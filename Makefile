@@ -6,6 +6,7 @@ BINARY := bin/lakehouse
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/lakehouse
+	go build -ldflags "-s -w" -o bin/healthcheck ./cmd/healthcheck
 
 test:
 	go test ./... -race -count=1 -timeout=5m
