@@ -1,0 +1,30 @@
+# Binaries
+/bin/
+/lakehouse
+*.exe
+
+# Test artifacts
+*.test
+*.prof
+coverage.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+/dist/
+
+# Local test data
+/testdata/generated/
+
+# Docker volumes
+docker-data/

@@ -1,0 +1,104 @@
+name: Check Upstream Releases
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check VictoriaLogs releases
+        id: vl
+        run: |
+          LATEST=$(gh api repos/VictoriaMetrics/VictoriaLogs/releases/latest --jq .tag_name 2>/dev/null || echo "unknown")
+          CURRENT=$(grep 'VictoriaMetrics/VictoriaLogs' go.mod | awk '{print $2}' 2>/dev/null || echo "none")
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          if [ "$LATEST" != "$CURRENT" ] && [ "$LATEST" != "unknown" ] && [ "$CURRENT" != "none" ]; then
+            echo "outdated=true" >> $GITHUB_OUTPUT
+          else
+            echo "outdated=false" >> $GITHUB_OUTPUT
+          fi
+          echo "VL: current=$CURRENT latest=$LATEST"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check VictoriaTraces releases
+        id: vt
+        run: |
+          LATEST=$(gh api repos/VictoriaMetrics/VictoriaTraces/releases/latest --jq .tag_name 2>/dev/null || echo "unknown")
+          CURRENT=$(grep 'VictoriaMetrics/VictoriaTraces' go.mod | awk '{print $2}' 2>/dev/null || echo "none")
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          if [ "$LATEST" != "$CURRENT" ] && [ "$LATEST" != "unknown" ] && [ "$CURRENT" != "none" ]; then
+            echo "outdated=true" >> $GITHUB_OUTPUT
+          else
+            echo "outdated=false" >> $GITHUB_OUTPUT
+          fi
+          echo "VT: current=$CURRENT latest=$LATEST"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create sync PR
+        if: steps.vl.outputs.outdated == 'true' || steps.vt.outputs.outdated == 'true'
+        run: |
+          BRANCH="upstream-sync/vl-${{ steps.vl.outputs.latest }}-vt-${{ steps.vt.outputs.latest }}"
+          git checkout -b "$BRANCH"
+
+          if [ "${{ steps.vl.outputs.outdated }}" = "true" ]; then
+            go get github.com/VictoriaMetrics/VictoriaLogs@${{ steps.vl.outputs.latest }} || true
+          fi
+          if [ "${{ steps.vt.outputs.outdated }}" = "true" ]; then
+            go get github.com/VictoriaMetrics/VictoriaTraces@${{ steps.vt.outputs.latest }} || true
+          fi
+          go mod tidy
+
+          # Attempt build
+          if ! go build ./...; then
+            echo "Build failed — manual intervention needed"
+          fi
+
+          git add go.mod go.sum
+          git commit -m "deps: sync upstream VL=${{ steps.vl.outputs.latest }} VT=${{ steps.vt.outputs.latest }}
+
+          [skip release]"
+          git push -u origin "$BRANCH"
+
+          gh pr create \
+            --title "Upstream sync: VL ${{ steps.vl.outputs.latest }}, VT ${{ steps.vt.outputs.latest }}" \
+            --label "dependencies" \
+            --body "$(cat <<'EOF'
+          ## Upstream Release Sync
+
+          | Component | Current | Latest |
+          |---|---|---|
+          | VictoriaLogs | ${{ steps.vl.outputs.current }} | ${{ steps.vl.outputs.latest }} |
+          | VictoriaTraces | ${{ steps.vt.outputs.current }} | ${{ steps.vt.outputs.latest }} |
+
+          ### Review Checklist
+          - [ ] `go build ./...` passes
+          - [ ] Unit tests pass
+          - [ ] Integration tests pass
+          - [ ] Protocol compliance: DataBlock wire format unchanged
+          - [ ] API compatibility: all endpoints respond correctly
+          - [ ] Review upstream CHANGELOG for breaking changes
+
+          ### Release Notes
+          - [VL releases](https://github.com/VictoriaMetrics/VictoriaLogs/releases)
+          - [VT releases](https://github.com/VictoriaMetrics/VictoriaTraces/releases)
+          EOF
+          )"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
