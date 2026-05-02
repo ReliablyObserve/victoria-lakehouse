@@ -100,14 +100,15 @@ jobs:
         if: steps.skip.outputs.skip != 'true'
         run: |
           VERSION=${{ steps.version.outputs.next }}
+          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
           docker buildx create --use
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --build-arg VERSION=${VERSION} \
-            -t ghcr.io/${{ github.repository }}:${VERSION} \
-            -t ghcr.io/${{ github.repository }}:latest \
+            -t ghcr.io/${REPO}:${VERSION} \
+            -t ghcr.io/${REPO}:latest \
             --push .
 
       - name: Package Helm chart
@@ -136,4 +137,5 @@ jobs:
         if: steps.skip.outputs.skip != 'true'
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
-          helm push dist/victoria-lakehouse-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          helm push dist/victoria-lakehouse-*.tgz oci://ghcr.io/${OWNER}/charts
