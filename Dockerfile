@@ -10,7 +10,7 @@ COPY . .
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -ldflags "-X main.version=${VERSION}" -o /lakehouse ./cmd/lakehouse
 
-FROM alpine:3.21
+FROM alpine:3.23
 
 RUN apk add --no-cache ca-certificates tzdata
 COPY --from=builder /lakehouse /usr/local/bin/lakehouse
