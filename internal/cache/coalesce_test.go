@@ -86,10 +86,13 @@ func TestGroup_DoDifferentKeys(t *testing.T) {
 		wg.Add(1)
 		go func(k string) {
 			defer wg.Done()
-			g.Do(k, func() ([]byte, error) {
+			_, err, _ := g.Do(k, func() ([]byte, error) {
 				calls.Add(1)
 				return []byte(k), nil
 			})
+			if err != nil {
+				t.Errorf("unexpected error for key %s: %v", k, err)
+			}
 		}(key)
 	}
 	wg.Wait()
@@ -102,7 +105,7 @@ func TestGroup_DoDifferentKeys(t *testing.T) {
 func TestGroup_DoRemovesAfterDone(t *testing.T) {
 	g := NewGroup()
 
-	g.Do("k1", func() ([]byte, error) {
+	_, _, _ = g.Do("k1", func() ([]byte, error) {
 		return []byte("first"), nil
 	})
 
@@ -127,7 +130,7 @@ func TestGroup_Inflight(t *testing.T) {
 
 	block := make(chan struct{})
 	go func() {
-		g.Do("k1", func() ([]byte, error) {
+		_, _, _ = g.Do("k1", func() ([]byte, error) {
 			<-block
 			return nil, nil
 		})

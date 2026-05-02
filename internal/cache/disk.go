@@ -76,7 +76,7 @@ func (d *DiskCache) Put(key string, data []byte) (string, error) {
 
 	if el, ok := d.items[key]; ok {
 		de := el.Value.(*diskEntry)
-		if err := os.WriteFile(de.path, data, 0o640); err != nil {
+		if err := os.WriteFile(de.path, data, 0o600); err != nil {
 			return "", err
 		}
 		d.curSize = d.curSize - de.size + size
@@ -86,7 +86,7 @@ func (d *DiskCache) Put(key string, data []byte) (string, error) {
 	}
 
 	path := d.keyToPath(key)
-	if err := os.WriteFile(path, data, 0o640); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return "", err
 	}
 
@@ -110,13 +110,13 @@ func (d *DiskCache) PutFromPath(key string, srcPath string) error {
 	defer d.mu.Unlock()
 
 	size := info.Size()
-	dstPath := d.keyToPath(key)
+	dstPath := filepath.Clean(d.keyToPath(key))
 
 	data, err := os.ReadFile(srcPath)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(dstPath, data, 0o640); err != nil {
+	if err := os.WriteFile(dstPath, data, 0o600); err != nil {
 		return err
 	}
 

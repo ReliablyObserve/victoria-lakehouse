@@ -58,8 +58,12 @@ func TestDiskCache_PutOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dc.Put("k", []byte("v1"))
-	dc.Put("k", []byte("v2-updated"))
+	if _, err := dc.Put("k", []byte("v1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dc.Put("k", []byte("v2-updated")); err != nil {
+		t.Fatal(err)
+	}
 
 	path, ok := dc.Get("k")
 	if !ok {
@@ -81,8 +85,12 @@ func TestDiskCache_Eviction(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dc.Put("a", make([]byte, 50))
-	dc.Put("b", make([]byte, 50))
+	if _, err := dc.Put("a", make([]byte, 50)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dc.Put("b", make([]byte, 50)); err != nil {
+		t.Fatal(err)
+	}
 
 	stats := dc.Stats()
 	if stats.Evictions == 0 {
@@ -124,9 +132,15 @@ func TestDiskCache_Clear(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dc.Put("k1", []byte("v1"))
-	dc.Put("k2", []byte("v2"))
-	dc.Clear()
+	if _, err := dc.Put("k1", []byte("v1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dc.Put("k2", []byte("v2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := dc.Clear(); err != nil {
+		t.Fatal(err)
+	}
 
 	if dc.Len() != 0 {
 		t.Errorf("len after clear = %d, want 0", dc.Len())
@@ -144,7 +158,7 @@ func TestDiskCache_PutFromPath(t *testing.T) {
 	}
 
 	srcPath := filepath.Join(t.TempDir(), "source.dat")
-	if err := os.WriteFile(srcPath, []byte("from-file"), 0640); err != nil {
+	if err := os.WriteFile(srcPath, []byte("from-file"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -169,8 +183,13 @@ func TestDiskCache_StaleFileRemoved(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	path, _ := dc.Put("k", []byte("data"))
-	os.Remove(path)
+	path, err := dc.Put("k", []byte("data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
 
 	_, ok := dc.Get("k")
 	if ok {
@@ -204,7 +223,9 @@ func TestDiskCache_Stats(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dc.Put("k", []byte("12345"))
+	if _, err := dc.Put("k", []byte("12345")); err != nil {
+		t.Fatal(err)
+	}
 	dc.Get("k")
 	dc.Get("missing")
 

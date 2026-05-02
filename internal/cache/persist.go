@@ -161,7 +161,7 @@ func (p *Persister) writeJSON(filename string, v any) error {
 		return fmt.Errorf("marshal %s: %w", filename, err)
 	}
 
-	if err := os.WriteFile(tmp, data, 0o640); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", filename, err)
 	}
 
