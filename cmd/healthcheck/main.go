@@ -19,7 +19,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "health check failed: %v\n", err)
 		os.Exit(1)
 	}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- healthcheck binary, URL is hardcoded default or operator CLI arg
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "health check failed: %v\n", err)
 		os.Exit(1)
