@@ -296,3 +296,66 @@ func TestLoad_InvalidYAML(t *testing.T) {
 		t.Error("expected error for invalid YAML")
 	}
 }
+
+func TestParseSizeBytes(t *testing.T) {
+	tests := []struct {
+		input string
+		want  int64
+	}{
+		{"512MB", 512 * 1024 * 1024},
+		{"50GB", 50 * 1024 * 1024 * 1024},
+		{"1TB", 1024 * 1024 * 1024 * 1024},
+		{"256KB", 256 * 1024},
+		{"100B", 100},
+		{"1024", 1024},
+		{" 512MB ", 512 * 1024 * 1024},
+		{"512mb", 512 * 1024 * 1024},
+		{"", 0},
+	}
+
+	for _, tt := range tests {
+		got, err := ParseSizeBytes(tt.input)
+		if err != nil {
+			t.Errorf("ParseSizeBytes(%q): %v", tt.input, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("ParseSizeBytes(%q) = %d, want %d", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestParseSizeBytes_Invalid(t *testing.T) {
+	_, err := ParseSizeBytes("abc")
+	if err == nil {
+		t.Error("expected error for invalid input")
+	}
+}
+
+func TestCacheMemoryBytes(t *testing.T) {
+	cfg := Default()
+	got := cfg.CacheMemoryBytes()
+	want := int64(512 * 1024 * 1024)
+	if got != want {
+		t.Errorf("CacheMemoryBytes = %d, want %d", got, want)
+	}
+}
+
+func TestCacheDiskBytes(t *testing.T) {
+	cfg := Default()
+	got := cfg.CacheDiskBytes()
+	want := int64(50 * 1024 * 1024 * 1024)
+	if got != want {
+		t.Errorf("CacheDiskBytes = %d, want %d", got, want)
+	}
+}
+
+func TestCacheMemoryBytes_Invalid(t *testing.T) {
+	cfg := Default()
+	cfg.Cache.MemoryLimit = "invalid"
+	got := cfg.CacheMemoryBytes()
+	want := int64(512 * 1024 * 1024)
+	if got != want {
+		t.Errorf("CacheMemoryBytes with invalid = %d, want default %d", got, want)
+	}
+}

@@ -216,6 +216,70 @@ Stream identity fields are defined per profile:
 
 `GetStreamFieldNames()` returns these from the registry. `GetStreamFieldValues()` delegates to `GetFieldValues()`. `GetStreams()` reads the `_stream` column from Parquet files.
 
+## Cache Layer (M3)
+
+### Multi-Tier Cache Implementation
+
+The cache layer is integrated into the storage query path via `getFileData()`:
+
+```
+Query arrives for Parquet file key
+  |
+  1. L1 Memory (LRU) -> hit? use bytes.NewReader, open parquet
+  2. L2 Disk (LRU)   -> hit? read file, promote to L1, open parquet
+  3. Singleflight    -> coalesce concurrent requests for same key
+  4. S3 Download     -> store in L2 disk + L1 memory
+```
+
+### L1 Memory Cache (`internal/cache/lru.go`)
+
+- Container/list doubly-linked list with map for O(1) access
+- Size-based LRU eviction (configurable via `--lakehouse.cache.memory-limit`)
+- Thread-safe (sync.Mutex)
+- Returns byte copies to prevent caller mutation of cached data
+- Tracks hits, misses, evictions for metrics
+
+### L2 Disk Cache (`internal/cache/disk.go`)
+
+- Stores full Parquet files on local EBS
+- Key-to-path sanitization (replaces `/`, `:`, `=` with `_`)
+- Watermark-based LRU eviction (default 80% of `--lakehouse.cache.disk-limit`)
+- Atomic file writes, stale file detection (auto-removes entries for deleted files)
+- Supports `PutFromPath` for zero-copy import from existing files
+
+### Cache Coalescence (`internal/cache/coalesce.go`)
+
+- Custom singleflight implementation prevents duplicate S3 downloads
+- When multiple queries need the same uncached file, only one S3 request executes
+- Waiting callers receive the same result with `shared=true`
+- In-flight tracking for metrics (`Inflight()` count)
+
+### Label Index (`internal/cache/persist.go`)
+
+- Pre-computed index of label/attribute names and values
+- `GetFieldNames()` responds in <1ms from label index instead of scanning Parquet files
+- `GetFieldValues()` serves from index when available (with limit), falls back to file scan
+- Values capped at 10K per label, cardinality and seen-in-files tracked
+- Built incrementally as Parquet files are queried (`updateLabelIndex()`)
+- Thread-safe (sync.RWMutex)
+
+### Metadata Persistence (`internal/cache/persist.go`)
+
+- Atomic JSON writes (write to `.tmp`, rename to final path)
+- Persists on graceful shutdown (`Close()`) and periodic intervals
+- On startup, recovers label index from disk for instant query capability
+- Manifest state serialization for fast restart (planned integration with manifest package)
+
+### Configuration
+
+| Flag | Default | Description |
+|---|---|---|
+| `--lakehouse.cache.memory-limit` | `512MB` | L1 memory cache max size |
+| `--lakehouse.cache.disk-path` | `/data/lakehouse/cache` | L2 disk cache directory |
+| `--lakehouse.cache.disk-limit` | `50GB` | L2 disk cache max size |
+| `--lakehouse.cache.eviction-watermark` | `0.8` | L2 eviction threshold |
+| `--lakehouse.manifest.persist-path` | `/data/lakehouse` | Persistence directory |
+
 ## Hot Boundary Auto-Discovery
 
 1. Discover vlstorage/vtstorage via headless DNS or static config

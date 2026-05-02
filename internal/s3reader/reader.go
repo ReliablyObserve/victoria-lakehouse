@@ -98,3 +98,20 @@ func (r *S3ReaderAt) ReadAt(p []byte, off int64) (int, error) {
 func (r *S3ReaderAt) Size() int64 {
 	return r.size
 }
+
+func (p *ClientPool) Download(ctx context.Context, key string) ([]byte, error) {
+	out, err := p.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(p.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("s3 GetObject %s: %w", key, err)
+	}
+	defer func() { _ = out.Body.Close() }()
+
+	data, err := io.ReadAll(out.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read s3 body %s: %w", key, err)
+	}
+	return data, nil
+}
