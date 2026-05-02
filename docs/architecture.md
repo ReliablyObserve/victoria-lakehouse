@@ -182,6 +182,40 @@ manifest.HasDataForRange(start, end) -> O(1) check
 
 Refreshed via S3 ListObjects (configurable interval) and/or SQS event notifications. ~100 bytes per partition-hour (~850KB for 1 year of hourly data).
 
+## Query Engine Features (M2)
+
+### Row Group Skipping
+
+Two skip mechanisms reduce I/O:
+
+1. **Timestamp statistics**: Row group column index min/max values are checked against the query time range. Row groups entirely outside `[startNs, endNs)` are skipped.
+2. **Bloom filters**: For columns marked `HasBloom: true` (service.name, trace_id), exact-match queries trigger bloom filter checks. If the bloom filter says a value is definitely absent, the row group is skipped.
+
+### Column Projection
+
+When `QueryContext.RequestedColumns` is set, only the specified columns (plus `timestamp_unix_nano` always) are read and returned. This reduces DataBlock size and memory allocation. Without projection, all columns are returned.
+
+### Filter Evaluation Matrix
+
+| LogsQL Filter | Parquet Strategy | Status |
+|---|---|---|
+| `_time:[start, end)` | Hive partition pruning + row group timestamp stats | Implemented |
+| `field:="exact"` | Bloom filter check (if available) + row scan | Implemented |
+| `trace_id:="abc"` | Bloom filter on trace_id column | Implemented |
+| `service.name:="X"` | Bloom filter on service.name column | Implemented |
+| `field:value` (substring) | Row scan, `strings.Contains` | Planned (M3+) |
+| `field:~"regex"` | Row scan, compiled regex | Planned (M3+) |
+| `field:>N` (range) | Row group min/max + scan | Planned (M3+) |
+| `NOT`, `AND`, `OR` | Evaluate sub-filters | Planned (M3+) |
+
+### Stream Fields
+
+Stream identity fields are defined per profile:
+- **Logs**: `service.name`, `k8s.namespace.name`, `k8s.pod.name`
+- **Traces**: `resource_attr:service.name`, `name`
+
+`GetStreamFieldNames()` returns these from the registry. `GetStreamFieldValues()` delegates to `GetFieldValues()`. `GetStreams()` reads the `_stream` column from Parquet files.
+
 ## Hot Boundary Auto-Discovery
 
 1. Discover vlstorage/vtstorage via headless DNS or static config

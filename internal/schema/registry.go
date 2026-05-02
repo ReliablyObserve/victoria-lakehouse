@@ -24,8 +24,9 @@ type FieldMapping struct {
 }
 
 type Profile struct {
-	Promoted   []FieldMapping
-	MapColumns []string // MAP column names to scan for unknown fields
+	Promoted     []FieldMapping
+	MapColumns   []string // MAP column names to scan for unknown fields
+	StreamFields []string // fields that define a stream identity
 }
 
 type Registry struct {
@@ -49,7 +50,8 @@ var LogsProfile = Profile{
 		{ParquetColumn: "_stream_id", InternalName: "_stream_id", Origin: OriginPromoted},
 		{ParquetColumn: "scope.name", InternalName: "scope.name", Origin: OriginPromoted},
 	},
-	MapColumns: []string{"resource.attributes", "log.attributes"},
+	MapColumns:   []string{"resource.attributes", "log.attributes"},
+	StreamFields: []string{"service.name", "k8s.namespace.name", "k8s.pod.name"},
 }
 
 var TracesProfile = Profile{
@@ -67,7 +69,8 @@ var TracesProfile = Profile{
 		{ParquetColumn: "service.name", InternalName: "resource_attr:service.name", Origin: OriginPromoted, HasBloom: true},
 		{ParquetColumn: "scope.name", InternalName: "scope_attr:otel.library.name", Origin: OriginPromoted},
 	},
-	MapColumns: []string{"resource.attributes", "span.attributes", "scope.attributes"},
+	MapColumns:   []string{"resource.attributes", "span.attributes", "scope.attributes"},
+	StreamFields: []string{"resource_attr:service.name", "name"},
 }
 
 func NewRegistry(profile Profile) *Registry {
@@ -155,6 +158,10 @@ func (r *Registry) PromotedColumns() []FieldMapping {
 
 func (r *Registry) MapColumns() []string {
 	return r.profile.MapColumns
+}
+
+func (r *Registry) StreamFields() []string {
+	return r.profile.StreamFields
 }
 
 func (r *Registry) TimestampColumn() string {

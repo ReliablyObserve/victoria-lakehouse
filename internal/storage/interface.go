@@ -25,10 +25,11 @@ type ValueWithHits struct {
 }
 
 type QueryContext struct {
-	TenantIDs []TenantID
-	StartNs   int64
-	EndNs     int64
-	Query     string
+	TenantIDs        []TenantID
+	StartNs          int64
+	EndNs            int64
+	Query            string
+	RequestedColumns []string // if non-empty, read only these columns (internal names)
 }
 
 type Storage interface {
