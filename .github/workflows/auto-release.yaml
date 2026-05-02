@@ -1,0 +1,139 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip release]') && !contains(github.event.head_commit.message, 'metadata sync')"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Determine version bump
+        id: version
+        run: |
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+
+          # Parse PR labels from merge commit
+          PR_NUM=$(echo "${{ github.event.head_commit.message }}" | grep -oP '#\K[0-9]+' | head -1 || true)
+          BUMP="patch"
+
+          if [ -n "$PR_NUM" ]; then
+            LABELS=$(gh pr view "$PR_NUM" --json labels --jq '.labels[].name' 2>/dev/null || true)
+            if echo "$LABELS" | grep -qE "release:major|breaking-change"; then
+              BUMP="major"
+            elif echo "$LABELS" | grep -qE "release:minor|feature"; then
+              BUMP="minor"
+            elif echo "$LABELS" | grep -qE "release:patch|bugfix|performance"; then
+              BUMP="patch"
+            fi
+          fi
+
+          # Fallback to conventional commits
+          if [ "$BUMP" = "patch" ]; then
+            MSG="${{ github.event.head_commit.message }}"
+            if echo "$MSG" | grep -qiE "BREAKING CHANGE|^feat!:"; then
+              BUMP="major"
+            elif echo "$MSG" | grep -qiE "^feat(\(|:)"; then
+              BUMP="minor"
+            fi
+          fi
+
+          # Calculate next version
+          IFS='.' read -r MAJOR MINOR PATCH <<< "${LATEST_TAG#v}"
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+          NEXT="v${MAJOR}.${MINOR}.${PATCH}"
+
+          echo "bump=$BUMP" >> $GITHUB_OUTPUT
+          echo "next=$NEXT" >> $GITHUB_OUTPUT
+          echo "Version: $LATEST_TAG → $NEXT ($BUMP)"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check for skip conditions
+        id: skip
+        run: |
+          # Skip if only docs/ci changed
+          CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+          if echo "$CHANGED" | grep -vqE "^(docs/|\.github/|README\.md|CHANGELOG\.md)"; then
+            echo "skip=false" >> $GITHUB_OUTPUT
+          else
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping release: only docs/CI changes"
+          fi
+
+      - name: Build binaries
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          VERSION=${{ steps.version.outputs.next }}
+          mkdir -p dist
+
+          for GOOS in linux darwin; do
+            for GOARCH in amd64 arm64; do
+              echo "Building ${GOOS}/${GOARCH}..."
+              CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH \
+                go build -ldflags "-X main.version=${VERSION}" \
+                -o "dist/lakehouse-${GOOS}-${GOARCH}" ./cmd/lakehouse
+            done
+          done
+
+          cd dist && sha256sum lakehouse-* > checksums.txt
+
+      - name: Build and push Docker image
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          VERSION=${{ steps.version.outputs.next }}
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+          docker buildx create --use
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION=${VERSION} \
+            -t ghcr.io/${{ github.repository }}:${VERSION} \
+            -t ghcr.io/${{ github.repository }}:latest \
+            --push .
+
+      - name: Package Helm chart
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          VERSION=${{ steps.version.outputs.next }}
+          # Update Chart.yaml version
+          sed -i "s/^version:.*/version: ${VERSION#v}/" charts/victoria-lakehouse/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${VERSION#v}\"/" charts/victoria-lakehouse/Chart.yaml
+          helm package charts/victoria-lakehouse/ -d dist/
+
+      - name: Create release
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          VERSION=${{ steps.version.outputs.next }}
+          git tag "$VERSION"
+          git push origin "$VERSION"
+
+          gh release create "$VERSION" dist/* \
+            --title "$VERSION" \
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push Helm chart to GHCR
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+          helm push dist/victoria-lakehouse-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts

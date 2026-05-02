@@ -1,0 +1,229 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3"
+)
+
+var (
+	version = "dev"
+)
+
+func main() {
+	var (
+		configPath = flag.String("lakehouse.config", "", "Path to YAML config file")
+		mode       = flag.String("lakehouse.mode", "", "Operating mode: logs or traces (required)")
+		s3Bucket   = flag.String("lakehouse.s3.bucket", "", "S3 bucket name (required)")
+		s3Region   = flag.String("lakehouse.s3.region", "", "S3 region")
+		s3Prefix   = flag.String("lakehouse.s3.prefix", "", "S3 key prefix")
+		s3Endpoint = flag.String("lakehouse.s3.endpoint", "", "Custom S3 endpoint (MinIO)")
+		s3AccessKey = flag.String("lakehouse.s3.access-key", "", "S3 access key")
+		s3SecretKey = flag.String("lakehouse.s3.secret-key", "", "S3 secret key")
+		s3PathStyle = flag.Bool("lakehouse.s3.force-path-style", false, "Use path-style S3 URLs")
+		topology   = flag.String("lakehouse.topology", "", "Deployment topology: auto, storage-node, direct, loki-proxy")
+		hotBoundary = flag.String("lakehouse.hot-boundary", "", "Manual hot boundary override (e.g., 7d)")
+		listenAddr = flag.String("httpListenAddr", "", "HTTP listen address (auto-set from mode)")
+		logLevel   = flag.String("loggerLevel", "INFO", "Log level: DEBUG, INFO, WARN, ERROR")
+	)
+	flag.Parse()
+
+	logger := setupLogger(*logLevel)
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		logger.Error("failed to load config", "error", err)
+		os.Exit(1)
+	}
+
+	applyFlags(cfg, *mode, *s3Bucket, *s3Region, *s3Prefix, *s3Endpoint,
+		*s3AccessKey, *s3SecretKey, *s3PathStyle, *topology, *hotBoundary)
+
+	if err := cfg.Validate(); err != nil {
+		logger.Error("invalid config", "error", err)
+		os.Exit(1)
+	}
+
+	addr := *listenAddr
+	if addr == "" {
+		addr = cfg.ListenAddr()
+	}
+
+	logger.Info("starting victoria-lakehouse",
+		"version", version,
+		"mode", cfg.Mode,
+		"topology", cfg.Topology,
+		"listen", addr,
+		"s3_bucket", cfg.S3.Bucket,
+		"s3_region", cfg.S3.Region,
+		"s3_prefix", cfg.AutoPrefix(),
+	)
+
+	sm := startup.NewManager(logger)
+
+	store, err := parquets3.New(cfg, logger)
+	if err != nil {
+		logger.Error("failed to initialize storage", "error", err)
+		os.Exit(1)
+	}
+
+	mux := newMux(cfg, store, sm)
+
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      mux,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: cfg.Query.Timeout + 5*time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	go runStartup(sm, cfg, logger)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	go func() {
+		logger.Info("HTTP server listening", "addr", addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("HTTP server error", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-ctx.Done()
+	logger.Info("shutdown signal received")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("HTTP server shutdown error", "error", err)
+	}
+
+	if err := store.Close(); err != nil {
+		logger.Error("storage close error", "error", err)
+	}
+
+	logger.Info("victoria-lakehouse stopped")
+}
+
+func newMux(cfg *config.Config, store storage.Storage, sm *startup.Manager) *http.ServeMux {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "OK")
+	})
+
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		if sm.IsReady() {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "READY")
+		} else {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprintf(w, "NOT READY (phase: %s)", sm.Phase())
+		}
+	})
+
+	mux.HandleFunc("/manifest/range", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"minTime":    0,
+			"maxTime":    0,
+			"minDate":    "",
+			"maxDate":    "",
+			"totalFiles": 0,
+			"totalBytes": 0,
+		})
+	})
+
+	mux.HandleFunc("/lakehouse/info", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"version":  version,
+			"mode":     cfg.Mode,
+			"topology": cfg.Topology,
+			"ready":    sm.IsReady(),
+			"phase":    sm.Phase().String(),
+		})
+	})
+
+	return mux
+}
+
+func runStartup(sm *startup.Manager, cfg *config.Config, logger *slog.Logger) {
+	sm.SetPhase(startup.PhaseDiskRecovery)
+
+	// Phase 1: Load persisted state from disk
+	// TODO: load manifest, label index, footers from cfg.Manifest.PersistPath
+	logger.Info("disk recovery complete (stub)")
+
+	sm.SetPhase(startup.PhaseS3Refresh)
+
+	// Phase 2: Refresh from S3
+	// TODO: incremental S3 ListObjects, download footers/blooms
+	logger.Info("S3 refresh complete (stub)")
+
+	sm.SetPhase(startup.PhaseReady)
+}
+
+func applyFlags(cfg *config.Config, mode, bucket, region, prefix, endpoint,
+	accessKey, secretKey string, pathStyle bool, topology, hotBoundary string) {
+	if mode != "" {
+		cfg.Mode = config.Mode(mode)
+	}
+	if bucket != "" {
+		cfg.S3.Bucket = bucket
+	}
+	if region != "" {
+		cfg.S3.Region = region
+	}
+	if prefix != "" {
+		cfg.S3.Prefix = prefix
+	}
+	if endpoint != "" {
+		cfg.S3.Endpoint = endpoint
+	}
+	if accessKey != "" {
+		cfg.S3.AccessKey = accessKey
+	}
+	if secretKey != "" {
+		cfg.S3.SecretKey = secretKey
+	}
+	if pathStyle {
+		cfg.S3.ForcePathStyle = true
+	}
+	if topology != "" {
+		cfg.Topology = config.Topology(topology)
+	}
+	if hotBoundary != "" {
+		cfg.HotBoundary = hotBoundary
+	}
+}
+
+func setupLogger(level string) *slog.Logger {
+	var lvl slog.Level
+	switch level {
+	case "DEBUG":
+		lvl = slog.LevelDebug
+	case "WARN":
+		lvl = slog.LevelWarn
+	case "ERROR":
+		lvl = slog.LevelError
+	default:
+		lvl = slog.LevelInfo
+	}
+	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
+}

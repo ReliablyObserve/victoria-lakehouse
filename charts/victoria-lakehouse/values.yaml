@@ -1,0 +1,58 @@
+mode: logs  # logs or traces
+replicas: 2
+
+image:
+  repository: ghcr.io/reliablyobserve/victoria-lakehouse
+  tag: ""  # defaults to appVersion
+  pullPolicy: IfNotPresent
+
+s3:
+  bucket: ""  # required
+  region: us-east-1
+  prefix: ""
+  endpoint: ""
+
+discovery:
+  headlessService: ""
+  partitionAuthKey: ""
+  peerHeadlessService: ""
+  storageNodes: []
+
+hotBoundary: ""
+
+cache:
+  memoryLimit: 512Mi
+  disk:
+    enabled: true
+    size: 50Gi
+    storageClass: ""
+
+query:
+  maxConcurrent: 32
+  timeout: 60s
+  slowThreshold: 5s
+
+startup:
+  serveStale: false
+  warmupWindow: 24h
+  maxWarmupTime: 5m
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+
+service:
+  type: ClusterIP
+  port: ""  # auto: 9428 for logs, 10428 for traces
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
