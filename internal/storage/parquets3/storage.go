@@ -14,7 +14,9 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/discovery"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
@@ -31,6 +33,9 @@ type Storage struct {
 	sfGroup    *cache.Group
 	labelIndex *cache.LabelIndex
 	persister  *cache.Persister
+	discovery  *discovery.Discovery
+	peerCache  *peercache.PeerCache
+	peerHandler *peercache.Handler
 }
 
 func New(cfg *config.Config, logger *slog.Logger) (*Storage, error) {
@@ -80,21 +85,58 @@ func New(cfg *config.Config, logger *slog.Logger) (*Storage, error) {
 		}
 	}
 
+	disc := discovery.New(
+		cfg.Discovery.HeadlessService,
+		cfg.Discovery.StorageNodes,
+		cfg.Discovery.PartitionAuthKey,
+		cfg.Discovery.PeerHeadlessService,
+		cfg.Discovery.Timeout,
+		logger,
+	)
+
+	var pc *peercache.PeerCache
+	var ph *peercache.Handler
+	if cfg.Peer.AuthKey != "" || cfg.Discovery.PeerHeadlessService != "" {
+		pc = peercache.New(
+			cfg.ListenAddr(),
+			cfg.Peer.AuthKey,
+			cfg.Peer.Timeout,
+			cfg.Peer.MaxConnections,
+			logger,
+		)
+		ph = peercache.NewHandler(cfg.Peer.AuthKey)
+	}
+
 	return &Storage{
-		cfg:        cfg,
-		logger:     l,
-		pool:       pool,
-		manifest:   m,
-		registry:   schema.NewRegistry(profile),
-		memCache:   memCache,
-		diskCache:  diskCacheInst,
-		sfGroup:    cache.NewGroup(),
-		labelIndex: labelIdx,
-		persister:  pers,
+		cfg:         cfg,
+		logger:      l,
+		pool:        pool,
+		manifest:    m,
+		registry:    schema.NewRegistry(profile),
+		memCache:    memCache,
+		diskCache:   diskCacheInst,
+		sfGroup:     cache.NewGroup(),
+		labelIndex:  labelIdx,
+		persister:   pers,
+		discovery:   disc,
+		peerCache:   pc,
+		peerHandler: ph,
 	}, nil
 }
 
 func (s *Storage) RunQuery(ctx context.Context, qctx *storage.QueryContext, writeBlock storage.WriteDataBlockFunc) error {
+	if boundary := s.discovery.GetHotBoundary(); boundary != nil {
+		if time.Unix(0, qctx.StartNs).After(boundary.MinTime) && time.Unix(0, qctx.EndNs).Before(boundary.MaxTime) {
+			s.logger.Debug("hot boundary suppression: query within hot range",
+				"start", time.Unix(0, qctx.StartNs),
+				"end", time.Unix(0, qctx.EndNs),
+				"hot_min", boundary.MinTime,
+				"hot_max", boundary.MaxTime,
+			)
+			return nil
+		}
+	}
+
 	if !s.manifest.HasDataForRange(qctx.StartNs, qctx.EndNs) {
 		s.logger.Debug("manifest fast path: no data for range",
 			"start", time.Unix(0, qctx.StartNs),
@@ -174,6 +216,17 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 		}
 	}
 
+	if s.peerCache != nil {
+		peer, isLocal := s.peerCache.Lookup(key)
+		if !isLocal {
+			peerData, found, peerErr := s.peerCache.Fetch(ctx, peer, key)
+			if peerErr == nil && found {
+				s.memCache.Put(key, peerData)
+				return peerData, nil
+			}
+		}
+	}
+
 	data, err, _ := s.sfGroup.Do(key, func() ([]byte, error) {
 		d, err := s.pool.Download(ctx, key)
 		if err != nil {
@@ -185,6 +238,11 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 				s.logger.Warn("disk cache put failed", "key", key, "error", putErr)
 			}
 		}
+
+		if s.peerHandler != nil {
+			s.peerHandler.Put(key, d)
+		}
+
 		return d, nil
 	})
 	if err != nil {
@@ -565,6 +623,35 @@ func (s *Storage) DiskCacheStats() *cache.Stats {
 
 func (s *Storage) LabelIndex() *cache.LabelIndex {
 	return s.labelIndex
+}
+
+func (s *Storage) Discovery() *discovery.Discovery {
+	return s.discovery
+}
+
+func (s *Storage) PeerCache() *peercache.PeerCache {
+	return s.peerCache
+}
+
+func (s *Storage) PeerHandler() *peercache.Handler {
+	return s.peerHandler
+}
+
+func (s *Storage) RefreshDiscovery(ctx context.Context) error {
+	if _, err := s.discovery.DiscoverStorageNodes(ctx); err != nil {
+		return fmt.Errorf("discover storage nodes: %w", err)
+	}
+	if _, err := s.discovery.PollPartitionList(ctx); err != nil {
+		return fmt.Errorf("poll partition list: %w", err)
+	}
+	if s.peerCache != nil {
+		peers, err := s.discovery.DiscoverPeers(ctx)
+		if err != nil {
+			return fmt.Errorf("discover peers: %w", err)
+		}
+		s.peerCache.UpdatePeers(peers)
+	}
+	return nil
 }
 
 func (s *Storage) PersistState() error {
