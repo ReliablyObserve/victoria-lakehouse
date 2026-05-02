@@ -54,11 +54,12 @@ func TestRing_ConcurrentMembersLookup(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for i := 0; i < 500; i++ {
-				if id%3 == 0 {
+				switch id % 3 {
+				case 0:
 					_ = r.Members()
-				} else if id%3 == 1 {
+				case 1:
 					_ = r.MemberCount()
-				} else {
+				default:
 					r.Lookup(fmt.Sprintf("k-%d", i))
 				}
 			}

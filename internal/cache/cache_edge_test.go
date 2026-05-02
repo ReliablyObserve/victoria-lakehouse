@@ -254,7 +254,7 @@ func TestDiskCache_EvictionOrder(t *testing.T) {
 	_, okA := dc.Get("a")
 	_, okB := dc.Get("b")
 	if okB && !okA {
-		// b was accessed less recently, so it should be evicted first
+		t.Log("b survived but a was evicted — unexpected LRU order")
 	}
 	_ = okA
 	_ = okB
