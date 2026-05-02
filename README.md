@@ -196,16 +196,16 @@ See [Security](docs/security.md).
 
 ## Parquet Schema
 
-Victoria Lakehouse reads OTLP-standard Parquet files. High-frequency fields are promoted to top-level columns (with statistics + bloom filters). Everything else goes in MAP columns.
+Victoria Lakehouse reads OTLP-standard Parquet files. Column names use **OTEL semantic convention dot-notation** directly (e.g., `service.name`, `k8s.namespace.name`) for zero-translation compatibility with OTEL Collector exporters and standard tooling. High-frequency fields are promoted to top-level columns (with statistics + bloom filters). Everything else goes in MAP columns.
 
 | Promoted (Logs) | Promoted (Traces) |
 |---|---|
 | `timestamp_unix_nano` | `timestamp_unix_nano`, `start_time_unix_nano` |
 | `body`, `severity_text` | `trace_id`, `span_id`, `parent_span_id` |
-| `service_name` | `span_name`, `service_name` |
-| `k8s_namespace_name`, `k8s_pod_name` | `status_code`, `duration_ns` |
-| `trace_id`, `span_id` | `resource_attributes` (MAP) |
-| `resource_attributes`, `log_attributes` (MAP) | `span_attributes`, `scope_attributes` (MAP) |
+| `service.name` | `span.name`, `service.name` |
+| `k8s.namespace.name`, `k8s.pod.name` | `status.code`, `duration_ns` |
+| `trace_id`, `span_id` | `resource.attributes` (MAP) |
+| `resource.attributes`, `log.attributes` (MAP) | `span.attributes`, `scope.attributes` (MAP) |
 
 S3 layout: Hive partitioned by `dt=YYYY-MM-DD/hour=HH`.
 

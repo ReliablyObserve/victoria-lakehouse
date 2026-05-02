@@ -59,6 +59,10 @@ Victoria Lakehouse implements VL's storage interface (11 methods):
 
 ## Parquet Schema
 
+### Column Naming: OTEL Semantic Conventions (Dot-Notation)
+
+Parquet column names use **OTEL semantic convention dot-notation directly** (e.g., `service.name`, `k8s.namespace.name`). This gives zero-translation compatibility with OTEL Collector Parquet exporters and standard OTEL tooling. SQL engines that need quoting (`"service.name"`) can handle this themselves — SQL compatibility is not a design constraint.
+
 ### Logs
 
 | Column | Type | VL Name | Notes |
@@ -67,16 +71,16 @@ Victoria Lakehouse implements VL's storage interface (11 methods):
 | `body` | STRING | `_msg` | Full-text search |
 | `severity_text` | STRING (DICT) | `level` | Dashboard filter |
 | `severity_number` | INT32 | (derived) | Numeric comparison |
-| `service_name` | STRING (DICT) | `service.name` | Highest-cardinality filter |
-| `k8s_namespace_name` | STRING (DICT) | `k8s.namespace.name` | Infra filter |
-| `k8s_pod_name` | STRING (DICT) | `k8s.pod.name` | Infra filter |
+| `service.name` | STRING (DICT) | `service.name` | Highest-cardinality filter |
+| `k8s.namespace.name` | STRING (DICT) | `k8s.namespace.name` | Infra filter |
+| `k8s.pod.name` | STRING (DICT) | `k8s.pod.name` | Infra filter |
 | `trace_id` | FIXED_BYTE_ARRAY(16) | `trace_id` | Bloom filter |
 | `span_id` | FIXED_BYTE_ARRAY(8) | `span_id` | Correlation |
 | `_stream` | STRING | `_stream` | Stream identity |
 | `_stream_id` | STRING | `_stream_id` | Stream hash |
-| `resource_attributes` | MAP<STRING,STRING> | (by key) | All resource attrs |
-| `log_attributes` | MAP<STRING,STRING> | (by key) | All log attrs |
-| `scope_name` | STRING | `scope.name` | Instrumentation scope |
+| `resource.attributes` | MAP<STRING,STRING> | (by key) | All resource attrs |
+| `log.attributes` | MAP<STRING,STRING> | (by key) | All log attrs |
+| `scope.name` | STRING | `scope.name` | Instrumentation scope |
 
 ### Traces
 
@@ -87,24 +91,24 @@ Victoria Lakehouse implements VL's storage interface (11 methods):
 | `trace_id` | FIXED_BYTE_ARRAY(16) | `trace_id` | Primary key + bloom |
 | `span_id` | FIXED_BYTE_ARRAY(8) | `span_id` | Identity |
 | `parent_span_id` | FIXED_BYTE_ARRAY(8) | `parent_span_id` | Tree construction |
-| `span_name` | STRING (DICT) | `name` | Common filter |
-| `span_kind` | INT32 | `kind` | CLIENT/SERVER |
-| `status_code` | INT32 | `status_code` | Error filtering |
-| `status_message` | STRING | `status_message` | Error details |
+| `span.name` | STRING (DICT) | `name` | Common filter |
+| `span.kind` | INT32 | `kind` | CLIENT/SERVER |
+| `status.code` | INT32 | `status_code` | Error filtering |
+| `status.message` | STRING | `status_message` | Error details |
 | `duration_ns` | INT64 | `duration` | Latency queries |
-| `service_name` | STRING (DICT) | `resource_attr:service.name` | Most filtered |
-| `resource_attributes` | MAP<STRING,STRING> | `resource_attr:*` | All resource attrs |
-| `span_attributes` | MAP<STRING,STRING> | `span_attr:*` | All span attrs |
-| `scope_name` | STRING | `scope_attr:otel.library.name` | Library |
-| `scope_attributes` | MAP<STRING,STRING> | `scope_attr:*` | Other scope |
+| `service.name` | STRING (DICT) | `resource_attr:service.name` | Most filtered |
+| `resource.attributes` | MAP<STRING,STRING> | `resource_attr:*` | All resource attrs |
+| `span.attributes` | MAP<STRING,STRING> | `span_attr:*` | All span attrs |
+| `scope.name` | STRING | `scope_attr:otel.library.name` | Library |
+| `scope.attributes` | MAP<STRING,STRING> | `scope_attr:*` | Other scope |
 
 ### Schema Registry
 
-The `SchemaRegistry` maps OTLP Parquet column names to VL/VT internal names at query time:
+The `SchemaRegistry` maps OTEL dot-notation Parquet column names to VL/VT internal names at query time. Because column names directly match OTEL semantic conventions, most promoted columns need no translation — the Parquet column name IS the VL/VT name.
 
-1. Check promoted column mappings (fast, stats + bloom)
-2. Check VT prefix convention (`resource_attr:X` -> MAP lookup)
-3. Check VL dotted convention (`custom.field` -> try resource_attrs, then log_attrs)
+1. Check promoted column (fast, stats + bloom) — most are identity mappings
+2. Check VT prefix convention (`resource_attr:X` -> `resource.attributes` MAP lookup)
+3. Check VL dotted convention (`custom.field` -> try `resource.attributes`, then `log.attributes`)
 4. Check runtime-discovered MAP keys
 5. Not found -> return empty
 
