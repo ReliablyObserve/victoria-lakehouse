@@ -68,9 +68,10 @@ jobs:
 
       - name: Build Docker image
         run: |
+          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           docker build \
             --build-arg VERSION=${{ github.sha }} \
-            -t ghcr.io/${{ github.repository }}:${{ github.sha }} .
+            -t ghcr.io/${REPO}:${{ github.sha }} .
 
   security:
     runs-on: ubuntu-latest

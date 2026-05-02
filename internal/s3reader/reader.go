@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -24,7 +23,6 @@ type S3ReaderAt struct {
 type ClientPool struct {
 	client *s3.Client
 	bucket string
-	mu     sync.RWMutex
 }
 
 func NewClientPool(ctx context.Context, cfg *config.S3Config) (*ClientPool, error) {
@@ -88,7 +86,7 @@ func (r *S3ReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("s3 GetObject range %s: %w", rangeHeader, err)
 	}
-	defer out.Body.Close()
+	defer func() { _ = out.Body.Close() }()
 
 	n, err := io.ReadFull(out.Body, p[:end-off+1])
 	if err == io.ErrUnexpectedEOF {

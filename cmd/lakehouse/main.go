@@ -124,22 +124,22 @@ func newMux(cfg *config.Config, store storage.Storage, sm *startup.Manager) *htt
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "OK")
+		_, _ = fmt.Fprint(w, "OK")
 	})
 
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		if sm.IsReady() {
 			w.WriteHeader(http.StatusOK)
-			fmt.Fprint(w, "READY")
+			_, _ = fmt.Fprint(w, "READY")
 		} else {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprintf(w, "NOT READY (phase: %s)", sm.Phase())
+			_, _ = fmt.Fprintf(w, "NOT READY (phase: %s)", sm.Phase())
 		}
 	})
 
 	mux.HandleFunc("/manifest/range", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"minTime":    0,
 			"maxTime":    0,
 			"minDate":    "",
@@ -151,7 +151,7 @@ func newMux(cfg *config.Config, store storage.Storage, sm *startup.Manager) *htt
 
 	mux.HandleFunc("/lakehouse/info", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"version":  version,
 			"mode":     cfg.Mode,
 			"topology": cfg.Topology,
