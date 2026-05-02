@@ -1,15 +1,18 @@
 package parquets3
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
@@ -18,11 +21,16 @@ import (
 )
 
 type Storage struct {
-	cfg      *config.Config
-	logger   *slog.Logger
-	pool     *s3reader.ClientPool
-	manifest *manifest.Manifest
-	registry *schema.Registry
+	cfg        *config.Config
+	logger     *slog.Logger
+	pool       *s3reader.ClientPool
+	manifest   *manifest.Manifest
+	registry   *schema.Registry
+	memCache   *cache.LRU
+	diskCache  *cache.DiskCache
+	sfGroup    *cache.Group
+	labelIndex *cache.LabelIndex
+	persister  *cache.Persister
 }
 
 func New(cfg *config.Config, logger *slog.Logger) (*Storage, error) {
@@ -44,12 +52,45 @@ func New(cfg *config.Config, logger *slog.Logger) (*Storage, error) {
 
 	m := manifest.New(cfg.S3.Bucket, prefix, logger)
 
+	memCache := cache.NewLRU(cfg.CacheMemoryBytes())
+
+	var diskCacheInst *cache.DiskCache
+	if cfg.Cache.DiskPath != "" {
+		dc, err := cache.NewDiskCache(cfg.Cache.DiskPath, cfg.CacheDiskBytes(), cfg.Cache.EvictionWatermark)
+		if err != nil {
+			l.Warn("disk cache init failed, running without disk cache", "error", err)
+		} else {
+			diskCacheInst = dc
+		}
+	}
+
+	labelIdx := cache.NewLabelIndex()
+
+	var pers *cache.Persister
+	if cfg.Manifest.PersistPath != "" {
+		p, err := cache.NewPersister(cfg.Manifest.PersistPath)
+		if err != nil {
+			l.Warn("persister init failed", "error", err)
+		} else {
+			pers = p
+			if saved, err := p.LoadLabelIndex(); err == nil {
+				labelIdx = saved
+				l.Info("recovered label index from disk", "labels", saved.Len())
+			}
+		}
+	}
+
 	return &Storage{
-		cfg:      cfg,
-		logger:   l,
-		pool:     pool,
-		manifest: m,
-		registry: schema.NewRegistry(profile),
+		cfg:        cfg,
+		logger:     l,
+		pool:       pool,
+		manifest:   m,
+		registry:   schema.NewRegistry(profile),
+		memCache:   memCache,
+		diskCache:  diskCacheInst,
+		sfGroup:    cache.NewGroup(),
+		labelIndex: labelIdx,
+		persister:  pers,
 	}, nil
 }
 
@@ -81,11 +122,17 @@ func (s *Storage) RunQuery(ctx context.Context, qctx *storage.QueryContext, writ
 }
 
 func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, qctx *storage.QueryContext, writeBlock storage.WriteDataBlockFunc) error {
-	reader := s.pool.NewReaderAt(fi.Key, fi.Size)
-	f, err := parquet.OpenFile(reader, fi.Size)
+	data, err := s.getFileData(ctx, fi.Key, fi.Size)
+	if err != nil {
+		return fmt.Errorf("get file data %s: %w", fi.Key, err)
+	}
+
+	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return fmt.Errorf("open parquet file %s: %w", fi.Key, err)
 	}
+
+	s.updateLabelIndex(f)
 
 	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
 	bloomChecks := s.buildBloomChecks(qctx)
@@ -109,6 +156,43 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, qctx *sto
 	}
 
 	return nil
+}
+
+func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]byte, error) {
+	if data, ok := s.memCache.Get(key); ok {
+		return data, nil
+	}
+
+	if s.diskCache != nil {
+		if path, ok := s.diskCache.Get(key); ok {
+			data, err := os.ReadFile(path)
+			if err == nil {
+				s.memCache.Put(key, data)
+				return data, nil
+			}
+			s.diskCache.Delete(key)
+		}
+	}
+
+	data, err, _ := s.sfGroup.Do(key, func() ([]byte, error) {
+		d, err := s.pool.Download(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+
+		if s.diskCache != nil {
+			if _, putErr := s.diskCache.Put(key, d); putErr != nil {
+				s.logger.Warn("disk cache put failed", "key", key, "error", putErr)
+			}
+		}
+		return d, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	s.memCache.Put(key, data)
+	return data, nil
 }
 
 func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, qctx *storage.QueryContext, writeBlock storage.WriteDataBlockFunc) error {
@@ -236,6 +320,15 @@ func (s *Storage) projectColumns(allCols []string, requested []string) []int {
 }
 
 func (s *Storage) GetFieldNames(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error) {
+	if s.labelIndex.Len() > 0 {
+		names := s.labelIndex.GetFieldNames()
+		result := make([]storage.ValueWithHits, len(names))
+		for i, name := range names {
+			result[i] = storage.ValueWithHits{Value: name, Hits: 1}
+		}
+		return result, nil
+	}
+
 	files := s.manifest.GetFilesForRange(qctx.StartNs, qctx.EndNs)
 	if len(files) == 0 {
 		return nil, nil
@@ -245,11 +338,17 @@ func (s *Storage) GetFieldNames(ctx context.Context, qctx *storage.QueryContext)
 	var result []storage.ValueWithHits
 
 	fi := files[0]
-	reader := s.pool.NewReaderAt(fi.Key, fi.Size)
-	f, err := parquet.OpenFile(reader, fi.Size)
+	data, err := s.getFileData(ctx, fi.Key, fi.Size)
+	if err != nil {
+		return nil, fmt.Errorf("get file data: %w", err)
+	}
+
+	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return nil, fmt.Errorf("open parquet: %w", err)
 	}
+
+	s.updateLabelIndex(f)
 
 	for _, name := range columnNames(f.Root()) {
 		internalName := name
@@ -266,6 +365,17 @@ func (s *Storage) GetFieldNames(ctx context.Context, qctx *storage.QueryContext)
 }
 
 func (s *Storage) GetFieldValues(ctx context.Context, qctx *storage.QueryContext, fieldName string, limit int) ([]storage.ValueWithHits, error) {
+	if limit > 0 && s.labelIndex.Len() > 0 {
+		vals := s.labelIndex.GetFieldValues(fieldName, limit)
+		if len(vals) > 0 {
+			result := make([]storage.ValueWithHits, len(vals))
+			for i, v := range vals {
+				result[i] = storage.ValueWithHits{Value: v, Hits: 1}
+			}
+			return result, nil
+		}
+	}
+
 	files := s.manifest.GetFilesForRange(qctx.StartNs, qctx.EndNs)
 	if len(files) == 0 {
 		return nil, nil
@@ -283,8 +393,13 @@ func (s *Storage) GetFieldValues(ctx context.Context, qctx *storage.QueryContext
 			return nil, err
 		}
 
-		reader := s.pool.NewReaderAt(fi.Key, fi.Size)
-		f, err := parquet.OpenFile(reader, fi.Size)
+		data, err := s.getFileData(ctx, fi.Key, fi.Size)
+		if err != nil {
+			s.logger.Warn("get file data for field values", "key", fi.Key, "error", err)
+			continue
+		}
+
+		f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
 		if err != nil {
 			s.logger.Warn("open parquet for field values", "key", fi.Key, "error", err)
 			continue
@@ -358,8 +473,13 @@ func (s *Storage) GetStreams(ctx context.Context, qctx *storage.QueryContext) ([
 			return nil, err
 		}
 
-		reader := s.pool.NewReaderAt(fi.Key, fi.Size)
-		f, err := parquet.OpenFile(reader, fi.Size)
+		data, err := s.getFileData(ctx, fi.Key, fi.Size)
+		if err != nil {
+			s.logger.Warn("get file data for streams", "key", fi.Key, "error", err)
+			continue
+		}
+
+		f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
 		if err != nil {
 			s.logger.Warn("open parquet for streams", "key", fi.Key, "error", err)
 			continue
@@ -411,7 +531,47 @@ func (s *Storage) Manifest() *manifest.Manifest {
 }
 
 func (s *Storage) Close() error {
+	if s.persister != nil {
+		if err := s.persister.SaveLabelIndex(s.labelIndex); err != nil {
+			s.logger.Warn("failed to persist label index", "error", err)
+		} else {
+			s.logger.Info("persisted label index", "labels", s.labelIndex.Len())
+		}
+	}
 	return nil
+}
+
+func (s *Storage) updateLabelIndex(f *parquet.File) {
+	for _, name := range columnNames(f.Root()) {
+		internalName := name
+		if m := s.registry.ResolveFromParquet(name); m != nil {
+			internalName = m.InternalName
+		}
+		s.labelIndex.Add(internalName, nil)
+	}
+}
+
+func (s *Storage) MemCacheStats() cache.Stats {
+	return s.memCache.Stats()
+}
+
+func (s *Storage) DiskCacheStats() *cache.Stats {
+	if s.diskCache == nil {
+		return nil
+	}
+	st := s.diskCache.Stats()
+	return &st
+}
+
+func (s *Storage) LabelIndex() *cache.LabelIndex {
+	return s.labelIndex
+}
+
+func (s *Storage) PersistState() error {
+	if s.persister == nil {
+		return nil
+	}
+	return s.persister.SaveLabelIndex(s.labelIndex)
 }
 
 type bloomCheck struct {

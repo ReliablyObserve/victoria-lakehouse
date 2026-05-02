@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -249,6 +250,53 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+func ParseSizeBytes(s string) (int64, error) {
+	if s == "" {
+		return 0, nil
+	}
+	s = strings.TrimSpace(s)
+	multiplier := int64(1)
+	upper := strings.ToUpper(s)
+	switch {
+	case strings.HasSuffix(upper, "TB"):
+		multiplier = 1024 * 1024 * 1024 * 1024
+		s = strings.TrimSpace(s[:len(s)-2])
+	case strings.HasSuffix(upper, "GB"):
+		multiplier = 1024 * 1024 * 1024
+		s = strings.TrimSpace(s[:len(s)-2])
+	case strings.HasSuffix(upper, "MB"):
+		multiplier = 1024 * 1024
+		s = strings.TrimSpace(s[:len(s)-2])
+	case strings.HasSuffix(upper, "KB"):
+		multiplier = 1024
+		s = strings.TrimSpace(s[:len(s)-2])
+	case strings.HasSuffix(upper, "B"):
+		s = strings.TrimSpace(s[:len(s)-1])
+	}
+	var val int64
+	_, err := fmt.Sscanf(s, "%d", &val)
+	if err != nil {
+		return 0, fmt.Errorf("parse size %q: %w", s, err)
+	}
+	return val * multiplier, nil
+}
+
+func (c *Config) CacheMemoryBytes() int64 {
+	n, _ := ParseSizeBytes(c.Cache.MemoryLimit)
+	if n <= 0 {
+		return 512 * 1024 * 1024
+	}
+	return n
+}
+
+func (c *Config) CacheDiskBytes() int64 {
+	n, _ := ParseSizeBytes(c.Cache.DiskLimit)
+	if n <= 0 {
+		return 50 * 1024 * 1024 * 1024
+	}
+	return n
 }
 
 func (c *Config) ListenAddr() string {

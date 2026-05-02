@@ -10,6 +10,7 @@ import (
 
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -36,10 +37,13 @@ func testLogger() *slog.Logger {
 
 func testStorage() *Storage {
 	return &Storage{
-		cfg:      testConfig(),
-		logger:   testLogger(),
-		manifest: manifest.New("test", "logs/", testLogger()),
-		registry: schema.NewRegistry(schema.LogsProfile),
+		cfg:        testConfig(),
+		logger:     testLogger(),
+		manifest:   manifest.New("test", "logs/", testLogger()),
+		registry:   schema.NewRegistry(schema.LogsProfile),
+		memCache:   cache.NewLRU(64 * 1024 * 1024),
+		sfGroup:    cache.NewGroup(),
+		labelIndex: cache.NewLabelIndex(),
 	}
 }
 
@@ -766,9 +770,225 @@ func TestIsPrintable(t *testing.T) {
 	}
 }
 
+// --- Cache integration tests ---
+
+func TestGetFileData_CachesInMemory(t *testing.T) {
+	dir := t.TempDir()
+	rows := []logRow{
+		{TimestampUnixNano: time.Now().UnixNano(), Body: "cached", SeverityText: "INFO", ServiceName: "svc"},
+	}
+	path := writeTestParquet(t, dir, rows)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := testStorage()
+	s.memCache.Put(path, data)
+
+	got, err := s.getFileData(context.Background(), path, int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(data) {
+		t.Errorf("data len = %d, want %d", len(got), len(data))
+	}
+
+	stats := s.memCache.Stats()
+	if stats.Hits != 1 {
+		t.Errorf("memory cache hits = %d, want 1", stats.Hits)
+	}
+}
+
+func TestGetFileData_CachesOnDisk(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	rows := []logRow{
+		{TimestampUnixNano: time.Now().UnixNano(), Body: "disk-cached", SeverityText: "INFO", ServiceName: "svc"},
+	}
+	path := writeTestParquet(t, dir, rows)
+	fileData, _ := os.ReadFile(path)
+
+	dc, err := cache.NewDiskCache(cacheDir, 100*1024*1024, 0.8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dc.Put(path, fileData)
+
+	s := testStorage()
+	s.diskCache = dc
+
+	got, err := s.getFileData(context.Background(), path, int64(len(fileData)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(fileData) {
+		t.Errorf("data len = %d, want %d", len(got), len(fileData))
+	}
+
+	diskStats := dc.Stats()
+	if diskStats.Hits != 1 {
+		t.Errorf("disk cache hits = %d, want 1", diskStats.Hits)
+	}
+
+	memStats := s.memCache.Stats()
+	if memStats.Entries != 1 {
+		t.Errorf("memory cache entries = %d, want 1 (promoted from disk)", memStats.Entries)
+	}
+}
+
+func TestUpdateLabelIndex(t *testing.T) {
+	dir := t.TempDir()
+	rows := []logRow{
+		{TimestampUnixNano: time.Now().UnixNano(), Body: "test", SeverityText: "INFO", ServiceName: "svc"},
+	}
+	path := writeTestParquet(t, dir, rows)
+	info, _ := os.Stat(path)
+
+	f, err := parquet.OpenFile(newLocalReaderAt(path), info.Size())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := testStorage()
+	s.updateLabelIndex(f)
+
+	if s.labelIndex.Len() != 4 {
+		t.Errorf("label index len = %d, want 4", s.labelIndex.Len())
+	}
+
+	names := s.labelIndex.GetFieldNames()
+	nameSet := make(map[string]bool)
+	for _, n := range names {
+		nameSet[n] = true
+	}
+	for _, expected := range []string{"_time", "_msg", "level", "service.name"} {
+		if !nameSet[expected] {
+			t.Errorf("label index missing %q", expected)
+		}
+	}
+}
+
+func TestGetFieldNames_UsesLabelIndex(t *testing.T) {
+	s := testStorage()
+	s.labelIndex.Add("service.name", []string{"api", "web"})
+	s.labelIndex.Add("level", []string{"info", "error"})
+
+	fields, err := s.GetFieldNames(context.Background(), &storage.QueryContext{
+		StartNs: time.Now().Add(-time.Hour).UnixNano(),
+		EndNs:   time.Now().UnixNano(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fields) != 2 {
+		t.Errorf("expected 2 fields from label index, got %d", len(fields))
+	}
+}
+
+func TestGetFieldValues_UsesLabelIndex(t *testing.T) {
+	s := testStorage()
+	s.labelIndex.Add("service.name", []string{"api", "web", "worker"})
+
+	vals, err := s.GetFieldValues(context.Background(), &storage.QueryContext{
+		StartNs: time.Now().Add(-time.Hour).UnixNano(),
+		EndNs:   time.Now().UnixNano(),
+	}, "service.name", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vals) != 3 {
+		t.Errorf("expected 3 values from label index, got %d", len(vals))
+	}
+}
+
+func TestMemCacheStats(t *testing.T) {
+	s := testStorage()
+	s.memCache.Put("k", []byte("v"))
+	stats := s.MemCacheStats()
+	if stats.Entries != 1 {
+		t.Errorf("entries = %d, want 1", stats.Entries)
+	}
+}
+
+func TestDiskCacheStats_Nil(t *testing.T) {
+	s := testStorage()
+	if s.DiskCacheStats() != nil {
+		t.Error("expected nil disk cache stats when no disk cache")
+	}
+}
+
+func TestDiskCacheStats_WithCache(t *testing.T) {
+	dir := t.TempDir()
+	dc, _ := cache.NewDiskCache(dir, 1024*1024, 0.8)
+
+	s := testStorage()
+	s.diskCache = dc
+	dc.Put("k", []byte("v"))
+
+	stats := s.DiskCacheStats()
+	if stats == nil {
+		t.Fatal("expected non-nil stats")
+	}
+	if stats.Entries != 1 {
+		t.Errorf("entries = %d, want 1", stats.Entries)
+	}
+}
+
+func TestPersistState_NoPersister(t *testing.T) {
+	s := testStorage()
+	if err := s.PersistState(); err != nil {
+		t.Errorf("PersistState with nil persister: %v", err)
+	}
+}
+
+func TestPersistState_WithPersister(t *testing.T) {
+	dir := t.TempDir()
+	p, _ := cache.NewPersister(dir)
+
+	s := testStorage()
+	s.persister = p
+	s.labelIndex.Add("svc", []string{"api"})
+
+	if err := s.PersistState(); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := p.LoadLabelIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Len() != 1 {
+		t.Errorf("loaded label index len = %d, want 1", loaded.Len())
+	}
+}
+
+func TestClose_PersistsLabelIndex(t *testing.T) {
+	dir := t.TempDir()
+	p, _ := cache.NewPersister(dir)
+
+	s := testStorage()
+	s.persister = p
+	s.labelIndex.Add("field1", nil)
+	s.labelIndex.Add("field2", nil)
+
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := p.LoadLabelIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Len() != 2 {
+		t.Errorf("persisted label index len = %d, want 2", loaded.Len())
+	}
+}
+
 // --- Close test ---
 
-func TestClose(t *testing.T) {
+func TestClose_NoPersister(t *testing.T) {
 	s := testStorage()
 	if err := s.Close(); err != nil {
 		t.Errorf("Close: %v", err)
