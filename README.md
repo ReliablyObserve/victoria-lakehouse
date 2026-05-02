@@ -242,6 +242,18 @@ See [Performance](docs/performance.md).
 
 ---
 
+## Current Status
+
+| Milestone | Status | Key Deliverables |
+|---|---|---|
+| M1: Foundation | Complete | Go module, config, CI/CD, Helm chart, Dockerfile |
+| M2: ParquetS3Storage Core | Complete | Schema registry, manifest, query engine, bloom filters, column projection, stream methods |
+| M3: Cache + Persistence | Planned | L1/L2 cache, singleflight, metadata persistence, startup warmup |
+| M4: Discovery + Peer Cache | Planned | Hot boundary auto-discovery, consistent hash peer cache, `/manifest/range` API |
+| M5: VL/VT Cluster Integration | Planned | `/internal/select/*` binary protocol, storage node registration |
+
+---
+
 ## Development
 
 ```bash

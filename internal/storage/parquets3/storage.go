@@ -88,6 +88,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, qctx *sto
 	}
 
 	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
+	bloomChecks := s.buildBloomChecks(qctx)
 
 	for _, rg := range f.RowGroups() {
 		if err := ctx.Err(); err != nil {
@@ -95,6 +96,10 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, qctx *sto
 		}
 
 		if tsIdx >= 0 && !rowGroupMatchesTimeRange(rg, tsIdx, qctx.StartNs, qctx.EndNs) {
+			continue
+		}
+
+		if s.bloomFilterSkip(f, rg, bloomChecks) {
 			continue
 		}
 
@@ -138,8 +143,9 @@ func (s *Storage) rowsToDataBlock(rows []parquet.Row, colNames []string, root *p
 		return nil
 	}
 
-	colCount := len(colNames)
-	columns := make([][]string, colCount)
+	projected := s.projectColumns(colNames, qctx.RequestedColumns)
+
+	columns := make([][]string, len(projected))
 	for i := range columns {
 		columns[i] = make([]string, 0, len(rows))
 	}
@@ -160,28 +166,29 @@ func (s *Storage) rowsToDataBlock(rows []parquet.Row, colNames []string, root *p
 			}
 		}
 
-		for i := range colNames {
-			if i < len(row) {
-				columns[i] = append(columns[i], valueToString(row[i]))
+		for outIdx, srcIdx := range projected {
+			if srcIdx < len(row) {
+				columns[outIdx] = append(columns[outIdx], valueToString(row[srcIdx]))
 			} else {
-				columns[i] = append(columns[i], "")
+				columns[outIdx] = append(columns[outIdx], "")
 			}
 		}
 	}
 
-	if len(columns[0]) == 0 {
+	if len(columns) == 0 || len(columns[0]) == 0 {
 		return nil
 	}
 
-	blockCols := make([]storage.BlockColumn, 0, colCount)
-	for i, name := range colNames {
+	blockCols := make([]storage.BlockColumn, 0, len(projected))
+	for outIdx, srcIdx := range projected {
+		name := colNames[srcIdx]
 		internalName := name
 		if m := s.registry.ResolveFromParquet(name); m != nil {
 			internalName = m.InternalName
 		}
 		blockCols = append(blockCols, storage.BlockColumn{
 			Name:   internalName,
-			Values: columns[i],
+			Values: columns[outIdx],
 		})
 	}
 
@@ -189,6 +196,43 @@ func (s *Storage) rowsToDataBlock(rows []parquet.Row, colNames []string, root *p
 		RowsCount: len(columns[0]),
 		Columns:   blockCols,
 	}
+}
+
+func (s *Storage) projectColumns(allCols []string, requested []string) []int {
+	if len(requested) == 0 {
+		indices := make([]int, len(allCols))
+		for i := range indices {
+			indices[i] = i
+		}
+		return indices
+	}
+
+	want := make(map[string]bool, len(requested))
+	for _, name := range requested {
+		want[name] = true
+		if m := s.registry.ResolveToParquet(name); m != nil {
+			want[m.ParquetColumn] = true
+		}
+	}
+	want["timestamp_unix_nano"] = true
+
+	var indices []int
+	for i, name := range allCols {
+		internalName := name
+		if m := s.registry.ResolveFromParquet(name); m != nil {
+			internalName = m.InternalName
+		}
+		if want[name] || want[internalName] {
+			indices = append(indices, i)
+		}
+	}
+	if len(indices) == 0 {
+		indices = make([]int, len(allCols))
+		for i := range indices {
+			indices[i] = i
+		}
+	}
+	return indices
 }
 
 func (s *Storage) GetFieldNames(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error) {
@@ -284,15 +328,74 @@ func (s *Storage) GetFieldValues(ctx context.Context, qctx *storage.QueryContext
 }
 
 func (s *Storage) GetStreamFieldNames(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error) {
-	return nil, nil
+	streamFields := s.registry.StreamFields()
+	result := make([]storage.ValueWithHits, 0, len(streamFields))
+	for _, name := range streamFields {
+		result = append(result, storage.ValueWithHits{Value: name, Hits: 1})
+	}
+	return result, nil
 }
 
 func (s *Storage) GetStreamFieldValues(ctx context.Context, qctx *storage.QueryContext, fieldName string) ([]storage.ValueWithHits, error) {
-	return nil, nil
+	return s.GetFieldValues(ctx, qctx, fieldName, 0)
 }
 
 func (s *Storage) GetStreams(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error) {
-	return nil, nil
+	files := s.manifest.GetFilesForRange(qctx.StartNs, qctx.EndNs)
+	if len(files) == 0 {
+		return nil, nil
+	}
+
+	streamColName := "_stream"
+	if m := s.registry.ResolveToParquet(streamColName); m != nil {
+		streamColName = m.ParquetColumn
+	}
+
+	seen := make(map[string]uint64)
+
+	for _, fi := range files {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		reader := s.pool.NewReaderAt(fi.Key, fi.Size)
+		f, err := parquet.OpenFile(reader, fi.Size)
+		if err != nil {
+			s.logger.Warn("open parquet for streams", "key", fi.Key, "error", err)
+			continue
+		}
+
+		streamIdx := findColumnIndex(f.Root(), streamColName)
+		if streamIdx < 0 {
+			continue
+		}
+
+		for _, rg := range f.RowGroups() {
+			rows := rg.Rows()
+			buf := make([]parquet.Row, 256)
+			for {
+				n, err := rows.ReadRows(buf)
+				for i := 0; i < n; i++ {
+					if streamIdx < len(buf[i]) {
+						val := valueToString(buf[i][streamIdx])
+						if val != "" {
+							seen[val]++
+						}
+					}
+				}
+				if err != nil {
+					break
+				}
+			}
+			_ = rows.Close()
+		}
+	}
+
+	result := make([]storage.ValueWithHits, 0, len(seen))
+	for v, hits := range seen {
+		result = append(result, storage.ValueWithHits{Value: v, Hits: hits})
+	}
+	return result, nil
 }
 
 func (s *Storage) GetStreamIDs(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error) {
@@ -309,6 +412,83 @@ func (s *Storage) Manifest() *manifest.Manifest {
 
 func (s *Storage) Close() error {
 	return nil
+}
+
+type bloomCheck struct {
+	colName string
+	value   parquet.Value
+}
+
+func (s *Storage) buildBloomChecks(qctx *storage.QueryContext) []bloomCheck {
+	if qctx.Query == "" {
+		return nil
+	}
+
+	var checks []bloomCheck
+	for _, col := range s.registry.PromotedColumns() {
+		if !col.HasBloom {
+			continue
+		}
+		val := extractExactMatch(qctx.Query, col.InternalName)
+		if val == "" {
+			val = extractExactMatch(qctx.Query, col.ParquetColumn)
+		}
+		if val != "" {
+			checks = append(checks, bloomCheck{
+				colName: col.ParquetColumn,
+				value:   parquet.ValueOf(val),
+			})
+		}
+	}
+	return checks
+}
+
+func (s *Storage) bloomFilterSkip(f *parquet.File, rg parquet.RowGroup, checks []bloomCheck) bool {
+	if len(checks) == 0 {
+		return false
+	}
+
+	cols := rg.ColumnChunks()
+	for _, check := range checks {
+		colIdx := findColumnIndex(f.Root(), check.colName)
+		if colIdx < 0 || colIdx >= len(cols) {
+			continue
+		}
+
+		bf := cols[colIdx].BloomFilter()
+		if bf == nil || bf.Size() == 0 {
+			continue
+		}
+
+		found, err := bf.Check(check.value)
+		if err != nil {
+			continue
+		}
+		if !found {
+			return true
+		}
+	}
+	return false
+}
+
+func extractExactMatch(query, fieldName string) string {
+	patterns := []string{
+		fieldName + `:="`,
+		fieldName + `:"`,
+	}
+	for _, prefix := range patterns {
+		idx := strings.Index(query, prefix)
+		if idx < 0 {
+			continue
+		}
+		start := idx + len(prefix)
+		end := strings.Index(query[start:], `"`)
+		if end < 0 {
+			continue
+		}
+		return query[start : start+end]
+	}
+	return ""
 }
 
 func rowGroupMatchesTimeRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs int64) bool {

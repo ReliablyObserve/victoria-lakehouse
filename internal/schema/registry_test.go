@@ -127,3 +127,81 @@ func TestRegistry_BloomColumns(t *testing.T) {
 		t.Errorf("expected 2 bloom columns (service.name, trace_id), got %d", blooms)
 	}
 }
+
+func TestRegistry_StreamFields_Logs(t *testing.T) {
+	r := NewRegistry(LogsProfile)
+	fields := r.StreamFields()
+	if len(fields) != 3 {
+		t.Errorf("expected 3 log stream fields, got %d", len(fields))
+	}
+
+	expected := map[string]bool{
+		"service.name":       true,
+		"k8s.namespace.name": true,
+		"k8s.pod.name":       true,
+	}
+	for _, f := range fields {
+		if !expected[f] {
+			t.Errorf("unexpected stream field: %q", f)
+		}
+	}
+}
+
+func TestRegistry_StreamFields_Traces(t *testing.T) {
+	r := NewRegistry(TracesProfile)
+	fields := r.StreamFields()
+	if len(fields) != 2 {
+		t.Errorf("expected 2 trace stream fields, got %d", len(fields))
+	}
+
+	expected := map[string]bool{
+		"resource_attr:service.name": true,
+		"name":                       true,
+	}
+	for _, f := range fields {
+		if !expected[f] {
+			t.Errorf("unexpected stream field: %q", f)
+		}
+	}
+}
+
+func TestRegistry_MapColumns_Logs(t *testing.T) {
+	r := NewRegistry(LogsProfile)
+	mc := r.MapColumns()
+	if len(mc) != 2 {
+		t.Errorf("expected 2 map columns for logs, got %d", len(mc))
+	}
+}
+
+func TestRegistry_MapColumns_Traces(t *testing.T) {
+	r := NewRegistry(TracesProfile)
+	mc := r.MapColumns()
+	if len(mc) != 3 {
+		t.Errorf("expected 3 map columns for traces, got %d", len(mc))
+	}
+}
+
+func TestRegistry_LogAttrPrefix(t *testing.T) {
+	r := NewRegistry(LogsProfile)
+	m := r.ResolveToParquet("log_attr:custom.field")
+	if m == nil {
+		t.Fatal("log_attr: prefix should resolve to MAP")
+	}
+	if m.Origin != OriginLogAttrMap {
+		t.Errorf("Origin = %d, want OriginLogAttrMap", m.Origin)
+	}
+	if m.MapKey != "custom.field" {
+		t.Errorf("MapKey = %q, want custom.field", m.MapKey)
+	}
+}
+
+func TestRegistry_ScopeAttrPrefix(t *testing.T) {
+	r := NewRegistry(TracesProfile)
+	m := r.ResolveToParquet("scope_attr:custom.field")
+	if m == nil {
+		t.Fatal("scope_attr: prefix should resolve to MAP")
+	}
+	if m.Origin != OriginScopeAttrMap {
+		t.Errorf("Origin = %d, want OriginScopeAttrMap", m.Origin)
+	}
+}
