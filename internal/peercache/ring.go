@@ -87,6 +87,7 @@ func (r *Ring) MemberCount() int {
 
 func hashKey(peer string, vnode int) uint32 {
 	b := []byte(peer)
-	b = append(b, byte(vnode>>24), byte(vnode>>16), byte(vnode>>8), byte(vnode))
+	v := uint32(vnode) // #nosec G115 -- intentional truncation for hash input
+	b = append(b, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
 	return crc32.ChecksumIEEE(b)
 }
