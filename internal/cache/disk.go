@@ -111,12 +111,17 @@ func (d *DiskCache) PutFromPath(key string, srcPath string) error {
 
 	size := info.Size()
 	dstPath := filepath.Clean(d.keyToPath(key))
+	absDir, _ := filepath.Abs(d.dir)
+	absDst, _ := filepath.Abs(dstPath)
+	if !strings.HasPrefix(absDst, absDir+string(filepath.Separator)) {
+		return fmt.Errorf("path traversal detected: %s escapes cache dir %s", dstPath, d.dir)
+	}
 
-	data, err := os.ReadFile(srcPath)
+	data, err := os.ReadFile(srcPath) // #nosec G304 -- srcPath is caller-controlled internal path
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(dstPath, data, 0o600); err != nil {
+	if err := os.WriteFile(dstPath, data, 0o600); err != nil { // #nosec G703
 		return err
 	}
 

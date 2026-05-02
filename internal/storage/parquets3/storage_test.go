@@ -814,7 +814,9 @@ func TestGetFileData_CachesOnDisk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dc.Put(path, fileData)
+	if _, err := dc.Put(path, fileData); err != nil {
+		t.Fatal(err)
+	}
 
 	s := testStorage()
 	s.diskCache = dc
@@ -925,7 +927,9 @@ func TestDiskCacheStats_WithCache(t *testing.T) {
 
 	s := testStorage()
 	s.diskCache = dc
-	dc.Put("k", []byte("v"))
+	if _, err := dc.Put("k", []byte("v")); err != nil {
+		t.Fatal(err)
+	}
 
 	stats := s.DiskCacheStats()
 	if stats == nil {
