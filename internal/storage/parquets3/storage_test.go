@@ -12,6 +12,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/discovery"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
@@ -36,14 +37,16 @@ func testLogger() *slog.Logger {
 }
 
 func testStorage() *Storage {
+	l := testLogger()
 	return &Storage{
 		cfg:        testConfig(),
-		logger:     testLogger(),
-		manifest:   manifest.New("test", "logs/", testLogger()),
+		logger:     l,
+		manifest:   manifest.New("test", "logs/", l),
 		registry:   schema.NewRegistry(schema.LogsProfile),
 		memCache:   cache.NewLRU(64 * 1024 * 1024),
 		sfGroup:    cache.NewGroup(),
 		labelIndex: cache.NewLabelIndex(),
+		discovery:  discovery.New("", nil, "", "", 5*time.Second, l),
 	}
 }
 
@@ -1062,4 +1065,59 @@ func newLocalReaderAt(path string) *localReaderAt {
 
 func (r *localReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	return r.f.ReadAt(p, off)
+}
+
+// --- M4: Discovery + Peer Cache tests ---
+
+func TestRunQuery_HotBoundarySuppression(t *testing.T) {
+	s := testStorage()
+
+	now := time.Now()
+	s.manifest.AddFile("dt="+now.AddDate(0, 0, -2).Format("2006-01-02")+"/hour=00",
+		manifest.FileInfo{Key: "logs/old.parquet", Size: 100})
+
+	s.discovery.SetHotBoundaryForTest(&discovery.HotBoundary{
+		MinTime: now.AddDate(0, 0, -3),
+		MaxTime: now,
+	})
+
+	qctx := &storage.QueryContext{
+		StartNs: now.Add(-1 * time.Hour).UnixNano(),
+		EndNs:   now.UnixNano(),
+	}
+
+	var called bool
+	err := s.RunQuery(context.Background(), qctx, func(_ uint, _ *storage.DataBlock) {
+		called = true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Error("writeBlock should not be called when query is within hot boundary")
+	}
+}
+
+func TestDiscovery_Accessor(t *testing.T) {
+	s := testStorage()
+	if s.Discovery() == nil {
+		t.Error("expected non-nil discovery")
+	}
+}
+
+func TestPeerCache_Accessor_Nil(t *testing.T) {
+	s := testStorage()
+	if s.PeerCache() != nil {
+		t.Error("expected nil peer cache (no peer config)")
+	}
+	if s.PeerHandler() != nil {
+		t.Error("expected nil peer handler (no peer config)")
+	}
+}
+
+func TestRefreshDiscovery_NoConfig(t *testing.T) {
+	s := testStorage()
+	if err := s.RefreshDiscovery(context.Background()); err != nil {
+		t.Errorf("RefreshDiscovery with no config: %v", err)
+	}
 }

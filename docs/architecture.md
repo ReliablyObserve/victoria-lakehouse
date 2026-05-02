@@ -280,15 +280,73 @@ Query arrives for Parquet file key
 | `--lakehouse.cache.eviction-watermark` | `0.8` | L2 eviction threshold |
 | `--lakehouse.manifest.persist-path` | `/data/lakehouse` | Persistence directory |
 
-## Hot Boundary Auto-Discovery
+## Discovery Layer (M4)
 
-1. Discover vlstorage/vtstorage via headless DNS or static config
-2. Poll `/internal/partition/list?authKey=<key>`
-3. Response: `["20260426","20260427",...]`
-4. Derive hot range, suppress data within it
-5. Refresh every 5min
+### Hot Boundary Auto-Discovery (`internal/discovery/`)
 
-Fallback: manual `--lakehouse.hot-boundary=7d`.
+Victoria Lakehouse auto-discovers the hot tier's data range by connecting to vlstorage/vtstorage nodes:
+
+1. **Discover storage nodes** via Kubernetes headless service DNS (SRV records) or static config
+2. **Poll** each node's `/internal/partition/list?authKey=<key>` endpoint
+3. **Response**: `["20260426","20260427",...]` — YYYYMMDD partition names
+4. **Derive hot range**: union of all partition dates across all storage nodes
+5. **Suppress**: queries entirely within hot range return empty immediately (<1ms)
+6. **Refresh** every 5min (configurable)
+
+**Discovery methods (priority order):**
+- Headless DNS: `--lakehouse.discovery.headless-service=vlstorage.ns.svc.cluster.local`
+- Static: `--lakehouse.discovery.storage-nodes=vlstorage-1:9428,vlstorage-2:9428`
+- Manual override: `--lakehouse.hot-boundary=7d`
+
+### Distributed Peer Cache (`internal/peercache/`)
+
+When Victoria Lakehouse runs as a fleet, instances discover each other and share cached data:
+
+```
+Query arrives at lakehouse-2 for file-abc.parquet
+  1. L1 memory (local) → miss
+  2. L2 disk (local) → miss
+  3. Consistent hash: hash("file-abc.parquet") → lakehouse-0
+  4. GET /internal/cache/fetch?key=file-abc.parquet → lakehouse-0
+  5. lakehouse-0 L2 hit → stream back to lakehouse-2
+  6. lakehouse-2 caches in L1, serves query
+```
+
+**Components:**
+- **Consistent hash ring** (`ring.go`): CRC32-based with 150 virtual nodes per member
+- **Peer HTTP protocol**: `GET /internal/cache/fetch?key=...` and `/internal/cache/has?key=...`
+- **Authentication**: `X-Peer-Auth-Key` header (shared secret via `--lakehouse.peer-auth-key`)
+- **Discovery**: Headless DNS via `--lakehouse.discovery.peer-headless-service`
+
+**Cache hierarchy with peer cache:**
+```
+L1: Memory (local)     → <10ms
+L2: Disk (local EBS)   → <50ms
+L3: Peer cache (HTTP)  → <30ms
+L4: S3 (range reads)   → 50-150ms
+```
+
+### Manifest Range API (`internal/manifest/api.go`)
+
+```
+GET /manifest/range
+Response: {"minTime": ..., "maxTime": ..., "minDate": "2025-01-31",
+           "maxDate": "2026-04-30", "totalFiles": 8760, "totalBytes": ...}
+```
+
+Used by Loki-VL-proxy for routing decisions and operational tooling for data coverage verification.
+
+### Configuration
+
+| Flag | Default | Description |
+|---|---|---|
+| `--lakehouse.discovery.headless-service` | `""` | K8s headless service for vlstorage/vtstorage |
+| `--lakehouse.discovery.storage-nodes` | `""` | Static storage node addresses |
+| `--lakehouse.discovery.partition-auth-key` | `""` | Auth key for `/internal/partition/list` |
+| `--lakehouse.discovery.peer-headless-service` | `""` | K8s headless service for peer discovery |
+| `--lakehouse.peer-auth-key` | `""` | Shared secret for peer cache HTTP |
+| `--lakehouse.peer.timeout` | `5s` | Peer cache request timeout |
+| `--lakehouse.peer.max-connections` | `32` | Max HTTP connections per peer |
 
 ## Startup Phases
 
