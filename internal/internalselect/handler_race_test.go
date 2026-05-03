@@ -99,7 +99,7 @@ func TestHandler_Race_MaxGoroutines(t *testing.T) {
 					continue
 				}
 				_, _ = io.ReadAll(resp.Body)
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				if i%10 == 0 {
 					runtime.Gosched()
 				}

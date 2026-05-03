@@ -259,7 +259,7 @@ func TestEngine_Stats(t *testing.T) {
 	e.Enqueue(Task{Key: "s2"})
 	time.Sleep(100 * time.Millisecond)
 
-	triggered, completed, errors, useful = e.Stats()
+	triggered, completed, _, useful = e.Stats()
 	if triggered != 2 {
 		t.Errorf("triggered = %d, want 2", triggered)
 	}

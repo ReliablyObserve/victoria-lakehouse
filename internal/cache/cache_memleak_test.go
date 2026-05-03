@@ -110,7 +110,7 @@ func TestGroup_MemLeak_DoCycles(t *testing.T) {
 	g := NewGroup()
 
 	for i := 0; i < 1000; i++ {
-		g.Do(fmt.Sprintf("k%d", i), func() ([]byte, error) {
+		_, _, _ = g.Do(fmt.Sprintf("k%d", i), func() ([]byte, error) {
 			return make([]byte, 64), nil
 		})
 	}
@@ -119,7 +119,7 @@ func TestGroup_MemLeak_DoCycles(t *testing.T) {
 	before := heapInUse()
 
 	for i := 1000; i < 100_000; i++ {
-		g.Do(fmt.Sprintf("k%d", i), func() ([]byte, error) {
+		_, _, _ = g.Do(fmt.Sprintf("k%d", i), func() ([]byte, error) {
 			return make([]byte, 64), nil
 		})
 	}

@@ -291,7 +291,6 @@ func parseQueryContextFromBody(body []byte, q map[string][]string) (*storage.Que
 		pos += 4
 		if pos+queryLen <= len(body) {
 			qctx.Query = string(body[pos : pos+queryLen])
-			pos += queryLen
 		}
 	}
 
