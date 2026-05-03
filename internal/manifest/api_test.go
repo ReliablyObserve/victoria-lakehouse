@@ -65,3 +65,56 @@ func TestRangeHandler_WithData(t *testing.T) {
 		t.Errorf("content-type = %q, want application/json", ct)
 	}
 }
+
+func TestPartitionsHandler_WithData(t *testing.T) {
+	m := New("bucket", "logs/", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	m.AddFile("dt=2026-04-01/hour=00", FileInfo{Key: "f1.parquet", Size: 1000})
+	m.AddFile("dt=2026-04-01/hour=01", FileInfo{Key: "f2.parquet", Size: 2000})
+	m.AddFile("dt=2026-04-02/hour=10", FileInfo{Key: "f3.parquet", Size: 3000})
+
+	req := httptest.NewRequest(http.MethodGet, "/manifest/partitions", nil)
+	w := httptest.NewRecorder()
+	m.PartitionsHandler()(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+
+	var resp PartitionsResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Partitions) != 2 {
+		t.Fatalf("partitions = %d, want 2", len(resp.Partitions))
+	}
+	if resp.Partitions[0].Date != "2026-04-01" {
+		t.Errorf("first date = %q, want 2026-04-01", resp.Partitions[0].Date)
+	}
+	if resp.Partitions[0].Files != 2 {
+		t.Errorf("first files = %d, want 2", resp.Partitions[0].Files)
+	}
+}
+
+func TestPartitionsHandler_FilteredRange(t *testing.T) {
+	m := New("bucket", "logs/", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	m.AddFile("dt=2026-04-01/hour=00", FileInfo{Key: "f1.parquet", Size: 1000})
+	m.AddFile("dt=2026-04-15/hour=10", FileInfo{Key: "f2.parquet", Size: 2000})
+	m.AddFile("dt=2026-04-30/hour=23", FileInfo{Key: "f3.parquet", Size: 3000})
+
+	req := httptest.NewRequest(http.MethodGet, "/manifest/partitions?start=2026-04-10&end=2026-04-20", nil)
+	w := httptest.NewRecorder()
+	m.PartitionsHandler()(w, req)
+
+	var resp PartitionsResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Partitions) != 1 {
+		t.Fatalf("partitions = %d, want 1", len(resp.Partitions))
+	}
+	if resp.Partitions[0].Date != "2026-04-15" {
+		t.Errorf("date = %q, want 2026-04-15", resp.Partitions[0].Date)
+	}
+}

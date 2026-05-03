@@ -162,6 +162,56 @@ func TestManifest_Empty(t *testing.T) {
 	}
 }
 
+func TestManifest_GetPartitions(t *testing.T) {
+	m := newTestManifest()
+
+	m.mu.Lock()
+	m.files = map[string][]FileInfo{
+		"dt=2026-05-01/hour=10": {{Key: "logs/dt=2026-05-01/hour=10/a.parquet", Size: 1000}},
+		"dt=2026-05-01/hour=11": {{Key: "logs/dt=2026-05-01/hour=11/b.parquet", Size: 2000}},
+		"dt=2026-05-02/hour=00": {
+			{Key: "logs/dt=2026-05-02/hour=00/c.parquet", Size: 3000},
+			{Key: "logs/dt=2026-05-02/hour=00/d.parquet", Size: 4000},
+		},
+		"dt=2026-05-03/hour=05": {{Key: "logs/dt=2026-05-03/hour=05/e.parquet", Size: 5000}},
+	}
+	m.totalFiles = 5
+	m.mu.Unlock()
+
+	// All partitions
+	all := m.GetPartitions("", "")
+	if len(all) != 3 {
+		t.Fatalf("expected 3 dates, got %d", len(all))
+	}
+	if all[0].Date != "2026-05-01" || all[0].Files != 2 || all[0].Bytes != 3000 {
+		t.Errorf("date 0: got %+v", all[0])
+	}
+	if all[1].Date != "2026-05-02" || all[1].Files != 2 || all[1].Bytes != 7000 {
+		t.Errorf("date 1: got %+v", all[1])
+	}
+	if all[2].Date != "2026-05-03" || all[2].Files != 1 || all[2].Bytes != 5000 {
+		t.Errorf("date 2: got %+v", all[2])
+	}
+
+	// Filtered by date range
+	filtered := m.GetPartitions("2026-05-02", "2026-05-02")
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 date, got %d", len(filtered))
+	}
+	if filtered[0].Date != "2026-05-02" {
+		t.Errorf("expected 2026-05-02, got %s", filtered[0].Date)
+	}
+	if len(filtered[0].Hours) != 1 || filtered[0].Hours[0] != 0 {
+		t.Errorf("expected hours [0], got %v", filtered[0].Hours)
+	}
+
+	// Empty range
+	empty := m.GetPartitions("2026-06-01", "2026-06-30")
+	if len(empty) != 0 {
+		t.Errorf("expected 0 dates, got %d", len(empty))
+	}
+}
+
 func newTestManifest() *Manifest {
 	return New("test-bucket", "logs/", testLogger())
 }

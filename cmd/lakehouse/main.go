@@ -140,28 +140,8 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager) *
 	})
 
 	m := store.Manifest()
-	mux.HandleFunc("/manifest/range", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		minT := m.MinTime()
-		maxT := m.MaxTime()
-		resp := map[string]any{
-			"minTime":    minT.UnixNano(),
-			"maxTime":    maxT.UnixNano(),
-			"totalFiles": m.TotalFiles(),
-			"totalBytes": m.TotalBytes(),
-		}
-		if !minT.IsZero() {
-			resp["minDate"] = minT.Format("2006-01-02")
-		} else {
-			resp["minDate"] = ""
-		}
-		if !maxT.IsZero() {
-			resp["maxDate"] = maxT.Format("2006-01-02")
-		} else {
-			resp["maxDate"] = ""
-		}
-		_ = json.NewEncoder(w).Encode(resp)
-	})
+	mux.HandleFunc("/manifest/range", m.RangeHandler())
+	mux.HandleFunc("/manifest/partitions", m.PartitionsHandler())
 
 	mux.HandleFunc("/lakehouse/info", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
