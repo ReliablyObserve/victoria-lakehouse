@@ -1,3 +1,5 @@
+name: victoria-lakehouse
+
 services:
   minio:
     image: minio/minio:latest
