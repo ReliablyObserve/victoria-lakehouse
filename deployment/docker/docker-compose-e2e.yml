@@ -1,3 +1,5 @@
+name: victoria-lakehouse
+
 services:
   minio:
     image: minio/minio:latest
@@ -26,50 +28,113 @@ services:
       echo 'MinIO bucket ready'
       "
 
+  datagen-seed:
+    build:
+      context: ../../
+      dockerfile: Dockerfile.datagen
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    command:
+      - "--endpoint=http://minio:9000"
+      - "--bucket=obs-archive"
+      - "--access-key=minioadmin"
+      - "--secret-key=minioadmin"
+      - "--logs=5000"
+      - "--traces=1000"
+      - "--hours-back=48"
+
+  datagen-continuous:
+    build:
+      context: ../../
+      dockerfile: Dockerfile.datagen
+    depends_on:
+      datagen-seed:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    command:
+      - "--endpoint=http://minio:9000"
+      - "--bucket=obs-archive"
+      - "--access-key=minioadmin"
+      - "--secret-key=minioadmin"
+      - "--logs=500"
+      - "--traces=200"
+      - "--hours-back=1"
+      - "--interval=30s"
+
   lakehouse-logs:
     build:
       context: ../../
       dockerfile: Dockerfile
     depends_on:
-      minio-init:
+      datagen-seed:
         condition: service_completed_successfully
     command:
-      - "--lakehouse.mode=logs"
-      - "--lakehouse.s3.bucket=obs-archive"
-      - "--lakehouse.s3.endpoint=http://minio:9000"
-      - "--lakehouse.s3.access-key=minioadmin"
-      - "--lakehouse.s3.secret-key=minioadmin"
-      - "--lakehouse.s3.force-path-style=true"
-      - "--lakehouse.cache.disk-path=/data/lakehouse/cache"
-      - "--lakehouse.cache.disk-limit=1GB"
-      - "--lakehouse.startup.serve-stale=true"
+      - "-lakehouse.mode=logs"
+      - "-lakehouse.s3.bucket=obs-archive"
+      - "-lakehouse.s3.endpoint=http://minio:9000"
+      - "-lakehouse.s3.access-key=minioadmin"
+      - "-lakehouse.s3.secret-key=minioadmin"
+      - "-lakehouse.s3.force-path-style=true"
+      - "-lakehouse.manifest.refresh-interval=30s"
+      - "-loggerLevel=DEBUG"
     ports:
-      - "9428:9428"
+      - "19428:9428"
     volumes:
       - lakehouse-cache-logs:/data/lakehouse
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://localhost:9428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
 
   lakehouse-traces:
     build:
       context: ../../
       dockerfile: Dockerfile
     depends_on:
-      minio-init:
+      datagen-seed:
         condition: service_completed_successfully
     command:
-      - "--lakehouse.mode=traces"
-      - "--lakehouse.s3.bucket=obs-archive"
-      - "--lakehouse.s3.endpoint=http://minio:9000"
-      - "--lakehouse.s3.access-key=minioadmin"
-      - "--lakehouse.s3.secret-key=minioadmin"
-      - "--lakehouse.s3.force-path-style=true"
-      - "--lakehouse.cache.disk-path=/data/lakehouse/cache"
-      - "--lakehouse.cache.disk-limit=1GB"
-      - "--lakehouse.startup.serve-stale=true"
+      - "-lakehouse.mode=traces"
+      - "-lakehouse.s3.bucket=obs-archive"
+      - "-lakehouse.s3.endpoint=http://minio:9000"
+      - "-lakehouse.s3.access-key=minioadmin"
+      - "-lakehouse.s3.secret-key=minioadmin"
+      - "-lakehouse.s3.force-path-style=true"
+      - "-lakehouse.manifest.refresh-interval=30s"
+      - "-loggerLevel=DEBUG"
     ports:
-      - "10428:10428"
+      - "20428:10428"
     volumes:
       - lakehouse-cache-traces:/data/lakehouse
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://localhost:10428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_INSTALL_PLUGINS: "https://github.com/VictoriaMetrics/victorialogs-datasource/releases/download/v0.26.3/victoriametrics-logs-datasource-v0.26.3.zip;victoriametrics-logs-datasource"
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "victoriametrics-logs-datasource"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      lakehouse-logs:
+        condition: service_healthy
+      lakehouse-traces:
+        condition: service_healthy
 
 volumes:
   lakehouse-cache-logs: {}
   lakehouse-cache-traces: {}
+  grafana-data: {}

@@ -84,6 +84,7 @@ func (m *Manager) SetCatchupFiles(n int64) {
 	m.catchupFiles = n
 }
 
+func (m *Manager) Logger() *slog.Logger     { return m.logger }
 func (m *Manager) RecoverySeconds() float64 { return m.recoveryTime.Seconds() }
 func (m *Manager) RefreshSeconds() float64  { return m.refreshTime.Seconds() }
 func (m *Manager) TotalSeconds() float64    { return m.totalTime.Seconds() }

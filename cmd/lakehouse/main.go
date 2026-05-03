@@ -13,8 +13,9 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/internalselect"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/selectapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3"
 )
 
@@ -24,19 +25,20 @@ var (
 
 func main() {
 	var (
-		configPath = flag.String("lakehouse.config", "", "Path to YAML config file")
-		mode       = flag.String("lakehouse.mode", "", "Operating mode: logs or traces (required)")
-		s3Bucket   = flag.String("lakehouse.s3.bucket", "", "S3 bucket name (required)")
-		s3Region   = flag.String("lakehouse.s3.region", "", "S3 region")
-		s3Prefix   = flag.String("lakehouse.s3.prefix", "", "S3 key prefix")
-		s3Endpoint = flag.String("lakehouse.s3.endpoint", "", "Custom S3 endpoint (MinIO)")
+		configPath  = flag.String("lakehouse.config", "", "Path to YAML config file")
+		mode        = flag.String("lakehouse.mode", "", "Operating mode: logs or traces (required)")
+		s3Bucket    = flag.String("lakehouse.s3.bucket", "", "S3 bucket name (required)")
+		s3Region    = flag.String("lakehouse.s3.region", "", "S3 region")
+		s3Prefix    = flag.String("lakehouse.s3.prefix", "", "S3 key prefix")
+		s3Endpoint  = flag.String("lakehouse.s3.endpoint", "", "Custom S3 endpoint (MinIO)")
 		s3AccessKey = flag.String("lakehouse.s3.access-key", "", "S3 access key")
 		s3SecretKey = flag.String("lakehouse.s3.secret-key", "", "S3 secret key")
 		s3PathStyle = flag.Bool("lakehouse.s3.force-path-style", false, "Use path-style S3 URLs")
-		topology   = flag.String("lakehouse.topology", "", "Deployment topology: auto, storage-node, direct, loki-proxy")
+		topology    = flag.String("lakehouse.topology", "", "Deployment topology: auto, storage-node, direct, loki-proxy")
 		hotBoundary = flag.String("lakehouse.hot-boundary", "", "Manual hot boundary override (e.g., 7d)")
-		listenAddr = flag.String("httpListenAddr", "", "HTTP listen address (auto-set from mode)")
-		logLevel   = flag.String("loggerLevel", "INFO", "Log level: DEBUG, INFO, WARN, ERROR")
+		listenAddr       = flag.String("httpListenAddr", "", "HTTP listen address (auto-set from mode)")
+		logLevel         = flag.String("loggerLevel", "INFO", "Log level: DEBUG, INFO, WARN, ERROR")
+		manifestRefresh  = flag.Duration("lakehouse.manifest.refresh-interval", 0, "Manifest refresh interval (e.g., 30s)")
 	)
 	flag.Parse()
 
@@ -49,7 +51,7 @@ func main() {
 	}
 
 	applyFlags(cfg, *mode, *s3Bucket, *s3Region, *s3Prefix, *s3Endpoint,
-		*s3AccessKey, *s3SecretKey, *s3PathStyle, *topology, *hotBoundary)
+		*s3AccessKey, *s3SecretKey, *s3PathStyle, *topology, *hotBoundary, *manifestRefresh)
 
 	if err := cfg.Validate(); err != nil {
 		logger.Error("invalid config", "error", err)
@@ -89,7 +91,7 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	go runStartup(sm, cfg, logger)
+	go runStartup(sm, cfg, logger, store)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -119,7 +121,7 @@ func main() {
 	logger.Info("victoria-lakehouse stopped")
 }
 
-func newMux(cfg *config.Config, store storage.Storage, sm *startup.Manager) *http.ServeMux {
+func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -137,50 +139,97 @@ func newMux(cfg *config.Config, store storage.Storage, sm *startup.Manager) *htt
 		}
 	})
 
+	m := store.Manifest()
 	mux.HandleFunc("/manifest/range", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"minTime":    0,
-			"maxTime":    0,
-			"minDate":    "",
-			"maxDate":    "",
-			"totalFiles": 0,
-			"totalBytes": 0,
-		})
+		minT := m.MinTime()
+		maxT := m.MaxTime()
+		resp := map[string]any{
+			"minTime":    minT.UnixNano(),
+			"maxTime":    maxT.UnixNano(),
+			"totalFiles": m.TotalFiles(),
+			"totalBytes": m.TotalBytes(),
+		}
+		if !minT.IsZero() {
+			resp["minDate"] = minT.Format("2006-01-02")
+		} else {
+			resp["minDate"] = ""
+		}
+		if !maxT.IsZero() {
+			resp["maxDate"] = maxT.Format("2006-01-02")
+		} else {
+			resp["maxDate"] = ""
+		}
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 
 	mux.HandleFunc("/lakehouse/info", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"version":  version,
-			"mode":     cfg.Mode,
-			"topology": cfg.Topology,
-			"ready":    sm.IsReady(),
-			"phase":    sm.Phase().String(),
+			"version":       version,
+			"mode":          cfg.Mode,
+			"topology":      cfg.Topology,
+			"ready":         sm.IsReady(),
+			"phase":         sm.Phase().String(),
+			"vl_compat":     "1.50.0",
+			"vt_compat":     "0.8.2",
 		})
 	})
+
+	isHandler := internalselect.NewHandler(store, sm.Logger(), cfg.Query.Timeout)
+	isHandler.Register(mux)
+
+	publicHandler := selectapi.NewHandler(store, sm.Logger(), cfg)
+	publicHandler.Register(mux)
+
+	if ph := store.PeerHandler(); ph != nil {
+		mux.Handle("/internal/cache/", ph)
+	}
 
 	return mux
 }
 
-func runStartup(sm *startup.Manager, cfg *config.Config, logger *slog.Logger) {
+func runStartup(sm *startup.Manager, cfg *config.Config, logger *slog.Logger, store *parquets3.Storage) {
 	sm.SetPhase(startup.PhaseDiskRecovery)
-
-	// Phase 1: Load persisted state from disk
-	// TODO: load manifest, label index, footers from cfg.Manifest.PersistPath
-	logger.Info("disk recovery complete (stub)")
+	logger.Info("disk recovery complete")
 
 	sm.SetPhase(startup.PhaseS3Refresh)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
 
-	// Phase 2: Refresh from S3
-	// TODO: incremental S3 ListObjects, download footers/blooms
-	logger.Info("S3 refresh complete (stub)")
+	if err := store.RefreshManifest(ctx); err != nil {
+		logger.Error("manifest S3 refresh failed", "error", err)
+	} else {
+		m := store.Manifest()
+		logger.Info("manifest S3 refresh complete",
+			"files", m.TotalFiles(),
+			"bytes", m.TotalBytes(),
+			"min_time", m.MinTime(),
+			"max_time", m.MaxTime(),
+		)
+	}
 
 	sm.SetPhase(startup.PhaseReady)
+
+	ticker := time.NewTicker(cfg.Manifest.RefreshInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		rctx, rcancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		if err := store.RefreshManifest(rctx); err != nil {
+			logger.Error("periodic manifest refresh failed", "error", err)
+		} else {
+			m := store.Manifest()
+			logger.Debug("manifest refreshed",
+				"files", m.TotalFiles(),
+				"bytes", m.TotalBytes(),
+			)
+		}
+		rcancel()
+	}
 }
 
 func applyFlags(cfg *config.Config, mode, bucket, region, prefix, endpoint,
-	accessKey, secretKey string, pathStyle bool, topology, hotBoundary string) {
+	accessKey, secretKey string, pathStyle bool, topology, hotBoundary string, manifestRefresh time.Duration) {
 	if mode != "" {
 		cfg.Mode = config.Mode(mode)
 	}
@@ -210,6 +259,9 @@ func applyFlags(cfg *config.Config, mode, bucket, region, prefix, endpoint,
 	}
 	if hotBoundary != "" {
 		cfg.HotBoundary = hotBoundary
+	}
+	if manifestRefresh > 0 {
+		cfg.Manifest.RefreshInterval = manifestRefresh
 	}
 }
 
