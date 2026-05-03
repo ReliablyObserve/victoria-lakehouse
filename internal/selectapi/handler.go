@@ -245,6 +245,7 @@ func (h *Handler) handleStreamIDs(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleHits(w http.ResponseWriter, r *http.Request) {
 	qctx := h.parseQueryContext(r)
+	groupField := r.URL.Query().Get("field")
 
 	step := 60 * time.Second
 	if s := r.URL.Query().Get("step"); s != "" {
@@ -256,37 +257,40 @@ func (h *Handler) handleHits(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	buckets := make(map[int64]int)
+	grouped := make(map[string]map[int64]int)
 	var mu sync.Mutex
+
 	err := h.store.RunQuery(ctx, qctx, func(workerID uint, db *storage.DataBlock) {
+		var timeVals []string
+		var groupVals []string
 		for _, col := range db.Columns {
 			if col.Name == "_time" || col.Name == "timestamp_unix_nano" {
-				mu.Lock()
-				for _, v := range col.Values {
-					ns, parseErr := strconv.ParseInt(v, 10, 64)
-					if parseErr != nil {
-						continue
-					}
-					t := time.Unix(0, ns).Truncate(step)
-					buckets[t.UnixNano()] ++
-				}
-				mu.Unlock()
-				break
+				timeVals = col.Values
+			}
+			if groupField != "" && col.Name == groupField {
+				groupVals = col.Values
 			}
 		}
-		if len(db.Columns) > 0 {
-			mu.Lock()
-			hasTime := false
-			for _, col := range db.Columns {
-				if col.Name == "_time" || col.Name == "timestamp_unix_nano" {
-					hasTime = true
-					break
-				}
+		if timeVals == nil {
+			return
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		for i, v := range timeVals {
+			ns, parseErr := strconv.ParseInt(v, 10, 64)
+			if parseErr != nil {
+				continue
 			}
-			if !hasTime {
-				buckets[0] += db.RowsCount
+			t := time.Unix(0, ns).Truncate(step).UnixNano()
+			gv := ""
+			if groupField != "" && i < len(groupVals) {
+				gv = groupVals[i]
 			}
-			mu.Unlock()
+			if grouped[gv] == nil {
+				grouped[gv] = make(map[int64]int)
+			}
+			grouped[gv][t]++
 		}
 	})
 
@@ -295,23 +299,33 @@ func (h *Handler) handleHits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	timestamps := make([]string, 0, len(buckets))
-	values := make([]int, 0, len(buckets))
-	sorted := make([]int64, 0, len(buckets))
-	for ns := range buckets {
-		sorted = append(sorted, ns)
-	}
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-	for _, ns := range sorted {
-		timestamps = append(timestamps, time.Unix(0, ns).UTC().Format(time.RFC3339))
-		values = append(values, buckets[ns])
+	hits := make([]map[string]any, 0, len(grouped))
+	for gv, buckets := range grouped {
+		sorted := make([]int64, 0, len(buckets))
+		for ns := range buckets {
+			sorted = append(sorted, ns)
+		}
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+
+		timestamps := make([]string, 0, len(sorted))
+		values := make([]int, 0, len(sorted))
+		for _, ns := range sorted {
+			timestamps = append(timestamps, time.Unix(0, ns).UTC().Format(time.RFC3339))
+			values = append(values, buckets[ns])
+		}
+
+		fields := map[string]string{}
+		if groupField != "" {
+			fields[groupField] = gv
+		}
+		hits = append(hits, map[string]any{
+			"fields": fields, "timestamps": timestamps, "values": values,
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"hits": []map[string]any{
-			{"fields": map[string]string{}, "timestamps": timestamps, "values": values},
-		},
+		"hits": hits,
 	})
 }
 
@@ -511,17 +525,56 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 			}
 
 			span.Tags = []jaegerTag{}
-			if code := getValAny(colMap, i, "status_code", "status.code"); code != "" && code != "0" {
-				span.Tags = append(span.Tags, jaegerTag{Key: "otel.status_code", Type: "string", Value: code})
+			var processTags []jaegerTag
+
+			knownFields := map[string]bool{
+				"trace_id": true, "span_id": true, "parent_span_id": true,
+				"name": true, "span.name": true, "_time": true,
+				"start_time_unix_nano": true, "duration": true, "duration_ns": true,
+				"resource_attr:service.name": true, "service.name": true,
+				"_stream": true, "_stream_id": true, "timestamp_unix_nano": true,
 			}
-			if msg := getValAny(colMap, i, "status_message", "status.message"); msg != "" {
-				span.Tags = append(span.Tags, jaegerTag{Key: "otel.status_description", Type: "string", Value: msg})
+
+			for colName, vals := range colMap {
+				if knownFields[colName] || i >= len(vals) || vals[i] == "" {
+					continue
+				}
+				v := vals[i]
+				switch colName {
+				case "status_code", "status.code":
+					if v != "0" {
+						statusStr := v
+						switch v {
+						case "1":
+							statusStr = "STATUS_CODE_OK"
+						case "2":
+							statusStr = "STATUS_CODE_ERROR"
+							span.Tags = append(span.Tags, jaegerTag{Key: "error", Type: "bool", Value: "true"})
+						}
+						span.Tags = append(span.Tags, jaegerTag{Key: "otel.status_code", Type: "string", Value: statusStr})
+					}
+				case "status_message", "status.message":
+					span.Tags = append(span.Tags, jaegerTag{Key: "otel.status_description", Type: "string", Value: v})
+				case "kind", "span.kind":
+					span.Tags = append(span.Tags, jaegerTag{Key: "span.kind", Type: "string", Value: spanKindName(v)})
+				default:
+					if strings.HasPrefix(colName, "resource_attr:") {
+						processTags = append(processTags, jaegerTag{
+							Key: strings.TrimPrefix(colName, "resource_attr:"), Type: "string", Value: v,
+						})
+					} else if strings.HasPrefix(colName, "scope_attr:") {
+						span.Tags = append(span.Tags, jaegerTag{
+							Key: colName, Type: "string", Value: v,
+						})
+					} else {
+						span.Tags = append(span.Tags, jaegerTag{Key: colName, Type: "string", Value: v})
+					}
+				}
 			}
-			if kind := getValAny(colMap, i, "kind", "span.kind"); kind != "" {
-				span.Tags = append(span.Tags, jaegerTag{Key: "span.kind", Type: "string", Value: spanKindName(kind)})
-			}
+
 			span.Logs = []any{}
 			span.ProcessID = "p1"
+			span.processTags = processTags
 
 			if span.ParentSpanID != "" {
 				span.References = []jaegerReference{
@@ -567,7 +620,11 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !found {
-			processes[pid] = jaegerProcess{ServiceName: svcName, Tags: []jaegerTag{}}
+			tags := spans[i].processTags
+			if tags == nil {
+				tags = []jaegerTag{}
+			}
+			processes[pid] = jaegerProcess{ServiceName: svcName, Tags: tags}
 		}
 		spans[i].ProcessID = pid
 	}
@@ -819,6 +876,7 @@ type jaegerSpan struct {
 	ProcessID     string            `json:"processID"`
 	References    []jaegerReference `json:"references,omitempty"`
 	Warnings      any               `json:"warnings"`
+	processTags   []jaegerTag
 }
 
 type jaegerTag struct {
