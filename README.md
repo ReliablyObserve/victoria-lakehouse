@@ -74,53 +74,112 @@ For full setup, cluster integration, and deployment patterns, see [Getting Start
 
 ---
 
-## How It Works
+## Architecture
 
-Victoria Lakehouse forks VictoriaLogs vlselect and replaces the storage layer with a Parquet/S3 backend. All 14 HTTP handlers, the LogsQL parser, and response serialization are reused unchanged. From the outside, it looks like a regular VL/VT storage node.
+Victoria Lakehouse is a clean-room reimplementation of VL/VT select APIs backed by Parquet files on S3. From the outside, it looks and responds like a regular VL/VT storage node.
+
+```mermaid
+graph TB
+    subgraph "Grafana"
+        VL_DS["VictoriaLogs<br/>Datasource"]
+        J_DS["Jaeger<br/>Datasource"]
+    end
+
+    subgraph "Hot Tier (EBS)"
+        vlselect["vlselect"]
+        vtselect["vtselect"]
+        vlstorage["vlstorage<br/>(EBS, last 7d)"]
+        vtstorage["vtstorage<br/>(EBS, last 7d)"]
+    end
+
+    subgraph "Cold Tier (S3) — Victoria Lakehouse"
+        LH_L["lakehouse-logs<br/>:9428"]
+        LH_T["lakehouse-traces<br/>:10428"]
+        Manifest["Partition<br/>Manifest"]
+        Cache["Multi-Tier<br/>Cache"]
+        S3["S3 Parquet<br/>(historical)"]
+    end
+
+    VL_DS --> vlselect
+    J_DS --> vtselect
+    vlselect --> vlstorage
+    vlselect --> LH_L
+    vtselect --> vtstorage
+    vtselect --> LH_T
+    LH_L --> Manifest
+    LH_T --> Manifest
+    Manifest --> Cache
+    Cache --> S3
+
+    style LH_L fill:#2d6a4f,color:#fff
+    style LH_T fill:#2d6a4f,color:#fff
+    style S3 fill:#264653,color:#fff
+```
 
 ### Query Flow
 
-```
-1. Query arrives (via vlselect fan-out or direct)
-2. Partition manifest check (<1ms, in-memory)
-   - If query is within hot boundary -> return empty immediately
-   - If query has cold data -> continue
-3. Resolve Hive partitions (dt=YYYY-MM-DD/hour=HH)
-4. For each Parquet file:
-   a. Row group statistics -> skip non-matching groups
-   b. Bloom filter check -> skip for point lookups (trace_id, service_name)
-   c. Column projection -> read only needed columns
-   d. Filter evaluation -> apply LogsQL filters
-   e. Emit DataBlocks to callback
-5. Pipe processors (stats, sort, limit) run on emitted DataBlocks
+```mermaid
+flowchart LR
+    Q["Query"] --> M{"Manifest<br/>Check"}
+    M -->|"Within hot<br/>boundary"| E["Empty<br/>Response<br/>&lt;1ms"]
+    M -->|"Has cold<br/>data"| P["Resolve<br/>Partitions"]
+    P --> RG{"Row Group<br/>Stats"}
+    RG -->|"No match"| Skip["Skip"]
+    RG -->|"Match"| BF{"Bloom<br/>Filter"}
+    BF -->|"Absent"| Skip
+    BF -->|"Possible"| Col["Read<br/>Columns"]
+    Col --> Filt["Apply<br/>Filters"]
+    Filt --> DB["Emit<br/>DataBlocks"]
+
+    style E fill:#2d6a4f,color:#fff
+    style Skip fill:#6c757d,color:#fff
 ```
 
 ### Multi-Tier Cache
 
-```
-L1: Memory cache (footers, blooms, hot pages)      -> <10ms
-L2: Local disk cache (EBS gp3, full Parquet files)  -> <50ms
-L3: Distributed peer cache (consistent hash routing) -> <30ms
-L4: S3 (source of truth, range reads)                -> 50-150ms
+```mermaid
+flowchart TD
+    Q["Query"] --> L1{"L1: Memory<br/>&lt;10ms"}
+    L1 -->|Hit| R["Return"]
+    L1 -->|Miss| L2{"L2: Disk (EBS)<br/>&lt;50ms"}
+    L2 -->|Hit| R
+    L2 -->|Miss| L3{"L3: Peer Cache<br/>&lt;30ms"}
+    L3 -->|Hit| R
+    L3 -->|Miss| L4["L4: S3<br/>50-150ms"]
+    L4 --> R
+
+    style L1 fill:#2d6a4f,color:#fff
+    style L2 fill:#264653,color:#fff
+    style L3 fill:#5a189a,color:#fff
+    style L4 fill:#e76f51,color:#fff
 ```
 
 ### Three Deployment Patterns
 
-**Pattern 1: Multi-Select Storage Node (recommended)**
-```
-vlselect --storageNode=vlstorage-1,vlstorage-2,lakehouse-logs
-```
-Transparent integration. Zero changes to Grafana. Hot boundary auto-discovered.
-
-**Pattern 2: Direct Grafana Query (standalone)**
-```
-Grafana -> lakehouse-logs:9428 (cold logs)
-Grafana -> lakehouse-traces:10428 (cold traces)
+```mermaid
+graph LR
+    subgraph "Pattern 1: Storage Node (recommended)"
+        G1["Grafana"] --> VS1["vlselect"]
+        VS1 --> VLS1["vlstorage<br/>(hot EBS)"]
+        VS1 --> LH1["lakehouse<br/>(cold S3)"]
+    end
 ```
 
-**Pattern 3: Loki-VL-proxy Upstream**
+```mermaid
+graph LR
+    subgraph "Pattern 2: Direct Grafana"
+        G2["Grafana"] --> LH2L["lakehouse-logs<br/>:9428"]
+        G2 --> LH2T["lakehouse-traces<br/>:10428"]
+    end
 ```
-Grafana -> Loki-VL-proxy -> hot: vlselect / cold: lakehouse-logs
+
+```mermaid
+graph LR
+    subgraph "Pattern 3: Loki-VL-proxy"
+        G3["Grafana"] --> LVP["Loki-VL-proxy"]
+        LVP -->|hot| VS3["vlselect"]
+        LVP -->|cold| LH3["lakehouse"]
+    end
 ```
 
 ---

@@ -2,22 +2,51 @@
 
 ## Overview
 
-Victoria Lakehouse is a single Go binary that forks VictoriaLogs vlselect, replacing the storage layer at `app/vlstorage/main.go` with a Parquet/S3 backend (`ParquetS3Storage`). The two layers above (HTTP handlers and LogsQL query handlers) are reused unchanged from VL.
+Victoria Lakehouse is a single Go binary that reimplements VL/VT select APIs backed by a Parquet/S3 backend (`ParquetS3Storage`). It serves the same HTTP endpoints and response formats as VL/VT, making it a drop-in cold storage tier.
 
-```
-victoria-lakehouse binary
-  |
-  +-- [REUSED] HTTP server (14 endpoint handlers from VL)
-  +-- [REUSED] LogsQL handlers (parse + serialize from VL)
-  +-- [NEW] ParquetS3Storage (Parquet/S3 backend)
-        |
-        +-- Partition manifest (in-memory, sub-ms lookup)
-        +-- Parquet query engine (parquet-go, bloom + stats skip)
-        +-- S3 reader (io.ReaderAt over range reads)
-        +-- Multi-tier cache (L1 memory, L2 disk, L3 peer, L4 S3)
-        +-- Schema registry (OTLP -> VL/VT field mapping)
-        +-- Discovery (hot boundary auto-detection)
-        +-- Prefetch (correlated, read-ahead, warmup)
+```mermaid
+graph TD
+    subgraph "Victoria Lakehouse Binary"
+        HTTP["HTTP Server<br/>14 VL/VT endpoints"]
+        API["Select API<br/>/select/logsql/* + Jaeger"]
+        IS["Internal Select<br/>/internal/select/*"]
+        
+        subgraph "ParquetS3Storage"
+            MF["Partition<br/>Manifest"]
+            QE["Parquet Query<br/>Engine"]
+            SR["Schema<br/>Registry"]
+            
+            subgraph "Cache Layer"
+                L1["L1 Memory<br/>LRU"]
+                L2["L2 Disk<br/>EBS"]
+                PC["L3 Peer<br/>Cache"]
+            end
+            
+            S3R["S3 Reader<br/>io.ReaderAt"]
+            LI["Label<br/>Index"]
+        end
+        
+        DISC["Discovery<br/>Hot Boundary"]
+    end
+    
+    HTTP --> API
+    HTTP --> IS
+    API --> MF
+    IS --> MF
+    MF --> QE
+    QE --> SR
+    QE --> L1
+    L1 --> L2
+    L2 --> PC
+    PC --> S3R
+    QE --> LI
+    
+    S3R --> S3[("S3<br/>Parquet Files")]
+    DISC --> HOT["vlstorage /<br/>vtstorage"]
+
+    style MF fill:#2d6a4f,color:#fff
+    style QE fill:#264653,color:#fff
+    style S3 fill:#e76f51,color:#fff
 ```
 
 ## Storage Interface
@@ -38,23 +67,44 @@ Victoria Lakehouse implements VL's storage interface (11 methods):
 
 ## Query Execution Flow
 
-```
-1. LogsQL handler calls s3Storage.RunQuery(qctx, writeBlock)
-2. Extract time range + stream filters from qctx
-3. PARTITION MANIFEST CHECK (sub-millisecond, no I/O):
-   - If no partitions exist for this range -> return immediately
-   - If range is within HOT_BOUNDARY -> return immediately
-4. Resolve known Parquet file paths from manifest
-5. For each Parquet file (parallelized):
-   a. Open via cache (L1 footer? L2 file? L3 peer? L4 S3?)
-   b. Per row group:
-      - Column statistics (min/max) -> skip non-matching
-      - Bloom filter -> skip for point lookups
-   c. Read matching columns only
-   d. Apply LogsQL filters row-by-row
-   e. Convert to DataBlock, call writeBlock()
-6. Pipe processors (stats, sort, limit) run on DataBlocks
-7. Trigger correlated prefetch if enabled
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Handler as Select API
+    participant Manifest
+    participant Engine as Parquet Engine
+    participant Cache as Cache Layer
+    participant S3
+
+    Client->>Handler: LogsQL / Jaeger query
+    Handler->>Manifest: HasDataForRange(start, end)
+    
+    alt Within hot boundary or no data
+        Manifest-->>Handler: empty (<1ms)
+        Handler-->>Client: empty result
+    else Has cold data
+        Manifest->>Handler: file list
+        Handler->>Engine: RunQuery(files, filters)
+        
+        loop For each Parquet file
+            Engine->>Cache: getFileData(key)
+            alt L1/L2/L3 hit
+                Cache-->>Engine: cached bytes
+            else Cache miss
+                Cache->>S3: GetObject (range read)
+                S3-->>Cache: parquet data
+                Cache-->>Engine: bytes
+            end
+            
+            Engine->>Engine: Row group stats skip
+            Engine->>Engine: Bloom filter skip
+            Engine->>Engine: Column projection
+            Engine->>Engine: Filter evaluation
+            Engine->>Handler: emit DataBlocks
+        end
+        
+        Handler-->>Client: streamed results
+    end
 ```
 
 ## Parquet Schema
@@ -284,6 +334,35 @@ Query arrives for Parquet file key
 
 ### Hot Boundary Auto-Discovery (`internal/discovery/`)
 
+```mermaid
+flowchart LR
+    subgraph "Discovery Sources"
+        DNS["Headless DNS<br/>SRV lookup"]
+        Static["Static config<br/>node list"]
+        Manual["Manual override<br/>--hot-boundary=7d"]
+    end
+    
+    subgraph "Victoria Lakehouse"
+        Poll["Poll<br/>/internal/partition/list"]
+        Derive["Derive hot range<br/>union of partitions"]
+        Suppress["Suppress queries<br/>within hot range"]
+    end
+    
+    subgraph "Storage Nodes"
+        VS1["vlstorage-1<br/>20260426-20260502"]
+        VS2["vlstorage-2<br/>20260426-20260502"]
+    end
+    
+    DNS --> Poll
+    Static --> Poll
+    Manual --> Suppress
+    Poll --> VS1
+    Poll --> VS2
+    VS1 --> Derive
+    VS2 --> Derive
+    Derive --> Suppress
+```
+
 Victoria Lakehouse auto-discovers the hot tier's data range by connecting to vlstorage/vtstorage nodes:
 
 1. **Discover storage nodes** via Kubernetes headless service DNS (SRV records) or static config
@@ -302,14 +381,33 @@ Victoria Lakehouse auto-discovers the hot tier's data range by connecting to vls
 
 When Victoria Lakehouse runs as a fleet, instances discover each other and share cached data:
 
-```
-Query arrives at lakehouse-2 for file-abc.parquet
-  1. L1 memory (local) → miss
-  2. L2 disk (local) → miss
-  3. Consistent hash: hash("file-abc.parquet") → lakehouse-0
-  4. GET /internal/cache/fetch?key=file-abc.parquet → lakehouse-0
-  5. lakehouse-0 L2 hit → stream back to lakehouse-2
-  6. lakehouse-2 caches in L1, serves query
+```mermaid
+sequenceDiagram
+    participant Q as Query
+    participant LH2 as lakehouse-2
+    participant Ring as Hash Ring
+    participant LH0 as lakehouse-0
+    participant S3
+
+    Q->>LH2: query for file-abc.parquet
+    LH2->>LH2: L1 memory → miss
+    LH2->>LH2: L2 disk → miss
+    LH2->>Ring: hash("file-abc.parquet")
+    Ring-->>LH2: owner = lakehouse-0
+    LH2->>LH0: GET /internal/cache/fetch?key=...
+    
+    alt Peer has data
+        LH0->>LH0: L2 disk → hit
+        LH0-->>LH2: stream parquet data
+        LH2->>LH2: cache in L1
+        LH2-->>Q: serve result
+    else Peer also misses
+        LH0->>S3: GetObject (range read)
+        S3-->>LH0: parquet data
+        LH0->>LH0: cache in L2
+        LH0-->>LH2: stream data
+        LH2-->>Q: serve result
+    end
 ```
 
 **Components:**
@@ -350,19 +448,63 @@ Used by Loki-VL-proxy for routing decisions and operational tooling for data cov
 
 ## Startup Phases
 
-```
-Phase 0: INIT         -> /health=200, /ready=503
-Phase 1: DISK_RECOVERY -> load manifest, label index, footers from disk
-Phase 2: S3_REFRESH    -> incremental ListObjects, download new footers
-Phase 3: READY         -> /ready=200, serving traffic
+```mermaid
+stateDiagram-v2
+    [*] --> INIT: Process start
+    INIT --> DISK_RECOVERY: Config parsed
+    DISK_RECOVERY --> S3_REFRESH: Manifest + index loaded
+    S3_REFRESH --> READY: Incremental refresh done
+    READY --> [*]: SIGTERM
+
+    INIT: /health=200, /ready=503
+    DISK_RECOVERY: Load manifest, label index, footers
+    S3_REFRESH: ListObjects, download new footers
+    READY: /ready=200, serving traffic
 ```
 
-With `--lakehouse.startup.serve-stale=true`, readiness flips after Phase 1 (stale but fast).
+With `--lakehouse.startup.serve-stale=true`, readiness flips after DISK_RECOVERY (stale but fast).
 
 ## Graceful Shutdown
 
-```
-SIGTERM -> stop new queries -> drain in-flight (30s) -> persist manifest + label index -> exit
+```mermaid
+flowchart LR
+    SIG["SIGTERM"] --> STOP["Stop accepting<br/>new queries"]
+    STOP --> DRAIN["Drain in-flight<br/>(30s timeout)"]
+    DRAIN --> PERSIST["Persist manifest<br/>+ label index"]
+    PERSIST --> EXIT["Exit"]
 ```
 
 Kubernetes `terminationGracePeriodSeconds`: 60s.
+
+## Data Flow (Write + Read Path)
+
+```mermaid
+flowchart TB
+    subgraph "Write Path (external)"
+        OTEL["OTEL Collector"] --> Vector["Vector / Archival"]
+        Vector --> PQ["Parquet + ZSTD"]
+        PQ --> S3W[("S3 Bucket")]
+    end
+    
+    subgraph "Read Path (Victoria Lakehouse)"
+        S3W --> MR["Manifest<br/>Refresh"]
+        MR --> MAN["Partition<br/>Manifest"]
+        
+        GF["Grafana"] --> VLS["vlselect"]
+        VLS --> LH["Victoria<br/>Lakehouse"]
+        LH --> MAN
+        MAN --> QE["Query<br/>Engine"]
+        QE --> CACHE["Cache<br/>L1→L2→L3"]
+        CACHE --> S3R["S3 Range<br/>Reads"]
+        S3R --> S3W
+    end
+
+    subgraph "Analytics (direct)"
+        DDB["DuckDB"] --> S3W
+        Trino["Trino"] --> S3W
+        Spark["Spark"] --> S3W
+    end
+    
+    style S3W fill:#e76f51,color:#fff
+    style LH fill:#2d6a4f,color:#fff
+```
