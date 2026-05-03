@@ -96,7 +96,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	filters := parseSimpleFilters(qctx.Query)
+	filter := ParseFilter(qctx.Query)
 
 	count := 0
 	err := h.store.RunQuery(ctx, qctx, func(workerID uint, db *storage.DataBlock) {
@@ -110,7 +110,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		}
 
 		for rowIdx := 0; rowIdx < db.RowsCount && count < limit; rowIdx++ {
-			if !matchFilters(colMap, rowIdx, filters) {
+			if !EvaluateFilter(filter, colMap, rowIdx) {
 				continue
 			}
 			record := make(map[string]string, len(db.Columns))
@@ -257,10 +257,17 @@ func (h *Handler) handleHits(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
+	filter := ParseFilter(qctx.Query)
+
 	grouped := make(map[string]map[int64]int)
 	var mu sync.Mutex
 
 	err := h.store.RunQuery(ctx, qctx, func(workerID uint, db *storage.DataBlock) {
+		colMap := make(map[string][]string, len(db.Columns))
+		for _, col := range db.Columns {
+			colMap[col.Name] = col.Values
+		}
+
 		var timeVals []string
 		var groupVals []string
 		for _, col := range db.Columns {
@@ -278,6 +285,9 @@ func (h *Handler) handleHits(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
 		for i, v := range timeVals {
+			if !EvaluateFilter(filter, colMap, i) {
+				continue
+			}
 			ns, parseErr := strconv.ParseInt(v, 10, 64)
 			if parseErr != nil {
 				continue
@@ -335,9 +345,19 @@ func (h *Handler) handleStatsQuery(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
+	filter := ParseFilter(qctx.Query)
+
 	var total int
 	err := h.store.RunQuery(ctx, qctx, func(workerID uint, db *storage.DataBlock) {
-		total += db.RowsCount
+		colMap := make(map[string][]string, len(db.Columns))
+		for _, col := range db.Columns {
+			colMap[col.Name] = col.Values
+		}
+		for i := 0; i < db.RowsCount; i++ {
+			if EvaluateFilter(filter, colMap, i) {
+				total++
+			}
+		}
 	})
 
 	if err != nil {
@@ -361,7 +381,90 @@ func (h *Handler) handleStatsQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleStatsQueryRange(w http.ResponseWriter, r *http.Request) {
-	h.handleStatsQuery(w, r)
+	qctx := h.parseQueryContext(r)
+
+	step := 60 * time.Second
+	if s := r.URL.Query().Get("step"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			step = d
+		} else if secs, err := strconv.ParseFloat(s, 64); err == nil && secs > 0 {
+			step = time.Duration(secs * float64(time.Second))
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
+	defer cancel()
+
+	filter := ParseFilter(qctx.Query)
+
+	buckets := make(map[int64]int)
+	var mu sync.Mutex
+
+	err := h.store.RunQuery(ctx, qctx, func(workerID uint, db *storage.DataBlock) {
+		colMap := make(map[string][]string, len(db.Columns))
+		for _, col := range db.Columns {
+			colMap[col.Name] = col.Values
+		}
+
+		var timeVals []string
+		for _, col := range db.Columns {
+			if col.Name == "_time" || col.Name == "timestamp_unix_nano" {
+				timeVals = col.Values
+				break
+			}
+		}
+		if timeVals == nil {
+			return
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		for i, v := range timeVals {
+			if !EvaluateFilter(filter, colMap, i) {
+				continue
+			}
+			ns, parseErr := strconv.ParseInt(v, 10, 64)
+			if parseErr != nil {
+				continue
+			}
+			t := time.Unix(0, ns).Truncate(step).UnixNano()
+			buckets[t]++
+		}
+	})
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Build a continuous series from start to end, filling zeros for missing buckets.
+	stepNs := step.Nanoseconds()
+	startBucket := (qctx.StartNs / stepNs) * stepNs
+	endBucket := (qctx.EndNs / stepNs) * stepNs
+
+	var values [][]any
+	for ts := startBucket; ts <= endBucket; ts += stepNs {
+		count := buckets[ts]
+		values = append(values, []any{float64(ts) / 1e9, fmt.Sprintf("%d", count)})
+	}
+
+	if values == nil {
+		values = [][]any{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status": "success",
+		"data": map[string]any{
+			"resultType": "matrix",
+			"result": []map[string]any{
+				{
+					"metric": map[string]string{},
+					"values": values,
+				},
+			},
+		},
+	})
 }
 
 func (h *Handler) handleTailNoop(w http.ResponseWriter, r *http.Request) {
@@ -959,56 +1062,6 @@ func spanKindName(code string) string {
 	}
 }
 
-type simpleFilter struct {
-	field string
-	value string
-	exact bool
-}
-
-func parseSimpleFilters(query string) []simpleFilter {
-	if query == "" || query == "*" {
-		return nil
-	}
-
-	var filters []simpleFilter
-	parts := strings.Fields(query)
-	for _, part := range parts {
-		if part == "AND" || part == "OR" || part == "NOT" {
-			continue
-		}
-		if idx := strings.Index(part, `:="`); idx > 0 {
-			field := part[:idx]
-			val := strings.TrimSuffix(strings.TrimPrefix(part[idx+3:], ""), `"`)
-			filters = append(filters, simpleFilter{field: field, value: val, exact: true})
-		} else if idx := strings.Index(part, `:`); idx > 0 {
-			field := part[:idx]
-			val := strings.Trim(part[idx+1:], `"`)
-			if val != "" && val != "*" {
-				filters = append(filters, simpleFilter{field: field, value: val, exact: false})
-			}
-		}
-	}
-	return filters
-}
-
-func matchFilters(colMap map[string][]string, rowIdx int, filters []simpleFilter) bool {
-	for _, f := range filters {
-		val := ""
-		if vals, ok := colMap[f.field]; ok && rowIdx < len(vals) {
-			val = vals[rowIdx]
-		}
-		if f.exact {
-			if val != f.value {
-				return false
-			}
-		} else {
-			if !strings.Contains(val, f.value) {
-				return false
-			}
-		}
-	}
-	return true
-}
 
 func parseTimeParam(primary, secondary string, defaultVal int64) int64 {
 	for _, s := range []string{primary, secondary} {

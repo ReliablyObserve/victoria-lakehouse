@@ -34,3 +34,6 @@ docker:
 e2e:
 	docker compose -f deployment/docker/docker-compose-e2e.yml up --build --abort-on-container-exit --exit-code-from e2e-test
 	docker compose -f deployment/docker/docker-compose-e2e.yml down -v
+
+e2e-test:
+	go test -tags=e2e -v -count=1 -timeout=10m ./tests/e2e/

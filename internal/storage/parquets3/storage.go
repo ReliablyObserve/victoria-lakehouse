@@ -500,6 +500,9 @@ func (s *Storage) GetFieldValues(ctx context.Context, qctx *storage.QueryContext
 	for v, hits := range seen {
 		result = append(result, storage.ValueWithHits{Value: v, Hits: hits})
 	}
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
+	}
 	return result, nil
 }
 
