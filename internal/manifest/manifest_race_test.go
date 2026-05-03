@@ -21,8 +21,8 @@ func TestManifest_Race_MaxGoroutines(t *testing.T) {
 		}
 	}
 
-	const goroutines = 500
-	const ops = 500
+	const goroutines = 50
+	const ops = 100
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 

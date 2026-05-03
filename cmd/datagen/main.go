@@ -26,6 +26,11 @@ type LogRow struct {
 	ServiceName       string `parquet:"service.name"`
 	K8sNamespaceName  string `parquet:"k8s.namespace.name"`
 	K8sPodName        string `parquet:"k8s.pod.name"`
+	K8sDeploymentName string `parquet:"k8s.deployment.name"`
+	K8sNodeName       string `parquet:"k8s.node.name"`
+	DeployEnv         string `parquet:"deployment.environment"`
+	CloudRegion       string `parquet:"cloud.region"`
+	HostName          string `parquet:"host.name"`
 	TraceID           string `parquet:"trace_id"`
 	SpanID            string `parquet:"span_id"`
 	Stream            string `parquet:"_stream"`
@@ -46,14 +51,32 @@ type TraceRow struct {
 	DurationNs         int64  `parquet:"duration_ns"`
 	ServiceName        string `parquet:"service.name"`
 	ScopeName          string `parquet:"scope.name"`
+	DeployEnv          string `parquet:"resource_attr:deployment.environment"`
+	CloudRegion        string `parquet:"resource_attr:cloud.region"`
+	HostName           string `parquet:"resource_attr:host.name"`
+	K8sNamespaceName   string `parquet:"resource_attr:k8s.namespace.name"`
+	K8sDeploymentName  string `parquet:"resource_attr:k8s.deployment.name"`
+	K8sNodeName        string `parquet:"resource_attr:k8s.node.name"`
+	HTTPMethod         string `parquet:"span_attr:http.method"`
+	HTTPStatusCode     string `parquet:"span_attr:http.status_code"`
+	HTTPUrl            string `parquet:"span_attr:http.url"`
+	DBSystem           string `parquet:"span_attr:db.system"`
+	DBStatement        string `parquet:"span_attr:db.statement"`
 }
 
 var (
-	services = []string{"api-gateway", "user-service", "order-service", "payment-service", "notification-service"}
-	namespaces = []string{"production", "staging"}
-	levels     = []string{"INFO", "WARN", "ERROR", "DEBUG"}
-	levelNums  = map[string]int32{"DEBUG": 5, "INFO": 9, "WARN": 13, "ERROR": 17}
-	spanNames  = []string{
+	services    = []string{"api-gateway", "user-service", "order-service", "payment-service", "notification-service"}
+	namespaces  = []string{"production", "staging"}
+	deployEnvs  = []string{"production", "staging", "canary"}
+	regions     = []string{"us-east-1", "eu-west-1", "ap-southeast-1"}
+	k8sNodes    = []string{"node-pool-a-1", "node-pool-a-2", "node-pool-b-1", "node-pool-b-2"}
+	hostNames   = []string{"ip-10-0-1-42", "ip-10-0-2-17", "ip-10-0-3-88", "ip-10-1-1-55", "ip-10-1-2-33"}
+	levels      = []string{"INFO", "WARN", "ERROR", "DEBUG"}
+	levelNums   = map[string]int32{"DEBUG": 5, "INFO": 9, "WARN": 13, "ERROR": 17}
+	httpMethods = []string{"GET", "POST", "PUT", "DELETE", "PATCH"}
+	httpCodes   = []string{"200", "201", "204", "400", "401", "403", "404", "500", "502", "503"}
+	dbSystems   = []string{"postgresql", "redis", "elasticsearch"}
+	spanNames   = []string{
 		"HTTP GET /api/v1/users", "HTTP POST /api/v1/orders",
 		"HTTP GET /api/v1/health", "DB SELECT users", "DB INSERT orders",
 		"gRPC /payment.Process", "Redis GET session", "Kafka produce events",
@@ -135,6 +158,10 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCo
 		}
 		svc := services[rng.Intn(len(services))]
 		ns := namespaces[rng.Intn(len(namespaces))]
+		env := deployEnvs[rng.Intn(len(deployEnvs))]
+		region := regions[rng.Intn(len(regions))]
+		node := k8sNodes[rng.Intn(len(k8sNodes))]
+		host := hostNames[rng.Intn(len(hostNames))]
 		lvl := levels[rng.Intn(len(levels))]
 		msg := logMessages[rng.Intn(len(logMessages))]
 		traceID := randomHex(32)
@@ -148,6 +175,11 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCo
 			ServiceName:       svc,
 			K8sNamespaceName:  ns,
 			K8sPodName:        fmt.Sprintf("%s-%s", svc, randomHex(8)),
+			K8sDeploymentName: svc,
+			K8sNodeName:       node,
+			DeployEnv:         env,
+			CloudRegion:       region,
+			HostName:          host,
 			TraceID:           traceID,
 			SpanID:            spanID,
 			Stream:            fmt.Sprintf("{service.name=%q,k8s.namespace.name=%q}", svc, ns),
@@ -188,6 +220,11 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCo
 		}
 		traceID := randomHex(32)
 		svc := services[rng.Intn(len(services))]
+		ns := namespaces[rng.Intn(len(namespaces))]
+		env := deployEnvs[rng.Intn(len(deployEnvs))]
+		region := regions[rng.Intn(len(regions))]
+		node := k8sNodes[rng.Intn(len(k8sNodes))]
+		host := hostNames[rng.Intn(len(hostNames))]
 
 		spansPerTrace := 2 + rng.Intn(4)
 		parentSpanID := ""
@@ -204,19 +241,49 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCo
 				statusMsg = "internal error"
 			}
 
+			spanName := spanNames[rng.Intn(len(spanNames))]
+			httpMethod := ""
+			httpCode := ""
+			httpUrl := ""
+			dbSystem := ""
+			dbStmt := ""
+
+			if len(spanName) > 4 && spanName[:4] == "HTTP" {
+				httpMethod = httpMethods[rng.Intn(len(httpMethods))]
+				httpCode = httpCodes[rng.Intn(len(httpCodes))]
+				httpUrl = fmt.Sprintf("http://%s:8080%s", svc, spanName[len("HTTP "+httpMethod):])
+			} else if len(spanName) > 2 && spanName[:2] == "DB" {
+				dbSystem = dbSystems[0]
+				dbStmt = fmt.Sprintf("SELECT * FROM %s WHERE id = $1", spanName[3:])
+			} else if spanName == "Redis GET session" {
+				dbSystem = "redis"
+				dbStmt = "GET session:user:" + randomHex(8)
+			}
+
 			row := TraceRow{
 				TimestampUnixNano:  endTime.UnixNano(),
 				StartTimeUnixNano:  startTime.UnixNano(),
 				TraceID:            traceID,
 				SpanID:             spanID,
 				ParentSpanID:       parentSpanID,
-				SpanName:           spanNames[rng.Intn(len(spanNames))],
+				SpanName:           spanName,
 				SpanKind:           int32(1 + rng.Intn(3)),
 				StatusCode:         statusCode,
 				StatusMessage:      statusMsg,
 				DurationNs:         dur.Nanoseconds(),
 				ServiceName:        svc,
 				ScopeName:          "github.com/reliablyobserve/instrumentation",
+				DeployEnv:          env,
+				CloudRegion:        region,
+				HostName:           host,
+				K8sNamespaceName:   ns,
+				K8sDeploymentName:  svc,
+				K8sNodeName:        node,
+				HTTPMethod:         httpMethod,
+				HTTPStatusCode:     httpCode,
+				HTTPUrl:            httpUrl,
+				DBSystem:           dbSystem,
+				DBStatement:        dbStmt,
 			}
 
 			key := partitionKeyBatch("traces", startTime, batchID)
