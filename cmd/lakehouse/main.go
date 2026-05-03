@@ -36,8 +36,9 @@ func main() {
 		s3PathStyle = flag.Bool("lakehouse.s3.force-path-style", false, "Use path-style S3 URLs")
 		topology    = flag.String("lakehouse.topology", "", "Deployment topology: auto, storage-node, direct, loki-proxy")
 		hotBoundary = flag.String("lakehouse.hot-boundary", "", "Manual hot boundary override (e.g., 7d)")
-		listenAddr  = flag.String("httpListenAddr", "", "HTTP listen address (auto-set from mode)")
-		logLevel    = flag.String("loggerLevel", "INFO", "Log level: DEBUG, INFO, WARN, ERROR")
+		listenAddr       = flag.String("httpListenAddr", "", "HTTP listen address (auto-set from mode)")
+		logLevel         = flag.String("loggerLevel", "INFO", "Log level: DEBUG, INFO, WARN, ERROR")
+		manifestRefresh  = flag.Duration("lakehouse.manifest.refresh-interval", 0, "Manifest refresh interval (e.g., 30s)")
 	)
 	flag.Parse()
 
@@ -50,7 +51,7 @@ func main() {
 	}
 
 	applyFlags(cfg, *mode, *s3Bucket, *s3Region, *s3Prefix, *s3Endpoint,
-		*s3AccessKey, *s3SecretKey, *s3PathStyle, *topology, *hotBoundary)
+		*s3AccessKey, *s3SecretKey, *s3PathStyle, *topology, *hotBoundary, *manifestRefresh)
 
 	if err := cfg.Validate(); err != nil {
 		logger.Error("invalid config", "error", err)
@@ -209,10 +210,26 @@ func runStartup(sm *startup.Manager, cfg *config.Config, logger *slog.Logger, st
 	}
 
 	sm.SetPhase(startup.PhaseReady)
+
+	ticker := time.NewTicker(cfg.Manifest.RefreshInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		rctx, rcancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		if err := store.RefreshManifest(rctx); err != nil {
+			logger.Error("periodic manifest refresh failed", "error", err)
+		} else {
+			m := store.Manifest()
+			logger.Debug("manifest refreshed",
+				"files", m.TotalFiles(),
+				"bytes", m.TotalBytes(),
+			)
+		}
+		rcancel()
+	}
 }
 
 func applyFlags(cfg *config.Config, mode, bucket, region, prefix, endpoint,
-	accessKey, secretKey string, pathStyle bool, topology, hotBoundary string) {
+	accessKey, secretKey string, pathStyle bool, topology, hotBoundary string, manifestRefresh time.Duration) {
 	if mode != "" {
 		cfg.Mode = config.Mode(mode)
 	}
@@ -242,6 +259,9 @@ func applyFlags(cfg *config.Config, mode, bucket, region, prefix, endpoint,
 	}
 	if hotBoundary != "" {
 		cfg.HotBoundary = hotBoundary
+	}
+	if manifestRefresh > 0 {
+		cfg.Manifest.RefreshInterval = manifestRefresh
 	}
 }
 

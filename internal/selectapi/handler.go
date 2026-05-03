@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
@@ -245,12 +246,48 @@ func (h *Handler) handleStreamIDs(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleHits(w http.ResponseWriter, r *http.Request) {
 	qctx := h.parseQueryContext(r)
 
+	step := 60 * time.Second
+	if s := r.URL.Query().Get("step"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			step = d
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	var totalHits int
+	buckets := make(map[int64]int)
+	var mu sync.Mutex
 	err := h.store.RunQuery(ctx, qctx, func(workerID uint, db *storage.DataBlock) {
-		totalHits += db.RowsCount
+		for _, col := range db.Columns {
+			if col.Name == "_time" || col.Name == "timestamp_unix_nano" {
+				mu.Lock()
+				for _, v := range col.Values {
+					ns, parseErr := strconv.ParseInt(v, 10, 64)
+					if parseErr != nil {
+						continue
+					}
+					t := time.Unix(0, ns).Truncate(step)
+					buckets[t.UnixNano()] ++
+				}
+				mu.Unlock()
+				break
+			}
+		}
+		if len(db.Columns) > 0 {
+			mu.Lock()
+			hasTime := false
+			for _, col := range db.Columns {
+				if col.Name == "_time" || col.Name == "timestamp_unix_nano" {
+					hasTime = true
+					break
+				}
+			}
+			if !hasTime {
+				buckets[0] += db.RowsCount
+			}
+			mu.Unlock()
+		}
 	})
 
 	if err != nil {
@@ -258,10 +295,22 @@ func (h *Handler) handleHits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	timestamps := make([]string, 0, len(buckets))
+	values := make([]int, 0, len(buckets))
+	sorted := make([]int64, 0, len(buckets))
+	for ns := range buckets {
+		sorted = append(sorted, ns)
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	for _, ns := range sorted {
+		timestamps = append(timestamps, time.Unix(0, ns).UTC().Format(time.RFC3339))
+		values = append(values, buckets[ns])
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"hits": []map[string]any{
-			{"total": totalHits},
+			{"fields": map[string]string{}, "timestamps": timestamps, "values": values},
 		},
 	})
 }

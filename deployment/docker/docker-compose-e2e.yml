@@ -76,6 +76,7 @@ services:
       - "-lakehouse.s3.access-key=minioadmin"
       - "-lakehouse.s3.secret-key=minioadmin"
       - "-lakehouse.s3.force-path-style=true"
+      - "-lakehouse.manifest.refresh-interval=30s"
       - "-loggerLevel=DEBUG"
     ports:
       - "19428:9428"
@@ -102,6 +103,7 @@ services:
       - "-lakehouse.s3.access-key=minioadmin"
       - "-lakehouse.s3.secret-key=minioadmin"
       - "-lakehouse.s3.force-path-style=true"
+      - "-lakehouse.manifest.refresh-interval=30s"
       - "-loggerLevel=DEBUG"
     ports:
       - "20428:10428"
