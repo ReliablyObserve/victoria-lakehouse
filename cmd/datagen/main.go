@@ -118,7 +118,7 @@ func main() {
 
 func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCount, tracesCount, hoursBack int) {
 	now := time.Now().UTC()
-	rng := mrand.New(mrand.NewSource(now.UnixNano()))
+	rng := mrand.New(mrand.NewSource(now.UnixNano())) // #nosec G404 -- synthetic test data, not security-sensitive
 
 	log.Printf("Generating %d log rows and %d trace spans over %d hours...", logsCount, tracesCount, hoursBack)
 
