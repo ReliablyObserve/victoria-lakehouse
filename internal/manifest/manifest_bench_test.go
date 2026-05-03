@@ -21,6 +21,7 @@ func BenchmarkHasDataForRange(b *testing.B) {
 	startNs := time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC).UnixNano()
 	endNs := time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC).UnixNano()
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		m.HasDataForRange(startNs, endNs)
@@ -42,6 +43,7 @@ func BenchmarkGetFilesForRange_1Hour(b *testing.B) {
 	startNs := time.Date(2026, 5, 15, 10, 0, 0, 0, time.UTC).UnixNano()
 	endNs := time.Date(2026, 5, 15, 11, 0, 0, 0, time.UTC).UnixNano()
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		m.GetFilesForRange(startNs, endNs)
@@ -63,6 +65,7 @@ func BenchmarkGetFilesForRange_24Hours(b *testing.B) {
 	startNs := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC).UnixNano()
 	endNs := time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC).UnixNano()
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		m.GetFilesForRange(startNs, endNs)
@@ -73,6 +76,7 @@ func BenchmarkAddFile(b *testing.B) {
 	l := testLogger()
 	m := New("bucket", "logs/", l)
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		partition := fmt.Sprintf("dt=2026-05-%02d/hour=%02d", (i%28)+1, i%24)
@@ -83,6 +87,7 @@ func BenchmarkAddFile(b *testing.B) {
 func BenchmarkExtractPartition(b *testing.B) {
 	key := "logs/dt=2026-05-02/hour=10/00000-abc.parquet"
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		extractPartition(key)
@@ -92,6 +97,7 @@ func BenchmarkExtractPartition(b *testing.B) {
 func BenchmarkParsePartitionTime(b *testing.B) {
 	partition := "dt=2026-05-02/hour=10"
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = parsePartitionTime(partition)

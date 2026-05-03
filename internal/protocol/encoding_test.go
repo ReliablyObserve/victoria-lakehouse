@@ -296,6 +296,7 @@ func BenchmarkMarshalDataBlock(b *testing.B) {
 		db.Columns[i].Values = vals
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		MarshalDataBlock(db)
@@ -316,6 +317,7 @@ func BenchmarkUnmarshalDataBlock(b *testing.B) {
 	}
 	data := MarshalDataBlock(db)
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = UnmarshalDataBlock(data)
@@ -328,6 +330,7 @@ func BenchmarkMarshalValueWithHits(b *testing.B) {
 		vals[i] = storage.ValueWithHits{Value: "service-name", Hits: 42}
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		MarshalValueWithHits(vals)

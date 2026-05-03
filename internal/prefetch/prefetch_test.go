@@ -311,6 +311,7 @@ func BenchmarkEngine_Enqueue(b *testing.B) {
 	}, testLogger())
 	defer e.Close()
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		e.Enqueue(Task{Key: fmt.Sprintf("k%d", i), Type: TypeCorrelated})

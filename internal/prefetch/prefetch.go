@@ -44,6 +44,7 @@ type Engine struct {
 	maxQueue      int
 	maxConcurrent int
 	active        atomic.Int32
+	closed        bool
 	fetchFn       FetchFunc
 	logger        *slog.Logger
 	ctx           context.Context
@@ -73,6 +74,10 @@ func NewEngine(maxConcurrent, maxQueue int, fetchFn FetchFunc, logger *slog.Logg
 func (e *Engine) Enqueue(task Task) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	if e.closed {
+		return false
+	}
 
 	for _, t := range e.queue {
 		if t.Key == task.Key {
@@ -195,6 +200,9 @@ func (e *Engine) Stats() (triggered, completed, errors, useful int64) {
 }
 
 func (e *Engine) Close() {
+	e.mu.Lock()
+	e.closed = true
+	e.mu.Unlock()
 	e.cancel()
 	e.wg.Wait()
 }
