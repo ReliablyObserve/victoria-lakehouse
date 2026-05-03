@@ -83,9 +83,10 @@ func main() {
 	bucket := flag.String("bucket", "obs-archive", "S3 bucket name")
 	accessKey := flag.String("access-key", "minioadmin", "S3 access key")
 	secretKey := flag.String("secret-key", "minioadmin", "S3 secret key")
-	logsCount := flag.Int("logs", 5000, "number of log rows to generate")
-	tracesCount := flag.Int("traces", 1000, "number of trace spans to generate")
-	hoursBack := flag.Int("hours-back", 48, "generate data for this many hours back")
+	logsCount := flag.Int("logs", 5000, "number of log rows per batch")
+	tracesCount := flag.Int("traces", 1000, "number of trace spans per batch")
+	hoursBack := flag.Int("hours-back", 48, "generate historical data for this many hours back")
+	interval := flag.Duration("interval", 0, "continuous mode: generate new data every interval (e.g. 30s)")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -103,15 +104,35 @@ func main() {
 		o.UsePathStyle = true
 	})
 
+	generateBatch(ctx, client, *bucket, *logsCount, *tracesCount, *hoursBack)
+
+	if *interval > 0 {
+		log.Printf("Continuous mode: generating %d logs + %d traces every %s", *logsCount, *tracesCount, *interval)
+		ticker := time.NewTicker(*interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			generateBatch(ctx, client, *bucket, *logsCount, *tracesCount, 1)
+		}
+	}
+}
+
+func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCount, tracesCount, hoursBack int) {
 	now := time.Now().UTC()
 	rng := mrand.New(mrand.NewSource(now.UnixNano()))
 
-	log.Printf("Generating %d log rows and %d trace spans over %d hours...", *logsCount, *tracesCount, *hoursBack)
+	log.Printf("Generating %d log rows and %d trace spans over %d hours...", logsCount, tracesCount, hoursBack)
 
+	batchID := randomHex(8)
 	logsByPartition := make(map[string][]LogRow)
-	for i := 0; i < *logsCount; i++ {
-		hoursAgo := rng.Intn(*hoursBack) + 1
+	for i := 0; i < logsCount; i++ {
+		hoursAgo := rng.Intn(hoursBack) + 1
+		if hoursBack <= 1 {
+			hoursAgo = 0
+		}
 		ts := now.Add(-time.Duration(hoursAgo) * time.Hour).Add(time.Duration(rng.Intn(3600)) * time.Second)
+		if hoursBack <= 1 {
+			ts = now.Add(-time.Duration(rng.Intn(3600)) * time.Second)
+		}
 		svc := services[rng.Intn(len(services))]
 		ns := namespaces[rng.Intn(len(namespaces))]
 		lvl := levels[rng.Intn(len(levels))]
@@ -134,29 +155,37 @@ func main() {
 			ScopeName:         "github.com/reliablyobserve/instrumentation",
 		}
 
-		key := partitionKey("logs", ts)
+		key := partitionKeyBatch("logs", ts, batchID)
 		logsByPartition[key] = append(logsByPartition[key], row)
 	}
 
 	for key, rows := range logsByPartition {
 		data, err := writeLogsParquet(rows)
 		if err != nil {
-			log.Fatalf("write logs parquet: %v", err)
+			log.Printf("ERROR write logs parquet: %v", err)
+			return
 		}
-		if err := upload(ctx, client, *bucket, key, data); err != nil {
-			log.Fatalf("upload %s: %v", key, err)
+		if err := upload(ctx, client, bucket, key, data); err != nil {
+			log.Printf("ERROR upload %s: %v", key, err)
+			return
 		}
 		log.Printf("  uploaded %s (%d rows, %d bytes)", key, len(rows), len(data))
 	}
 
 	tracesByPartition := make(map[string][]TraceRow)
-	numTraces := *tracesCount / 3
+	numTraces := tracesCount / 3
 	if numTraces < 1 {
 		numTraces = 1
 	}
 	for t := 0; t < numTraces; t++ {
-		hoursAgo := rng.Intn(*hoursBack) + 1
+		hoursAgo := rng.Intn(hoursBack) + 1
+		if hoursBack <= 1 {
+			hoursAgo = 0
+		}
 		baseTime := now.Add(-time.Duration(hoursAgo) * time.Hour).Add(time.Duration(rng.Intn(3600)) * time.Second)
+		if hoursBack <= 1 {
+			baseTime = now.Add(-time.Duration(rng.Intn(3600)) * time.Second)
+		}
 		traceID := randomHex(32)
 		svc := services[rng.Intn(len(services))]
 
@@ -190,7 +219,7 @@ func main() {
 				ScopeName:          "github.com/reliablyobserve/instrumentation",
 			}
 
-			key := partitionKey("traces", startTime)
+			key := partitionKeyBatch("traces", startTime, batchID)
 			tracesByPartition[key] = append(tracesByPartition[key], row)
 			parentSpanID = spanID
 		}
@@ -199,10 +228,12 @@ func main() {
 	for key, rows := range tracesByPartition {
 		data, err := writeTracesParquet(rows)
 		if err != nil {
-			log.Fatalf("write traces parquet: %v", err)
+			log.Printf("ERROR write traces parquet: %v", err)
+			return
 		}
-		if err := upload(ctx, client, *bucket, key, data); err != nil {
-			log.Fatalf("upload %s: %v", key, err)
+		if err := upload(ctx, client, bucket, key, data); err != nil {
+			log.Printf("ERROR upload %s: %v", key, err)
+			return
 		}
 		log.Printf("  uploaded %s (%d rows, %d bytes)", key, len(rows), len(data))
 	}
@@ -216,13 +247,13 @@ func main() {
 		totalTraces += len(rows)
 	}
 
-	log.Printf("Done! Generated %d log rows in %d partitions, %d trace spans in %d partitions",
+	log.Printf("Batch done: %d log rows in %d partitions, %d trace spans in %d partitions",
 		totalLogs, len(logsByPartition), totalTraces, len(tracesByPartition))
 }
 
-func partitionKey(signal string, ts time.Time) string {
-	return fmt.Sprintf("%s/dt=%s/hour=%02d/00000-testdata.parquet",
-		signal, ts.Format("2006-01-02"), ts.Hour())
+func partitionKeyBatch(signal string, ts time.Time, batchID string) string {
+	return fmt.Sprintf("%s/dt=%s/hour=%02d/%s.parquet",
+		signal, ts.Format("2006-01-02"), ts.Hour(), batchID)
 }
 
 func writeLogsParquet(rows []LogRow) ([]byte, error) {

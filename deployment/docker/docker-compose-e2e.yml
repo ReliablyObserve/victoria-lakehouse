@@ -26,7 +26,7 @@ services:
       echo 'MinIO bucket ready'
       "
 
-  datagen:
+  datagen-seed:
     build:
       context: ../../
       dockerfile: Dockerfile.datagen
@@ -42,12 +42,30 @@ services:
       - "--traces=1000"
       - "--hours-back=48"
 
+  datagen-continuous:
+    build:
+      context: ../../
+      dockerfile: Dockerfile.datagen
+    depends_on:
+      datagen-seed:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    command:
+      - "--endpoint=http://minio:9000"
+      - "--bucket=obs-archive"
+      - "--access-key=minioadmin"
+      - "--secret-key=minioadmin"
+      - "--logs=500"
+      - "--traces=200"
+      - "--hours-back=1"
+      - "--interval=30s"
+
   lakehouse-logs:
     build:
       context: ../../
       dockerfile: Dockerfile
     depends_on:
-      datagen:
+      datagen-seed:
         condition: service_completed_successfully
     command:
       - "-lakehouse.mode=logs"
@@ -73,7 +91,7 @@ services:
       context: ../../
       dockerfile: Dockerfile
     depends_on:
-      datagen:
+      datagen-seed:
         condition: service_completed_successfully
     command:
       - "-lakehouse.mode=traces"
