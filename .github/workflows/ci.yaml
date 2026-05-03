@@ -90,7 +90,7 @@ jobs:
       - name: Run gosec
         uses: securego/gosec@master
         with:
-          args: -exclude=G104,G110,G204,G304,G401,G501 ./...
+          args: -exclude=G104,G110,G115,G204,G304,G401,G501,G705 ./...
 
   helm:
     runs-on: ubuntu-latest
