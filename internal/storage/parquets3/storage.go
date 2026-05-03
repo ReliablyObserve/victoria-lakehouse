@@ -441,6 +441,9 @@ func (s *Storage) GetFieldValues(ctx context.Context, qctx *storage.QueryContext
 
 	mapping := s.registry.ResolveToParquet(fieldName)
 	if mapping == nil {
+		mapping = s.registry.ResolveFromParquet(fieldName)
+	}
+	if mapping == nil {
 		return nil, nil
 	}
 
@@ -652,6 +655,10 @@ func (s *Storage) RefreshDiscovery(ctx context.Context) error {
 		s.peerCache.UpdatePeers(peers)
 	}
 	return nil
+}
+
+func (s *Storage) RefreshManifest(ctx context.Context) error {
+	return s.manifest.RefreshFromS3(ctx, s.pool.S3Client())
 }
 
 func (s *Storage) PersistState() error {

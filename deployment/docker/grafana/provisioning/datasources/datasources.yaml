@@ -1,0 +1,24 @@
+apiVersion: 1
+
+datasources:
+  - name: Victoria Lakehouse Logs
+    type: victoriametrics-logs-datasource
+    uid: victoria-lakehouse-logs
+    access: proxy
+    url: http://lakehouse-logs:9428
+    isDefault: true
+    jsonData:
+      maxLines: 1000
+
+  - name: Victoria Lakehouse Traces (Jaeger)
+    type: jaeger
+    uid: victoria-lakehouse-traces
+    access: proxy
+    url: http://lakehouse-traces:10428
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: victoria-lakehouse-logs
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+        filterByTraceID: true
+        filterBySpanID: false

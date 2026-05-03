@@ -99,6 +99,10 @@ func (r *S3ReaderAt) Size() int64 {
 	return r.size
 }
 
+func (p *ClientPool) S3Client() *s3.Client {
+	return p.client
+}
+
 func (p *ClientPool) Download(ctx context.Context, key string) ([]byte, error) {
 	out, err := p.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(p.bucket),

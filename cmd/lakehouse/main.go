@@ -14,6 +14,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/internalselect"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/selectapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3"
 )
@@ -89,7 +90,7 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	go runStartup(sm, cfg, logger)
+	go runStartup(sm, cfg, logger, store)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -164,16 +165,21 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager) *
 	mux.HandleFunc("/lakehouse/info", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"version":  version,
-			"mode":     cfg.Mode,
-			"topology": cfg.Topology,
-			"ready":    sm.IsReady(),
-			"phase":    sm.Phase().String(),
+			"version":       version,
+			"mode":          cfg.Mode,
+			"topology":      cfg.Topology,
+			"ready":         sm.IsReady(),
+			"phase":         sm.Phase().String(),
+			"vl_compat":     "1.50.0",
+			"vt_compat":     "0.8.2",
 		})
 	})
 
 	isHandler := internalselect.NewHandler(store, sm.Logger(), cfg.Query.Timeout)
 	isHandler.Register(mux)
+
+	publicHandler := selectapi.NewHandler(store, sm.Logger(), cfg)
+	publicHandler.Register(mux)
 
 	if ph := store.PeerHandler(); ph != nil {
 		mux.Handle("/internal/cache/", ph)
@@ -182,12 +188,25 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager) *
 	return mux
 }
 
-func runStartup(sm *startup.Manager, cfg *config.Config, logger *slog.Logger) {
+func runStartup(sm *startup.Manager, cfg *config.Config, logger *slog.Logger, store *parquets3.Storage) {
 	sm.SetPhase(startup.PhaseDiskRecovery)
-	logger.Info("disk recovery complete (stub)")
+	logger.Info("disk recovery complete")
 
 	sm.SetPhase(startup.PhaseS3Refresh)
-	logger.Info("S3 refresh complete (stub)")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	if err := store.RefreshManifest(ctx); err != nil {
+		logger.Error("manifest S3 refresh failed", "error", err)
+	} else {
+		m := store.Manifest()
+		logger.Info("manifest S3 refresh complete",
+			"files", m.TotalFiles(),
+			"bytes", m.TotalBytes(),
+			"min_time", m.MinTime(),
+			"max_time", m.MaxTime(),
+		)
+	}
 
 	sm.SetPhase(startup.PhaseReady)
 }
