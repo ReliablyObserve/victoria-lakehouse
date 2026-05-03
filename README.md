@@ -1,8 +1,11 @@
 # Victoria Lakehouse
 
 [![CI](https://github.com/ReliablyObserve/victoria-lakehouse/actions/workflows/ci.yaml/badge.svg?branch=main&event=push)](https://github.com/ReliablyObserve/victoria-lakehouse/actions/workflows/ci.yaml)
+[![Security](https://github.com/ReliablyObserve/victoria-lakehouse/actions/workflows/security.yaml/badge.svg?branch=main&event=push)](https://github.com/ReliablyObserve/victoria-lakehouse/actions/workflows/security.yaml)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/ReliablyObserve/victoria-lakehouse)](https://go.dev/)
 [![Release](https://img.shields.io/github/v/release/ReliablyObserve/victoria-lakehouse)](https://github.com/ReliablyObserve/victoria-lakehouse/releases)
+[![Lines of Code](https://img.shields.io/badge/go%20loc-16.8k-blue)](https://github.com/ReliablyObserve/victoria-lakehouse)
+[![Tests](https://img.shields.io/badge/tests-368%20passed-brightgreen)](#tests)
 [![License](https://img.shields.io/github/license/ReliablyObserve/victoria-lakehouse)](LICENSE)
 
 **S3-backed cold storage select for VictoriaLogs and VictoriaTraces.** Serve historical observability data from Parquet files on S3, while existing VL/VT clusters handle hot data on EBS.
