@@ -259,3 +259,67 @@ func parsePartitionTime(partition string) (time.Time, error) {
 
 	return t, nil
 }
+
+type PartitionSummary struct {
+	Date  string `json:"date"`
+	Hours []int  `json:"hours"`
+	Files int    `json:"files"`
+	Bytes int64  `json:"bytes"`
+}
+
+func (m *Manifest) GetPartitions(startDate, endDate string) []PartitionSummary {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	byDate := make(map[string]*PartitionSummary)
+
+	for partition, files := range m.files {
+		parts := strings.Split(partition, "/")
+		var dateStr, hourStr string
+		for _, p := range parts {
+			if v, ok := strings.CutPrefix(p, "dt="); ok {
+				dateStr = v
+			}
+			if v, ok := strings.CutPrefix(p, "hour="); ok {
+				hourStr = v
+			}
+		}
+		if dateStr == "" {
+			continue
+		}
+		if startDate != "" && dateStr < startDate {
+			continue
+		}
+		if endDate != "" && dateStr > endDate {
+			continue
+		}
+
+		ps, ok := byDate[dateStr]
+		if !ok {
+			ps = &PartitionSummary{Date: dateStr}
+			byDate[dateStr] = ps
+		}
+		var totalBytes int64
+		for _, f := range files {
+			totalBytes += f.Size
+		}
+		ps.Files += len(files)
+		ps.Bytes += totalBytes
+		if hourStr != "" {
+			var hour int
+			if _, err := fmt.Sscanf(hourStr, "%d", &hour); err == nil {
+				ps.Hours = append(ps.Hours, hour)
+			}
+		}
+	}
+
+	result := make([]PartitionSummary, 0, len(byDate))
+	for _, ps := range byDate {
+		sort.Ints(ps.Hours)
+		result = append(result, *ps)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Date < result[j].Date
+	})
+	return result
+}
