@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/internalselect"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3"
 )
 
@@ -24,19 +24,19 @@ var (
 
 func main() {
 	var (
-		configPath = flag.String("lakehouse.config", "", "Path to YAML config file")
-		mode       = flag.String("lakehouse.mode", "", "Operating mode: logs or traces (required)")
-		s3Bucket   = flag.String("lakehouse.s3.bucket", "", "S3 bucket name (required)")
-		s3Region   = flag.String("lakehouse.s3.region", "", "S3 region")
-		s3Prefix   = flag.String("lakehouse.s3.prefix", "", "S3 key prefix")
-		s3Endpoint = flag.String("lakehouse.s3.endpoint", "", "Custom S3 endpoint (MinIO)")
+		configPath  = flag.String("lakehouse.config", "", "Path to YAML config file")
+		mode        = flag.String("lakehouse.mode", "", "Operating mode: logs or traces (required)")
+		s3Bucket    = flag.String("lakehouse.s3.bucket", "", "S3 bucket name (required)")
+		s3Region    = flag.String("lakehouse.s3.region", "", "S3 region")
+		s3Prefix    = flag.String("lakehouse.s3.prefix", "", "S3 key prefix")
+		s3Endpoint  = flag.String("lakehouse.s3.endpoint", "", "Custom S3 endpoint (MinIO)")
 		s3AccessKey = flag.String("lakehouse.s3.access-key", "", "S3 access key")
 		s3SecretKey = flag.String("lakehouse.s3.secret-key", "", "S3 secret key")
 		s3PathStyle = flag.Bool("lakehouse.s3.force-path-style", false, "Use path-style S3 URLs")
-		topology   = flag.String("lakehouse.topology", "", "Deployment topology: auto, storage-node, direct, loki-proxy")
+		topology    = flag.String("lakehouse.topology", "", "Deployment topology: auto, storage-node, direct, loki-proxy")
 		hotBoundary = flag.String("lakehouse.hot-boundary", "", "Manual hot boundary override (e.g., 7d)")
-		listenAddr = flag.String("httpListenAddr", "", "HTTP listen address (auto-set from mode)")
-		logLevel   = flag.String("loggerLevel", "INFO", "Log level: DEBUG, INFO, WARN, ERROR")
+		listenAddr  = flag.String("httpListenAddr", "", "HTTP listen address (auto-set from mode)")
+		logLevel    = flag.String("loggerLevel", "INFO", "Log level: DEBUG, INFO, WARN, ERROR")
 	)
 	flag.Parse()
 
@@ -119,7 +119,7 @@ func main() {
 	logger.Info("victoria-lakehouse stopped")
 }
 
-func newMux(cfg *config.Config, store storage.Storage, sm *startup.Manager) *http.ServeMux {
+func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -137,16 +137,28 @@ func newMux(cfg *config.Config, store storage.Storage, sm *startup.Manager) *htt
 		}
 	})
 
+	m := store.Manifest()
 	mux.HandleFunc("/manifest/range", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"minTime":    0,
-			"maxTime":    0,
-			"minDate":    "",
-			"maxDate":    "",
-			"totalFiles": 0,
-			"totalBytes": 0,
-		})
+		minT := m.MinTime()
+		maxT := m.MaxTime()
+		resp := map[string]any{
+			"minTime":    minT.UnixNano(),
+			"maxTime":    maxT.UnixNano(),
+			"totalFiles": m.TotalFiles(),
+			"totalBytes": m.TotalBytes(),
+		}
+		if !minT.IsZero() {
+			resp["minDate"] = minT.Format("2006-01-02")
+		} else {
+			resp["minDate"] = ""
+		}
+		if !maxT.IsZero() {
+			resp["maxDate"] = maxT.Format("2006-01-02")
+		} else {
+			resp["maxDate"] = ""
+		}
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 
 	mux.HandleFunc("/lakehouse/info", func(w http.ResponseWriter, r *http.Request) {
@@ -160,20 +172,21 @@ func newMux(cfg *config.Config, store storage.Storage, sm *startup.Manager) *htt
 		})
 	})
 
+	isHandler := internalselect.NewHandler(store, sm.Logger(), cfg.Query.Timeout)
+	isHandler.Register(mux)
+
+	if ph := store.PeerHandler(); ph != nil {
+		mux.Handle("/internal/cache/", ph)
+	}
+
 	return mux
 }
 
 func runStartup(sm *startup.Manager, cfg *config.Config, logger *slog.Logger) {
 	sm.SetPhase(startup.PhaseDiskRecovery)
-
-	// Phase 1: Load persisted state from disk
-	// TODO: load manifest, label index, footers from cfg.Manifest.PersistPath
 	logger.Info("disk recovery complete (stub)")
 
 	sm.SetPhase(startup.PhaseS3Refresh)
-
-	// Phase 2: Refresh from S3
-	// TODO: incremental S3 ListObjects, download footers/blooms
 	logger.Info("S3 refresh complete (stub)")
 
 	sm.SetPhase(startup.PhaseReady)
