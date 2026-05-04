@@ -3,18 +3,29 @@
 package e2e
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"testing"
 	"time"
 )
 
-const (
-	logsBaseURL   = "http://localhost:19428"
-	tracesBaseURL = "http://localhost:20428"
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+var (
+	logsBaseURL   = envOrDefault("LOGS_BASE_URL", "http://localhost:19428")
+	tracesBaseURL = envOrDefault("TRACES_BASE_URL", "http://localhost:20428")
+	lokiProxyURL  = envOrDefault("LOKI_PROXY_URL", "http://localhost:3100")
+	vlselectURL   = envOrDefault("VLSELECT_URL", "http://localhost:9471")
 )
 
 // httpGet performs an HTTP GET and returns the response, failing the test on error.
@@ -80,6 +91,17 @@ func httpGetAllowStatus(t *testing.T, baseURL, path string, params url.Values, a
 	resp.Body.Close()
 	t.Fatalf("GET %s returned unexpected status %d (allowed: %v): %s", u, resp.StatusCode, allowedStatuses, string(body))
 	return nil
+}
+
+// httpPost performs an HTTP POST and returns the response, failing the test on error.
+func httpPost(t *testing.T, baseURL, path string, contentType string, body []byte) *http.Response {
+	t.Helper()
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Post(baseURL+path, contentType, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST %s%s failed: %v", baseURL, path, err)
+	}
+	return resp
 }
 
 // mustParseJSON parses JSON data into a map, failing the test on error.
