@@ -1,12 +1,14 @@
 name: victoria-lakehouse
 
+networks:
+  lakehouse-net:
+    driver: bridge
+
 services:
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
-    ports:
-      - "9000:9000"
-      - "9001:9001"
+    networks: [lakehouse-net]
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
@@ -21,12 +23,29 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    networks: [lakehouse-net]
     entrypoint: >
       /bin/sh -c "
       mc alias set local http://minio:9000 minioadmin minioadmin &&
       mc mb local/obs-archive --ignore-existing &&
       echo 'MinIO bucket ready'
       "
+
+  victorialogs:
+    image: victoriametrics/victoria-logs:v1.20.0-victorialogs
+    command:
+      - "-storageDataPath=/data"
+      - "-retentionPeriod=7d"
+      - "-loggerLevel=INFO"
+    networks: [lakehouse-net]
+    volumes:
+      - vl-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   datagen-seed:
     build:
@@ -35,6 +54,9 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
+      victorialogs:
+        condition: service_healthy
+    networks: [lakehouse-net]
     command:
       - "--endpoint=http://minio:9000"
       - "--bucket=obs-archive"
@@ -43,6 +65,8 @@ services:
       - "--logs=5000"
       - "--traces=1000"
       - "--hours-back=48"
+      - "--dual-write"
+      - "--vl-endpoint=http://victorialogs:9428"
 
   datagen-continuous:
     build:
@@ -52,6 +76,7 @@ services:
       datagen-seed:
         condition: service_completed_successfully
     restart: unless-stopped
+    networks: [lakehouse-net]
     command:
       - "--endpoint=http://minio:9000"
       - "--bucket=obs-archive"
@@ -61,6 +86,8 @@ services:
       - "--traces=200"
       - "--hours-back=1"
       - "--interval=30s"
+      - "--dual-write"
+      - "--vl-endpoint=http://victorialogs:9428"
 
   lakehouse-logs:
     build:
@@ -69,6 +96,7 @@ services:
     depends_on:
       datagen-seed:
         condition: service_completed_successfully
+    networks: [lakehouse-net]
     command:
       - "-lakehouse.mode=logs"
       - "-lakehouse.s3.bucket=obs-archive"
@@ -78,8 +106,6 @@ services:
       - "-lakehouse.s3.force-path-style=true"
       - "-lakehouse.manifest.refresh-interval=30s"
       - "-loggerLevel=DEBUG"
-    ports:
-      - "19428:9428"
     volumes:
       - lakehouse-cache-logs:/data/lakehouse
     healthcheck:
@@ -96,6 +122,7 @@ services:
     depends_on:
       datagen-seed:
         condition: service_completed_successfully
+    networks: [lakehouse-net]
     command:
       - "-lakehouse.mode=traces"
       - "-lakehouse.s3.bucket=obs-archive"
@@ -105,8 +132,6 @@ services:
       - "-lakehouse.s3.force-path-style=true"
       - "-lakehouse.manifest.refresh-interval=30s"
       - "-loggerLevel=DEBUG"
-    ports:
-      - "20428:10428"
     volumes:
       - lakehouse-cache-traces:/data/lakehouse
     healthcheck:
@@ -116,10 +141,46 @@ services:
       retries: 10
       start_period: 10s
 
+  vlselect:
+    image: victoriametrics/victoria-logs:v1.20.0-victorialogs
+    command:
+      - "-storageNode=victorialogs:9428"
+      - "-storageNode=lakehouse-logs:9428"
+      - "-httpListenAddr=:9471"
+      - "-loggerLevel=INFO"
+    depends_on:
+      victorialogs:
+        condition: service_healthy
+      lakehouse-logs:
+        condition: service_healthy
+    networks: [lakehouse-net]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9471/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  loki-vl-proxy:
+    image: ghcr.io/reliablyobserve/loki-vl-proxy:latest
+    environment:
+      BACKEND_URL: "http://lakehouse-logs:9428"
+    depends_on:
+      lakehouse-logs:
+        condition: service_healthy
+    networks: [lakehouse-net]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3100/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
   grafana:
     image: grafana/grafana:latest
     ports:
-      - "3000:3000"
+      - "3003:3000"
+    networks: [lakehouse-net]
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
@@ -135,6 +196,7 @@ services:
         condition: service_healthy
 
 volumes:
+  vl-data: {}
   lakehouse-cache-logs: {}
   lakehouse-cache-traces: {}
   grafana-data: {}
