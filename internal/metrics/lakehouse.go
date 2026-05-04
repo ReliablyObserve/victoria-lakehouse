@@ -48,6 +48,9 @@ var (
 		[]float64{0.1, 0.5, 1, 5, 10, 30, 60})
 	DiscoveryHotBoundaryDays = NewFloatGauge("lakehouse_discovery_hot_boundary_days")
 	DiscoveryGapDays         = NewFloatGauge("lakehouse_discovery_hot_boundary_gap_days")
+	ManifestPushTotal        = NewCounter("lakehouse_manifest_push_total")
+	ManifestPushPeers        = NewGauge("lakehouse_manifest_push_peers")
+	ManifestPushErrorsTotal  = NewCounter("lakehouse_manifest_push_errors_total")
 )
 
 // Parquet engine metrics
