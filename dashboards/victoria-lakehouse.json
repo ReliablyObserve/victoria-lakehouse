@@ -1,0 +1,370 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Overview",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": { "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0 }] } },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 3, "x": 0, "y": 1 },
+      "id": 2,
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Ready",
+      "type": "stat",
+      "targets": [{ "expr": "lakehouse_ready{instance=~\"$instance\"}", "legendFormat": "" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 3, "x": 3, "y": 1 },
+      "id": 3,
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Startup Time",
+      "type": "stat",
+      "targets": [{ "expr": "lakehouse_startup_total_seconds{instance=~\"$instance\"}", "legendFormat": "" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": { "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 3, "x": 6, "y": 1 },
+      "id": 4,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Manifest Files",
+      "type": "stat",
+      "targets": [{ "expr": "lakehouse_manifest_files{instance=~\"$instance\"}", "legendFormat": "" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 3, "x": 9, "y": 1 },
+      "id": 5,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Manifest Bytes",
+      "type": "stat",
+      "targets": [{ "expr": "lakehouse_manifest_bytes{instance=~\"$instance\"}", "legendFormat": "" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": { "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 3, "x": 12, "y": 1 },
+      "id": 6,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Active Queries",
+      "type": "stat",
+      "targets": [{ "expr": "lakehouse_concurrent_select_current{instance=~\"$instance\"}", "legendFormat": "" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 3, "x": 15, "y": 1 },
+      "id": 7,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Insert Rate",
+      "type": "stat",
+      "targets": [{ "expr": "rate(lakehouse_insert_rows_total{instance=~\"$instance\"}[5m])", "legendFormat": "" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 3, "x": 18, "y": 1 },
+      "id": 8,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "WAL Size",
+      "type": "stat",
+      "targets": [{ "expr": "lakehouse_insert_wal_bytes{instance=~\"$instance\"}", "legendFormat": "" }]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 10,
+      "title": "RED (Rate / Errors / Duration)",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10, "stacking": { "mode": "normal" } } } },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 6 },
+      "id": 11,
+      "title": "Request Rate",
+      "type": "timeseries",
+      "targets": [{ "expr": "sum by (path) (rate(lakehouse_http_requests_total{instance=~\"$instance\"}[5m]))", "legendFormat": "{{path}}" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 6 },
+      "id": 12,
+      "title": "Error Rate",
+      "type": "timeseries",
+      "targets": [{ "expr": "sum by (path) (rate(lakehouse_http_errors_total{instance=~\"$instance\"}[5m]))", "legendFormat": "{{path}}" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 6 },
+      "id": 13,
+      "title": "Query Duration (p50 / p95 / p99)",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(lakehouse_query_duration_seconds_bucket{instance=~\"$instance\"}[5m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(lakehouse_query_duration_seconds_bucket{instance=~\"$instance\"}[5m])) by (le))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum(rate(lakehouse_query_duration_seconds_bucket{instance=~\"$instance\"}[5m])) by (le))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "id": 20,
+      "title": "S3",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10, "stacking": { "mode": "normal" } } } },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 15 },
+      "id": 21,
+      "title": "S3 Request Rate",
+      "type": "timeseries",
+      "targets": [{ "expr": "sum by (op) (rate(lakehouse_s3_requests_total{instance=~\"$instance\"}[5m]))", "legendFormat": "{{op}}" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 15 },
+      "id": 22,
+      "title": "S3 Latency (p50 / p95)",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(lakehouse_s3_request_duration_seconds_bucket{instance=~\"$instance\"}[5m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(lakehouse_s3_request_duration_seconds_bucket{instance=~\"$instance\"}[5m])) by (le))", "legendFormat": "p95" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "Bps", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 15 },
+      "id": 23,
+      "title": "S3 Throughput",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "rate(lakehouse_s3_bytes_read_total{instance=~\"$instance\"}[5m])", "legendFormat": "read" },
+        { "expr": "rate(lakehouse_insert_bytes_uploaded_total{instance=~\"$instance\"}[5m])", "legendFormat": "write" }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "id": 30,
+      "title": "Cache",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10, "stacking": { "mode": "normal" } } } },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
+      "id": 31,
+      "title": "Cache Hits by Tier",
+      "type": "timeseries",
+      "targets": [{ "expr": "sum by (tier) (rate(lakehouse_cache_hits_total{instance=~\"$instance\"}[5m]))", "legendFormat": "{{tier}}" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10, "stacking": { "mode": "normal" } } } },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
+      "id": 32,
+      "title": "Cache Misses by Tier",
+      "type": "timeseries",
+      "targets": [{ "expr": "sum by (tier) (rate(lakehouse_cache_misses_total{instance=~\"$instance\"}[5m]))", "legendFormat": "{{tier}}" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 24 },
+      "id": 33,
+      "title": "Cache Size",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "lakehouse_cache_memory_bytes{instance=~\"$instance\"}", "legendFormat": "L1 memory" },
+        { "expr": "lakehouse_cache_disk_bytes{instance=~\"$instance\"}", "legendFormat": "L2 disk" }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
+      "id": 40,
+      "title": "Parquet Engine",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10, "stacking": { "mode": "normal" } } } },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 33 },
+      "id": 41,
+      "title": "Row Groups Skipped",
+      "type": "timeseries",
+      "targets": [{ "expr": "sum by (reason) (rate(lakehouse_parquet_row_groups_skipped_total{instance=~\"$instance\"}[5m]))", "legendFormat": "{{reason}}" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 33 },
+      "id": 42,
+      "title": "Row Groups Scanned vs Skipped",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "rate(lakehouse_parquet_row_groups_scanned_total{instance=~\"$instance\"}[5m])", "legendFormat": "scanned" },
+        { "expr": "sum(rate(lakehouse_parquet_row_groups_skipped_total{instance=~\"$instance\"}[5m]))", "legendFormat": "skipped" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 33 },
+      "id": 43,
+      "title": "Files Opened",
+      "type": "timeseries",
+      "targets": [{ "expr": "rate(lakehouse_parquet_files_opened_total{instance=~\"$instance\"}[5m])", "legendFormat": "files/s" }]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 41 },
+      "id": 50,
+      "title": "Insert / Write Path",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 42 },
+      "id": 51,
+      "title": "Insert Rate (rows/s)",
+      "type": "timeseries",
+      "targets": [{ "expr": "rate(lakehouse_insert_rows_total{instance=~\"$instance\"}[5m])", "legendFormat": "rows/s" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 42 },
+      "id": 52,
+      "title": "Rows Buffered / Partitions Active",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "lakehouse_insert_rows_buffered{instance=~\"$instance\"}", "legendFormat": "rows buffered" },
+        { "expr": "lakehouse_insert_partitions_active{instance=~\"$instance\"}", "legendFormat": "partitions" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 42 },
+      "id": 53,
+      "title": "Flush Duration (p50 / p95)",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(lakehouse_insert_flush_duration_seconds_bucket{instance=~\"$instance\"}[5m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(lakehouse_insert_flush_duration_seconds_bucket{instance=~\"$instance\"}[5m])) by (le))", "legendFormat": "p95" }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 50 },
+      "id": 60,
+      "title": "Manifest & Discovery",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 51 },
+      "id": 61,
+      "title": "Manifest Fast Path (no-data short-circuit)",
+      "type": "timeseries",
+      "targets": [{ "expr": "rate(lakehouse_manifest_fast_path_total{instance=~\"$instance\"}[5m])", "legendFormat": "fast path/s" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "d", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 51 },
+      "id": 62,
+      "title": "Hot Boundary Gap",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "lakehouse_discovery_hot_boundary_days{instance=~\"$instance\"}", "legendFormat": "hot boundary" },
+        { "expr": "lakehouse_discovery_hot_boundary_gap_days{instance=~\"$instance\"}", "legendFormat": "gap" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 51 },
+      "id": 63,
+      "title": "Singleflight Dedup",
+      "type": "timeseries",
+      "targets": [{ "expr": "rate(lakehouse_cache_singleflight_dedup_total{instance=~\"$instance\"}[5m])", "legendFormat": "dedup/s" }]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["victoria-lakehouse"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "type": "datasource"
+      },
+      {
+        "current": {},
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "definition": "label_values(lakehouse_info, instance)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "instance",
+        "query": { "query": "label_values(lakehouse_info, instance)" },
+        "refresh": 2,
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "Victoria Lakehouse",
+  "uid": "victoria-lakehouse",
+  "version": 1
+}

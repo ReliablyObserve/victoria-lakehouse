@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
@@ -247,6 +249,8 @@ func (m *Manifest) AddFile(partition string, fi FileInfo) {
 	m.files[partition] = append(m.files[partition], fi)
 	m.totalFiles++
 	m.totalBytes += fi.Size
+	metrics.ManifestFiles.Set(int64(m.totalFiles))
+	metrics.ManifestBytes.Set(m.totalBytes)
 
 	t, err := parsePartitionTime(partition)
 	if err != nil {

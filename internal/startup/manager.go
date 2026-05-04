@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"sync/atomic"
 	"time"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
 type Phase int32
@@ -61,6 +63,7 @@ func (m *Manager) IsReady() bool {
 func (m *Manager) SetPhase(p Phase) {
 	old := Phase(m.phase.Swap(int32(p)))
 	m.logger.Info("startup phase transition", "from", old.String(), "to", p.String(), "elapsed", time.Since(m.startTime))
+	metrics.StartupPhase.Set(int64(p))
 
 	switch p {
 	case PhaseDiskRecovery:
@@ -71,6 +74,8 @@ func (m *Manager) SetPhase(p Phase) {
 		m.totalTime = time.Since(m.startTime)
 		m.refreshTime = m.totalTime - m.recoveryTime
 		m.ready.Store(true)
+		metrics.Ready.Set(1)
+		metrics.StartupTotalSeconds.Set(m.totalTime.Seconds())
 		m.logger.Info("startup complete",
 			"recovery_seconds", m.recoveryTime.Seconds(),
 			"refresh_seconds", m.refreshTime.Seconds(),

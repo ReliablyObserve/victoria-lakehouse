@@ -16,6 +16,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/discovery"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -177,6 +178,14 @@ func (s *Storage) CanWriteData() error {
 }
 
 func (s *Storage) RunQuery(ctx context.Context, qctx *storage.QueryContext, writeBlock storage.WriteDataBlockFunc) error {
+	queryStart := time.Now()
+	metrics.ConcurrentSelects.Inc()
+	defer func() {
+		metrics.ConcurrentSelects.Dec()
+		elapsed := time.Since(queryStart).Seconds()
+		metrics.QueryDuration.Observe(elapsed)
+	}()
+
 	if boundary := s.discovery.GetHotBoundary(); boundary != nil {
 		if time.Unix(0, qctx.StartNs).After(boundary.MinTime) && time.Unix(0, qctx.EndNs).Before(boundary.MaxTime) {
 			s.logger.Debug("hot boundary suppression: query within hot range",
@@ -190,6 +199,7 @@ func (s *Storage) RunQuery(ctx context.Context, qctx *storage.QueryContext, writ
 	}
 
 	if !s.manifest.HasDataForRange(qctx.StartNs, qctx.EndNs) {
+		metrics.ManifestFastPathTotal.Inc()
 		s.logger.Debug("manifest fast path: no data for range",
 			"start", time.Unix(0, qctx.StartNs),
 			"end", time.Unix(0, qctx.EndNs),
@@ -242,6 +252,9 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, qctx *sto
 		return fmt.Errorf("get file data %s: %w", fi.Key, err)
 	}
 
+	metrics.ParquetFilesOpened.Inc()
+	metrics.ParquetColumnBytesRead.Add(len(data))
+
 	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return fmt.Errorf("open parquet file %s: %w", fi.Key, err)
@@ -258,13 +271,16 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, qctx *sto
 		}
 
 		if tsIdx >= 0 && !rowGroupMatchesTimeRange(rg, tsIdx, qctx.StartNs, qctx.EndNs) {
+			metrics.ParquetRowGroupsSkipped.Inc("stats")
 			continue
 		}
 
 		if s.bloomFilterSkip(f, rg, bloomChecks) {
+			metrics.ParquetRowGroupsSkipped.Inc("bloom")
 			continue
 		}
 
+		metrics.ParquetRowGroupsScanned.Inc()
 		if err := s.readRowGroup(f, rg, qctx, writeBlock); err != nil {
 			return err
 		}
@@ -275,36 +291,50 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, qctx *sto
 
 func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]byte, error) {
 	if data, ok := s.memCache.Get(key); ok {
+		metrics.CacheHitsTotal.Inc("L1")
 		return data, nil
 	}
+	metrics.CacheMissesTotal.Inc("L1")
 
 	if s.diskCache != nil {
 		if path, ok := s.diskCache.Get(key); ok {
 			data, err := os.ReadFile(path)
 			if err == nil {
+				metrics.CacheHitsTotal.Inc("L2")
 				s.memCache.Put(key, data)
 				return data, nil
 			}
 			s.diskCache.Delete(key)
 		}
+		metrics.CacheMissesTotal.Inc("L2")
 	}
 
 	if s.peerCache != nil {
 		peer, isLocal := s.peerCache.Lookup(key)
 		if !isLocal {
+			metrics.PeerRequestsTotal.Inc("fetch")
 			peerData, found, peerErr := s.peerCache.Fetch(ctx, peer, key)
 			if peerErr == nil && found {
+				metrics.CacheHitsTotal.Inc("L3")
+				metrics.PeerHitsTotal.Inc()
+				metrics.PeerBytesTransferred.Add("rx", len(peerData))
 				s.memCache.Put(key, peerData)
 				return peerData, nil
 			}
+			metrics.CacheMissesTotal.Inc("L3")
 		}
 	}
 
-	data, err, _ := s.sfGroup.Do(key, func() ([]byte, error) {
-		d, err := s.pool.Download(ctx, key)
-		if err != nil {
-			return nil, err
+	data, err, shared := s.sfGroup.Do(key, func() ([]byte, error) {
+		s3Start := time.Now()
+		metrics.S3RequestsTotal.Inc("GET")
+		d, dlErr := s.pool.Download(ctx, key)
+		metrics.S3RequestDuration.Observe(time.Since(s3Start).Seconds())
+		if dlErr != nil {
+			metrics.S3ErrorsTotal.Inc("GET")
+			return nil, dlErr
 		}
+		metrics.S3BytesReadTotal.Add(len(d))
 
 		if s.diskCache != nil {
 			if _, putErr := s.diskCache.Put(key, d); putErr != nil {
@@ -320,6 +350,9 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 	})
 	if err != nil {
 		return nil, err
+	}
+	if shared {
+		metrics.CacheSingleflightDedup.Inc()
 	}
 
 	s.memCache.Put(key, data)

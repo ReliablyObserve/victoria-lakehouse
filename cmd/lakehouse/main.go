@@ -15,6 +15,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/insertapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/internalselect"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/selectapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3"
@@ -129,6 +130,18 @@ func main() {
 
 func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager) *http.ServeMux {
 	mux := http.NewServeMux()
+
+	metrics.NewInfoGauge("lakehouse_info", map[string]string{
+		"version":  version,
+		"mode":     string(cfg.Mode),
+		"topology": string(cfg.Topology),
+		"role":     string(cfg.Role),
+	})
+
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		metrics.Default().WritePrometheus(w)
+	})
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
