@@ -29,10 +29,17 @@ type Profile struct {
 	StreamFields []string // fields that define a stream identity
 }
 
+type ExtraPromoted struct {
+	Name  string
+	Type  string
+	Bloom bool
+}
+
 type Registry struct {
-	profile    Profile
-	byInternal map[string]*FieldMapping
-	byParquet  map[string]*FieldMapping
+	profile        Profile
+	extraPromoted  []ExtraPromoted
+	byInternal     map[string]*FieldMapping
+	byParquet      map[string]*FieldMapping
 }
 
 var LogsProfile = Profile{
@@ -78,18 +85,38 @@ var TracesProfile = Profile{
 	StreamFields: []string{"resource_attr:service.name", "name"},
 }
 
-func NewRegistry(profile Profile) *Registry {
+func NewRegistry(profile Profile, extra ...ExtraPromoted) *Registry {
 	r := &Registry{
-		profile:    profile,
-		byInternal: make(map[string]*FieldMapping, len(profile.Promoted)),
-		byParquet:  make(map[string]*FieldMapping, len(profile.Promoted)),
+		profile:       profile,
+		extraPromoted: extra,
+		byInternal:    make(map[string]*FieldMapping, len(profile.Promoted)+len(extra)),
+		byParquet:     make(map[string]*FieldMapping, len(profile.Promoted)+len(extra)),
 	}
 	for i := range profile.Promoted {
 		m := &profile.Promoted[i]
 		r.byInternal[m.InternalName] = m
 		r.byParquet[m.ParquetColumn] = m
 	}
+	for _, ep := range extra {
+		m := &FieldMapping{
+			ParquetColumn: ep.Name,
+			InternalName:  ep.Name,
+			Origin:        OriginPromoted,
+			HasBloom:      ep.Bloom,
+		}
+		r.byInternal[ep.Name] = m
+		r.byParquet[ep.Name] = m
+	}
 	return r
+}
+
+func (r *Registry) ExtraPromoted() []ExtraPromoted {
+	return r.extraPromoted
+}
+
+func (r *Registry) IsPromoted(fieldName string) bool {
+	_, ok := r.byInternal[fieldName]
+	return ok
 }
 
 func (r *Registry) ResolveToParquet(internalName string) *FieldMapping {

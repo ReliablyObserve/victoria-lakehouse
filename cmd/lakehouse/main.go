@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/insertapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/internalselect"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/selectapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
@@ -36,6 +37,8 @@ func main() {
 		s3PathStyle = flag.Bool("lakehouse.s3.force-path-style", false, "Use path-style S3 URLs")
 		topology    = flag.String("lakehouse.topology", "", "Deployment topology: auto, storage-node, direct, loki-proxy")
 		hotBoundary = flag.String("lakehouse.hot-boundary", "", "Manual hot boundary override (e.g., 7d)")
+		role             = flag.String("lakehouse.role", "", "Role: all, insert, select (default: all)")
+		flushInterval    = flag.Duration("lakehouse.insert.flush-interval", 0, "Insert flush interval (e.g., 10s)")
 		listenAddr       = flag.String("httpListenAddr", "", "HTTP listen address (auto-set from mode)")
 		logLevel         = flag.String("loggerLevel", "INFO", "Log level: DEBUG, INFO, WARN, ERROR")
 		manifestRefresh  = flag.Duration("lakehouse.manifest.refresh-interval", 0, "Manifest refresh interval (e.g., 30s)")
@@ -50,8 +53,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	applyFlags(cfg, *mode, *s3Bucket, *s3Region, *s3Prefix, *s3Endpoint,
-		*s3AccessKey, *s3SecretKey, *s3PathStyle, *topology, *hotBoundary, *manifestRefresh)
+	applyFlags(cfg, *mode, *role, *s3Bucket, *s3Region, *s3Prefix, *s3Endpoint,
+		*s3AccessKey, *s3SecretKey, *s3PathStyle, *topology, *hotBoundary, *manifestRefresh, *flushInterval)
 
 	if err := cfg.Validate(); err != nil {
 		logger.Error("invalid config", "error", err)
@@ -66,6 +69,7 @@ func main() {
 	logger.Info("starting victoria-lakehouse",
 		"version", version,
 		"mode", cfg.Mode,
+		"role", cfg.Role,
 		"topology", cfg.Topology,
 		"listen", addr,
 		"s3_bucket", cfg.S3.Bucket,
@@ -80,6 +84,8 @@ func main() {
 		logger.Error("failed to initialize storage", "error", err)
 		os.Exit(1)
 	}
+
+	store.StartWriter()
 
 	mux := newMux(cfg, store, sm)
 
@@ -156,11 +162,22 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager) *
 		})
 	})
 
-	isHandler := internalselect.NewHandler(store, sm.Logger(), cfg.Query.Timeout)
-	isHandler.Register(mux)
+	if cfg.SelectEnabled() {
+		isHandler := internalselect.NewHandler(store, sm.Logger(), cfg.Query.Timeout)
+		isHandler.Register(mux)
 
-	publicHandler := selectapi.NewHandler(store, sm.Logger(), cfg)
-	publicHandler.Register(mux)
+		publicHandler := selectapi.NewHandler(store, sm.Logger(), cfg)
+		publicHandler.Register(mux)
+	}
+
+	if cfg.InsertEnabled() {
+		var bq insertapi.BufferQuerier
+		if w := store.Writer(); w != nil {
+			bq = w
+		}
+		ih := insertapi.NewHandler(store, sm.Logger(), cfg, bq)
+		ih.Register(mux)
+	}
 
 	if ph := store.PeerHandler(); ph != nil {
 		mux.Handle("/internal/cache/", ph)
@@ -208,10 +225,16 @@ func runStartup(sm *startup.Manager, cfg *config.Config, logger *slog.Logger, st
 	}
 }
 
-func applyFlags(cfg *config.Config, mode, bucket, region, prefix, endpoint,
-	accessKey, secretKey string, pathStyle bool, topology, hotBoundary string, manifestRefresh time.Duration) {
+func applyFlags(cfg *config.Config, mode, role, bucket, region, prefix, endpoint,
+	accessKey, secretKey string, pathStyle bool, topology, hotBoundary string, manifestRefresh time.Duration, flushInterval time.Duration) {
 	if mode != "" {
 		cfg.Mode = config.Mode(mode)
+	}
+	if role != "" {
+		cfg.Role = config.Role(role)
+	}
+	if flushInterval > 0 {
+		cfg.Insert.FlushInterval = flushInterval
 	}
 	if bucket != "" {
 		cfg.S3.Bucket = bucket

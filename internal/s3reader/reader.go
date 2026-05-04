@@ -1,6 +1,7 @@
 package s3reader
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -101,6 +102,23 @@ func (r *S3ReaderAt) Size() int64 {
 
 func (p *ClientPool) S3Client() *s3.Client {
 	return p.client
+}
+
+func (p *ClientPool) Upload(ctx context.Context, key string, data []byte) error {
+	_, err := p.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(p.bucket),
+		Key:         aws.String(key),
+		Body:        bytes.NewReader(data),
+		ContentType: aws.String("application/octet-stream"),
+	})
+	if err != nil {
+		return fmt.Errorf("s3 PutObject %s: %w", key, err)
+	}
+	return nil
+}
+
+func (p *ClientPool) Bucket() string {
+	return p.bucket
 }
 
 func (p *ClientPool) Download(ctx context.Context, key string) ([]byte, error) {

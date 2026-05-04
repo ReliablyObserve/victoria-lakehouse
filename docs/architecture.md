@@ -2,14 +2,25 @@
 
 ## Overview
 
-Victoria Lakehouse is a single Go binary that reimplements VL/VT select APIs backed by a Parquet/S3 backend (`ParquetS3Storage`). It serves the same HTTP endpoints and response formats as VL/VT, making it a drop-in cold storage tier.
+Victoria Lakehouse is a single Go binary that reimplements VL/VT APIs backed by a Parquet/S3 backend (`ParquetS3Storage`). It serves the same HTTP endpoints and response formats as VL/VT for both reads and writes, making it a drop-in cold storage tier.
 
 ```mermaid
 graph TD
     subgraph "Victoria Lakehouse Binary"
-        HTTP["HTTP Server<br/>14 VL/VT endpoints"]
-        API["Select API<br/>/select/logsql/* + Jaeger"]
-        IS["Internal Select<br/>/internal/select/*"]
+        HTTP["HTTP Server"]
+        
+        subgraph "Insert Path"
+            INS["Insert API<br/>/insert/jsonline<br/>/insert/loki/api/v1/push<br/>/insert/elasticsearch/_bulk"]
+            WAL["WAL<br/>(crash recovery)"]
+            BW["BatchWriter<br/>(per-partition buffers)"]
+            BB["Buffer Query<br/>/internal/buffer/query"]
+        end
+        
+        subgraph "Select Path"
+            API["Select API<br/>/select/logsql/* + Jaeger"]
+            IS["Internal Select<br/>/internal/select/*"]
+            BRIDGE["Buffer Bridge<br/>(fan-out to insert pods)"]
+        end
         
         subgraph "ParquetS3Storage"
             MF["Partition<br/>Manifest"]
@@ -29,9 +40,17 @@ graph TD
         DISC["Discovery<br/>Hot Boundary"]
     end
     
+    HTTP --> INS
     HTTP --> API
     HTTP --> IS
+    HTTP --> BB
+    INS --> WAL
+    WAL --> BW
+    BW -->|flush Parquet| S3R
+    BW -->|manifest.AddFile| MF
     API --> MF
+    API --> BRIDGE
+    BRIDGE -->|HTTP| BB
     IS --> MF
     MF --> QE
     QE --> SR
@@ -47,15 +66,19 @@ graph TD
     style MF fill:#2d6a4f,color:#fff
     style QE fill:#264653,color:#fff
     style S3 fill:#e76f51,color:#fff
+    style WAL fill:#e76f51,color:#fff
+    style INS fill:#5a189a,color:#fff
 ```
 
 ## Storage Interface
 
-Victoria Lakehouse implements VL's storage interface (11 methods):
+Victoria Lakehouse implements both read and write interfaces:
+
+### Read Interface
 
 | Method | Purpose |
 |---|---|
-| `RunQuery(qctx, writeBlock)` | Execute LogsQL query, stream results |
+| `RunQuery(qctx, writeBlock)` | Execute LogsQL query, stream results (S3 + buffer bridge) |
 | `GetFieldNames(qctx, filter)` | List field/column names |
 | `GetFieldValues(qctx, field, filter)` | List values for a field |
 | `GetStreamFieldNames(qctx, filter)` | List stream label names |
@@ -63,7 +86,16 @@ Victoria Lakehouse implements VL's storage interface (11 methods):
 | `GetStreams(qctx)` | List active streams |
 | `GetStreamIDs(qctx)` | List stream IDs |
 | `GetTenantIDs(qctx)` | List tenant IDs |
-| `DeleteRunTask` / `DeleteStopTask` / `DeleteActiveTasks` | No-op (read-only) |
+
+### Write Interface
+
+| Method | Purpose |
+|---|---|
+| `MustAddLogRows(rows)` | Buffer log rows (WAL + partition buffer + flush to S3) |
+| `MustAddTraceRows(rows)` | Buffer trace rows (WAL + partition buffer + flush to S3) |
+| `CanWriteData()` | Check S3 connectivity + WAL capacity |
+| `BufferedLogRows(start, end)` | Return unflushed log rows for buffer query bridge |
+| `BufferedTraceRows(start, end)` | Return unflushed trace rows for buffer query bridge |
 
 ## Query Execution Flow
 
@@ -476,27 +508,177 @@ flowchart LR
 
 Kubernetes `terminationGracePeriodSeconds`: 60s.
 
+## Write Path
+
+### Write-Ahead Log (WAL)
+
+The WAL provides crash recovery for the write path. Every row is appended to the WAL before being added to in-memory partition buffers.
+
+```
+Entry format: [4-byte LE length][1-byte mode ('L'=log, 'T'=trace)][gob-encoded row]
+```
+
+On startup, `ReplayWAL()` reads all entries and re-adds them to partition buffers. On successful flush to S3, the WAL is atomically truncated (tmp file + `os.Rename`).
+
+Configuration: `--lakehouse.insert.wal-enabled` (default true), `--lakehouse.insert.wal-dir`, `--lakehouse.insert.wal-max-bytes` (default 512MB).
+
+### Insert → Buffer → Flush Pipeline
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Insert as Insert API
+    participant WAL
+    participant Buffer as Partition Buffer
+    participant S3
+    participant Manifest
+
+    Client->>Insert: POST /insert/jsonline
+    Insert->>WAL: Append entries
+    Insert->>Buffer: AddLogRows (per-partition)
+    
+    alt Periodic flush or adaptive trigger
+        Buffer->>Buffer: Snapshot & swap
+        Buffer->>S3: PutObject (Parquet + ZSTD)
+        S3-->>Buffer: OK
+        Buffer->>Manifest: AddFile(path, labels, time range)
+        Buffer->>WAL: Truncate
+    end
+```
+
+### Adaptive File Sizing
+
+Instead of a fixed row count trigger, the flush pipeline estimates per-partition byte size based on previously flushed files. When a partition's estimated size approaches `--lakehouse.insert.target-file-size` (default 128MB), an immediate flush is triggered — producing Parquet files of consistent, optimal size.
+
+### Buffer Query Bridge
+
+Select pods query insert pods for unflushed data, enabling zero-delay reads:
+
+```mermaid
+sequenceDiagram
+    participant Grafana
+    participant Select as Select Pod
+    participant S3
+    participant Insert1 as Insert Pod 1
+    participant Insert2 as Insert Pod 2
+
+    Grafana->>Select: LogsQL query
+    
+    par S3 query
+        Select->>S3: Parquet files (via manifest)
+        S3-->>Select: historical data
+    and Buffer fan-out
+        Select->>Insert1: GET /internal/buffer/query?start=X&end=Y&mode=logs
+        Insert1-->>Select: NDJSON buffered rows
+        Select->>Insert2: GET /internal/buffer/query?start=X&end=Y&mode=logs
+        Insert2-->>Select: NDJSON buffered rows
+    end
+    
+    Select->>Select: Merge S3 + buffer results
+    Select-->>Grafana: Streamed response
+```
+
+Endpoint errors are silently ignored (graceful degradation). Insert pod discovery uses headless service DNS (`--lakehouse.select.insert-headless-service`).
+
+### Manifest Label Pruning
+
+During flush, label values are extracted from the row batch and stored in `FileInfo.Labels`. At query time, the manifest can skip files whose labels don't match the query predicates — without opening Parquet files. This is level 2 of the five-level prune cascade (after time-range pruning).
+
+## Production Architecture (Hot + Cold + Analytics)
+
+```mermaid
+graph TB
+    subgraph "Data Collection"
+        APP["Applications<br/>(OTEL SDK)"] --> OC["OTEL Collector<br/>(traces)"]
+        K8S["Kubernetes<br/>Pods"] --> VA["vlagent<br/>(logs)"]
+        INFRA["Infrastructure"] --> VA
+    end
+
+    subgraph "Hot Tier — 1 Month Retention (EBS)"
+        VA -->|mirror 1| VLI["vlinsert"]
+        VLI --> VLSTO["vlstorage<br/>(multi-AZ EBS)"]
+        OC -->|export 1| VTI["vtinsert"]
+        VTI --> VTSTO["vtstorage<br/>(multi-AZ EBS)"]
+        VLSEL["vlselect"]
+        VTSEL["vtselect"]
+        VLSEL --> VLSTO
+        VTSEL --> VTSTO
+    end
+
+    subgraph "Cold Tier — Unlimited Retention (S3)"
+        VA -->|mirror 2| LHI_L["lakehouse-insert<br/>mode=logs"]
+        OC -->|export 2| LHI_T["lakehouse-insert<br/>mode=traces"]
+        LHI_L --> WAL_L["WAL"]
+        LHI_T --> WAL_T["WAL"]
+        WAL_L --> BUF_L["Buffers"]
+        WAL_T --> BUF_T["Buffers"]
+        BUF_L -->|flush| S3[("S3 Parquet<br/>(11 nines)")]
+        BUF_T -->|flush| S3
+        LHS_L["lakehouse-select<br/>mode=logs"]
+        LHS_T["lakehouse-select<br/>mode=traces"]
+        LHS_L --> S3
+        LHS_T --> S3
+        LHS_L -.->|buffer query| BUF_L
+        LHS_T -.->|buffer query| BUF_T
+    end
+
+    subgraph "Query Path"
+        GF["Grafana"]
+        GF --> VLSEL
+        GF --> VTSEL
+        VLSEL -->|cold fan-out| LHS_L
+        VTSEL -->|cold fan-out| LHS_T
+    end
+
+    subgraph "Analytics — Open Parquet"
+        DDB["DuckDB"] --> S3
+        TRINO["Trino"] --> S3
+        SPARK["Spark"] --> S3
+        CH["ClickHouse"] --> S3
+    end
+
+    style S3 fill:#e76f51,color:#fff
+    style LHI_L fill:#5a189a,color:#fff
+    style LHI_T fill:#5a189a,color:#fff
+    style LHS_L fill:#2d6a4f,color:#fff
+    style LHS_T fill:#2d6a4f,color:#fff
+    style VA fill:#264653,color:#fff
+    style OC fill:#264653,color:#fff
+```
+
+For detailed collector configurations (vlagent, OTEL Collector), DR scenarios, and Kubernetes deployment layouts, see [Deployment Architecture](deployment-architecture.md).
+
+For analytics tool setup (DuckDB, Trino, Spark, ClickHouse, Pandas), see [Analytics](analytics.md).
+
 ## Data Flow (Write + Read Path)
 
 ```mermaid
 flowchart TB
-    subgraph "Write Path (external)"
-        OTEL["OTEL Collector"] --> Vector["Vector / Archival"]
-        Vector --> PQ["Parquet + ZSTD"]
+    subgraph "Write Path (Lakehouse Insert)"
+        OTEL["OTEL Collector /<br/>Loki Push / ES Bulk"] --> INS["Lakehouse Insert<br/>/insert/*"]
+        INS --> WWAL["WAL"]
+        WWAL --> WBUF["Partition Buffers"]
+        WBUF -->|flush| PQ["Parquet + ZSTD"]
         PQ --> S3W[("S3 Bucket")]
+        PQ -->|manifest.AddFile| MAN["Partition<br/>Manifest"]
+    end
+
+    subgraph "Write Path (external)"
+        VEC["Vector / Archival<br/>(ETL)"] --> S3W
     end
     
-    subgraph "Read Path (Victoria Lakehouse)"
+    subgraph "Read Path (Lakehouse Select)"
         S3W --> MR["Manifest<br/>Refresh"]
-        MR --> MAN["Partition<br/>Manifest"]
+        MR --> MAN
         
         GF["Grafana"] --> VLS["vlselect"]
-        VLS --> LH["Victoria<br/>Lakehouse"]
+        VLS --> LH["Lakehouse<br/>Select"]
         LH --> MAN
         MAN --> QE["Query<br/>Engine"]
         QE --> CACHE["Cache<br/>L1→L2→L3"]
         CACHE --> S3R["S3 Range<br/>Reads"]
         S3R --> S3W
+        LH -.->|buffer query| WBUF
     end
 
     subgraph "Analytics (direct)"
@@ -507,4 +689,5 @@ flowchart TB
     
     style S3W fill:#e76f51,color:#fff
     style LH fill:#2d6a4f,color:#fff
+    style INS fill:#5a189a,color:#fff
 ```

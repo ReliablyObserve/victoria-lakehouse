@@ -1,0 +1,61 @@
+{{- if .Values.select.enabled }}
+{{- $port := include "victoria-lakehouse.port" (dict "context" . "servicePort" .Values.select.service.port) }}
+{{- $fullname := include "victoria-lakehouse.fullname" . }}
+{{- $component := "select" }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-select
+  labels:
+    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" $component) | nindent 4 }}
+    {{- with .Values.select.service.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- if or .Values.select.service.annotations .Values.global.commonAnnotations }}
+  annotations:
+    {{- with .Values.global.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.select.service.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  type: {{ .Values.select.service.type }}
+  ports:
+    - port: {{ $port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" $component) | nindent 4 }}
+{{- if .Values.select.headlessService.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-select-headless
+  labels:
+    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" $component) | nindent 4 }}
+  {{- if or .Values.select.headlessService.annotations .Values.global.commonAnnotations }}
+  annotations:
+    {{- with .Values.global.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.select.headlessService.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - port: {{ $port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" $component) | nindent 4 }}
+{{- end }}
+{{- end }}

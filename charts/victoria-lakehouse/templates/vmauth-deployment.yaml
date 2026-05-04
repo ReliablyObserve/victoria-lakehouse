@@ -1,0 +1,91 @@
+{{- if .Values.vmauth.enabled }}
+{{- $fullname := include "victoria-lakehouse.fullname" . }}
+{{- $component := "vmauth" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-vmauth
+  labels:
+    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" $component) | nindent 4 }}
+  {{- with .Values.global.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.vmauth.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" $component) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" $component) | nindent 8 }}
+        {{- with .Values.vmauth.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/vmauth-configmap.yaml") . | sha256sum }}
+        {{- with .Values.vmauth.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "victoria-lakehouse.podSecurityContext" (dict "context" . "override" .Values.vmauth.podSecurityContext) | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.vmauth.terminationGracePeriodSeconds }}
+      containers:
+        - name: vmauth
+          image: "{{ .Values.vmauth.image.repository }}:{{ .Values.vmauth.image.tag }}"
+          imagePullPolicy: {{ .Values.vmauth.image.pullPolicy }}
+          securityContext:
+            {{- include "victoria-lakehouse.containerSecurityContext" (dict "context" . "override" .Values.vmauth.securityContext) | nindent 12 }}
+          args:
+            - "-auth.config=/config/vmauth.yml"
+            - "-httpListenAddr=:{{ .Values.vmauth.service.port }}"
+            {{- range $key, $val := .Values.vmauth.extraArgs }}
+            - "-{{ $key }}={{ $val }}"
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.vmauth.service.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          {{- with .Values.vmauth.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $fullname }}-vmauth
+      {{- with .Values.vmauth.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.vmauth.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.vmauth.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

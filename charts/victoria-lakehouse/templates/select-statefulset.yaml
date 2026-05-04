@@ -1,0 +1,170 @@
+{{- if .Values.select.enabled }}
+{{- $port := include "victoria-lakehouse.port" (dict "context" . "servicePort" .Values.select.service.port) }}
+{{- $fullname := include "victoria-lakehouse.fullname" . }}
+{{- $component := "select" }}
+apiVersion: apps/v1
+{{- if .Values.select.persistence.enabled }}
+kind: StatefulSet
+{{- else }}
+kind: Deployment
+{{- end }}
+metadata:
+  name: {{ $fullname }}-select
+  labels:
+    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" $component) | nindent 4 }}
+  {{- with .Values.global.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.select.replicaCount }}
+  {{- if .Values.select.persistence.enabled }}
+  serviceName: {{ $fullname }}-select-headless
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" $component) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" $component) | nindent 8 }}
+        {{- with .Values.select.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.select.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.select.serviceAccount.create }}
+      serviceAccountName: {{ include "victoria-lakehouse.serviceAccountName" (dict "context" . "component" $component "sa" .Values.select.serviceAccount) }}
+      {{- end }}
+      securityContext:
+        {{- include "victoria-lakehouse.podSecurityContext" (dict "context" . "override" .Values.select.podSecurityContext) | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.select.terminationGracePeriodSeconds }}
+      {{- with .Values.select.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: lakehouse
+          image: {{ include "victoria-lakehouse.image" (dict "context" . "imageOverride" .Values.select.image) }}
+          imagePullPolicy: {{ include "victoria-lakehouse.imagePullPolicy" (dict "context" . "imageOverride" .Values.select.image) }}
+          securityContext:
+            {{- include "victoria-lakehouse.containerSecurityContext" (dict "context" . "override" .Values.select.securityContext) | nindent 12 }}
+          args:
+            - "--lakehouse.mode={{ .Values.mode }}"
+            - "--lakehouse.role=select"
+            {{- include "victoria-lakehouse.s3Args" . | nindent 12 }}
+            {{- include "victoria-lakehouse.discoveryArgs" . | nindent 12 }}
+            {{- include "victoria-lakehouse.commonArgs" . | nindent 12 }}
+            {{- if .Values.selectConfig.bufferQueryEnabled }}
+            - "--lakehouse.select.buffer-query-enabled=true"
+            - "--lakehouse.select.buffer-query-timeout={{ .Values.selectConfig.bufferQueryTimeout }}"
+            {{- $insertSvc := .Values.selectConfig.insertHeadlessService }}
+            {{- if and (not $insertSvc) .Values.insertComponent.enabled }}
+            {{- $insertSvc = printf "%s-insert-headless" $fullname }}
+            {{- end }}
+            {{- if $insertSvc }}
+            - "--lakehouse.select.insert-headless-service={{ $insertSvc }}"
+            {{- end }}
+            {{- end }}
+            {{- range $key, $val := .Values.select.extraArgs }}
+            - "--{{ $key }}={{ $val }}"
+            {{- end }}
+          {{- with .Values.select.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.select.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ $port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: {{ .Values.select.probe.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.select.probe.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.select.probe.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: {{ .Values.select.probe.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.select.probe.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.select.probe.readiness.failureThreshold }}
+          startupProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: {{ .Values.select.probe.startup.periodSeconds }}
+            failureThreshold: {{ .Values.select.probe.startup.failureThreshold }}
+          {{- with .Values.select.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: cache
+              mountPath: /data/lakehouse
+            {{- with .Values.select.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- with .Values.select.extraContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if not .Values.select.persistence.enabled }}
+      volumes:
+        - name: cache
+          emptyDir: {}
+        {{- with .Values.select.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- else }}
+      {{- with .Values.select.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- end }}
+      {{- with .Values.select.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.select.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.select.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.select.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.select.priorityClassName }}
+      priorityClassName: {{ .Values.select.priorityClassName }}
+      {{- end }}
+  {{- if .Values.select.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: cache
+      spec:
+        accessModes:
+          {{- toYaml .Values.select.persistence.accessModes | nindent 10 }}
+        {{- if .Values.select.persistence.storageClass }}
+        storageClassName: {{ .Values.select.persistence.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.select.persistence.size }}
+  {{- end }}
+{{- end }}
