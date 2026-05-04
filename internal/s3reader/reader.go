@@ -3,6 +3,7 @@ package s3reader
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
@@ -10,6 +11,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 )
@@ -136,4 +138,34 @@ func (p *ClientPool) Download(ctx context.Context, key string) ([]byte, error) {
 		return nil, fmt.Errorf("read s3 body %s: %w", key, err)
 	}
 	return data, nil
+}
+
+func (p *ClientPool) Delete(ctx context.Context, key string) error {
+	_, err := p.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(p.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return fmt.Errorf("s3 DeleteObject %s: %w", key, err)
+	}
+	return nil
+}
+
+func (p *ClientPool) Exists(ctx context.Context, key string) (bool, error) {
+	_, err := p.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(p.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		var nsk *types.NotFound
+		if errors.As(err, &nsk) {
+			return false, nil
+		}
+		var nf *types.NoSuchKey
+		if errors.As(err, &nf) {
+			return false, nil
+		}
+		return false, fmt.Errorf("s3 HeadObject %s: %w", key, err)
+	}
+	return true, nil
 }
