@@ -35,7 +35,7 @@ func TestWAL_AppendReplayLogs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w2.Close()
+	defer func() { _ = w2.Close() }()
 
 	logs, traces, err := w2.Replay()
 	if err != nil {
@@ -66,10 +66,10 @@ func TestWAL_AppendReplayTraces(t *testing.T) {
 	if err := w.AppendTrace(&row); err != nil {
 		t.Fatal(err)
 	}
-	w.Close()
+	_ = w.Close()
 
 	w2, _ := Open(filepath.Join(dir, "wal.bin"), 512*1024*1024)
-	defer w2.Close()
+	defer func() { _ = w2.Close() }()
 	logs, traces, _ := w2.Replay()
 
 	if len(logs) != 0 {
@@ -101,10 +101,10 @@ func TestWAL_Truncate(t *testing.T) {
 	}
 
 	_ = w.AppendLog(&schema.LogRow{TimestampUnixNano: 2000, Body: "after"})
-	w.Close()
+	_ = w.Close()
 
 	w2, _ := Open(path, 512*1024*1024)
-	defer w2.Close()
+	defer func() { _ = w2.Close() }()
 	logs, _, _ := w2.Replay()
 	if len(logs) != 1 {
 		t.Fatalf("logs = %d, want 1", len(logs))
@@ -124,11 +124,11 @@ func TestWAL_Full(t *testing.T) {
 			if !w.IsFull() {
 				t.Error("should report full")
 			}
-			w.Close()
+			_ = w.Close()
 			return
 		}
 	}
-	w.Close()
+	_ = w.Close()
 	t.Fatal("expected WAL full error")
 }
 
@@ -139,14 +139,14 @@ func TestWAL_CorruptPartialEntry(t *testing.T) {
 
 	_ = w.AppendLog(&schema.LogRow{TimestampUnixNano: 1000, Body: "good"})
 	_ = w.AppendLog(&schema.LogRow{TimestampUnixNano: 2000, Body: "also good"})
-	w.Close()
+	_ = w.Close()
 
 	// Truncate file mid-entry to simulate crash
 	data, _ := os.ReadFile(path)
 	_ = os.WriteFile(path, data[:len(data)-5], 0o600)
 
 	w2, _ := Open(path, 512*1024*1024)
-	defer w2.Close()
+	defer func() { _ = w2.Close() }()
 	logs, _, err := w2.Replay()
 	if err != nil {
 		t.Fatalf("replay should succeed with partial entry: %v", err)
@@ -162,7 +162,7 @@ func TestWAL_CorruptPartialEntry(t *testing.T) {
 func TestWAL_EmptyReplay(t *testing.T) {
 	dir := t.TempDir()
 	w, _ := Open(filepath.Join(dir, "wal.bin"), 512*1024*1024)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	logs, traces, err := w.Replay()
 	if err != nil {
@@ -180,10 +180,10 @@ func TestWAL_MixedLogTrace(t *testing.T) {
 	_ = w.AppendLog(&schema.LogRow{TimestampUnixNano: 1000, Body: "log1"})
 	_ = w.AppendTrace(&schema.TraceRow{TimestampUnixNano: 2000, TraceID: "t1"})
 	_ = w.AppendLog(&schema.LogRow{TimestampUnixNano: 3000, Body: "log2"})
-	w.Close()
+	_ = w.Close()
 
 	w2, _ := Open(filepath.Join(dir, "wal.bin"), 512*1024*1024)
-	defer w2.Close()
+	defer func() { _ = w2.Close() }()
 	logs, traces, _ := w2.Replay()
 
 	if len(logs) != 2 {
@@ -240,7 +240,7 @@ func TestWAL_AppendTraceAfterClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.Close()
+	_ = w.Close()
 
 	err = w.AppendTrace(&schema.TraceRow{TimestampUnixNano: 1000, TraceID: "t1"})
 	if err == nil {
@@ -258,7 +258,7 @@ func TestWAL_ReplayUnknownModeByte(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = w.AppendLog(&schema.LogRow{TimestampUnixNano: 1000, Body: "valid"})
-	w.Close()
+	_ = w.Close()
 
 	// Read the file, find the mode byte of the first entry (at offset 4) and change it
 	data, err := os.ReadFile(path)
@@ -289,7 +289,7 @@ func TestWAL_ReplayUnknownModeByte(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w2.Close()
+	defer func() { _ = w2.Close() }()
 	logs, traces, err := w2.Replay()
 	if err != nil {
 		t.Fatalf("replay should succeed (stop at unknown mode): %v", err)
@@ -313,7 +313,7 @@ func TestWAL_ReplayCorruptGobData(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = w.AppendLog(&schema.LogRow{TimestampUnixNano: 1000, Body: "valid"})
-	w.Close()
+	_ = w.Close()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -339,7 +339,7 @@ func TestWAL_ReplayCorruptGobData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w2.Close()
+	defer func() { _ = w2.Close() }()
 	logs, _, err := w2.Replay()
 	if err != nil {
 		t.Fatalf("replay error: %v", err)
@@ -359,7 +359,7 @@ func TestWAL_ReplayCorruptTraceGobData(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = w.AppendTrace(&schema.TraceRow{TimestampUnixNano: 1000, TraceID: "t1"})
-	w.Close()
+	_ = w.Close()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -384,7 +384,7 @@ func TestWAL_ReplayCorruptTraceGobData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w2.Close()
+	defer func() { _ = w2.Close() }()
 	_, traces, err := w2.Replay()
 	if err != nil {
 		t.Fatalf("replay error: %v", err)
@@ -412,10 +412,10 @@ func TestWAL_LargeEntry(t *testing.T) {
 		t.Errorf("size %d should be >= 64KB for large entry", sizeBefore)
 	}
 
-	w.Close()
+	_ = w.Close()
 
 	w2, _ := Open(filepath.Join(dir, "wal.bin"), 512*1024*1024)
-	defer w2.Close()
+	defer func() { _ = w2.Close() }()
 	logs, _, err := w2.Replay()
 	if err != nil {
 		t.Fatal(err)
@@ -434,7 +434,7 @@ func TestWAL_IsFull_Transition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	if w.IsFull() {
 		t.Error("new WAL should not be full")
@@ -445,7 +445,7 @@ func TestWAL_IsFull_Transition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w2.Close()
+	defer func() { _ = w2.Close() }()
 
 	// Append will fail (any entry is > 1 byte)
 	err = w2.AppendLog(&schema.LogRow{TimestampUnixNano: 1, Body: "a"})
@@ -476,7 +476,7 @@ func TestWAL_ReplayAfterClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.Close()
+	_ = w.Close()
 
 	// Replay on closed file should fail at seek
 	_, _, err = w.Replay()
@@ -508,7 +508,7 @@ func TestWAL_TruncateAfterClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = w.AppendLog(&schema.LogRow{TimestampUnixNano: 1, Body: "test"})
-	w.Close()
+	_ = w.Close()
 
 	// Truncate on closed WAL should fail at the initial file.Close()
 	err = w.Truncate()
@@ -528,7 +528,7 @@ func TestWAL_ReplayPartialHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	logs, traces, err := w.Replay()
 	if err != nil {
 		t.Fatalf("replay should succeed with partial header: %v", err)
@@ -544,7 +544,7 @@ func TestWAL_Size_AfterMultipleAppends(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	if w.Size() != 0 {
 		t.Errorf("initial size = %d, want 0", w.Size())

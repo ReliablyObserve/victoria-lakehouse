@@ -92,7 +92,7 @@ func (b *BufferBridge) fetchLogs(ctx context.Context, endpoint string, startNs, 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("buffer query returned %d", resp.StatusCode)
@@ -161,7 +161,7 @@ func (b *BufferBridge) fetchTraces(ctx context.Context, endpoint string, startNs
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("buffer query returned %d", resp.StatusCode)

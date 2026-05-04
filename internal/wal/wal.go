@@ -39,7 +39,9 @@ func Open(path string, maxBytes int64) (*WAL, error) {
 	}
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
+		if closeErr := f.Close(); closeErr != nil {
+			return nil, fmt.Errorf("stat WAL: %w (close: %v)", err, closeErr)
+		}
 		return nil, err
 	}
 	return &WAL{file: f, path: path, size: info.Size(), max: maxBytes}, nil
@@ -176,7 +178,9 @@ func (w *WAL) Truncate() error {
 	if err != nil {
 		return err
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close truncated WAL: %w", err)
+	}
 
 	if err := os.Rename(tmp, w.path); err != nil {
 		return err

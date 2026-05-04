@@ -925,7 +925,7 @@ func TestBatchWriter_WALReplay(t *testing.T) {
 	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
 	bw1.AddLogRows(sampleLogRows(3, base))
 	// Close WAL without flushing (crash scenario)
-	bw1.wal.Close()
+	_ = bw1.wal.Close()
 
 	// Second writer: replay WAL
 	m2 := manifest.New("test-bucket", "logs/", slog.Default())
