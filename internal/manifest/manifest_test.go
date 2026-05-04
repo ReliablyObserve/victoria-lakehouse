@@ -383,10 +383,14 @@ func TestManifest_SaveLoadRoundTrip_WithLabels(t *testing.T) {
 	m.AddFile("dt=2026-05-02/hour=10", fi)
 
 	path := t.TempDir() + "/manifest.json"
-	m.SaveTo(path)
+	if err := m.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
 
 	m2 := newTestManifest()
-	m2.LoadFrom(path)
+	if err := m2.LoadFrom(path); err != nil {
+		t.Fatal(err)
+	}
 
 	files := m2.GetFilesForRange(may2h10.UnixNano(), may2h10.Add(time.Hour).UnixNano())
 	if len(files) != 1 {

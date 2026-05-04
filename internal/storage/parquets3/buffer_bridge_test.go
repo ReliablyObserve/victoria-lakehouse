@@ -21,7 +21,7 @@ func TestBufferBridge_QueryLogs(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		enc := json.NewEncoder(w)
 		for _, row := range rows {
-			enc.Encode(row)
+			_ = enc.Encode(row)
 		}
 	}))
 	defer srv.Close()
@@ -53,7 +53,7 @@ func TestBufferBridge_QueryTraces(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		enc := json.NewEncoder(w)
 		for _, row := range rows {
-			enc.Encode(row)
+			_ = enc.Encode(row)
 		}
 	}))
 	defer srv.Close()
@@ -123,12 +123,12 @@ func TestBufferBridge_MultipleEndpoints(t *testing.T) {
 	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
 
 	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(schema.LogRow{TimestampUnixNano: base.UnixNano(), Body: "from-1"})
+		_ = json.NewEncoder(w).Encode(schema.LogRow{TimestampUnixNano: base.UnixNano(), Body: "from-1"})
 	}))
 	defer srv1.Close()
 
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(schema.LogRow{TimestampUnixNano: base.UnixNano(), Body: "from-2"})
+		_ = json.NewEncoder(w).Encode(schema.LogRow{TimestampUnixNano: base.UnixNano(), Body: "from-2"})
 	}))
 	defer srv2.Close()
 

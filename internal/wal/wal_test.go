@@ -88,7 +88,7 @@ func TestWAL_Truncate(t *testing.T) {
 	path := filepath.Join(dir, "wal.bin")
 	w, _ := Open(path, 512*1024*1024)
 
-	w.AppendLog(&schema.LogRow{TimestampUnixNano: 1000, Body: "before"})
+	_ = w.AppendLog(&schema.LogRow{TimestampUnixNano: 1000, Body: "before"})
 	if w.Size() == 0 {
 		t.Fatal("size should be > 0 after append")
 	}
@@ -100,7 +100,7 @@ func TestWAL_Truncate(t *testing.T) {
 		t.Errorf("size after truncate = %d, want 0", w.Size())
 	}
 
-	w.AppendLog(&schema.LogRow{TimestampUnixNano: 2000, Body: "after"})
+	_ = w.AppendLog(&schema.LogRow{TimestampUnixNano: 2000, Body: "after"})
 	w.Close()
 
 	w2, _ := Open(path, 512*1024*1024)
@@ -137,13 +137,13 @@ func TestWAL_CorruptPartialEntry(t *testing.T) {
 	path := filepath.Join(dir, "wal.bin")
 	w, _ := Open(path, 512*1024*1024)
 
-	w.AppendLog(&schema.LogRow{TimestampUnixNano: 1000, Body: "good"})
-	w.AppendLog(&schema.LogRow{TimestampUnixNano: 2000, Body: "also good"})
+	_ = w.AppendLog(&schema.LogRow{TimestampUnixNano: 1000, Body: "good"})
+	_ = w.AppendLog(&schema.LogRow{TimestampUnixNano: 2000, Body: "also good"})
 	w.Close()
 
 	// Truncate file mid-entry to simulate crash
 	data, _ := os.ReadFile(path)
-	os.WriteFile(path, data[:len(data)-5], 0o644)
+	_ = os.WriteFile(path, data[:len(data)-5], 0o600)
 
 	w2, _ := Open(path, 512*1024*1024)
 	defer w2.Close()
@@ -177,9 +177,9 @@ func TestWAL_MixedLogTrace(t *testing.T) {
 	dir := t.TempDir()
 	w, _ := Open(filepath.Join(dir, "wal.bin"), 512*1024*1024)
 
-	w.AppendLog(&schema.LogRow{TimestampUnixNano: 1000, Body: "log1"})
-	w.AppendTrace(&schema.TraceRow{TimestampUnixNano: 2000, TraceID: "t1"})
-	w.AppendLog(&schema.LogRow{TimestampUnixNano: 3000, Body: "log2"})
+	_ = w.AppendLog(&schema.LogRow{TimestampUnixNano: 1000, Body: "log1"})
+	_ = w.AppendTrace(&schema.TraceRow{TimestampUnixNano: 2000, TraceID: "t1"})
+	_ = w.AppendLog(&schema.LogRow{TimestampUnixNano: 3000, Body: "log2"})
 	w.Close()
 
 	w2, _ := Open(filepath.Join(dir, "wal.bin"), 512*1024*1024)
@@ -257,7 +257,7 @@ func TestWAL_ReplayUnknownModeByte(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.AppendLog(&schema.LogRow{TimestampUnixNano: 1000, Body: "valid"})
+	_ = w.AppendLog(&schema.LogRow{TimestampUnixNano: 1000, Body: "valid"})
 	w.Close()
 
 	// Read the file, find the mode byte of the first entry (at offset 4) and change it
@@ -283,7 +283,7 @@ func TestWAL_ReplayUnknownModeByte(t *testing.T) {
 	synth = append(synth, header...)
 	synth = append(synth, gobData...)
 
-	os.WriteFile(path, synth, 0o644)
+	_ = os.WriteFile(path, synth, 0o600)
 
 	w2, err := Open(path, 512*1024*1024)
 	if err != nil {
@@ -312,7 +312,7 @@ func TestWAL_ReplayCorruptGobData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.AppendLog(&schema.LogRow{TimestampUnixNano: 1000, Body: "valid"})
+	_ = w.AppendLog(&schema.LogRow{TimestampUnixNano: 1000, Body: "valid"})
 	w.Close()
 
 	data, err := os.ReadFile(path)
@@ -333,7 +333,7 @@ func TestWAL_ReplayCorruptGobData(t *testing.T) {
 	synth = append(synth, corruptHeader...)
 	synth = append(synth, corruptPayload...)
 
-	os.WriteFile(path, synth, 0o644)
+	_ = os.WriteFile(path, synth, 0o600)
 
 	w2, err := Open(path, 512*1024*1024)
 	if err != nil {
@@ -358,7 +358,7 @@ func TestWAL_ReplayCorruptTraceGobData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.AppendTrace(&schema.TraceRow{TimestampUnixNano: 1000, TraceID: "t1"})
+	_ = w.AppendTrace(&schema.TraceRow{TimestampUnixNano: 1000, TraceID: "t1"})
 	w.Close()
 
 	data, err := os.ReadFile(path)
@@ -378,7 +378,7 @@ func TestWAL_ReplayCorruptTraceGobData(t *testing.T) {
 	synth = append(synth, corruptHeader...)
 	synth = append(synth, corruptPayload...)
 
-	os.WriteFile(path, synth, 0o644)
+	_ = os.WriteFile(path, synth, 0o600)
 
 	w2, err := Open(path, 512*1024*1024)
 	if err != nil {
@@ -507,7 +507,7 @@ func TestWAL_TruncateAfterClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.AppendLog(&schema.LogRow{TimestampUnixNano: 1, Body: "test"})
+	_ = w.AppendLog(&schema.LogRow{TimestampUnixNano: 1, Body: "test"})
 	w.Close()
 
 	// Truncate on closed WAL should fail at the initial file.Close()
@@ -522,7 +522,7 @@ func TestWAL_ReplayPartialHeader(t *testing.T) {
 	path := filepath.Join(dir, "wal.bin")
 
 	// Write just 3 bytes (less than the 5-byte header)
-	os.WriteFile(path, []byte{0x01, 0x02, 0x03}, 0o644)
+	_ = os.WriteFile(path, []byte{0x01, 0x02, 0x03}, 0o600)
 
 	w, err := Open(path, 512*1024*1024)
 	if err != nil {
@@ -550,13 +550,13 @@ func TestWAL_Size_AfterMultipleAppends(t *testing.T) {
 		t.Errorf("initial size = %d, want 0", w.Size())
 	}
 
-	w.AppendLog(&schema.LogRow{TimestampUnixNano: 1, Body: "a"})
+	_ = w.AppendLog(&schema.LogRow{TimestampUnixNano: 1, Body: "a"})
 	s1 := w.Size()
 	if s1 == 0 {
 		t.Fatal("size should be > 0 after first append")
 	}
 
-	w.AppendLog(&schema.LogRow{TimestampUnixNano: 2, Body: "b"})
+	_ = w.AppendLog(&schema.LogRow{TimestampUnixNano: 2, Body: "b"})
 	s2 := w.Size()
 	if s2 <= s1 {
 		t.Errorf("size should grow: %d <= %d", s2, s1)

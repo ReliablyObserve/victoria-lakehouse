@@ -311,12 +311,12 @@ func (m *Manifest) SaveTo(path string) error {
 		return fmt.Errorf("marshal manifest: %w", err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("create dir: %w", err)
 	}
 
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write manifest: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {

@@ -239,7 +239,7 @@ func TestLoadFrom_InvalidJSON(t *testing.T) {
 	m := New("bucket", "logs/", l)
 
 	path := filepath.Join(t.TempDir(), "manifest.json")
-	os.WriteFile(path, []byte("this is not json{{{"), 0o644)
+	_ = os.WriteFile(path, []byte("this is not json{{{"), 0o600)
 
 	err := m.LoadFrom(path)
 	if err == nil {
@@ -258,9 +258,13 @@ func TestSaveTo_ReadOnlyDir(t *testing.T) {
 
 	// Create a read-only directory
 	roDir := filepath.Join(t.TempDir(), "readonly")
-	os.MkdirAll(roDir, 0o755)
-	os.Chmod(roDir, 0o444)
-	defer os.Chmod(roDir, 0o755) // cleanup
+	if err := os.MkdirAll(roDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(roDir, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(roDir, 0o755) }()
 
 	path := filepath.Join(roDir, "manifest.json")
 	err := m.SaveTo(path)
@@ -328,10 +332,14 @@ func TestLoadFrom_RestoresTimeBounds(t *testing.T) {
 	origMaxNs := m.MaxTime().UnixNano()
 
 	savePath := filepath.Join(t.TempDir(), "manifest.json")
-	m.SaveTo(savePath)
+	if err := m.SaveTo(savePath); err != nil {
+		t.Fatal(err)
+	}
 
 	m2 := New("bucket", "logs/", l)
-	m2.LoadFrom(savePath)
+	if err := m2.LoadFrom(savePath); err != nil {
+		t.Fatal(err)
+	}
 
 	// Compare using UnixNano to avoid timezone issues (LoadFrom uses time.Unix(0, ns)
 	// which may use local timezone)
@@ -401,7 +409,9 @@ func TestLoadFrom_ReadError(t *testing.T) {
 
 	// Create a directory where the file should be — reading it will error
 	dir := filepath.Join(t.TempDir(), "manifest.json")
-	os.MkdirAll(dir, 0o755)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	err := m.LoadFrom(dir)
 	if err == nil {
@@ -433,7 +443,7 @@ func TestRefreshFromS3_WithParquetFiles(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Query().Get("list-type") == "2" {
 			w.Header().Set("Content-Type", "application/xml")
-			fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>
+			_, _ = fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult>
   <IsTruncated>false</IsTruncated>
   <Contents>
@@ -503,7 +513,7 @@ func TestRefreshFromS3_Empty(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Query().Get("list-type") == "2" {
 			w.Header().Set("Content-Type", "application/xml")
-			fmt.Fprint(w, `<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>`)
+			_, _ = fmt.Fprint(w, `<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>`)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -548,7 +558,7 @@ func TestRefreshFromS3_ReplacesOldData(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Query().Get("list-type") == "2" {
 			w.Header().Set("Content-Type", "application/xml")
-			fmt.Fprint(w, `<?xml version="1.0"?>
+			_, _ = fmt.Fprint(w, `<?xml version="1.0"?>
 <ListBucketResult>
   <IsTruncated>false</IsTruncated>
   <Contents>

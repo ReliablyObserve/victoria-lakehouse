@@ -30,10 +30,10 @@ type WAL struct {
 
 // Open opens or creates the WAL at path with the given maximum byte capacity.
 func Open(path string, maxBytes int64) (*WAL, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, fmt.Errorf("create WAL dir: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open WAL: %w", err)
 	}
@@ -182,7 +182,7 @@ func (w *WAL) Truncate() error {
 		return err
 	}
 
-	w.file, err = os.OpenFile(w.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+	w.file, err = os.OpenFile(w.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}

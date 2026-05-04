@@ -55,11 +55,15 @@ func (h *BufferHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch mode {
 	case "logs":
 		for _, row := range h.store.BufferedLogRows(startNs, endNs) {
-			enc.Encode(row)
+			if err := enc.Encode(row); err != nil {
+				return
+			}
 		}
 	case "traces":
 		for _, row := range h.store.BufferedTraceRows(startNs, endNs) {
-			enc.Encode(row)
+			if err := enc.Encode(row); err != nil {
+				return
+			}
 		}
 	default:
 		http.Error(w, "mode must be logs or traces", http.StatusBadRequest)

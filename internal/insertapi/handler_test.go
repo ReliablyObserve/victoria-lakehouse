@@ -911,7 +911,7 @@ func TestJsonFieldsToLogRow_NoExtraFields(t *testing.T) {
 
 	row := jsonFieldsToLogRow(fields, promotedLogFields)
 
-	if row.LogAttributes != nil && len(row.LogAttributes) > 0 {
+	if len(row.LogAttributes) > 0 {
 		t.Errorf("LogAttributes should be nil/empty for all-promoted fields, got %v", row.LogAttributes)
 	}
 }
