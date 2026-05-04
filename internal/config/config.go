@@ -48,6 +48,7 @@ type Config struct {
 	Startup        StartupConfig        `yaml:"startup"`
 	Query          QueryConfig          `yaml:"query"`
 	Insert         InsertConfig         `yaml:"insert"`
+	Select         SelectConfig         `yaml:"select"`
 	Schema         SchemaConfig         `yaml:"schema"`
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
 	Tenant         TenantConfig         `yaml:"tenant"`
@@ -57,11 +58,13 @@ type InsertConfig struct {
 	FlushInterval    time.Duration `yaml:"flush_interval"`
 	MaxBufferRows    int           `yaml:"max_buffer_rows"`
 	MaxBufferBytes   string        `yaml:"max_buffer_bytes"`
+	TargetFileSize   string        `yaml:"target_file_size"`
 	RowGroupSize     int           `yaml:"row_group_size"`
 	BloomColumns     []string      `yaml:"bloom_columns"`
 	CompressionLevel int           `yaml:"compression_level"`
 	WALEnabled       bool          `yaml:"wal_enabled"`
 	WALDir           string        `yaml:"wal_dir"`
+	WALMaxBytes      string        `yaml:"wal_max_bytes"`
 }
 
 func (c *InsertConfig) MaxBufferBytesN() int64 {
@@ -72,12 +75,34 @@ func (c *InsertConfig) MaxBufferBytesN() int64 {
 	return n
 }
 
+func (c *InsertConfig) TargetFileSizeN() int64 {
+	n, _ := ParseSizeBytes(c.TargetFileSize)
+	if n <= 0 {
+		return 128 * 1024 * 1024
+	}
+	return n
+}
+
+func (c *InsertConfig) WALMaxBytesN() int64 {
+	n, _ := ParseSizeBytes(c.WALMaxBytes)
+	if n <= 0 {
+		return 512 * 1024 * 1024
+	}
+	return n
+}
+
 func (c *Config) InsertEnabled() bool {
 	return c.Role == RoleAll || c.Role == RoleInsert
 }
 
 func (c *Config) SelectEnabled() bool {
 	return c.Role == RoleAll || c.Role == RoleSelect
+}
+
+type SelectConfig struct {
+	BufferQueryEnabled    bool          `yaml:"buffer_query_enabled"`
+	InsertHeadlessService string        `yaml:"insert_headless_service"`
+	BufferQueryTimeout    time.Duration `yaml:"buffer_query_timeout"`
 }
 
 type S3Config struct {
@@ -241,10 +266,18 @@ func Default() *Config {
 			FlushInterval:    10 * time.Second,
 			MaxBufferRows:    50000,
 			MaxBufferBytes:   "256MB",
+			TargetFileSize:   "128MB",
 			RowGroupSize:     10000,
 			BloomColumns:     []string{"service.name", "trace_id"},
 			CompressionLevel: 3,
+			WALEnabled:       true,
 			WALDir:           "/data/lakehouse/wal",
+			WALMaxBytes:      "512MB",
+		},
+
+		Select: SelectConfig{
+			BufferQueryEnabled: true,
+			BufferQueryTimeout: 2 * time.Second,
 		},
 
 		Tenant: TenantConfig{
@@ -296,6 +329,9 @@ func (c *Config) Validate() error {
 	}
 
 	if c.InsertEnabled() {
+		if c.Insert.TargetFileSize == "" {
+			return fmt.Errorf("--lakehouse.insert.target-file-size is required when insert enabled")
+		}
 		if c.Insert.FlushInterval <= 0 {
 			return fmt.Errorf("--lakehouse.insert.flush-interval must be positive")
 		}
@@ -617,11 +653,28 @@ func mergeConfig(base, overlay *Config) *Config {
 	if overlay.Insert.CompressionLevel > 0 {
 		base.Insert.CompressionLevel = overlay.Insert.CompressionLevel
 	}
+	if overlay.Insert.TargetFileSize != "" {
+		base.Insert.TargetFileSize = overlay.Insert.TargetFileSize
+	}
 	if overlay.Insert.WALEnabled {
 		base.Insert.WALEnabled = true
 	}
 	if overlay.Insert.WALDir != "" {
 		base.Insert.WALDir = overlay.Insert.WALDir
+	}
+	if overlay.Insert.WALMaxBytes != "" {
+		base.Insert.WALMaxBytes = overlay.Insert.WALMaxBytes
+	}
+
+	// Select
+	if overlay.Select.BufferQueryEnabled {
+		base.Select.BufferQueryEnabled = true
+	}
+	if overlay.Select.InsertHeadlessService != "" {
+		base.Select.InsertHeadlessService = overlay.Select.InsertHeadlessService
+	}
+	if overlay.Select.BufferQueryTimeout > 0 {
+		base.Select.BufferQueryTimeout = overlay.Select.BufferQueryTimeout
 	}
 
 	// Schema

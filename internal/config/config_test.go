@@ -1114,3 +1114,88 @@ lakehouse:
 		t.Errorf("Name = %q", cfg.Schema.ExtraPromoted[1].Name)
 	}
 }
+
+func TestDefaultConfig_TargetFileSize(t *testing.T) {
+	cfg := Default()
+	if cfg.Insert.TargetFileSize != "128MB" {
+		t.Errorf("TargetFileSize = %q, want 128MB", cfg.Insert.TargetFileSize)
+	}
+}
+
+func TestDefaultConfig_WALMaxBytes(t *testing.T) {
+	cfg := Default()
+	if cfg.Insert.WALMaxBytes != "512MB" {
+		t.Errorf("WALMaxBytes = %q, want 512MB", cfg.Insert.WALMaxBytes)
+	}
+}
+
+func TestDefaultConfig_WALEnabled(t *testing.T) {
+	cfg := Default()
+	if !cfg.Insert.WALEnabled {
+		t.Error("WALEnabled should default to true")
+	}
+}
+
+func TestDefaultConfig_SelectConfig(t *testing.T) {
+	cfg := Default()
+	if !cfg.Select.BufferQueryEnabled {
+		t.Error("BufferQueryEnabled should default to true")
+	}
+	if cfg.Select.BufferQueryTimeout != 2*time.Second {
+		t.Errorf("BufferQueryTimeout = %v, want 2s", cfg.Select.BufferQueryTimeout)
+	}
+}
+
+func TestInsertConfig_TargetFileSizeN(t *testing.T) {
+	ic := &InsertConfig{TargetFileSize: "128MB"}
+	got := ic.TargetFileSizeN()
+	want := int64(128 * 1024 * 1024)
+	if got != want {
+		t.Errorf("TargetFileSizeN = %d, want %d", got, want)
+	}
+}
+
+func TestInsertConfig_WALMaxBytesN(t *testing.T) {
+	ic := &InsertConfig{WALMaxBytes: "512MB"}
+	got := ic.WALMaxBytesN()
+	want := int64(512 * 1024 * 1024)
+	if got != want {
+		t.Errorf("WALMaxBytesN = %d, want %d", got, want)
+	}
+}
+
+func TestValidate_TargetFileSizeRequired(t *testing.T) {
+	cfg := Default()
+	cfg.Mode = ModeLogs
+	cfg.S3.Bucket = "test"
+	cfg.Insert.TargetFileSize = ""
+	if err := cfg.Validate(); err == nil {
+		t.Error("empty TargetFileSize should fail validation")
+	}
+}
+
+func TestMergeConfig_SelectFields(t *testing.T) {
+	base := Default()
+	overlay := &Config{}
+	overlay.Select.BufferQueryTimeout = 5 * time.Second
+	overlay.Select.InsertHeadlessService = "lakehouse-insert-headless"
+
+	result := mergeConfig(base, overlay)
+	if result.Select.BufferQueryTimeout != 5*time.Second {
+		t.Errorf("BufferQueryTimeout = %v", result.Select.BufferQueryTimeout)
+	}
+	if result.Select.InsertHeadlessService != "lakehouse-insert-headless" {
+		t.Errorf("InsertHeadlessService = %q", result.Select.InsertHeadlessService)
+	}
+}
+
+func TestMergeConfig_TargetFileSize(t *testing.T) {
+	base := Default()
+	overlay := &Config{}
+	overlay.Insert.TargetFileSize = "256MB"
+
+	result := mergeConfig(base, overlay)
+	if result.Insert.TargetFileSize != "256MB" {
+		t.Errorf("TargetFileSize = %q, want 256MB", result.Insert.TargetFileSize)
+	}
+}
