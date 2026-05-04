@@ -1,7 +1,7 @@
 apiVersion: 1
 
 datasources:
-  - name: Victoria Lakehouse Logs
+  - name: Victoria Lakehouse Logs (Cold)
     type: victoriametrics-logs-datasource
     uid: victoria-lakehouse-logs
     access: proxy
@@ -22,3 +22,27 @@ datasources:
         spanEndTimeShift: "1h"
         filterByTraceID: true
         filterBySpanID: false
+
+  - name: VictoriaLogs Hot
+    type: victoriametrics-logs-datasource
+    uid: victorialogs-hot
+    access: proxy
+    url: http://victorialogs:9428
+    jsonData:
+      maxLines: 1000
+
+  - name: Multi-Level Select (Hot+Cold)
+    type: victoriametrics-logs-datasource
+    uid: vlselect-multilevel
+    access: proxy
+    url: http://vlselect:9471
+    jsonData:
+      maxLines: 1000
+
+  - name: Loki via Proxy
+    type: loki
+    uid: loki-vl-proxy
+    access: proxy
+    url: http://loki-vl-proxy:3100
+    jsonData:
+      maxLines: 1000
