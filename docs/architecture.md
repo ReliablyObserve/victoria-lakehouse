@@ -584,6 +584,72 @@ Endpoint errors are silently ignored (graceful degradation). Insert pod discover
 
 During flush, label values are extracted from the row batch and stored in `FileInfo.Labels`. At query time, the manifest can skip files whose labels don't match the query predicates — without opening Parquet files. This is level 2 of the five-level prune cascade (after time-range pruning).
 
+## Production Architecture (Hot + Cold + Analytics)
+
+```mermaid
+graph TB
+    subgraph "Data Collection"
+        APP["Applications<br/>(OTEL SDK)"] --> OC["OTEL Collector<br/>(traces)"]
+        K8S["Kubernetes<br/>Pods"] --> VA["vlagent<br/>(logs)"]
+        INFRA["Infrastructure"] --> VA
+    end
+
+    subgraph "Hot Tier — 1 Month Retention (EBS)"
+        VA -->|mirror 1| VLI["vlinsert"]
+        VLI --> VLSTO["vlstorage<br/>(multi-AZ EBS)"]
+        OC -->|export 1| VTI["vtinsert"]
+        VTI --> VTSTO["vtstorage<br/>(multi-AZ EBS)"]
+        VLSEL["vlselect"]
+        VTSEL["vtselect"]
+        VLSEL --> VLSTO
+        VTSEL --> VTSTO
+    end
+
+    subgraph "Cold Tier — Unlimited Retention (S3)"
+        VA -->|mirror 2| LHI_L["lakehouse-insert<br/>mode=logs"]
+        OC -->|export 2| LHI_T["lakehouse-insert<br/>mode=traces"]
+        LHI_L --> WAL_L["WAL"]
+        LHI_T --> WAL_T["WAL"]
+        WAL_L --> BUF_L["Buffers"]
+        WAL_T --> BUF_T["Buffers"]
+        BUF_L -->|flush| S3[("S3 Parquet<br/>(11 nines)")]
+        BUF_T -->|flush| S3
+        LHS_L["lakehouse-select<br/>mode=logs"]
+        LHS_T["lakehouse-select<br/>mode=traces"]
+        LHS_L --> S3
+        LHS_T --> S3
+        LHS_L -.->|buffer query| BUF_L
+        LHS_T -.->|buffer query| BUF_T
+    end
+
+    subgraph "Query Path"
+        GF["Grafana"]
+        GF --> VLSEL
+        GF --> VTSEL
+        VLSEL -->|cold fan-out| LHS_L
+        VTSEL -->|cold fan-out| LHS_T
+    end
+
+    subgraph "Analytics — Open Parquet"
+        DDB["DuckDB"] --> S3
+        TRINO["Trino"] --> S3
+        SPARK["Spark"] --> S3
+        CH["ClickHouse"] --> S3
+    end
+
+    style S3 fill:#e76f51,color:#fff
+    style LHI_L fill:#5a189a,color:#fff
+    style LHI_T fill:#5a189a,color:#fff
+    style LHS_L fill:#2d6a4f,color:#fff
+    style LHS_T fill:#2d6a4f,color:#fff
+    style VA fill:#264653,color:#fff
+    style OC fill:#264653,color:#fff
+```
+
+For detailed collector configurations (vlagent, OTEL Collector), DR scenarios, and Kubernetes deployment layouts, see [Deployment Architecture](deployment-architecture.md).
+
+For analytics tool setup (DuckDB, Trino, Spark, ClickHouse, Pandas), see [Analytics](analytics.md).
+
 ## Data Flow (Write + Read Path)
 
 ```mermaid

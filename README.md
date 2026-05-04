@@ -15,7 +15,8 @@
 - **Zero-delay reads.** Select pods query insert pods for unflushed buffer data, merging with S3 results for immediate read-after-write visibility.
 - **60-96% cost reduction.** S3 is 3-6x cheaper than EBS per GB. At 1 PB/month with multi-AZ, hybrid deployments save $3-9.5M/year compared to all-EBS.
 - **Sub-millisecond fast path.** Queries within the hot tier's range get an immediate empty response via the partition manifest. Zero S3 I/O.
-- **Open Parquet files.** DuckDB, Trino, Spark, and ClickHouse read the same files directly for analytics.
+- **Disaster recovery.** When the hot cluster is down (outage, upgrade, migration), lakehouse serves all data from S3 — slower but always available.
+- **Open Parquet files.** DuckDB, Trino, Spark, and ClickHouse read the same files directly for analytics, compliance, and ML.
 
 ---
 
@@ -81,57 +82,60 @@ For full setup, cluster integration, and deployment patterns, see [Getting Start
 
 ## Architecture
 
-Victoria Lakehouse is a clean-room reimplementation of VL/VT APIs backed by Parquet files on S3. From the outside, it looks and responds like a regular VL/VT storage node — for both reads and writes.
+Victoria Lakehouse is a clean-room reimplementation of VL/VT APIs backed by Parquet files on S3. It integrates with vlagent (logs) and OTEL Collector (traces) to mirror data to both hot and cold tiers simultaneously, providing unlimited retention, disaster recovery, and open-format analytics.
 
 ```mermaid
 graph TB
-    subgraph "Grafana"
-        VL_DS["VictoriaLogs<br/>Datasource"]
-        J_DS["Jaeger<br/>Datasource"]
+    subgraph "Data Collection"
+        K8S["Kubernetes Pods /<br/>Infrastructure"] --> VA["vlagent<br/>(logs)"]
+        APP["Applications<br/>(OTEL SDK)"] --> OC["OTEL Collector<br/>(traces)"]
     end
 
-    subgraph "Hot Tier (EBS)"
-        vlselect["vlselect"]
-        vtselect["vtselect"]
-        vlstorage["vlstorage<br/>(EBS, last 7d)"]
-        vtstorage["vtstorage<br/>(EBS, last 7d)"]
+    subgraph "Hot Tier — 1 Month (EBS, multi-AZ)"
+        VA -->|mirror 1| VLI["vlinsert"]
+        OC -->|export 1| VTI["vtinsert"]
+        VLI --> VLSTO["vlstorage"]
+        VTI --> VTSTO["vtstorage"]
+        VLSEL["vlselect"]
+        VTSEL["vtselect"]
+        VLSEL --> VLSTO
+        VTSEL --> VTSTO
     end
 
-    subgraph "Cold Tier (S3) — Victoria Lakehouse"
-        LH_I["lakehouse-insert<br/>/insert/*"]
-        LH_L["lakehouse-select<br/>:9428"]
-        LH_T["lakehouse-traces<br/>:10428"]
-        WAL["WAL<br/>(crash recovery)"]
-        BUF["In-Memory<br/>Buffer"]
-        Manifest["Partition<br/>Manifest"]
-        Cache["Multi-Tier<br/>Cache"]
-        S3["S3 Parquet<br/>(historical)"]
+    subgraph "Cold Tier — Unlimited (S3) — Victoria Lakehouse"
+        VA -->|mirror 2| LHI["lakehouse-insert"]
+        OC -->|export 2| LHI
+        LHI --> WAL["WAL"]
+        WAL --> BUF["Buffers"]
+        BUF -->|flush| S3[("S3 Parquet<br/>(11 nines)")]
+        LHS["lakehouse-select"]
+        LHS --> S3
+        LHS -.->|buffer query| BUF
     end
 
-    Clients["OTEL / Vector /<br/>Loki Push"] --> LH_I
-    LH_I --> WAL
-    WAL --> BUF
-    BUF -->|flush| S3
-    BUF -->|manifest.AddFile| Manifest
-    LH_L -->|buffer query| BUF
+    subgraph "Consumers"
+        GF["Grafana"] --> VLSEL
+        GF --> VTSEL
+        VLSEL -->|cold fan-out| LHS
+        VTSEL -->|cold fan-out| LHS
+        DDB["DuckDB / Trino<br/>Spark / ClickHouse"] --> S3
+    end
 
-    VL_DS --> vlselect
-    J_DS --> vtselect
-    vlselect --> vlstorage
-    vlselect --> LH_L
-    vtselect --> vtstorage
-    vtselect --> LH_T
-    LH_L --> Manifest
-    LH_T --> Manifest
-    Manifest --> Cache
-    Cache --> S3
-
-    style LH_I fill:#5a189a,color:#fff
-    style LH_L fill:#2d6a4f,color:#fff
-    style LH_T fill:#2d6a4f,color:#fff
-    style S3 fill:#264653,color:#fff
-    style WAL fill:#e76f51,color:#fff
+    style S3 fill:#e76f51,color:#fff
+    style LHI fill:#5a189a,color:#fff
+    style LHS fill:#2d6a4f,color:#fff
+    style VA fill:#264653,color:#fff
+    style OC fill:#264653,color:#fff
 ```
+
+**Key points:**
+- **vlagent** mirrors logs to both VictoriaLogs (hot, 1 month, EBS) and Lakehouse (cold, unlimited, S3)
+- **OTEL Collector** fans out traces to both VictoriaTraces (hot) and Lakehouse (cold)
+- **vlselect/vtselect** transparently fan out queries to hot + cold — users see unified results
+- **Lakehouse as DR**: when hot cluster is down, Grafana queries lakehouse directly (slower but always available)
+- **Open Parquet**: DuckDB, Trino, Spark, ClickHouse query S3 directly for analytics, compliance, ML
+
+For detailed collector configs and DR playbooks, see [Deployment Architecture](docs/deployment-architecture.md).
 
 ### Query Flow
 
@@ -175,22 +179,23 @@ flowchart TD
 
 ```mermaid
 graph LR
-    subgraph "Pattern 1: Standalone (single binary)"
-        C1["Clients"] -->|insert| LH1["lakehouse<br/>role=all"]
-        G1["Grafana"] -->|select| LH1
-        LH1 --> S1[("S3")]
+    subgraph "Pattern 1: Hot+Cold with vlagent/OTEL (recommended)"
+        VA["vlagent"] -->|mirror| VLI["vlinsert<br/>(hot)"]
+        VA -->|mirror| LHI["lakehouse-insert<br/>(cold)"]
+        OC["OTEL<br/>Collector"] -->|export| VTI["vtinsert"]
+        OC -->|export| LHI
+        G1["Grafana"] --> VS1["vlselect"]
+        VS1 --> VLS1["vlstorage"]
+        VS1 -->|cold| LHS1["lakehouse-select"]
     end
 ```
 
 ```mermaid
 graph LR
-    subgraph "Pattern 2: Hybrid hot+cold (recommended)"
-        C2["Clients"] --> VLI["vlinsert<br/>(hot EBS)"]
-        C2 --> LHI["lakehouse-insert<br/>(cold S3)"]
-        G2["Grafana"] --> VS2["vlselect"]
-        VS2 --> VLS2["vlstorage<br/>(hot)"]
-        VS2 --> LHS["lakehouse-select<br/>(cold)"]
-        LHS -.->|buffer query| LHI
+    subgraph "Pattern 2: Standalone (single binary)"
+        C2["Clients"] -->|insert| LH2["lakehouse<br/>role=all"]
+        G2["Grafana"] -->|select| LH2
+        LH2 --> S2[("S3")]
     end
 ```
 
@@ -207,10 +212,20 @@ graph LR
 
 ```mermaid
 graph LR
-    subgraph "Pattern 4: Loki-VL-proxy"
-        G4["Grafana"] --> LVP["Loki-VL-proxy"]
-        LVP -->|hot| VS4["vlselect"]
-        LVP -->|cold| LH4["lakehouse"]
+    subgraph "Pattern 4: Disaster Recovery"
+        G4["Grafana"] --> VMA["vmauth<br/>first_available"]
+        VMA -->|primary| VS4["vlselect"]
+        VMA -->|fallback| LH4["lakehouse-select"]
+    end
+```
+
+```mermaid
+graph LR
+    subgraph "Pattern 5: Analytics (open Parquet)"
+        S5[("S3 Parquet")] --> DDB["DuckDB"]
+        S5 --> TRI["Trino"]
+        S5 --> SPK["Spark"]
+        S5 --> CH["ClickHouse"]
     end
 ```
 
@@ -337,15 +352,22 @@ See [Performance](docs/performance.md).
 ## Documentation
 
 ### Core
-- [Getting Started](docs/getting-started.md)
-- [Configuration](docs/configuration.md)
-- [Architecture](docs/architecture.md)
-- [Operations](docs/operations.md)
-- [Security](docs/security.md)
-- [Observability](docs/observability.md)
-- [Performance](docs/performance.md)
-- [Scaling](docs/scaling.md)
-- [Cost Estimates](docs/cost-estimates.md)
+- [Getting Started](docs/getting-started.md) — quick start, ingestion, deployment patterns
+- [Deployment Architecture](docs/deployment-architecture.md) — vlagent, OTEL Collector, hot/cold tiers, DR
+- [Configuration](docs/configuration.md) — all 65+ flags with defaults
+- [Architecture](docs/architecture.md) — internal design, Parquet schema, query flow
+- [Operations](docs/operations.md) — day-2 operations, scaling, troubleshooting
+
+### Use Cases & Analytics
+- [Use Cases](docs/use-cases.md) — DR, compliance, capacity planning, cost allocation, ML
+- [Analytics](docs/analytics.md) — DuckDB, Trino, Spark, ClickHouse, Pandas examples
+
+### Operations
+- [Security](docs/security.md) — hardening, network policies, credential handling
+- [Observability](docs/observability.md) — metrics, dashboards, alerting rules
+- [Performance](docs/performance.md) — benchmarks, tuning, targets
+- [Scaling](docs/scaling.md) — horizontal and vertical scaling guides
+- [Cost Estimates](docs/cost-estimates.md) — EBS vs S3 cost comparison
 
 ---
 
