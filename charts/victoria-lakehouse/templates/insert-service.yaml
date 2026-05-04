@@ -1,0 +1,61 @@
+{{- if .Values.insertComponent.enabled }}
+{{- $port := include "victoria-lakehouse.port" (dict "context" . "servicePort" .Values.insertComponent.service.port) }}
+{{- $fullname := include "victoria-lakehouse.fullname" . }}
+{{- $component := "insert" }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-insert
+  labels:
+    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" $component) | nindent 4 }}
+    {{- with .Values.insertComponent.service.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- if or .Values.insertComponent.service.annotations .Values.global.commonAnnotations }}
+  annotations:
+    {{- with .Values.global.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.insertComponent.service.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  type: {{ .Values.insertComponent.service.type }}
+  ports:
+    - port: {{ $port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" $component) | nindent 4 }}
+{{- if .Values.insertComponent.headlessService.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-insert-headless
+  labels:
+    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" $component) | nindent 4 }}
+  {{- if or .Values.insertComponent.headlessService.annotations .Values.global.commonAnnotations }}
+  annotations:
+    {{- with .Values.global.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.insertComponent.headlessService.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - port: {{ $port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" $component) | nindent 4 }}
+{{- end }}
+{{- end }}

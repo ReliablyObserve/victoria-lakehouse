@@ -1,0 +1,23 @@
+{{- if .Values.vmauth.enabled }}
+{{- $fullname := include "victoria-lakehouse.fullname" . }}
+{{- $component := "vmauth" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-vmauth
+  labels:
+    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" $component) | nindent 4 }}
+  {{- with .Values.global.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.vmauth.service.type }}
+  ports:
+    - port: {{ .Values.vmauth.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" $component) | nindent 4 }}
+{{- end }}

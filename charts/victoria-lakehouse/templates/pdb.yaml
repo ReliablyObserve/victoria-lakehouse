@@ -1,0 +1,38 @@
+{{- if and .Values.select.enabled .Values.select.podDisruptionBudget.enabled }}
+{{- $fullname := include "victoria-lakehouse.fullname" . }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $fullname }}-select
+  labels:
+    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" "select") | nindent 4 }}
+  {{- with .Values.global.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  minAvailable: {{ .Values.select.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" "select") | nindent 6 }}
+{{- end }}
+{{- if and .Values.insertComponent.enabled .Values.insertComponent.podDisruptionBudget.enabled }}
+{{- $fullname := include "victoria-lakehouse.fullname" . }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $fullname }}-insert
+  labels:
+    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" "insert") | nindent 4 }}
+  {{- with .Values.global.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  minAvailable: {{ .Values.insertComponent.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" "insert") | nindent 6 }}
+{{- end }}

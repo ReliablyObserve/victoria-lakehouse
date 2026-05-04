@@ -1,0 +1,32 @@
+{{- if .Values.vmauth.enabled }}
+{{- $fullname := include "victoria-lakehouse.fullname" . }}
+{{- $insertPort := include "victoria-lakehouse.port" (dict "context" . "servicePort" .Values.insertComponent.service.port) }}
+{{- $selectPort := include "victoria-lakehouse.port" (dict "context" . "servicePort" .Values.select.service.port) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-vmauth
+  labels:
+    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" "vmauth") | nindent 4 }}
+  {{- with .Values.global.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  vmauth.yml: |
+    {{- if .Values.vmauth.config }}
+    {{- .Values.vmauth.config | nindent 4 }}
+    {{- else }}
+    unauthorized_user:
+      url_map:
+        {{- if .Values.insertComponent.enabled }}
+        - src_paths:
+            - "/insert/.*"
+            - "/internal/insert"
+          url_prefix: "http://{{ $fullname }}-insert:{{ $insertPort }}/"
+        {{- end }}
+        - src_paths:
+            - "/.*"
+          url_prefix: "http://{{ $fullname }}-select:{{ $selectPort }}/"
+    {{- end }}
+{{- end }}
