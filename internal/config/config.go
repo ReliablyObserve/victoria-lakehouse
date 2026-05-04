@@ -52,6 +52,7 @@ type Config struct {
 	Schema         SchemaConfig         `yaml:"schema"`
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
 	Tenant         TenantConfig         `yaml:"tenant"`
+	Compaction     CompactionConfig     `yaml:"compaction"`
 }
 
 type InsertConfig struct {
@@ -185,6 +186,19 @@ type TenantConfig struct {
 	PrefixTemplate string `yaml:"prefix_template"`
 }
 
+type CompactionConfig struct {
+	Enabled        bool          `yaml:"enabled"`
+	Interval       time.Duration `yaml:"interval"`
+	MaxConcurrent  int           `yaml:"max_concurrent"`
+	MinFilesL0     int           `yaml:"min_files_l0"`
+	MinFilesL1     int           `yaml:"min_files_l1"`
+	MinAge         time.Duration `yaml:"min_age"`
+	LeaderElection string        `yaml:"leader_election"`
+	LeaseDuration  time.Duration `yaml:"lease_duration"`
+	S3LockTTL      time.Duration `yaml:"s3_lock_ttl"`
+	S3Heartbeat    time.Duration `yaml:"s3_heartbeat"`
+}
+
 type ExtraPromotedColumn struct {
 	Name  string `yaml:"name"`
 	Type  string `yaml:"type"`
@@ -283,6 +297,19 @@ func Default() *Config {
 		Tenant: TenantConfig{
 			PrefixTemplate: "{AccountID}/{ProjectID}/",
 		},
+
+		Compaction: CompactionConfig{
+			Enabled:        false,
+			Interval:       5 * time.Minute,
+			MaxConcurrent:  1,
+			MinFilesL0:     10,
+			MinFilesL1:     10,
+			MinAge:         1 * time.Hour,
+			LeaderElection: "auto",
+			LeaseDuration:  15 * time.Second,
+			S3LockTTL:      60 * time.Second,
+			S3Heartbeat:    15 * time.Second,
+		},
 	}
 }
 
@@ -377,6 +404,26 @@ func (c *Config) Validate() error {
 	}
 	if c.CircuitBreaker.Threshold <= 0 {
 		return fmt.Errorf("--lakehouse.circuit-breaker.threshold must be positive, got %d", c.CircuitBreaker.Threshold)
+	}
+
+	switch c.Compaction.LeaderElection {
+	case "auto", "k8s", "s3", "none", "":
+	default:
+		return fmt.Errorf("--lakehouse.compaction.leader-election must be one of: auto, k8s, s3, none; got %q", c.Compaction.LeaderElection)
+	}
+	if c.Compaction.Enabled {
+		if c.Compaction.Interval <= 0 {
+			return fmt.Errorf("--lakehouse.compaction.interval must be positive")
+		}
+		if c.Compaction.MaxConcurrent <= 0 {
+			return fmt.Errorf("--lakehouse.compaction.max-concurrent must be positive")
+		}
+		if c.Compaction.MinFilesL0 < 2 {
+			return fmt.Errorf("--lakehouse.compaction.min-files-l0 must be >= 2")
+		}
+		if c.Compaction.MinFilesL1 < 2 {
+			return fmt.Errorf("--lakehouse.compaction.min-files-l1 must be >= 2")
+		}
 	}
 
 	return nil
@@ -680,6 +727,38 @@ func mergeConfig(base, overlay *Config) *Config {
 	// Schema
 	if len(overlay.Schema.ExtraPromoted) > 0 {
 		base.Schema.ExtraPromoted = overlay.Schema.ExtraPromoted
+	}
+
+	// Compaction
+	if overlay.Compaction.Enabled {
+		base.Compaction.Enabled = true
+	}
+	if overlay.Compaction.Interval > 0 {
+		base.Compaction.Interval = overlay.Compaction.Interval
+	}
+	if overlay.Compaction.MaxConcurrent > 0 {
+		base.Compaction.MaxConcurrent = overlay.Compaction.MaxConcurrent
+	}
+	if overlay.Compaction.MinFilesL0 > 0 {
+		base.Compaction.MinFilesL0 = overlay.Compaction.MinFilesL0
+	}
+	if overlay.Compaction.MinFilesL1 > 0 {
+		base.Compaction.MinFilesL1 = overlay.Compaction.MinFilesL1
+	}
+	if overlay.Compaction.MinAge > 0 {
+		base.Compaction.MinAge = overlay.Compaction.MinAge
+	}
+	if overlay.Compaction.LeaderElection != "" {
+		base.Compaction.LeaderElection = overlay.Compaction.LeaderElection
+	}
+	if overlay.Compaction.LeaseDuration > 0 {
+		base.Compaction.LeaseDuration = overlay.Compaction.LeaseDuration
+	}
+	if overlay.Compaction.S3LockTTL > 0 {
+		base.Compaction.S3LockTTL = overlay.Compaction.S3LockTTL
+	}
+	if overlay.Compaction.S3Heartbeat > 0 {
+		base.Compaction.S3Heartbeat = overlay.Compaction.S3Heartbeat
 	}
 
 	return base
