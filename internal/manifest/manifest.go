@@ -375,6 +375,11 @@ func (m *Manifest) LoadFrom(path string) error {
 	return nil
 }
 
+// ParsePartitionTime is the exported wrapper for parsePartitionTime.
+func ParsePartitionTime(partition string) (time.Time, error) {
+	return parsePartitionTime(partition)
+}
+
 // parsePartitionTime parses "dt=2026-05-02/hour=10" into a time.Time.
 func parsePartitionTime(partition string) (time.Time, error) {
 	parts := strings.Split(partition, "/")
