@@ -24,8 +24,9 @@ type FileInfo struct {
 	MinTimeNs         int64  `json:"min_time_ns,omitempty"`
 	MaxTimeNs         int64  `json:"max_time_ns,omitempty"`
 	RawBytes          int64  `json:"raw_bytes,omitempty"`
-	SchemaFingerprint string `json:"schema_fp,omitempty"`
-	CompactionLevel   int    `json:"compaction_level,omitempty"`
+	SchemaFingerprint string              `json:"schema_fp,omitempty"`
+	CompactionLevel   int                 `json:"compaction_level,omitempty"`
+	Labels            map[string][]string `json:"labels,omitempty"`
 }
 
 func (fi FileInfo) CompressionRatio() float64 {
@@ -33,6 +34,18 @@ func (fi FileInfo) CompressionRatio() float64 {
 		return 0
 	}
 	return float64(fi.RawBytes) / float64(fi.Size)
+}
+
+func (fi FileInfo) MatchesLabel(field, value string) bool {
+	if fi.Labels == nil {
+		return false
+	}
+	for _, v := range fi.Labels[field] {
+		if v == value {
+			return true
+		}
+	}
+	return false
 }
 
 type Manifest struct {
@@ -195,6 +208,36 @@ func (m *Manifest) PartitionCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.files)
+}
+
+func (m *Manifest) AllFiles() map[string][]FileInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	snap := make(map[string][]FileInfo, len(m.files))
+	for k, v := range m.files {
+		cp := make([]FileInfo, len(v))
+		copy(cp, v)
+		snap[k] = cp
+	}
+	return snap
+}
+
+func (m *Manifest) RemoveFile(partition string, key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	files := m.files[partition]
+	for i, fi := range files {
+		if fi.Key == key {
+			m.totalFiles--
+			m.totalBytes -= fi.Size
+			m.files[partition] = append(files[:i], files[i+1:]...)
+			if len(m.files[partition]) == 0 {
+				delete(m.files, partition)
+			}
+			return
+		}
+	}
 }
 
 func (m *Manifest) AddFile(partition string, fi FileInfo) {

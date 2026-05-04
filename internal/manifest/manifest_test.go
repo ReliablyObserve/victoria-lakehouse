@@ -293,6 +293,110 @@ func TestManifest_SaveTo_CreatesDir(t *testing.T) {
 	}
 }
 
+func TestFileInfo_Labels(t *testing.T) {
+	fi := FileInfo{
+		Key:  "test.parquet",
+		Size: 1000,
+		Labels: map[string][]string{
+			"service.name":  {"api", "worker"},
+			"severity_text": {"INFO", "ERROR"},
+		},
+	}
+
+	if !fi.MatchesLabel("service.name", "api") {
+		t.Error("should match service.name=api")
+	}
+	if !fi.MatchesLabel("service.name", "worker") {
+		t.Error("should match service.name=worker")
+	}
+	if fi.MatchesLabel("service.name", "unknown") {
+		t.Error("should not match service.name=unknown")
+	}
+	if fi.MatchesLabel("missing.field", "any") {
+		t.Error("should not match missing field")
+	}
+}
+
+func TestFileInfo_MatchesLabel_NilLabels(t *testing.T) {
+	fi := FileInfo{Key: "test.parquet", Size: 1000}
+	if fi.MatchesLabel("service.name", "api") {
+		t.Error("nil labels should not match")
+	}
+}
+
+func TestManifest_AllFiles(t *testing.T) {
+	m := newTestManifest()
+	m.AddFile("dt=2026-05-02/hour=10", FileInfo{Key: "a.parquet", Size: 100})
+	m.AddFile("dt=2026-05-02/hour=11", FileInfo{Key: "b.parquet", Size: 200})
+	m.AddFile("dt=2026-05-02/hour=10", FileInfo{Key: "c.parquet", Size: 300})
+
+	all := m.AllFiles()
+	total := 0
+	for _, files := range all {
+		total += len(files)
+	}
+	if total != 3 {
+		t.Errorf("AllFiles total = %d, want 3", total)
+	}
+}
+
+func TestManifest_RemoveFile(t *testing.T) {
+	m := newTestManifest()
+	m.AddFile("dt=2026-05-02/hour=10", FileInfo{Key: "a.parquet", Size: 100})
+	m.AddFile("dt=2026-05-02/hour=10", FileInfo{Key: "b.parquet", Size: 200})
+
+	m.RemoveFile("dt=2026-05-02/hour=10", "a.parquet")
+
+	if m.TotalFiles() != 1 {
+		t.Errorf("TotalFiles = %d, want 1", m.TotalFiles())
+	}
+	if m.TotalBytes() != 200 {
+		t.Errorf("TotalBytes = %d, want 200", m.TotalBytes())
+	}
+}
+
+func TestManifest_RemoveFile_NotFound(t *testing.T) {
+	m := newTestManifest()
+	m.AddFile("dt=2026-05-02/hour=10", FileInfo{Key: "a.parquet", Size: 100})
+
+	m.RemoveFile("dt=2026-05-02/hour=10", "nonexistent.parquet")
+
+	if m.TotalFiles() != 1 {
+		t.Errorf("TotalFiles = %d, want 1 (no change)", m.TotalFiles())
+	}
+}
+
+func TestManifest_SaveLoadRoundTrip_WithLabels(t *testing.T) {
+	m := newTestManifest()
+	may2h10 := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
+
+	fi := FileInfo{
+		Key:       "test.parquet",
+		Size:      1000,
+		RowCount:  50,
+		MinTimeNs: may2h10.UnixNano(),
+		MaxTimeNs: may2h10.Add(30 * time.Minute).UnixNano(),
+		Labels: map[string][]string{
+			"service.name": {"api", "worker"},
+		},
+	}
+	m.AddFile("dt=2026-05-02/hour=10", fi)
+
+	path := t.TempDir() + "/manifest.json"
+	m.SaveTo(path)
+
+	m2 := newTestManifest()
+	m2.LoadFrom(path)
+
+	files := m2.GetFilesForRange(may2h10.UnixNano(), may2h10.Add(time.Hour).UnixNano())
+	if len(files) != 1 {
+		t.Fatalf("files = %d, want 1", len(files))
+	}
+	if !files[0].MatchesLabel("service.name", "api") {
+		t.Error("labels not preserved after save/load")
+	}
+}
+
 func newTestManifest() *Manifest {
 	return New("test-bucket", "logs/", testLogger())
 }
