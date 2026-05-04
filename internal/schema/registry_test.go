@@ -205,3 +205,198 @@ func TestRegistry_ScopeAttrPrefix(t *testing.T) {
 		t.Errorf("Origin = %d, want OriginScopeAttrMap", m.Origin)
 	}
 }
+
+func TestRegistry_ExtraPromoted(t *testing.T) {
+	extra := []ExtraPromoted{
+		{Name: "http.status_code", Type: "string", Bloom: true},
+		{Name: "customer_id", Type: "string", Bloom: true},
+	}
+	r := NewRegistry(LogsProfile, extra...)
+
+	m := r.ResolveToParquet("http.status_code")
+	if m == nil {
+		t.Fatal("extra promoted http.status_code should resolve")
+	}
+	if m.Origin != OriginPromoted {
+		t.Errorf("Origin = %d, want OriginPromoted", m.Origin)
+	}
+	if !m.HasBloom {
+		t.Error("HasBloom should be true")
+	}
+	if m.ParquetColumn != "http.status_code" {
+		t.Errorf("ParquetColumn = %q", m.ParquetColumn)
+	}
+
+	m2 := r.ResolveToParquet("customer_id")
+	if m2 == nil {
+		t.Fatal("extra promoted customer_id should resolve")
+	}
+	if !m2.HasBloom {
+		t.Error("customer_id HasBloom should be true")
+	}
+}
+
+func TestRegistry_ExtraPromotedReverseResolve(t *testing.T) {
+	extra := []ExtraPromoted{
+		{Name: "http.status_code", Type: "string", Bloom: false},
+	}
+	r := NewRegistry(LogsProfile, extra...)
+
+	m := r.ResolveFromParquet("http.status_code")
+	if m == nil {
+		t.Fatal("reverse resolve should find extra promoted")
+	}
+	if m.InternalName != "http.status_code" {
+		t.Errorf("InternalName = %q", m.InternalName)
+	}
+}
+
+func TestRegistry_ExtraPromotedList(t *testing.T) {
+	extra := []ExtraPromoted{
+		{Name: "http.status_code", Type: "string", Bloom: true},
+		{Name: "customer_id", Type: "string", Bloom: false},
+	}
+	r := NewRegistry(LogsProfile, extra...)
+
+	got := r.ExtraPromoted()
+	if len(got) != 2 {
+		t.Fatalf("ExtraPromoted() len = %d, want 2", len(got))
+	}
+	if got[0].Name != "http.status_code" {
+		t.Errorf("got[0].Name = %q", got[0].Name)
+	}
+}
+
+func TestRegistry_IsPromoted(t *testing.T) {
+	r := NewRegistry(LogsProfile)
+
+	if !r.IsPromoted("_time") {
+		t.Error("_time should be promoted")
+	}
+	if !r.IsPromoted("service.name") {
+		t.Error("service.name should be promoted")
+	}
+	if r.IsPromoted("random.field") {
+		t.Error("random.field should not be promoted")
+	}
+}
+
+func TestRegistry_IsPromoted_WithExtra(t *testing.T) {
+	extra := []ExtraPromoted{
+		{Name: "customer_id", Type: "string", Bloom: true},
+	}
+	r := NewRegistry(LogsProfile, extra...)
+
+	if !r.IsPromoted("customer_id") {
+		t.Error("extra promoted customer_id should be promoted")
+	}
+	if !r.IsPromoted("_time") {
+		t.Error("default promoted _time should still be promoted")
+	}
+	if r.IsPromoted("unknown") {
+		t.Error("unknown should not be promoted")
+	}
+}
+
+func TestRegistry_ExtraPromotedOverridesDefault(t *testing.T) {
+	extra := []ExtraPromoted{
+		{Name: "service.name", Type: "string", Bloom: false},
+	}
+	r := NewRegistry(LogsProfile, extra...)
+
+	m := r.ResolveToParquet("service.name")
+	if m == nil {
+		t.Fatal("service.name should resolve")
+	}
+	if m.HasBloom {
+		t.Error("extra promoted should override default bloom setting")
+	}
+}
+
+func TestRegistry_NoExtraPromoted(t *testing.T) {
+	r := NewRegistry(LogsProfile)
+	got := r.ExtraPromoted()
+	if len(got) != 0 {
+		t.Errorf("ExtraPromoted() should be empty, got %d", len(got))
+	}
+}
+
+func TestRegistry_DottedConvention_SpanAttrs(t *testing.T) {
+	profile := Profile{
+		Promoted:     []FieldMapping{},
+		MapColumns:   []string{"span.attributes"},
+		StreamFields: []string{},
+	}
+	r := NewRegistry(profile)
+	m := r.ResolveToParquet("my.custom.field")
+	if m == nil {
+		t.Fatal("dotted field should resolve to MAP fallback")
+	}
+	if m.Origin != OriginSpanAttrMap {
+		t.Errorf("Origin = %d, want OriginSpanAttrMap (%d)", m.Origin, OriginSpanAttrMap)
+	}
+	if m.MapColumn != "span.attributes" {
+		t.Errorf("MapColumn = %q, want span.attributes", m.MapColumn)
+	}
+}
+
+func TestRegistry_DottedConvention_LogAttrs(t *testing.T) {
+	profile := Profile{
+		Promoted:     []FieldMapping{},
+		MapColumns:   []string{"log.attributes"},
+		StreamFields: []string{},
+	}
+	r := NewRegistry(profile)
+	m := r.ResolveToParquet("custom.field")
+	if m == nil {
+		t.Fatal("dotted field should resolve to MAP fallback")
+	}
+	if m.Origin != OriginLogAttrMap {
+		t.Errorf("Origin = %d, want OriginLogAttrMap (%d)", m.Origin, OriginLogAttrMap)
+	}
+}
+
+func TestRegistry_DottedConvention_ScopeAttrs(t *testing.T) {
+	profile := Profile{
+		Promoted:     []FieldMapping{},
+		MapColumns:   []string{"scope.attributes"},
+		StreamFields: []string{},
+	}
+	r := NewRegistry(profile)
+	m := r.ResolveToParquet("custom.field")
+	if m == nil {
+		t.Fatal("should resolve")
+	}
+	if m.Origin != OriginScopeAttrMap {
+		t.Errorf("Origin = %d, want OriginScopeAttrMap", m.Origin)
+	}
+}
+
+func TestRegistry_DottedConvention_UnknownMapColumn(t *testing.T) {
+	profile := Profile{
+		Promoted:     []FieldMapping{},
+		MapColumns:   []string{"custom.attributes"},
+		StreamFields: []string{},
+	}
+	r := NewRegistry(profile)
+	m := r.ResolveToParquet("field")
+	if m == nil {
+		t.Fatal("should resolve to fallback")
+	}
+	if m.Origin != OriginResourceMap {
+		t.Errorf("Origin = %d, want OriginResourceMap (default)", m.Origin)
+	}
+}
+
+func TestRegistry_NoMapColumns(t *testing.T) {
+	profile := Profile{
+		Promoted:     []FieldMapping{},
+		MapColumns:   []string{},
+		StreamFields: []string{},
+	}
+	r := NewRegistry(profile)
+	m := r.ResolveToParquet("unknown.field")
+	if m != nil {
+		t.Error("should return nil when no MAP columns and no promoted match")
+	}
+}

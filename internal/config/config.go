@@ -16,6 +16,14 @@ const (
 	ModeTraces Mode = "traces"
 )
 
+type Role string
+
+const (
+	RoleAll    Role = "all"
+	RoleInsert Role = "insert"
+	RoleSelect Role = "select"
+)
+
 type Topology string
 
 const (
@@ -27,6 +35,7 @@ const (
 
 type Config struct {
 	Mode     Mode     `yaml:"mode"`
+	Role     Role     `yaml:"role"`
 	Topology Topology `yaml:"topology"`
 
 	S3             S3Config             `yaml:"s3"`
@@ -38,8 +47,37 @@ type Config struct {
 	Peer           PeerConfig           `yaml:"peer"`
 	Startup        StartupConfig        `yaml:"startup"`
 	Query          QueryConfig          `yaml:"query"`
+	Insert         InsertConfig         `yaml:"insert"`
+	Schema         SchemaConfig         `yaml:"schema"`
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
 	Tenant         TenantConfig         `yaml:"tenant"`
+}
+
+type InsertConfig struct {
+	FlushInterval    time.Duration `yaml:"flush_interval"`
+	MaxBufferRows    int           `yaml:"max_buffer_rows"`
+	MaxBufferBytes   string        `yaml:"max_buffer_bytes"`
+	RowGroupSize     int           `yaml:"row_group_size"`
+	BloomColumns     []string      `yaml:"bloom_columns"`
+	CompressionLevel int           `yaml:"compression_level"`
+	WALEnabled       bool          `yaml:"wal_enabled"`
+	WALDir           string        `yaml:"wal_dir"`
+}
+
+func (c *InsertConfig) MaxBufferBytesN() int64 {
+	n, _ := ParseSizeBytes(c.MaxBufferBytes)
+	if n <= 0 {
+		return 256 * 1024 * 1024
+	}
+	return n
+}
+
+func (c *Config) InsertEnabled() bool {
+	return c.Role == RoleAll || c.Role == RoleInsert
+}
+
+func (c *Config) SelectEnabled() bool {
+	return c.Role == RoleAll || c.Role == RoleSelect
 }
 
 type S3Config struct {
@@ -122,8 +160,19 @@ type TenantConfig struct {
 	PrefixTemplate string `yaml:"prefix_template"`
 }
 
+type ExtraPromotedColumn struct {
+	Name  string `yaml:"name"`
+	Type  string `yaml:"type"`
+	Bloom bool   `yaml:"bloom"`
+}
+
+type SchemaConfig struct {
+	ExtraPromoted []ExtraPromotedColumn `yaml:"extra_promoted"`
+}
+
 func Default() *Config {
 	return &Config{
+		Role:     RoleAll,
 		Topology: TopologyAuto,
 
 		S3: S3Config{
@@ -188,6 +237,16 @@ func Default() *Config {
 			SuccessThreshold: 2,
 		},
 
+		Insert: InsertConfig{
+			FlushInterval:    10 * time.Second,
+			MaxBufferRows:    50000,
+			MaxBufferBytes:   "256MB",
+			RowGroupSize:     10000,
+			BloomColumns:     []string{"service.name", "trace_id"},
+			CompressionLevel: 3,
+			WALDir:           "/data/lakehouse/wal",
+		},
+
 		Tenant: TenantConfig{
 			PrefixTemplate: "{AccountID}/{ProjectID}/",
 		},
@@ -225,6 +284,41 @@ func (c *Config) Validate() error {
 	}
 	if c.S3.Bucket == "" {
 		return fmt.Errorf("--lakehouse.s3.bucket is required")
+	}
+
+	switch c.Role {
+	case RoleAll, RoleInsert, RoleSelect, "":
+	default:
+		return fmt.Errorf("--lakehouse.role must be one of: all, insert, select; got %q", c.Role)
+	}
+	if c.Role == "" {
+		c.Role = RoleAll
+	}
+
+	if c.InsertEnabled() {
+		if c.Insert.FlushInterval <= 0 {
+			return fmt.Errorf("--lakehouse.insert.flush-interval must be positive")
+		}
+		if c.Insert.MaxBufferRows <= 0 {
+			return fmt.Errorf("--lakehouse.insert.max-buffer-rows must be positive")
+		}
+		if c.Insert.RowGroupSize <= 0 {
+			return fmt.Errorf("--lakehouse.insert.row-group-size must be positive")
+		}
+		if c.Insert.CompressionLevel < 1 || c.Insert.CompressionLevel > 22 {
+			return fmt.Errorf("--lakehouse.insert.compression-level must be 1-22, got %d", c.Insert.CompressionLevel)
+		}
+	}
+
+	for _, ep := range c.Schema.ExtraPromoted {
+		if ep.Name == "" {
+			return fmt.Errorf("--lakehouse.schema.extra-promoted: name is required")
+		}
+		switch ep.Type {
+		case "string", "int32", "int64", "float64":
+		default:
+			return fmt.Errorf("--lakehouse.schema.extra-promoted %q: type must be string, int32, int64, or float64; got %q", ep.Name, ep.Type)
+		}
 	}
 
 	switch c.Topology {
@@ -497,6 +591,42 @@ func mergeConfig(base, overlay *Config) *Config {
 	// HotBoundary
 	if overlay.HotBoundary != "" {
 		base.HotBoundary = overlay.HotBoundary
+	}
+
+	// Role
+	if overlay.Role != "" {
+		base.Role = overlay.Role
+	}
+
+	// Insert
+	if overlay.Insert.FlushInterval > 0 {
+		base.Insert.FlushInterval = overlay.Insert.FlushInterval
+	}
+	if overlay.Insert.MaxBufferRows > 0 {
+		base.Insert.MaxBufferRows = overlay.Insert.MaxBufferRows
+	}
+	if overlay.Insert.MaxBufferBytes != "" {
+		base.Insert.MaxBufferBytes = overlay.Insert.MaxBufferBytes
+	}
+	if overlay.Insert.RowGroupSize > 0 {
+		base.Insert.RowGroupSize = overlay.Insert.RowGroupSize
+	}
+	if len(overlay.Insert.BloomColumns) > 0 {
+		base.Insert.BloomColumns = overlay.Insert.BloomColumns
+	}
+	if overlay.Insert.CompressionLevel > 0 {
+		base.Insert.CompressionLevel = overlay.Insert.CompressionLevel
+	}
+	if overlay.Insert.WALEnabled {
+		base.Insert.WALEnabled = true
+	}
+	if overlay.Insert.WALDir != "" {
+		base.Insert.WALDir = overlay.Insert.WALDir
+	}
+
+	// Schema
+	if len(overlay.Schema.ExtraPromoted) > 0 {
+		base.Schema.ExtraPromoted = overlay.Schema.ExtraPromoted
 	}
 
 	return base

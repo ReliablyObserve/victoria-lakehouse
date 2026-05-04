@@ -162,6 +162,137 @@ func TestManifest_Empty(t *testing.T) {
 	}
 }
 
+func TestFileInfo_CompressionRatio(t *testing.T) {
+	fi := FileInfo{RawBytes: 10000, Size: 2500}
+	if r := fi.CompressionRatio(); r != 4.0 {
+		t.Errorf("CompressionRatio = %f, want 4.0", r)
+	}
+
+	fi2 := FileInfo{RawBytes: 0, Size: 100}
+	if r := fi2.CompressionRatio(); r != 0 {
+		t.Errorf("CompressionRatio with zero raw = %f, want 0", r)
+	}
+
+	fi3 := FileInfo{RawBytes: 100, Size: 0}
+	if r := fi3.CompressionRatio(); r != 0 {
+		t.Errorf("CompressionRatio with zero size = %f, want 0", r)
+	}
+}
+
+func TestManifest_AddFile_EnhancedFileInfo(t *testing.T) {
+	m := newTestManifest()
+
+	may2h10 := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
+
+	fi := FileInfo{
+		Key:               "logs/dt=2026-05-02/hour=10/abc.parquet",
+		Size:              5000,
+		RowCount:          200,
+		MinTimeNs:         may2h10.UnixNano(),
+		MaxTimeNs:         may2h10.Add(30 * time.Minute).UnixNano(),
+		RawBytes:          25000,
+		SchemaFingerprint: "abcd1234",
+	}
+	m.AddFile("dt=2026-05-02/hour=10", fi)
+
+	files := m.GetFilesForRange(may2h10.UnixNano(), may2h10.Add(time.Hour).UnixNano())
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	if files[0].RowCount != 200 {
+		t.Errorf("RowCount = %d, want 200", files[0].RowCount)
+	}
+	if files[0].RawBytes != 25000 {
+		t.Errorf("RawBytes = %d, want 25000", files[0].RawBytes)
+	}
+	if files[0].SchemaFingerprint != "abcd1234" {
+		t.Errorf("SchemaFingerprint = %q, want abcd1234", files[0].SchemaFingerprint)
+	}
+	if r := files[0].CompressionRatio(); r != 5.0 {
+		t.Errorf("CompressionRatio = %f, want 5.0", r)
+	}
+}
+
+func TestManifest_SaveLoadRoundTrip(t *testing.T) {
+	m := newTestManifest()
+
+	may2h10 := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
+	may2h11 := time.Date(2026, 5, 2, 11, 0, 0, 0, time.UTC)
+
+	fi1 := FileInfo{
+		Key:               "logs/dt=2026-05-02/hour=10/a.parquet",
+		Size:              1000,
+		RowCount:          50,
+		MinTimeNs:         may2h10.UnixNano(),
+		MaxTimeNs:         may2h10.Add(59 * time.Minute).UnixNano(),
+		RawBytes:          5000,
+		SchemaFingerprint: "fp1",
+	}
+	fi2 := FileInfo{
+		Key:               "logs/dt=2026-05-02/hour=11/b.parquet",
+		Size:              2000,
+		RowCount:          100,
+		MinTimeNs:         may2h11.UnixNano(),
+		MaxTimeNs:         may2h11.Add(59 * time.Minute).UnixNano(),
+		RawBytes:          10000,
+		SchemaFingerprint: "fp1",
+	}
+	m.AddFile("dt=2026-05-02/hour=10", fi1)
+	m.AddFile("dt=2026-05-02/hour=11", fi2)
+
+	savePath := t.TempDir() + "/manifest.json"
+	if err := m.SaveTo(savePath); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	m2 := newTestManifest()
+	if err := m2.LoadFrom(savePath); err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+
+	if m2.TotalFiles() != 2 {
+		t.Errorf("loaded TotalFiles = %d, want 2", m2.TotalFiles())
+	}
+	if m2.TotalBytes() != 3000 {
+		t.Errorf("loaded TotalBytes = %d, want 3000", m2.TotalBytes())
+	}
+
+	files := m2.GetFilesForRange(may2h10.UnixNano(), may2h11.Add(time.Hour).UnixNano())
+	if len(files) != 2 {
+		t.Fatalf("loaded GetFilesForRange = %d, want 2", len(files))
+	}
+
+	var found bool
+	for _, f := range files {
+		if f.Key == fi1.Key && f.RowCount == 50 && f.RawBytes == 5000 {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("fi1 metadata not preserved after save/load")
+	}
+}
+
+func TestManifest_LoadFrom_NotExist(t *testing.T) {
+	m := newTestManifest()
+	if err := m.LoadFrom(t.TempDir() + "/nonexistent.json"); err != nil {
+		t.Errorf("LoadFrom nonexistent should return nil, got: %v", err)
+	}
+	if m.TotalFiles() != 0 {
+		t.Error("should be empty after loading nonexistent")
+	}
+}
+
+func TestManifest_SaveTo_CreatesDir(t *testing.T) {
+	m := newTestManifest()
+	m.AddFile("dt=2026-05-02/hour=10", FileInfo{Key: "test.parquet", Size: 100})
+
+	path := t.TempDir() + "/subdir/deep/manifest.json"
+	if err := m.SaveTo(path); err != nil {
+		t.Fatalf("SaveTo should create dirs: %v", err)
+	}
+}
+
 func newTestManifest() *Manifest {
 	return New("test-bucket", "logs/", testLogger())
 }

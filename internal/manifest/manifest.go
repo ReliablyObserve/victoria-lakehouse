@@ -2,9 +2,12 @@ package manifest
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -15,8 +18,21 @@ import (
 )
 
 type FileInfo struct {
-	Key  string
-	Size int64
+	Key               string `json:"key"`
+	Size              int64  `json:"size"`
+	RowCount          int64  `json:"row_count,omitempty"`
+	MinTimeNs         int64  `json:"min_time_ns,omitempty"`
+	MaxTimeNs         int64  `json:"max_time_ns,omitempty"`
+	RawBytes          int64  `json:"raw_bytes,omitempty"`
+	SchemaFingerprint string `json:"schema_fp,omitempty"`
+	CompactionLevel   int    `json:"compaction_level,omitempty"`
+}
+
+func (fi FileInfo) CompressionRatio() float64 {
+	if fi.RawBytes <= 0 || fi.Size <= 0 {
+		return 0
+	}
+	return float64(fi.RawBytes) / float64(fi.Size)
 }
 
 type Manifest struct {
@@ -224,6 +240,83 @@ func extractPartition(key string) string {
 		return dtPart
 	}
 	return dtPart + "/" + hourPart
+}
+
+type persistedManifest struct {
+	Files       map[string][]FileInfo `json:"files"`
+	MinTimeNs   int64                 `json:"min_time_ns"`
+	MaxTimeNs   int64                 `json:"max_time_ns"`
+	TotalFiles_ int                   `json:"total_files"`
+	TotalBytes_ int64                 `json:"total_bytes"`
+	SavedAt     time.Time             `json:"saved_at"`
+}
+
+func (m *Manifest) SaveTo(path string) error {
+	m.mu.RLock()
+	snap := persistedManifest{
+		Files:       m.files,
+		MinTimeNs:   m.minTime.UnixNano(),
+		MaxTimeNs:   m.maxTime.UnixNano(),
+		TotalFiles_: m.totalFiles,
+		TotalBytes_: m.totalBytes,
+		SavedAt:     time.Now(),
+	}
+	m.mu.RUnlock()
+
+	data, err := json.Marshal(snap)
+	if err != nil {
+		return fmt.Errorf("marshal manifest: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create dir: %w", err)
+	}
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return fmt.Errorf("write manifest: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("rename manifest: %w", err)
+	}
+
+	m.logger.Debug("manifest saved", "path", path, "files", snap.TotalFiles_, "bytes", len(data))
+	return nil
+}
+
+func (m *Manifest) LoadFrom(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read manifest: %w", err)
+	}
+
+	var snap persistedManifest
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return fmt.Errorf("unmarshal manifest: %w", err)
+	}
+
+	m.mu.Lock()
+	m.files = snap.Files
+	m.totalFiles = snap.TotalFiles_
+	m.totalBytes = snap.TotalBytes_
+	if snap.MinTimeNs != 0 {
+		m.minTime = time.Unix(0, snap.MinTimeNs)
+	}
+	if snap.MaxTimeNs != 0 {
+		m.maxTime = time.Unix(0, snap.MaxTimeNs)
+	}
+	m.mu.Unlock()
+
+	m.logger.Info("manifest loaded from disk",
+		"path", path,
+		"files", snap.TotalFiles_,
+		"bytes", snap.TotalBytes_,
+		"saved_at", snap.SavedAt,
+	)
+	return nil
 }
 
 // parsePartitionTime parses "dt=2026-05-02/hour=10" into a time.Time.

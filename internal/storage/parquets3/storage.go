@@ -36,6 +36,7 @@ type Storage struct {
 	discovery  *discovery.Discovery
 	peerCache  *peercache.PeerCache
 	peerHandler *peercache.Handler
+	writer     *BatchWriter
 }
 
 func New(cfg *config.Config, logger *slog.Logger) (*Storage, error) {
@@ -107,6 +108,11 @@ func New(cfg *config.Config, logger *slog.Logger) (*Storage, error) {
 		ph = peercache.NewHandler(cfg.Peer.AuthKey)
 	}
 
+	var bw *BatchWriter
+	if cfg.InsertEnabled() {
+		bw = NewBatchWriter(&cfg.Insert, pool, m, prefix, cfg.Mode, logger)
+	}
+
 	return &Storage{
 		cfg:         cfg,
 		logger:      l,
@@ -121,7 +127,40 @@ func New(cfg *config.Config, logger *slog.Logger) (*Storage, error) {
 		discovery:   disc,
 		peerCache:   pc,
 		peerHandler: ph,
+		writer:      bw,
 	}, nil
+}
+
+// StartWriter begins the background flush loop. Call after New().
+func (s *Storage) StartWriter() {
+	if s.writer != nil {
+		s.writer.Start()
+	}
+}
+
+// Writer returns the batch writer (nil if insert not enabled).
+func (s *Storage) Writer() *BatchWriter {
+	return s.writer
+}
+
+// MustAddLogRows adds log rows to the write buffer. Panics on nil writer.
+func (s *Storage) MustAddLogRows(rows []schema.LogRow) {
+	s.writer.AddLogRows(rows)
+}
+
+// MustAddTraceRows adds trace rows to the write buffer. Panics on nil writer.
+func (s *Storage) MustAddTraceRows(rows []schema.TraceRow) {
+	s.writer.AddTraceRows(rows)
+}
+
+// CanWriteData checks S3 connectivity for writes.
+func (s *Storage) CanWriteData() error {
+	if s.writer == nil {
+		return fmt.Errorf("insert not enabled (role=%s)", s.cfg.Role)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return s.writer.CanWriteData(ctx)
 }
 
 func (s *Storage) RunQuery(ctx context.Context, qctx *storage.QueryContext, writeBlock storage.WriteDataBlockFunc) error {
@@ -595,6 +634,10 @@ func (s *Storage) Manifest() *manifest.Manifest {
 }
 
 func (s *Storage) Close() error {
+	if s.writer != nil {
+		s.writer.Stop()
+		s.logger.Info("writer stopped and final flush completed")
+	}
 	if s.persister != nil {
 		if err := s.persister.SaveLabelIndex(s.labelIndex); err != nil {
 			s.logger.Warn("failed to persist label index", "error", err)
