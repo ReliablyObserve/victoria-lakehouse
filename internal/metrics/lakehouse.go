@@ -48,6 +48,10 @@ var (
 		[]float64{0.1, 0.5, 1, 5, 10, 30, 60})
 	DiscoveryHotBoundaryDays = NewFloatGauge("lakehouse_discovery_hot_boundary_days")
 	DiscoveryGapDays         = NewFloatGauge("lakehouse_discovery_hot_boundary_gap_days")
+	ManifestPushTotal              = NewCounter("lakehouse_manifest_push_total")
+	ManifestPushPeers              = NewGauge("lakehouse_manifest_push_peers")
+	ManifestPushErrorsTotal        = NewCounter("lakehouse_manifest_push_errors_total")
+	ManifestUpdateReceivedTotal    = NewCounter("lakehouse_manifest_update_received_total")
 )
 
 // Parquet engine metrics
@@ -91,4 +95,25 @@ var (
 var (
 	QueryDuration = NewHistogram("lakehouse_query_duration_seconds", DefBuckets)
 	QueryRowsTotal = NewCounter("lakehouse_query_rows_returned_total")
+)
+
+// Compaction metrics
+var (
+	CompactionRunsTotal         = NewCounter("lakehouse_compaction_runs_total")
+	CompactionFilesInputTotal   = NewCounter("lakehouse_compaction_files_input_total")
+	CompactionFilesOutputTotal  = NewCounter("lakehouse_compaction_files_output_total")
+	CompactionBytesReadTotal    = NewCounter("lakehouse_compaction_bytes_read_total")
+	CompactionBytesWrittenTotal = NewCounter("lakehouse_compaction_bytes_written_total")
+	CompactionRowsMergedTotal   = NewCounter("lakehouse_compaction_rows_merged_total")
+	CompactionDuration          = NewHistogram("lakehouse_compaction_duration_seconds",
+		[]float64{0.1, 0.5, 1, 5, 10, 30, 60, 120})
+	CompactionErrorsTotal  = NewCounter("lakehouse_compaction_errors_total")
+	CompactionSkippedTotal = NewCounterVec("lakehouse_compaction_skipped_total", "reason")
+)
+
+// Election metrics
+var (
+	ElectionLeader            = NewGauge("lakehouse_election_leader")
+	ElectionTransitionsTotal  = NewCounter("lakehouse_election_transitions_total")
+	ElectionHealthChecksTotal = NewCounterVec("lakehouse_election_health_checks_total", "result")
 )

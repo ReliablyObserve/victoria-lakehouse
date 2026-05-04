@@ -1,0 +1,35 @@
+name: Load Test
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  loadtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: Start E2E stack
+        run: docker compose -f deployment/docker/docker-compose-e2e.yml up -d
+      - name: Wait for lakehouse ready
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:19428/ready && break
+            sleep 2
+          done
+      - name: Run load tests
+        run: go run ./cmd/loadtest --target=http://localhost:19428 --mode=all --duration=120s --output=loadtest-results.json
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loadtest-results
+          path: loadtest-results.json
+      - name: Stop E2E stack
+        if: always()
+        run: docker compose -f deployment/docker/docker-compose-e2e.yml down

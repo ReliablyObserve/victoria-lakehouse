@@ -63,6 +63,38 @@ Victoria Lakehouse exposes ~80 Prometheus metrics at `/metrics` using the `lakeh
 | `lakehouse_parquet_bloom_checks_total` | Counter | `result` | Bloom lookups |
 | `lakehouse_parquet_column_bytes_read_total` | Counter | | Parquet I/O |
 
+### Compaction Metrics (M9)
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `lakehouse_compaction_runs_total` | Counter | | Compaction cycles started |
+| `lakehouse_compaction_files_input_total` | Counter | | Source files read across all compactions |
+| `lakehouse_compaction_files_output_total` | Counter | | Output files written |
+| `lakehouse_compaction_bytes_read_total` | Counter | | Bytes downloaded from S3 for compaction |
+| `lakehouse_compaction_bytes_written_total` | Counter | | Bytes uploaded to S3 after compaction |
+| `lakehouse_compaction_rows_merged_total` | Counter | | Total rows processed by compaction |
+| `lakehouse_compaction_duration_seconds` | Histogram | | Per-partition compaction time |
+| `lakehouse_compaction_errors_total` | Counter | | Failed compaction attempts |
+| `lakehouse_compaction_level_files` | Gauge | `level` | Current file count at each compaction level |
+| `lakehouse_compaction_skipped_total` | Counter | `reason` | Skipped partitions (`locked`, `not_leader`, `below_threshold`, `too_recent`, `schema_mismatch`) |
+
+### Leader Election Metrics (M9)
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `lakehouse_election_leader` | Gauge | | 1 if this instance is the current leader, 0 otherwise |
+| `lakehouse_election_transitions_total` | Counter | | Total leadership transitions |
+| `lakehouse_election_health_checks_total` | Counter | `result` | Liveness check outcomes (`alive`, `dead`, `timeout`) — S3 election mode |
+
+### Manifest Push Metrics (M9)
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `lakehouse_manifest_push_total` | Counter | | Push notifications sent to peers after flush/compaction |
+| `lakehouse_manifest_push_errors_total` | Counter | | Failed push attempts |
+| `lakehouse_manifest_push_peers` | Gauge | | Number of peers currently notified |
+| `lakehouse_manifest_update_received_total` | Counter | | Manifest update notifications received from peers |
+
 ### Startup Metrics
 
 | Metric | Type | Description |

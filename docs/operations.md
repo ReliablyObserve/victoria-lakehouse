@@ -139,6 +139,62 @@ Alert: `LakehouseS3CircuitBreakerOpen`.
 | 10TB S3 | 12 (4/AZ) | 2 vCPU | 2GB | 100GB |
 | 100TB S3 | 24 (8/AZ) | 2 vCPU | 4GB | 200GB |
 
+## Compaction
+
+### Enabling Compaction
+
+Compaction is disabled by default. Enable it for production deployments:
+
+```bash
+lakehouse \
+  --lakehouse.compaction.enabled=true \
+  --lakehouse.compaction.leader-election=auto \
+  --lakehouse.compaction.min-files-l0=10 \
+  --lakehouse.compaction.min-files-l1=10
+```
+
+Or in YAML:
+
+```yaml
+lakehouse:
+  compaction:
+    enabled: true
+    leader_election: auto
+    min_files_l0: 10
+    min_files_l1: 10
+    interval: 5m
+    min_age: 1h
+```
+
+Compaction is only meaningful when inserts are active. For read-only (select-only) instances, leave compaction disabled.
+
+### Monitoring Compaction
+
+Key metrics to watch:
+
+| Metric | Alert condition |
+|---|---|
+| `lakehouse_compaction_errors_total` (rate) | Any sustained errors |
+| `lakehouse_compaction_level_files{level="0"}` | Should trend down over time |
+| `lakehouse_compaction_duration_seconds` (p95) | >60s may indicate S3 saturation |
+| `lakehouse_election_leader` | Should be 1 on exactly one instance in the fleet |
+
+### Leader Election Troubleshooting
+
+**K8s mode — "not becoming leader"**
+
+1. Check that the Helm chart RBAC was applied: the ServiceAccount needs `get/create/update` on `leases.coordination.k8s.io`.
+2. Check `lakehouse_election_transitions_total` — transitions should occur when pods restart.
+3. Increase `--lakehouse.compaction.lease-duration` if instances are losing leadership due to transient API server latency.
+
+**S3 mode — lock not being released after crash**
+
+The lock TTL (`--lakehouse.compaction.s3-lock-ttl`, default 60s) controls when a stale lock may be stolen. After a crash, the next instance will take over within one TTL. To recover faster, reduce the TTL or manually delete the lock file `{prefix}.election-lock`.
+
+**`none` mode — multiple instances all compact**
+
+This is expected for `none` mode. Only use `none` for single-instance deployments. For fleets, use `auto`, `k8s`, or `s3`.
+
 ## Troubleshooting
 
 ### Queries return empty when data exists

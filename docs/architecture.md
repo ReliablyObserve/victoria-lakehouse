@@ -648,6 +648,56 @@ graph TB
 
 For detailed collector configurations (vlagent, OTEL Collector), DR scenarios, and Kubernetes deployment layouts, see [Deployment Architecture](deployment-architecture.md).
 
+## Compaction Pipeline (M9)
+
+Victoria Lakehouse uses a leveled compaction strategy to merge small L0 flush files into progressively larger L1 and L2 files, improving query performance by reducing file counts and increasing row group density.
+
+### Level Layout
+
+```
+L0: Raw flush files  (small, many — written by BatchWriter on each flush)
+L1: Merged files     (medium — L0 files merged when MinFilesL0 threshold reached)
+L2: Large files      (large  — L1 files merged when MinFilesL1 threshold reached)
+```
+
+Files are named `compacted-L1-<uuid8>.parquet` and `compacted-L2-<uuid8>.parquet` to distinguish levels.
+
+### Compaction Execution
+
+1. **Scheduler** runs a periodic scan (default: every 5 minutes). Only the elected leader runs compaction.
+2. **Policy** identifies eligible partitions: L0→L1 is prioritized, then L1→L2. Partitions younger than `MinAge` are skipped to avoid compacting actively-written data.
+3. **Sentinel** acquires a per-partition S3 lock (a small sentinel file) before compacting. This prevents duplicate work when multiple instances exist.
+4. **Compactor** downloads source files, merges all rows sorted by `timestamp_unix_nano`, writes a single Parquet file with bloom filters, uploads it, updates the manifest, and deletes source files.
+
+Schema fingerprint matching ensures only files with identical schemas are merged. If a partition contains files with mixed schemas, only the majority fingerprint group is compacted.
+
+### Partition Sentinels
+
+Before compacting a partition, the Scheduler writes a sentinel file to S3 (`{prefix}{partition}/.compacting`). Any other instance that checks and finds a sentinel skips that partition. The sentinel is released after compaction completes or fails.
+
+## Leader Election (M9)
+
+Only one instance runs compaction at a time. Victoria Lakehouse supports four election modes:
+
+| Mode | Backend | Use case |
+|---|---|---|
+| `auto` | K8s Lease if in K8s, else S3 lock | Recommended default |
+| `k8s` | Kubernetes Lease object | Kubernetes deployments |
+| `s3` | S3 lock file + HTTP liveness | Non-Kubernetes deployments |
+| `none` | No coordination (always leader) | Single-instance / dev |
+
+**K8s mode**: Uses `coordination.k8s.io/v1` Lease objects. Requires a ServiceAccount with `get/create/update` on Lease resources (Helm chart provides RBAC automatically).
+
+**S3 mode**: Writes a JSON lock file to S3 with holder identity, address, and heartbeat timestamp. Before stealing an expired lock, the challenger performs an HTTP liveness check against the current holder's address. This prevents false takeovers due to clock skew or S3 latency spikes.
+
+**auto mode**: In-cluster (KUBERNETES_SERVICE_HOST set) → K8s. Outside cluster with S3 configured → S3. Otherwise → none.
+
+## Peer Manifest Push Notifications (M9)
+
+After each flush or compaction, the instance that wrote new files notifies all peers by POSTing to their `/internal/manifest/update` endpoint. Peers apply the update immediately, without waiting for their next S3 poll interval.
+
+This reduces manifest staleness from up to 5 minutes (polling interval) to near-zero for data written by the fleet. It is an optimization — peers still fall back to periodic S3 polling for correctness.
+
 For analytics tool setup (DuckDB, Trino, Spark, ClickHouse, Pandas), see [Analytics](analytics.md).
 
 ## Data Flow (Write + Read Path)

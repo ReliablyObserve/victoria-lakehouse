@@ -212,6 +212,15 @@ func (m *Manifest) PartitionCount() int {
 	return len(m.files)
 }
 
+func (m *Manifest) FilesForPartition(partition string) []FileInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	files := m.files[partition]
+	cp := make([]FileInfo, len(files))
+	copy(cp, files)
+	return cp
+}
+
 func (m *Manifest) AllFiles() map[string][]FileInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -263,6 +272,11 @@ func (m *Manifest) AddFile(partition string, fi FileInfo) {
 	if m.maxTime.IsZero() || end.After(m.maxTime) {
 		m.maxTime = end
 	}
+}
+
+// ExtractPartition is the exported wrapper for extractPartition.
+func ExtractPartition(key string) string {
+	return extractPartition(key)
 }
 
 // extractPartition extracts "dt=YYYY-MM-DD/hour=HH" from an S3 key.
@@ -364,6 +378,11 @@ func (m *Manifest) LoadFrom(path string) error {
 		"saved_at", snap.SavedAt,
 	)
 	return nil
+}
+
+// ParsePartitionTime is the exported wrapper for parsePartitionTime.
+func ParsePartitionTime(partition string) (time.Time, error) {
+	return parsePartitionTime(partition)
 }
 
 // parsePartitionTime parses "dt=2026-05-02/hour=10" into a time.Time.

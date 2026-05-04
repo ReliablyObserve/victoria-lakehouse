@@ -12,9 +12,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/compaction"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/election"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/insertapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/internalselect"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/selectapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
@@ -43,6 +46,10 @@ func main() {
 		listenAddr       = flag.String("httpListenAddr", "", "HTTP listen address (auto-set from mode)")
 		logLevel         = flag.String("loggerLevel", "INFO", "Log level: DEBUG, INFO, WARN, ERROR")
 		manifestRefresh  = flag.Duration("lakehouse.manifest.refresh-interval", 0, "Manifest refresh interval (e.g., 30s)")
+
+		compactionEnabled  = flag.Bool("lakehouse.compaction.enabled", false, "Enable compaction scheduler")
+		compactionInterval = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
+		compactionElection = flag.String("lakehouse.compaction.leader-election", "", "Election mode: auto, k8s, s3, none")
 	)
 	flag.Parse()
 
@@ -55,7 +62,8 @@ func main() {
 	}
 
 	applyFlags(cfg, *mode, *role, *s3Bucket, *s3Region, *s3Prefix, *s3Endpoint,
-		*s3AccessKey, *s3SecretKey, *s3PathStyle, *topology, *hotBoundary, *manifestRefresh, *flushInterval)
+		*s3AccessKey, *s3SecretKey, *s3PathStyle, *topology, *hotBoundary, *manifestRefresh, *flushInterval,
+		*compactionEnabled, *compactionInterval, *compactionElection)
 
 	if err := cfg.Validate(); err != nil {
 		logger.Error("invalid config", "error", err)
@@ -87,6 +95,81 @@ func main() {
 	}
 
 	store.StartWriter()
+
+	var pusher *manifest.Pusher
+	if cfg.Discovery.PeerHeadlessService != "" {
+		disc := store.Discovery()
+		pusher = manifest.NewPusher(manifest.PusherConfig{
+			GetPeers:   func() []string { return disc.GetPeers() },
+			AuthSecret: cfg.Peer.AuthKey,
+			SelfAddr:   addr,
+			Logger:     logger,
+		})
+	}
+
+	var sched *compaction.Scheduler
+	if cfg.Compaction.Enabled {
+		leader := election.NewAutoElector(election.AutoElectorConfig{
+			Mode:    cfg.Compaction.LeaderElection,
+			S3Store: store.Pool(),
+			S3Config: election.S3ElectorConfig{
+				LockKey:           cfg.AutoPrefix() + "_compaction_lock.json",
+				Identity:          hostname(),
+				Address:           addr,
+				HeartbeatInterval: cfg.Compaction.S3Heartbeat,
+				LockTTL:           cfg.Compaction.S3LockTTL,
+				Logger:            logger,
+			},
+			K8sConfig: election.K8sElectorConfig{
+				LeaseName:     "lakehouse-compaction-" + string(cfg.Mode),
+				LeaseDuration: cfg.Compaction.LeaseDuration,
+				Logger:        logger,
+			},
+			Logger: logger,
+		})
+
+		elCtx, elCancel := context.WithCancel(context.Background())
+		leader.Start(elCtx)
+
+		sentinel := compaction.NewSentinel(store.Pool(), 10*time.Minute)
+		policy := compaction.NewLevelPolicy(
+			cfg.Compaction.MinFilesL0,
+			cfg.Compaction.MinFilesL1,
+			cfg.Compaction.MinAge,
+		)
+
+		sched = compaction.NewScheduler(compaction.SchedulerConfig{
+			Leader:           leader,
+			Manifest:         store.Manifest(),
+			Pool:             store.Pool(),
+			Sentinel:         sentinel,
+			Policy:           policy,
+			Prefix:           cfg.AutoPrefix(),
+			Mode:             cfg.Mode,
+			Interval:         cfg.Compaction.Interval,
+			MaxConcurrent:    cfg.Compaction.MaxConcurrent,
+			RowGroupSize:     cfg.Insert.RowGroupSize,
+			CompressionLevel: cfg.Insert.CompressionLevel,
+			Logger:           logger,
+			OnCompacted: func(added []manifest.FileInfo, removed []string) {
+				if pusher != nil {
+					pusher.Notify(added, removed)
+				}
+			},
+		})
+		sched.Start()
+
+		defer func() {
+			sched.Stop()
+			leader.Stop()
+			elCancel()
+		}()
+
+		logger.Info("compaction scheduler started",
+			"election", cfg.Compaction.LeaderElection,
+			"interval", cfg.Compaction.Interval,
+		)
+	}
 
 	mux := newMux(cfg, store, sm)
 
@@ -196,6 +279,43 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager) *
 		mux.Handle("/internal/cache/", ph)
 	}
 
+	mux.HandleFunc("/internal/manifest/update", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.Peer.AuthKey != "" {
+			auth := r.Header.Get("Authorization")
+			if auth != "Bearer "+cfg.Peer.AuthKey {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+
+		var update manifest.ManifestUpdate
+		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		m := store.Manifest()
+		for _, fi := range update.Added {
+			partition := manifest.ExtractPartition(fi.Key)
+			if partition != "" {
+				m.AddFile(partition, fi)
+			}
+		}
+		for _, key := range update.Removed {
+			partition := manifest.ExtractPartition(key)
+			if partition != "" {
+				m.RemoveFile(partition, key)
+			}
+		}
+
+		metrics.ManifestUpdateReceivedTotal.Inc()
+		w.WriteHeader(http.StatusOK)
+	})
+
 	return mux
 }
 
@@ -239,7 +359,8 @@ func runStartup(sm *startup.Manager, cfg *config.Config, logger *slog.Logger, st
 }
 
 func applyFlags(cfg *config.Config, mode, role, bucket, region, prefix, endpoint,
-	accessKey, secretKey string, pathStyle bool, topology, hotBoundary string, manifestRefresh time.Duration, flushInterval time.Duration) {
+	accessKey, secretKey string, pathStyle bool, topology, hotBoundary string, manifestRefresh time.Duration, flushInterval time.Duration,
+	compactionEnabled bool, compactionInterval time.Duration, compactionElection string) {
 	if mode != "" {
 		cfg.Mode = config.Mode(mode)
 	}
@@ -279,6 +400,15 @@ func applyFlags(cfg *config.Config, mode, role, bucket, region, prefix, endpoint
 	if manifestRefresh > 0 {
 		cfg.Manifest.RefreshInterval = manifestRefresh
 	}
+	if compactionEnabled {
+		cfg.Compaction.Enabled = true
+	}
+	if compactionInterval > 0 {
+		cfg.Compaction.Interval = compactionInterval
+	}
+	if compactionElection != "" {
+		cfg.Compaction.LeaderElection = compactionElection
+	}
 }
 
 func setupLogger(level string) *slog.Logger {
@@ -294,4 +424,12 @@ func setupLogger(level string) *slog.Logger {
 		lvl = slog.LevelInfo
 	}
 	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
+}
+
+func hostname() string {
+	if h := os.Getenv("POD_NAME"); h != "" {
+		return h
+	}
+	h, _ := os.Hostname()
+	return h
 }
