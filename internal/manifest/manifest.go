@@ -212,6 +212,15 @@ func (m *Manifest) PartitionCount() int {
 	return len(m.files)
 }
 
+func (m *Manifest) FilesForPartition(partition string) []FileInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	files := m.files[partition]
+	cp := make([]FileInfo, len(files))
+	copy(cp, files)
+	return cp
+}
+
 func (m *Manifest) AllFiles() map[string][]FileInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
