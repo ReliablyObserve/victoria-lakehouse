@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/wal"
 )
 
 // BatchWriter buffers incoming rows per partition and flushes them as
@@ -40,6 +42,8 @@ type BatchWriter struct {
 	totalRows  atomic.Int64
 	totalBytes atomic.Int64
 
+	wal *wal.WAL // nil if WAL disabled
+
 	stopCh chan struct{}
 	wg     sync.WaitGroup
 }
@@ -47,7 +51,7 @@ type BatchWriter struct {
 func NewBatchWriter(cfg *config.InsertConfig, pool *s3reader.ClientPool,
 	m *manifest.Manifest, prefix string, mode config.Mode, logger *slog.Logger) *BatchWriter {
 
-	return &BatchWriter{
+	bw := &BatchWriter{
 		cfg:       cfg,
 		pool:      pool,
 		manifest:  m,
@@ -58,6 +62,18 @@ func NewBatchWriter(cfg *config.InsertConfig, pool *s3reader.ClientPool,
 		traceBufs: make(map[string][]schema.TraceRow),
 		stopCh:    make(chan struct{}),
 	}
+
+	if cfg.WALEnabled && cfg.WALDir != "" {
+		walPath := filepath.Join(cfg.WALDir, "lakehouse.wal")
+		w, err := wal.Open(walPath, cfg.WALMaxBytesN())
+		if err != nil {
+			logger.Error("WAL open failed, continuing without WAL", "error", err)
+		} else {
+			bw.wal = w
+		}
+	}
+
+	return bw
 }
 
 func (w *BatchWriter) Start() {
@@ -101,6 +117,15 @@ func (w *BatchWriter) AddLogRows(rows []schema.LogRow) {
 		return
 	}
 
+	if w.wal != nil {
+		for i := range rows {
+			if err := w.wal.AppendLog(&rows[i]); err != nil {
+				w.logger.Error("WAL append failed", "error", err)
+				break
+			}
+		}
+	}
+
 	byPartition := make(map[string][]schema.LogRow)
 	for i := range rows {
 		p := partitionFromNano(rows[i].TimestampUnixNano)
@@ -122,6 +147,15 @@ func (w *BatchWriter) AddLogRows(rows []schema.LogRow) {
 func (w *BatchWriter) AddTraceRows(rows []schema.TraceRow) {
 	if len(rows) == 0 {
 		return
+	}
+
+	if w.wal != nil {
+		for i := range rows {
+			if err := w.wal.AppendTrace(&rows[i]); err != nil {
+				w.logger.Error("WAL append failed", "error", err)
+				break
+			}
+		}
 	}
 
 	byPartition := make(map[string][]schema.TraceRow)
@@ -205,6 +239,12 @@ func (w *BatchWriter) FlushAll(ctx context.Context) error {
 	for partition, rows := range traceSnap {
 		if err := w.flushTracePartition(ctx, partition, rows); err != nil {
 			errs = append(errs, fmt.Errorf("flush traces %s: %w", partition, err))
+		}
+	}
+
+	if len(errs) == 0 && w.wal != nil {
+		if err := w.wal.Truncate(); err != nil {
+			w.logger.Error("WAL truncate failed", "error", err)
 		}
 	}
 
@@ -429,8 +469,31 @@ func (w *BatchWriter) TotalBytesUploaded() int64 {
 	return w.totalBytes.Load()
 }
 
+// ReplayWAL reads all entries from the WAL back into memory buffers.
+// Call this once at startup for crash recovery.
+func (w *BatchWriter) ReplayWAL() (int, int) {
+	if w.wal == nil {
+		return 0, 0
+	}
+	logs, traces, err := w.wal.Replay()
+	if err != nil {
+		w.logger.Error("WAL replay error", "error", err)
+	}
+	if len(logs) > 0 {
+		w.AddLogRows(logs)
+	}
+	if len(traces) > 0 {
+		w.AddTraceRows(traces)
+	}
+	w.logger.Info("WAL replayed", "logs", len(logs), "traces", len(traces))
+	return len(logs), len(traces)
+}
+
 // CanWriteData checks if the S3 backend is reachable.
 func (w *BatchWriter) CanWriteData(ctx context.Context) error {
+	if w.wal != nil && w.wal.IsFull() {
+		return fmt.Errorf("WAL full")
+	}
 	testKey := w.prefix + "_write_check"
 	return w.pool.Upload(ctx, testKey, []byte("ok"))
 }

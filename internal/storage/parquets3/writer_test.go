@@ -875,6 +875,126 @@ func TestAdaptiveFlush_TargetFileSize(t *testing.T) {
 	}
 }
 
+func TestBatchWriter_WALIntegration(t *testing.T) {
+	s3srv := mockS3()
+	defer s3srv.Close()
+
+	pool := testPool(t, s3srv.URL)
+	m := manifest.New("test-bucket", "logs/", slog.Default())
+	cfg := testInsertConfig()
+	cfg.WALEnabled = true
+	cfg.WALDir = t.TempDir()
+	cfg.WALMaxBytes = "10MB"
+	bw := NewBatchWriter(cfg, pool, m, "logs/", config.ModeLogs, slog.Default())
+
+	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
+	bw.AddLogRows(sampleLogRows(5, base))
+
+	// WAL should have data
+	if bw.wal == nil {
+		t.Fatal("WAL should be initialized")
+	}
+	if bw.wal.Size() == 0 {
+		t.Error("WAL should have data after AddLogRows")
+	}
+
+	// Flush should truncate WAL
+	if err := bw.FlushAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if bw.wal.Size() != 0 {
+		t.Errorf("WAL size after flush = %d, want 0", bw.wal.Size())
+	}
+}
+
+func TestBatchWriter_WALReplay(t *testing.T) {
+	s3srv := mockS3()
+	defer s3srv.Close()
+
+	pool := testPool(t, s3srv.URL)
+	walDir := t.TempDir()
+
+	// First writer: add rows, don't flush (simulate crash)
+	cfg := testInsertConfig()
+	cfg.WALEnabled = true
+	cfg.WALDir = walDir
+	cfg.WALMaxBytes = "10MB"
+	m1 := manifest.New("test-bucket", "logs/", slog.Default())
+	bw1 := NewBatchWriter(cfg, pool, m1, "logs/", config.ModeLogs, slog.Default())
+
+	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
+	bw1.AddLogRows(sampleLogRows(3, base))
+	// Close WAL without flushing (crash scenario)
+	bw1.wal.Close()
+
+	// Second writer: replay WAL
+	m2 := manifest.New("test-bucket", "logs/", slog.Default())
+	bw2 := NewBatchWriter(cfg, pool, m2, "logs/", config.ModeLogs, slog.Default())
+	logCount, traceCount := bw2.ReplayWAL()
+
+	if logCount != 3 {
+		t.Errorf("replayed logs = %d, want 3", logCount)
+	}
+	if traceCount != 0 {
+		t.Errorf("replayed traces = %d, want 0", traceCount)
+	}
+	if bw2.BufferedRows() != 3 {
+		t.Errorf("buffered rows after replay = %d, want 3", bw2.BufferedRows())
+	}
+
+	// Flush replayed rows
+	if err := bw2.FlushAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if m2.TotalFiles() != 1 {
+		t.Errorf("TotalFiles after replay flush = %d, want 1", m2.TotalFiles())
+	}
+}
+
+func TestBatchWriter_WALDisabled(t *testing.T) {
+	s3srv := mockS3()
+	defer s3srv.Close()
+
+	pool := testPool(t, s3srv.URL)
+	m := manifest.New("test-bucket", "logs/", slog.Default())
+	cfg := testInsertConfig()
+	cfg.WALEnabled = false
+	bw := NewBatchWriter(cfg, pool, m, "logs/", config.ModeLogs, slog.Default())
+
+	if bw.wal != nil {
+		t.Error("WAL should be nil when disabled")
+	}
+
+	logCount, traceCount := bw.ReplayWAL()
+	if logCount != 0 || traceCount != 0 {
+		t.Error("replay on nil WAL should return 0,0")
+	}
+}
+
+func TestBatchWriter_CanWriteData_WALFull(t *testing.T) {
+	s3srv := mockS3()
+	defer s3srv.Close()
+
+	pool := testPool(t, s3srv.URL)
+	m := manifest.New("test-bucket", "logs/", slog.Default())
+	cfg := testInsertConfig()
+	cfg.WALEnabled = true
+	cfg.WALDir = t.TempDir()
+	cfg.WALMaxBytes = "100B" // tiny WAL
+	bw := NewBatchWriter(cfg, pool, m, "logs/", config.ModeLogs, slog.Default())
+
+	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
+	// Fill the WAL
+	for i := 0; i < 100; i++ {
+		bw.AddLogRows(sampleLogRows(1, base.Add(time.Duration(i)*time.Second)))
+	}
+
+	err := bw.CanWriteData(context.Background())
+	if bw.wal.IsFull() && err == nil {
+		t.Error("CanWriteData should return error when WAL is full")
+	}
+}
+
 func TestFlushAll_EnhancedFileInfo(t *testing.T) {
 	s3srv := mockS3()
 	defer s3srv.Close()
