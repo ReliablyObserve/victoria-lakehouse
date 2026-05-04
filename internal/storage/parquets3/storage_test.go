@@ -1444,7 +1444,7 @@ func TestStartWriter_WALReplay_WithEntries(t *testing.T) {
 	if err := w.AppendLog(&schema.LogRow{TimestampUnixNano: now + 1, Body: "wal-entry-2"}); err != nil {
 		t.Fatal(err)
 	}
-	w.Close()
+	_ = w.Close()
 
 	// Re-open WAL so ReplayWAL can read it
 	w2, err := wal.Open(walPath, 512*1024*1024)
