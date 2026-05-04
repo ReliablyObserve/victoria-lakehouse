@@ -1,68 +1,29 @@
-# =============================================================================
-# Victoria Lakehouse Helm Chart — values.yaml
-# =============================================================================
-# This chart deploys Victoria Lakehouse as a multi-component architecture:
-#   - select: read path (queries S3 Parquet files)
-#   - insert: write path (VL-compatible insert APIs, WAL, flush to S3)
-#   - vmauth: routing proxy between insert and select
-# =============================================================================
-
-# -- Operating mode: "logs" (port 9428) or "traces" (port 10428)
-# Determines schema profile, S3 prefix, and default port
-mode: logs
-
-# -- Role can be overridden per-component but defaults to this
-# Options: all, insert, select
-role: all
-
-# -- Override chart name used in resource names
 nameOverride: ""
-# -- Override full resource name (takes precedence over nameOverride)
 fullnameOverride: ""
 
-# =============================================================================
-# Global settings
-# =============================================================================
-
-# -- Global settings applied to all components unless overridden
 global:
-  # -- Image pull secrets for private registries
   imagePullSecrets: []
-  # -- Common labels applied to all resources
   commonLabels: {}
-  # -- Common annotations applied to all resources
   commonAnnotations: {}
 
-# =============================================================================
-# Default image for all components
-# =============================================================================
-
-# -- Container image for the lakehouse binary
 image:
-  # -- Image registry and repository
   repository: ghcr.io/reliablyobserve/victoria-lakehouse
-  # -- Image tag, defaults to Chart.appVersion if empty
   tag: ""
-  # -- Image pull policy: Always, IfNotPresent, Never
   pullPolicy: IfNotPresent
 
-# =============================================================================
-# Default security context (shared by all components unless overridden)
-# =============================================================================
-
-# -- Default pod and container security context applied to all components
-# Components can override these via their own podSecurityContext/securityContext
-defaultSecurityContext:
-  # -- Pod-level security context
-  pod:
+common:
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  resources: {}
+  podSecurityContext:
     runAsNonRoot: true
     runAsUser: 65534
     runAsGroup: 65534
     fsGroup: 65534
     seccompProfile:
       type: RuntimeDefault
-  # -- Container-level security context
-  container:
+  securityContext:
     readOnlyRootFilesystem: true
     allowPrivilegeEscalation: false
     capabilities:
@@ -73,570 +34,253 @@ defaultSecurityContext:
     seccompProfile:
       type: RuntimeDefault
 
-# =============================================================================
-# S3 configuration (shared by insert and select)
-# =============================================================================
+lakehouseConfig:
+  mode: logs
+  role: all
+  s3:
+    bucket: ""
+    region: us-east-1
+    prefix: ""
+    endpoint: ""
+    access_key: ""
+    secret_key: ""
+    force_path_style: false
+    max_connections: 128
+    timeout: 30s
+  cache:
+    memory_limit: 512MB
+    eviction_watermark: 0.8
+  insert:
+    flush_interval: 10s
+    max_buffer_rows: 50000
+    max_buffer_bytes: 256MB
+    row_group_size: 10000
+    target_file_size: 128MB
+    bloom_columns: "service.name,trace_id"
+    compression_level: default
+    wal:
+      enabled: true
+      dir: /data/lakehouse/wal
+      max_bytes: 512MB
+  select:
+    buffer_query_enabled: true
+    insert_headless_service: ""
+    buffer_query_timeout: 2s
+  discovery:
+    headless_service: ""
+    storage_nodes: []
+    partition_auth_key: ""
+    peer_headless_service: ""
+    refresh_interval: 5m
+    timeout: 10s
+  peer:
+    auth_key: ""
+    timeout: 5s
+    max_connections: 32
+  hot_boundary: ""
+  manifest:
+    refresh_interval: 5m
+    persist_path: /data/lakehouse
+    sqs_queue_url: ""
+  query:
+    max_concurrent: 32
+    timeout: 60s
+    slow_threshold: 5s
+  startup:
+    serve_stale: false
+    warmup_window: 24h
+    max_warmup_time: 5m
+  schema:
+    extra_promoted: []
+  compaction:
+    enabled: false
+    interval: 5m
+    max_concurrent: 1
+    min_files_l0: 10
+    min_files_l1: 10
+    min_age: 1h
+    leader_election: auto
 
-# -- S3 storage configuration shared by both insert and select components
-s3:
-  # -- S3 bucket name (REQUIRED — chart will fail without this)
-  bucket: ""
-  # -- AWS region for the S3 bucket
-  region: us-east-1
-  # -- S3 key prefix (auto-set from mode if empty: logs/ or traces/)
-  prefix: ""
-  # -- Custom S3 endpoint URL for MinIO, R2, or other S3-compatible storage
-  endpoint: ""
-  # -- S3 access key ID (prefer IRSA/IAM role over static credentials)
-  accessKey: ""
-  # -- S3 secret access key (prefer IRSA/IAM role over static credentials)
-  secretKey: ""
-  # -- Use path-style S3 URLs (required for MinIO and some S3-compatible stores)
-  forcePathStyle: false
-  # -- Maximum number of concurrent S3 connections per component
-  maxConnections: 128
-  # -- Per-request timeout for S3 operations
-  timeout: 30s
-
-# =============================================================================
-# Insert write-path configuration
-# =============================================================================
-
-# -- Insert component configuration for write-path tuning
-# These values control how data is buffered, flushed, and written to S3
-insert:
-  # -- Periodic flush interval to S3 (lower = less read delay, more S3 PUT calls)
-  flushInterval: 10s
-  # -- Maximum rows per partition buffer before triggering a flush
-  maxBufferRows: 50000
-  # -- Total buffer memory limit across all partitions
-  maxBufferBytes: 256MB
-  # -- Number of rows per Parquet row group (affects read performance)
-  rowGroupSize: 10000
-  # -- Target Parquet file size (adaptive flush trigger, larger = fewer S3 objects)
-  targetFileSize: 128MB
-  # -- Columns with bloom filters for fast point lookups (comma-separated)
-  bloomColumns: "service.name,trace_id"
-  # -- ZSTD compression level: fastest, default, better, best
-  compressionLevel: default
-  # -- Write-ahead log configuration for crash recovery
-  wal:
-    # -- Enable write-ahead log (strongly recommended for production)
-    enabled: true
-    # -- WAL file directory inside the container
-    dir: /data/lakehouse/wal
-    # -- Maximum WAL file size before rotation
-    maxBytes: 512MB
-
-# =============================================================================
-# Select read-path configuration
-# =============================================================================
-
-# -- Select component configuration for read-path tuning
-# Controls buffer bridge queries to insert pods for zero-delay reads
-selectConfig:
-  # -- Query insert pods for unflushed data (enables zero-delay reads)
-  bufferQueryEnabled: true
-  # -- K8s headless service for insert pod discovery (auto-set from chart if empty)
-  insertHeadlessService: ""
-  # -- Timeout for buffer query fan-out to insert pods
-  bufferQueryTimeout: 2s
-
-# =============================================================================
-# Discovery configuration
-# =============================================================================
-
-# -- Discovery settings for finding storage nodes and peers
-discovery:
-  # -- K8s headless service for vlstorage/vtstorage hot boundary discovery
-  headlessService: ""
-  # -- Comma-separated static storage node addresses (alternative to headless service)
-  storageNodes: []
-  # -- Auth key for /internal/partition/list endpoint on storage nodes
-  partitionAuthKey: ""
-  # -- K8s headless service for peer cache fleet discovery
-  peerHeadlessService: ""
-  # -- How often to re-poll storage nodes for partition changes
-  refreshInterval: 5m
-  # -- Timeout per storage node poll request
-  timeout: 10s
-
-# =============================================================================
-# Cache configuration
-# =============================================================================
-
-# -- Cache tuning for query performance
-cache:
-  # -- L1 in-memory cache maximum size (higher = faster queries, more RAM)
-  memoryLimit: 512MB
-  # -- L2 disk cache eviction watermark (start evicting when disk usage exceeds this %)
-  evictionWatermark: 0.8
-
-# =============================================================================
-# Peer cache configuration
-# =============================================================================
-
-# -- Peer cache settings for distributed cache sharing between replicas
-peer:
-  # -- Shared secret for peer cache HTTP authentication
-  authKey: ""
-  # -- Timeout for individual peer cache requests
-  timeout: 5s
-  # -- Maximum HTTP connections per peer node
-  maxConnections: 32
-
-# =============================================================================
-# Hot boundary
-# =============================================================================
-
-# -- Hot boundary override timestamp (empty = auto-discover from storage nodes)
-# Data newer than this boundary is served by VL/VT storage, older by lakehouse
-hotBoundary: ""
-
-# =============================================================================
-# Manifest settings
-# =============================================================================
-
-# -- Manifest and label index configuration for file discovery
-manifest:
-  # -- S3 ListObjects polling interval for discovering new Parquet files
-  refreshInterval: 5m
-  # -- Local directory for persisted manifest and label index data
-  persistPath: /data/lakehouse
-  # -- SQS queue URL for S3 event notifications (optional, reduces discovery latency)
-  sqsQueueUrl: ""
-
-# =============================================================================
-# Query settings
-# =============================================================================
-
-# -- Query execution limits and monitoring
-query:
-  # -- Maximum number of concurrent queries per select replica
-  maxConcurrent: 32
-  # -- Per-query timeout (queries exceeding this are cancelled)
-  timeout: 60s
-  # -- Queries slower than this threshold are logged as slow queries
-  slowThreshold: 5s
-
-# =============================================================================
-# Startup settings
-# =============================================================================
-
-# -- Startup behavior configuration
-startup:
-  # -- Serve queries from disk cache before S3 manifest refresh completes
-  serveStale: false
-  # -- Time window of data to pre-cache during startup warmup
-  warmupWindow: 24h
-  # -- Maximum time allowed for warmup before serving begins regardless
-  maxWarmupTime: 5m
-
-# =============================================================================
-# Schema extensibility
-# =============================================================================
-
-# -- Schema extensibility for user-defined promoted Parquet columns
-schema:
-  # -- User-defined promoted Parquet columns with optional bloom filters
-  # Each entry must specify name, type, and optionally bloom: true
-  extraPromoted: []
-  # Example:
-  #   - name: "http.status_code"
-  #     type: "int32"
-  #     bloom: true
-  #   - name: "customer_id"
-  #     type: "string"
-  #     bloom: true
-
-# =============================================================================
-# Select component
-# =============================================================================
-
-# -- Select component: handles the read path (queries S3 Parquet files)
 select:
-  # -- Enable the select component
   enabled: true
-  # -- Number of select replicas
   replicaCount: 2
-  # -- Override global image for select component
   image: {}
-  # -- Extra CLI arguments passed to the lakehouse binary
-  # Specify as key-value pairs, e.g.: lakehouse.extra-flag: "value"
   extraArgs: {}
-  # -- Extra environment variables added to the select container
   extraEnv: []
-  # -- Extra environment variable sources (ConfigMaps, Secrets)
   extraEnvFrom: []
-  # -- Extra volumes added to the select pod
   extraVolumes: []
-  # -- Extra volume mounts added to the select container
   extraVolumeMounts: []
-  # -- Extra containers (sidecars) added to the select pod
   extraContainers: []
-  # -- Init containers added to the select pod
   initContainers: []
-  # -- CPU and memory resource requests and limits for the select container
   resources: {}
-  # Example:
-  #   requests:
-  #     cpu: 250m
-  #     memory: 512Mi
-  #   limits:
-  #     cpu: "2"
-  #     memory: 2Gi
-  # -- Pod-level security context (overrides defaultSecurityContext.pod)
   podSecurityContext: {}
-  # -- Container-level security context (overrides defaultSecurityContext.container)
   securityContext: {}
-  # -- Service configuration for the select component
   service:
-    # -- Service type: ClusterIP, NodePort, LoadBalancer
     type: ClusterIP
-    # -- Service port (auto-determined from mode if empty: 9428 for logs, 10428 for traces)
     port: ""
-    # -- Additional annotations for the service
     annotations: {}
-    # -- Additional labels for the service
     labels: {}
-  # -- Headless service for peer cache and pod discovery
   headlessService:
-    # -- Create a headless service for the select component
     enabled: true
-    # -- Annotations for the headless service
     annotations: {}
-  # -- Node selector constraints for pod scheduling
   nodeSelector: {}
-  # -- Tolerations for pod scheduling
   tolerations: []
-  # -- Affinity rules for pod scheduling
   affinity: {}
-  # -- Pod disruption budget to ensure availability during node operations
   podDisruptionBudget:
-    # -- Enable pod disruption budget
     enabled: false
-    # -- Minimum number of pods that must remain available
     minAvailable: 1
-  # -- Service account configuration for the select component
   serviceAccount:
-    # -- Create a dedicated service account
     create: true
-    # -- Override service account name (auto-generated if empty)
     name: ""
-    # -- Annotations for the service account (e.g., IRSA role ARN)
     annotations: {}
-  # -- Horizontal pod autoscaler for automatic scaling
   horizontalPodAutoscaler:
-    # -- Enable horizontal pod autoscaler
     enabled: false
-    # -- Minimum number of replicas
     minReplicas: 2
-    # -- Maximum number of replicas
     maxReplicas: 10
-    # -- Target CPU utilization percentage for scaling
     targetCPUUtilizationPercentage: 80
-  # -- Ingress configuration for external access to the select component
+  verticalPodAutoscaler:
+    enabled: false
+    updateMode: "Off"
   ingress:
-    # -- Enable ingress
     enabled: false
-    # -- Ingress class name (e.g., nginx, traefik)
     className: ""
-    # -- Ingress annotations (e.g., cert-manager, auth)
     annotations: {}
-    # -- Ingress host rules
     hosts: []
-    # Example:
-    #   - host: lakehouse-select.example.com
-    #     paths:
-    #       - path: /
-    #         pathType: Prefix
-    # -- TLS configuration for ingress
     tls: []
-    # Example:
-    #   - secretName: lakehouse-select-tls
-    #     hosts:
-    #       - lakehouse-select.example.com
-  # -- Prometheus Operator ServiceMonitor for metrics scraping
   serviceMonitor:
-    # -- Enable ServiceMonitor creation
     enabled: false
-    # -- Scrape interval
     interval: 30s
-    # -- Additional labels for ServiceMonitor (used for Prometheus selector matching)
     labels: {}
-  # -- Persistent volume claim for disk cache
   persistence:
-    # -- Enable persistent storage for disk cache (uses StatefulSet when true)
     enabled: true
-    # -- Size of the persistent volume
     size: 50Gi
-    # -- Storage class name (empty uses cluster default)
     storageClass: ""
-    # -- Access modes for the PVC
     accessModes:
       - ReadWriteOnce
-  # -- Probe configuration for health checking
   probe:
-    # -- Liveness probe: restarts the container if it fails
     liveness:
       initialDelaySeconds: 5
       periodSeconds: 10
       failureThreshold: 3
-    # -- Readiness probe: removes pod from service endpoints if it fails
     readiness:
       initialDelaySeconds: 2
       periodSeconds: 5
       failureThreshold: 60
-    # -- Startup probe: gives pod time to initialize before liveness kicks in
     startup:
       periodSeconds: 5
       failureThreshold: 120
-  # -- Annotations added to select pods
   podAnnotations: {}
-  # -- Labels added to select pods
   podLabels: {}
-  # -- Seconds to wait for graceful shutdown before SIGKILL
   terminationGracePeriodSeconds: 60
-  # -- Priority class name for pod scheduling priority
   priorityClassName: ""
-  # -- Topology spread constraints for even pod distribution
   topologySpreadConstraints: []
 
-# =============================================================================
-# Insert component
-# =============================================================================
-
-# -- Insert component: handles the write path (VL-compatible insert APIs, WAL, flush to S3)
 insertComponent:
-  # -- Enable the insert component
   enabled: true
-  # -- Number of insert replicas
   replicaCount: 2
-  # -- Override global image for insert component
   image: {}
-  # -- Extra CLI arguments passed to the lakehouse binary
   extraArgs: {}
-  # -- Extra environment variables added to the insert container
   extraEnv: []
-  # -- Extra environment variable sources (ConfigMaps, Secrets)
   extraEnvFrom: []
-  # -- Extra volumes added to the insert pod
   extraVolumes: []
-  # -- Extra volume mounts added to the insert container
   extraVolumeMounts: []
-  # -- Extra containers (sidecars) added to the insert pod
   extraContainers: []
-  # -- Init containers added to the insert pod
   initContainers: []
-  # -- CPU and memory resource requests and limits for the insert container
   resources: {}
-  # -- Pod-level security context (overrides defaultSecurityContext.pod)
   podSecurityContext: {}
-  # -- Container-level security context (overrides defaultSecurityContext.container)
   securityContext: {}
-  # -- Service configuration for the insert component
   service:
-    # -- Service type: ClusterIP, NodePort, LoadBalancer
     type: ClusterIP
-    # -- Service port (auto-determined from mode if empty: 9428 for logs, 10428 for traces)
     port: ""
-    # -- Additional annotations for the service
     annotations: {}
-    # -- Additional labels for the service
     labels: {}
-  # -- Headless service for buffer query discovery by select pods
   headlessService:
-    # -- Create a headless service for the insert component
     enabled: true
-    # -- Annotations for the headless service
     annotations: {}
-  # -- Node selector constraints for pod scheduling
   nodeSelector: {}
-  # -- Tolerations for pod scheduling
   tolerations: []
-  # -- Affinity rules for pod scheduling
   affinity: {}
-  # -- Pod disruption budget to ensure availability during node operations
   podDisruptionBudget:
-    # -- Enable pod disruption budget
     enabled: false
-    # -- Minimum number of pods that must remain available
     minAvailable: 1
-  # -- Service account configuration for the insert component
   serviceAccount:
-    # -- Create a dedicated service account
     create: true
-    # -- Override service account name (auto-generated if empty)
     name: ""
-    # -- Annotations for the service account (e.g., IRSA role ARN)
     annotations: {}
-  # -- Horizontal pod autoscaler for automatic scaling
   horizontalPodAutoscaler:
-    # -- Enable horizontal pod autoscaler
     enabled: false
-    # -- Minimum number of replicas
     minReplicas: 2
-    # -- Maximum number of replicas
     maxReplicas: 10
-    # -- Target CPU utilization percentage for scaling
     targetCPUUtilizationPercentage: 80
-  # -- Ingress configuration for external access to the insert component
+  verticalPodAutoscaler:
+    enabled: false
+    updateMode: "Off"
   ingress:
-    # -- Enable ingress
     enabled: false
-    # -- Ingress class name
     className: ""
-    # -- Ingress annotations
     annotations: {}
-    # -- Ingress host rules
     hosts: []
-    # -- TLS configuration for ingress
     tls: []
-  # -- Prometheus Operator ServiceMonitor for metrics scraping
   serviceMonitor:
-    # -- Enable ServiceMonitor creation
     enabled: false
-    # -- Scrape interval
     interval: 30s
-    # -- Additional labels for ServiceMonitor
     labels: {}
-  # -- Persistent volume claim for WAL and disk cache
   persistence:
-    # -- Enable persistent storage (uses StatefulSet when true)
     enabled: true
-    # -- Size of the persistent volume
     size: 50Gi
-    # -- Storage class name (empty uses cluster default)
     storageClass: ""
-    # -- Access modes for the PVC
     accessModes:
       - ReadWriteOnce
-  # -- Probe configuration for health checking
   probe:
-    # -- Liveness probe: restarts the container if it fails
     liveness:
       initialDelaySeconds: 5
       periodSeconds: 10
       failureThreshold: 3
-    # -- Readiness probe: removes pod from service endpoints if it fails
     readiness:
       initialDelaySeconds: 2
       periodSeconds: 5
       failureThreshold: 60
-    # -- Startup probe: gives pod time to initialize before liveness kicks in
     startup:
       periodSeconds: 5
       failureThreshold: 120
-  # -- Annotations added to insert pods
   podAnnotations: {}
-  # -- Labels added to insert pods
   podLabels: {}
-  # -- Seconds to wait for graceful shutdown before SIGKILL
   terminationGracePeriodSeconds: 60
-  # -- Priority class name for pod scheduling priority
   priorityClassName: ""
-  # -- Topology spread constraints for even pod distribution
   topologySpreadConstraints: []
 
-# =============================================================================
-# vmauth routing proxy
-# =============================================================================
-
-# -- vmauth component: routing proxy between insert and select
-# Routes /insert/* to insert component, /select/* and everything else to select
 vmauth:
-  # -- Enable vmauth routing proxy
   enabled: false
-  # -- vmauth container image
   image:
-    # -- vmauth image repository
     repository: victoriametrics/vmauth
-    # -- vmauth image tag
     tag: v1.106.1
-    # -- vmauth image pull policy
     pullPolicy: IfNotPresent
-  # -- Number of vmauth replicas
   replicaCount: 1
-  # -- CPU and memory resource requests and limits for vmauth
   resources: {}
-  # -- Service configuration for vmauth
   service:
-    # -- Service type
     type: ClusterIP
-    # -- vmauth listening port
     port: 8427
-  # -- Custom vmauth config YAML (auto-generated if empty)
-  # When empty, the chart generates a config that routes /insert/* to insert
-  # and everything else to select
-  config: ""
-  # -- Extra CLI arguments for vmauth
-  extraArgs: {}
-  # -- Pod-level security context for vmauth
-  podSecurityContext: {}
-  # -- Container-level security context for vmauth
-  securityContext: {}
-  # -- Node selector for vmauth pod scheduling
-  nodeSelector: {}
-  # -- Tolerations for vmauth pod scheduling
-  tolerations: []
-  # -- Affinity rules for vmauth pod scheduling
-  affinity: {}
-  # -- Prometheus Operator ServiceMonitor for vmauth metrics
-  serviceMonitor:
-    # -- Enable ServiceMonitor for vmauth
-    enabled: false
-    # -- Scrape interval
-    interval: 30s
-    # -- Additional labels for ServiceMonitor
-    labels: {}
-  # -- Ingress configuration for external access via vmauth
-  ingress:
-    # -- Enable ingress for vmauth
-    enabled: false
-    # -- Ingress class name
-    className: ""
-    # -- Ingress annotations
     annotations: {}
-    # -- Ingress host rules
+    labels: {}
+  config: ""
+  extraArgs: {}
+  podSecurityContext: {}
+  securityContext: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
     hosts: []
-    # Example:
-    #   - host: lakehouse.example.com
-    #     paths:
-    #       - path: /
-    #         pathType: Prefix
-    # -- TLS configuration
     tls: []
-  # -- Annotations added to vmauth pods
   podAnnotations: {}
-  # -- Labels added to vmauth pods
   podLabels: {}
-  # -- terminationGracePeriodSeconds for vmauth pods
   terminationGracePeriodSeconds: 30
 
-# =============================================================================
-# Compaction configuration
-# =============================================================================
-
-# -- Compaction configuration for background Parquet file compaction
-compaction:
-  # -- Enable the compaction job
-  enabled: false
-  # -- How often to run compaction
-  interval: 5m
-  # -- Maximum number of concurrent compaction workers
-  maxConcurrent: 1
-  # -- Minimum number of L0 files required to trigger compaction
-  minFilesL0: 10
-  # -- Minimum number of L1 files required to trigger compaction
-  minFilesL1: 10
-  # -- Minimum age of files before they are eligible for compaction
-  minAge: 1h
-  # -- Leader election mode: auto, k8s, s3, none
-  # auto selects k8s when running in Kubernetes, s3 otherwise
-  leaderElection: auto
-  # -- Duration for k8s lease lock (k8s leader election only)
-  leaseDuration: 15s
-  # -- TTL for S3 lock object (s3 leader election only)
-  s3LockTTL: 60s
-  # -- Heartbeat interval for S3 lock renewal (s3 leader election only)
-  s3Heartbeat: 15s
+extraManifests: []
