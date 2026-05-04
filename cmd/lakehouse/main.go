@@ -191,7 +191,11 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager) *
 	}
 
 	if cfg.InsertEnabled() {
-		ih := insertapi.NewHandler(store, sm.Logger(), cfg)
+		var bq insertapi.BufferQuerier
+		if w := store.Writer(); w != nil {
+			bq = w
+		}
+		ih := insertapi.NewHandler(store, sm.Logger(), cfg, bq)
 		ih.Register(mux)
 	}
 

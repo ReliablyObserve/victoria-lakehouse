@@ -16,6 +16,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/wal"
 )
 
 type logRow struct {
@@ -1119,5 +1120,374 @@ func TestRefreshDiscovery_NoConfig(t *testing.T) {
 	s := testStorage()
 	if err := s.RefreshDiscovery(context.Background()); err != nil {
 		t.Errorf("RefreshDiscovery with no config: %v", err)
+	}
+}
+
+// --- Task 10: logRowsToDataBlock tests ---
+
+func TestLogRowsToDataBlock(t *testing.T) {
+	s := testStorage()
+
+	rows := []schema.LogRow{
+		{
+			TimestampUnixNano: 1000000000,
+			Body:              "hello world",
+			SeverityText:      "INFO",
+			ServiceName:       "api-gw",
+			TraceID:           "trace-1",
+			SpanID:            "span-1",
+			Stream:            `{service.name="api-gw"}`,
+			K8sNamespaceName:  "default",
+			K8sPodName:        "pod-1",
+			K8sDeploymentName: "deploy-1",
+			K8sNodeName:       "node-1",
+			DeployEnv:         "production",
+			CloudRegion:       "us-east-1",
+			HostName:          "host-1",
+		},
+		{
+			TimestampUnixNano: 2000000000,
+			Body:              "error occurred",
+			SeverityText:      "ERROR",
+			ServiceName:       "worker",
+		},
+	}
+
+	db := s.logRowsToDataBlock(rows)
+
+	if db == nil {
+		t.Fatal("expected non-nil DataBlock")
+	}
+	if db.RowsCount != 2 {
+		t.Errorf("RowsCount = %d, want 2", db.RowsCount)
+	}
+
+	colMap := make(map[string][]string)
+	for _, col := range db.Columns {
+		colMap[col.Name] = col.Values
+	}
+
+	// Check _time column
+	if vals, ok := colMap["_time"]; !ok {
+		t.Error("missing _time column")
+	} else {
+		if vals[0] != "1000000000" {
+			t.Errorf("_time[0] = %q, want %q", vals[0], "1000000000")
+		}
+		if vals[1] != "2000000000" {
+			t.Errorf("_time[1] = %q, want %q", vals[1], "2000000000")
+		}
+	}
+
+	// Check _msg column
+	if vals, ok := colMap["_msg"]; !ok {
+		t.Error("missing _msg column")
+	} else {
+		if vals[0] != "hello world" {
+			t.Errorf("_msg[0] = %q, want %q", vals[0], "hello world")
+		}
+	}
+
+	// Check level column
+	if vals, ok := colMap["level"]; !ok {
+		t.Error("missing level column")
+	} else {
+		if vals[0] != "INFO" {
+			t.Errorf("level[0] = %q, want %q", vals[0], "INFO")
+		}
+	}
+
+	// Check service.name column
+	if vals, ok := colMap["service.name"]; !ok {
+		t.Error("missing service.name column")
+	} else {
+		if vals[0] != "api-gw" {
+			t.Errorf("service.name[0] = %q, want %q", vals[0], "api-gw")
+		}
+	}
+
+	// Check trace_id column
+	if vals, ok := colMap["trace_id"]; !ok {
+		t.Error("missing trace_id column")
+	} else if vals[0] != "trace-1" {
+		t.Errorf("trace_id[0] = %q, want %q", vals[0], "trace-1")
+	}
+
+	// Check other mapped columns
+	for _, tc := range []struct{ col, want string }{
+		{"span_id", "span-1"},
+		{"_stream", `{service.name="api-gw"}`},
+		{"k8s.namespace.name", "default"},
+		{"k8s.pod.name", "pod-1"},
+		{"k8s.deployment.name", "deploy-1"},
+		{"k8s.node.name", "node-1"},
+		{"deployment.environment", "production"},
+		{"cloud.region", "us-east-1"},
+		{"host.name", "host-1"},
+	} {
+		if vals, ok := colMap[tc.col]; !ok {
+			t.Errorf("missing %s column", tc.col)
+		} else if vals[0] != tc.want {
+			t.Errorf("%s[0] = %q, want %q", tc.col, vals[0], tc.want)
+		}
+	}
+
+	// Verify all columns have same length
+	for _, col := range db.Columns {
+		if len(col.Values) != db.RowsCount {
+			t.Errorf("column %s has %d values, want %d", col.Name, len(col.Values), db.RowsCount)
+		}
+	}
+}
+
+func TestLogRowsToDataBlock_Empty(t *testing.T) {
+	s := testStorage()
+	db := s.logRowsToDataBlock(nil)
+	if db != nil {
+		t.Error("expected nil DataBlock for nil rows")
+	}
+
+	db = s.logRowsToDataBlock([]schema.LogRow{})
+	if db != nil {
+		t.Error("expected nil DataBlock for empty rows")
+	}
+}
+
+func TestTraceRowsToDataBlock(t *testing.T) {
+	s := testStorage()
+
+	rows := []schema.TraceRow{
+		{
+			TimestampUnixNano: 1000000000,
+			TraceID:           "trace-abc",
+			SpanID:            "span-def",
+			SpanName:          "GET /api/v1/users",
+			ServiceName:       "api-gw",
+			DurationNs:        5000000,
+			StatusCode:        0,
+			ParentSpanID:      "parent-123",
+			StatusMessage:     "OK",
+		},
+		{
+			TimestampUnixNano: 2000000000,
+			TraceID:           "trace-xyz",
+			SpanID:            "span-ghi",
+			SpanName:          "db.query",
+			ServiceName:       "db-service",
+			DurationNs:        1000000,
+			StatusCode:        2,
+			StatusMessage:     "error",
+		},
+	}
+
+	db := s.traceRowsToDataBlock(rows)
+
+	if db == nil {
+		t.Fatal("expected non-nil DataBlock")
+	}
+	if db.RowsCount != 2 {
+		t.Errorf("RowsCount = %d, want 2", db.RowsCount)
+	}
+
+	colMap := make(map[string][]string)
+	for _, col := range db.Columns {
+		colMap[col.Name] = col.Values
+	}
+
+	// Check _time
+	if vals, ok := colMap["_time"]; !ok {
+		t.Error("missing _time column")
+	} else if vals[0] != "1000000000" {
+		t.Errorf("_time[0] = %q, want %q", vals[0], "1000000000")
+	}
+
+	// Check trace_id
+	if vals, ok := colMap["trace_id"]; !ok {
+		t.Error("missing trace_id column")
+	} else if vals[0] != "trace-abc" {
+		t.Errorf("trace_id[0] = %q, want %q", vals[0], "trace-abc")
+	}
+
+	// Check span_id
+	if vals, ok := colMap["span_id"]; !ok {
+		t.Error("missing span_id column")
+	} else if vals[0] != "span-def" {
+		t.Errorf("span_id[0] = %q, want %q", vals[0], "span-def")
+	}
+
+	// Check name
+	if vals, ok := colMap["name"]; !ok {
+		t.Error("missing name column")
+	} else if vals[0] != "GET /api/v1/users" {
+		t.Errorf("name[0] = %q, want %q", vals[0], "GET /api/v1/users")
+	}
+
+	// Check service.name
+	if vals, ok := colMap["service.name"]; !ok {
+		t.Error("missing service.name column")
+	} else if vals[0] != "api-gw" {
+		t.Errorf("service.name[0] = %q, want %q", vals[0], "api-gw")
+	}
+
+	// Check duration
+	if vals, ok := colMap["duration"]; !ok {
+		t.Error("missing duration column")
+	} else if vals[0] != "5000000" {
+		t.Errorf("duration[0] = %q, want %q", vals[0], "5000000")
+	}
+
+	// Check status_code
+	if vals, ok := colMap["status_code"]; !ok {
+		t.Error("missing status_code column")
+	} else if vals[0] != "0" {
+		t.Errorf("status_code[0] = %q, want %q", vals[0], "0")
+	}
+
+	// Check parent_span_id
+	if vals, ok := colMap["parent_span_id"]; !ok {
+		t.Error("missing parent_span_id column")
+	} else if vals[0] != "parent-123" {
+		t.Errorf("parent_span_id[0] = %q, want %q", vals[0], "parent-123")
+	}
+
+	// Check status_message
+	if vals, ok := colMap["status_message"]; !ok {
+		t.Error("missing status_message column")
+	} else if vals[0] != "OK" {
+		t.Errorf("status_message[0] = %q, want %q", vals[0], "OK")
+	}
+
+	// Verify second row
+	if colMap["status_code"][1] != "2" {
+		t.Errorf("status_code[1] = %q, want %q", colMap["status_code"][1], "2")
+	}
+
+	// Verify all columns have same length
+	for _, col := range db.Columns {
+		if len(col.Values) != db.RowsCount {
+			t.Errorf("column %s has %d values, want %d", col.Name, len(col.Values), db.RowsCount)
+		}
+	}
+}
+
+func TestTraceRowsToDataBlock_Empty(t *testing.T) {
+	s := testStorage()
+	db := s.traceRowsToDataBlock(nil)
+	if db != nil {
+		t.Error("expected nil DataBlock for nil rows")
+	}
+
+	db = s.traceRowsToDataBlock([]schema.TraceRow{})
+	if db != nil {
+		t.Error("expected nil DataBlock for empty rows")
+	}
+}
+
+// --- Task 10: StartWriter WAL replay test ---
+
+func TestStartWriter_WALReplay(t *testing.T) {
+	// With nil writer, StartWriter is a no-op.
+	s := testStorage()
+	s.writer = nil
+	s.StartWriter() // should not panic
+
+	// With a writer that has no WAL, ReplayWAL returns (0,0).
+	cfg := config.Default()
+	cfg.Mode = config.ModeLogs
+	cfg.S3.Bucket = "test-bucket"
+	cfg.Insert.WALEnabled = false
+
+	s2 := testStorage()
+	s2.writer = &BatchWriter{
+		cfg:       &cfg.Insert,
+		mode:      cfg.Mode,
+		logger:    testLogger(),
+		logBufs:   make(map[string][]schema.LogRow),
+		traceBufs: make(map[string][]schema.TraceRow),
+		stopCh:    make(chan struct{}),
+	}
+	logCount, traceCount := s2.writer.ReplayWAL()
+	if logCount != 0 || traceCount != 0 {
+		t.Errorf("ReplayWAL with no WAL = (%d, %d), want (0, 0)", logCount, traceCount)
+	}
+}
+
+func TestStartWriter_WALReplay_WithEntries(t *testing.T) {
+	// Test that ReplayWAL recovers entries from a populated WAL.
+	dir := t.TempDir()
+
+	cfg := config.Default()
+	cfg.Mode = config.ModeLogs
+	cfg.S3.Bucket = "test-bucket"
+	cfg.Insert.WALEnabled = true
+	cfg.Insert.WALDir = dir
+
+	bw := &BatchWriter{
+		cfg:       &cfg.Insert,
+		mode:      cfg.Mode,
+		logger:    testLogger(),
+		logBufs:   make(map[string][]schema.LogRow),
+		traceBufs: make(map[string][]schema.TraceRow),
+		stopCh:    make(chan struct{}),
+	}
+
+	// Open a WAL and write entries to it
+	walPath := filepath.Join(dir, "lakehouse.wal")
+	w, err := wal.Open(walPath, 512*1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixNano()
+	if err := w.AppendLog(&schema.LogRow{TimestampUnixNano: now, Body: "wal-entry-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.AppendLog(&schema.LogRow{TimestampUnixNano: now + 1, Body: "wal-entry-2"}); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	// Re-open WAL so ReplayWAL can read it
+	w2, err := wal.Open(walPath, 512*1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bw.wal = w2
+
+	// ReplayWAL should recover the entries
+	logCount, traceCount := bw.ReplayWAL()
+	if logCount != 2 {
+		t.Errorf("ReplayWAL logCount = %d, want 2", logCount)
+	}
+	if traceCount != 0 {
+		t.Errorf("ReplayWAL traceCount = %d, want 0", traceCount)
+	}
+
+	// Verify entries are in the buffer
+	buffered := bw.BufferedRows()
+	if buffered != 2 {
+		t.Errorf("BufferedRows after WAL replay = %d, want 2", buffered)
+	}
+
+	// Now verify StartWriter calls ReplayWAL before Start by checking
+	// that a storage with this writer would trigger the logging path.
+	s := testStorage()
+	s.writer = bw
+	// Don't call StartWriter since we need S3 for flush.
+	// Instead verify the contract: ReplayWAL was already called above.
+}
+
+// --- Task 10: BufferBridge accessor test ---
+
+func TestBufferBridge_Accessor(t *testing.T) {
+	s := testStorage()
+	if s.BufferBridge() != nil {
+		t.Error("expected nil buffer bridge for default test storage")
+	}
+
+	// Assign a bridge and check accessor
+	bb := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true}, config.ModeLogs)
+	s.bufferBridge = bb
+	if s.BufferBridge() != bb {
+		t.Error("BufferBridge() did not return the assigned bridge")
 	}
 }

@@ -23,20 +23,21 @@ import (
 )
 
 type Storage struct {
-	cfg        *config.Config
-	logger     *slog.Logger
-	pool       *s3reader.ClientPool
-	manifest   *manifest.Manifest
-	registry   *schema.Registry
-	memCache   *cache.LRU
-	diskCache  *cache.DiskCache
-	sfGroup    *cache.Group
-	labelIndex *cache.LabelIndex
-	persister  *cache.Persister
-	discovery  *discovery.Discovery
-	peerCache  *peercache.PeerCache
-	peerHandler *peercache.Handler
-	writer     *BatchWriter
+	cfg          *config.Config
+	logger       *slog.Logger
+	pool         *s3reader.ClientPool
+	manifest     *manifest.Manifest
+	registry     *schema.Registry
+	memCache     *cache.LRU
+	diskCache    *cache.DiskCache
+	sfGroup      *cache.Group
+	labelIndex   *cache.LabelIndex
+	persister    *cache.Persister
+	discovery    *discovery.Discovery
+	peerCache    *peercache.PeerCache
+	peerHandler  *peercache.Handler
+	writer       *BatchWriter
+	bufferBridge *BufferBridge
 }
 
 func New(cfg *config.Config, logger *slog.Logger) (*Storage, error) {
@@ -113,29 +114,41 @@ func New(cfg *config.Config, logger *slog.Logger) (*Storage, error) {
 		bw = NewBatchWriter(&cfg.Insert, pool, m, prefix, cfg.Mode, logger)
 	}
 
+	var bb *BufferBridge
+	if cfg.SelectEnabled() && cfg.Select.BufferQueryEnabled {
+		bb = NewBufferBridge(&cfg.Select, cfg.Mode)
+	}
+
 	return &Storage{
-		cfg:         cfg,
-		logger:      l,
-		pool:        pool,
-		manifest:    m,
-		registry:    schema.NewRegistry(profile),
-		memCache:    memCache,
-		diskCache:   diskCacheInst,
-		sfGroup:     cache.NewGroup(),
-		labelIndex:  labelIdx,
-		persister:   pers,
-		discovery:   disc,
-		peerCache:   pc,
-		peerHandler: ph,
-		writer:      bw,
+		cfg:          cfg,
+		logger:       l,
+		pool:         pool,
+		manifest:     m,
+		registry:     schema.NewRegistry(profile),
+		memCache:     memCache,
+		diskCache:    diskCacheInst,
+		sfGroup:      cache.NewGroup(),
+		labelIndex:   labelIdx,
+		persister:    pers,
+		discovery:    disc,
+		peerCache:    pc,
+		peerHandler:  ph,
+		writer:       bw,
+		bufferBridge: bb,
 	}, nil
 }
 
 // StartWriter begins the background flush loop. Call after New().
+// WAL is replayed before starting the flush loop for crash recovery.
 func (s *Storage) StartWriter() {
-	if s.writer != nil {
-		s.writer.Start()
+	if s.writer == nil {
+		return
 	}
+	logCount, traceCount := s.writer.ReplayWAL()
+	if logCount > 0 || traceCount > 0 {
+		s.logger.Info("WAL recovery complete", "logs", logCount, "traces", traceCount)
+	}
+	s.writer.Start()
 }
 
 // Writer returns the batch writer (nil if insert not enabled).
@@ -196,6 +209,27 @@ func (s *Storage) RunQuery(ctx context.Context, qctx *storage.QueryContext, writ
 		if err := s.queryFile(ctx, fi, qctx, writeBlock); err != nil {
 			s.logger.Warn("query file error", "key", fi.Key, "error", err)
 			continue
+		}
+	}
+
+	if s.bufferBridge != nil {
+		switch s.cfg.Mode {
+		case config.ModeLogs:
+			bufRows, _ := s.bufferBridge.QueryLogs(ctx, qctx.StartNs, qctx.EndNs)
+			if len(bufRows) > 0 {
+				db := s.logRowsToDataBlock(bufRows)
+				if db != nil && db.RowsCount > 0 {
+					writeBlock(0, db)
+				}
+			}
+		case config.ModeTraces:
+			bufRows, _ := s.bufferBridge.QueryTraces(ctx, qctx.StartNs, qctx.EndNs)
+			if len(bufRows) > 0 {
+				db := s.traceRowsToDataBlock(bufRows)
+				if db != nil && db.RowsCount > 0 {
+					writeBlock(0, db)
+				}
+			}
 		}
 	}
 
@@ -684,6 +718,114 @@ func (s *Storage) PeerCache() *peercache.PeerCache {
 
 func (s *Storage) PeerHandler() *peercache.Handler {
 	return s.peerHandler
+}
+
+// BufferBridge returns the buffer bridge (nil if not configured).
+func (s *Storage) BufferBridge() *BufferBridge {
+	return s.bufferBridge
+}
+
+// logRowsToDataBlock converts in-memory LogRow slices to a columnar DataBlock.
+func (s *Storage) logRowsToDataBlock(rows []schema.LogRow) *storage.DataBlock {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	times := make([]string, len(rows))
+	bodies := make([]string, len(rows))
+	levels := make([]string, len(rows))
+	services := make([]string, len(rows))
+	traceIDs := make([]string, len(rows))
+	spanIDs := make([]string, len(rows))
+	streams := make([]string, len(rows))
+	namespaces := make([]string, len(rows))
+	pods := make([]string, len(rows))
+	deployments := make([]string, len(rows))
+	nodes := make([]string, len(rows))
+	envs := make([]string, len(rows))
+	regions := make([]string, len(rows))
+	hosts := make([]string, len(rows))
+
+	for i, row := range rows {
+		times[i] = fmt.Sprintf("%d", row.TimestampUnixNano)
+		bodies[i] = row.Body
+		levels[i] = row.SeverityText
+		services[i] = row.ServiceName
+		traceIDs[i] = row.TraceID
+		spanIDs[i] = row.SpanID
+		streams[i] = row.Stream
+		namespaces[i] = row.K8sNamespaceName
+		pods[i] = row.K8sPodName
+		deployments[i] = row.K8sDeploymentName
+		nodes[i] = row.K8sNodeName
+		envs[i] = row.DeployEnv
+		regions[i] = row.CloudRegion
+		hosts[i] = row.HostName
+	}
+
+	return &storage.DataBlock{
+		RowsCount: len(rows),
+		Columns: []storage.BlockColumn{
+			{Name: "_time", Values: times},
+			{Name: "_msg", Values: bodies},
+			{Name: "level", Values: levels},
+			{Name: "service.name", Values: services},
+			{Name: "trace_id", Values: traceIDs},
+			{Name: "span_id", Values: spanIDs},
+			{Name: "_stream", Values: streams},
+			{Name: "k8s.namespace.name", Values: namespaces},
+			{Name: "k8s.pod.name", Values: pods},
+			{Name: "k8s.deployment.name", Values: deployments},
+			{Name: "k8s.node.name", Values: nodes},
+			{Name: "deployment.environment", Values: envs},
+			{Name: "cloud.region", Values: regions},
+			{Name: "host.name", Values: hosts},
+		},
+	}
+}
+
+// traceRowsToDataBlock converts in-memory TraceRow slices to a columnar DataBlock.
+func (s *Storage) traceRowsToDataBlock(rows []schema.TraceRow) *storage.DataBlock {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	times := make([]string, len(rows))
+	traceIDs := make([]string, len(rows))
+	spanIDs := make([]string, len(rows))
+	names := make([]string, len(rows))
+	services := make([]string, len(rows))
+	durations := make([]string, len(rows))
+	statusCodes := make([]string, len(rows))
+	parentSpanIDs := make([]string, len(rows))
+	statusMsgs := make([]string, len(rows))
+
+	for i, row := range rows {
+		times[i] = fmt.Sprintf("%d", row.TimestampUnixNano)
+		traceIDs[i] = row.TraceID
+		spanIDs[i] = row.SpanID
+		names[i] = row.SpanName
+		services[i] = row.ServiceName
+		durations[i] = fmt.Sprintf("%d", row.DurationNs)
+		statusCodes[i] = fmt.Sprintf("%d", row.StatusCode)
+		parentSpanIDs[i] = row.ParentSpanID
+		statusMsgs[i] = row.StatusMessage
+	}
+
+	return &storage.DataBlock{
+		RowsCount: len(rows),
+		Columns: []storage.BlockColumn{
+			{Name: "_time", Values: times},
+			{Name: "trace_id", Values: traceIDs},
+			{Name: "span_id", Values: spanIDs},
+			{Name: "name", Values: names},
+			{Name: "service.name", Values: services},
+			{Name: "duration", Values: durations},
+			{Name: "status_code", Values: statusCodes},
+			{Name: "parent_span_id", Values: parentSpanIDs},
+			{Name: "status_message", Values: statusMsgs},
+		},
+	}
 }
 
 func (s *Storage) RefreshDiscovery(ctx context.Context) error {

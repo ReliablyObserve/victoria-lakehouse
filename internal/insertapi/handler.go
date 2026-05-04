@@ -25,9 +25,10 @@ type Handler struct {
 	logger         *slog.Logger
 	cfg            *config.Config
 	promotedFields map[string]bool
+	bufferHandler  *BufferHandler
 }
 
-func NewHandler(store LogStore, logger *slog.Logger, cfg *config.Config) *Handler {
+func NewHandler(store LogStore, logger *slog.Logger, cfg *config.Config, bq ...BufferQuerier) *Handler {
 	promoted := make(map[string]bool, len(promotedLogFields)+len(cfg.Schema.ExtraPromoted))
 	for k, v := range promotedLogFields {
 		promoted[k] = v
@@ -35,18 +36,25 @@ func NewHandler(store LogStore, logger *slog.Logger, cfg *config.Config) *Handle
 	for _, ep := range cfg.Schema.ExtraPromoted {
 		promoted[ep.Name] = true
 	}
-	return &Handler{
+	h := &Handler{
 		store:          store,
 		logger:         logger.With("component", "insertapi"),
 		cfg:            cfg,
 		promotedFields: promoted,
 	}
+	if len(bq) > 0 && bq[0] != nil {
+		h.bufferHandler = NewBufferHandler(bq[0])
+	}
+	return h
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/insert/jsonline", h.handleJSONLine)
 	mux.HandleFunc("/insert/loki/api/v1/push", h.handleLokiPush)
 	mux.HandleFunc("/insert/elasticsearch/_bulk", h.handleESBulk)
+	if h.bufferHandler != nil {
+		mux.Handle("/internal/buffer/query", h.bufferHandler)
+	}
 }
 
 // handleJSONLine accepts VL-compatible JSON line format.

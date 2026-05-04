@@ -753,6 +753,78 @@ func TestHandleESBulk_BlankLines(t *testing.T) {
 	}
 }
 
+// --- Task 10: Buffer endpoint registration tests ---
+
+func TestHandler_RegisterBufferEndpoint(t *testing.T) {
+	store := &mockStore{}
+	logger := slog.Default()
+	cfg := config.Default()
+	cfg.Mode = config.ModeLogs
+
+	bq := &mockBufferStore{
+		logRows: []schema.LogRow{
+			{TimestampUnixNano: 1000, Body: "buffered"},
+		},
+	}
+	h := NewHandler(store, logger, cfg, bq)
+	if h.bufferHandler == nil {
+		t.Fatal("bufferHandler should not be nil when BufferQuerier is provided")
+	}
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	// Verify the buffer query endpoint is registered and functional
+	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=2000&mode=logs", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code == http.StatusNotFound {
+		t.Error("/internal/buffer/query should be registered (got 404)")
+	}
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rr.Code)
+	}
+}
+
+func TestHandler_NoBufferEndpoint(t *testing.T) {
+	store := &mockStore{}
+	logger := slog.Default()
+	cfg := config.Default()
+	cfg.Mode = config.ModeLogs
+
+	// No BufferQuerier provided
+	h := NewHandler(store, logger, cfg)
+	if h.bufferHandler != nil {
+		t.Error("bufferHandler should be nil when no BufferQuerier is provided")
+	}
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	// Verify the buffer query endpoint is NOT registered
+	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=1000&mode=logs", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 (endpoint should not be registered)", rr.Code)
+	}
+}
+
+func TestHandler_NilBufferQuerier(t *testing.T) {
+	store := &mockStore{}
+	logger := slog.Default()
+	cfg := config.Default()
+	cfg.Mode = config.ModeLogs
+
+	// Explicit nil BufferQuerier
+	h := NewHandler(store, logger, cfg, nil)
+	if h.bufferHandler != nil {
+		t.Error("bufferHandler should be nil when nil BufferQuerier is passed")
+	}
+}
+
 func TestHandleESBulk_ResponseBody(t *testing.T) {
 	store := &mockStore{}
 	h := testHandler(store)
