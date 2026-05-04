@@ -5,7 +5,9 @@ All notable changes to Victoria Lakehouse will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.8.0] - 2026-05-04
+## [Unreleased]
+
+## [0.9.0] - 2026-05-04
 
 ### Added
 
@@ -20,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Helm RBAC** — K8s Role/RoleBinding for Lease-based leader election when `compaction.enabled=true`
 - **Nightly CI load test** — GitHub Actions workflow running full benchmark suite on schedule
 
-## [Unreleased]
+## [0.8.0] - 2026-05-04
 
 ### Added
 
@@ -34,6 +36,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **WAL integration in BatchWriter** — entries written to WAL before buffering, WAL truncated on successful flush, replay on startup
 - **Insert + select role separation** — `--lakehouse.role=all|insert|select` for independent scaling
 - **Config extensions** — `TargetFileSize`, `WALMaxBytes`, `WALDir`, `WALEnabled`, `SelectConfig` with `BufferQueryEnabled`, `InsertHeadlessService`, `BufferQueryTimeout`
+
+## [0.7.0] - 2026-05-04
+
+### Added
+
+- **Prometheus metrics instrumentation** — ~80 metrics under `lakehouse_*` prefix: HTTP RED, S3 operations, cache tiers, peer cache, manifest/discovery, Parquet engine, insert/writer, prefetch, startup/health, query
+- **Grafana dashboards** — `victoria-lakehouse.json` (single-instance, 7 rows) and `victoria-lakehouse-cluster.json` (fleet, adds peer cache + per-instance)
+- **Alerting rules** — 10 Prometheus alerting rules for critical operational conditions
+- **Startup warmup sequence** — phased startup with readiness probe gating (init → disk recovery → S3 refresh → ready)
+- **Circuit breaker** for S3 operations with configurable thresholds and recovery
 
 ## [0.6.0] - 2026-05-03
 

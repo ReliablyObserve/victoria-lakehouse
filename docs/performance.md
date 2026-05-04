@@ -84,6 +84,63 @@ Sequential time-range scans (scrolling in Grafana Explore) prefetch the next N p
 | Max S3 connections | N/A | 100-200 |
 | Fleet QPS (12 instances) | 2,400-6,000 | 600-1,800 |
 
+## Load Testing (M9)
+
+Victoria Lakehouse ships a load test binary at `cmd/loadtest` that measures both latency targets and maximum throughput.
+
+### Building and Running
+
+```bash
+# Build
+make build-loadtest
+# or
+go build -o bin/loadtest ./cmd/loadtest
+
+# Run all tests (latency + throughput)
+./bin/loadtest --target http://localhost:9428 --mode all --duration 60s
+
+# Latency benchmarks only
+./bin/loadtest --target http://localhost:9428 --mode latency --iterations 100
+
+# Throughput stress tests only
+./bin/loadtest --target http://localhost:9428 --mode throughput --duration 60s
+
+# Save results to JSON
+./bin/loadtest --target http://localhost:9428 --mode all --output results.json
+```
+
+Exits 0 if all p95 targets pass, exits 1 if any target is missed.
+
+### Latency Benchmarks
+
+Six benchmarks, each measured at p50/p95/p99 across the configured number of iterations:
+
+| Benchmark | Target p95 | What it measures |
+|---|---|---|
+| `manifest_fast_path` | 1ms | Empty response for queries in the future (manifest short-circuit) |
+| `field_names` | 1ms | `GET /select/logsql/field_names` from label index |
+| `field_values` | 1ms | `GET /select/logsql/field_values?field=service.name` from label index |
+| `bloom_point_query` | 100ms | `trace_id:="..."` bloom filter lookup |
+| `stats_aggregation` | 300ms | `stats_query` over 1h window |
+| `time_range_scan_1h` | 500ms | Full scan over last 1h, 100-row limit |
+
+The `manifest_fast_path` and label index benchmarks (1ms target) exercise the pure in-memory path with no S3 I/O.
+
+### Throughput Tests
+
+Two throughput tests find the maximum sustainable rate by sweeping concurrency levels (1, 2, 4, 8, 16, 32):
+
+| Test | Unit | What it measures |
+|---|---|---|
+| `max_insert_rate` | rows/s | Maximum insert throughput (100-row NDJSON batches) |
+| `max_query_qps` | qps | Maximum query throughput (`SELECT * LIMIT 10`) |
+
+Additionally, a `mixed` mode runs 7 insert workers and 3 query workers concurrently for a blended ops/s measurement.
+
+### Running in CI
+
+The nightly GitHub Actions workflow (`.github/workflows/loadtest.yml`) runs the load test against a live MinIO + Lakehouse stack. Results are saved as a JSON artifact and the job fails if any latency target is missed.
+
 ## User Experience
 
 | Scenario | Behavior |
