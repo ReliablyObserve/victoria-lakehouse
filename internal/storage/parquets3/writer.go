@@ -144,11 +144,43 @@ func (w *BatchWriter) AddTraceRows(rows []schema.TraceRow) {
 func (w *BatchWriter) checkSizeThreshold() {
 	total := int(w.totalRows.Load())
 	if total >= w.cfg.MaxBufferRows {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		if err := w.FlushAll(ctx); err != nil {
-			w.logger.Error("size-triggered flush failed", "error", err)
+		w.triggerFlush()
+		return
+	}
+
+	targetBytes := w.cfg.TargetFileSizeN()
+	if targetBytes <= 0 {
+		return
+	}
+
+	w.mu.Lock()
+	var needsFlush bool
+	for _, rows := range w.logBufs {
+		if estimateRawBytesLogs(rows) >= targetBytes {
+			needsFlush = true
+			break
 		}
+	}
+	if !needsFlush {
+		for _, rows := range w.traceBufs {
+			if estimateRawBytesTraces(rows) >= targetBytes {
+				needsFlush = true
+				break
+			}
+		}
+	}
+	w.mu.Unlock()
+
+	if needsFlush {
+		w.triggerFlush()
+	}
+}
+
+func (w *BatchWriter) triggerFlush() {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if err := w.FlushAll(ctx); err != nil {
+		w.logger.Error("triggered flush failed", "error", err)
 	}
 }
 
@@ -207,6 +239,7 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 		MaxTimeNs:         rows[len(rows)-1].TimestampUnixNano,
 		RawBytes:          result.RawBytes,
 		SchemaFingerprint: schemaFingerprint(w.mode),
+		Labels:            extractLogLabels(rows),
 	}
 	w.manifest.AddFile(partition, fi)
 
@@ -248,6 +281,7 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 		MaxTimeNs:         rows[len(rows)-1].TimestampUnixNano,
 		RawBytes:          result.RawBytes,
 		SchemaFingerprint: schemaFingerprint(w.mode),
+		Labels:            extractTraceLabels(rows),
 	}
 	w.manifest.AddFile(partition, fi)
 

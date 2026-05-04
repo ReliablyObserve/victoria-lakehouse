@@ -217,6 +217,7 @@ func testInsertConfig() *config.InsertConfig {
 		FlushInterval:    1 * time.Second,
 		MaxBufferRows:    100,
 		MaxBufferBytes:   "256MB",
+		TargetFileSize:   "128MB",
 		RowGroupSize:     50,
 		BloomColumns:     []string{"service.name", "trace_id"},
 		CompressionLevel: 3,
@@ -817,6 +818,60 @@ func TestSchemaFingerprint(t *testing.T) {
 	fp1b := schemaFingerprint(config.ModeLogs)
 	if fp1 != fp1b {
 		t.Error("same mode should produce same fingerprint")
+	}
+}
+
+func TestFlushAll_PopulatesLabels(t *testing.T) {
+	s3srv := mockS3()
+	defer s3srv.Close()
+	bw, m := testWriter(t, s3srv.URL)
+
+	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
+	rows := []schema.LogRow{
+		{TimestampUnixNano: base.UnixNano(), Body: "a", ServiceName: "api", SeverityText: "INFO"},
+		{TimestampUnixNano: base.Add(time.Second).UnixNano(), Body: "b", ServiceName: "worker", SeverityText: "ERROR"},
+	}
+	bw.AddLogRows(rows)
+
+	if err := bw.FlushAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	files := m.GetFilesForRange(base.UnixNano(), base.Add(time.Hour).UnixNano())
+	if len(files) != 1 {
+		t.Fatalf("files = %d, want 1", len(files))
+	}
+	if files[0].Labels == nil {
+		t.Fatal("Labels should be populated")
+	}
+	if !files[0].MatchesLabel("service.name", "api") {
+		t.Error("should contain service.name=api")
+	}
+	if !files[0].MatchesLabel("service.name", "worker") {
+		t.Error("should contain service.name=worker")
+	}
+	if !files[0].MatchesLabel("severity_text", "INFO") {
+		t.Error("should contain severity_text=INFO")
+	}
+}
+
+func TestAdaptiveFlush_TargetFileSize(t *testing.T) {
+	s3srv := mockS3()
+	defer s3srv.Close()
+
+	pool := testPool(t, s3srv.URL)
+	m := manifest.New("test-bucket", "logs/", slog.Default())
+	cfg := testInsertConfig()
+	cfg.MaxBufferRows = 1000000 // high row limit so it doesn't trigger
+	cfg.TargetFileSize = "1KB"  // very low target so byte check triggers
+	bw := NewBatchWriter(cfg, pool, m, "logs/", config.ModeLogs, slog.Default())
+
+	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
+	bw.AddLogRows(sampleLogRows(50, base))
+
+	// Should have auto-flushed due to per-partition size exceeding 1KB
+	if got := m.TotalFiles(); got < 1 {
+		t.Errorf("TotalFiles = %d, want >= 1 (adaptive flush should trigger)", got)
 	}
 }
 
