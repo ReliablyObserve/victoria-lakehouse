@@ -290,6 +290,22 @@ curl http://localhost:9428/lakehouse/info
 curl http://localhost:9428/metrics
 ```
 
+## Enabling Compaction for Production
+
+For production deployments with ongoing inserts, enable background compaction to merge small L0 flush files into larger L1/L2 files. This improves query performance over time by reducing file count and improving row group density.
+
+```bash
+lakehouse \
+  --lakehouse.mode=logs \
+  --lakehouse.s3.bucket=obs-archive \
+  --lakehouse.compaction.enabled=true \
+  --lakehouse.compaction.leader-election=auto
+```
+
+Compaction only runs on the elected leader. In Kubernetes, the Helm chart automatically creates the required ServiceAccount and RBAC for `auto` (K8s Lease) mode. For non-Kubernetes deployments, `leader-election=s3` uses an S3 lock file.
+
+See [Operations — Compaction](operations.md#compaction) for thresholds, monitoring, and troubleshooting.
+
 ## Next Steps
 
 - [Deployment Architecture](deployment-architecture.md) — vlagent, OTEL Collector, hot/cold tiers, DR

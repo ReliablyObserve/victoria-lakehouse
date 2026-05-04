@@ -168,6 +168,32 @@ lakehouse:
 | `--lakehouse.tenant.default-prefix` | `""` | S3 prefix for default (no tenant) queries |
 | `--lakehouse.tenant.prefix-template` | `{AccountID}/{ProjectID}/` | S3 prefix template per tenant |
 
+## Compaction Settings
+
+| Flag | Default | Description |
+|---|---|---|
+| `--lakehouse.compaction.enabled` | `false` | Enable background Parquet compaction |
+| `--lakehouse.compaction.interval` | `5m` | How often the scheduler scans for eligible partitions |
+| `--lakehouse.compaction.max-concurrent` | `1` | Max partitions compacted per scan |
+| `--lakehouse.compaction.min-files-l0` | `10` | L0→L1 compaction threshold (number of L0 files per partition) |
+| `--lakehouse.compaction.min-files-l1` | `10` | L1→L2 compaction threshold (number of L1 files per partition) |
+| `--lakehouse.compaction.min-age` | `1h` | Minimum partition age before it is eligible for compaction |
+| `--lakehouse.compaction.leader-election` | `auto` | Election mode: `auto`, `k8s`, `s3`, `none` |
+| `--lakehouse.compaction.lease-duration` | `15s` | K8s Lease duration (k8s election mode) |
+| `--lakehouse.compaction.s3-lock-ttl` | `60s` | S3 lock TTL before another instance may steal it (s3 election mode) |
+| `--lakehouse.compaction.s3-heartbeat` | `15s` | S3 lock heartbeat interval (s3 election mode) |
+
+Compaction is disabled by default. Enable it for production deployments with more than a few hours of data. See [Operations — Compaction](operations.md#compaction) for guidance.
+
+**Leader election modes:**
+
+| Mode | Behavior |
+|---|---|
+| `auto` | Uses K8s Lease when `KUBERNETES_SERVICE_HOST` is set, else S3 lock, else none |
+| `k8s` | Kubernetes `coordination.k8s.io/v1` Lease — requires RBAC (provided by Helm chart) |
+| `s3` | S3 lock file with HTTP liveness detection before stealing an expired lock |
+| `none` | No coordination — every instance is always the leader (single-instance only) |
+
 ## Inherited VL/VT Flags
 
 | Flag | Default | Description |
