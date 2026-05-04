@@ -96,7 +96,7 @@ func (p *Pusher) push(addr string, data []byte) {
 		metrics.ManifestPushErrorsTotal.Inc()
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		p.logger.Debug("push rejected", "peer", addr, "status", resp.StatusCode)
