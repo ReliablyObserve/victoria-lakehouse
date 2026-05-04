@@ -1,6 +1,6 @@
 # Getting Started
 
-Victoria Lakehouse serves cold observability data from Parquet files on S3. It runs as a single binary in either `logs` or `traces` mode.
+Victoria Lakehouse reads and writes cold observability data as Parquet files on S3. It runs as a single binary in either `logs` or `traces` mode, with optional role separation for independent scaling of insert and select workloads.
 
 ## Prerequisites
 
@@ -87,6 +87,32 @@ helm install lakehouse-logs oci://ghcr.io/reliablyobserve/charts/victoria-lakeho
   --set discovery.partitionAuthKey=secret
 ```
 
+## Ingesting Data
+
+Victoria Lakehouse accepts data through VL-compatible insert APIs:
+
+```bash
+# JSON line format (VL-native)
+curl -X POST http://localhost:9428/insert/jsonline -d '
+{"_time":"2026-05-04T10:00:00Z","_msg":"request completed","level":"info","service.name":"api-gw","trace_id":"abc123"}
+{"_time":"2026-05-04T10:00:01Z","_msg":"database query slow","level":"warn","service.name":"user-svc"}'
+
+# Loki push format
+curl -X POST http://localhost:9428/insert/loki/api/v1/push -d '{
+  "streams": [{
+    "stream": {"service": "api-gw", "env": "prod"},
+    "values": [["1714816800000000000", "request completed"]]
+  }]
+}'
+
+# Elasticsearch bulk format
+curl -X POST http://localhost:9428/insert/elasticsearch/_bulk -d '
+{"index":{}}
+{"_time":"2026-05-04T10:00:00Z","_msg":"hello world","service.name":"test"}'
+```
+
+Data flows through the WAL (crash safety) into per-partition buffers, then flushes as Parquet files to S3. Queries see data immediately via the buffer query bridge.
+
 ## Deployment Patterns
 
 ### Pattern 1: Multi-Select Storage Node (Recommended)
@@ -118,7 +144,24 @@ datasources:
     url: http://lakehouse-traces:10428
 ```
 
-### Pattern 3: Loki-VL-proxy Upstream
+### Pattern 3: Scaled Insert + Select
+
+Run insert and select as separate deployments for independent scaling:
+
+```bash
+# Insert pods (write to S3)
+lakehouse --lakehouse.mode=logs --lakehouse.role=insert \
+  --lakehouse.s3.bucket=obs-archive
+
+# Select pods (read from S3 + query insert buffers)
+lakehouse --lakehouse.mode=logs --lakehouse.role=select \
+  --lakehouse.s3.bucket=obs-archive \
+  --lakehouse.select.insert-headless-service=lakehouse-insert.monitoring.svc.cluster.local
+```
+
+Select pods discover insert pods via headless DNS and query their `/internal/buffer/query` endpoint for unflushed data.
+
+### Pattern 4: Loki-VL-proxy Upstream
 
 Route cold queries through Loki-VL-proxy:
 

@@ -4,13 +4,15 @@
 [![Security](https://github.com/ReliablyObserve/victoria-lakehouse/actions/workflows/security.yaml/badge.svg?branch=main&event=push)](https://github.com/ReliablyObserve/victoria-lakehouse/actions/workflows/security.yaml)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/ReliablyObserve/victoria-lakehouse)](https://go.dev/)
 [![Release](https://img.shields.io/github/v/release/ReliablyObserve/victoria-lakehouse)](https://github.com/ReliablyObserve/victoria-lakehouse/releases)
-[![Lines of Code](https://img.shields.io/badge/go%20loc-16.8k-blue)](https://github.com/ReliablyObserve/victoria-lakehouse)
-[![Tests](https://img.shields.io/badge/tests-368%20passed-brightgreen)](#tests)
+[![Lines of Code](https://img.shields.io/badge/go%20loc-24.2k-blue)](https://github.com/ReliablyObserve/victoria-lakehouse)
+[![Tests](https://img.shields.io/badge/tests-832%20passed-brightgreen)](#tests)
 [![License](https://img.shields.io/github/license/ReliablyObserve/victoria-lakehouse)](LICENSE)
 
-**S3-backed cold storage select for VictoriaLogs and VictoriaTraces.** Serve historical observability data from Parquet files on S3, while existing VL/VT clusters handle hot data on EBS.
+**S3-backed cold storage for VictoriaLogs and VictoriaTraces.** Read and write historical observability data as Parquet files on S3, while existing VL/VT clusters handle hot data on EBS.
 
 - **Drop-in VL/VT storage node.** Register as a `-storageNode` on vlselect/vtselect. Queries spanning hot and cold data work transparently.
+- **Write path with crash recovery.** VL-compatible insert APIs (`/insert/jsonline`, Loki push, ES bulk) buffer data, flush to S3 Parquet, and survive process crashes via WAL.
+- **Zero-delay reads.** Select pods query insert pods for unflushed buffer data, merging with S3 results for immediate read-after-write visibility.
 - **60-96% cost reduction.** S3 is 3-6x cheaper than EBS per GB. At 1 PB/month with multi-AZ, hybrid deployments save $3-9.5M/year compared to all-EBS.
 - **Sub-millisecond fast path.** Queries within the hot tier's range get an immediate empty response via the partition manifest. Zero S3 I/O.
 - **Open Parquet files.** DuckDB, Trino, Spark, and ClickHouse read the same files directly for analytics.
@@ -79,7 +81,7 @@ For full setup, cluster integration, and deployment patterns, see [Getting Start
 
 ## Architecture
 
-Victoria Lakehouse is a clean-room reimplementation of VL/VT select APIs backed by Parquet files on S3. From the outside, it looks and responds like a regular VL/VT storage node.
+Victoria Lakehouse is a clean-room reimplementation of VL/VT APIs backed by Parquet files on S3. From the outside, it looks and responds like a regular VL/VT storage node — for both reads and writes.
 
 ```mermaid
 graph TB
@@ -96,12 +98,22 @@ graph TB
     end
 
     subgraph "Cold Tier (S3) — Victoria Lakehouse"
-        LH_L["lakehouse-logs<br/>:9428"]
+        LH_I["lakehouse-insert<br/>/insert/*"]
+        LH_L["lakehouse-select<br/>:9428"]
         LH_T["lakehouse-traces<br/>:10428"]
+        WAL["WAL<br/>(crash recovery)"]
+        BUF["In-Memory<br/>Buffer"]
         Manifest["Partition<br/>Manifest"]
         Cache["Multi-Tier<br/>Cache"]
         S3["S3 Parquet<br/>(historical)"]
     end
+
+    Clients["OTEL / Vector /<br/>Loki Push"] --> LH_I
+    LH_I --> WAL
+    WAL --> BUF
+    BUF -->|flush| S3
+    BUF -->|manifest.AddFile| Manifest
+    LH_L -->|buffer query| BUF
 
     VL_DS --> vlselect
     J_DS --> vtselect
@@ -114,9 +126,11 @@ graph TB
     Manifest --> Cache
     Cache --> S3
 
+    style LH_I fill:#5a189a,color:#fff
     style LH_L fill:#2d6a4f,color:#fff
     style LH_T fill:#2d6a4f,color:#fff
     style S3 fill:#264653,color:#fff
+    style WAL fill:#e76f51,color:#fff
 ```
 
 ### Query Flow
@@ -157,54 +171,85 @@ flowchart TD
     style L4 fill:#e76f51,color:#fff
 ```
 
-### Three Deployment Patterns
+### Deployment Patterns
 
 ```mermaid
 graph LR
-    subgraph "Pattern 1: Storage Node (recommended)"
-        G1["Grafana"] --> VS1["vlselect"]
-        VS1 --> VLS1["vlstorage<br/>(hot EBS)"]
-        VS1 --> LH1["lakehouse<br/>(cold S3)"]
+    subgraph "Pattern 1: Standalone (single binary)"
+        C1["Clients"] -->|insert| LH1["lakehouse<br/>role=all"]
+        G1["Grafana"] -->|select| LH1
+        LH1 --> S1[("S3")]
     end
 ```
 
 ```mermaid
 graph LR
-    subgraph "Pattern 2: Direct Grafana"
-        G2["Grafana"] --> LH2L["lakehouse-logs<br/>:9428"]
-        G2 --> LH2T["lakehouse-traces<br/>:10428"]
+    subgraph "Pattern 2: Hybrid hot+cold (recommended)"
+        C2["Clients"] --> VLI["vlinsert<br/>(hot EBS)"]
+        C2 --> LHI["lakehouse-insert<br/>(cold S3)"]
+        G2["Grafana"] --> VS2["vlselect"]
+        VS2 --> VLS2["vlstorage<br/>(hot)"]
+        VS2 --> LHS["lakehouse-select<br/>(cold)"]
+        LHS -.->|buffer query| LHI
     end
 ```
 
 ```mermaid
 graph LR
-    subgraph "Pattern 3: Loki-VL-proxy"
-        G3["Grafana"] --> LVP["Loki-VL-proxy"]
-        LVP -->|hot| VS3["vlselect"]
-        LVP -->|cold| LH3["lakehouse"]
+    subgraph "Pattern 3: Scaled insert + select"
+        C3["Clients"] --> LHI3["insert-0,1,2"]
+        LHI3 --> S3[("S3")]
+        G3["Grafana"] --> LHS3["select-0,1,2"]
+        LHS3 --> S3
+        LHS3 -.->|buffer query| LHI3
+    end
+```
+
+```mermaid
+graph LR
+    subgraph "Pattern 4: Loki-VL-proxy"
+        G4["Grafana"] --> LVP["Loki-VL-proxy"]
+        LVP -->|hot| VS4["vlselect"]
+        LVP -->|cold| LH4["lakehouse"]
     end
 ```
 
 ---
 
-## Modes
+## Modes and Roles
 
-Single binary, two modes:
+Single binary, two modes, three roles:
 
 | Mode | Flag | Port | API | Use Case |
 |---|---|---|---|---|
-| Logs | `--lakehouse.mode=logs` | 9428 | VL `/select/logsql/*` | Cold log queries |
-| Traces | `--lakehouse.mode=traces` | 10428 | VT `/select/logsql/*` + Jaeger | Cold trace queries |
+| Logs | `--lakehouse.mode=logs` | 9428 | VL `/select/logsql/*` + `/insert/*` | Cold log storage |
+| Traces | `--lakehouse.mode=traces` | 10428 | VT `/select/logsql/*` + Jaeger | Cold trace storage |
+
+| Role | Flag | Description |
+|---|---|---|
+| All | `--lakehouse.role=all` (default) | Insert + select in one process |
+| Insert | `--lakehouse.role=insert` | Write path only, flush to S3 |
+| Select | `--lakehouse.role=select` | Read path only, query S3 + buffers |
 
 ---
 
 ## Key Features
 
+### Write Path
+- **VL-compatible insert APIs**: `/insert/jsonline`, `/insert/loki/api/v1/push`, `/insert/elasticsearch/_bulk` — same protocols as VictoriaLogs.
+- **Write-ahead log (WAL)**: crash-safe durability with gob-encoded append-only log and automatic replay on restart.
+- **Adaptive file sizing**: per-partition byte estimates trigger flush when approaching `--lakehouse.insert.target-file-size` for optimal Parquet file sizes.
+- **Buffer query bridge**: select pods fan out to insert pods via `/internal/buffer/query` for zero-delay reads of unflushed data.
+- **Manifest label pruning**: `FileInfo.Labels` enables query-time file skipping based on label values without opening Parquet files.
+
+### Read Path
 - **Auto-discovery of hot boundary** via `/internal/partition/list` on vlstorage/vtstorage. Zero manual config.
 - **Partition manifest** for sub-ms "nothing here" responses. Recent queries cost zero S3 I/O.
 - **Bloom filters** on `trace_id` and `service_name` for fast point lookups.
 - **Correlated prefetch**: log query warms trace Parquet for same time+service, and vice versa.
 - **Read-ahead**: sequential time scans prefetch next partitions.
+
+### Infrastructure
 - **Metadata persistence**: manifest, label index, and cache survive restarts.
 - **Distributed peer cache**: consistent hash routing across fleet instances via headless DNS.
 - **Schema auto-discovery**: OTLP column names in Parquet, mapped to VL/VT names at query time.
@@ -214,7 +259,7 @@ Single binary, two modes:
 
 ## Configuration
 
-Minimal config (mode + S3 bucket) works out of the box. All 55+ flags have production-ready defaults.
+Minimal config (mode + S3 bucket) works out of the box. All 65+ flags have production-ready defaults.
 
 ```yaml
 lakehouse:
@@ -312,7 +357,10 @@ See [Performance](docs/performance.md).
 | M2: ParquetS3Storage Core | Complete | Schema registry, manifest, query engine, bloom filters, column projection, stream methods |
 | M3: Cache + Persistence | Complete | L1 memory LRU, L2 disk LRU, singleflight coalescence, label index, metadata persistence |
 | M4: Discovery + Peer Cache | Complete | Hot boundary auto-discovery, consistent hash peer cache, `/manifest/range` API |
-| M5: VL/VT Cluster Integration | Planned | `/internal/select/*` binary protocol, storage node registration |
+| M5: VL/VT Cluster Integration | Complete | `/internal/select/*` binary protocol, storage node registration |
+| M6: Filter AST + E2E | Complete | Full LogsQL predicate engine, Playwright E2E, schema validation |
+| M8-Phase A: Write Durability | Complete | WAL crash recovery, insert APIs, adaptive flush, buffer query bridge, manifest labels |
+| M7: Observability | Planned | Metrics instrumentation, Grafana dashboards, alerting rules |
 
 ---
 

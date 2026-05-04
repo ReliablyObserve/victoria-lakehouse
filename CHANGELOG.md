@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Write-ahead log (WAL)** — append-only crash recovery with gob-encoded log/trace entries, automatic replay on startup, atomic truncate after flush (`internal/wal/`)
+- **VL-compatible insert APIs** — `/insert/jsonline`, `/insert/loki/api/v1/push`, `/insert/elasticsearch/_bulk` with full field mapping to Parquet schema (`internal/insertapi/`)
+- **Adaptive file sizing** — per-partition byte estimates trigger flush when approaching `--lakehouse.insert.target-file-size` for optimal Parquet output
+- **Buffer query bridge** — select pods fan out to insert pods via `/internal/buffer/query` for zero-delay reads of unflushed data (`internal/storage/parquets3/buffer_bridge.go`)
+- **Manifest label pruning** — `FileInfo.Labels` field with `MatchesLabel()` for query-time file skipping without opening Parquet files
+- **Manifest management** — `AllFiles()` snapshot and `RemoveFile()` for partition lifecycle
+- **Label extraction** — automatic extraction of label values from log rows (10 fields) and trace rows (2 fields) during flush
+- **WAL integration in BatchWriter** — entries written to WAL before buffering, WAL truncated on successful flush, replay on startup
+- **Insert + select role separation** — `--lakehouse.role=all|insert|select` for independent scaling
+- **Config extensions** — `TargetFileSize`, `WALMaxBytes`, `WALDir`, `WALEnabled`, `SelectConfig` with `BufferQueryEnabled`, `InsertHeadlessService`, `BufferQueryTimeout`
+
 ## [0.6.0] - 2026-05-03
 
 ### Added

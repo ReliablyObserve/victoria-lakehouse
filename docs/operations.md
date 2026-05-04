@@ -9,6 +9,7 @@
 | `/lakehouse/info` | Build/config info | Always |
 | `/manifest/range` | Data range served | Always |
 | `/metrics` | Prometheus metrics | Always |
+| `/internal/buffer/query` | Buffer query (insert pods) | When insert role enabled |
 
 ## Startup Behavior
 
@@ -29,14 +30,38 @@ Set `--lakehouse.startup.serve-stale=true` to serve from persisted cache (Phase 
 
 `--lakehouse.startup.max-warmup-time=5m` aborts warmup and goes ready with whatever was loaded. Background refresh continues.
 
+## Write Path Operations
+
+### WAL Management
+
+The WAL is automatically managed but operators should monitor:
+- **WAL size**: `lakehouse_insert_wal_bytes` — if approaching `--lakehouse.insert.wal-max-bytes`, flush pipeline may be stalled
+- **WAL replay on startup**: check logs for `"WAL recovery complete"` with recovered log/trace counts
+- **WAL location**: `--lakehouse.insert.wal-dir` must be on durable storage (not tmpfs)
+
+### Buffer Query Bridge
+
+When running separate insert and select pods:
+- Select pods discover insert pods via `--lakehouse.select.insert-headless-service`
+- Buffer query timeout is configurable via `--lakehouse.select.buffer-query-timeout` (default 2s)
+- Endpoint errors are silently ignored — degraded to S3-only results rather than failing the query
+
+### Flush Pipeline
+
+- **Periodic flush**: every `--lakehouse.insert.flush-interval` (default 10s)
+- **Adaptive flush**: when per-partition estimate reaches `--lakehouse.insert.target-file-size` (default 128MB)
+- **Graceful shutdown flush**: all buffers flushed before process exit (preStop hook)
+
 ## Graceful Shutdown
 
 On SIGTERM:
 1. Stop accepting new queries (readiness -> false)
-2. Drain in-flight queries (30s timeout)
-3. Persist manifest, label index, peer ring to disk
-4. Close S3 and peer connections
-5. Exit
+2. Flush all pending write buffers to S3
+3. Drain in-flight queries (30s timeout)
+4. Truncate WAL (all data flushed)
+5. Persist manifest, label index, peer ring to disk
+6. Close S3 and peer connections
+7. Exit
 
 Set `terminationGracePeriodSeconds: 60` in Kubernetes (30s drain + 30s persist).
 
@@ -137,3 +162,23 @@ Alert: `LakehouseS3CircuitBreakerOpen`.
 3. Enable `--lakehouse.startup.serve-stale=true` for faster readiness
 4. Reduce `--lakehouse.startup.warmup-window` to warm fewer partitions
 5. Set `--lakehouse.startup.max-warmup-time` as safety valve
+
+### Insert returns 503
+
+1. Check `CanWriteData()` — S3 connectivity issue or WAL full
+2. If WAL full: flush pipeline may be stalled (check S3 write errors)
+3. Increase `--lakehouse.insert.wal-max-bytes` or investigate S3 permissions
+
+### Recently ingested data not visible in queries
+
+1. Check flush interval: data is visible in S3 after `--lakehouse.insert.flush-interval`
+2. If buffer query bridge is enabled, data should be visible immediately via insert pod buffers
+3. Check `--lakehouse.select.buffer-query-enabled` is `true`
+4. Check `--lakehouse.select.insert-headless-service` resolves to insert pods
+5. Check buffer query timeout: `--lakehouse.select.buffer-query-timeout` (default 2s)
+
+### WAL replay on startup reports entries but data is missing
+
+1. WAL replay re-adds entries to partition buffers — they will be flushed on next flush cycle
+2. If process crashes before first flush after replay, the WAL still has the entries (not truncated until successful flush)
+3. Check logs for `"WAL recovery complete"` with correct counts

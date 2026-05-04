@@ -10,6 +10,7 @@ All flags have production-ready defaults. A minimal config requires only `--lake
 |---|---|---|
 | `--lakehouse.mode` | **(required)** | `logs` or `traces` — determines schema, port, field mapping |
 | `--lakehouse.config` | `""` | Path to YAML config file |
+| `--lakehouse.role` | `all` | `all`, `insert`, `select` — component role |
 | `--lakehouse.topology` | `auto` | `auto`, `storage-node`, `direct`, `loki-proxy` |
 
 ## S3 Settings
@@ -59,6 +60,53 @@ All flags have production-ready defaults. A minimal config requires only `--lake
 | `--lakehouse.hot-boundary` | `""` (auto-discover) | Manual hot boundary override (e.g., `7d`, `168h`) |
 
 When empty, Victoria Lakehouse auto-discovers the hot boundary by polling vlstorage/vtstorage nodes. Set this to skip auto-discovery.
+
+## Insert Settings
+
+| Flag | Default | Description |
+|---|---|---|
+| `--lakehouse.insert.flush-interval` | `10s` | Periodic flush interval (1s-60s) |
+| `--lakehouse.insert.max-buffer-rows` | `50000` | Per-partition buffer row limit |
+| `--lakehouse.insert.max-buffer-bytes` | `256MB` | Total buffer memory limit |
+| `--lakehouse.insert.row-group-size` | `10000` | Rows per Parquet row group |
+| `--lakehouse.insert.target-file-size` | `128MB` | Target Parquet file size (adaptive flush trigger) |
+| `--lakehouse.insert.bloom-columns` | `service.name,trace_id` | Columns with bloom filters |
+| `--lakehouse.insert.compression-level` | `default` | ZSTD level: `fastest`, `default`, `better`, `best` |
+
+## WAL Settings
+
+| Flag | Default | Description |
+|---|---|---|
+| `--lakehouse.insert.wal-enabled` | `true` | Enable write-ahead log for crash recovery |
+| `--lakehouse.insert.wal-dir` | `/data/lakehouse/wal` | WAL file directory |
+| `--lakehouse.insert.wal-max-bytes` | `512MB` | Maximum WAL file size |
+
+## Select Settings
+
+| Flag | Default | Description |
+|---|---|---|
+| `--lakehouse.select.buffer-query-enabled` | `true` | Query insert pods for unflushed data |
+| `--lakehouse.select.insert-headless-service` | `""` | K8s headless service for insert pod discovery |
+| `--lakehouse.select.buffer-query-timeout` | `2s` | Timeout for buffer query fan-out |
+
+## Schema Extensibility
+
+| Flag | Default | Description |
+|---|---|---|
+| `--lakehouse.schema.extra-promoted` | `""` | YAML list of user-defined promoted Parquet columns |
+
+Example YAML:
+```yaml
+lakehouse:
+  schema:
+    extra_promoted:
+      - name: "http.status_code"
+        type: "int32"
+        bloom: true
+      - name: "customer_id"
+        type: "string"
+        bloom: true
+```
 
 ## Manifest Settings
 
@@ -145,6 +193,7 @@ When empty, Victoria Lakehouse auto-discovers the hot boundary by polling vlstor
 ```yaml
 lakehouse:
   mode: logs
+  role: all
   topology: auto
 
   s3:
@@ -155,6 +204,23 @@ lakehouse:
     timeout: 30s
     retry_max: 3
     retry_base_delay: 200ms
+
+  insert:
+    flush_interval: 10s
+    max_buffer_rows: 50000
+    max_buffer_bytes: 256MB
+    row_group_size: 10000
+    target_file_size: 128MB
+    bloom_columns: "service.name,trace_id"
+    compression_level: default
+    wal_enabled: true
+    wal_dir: /data/lakehouse/wal
+    wal_max_bytes: 512MB
+
+  select:
+    buffer_query_enabled: true
+    insert_headless_service: lakehouse-insert.monitoring.svc.cluster.local
+    buffer_query_timeout: 2s
 
   cache:
     memory_limit: 512MB
