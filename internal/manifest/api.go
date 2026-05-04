@@ -31,3 +31,17 @@ func (m *Manifest) RangeHandler() http.HandlerFunc {
 		_ = json.NewEncoder(w).Encode(resp)
 	}
 }
+
+type PartitionsResponse struct {
+	Partitions []PartitionSummary `json:"partitions"`
+}
+
+func (m *Manifest) PartitionsHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		startDate := r.URL.Query().Get("start")
+		endDate := r.URL.Query().Get("end")
+		partitions := m.GetPartitions(startDate, endDate)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(PartitionsResponse{Partitions: partitions})
+	}
+}
