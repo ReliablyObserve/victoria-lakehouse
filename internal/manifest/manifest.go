@@ -274,6 +274,11 @@ func (m *Manifest) AddFile(partition string, fi FileInfo) {
 	}
 }
 
+// ExtractPartition is the exported wrapper for extractPartition.
+func ExtractPartition(key string) string {
+	return extractPartition(key)
+}
+
 // extractPartition extracts "dt=YYYY-MM-DD/hour=HH" from an S3 key.
 func extractPartition(key string) string {
 	dir := path.Dir(key)

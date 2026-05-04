@@ -758,6 +758,11 @@ func (s *Storage) BufferBridge() *BufferBridge {
 	return s.bufferBridge
 }
 
+// Pool returns the S3 client pool.
+func (s *Storage) Pool() *s3reader.ClientPool {
+	return s.pool
+}
+
 // logRowsToDataBlock converts in-memory LogRow slices to a columnar DataBlock.
 func (s *Storage) logRowsToDataBlock(rows []schema.LogRow) *storage.DataBlock {
 	if len(rows) == 0 {
