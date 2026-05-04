@@ -30,3 +30,6 @@ Thumbs.db
 
 # Docker volumes
 docker-data/
+
+# Git worktrees
+.worktrees/
