@@ -21,6 +21,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/wal"
@@ -116,6 +117,7 @@ func (w *BatchWriter) AddLogRows(rows []schema.LogRow) {
 	if len(rows) == 0 {
 		return
 	}
+	metrics.InsertRowsTotal.Add(len(rows))
 
 	if w.wal != nil {
 		for i := range rows {
@@ -139,6 +141,7 @@ func (w *BatchWriter) AddLogRows(rows []schema.LogRow) {
 	w.mu.Unlock()
 
 	w.totalRows.Add(int64(len(rows)))
+	metrics.InsertRowsBuffered.Set(w.totalRows.Load())
 
 	w.checkSizeThreshold()
 }
@@ -148,6 +151,7 @@ func (w *BatchWriter) AddTraceRows(rows []schema.TraceRow) {
 	if len(rows) == 0 {
 		return
 	}
+	metrics.InsertRowsTotal.Add(len(rows))
 
 	if w.wal != nil {
 		for i := range rows {
@@ -171,6 +175,7 @@ func (w *BatchWriter) AddTraceRows(rows []schema.TraceRow) {
 	w.mu.Unlock()
 
 	w.totalRows.Add(int64(len(rows)))
+	metrics.InsertRowsBuffered.Set(w.totalRows.Load())
 
 	w.checkSizeThreshold()
 }
@@ -220,6 +225,8 @@ func (w *BatchWriter) triggerFlush() {
 
 // FlushAll snapshots all buffers and flushes them to S3.
 func (w *BatchWriter) FlushAll(ctx context.Context) error {
+	flushStart := time.Now()
+
 	w.mu.Lock()
 	logSnap := w.logBufs
 	traceSnap := w.traceBufs
@@ -228,24 +235,38 @@ func (w *BatchWriter) FlushAll(ctx context.Context) error {
 	w.totalRows.Store(0)
 	w.mu.Unlock()
 
+	metrics.InsertRowsBuffered.Set(0)
+	metrics.InsertPartitionsActive.Set(int64(len(logSnap) + len(traceSnap)))
+
 	var errs []error
 
 	for partition, rows := range logSnap {
 		if err := w.flushLogPartition(ctx, partition, rows); err != nil {
+			metrics.InsertFlushErrorsTotal.Inc()
 			errs = append(errs, fmt.Errorf("flush logs %s: %w", partition, err))
 		}
 	}
 
 	for partition, rows := range traceSnap {
 		if err := w.flushTracePartition(ctx, partition, rows); err != nil {
+			metrics.InsertFlushErrorsTotal.Inc()
 			errs = append(errs, fmt.Errorf("flush traces %s: %w", partition, err))
 		}
+	}
+
+	if len(logSnap) > 0 || len(traceSnap) > 0 {
+		metrics.InsertFlushTotal.Inc()
+		metrics.InsertFlushDuration.Observe(time.Since(flushStart).Seconds())
 	}
 
 	if len(errs) == 0 && w.wal != nil {
 		if err := w.wal.Truncate(); err != nil {
 			w.logger.Error("WAL truncate failed", "error", err)
 		}
+	}
+
+	if w.wal != nil {
+		metrics.InsertWALBytes.Set(w.wal.Size())
 	}
 
 	if len(errs) > 0 {
@@ -267,9 +288,12 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 	batchID := randomBatchID()
 	key := fmt.Sprintf("%s%s/%s.parquet", w.prefix, partition, batchID)
 
+	metrics.S3RequestsTotal.Inc("PUT")
 	if err := w.pool.Upload(ctx, key, result.Data); err != nil {
+		metrics.S3ErrorsTotal.Inc("PUT")
 		return err
 	}
+	metrics.InsertBytesUploaded.Add(len(result.Data))
 
 	fi := manifest.FileInfo{
 		Key:               key,
@@ -309,9 +333,12 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 	batchID := randomBatchID()
 	key := fmt.Sprintf("%s%s/%s.parquet", w.prefix, partition, batchID)
 
+	metrics.S3RequestsTotal.Inc("PUT")
 	if err := w.pool.Upload(ctx, key, result.Data); err != nil {
+		metrics.S3ErrorsTotal.Inc("PUT")
 		return err
 	}
+	metrics.InsertBytesUploaded.Add(len(result.Data))
 
 	fi := manifest.FileInfo{
 		Key:               key,

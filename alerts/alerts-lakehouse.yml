@@ -1,0 +1,102 @@
+groups:
+  - name: lakehouse
+    rules:
+      - alert: LakehouseHighErrorRate
+        expr: |
+          sum(rate(lakehouse_http_errors_total[5m]))
+          / sum(rate(lakehouse_http_requests_total[5m]))
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Lakehouse HTTP error rate above 5%"
+          description: "Error rate is {{ $value | humanizePercentage }} over the last 5 minutes."
+
+      - alert: LakehouseS3CircuitBreakerOpen
+        expr: lakehouse_s3_circuit_breaker_state == 2
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Lakehouse S3 circuit breaker is open"
+          description: "S3 requests are being rejected. Check S3 availability and throttling."
+
+      - alert: LakehouseHotBoundaryGap
+        expr: lakehouse_discovery_hot_boundary_gap_days > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gap between cold and hot data exceeds 1 day"
+          description: "Hot boundary gap is {{ $value }} days. Data may be missing between hot and cold tiers."
+
+      - alert: LakehouseCacheDiskFull
+        expr: |
+          lakehouse_cache_disk_bytes
+          / lakehouse_cache_disk_bytes_limit
+          > 0.95
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Lakehouse L2 disk cache above 95%"
+          description: "Disk cache is {{ $value | humanizePercentage }} full. Consider increasing disk or lowering eviction watermark."
+
+      - alert: LakehouseNotReady
+        expr: lakehouse_ready == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Lakehouse not ready for over 5 minutes"
+          description: "Instance is still in startup phase {{ $labels.phase }}. Check S3 connectivity and manifest refresh."
+
+      - alert: LakehouseSlowQueries
+        expr: rate(lakehouse_slow_queries_total[10m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sustained slow queries on Lakehouse"
+          description: "Slow query rate is {{ $value }}/s over 10 minutes. Check S3 latency and cache hit rates."
+
+      - alert: LakehouseManifestStale
+        expr: |
+          time() - lakehouse_manifest_last_refresh_timestamp_seconds > 7200
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Lakehouse manifest not refreshed in over 2 hours"
+          description: "Manifest may be stale. New S3 files won't be queryable. Check S3 ListObjects permissions."
+
+      - alert: LakehouseDiscoveryFailed
+        expr: lakehouse_peer_ring_members == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No peers discovered in Lakehouse fleet"
+          description: "Peer ring is empty for 10 minutes. Check headless service DNS resolution."
+
+      - alert: LakehouseS3ThrottleSustained
+        expr: rate(lakehouse_s3_throttle_total[5m]) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sustained S3 throttling on Lakehouse"
+          description: "S3 throttle rate is {{ $value }}/s. Consider reducing concurrency or requesting S3 rate increase."
+
+      - alert: LakehousePeerDown
+        expr: |
+          rate(lakehouse_peer_errors_total[5m])
+          / (rate(lakehouse_peer_requests_total[5m]) + 1)
+          > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High peer cache error rate"
+          description: "Peer cache error rate is {{ $value | humanizePercentage }}. Check network connectivity between pods."
