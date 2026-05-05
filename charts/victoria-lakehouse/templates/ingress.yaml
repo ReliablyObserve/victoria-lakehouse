@@ -1,128 +1,38 @@
-{{- if and .Values.select.enabled .Values.select.ingress.enabled }}
-{{- $fullname := include "victoria-lakehouse.fullname" . }}
-{{- $port := include "victoria-lakehouse.port" (dict "context" . "servicePort" .Values.select.service.port) }}
+{{- range $name, $spec := dict "select" $.Values.select "insert" $.Values.insertComponent "vmauth" $.Values.vmauth }}
+{{- if and $spec.enabled (dig "ingress" "enabled" false $spec) }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ $fullname }}-select
+  name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $name }}
   labels:
-    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" "select") | nindent 4 }}
-  {{- if or .Values.select.ingress.annotations .Values.global.commonAnnotations }}
+    {{- include "victoria-lakehouse.componentLabels" (dict "root" $ "component" $name) | nindent 4 }}
+  {{- with $spec.ingress.annotations }}
   annotations:
-    {{- with .Values.global.commonAnnotations }}
     {{- toYaml . | nindent 4 }}
-    {{- end }}
-    {{- with .Values.select.ingress.annotations }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
   {{- end }}
 spec:
-  {{- if .Values.select.ingress.className }}
-  ingressClassName: {{ .Values.select.ingress.className }}
+  {{- with $spec.ingress.className }}
+  ingressClassName: {{ . }}
   {{- end }}
-  {{- if .Values.select.ingress.tls }}
+  {{- with $spec.ingress.tls }}
   tls:
-    {{- toYaml .Values.select.ingress.tls | nindent 4 }}
+    {{- toYaml . | nindent 4 }}
   {{- end }}
   rules:
-    {{- range .Values.select.ingress.hosts }}
+    {{- range $spec.ingress.hosts }}
     - host: {{ .host | quote }}
       http:
         paths:
           {{- range .paths }}
           - path: {{ .path }}
-            pathType: {{ .pathType | default "Prefix" }}
+            pathType: {{ .pathType }}
             backend:
               service:
-                name: {{ $fullname }}-select
+                name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $name }}
                 port:
-                  number: {{ $port }}
+                  name: http
           {{- end }}
     {{- end }}
 {{- end }}
-{{- if and .Values.insertComponent.enabled .Values.insertComponent.ingress.enabled }}
-{{- $fullname := include "victoria-lakehouse.fullname" . }}
-{{- $port := include "victoria-lakehouse.port" (dict "context" . "servicePort" .Values.insertComponent.service.port) }}
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: {{ $fullname }}-insert
-  labels:
-    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" "insert") | nindent 4 }}
-  {{- if or .Values.insertComponent.ingress.annotations .Values.global.commonAnnotations }}
-  annotations:
-    {{- with .Values.global.commonAnnotations }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
-    {{- with .Values.insertComponent.ingress.annotations }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
-  {{- end }}
-spec:
-  {{- if .Values.insertComponent.ingress.className }}
-  ingressClassName: {{ .Values.insertComponent.ingress.className }}
-  {{- end }}
-  {{- if .Values.insertComponent.ingress.tls }}
-  tls:
-    {{- toYaml .Values.insertComponent.ingress.tls | nindent 4 }}
-  {{- end }}
-  rules:
-    {{- range .Values.insertComponent.ingress.hosts }}
-    - host: {{ .host | quote }}
-      http:
-        paths:
-          {{- range .paths }}
-          - path: {{ .path }}
-            pathType: {{ .pathType | default "Prefix" }}
-            backend:
-              service:
-                name: {{ $fullname }}-insert
-                port:
-                  number: {{ $port }}
-          {{- end }}
-    {{- end }}
-{{- end }}
-{{- if and .Values.vmauth.enabled .Values.vmauth.ingress.enabled }}
-{{- $fullname := include "victoria-lakehouse.fullname" . }}
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: {{ $fullname }}-vmauth
-  labels:
-    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" "vmauth") | nindent 4 }}
-  {{- if or .Values.vmauth.ingress.annotations .Values.global.commonAnnotations }}
-  annotations:
-    {{- with .Values.global.commonAnnotations }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
-    {{- with .Values.vmauth.ingress.annotations }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
-  {{- end }}
-spec:
-  {{- if .Values.vmauth.ingress.className }}
-  ingressClassName: {{ .Values.vmauth.ingress.className }}
-  {{- end }}
-  {{- if .Values.vmauth.ingress.tls }}
-  tls:
-    {{- toYaml .Values.vmauth.ingress.tls | nindent 4 }}
-  {{- end }}
-  rules:
-    {{- range .Values.vmauth.ingress.hosts }}
-    - host: {{ .host | quote }}
-      http:
-        paths:
-          {{- range .paths }}
-          - path: {{ .path }}
-            pathType: {{ .pathType | default "Prefix" }}
-            backend:
-              service:
-                name: {{ $fullname }}-vmauth
-                port:
-                  number: {{ $.Values.vmauth.service.port }}
-          {{- end }}
-    {{- end }}
 {{- end }}

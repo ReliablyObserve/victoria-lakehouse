@@ -1,64 +1,25 @@
-{{- if and .Values.select.enabled .Values.select.horizontalPodAutoscaler.enabled }}
-{{- $fullname := include "victoria-lakehouse.fullname" . }}
+{{- range $name, $spec := dict "select" $.Values.select "insert" $.Values.insertComponent }}
+{{- if and $spec.enabled (dig "horizontalPodAutoscaler" "enabled" false $spec) }}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: {{ $fullname }}-select
+  name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $name }}
   labels:
-    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" "select") | nindent 4 }}
-  {{- with .Values.global.commonAnnotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- include "victoria-lakehouse.componentLabels" (dict "root" $ "component" $name) | nindent 4 }}
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
-    {{- if .Values.select.persistence.enabled }}
     kind: StatefulSet
-    {{- else }}
-    kind: Deployment
-    {{- end }}
-    name: {{ $fullname }}-select
-  minReplicas: {{ .Values.select.horizontalPodAutoscaler.minReplicas }}
-  maxReplicas: {{ .Values.select.horizontalPodAutoscaler.maxReplicas }}
+    name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $name }}
+  minReplicas: {{ $spec.horizontalPodAutoscaler.minReplicas }}
+  maxReplicas: {{ $spec.horizontalPodAutoscaler.maxReplicas }}
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: {{ .Values.select.horizontalPodAutoscaler.targetCPUUtilizationPercentage }}
+          averageUtilization: {{ $spec.horizontalPodAutoscaler.targetCPUUtilizationPercentage }}
 {{- end }}
-{{- if and .Values.insertComponent.enabled .Values.insertComponent.horizontalPodAutoscaler.enabled }}
-{{- $fullname := include "victoria-lakehouse.fullname" . }}
----
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: {{ $fullname }}-insert
-  labels:
-    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" "insert") | nindent 4 }}
-  {{- with .Values.global.commonAnnotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    {{- if .Values.insertComponent.persistence.enabled }}
-    kind: StatefulSet
-    {{- else }}
-    kind: Deployment
-    {{- end }}
-    name: {{ $fullname }}-insert
-  minReplicas: {{ .Values.insertComponent.horizontalPodAutoscaler.minReplicas }}
-  maxReplicas: {{ .Values.insertComponent.horizontalPodAutoscaler.maxReplicas }}
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: {{ .Values.insertComponent.horizontalPodAutoscaler.targetCPUUtilizationPercentage }}
 {{- end }}
