@@ -157,7 +157,7 @@ func (s *TombstoneStore) Count() int {
 // PersistToDisk marshals all tombstones to JSON and writes atomically to {dir}/tombstones.json.
 // Creates dir if needed with mode 0o755.
 func (s *TombstoneStore) PersistToDisk(dir string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create dir: %w", err)
 	}
 
@@ -171,7 +171,7 @@ func (s *TombstoneStore) PersistToDisk(dir string) error {
 	target := filepath.Join(dir, "tombstones.json")
 	tmp := target + ".tmp"
 
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write tmp file: %w", err)
 	}
 

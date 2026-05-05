@@ -56,7 +56,7 @@ func runBenchmarks(cfg BenchmarkConfig) []BenchmarkResult {
 }
 
 func benchmarkSingle(_ BenchmarkConfig, sizeName string, rowCount, rowGroupSize, compressionLevel int) BenchmarkResult {
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	rng := rand.New(rand.NewSource(time.Now().UnixNano())) // #nosec G404 -- benchmark data, not security-sensitive
 	rows := benchGenerateLogRows(rng, rowCount)
 	rawSize := benchEstimateRawSize(rows)
 
