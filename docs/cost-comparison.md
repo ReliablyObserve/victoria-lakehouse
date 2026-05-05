@@ -469,7 +469,7 @@ A critical cost factor often overlooked: **deleting data from cold storage.**
 - Physical deletion happens naturally when S3 lifecycle expires the file
 - For S3 Standard files, optional background rewrite reclaims space at minimal cost
 
-Full design: [Deletion Strategy](docs/deletion-strategy.md)
+Full design: [Deletion Strategy](./deletion-strategy.md)
 
 ---
 

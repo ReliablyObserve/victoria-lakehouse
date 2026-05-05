@@ -9,6 +9,14 @@ on:
       - website/**
       - docs/**
       - README.md
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/docs-site.yaml
+      - website/**
+      - docs/**
+      - README.md
   workflow_dispatch:
 
 permissions:
@@ -43,15 +51,18 @@ jobs:
         run: npm run build
 
       - name: Configure Pages
+        if: github.event_name == 'push'
         uses: actions/configure-pages@v6
 
       - name: Upload Pages artifact
+        if: github.event_name == 'push'
         uses: actions/upload-pages-artifact@v5
         with:
           path: website/build
 
   deploy:
     needs: build
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       pages: write
