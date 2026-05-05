@@ -61,7 +61,7 @@ func benchmarkLatency(target string, iterations int, urlFn func(string) string, 
 		if err != nil {
 			continue
 		}
-		io.Copy(io.Discard, resp.Body)
+		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 		latencies = append(latencies, float64(elapsed.Microseconds())/1000.0)
 	}

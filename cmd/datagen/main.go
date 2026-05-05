@@ -43,23 +43,6 @@ var (
 		"gRPC /payment.Process", "Redis GET session", "Kafka produce events",
 		"HTTP GET /api/v1/products", "HTTP DELETE /api/v1/sessions",
 	}
-	logMessages = []string{
-		"request completed successfully",
-		"processing incoming request from client",
-		"database query executed in 12ms",
-		"cache miss for key user:1234",
-		"connection established to upstream service",
-		"rate limit threshold approaching",
-		"failed to parse request body: unexpected EOF",
-		"authentication token validated",
-		"retry attempt 2/3 for downstream call",
-		"graceful shutdown initiated",
-		"health check passed all probes",
-		"metrics exported to prometheus endpoint",
-		"TLS handshake completed",
-		"websocket connection upgraded",
-		"batch processing completed: 1500 records",
-	}
 )
 
 func main() {

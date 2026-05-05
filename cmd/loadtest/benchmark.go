@@ -2,17 +2,12 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"log"
 	"math/rand"
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/parquet-go/parquet-go"
 	"github.com/parquet-go/parquet-go/compress/zstd"
 )
@@ -194,25 +189,3 @@ func benchReadParquet(data []byte) []schema.LogRow {
 	return rows[:total]
 }
 
-// uploadBenchmark uploads a benchmark file to S3 (only used when endpoint is configured).
-func uploadBenchmark(cfg BenchmarkConfig, sizeName string, rgs, cl int, data []byte) error {
-	ctx := context.Background()
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
-		awsconfig.WithRegion("us-east-1"),
-		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, "")),
-	)
-	if err != nil {
-		return err
-	}
-	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(cfg.Endpoint)
-		o.UsePathStyle = true
-	})
-	key := fmt.Sprintf("benchmarks/%s-rg%d-zstd%d.parquet", sizeName, rgs, cl)
-	_, err = client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(cfg.Bucket),
-		Key:    aws.String(key),
-		Body:   bytes.NewReader(data),
-	})
-	return err
-}

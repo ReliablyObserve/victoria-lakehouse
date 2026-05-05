@@ -70,7 +70,7 @@ func measureInsertRate(target string, concurrency int, dur time.Duration) float6
 				if err != nil {
 					continue
 				}
-				io.Copy(io.Discard, resp.Body)
+				_, _ = io.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
 				if resp.StatusCode < 300 {
 					totalRows.Add(100)
@@ -124,7 +124,7 @@ func measureQueryQPS(target string, concurrency int, dur time.Duration) float64 
 				if err != nil {
 					continue
 				}
-				io.Copy(io.Discard, resp.Body)
+				_, _ = io.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
 				totalQueries.Add(1)
 			}
@@ -162,7 +162,7 @@ func runMixedWorkload(target string, durationStr string) *ThroughputResult {
 				if err != nil {
 					continue
 				}
-				io.Copy(io.Discard, resp.Body)
+				_, _ = io.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
 				totalOps.Add(1)
 			}
@@ -180,7 +180,7 @@ func runMixedWorkload(target string, durationStr string) *ThroughputResult {
 				if err != nil {
 					continue
 				}
-				io.Copy(io.Discard, resp.Body)
+				_, _ = io.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
 				totalOps.Add(1)
 			}
