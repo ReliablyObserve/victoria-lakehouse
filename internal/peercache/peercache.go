@@ -129,9 +129,9 @@ func (pc *PeerCache) Members() []string {
 }
 
 type Handler struct {
-	mu       sync.RWMutex
-	cache    map[string][]byte
-	authKey  string
+	mu      sync.RWMutex
+	cache   map[string][]byte
+	authKey string
 }
 
 func NewHandler(authKey string) *Handler {

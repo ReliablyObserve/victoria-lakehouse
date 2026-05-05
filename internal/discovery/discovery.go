@@ -64,14 +64,14 @@ func New(
 	opts ...Option,
 ) *Discovery {
 	d := &Discovery{
-		headlessService:    headlessService,
-		staticStorageNodes: staticStorageNodes,
-		partitionAuthKey:   partitionAuthKey,
+		headlessService:     headlessService,
+		staticStorageNodes:  staticStorageNodes,
+		partitionAuthKey:    partitionAuthKey,
 		peerHeadlessService: peerHeadlessService,
-		timeout:            timeout,
-		logger:             logger.With("component", "discovery"),
-		lookupSRV:  net.DefaultResolver.LookupSRV,
-		lookupHost: net.DefaultResolver.LookupHost,
+		timeout:             timeout,
+		logger:              logger.With("component", "discovery"),
+		lookupSRV:           net.DefaultResolver.LookupSRV,
+		lookupHost:          net.DefaultResolver.LookupHost,
 		httpClient: &http.Client{
 			Timeout: timeout,
 		},

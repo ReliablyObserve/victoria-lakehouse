@@ -847,11 +847,11 @@ func TestHandleESBulk_ResponseBody(t *testing.T) {
 
 func TestJsonFieldsToLogRow_CapturesNonPromotedFields(t *testing.T) {
 	fields := map[string]any{
-		"_msg":          "test",
-		"service.name":  "svc",
-		"custom_field":  "custom_value",
-		"http.method":   "GET",
-		"request.id":    "req-123",
+		"_msg":         "test",
+		"service.name": "svc",
+		"custom_field": "custom_value",
+		"http.method":  "GET",
+		"request.id":   "req-123",
 	}
 
 	row := jsonFieldsToLogRow(fields, promotedLogFields)
@@ -919,8 +919,8 @@ func TestJsonFieldsToLogRow_NoExtraFields(t *testing.T) {
 func TestApplyStreamLabels_CapturesUnknownLabels(t *testing.T) {
 	row := &schema.LogRow{}
 	labels := map[string]string{
-		"service":   "my-service",
-		"app":       "my-app",
+		"service":    "my-service",
+		"app":        "my-app",
 		"datacenter": "dc1",
 	}
 

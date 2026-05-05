@@ -15,9 +15,9 @@ import (
 
 type staticLeader struct{ leader bool }
 
-func (s *staticLeader) IsLeader() bool        { return s.leader }
+func (s *staticLeader) IsLeader() bool          { return s.leader }
 func (s *staticLeader) Start(_ context.Context) {}
-func (s *staticLeader) Stop()                  {}
+func (s *staticLeader) Stop()                   {}
 
 func TestScheduler_SkipsWhenNotLeader(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))

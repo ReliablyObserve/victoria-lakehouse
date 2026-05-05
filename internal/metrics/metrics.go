@@ -111,11 +111,11 @@ func (g *FloatGauge) writePrometheus(w io.Writer, name string) {
 
 // Histogram tracks value distributions in predefined buckets.
 type Histogram struct {
-	mu      sync.Mutex
-	bounds  []float64
-	counts  []uint64
-	sum     float64
-	count   uint64
+	mu     sync.Mutex
+	bounds []float64
+	counts []uint64
+	sum    float64
+	count  uint64
 }
 
 func NewHistogram(name string, buckets []float64) *Histogram {

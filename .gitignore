@@ -3,6 +3,7 @@
 /lakehouse
 /datagen
 /healthcheck
+/loadtest
 *.exe
 
 # Test artifacts

@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
       - name: Start E2E stack
         run: docker compose -f deployment/docker/docker-compose-e2e.yml up -d
       - name: Wait for lakehouse ready
@@ -26,7 +26,7 @@ jobs:
         run: go run ./cmd/loadtest --target=http://localhost:19428 --mode=all --duration=120s --output=loadtest-results.json
       - name: Upload results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: loadtest-results
           path: loadtest-results.json

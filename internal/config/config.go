@@ -132,13 +132,13 @@ type CacheConfig struct {
 }
 
 type DiscoveryConfig struct {
-	HeadlessService      string        `yaml:"headless_service"`
-	StorageNodes         []string      `yaml:"storage_nodes"`
-	PartitionAuthKey     string        `yaml:"partition_auth_key"`
-	RefreshInterval      time.Duration `yaml:"refresh_interval"`
-	Timeout              time.Duration `yaml:"timeout"`
-	PeerHeadlessService  string        `yaml:"peer_headless_service"`
-	PeerRefreshInterval  time.Duration `yaml:"peer_refresh_interval"`
+	HeadlessService     string        `yaml:"headless_service"`
+	StorageNodes        []string      `yaml:"storage_nodes"`
+	PartitionAuthKey    string        `yaml:"partition_auth_key"`
+	RefreshInterval     time.Duration `yaml:"refresh_interval"`
+	Timeout             time.Duration `yaml:"timeout"`
+	PeerHeadlessService string        `yaml:"peer_headless_service"`
+	PeerRefreshInterval time.Duration `yaml:"peer_refresh_interval"`
 }
 
 type ManifestConfig struct {
@@ -151,10 +151,10 @@ type ManifestConfig struct {
 }
 
 type PrefetchConfig struct {
-	Correlated    bool `yaml:"correlated"`
+	Correlated     bool `yaml:"correlated"`
 	ReadAheadDepth int  `yaml:"read_ahead_depth"`
-	MaxConcurrent int  `yaml:"max_concurrent"`
-	MaxQueue      int  `yaml:"max_queue"`
+	MaxConcurrent  int  `yaml:"max_concurrent"`
+	MaxQueue       int  `yaml:"max_queue"`
 }
 
 type PeerConfig struct {

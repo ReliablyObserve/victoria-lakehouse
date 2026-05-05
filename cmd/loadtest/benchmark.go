@@ -188,4 +188,3 @@ func benchReadParquet(data []byte) []schema.LogRow {
 	total, _ := reader.Read(rows)
 	return rows[:total]
 }
-

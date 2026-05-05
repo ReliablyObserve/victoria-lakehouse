@@ -33,14 +33,14 @@ func (p Phase) String() string {
 }
 
 type Manager struct {
-	phase          atomic.Int32
-	ready          atomic.Bool
-	startTime      time.Time
-	recoveryTime   time.Duration
-	refreshTime    time.Duration
-	totalTime      time.Duration
-	catchupFiles   int64
-	logger         *slog.Logger
+	phase        atomic.Int32
+	ready        atomic.Bool
+	startTime    time.Time
+	recoveryTime time.Duration
+	refreshTime  time.Duration
+	totalTime    time.Duration
+	catchupFiles int64
+	logger       *slog.Logger
 }
 
 func NewManager(logger *slog.Logger) *Manager {

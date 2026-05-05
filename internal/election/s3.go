@@ -29,13 +29,13 @@ type S3Lock struct {
 
 // S3ElectorConfig holds all configuration for S3Elector.
 type S3ElectorConfig struct {
-	LockKey             string
-	Identity            string
-	Address             string
-	HeartbeatInterval   time.Duration
-	LockTTL             time.Duration
-	HealthCheckTimeout  time.Duration
-	Logger              *slog.Logger
+	LockKey            string
+	Identity           string
+	Address            string
+	HeartbeatInterval  time.Duration
+	LockTTL            time.Duration
+	HealthCheckTimeout time.Duration
+	Logger             *slog.Logger
 }
 
 // S3Elector implements Leader using an S3 lock file with liveness detection.
