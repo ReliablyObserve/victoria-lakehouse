@@ -1,12 +1,6 @@
 name: docs-site
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/docs-site.yaml
-      - website/**
-      - docs/**
-      - README.md
   push:
     branches:
       - main
@@ -27,8 +21,12 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      pages_site_exists: ${{ steps.pages_site.outputs.exists || 'false' }}
     permissions:
-      contents: write
+      contents: read
+      pages: write
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -48,26 +46,25 @@ jobs:
         working-directory: website
         run: npm run build
 
-      - name: Deploy to main branch
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          # Copy built site to docs folder
-          rm -rf docs
-          mkdir -p docs
-          cp -r website/build/* docs/
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
 
-          # Create .nojekyll to prevent GitHub from processing Jekyll
-          touch docs/.nojekyll
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: website/build
 
-          # Configure git
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-
-          # Commit and push if there are changes
-          if [ -n "$(git status --porcelain)" ]; then
-            git add docs/
-            git commit -m "docs: rebuild website [skip ci]"
-            git push origin main
-          fi
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+  deploy:
+    if: needs.build.outputs.pages_site_exists == 'true'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
