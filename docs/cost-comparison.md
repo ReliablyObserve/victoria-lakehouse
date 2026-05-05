@@ -198,7 +198,7 @@ At 500 GB/day raw ingestion, 1 year retention:
 | **Write amplification** | 1x (single Parquet write per flush) | 3-5x (WAL + chunk + index + compaction) | 2-3x (WAL + block + compaction) |
 | **S3 PUTs/day** | ~5K (flush every 10s × partitions) | ~143K (chunks + index) | ~50K (blocks + bloom) |
 | **S3 PUT cost/day** | $0.025 | $0.72 | $0.25 |
-| **Compaction I/O** | None (files immutable) | 2-5x read+rewrite | 2-3x read+rewrite |
+| **Compaction I/O** | Merge recent small files only (old data never touched) | 2-5x read+rewrite of ALL data over time | 2-3x read+rewrite of ALL data |
 
 ### Read Path I/O
 
@@ -240,7 +240,7 @@ At 500 GB/day raw ingestion, 1 year retention:
 
 | Concern | Lakehouse Hybrid | Loki | Tempo |
 |---|---|---|---|
-| **Compaction** | None (immutable Parquet files) | Required, CPU-intensive, tuning needed | Required, less intensive |
+| **Compaction** | Size-tiered merge (recent files only, old data untouched) | Rewrites all chunks regardless of age (triggers S3-IA fees) | Rewrites old blocks (triggers S3-IA fees) |
 | **Index management** | Manifest (in-memory, auto-built) | DynamoDB/BoltDB (retention policies, migration) | Bloom/search (auto-managed) |
 | **Schema changes** | Add promoted columns (backward-compatible) | Label changes need index migration | Schema-less (trace attributes) |
 | **Multi-tenancy** | VL/VT native tenant ID | Native tenant ID | Native tenant ID |
@@ -384,12 +384,13 @@ Year 2 (retention grows, compression advantage compounds):
 - With lifecycle (2yr): ~$780/mo cold storage (vs $1,540 standard = 49% savings)
 
 **Loki cannot safely use S3-IA/Glacier** because:
-- Compaction reads and rewrites old chunks (retrieval fees)
+- Compaction reads and rewrites ALL old chunks (retrieval fees on every compaction cycle)
 - Index queries touch old data unpredictably
 - Minimum object size (128KB) vs small chunk sizes
 
 **Lakehouse uses S3-IA/Glacier natively** because:
-- Files are immutable (no compaction rewrites)
+- Compaction only merges recent small files (old data is never read or rewritten)
+- Once a file is compacted to optimal size, it's never touched again — safe for lifecycle transitions
 - Manifest knows exact file locations (no LIST needed)
 - Files are large (10-50MB, well above 128KB minimum)
 - Query patterns predictable (partition → file → row groups)
