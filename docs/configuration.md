@@ -1,3 +1,8 @@
+---
+title: Configuration
+sidebar_position: 9
+---
+
 # Configuration
 
 Victoria Lakehouse uses a `--lakehouse.*` flag prefix for all settings. Flags can also be set via YAML config file (`--lakehouse.config=path`). CLI flags override YAML values.

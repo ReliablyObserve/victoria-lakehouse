@@ -1,3 +1,8 @@
+---
+title: Security
+sidebar_position: 12
+---
+
 # Security
 
 ## Container Hardening

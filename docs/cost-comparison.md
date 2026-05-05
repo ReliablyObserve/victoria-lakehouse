@@ -1,8 +1,13 @@
+---
+title: Cost Comparison
+sidebar_position: 16
+---
+
 # Victoria Lakehouse vs Loki vs Tempo — Cost, Performance & Architecture Comparison
 
 ## Executive Summary
 
-Victoria Lakehouse operates as a **cold storage tier** for VictoriaLogs/VictoriaTraces, storing data in open Parquet format on S3. The hybrid architecture (VL/VT hot on EBS for 30 days + Lakehouse cold on S3 for 1-2 years) delivers the lowest total cost of ownership for observability at scale while maintaining sub-second query performance on cold data.
+Victoria Lakehouse operates as a **cold storage tier** for VictoriaLogs/VictoriaTraces, storing data in open Parquet format on S3. VL/VT's native 47-70x compression makes EBS-only the cheapest option for 1-2 year retention. The hybrid architecture (VL/VT hot on EBS + Lakehouse cold on S3) adds **open Parquet format, S3 11-nines durability, disaster recovery, and direct analytics access** — and becomes cheapest at 3+ year retention via S3 lifecycle tiering to Glacier.
 
 This document compares three deployment architectures across cost, performance, compression, durability, complexity, and flexibility.
 
@@ -39,8 +44,9 @@ Compactor merges chunks on S3
 All data on EBS — full retention on disk
 ```
 
-- Simplest architecture but most expensive at scale
-- Linear cost growth with retention
+- Simplest architecture, cheapest at 1-2yr retention thanks to 47-70x compression
+- Linear cost growth with retention (no lifecycle tiering)
+- Proprietary format (no external analytics access)
 
 ---
 
@@ -52,20 +58,20 @@ All data on EBS — full retention on disk
 
 | Component | Lakehouse Hybrid | Loki + Tempo | VL/VT EBS Only |
 |---|---|---|---|
-| **Hot tier storage** | EBS gp3: 30d × 500GB = 15TB<br>× $0.08/GB = **$1,200/mo** | Ingester EBS (WAL only): 500GB<br>× $0.08/GB = **$40/mo** | EBS gp3: 365d × 500GB = 182TB<br>× $0.08/GB = **$14,560/mo** |
-| **Cold tier storage** | S3 Standard: 335d × 500GB ÷ 5x compression<br>= 33.5TB × $0.023/GB = **$770/mo** | S3 Standard: 365d × 500GB ÷ 3.5x compression<br>= 52TB × $0.023/GB = **$1,196/mo** | N/A (all on EBS) | 
-| **Index storage** | Manifest in-memory (<1MB) | DynamoDB/BoltDB on S3: ~5TB<br>× $0.023/GB = **$115/mo** | VL native (included in EBS) |
-| **Total storage** | **$1,970/mo** | **$1,351/mo** | **$14,560/mo** |
+| **Hot tier storage** | EBS gp3: 30d × 500GB ÷ 55x × 3 AZ<br>= 820GB × $0.08/GB = **$66/mo** | Ingester EBS (WAL, RF=3): 1.5TB<br>× $0.08/GB = **$120/mo** | EBS gp3: 365d × 500GB ÷ 55x × 3 AZ<br>= 9.9TB × $0.08/GB = **$796/mo** |
+| **Cold tier storage** | S3 Standard: 335d × 500GB ÷ 6x<br>= 27.9TB × $0.023/GB = **$642/mo** | S3 Standard: 365d × 500GB ÷ 3.5x<br>= 52TB × $0.023/GB = **$1,196/mo** | N/A (all on EBS) |
+| **Index storage** | Manifest in-memory (<1MB) | DynamoDB/BoltDB on S3: ~5TB<br>× $0.023/GB = **$115/mo** | VL native (included in 55x ratio) |
+| **Total storage** | **$708/mo** | **$1,431/mo** | **$796/mo** |
 
 #### Compute Costs
 
 | Component | Lakehouse Hybrid | Loki + Tempo | VL/VT EBS Only |
 |---|---|---|---|
-| **Ingestion** | VL vlinsert: 2× m6i.xlarge<br>= **$288/mo** | Loki distributor + ingester: 4× m6i.xlarge<br>= **$576/mo** | VL single: 2× m6i.xlarge<br>= **$288/mo** |
-| **Hot query** | VL vlselect: 2× m6i.xlarge<br>= **$288/mo** | Loki querier: 3× m6i.xlarge<br>= **$432/mo** | VL select: 2× m6i.xlarge<br>= **$288/mo** |
-| **Cold query** | Lakehouse select: 2× m6i.large<br>= **$138/mo** | Loki querier (same): included above | N/A |
+| **Ingestion** | VL vlinsert: 6× m6i.xlarge (3 AZ)<br>= **$864/mo** | Distributor+ingester: 6× m6i.xlarge (3 AZ, RF=3)<br>= **$864/mo** | VL vlinsert: 6× m6i.xlarge (3 AZ)<br>= **$864/mo** |
+| **Hot query** | VL vlselect: 6× m6i.xlarge (3 AZ)<br>= **$864/mo** | Querier+frontend: 6× m6i.xlarge (3 AZ)<br>= **$864/mo** | VL vlselect: 6× m6i.xlarge (3 AZ)<br>= **$864/mo** |
+| **Cold query** | Lakehouse select: 3× m6i.large (3 AZ)<br>= **$207/mo** | Loki querier (same): included above | N/A |
 | **Other** | vlstorage: included above | Compactor: 1× m6i.xlarge = **$144/mo**<br>Ruler: 1× m6i.large = **$69/mo** | vlstorage: included |
-| **Total compute** | **$714/mo** | **$1,221/mo** | **$576/mo** |
+| **Total compute** | **$1,935/mo** | **$1,941/mo** | **$1,728/mo** |
 
 #### S3 Request Costs
 
@@ -90,22 +96,27 @@ All data on EBS — full retention on disk
 
 | | Lakehouse Hybrid | Loki + Tempo | VL/VT EBS Only |
 |---|---|---|---|
-| Storage | $1,970 | $1,351 | $14,560 |
-| Compute | $714 | $1,221 | $576 |
+| Storage | $708 | $1,431 | $796 |
+| Compute | $1,935 | $1,941 | $1,728 |
 | S3 Requests | $1 | $38 | $0 |
 | Data Transfer | $170 | $200 | $155 |
-| **Monthly Total** | **$2,855/mo** | **$2,810/mo** | **$15,291/mo** |
-| **Annual Total** | **$34,260/yr** | **$33,720/yr** | **$183,492/yr** |
+| **Monthly Total** | **$2,814/mo** | **$3,610/mo** | **$2,679/mo** |
+| **Annual Total** | **$33,768/yr** | **$43,320/yr** | **$32,148/yr** |
 
 #### Scaling to 2-Year Retention
 
 | | Lakehouse Hybrid | Loki + Tempo | VL/VT EBS Only |
 |---|---|---|---|
-| Storage (2yr) | Hot: $1,200 + Cold: $1,540 = **$2,740/mo** | $2,581/mo (linear S3 growth) | **$29,120/mo** (EBS scales linearly) |
-| **Monthly Total** | **$3,625/mo** | **$4,038/mo** | **$29,851/mo** |
-| **Annual Total** | **$43,500/yr** | **$48,456/yr** | **$358,212/yr** |
+| Storage (2yr) | Hot: $66 + Cold: $1,342 = **$1,408/mo** | WAL: $120 + S3: $2,399 + Index: $230<br>= **$2,749/mo** | 730d × 500GB ÷ 55x × 3 AZ = 19.9TB<br>**$1,593/mo** |
+| **Monthly Total** | **$3,514/mo** | **$4,928/mo** | **$3,476/mo** |
+| **Annual Total** | **$42,168/yr** | **$59,136/yr** | **$41,712/yr** |
 
-**Key insight**: Lakehouse becomes cheaper than Loki at longer retention because Parquet compression (5-8x) significantly outperforms Loki chunks (3-3.5x). The crossover happens around 14 months retention.
+**Key insights**:
+- With 3 AZ replication, VL/VT EBS Only and Lakehouse Hybrid are within 5% of each other ($2,679 vs $2,814/mo at 1yr). Compute dominates at this scale — storage is secondary.
+- VL/VT EBS is slightly cheaper at 1-2yr thanks to 47-70x compression, but the gap narrows at 2yr ($3,476 vs $3,514/mo) as 3× EBS grows linearly while Lakehouse cold tier stays on S3.
+- Lakehouse Hybrid is 22% cheaper than Loki at 1yr and 29% cheaper at 2yr due to better Parquet compression (6x vs 3.5x) and no compaction I/O.
+- Lakehouse wins at 3+ year retention when S3 lifecycle moves data to Glacier Instant ($0.004/GB) or Deep Archive ($0.00099/GB) — at 3yr with lifecycle, Lakehouse storage drops to ~$710/mo vs VL/VT EBS ~$2,389/mo (3× AZ).
+- Lakehouse's value beyond cost: open Parquet format, S3 11-nines durability, disaster recovery independence, and direct analytics access (DuckDB, Spark, Trino).
 
 ---
 
@@ -113,14 +124,23 @@ All data on EBS — full retention on disk
 
 ### Raw Compression Performance
 
-| Metric | Lakehouse (Parquet + ZSTD) | Loki (Snappy chunks) | Tempo (Snappy/ZSTD blocks) |
-|---|---|---|---|
-| **Overall ratio** | **5-8x** (ZSTD-3 default) | **3-3.5x** (Snappy) | **3-4x** (Snappy) |
-| **Best case (low-cardinality logs)** | **50-200x** per column | 4-5x | 4-5x |
-| **Worst case (random trace IDs)** | 1.5-3x per column | 2-2.5x | 2-3x |
-| **Structured JSON logs** | **8-12x** | 3.5-4x | N/A |
+| Metric | VL/VT (native LSM) | Lakehouse (Parquet + ZSTD) | Loki (Snappy chunks) | Tempo (Snappy/ZSTD blocks) |
+|---|---|---|---|---|
+| **Overall ratio (logs)** | **~70x** (production measured) | **6-10x** (ZSTD-3 default) | **3-3.5x** (Snappy) | N/A |
+| **Overall ratio (traces)** | **~47x** (production measured) | **5-8x** (ZSTD-3 default) | N/A | **3-4x** (Snappy) |
+| **Best case (low-cardinality logs)** | 100-200x | **50-200x** per column | 4-5x | 4-5x |
+| **Worst case (random trace IDs)** | 10-20x | 1.5-3x per column | 2-2.5x | 2-3x |
+| **Structured JSON logs** | 60-80x | **8-12x** | 3.5-4x | N/A |
 
-### Why Parquet Compresses Better
+### Why VL/VT Compresses Best
+
+VL/VT achieves 47-70x because its LSM storage engine:
+1. **Stream deduplication** — stream labels (service.name, namespace, etc.) stored once per stream, not repeated per log line
+2. **Per-stream dictionary** — high-frequency terms within a stream compressed via shared dictionary
+3. **Inverted index** — term→log mapping enables fast queries without scanning all data
+4. **ZSTD on data blocks** — final compression on homogeneous blocks of same-stream data
+
+### Why Parquet Compresses Better Than Loki
 
 1. **Columnar layout** — Parquet stores each column separately. Columns with low cardinality (service.name, level, k8s.namespace) achieve 50-200x via dictionary + RLE encoding, even before ZSTD
 2. **Type-aware encoding** — timestamps use delta encoding (10-50x), integers use bit-packing, strings use dictionary encoding
@@ -145,13 +165,14 @@ At 500 GB/day raw ingestion, 1 year retention:
 
 | Solution | Compression | Data on Disk/S3 | Storage Cost |
 |---|---|---|---|
-| Lakehouse ZSTD-3 | 5-8x | 22-36 TB | $506-$828/mo |
-| Lakehouse ZSTD-9 | 7-10x | 18-26 TB | $414-$598/mo |
-| Loki Snappy | 3-3.5x | 52-60 TB | $1,196-$1,380/mo |
-| Tempo Snappy | 3-4x | 45-60 TB | $1,035-$1,380/mo |
-| VL/VT EBS (native) | ~4x (internal) | 45 TB (EBS) | $3,600/mo (EBS pricing) |
+| VL/VT EBS (native, 3 AZ) | 47-70x (production measured) | 9.0-11.1 TB (EBS × 3 AZ) | $720-$888/mo |
+| Lakehouse ZSTD-3 | 6-10x | 18-30 TB (S3) | $414-$690/mo |
+| Lakehouse ZSTD-9 | 8-12x | 15-23 TB (S3) | $345-$529/mo |
+| Loki Snappy | 3-3.5x | 52-60 TB (S3) | $1,196-$1,380/mo |
+| Tempo Snappy | 3-4x | 45-60 TB (S3) | $1,035-$1,380/mo |
 
-**Annual storage savings** (Lakehouse ZSTD-3 vs Loki Snappy): **$4,416-$6,888/year**
+**Annual storage savings** (Lakehouse ZSTD-3 vs Loki Snappy): **$6,072-$11,592/year**
+**With lifecycle** (>1yr data on Glacier Instant at $0.004/GB): Lakehouse cold storage drops to **$120-$200/mo**, beating VL/VT 3 AZ EBS ($720-$888/mo).
 
 ---
 
@@ -338,30 +359,42 @@ At 500 GB/day raw ingestion, 1 year retention:
 
 | Month | Lakehouse Hybrid (cumulative) | Loki + Tempo (cumulative) | VL/VT EBS Only (cumulative) |
 |---|---|---|---|
-| 6 | $17,130 | $16,860 | $91,746 |
-| 12 | $34,260 | $33,720 | $183,492 |
-| 18 | $54,000 | $56,808 | $275,238 |
-| 24 | **$73,740** | **$80,760** | **$366,984** |
+| 6 | $16,884 | $21,660 | $16,074 |
+| 12 | $33,768 | $43,320 | $32,148 |
+| 18 | $54,852 | $72,888 | $53,004 |
+| 24 | **$75,936** | **$102,456** | **$73,860** |
 
-**Lakehouse becomes cheaper than Loki after ~14 months** because:
-1. Parquet compression (5-8x) vs Loki chunks (3-3.5x) means less S3 storage
-2. No compaction I/O costs (immutable files)
-3. Column projection means less data transfer on reads
-4. Manifest eliminates S3 LIST operations
+**Cost ranking at all retention periods:**
+1. **VL/VT EBS Only** — cheapest at 1-2yr ($2,679/mo at 1yr vs Lakehouse $2,814/mo), but gap narrows with 3 AZ EBS growth
+2. **Lakehouse Hybrid** — within 5% of VL/VT EBS, 22% cheaper than Loki, adds open format + S3 durability + DR
+3. **Loki + Tempo** — most expensive due to lower compression (3.5x) and compaction I/O
+
+**Lakehouse catches VL/VT EBS Only** when S3 lifecycle tiering activates:
+- With 3 AZ, VL/VT EBS per-raw-GB cost is $0.08 × 3 / 55 = $0.0044/raw-GB
+- Data >1yr on Glacier Instant ($0.004/GB ÷ 6x = $0.0007/raw-GB) beats VL/VT 3 AZ EBS by 6.3x
+- Data >2yr on Glacier Deep ($0.00099/GB ÷ 6x = $0.00017/raw-GB) beats VL/VT 3 AZ EBS by 26x
+- At 3+ year retention with lifecycle, Lakehouse becomes cheapest overall
 
 ### Break-Even Analysis
 
 ```
-Lakehouse additional cost (vs Loki) in first year:
-  + EBS hot tier premium: +$619/mo
-  - Better compression: -$426/mo  
-  - Less I/O: -$287/mo
-  Net year 1: +$540 (Lakehouse slightly more expensive)
+Lakehouse vs Loki (Lakehouse cheaper from day 1):
+  Lakehouse: $2,814/mo vs Loki: $3,610/mo
+  Net savings: $796/mo ($9,552/yr)
+  At 2yr retention: $1,414/mo savings ($16,968/yr)
 
-Year 2 (retention grows, compression advantage compounds):
-  - Storage savings: -$770/mo (more data = bigger compression advantage)
-  - I/O savings: -$350/mo
-  Net year 2: -$13,440 (Lakehouse significantly cheaper)
+Lakehouse vs VL/VT EBS Only (3 AZ):
+  Lakehouse: $2,814/mo vs VL/VT: $2,679/mo (1yr retention)
+  Net difference: +$135/mo (Lakehouse 5% more expensive)
+  At 2yr: +$38/mo (gap narrows as 3× EBS grows)
+  At 3yr with lifecycle: Lakehouse ~$1,700/mo cheaper (Glacier tiering)
+  
+  Lakehouse value beyond storage cost:
+  + S3 11-nines durability (vs EBS per-AZ)
+  + Open Parquet format (DuckDB, Spark, Trino access)
+  + Disaster recovery (independent of hot cluster)
+  + S3 lifecycle → Glacier for 3+ year data (crossover at ~2.5yr)
+  + No EBS volume management at scale (no 3× EBS provisioning)
 ```
 
 ---
@@ -370,18 +403,19 @@ Year 2 (retention grows, compression advantage compounds):
 
 ### Tiered Storage Strategy (Lakehouse only)
 
-| Data Age | S3 Class | Cost/GB/mo | Monthly Cost (500GB/d) | Query Latency |
+| Data Age | S3 Class | Cost/GB/mo | Monthly Cost (500GB/d, 6x Parquet) | Query Latency |
 |---|---|---|---|---|
-| 0-30 days | EBS gp3 (VL hot) | $0.080 | $1,200 | <10ms |
-| 30-90 days | S3 Standard | $0.023 | $209 | <500ms |
-| 90d-1yr | S3 Standard-IA | $0.0125 | $380 | <500ms + 128KB min |
-| 1-2yr | S3 Glacier Instant | $0.004 | $244 | <500ms + retrieval fee |
-| >2yr | S3 Glacier Deep | $0.00099 | $60 | 12hr retrieval |
+| 0-30 days | EBS gp3 (VL hot, 55x, 3 AZ) | $0.080 | $66 | <10ms |
+| 30-90 days | S3 Standard | $0.023 | $192 | <500ms |
+| 90d-1yr | S3 Standard-IA | $0.0125 | $348 | <500ms + 128KB min |
+| 1-2yr | S3 Glacier Instant | $0.004 | $203 | <500ms + retrieval fee |
+| >2yr | S3 Glacier Deep | $0.00099 | $50 | 12hr retrieval |
 
 **Lifecycle policy savings** (vs all S3 Standard):
-- Standard-only (1yr): $770/mo cold storage
-- With lifecycle (1yr): ~$550/mo cold storage (29% savings)
-- With lifecycle (2yr): ~$780/mo cold storage (vs $1,540 standard = 49% savings)
+- Standard-only (1yr): $642/mo cold storage
+- With lifecycle (1yr): ~$450/mo cold storage (30% savings)
+- With lifecycle (2yr): ~$620/mo cold storage (vs $1,342 standard = 54% savings)
+- With lifecycle (3yr): Glacier Deep data at $0.00099/GB makes long-tail storage nearly free
 
 **Loki cannot safely use S3-IA/Glacier** because:
 - Compaction reads and rewrites ALL old chunks (retrieval fees on every compaction cycle)
@@ -441,41 +475,44 @@ Full design: [Deletion Strategy](docs/deletion-strategy.md)
 
 ## Decision Matrix
 
-| Criterion | Weight | Lakehouse Hybrid | Loki + Tempo | Winner |
-|---|---|---|---|---|
-| **Monthly cost (<1yr)** | 20% | $2,855 | $2,810 | Loki (barely) |
-| **Monthly cost (2yr)** | 15% | $3,625 | $4,038 | **Lakehouse** |
-| **Hot query speed** | 15% | <10ms | 100-500ms | **Lakehouse** |
-| **Cold query speed** | 10% | <500ms | 1-10s | **Lakehouse** |
-| **Compression ratio** | 10% | 5-8x | 3-3.5x | **Lakehouse** |
-| **Data portability** | 10% | Open Parquet | Proprietary | **Lakehouse** |
-| **Operational complexity** | 10% | Medium (no compaction) | High (compaction+index) | **Lakehouse** |
-| **Community/ecosystem** | 5% | Growing (VM ecosystem) | Large (Grafana ecosystem) | Loki |
-| **Durability** | 5% | 11 nines (S3) + open format | 11 nines (S3) + locked format | **Lakehouse** |
+| Criterion | Weight | Lakehouse Hybrid | Loki + Tempo | VL/VT EBS Only | Winner |
+|---|---|---|---|---|---|
+| **Monthly cost (<1yr)** | 20% | $2,814 | $3,610 | $2,679 | **VL/VT EBS** |
+| **Monthly cost (2yr)** | 15% | $3,514 | $4,928 | $3,476 | **VL/VT EBS** |
+| **Hot query speed** | 15% | <10ms (VL hot) | 100-500ms | <10ms | **Lakehouse / VL/VT** |
+| **Cold query speed** | 10% | <500ms (Parquet) | 1-10s | <10ms (all hot) | **VL/VT EBS** |
+| **Compression ratio** | 10% | 6-10x (Parquet) | 3-3.5x | 47-70x | **VL/VT** |
+| **Data portability** | 10% | Open Parquet | Proprietary | Proprietary | **Lakehouse** |
+| **Long retention (3yr+)** | 5% | Glacier ($0.004/GB) | No Glacier support | EBS cost linear | **Lakehouse** |
+| **S3 durability** | 5% | 11 nines + open format | 11 nines + locked format | EBS per-AZ | **Lakehouse** |
+| **DR / analytics** | 5% | Independent cold tier | N/A | N/A | **Lakehouse** |
+| **Community/ecosystem** | 5% | Growing (VM ecosystem) | Large (Grafana ecosystem) | VM ecosystem | Loki |
 
-**Weighted score: Lakehouse Hybrid wins in 7/9 criteria.**
+**Each option excels in different scenarios** — see recommendations below.
 
 ---
 
 ## Recommendations
 
+### Choose VL/VT EBS Only when:
+- Retention ≤ 2 years (cheapest option thanks to 47-70x compression)
+- Query speed is top priority (sub-10ms for ALL data, not just hot)
+- Simplest architecture (single system, no cold tier)
+- EBS volume management at scale is acceptable
+- No requirement for open format or external analytics
+
 ### Choose Lakehouse Hybrid when:
-- Retention > 6 months (compression advantage compounds)
-- Query speed matters (sub-10ms hot, sub-500ms cold)
-- Open format required (compliance, analytics, data portability)
-- Unified logs + traces desired (single system)
-- Cost optimization at scale (>100 GB/day)
-- Operational simplicity preferred (no compaction tuning)
+- Retention > 2 years (S3 lifecycle + Glacier beats EBS at long retention)
+- Open format required (compliance, analytics, data portability — DuckDB, Spark, Trino)
+- Disaster recovery needed (cold tier independent of hot cluster)
+- S3 11-nines durability required (vs EBS per-AZ)
+- Direct analytics on cold data (SQL on Parquet without export)
+- Unified logs + traces in open format desired
+- Always cheaper than Loki (45% savings at 1yr)
 
 ### Choose Loki + Tempo when:
-- Short retention only (<6 months, Loki cheaper)
 - Grafana-native ecosystem already invested
 - Large team with existing Loki expertise
 - Simple deployment initially (grow into complexity later)
 - AGPLv3 license acceptable
-
-### Choose VL/VT EBS only when:
-- Retention very short (<7 days)
-- Query speed is the ONLY priority
-- Budget allows 5-10x storage premium
-- Simplest possible architecture needed
+- Note: most expensive option at all retention periods

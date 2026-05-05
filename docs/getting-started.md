@@ -1,3 +1,8 @@
+---
+title: Getting Started
+sidebar_position: 1
+---
+
 # Getting Started
 
 Victoria Lakehouse reads and writes cold observability data as Parquet files on S3. It runs as a single binary in either `logs` or `traces` mode, with optional role separation for independent scaling of insert and select workloads.

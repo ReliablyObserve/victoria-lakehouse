@@ -1,3 +1,8 @@
+---
+title: Performance
+sidebar_position: 14
+---
+
 # Performance
 
 ## Performance Targets
@@ -61,9 +66,9 @@ ZSTD levels tested: 1, 3, 9, 19
 | ZSTD Level | Speed | Typical Ratio | Use Case |
 |---|---|---|---|
 | 1 (Fastest) | ~500 MB/s | 3-5x | High ingest rate, latency-sensitive |
-| 3 (Default) | ~300 MB/s | 4-6x | Balanced (recommended) |
-| 9 (Better) | ~100 MB/s | 5-8x | Storage cost optimization |
-| 19 (Best) | ~20 MB/s | 6-10x | Archival, rarely queried |
+| 3 (Default) | ~300 MB/s | 5-7x | Balanced (recommended) |
+| 9 (Better) | ~100 MB/s | 6-10x | Storage cost optimization |
+| 19 (Best) | ~20 MB/s | 8-12x | Archival, rarely queried |
 
 **Column breakdown** (typical log data):
 - `body` (text): 2-4x compression (high entropy)
@@ -109,8 +114,8 @@ s3_scan_p95 ≈ minio_scan_p95 + (10 × 80 / 128) ≈ minio + 6ms
 ```
 Monthly storage = ingestion_gb_day × retention_days × (1/compression_ratio) × $0.023/GB
 
-Example (500 GB/day, 365 day retention, 5x compression):
-  = 500 × 365 × 0.2 × $0.023 = $839/month
+Example (500 GB/day, 365 day retention, 6x compression):
+  = 500 × 365 × (1/6) × $0.023 = $699/month
 ```
 
 ### Request cost

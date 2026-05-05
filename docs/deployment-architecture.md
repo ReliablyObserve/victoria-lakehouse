@@ -1,3 +1,8 @@
+---
+title: Deployment Architecture
+sidebar_position: 6
+---
+
 # Deployment Architecture
 
 Victoria Lakehouse fits into observability infrastructure as a **cold storage tier** alongside hot VictoriaLogs/VictoriaTraces clusters. This document describes the production architecture including data collection, hot/cold tiering, disaster recovery, and analytics access.

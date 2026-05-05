@@ -1,3 +1,8 @@
+---
+title: Observability
+sidebar_position: 11
+---
+
 # Observability
 
 ## Metrics

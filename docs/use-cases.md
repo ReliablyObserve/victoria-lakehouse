@@ -1,3 +1,8 @@
+---
+title: Use Cases
+sidebar_position: 18
+---
+
 # Use Cases
 
 Victoria Lakehouse addresses several operational, compliance, and analytical needs that go beyond standard hot-tier observability storage.

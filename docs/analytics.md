@@ -1,3 +1,8 @@
+---
+title: Analytics
+sidebar_position: 19
+---
+
 # Analytics with Open Parquet Format
 
 Victoria Lakehouse stores all data as standard Apache Parquet files on S3 with Hive partitioning. Any tool that reads Parquet can query this data directly — no proprietary format, no vendor lock-in.

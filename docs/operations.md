@@ -1,3 +1,8 @@
+---
+title: Operations
+sidebar_position: 10
+---
+
 # Operations
 
 ## Health Endpoints

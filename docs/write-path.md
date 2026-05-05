@@ -1,3 +1,8 @@
+---
+title: Write Path
+sidebar_position: 3
+---
+
 # Write Path
 
 ## Overview

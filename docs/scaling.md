@@ -1,3 +1,8 @@
+---
+title: Scaling
+sidebar_position: 13
+---
+
 # Scaling
 
 ## Vertical Scaling

@@ -1,3 +1,8 @@
+---
+title: Deletion Strategy
+sidebar_position: 5
+---
+
 # Cost-Aware Deletion Strategy
 
 > **Status:** Implemented in v0.10.0 (logs) and v0.11.0 (traces). Tombstone store, HTTP handlers (`/delete/logsql/*` for logs, `/delete/tracessql/*` for traces), query-time filtering, mode-aware background rewriter, storage-class-aware scheduler, and verify endpoint are all functional.
