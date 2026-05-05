@@ -231,40 +231,34 @@ Hive partitioned by date and hour. Files written by external archival pipelines 
 
 ## Multi-Tier Cache
 
-```
-L1: Memory (sync.Map + LRU)
-    - Parquet footers (~1KB each)
-    - Bloom filter data (~10KB per column per row group)
-    - Hot row group pages
-    - Configurable max: --lakehouse.cache.memory-limit (default 512MB)
-    - Target: >90% hit rate for repeated queries
-
-L2: Local Disk (EBS gp3)
-    - Full Parquet files from S3
-    - LRU eviction at watermark (default 80% of disk limit)
-    - Async background download
-    - Target: >80% hit rate for same-day queries
-
-L3: Peer Cache (HTTP)
-    - Consistent hash ring, headless DNS discovery
-    - GET /internal/cache/fetch?key=...
-    - Shared secret auth (--lakehouse.peer-auth-key)
-    - singleflight coalescence (no duplicate S3 fetches)
-
-L4: S3 (source of truth)
-    - io.ReaderAt -> S3 GetObject with Range header
-    - Section hints for footer+bloom prefetch
-    - Connection pooling, circuit breaker
+```mermaid
+flowchart TB
+    subgraph L1["L1: Memory (sync.Map + LRU) — < 10ms"]
+        L1D["Parquet footers (~1KB)\nBloom filters (~10KB/col/rg)\nHot row group pages\nMax: --lakehouse.cache.memory-limit (512MB)\nTarget: >90% hit rate"]
+    end
+    subgraph L2["L2: Local Disk (EBS gp3) — < 50ms"]
+        L2D["Full Parquet files from S3\nLRU eviction at 80% watermark\nAsync background download\nTarget: >80% hit rate"]
+    end
+    subgraph L3["L3: Peer Cache (HTTP) — < 30ms"]
+        L3D["Consistent hash ring + headless DNS\nGET /internal/cache/fetch\nShared secret auth\nsingleflight coalescence"]
+    end
+    subgraph L4["L4: S3 (source of truth) — 50–150ms"]
+        L4D["io.ReaderAt → S3 GetObject Range\nSection hints for prefetch\nConnection pooling + circuit breaker"]
+    end
+    L1 -->|miss| L2
+    L2 -->|miss| L3
+    L3 -->|miss| L4
 ```
 
 ## Partition Manifest
 
 In-memory index of all Parquet files in S3. Enables sub-millisecond "nothing here" responses.
 
-```
-manifest.HasDataForRange(start, end) -> O(1) check
-  - Range outside [minTime, maxTime] -> return empty (FAST PATH)
-  - Range overlaps -> manifest.GetFiles(start, end) -> only matching files
+```mermaid
+flowchart LR
+    Q["HasDataForRange\n(start, end)"] -->|O(1) check| D{Range within\nminTime..maxTime?}
+    D -->|outside| EMPTY["Return empty\n(FAST PATH)"]
+    D -->|overlaps| FILES["GetFiles(start, end)\n→ only matching files"]
 ```
 
 Refreshed via S3 ListObjects (configurable interval) and/or SQS event notifications. ~100 bytes per partition-hour (~850KB for 1 year of hourly data).
@@ -309,13 +303,14 @@ Stream identity fields are defined per profile:
 
 The cache layer is integrated into the storage query path via `getFileData()`:
 
-```
-Query arrives for Parquet file key
-  |
-  1. L1 Memory (LRU) -> hit? use bytes.NewReader, open parquet
-  2. L2 Disk (LRU)   -> hit? read file, promote to L1, open parquet
-  3. Singleflight    -> coalesce concurrent requests for same key
-  4. S3 Download     -> store in L2 disk + L1 memory
+```mermaid
+flowchart TB
+    Q["Query for Parquet file key"] --> L1{"L1 Memory\n(LRU)"}
+    L1 -->|hit| USE1["bytes.NewReader\n→ open parquet"]
+    L1 -->|miss| L2{"L2 Disk\n(LRU)"}
+    L2 -->|hit| PROM["Read file\npromote to L1\n→ open parquet"]
+    L2 -->|miss| SF["Singleflight\ncoalesce concurrent requests"]
+    SF --> S3["S3 Download\n→ store in L2 + L1"]
 ```
 
 ### L1 Memory Cache (`internal/cache/lru.go`)
@@ -454,11 +449,11 @@ sequenceDiagram
 - **Discovery**: Headless DNS via `--lakehouse.discovery.peer-headless-service`
 
 **Cache hierarchy with peer cache:**
-```
-L1: Memory (local)     → <10ms
-L2: Disk (local EBS)   → <50ms
-L3: Peer cache (HTTP)  → <30ms
-L4: S3 (range reads)   → 50-150ms
+```mermaid
+flowchart LR
+    L1["L1: Memory\n< 10ms"] -->|miss| L2["L2: Disk (EBS)\n< 50ms"]
+    L2 -->|miss| L3["L3: Peer cache (HTTP)\n< 30ms"]
+    L3 -->|miss| L4["L4: S3 (range reads)\n50–150ms"]
 ```
 
 ### Manifest Range API (`internal/manifest/api.go`)
@@ -659,10 +654,10 @@ Victoria Lakehouse uses a leveled compaction strategy to merge small L0 flush fi
 
 ### Level Layout
 
-```
-L0: Raw flush files  (small, many — written by BatchWriter on each flush)
-L1: Merged files     (medium — L0 files merged when MinFilesL0 threshold reached)
-L2: Large files      (large  — L1 files merged when MinFilesL1 threshold reached)
+```mermaid
+flowchart LR
+    L0["L0: Raw flush files\n(small, many)"] -->|MinFilesL0 threshold| L1["L1: Merged files\n(medium)"]
+    L1 -->|MinFilesL1 threshold| L2["L2: Large files\n(large)"]
 ```
 
 Files are named `compacted-L1-<uuid8>.parquet` and `compacted-L2-<uuid8>.parquet` to distinguish levels.

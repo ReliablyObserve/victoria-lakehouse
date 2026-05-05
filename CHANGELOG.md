@@ -7,12 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Docs: All ASCII text diagrams converted to Mermaid across write-path, use-cases, cost-comparison, architecture, and deletion-strategy
+- Docs: Deletion strategy updated to show both logs (`/delete/logsql/*`) and traces (`/delete/tracessql/*`) endpoints side by side
+
 ## [0.14.0] - 2026-05-05
 
 ### Added
 - `/lakehouse/info` endpoint now includes `build_time` field for operational visibility
 - Traces delete support: mode-aware rewriter uses `schema.TraceRow` for traces mode, `schema.LogRow` for logs mode
-- Delete handler registers at `/delete/traceql/*` in traces mode, `/delete/logsql/*` in logs mode
+- Delete handler registers at `/delete/tracessql/*` in traces mode, `/delete/logsql/*` in logs mode
 - Docs: 5 new pages for Docusaurus site — read-path, kubernetes-deployment, docker-compose-setup, benchmarks, open-parquet-format
 - Docs: Docusaurus YAML frontmatter on all 20 documentation pages
 - CI: Changelog enforcement workflow — PRs with releasable changes require `[Unreleased]` entry

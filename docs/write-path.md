@@ -9,11 +9,15 @@ sidebar_position: 3
 
 Victoria Lakehouse accepts data through VL-compatible insert APIs, buffers rows in memory, and flushes them as optimally-sized Parquet files to S3. A write-ahead log (WAL) ensures crash safety, and a buffer query bridge provides zero-delay read-after-write visibility.
 
-```
-Client → Insert API → WAL (disk) → Buffer (memory) → Flush → S3 Parquet → Manifest update
-                                        ↓
-                              Select pod buffer query
-                              (zero-delay reads)
+```mermaid
+flowchart LR
+    Client --> InsertAPI["Insert API"]
+    InsertAPI --> WAL["WAL\n(disk)"]
+    WAL --> Buffer["Buffer\n(memory)"]
+    Buffer --> Flush
+    Flush --> S3["S3 Parquet"]
+    S3 --> Manifest["Manifest update"]
+    Buffer -.->|zero-delay reads| Select["Select pod\nbuffer query"]
 ```
 
 ## Insert APIs

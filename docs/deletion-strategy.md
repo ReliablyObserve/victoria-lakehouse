@@ -5,14 +5,22 @@ sidebar_position: 5
 
 # Cost-Aware Deletion Strategy
 
-> **Status:** Implemented in v0.10.0 (logs) and v0.11.0 (traces). Tombstone store, HTTP handlers (`/delete/logsql/*` for logs, `/delete/tracessql/*` for traces), query-time filtering, mode-aware background rewriter, storage-class-aware scheduler, and verify endpoint are all functional.
+> **Status:** Implemented in v0.10.0 (logs) and v0.11.0 (traces). Tombstone store, HTTP handlers, query-time filtering, mode-aware background rewriter, storage-class-aware scheduler, and verify endpoint are all functional.
 
+## Supported Modes
+
+| Mode | Delete Endpoint Prefix | Rewriter Row Type | Field Mapping |
+|---|---|---|---|
+| `logs` | `/delete/logsql/*` | `schema.LogRow` | `body`, `service.name`, `level`, etc. |
+| `traces` | `/delete/tracessql/*` | `schema.TraceRow` | `span.name`, `trace_id`, `status.code`, etc. |
+
+Both modes share the same tombstone store, scheduler, storage-class detection, and three-tier deletion strategy. Only the HTTP prefix, Parquet row type, and field mapping differ.
 
 ## Problem
 
-Deleting records from Parquet files on S3 is inherently expensive because Parquet is immutable — you must read the file, filter out deleted rows, and write a new file. On S3 Glacier, this means retrieval fees ($0.03-$0.09/GB) plus rewrite costs. At scale, naive deletion of a single log line from a 2-year-old Glacier file could cost more than storing it for another decade.
+Deleting records from Parquet files on S3 is inherently expensive because Parquet is immutable — you must read the file, filter out deleted rows, and write a new file. On S3 Glacier, this means retrieval fees ($0.03-$0.09/GB) plus rewrite costs. At scale, naive deletion of a single record from a 2-year-old Glacier file could cost more than storing it for another decade.
 
-Victoria Lakehouse must support VL/VT-compatible delete APIs (`/delete/logsql/*`) with the same query syntax — but implement them intelligently at the storage layer based on the S3 storage class of the underlying data.
+Victoria Lakehouse supports VL/VT-compatible delete APIs with the same LogsQL query syntax — but implements them intelligently at the storage layer based on the S3 storage class of the underlying data.
 
 ## Design: Three-Tier Deletion
 
@@ -73,14 +81,26 @@ For data on S3-IA, Glacier Instant, or Glacier Deep:
 
 ## API Surface
 
-### Delete Endpoint (VL-Compatible)
+The delete API uses a mode-specific prefix: `/delete/logsql/*` for logs mode, `/delete/tracessql/*` for traces mode. All endpoints accept the same parameters.
+
+### Delete Endpoint
 
 ```
-POST /delete/logsql/delete
+POST /delete/{logsql|tracessql}/delete
   ?query=<LogsQL filter>
   &start=<timestamp>
   &end=<timestamp>
   &mode=tombstone|rewrite|auto   (default: auto)
+```
+
+**Examples:**
+
+```bash
+# Delete logs matching a query
+curl -X POST 'http://lakehouse:9428/delete/logsql/delete?query=service.name:="leaked-creds"&start=2025-01-01&end=2025-06-01'
+
+# Delete traces matching a query
+curl -X POST 'http://lakehouse:10428/delete/tracessql/delete?query=trace_id:="abc123"&start=2025-01-01&end=2025-06-01'
 ```
 
 **Mode behavior:**
@@ -93,7 +113,7 @@ POST /delete/logsql/delete
 Before executing a delete, users can estimate the cost:
 
 ```
-POST /delete/logsql/estimate
+POST /delete/{logsql|tracessql}/estimate
   ?query=<LogsQL filter>
   &start=<timestamp>
   &end=<timestamp>
@@ -116,28 +136,42 @@ Response:
 ### Tombstone Management
 
 ```
-GET /delete/logsql/tombstones
+GET /delete/{logsql|tracessql}/tombstones
   ?active=true                    # Only show active (non-reaped) tombstones
 
-DELETE /delete/logsql/tombstone/{id}
+DELETE /delete/{logsql|tracessql}/tombstone/{id}
   # Removes a tombstone (un-deletes data if file still exists)
 
-GET /delete/logsql/tombstone/{id}/status
+GET /delete/{logsql|tracessql}/tombstone/{id}/status
   # Shows rewrite progress for this tombstone
 ```
+
+### Verify Endpoint
+
+```
+POST /delete/{logsql|tracessql}/verify
+  ?query=<LogsQL filter>
+  &start=<timestamp>
+  &end=<timestamp>
+```
+
+Confirms that deleted data is no longer visible through queries. Returns verification status and affected file count.
 
 ## Query-Time Tombstone Evaluation
 
 Tombstones are evaluated during the normal read path:
 
-```
-Query arrives
-  → Manifest lookup (find files)
-  → Check tombstones for matching files
-  → For tombstoned files:
-      - If entire file is tombstoned: skip file entirely (fast path)
-      - If partial tombstone: read file, apply tombstone filter as post-filter
-  → Return results with deleted rows suppressed
+```mermaid
+flowchart TB
+    Q["Query arrives"] --> MAN["Manifest lookup\n(find files)"]
+    MAN --> CHK["Check tombstones\nfor matching files"]
+    CHK --> D{Tombstone\ncoverage?}
+    D -->|entire file| SKIP["Skip file entirely\n(fast path)"]
+    D -->|partial| READ["Read file\napply tombstone filter\nas post-filter"]
+    D -->|no tombstone| NORMAL["Read file normally"]
+    SKIP --> RES["Return results\n(deleted rows suppressed)"]
+    READ --> RES
+    NORMAL --> RES
 ```
 
 **Performance impact:**
@@ -202,18 +236,7 @@ Tombstone-based deletion **satisfies GDPR right to erasure** requirements becaus
 
 ## Traces Delete Support
 
-The same three-tier deletion strategy applies to traces (`--lakehouse.mode=traces`):
-
-### API Surface (Traces)
-
-```
-POST /delete/tracessql/delete?query=<LogsQL>&start=<ts>&end=<ts>&mode=hide|permanent|auto
-POST /delete/tracessql/estimate?query=<LogsQL>&start=<ts>&end=<ts>
-GET  /delete/tracessql/tombstones
-GET  /delete/tracessql/tombstone/{id}
-DELETE /delete/tracessql/tombstone/{id}
-POST /delete/tracessql/verify?query=<LogsQL>&start=<ts>&end=<ts>
-```
+The same three-tier deletion strategy applies to traces mode (`--lakehouse.mode=traces`). All endpoints use the `/delete/tracessql/*` prefix instead of `/delete/logsql/*`.
 
 ### Trace Field Matching
 
@@ -261,18 +284,18 @@ Tombstones are small JSON files (<1KB) stored alongside data. They're loaded int
 
 ### Rewrite Job Scheduling
 
-```
-Background goroutine (every rewrite_delay):
-  1. Scan active tombstones
-  2. Group by affected file
-  3. For each file on STANDARD class:
-     a. Read file from S3
-     b. Apply all tombstones for this file
-     c. Write new file (without deleted rows)
-     d. Update manifest (atomic swap)
-     e. Delete old file
-     f. Mark tombstone as "reaped" for this file
-  4. Skip files on IA/Glacier (log advisory message)
+```mermaid
+flowchart TB
+    START["Background goroutine\n(every rewrite_delay)"] --> SCAN["Scan active tombstones"]
+    SCAN --> GROUP["Group by affected file"]
+    GROUP --> CHECK{Storage class?}
+    CHECK -->|STANDARD| READ["Read file from S3"]
+    READ --> FILTER["Apply all tombstones"]
+    FILTER --> WRITE["Write new file\n(without deleted rows)"]
+    WRITE --> SWAP["Manifest atomic swap"]
+    SWAP --> DEL["Delete old file"]
+    DEL --> REAP["Mark tombstone reaped"]
+    CHECK -->|IA / Glacier| SKIP["Skip\n(log advisory message)"]
 ```
 
 ### Metrics
