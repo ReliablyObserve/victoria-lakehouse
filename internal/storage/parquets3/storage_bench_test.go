@@ -48,4 +48,3 @@ func BenchmarkIsPrintable_Long(b *testing.B) {
 		isPrintable(data)
 	}
 }
-

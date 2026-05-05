@@ -20,12 +20,12 @@ import (
 )
 
 type FileInfo struct {
-	Key               string `json:"key"`
-	Size              int64  `json:"size"`
-	RowCount          int64  `json:"row_count,omitempty"`
-	MinTimeNs         int64  `json:"min_time_ns,omitempty"`
-	MaxTimeNs         int64  `json:"max_time_ns,omitempty"`
-	RawBytes          int64  `json:"raw_bytes,omitempty"`
+	Key               string              `json:"key"`
+	Size              int64               `json:"size"`
+	RowCount          int64               `json:"row_count,omitempty"`
+	MinTimeNs         int64               `json:"min_time_ns,omitempty"`
+	MaxTimeNs         int64               `json:"max_time_ns,omitempty"`
+	RawBytes          int64               `json:"raw_bytes,omitempty"`
 	SchemaFingerprint string              `json:"schema_fp,omitempty"`
 	CompactionLevel   int                 `json:"compaction_level,omitempty"`
 	Labels            map[string][]string `json:"labels,omitempty"`

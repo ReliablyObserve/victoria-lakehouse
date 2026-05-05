@@ -70,4 +70,3 @@ func TestIsPrintable_TableDriven(t *testing.T) {
 		})
 	}
 }
-

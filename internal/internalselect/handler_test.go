@@ -18,14 +18,14 @@ import (
 )
 
 type mockStorage struct {
-	runQueryFn         func(ctx context.Context, qctx *storage.QueryContext, writeBlock storage.WriteDataBlockFunc) error
-	getFieldNamesFn    func(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error)
-	getFieldValuesFn   func(ctx context.Context, qctx *storage.QueryContext, fieldName string, limit int) ([]storage.ValueWithHits, error)
+	runQueryFn             func(ctx context.Context, qctx *storage.QueryContext, writeBlock storage.WriteDataBlockFunc) error
+	getFieldNamesFn        func(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error)
+	getFieldValuesFn       func(ctx context.Context, qctx *storage.QueryContext, fieldName string, limit int) ([]storage.ValueWithHits, error)
 	getStreamFieldNamesFn  func(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error)
 	getStreamFieldValuesFn func(ctx context.Context, qctx *storage.QueryContext, fieldName string) ([]storage.ValueWithHits, error)
-	getStreamsFn       func(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error)
-	getStreamIDsFn     func(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error)
-	getTenantIDsFn     func(ctx context.Context, qctx *storage.QueryContext) ([]storage.TenantID, error)
+	getStreamsFn           func(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error)
+	getStreamIDsFn         func(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error)
+	getTenantIDsFn         func(ctx context.Context, qctx *storage.QueryContext) ([]storage.TenantID, error)
 }
 
 func (m *mockStorage) RunQuery(ctx context.Context, qctx *storage.QueryContext, writeBlock storage.WriteDataBlockFunc) error {

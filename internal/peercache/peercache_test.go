@@ -2,8 +2,8 @@ package peercache
 
 import (
 	"context"
-	"log/slog"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"

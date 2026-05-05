@@ -36,10 +36,10 @@ type ExtraPromoted struct {
 }
 
 type Registry struct {
-	profile        Profile
-	extraPromoted  []ExtraPromoted
-	byInternal     map[string]*FieldMapping
-	byParquet      map[string]*FieldMapping
+	profile       Profile
+	extraPromoted []ExtraPromoted
+	byInternal    map[string]*FieldMapping
+	byParquet     map[string]*FieldMapping
 }
 
 var LogsProfile = Profile{

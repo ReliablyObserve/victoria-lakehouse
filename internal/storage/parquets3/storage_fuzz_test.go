@@ -40,4 +40,3 @@ func FuzzIsPrintable(f *testing.F) {
 		_ = result
 	})
 }
-

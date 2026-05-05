@@ -147,8 +147,8 @@ func otelLog(rng *rand.Rand, ts time.Time, svc string) (string, map[string]strin
 
 	attrs := map[string]string{
 		"format":              "otel",
-		"otel.trace_id":      traceID,
-		"otel.span_id":       spanID,
+		"otel.trace_id":       traceID,
+		"otel.span_id":        spanID,
 		"instrumentation.lib": "opentelemetry-go/1.28.0",
 	}
 	return body, attrs
