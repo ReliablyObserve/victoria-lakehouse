@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Delete verification endpoint (`/delete/logsql/verify`) for compliance auditing
 - Un-delete support (remove tombstone to restore data visibility)
 - Tombstone persistence to disk + S3 (survives full cluster recreation)
+- Traces delete support: mode-aware rewriter uses `schema.TraceRow` for traces mode, `schema.LogRow` for logs mode
+- Delete handler registers at `/delete/traceql/*` in traces mode, `/delete/logsql/*` in logs mode
 - E2E: VictoriaLogs hot tier, multi-level vlselect, loki-vl-proxy in Docker Compose
 - E2E: Internal Docker networking (only Grafana on port 3003)
 - E2E: Loki proxy integration tests, vlselect multi-level tests, performance assertion tests
@@ -30,8 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI: Upstream sync tracks GitHub releases (not Go module versions)
 - CI: Nightly benchmark workflow with artifact upload
 - Docs: Performance documentation with benchmark methodology and cost projections
+- Docs: 5 new pages for Docusaurus site — read-path, kubernetes-deployment, docker-compose-setup, benchmarks, open-parquet-format
+- Docs: Docusaurus YAML frontmatter on all 20 documentation pages
 
 ### Changed
+- Docs: All cost tables corrected for 3 AZ replication (VL/VT runs 3 identical clusters, one per AZ)
+- Docs: At 500GB/day 1yr 3 AZ — VL/VT $2,679/mo, Lakehouse $2,814/mo (within 5%), Loki $3,610/mo
+- Docs: Compute scaled to 6× per component (3 AZ), storage × 3 for EBS, break-even and cumulative projections updated
 - Helm: vmauth config stored as Secret instead of ConfigMap
 - Helm: All components use generic HPA/VPA/PDB/ServiceMonitor/Ingress templates
 - Grafana: 5 datasources (cold, hot, multi-level, Loki proxy, Jaeger)
