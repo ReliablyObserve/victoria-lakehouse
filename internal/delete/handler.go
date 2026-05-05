@@ -33,26 +33,36 @@ type Handler struct {
 	detector *StorageClassDetector
 	cfg      *config.DeleteConfig
 	logger   *slog.Logger
+	mode     string
 }
 
 // NewHandler creates a Handler with the given dependencies.
-func NewHandler(store *TombstoneStore, manifest ManifestQuerier, detector *StorageClassDetector, cfg *config.DeleteConfig, logger *slog.Logger) *Handler {
+// Mode should be "logs" or "traces" and determines the URL prefix.
+func NewHandler(store *TombstoneStore, manifest ManifestQuerier, detector *StorageClassDetector, cfg *config.DeleteConfig, logger *slog.Logger, mode string) *Handler {
+	if mode == "" {
+		mode = "logs"
+	}
 	return &Handler{
 		store:    store,
 		manifest: manifest,
 		detector: detector,
 		cfg:      cfg,
 		logger:   logger,
+		mode:     mode,
 	}
 }
 
 // Register mounts all delete endpoints on the given ServeMux.
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("/delete/logsql/delete", h.handleDelete)
-	mux.HandleFunc("/delete/logsql/estimate", h.handleEstimate)
-	mux.HandleFunc("/delete/logsql/tombstones", h.handleListTombstones)
-	mux.HandleFunc("/delete/logsql/tombstone/", h.handleTombstoneByID)
-	mux.HandleFunc("/delete/logsql/verify", h.handleVerify)
+	prefix := "/delete/logsql"
+	if h.mode == "traces" {
+		prefix = "/delete/tracessql"
+	}
+	mux.HandleFunc(prefix+"/delete", h.handleDelete)
+	mux.HandleFunc(prefix+"/estimate", h.handleEstimate)
+	mux.HandleFunc(prefix+"/tombstones", h.handleListTombstones)
+	mux.HandleFunc(prefix+"/tombstone/", h.handleTombstoneByID)
+	mux.HandleFunc(prefix+"/verify", h.handleVerify)
 }
 
 func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) {

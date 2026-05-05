@@ -13,7 +13,7 @@
 - **Drop-in VL/VT storage node.** Register as a `-storageNode` on vlselect/vtselect. Queries spanning hot and cold data work transparently.
 - **Write path with crash recovery.** VL-compatible insert APIs (`/insert/jsonline`, Loki push, ES bulk) buffer data, flush to S3 Parquet, and survive process crashes via WAL.
 - **Zero-delay reads.** Select pods query insert pods for unflushed buffer data, merging with S3 results for immediate read-after-write visibility.
-- **60-96% cost reduction.** S3 is 3-6x cheaper than EBS per GB. At 1 PB/month with multi-AZ, hybrid deployments save $3-9.5M/year compared to all-EBS.
+- **Open format + S3 durability.** 22% cheaper than Loki/Tempo. Within 5% of VL/VT EBS cost at 1yr, cheapest at 3yr+ with Glacier tiering. S3's 11-nines durability for compliance.
 - **Sub-millisecond fast path.** Queries within the hot tier's range get an immediate empty response via the partition manifest. Zero S3 I/O.
 - **Disaster recovery.** When the hot cluster is down (outage, upgrade, migration), lakehouse serves all data from S3 — slower but always available.
 - **Cost-aware deletion.** VL-compatible delete APIs with tombstone-based soft delete. Three modes: `hide` (instant, $0), `permanent` (physical removal), `auto` (smart). Glacier-safe — never triggers retrieval fees.
@@ -23,14 +23,18 @@
 
 ## The Cost Case
 
-S3 storage is inherently multi-AZ (11 nines durability) at no extra cost. EBS requires per-AZ replicas for HA, tripling storage cost.
+VL/VT's 47-70x compression makes EBS-only cheapest for short retention. With 3 AZ replication, VL/VT EBS and Lakehouse Hybrid are within 5% of each other. Lakehouse adds **open Parquet format, S3 11-nines durability, disaster recovery, and Glacier tiering** — and is always cheaper than Loki/Tempo.
 
-| Ingestion | Retention | All-EBS (3 AZ) | Hybrid (1mo hot + S3 cold) | Savings |
-|---|---|---|---|---|
-| 250 GB/mo | 1 year | $282/mo | $138/mo (all-S3) | 51% |
-| 500 GB/mo | 1 year | $564/mo | $141/mo (all-S3) | 75% |
-| 1 PB/mo | 1 year | $303,000/mo | $48,513/mo | 84% |
-| 1 PB/mo | 2 years | $591,000/mo | $60,963/mo | 90% |
+| Scenario (500 GB/day, 1yr, 3 AZ) | VL/VT EBS Only | Lakehouse Hybrid | Loki + Tempo |
+|---|---|---|---|
+| **Monthly cost** | **$2,679/mo** | $2,814/mo | $3,610/mo |
+| **Compression** | 47-70x | 6x (Parquet) | 3.5x |
+| **Query speed (cold)** | <10ms (all EBS) | <500ms (Parquet) | 1-10s |
+| **Data format** | Proprietary | **Open Parquet** | Proprietary |
+| **S3 durability** | EBS per-AZ | **11 nines** | 11 nines |
+| **Glacier tiering** | N/A | **Yes (cheapest at 3yr+)** | No (compaction breaks it) |
+| **Analytics access** | VL/VT API only | **DuckDB, Spark, Trino** | Loki API only |
+| **Disaster recovery** | N/A | **Independent cold tier** | N/A |
 
 Full cost worksheet: [Cost Estimates](docs/cost-estimates.md) | Deep comparison vs Loki/Tempo: [Cost Comparison](docs/cost-comparison.md)
 
@@ -398,10 +402,7 @@ See [Performance](docs/performance.md).
 | M8-Phase A: Write Durability | Complete | WAL crash recovery, insert APIs, adaptive flush, buffer query bridge, manifest labels |
 | M9: Compaction | Complete | Background merge, size-tiered strategy, manifest updates |
 | M10: Testing & Helm | Complete | E2E overhaul (VL + vlselect + loki-vl-proxy), benchmarks, Victoria-pattern Helm chart, upstream sync GHA |
-<<<<<<< HEAD
-=======
 | M11: Cost-Aware Deletion | Complete | Tombstone store, `/delete/logsql/*` + `/delete/tracessql/*` APIs, query-time filtering, background rewriter, storage-class detection, verify endpoint |
->>>>>>> origin/main
 | M7: Observability | Planned | Metrics instrumentation, Grafana dashboards, alerting rules |
 
 ---

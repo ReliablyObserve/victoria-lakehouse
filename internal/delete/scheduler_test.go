@@ -12,7 +12,7 @@ import (
 // buildSchedulerForTest creates a scheduler for testing with given parameters.
 func buildSchedulerForTest(t *testing.T, store *TombstoneStore, detector *StorageClassDetector, pool *mockRewriterPool, allowedClasses []string) *RewriteScheduler {
 	t.Helper()
-	rewriter := NewRewriter(pool, "logs/", 10000)
+	rewriter := NewRewriter(pool, "logs/", 10000, "logs")
 	return NewRewriteScheduler(RewriteSchedulerConfig{
 		Store:          store,
 		Rewriter:       rewriter,
@@ -326,7 +326,7 @@ func TestSchedulerNewDefaults(t *testing.T) {
 	store := NewTombstoneStore()
 	pool := newMockRewriterPool()
 	detector := NewStorageClassDetector(nil)
-	rewriter := NewRewriter(pool, "logs/", 10000)
+	rewriter := NewRewriter(pool, "logs/", 10000, "logs")
 
 	sched := NewRewriteScheduler(RewriteSchedulerConfig{
 		Store:    store,
