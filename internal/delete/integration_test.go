@@ -53,7 +53,7 @@ func newTestSetup(t *testing.T, lifecycleRules []LifecycleRule) *testSetup {
 	store := NewTombstoneStore()
 	manifest := &mockManifest{}
 	detector := NewStorageClassDetector(lifecycleRules)
-	rewriter := NewRewriter(pool, "logs/", 10000)
+	rewriter := NewRewriter(pool, "logs/", 10000, "logs")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	cfg := &config.DeleteConfig{
@@ -61,7 +61,7 @@ func newTestSetup(t *testing.T, lifecycleRules []LifecycleRule) *testSetup {
 		DefaultMode: "auto",
 	}
 
-	handler := NewHandler(store, manifest, detector, cfg, logger)
+	handler := NewHandler(store, manifest, detector, cfg, logger, "logs")
 
 	scheduler := NewRewriteScheduler(RewriteSchedulerConfig{
 		Store:          store,
@@ -497,4 +497,158 @@ func TestIntegration_AllRowsRemoved(t *testing.T) {
 	if result.NewKey != "" {
 		t.Fatalf("expected empty NewKey when all rows removed, got %s", result.NewKey)
 	}
+}
+
+// --- Trace integration tests ---
+
+func TestIntegration_TraceDelete_FullRoundTrip(t *testing.T) {
+	store := NewTombstoneStore()
+	pool := newMockS3Pool()
+
+	// Upload trace Parquet file with mixed services
+	rows := []schema.TraceRow{
+		{TimestampUnixNano: 1000, TraceID: "t1", SpanID: "s1", SpanName: "GET /users", ServiceName: "user-svc"},
+		{TimestampUnixNano: 2000, TraceID: "t1", SpanID: "s2", SpanName: "DB query", ServiceName: "user-svc"},
+		{TimestampUnixNano: 3000, TraceID: "t2", SpanID: "s3", SpanName: "GET /orders", ServiceName: "order-svc"},
+		{TimestampUnixNano: 4000, TraceID: "t2", SpanID: "s4", SpanName: "payment", ServiceName: "payment-svc"},
+	}
+
+	var buf bytes.Buffer
+	writer := parquet.NewGenericWriter[schema.TraceRow](&buf)
+	if _, err := writer.Write(rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	key := "traces/dt=2026-05-02/hour=10/batch.parquet"
+	pool.objects[key] = buf.Bytes()
+
+	manifest := &mockManifest{files: []FileInfo{
+		{Key: key, Size: int64(len(pool.objects[key])), MinTimeNs: 1000, MaxTimeNs: 4000},
+	}}
+
+	cfg := &config.DeleteConfig{
+		Enabled:             true,
+		DefaultMode:         "auto",
+		AutoRewriteClasses:  []string{"STANDARD"},
+		RewriteDelay:        0,
+		RewriteBatchSize:    10,
+		RewriteMaxConcurrent: 2,
+	}
+
+	detector := NewStorageClassDetector(nil)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := NewHandler(store, manifest, detector, cfg, logger, "traces")
+
+	// Create tombstone via API
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	form := url.Values{}
+	form.Set("query", `service.name:="order-svc"`)
+	form.Set("start", "0")
+	form.Set("end", "10000")
+	form.Set("mode", "permanent")
+
+	req := httptest.NewRequest("POST", "/delete/tracessql/delete", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete request failed: %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	// Rewrite the file
+	rewriter := NewRewriter(pool, "traces/", 10000, "traces")
+	active := store.Active()
+	if len(active) != 1 {
+		t.Fatalf("expected 1 active tombstone, got %d", len(active))
+	}
+
+	result, err := rewriter.RewriteFile(context.Background(), key, active)
+	if err != nil {
+		t.Fatalf("rewrite error: %v", err)
+	}
+
+	if result.RowsRemoved != 1 {
+		t.Fatalf("expected 1 row removed (order-svc), got %d", result.RowsRemoved)
+	}
+	if result.RowsKept != 3 {
+		t.Fatalf("expected 3 rows kept, got %d", result.RowsKept)
+	}
+
+	// Verify new file contents
+	newData := pool.objects[result.NewKey]
+	reader := parquet.NewGenericReader[schema.TraceRow](bytes.NewReader(newData))
+	defer func() { _ = reader.Close() }()
+
+	readRows := make([]schema.TraceRow, 10)
+	n, _ := reader.Read(readRows)
+	if n != 3 {
+		t.Fatalf("expected 3 rows, got %d", n)
+	}
+	for i := 0; i < n; i++ {
+		if readRows[i].ServiceName == "order-svc" {
+			t.Fatalf("order-svc span should be deleted")
+		}
+	}
+}
+
+func TestIntegration_TraceDelete_ByTraceID(t *testing.T) {
+	store := NewTombstoneStore()
+	pool := newMockS3Pool()
+
+	rows := []schema.TraceRow{
+		{TimestampUnixNano: 1000, TraceID: "trace-aaa", SpanID: "s1", SpanName: "root", ServiceName: "svc"},
+		{TimestampUnixNano: 2000, TraceID: "trace-aaa", SpanID: "s2", SpanName: "child", ServiceName: "svc"},
+		{TimestampUnixNano: 3000, TraceID: "trace-bbb", SpanID: "s3", SpanName: "other", ServiceName: "svc"},
+	}
+
+	var buf bytes.Buffer
+	writer := parquet.NewGenericWriter[schema.TraceRow](&buf)
+	if _, err := writer.Write(rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	key := "traces/dt=2026-05-02/hour=10/batch2.parquet"
+	pool.objects[key] = buf.Bytes()
+
+	// Create tombstone for specific trace ID
+	ts := Tombstone{
+		ID:           "del-trace",
+		Query:        `trace_id:="trace-aaa"`,
+		StartNs:      0,
+		EndNs:        10000,
+		AffectedKeys: []string{key},
+		CreatedAt:    time.Now().Add(-2 * time.Hour),
+		Mode:         "permanent",
+		Reaped:       make(map[string]bool),
+	}
+	store.Add(ts)
+
+	rewriter := NewRewriter(pool, "traces/", 10000, "traces")
+	result, err := rewriter.RewriteFile(context.Background(), key, []Tombstone{ts})
+	if err != nil {
+		t.Fatalf("rewrite error: %v", err)
+	}
+
+	if result.RowsRemoved != 2 {
+		t.Fatalf("expected 2 rows removed (both trace-aaa spans), got %d", result.RowsRemoved)
+	}
+	if result.RowsKept != 1 {
+		t.Fatalf("expected 1 row kept (trace-bbb), got %d", result.RowsKept)
+	}
+
+	_ = metrics.DeleteRewriteTotal
 }

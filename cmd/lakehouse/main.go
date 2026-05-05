@@ -195,7 +195,7 @@ func main() {
 	}
 	detector := delete.NewStorageClassDetector(lifecycleRules)
 
-	rewriter := delete.NewRewriter(store.Pool(), cfg.AutoPrefix(), cfg.Insert.RowGroupSize)
+	rewriter := delete.NewRewriter(store.Pool(), cfg.AutoPrefix(), cfg.Insert.RowGroupSize, string(cfg.Mode))
 
 	var rewriteSched *delete.RewriteScheduler
 	if cfg.Delete.Enabled {
@@ -328,7 +328,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 
 	if cfg.Delete.Enabled && tombstoneStore != nil {
 		mq := &manifestQuerierAdapter{m: store.Manifest()}
-		dh := delete.NewHandler(tombstoneStore, mq, detector, &cfg.Delete, sm.Logger())
+		dh := delete.NewHandler(tombstoneStore, mq, detector, &cfg.Delete, sm.Logger(), string(cfg.Mode))
 		dh.Register(mux)
 	}
 
