@@ -357,7 +357,7 @@ func pushNDJSON(endpoint string, rows []LogRow) error {
 	if err != nil {
 		return fmt.Errorf("push to VL: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("push to VL: status %d: %s", resp.StatusCode, string(body))
