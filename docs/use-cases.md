@@ -13,10 +13,10 @@ Victoria Lakehouse addresses several operational, compliance, and analytical nee
 
 **Solution**: Mirror data to Victoria Lakehouse on S3. S3 is inherently multi-AZ (11 nines durability) at $0.023/GB — 3-6x cheaper than EBS.
 
-```
-vlagent/OTEL Collector
-  ├── mirror → VictoriaLogs/Traces (hot, 30d, EBS)
-  └── mirror → Victoria Lakehouse (cold, unlimited, S3)
+```mermaid
+flowchart LR
+    VA["vlagent / OTEL Collector"] -->|mirror| VL["VictoriaLogs/Traces\n(hot, 30d, EBS)"]
+    VA -->|mirror| LH["Victoria Lakehouse\n(cold, unlimited, S3)"]
 ```
 
 **Typical retention policy:**
@@ -213,14 +213,19 @@ growth = spark.sql("""
 
 **Solution**: Each region runs its own lakehouse-insert, writing to a regional S3 bucket. S3 Cross-Region Replication syncs data to a central bucket. A lakehouse-select fleet reads from the central bucket for unified queries.
 
-```
-Region A:  vlagent → lakehouse-insert → s3://obs-region-a/
-Region B:  vlagent → lakehouse-insert → s3://obs-region-b/
-                                            │
-                        S3 Cross-Region Replication
-                                            ▼
-Central:   lakehouse-select → s3://obs-central/ (replicated from all regions)
-           Grafana → lakehouse-select (unified view)
+```mermaid
+flowchart TB
+    subgraph "Region A"
+        VA_A["vlagent"] --> LHI_A["lakehouse-insert"] --> S3A[("s3://obs-region-a/")]
+    end
+    subgraph "Region B"
+        VA_B["vlagent"] --> LHI_B["lakehouse-insert"] --> S3B[("s3://obs-region-b/")]
+    end
+    S3A -->|S3 Cross-Region Replication| S3C[("s3://obs-central/")]
+    S3B -->|S3 Cross-Region Replication| S3C
+    subgraph "Central"
+        GF["Grafana"] --> LHS["lakehouse-select\n(unified view)"] --> S3C
+    end
 ```
 
 ## 11. Data Sharing with External Teams

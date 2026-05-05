@@ -130,14 +130,17 @@ GET /delete/logsql/tombstone/{id}/status
 
 Tombstones are evaluated during the normal read path:
 
-```
-Query arrives
-  → Manifest lookup (find files)
-  → Check tombstones for matching files
-  → For tombstoned files:
-      - If entire file is tombstoned: skip file entirely (fast path)
-      - If partial tombstone: read file, apply tombstone filter as post-filter
-  → Return results with deleted rows suppressed
+```mermaid
+flowchart TB
+    Q["Query arrives"] --> MAN["Manifest lookup\n(find files)"]
+    MAN --> CHK["Check tombstones\nfor matching files"]
+    CHK --> D{Tombstone\ncoverage?}
+    D -->|entire file| SKIP["Skip file entirely\n(fast path)"]
+    D -->|partial| READ["Read file\napply tombstone filter\nas post-filter"]
+    D -->|no tombstone| NORMAL["Read file normally"]
+    SKIP --> RES["Return results\n(deleted rows suppressed)"]
+    READ --> RES
+    NORMAL --> RES
 ```
 
 **Performance impact:**

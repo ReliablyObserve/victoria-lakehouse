@@ -17,9 +17,15 @@ This document compares three deployment architectures across cost, performance, 
 
 ### Option A: Victoria Lakehouse Hybrid (Recommended)
 
-```
-Hot tier (0-30 days):  VL/VT on EBS (gp3)  — sub-10ms queries
-Cold tier (30d-2yr):   Lakehouse on S3      — <500ms queries (Parquet + bloom)
+```mermaid
+flowchart LR
+    subgraph "Hot tier (0–30 days)"
+        VL["VL/VT on EBS (gp3)\nsub-10ms queries"]
+    end
+    subgraph "Cold tier (30d–2yr)"
+        LH["Lakehouse on S3\n< 500ms queries\n(Parquet + bloom)"]
+    end
+    VL -.-> LH
 ```
 
 - VL/VT handles recent high-frequency queries natively on local SSD/EBS
@@ -28,10 +34,10 @@ Cold tier (30d-2yr):   Lakehouse on S3      — <500ms queries (Parquet + bloom)
 
 ### Option B: Grafana Loki + Tempo
 
-```
-All data on S3 via chunks — no hot/cold split
-Ingester WAL on EBS (temporary, not queryable long-term)
-Compactor merges chunks on S3
+```mermaid
+flowchart LR
+    Ingester["Ingester WAL\n(EBS, temporary)"] --> S3["All data on S3\nvia chunks"]
+    Compactor["Compactor"] -->|merge chunks| S3
 ```
 
 - All queries hit S3 regardless of data age
@@ -40,8 +46,9 @@ Compactor merges chunks on S3
 
 ### Option C: Standalone VL/VT (EBS only, no Lakehouse)
 
-```
-All data on EBS — full retention on disk
+```mermaid
+flowchart LR
+    VL["VL/VT"] --> EBS["All data on EBS\nfull retention on disk"]
 ```
 
 - Simplest architecture, cheapest at 1-2yr retention thanks to 47-70x compression
@@ -377,24 +384,24 @@ At 500 GB/day raw ingestion, 1 year retention:
 
 ### Break-Even Analysis
 
-```
-Lakehouse vs Loki (Lakehouse cheaper from day 1):
-  Lakehouse: $2,814/mo vs Loki: $3,610/mo
-  Net savings: $796/mo ($9,552/yr)
-  At 2yr retention: $1,414/mo savings ($16,968/yr)
-
-Lakehouse vs VL/VT EBS Only (3 AZ):
-  Lakehouse: $2,814/mo vs VL/VT: $2,679/mo (1yr retention)
-  Net difference: +$135/mo (Lakehouse 5% more expensive)
-  At 2yr: +$38/mo (gap narrows as 3× EBS grows)
-  At 3yr with lifecycle: Lakehouse ~$1,700/mo cheaper (Glacier tiering)
-  
-  Lakehouse value beyond storage cost:
-  + S3 11-nines durability (vs EBS per-AZ)
-  + Open Parquet format (DuckDB, Spark, Trino access)
-  + Disaster recovery (independent of hot cluster)
-  + S3 lifecycle → Glacier for 3+ year data (crossover at ~2.5yr)
-  + No EBS volume management at scale (no 3× EBS provisioning)
+```mermaid
+flowchart TB
+    subgraph "Lakehouse vs Loki (cheaper from day 1)"
+        LvL["Lakehouse: $2,814/mo vs Loki: $3,610/mo\nSavings: $796/mo ($9,552/yr)\nAt 2yr: $1,414/mo savings ($16,968/yr)"]
+    end
+    subgraph "Lakehouse vs VL/VT EBS Only (3 AZ)"
+        LvV1["1yr: Lakehouse $2,814 vs VL/VT $2,679\n(+$135/mo, Lakehouse 5% more)"]
+        LvV2["2yr: gap narrows to +$38/mo\n(3× EBS grows linearly)"]
+        LvV3["3yr + lifecycle: Lakehouse ~$1,700/mo cheaper\n(Glacier tiering crossover at ~2.5yr)"]
+        LvV1 --> LvV2 --> LvV3
+    end
+    subgraph "Lakehouse value beyond cost"
+        V1["S3 11-nines durability"]
+        V2["Open Parquet (DuckDB, Spark, Trino)"]
+        V3["Disaster recovery"]
+        V4["S3 lifecycle → Glacier"]
+        V5["No EBS volume management"]
+    end
 ```
 
 ---
