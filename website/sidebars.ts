@@ -4,6 +4,7 @@ const sidebars: SidebarsConfig = {
   docsSidebar: [
     'getting-started',
     {
+      type: 'category',
       label: 'Core Concepts',
       items: [
         'architecture',
@@ -13,6 +14,7 @@ const sidebars: SidebarsConfig = {
       ],
     },
     {
+      type: 'category',
       label: 'Deployment',
       items: [
         'deployment-architecture',
@@ -21,6 +23,7 @@ const sidebars: SidebarsConfig = {
       ],
     },
     {
+      type: 'category',
       label: 'Operations',
       items: [
         'configuration',
@@ -31,6 +34,7 @@ const sidebars: SidebarsConfig = {
       ],
     },
     {
+      type: 'category',
       label: 'Performance & Cost',
       items: [
         'performance',
@@ -40,6 +44,7 @@ const sidebars: SidebarsConfig = {
       ],
     },
     {
+      type: 'category',
       label: 'Analytics',
       items: [
         'use-cases',
