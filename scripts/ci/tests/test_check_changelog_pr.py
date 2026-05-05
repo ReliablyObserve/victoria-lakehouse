@@ -5,6 +5,7 @@ from scripts.ci.check_changelog_pr import (
     has_genuinely_new_unreleased_entries,
     has_meaningful_changelog_content,
     is_dependency_only_pr,
+    is_release_commit,
     is_release_metadata_sync,
     should_require_changelog,
 )
@@ -70,6 +71,26 @@ class CheckChangelogPRTests(unittest.TestCase):
                     "scripts/ci/check_changelog_pr.py",
                     "scripts/ci/tests/test_check_changelog_pr.py",
                 ],
+            )
+        )
+
+    def test_is_release_commit_ignores_ci_scope(self):
+        self.assertFalse(is_release_commit("feat(ci): consolidate post-release updates"))
+        self.assertFalse(is_release_commit("fix(ci): exempt paths from changelog"))
+        self.assertFalse(is_release_commit("fix(build): update makefile"))
+        self.assertFalse(is_release_commit("feat(deps): bump go version"))
+
+    def test_is_release_commit_allows_code_scopes(self):
+        self.assertTrue(is_release_commit("feat(delete): add cost-aware deletion"))
+        self.assertTrue(is_release_commit("fix(storage): handle nil pointer"))
+        self.assertTrue(is_release_commit("feat: add new feature"))
+        self.assertTrue(is_release_commit("fix: correct bug"))
+
+    def test_should_skip_for_ci_commits_with_readme(self):
+        self.assertFalse(
+            should_require_changelog(
+                ["feat(ci): consolidate post-release updates", "fix(ci): exempt paths"],
+                [".github/workflows/auto-release.yaml", "README.md", "scripts/ci/check_changelog_pr.py"],
             )
         )
 

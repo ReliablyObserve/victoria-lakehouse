@@ -20,6 +20,14 @@ RELEASE_PREFIXES = (
     "revert",
 )
 
+NON_RELEASE_SCOPES = frozenset((
+    "ci",
+    "build",
+    "deps",
+    "deps-dev",
+    "chore",
+))
+
 DEPENDENCY_UPDATE_PREFIXES = (
     "build(deps):",
     "build(deps-dev):",
@@ -117,10 +125,17 @@ def is_release_commit(subject: str) -> bool:
     lowered = subject.strip().lower()
     if "breaking change" in lowered:
         return True
-    return any(
-        lowered.startswith(prefix + ":") or lowered.startswith(prefix + "(")
-        for prefix in RELEASE_PREFIXES
-    )
+    for prefix in RELEASE_PREFIXES:
+        if lowered.startswith(prefix + ":"):
+            return True
+        if lowered.startswith(prefix + "("):
+            scope_end = lowered.find(")", len(prefix) + 1)
+            if scope_end > 0:
+                scope = lowered[len(prefix) + 1 : scope_end]
+                if scope in NON_RELEASE_SCOPES:
+                    continue
+            return True
+    return False
 
 
 def is_release_path(path: str) -> bool:
