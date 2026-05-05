@@ -14,6 +14,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/compaction"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/election"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/insertapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/internalselect"
@@ -171,7 +172,50 @@ func main() {
 		)
 	}
 
-	mux := newMux(cfg, store, sm)
+	// --- Delete subsystem ---
+	tombstoneStore := delete.NewTombstoneStore()
+	if err := tombstoneStore.LoadFromDisk(cfg.Delete.PersistPath); err != nil {
+		logger.Warn("failed to load tombstones from disk", "error", err, "path", cfg.Delete.PersistPath)
+	}
+	if tombstoneStore.Count() == 0 {
+		s3Pool := &s3PoolAdapter{pool: store.Pool()}
+		if err := tombstoneStore.LoadFromS3(context.Background(), s3Pool, cfg.S3.Bucket, cfg.AutoPrefix()); err != nil {
+			logger.Warn("failed to load tombstones from S3", "error", err)
+		}
+	}
+	store.SetTombstoneStore(tombstoneStore)
+
+	// Build lifecycle rules for storage class detection.
+	lifecycleRules := make([]delete.LifecycleRule, len(cfg.Delete.LifecycleRules))
+	for i, r := range cfg.Delete.LifecycleRules {
+		lifecycleRules[i] = delete.LifecycleRule{
+			TransitionDays: r.TransitionDays,
+			Class:          delete.ParseStorageClass(r.StorageClass),
+		}
+	}
+	detector := delete.NewStorageClassDetector(lifecycleRules)
+
+	rewriter := delete.NewRewriter(store.Pool(), cfg.AutoPrefix(), cfg.Insert.RowGroupSize)
+
+	var rewriteSched *delete.RewriteScheduler
+	if cfg.Delete.Enabled {
+		rewriteSched = delete.NewRewriteScheduler(delete.RewriteSchedulerConfig{
+			Store:          tombstoneStore,
+			Rewriter:       rewriter,
+			Detector:       detector,
+			RewriteDelay:   cfg.Delete.RewriteDelay,
+			AllowedClasses: cfg.Delete.AutoRewriteClasses,
+			MaxConcurrent:  cfg.Delete.RewriteMaxConcurrent,
+			Logger:         logger,
+		})
+		rewriteSched.Start(cfg.Delete.VerifyInterval)
+		logger.Info("delete rewrite scheduler started",
+			"rewrite_delay", cfg.Delete.RewriteDelay,
+			"verify_interval", cfg.Delete.VerifyInterval,
+		)
+	}
+
+	mux := newMux(cfg, store, sm, tombstoneStore, detector)
 
 	srv := &http.Server{
 		Addr:         addr,
@@ -204,6 +248,13 @@ func main() {
 		logger.Error("HTTP server shutdown error", "error", err)
 	}
 
+	if rewriteSched != nil {
+		rewriteSched.Stop()
+	}
+	if err := tombstoneStore.PersistToDisk(cfg.Delete.PersistPath); err != nil {
+		logger.Error("failed to persist tombstones to disk", "error", err)
+	}
+
 	if err := store.Close(); err != nil {
 		logger.Error("storage close error", "error", err)
 	}
@@ -211,7 +262,7 @@ func main() {
 	logger.Info("victoria-lakehouse stopped")
 }
 
-func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager) *http.ServeMux {
+func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	metrics.NewInfoGauge("lakehouse_info", map[string]string{
@@ -273,6 +324,12 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager) *
 		}
 		ih := insertapi.NewHandler(store, sm.Logger(), cfg, bq)
 		ih.Register(mux)
+	}
+
+	if cfg.Delete.Enabled && tombstoneStore != nil {
+		mq := &manifestQuerierAdapter{m: store.Manifest()}
+		dh := delete.NewHandler(tombstoneStore, mq, detector, &cfg.Delete, sm.Logger())
+		dh.Register(mux)
 	}
 
 	if ph := store.PeerHandler(); ph != nil {
