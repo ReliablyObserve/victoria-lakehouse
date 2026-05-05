@@ -54,7 +54,7 @@ func waitForHealthFatal(baseURL string, timeout time.Duration) {
 	for time.Now().Before(deadline) {
 		resp, err := client.Get(baseURL + "/health")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return
 			}
@@ -76,7 +76,7 @@ func verifyManifest(baseURL string, label string) {
 		}
 
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		var result map[string]any
 		if err := json.Unmarshal(body, &result); err != nil {
@@ -104,7 +104,7 @@ func storeTimeRange() {
 		os.Exit(1)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	var result map[string]any
 	if err := json.Unmarshal(body, &result); err != nil {
