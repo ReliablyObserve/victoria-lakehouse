@@ -51,8 +51,15 @@ class CheckChangelogPRTests(unittest.TestCase):
     def test_should_skip_for_docs_only(self):
         self.assertFalse(should_require_changelog(["docs: update guide"], ["docs/getting-started.md"]))
 
-    def test_should_require_for_ci_and_deployment_changes(self):
-        self.assertTrue(should_require_changelog(["ci: tune workflow"], [".github/workflows/ci.yaml"]))
+    def test_should_skip_for_github_workflow_only_changes(self):
+        self.assertFalse(should_require_changelog(["ci: tune workflow"], [".github/workflows/ci.yaml"]))
+        self.assertFalse(
+            should_require_changelog(
+                ["fix(ci): update release skip"], [".github/workflows/auto-release.yaml"]
+            )
+        )
+
+    def test_should_require_for_deployment_changes(self):
         self.assertTrue(should_require_changelog(["feat: update compose"], ["deployment/docker/docker-compose-e2e.yml"]))
 
     def test_should_skip_for_changelog_gate_policy_only_changes(self):

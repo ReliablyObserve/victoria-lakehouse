@@ -44,6 +44,7 @@ IMPACTFUL_FILES = {
 }
 
 EXEMPT_PATH_PREFIXES = (
+    ".github/",
     "website/",
     "scripts/ci/",
 )
