@@ -26,7 +26,8 @@ import (
 )
 
 var (
-	version = "dev"
+	version   = "dev"
+	buildTime = "unknown"
 )
 
 func main() {
@@ -299,13 +300,14 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	mux.HandleFunc("/lakehouse/info", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"version":   version,
-			"mode":      cfg.Mode,
-			"topology":  cfg.Topology,
-			"ready":     sm.IsReady(),
-			"phase":     sm.Phase().String(),
-			"vl_compat": "1.50.0",
-			"vt_compat": "0.8.2",
+			"version":    version,
+			"build_time": buildTime,
+			"mode":       cfg.Mode,
+			"topology":   cfg.Topology,
+			"ready":      sm.IsReady(),
+			"phase":      sm.Phase().String(),
+			"vl_compat":  "1.50.0",
+			"vt_compat":  "0.8.2",
 		})
 	})
 

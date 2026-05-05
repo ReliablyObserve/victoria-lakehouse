@@ -6,7 +6,8 @@ ARG BUILD_TIME=unknown
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o /lakehouse ./cmd/lakehouse && \
+ARG BUILD_TIME=unknown
+RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=${BUILD_TIME}" -o /lakehouse ./cmd/lakehouse && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o /healthcheck ./cmd/healthcheck && \
     mkdir -p /data/lakehouse/cache
 
