@@ -412,6 +412,33 @@ Year 2 (retention grows, compression advantage compounds):
 
 ---
 
+## Deletion Costs
+
+A critical cost factor often overlooked: **deleting data from cold storage.**
+
+| Operation | Lakehouse | Loki | Tempo |
+|---|---|---|---|
+| **Delete single record (S3 Standard)** | $0 tombstone, $0.001 optional rewrite | Not supported | Not supported (whole trace only) |
+| **Delete single record (Glacier)** | **$0** (tombstone suppression, no retrieval) | N/A (can't use Glacier) | N/A (can't use Glacier) |
+| **Delete by query pattern (1K records)** | **$0** instant (tombstone) | Not supported at record level | Not supported |
+| **GDPR right to erasure** | Immediate tombstone (compliant) | Manual stream delete (incomplete) | Manual trace delete |
+| **Retention expiry** | S3 Lifecycle rule ($0) | Compactor CPU cost | Compactor CPU cost |
+
+**Why this matters at scale:**
+- GDPR/CCPA deletion requests are routine — a customer asks to delete all their logs
+- With Loki, you can only delete entire label streams (not individual records matching a pattern)
+- With Lakehouse, `POST /delete/logsql/delete?query=customer_id:="CUST-123"` immediately suppresses all matching records across all storage tiers at zero cost
+
+**Lakehouse deletion is Glacier-safe:**
+- Tombstones make data invisible without touching the underlying Parquet files
+- Files on Glacier are never retrieved for deletion (no $0.03-$0.09/GB retrieval fees)
+- Physical deletion happens naturally when S3 lifecycle expires the file
+- For S3 Standard files, optional background rewrite reclaims space at minimal cost
+
+Full design: [Deletion Strategy](docs/deletion-strategy.md)
+
+---
+
 ## Decision Matrix
 
 | Criterion | Weight | Lakehouse Hybrid | Loki + Tempo | Winner |

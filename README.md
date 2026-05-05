@@ -370,6 +370,7 @@ See [Performance](docs/performance.md).
 - [Cost Estimates](docs/cost-estimates.md) — EBS vs S3 cost comparison
 - [Cost Comparison vs Loki/Tempo](docs/cost-comparison.md) — comprehensive competitive analysis
 - [Write Path](docs/write-path.md) — insert APIs, WAL, flush pipeline, buffer query bridge
+- [Deletion Strategy](docs/deletion-strategy.md) — cost-aware tombstone + selective rewrite, Glacier-safe
 
 ---
 
