@@ -35,4 +35,4 @@ jobs:
           python-version: "3.12"
 
       - name: Run changelog gate tests
-        run: python -m pytest scripts/ci/tests/ -v
+        run: python -m unittest discover -s scripts/ci/tests -v
