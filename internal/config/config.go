@@ -53,6 +53,7 @@ type Config struct {
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
 	Tenant         TenantConfig         `yaml:"tenant"`
 	Compaction     CompactionConfig     `yaml:"compaction"`
+	Delete         DeleteConfig         `yaml:"delete"`
 }
 
 type InsertConfig struct {
@@ -199,6 +200,25 @@ type CompactionConfig struct {
 	S3Heartbeat    time.Duration `yaml:"s3_heartbeat"`
 }
 
+type DeleteConfig struct {
+	Enabled              bool                  `yaml:"enabled"`
+	DefaultMode          string                `yaml:"default_mode"`
+	AutoRewriteClasses   []string              `yaml:"auto_rewrite_classes"`
+	RewriteDelay         time.Duration         `yaml:"rewrite_delay"`
+	RewriteBatchSize     int                   `yaml:"rewrite_batch_size"`
+	RewriteMaxConcurrent int                   `yaml:"rewrite_max_concurrent"`
+	PersistPath          string                `yaml:"persist_path"`
+	CostWarningThreshold float64               `yaml:"cost_warning_threshold"`
+	ForceGlacierHeader   string                `yaml:"force_glacier_header"`
+	VerifyInterval       time.Duration         `yaml:"verify_interval"`
+	LifecycleRules       []LifecycleRuleConfig `yaml:"lifecycle_rules"`
+}
+
+type LifecycleRuleConfig struct {
+	TransitionDays int    `yaml:"transition_days"`
+	StorageClass   string `yaml:"storage_class"`
+}
+
 type ExtraPromotedColumn struct {
 	Name  string `yaml:"name"`
 	Type  string `yaml:"type"`
@@ -309,6 +329,19 @@ func Default() *Config {
 			LeaseDuration:  15 * time.Second,
 			S3LockTTL:      60 * time.Second,
 			S3Heartbeat:    15 * time.Second,
+		},
+
+		Delete: DeleteConfig{
+			Enabled:              true,
+			DefaultMode:          "auto",
+			AutoRewriteClasses:   []string{"STANDARD"},
+			RewriteDelay:         time.Hour,
+			RewriteBatchSize:     50,
+			RewriteMaxConcurrent: 2,
+			PersistPath:          "/data/lakehouse/tombstones",
+			CostWarningThreshold: 10.0,
+			ForceGlacierHeader:   "X-Force-Glacier-Delete",
+			VerifyInterval:       6 * time.Hour,
 		},
 	}
 }
@@ -759,6 +792,41 @@ func mergeConfig(base, overlay *Config) *Config {
 	}
 	if overlay.Compaction.S3Heartbeat > 0 {
 		base.Compaction.S3Heartbeat = overlay.Compaction.S3Heartbeat
+	}
+
+	// Delete
+	if overlay.Delete.Enabled {
+		base.Delete.Enabled = true
+	}
+	if overlay.Delete.DefaultMode != "" {
+		base.Delete.DefaultMode = overlay.Delete.DefaultMode
+	}
+	if len(overlay.Delete.AutoRewriteClasses) > 0 {
+		base.Delete.AutoRewriteClasses = overlay.Delete.AutoRewriteClasses
+	}
+	if overlay.Delete.RewriteDelay > 0 {
+		base.Delete.RewriteDelay = overlay.Delete.RewriteDelay
+	}
+	if overlay.Delete.RewriteBatchSize > 0 {
+		base.Delete.RewriteBatchSize = overlay.Delete.RewriteBatchSize
+	}
+	if overlay.Delete.RewriteMaxConcurrent > 0 {
+		base.Delete.RewriteMaxConcurrent = overlay.Delete.RewriteMaxConcurrent
+	}
+	if overlay.Delete.PersistPath != "" {
+		base.Delete.PersistPath = overlay.Delete.PersistPath
+	}
+	if overlay.Delete.CostWarningThreshold > 0 {
+		base.Delete.CostWarningThreshold = overlay.Delete.CostWarningThreshold
+	}
+	if overlay.Delete.ForceGlacierHeader != "" {
+		base.Delete.ForceGlacierHeader = overlay.Delete.ForceGlacierHeader
+	}
+	if overlay.Delete.VerifyInterval > 0 {
+		base.Delete.VerifyInterval = overlay.Delete.VerifyInterval
+	}
+	if len(overlay.Delete.LifecycleRules) > 0 {
+		base.Delete.LifecycleRules = overlay.Delete.LifecycleRules
 	}
 
 	return base
