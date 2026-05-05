@@ -8,9 +8,9 @@
 [![Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ReliablyObserve/victoria-lakehouse/badges/tests.json)](#tests)
 [![License](https://img.shields.io/github/license/ReliablyObserve/victoria-lakehouse)](LICENSE)
 
-**S3-backed cold storage for VictoriaLogs and VictoriaTraces.** Fully compatible with VictoriaLogs and VictoriaTraces APIs — built on upstream VL/VT code with only the storage layer replaced by an S3 Parquet backend. Not a fork, not a copy — a new storage tier that follows VL/VT exactly.
+**S3-backed cold storage for VictoriaLogs and VictoriaTraces.** 100% API-compatible with VL/VT — same endpoints, same protocols, same query language. Implements the VL/VT storage interface with an S3 Parquet backend. Registers as a `-storageNode` and works transparently alongside existing VL/VT clusters.
 
-> **100% VL/VT compatible.** Victoria Lakehouse imports VictoriaLogs and VictoriaTraces as Go module dependencies. All HTTP handlers, LogsQL/TraceQL parsers, insert pipelines, and select protocols come directly from upstream VL/VT — unchanged. We add exactly one thing: a Parquet-on-S3 storage layer that replaces the local disk storage. When VictoriaMetrics ships a new release, we `go get -u` and rebuild — zero merge conflicts, zero patches.
+> **100% VL/VT API compatible.** Victoria Lakehouse reimplements the VL/VT storage layer with Parquet on S3 while exposing identical HTTP APIs, LogsQL query syntax, binary DataBlock protocol, and insert endpoints. VL/VT's vlselect fans out queries to both hot (vlstorage) and cold (lakehouse) — users see unified results. No VL/VT fork — a purpose-built cold tier that speaks the same language.
 
 - **Drop-in VL/VT storage node.** Register as a `-storageNode` on vlselect/vtselect. Queries spanning hot and cold data work transparently.
 - **Write path with crash recovery.** VL-compatible insert APIs (`/insert/jsonline`, Loki push, ES bulk) buffer data, flush to S3 Parquet, and survive process crashes via WAL.
@@ -89,7 +89,7 @@ For full setup, cluster integration, and deployment patterns, see [Getting Start
 
 ## Architecture
 
-Victoria Lakehouse uses the upstream VictoriaLogs and VictoriaTraces codebase directly — all HTTP handlers, parsers, and protocols are imported as Go module dependencies with zero modifications. The only addition is a Parquet-on-S3 storage backend that replaces VL/VT's local disk storage. This means every VL/VT feature, API, and query capability works identically on the cold tier.
+Victoria Lakehouse reimplements the VL/VT storage interface (`RunQuery`, `GetFieldNames`, `GetFieldValues`, `GetStreams`, etc.) backed by Parquet files on S3. All HTTP APIs (`/select/logsql/*`, `/insert/jsonline`, `/insert/loki/api/v1/push`, `/insert/elasticsearch/_bulk`, `/delete/logsql/*`), the binary DataBlock protocol, and the LogsQL query engine are implemented from the VL/VT spec — same endpoints, same wire format, same query syntax.
 
 It integrates with vlagent (logs) and OTEL Collector (traces) to mirror data to both hot and cold tiers simultaneously, providing unlimited retention, disaster recovery, and open-format analytics.
 
@@ -293,7 +293,7 @@ Single binary, two modes, three roles:
 
 ## Configuration
 
-Minimal config (mode + S3 bucket) works out of the box. All 65+ flags have production-ready defaults.
+Minimal config (mode + S3 bucket) works out of the box. All 110+ config options have production-ready defaults.
 
 ```yaml
 lakehouse:
@@ -373,7 +373,7 @@ See [Performance](docs/performance.md).
 ### Core
 - [Getting Started](docs/getting-started.md) — quick start, ingestion, deployment patterns
 - [Deployment Architecture](docs/deployment-architecture.md) — vlagent, OTEL Collector, hot/cold tiers, DR
-- [Configuration](docs/configuration.md) — all 65+ flags with defaults
+- [Configuration](docs/configuration.md) — all 110+ config options with defaults
 - [Architecture](docs/architecture.md) — internal design, Parquet schema, query flow
 - [Operations](docs/operations.md) — day-2 operations, scaling, troubleshooting
 
@@ -407,7 +407,7 @@ See [Performance](docs/performance.md).
 | M9: Compaction | Complete | Background merge, size-tiered strategy, manifest updates |
 | M10: Testing & Helm | Complete | E2E overhaul (VL + vlselect + loki-vl-proxy), benchmarks, Victoria-pattern Helm chart, upstream sync GHA |
 | M11: Cost-Aware Deletion | Complete | Tombstone store, `/delete/logsql/*` + `/delete/tracessql/*` APIs, query-time filtering, background rewriter, storage-class detection, verify endpoint |
-| M7: Observability | Planned | Metrics instrumentation, Grafana dashboards, alerting rules |
+| M7: Observability | Complete | ~80 Prometheus metrics, Grafana dashboards (single + cluster), 10 alerting rules, circuit breaker |
 
 ---
 
