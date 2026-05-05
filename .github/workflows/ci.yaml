@@ -57,7 +57,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
-          go build -ldflags "-X main.version=${{ github.sha }}" \
+          go build -ldflags "-X main.version=${{ github.sha }} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o bin/lakehouse-${{ matrix.goos }}-${{ matrix.goarch }} \
             ./cmd/lakehouse
 

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `/lakehouse/info` endpoint now includes `build_time` field for operational visibility
 - Traces delete support: mode-aware rewriter uses `schema.TraceRow` for traces mode, `schema.LogRow` for logs mode
 - Delete handler registers at `/delete/traceql/*` in traces mode, `/delete/logsql/*` in logs mode
 - Docs: 5 new pages for Docusaurus site — read-path, kubernetes-deployment, docker-compose-setup, benchmarks, open-parquet-format

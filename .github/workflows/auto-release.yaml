@@ -89,7 +89,7 @@ jobs:
             for GOARCH in amd64 arm64; do
               echo "Building ${GOOS}/${GOARCH}..."
               CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH \
-                go build -ldflags "-X main.version=${VERSION}" \
+                go build -ldflags "-X main.version=${VERSION} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
                 -o "dist/lakehouse-${GOOS}-${GOARCH}" ./cmd/lakehouse
             done
           done
