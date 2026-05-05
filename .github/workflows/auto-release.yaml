@@ -140,12 +140,22 @@ jobs:
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           helm push dist/victoria-lakehouse-*.tgz oci://ghcr.io/${OWNER}/charts
 
-      - name: Commit version bump back to main
+      - name: Create version bump PR
         if: steps.skip.outputs.skip != 'true'
         run: |
           VERSION=${{ steps.version.outputs.next }}
+          BRANCH="chore/bump-chart-${VERSION}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
           git add charts/victoria-lakehouse/Chart.yaml
           git commit -m "chore: bump chart to ${VERSION} [skip release]"
-          git push origin main
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "chore: bump chart to ${VERSION} [skip release]" \
+            --body "Auto-generated version bump after ${VERSION} release." \
+            --base main \
+            --head "$BRANCH" \
+            --label "release:patch"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
