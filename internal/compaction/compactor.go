@@ -240,7 +240,7 @@ func (c *Compactor) mergeTraceFiles(allData [][]byte) ([]schema.TraceRow, error)
 
 func readLogRows(data []byte) ([]schema.LogRow, error) {
 	reader := parquet.NewGenericReader[schema.LogRow](bytes.NewReader(data))
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	n := int(reader.NumRows())
 	rows := make([]schema.LogRow, n)
@@ -253,7 +253,7 @@ func readLogRows(data []byte) ([]schema.LogRow, error) {
 
 func readTraceRows(data []byte) ([]schema.TraceRow, error) {
 	reader := parquet.NewGenericReader[schema.TraceRow](bytes.NewReader(data))
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	n := int(reader.NumRows())
 	rows := make([]schema.TraceRow, n)
