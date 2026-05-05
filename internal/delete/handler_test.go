@@ -33,7 +33,7 @@ func newTestHandler(cfg *config.DeleteConfig, files []FileInfo) *Handler {
 	manifest := &mockManifest{files: files}
 	detector := NewStorageClassDetector(nil) // no lifecycle rules
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewHandler(store, manifest, detector, cfg, logger)
+	return NewHandler(store, manifest, detector, cfg, logger, "logs")
 }
 
 func defaultCfg() *config.DeleteConfig {
@@ -730,5 +730,108 @@ func TestHandler_handleVerify_WildcardTombstone(t *testing.T) {
 	result := decodeJSON(t, w.Body)
 	if result["verified"] != true {
 		t.Errorf("expected verified=true for wildcard tombstone, got %v", result["verified"])
+	}
+}
+
+// --- Trace mode handler tests ---
+
+func TestHandler_TraceMode_Delete(t *testing.T) {
+	store := NewTombstoneStore()
+	manifest := &mockManifest{files: []FileInfo{
+		{Key: "traces/dt=2026-05-02/hour=10/batch.parquet", Size: 1024, MinTimeNs: 1000, MaxTimeNs: 5000},
+	}}
+	detector := NewStorageClassDetector(nil)
+	cfg := defaultCfg()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	h := NewHandler(store, manifest, detector, cfg, logger, "traces")
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	form := url.Values{}
+	form.Set("query", `service.name:="order-svc"`)
+	form.Set("start", "0")
+	form.Set("end", "10000")
+	form.Set("mode", "permanent")
+
+	req := httptest.NewRequest("POST", "/delete/tracessql/delete", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if store.Count() != 1 {
+		t.Fatalf("expected 1 tombstone, got %d", store.Count())
+	}
+}
+
+func TestHandler_TraceMode_Estimate(t *testing.T) {
+	store := NewTombstoneStore()
+	manifest := &mockManifest{files: []FileInfo{
+		{Key: "traces/dt=2026-05-02/hour=10/batch.parquet", Size: 2048, MinTimeNs: 1000, MaxTimeNs: 5000},
+	}}
+	detector := NewStorageClassDetector(nil)
+	cfg := defaultCfg()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	h := NewHandler(store, manifest, detector, cfg, logger, "traces")
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	form := url.Values{}
+	form.Set("query", `trace_id:="abc"`)
+	form.Set("start", "0")
+	form.Set("end", "10000")
+
+	req := httptest.NewRequest("POST", "/delete/tracessql/estimate", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandler_TraceMode_ListTombstones(t *testing.T) {
+	store := NewTombstoneStore()
+	manifest := &mockManifest{}
+	detector := NewStorageClassDetector(nil)
+	cfg := defaultCfg()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	h := NewHandler(store, manifest, detector, cfg, logger, "traces")
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	req := httptest.NewRequest("GET", "/delete/tracessql/tombstones", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandler_TraceMode_LogsEndpointReturns404(t *testing.T) {
+	store := NewTombstoneStore()
+	manifest := &mockManifest{}
+	detector := NewStorageClassDetector(nil)
+	cfg := defaultCfg()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	h := NewHandler(store, manifest, detector, cfg, logger, "traces")
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	req := httptest.NewRequest("GET", "/delete/logsql/tombstones", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("logs endpoints should not be registered in traces mode, got %d", w.Code)
 	}
 }
