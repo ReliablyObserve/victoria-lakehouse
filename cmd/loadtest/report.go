@@ -22,12 +22,25 @@ type ThroughputResult struct {
 	Unit           string  `json:"unit"`
 }
 
+type BenchmarkResult struct {
+	FileSize       string  `json:"file_size"`
+	RowGroupSize   int     `json:"row_group_size"`
+	CompressionLvl int     `json:"compression_level"`
+	WriteTimeMs    float64 `json:"write_time_ms"`
+	ReadTimeMs     float64 `json:"read_time_ms"`
+	FileSizeBytes  int64   `json:"file_size_bytes"`
+	RawSizeBytes   int64   `json:"raw_size_bytes"`
+	Ratio          float64 `json:"compression_ratio"`
+	RowCount       int     `json:"row_count"`
+}
+
 type Report struct {
 	Mode              string                       `json:"mode"`
 	Duration          string                       `json:"duration"`
 	Target            string                       `json:"target"`
 	LatencyBenchmarks map[string]*LatencyResult    `json:"latency_benchmarks,omitempty"`
 	ThroughputTests   map[string]*ThroughputResult `json:"throughput_tests,omitempty"`
+	Benchmarks        []BenchmarkResult            `json:"benchmarks,omitempty"`
 	Pass              bool                         `json:"pass"`
 }
 
@@ -68,6 +81,16 @@ func (r *Report) PrintSummary() {
 		for name, tr := range r.ThroughputTests {
 			fmt.Printf("  %-30s max=%.0f %s @ concurrency=%d\n",
 				name, tr.MaxRate, tr.Unit, tr.ConcurrencyMax)
+		}
+	}
+
+	if len(r.Benchmarks) > 0 {
+		fmt.Println("\nBenchmark Results:")
+		fmt.Printf("  %-8s %8s %6s %12s %12s %8s %8s\n", "Size", "RowGroup", "ZSTD", "FileBytes", "RawBytes", "Ratio", "WriteMs")
+		fmt.Println("  " + strings.Repeat("-", 72))
+		for _, b := range r.Benchmarks {
+			fmt.Printf("  %-8s %8d %6d %12d %12d %7.2fx %7.1fms\n",
+				b.FileSize, b.RowGroupSize, b.CompressionLvl, b.FileSizeBytes, b.RawSizeBytes, b.Ratio, b.WriteTimeMs)
 		}
 	}
 

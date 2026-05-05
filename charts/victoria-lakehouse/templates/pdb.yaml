@@ -1,38 +1,16 @@
-{{- if and .Values.select.enabled .Values.select.podDisruptionBudget.enabled }}
-{{- $fullname := include "victoria-lakehouse.fullname" . }}
+{{- range $name, $spec := dict "select" $.Values.select "insert" $.Values.insertComponent }}
+{{- if and $spec.enabled (dig "podDisruptionBudget" "enabled" false $spec) }}
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ $fullname }}-select
+  name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $name }}
   labels:
-    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" "select") | nindent 4 }}
-  {{- with .Values.global.commonAnnotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- include "victoria-lakehouse.componentLabels" (dict "root" $ "component" $name) | nindent 4 }}
 spec:
-  minAvailable: {{ .Values.select.podDisruptionBudget.minAvailable }}
+  minAvailable: {{ $spec.podDisruptionBudget.minAvailable }}
   selector:
     matchLabels:
-      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" "select") | nindent 6 }}
+      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "root" $ "component" $name) | nindent 6 }}
 {{- end }}
-{{- if and .Values.insertComponent.enabled .Values.insertComponent.podDisruptionBudget.enabled }}
-{{- $fullname := include "victoria-lakehouse.fullname" . }}
----
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: {{ $fullname }}-insert
-  labels:
-    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" "insert") | nindent 4 }}
-  {{- with .Values.global.commonAnnotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
-spec:
-  minAvailable: {{ .Values.insertComponent.podDisruptionBudget.minAvailable }}
-  selector:
-    matchLabels:
-      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" "insert") | nindent 6 }}
 {{- end }}

@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math/big"
 	mrand "math/rand"
+	"net/http"
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -40,23 +43,6 @@ var (
 		"gRPC /payment.Process", "Redis GET session", "Kafka produce events",
 		"HTTP GET /api/v1/products", "HTTP DELETE /api/v1/sessions",
 	}
-	logMessages = []string{
-		"request completed successfully",
-		"processing incoming request from client",
-		"database query executed in 12ms",
-		"cache miss for key user:1234",
-		"connection established to upstream service",
-		"rate limit threshold approaching",
-		"failed to parse request body: unexpected EOF",
-		"authentication token validated",
-		"retry attempt 2/3 for downstream call",
-		"graceful shutdown initiated",
-		"health check passed all probes",
-		"metrics exported to prometheus endpoint",
-		"TLS handshake completed",
-		"websocket connection upgraded",
-		"batch processing completed: 1500 records",
-	}
 )
 
 func main() {
@@ -68,6 +54,8 @@ func main() {
 	tracesCount := flag.Int("traces", 1000, "number of trace spans per batch")
 	hoursBack := flag.Int("hours-back", 48, "generate historical data for this many hours back")
 	interval := flag.Duration("interval", 0, "continuous mode: generate new data every interval (e.g. 30s)")
+	dualWrite := flag.Bool("dual-write", false, "also push logs to VictoriaLogs via /insert/jsonline")
+	vlEndpoint := flag.String("vl-endpoint", "http://localhost:9428", "VictoriaLogs endpoint for dual-write")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -85,19 +73,19 @@ func main() {
 		o.UsePathStyle = true
 	})
 
-	generateBatch(ctx, client, *bucket, *logsCount, *tracesCount, *hoursBack)
+	generateBatch(ctx, client, *bucket, *logsCount, *tracesCount, *hoursBack, *dualWrite, *vlEndpoint)
 
 	if *interval > 0 {
 		log.Printf("Continuous mode: generating %d logs + %d traces every %s", *logsCount, *tracesCount, *interval)
 		ticker := time.NewTicker(*interval)
 		defer ticker.Stop()
 		for range ticker.C {
-			generateBatch(ctx, client, *bucket, *logsCount, *tracesCount, 1)
+			generateBatch(ctx, client, *bucket, *logsCount, *tracesCount, 1, *dualWrite, *vlEndpoint)
 		}
 	}
 }
 
-func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCount, tracesCount, hoursBack int) {
+func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCount, tracesCount, hoursBack int, dualWrite bool, vlEndpoint string) {
 	now := time.Now().UTC()
 	rng := mrand.New(mrand.NewSource(now.UnixNano())) // #nosec G404 -- synthetic test data, not security-sensitive
 
@@ -121,13 +109,14 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCo
 		node := k8sNodes[rng.Intn(len(k8sNodes))]
 		host := hostNames[rng.Intn(len(hostNames))]
 		lvl := levels[rng.Intn(len(levels))]
-		msg := logMessages[rng.Intn(len(logMessages))]
+		pattern := pickPattern(rng)
+		body, logAttrs := pattern(rng, ts, svc)
 		traceID := randomHex(32)
 		spanID := randomHex(16)
 
 		row := LogRow{
 			TimestampUnixNano: ts.UnixNano(),
-			Body:              fmt.Sprintf("[%s] %s svc=%s", lvl, msg, svc),
+			Body:              body,
 			SeverityText:      lvl,
 			SeverityNumber:    levelNums[lvl],
 			ServiceName:       svc,
@@ -143,6 +132,7 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCo
 			Stream:            fmt.Sprintf("{service.name=%q,k8s.namespace.name=%q}", svc, ns),
 			StreamID:          randomHex(16),
 			ScopeName:         "github.com/reliablyobserve/instrumentation",
+			LogAttributes:     logAttrs,
 		}
 
 		key := partitionKeyBatch("logs", ts, batchID)
@@ -160,6 +150,18 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCo
 			return
 		}
 		log.Printf("  uploaded %s (%d rows, %d bytes)", key, len(rows), len(data))
+	}
+
+	if dualWrite && vlEndpoint != "" {
+		var allLogs []LogRow
+		for _, rows := range logsByPartition {
+			allLogs = append(allLogs, rows...)
+		}
+		if err := pushNDJSON(vlEndpoint, allLogs); err != nil {
+			log.Printf("WARNING: dual-write to VL failed: %v", err)
+		} else {
+			log.Printf("  dual-write: pushed %d logs to VL at %s", len(allLogs), vlEndpoint)
+		}
 	}
 
 	tracesByPartition := make(map[string][]TraceRow)
@@ -219,29 +221,29 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCo
 			}
 
 			row := TraceRow{
-				TimestampUnixNano:  endTime.UnixNano(),
-				StartTimeUnixNano:  startTime.UnixNano(),
-				TraceID:            traceID,
-				SpanID:             spanID,
-				ParentSpanID:       parentSpanID,
-				SpanName:           spanName,
-				SpanKind:           int32(1 + rng.Intn(3)),
-				StatusCode:         statusCode,
-				StatusMessage:      statusMsg,
-				DurationNs:         dur.Nanoseconds(),
-				ServiceName:        svc,
-				ScopeName:          "github.com/reliablyobserve/instrumentation",
-				DeployEnv:          env,
-				CloudRegion:        region,
-				HostName:           host,
-				K8sNamespaceName:   ns,
-				K8sDeploymentName:  svc,
-				K8sNodeName:        node,
-				HTTPMethod:         httpMethod,
-				HTTPStatusCode:     httpCode,
-				HTTPUrl:            httpUrl,
-				DBSystem:           dbSystem,
-				DBStatement:        dbStmt,
+				TimestampUnixNano: endTime.UnixNano(),
+				StartTimeUnixNano: startTime.UnixNano(),
+				TraceID:           traceID,
+				SpanID:            spanID,
+				ParentSpanID:      parentSpanID,
+				SpanName:          spanName,
+				SpanKind:          int32(1 + rng.Intn(3)),
+				StatusCode:        statusCode,
+				StatusMessage:     statusMsg,
+				DurationNs:        dur.Nanoseconds(),
+				ServiceName:       svc,
+				ScopeName:         "github.com/reliablyobserve/instrumentation",
+				DeployEnv:         env,
+				CloudRegion:       region,
+				HostName:          host,
+				K8sNamespaceName:  ns,
+				K8sDeploymentName: svc,
+				K8sNodeName:       node,
+				HTTPMethod:        httpMethod,
+				HTTPStatusCode:    httpCode,
+				HTTPUrl:           httpUrl,
+				DBSystem:          dbSystem,
+				DBStatement:       dbStmt,
 			}
 
 			key := partitionKeyBatch("traces", startTime, batchID)
@@ -326,4 +328,39 @@ func randomHex(length int) string {
 		return fmt.Sprintf("%0*x", length, n)
 	}
 	return fmt.Sprintf("%x", b)
+}
+
+func pushNDJSON(endpoint string, rows []LogRow) error {
+	var buf bytes.Buffer
+	for _, r := range rows {
+		line := map[string]any{
+			"_time":                  time.Unix(0, r.TimestampUnixNano).Format(time.RFC3339Nano),
+			"_msg":                   r.Body,
+			"level":                  r.SeverityText,
+			"service.name":           r.ServiceName,
+			"k8s.namespace.name":     r.K8sNamespaceName,
+			"k8s.pod.name":           r.K8sPodName,
+			"k8s.deployment.name":    r.K8sDeploymentName,
+			"k8s.node.name":          r.K8sNodeName,
+			"deployment.environment": r.DeployEnv,
+			"cloud.region":           r.CloudRegion,
+			"host.name":              r.HostName,
+			"trace_id":               r.TraceID,
+			"span_id":                r.SpanID,
+		}
+		enc, _ := json.Marshal(line)
+		buf.Write(enc)
+		buf.WriteByte('\n')
+	}
+
+	resp, err := http.Post(endpoint+"/insert/jsonline", "application/x-ndjson", &buf)
+	if err != nil {
+		return fmt.Errorf("push to VL: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("push to VL: status %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
 }

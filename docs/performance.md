@@ -1,152 +1,143 @@
 # Performance
 
-## Latency Targets
+## Performance Targets
 
 | Operation | Target p95 | Notes |
 |---|---|---|
-| Manifest "nothing here" | <1ms | In-memory, no I/O |
-| Point query (trace_id, bloom) | <100ms | Bloom filter + row group skip |
-| Time-range scan (1h) | <500ms | Parquet column reads from cache/S3 |
-| Time-range scan (24h) | <1200ms | Multiple partition reads |
-| stats_query (aggregation) | <300ms | COUNT/SUM via pipe processors |
-| field_names discovery | <1ms | Label index (pre-computed) |
-| field_values | <3ms | Label index |
+| Manifest "nothing here" fast path | <1ms | Query range outside cold data |
+| Point query (trace_id, bloom filter) | <100ms | Single bloom filter lookup |
+| Time-range scan (1h) | <500ms | Row group stats pruning |
+| stats_query (aggregation) | <300ms | Aggregation over matched data |
+| field_names / field_values | <1ms | Label index lookup |
 
-## Latency by Cache Tier
+## Running Benchmarks
 
-### L1 Memory Cache Hit
-
-| Query Type | p50 | p95 |
-|---|---|---|
-| Point query (trace_id) | 3-10ms | 20-40ms |
-| Time-range scan (1h) | 10-30ms | 50-100ms |
-| stats_query | 15-50ms | 80-200ms |
-| field_names | <1ms | <2ms |
-
-### L2 Disk Cache Hit (EBS gp3)
-
-| Query Type | p50 | p95 |
-|---|---|---|
-| Point query | 5-20ms | 30-60ms |
-| Time-range scan (1h) | 15-50ms | 80-150ms |
-| Full-text search (1h) | 30-100ms | 200-500ms |
-
-### L3 Peer Cache Hit
-
-| Query Type | p50 | p95 |
-|---|---|---|
-| Point query | 10-30ms | 50-80ms |
-| Time-range scan (1h) | 25-70ms | 100-200ms |
-
-### L4 S3 Direct Read (Cold)
-
-| Query Type | p50 | p95 |
-|---|---|---|
-| Point query (bloom) | 50-100ms | 150-250ms |
-| Time-range scan (1h) | 100-300ms | 300-600ms |
-| Time-range scan (24h) | 200-600ms | 500-1200ms |
-| Full-text search (1h) | 200-500ms | 500-1500ms |
-
-## Optimization Techniques
-
-### Partition Manifest Fast Path
-
-For queries entirely within the hot tier's range, the partition manifest returns empty in <1ms with zero S3 I/O. This is the critical optimization for cluster mode where every query fans out to all storage nodes.
-
-### Bloom Filter + Row Group Statistics
-
-- Row group statistics (min/max on timestamp, service_name) skip 80-95% of row groups
-- Bloom filters on `trace_id` and `service_name` skip 95%+ for point lookups
-- Combined: most queries read <5% of total data
-
-### Column Projection
-
-Parquet column projection reads only the columns referenced by the query. A 3-column query on a 20-column file reads 70%+ fewer bytes.
-
-### Cache Coalescence
-
-`singleflight.Group` ensures concurrent queries for the same Parquet file generate only one S3 fetch. Subsequent queries wait for the first fetch to complete.
-
-### Correlated Prefetch
-
-After a log query, Victoria Lakehouse warms trace Parquet files for the same time+service in the background. The user's next trace query hits warm cache.
-
-### Read-Ahead
-
-Sequential time-range scans (scrolling in Grafana Explore) prefetch the next N partitions. Configurable via `--lakehouse.prefetch.read-ahead-depth`.
-
-## Throughput
-
-| Metric | L1/L2 Cache | S3 Cold |
-|---|---|---|
-| QPS per instance | 200-500 | 50-150 |
-| Data scan rate | 500 MB/s | 50-100 MB/s |
-| Max S3 connections | N/A | 100-200 |
-| Fleet QPS (12 instances) | 2,400-6,000 | 600-1,800 |
-
-## Load Testing (M9)
-
-Victoria Lakehouse ships a load test binary at `cmd/loadtest` that measures both latency targets and maximum throughput.
-
-### Building and Running
+### Quick start
 
 ```bash
-# Build
-make build-loadtest
-# or
-go build -o bin/loadtest ./cmd/loadtest
+# Start MinIO
+docker run -d -p 9000:9000 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin minio/minio server /data
 
-# Run all tests (latency + throughput)
-./bin/loadtest --target http://localhost:9428 --mode all --duration 60s
+# Generate test data
+go run ./cmd/datagen --endpoint=http://localhost:9000 --logs=50000 --hours-back=48
 
-# Latency benchmarks only
-./bin/loadtest --target http://localhost:9428 --mode latency --iterations 100
+# Run latency benchmarks
+go run ./cmd/loadtest -mode=latency -target=http://localhost:9428
 
-# Throughput stress tests only
-./bin/loadtest --target http://localhost:9428 --mode throughput --duration 60s
-
-# Save results to JSON
-./bin/loadtest --target http://localhost:9428 --mode all --output results.json
+# Run file size / compression benchmarks
+go run ./cmd/loadtest -mode=benchmark -output=benchmark-results.json
 ```
 
-Exits 0 if all p95 targets pass, exits 1 if any target is missed.
+### Benchmark modes
 
-### Latency Benchmarks
-
-Six benchmarks, each measured at p50/p95/p99 across the configured number of iterations:
-
-| Benchmark | Target p95 | What it measures |
-|---|---|---|
-| `manifest_fast_path` | 1ms | Empty response for queries in the future (manifest short-circuit) |
-| `field_names` | 1ms | `GET /select/logsql/field_names` from label index |
-| `field_values` | 1ms | `GET /select/logsql/field_values?field=service.name` from label index |
-| `bloom_point_query` | 100ms | `trace_id:="..."` bloom filter lookup |
-| `stats_aggregation` | 300ms | `stats_query` over 1h window |
-| `time_range_scan_1h` | 500ms | Full scan over last 1h, 100-row limit |
-
-The `manifest_fast_path` and label index benchmarks (1ms target) exercise the pure in-memory path with no S3 I/O.
-
-### Throughput Tests
-
-Two throughput tests find the maximum sustainable rate by sweeping concurrency levels (1, 2, 4, 8, 16, 32):
-
-| Test | Unit | What it measures |
-|---|---|---|
-| `max_insert_rate` | rows/s | Maximum insert throughput (100-row NDJSON batches) |
-| `max_query_qps` | qps | Maximum query throughput (`SELECT * LIMIT 10`) |
-
-Additionally, a `mixed` mode runs 7 insert workers and 3 query workers concurrently for a blended ops/s measurement.
-
-### Running in CI
-
-The nightly GitHub Actions workflow (`.github/workflows/loadtest.yml`) runs the load test against a live MinIO + Lakehouse stack. Results are saved as a JSON artifact and the job fails if any latency target is missed.
-
-## User Experience
-
-| Scenario | Behavior |
+| Mode | Description |
 |---|---|
-| Recent logs (within hot range) | Instant — hot VL handles, Lakehouse returns empty <1ms |
-| 30-day query (hot+cold) | Hot portion fast, cold 100-300ms |
-| Field autocomplete | <1ms from label index (faster than EBS VL/VT) |
-| Scrolling through time | Smooth with read-ahead prefetch |
-| First query after deploy | 1-5s from persisted cache |
+| `latency` | Measures p50/p95/p99 for each query type against targets |
+| `throughput` | Stress tests insert and query concurrency |
+| `benchmark` | File size × row group × compression matrix |
+| `all` | Runs latency + throughput |
+
+## File Size Optimization
+
+The benchmark suite tests these combinations:
+
+| Target Size | Row Count | Row Group Sizes Tested |
+|---|---|---|
+| 1 MB | ~500 rows | 1K |
+| 5 MB | ~2,500 rows | 1K, 5K |
+| 10 MB | ~5,000 rows | 1K, 5K, 10K |
+| 50 MB | ~25,000 rows | 1K, 5K, 10K, 50K |
+| 100 MB | ~50,000 rows | 1K, 5K, 10K, 50K |
+
+**Recommendation:** 10-50MB files with 10K row groups provide the best balance of:
+- S3 GET efficiency (fewer requests per query)
+- Row group stats pruning (skip irrelevant groups)
+- Write throughput (reasonable flush frequency)
+
+## Compression Ratios
+
+ZSTD levels tested: 1, 3, 9, 19
+
+| ZSTD Level | Speed | Typical Ratio | Use Case |
+|---|---|---|---|
+| 1 (Fastest) | ~500 MB/s | 3-5x | High ingest rate, latency-sensitive |
+| 3 (Default) | ~300 MB/s | 4-6x | Balanced (recommended) |
+| 9 (Better) | ~100 MB/s | 5-8x | Storage cost optimization |
+| 19 (Best) | ~20 MB/s | 6-10x | Archival, rarely queried |
+
+**Column breakdown** (typical log data):
+- `body` (text): 2-4x compression (high entropy)
+- `service.name`: 50-200x (low cardinality, dictionary encoding)
+- `timestamp_unix_nano`: 10-50x (delta encoding)
+- `trace_id`: 1.5-3x (random, high entropy)
+- `k8s.*` fields: 20-100x (low cardinality)
+
+## MinIO vs S3 Latency
+
+MinIO provides a local baseline. Real S3 adds network overhead:
+
+```
+Estimated S3 latency = MinIO latency + S3 first-byte overhead
+
+Where:
+  MinIO first-byte: 1-5ms (local network)
+  S3 first-byte:    50-150ms (us-east-1, same region)
+  S3 cross-region:  100-300ms
+```
+
+**Extrapolation formula:**
+
+```
+s3_p95 = minio_p95 + 80ms  (same-region estimate)
+```
+
+For multi-GET queries (scanning multiple row groups):
+
+```
+s3_scan_p95 = minio_scan_p95 + (num_gets × 80ms / concurrency)
+```
+
+With default concurrency=128, a query touching 10 row groups:
+```
+s3_scan_p95 ≈ minio_scan_p95 + (10 × 80 / 128) ≈ minio + 6ms
+```
+
+## Cost Projections
+
+### Storage cost
+
+```
+Monthly storage = ingestion_gb_day × retention_days × (1/compression_ratio) × $0.023/GB
+
+Example (500 GB/day, 365 day retention, 5x compression):
+  = 500 × 365 × 0.2 × $0.023 = $839/month
+```
+
+### Request cost
+
+```
+Monthly requests = queries_per_day × 30 × avg_gets_per_query × $0.0004/1000
+
+Example (10K queries/day, 5 GETs each):
+  = 10,000 × 30 × 5 × $0.0004/1000 = $0.60/month
+```
+
+### Total cost comparison
+
+| Scenario | Hot (EBS) | Cold (S3) | Total |
+|---|---|---|---|
+| 100 GB/day, 30d hot + 335d cold | $1,080/mo | $168/mo | $1,248/mo |
+| 500 GB/day, 30d hot + 335d cold | $5,400/mo | $839/mo | $6,239/mo |
+| 1 TB/day, 30d hot + 335d cold | $10,800/mo | $1,678/mo | $12,478/mo |
+
+**EBS cost:** $0.08/GB/month × uncompressed hot data (VL handles its own compression)
+**S3 cost:** $0.023/GB/month × compressed cold data
+
+## CI Integration
+
+The nightly workflow (`.github/workflows/nightly-loadtest.yaml`) runs:
+1. Latency benchmarks against performance targets
+2. Throughput stress tests
+3. File size / compression matrix
+
+Results are uploaded as workflow artifacts. The latency benchmarks fail the workflow if targets are not met.

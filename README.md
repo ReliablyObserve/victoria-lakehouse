@@ -5,7 +5,7 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/ReliablyObserve/victoria-lakehouse)](https://go.dev/)
 [![Release](https://img.shields.io/github/v/release/ReliablyObserve/victoria-lakehouse)](https://github.com/ReliablyObserve/victoria-lakehouse/releases)
 [![Lines of Code](https://img.shields.io/badge/go%20loc-24.2k-blue)](https://github.com/ReliablyObserve/victoria-lakehouse)
-[![Tests](https://img.shields.io/badge/tests-832%20passed-brightgreen)](#tests)
+[![Tests](https://img.shields.io/badge/tests-876%20passed-brightgreen)](#tests)
 [![License](https://img.shields.io/github/license/ReliablyObserve/victoria-lakehouse)](LICENSE)
 
 **S3-backed cold storage for VictoriaLogs and VictoriaTraces.** Read and write historical observability data as Parquet files on S3, while existing VL/VT clusters handle hot data on EBS.
@@ -31,7 +31,7 @@ S3 storage is inherently multi-AZ (11 nines durability) at no extra cost. EBS re
 | 1 PB/mo | 1 year | $303,000/mo | $48,513/mo | 84% |
 | 1 PB/mo | 2 years | $591,000/mo | $60,963/mo | 90% |
 
-Full cost worksheet: [Cost Estimates](docs/cost-estimates.md)
+Full cost worksheet: [Cost Estimates](docs/cost-estimates.md) | Deep comparison vs Loki/Tempo: [Cost Comparison](docs/cost-comparison.md)
 
 ---
 
@@ -368,6 +368,9 @@ See [Performance](docs/performance.md).
 - [Performance](docs/performance.md) — benchmarks, tuning, targets
 - [Scaling](docs/scaling.md) — horizontal and vertical scaling guides
 - [Cost Estimates](docs/cost-estimates.md) — EBS vs S3 cost comparison
+- [Cost Comparison vs Loki/Tempo](docs/cost-comparison.md) — comprehensive competitive analysis
+- [Write Path](docs/write-path.md) — insert APIs, WAL, flush pipeline, buffer query bridge
+- [Deletion Strategy](docs/deletion-strategy.md) — cost-aware tombstone + selective rewrite, Glacier-safe
 
 ---
 
@@ -382,6 +385,8 @@ See [Performance](docs/performance.md).
 | M5: VL/VT Cluster Integration | Complete | `/internal/select/*` binary protocol, storage node registration |
 | M6: Filter AST + E2E | Complete | Full LogsQL predicate engine, Playwright E2E, schema validation |
 | M8-Phase A: Write Durability | Complete | WAL crash recovery, insert APIs, adaptive flush, buffer query bridge, manifest labels |
+| M9: Compaction | Complete | Background merge, size-tiered strategy, manifest updates |
+| M10: Testing & Helm | Complete | E2E overhaul (VL + vlselect + loki-vl-proxy), benchmarks, Victoria-pattern Helm chart, upstream sync GHA |
 | M7: Observability | Planned | Metrics instrumentation, Grafana dashboards, alerting rules |
 
 ---

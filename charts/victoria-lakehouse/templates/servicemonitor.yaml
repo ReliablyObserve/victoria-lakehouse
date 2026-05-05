@@ -1,77 +1,21 @@
-{{- if and .Values.select.enabled .Values.select.serviceMonitor.enabled }}
-{{- $port := include "victoria-lakehouse.port" (dict "context" . "servicePort" .Values.select.service.port) }}
-{{- $fullname := include "victoria-lakehouse.fullname" . }}
+{{- range $name, $spec := dict "select" $.Values.select "insert" $.Values.insertComponent "vmauth" $.Values.vmauth }}
+{{- if and $spec.enabled (dig "serviceMonitor" "enabled" false $spec) }}
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: {{ $fullname }}-select
+  name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $name }}
   labels:
-    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" "select") | nindent 4 }}
-    {{- with .Values.select.serviceMonitor.labels }}
+    {{- include "victoria-lakehouse.componentLabels" (dict "root" $ "component" $name) | nindent 4 }}
+    {{- with $spec.serviceMonitor.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-  {{- with .Values.global.commonAnnotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
 spec:
   selector:
     matchLabels:
-      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" "select") | nindent 6 }}
+      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "root" $ "component" $name) | nindent 6 }}
   endpoints:
     - port: http
-      interval: {{ .Values.select.serviceMonitor.interval }}
-      path: /metrics
+      interval: {{ $spec.serviceMonitor.interval }}
 {{- end }}
-{{- if and .Values.insertComponent.enabled .Values.insertComponent.serviceMonitor.enabled }}
-{{- $port := include "victoria-lakehouse.port" (dict "context" . "servicePort" .Values.insertComponent.service.port) }}
-{{- $fullname := include "victoria-lakehouse.fullname" . }}
----
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: {{ $fullname }}-insert
-  labels:
-    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" "insert") | nindent 4 }}
-    {{- with .Values.insertComponent.serviceMonitor.labels }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
-  {{- with .Values.global.commonAnnotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
-spec:
-  selector:
-    matchLabels:
-      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" "insert") | nindent 6 }}
-  endpoints:
-    - port: http
-      interval: {{ .Values.insertComponent.serviceMonitor.interval }}
-      path: /metrics
-{{- end }}
-{{- if and .Values.vmauth.enabled .Values.vmauth.serviceMonitor.enabled }}
-{{- $fullname := include "victoria-lakehouse.fullname" . }}
----
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: {{ $fullname }}-vmauth
-  labels:
-    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" "vmauth") | nindent 4 }}
-    {{- with .Values.vmauth.serviceMonitor.labels }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
-  {{- with .Values.global.commonAnnotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
-spec:
-  selector:
-    matchLabels:
-      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" "vmauth") | nindent 6 }}
-  endpoints:
-    - port: http
-      interval: {{ .Values.vmauth.serviceMonitor.interval }}
-      path: /metrics
 {{- end }}

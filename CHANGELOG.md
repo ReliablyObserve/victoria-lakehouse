@@ -5,6 +5,47 @@ All notable changes to Victoria Lakehouse will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] — 2026-05-05
+
+### Added
+- E2E: VictoriaLogs hot tier, multi-level vlselect, loki-vl-proxy in Docker Compose
+- E2E: Internal Docker networking (only Grafana on port 3003)
+- E2E: Loki proxy integration tests, vlselect multi-level tests, performance assertion tests
+- Datagen: 5 realistic log patterns (JSON, logfmt, nginx, Java stacktrace, OTEL)
+- Datagen: Dual-write to VL and S3 for hot/cold verification
+- Loadtest: Benchmark mode for file size × row group × compression matrix
+- Helm: Single YAML config blob in ConfigMap (no individual flag mapping)
+- Helm: Common section deep-merged into components
+- Helm: Separate toggleable headless services for discovery
+- Helm: VPA support, extraManifests, vmauth Secret routing
+- CI: Upstream sync tracks GitHub releases (not Go module versions)
+- CI: Nightly benchmark workflow with artifact upload
+- Docs: Performance documentation with benchmark methodology and cost projections
+
+### Changed
+- Helm: vmauth config stored as Secret instead of ConfigMap
+- Helm: All components use generic HPA/VPA/PDB/ServiceMonitor/Ingress templates
+- Grafana: 5 datasources (cold, hot, multi-level, Loki proxy, Jaeger)
+
+### Removed
+- Docker Compose: Host port mappings for non-Grafana services
+- Helm: compaction-rbac.yaml (config in lakehouseConfig blob)
+
+## [0.8.0] - 2026-05-04
+
+### Added
+
+- **Level-based Parquet compaction** — L0→L1→L2 with configurable thresholds, partition-level S3 sentinels, and structured logging (`internal/compaction/`)
+- **Leader election** — K8s Lease (primary) with S3 lock + HTTP liveness detection (fallback), `auto`/`k8s`/`s3`/`none` modes (`internal/election/`)
+- **Peer manifest push notifications** — fire-and-forget HTTP POST to all peers on flush/compaction, with S3 ListObjects poll as fallback (`internal/manifest/push.go`)
+- **Manifest update receiver** — `POST /internal/manifest/update` handler for cross-instance manifest sync
+- **Load testing binary** — `cmd/loadtest/` with latency benchmarks (6 tests against plan targets) and throughput stress tests (insert rate, query QPS, mixed workload)
+- **Compaction metrics** — 11 new Prometheus metrics: runs, files, bytes, rows, duration, errors, skip reasons
+- **Election metrics** — leader gauge, transition counter, health check outcomes
+- **Manifest push metrics** — push total, errors, peer count, received updates
+- **Helm RBAC** — K8s Role/RoleBinding for Lease-based leader election when `compaction.enabled=true`
+- **Nightly CI load test** — GitHub Actions workflow running full benchmark suite on schedule
+
 ## [Unreleased]
 
 ## [0.9.0] - 2026-05-04

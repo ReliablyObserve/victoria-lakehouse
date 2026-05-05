@@ -89,8 +89,8 @@ func (c *Compactor) Compact(ctx context.Context, partition string, files []manif
 	}
 
 	var (
-		result   CompactResult
-		allData  [][]byte
+		result    CompactResult
+		allData   [][]byte
 		inputKeys []string
 	)
 	result.Partition = partition

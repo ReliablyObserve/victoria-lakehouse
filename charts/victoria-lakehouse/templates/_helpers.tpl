@@ -1,13 +1,12 @@
 {{/*
-Expand the name of the chart.
+Chart name
 */}}
 {{- define "victoria-lakehouse.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
-Create a default fully qualified app name.
-We truncate at 63 chars because some Kubernetes name fields are limited to this.
+Full resource name
 */}}
 {{- define "victoria-lakehouse.fullname" -}}
 {{- if .Values.fullnameOverride }}
@@ -23,18 +22,21 @@ We truncate at 63 chars because some Kubernetes name fields are limited to this.
 {{- end }}
 
 {{/*
-Chart label value (name-version).
+Chart label value
 */}}
 {{- define "victoria-lakehouse.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
-Common labels shared by all resources.
+Common labels
 */}}
 {{- define "victoria-lakehouse.labels" -}}
 helm.sh/chart: {{ include "victoria-lakehouse.chart" . }}
+{{ include "victoria-lakehouse.selectorLabels" . }}
+{{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- with .Values.global.commonLabels }}
 {{ toYaml . }}
@@ -42,198 +44,120 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
 {{/*
-Component-specific labels. Call with a dict containing "context" (the root .)
-and "component" (the component name string).
-Usage: {{ include "victoria-lakehouse.componentLabels" (dict "context" . "component" "select") }}
+Selector labels
 */}}
-{{- define "victoria-lakehouse.componentLabels" -}}
-{{ include "victoria-lakehouse.labels" .context }}
-{{ include "victoria-lakehouse.componentSelectorLabels" (dict "context" .context "component" .component) }}
+{{- define "victoria-lakehouse.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "victoria-lakehouse.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
-Selector labels for a specific component.
-Usage: {{ include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" "select") }}
+Component labels — pass dict with "root" (top-level context) and "component" (string)
+Usage: {{ include "victoria-lakehouse.componentLabels" (dict "root" . "component" "select") }}
 */}}
-{{- define "victoria-lakehouse.componentSelectorLabels" -}}
-app.kubernetes.io/name: {{ include "victoria-lakehouse.name" .context }}
-app.kubernetes.io/instance: {{ .context.Release.Name }}
+{{- define "victoria-lakehouse.componentLabels" -}}
+{{ include "victoria-lakehouse.labels" .root }}
 app.kubernetes.io/component: {{ .component }}
 {{- end }}
 
 {{/*
-Resolve the port number based on mode and optional override.
-Usage: {{ include "victoria-lakehouse.port" (dict "context" . "servicePort" .Values.select.service.port) }}
+Component selector labels
+Usage: {{ include "victoria-lakehouse.componentSelectorLabels" (dict "root" . "component" "select") }}
 */}}
-{{- define "victoria-lakehouse.port" -}}
-{{- if .servicePort }}
-{{- .servicePort }}
-{{- else if eq .context.Values.mode "traces" }}
-{{- 10428 }}
-{{- else }}
-{{- 9428 }}
-{{- end }}
+{{- define "victoria-lakehouse.componentSelectorLabels" -}}
+{{ include "victoria-lakehouse.selectorLabels" .root }}
+app.kubernetes.io/component: {{ .component }}
 {{- end }}
 
 {{/*
-Render the container image reference.
-Accepts a dict with "context" (root .) and "imageOverride" (component-level image override).
-Falls back to global image settings.
-Usage: {{ include "victoria-lakehouse.image" (dict "context" . "imageOverride" .Values.select.image) }}
+Container image with tag fallback to appVersion
+Usage: {{ include "victoria-lakehouse.image" . }}
 */}}
 {{- define "victoria-lakehouse.image" -}}
-{{- $repo := .context.Values.image.repository }}
-{{- $tag := .context.Values.image.tag | default .context.Chart.AppVersion }}
-{{- $pullPolicy := .context.Values.image.pullPolicy }}
-{{- if .imageOverride }}
-  {{- if .imageOverride.repository }}
-    {{- $repo = .imageOverride.repository }}
-  {{- end }}
-  {{- if .imageOverride.tag }}
-    {{- $tag = .imageOverride.tag }}
-  {{- end }}
-  {{- if .imageOverride.pullPolicy }}
-    {{- $pullPolicy = .imageOverride.pullPolicy }}
-  {{- end }}
-{{- end }}
-{{- printf "%s:%s" $repo $tag }}
+{{- $tag := default .Chart.AppVersion .Values.image.tag -}}
+{{- printf "%s:%s" .Values.image.repository $tag -}}
 {{- end }}
 
 {{/*
-Render image pull policy from override or global.
+Service port based on mode: 9428 for logs, 10428 for traces
 */}}
-{{- define "victoria-lakehouse.imagePullPolicy" -}}
-{{- $pullPolicy := .context.Values.image.pullPolicy }}
-{{- if .imageOverride }}
-  {{- if .imageOverride.pullPolicy }}
-    {{- $pullPolicy = .imageOverride.pullPolicy }}
-  {{- end }}
-{{- end }}
-{{- $pullPolicy }}
+{{- define "victoria-lakehouse.servicePort" -}}
+{{- if eq (default "logs" .Values.lakehouseConfig.mode) "traces" -}}
+10428
+{{- else -}}
+9428
+{{- end -}}
 {{- end }}
 
 {{/*
-Pod security context: uses component override if set, otherwise defaultSecurityContext.pod.
-Usage: {{ include "victoria-lakehouse.podSecurityContext" (dict "context" . "override" .Values.select.podSecurityContext) }}
+Merge common values into component — returns the merged value for a given key.
+Components override common. Empty component values fall through to common.
+This is a helper for the templates to resolve per-key.
+*/}}
+
+{{/*
+Resolve podSecurityContext: component-specific overrides common
+Usage: {{ include "victoria-lakehouse.podSecurityContext" (dict "component" .Values.select "common" .Values.common) }}
 */}}
 {{- define "victoria-lakehouse.podSecurityContext" -}}
-{{- if .override }}
-{{- toYaml .override }}
+{{- if .component.podSecurityContext }}
+{{- toYaml .component.podSecurityContext }}
 {{- else }}
-{{- toYaml .context.Values.defaultSecurityContext.pod }}
+{{- toYaml .common.podSecurityContext }}
 {{- end }}
 {{- end }}
 
 {{/*
-Container security context: uses component override if set, otherwise defaultSecurityContext.container.
-Usage: {{ include "victoria-lakehouse.containerSecurityContext" (dict "context" . "override" .Values.select.securityContext) }}
+Resolve securityContext: component-specific overrides common
 */}}
-{{- define "victoria-lakehouse.containerSecurityContext" -}}
-{{- if .override }}
-{{- toYaml .override }}
+{{- define "victoria-lakehouse.securityContext" -}}
+{{- if .component.securityContext }}
+{{- toYaml .component.securityContext }}
 {{- else }}
-{{- toYaml .context.Values.defaultSecurityContext.container }}
+{{- toYaml .common.securityContext }}
 {{- end }}
 {{- end }}
 
 {{/*
-Service account name for a component.
-Usage: {{ include "victoria-lakehouse.serviceAccountName" (dict "context" . "component" "select" "sa" .Values.select.serviceAccount) }}
+Resolve nodeSelector: component-specific overrides common
 */}}
-{{- define "victoria-lakehouse.serviceAccountName" -}}
-{{- if .sa.name }}
-{{- .sa.name }}
-{{- else }}
-{{- printf "%s-%s" (include "victoria-lakehouse.fullname" .context) .component }}
+{{- define "victoria-lakehouse.nodeSelector" -}}
+{{- if .component.nodeSelector }}
+{{- toYaml .component.nodeSelector }}
+{{- else if .common.nodeSelector }}
+{{- toYaml .common.nodeSelector }}
 {{- end }}
 {{- end }}
 
 {{/*
-Common S3 args shared by both insert and select.
-Usage: {{ include "victoria-lakehouse.s3Args" . }}
+Resolve tolerations: component-specific overrides common
 */}}
-{{- define "victoria-lakehouse.s3Args" -}}
-- "--lakehouse.s3.bucket={{ .Values.s3.bucket }}"
-- "--lakehouse.s3.region={{ .Values.s3.region }}"
-{{- if .Values.s3.prefix }}
-- "--lakehouse.s3.prefix={{ .Values.s3.prefix }}"
-{{- end }}
-{{- if .Values.s3.endpoint }}
-- "--lakehouse.s3.endpoint={{ .Values.s3.endpoint }}"
-{{- end }}
-{{- if .Values.s3.accessKey }}
-- "--lakehouse.s3.access-key={{ .Values.s3.accessKey }}"
-{{- end }}
-{{- if .Values.s3.secretKey }}
-- "--lakehouse.s3.secret-key={{ .Values.s3.secretKey }}"
-{{- end }}
-{{- if .Values.s3.forcePathStyle }}
-- "--lakehouse.s3.force-path-style=true"
-{{- end }}
-- "--lakehouse.s3.max-connections={{ .Values.s3.maxConnections }}"
-- "--lakehouse.s3.timeout={{ .Values.s3.timeout }}"
-{{- end }}
-
-{{/*
-Common discovery args shared by both insert and select.
-Usage: {{ include "victoria-lakehouse.discoveryArgs" . }}
-*/}}
-{{- define "victoria-lakehouse.discoveryArgs" -}}
-{{- if .Values.discovery.headlessService }}
-- "--lakehouse.discovery.headless-service={{ .Values.discovery.headlessService }}"
-{{- end }}
-{{- if .Values.discovery.storageNodes }}
-- "--lakehouse.discovery.storage-nodes={{ join "," .Values.discovery.storageNodes }}"
-{{- end }}
-{{- if .Values.discovery.partitionAuthKey }}
-- "--lakehouse.discovery.partition-auth-key={{ .Values.discovery.partitionAuthKey }}"
-{{- end }}
-{{- if .Values.discovery.peerHeadlessService }}
-- "--lakehouse.discovery.peer-headless-service={{ .Values.discovery.peerHeadlessService }}"
-{{- end }}
-- "--lakehouse.discovery.refresh-interval={{ .Values.discovery.refreshInterval }}"
-- "--lakehouse.discovery.timeout={{ .Values.discovery.timeout }}"
-{{- end }}
-
-{{/*
-Common cache, peer, manifest, query, startup args.
-Usage: {{ include "victoria-lakehouse.commonArgs" . }}
-*/}}
-{{- define "victoria-lakehouse.commonArgs" -}}
-- "--lakehouse.cache.memory-limit={{ .Values.cache.memoryLimit }}"
-- "--lakehouse.cache.eviction-watermark={{ .Values.cache.evictionWatermark }}"
-{{- if .Values.peer.authKey }}
-- "--lakehouse.peer.auth-key={{ .Values.peer.authKey }}"
-{{- end }}
-- "--lakehouse.peer.timeout={{ .Values.peer.timeout }}"
-- "--lakehouse.peer.max-connections={{ .Values.peer.maxConnections }}"
-{{- if .Values.hotBoundary }}
-- "--lakehouse.hot-boundary={{ .Values.hotBoundary }}"
-{{- end }}
-- "--lakehouse.manifest.refresh-interval={{ .Values.manifest.refreshInterval }}"
-- "--lakehouse.manifest.persist-path={{ .Values.manifest.persistPath }}"
-{{- if .Values.manifest.sqsQueueUrl }}
-- "--lakehouse.manifest.sqs-queue-url={{ .Values.manifest.sqsQueueUrl }}"
-{{- end }}
-- "--lakehouse.query.max-concurrent={{ .Values.query.maxConcurrent }}"
-- "--lakehouse.query.timeout={{ .Values.query.timeout }}"
-- "--lakehouse.query.slow-threshold={{ .Values.query.slowThreshold }}"
-{{- if .Values.startup.serveStale }}
-- "--lakehouse.startup.serve-stale=true"
-{{- end }}
-- "--lakehouse.startup.warmup-window={{ .Values.startup.warmupWindow }}"
-- "--lakehouse.startup.max-warmup-time={{ .Values.startup.maxWarmupTime }}"
-{{- range .Values.schema.extraPromoted }}
-- "--lakehouse.schema.extra-promoted={{ .name }}:{{ .type }}{{ if .bloom }}:bloom{{ end }}"
+{{- define "victoria-lakehouse.tolerations" -}}
+{{- if .component.tolerations }}
+{{- toYaml .component.tolerations }}
+{{- else if .common.tolerations }}
+{{- toYaml .common.tolerations }}
 {{- end }}
 {{- end }}
 
 {{/*
-Global annotations including common annotations.
-Usage: {{ include "victoria-lakehouse.globalAnnotations" . }}
+Resolve affinity: component-specific overrides common
 */}}
-{{- define "victoria-lakehouse.globalAnnotations" -}}
-{{- with .Values.global.commonAnnotations }}
-{{ toYaml . }}
+{{- define "victoria-lakehouse.affinity" -}}
+{{- if .component.affinity }}
+{{- toYaml .component.affinity }}
+{{- else if .common.affinity }}
+{{- toYaml .common.affinity }}
+{{- end }}
+{{- end }}
+
+{{/*
+Resolve resources: component-specific overrides common
+*/}}
+{{- define "victoria-lakehouse.resources" -}}
+{{- if .component.resources }}
+{{- toYaml .component.resources }}
+{{- else if .common.resources }}
+{{- toYaml .common.resources }}
 {{- end }}
 {{- end }}

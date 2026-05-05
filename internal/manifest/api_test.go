@@ -2,8 +2,8 @@ package manifest
 
 import (
 	"encoding/json"
-	"log/slog"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"

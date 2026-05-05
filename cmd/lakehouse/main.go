@@ -30,22 +30,22 @@ var (
 
 func main() {
 	var (
-		configPath  = flag.String("lakehouse.config", "", "Path to YAML config file")
-		mode        = flag.String("lakehouse.mode", "", "Operating mode: logs or traces (required)")
-		s3Bucket    = flag.String("lakehouse.s3.bucket", "", "S3 bucket name (required)")
-		s3Region    = flag.String("lakehouse.s3.region", "", "S3 region")
-		s3Prefix    = flag.String("lakehouse.s3.prefix", "", "S3 key prefix")
-		s3Endpoint  = flag.String("lakehouse.s3.endpoint", "", "Custom S3 endpoint (MinIO)")
-		s3AccessKey = flag.String("lakehouse.s3.access-key", "", "S3 access key")
-		s3SecretKey = flag.String("lakehouse.s3.secret-key", "", "S3 secret key")
-		s3PathStyle = flag.Bool("lakehouse.s3.force-path-style", false, "Use path-style S3 URLs")
-		topology    = flag.String("lakehouse.topology", "", "Deployment topology: auto, storage-node, direct, loki-proxy")
-		hotBoundary = flag.String("lakehouse.hot-boundary", "", "Manual hot boundary override (e.g., 7d)")
-		role             = flag.String("lakehouse.role", "", "Role: all, insert, select (default: all)")
-		flushInterval    = flag.Duration("lakehouse.insert.flush-interval", 0, "Insert flush interval (e.g., 10s)")
-		listenAddr       = flag.String("httpListenAddr", "", "HTTP listen address (auto-set from mode)")
-		logLevel         = flag.String("loggerLevel", "INFO", "Log level: DEBUG, INFO, WARN, ERROR")
-		manifestRefresh  = flag.Duration("lakehouse.manifest.refresh-interval", 0, "Manifest refresh interval (e.g., 30s)")
+		configPath      = flag.String("lakehouse.config", "", "Path to YAML config file")
+		mode            = flag.String("lakehouse.mode", "", "Operating mode: logs or traces (required)")
+		s3Bucket        = flag.String("lakehouse.s3.bucket", "", "S3 bucket name (required)")
+		s3Region        = flag.String("lakehouse.s3.region", "", "S3 region")
+		s3Prefix        = flag.String("lakehouse.s3.prefix", "", "S3 key prefix")
+		s3Endpoint      = flag.String("lakehouse.s3.endpoint", "", "Custom S3 endpoint (MinIO)")
+		s3AccessKey     = flag.String("lakehouse.s3.access-key", "", "S3 access key")
+		s3SecretKey     = flag.String("lakehouse.s3.secret-key", "", "S3 secret key")
+		s3PathStyle     = flag.Bool("lakehouse.s3.force-path-style", false, "Use path-style S3 URLs")
+		topology        = flag.String("lakehouse.topology", "", "Deployment topology: auto, storage-node, direct, loki-proxy")
+		hotBoundary     = flag.String("lakehouse.hot-boundary", "", "Manual hot boundary override (e.g., 7d)")
+		role            = flag.String("lakehouse.role", "", "Role: all, insert, select (default: all)")
+		flushInterval   = flag.Duration("lakehouse.insert.flush-interval", 0, "Insert flush interval (e.g., 10s)")
+		listenAddr      = flag.String("httpListenAddr", "", "HTTP listen address (auto-set from mode)")
+		logLevel        = flag.String("loggerLevel", "INFO", "Log level: DEBUG, INFO, WARN, ERROR")
+		manifestRefresh = flag.Duration("lakehouse.manifest.refresh-interval", 0, "Manifest refresh interval (e.g., 30s)")
 
 		compactionEnabled  = flag.Bool("lakehouse.compaction.enabled", false, "Enable compaction scheduler")
 		compactionInterval = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
@@ -248,13 +248,13 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager) *
 	mux.HandleFunc("/lakehouse/info", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"version":       version,
-			"mode":          cfg.Mode,
-			"topology":      cfg.Topology,
-			"ready":         sm.IsReady(),
-			"phase":         sm.Phase().String(),
-			"vl_compat":     "1.50.0",
-			"vt_compat":     "0.8.2",
+			"version":   version,
+			"mode":      cfg.Mode,
+			"topology":  cfg.Topology,
+			"ready":     sm.IsReady(),
+			"phase":     sm.Phase().String(),
+			"vl_compat": "1.50.0",
+			"vt_compat": "0.8.2",
 		})
 	})
 

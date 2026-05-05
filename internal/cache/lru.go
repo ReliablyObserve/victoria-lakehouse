@@ -12,13 +12,13 @@ type entry struct {
 }
 
 type LRU struct {
-	mu       sync.Mutex
-	items    map[string]*list.Element
-	order    *list.List
-	curSize  int64
-	maxSize  int64
-	hits     uint64
-	misses   uint64
+	mu        sync.Mutex
+	items     map[string]*list.Element
+	order     *list.List
+	curSize   int64
+	maxSize   int64
+	hits      uint64
+	misses    uint64
 	evictions uint64
 }
 

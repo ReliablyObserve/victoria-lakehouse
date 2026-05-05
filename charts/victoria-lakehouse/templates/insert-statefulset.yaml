@@ -1,82 +1,65 @@
 {{- if .Values.insertComponent.enabled }}
-{{- $port := include "victoria-lakehouse.port" (dict "context" . "servicePort" .Values.insertComponent.service.port) }}
-{{- $fullname := include "victoria-lakehouse.fullname" . }}
-{{- $component := "insert" }}
 apiVersion: apps/v1
-{{- if .Values.insertComponent.persistence.enabled }}
 kind: StatefulSet
-{{- else }}
-kind: Deployment
-{{- end }}
 metadata:
-  name: {{ $fullname }}-insert
+  name: {{ include "victoria-lakehouse.fullname" . }}-insert
   labels:
-    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" $component) | nindent 4 }}
-  {{- with .Values.global.commonAnnotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- include "victoria-lakehouse.componentLabels" (dict "root" . "component" "insert") | nindent 4 }}
 spec:
   replicas: {{ .Values.insertComponent.replicaCount }}
-  {{- if .Values.insertComponent.persistence.enabled }}
-  serviceName: {{ $fullname }}-insert-headless
-  {{- end }}
+  serviceName: {{ include "victoria-lakehouse.fullname" . }}-insert-headless
   selector:
     matchLabels:
-      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" $component) | nindent 6 }}
+      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "root" . "component" "insert") | nindent 6 }}
   template:
     metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.insertComponent.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       labels:
-        {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" $component) | nindent 8 }}
+        {{- include "victoria-lakehouse.componentSelectorLabels" (dict "root" . "component" "insert") | nindent 8 }}
         {{- with .Values.insertComponent.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.insertComponent.podAnnotations }}
-      annotations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
     spec:
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if .Values.insertComponent.serviceAccount.create }}
-      serviceAccountName: {{ include "victoria-lakehouse.serviceAccountName" (dict "context" . "component" $component "sa" .Values.insertComponent.serviceAccount) }}
-      {{- end }}
-      securityContext:
-        {{- include "victoria-lakehouse.podSecurityContext" (dict "context" . "override" .Values.insertComponent.podSecurityContext) | nindent 8 }}
+      serviceAccountName: {{ default (printf "%s-insert" (include "victoria-lakehouse.fullname" .)) .Values.insertComponent.serviceAccount.name }}
       terminationGracePeriodSeconds: {{ .Values.insertComponent.terminationGracePeriodSeconds }}
+      {{- with (include "victoria-lakehouse.podSecurityContext" (dict "component" .Values.insertComponent "common" .Values.common)) }}
+      securityContext:
+        {{- . | nindent 8 }}
+      {{- end }}
       {{- with .Values.insertComponent.initContainers }}
       initContainers:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
-        - name: lakehouse
-          image: {{ include "victoria-lakehouse.image" (dict "context" . "imageOverride" .Values.insertComponent.image) }}
-          imagePullPolicy: {{ include "victoria-lakehouse.imagePullPolicy" (dict "context" . "imageOverride" .Values.insertComponent.image) }}
-          securityContext:
-            {{- include "victoria-lakehouse.containerSecurityContext" (dict "context" . "override" .Values.insertComponent.securityContext) | nindent 12 }}
+        - name: insert
+          image: {{ include "victoria-lakehouse.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
-            - "--lakehouse.mode={{ .Values.mode }}"
+            - "--lakehouse.config=/etc/lakehouse/config.yaml"
             - "--lakehouse.role=insert"
-            {{- include "victoria-lakehouse.s3Args" . | nindent 12 }}
-            {{- include "victoria-lakehouse.discoveryArgs" . | nindent 12 }}
-            {{- include "victoria-lakehouse.commonArgs" . | nindent 12 }}
-            - "--lakehouse.insert.flush-interval={{ .Values.insert.flushInterval }}"
-            - "--lakehouse.insert.max-buffer-rows={{ .Values.insert.maxBufferRows }}"
-            - "--lakehouse.insert.max-buffer-bytes={{ .Values.insert.maxBufferBytes }}"
-            - "--lakehouse.insert.row-group-size={{ .Values.insert.rowGroupSize }}"
-            - "--lakehouse.insert.target-file-size={{ .Values.insert.targetFileSize }}"
-            - "--lakehouse.insert.bloom-columns={{ .Values.insert.bloomColumns }}"
-            - "--lakehouse.insert.compression-level={{ .Values.insert.compressionLevel }}"
-            {{- if .Values.insert.wal.enabled }}
-            - "--lakehouse.insert.wal-enabled=true"
-            - "--lakehouse.insert.wal-dir={{ .Values.insert.wal.dir }}"
-            - "--lakehouse.insert.wal-max-bytes={{ .Values.insert.wal.maxBytes }}"
-            {{- end }}
             {{- range $key, $val := .Values.insertComponent.extraArgs }}
             - "--{{ $key }}={{ $val }}"
             {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ include "victoria-lakehouse.servicePort" . }}
+              protocol: TCP
+          {{- with (include "victoria-lakehouse.securityContext" (dict "component" .Values.insertComponent "common" .Values.common)) }}
+          securityContext:
+            {{- . | nindent 12 }}
+          {{- end }}
+          {{- with (include "victoria-lakehouse.resources" (dict "component" .Values.insertComponent "common" .Values.common)) }}
+          resources:
+            {{- . | nindent 12 }}
+          {{- end }}
           {{- with .Values.insertComponent.extraEnv }}
           env:
             {{- toYaml . | nindent 12 }}
@@ -85,10 +68,15 @@ spec:
           envFrom:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          ports:
-            - name: http
-              containerPort: {{ $port }}
-              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/lakehouse
+              readOnly: true
+            - name: data
+              mountPath: /data/lakehouse
+            {{- with .Values.insertComponent.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /health
@@ -98,61 +86,45 @@ spec:
             failureThreshold: {{ .Values.insertComponent.probe.liveness.failureThreshold }}
           readinessProbe:
             httpGet:
-              path: /ready
+              path: /health
               port: http
             initialDelaySeconds: {{ .Values.insertComponent.probe.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.insertComponent.probe.readiness.periodSeconds }}
             failureThreshold: {{ .Values.insertComponent.probe.readiness.failureThreshold }}
           startupProbe:
             httpGet:
-              path: /ready
+              path: /health
               port: http
             periodSeconds: {{ .Values.insertComponent.probe.startup.periodSeconds }}
             failureThreshold: {{ .Values.insertComponent.probe.startup.failureThreshold }}
-          {{- with .Values.insertComponent.resources }}
-          resources:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          volumeMounts:
-            - name: data
-              mountPath: /data/lakehouse
-            {{- with .Values.insertComponent.extraVolumeMounts }}
-            {{- toYaml . | nindent 12 }}
-            {{- end }}
         {{- with .Values.insertComponent.extraContainers }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- if not .Values.insertComponent.persistence.enabled }}
       volumes:
-        - name: data
-          emptyDir: {}
+        - name: config
+          configMap:
+            name: {{ include "victoria-lakehouse.fullname" . }}-config
         {{- with .Values.insertComponent.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- else }}
-      {{- with .Values.insertComponent.extraVolumes }}
-      volumes:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- end }}
-      {{- with .Values.insertComponent.nodeSelector }}
+      {{- with (include "victoria-lakehouse.nodeSelector" (dict "component" .Values.insertComponent "common" .Values.common)) }}
       nodeSelector:
-        {{- toYaml . | nindent 8 }}
+        {{- . | nindent 8 }}
       {{- end }}
-      {{- with .Values.insertComponent.tolerations }}
+      {{- with (include "victoria-lakehouse.tolerations" (dict "component" .Values.insertComponent "common" .Values.common)) }}
       tolerations:
-        {{- toYaml . | nindent 8 }}
+        {{- . | nindent 8 }}
       {{- end }}
-      {{- with .Values.insertComponent.affinity }}
+      {{- with (include "victoria-lakehouse.affinity" (dict "component" .Values.insertComponent "common" .Values.common)) }}
       affinity:
-        {{- toYaml . | nindent 8 }}
+        {{- . | nindent 8 }}
       {{- end }}
       {{- with .Values.insertComponent.topologySpreadConstraints }}
       topologySpreadConstraints:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if .Values.insertComponent.priorityClassName }}
-      priorityClassName: {{ .Values.insertComponent.priorityClassName }}
+      {{- with .Values.insertComponent.priorityClassName }}
+      priorityClassName: {{ . }}
       {{- end }}
   {{- if .Values.insertComponent.persistence.enabled }}
   volumeClaimTemplates:
@@ -161,8 +133,8 @@ spec:
       spec:
         accessModes:
           {{- toYaml .Values.insertComponent.persistence.accessModes | nindent 10 }}
-        {{- if .Values.insertComponent.persistence.storageClass }}
-        storageClassName: {{ .Values.insertComponent.persistence.storageClass }}
+        {{- with .Values.insertComponent.persistence.storageClass }}
+        storageClassName: {{ . }}
         {{- end }}
         resources:
           requests:

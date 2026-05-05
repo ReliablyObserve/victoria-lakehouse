@@ -32,6 +32,14 @@ func main() {
 	case "all":
 		report.LatencyBenchmarks = runLatencyBenchmarks(*target, *iterations)
 		report.ThroughputTests = runThroughputTests(*target, *duration)
+	case "benchmark":
+		bcfg := BenchmarkConfig{
+			Endpoint:  "",
+			Bucket:    "obs-archive",
+			AccessKey: "minioadmin",
+			SecretKey: "minioadmin",
+		}
+		report.Benchmarks = runBenchmarks(bcfg)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown mode: %s\n", *mode)
 		os.Exit(1)

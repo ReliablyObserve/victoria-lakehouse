@@ -223,7 +223,7 @@ func parseNot(tokens []string, pos int) (*FilterNode, int) {
 	}
 
 	if strings.EqualFold(tokens[pos], "NOT") {
-		pos++ // consume NOT
+		pos++                                  // consume NOT
 		child, newPos := parseNot(tokens, pos) // NOT is right-associative
 		if child == nil {
 			return nil, newPos

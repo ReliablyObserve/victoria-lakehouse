@@ -1,0 +1,77 @@
+name: Nightly Load Test
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Test mode: latency, throughput, benchmark, all'
+        required: false
+        default: 'all'
+
+permissions:
+  contents: read
+
+jobs:
+  loadtest:
+    runs-on: ubuntu-latest
+    services:
+      minio:
+        image: minio/minio:latest
+        ports:
+          - 9000:9000
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        options: --health-cmd "mc ready local" --health-interval 5s --health-timeout 5s --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Create S3 bucket
+        run: |
+          curl -sSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /tmp/mc && chmod +x /tmp/mc
+          /tmp/mc alias set local http://localhost:9000 minioadmin minioadmin
+          /tmp/mc mb local/obs-archive --ignore-existing
+
+      - name: Generate test data
+        run: go run ./cmd/datagen --endpoint=http://localhost:9000 --logs=10000 --traces=2000 --hours-back=48
+
+      - name: Build lakehouse
+        run: go build -o /tmp/lakehouse ./cmd/lakehouse
+
+      - name: Start lakehouse
+        run: |
+          /tmp/lakehouse \
+            -lakehouse.mode=logs \
+            -lakehouse.s3.bucket=obs-archive \
+            -lakehouse.s3.endpoint=http://localhost:9000 \
+            -lakehouse.s3.access-key=minioadmin \
+            -lakehouse.s3.secret-key=minioadmin \
+            -lakehouse.s3.force-path-style=true &
+          sleep 5
+          curl -sf http://localhost:9428/health
+
+      - name: Run load tests
+        run: |
+          MODE="${{ github.event.inputs.mode || 'all' }}"
+          go run ./cmd/loadtest -mode=$MODE -target=http://localhost:9428 -output=loadtest-results.json
+
+      - name: Run benchmarks
+        if: github.event.inputs.mode == 'benchmark' || github.event.inputs.mode == '' || github.event.inputs.mode == 'all'
+        run: go run ./cmd/loadtest -mode=benchmark -output=benchmark-results.json
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: loadtest-results
+          path: |
+            loadtest-results.json
+            benchmark-results.json
+          if-no-files-found: ignore
