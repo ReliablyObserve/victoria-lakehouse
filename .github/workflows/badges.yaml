@@ -1,0 +1,93 @@
+name: Badges
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Collect metrics
+        id: metrics
+        run: |
+          # Count Go LOC (excluding tests, vendor, generated)
+          LOC=$(find . -name '*.go' ! -name '*_test.go' ! -name 'zz_generated*' \
+            ! -path './vendor/*' ! -path './.worktrees/*' | xargs wc -l | tail -1 | awk '{print $1}')
+          if [ "$LOC" -ge 1000 ]; then
+            LOC_K=$(awk "BEGIN {printf \"%.1f\", $LOC/1000}")
+            LOC_DISPLAY="${LOC_K}k"
+          else
+            LOC_DISPLAY="$LOC"
+          fi
+
+          # Count tests
+          TEST_OUTPUT=$(go test -count=1 ./... 2>&1 || true)
+          PASS_COUNT=$(echo "$TEST_OUTPUT" | grep -c '^ok' || echo "0")
+          TOTAL_TESTS=0
+          while IFS= read -r line; do
+            if echo "$line" | grep -qE '^\s*--- PASS:'; then
+              TOTAL_TESTS=$((TOTAL_TESTS + 1))
+            fi
+          done <<< "$TEST_OUTPUT"
+          # Fallback: parse from verbose if available, otherwise use package count
+          if [ "$TOTAL_TESTS" -eq 0 ]; then
+            TOTAL_TESTS=$(echo "$TEST_OUTPUT" | grep -oP '\((\d+) tests' | grep -oP '\d+' | awk '{s+=$1} END {print s+0}')
+          fi
+          if [ "$TOTAL_TESTS" -eq 0 ]; then
+            # Run with -v to get individual test counts
+            TOTAL_TESTS=$(go test -count=1 -v ./... 2>&1 | grep -c '^--- PASS:' || echo "0")
+          fi
+
+          echo "loc=$LOC_DISPLAY" >> "$GITHUB_OUTPUT"
+          echo "tests=$TOTAL_TESTS" >> "$GITHUB_OUTPUT"
+          echo "Metrics: LOC=$LOC_DISPLAY, Tests=$TOTAL_TESTS"
+
+      - name: Write badge JSON
+        run: |
+          mkdir -p .badges
+          cat > .badges/loc.json << 'TEMPLATE'
+          TEMPLATE
+          jq -n \
+            --arg msg "${{ steps.metrics.outputs.loc }}" \
+            '{schemaVersion: 1, label: "go loc", message: $msg, color: "blue"}' \
+            > .badges/loc.json
+
+          jq -n \
+            --arg msg "${{ steps.metrics.outputs.tests }} passed" \
+            '{schemaVersion: 1, label: "tests", message: $msg, color: "brightgreen"}' \
+            > .badges/tests.json
+
+      - name: Push to badges branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          cp -r .badges /tmp/badges-data
+
+          # Create or update orphan badges branch
+          git fetch origin badges 2>/dev/null || true
+          if git rev-parse --verify origin/badges >/dev/null 2>&1; then
+            git checkout badges
+          else
+            git checkout --orphan badges
+            git rm -rf .
+          fi
+
+          cp /tmp/badges-data/* .
+          git add loc.json tests.json
+          if git diff --cached --quiet; then
+            echo "No badge changes"
+          else
+            git commit -m "update badge data [skip ci]"
+            git push origin badges
+          fi

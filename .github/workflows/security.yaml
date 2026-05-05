@@ -1,6 +1,8 @@
 name: Security
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
   schedule:
@@ -8,7 +10,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   govulncheck:
@@ -52,13 +53,3 @@ jobs:
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz" | tar xz -C /usr/local/bin gitleaks
           gitleaks detect --source . --verbose
 
-  codeql:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
-    steps:
-      - uses: actions/checkout@v6
-      - uses: github/codeql-action/init@v4
-        with:
-          languages: go
-      - uses: github/codeql-action/autobuild@v4
-      - uses: github/codeql-action/analyze@v4

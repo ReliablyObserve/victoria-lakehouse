@@ -4,11 +4,13 @@
 [![Security](https://github.com/ReliablyObserve/victoria-lakehouse/actions/workflows/security.yaml/badge.svg?branch=main&event=push)](https://github.com/ReliablyObserve/victoria-lakehouse/actions/workflows/security.yaml)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/ReliablyObserve/victoria-lakehouse)](https://go.dev/)
 [![Release](https://img.shields.io/github/v/release/ReliablyObserve/victoria-lakehouse)](https://github.com/ReliablyObserve/victoria-lakehouse/releases)
-[![Lines of Code](https://img.shields.io/badge/go%20loc-33.5k-blue)](https://github.com/ReliablyObserve/victoria-lakehouse)
-[![Tests](https://img.shields.io/badge/tests-1013%20passed-brightgreen)](#tests)
+[![Lines of Code](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ReliablyObserve/victoria-lakehouse/badges/loc.json)](https://github.com/ReliablyObserve/victoria-lakehouse)
+[![Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ReliablyObserve/victoria-lakehouse/badges/tests.json)](#tests)
 [![License](https://img.shields.io/github/license/ReliablyObserve/victoria-lakehouse)](LICENSE)
 
-**S3-backed cold storage for VictoriaLogs and VictoriaTraces.** Read and write historical observability data as Parquet files on S3, while existing VL/VT clusters handle hot data on EBS.
+**S3-backed cold storage for VictoriaLogs and VictoriaTraces.** Fully compatible with VictoriaLogs and VictoriaTraces APIs — built on upstream VL/VT code with only the storage layer replaced by an S3 Parquet backend. Not a fork, not a copy — a new storage tier that follows VL/VT exactly.
+
+> **100% VL/VT compatible.** Victoria Lakehouse imports VictoriaLogs and VictoriaTraces as Go module dependencies. All HTTP handlers, LogsQL/TraceQL parsers, insert pipelines, and select protocols come directly from upstream VL/VT — unchanged. We add exactly one thing: a Parquet-on-S3 storage layer that replaces the local disk storage. When VictoriaMetrics ships a new release, we `go get -u` and rebuild — zero merge conflicts, zero patches.
 
 - **Drop-in VL/VT storage node.** Register as a `-storageNode` on vlselect/vtselect. Queries spanning hot and cold data work transparently.
 - **Write path with crash recovery.** VL-compatible insert APIs (`/insert/jsonline`, Loki push, ES bulk) buffer data, flush to S3 Parquet, and survive process crashes via WAL.
@@ -87,7 +89,9 @@ For full setup, cluster integration, and deployment patterns, see [Getting Start
 
 ## Architecture
 
-Victoria Lakehouse is a clean-room reimplementation of VL/VT APIs backed by Parquet files on S3. It integrates with vlagent (logs) and OTEL Collector (traces) to mirror data to both hot and cold tiers simultaneously, providing unlimited retention, disaster recovery, and open-format analytics.
+Victoria Lakehouse uses the upstream VictoriaLogs and VictoriaTraces codebase directly — all HTTP handlers, parsers, and protocols are imported as Go module dependencies with zero modifications. The only addition is a Parquet-on-S3 storage backend that replaces VL/VT's local disk storage. This means every VL/VT feature, API, and query capability works identically on the cold tier.
+
+It integrates with vlagent (logs) and OTEL Collector (traces) to mirror data to both hot and cold tiers simultaneously, providing unlimited retention, disaster recovery, and open-format analytics.
 
 ```mermaid
 graph TB

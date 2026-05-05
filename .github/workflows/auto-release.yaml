@@ -11,7 +11,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    if: "!contains(github.event.head_commit.message, '[skip release]') && !contains(github.event.head_commit.message, '[metadata sync]')"
+    if: "!contains(github.event.head_commit.message, '[skip release]')"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -70,13 +70,13 @@ jobs:
       - name: Check for skip conditions
         id: skip
         run: |
-          # Skip if only docs/ci changed
+          # Skip if only non-code files changed (docs, CI, website, release metadata)
           CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
-          if echo "$CHANGED" | grep -vqE "^(docs/|\.github/|README\.md|CHANGELOG\.md)"; then
+          if echo "$CHANGED" | grep -vqE "^(docs/|\.github/|README\.md|CHANGELOG\.md|LICENSE|website/|scripts/ci/|charts/victoria-lakehouse/Chart\.yaml)"; then
             echo "skip=false" >> $GITHUB_OUTPUT
           else
             echo "skip=true" >> $GITHUB_OUTPUT
-            echo "Skipping release: only docs/CI changes"
+            echo "Skipping release: only docs/CI/metadata changes"
           fi
 
       - name: Build binaries
@@ -139,3 +139,51 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           helm push dist/victoria-lakehouse-*.tgz oci://ghcr.io/${OWNER}/charts
+
+      - name: Create release metadata PR
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          VERSION=${{ steps.version.outputs.next }}
+          BRANCH="chore/release-metadata-${VERSION}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+
+          # 1. Chart.yaml is already updated from the package step — stage it
+          git add charts/victoria-lakehouse/Chart.yaml
+
+          # 2. Materialize [Unreleased] → [VERSION] - DATE in CHANGELOG
+          bash scripts/ci/materialize_unreleased.sh "${VERSION#v}"
+          git add CHANGELOG.md
+
+          # 3. Update appVersion in README badge if present
+          sed -i "s/appVersion-[0-9]*\.[0-9]*\.[0-9]*/appVersion-${VERSION#v}/" README.md 2>/dev/null || true
+          git add README.md 2>/dev/null || true
+
+          # Extract release notes for PR body
+          NOTES=$(bash scripts/ci/extract_changelog_section.sh "${VERSION#v}" 2>/dev/null || echo "See CHANGELOG.md")
+
+          git commit -m "chore: release metadata for ${VERSION} [skip release]"
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --title "chore: release metadata for ${VERSION} [skip release]" \
+            --body "$(cat <<EOF
+          ## Release ${VERSION}
+
+          Auto-generated after ${VERSION} release. Updates:
+          - Chart.yaml version and appVersion → ${VERSION#v}
+          - CHANGELOG.md: \`[Unreleased]\` materialized as \`[${VERSION#v}]\`
+          - README.md: version badge updated
+
+          ### Changelog
+
+          ${NOTES}
+          EOF
+          )" \
+            --base main \
+            --head "$BRANCH" \
+            --label "release:patch"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

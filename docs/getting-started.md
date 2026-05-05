@@ -5,7 +5,9 @@ sidebar_position: 1
 
 # Getting Started
 
-Victoria Lakehouse reads and writes cold observability data as Parquet files on S3. It runs as a single binary in either `logs` or `traces` mode, with optional role separation for independent scaling of insert and select workloads.
+Victoria Lakehouse is fully compatible with VictoriaLogs and VictoriaTraces. It imports upstream VL/VT code as Go module dependencies — all HTTP handlers, LogsQL parsers, insert pipelines, and select protocols come directly from VictoriaMetrics with zero modifications. The only addition is a Parquet-on-S3 storage backend that replaces VL/VT's local disk storage.
+
+It runs as a single binary in either `logs` or `traces` mode, with optional role separation for independent scaling of insert and select workloads.
 
 ## Prerequisites
 
