@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-05-05
+
 ### Added
 - `/lakehouse/info` endpoint now includes `build_time` field for operational visibility
 - Traces delete support: mode-aware rewriter uses `schema.TraceRow` for traces mode, `schema.LogRow` for logs mode
