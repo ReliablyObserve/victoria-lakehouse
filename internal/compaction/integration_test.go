@@ -29,7 +29,7 @@ func TestIntegration_FullCompactionCycle(t *testing.T) {
 		}
 		data := makeTestParquet(t, rows)
 		key := fmt.Sprintf("logs/dt=2026-05-02/hour=10/batch-%02d.parquet", i)
-		pool.Upload(context.Background(), key, data)
+		_ = pool.Upload(context.Background(), key, data)
 		m.AddFile("dt=2026-05-02/hour=10", manifest.FileInfo{
 			Key:               key,
 			Size:              int64(len(data)),
@@ -116,7 +116,7 @@ func TestIntegration_L1ToL2(t *testing.T) {
 		}
 		data := makeTestParquet(t, rows)
 		key := fmt.Sprintf("logs/dt=2026-05-02/hour=10/compacted-L1-%02d.parquet", i)
-		pool.Upload(context.Background(), key, data)
+		_ = pool.Upload(context.Background(), key, data)
 		m.AddFile("dt=2026-05-02/hour=10", manifest.FileInfo{
 			Key:               key,
 			Size:              int64(len(data)),
