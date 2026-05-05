@@ -19,10 +19,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
+      pages: write
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -42,18 +44,24 @@ jobs:
         working-directory: website
         run: npm run build
 
-      - name: Deploy to docs/ folder
-        run: |
-          rm -rf docs
-          mkdir -p docs
-          cp -r website/build/* docs/
-          touch docs/.nojekyll
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
 
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: website/build
 
-          if [ -n "$(git status --porcelain)" ]; then
-            git add docs/
-            git commit -m "docs: update website [skip ci]"
-            git push
-          fi
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
