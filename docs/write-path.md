@@ -25,7 +25,6 @@ All VL-compatible insert endpoints are supported:
 | `/insert/jsonline` | NDJSON | Native VL ingest, vlagent |
 | `/insert/loki/api/v1/push` | Loki push protocol | Promtail, Grafana Agent |
 | `/insert/elasticsearch/_bulk` | ES bulk API | Filebeat, Fluentd |
-| `/insert/opentelemetry/v1/logs` | OTLP | OpenTelemetry Collector |
 
 Each endpoint parses the incoming format and converts to internal `LogRows` — the common representation used by the buffer and flush pipeline.
 

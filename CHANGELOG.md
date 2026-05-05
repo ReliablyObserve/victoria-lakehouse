@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs: Docusaurus YAML frontmatter on all 20 documentation pages
 - CI: Changelog enforcement workflow — PRs with releasable changes require `[Unreleased]` entry
 
+### Fixed
+- Docs: Corrected false VL/VT compatibility claims — replaced "imports as Go module dependencies" with accurate "reimplements the VL/VT storage interface" (codebase is 100% clean-room, zero VL/VT Go imports)
+- Docs: Removed non-existent `/insert/opentelemetry/v1/logs` endpoint from write-path documentation
+- Docs: M7 Observability milestone updated from "Planned" to "Complete"
+- Docs: Config count corrected from "65+ flags" to "110+ config options" (verified from code)
+
 ### Changed
 - Docs: All cost tables corrected for 3 AZ replication (VL/VT runs 3 identical clusters, one per AZ)
 - Docs: At 500GB/day 1yr 3 AZ — VL/VT $2,679/mo, Lakehouse $2,814/mo (within 5%), Loki $3,610/mo
