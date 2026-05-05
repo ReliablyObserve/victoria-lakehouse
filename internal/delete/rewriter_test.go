@@ -108,7 +108,7 @@ func TestRewriteFile_MatchingRowsRemoved(t *testing.T) {
 	// Verify new file has correct rows.
 	newData := pool.objects[result.NewKey]
 	reader := parquet.NewGenericReader[schema.LogRow](bytes.NewReader(newData))
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	readRows := make([]schema.LogRow, 10)
 	n, _ := reader.Read(readRows)

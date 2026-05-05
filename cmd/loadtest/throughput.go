@@ -71,7 +71,7 @@ func measureInsertRate(target string, concurrency int, dur time.Duration) float6
 					continue
 				}
 				_, _ = io.Copy(io.Discard, resp.Body)
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				if resp.StatusCode < 300 {
 					totalRows.Add(100)
 				}
@@ -125,7 +125,7 @@ func measureQueryQPS(target string, concurrency int, dur time.Duration) float64 
 					continue
 				}
 				_, _ = io.Copy(io.Discard, resp.Body)
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				totalQueries.Add(1)
 			}
 		}()

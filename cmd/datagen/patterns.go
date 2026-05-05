@@ -111,14 +111,14 @@ func javaStackTrace(rng *rand.Rand, _ time.Time, svc string) (string, map[string
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s: %s\n", exc.class, exc.msg))
+	fmt.Fprintf(&sb, "%s: %s\n", exc.class, exc.msg)
 	depth := 3 + rng.Intn(8)
 	for i := 0; i < depth; i++ {
 		pkg := packages[rng.Intn(len(packages))]
 		line := 10 + rng.Intn(500)
-		sb.WriteString(fmt.Sprintf("\tat %s.process(Unknown Source:%d)\n", pkg, line))
+		fmt.Fprintf(&sb, "\tat %s.process(Unknown Source:%d)\n", pkg, line)
 	}
-	sb.WriteString(fmt.Sprintf("\t... %d more", 5+rng.Intn(20)))
+	fmt.Fprintf(&sb, "\t... %d more", 5+rng.Intn(20))
 
 	attrs := map[string]string{
 		"exception.type":    exc.class,

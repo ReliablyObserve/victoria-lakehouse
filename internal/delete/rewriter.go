@@ -70,7 +70,7 @@ func (r *Rewriter) RewriteFile(ctx context.Context, key string, tombstones []Tom
 
 	// Read all log rows from the Parquet file.
 	reader := parquet.NewGenericReader[schema.LogRow](bytes.NewReader(data))
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	n := int(reader.NumRows())
 	rows := make([]schema.LogRow, n)
