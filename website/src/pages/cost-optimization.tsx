@@ -115,7 +115,7 @@ Query Router:
                 Cost Estimator
               </Link>
               {' '}
-              <Link to="/guides/getting-started/" className="button button--secondary">
+              <Link to="/docs/getting-started/" className="button button--secondary">
                 Get Started
               </Link>
             </section>

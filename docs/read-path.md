@@ -1,8 +1,7 @@
 ---
-id: read-path
 title: Read Path
 ---
 
-# Read Path Architecture
+# Read Path
 
-Documentation for the read path coming soon.
+Documentation coming soon.

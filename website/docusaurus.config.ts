@@ -39,6 +39,7 @@ const config: Config = {
           sidebarPath: './sidebars.ts',
           editUrl: 'https://github.com/ReliablyObserve/victoria-lakehouse/tree/main/',
           showLastUpdateTime: true,
+          exclude: ['superpowers/**'],
         },
         blog: false,
         theme: {
@@ -83,12 +84,12 @@ const config: Config = {
           label: 'Docs',
         },
         {
-          to: '/use-cases/disaster-recovery/',
+          to: '/disaster-recovery/',
           label: 'Use Cases',
           position: 'left',
         },
         {
-          to: '/guides/getting-started/',
+          to: '/docs/getting-started/',
           label: 'Guides',
           position: 'left',
         },
@@ -107,19 +108,19 @@ const config: Config = {
           items: [
             {
               label: 'Disaster Recovery',
-              to: '/use-cases/disaster-recovery/',
+              to: '/disaster-recovery/',
             },
             {
               label: 'Cost Optimization',
-              to: '/use-cases/cost-optimization/',
+              to: '/cost-optimization/',
             },
             {
               label: 'Unlimited Retention',
-              to: '/use-cases/unlimited-retention/',
+              to: '/unlimited-retention/',
             },
             {
               label: 'Analytics & Compliance',
-              to: '/use-cases/analytics-compliance/',
+              to: '/analytics-compliance/',
             },
           ],
         },
@@ -128,15 +129,15 @@ const config: Config = {
           items: [
             {
               label: 'Getting Started',
-              to: '/guides/getting-started/',
+              to: '/docs/getting-started/',
             },
             {
-              label: 'Hot + Cold Architecture',
-              to: '/guides/hot-cold-architecture/',
+              label: 'Architecture',
+              to: '/docs/architecture/',
             },
             {
-              label: 'Kubernetes Deployment',
-              to: '/guides/kubernetes-deployment/',
+              label: 'Operations',
+              to: '/docs/operations/',
             },
           ],
         },

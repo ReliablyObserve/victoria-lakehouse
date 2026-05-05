@@ -98,7 +98,7 @@ Query Path:
 
             <section className="margin-vert--lg">
               <h2>Next Steps</h2>
-              <Link to="/guides/getting-started/" className="button button--primary">
+              <Link to="/docs/getting-started/" className="button button--primary">
                 Get Started
               </Link>
               {' '}

@@ -1,8 +1,7 @@
 ---
-id: benchmarks
 title: Benchmarks
 ---
 
-# Performance Benchmarks
+# Benchmarks
 
-Documentation for benchmarks coming soon.
+Documentation coming soon.

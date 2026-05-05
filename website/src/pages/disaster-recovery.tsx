@@ -77,7 +77,7 @@ vmauth:
               <p>
                 Learn how to set up Victoria Lakehouse for your environment:
               </p>
-              <Link to="/guides/getting-started/" className="button button--primary">
+              <Link to="/docs/getting-started/" className="button button--primary">
                 Getting Started
               </Link>
               {' '}
