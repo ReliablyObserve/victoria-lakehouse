@@ -65,6 +65,17 @@ const config: Config = {
     colorMode: {
       defaultMode: 'light',
       respectPrefersColorScheme: true,
+      disableSwitch: false,
+      switchConfig: {
+        darkIcon: '🌙',
+        darkIconStyle: {
+          marginLeft: '2px',
+        },
+        lightIcon: '☀️',
+        lightIconStyle: {
+          marginLeft: '1px',
+        },
+      },
     },
     navbar: {
       title: 'Victoria Lakehouse',

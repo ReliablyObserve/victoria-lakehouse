@@ -7,6 +7,8 @@
   --ifm-color-primary-lighter: #52b788;
   --ifm-color-primary-lightest: #74c69d;
   --ifm-code-font-size: 95%;
+  color-scheme: light;
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 html[data-theme='dark'] {
@@ -17,6 +19,9 @@ html[data-theme='dark'] {
   --ifm-color-primary-light: #74c69d;
   --ifm-color-primary-lighter: #95d5b2;
   --ifm-color-primary-lightest: #b7e4c7;
+  --ifm-background-color: #0a0a0a;
+  --ifm-background-surface-primary: #1a1a1a;
+  --ifm-text-color-base: #e8e8e8;
 }
 
 .docusaurus-highlight-code-line {
@@ -100,4 +105,23 @@ html[data-theme='dark'] .docusaurus-highlight-code-line {
 html[data-theme='dark'] .cost-metric {
   background: linear-gradient(135deg, rgba(82, 183, 136, 0.1) 0%, rgba(116, 198, 157, 0.1) 100%);
   border-color: var(--ifm-color-primary);
+}
+
+/* Dark mode smooth transitions */
+html[data-theme='dark'] * {
+  transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
+}
+
+/* Navbar theme toggle styling */
+.navbar__toggle {
+  transition: transform 0.2s ease;
+}
+
+.navbar__toggle:hover {
+  transform: scale(1.1);
+}
+
+/* Code blocks dark mode */
+html[data-theme='dark'] .docusaurus-highlight-code-line {
+  background-color: rgba(255, 255, 255, 0.1);
 }
