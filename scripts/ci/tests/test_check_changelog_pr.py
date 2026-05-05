@@ -1,0 +1,138 @@
+import unittest
+
+from scripts.ci.check_changelog_pr import (
+    extract_unreleased_section,
+    has_genuinely_new_unreleased_entries,
+    has_meaningful_changelog_content,
+    is_dependency_only_pr,
+    is_release_metadata_sync,
+    should_require_changelog,
+)
+
+
+class CheckChangelogPRTests(unittest.TestCase):
+    def test_extract_unreleased_section(self):
+        text = """# Changelog
+
+## [Unreleased]
+
+### Features
+
+- add thing
+
+## [0.1.0] - 2026-01-01
+"""
+        self.assertEqual(
+            extract_unreleased_section(text),
+            "### Features\n\n- add thing",
+        )
+
+    def test_has_meaningful_changelog_content(self):
+        self.assertFalse(has_meaningful_changelog_content(""))
+        self.assertFalse(has_meaningful_changelog_content("### Features"))
+        self.assertTrue(has_meaningful_changelog_content("### Features\n\n- add thing"))
+
+    def test_should_require_changelog_for_release_commits(self):
+        self.assertTrue(should_require_changelog(["feat: add delete mode"], ["docs/readme.md"]))
+        self.assertTrue(should_require_changelog(["fix(delete): handle Glacier files"], ["README.md"]))
+
+    def test_should_require_changelog_for_impactful_paths(self):
+        self.assertTrue(should_require_changelog(["test: add coverage"], ["internal/delete/handler.go"]))
+        self.assertTrue(should_require_changelog(["docs: mention thing"], ["go.mod"]))
+
+    def test_should_skip_for_unit_test_only_changes(self):
+        self.assertFalse(
+            should_require_changelog(
+                ["test: add coverage"],
+                ["internal/delete/handler_test.go", "internal/storage/parquets3/storage_test.go"],
+            )
+        )
+
+    def test_should_skip_for_docs_only(self):
+        self.assertFalse(should_require_changelog(["docs: update guide"], ["docs/getting-started.md"]))
+
+    def test_should_require_for_ci_and_deployment_changes(self):
+        self.assertTrue(should_require_changelog(["ci: tune workflow"], [".github/workflows/ci.yaml"]))
+        self.assertTrue(should_require_changelog(["feat: update compose"], ["deployment/docker/docker-compose-e2e.yml"]))
+
+    def test_should_skip_for_changelog_gate_policy_only_changes(self):
+        self.assertFalse(
+            should_require_changelog(
+                ["test: refine changelog gate"],
+                [
+                    "scripts/ci/check_changelog_pr.py",
+                    "scripts/ci/tests/test_check_changelog_pr.py",
+                ],
+            )
+        )
+
+    def test_should_skip_for_website_only_changes(self):
+        self.assertFalse(
+            should_require_changelog(
+                ["feat: update website"],
+                ["website/src/pages/index.tsx", "website/docusaurus.config.ts"],
+            )
+        )
+
+    def test_has_genuinely_new_unreleased_entries_detects_new(self):
+        base_changelog = "## [0.12.0]\n\n- fix: old bug\n"
+        head_unreleased = "- fix: brand new fix\n"
+        self.assertTrue(has_genuinely_new_unreleased_entries(head_unreleased, base_changelog))
+
+    def test_has_genuinely_new_unreleased_entries_rejects_stale_branch(self):
+        base_changelog = (
+            "## [Unreleased]\n\n"
+            "## [0.12.0] - 2026-05-05\n\n"
+            "- feat: cost-aware deletion\n"
+            "- feat: tombstone persistence\n"
+        )
+        head_unreleased = (
+            "### Added\n\n"
+            "- feat: cost-aware deletion\n"
+            "- feat: tombstone persistence\n"
+        )
+        self.assertFalse(has_genuinely_new_unreleased_entries(head_unreleased, base_changelog))
+
+    def test_has_genuinely_new_unreleased_entries_mixed(self):
+        base_changelog = (
+            "## [0.12.0] - 2026-05-05\n\n"
+            "- feat: old feature\n"
+        )
+        head_unreleased = (
+            "- feat: old feature\n"
+            "- feat: traces delete support\n"
+        )
+        self.assertTrue(has_genuinely_new_unreleased_entries(head_unreleased, base_changelog))
+
+    def test_dependency_only_pr_go_modules(self):
+        self.assertTrue(
+            is_dependency_only_pr(
+                ["build(deps): bump github.com/klauspost/compress from 1.18.5 to 1.18.6"],
+                ["go.mod", "go.sum"],
+            )
+        )
+
+    def test_dependency_only_pr_rejects_app_code(self):
+        self.assertFalse(
+            is_dependency_only_pr(
+                ["build(deps): bump X"],
+                ["go.mod", "go.sum", "internal/delete/handler.go"],
+            )
+        )
+
+    def test_dependency_only_pr_rejects_empty(self):
+        self.assertFalse(is_dependency_only_pr([], ["go.mod"]))
+        self.assertFalse(is_dependency_only_pr(["build(deps): bump X"], []))
+
+    def test_release_metadata_sync_detection(self):
+        self.assertTrue(
+            is_release_metadata_sync(
+                ["CHANGELOG.md", "README.md", "charts/victoria-lakehouse/Chart.yaml"]
+            )
+        )
+        self.assertFalse(is_release_metadata_sync(["README.md"]))
+        self.assertFalse(is_release_metadata_sync(["CHANGELOG.md", "internal/delete/handler.go"]))
+
+
+if __name__ == "__main__":
+    unittest.main()
