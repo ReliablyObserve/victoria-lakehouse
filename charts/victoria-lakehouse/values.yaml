@@ -283,4 +283,32 @@ vmauth:
   podLabels: {}
   terminationGracePeriodSeconds: 30
 
+# =============================================================================
+# Compaction configuration
+# =============================================================================
+
+# -- Compaction configuration for background Parquet file compaction
+compaction:
+  # -- Enable the compaction job
+  enabled: false
+  # -- How often to run compaction
+  interval: 5m
+  # -- Maximum number of concurrent compaction workers
+  maxConcurrent: 1
+  # -- Minimum number of L0 files required to trigger compaction
+  minFilesL0: 10
+  # -- Minimum number of L1 files required to trigger compaction
+  minFilesL1: 10
+  # -- Minimum age of files before they are eligible for compaction
+  minAge: 1h
+  # -- Leader election mode: auto, k8s, s3, none
+  # auto selects k8s when running in Kubernetes, s3 otherwise
+  leaderElection: auto
+  # -- Duration for k8s lease lock (k8s leader election only)
+  leaseDuration: 15s
+  # -- TTL for S3 lock object (s3 leader election only)
+  s3LockTTL: 60s
+  # -- Heartbeat interval for S3 lock renewal (s3 leader election only)
+  s3Heartbeat: 15s
+
 extraManifests: []
