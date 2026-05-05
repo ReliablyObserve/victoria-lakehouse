@@ -5,7 +5,7 @@ sidebar_position: 1
 
 # Getting Started
 
-Victoria Lakehouse is fully compatible with VictoriaLogs and VictoriaTraces. It imports upstream VL/VT code as Go module dependencies — all HTTP handlers, LogsQL parsers, insert pipelines, and select protocols come directly from VictoriaMetrics with zero modifications. The only addition is a Parquet-on-S3 storage backend that replaces VL/VT's local disk storage.
+Victoria Lakehouse is 100% API-compatible with VictoriaLogs and VictoriaTraces. It reimplements the VL/VT storage interface with Parquet on S3, exposing identical HTTP endpoints, LogsQL query syntax, insert APIs, and binary DataBlock protocol. It registers as a `-storageNode` on vlselect/vtselect and works transparently alongside existing VL/VT clusters.
 
 It runs as a single binary in either `logs` or `traces` mode, with optional role separation for independent scaling of insert and select workloads.
 
