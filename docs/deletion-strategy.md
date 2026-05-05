@@ -1,5 +1,7 @@
 # Cost-Aware Deletion Strategy
 
+> **Status:** Implemented in v0.10.0. Tombstone store, HTTP handlers (`/delete/logsql/*`), query-time filtering, background rewriter, storage-class-aware scheduler, and verify endpoint are all functional.
+
 ## Problem
 
 Deleting records from Parquet files on S3 is inherently expensive because Parquet is immutable — you must read the file, filter out deleted rows, and write a new file. On S3 Glacier, this means retrieval fees ($0.03-$0.09/GB) plus rewrite costs. At scale, naive deletion of a single log line from a 2-year-old Glacier file could cost more than storing it for another decade.

@@ -100,6 +100,19 @@ lakehouseConfig:
     min_files_l1: 10
     min_age: 1h
     leader_election: auto
+  delete:
+    enabled: true
+    default_mode: auto
+    auto_rewrite_classes:
+      - STANDARD
+    rewrite_delay: 1h
+    rewrite_batch_size: 50
+    rewrite_max_concurrent: 2
+    persist_path: /data/lakehouse/tombstones
+    cost_warning_threshold: 10.0
+    force_glacier_header: X-Force-Glacier-Delete
+    verify_interval: 6h
+    lifecycle_rules: []
 
 select:
   enabled: true
