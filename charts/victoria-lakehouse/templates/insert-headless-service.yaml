@@ -1,19 +1,20 @@
-{{- if .Values.insertComponent.enabled }}
+{{- if and .Values.insertComponent.enabled .Values.insertComponent.headlessService.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "victoria-lakehouse.fullname" . }}-insert
+  name: {{ include "victoria-lakehouse.fullname" . }}-insert-headless
   labels:
     {{- include "victoria-lakehouse.componentLabels" (dict "root" . "component" "insert") | nindent 4 }}
-  {{- with .Values.insertComponent.service.annotations }}
+  {{- with .Values.insertComponent.headlessService.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  type: {{ .Values.insertComponent.service.type }}
+  type: ClusterIP
+  clusterIP: None
   ports:
     - name: http
-      port: {{ default (include "victoria-lakehouse.servicePort" .) .Values.insertComponent.service.port }}
+      port: {{ include "victoria-lakehouse.servicePort" . }}
       targetPort: http
       protocol: TCP
   selector:

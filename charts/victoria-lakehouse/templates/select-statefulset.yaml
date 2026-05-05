@@ -1,81 +1,65 @@
 {{- if .Values.select.enabled }}
-{{- $port := include "victoria-lakehouse.port" (dict "context" . "servicePort" .Values.select.service.port) }}
-{{- $fullname := include "victoria-lakehouse.fullname" . }}
-{{- $component := "select" }}
 apiVersion: apps/v1
-{{- if .Values.select.persistence.enabled }}
 kind: StatefulSet
-{{- else }}
-kind: Deployment
-{{- end }}
 metadata:
-  name: {{ $fullname }}-select
+  name: {{ include "victoria-lakehouse.fullname" . }}-select
   labels:
-    {{- include "victoria-lakehouse.componentLabels" (dict "context" . "component" $component) | nindent 4 }}
-  {{- with .Values.global.commonAnnotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- include "victoria-lakehouse.componentLabels" (dict "root" . "component" "select") | nindent 4 }}
 spec:
   replicas: {{ .Values.select.replicaCount }}
-  {{- if .Values.select.persistence.enabled }}
-  serviceName: {{ $fullname }}-select-headless
-  {{- end }}
+  serviceName: {{ include "victoria-lakehouse.fullname" . }}-select-headless
   selector:
     matchLabels:
-      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" $component) | nindent 6 }}
+      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "root" . "component" "select") | nindent 6 }}
   template:
     metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.select.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       labels:
-        {{- include "victoria-lakehouse.componentSelectorLabels" (dict "context" . "component" $component) | nindent 8 }}
+        {{- include "victoria-lakehouse.componentSelectorLabels" (dict "root" . "component" "select") | nindent 8 }}
         {{- with .Values.select.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.select.podAnnotations }}
-      annotations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
     spec:
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if .Values.select.serviceAccount.create }}
-      serviceAccountName: {{ include "victoria-lakehouse.serviceAccountName" (dict "context" . "component" $component "sa" .Values.select.serviceAccount) }}
-      {{- end }}
-      securityContext:
-        {{- include "victoria-lakehouse.podSecurityContext" (dict "context" . "override" .Values.select.podSecurityContext) | nindent 8 }}
+      serviceAccountName: {{ default (printf "%s-select" (include "victoria-lakehouse.fullname" .)) .Values.select.serviceAccount.name }}
       terminationGracePeriodSeconds: {{ .Values.select.terminationGracePeriodSeconds }}
+      {{- with (include "victoria-lakehouse.podSecurityContext" (dict "component" .Values.select "common" .Values.common)) }}
+      securityContext:
+        {{- . | nindent 8 }}
+      {{- end }}
       {{- with .Values.select.initContainers }}
       initContainers:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
-        - name: lakehouse
-          image: {{ include "victoria-lakehouse.image" (dict "context" . "imageOverride" .Values.select.image) }}
-          imagePullPolicy: {{ include "victoria-lakehouse.imagePullPolicy" (dict "context" . "imageOverride" .Values.select.image) }}
-          securityContext:
-            {{- include "victoria-lakehouse.containerSecurityContext" (dict "context" . "override" .Values.select.securityContext) | nindent 12 }}
+        - name: select
+          image: {{ include "victoria-lakehouse.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
-            - "--lakehouse.mode={{ .Values.mode }}"
+            - "--lakehouse.config=/etc/lakehouse/config.yaml"
             - "--lakehouse.role=select"
-            {{- include "victoria-lakehouse.s3Args" . | nindent 12 }}
-            {{- include "victoria-lakehouse.discoveryArgs" . | nindent 12 }}
-            {{- include "victoria-lakehouse.commonArgs" . | nindent 12 }}
-            {{- if .Values.selectConfig.bufferQueryEnabled }}
-            - "--lakehouse.select.buffer-query-enabled=true"
-            - "--lakehouse.select.buffer-query-timeout={{ .Values.selectConfig.bufferQueryTimeout }}"
-            {{- $insertSvc := .Values.selectConfig.insertHeadlessService }}
-            {{- if and (not $insertSvc) .Values.insertComponent.enabled }}
-            {{- $insertSvc = printf "%s-insert-headless" $fullname }}
-            {{- end }}
-            {{- if $insertSvc }}
-            - "--lakehouse.select.insert-headless-service={{ $insertSvc }}"
-            {{- end }}
-            {{- end }}
             {{- range $key, $val := .Values.select.extraArgs }}
             - "--{{ $key }}={{ $val }}"
             {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ include "victoria-lakehouse.servicePort" . }}
+              protocol: TCP
+          {{- with (include "victoria-lakehouse.securityContext" (dict "component" .Values.select "common" .Values.common)) }}
+          securityContext:
+            {{- . | nindent 12 }}
+          {{- end }}
+          {{- with (include "victoria-lakehouse.resources" (dict "component" .Values.select "common" .Values.common)) }}
+          resources:
+            {{- . | nindent 12 }}
+          {{- end }}
           {{- with .Values.select.extraEnv }}
           env:
             {{- toYaml . | nindent 12 }}
@@ -84,10 +68,15 @@ spec:
           envFrom:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          ports:
-            - name: http
-              containerPort: {{ $port }}
-              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/lakehouse
+              readOnly: true
+            - name: data
+              mountPath: /data/lakehouse
+            {{- with .Values.select.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /health
@@ -97,71 +86,55 @@ spec:
             failureThreshold: {{ .Values.select.probe.liveness.failureThreshold }}
           readinessProbe:
             httpGet:
-              path: /ready
+              path: /health
               port: http
             initialDelaySeconds: {{ .Values.select.probe.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.select.probe.readiness.periodSeconds }}
             failureThreshold: {{ .Values.select.probe.readiness.failureThreshold }}
           startupProbe:
             httpGet:
-              path: /ready
+              path: /health
               port: http
             periodSeconds: {{ .Values.select.probe.startup.periodSeconds }}
             failureThreshold: {{ .Values.select.probe.startup.failureThreshold }}
-          {{- with .Values.select.resources }}
-          resources:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          volumeMounts:
-            - name: cache
-              mountPath: /data/lakehouse
-            {{- with .Values.select.extraVolumeMounts }}
-            {{- toYaml . | nindent 12 }}
-            {{- end }}
         {{- with .Values.select.extraContainers }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- if not .Values.select.persistence.enabled }}
       volumes:
-        - name: cache
-          emptyDir: {}
+        - name: config
+          configMap:
+            name: {{ include "victoria-lakehouse.fullname" . }}-config
         {{- with .Values.select.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- else }}
-      {{- with .Values.select.extraVolumes }}
-      volumes:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- end }}
-      {{- with .Values.select.nodeSelector }}
+      {{- with (include "victoria-lakehouse.nodeSelector" (dict "component" .Values.select "common" .Values.common)) }}
       nodeSelector:
-        {{- toYaml . | nindent 8 }}
+        {{- . | nindent 8 }}
       {{- end }}
-      {{- with .Values.select.tolerations }}
+      {{- with (include "victoria-lakehouse.tolerations" (dict "component" .Values.select "common" .Values.common)) }}
       tolerations:
-        {{- toYaml . | nindent 8 }}
+        {{- . | nindent 8 }}
       {{- end }}
-      {{- with .Values.select.affinity }}
+      {{- with (include "victoria-lakehouse.affinity" (dict "component" .Values.select "common" .Values.common)) }}
       affinity:
-        {{- toYaml . | nindent 8 }}
+        {{- . | nindent 8 }}
       {{- end }}
       {{- with .Values.select.topologySpreadConstraints }}
       topologySpreadConstraints:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if .Values.select.priorityClassName }}
-      priorityClassName: {{ .Values.select.priorityClassName }}
+      {{- with .Values.select.priorityClassName }}
+      priorityClassName: {{ . }}
       {{- end }}
   {{- if .Values.select.persistence.enabled }}
   volumeClaimTemplates:
     - metadata:
-        name: cache
+        name: data
       spec:
         accessModes:
           {{- toYaml .Values.select.persistence.accessModes | nindent 10 }}
-        {{- if .Values.select.persistence.storageClass }}
-        storageClassName: {{ .Values.select.persistence.storageClass }}
+        {{- with .Values.select.persistence.storageClass }}
+        storageClassName: {{ . }}
         {{- end }}
         resources:
           requests:

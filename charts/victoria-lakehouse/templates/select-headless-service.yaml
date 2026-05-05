@@ -1,19 +1,20 @@
-{{- if .Values.select.enabled }}
+{{- if and .Values.select.enabled .Values.select.headlessService.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "victoria-lakehouse.fullname" . }}-select
+  name: {{ include "victoria-lakehouse.fullname" . }}-select-headless
   labels:
     {{- include "victoria-lakehouse.componentLabels" (dict "root" . "component" "select") | nindent 4 }}
-  {{- with .Values.select.service.annotations }}
+  {{- with .Values.select.headlessService.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  type: {{ .Values.select.service.type }}
+  type: ClusterIP
+  clusterIP: None
   ports:
     - name: http
-      port: {{ default (include "victoria-lakehouse.servicePort" .) .Values.select.service.port }}
+      port: {{ include "victoria-lakehouse.servicePort" . }}
       targetPort: http
       protocol: TCP
   selector:
