@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/discovery"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
@@ -39,6 +41,7 @@ type Storage struct {
 	peerHandler  *peercache.Handler
 	writer       *BatchWriter
 	bufferBridge *BufferBridge
+	tombstones   *delete.TombstoneStore
 }
 
 func New(cfg *config.Config, logger *slog.Logger) (*Storage, error) {
@@ -207,6 +210,17 @@ func (s *Storage) RunQuery(ctx context.Context, qctx *storage.QueryContext, writ
 		return nil
 	}
 
+	// Wrap writeBlock to apply tombstone filtering before passing to caller.
+	filteredWriteBlock := writeBlock
+	if s.tombstones != nil {
+		filteredWriteBlock = func(workerID uint, db *storage.DataBlock) {
+			filtered := s.filterTombstonedRows(db, qctx.StartNs, qctx.EndNs)
+			if filtered != nil && filtered.RowsCount > 0 {
+				writeBlock(workerID, filtered)
+			}
+		}
+	}
+
 	files := s.manifest.GetFilesForRange(qctx.StartNs, qctx.EndNs)
 	if len(files) == 0 {
 		return nil
@@ -216,7 +230,7 @@ func (s *Storage) RunQuery(ctx context.Context, qctx *storage.QueryContext, writ
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := s.queryFile(ctx, fi, qctx, writeBlock); err != nil {
+		if err := s.queryFile(ctx, fi, qctx, filteredWriteBlock); err != nil {
 			s.logger.Warn("query file error", "key", fi.Key, "error", err)
 			continue
 		}
@@ -229,7 +243,7 @@ func (s *Storage) RunQuery(ctx context.Context, qctx *storage.QueryContext, writ
 			if len(bufRows) > 0 {
 				db := s.logRowsToDataBlock(bufRows)
 				if db != nil && db.RowsCount > 0 {
-					writeBlock(0, db)
+					filteredWriteBlock(0, db)
 				}
 			}
 		case config.ModeTraces:
@@ -237,7 +251,7 @@ func (s *Storage) RunQuery(ctx context.Context, qctx *storage.QueryContext, writ
 			if len(bufRows) > 0 {
 				db := s.traceRowsToDataBlock(bufRows)
 				if db != nil && db.RowsCount > 0 {
-					writeBlock(0, db)
+					filteredWriteBlock(0, db)
 				}
 			}
 		}
@@ -756,6 +770,103 @@ func (s *Storage) PeerHandler() *peercache.Handler {
 // BufferBridge returns the buffer bridge (nil if not configured).
 func (s *Storage) BufferBridge() *BufferBridge {
 	return s.bufferBridge
+}
+
+// SetTombstoneStore injects a TombstoneStore for query-time row filtering.
+func (s *Storage) SetTombstoneStore(ts *delete.TombstoneStore) {
+	s.tombstones = ts
+}
+
+// TombstoneStore returns the configured TombstoneStore (nil if not set).
+func (s *Storage) TombstoneStore() *delete.TombstoneStore {
+	return s.tombstones
+}
+
+// filterTombstonedRows removes rows from a DataBlock that match any active tombstone
+// in the given time range. Returns nil if all rows are suppressed.
+func (s *Storage) filterTombstonedRows(db *storage.DataBlock, startNs, endNs int64) *storage.DataBlock {
+	if s.tombstones == nil {
+		return db
+	}
+
+	tombstones := s.tombstones.ForRange(startNs, endNs)
+	if len(tombstones) == 0 {
+		return db
+	}
+
+	// Find the timestamp column index
+	tsColIdx := -1
+	for i, col := range db.Columns {
+		if col.Name == "_time" || col.Name == "timestamp_unix_nano" {
+			tsColIdx = i
+			break
+		}
+	}
+
+	// Determine which rows to keep
+	keep := make([]bool, db.RowsCount)
+	keepCount := 0
+
+	for rowIdx := 0; rowIdx < db.RowsCount; rowIdx++ {
+		// Build row map for this row
+		row := make(map[string]string, len(db.Columns))
+		for _, col := range db.Columns {
+			row[col.Name] = col.Values[rowIdx]
+		}
+
+		// Parse timestamp
+		var tsNs int64
+		if tsColIdx >= 0 {
+			tsNs, _ = strconv.ParseInt(db.Columns[tsColIdx].Values[rowIdx], 10, 64)
+		}
+
+		// Check if any tombstone matches this row
+		matched := false
+		for i := range tombstones {
+			if tombstones[i].MatchesRow(row, tsNs) {
+				matched = true
+				break
+			}
+		}
+
+		if !matched {
+			keep[rowIdx] = true
+			keepCount++
+		}
+	}
+
+	suppressed := db.RowsCount - keepCount
+	if suppressed > 0 {
+		metrics.DeleteRowsSuppressed.Add(suppressed)
+	}
+
+	if keepCount == 0 {
+		return nil
+	}
+
+	if keepCount == db.RowsCount {
+		return db
+	}
+
+	// Build new DataBlock with only kept rows
+	newCols := make([]storage.BlockColumn, len(db.Columns))
+	for i, col := range db.Columns {
+		vals := make([]string, 0, keepCount)
+		for rowIdx, v := range col.Values {
+			if keep[rowIdx] {
+				vals = append(vals, v)
+			}
+		}
+		newCols[i] = storage.BlockColumn{
+			Name:   col.Name,
+			Values: vals,
+		}
+	}
+
+	return &storage.DataBlock{
+		RowsCount: keepCount,
+		Columns:   newCols,
+	}
 }
 
 // Pool returns the S3 client pool.

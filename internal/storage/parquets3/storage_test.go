@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/discovery"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -1490,4 +1492,320 @@ func TestBufferBridge_Accessor(t *testing.T) {
 	if s.BufferBridge() != bb {
 		t.Error("BufferBridge() did not return the assigned bridge")
 	}
+}
+
+// --- Tombstone filtering tests ---
+
+func TestTombstone_SetterGetter(t *testing.T) {
+	s := testStorage()
+	if s.TombstoneStore() != nil {
+		t.Error("expected nil tombstone store initially")
+	}
+
+	ts := delete.NewTombstoneStore()
+	s.SetTombstoneStore(ts)
+	if s.TombstoneStore() != ts {
+		t.Error("TombstoneStore() did not return the set store")
+	}
+}
+
+func TestTombstone_NoTombstones_AllRowsPassThrough(t *testing.T) {
+	dir := t.TempDir()
+
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	rows := []logRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "hello world", SeverityText: "INFO", ServiceName: "api-gw"},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "second msg", SeverityText: "WARN", ServiceName: "worker"},
+		{TimestampUnixNano: now.Add(2 * time.Second).UnixNano(), Body: "third msg", SeverityText: "ERROR", ServiceName: "api-gw"},
+	}
+	path := writeTestParquet(t, dir, rows)
+	info, _ := os.Stat(path)
+
+	s := testStorage()
+	// No tombstone store set — all rows should pass through.
+
+	var blocks []*storage.DataBlock
+	err := s.queryLocalFile(path, info.Size(), &storage.QueryContext{
+		StartNs: now.Add(-time.Minute).UnixNano(),
+		EndNs:   now.Add(time.Minute).UnixNano(),
+	}, func(_ uint, db *storage.DataBlock) {
+		blocks = append(blocks, db)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	totalRows := 0
+	for _, b := range blocks {
+		totalRows += b.RowsCount
+	}
+	if totalRows != 3 {
+		t.Errorf("without tombstones expected 3 rows, got %d", totalRows)
+	}
+}
+
+func TestTombstone_MatchingRowsSuppressed(t *testing.T) {
+	dir := t.TempDir()
+
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	rows := []logRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "hello world", SeverityText: "INFO", ServiceName: "api-gw"},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "secret data", SeverityText: "WARN", ServiceName: "worker"},
+		{TimestampUnixNano: now.Add(2 * time.Second).UnixNano(), Body: "third msg", SeverityText: "ERROR", ServiceName: "api-gw"},
+	}
+	path := writeTestParquet(t, dir, rows)
+	info, _ := os.Stat(path)
+
+	s := testStorage()
+
+	// Set up tombstone that matches service.name="worker"
+	ts := delete.NewTombstoneStore()
+	ts.Add(delete.Tombstone{
+		ID:      "ts-1",
+		Query:   `service.name:="worker"`,
+		StartNs: now.Add(-time.Minute).UnixNano(),
+		EndNs:   now.Add(time.Minute).UnixNano(),
+	})
+	s.SetTombstoneStore(ts)
+
+	var blocks []*storage.DataBlock
+	qctx := &storage.QueryContext{
+		StartNs: now.Add(-time.Minute).UnixNano(),
+		EndNs:   now.Add(time.Minute).UnixNano(),
+	}
+
+	// Use filterTombstonedRows directly since queryLocalFile doesn't go through RunQuery's wrapper
+	err := s.queryLocalFile(path, info.Size(), qctx, func(_ uint, db *storage.DataBlock) {
+		filtered := s.filterTombstonedRows(db, qctx.StartNs, qctx.EndNs)
+		if filtered != nil && filtered.RowsCount > 0 {
+			blocks = append(blocks, filtered)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	totalRows := 0
+	for _, b := range blocks {
+		totalRows += b.RowsCount
+	}
+	if totalRows != 2 {
+		t.Errorf("expected 2 rows after tombstone suppression (worker row removed), got %d", totalRows)
+	}
+
+	// Verify remaining rows are the api-gw ones
+	for _, b := range blocks {
+		for _, col := range b.Columns {
+			if col.Name == "service.name" {
+				for _, v := range col.Values {
+					if v == "worker" {
+						t.Error("worker row should have been suppressed by tombstone")
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestTombstone_PartialMatch_OnlyMatchingRowsSuppressed(t *testing.T) {
+	s := testStorage()
+
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+
+	// Create a DataBlock directly
+	db := &storage.DataBlock{
+		RowsCount: 4,
+		Columns: []storage.BlockColumn{
+			{Name: "_time", Values: []string{
+				fmt.Sprintf("%d", now.UnixNano()),
+				fmt.Sprintf("%d", now.Add(time.Second).UnixNano()),
+				fmt.Sprintf("%d", now.Add(2*time.Second).UnixNano()),
+				fmt.Sprintf("%d", now.Add(3*time.Second).UnixNano()),
+			}},
+			{Name: "service.name", Values: []string{"api-gw", "worker", "api-gw", "worker"}},
+			{Name: "_msg", Values: []string{"msg1", "msg2", "msg3", "msg4"}},
+		},
+	}
+
+	// Tombstone matches worker service
+	ts := delete.NewTombstoneStore()
+	ts.Add(delete.Tombstone{
+		ID:      "ts-partial",
+		Query:   `service.name:="worker"`,
+		StartNs: now.Add(-time.Minute).UnixNano(),
+		EndNs:   now.Add(time.Minute).UnixNano(),
+	})
+	s.SetTombstoneStore(ts)
+
+	filtered := s.filterTombstonedRows(db, now.Add(-time.Minute).UnixNano(), now.Add(time.Minute).UnixNano())
+
+	if filtered == nil {
+		t.Fatal("expected non-nil result (partial match)")
+	}
+	if filtered.RowsCount != 2 {
+		t.Errorf("expected 2 remaining rows, got %d", filtered.RowsCount)
+	}
+
+	// Verify remaining are api-gw
+	for _, col := range filtered.Columns {
+		if col.Name == "service.name" {
+			for i, v := range col.Values {
+				if v != "api-gw" {
+					t.Errorf("row %d: expected api-gw, got %s", i, v)
+				}
+			}
+		}
+	}
+}
+
+func TestTombstone_AllRowsSuppressed_ReturnsNil(t *testing.T) {
+	s := testStorage()
+
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+
+	db := &storage.DataBlock{
+		RowsCount: 2,
+		Columns: []storage.BlockColumn{
+			{Name: "_time", Values: []string{
+				fmt.Sprintf("%d", now.UnixNano()),
+				fmt.Sprintf("%d", now.Add(time.Second).UnixNano()),
+			}},
+			{Name: "service.name", Values: []string{"worker", "worker"}},
+			{Name: "_msg", Values: []string{"msg1", "msg2"}},
+		},
+	}
+
+	// Tombstone matches all rows
+	ts := delete.NewTombstoneStore()
+	ts.Add(delete.Tombstone{
+		ID:      "ts-all",
+		Query:   `service.name:="worker"`,
+		StartNs: now.Add(-time.Minute).UnixNano(),
+		EndNs:   now.Add(time.Minute).UnixNano(),
+	})
+	s.SetTombstoneStore(ts)
+
+	filtered := s.filterTombstonedRows(db, now.Add(-time.Minute).UnixNano(), now.Add(time.Minute).UnixNano())
+
+	if filtered != nil {
+		t.Errorf("expected nil when all rows suppressed, got %+v", filtered)
+	}
+}
+
+func TestTombstone_NilStore_PassThrough(t *testing.T) {
+	s := testStorage()
+	// tombstones is nil by default
+
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	db := &storage.DataBlock{
+		RowsCount: 1,
+		Columns: []storage.BlockColumn{
+			{Name: "_time", Values: []string{fmt.Sprintf("%d", now.UnixNano())}},
+			{Name: "_msg", Values: []string{"hello"}},
+		},
+	}
+
+	filtered := s.filterTombstonedRows(db, now.Add(-time.Minute).UnixNano(), now.Add(time.Minute).UnixNano())
+	if filtered != db {
+		t.Error("with nil tombstone store, should return original DataBlock pointer")
+	}
+}
+
+func TestTombstone_EmptyForRange_PassThrough(t *testing.T) {
+	s := testStorage()
+
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	db := &storage.DataBlock{
+		RowsCount: 1,
+		Columns: []storage.BlockColumn{
+			{Name: "_time", Values: []string{fmt.Sprintf("%d", now.UnixNano())}},
+			{Name: "_msg", Values: []string{"hello"}},
+		},
+	}
+
+	// Tombstone outside the query range
+	ts := delete.NewTombstoneStore()
+	ts.Add(delete.Tombstone{
+		ID:      "ts-outside",
+		Query:   "*",
+		StartNs: now.Add(time.Hour).UnixNano(),
+		EndNs:   now.Add(2 * time.Hour).UnixNano(),
+	})
+	s.SetTombstoneStore(ts)
+
+	filtered := s.filterTombstonedRows(db, now.Add(-time.Minute).UnixNano(), now.Add(time.Minute).UnixNano())
+	if filtered != db {
+		t.Error("with no matching tombstones in range, should return original DataBlock pointer")
+	}
+}
+
+func TestTombstone_RunQuery_Integration(t *testing.T) {
+	dir := t.TempDir()
+
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	rows := []logRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "keep me", SeverityText: "INFO", ServiceName: "api-gw"},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "delete me", SeverityText: "ERROR", ServiceName: "worker"},
+	}
+	path := writeTestParquet(t, dir, rows)
+	info, _ := os.Stat(path)
+
+	s := testStorage()
+
+	// Add file to manifest so RunQuery finds it
+	s.manifest.AddFile("dt=2026-05-02/hour=10", manifest.FileInfo{Key: path, Size: info.Size()})
+
+	// Override getFileData to read from local path
+	s.memCache.Put(path, mustReadFile(t, path))
+
+	// Set up tombstone
+	ts := delete.NewTombstoneStore()
+	ts.Add(delete.Tombstone{
+		ID:      "ts-integration",
+		Query:   `service.name:="worker"`,
+		StartNs: now.Add(-time.Minute).UnixNano(),
+		EndNs:   now.Add(time.Minute).UnixNano(),
+	})
+	s.SetTombstoneStore(ts)
+
+	var blocks []*storage.DataBlock
+	err := s.RunQuery(context.Background(), &storage.QueryContext{
+		StartNs: now.Add(-time.Minute).UnixNano(),
+		EndNs:   now.Add(time.Minute).UnixNano(),
+	}, func(_ uint, db *storage.DataBlock) {
+		blocks = append(blocks, db)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	totalRows := 0
+	for _, b := range blocks {
+		totalRows += b.RowsCount
+	}
+	if totalRows != 1 {
+		t.Errorf("expected 1 row after tombstone filtering in RunQuery, got %d", totalRows)
+	}
+
+	// Verify the kept row is api-gw
+	for _, b := range blocks {
+		for _, col := range b.Columns {
+			if col.Name == "service.name" {
+				for _, v := range col.Values {
+					if v == "worker" {
+						t.Error("worker row should have been filtered by tombstone in RunQuery")
+					}
+				}
+			}
+		}
+	}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
