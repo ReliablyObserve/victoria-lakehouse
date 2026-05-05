@@ -11,7 +11,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    if: "!contains(github.event.head_commit.message, '[skip release]') && !contains(github.event.head_commit.message, '[metadata sync]')"
+    if: "!contains(github.event.head_commit.message, '[skip release]')"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -70,13 +70,13 @@ jobs:
       - name: Check for skip conditions
         id: skip
         run: |
-          # Skip if only docs/ci changed
+          # Skip if only non-code files changed (docs, CI, website, release metadata)
           CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
-          if echo "$CHANGED" | grep -vqE "^(docs/|\.github/|README\.md|CHANGELOG\.md)"; then
+          if echo "$CHANGED" | grep -vqE "^(docs/|\.github/|README\.md|CHANGELOG\.md|LICENSE|website/|scripts/ci/|charts/victoria-lakehouse/Chart\.yaml)"; then
             echo "skip=false" >> $GITHUB_OUTPUT
           else
             echo "skip=true" >> $GITHUB_OUTPUT
-            echo "Skipping release: only docs/CI changes"
+            echo "Skipping release: only docs/CI/metadata changes"
           fi
 
       - name: Build binaries
