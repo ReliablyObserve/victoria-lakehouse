@@ -195,6 +195,78 @@ The lock TTL (`--lakehouse.compaction.s3-lock-ttl`, default 60s) controls when a
 
 This is expected for `none` mode. Only use `none` for single-instance deployments. For fleets, use `auto`, `k8s`, or `s3`.
 
+## Deletion Operations
+
+### Tombstone Management
+
+Tombstones are persisted to disk and S3. On startup, the store loads from disk first, then syncs from S3 for cluster-wide consistency.
+
+**Key metrics:**
+- `lakehouse_delete_tombstones_active` — active tombstones in memory
+- `lakehouse_delete_tombstones_total` — lifetime tombstones created
+- `lakehouse_delete_rows_suppressed_total` — rows filtered at query time
+- `lakehouse_delete_rewrite_total` — physical rewrites completed
+- `lakehouse_delete_rewrite_skipped_glacier_total` — rewrites skipped due to storage class
+
+**Configuration:**
+
+```yaml
+lakehouse:
+  delete:
+    enabled: true
+    default_mode: auto
+    auto_rewrite_classes: [STANDARD]
+    rewrite_delay: 1h
+    rewrite_batch_size: 50
+    rewrite_max_concurrent: 2
+    persist_path: /data/lakehouse/tombstones
+    cost_warning_threshold: 10.0
+    verify_interval: 6h
+    lifecycle_rules: []
+```
+
+### Background Rewriter
+
+The rewriter processes tombstones with mode `permanent` or `auto` against S3 Standard files:
+
+1. Scans active tombstones past `rewrite_delay`
+2. Checks file storage class (HeadObject or lifecycle prediction)
+3. Skips non-Standard files (Glacier, IA) — tombstone-only suppression
+4. Downloads, filters rows, rewrites, uploads replacement, updates manifest
+5. Marks tombstone as reaped once all affected files are processed
+
+**Rewriter is mode-aware**: uses `schema.LogRow` for logs mode, `schema.TraceRow` for traces mode.
+
+### Un-Delete (Restoring Data)
+
+Remove a tombstone to restore data visibility:
+
+```bash
+curl -X DELETE http://lakehouse:9428/delete/logsql/tombstone/{id}
+```
+
+If the file has not been physically rewritten yet, the original data becomes visible again immediately. If already rewritten, the rows are permanently gone.
+
+### Cost Estimation Before Delete
+
+Always estimate before large deletes:
+
+```bash
+curl -X POST 'http://lakehouse:9428/delete/logsql/estimate?query=service.name:="leaked"&start=2025-01-01&end=2025-06-01'
+```
+
+Response includes per-storage-class file counts and estimated rewrite costs. Use `mode=hide` to avoid any physical rewrites if cost is too high.
+
+### Verify Endpoint
+
+After deletion, verify data is suppressed:
+
+```bash
+curl -X POST 'http://lakehouse:9428/delete/logsql/verify?query=service.name:="leaked"&start=2025-01-01&end=2025-06-01'
+```
+
+Normal mode (default): runs the query through the normal read path — if results are empty, deletion is working. Deep mode (`mode=deep`): scans affected files directly for compliance auditing.
+
 ## Troubleshooting
 
 ### Queries return empty when data exists

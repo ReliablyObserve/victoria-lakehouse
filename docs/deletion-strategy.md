@@ -1,6 +1,6 @@
 # Cost-Aware Deletion Strategy
 
-> **Status:** Implemented in v0.10.0. Tombstone store, HTTP handlers (`/delete/logsql/*`), query-time filtering, background rewriter, storage-class-aware scheduler, and verify endpoint are all functional.
+> **Status:** Implemented in v0.10.0 (logs) and v0.11.0 (traces). Tombstone store, HTTP handlers (`/delete/logsql/*` for logs, `/delete/tracessql/*` for traces), query-time filtering, mode-aware background rewriter, storage-class-aware scheduler, and verify endpoint are all functional.
 
 
 ## Problem
@@ -194,6 +194,54 @@ Tombstone-based deletion **satisfies GDPR right to erasure** requirements becaus
 | GDPR compliance | Immediate tombstone + audit trail | Manual stream deletion | Manual trace deletion |
 | Un-delete | Remove tombstone | Not possible | Not possible |
 | Delete cost estimation | Built-in API | N/A | N/A |
+
+## Traces Delete Support
+
+The same three-tier deletion strategy applies to traces (`--lakehouse.mode=traces`):
+
+### API Surface (Traces)
+
+```
+POST /delete/tracessql/delete?query=<LogsQL>&start=<ts>&end=<ts>&mode=hide|permanent|auto
+POST /delete/tracessql/estimate?query=<LogsQL>&start=<ts>&end=<ts>
+GET  /delete/tracessql/tombstones
+GET  /delete/tracessql/tombstone/{id}
+DELETE /delete/tracessql/tombstone/{id}
+POST /delete/tracessql/verify?query=<LogsQL>&start=<ts>&end=<ts>
+```
+
+### Trace Field Matching
+
+Tombstone queries match against trace span fields:
+
+| Query Pattern | Matches Against |
+|---|---|
+| `service.name:="payment-service"` | TraceRow.ServiceName |
+| `trace_id:="abc123"` | TraceRow.TraceID |
+| `span.name:="HTTP GET"` | TraceRow.SpanName |
+| `status.code:="ERROR"` | TraceRow.StatusCode (as string) |
+| `k8s.namespace.name:="prod"` | TraceRow.K8sNamespaceName |
+| `http.method:="POST"` | TraceRow.Attributes["http.method"] |
+| `*` or empty | All rows in time range |
+
+The `body` field in wildcard/fallback queries maps to `SpanName` for traces (vs `Body` for logs).
+
+### Mode-Aware Rewriter
+
+The background rewriter is mode-aware:
+- **Logs mode**: reads/writes `schema.LogRow` Parquet files, filters via `logRowToMap`
+- **Traces mode**: reads/writes `schema.TraceRow` Parquet files, filters via `traceRowToMap`
+
+Both modes share the same scheduler, storage-class detection, and tombstone store — only the Parquet row type and field mapping differ.
+
+### Cross-Signal Deletion
+
+To delete data matching across both logs and traces (e.g., GDPR erasure of a user's activity):
+
+1. Issue delete to logs: `POST /delete/logsql/delete?query=user_id:="user-123"&start=...&end=...`
+2. Issue delete to traces: `POST /delete/tracessql/delete?query=user_id:="user-123"&start=...&end=...`
+
+Each operates independently on its respective Parquet files. Both share the same tombstone store if running in `all` mode.
 
 ## Implementation Notes
 

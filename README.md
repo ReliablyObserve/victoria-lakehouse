@@ -4,8 +4,8 @@
 [![Security](https://github.com/ReliablyObserve/victoria-lakehouse/actions/workflows/security.yaml/badge.svg?branch=main&event=push)](https://github.com/ReliablyObserve/victoria-lakehouse/actions/workflows/security.yaml)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/ReliablyObserve/victoria-lakehouse)](https://go.dev/)
 [![Release](https://img.shields.io/github/v/release/ReliablyObserve/victoria-lakehouse)](https://github.com/ReliablyObserve/victoria-lakehouse/releases)
-[![Lines of Code](https://img.shields.io/badge/go%20loc-24.2k-blue)](https://github.com/ReliablyObserve/victoria-lakehouse)
-[![Tests](https://img.shields.io/badge/tests-876%20passed-brightgreen)](#tests)
+[![Lines of Code](https://img.shields.io/badge/go%20loc-33.5k-blue)](https://github.com/ReliablyObserve/victoria-lakehouse)
+[![Tests](https://img.shields.io/badge/tests-1013%20passed-brightgreen)](#tests)
 [![License](https://img.shields.io/github/license/ReliablyObserve/victoria-lakehouse)](LICENSE)
 
 **S3-backed cold storage for VictoriaLogs and VictoriaTraces.** Read and write historical observability data as Parquet files on S3, while existing VL/VT clusters handle hot data on EBS.
@@ -16,6 +16,7 @@
 - **60-96% cost reduction.** S3 is 3-6x cheaper than EBS per GB. At 1 PB/month with multi-AZ, hybrid deployments save $3-9.5M/year compared to all-EBS.
 - **Sub-millisecond fast path.** Queries within the hot tier's range get an immediate empty response via the partition manifest. Zero S3 I/O.
 - **Disaster recovery.** When the hot cluster is down (outage, upgrade, migration), lakehouse serves all data from S3 — slower but always available.
+- **Cost-aware deletion.** VL-compatible delete APIs with tombstone-based soft delete. Three modes: `hide` (instant, $0), `permanent` (physical removal), `auto` (smart). Glacier-safe — never triggers retrieval fees.
 - **Open Parquet files.** DuckDB, Trino, Spark, and ClickHouse read the same files directly for analytics, compliance, and ML.
 
 ---
@@ -264,6 +265,16 @@ Single binary, two modes, three roles:
 - **Correlated prefetch**: log query warms trace Parquet for same time+service, and vice versa.
 - **Read-ahead**: sequential time scans prefetch next partitions.
 
+### Deletion
+- **Three-tier strategy**: tombstone (instant, $0) → selective rewrite (S3 Standard only) → lifecycle expiry (Glacier/IA).
+- **VL-compatible APIs**: `/delete/logsql/*` for logs, `/delete/tracessql/*` for traces — same query syntax.
+- **Three modes**: `hide` (tombstone only, never rewrites), `permanent` (physical removal), `auto` (smart default).
+- **Cost estimation**: `/delete/logsql/estimate` returns per-storage-class cost breakdown before executing.
+- **Verification**: `/delete/logsql/verify` confirms tombstoned data is invisible (normal mode) or physically deleted (deep mode).
+- **Un-delete**: remove a tombstone to restore data visibility instantly.
+- **Glacier-safe**: never triggers retrieval fees. Tombstone suppresses reads; data ages out via lifecycle.
+- **GDPR compliant**: immediate inaccessibility satisfies right-to-erasure. Optional physical delete for strict compliance.
+
 ### Infrastructure
 - **Metadata persistence**: manifest, label index, and cache survive restarts.
 - **Distributed peer cache**: consistent hash routing across fleet instances via headless DNS.
@@ -387,6 +398,7 @@ See [Performance](docs/performance.md).
 | M8-Phase A: Write Durability | Complete | WAL crash recovery, insert APIs, adaptive flush, buffer query bridge, manifest labels |
 | M9: Compaction | Complete | Background merge, size-tiered strategy, manifest updates |
 | M10: Testing & Helm | Complete | E2E overhaul (VL + vlselect + loki-vl-proxy), benchmarks, Victoria-pattern Helm chart, upstream sync GHA |
+| M11: Cost-Aware Deletion | Complete | Tombstone store, `/delete/logsql/*` + `/delete/tracessql/*` APIs, query-time filtering, background rewriter, storage-class detection, verify endpoint |
 | M7: Observability | Planned | Metrics instrumentation, Grafana dashboards, alerting rules |
 
 ---
