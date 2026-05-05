@@ -45,7 +45,7 @@ func httpGet(t *testing.T, baseURL, path string, params url.Values) *http.Respon
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		t.Fatalf("GET %s returned status %d: %s", u, resp.StatusCode, string(body))
 	}
 
@@ -56,7 +56,7 @@ func httpGet(t *testing.T, baseURL, path string, params url.Values) *http.Respon
 func httpGetBody(t *testing.T, baseURL, path string, params url.Values) []byte {
 	t.Helper()
 	resp := httpGet(t, baseURL, path, params)
-	defer resp.Body.Close()
+	defer _ = resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -88,7 +88,7 @@ func httpGetAllowStatus(t *testing.T, baseURL, path string, params url.Values, a
 	}
 
 	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	t.Fatalf("GET %s returned unexpected status %d (allowed: %v): %s", u, resp.StatusCode, allowedStatuses, string(body))
 	return nil
 }
@@ -124,7 +124,7 @@ func waitForHealth(t *testing.T, baseURL string, timeout time.Duration) {
 	for time.Now().Before(deadline) {
 		resp, err := client.Get(baseURL + "/health")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return
 			}

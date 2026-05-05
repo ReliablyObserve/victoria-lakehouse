@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.10.0] — 2026-05-05
 
 ### Added
+- Cost-aware deletion: VL-compatible `/delete/logsql/*` APIs with tombstone-based soft delete
+- Three delete modes: `hide` (tombstone only), `permanent` (physical removal), `auto` (smart default)
+- Tombstone query-time filtering across all query paths (zero-cost data suppression)
+- Background rewriter for S3 Standard files with storage-class gating (never touches Glacier/IA)
+- S3 storage class detection with lifecycle rule prediction (zero-cost age-based)
+- Cost estimation endpoint (`/delete/logsql/estimate`) with per-class breakdown
+- Delete verification endpoint (`/delete/logsql/verify`) for compliance auditing
+- Un-delete support (remove tombstone to restore data visibility)
+- Tombstone persistence to disk + S3 (survives full cluster recreation)
 - E2E: VictoriaLogs hot tier, multi-level vlselect, loki-vl-proxy in Docker Compose
 - E2E: Internal Docker networking (only Grafana on port 3003)
 - E2E: Loki proxy integration tests, vlselect multi-level tests, performance assertion tests

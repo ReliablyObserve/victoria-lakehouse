@@ -117,3 +117,17 @@ var (
 	ElectionTransitionsTotal  = NewCounter("lakehouse_election_transitions_total")
 	ElectionHealthChecksTotal = NewCounterVec("lakehouse_election_health_checks_total", "result")
 )
+
+// Delete metrics
+var (
+	DeleteTombstonesActive      = NewGauge("lakehouse_delete_tombstones_active")
+	DeleteTombstonesTotal       = NewCounter("lakehouse_delete_tombstones_total")
+	DeleteRewriteTotal          = NewCounter("lakehouse_delete_rewrite_total")
+	DeleteRewriteErrors         = NewCounter("lakehouse_delete_rewrite_errors_total")
+	DeleteRewriteBytesSaved     = NewCounter("lakehouse_delete_rewrite_bytes_saved_total")
+	DeleteRewriteSkippedGlacier = NewCounter("lakehouse_delete_rewrite_skipped_glacier_total")
+	DeleteRowsSuppressed        = NewCounter("lakehouse_delete_rows_suppressed_total")
+	DeleteCompactionRowsRemoved = NewCounter("lakehouse_delete_compaction_rows_removed_total")
+	DeleteVerifyTotal           = NewCounter("lakehouse_delete_verify_total")
+	DeleteVerifyLeakDetected    = NewCounter("lakehouse_delete_verify_leak_detected_total")
+)

@@ -1003,6 +1003,44 @@ func TestMergeConfig_SchemaFields(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_DeleteConfig(t *testing.T) {
+	cfg := Default()
+
+	if !cfg.Delete.Enabled {
+		t.Error("default Delete.Enabled should be true")
+	}
+	if cfg.Delete.DefaultMode != "auto" {
+		t.Errorf("default Delete.DefaultMode = %q, want %q", cfg.Delete.DefaultMode, "auto")
+	}
+	if len(cfg.Delete.AutoRewriteClasses) != 1 || cfg.Delete.AutoRewriteClasses[0] != "STANDARD" {
+		t.Errorf("default Delete.AutoRewriteClasses = %v, want [STANDARD]", cfg.Delete.AutoRewriteClasses)
+	}
+	if cfg.Delete.RewriteDelay != time.Hour {
+		t.Errorf("default Delete.RewriteDelay = %v, want 1h", cfg.Delete.RewriteDelay)
+	}
+	if cfg.Delete.RewriteBatchSize != 50 {
+		t.Errorf("default Delete.RewriteBatchSize = %d, want 50", cfg.Delete.RewriteBatchSize)
+	}
+	if cfg.Delete.RewriteMaxConcurrent != 2 {
+		t.Errorf("default Delete.RewriteMaxConcurrent = %d, want 2", cfg.Delete.RewriteMaxConcurrent)
+	}
+	if cfg.Delete.PersistPath != "/data/lakehouse/tombstones" {
+		t.Errorf("default Delete.PersistPath = %q, want %q", cfg.Delete.PersistPath, "/data/lakehouse/tombstones")
+	}
+	if cfg.Delete.CostWarningThreshold != 10.0 {
+		t.Errorf("default Delete.CostWarningThreshold = %f, want 10.0", cfg.Delete.CostWarningThreshold)
+	}
+	if cfg.Delete.ForceGlacierHeader != "X-Force-Glacier-Delete" {
+		t.Errorf("default Delete.ForceGlacierHeader = %q, want %q", cfg.Delete.ForceGlacierHeader, "X-Force-Glacier-Delete")
+	}
+	if cfg.Delete.VerifyInterval != 6*time.Hour {
+		t.Errorf("default Delete.VerifyInterval = %v, want 6h", cfg.Delete.VerifyInterval)
+	}
+	if cfg.Delete.LifecycleRules != nil {
+		t.Errorf("default Delete.LifecycleRules should be nil, got %v", cfg.Delete.LifecycleRules)
+	}
+}
+
 func TestMergeConfig_EmptySchemaPreservesBase(t *testing.T) {
 	base := Default()
 	base.Schema.ExtraPromoted = []ExtraPromotedColumn{
