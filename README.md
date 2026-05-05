@@ -398,7 +398,10 @@ See [Performance](docs/performance.md).
 | M8-Phase A: Write Durability | Complete | WAL crash recovery, insert APIs, adaptive flush, buffer query bridge, manifest labels |
 | M9: Compaction | Complete | Background merge, size-tiered strategy, manifest updates |
 | M10: Testing & Helm | Complete | E2E overhaul (VL + vlselect + loki-vl-proxy), benchmarks, Victoria-pattern Helm chart, upstream sync GHA |
+<<<<<<< HEAD
+=======
 | M11: Cost-Aware Deletion | Complete | Tombstone store, `/delete/logsql/*` + `/delete/tracessql/*` APIs, query-time filtering, background rewriter, storage-class detection, verify endpoint |
+>>>>>>> origin/main
 | M7: Observability | Planned | Metrics instrumentation, Grafana dashboards, alerting rules |
 
 ---
