@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Docs: All ASCII text diagrams converted to Mermaid across write-path, use-cases, cost-comparison, architecture, and deletion-strategy
+- Docs: Deletion strategy updated to show both logs (`/delete/logsql/*`) and traces (`/delete/tracessql/*`) endpoints side by side
+
 ## [0.14.0] - 2026-05-05
 
 ### Added
@@ -24,8 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs: Config count corrected from "65+ flags" to "110+ config options" (verified from code)
 
 ### Changed
-- Docs: All ASCII text diagrams converted to Mermaid across write-path, use-cases, cost-comparison, architecture, and deletion-strategy
-- Docs: Deletion strategy updated to show both logs (`/delete/logsql/*`) and traces (`/delete/tracessql/*`) endpoints side by side
 - Docs: All cost tables corrected for 3 AZ replication (VL/VT runs 3 identical clusters, one per AZ)
 - Docs: At 500GB/day 1yr 3 AZ — VL/VT $2,679/mo, Lakehouse $2,814/mo (within 5%), Loki $3,610/mo
 - Docs: Compute scaled to 6× per component (3 AZ), storage × 3 for EBS, break-even and cumulative projections updated
