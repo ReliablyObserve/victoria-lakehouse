@@ -1318,8 +1318,5 @@ func isPrintable(b []byte) bool {
 }
 
 func safeUint64ToInt(v uint64) int {
-	if v > uint64(math.MaxInt) {
-		return math.MaxInt
-	}
-	return int(v)
+	return int(min(v, uint64(math.MaxInt))) //nolint:gosec // overflow guarded by min
 }
