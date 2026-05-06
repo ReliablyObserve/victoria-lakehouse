@@ -4,25 +4,25 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 )
 
 type PeerCache struct {
 	ring       *Ring
 	authKey    string
 	httpClient *http.Client
-	logger     *slog.Logger
 
 	hits   atomic.Uint64
 	misses atomic.Uint64
 	errors atomic.Uint64
 }
 
-func New(selfAddr, authKey string, timeout time.Duration, maxConns int, logger *slog.Logger) *PeerCache {
+func New(selfAddr, authKey string, timeout time.Duration, maxConns int) *PeerCache {
 	transport := &http.Transport{
 		MaxIdleConnsPerHost: maxConns,
 		IdleConnTimeout:     90 * time.Second,
@@ -34,7 +34,6 @@ func New(selfAddr, authKey string, timeout time.Duration, maxConns int, logger *
 			Timeout:   timeout,
 			Transport: transport,
 		},
-		logger: logger.With("component", "peercache"),
 	}
 }
 
@@ -42,7 +41,7 @@ func (pc *PeerCache) UpdatePeers(peers []string) {
 	old := pc.ring.MemberCount()
 	pc.ring.Set(peers)
 	if pc.ring.MemberCount() != old {
-		pc.logger.Info("peer ring updated", "members", pc.ring.MemberCount(), "peers", peers)
+		logger.Infof("peer ring updated; members=%d, peers=%v", pc.ring.MemberCount(), peers)
 	}
 }
 

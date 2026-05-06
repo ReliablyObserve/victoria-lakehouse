@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -54,14 +52,13 @@ func newTestSetup(t *testing.T, lifecycleRules []LifecycleRule) *testSetup {
 	manifest := &mockManifest{}
 	detector := NewStorageClassDetector(lifecycleRules)
 	rewriter := NewRewriter(pool, "logs/", 10000, "logs")
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	cfg := &config.DeleteConfig{
 		Enabled:     true,
 		DefaultMode: "auto",
 	}
 
-	handler := NewHandler(store, manifest, detector, cfg, logger, "logs")
+	handler := NewHandler(store, manifest, detector, cfg, "logs")
 
 	scheduler := NewRewriteScheduler(RewriteSchedulerConfig{
 		Store:          store,
@@ -70,7 +67,6 @@ func newTestSetup(t *testing.T, lifecycleRules []LifecycleRule) *testSetup {
 		RewriteDelay:   0, // no delay for tests
 		AllowedClasses: []string{"STANDARD"},
 		MaxConcurrent:  1,
-		Logger:         logger,
 	})
 
 	mux := http.NewServeMux()
@@ -539,8 +535,7 @@ func TestIntegration_TraceDelete_FullRoundTrip(t *testing.T) {
 	}
 
 	detector := NewStorageClassDetector(nil)
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	handler := NewHandler(store, manifest, detector, cfg, logger, "traces")
+	handler := NewHandler(store, manifest, detector, cfg, "traces")
 
 	// Create tombstone via API
 	mux := http.NewServeMux()

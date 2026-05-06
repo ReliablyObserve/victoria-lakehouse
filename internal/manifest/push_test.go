@@ -2,8 +2,6 @@ package manifest
 
 import (
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -41,7 +39,6 @@ func TestPusher_NotifiesAllPeers(t *testing.T) {
 		GetPeers:   peers,
 		AuthSecret: "test-secret",
 		SelfAddr:   "10.0.0.99:9428",
-		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 
 	added := []FileInfo{{Key: "logs/dt=2026-05-02/hour=10/new.parquet", Size: 1000}}
@@ -71,7 +68,6 @@ func TestPusher_SkipsSelf(t *testing.T) {
 		GetPeers:   func() []string { return []string{selfAddr} },
 		AuthSecret: "",
 		SelfAddr:   selfAddr,
-		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 
 	p.Notify([]FileInfo{{Key: "test"}}, nil)
@@ -95,7 +91,6 @@ func TestPusher_AuthHeader(t *testing.T) {
 		GetPeers:   func() []string { return []string{srv.Listener.Addr().String()} },
 		AuthSecret: "my-secret",
 		SelfAddr:   "10.0.0.99:9428",
-		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 
 	p.Notify([]FileInfo{{Key: "test"}}, nil)

@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-type LogPattern func(rng *rand.Rand, ts time.Time, svc string) (body string, attrs map[string]string)
+type LogPattern func(rng *rand.Rand, ts time.Time, svc string, lvl string) (body string, attrs map[string]string)
 
 var logPatterns = []LogPattern{
 	jsonAccessLog,
@@ -21,7 +21,7 @@ func pickPattern(rng *rand.Rand) LogPattern {
 	return logPatterns[rng.Intn(len(logPatterns))]
 }
 
-func jsonAccessLog(rng *rand.Rand, ts time.Time, svc string) (string, map[string]string) {
+func jsonAccessLog(rng *rand.Rand, ts time.Time, svc string, _ string) (string, map[string]string) {
 	method := httpMethods[rng.Intn(len(httpMethods))]
 	path := []string{"/api/v1/users", "/api/v1/orders", "/api/v1/products", "/api/v1/health", "/api/v2/search"}[rng.Intn(5)]
 	status := []int{200, 200, 200, 201, 204, 400, 401, 404, 500}[rng.Intn(9)]
@@ -40,8 +40,7 @@ func jsonAccessLog(rng *rand.Rand, ts time.Time, svc string) (string, map[string
 	return body, attrs
 }
 
-func logfmtLog(rng *rand.Rand, ts time.Time, svc string) (string, map[string]string) {
-	lvl := levels[rng.Intn(len(levels))]
+func logfmtLog(rng *rand.Rand, ts time.Time, svc string, lvl string) (string, map[string]string) {
 	components := []string{"http", "grpc", "db", "cache", "queue"}
 	component := components[rng.Intn(len(components))]
 	msgs := []string{
@@ -62,7 +61,7 @@ func logfmtLog(rng *rand.Rand, ts time.Time, svc string) (string, map[string]str
 	return body, attrs
 }
 
-func nginxCombinedLog(rng *rand.Rand, ts time.Time, _ string) (string, map[string]string) {
+func nginxCombinedLog(rng *rand.Rand, ts time.Time, _ string, _ string) (string, map[string]string) {
 	ips := []string{"10.0.1.42", "10.0.2.17", "192.168.1.100", "172.16.0.55", "10.1.2.33"}
 	ip := ips[rng.Intn(len(ips))]
 	method := httpMethods[rng.Intn(len(httpMethods))]
@@ -88,7 +87,7 @@ func nginxCombinedLog(rng *rand.Rand, ts time.Time, _ string) (string, map[strin
 	return body, attrs
 }
 
-func javaStackTrace(rng *rand.Rand, _ time.Time, svc string) (string, map[string]string) {
+func javaStackTrace(rng *rand.Rand, _ time.Time, svc string, _ string) (string, map[string]string) {
 	exceptions := []struct {
 		class string
 		msg   string
@@ -128,8 +127,7 @@ func javaStackTrace(rng *rand.Rand, _ time.Time, svc string) (string, map[string
 	return sb.String(), attrs
 }
 
-func otelLog(rng *rand.Rand, ts time.Time, svc string) (string, map[string]string) {
-	lvl := levels[rng.Intn(len(levels))]
+func otelLog(rng *rand.Rand, ts time.Time, svc string, lvl string) (string, map[string]string) {
 	msgs := []string{
 		"Span started for incoming request",
 		"Exporting batch of spans",

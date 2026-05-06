@@ -25,7 +25,7 @@ func TestParseSizeBytes_EdgeCases(t *testing.T) {
 		{"just suffix", "MB", 0, true},
 		{"just B", "B", 0, true},
 		{"negative", "-1GB", -1 * 1024 * 1024 * 1024, false},
-		{"float truncated", "1.5GB", 1 * 1024 * 1024 * 1024, false},
+		{"float value", "1.5GB", 3 * 1024 * 1024 * 1024 / 2, false},
 		{"garbage", "xyz", 0, true},
 		{"empty", "", 0, false},
 		{"only spaces", "   ", 0, true},

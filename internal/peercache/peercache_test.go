@@ -2,17 +2,11 @@ package peercache
 
 import (
 	"context"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 )
-
-func testLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
 
 func TestPeerCache_Fetch_Hit(t *testing.T) {
 	handler := NewHandler("")
@@ -21,7 +15,7 @@ func TestPeerCache_Fetch_Hit(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	pc := New("self:9428", "", 5*time.Second, 10, testLogger())
+	pc := New("self:9428", "", 5*time.Second, 10)
 
 	data, found, err := pc.Fetch(context.Background(), srv.Listener.Addr().String(), "test-key")
 	if err != nil {
@@ -45,7 +39,7 @@ func TestPeerCache_Fetch_Miss(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	pc := New("self:9428", "", 5*time.Second, 10, testLogger())
+	pc := New("self:9428", "", 5*time.Second, 10)
 
 	_, found, err := pc.Fetch(context.Background(), srv.Listener.Addr().String(), "missing-key")
 	if err != nil {
@@ -68,7 +62,7 @@ func TestPeerCache_Fetch_WithAuth(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	pc := New("self:9428", "secret-key", 5*time.Second, 10, testLogger())
+	pc := New("self:9428", "secret-key", 5*time.Second, 10)
 	data, found, err := pc.Fetch(context.Background(), srv.Listener.Addr().String(), "k")
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +79,7 @@ func TestPeerCache_Fetch_AuthRejected(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	pc := New("self:9428", "wrong-key", 5*time.Second, 10, testLogger())
+	pc := New("self:9428", "wrong-key", 5*time.Second, 10)
 	_, _, err := pc.Fetch(context.Background(), srv.Listener.Addr().String(), "k")
 	if err == nil {
 		t.Error("expected error for wrong auth key")
@@ -99,7 +93,7 @@ func TestPeerCache_Has(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	pc := New("self:9428", "", 5*time.Second, 10, testLogger())
+	pc := New("self:9428", "", 5*time.Second, 10)
 
 	ok, err := pc.Has(context.Background(), srv.Listener.Addr().String(), "exists")
 	if err != nil {
@@ -119,7 +113,7 @@ func TestPeerCache_Has(t *testing.T) {
 }
 
 func TestPeerCache_UpdatePeers(t *testing.T) {
-	pc := New("self:9428", "", 5*time.Second, 10, testLogger())
+	pc := New("self:9428", "", 5*time.Second, 10)
 	pc.UpdatePeers([]string{"a:1", "b:1", "c:1"})
 
 	stats := pc.Stats()
@@ -134,7 +128,7 @@ func TestPeerCache_UpdatePeers(t *testing.T) {
 }
 
 func TestPeerCache_Lookup(t *testing.T) {
-	pc := New("self:9428", "", 5*time.Second, 10, testLogger())
+	pc := New("self:9428", "", 5*time.Second, 10)
 	pc.UpdatePeers([]string{"self:9428", "peer-1:9428"})
 
 	peer, isLocal := pc.Lookup("some-key")

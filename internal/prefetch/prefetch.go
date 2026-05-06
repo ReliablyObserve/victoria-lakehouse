@@ -2,10 +2,11 @@ package prefetch
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 )
 
 type Type int
@@ -46,7 +47,6 @@ type Engine struct {
 	active        atomic.Int32
 	closed        bool
 	fetchFn       FetchFunc
-	logger        *slog.Logger
 	ctx           context.Context
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
@@ -59,13 +59,12 @@ type Engine struct {
 	usefulKeys sync.Map
 }
 
-func NewEngine(maxConcurrent, maxQueue int, fetchFn FetchFunc, logger *slog.Logger) *Engine {
+func NewEngine(maxConcurrent, maxQueue int, fetchFn FetchFunc) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Engine{
 		maxQueue:      maxQueue,
 		maxConcurrent: maxConcurrent,
 		fetchFn:       fetchFn,
-		logger:        logger.With("component", "prefetch"),
 		ctx:           ctx,
 		cancel:        cancel,
 	}
@@ -176,13 +175,13 @@ func (e *Engine) processTask(task Task) {
 		e.errors.Add(1)
 		e.usefulKeys.Delete(task.Key)
 		if e.ctx.Err() == nil {
-			e.logger.Debug("prefetch failed", "key", task.Key, "type", task.Type, "error", err)
+			logger.Infof("prefetch failed; key=%s, type=%v, error=%s", task.Key, task.Type, err)
 		}
 		return
 	}
 
 	e.completed.Add(1)
-	e.logger.Debug("prefetch complete", "key", task.Key, "type", task.Type)
+	logger.Infof("prefetch complete; key=%s, type=%v", task.Key, task.Type)
 }
 
 func (e *Engine) QueueLen() int {

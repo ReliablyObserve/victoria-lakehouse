@@ -14,7 +14,7 @@ func TestEngine_Race_MaxGoroutines(t *testing.T) {
 	e := NewEngine(8, 100, func(_ context.Context, _ string) error {
 		time.Sleep(time.Microsecond)
 		return nil
-	}, testLogger())
+	})
 	defer e.Close()
 
 	const goroutines = 500
@@ -61,7 +61,7 @@ func TestEngine_Race_EnqueueAndClose(t *testing.T) {
 		e := NewEngine(4, 50, func(_ context.Context, _ string) error {
 			time.Sleep(time.Microsecond)
 			return nil
-		}, testLogger())
+		})
 
 		var wg sync.WaitGroup
 		wg.Add(2)
@@ -86,7 +86,7 @@ func TestEngine_Race_EnqueueAndClose(t *testing.T) {
 func TestEngine_Race_StatsUnderLoad(t *testing.T) {
 	e := NewEngine(4, 100, func(_ context.Context, _ string) error {
 		return nil
-	}, testLogger())
+	})
 	defer e.Close()
 
 	const goroutines = 100
@@ -121,7 +121,7 @@ func TestEngine_Race_StatsUnderLoad(t *testing.T) {
 func BenchmarkEngine_EnqueueParallel(b *testing.B) {
 	e := NewEngine(8, 1000, func(_ context.Context, _ string) error {
 		return nil
-	}, testLogger())
+	})
 	defer e.Close()
 
 	b.ReportAllocs()
@@ -138,7 +138,7 @@ func BenchmarkEngine_EnqueueParallel(b *testing.B) {
 func BenchmarkEngine_Stats(b *testing.B) {
 	e := NewEngine(4, 100, func(_ context.Context, _ string) error {
 		return nil
-	}, testLogger())
+	})
 	defer e.Close()
 
 	b.ReportAllocs()
@@ -151,7 +151,7 @@ func BenchmarkEngine_Stats(b *testing.B) {
 func BenchmarkEngine_MarkUseful(b *testing.B) {
 	e := NewEngine(4, 100, func(_ context.Context, _ string) error {
 		return nil
-	}, testLogger())
+	})
 	defer e.Close()
 
 	for i := 0; i < 1000; i++ {

@@ -7,8 +7,7 @@ import (
 )
 
 func BenchmarkHasDataForRange(b *testing.B) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	for d := 0; d < 365; d++ {
 		for h := 0; h < 24; h++ {
@@ -29,8 +28,7 @@ func BenchmarkHasDataForRange(b *testing.B) {
 }
 
 func BenchmarkGetFilesForRange_1Hour(b *testing.B) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	for d := 0; d < 30; d++ {
 		for h := 0; h < 24; h++ {
@@ -51,8 +49,7 @@ func BenchmarkGetFilesForRange_1Hour(b *testing.B) {
 }
 
 func BenchmarkGetFilesForRange_24Hours(b *testing.B) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	for d := 0; d < 30; d++ {
 		for h := 0; h < 24; h++ {
@@ -73,8 +70,7 @@ func BenchmarkGetFilesForRange_24Hours(b *testing.B) {
 }
 
 func BenchmarkAddFile(b *testing.B) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	b.ReportAllocs()
 	b.ResetTimer()

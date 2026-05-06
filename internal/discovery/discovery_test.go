@@ -3,8 +3,6 @@ package discovery
 import (
 	"context"
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -12,12 +10,8 @@ import (
 	"time"
 )
 
-func testLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
-
 func TestDiscoverStorageNodes_Static(t *testing.T) {
-	d := New("", []string{"node1:9428", "node2:9428"}, "", "", 5*time.Second, testLogger())
+	d := New("", []string{"node1:9428", "node2:9428"}, "", "", "9428", 5*time.Second)
 
 	nodes, err := d.DiscoverStorageNodes(context.Background())
 	if err != nil {
@@ -32,7 +26,7 @@ func TestDiscoverStorageNodes_Static(t *testing.T) {
 }
 
 func TestDiscoverStorageNodes_NoConfig(t *testing.T) {
-	d := New("", nil, "", "", 5*time.Second, testLogger())
+	d := New("", nil, "", "", "9428", 5*time.Second)
 
 	nodes, err := d.DiscoverStorageNodes(context.Background())
 	if err != nil {
@@ -44,7 +38,7 @@ func TestDiscoverStorageNodes_NoConfig(t *testing.T) {
 }
 
 func TestDiscoverStorageNodes_HeadlessSRV(t *testing.T) {
-	d := New("vlstorage.monitoring.svc.cluster.local", nil, "", "", 5*time.Second, testLogger(),
+	d := New("vlstorage.monitoring.svc.cluster.local", nil, "", "", "9428", 5*time.Second,
 		WithLookupSRV(func(_ context.Context, _, _, _ string) (string, []*net.SRV, error) {
 			return "", []*net.SRV{
 				{Target: "vlstorage-0.monitoring.svc.cluster.local.", Port: 9428},
@@ -66,7 +60,7 @@ func TestDiscoverStorageNodes_HeadlessSRV(t *testing.T) {
 }
 
 func TestDiscoverStorageNodes_HeadlessHostLookup(t *testing.T) {
-	d := New("vlstorage.monitoring.svc.cluster.local", nil, "", "", 5*time.Second, testLogger(),
+	d := New("vlstorage.monitoring.svc.cluster.local", nil, "", "", "9428", 5*time.Second,
 		WithLookupSRV(func(_ context.Context, _, _, _ string) (string, []*net.SRV, error) {
 			return "", nil, &net.DNSError{Err: "no such host"}
 		}),
@@ -88,7 +82,7 @@ func TestDiscoverStorageNodes_HeadlessHostLookup(t *testing.T) {
 }
 
 func TestDiscoverStorageNodes_HeadlessWithPort(t *testing.T) {
-	d := New("vlstorage.monitoring.svc.cluster.local:10428", nil, "", "", 5*time.Second, testLogger(),
+	d := New("vlstorage.monitoring.svc.cluster.local:10428", nil, "", "", "9428", 5*time.Second,
 		WithLookupSRV(func(_ context.Context, _, _, _ string) (string, []*net.SRV, error) {
 			return "", nil, &net.DNSError{Err: "no such host"}
 		}),
@@ -110,7 +104,7 @@ func TestDiscoverStorageNodes_HeadlessWithPort(t *testing.T) {
 }
 
 func TestDiscoverPeers(t *testing.T) {
-	d := New("", nil, "", "lakehouse.monitoring.svc.cluster.local", 5*time.Second, testLogger(),
+	d := New("", nil, "", "lakehouse.monitoring.svc.cluster.local", "9428", 5*time.Second,
 		WithLookupSRV(func(_ context.Context, _, _, _ string) (string, []*net.SRV, error) {
 			return "", []*net.SRV{
 				{Target: "lakehouse-0.monitoring.svc.cluster.local.", Port: 9428},
@@ -130,7 +124,7 @@ func TestDiscoverPeers(t *testing.T) {
 }
 
 func TestDiscoverPeers_NoPeerService(t *testing.T) {
-	d := New("", nil, "", "", 5*time.Second, testLogger())
+	d := New("", nil, "", "", "9428", 5*time.Second)
 
 	peers, err := d.DiscoverPeers(context.Background())
 	if err != nil {
@@ -153,7 +147,7 @@ func TestPollPartitionList(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New("", []string{srv.Listener.Addr().String()}, "", "", 5*time.Second, testLogger())
+	d := New("", []string{srv.Listener.Addr().String()}, "", "", "9428", 5*time.Second)
 
 	if _, err := d.DiscoverStorageNodes(context.Background()); err != nil {
 		t.Fatal(err)
@@ -193,7 +187,7 @@ func TestPollPartitionList_WithAuthKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New("", []string{srv.Listener.Addr().String()}, "test-secret", "", 5*time.Second, testLogger())
+	d := New("", []string{srv.Listener.Addr().String()}, "test-secret", "", "9428", 5*time.Second)
 	if _, err := d.DiscoverStorageNodes(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +201,7 @@ func TestPollPartitionList_WithAuthKey(t *testing.T) {
 }
 
 func TestPollPartitionList_NoNodes(t *testing.T) {
-	d := New("", nil, "", "", 5*time.Second, testLogger())
+	d := New("", nil, "", "", "9428", 5*time.Second)
 
 	boundary, err := d.PollPartitionList(context.Background())
 	if err != nil {
@@ -224,7 +218,7 @@ func TestPollPartitionList_NodeError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New("", []string{srv.Listener.Addr().String()}, "", "", 5*time.Second, testLogger())
+	d := New("", []string{srv.Listener.Addr().String()}, "", "", "9428", 5*time.Second)
 	if _, err := d.DiscoverStorageNodes(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +247,7 @@ func TestPollPartitionList_MultipleNodes(t *testing.T) {
 	}))
 	defer srv2.Close()
 
-	d := New("", []string{srv1.Listener.Addr().String(), srv2.Listener.Addr().String()}, "", "", 5*time.Second, testLogger())
+	d := New("", []string{srv1.Listener.Addr().String(), srv2.Listener.Addr().String()}, "", "", "9428", 5*time.Second)
 	if _, err := d.DiscoverStorageNodes(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -274,14 +268,14 @@ func TestPollPartitionList_MultipleNodes(t *testing.T) {
 }
 
 func TestGetHotBoundary(t *testing.T) {
-	d := New("", nil, "", "", 5*time.Second, testLogger())
+	d := New("", nil, "", "", "9428", 5*time.Second)
 	if d.GetHotBoundary() != nil {
 		t.Error("expected nil boundary initially")
 	}
 }
 
 func TestGetStorageNodes(t *testing.T) {
-	d := New("", []string{"a:1", "b:2"}, "", "", 5*time.Second, testLogger())
+	d := New("", []string{"a:1", "b:2"}, "", "", "9428", 5*time.Second)
 	if _, err := d.DiscoverStorageNodes(context.Background()); err != nil {
 		t.Fatal(err)
 	}

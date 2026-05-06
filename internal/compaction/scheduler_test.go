@@ -3,8 +3,6 @@ package compaction
 import (
 	"context"
 	"fmt"
-	"log/slog"
-	"os"
 	"testing"
 	"time"
 
@@ -20,9 +18,8 @@ func (s *staticLeader) Start(_ context.Context) {}
 func (s *staticLeader) Stop()                   {}
 
 func TestScheduler_SkipsWhenNotLeader(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	pool := newMockPool()
-	m := manifest.New("test-bucket", "logs/", logger)
+	m := manifest.New("test-bucket", "logs/")
 	sentinel := NewSentinel(pool, time.Hour)
 	policy := NewLevelPolicy(10, 20, 0)
 
@@ -51,7 +48,6 @@ func TestScheduler_SkipsWhenNotLeader(t *testing.T) {
 		MaxConcurrent:    2,
 		RowGroupSize:     1000,
 		CompressionLevel: 3,
-		Logger:           logger,
 	})
 
 	n, err := sched.Scan(context.Background())
@@ -70,9 +66,8 @@ func TestScheduler_SkipsWhenNotLeader(t *testing.T) {
 }
 
 func TestScheduler_CompactsEligiblePartition(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	pool := newMockPool()
-	m := manifest.New("test-bucket", "logs/", logger)
+	m := manifest.New("test-bucket", "logs/")
 	sentinel := NewSentinel(pool, time.Hour)
 	// MinFilesL0=10, so 12 L0 files qualifies.
 	policy := NewLevelPolicy(10, 20, 0)
@@ -119,7 +114,6 @@ func TestScheduler_CompactsEligiblePartition(t *testing.T) {
 		MaxConcurrent:    2,
 		RowGroupSize:     1000,
 		CompressionLevel: 3,
-		Logger:           logger,
 		OnCompacted: func(added []manifest.FileInfo, removed []string) {
 			callbackCalled = true
 		},

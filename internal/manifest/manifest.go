@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"path"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -60,15 +60,13 @@ type Manifest struct {
 	lastRefresh time.Time
 	prefix      string
 	bucket      string
-	logger      *slog.Logger
 }
 
-func New(bucket, prefix string, logger *slog.Logger) *Manifest {
+func New(bucket, prefix string) *Manifest {
 	return &Manifest{
 		files:  make(map[string][]FileInfo),
 		prefix: prefix,
 		bucket: bucket,
-		logger: logger.With("component", "manifest"),
 	}
 }
 
@@ -131,13 +129,7 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	m.lastRefresh = time.Now()
 	m.mu.Unlock()
 
-	m.logger.Info("manifest refreshed",
-		"partitions", len(files),
-		"files", totalFiles,
-		"bytes", totalBytes,
-		"min_time", minT,
-		"max_time", maxT,
-	)
+	logger.Infof("manifest refreshed; partitions=%d, files=%d, bytes=%d, min_time=%v, max_time=%v", len(files), totalFiles, totalBytes, minT, maxT)
 
 	return nil
 }
@@ -341,7 +333,7 @@ func (m *Manifest) SaveTo(path string) error {
 		return fmt.Errorf("rename manifest: %w", err)
 	}
 
-	m.logger.Debug("manifest saved", "path", path, "files", snap.TotalFiles_, "bytes", len(data))
+	logger.Infof("manifest saved; path=%s, files=%d, bytes=%d", path, snap.TotalFiles_, len(data))
 	return nil
 }
 
@@ -371,12 +363,7 @@ func (m *Manifest) LoadFrom(path string) error {
 	}
 	m.mu.Unlock()
 
-	m.logger.Info("manifest loaded from disk",
-		"path", path,
-		"files", snap.TotalFiles_,
-		"bytes", snap.TotalBytes_,
-		"saved_at", snap.SavedAt,
-	)
+	logger.Infof("manifest loaded from disk; path=%s, files=%d, bytes=%d, saved_at=%v", path, snap.TotalFiles_, snap.TotalBytes_, snap.SavedAt)
 	return nil
 }
 

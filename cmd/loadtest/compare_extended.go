@@ -35,6 +35,8 @@ type ExtResult struct {
 	P95Ms      float64 `json:"p95_ms"`
 	P99Ms      float64 `json:"p99_ms"`
 	Iterations int     `json:"iterations"`
+	HasData    bool    `json:"has_data"`
+	AvgBytes   int     `json:"avg_response_bytes,omitempty"`
 }
 
 type ExtCompareReport struct {
@@ -45,13 +47,17 @@ type ExtCompareReport struct {
 }
 
 type ExtCompareRow struct {
-	Scenario string  `json:"scenario"`
-	Category string  `json:"category"`
-	Range    string  `json:"range"`
-	LHP95    float64 `json:"lh_s3_p95_ms"`
-	VLP95    float64 `json:"vl_ebs_p95_ms"`
-	Ratio    float64 `json:"ratio"`
-	Winner   string  `json:"winner"`
+	Scenario  string  `json:"scenario"`
+	Category  string  `json:"category"`
+	Range     string  `json:"range"`
+	LHP95     float64 `json:"lh_s3_p95_ms"`
+	VLP95     float64 `json:"vl_ebs_p95_ms"`
+	Ratio     float64 `json:"ratio"`
+	Winner    string  `json:"winner"`
+	LHHasData bool    `json:"lh_has_data"`
+	VLHasData bool    `json:"vl_has_data"`
+	LHAvgKB   float64 `json:"lh_avg_kb,omitempty"`
+	VLAvgKB   float64 `json:"vl_avg_kb,omitempty"`
 }
 
 func buildExtScenarios() []ExtScenario {
@@ -308,8 +314,38 @@ func runExtCompare(cfg ExtCompareConfig) ExtCompareReport {
 
 	client := &http.Client{Timeout: 60 * time.Second}
 
-	fmt.Printf("\n  %-35s %12s %12s %8s %8s\n", "Scenario", "VLH S3 p95", "VL EBS p95", "Ratio", "Winner")
-	fmt.Println("  " + strings.Repeat("-", 80))
+	// Data verification preamble
+	fmt.Println("\n  [DATA VERIFICATION]")
+	now := time.Now()
+	for _, label := range []string{"1h", "4h", "24h", "48h"} {
+		var dur time.Duration
+		switch label {
+		case "1h":
+			dur = 1 * time.Hour
+		case "4h":
+			dur = 4 * time.Hour
+		case "24h":
+			dur = 24 * time.Hour
+		case "48h":
+			dur = 48 * time.Hour
+		}
+		s := now.Add(-dur)
+		lhBody, _ := httpGetBody(client, fmt.Sprintf("%s/select/logsql/stats_query?query=*&start=%d&end=%d",
+			cfg.LakehouseURL, s.UnixNano(), now.UnixNano()))
+		vlBody, _ := httpGetBody(client, fmt.Sprintf("%s/select/logsql/stats_query?query=%s&start=%d&end=%d",
+			cfg.VLURL, url.QueryEscape("* | stats count() rows"), s.UnixNano(), now.UnixNano()))
+		lhCount := parseStatsCount(lhBody)
+		vlCount := parseStatsCount(vlBody)
+		ratio := "-"
+		if lhCount > 0 {
+			ratio = fmt.Sprintf("%.1fx", float64(vlCount)/float64(lhCount))
+		}
+		fmt.Printf("    %4s:  LH=%6d rows  VL=%6d rows  (VL/LH=%s)\n", label, lhCount, vlCount, ratio)
+	}
+	fmt.Println()
+
+	fmt.Printf("\n  %-35s %12s %12s %8s %10s %6s %6s\n", "Scenario", "VLH S3 p95", "VL EBS p95", "Ratio", "Winner", "LH KB", "VL KB")
+	fmt.Println("  " + strings.Repeat("-", 96))
 
 	prevCategory := ""
 	for _, sc := range scenarios {
@@ -326,24 +362,36 @@ func runExtCompare(cfg ExtCompareConfig) ExtCompareReport {
 
 		// Measure LH
 		var lhLats []float64
+		var lhTotalBytes int64
 		for i := 0; i < cfg.Iterations; i++ {
-			lat := measureRequest(client, sc.LHURLFn(cfg.LakehouseURL))
-			if lat >= 0 {
-				lhLats = append(lhLats, lat)
+			m := measureRequestFull(client, sc.LHURLFn(cfg.LakehouseURL))
+			if m.latencyMs >= 0 {
+				lhLats = append(lhLats, m.latencyMs)
+				lhTotalBytes += m.bodyBytes
 			}
 		}
 
 		// Measure VL
 		var vlLats []float64
+		var vlTotalBytes int64
 		for i := 0; i < cfg.Iterations; i++ {
-			lat := measureRequest(client, sc.VLURLFn(cfg.VLURL))
-			if lat >= 0 {
-				vlLats = append(vlLats, lat)
+			m := measureRequestFull(client, sc.VLURLFn(cfg.VLURL))
+			if m.latencyMs >= 0 {
+				vlLats = append(vlLats, m.latencyMs)
+				vlTotalBytes += m.bodyBytes
 			}
 		}
 
 		lhR := buildExtResult(sc, lhLats)
 		vlR := buildExtResult(sc, vlLats)
+		if len(lhLats) > 0 {
+			lhR.HasData = lhTotalBytes/int64(len(lhLats)) > 10
+			lhR.AvgBytes = int(lhTotalBytes / int64(len(lhLats)))
+		}
+		if len(vlLats) > 0 {
+			vlR.HasData = vlTotalBytes/int64(len(vlLats)) > 10
+			vlR.AvgBytes = int(vlTotalBytes / int64(len(vlLats)))
+		}
 		report.LHResults = append(report.LHResults, lhR)
 		report.VLResults = append(report.VLResults, vlR)
 
@@ -351,7 +399,13 @@ func runExtCompare(cfg ExtCompareConfig) ExtCompareReport {
 		winner := "-"
 		if vlR.P95Ms > 0 && lhR.P95Ms > 0 {
 			ratio = lhR.P95Ms / vlR.P95Ms
-			if ratio < 0.8 {
+			if !lhR.HasData && vlR.HasData {
+				winner = "VLH*EMPTY"
+			} else if lhR.HasData && !vlR.HasData {
+				winner = "VL*EMPTY"
+			} else if !lhR.HasData && !vlR.HasData {
+				winner = "BOTH*EMPTY"
+			} else if ratio < 0.8 {
 				winner = "VLH"
 			} else if ratio > 1.2 {
 				winner = "VL"
@@ -360,13 +414,22 @@ func runExtCompare(cfg ExtCompareConfig) ExtCompareReport {
 			}
 		}
 
+		lhKB := float64(lhR.AvgBytes) / 1024.0
+		vlKB := float64(vlR.AvgBytes) / 1024.0
+
 		report.Comparison = append(report.Comparison, ExtCompareRow{
 			Scenario: sc.Name, Category: sc.Category, Range: sc.Range,
 			LHP95: lhR.P95Ms, VLP95: vlR.P95Ms, Ratio: ratio, Winner: winner,
+			LHHasData: lhR.HasData, VLHasData: vlR.HasData,
+			LHAvgKB: lhKB, VLAvgKB: vlKB,
 		})
 
-		fmt.Printf("  %-35s %11.1fms %11.1fms %7.1fx %8s\n",
-			sc.Name, lhR.P95Ms, vlR.P95Ms, ratio, winner)
+		dataFlag := ""
+		if !lhR.HasData || !vlR.HasData {
+			dataFlag = " ⚠"
+		}
+		fmt.Printf("  %-35s %11.1fms %11.1fms %7.1fx %10s %5.0fKB %5.0fKB%s\n",
+			sc.Name, lhR.P95Ms, vlR.P95Ms, ratio, winner, lhKB, vlKB, dataFlag)
 	}
 
 	// Summary
@@ -383,19 +446,32 @@ func doRequest(client *http.Client, u string) {
 	_ = resp.Body.Close()
 }
 
+type measurement struct {
+	latencyMs float64
+	bodyBytes int64
+}
+
 func measureRequest(client *http.Client, u string) float64 {
+	m := measureRequestFull(client, u)
+	return m.latencyMs
+}
+
+func measureRequestFull(client *http.Client, u string) measurement {
 	start := time.Now()
 	resp, err := client.Get(u)
 	elapsed := time.Since(start)
 	if err != nil {
-		return -1
+		return measurement{latencyMs: -1}
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
+	n, _ := io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return -1
+		return measurement{latencyMs: -1}
 	}
-	return float64(elapsed.Microseconds()) / 1000.0
+	return measurement{
+		latencyMs: float64(elapsed.Microseconds()) / 1000.0,
+		bodyBytes: n,
+	}
 }
 
 func buildExtResult(sc ExtScenario, latencies []float64) ExtResult {
@@ -416,13 +492,13 @@ func buildExtResult(sc ExtScenario, latencies []float64) ExtResult {
 
 func printExtSummary(report ExtCompareReport) {
 	fmt.Println("\n" + strings.Repeat("=", 100))
-	fmt.Println("  SUMMARY BY CATEGORY")
+	fmt.Println("  SUMMARY BY CATEGORY (only scenarios where BOTH systems returned data)")
 	fmt.Println(strings.Repeat("=", 100))
 
 	type catStats struct {
-		lhWins, vlWins, ties int
-		lhTotal, vlTotal     float64
-		count                int
+		lhWins, vlWins, ties, empty int
+		lhTotal, vlTotal            float64
+		validCount                  int
 	}
 	cats := map[string]*catStats{}
 	catOrder := []string{}
@@ -434,7 +510,11 @@ func printExtSummary(report ExtCompareReport) {
 			cats[row.Category] = cs
 			catOrder = append(catOrder, row.Category)
 		}
-		cs.count++
+		if !row.LHHasData || !row.VLHasData {
+			cs.empty++
+			continue
+		}
+		cs.validCount++
 		cs.lhTotal += row.LHP95
 		cs.vlTotal += row.VLP95
 		switch row.Winner {
@@ -447,30 +527,32 @@ func printExtSummary(report ExtCompareReport) {
 		}
 	}
 
-	fmt.Printf("\n  %-15s %8s %8s %8s %12s %12s\n", "Category", "VLH wins", "VL wins", "Ties", "VLH avg p95", "VL avg p95")
-	fmt.Println("  " + strings.Repeat("-", 70))
+	fmt.Printf("\n  %-15s %8s %8s %8s %8s %12s %12s\n", "Category", "VLH wins", "VL wins", "Ties", "Empty", "VLH avg p95", "VL avg p95")
+	fmt.Println("  " + strings.Repeat("-", 80))
 
-	totalLH, totalVL, totalLHW, totalVLW, totalT := 0, 0, 0, 0, 0
+	totalLHW, totalVLW, totalT, totalEmpty := 0, 0, 0, 0
 	for _, cat := range catOrder {
 		cs := cats[cat]
-		fmt.Printf("  %-15s %8d %8d %8d %11.1fms %11.1fms\n",
-			cat, cs.lhWins, cs.vlWins, cs.ties,
-			cs.lhTotal/float64(cs.count), cs.vlTotal/float64(cs.count))
+		avgLH, avgVL := 0.0, 0.0
+		if cs.validCount > 0 {
+			avgLH = cs.lhTotal / float64(cs.validCount)
+			avgVL = cs.vlTotal / float64(cs.validCount)
+		}
+		fmt.Printf("  %-15s %8d %8d %8d %8d %11.1fms %11.1fms\n",
+			cat, cs.lhWins, cs.vlWins, cs.ties, cs.empty, avgLH, avgVL)
 		totalLHW += cs.lhWins
 		totalVLW += cs.vlWins
 		totalT += cs.ties
-		totalLH += cs.count
-		totalVL += cs.count
+		totalEmpty += cs.empty
 	}
-	fmt.Println("  " + strings.Repeat("-", 70))
-	fmt.Printf("  %-15s %8d %8d %8d\n", "TOTAL", totalLHW, totalVLW, totalT)
+	fmt.Println("  " + strings.Repeat("-", 80))
+	fmt.Printf("  %-15s %8d %8d %8d %8d\n", "TOTAL", totalLHW, totalVLW, totalT, totalEmpty)
 
-	fmt.Println("\n  Key insights:")
-	fmt.Println("    VLH (S3 Parquet) strengths: metadata (field_names/values via label index),")
-	fmt.Println("      point lookups (bloom filters), service.name filter (bloom-accelerated)")
-	fmt.Println("    VL (EBS disk) strengths: aggregations (stats/rate), compound filters,")
-	fmt.Println("      histograms (native columnar on-disk scans)")
-	fmt.Println("    VLH cold cache penalty ~1.5-2x warm (S3 fetch), VL unchanged (disk-based)")
+	if totalEmpty > 0 {
+		fmt.Printf("\n  WARNING: %d scenarios had one or both systems return empty data.\n", totalEmpty)
+		fmt.Println("  These are EXCLUDED from win/loss tallies to avoid misleading results.")
+		fmt.Println("  (A fast response to empty data is not a performance win.)")
+	}
 }
 
 func (r *ExtCompareReport) WriteJSON(path string) error {

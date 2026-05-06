@@ -20,8 +20,7 @@ func heapInUse() uint64 {
 }
 
 func TestManifest_MemLeak_AddFileCycles(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	for i := 0; i < 100; i++ {
 		partition := fmt.Sprintf("dt=2026-05-%02d/hour=%02d", (i%28)+1, i%24)
@@ -46,8 +45,7 @@ func TestManifest_MemLeak_AddFileCycles(t *testing.T) {
 }
 
 func TestManifest_MemLeak_HasDataForRangeCycles(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	for d := 0; d < 30; d++ {
 		for h := 0; h < 24; h++ {
@@ -81,8 +79,7 @@ func TestManifest_MemLeak_HasDataForRangeCycles(t *testing.T) {
 }
 
 func TestManifest_MemLeak_GetFilesForRangeCycles(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	for d := 0; d < 30; d++ {
 		for h := 0; h < 24; h++ {

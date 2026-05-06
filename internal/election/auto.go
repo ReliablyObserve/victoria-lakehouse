@@ -3,8 +3,9 @@ package election
 
 import (
 	"context"
-	"log/slog"
 	"os"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 )
 
 // AutoElectorConfig configures the AutoElector mode and the underlying
@@ -14,14 +15,12 @@ type AutoElectorConfig struct {
 	S3Store   S3Store
 	S3Config  S3ElectorConfig
 	K8sConfig K8sElectorConfig
-	Logger    *slog.Logger
 }
 
 // AutoElector selects and wraps a Leader implementation based on the configured
 // Mode, with automatic environment-based fallback when Mode is "auto".
 type AutoElector struct {
-	inner  Leader
-	logger *slog.Logger
+	inner Leader
 }
 
 // NewAutoElector constructs an AutoElector, choosing the inner Leader based on
@@ -32,51 +31,47 @@ type AutoElector struct {
 //   - "auto"       → K8s if KUBERNETES_SERVICE_HOST is set, else S3 if S3Store
 //     is provided, else noop
 func NewAutoElector(cfg AutoElectorConfig) *AutoElector {
-	lg := cfg.Logger
-	if lg == nil {
-		lg = slog.Default()
-	}
 	var inner Leader
 	switch cfg.Mode {
 	case "none", "":
 		inner = NewNoopElector()
-		lg.Info("election mode: none")
+		logger.Infof("election mode: none")
 	case "s3":
 		inner = NewS3Elector(cfg.S3Store, cfg.S3Config)
-		lg.Info("election mode: s3")
+		logger.Infof("election mode: s3")
 	case "k8s":
 		e, err := NewK8sElector(cfg.K8sConfig)
 		if err != nil {
-			lg.Error("k8s election failed, falling back to noop", "error", err)
+			logger.Errorf("k8s election failed, falling back to noop: %s", err)
 			inner = NewNoopElector()
 		} else {
 			inner = e
 		}
-		lg.Info("election mode: k8s")
+		logger.Infof("election mode: k8s")
 	case "auto":
 		if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
 			e, err := NewK8sElector(cfg.K8sConfig)
 			if err != nil {
-				lg.Warn("k8s election failed, falling back to s3", "error", err)
+				logger.Warnf("k8s election failed, falling back to s3: %s", err)
 				inner = NewS3Elector(cfg.S3Store, cfg.S3Config)
 			} else {
 				inner = e
-				lg.Info("election mode: auto → k8s")
+				logger.Infof("election mode: auto -> k8s")
 			}
 		} else {
 			if cfg.S3Store != nil {
 				inner = NewS3Elector(cfg.S3Store, cfg.S3Config)
-				lg.Info("election mode: auto → s3")
+				logger.Infof("election mode: auto -> s3")
 			} else {
 				inner = NewNoopElector()
-				lg.Info("election mode: auto → none")
+				logger.Infof("election mode: auto -> none")
 			}
 		}
 	default:
-		lg.Warn("unknown election mode, defaulting to none", "mode", cfg.Mode)
+		logger.Warnf("unknown election mode, defaulting to none; mode=%s", cfg.Mode)
 		inner = NewNoopElector()
 	}
-	return &AutoElector{inner: inner, logger: lg}
+	return &AutoElector{inner: inner}
 }
 
 // IsLeader delegates to the underlying Leader implementation.

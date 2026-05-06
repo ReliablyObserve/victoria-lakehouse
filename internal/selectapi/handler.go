@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -12,21 +11,22 @@ import (
 	"sync"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 type Handler struct {
 	store   storage.Storage
-	logger  *slog.Logger
 	cfg     *config.Config
 	timeout time.Duration
 }
 
-func NewHandler(store storage.Storage, logger *slog.Logger, cfg *config.Config) *Handler {
+func NewHandler(store storage.Storage, cfg *config.Config) *Handler {
 	return &Handler{
 		store:   store,
-		logger:  logger.With("component", "selectapi"),
 		cfg:     cfg,
 		timeout: cfg.Query.Timeout,
 	}
@@ -59,30 +59,31 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	}
 }
 
-func (h *Handler) parseQueryContext(r *http.Request) *storage.QueryContext {
-	q := r.URL.Query()
-
-	query := q.Get("query")
-	if query == "" {
-		query = "*"
+func (h *Handler) parseQuery(r *http.Request) (*logstorage.Query, error) {
+	params := r.URL.Query()
+	queryStr := params.Get("query")
+	if queryStr == "" {
+		queryStr = "*"
 	}
-
-	startNs := parseTimeParam(q.Get("start"), q.Get("time"), 0)
-	endNs := parseTimeParam(q.Get("end"), "", time.Now().UnixNano())
-
+	q, err := logstorage.ParseQuery(queryStr)
+	if err != nil {
+		return nil, fmt.Errorf("parse query: %w", err)
+	}
+	startNs := parseTimeParam(params.Get("start"), params.Get("time"), 0)
+	endNs := parseTimeParam(params.Get("end"), "", time.Now().UnixNano())
 	if startNs == 0 {
 		startNs = time.Now().Add(-24 * time.Hour).UnixNano()
 	}
-
-	return &storage.QueryContext{
-		StartNs: startNs,
-		EndNs:   endNs,
-		Query:   query,
-	}
+	q.AddTimeFilter(startNs, endNs)
+	return q, nil
 }
 
 func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
-	qctx := h.parseQueryContext(r)
+	q, err := h.parseQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
@@ -96,27 +97,38 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	filter := ParseFilter(qctx.Query)
+	queryStr := r.URL.Query().Get("query")
+	if queryStr == "" {
+		queryStr = "*"
+	}
+	filter := ParseFilter(queryStr)
 
 	count := 0
-	err := h.store.RunQuery(ctx, qctx, func(workerID uint, db *storage.DataBlock) {
+	err = h.store.RunQuery(ctx, nil, q, func(workerID uint, db *logstorage.DataBlock) {
 		if count >= limit {
 			return
 		}
 
-		colMap := make(map[string][]string, len(db.Columns))
-		for _, col := range db.Columns {
+		columns := db.GetColumns(false)
+		colMap := make(map[string][]string, len(columns))
+		for _, col := range columns {
 			colMap[col.Name] = col.Values
 		}
 
-		for rowIdx := 0; rowIdx < db.RowsCount && count < limit; rowIdx++ {
+		for rowIdx := 0; rowIdx < db.RowsCount() && count < limit; rowIdx++ {
 			if !EvaluateFilter(filter, colMap, rowIdx) {
 				continue
 			}
-			record := make(map[string]string, len(db.Columns))
-			for _, col := range db.Columns {
+			record := make(map[string]string, len(columns))
+			for _, col := range columns {
 				if rowIdx < len(col.Values) {
-					record[col.Name] = col.Values[rowIdx]
+					v := col.Values[rowIdx]
+					if col.Name == "_time" || col.Name == "timestamp_unix_nano" {
+						if ns, err := strconv.ParseInt(v, 10, 64); err == nil {
+							v = time.Unix(0, ns).UTC().Format(time.RFC3339Nano)
+						}
+					}
+					record[col.Name] = v
 				}
 			}
 			line, _ := json.Marshal(record)
@@ -130,17 +142,21 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if err != nil {
-		h.logger.Error("query error", "error", err, "query", qctx.Query)
+		logger.Errorf("query error: %s; query=%q", err, q.String())
 	}
 }
 
 func (h *Handler) handleFieldNames(w http.ResponseWriter, r *http.Request) {
-	qctx := h.parseQueryContext(r)
+	q, err := h.parseQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	results, err := h.store.GetFieldNames(ctx, qctx)
+	results, err := h.store.GetFieldNames(ctx, nil, q)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -150,7 +166,11 @@ func (h *Handler) handleFieldNames(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleFieldValues(w http.ResponseWriter, r *http.Request) {
-	qctx := h.parseQueryContext(r)
+	q, err := h.parseQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	fieldName := r.URL.Query().Get("field")
 	if fieldName == "" {
 		fieldName = r.URL.Query().Get("field_name")
@@ -160,9 +180,9 @@ func (h *Handler) handleFieldValues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit := 100
+	var limit uint64 = 100
 	if l := r.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+		if parsed, err := strconv.ParseUint(l, 10, 64); err == nil && parsed > 0 {
 			limit = parsed
 		}
 	}
@@ -170,7 +190,7 @@ func (h *Handler) handleFieldValues(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	results, err := h.store.GetFieldValues(ctx, qctx, fieldName, limit)
+	results, err := h.store.GetFieldValues(ctx, nil, q, fieldName, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -180,12 +200,16 @@ func (h *Handler) handleFieldValues(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleStreamFieldNames(w http.ResponseWriter, r *http.Request) {
-	qctx := h.parseQueryContext(r)
+	q, err := h.parseQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	results, err := h.store.GetStreamFieldNames(ctx, qctx)
+	results, err := h.store.GetStreamFieldNames(ctx, nil, q)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -195,16 +219,27 @@ func (h *Handler) handleStreamFieldNames(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) handleStreamFieldValues(w http.ResponseWriter, r *http.Request) {
-	qctx := h.parseQueryContext(r)
+	q, err := h.parseQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	fieldName := r.URL.Query().Get("field")
 	if fieldName == "" {
 		fieldName = r.URL.Query().Get("field_name")
 	}
 
+	var limit uint64 = 100
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if parsed, err := strconv.ParseUint(l, 10, 64); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	results, err := h.store.GetStreamFieldValues(ctx, qctx, fieldName)
+	results, err := h.store.GetStreamFieldValues(ctx, nil, q, fieldName, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -214,12 +249,23 @@ func (h *Handler) handleStreamFieldValues(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) handleStreams(w http.ResponseWriter, r *http.Request) {
-	qctx := h.parseQueryContext(r)
+	q, err := h.parseQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var limit uint64 = 100
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if parsed, err := strconv.ParseUint(l, 10, 64); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	results, err := h.store.GetStreams(ctx, qctx)
+	results, err := h.store.GetStreams(ctx, nil, q, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -229,12 +275,23 @@ func (h *Handler) handleStreams(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleStreamIDs(w http.ResponseWriter, r *http.Request) {
-	qctx := h.parseQueryContext(r)
+	q, err := h.parseQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var limit uint64 = 100
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if parsed, err := strconv.ParseUint(l, 10, 64); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	results, err := h.store.GetStreamIDs(ctx, qctx)
+	results, err := h.store.GetStreamIDs(ctx, nil, q, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -244,7 +301,11 @@ func (h *Handler) handleStreamIDs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleHits(w http.ResponseWriter, r *http.Request) {
-	qctx := h.parseQueryContext(r)
+	q, err := h.parseQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	groupField := r.URL.Query().Get("field")
 
 	step := 60 * time.Second
@@ -257,20 +318,25 @@ func (h *Handler) handleHits(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	filter := ParseFilter(qctx.Query)
+	queryStr := r.URL.Query().Get("query")
+	if queryStr == "" {
+		queryStr = "*"
+	}
+	filter := ParseFilter(queryStr)
 
 	grouped := make(map[string]map[int64]int)
 	var mu sync.Mutex
 
-	err := h.store.RunQuery(ctx, qctx, func(workerID uint, db *storage.DataBlock) {
-		colMap := make(map[string][]string, len(db.Columns))
-		for _, col := range db.Columns {
+	err = h.store.RunQuery(ctx, nil, q, func(workerID uint, db *logstorage.DataBlock) {
+		columns := db.GetColumns(false)
+		colMap := make(map[string][]string, len(columns))
+		for _, col := range columns {
 			colMap[col.Name] = col.Values
 		}
 
 		var timeVals []string
 		var groupVals []string
-		for _, col := range db.Columns {
+		for _, col := range columns {
 			if col.Name == "_time" || col.Name == "timestamp_unix_nano" {
 				timeVals = col.Values
 			}
@@ -319,9 +385,11 @@ func (h *Handler) handleHits(w http.ResponseWriter, r *http.Request) {
 
 		timestamps := make([]string, 0, len(sorted))
 		values := make([]int, 0, len(sorted))
+		total := 0
 		for _, ns := range sorted {
 			timestamps = append(timestamps, time.Unix(0, ns).UTC().Format(time.RFC3339))
 			values = append(values, buckets[ns])
+			total += buckets[ns]
 		}
 
 		fields := map[string]string{}
@@ -329,7 +397,7 @@ func (h *Handler) handleHits(w http.ResponseWriter, r *http.Request) {
 			fields[groupField] = gv
 		}
 		hits = append(hits, map[string]any{
-			"fields": fields, "timestamps": timestamps, "values": values,
+			"fields": fields, "timestamps": timestamps, "values": values, "total": total,
 		})
 	}
 
@@ -340,20 +408,29 @@ func (h *Handler) handleHits(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleStatsQuery(w http.ResponseWriter, r *http.Request) {
-	qctx := h.parseQueryContext(r)
+	q, err := h.parseQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	filter := ParseFilter(qctx.Query)
+	queryStr := r.URL.Query().Get("query")
+	if queryStr == "" {
+		queryStr = "*"
+	}
+	filter := ParseFilter(queryStr)
 
 	var total int
-	err := h.store.RunQuery(ctx, qctx, func(workerID uint, db *storage.DataBlock) {
-		colMap := make(map[string][]string, len(db.Columns))
-		for _, col := range db.Columns {
+	err = h.store.RunQuery(ctx, nil, q, func(workerID uint, db *logstorage.DataBlock) {
+		columns := db.GetColumns(false)
+		colMap := make(map[string][]string, len(columns))
+		for _, col := range columns {
 			colMap[col.Name] = col.Values
 		}
-		for i := 0; i < db.RowsCount; i++ {
+		for i := 0; i < db.RowsCount(); i++ {
 			if EvaluateFilter(filter, colMap, i) {
 				total++
 			}
@@ -381,7 +458,11 @@ func (h *Handler) handleStatsQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleStatsQueryRange(w http.ResponseWriter, r *http.Request) {
-	qctx := h.parseQueryContext(r)
+	q, err := h.parseQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	step := 60 * time.Second
 	if s := r.URL.Query().Get("step"); s != "" {
@@ -395,19 +476,24 @@ func (h *Handler) handleStatsQueryRange(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	filter := ParseFilter(qctx.Query)
+	queryStr := r.URL.Query().Get("query")
+	if queryStr == "" {
+		queryStr = "*"
+	}
+	filter := ParseFilter(queryStr)
 
 	buckets := make(map[int64]int)
 	var mu sync.Mutex
 
-	err := h.store.RunQuery(ctx, qctx, func(workerID uint, db *storage.DataBlock) {
-		colMap := make(map[string][]string, len(db.Columns))
-		for _, col := range db.Columns {
+	err = h.store.RunQuery(ctx, nil, q, func(workerID uint, db *logstorage.DataBlock) {
+		columns := db.GetColumns(false)
+		colMap := make(map[string][]string, len(columns))
+		for _, col := range columns {
 			colMap[col.Name] = col.Values
 		}
 
 		var timeVals []string
-		for _, col := range db.Columns {
+		for _, col := range columns {
 			if col.Name == "_time" || col.Name == "timestamp_unix_nano" {
 				timeVals = col.Values
 				break
@@ -438,9 +524,10 @@ func (h *Handler) handleStatsQueryRange(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Build a continuous series from start to end, filling zeros for missing buckets.
+	startNs, endNs := q.GetFilterTimeRange()
 	stepNs := step.Nanoseconds()
-	startBucket := (qctx.StartNs / stepNs) * stepNs
-	endBucket := (qctx.EndNs / stepNs) * stepNs
+	startBucket := (startNs / stepNs) * stepNs
+	endBucket := (endNs / stepNs) * stepNs
 
 	var values [][]any
 	for ts := startBucket; ts <= endBucket; ts += stepNs {
@@ -471,7 +558,7 @@ func (h *Handler) handleTailNoop(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "live tail not supported on cold storage", http.StatusNotImplemented)
 }
 
-func (h *Handler) writeValuesJSON(w http.ResponseWriter, values []storage.ValueWithHits) {
+func (h *Handler) writeValuesJSON(w http.ResponseWriter, values []logstorage.ValueWithHits) {
 	w.Header().Set("Content-Type", "application/json")
 
 	type entry struct {
@@ -492,19 +579,20 @@ func (h *Handler) writeValuesJSON(w http.ResponseWriter, values []storage.ValueW
 // Jaeger API handlers for trace mode
 
 func (h *Handler) handleJaegerServices(w http.ResponseWriter, r *http.Request) {
-	qctx := &storage.QueryContext{
-		StartNs: time.Now().Add(-720 * time.Hour).UnixNano(),
-		EndNs:   time.Now().UnixNano(),
-		Query:   "*",
+	q, err := logstorage.ParseQuery("*")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
+	q.AddTimeFilter(time.Now().Add(-720*time.Hour).UnixNano(), time.Now().UnixNano())
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
 	// Use Parquet column name — works for both logs and traces mode
-	results, err := h.store.GetFieldValues(ctx, qctx, "service.name", 1000)
+	results, err := h.store.GetFieldValues(ctx, nil, q, "service.name", 1000)
 	if err == nil && len(results) == 0 {
-		results, err = h.store.GetFieldValues(ctx, qctx, "resource_attr:service.name", 1000)
+		results, err = h.store.GetFieldValues(ctx, nil, q, "resource_attr:service.name", 1000)
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -541,18 +629,19 @@ func (h *Handler) handleJaegerOperations(w http.ResponseWriter, r *http.Request)
 	}
 
 	if len(parts) >= 2 && parts[1] == "operations" {
-		qctx := &storage.QueryContext{
-			StartNs: time.Now().Add(-720 * time.Hour).UnixNano(),
-			EndNs:   time.Now().UnixNano(),
-			Query:   fmt.Sprintf(`service.name:="%s"`, parts[0]),
+		q, err := logstorage.ParseQuery(fmt.Sprintf(`service.name:="%s"`, parts[0]))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
+		q.AddTimeFilter(time.Now().Add(-720*time.Hour).UnixNano(), time.Now().UnixNano())
 
 		ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 		defer cancel()
 
-		results, err := h.store.GetFieldValues(ctx, qctx, "span.name", 1000)
+		results, err := h.store.GetFieldValues(ctx, nil, q, "span.name", 1000)
 		if err == nil && len(results) == 0 {
-			results, err = h.store.GetFieldValues(ctx, qctx, "name", 1000)
+			results, err = h.store.GetFieldValues(ctx, nil, q, "name", 1000)
 		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -588,23 +677,25 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	qctx := &storage.QueryContext{
-		StartNs: 0,
-		EndNs:   time.Now().Add(time.Hour).UnixNano(),
-		Query:   fmt.Sprintf(`trace_id:="%s"`, traceID),
+	q, err := logstorage.ParseQuery(fmt.Sprintf(`trace_id:="%s"`, traceID))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
+	q.AddTimeFilter(0, time.Now().Add(time.Hour).UnixNano())
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
 	var spans []jaegerSpan
-	err := h.store.RunQuery(ctx, qctx, func(workerID uint, db *storage.DataBlock) {
-		colMap := make(map[string][]string, len(db.Columns))
-		for _, col := range db.Columns {
+	err = h.store.RunQuery(ctx, nil, q, func(workerID uint, db *logstorage.DataBlock) {
+		columns := db.GetColumns(false)
+		colMap := make(map[string][]string, len(columns))
+		for _, col := range columns {
 			colMap[col.Name] = col.Values
 		}
 
-		for i := 0; i < db.RowsCount; i++ {
+		for i := 0; i < db.RowsCount(); i++ {
 			rowTraceID := getVal(colMap, "trace_id", i)
 			if rowTraceID != traceID {
 				continue
@@ -749,14 +840,14 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	service := q.Get("service")
+	params := r.URL.Query()
+	service := params.Get("service")
 	if service == "" {
 		http.Error(w, "service name is required", http.StatusBadRequest)
 		return
 	}
-	operation := q.Get("operation")
-	lookback := q.Get("lookback")
+	operation := params.Get("operation")
+	lookback := params.Get("lookback")
 
 	endNs := time.Now().UnixNano()
 	startNs := time.Now().Add(-24 * time.Hour).UnixNano()
@@ -765,12 +856,12 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 			startNs = time.Now().Add(-d).UnixNano()
 		}
 	}
-	if s := q.Get("start"); s != "" {
+	if s := params.Get("start"); s != "" {
 		if us, err := strconv.ParseInt(s, 10, 64); err == nil {
 			startNs = us * 1000
 		}
 	}
-	if s := q.Get("end"); s != "" {
+	if s := params.Get("end"); s != "" {
 		if us, err := strconv.ParseInt(s, 10, 64); err == nil {
 			endNs = us * 1000
 		}
@@ -786,19 +877,19 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var minDurNs, maxDurNs int64
-	if s := q.Get("minDuration"); s != "" {
+	if s := params.Get("minDuration"); s != "" {
 		if d, err := time.ParseDuration(s); err == nil {
 			minDurNs = d.Nanoseconds()
 		}
 	}
-	if s := q.Get("maxDuration"); s != "" {
+	if s := params.Get("maxDuration"); s != "" {
 		if d, err := time.ParseDuration(s); err == nil {
 			maxDurNs = d.Nanoseconds()
 		}
 	}
 
 	var tagFilters map[string]string
-	if tags := q.Get("tags"); tags != "" {
+	if tags := params.Get("tags"); tags != "" {
 		tagFilters = make(map[string]string)
 		_ = json.Unmarshal([]byte(tags), &tagFilters)
 		for k, v := range tagFilters {
@@ -823,7 +914,7 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	limit := 20
-	if l := q.Get("limit"); l != "" {
+	if l := params.Get("limit"); l != "" {
 		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
 			if parsed > 1000 {
 				parsed = 1000
@@ -832,23 +923,25 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	qctx := &storage.QueryContext{
-		StartNs: startNs,
-		EndNs:   endNs,
-		Query:   query,
+	q, err := logstorage.ParseQuery(query)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
+	q.AddTimeFilter(startNs, endNs)
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
 	traceMap := make(map[string][]map[string]string)
-	err := h.store.RunQuery(ctx, qctx, func(workerID uint, db *storage.DataBlock) {
-		colMap := make(map[string][]string, len(db.Columns))
-		for _, col := range db.Columns {
+	err = h.store.RunQuery(ctx, nil, q, func(workerID uint, db *logstorage.DataBlock) {
+		columns := db.GetColumns(false)
+		colMap := make(map[string][]string, len(columns))
+		for _, col := range columns {
 			colMap[col.Name] = col.Values
 		}
 
-		for i := 0; i < db.RowsCount; i++ {
+		for i := 0; i < db.RowsCount(); i++ {
 			tid := getVal(colMap, "trace_id", i)
 			if tid == "" {
 				continue

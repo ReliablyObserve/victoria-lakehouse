@@ -8,9 +8,9 @@
 [![Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ReliablyObserve/victoria-lakehouse/badges/tests.json)](#tests)
 [![License](https://img.shields.io/github/license/ReliablyObserve/victoria-lakehouse)](LICENSE)
 
-**S3-backed cold storage for VictoriaLogs and VictoriaTraces.** 100% API-compatible with VL/VT — same endpoints, same protocols, same query language. Implements the VL/VT storage interface with an S3 Parquet backend. Registers as a `-storageNode` and works transparently alongside existing VL/VT clusters.
+**S3-backed cold storage for VictoriaLogs and VictoriaTraces.** Two dedicated binaries — `lakehouse-logs` and `lakehouse-traces` — each 100% API-compatible with VL/VT. Same endpoints, same protocols, same query language. Implements the VL/VT storage interface with an S3 Parquet backend. Registers as a `-storageNode` and works transparently alongside existing VL/VT clusters.
 
-> **100% VL/VT API compatible.** Victoria Lakehouse reimplements the VL/VT storage layer with Parquet on S3 while exposing identical HTTP APIs, LogsQL query syntax, binary DataBlock protocol, and insert endpoints. VL/VT's vlselect fans out queries to both hot (vlstorage) and cold (lakehouse) — users see unified results. No VL/VT fork — a purpose-built cold tier that speaks the same language.
+> **Two binaries, one architecture.** `lakehouse-logs` reimplements the VL storage layer. `lakehouse-traces` reimplements the VT storage layer. Both use Parquet on S3 and expose identical HTTP APIs, LogsQL query syntax, binary DataBlock protocol, and insert endpoints as their upstream counterparts. Each binary pins to its own VL/VT dependency version for maximum compatibility.
 
 - **Drop-in VL/VT storage node.** Register as a `-storageNode` on vlselect/vtselect. Queries spanning hot and cold data work transparently.
 - **Write path with crash recovery.** VL-compatible insert APIs (`/insert/jsonline`, Loki push, ES bulk) buffer data, flush to S3 Parquet, and survive process crashes via WAL.
@@ -47,9 +47,15 @@ Full cost worksheet: [Cost Estimates](docs/cost-estimates.md) | Deep comparison 
 ### Docker
 
 ```bash
+# Logs (VL-compatible, port 9428)
 docker run -p 9428:9428 \
-  ghcr.io/reliablyobserve/victoria-lakehouse:latest \
-  --lakehouse.mode=logs \
+  ghcr.io/reliablyobserve/lakehouse-logs:latest \
+  --lakehouse.s3.bucket=obs-archive \
+  --lakehouse.s3.region=us-east-1
+
+# Traces (VT-compatible, port 10428)
+docker run -p 10428:10428 \
+  ghcr.io/reliablyobserve/lakehouse-traces:latest \
   --lakehouse.s3.bucket=obs-archive \
   --lakehouse.s3.region=us-east-1
 ```
@@ -63,12 +69,19 @@ docker compose -f deployment/docker/docker-compose-e2e.yml up
 ### Helm
 
 ```bash
+# Deploy logs cold tier
 helm install lakehouse-logs oci://ghcr.io/reliablyobserve/charts/victoria-lakehouse \
-  --set mode=logs \
-  --set s3.bucket=obs-archive \
-  --set s3.region=us-east-1 \
-  --set discovery.headlessService=vlstorage.monitoring.svc.cluster.local \
-  --set discovery.partitionAuthKey=secret
+  --set lakehouseConfig.mode=logs \
+  --set lakehouseConfig.s3.bucket=obs-archive \
+  --set lakehouseConfig.s3.region=us-east-1 \
+  --set lakehouseConfig.discovery.headless_service=vlstorage.monitoring.svc.cluster.local
+
+# Deploy traces cold tier (separate release, same chart)
+helm install lakehouse-traces oci://ghcr.io/reliablyobserve/charts/victoria-lakehouse \
+  --set lakehouseConfig.mode=traces \
+  --set lakehouseConfig.s3.bucket=obs-archive \
+  --set lakehouseConfig.s3.region=us-east-1 \
+  --set lakehouseConfig.discovery.headless_service=vtstorage.monitoring.svc.cluster.local
 ```
 
 ### Grafana Datasource (Direct Access)
@@ -81,6 +94,10 @@ datasources:
     type: victorialogs-datasource
     access: proxy
     url: http://lakehouse-logs:9428
+  - name: Cold Traces (Lakehouse)
+    type: jaeger
+    access: proxy
+    url: http://lakehouse-traces:10428
 ```
 
 For full setup, cluster integration, and deployment patterns, see [Getting Started](docs/getting-started.md).
@@ -112,34 +129,42 @@ graph TB
     end
 
     subgraph "Cold Tier — Unlimited (S3) — Victoria Lakehouse"
-        VA -->|mirror 2| LHI["lakehouse-insert"]
-        OC -->|export 2| LHI
-        LHI --> WAL["WAL"]
-        WAL --> BUF["Buffers"]
-        BUF -->|flush| S3[("S3 Parquet<br/>(11 nines)")]
-        LHS["lakehouse-select"]
-        LHS --> S3
-        LHS -.->|buffer query| BUF
+        VA -->|mirror 2| LHL["lakehouse-logs<br/>(insert)"]
+        OC -->|export 2| LHT["lakehouse-traces<br/>(insert)"]
+        LHL --> WAL1["WAL"]
+        LHT --> WAL2["WAL"]
+        WAL1 --> BUF1["Buffers"]
+        WAL2 --> BUF2["Buffers"]
+        BUF1 -->|flush| S3[("S3 Parquet<br/>(11 nines)")]
+        BUF2 -->|flush| S3
+        LHLS["lakehouse-logs<br/>(select)"]
+        LHTS["lakehouse-traces<br/>(select)"]
+        LHLS --> S3
+        LHTS --> S3
+        LHLS -.->|buffer query| BUF1
+        LHTS -.->|buffer query| BUF2
     end
 
     subgraph "Consumers"
         GF["Grafana"] --> VLSEL
         GF --> VTSEL
-        VLSEL -->|cold fan-out| LHS
-        VTSEL -->|cold fan-out| LHS
+        VLSEL -->|cold fan-out| LHLS
+        VTSEL -->|cold fan-out| LHTS
         DDB["DuckDB / Trino<br/>Spark / ClickHouse"] --> S3
     end
 
     style S3 fill:#e76f51,color:#fff
-    style LHI fill:#5a189a,color:#fff
-    style LHS fill:#2d6a4f,color:#fff
+    style LHL fill:#5a189a,color:#fff
+    style LHT fill:#5a189a,color:#fff
+    style LHLS fill:#2d6a4f,color:#fff
+    style LHTS fill:#2d6a4f,color:#fff
     style VA fill:#264653,color:#fff
     style OC fill:#264653,color:#fff
 ```
 
 **Key points:**
-- **vlagent** mirrors logs to both VictoriaLogs (hot, 1 month, EBS) and Lakehouse (cold, unlimited, S3)
-- **OTEL Collector** fans out traces to both VictoriaTraces (hot) and Lakehouse (cold)
+- **vlagent** mirrors logs to both VictoriaLogs (hot, 1 month, EBS) and `lakehouse-logs` (cold, unlimited, S3)
+- **OTEL Collector** fans out traces to both VictoriaTraces (hot) and `lakehouse-traces` (cold)
 - **vlselect/vtselect** transparently fan out queries to hot + cold — users see unified results
 - **Lakehouse as DR**: when hot cluster is down, Grafana queries lakehouse directly (slower but always available)
 - **Open Parquet**: DuckDB, Trino, Spark, ClickHouse query S3 directly for analytics, compliance, ML
@@ -190,21 +215,24 @@ flowchart TD
 graph LR
     subgraph "Pattern 1: Hot+Cold with vlagent/OTEL (recommended)"
         VA["vlagent"] -->|mirror| VLI["vlinsert<br/>(hot)"]
-        VA -->|mirror| LHI["lakehouse-insert<br/>(cold)"]
+        VA -->|mirror| LHL["lakehouse-logs<br/>(cold)"]
         OC["OTEL<br/>Collector"] -->|export| VTI["vtinsert"]
-        OC -->|export| LHI
+        OC -->|export| LHT["lakehouse-traces<br/>(cold)"]
         G1["Grafana"] --> VS1["vlselect"]
         VS1 --> VLS1["vlstorage"]
-        VS1 -->|cold| LHS1["lakehouse-select"]
+        VS1 -->|cold| LHLS["lakehouse-logs<br/>(select)"]
     end
 ```
 
 ```mermaid
 graph LR
-    subgraph "Pattern 2: Standalone (single binary)"
-        C2["Clients"] -->|insert| LH2["lakehouse<br/>role=all"]
-        G2["Grafana"] -->|select| LH2
-        LH2 --> S2[("S3")]
+    subgraph "Pattern 2: Standalone"
+        C2L["Clients<br/>(logs)"] -->|insert| LHL2["lakehouse-logs<br/>role=all"]
+        C2T["Clients<br/>(traces)"] -->|insert| LHT2["lakehouse-traces<br/>role=all"]
+        G2["Grafana"] -->|select| LHL2
+        G2 -->|select| LHT2
+        LHL2 --> S2[("S3")]
+        LHT2 --> S2
     end
 ```
 
@@ -224,7 +252,7 @@ graph LR
     subgraph "Pattern 4: Disaster Recovery"
         G4["Grafana"] --> VMA["vmauth<br/>first_available"]
         VMA -->|primary| VS4["vlselect"]
-        VMA -->|fallback| LH4["lakehouse-select"]
+        VMA -->|fallback| LH4["lakehouse-logs<br/>(select)"]
     end
 ```
 
@@ -240,14 +268,16 @@ graph LR
 
 ---
 
-## Modes and Roles
+## Binaries and Roles
 
-Single binary, two modes, three roles:
+Two separate binaries with independent VL/VT dependency versions:
 
-| Mode | Flag | Port | API | Use Case |
+| Binary | Port | VL/VT Compat | API | Docker Image |
 |---|---|---|---|---|
-| Logs | `--lakehouse.mode=logs` | 9428 | VL `/select/logsql/*` + `/insert/*` | Cold log storage |
-| Traces | `--lakehouse.mode=traces` | 10428 | VT `/select/logsql/*` + Jaeger | Cold trace storage |
+| `lakehouse-logs` | 9428 | VL v1.50.0 | VL `/select/logsql/*` + `/insert/*` + `/delete/logsql/*` | `ghcr.io/.../lakehouse-logs` |
+| `lakehouse-traces` | 10428 | VT v0.8.2 | VT `/select/logsql/*` + Jaeger + `/delete/tracessql/*` | `ghcr.io/.../lakehouse-traces` |
+
+Each binary supports three roles:
 
 | Role | Flag | Description |
 |---|---|---|
@@ -274,11 +304,11 @@ Single binary, two modes, three roles:
 - **Read-ahead**: sequential time scans prefetch next partitions.
 
 ### Deletion
-- **Three-tier strategy**: tombstone (instant, $0) → selective rewrite (S3 Standard only) → lifecycle expiry (Glacier/IA).
-- **VL-compatible APIs**: `/delete/logsql/*` for logs, `/delete/tracessql/*` for traces — same query syntax.
+- **Three-tier strategy**: tombstone (instant, $0) -> selective rewrite (S3 Standard only) -> lifecycle expiry (Glacier/IA).
+- **`lakehouse-logs`**: `/delete/logsql/*` endpoints. **`lakehouse-traces`**: `/delete/tracessql/*` endpoints.
 - **Three modes**: `hide` (tombstone only, never rewrites), `permanent` (physical removal), `auto` (smart default).
-- **Cost estimation**: `/delete/logsql/estimate` returns per-storage-class cost breakdown before executing.
-- **Verification**: `/delete/logsql/verify` confirms tombstoned data is invisible (normal mode) or physically deleted (deep mode).
+- **Cost estimation**: `/delete/logsql/estimate` (or `/delete/tracessql/estimate`) returns per-storage-class cost breakdown before executing.
+- **Verification**: `/delete/logsql/verify` (or `/delete/tracessql/verify`) confirms tombstoned data is invisible (normal mode) or physically deleted (deep mode).
 - **Un-delete**: remove a tombstone to restore data visibility instantly.
 - **Glacier-safe**: never triggers retrieval fees. Tombstone suppresses reads; data ages out via lifecycle.
 - **GDPR compliant**: immediate inaccessibility satisfies right-to-erasure. Optional physical delete for strict compliance.
@@ -293,17 +323,51 @@ Single binary, two modes, three roles:
 
 ## Configuration
 
-Minimal config (mode + S3 bucket) works out of the box. All 110+ config options have production-ready defaults.
+Minimal config (S3 bucket) works out of the box. All 110+ config options have production-ready defaults. Each binary automatically applies mode-appropriate defaults (port, S3 prefix, bloom columns, delete prefix).
+
+### Shared Config (both binaries)
 
 ```yaml
 lakehouse:
-  mode: logs
   s3:
     bucket: obs-archive
     region: us-east-1
   discovery:
     headless_service: vlstorage.monitoring.svc.cluster.local
     partition_auth_key: "${PARTITION_AUTH_KEY}"
+```
+
+### Mode-Specific Config
+
+Each binary reads its own section for mode-specific overrides:
+
+```yaml
+lakehouse:
+  # lakehouse-logs reads this section
+  logs:
+    bloom_columns: [service.name]
+    delete_prefix: /delete/logsql
+
+  # lakehouse-traces reads this section
+  traces:
+    bloom_columns: [trace_id, service.name]
+    delete_prefix: /delete/tracessql
+    jaeger_enabled: true
+    jaeger_grpc_addr: ":16685"
+```
+
+### Mode-Specific Flags
+
+```bash
+# lakehouse-logs flags
+--lakehouse.logs.bloom-columns=service.name
+--lakehouse.logs.delete-prefix=/delete/logsql
+
+# lakehouse-traces flags
+--lakehouse.traces.bloom-columns=trace_id,service.name
+--lakehouse.traces.delete-prefix=/delete/tracessql
+--lakehouse.traces.jaeger-enabled=true
+--lakehouse.traces.jaeger-grpc-addr=:16685
 ```
 
 Full reference: [Configuration](docs/configuration.md)
@@ -406,19 +470,30 @@ See [Performance](docs/performance.md).
 | M8-Phase A: Write Durability | Complete | WAL crash recovery, insert APIs, adaptive flush, buffer query bridge, manifest labels |
 | M9: Compaction | Complete | Background merge, size-tiered strategy, manifest updates |
 | M10: Testing & Helm | Complete | E2E overhaul (VL + vlselect + loki-vl-proxy), benchmarks, Victoria-pattern Helm chart, upstream sync GHA |
-| M11: Cost-Aware Deletion | Complete | Tombstone store, `/delete/logsql/*` + `/delete/tracessql/*` APIs, query-time filtering, background rewriter, storage-class detection, verify endpoint |
+| M11: Cost-Aware Deletion | Complete | Tombstone store, delete APIs, query-time filtering, background rewriter, storage-class detection, verify endpoint |
 | M7: Observability | Complete | ~80 Prometheus metrics, Grafana dashboards (single + cluster), 10 alerting rules, circuit breaker |
+| Binary Split | Complete | Separate `lakehouse-logs` + `lakehouse-traces` binaries, independent Go modules, mode-specific config/flags |
 
 ---
 
 ## Development
 
 ```bash
-make build          # Build binary + healthcheck
-make test           # Run unit tests with race detector
-make lint           # golangci-lint
-make docker         # Build container image
-make e2e            # Full E2E with MinIO + VL cluster
+# Logs binary
+make build-logs       # Build lakehouse-logs
+make test-logs        # Run logs module tests with race detector
+make docker-logs      # Build logs Docker image
+
+# Traces binary
+make build-traces     # Build lakehouse-traces
+make test-traces      # Run traces module tests with race detector
+make docker-traces    # Build traces Docker image
+
+# Both
+make build            # Build both binaries
+make test             # Run all tests
+make lint             # golangci-lint both modules
+make e2e              # Full E2E with MinIO + VL cluster
 ```
 
 ---

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Architecture
+- Split into two separate binaries: `lakehouse-logs` and `lakehouse-traces`
+- Each binary has its own Go module with independent VL dependency versions
+- Logs pins to VL v1.50.0, Traces pins to VL commit a408207c2242 (VT v0.8.2 compatible)
+- Removed unified `cmd/lakehouse/` binary and `--lakehouse.mode` flag — mode is hardcoded per binary
+
+### Logs (`lakehouse-logs`)
+- Separate Dockerfile (`Dockerfile.logs`), Docker image (`ghcr.io/.../lakehouse-logs`)
+- Default port `:9428`, bloom columns: `[service.name]`
+- Delete API at `/delete/logsql/*`
+- Mode-specific config section: `logs:` in YAML, `--lakehouse.logs.*` flags
+
+### Traces (`lakehouse-traces`)
+- Separate Go module (`lakehouse-traces/go.mod`) with VT-compatible VL dependency
+- Separate Dockerfile (`Dockerfile.traces`), Docker image (`ghcr.io/.../lakehouse-traces`)
+- Default port `:10428`, bloom columns: `[trace_id, service.name]`
+- Delete API at `/delete/tracessql/*`
+- Jaeger gRPC support: `--lakehouse.traces.jaeger-enabled`, `--lakehouse.traces.jaeger-grpc-addr`
+- Mode-specific config section: `traces:` in YAML, `--lakehouse.traces.*` flags
+
+### Shared
+- Mode-specific config extension points (`logs:` / `traces:` sections) with accessor methods (`ActiveBloomColumns()`, `ActiveDeletePrefix()`, `ActiveCompatVersion()`)
+- Discovery `defaultPort` parameter for mode-aware SRV resolution (9428 for logs, 10428 for traces)
+- Helm chart: mode-aware image selection (`image.logs.repository` / `image.traces.repository`)
+- CI: Fully parallel jobs for logs and traces (test, lint, build, docker, security, benchmarks)
+
 ### Changed
 - Docs: All ASCII text diagrams converted to Mermaid across write-path, use-cases, cost-comparison, architecture, and deletion-strategy
 - Docs: Deletion strategy updated to show both logs (`/delete/logsql/*`) and traces (`/delete/tracessql/*`) endpoints side by side

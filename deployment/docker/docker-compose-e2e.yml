@@ -32,7 +32,7 @@ services:
       "
 
   victorialogs:
-    image: victoriametrics/victoria-logs:v1.20.0-victorialogs
+    image: victoriametrics/victoria-logs:v1.50.0
     command:
       - "-storageDataPath=/data"
       - "-retentionPeriod=7d"
@@ -41,7 +41,7 @@ services:
     volumes:
       - vl-data:/data
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:9428/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9428/health"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -92,20 +92,21 @@ services:
   lakehouse-logs:
     build:
       context: ../../
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.logs
     depends_on:
       datagen-seed:
         condition: service_completed_successfully
     networks: [lakehouse-net]
+    ports:
+      - "9429:9428"
     command:
-      - "-lakehouse.mode=logs"
       - "-lakehouse.s3.bucket=obs-archive"
       - "-lakehouse.s3.endpoint=http://minio:9000"
       - "-lakehouse.s3.access-key=minioadmin"
       - "-lakehouse.s3.secret-key=minioadmin"
       - "-lakehouse.s3.force-path-style=true"
       - "-lakehouse.manifest.refresh-interval=30s"
-      - "-loggerLevel=DEBUG"
+      - "-loggerLevel=INFO"
     volumes:
       - lakehouse-cache-logs:/data/lakehouse
     healthcheck:
@@ -118,22 +119,24 @@ services:
   lakehouse-traces:
     build:
       context: ../../
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.traces
     depends_on:
       datagen-seed:
         condition: service_completed_successfully
     networks: [lakehouse-net]
+    ports:
+      - "10429:10428"
     command:
-      - "-lakehouse.mode=traces"
       - "-lakehouse.s3.bucket=obs-archive"
       - "-lakehouse.s3.endpoint=http://minio:9000"
       - "-lakehouse.s3.access-key=minioadmin"
       - "-lakehouse.s3.secret-key=minioadmin"
       - "-lakehouse.s3.force-path-style=true"
       - "-lakehouse.manifest.refresh-interval=30s"
-      - "-loggerLevel=DEBUG"
+      - "-loggerLevel=INFO"
     volumes:
       - lakehouse-cache-traces:/data/lakehouse
+
     healthcheck:
       test: ["CMD", "/usr/local/bin/healthcheck", "http://localhost:10428/health"]
       interval: 5s
@@ -142,7 +145,7 @@ services:
       start_period: 10s
 
   vlselect:
-    image: victoriametrics/victoria-logs:v1.20.0-victorialogs
+    image: victoriametrics/victoria-logs:v1.50.0
     command:
       - "-storageNode=victorialogs:9428"
       - "-storageNode=lakehouse-logs:9428"
@@ -155,22 +158,33 @@ services:
         condition: service_healthy
     networks: [lakehouse-net]
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:9471/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9471/health"]
       interval: 5s
       timeout: 3s
       retries: 10
       start_period: 5s
 
   loki-vl-proxy:
-    image: ghcr.io/reliablyobserve/loki-vl-proxy:latest
+    build:
+      context: /private/tmp/loki-vl-fix
+      dockerfile: Dockerfile
     environment:
-      BACKEND_URL: "http://lakehouse-logs:9428"
+      VL_BACKEND_URL: "http://lakehouse-logs:9428"
+      LABEL_STYLE: "underscores"
+      METADATA_FIELD_MODE: "hybrid"
+    ports:
+      - "3100:3100"
+    command:
+      - "-label-style=underscores"
+      - "-metadata-field-mode=hybrid"
+      - "-stream-fields=service.name,k8s.namespace.name,k8s.pod.name,deployment.environment"
+      - "-extra-label-fields=level,cloud.region,host.name"
     depends_on:
       lakehouse-logs:
         condition: service_healthy
     networks: [lakehouse-net]
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3100/ready"]
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://127.0.0.1:3100/ready"]
       interval: 5s
       timeout: 3s
       retries: 10

@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
 	"sort"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/google/uuid"
 	"github.com/parquet-go/parquet-go"
 	"github.com/parquet-go/parquet-go/compress/zstd"
@@ -32,7 +32,6 @@ type CompactorConfig struct {
 	Mode             config.Mode
 	RowGroupSize     int
 	CompressionLevel int
-	Logger           *slog.Logger
 }
 
 // CompactResult summarises one compaction run.
@@ -55,7 +54,6 @@ type Compactor struct {
 	mode             config.Mode
 	rowGroupSize     int
 	compressionLevel int
-	logger           *slog.Logger
 }
 
 // NewCompactor creates a Compactor from the given config.
@@ -67,7 +65,6 @@ func NewCompactor(cfg CompactorConfig) *Compactor {
 		mode:             cfg.Mode,
 		rowGroupSize:     cfg.RowGroupSize,
 		compressionLevel: cfg.CompressionLevel,
-		logger:           cfg.Logger.With("component", "compactor"),
 	}
 }
 
@@ -189,21 +186,13 @@ func (c *Compactor) Compact(ctx context.Context, partition string, files []manif
 	for _, f := range files {
 		c.manifest.RemoveFile(partition, f.Key)
 		if err := c.pool.Delete(ctx, f.Key); err != nil {
-			c.logger.Warn("failed to delete source file", "key", f.Key, "error", err)
+			logger.Warnf("failed to delete source file; key=%s, error=%s", f.Key, err)
 		}
 	}
 
 	result.Duration = time.Since(start)
 
-	c.logger.Info("compaction complete",
-		"partition", partition,
-		"input_files", len(files),
-		"rows_merged", rowsMerged,
-		"bytes_read", result.BytesRead,
-		"bytes_written", result.BytesWritten,
-		"output_level", result.OutputLevel,
-		"duration", result.Duration,
-	)
+	logger.Infof("compaction complete; partition=%s, input_files=%d, rows_merged=%d, bytes_read=%d, bytes_written=%d, output_level=%d, duration=%v", partition, len(files), rowsMerged, result.BytesRead, result.BytesWritten, result.OutputLevel, result.Duration)
 
 	return &result, nil
 }

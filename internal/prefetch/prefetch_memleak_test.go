@@ -22,7 +22,7 @@ func heapInUse() uint64 {
 func TestEngine_MemLeak_EnqueueCycles(t *testing.T) {
 	e := NewEngine(4, 100, func(_ context.Context, _ string) error {
 		return nil
-	}, testLogger())
+	})
 	defer e.Close()
 
 	for i := 0; i < 1000; i++ {
@@ -50,7 +50,7 @@ func TestEngine_MemLeak_EnqueueCycles(t *testing.T) {
 func TestEngine_MemLeak_MarkUsefulCycles(t *testing.T) {
 	e := NewEngine(4, 100, func(_ context.Context, _ string) error {
 		return nil
-	}, testLogger())
+	})
 	defer e.Close()
 
 	for i := 0; i < 1000; i++ {
@@ -86,7 +86,7 @@ func TestEngine_MemLeak_MarkUsefulCycles(t *testing.T) {
 func TestEngine_MemLeak_StatsCycles(t *testing.T) {
 	e := NewEngine(2, 10, func(_ context.Context, _ string) error {
 		return nil
-	}, testLogger())
+	})
 	defer e.Close()
 
 	for i := 0; i < 100; i++ {

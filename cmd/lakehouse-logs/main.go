@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
+	"strings"
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/compaction"
@@ -23,76 +21,90 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/selectapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/envflag"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httpserver"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/memory"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/procutil"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 )
 
+const vlCompat = "1.50.0"
+
 var (
-	version   = "dev"
-	buildTime = "unknown"
+	configPath      = flag.String("lakehouse.config", "", "Path to YAML config file")
+	s3Bucket        = flag.String("lakehouse.s3.bucket", "", "S3 bucket name (required)")
+	s3Region        = flag.String("lakehouse.s3.region", "", "S3 region")
+	s3Prefix        = flag.String("lakehouse.s3.prefix", "", "S3 key prefix")
+	s3Endpoint      = flag.String("lakehouse.s3.endpoint", "", "Custom S3 endpoint (MinIO)")
+	s3AccessKey     = flag.String("lakehouse.s3.access-key", "", "S3 access key")
+	s3SecretKey     = flag.String("lakehouse.s3.secret-key", "", "S3 secret key")
+	s3PathStyle     = flag.Bool("lakehouse.s3.force-path-style", false, "Use path-style S3 URLs")
+	topology        = flag.String("lakehouse.topology", "", "Deployment topology: auto, storage-node, direct, loki-proxy")
+	hotBoundary     = flag.String("lakehouse.hot-boundary", "", "Manual hot boundary override (e.g., 7d)")
+	role            = flag.String("lakehouse.role", "", "Role: all, insert, select (default: all)")
+	flushInterval   = flag.Duration("lakehouse.insert.flush-interval", 0, "Insert flush interval (e.g., 10s)")
+	listenAddr      = flag.String("httpListenAddr", ":9428", "HTTP listen address")
+	manifestRefresh = flag.Duration("lakehouse.manifest.refresh-interval", 0, "Manifest refresh interval (e.g., 30s)")
+
+	cacheMemoryMB = flag.Int("lakehouse.cache.memory-mb", 0, "L1 memory cache size in MB (default: 256)")
+	cacheDiskPath = flag.String("lakehouse.cache.disk-path", "", "L2 disk cache directory path")
+	cacheDiskMB   = flag.Int("lakehouse.cache.disk-max-mb", 0, "L2 disk cache max size in MB (default: 1024)")
+
+	compactionEnabled  = flag.Bool("lakehouse.compaction.enabled", false, "Enable compaction scheduler")
+	compactionInterval = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
+	compactionElection = flag.String("lakehouse.compaction.leader-election", "", "Election mode: auto, k8s, s3, none")
+
+	logsBloomColumns = flag.String("lakehouse.logs.bloom-columns", "", "Comma-separated bloom filter columns for logs (default: service.name)")
+	logsDeletePrefix = flag.String("lakehouse.logs.delete-prefix", "", "Delete API prefix (default: /delete/logsql)")
 )
 
 func main() {
-	var (
-		configPath      = flag.String("lakehouse.config", "", "Path to YAML config file")
-		mode            = flag.String("lakehouse.mode", "", "Operating mode: logs or traces (required)")
-		s3Bucket        = flag.String("lakehouse.s3.bucket", "", "S3 bucket name (required)")
-		s3Region        = flag.String("lakehouse.s3.region", "", "S3 region")
-		s3Prefix        = flag.String("lakehouse.s3.prefix", "", "S3 key prefix")
-		s3Endpoint      = flag.String("lakehouse.s3.endpoint", "", "Custom S3 endpoint (MinIO)")
-		s3AccessKey     = flag.String("lakehouse.s3.access-key", "", "S3 access key")
-		s3SecretKey     = flag.String("lakehouse.s3.secret-key", "", "S3 secret key")
-		s3PathStyle     = flag.Bool("lakehouse.s3.force-path-style", false, "Use path-style S3 URLs")
-		topology        = flag.String("lakehouse.topology", "", "Deployment topology: auto, storage-node, direct, loki-proxy")
-		hotBoundary     = flag.String("lakehouse.hot-boundary", "", "Manual hot boundary override (e.g., 7d)")
-		role            = flag.String("lakehouse.role", "", "Role: all, insert, select (default: all)")
-		flushInterval   = flag.Duration("lakehouse.insert.flush-interval", 0, "Insert flush interval (e.g., 10s)")
-		listenAddr      = flag.String("httpListenAddr", "", "HTTP listen address (auto-set from mode)")
-		logLevel        = flag.String("loggerLevel", "INFO", "Log level: DEBUG, INFO, WARN, ERROR")
-		manifestRefresh = flag.Duration("lakehouse.manifest.refresh-interval", 0, "Manifest refresh interval (e.g., 30s)")
+	buildinfo.Init()
+	envflag.Parse()
 
-		compactionEnabled  = flag.Bool("lakehouse.compaction.enabled", false, "Enable compaction scheduler")
-		compactionInterval = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
-		compactionElection = flag.String("lakehouse.compaction.leader-election", "", "Election mode: auto, k8s, s3, none")
-	)
-	flag.Parse()
+	logger.InitNoLogFlags()
+	vlMemoryAllowed := memory.Allowed()
 
-	logger := setupLogger(*logLevel)
+	logger.Infof("lakehouse-logs starting; vl_compat=%s, memory_allowed_bytes=%d", vlCompat, vlMemoryAllowed)
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		logger.Error("failed to load config", "error", err)
+		logger.Errorf("failed to load config: %s", err)
 		os.Exit(1)
 	}
 
-	applyFlags(cfg, *mode, *role, *s3Bucket, *s3Region, *s3Prefix, *s3Endpoint,
-		*s3AccessKey, *s3SecretKey, *s3PathStyle, *topology, *hotBoundary, *manifestRefresh, *flushInterval,
-		*compactionEnabled, *compactionInterval, *compactionElection)
+	cfg.Mode = config.ModeLogs
+	applyFlags(cfg)
 
 	if err := cfg.Validate(); err != nil {
-		logger.Error("invalid config", "error", err)
+		logger.Errorf("invalid config: %s", err)
 		os.Exit(1)
 	}
 
 	addr := *listenAddr
-	if addr == "" {
+	if addr == ":9428" && cfg.ListenAddr() != "" && cfg.ListenAddr() != ":9428" {
 		addr = cfg.ListenAddr()
 	}
 
-	logger.Info("starting victoria-lakehouse",
-		"version", version,
-		"mode", cfg.Mode,
-		"role", cfg.Role,
-		"topology", cfg.Topology,
-		"listen", addr,
-		"s3_bucket", cfg.S3.Bucket,
-		"s3_region", cfg.S3.Region,
-		"s3_prefix", cfg.AutoPrefix(),
-	)
+	logger.Infof("starting lakehouse-logs; version=%s, role=%s, topology=%s, listen=%s, s3_bucket=%s, s3_prefix=%s",
+		buildinfo.Version, cfg.Role, cfg.Topology, addr, cfg.S3.Bucket, cfg.AutoPrefix())
 
-	sm := startup.NewManager(logger)
+	run(cfg, addr)
+}
 
-	store, err := parquets3.New(cfg, logger)
+func run(cfg *config.Config, addr string) {
+	sm := startup.NewManager()
+
+	store, err := parquets3.New(cfg)
 	if err != nil {
-		logger.Error("failed to initialize storage", "error", err)
+		logger.Errorf("failed to initialize storage: %s", err)
 		os.Exit(1)
 	}
 
@@ -105,7 +117,6 @@ func main() {
 			GetPeers:   func() []string { return disc.GetPeers() },
 			AuthSecret: cfg.Peer.AuthKey,
 			SelfAddr:   addr,
-			Logger:     logger,
 		})
 	}
 
@@ -120,14 +131,11 @@ func main() {
 				Address:           addr,
 				HeartbeatInterval: cfg.Compaction.S3Heartbeat,
 				LockTTL:           cfg.Compaction.S3LockTTL,
-				Logger:            logger,
 			},
 			K8sConfig: election.K8sElectorConfig{
-				LeaseName:     "lakehouse-compaction-" + string(cfg.Mode),
+				LeaseName:     "lakehouse-compaction-logs",
 				LeaseDuration: cfg.Compaction.LeaseDuration,
-				Logger:        logger,
 			},
-			Logger: logger,
 		})
 
 		elCtx, elCancel := context.WithCancel(context.Background())
@@ -152,7 +160,6 @@ func main() {
 			MaxConcurrent:    cfg.Compaction.MaxConcurrent,
 			RowGroupSize:     cfg.Insert.RowGroupSize,
 			CompressionLevel: cfg.Insert.CompressionLevel,
-			Logger:           logger,
 			OnCompacted: func(added []manifest.FileInfo, removed []string) {
 				if pusher != nil {
 					pusher.Notify(added, removed)
@@ -167,26 +174,22 @@ func main() {
 			elCancel()
 		}()
 
-		logger.Info("compaction scheduler started",
-			"election", cfg.Compaction.LeaderElection,
-			"interval", cfg.Compaction.Interval,
-		)
+		logger.Infof("compaction scheduler started; election=%s, interval=%v",
+			cfg.Compaction.LeaderElection, cfg.Compaction.Interval)
 	}
 
-	// --- Delete subsystem ---
 	tombstoneStore := delete.NewTombstoneStore()
 	if err := tombstoneStore.LoadFromDisk(cfg.Delete.PersistPath); err != nil {
-		logger.Warn("failed to load tombstones from disk", "error", err, "path", cfg.Delete.PersistPath)
+		logger.Warnf("failed to load tombstones from disk: %s; path=%s", err, cfg.Delete.PersistPath)
 	}
 	if tombstoneStore.Count() == 0 {
 		s3Pool := &s3PoolAdapter{pool: store.Pool()}
 		if err := tombstoneStore.LoadFromS3(context.Background(), s3Pool, cfg.S3.Bucket, cfg.AutoPrefix()); err != nil {
-			logger.Warn("failed to load tombstones from S3", "error", err)
+			logger.Warnf("failed to load tombstones from S3: %s", err)
 		}
 	}
 	store.SetTombstoneStore(tombstoneStore)
 
-	// Build lifecycle rules for storage class detection.
 	lifecycleRules := make([]delete.LifecycleRule, len(cfg.Delete.LifecycleRules))
 	for i, r := range cfg.Delete.LifecycleRules {
 		lifecycleRules[i] = delete.LifecycleRule{
@@ -196,7 +199,7 @@ func main() {
 	}
 	detector := delete.NewStorageClassDetector(lifecycleRules)
 
-	rewriter := delete.NewRewriter(store.Pool(), cfg.AutoPrefix(), cfg.Insert.RowGroupSize, string(cfg.Mode))
+	rewriter := delete.NewRewriter(store.Pool(), cfg.AutoPrefix(), cfg.Insert.RowGroupSize, "logs")
 
 	var rewriteSched *delete.RewriteScheduler
 	if cfg.Delete.Enabled {
@@ -207,75 +210,53 @@ func main() {
 			RewriteDelay:   cfg.Delete.RewriteDelay,
 			AllowedClasses: cfg.Delete.AutoRewriteClasses,
 			MaxConcurrent:  cfg.Delete.RewriteMaxConcurrent,
-			Logger:         logger,
 		})
 		rewriteSched.Start(cfg.Delete.VerifyInterval)
-		logger.Info("delete rewrite scheduler started",
-			"rewrite_delay", cfg.Delete.RewriteDelay,
-			"verify_interval", cfg.Delete.VerifyInterval,
-		)
+		logger.Infof("delete rewrite scheduler started; rewrite_delay=%v, verify_interval=%v",
+			cfg.Delete.RewriteDelay, cfg.Delete.VerifyInterval)
 	}
 
 	mux := newMux(cfg, store, sm, tombstoneStore, detector)
 
-	srv := &http.Server{
-		Addr:         addr,
-		Handler:      mux,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: cfg.Query.Timeout + 5*time.Second,
-		IdleTimeout:  120 * time.Second,
+	requestHandler := func(w http.ResponseWriter, r *http.Request) bool {
+		mux.ServeHTTP(w, r)
+		return true
 	}
 
-	go runStartup(sm, cfg, logger, store)
+	go runStartup(sm, cfg, store)
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
+	httpserver.Serve([]string{addr}, requestHandler, httpserver.ServeOptions{})
+	logger.Infof("lakehouse-logs listening; addr=%s", addr)
 
-	go func() {
-		logger.Info("HTTP server listening", "addr", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("HTTP server error", "error", err)
-			os.Exit(1)
-		}
-	}()
+	sig := procutil.WaitForSigterm()
+	logger.Infof("shutdown signal received; signal=%v", sig)
 
-	<-ctx.Done()
-	logger.Info("shutdown signal received")
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.Error("HTTP server shutdown error", "error", err)
+	if err := httpserver.Stop([]string{addr}); err != nil {
+		logger.Errorf("HTTP server shutdown error: %s", err)
 	}
 
 	if rewriteSched != nil {
 		rewriteSched.Stop()
 	}
 	if err := tombstoneStore.PersistToDisk(cfg.Delete.PersistPath); err != nil {
-		logger.Error("failed to persist tombstones to disk", "error", err)
+		logger.Errorf("failed to persist tombstones to disk: %s", err)
 	}
 
 	if err := store.Close(); err != nil {
-		logger.Error("storage close error", "error", err)
+		logger.Errorf("storage close error: %s", err)
 	}
 
-	logger.Info("victoria-lakehouse stopped")
+	logger.Infof("lakehouse-logs stopped")
 }
 
 func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	metrics.NewInfoGauge("lakehouse_info", map[string]string{
-		"version":  version,
-		"mode":     string(cfg.Mode),
+		"version":  buildinfo.Version,
+		"mode":     "logs",
 		"topology": string(cfg.Topology),
 		"role":     string(cfg.Role),
-	})
-
-	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		metrics.Default().WritePrometheus(w)
 	})
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -300,22 +281,20 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	mux.HandleFunc("/lakehouse/info", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"version":    version,
-			"build_time": buildTime,
-			"mode":       cfg.Mode,
-			"topology":   cfg.Topology,
-			"ready":      sm.IsReady(),
-			"phase":      sm.Phase().String(),
-			"vl_compat":  "1.50.0",
-			"vt_compat":  "0.8.2",
+			"version":   buildinfo.Version,
+			"mode":      "logs",
+			"topology":  cfg.Topology,
+			"ready":     sm.IsReady(),
+			"phase":     sm.Phase().String(),
+			"vl_compat": vlCompat,
 		})
 	})
 
 	if cfg.SelectEnabled() {
-		isHandler := internalselect.NewHandler(store, sm.Logger(), cfg.Query.Timeout)
+		isHandler := internalselect.NewHandler(store, cfg.Query.Timeout)
 		isHandler.Register(mux)
 
-		publicHandler := selectapi.NewHandler(store, sm.Logger(), cfg)
+		publicHandler := selectapi.NewHandler(store, cfg)
 		publicHandler.Register(mux)
 	}
 
@@ -324,13 +303,13 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		if w := store.Writer(); w != nil {
 			bq = w
 		}
-		ih := insertapi.NewHandler(store, sm.Logger(), cfg, bq)
+		ih := insertapi.NewHandler(store, cfg, bq)
 		ih.Register(mux)
 	}
 
 	if cfg.Delete.Enabled && tombstoneStore != nil {
 		mq := &manifestQuerierAdapter{m: store.Manifest()}
-		dh := delete.NewHandler(tombstoneStore, mq, detector, &cfg.Delete, sm.Logger(), string(cfg.Mode))
+		dh := delete.NewHandler(tombstoneStore, mq, detector, &cfg.Delete, "logs")
 		dh.Register(mux)
 	}
 
@@ -405,24 +384,20 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	return mux
 }
 
-func runStartup(sm *startup.Manager, cfg *config.Config, logger *slog.Logger, store *parquets3.Storage) {
+func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage) {
 	sm.SetPhase(startup.PhaseDiskRecovery)
-	logger.Info("disk recovery complete")
+	logger.Infof("disk recovery complete")
 
 	sm.SetPhase(startup.PhaseS3Refresh)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	if err := store.RefreshManifest(ctx); err != nil {
-		logger.Error("manifest S3 refresh failed", "error", err)
+		logger.Errorf("manifest S3 refresh failed: %s", err)
 	} else {
 		m := store.Manifest()
-		logger.Info("manifest S3 refresh complete",
-			"files", m.TotalFiles(),
-			"bytes", m.TotalBytes(),
-			"min_time", m.MinTime(),
-			"max_time", m.MaxTime(),
-		)
+		logger.Infof("manifest S3 refresh complete; files=%d, bytes=%d, min_time=%v, max_time=%v",
+			m.TotalFiles(), m.TotalBytes(), m.MinTime(), m.MaxTime())
 		store.WarmLabelIndex(ctx)
 	}
 
@@ -433,84 +408,77 @@ func runStartup(sm *startup.Manager, cfg *config.Config, logger *slog.Logger, st
 	for range ticker.C {
 		rctx, rcancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		if err := store.RefreshManifest(rctx); err != nil {
-			logger.Error("periodic manifest refresh failed", "error", err)
+			logger.Errorf("periodic manifest refresh failed: %s", err)
 		} else {
 			m := store.Manifest()
-			logger.Debug("manifest refreshed",
-				"files", m.TotalFiles(),
-				"bytes", m.TotalBytes(),
-			)
+			logger.Infof("manifest refreshed; files=%d, bytes=%d", m.TotalFiles(), m.TotalBytes())
 		}
 		rcancel()
 	}
 }
 
-func applyFlags(cfg *config.Config, mode, role, bucket, region, prefix, endpoint,
-	accessKey, secretKey string, pathStyle bool, topology, hotBoundary string, manifestRefresh time.Duration, flushInterval time.Duration,
-	compactionEnabled bool, compactionInterval time.Duration, compactionElection string) {
-	if mode != "" {
-		cfg.Mode = config.Mode(mode)
+func applyFlags(cfg *config.Config) {
+	if r := *role; r != "" {
+		cfg.Role = config.Role(r)
 	}
-	if role != "" {
-		cfg.Role = config.Role(role)
+	if *flushInterval > 0 {
+		cfg.Insert.FlushInterval = *flushInterval
 	}
-	if flushInterval > 0 {
-		cfg.Insert.FlushInterval = flushInterval
+	if b := *s3Bucket; b != "" {
+		cfg.S3.Bucket = b
 	}
-	if bucket != "" {
-		cfg.S3.Bucket = bucket
+	if r := *s3Region; r != "" {
+		cfg.S3.Region = r
 	}
-	if region != "" {
-		cfg.S3.Region = region
+	if p := *s3Prefix; p != "" {
+		cfg.S3.Prefix = p
 	}
-	if prefix != "" {
-		cfg.S3.Prefix = prefix
+	if e := *s3Endpoint; e != "" {
+		cfg.S3.Endpoint = e
 	}
-	if endpoint != "" {
-		cfg.S3.Endpoint = endpoint
+	if k := *s3AccessKey; k != "" {
+		cfg.S3.AccessKey = k
 	}
-	if accessKey != "" {
-		cfg.S3.AccessKey = accessKey
+	if k := *s3SecretKey; k != "" {
+		cfg.S3.SecretKey = k
 	}
-	if secretKey != "" {
-		cfg.S3.SecretKey = secretKey
-	}
-	if pathStyle {
+	if *s3PathStyle {
 		cfg.S3.ForcePathStyle = true
 	}
-	if topology != "" {
-		cfg.Topology = config.Topology(topology)
+	if t := *topology; t != "" {
+		cfg.Topology = config.Topology(t)
 	}
-	if hotBoundary != "" {
-		cfg.HotBoundary = hotBoundary
+	if h := *hotBoundary; h != "" {
+		cfg.HotBoundary = h
 	}
-	if manifestRefresh > 0 {
-		cfg.Manifest.RefreshInterval = manifestRefresh
+	if *manifestRefresh > 0 {
+		cfg.Manifest.RefreshInterval = *manifestRefresh
 	}
-	if compactionEnabled {
+	if *cacheMemoryMB > 0 {
+		cfg.Cache.MemoryLimit = fmt.Sprintf("%dMB", *cacheMemoryMB)
+	}
+	if p := *cacheDiskPath; p != "" {
+		cfg.Cache.DiskPath = p
+	}
+	if *cacheDiskMB > 0 {
+		cfg.Cache.DiskLimit = fmt.Sprintf("%dMB", *cacheDiskMB)
+	}
+	if *compactionEnabled {
 		cfg.Compaction.Enabled = true
 	}
-	if compactionInterval > 0 {
-		cfg.Compaction.Interval = compactionInterval
+	if *compactionInterval > 0 {
+		cfg.Compaction.Interval = *compactionInterval
 	}
-	if compactionElection != "" {
-		cfg.Compaction.LeaderElection = compactionElection
+	if e := *compactionElection; e != "" {
+		cfg.Compaction.LeaderElection = e
 	}
-}
 
-func setupLogger(level string) *slog.Logger {
-	var lvl slog.Level
-	switch level {
-	case "DEBUG":
-		lvl = slog.LevelDebug
-	case "WARN":
-		lvl = slog.LevelWarn
-	case "ERROR":
-		lvl = slog.LevelError
-	default:
-		lvl = slog.LevelInfo
+	if s := *logsBloomColumns; s != "" {
+		cfg.Logs.BloomColumns = strings.Split(s, ",")
 	}
-	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
+	if s := *logsDeletePrefix; s != "" {
+		cfg.Logs.DeletePrefix = s
+	}
 }
 
 func hostname() string {
@@ -519,4 +487,60 @@ func hostname() string {
 	}
 	h, _ := os.Hostname()
 	return h
+}
+
+type s3PoolAdapter struct {
+	pool *s3reader.ClientPool
+}
+
+func (a *s3PoolAdapter) Upload(ctx context.Context, key string, data []byte) error {
+	return a.pool.Upload(ctx, key, data)
+}
+
+func (a *s3PoolAdapter) Download(ctx context.Context, key string) ([]byte, error) {
+	return a.pool.Download(ctx, key)
+}
+
+func (a *s3PoolAdapter) Delete(ctx context.Context, key string) error {
+	return a.pool.Delete(ctx, key)
+}
+
+func (a *s3PoolAdapter) List(ctx context.Context, prefix string) ([]string, error) {
+	client := a.pool.S3Client()
+	bucket := a.pool.Bucket()
+
+	var keys []string
+	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucket),
+		Prefix: aws.String(prefix),
+	})
+
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, obj := range page.Contents {
+			keys = append(keys, aws.ToString(obj.Key))
+		}
+	}
+	return keys, nil
+}
+
+type manifestQuerierAdapter struct {
+	m *manifest.Manifest
+}
+
+func (a *manifestQuerierAdapter) GetFilesForRange(startNs, endNs int64) []delete.FileInfo {
+	mFiles := a.m.GetFilesForRange(startNs, endNs)
+	result := make([]delete.FileInfo, len(mFiles))
+	for i, f := range mFiles {
+		result[i] = delete.FileInfo{
+			Key:       f.Key,
+			Size:      f.Size,
+			MinTimeNs: f.MinTimeNs,
+			MaxTimeNs: f.MaxTimeNs,
+		}
+	}
+	return result
 }

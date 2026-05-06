@@ -7,7 +7,7 @@ sidebar_position: 1
 
 Victoria Lakehouse is 100% API-compatible with VictoriaLogs and VictoriaTraces. It reimplements the VL/VT storage interface with Parquet on S3, exposing identical HTTP endpoints, LogsQL query syntax, insert APIs, and binary DataBlock protocol. It registers as a `-storageNode` on vlselect/vtselect and works transparently alongside existing VL/VT clusters.
 
-It runs as a single binary in either `logs` or `traces` mode, with optional role separation for independent scaling of insert and select workloads.
+It ships as two dedicated binaries — `lakehouse-logs` and `lakehouse-traces` — each with independent VL/VT dependency versions and optional role separation for independent scaling of insert and select workloads.
 
 ## Prerequisites
 
@@ -24,11 +24,15 @@ It runs as a single binary in either `logs` or `traces` mode, with optional role
 # Build from source
 git clone https://github.com/ReliablyObserve/victoria-lakehouse.git
 cd victoria-lakehouse
-make build
+make build-logs    # or: make build-traces
 
-# Run
-./bin/lakehouse \
-  --lakehouse.mode=logs \
+# Run logs
+./bin/lakehouse-logs \
+  --lakehouse.s3.bucket=obs-archive \
+  --lakehouse.s3.region=us-east-1
+
+# Run traces
+./bin/lakehouse-traces \
   --lakehouse.s3.bucket=obs-archive \
   --lakehouse.s3.region=us-east-1
 ```
@@ -36,9 +40,15 @@ make build
 ### Docker
 
 ```bash
+# Logs
 docker run -p 9428:9428 \
-  ghcr.io/reliablyobserve/victoria-lakehouse:latest \
-  --lakehouse.mode=logs \
+  ghcr.io/reliablyobserve/lakehouse-logs:latest \
+  --lakehouse.s3.bucket=obs-archive \
+  --lakehouse.s3.region=us-east-1
+
+# Traces
+docker run -p 10428:10428 \
+  ghcr.io/reliablyobserve/lakehouse-traces:latest \
   --lakehouse.s3.bucket=obs-archive \
   --lakehouse.s3.region=us-east-1
 ```
@@ -47,8 +57,7 @@ For MinIO (local development):
 
 ```bash
 docker run -p 9428:9428 \
-  ghcr.io/reliablyobserve/victoria-lakehouse:latest \
-  --lakehouse.mode=logs \
+  ghcr.io/reliablyobserve/lakehouse-logs:latest \
   --lakehouse.s3.bucket=obs-archive \
   --lakehouse.s3.endpoint=http://minio:9000 \
   --lakehouse.s3.access-key=minioadmin \
@@ -209,11 +218,11 @@ Run insert and select as separate deployments for independent scaling:
 
 ```bash
 # Insert pods (write to S3)
-lakehouse --lakehouse.mode=logs --lakehouse.role=insert \
+lakehouse-logs --lakehouse.role=insert \
   --lakehouse.s3.bucket=obs-archive
 
 # Select pods (read from S3 + query insert buffers)
-lakehouse --lakehouse.mode=logs --lakehouse.role=select \
+lakehouse-logs --lakehouse.role=select \
   --lakehouse.s3.bucket=obs-archive \
   --lakehouse.select.insert-headless-service=lakehouse-insert.monitoring.svc.cluster.local
 ```
@@ -302,8 +311,7 @@ curl http://localhost:9428/metrics
 For production deployments with ongoing inserts, enable background compaction to merge small L0 flush files into larger L1/L2 files. This improves query performance over time by reducing file count and improving row group density.
 
 ```bash
-lakehouse \
-  --lakehouse.mode=logs \
+lakehouse-logs \
   --lakehouse.s3.bucket=obs-archive \
   --lakehouse.compaction.enabled=true \
   --lakehouse.compaction.leader-election=auto

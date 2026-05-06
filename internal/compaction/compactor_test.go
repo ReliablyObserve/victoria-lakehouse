@@ -3,8 +3,6 @@ package compaction
 import (
 	"bytes"
 	"context"
-	"log/slog"
-	"os"
 	"testing"
 
 	"github.com/parquet-go/parquet-go"
@@ -28,9 +26,8 @@ func makeTestParquet(t *testing.T, rows []schema.LogRow) []byte {
 }
 
 func TestCompactor_MergeLogRows(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	pool := newMockPool()
-	m := manifest.New("test-bucket", "logs/", logger)
+	m := manifest.New("test-bucket", "logs/")
 
 	const partition = "dt=2026-05-04/hour=10"
 	const fp = "abc123"
@@ -85,7 +82,6 @@ func TestCompactor_MergeLogRows(t *testing.T) {
 		Mode:             config.ModeLogs,
 		RowGroupSize:     1000,
 		CompressionLevel: 3,
-		Logger:           logger,
 	})
 
 	result, err := compactor.Compact(context.Background(), partition, []manifest.FileInfo{fi1, fi2}, 0)
@@ -157,9 +153,8 @@ func TestCompactor_MergeLogRows(t *testing.T) {
 }
 
 func TestCompactor_SchemaFingerprintMismatchSkipped(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	pool := newMockPool()
-	m := manifest.New("test-bucket", "logs/", logger)
+	m := manifest.New("test-bucket", "logs/")
 
 	const partition = "dt=2026-05-04/hour=10"
 
@@ -181,7 +176,6 @@ func TestCompactor_SchemaFingerprintMismatchSkipped(t *testing.T) {
 		Mode:             config.ModeLogs,
 		RowGroupSize:     1000,
 		CompressionLevel: 3,
-		Logger:           logger,
 	})
 
 	_, err := compactor.Compact(context.Background(), partition, []manifest.FileInfo{fi1, fi2}, 0)

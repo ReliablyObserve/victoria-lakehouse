@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
@@ -22,24 +22,17 @@ type PusherConfig struct {
 	GetPeers   func() []string
 	AuthSecret string
 	SelfAddr   string
-	Logger     *slog.Logger
 }
 
 type Pusher struct {
 	cfg    PusherConfig
 	client *http.Client
-	logger *slog.Logger
 }
 
 func NewPusher(cfg PusherConfig) *Pusher {
-	lg := cfg.Logger
-	if lg == nil {
-		lg = slog.Default()
-	}
 	return &Pusher{
 		cfg:    cfg,
 		client: &http.Client{Timeout: 2 * time.Second},
-		logger: lg.With("component", "manifest.push"),
 	}
 }
 
@@ -56,7 +49,7 @@ func (p *Pusher) Notify(added []FileInfo, removed []string) {
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
-		p.logger.Warn("failed to marshal manifest update", "error", err)
+		logger.Warnf("failed to marshal manifest update: %s", err)
 		return
 	}
 
@@ -81,7 +74,7 @@ func (p *Pusher) push(addr string, data []byte) {
 	url := fmt.Sprintf("http://%s/internal/manifest/update", addr)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
-		p.logger.Warn("push request create failed", "peer", addr, "error", err)
+		logger.Warnf("push request create failed; peer=%s: %s", addr, err)
 		metrics.ManifestPushErrorsTotal.Inc()
 		return
 	}
@@ -92,14 +85,14 @@ func (p *Pusher) push(addr string, data []byte) {
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		p.logger.Debug("push failed", "peer", addr, "error", err)
+		logger.Infof("push failed; peer=%s: %s", addr, err)
 		metrics.ManifestPushErrorsTotal.Inc()
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		p.logger.Debug("push rejected", "peer", addr, "status", resp.StatusCode)
+		logger.Infof("push rejected; peer=%s, status=%d", addr, resp.StatusCode)
 		metrics.ManifestPushErrorsTotal.Inc()
 	}
 }

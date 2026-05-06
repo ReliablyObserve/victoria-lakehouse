@@ -3,7 +3,6 @@ package delete
 import (
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -32,8 +31,7 @@ func newTestHandler(cfg *config.DeleteConfig, files []FileInfo) *Handler {
 	store := NewTombstoneStore()
 	manifest := &mockManifest{files: files}
 	detector := NewStorageClassDetector(nil) // no lifecycle rules
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewHandler(store, manifest, detector, cfg, logger, "logs")
+	return NewHandler(store, manifest, detector, cfg, "logs")
 }
 
 func defaultCfg() *config.DeleteConfig {
@@ -742,9 +740,8 @@ func TestHandler_TraceMode_Delete(t *testing.T) {
 	}}
 	detector := NewStorageClassDetector(nil)
 	cfg := defaultCfg()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	h := NewHandler(store, manifest, detector, cfg, logger, "traces")
+	h := NewHandler(store, manifest, detector, cfg, "traces")
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -775,9 +772,8 @@ func TestHandler_TraceMode_Estimate(t *testing.T) {
 	}}
 	detector := NewStorageClassDetector(nil)
 	cfg := defaultCfg()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	h := NewHandler(store, manifest, detector, cfg, logger, "traces")
+	h := NewHandler(store, manifest, detector, cfg, "traces")
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -801,9 +797,8 @@ func TestHandler_TraceMode_ListTombstones(t *testing.T) {
 	manifest := &mockManifest{}
 	detector := NewStorageClassDetector(nil)
 	cfg := defaultCfg()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	h := NewHandler(store, manifest, detector, cfg, logger, "traces")
+	h := NewHandler(store, manifest, detector, cfg, "traces")
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -821,9 +816,8 @@ func TestHandler_TraceMode_LogsEndpointReturns404(t *testing.T) {
 	manifest := &mockManifest{}
 	detector := NewStorageClassDetector(nil)
 	cfg := defaultCfg()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	h := NewHandler(store, manifest, detector, cfg, logger, "traces")
+	h := NewHandler(store, manifest, detector, cfg, "traces")
 	mux := http.NewServeMux()
 	h.Register(mux)
 

@@ -7,7 +7,10 @@ global:
   commonAnnotations: {}
 
 image:
-  repository: ghcr.io/reliablyobserve/victoria-lakehouse
+  logs:
+    repository: ghcr.io/reliablyobserve/lakehouse-logs
+  traces:
+    repository: ghcr.io/reliablyobserve/lakehouse-traces
   tag: ""
   pullPolicy: IfNotPresent
 
@@ -37,6 +40,8 @@ common:
 lakehouseConfig:
   mode: logs
   role: all
+  topology: auto
+  hot_boundary: ""
   s3:
     bucket: ""
     region: us-east-1
@@ -47,21 +52,29 @@ lakehouseConfig:
     force_path_style: false
     max_connections: 128
     timeout: 30s
+    retry_max: 3
+    retry_base_delay: 200ms
   cache:
     memory_limit: 512MB
+    disk_path: /data/lakehouse/cache
+    disk_limit: 50GB
     eviction_watermark: 0.8
+    footer_ttl: 1h
+    bloom_ttl: 1h
+    page_ttl: 10m
   insert:
     flush_interval: 10s
     max_buffer_rows: 50000
     max_buffer_bytes: 256MB
-    row_group_size: 10000
     target_file_size: 128MB
-    bloom_columns: "service.name,trace_id"
-    compression_level: default
-    wal:
-      enabled: true
-      dir: /data/lakehouse/wal
-      max_bytes: 512MB
+    row_group_size: 10000
+    bloom_columns:
+      - service.name
+      - trace_id
+    compression_level: 3
+    wal_enabled: true
+    wal_dir: /data/lakehouse/wal
+    wal_max_bytes: 512MB
   select:
     buffer_query_enabled: true
     insert_headless_service: ""
@@ -72,19 +85,28 @@ lakehouseConfig:
     partition_auth_key: ""
     peer_headless_service: ""
     refresh_interval: 5m
+    peer_refresh_interval: 30s
     timeout: 10s
   peer:
     auth_key: ""
     timeout: 5s
     max_connections: 32
-  hot_boundary: ""
   manifest:
     refresh_interval: 5m
     persist_path: /data/lakehouse
+    persist_interval: 5m
     sqs_queue_url: ""
+    sqs_region: ""
+    sqs_wait_time: 20s
+  prefetch:
+    correlated: true
+    read_ahead_depth: 2
+    max_concurrent: 4
+    max_queue: 64
   query:
     max_concurrent: 32
     timeout: 60s
+    max_rows: 10000000
     slow_threshold: 5s
   startup:
     serve_stale: false
@@ -92,6 +114,13 @@ lakehouseConfig:
     max_warmup_time: 5m
   schema:
     extra_promoted: []
+  circuit_breaker:
+    threshold: 5
+    timeout: 30s
+    success_threshold: 2
+  tenant:
+    default_prefix: ""
+    prefix_template: "{AccountID}/{ProjectID}/"
   compaction:
     enabled: false
     interval: 5m
@@ -100,6 +129,9 @@ lakehouseConfig:
     min_files_l1: 10
     min_age: 1h
     leader_election: auto
+    lease_duration: 15s
+    s3_lock_ttl: 60s
+    s3_heartbeat: 15s
   delete:
     enabled: true
     default_mode: auto
@@ -113,6 +145,22 @@ lakehouseConfig:
     force_glacier_header: X-Force-Glacier-Delete
     verify_interval: 6h
     lifecycle_rules: []
+
+  # Mode-specific config: only the active mode's section is used by the binary.
+  # Set lakehouseConfig.mode above to select which binary/config applies.
+  logs:
+    bloom_columns:
+      - service.name
+    delete_prefix: /delete/logsql
+    compat_version: ""
+  traces:
+    bloom_columns:
+      - trace_id
+      - service.name
+    delete_prefix: /delete/tracessql
+    compat_version: ""
+    jaeger_enabled: true
+    jaeger_grpc_addr: ":16685"
 
 select:
   enabled: true

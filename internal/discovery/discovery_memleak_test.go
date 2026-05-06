@@ -26,8 +26,8 @@ func TestDiscovery_MemLeak_DiscoverStorageNodesCycles(t *testing.T) {
 		nil,
 		"auth-key",
 		"",
+		"9428",
 		5000000000,
-		testLogger(),
 		WithLookupSRV(func(_ context.Context, _, _, _ string) (string, []*net.SRV, error) {
 			return "", []*net.SRV{
 				{Target: "node1.svc.cluster.local.", Port: 9428},
@@ -64,8 +64,8 @@ func TestDiscovery_MemLeak_DiscoverPeersCycles(t *testing.T) {
 		nil,
 		"",
 		"peers.svc.cluster.local",
+		"9428",
 		5000000000,
-		testLogger(),
 		WithLookupSRV(func(_ context.Context, _, _, _ string) (string, []*net.SRV, error) {
 			return "", []*net.SRV{
 				{Target: "peer1.", Port: 9428},
@@ -96,7 +96,7 @@ func TestDiscovery_MemLeak_DiscoverPeersCycles(t *testing.T) {
 }
 
 func TestDiscovery_MemLeak_GetterCycles(t *testing.T) {
-	d := New("", []string{"node1:9428", "node2:9428"}, "", "", 5000000000, testLogger())
+	d := New("", []string{"node1:9428", "node2:9428"}, "", "", "9428", 5000000000)
 	ctx := context.Background()
 	_, _ = d.DiscoverStorageNodes(ctx)
 
@@ -127,7 +127,7 @@ func TestDiscovery_MemLeak_GetterCycles(t *testing.T) {
 }
 
 func BenchmarkDiscovery_GetStorageNodes(b *testing.B) {
-	d := New("", []string{"node1:9428", "node2:9428", "node3:9428"}, "", "", 5000000000, testLogger())
+	d := New("", []string{"node1:9428", "node2:9428", "node3:9428"}, "", "", "9428", 5000000000)
 	ctx := context.Background()
 	_, _ = d.DiscoverStorageNodes(ctx)
 
@@ -139,7 +139,7 @@ func BenchmarkDiscovery_GetStorageNodes(b *testing.B) {
 }
 
 func BenchmarkDiscovery_GetHotBoundary(b *testing.B) {
-	d := New("", nil, "", "", 5000000000, testLogger())
+	d := New("", nil, "", "", "9428", 5000000000)
 	d.SetHotBoundaryForTest(&HotBoundary{MinDate: "20260401", MaxDate: "20260501"})
 
 	b.ReportAllocs()
@@ -155,8 +155,8 @@ func BenchmarkDiscovery_DiscoverStorageNodes(b *testing.B) {
 		nil,
 		"auth",
 		"",
+		"9428",
 		5000000000,
-		testLogger(),
 		WithLookupSRV(func(_ context.Context, _, _, _ string) (string, []*net.SRV, error) {
 			return "", []*net.SRV{
 				{Target: "n1.", Port: 9428},

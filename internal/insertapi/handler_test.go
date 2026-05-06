@@ -3,7 +3,6 @@ package insertapi
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,10 +27,9 @@ func (m *mockStore) CanWriteData() error {
 }
 
 func testHandler(store LogStore) *Handler {
-	logger := slog.Default()
 	cfg := config.Default()
 	cfg.Mode = config.ModeLogs
-	return NewHandler(store, logger, cfg)
+	return NewHandler(store, cfg)
 }
 
 // --- jsonFieldsToLogRow tests ---
@@ -757,7 +755,6 @@ func TestHandleESBulk_BlankLines(t *testing.T) {
 
 func TestHandler_RegisterBufferEndpoint(t *testing.T) {
 	store := &mockStore{}
-	logger := slog.Default()
 	cfg := config.Default()
 	cfg.Mode = config.ModeLogs
 
@@ -766,7 +763,7 @@ func TestHandler_RegisterBufferEndpoint(t *testing.T) {
 			{TimestampUnixNano: 1000, Body: "buffered"},
 		},
 	}
-	h := NewHandler(store, logger, cfg, bq)
+	h := NewHandler(store, cfg, bq)
 	if h.bufferHandler == nil {
 		t.Fatal("bufferHandler should not be nil when BufferQuerier is provided")
 	}
@@ -789,12 +786,11 @@ func TestHandler_RegisterBufferEndpoint(t *testing.T) {
 
 func TestHandler_NoBufferEndpoint(t *testing.T) {
 	store := &mockStore{}
-	logger := slog.Default()
 	cfg := config.Default()
 	cfg.Mode = config.ModeLogs
 
 	// No BufferQuerier provided
-	h := NewHandler(store, logger, cfg)
+	h := NewHandler(store, cfg)
 	if h.bufferHandler != nil {
 		t.Error("bufferHandler should be nil when no BufferQuerier is provided")
 	}
@@ -814,12 +810,11 @@ func TestHandler_NoBufferEndpoint(t *testing.T) {
 
 func TestHandler_NilBufferQuerier(t *testing.T) {
 	store := &mockStore{}
-	logger := slog.Default()
 	cfg := config.Default()
 	cfg.Mode = config.ModeLogs
 
 	// Explicit nil BufferQuerier
-	h := NewHandler(store, logger, cfg, nil)
+	h := NewHandler(store, cfg, nil)
 	if h.bufferHandler != nil {
 		t.Error("bufferHandler should be nil when nil BufferQuerier is passed")
 	}
@@ -978,7 +973,6 @@ func TestJsonFieldsToLogRow_ExtraPromotedNotInMAP(t *testing.T) {
 
 func TestNewHandler_WithExtraPromoted(t *testing.T) {
 	store := &mockStore{}
-	logger := slog.Default()
 	cfg := config.Default()
 	cfg.Mode = config.ModeLogs
 	cfg.Schema.ExtraPromoted = []config.ExtraPromotedColumn{
@@ -986,7 +980,7 @@ func TestNewHandler_WithExtraPromoted(t *testing.T) {
 		{Name: "customer_id", Type: "string", Bloom: true},
 	}
 
-	h := NewHandler(store, logger, cfg)
+	h := NewHandler(store, cfg)
 
 	if !h.promotedFields["http.status_code"] {
 		t.Error("http.status_code should be in promotedFields")
@@ -1001,14 +995,13 @@ func TestNewHandler_WithExtraPromoted(t *testing.T) {
 
 func TestHandleJSONLine_ExtraPromotedExcludedFromMAP(t *testing.T) {
 	store := &mockStore{}
-	logger := slog.Default()
 	cfg := config.Default()
 	cfg.Mode = config.ModeLogs
 	cfg.Schema.ExtraPromoted = []config.ExtraPromotedColumn{
 		{Name: "customer_id", Type: "string", Bloom: true},
 	}
 
-	h := NewHandler(store, logger, cfg)
+	h := NewHandler(store, cfg)
 
 	body := `{"_msg":"test","customer_id":"cust-1","random":"val"}`
 	req := httptest.NewRequest(http.MethodPost, "/insert/jsonline", strings.NewReader(body))

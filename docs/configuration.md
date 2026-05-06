@@ -7,13 +7,12 @@ sidebar_position: 9
 
 Victoria Lakehouse uses a `--lakehouse.*` flag prefix for all settings. Flags can also be set via YAML config file (`--lakehouse.config=path`). CLI flags override YAML values.
 
-All flags have production-ready defaults. A minimal config requires only `--lakehouse.mode` and `--lakehouse.s3.bucket`.
+All flags have production-ready defaults. A minimal config requires only `--lakehouse.s3.bucket`. Mode is determined by which binary you run (`lakehouse-logs` or `lakehouse-traces`).
 
 ## Core Settings
 
 | Flag | Default | Description |
 |---|---|---|
-| `--lakehouse.mode` | **(required)** | `logs` or `traces` — determines schema, port, field mapping |
 | `--lakehouse.config` | `""` | Path to YAML config file |
 | `--lakehouse.role` | `all` | `all`, `insert`, `select` — component role |
 | `--lakehouse.topology` | `auto` | `auto`, `storage-node`, `direct`, `loki-proxy` |

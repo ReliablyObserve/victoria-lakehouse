@@ -5,12 +5,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/protocol"
@@ -19,14 +19,12 @@ import (
 
 type Handler struct {
 	store   storage.Storage
-	logger  *slog.Logger
 	timeout time.Duration
 }
 
-func NewHandler(store storage.Storage, logger *slog.Logger, timeout time.Duration) *Handler {
+func NewHandler(store storage.Storage, timeout time.Duration) *Handler {
 	return &Handler{
 		store:   store,
-		logger:  logger.With("component", "internalselect"),
 		timeout: timeout,
 	}
 }
@@ -51,7 +49,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	qctx, err := parseQueryContext(r)
+	tenantIDs, q, err := parseInternalQuery(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -66,24 +64,24 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 
 	enc, err := zstd.NewWriter(w, zstd.WithEncoderLevel(zstd.SpeedDefault))
 	if err != nil {
-		h.logger.Error("zstd encoder init", "error", err)
+		logger.Errorf("zstd encoder init: %s", err)
 		return
 	}
 	defer func() { _ = enc.Close() }()
 
-	writeBlock := func(_ uint, db *storage.DataBlock) {
+	writeBlock := func(_ uint, db *logstorage.DataBlock) {
 		if err := protocol.WriteDataBlockStream(enc, db); err != nil {
-			h.logger.Warn("write data block", "error", err)
+			logger.Warnf("write data block; error=%s", err)
 		}
 	}
 
-	if err := h.store.RunQuery(ctx, qctx, writeBlock); err != nil {
-		h.logger.Warn("query execution", "error", err)
+	if err := h.store.RunQuery(ctx, tenantIDs, q, writeBlock); err != nil {
+		logger.Warnf("query execution; error=%s", err)
 	}
 }
 
 func (h *Handler) handleFieldNames(w http.ResponseWriter, r *http.Request) {
-	qctx, err := parseQueryContext(r)
+	tenantIDs, q, err := parseInternalQuery(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -92,7 +90,7 @@ func (h *Handler) handleFieldNames(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	vals, err := h.store.GetFieldNames(ctx, qctx)
+	vals, err := h.store.GetFieldNames(ctx, tenantIDs, q)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -102,23 +100,22 @@ func (h *Handler) handleFieldNames(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleFieldValues(w http.ResponseWriter, r *http.Request) {
-	qctx, err := parseQueryContext(r)
+	tenantIDs, q, err := parseInternalQuery(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	fieldName := r.URL.Query().Get("field")
-	limitStr := r.URL.Query().Get("limit")
-	limit := 0
-	if limitStr != "" {
-		limit, _ = strconv.Atoi(limitStr)
+	var limit uint64
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		limit, _ = strconv.ParseUint(limitStr, 10, 64)
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	vals, err := h.store.GetFieldValues(ctx, qctx, fieldName, limit)
+	vals, err := h.store.GetFieldValues(ctx, tenantIDs, q, fieldName, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -128,7 +125,7 @@ func (h *Handler) handleFieldValues(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleStreamFieldNames(w http.ResponseWriter, r *http.Request) {
-	qctx, err := parseQueryContext(r)
+	tenantIDs, q, err := parseInternalQuery(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -137,7 +134,7 @@ func (h *Handler) handleStreamFieldNames(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	vals, err := h.store.GetStreamFieldNames(ctx, qctx)
+	vals, err := h.store.GetStreamFieldNames(ctx, tenantIDs, q)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -147,18 +144,22 @@ func (h *Handler) handleStreamFieldNames(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) handleStreamFieldValues(w http.ResponseWriter, r *http.Request) {
-	qctx, err := parseQueryContext(r)
+	tenantIDs, q, err := parseInternalQuery(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	fieldName := r.URL.Query().Get("field")
+	var limit uint64
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		limit, _ = strconv.ParseUint(limitStr, 10, 64)
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	vals, err := h.store.GetStreamFieldValues(ctx, qctx, fieldName)
+	vals, err := h.store.GetStreamFieldValues(ctx, tenantIDs, q, fieldName, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -168,16 +169,21 @@ func (h *Handler) handleStreamFieldValues(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) handleStreams(w http.ResponseWriter, r *http.Request) {
-	qctx, err := parseQueryContext(r)
+	tenantIDs, q, err := parseInternalQuery(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
+	var limit uint64
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		limit, _ = strconv.ParseUint(limitStr, 10, 64)
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	vals, err := h.store.GetStreams(ctx, qctx)
+	vals, err := h.store.GetStreams(ctx, tenantIDs, q, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -187,16 +193,21 @@ func (h *Handler) handleStreams(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleStreamIDs(w http.ResponseWriter, r *http.Request) {
-	qctx, err := parseQueryContext(r)
+	tenantIDs, q, err := parseInternalQuery(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
+	var limit uint64
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		limit, _ = strconv.ParseUint(limitStr, 10, 64)
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	vals, err := h.store.GetStreamIDs(ctx, qctx)
+	vals, err := h.store.GetStreamIDs(ctx, tenantIDs, q, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -205,106 +216,89 @@ func (h *Handler) handleStreamIDs(w http.ResponseWriter, r *http.Request) {
 	writeValueWithHitsResponse(w, vals)
 }
 
-func (h *Handler) handleTenantIDs(w http.ResponseWriter, r *http.Request) {
-	qctx, err := parseQueryContext(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
-	defer cancel()
-
-	ids, err := h.store.GetTenantIDs(ctx, qctx)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
+func (h *Handler) handleTenantIDs(w http.ResponseWriter, _ *http.Request) {
+	// GetTenantIDs is not part of the storage.Storage interface;
+	// return an empty list for now.
 	w.Header().Set("Content-Type", "application/octet-stream")
-	_, _ = w.Write(protocol.MarshalTenantIDs(ids))
+	_, _ = w.Write(protocol.MarshalTenantIDs(nil))
 }
 
 func (h *Handler) handleDeleteNoop(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func parseQueryContext(r *http.Request) (*storage.QueryContext, error) {
-	q := r.URL.Query()
+// parseInternalQuery extracts tenant IDs and a logstorage.Query from the request.
+// It reads time range and query string from URL params or binary body.
+func parseInternalQuery(r *http.Request) ([]logstorage.TenantID, *logstorage.Query, error) {
+	params := r.URL.Query()
 
-	startNs, _ := strconv.ParseInt(q.Get("start"), 10, 64)
-	endNs, _ := strconv.ParseInt(q.Get("end"), 10, 64)
+	startNs, _ := strconv.ParseInt(params.Get("start"), 10, 64)
+	endNs, _ := strconv.ParseInt(params.Get("end"), 10, 64)
+
+	queryStr := params.Get("query")
 
 	if startNs == 0 && endNs == 0 {
 		if body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)); err == nil && len(body) > 0 {
-			return parseQueryContextFromBody(body, q)
+			s, e, qs := parseQueryFromBody(body)
+			startNs = s
+			endNs = e
+			if qs != "" {
+				queryStr = qs
+			}
 		}
 	}
 
-	var tenantIDs []storage.TenantID
-	if accountID := q.Get("AccountID"); accountID != "" {
+	var tenantIDs []logstorage.TenantID
+	if accountID := params.Get("AccountID"); accountID != "" {
 		aid, _ := strconv.ParseUint(accountID, 10, 32)
-		pid, _ := strconv.ParseUint(q.Get("ProjectID"), 10, 32)
-		tenantIDs = append(tenantIDs, storage.TenantID{
+		pid, _ := strconv.ParseUint(params.Get("ProjectID"), 10, 32)
+		tenantIDs = append(tenantIDs, logstorage.TenantID{
 			AccountID: uint32(aid),
 			ProjectID: uint32(pid),
 		})
 	}
 
-	query := q.Get("query")
-	var requestedCols []string
-	if cols := q.Get("columns"); cols != "" {
-		requestedCols = strings.Split(cols, ",")
+	if queryStr == "" {
+		queryStr = "*"
+	}
+	q, err := logstorage.ParseQuery(queryStr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse query: %w", err)
+	}
+	if startNs != 0 || endNs != 0 {
+		q.AddTimeFilter(startNs, endNs)
 	}
 
-	return &storage.QueryContext{
-		TenantIDs:        tenantIDs,
-		StartNs:          startNs,
-		EndNs:            endNs,
-		Query:            query,
-		RequestedColumns: requestedCols,
-	}, nil
+	return tenantIDs, q, nil
 }
 
-func parseQueryContextFromBody(body []byte, q map[string][]string) (*storage.QueryContext, error) {
+// parseQueryFromBody extracts startNs, endNs, and query string from binary body.
+func parseQueryFromBody(body []byte) (startNs, endNs int64, query string) {
 	if len(body) < 16 {
-		return nil, fmt.Errorf("request body too short: %d bytes", len(body))
+		return 0, 0, ""
 	}
-
-	qctx := &storage.QueryContext{}
 
 	pos := 0
-	if pos+8 > len(body) {
-		return qctx, nil
-	}
-	qctx.StartNs = int64(binary.BigEndian.Uint64(body[pos : pos+8]))
+	startNs = int64(binary.BigEndian.Uint64(body[pos : pos+8]))
 	pos += 8
-
-	if pos+8 > len(body) {
-		return qctx, nil
-	}
-	qctx.EndNs = int64(binary.BigEndian.Uint64(body[pos : pos+8]))
+	endNs = int64(binary.BigEndian.Uint64(body[pos : pos+8]))
 	pos += 8
 
 	if pos+4 <= len(body) {
 		queryLen := int(binary.BigEndian.Uint32(body[pos : pos+4]))
 		pos += 4
 		if pos+queryLen <= len(body) {
-			qctx.Query = string(body[pos : pos+queryLen])
+			query = string(body[pos : pos+queryLen])
 		}
 	}
 
-	if cols := getFirst(q, "columns"); cols != "" {
-		qctx.RequestedColumns = strings.Split(cols, ",")
-	}
-
-	return qctx, nil
+	return startNs, endNs, query
 }
 
-func writeValueWithHitsResponse(w http.ResponseWriter, vals []storage.ValueWithHits) {
+func writeValueWithHitsResponse(w http.ResponseWriter, vals []logstorage.ValueWithHits) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	if vals == nil {
-		vals = []storage.ValueWithHits{}
+		vals = []logstorage.ValueWithHits{}
 	}
 	_, _ = w.Write(protocol.MarshalValueWithHits(vals))
 }

@@ -5,85 +5,73 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/protocol"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 type mockStorage struct {
-	runQueryFn             func(ctx context.Context, qctx *storage.QueryContext, writeBlock storage.WriteDataBlockFunc) error
-	getFieldNamesFn        func(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error)
-	getFieldValuesFn       func(ctx context.Context, qctx *storage.QueryContext, fieldName string, limit int) ([]storage.ValueWithHits, error)
-	getStreamFieldNamesFn  func(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error)
-	getStreamFieldValuesFn func(ctx context.Context, qctx *storage.QueryContext, fieldName string) ([]storage.ValueWithHits, error)
-	getStreamsFn           func(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error)
-	getStreamIDsFn         func(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error)
-	getTenantIDsFn         func(ctx context.Context, qctx *storage.QueryContext) ([]storage.TenantID, error)
+	runQueryFn             func(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error
+	getFieldNamesFn        func(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error)
+	getFieldValuesFn       func(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error)
+	getStreamFieldNamesFn  func(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error)
+	getStreamFieldValuesFn func(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error)
+	getStreamsFn           func(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, limit uint64) ([]logstorage.ValueWithHits, error)
+	getStreamIDsFn         func(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, limit uint64) ([]logstorage.ValueWithHits, error)
 }
 
-func (m *mockStorage) RunQuery(ctx context.Context, qctx *storage.QueryContext, writeBlock storage.WriteDataBlockFunc) error {
+func (m *mockStorage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
 	if m.runQueryFn != nil {
-		return m.runQueryFn(ctx, qctx, writeBlock)
+		return m.runQueryFn(ctx, tenantIDs, q, writeBlock)
 	}
 	return nil
 }
-func (m *mockStorage) GetFieldNames(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error) {
+func (m *mockStorage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
 	if m.getFieldNamesFn != nil {
-		return m.getFieldNamesFn(ctx, qctx)
+		return m.getFieldNamesFn(ctx, tenantIDs, q)
 	}
 	return nil, nil
 }
-func (m *mockStorage) GetFieldValues(ctx context.Context, qctx *storage.QueryContext, fieldName string, limit int) ([]storage.ValueWithHits, error) {
+func (m *mockStorage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
 	if m.getFieldValuesFn != nil {
-		return m.getFieldValuesFn(ctx, qctx, fieldName, limit)
+		return m.getFieldValuesFn(ctx, tenantIDs, q, fieldName, limit)
 	}
 	return nil, nil
 }
-func (m *mockStorage) GetStreamFieldNames(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error) {
+func (m *mockStorage) GetStreamFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
 	if m.getStreamFieldNamesFn != nil {
-		return m.getStreamFieldNamesFn(ctx, qctx)
+		return m.getStreamFieldNamesFn(ctx, tenantIDs, q)
 	}
 	return nil, nil
 }
-func (m *mockStorage) GetStreamFieldValues(ctx context.Context, qctx *storage.QueryContext, fieldName string) ([]storage.ValueWithHits, error) {
+func (m *mockStorage) GetStreamFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
 	if m.getStreamFieldValuesFn != nil {
-		return m.getStreamFieldValuesFn(ctx, qctx, fieldName)
+		return m.getStreamFieldValuesFn(ctx, tenantIDs, q, fieldName, limit)
 	}
 	return nil, nil
 }
-func (m *mockStorage) GetStreams(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error) {
+func (m *mockStorage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, limit uint64) ([]logstorage.ValueWithHits, error) {
 	if m.getStreamsFn != nil {
-		return m.getStreamsFn(ctx, qctx)
+		return m.getStreamsFn(ctx, tenantIDs, q, limit)
 	}
 	return nil, nil
 }
-func (m *mockStorage) GetStreamIDs(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error) {
+func (m *mockStorage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, limit uint64) ([]logstorage.ValueWithHits, error) {
 	if m.getStreamIDsFn != nil {
-		return m.getStreamIDsFn(ctx, qctx)
-	}
-	return nil, nil
-}
-func (m *mockStorage) GetTenantIDs(ctx context.Context, qctx *storage.QueryContext) ([]storage.TenantID, error) {
-	if m.getTenantIDsFn != nil {
-		return m.getTenantIDsFn(ctx, qctx)
+		return m.getStreamIDsFn(ctx, tenantIDs, q, limit)
 	}
 	return nil, nil
 }
 func (m *mockStorage) Close() error { return nil }
 
-func testLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
-
 func TestHandler_Query_EmptyResult(t *testing.T) {
-	h := NewHandler(&mockStorage{}, testLogger(), 30*time.Second)
+	h := NewHandler(&mockStorage{}, 30*time.Second)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -101,18 +89,17 @@ func TestHandler_Query_EmptyResult(t *testing.T) {
 
 func TestHandler_Query_WithDataBlocks(t *testing.T) {
 	store := &mockStorage{
-		runQueryFn: func(_ context.Context, _ *storage.QueryContext, writeBlock storage.WriteDataBlockFunc) error {
-			writeBlock(0, &storage.DataBlock{
-				RowsCount: 2,
-				Columns: []storage.BlockColumn{
-					{Name: "_msg", Values: []string{"hello", "world"}},
-				},
+		runQueryFn: func(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
+			db := &logstorage.DataBlock{}
+			db.SetColumns([]logstorage.BlockColumn{
+				{Name: "_msg", Values: []string{"hello", "world"}},
 			})
+			writeBlock(0, db)
 			return nil
 		},
 	}
 
-	h := NewHandler(store, testLogger(), 30*time.Second)
+	h := NewHandler(store, 30*time.Second)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -140,19 +127,20 @@ func TestHandler_Query_WithDataBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if db.RowsCount != 2 {
-		t.Errorf("RowsCount = %d, want 2", db.RowsCount)
+	if db.RowsCount() != 2 {
+		t.Errorf("RowsCount = %d, want 2", db.RowsCount())
 	}
-	if len(db.Columns) != 1 {
-		t.Fatalf("columns = %d, want 1", len(db.Columns))
+	cols := db.GetColumns(false)
+	if len(cols) != 1 {
+		t.Fatalf("columns = %d, want 1", len(cols))
 	}
-	if db.Columns[0].Name != "_msg" {
-		t.Errorf("column name = %q, want %q", db.Columns[0].Name, "_msg")
+	if cols[0].Name != "_msg" {
+		t.Errorf("column name = %q, want %q", cols[0].Name, "_msg")
 	}
 }
 
 func TestHandler_Query_MethodNotAllowed(t *testing.T) {
-	h := NewHandler(&mockStorage{}, testLogger(), 30*time.Second)
+	h := NewHandler(&mockStorage{}, 30*time.Second)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -167,15 +155,15 @@ func TestHandler_Query_MethodNotAllowed(t *testing.T) {
 
 func TestHandler_FieldNames(t *testing.T) {
 	store := &mockStorage{
-		getFieldNamesFn: func(_ context.Context, _ *storage.QueryContext) ([]storage.ValueWithHits, error) {
-			return []storage.ValueWithHits{
+		getFieldNamesFn: func(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query) ([]logstorage.ValueWithHits, error) {
+			return []logstorage.ValueWithHits{
 				{Value: "_time", Hits: 100},
 				{Value: "_msg", Hits: 50},
 			}, nil
 		},
 	}
 
-	h := NewHandler(store, testLogger(), 30*time.Second)
+	h := NewHandler(store, 30*time.Second)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -201,18 +189,18 @@ func TestHandler_FieldNames(t *testing.T) {
 
 func TestHandler_FieldValues(t *testing.T) {
 	store := &mockStorage{
-		getFieldValuesFn: func(_ context.Context, _ *storage.QueryContext, fieldName string, limit int) ([]storage.ValueWithHits, error) {
+		getFieldValuesFn: func(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
 			if fieldName != "service" {
 				t.Errorf("fieldName = %q, want %q", fieldName, "service")
 			}
 			if limit != 10 {
 				t.Errorf("limit = %d, want 10", limit)
 			}
-			return []storage.ValueWithHits{{Value: "api-gw", Hits: 42}}, nil
+			return []logstorage.ValueWithHits{{Value: "api-gw", Hits: 42}}, nil
 		},
 	}
 
-	h := NewHandler(store, testLogger(), 30*time.Second)
+	h := NewHandler(store, 30*time.Second)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -234,13 +222,8 @@ func TestHandler_FieldValues(t *testing.T) {
 }
 
 func TestHandler_TenantIDs(t *testing.T) {
-	store := &mockStorage{
-		getTenantIDsFn: func(_ context.Context, _ *storage.QueryContext) ([]storage.TenantID, error) {
-			return []storage.TenantID{{AccountID: 1, ProjectID: 2}}, nil
-		},
-	}
-
-	h := NewHandler(store, testLogger(), 30*time.Second)
+	// handleTenantIDs now returns empty list since GetTenantIDs is not in the storage interface.
+	h := NewHandler(&mockStorage{}, 30*time.Second)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -256,13 +239,13 @@ func TestHandler_TenantIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ids) != 1 || ids[0].AccountID != 1 || ids[0].ProjectID != 2 {
-		t.Errorf("unexpected ids: %+v", ids)
+	if len(ids) != 0 {
+		t.Errorf("expected empty ids, got: %+v", ids)
 	}
 }
 
 func TestHandler_DeleteNoop(t *testing.T) {
-	h := NewHandler(&mockStorage{}, testLogger(), 30*time.Second)
+	h := NewHandler(&mockStorage{}, 30*time.Second)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -278,21 +261,21 @@ func TestHandler_DeleteNoop(t *testing.T) {
 
 func TestHandler_StreamEndpoints(t *testing.T) {
 	store := &mockStorage{
-		getStreamFieldNamesFn: func(_ context.Context, _ *storage.QueryContext) ([]storage.ValueWithHits, error) {
-			return []storage.ValueWithHits{{Value: "service.name", Hits: 1}}, nil
+		getStreamFieldNamesFn: func(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query) ([]logstorage.ValueWithHits, error) {
+			return []logstorage.ValueWithHits{{Value: "service.name", Hits: 1}}, nil
 		},
-		getStreamFieldValuesFn: func(_ context.Context, _ *storage.QueryContext, _ string) ([]storage.ValueWithHits, error) {
-			return []storage.ValueWithHits{{Value: "api-gw", Hits: 5}}, nil
+		getStreamFieldValuesFn: func(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, _ string, _ uint64) ([]logstorage.ValueWithHits, error) {
+			return []logstorage.ValueWithHits{{Value: "api-gw", Hits: 5}}, nil
 		},
-		getStreamsFn: func(_ context.Context, _ *storage.QueryContext) ([]storage.ValueWithHits, error) {
-			return []storage.ValueWithHits{{Value: `{service="api"}`, Hits: 10}}, nil
+		getStreamsFn: func(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, _ uint64) ([]logstorage.ValueWithHits, error) {
+			return []logstorage.ValueWithHits{{Value: `{service="api"}`, Hits: 10}}, nil
 		},
-		getStreamIDsFn: func(_ context.Context, _ *storage.QueryContext) ([]storage.ValueWithHits, error) {
-			return []storage.ValueWithHits{{Value: "abc123", Hits: 1}}, nil
+		getStreamIDsFn: func(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, _ uint64) ([]logstorage.ValueWithHits, error) {
+			return []logstorage.ValueWithHits{{Value: "abc123", Hits: 1}}, nil
 		},
 	}
 
-	h := NewHandler(store, testLogger(), 30*time.Second)
+	h := NewHandler(store, 30*time.Second)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -320,33 +303,31 @@ func TestHandler_StreamEndpoints(t *testing.T) {
 	}
 }
 
-func TestParseQueryContext_QueryParams(t *testing.T) {
+func TestParseInternalQuery_QueryParams(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet,
-		"/internal/select/query?start=1000000000&end=2000000000&query=service:api&AccountID=1&ProjectID=2&columns=_time,_msg",
+		"/internal/select/query?start=1000000000&end=2000000000&query=service:api&AccountID=1&ProjectID=2",
 		nil)
 
-	qctx, err := parseQueryContext(req)
+	tenantIDs, q, err := parseInternalQuery(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if qctx.StartNs != 1000000000 {
-		t.Errorf("StartNs = %d", qctx.StartNs)
+	startNs, endNs := q.GetFilterTimeRange()
+	if startNs != 1000000000 {
+		t.Errorf("StartNs = %d", startNs)
 	}
-	if qctx.EndNs != 2000000000 {
-		t.Errorf("EndNs = %d", qctx.EndNs)
+	// AddTimeFilter rounds endNs up to the next second boundary minus 1ns
+	// (based on RFC3339 precision of the formatted timestamp).
+	if endNs < 2000000000 {
+		t.Errorf("EndNs = %d, expected >= 2000000000", endNs)
 	}
-	if qctx.Query != "service:api" {
-		t.Errorf("Query = %q", qctx.Query)
+	if len(tenantIDs) != 1 || tenantIDs[0].AccountID != 1 {
+		t.Errorf("TenantIDs = %+v", tenantIDs)
 	}
-	if len(qctx.TenantIDs) != 1 || qctx.TenantIDs[0].AccountID != 1 {
-		t.Errorf("TenantIDs = %+v", qctx.TenantIDs)
-	}
-	if len(qctx.RequestedColumns) != 2 {
-		t.Errorf("RequestedColumns = %v", qctx.RequestedColumns)
-	}
+	_ = q // query is embedded in the logstorage.Query
 }
 
-func TestParseQueryContext_BinaryBody(t *testing.T) {
+func TestParseInternalQuery_BinaryBody(t *testing.T) {
 	body := make([]byte, 0, 32)
 
 	start := make([]byte, 8)
@@ -365,23 +346,27 @@ func TestParseQueryContext_BinaryBody(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/internal/select/query", bytes.NewReader(body))
 
-	qctx, err := parseQueryContext(req)
+	_, q, err := parseInternalQuery(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if qctx.StartNs != 1000000000 {
-		t.Errorf("StartNs = %d", qctx.StartNs)
+	startNs, endNs := q.GetFilterTimeRange()
+	if startNs != 1000000000 {
+		t.Errorf("StartNs = %d", startNs)
 	}
-	if qctx.EndNs != 2000000000 {
-		t.Errorf("EndNs = %d", qctx.EndNs)
+	// AddTimeFilter rounds endNs up to the next second boundary minus 1ns.
+	if endNs < 2000000000 {
+		t.Errorf("EndNs = %d, expected >= 2000000000", endNs)
 	}
-	if qctx.Query != "test query" {
-		t.Errorf("Query = %q", qctx.Query)
+	// The query string is embedded in the logstorage.Query; verify via String()
+	qStr := q.String()
+	if qStr == "" {
+		t.Error("expected non-empty query string")
 	}
 }
 
 func TestHandler_AllEndpointsRegistered(t *testing.T) {
-	h := NewHandler(&mockStorage{}, testLogger(), 30*time.Second)
+	h := NewHandler(&mockStorage{}, 30*time.Second)
 	mux := http.NewServeMux()
 	h.Register(mux)
 

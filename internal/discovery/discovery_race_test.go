@@ -16,8 +16,8 @@ func TestDiscovery_Race_MaxGoroutines(t *testing.T) {
 		nil,
 		"auth-key",
 		"peers.svc.cluster.local",
+		"9428",
 		5000000000,
-		testLogger(),
 		WithLookupSRV(func(_ context.Context, _, _, _ string) (string, []*net.SRV, error) {
 			return "", []*net.SRV{
 				{Target: "node1.", Port: 9428},
@@ -76,8 +76,8 @@ func TestDiscovery_Race_StaticNodes(t *testing.T) {
 		[]string{"node1:9428", "node2:9428", "node3:9428"},
 		"auth",
 		"",
+		"9428",
 		5000000000,
-		testLogger(),
 	)
 
 	const goroutines = 200
