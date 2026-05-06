@@ -3,8 +3,6 @@ package compaction
 import (
 	"context"
 	"fmt"
-	"io"
-	"log/slog"
 	"testing"
 	"time"
 
@@ -15,8 +13,7 @@ import (
 )
 
 func TestIntegration_FullCompactionCycle(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	m := manifest.New("test", "logs/", logger)
+	m := manifest.New("test", "logs/")
 	pool := newMockPool()
 
 	for i := 0; i < 12; i++ {
@@ -63,7 +60,6 @@ func TestIntegration_FullCompactionCycle(t *testing.T) {
 		RowGroupSize:     1000,
 		CompressionLevel: 1,
 		MaxConcurrent:    1,
-		Logger:           logger,
 		OnCompacted: func(added []manifest.FileInfo, removed []string) {
 			notifiedAdded = added
 			notifiedRemoved = removed
@@ -106,8 +102,7 @@ func TestIntegration_FullCompactionCycle(t *testing.T) {
 }
 
 func TestIntegration_L1ToL2(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	m := manifest.New("test", "logs/", logger)
+	m := manifest.New("test", "logs/")
 	pool := newMockPool()
 
 	for i := 0; i < 12; i++ {
@@ -137,7 +132,6 @@ func TestIntegration_L1ToL2(t *testing.T) {
 		RowGroupSize:     1000,
 		CompressionLevel: 1,
 		MaxConcurrent:    1,
-		Logger:           logger,
 	})
 
 	compacted, err := sched.Scan(context.Background())

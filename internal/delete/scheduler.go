@@ -2,8 +2,9 @@ package delete
 
 import (
 	"context"
-	"log/slog"
 	"time"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
@@ -16,7 +17,6 @@ type RewriteSchedulerConfig struct {
 	RewriteDelay   time.Duration
 	AllowedClasses []string
 	MaxConcurrent  int
-	Logger         *slog.Logger
 }
 
 // RewriteScheduler periodically processes pending tombstones by rewriting
@@ -28,7 +28,6 @@ type RewriteScheduler struct {
 	rewriteDelay   time.Duration
 	allowedClasses map[string]bool
 	maxConcurrent  int
-	logger         *slog.Logger
 	stopCh         chan struct{}
 }
 
@@ -43,11 +42,6 @@ func NewRewriteScheduler(cfg RewriteSchedulerConfig) *RewriteScheduler {
 		allowed[c] = true
 	}
 
-	logger := cfg.Logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-
 	maxConc := cfg.MaxConcurrent
 	if maxConc <= 0 {
 		maxConc = 1
@@ -60,7 +54,6 @@ func NewRewriteScheduler(cfg RewriteSchedulerConfig) *RewriteScheduler {
 		rewriteDelay:   cfg.RewriteDelay,
 		allowedClasses: allowed,
 		maxConcurrent:  maxConc,
-		logger:         logger,
 		stopCh:         make(chan struct{}),
 	}
 }
@@ -121,8 +114,7 @@ func (s *RewriteScheduler) RunOnce(ctx context.Context) []RewriteResult {
 
 			if !s.allowedClasses[string(class)] {
 				metrics.DeleteRewriteSkippedGlacier.Inc()
-				s.logger.Info("skipping rewrite: storage class not allowed",
-					"key", key, "class", string(class))
+				logger.Infof("skipping rewrite: storage class not allowed; key=%s, class=%s", key, string(class))
 				continue
 			}
 
@@ -130,7 +122,7 @@ func (s *RewriteScheduler) RunOnce(ctx context.Context) []RewriteResult {
 			result, err := s.rewriter.RewriteFile(ctx, key, []Tombstone{ts})
 			if err != nil {
 				metrics.DeleteRewriteErrors.Inc()
-				s.logger.Error("rewrite failed", "key", key, "error", err)
+				logger.Errorf("rewrite failed: %s; key=%s", err, key)
 				continue
 			}
 

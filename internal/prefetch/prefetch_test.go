@@ -3,17 +3,11 @@ package prefetch
 import (
 	"context"
 	"fmt"
-	"io"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
-
-func testLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
 
 func TestEngine_Enqueue(t *testing.T) {
 	var fetched sync.Map
@@ -23,7 +17,7 @@ func TestEngine_Enqueue(t *testing.T) {
 		fetched.Store(key, true)
 		count.Add(1)
 		return nil
-	}, testLogger())
+	})
 	defer e.Close()
 
 	e.Enqueue(Task{Key: "a", Type: TypeCorrelated})
@@ -54,7 +48,7 @@ func TestEngine_DeduplicatesKeys(t *testing.T) {
 		count.Add(1)
 		<-blocker
 		return nil
-	}, testLogger())
+	})
 	defer func() {
 		close(blocker)
 		e.Close()
@@ -75,7 +69,7 @@ func TestEngine_MaxQueue(t *testing.T) {
 	e := NewEngine(1, 3, func(_ context.Context, _ string) error {
 		<-blocker
 		return nil
-	}, testLogger())
+	})
 	defer func() {
 		close(blocker)
 		e.Close()
@@ -109,7 +103,7 @@ func TestEngine_MaxConcurrent(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		current.Add(-1)
 		return nil
-	}, testLogger())
+	})
 	defer e.Close()
 
 	for i := 0; i < 10; i++ {
@@ -128,7 +122,7 @@ func TestEngine_CorrelatedEnqueue(t *testing.T) {
 	e := NewEngine(4, 20, func(_ context.Context, key string) error {
 		fetched.Store(key, true)
 		return nil
-	}, testLogger())
+	})
 	defer e.Close()
 
 	n := e.EnqueueCorrelated([]string{"a", "b", "c"})
@@ -150,7 +144,7 @@ func TestEngine_ReadAheadEnqueue(t *testing.T) {
 	e := NewEngine(2, 10, func(_ context.Context, _ string) error {
 		count.Add(1)
 		return nil
-	}, testLogger())
+	})
 	defer e.Close()
 
 	n := e.EnqueueReadAhead([]string{"x", "y"})
@@ -169,7 +163,7 @@ func TestEngine_WarmupEnqueue(t *testing.T) {
 	e := NewEngine(2, 10, func(_ context.Context, _ string) error {
 		count.Add(1)
 		return nil
-	}, testLogger())
+	})
 	defer e.Close()
 
 	n := e.EnqueueWarmup([]string{"w1", "w2", "w3"})
@@ -186,7 +180,7 @@ func TestEngine_WarmupEnqueue(t *testing.T) {
 func TestEngine_ErrorCounting(t *testing.T) {
 	e := NewEngine(2, 10, func(_ context.Context, _ string) error {
 		return fmt.Errorf("simulated error")
-	}, testLogger())
+	})
 	defer e.Close()
 
 	e.Enqueue(Task{Key: "fail1"})
@@ -209,7 +203,7 @@ func TestEngine_ErrorCounting(t *testing.T) {
 func TestEngine_MarkUseful(t *testing.T) {
 	e := NewEngine(2, 10, func(_ context.Context, _ string) error {
 		return nil
-	}, testLogger())
+	})
 	defer e.Close()
 
 	e.Enqueue(Task{Key: "useful-key"})
@@ -232,7 +226,7 @@ func TestEngine_Close(t *testing.T) {
 		started.Add(1)
 		<-ctx.Done()
 		return ctx.Err()
-	}, testLogger())
+	})
 
 	e.Enqueue(Task{Key: "long-running"})
 	time.Sleep(50 * time.Millisecond)
@@ -247,7 +241,7 @@ func TestEngine_Close(t *testing.T) {
 func TestEngine_Stats(t *testing.T) {
 	e := NewEngine(4, 10, func(_ context.Context, _ string) error {
 		return nil
-	}, testLogger())
+	})
 	defer e.Close()
 
 	triggered, completed, errors, useful := e.Stats()
@@ -273,7 +267,7 @@ func TestEngine_Active(t *testing.T) {
 	e := NewEngine(2, 10, func(_ context.Context, _ string) error {
 		<-blocker
 		return nil
-	}, testLogger())
+	})
 	defer func() {
 		close(blocker)
 		e.Close()
@@ -308,7 +302,7 @@ func TestType_String(t *testing.T) {
 func BenchmarkEngine_Enqueue(b *testing.B) {
 	e := NewEngine(4, 1000, func(_ context.Context, _ string) error {
 		return nil
-	}, testLogger())
+	})
 	defer e.Close()
 
 	b.ReportAllocs()

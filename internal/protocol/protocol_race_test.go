@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
 
 func TestMarshalUnmarshal_Race_MaxGoroutines(t *testing.T) {
@@ -24,26 +24,24 @@ func TestMarshalUnmarshal_Race_MaxGoroutines(t *testing.T) {
 			for i := 0; i < ops; i++ {
 				rows := rng.Intn(50) + 1
 				cols := rng.Intn(5) + 1
-				db := &storage.DataBlock{
-					RowsCount: rows,
-					Columns:   make([]storage.BlockColumn, cols),
-				}
-				for c := range db.Columns {
-					db.Columns[c].Name = fmt.Sprintf("col-%d", c)
+				blockCols := make([]logstorage.BlockColumn, cols)
+				for c := range blockCols {
+					blockCols[c].Name = fmt.Sprintf("col-%d", c)
 					vals := make([]string, rows)
 					for r := range vals {
 						vals[r] = fmt.Sprintf("v-%d-%d-%d", id, i, r)
 					}
-					db.Columns[c].Values = vals
+					blockCols[c].Values = vals
 				}
+				db := makeDataBlock(blockCols)
 				data := MarshalDataBlock(db)
 				got, err := UnmarshalDataBlock(data)
 				if err != nil {
 					t.Errorf("unmarshal error: %v", err)
 					return
 				}
-				if got.RowsCount != db.RowsCount {
-					t.Errorf("rows mismatch: got %d want %d", got.RowsCount, db.RowsCount)
+				if got.RowsCount() != db.RowsCount() {
+					t.Errorf("rows mismatch: got %d want %d", got.RowsCount(), db.RowsCount())
 				}
 				if i%50 == 0 {
 					runtime.Gosched()
@@ -66,9 +64,9 @@ func TestValueWithHits_Race_MaxGoroutines(t *testing.T) {
 			rng := rand.New(rand.NewSource(int64(id)))
 			for i := 0; i < ops; i++ {
 				count := rng.Intn(50) + 1
-				vals := make([]storage.ValueWithHits, count)
+				vals := make([]logstorage.ValueWithHits, count)
 				for j := range vals {
-					vals[j] = storage.ValueWithHits{
+					vals[j] = logstorage.ValueWithHits{
 						Value: fmt.Sprintf("v-%d-%d", id, j),
 						Hits:  uint64(rng.Int63()),
 					}
@@ -103,15 +101,13 @@ func TestStream_Race_MaxGoroutines(t *testing.T) {
 			rng := rand.New(rand.NewSource(int64(id)))
 			for i := 0; i < ops; i++ {
 				rows := rng.Intn(20) + 1
-				db := &storage.DataBlock{
-					RowsCount: rows,
-					Columns: []storage.BlockColumn{
-						{Name: "col", Values: make([]string, rows)},
-					},
+				vals := make([]string, rows)
+				for r := range vals {
+					vals[r] = fmt.Sprintf("val-%d", r)
 				}
-				for r := range db.Columns[0].Values {
-					db.Columns[0].Values[r] = fmt.Sprintf("val-%d", r)
-				}
+				db := makeDataBlock([]logstorage.BlockColumn{
+					{Name: "col", Values: vals},
+				})
 
 				var buf bytes.Buffer
 				if err := WriteDataBlockStream(&buf, db); err != nil {
@@ -123,8 +119,8 @@ func TestStream_Race_MaxGoroutines(t *testing.T) {
 					t.Errorf("read error: %v", err)
 					return
 				}
-				if got.RowsCount != db.RowsCount {
-					t.Errorf("rows mismatch: got %d want %d", got.RowsCount, db.RowsCount)
+				if got.RowsCount() != db.RowsCount() {
+					t.Errorf("rows mismatch: got %d want %d", got.RowsCount(), db.RowsCount())
 				}
 				if i%25 == 0 {
 					runtime.Gosched()
@@ -147,9 +143,9 @@ func TestTenantIDs_Race_MaxGoroutines(t *testing.T) {
 			rng := rand.New(rand.NewSource(int64(id)))
 			for i := 0; i < ops; i++ {
 				count := rng.Intn(50) + 1
-				ids := make([]storage.TenantID, count)
+				ids := make([]logstorage.TenantID, count)
 				for j := range ids {
-					ids[j] = storage.TenantID{
+					ids[j] = logstorage.TenantID{
 						AccountID: uint32(rng.Int31()),
 						ProjectID: uint32(rng.Int31()),
 					}

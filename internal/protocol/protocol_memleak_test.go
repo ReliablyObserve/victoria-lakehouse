@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
 
 func forceGC() {
@@ -22,17 +22,15 @@ func heapInUse() uint64 {
 }
 
 func TestMarshalDataBlock_MemLeak(t *testing.T) {
-	db := &storage.DataBlock{
-		RowsCount: 100,
-		Columns: []storage.BlockColumn{
-			{Name: "_time", Values: make([]string, 100)},
-			{Name: "_msg", Values: make([]string, 100)},
-		},
+	cols := []logstorage.BlockColumn{
+		{Name: "_time", Values: make([]string, 100)},
+		{Name: "_msg", Values: make([]string, 100)},
 	}
-	for i := range db.Columns[0].Values {
-		db.Columns[0].Values[i] = fmt.Sprintf("%d", i)
-		db.Columns[1].Values[i] = "log message here"
+	for i := range cols[0].Values {
+		cols[0].Values[i] = fmt.Sprintf("%d", i)
+		cols[1].Values[i] = "log message here"
 	}
+	db := makeDataBlock(cols)
 
 	for i := 0; i < 1000; i++ {
 		_ = MarshalDataBlock(db)
@@ -55,17 +53,15 @@ func TestMarshalDataBlock_MemLeak(t *testing.T) {
 }
 
 func TestUnmarshalDataBlock_MemLeak(t *testing.T) {
-	db := &storage.DataBlock{
-		RowsCount: 100,
-		Columns: []storage.BlockColumn{
-			{Name: "_time", Values: make([]string, 100)},
-			{Name: "_msg", Values: make([]string, 100)},
-		},
+	cols := []logstorage.BlockColumn{
+		{Name: "_time", Values: make([]string, 100)},
+		{Name: "_msg", Values: make([]string, 100)},
 	}
-	for i := range db.Columns[0].Values {
-		db.Columns[0].Values[i] = fmt.Sprintf("%d", i)
-		db.Columns[1].Values[i] = "log message here"
+	for i := range cols[0].Values {
+		cols[0].Values[i] = fmt.Sprintf("%d", i)
+		cols[1].Values[i] = "log message here"
 	}
+	db := makeDataBlock(cols)
 	data := MarshalDataBlock(db)
 
 	for i := 0; i < 1000; i++ {
@@ -89,15 +85,13 @@ func TestUnmarshalDataBlock_MemLeak(t *testing.T) {
 }
 
 func TestStreamRoundTrip_MemLeak(t *testing.T) {
-	db := &storage.DataBlock{
-		RowsCount: 50,
-		Columns: []storage.BlockColumn{
-			{Name: "col", Values: make([]string, 50)},
-		},
+	cols := []logstorage.BlockColumn{
+		{Name: "col", Values: make([]string, 50)},
 	}
-	for i := range db.Columns[0].Values {
-		db.Columns[0].Values[i] = "value"
+	for i := range cols[0].Values {
+		cols[0].Values[i] = "value"
 	}
+	db := makeDataBlock(cols)
 
 	for i := 0; i < 1000; i++ {
 		var buf bytes.Buffer
@@ -124,9 +118,9 @@ func TestStreamRoundTrip_MemLeak(t *testing.T) {
 }
 
 func TestValueWithHits_MemLeak(t *testing.T) {
-	vals := make([]storage.ValueWithHits, 100)
+	vals := make([]logstorage.ValueWithHits, 100)
 	for i := range vals {
-		vals[i] = storage.ValueWithHits{Value: fmt.Sprintf("v-%d", i), Hits: uint64(i)}
+		vals[i] = logstorage.ValueWithHits{Value: fmt.Sprintf("v-%d", i), Hits: uint64(i)}
 	}
 
 	for i := 0; i < 1000; i++ {

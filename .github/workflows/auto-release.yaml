@@ -79,24 +79,40 @@ jobs:
             echo "Skipping release: only docs/CI/metadata changes"
           fi
 
+      - name: Clone VL deps
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          mkdir -p deps lakehouse-traces/deps
+          git clone --depth 1 --branch v1.50.0 \
+            https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs
+          git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src
+          cd /tmp/vl-src && git checkout a408207c2242
+          cp -r /tmp/vl-src ${{ github.workspace }}/lakehouse-traces/deps/VictoriaLogs
+
       - name: Build binaries
         if: steps.skip.outputs.skip != 'true'
         run: |
           VERSION=${{ steps.version.outputs.next }}
+          LDFLAGS="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}"
           mkdir -p dist
 
           for GOOS in linux darwin; do
             for GOARCH in amd64 arm64; do
-              echo "Building ${GOOS}/${GOARCH}..."
+              echo "Building lakehouse-logs ${GOOS}/${GOARCH}..."
               CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH \
-                go build -ldflags "-X main.version=${VERSION} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-                -o "dist/lakehouse-${GOOS}-${GOARCH}" ./cmd/lakehouse
+                go build -ldflags "$LDFLAGS" \
+                -o "dist/lakehouse-logs-${GOOS}-${GOARCH}" ./cmd/lakehouse-logs
+
+              echo "Building lakehouse-traces ${GOOS}/${GOARCH}..."
+              CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH \
+                go build -ldflags "$LDFLAGS" \
+                -o "dist/lakehouse-traces-${GOOS}-${GOARCH}" ./lakehouse-traces
             done
           done
 
           cd dist && sha256sum lakehouse-* > checksums.txt
 
-      - name: Build and push Docker image
+      - name: Build and push Docker images
         if: steps.skip.outputs.skip != 'true'
         run: |
           VERSION=${{ steps.version.outputs.next }}
@@ -104,11 +120,21 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
           docker buildx create --use
+
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
+            -f Dockerfile.logs \
             --build-arg VERSION=${VERSION} \
-            -t ghcr.io/${REPO}:${VERSION} \
-            -t ghcr.io/${REPO}:latest \
+            -t ghcr.io/${REPO}/lakehouse-logs:${VERSION} \
+            -t ghcr.io/${REPO}/lakehouse-logs:latest \
+            --push .
+
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            -f Dockerfile.traces \
+            --build-arg VERSION=${VERSION} \
+            -t ghcr.io/${REPO}/lakehouse-traces:${VERSION} \
+            -t ghcr.io/${REPO}/lakehouse-traces:latest \
             --push .
 
       - name: Package Helm chart
@@ -124,12 +150,52 @@ jobs:
         if: steps.skip.outputs.skip != 'true'
         run: |
           VERSION=${{ steps.version.outputs.next }}
+          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           git tag "$VERSION"
           git push origin "$VERSION"
 
+          # Extract changelog section for release notes
+          NOTES=$(bash scripts/ci/extract_changelog_section.sh "${VERSION#v}" 2>/dev/null || echo "")
+
+          cat > /tmp/release-notes.md <<EOF
+          ## Release Artifacts
+
+          ### Binaries
+          | Binary | Platform | File |
+          |--------|----------|------|
+          | **lakehouse-logs** | Linux amd64 | \`lakehouse-logs-linux-amd64\` |
+          | **lakehouse-logs** | Linux arm64 | \`lakehouse-logs-linux-arm64\` |
+          | **lakehouse-logs** | macOS amd64 | \`lakehouse-logs-darwin-amd64\` |
+          | **lakehouse-logs** | macOS arm64 | \`lakehouse-logs-darwin-arm64\` |
+          | **lakehouse-traces** | Linux amd64 | \`lakehouse-traces-linux-amd64\` |
+          | **lakehouse-traces** | Linux arm64 | \`lakehouse-traces-linux-arm64\` |
+          | **lakehouse-traces** | macOS amd64 | \`lakehouse-traces-darwin-amd64\` |
+          | **lakehouse-traces** | macOS arm64 | \`lakehouse-traces-darwin-arm64\` |
+
+          ### Docker Images
+          \`\`\`bash
+          # Logs
+          docker pull ghcr.io/${REPO}/lakehouse-logs:${VERSION}
+
+          # Traces
+          docker pull ghcr.io/${REPO}/lakehouse-traces:${VERSION}
+          \`\`\`
+
+          ### Helm Chart
+          \`\`\`bash
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          helm install lakehouse-logs oci://ghcr.io/\${OWNER}/charts/victoria-lakehouse \\
+            --set lakehouseConfig.mode=logs
+          helm install lakehouse-traces oci://ghcr.io/\${OWNER}/charts/victoria-lakehouse \\
+            --set lakehouseConfig.mode=traces
+          \`\`\`
+
+          ${NOTES}
+          EOF
+
           gh release create "$VERSION" dist/* \
             --title "$VERSION" \
-            --generate-notes
+            --notes-file /tmp/release-notes.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -144,6 +210,7 @@ jobs:
         if: steps.skip.outputs.skip != 'true'
         run: |
           VERSION=${{ steps.version.outputs.next }}
+          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           BRANCH="chore/release-metadata-${VERSION}"
 
           git config user.name "github-actions[bot]"
@@ -176,6 +243,10 @@ jobs:
           - Chart.yaml version and appVersion → ${VERSION#v}
           - CHANGELOG.md: \`[Unreleased]\` materialized as \`[${VERSION#v}]\`
           - README.md: version badge updated
+
+          ### Images
+          - \`ghcr.io/${REPO}/lakehouse-logs:${VERSION}\`
+          - \`ghcr.io/${REPO}/lakehouse-traces:${VERSION}\`
 
           ### Changelog
 

@@ -3,16 +3,13 @@ package discovery
 import (
 	"context"
 	"fmt"
-	"io"
-	"log/slog"
 	"sync"
 	"testing"
 	"time"
 )
 
 func TestDiscovery_ConcurrentGetHotBoundary(t *testing.T) {
-	l := slog.New(slog.NewTextHandler(io.Discard, nil))
-	d := New("", nil, "", "", 5*time.Second, l)
+	d := New("", nil, "", "", "9428", 5*time.Second)
 
 	d.SetHotBoundaryForTest(&HotBoundary{
 		MinDate: "20260101",
@@ -54,8 +51,7 @@ func TestDiscovery_ConcurrentGetHotBoundary(t *testing.T) {
 }
 
 func TestDiscovery_ConcurrentGetStorageNodes(t *testing.T) {
-	l := slog.New(slog.NewTextHandler(io.Discard, nil))
-	d := New("", []string{"node1:9428", "node2:9428"}, "", "", 5*time.Second, l)
+	d := New("", []string{"node1:9428", "node2:9428"}, "", "", "9428", 5*time.Second)
 
 	_, err := d.DiscoverStorageNodes(context.Background())
 	if err != nil {
@@ -82,8 +78,7 @@ func TestDiscovery_ConcurrentGetStorageNodes(t *testing.T) {
 }
 
 func TestDiscovery_ConcurrentGetPeers(t *testing.T) {
-	l := slog.New(slog.NewTextHandler(io.Discard, nil))
-	d := New("", nil, "", "", 5*time.Second, l)
+	d := New("", nil, "", "", "9428", 5*time.Second)
 
 	const goroutines = 20
 	var wg sync.WaitGroup

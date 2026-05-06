@@ -70,12 +70,18 @@ app.kubernetes.io/component: {{ .component }}
 {{- end }}
 
 {{/*
-Container image with tag fallback to appVersion
+Container image with tag fallback to appVersion.
+Selects lakehouse-logs or lakehouse-traces image based on lakehouseConfig.mode.
 Usage: {{ include "victoria-lakehouse.image" . }}
 */}}
 {{- define "victoria-lakehouse.image" -}}
+{{- $mode := default "logs" .Values.lakehouseConfig.mode -}}
 {{- $tag := default .Chart.AppVersion .Values.image.tag -}}
-{{- printf "%s:%s" .Values.image.repository $tag -}}
+{{- if eq $mode "traces" -}}
+{{- printf "%s:%s" .Values.image.traces.repository $tag -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.image.logs.repository $tag -}}
+{{- end -}}
 {{- end }}
 
 {{/*

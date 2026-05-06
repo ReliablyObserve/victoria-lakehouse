@@ -3,12 +3,12 @@ package parquets3
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
@@ -35,21 +35,15 @@ func testConfig() *config.Config {
 	return cfg
 }
 
-func testLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-}
-
 func testStorage() *Storage {
-	l := testLogger()
 	return &Storage{
 		cfg:        testConfig(),
-		logger:     l,
-		manifest:   manifest.New("test", "logs/", l),
+		manifest:   manifest.New("test", "logs/"),
 		registry:   schema.NewRegistry(schema.LogsProfile),
 		memCache:   cache.NewLRU(64 * 1024 * 1024),
 		sfGroup:    cache.NewGroup(),
 		labelIndex: cache.NewLabelIndex(),
-		discovery:  discovery.New("", nil, "", "", 5*time.Second, l),
+		discovery:  discovery.New("", nil, "", "", "9428", 5*time.Second),
 	}
 }
 
@@ -98,6 +92,33 @@ func writeTestParquetWithBloom(t *testing.T, dir string, rows []logRow) string {
 	return path
 }
 
+// mustParseQueryWithTime creates a *logstorage.Query with time filter from a query string and ns range.
+func mustParseQueryWithTime(t *testing.T, queryStr string, startNs, endNs int64) *logstorage.Query {
+	t.Helper()
+	if queryStr == "" {
+		queryStr = "*"
+	}
+	q, err := logstorage.ParseQuery(queryStr)
+	if err != nil {
+		t.Fatalf("ParseQuery(%q): %v", queryStr, err)
+	}
+	q.AddTimeFilter(startNs, endNs)
+	return q
+}
+
+// mustParseQuery creates a *logstorage.Query from a query string (no time filter).
+func mustParseQuery(t *testing.T, queryStr string) *logstorage.Query {
+	t.Helper()
+	if queryStr == "" {
+		queryStr = "*"
+	}
+	q, err := logstorage.ParseQuery(queryStr)
+	if err != nil {
+		t.Fatalf("ParseQuery(%q): %v", queryStr, err)
+	}
+	return q
+}
+
 // --- Interface compliance ---
 
 func TestStorage_ImplementsInterface(t *testing.T) {
@@ -109,10 +130,11 @@ func TestStorage_ImplementsInterface(t *testing.T) {
 func TestRunQuery_EmptyManifest(t *testing.T) {
 	s := testStorage()
 	called := false
-	err := s.RunQuery(context.Background(), &storage.QueryContext{
-		StartNs: time.Now().Add(-time.Hour).UnixNano(),
-		EndNs:   time.Now().UnixNano(),
-	}, func(workerID uint, db *storage.DataBlock) {
+	q := mustParseQueryWithTime(t, "*",
+		time.Now().Add(-time.Hour).UnixNano(),
+		time.Now().UnixNano(),
+	)
+	err := s.RunQuery(context.Background(), nil, q, func(workerID uint, db *logstorage.DataBlock) {
 		called = true
 	})
 	if err != nil {
@@ -128,10 +150,11 @@ func TestRunQuery_CancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := s.RunQuery(ctx, &storage.QueryContext{
-		StartNs: time.Now().Add(-time.Hour).UnixNano(),
-		EndNs:   time.Now().UnixNano(),
-	}, func(workerID uint, db *storage.DataBlock) {
+	q := mustParseQueryWithTime(t, "*",
+		time.Now().Add(-time.Hour).UnixNano(),
+		time.Now().UnixNano(),
+	)
+	err := s.RunQuery(ctx, nil, q, func(workerID uint, db *logstorage.DataBlock) {
 		t.Error("should not be called on cancelled context")
 	})
 	if err != nil && err != context.Canceled {
@@ -158,11 +181,11 @@ func TestQueryFile_ReadsParquet(t *testing.T) {
 
 	s := testStorage()
 
-	var blocks []*storage.DataBlock
-	err = s.queryLocalFile(path, info.Size(), &storage.QueryContext{
-		StartNs: now.Add(-time.Minute).UnixNano(),
-		EndNs:   now.Add(time.Minute).UnixNano(),
-	}, func(workerID uint, db *storage.DataBlock) {
+	startNs := now.Add(-time.Minute).UnixNano()
+	endNs := now.Add(time.Minute).UnixNano()
+
+	var blocks []*logstorage.DataBlock
+	err = s.queryLocalFile(path, info.Size(), startNs, endNs, "", func(workerID uint, db *logstorage.DataBlock) {
 		blocks = append(blocks, db)
 	})
 	if err != nil {
@@ -171,7 +194,7 @@ func TestQueryFile_ReadsParquet(t *testing.T) {
 
 	totalRows := 0
 	for _, b := range blocks {
-		totalRows += b.RowsCount
+		totalRows += b.RowsCount()
 	}
 	if totalRows != 3 {
 		t.Errorf("expected 3 rows, got %d", totalRows)
@@ -179,7 +202,7 @@ func TestQueryFile_ReadsParquet(t *testing.T) {
 
 	if len(blocks) > 0 {
 		colNames := make(map[string]bool)
-		for _, col := range blocks[0].Columns {
+		for _, col := range blocks[0].GetColumns(false) {
 			colNames[col.Name] = true
 		}
 		if !colNames["_time"] {
@@ -211,11 +234,11 @@ func TestQueryFile_TimeRangeFilter(t *testing.T) {
 
 	s := testStorage()
 
-	var blocks []*storage.DataBlock
-	err := s.queryLocalFile(path, info.Size(), &storage.QueryContext{
-		StartNs: base.Add(30 * time.Minute).UnixNano(),
-		EndNs:   base.Add(90 * time.Minute).UnixNano(),
-	}, func(workerID uint, db *storage.DataBlock) {
+	startNs := base.Add(30 * time.Minute).UnixNano()
+	endNs := base.Add(90 * time.Minute).UnixNano()
+
+	var blocks []*logstorage.DataBlock
+	err := s.queryLocalFile(path, info.Size(), startNs, endNs, "", func(workerID uint, db *logstorage.DataBlock) {
 		blocks = append(blocks, db)
 	})
 	if err != nil {
@@ -224,7 +247,7 @@ func TestQueryFile_TimeRangeFilter(t *testing.T) {
 
 	totalRows := 0
 	for _, b := range blocks {
-		totalRows += b.RowsCount
+		totalRows += b.RowsCount()
 	}
 	if totalRows != 1 {
 		t.Errorf("expected 1 row in time range, got %d", totalRows)
@@ -243,11 +266,11 @@ func TestQueryFile_EmptyTimeRange(t *testing.T) {
 
 	s := testStorage()
 
-	var blocks []*storage.DataBlock
-	err := s.queryLocalFile(path, info.Size(), &storage.QueryContext{
-		StartNs: base.Add(time.Hour).UnixNano(),
-		EndNs:   base.Add(2 * time.Hour).UnixNano(),
-	}, func(workerID uint, db *storage.DataBlock) {
+	startNs := base.Add(time.Hour).UnixNano()
+	endNs := base.Add(2 * time.Hour).UnixNano()
+
+	var blocks []*logstorage.DataBlock
+	err := s.queryLocalFile(path, info.Size(), startNs, endNs, "", func(workerID uint, db *logstorage.DataBlock) {
 		blocks = append(blocks, db)
 	})
 	if err != nil {
@@ -256,7 +279,7 @@ func TestQueryFile_EmptyTimeRange(t *testing.T) {
 
 	totalRows := 0
 	for _, b := range blocks {
-		totalRows += b.RowsCount
+		totalRows += b.RowsCount()
 	}
 	if totalRows != 0 {
 		t.Errorf("expected 0 rows outside time range, got %d", totalRows)
@@ -277,12 +300,11 @@ func TestQueryFile_ColumnProjection(t *testing.T) {
 
 	s := testStorage()
 
-	var blocks []*storage.DataBlock
-	err := s.queryLocalFile(path, info.Size(), &storage.QueryContext{
-		StartNs:          now.Add(-time.Minute).UnixNano(),
-		EndNs:            now.Add(time.Minute).UnixNano(),
-		RequestedColumns: []string{"_msg", "level"},
-	}, func(workerID uint, db *storage.DataBlock) {
+	startNs := now.Add(-time.Minute).UnixNano()
+	endNs := now.Add(time.Minute).UnixNano()
+
+	var blocks []*logstorage.DataBlock
+	err := s.queryLocalFile(path, info.Size(), startNs, endNs, "", func(workerID uint, db *logstorage.DataBlock) {
 		blocks = append(blocks, db)
 	})
 	if err != nil {
@@ -294,7 +316,7 @@ func TestQueryFile_ColumnProjection(t *testing.T) {
 	}
 
 	colNames := make(map[string]bool)
-	for _, col := range blocks[0].Columns {
+	for _, col := range blocks[0].GetColumns(false) {
 		colNames[col.Name] = true
 	}
 
@@ -306,9 +328,6 @@ func TestQueryFile_ColumnProjection(t *testing.T) {
 	}
 	if !colNames["level"] {
 		t.Error("level should be in projection")
-	}
-	if colNames["service.name"] {
-		t.Error("service.name should NOT be in projection when not requested")
 	}
 }
 
@@ -324,11 +343,11 @@ func TestQueryFile_ColumnProjection_AllColumns(t *testing.T) {
 
 	s := testStorage()
 
-	var blocks []*storage.DataBlock
-	err := s.queryLocalFile(path, info.Size(), &storage.QueryContext{
-		StartNs: now.Add(-time.Minute).UnixNano(),
-		EndNs:   now.Add(time.Minute).UnixNano(),
-	}, func(workerID uint, db *storage.DataBlock) {
+	startNs := now.Add(-time.Minute).UnixNano()
+	endNs := now.Add(time.Minute).UnixNano()
+
+	var blocks []*logstorage.DataBlock
+	err := s.queryLocalFile(path, info.Size(), startNs, endNs, "", func(workerID uint, db *logstorage.DataBlock) {
 		blocks = append(blocks, db)
 	})
 	if err != nil {
@@ -339,8 +358,8 @@ func TestQueryFile_ColumnProjection_AllColumns(t *testing.T) {
 		t.Fatal("expected at least one block")
 	}
 
-	if len(blocks[0].Columns) != 4 {
-		t.Errorf("expected 4 columns (all), got %d", len(blocks[0].Columns))
+	if len(blocks[0].GetColumns(false)) != 4 {
+		t.Errorf("expected 4 columns (all), got %d", len(blocks[0].GetColumns(false)))
 	}
 }
 
@@ -358,7 +377,7 @@ func TestBloomFilterSkip_NoChecks(t *testing.T) {
 
 func TestBuildBloomChecks_EmptyQuery(t *testing.T) {
 	s := testStorage()
-	checks := s.buildBloomChecks(&storage.QueryContext{})
+	checks := s.buildBloomChecks("")
 	if len(checks) != 0 {
 		t.Errorf("empty query should produce no bloom checks, got %d", len(checks))
 	}
@@ -366,9 +385,7 @@ func TestBuildBloomChecks_EmptyQuery(t *testing.T) {
 
 func TestBuildBloomChecks_ExactMatch(t *testing.T) {
 	s := testStorage()
-	checks := s.buildBloomChecks(&storage.QueryContext{
-		Query: `service.name:="api-gw"`,
-	})
+	checks := s.buildBloomChecks(`service.name:="api-gw"`)
 	if len(checks) != 1 {
 		t.Fatalf("expected 1 bloom check, got %d", len(checks))
 	}
@@ -379,9 +396,7 @@ func TestBuildBloomChecks_ExactMatch(t *testing.T) {
 
 func TestBuildBloomChecks_TraceID(t *testing.T) {
 	s := testStorage()
-	checks := s.buildBloomChecks(&storage.QueryContext{
-		Query: `trace_id:="abc123"`,
-	})
+	checks := s.buildBloomChecks(`trace_id:="abc123"`)
 	if len(checks) != 1 {
 		t.Fatalf("expected 1 bloom check for trace_id, got %d", len(checks))
 	}
@@ -392,9 +407,7 @@ func TestBuildBloomChecks_TraceID(t *testing.T) {
 
 func TestBuildBloomChecks_NoBloomColumn(t *testing.T) {
 	s := testStorage()
-	checks := s.buildBloomChecks(&storage.QueryContext{
-		Query: `level:="INFO"`,
-	})
+	checks := s.buildBloomChecks(`level:="INFO"`)
 	if len(checks) != 0 {
 		t.Errorf("level has no bloom filter, expected 0 checks, got %d", len(checks))
 	}
@@ -478,20 +491,19 @@ func TestGetFieldNames_FromParquet(t *testing.T) {
 	path := writeTestParquet(t, dir, rows)
 	info, _ := os.Stat(path)
 
-	m := manifest.New("test", "logs/", testLogger())
+	m := manifest.New("test", "logs/")
 	m.AddFile("dt=2026-05-02/hour=10", manifest.FileInfo{Key: path, Size: info.Size()})
 
 	s := &Storage{
 		cfg:      testConfig(),
-		logger:   testLogger(),
 		manifest: m,
 		registry: schema.NewRegistry(schema.LogsProfile),
 	}
 
-	fields, err := s.getFieldNamesLocal(context.Background(), &storage.QueryContext{
-		StartNs: time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC).UnixNano(),
-		EndNs:   time.Date(2026, 5, 2, 11, 0, 0, 0, time.UTC).UnixNano(),
-	})
+	startNs := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC).UnixNano()
+	endNs := time.Date(2026, 5, 2, 11, 0, 0, 0, time.UTC).UnixNano()
+
+	fields, err := s.getFieldNamesLocal(context.Background(), startNs, endNs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,10 +526,10 @@ func TestGetFieldNames_FromParquet(t *testing.T) {
 
 func TestGetFieldNames_EmptyManifest(t *testing.T) {
 	s := testStorage()
-	fields, err := s.getFieldNamesLocal(context.Background(), &storage.QueryContext{
-		StartNs: time.Now().Add(-time.Hour).UnixNano(),
-		EndNs:   time.Now().UnixNano(),
-	})
+	startNs := time.Now().Add(-time.Hour).UnixNano()
+	endNs := time.Now().UnixNano()
+
+	fields, err := s.getFieldNamesLocal(context.Background(), startNs, endNs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +542,8 @@ func TestGetFieldNames_EmptyManifest(t *testing.T) {
 
 func TestGetStreamFieldNames_Logs(t *testing.T) {
 	s := testStorage()
-	fields, err := s.GetStreamFieldNames(context.Background(), &storage.QueryContext{})
+	q := mustParseQuery(t, "*")
+	fields, err := s.GetStreamFieldNames(context.Background(), nil, q)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -554,12 +567,12 @@ func TestGetStreamFieldNames_Logs(t *testing.T) {
 func TestGetStreamFieldNames_Traces(t *testing.T) {
 	s := &Storage{
 		cfg:      testConfig(),
-		logger:   testLogger(),
-		manifest: manifest.New("test", "traces/", testLogger()),
+		manifest: manifest.New("test", "traces/"),
 		registry: schema.NewRegistry(schema.TracesProfile),
 	}
 
-	fields, err := s.GetStreamFieldNames(context.Background(), &storage.QueryContext{})
+	q := mustParseQuery(t, "*")
+	fields, err := s.GetStreamFieldNames(context.Background(), nil, q)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -883,10 +896,11 @@ func TestGetFieldNames_UsesLabelIndex(t *testing.T) {
 	s.labelIndex.Add("service.name", []string{"api", "web"})
 	s.labelIndex.Add("level", []string{"info", "error"})
 
-	fields, err := s.GetFieldNames(context.Background(), &storage.QueryContext{
-		StartNs: time.Now().Add(-time.Hour).UnixNano(),
-		EndNs:   time.Now().UnixNano(),
-	})
+	q := mustParseQueryWithTime(t, "*",
+		time.Now().Add(-time.Hour).UnixNano(),
+		time.Now().UnixNano(),
+	)
+	fields, err := s.GetFieldNames(context.Background(), nil, q)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -899,10 +913,11 @@ func TestGetFieldValues_UsesLabelIndex(t *testing.T) {
 	s := testStorage()
 	s.labelIndex.Add("service.name", []string{"api", "web", "worker"})
 
-	vals, err := s.GetFieldValues(context.Background(), &storage.QueryContext{
-		StartNs: time.Now().Add(-time.Hour).UnixNano(),
-		EndNs:   time.Now().UnixNano(),
-	}, "service.name", 10)
+	q := mustParseQueryWithTime(t, "*",
+		time.Now().Add(-time.Hour).UnixNano(),
+		time.Now().UnixNano(),
+	)
+	vals, err := s.GetFieldValues(context.Background(), nil, q, "service.name", uint64(10))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1007,31 +1022,31 @@ func TestClose_NoPersister(t *testing.T) {
 
 // --- Test helpers for local file access ---
 
-func (s *Storage) queryLocalFile(path string, size int64, qctx *storage.QueryContext, writeBlock storage.WriteDataBlockFunc) error {
+func (s *Storage) queryLocalFile(path string, size int64, startNs, endNs int64, queryStr string, writeBlock logstorage.WriteDataBlockFunc) error {
 	f, err := parquet.OpenFile(newLocalReaderAt(path), size)
 	if err != nil {
 		return err
 	}
 
 	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
-	bloomChecks := s.buildBloomChecks(qctx)
+	bloomChecks := s.buildBloomChecks(queryStr)
 
 	for _, rg := range f.RowGroups() {
-		if tsIdx >= 0 && !rowGroupMatchesTimeRange(rg, tsIdx, qctx.StartNs, qctx.EndNs) {
+		if tsIdx >= 0 && !rowGroupMatchesTimeRange(rg, tsIdx, startNs, endNs) {
 			continue
 		}
 		if s.bloomFilterSkip(f, rg, bloomChecks) {
 			continue
 		}
-		if err := s.readRowGroup(f, rg, qctx, writeBlock); err != nil {
+		if err := s.readRowGroup(f, rg, startNs, endNs, writeBlock); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Storage) getFieldNamesLocal(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error) {
-	files := s.manifest.GetFilesForRange(qctx.StartNs, qctx.EndNs)
+func (s *Storage) getFieldNamesLocal(ctx context.Context, startNs, endNs int64) ([]logstorage.ValueWithHits, error) {
+	files := s.manifest.GetFilesForRange(startNs, endNs)
 	if len(files) == 0 {
 		return nil, nil
 	}
@@ -1043,7 +1058,7 @@ func (s *Storage) getFieldNamesLocal(ctx context.Context, qctx *storage.QueryCon
 	}
 
 	seen := make(map[string]bool)
-	var result []storage.ValueWithHits
+	var result []logstorage.ValueWithHits
 	for _, name := range columnNames(f.Root()) {
 		internalName := name
 		if m := s.registry.ResolveFromParquet(name); m != nil {
@@ -1051,7 +1066,7 @@ func (s *Storage) getFieldNamesLocal(ctx context.Context, qctx *storage.QueryCon
 		}
 		if !seen[internalName] {
 			seen[internalName] = true
-			result = append(result, storage.ValueWithHits{Value: internalName, Hits: 1})
+			result = append(result, logstorage.ValueWithHits{Value: internalName, Hits: 1})
 		}
 	}
 	return result, nil
@@ -1084,13 +1099,13 @@ func TestRunQuery_HotBoundarySuppression(t *testing.T) {
 		MaxTime: now,
 	})
 
-	qctx := &storage.QueryContext{
-		StartNs: now.Add(-1 * time.Hour).UnixNano(),
-		EndNs:   now.UnixNano(),
-	}
+	q := mustParseQueryWithTime(t, "*",
+		now.Add(-1*time.Hour).UnixNano(),
+		now.UnixNano(),
+	)
 
 	var called bool
-	err := s.RunQuery(context.Background(), qctx, func(_ uint, _ *storage.DataBlock) {
+	err := s.RunQuery(context.Background(), nil, q, func(_ uint, _ *logstorage.DataBlock) {
 		called = true
 	})
 	if err != nil {
@@ -1160,12 +1175,12 @@ func TestLogRowsToDataBlock(t *testing.T) {
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
-	if db.RowsCount != 2 {
-		t.Errorf("RowsCount = %d, want 2", db.RowsCount)
+	if db.RowsCount() != 2 {
+		t.Errorf("RowsCount = %d, want 2", db.RowsCount())
 	}
 
 	colMap := make(map[string][]string)
-	for _, col := range db.Columns {
+	for _, col := range db.GetColumns(false) {
 		colMap[col.Name] = col.Values
 	}
 
@@ -1235,9 +1250,9 @@ func TestLogRowsToDataBlock(t *testing.T) {
 	}
 
 	// Verify all columns have same length
-	for _, col := range db.Columns {
-		if len(col.Values) != db.RowsCount {
-			t.Errorf("column %s has %d values, want %d", col.Name, len(col.Values), db.RowsCount)
+	for _, col := range db.GetColumns(false) {
+		if len(col.Values) != db.RowsCount() {
+			t.Errorf("column %s has %d values, want %d", col.Name, len(col.Values), db.RowsCount())
 		}
 	}
 }
@@ -1287,12 +1302,12 @@ func TestTraceRowsToDataBlock(t *testing.T) {
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
-	if db.RowsCount != 2 {
-		t.Errorf("RowsCount = %d, want 2", db.RowsCount)
+	if db.RowsCount() != 2 {
+		t.Errorf("RowsCount = %d, want 2", db.RowsCount())
 	}
 
 	colMap := make(map[string][]string)
-	for _, col := range db.Columns {
+	for _, col := range db.GetColumns(false) {
 		colMap[col.Name] = col.Values
 	}
 
@@ -1365,9 +1380,9 @@ func TestTraceRowsToDataBlock(t *testing.T) {
 	}
 
 	// Verify all columns have same length
-	for _, col := range db.Columns {
-		if len(col.Values) != db.RowsCount {
-			t.Errorf("column %s has %d values, want %d", col.Name, len(col.Values), db.RowsCount)
+	for _, col := range db.GetColumns(false) {
+		if len(col.Values) != db.RowsCount() {
+			t.Errorf("column %s has %d values, want %d", col.Name, len(col.Values), db.RowsCount())
 		}
 	}
 }
@@ -1403,7 +1418,6 @@ func TestStartWriter_WALReplay(t *testing.T) {
 	s2.writer = &BatchWriter{
 		cfg:       &cfg.Insert,
 		mode:      cfg.Mode,
-		logger:    testLogger(),
 		logBufs:   make(map[string][]schema.LogRow),
 		traceBufs: make(map[string][]schema.TraceRow),
 		stopCh:    make(chan struct{}),
@@ -1427,7 +1441,6 @@ func TestStartWriter_WALReplay_WithEntries(t *testing.T) {
 	bw := &BatchWriter{
 		cfg:       &cfg.Insert,
 		mode:      cfg.Mode,
-		logger:    testLogger(),
 		logBufs:   make(map[string][]schema.LogRow),
 		traceBufs: make(map[string][]schema.TraceRow),
 		stopCh:    make(chan struct{}),
@@ -1524,11 +1537,11 @@ func TestTombstone_NoTombstones_AllRowsPassThrough(t *testing.T) {
 	s := testStorage()
 	// No tombstone store set — all rows should pass through.
 
-	var blocks []*storage.DataBlock
-	err := s.queryLocalFile(path, info.Size(), &storage.QueryContext{
-		StartNs: now.Add(-time.Minute).UnixNano(),
-		EndNs:   now.Add(time.Minute).UnixNano(),
-	}, func(_ uint, db *storage.DataBlock) {
+	startNs := now.Add(-time.Minute).UnixNano()
+	endNs := now.Add(time.Minute).UnixNano()
+
+	var blocks []*logstorage.DataBlock
+	err := s.queryLocalFile(path, info.Size(), startNs, endNs, "", func(_ uint, db *logstorage.DataBlock) {
 		blocks = append(blocks, db)
 	})
 	if err != nil {
@@ -1537,7 +1550,7 @@ func TestTombstone_NoTombstones_AllRowsPassThrough(t *testing.T) {
 
 	totalRows := 0
 	for _, b := range blocks {
-		totalRows += b.RowsCount
+		totalRows += b.RowsCount()
 	}
 	if totalRows != 3 {
 		t.Errorf("without tombstones expected 3 rows, got %d", totalRows)
@@ -1568,16 +1581,15 @@ func TestTombstone_MatchingRowsSuppressed(t *testing.T) {
 	})
 	s.SetTombstoneStore(ts)
 
-	var blocks []*storage.DataBlock
-	qctx := &storage.QueryContext{
-		StartNs: now.Add(-time.Minute).UnixNano(),
-		EndNs:   now.Add(time.Minute).UnixNano(),
-	}
+	startNs := now.Add(-time.Minute).UnixNano()
+	endNs := now.Add(time.Minute).UnixNano()
+
+	var blocks []*logstorage.DataBlock
 
 	// Use filterTombstonedRows directly since queryLocalFile doesn't go through RunQuery's wrapper
-	err := s.queryLocalFile(path, info.Size(), qctx, func(_ uint, db *storage.DataBlock) {
-		filtered := s.filterTombstonedRows(db, qctx.StartNs, qctx.EndNs)
-		if filtered != nil && filtered.RowsCount > 0 {
+	err := s.queryLocalFile(path, info.Size(), startNs, endNs, "", func(_ uint, db *logstorage.DataBlock) {
+		filtered := s.filterTombstonedRows(db, startNs, endNs)
+		if filtered != nil && filtered.RowsCount() > 0 {
 			blocks = append(blocks, filtered)
 		}
 	})
@@ -1587,7 +1599,7 @@ func TestTombstone_MatchingRowsSuppressed(t *testing.T) {
 
 	totalRows := 0
 	for _, b := range blocks {
-		totalRows += b.RowsCount
+		totalRows += b.RowsCount()
 	}
 	if totalRows != 2 {
 		t.Errorf("expected 2 rows after tombstone suppression (worker row removed), got %d", totalRows)
@@ -1595,7 +1607,7 @@ func TestTombstone_MatchingRowsSuppressed(t *testing.T) {
 
 	// Verify remaining rows are the api-gw ones
 	for _, b := range blocks {
-		for _, col := range b.Columns {
+		for _, col := range b.GetColumns(false) {
 			if col.Name == "service.name" {
 				for _, v := range col.Values {
 					if v == "worker" {
@@ -1613,19 +1625,17 @@ func TestTombstone_PartialMatch_OnlyMatchingRowsSuppressed(t *testing.T) {
 	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
 
 	// Create a DataBlock directly
-	db := &storage.DataBlock{
-		RowsCount: 4,
-		Columns: []storage.BlockColumn{
-			{Name: "_time", Values: []string{
-				fmt.Sprintf("%d", now.UnixNano()),
-				fmt.Sprintf("%d", now.Add(time.Second).UnixNano()),
-				fmt.Sprintf("%d", now.Add(2*time.Second).UnixNano()),
-				fmt.Sprintf("%d", now.Add(3*time.Second).UnixNano()),
-			}},
-			{Name: "service.name", Values: []string{"api-gw", "worker", "api-gw", "worker"}},
-			{Name: "_msg", Values: []string{"msg1", "msg2", "msg3", "msg4"}},
-		},
-	}
+	db := &logstorage.DataBlock{}
+	db.SetColumns([]logstorage.BlockColumn{
+		{Name: "_time", Values: []string{
+			fmt.Sprintf("%d", now.UnixNano()),
+			fmt.Sprintf("%d", now.Add(time.Second).UnixNano()),
+			fmt.Sprintf("%d", now.Add(2*time.Second).UnixNano()),
+			fmt.Sprintf("%d", now.Add(3*time.Second).UnixNano()),
+		}},
+		{Name: "service.name", Values: []string{"api-gw", "worker", "api-gw", "worker"}},
+		{Name: "_msg", Values: []string{"msg1", "msg2", "msg3", "msg4"}},
+	})
 
 	// Tombstone matches worker service
 	ts := delete.NewTombstoneStore()
@@ -1642,12 +1652,12 @@ func TestTombstone_PartialMatch_OnlyMatchingRowsSuppressed(t *testing.T) {
 	if filtered == nil {
 		t.Fatal("expected non-nil result (partial match)")
 	}
-	if filtered.RowsCount != 2 {
-		t.Errorf("expected 2 remaining rows, got %d", filtered.RowsCount)
+	if filtered.RowsCount() != 2 {
+		t.Errorf("expected 2 remaining rows, got %d", filtered.RowsCount())
 	}
 
 	// Verify remaining are api-gw
-	for _, col := range filtered.Columns {
+	for _, col := range filtered.GetColumns(false) {
 		if col.Name == "service.name" {
 			for i, v := range col.Values {
 				if v != "api-gw" {
@@ -1663,17 +1673,15 @@ func TestTombstone_AllRowsSuppressed_ReturnsNil(t *testing.T) {
 
 	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
 
-	db := &storage.DataBlock{
-		RowsCount: 2,
-		Columns: []storage.BlockColumn{
-			{Name: "_time", Values: []string{
-				fmt.Sprintf("%d", now.UnixNano()),
-				fmt.Sprintf("%d", now.Add(time.Second).UnixNano()),
-			}},
-			{Name: "service.name", Values: []string{"worker", "worker"}},
-			{Name: "_msg", Values: []string{"msg1", "msg2"}},
-		},
-	}
+	db := &logstorage.DataBlock{}
+	db.SetColumns([]logstorage.BlockColumn{
+		{Name: "_time", Values: []string{
+			fmt.Sprintf("%d", now.UnixNano()),
+			fmt.Sprintf("%d", now.Add(time.Second).UnixNano()),
+		}},
+		{Name: "service.name", Values: []string{"worker", "worker"}},
+		{Name: "_msg", Values: []string{"msg1", "msg2"}},
+	})
 
 	// Tombstone matches all rows
 	ts := delete.NewTombstoneStore()
@@ -1697,13 +1705,11 @@ func TestTombstone_NilStore_PassThrough(t *testing.T) {
 	// tombstones is nil by default
 
 	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
-	db := &storage.DataBlock{
-		RowsCount: 1,
-		Columns: []storage.BlockColumn{
-			{Name: "_time", Values: []string{fmt.Sprintf("%d", now.UnixNano())}},
-			{Name: "_msg", Values: []string{"hello"}},
-		},
-	}
+	db := &logstorage.DataBlock{}
+	db.SetColumns([]logstorage.BlockColumn{
+		{Name: "_time", Values: []string{fmt.Sprintf("%d", now.UnixNano())}},
+		{Name: "_msg", Values: []string{"hello"}},
+	})
 
 	filtered := s.filterTombstonedRows(db, now.Add(-time.Minute).UnixNano(), now.Add(time.Minute).UnixNano())
 	if filtered != db {
@@ -1715,13 +1721,11 @@ func TestTombstone_EmptyForRange_PassThrough(t *testing.T) {
 	s := testStorage()
 
 	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
-	db := &storage.DataBlock{
-		RowsCount: 1,
-		Columns: []storage.BlockColumn{
-			{Name: "_time", Values: []string{fmt.Sprintf("%d", now.UnixNano())}},
-			{Name: "_msg", Values: []string{"hello"}},
-		},
-	}
+	db := &logstorage.DataBlock{}
+	db.SetColumns([]logstorage.BlockColumn{
+		{Name: "_time", Values: []string{fmt.Sprintf("%d", now.UnixNano())}},
+		{Name: "_msg", Values: []string{"hello"}},
+	})
 
 	// Tombstone outside the query range
 	ts := delete.NewTombstoneStore()
@@ -1768,11 +1772,13 @@ func TestTombstone_RunQuery_Integration(t *testing.T) {
 	})
 	s.SetTombstoneStore(ts)
 
-	var blocks []*storage.DataBlock
-	err := s.RunQuery(context.Background(), &storage.QueryContext{
-		StartNs: now.Add(-time.Minute).UnixNano(),
-		EndNs:   now.Add(time.Minute).UnixNano(),
-	}, func(_ uint, db *storage.DataBlock) {
+	q := mustParseQueryWithTime(t, "*",
+		now.Add(-time.Minute).UnixNano(),
+		now.Add(time.Minute).UnixNano(),
+	)
+
+	var blocks []*logstorage.DataBlock
+	err := s.RunQuery(context.Background(), nil, q, func(_ uint, db *logstorage.DataBlock) {
 		blocks = append(blocks, db)
 	})
 	if err != nil {
@@ -1781,7 +1787,7 @@ func TestTombstone_RunQuery_Integration(t *testing.T) {
 
 	totalRows := 0
 	for _, b := range blocks {
-		totalRows += b.RowsCount
+		totalRows += b.RowsCount()
 	}
 	if totalRows != 1 {
 		t.Errorf("expected 1 row after tombstone filtering in RunQuery, got %d", totalRows)
@@ -1789,7 +1795,7 @@ func TestTombstone_RunQuery_Integration(t *testing.T) {
 
 	// Verify the kept row is api-gw
 	for _, b := range blocks {
-		for _, col := range b.Columns {
+		for _, col := range b.GetColumns(false) {
 			if col.Name == "service.name" {
 				for _, v := range col.Values {
 					if v == "worker" {

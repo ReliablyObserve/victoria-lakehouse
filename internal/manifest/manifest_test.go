@@ -1,8 +1,6 @@
 package manifest
 
 import (
-	"io"
-	"log/slog"
 	"testing"
 	"time"
 )
@@ -452,9 +450,5 @@ func TestManifest_GetPartitions(t *testing.T) {
 }
 
 func newTestManifest() *Manifest {
-	return New("test-bucket", "logs/", testLogger())
-}
-
-func testLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	return New("test-bucket", "logs/")
 }

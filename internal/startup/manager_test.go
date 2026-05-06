@@ -1,8 +1,6 @@
 package startup
 
 import (
-	"log/slog"
-	"os"
 	"testing"
 	"time"
 )
@@ -26,8 +24,7 @@ func TestPhaseString(t *testing.T) {
 }
 
 func TestManager_Lifecycle(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	m := NewManager(logger)
+	m := NewManager()
 
 	if m.Phase() != PhaseInit {
 		t.Errorf("initial phase = %v, want init", m.Phase())

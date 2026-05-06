@@ -5,11 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 )
 
 // S3Store abstracts S3 operations used by S3Elector, allowing test mocks.
@@ -35,7 +36,6 @@ type S3ElectorConfig struct {
 	HeartbeatInterval  time.Duration
 	LockTTL            time.Duration
 	HealthCheckTimeout time.Duration
-	Logger             *slog.Logger
 }
 
 // S3Elector implements Leader using an S3 lock file with liveness detection.
@@ -59,9 +59,6 @@ func NewS3Elector(store S3Store, cfg S3ElectorConfig) *S3Elector {
 	}
 	if cfg.HealthCheckTimeout == 0 {
 		cfg.HealthCheckTimeout = 3 * time.Second
-	}
-	if cfg.Logger == nil {
-		cfg.Logger = slog.Default()
 	}
 	return &S3Elector{
 		cfg:    cfg,
@@ -143,7 +140,7 @@ func (e *S3Elector) tryAcquire(ctx context.Context) {
 	var lock S3Lock
 	if err := json.Unmarshal(data, &lock); err != nil {
 		// Corrupted lock — overwrite.
-		e.cfg.Logger.Warn("s3elector: corrupted lock, overwriting", "key", e.cfg.LockKey, "err", err)
+		logger.Warnf("s3elector: corrupted lock, overwriting; key=%s, err=%s", e.cfg.LockKey, err)
 		e.writeLock(ctx)
 		return
 	}
@@ -156,14 +153,12 @@ func (e *S3Elector) tryAcquire(ctx context.Context) {
 
 	// Someone else holds the lock. Check liveness.
 	if e.isHolderAlive(lock) {
-		e.cfg.Logger.Debug("s3elector: another holder is alive, not taking over",
-			"holder", lock.Holder, "address", lock.Address)
+		logger.Infof("s3elector: another holder is alive, not taking over; holder=%s, address=%s", lock.Holder, lock.Address)
 		return
 	}
 
 	// Holder is dead — take over.
-	e.cfg.Logger.Info("s3elector: holder appears dead, taking over",
-		"holder", lock.Holder, "address", lock.Address)
+	logger.Infof("s3elector: holder appears dead, taking over; holder=%s, address=%s", lock.Holder, lock.Address)
 	e.writeLock(ctx)
 }
 
@@ -205,15 +200,15 @@ func (e *S3Elector) writeLock(ctx context.Context) {
 	}
 	data, err := json.Marshal(lock)
 	if err != nil {
-		e.cfg.Logger.Error("s3elector: failed to marshal lock", "err", err)
+		logger.Errorf("s3elector: failed to marshal lock: %s", err)
 		return
 	}
 	if err := e.store.Upload(ctx, e.cfg.LockKey, data); err != nil {
-		e.cfg.Logger.Error("s3elector: failed to write lock", "key", e.cfg.LockKey, "err", err)
+		logger.Errorf("s3elector: failed to write lock: %s; key=%s", err, e.cfg.LockKey)
 		return
 	}
 	e.isLeader.Store(true)
-	e.cfg.Logger.Info("s3elector: acquired leadership", "identity", e.cfg.Identity)
+	logger.Infof("s3elector: acquired leadership; identity=%s", e.cfg.Identity)
 }
 
 // heartbeat updates the Heartbeat timestamp in the lock file.
@@ -230,18 +225,18 @@ func (e *S3Elector) heartbeat(ctx context.Context) {
 	if err := json.Unmarshal(data, &lock); err != nil || lock.Holder != e.cfg.Identity {
 		// Lock was taken by someone else.
 		e.isLeader.Store(false)
-		e.cfg.Logger.Warn("s3elector: lost leadership during heartbeat")
+		logger.Warnf("s3elector: lost leadership during heartbeat")
 		return
 	}
 
 	lock.Heartbeat = time.Now().UTC()
 	updated, err := json.Marshal(lock)
 	if err != nil {
-		e.cfg.Logger.Error("s3elector: failed to marshal heartbeat", "err", err)
+		logger.Errorf("s3elector: failed to marshal heartbeat: %s", err)
 		return
 	}
 	if err := e.store.Upload(ctx, e.cfg.LockKey, updated); err != nil {
-		e.cfg.Logger.Error("s3elector: failed to write heartbeat", "err", err)
+		logger.Errorf("s3elector: failed to write heartbeat: %s", err)
 	}
 }
 
@@ -255,9 +250,9 @@ func (e *S3Elector) release(ctx context.Context) {
 	defer cancel()
 
 	if err := e.store.Delete(releaseCtx, e.cfg.LockKey); err != nil {
-		e.cfg.Logger.Error("s3elector: failed to release lock", "key", e.cfg.LockKey, "err", err)
+		logger.Errorf("s3elector: failed to release lock: %s; key=%s", err, e.cfg.LockKey)
 	} else {
-		e.cfg.Logger.Info("s3elector: released leadership", "identity", e.cfg.Identity)
+		logger.Infof("s3elector: released leadership; identity=%s", e.cfg.Identity)
 	}
 	e.isLeader.Store(false)
 }

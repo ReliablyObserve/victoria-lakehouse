@@ -236,7 +236,7 @@ Tombstone-based deletion **satisfies GDPR right to erasure** requirements becaus
 
 ## Traces Delete Support
 
-The same three-tier deletion strategy applies to traces mode (`--lakehouse.mode=traces`). All endpoints use the `/delete/tracessql/*` prefix instead of `/delete/logsql/*`.
+The same three-tier deletion strategy applies to `lakehouse-traces`. All endpoints use the `/delete/tracessql/*` prefix instead of `/delete/logsql/*`.
 
 ### Trace Field Matching
 

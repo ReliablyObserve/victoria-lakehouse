@@ -1,9 +1,10 @@
 package startup
 
 import (
-	"log/slog"
 	"sync/atomic"
 	"time"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
@@ -40,13 +41,11 @@ type Manager struct {
 	refreshTime  time.Duration
 	totalTime    time.Duration
 	catchupFiles int64
-	logger       *slog.Logger
 }
 
-func NewManager(logger *slog.Logger) *Manager {
+func NewManager() *Manager {
 	m := &Manager{
 		startTime: time.Now(),
-		logger:    logger.With("component", "startup"),
 	}
 	m.phase.Store(int32(PhaseInit))
 	return m
@@ -62,7 +61,7 @@ func (m *Manager) IsReady() bool {
 
 func (m *Manager) SetPhase(p Phase) {
 	old := Phase(m.phase.Swap(int32(p)))
-	m.logger.Info("startup phase transition", "from", old.String(), "to", p.String(), "elapsed", time.Since(m.startTime))
+	logger.Infof("startup phase transition; from=%s, to=%s, elapsed=%v", old.String(), p.String(), time.Since(m.startTime))
 	metrics.StartupPhase.Set(int64(p))
 
 	switch p {
@@ -76,12 +75,7 @@ func (m *Manager) SetPhase(p Phase) {
 		m.ready.Store(true)
 		metrics.Ready.Set(1)
 		metrics.StartupTotalSeconds.Set(m.totalTime.Seconds())
-		m.logger.Info("startup complete",
-			"recovery_seconds", m.recoveryTime.Seconds(),
-			"refresh_seconds", m.refreshTime.Seconds(),
-			"total_seconds", m.totalTime.Seconds(),
-			"catchup_files", m.catchupFiles,
-		)
+		logger.Infof("startup complete; recovery_seconds=%v, refresh_seconds=%v, total_seconds=%v, catchup_files=%d", m.recoveryTime.Seconds(), m.refreshTime.Seconds(), m.totalTime.Seconds(), m.catchupFiles)
 	}
 }
 
@@ -89,7 +83,6 @@ func (m *Manager) SetCatchupFiles(n int64) {
 	m.catchupFiles = n
 }
 
-func (m *Manager) Logger() *slog.Logger     { return m.logger }
 func (m *Manager) RecoverySeconds() float64 { return m.recoveryTime.Seconds() }
 func (m *Manager) RefreshSeconds() float64  { return m.refreshTime.Seconds() }
 func (m *Manager) TotalSeconds() float64    { return m.totalTime.Seconds() }

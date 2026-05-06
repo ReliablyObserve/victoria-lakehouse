@@ -3,11 +3,11 @@ package election
 
 import (
 	"context"
-	"log/slog"
 	"os"
 	"sync/atomic"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -23,7 +23,6 @@ type K8sElectorConfig struct {
 	LeaseDuration  time.Duration
 	RenewDeadline  time.Duration
 	RetryPeriod    time.Duration
-	Logger         *slog.Logger
 }
 
 // K8sElector implements Leader using a Kubernetes Lease object for distributed
@@ -32,7 +31,6 @@ type K8sElector struct {
 	cfg    K8sElectorConfig
 	leader atomic.Bool
 	cancel context.CancelFunc
-	logger *slog.Logger
 }
 
 // NewK8sElector constructs a K8sElector, applying defaults for zero-value durations.
@@ -55,11 +53,7 @@ func NewK8sElector(cfg K8sElectorConfig) (*K8sElector, error) {
 	if cfg.Identity == "" {
 		cfg.Identity, _ = os.Hostname()
 	}
-	lg := cfg.Logger
-	if lg == nil {
-		lg = slog.Default()
-	}
-	return &K8sElector{cfg: cfg, logger: lg.With("component", "election.k8s")}, nil
+	return &K8sElector{cfg: cfg}, nil
 }
 
 // IsLeader reports whether this instance currently holds the Kubernetes lease.
@@ -82,12 +76,12 @@ func (e *K8sElector) Stop() {
 func (e *K8sElector) run(ctx context.Context) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		e.logger.Error("k8s in-cluster config failed", "error", err)
+		logger.Errorf("k8s in-cluster config failed: %s", err)
 		return
 	}
 	client, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		e.logger.Error("k8s client creation failed", "error", err)
+		logger.Errorf("k8s client creation failed: %s", err)
 		return
 	}
 	lock := &resourcelock.LeaseLock{
@@ -109,14 +103,14 @@ func (e *K8sElector) run(ctx context.Context) {
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: func(_ context.Context) {
 				e.leader.Store(true)
-				e.logger.Info("compaction leader elected", "identity", e.cfg.Identity)
+				logger.Infof("compaction leader elected; identity=%s", e.cfg.Identity)
 			},
 			OnStoppedLeading: func() {
 				e.leader.Store(false)
-				e.logger.Info("compaction leadership lost", "identity", e.cfg.Identity)
+				logger.Infof("compaction leadership lost; identity=%s", e.cfg.Identity)
 			},
 			OnNewLeader: func(identity string) {
-				e.logger.Info("new compaction leader", "leader", identity)
+				logger.Infof("new compaction leader; leader=%s", identity)
 			},
 		},
 	})

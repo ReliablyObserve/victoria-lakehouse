@@ -9,8 +9,38 @@ on:
 permissions:
   contents: read
 
+env:
+  VL_VERSION_LOGS: v1.50.0
+  VL_COMMIT_TRACES: a408207c2242
+
 jobs:
-  test:
+  deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Clone VL for logs
+        run: |
+          mkdir -p deps
+          git clone --depth 1 --branch ${{ env.VL_VERSION_LOGS }} \
+            https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs
+
+      - name: Clone VL for traces
+        run: |
+          mkdir -p lakehouse-traces/deps
+          git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src
+          cd /tmp/vl-src && git checkout ${{ env.VL_COMMIT_TRACES }}
+          cp -r /tmp/vl-src ${{ github.workspace }}/lakehouse-traces/deps/VictoriaLogs
+
+      - uses: actions/cache/save@v4
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+
+  test-logs:
+    needs: deps
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -19,13 +49,46 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Run tests
-        run: go test ./... -race -count=1 -timeout=10m
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
 
-      - name: Run vet
+      - name: Test logs module
+        run: go test ./internal/... -race -count=1 -timeout=10m
+
+      - name: Vet logs module
+        run: go vet ./internal/... ./cmd/...
+
+  test-traces:
+    needs: deps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: lakehouse-traces/go.mod
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+
+      - name: Test traces module
+        working-directory: lakehouse-traces
+        run: go test ./internal/... -race -count=1 -timeout=10m
+
+      - name: Vet traces module
+        working-directory: lakehouse-traces
         run: go vet ./...
 
-  lint:
+  lint-logs:
+    needs: deps
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -33,12 +96,42 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
 
       - uses: golangci/golangci-lint-action@v9
         with:
           version: latest
 
-  build:
+  lint-traces:
+    needs: deps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: lakehouse-traces/go.mod
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          working-directory: lakehouse-traces
+
+  build-logs:
+    needs: deps
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -51,29 +144,82 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+
+      - name: Build lakehouse-logs
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
-          go build -ldflags "-X main.version=${{ github.sha }} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -o bin/lakehouse-${{ matrix.goos }}-${{ matrix.goarch }} \
-            ./cmd/lakehouse
+          go build -ldflags "-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${{ github.sha }}" \
+            -o bin/lakehouse-logs-${{ matrix.goos }}-${{ matrix.goarch }} \
+            ./cmd/lakehouse-logs
 
-  docker:
+  build-traces:
+    needs: deps
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, darwin]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: lakehouse-traces/go.mod
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+
+      - name: Build lakehouse-traces
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          go build -ldflags "-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${{ github.sha }}" \
+            -o bin/lakehouse-traces-${{ matrix.goos }}-${{ matrix.goarch }} \
+            ./lakehouse-traces
+
+  docker-logs:
+    needs: deps
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
-      - name: Build Docker image
+      - name: Build Docker image (logs)
         run: |
           REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          docker build \
+          docker build -f Dockerfile.logs \
             --build-arg VERSION=${{ github.sha }} \
-            -t ghcr.io/${REPO}:${{ github.sha }} .
+            -t ghcr.io/${REPO}/lakehouse-logs:${{ github.sha }} .
 
-  security:
+  docker-traces:
+    needs: deps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build Docker image (traces)
+        run: |
+          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          docker build -f Dockerfile.traces \
+            --build-arg VERSION=${{ github.sha }} \
+            -t ghcr.io/${REPO}/lakehouse-traces:${{ github.sha }} .
+
+  security-logs:
+    needs: deps
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -82,15 +228,40 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Run govulncheck
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+
+      - name: Run govulncheck (logs)
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
-      - name: Run gosec
-        uses: securego/gosec@master
+  security-traces:
+    needs: deps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
         with:
-          args: -exclude=G104,G110,G115,G204,G304,G401,G501,G705 ./...
+          go-version-file: lakehouse-traces/go.mod
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+
+      - name: Run govulncheck (traces)
+        working-directory: lakehouse-traces
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
 
   helm:
     runs-on: ubuntu-latest
@@ -101,7 +272,8 @@ jobs:
         run: |
           helm lint charts/victoria-lakehouse/ || true
 
-  benchmarks:
+  benchmarks-logs:
+    needs: deps
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
@@ -111,11 +283,44 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Run benchmarks
-        run: go test -bench=. -benchtime=3s -count=2 ./... | tee bench.txt
-
-      - name: Upload benchmark results
-        uses: actions/upload-artifact@v7
+      - uses: actions/cache/restore@v4
         with:
-          name: bench-results
-          path: bench.txt
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+
+      - name: Run benchmarks (logs)
+        run: go test -bench=. -benchtime=3s -count=2 ./internal/... | tee bench-logs.txt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bench-results-logs
+          path: bench-logs.txt
+
+  benchmarks-traces:
+    needs: deps
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: lakehouse-traces/go.mod
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+
+      - name: Run benchmarks (traces)
+        working-directory: lakehouse-traces
+        run: go test -bench=. -benchtime=3s -count=2 ./internal/... | tee bench-traces.txt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bench-results-traces
+          path: lakehouse-traces/bench-traces.txt

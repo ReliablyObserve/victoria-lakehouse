@@ -1,9 +1,10 @@
 package selectapi
 
 import (
-	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/regexutil"
 )
 
 // FilterOp represents the type of filter operation.
@@ -24,7 +25,7 @@ type FilterNode struct {
 	Op       FilterOp
 	Field    string
 	Value    string
-	Regex    *regexp.Regexp
+	Regex    *regexutil.Regex
 	Children []*FilterNode
 }
 
@@ -277,9 +278,8 @@ func parseFilterTerm(term string) *FilterNode {
 		field := term[:idx]
 		pattern := term[idx+3:]
 		pattern = strings.TrimSuffix(pattern, `"`)
-		re, err := regexp.Compile(pattern)
+		re, err := regexutil.NewRegex(pattern)
 		if err != nil {
-			// Invalid regex — treat as substring match
 			return &FilterNode{Op: FilterSubstring, Field: field, Value: pattern}
 		}
 		return &FilterNode{Op: FilterRegex, Field: field, Value: pattern, Regex: re}

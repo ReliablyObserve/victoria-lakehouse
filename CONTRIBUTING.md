@@ -23,10 +23,13 @@ go test ./...
 
 ```bash
 # Start MinIO for local S3
-docker compose -f deploy/compose/docker-compose.yml up -d minio
+docker compose -f deployment/docker/docker-compose-e2e.yml up -d minio
 
-# Run lakehouse in logs mode
-go run ./cmd/lakehouse --lakehouse.mode=logs --lakehouse.s3.bucket=obs-archive --lakehouse.s3.endpoint=http://localhost:9000
+# Run lakehouse-logs
+go run ./cmd/lakehouse-logs --lakehouse.s3.bucket=obs-archive --lakehouse.s3.endpoint=http://localhost:9000
+
+# Run lakehouse-traces
+cd lakehouse-traces && go run . --lakehouse.s3.bucket=obs-archive --lakehouse.s3.endpoint=http://localhost:9000
 ```
 
 ## Development Workflow

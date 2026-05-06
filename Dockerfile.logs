@@ -1,0 +1,22 @@
+FROM golang:1.26.2-alpine3.22 AS builder
+RUN apk add --no-cache git
+WORKDIR /app
+ARG VERSION=dev
+ARG VL_VERSION=v1.50.0
+ENV GOWORK=off
+COPY go.mod go.sum ./
+RUN mkdir -p deps && \
+    git clone --depth 1 --branch ${VL_VERSION} https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs && \
+    go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}" -o /lakehouse-logs ./cmd/lakehouse-logs && \
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o /healthcheck ./cmd/healthcheck && \
+    mkdir -p /data/lakehouse/cache
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=builder /lakehouse-logs /usr/local/bin/lakehouse-logs
+COPY --from=builder /healthcheck /usr/local/bin/healthcheck
+COPY --from=builder --chown=65532:65532 /data/lakehouse /data/lakehouse
+USER nonroot
+EXPOSE 9428
+ENTRYPOINT ["/usr/local/bin/lakehouse-logs"]

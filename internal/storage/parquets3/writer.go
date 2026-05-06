@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
-	"log/slog"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
 	"github.com/parquet-go/parquet-go/compress/zstd"
 
@@ -35,7 +35,6 @@ type BatchWriter struct {
 	manifest *manifest.Manifest
 	prefix   string
 	mode     config.Mode
-	logger   *slog.Logger
 
 	mu         sync.Mutex
 	logBufs    map[string][]schema.LogRow
@@ -50,7 +49,7 @@ type BatchWriter struct {
 }
 
 func NewBatchWriter(cfg *config.InsertConfig, pool *s3reader.ClientPool,
-	m *manifest.Manifest, prefix string, mode config.Mode, logger *slog.Logger) *BatchWriter {
+	m *manifest.Manifest, prefix string, mode config.Mode) *BatchWriter {
 
 	bw := &BatchWriter{
 		cfg:       cfg,
@@ -58,7 +57,6 @@ func NewBatchWriter(cfg *config.InsertConfig, pool *s3reader.ClientPool,
 		manifest:  m,
 		prefix:    prefix,
 		mode:      mode,
-		logger:    logger.With("component", "writer"),
 		logBufs:   make(map[string][]schema.LogRow),
 		traceBufs: make(map[string][]schema.TraceRow),
 		stopCh:    make(chan struct{}),
@@ -68,7 +66,7 @@ func NewBatchWriter(cfg *config.InsertConfig, pool *s3reader.ClientPool,
 		walPath := filepath.Join(cfg.WALDir, "lakehouse.wal")
 		w, err := wal.Open(walPath, cfg.WALMaxBytesN())
 		if err != nil {
-			logger.Error("WAL open failed, continuing without WAL", "error", err)
+			logger.Errorf("WAL open failed, continuing without WAL: %s", err)
 		} else {
 			bw.wal = w
 		}
@@ -89,7 +87,7 @@ func (w *BatchWriter) Stop() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := w.FlushAll(ctx); err != nil {
-		w.logger.Error("final flush failed", "error", err)
+		logger.Errorf("final flush failed: %s", err)
 	}
 }
 
@@ -103,7 +101,7 @@ func (w *BatchWriter) flushLoop() {
 		case <-ticker.C:
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			if err := w.FlushAll(ctx); err != nil {
-				w.logger.Error("periodic flush failed", "error", err)
+				logger.Errorf("periodic flush failed: %s", err)
 			}
 			cancel()
 		case <-w.stopCh:
@@ -122,7 +120,7 @@ func (w *BatchWriter) AddLogRows(rows []schema.LogRow) {
 	if w.wal != nil {
 		for i := range rows {
 			if err := w.wal.AppendLog(&rows[i]); err != nil {
-				w.logger.Error("WAL append failed", "error", err)
+				logger.Errorf("WAL append failed: %s", err)
 				break
 			}
 		}
@@ -156,7 +154,7 @@ func (w *BatchWriter) AddTraceRows(rows []schema.TraceRow) {
 	if w.wal != nil {
 		for i := range rows {
 			if err := w.wal.AppendTrace(&rows[i]); err != nil {
-				w.logger.Error("WAL append failed", "error", err)
+				logger.Errorf("WAL append failed: %s", err)
 				break
 			}
 		}
@@ -219,7 +217,7 @@ func (w *BatchWriter) triggerFlush() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := w.FlushAll(ctx); err != nil {
-		w.logger.Error("triggered flush failed", "error", err)
+		logger.Errorf("triggered flush failed: %s", err)
 	}
 }
 
@@ -261,7 +259,7 @@ func (w *BatchWriter) FlushAll(ctx context.Context) error {
 
 	if len(errs) == 0 && w.wal != nil {
 		if err := w.wal.Truncate(); err != nil {
-			w.logger.Error("WAL truncate failed", "error", err)
+			logger.Errorf("WAL truncate failed: %s", err)
 		}
 	}
 
@@ -309,13 +307,8 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 
 	w.totalBytes.Add(int64(len(result.Data)))
 
-	w.logger.Debug("flushed log partition",
-		"partition", partition,
-		"rows", len(rows),
-		"bytes", len(result.Data),
-		"ratio", fi.CompressionRatio(),
-		"key", key,
-	)
+	logger.Infof("flushed log partition; partition=%s, rows=%d, bytes=%d, ratio=%v, key=%s",
+		partition, len(rows), len(result.Data), fi.CompressionRatio(), key)
 
 	return nil
 }
@@ -354,13 +347,8 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 
 	w.totalBytes.Add(int64(len(result.Data)))
 
-	w.logger.Debug("flushed trace partition",
-		"partition", partition,
-		"rows", len(rows),
-		"bytes", len(result.Data),
-		"ratio", fi.CompressionRatio(),
-		"key", key,
-	)
+	logger.Infof("flushed trace partition; partition=%s, rows=%d, bytes=%d, ratio=%v, key=%s",
+		partition, len(rows), len(result.Data), fi.CompressionRatio(), key)
 
 	return nil
 }
@@ -504,7 +492,7 @@ func (w *BatchWriter) ReplayWAL() (int, int) {
 	}
 	logs, traces, err := w.wal.Replay()
 	if err != nil {
-		w.logger.Error("WAL replay error", "error", err)
+		logger.Errorf("WAL replay error: %s", err)
 	}
 	if len(logs) > 0 {
 		w.AddLogRows(logs)
@@ -512,7 +500,7 @@ func (w *BatchWriter) ReplayWAL() (int, int) {
 	if len(traces) > 0 {
 		w.AddTraceRows(traces)
 	}
-	w.logger.Info("WAL replayed", "logs", len(logs), "traces", len(traces))
+	logger.Infof("WAL replayed; logs=%d, traces=%d", len(logs), len(traces))
 	return len(logs), len(traces)
 }
 

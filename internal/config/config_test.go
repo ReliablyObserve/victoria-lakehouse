@@ -1237,3 +1237,179 @@ func TestMergeConfig_TargetFileSize(t *testing.T) {
 		t.Errorf("TargetFileSize = %q, want 256MB", result.Insert.TargetFileSize)
 	}
 }
+
+func TestDefaultConfig_ModeConfigs(t *testing.T) {
+	cfg := Default()
+
+	if len(cfg.Logs.BloomColumns) != 1 || cfg.Logs.BloomColumns[0] != "service.name" {
+		t.Errorf("Logs.BloomColumns = %v, want [service.name]", cfg.Logs.BloomColumns)
+	}
+	if cfg.Logs.DeletePrefix != "/delete/logsql" {
+		t.Errorf("Logs.DeletePrefix = %q, want /delete/logsql", cfg.Logs.DeletePrefix)
+	}
+
+	if len(cfg.Traces.BloomColumns) != 2 {
+		t.Fatalf("Traces.BloomColumns len = %d, want 2", len(cfg.Traces.BloomColumns))
+	}
+	if cfg.Traces.BloomColumns[0] != "trace_id" || cfg.Traces.BloomColumns[1] != "service.name" {
+		t.Errorf("Traces.BloomColumns = %v", cfg.Traces.BloomColumns)
+	}
+	if cfg.Traces.DeletePrefix != "/delete/tracessql" {
+		t.Errorf("Traces.DeletePrefix = %q, want /delete/tracessql", cfg.Traces.DeletePrefix)
+	}
+	if !cfg.Traces.JaegerEnabled {
+		t.Error("Traces.JaegerEnabled should be true by default")
+	}
+	if cfg.Traces.JaegerGRPCAddr != ":16685" {
+		t.Errorf("Traces.JaegerGRPCAddr = %q, want :16685", cfg.Traces.JaegerGRPCAddr)
+	}
+}
+
+func TestActiveBloomColumns_LogsMode(t *testing.T) {
+	cfg := Default()
+	cfg.Mode = ModeLogs
+
+	cols := cfg.ActiveBloomColumns()
+	if len(cols) != 1 || cols[0] != "service.name" {
+		t.Errorf("ActiveBloomColumns(logs) = %v, want [service.name]", cols)
+	}
+}
+
+func TestActiveBloomColumns_TracesMode(t *testing.T) {
+	cfg := Default()
+	cfg.Mode = ModeTraces
+
+	cols := cfg.ActiveBloomColumns()
+	if len(cols) != 2 || cols[0] != "trace_id" {
+		t.Errorf("ActiveBloomColumns(traces) = %v, want [trace_id, service.name]", cols)
+	}
+}
+
+func TestActiveBloomColumns_OverrideFromModeSection(t *testing.T) {
+	cfg := Default()
+	cfg.Mode = ModeLogs
+	cfg.Logs.BloomColumns = []string{"custom.field", "trace_id"}
+
+	cols := cfg.ActiveBloomColumns()
+	if len(cols) != 2 || cols[0] != "custom.field" {
+		t.Errorf("ActiveBloomColumns = %v, want [custom.field, trace_id]", cols)
+	}
+}
+
+func TestActiveBloomColumns_FallbackToInsert(t *testing.T) {
+	cfg := Default()
+	cfg.Mode = ModeLogs
+	cfg.Logs.BloomColumns = nil
+	cfg.Insert.BloomColumns = []string{"fallback"}
+
+	cols := cfg.ActiveBloomColumns()
+	if len(cols) != 1 || cols[0] != "fallback" {
+		t.Errorf("ActiveBloomColumns = %v, want [fallback]", cols)
+	}
+}
+
+func TestActiveDeletePrefix(t *testing.T) {
+	cfg := Default()
+
+	cfg.Mode = ModeLogs
+	if p := cfg.ActiveDeletePrefix(); p != "/delete/logsql" {
+		t.Errorf("logs prefix = %q", p)
+	}
+
+	cfg.Mode = ModeTraces
+	if p := cfg.ActiveDeletePrefix(); p != "/delete/tracessql" {
+		t.Errorf("traces prefix = %q", p)
+	}
+
+	cfg.Traces.DeletePrefix = "/custom/delete"
+	if p := cfg.ActiveDeletePrefix(); p != "/custom/delete" {
+		t.Errorf("custom traces prefix = %q", p)
+	}
+}
+
+func TestActiveCompatVersion(t *testing.T) {
+	cfg := Default()
+	cfg.Mode = ModeLogs
+
+	if v := cfg.ActiveCompatVersion(); v != "" {
+		t.Errorf("default compat = %q, want empty", v)
+	}
+
+	cfg.Logs.CompatVersion = "1.50.0"
+	if v := cfg.ActiveCompatVersion(); v != "1.50.0" {
+		t.Errorf("logs compat = %q, want 1.50.0", v)
+	}
+
+	cfg.Mode = ModeTraces
+	cfg.Traces.CompatVersion = "0.8.2"
+	if v := cfg.ActiveCompatVersion(); v != "0.8.2" {
+		t.Errorf("traces compat = %q, want 0.8.2", v)
+	}
+}
+
+func TestMergeConfig_ModeConfigs(t *testing.T) {
+	base := Default()
+	overlay := &Config{}
+	overlay.Logs.BloomColumns = []string{"custom_field"}
+	overlay.Logs.DeletePrefix = "/custom/logs"
+	overlay.Traces.BloomColumns = []string{"span_id"}
+	overlay.Traces.JaegerEnabled = true
+	overlay.Traces.JaegerGRPCAddr = ":9999"
+
+	result := mergeConfig(base, overlay)
+
+	if len(result.Logs.BloomColumns) != 1 || result.Logs.BloomColumns[0] != "custom_field" {
+		t.Errorf("Logs.BloomColumns = %v", result.Logs.BloomColumns)
+	}
+	if result.Logs.DeletePrefix != "/custom/logs" {
+		t.Errorf("Logs.DeletePrefix = %q", result.Logs.DeletePrefix)
+	}
+	if len(result.Traces.BloomColumns) != 1 || result.Traces.BloomColumns[0] != "span_id" {
+		t.Errorf("Traces.BloomColumns = %v", result.Traces.BloomColumns)
+	}
+	if !result.Traces.JaegerEnabled {
+		t.Error("Traces.JaegerEnabled should be true")
+	}
+	if result.Traces.JaegerGRPCAddr != ":9999" {
+		t.Errorf("Traces.JaegerGRPCAddr = %q", result.Traces.JaegerGRPCAddr)
+	}
+}
+
+func TestLoad_YAMLWithModeConfigs(t *testing.T) {
+	content := `
+lakehouse:
+  mode: traces
+  s3:
+    bucket: test-bucket
+  traces:
+    bloom_columns:
+      - span_id
+      - trace_id
+    delete_prefix: /delete/custom
+    jaeger_enabled: true
+    jaeger_grpc_addr: ":17685"
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(cfg.Traces.BloomColumns) != 2 || cfg.Traces.BloomColumns[0] != "span_id" {
+		t.Errorf("Traces.BloomColumns = %v", cfg.Traces.BloomColumns)
+	}
+	if cfg.Traces.DeletePrefix != "/delete/custom" {
+		t.Errorf("Traces.DeletePrefix = %q", cfg.Traces.DeletePrefix)
+	}
+	if !cfg.Traces.JaegerEnabled {
+		t.Error("Traces.JaegerEnabled should be true")
+	}
+	if cfg.Traces.JaegerGRPCAddr != ":17685" {
+		t.Errorf("Traces.JaegerGRPCAddr = %q", cfg.Traces.JaegerGRPCAddr)
+	}
+}

@@ -3,269 +3,111 @@ package metrics
 import (
 	"fmt"
 	"io"
-	"math"
 	"sort"
 	"strings"
-	"sync"
-	"sync/atomic"
+
+	vmmetrics "github.com/VictoriaMetrics/metrics"
 )
 
-var defaultRegistry = NewRegistry()
-
-func Default() *Registry { return defaultRegistry }
-
-type Registry struct {
-	mu      sync.RWMutex
-	metrics map[string]metric
-	order   []string
+// WritePrometheus writes all registered metrics in Prometheus text format.
+func WritePrometheus(w io.Writer, exposeProcessMetrics bool) {
+	vmmetrics.WritePrometheus(w, exposeProcessMetrics)
 }
 
-type metric interface {
-	writePrometheus(w io.Writer, name string)
-}
-
-func NewRegistry() *Registry {
-	return &Registry{metrics: make(map[string]metric)}
-}
-
-func (r *Registry) register(name string, m metric) {
-	r.mu.Lock()
-	if _, ok := r.metrics[name]; !ok {
-		r.order = append(r.order, name)
-	}
-	r.metrics[name] = m
-	r.mu.Unlock()
-}
-
-func (r *Registry) WritePrometheus(w io.Writer) {
-	r.mu.RLock()
-	names := make([]string, len(r.order))
-	copy(names, r.order)
-	r.mu.RUnlock()
-
-	for _, name := range names {
-		r.mu.RLock()
-		m := r.metrics[name]
-		r.mu.RUnlock()
-		m.writePrometheus(w, name)
-	}
-}
-
-// Counter is a monotonically increasing counter.
+// Counter is a monotonically increasing counter backed by VictoriaMetrics/metrics.
 type Counter struct {
-	v atomic.Uint64
+	c *vmmetrics.Counter
 }
 
 func NewCounter(name string) *Counter {
-	c := &Counter{}
-	defaultRegistry.register(name, c)
-	return c
+	return &Counter{c: vmmetrics.NewCounter(name)}
 }
 
-func (c *Counter) Inc()          { c.v.Add(1) }
-func (c *Counter) Add(delta int) { c.v.Add(uint64(delta)) }
-func (c *Counter) Get() uint64   { return c.v.Load() }
+func (c *Counter) Inc()          { c.c.Inc() }
+func (c *Counter) Add(delta int) { c.c.Add(delta) }
+func (c *Counter) Get() uint64   { return c.c.Get() }
 
-func (c *Counter) writePrometheus(w io.Writer, name string) {
-	_, _ = fmt.Fprintf(w, "%s %d\n", name, c.v.Load())
-}
-
-// Gauge is a value that can go up and down.
+// Gauge is a value that can go up and down, backed by VictoriaMetrics/metrics.
 type Gauge struct {
-	v atomic.Int64
+	g *vmmetrics.Gauge
 }
 
 func NewGauge(name string) *Gauge {
-	g := &Gauge{}
-	defaultRegistry.register(name, g)
-	return g
+	return &Gauge{g: vmmetrics.NewGauge(name, nil)}
 }
 
-func (g *Gauge) Set(v int64) { g.v.Store(v) }
-func (g *Gauge) Inc()        { g.v.Add(1) }
-func (g *Gauge) Dec()        { g.v.Add(-1) }
-func (g *Gauge) Add(v int64) { g.v.Add(v) }
-func (g *Gauge) Get() int64  { return g.v.Load() }
+func (g *Gauge) Set(v int64) { g.g.Set(float64(v)) }
+func (g *Gauge) Inc()        { g.g.Inc() }
+func (g *Gauge) Dec()        { g.g.Dec() }
+func (g *Gauge) Add(v int64) { g.g.Add(float64(v)) }
+func (g *Gauge) Get() int64  { return int64(g.g.Get()) }
 
-func (g *Gauge) writePrometheus(w io.Writer, name string) {
-	_, _ = fmt.Fprintf(w, "%s %d\n", name, g.v.Load())
-}
-
-// FloatGauge stores a float64 value.
+// FloatGauge stores a float64 value, backed by VictoriaMetrics/metrics.
 type FloatGauge struct {
-	v atomic.Uint64
+	g *vmmetrics.Gauge
 }
 
 func NewFloatGauge(name string) *FloatGauge {
-	g := &FloatGauge{}
-	defaultRegistry.register(name, g)
-	return g
+	return &FloatGauge{g: vmmetrics.NewGauge(name, nil)}
 }
 
-func (g *FloatGauge) Set(v float64) { g.v.Store(math.Float64bits(v)) }
-func (g *FloatGauge) Get() float64  { return math.Float64frombits(g.v.Load()) }
+func (g *FloatGauge) Set(v float64) { g.g.Set(v) }
+func (g *FloatGauge) Get() float64  { return g.g.Get() }
 
-func (g *FloatGauge) writePrometheus(w io.Writer, name string) {
-	_, _ = fmt.Fprintf(w, "%s %g\n", name, g.Get())
-}
-
-// Histogram tracks value distributions in predefined buckets.
+// Histogram tracks value distributions, backed by VictoriaMetrics/metrics.
+// The buckets parameter is accepted for API compatibility but ignored;
+// VM histograms use automatic bucket ranges.
 type Histogram struct {
-	mu     sync.Mutex
-	bounds []float64
-	counts []uint64
-	sum    float64
-	count  uint64
+	h *vmmetrics.Histogram
 }
 
-func NewHistogram(name string, buckets []float64) *Histogram {
-	sorted := make([]float64, len(buckets))
-	copy(sorted, buckets)
-	sort.Float64s(sorted)
-	h := &Histogram{
-		bounds: sorted,
-		counts: make([]uint64, len(sorted)+1),
-	}
-	defaultRegistry.register(name, h)
-	return h
+func NewHistogram(name string, _ []float64) *Histogram {
+	return &Histogram{h: vmmetrics.NewHistogram(name)}
 }
 
-func (h *Histogram) Observe(v float64) {
-	idx := sort.SearchFloat64s(h.bounds, v)
-	h.mu.Lock()
-	h.counts[idx]++
-	h.sum += v
-	h.count++
-	h.mu.Unlock()
-}
+func (h *Histogram) Observe(v float64) { h.h.Update(v) }
 
-func (h *Histogram) writePrometheus(w io.Writer, name string) {
-	h.mu.Lock()
-	counts := make([]uint64, len(h.counts))
-	copy(counts, h.counts)
-	sum := h.sum
-	count := h.count
-	h.mu.Unlock()
-
-	var cumulative uint64
-	for i, bound := range h.bounds {
-		cumulative += counts[i]
-		_, _ = fmt.Fprintf(w, "%s_bucket{le=\"%g\"} %d\n", name, bound, cumulative)
-	}
-	cumulative += counts[len(h.bounds)]
-	_, _ = fmt.Fprintf(w, "%s_bucket{le=\"+Inf\"} %d\n", name, cumulative)
-	_, _ = fmt.Fprintf(w, "%s_sum %g\n", name, sum)
-	_, _ = fmt.Fprintf(w, "%s_count %d\n", name, count)
-}
-
-// DefBuckets are default histogram buckets for latency in seconds.
+// DefBuckets kept for API compatibility (ignored by VM histograms).
 var DefBuckets = []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
 
-// CounterVec is a set of counters indexed by label values.
+// CounterVec is a set of counters indexed by a single label value,
+// backed by VictoriaMetrics/metrics GetOrCreateCounter.
 type CounterVec struct {
-	mu       sync.RWMutex
-	counters map[string]*atomic.Uint64
-	name     string
-	label    string
+	name  string
+	label string
 }
 
 func NewCounterVec(name, label string) *CounterVec {
-	cv := &CounterVec{
-		counters: make(map[string]*atomic.Uint64),
-		name:     name,
-		label:    label,
-	}
-	defaultRegistry.register(name, cv)
-	return cv
+	return &CounterVec{name: name, label: label}
 }
 
 func (cv *CounterVec) Inc(labelValue string) {
-	cv.get(labelValue).Add(1)
+	vmmetrics.GetOrCreateCounter(fmt.Sprintf(`%s{%s=%q}`, cv.name, cv.label, labelValue)).Inc()
 }
 
 func (cv *CounterVec) Add(labelValue string, delta int) {
-	cv.get(labelValue).Add(uint64(delta))
+	vmmetrics.GetOrCreateCounter(fmt.Sprintf(`%s{%s=%q}`, cv.name, cv.label, labelValue)).Add(delta)
 }
 
 func (cv *CounterVec) Get(labelValue string) uint64 {
-	cv.mu.RLock()
-	c, ok := cv.counters[labelValue]
-	cv.mu.RUnlock()
-	if !ok {
-		return 0
-	}
-	return c.Load()
+	return vmmetrics.GetOrCreateCounter(fmt.Sprintf(`%s{%s=%q}`, cv.name, cv.label, labelValue)).Get()
 }
 
-func (cv *CounterVec) get(labelValue string) *atomic.Uint64 {
-	cv.mu.RLock()
-	c, ok := cv.counters[labelValue]
-	cv.mu.RUnlock()
-	if ok {
-		return c
-	}
-	cv.mu.Lock()
-	c, ok = cv.counters[labelValue]
-	if !ok {
-		c = &atomic.Uint64{}
-		cv.counters[labelValue] = c
-	}
-	cv.mu.Unlock()
-	return c
+// NewGaugeFunc creates a gauge backed by a callback function.
+func NewGaugeFunc(name string, fn func() float64) {
+	vmmetrics.NewGauge(name, fn)
 }
 
-func (cv *CounterVec) writePrometheus(w io.Writer, name string) {
-	cv.mu.RLock()
-	keys := make([]string, 0, len(cv.counters))
-	for k := range cv.counters {
-		keys = append(keys, k)
-	}
-	cv.mu.RUnlock()
-	sort.Strings(keys)
-
-	for _, k := range keys {
-		cv.mu.RLock()
-		c := cv.counters[k]
-		cv.mu.RUnlock()
-		_, _ = fmt.Fprintf(w, "%s{%s=%q} %d\n", name, cv.label, k, c.Load())
-	}
-}
-
-// GaugeFunc is a gauge backed by a callback function.
-type GaugeFunc struct {
-	fn func() float64
-}
-
-func NewGaugeFunc(name string, fn func() float64) *GaugeFunc {
-	gf := &GaugeFunc{fn: fn}
-	defaultRegistry.register(name, gf)
-	return gf
-}
-
-func (gf *GaugeFunc) writePrometheus(w io.Writer, name string) {
-	_, _ = fmt.Fprintf(w, "%s %g\n", name, gf.fn())
-}
-
-// InfoGauge emits a gauge with value 1 and static labels for metadata.
-type InfoGauge struct {
-	labels string
-}
-
-func NewInfoGauge(name string, labels map[string]string) *InfoGauge {
-	parts := make([]string, 0, len(labels))
+// NewInfoGauge emits a counter with value 1 and static labels for metadata.
+func NewInfoGauge(name string, labels map[string]string) {
 	keys := make([]string, 0, len(labels))
 	for k := range labels {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
 		parts = append(parts, fmt.Sprintf("%s=%q", k, labels[k]))
 	}
-	ig := &InfoGauge{labels: strings.Join(parts, ",")}
-	defaultRegistry.register(name, ig)
-	return ig
-}
-
-func (ig *InfoGauge) writePrometheus(w io.Writer, name string) {
-	_, _ = fmt.Fprintf(w, "%s{%s} 1\n", name, ig.labels)
+	vmmetrics.GetOrCreateCounter(fmt.Sprintf(`%s{%s}`, name, strings.Join(parts, ","))).Set(1)
 }

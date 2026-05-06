@@ -1,9 +1,12 @@
 # Binaries
 /bin/
 /lakehouse
+/lakehouse-logs
+/lakehouse-traces-bin
 /datagen
 /healthcheck
 /loadtest
+/s3proxy
 *.exe
 
 # Test artifacts
@@ -11,6 +14,10 @@
 *.prof
 coverage.out
 coverage.html
+
+# Python
+__pycache__/
+*.pyc
 
 # IDE
 .idea/
@@ -34,3 +41,10 @@ docker-data/
 
 # Git worktrees
 .worktrees/
+
+# Go module replace targets (cloned by `make deps`)
+/deps/
+/lakehouse-traces/deps/
+
+# Go workspace
+go.work.sum

@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -227,9 +226,9 @@ func testInsertConfig() *config.InsertConfig {
 func testWriter(t *testing.T, endpoint string) (*BatchWriter, *manifest.Manifest) {
 	t.Helper()
 	pool := testPool(t, endpoint)
-	m := manifest.New("test-bucket", "logs/", slog.Default())
+	m := manifest.New("test-bucket", "logs/")
 	cfg := testInsertConfig()
-	bw := NewBatchWriter(cfg, pool, m, "logs/", config.ModeLogs, slog.Default())
+	bw := NewBatchWriter(cfg, pool, m, "logs/", config.ModeLogs)
 	return bw, m
 }
 
@@ -316,9 +315,9 @@ func TestAddTraceRows_Buffering(t *testing.T) {
 	defer s3srv.Close()
 
 	pool := testPool(t, s3srv.URL)
-	m := manifest.New("test-bucket", "traces/", slog.Default())
+	m := manifest.New("test-bucket", "traces/")
 	cfg := testInsertConfig()
-	bw := NewBatchWriter(cfg, pool, m, "traces/", config.ModeTraces, slog.Default())
+	bw := NewBatchWriter(cfg, pool, m, "traces/", config.ModeTraces)
 
 	rows := sampleTraceRows(8, time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC))
 	bw.AddTraceRows(rows)
@@ -332,9 +331,9 @@ func TestAddTraceRows_Empty(t *testing.T) {
 	s3srv := mockS3()
 	defer s3srv.Close()
 	pool := testPool(t, s3srv.URL)
-	m := manifest.New("test-bucket", "traces/", slog.Default())
+	m := manifest.New("test-bucket", "traces/")
 	cfg := testInsertConfig()
-	bw := NewBatchWriter(cfg, pool, m, "traces/", config.ModeTraces, slog.Default())
+	bw := NewBatchWriter(cfg, pool, m, "traces/", config.ModeTraces)
 
 	bw.AddTraceRows(nil)
 	bw.AddTraceRows([]schema.TraceRow{})
@@ -377,9 +376,9 @@ func TestBufferedTraceRows_TimeRange(t *testing.T) {
 	s3srv := mockS3()
 	defer s3srv.Close()
 	pool := testPool(t, s3srv.URL)
-	m := manifest.New("test-bucket", "traces/", slog.Default())
+	m := manifest.New("test-bucket", "traces/")
 	cfg := testInsertConfig()
-	bw := NewBatchWriter(cfg, pool, m, "traces/", config.ModeTraces, slog.Default())
+	bw := NewBatchWriter(cfg, pool, m, "traces/", config.ModeTraces)
 
 	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
 	rows := sampleTraceRows(10, base)
@@ -398,9 +397,9 @@ func TestBufferedTraceRows_Empty(t *testing.T) {
 	s3srv := mockS3()
 	defer s3srv.Close()
 	pool := testPool(t, s3srv.URL)
-	m := manifest.New("test-bucket", "traces/", slog.Default())
+	m := manifest.New("test-bucket", "traces/")
 	cfg := testInsertConfig()
-	bw := NewBatchWriter(cfg, pool, m, "traces/", config.ModeTraces, slog.Default())
+	bw := NewBatchWriter(cfg, pool, m, "traces/", config.ModeTraces)
 
 	got := bw.BufferedTraceRows(0, time.Now().UnixNano())
 	if len(got) != 0 {
@@ -438,9 +437,9 @@ func TestFlushAll_Traces(t *testing.T) {
 	s3srv := mockS3()
 	defer s3srv.Close()
 	pool := testPool(t, s3srv.URL)
-	m := manifest.New("test-bucket", "traces/", slog.Default())
+	m := manifest.New("test-bucket", "traces/")
 	cfg := testInsertConfig()
-	bw := NewBatchWriter(cfg, pool, m, "traces/", config.ModeTraces, slog.Default())
+	bw := NewBatchWriter(cfg, pool, m, "traces/", config.ModeTraces)
 
 	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
 	bw.AddTraceRows(sampleTraceRows(15, base))
@@ -524,10 +523,10 @@ func TestCheckSizeThreshold(t *testing.T) {
 	defer s3srv.Close()
 
 	pool := testPool(t, s3srv.URL)
-	m := manifest.New("test-bucket", "logs/", slog.Default())
+	m := manifest.New("test-bucket", "logs/")
 	cfg := testInsertConfig()
 	cfg.MaxBufferRows = 20
-	bw := NewBatchWriter(cfg, pool, m, "logs/", config.ModeLogs, slog.Default())
+	bw := NewBatchWriter(cfg, pool, m, "logs/", config.ModeLogs)
 
 	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
 	bw.AddLogRows(sampleLogRows(25, base))
@@ -574,9 +573,9 @@ func TestFlushAll_TraceS3Error(t *testing.T) {
 	defer errSrv.Close()
 
 	pool := testPool(t, errSrv.URL)
-	m := manifest.New("test-bucket", "traces/", slog.Default())
+	m := manifest.New("test-bucket", "traces/")
 	cfg := testInsertConfig()
-	bw := NewBatchWriter(cfg, pool, m, "traces/", config.ModeTraces, slog.Default())
+	bw := NewBatchWriter(cfg, pool, m, "traces/", config.ModeTraces)
 	bw.AddTraceRows(sampleTraceRows(5, time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)))
 
 	err := bw.FlushAll(context.Background())
@@ -860,11 +859,11 @@ func TestAdaptiveFlush_TargetFileSize(t *testing.T) {
 	defer s3srv.Close()
 
 	pool := testPool(t, s3srv.URL)
-	m := manifest.New("test-bucket", "logs/", slog.Default())
+	m := manifest.New("test-bucket", "logs/")
 	cfg := testInsertConfig()
 	cfg.MaxBufferRows = 1000000 // high row limit so it doesn't trigger
 	cfg.TargetFileSize = "1KB"  // very low target so byte check triggers
-	bw := NewBatchWriter(cfg, pool, m, "logs/", config.ModeLogs, slog.Default())
+	bw := NewBatchWriter(cfg, pool, m, "logs/", config.ModeLogs)
 
 	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
 	bw.AddLogRows(sampleLogRows(50, base))
@@ -880,12 +879,12 @@ func TestBatchWriter_WALIntegration(t *testing.T) {
 	defer s3srv.Close()
 
 	pool := testPool(t, s3srv.URL)
-	m := manifest.New("test-bucket", "logs/", slog.Default())
+	m := manifest.New("test-bucket", "logs/")
 	cfg := testInsertConfig()
 	cfg.WALEnabled = true
 	cfg.WALDir = t.TempDir()
 	cfg.WALMaxBytes = "10MB"
-	bw := NewBatchWriter(cfg, pool, m, "logs/", config.ModeLogs, slog.Default())
+	bw := NewBatchWriter(cfg, pool, m, "logs/", config.ModeLogs)
 
 	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
 	bw.AddLogRows(sampleLogRows(5, base))
@@ -919,8 +918,8 @@ func TestBatchWriter_WALReplay(t *testing.T) {
 	cfg.WALEnabled = true
 	cfg.WALDir = walDir
 	cfg.WALMaxBytes = "10MB"
-	m1 := manifest.New("test-bucket", "logs/", slog.Default())
-	bw1 := NewBatchWriter(cfg, pool, m1, "logs/", config.ModeLogs, slog.Default())
+	m1 := manifest.New("test-bucket", "logs/")
+	bw1 := NewBatchWriter(cfg, pool, m1, "logs/", config.ModeLogs)
 
 	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
 	bw1.AddLogRows(sampleLogRows(3, base))
@@ -928,8 +927,8 @@ func TestBatchWriter_WALReplay(t *testing.T) {
 	_ = bw1.wal.Close()
 
 	// Second writer: replay WAL
-	m2 := manifest.New("test-bucket", "logs/", slog.Default())
-	bw2 := NewBatchWriter(cfg, pool, m2, "logs/", config.ModeLogs, slog.Default())
+	m2 := manifest.New("test-bucket", "logs/")
+	bw2 := NewBatchWriter(cfg, pool, m2, "logs/", config.ModeLogs)
 	logCount, traceCount := bw2.ReplayWAL()
 
 	if logCount != 3 {
@@ -956,10 +955,10 @@ func TestBatchWriter_WALDisabled(t *testing.T) {
 	defer s3srv.Close()
 
 	pool := testPool(t, s3srv.URL)
-	m := manifest.New("test-bucket", "logs/", slog.Default())
+	m := manifest.New("test-bucket", "logs/")
 	cfg := testInsertConfig()
 	cfg.WALEnabled = false
-	bw := NewBatchWriter(cfg, pool, m, "logs/", config.ModeLogs, slog.Default())
+	bw := NewBatchWriter(cfg, pool, m, "logs/", config.ModeLogs)
 
 	if bw.wal != nil {
 		t.Error("WAL should be nil when disabled")
@@ -976,12 +975,12 @@ func TestBatchWriter_CanWriteData_WALFull(t *testing.T) {
 	defer s3srv.Close()
 
 	pool := testPool(t, s3srv.URL)
-	m := manifest.New("test-bucket", "logs/", slog.Default())
+	m := manifest.New("test-bucket", "logs/")
 	cfg := testInsertConfig()
 	cfg.WALEnabled = true
 	cfg.WALDir = t.TempDir()
 	cfg.WALMaxBytes = "100B" // tiny WAL
-	bw := NewBatchWriter(cfg, pool, m, "logs/", config.ModeLogs, slog.Default())
+	bw := NewBatchWriter(cfg, pool, m, "logs/", config.ModeLogs)
 
 	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
 	// Fill the WAL

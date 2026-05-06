@@ -2,11 +2,11 @@ package delete
 
 import (
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/google/uuid"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
@@ -32,13 +32,12 @@ type Handler struct {
 	manifest ManifestQuerier
 	detector *StorageClassDetector
 	cfg      *config.DeleteConfig
-	logger   *slog.Logger
 	mode     string
 }
 
 // NewHandler creates a Handler with the given dependencies.
 // Mode should be "logs" or "traces" and determines the URL prefix.
-func NewHandler(store *TombstoneStore, manifest ManifestQuerier, detector *StorageClassDetector, cfg *config.DeleteConfig, logger *slog.Logger, mode string) *Handler {
+func NewHandler(store *TombstoneStore, manifest ManifestQuerier, detector *StorageClassDetector, cfg *config.DeleteConfig, mode string) *Handler {
 	if mode == "" {
 		mode = "logs"
 	}
@@ -47,7 +46,6 @@ func NewHandler(store *TombstoneStore, manifest ManifestQuerier, detector *Stora
 		manifest: manifest,
 		detector: detector,
 		cfg:      cfg,
-		logger:   logger,
 		mode:     mode,
 	}
 }
@@ -123,12 +121,7 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) {
 	metrics.DeleteTombstonesTotal.Inc()
 	metrics.DeleteTombstonesActive.Set(int64(h.store.Count()))
 
-	h.logger.Info("tombstone created",
-		"id", ts.ID,
-		"query", query,
-		"mode", mode,
-		"affected_files", len(affectedKeys),
-	)
+	logger.Infof("tombstone created; id=%s, query=%s, mode=%s, affected_files=%d", ts.ID, query, mode, len(affectedKeys))
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tombstone_id":   ts.ID,
@@ -242,7 +235,7 @@ func (h *Handler) handleTombstoneByID(w http.ResponseWriter, r *http.Request) {
 		h.store.Remove(id)
 		metrics.DeleteTombstonesActive.Set(int64(h.store.Count()))
 
-		h.logger.Info("tombstone removed", "id", id)
+		logger.Infof("tombstone removed; id=%s", id)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "removed",
 			"id":     id,

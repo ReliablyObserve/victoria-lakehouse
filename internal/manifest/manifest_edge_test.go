@@ -85,8 +85,7 @@ func TestParsePartitionTime_TableDriven(t *testing.T) {
 }
 
 func TestHasDataForRange_EdgeCases(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	if m.HasDataForRange(0, 1000) {
 		t.Error("empty manifest should return false")
@@ -125,8 +124,7 @@ func TestHasDataForRange_EdgeCases(t *testing.T) {
 }
 
 func TestGetFilesForRange_MultiPartition(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	m.AddFile("dt=2026-05-01/hour=10", FileInfo{Key: "a.parquet", Size: 100})
 	m.AddFile("dt=2026-05-01/hour=11", FileInfo{Key: "b.parquet", Size: 200})
@@ -142,8 +140,7 @@ func TestGetFilesForRange_MultiPartition(t *testing.T) {
 }
 
 func TestGetFilesForRange_Empty(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	files := m.GetFilesForRange(0, 1000)
 	if len(files) != 0 {
@@ -152,8 +149,7 @@ func TestGetFilesForRange_Empty(t *testing.T) {
 }
 
 func TestAddFile_UpdatesMinMax(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	m.AddFile("dt=2026-05-01/hour=10", FileInfo{Key: "a.parquet", Size: 100})
 	if m.TotalFiles() != 1 {
@@ -178,8 +174,7 @@ func TestAddFile_UpdatesMinMax(t *testing.T) {
 }
 
 func TestAddFile_InvalidPartition(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	m.AddFile("invalid-partition", FileInfo{Key: "f.parquet", Size: 100})
 	if m.TotalFiles() != 1 {
@@ -191,8 +186,7 @@ func TestAddFile_InvalidPartition(t *testing.T) {
 }
 
 func TestPartitionCount(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	m.AddFile("dt=2026-05-01/hour=10", FileInfo{Key: "a.parquet", Size: 100})
 	m.AddFile("dt=2026-05-01/hour=10", FileInfo{Key: "b.parquet", Size: 100})
@@ -204,8 +198,7 @@ func TestPartitionCount(t *testing.T) {
 }
 
 func TestSaveTo_OverwriteExisting(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	savePath := filepath.Join(t.TempDir(), "manifest.json")
 
@@ -222,7 +215,7 @@ func TestSaveTo_OverwriteExisting(t *testing.T) {
 	}
 
 	// Load and verify the second save took effect
-	m2 := New("bucket", "logs/", l)
+	m2 := New("bucket", "logs/")
 	if err := m2.LoadFrom(savePath); err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -235,8 +228,7 @@ func TestSaveTo_OverwriteExisting(t *testing.T) {
 }
 
 func TestLoadFrom_InvalidJSON(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	path := filepath.Join(t.TempDir(), "manifest.json")
 	_ = os.WriteFile(path, []byte("this is not json{{{"), 0o600)
@@ -252,8 +244,7 @@ func TestLoadFrom_InvalidJSON(t *testing.T) {
 }
 
 func TestSaveTo_ReadOnlyDir(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 	m.AddFile("dt=2026-05-01/hour=10", FileInfo{Key: "a.parquet", Size: 100})
 
 	// Create a read-only directory
@@ -274,8 +265,7 @@ func TestSaveTo_ReadOnlyDir(t *testing.T) {
 }
 
 func TestRemoveFile_NonexistentPartition(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	m.AddFile("dt=2026-05-01/hour=10", FileInfo{Key: "a.parquet", Size: 100})
 
@@ -292,8 +282,7 @@ func TestRemoveFile_NonexistentPartition(t *testing.T) {
 }
 
 func TestRemoveFile_LastInPartition(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	m.AddFile("dt=2026-05-01/hour=10", FileInfo{Key: "a.parquet", Size: 100})
 
@@ -308,8 +297,7 @@ func TestRemoveFile_LastInPartition(t *testing.T) {
 }
 
 func TestAllFiles_Empty(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	all := m.AllFiles()
 	if len(all) != 0 {
@@ -318,8 +306,7 @@ func TestAllFiles_Empty(t *testing.T) {
 }
 
 func TestLoadFrom_RestoresTimeBounds(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	may1h10 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
 	may2h15 := time.Date(2026, 5, 2, 15, 0, 0, 0, time.UTC)
@@ -336,7 +323,7 @@ func TestLoadFrom_RestoresTimeBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m2 := New("bucket", "logs/", l)
+	m2 := New("bucket", "logs/")
 	if err := m2.LoadFrom(savePath); err != nil {
 		t.Fatal(err)
 	}
@@ -366,8 +353,7 @@ func TestLoadFrom_RestoresTimeBounds(t *testing.T) {
 }
 
 func TestGetFilesForRange_InvalidPartitionSkipped(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	// Directly inject an invalid partition key into the files map
 	m.mu.Lock()
@@ -392,8 +378,7 @@ func TestGetFilesForRange_InvalidPartitionSkipped(t *testing.T) {
 }
 
 func TestSaveTo_MkdirAllError(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 	m.AddFile("dt=2026-05-01/hour=10", FileInfo{Key: "a.parquet", Size: 100})
 
 	// Use /dev/null as parent — can't create subdirectories under it
@@ -404,8 +389,7 @@ func TestSaveTo_MkdirAllError(t *testing.T) {
 }
 
 func TestLoadFrom_ReadError(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	// Create a directory where the file should be — reading it will error
 	dir := filepath.Join(t.TempDir(), "manifest.json")
@@ -474,8 +458,7 @@ func TestRefreshFromS3_WithParquetFiles(t *testing.T) {
 	defer srv.Close()
 
 	client := testS3Client(t, srv.URL)
-	l := testLogger()
-	m := New("test-bucket", "logs/", l)
+	m := New("test-bucket", "logs/")
 
 	err := m.RefreshFromS3(context.Background(), client)
 	if err != nil {
@@ -521,8 +504,7 @@ func TestRefreshFromS3_Empty(t *testing.T) {
 	defer srv.Close()
 
 	client := testS3Client(t, srv.URL)
-	l := testLogger()
-	m := New("test-bucket", "logs/", l)
+	m := New("test-bucket", "logs/")
 
 	err := m.RefreshFromS3(context.Background(), client)
 	if err != nil {
@@ -545,8 +527,7 @@ func TestRefreshFromS3_Error(t *testing.T) {
 	defer srv.Close()
 
 	client := testS3Client(t, srv.URL)
-	l := testLogger()
-	m := New("test-bucket", "logs/", l)
+	m := New("test-bucket", "logs/")
 
 	err := m.RefreshFromS3(context.Background(), client)
 	if err == nil {
@@ -573,8 +554,7 @@ func TestRefreshFromS3_ReplacesOldData(t *testing.T) {
 	defer srv.Close()
 
 	client := testS3Client(t, srv.URL)
-	l := testLogger()
-	m := New("test-bucket", "logs/", l)
+	m := New("test-bucket", "logs/")
 
 	// Pre-populate with old data
 	m.AddFile("dt=2026-01-01/hour=00", FileInfo{Key: "old.parquet", Size: 1})

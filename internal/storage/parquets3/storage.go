@@ -5,12 +5,14 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
@@ -22,12 +24,10 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 type Storage struct {
 	cfg          *config.Config
-	logger       *slog.Logger
 	pool         *s3reader.ClientPool
 	manifest     *manifest.Manifest
 	registry     *schema.Registry
@@ -44,9 +44,7 @@ type Storage struct {
 	tombstones   *delete.TombstoneStore
 }
 
-func New(cfg *config.Config, logger *slog.Logger) (*Storage, error) {
-	l := logger.With("component", "parquets3")
-
+func New(cfg *config.Config) (*Storage, error) {
 	pool, err := s3reader.NewClientPool(context.Background(), &cfg.S3)
 	if err != nil {
 		return nil, fmt.Errorf("create S3 client pool: %w", err)
@@ -61,7 +59,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*Storage, error) {
 		profile = schema.LogsProfile
 	}
 
-	m := manifest.New(cfg.S3.Bucket, prefix, logger)
+	m := manifest.New(cfg.S3.Bucket, prefix)
 
 	memCache := cache.NewLRU(cfg.CacheMemoryBytes())
 
@@ -69,7 +67,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*Storage, error) {
 	if cfg.Cache.DiskPath != "" {
 		dc, err := cache.NewDiskCache(cfg.Cache.DiskPath, cfg.CacheDiskBytes(), cfg.Cache.EvictionWatermark)
 		if err != nil {
-			l.Warn("disk cache init failed, running without disk cache", "error", err)
+			logger.Warnf("disk cache init failed, running without disk cache: %s", err)
 		} else {
 			diskCacheInst = dc
 		}
@@ -81,12 +79,12 @@ func New(cfg *config.Config, logger *slog.Logger) (*Storage, error) {
 	if cfg.Manifest.PersistPath != "" {
 		p, err := cache.NewPersister(cfg.Manifest.PersistPath)
 		if err != nil {
-			l.Warn("persister init failed", "error", err)
+			logger.Warnf("persister init failed: %s", err)
 		} else {
 			pers = p
 			if saved, err := p.LoadLabelIndex(); err == nil {
 				labelIdx = saved
-				l.Info("recovered label index from disk", "labels", saved.Len())
+				logger.Infof("recovered label index from disk; labels=%d", saved.Len())
 			}
 		}
 	}
@@ -96,8 +94,8 @@ func New(cfg *config.Config, logger *slog.Logger) (*Storage, error) {
 		cfg.Discovery.StorageNodes,
 		cfg.Discovery.PartitionAuthKey,
 		cfg.Discovery.PeerHeadlessService,
+		cfg.DefaultPort(),
 		cfg.Discovery.Timeout,
-		logger,
 	)
 
 	var pc *peercache.PeerCache
@@ -108,14 +106,13 @@ func New(cfg *config.Config, logger *slog.Logger) (*Storage, error) {
 			cfg.Peer.AuthKey,
 			cfg.Peer.Timeout,
 			cfg.Peer.MaxConnections,
-			logger,
 		)
 		ph = peercache.NewHandler(cfg.Peer.AuthKey)
 	}
 
 	var bw *BatchWriter
 	if cfg.InsertEnabled() {
-		bw = NewBatchWriter(&cfg.Insert, pool, m, prefix, cfg.Mode, logger)
+		bw = NewBatchWriter(&cfg.Insert, pool, m, prefix, cfg.Mode)
 	}
 
 	var bb *BufferBridge
@@ -125,7 +122,6 @@ func New(cfg *config.Config, logger *slog.Logger) (*Storage, error) {
 
 	return &Storage{
 		cfg:          cfg,
-		logger:       l,
 		pool:         pool,
 		manifest:     m,
 		registry:     schema.NewRegistry(profile),
@@ -150,7 +146,7 @@ func (s *Storage) StartWriter() {
 	}
 	logCount, traceCount := s.writer.ReplayWAL()
 	if logCount > 0 || traceCount > 0 {
-		s.logger.Info("WAL recovery complete", "logs", logCount, "traces", traceCount)
+		logger.Infof("WAL recovery complete; logs=%d, traces=%d", logCount, traceCount)
 	}
 	s.writer.Start()
 }
@@ -180,7 +176,7 @@ func (s *Storage) CanWriteData() error {
 	return s.writer.CanWriteData(ctx)
 }
 
-func (s *Storage) RunQuery(ctx context.Context, qctx *storage.QueryContext, writeBlock storage.WriteDataBlockFunc) error {
+func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
 	queryStart := time.Now()
 	metrics.ConcurrentSelects.Inc()
 	defer func() {
@@ -189,49 +185,47 @@ func (s *Storage) RunQuery(ctx context.Context, qctx *storage.QueryContext, writ
 		metrics.QueryDuration.Observe(elapsed)
 	}()
 
+	startNs, endNs := q.GetFilterTimeRange()
+
 	if boundary := s.discovery.GetHotBoundary(); boundary != nil {
-		if time.Unix(0, qctx.StartNs).After(boundary.MinTime) && time.Unix(0, qctx.EndNs).Before(boundary.MaxTime) {
-			s.logger.Debug("hot boundary suppression: query within hot range",
-				"start", time.Unix(0, qctx.StartNs),
-				"end", time.Unix(0, qctx.EndNs),
-				"hot_min", boundary.MinTime,
-				"hot_max", boundary.MaxTime,
-			)
+		if time.Unix(0, startNs).After(boundary.MinTime) && time.Unix(0, endNs).Before(boundary.MaxTime) {
+			logger.Infof("hot boundary suppression: query within hot range; start=%v, end=%v, hot_min=%v, hot_max=%v",
+				time.Unix(0, startNs), time.Unix(0, endNs), boundary.MinTime, boundary.MaxTime)
 			return nil
 		}
 	}
 
-	if !s.manifest.HasDataForRange(qctx.StartNs, qctx.EndNs) {
+	if !s.manifest.HasDataForRange(startNs, endNs) {
 		metrics.ManifestFastPathTotal.Inc()
-		s.logger.Debug("manifest fast path: no data for range",
-			"start", time.Unix(0, qctx.StartNs),
-			"end", time.Unix(0, qctx.EndNs),
-		)
+		logger.Infof("manifest fast path: no data for range; start=%v, end=%v",
+			time.Unix(0, startNs), time.Unix(0, endNs))
 		return nil
 	}
 
 	// Wrap writeBlock to apply tombstone filtering before passing to caller.
 	filteredWriteBlock := writeBlock
 	if s.tombstones != nil {
-		filteredWriteBlock = func(workerID uint, db *storage.DataBlock) {
-			filtered := s.filterTombstonedRows(db, qctx.StartNs, qctx.EndNs)
-			if filtered != nil && filtered.RowsCount > 0 {
+		filteredWriteBlock = func(workerID uint, db *logstorage.DataBlock) {
+			filtered := s.filterTombstonedRows(db, startNs, endNs)
+			if filtered != nil && filtered.RowsCount() > 0 {
 				writeBlock(workerID, filtered)
 			}
 		}
 	}
 
-	files := s.manifest.GetFilesForRange(qctx.StartNs, qctx.EndNs)
+	files := s.manifest.GetFilesForRange(startNs, endNs)
 	if len(files) == 0 {
 		return nil
 	}
+
+	queryStr := q.String()
 
 	for _, fi := range files {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := s.queryFile(ctx, fi, qctx, filteredWriteBlock); err != nil {
-			s.logger.Warn("query file error", "key", fi.Key, "error", err)
+		if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, filteredWriteBlock); err != nil {
+			logger.Warnf("query file error: %s; key=%s", err, fi.Key)
 			continue
 		}
 	}
@@ -239,18 +233,18 @@ func (s *Storage) RunQuery(ctx context.Context, qctx *storage.QueryContext, writ
 	if s.bufferBridge != nil {
 		switch s.cfg.Mode {
 		case config.ModeLogs:
-			bufRows, _ := s.bufferBridge.QueryLogs(ctx, qctx.StartNs, qctx.EndNs)
+			bufRows, _ := s.bufferBridge.QueryLogs(ctx, startNs, endNs)
 			if len(bufRows) > 0 {
 				db := s.logRowsToDataBlock(bufRows)
-				if db != nil && db.RowsCount > 0 {
+				if db != nil && db.RowsCount() > 0 {
 					filteredWriteBlock(0, db)
 				}
 			}
 		case config.ModeTraces:
-			bufRows, _ := s.bufferBridge.QueryTraces(ctx, qctx.StartNs, qctx.EndNs)
+			bufRows, _ := s.bufferBridge.QueryTraces(ctx, startNs, endNs)
 			if len(bufRows) > 0 {
 				db := s.traceRowsToDataBlock(bufRows)
-				if db != nil && db.RowsCount > 0 {
+				if db != nil && db.RowsCount() > 0 {
 					filteredWriteBlock(0, db)
 				}
 			}
@@ -260,7 +254,7 @@ func (s *Storage) RunQuery(ctx context.Context, qctx *storage.QueryContext, writ
 	return nil
 }
 
-func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, qctx *storage.QueryContext, writeBlock storage.WriteDataBlockFunc) error {
+func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, writeBlock logstorage.WriteDataBlockFunc) error {
 	data, err := s.getFileData(ctx, fi.Key, fi.Size)
 	if err != nil {
 		return fmt.Errorf("get file data %s: %w", fi.Key, err)
@@ -277,14 +271,14 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, qctx *sto
 	s.updateLabelIndex(f)
 
 	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
-	bloomChecks := s.buildBloomChecks(qctx)
+	bloomChecks := s.buildBloomChecks(queryStr)
 
 	for _, rg := range f.RowGroups() {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
-		if tsIdx >= 0 && !rowGroupMatchesTimeRange(rg, tsIdx, qctx.StartNs, qctx.EndNs) {
+		if tsIdx >= 0 && !rowGroupMatchesTimeRange(rg, tsIdx, startNs, endNs) {
 			metrics.ParquetRowGroupsSkipped.Inc("stats")
 			continue
 		}
@@ -295,7 +289,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, qctx *sto
 		}
 
 		metrics.ParquetRowGroupsScanned.Inc()
-		if err := s.readRowGroup(f, rg, qctx, writeBlock); err != nil {
+		if err := s.readRowGroup(f, rg, startNs, endNs, writeBlock); err != nil {
 			return err
 		}
 	}
@@ -352,7 +346,7 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 
 		if s.diskCache != nil {
 			if _, putErr := s.diskCache.Put(key, d); putErr != nil {
-				s.logger.Warn("disk cache put failed", "key", key, "error", putErr)
+				logger.Warnf("disk cache put failed: %s; key=%s", putErr, key)
 			}
 		}
 
@@ -373,7 +367,7 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 	return data, nil
 }
 
-func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, qctx *storage.QueryContext, writeBlock storage.WriteDataBlockFunc) error {
+func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc) error {
 	schema := f.Root()
 	rows := rg.Rows()
 	defer func() { _ = rows.Close() }()
@@ -384,8 +378,8 @@ func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, qctx *stora
 	for {
 		n, err := rows.ReadRows(buf)
 		if n > 0 {
-			db := s.rowsToDataBlock(buf[:n], colNames, schema, qctx)
-			if db != nil && db.RowsCount > 0 {
+			db := s.rowsToDataBlock(buf[:n], colNames, schema, startNs, endNs)
+			if db != nil && db.RowsCount() > 0 {
 				writeBlock(0, db)
 			}
 		}
@@ -400,12 +394,12 @@ func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, qctx *stora
 	return nil
 }
 
-func (s *Storage) rowsToDataBlock(rows []parquet.Row, colNames []string, root *parquet.Column, qctx *storage.QueryContext) *storage.DataBlock {
+func (s *Storage) rowsToDataBlock(rows []parquet.Row, colNames []string, root *parquet.Column, startNs, endNs int64) *logstorage.DataBlock {
 	if len(rows) == 0 {
 		return nil
 	}
 
-	projected := s.projectColumns(colNames, qctx.RequestedColumns)
+	projected := s.projectColumns(colNames, nil)
 
 	columns := make([][]string, len(projected))
 	for i := range columns {
@@ -421,9 +415,9 @@ func (s *Storage) rowsToDataBlock(rows []parquet.Row, colNames []string, root *p
 	}
 
 	for _, row := range rows {
-		if tsColIdx >= 0 && qctx.StartNs != 0 && qctx.EndNs != 0 {
+		if tsColIdx >= 0 && startNs != 0 && endNs != 0 {
 			ts := valueToInt64(row[tsColIdx])
-			if ts < qctx.StartNs || ts >= qctx.EndNs {
+			if ts < startNs || ts >= endNs {
 				continue
 			}
 		}
@@ -441,23 +435,22 @@ func (s *Storage) rowsToDataBlock(rows []parquet.Row, colNames []string, root *p
 		return nil
 	}
 
-	blockCols := make([]storage.BlockColumn, 0, len(projected))
+	blockCols := make([]logstorage.BlockColumn, 0, len(projected))
 	for outIdx, srcIdx := range projected {
 		name := colNames[srcIdx]
 		internalName := name
 		if m := s.registry.ResolveFromParquet(name); m != nil {
-			internalName = m.InternalName
+			internalName = bytesutil.InternString(m.InternalName)
 		}
-		blockCols = append(blockCols, storage.BlockColumn{
+		blockCols = append(blockCols, logstorage.BlockColumn{
 			Name:   internalName,
 			Values: columns[outIdx],
 		})
 	}
 
-	return &storage.DataBlock{
-		RowsCount: len(columns[0]),
-		Columns:   blockCols,
-	}
+	db := &logstorage.DataBlock{}
+	db.SetColumns(blockCols)
+	return db
 }
 
 func (s *Storage) projectColumns(allCols []string, requested []string) []int {
@@ -497,23 +490,25 @@ func (s *Storage) projectColumns(allCols []string, requested []string) []int {
 	return indices
 }
 
-func (s *Storage) GetFieldNames(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error) {
+func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
 	if s.labelIndex.Len() > 0 {
 		names := s.labelIndex.GetFieldNames()
-		result := make([]storage.ValueWithHits, len(names))
+		result := make([]logstorage.ValueWithHits, len(names))
 		for i, name := range names {
-			result[i] = storage.ValueWithHits{Value: name, Hits: 1}
+			result[i] = logstorage.ValueWithHits{Value: name, Hits: 1}
 		}
 		return result, nil
 	}
 
-	files := s.manifest.GetFilesForRange(qctx.StartNs, qctx.EndNs)
+	startNs, endNs := q.GetFilterTimeRange()
+
+	files := s.manifest.GetFilesForRange(startNs, endNs)
 	if len(files) == 0 {
 		return nil, nil
 	}
 
 	seen := make(map[string]bool)
-	var result []storage.ValueWithHits
+	var result []logstorage.ValueWithHits
 
 	fi := files[0]
 	data, err := s.getFileData(ctx, fi.Key, fi.Size)
@@ -535,26 +530,28 @@ func (s *Storage) GetFieldNames(ctx context.Context, qctx *storage.QueryContext)
 		}
 		if !seen[internalName] {
 			seen[internalName] = true
-			result = append(result, storage.ValueWithHits{Value: internalName, Hits: 1})
+			result = append(result, logstorage.ValueWithHits{Value: internalName, Hits: 1})
 		}
 	}
 
 	return result, nil
 }
 
-func (s *Storage) GetFieldValues(ctx context.Context, qctx *storage.QueryContext, fieldName string, limit int) ([]storage.ValueWithHits, error) {
+func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
 	if limit > 0 && s.labelIndex.Len() > 0 {
 		vals := s.labelIndex.GetFieldValues(fieldName, limit)
 		if len(vals) > 0 {
-			result := make([]storage.ValueWithHits, len(vals))
+			result := make([]logstorage.ValueWithHits, len(vals))
 			for i, v := range vals {
-				result[i] = storage.ValueWithHits{Value: v, Hits: 1}
+				result[i] = logstorage.ValueWithHits{Value: v, Hits: 1}
 			}
 			return result, nil
 		}
 	}
 
-	files := s.manifest.GetFilesForRange(qctx.StartNs, qctx.EndNs)
+	startNs, endNs := q.GetFilterTimeRange()
+
+	files := s.manifest.GetFilesForRange(startNs, endNs)
 	if len(files) == 0 {
 		return nil, nil
 	}
@@ -576,15 +573,17 @@ func (s *Storage) GetFieldValues(ctx context.Context, qctx *storage.QueryContext
 
 		data, err := s.getFileData(ctx, fi.Key, fi.Size)
 		if err != nil {
-			s.logger.Warn("get file data for field values", "key", fi.Key, "error", err)
+			logger.Warnf("get file data for field values: %s; key=%s", err, fi.Key)
 			continue
 		}
 
 		f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
 		if err != nil {
-			s.logger.Warn("open parquet for field values", "key", fi.Key, "error", err)
+			logger.Warnf("open parquet for field values: %s; key=%s", err, fi.Key)
 			continue
 		}
+
+		s.updateLabelIndex(f)
 
 		colIdx := findColumnIndex(f.Root(), mapping.ParquetColumn)
 		if colIdx < 0 {
@@ -611,36 +610,38 @@ func (s *Storage) GetFieldValues(ctx context.Context, qctx *storage.QueryContext
 			_ = rows.Close()
 		}
 
-		if limit > 0 && len(seen) >= limit {
+		if limit > 0 && uint64(len(seen)) >= limit {
 			break
 		}
 	}
 
-	result := make([]storage.ValueWithHits, 0, len(seen))
+	result := make([]logstorage.ValueWithHits, 0, len(seen))
 	for v, hits := range seen {
-		result = append(result, storage.ValueWithHits{Value: v, Hits: hits})
+		result = append(result, logstorage.ValueWithHits{Value: v, Hits: hits})
 	}
-	if limit > 0 && len(result) > limit {
+	if limit > 0 && uint64(len(result)) > limit {
 		result = result[:limit]
 	}
 	return result, nil
 }
 
-func (s *Storage) GetStreamFieldNames(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error) {
+func (s *Storage) GetStreamFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
 	streamFields := s.registry.StreamFields()
-	result := make([]storage.ValueWithHits, 0, len(streamFields))
+	result := make([]logstorage.ValueWithHits, 0, len(streamFields))
 	for _, name := range streamFields {
-		result = append(result, storage.ValueWithHits{Value: name, Hits: 1})
+		result = append(result, logstorage.ValueWithHits{Value: name, Hits: 1})
 	}
 	return result, nil
 }
 
-func (s *Storage) GetStreamFieldValues(ctx context.Context, qctx *storage.QueryContext, fieldName string) ([]storage.ValueWithHits, error) {
-	return s.GetFieldValues(ctx, qctx, fieldName, 0)
+func (s *Storage) GetStreamFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
+	return s.GetFieldValues(ctx, tenantIDs, q, fieldName, limit)
 }
 
-func (s *Storage) GetStreams(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error) {
-	files := s.manifest.GetFilesForRange(qctx.StartNs, qctx.EndNs)
+func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, limit uint64) ([]logstorage.ValueWithHits, error) {
+	startNs, endNs := q.GetFilterTimeRange()
+
+	files := s.manifest.GetFilesForRange(startNs, endNs)
 	if len(files) == 0 {
 		return nil, nil
 	}
@@ -659,13 +660,13 @@ func (s *Storage) GetStreams(ctx context.Context, qctx *storage.QueryContext) ([
 
 		data, err := s.getFileData(ctx, fi.Key, fi.Size)
 		if err != nil {
-			s.logger.Warn("get file data for streams", "key", fi.Key, "error", err)
+			logger.Warnf("get file data for streams: %s; key=%s", err, fi.Key)
 			continue
 		}
 
 		f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
 		if err != nil {
-			s.logger.Warn("open parquet for streams", "key", fi.Key, "error", err)
+			logger.Warnf("open parquet for streams: %s; key=%s", err, fi.Key)
 			continue
 		}
 
@@ -693,20 +694,23 @@ func (s *Storage) GetStreams(ctx context.Context, qctx *storage.QueryContext) ([
 			}
 			_ = rows.Close()
 		}
+
+		if limit > 0 && uint64(len(seen)) >= limit {
+			break
+		}
 	}
 
-	result := make([]storage.ValueWithHits, 0, len(seen))
+	result := make([]logstorage.ValueWithHits, 0, len(seen))
 	for v, hits := range seen {
-		result = append(result, storage.ValueWithHits{Value: v, Hits: hits})
+		result = append(result, logstorage.ValueWithHits{Value: v, Hits: hits})
+	}
+	if limit > 0 && uint64(len(result)) > limit {
+		result = result[:limit]
 	}
 	return result, nil
 }
 
-func (s *Storage) GetStreamIDs(ctx context.Context, qctx *storage.QueryContext) ([]storage.ValueWithHits, error) {
-	return nil, nil
-}
-
-func (s *Storage) GetTenantIDs(ctx context.Context, qctx *storage.QueryContext) ([]storage.TenantID, error) {
+func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, limit uint64) ([]logstorage.ValueWithHits, error) {
 	return nil, nil
 }
 
@@ -717,26 +721,115 @@ func (s *Storage) Manifest() *manifest.Manifest {
 func (s *Storage) Close() error {
 	if s.writer != nil {
 		s.writer.Stop()
-		s.logger.Info("writer stopped and final flush completed")
+		logger.Infof("writer stopped and final flush completed")
 	}
 	if s.persister != nil {
 		if err := s.persister.SaveLabelIndex(s.labelIndex); err != nil {
-			s.logger.Warn("failed to persist label index", "error", err)
+			logger.Warnf("failed to persist label index: %s", err)
 		} else {
-			s.logger.Info("persisted label index", "labels", s.labelIndex.Len())
+			logger.Infof("persisted label index; labels=%d", s.labelIndex.Len())
 		}
 	}
 	return nil
 }
 
 func (s *Storage) updateLabelIndex(f *parquet.File) {
+	// Columns that should have values extracted (use Parquet column names)
+	promotedWithValues := map[string]bool{
+		"service.name":            true,
+		"severity_text":           true,
+		"k8s.namespace.name":      true,
+		"k8s.deployment.name":     true,
+		"k8s.node.name":           true,
+		"deployment.environment":  true,
+		"cloud.region":            true,
+		"span.name":               true,
+	}
+
 	for _, name := range columnNames(f.Root()) {
 		internalName := name
 		if m := s.registry.ResolveFromParquet(name); m != nil {
 			internalName = m.InternalName
 		}
-		s.labelIndex.Add(internalName, nil)
+
+		if !promotedWithValues[name] {
+			s.labelIndex.Add(internalName, nil)
+			continue
+		}
+
+		colIdx := findColumnIndex(f.Root(), name)
+		if colIdx < 0 {
+			s.labelIndex.Add(internalName, nil)
+			continue
+		}
+
+		vals := extractDistinctFromStats(f, colIdx)
+		s.labelIndex.Add(internalName, vals)
 	}
+}
+
+func extractDistinctFromStats(f *parquet.File, colIdx int) []string {
+	seen := make(map[string]bool)
+	for _, rg := range f.RowGroups() {
+		cols := rg.ColumnChunks()
+		if colIdx >= len(cols) {
+			continue
+		}
+		// First try column index stats (fast, no data read)
+		ci, err := cols[colIdx].ColumnIndex()
+		if err == nil && ci != nil {
+			numPages := ci.NumPages()
+			for p := 0; p < numPages; p++ {
+				if minBytes := ci.MinValue(p).Bytes(); len(minBytes) > 0 && len(minBytes) < 256 && isPrintable(minBytes) {
+					seen[string(minBytes)] = true
+				}
+				if maxBytes := ci.MaxValue(p).Bytes(); len(maxBytes) > 0 && len(maxBytes) < 256 && isPrintable(maxBytes) {
+					seen[string(maxBytes)] = true
+				}
+			}
+		}
+		// If stats give few values, scan first row group's actual data
+		if len(seen) < 50 && rg.NumRows() > 0 {
+			rows := rg.Rows()
+			buf := make([]parquet.Row, 512)
+			n, _ := rows.ReadRows(buf)
+			for i := 0; i < n; i++ {
+				if colIdx < len(buf[i]) {
+					val := buf[i][colIdx]
+					if !val.IsNull() {
+						if b := val.Bytes(); len(b) > 0 && len(b) < 256 && isPrintable(b) {
+							seen[string(b)] = true
+						}
+					}
+				}
+			}
+			_ = rows.Close()
+		}
+		if len(seen) > 1000 {
+			break
+		}
+		break // One row group is enough for warmup
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(seen))
+	for v := range seen {
+		result = append(result, v)
+	}
+	return result
+}
+
+// ClearCaches clears the L1 memory cache and L2 disk cache (if present).
+// Useful for benchmarking to ensure cold-start query performance.
+func (s *Storage) ClearCaches() {
+	s.memCache.Clear()
+	if s.diskCache != nil {
+		if err := s.diskCache.Clear(); err != nil {
+			logger.Warnf("disk cache clear failed: %s", err)
+		}
+	}
+	logger.Infof("caches cleared")
 }
 
 func (s *Storage) MemCacheStats() cache.Stats {
@@ -784,7 +877,7 @@ func (s *Storage) TombstoneStore() *delete.TombstoneStore {
 
 // filterTombstonedRows removes rows from a DataBlock that match any active tombstone
 // in the given time range. Returns nil if all rows are suppressed.
-func (s *Storage) filterTombstonedRows(db *storage.DataBlock, startNs, endNs int64) *storage.DataBlock {
+func (s *Storage) filterTombstonedRows(db *logstorage.DataBlock, startNs, endNs int64) *logstorage.DataBlock {
 	if s.tombstones == nil {
 		return db
 	}
@@ -794,9 +887,13 @@ func (s *Storage) filterTombstonedRows(db *storage.DataBlock, startNs, endNs int
 		return db
 	}
 
+	rowsCount := db.RowsCount()
+
+	columns := db.GetColumns(false)
+
 	// Find the timestamp column index
 	tsColIdx := -1
-	for i, col := range db.Columns {
+	for i, col := range columns {
 		if col.Name == "_time" || col.Name == "timestamp_unix_nano" {
 			tsColIdx = i
 			break
@@ -804,20 +901,20 @@ func (s *Storage) filterTombstonedRows(db *storage.DataBlock, startNs, endNs int
 	}
 
 	// Determine which rows to keep
-	keep := make([]bool, db.RowsCount)
+	keep := make([]bool, rowsCount)
 	keepCount := 0
 
-	for rowIdx := 0; rowIdx < db.RowsCount; rowIdx++ {
+	for rowIdx := 0; rowIdx < rowsCount; rowIdx++ {
 		// Build row map for this row
-		row := make(map[string]string, len(db.Columns))
-		for _, col := range db.Columns {
+		row := make(map[string]string, len(columns))
+		for _, col := range columns {
 			row[col.Name] = col.Values[rowIdx]
 		}
 
 		// Parse timestamp
 		var tsNs int64
 		if tsColIdx >= 0 {
-			tsNs, _ = strconv.ParseInt(db.Columns[tsColIdx].Values[rowIdx], 10, 64)
+			tsNs, _ = strconv.ParseInt(columns[tsColIdx].Values[rowIdx], 10, 64)
 		}
 
 		// Check if any tombstone matches this row
@@ -835,7 +932,7 @@ func (s *Storage) filterTombstonedRows(db *storage.DataBlock, startNs, endNs int
 		}
 	}
 
-	suppressed := db.RowsCount - keepCount
+	suppressed := rowsCount - keepCount
 	if suppressed > 0 {
 		metrics.DeleteRowsSuppressed.Add(suppressed)
 	}
@@ -844,29 +941,28 @@ func (s *Storage) filterTombstonedRows(db *storage.DataBlock, startNs, endNs int
 		return nil
 	}
 
-	if keepCount == db.RowsCount {
+	if keepCount == rowsCount {
 		return db
 	}
 
 	// Build new DataBlock with only kept rows
-	newCols := make([]storage.BlockColumn, len(db.Columns))
-	for i, col := range db.Columns {
+	newCols := make([]logstorage.BlockColumn, len(columns))
+	for i, col := range columns {
 		vals := make([]string, 0, keepCount)
 		for rowIdx, v := range col.Values {
 			if keep[rowIdx] {
 				vals = append(vals, v)
 			}
 		}
-		newCols[i] = storage.BlockColumn{
+		newCols[i] = logstorage.BlockColumn{
 			Name:   col.Name,
 			Values: vals,
 		}
 	}
 
-	return &storage.DataBlock{
-		RowsCount: keepCount,
-		Columns:   newCols,
-	}
+	filtered := &logstorage.DataBlock{}
+	filtered.SetColumns(newCols)
+	return filtered
 }
 
 // Pool returns the S3 client pool.
@@ -875,7 +971,7 @@ func (s *Storage) Pool() *s3reader.ClientPool {
 }
 
 // logRowsToDataBlock converts in-memory LogRow slices to a columnar DataBlock.
-func (s *Storage) logRowsToDataBlock(rows []schema.LogRow) *storage.DataBlock {
+func (s *Storage) logRowsToDataBlock(rows []schema.LogRow) *logstorage.DataBlock {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -912,29 +1008,28 @@ func (s *Storage) logRowsToDataBlock(rows []schema.LogRow) *storage.DataBlock {
 		hosts[i] = row.HostName
 	}
 
-	return &storage.DataBlock{
-		RowsCount: len(rows),
-		Columns: []storage.BlockColumn{
-			{Name: "_time", Values: times},
-			{Name: "_msg", Values: bodies},
-			{Name: "level", Values: levels},
-			{Name: "service.name", Values: services},
-			{Name: "trace_id", Values: traceIDs},
-			{Name: "span_id", Values: spanIDs},
-			{Name: "_stream", Values: streams},
-			{Name: "k8s.namespace.name", Values: namespaces},
-			{Name: "k8s.pod.name", Values: pods},
-			{Name: "k8s.deployment.name", Values: deployments},
-			{Name: "k8s.node.name", Values: nodes},
-			{Name: "deployment.environment", Values: envs},
-			{Name: "cloud.region", Values: regions},
-			{Name: "host.name", Values: hosts},
-		},
-	}
+	db := &logstorage.DataBlock{}
+	db.SetColumns([]logstorage.BlockColumn{
+		{Name: "_time", Values: times},
+		{Name: "_msg", Values: bodies},
+		{Name: "level", Values: levels},
+		{Name: "service.name", Values: services},
+		{Name: "trace_id", Values: traceIDs},
+		{Name: "span_id", Values: spanIDs},
+		{Name: "_stream", Values: streams},
+		{Name: "k8s.namespace.name", Values: namespaces},
+		{Name: "k8s.pod.name", Values: pods},
+		{Name: "k8s.deployment.name", Values: deployments},
+		{Name: "k8s.node.name", Values: nodes},
+		{Name: "deployment.environment", Values: envs},
+		{Name: "cloud.region", Values: regions},
+		{Name: "host.name", Values: hosts},
+	})
+	return db
 }
 
 // traceRowsToDataBlock converts in-memory TraceRow slices to a columnar DataBlock.
-func (s *Storage) traceRowsToDataBlock(rows []schema.TraceRow) *storage.DataBlock {
+func (s *Storage) traceRowsToDataBlock(rows []schema.TraceRow) *logstorage.DataBlock {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -961,20 +1056,19 @@ func (s *Storage) traceRowsToDataBlock(rows []schema.TraceRow) *storage.DataBloc
 		statusMsgs[i] = row.StatusMessage
 	}
 
-	return &storage.DataBlock{
-		RowsCount: len(rows),
-		Columns: []storage.BlockColumn{
-			{Name: "_time", Values: times},
-			{Name: "trace_id", Values: traceIDs},
-			{Name: "span_id", Values: spanIDs},
-			{Name: "name", Values: names},
-			{Name: "service.name", Values: services},
-			{Name: "duration", Values: durations},
-			{Name: "status_code", Values: statusCodes},
-			{Name: "parent_span_id", Values: parentSpanIDs},
-			{Name: "status_message", Values: statusMsgs},
-		},
-	}
+	db := &logstorage.DataBlock{}
+	db.SetColumns([]logstorage.BlockColumn{
+		{Name: "_time", Values: times},
+		{Name: "trace_id", Values: traceIDs},
+		{Name: "span_id", Values: spanIDs},
+		{Name: "name", Values: names},
+		{Name: "service.name", Values: services},
+		{Name: "duration", Values: durations},
+		{Name: "status_code", Values: statusCodes},
+		{Name: "parent_span_id", Values: parentSpanIDs},
+		{Name: "status_message", Values: statusMsgs},
+	})
+	return db
 }
 
 func (s *Storage) RefreshDiscovery(ctx context.Context) error {
@@ -998,6 +1092,40 @@ func (s *Storage) RefreshManifest(ctx context.Context) error {
 	return s.manifest.RefreshFromS3(ctx, s.pool.S3Client())
 }
 
+func (s *Storage) WarmLabelIndex(ctx context.Context) {
+	if s.labelIndex.Len() > 0 {
+		return
+	}
+	files := s.manifest.GetFilesForRange(0, 1<<62)
+	if len(files) == 0 {
+		return
+	}
+	// Sample up to 10 files spread across the range for value diversity
+	sampleCount := 10
+	if len(files) < sampleCount {
+		sampleCount = len(files)
+	}
+	step := len(files) / sampleCount
+	if step == 0 {
+		step = 1
+	}
+	sampled := 0
+	for i := 0; i < len(files) && sampled < sampleCount; i += step {
+		fi := files[i]
+		data, err := s.getFileData(ctx, fi.Key, fi.Size)
+		if err != nil {
+			continue
+		}
+		f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+		if err != nil {
+			continue
+		}
+		s.updateLabelIndex(f)
+		sampled++
+	}
+	logger.Infof("label index warmed; labels=%d, files_sampled=%d", s.labelIndex.Len(), sampled)
+}
+
 func (s *Storage) PersistState() error {
 	if s.persister == nil {
 		return nil
@@ -1010,8 +1138,8 @@ type bloomCheck struct {
 	value   parquet.Value
 }
 
-func (s *Storage) buildBloomChecks(qctx *storage.QueryContext) []bloomCheck {
-	if qctx.Query == "" {
+func (s *Storage) buildBloomChecks(queryStr string) []bloomCheck {
+	if queryStr == "" {
 		return nil
 	}
 
@@ -1020,9 +1148,9 @@ func (s *Storage) buildBloomChecks(qctx *storage.QueryContext) []bloomCheck {
 		if !col.HasBloom {
 			continue
 		}
-		val := extractExactMatch(qctx.Query, col.InternalName)
+		val := extractExactMatch(queryStr, col.InternalName)
 		if val == "" {
-			val = extractExactMatch(qctx.Query, col.ParquetColumn)
+			val = extractExactMatch(queryStr, col.ParquetColumn)
 		}
 		if val != "" {
 			checks = append(checks, bloomCheck{
@@ -1108,9 +1236,14 @@ func rowGroupMatchesTimeRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs 
 }
 
 func findColumnIndex(root *parquet.Column, name string) int {
-	for i, col := range root.Columns() {
-		if col.Name() == name {
-			return i
+	col := root.Column(name)
+	if col != nil && col.Leaf() {
+		return col.Index()
+	}
+	// Fallback: search top-level leaf columns by name
+	for _, c := range root.Columns() {
+		if c.Name() == name && c.Leaf() {
+			return c.Index()
 		}
 	}
 	return -1
@@ -1120,7 +1253,7 @@ func columnNames(root *parquet.Column) []string {
 	cols := root.Columns()
 	names := make([]string, len(cols))
 	for i, col := range cols {
-		names[i] = col.Name()
+		names[i] = bytesutil.InternString(col.Name())
 	}
 	return names
 }
@@ -1143,7 +1276,7 @@ func valueToString(v parquet.Value) string {
 	case parquet.ByteArray, parquet.FixedLenByteArray:
 		b := v.ByteArray()
 		if isPrintable(b) {
-			return string(b)
+			return bytesutil.InternBytes(b)
 		}
 		return fmt.Sprintf("%x", b)
 	case parquet.Boolean:

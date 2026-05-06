@@ -4,64 +4,57 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
+
+func makeDataBlock(cols []logstorage.BlockColumn) *logstorage.DataBlock {
+	db := &logstorage.DataBlock{}
+	if cols != nil {
+		db.SetColumns(cols)
+	}
+	return db
+}
 
 func TestMarshalUnmarshalDataBlock(t *testing.T) {
 	tests := []struct {
 		name string
-		db   *storage.DataBlock
+		db   *logstorage.DataBlock
 	}{
 		{
 			name: "empty",
-			db:   &storage.DataBlock{RowsCount: 0, Columns: nil},
+			db:   makeDataBlock(nil),
 		},
 		{
 			name: "single column single row",
-			db: &storage.DataBlock{
-				RowsCount: 1,
-				Columns: []storage.BlockColumn{
-					{Name: "col1", Values: []string{"val1"}},
-				},
-			},
+			db: makeDataBlock([]logstorage.BlockColumn{
+				{Name: "col1", Values: []string{"val1"}},
+			}),
 		},
 		{
 			name: "multiple columns",
-			db: &storage.DataBlock{
-				RowsCount: 3,
-				Columns: []storage.BlockColumn{
-					{Name: "_time", Values: []string{"1000", "2000", "3000"}},
-					{Name: "_msg", Values: []string{"hello", "world", "test"}},
-					{Name: "level", Values: []string{"info", "info", "info"}},
-				},
-			},
+			db: makeDataBlock([]logstorage.BlockColumn{
+				{Name: "_time", Values: []string{"1000", "2000", "3000"}},
+				{Name: "_msg", Values: []string{"hello", "world", "test"}},
+				{Name: "level", Values: []string{"info", "info", "info"}},
+			}),
 		},
 		{
 			name: "const column optimization",
-			db: &storage.DataBlock{
-				RowsCount: 5,
-				Columns: []storage.BlockColumn{
-					{Name: "service", Values: []string{"api", "api", "api", "api", "api"}},
-				},
-			},
+			db: makeDataBlock([]logstorage.BlockColumn{
+				{Name: "service", Values: []string{"api", "api", "api", "api", "api"}},
+			}),
 		},
 		{
 			name: "empty string values",
-			db: &storage.DataBlock{
-				RowsCount: 2,
-				Columns: []storage.BlockColumn{
-					{Name: "col", Values: []string{"", ""}},
-				},
-			},
+			db: makeDataBlock([]logstorage.BlockColumn{
+				{Name: "col", Values: []string{"", ""}},
+			}),
 		},
 		{
 			name: "unicode values",
-			db: &storage.DataBlock{
-				RowsCount: 2,
-				Columns: []storage.BlockColumn{
-					{Name: "msg", Values: []string{"日本語", "Ünîcödé"}},
-				},
-			},
+			db: makeDataBlock([]logstorage.BlockColumn{
+				{Name: "msg", Values: []string{"日本語", "Ünîcödé"}},
+			}),
 		},
 	}
 
@@ -72,23 +65,25 @@ func TestMarshalUnmarshalDataBlock(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unmarshal: %v", err)
 			}
-			if got.RowsCount != tt.db.RowsCount {
-				t.Errorf("RowsCount = %d, want %d", got.RowsCount, tt.db.RowsCount)
+			if got.RowsCount() != tt.db.RowsCount() {
+				t.Errorf("RowsCount = %d, want %d", got.RowsCount(), tt.db.RowsCount())
 			}
-			if len(got.Columns) != len(tt.db.Columns) {
-				t.Fatalf("len(Columns) = %d, want %d", len(got.Columns), len(tt.db.Columns))
+			gotCols := got.GetColumns(false)
+			wantCols := tt.db.GetColumns(false)
+			if len(gotCols) != len(wantCols) {
+				t.Fatalf("len(Columns) = %d, want %d", len(gotCols), len(wantCols))
 			}
-			for i, col := range got.Columns {
-				if col.Name != tt.db.Columns[i].Name {
-					t.Errorf("column %d name = %q, want %q", i, col.Name, tt.db.Columns[i].Name)
+			for i, col := range gotCols {
+				if col.Name != wantCols[i].Name {
+					t.Errorf("column %d name = %q, want %q", i, col.Name, wantCols[i].Name)
 				}
-				if len(col.Values) != len(tt.db.Columns[i].Values) {
-					t.Errorf("column %d values len = %d, want %d", i, len(col.Values), len(tt.db.Columns[i].Values))
+				if len(col.Values) != len(wantCols[i].Values) {
+					t.Errorf("column %d values len = %d, want %d", i, len(col.Values), len(wantCols[i].Values))
 					continue
 				}
 				for j, v := range col.Values {
-					if v != tt.db.Columns[i].Values[j] {
-						t.Errorf("column %d row %d = %q, want %q", i, j, v, tt.db.Columns[i].Values[j])
+					if v != wantCols[i].Values[j] {
+						t.Errorf("column %d row %d = %q, want %q", i, j, v, wantCols[i].Values[j])
 					}
 				}
 			}
@@ -99,17 +94,17 @@ func TestMarshalUnmarshalDataBlock(t *testing.T) {
 func TestMarshalUnmarshalValueWithHits(t *testing.T) {
 	tests := []struct {
 		name string
-		vals []storage.ValueWithHits
+		vals []logstorage.ValueWithHits
 	}{
 		{"nil", nil},
-		{"empty", []storage.ValueWithHits{}},
+		{"empty", []logstorage.ValueWithHits{}},
 		{
 			"single",
-			[]storage.ValueWithHits{{Value: "service.name", Hits: 42}},
+			[]logstorage.ValueWithHits{{Value: "service.name", Hits: 42}},
 		},
 		{
 			"multiple",
-			[]storage.ValueWithHits{
+			[]logstorage.ValueWithHits{
 				{Value: "api-gw", Hits: 100},
 				{Value: "web", Hits: 200},
 				{Value: "db", Hits: 50},
@@ -117,11 +112,11 @@ func TestMarshalUnmarshalValueWithHits(t *testing.T) {
 		},
 		{
 			"zero hits",
-			[]storage.ValueWithHits{{Value: "empty", Hits: 0}},
+			[]logstorage.ValueWithHits{{Value: "empty", Hits: 0}},
 		},
 		{
 			"large hits",
-			[]storage.ValueWithHits{{Value: "big", Hits: 1<<63 - 1}},
+			[]logstorage.ValueWithHits{{Value: "big", Hits: 1<<63 - 1}},
 		},
 	}
 
@@ -154,24 +149,24 @@ func TestMarshalUnmarshalValueWithHits(t *testing.T) {
 func TestMarshalUnmarshalTenantIDs(t *testing.T) {
 	tests := []struct {
 		name string
-		ids  []storage.TenantID
+		ids  []logstorage.TenantID
 	}{
 		{"nil", nil},
-		{"empty", []storage.TenantID{}},
+		{"empty", []logstorage.TenantID{}},
 		{
 			"single",
-			[]storage.TenantID{{AccountID: 1, ProjectID: 2}},
+			[]logstorage.TenantID{{AccountID: 1, ProjectID: 2}},
 		},
 		{
 			"multiple",
-			[]storage.TenantID{
+			[]logstorage.TenantID{
 				{AccountID: 100, ProjectID: 200},
 				{AccountID: 300, ProjectID: 400},
 			},
 		},
 		{
 			"max values",
-			[]storage.TenantID{{AccountID: ^uint32(0), ProjectID: ^uint32(0)}},
+			[]logstorage.TenantID{{AccountID: ^uint32(0), ProjectID: ^uint32(0)}},
 		},
 	}
 
@@ -199,13 +194,10 @@ func TestMarshalUnmarshalTenantIDs(t *testing.T) {
 }
 
 func TestDataBlockStreamRoundTrip(t *testing.T) {
-	db := &storage.DataBlock{
-		RowsCount: 2,
-		Columns: []storage.BlockColumn{
-			{Name: "_time", Values: []string{"1000", "2000"}},
-			{Name: "_msg", Values: []string{"hello", "world"}},
-		},
-	}
+	db := makeDataBlock([]logstorage.BlockColumn{
+		{Name: "_time", Values: []string{"1000", "2000"}},
+		{Name: "_msg", Values: []string{"hello", "world"}},
+	})
 
 	var buf bytes.Buffer
 	if err := WriteDataBlockStream(&buf, db); err != nil {
@@ -216,11 +208,12 @@ func TestDataBlockStreamRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.RowsCount != 2 {
-		t.Errorf("RowsCount = %d, want 2", got.RowsCount)
+	if got.RowsCount() != 2 {
+		t.Errorf("RowsCount = %d, want 2", got.RowsCount())
 	}
-	if len(got.Columns) != 2 {
-		t.Fatalf("columns = %d, want 2", len(got.Columns))
+	gotCols := got.GetColumns(false)
+	if len(gotCols) != 2 {
+		t.Fatalf("columns = %d, want 2", len(gotCols))
 	}
 }
 
@@ -283,18 +276,16 @@ func TestAllSame(t *testing.T) {
 }
 
 func BenchmarkMarshalDataBlock(b *testing.B) {
-	db := &storage.DataBlock{
-		RowsCount: 1000,
-		Columns:   make([]storage.BlockColumn, 5),
-	}
-	for i := range db.Columns {
-		db.Columns[i].Name = "col"
+	cols := make([]logstorage.BlockColumn, 5)
+	for i := range cols {
+		cols[i].Name = "col"
 		vals := make([]string, 1000)
 		for j := range vals {
 			vals[j] = "value-data-here"
 		}
-		db.Columns[i].Values = vals
+		cols[i].Values = vals
 	}
+	db := makeDataBlock(cols)
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -304,17 +295,15 @@ func BenchmarkMarshalDataBlock(b *testing.B) {
 }
 
 func BenchmarkUnmarshalDataBlock(b *testing.B) {
-	db := &storage.DataBlock{
-		RowsCount: 1000,
-		Columns: []storage.BlockColumn{
-			{Name: "_time", Values: make([]string, 1000)},
-			{Name: "_msg", Values: make([]string, 1000)},
-		},
+	cols := []logstorage.BlockColumn{
+		{Name: "_time", Values: make([]string, 1000)},
+		{Name: "_msg", Values: make([]string, 1000)},
 	}
-	for i := range db.Columns[0].Values {
-		db.Columns[0].Values[i] = "1234567890"
-		db.Columns[1].Values[i] = "log message here"
+	for i := range cols[0].Values {
+		cols[0].Values[i] = "1234567890"
+		cols[1].Values[i] = "log message here"
 	}
+	db := makeDataBlock(cols)
 	data := MarshalDataBlock(db)
 
 	b.ReportAllocs()
@@ -325,9 +314,9 @@ func BenchmarkUnmarshalDataBlock(b *testing.B) {
 }
 
 func BenchmarkMarshalValueWithHits(b *testing.B) {
-	vals := make([]storage.ValueWithHits, 100)
+	vals := make([]logstorage.ValueWithHits, 100)
 	for i := range vals {
-		vals[i] = storage.ValueWithHits{Value: "service-name", Hits: 42}
+		vals[i] = logstorage.ValueWithHits{Value: "service-name", Hits: 42}
 	}
 
 	b.ReportAllocs()

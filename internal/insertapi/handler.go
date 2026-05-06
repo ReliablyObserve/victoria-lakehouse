@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -22,13 +23,12 @@ type LogStore interface {
 
 type Handler struct {
 	store          LogStore
-	logger         *slog.Logger
 	cfg            *config.Config
 	promotedFields map[string]bool
 	bufferHandler  *BufferHandler
 }
 
-func NewHandler(store LogStore, logger *slog.Logger, cfg *config.Config, bq ...BufferQuerier) *Handler {
+func NewHandler(store LogStore, cfg *config.Config, bq ...BufferQuerier) *Handler {
 	promoted := make(map[string]bool, len(promotedLogFields)+len(cfg.Schema.ExtraPromoted))
 	for k, v := range promotedLogFields {
 		promoted[k] = v
@@ -38,7 +38,6 @@ func NewHandler(store LogStore, logger *slog.Logger, cfg *config.Config, bq ...B
 	}
 	h := &Handler{
 		store:          store,
-		logger:         logger.With("component", "insertapi"),
 		cfg:            cfg,
 		promotedFields: promoted,
 	}
@@ -84,7 +83,7 @@ func (h *Handler) handleJSONLine(w http.ResponseWriter, r *http.Request) {
 
 		var fields map[string]any
 		if err := json.Unmarshal(line, &fields); err != nil {
-			h.logger.Debug("skipping invalid JSON line", "error", err)
+			logger.Infof("skipping invalid JSON line; error=%s", err)
 			continue
 		}
 
@@ -94,7 +93,7 @@ func (h *Handler) handleJSONLine(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		h.logger.Error("scanner error", "error", err)
+		logger.Errorf("scanner error: %s", err)
 		http.Error(w, "read error", http.StatusInternalServerError)
 		return
 	}
@@ -104,7 +103,7 @@ func (h *Handler) handleJSONLine(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-	h.logger.Debug("jsonline insert", "rows", count)
+	logger.Infof("jsonline insert; rows=%d", count)
 }
 
 // handleLokiPush accepts Loki push API format (JSON).
@@ -158,7 +157,7 @@ func (h *Handler) handleLokiPush(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-	h.logger.Debug("loki push", "rows", len(rows))
+	logger.Infof("loki push; rows=%d", len(rows))
 }
 
 // handleESBulk accepts Elasticsearch bulk format (index + doc lines).
@@ -207,7 +206,7 @@ func (h *Handler) handleESBulk(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = fmt.Fprintf(w, `{"errors":false,"items":[]}`)
-	h.logger.Debug("es bulk", "rows", len(rows))
+	logger.Infof("es bulk; rows=%d", len(rows))
 }
 
 type lokiPushRequest struct {

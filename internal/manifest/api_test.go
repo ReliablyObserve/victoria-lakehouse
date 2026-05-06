@@ -2,8 +2,6 @@ package manifest
 
 import (
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,7 +9,7 @@ import (
 )
 
 func TestRangeHandler_Empty(t *testing.T) {
-	m := New("bucket", "logs/", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m := New("bucket", "logs/")
 
 	req := httptest.NewRequest(http.MethodGet, "/manifest/range", nil)
 	w := httptest.NewRecorder()
@@ -31,7 +29,7 @@ func TestRangeHandler_Empty(t *testing.T) {
 }
 
 func TestRangeHandler_WithData(t *testing.T) {
-	m := New("bucket", "logs/", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m := New("bucket", "logs/")
 
 	m.AddFile("dt=2026-04-01/hour=00", FileInfo{Key: "logs/dt=2026-04-01/hour=00/f.parquet", Size: 1000})
 	m.AddFile("dt=2026-04-30/hour=23", FileInfo{Key: "logs/dt=2026-04-30/hour=23/g.parquet", Size: 2000})
@@ -67,7 +65,7 @@ func TestRangeHandler_WithData(t *testing.T) {
 }
 
 func TestPartitionsHandler_WithData(t *testing.T) {
-	m := New("bucket", "logs/", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m := New("bucket", "logs/")
 
 	m.AddFile("dt=2026-04-01/hour=00", FileInfo{Key: "f1.parquet", Size: 1000})
 	m.AddFile("dt=2026-04-01/hour=01", FileInfo{Key: "f2.parquet", Size: 2000})
@@ -97,7 +95,7 @@ func TestPartitionsHandler_WithData(t *testing.T) {
 }
 
 func TestPartitionsHandler_FilteredRange(t *testing.T) {
-	m := New("bucket", "logs/", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m := New("bucket", "logs/")
 
 	m.AddFile("dt=2026-04-01/hour=00", FileInfo{Key: "f1.parquet", Size: 1000})
 	m.AddFile("dt=2026-04-15/hour=10", FileInfo{Key: "f2.parquet", Size: 2000})

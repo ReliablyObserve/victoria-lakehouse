@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -54,6 +55,56 @@ type Config struct {
 	Tenant         TenantConfig         `yaml:"tenant"`
 	Compaction     CompactionConfig     `yaml:"compaction"`
 	Delete         DeleteConfig         `yaml:"delete"`
+
+	Logs   LogsModeConfig   `yaml:"logs"`
+	Traces TracesModeConfig `yaml:"traces"`
+}
+
+type LogsModeConfig struct {
+	BloomColumns  []string `yaml:"bloom_columns"`
+	DeletePrefix  string   `yaml:"delete_prefix"`
+	CompatVersion string   `yaml:"compat_version"`
+}
+
+type TracesModeConfig struct {
+	BloomColumns   []string `yaml:"bloom_columns"`
+	DeletePrefix   string   `yaml:"delete_prefix"`
+	CompatVersion  string   `yaml:"compat_version"`
+	JaegerEnabled  bool     `yaml:"jaeger_enabled"`
+	JaegerGRPCAddr string   `yaml:"jaeger_grpc_addr"`
+}
+
+func (c *Config) ActiveBloomColumns() []string {
+	if c.Mode == ModeTraces && len(c.Traces.BloomColumns) > 0 {
+		return c.Traces.BloomColumns
+	}
+	if c.Mode == ModeLogs && len(c.Logs.BloomColumns) > 0 {
+		return c.Logs.BloomColumns
+	}
+	return c.Insert.BloomColumns
+}
+
+func (c *Config) ActiveDeletePrefix() string {
+	if c.Mode == ModeTraces && c.Traces.DeletePrefix != "" {
+		return c.Traces.DeletePrefix
+	}
+	if c.Mode == ModeLogs && c.Logs.DeletePrefix != "" {
+		return c.Logs.DeletePrefix
+	}
+	if c.Mode == ModeTraces {
+		return "/delete/tracessql"
+	}
+	return "/delete/logsql"
+}
+
+func (c *Config) ActiveCompatVersion() string {
+	if c.Mode == ModeTraces && c.Traces.CompatVersion != "" {
+		return c.Traces.CompatVersion
+	}
+	if c.Mode == ModeLogs && c.Logs.CompatVersion != "" {
+		return c.Logs.CompatVersion
+	}
+	return ""
 }
 
 type InsertConfig struct {
@@ -343,6 +394,20 @@ func Default() *Config {
 			ForceGlacierHeader:   "X-Force-Glacier-Delete",
 			VerifyInterval:       6 * time.Hour,
 		},
+
+		Logs: LogsModeConfig{
+			BloomColumns:  []string{"service.name"},
+			DeletePrefix:  "/delete/logsql",
+			CompatVersion: "",
+		},
+
+		Traces: TracesModeConfig{
+			BloomColumns:   []string{"trace_id", "service.name"},
+			DeletePrefix:   "/delete/tracessql",
+			CompatVersion:  "",
+			JaegerEnabled:  true,
+			JaegerGRPCAddr: ":16685",
+		},
 	}
 }
 
@@ -370,10 +435,10 @@ func Load(path string) (*Config, error) {
 
 func (c *Config) Validate() error {
 	if c.Mode == "" {
-		return fmt.Errorf("--lakehouse.mode is required (logs or traces)")
+		return fmt.Errorf("mode is required (logs or traces)")
 	}
 	if c.Mode != ModeLogs && c.Mode != ModeTraces {
-		return fmt.Errorf("--lakehouse.mode must be 'logs' or 'traces', got %q", c.Mode)
+		return fmt.Errorf("mode must be 'logs' or 'traces', got %q", c.Mode)
 	}
 	if c.S3.Bucket == "" {
 		return fmt.Errorf("--lakehouse.s3.bucket is required")
@@ -467,30 +532,25 @@ func ParseSizeBytes(s string) (int64, error) {
 		return 0, nil
 	}
 	s = strings.TrimSpace(s)
-	multiplier := int64(1)
+	// flagutil.ParseBytes treats KB/MB/GB/TB as SI (decimal) units.
+	// Lakehouse historically uses binary (1024-based) semantics for those
+	// suffixes, so rewrite them to KiB/MiB/GiB/TiB before delegating.
 	upper := strings.ToUpper(s)
 	switch {
 	case strings.HasSuffix(upper, "TB"):
-		multiplier = 1024 * 1024 * 1024 * 1024
-		s = strings.TrimSpace(s[:len(s)-2])
+		s = s[:len(s)-2] + "TiB"
 	case strings.HasSuffix(upper, "GB"):
-		multiplier = 1024 * 1024 * 1024
-		s = strings.TrimSpace(s[:len(s)-2])
+		s = s[:len(s)-2] + "GiB"
 	case strings.HasSuffix(upper, "MB"):
-		multiplier = 1024 * 1024
-		s = strings.TrimSpace(s[:len(s)-2])
+		s = s[:len(s)-2] + "MiB"
 	case strings.HasSuffix(upper, "KB"):
-		multiplier = 1024
-		s = strings.TrimSpace(s[:len(s)-2])
+		s = s[:len(s)-2] + "KiB"
 	case strings.HasSuffix(upper, "B"):
-		s = strings.TrimSpace(s[:len(s)-1])
+		// Plain "B" suffix (e.g. "100B") — strip it so flagutil
+		// parses the bare number as bytes.
+		s = s[:len(s)-1]
 	}
-	var val int64
-	_, err := fmt.Sscanf(s, "%d", &val)
-	if err != nil {
-		return 0, fmt.Errorf("parse size %q: %w", s, err)
-	}
-	return val * multiplier, nil
+	return flagutil.ParseBytes(s)
 }
 
 func (c *Config) CacheMemoryBytes() int64 {
@@ -514,6 +574,13 @@ func (c *Config) ListenAddr() string {
 		return ":10428"
 	}
 	return ":9428"
+}
+
+func (c *Config) DefaultPort() string {
+	if c.Mode == ModeTraces {
+		return "10428"
+	}
+	return "9428"
 }
 
 func (c *Config) AutoPrefix() string {
@@ -827,6 +894,34 @@ func mergeConfig(base, overlay *Config) *Config {
 	}
 	if len(overlay.Delete.LifecycleRules) > 0 {
 		base.Delete.LifecycleRules = overlay.Delete.LifecycleRules
+	}
+
+	// Logs mode config
+	if len(overlay.Logs.BloomColumns) > 0 {
+		base.Logs.BloomColumns = overlay.Logs.BloomColumns
+	}
+	if overlay.Logs.DeletePrefix != "" {
+		base.Logs.DeletePrefix = overlay.Logs.DeletePrefix
+	}
+	if overlay.Logs.CompatVersion != "" {
+		base.Logs.CompatVersion = overlay.Logs.CompatVersion
+	}
+
+	// Traces mode config
+	if len(overlay.Traces.BloomColumns) > 0 {
+		base.Traces.BloomColumns = overlay.Traces.BloomColumns
+	}
+	if overlay.Traces.DeletePrefix != "" {
+		base.Traces.DeletePrefix = overlay.Traces.DeletePrefix
+	}
+	if overlay.Traces.CompatVersion != "" {
+		base.Traces.CompatVersion = overlay.Traces.CompatVersion
+	}
+	if overlay.Traces.JaegerEnabled {
+		base.Traces.JaegerEnabled = true
+	}
+	if overlay.Traces.JaegerGRPCAddr != "" {
+		base.Traces.JaegerGRPCAddr = overlay.Traces.JaegerGRPCAddr
 	}
 
 	return base

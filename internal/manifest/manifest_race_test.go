@@ -10,8 +10,7 @@ import (
 )
 
 func TestManifest_Race_MaxGoroutines(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	for d := 0; d < 10; d++ {
 		for h := 0; h < 24; h++ {
@@ -69,8 +68,7 @@ func TestManifest_Race_MaxGoroutines(t *testing.T) {
 }
 
 func TestManifest_Race_AddFileInvariant(t *testing.T) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	const goroutines = 100
 	const ops = 1000
@@ -109,8 +107,7 @@ func TestManifest_Race_AddFileInvariant(t *testing.T) {
 }
 
 func BenchmarkManifest_ConcurrentReads(b *testing.B) {
-	l := testLogger()
-	m := New("bucket", "logs/", l)
+	m := New("bucket", "logs/")
 
 	for d := 0; d < 30; d++ {
 		for h := 0; h < 24; h++ {

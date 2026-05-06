@@ -6,7 +6,7 @@ import (
 	"io"
 	"math"
 
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
 
 const (
@@ -16,9 +16,10 @@ const (
 	columnTypeRegular = byte(1)
 )
 
-func MarshalDataBlock(db *storage.DataBlock) []byte {
+func MarshalDataBlock(db *logstorage.DataBlock) []byte {
+	columns := db.GetColumns(false)
 	size := 8
-	for _, col := range db.Columns {
+	for _, col := range columns {
 		size += 4 + len(col.Name) + 1
 		if allSame(col.Values) {
 			if len(col.Values) > 0 {
@@ -34,10 +35,10 @@ func MarshalDataBlock(db *storage.DataBlock) []byte {
 	}
 
 	buf := make([]byte, 0, size)
-	buf = appendUint32(buf, uint32(db.RowsCount))
-	buf = appendUint32(buf, uint32(len(db.Columns)))
+	buf = appendUint32(buf, uint32(db.RowsCount()))
+	buf = appendUint32(buf, uint32(len(columns)))
 
-	for _, col := range db.Columns {
+	for _, col := range columns {
 		buf = appendString(buf, col.Name)
 		if allSame(col.Values) {
 			buf = append(buf, columnTypeConst)
@@ -57,7 +58,7 @@ func MarshalDataBlock(db *storage.DataBlock) []byte {
 	return buf
 }
 
-func UnmarshalDataBlock(data []byte) (*storage.DataBlock, error) {
+func UnmarshalDataBlock(data []byte) (*logstorage.DataBlock, error) {
 	if len(data) < 8 {
 		return nil, fmt.Errorf("data too short: %d bytes", len(data))
 	}
@@ -70,7 +71,7 @@ func UnmarshalDataBlock(data []byte) (*storage.DataBlock, error) {
 		return nil, fmt.Errorf("suspicious block size: rows=%d cols=%d", rowsCount, colsCount)
 	}
 
-	columns := make([]storage.BlockColumn, colsCount)
+	columns := make([]logstorage.BlockColumn, colsCount)
 	for i := 0; i < colsCount; i++ {
 		name, n, err := readString(data, pos)
 		if err != nil {
@@ -110,13 +111,15 @@ func UnmarshalDataBlock(data []byte) (*storage.DataBlock, error) {
 			return nil, fmt.Errorf("unknown column type %d for column %d", colType, i)
 		}
 
-		columns[i] = storage.BlockColumn{Name: name, Values: values}
+		columns[i] = logstorage.BlockColumn{Name: name, Values: values}
 	}
 
-	return &storage.DataBlock{RowsCount: rowsCount, Columns: columns}, nil
+	db := &logstorage.DataBlock{}
+	db.SetColumns(columns)
+	return db, nil
 }
 
-func MarshalValueWithHits(vals []storage.ValueWithHits) []byte {
+func MarshalValueWithHits(vals []logstorage.ValueWithHits) []byte {
 	size := 4
 	for _, v := range vals {
 		size += 4 + len(v.Value) + 8
@@ -130,7 +133,7 @@ func MarshalValueWithHits(vals []storage.ValueWithHits) []byte {
 	return buf
 }
 
-func UnmarshalValueWithHits(data []byte) ([]storage.ValueWithHits, error) {
+func UnmarshalValueWithHits(data []byte) ([]logstorage.ValueWithHits, error) {
 	if len(data) < 4 {
 		return nil, fmt.Errorf("data too short: %d bytes", len(data))
 	}
@@ -141,7 +144,7 @@ func UnmarshalValueWithHits(data []byte) ([]storage.ValueWithHits, error) {
 	}
 
 	pos := 4
-	vals := make([]storage.ValueWithHits, count)
+	vals := make([]logstorage.ValueWithHits, count)
 	for i := 0; i < count; i++ {
 		val, n, err := readString(data, pos)
 		if err != nil {
@@ -153,13 +156,13 @@ func UnmarshalValueWithHits(data []byte) ([]storage.ValueWithHits, error) {
 		}
 		hits := binary.BigEndian.Uint64(data[pos : pos+8])
 		pos += 8
-		vals[i] = storage.ValueWithHits{Value: val, Hits: hits}
+		vals[i] = logstorage.ValueWithHits{Value: val, Hits: hits}
 	}
 
 	return vals, nil
 }
 
-func MarshalTenantIDs(ids []storage.TenantID) []byte {
+func MarshalTenantIDs(ids []logstorage.TenantID) []byte {
 	buf := make([]byte, 0, 4+len(ids)*8)
 	buf = appendUint32(buf, uint32(len(ids)))
 	for _, id := range ids {
@@ -169,7 +172,7 @@ func MarshalTenantIDs(ids []storage.TenantID) []byte {
 	return buf
 }
 
-func UnmarshalTenantIDs(data []byte) ([]storage.TenantID, error) {
+func UnmarshalTenantIDs(data []byte) ([]logstorage.TenantID, error) {
 	if len(data) < 4 {
 		return nil, fmt.Errorf("data too short: %d bytes", len(data))
 	}
@@ -180,12 +183,12 @@ func UnmarshalTenantIDs(data []byte) ([]storage.TenantID, error) {
 	}
 
 	pos := 4
-	ids := make([]storage.TenantID, count)
+	ids := make([]logstorage.TenantID, count)
 	for i := 0; i < count; i++ {
 		if pos+8 > len(data) {
 			return nil, fmt.Errorf("truncated at tenant %d", i)
 		}
-		ids[i] = storage.TenantID{
+		ids[i] = logstorage.TenantID{
 			AccountID: binary.BigEndian.Uint32(data[pos : pos+4]),
 			ProjectID: binary.BigEndian.Uint32(data[pos+4 : pos+8]),
 		}
@@ -194,7 +197,7 @@ func UnmarshalTenantIDs(data []byte) ([]storage.TenantID, error) {
 	return ids, nil
 }
 
-func WriteDataBlockStream(w io.Writer, db *storage.DataBlock) error {
+func WriteDataBlockStream(w io.Writer, db *logstorage.DataBlock) error {
 	data := MarshalDataBlock(db)
 	lenBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(lenBuf, uint32(len(data)))
@@ -205,7 +208,7 @@ func WriteDataBlockStream(w io.Writer, db *storage.DataBlock) error {
 	return err
 }
 
-func ReadDataBlockStream(r io.Reader) (*storage.DataBlock, error) {
+func ReadDataBlockStream(r io.Reader) (*logstorage.DataBlock, error) {
 	lenBuf := make([]byte, 4)
 	if _, err := io.ReadFull(r, lenBuf); err != nil {
 		return nil, err

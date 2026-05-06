@@ -2,10 +2,11 @@ package compaction
 
 import (
 	"context"
-	"log/slog"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/election"
@@ -25,7 +26,6 @@ type SchedulerConfig struct {
 	MaxConcurrent    int
 	RowGroupSize     int
 	CompressionLevel int
-	Logger           *slog.Logger
 	OnCompacted      func(added []manifest.FileInfo, removed []string)
 }
 
@@ -42,7 +42,6 @@ type Scheduler struct {
 	maxConcurrent    int
 	rowGroupSize     int
 	compressionLevel int
-	logger           *slog.Logger
 	onCompacted      func(added []manifest.FileInfo, removed []string)
 
 	stopCh chan struct{}
@@ -71,7 +70,6 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 		maxConcurrent:    maxConc,
 		rowGroupSize:     cfg.RowGroupSize,
 		compressionLevel: cfg.CompressionLevel,
-		logger:           cfg.Logger.With("component", "scheduler"),
 		onCompacted:      cfg.OnCompacted,
 		stopCh:           make(chan struct{}),
 	}
@@ -92,9 +90,9 @@ func (s *Scheduler) Start() {
 				ctx := context.Background()
 				n, err := s.Scan(ctx)
 				if err != nil {
-					s.logger.Error("scan failed", "error", err)
+					logger.Errorf("scan failed: %s", err)
 				} else if n > 0 {
-					s.logger.Info("scan completed", "compactions", n)
+					logger.Infof("scan completed; compactions=%d", n)
 				}
 			}
 		}
@@ -118,7 +116,7 @@ type partitionCandidate struct {
 // and compact up to MaxConcurrent of them.
 func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 	if !s.leader.IsLeader() {
-		s.logger.Debug("not leader, skipping scan")
+		logger.Infof("not leader, skipping scan")
 		return 0, nil
 	}
 
@@ -129,7 +127,7 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 	for partition, files := range allFiles {
 		pt, err := manifest.ParsePartitionTime(partition)
 		if err != nil {
-			s.logger.Warn("skip partition: cannot parse time", "partition", partition, "error", err)
+			logger.Warnf("skip partition: cannot parse time; partition=%s, error=%s", partition, err)
 			continue
 		}
 		level, eligible := s.policy.Eligible(files, pt)
@@ -156,17 +154,17 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 
 		locked, err := s.sentinel.IsLocked(ctx, s.prefix, c.partition)
 		if err != nil {
-			s.logger.Warn("sentinel check failed", "partition", c.partition, "error", err)
+			logger.Warnf("sentinel check failed; partition=%s, error=%s", c.partition, err)
 			continue
 		}
 		if locked {
-			s.logger.Debug("partition locked, skipping", "partition", c.partition)
+			logger.Infof("partition locked, skipping; partition=%s", c.partition)
 			continue
 		}
 
 		ok, err := s.sentinel.Acquire(ctx, s.prefix, c.partition, "scheduler")
 		if err != nil {
-			s.logger.Warn("sentinel acquire failed", "partition", c.partition, "error", err)
+			logger.Warnf("sentinel acquire failed; partition=%s, error=%s", c.partition, err)
 			continue
 		}
 		if !ok {
@@ -181,7 +179,7 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 		selected := s.policy.SelectFiles(partFiles, c.level, fp)
 		if len(selected) < 2 {
 			if err := s.sentinel.Release(ctx, s.prefix, c.partition); err != nil {
-				s.logger.Warn("sentinel release failed", "partition", c.partition, "error", err)
+				logger.Warnf("sentinel release failed; partition=%s, error=%s", c.partition, err)
 			}
 			continue
 		}
@@ -194,20 +192,19 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 			Mode:             s.mode,
 			RowGroupSize:     s.rowGroupSize,
 			CompressionLevel: s.compressionLevel,
-			Logger:           s.logger,
 		})
 
 		result, err := compactor.Compact(ctx, c.partition, selected, c.level)
 		if err != nil {
-			s.logger.Error("compaction failed", "partition", c.partition, "error", err)
+			logger.Errorf("compaction failed: %s; partition=%s", err, c.partition)
 			if relErr := s.sentinel.Release(ctx, s.prefix, c.partition); relErr != nil {
-				s.logger.Warn("sentinel release after failure", "partition", c.partition, "error", relErr)
+				logger.Warnf("sentinel release after failure; partition=%s, error=%s", c.partition, relErr)
 			}
 			continue
 		}
 
 		if err := s.sentinel.Release(ctx, s.prefix, c.partition); err != nil {
-			s.logger.Warn("sentinel release failed", "partition", c.partition, "error", err)
+			logger.Warnf("sentinel release failed; partition=%s, error=%s", c.partition, err)
 		}
 
 		// Call OnCompacted callback if set.
@@ -220,13 +217,7 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 			s.onCompacted(addedFiles, removedKeys)
 		}
 
-		s.logger.Info("compacted partition",
-			"partition", c.partition,
-			"level", c.level,
-			"input_files", len(selected),
-			"output", result.OutputFile,
-			"rows", result.RowsMerged,
-		)
+		logger.Infof("compacted partition; partition=%s, level=%d, input_files=%d, output=%s, rows=%d", c.partition, c.level, len(selected), result.OutputFile, result.RowsMerged)
 		compacted++
 	}
 

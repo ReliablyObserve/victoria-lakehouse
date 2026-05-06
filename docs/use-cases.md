@@ -267,5 +267,5 @@ aws s3 sync s3://obs-archive/logs/dt=2026-04-28/ s3://obs-dev/logs/dt=2026-04-28
   --exclude "*" --include "*.parquet"
 
 # Point dev lakehouse at dev bucket
-lakehouse --lakehouse.mode=logs --lakehouse.s3.bucket=obs-dev
+lakehouse-logs --lakehouse.s3.bucket=obs-dev
 ```

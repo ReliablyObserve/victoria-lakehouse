@@ -110,7 +110,7 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCo
 		host := hostNames[rng.Intn(len(hostNames))]
 		lvl := levels[rng.Intn(len(levels))]
 		pattern := pickPattern(rng)
-		body, logAttrs := pattern(rng, ts, svc)
+		body, logAttrs := pattern(rng, ts, svc, lvl)
 		traceID := randomHex(32)
 		spanID := randomHex(16)
 
@@ -353,7 +353,7 @@ func pushNDJSON(endpoint string, rows []LogRow) error {
 		buf.WriteByte('\n')
 	}
 
-	resp, err := http.Post(endpoint+"/insert/jsonline", "application/x-ndjson", &buf)
+	resp, err := http.Post(endpoint+"/insert/jsonline?_stream_fields=service.name,k8s.namespace.name", "application/x-ndjson", &buf)
 	if err != nil {
 		return fmt.Errorf("push to VL: %w", err)
 	}

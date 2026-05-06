@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
@@ -13,48 +12,40 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
-
-func testRaceLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
 
 func TestHandler_Race_MaxGoroutines(t *testing.T) {
 	ms := &mockStorage{
-		runQueryFn: func(_ context.Context, _ *storage.QueryContext, writeBlock storage.WriteDataBlockFunc) error {
-			writeBlock(0, &storage.DataBlock{
-				RowsCount: 1,
-				Columns: []storage.BlockColumn{
-					{Name: "_msg", Values: []string{"test"}},
-				},
+		runQueryFn: func(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
+			db := &logstorage.DataBlock{}
+			db.SetColumns([]logstorage.BlockColumn{
+				{Name: "_msg", Values: []string{"test"}},
 			})
+			writeBlock(0, db)
 			return nil
 		},
-		getFieldNamesFn: func(_ context.Context, _ *storage.QueryContext) ([]storage.ValueWithHits, error) {
-			return []storage.ValueWithHits{{Value: "f", Hits: 1}}, nil
+		getFieldNamesFn: func(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query) ([]logstorage.ValueWithHits, error) {
+			return []logstorage.ValueWithHits{{Value: "f", Hits: 1}}, nil
 		},
-		getFieldValuesFn: func(_ context.Context, _ *storage.QueryContext, _ string, _ int) ([]storage.ValueWithHits, error) {
-			return []storage.ValueWithHits{{Value: "v", Hits: 1}}, nil
+		getFieldValuesFn: func(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, _ string, _ uint64) ([]logstorage.ValueWithHits, error) {
+			return []logstorage.ValueWithHits{{Value: "v", Hits: 1}}, nil
 		},
-		getStreamsFn: func(_ context.Context, _ *storage.QueryContext) ([]storage.ValueWithHits, error) {
+		getStreamsFn: func(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, _ uint64) ([]logstorage.ValueWithHits, error) {
 			return nil, nil
 		},
-		getStreamIDsFn: func(_ context.Context, _ *storage.QueryContext) ([]storage.ValueWithHits, error) {
+		getStreamIDsFn: func(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, _ uint64) ([]logstorage.ValueWithHits, error) {
 			return nil, nil
 		},
-		getStreamFieldNamesFn: func(_ context.Context, _ *storage.QueryContext) ([]storage.ValueWithHits, error) {
+		getStreamFieldNamesFn: func(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query) ([]logstorage.ValueWithHits, error) {
 			return nil, nil
 		},
-		getStreamFieldValuesFn: func(_ context.Context, _ *storage.QueryContext, _ string) ([]storage.ValueWithHits, error) {
-			return nil, nil
-		},
-		getTenantIDsFn: func(_ context.Context, _ *storage.QueryContext) ([]storage.TenantID, error) {
+		getStreamFieldValuesFn: func(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, _ string, _ uint64) ([]logstorage.ValueWithHits, error) {
 			return nil, nil
 		},
 	}
 
-	h := NewHandler(ms, testRaceLogger(), 30*time.Second)
+	h := NewHandler(ms, 30*time.Second)
 	mux := http.NewServeMux()
 	h.Register(mux)
 	srv := httptest.NewServer(mux)
@@ -111,18 +102,17 @@ func TestHandler_Race_MaxGoroutines(t *testing.T) {
 
 func BenchmarkHandler_Query(b *testing.B) {
 	ms := &mockStorage{
-		runQueryFn: func(_ context.Context, _ *storage.QueryContext, writeBlock storage.WriteDataBlockFunc) error {
-			writeBlock(0, &storage.DataBlock{
-				RowsCount: 10,
-				Columns: []storage.BlockColumn{
-					{Name: "_msg", Values: make([]string, 10)},
-				},
+		runQueryFn: func(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
+			db := &logstorage.DataBlock{}
+			db.SetColumns([]logstorage.BlockColumn{
+				{Name: "_msg", Values: make([]string, 10)},
 			})
+			writeBlock(0, db)
 			return nil
 		},
 	}
 
-	h := NewHandler(ms, testRaceLogger(), 30*time.Second)
+	h := NewHandler(ms, 30*time.Second)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -137,16 +127,16 @@ func BenchmarkHandler_Query(b *testing.B) {
 
 func BenchmarkHandler_FieldNames(b *testing.B) {
 	ms := &mockStorage{
-		getFieldNamesFn: func(_ context.Context, _ *storage.QueryContext) ([]storage.ValueWithHits, error) {
-			vals := make([]storage.ValueWithHits, 50)
+		getFieldNamesFn: func(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query) ([]logstorage.ValueWithHits, error) {
+			vals := make([]logstorage.ValueWithHits, 50)
 			for i := range vals {
-				vals[i] = storage.ValueWithHits{Value: fmt.Sprintf("field-%d", i), Hits: uint64(i)}
+				vals[i] = logstorage.ValueWithHits{Value: fmt.Sprintf("field-%d", i), Hits: uint64(i)}
 			}
 			return vals, nil
 		},
 	}
 
-	h := NewHandler(ms, testRaceLogger(), 30*time.Second)
+	h := NewHandler(ms, 30*time.Second)
 	mux := http.NewServeMux()
 	h.Register(mux)
 

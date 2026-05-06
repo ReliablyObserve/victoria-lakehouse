@@ -80,7 +80,7 @@ func TestHandler_Race_MaxGoroutines(t *testing.T) {
 }
 
 func TestPeerCache_Race_ConcurrentOps(t *testing.T) {
-	pc := New("self:9428", "auth", 5000000000, 10, testLogger())
+	pc := New("self:9428", "auth", 5000000000, 10)
 
 	const goroutines = 200
 	const ops = 200
@@ -128,7 +128,7 @@ func BenchmarkHandler_PutGet(b *testing.B) {
 }
 
 func BenchmarkPeerCache_Lookup(b *testing.B) {
-	pc := New("self:9428", "auth", 5000000000, 10, testLogger())
+	pc := New("self:9428", "auth", 5000000000, 10)
 	pc.UpdatePeers([]string{"self:9428", "a:9428", "b:9428", "c:9428"})
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -138,7 +138,7 @@ func BenchmarkPeerCache_Lookup(b *testing.B) {
 }
 
 func BenchmarkPeerCache_Stats(b *testing.B) {
-	pc := New("self:9428", "auth", 5000000000, 10, testLogger())
+	pc := New("self:9428", "auth", 5000000000, 10)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

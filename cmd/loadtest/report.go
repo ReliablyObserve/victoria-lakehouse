@@ -41,6 +41,8 @@ type Report struct {
 	LatencyBenchmarks map[string]*LatencyResult    `json:"latency_benchmarks,omitempty"`
 	ThroughputTests   map[string]*ThroughputResult `json:"throughput_tests,omitempty"`
 	Benchmarks        []BenchmarkResult            `json:"benchmarks,omitempty"`
+	RealisticResults  []RealisticResult            `json:"realistic_results,omitempty"`
+	VerifyResults     *VerifyResult                `json:"verify_results,omitempty"`
 	Pass              bool                         `json:"pass"`
 }
 
@@ -51,6 +53,15 @@ func (r *Report) ComputePass() {
 		if !lr.Pass {
 			r.Pass = false
 		}
+	}
+	for i := range r.RealisticResults {
+		r.RealisticResults[i].Pass = r.RealisticResults[i].P95Ms <= r.RealisticResults[i].TargetP95Ms
+		if !r.RealisticResults[i].Pass {
+			r.Pass = false
+		}
+	}
+	if r.VerifyResults != nil && !r.VerifyResults.Pass {
+		r.Pass = false
 	}
 }
 

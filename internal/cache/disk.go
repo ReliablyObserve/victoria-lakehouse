@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	vlfs "github.com/VictoriaMetrics/VictoriaMetrics/lib/fs"
 )
 
 type diskEntry struct {
@@ -28,8 +30,37 @@ type DiskCache struct {
 	evictions uint64
 }
 
+// writeFileAtomic wraps vlfs.MustWriteAtomic (which panics) to return an error
+// for graceful cache degradation.
+func writeFileAtomic(path string, data []byte) error {
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("atomic write failed: %v", r)
+			}
+		}()
+		vlfs.MustWriteAtomic(path, data, true)
+	}()
+	return err
+}
+
+// mkdirIfNotExist wraps vlfs.MustMkdirIfNotExist (which panics) to return an error.
+func mkdirIfNotExist(path string) error {
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("mkdir failed: %v", r)
+			}
+		}()
+		vlfs.MustMkdirIfNotExist(path)
+	}()
+	return err
+}
+
 func NewDiskCache(dir string, maxSize int64, watermark float64) (*DiskCache, error) {
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	if err := mkdirIfNotExist(dir); err != nil {
 		return nil, fmt.Errorf("create cache dir: %w", err)
 	}
 	if watermark <= 0 || watermark > 1 {
@@ -76,7 +107,7 @@ func (d *DiskCache) Put(key string, data []byte) (string, error) {
 
 	if el, ok := d.items[key]; ok {
 		de := el.Value.(*diskEntry)
-		if err := os.WriteFile(de.path, data, 0o600); err != nil {
+		if err := writeFileAtomic(de.path, data); err != nil {
 			return "", err
 		}
 		d.curSize = d.curSize - de.size + size
@@ -86,7 +117,7 @@ func (d *DiskCache) Put(key string, data []byte) (string, error) {
 	}
 
 	path := d.keyToPath(key)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := writeFileAtomic(path, data); err != nil {
 		return "", err
 	}
 
@@ -121,7 +152,7 @@ func (d *DiskCache) PutFromPath(key string, srcPath string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(dstPath, data, 0o600); err != nil { // #nosec G703
+	if err := writeFileAtomic(dstPath, data); err != nil {
 		return err
 	}
 
