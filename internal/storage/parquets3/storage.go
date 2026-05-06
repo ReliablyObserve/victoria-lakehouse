@@ -586,6 +586,8 @@ func (s *Storage) GetFieldValues(ctx context.Context, qctx *storage.QueryContext
 			continue
 		}
 
+		s.updateLabelIndex(f)
+
 		colIdx := findColumnIndex(f.Root(), mapping.ParquetColumn)
 		if colIdx < 0 {
 			continue
@@ -730,13 +732,102 @@ func (s *Storage) Close() error {
 }
 
 func (s *Storage) updateLabelIndex(f *parquet.File) {
+	// Columns that should have values extracted (use Parquet column names)
+	promotedWithValues := map[string]bool{
+		"service.name":            true,
+		"severity_text":           true,
+		"k8s.namespace.name":      true,
+		"k8s.deployment.name":     true,
+		"k8s.node.name":           true,
+		"deployment.environment":  true,
+		"cloud.region":            true,
+		"span.name":               true,
+	}
+
 	for _, name := range columnNames(f.Root()) {
 		internalName := name
 		if m := s.registry.ResolveFromParquet(name); m != nil {
 			internalName = m.InternalName
 		}
-		s.labelIndex.Add(internalName, nil)
+
+		if !promotedWithValues[name] {
+			s.labelIndex.Add(internalName, nil)
+			continue
+		}
+
+		colIdx := findColumnIndex(f.Root(), name)
+		if colIdx < 0 {
+			s.labelIndex.Add(internalName, nil)
+			continue
+		}
+
+		vals := extractDistinctFromStats(f, colIdx)
+		s.labelIndex.Add(internalName, vals)
 	}
+}
+
+func extractDistinctFromStats(f *parquet.File, colIdx int) []string {
+	seen := make(map[string]bool)
+	for _, rg := range f.RowGroups() {
+		cols := rg.ColumnChunks()
+		if colIdx >= len(cols) {
+			continue
+		}
+		// First try column index stats (fast, no data read)
+		ci, err := cols[colIdx].ColumnIndex()
+		if err == nil && ci != nil {
+			numPages := ci.NumPages()
+			for p := 0; p < numPages; p++ {
+				if minBytes := ci.MinValue(p).Bytes(); len(minBytes) > 0 && len(minBytes) < 256 && isPrintable(minBytes) {
+					seen[string(minBytes)] = true
+				}
+				if maxBytes := ci.MaxValue(p).Bytes(); len(maxBytes) > 0 && len(maxBytes) < 256 && isPrintable(maxBytes) {
+					seen[string(maxBytes)] = true
+				}
+			}
+		}
+		// If stats give few values, scan first row group's actual data
+		if len(seen) < 50 && rg.NumRows() > 0 {
+			rows := rg.Rows()
+			buf := make([]parquet.Row, 512)
+			n, _ := rows.ReadRows(buf)
+			for i := 0; i < n; i++ {
+				if colIdx < len(buf[i]) {
+					val := buf[i][colIdx]
+					if !val.IsNull() {
+						if b := val.Bytes(); len(b) > 0 && len(b) < 256 && isPrintable(b) {
+							seen[string(b)] = true
+						}
+					}
+				}
+			}
+			_ = rows.Close()
+		}
+		if len(seen) > 1000 {
+			break
+		}
+		break // One row group is enough for warmup
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(seen))
+	for v := range seen {
+		result = append(result, v)
+	}
+	return result
+}
+
+// ClearCaches clears the L1 memory cache and L2 disk cache (if present).
+// Useful for benchmarking to ensure cold-start query performance.
+func (s *Storage) ClearCaches() {
+	s.memCache.Clear()
+	if s.diskCache != nil {
+		if err := s.diskCache.Clear(); err != nil {
+			s.logger.Warn("disk cache clear failed", "error", err)
+		}
+	}
+	s.logger.Info("caches cleared")
 }
 
 func (s *Storage) MemCacheStats() cache.Stats {
@@ -998,6 +1089,40 @@ func (s *Storage) RefreshManifest(ctx context.Context) error {
 	return s.manifest.RefreshFromS3(ctx, s.pool.S3Client())
 }
 
+func (s *Storage) WarmLabelIndex(ctx context.Context) {
+	if s.labelIndex.Len() > 0 {
+		return
+	}
+	files := s.manifest.GetFilesForRange(0, 1<<62)
+	if len(files) == 0 {
+		return
+	}
+	// Sample up to 10 files spread across the range for value diversity
+	sampleCount := 10
+	if len(files) < sampleCount {
+		sampleCount = len(files)
+	}
+	step := len(files) / sampleCount
+	if step == 0 {
+		step = 1
+	}
+	sampled := 0
+	for i := 0; i < len(files) && sampled < sampleCount; i += step {
+		fi := files[i]
+		data, err := s.getFileData(ctx, fi.Key, fi.Size)
+		if err != nil {
+			continue
+		}
+		f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+		if err != nil {
+			continue
+		}
+		s.updateLabelIndex(f)
+		sampled++
+	}
+	s.logger.Info("label index warmed", "labels", s.labelIndex.Len(), "files_sampled", sampled)
+}
+
 func (s *Storage) PersistState() error {
 	if s.persister == nil {
 		return nil
@@ -1108,9 +1233,14 @@ func rowGroupMatchesTimeRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs 
 }
 
 func findColumnIndex(root *parquet.Column, name string) int {
-	for i, col := range root.Columns() {
-		if col.Name() == name {
-			return i
+	col := root.Column(name)
+	if col != nil && col.Leaf() {
+		return col.Index()
+	}
+	// Fallback: search top-level leaf columns by name
+	for _, c := range root.Columns() {
+		if c.Name() == name && c.Leaf() {
+			return c.Index()
 		}
 	}
 	return -1

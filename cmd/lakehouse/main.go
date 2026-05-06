@@ -334,6 +334,33 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		dh.Register(mux)
 	}
 
+	mux.HandleFunc("/internal/cache/clear", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		store.ClearCaches()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]bool{"cleared": true})
+	})
+
+	mux.HandleFunc("/internal/cache/stats", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		stats := store.MemCacheStats()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"l1_entries":   stats.Entries,
+			"l1_size":      stats.Size,
+			"l1_max_size":  stats.MaxSize,
+			"l1_hits":      stats.Hits,
+			"l1_misses":    stats.Misses,
+			"l1_evictions": stats.Evictions,
+		})
+	})
+
 	if ph := store.PeerHandler(); ph != nil {
 		mux.Handle("/internal/cache/", ph)
 	}
@@ -396,6 +423,7 @@ func runStartup(sm *startup.Manager, cfg *config.Config, logger *slog.Logger, st
 			"min_time", m.MinTime(),
 			"max_time", m.MaxTime(),
 		)
+		store.WarmLabelIndex(ctx)
 	}
 
 	sm.SetPhase(startup.PhaseReady)
