@@ -62,6 +62,26 @@ func main() {
 			fmt.Printf("Compare report written to %s\n", *output)
 		}
 		return
+	case "compare-ext":
+		extCfg := ExtCompareConfig{
+			LakehouseURL: *target,
+			VLURL:        *compareVL,
+			Iterations:   *iterations,
+			Warmup:       *warmup,
+		}
+		if extCfg.VLURL == "" {
+			fmt.Fprintf(os.Stderr, "compare-ext mode requires --compare-vl flag\n")
+			os.Exit(1)
+		}
+		extReport := runExtCompare(extCfg)
+		if *output != "" {
+			if err := extReport.WriteJSON(*output); err != nil {
+				fmt.Fprintf(os.Stderr, "failed to write extended compare report: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Extended compare report written to %s\n", *output)
+		}
+		return
 	case "e2e":
 		e2eCfg := E2EBenchConfig{
 			LakehouseDirectURL: *e2eDirect,
