@@ -539,10 +539,12 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 }
 
 func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
-	if limit > uint64(math.MaxInt) {
-		limit = uint64(math.MaxInt)
+	var intLimit int
+	if limit <= uint64(math.MaxInt) {
+		intLimit = int(limit)
+	} else {
+		intLimit = math.MaxInt
 	}
-	intLimit := int(limit)
 	if intLimit > 0 && s.labelIndex.Len() > 0 {
 		vals := s.labelIndex.GetFieldValues(fieldName, intLimit)
 		if len(vals) > 0 {
@@ -656,10 +658,12 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 		streamColName = m.ParquetColumn
 	}
 
-	if limit > uint64(math.MaxInt) {
-		limit = uint64(math.MaxInt)
+	var intLimit int
+	if limit <= uint64(math.MaxInt) {
+		intLimit = int(limit)
+	} else {
+		intLimit = math.MaxInt
 	}
-	intLimit := int(limit)
 	seen := make(map[string]uint64)
 
 	for _, fi := range files {
