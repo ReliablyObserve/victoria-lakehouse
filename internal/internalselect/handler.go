@@ -23,8 +23,6 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/vlstorage"
 )
 
-const maxConcurrentRequests = 100
-
 type Handler struct {
 	store   storage.Storage
 	timeout time.Duration
