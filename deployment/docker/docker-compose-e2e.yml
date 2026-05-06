@@ -32,7 +32,7 @@ services:
       "
 
   victorialogs:
-    image: victoriametrics/victoria-logs:v1.20.0-victorialogs
+    image: victoriametrics/victoria-logs:v1.50.0
     command:
       - "-storageDataPath=/data"
       - "-retentionPeriod=7d"
@@ -142,7 +142,7 @@ services:
       start_period: 10s
 
   vlselect:
-    image: victoriametrics/victoria-logs:v1.20.0-victorialogs
+    image: victoriametrics/victoria-logs:v1.50.0
     command:
       - "-storageNode=victorialogs:9428"
       - "-storageNode=lakehouse-logs:9428"
