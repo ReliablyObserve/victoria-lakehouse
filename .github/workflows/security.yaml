@@ -11,22 +11,72 @@ on:
 permissions:
   contents: read
 
+env:
+  VL_VERSION_LOGS: v1.50.0
+  VL_COMMIT_TRACES: a408207c2242
+
 jobs:
+  deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Clone VL for logs
+        run: |
+          mkdir -p deps
+          git clone --depth 1 --branch ${{ env.VL_VERSION_LOGS }} \
+            https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs
+
+      - name: Clone VL for traces
+        run: |
+          mkdir -p lakehouse-traces/deps
+          git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src
+          cd /tmp/vl-src && git checkout ${{ env.VL_COMMIT_TRACES }}
+          cp -r /tmp/vl-src ${{ github.workspace }}/lakehouse-traces/deps/VictoriaLogs
+
+      - uses: actions/cache/save@v4
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+          key: vl-deps-security-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+
   govulncheck:
+    needs: deps
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+          key: vl-deps-security-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+
       - run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
   gosec:
+    needs: deps
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+          key: vl-deps-security-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+
       - uses: securego/gosec@master
         with:
           args: -exclude=G104,G110,G115,G204,G304,G401,G501,G705 ./...
@@ -52,4 +102,3 @@ jobs:
           VERSION=$(curl -sSf https://api.github.com/repos/gitleaks/gitleaks/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz" | tar xz -C /usr/local/bin gitleaks
           gitleaks detect --source . --verbose
-

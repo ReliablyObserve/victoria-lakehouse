@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -538,7 +539,7 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 }
 
 func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
-	intLimit := int(limit)
+	intLimit := safeUint64ToInt(limit)
 	if intLimit > 0 && s.labelIndex.Len() > 0 {
 		vals := s.labelIndex.GetFieldValues(fieldName, intLimit)
 		if len(vals) > 0 {
@@ -652,7 +653,7 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 		streamColName = m.ParquetColumn
 	}
 
-	intLimit := int(limit)
+	intLimit := safeUint64ToInt(limit)
 	seen := make(map[string]uint64)
 
 	for _, fi := range files {
@@ -1314,4 +1315,11 @@ func isPrintable(b []byte) bool {
 		}
 	}
 	return true
+}
+
+func safeUint64ToInt(v uint64) int {
+	if v > uint64(math.MaxInt) {
+		return math.MaxInt
+	}
+	return int(v)
 }

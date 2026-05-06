@@ -302,10 +302,3 @@ func writeValueWithHitsResponse(w http.ResponseWriter, vals []logstorage.ValueWi
 	}
 	_, _ = w.Write(protocol.MarshalValueWithHits(vals))
 }
-
-func getFirst(q map[string][]string, key string) string {
-	if vals, ok := q[key]; ok && len(vals) > 0 {
-		return vals[0]
-	}
-	return ""
-}

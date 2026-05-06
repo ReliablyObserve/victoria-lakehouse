@@ -257,7 +257,7 @@ func clearCache(target string) {
 		fmt.Printf("  Warning: could not clear cache: %v\n", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	fmt.Println("  Cache cleared for cold test")
 }

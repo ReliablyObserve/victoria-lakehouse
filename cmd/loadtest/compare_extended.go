@@ -451,11 +451,6 @@ type measurement struct {
 	bodyBytes int64
 }
 
-func measureRequest(client *http.Client, u string) float64 {
-	m := measureRequestFull(client, u)
-	return m.latencyMs
-}
-
 func measureRequestFull(client *http.Client, u string) measurement {
 	start := time.Now()
 	resp, err := client.Get(u)

@@ -34,10 +34,11 @@ func main() {
 		log.Fatalf("invalid upstream URL: %v", err)
 	}
 
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		originalDirector(req)
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(target)
+			pr.SetXForwarded()
+		},
 	}
 
 	if *bandwidthMBps > 0 {
@@ -97,7 +98,12 @@ func main() {
 
 	log.Printf("[s3proxy] listening on %s → %s (GET=%s HEAD=%s PUT=%s LIST=%s jitter=%.0f%% bw=%.0fMB/s)",
 		*listen, *upstream, *getDelay, *headDelay, *putDelay, *listDelay, *jitter*100, *bandwidthMBps)
-	log.Fatal(http.ListenAndServe(*listen, handler))
+	srv := &http.Server{
+		Addr:              *listen,
+		Handler:           handler,
+		ReadHeaderTimeout: 30 * time.Second,
+	}
+	log.Fatal(srv.ListenAndServe())
 }
 
 type throttledReader struct {

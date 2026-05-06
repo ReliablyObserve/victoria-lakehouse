@@ -2,20 +2,25 @@ FROM golang:1.26.2-alpine3.22 AS builder
 RUN apk add --no-cache git
 WORKDIR /app
 ARG VERSION=dev
+ARG VL_VERSION=v1.50.0
 # VictoriaLogs at commit a408207c2242 (VictoriaTraces v0.8.2 compatible)
 ARG VL_COMMIT=a408207c2242
-COPY go.mod go.sum go.work ./
+ENV GOWORK=off
+COPY go.mod go.sum ./
 COPY lakehouse-traces/go.mod lakehouse-traces/go.sum ./lakehouse-traces/
-RUN mkdir -p lakehouse-traces/deps && \
+RUN mkdir -p deps lakehouse-traces/deps && \
+    git clone --depth 1 --branch ${VL_VERSION} https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs && \
     git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src && \
     cd /tmp/vl-src && git checkout ${VL_COMMIT} && \
     cp -r /tmp/vl-src /app/lakehouse-traces/deps/VictoriaLogs && \
     rm -rf /tmp/vl-src && \
-    cd /app && go mod download
+    cd /app && go mod download && \
+    cd /app/lakehouse-traces && go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}" -o /lakehouse-traces ./lakehouse-traces && \
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o /healthcheck ./cmd/healthcheck && \
-    mkdir -p /data/lakehouse/cache
+RUN cd lakehouse-traces && \
+    CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}" -o /lakehouse-traces .
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /healthcheck ./cmd/healthcheck
+RUN mkdir -p /data/lakehouse/cache
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=builder /lakehouse-traces /usr/local/bin/lakehouse-traces

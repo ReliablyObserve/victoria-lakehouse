@@ -3,8 +3,8 @@ RUN apk add --no-cache git
 WORKDIR /app
 ARG VERSION=dev
 ARG VL_VERSION=v1.50.0
-COPY go.mod go.sum go.work ./
-COPY lakehouse-traces/go.mod lakehouse-traces/go.sum ./lakehouse-traces/
+ENV GOWORK=off
+COPY go.mod go.sum ./
 RUN mkdir -p deps && \
     git clone --depth 1 --branch ${VL_VERSION} https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs && \
     go mod download
