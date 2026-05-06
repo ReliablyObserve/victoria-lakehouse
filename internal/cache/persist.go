@@ -67,7 +67,7 @@ func (idx *LabelIndex) GetFieldNames() []string {
 	return names
 }
 
-func (idx *LabelIndex) GetFieldValues(name string, limit int) []string {
+func (idx *LabelIndex) GetFieldValues(name string, limit uint64) []string {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
@@ -75,7 +75,7 @@ func (idx *LabelIndex) GetFieldValues(name string, limit int) []string {
 	if !ok {
 		return nil
 	}
-	if limit > 0 && limit < len(li.Values) {
+	if limit > 0 && limit < uint64(len(li.Values)) {
 		return li.Values[:limit]
 	}
 	return li.Values

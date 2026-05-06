@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -539,14 +538,8 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 }
 
 func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
-	var intLimit int
-	if limit <= uint64(math.MaxInt) {
-		intLimit = int(limit)
-	} else {
-		intLimit = math.MaxInt
-	}
-	if intLimit > 0 && s.labelIndex.Len() > 0 {
-		vals := s.labelIndex.GetFieldValues(fieldName, intLimit)
+	if limit > 0 && s.labelIndex.Len() > 0 {
+		vals := s.labelIndex.GetFieldValues(fieldName, limit)
 		if len(vals) > 0 {
 			result := make([]logstorage.ValueWithHits, len(vals))
 			for i, v := range vals {
@@ -617,7 +610,7 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 			_ = rows.Close()
 		}
 
-		if intLimit > 0 && len(seen) >= intLimit {
+		if limit > 0 && uint64(len(seen)) >= limit {
 			break
 		}
 	}
@@ -626,8 +619,8 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 	for v, hits := range seen {
 		result = append(result, logstorage.ValueWithHits{Value: v, Hits: hits})
 	}
-	if intLimit > 0 && len(result) > intLimit {
-		result = result[:intLimit]
+	if limit > 0 && uint64(len(result)) > limit {
+		result = result[:limit]
 	}
 	return result, nil
 }
@@ -658,12 +651,6 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 		streamColName = m.ParquetColumn
 	}
 
-	var intLimit int
-	if limit <= uint64(math.MaxInt) {
-		intLimit = int(limit)
-	} else {
-		intLimit = math.MaxInt
-	}
 	seen := make(map[string]uint64)
 
 	for _, fi := range files {
@@ -708,7 +695,7 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 			_ = rows.Close()
 		}
 
-		if intLimit > 0 && len(seen) >= intLimit {
+		if limit > 0 && uint64(len(seen)) >= limit {
 			break
 		}
 	}
@@ -717,8 +704,8 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 	for v, hits := range seen {
 		result = append(result, logstorage.ValueWithHits{Value: v, Hits: hits})
 	}
-	if intLimit > 0 && len(result) > intLimit {
-		result = result[:intLimit]
+	if limit > 0 && uint64(len(result)) > limit {
+		result = result[:limit]
 	}
 	return result, nil
 }
