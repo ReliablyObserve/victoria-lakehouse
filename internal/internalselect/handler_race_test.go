@@ -12,8 +12,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaLogs/app/vlstorage/netselect"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
+
+func vlParams(version string) string {
+	return "version=" + version +
+		"&tenant_ids=[]&timestamp=0&query=*" +
+		"&disable_compression=false&allow_partial_response=false&hidden_fields_filters=[]"
+}
 
 func TestHandler_Race_MaxGoroutines(t *testing.T) {
 	ms := &mockStorage{
@@ -55,17 +62,17 @@ func TestHandler_Race_MaxGoroutines(t *testing.T) {
 		method string
 		path   string
 	}{
-		{"POST", "/internal/select/query?start=0&end=9999999999999999999&query=*"},
-		{"GET", "/internal/select/field_names?start=0&end=9999999999999999999&query=*"},
-		{"GET", "/internal/select/field_values?start=0&end=9999999999999999999&query=*&field=test"},
-		{"GET", "/internal/select/streams?start=0&end=9999999999999999999&query=*"},
-		{"GET", "/internal/select/stream_ids?start=0&end=9999999999999999999&query=*"},
-		{"GET", "/internal/select/stream_field_names?start=0&end=9999999999999999999&query=*"},
-		{"GET", "/internal/select/stream_field_values?start=0&end=9999999999999999999&query=*&field=test"},
-		{"GET", "/internal/select/tenant_ids?start=0&end=9999999999999999999&query=*"},
-		{"POST", "/internal/select/delete_run?start=0&end=9999999999999999999&query=*"},
-		{"POST", "/internal/select/delete_stop?start=0&end=9999999999999999999&query=*"},
-		{"GET", "/internal/select/delete_active_tasks"},
+		{"POST", "/internal/select/query?" + vlParams(netselect.QueryProtocolVersion)},
+		{"GET", "/internal/select/field_names?" + vlParams(netselect.FieldNamesProtocolVersion)},
+		{"GET", "/internal/select/field_values?" + vlParams(netselect.FieldValuesProtocolVersion) + "&field=test&limit=100"},
+		{"GET", "/internal/select/streams?" + vlParams(netselect.StreamsProtocolVersion) + "&limit=100"},
+		{"GET", "/internal/select/stream_ids?" + vlParams(netselect.StreamIDsProtocolVersion) + "&limit=100"},
+		{"GET", "/internal/select/stream_field_names?" + vlParams(netselect.StreamFieldNamesProtocolVersion)},
+		{"GET", "/internal/select/stream_field_values?" + vlParams(netselect.StreamFieldValuesProtocolVersion) + "&field=test&limit=100"},
+		{"GET", "/internal/select/tenant_ids?start=0&end=9999999999999999999"},
+		{"POST", "/internal/delete/run_task?version=" + netselect.DeleteRunTaskProtocolVersion + "&task_id=t1&timestamp=0&tenant_ids=[]&filter=*"},
+		{"POST", "/internal/delete/stop_task?version=" + netselect.DeleteStopTaskProtocolVersion + "&task_id=t1"},
+		{"GET", "/internal/delete/active_tasks?version=" + netselect.DeleteActiveTasksProtocolVersion},
 	}
 
 	const goroutines = 200
@@ -119,7 +126,7 @@ func BenchmarkHandler_Query(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		req := httptest.NewRequest("POST", "/internal/select/query?start=0&end=9999999999999999999&query=*", nil)
+		req := httptest.NewRequest("POST", "/internal/select/query?"+vlParams(netselect.QueryProtocolVersion), nil)
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
 	}
@@ -143,7 +150,7 @@ func BenchmarkHandler_FieldNames(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		req := httptest.NewRequest("GET", "/internal/select/field_names?start=0&end=9999999999999999999&query=*", nil)
+		req := httptest.NewRequest("GET", "/internal/select/field_names?"+vlParams(netselect.FieldNamesProtocolVersion), nil)
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
 	}

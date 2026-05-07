@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Replace custom internalselect encoding with VL's actual wire format — fixes vlselect panics (`growslice: len out of range`) caused by 4-byte uint32 block lengths instead of 8-byte uint64
+- Add `internal/vlstorage/` thin dispatch layer bridging `storage.Storage` to VL's vlstorage function signatures (both logs and traces)
+- Remove protocol-incompatible vlselect service from E2E compose
+
 ### Architecture
 - Split into two separate binaries: `lakehouse-logs` and `lakehouse-traces`
 - Each binary has its own Go module with independent VL dependency versions

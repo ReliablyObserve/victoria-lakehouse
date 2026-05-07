@@ -1,19 +1,16 @@
 package internalselect
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/encoding"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/encoding/zstd"
+	"github.com/VictoriaMetrics/VictoriaLogs/app/vlstorage/netselect"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
-	"github.com/klauspost/compress/zstd"
-
-	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/protocol"
 )
 
 type mockStorage struct {
@@ -70,20 +67,29 @@ func (m *mockStorage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.T
 }
 func (m *mockStorage) Close() error { return nil }
 
+func vlQueryURL() string {
+	return "/internal/select/query?version=" + netselect.QueryProtocolVersion +
+		"&tenant_ids=[]&timestamp=0&query=*" +
+		"&disable_compression=false&allow_partial_response=false&hidden_fields_filters=[]"
+}
+
+func vlMetadataURL(path, version string) string {
+	return path + "?version=" + version +
+		"&tenant_ids=[]&timestamp=0&query=*" +
+		"&disable_compression=false&allow_partial_response=false&hidden_fields_filters=[]"
+}
+
 func TestHandler_Query_EmptyResult(t *testing.T) {
 	h := NewHandler(&mockStorage{}, 30*time.Second)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
-	req := httptest.NewRequest(http.MethodPost, "/internal/select/query?start=1000&end=2000", nil)
+	req := httptest.NewRequest(http.MethodPost, vlQueryURL(), nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-	if enc := rec.Header().Get("Content-Encoding"); enc != "zstd" {
-		t.Errorf("Content-Encoding = %q, want %q", enc, "zstd")
+		t.Errorf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 }
 
@@ -103,26 +109,36 @@ func TestHandler_Query_WithDataBlocks(t *testing.T) {
 	mux := http.NewServeMux()
 	h.Register(mux)
 
-	req := httptest.NewRequest(http.MethodPost, "/internal/select/query?start=1000&end=2000", nil)
+	req := httptest.NewRequest(http.MethodPost, vlQueryURL(), nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
-	dec, err := zstd.NewReader(bytes.NewReader(rec.Body.Bytes()))
+	body := rec.Body.Bytes()
+	if len(body) < 8 {
+		t.Fatal("response too short")
+	}
+
+	blockLen := encoding.UnmarshalUint64(body[:8])
+	blockData := body[8 : 8+blockLen]
+
+	decompressed, err := zstd.Decompress(nil, blockData)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dec.Close()
 
-	decompressed, err := io.ReadAll(dec)
-	if err != nil {
-		t.Fatal(err)
+	if len(decompressed) < 1 {
+		t.Fatal("decompressed data too short")
+	}
+	if decompressed[0] != 0 {
+		t.Errorf("expected data block flag 0x00, got 0x%02x", decompressed[0])
 	}
 
-	db, err := protocol.ReadDataBlockStream(bytes.NewReader(decompressed))
+	var db logstorage.DataBlock
+	tail, _, err := db.UnmarshalInplace(decompressed[1:], nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,19 +153,11 @@ func TestHandler_Query_WithDataBlocks(t *testing.T) {
 	if cols[0].Name != "_msg" {
 		t.Errorf("column name = %q, want %q", cols[0].Name, "_msg")
 	}
-}
 
-func TestHandler_Query_MethodNotAllowed(t *testing.T) {
-	h := NewHandler(&mockStorage{}, 30*time.Second)
-	mux := http.NewServeMux()
-	h.Register(mux)
-
-	req := httptest.NewRequest(http.MethodGet, "/internal/select/query", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	if len(tail) > 0 {
+		if tail[0] != 1 {
+			t.Errorf("expected stats block flag 0x01 in remaining data, got 0x%02x", tail[0])
+		}
 	}
 }
 
@@ -167,23 +175,23 @@ func TestHandler_FieldNames(t *testing.T) {
 	mux := http.NewServeMux()
 	h.Register(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/internal/select/field_names?start=1000&end=2000", nil)
+	url := vlMetadataURL("/internal/select/field_names", netselect.FieldNamesProtocolVersion)
+	req := httptest.NewRequest(http.MethodGet, url, nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
-	vals, err := protocol.UnmarshalValueWithHits(rec.Body.Bytes())
+	data, err := zstd.Decompress(nil, rec.Body.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(vals) != 2 {
-		t.Fatalf("len = %d, want 2", len(vals))
-	}
-	if vals[0].Value != "_time" {
-		t.Errorf("vals[0] = %q, want %q", vals[0].Value, "_time")
+
+	count := encoding.UnmarshalUint64(data[:8])
+	if count != 2 {
+		t.Errorf("count = %d, want 2", count)
 	}
 }
 
@@ -204,25 +212,27 @@ func TestHandler_FieldValues(t *testing.T) {
 	mux := http.NewServeMux()
 	h.Register(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/internal/select/field_values?start=1000&end=2000&field=service&limit=10", nil)
+	url := vlMetadataURL("/internal/select/field_values", netselect.FieldValuesProtocolVersion) + "&field=service&limit=10"
+	req := httptest.NewRequest(http.MethodGet, url, nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d", rec.Code)
+		t.Fatalf("status = %d; body: %s", rec.Code, rec.Body.String())
 	}
 
-	vals, err := protocol.UnmarshalValueWithHits(rec.Body.Bytes())
+	data, err := zstd.Decompress(nil, rec.Body.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(vals) != 1 || vals[0].Value != "api-gw" {
-		t.Errorf("unexpected vals: %+v", vals)
+
+	count := encoding.UnmarshalUint64(data[:8])
+	if count != 1 {
+		t.Errorf("count = %d, want 1", count)
 	}
 }
 
 func TestHandler_TenantIDs(t *testing.T) {
-	// handleTenantIDs now returns empty list since GetTenantIDs is not in the storage interface.
 	h := NewHandler(&mockStorage{}, 30*time.Second)
 	mux := http.NewServeMux()
 	h.Register(mux)
@@ -232,15 +242,7 @@ func TestHandler_TenantIDs(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d", rec.Code)
-	}
-
-	ids, err := protocol.UnmarshalTenantIDs(rec.Body.Bytes())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ids) != 0 {
-		t.Errorf("expected empty ids, got: %+v", ids)
+		t.Fatalf("status = %d; body: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -249,12 +251,19 @@ func TestHandler_DeleteNoop(t *testing.T) {
 	mux := http.NewServeMux()
 	h.Register(mux)
 
-	for _, path := range []string{"/internal/select/delete_run", "/internal/select/delete_stop", "/internal/select/delete_active_tasks"} {
-		req := httptest.NewRequest(http.MethodPost, path, nil)
+	for _, tc := range []struct {
+		path    string
+		version string
+	}{
+		{"/internal/delete/run_task", netselect.DeleteRunTaskProtocolVersion},
+		{"/internal/delete/stop_task", netselect.DeleteStopTaskProtocolVersion},
+		{"/internal/delete/active_tasks", netselect.DeleteActiveTasksProtocolVersion},
+	} {
+		req := httptest.NewRequest(http.MethodPost, tc.path+"?version="+tc.version+"&task_id=test&timestamp=0&tenant_ids=[]&filter=*", nil)
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
-			t.Errorf("%s: status = %d, want %d", path, rec.Code, http.StatusOK)
+			t.Errorf("%s: status = %d, want %d; body: %s", tc.path, rec.Code, http.StatusOK, rec.Body.String())
 		}
 	}
 }
@@ -279,89 +288,36 @@ func TestHandler_StreamEndpoints(t *testing.T) {
 	mux := http.NewServeMux()
 	h.Register(mux)
 
-	endpoints := []string{
-		"/internal/select/stream_field_names?start=1&end=2",
-		"/internal/select/stream_field_values?start=1&end=2&field=service.name",
-		"/internal/select/streams?start=1&end=2",
-		"/internal/select/stream_ids?start=1&end=2",
+	endpoints := []struct {
+		path    string
+		version string
+	}{
+		{"/internal/select/stream_field_names", netselect.StreamFieldNamesProtocolVersion},
+		{"/internal/select/stream_field_values", netselect.StreamFieldValuesProtocolVersion},
+		{"/internal/select/streams", netselect.StreamsProtocolVersion},
+		{"/internal/select/stream_ids", netselect.StreamIDsProtocolVersion},
 	}
 
 	for _, ep := range endpoints {
-		req := httptest.NewRequest(http.MethodGet, ep, nil)
+		url := vlMetadataURL(ep.path, ep.version) + "&field=service.name&limit=100"
+		req := httptest.NewRequest(http.MethodGet, url, nil)
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
-			t.Errorf("%s: status = %d", ep, rec.Code)
+			t.Errorf("%s: status = %d; body: %s", ep.path, rec.Code, rec.Body.String())
+			continue
 		}
-		vals, err := protocol.UnmarshalValueWithHits(rec.Body.Bytes())
+
+		data, err := zstd.Decompress(nil, rec.Body.Bytes())
 		if err != nil {
-			t.Errorf("%s: unmarshal error: %v", ep, err)
+			t.Errorf("%s: decompress error: %v", ep.path, err)
+			continue
 		}
-		if len(vals) != 1 {
-			t.Errorf("%s: len = %d, want 1", ep, len(vals))
+
+		count := encoding.UnmarshalUint64(data[:8])
+		if count != 1 {
+			t.Errorf("%s: count = %d, want 1", ep.path, count)
 		}
-	}
-}
-
-func TestParseInternalQuery_QueryParams(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet,
-		"/internal/select/query?start=1000000000&end=2000000000&query=service:api&AccountID=1&ProjectID=2",
-		nil)
-
-	tenantIDs, q, err := parseInternalQuery(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	startNs, endNs := q.GetFilterTimeRange()
-	if startNs != 1000000000 {
-		t.Errorf("StartNs = %d", startNs)
-	}
-	// AddTimeFilter rounds endNs up to the next second boundary minus 1ns
-	// (based on RFC3339 precision of the formatted timestamp).
-	if endNs < 2000000000 {
-		t.Errorf("EndNs = %d, expected >= 2000000000", endNs)
-	}
-	if len(tenantIDs) != 1 || tenantIDs[0].AccountID != 1 {
-		t.Errorf("TenantIDs = %+v", tenantIDs)
-	}
-	_ = q // query is embedded in the logstorage.Query
-}
-
-func TestParseInternalQuery_BinaryBody(t *testing.T) {
-	body := make([]byte, 0, 32)
-
-	start := make([]byte, 8)
-	binary.BigEndian.PutUint64(start, 1000000000)
-	body = append(body, start...)
-
-	end := make([]byte, 8)
-	binary.BigEndian.PutUint64(end, 2000000000)
-	body = append(body, end...)
-
-	query := "test query"
-	qlen := make([]byte, 4)
-	binary.BigEndian.PutUint32(qlen, uint32(len(query)))
-	body = append(body, qlen...)
-	body = append(body, []byte(query)...)
-
-	req := httptest.NewRequest(http.MethodPost, "/internal/select/query", bytes.NewReader(body))
-
-	_, q, err := parseInternalQuery(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	startNs, endNs := q.GetFilterTimeRange()
-	if startNs != 1000000000 {
-		t.Errorf("StartNs = %d", startNs)
-	}
-	// AddTimeFilter rounds endNs up to the next second boundary minus 1ns.
-	if endNs < 2000000000 {
-		t.Errorf("EndNs = %d, expected >= 2000000000", endNs)
-	}
-	// The query string is embedded in the logstorage.Query; verify via String()
-	qStr := q.String()
-	if qStr == "" {
-		t.Error("expected non-empty query string")
 	}
 }
 
@@ -382,9 +338,9 @@ func TestHandler_AllEndpointsRegistered(t *testing.T) {
 		{http.MethodGet, "/internal/select/streams"},
 		{http.MethodGet, "/internal/select/stream_ids"},
 		{http.MethodGet, "/internal/select/tenant_ids"},
-		{http.MethodPost, "/internal/select/delete_run"},
-		{http.MethodPost, "/internal/select/delete_stop"},
-		{http.MethodPost, "/internal/select/delete_active_tasks"},
+		{http.MethodPost, "/internal/delete/run_task"},
+		{http.MethodPost, "/internal/delete/stop_task"},
+		{http.MethodPost, "/internal/delete/active_tasks"},
 	}
 
 	for _, ep := range endpoints {

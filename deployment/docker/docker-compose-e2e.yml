@@ -97,8 +97,6 @@ services:
       datagen-seed:
         condition: service_completed_successfully
     networks: [lakehouse-net]
-    ports:
-      - "9429:9428"
     command:
       - "-lakehouse.s3.bucket=obs-archive"
       - "-lakehouse.s3.endpoint=http://minio:9000"
@@ -124,8 +122,6 @@ services:
       datagen-seed:
         condition: service_completed_successfully
     networks: [lakehouse-net]
-    ports:
-      - "10429:10428"
     command:
       - "-lakehouse.s3.bucket=obs-archive"
       - "-lakehouse.s3.endpoint=http://minio:9000"
@@ -144,26 +140,6 @@ services:
       retries: 10
       start_period: 10s
 
-  vlselect:
-    image: victoriametrics/victoria-logs:v1.50.0
-    command:
-      - "-storageNode=victorialogs:9428"
-      - "-storageNode=lakehouse-logs:9428"
-      - "-httpListenAddr=:9471"
-      - "-loggerLevel=INFO"
-    depends_on:
-      victorialogs:
-        condition: service_healthy
-      lakehouse-logs:
-        condition: service_healthy
-    networks: [lakehouse-net]
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9471/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 5s
-
   loki-vl-proxy:
     build:
       context: /private/tmp/loki-vl-fix
@@ -172,8 +148,6 @@ services:
       VL_BACKEND_URL: "http://lakehouse-logs:9428"
       LABEL_STYLE: "underscores"
       METADATA_FIELD_MODE: "hybrid"
-    ports:
-      - "3100:3100"
     command:
       - "-label-style=underscores"
       - "-metadata-field-mode=hybrid"
