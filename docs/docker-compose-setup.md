@@ -5,7 +5,7 @@ sidebar_position: 7
 
 # Docker Compose Setup
 
-Victoria Lakehouse provides a complete Docker Compose environment for local development, testing, and evaluation. The compose file at `deployment/docker/docker-compose-e2e.yml` starts all components needed for an end-to-end workflow: S3-compatible storage, data generation, log and trace lakehouse instances, a hot VictoriaLogs tier, multi-level select, a Loki-compatible proxy, and Grafana with pre-configured datasources.
+Victoria Lakehouse provides a complete Docker Compose environment for local development, testing, and evaluation. The compose file at `deployment/docker/docker-compose-e2e.yml` starts all components needed for an end-to-end workflow: S3-compatible storage, data generation, log and trace lakehouse instances, a hot VictoriaLogs tier, a Loki-compatible proxy, and Grafana with pre-configured datasources.
 
 ## Quick Start
 
@@ -109,20 +109,6 @@ victorialogs:
 
 A standalone VictoriaLogs instance acting as the hot tier with 7-day retention and EBS-equivalent local storage.
 
-### vlselect (Multi-Level Select)
-
-```yaml
-vlselect:
-  command:
-    - "-storageNode=victorialogs:9428"
-    - "-storageNode=lakehouse-logs:9428"
-    - "-httpListenAddr=:9471"
-```
-
-Fans out queries to both the hot VictoriaLogs instance and cold lakehouse-logs, demonstrating the multi-level select architecture. Recent data comes from VictoriaLogs (fast, EBS-backed), while historical data comes from lakehouse (S3-backed).
-
-- **Internal endpoint**: `http://vlselect:9471`
-
 ### Loki-VL-proxy
 
 ```yaml
@@ -149,14 +135,13 @@ grafana:
     GF_INSTALL_PLUGINS: "victoriametrics-logs-datasource"
 ```
 
-Pre-configured with five datasources via provisioning files in `deployment/docker/grafana/provisioning/`:
+Pre-configured with four datasources via provisioning files in `deployment/docker/grafana/provisioning/`:
 
 | Datasource | Type | URL | Purpose |
 |---|---|---|---|
 | Victoria Lakehouse Logs (Cold) | VictoriaLogs | `http://lakehouse-logs:9428` | Direct cold tier queries |
 | Victoria Lakehouse Traces (Jaeger) | Jaeger | `http://lakehouse-traces:10428` | Trace search and visualization |
 | VictoriaLogs Hot | VictoriaLogs | `http://victorialogs:9428` | Hot tier only |
-| Multi-Level Select (Hot+Cold) | VictoriaLogs | `http://vlselect:9471` | Unified hot + cold |
 | Loki via Proxy | Loki | `http://loki-vl-proxy:3100` | LogQL-compatible access |
 
 - **Grafana UI**: [http://localhost:3003](http://localhost:3003)
@@ -182,7 +167,7 @@ The compose file uses health checks and `depends_on` conditions to ensure correc
 4. **datagen-seed** writes historical data to MinIO and VictoriaLogs, then exits
 5. **lakehouse-logs** and **lakehouse-traces** start (depend on seed completion)
 6. **datagen-continuous** begins generating fresh data every 30 seconds
-7. **vlselect** and **loki-vl-proxy** start (depend on their backends)
+7. **loki-vl-proxy** starts (depends on lakehouse-logs)
 8. **grafana** starts last (depends on both lakehouse services)
 
 ## Verifying the Setup
