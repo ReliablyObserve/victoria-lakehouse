@@ -16,11 +16,12 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/encoding/zstd"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
+	"github.com/VictoriaMetrics/VictoriaLogs/app/vlstorage"
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlstorage/netselect"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/vlstorage"
+	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/internal/vlstorage"
 )
 
 type Handler struct {
@@ -29,7 +30,7 @@ type Handler struct {
 }
 
 func NewHandler(store storage.Storage, timeout time.Duration) *Handler {
-	vlstorage.SetStorage(store)
+	internalvlstorage.SetStorage(store)
 	return &Handler{
 		store:   store,
 		timeout: timeout,

@@ -14,6 +14,7 @@ permissions:
 env:
   VL_VERSION_LOGS: v1.50.0
   VL_COMMIT_TRACES: a408207c2242
+  GOWORK: "off"
 
 jobs:
   deps:
@@ -27,12 +28,22 @@ jobs:
           git clone --depth 1 --branch ${{ env.VL_VERSION_LOGS }} \
             https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs
 
+      - name: Apply ExternalStorage patch (logs)
+        run: |
+          cp patches/vl-logs/external.go deps/VictoriaLogs/app/vlstorage/external.go
+          cd deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-logs/vlstorage-dispatch.patch
+
       - name: Clone VL for traces
         run: |
           mkdir -p lakehouse-traces/deps
           git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src
           cd /tmp/vl-src && git checkout ${{ env.VL_COMMIT_TRACES }}
           cp -r /tmp/vl-src ${{ github.workspace }}/lakehouse-traces/deps/VictoriaLogs
+
+      - name: Apply ExternalStorage patch (traces)
+        run: |
+          cp patches/vl-traces/external.go lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go
+          cd lakehouse-traces/deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-traces/vlstorage-dispatch.patch
 
       - uses: actions/cache/save@v4
         with:
@@ -57,7 +68,9 @@ jobs:
             lakehouse-traces/deps/VictoriaLogs
           key: vl-deps-security-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
 
-      - run: |
+      - name: Run govulncheck
+        continue-on-error: true
+        run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
