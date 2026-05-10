@@ -90,6 +90,15 @@ jobs:
           cd /tmp/vl-src && git checkout a408207c2242
           cp -r /tmp/vl-src ${{ github.workspace }}/lakehouse-traces/deps/VictoriaLogs
 
+      - name: Apply ExternalStorage patches
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          cp patches/vl-logs/external.go deps/VictoriaLogs/app/vlstorage/external.go
+          cd deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-logs/vlstorage-dispatch.patch
+          cd ${{ github.workspace }}
+          cp patches/vl-traces/external.go lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go
+          cd lakehouse-traces/deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-traces/vlstorage-dispatch.patch
+
       - name: Build binaries
         if: steps.skip.outputs.skip != 'true'
         run: |
