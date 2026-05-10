@@ -6,120 +6,108 @@ export default function CostOptimization() {
     <Layout
       title="Cost Optimization"
       description="Reduce observability costs by 60-96% with Victoria Lakehouse">
-      <main className="container margin-vert--lg">
-        <div className="row">
-          <div className="col col--8 col--offset-2">
-            <h1>Cost Optimization with Victoria Lakehouse</h1>
+      <header className="hero hero--primary" style={{padding: '3rem 0', textAlign: 'center'}}>
+        <div className="container">
+          <h1 className="hero__title">Cost Optimization</h1>
+          <p className="hero__subtitle" style={{maxWidth: 600, margin: '0 auto'}}>
+            Reduce observability storage costs by 60-96% with S3-backed cold storage.
+          </p>
+        </div>
+      </header>
 
-            <section className="margin-vert--lg">
-              <h2>The Cost Problem at Scale</h2>
-              <p>
-                EBS costs scale linearly with retention. A PB/month of logs retained for 1 year on all-EBS
-                infrastructure costs ~$303,000/month — even with all-inclusive storage, replication, and backup.
-              </p>
-
-              <div className="cost-metric">
-                <strong>250 GB/mo, 1 year retention:</strong> $282/mo all-EBS vs $138/mo hybrid = 51% savings<br/>
-                <strong>1 PB/mo, 1 year retention:</strong> $303,000/mo all-EBS vs $48,513/mo hybrid = 84% savings<br/>
-                <strong>1 PB/mo, 2 year retention:</strong> $591,000/mo all-EBS vs $60,963/mo hybrid = 90% savings
-              </div>
-            </section>
-
-            <section className="margin-vert--lg">
-              <h2>Why S3 is So Much Cheaper</h2>
-              <ul>
-                <li><strong>3-6x cheaper per GB:</strong> S3 Standard is $0.023/GB/month vs EBS $0.10-0.15/GB/month</li>
-                <li><strong>Multi-AZ included:</strong> S3 is 11 nines durable across AZs with no extra cost</li>
-                <li><strong>No compute tax:</strong> Query S3 directly; no need for standby replicas</li>
-                <li><strong>Lifecycle tiers:</strong> Transparent tiering to Glacier ($0.004/GB/month) after 30 days</li>
-              </ul>
-            </section>
-
-            <section className="margin-vert--lg">
-              <h2>Hybrid Tier Architecture</h2>
-              <pre><code>{`
-Hot Tier (1 month, EBS):       Fast queries, high cost
-  vlstorage/vtstorage (multi-AZ replica)
-
-Cold Tier (unlimited, S3):     Slow queries, low cost
-  Victoria Lakehouse (Parquet on S3)
-
-Query Router:
-  vlselect/vtselect fan-out to both tiers
-  Manifest check prevents cold queries for recent data
-`}</code></pre>
-            </section>
-
-            <section className="margin-vert--lg">
-              <h2>Real-World Example: 1 PB/month Ingestion</h2>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Metric</th>
-                    <th>All-EBS (3 AZ)</th>
-                    <th>Hybrid (1mo hot + S3 cold)</th>
-                    <th>Savings</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td>Monthly Ingest</td>
-                    <td>1 PB</td>
-                    <td>1 PB</td>
-                    <td>—</td>
-                  </tr>
-                  <tr>
-                    <td>Retention</td>
-                    <td>1 Year</td>
-                    <td>1 Year</td>
-                    <td>—</td>
-                  </tr>
-                  <tr>
-                    <td>Storage Cost</td>
-                    <td>$303,000/mo</td>
-                    <td>$48,513/mo</td>
-                    <td>84%</td>
-                  </tr>
-                  <tr>
-                    <td>Compute (Queries)</td>
-                    <td>Included</td>
-                    <td>~$500/mo</td>
-                    <td>Negligible</td>
-                  </tr>
-                  <tr>
-                    <td>Total</td>
-                    <td>~$303,000/mo</td>
-                    <td>~$49,000/mo</td>
-                    <td>84%</td>
-                  </tr>
-                </tbody>
-              </table>
-            </section>
-
-            <section className="margin-vert--lg">
-              <h2>Advanced Cost Optimization</h2>
-              <ul>
-                <li><strong>Lifecycle Tiering:</strong> Auto-tier S3 Standard → Glacier after 30 days = 5x cheaper</li>
-                <li><strong>Cost-Aware Deletion:</strong> Tomb stone deleted data instantly (no rewrite cost)</li>
-                <li><strong>Intelligent Tiering:</strong> Let AWS move data between access tiers automatically</li>
-                <li><strong>Query Filtering:</strong> Push predicates down to Parquet to reduce S3 data scanned</li>
-              </ul>
-            </section>
-
-            <section className="margin-vert--lg">
-              <h2>Next Steps</h2>
-              <p>
-                Calculate your exact savings based on ingestion rate and retention needs:
-              </p>
-              <Link to="/docs/cost-estimates/" className="button button--primary">
-                Cost Estimator
-              </Link>
-              {' '}
-              <Link to="/docs/getting-started/" className="button button--secondary">
-                Get Started
-              </Link>
-            </section>
+      <main className="container margin-vert--xl">
+        <div className="row margin-bottom--xl">
+          <div className="col col--4">
+            <div className="cost-metric" style={{textAlign: 'center', height: '100%'}}>
+              <strong style={{fontSize: '2.5rem', display: 'block', marginBottom: '0.5rem'}}>51%</strong>
+              savings at 250 GB/day
+            </div>
           </div>
+          <div className="col col--4">
+            <div className="cost-metric" style={{textAlign: 'center', height: '100%'}}>
+              <strong style={{fontSize: '2.5rem', display: 'block', marginBottom: '0.5rem'}}>84%</strong>
+              savings at 1 PB/month
+            </div>
+          </div>
+          <div className="col col--4">
+            <div className="cost-metric" style={{textAlign: 'center', height: '100%'}}>
+              <strong style={{fontSize: '2.5rem', display: 'block', marginBottom: '0.5rem'}}>90%</strong>
+              savings at 2 year retention
+            </div>
+          </div>
+        </div>
+
+        <div className="row margin-bottom--xl">
+          <div className="col col--8 col--offset-2">
+            <h2>The Cost Problem at Scale</h2>
+            <p style={{fontSize: '1.1rem'}}>
+              EBS costs scale linearly with retention. A PB/month of logs retained for 1 year
+              on all-EBS infrastructure costs ~$303,000/month. With Lakehouse hybrid architecture,
+              that drops to ~$49,000/month.
+            </p>
+          </div>
+        </div>
+
+        <div className="row margin-bottom--xl">
+          <div className="col col--8 col--offset-2">
+            <h2>Why S3 is So Much Cheaper</h2>
+            <ul style={{fontSize: '1.1rem', lineHeight: '2'}}>
+              <li><strong>3-6x cheaper per GB</strong> — S3 Standard $0.023/GB vs EBS $0.10-0.15/GB</li>
+              <li><strong>Multi-AZ included</strong> — 11 nines durability across AZs at no extra cost</li>
+              <li><strong>No compute tax</strong> — query S3 directly, no standby replicas needed</li>
+              <li><strong>Lifecycle tiers</strong> — auto-tier to Glacier ($0.004/GB) after configurable period</li>
+            </ul>
+          </div>
+        </div>
+
+        <div className="row margin-bottom--xl">
+          <div className="col col--8 col--offset-2">
+            <h2>Hybrid Tier Architecture</h2>
+            <table style={{width: '100%'}}>
+              <thead>
+                <tr>
+                  <th>Tier</th>
+                  <th>Storage</th>
+                  <th>Retention</th>
+                  <th>Query Speed</th>
+                  <th>Cost/GB</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Hot</strong></td>
+                  <td>VL/VT on EBS</td>
+                  <td>1 month</td>
+                  <td>&lt;10ms</td>
+                  <td>$0.10-0.15</td>
+                </tr>
+                <tr>
+                  <td><strong>Cold</strong></td>
+                  <td>Lakehouse on S3</td>
+                  <td>Unlimited</td>
+                  <td>50-150ms</td>
+                  <td>$0.023</td>
+                </tr>
+                <tr>
+                  <td><strong>Archive</strong></td>
+                  <td>S3 Glacier</td>
+                  <td>Unlimited</td>
+                  <td>Minutes</td>
+                  <td>$0.004</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="text--center margin-vert--xl">
+          <Link to="/docs/cost-estimates/" className="button button--primary button--lg">
+            Full Cost Analysis
+          </Link>
+          {' '}
+          <Link to="/docs/getting-started/" className="button button--secondary button--lg">
+            Get Started
+          </Link>
         </div>
       </main>
     </Layout>
