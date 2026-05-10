@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replace custom internalselect encoding with VL's actual wire format — fixes vlselect panics (`growslice: len out of range`) caused by 4-byte uint32 block lengths instead of 8-byte uint64
 - Add `internal/vlstorage/` thin dispatch layer bridging `storage.Storage` to VL's vlstorage function signatures (both logs and traces)
 - Remove protocol-incompatible vlselect service from E2E compose
+- Remove orphaned vlselect Grafana datasource pointing to removed service
+- Fix traces-to-logs datasource uid reference (`victoria-lakehouse-logs` → `victoria-lakehouse-cold`)
+- Delete dead `internal/protocol/` package in both logs and traces modules (replaced by VL encoding in #28)
 
 ### Architecture
 - Split into two separate binaries: `lakehouse-logs` and `lakehouse-traces`
