@@ -8,6 +8,9 @@ COPY go.mod go.sum ./
 RUN mkdir -p deps && \
     git clone --depth 1 --branch ${VL_VERSION} https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs && \
     go mod download
+COPY patches/vl-logs/ /tmp/patches/
+RUN cp /tmp/patches/external.go deps/VictoriaLogs/app/vlstorage/external.go && \
+    cd deps/VictoriaLogs && git apply /tmp/patches/vlstorage-dispatch.patch
 COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}" -o /lakehouse-logs ./cmd/lakehouse-logs && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o /healthcheck ./cmd/healthcheck && \

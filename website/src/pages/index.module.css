@@ -1,5 +1,5 @@
 .heroBanner {
-  padding: 2rem 0;
+  padding: 4rem 0;
   text-align: center;
   position: relative;
   overflow: hidden;
@@ -8,16 +8,24 @@
 .heroBanner .hero__title {
   font-size: 3rem;
   font-weight: 700;
-  margin-bottom: 1rem;
+  margin-bottom: 0.5rem;
 }
 
 .heroBanner .hero__subtitle {
   font-size: 1.5rem;
   font-weight: 400;
+  margin-bottom: 0.5rem;
+  opacity: 0.95;
+}
+
+.heroDescription {
+  font-size: 1.1rem;
   margin-bottom: 2rem;
-  max-width: 800px;
+  max-width: 700px;
   margin-left: auto;
   margin-right: auto;
+  opacity: 0.85;
+  line-height: 1.5;
 }
 
 .buttons {
@@ -25,6 +33,87 @@
   gap: 1rem;
   justify-content: center;
   flex-wrap: wrap;
+}
+
+/* How It Works */
+.howItWorks {
+  padding: 4rem 0;
+  background: var(--ifm-color-emphasis-100);
+}
+
+.stepCard {
+  text-align: center;
+  padding: 2rem 1.5rem;
+}
+
+.stepNumber {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--ifm-color-primary);
+  color: white;
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin-bottom: 1rem;
+}
+
+.stepCard h3 {
+  font-size: 1.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.stepCard p {
+  color: var(--ifm-text-color);
+  line-height: 1.6;
+}
+
+/* Comparison Section */
+.comparison {
+  padding: 4rem 0;
+}
+
+.comparisonCard {
+  text-align: center;
+  padding: 2rem 1.5rem;
+  background: var(--ifm-color-emphasis-100);
+  border-radius: 12px;
+  height: 100%;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.comparisonCard:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.comparisonCard h3 {
+  font-size: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ifm-color-emphasis-600);
+  margin-bottom: 0.5rem;
+}
+
+.statValue {
+  font-size: 3rem;
+  font-weight: 700;
+  color: var(--ifm-color-primary);
+  line-height: 1.1;
+}
+
+.statLabel {
+  font-size: 0.9rem;
+  color: var(--ifm-color-emphasis-600);
+  margin-bottom: 1rem;
+}
+
+.comparisonCard p {
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--ifm-text-color);
 }
 
 @media screen and (max-width: 996px) {
@@ -40,6 +129,10 @@
     font-size: 1.25rem;
   }
 
+  .heroDescription {
+    font-size: 1rem;
+  }
+
   .buttons {
     flex-direction: column;
     gap: 0.5rem;
@@ -47,5 +140,21 @@
 
   .buttons .button {
     width: 100%;
+  }
+
+  .howItWorks {
+    padding: 2rem 0;
+  }
+
+  .comparison {
+    padding: 2rem 0;
+  }
+
+  .comparisonCard {
+    margin-bottom: 1rem;
+  }
+
+  .statValue {
+    font-size: 2.5rem;
   }
 }

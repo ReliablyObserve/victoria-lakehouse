@@ -16,11 +16,12 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/encoding/zstd"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
+	"github.com/VictoriaMetrics/VictoriaLogs/app/vlstorage"
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlstorage/netselect"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage"
-	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
+	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
 )
 
 type Handler struct {
@@ -29,7 +30,7 @@ type Handler struct {
 }
 
 func NewHandler(store storage.Storage, timeout time.Duration) *Handler {
-	vlstorage.SetStorage(store)
+	internalvlstorage.SetStorage(store)
 	return &Handler{
 		store:   store,
 		timeout: timeout,
@@ -146,11 +147,9 @@ func processFieldNamesRequest(ctx context.Context, w http.ResponseWriter, r *htt
 		return err
 	}
 
-	filter := r.FormValue("filter")
-
 	qctx := cp.NewQueryContext(ctx)
 
-	fieldNames, err := vlstorage.GetFieldNames(qctx, filter)
+	fieldNames, err := vlstorage.GetFieldNames(qctx)
 	if err != nil {
 		return fmt.Errorf("cannot obtain field names: %w", err)
 	}
@@ -165,7 +164,6 @@ func processFieldValuesRequest(ctx context.Context, w http.ResponseWriter, r *ht
 	}
 
 	fieldName := r.FormValue("field")
-	filter := r.FormValue("filter")
 
 	limit, err := getInt64FromRequest(r, "limit")
 	if err != nil {
@@ -174,7 +172,7 @@ func processFieldValuesRequest(ctx context.Context, w http.ResponseWriter, r *ht
 
 	qctx := cp.NewQueryContext(ctx)
 
-	fieldValues, err := vlstorage.GetFieldValues(qctx, fieldName, filter, uint64(limit))
+	fieldValues, err := vlstorage.GetFieldValues(qctx, fieldName, uint64(limit))
 	if err != nil {
 		return fmt.Errorf("cannot obtain field values: %w", err)
 	}
@@ -188,11 +186,9 @@ func processStreamFieldNamesRequest(ctx context.Context, w http.ResponseWriter, 
 		return err
 	}
 
-	filter := r.FormValue("filter")
-
 	qctx := cp.NewQueryContext(ctx)
 
-	fieldNames, err := vlstorage.GetStreamFieldNames(qctx, filter)
+	fieldNames, err := vlstorage.GetStreamFieldNames(qctx)
 	if err != nil {
 		return fmt.Errorf("cannot obtain stream field names: %w", err)
 	}
@@ -207,7 +203,6 @@ func processStreamFieldValuesRequest(ctx context.Context, w http.ResponseWriter,
 	}
 
 	fieldName := r.FormValue("field")
-	filter := r.FormValue("filter")
 
 	limit, err := getInt64FromRequest(r, "limit")
 	if err != nil {
@@ -216,7 +211,7 @@ func processStreamFieldValuesRequest(ctx context.Context, w http.ResponseWriter,
 
 	qctx := cp.NewQueryContext(ctx)
 
-	fieldValues, err := vlstorage.GetStreamFieldValues(qctx, fieldName, filter, uint64(limit))
+	fieldValues, err := vlstorage.GetStreamFieldValues(qctx, fieldName, uint64(limit))
 	if err != nil {
 		return fmt.Errorf("cannot obtain stream field values: %w", err)
 	}

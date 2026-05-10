@@ -3,12 +3,13 @@ import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
 const siteTitle = 'Victoria Lakehouse';
+const siteTagline = 'Cold storage for VictoriaLogs & VictoriaTraces on S3';
 const siteDescription =
   'S3-backed cold storage for VictoriaLogs and VictoriaTraces — 22% cheaper than Loki/Tempo, within 5% of VL/VT EBS. Unlimited retention, disaster recovery, and open Parquet format for analytics.';
 
 const config: Config = {
   title: siteTitle,
-  tagline: siteDescription,
+  tagline: siteTagline,
   future: {
     v4: true,
   },

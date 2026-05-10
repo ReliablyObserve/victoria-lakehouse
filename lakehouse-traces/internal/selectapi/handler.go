@@ -8,10 +8,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/logsql"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
@@ -33,17 +32,20 @@ func NewHandler(store storage.Storage, cfg *config.Config) *Handler {
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("/select/logsql/query", h.handleQuery)
-	mux.HandleFunc("/select/logsql/field_names", h.handleFieldNames)
-	mux.HandleFunc("/select/logsql/field_values", h.handleFieldValues)
-	mux.HandleFunc("/select/logsql/stream_field_names", h.handleStreamFieldNames)
-	mux.HandleFunc("/select/logsql/stream_field_values", h.handleStreamFieldValues)
-	mux.HandleFunc("/select/logsql/streams", h.handleStreams)
-	mux.HandleFunc("/select/logsql/stream_ids", h.handleStreamIDs)
-	mux.HandleFunc("/select/logsql/hits", h.handleHits)
-	mux.HandleFunc("/select/logsql/stats_query", h.handleStatsQuery)
-	mux.HandleFunc("/select/logsql/stats_query_range", h.handleStatsQueryRange)
+	mux.HandleFunc("/select/logsql/query", h.wrapVL(logsql.ProcessQueryRequest))
+	mux.HandleFunc("/select/logsql/query_time_range", h.wrapVL(logsql.ProcessQueryTimeRangeRequest))
+	mux.HandleFunc("/select/logsql/facets", h.wrapVL(logsql.ProcessFacetsRequest))
+	mux.HandleFunc("/select/logsql/field_names", h.wrapVL(logsql.ProcessFieldNamesRequest))
+	mux.HandleFunc("/select/logsql/field_values", h.wrapVL(logsql.ProcessFieldValuesRequest))
+	mux.HandleFunc("/select/logsql/stream_field_names", h.wrapVL(logsql.ProcessStreamFieldNamesRequest))
+	mux.HandleFunc("/select/logsql/stream_field_values", h.wrapVL(logsql.ProcessStreamFieldValuesRequest))
+	mux.HandleFunc("/select/logsql/streams", h.wrapVL(logsql.ProcessStreamsRequest))
+	mux.HandleFunc("/select/logsql/stream_ids", h.wrapVL(logsql.ProcessStreamIDsRequest))
+	mux.HandleFunc("/select/logsql/hits", h.wrapVL(logsql.ProcessHitsRequest))
+	mux.HandleFunc("/select/logsql/stats_query", h.wrapVL(logsql.ProcessStatsQueryRequest))
+	mux.HandleFunc("/select/logsql/stats_query_range", h.wrapVL(logsql.ProcessStatsQueryRangeRequest))
 	mux.HandleFunc("/select/logsql/tail", h.handleTailNoop)
+	mux.HandleFunc("/select/tenant_ids", h.wrapVL(logsql.ProcessTenantIDsRequest))
 
 	if h.cfg.Mode == config.ModeTraces {
 		mux.HandleFunc("/select/jaeger/api/traces/", h.handleJaegerTrace)
@@ -59,521 +61,16 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	}
 }
 
-func (h *Handler) parseQuery(r *http.Request) (*logstorage.Query, error) {
-	params := r.URL.Query()
-	queryStr := params.Get("query")
-	if queryStr == "" {
-		queryStr = "*"
-	}
-	q, err := logstorage.ParseQuery(queryStr)
-	if err != nil {
-		return nil, fmt.Errorf("parse query: %w", err)
-	}
-	startNs := parseTimeParam(params.Get("start"), params.Get("time"), 0)
-	endNs := parseTimeParam(params.Get("end"), "", time.Now().UnixNano())
-	if startNs == 0 {
-		startNs = time.Now().Add(-24 * time.Hour).UnixNano()
-	}
-	q.AddTimeFilter(startNs, endNs)
-	return q, nil
-}
-
-func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
-	q, err := h.parseQuery(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
-	defer cancel()
-
-	w.Header().Set("Content-Type", "application/stream+json")
-
-	limit := 1000
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
-			limit = parsed
-		}
-	}
-
-	queryStr := r.URL.Query().Get("query")
-	if queryStr == "" {
-		queryStr = "*"
-	}
-	filter := ParseFilter(queryStr)
-
-	count := 0
-	err = h.store.RunQuery(ctx, nil, q, func(workerID uint, db *logstorage.DataBlock) {
-		if count >= limit {
-			return
-		}
-
-		columns := db.GetColumns(false)
-		colMap := make(map[string][]string, len(columns))
-		for _, col := range columns {
-			colMap[col.Name] = col.Values
-		}
-
-		for rowIdx := 0; rowIdx < db.RowsCount() && count < limit; rowIdx++ {
-			if !EvaluateFilter(filter, colMap, rowIdx) {
-				continue
-			}
-			record := make(map[string]string, len(columns))
-			for _, col := range columns {
-				if rowIdx < len(col.Values) {
-					v := col.Values[rowIdx]
-					if col.Name == "_time" || col.Name == "timestamp_unix_nano" {
-						if ns, err := strconv.ParseInt(v, 10, 64); err == nil {
-							v = time.Unix(0, ns).UTC().Format(time.RFC3339Nano)
-						}
-					}
-					record[col.Name] = v
-				}
-			}
-			line, _ := json.Marshal(record)
-			_, _ = w.Write(line)
-			_, _ = w.Write([]byte("\n"))
-			count++
-		}
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-	})
-
-	if err != nil {
-		logger.Errorf("query error: %s; query=%q", err, q.String())
+func (h *Handler) wrapVL(fn func(ctx context.Context, w http.ResponseWriter, r *http.Request)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
+		defer cancel()
+		fn(ctx, w, r)
 	}
 }
 
-func (h *Handler) handleFieldNames(w http.ResponseWriter, r *http.Request) {
-	q, err := h.parseQuery(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
-	defer cancel()
-
-	results, err := h.store.GetFieldNames(ctx, nil, q)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	h.writeValuesJSON(w, results)
-}
-
-func (h *Handler) handleFieldValues(w http.ResponseWriter, r *http.Request) {
-	q, err := h.parseQuery(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	fieldName := r.URL.Query().Get("field")
-	if fieldName == "" {
-		fieldName = r.URL.Query().Get("field_name")
-	}
-	if fieldName == "" {
-		http.Error(w, "field parameter required", http.StatusBadRequest)
-		return
-	}
-
-	var limit uint64 = 100
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.ParseUint(l, 10, 64); err == nil && parsed > 0 {
-			limit = parsed
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
-	defer cancel()
-
-	results, err := h.store.GetFieldValues(ctx, nil, q, fieldName, limit)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	h.writeValuesJSON(w, results)
-}
-
-func (h *Handler) handleStreamFieldNames(w http.ResponseWriter, r *http.Request) {
-	q, err := h.parseQuery(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
-	defer cancel()
-
-	results, err := h.store.GetStreamFieldNames(ctx, nil, q)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	h.writeValuesJSON(w, results)
-}
-
-func (h *Handler) handleStreamFieldValues(w http.ResponseWriter, r *http.Request) {
-	q, err := h.parseQuery(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	fieldName := r.URL.Query().Get("field")
-	if fieldName == "" {
-		fieldName = r.URL.Query().Get("field_name")
-	}
-
-	var limit uint64 = 100
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.ParseUint(l, 10, 64); err == nil && parsed > 0 {
-			limit = parsed
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
-	defer cancel()
-
-	results, err := h.store.GetStreamFieldValues(ctx, nil, q, fieldName, limit)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	h.writeValuesJSON(w, results)
-}
-
-func (h *Handler) handleStreams(w http.ResponseWriter, r *http.Request) {
-	q, err := h.parseQuery(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	var limit uint64 = 100
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.ParseUint(l, 10, 64); err == nil && parsed > 0 {
-			limit = parsed
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
-	defer cancel()
-
-	results, err := h.store.GetStreams(ctx, nil, q, limit)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	h.writeValuesJSON(w, results)
-}
-
-func (h *Handler) handleStreamIDs(w http.ResponseWriter, r *http.Request) {
-	q, err := h.parseQuery(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	var limit uint64 = 100
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.ParseUint(l, 10, 64); err == nil && parsed > 0 {
-			limit = parsed
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
-	defer cancel()
-
-	results, err := h.store.GetStreamIDs(ctx, nil, q, limit)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	h.writeValuesJSON(w, results)
-}
-
-func (h *Handler) handleHits(w http.ResponseWriter, r *http.Request) {
-	q, err := h.parseQuery(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	groupField := r.URL.Query().Get("field")
-
-	step := 60 * time.Second
-	if s := r.URL.Query().Get("step"); s != "" {
-		if d, err := time.ParseDuration(s); err == nil && d > 0 {
-			step = d
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
-	defer cancel()
-
-	queryStr := r.URL.Query().Get("query")
-	if queryStr == "" {
-		queryStr = "*"
-	}
-	filter := ParseFilter(queryStr)
-
-	grouped := make(map[string]map[int64]int)
-	var mu sync.Mutex
-
-	err = h.store.RunQuery(ctx, nil, q, func(workerID uint, db *logstorage.DataBlock) {
-		columns := db.GetColumns(false)
-		colMap := make(map[string][]string, len(columns))
-		for _, col := range columns {
-			colMap[col.Name] = col.Values
-		}
-
-		var timeVals []string
-		var groupVals []string
-		for _, col := range columns {
-			if col.Name == "_time" || col.Name == "timestamp_unix_nano" {
-				timeVals = col.Values
-			}
-			if groupField != "" && col.Name == groupField {
-				groupVals = col.Values
-			}
-		}
-		if timeVals == nil {
-			return
-		}
-
-		mu.Lock()
-		defer mu.Unlock()
-		for i, v := range timeVals {
-			if !EvaluateFilter(filter, colMap, i) {
-				continue
-			}
-			ns, parseErr := strconv.ParseInt(v, 10, 64)
-			if parseErr != nil {
-				continue
-			}
-			t := time.Unix(0, ns).Truncate(step).UnixNano()
-			gv := ""
-			if groupField != "" && i < len(groupVals) {
-				gv = groupVals[i]
-			}
-			if grouped[gv] == nil {
-				grouped[gv] = make(map[int64]int)
-			}
-			grouped[gv][t]++
-		}
-	})
-
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	hits := make([]map[string]any, 0, len(grouped))
-	for gv, buckets := range grouped {
-		sorted := make([]int64, 0, len(buckets))
-		for ns := range buckets {
-			sorted = append(sorted, ns)
-		}
-		sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-
-		timestamps := make([]string, 0, len(sorted))
-		values := make([]int, 0, len(sorted))
-		total := 0
-		for _, ns := range sorted {
-			timestamps = append(timestamps, time.Unix(0, ns).UTC().Format(time.RFC3339))
-			values = append(values, buckets[ns])
-			total += buckets[ns]
-		}
-
-		fields := map[string]string{}
-		if groupField != "" {
-			fields[groupField] = gv
-		}
-		hits = append(hits, map[string]any{
-			"fields": fields, "timestamps": timestamps, "values": values, "total": total,
-		})
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"hits": hits,
-	})
-}
-
-func (h *Handler) handleStatsQuery(w http.ResponseWriter, r *http.Request) {
-	q, err := h.parseQuery(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
-	defer cancel()
-
-	queryStr := r.URL.Query().Get("query")
-	if queryStr == "" {
-		queryStr = "*"
-	}
-	filter := ParseFilter(queryStr)
-
-	var total int
-	err = h.store.RunQuery(ctx, nil, q, func(workerID uint, db *logstorage.DataBlock) {
-		columns := db.GetColumns(false)
-		colMap := make(map[string][]string, len(columns))
-		for _, col := range columns {
-			colMap[col.Name] = col.Values
-		}
-		for i := 0; i < db.RowsCount(); i++ {
-			if EvaluateFilter(filter, colMap, i) {
-				total++
-			}
-		}
-	})
-
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status": "success",
-		"data": map[string]any{
-			"resultType": "vector",
-			"result": []map[string]any{
-				{
-					"metric": map[string]string{},
-					"value":  []any{float64(time.Now().Unix()), fmt.Sprintf("%d", total)},
-				},
-			},
-		},
-	})
-}
-
-func (h *Handler) handleStatsQueryRange(w http.ResponseWriter, r *http.Request) {
-	q, err := h.parseQuery(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	step := 60 * time.Second
-	if s := r.URL.Query().Get("step"); s != "" {
-		if d, err := time.ParseDuration(s); err == nil && d > 0 {
-			step = d
-		} else if secs, err := strconv.ParseFloat(s, 64); err == nil && secs > 0 {
-			step = time.Duration(secs * float64(time.Second))
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
-	defer cancel()
-
-	queryStr := r.URL.Query().Get("query")
-	if queryStr == "" {
-		queryStr = "*"
-	}
-	filter := ParseFilter(queryStr)
-
-	buckets := make(map[int64]int)
-	var mu sync.Mutex
-
-	err = h.store.RunQuery(ctx, nil, q, func(workerID uint, db *logstorage.DataBlock) {
-		columns := db.GetColumns(false)
-		colMap := make(map[string][]string, len(columns))
-		for _, col := range columns {
-			colMap[col.Name] = col.Values
-		}
-
-		var timeVals []string
-		for _, col := range columns {
-			if col.Name == "_time" || col.Name == "timestamp_unix_nano" {
-				timeVals = col.Values
-				break
-			}
-		}
-		if timeVals == nil {
-			return
-		}
-
-		mu.Lock()
-		defer mu.Unlock()
-		for i, v := range timeVals {
-			if !EvaluateFilter(filter, colMap, i) {
-				continue
-			}
-			ns, parseErr := strconv.ParseInt(v, 10, 64)
-			if parseErr != nil {
-				continue
-			}
-			t := time.Unix(0, ns).Truncate(step).UnixNano()
-			buckets[t]++
-		}
-	})
-
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Build a continuous series from start to end, filling zeros for missing buckets.
-	startNs, endNs := q.GetFilterTimeRange()
-	stepNs := step.Nanoseconds()
-	startBucket := (startNs / stepNs) * stepNs
-	endBucket := (endNs / stepNs) * stepNs
-
-	var values [][]any
-	for ts := startBucket; ts <= endBucket; ts += stepNs {
-		count := buckets[ts]
-		values = append(values, []any{float64(ts) / 1e9, fmt.Sprintf("%d", count)})
-	}
-
-	if values == nil {
-		values = [][]any{}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status": "success",
-		"data": map[string]any{
-			"resultType": "matrix",
-			"result": []map[string]any{
-				{
-					"metric": map[string]string{},
-					"values": values,
-				},
-			},
-		},
-	})
-}
-
-func (h *Handler) handleTailNoop(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleTailNoop(w http.ResponseWriter, _ *http.Request) {
 	http.Error(w, "live tail not supported on cold storage", http.StatusNotImplemented)
-}
-
-func (h *Handler) writeValuesJSON(w http.ResponseWriter, values []logstorage.ValueWithHits) {
-	w.Header().Set("Content-Type", "application/json")
-
-	type entry struct {
-		Value string `json:"value"`
-		Hits  uint64 `json:"hits"`
-	}
-
-	entries := make([]entry, len(values))
-	for i, v := range values {
-		entries[i] = entry{Value: v.Value, Hits: v.Hits}
-	}
-
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"values": entries,
-	})
 }
 
 // Jaeger API handlers for trace mode
@@ -589,7 +86,6 @@ func (h *Handler) handleJaegerServices(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	// Use Parquet column name — works for both logs and traces mode
 	results, err := h.store.GetFieldValues(ctx, nil, q, "service.name", 1000)
 	if err == nil && len(results) == 0 {
 		results, err = h.store.GetFieldValues(ctx, nil, q, "resource_attr:service.name", 1000)
@@ -609,19 +105,14 @@ func (h *Handler) handleJaegerServices(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(jaegerListResponse{
-		Data:   services,
-		Total:  len(services),
-		Limit:  0,
-		Offset: 0,
+		Data:  services,
+		Total: len(services),
 	})
 }
 
 func (h *Handler) handleJaegerOperations(w http.ResponseWriter, r *http.Request) {
 	trimmed := strings.TrimPrefix(r.URL.Path, "/select/jaeger/api/services/")
 	trimmed = strings.TrimPrefix(trimmed, "/api/services/")
-	if trimmed == r.URL.Path {
-		trimmed = strings.TrimPrefix(r.URL.Path, "/api/services/")
-	}
 	parts := strings.Split(trimmed, "/")
 	if len(parts) < 1 || parts[0] == "" {
 		http.Error(w, "service name required", http.StatusBadRequest)
@@ -658,10 +149,8 @@ func (h *Handler) handleJaegerOperations(w http.ResponseWriter, r *http.Request)
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(jaegerListResponse{
-			Data:   ops,
-			Total:  len(ops),
-			Limit:  0,
-			Offset: 0,
+			Data:  ops,
+			Total: len(ops),
 		})
 		return
 	}
@@ -688,7 +177,7 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	var spans []jaegerSpan
-	err = h.store.RunQuery(ctx, nil, q, func(workerID uint, db *logstorage.DataBlock) {
+	err = h.store.RunQuery(ctx, nil, q, func(_ uint, db *logstorage.DataBlock) {
 		columns := db.GetColumns(false)
 		colMap := make(map[string][]string, len(columns))
 		for _, col := range columns {
@@ -757,9 +246,7 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 							Key: strings.TrimPrefix(colName, "resource_attr:"), Type: "string", Value: v,
 						})
 					} else if strings.HasPrefix(colName, "scope_attr:") {
-						span.Tags = append(span.Tags, jaegerTag{
-							Key: colName, Type: "string", Value: v,
-						})
+						span.Tags = append(span.Tags, jaegerTag{Key: colName, Type: "string", Value: v})
 					} else {
 						span.Tags = append(span.Tags, jaegerTag{Key: colName, Type: "string", Value: v})
 					}
@@ -791,9 +278,6 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(jaegerTracesResponse{
 			Data:   []jaegerTraceData{},
 			Errors: []map[string]any{{"code": 404, "msg": "trace not found"}},
-			Total:  0,
-			Limit:  0,
-			Offset: 0,
 		})
 		return
 	}
@@ -826,16 +310,9 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(jaegerTracesResponse{
 		Data: []jaegerTraceData{
-			{
-				TraceID:   traceID,
-				Spans:     spans,
-				Processes: processes,
-				Warnings:  nil,
-			},
+			{TraceID: traceID, Spans: spans, Processes: processes},
 		},
-		Total:  1,
-		Limit:  0,
-		Offset: 0,
+		Total: 1,
 	})
 }
 
@@ -847,11 +324,10 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	operation := params.Get("operation")
-	lookback := params.Get("lookback")
 
 	endNs := time.Now().UnixNano()
 	startNs := time.Now().Add(-24 * time.Hour).UnixNano()
-	if lookback != "" {
+	if lookback := params.Get("lookback"); lookback != "" {
 		if d, err := time.ParseDuration(lookback); err == nil {
 			startNs = time.Now().Add(-d).UnixNano()
 		}
@@ -867,11 +343,8 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	query := "*"
 	var queryParts []string
-	if service != "" {
-		queryParts = append(queryParts, fmt.Sprintf(`service.name:="%s"`, service))
-	}
+	queryParts = append(queryParts, fmt.Sprintf(`service.name:="%s"`, service))
 	if operation != "" {
 		queryParts = append(queryParts, fmt.Sprintf(`span.name:="%s"`, operation))
 	}
@@ -888,9 +361,8 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var tagFilters map[string]string
 	if tags := params.Get("tags"); tags != "" {
-		tagFilters = make(map[string]string)
+		var tagFilters map[string]string
 		_ = json.Unmarshal([]byte(tags), &tagFilters)
 		for k, v := range tagFilters {
 			if mapped, ok := jaegerSpanAttrMap[k]; ok {
@@ -909,10 +381,6 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if len(queryParts) > 0 {
-		query = strings.Join(queryParts, " AND ")
-	}
-
 	limit := 20
 	if l := params.Get("limit"); l != "" {
 		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
@@ -923,7 +391,7 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	q, err := logstorage.ParseQuery(query)
+	q, err := logstorage.ParseQuery(strings.Join(queryParts, " AND "))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -934,7 +402,7 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	traceMap := make(map[string][]map[string]string)
-	err = h.store.RunQuery(ctx, nil, q, func(workerID uint, db *logstorage.DataBlock) {
+	err = h.store.RunQuery(ctx, nil, q, func(_ uint, db *logstorage.DataBlock) {
 		columns := db.GetColumns(false)
 		colMap := make(map[string][]string, len(columns))
 		for _, col := range columns {
@@ -984,8 +452,8 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 
 		processHashMap := make(map[string]string)
 		processes := make(map[string]jaegerProcess)
-
 		jaegerSpans := make([]jaegerSpan, 0, len(rawSpans))
+
 		for _, s := range rawSpans {
 			startUs := int64(0)
 			if ns, err := strconv.ParseInt(s["start_time_unix_nano"], 10, 64); err == nil {
@@ -1023,18 +491,22 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 			TraceID:   tid,
 			Spans:     jaegerSpans,
 			Processes: processes,
-			Warnings:  nil,
 		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(jaegerTracesResponse{
-		Data:   traces,
-		Total:  len(traces),
-		Limit:  0,
-		Offset: 0,
+		Data:  traces,
+		Total: len(traces),
 	})
 }
+
+func (h *Handler) handleJaegerDependencies(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(jaegerListResponse{Data: []string{}})
+}
+
+// Jaeger types
 
 type jaegerListResponse struct {
 	Data   []string `json:"data"`
@@ -1112,16 +584,6 @@ var jaegerSpanKindToCodeMap = map[string]string{
 	"consumer": "5",
 }
 
-func (h *Handler) handleJaegerDependencies(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(jaegerListResponse{
-		Data:   []string{},
-		Total:  0,
-		Limit:  0,
-		Offset: 0,
-	})
-}
-
 func getVal(colMap map[string][]string, col string, idx int) string {
 	if vals, ok := colMap[col]; ok && idx < len(vals) {
 		return vals[idx]
@@ -1153,31 +615,4 @@ func spanKindName(code string) string {
 	default:
 		return code
 	}
-}
-
-func parseTimeParam(primary, secondary string, defaultVal int64) int64 {
-	for _, s := range []string{primary, secondary} {
-		if s == "" {
-			continue
-		}
-		if ns, err := strconv.ParseInt(s, 10, 64); err == nil {
-			switch {
-			case ns < 1e12:
-				return ns * int64(time.Second)
-			case ns < 1e15:
-				return ns * int64(time.Millisecond)
-			case ns < 1e18:
-				return ns * 1000
-			default:
-				return ns
-			}
-		}
-		if t, err := time.Parse(time.RFC3339, s); err == nil {
-			return t.UnixNano()
-		}
-		if d, err := time.ParseDuration(s); err == nil {
-			return time.Now().Add(-d).UnixNano()
-		}
-	}
-	return defaultVal
 }

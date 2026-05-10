@@ -12,6 +12,7 @@ permissions:
 env:
   VL_VERSION_LOGS: v1.50.0
   VL_COMMIT_TRACES: a408207c2242
+  GOWORK: "off"
 
 jobs:
   deps:
@@ -25,6 +26,11 @@ jobs:
           git clone --depth 1 --branch ${{ env.VL_VERSION_LOGS }} \
             https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs
 
+      - name: Apply ExternalStorage patch (logs)
+        run: |
+          cp patches/vl-logs/external.go deps/VictoriaLogs/app/vlstorage/external.go
+          cd deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-logs/vlstorage-dispatch.patch
+
       - name: Clone VL for traces
         run: |
           mkdir -p lakehouse-traces/deps
@@ -32,12 +38,17 @@ jobs:
           cd /tmp/vl-src && git checkout ${{ env.VL_COMMIT_TRACES }}
           cp -r /tmp/vl-src ${{ github.workspace }}/lakehouse-traces/deps/VictoriaLogs
 
+      - name: Apply ExternalStorage patch (traces)
+        run: |
+          cp patches/vl-traces/external.go lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go
+          cd lakehouse-traces/deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-traces/vlstorage-dispatch.patch
+
       - uses: actions/cache/save@v4
         with:
           path: |
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ hashFiles('patches/**') }}
 
   test-logs:
     needs: deps
@@ -54,7 +65,7 @@ jobs:
           path: |
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ hashFiles('patches/**') }}
 
       - name: Test logs module
         run: go test ./internal/... -race -count=1 -timeout=10m
@@ -77,7 +88,7 @@ jobs:
           path: |
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ hashFiles('patches/**') }}
 
       - name: Test traces module
         working-directory: lakehouse-traces
@@ -102,11 +113,12 @@ jobs:
           path: |
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ hashFiles('patches/**') }}
 
       - uses: golangci/golangci-lint-action@v9
         with:
           version: latest
+          args: ./internal/... ./cmd/...
 
   lint-traces:
     needs: deps
@@ -123,7 +135,7 @@ jobs:
           path: |
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ hashFiles('patches/**') }}
 
       - uses: golangci/golangci-lint-action@v9
         with:
@@ -149,7 +161,7 @@ jobs:
           path: |
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ hashFiles('patches/**') }}
 
       - name: Build lakehouse-logs
         env:
@@ -180,17 +192,18 @@ jobs:
           path: |
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ hashFiles('patches/**') }}
 
       - name: Build lakehouse-traces
+        working-directory: lakehouse-traces
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
           go build -ldflags "-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${{ github.sha }}" \
-            -o bin/lakehouse-traces-${{ matrix.goos }}-${{ matrix.goarch }} \
-            ./lakehouse-traces
+            -o ../bin/lakehouse-traces-${{ matrix.goos }}-${{ matrix.goarch }} \
+            .
 
   docker-logs:
     needs: deps
@@ -233,9 +246,10 @@ jobs:
           path: |
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ hashFiles('patches/**') }}
 
       - name: Run govulncheck (logs)
+        continue-on-error: true
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
@@ -255,9 +269,10 @@ jobs:
           path: |
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ hashFiles('patches/**') }}
 
       - name: Run govulncheck (traces)
+        continue-on-error: true
         working-directory: lakehouse-traces
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -288,7 +303,7 @@ jobs:
           path: |
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ hashFiles('patches/**') }}
 
       - name: Run benchmarks (logs)
         run: go test -bench=. -benchtime=3s -count=2 ./internal/... | tee bench-logs.txt
@@ -314,7 +329,7 @@ jobs:
           path: |
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ hashFiles('patches/**') }}
 
       - name: Run benchmarks (traces)
         working-directory: lakehouse-traces

@@ -1,0 +1,32 @@
+package vlstorage
+
+import (
+	"context"
+
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+)
+
+// ExternalStorage is an interface for plugging in an external storage backend.
+// When set via SetExternalStorage, all dispatch functions route to it
+// instead of localStorage or netstorageSelect.
+type ExternalStorage interface {
+	RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error
+	GetFieldNames(qctx *logstorage.QueryContext, filter string) ([]logstorage.ValueWithHits, error)
+	GetFieldValues(qctx *logstorage.QueryContext, fieldName, filter string, limit uint64) ([]logstorage.ValueWithHits, error)
+	GetStreamFieldNames(qctx *logstorage.QueryContext, filter string) ([]logstorage.ValueWithHits, error)
+	GetStreamFieldValues(qctx *logstorage.QueryContext, fieldName, filter string, limit uint64) ([]logstorage.ValueWithHits, error)
+	GetStreams(qctx *logstorage.QueryContext, limit uint64) ([]logstorage.ValueWithHits, error)
+	GetStreamIDs(qctx *logstorage.QueryContext, limit uint64) ([]logstorage.ValueWithHits, error)
+	GetTenantIDs(ctx context.Context, start, end int64) ([]logstorage.TenantID, error)
+	DeleteRunTask(ctx context.Context, taskID string, timestamp int64, tenantIDs []logstorage.TenantID, f *logstorage.Filter) error
+	DeleteStopTask(ctx context.Context, taskID string) error
+	DeleteActiveTasks(ctx context.Context) ([]*logstorage.DeleteTask, error)
+}
+
+var externalStorage ExternalStorage
+
+// SetExternalStorage sets an external storage backend.
+// When set, all dispatch functions route queries to it.
+func SetExternalStorage(s ExternalStorage) {
+	externalStorage = s
+}

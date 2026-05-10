@@ -1,0 +1,116 @@
+diff --git a/app/vlstorage/main.go b/app/vlstorage/main.go
+index d92ebfe..e1c7d2d 100644
+--- a/app/vlstorage/main.go
++++ b/app/vlstorage/main.go
+@@ -552,6 +552,10 @@ func (*Storage) MustAddRows(lr *logstorage.LogRows) {
+ 
+ // RunQuery runs the given qctx and calls writeBlock for the returned data blocks
+ func RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error {
++	if externalStorage != nil {
++		return externalStorage.RunQuery(qctx, writeBlock)
++	}
++
+ 	qOpt, offset, limit := qctx.Query.GetLastNResultsQuery()
+ 	if qOpt != nil {
+ 		qctxOpt := qctx.WithQuery(qOpt)
+@@ -568,6 +572,9 @@ func RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBloc
+ //
+ // If the filter isn't empty, then only the field names containing the filter substing are returned.
+ func GetFieldNames(qctx *logstorage.QueryContext, filter string) ([]logstorage.ValueWithHits, error) {
++	if externalStorage != nil {
++		return externalStorage.GetFieldNames(qctx, filter)
++	}
+ 	if localStorage != nil {
+ 		return localStorage.GetFieldNames(qctx, filter)
+ 	}
+@@ -580,6 +587,9 @@ func GetFieldNames(qctx *logstorage.QueryContext, filter string) ([]logstorage.V
+ //
+ // If limit > 0, then up to limit unique values are returned.
+ func GetFieldValues(qctx *logstorage.QueryContext, fieldName, filter string, limit uint64) ([]logstorage.ValueWithHits, error) {
++	if externalStorage != nil {
++		return externalStorage.GetFieldValues(qctx, fieldName, filter, limit)
++	}
+ 	if localStorage != nil {
+ 		return localStorage.GetFieldValues(qctx, fieldName, filter, limit)
+ 	}
+@@ -590,6 +600,9 @@ func GetFieldValues(qctx *logstorage.QueryContext, fieldName, filter string, lim
+ //
+ // If the filter is non-empty, then only the field names containing the filter substring are returned.
+ func GetStreamFieldNames(qctx *logstorage.QueryContext, filter string) ([]logstorage.ValueWithHits, error) {
++	if externalStorage != nil {
++		return externalStorage.GetStreamFieldNames(qctx, filter)
++	}
+ 	if localStorage != nil {
+ 		return localStorage.GetStreamFieldNames(qctx, filter)
+ 	}
+@@ -602,6 +615,9 @@ func GetStreamFieldNames(qctx *logstorage.QueryContext, filter string) ([]logsto
+ //
+ // If limit > 0, then up to limit unique stream field values are returned.
+ func GetStreamFieldValues(qctx *logstorage.QueryContext, fieldName, filter string, limit uint64) ([]logstorage.ValueWithHits, error) {
++	if externalStorage != nil {
++		return externalStorage.GetStreamFieldValues(qctx, fieldName, filter, limit)
++	}
+ 	if localStorage != nil {
+ 		return localStorage.GetStreamFieldValues(qctx, fieldName, filter, limit)
+ 	}
+@@ -612,6 +628,9 @@ func GetStreamFieldValues(qctx *logstorage.QueryContext, fieldName, filter strin
+ //
+ // If limit > 0, then up to limit unique streams are returned.
+ func GetStreams(qctx *logstorage.QueryContext, limit uint64) ([]logstorage.ValueWithHits, error) {
++	if externalStorage != nil {
++		return externalStorage.GetStreams(qctx, limit)
++	}
+ 	if localStorage != nil {
+ 		return localStorage.GetStreams(qctx, limit)
+ 	}
+@@ -622,6 +641,9 @@ func GetStreams(qctx *logstorage.QueryContext, limit uint64) ([]logstorage.Value
+ //
+ // If limit > 0, then up to limit unique streamIDs are returned.
+ func GetStreamIDs(qctx *logstorage.QueryContext, limit uint64) ([]logstorage.ValueWithHits, error) {
++	if externalStorage != nil {
++		return externalStorage.GetStreamIDs(qctx, limit)
++	}
+ 	if localStorage != nil {
+ 		return localStorage.GetStreamIDs(qctx, limit)
+ 	}
+@@ -634,6 +656,9 @@ func GetStreamIDs(qctx *logstorage.QueryContext, limit uint64) ([]logstorage.Val
+ func DeleteRunTask(ctx context.Context, taskID string, timestamp int64, tenantIDs []logstorage.TenantID, f *logstorage.Filter) error {
+ 	logger.Infof("starting deleting logs for task_id=%q, filter=%q, tenantIDs=%s", taskID, f, tenantIDs)
+ 
++	if externalStorage != nil {
++		return externalStorage.DeleteRunTask(ctx, taskID, timestamp, tenantIDs, f)
++	}
+ 	if localStorage != nil {
+ 		return localStorage.DeleteRunTask(ctx, taskID, timestamp, tenantIDs, f)
+ 	}
+@@ -645,7 +670,9 @@ func DeleteStopTask(ctx context.Context, taskID string) error {
+ 	logger.Infof("stopping delete task with task_id=%q", taskID)
+ 
+ 	var err error
+-	if localStorage != nil {
++	if externalStorage != nil {
++		err = externalStorage.DeleteStopTask(ctx, taskID)
++	} else if localStorage != nil {
+ 		err = localStorage.DeleteStopTask(ctx, taskID)
+ 	} else {
+ 		err = netstorageSelect.DeleteStopTask(ctx, taskID)
+@@ -658,6 +685,9 @@ func DeleteStopTask(ctx context.Context, taskID string) error {
+ 
+ // DeleteActiveTasks returns a list of active deletion tasks started via DeleteRunTask().
+ func DeleteActiveTasks(ctx context.Context) ([]*logstorage.DeleteTask, error) {
++	if externalStorage != nil {
++		return externalStorage.DeleteActiveTasks(ctx)
++	}
+ 	if localStorage != nil {
+ 		return localStorage.DeleteActiveTasks(ctx)
+ 	}
+@@ -666,6 +696,9 @@ func DeleteActiveTasks(ctx context.Context) ([]*logstorage.DeleteTask, error) {
+ 
+ // GetTenantIDs returns tenantIDs from the storage by the given start and end.
+ func GetTenantIDs(ctx context.Context, start, end int64) ([]logstorage.TenantID, error) {
++	if externalStorage != nil {
++		return externalStorage.GetTenantIDs(ctx, start, end)
++	}
+ 	if localStorage != nil {
+ 		return localStorage.GetTenantIDs(ctx, start, end)
+ 	}

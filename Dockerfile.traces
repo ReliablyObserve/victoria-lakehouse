@@ -16,6 +16,11 @@ RUN mkdir -p deps lakehouse-traces/deps && \
     rm -rf /tmp/vl-src && \
     cd /app && go mod download && \
     cd /app/lakehouse-traces && go mod download
+COPY patches/ /tmp/patches/
+RUN cp /tmp/patches/vl-logs/external.go deps/VictoriaLogs/app/vlstorage/external.go && \
+    cd deps/VictoriaLogs && git apply /tmp/patches/vl-logs/vlstorage-dispatch.patch
+RUN cp /tmp/patches/vl-traces/external.go lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go && \
+    cd lakehouse-traces/deps/VictoriaLogs && git apply /tmp/patches/vl-traces/vlstorage-dispatch.patch
 COPY . .
 RUN cd lakehouse-traces && \
     CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}" -o /lakehouse-traces .

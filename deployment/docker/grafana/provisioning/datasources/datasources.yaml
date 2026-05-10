@@ -17,7 +17,7 @@ datasources:
     url: http://lakehouse-traces:10428
     jsonData:
       tracesToLogsV2:
-        datasourceUid: victoria-lakehouse-logs
+        datasourceUid: victoria-lakehouse-cold
         spanStartTimeShift: "-1h"
         spanEndTimeShift: "1h"
         filterByTraceID: true
@@ -28,14 +28,6 @@ datasources:
     uid: victorialogs-hot
     access: proxy
     url: http://victorialogs:9428
-    jsonData:
-      maxLines: 1000
-
-  - name: Multi-Level Select (Hot+Cold)
-    type: victoriametrics-logs-datasource
-    uid: vlselect-multilevel
-    access: proxy
-    url: http://vlselect:9471
     jsonData:
       maxLines: 1000
 
