@@ -9,6 +9,9 @@ permissions:
   packages: write
   pull-requests: write
 
+env:
+  GOWORK: "off"
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -28,8 +31,8 @@ jobs:
           LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
           echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
 
-          # Parse PR labels from merge commit
-          PR_NUM=$(echo "${{ github.event.head_commit.message }}" | grep -oP '#\K[0-9]+' | head -1 || true)
+          # Parse PR labels from merge commit (first line only)
+          PR_NUM=$(echo "$COMMIT_MSG" | head -1 | grep -oP '#\K[0-9]+' | head -1 || true)
           BUMP="patch"
 
           if [ -n "$PR_NUM" ]; then
@@ -45,10 +48,10 @@ jobs:
 
           # Fallback to conventional commits
           if [ "$BUMP" = "patch" ]; then
-            MSG="${{ github.event.head_commit.message }}"
-            if echo "$MSG" | grep -qiE "BREAKING CHANGE|^feat!:"; then
+            MSG_FIRST=$(echo "$COMMIT_MSG" | head -1)
+            if echo "$MSG_FIRST" | grep -qiE "BREAKING CHANGE|^feat!:"; then
               BUMP="major"
-            elif echo "$MSG" | grep -qiE "^feat(\(|:)"; then
+            elif echo "$MSG_FIRST" | grep -qiE "^feat(\(|:)"; then
               BUMP="minor"
             fi
           fi
@@ -67,6 +70,7 @@ jobs:
           echo "Version: $LATEST_TAG → $NEXT ($BUMP)"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
 
       - name: Check for skip conditions
         id: skip
@@ -114,9 +118,11 @@ jobs:
                 -o "dist/lakehouse-logs-${GOOS}-${GOARCH}" ./cmd/lakehouse-logs
 
               echo "Building lakehouse-traces ${GOOS}/${GOARCH}..."
+              cd lakehouse-traces
               CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH \
                 go build -ldflags "$LDFLAGS" \
-                -o "dist/lakehouse-traces-${GOOS}-${GOARCH}" ./lakehouse-traces
+                -o "../dist/lakehouse-traces-${GOOS}-${GOARCH}" .
+              cd ..
             done
           done
 
