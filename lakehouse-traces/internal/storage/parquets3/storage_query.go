@@ -283,7 +283,12 @@ func (s *Storage) rowsToDataBlock(rows []parquet.Row, colNames []string, root *p
 
 		for outIdx, srcIdx := range projected {
 			if srcIdx < len(row) {
-				columns[outIdx] = append(columns[outIdx], valueToString(row[srcIdx]))
+				if srcIdx == tsColIdx {
+					ns := valueToInt64(row[srcIdx])
+					columns[outIdx] = append(columns[outIdx], time.Unix(0, ns).UTC().Format(time.RFC3339Nano))
+				} else {
+					columns[outIdx] = append(columns[outIdx], valueToString(row[srcIdx]))
+				}
 			} else {
 				columns[outIdx] = append(columns[outIdx], "")
 			}

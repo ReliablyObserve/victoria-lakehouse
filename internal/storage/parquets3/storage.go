@@ -486,10 +486,15 @@ func (s *Storage) filterTombstonedRows(db *logstorage.DataBlock, startNs, endNs 
 			row[col.Name] = col.Values[rowIdx]
 		}
 
-		// Parse timestamp
+		// Parse timestamp (RFC3339Nano format from VL, fallback to raw integer)
 		var tsNs int64
 		if tsColIdx >= 0 {
-			tsNs, _ = strconv.ParseInt(columns[tsColIdx].Values[rowIdx], 10, 64)
+			v := columns[tsColIdx].Values[rowIdx]
+			if ns, ok := logstorage.TryParseTimestampRFC3339Nano(v); ok {
+				tsNs = ns
+			} else {
+				tsNs, _ = strconv.ParseInt(v, 10, 64)
+			}
 		}
 
 		// Check if any tombstone matches this row
