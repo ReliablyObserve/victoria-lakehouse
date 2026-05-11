@@ -105,16 +105,6 @@ func TestValidate_ZeroQueryMaxRows(t *testing.T) {
 	}
 }
 
-func TestValidate_ZeroCBThreshold(t *testing.T) {
-	cfg := Default()
-	cfg.Mode = ModeLogs
-	cfg.S3.Bucket = "test"
-	cfg.CircuitBreaker.Threshold = 0
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for zero circuit breaker threshold")
-	}
-}
-
 func TestValidate_EvictionWatermarkBoundaries(t *testing.T) {
 	tests := []struct {
 		name    string

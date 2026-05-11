@@ -18,7 +18,6 @@ var (
 	S3ErrorsTotal         = NewCounterVec("lakehouse_s3_errors_total", "op")
 	S3BytesReadTotal      = NewCounter("lakehouse_s3_bytes_read_total")
 	S3ThrottleTotal       = NewCounter("lakehouse_s3_throttle_total")
-	S3CircuitBreakerState = NewGauge("lakehouse_s3_circuit_breaker_state")
 )
 
 // Cache metrics
@@ -93,8 +92,9 @@ var (
 
 // Query metrics
 var (
-	QueryDuration  = NewHistogram("lakehouse_query_duration_seconds", DefBuckets)
-	QueryRowsTotal = NewCounter("lakehouse_query_rows_returned_total")
+	QueryDuration      = NewHistogram("lakehouse_query_duration_seconds", DefBuckets)
+	QueryRowsTotal     = NewCounter("lakehouse_query_rows_returned_total")
+	QueryRejectedTotal = NewCounter("lakehouse_query_rejected_total")
 )
 
 // Compaction metrics

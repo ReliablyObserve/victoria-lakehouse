@@ -43,11 +43,65 @@ func (mockStore) GetStreamIDs(_ context.Context, _ []logstorage.TenantID, _ *log
 }
 func (mockStore) Close() error { return nil }
 
+// dataStore implements storage.Storage and returns realistic data for
+// Jaeger handler tests. It records which fields were queried so tests
+// can verify handler behavior.
+type dataStore struct {
+	mockStore // embed for default no-op methods
+
+	// fieldValues maps fieldName -> list of values to return from GetFieldValues.
+	fieldValues map[string][]logstorage.ValueWithHits
+
+	// runQuerySpans holds synthetic span rows to deliver via RunQuery callbacks.
+	runQuerySpans []map[string]string
+}
+
+var _ storage.Storage = (*dataStore)(nil)
+
+func (d *dataStore) GetFieldValues(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, fieldName string, _ uint64) ([]logstorage.ValueWithHits, error) {
+	if d.fieldValues != nil {
+		if vals, ok := d.fieldValues[fieldName]; ok {
+			return vals, nil
+		}
+	}
+	return nil, nil
+}
+
+func (d *dataStore) RunQuery(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
+	if len(d.runQuerySpans) == 0 {
+		return nil
+	}
+
+	// Collect all column names across all spans.
+	colSet := make(map[string]bool)
+	for _, span := range d.runQuerySpans {
+		for k := range span {
+			colSet[k] = true
+		}
+	}
+
+	// Build columns with values aligned to span rows.
+	cols := make([]logstorage.BlockColumn, 0, len(colSet))
+	for colName := range colSet {
+		vals := make([]string, len(d.runQuerySpans))
+		for i, span := range d.runQuerySpans {
+			vals[i] = span[colName]
+		}
+		cols = append(cols, logstorage.BlockColumn{Name: colName, Values: vals})
+	}
+
+	var db logstorage.DataBlock
+	db.SetColumns(cols)
+	writeBlock(0, &db)
+	return nil
+}
+
 func testConfig(mode config.Mode) *config.Config {
 	return &config.Config{
 		Mode: mode,
 		Query: config.QueryConfig{
-			Timeout: 5 * time.Second,
+			Timeout:       5 * time.Second,
+			MaxConcurrent: 32,
 		},
 	}
 }
@@ -335,5 +389,421 @@ func TestGetValAny(t *testing.T) {
 	v = getValAny(colMap, 0, "missing1", "missing2")
 	if v != "" {
 		t.Errorf("getValAny(missing) = %q, want empty", v)
+	}
+}
+
+// --- Jaeger handler tests with data ---
+
+func TestHandleJaegerTrace_WithData(t *testing.T) {
+	store := &dataStore{
+		runQuerySpans: []map[string]string{
+			{
+				"trace_id":             "abc123",
+				"span_id":              "span-1",
+				"parent_span_id":       "",
+				"name":                 "HTTP GET /api",
+				"service.name":         "frontend",
+				"start_time_unix_nano": "1700000000000000000",
+				"duration":             "5000000",
+				"kind":                 "2",
+			},
+			{
+				"trace_id":             "abc123",
+				"span_id":              "span-2",
+				"parent_span_id":       "span-1",
+				"name":                 "DB query",
+				"service.name":         "backend",
+				"start_time_unix_nano": "1700000001000000000",
+				"duration":             "2000000",
+				"kind":                 "3",
+			},
+		},
+	}
+
+	cfg := testConfig(config.ModeTraces)
+	h := NewHandler(store, cfg)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/traces/abc123", nil)
+	h.handleJaegerTrace(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp jaegerTracesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Data should contain one trace with spans.
+	dataSlice, ok := resp.Data.([]any)
+	if !ok {
+		t.Fatalf("expected data to be []any, got %T", resp.Data)
+	}
+	if len(dataSlice) != 1 {
+		t.Fatalf("expected 1 trace, got %d", len(dataSlice))
+	}
+
+	traceData, ok := dataSlice[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected trace data to be map, got %T", dataSlice[0])
+	}
+	if traceData["traceID"] != "abc123" {
+		t.Errorf("traceID = %v, want abc123", traceData["traceID"])
+	}
+
+	spans, ok := traceData["spans"].([]any)
+	if !ok {
+		t.Fatalf("expected spans to be []any, got %T", traceData["spans"])
+	}
+	if len(spans) != 2 {
+		t.Errorf("expected 2 spans, got %d", len(spans))
+	}
+
+	// Verify processes map is present.
+	processes, ok := traceData["processes"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected processes to be map, got %T", traceData["processes"])
+	}
+	if len(processes) == 0 {
+		t.Error("expected non-empty processes map")
+	}
+}
+
+func TestHandleJaegerTrace_EmptyTraceID_TracesSuffix(t *testing.T) {
+	cfg := testConfig(config.ModeTraces)
+	h := NewHandler(mockStore{}, cfg)
+
+	// When the last path segment is "traces", the handler treats it as
+	// an empty trace ID and returns 400.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/traces/traces", nil)
+	h.handleJaegerTrace(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for trace_id='traces', got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleJaegerSearch_ValidService(t *testing.T) {
+	store := &dataStore{
+		runQuerySpans: []map[string]string{
+			{
+				"trace_id":             "trace-001",
+				"span_id":              "span-a",
+				"service.name":         "my-service",
+				"name":                 "GET /health",
+				"start_time_unix_nano": "1700000000000000000",
+				"duration":             "1000000",
+			},
+		},
+	}
+
+	cfg := testConfig(config.ModeTraces)
+	h := NewHandler(store, cfg)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/traces?service=my-service", nil)
+	h.handleJaegerSearch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp jaegerTracesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	dataSlice, ok := resp.Data.([]any)
+	if !ok {
+		t.Fatalf("expected []any data, got %T", resp.Data)
+	}
+	if len(dataSlice) != 1 {
+		t.Errorf("expected 1 trace in search results, got %d", len(dataSlice))
+	}
+}
+
+func TestHandleJaegerSearch_WithLookbackAndLimit(t *testing.T) {
+	store := &dataStore{
+		runQuerySpans: []map[string]string{
+			{
+				"trace_id":             "trace-002",
+				"span_id":              "span-b",
+				"service.name":         "svc-a",
+				"name":                 "POST /data",
+				"start_time_unix_nano": "1700000000000000000",
+				"duration":             "3000000",
+			},
+		},
+	}
+
+	cfg := testConfig(config.ModeTraces)
+	h := NewHandler(store, cfg)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/traces?service=svc-a&lookback=48h&limit=5", nil)
+	h.handleJaegerSearch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleJaegerServices_WithData(t *testing.T) {
+	store := &dataStore{
+		fieldValues: map[string][]logstorage.ValueWithHits{
+			"service.name": {
+				{Value: "frontend", Hits: 10},
+				{Value: "backend", Hits: 5},
+				{Value: "", Hits: 1}, // empty values should be filtered out
+			},
+		},
+	}
+
+	cfg := testConfig(config.ModeTraces)
+	h := NewHandler(store, cfg)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/services", nil)
+	h.handleJaegerServices(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp jaegerListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	if len(resp.Data) != 2 {
+		t.Fatalf("expected 2 services, got %d: %v", len(resp.Data), resp.Data)
+	}
+	// Services should be sorted alphabetically.
+	if resp.Data[0] != "backend" || resp.Data[1] != "frontend" {
+		t.Errorf("expected [backend, frontend], got %v", resp.Data)
+	}
+	if resp.Total != 2 {
+		t.Errorf("total = %d, want 2", resp.Total)
+	}
+}
+
+func TestHandleJaegerOperations_WithValidService(t *testing.T) {
+	store := &dataStore{
+		fieldValues: map[string][]logstorage.ValueWithHits{
+			"span.name": {
+				{Value: "GET /api", Hits: 5},
+				{Value: "POST /data", Hits: 3},
+			},
+		},
+	}
+
+	cfg := testConfig(config.ModeTraces)
+	h := NewHandler(store, cfg)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/services/frontend/operations", nil)
+	h.handleJaegerOperations(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp jaegerListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	if len(resp.Data) != 2 {
+		t.Fatalf("expected 2 operations, got %d: %v", len(resp.Data), resp.Data)
+	}
+	// Should be sorted.
+	if resp.Data[0] != "GET /api" || resp.Data[1] != "POST /data" {
+		t.Errorf("expected [GET /api, POST /data], got %v", resp.Data)
+	}
+}
+
+func TestHandleJaegerOperations_NotFoundWithoutOperationsPath(t *testing.T) {
+	cfg := testConfig(config.ModeTraces)
+	h := NewHandler(mockStore{}, cfg)
+
+	// Path without /operations suffix should return 404.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/services/frontend/something-else", nil)
+	h.handleJaegerOperations(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleJaegerDependencies_ViaSelectPrefix(t *testing.T) {
+	cfg := testConfig(config.ModeTraces)
+	h := NewHandler(mockStore{}, cfg)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/select/jaeger/api/dependencies", nil)
+	h.handleJaegerDependencies(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	data, ok := resp["data"].([]any)
+	if !ok {
+		t.Fatalf("expected data to be []any, got %T", resp["data"])
+	}
+	if len(data) != 0 {
+		t.Errorf("expected empty data array, got %v", data)
+	}
+}
+
+func TestHandleJaegerTrace_SpanWithParentReference(t *testing.T) {
+	store := &dataStore{
+		runQuerySpans: []map[string]string{
+			{
+				"trace_id":             "ref-trace",
+				"span_id":              "child-span",
+				"parent_span_id":       "parent-span",
+				"name":                 "child-op",
+				"service.name":         "svc",
+				"start_time_unix_nano": "1700000000000000000",
+				"duration":             "1000000",
+			},
+		},
+	}
+
+	cfg := testConfig(config.ModeTraces)
+	h := NewHandler(store, cfg)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/traces/ref-trace", nil)
+	h.handleJaegerTrace(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp jaegerTracesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	dataSlice, ok := resp.Data.([]any)
+	if !ok || len(dataSlice) == 0 {
+		t.Fatal("expected non-empty data")
+	}
+	traceData := dataSlice[0].(map[string]any)
+	spans := traceData["spans"].([]any)
+	span := spans[0].(map[string]any)
+
+	refs, ok := span["references"].([]any)
+	if !ok || len(refs) == 0 {
+		t.Fatal("expected references for child span")
+	}
+	ref := refs[0].(map[string]any)
+	if ref["refType"] != "CHILD_OF" {
+		t.Errorf("refType = %v, want CHILD_OF", ref["refType"])
+	}
+	if ref["spanID"] != "parent-span" {
+		t.Errorf("reference spanID = %v, want parent-span", ref["spanID"])
+	}
+}
+
+func TestWrapVL_RateLimiting_Rejects429(t *testing.T) {
+	cfg := &config.Config{
+		Mode: config.ModeLogs,
+		Query: config.QueryConfig{
+			Timeout:       5 * time.Second,
+			MaxConcurrent: 1,
+		},
+	}
+	h := NewHandler(mockStore{}, cfg)
+
+	// Block the semaphore by occupying the single slot.
+	blocker := make(chan struct{})
+	wrapped := h.wrapVL(func(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+		<-blocker // block until test releases
+	})
+
+	// First request: should acquire the semaphore.
+	go func() {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/select/logsql/query", nil)
+		wrapped(rec, req)
+	}()
+
+	// Give the goroutine a moment to acquire the semaphore.
+	time.Sleep(50 * time.Millisecond)
+
+	// Second request: should be rejected with 429.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/select/logsql/query", nil)
+	wrapped(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	// Release the blocker so the first request can finish.
+	close(blocker)
+}
+
+func TestWrapVL_RateLimiting_AllowsWithinLimit(t *testing.T) {
+	cfg := &config.Config{
+		Mode: config.ModeLogs,
+		Query: config.QueryConfig{
+			Timeout:       5 * time.Second,
+			MaxConcurrent: 10,
+		},
+	}
+	h := NewHandler(mockStore{}, cfg)
+
+	wrapped := h.wrapVL(func(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/select/logsql/query", nil)
+	wrapped(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestHandleJaegerServices_FallbackToResourceAttr(t *testing.T) {
+	// When "service.name" returns empty, the handler tries "resource_attr:service.name".
+	store := &dataStore{
+		fieldValues: map[string][]logstorage.ValueWithHits{
+			"resource_attr:service.name": {
+				{Value: "otel-svc", Hits: 3},
+			},
+		},
+	}
+
+	cfg := testConfig(config.ModeTraces)
+	h := NewHandler(store, cfg)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/services", nil)
+	h.handleJaegerServices(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp jaegerListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0] != "otel-svc" {
+		t.Errorf("expected [otel-svc], got %v", resp.Data)
 	}
 }
