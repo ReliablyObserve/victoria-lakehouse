@@ -12,8 +12,10 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/logsql"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage"
 )
 
@@ -63,9 +65,16 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 func (h *Handler) wrapVL(fn func(ctx context.Context, w http.ResponseWriter, r *http.Request)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
 		ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 		defer cancel()
 		fn(ctx, w, r)
+		dur := time.Since(start)
+		metrics.QueryDuration.Observe(dur.Seconds())
+		if h.cfg.Query.SlowThreshold > 0 && dur >= h.cfg.Query.SlowThreshold {
+			metrics.SlowQueriesTotal.Inc()
+			logger.Warnf("slow query: path=%s duration=%s query=%s", r.URL.Path, dur, r.FormValue("query"))
+		}
 	}
 }
 
@@ -503,7 +512,9 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleJaegerDependencies(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(jaegerListResponse{Data: []string{}})
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"data": []any{},
+	})
 }
 
 // Jaeger types
