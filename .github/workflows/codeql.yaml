@@ -1,0 +1,66 @@
+name: "CodeQL"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  security-events: write
+  contents: read
+
+env:
+  VL_VERSION_LOGS: v1.50.0
+  VL_COMMIT_TRACES: a408207c2242
+  GOWORK: "off"
+
+jobs:
+  analyze:
+    name: Analyze (go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Clone VL for logs
+        run: |
+          mkdir -p deps
+          git clone --depth 1 --branch ${{ env.VL_VERSION_LOGS }} \
+            https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs
+
+      - name: Apply ExternalStorage patch (logs)
+        run: |
+          cp patches/vl-logs/external.go deps/VictoriaLogs/app/vlstorage/external.go
+          cd deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-logs/vlstorage-dispatch.patch
+
+      - name: Clone VL for traces
+        run: |
+          mkdir -p lakehouse-traces/deps
+          git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src
+          cd /tmp/vl-src && git checkout ${{ env.VL_COMMIT_TRACES }}
+          cp -r /tmp/vl-src ${{ github.workspace }}/lakehouse-traces/deps/VictoriaLogs
+
+      - name: Apply ExternalStorage patch (traces)
+        run: |
+          cp patches/vl-traces/external.go lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go
+          cd lakehouse-traces/deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-traces/vlstorage-dispatch.patch
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: go
+          build-mode: manual
+
+      - name: Build
+        run: |
+          go build ./cmd/lakehouse-logs/...
+          cd lakehouse-traces && go build .
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
