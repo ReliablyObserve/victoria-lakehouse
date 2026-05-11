@@ -60,6 +60,35 @@ Victoria Lakehouse exposes ~80 Prometheus metrics at `/metrics` using the `lakeh
 | `lakehouse_discovery_hot_boundary_seconds` | Gauge | Auto-discovered boundary |
 | `lakehouse_discovery_hot_boundary_gap_days` | Gauge | Gap between cold and hot |
 
+### Smart Cache Metrics
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `lakehouse_cache_hit_ratio` | Gauge | | Overall cache hit ratio |
+| `lakehouse_cache_entries_total` | Gauge | | Total entries in smart cache |
+| `lakehouse_cache_bytes_used` | Gauge | | Bytes currently cached |
+| `lakehouse_cache_bytes_limit` | Gauge | | Configured cache byte limit |
+| `lakehouse_cache_evictions_total` | Counter | `reason` | Evictions (ttl, size, manual) |
+| `lakehouse_cache_hot_entries` | Gauge | | Entries marked as "hot" |
+| `lakehouse_cache_pinned_entries` | Gauge | | Entries pinned by active queries |
+| `lakehouse_cache_recommended_bytes` | Counter | `method` | Cache sizing recommendations (ingestion, query) |
+| `lakehouse_cache_coverage_hours` | Gauge | | Estimated hours of query data cached |
+| `lakehouse_cache_prefetch_hit_ratio` | Gauge | | Prefetched data that was actually used |
+| `lakehouse_cache_owned_entries` | Gauge | | Entries owned by this node (hash routing) |
+| `lakehouse_cache_owned_bytes` | Gauge | | Bytes owned by this node |
+| `lakehouse_cache_effective_bytes` | Gauge | | Effective cache capacity including peer |
+
+### Cross-Signal Metrics
+
+| Metric | Type | Description |
+|---|---|---|
+| `lakehouse_cache_cross_eviction_sent_total` | Counter | Eviction hints sent to other signal |
+| `lakehouse_cache_cross_eviction_received_total` | Counter | Eviction hints received |
+| `lakehouse_cache_cross_eviction_pending` | Gauge | Pending eviction hint queue |
+| `lakehouse_cache_cross_eviction_applied_total` | Counter | Eviction hints applied (deprioritized entries) |
+| `lakehouse_cache_cross_prefetch_sent_total` | Counter | Prefetch hints sent to other signal |
+| `lakehouse_cache_cross_prefetch_received_total` | Counter | Prefetch hints received |
+
 ### Parquet Engine Metrics
 
 | Metric | Type | Labels | Description |

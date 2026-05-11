@@ -250,7 +250,7 @@ jobs:
           git commit -m "chore: release metadata for ${VERSION} [skip release]"
           git push origin "$BRANCH"
 
-          gh pr create \
+          PR_URL=$(gh pr create \
             --title "chore: release metadata for ${VERSION} [skip release]" \
             --body "$(cat <<EOF
           ## Release ${VERSION}
@@ -271,6 +271,9 @@ jobs:
           )" \
             --base main \
             --head "$BRANCH" \
-            --label "release:patch"
+            --label "release:patch")
+
+          # Auto-merge the metadata PR to prevent version drift
+          gh pr merge "$PR_URL" --auto --squash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

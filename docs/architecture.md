@@ -29,10 +29,11 @@ graph TD
         
         subgraph "ParquetS3Storage"
             MF["Partition<br/>Manifest"]
-            QE["Parquet Query<br/>Engine"]
+            QE["Parquet Query<br/>Engine<br/>(parallel file workers)"]
             SR["Schema<br/>Registry"]
             
-            subgraph "Cache Layer"
+            subgraph "Smart Cache"
+                SC["Smart Cache<br/>Controller"]
                 L1["L1 Memory<br/>LRU"]
                 L2["L2 Disk<br/>EBS"]
                 PC["L3 Peer<br/>Cache"]
@@ -42,6 +43,11 @@ graph TD
             LI["Label<br/>Index"]
         end
         
+        subgraph "Cross-Signal"
+            CSC["Cross-Signal<br/>Client"]
+            CSH["Cross-Signal<br/>Handler"]
+        end
+        
         DISC["Discovery<br/>Hot Boundary"]
     end
     
@@ -49,6 +55,7 @@ graph TD
     HTTP --> API
     HTTP --> IS
     HTTP --> BB
+    HTTP --> CSH
     INS --> WAL
     WAL --> BW
     BW -->|flush Parquet| S3R
@@ -59,11 +66,15 @@ graph TD
     IS --> MF
     MF --> QE
     QE --> SR
-    QE --> L1
+    QE --> SC
+    SC --> L1
     L1 --> L2
     L2 --> PC
     PC --> S3R
     QE --> LI
+    QE -->|trace_ids| CSC
+    CSC -->|HTTP hints| OTHER["Other Signal<br/>(lakehouse-logs<br/>or lakehouse-traces)"]
+    CSH -->|prefetch| SC
     
     S3R --> S3[("S3<br/>Parquet Files")]
     DISC --> HOT["vlstorage /<br/>vtstorage"]
@@ -361,6 +372,49 @@ flowchart TB
 | `--lakehouse.cache.disk-limit` | `50GB` | L2 disk cache max size |
 | `--lakehouse.cache.eviction-watermark` | `0.8` | L2 eviction threshold |
 | `--lakehouse.manifest.persist-path` | `/data/lakehouse` | Persistence directory |
+
+## Smart Cache Controller (`internal/smartcache/`)
+
+The smart cache controller wraps the existing L1/L2/L3 cache tiers with unified metadata tracking, TTL enforcement, and intelligent eviction.
+
+### How It Works
+
+1. **Unified Get path**: `Controller.Get(ctx, key, size)` checks L1 → L2 → L3 → S3 with singleflight deduplication. Successful fetches populate all upstream tiers and record metadata.
+2. **Hot access detection**: entries accessed `>= HotAccessThreshold` times within `HotWindow` are marked "hot" and prioritized during eviction.
+3. **Active query pinning**: `Pin(key)` / `Unpin(key)` protect files used by in-flight queries. Pinned entries survive eviction even past TTL, with a configurable grace period after unpin.
+4. **TTL eviction**: background loop runs every 30s, removing expired entries from L2 and metadata. Hot and pinned entries survive.
+5. **Snapshot persistence**: metadata (access counts, TTL, pin state) is periodically saved to disk for fast warmup on restart.
+
+### Cache Sizing Calculator (`internal/smartcache/sizing.go`)
+
+Estimates the cache budget needed to cover `TargetHours` of query data:
+
+- **Early (< 12h uptime)**: uses ingestion rate hint — `rate × TargetHours`
+- **After 12h**: blends toward query-based estimation using deduplicated file access patterns
+- **Fleet division**: recommended size is divided by fleet size for per-node budgets
+- Linear interpolation between ingestion-based and query-based estimates over the first 12 hours
+
+### Cross-Signal Prefetch (`internal/crosssignal/`)
+
+Bidirectional hints between `lakehouse-logs` and `lakehouse-traces`:
+
+- **Client** (`client.go`): accumulates trace IDs from query results, flushes as `POST /internal/prefetch/hint` batches on interval or max batch size
+- **Handler** (`handler.go`): receives hints, routes to prefetch engine for cache warming. Also handles `/internal/cache/evict-hint` for connected data deprioritization.
+- **Auth**: optional `X-Cross-Signal-Key` header for securing cross-deployment communication
+- **Connected eviction**: when entries are evicted, `DeprioritizeByTraceIDs()` zeros access metadata for correlated entries, making them next-in-line for eviction
+
+### Configuration
+
+| Flag | Default | Description |
+|---|---|---|
+| `--lakehouse.smart-cache.max-age` | `24h` | Entry TTL |
+| `--lakehouse.smart-cache.hot-access-threshold` | `3` | Accesses to mark "hot" |
+| `--lakehouse.smart-cache.hot-window` | `10m` | Window for hot detection |
+| `--lakehouse.smart-cache.target-hours` | `24` | Cache sizing target |
+| `--lakehouse.smart-cache.query-grace-period` | `5m` | Pin grace period |
+| `--lakehouse.cross-signal.enabled` | `false` | Enable cross-signal hints |
+| `--lakehouse.cross-signal.endpoint` | `""` | Other signal's URL |
+| `--lakehouse.query.file-workers` | `8` | Parallel file workers per query |
 
 ## Discovery Layer (M4)
 

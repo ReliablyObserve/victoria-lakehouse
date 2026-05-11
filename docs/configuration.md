@@ -132,6 +132,31 @@ lakehouse:
 | `--lakehouse.prefetch.max-concurrent` | `4` | Max concurrent prefetch downloads |
 | `--lakehouse.prefetch.max-queue` | `64` | Max pending prefetch tasks |
 
+## Smart Cache Settings
+
+| Flag | Default | Description |
+|---|---|---|
+| `--lakehouse.smart-cache.max-age` | `24h` | Maximum TTL for cached entries |
+| `--lakehouse.smart-cache.snapshot-interval` | `60s` | How often to persist cache metadata to disk |
+| `--lakehouse.smart-cache.query-grace-period` | `5m` | Keep pinned entries after query completes |
+| `--lakehouse.smart-cache.hot-access-threshold` | `3` | Accesses within hot window to mark entry as "hot" |
+| `--lakehouse.smart-cache.hot-window` | `10m` | Window for counting hot accesses |
+| `--lakehouse.smart-cache.target-hours` | `24` | Target hours of query coverage for cache sizing |
+| `--lakehouse.smart-cache.disk-limit-max` | `100GB` | Hard cap on disk cache size |
+| `--lakehouse.smart-cache.ingestion-rate-hint` | `""` | Optional hint for ingestion rate (e.g., `500MB`) to bootstrap cache sizing |
+
+## Cross-Signal Settings
+
+| Flag | Default | Description |
+|---|---|---|
+| `--lakehouse.cross-signal.enabled` | `false` | Enable cross-signal prefetch hints |
+| `--lakehouse.cross-signal.endpoint` | `""` | URL of the other signal's lakehouse (e.g., `http://lakehouse-traces:10428`) |
+| `--lakehouse.cross-signal.headless-service` | `""` | Headless service for peer discovery (alternative to endpoint) |
+| `--lakehouse.cross-signal.auth-key` | `""` | Shared secret for cross-signal HTTP |
+| `--lakehouse.cross-signal.timeout` | `2s` | Timeout for cross-signal HTTP requests |
+| `--lakehouse.cross-signal.max-batch` | `100` | Max trace IDs per hint batch |
+| `--lakehouse.cross-signal.batch-interval` | `500ms` | Flush interval for hint batching |
+
 ## Peer Cache Settings
 
 | Flag | Default | Description |
@@ -156,6 +181,7 @@ lakehouse:
 | `--lakehouse.query.timeout` | `60s` | Per-query timeout |
 | `--lakehouse.query.max-rows` | `10000000` | Max rows scanned per query (safety limit) |
 | `--lakehouse.query.slow-threshold` | `5s` | Queries slower than this are logged |
+| `--lakehouse.query.file-workers` | `8` | Concurrent Parquet files processed per query |
 
 ## Circuit Breaker Settings
 

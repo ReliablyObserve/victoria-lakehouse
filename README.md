@@ -304,8 +304,23 @@ Each binary supports three roles:
 - **Auto-discovery of hot boundary** via `/internal/partition/list` on vlstorage/vtstorage. Zero manual config.
 - **Partition manifest** for sub-ms "nothing here" responses. Recent queries cost zero S3 I/O.
 - **Bloom filters** on `trace_id` and `service_name` for fast point lookups.
+- **Parallel file workers**: configurable bounded worker pool for concurrent Parquet file processing (default 8 workers).
 - **Correlated prefetch**: log query warms trace Parquet for same time+service, and vice versa.
 - **Read-ahead**: sequential time scans prefetch next partitions.
+
+### Smart Cache
+- **Unified cache controller** orchestrating L1 (memory), L2 (disk), L3 (peer), L4 (S3) with per-entry TTL, hot access detection, and singleflight S3 deduplication.
+- **Active query pinning**: files used by in-flight queries are pinned in cache with configurable grace period, preventing eviction under load.
+- **Cache sizing calculator**: adaptive budget estimation blending ingestion rate (early) and query pattern analysis (after 12h uptime), with per-node fleet division.
+- **Snapshot persistence**: metadata snapshots to disk for fast cache warmup on restart.
+- **15 Prometheus metrics**: hit ratio, entries, bytes used/limit, evictions by reason, hot/pinned entries, coverage hours, prefetch hit ratio.
+
+### Cross-Signal Prefetch
+- **Bidirectional hints** between `lakehouse-logs` and `lakehouse-traces` deployments. A logs query for `service=checkout` automatically warms trace Parquet for the same time window, and vice versa.
+- **Works across separate binaries/deployments** — logs and traces don't need to be co-located. Hints are exchanged via HTTP (`/internal/prefetch/hint`, `/internal/cache/evict-hint`).
+- **Connected data eviction**: when trace cache entries are evicted, correlated log entries are deprioritized.
+- **Hint batching**: trace ID hints are accumulated and flushed on interval or batch size threshold, reducing HTTP overhead.
+- **Auth key support**: optional `X-Cross-Signal-Key` header for securing cross-deployment communication.
 
 ### Deletion
 - **Three-tier strategy**: tombstone (instant, $0) -> selective rewrite (S3 Standard only) -> lifecycle expiry (Glacier/IA).
@@ -318,7 +333,7 @@ Each binary supports three roles:
 - **GDPR compliant**: immediate inaccessibility satisfies right-to-erasure. Optional physical delete for strict compliance.
 
 ### Infrastructure
-- **Metadata persistence**: manifest, label index, and cache survive restarts.
+- **Metadata persistence**: manifest, label index, cache metadata, and smart cache snapshots survive restarts.
 - **Distributed peer cache**: consistent hash routing across fleet instances via headless DNS.
 - **Schema auto-discovery**: OTLP column names in Parquet, mapped to VL/VT names at query time.
 - **SQS/SNS support**: optional near-real-time manifest updates from S3 event notifications.
@@ -339,6 +354,27 @@ lakehouse:
   discovery:
     headless_service: vlstorage.monitoring.svc.cluster.local
     partition_auth_key: "${PARTITION_AUTH_KEY}"
+```
+
+### Smart Cache & Cross-Signal Config
+
+```yaml
+lakehouse:
+  smart_cache:
+    max_age: 24h
+    hot_access_threshold: 3
+    hot_window: 10m
+    target_hours: 24
+    snapshot_interval: 60s
+    query_grace_period: 5m
+  cross_signal:
+    enabled: true
+    endpoint: http://lakehouse-traces:10428  # for lakehouse-logs
+    auth_key: "${CROSS_SIGNAL_KEY}"
+    max_batch: 100
+    batch_interval: 500ms
+  query:
+    file_workers: 8
 ```
 
 ### Mode-Specific Config
@@ -380,7 +416,7 @@ Full reference: [Configuration](docs/configuration.md)
 
 ## Observability
 
-- **~80 Prometheus metrics** under `lakehouse_*` prefix (RED, USE, S3, cache, peer, manifest, Parquet engine, prefetch, startup)
+- **~100 Prometheus metrics** under `lakehouse_*` prefix (RED, USE, S3, cache, peer, manifest, Parquet engine, prefetch, smart cache, cross-signal, startup)
 - **Grafana dashboards** (single-instance + cluster + supplementary panels for VL/VT dashboards)
 - **10 alerting rules** with severity and annotations
 - **Structured JSON logs** via `slog`
@@ -477,6 +513,7 @@ See [Performance](docs/performance.md).
 | M11: Cost-Aware Deletion | Complete | Tombstone store, delete APIs, query-time filtering, background rewriter, storage-class detection, verify endpoint |
 | M7: Observability | Complete | ~80 Prometheus metrics, Grafana dashboards (single + cluster), 10 alerting rules, circuit breaker |
 | Binary Split | Complete | Separate `lakehouse-logs` + `lakehouse-traces` binaries, independent Go modules, mode-specific config/flags |
+| Smart Cache & Cross-Signal | Complete | Smart cache controller, cross-signal prefetch, parallel query workers, cache sizing, active query pinning |
 
 ---
 
