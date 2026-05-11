@@ -45,7 +45,7 @@ jobs:
           cp patches/vl-traces/external.go lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go
           cd lakehouse-traces/deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-traces/vlstorage-dispatch.patch
 
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v5
         with:
           path: |
             deps/VictoriaLogs
@@ -61,7 +61,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         with:
           path: |
             deps/VictoriaLogs
@@ -82,7 +82,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         with:
           path: |
             deps/VictoriaLogs
