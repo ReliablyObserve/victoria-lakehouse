@@ -372,4 +372,9 @@ compaction:
   # -- Heartbeat interval for S3 lock renewal (s3 leader election only)
   s3Heartbeat: 15s
 
+networkPolicy:
+  enabled: false
+  ingressFrom: []
+  extraEgress: []
+
 extraManifests: []

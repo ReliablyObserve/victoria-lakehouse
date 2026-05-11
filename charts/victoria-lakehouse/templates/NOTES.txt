@@ -1,0 +1,17 @@
+Victoria Lakehouse has been installed in {{ .Values.lakehouseConfig.mode }} mode.
+
+{{- if .Values.vmauth.enabled }}
+Access via vmauth:
+  kubectl port-forward svc/{{ include "victoria-lakehouse.fullname" . }}-vmauth {{ include "victoria-lakehouse.servicePort" . }}:{{ include "victoria-lakehouse.servicePort" . }}
+{{- else if .Values.select.enabled }}
+Access select API:
+  kubectl port-forward svc/{{ include "victoria-lakehouse.fullname" . }}-select {{ include "victoria-lakehouse.servicePort" . }}:{{ include "victoria-lakehouse.servicePort" . }}
+{{- end }}
+
+Query endpoint: http://localhost:{{ include "victoria-lakehouse.servicePort" . }}/select/logsql/query
+
+{{- if .Values.insertComponent.enabled }}
+Insert endpoint: http://localhost:{{ include "victoria-lakehouse.servicePort" . }}/insert/jsonline
+{{- end }}
+
+Documentation: https://reliablyobserve.github.io/victoria-lakehouse/
