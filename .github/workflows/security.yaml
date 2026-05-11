@@ -89,9 +89,10 @@ jobs:
             lakehouse-traces/deps/VictoriaLogs
           key: vl-deps-security-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ hashFiles('patches/**') }}
 
-      - uses: securego/gosec@master
-        with:
-          args: -exclude=G110,G115,G304,G401,G501,G705 ./...
+      - name: Run gosec
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -exclude=G110,G115,G304,G401,G501,G705 ./...
 
   trivy:
     runs-on: ubuntu-latest
