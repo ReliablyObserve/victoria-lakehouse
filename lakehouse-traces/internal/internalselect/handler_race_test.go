@@ -52,7 +52,7 @@ func TestHandler_Race_MaxGoroutines(t *testing.T) {
 		},
 	}
 
-	h := NewHandler(ms, 30*time.Second)
+	h := NewHandler(ms, 30*time.Second, nil)
 	mux := http.NewServeMux()
 	h.Register(mux)
 	srv := httptest.NewServer(mux)
@@ -119,7 +119,7 @@ func BenchmarkHandler_Query(b *testing.B) {
 		},
 	}
 
-	h := NewHandler(ms, 30*time.Second)
+	h := NewHandler(ms, 30*time.Second, nil)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -143,7 +143,7 @@ func BenchmarkHandler_FieldNames(b *testing.B) {
 		},
 	}
 
-	h := NewHandler(ms, 30*time.Second)
+	h := NewHandler(ms, 30*time.Second, nil)
 	mux := http.NewServeMux()
 	h.Register(mux)
 

@@ -20,6 +20,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlstorage/netselect"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/internal/vlstorage"
 )
@@ -29,8 +30,8 @@ type Handler struct {
 	timeout time.Duration
 }
 
-func NewHandler(store storage.Storage, timeout time.Duration) *Handler {
-	internalvlstorage.SetStorage(store)
+func NewHandler(store storage.Storage, timeout time.Duration, ts *delete.TombstoneStore) *Handler {
+	internalvlstorage.SetStorage(store, ts)
 	return &Handler{
 		store:   store,
 		timeout: timeout,

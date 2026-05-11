@@ -291,7 +291,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	})
 
 	if cfg.SelectEnabled() {
-		isHandler := internalselect.NewHandler(store, cfg.Query.Timeout)
+		isHandler := internalselect.NewHandler(store, cfg.Query.Timeout, tombstoneStore)
 		isHandler.Register(mux)
 
 		publicHandler := selectapi.NewHandler(store, cfg)

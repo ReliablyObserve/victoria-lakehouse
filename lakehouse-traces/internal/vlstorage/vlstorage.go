@@ -2,19 +2,22 @@ package vlstorage
 
 import (
 	"context"
+	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlstorage"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage"
 )
 
 type adapter struct {
-	store storage.Storage
+	store      storage.Storage
+	tombstones *delete.TombstoneStore
 }
 
-func SetStorage(s storage.Storage) {
-	vlstorage.SetExternalStorage(&adapter{store: s})
+func SetStorage(s storage.Storage, ts *delete.TombstoneStore) {
+	vlstorage.SetExternalStorage(&adapter{store: s, tombstones: ts})
 }
 
 func (a *adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error {
@@ -46,19 +49,48 @@ func (a *adapter) GetStreamIDs(qctx *logstorage.QueryContext, limit uint64) ([]l
 }
 
 func (a *adapter) GetTenantIDs(_ context.Context, _, _ int64) ([]logstorage.TenantID, error) {
-	return nil, nil
+	return []logstorage.TenantID{{AccountID: 0, ProjectID: 0}}, nil
 }
 
-func (a *adapter) DeleteRunTask(_ context.Context, _ string, _ int64, _ []logstorage.TenantID, _ *logstorage.Filter) error {
+func (a *adapter) DeleteRunTask(_ context.Context, taskID string, timestamp int64, _ []logstorage.TenantID, f *logstorage.Filter) error {
+	if a.tombstones == nil {
+		return nil
+	}
+	a.tombstones.Add(delete.Tombstone{
+		ID:        taskID,
+		Query:     f.String(),
+		StartNs:   0,
+		EndNs:     timestamp,
+		CreatedAt: time.Now(),
+		Mode:      "auto",
+	})
 	return nil
 }
 
-func (a *adapter) DeleteStopTask(_ context.Context, _ string) error {
+func (a *adapter) DeleteStopTask(_ context.Context, taskID string) error {
+	if a.tombstones == nil {
+		return nil
+	}
+	a.tombstones.Remove(taskID)
 	return nil
 }
 
 func (a *adapter) DeleteActiveTasks(_ context.Context) ([]*logstorage.DeleteTask, error) {
-	return nil, nil
+	if a.tombstones == nil {
+		return nil, nil
+	}
+	active := a.tombstones.Active()
+	result := make([]*logstorage.DeleteTask, 0, len(active))
+	for _, t := range active {
+		result = append(result, &logstorage.DeleteTask{
+			TaskID: t.ID,
+		})
+	}
+	return result, nil
 }
 
-func UpdatePerQueryStatsMetrics(_ *logstorage.QueryStats) {}
+func UpdatePerQueryStatsMetrics(qs *logstorage.QueryStats) {
+	if qs == nil {
+		return
+	}
+}

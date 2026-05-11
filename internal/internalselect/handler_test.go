@@ -81,7 +81,7 @@ func vlMetadataURL(path, version string) string {
 }
 
 func TestHandler_Query_EmptyResult(t *testing.T) {
-	h := NewHandler(&mockStorage{}, 30*time.Second)
+	h := NewHandler(&mockStorage{}, 30*time.Second, nil)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -106,7 +106,7 @@ func TestHandler_Query_WithDataBlocks(t *testing.T) {
 		},
 	}
 
-	h := NewHandler(store, 30*time.Second)
+	h := NewHandler(store, 30*time.Second, nil)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -172,7 +172,7 @@ func TestHandler_FieldNames(t *testing.T) {
 		},
 	}
 
-	h := NewHandler(store, 30*time.Second)
+	h := NewHandler(store, 30*time.Second, nil)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -212,7 +212,7 @@ func TestHandler_FieldValues(t *testing.T) {
 		},
 	}
 
-	h := NewHandler(store, 30*time.Second)
+	h := NewHandler(store, 30*time.Second, nil)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -237,7 +237,7 @@ func TestHandler_FieldValues(t *testing.T) {
 }
 
 func TestHandler_TenantIDs(t *testing.T) {
-	h := NewHandler(&mockStorage{}, 30*time.Second)
+	h := NewHandler(&mockStorage{}, 30*time.Second, nil)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -258,7 +258,7 @@ func TestHandler_TenantIDs(t *testing.T) {
 }
 
 func TestHandler_DeleteNoop(t *testing.T) {
-	h := NewHandler(&mockStorage{}, 30*time.Second)
+	h := NewHandler(&mockStorage{}, 30*time.Second, nil)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -295,7 +295,7 @@ func TestHandler_StreamEndpoints(t *testing.T) {
 		},
 	}
 
-	h := NewHandler(store, 30*time.Second)
+	h := NewHandler(store, 30*time.Second, nil)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -338,7 +338,7 @@ func TestHandler_StreamEndpoints(t *testing.T) {
 }
 
 func TestHandler_AllEndpointsRegistered(t *testing.T) {
-	h := NewHandler(&mockStorage{}, 30*time.Second)
+	h := NewHandler(&mockStorage{}, 30*time.Second, nil)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
@@ -370,7 +370,7 @@ func TestHandler_AllEndpointsRegistered(t *testing.T) {
 }
 
 func TestHandler_ProtocolVersionMismatch(t *testing.T) {
-	h := NewHandler(&mockStorage{}, 30*time.Second)
+	h := NewHandler(&mockStorage{}, 30*time.Second, nil)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
