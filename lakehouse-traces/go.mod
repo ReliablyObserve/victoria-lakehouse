@@ -1,6 +1,6 @@
 module github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces
 
-go 1.26.2
+go 1.26.3
 
 // VictoriaLogs at commit a408207c2242 (compatible with VictoriaTraces v0.8.2)
 replace github.com/VictoriaMetrics/VictoriaLogs => ./deps/VictoriaLogs
@@ -14,7 +14,6 @@ require (
 	github.com/VictoriaMetrics/VictoriaMetrics v1.140.1-0.20260414051809-8a20ccf21db7
 	github.com/aws/aws-sdk-go-v2 v1.41.7
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.100.1
-	github.com/klauspost/compress v1.18.6
 	github.com/parquet-go/parquet-go v0.29.0
 )
 
@@ -50,6 +49,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
+	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
