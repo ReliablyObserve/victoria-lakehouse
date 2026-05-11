@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -11,7 +12,10 @@ import (
 )
 
 func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
-	if s.labelIndex.Len() > 0 {
+	queryStr := q.String()
+	predicates := parseFilterPredicates(queryStr)
+
+	if len(predicates) == 0 && s.labelIndex.Len() > 0 {
 		names := s.labelIndex.GetFieldNames()
 		result := make([]logstorage.ValueWithHits, len(names))
 		for i, name := range names {
@@ -58,7 +62,10 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 }
 
 func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
-	if limit > 0 && s.labelIndex.Len() > 0 {
+	queryStr := q.String()
+	predicates := parseFilterPredicates(queryStr)
+
+	if len(predicates) == 0 && limit > 0 && s.labelIndex.Len() > 0 {
 		vals := s.labelIndex.GetFieldValues(fieldName, limit)
 		if len(vals) > 0 {
 			result := make([]logstorage.ValueWithHits, len(vals))
@@ -105,6 +112,7 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 
 		s.updateLabelIndex(f)
 
+		colNames := columnNames(f.Root())
 		colIdx := findColumnIndex(f.Root(), mapping.ParquetColumn)
 		if colIdx < 0 {
 			continue
@@ -115,13 +123,8 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 			buf := make([]parquet.Row, 256)
 			for {
 				n, err := rows.ReadRows(buf)
-				for i := 0; i < n; i++ {
-					if colIdx < len(buf[i]) {
-						val := valueToString(buf[i][colIdx])
-						if val != "" {
-							seen[val]++
-						}
-					}
+				if n > 0 {
+					collectFilteredValues(buf[:n], colNames, colIdx, predicates, s, seen)
 				}
 				if err != nil {
 					break
@@ -159,6 +162,9 @@ func (s *Storage) GetStreamFieldValues(ctx context.Context, tenantIDs []logstora
 }
 
 func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, limit uint64) ([]logstorage.ValueWithHits, error) {
+	queryStr := q.String()
+	predicates := parseFilterPredicates(queryStr)
+
 	startNs, endNs := q.GetFilterTimeRange()
 
 	files := s.manifest.GetFilesForRange(startNs, endNs)
@@ -190,6 +196,7 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 			continue
 		}
 
+		colNames := columnNames(f.Root())
 		streamIdx := findColumnIndex(f.Root(), streamColName)
 		if streamIdx < 0 {
 			continue
@@ -200,13 +207,8 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 			buf := make([]parquet.Row, 256)
 			for {
 				n, err := rows.ReadRows(buf)
-				for i := 0; i < n; i++ {
-					if streamIdx < len(buf[i]) {
-						val := valueToString(buf[i][streamIdx])
-						if val != "" {
-							seen[val]++
-						}
-					}
+				if n > 0 {
+					collectFilteredValues(buf[:n], colNames, streamIdx, predicates, s, seen)
 				}
 				if err != nil {
 					break
@@ -231,6 +233,9 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 }
 
 func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, limit uint64) ([]logstorage.ValueWithHits, error) {
+	queryStr := q.String()
+	predicates := parseFilterPredicates(queryStr)
+
 	startNs, endNs := q.GetFilterTimeRange()
 
 	files := s.manifest.GetFilesForRange(startNs, endNs)
@@ -262,6 +267,7 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 			continue
 		}
 
+		colNames := columnNames(f.Root())
 		colIdx := findColumnIndex(f.Root(), colName)
 		if colIdx < 0 {
 			continue
@@ -272,13 +278,8 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 			buf := make([]parquet.Row, 256)
 			for {
 				n, err := rows.ReadRows(buf)
-				for i := 0; i < n; i++ {
-					if colIdx < len(buf[i]) {
-						val := valueToString(buf[i][colIdx])
-						if val != "" {
-							seen[val]++
-						}
-					}
+				if n > 0 {
+					collectFilteredValues(buf[:n], colNames, colIdx, predicates, s, seen)
 				}
 				if err != nil {
 					break
@@ -300,4 +301,81 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 		result = result[:limit]
 	}
 	return result, nil
+}
+
+// collectFilteredValues collects values from targetColIdx for rows that match predicates.
+// When predicates is nil/empty, all rows contribute values (no filtering).
+func collectFilteredValues(rows []parquet.Row, colNames []string, targetColIdx int, predicates []filterPredicate, s *Storage, seen map[string]uint64) {
+	if len(predicates) == 0 {
+		for _, row := range rows {
+			if targetColIdx < len(row) {
+				val := valueToString(row[targetColIdx])
+				if val != "" {
+					seen[val]++
+				}
+			}
+		}
+		return
+	}
+
+	colMap := make(map[string]int, len(colNames))
+	for i, name := range colNames {
+		colMap[name] = i
+		if s != nil {
+			if m := s.registry.ResolveFromParquet(name); m != nil {
+				colMap[m.InternalName] = i
+			}
+		}
+	}
+
+	for _, row := range rows {
+		if rowMatchesPredicates(row, colNames, colMap, predicates, s) {
+			if targetColIdx < len(row) {
+				val := valueToString(row[targetColIdx])
+				if val != "" {
+					seen[val]++
+				}
+			}
+		}
+	}
+}
+
+// rowMatchesPredicates checks if a raw Parquet row matches all filter predicates.
+func rowMatchesPredicates(row parquet.Row, colNames []string, colMap map[string]int, predicates []filterPredicate, s *Storage) bool {
+	for _, p := range predicates {
+		colIdx, ok := colMap[p.field]
+		if !ok {
+			if p.negated {
+				continue
+			}
+			return false
+		}
+
+		val := ""
+		if colIdx < len(row) {
+			val = valueToString(row[colIdx])
+		}
+
+		matched := false
+		switch p.op {
+		case filterExact:
+			matched = val == p.value
+		case filterSubstring:
+			matched = strings.Contains(val, p.value)
+		case filterRegex:
+			if p.re != nil {
+				matched = p.re.MatchString(val)
+			}
+		default:
+			matched = true
+		}
+
+		if p.negated {
+			matched = !matched
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
 }
