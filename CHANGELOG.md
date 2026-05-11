@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-05-11
+
 ### Added
 - **Smart cache controller** — unified cache orchestrator wrapping L1 (memory), L2 (disk), L3 (peer), L4 (S3) with configurable TTL, hot access detection, pin tracking, and singleflight S3 deduplication (`internal/smartcache/`)
 - **Cross-signal prefetch** — bidirectional hints between `lakehouse-logs` and `lakehouse-traces` deployments via HTTP (`/internal/prefetch/hint`, `/internal/cache/evict-hint`). Logs query for `service=checkout` automatically warms trace data for same time window, and vice versa (`internal/crosssignal/`)
