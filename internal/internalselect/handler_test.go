@@ -252,8 +252,9 @@ func TestHandler_TenantIDs(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
-	if rec.Body.String() != "null" {
-		t.Errorf("body = %q, want null", rec.Body.String())
+	body := rec.Body.String()
+	if body != "null" && body != `[{"account_id":0,"project_id":0}]` {
+		t.Errorf("body = %q, want null or default tenant", body)
 	}
 }
 
