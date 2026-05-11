@@ -46,15 +46,29 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		return nil
 	}
 
-	// Wrap writeBlock to apply tombstone filtering before passing to caller.
-	filteredWriteBlock := writeBlock
-	if s.tombstones != nil {
-		filteredWriteBlock = func(workerID uint, db *logstorage.DataBlock) {
-			filtered := s.filterTombstonedRows(db, startNs, endNs)
-			if filtered != nil && filtered.RowsCount() > 0 {
-				writeBlock(workerID, filtered)
+	// Wrap writeBlock to apply tombstone filtering and panic recovery.
+	// VL handlers may add pipes (hits, stats) that expect columns our
+	// storage doesn't produce — recover instead of crashing.
+	var writeBlockPanic atomic.Bool
+	filteredWriteBlock := func(workerID uint, db *logstorage.DataBlock) {
+		if writeBlockPanic.Load() {
+			return
+		}
+		if s.tombstones != nil {
+			db = s.filterTombstonedRows(db, startNs, endNs)
+			if db == nil || db.RowsCount() == 0 {
+				return
 			}
 		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					writeBlockPanic.Store(true)
+					logger.Warnf("writeBlock panic recovered (unsupported pipe in query): %v", r)
+				}
+			}()
+			writeBlock(workerID, db)
+		}()
 	}
 
 	files := s.manifest.GetFilesForRange(startNs, endNs)

@@ -54,7 +54,11 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	// Wrap writeBlock to apply LogsQL filter evaluation, tombstone filtering,
 	// and max_rows enforcement before passing to caller.
+	var writeBlockPanic atomic.Bool
 	filteredWriteBlock := func(workerID uint, db *logstorage.DataBlock) {
+		if writeBlockPanic.Load() {
+			return
+		}
 		if maxRows > 0 && rowsEmitted.Load() >= maxRows {
 			return
 		}
@@ -69,7 +73,15 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			}
 		}
 		rowsEmitted.Add(int64(db.RowsCount()))
-		writeBlock(workerID, db)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					writeBlockPanic.Store(true)
+					logger.Warnf("writeBlock panic recovered (unsupported pipe in query): %v", r)
+				}
+			}()
+			writeBlock(workerID, db)
+		}()
 	}
 
 	files := s.manifest.GetFilesForRange(startNs, endNs)
