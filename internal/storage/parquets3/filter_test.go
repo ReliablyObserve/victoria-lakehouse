@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	"github.com/parquet-go/parquet-go"
 )
 
 func TestParseFilterPredicates(t *testing.T) {
@@ -269,4 +270,120 @@ func TestExtractTraceIDs_NoColumn(t *testing.T) {
 	if len(ids) != 0 {
 		t.Errorf("expected 0 trace IDs when no trace_id column, got %d", len(ids))
 	}
+}
+
+func TestRowMatchesPredicates(t *testing.T) {
+	colNames := []string{"service.name", "level", "_msg"}
+	colMap := map[string]int{
+		"service.name": 0,
+		"level":        1,
+		"_msg":         2,
+	}
+
+	mkRow := func(svc, level, msg string) parquet.Row {
+		return parquet.Row{
+			parquet.ValueOf(svc),
+			parquet.ValueOf(level),
+			parquet.ValueOf(msg),
+		}
+	}
+
+	t.Run("exact match", func(t *testing.T) {
+		preds := parseFilterPredicates(`service.name:="checkout"`)
+		if !rowMatchesPredicates(mkRow("checkout", "error", "fail"), colNames, colMap, preds, nil) {
+			t.Error("expected match")
+		}
+		if rowMatchesPredicates(mkRow("payment", "error", "fail"), colNames, colMap, preds, nil) {
+			t.Error("expected no match")
+		}
+	})
+
+	t.Run("combined predicates", func(t *testing.T) {
+		preds := parseFilterPredicates(`service.name:="checkout" level:="error"`)
+		if !rowMatchesPredicates(mkRow("checkout", "error", "fail"), colNames, colMap, preds, nil) {
+			t.Error("expected match for checkout+error")
+		}
+		if rowMatchesPredicates(mkRow("checkout", "info", "ok"), colNames, colMap, preds, nil) {
+			t.Error("expected no match for checkout+info")
+		}
+	})
+
+	t.Run("negated predicate", func(t *testing.T) {
+		preds := parseFilterPredicates(`NOT service.name:="checkout"`)
+		if rowMatchesPredicates(mkRow("checkout", "error", "fail"), colNames, colMap, preds, nil) {
+			t.Error("expected no match for negated checkout")
+		}
+		if !rowMatchesPredicates(mkRow("payment", "error", "fail"), colNames, colMap, preds, nil) {
+			t.Error("expected match for payment with NOT checkout")
+		}
+	})
+
+	t.Run("missing field", func(t *testing.T) {
+		preds := []filterPredicate{{field: "nonexistent", op: filterExact, value: "x"}}
+		if rowMatchesPredicates(mkRow("checkout", "error", "fail"), colNames, colMap, preds, nil) {
+			t.Error("expected no match for missing field")
+		}
+	})
+
+	t.Run("missing field negated", func(t *testing.T) {
+		preds := []filterPredicate{{field: "nonexistent", op: filterExact, value: "x", negated: true}}
+		if !rowMatchesPredicates(mkRow("checkout", "error", "fail"), colNames, colMap, preds, nil) {
+			t.Error("expected match for negated missing field")
+		}
+	})
+
+	t.Run("no predicates matches all", func(t *testing.T) {
+		if !rowMatchesPredicates(mkRow("anything", "any", "any"), colNames, colMap, nil, nil) {
+			t.Error("expected match with no predicates")
+		}
+	})
+}
+
+func TestCollectFilteredValues(t *testing.T) {
+	mkRow := func(svc, level string) parquet.Row {
+		return parquet.Row{
+			parquet.ValueOf(svc),
+			parquet.ValueOf(level),
+		}
+	}
+
+	colNames := []string{"service.name", "level"}
+	rows := []parquet.Row{
+		mkRow("checkout", "error"),
+		mkRow("payment", "info"),
+		mkRow("checkout", "warn"),
+		mkRow("auth", "error"),
+	}
+
+	t.Run("no predicates collects all", func(t *testing.T) {
+		seen := make(map[string]uint64)
+		collectFilteredValues(rows, colNames, 1, nil, nil, seen)
+		if len(seen) != 3 {
+			t.Errorf("expected 3 unique level values, got %d: %v", len(seen), seen)
+		}
+	})
+
+	t.Run("with filter collects matching only", func(t *testing.T) {
+		seen := make(map[string]uint64)
+		preds := parseFilterPredicates(`service.name:="checkout"`)
+		collectFilteredValues(rows, colNames, 1, preds, nil, seen)
+		if len(seen) != 2 {
+			t.Errorf("expected 2 level values for checkout, got %d: %v", len(seen), seen)
+		}
+		if _, ok := seen["error"]; !ok {
+			t.Error("expected 'error' in results")
+		}
+		if _, ok := seen["warn"]; !ok {
+			t.Error("expected 'warn' in results")
+		}
+	})
+
+	t.Run("filter excludes all", func(t *testing.T) {
+		seen := make(map[string]uint64)
+		preds := parseFilterPredicates(`service.name:="nonexistent"`)
+		collectFilteredValues(rows, colNames, 1, preds, nil, seen)
+		if len(seen) != 0 {
+			t.Errorf("expected 0 values, got %d: %v", len(seen), seen)
+		}
+	})
 }
