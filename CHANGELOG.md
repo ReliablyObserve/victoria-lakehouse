@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Smart cache controller** — unified cache orchestrator wrapping L1 (memory), L2 (disk), L3 (peer), L4 (S3) with configurable TTL, hot access detection, pin tracking, and singleflight S3 deduplication (`internal/smartcache/`)
 - **Cross-signal prefetch** — bidirectional hints between `lakehouse-logs` and `lakehouse-traces` deployments via HTTP (`/internal/prefetch/hint`, `/internal/cache/evict-hint`). Logs query for `service=checkout` automatically warms trace data for same time window, and vice versa (`internal/crosssignal/`)
+- **LogsQL filter evaluation** — post-scan field matchers (exact, substring, regex, NOT) applied to DataBlock rows in RunQuery, ensuring cold queries respect LogsQL semantics (`internal/storage/parquets3/filter.go`)
+- **max_rows enforcement** — `query.max_rows` (default 10M) caps emitted rows per query via atomic counter, preventing unbounded cold-query resource usage
+- **Internal endpoint auth** — `/internal/cache/clear` and `/internal/cache/stats` require Bearer token (`peer.auth_key`) when configured, matching `/internal/manifest/update` pattern
+- **Prefetch engine wiring** — cross-signal handler now creates and uses a `prefetch.Engine` to process incoming prefetch hints (was nil/inert)
 - **Parallel query file workers** — configurable bounded worker pool for concurrent Parquet file processing during queries, replacing sequential file scanning (`query.file_workers`, default 8)
 - **Cache sizing calculator** — adaptive cache budget estimation blending ingestion rate (early) and query pattern analysis (after 12h), with per-node fleet division (`internal/smartcache/sizing.go`)
 - **Active query pinning** — files used by in-flight queries are pinned in cache with configurable grace period, preventing eviction under pressure
@@ -22,9 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - `getFileData()` in storage now routes through SmartCacheController when available, with fallback to original L1→L2→L3→S3 chain
+- `RunQuery` wraps `writeBlock` callback with filter evaluation, tombstone filtering, and max_rows enforcement before passing to caller
 - `RunQuery` uses parallel file worker pool instead of sequential processing
 - `queryFile` extracts trace IDs from result DataBlocks for prefetch and cross-signal hints
-- Both `lakehouse-logs` and `lakehouse-traces` binaries wire up cross-signal handlers, eviction loop, and snapshot persistence
+- Both `lakehouse-logs` and `lakehouse-traces` binaries wire up cross-signal handlers with active prefetch engine, eviction loop, and snapshot persistence
 - Auto-release workflow now auto-merges metadata PRs to prevent version drift
 
 ## [0.17.0] - 2026-05-11

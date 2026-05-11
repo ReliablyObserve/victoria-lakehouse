@@ -303,6 +303,8 @@ Each binary supports three roles:
 ### Read Path
 - **Auto-discovery of hot boundary** via `/internal/partition/list` on vlstorage/vtstorage. Zero manual config.
 - **Partition manifest** for sub-ms "nothing here" responses. Recent queries cost zero S3 I/O.
+- **LogsQL filter evaluation**: field matchers (exact, substring, regex, NOT) are applied post-scan to filter DataBlock rows at the storage layer.
+- **max_rows enforcement**: `query.max_rows` (default 10M) caps emitted rows per query, preventing unbounded cold-query resource usage.
 - **Bloom filters** on `trace_id` and `service_name` for fast point lookups.
 - **Parallel file workers**: configurable bounded worker pool for concurrent Parquet file processing (default 8 workers).
 - **Correlated prefetch**: log query warms trace Parquet for same time+service, and vice versa.
@@ -433,6 +435,8 @@ See [Observability](docs/observability.md).
 - **Stripped binaries** (`-s -w` linker flags)
 - **Drop all capabilities** (`capabilities.drop: ["ALL"]`)
 - **Seccomp profile** (`RuntimeDefault`)
+- **Internal endpoint auth**: `/internal/cache/*` endpoints require Bearer token (`peer.auth_key`) when configured, matching the same auth pattern used by `/internal/manifest/update`
+- **Tenant isolation**: each Lakehouse deployment serves a single tenant's S3 prefix. Multi-tenancy is achieved at the deployment level, not row-level filtering
 - **CI security gates**: govulncheck, gosec, Trivy, gitleaks, CodeQL
 
 See [Security](docs/security.md).

@@ -46,23 +46,36 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		return nil
 	}
 
-	// Wrap writeBlock to apply tombstone filtering before passing to caller.
-	filteredWriteBlock := writeBlock
-	if s.tombstones != nil {
-		filteredWriteBlock = func(workerID uint, db *logstorage.DataBlock) {
-			filtered := s.filterTombstonedRows(db, startNs, endNs)
-			if filtered != nil && filtered.RowsCount() > 0 {
-				writeBlock(workerID, filtered)
+	queryStr := q.String()
+	predicates := parseFilterPredicates(queryStr)
+
+	var rowsEmitted atomic.Int64
+	maxRows := s.cfg.Query.MaxRows
+
+	// Wrap writeBlock to apply LogsQL filter evaluation, tombstone filtering,
+	// and max_rows enforcement before passing to caller.
+	filteredWriteBlock := func(workerID uint, db *logstorage.DataBlock) {
+		if maxRows > 0 && rowsEmitted.Load() >= maxRows {
+			return
+		}
+		db = filterDataBlock(db, predicates)
+		if db == nil || db.RowsCount() == 0 {
+			return
+		}
+		if s.tombstones != nil {
+			db = s.filterTombstonedRows(db, startNs, endNs)
+			if db == nil || db.RowsCount() == 0 {
+				return
 			}
 		}
+		rowsEmitted.Add(int64(db.RowsCount()))
+		writeBlock(workerID, db)
 	}
 
 	files := s.manifest.GetFilesForRange(startNs, endNs)
 	if len(files) == 0 {
 		return nil
 	}
-
-	queryStr := q.String()
 
 	// Parallel file worker pool
 	fileWorkers := s.cfg.Query.FileWorkers
@@ -112,6 +125,9 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 					firstErr.CompareAndSwap(nil, err)
 					return
 				}
+				if maxRows > 0 && rowsEmitted.Load() >= maxRows {
+					return
+				}
 				if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, serializedWriteBlock); err != nil {
 					logger.Warnf("query file error: %s; key=%s", err, fi.Key)
 					continue
@@ -127,7 +143,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}
 	}
 
-	if s.bufferBridge != nil {
+	if s.bufferBridge != nil && (maxRows <= 0 || rowsEmitted.Load() < maxRows) {
 		switch s.cfg.Mode {
 		case config.ModeLogs:
 			bufRows, _ := s.bufferBridge.QueryLogs(ctx, startNs, endNs)

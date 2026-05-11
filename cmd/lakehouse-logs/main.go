@@ -14,6 +14,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/crosssignal"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/prefetch"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/election"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/insertapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -343,6 +344,13 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		if cfg.Peer.AuthKey != "" {
+			auth := r.Header.Get("Authorization")
+			if auth != "Bearer "+cfg.Peer.AuthKey {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
 		store.ClearCaches()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]bool{"cleared": true})
@@ -352,6 +360,13 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
+		}
+		if cfg.Peer.AuthKey != "" {
+			auth := r.Header.Get("Authorization")
+			if auth != "Bearer "+cfg.Peer.AuthKey {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
 		}
 		stats := store.MemCacheStats()
 		w.Header().Set("Content-Type", "application/json")
@@ -376,6 +391,11 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		if sc := store.SmartCache(); sc != nil {
 			evictionRouter = sc
 		}
+
+		engine := prefetch.NewEngine(4, 1000, func(ctx context.Context, key string) error {
+			return store.WarmFile(ctx, key)
+		})
+		prefetchRouter = engine
 
 		csHandler := crosssignal.NewHandler(crosssignal.HandlerConfig{
 			AuthKey:         cfg.CrossSignal.AuthKey,
