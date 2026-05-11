@@ -135,7 +135,7 @@ func TestController_GetFromL1(t *testing.T) {
 func TestController_GetFromL2_OwnedKey(t *testing.T) {
 	l1 := newMockL1()
 	l2 := newMockL2()
-	l2.Put("file2", []byte("disk-data"))
+	_ = l2.Put("file2", []byte("disk-data"))
 
 	meta := NewMetadataMap()
 	meta.Set("file2", EntryMeta{

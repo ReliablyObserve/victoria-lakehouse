@@ -45,7 +45,7 @@ func classifyPriority(meta EntryMeta, now time.Time, maxAge time.Duration, hotTh
 	pinned := meta.IsPinned()
 	hot := IsHot(meta, hotThreshold, hotWindow)
 
-	isExpired := false
+	var isExpired bool
 	if hot {
 		isExpired = now.Sub(meta.LastAccess) > maxAge
 	} else {

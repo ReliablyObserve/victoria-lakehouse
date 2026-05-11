@@ -232,7 +232,7 @@ func (c *Client) sendPrefetchHint(hint PrefetchHint) {
 		logger.Errorf("crosssignal: failed to send prefetch hint: %v", err)
 		return
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	metrics.CrossPrefetchSent.Inc()
 }
@@ -263,7 +263,7 @@ func (c *Client) sendEvictionHint(hint EvictionHint) {
 		logger.Errorf("crosssignal: failed to send eviction hint: %v", err)
 		return
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	metrics.CrossEvictionSent.Inc()
 }

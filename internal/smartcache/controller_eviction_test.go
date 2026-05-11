@@ -18,7 +18,7 @@ func TestController_EvictionLoop_RemovesExpired(t *testing.T) {
 		Signal:            "logs",
 		Size:              100,
 	})
-	l2.Put("expired-key", make([]byte, 100))
+	_ = l2.Put("expired-key", make([]byte, 100))
 
 	meta.Set("fresh-key", EntryMeta{
 		CreatedAt:         time.Now(),
@@ -28,7 +28,7 @@ func TestController_EvictionLoop_RemovesExpired(t *testing.T) {
 		Signal:            "logs",
 		Size:              200,
 	})
-	l2.Put("fresh-key", make([]byte, 200))
+	_ = l2.Put("fresh-key", make([]byte, 200))
 
 	ctrl := NewController(ControllerConfig{
 		L1:           l1,
@@ -154,7 +154,7 @@ func TestController_EvictionLoop_PinnedSurvives(t *testing.T) {
 		Signal:            "logs",
 		Size:              100,
 	})
-	l2.Put("pinned-key", make([]byte, 100))
+	_ = l2.Put("pinned-key", make([]byte, 100))
 
 	ctrl := NewController(ControllerConfig{
 		L1:           newMockL1(),

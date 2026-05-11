@@ -2,7 +2,6 @@ package smartcache
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 )
@@ -164,7 +163,6 @@ func TestController_ImplementsEvictionRouter(t *testing.T) {
 		Signal:       "logs",
 	})
 
-	var n int = ctrl.DeprioritizeByTraceIDs([]string{"test"})
+	n := ctrl.DeprioritizeByTraceIDs([]string{"test"})
 	_ = n
-	_ = fmt.Sprintf("compiles")
 }

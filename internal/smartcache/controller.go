@@ -237,9 +237,7 @@ func (c *Controller) StartSnapshotLoop(path string, interval time.Duration, stop
 				_ = c.metadata.SaveSnapshot(path)
 				return
 			case <-ticker.C:
-				if err := c.metadata.SaveSnapshot(path); err != nil {
-					// logged by caller's context
-				}
+				_ = c.metadata.SaveSnapshot(path)
 			}
 		}
 	}()
