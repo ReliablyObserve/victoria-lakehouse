@@ -159,14 +159,14 @@ func (m *mockS3Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			w.Header().Set("Content-Type", "application/xml")
-			fmt.Fprint(w, `<?xml version="1.0"?><Error><Code>NoSuchKey</Code></Error>`)
+			_, _ = fmt.Fprint(w, `<?xml version="1.0"?><Error><Code>NoSuchKey</Code></Error>`)
 			return
 		}
 		rangeHeader := r.Header.Get("Range")
 		if rangeHeader != "" {
 			// Parse "bytes=start-end"
 			var start, end int64
-			fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end)
+			_, _ = fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end)
 			if start >= int64(len(data)) {
 				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 				return
@@ -176,11 +176,11 @@ func (m *mockS3Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(data)))
 			w.WriteHeader(http.StatusPartialContent)
-			w.Write(data[start : end+1])
+			_, _ = w.Write(data[start : end+1])
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write(data)
+		_, _ = w.Write(data)
 
 	case http.MethodDelete:
 		m.deleteCalls.Add(1)
