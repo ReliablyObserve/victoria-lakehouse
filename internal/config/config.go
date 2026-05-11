@@ -54,6 +54,8 @@ type Config struct {
 	Tenant TenantConfig `yaml:"tenant"`
 	Compaction     CompactionConfig     `yaml:"compaction"`
 	Delete         DeleteConfig         `yaml:"delete"`
+	SmartCache  SmartCacheConfig  `yaml:"smart_cache"`
+	CrossSignal CrossSignalConfig `yaml:"cross_signal"`
 
 	Logs   LogsModeConfig   `yaml:"logs"`
 	Traces TracesModeConfig `yaml:"traces"`
@@ -167,8 +169,9 @@ type S3Config struct {
 	ForcePathStyle bool          `yaml:"force_path_style"`
 	MaxConnections int           `yaml:"max_connections"`
 	Timeout        time.Duration `yaml:"timeout"`
-	RetryMax       int           `yaml:"retry_max"`
-	RetryBaseDelay time.Duration `yaml:"retry_base_delay"`
+	RetryMax               int           `yaml:"retry_max"`
+	RetryBaseDelay         time.Duration `yaml:"retry_base_delay"`
+	MaxConcurrentDownloads int           `yaml:"max_concurrent_downloads"`
 }
 
 type CacheConfig struct {
@@ -221,6 +224,7 @@ type StartupConfig struct {
 
 type QueryConfig struct {
 	MaxConcurrent int           `yaml:"max_concurrent"`
+	FileWorkers   int           `yaml:"file_workers"`
 	Timeout       time.Duration `yaml:"timeout"`
 	MaxRows       int64         `yaml:"max_rows"`
 	SlowThreshold time.Duration `yaml:"slow_threshold"`
@@ -263,6 +267,27 @@ type LifecycleRuleConfig struct {
 	StorageClass   string `yaml:"storage_class"`
 }
 
+type SmartCacheConfig struct {
+	MaxAge             time.Duration `yaml:"max_age"`
+	SnapshotInterval   time.Duration `yaml:"snapshot_interval"`
+	QueryGracePeriod   time.Duration `yaml:"query_grace_period"`
+	HotAccessThreshold int           `yaml:"hot_access_threshold"`
+	HotWindow          time.Duration `yaml:"hot_window"`
+	TargetHours        int           `yaml:"target_hours"`
+	DiskLimitMax       string        `yaml:"disk_limit_max"`
+	IngestionRateHint  string        `yaml:"ingestion_rate_hint"`
+}
+
+type CrossSignalConfig struct {
+	Enabled         bool          `yaml:"enabled"`
+	Endpoint        string        `yaml:"endpoint"`
+	HeadlessService string        `yaml:"headless_service"`
+	AuthKey         string        `yaml:"auth_key"`
+	Timeout         time.Duration `yaml:"timeout"`
+	MaxBatch        int           `yaml:"max_batch"`
+	BatchInterval   time.Duration `yaml:"batch_interval"`
+}
+
 type ExtraPromotedColumn struct {
 	Name  string `yaml:"name"`
 	Type  string `yaml:"type"`
@@ -279,11 +304,12 @@ func Default() *Config {
 		Topology: TopologyAuto,
 
 		S3: S3Config{
-			Region:         "us-east-1",
-			MaxConnections: 128,
-			Timeout:        30 * time.Second,
-			RetryMax:       3,
-			RetryBaseDelay: 200 * time.Millisecond,
+			Region:                 "us-east-1",
+			MaxConnections:         128,
+			Timeout:                30 * time.Second,
+			RetryMax:               3,
+			RetryBaseDelay:         200 * time.Millisecond,
+			MaxConcurrentDownloads: 16,
 		},
 
 		Cache: CacheConfig{
@@ -312,8 +338,8 @@ func Default() *Config {
 		Prefetch: PrefetchConfig{
 			Correlated:     true,
 			ReadAheadDepth: 2,
-			MaxConcurrent:  4,
-			MaxQueue:       64,
+			MaxConcurrent:  8,
+			MaxQueue:       128,
 		},
 
 		Peer: PeerConfig{
@@ -329,6 +355,7 @@ func Default() *Config {
 
 		Query: QueryConfig{
 			MaxConcurrent: 32,
+			FileWorkers:   8,
 			Timeout:       60 * time.Second,
 			MaxRows:       10_000_000,
 			SlowThreshold: 5 * time.Second,
@@ -380,6 +407,23 @@ func Default() *Config {
 			CostWarningThreshold: 10.0,
 			ForceGlacierHeader:   "X-Force-Glacier-Delete",
 			VerifyInterval:       6 * time.Hour,
+		},
+
+		SmartCache: SmartCacheConfig{
+			MaxAge:             24 * time.Hour,
+			SnapshotInterval:   60 * time.Second,
+			QueryGracePeriod:   5 * time.Minute,
+			HotAccessThreshold: 3,
+			HotWindow:          10 * time.Minute,
+			TargetHours:        24,
+			DiskLimitMax:       "100GB",
+		},
+
+		CrossSignal: CrossSignalConfig{
+			Enabled:       false,
+			Timeout:       2 * time.Second,
+			MaxBatch:      100,
+			BatchInterval: 500 * time.Millisecond,
 		},
 
 		Logs: LogsModeConfig{
@@ -618,6 +662,9 @@ func mergeConfig(base, overlay *Config) *Config {
 	if overlay.S3.RetryBaseDelay > 0 {
 		base.S3.RetryBaseDelay = overlay.S3.RetryBaseDelay
 	}
+	if overlay.S3.MaxConcurrentDownloads > 0 {
+		base.S3.MaxConcurrentDownloads = overlay.S3.MaxConcurrentDownloads
+	}
 
 	// Cache
 	if overlay.Cache.MemoryLimit != "" {
@@ -724,6 +771,9 @@ func mergeConfig(base, overlay *Config) *Config {
 	// Query
 	if overlay.Query.MaxConcurrent > 0 {
 		base.Query.MaxConcurrent = overlay.Query.MaxConcurrent
+	}
+	if overlay.Query.FileWorkers > 0 {
+		base.Query.FileWorkers = overlay.Query.FileWorkers
 	}
 	if overlay.Query.Timeout > 0 {
 		base.Query.Timeout = overlay.Query.Timeout
@@ -866,6 +916,55 @@ func mergeConfig(base, overlay *Config) *Config {
 	}
 	if len(overlay.Delete.LifecycleRules) > 0 {
 		base.Delete.LifecycleRules = overlay.Delete.LifecycleRules
+	}
+
+	// SmartCache
+	if overlay.SmartCache.MaxAge > 0 {
+		base.SmartCache.MaxAge = overlay.SmartCache.MaxAge
+	}
+	if overlay.SmartCache.SnapshotInterval > 0 {
+		base.SmartCache.SnapshotInterval = overlay.SmartCache.SnapshotInterval
+	}
+	if overlay.SmartCache.QueryGracePeriod > 0 {
+		base.SmartCache.QueryGracePeriod = overlay.SmartCache.QueryGracePeriod
+	}
+	if overlay.SmartCache.HotAccessThreshold > 0 {
+		base.SmartCache.HotAccessThreshold = overlay.SmartCache.HotAccessThreshold
+	}
+	if overlay.SmartCache.HotWindow > 0 {
+		base.SmartCache.HotWindow = overlay.SmartCache.HotWindow
+	}
+	if overlay.SmartCache.TargetHours > 0 {
+		base.SmartCache.TargetHours = overlay.SmartCache.TargetHours
+	}
+	if overlay.SmartCache.DiskLimitMax != "" {
+		base.SmartCache.DiskLimitMax = overlay.SmartCache.DiskLimitMax
+	}
+	if overlay.SmartCache.IngestionRateHint != "" {
+		base.SmartCache.IngestionRateHint = overlay.SmartCache.IngestionRateHint
+	}
+
+	// CrossSignal
+	if overlay.CrossSignal.Enabled {
+		base.CrossSignal.Enabled = true
+	}
+	if overlay.CrossSignal.Endpoint != "" {
+		base.CrossSignal.Endpoint = overlay.CrossSignal.Endpoint
+	}
+	if overlay.CrossSignal.HeadlessService != "" {
+		base.CrossSignal.HeadlessService = overlay.CrossSignal.HeadlessService
+	}
+	if overlay.CrossSignal.AuthKey != "" {
+		base.CrossSignal.AuthKey = overlay.CrossSignal.AuthKey
+	}
+	if overlay.CrossSignal.Timeout > 0 {
+		base.CrossSignal.Timeout = overlay.CrossSignal.Timeout
+	}
+	if overlay.CrossSignal.MaxBatch > 0 {
+		base.CrossSignal.MaxBatch = overlay.CrossSignal.MaxBatch
+	}
+	if overlay.CrossSignal.BatchInterval > 0 {
+		base.CrossSignal.BatchInterval = overlay.CrossSignal.BatchInterval
 	}
 
 	// Logs mode config
