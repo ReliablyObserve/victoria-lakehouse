@@ -7,28 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-05-11
+
 ### Added
 - Query rate limiting via `MaxConcurrent` semaphore — returns HTTP 429 when at capacity
-- Tests for S3 reader operations (Upload, Download, Delete, Exists), election (S3/K8s/auto), Jaeger handlers (+81 tests)
+- S3 retry with exponential backoff for all S3 operations (`ReadAt`, `Upload`, `Download`, `Delete`, `Exists`)
+- Context propagation in S3 reader (replaces `context.TODO()`)
+- Per-operation S3 metrics (requests, duration, errors, bytes read)
+- Slow query logging with configurable threshold and query duration histograms
+- VL/VT integration stubs: `GetStreamIDs`, `GetTenantIDs`, delete dispatch (`DeleteRunTask`/`DeleteStopTask`/`DeleteActiveTasks`)
+- Tests: s3reader (Upload/Download/Delete/Exists), election (S3/K8s/auto), Jaeger handlers, selectapi, vlstorage adapters, S3 retry (+112 tests)
+- Helm: `NOTES.txt` post-install guidance, `NetworkPolicy` template, `values.schema.json` validation
+- CI: golangci-lint v2 config, Dependabot for Go/Actions/Docker, hardened security workflow
+- Project logo
 
 ### Changed
 - Replace custom `internalselect` handler (~960 lines) with VL's built-in `RequestHandler` for both modules
 - Split `parquets3/storage.go` (1,383 lines) into `storage_query.go` and `storage_fields.go`
 - Extract Jaeger handlers (~560 lines) from `handler.go` into dedicated `jaeger.go`
-
-### Removed
-- Dead code: empty `UpdatePerQueryStatsMetrics()`, unused `CircuitBreakerConfig`, `S3CircuitBreakerState` metric
-
-### Added
-- S3 retry with exponential backoff for all S3 operations (`ReadAt`, `Upload`, `Download`, `Delete`, `Exists`)
-- Context propagation in S3 reader (replaces `context.TODO()`)
-- Per-operation S3 metrics (requests, duration, errors, bytes read)
-- Slow query logging with configurable threshold and query duration histograms
-- VL/VT integration stubs: `GetStreamIDs`, `GetTenantIDs`, delete dispatch (`DeleteRunTask`/`DeleteStopTask`/`DeleteActiveTasks`), `UpdatePerQueryStatsMetrics`
-- Unit tests for `selectapi/handler`, `vlstorage` adapters, and S3 retry logic (31 new tests)
-- Helm: `NOTES.txt` post-install guidance, `NetworkPolicy` template, `values.schema.json` validation
-- CI: golangci-lint v2 config, Dependabot for Go/Actions/Docker, hardened security workflow
-- Project logo
 
 ### Fixed
 - Replace custom internalselect encoding with VL's actual wire format — fixes vlselect panics (`growslice: len out of range`) caused by 4-byte uint32 block lengths instead of 8-byte uint64
@@ -37,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove orphaned vlselect Grafana datasource pointing to removed service
 - Fix traces-to-logs datasource uid reference (`victoria-lakehouse-logs` → `victoria-lakehouse-cold`)
 - Delete dead `internal/protocol/` package in both logs and traces modules (replaced by VL encoding in #28)
+
+### Removed
+- Dead code: empty `UpdatePerQueryStatsMetrics()`, unused `CircuitBreakerConfig`, `S3CircuitBreakerState` metric
 
 ### Architecture
 - Split into two separate binaries: `lakehouse-logs` and `lakehouse-traces`
