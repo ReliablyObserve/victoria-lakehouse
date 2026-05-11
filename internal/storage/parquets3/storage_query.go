@@ -170,6 +170,12 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
 	bloomChecks := s.buildBloomChecks(queryStr)
 
+	var collectedTraceIDs []string
+	var traceIDsPtr *[]string
+	if s.smartCache != nil {
+		traceIDsPtr = &collectedTraceIDs
+	}
+
 	for _, rg := range f.RowGroups() {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -186,15 +192,19 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 		}
 
 		metrics.ParquetRowGroupsScanned.Inc()
-		if err := s.readRowGroup(f, rg, startNs, endNs, writeBlock); err != nil {
+		if err := s.readRowGroup(f, rg, startNs, endNs, writeBlock, traceIDsPtr); err != nil {
 			return err
 		}
+	}
+
+	if s.smartCache != nil && len(collectedTraceIDs) > 0 {
+		s.smartCache.RecordTraceIDs(fi.Key, collectedTraceIDs)
 	}
 
 	return nil
 }
 
-func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc) error {
+func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
 	schema := f.Root()
 	rows := rg.Rows()
 	defer func() { _ = rows.Close() }()
@@ -208,6 +218,9 @@ func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, en
 			db := s.rowsToDataBlock(buf[:n], colNames, schema, startNs, endNs)
 			if db != nil && db.RowsCount() > 0 {
 				writeBlock(0, db)
+				if traceIDs != nil {
+					extractTraceIDs(db, traceIDs)
+				}
 			}
 		}
 		if err != nil {
@@ -219,6 +232,25 @@ func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, en
 	}
 
 	return nil
+}
+
+// extractTraceIDs collects unique, non-empty trace_id values from a DataBlock
+// into the destination slice, capped at 200 entries.
+func extractTraceIDs(db *logstorage.DataBlock, dest *[]string) {
+	cols := db.GetColumns(false)
+	for _, col := range cols {
+		if col.Name != "trace_id" {
+			continue
+		}
+		seen := make(map[string]bool)
+		for _, v := range col.Values {
+			if v != "" && !seen[v] && len(*dest) < 200 {
+				seen[v] = true
+				*dest = append(*dest, v)
+			}
+		}
+		return
+	}
 }
 
 func (s *Storage) rowsToDataBlock(rows []parquet.Row, colNames []string, root *parquet.Column, startNs, endNs int64) *logstorage.DataBlock {
