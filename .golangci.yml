@@ -10,10 +10,7 @@ linters:
     - bodyclose
     - durationcheck
     - errname
-    - nilerr
-    - prealloc
     - unconvert
-    - unparam
     - wastedassign
 
 issues:
