@@ -13,6 +13,11 @@ on:
 permissions:
   contents: read
 
+env:
+  VL_VERSION_LOGS: v1.50.0
+  VL_COMMIT_TRACES: a408207c2242
+  GOWORK: "off"
+
 jobs:
   loadtest:
     runs-on: ubuntu-latest
@@ -33,6 +38,17 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Clone VL for logs
+        run: |
+          mkdir -p deps
+          git clone --depth 1 --branch ${{ env.VL_VERSION_LOGS }} \
+            https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs
+
+      - name: Apply ExternalStorage patch (logs)
+        run: |
+          cp patches/vl-logs/external.go deps/VictoriaLogs/app/vlstorage/external.go
+          cd deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-logs/vlstorage-dispatch.patch
+
       - name: Create S3 bucket
         run: |
           curl -sSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /tmp/mc && chmod +x /tmp/mc
@@ -42,12 +58,12 @@ jobs:
       - name: Generate test data
         run: go run ./cmd/datagen --endpoint=http://localhost:9000 --logs=10000 --traces=2000 --hours-back=48
 
-      - name: Build lakehouse
-        run: go build -o /tmp/lakehouse ./cmd/lakehouse
+      - name: Build lakehouse-logs
+        run: go build -o /tmp/lakehouse-logs ./cmd/lakehouse-logs
 
-      - name: Start lakehouse
+      - name: Start lakehouse-logs
         run: |
-          /tmp/lakehouse \
+          /tmp/lakehouse-logs \
             -lakehouse.mode=logs \
             -lakehouse.s3.bucket=obs-archive \
             -lakehouse.s3.endpoint=http://localhost:9000 \

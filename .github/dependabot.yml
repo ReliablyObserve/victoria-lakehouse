@@ -1,37 +1,32 @@
 version: 2
 updates:
-  - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: weekly
-      day: monday
-    labels:
-      - dependencies
-      - github-actions
-    groups:
-      actions:
-        patterns:
-          - "*"
-
   - package-ecosystem: gomod
     directory: /
     schedule:
       interval: weekly
-      day: monday
     labels:
-      - dependencies
-      - go
-    groups:
-      go-deps:
-        update-types:
-          - minor
-          - patch
+      - "dependencies"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: gomod
+    directory: /lakehouse-traces
+    schedule:
+      interval: weekly
+    labels:
+      - "dependencies"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - "ci"
+    open-pull-requests-limit: 5
 
   - package-ecosystem: docker
     directory: /
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
     labels:
-      - dependencies
-      - docker
+      - "dependencies"
