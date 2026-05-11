@@ -1,0 +1,26 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - durationcheck
+    - errname
+    - unconvert
+    - wastedassign
+
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 5
+
+output:
+  formats:
+    text:
+      path: stdout
+
+run:
+  timeout: 5m

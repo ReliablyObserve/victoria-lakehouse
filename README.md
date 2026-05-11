@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.png" alt="Victoria Lakehouse" width="200">
+</p>
+
 # Victoria Lakehouse
 
 [![CI](https://github.com/ReliablyObserve/victoria-lakehouse/actions/workflows/ci.yaml/badge.svg?branch=main&event=push)](https://github.com/ReliablyObserve/victoria-lakehouse/actions/workflows/ci.yaml)

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- S3 retry with exponential backoff for all S3 operations (`ReadAt`, `Upload`, `Download`, `Delete`, `Exists`)
+- Context propagation in S3 reader (replaces `context.TODO()`)
+- Per-operation S3 metrics (requests, duration, errors, bytes read)
+- Slow query logging with configurable threshold and query duration histograms
+- VL/VT integration stubs: `GetStreamIDs`, `GetTenantIDs`, delete dispatch (`DeleteRunTask`/`DeleteStopTask`/`DeleteActiveTasks`), `UpdatePerQueryStatsMetrics`
+- Unit tests for `selectapi/handler`, `vlstorage` adapters, and S3 retry logic (31 new tests)
+- Helm: `NOTES.txt` post-install guidance, `NetworkPolicy` template, `values.schema.json` validation
+- CI: golangci-lint v2 config, Dependabot for Go/Actions/Docker, hardened security workflow
+- Project logo
+
 ### Fixed
 - Replace custom internalselect encoding with VL's actual wire format — fixes vlselect panics (`growslice: len out of range`) caused by 4-byte uint32 block lengths instead of 8-byte uint64
 - Add `internal/vlstorage/` thin dispatch layer bridging `storage.Storage` to VL's vlstorage function signatures (both logs and traces)

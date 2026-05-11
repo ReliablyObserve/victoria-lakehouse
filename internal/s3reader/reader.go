@@ -6,14 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	smithy "github.com/aws/smithy-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
 type S3ReaderAt struct {
@@ -21,6 +25,50 @@ type S3ReaderAt struct {
 	bucket string
 	key    string
 	size   int64
+	ctx    context.Context
+}
+
+func retryS3(ctx context.Context, maxRetries int, fn func() error) error {
+	var lastErr error
+	for i := 0; i <= maxRetries; i++ {
+		lastErr = fn()
+		if lastErr == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !isRetryable(lastErr) {
+			return lastErr
+		}
+		if i < maxRetries {
+			backoff := time.Duration(1<<uint(i)) * 100 * time.Millisecond
+			if backoff > 5*time.Second {
+				backoff = 5 * time.Second
+			}
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+	return lastErr
+}
+
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ae smithy.APIError
+	if errors.As(err, &ae) {
+		switch ae.ErrorCode() {
+		case "SlowDown", "ServiceUnavailable", "InternalError", "RequestTimeout":
+			return true
+		}
+	}
+	return strings.Contains(err.Error(), "connection reset") ||
+		strings.Contains(err.Error(), "i/o timeout")
 }
 
 type ClientPool struct {
@@ -60,12 +108,13 @@ func NewClientPool(ctx context.Context, cfg *config.S3Config) (*ClientPool, erro
 	}, nil
 }
 
-func (p *ClientPool) NewReaderAt(key string, size int64) *S3ReaderAt {
+func (p *ClientPool) NewReaderAt(ctx context.Context, key string, size int64) *S3ReaderAt {
 	return &S3ReaderAt{
 		client: p.client,
 		bucket: p.bucket,
 		key:    key,
 		size:   size,
+		ctx:    ctx,
 	}
 }
 
@@ -81,12 +130,22 @@ func (r *S3ReaderAt) ReadAt(p []byte, off int64) (int, error) {
 
 	rangeHeader := fmt.Sprintf("bytes=%d-%d", off, end)
 
-	out, err := r.client.GetObject(context.TODO(), &s3.GetObjectInput{
-		Bucket: aws.String(r.bucket),
-		Key:    aws.String(r.key),
-		Range:  aws.String(rangeHeader),
+	start := time.Now()
+	metrics.S3RequestsTotal.Inc("GetObject")
+
+	var out *s3.GetObjectOutput
+	err := retryS3(r.ctx, 3, func() error {
+		var getErr error
+		out, getErr = r.client.GetObject(r.ctx, &s3.GetObjectInput{
+			Bucket: aws.String(r.bucket),
+			Key:    aws.String(r.key),
+			Range:  aws.String(rangeHeader),
+		})
+		return getErr
 	})
+	metrics.S3RequestDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
+		metrics.S3ErrorsTotal.Inc("GetObject")
 		return 0, fmt.Errorf("s3 GetObject range %s: %w", rangeHeader, err)
 	}
 	defer func() { _ = out.Body.Close() }()
@@ -95,6 +154,7 @@ func (r *S3ReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	if err == io.ErrUnexpectedEOF {
 		err = io.EOF
 	}
+	metrics.S3BytesReadTotal.Add(n)
 	return n, err
 }
 
@@ -107,13 +167,21 @@ func (p *ClientPool) S3Client() *s3.Client {
 }
 
 func (p *ClientPool) Upload(ctx context.Context, key string, data []byte) error {
-	_, err := p.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(p.bucket),
-		Key:         aws.String(key),
-		Body:        bytes.NewReader(data),
-		ContentType: aws.String("application/octet-stream"),
+	start := time.Now()
+	metrics.S3RequestsTotal.Inc("PutObject")
+
+	err := retryS3(ctx, 3, func() error {
+		_, putErr := p.client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket:      aws.String(p.bucket),
+			Key:         aws.String(key),
+			Body:        bytes.NewReader(data),
+			ContentType: aws.String("application/octet-stream"),
+		})
+		return putErr
 	})
+	metrics.S3RequestDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
+		metrics.S3ErrorsTotal.Inc("PutObject")
 		return fmt.Errorf("s3 PutObject %s: %w", key, err)
 	}
 	return nil
@@ -124,11 +192,21 @@ func (p *ClientPool) Bucket() string {
 }
 
 func (p *ClientPool) Download(ctx context.Context, key string) ([]byte, error) {
-	out, err := p.client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(p.bucket),
-		Key:    aws.String(key),
+	start := time.Now()
+	metrics.S3RequestsTotal.Inc("GetObject")
+
+	var out *s3.GetObjectOutput
+	err := retryS3(ctx, 3, func() error {
+		var getErr error
+		out, getErr = p.client.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(p.bucket),
+			Key:    aws.String(key),
+		})
+		return getErr
 	})
+	metrics.S3RequestDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
+		metrics.S3ErrorsTotal.Inc("GetObject")
 		return nil, fmt.Errorf("s3 GetObject %s: %w", key, err)
 	}
 	defer func() { _ = out.Body.Close() }()
@@ -137,25 +215,41 @@ func (p *ClientPool) Download(ctx context.Context, key string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read s3 body %s: %w", key, err)
 	}
+	metrics.S3BytesReadTotal.Add(len(data))
 	return data, nil
 }
 
 func (p *ClientPool) Delete(ctx context.Context, key string) error {
-	_, err := p.client.DeleteObject(ctx, &s3.DeleteObjectInput{
-		Bucket: aws.String(p.bucket),
-		Key:    aws.String(key),
+	start := time.Now()
+	metrics.S3RequestsTotal.Inc("DeleteObject")
+
+	err := retryS3(ctx, 3, func() error {
+		_, delErr := p.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+			Bucket: aws.String(p.bucket),
+			Key:    aws.String(key),
+		})
+		return delErr
 	})
+	metrics.S3RequestDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
+		metrics.S3ErrorsTotal.Inc("DeleteObject")
 		return fmt.Errorf("s3 DeleteObject %s: %w", key, err)
 	}
 	return nil
 }
 
 func (p *ClientPool) Exists(ctx context.Context, key string) (bool, error) {
-	_, err := p.client.HeadObject(ctx, &s3.HeadObjectInput{
-		Bucket: aws.String(p.bucket),
-		Key:    aws.String(key),
+	start := time.Now()
+	metrics.S3RequestsTotal.Inc("HeadObject")
+
+	err := retryS3(ctx, 3, func() error {
+		_, headErr := p.client.HeadObject(ctx, &s3.HeadObjectInput{
+			Bucket: aws.String(p.bucket),
+			Key:    aws.String(key),
+		})
+		return headErr
 	})
+	metrics.S3RequestDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
 		var nsk *types.NotFound
 		if errors.As(err, &nsk) {
@@ -165,6 +259,7 @@ func (p *ClientPool) Exists(ctx context.Context, key string) (bool, error) {
 		if errors.As(err, &nf) {
 			return false, nil
 		}
+		metrics.S3ErrorsTotal.Inc("HeadObject")
 		return false, fmt.Errorf("s3 HeadObject %s: %w", key, err)
 	}
 	return true, nil
