@@ -12,6 +12,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/compaction"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/crosssignal"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/election"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/insertapi"
@@ -218,6 +219,20 @@ func run(cfg *config.Config, addr string) {
 			cfg.Delete.RewriteDelay, cfg.Delete.VerifyInterval)
 	}
 
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+
+	if sc := store.SmartCache(); sc != nil {
+		sc.StartEvictionLoop(30*time.Second, stopCh)
+		snapshotPath := ""
+		if cfg.Cache.DiskPath != "" {
+			snapshotPath = cfg.Cache.DiskPath + "/smartcache.meta.json"
+		}
+		sc.StartSnapshotLoop(snapshotPath, cfg.SmartCache.SnapshotInterval, stopCh)
+		logger.Infof("smart cache started; max_age=%v, snapshot_interval=%v",
+			cfg.SmartCache.MaxAge, cfg.SmartCache.SnapshotInterval)
+	}
+
 	mux := newMux(cfg, store, sm, tombstoneStore, detector)
 
 	requestHandler := func(w http.ResponseWriter, r *http.Request) bool {
@@ -352,6 +367,22 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 
 	if ph := store.PeerHandler(); ph != nil {
 		mux.Handle("/internal/cache/", ph)
+	}
+
+	// Cross-signal handlers
+	if cfg.CrossSignal.Enabled && cfg.SelectEnabled() {
+		var prefetchRouter crosssignal.PrefetchRouter
+		var evictionRouter crosssignal.EvictionRouter
+		if sc := store.SmartCache(); sc != nil {
+			evictionRouter = sc
+		}
+
+		csHandler := crosssignal.NewHandler(crosssignal.HandlerConfig{
+			AuthKey:         cfg.CrossSignal.AuthKey,
+			PrefetchRouter:  prefetchRouter,
+			EvictionHandler: evictionRouter,
+		})
+		csHandler.Register(mux)
 	}
 
 	mux.HandleFunc("/internal/manifest/update", func(w http.ResponseWriter, r *http.Request) {

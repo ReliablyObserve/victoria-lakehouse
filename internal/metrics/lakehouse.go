@@ -83,6 +83,34 @@ var (
 	PrefetchBytesTotal = NewCounter("lakehouse_prefetch_bytes_total")
 )
 
+// Smart cache metrics
+var (
+	SmartCacheHitRatio         = NewFloatGauge("lakehouse_cache_hit_ratio")
+	SmartCacheEntriesTotal     = NewGauge("lakehouse_cache_entries_total")
+	SmartCacheBytesUsed        = NewGauge("lakehouse_cache_bytes_used")
+	SmartCacheBytesLimit       = NewGauge("lakehouse_cache_bytes_limit")
+	SmartCacheEvictionsTotal   = NewCounterVec("lakehouse_cache_evictions_total", "reason")
+	SmartCacheHotEntries       = NewGauge("lakehouse_cache_hot_entries")
+	SmartCachePinnedEntries    = NewGauge("lakehouse_cache_pinned_entries")
+	SmartCacheRecommendedBytes = NewCounterVec("lakehouse_cache_recommended_bytes", "method")
+	SmartCacheCoverageHours    = NewFloatGauge("lakehouse_cache_coverage_hours")
+	SmartCachePrefetchHitRatio = NewFloatGauge("lakehouse_cache_prefetch_hit_ratio")
+	SmartCacheOwnedEntries     = NewGauge("lakehouse_cache_owned_entries")
+	SmartCacheOwnedBytes       = NewGauge("lakehouse_cache_owned_bytes")
+	SmartCachePeerServedTotal  = NewCounter("lakehouse_cache_peer_served_total")
+	SmartCacheEffectiveBytes   = NewGauge("lakehouse_cache_effective_bytes")
+)
+
+// Cross-signal eviction metrics
+var (
+	CrossEvictionSent     = NewCounter("lakehouse_cache_cross_eviction_sent_total")
+	CrossEvictionReceived = NewCounter("lakehouse_cache_cross_eviction_received_total")
+	CrossEvictionPending  = NewGauge("lakehouse_cache_cross_eviction_pending")
+	CrossEvictionApplied  = NewCounter("lakehouse_cache_cross_eviction_applied_total")
+	CrossPrefetchSent     = NewCounter("lakehouse_cache_cross_prefetch_sent_total")
+	CrossPrefetchReceived = NewCounter("lakehouse_cache_cross_prefetch_received_total")
+)
+
 // Startup & health metrics
 var (
 	StartupPhase        = NewGauge("lakehouse_startup_phase")

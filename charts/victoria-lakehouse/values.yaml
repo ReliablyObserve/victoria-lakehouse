@@ -103,11 +103,29 @@ lakehouseConfig:
     read_ahead_depth: 2
     max_concurrent: 4
     max_queue: 64
+  smart_cache:
+    max_age: 24h
+    snapshot_interval: 60s
+    query_grace_period: 5m
+    hot_access_threshold: 3
+    hot_window: 10m
+    target_hours: 24
+    disk_limit_max: 100GB
+    ingestion_rate_hint: ""
+  cross_signal:
+    enabled: false
+    endpoint: ""
+    headless_service: ""
+    auth_key: ""
+    timeout: 2s
+    max_batch: 100
+    batch_interval: 500ms
   query:
     max_concurrent: 32
     timeout: 60s
     max_rows: 10000000
     slow_threshold: 5s
+    file_workers: 8
   startup:
     serve_stale: false
     warmup_window: 24h

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Smart cache controller** — unified cache orchestrator wrapping L1 (memory), L2 (disk), L3 (peer), L4 (S3) with configurable TTL, hot access detection, pin tracking, and singleflight S3 deduplication (`internal/smartcache/`)
+- **Cross-signal prefetch** — bidirectional hints between `lakehouse-logs` and `lakehouse-traces` deployments via HTTP (`/internal/prefetch/hint`, `/internal/cache/evict-hint`). Logs query for `service=checkout` automatically warms trace data for same time window, and vice versa (`internal/crosssignal/`)
+- **Parallel query file workers** — configurable bounded worker pool for concurrent Parquet file processing during queries, replacing sequential file scanning (`query.file_workers`, default 8)
+- **Cache sizing calculator** — adaptive cache budget estimation blending ingestion rate (early) and query pattern analysis (after 12h), with per-node fleet division (`internal/smartcache/sizing.go`)
+- **Active query pinning** — files used by in-flight queries are pinned in cache with configurable grace period, preventing eviction under pressure
+- **Connected data eviction** — trace IDs extracted from query results enable cross-signal cache deprioritization when traces are evicted
+- **Hint batching** — cross-signal client accumulates trace ID hints and flushes on interval or batch size threshold, reducing HTTP overhead
+- **Smart cache metrics** — 15 new Prometheus metrics: hit ratio, entries, bytes used/limit, evictions by reason, hot/pinned/owned entries, effective bytes, prefetch hit ratio, coverage hours
+- **Cross-signal metrics** — 6 new metrics: eviction sent/received/pending/applied, prefetch sent/received
+- Smart cache snapshot persistence — periodic metadata snapshots to disk for fast cache warmup on restart
+- Smart cache eviction loop — background TTL enforcement with hot access detection and pin protection
+
+### Changed
+- `getFileData()` in storage now routes through SmartCacheController when available, with fallback to original L1→L2→L3→S3 chain
+- `RunQuery` uses parallel file worker pool instead of sequential processing
+- `queryFile` extracts trace IDs from result DataBlocks for prefetch and cross-signal hints
+- Both `lakehouse-logs` and `lakehouse-traces` binaries wire up cross-signal handlers, eviction loop, and snapshot persistence
+- Auto-release workflow now auto-merges metadata PRs to prevent version drift
+
 ## [0.17.0] - 2026-05-11
 
 ### Added
@@ -26,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Split `parquets3/storage.go` (1,383 lines) into `storage_query.go` and `storage_fields.go`
 - Extract Jaeger handlers (~560 lines) from `handler.go` into dedicated `jaeger.go`
 
+### Removed
+- Dead code: empty `UpdatePerQueryStatsMetrics()`, unused `CircuitBreakerConfig`, `S3CircuitBreakerState` metric
+
 ### Fixed
 - Replace custom internalselect encoding with VL's actual wire format — fixes vlselect panics (`growslice: len out of range`) caused by 4-byte uint32 block lengths instead of 8-byte uint64
 - Add `internal/vlstorage/` thin dispatch layer bridging `storage.Storage` to VL's vlstorage function signatures (both logs and traces)
@@ -33,9 +56,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove orphaned vlselect Grafana datasource pointing to removed service
 - Fix traces-to-logs datasource uid reference (`victoria-lakehouse-logs` → `victoria-lakehouse-cold`)
 - Delete dead `internal/protocol/` package in both logs and traces modules (replaced by VL encoding in #28)
-
-### Removed
-- Dead code: empty `UpdatePerQueryStatsMetrics()`, unused `CircuitBreakerConfig`, `S3CircuitBreakerState` metric
 
 ### Architecture
 - Split into two separate binaries: `lakehouse-logs` and `lakehouse-traces`
@@ -62,10 +82,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Discovery `defaultPort` parameter for mode-aware SRV resolution (9428 for logs, 10428 for traces)
 - Helm chart: mode-aware image selection (`image.logs.repository` / `image.traces.repository`)
 - CI: Fully parallel jobs for logs and traces (test, lint, build, docker, security, benchmarks)
-
-### Changed
-- Docs: All ASCII text diagrams converted to Mermaid across write-path, use-cases, cost-comparison, architecture, and deletion-strategy
-- Docs: Deletion strategy updated to show both logs (`/delete/logsql/*`) and traces (`/delete/tracessql/*`) endpoints side by side
 
 ## [0.14.0] - 2026-05-05
 

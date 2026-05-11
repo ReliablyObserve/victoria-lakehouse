@@ -12,13 +12,16 @@ import (
 type Type int
 
 const (
-	TypeCorrelated Type = iota
+	TypeCrossSignal Type = iota
+	TypeCorrelated
 	TypeReadAhead
 	TypeWarmup
 )
 
 func (t Type) String() string {
 	switch t {
+	case TypeCrossSignal:
+		return "cross_signal"
 	case TypeCorrelated:
 		return "correlated"
 	case TypeReadAhead:
@@ -126,6 +129,16 @@ func (e *Engine) EnqueueWarmup(keys []string) int {
 	return enqueued
 }
 
+func (e *Engine) EnqueueCrossSignal(keys []string) int {
+	enqueued := 0
+	for _, key := range keys {
+		if e.Enqueue(Task{Key: key, Type: TypeCrossSignal, Priority: 1}) {
+			enqueued++
+		}
+	}
+	return enqueued
+}
+
 func (e *Engine) MarkUseful(key string) {
 	if _, loaded := e.usefulKeys.LoadAndDelete(key); loaded {
 		e.useful.Add(1)
@@ -146,9 +159,9 @@ func (e *Engine) startWorkerLocked() {
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
-		defer e.active.Add(-1)
 		e.processTask(task)
 
+		e.active.Add(-1)
 		e.mu.Lock()
 		e.startWorkerLocked()
 		e.mu.Unlock()
@@ -159,8 +172,14 @@ func (e *Engine) dequeue() (Task, bool) {
 	if len(e.queue) == 0 {
 		return Task{}, false
 	}
-	task := e.queue[0]
-	e.queue = e.queue[1:]
+	bestIdx := 0
+	for i := 1; i < len(e.queue); i++ {
+		if e.queue[i].Priority < e.queue[bestIdx].Priority {
+			bestIdx = i
+		}
+	}
+	task := e.queue[bestIdx]
+	e.queue = append(e.queue[:bestIdx], e.queue[bestIdx+1:]...)
 	return task, true
 }
 

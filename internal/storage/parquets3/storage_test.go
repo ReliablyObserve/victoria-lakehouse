@@ -1038,7 +1038,7 @@ func (s *Storage) queryLocalFile(path string, size int64, startNs, endNs int64, 
 		if s.bloomFilterSkip(f, rg, bloomChecks) {
 			continue
 		}
-		if err := s.readRowGroup(f, rg, startNs, endNs, writeBlock); err != nil {
+		if err := s.readRowGroup(f, rg, startNs, endNs, writeBlock, nil); err != nil {
 			return err
 		}
 	}

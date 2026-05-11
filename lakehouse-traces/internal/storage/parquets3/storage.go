@@ -21,6 +21,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/smartcache"
 )
 
 type Storage struct {
@@ -39,6 +40,7 @@ type Storage struct {
 	writer       *BatchWriter
 	bufferBridge *BufferBridge
 	tombstones   *delete.TombstoneStore
+	smartCache   *smartcache.Controller
 }
 
 func New(cfg *config.Config) (*Storage, error) {
@@ -107,6 +109,42 @@ func New(cfg *config.Config) (*Storage, error) {
 		ph = peercache.NewHandler(cfg.Peer.AuthKey)
 	}
 
+	var sc *smartcache.Controller
+	if cfg.SelectEnabled() {
+		metaMap := smartcache.NewMetadataMap()
+
+		if cfg.Cache.DiskPath != "" {
+			snapPath := cfg.Cache.DiskPath + "/smartcache.meta.json"
+			if err := metaMap.LoadSnapshot(snapPath); err != nil {
+				logger.Warnf("failed to load cache metadata snapshot: %s", err)
+			}
+		}
+
+		var peerLookupImpl smartcache.PeerLookup
+		var peerFetchImpl smartcache.PeerFetcher
+		if pc != nil {
+			peerLookupImpl = &peerLookupAdapter{pc: pc}
+			peerFetchImpl = &peerFetchAdapter{pc: pc}
+		} else {
+			peerLookupImpl = &localOnlyLookup{}
+			peerFetchImpl = nil
+		}
+
+		sc = smartcache.NewController(smartcache.ControllerConfig{
+			L1:           &l1Adapter{lru: memCache},
+			L2:           &l2Adapter{dc: diskCacheInst},
+			PeerLookup:   peerLookupImpl,
+			PeerFetcher:  peerFetchImpl,
+			S3Fetcher:    &s3Adapter{pool: pool},
+			Metadata:     metaMap,
+			MaxAge:       cfg.SmartCache.MaxAge,
+			HotThreshold: cfg.SmartCache.HotAccessThreshold,
+			HotWindow:    cfg.SmartCache.HotWindow,
+			GracePeriod:  cfg.SmartCache.QueryGracePeriod,
+			Signal:       string(cfg.Mode),
+		})
+	}
+
 	var bw *BatchWriter
 	if cfg.InsertEnabled() {
 		bw = NewBatchWriter(&cfg.Insert, pool, m, prefix, cfg.Mode)
@@ -132,6 +170,7 @@ func New(cfg *config.Config) (*Storage, error) {
 		peerHandler:  ph,
 		writer:       bw,
 		bufferBridge: bb,
+		smartCache:   sc,
 	}, nil
 }
 
@@ -174,6 +213,12 @@ func (s *Storage) CanWriteData() error {
 }
 
 func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]byte, error) {
+	// When SmartCacheController is available, delegate entirely to it.
+	if s.smartCache != nil {
+		return s.smartCache.Get(ctx, key, size)
+	}
+
+	// Fallback: original cache chain for insert-only nodes without SmartCache.
 	if data, ok := s.memCache.Get(key); ok {
 		metrics.CacheHitsTotal.Inc("L1")
 		return data, nil
@@ -661,5 +706,80 @@ func (s *Storage) PersistState() error {
 		return nil
 	}
 	return s.persister.SaveLabelIndex(s.labelIndex)
+}
+
+// SmartCache returns the SmartCacheController (nil if not configured).
+func (s *Storage) SmartCache() *smartcache.Controller {
+	return s.smartCache
+}
+
+// --- Adapter types bridging existing caches to smartcache interfaces ---
+
+type l1Adapter struct{ lru *cache.LRU }
+
+func (a *l1Adapter) Get(key string) ([]byte, bool) { return a.lru.Get(key) }
+func (a *l1Adapter) Put(key string, val []byte)     { a.lru.Put(key, val) }
+
+type l2Adapter struct{ dc *cache.DiskCache }
+
+func (a *l2Adapter) Get(key string) ([]byte, bool) {
+	if a.dc == nil {
+		return nil, false
+	}
+	path, ok := a.dc.Get(key)
+	if !ok {
+		return nil, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		a.dc.Delete(key)
+		return nil, false
+	}
+	return data, true
+}
+
+func (a *l2Adapter) Put(key string, data []byte) error {
+	if a.dc == nil {
+		return nil
+	}
+	_, err := a.dc.Put(key, data)
+	return err
+}
+
+func (a *l2Adapter) Delete(key string) {
+	if a.dc != nil {
+		a.dc.Delete(key)
+	}
+}
+
+func (a *l2Adapter) Size() int64 {
+	if a.dc == nil {
+		return 0
+	}
+	return a.dc.Size()
+}
+
+type peerLookupAdapter struct{ pc *peercache.PeerCache }
+
+func (a *peerLookupAdapter) Lookup(key string) (string, bool) { return a.pc.Lookup(key) }
+func (a *peerLookupAdapter) Members() []string                { return a.pc.Members() }
+func (a *peerLookupAdapter) MemberCount() int                 { return len(a.pc.Members()) }
+
+type peerFetchAdapter struct{ pc *peercache.PeerCache }
+
+func (a *peerFetchAdapter) Fetch(ctx context.Context, peer, key string) ([]byte, bool, error) {
+	return a.pc.Fetch(ctx, peer, key)
+}
+
+type localOnlyLookup struct{}
+
+func (l *localOnlyLookup) Lookup(key string) (string, bool) { return "self", true }
+func (l *localOnlyLookup) Members() []string                { return []string{"self"} }
+func (l *localOnlyLookup) MemberCount() int                 { return 1 }
+
+type s3Adapter struct{ pool *s3reader.ClientPool }
+
+func (a *s3Adapter) Download(ctx context.Context, key string) ([]byte, error) {
+	return a.pool.Download(ctx, key)
 }
 

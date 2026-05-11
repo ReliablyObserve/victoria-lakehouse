@@ -70,8 +70,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Prefetch.ReadAheadDepth != 2 {
 		t.Errorf("default read ahead = %d, want 2", cfg.Prefetch.ReadAheadDepth)
 	}
-	if cfg.Prefetch.MaxConcurrent != 4 {
-		t.Errorf("default prefetch concurrent = %d, want 4", cfg.Prefetch.MaxConcurrent)
+	if cfg.Prefetch.MaxConcurrent != 8 {
+		t.Errorf("default prefetch concurrent = %d, want 8", cfg.Prefetch.MaxConcurrent)
 	}
 	if cfg.Peer.Timeout != 5*time.Second {
 		t.Errorf("default peer timeout = %v, want 5s", cfg.Peer.Timeout)
