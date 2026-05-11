@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
@@ -62,13 +64,66 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	queryStr := q.String()
 
-	for _, fi := range files {
-		if err := ctx.Err(); err != nil {
-			return err
+	// Parallel file worker pool
+	fileWorkers := s.cfg.Query.FileWorkers
+	if fileWorkers <= 0 {
+		fileWorkers = 8
+	}
+	if fileWorkers > len(files) {
+		fileWorkers = len(files)
+	}
+
+	queryID := fmt.Sprintf("q-%d", queryStart.UnixNano())
+
+	// Pin all files in smart cache before query, defer unpin
+	if s.smartCache != nil {
+		for _, fi := range files {
+			s.smartCache.Pin(fi.Key, queryID)
 		}
-		if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, filteredWriteBlock); err != nil {
-			logger.Warnf("query file error: %s; key=%s", err, fi.Key)
-			continue
+		defer func() {
+			for _, fi := range files {
+				s.smartCache.Unpin(fi.Key, queryID)
+			}
+		}()
+	}
+
+	var wbMu sync.Mutex
+	serializedWriteBlock := func(workerID uint, db *logstorage.DataBlock) {
+		wbMu.Lock()
+		filteredWriteBlock(workerID, db)
+		wbMu.Unlock()
+	}
+
+	taskCh := make(chan manifest.FileInfo, len(files))
+	for _, fi := range files {
+		taskCh <- fi
+	}
+	close(taskCh)
+
+	var wg sync.WaitGroup
+	var firstErr atomic.Value
+
+	for i := 0; i < fileWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for fi := range taskCh {
+				if err := ctx.Err(); err != nil {
+					firstErr.CompareAndSwap(nil, err)
+					return
+				}
+				if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, serializedWriteBlock); err != nil {
+					logger.Warnf("query file error: %s; key=%s", err, fi.Key)
+					continue
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if v := firstErr.Load(); v != nil {
+		if err, ok := v.(error); ok && ctx.Err() != nil {
+			return err
 		}
 	}
 
