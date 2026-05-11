@@ -188,3 +188,85 @@ func (c *Controller) RecordTraceIDs(key string, traceIDs []string) {
 func (c *Controller) Metadata() *MetadataMap {
 	return c.metadata
 }
+
+// RunEvictionOnce runs a single eviction pass, removing expired entries from
+// both the L2 cache and the metadata map. Returns the list of evicted keys.
+func (c *Controller) RunEvictionOnce() []string {
+	expired := CollectExpired(c.metadata, c.maxAge, c.hotThreshold, c.hotWindow)
+	for _, key := range expired {
+		meta, ok := c.metadata.Get(key)
+		if !ok {
+			continue
+		}
+		c.l2.Delete(key)
+		c.metadata.Delete(key)
+		_ = meta
+	}
+	return expired
+}
+
+// StartEvictionLoop launches a background goroutine that periodically runs
+// eviction. It stops when the stop channel is closed.
+func (c *Controller) StartEvictionLoop(interval time.Duration, stop <-chan struct{}) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				c.RunEvictionOnce()
+			}
+		}
+	}()
+}
+
+// StartSnapshotLoop launches a background goroutine that periodically saves
+// metadata snapshots to disk. On stop it performs a final save.
+func (c *Controller) StartSnapshotLoop(path string, interval time.Duration, stop <-chan struct{}) {
+	if path == "" {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				_ = c.metadata.SaveSnapshot(path)
+				return
+			case <-ticker.C:
+				if err := c.metadata.SaveSnapshot(path); err != nil {
+					// logged by caller's context
+				}
+			}
+		}
+	}()
+}
+
+// DeprioritizeByTraceIDs resets access counts and timestamps for any cached
+// entries whose TraceIDs overlap with the provided set. This supports
+// cross-signal deprioritization where resolved traces should no longer be
+// kept hot in cache. Returns the number of entries deprioritized.
+func (c *Controller) DeprioritizeByTraceIDs(traceIDs []string) int {
+	traceSet := make(map[string]bool, len(traceIDs))
+	for _, id := range traceIDs {
+		traceSet[id] = true
+	}
+
+	all := c.metadata.All()
+	deprioritized := 0
+	for key, meta := range all {
+		for _, tid := range meta.TraceIDs {
+			if traceSet[tid] {
+				meta.LastAccess = time.Time{}
+				meta.AccessCount = 0
+				c.metadata.Set(key, meta)
+				deprioritized++
+				break
+			}
+		}
+	}
+	return deprioritized
+}
