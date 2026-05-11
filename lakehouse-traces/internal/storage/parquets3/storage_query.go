@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
@@ -62,13 +64,66 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	queryStr := q.String()
 
-	for _, fi := range files {
-		if err := ctx.Err(); err != nil {
-			return err
+	// Parallel file worker pool
+	fileWorkers := s.cfg.Query.FileWorkers
+	if fileWorkers <= 0 {
+		fileWorkers = 8
+	}
+	if fileWorkers > len(files) {
+		fileWorkers = len(files)
+	}
+
+	queryID := fmt.Sprintf("q-%d", queryStart.UnixNano())
+
+	// Pin all files in smart cache before query, defer unpin
+	if s.smartCache != nil {
+		for _, fi := range files {
+			s.smartCache.Pin(fi.Key, queryID)
 		}
-		if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, filteredWriteBlock); err != nil {
-			logger.Warnf("query file error: %s; key=%s", err, fi.Key)
-			continue
+		defer func() {
+			for _, fi := range files {
+				s.smartCache.Unpin(fi.Key, queryID)
+			}
+		}()
+	}
+
+	var wbMu sync.Mutex
+	serializedWriteBlock := func(workerID uint, db *logstorage.DataBlock) {
+		wbMu.Lock()
+		filteredWriteBlock(workerID, db)
+		wbMu.Unlock()
+	}
+
+	taskCh := make(chan manifest.FileInfo, len(files))
+	for _, fi := range files {
+		taskCh <- fi
+	}
+	close(taskCh)
+
+	var wg sync.WaitGroup
+	var firstErr atomic.Value
+
+	for i := 0; i < fileWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for fi := range taskCh {
+				if err := ctx.Err(); err != nil {
+					firstErr.CompareAndSwap(nil, err)
+					return
+				}
+				if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, serializedWriteBlock); err != nil {
+					logger.Warnf("query file error: %s; key=%s", err, fi.Key)
+					continue
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if v := firstErr.Load(); v != nil {
+		if err, ok := v.(error); ok && ctx.Err() != nil {
+			return err
 		}
 	}
 
@@ -115,6 +170,12 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
 	bloomChecks := s.buildBloomChecks(queryStr)
 
+	var collectedTraceIDs []string
+	var traceIDsPtr *[]string
+	if s.smartCache != nil {
+		traceIDsPtr = &collectedTraceIDs
+	}
+
 	for _, rg := range f.RowGroups() {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -131,15 +192,19 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 		}
 
 		metrics.ParquetRowGroupsScanned.Inc()
-		if err := s.readRowGroup(f, rg, startNs, endNs, writeBlock); err != nil {
+		if err := s.readRowGroup(f, rg, startNs, endNs, writeBlock, traceIDsPtr); err != nil {
 			return err
 		}
+	}
+
+	if s.smartCache != nil && len(collectedTraceIDs) > 0 {
+		s.smartCache.RecordTraceIDs(fi.Key, collectedTraceIDs)
 	}
 
 	return nil
 }
 
-func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc) error {
+func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
 	schema := f.Root()
 	rows := rg.Rows()
 	defer func() { _ = rows.Close() }()
@@ -153,6 +218,9 @@ func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, en
 			db := s.rowsToDataBlock(buf[:n], colNames, schema, startNs, endNs)
 			if db != nil && db.RowsCount() > 0 {
 				writeBlock(0, db)
+				if traceIDs != nil {
+					extractTraceIDs(db, traceIDs)
+				}
 			}
 		}
 		if err != nil {
@@ -164,6 +232,25 @@ func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, en
 	}
 
 	return nil
+}
+
+// extractTraceIDs collects unique, non-empty trace_id values from a DataBlock
+// into the destination slice, capped at 200 entries.
+func extractTraceIDs(db *logstorage.DataBlock, dest *[]string) {
+	cols := db.GetColumns(false)
+	for _, col := range cols {
+		if col.Name != "trace_id" {
+			continue
+		}
+		seen := make(map[string]bool)
+		for _, v := range col.Values {
+			if v != "" && !seen[v] && len(*dest) < 200 {
+				seen[v] = true
+				*dest = append(*dest, v)
+			}
+		}
+		return
+	}
 }
 
 func (s *Storage) rowsToDataBlock(rows []parquet.Row, colNames []string, root *parquet.Column, startNs, endNs int64) *logstorage.DataBlock {
