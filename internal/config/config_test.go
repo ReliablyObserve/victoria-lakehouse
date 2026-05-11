@@ -100,15 +100,6 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Query.SlowThreshold != 5*time.Second {
 		t.Errorf("default slow threshold = %v, want 5s", cfg.Query.SlowThreshold)
 	}
-	if cfg.CircuitBreaker.Threshold != 5 {
-		t.Errorf("default CB threshold = %d, want 5", cfg.CircuitBreaker.Threshold)
-	}
-	if cfg.CircuitBreaker.Timeout != 30*time.Second {
-		t.Errorf("default CB timeout = %v, want 30s", cfg.CircuitBreaker.Timeout)
-	}
-	if cfg.CircuitBreaker.SuccessThreshold != 2 {
-		t.Errorf("default CB success threshold = %d, want 2", cfg.CircuitBreaker.SuccessThreshold)
-	}
 	if cfg.Tenant.PrefixTemplate != "{AccountID}/{ProjectID}/" {
 		t.Errorf("default tenant prefix template = %q", cfg.Tenant.PrefixTemplate)
 	}
@@ -503,16 +494,6 @@ func TestValidate_InvalidQueryMaxRows(t *testing.T) {
 	}
 }
 
-func TestValidate_InvalidCBThreshold(t *testing.T) {
-	cfg := Default()
-	cfg.Mode = ModeLogs
-	cfg.S3.Bucket = "test"
-	cfg.CircuitBreaker.Threshold = 0
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for zero CB threshold")
-	}
-}
-
 func TestValidate_EmptyRoleDefaultsToAll(t *testing.T) {
 	cfg := Default()
 	cfg.Mode = ModeLogs
@@ -768,26 +749,6 @@ func TestMergeConfig_QueryFields(t *testing.T) {
 	}
 	if result.Query.SlowThreshold != 10*time.Second {
 		t.Errorf("SlowThreshold = %v", result.Query.SlowThreshold)
-	}
-}
-
-func TestMergeConfig_CircuitBreakerFields(t *testing.T) {
-	base := Default()
-	overlay := &Config{}
-	overlay.CircuitBreaker.Threshold = 10
-	overlay.CircuitBreaker.Timeout = 60 * time.Second
-	overlay.CircuitBreaker.SuccessThreshold = 3
-
-	result := mergeConfig(base, overlay)
-
-	if result.CircuitBreaker.Threshold != 10 {
-		t.Errorf("Threshold = %d", result.CircuitBreaker.Threshold)
-	}
-	if result.CircuitBreaker.Timeout != 60*time.Second {
-		t.Errorf("Timeout = %v", result.CircuitBreaker.Timeout)
-	}
-	if result.CircuitBreaker.SuccessThreshold != 3 {
-		t.Errorf("SuccessThreshold = %d", result.CircuitBreaker.SuccessThreshold)
 	}
 }
 

@@ -15,12 +15,14 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/election"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/insertapi"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/internalselect"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/selectapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3"
+	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/internal/vlstorage"
+
+	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/internalselect"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/envflag"
@@ -235,6 +237,8 @@ func run(cfg *config.Config, addr string) {
 		logger.Errorf("HTTP server shutdown error: %s", err)
 	}
 
+	internalselect.Stop()
+
 	if rewriteSched != nil {
 		rewriteSched.Stop()
 	}
@@ -291,8 +295,14 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	})
 
 	if cfg.SelectEnabled() {
-		isHandler := internalselect.NewHandler(store, cfg.Query.Timeout, tombstoneStore)
-		isHandler.Register(mux)
+		internalvlstorage.SetStorage(store, tombstoneStore)
+		internalselect.Init()
+
+		internalHandler := func(w http.ResponseWriter, r *http.Request) {
+			internalselect.RequestHandler(r.Context(), w, r)
+		}
+		mux.HandleFunc("/internal/select/", internalHandler)
+		mux.HandleFunc("/internal/delete/", internalHandler)
 
 		publicHandler := selectapi.NewHandler(store, cfg)
 		publicHandler.Register(mux)

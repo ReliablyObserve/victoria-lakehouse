@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Query rate limiting via `MaxConcurrent` semaphore — returns HTTP 429 when at capacity
+- Tests for S3 reader operations (Upload, Download, Delete, Exists), election (S3/K8s/auto), Jaeger handlers (+81 tests)
+
+### Changed
+- Replace custom `internalselect` handler (~960 lines) with VL's built-in `RequestHandler` for both modules
+- Split `parquets3/storage.go` (1,383 lines) into `storage_query.go` and `storage_fields.go`
+- Extract Jaeger handlers (~560 lines) from `handler.go` into dedicated `jaeger.go`
+
+### Removed
+- Dead code: empty `UpdatePerQueryStatsMetrics()`, unused `CircuitBreakerConfig`, `S3CircuitBreakerState` metric
+
+### Added
 - S3 retry with exponential backoff for all S3 operations (`ReadAt`, `Upload`, `Download`, `Delete`, `Exists`)
 - Context propagation in S3 reader (replaces `context.TODO()`)
 - Per-operation S3 metrics (requests, duration, errors, bytes read)

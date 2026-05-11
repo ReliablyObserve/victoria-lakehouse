@@ -91,8 +91,3 @@ func (a *adapter) DeleteActiveTasks(_ context.Context) ([]*logstorage.DeleteTask
 	return result, nil
 }
 
-func UpdatePerQueryStatsMetrics(qs *logstorage.QueryStats) {
-	if qs == nil {
-		return
-	}
-}

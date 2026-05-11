@@ -157,13 +157,3 @@ func TestDeleteActiveTasks_ReturnsTombstones(t *testing.T) {
 	}
 }
 
-func TestUpdatePerQueryStatsMetrics_NilNoPanic(t *testing.T) {
-	// Should not panic with nil input.
-	UpdatePerQueryStatsMetrics(nil)
-}
-
-func TestUpdatePerQueryStatsMetrics_NonNilNoPanic(t *testing.T) {
-	// Should not panic with a real QueryStats.
-	qs := &logstorage.QueryStats{}
-	UpdatePerQueryStatsMetrics(qs)
-}

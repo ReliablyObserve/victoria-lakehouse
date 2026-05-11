@@ -51,8 +51,7 @@ type Config struct {
 	Insert         InsertConfig         `yaml:"insert"`
 	Select         SelectConfig         `yaml:"select"`
 	Schema         SchemaConfig         `yaml:"schema"`
-	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
-	Tenant         TenantConfig         `yaml:"tenant"`
+	Tenant TenantConfig `yaml:"tenant"`
 	Compaction     CompactionConfig     `yaml:"compaction"`
 	Delete         DeleteConfig         `yaml:"delete"`
 
@@ -227,12 +226,6 @@ type QueryConfig struct {
 	SlowThreshold time.Duration `yaml:"slow_threshold"`
 }
 
-type CircuitBreakerConfig struct {
-	Threshold        int           `yaml:"threshold"`
-	Timeout          time.Duration `yaml:"timeout"`
-	SuccessThreshold int           `yaml:"success_threshold"`
-}
-
 type TenantConfig struct {
 	DefaultPrefix  string `yaml:"default_prefix"`
 	PrefixTemplate string `yaml:"prefix_template"`
@@ -339,12 +332,6 @@ func Default() *Config {
 			Timeout:       60 * time.Second,
 			MaxRows:       10_000_000,
 			SlowThreshold: 5 * time.Second,
-		},
-
-		CircuitBreaker: CircuitBreakerConfig{
-			Threshold:        5,
-			Timeout:          30 * time.Second,
-			SuccessThreshold: 2,
 		},
 
 		Insert: InsertConfig{
@@ -500,10 +487,6 @@ func (c *Config) Validate() error {
 	if c.Query.MaxRows <= 0 {
 		return fmt.Errorf("--lakehouse.query.max-rows must be positive, got %d", c.Query.MaxRows)
 	}
-	if c.CircuitBreaker.Threshold <= 0 {
-		return fmt.Errorf("--lakehouse.circuit-breaker.threshold must be positive, got %d", c.CircuitBreaker.Threshold)
-	}
-
 	switch c.Compaction.LeaderElection {
 	case "auto", "k8s", "s3", "none", "":
 	default:
@@ -750,17 +733,6 @@ func mergeConfig(base, overlay *Config) *Config {
 	}
 	if overlay.Query.SlowThreshold > 0 {
 		base.Query.SlowThreshold = overlay.Query.SlowThreshold
-	}
-
-	// Circuit Breaker
-	if overlay.CircuitBreaker.Threshold > 0 {
-		base.CircuitBreaker.Threshold = overlay.CircuitBreaker.Threshold
-	}
-	if overlay.CircuitBreaker.Timeout > 0 {
-		base.CircuitBreaker.Timeout = overlay.CircuitBreaker.Timeout
-	}
-	if overlay.CircuitBreaker.SuccessThreshold > 0 {
-		base.CircuitBreaker.SuccessThreshold = overlay.CircuitBreaker.SuccessThreshold
 	}
 
 	// Tenant

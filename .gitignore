@@ -3,6 +3,7 @@
 /lakehouse
 /lakehouse-logs
 /lakehouse-traces-bin
+lakehouse-traces/lakehouse-traces
 /datagen
 /healthcheck
 /loadtest
