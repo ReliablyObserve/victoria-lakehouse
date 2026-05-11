@@ -713,6 +713,12 @@ func (s *Storage) SmartCache() *smartcache.Controller {
 	return s.smartCache
 }
 
+// WarmFile fetches a file into cache without returning the data.
+func (s *Storage) WarmFile(ctx context.Context, key string) error {
+	_, err := s.getFileData(ctx, key, 0)
+	return err
+}
+
 // --- Adapter types bridging existing caches to smartcache interfaces ---
 
 type l1Adapter struct{ lru *cache.LRU }
