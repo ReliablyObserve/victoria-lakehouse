@@ -144,13 +144,15 @@ services:
     image: ghcr.io/reliablyobserve/loki-vl-proxy:v1.31.2
     environment:
       VL_BACKEND_URL: "http://victorialogs:9428"
-      LABEL_STYLE: "underscores"
-      METADATA_FIELD_MODE: "hybrid"
     command:
       - "-label-style=underscores"
-      - "-metadata-field-mode=hybrid"
-      - "-stream-fields=service.name,k8s.namespace.name,k8s.pod.name,deployment.environment"
-      - "-extra-label-fields=level,cloud.region,host.name"
+      - "-metadata-field-mode=translated"
+      - "-emit-structured-metadata=true"
+      - "-stream-fields=service.name,k8s.namespace.name,k8s.pod.name,k8s.deployment.name,deployment.environment"
+      - "-extra-label-fields=level,cloud.region,host.name,k8s.node.name,trace_id,span_id,scope.name"
+      - "-derived-fields=[{\"name\":\"traceID\",\"matcherRegex\":\"trace_id=([a-f0-9]+)\",\"url\":\"http://localhost:3003/explore?left=%5B%22now-1h%22,%22now%22,%22victoria-lakehouse-traces%22,%7B%22query%22:%22$${__value.raw}%22%7D%5D\"}]"
+      - "-patterns-autodetect-from-queries=true"
+      - "-label-values-indexed-cache=true"
       - "-cold-enabled=true"
       - "-cold-backend=http://lakehouse-logs:9428"
       - "-cold-boundary=24h"
