@@ -141,9 +141,7 @@ services:
       start_period: 10s
 
   loki-vl-proxy:
-    build:
-      context: /private/tmp/loki-vl-fix
-      dockerfile: Dockerfile
+    image: ghcr.io/reliablyobserve/loki-vl-proxy:v1.31.2
     environment:
       VL_BACKEND_URL: "http://lakehouse-logs:9428"
       LABEL_STYLE: "underscores"

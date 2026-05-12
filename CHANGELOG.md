@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Add `external_query.go` patch to auto-release workflow — fixes binary build failure (`undefined: logstorage.QueryHasPipes`)
+- Update e2e compose loki-vl-proxy from broken local build path to published GHCR image v1.31.2
+
 ### Changed
 - Replace custom LogsQL filter parser with VL's native `Filter.MatchRow()` — full LogsQL parity including OR, AND, NOT, regex, ranges, case-insensitive matching, and all filter types VL supports
 - Apply LogsQL filter evaluation in traces `RunQuery` (was missing) — traces now filter rows same as logs module
