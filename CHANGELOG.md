@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Format `_time` column as RFC3339Nano instead of raw nanoseconds — fixes VL handler timestamp parsing for all query endpoints
+- Recover from `writeBlock` panics caused by unsupported VL pipe processors (e.g. `CountByTimePipe` in `/hits`) — prevents query crashes, returns partial results instead
+- Add `filter.go` to traces module for metadata filter scoping — traces `GetFieldNames`/`GetFieldValues` now correctly apply LogsQL filters
+- Apply LogsQL filter scope to metadata endpoints (`GetFieldNames`, `GetFieldValues`, `GetStreamFieldNames`, `GetStreamFieldValues`) — previously returned unfiltered results
+
 ## [0.18.1] - 2026-05-11
 
 ### Added
