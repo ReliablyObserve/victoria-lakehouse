@@ -33,7 +33,7 @@ func TestDelete_TombstoneAndQuery(t *testing.T) {
 		url.QueryEscape(`service.name:="nginx"`), startNs, endNs)
 
 	resp := httpPost(t, logsBaseURL, deleteURL, "application/x-www-form-urlencoded", nil)
-	defer _ = resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -90,7 +90,7 @@ func TestDelete_Estimate(t *testing.T) {
 		url.QueryEscape("*"), startNs, endNs)
 
 	resp := httpPost(t, logsBaseURL, estimateURL, "application/x-www-form-urlencoded", nil)
-	defer _ = resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -160,7 +160,7 @@ func TestDelete_ListTombstones(t *testing.T) {
 	waitForHealth(t, logsBaseURL, 30*time.Second)
 
 	resp := httpGet(t, logsBaseURL, "/delete/logsql/tombstones", nil)
-	defer _ = resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -199,7 +199,7 @@ func httpDoDelete(t *testing.T, baseURL, path string) {
 	if err != nil {
 		t.Fatalf("DELETE %s%s failed: %v", baseURL, path, err)
 	}
-	defer _ = resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
