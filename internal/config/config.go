@@ -231,8 +231,17 @@ type QueryConfig struct {
 }
 
 type TenantConfig struct {
-	DefaultPrefix  string `yaml:"default_prefix"`
-	PrefixTemplate string `yaml:"prefix_template"`
+	DefaultPrefix    string `yaml:"default_prefix"`
+	PrefixTemplate   string `yaml:"prefix_template"`
+	Isolation        string `yaml:"isolation"`
+	BucketTemplate   string `yaml:"bucket_template"`
+	DefaultAccount   string `yaml:"default_account"`
+	DefaultProject   string `yaml:"default_project"`
+	HeaderAccount    string `yaml:"header_account"`
+	HeaderProject    string `yaml:"header_project"`
+	GlobalReadHeader string `yaml:"global_read_header"`
+	GlobalReadValue  string `yaml:"global_read_value"`
+	GlobalReadToken  string `yaml:"global_read_token"`
 }
 
 type CompactionConfig struct {
@@ -381,6 +390,11 @@ func Default() *Config {
 
 		Tenant: TenantConfig{
 			PrefixTemplate: "{AccountID}/{ProjectID}/",
+			Isolation:      "prefix",
+			DefaultAccount: "0",
+			DefaultProject: "0",
+			HeaderAccount:  "X-Scope-AccountID",
+			HeaderProject:  "X-Scope-ProjectID",
 		},
 
 		Compaction: CompactionConfig{
@@ -791,6 +805,33 @@ func mergeConfig(base, overlay *Config) *Config {
 	}
 	if overlay.Tenant.PrefixTemplate != "" {
 		base.Tenant.PrefixTemplate = overlay.Tenant.PrefixTemplate
+	}
+	if overlay.Tenant.Isolation != "" {
+		base.Tenant.Isolation = overlay.Tenant.Isolation
+	}
+	if overlay.Tenant.BucketTemplate != "" {
+		base.Tenant.BucketTemplate = overlay.Tenant.BucketTemplate
+	}
+	if overlay.Tenant.DefaultAccount != "" {
+		base.Tenant.DefaultAccount = overlay.Tenant.DefaultAccount
+	}
+	if overlay.Tenant.DefaultProject != "" {
+		base.Tenant.DefaultProject = overlay.Tenant.DefaultProject
+	}
+	if overlay.Tenant.HeaderAccount != "" {
+		base.Tenant.HeaderAccount = overlay.Tenant.HeaderAccount
+	}
+	if overlay.Tenant.HeaderProject != "" {
+		base.Tenant.HeaderProject = overlay.Tenant.HeaderProject
+	}
+	if overlay.Tenant.GlobalReadHeader != "" {
+		base.Tenant.GlobalReadHeader = overlay.Tenant.GlobalReadHeader
+	}
+	if overlay.Tenant.GlobalReadValue != "" {
+		base.Tenant.GlobalReadValue = overlay.Tenant.GlobalReadValue
+	}
+	if overlay.Tenant.GlobalReadToken != "" {
+		base.Tenant.GlobalReadToken = overlay.Tenant.GlobalReadToken
 	}
 
 	// HotBoundary

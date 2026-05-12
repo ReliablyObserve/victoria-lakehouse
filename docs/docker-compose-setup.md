@@ -40,8 +40,7 @@ graph TB
     end
 
     subgraph "Analytics — direct Parquet SQL"
-        DDB["DuckDB<br/>(in-memory)"]
-        CH["ClickHouse<br/>:9000"]
+        DDB["DuckDB · ClickHouse<br/>(+ Trino, Databricks, Snowflake,<br/>StarRocks, Spark, pandas)"]
     end
 
     subgraph "Grafana :3003"
@@ -58,8 +57,7 @@ graph TB
 
     MINIO --> LHL
     MINIO --> LHT
-    MINIO -->|"s3()"| CH
-    MINIO -->|"read_parquet()"| DDB
+    MINIO -->|"SQL on Parquet"| DDB
 
     VLS -->|"fan-out"| VL
     VLS -->|"fan-out"| LHL
@@ -77,7 +75,6 @@ graph TB
     G --> LHT
     G --> LVP
     G --> DDB
-    G --> CH
 
     style VL fill:#264653,color:#fff
     style VT fill:#264653,color:#fff
@@ -87,7 +84,6 @@ graph TB
     style VTS fill:#2d6a4f,color:#fff
     style MINIO fill:#e76f51,color:#fff
     style DDB fill:#ff6b35,color:#fff
-    style CH fill:#fabd2f,color:#000
 ```
 
 ## Quick Start
@@ -151,16 +147,19 @@ The datagen tool produces five realistic log patterns (JSON access logs, logfmt,
 ```yaml
 lakehouse-logs:
   command:
-    - "-lakehouse.mode=logs"
     - "-lakehouse.s3.bucket=obs-archive"
     - "-lakehouse.s3.endpoint=http://minio:9000"
     - "-lakehouse.s3.access-key=minioadmin"
     - "-lakehouse.s3.secret-key=minioadmin"
     - "-lakehouse.s3.force-path-style=true"
     - "-lakehouse.manifest.refresh-interval=30s"
+    - "-lakehouse.tenant.default-account=0"
+    - "-lakehouse.tenant.default-project=0"
+    - "-lakehouse.tenant.global-read-header=X-Lakehouse-Global-Read"
+    - "-lakehouse.tenant.global-read-value=lakehouse-e2e-global-key"
 ```
 
-Serves VictoriaLogs-compatible select APIs backed by Parquet files on MinIO. The manifest refreshes every 30 seconds to pick up newly generated data quickly.
+Serves VictoriaLogs-compatible select APIs backed by Parquet files on MinIO. Pre-configured with tenant `0/0` (default) and global read access via the `X-Lakehouse-Global-Read` header for admin/testing dashboards.
 
 - **Internal endpoint**: `http://lakehouse-logs:9428`
 - **Health check**: `GET /health` every 5 seconds
@@ -335,6 +334,22 @@ FROM read_parquet('s3://obs-archive/logs/**/*.parquet')
 WHERE $__timeFilter(make_timestamp(timestamp_unix_nano / 1000))
 GROUP BY 1 ORDER BY 1
 ```
+
+### Other Analytics Engines (External)
+
+The Docker Compose includes DuckDB and ClickHouse pre-configured. Additional engines can query the same S3 Parquet files externally:
+
+| Engine | Grafana Plugin | How to Connect | License |
+|---|---|---|---|
+| **DuckDB** | `motherduck-duckdb-datasource` (unsigned) | Included in compose | Free |
+| **ClickHouse** | `grafana-clickhouse-datasource` (official) | Included in compose | Free |
+| **[Trino](https://trino.io/)** | [`trino-datasource`](https://grafana.com/grafana/plugins/trino-datasource/) (community-signed) | Add Trino container + Hive connector | Free |
+| **[Databricks](https://www.databricks.com/)** | `grafana-databricks-datasource` (official) | External Databricks workspace | Enterprise |
+| **[Snowflake](https://www.snowflake.com/)** | `grafana-snowflake-datasource` (official) | External Snowflake account | Enterprise |
+| **[StarRocks](https://www.starrocks.io/)** | Built-in MySQL datasource | Add StarRocks container | Free |
+| **[Spark](https://spark.apache.org/)** | None | PySpark with `s3a://` | — |
+
+Full engine details: [Analytics Engines](analytics-engines.md)
 
 ### Grafana
 
