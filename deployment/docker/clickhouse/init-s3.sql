@@ -1,36 +1,41 @@
 -- ClickHouse OTEL-compatible views for Lakehouse S3 Parquet data
--- Maps Parquet column names to OpenTelemetry standard naming convention
--- Compatible with Grafana ClickHouse datasource OTEL mode
+-- Schema matches the OpenTelemetry ClickHouse exporter exactly so
+-- Grafana's OTEL mode auto-discovers columns with zero configuration.
+-- Reference: https://opentelemetry.io/docs/specs/otel/logs/data-model/
 
 CREATE DATABASE IF NOT EXISTS lakehouse;
 
 -- ==========================================================================
--- OTEL Logs — maps Parquet logs to OpenTelemetry log schema
+-- OTEL Logs — matches otel-collector clickhouseexporter log schema
 -- ==========================================================================
 
 CREATE OR REPLACE VIEW lakehouse.otel_logs AS
 SELECT
     fromUnixTimestamp64Nano(timestamp_unix_nano) AS Timestamp,
-    body AS Body,
+    toUInt32(0) AS TraceFlags,
     severity_text AS SeverityText,
-    severity_number AS SeverityNumber,
+    toInt32(severity_number) AS SeverityNumber,
+    body AS Body,
     `service.name` AS ServiceName,
     trace_id AS TraceId,
     span_id AS SpanId,
     `scope.name` AS ScopeName,
     '' AS ScopeVersion,
-    `_stream` AS LogStreamId,
+    '' AS ResourceSchemaUrl,
+    '' AS ScopeSchemaUrl,
     mapConcat(
         `resource.attributes`,
-        mapFromArrays(
-            ['k8s.namespace.name', 'k8s.pod.name', 'k8s.deployment.name',
-             'k8s.node.name', 'deployment.environment', 'cloud.region', 'host.name'],
-            [`k8s.namespace.name`, `k8s.pod.name`, `k8s.deployment.name`,
-             `k8s.node.name`, `deployment.environment`, `cloud.region`, `host.name`]
+        mapFilter((k, v) -> v != '',
+            mapFromArrays(
+                ['k8s.namespace.name', 'k8s.pod.name', 'k8s.deployment.name',
+                 'k8s.node.name', 'deployment.environment', 'cloud.region', 'host.name'],
+                [`k8s.namespace.name`, `k8s.pod.name`, `k8s.deployment.name`,
+                 `k8s.node.name`, `deployment.environment`, `cloud.region`, `host.name`]
+            )
         )
     ) AS ResourceAttributes,
     `log.attributes` AS LogAttributes,
-    map() AS ScopeAttributes
+    CAST(map() AS Map(String, String)) AS ScopeAttributes
 FROM s3(
     'http://minio:9000/obs-archive/*/*/logs/dt=*/hour=*/*.parquet',
     'minioadmin', 'minioadmin', 'Parquet',
@@ -43,7 +48,7 @@ FROM s3(
 );
 
 -- ==========================================================================
--- OTEL Traces — maps Parquet traces to OpenTelemetry span schema
+-- OTEL Traces — matches otel-collector clickhouseexporter span schema
 -- ==========================================================================
 
 CREATE OR REPLACE VIEW lakehouse.otel_traces AS
@@ -63,7 +68,7 @@ SELECT
         ELSE 'SPAN_KIND_UNSPECIFIED'
     END AS SpanKind,
     `service.name` AS ServiceName,
-    duration_ns / 1000000 AS Duration,
+    duration_ns AS Duration,
     CASE `status.code`
         WHEN 0 THEN 'STATUS_CODE_UNSET'
         WHEN 1 THEN 'STATUS_CODE_OK'
@@ -74,31 +79,38 @@ SELECT
     `scope.name` AS ScopeName,
     '' AS ScopeVersion,
     '' AS TraceState,
+    toUInt32(0) AS TraceFlags,
+    '' AS ResourceSchemaUrl,
+    '' AS ScopeSchemaUrl,
     mapConcat(
         `resource.attributes`,
-        mapFromArrays(
-            ['deployment.environment', 'cloud.region', 'host.name',
-             'k8s.namespace.name', 'k8s.deployment.name', 'k8s.node.name'],
-            [`resource_attr:deployment.environment`, `resource_attr:cloud.region`, `resource_attr:host.name`,
-             `resource_attr:k8s.namespace.name`, `resource_attr:k8s.deployment.name`, `resource_attr:k8s.node.name`]
+        mapFilter((k, v) -> v != '',
+            mapFromArrays(
+                ['deployment.environment', 'cloud.region', 'host.name',
+                 'k8s.namespace.name', 'k8s.deployment.name', 'k8s.node.name'],
+                [`resource_attr:deployment.environment`, `resource_attr:cloud.region`, `resource_attr:host.name`,
+                 `resource_attr:k8s.namespace.name`, `resource_attr:k8s.deployment.name`, `resource_attr:k8s.node.name`]
+            )
         )
     ) AS ResourceAttributes,
     mapConcat(
         `span.attributes`,
-        mapFromArrays(
-            ['http.method', 'http.status_code', 'http.url', 'db.system', 'db.statement'],
-            [`span_attr:http.method`, `span_attr:http.status_code`, `span_attr:http.url`,
-             `span_attr:db.system`, `span_attr:db.statement`]
+        mapFilter((k, v) -> v != '',
+            mapFromArrays(
+                ['http.method', 'http.status_code', 'http.url', 'db.system', 'db.statement'],
+                [`span_attr:http.method`, `span_attr:http.status_code`, `span_attr:http.url`,
+                 `span_attr:db.system`, `span_attr:db.statement`]
+            )
         )
     ) AS SpanAttributes,
-    map() AS ScopeAttributes,
-    [] AS `Events.Timestamp`,
-    [] AS `Events.Name`,
-    [] AS `Events.Attributes`,
-    [] AS `Links.TraceId`,
-    [] AS `Links.SpanId`,
-    [] AS `Links.TraceState`,
-    [] AS `Links.Attributes`
+    CAST(map() AS Map(String, String)) AS ScopeAttributes,
+    CAST([] AS Array(DateTime64(9))) AS `Events.Timestamp`,
+    CAST([] AS Array(String)) AS `Events.Name`,
+    CAST([] AS Array(Map(String, String))) AS `Events.Attributes`,
+    CAST([] AS Array(String)) AS `Links.TraceId`,
+    CAST([] AS Array(String)) AS `Links.SpanId`,
+    CAST([] AS Array(String)) AS `Links.TraceState`,
+    CAST([] AS Array(Map(String, String))) AS `Links.Attributes`
 FROM s3(
     'http://minio:9000/obs-archive/*/*/traces/dt=*/hour=*/*.parquet',
     'minioadmin', 'minioadmin', 'Parquet',

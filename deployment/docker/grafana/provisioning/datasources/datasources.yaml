@@ -129,6 +129,7 @@ datasources:
       logsSeverityNumberField: SeverityNumber
       logsBodyField: Body
       logsTimeField: Timestamp
+      logsLevelField: SeverityText
       logsServiceNameField: ServiceName
       logsTraceIdField: TraceId
       logsSpanIdField: SpanId
@@ -155,6 +156,7 @@ datasources:
       tracesTable: otel_traces
       tracesTimestamp: Timestamp
       tracesDurationField: Duration
+      tracesDurationUnit: ns
       tracesTraceIdField: TraceId
       tracesSpanIdField: SpanId
       tracesParentSpanIdField: ParentSpanId
@@ -162,6 +164,8 @@ datasources:
       tracesOperationNameField: SpanName
       tracesStatusCodeField: StatusCode
       tracesStatusMessageField: StatusMessage
+      tracesSpanKindField: SpanKind
+      tracesTraceStateField: TraceState
       tracesToLogsV2:
         datasourceUid: clickhouse-logs
         spanStartTimeShift: "-1h"

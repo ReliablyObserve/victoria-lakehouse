@@ -138,7 +138,11 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket, tenantPrefix 
 			Stream:            fmt.Sprintf("{service.name=%q,k8s.namespace.name=%q,k8s.deployment.name=%q,deployment.environment=%q,cloud.region=%q}", svc, ns, svc, env, region),
 			StreamID:          randomHex(16),
 			ScopeName:         "github.com/reliablyobserve/instrumentation",
-			LogAttributes:     logAttrs,
+			ResourceAttributes: map[string]string{
+				"service.version":    fmt.Sprintf("1.%d.0", rng.Intn(10)),
+				"telemetry.sdk.name": "opentelemetry",
+			},
+			LogAttributes: logAttrs,
 		}
 
 		key := partitionKeyBatch(tenantPrefix, "logs", ts, batchID)
@@ -226,30 +230,39 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket, tenantPrefix 
 				dbStmt = "GET session:user:" + randomHex(8)
 			}
 
+			resAttrs := map[string]string{
+				"service.version":    fmt.Sprintf("1.%d.0", rng.Intn(10)),
+				"telemetry.sdk.name": "opentelemetry",
+			}
+			spanAttrs := map[string]string{}
+
 			row := TraceRow{
-				TimestampUnixNano: endTime.UnixNano(),
-				StartTimeUnixNano: startTime.UnixNano(),
-				TraceID:           traceID,
-				SpanID:            spanID,
-				ParentSpanID:      parentSpanID,
-				SpanName:          spanName,
-				SpanKind:          int32(1 + rng.Intn(3)),
-				StatusCode:        statusCode,
-				StatusMessage:     statusMsg,
-				DurationNs:        dur.Nanoseconds(),
-				ServiceName:       svc,
-				ScopeName:         "github.com/reliablyobserve/instrumentation",
-				DeployEnv:         env,
-				CloudRegion:       region,
-				HostName:          host,
-				K8sNamespaceName:  ns,
-				K8sDeploymentName: svc,
-				K8sNodeName:       node,
-				HTTPMethod:        httpMethod,
-				HTTPStatusCode:    httpCode,
-				HTTPUrl:           httpUrl,
-				DBSystem:          dbSystem,
-				DBStatement:       dbStmt,
+				TimestampUnixNano:  endTime.UnixNano(),
+				StartTimeUnixNano:  startTime.UnixNano(),
+				TraceID:            traceID,
+				SpanID:             spanID,
+				ParentSpanID:       parentSpanID,
+				SpanName:           spanName,
+				SpanKind:           int32(1 + rng.Intn(3)),
+				StatusCode:         statusCode,
+				StatusMessage:      statusMsg,
+				DurationNs:         dur.Nanoseconds(),
+				ServiceName:        svc,
+				ScopeName:          "github.com/reliablyobserve/instrumentation",
+				DeployEnv:          env,
+				CloudRegion:        region,
+				HostName:           host,
+				K8sNamespaceName:   ns,
+				K8sDeploymentName:  svc,
+				K8sNodeName:        node,
+				HTTPMethod:         httpMethod,
+				HTTPStatusCode:     httpCode,
+				HTTPUrl:            httpUrl,
+				DBSystem:           dbSystem,
+				DBStatement:        dbStmt,
+				ResourceAttributes: resAttrs,
+				SpanAttributes:     spanAttrs,
+				ScopeAttributes:    map[string]string{},
 			}
 
 			key := partitionKeyBatch(tenantPrefix, "traces", startTime, batchID)

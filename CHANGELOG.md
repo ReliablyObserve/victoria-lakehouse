@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- ClickHouse OTEL views — `ScopeAttributes` was `Map(Nothing, Nothing)`, now `Map(String, String)` via typed CAST; Events/Links arrays were `Array(Nothing)`, now properly typed (`Array(DateTime64(9))`, `Array(String)`, `Array(Map(String, String))`); removed non-standard `LogStreamId` from `otel_logs`; added `TraceFlags`, `ResourceSchemaUrl`, `ScopeSchemaUrl` columns; traces Duration now in nanoseconds (OTEL standard) instead of milliseconds; empty promoted fields filtered via `mapFilter` to avoid clutter in ResourceAttributes/SpanAttributes
+- Datagen now populates `ResourceAttributes` MAP column for logs (with `service.version`, `telemetry.sdk.name`) and `ResourceAttributes`, `SpanAttributes`, `ScopeAttributes` MAP columns for traces
+- Grafana ClickHouse datasource config — added `logsLevelField: SeverityText`, `tracesDurationUnit: ns`, `tracesSpanKindField`, `tracesTraceStateField` for proper OTEL auto-discovery
+
+### Changed
+- Datagen seed volume increased — 10K logs + 2K traces over 72h (was 5K + 1K over 48h) to better populate both hot (disk 24h) and cold (S3 lakehouse) tiers
+- Tenant1 seed increased — 2K logs + 500 traces over 72h (was 1K + 200 over 48h)
+
 ## [0.20.0] - 2026-05-12
 
 ### Added
