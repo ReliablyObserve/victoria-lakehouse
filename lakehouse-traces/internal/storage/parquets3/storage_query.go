@@ -46,12 +46,24 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		return nil
 	}
 
-	// Wrap writeBlock to apply tombstone filtering and panic recovery.
-	// VL handlers may add pipes (hits, stats) that expect columns our
-	// storage doesn't produce — recover instead of crashing.
+	queryStr := q.String()
+	filter := parseFilterFromQuery(q)
+
+	var rowsEmitted atomic.Int64
+	maxRows := s.cfg.Query.MaxRows
+
+	// Wrap writeBlock to apply LogsQL filter evaluation, tombstone filtering,
+	// max_rows enforcement, and panic recovery.
 	var writeBlockPanic atomic.Bool
 	filteredWriteBlock := func(workerID uint, db *logstorage.DataBlock) {
 		if writeBlockPanic.Load() {
+			return
+		}
+		if maxRows > 0 && rowsEmitted.Load() >= maxRows {
+			return
+		}
+		db = filterDataBlock(db, filter)
+		if db == nil || db.RowsCount() == 0 {
 			return
 		}
 		if s.tombstones != nil {
@@ -60,6 +72,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				return
 			}
 		}
+		rowsEmitted.Add(int64(db.RowsCount()))
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -75,8 +88,6 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	if len(files) == 0 {
 		return nil
 	}
-
-	queryStr := q.String()
 
 	// Parallel file worker pool
 	fileWorkers := s.cfg.Query.FileWorkers

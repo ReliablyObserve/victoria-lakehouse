@@ -10,6 +10,7 @@ RUN mkdir -p deps && \
     go mod download
 COPY patches/vl-logs/ /tmp/patches/
 RUN cp /tmp/patches/external.go deps/VictoriaLogs/app/vlstorage/external.go && \
+    cp /tmp/patches/external_query.go deps/VictoriaLogs/lib/logstorage/external_query.go && \
     cd deps/VictoriaLogs && git apply /tmp/patches/vlstorage-dispatch.patch
 COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}" -o /lakehouse-logs ./cmd/lakehouse-logs && \

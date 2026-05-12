@@ -18,8 +18,10 @@ RUN mkdir -p deps lakehouse-traces/deps && \
     cd /app/lakehouse-traces && go mod download
 COPY patches/ /tmp/patches/
 RUN cp /tmp/patches/vl-logs/external.go deps/VictoriaLogs/app/vlstorage/external.go && \
+    cp /tmp/patches/vl-logs/external_query.go deps/VictoriaLogs/lib/logstorage/external_query.go && \
     cd deps/VictoriaLogs && git apply /tmp/patches/vl-logs/vlstorage-dispatch.patch
 RUN cp /tmp/patches/vl-traces/external.go lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go && \
+    cp /tmp/patches/vl-traces/external_query.go lakehouse-traces/deps/VictoriaLogs/lib/logstorage/external_query.go && \
     cd lakehouse-traces/deps/VictoriaLogs && git apply /tmp/patches/vl-traces/vlstorage-dispatch.patch
 COPY . .
 RUN cd lakehouse-traces && \

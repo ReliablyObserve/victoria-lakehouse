@@ -41,7 +41,8 @@ func (mockStore) GetStreams(_ context.Context, _ []logstorage.TenantID, _ *logst
 func (mockStore) GetStreamIDs(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, _ uint64) ([]logstorage.ValueWithHits, error) {
 	return nil, nil
 }
-func (mockStore) Close() error { return nil }
+func (mockStore) HasDataForRange(_, _ int64) bool { return true }
+func (mockStore) Close() error                    { return nil }
 
 // dataStore implements storage.Storage and returns realistic data for
 // Jaeger handler tests. It records which fields were queried so tests

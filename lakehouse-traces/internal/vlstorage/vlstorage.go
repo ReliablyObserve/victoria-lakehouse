@@ -6,6 +6,7 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlstorage"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/prefixfilter"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage"
@@ -21,11 +22,26 @@ func SetStorage(s storage.Storage, ts *delete.TombstoneStore) {
 }
 
 func (a *adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error {
-	return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query, writeBlock)
+	hiddenFilters := qctx.HiddenFieldsFilters
+
+	if logstorage.QueryHasPipes(qctx.Query) {
+		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
+			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query,
+				wrapHiddenFields(wb, hiddenFilters))
+		}
+		return logstorage.RunQueryExternal(qctx, searchFn, writeBlock)
+	}
+
+	return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query,
+		wrapHiddenFields(writeBlock, hiddenFilters))
 }
 
 func (a *adapter) GetFieldNames(qctx *logstorage.QueryContext) ([]logstorage.ValueWithHits, error) {
-	return a.store.GetFieldNames(qctx.Context, qctx.TenantIDs, qctx.Query)
+	results, err := a.store.GetFieldNames(qctx.Context, qctx.TenantIDs, qctx.Query)
+	if err != nil {
+		return nil, err
+	}
+	return filterHiddenValues(results, qctx.HiddenFieldsFilters), nil
 }
 
 func (a *adapter) GetFieldValues(qctx *logstorage.QueryContext, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
@@ -33,7 +49,11 @@ func (a *adapter) GetFieldValues(qctx *logstorage.QueryContext, fieldName string
 }
 
 func (a *adapter) GetStreamFieldNames(qctx *logstorage.QueryContext) ([]logstorage.ValueWithHits, error) {
-	return a.store.GetStreamFieldNames(qctx.Context, qctx.TenantIDs, qctx.Query)
+	results, err := a.store.GetStreamFieldNames(qctx.Context, qctx.TenantIDs, qctx.Query)
+	if err != nil {
+		return nil, err
+	}
+	return filterHiddenValues(results, qctx.HiddenFieldsFilters), nil
 }
 
 func (a *adapter) GetStreamFieldValues(qctx *logstorage.QueryContext, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
@@ -48,7 +68,10 @@ func (a *adapter) GetStreamIDs(qctx *logstorage.QueryContext, limit uint64) ([]l
 	return a.store.GetStreamIDs(qctx.Context, qctx.TenantIDs, qctx.Query, limit)
 }
 
-func (a *adapter) GetTenantIDs(_ context.Context, _, _ int64) ([]logstorage.TenantID, error) {
+func (a *adapter) GetTenantIDs(_ context.Context, start, end int64) ([]logstorage.TenantID, error) {
+	if !a.store.HasDataForRange(start, end) {
+		return nil, nil
+	}
 	return []logstorage.TenantID{{AccountID: 0, ProjectID: 0}}, nil
 }
 
@@ -87,5 +110,45 @@ func (a *adapter) DeleteActiveTasks(_ context.Context) ([]*logstorage.DeleteTask
 		})
 	}
 	return result, nil
+}
+
+// wrapHiddenFields wraps writeBlock to strip columns matching HiddenFieldsFilters.
+func wrapHiddenFields(writeBlock logstorage.WriteDataBlockFunc, filters []string) logstorage.WriteDataBlockFunc {
+	if len(filters) == 0 {
+		return writeBlock
+	}
+	return func(workerID uint, db *logstorage.DataBlock) {
+		columns := db.GetColumns(false)
+		filtered := make([]logstorage.BlockColumn, 0, len(columns))
+		for _, col := range columns {
+			if !prefixfilter.MatchFilters(filters, col.Name) {
+				filtered = append(filtered, col)
+			}
+		}
+		if len(filtered) == len(columns) {
+			writeBlock(workerID, db)
+			return
+		}
+		if len(filtered) == 0 {
+			return
+		}
+		result := &logstorage.DataBlock{}
+		result.SetColumns(filtered)
+		writeBlock(workerID, result)
+	}
+}
+
+// filterHiddenValues removes entries whose Value matches any HiddenFieldsFilter pattern.
+func filterHiddenValues(results []logstorage.ValueWithHits, filters []string) []logstorage.ValueWithHits {
+	if len(filters) == 0 {
+		return results
+	}
+	filtered := make([]logstorage.ValueWithHits, 0, len(results))
+	for _, v := range results {
+		if !prefixfilter.MatchFilters(filters, v.Value) {
+			filtered = append(filtered, v)
+		}
+	}
+	return filtered
 }
 
