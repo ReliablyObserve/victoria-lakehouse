@@ -1184,15 +1184,15 @@ func TestLogRowsToDataBlock(t *testing.T) {
 		colMap[col.Name] = col.Values
 	}
 
-	// Check _time column
+	// Check _time column — formatted as RFC3339Nano via schema TypeTimestampNano
 	if vals, ok := colMap["_time"]; !ok {
 		t.Error("missing _time column")
 	} else {
-		if vals[0] != "1000000000" {
-			t.Errorf("_time[0] = %q, want %q", vals[0], "1000000000")
+		if vals[0] != "1970-01-01T00:00:01Z" {
+			t.Errorf("_time[0] = %q, want %q", vals[0], "1970-01-01T00:00:01Z")
 		}
-		if vals[1] != "2000000000" {
-			t.Errorf("_time[1] = %q, want %q", vals[1], "2000000000")
+		if vals[1] != "1970-01-01T00:00:02Z" {
+			t.Errorf("_time[1] = %q, want %q", vals[1], "1970-01-01T00:00:02Z")
 		}
 	}
 
@@ -1311,11 +1311,11 @@ func TestTraceRowsToDataBlock(t *testing.T) {
 		colMap[col.Name] = col.Values
 	}
 
-	// Check _time
+	// Check _time — formatted as RFC3339Nano via schema TypeTimestampNano
 	if vals, ok := colMap["_time"]; !ok {
 		t.Error("missing _time column")
-	} else if vals[0] != "1000000000" {
-		t.Errorf("_time[0] = %q, want %q", vals[0], "1000000000")
+	} else if vals[0] != "1970-01-01T00:00:01Z" {
+		t.Errorf("_time[0] = %q, want %q", vals[0], "1970-01-01T00:00:01Z")
 	}
 
 	// Check trace_id

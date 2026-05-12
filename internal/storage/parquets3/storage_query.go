@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -266,15 +267,15 @@ func readRowGroupTyped[T any](s *Storage, f *parquet.File, rg parquet.RowGroup, 
 
 type field struct {
 	name  string
-	value string
+	value any
 }
 
 func logRowToFields(r *schema.LogRow) []field {
 	fields := []field{
-		{"_time", time.Unix(0, r.TimestampUnixNano).UTC().Format(time.RFC3339Nano)},
+		{"_time", r.TimestampUnixNano},
 		{"_msg", r.Body},
 		{"level", r.SeverityText},
-		{"severity_number", fmt.Sprintf("%d", r.SeverityNumber)},
+		{"severity_number", r.SeverityNumber},
 		{"service.name", r.ServiceName},
 		{"k8s.namespace.name", r.K8sNamespaceName},
 		{"k8s.pod.name", r.K8sPodName},
@@ -300,18 +301,18 @@ func logRowToFields(r *schema.LogRow) []field {
 
 func traceRowToFields(r *schema.TraceRow) []field {
 	fields := []field{
-		{"_time", time.Unix(0, r.TimestampUnixNano).UTC().Format(time.RFC3339Nano)},
-		{"start_time", time.Unix(0, r.StartTimeUnixNano).UTC().Format(time.RFC3339Nano)},
+		{"_time", r.TimestampUnixNano},
+		{"start_time", r.StartTimeUnixNano},
 		{"trace_id", r.TraceID},
 		{"span_id", r.SpanID},
 		{"parent_span_id", r.ParentSpanID},
 		{"name", r.SpanName},
-		{"span.kind", fmt.Sprintf("%d", r.SpanKind)},
-		{"status_code", fmt.Sprintf("%d", r.StatusCode)},
-		{"status.message", r.StatusMessage},
-		{"duration", fmt.Sprintf("%d", r.DurationNs)},
-		{"service.name", r.ServiceName},
-		{"scope.name", r.ScopeName},
+		{"kind", r.SpanKind},
+		{"status_code", r.StatusCode},
+		{"status_message", r.StatusMessage},
+		{"duration", r.DurationNs},
+		{"resource_attr:service.name", r.ServiceName},
+		{"scope_attr:otel.library.name", r.ScopeName},
 		{"resource_attr:deployment.environment", r.DeployEnv},
 		{"resource_attr:cloud.region", r.CloudRegion},
 		{"resource_attr:host.name", r.HostName},
@@ -366,7 +367,8 @@ func typedRowsToDataBlock[T any](s *Storage, rows []T, startNs, endNs int64, toF
 
 		seen := make(map[int]bool)
 		for _, f := range fields {
-			if f.value == "" {
+			formatted := s.registry.FormatField(f.name, f.value)
+			if formatted == "" {
 				continue
 			}
 			idx := getCol(f.name)
@@ -374,7 +376,7 @@ func typedRowsToDataBlock[T any](s *Storage, rows []T, startNs, endNs int64, toF
 				continue
 			}
 			seen[idx] = true
-			cols[idx].values = append(cols[idx].values, f.value)
+			cols[idx].values = append(cols[idx].values, formatted)
 		}
 
 		for i := range cols {
@@ -388,19 +390,15 @@ func typedRowsToDataBlock[T any](s *Storage, rows []T, startNs, endNs int64, toF
 		return nil
 	}
 
-	seen := make(map[string]int, len(cols))
 	blockCols := make([]logstorage.BlockColumn, 0, len(cols))
+	seen := make(map[string]bool, len(cols))
 	for _, col := range cols {
-		internalName := col.name
-		if m := s.registry.ResolveFromParquet(col.name); m != nil {
-			internalName = bytesutil.InternString(m.InternalName)
-		}
-		if _, dup := seen[internalName]; dup {
+		if seen[col.name] {
 			continue
 		}
-		seen[internalName] = len(blockCols)
+		seen[col.name] = true
 		blockCols = append(blockCols, logstorage.BlockColumn{
-			Name:   internalName,
+			Name:   col.name,
 			Values: col.values,
 		})
 	}
@@ -449,6 +447,19 @@ func (s *Storage) rowsToDataBlock(rows []parquet.Row, colNames []string, root *p
 		}
 	}
 
+	internalNames := make([]string, len(projected))
+	mappings := make([]*schema.FieldMapping, len(projected))
+	for outIdx, srcIdx := range projected {
+		name := colNames[srcIdx]
+		m := s.registry.ResolveFromParquet(name)
+		if m != nil {
+			internalNames[outIdx] = bytesutil.InternString(m.InternalName)
+			mappings[outIdx] = m
+		} else {
+			internalNames[outIdx] = name
+		}
+	}
+
 	for _, row := range rows {
 		if tsColIdx >= 0 && startNs != 0 && endNs != 0 {
 			ts := valueToInt64(row[tsColIdx])
@@ -459,11 +470,11 @@ func (s *Storage) rowsToDataBlock(rows []parquet.Row, colNames []string, root *p
 
 		for outIdx, srcIdx := range projected {
 			if srcIdx < len(row) {
-				if srcIdx == tsColIdx {
-					ns := valueToInt64(row[srcIdx])
-					columns[outIdx] = append(columns[outIdx], time.Unix(0, ns).UTC().Format(time.RFC3339Nano))
+				native := parquetValueToAny(row[srcIdx])
+				if mappings[outIdx] != nil {
+					columns[outIdx] = append(columns[outIdx], mappings[outIdx].Type.FormatValue(native))
 				} else {
-					columns[outIdx] = append(columns[outIdx], valueToString(row[srcIdx]))
+					columns[outIdx] = append(columns[outIdx], schema.TypeString.FormatValue(native))
 				}
 			} else {
 				columns[outIdx] = append(columns[outIdx], "")
@@ -476,14 +487,9 @@ func (s *Storage) rowsToDataBlock(rows []parquet.Row, colNames []string, root *p
 	}
 
 	blockCols := make([]logstorage.BlockColumn, 0, len(projected))
-	for outIdx, srcIdx := range projected {
-		name := colNames[srcIdx]
-		internalName := name
-		if m := s.registry.ResolveFromParquet(name); m != nil {
-			internalName = bytesutil.InternString(m.InternalName)
-		}
+	for outIdx := range projected {
 		blockCols = append(blockCols, logstorage.BlockColumn{
-			Name:   internalName,
+			Name:   internalNames[outIdx],
 			Values: columns[outIdx],
 		})
 	}
@@ -655,21 +661,47 @@ func columnNames(root *parquet.Column) []string {
 	return names
 }
 
+func parquetValueToAny(v parquet.Value) any {
+	if v.IsNull() {
+		return ""
+	}
+	switch v.Kind() {
+	case parquet.Int32:
+		return v.Int32()
+	case parquet.Int64:
+		return v.Int64()
+	case parquet.Float:
+		return float64(v.Float())
+	case parquet.Double:
+		return v.Double()
+	case parquet.Boolean:
+		return v.Boolean()
+	case parquet.ByteArray, parquet.FixedLenByteArray:
+		b := v.ByteArray()
+		if isPrintable(b) {
+			return bytesutil.InternBytes(b)
+		}
+		return fmt.Sprintf("%x", b)
+	default:
+		return v.String()
+	}
+}
+
 func valueToString(v parquet.Value) string {
 	if v.IsNull() {
 		return ""
 	}
 	switch v.Kind() {
 	case parquet.Int32:
-		return fmt.Sprintf("%d", v.Int32())
+		return strconv.FormatInt(int64(v.Int32()), 10)
 	case parquet.Int64:
-		return fmt.Sprintf("%d", v.Int64())
+		return strconv.FormatInt(v.Int64(), 10)
 	case parquet.Int96:
 		return v.String()
 	case parquet.Float:
-		return fmt.Sprintf("%g", v.Float())
+		return strconv.FormatFloat(float64(v.Float()), 'g', -1, 32)
 	case parquet.Double:
-		return fmt.Sprintf("%g", v.Double())
+		return strconv.FormatFloat(v.Double(), 'g', -1, 64)
 	case parquet.ByteArray, parquet.FixedLenByteArray:
 		b := v.ByteArray()
 		if isPrintable(b) {

@@ -1,6 +1,9 @@
 package schema
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLogsRegistry_PromotedLookup(t *testing.T) {
 	r := NewRegistry(LogsProfile)
@@ -398,5 +401,224 @@ func TestRegistry_NoMapColumns(t *testing.T) {
 	m := r.ResolveToParquet("unknown.field")
 	if m != nil {
 		t.Error("should return nil when no MAP columns and no promoted match")
+	}
+}
+
+func TestFieldType_FormatValue_TimestampNano(t *testing.T) {
+	ts := int64(1715500800000000000) // 2024-05-12T12:00:00Z
+	got := TypeTimestampNano.FormatValue(ts)
+	want := time.Unix(0, ts).UTC().Format(time.RFC3339Nano)
+	if got != want {
+		t.Errorf("FormatValue(%d) = %q, want %q", ts, got, want)
+	}
+
+	if got := TypeTimestampNano.FormatValue(int64(0)); got != "1970-01-01T00:00:00Z" {
+		t.Errorf("FormatValue(0) = %q, want epoch", got)
+	}
+
+	if got := TypeTimestampNano.FormatValue("not-an-int"); got != "not-an-int" {
+		t.Errorf("FormatValue(string) = %q, want fallback", got)
+	}
+}
+
+func TestFieldType_FormatValue_Int32(t *testing.T) {
+	tests := []struct {
+		input any
+		want  string
+	}{
+		{int32(42), "42"},
+		{int32(-1), "-1"},
+		{int32(0), "0"},
+		{int64(99), "99"},
+		{int(7), "7"},
+	}
+	for _, tt := range tests {
+		if got := TypeInt32.FormatValue(tt.input); got != tt.want {
+			t.Errorf("TypeInt32.FormatValue(%v) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestFieldType_FormatValue_Int64(t *testing.T) {
+	tests := []struct {
+		input any
+		want  string
+	}{
+		{int64(1234567890), "1234567890"},
+		{int64(-999), "-999"},
+		{int32(5), "5"},
+	}
+	for _, tt := range tests {
+		if got := TypeInt64.FormatValue(tt.input); got != tt.want {
+			t.Errorf("TypeInt64.FormatValue(%v) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestFieldType_FormatValue_Float64(t *testing.T) {
+	if got := TypeFloat64.FormatValue(3.14); got != "3.14" {
+		t.Errorf("FormatValue(3.14) = %q", got)
+	}
+	if got := TypeFloat64.FormatValue(0.0); got != "0" {
+		t.Errorf("FormatValue(0.0) = %q", got)
+	}
+}
+
+func TestFieldType_FormatValue_Bool(t *testing.T) {
+	if got := TypeBool.FormatValue(true); got != "true" {
+		t.Errorf("FormatValue(true) = %q", got)
+	}
+	if got := TypeBool.FormatValue(false); got != "false" {
+		t.Errorf("FormatValue(false) = %q", got)
+	}
+}
+
+func TestFieldType_FormatValue_String(t *testing.T) {
+	if got := TypeString.FormatValue("hello"); got != "hello" {
+		t.Errorf("FormatValue(hello) = %q", got)
+	}
+	if got := TypeString.FormatValue(""); got != "" {
+		t.Errorf("FormatValue empty = %q", got)
+	}
+}
+
+func TestParseFieldType(t *testing.T) {
+	tests := []struct {
+		input string
+		want  FieldType
+	}{
+		{"string", TypeString},
+		{"int32", TypeInt32},
+		{"int64", TypeInt64},
+		{"float64", TypeFloat64},
+		{"bool", TypeBool},
+		{"timestamp_nano", TypeTimestampNano},
+		{"", TypeString},
+		{"unknown", TypeString},
+	}
+	for _, tt := range tests {
+		if got := ParseFieldType(tt.input); got != tt.want {
+			t.Errorf("ParseFieldType(%q) = %d, want %d", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestRegistry_FormatField(t *testing.T) {
+	r := NewRegistry(LogsProfile)
+
+	got := r.FormatField("_time", int64(1000000000))
+	if got != "1970-01-01T00:00:01Z" {
+		t.Errorf("FormatField(_time) = %q", got)
+	}
+
+	got = r.FormatField("severity_number", int32(5))
+	if got != "5" {
+		t.Errorf("FormatField(severity_number) = %q", got)
+	}
+
+	got = r.FormatField("_msg", "hello")
+	if got != "hello" {
+		t.Errorf("FormatField(_msg) = %q", got)
+	}
+
+	got = r.FormatField("unknown.field", "fallback")
+	if got != "fallback" {
+		t.Errorf("FormatField(unknown) = %q, want fallback", got)
+	}
+}
+
+func TestRegistry_FormatField_Traces(t *testing.T) {
+	r := NewRegistry(TracesProfile)
+
+	got := r.FormatField("_time", int64(2000000000))
+	if got != "1970-01-01T00:00:02Z" {
+		t.Errorf("FormatField(_time) = %q", got)
+	}
+
+	got = r.FormatField("start_time", int64(3000000000))
+	if got != "1970-01-01T00:00:03Z" {
+		t.Errorf("FormatField(start_time) = %q", got)
+	}
+
+	got = r.FormatField("duration", int64(5000000))
+	if got != "5000000" {
+		t.Errorf("FormatField(duration) = %q", got)
+	}
+
+	got = r.FormatField("status_code", int32(2))
+	if got != "2" {
+		t.Errorf("FormatField(status_code) = %q", got)
+	}
+
+	got = r.FormatField("kind", int32(3))
+	if got != "3" {
+		t.Errorf("FormatField(kind) = %q", got)
+	}
+}
+
+func TestRegistry_ExtraPromotedType(t *testing.T) {
+	extra := []ExtraPromoted{
+		{Name: "http.status_code", Type: "int32", Bloom: false},
+		{Name: "request.duration_ms", Type: "float64", Bloom: false},
+		{Name: "is_error", Type: "bool", Bloom: false},
+	}
+	r := NewRegistry(LogsProfile, extra...)
+
+	got := r.FormatField("http.status_code", int32(200))
+	if got != "200" {
+		t.Errorf("FormatField(http.status_code) = %q, want 200", got)
+	}
+
+	got = r.FormatField("request.duration_ms", 42.5)
+	if got != "42.5" {
+		t.Errorf("FormatField(request.duration_ms) = %q", got)
+	}
+
+	got = r.FormatField("is_error", true)
+	if got != "true" {
+		t.Errorf("FormatField(is_error) = %q", got)
+	}
+}
+
+func TestLogsProfile_Types(t *testing.T) {
+	r := NewRegistry(LogsProfile)
+	m := r.ResolveToParquet("_time")
+	if m.Type != TypeTimestampNano {
+		t.Errorf("_time type = %d, want TypeTimestampNano", m.Type)
+	}
+	m = r.ResolveToParquet("severity_number")
+	if m.Type != TypeInt32 {
+		t.Errorf("severity_number type = %d, want TypeInt32", m.Type)
+	}
+	m = r.ResolveToParquet("_msg")
+	if m.Type != TypeString {
+		t.Errorf("_msg type = %d, want TypeString", m.Type)
+	}
+}
+
+func TestTracesProfile_Types(t *testing.T) {
+	r := NewRegistry(TracesProfile)
+	checks := []struct {
+		name     string
+		wantType FieldType
+	}{
+		{"_time", TypeTimestampNano},
+		{"start_time", TypeTimestampNano},
+		{"duration", TypeInt64},
+		{"status_code", TypeInt32},
+		{"kind", TypeInt32},
+		{"trace_id", TypeString},
+		{"name", TypeString},
+		{"status_message", TypeString},
+	}
+	for _, tt := range checks {
+		m := r.ResolveToParquet(tt.name)
+		if m == nil {
+			t.Errorf("ResolveToParquet(%q) = nil", tt.name)
+			continue
+		}
+		if m.Type != tt.wantType {
+			t.Errorf("%s type = %d, want %d", tt.name, m.Type, tt.wantType)
+		}
 	}
 }

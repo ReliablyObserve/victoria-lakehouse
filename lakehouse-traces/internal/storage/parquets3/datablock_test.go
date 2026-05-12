@@ -60,7 +60,7 @@ func TestTraceRowToFields_NoCollisionCausingRenames(t *testing.T) {
 	}
 
 	for _, f := range fields {
-		if f.value == "" {
+		if s, ok := f.value.(string); ok && s == "" {
 			continue
 		}
 		m := reg.ResolveFromParquet(f.name)
@@ -180,8 +180,8 @@ func TestTypedRowsToDataBlock_DeduplicationGuard(t *testing.T) {
 
 	toFieldsWithDup := func(r *schema.TraceRow) []field {
 		return []field{
-			{"_time", time.Unix(0, r.TimestampUnixNano).UTC().Format(time.RFC3339Nano)},
-			{"timestamp_unix_nano", fmt.Sprintf("%d", r.TimestampUnixNano)},
+			{"_time", r.TimestampUnixNano},
+			{"_time", r.TimestampUnixNano},
 			{"trace_id", r.TraceID},
 		}
 	}
@@ -301,11 +301,13 @@ func TestTraceRowToFields_EmptyRow(t *testing.T) {
 	}
 
 	timeFound := false
+	reg := schema.NewRegistry(schema.TracesProfile)
 	for _, f := range fields {
 		if f.name == "_time" {
 			timeFound = true
-			if _, err := time.Parse(time.RFC3339Nano, f.value); err != nil {
-				t.Errorf("_time from zero timestamp should still be valid RFC3339Nano, got %q: %v", f.value, err)
+			formatted := reg.FormatField(f.name, f.value)
+			if _, err := time.Parse(time.RFC3339Nano, formatted); err != nil {
+				t.Errorf("_time from zero timestamp should still be valid RFC3339Nano, got %q: %v", formatted, err)
 			}
 		}
 	}
@@ -429,7 +431,7 @@ func TestLogRowToFields_NoParquetColumnNames(t *testing.T) {
 
 	fields := logRowToFields(row)
 	for _, f := range fields {
-		if f.value == "" {
+		if s, ok := f.value.(string); ok && s == "" {
 			continue
 		}
 		m := reg.ResolveFromParquet(f.name)

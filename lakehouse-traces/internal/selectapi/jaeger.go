@@ -138,8 +138,8 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 			span.OperationName = getValAny(colMap, i, "name", "span.name")
 			span.ServiceName = getValAny(colMap, i, "resource_attr:service.name", "service.name")
 
-			startStr := getValAny(colMap, i, "start_time_unix_nano")
-			if startNs, err := strconv.ParseInt(startStr, 10, 64); err == nil {
+			startStr := getValAny(colMap, i, "start_time", "start_time_unix_nano")
+			if startNs, ok := parseTimestampNanos(startStr); ok {
 				span.StartTime = startNs / 1000
 			}
 			durStr := getValAny(colMap, i, "duration", "duration_ns")
@@ -380,12 +380,12 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 			}
 
 			span := map[string]string{
-				"trace_id":             tid,
-				"span_id":              getVal(colMap, "span_id", i),
-				"service.name":         getValAny(colMap, i, "resource_attr:service.name", "service.name"),
-				"span.name":            getValAny(colMap, i, "name", "span.name"),
-				"start_time_unix_nano": getValAny(colMap, i, "start_time_unix_nano"),
-				"duration_ns":          durStr,
+				"trace_id":    tid,
+				"span_id":     getVal(colMap, "span_id", i),
+				"service.name": getValAny(colMap, i, "resource_attr:service.name", "service.name"),
+				"span.name":   getValAny(colMap, i, "name", "span.name"),
+				"start_time":  getValAny(colMap, i, "start_time", "start_time_unix_nano"),
+				"duration_ns": durStr,
 			}
 			traceMap[tid] = append(traceMap[tid], span)
 		}
@@ -408,7 +408,7 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 
 		for _, s := range rawSpans {
 			startUs := int64(0)
-			if ns, err := strconv.ParseInt(s["start_time_unix_nano"], 10, 64); err == nil {
+			if ns, ok := parseTimestampNanos(s["start_time"]); ok {
 				startUs = ns / 1000
 			}
 			durUs := int64(0)
@@ -552,6 +552,16 @@ func getValAny(colMap map[string][]string, idx int, names ...string) string {
 		}
 	}
 	return ""
+}
+
+func parseTimestampNanos(s string) (int64, bool) {
+	if ns, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return ns, true
+	}
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t.UnixNano(), true
+	}
+	return 0, false
 }
 
 func spanKindName(code string) string {
