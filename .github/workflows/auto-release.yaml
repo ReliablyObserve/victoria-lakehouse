@@ -276,7 +276,6 @@ jobs:
             --head "$BRANCH" \
             --label "release:patch")
 
-          # Auto-merge the metadata PR to prevent version drift
-          gh pr merge "$PR_URL" --auto --squash
+          echo "Release metadata PR created: $PR_URL"
         env:
           GH_TOKEN: ${{ secrets.TOKEN_GITHUB || secrets.GITHUB_TOKEN }}
