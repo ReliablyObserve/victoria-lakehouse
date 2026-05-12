@@ -36,6 +36,7 @@ jobs:
       - name: Apply ExternalStorage patch (logs)
         run: |
           cp patches/vl-logs/external.go deps/VictoriaLogs/app/vlstorage/external.go
+          cp patches/vl-logs/external_query.go deps/VictoriaLogs/lib/logstorage/external_query.go
           cd deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-logs/vlstorage-dispatch.patch
 
       - name: Clone VL for traces
@@ -48,38 +49,58 @@ jobs:
       - name: Apply ExternalStorage patch (traces)
         run: |
           cp patches/vl-traces/external.go lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go
+          cp patches/vl-traces/external_query.go lakehouse-traces/deps/VictoriaLogs/lib/logstorage/external_query.go
           cd lakehouse-traces/deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-traces/vlstorage-dispatch.patch
 
       - name: Collect metrics
         id: metrics
         run: |
-          # Count Go LOC across both modules (excluding tests, vendor, generated)
-          LOC=$(find . -name '*.go' ! -name '*_test.go' ! -name 'zz_generated*' \
+          format_loc() {
+            local count=$1
+            if [ "$count" -ge 1000 ]; then
+              awk "BEGIN {printf \"%.1fk\", $count/1000}"
+            else
+              echo "$count"
+            fi
+          }
+
+          # Production code: Go files excluding tests, deps, vendor, generated
+          PROD_LOC=$(find . -name '*.go' ! -name '*_test.go' ! -name 'zz_generated*' \
             ! -path './vendor/*' ! -path './.worktrees/*' ! -path './deps/*' \
-            ! -path './lakehouse-traces/deps/*' | xargs wc -l | tail -1 | awk '{print $1}')
-          if [ "$LOC" -ge 1000 ]; then
-            LOC_K=$(awk "BEGIN {printf \"%.1f\", $LOC/1000}")
-            LOC_DISPLAY="${LOC_K}k"
-          else
-            LOC_DISPLAY="$LOC"
-          fi
+            ! -path './lakehouse-traces/deps/*' ! -path './patches/*' \
+            | xargs wc -l | tail -1 | awk '{print $1}')
+
+          # Test code: only _test.go files, same exclusions
+          TEST_LOC=$(find . -name '*_test.go' \
+            ! -path './vendor/*' ! -path './.worktrees/*' ! -path './deps/*' \
+            ! -path './lakehouse-traces/deps/*' ! -path './patches/*' \
+            | xargs wc -l | tail -1 | awk '{print $1}')
+
+          PROD_DISPLAY=$(format_loc "$PROD_LOC")
+          TEST_DISPLAY=$(format_loc "$TEST_LOC")
 
           # Count tests from both modules
           TESTS_LOGS=$(go test -count=1 -v ./internal/... 2>&1 | grep -c '^--- PASS:' || echo "0")
           TESTS_TRACES=$(cd lakehouse-traces && go test -count=1 -v ./internal/... 2>&1 | grep -c '^--- PASS:' || echo "0")
           TOTAL_TESTS=$((TESTS_LOGS + TESTS_TRACES))
 
-          echo "loc=$LOC_DISPLAY" >> "$GITHUB_OUTPUT"
+          echo "prod_loc=$PROD_DISPLAY" >> "$GITHUB_OUTPUT"
+          echo "test_loc=$TEST_DISPLAY" >> "$GITHUB_OUTPUT"
           echo "tests=$TOTAL_TESTS" >> "$GITHUB_OUTPUT"
-          echo "Metrics: LOC=$LOC_DISPLAY, Tests=$TOTAL_TESTS"
+          echo "Metrics: Prod=$PROD_DISPLAY, Test=$TEST_DISPLAY, Tests=$TOTAL_TESTS"
 
       - name: Write badge JSON
         run: |
           mkdir -p .badges
           jq -n \
-            --arg msg "${{ steps.metrics.outputs.loc }}" \
-            '{schemaVersion: 1, label: "go loc", message: $msg, color: "blue"}' \
-            > .badges/loc.json
+            --arg msg "${{ steps.metrics.outputs.prod_loc }}" \
+            '{schemaVersion: 1, label: "prod code", message: $msg, color: "blue"}' \
+            > .badges/prod-loc.json
+
+          jq -n \
+            --arg msg "${{ steps.metrics.outputs.test_loc }}" \
+            '{schemaVersion: 1, label: "test code", message: $msg, color: "orange"}' \
+            > .badges/test-loc.json
 
           jq -n \
             --arg msg "${{ steps.metrics.outputs.tests }} passed" \
@@ -102,7 +123,8 @@ jobs:
           fi
 
           cp /tmp/badges-data/* .
-          git add loc.json tests.json
+          git add prod-loc.json test-loc.json tests.json
+          git rm -f loc.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "No badge changes"
           else

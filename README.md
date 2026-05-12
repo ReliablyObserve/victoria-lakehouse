@@ -8,7 +8,8 @@
 [![Security](https://github.com/ReliablyObserve/victoria-lakehouse/actions/workflows/security.yaml/badge.svg?branch=main&event=push)](https://github.com/ReliablyObserve/victoria-lakehouse/actions/workflows/security.yaml)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/ReliablyObserve/victoria-lakehouse)](https://go.dev/)
 [![Release](https://img.shields.io/github/v/release/ReliablyObserve/victoria-lakehouse)](https://github.com/ReliablyObserve/victoria-lakehouse/releases)
-[![Lines of Code](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ReliablyObserve/victoria-lakehouse/badges/loc.json)](https://github.com/ReliablyObserve/victoria-lakehouse)
+[![Prod Code](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ReliablyObserve/victoria-lakehouse/badges/prod-loc.json)](https://github.com/ReliablyObserve/victoria-lakehouse)
+[![Test Code](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ReliablyObserve/victoria-lakehouse/badges/test-loc.json)](https://github.com/ReliablyObserve/victoria-lakehouse)
 [![Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ReliablyObserve/victoria-lakehouse/badges/tests.json)](#tests)
 [![License](https://img.shields.io/github/license/ReliablyObserve/victoria-lakehouse)](LICENSE)
 
