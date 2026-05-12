@@ -8,7 +8,8 @@
 [![Security](https://github.com/ReliablyObserve/victoria-lakehouse/actions/workflows/security.yaml/badge.svg?branch=main&event=push)](https://github.com/ReliablyObserve/victoria-lakehouse/actions/workflows/security.yaml)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/ReliablyObserve/victoria-lakehouse)](https://go.dev/)
 [![Release](https://img.shields.io/github/v/release/ReliablyObserve/victoria-lakehouse)](https://github.com/ReliablyObserve/victoria-lakehouse/releases)
-[![Lines of Code](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ReliablyObserve/victoria-lakehouse/badges/loc.json)](https://github.com/ReliablyObserve/victoria-lakehouse)
+[![Prod Code](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ReliablyObserve/victoria-lakehouse/badges/prod-loc.json)](https://github.com/ReliablyObserve/victoria-lakehouse)
+[![Test Code](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ReliablyObserve/victoria-lakehouse/badges/test-loc.json)](https://github.com/ReliablyObserve/victoria-lakehouse)
 [![Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ReliablyObserve/victoria-lakehouse/badges/tests.json)](#tests)
 [![License](https://img.shields.io/github/license/ReliablyObserve/victoria-lakehouse)](LICENSE)
 
@@ -70,6 +71,8 @@ docker run -p 10428:10428 \
 docker compose -f deployment/docker/docker-compose-e2e.yml up
 ```
 
+Starts 13 services: MinIO (S3), VictoriaLogs + VictoriaTraces (hot tiers, 24h), lakehouse-logs + lakehouse-traces (cold S3), vlselect + vtselect (multi-level select), loki-vl-proxy (hot+cold routing), ClickHouse (analytics), and Grafana with 11 pre-configured datasources. See [Docker Compose Setup](docs/docker-compose-setup.md).
+
 ### Helm
 
 ```bash
@@ -112,49 +115,53 @@ For full setup, cluster integration, and deployment patterns, see [Getting Start
 
 Victoria Lakehouse reimplements the VL/VT storage interface (`RunQuery`, `GetFieldNames`, `GetFieldValues`, `GetStreams`, etc.) backed by Parquet files on S3. All HTTP APIs (`/select/logsql/*`, `/insert/jsonline`, `/insert/loki/api/v1/push`, `/insert/elasticsearch/_bulk`, `/delete/logsql/*`), the binary DataBlock protocol, and the LogsQL query engine are implemented from the VL/VT spec — same endpoints, same wire format, same query syntax.
 
-It integrates with vlagent (logs) and OTEL Collector (traces) to mirror data to both hot and cold tiers simultaneously, providing unlimited retention, disaster recovery, and open-format analytics.
+It integrates with any log/trace shipper — [vlagent](https://docs.victoriametrics.com/victorialogs/data-ingestion/vlogscli/), [Fluent Bit](https://fluentbit.io/), [Vector](https://vector.dev/), [OTEL Collector](https://opentelemetry.io/docs/collector/), [Fluentd](https://www.fluentd.org/), [Logstash](https://www.elastic.co/logstash), [Promtail](https://grafana.com/docs/loki/latest/send-data/promtail/) — to mirror data to both hot and cold tiers simultaneously, providing unlimited retention, disaster recovery, and open-format analytics. For Grafana users, [loki-vl-proxy](https://github.com/ReliablyObserve/loki-vl-proxy) provides automatic hot+cold routing with full **Grafana Loki Drilldown** compatibility — queries for the last 24h go to VictoriaLogs (hot), older queries route to lakehouse (cold).
 
 ```mermaid
 graph TB
     subgraph "Data Collection"
-        K8S["Kubernetes Pods /<br/>Infrastructure"] --> VA["vlagent<br/>(logs)"]
-        APP["Applications<br/>(OTEL SDK)"] --> OC["OTEL Collector<br/>(traces)"]
+        K8S["Kubernetes / Infrastructure"]
+        LOG["Log Shippers<br/>vlagent · Fluent Bit · Vector<br/>OTEL Collector · Fluentd"]
+        APP["Applications (OTEL SDK / Zipkin)"]
+        TRACE["Trace Collectors<br/>OTEL Collector · Jaeger Agent"]
+        K8S --> LOG
+        APP --> TRACE
     end
 
     subgraph "Hot Tier — 1 Month (EBS, multi-AZ)"
-        VA -->|mirror 1| VLI["vlinsert"]
-        OC -->|export 1| VTI["vtinsert"]
-        VLI --> VLSTO["vlstorage"]
-        VTI --> VTSTO["vtstorage"]
-        VLSEL["vlselect"]
-        VTSEL["vtselect"]
-        VLSEL --> VLSTO
-        VTSEL --> VTSTO
+        VLI["vlinsert"] --> VLSTO["vlstorage"]
+        VTI["vtinsert"] --> VTSTO["vtstorage"]
+        VLSEL["vlselect"] --> VLSTO
+        VTSEL["vtselect"] --> VTSTO
     end
 
     subgraph "Cold Tier — Unlimited (S3) — Victoria Lakehouse"
-        VA -->|mirror 2| LHL["lakehouse-logs<br/>(insert)"]
-        OC -->|export 2| LHT["lakehouse-traces<br/>(insert)"]
-        LHL --> WAL1["WAL"]
-        LHT --> WAL2["WAL"]
-        WAL1 --> BUF1["Buffers"]
-        WAL2 --> BUF2["Buffers"]
-        BUF1 -->|flush| S3[("S3 Parquet<br/>(11 nines)")]
-        BUF2 -->|flush| S3
-        LHLS["lakehouse-logs<br/>(select)"]
-        LHTS["lakehouse-traces<br/>(select)"]
-        LHLS --> S3
-        LHTS --> S3
-        LHLS -.->|buffer query| BUF1
-        LHTS -.->|buffer query| BUF2
+        LHL["lakehouse-logs<br/>(insert)"] --> WAL1["WAL → Buffers"]
+        LHT["lakehouse-traces<br/>(insert)"] --> WAL2["WAL → Buffers"]
+        WAL1 -->|flush| S3[("S3 Parquet<br/>(11 nines)")]
+        WAL2 -->|flush| S3
+        LHLS["lakehouse-logs<br/>(select)"] --> S3
+        LHTS["lakehouse-traces<br/>(select)"] --> S3
+        LHLS -.->|buffer query| WAL1
+        LHTS -.->|buffer query| WAL2
     end
+
+    LOG -->|"mirror (hot)"| VLI
+    LOG -->|"mirror (cold)"| LHL
+    TRACE -->|"export (hot)"| VTI
+    TRACE -->|"export (cold)"| LHT
 
     subgraph "Consumers"
         GF["Grafana"] --> VLSEL
         GF --> VTSEL
         VLSEL -->|cold fan-out| LHLS
         VTSEL -->|cold fan-out| LHTS
-        DDB["DuckDB / Trino<br/>Spark / ClickHouse"] --> S3
+    end
+
+    subgraph "Analytics — Direct S3 Parquet"
+        GF --> DDB["DuckDB · ClickHouse"]
+        DDB --> S3
+        TRI["Trino · Spark · pandas"] --> S3
     end
 
     style S3 fill:#e76f51,color:#fff
@@ -162,18 +169,19 @@ graph TB
     style LHT fill:#5a189a,color:#fff
     style LHLS fill:#2d6a4f,color:#fff
     style LHTS fill:#2d6a4f,color:#fff
-    style VA fill:#264653,color:#fff
-    style OC fill:#264653,color:#fff
+    style LOG fill:#264653,color:#fff
+    style TRACE fill:#264653,color:#fff
+    style DDB fill:#ff6b35,color:#fff
 ```
 
 **Key points:**
-- **vlagent** mirrors logs to both VictoriaLogs (hot, 1 month, EBS) and `lakehouse-logs` (cold, unlimited, S3)
-- **OTEL Collector** fans out traces to both VictoriaTraces (hot) and `lakehouse-traces` (cold)
+- **Any log shipper** (vlagent, Fluent Bit, Vector, OTEL Collector, Fluentd, Logstash, Promtail) mirrors to both VictoriaLogs (hot) and `lakehouse-logs` (cold) — all support VL's `/insert/jsonline`, Loki push, or ES bulk API
+- **Any trace shipper** (OTEL Collector, Jaeger Agent) fans out to both VictoriaTraces (hot) and `lakehouse-traces` (cold) via OTLP or Zipkin protocols
 - **vlselect/vtselect** transparently fan out queries to hot + cold — users see unified results
 - **Lakehouse as DR**: when hot cluster is down, Grafana queries lakehouse directly (slower but always available)
-- **Open Parquet**: DuckDB, Trino, Spark, ClickHouse query S3 directly for analytics, compliance, ML
+- **Open Parquet analytics**: [DuckDB](https://duckdb.org/docs/extensions/httpfs/s3api.html) via `read_parquet()`, [ClickHouse](https://clickhouse.com/docs/sql-reference/table-functions/s3) via `s3()` table function, [Trino](https://trino.io/docs/current/connector/hive-s3.html), [Spark](https://spark.apache.org/docs/latest/sql-data-sources-parquet.html), and [pandas](https://pandas.pydata.org/docs/reference/api/pandas.read_parquet.html) all query S3 Parquet directly for analytics, compliance, and ML
 
-For detailed collector configs and DR playbooks, see [Deployment Architecture](docs/deployment-architecture.md).
+For detailed collector configs, shipper examples, and DR playbooks, see [Deployment Architecture](docs/deployment-architecture.md).
 
 ### Query Flow
 
@@ -217,14 +225,17 @@ flowchart TD
 
 ```mermaid
 graph LR
-    subgraph "Pattern 1: Hot+Cold with vlagent/OTEL (recommended)"
-        VA["vlagent"] -->|mirror| VLI["vlinsert<br/>(hot)"]
+    subgraph "Pattern 1: Hot+Cold dual-write (recommended)"
+        VA["vlagent / Fluent Bit<br/>Vector / OTEL Collector"] -->|mirror| VLI["vlinsert<br/>(hot)"]
         VA -->|mirror| LHL["lakehouse-logs<br/>(cold)"]
-        OC["OTEL<br/>Collector"] -->|export| VTI["vtinsert"]
+        OC["OTEL Collector<br/>Jaeger Agent"] -->|export| VTI["vtinsert<br/>(hot)"]
         OC -->|export| LHT["lakehouse-traces<br/>(cold)"]
-        G1["Grafana"] --> VS1["vlselect"]
-        VS1 --> VLS1["vlstorage"]
-        VS1 -->|cold| LHLS["lakehouse-logs<br/>(select)"]
+        G1L["Grafana<br/>(logs)"] --> VLS1["vlselect"]
+        VLS1 -->|hot| VLSTO1["vlstorage"]
+        VLS1 -->|cold| LHLS["lakehouse-logs"]
+        G1T["Grafana<br/>(traces)"] --> VTS1["vtselect"]
+        VTS1 -->|hot| VTSTO1["vtstorage"]
+        VTS1 -->|cold| LHTS["lakehouse-traces"]
     end
 ```
 
@@ -262,32 +273,68 @@ graph LR
 
 ```mermaid
 graph LR
-    subgraph "Pattern 5: Analytics (open Parquet)"
-        S5[("S3 Parquet")] --> DDB["DuckDB"]
-        S5 --> TRI["Trino"]
-        S5 --> SPK["Spark"]
-        S5 --> CH["ClickHouse"]
+    subgraph "Pattern 5: Multi-Level Select (Hot+Cold unified)"
+        VA5["vlagent"] -->|mirror| VLI5["vlinsert"]
+        VA5 -->|mirror| LHI5["lakehouse-logs<br/>(insert)"]
+        OC5["OTEL Collector"] -->|export| VTI5["vtinsert"]
+        OC5 -->|export| LTI5["lakehouse-traces<br/>(insert)"]
+        G5L["Grafana<br/>(logs)"] --> VLS5["vlselect"]
+        VLS5 -->|hot| VLSTO5["vlstorage<br/>(disk)"]
+        VLS5 -->|cold| LHL5["lakehouse-logs<br/>(S3)"]
+        G5T["Grafana<br/>(traces)"] --> VTS5["vtselect"]
+        VTS5 -->|hot| VTSTO5["vtstorage<br/>(disk)"]
+        VTS5 -->|cold| LHT5["lakehouse-traces<br/>(S3)"]
     end
 ```
+
+```mermaid
+graph LR
+    subgraph "Pattern 6: Loki-VL-proxy (Hot+Cold)"
+        G6["Grafana<br/>Loki Drilldown"] --> LVP["loki-vl-proxy"]
+        LVP -->|"hot (<24h)"| VL6["VictoriaLogs"]
+        LVP -->|"cold (>24h)"| LH6["lakehouse-logs<br/>(select)"]
+    end
+```
+
+```mermaid
+graph LR
+    subgraph "Pattern 7: Analytics (open Parquet on S3)"
+        G7["Grafana"] --> DDB["DuckDB<br/>(in-memory plugin)"]
+        G7 --> CH7["ClickHouse<br/>(server)"]
+        DDB -->|"read_parquet()"| S7[("S3 Parquet")]
+        CH7 -->|"s3() table fn"| S7
+        TRI["Trino<br/>(Hive connector)"] --> S7
+        SPK["Spark<br/>(spark.read.parquet)"] --> S7
+    end
+```
+
+**How each engine queries S3 Parquet:**
+- **[DuckDB](https://duckdb.org/docs/extensions/httpfs/s3api.html)**: `SELECT * FROM read_parquet('s3://obs-archive/logs/**/*.parquet')` — in-memory, zero infrastructure, [Grafana plugin](https://github.com/motherduckdb/grafana-duckdb-datasource)
+- **[ClickHouse](https://clickhouse.com/docs/sql-reference/table-functions/s3)**: `SELECT * FROM s3('http://s3/bucket/logs/**/*.parquet', 'Parquet')` — server with native [Grafana datasource](https://grafana.com/grafana/plugins/grafana-clickhouse-datasource/) supporting Logs and Traces panels
+- **[Trino](https://trino.io/docs/current/connector/hive-s3.html)**: Hive connector with Parquet SerDe on S3
+- **[Spark](https://spark.apache.org/docs/latest/sql-data-sources-parquet.html)**: `spark.read.parquet("s3a://obs-archive/logs/")` — batch analytics, ML pipelines
+- **[pandas](https://pandas.pydata.org/docs/reference/api/pandas.read_parquet.html)**: `pd.read_parquet("s3://obs-archive/logs/")` — notebooks, data science
 
 ---
 
 ## Binaries and Roles
 
-Two separate binaries with independent VL/VT dependency versions:
+Two separate binaries, each pinned to its own VL/VT upstream version for maximum API compatibility. Same Go codebase (shared `internal/` packages for cache, manifest, S3, config), different entry points and schemas. Each binary is a standalone static binary (no CGo) with a distroless Docker image (<20MB compressed).
 
-| Binary | Port | VL/VT Compat | API | Docker Image |
-|---|---|---|---|---|
-| `lakehouse-logs` | 9428 | VL v1.50.0 | VL `/select/logsql/*` + `/insert/*` + `/delete/logsql/*` | `ghcr.io/.../lakehouse-logs` |
-| `lakehouse-traces` | 10428 | VT v0.8.2 | VT `/select/logsql/*` + Jaeger + `/delete/tracessql/*` | `ghcr.io/.../lakehouse-traces` |
+| Binary | Port | Upstream Compat | Insert APIs | Select APIs | Docker Image |
+|---|---|---|---|---|---|
+| `lakehouse-logs` | 9428 | VL v1.50.0 | `/insert/jsonline`, `/insert/loki/api/v1/push`, `/insert/elasticsearch/_bulk` | `/select/logsql/*`, `/delete/logsql/*`, `/internal/select/*` | `ghcr.io/reliablyobserve/lakehouse-logs` |
+| `lakehouse-traces` | 10428 | VT v0.8.2 | `/insert/jsonline`, Zipkin `/api/v2/spans`, OTLP | `/select/logsql/*`, Jaeger `/select/jaeger/api/*`, `/delete/tracessql/*` | `ghcr.io/reliablyobserve/lakehouse-traces` |
 
-Each binary supports three roles:
+Each binary supports three roles for independent scaling:
 
-| Role | Flag | Description |
-|---|---|---|
-| All | `--lakehouse.role=all` (default) | Insert + select in one process |
-| Insert | `--lakehouse.role=insert` | Write path only, flush to S3 |
-| Select | `--lakehouse.role=select` | Read path only, query S3 + buffers |
+| Role | Flag | Description | Use Case |
+|---|---|---|---|
+| All | `--lakehouse.role=all` (default) | Insert + select in one process, direct S3 access | Single-node, dev/test, small deployments |
+| Insert | `--lakehouse.role=insert` | Write path only — receives data, buffers, flushes Parquet to S3 | Scale write throughput independently |
+| Select | `--lakehouse.role=select` | Read path only — queries S3 + buffer query to insert pods | Scale read concurrency independently |
+
+**Why two binaries**: VictoriaLogs and VictoriaTraces evolve at different cadences and have different API surfaces (Jaeger for traces, Loki push for logs). Separate binaries let each track its upstream independently — a VL version bump never blocks VT and vice versa. Separate Go modules prevent dependency conflicts between the two VL/VT versions.
 
 ---
 
@@ -333,6 +380,11 @@ Each binary supports three roles:
 - **Un-delete**: remove a tombstone to restore data visibility instantly.
 - **Glacier-safe**: never triggers retrieval fees. Tombstone suppresses reads; data ages out via lifecycle.
 - **GDPR compliant**: immediate inaccessibility satisfies right-to-erasure. Optional physical delete for strict compliance.
+
+### Loki Drilldown Compatibility
+- **loki-vl-proxy hot+cold routing** with automatic time-based query routing: recent queries to VictoriaLogs (hot), older queries to lakehouse (cold), with configurable overlap.
+- **Translated metadata mode** (`-metadata-field-mode=translated`) and structured metadata emission for full Grafana Loki Drilldown support.
+- **Trace-to-logs linking** via derived fields — click a trace ID in Grafana to jump to correlated logs.
 
 ### Infrastructure
 - **Metadata persistence**: manifest, label index, cache metadata, and smart cache snapshots survive restarts.
@@ -429,15 +481,27 @@ See [Observability](docs/observability.md).
 
 ## Security
 
-- **Distroless runtime image** (`gcr.io/distroless/static-debian12:nonroot`) — no shell, no package manager
-- **Non-root execution** (UID 65534)
-- **Read-only root filesystem** in Kubernetes
-- **Stripped binaries** (`-s -w` linker flags)
-- **Drop all capabilities** (`capabilities.drop: ["ALL"]`)
-- **Seccomp profile** (`RuntimeDefault`)
-- **Internal endpoint auth**: `/internal/cache/*` endpoints require Bearer token (`peer.auth_key`) when configured, matching the same auth pattern used by `/internal/manifest/update`
+### Container Hardening
+- **Distroless runtime image** (`gcr.io/distroless/static-debian12:nonroot`) — no shell, no package manager, minimal attack surface
+- **Non-root execution** (UID 65534) — never runs as root
+- **Read-only root filesystem** in Kubernetes — prevents runtime filesystem modification
+- **Stripped binaries** (`-s -w` linker flags) — no debug symbols in production
+- **Drop all capabilities** (`capabilities.drop: ["ALL"]`) — principle of least privilege
+- **Seccomp profile** (`RuntimeDefault`) — syscall filtering
+
+### Authentication & Authorization
+- **Internal endpoint auth**: `/internal/cache/*`, `/internal/manifest/update`, `/internal/prefetch/hint` endpoints require Bearer token when configured (`peer.auth_key`, `partition_auth_key`)
+- **Cross-signal auth**: optional `X-Cross-Signal-Key` header for securing cross-deployment prefetch hints between logs and traces instances
+- **S3 credential isolation**: each binary has its own S3 credentials via flags, environment variables, or IAM roles
 - **Tenant isolation**: each Lakehouse deployment serves a single tenant's S3 prefix. Multi-tenancy is achieved at the deployment level, not row-level filtering
-- **CI security gates**: govulncheck, gosec, Trivy, gitleaks, CodeQL
+
+### CI Security Pipeline
+- **[govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck)** — Go vulnerability database scanning
+- **[gosec](https://github.com/securego/gosec)** — Go security linter
+- **[Trivy](https://trivy.dev/)** — container image vulnerability scanning
+- **[gitleaks](https://gitleaks.io/)** — secret detection in git history
+- **[CodeQL](https://codeql.github.com/)** — semantic code analysis (Go, Python, JavaScript)
+- **[golangci-lint](https://golangci-lint.run/)** — includes security-related linters (errcheck, gosec, staticcheck)
 
 See [Security](docs/security.md).
 
@@ -445,20 +509,43 @@ See [Security](docs/security.md).
 
 ## Parquet Schema
 
-Victoria Lakehouse reads OTLP-standard Parquet files. Column names use **OTEL semantic convention dot-notation** directly (e.g., `service.name`, `k8s.namespace.name`) for zero-translation compatibility with OTEL Collector exporters and standard tooling. High-frequency fields are promoted to top-level columns (with statistics + bloom filters). Everything else goes in MAP columns.
+Victoria Lakehouse reads and writes **OTLP-standard Parquet files**. Column names use OTEL semantic convention dot-notation directly (e.g., `service.name`, `k8s.namespace.name`) for zero-translation compatibility with OTEL Collector exporters and standard tooling. High-frequency fields are promoted to top-level columns with statistics and optional bloom filters. Everything else is preserved in MAP columns — no data is ever lost.
 
-| Promoted (Logs) | Promoted (Traces) |
-|---|---|
-| `timestamp_unix_nano` | `timestamp_unix_nano`, `start_time_unix_nano` |
-| `body`, `severity_text` | `trace_id`, `span_id`, `parent_span_id` |
-| `service.name` | `span.name`, `service.name` |
-| `k8s.namespace.name`, `k8s.pod.name` | `status.code`, `duration_ns` |
-| `trace_id`, `span_id` | `resource.attributes` (MAP) |
-| `resource.attributes`, `log.attributes` (MAP) | `span.attributes`, `scope.attributes` (MAP) |
+**S3 layout**: Hive partitioned `s3://{bucket}/{signal}/dt=YYYY-MM-DD/hour=HH/{batch}.parquet`
 
-S3 layout: Hive partitioned by `dt=YYYY-MM-DD/hour=HH`.
+### Logs Schema
 
-Full schema reference: [Architecture](docs/architecture.md)
+| Column | Type | Bloom | Description |
+|---|---|---|---|
+| `timestamp_unix_nano` | INT64 | | Log timestamp (nanoseconds) |
+| `body` | STRING | | Log message body |
+| `severity_text` | STRING | | Log level (INFO, ERROR, etc.) |
+| `service.name` | STRING | Yes | Originating service |
+| `k8s.namespace.name` | STRING | | Kubernetes namespace |
+| `k8s.pod.name` | STRING | | Kubernetes pod |
+| `trace_id` | STRING | Yes | Correlated trace ID |
+| `span_id` | STRING | | Correlated span ID |
+| `_stream` / `_stream_id` | STRING | | VL stream identity |
+| `resource.attributes` | MAP | | All resource attributes |
+| `log.attributes` | MAP | | All log attributes |
+
+### Traces Schema
+
+| Column | Type | Bloom | Description |
+|---|---|---|---|
+| `timestamp_unix_nano` | INT64 | | Span start time (nanoseconds) |
+| `trace_id` | STRING | Yes | Trace identifier |
+| `span_id` | STRING | | Span identifier |
+| `parent_span_id` | STRING | | Parent span for tree structure |
+| `span.name` | STRING | | Operation name |
+| `service.name` | STRING | Yes | Originating service |
+| `duration_ns` | INT64 | | Span duration (nanoseconds) |
+| `status.code` | INT32 | | Span status (OK, ERROR, UNSET) |
+| `resource.attributes` | MAP | | All resource attributes |
+| `span.attributes` | MAP | | All span attributes |
+| `scope.attributes` | MAP | | Instrumentation scope attributes |
+
+Any tool that reads Parquet can query these files: DuckDB, ClickHouse, Trino, Spark, pandas. Full schema reference: [Architecture](docs/architecture.md)
 
 ---
 
@@ -478,46 +565,54 @@ See [Performance](docs/performance.md).
 
 ## Documentation
 
-### Core
-- [Getting Started](docs/getting-started.md) — quick start, ingestion, deployment patterns
-- [Deployment Architecture](docs/deployment-architecture.md) — vlagent, OTEL Collector, hot/cold tiers, DR
-- [Configuration](docs/configuration.md) — all 110+ config options with defaults
-- [Architecture](docs/architecture.md) — internal design, Parquet schema, query flow
-- [Operations](docs/operations.md) — day-2 operations, scaling, troubleshooting
+### Getting Started
+- [Getting Started](docs/getting-started.md) — quick start, first query in 5 minutes
+- [Docker Compose Setup](docs/docker-compose-setup.md) — full local environment with MinIO, hot/cold tiers, Grafana (11 datasources)
+- [Configuration](docs/configuration.md) — all 110+ config options with production-ready defaults
 
-### Use Cases & Analytics
-- [Use Cases](docs/use-cases.md) — DR, compliance, capacity planning, cost allocation, ML
-- [Analytics](docs/analytics.md) — DuckDB, Trino, Spark, ClickHouse, Pandas examples
+### Architecture & Design
+- [Architecture](docs/architecture.md) — internal design, Parquet schema, query flow, cache tiers
+- [Deployment Architecture](docs/deployment-architecture.md) — collector configs (vlagent, Fluent Bit, Vector, OTEL Collector), hot/cold tiers, DR playbooks
+- [Write Path](docs/write-path.md) — insert APIs, WAL crash recovery, adaptive flush, buffer query bridge
+- [Deletion Strategy](docs/deletion-strategy.md) — cost-aware tombstone + selective rewrite, Glacier-safe, three modes
+
+### Analytics (Open Parquet)
+- [Analytics](docs/analytics.md) — DuckDB, ClickHouse, Trino, Spark, pandas examples on S3 Parquet
+- [Use Cases](docs/use-cases.md) — disaster recovery, compliance/audit, capacity planning, cost allocation, ML pipelines
 
 ### Operations
-- [Security](docs/security.md) — hardening, network policies, credential handling
-- [Observability](docs/observability.md) — metrics, dashboards, alerting rules
-- [Performance](docs/performance.md) — benchmarks, tuning, targets
-- [Scaling](docs/scaling.md) — horizontal and vertical scaling guides
-- [Cost Estimates](docs/cost-estimates.md) — EBS vs S3 cost comparison
-- [Cost Comparison vs Loki/Tempo](docs/cost-comparison.md) — comprehensive competitive analysis
-- [Write Path](docs/write-path.md) — insert APIs, WAL, flush pipeline, buffer query bridge
-- [Deletion Strategy](docs/deletion-strategy.md) — cost-aware tombstone + selective rewrite, Glacier-safe
+- [Operations](docs/operations.md) — day-2 operations, scaling, troubleshooting
+- [Security](docs/security.md) — container hardening, auth, network policies, credentials
+- [Observability](docs/observability.md) — ~100 metrics, Grafana dashboards, 10 alerting rules
+- [Performance](docs/performance.md) — benchmarks, tuning guides, p95 targets
+- [Scaling](docs/scaling.md) — horizontal (insert/select separation) and vertical scaling
+
+### Cost & Comparison
+- [Cost Estimates](docs/cost-estimates.md) — EBS vs S3 vs Glacier cost breakdown
+- [Cost Comparison vs Loki/Tempo](docs/cost-comparison.md) — comprehensive competitive analysis at 500 GB/day
 
 ---
 
 ## Current Status
 
-| Milestone | Status | Key Deliverables |
+All core milestones are **complete**. The project is in production-readiness and feature expansion phase.
+
+| Milestone | Status | Description |
 |---|---|---|
-| M1: Foundation | Complete | Go module, config, CI/CD, Helm chart, Dockerfile |
-| M2: ParquetS3Storage Core | Complete | Schema registry, manifest, query engine, bloom filters, column projection, stream methods |
-| M3: Cache + Persistence | Complete | L1 memory LRU, L2 disk LRU, singleflight coalescence, label index, metadata persistence |
-| M4: Discovery + Peer Cache | Complete | Hot boundary auto-discovery, consistent hash peer cache, `/manifest/range` API |
-| M5: VL/VT Cluster Integration | Complete | `/internal/select/*` binary protocol, storage node registration |
-| M6: Filter AST + E2E | Complete | Full LogsQL predicate engine, Playwright E2E, schema validation |
-| M8-Phase A: Write Durability | Complete | WAL crash recovery, insert APIs, adaptive flush, buffer query bridge, manifest labels |
-| M9: Compaction | Complete | Background merge, size-tiered strategy, manifest updates |
-| M10: Testing & Helm | Complete | E2E overhaul (VL + vlselect + loki-vl-proxy), benchmarks, Victoria-pattern Helm chart, upstream sync GHA |
-| M11: Cost-Aware Deletion | Complete | Tombstone store, delete APIs, query-time filtering, background rewriter, storage-class detection, verify endpoint |
-| M7: Observability | Complete | ~80 Prometheus metrics, Grafana dashboards (single + cluster), 10 alerting rules, circuit breaker |
-| Binary Split | Complete | Separate `lakehouse-logs` + `lakehouse-traces` binaries, independent Go modules, mode-specific config/flags |
-| Smart Cache & Cross-Signal | Complete | Smart cache controller, cross-signal prefetch, parallel query workers, cache sizing, active query pinning |
+| **M1: Foundation** | Complete | Go module, CI/CD pipeline (test, lint, build, security), Dockerfile (distroless), Helm chart, config namespace with 110+ flags |
+| **M2: ParquetS3Storage** | Complete | Schema registry (OTLP → VL/VT), partition manifest, Parquet query engine with row group stats skip, bloom filters, column projection, all 11 VL storage interface methods |
+| **M3: Cache + Persistence** | Complete | L1 memory LRU, L2 disk LRU, singleflight S3 dedup, label/attribute index, metadata persistence to disk for fast restart |
+| **M4: Discovery + Peer Cache** | Complete | Hot boundary auto-discovery via `/internal/partition/list`, consistent hash peer cache (L3) via headless DNS, `/manifest/range` API |
+| **M5: Cluster Integration** | Complete | `/internal/select/*` binary protocol with ZSTD DataBlock streaming, `-storageNode` registration on vlselect/vtselect |
+| **M6: Filter AST + E2E** | Complete | Full LogsQL predicate engine (exact, substring, regex, NOT, AND, OR, ranges), Playwright E2E, schema validation |
+| **M7: Observability** | Complete | ~100 Prometheus metrics, Grafana dashboards (single-instance + cluster), 10 alerting rules, circuit breaker, structured JSON logging |
+| **M8: Write Path** | Complete | VL-compatible insert APIs (`/insert/jsonline`, Loki push, ES bulk), WAL with crash recovery, adaptive flush, buffer query bridge for zero-delay reads |
+| **M9: Compaction** | Complete | Background merge of small Parquet files, size-tiered strategy, manifest atomic updates, tombstone integration |
+| **M10: Testing & Helm** | Complete | E2E test suite (VL + vlselect + loki-vl-proxy chain), benchmarks, Victoria-pattern Helm chart, upstream sync GHA |
+| **M11: Cost-Aware Deletion** | Complete | Three-tier deletion (tombstone → rewrite → lifecycle), `/delete/logsql/*` and `/delete/tracessql/*` APIs, storage-class detection, Glacier-safe, verify endpoint |
+| **Binary Split** | Complete | Separate `lakehouse-logs` + `lakehouse-traces` binaries with independent Go modules, mode-specific config/flags/schemas |
+| **Smart Cache** | Complete | Unified cache controller (L1-L4), active query pinning, cache sizing calculator, snapshot persistence, cross-signal prefetch between logs↔traces |
+| **E2E Compose** | Complete | Full Docker Compose with MinIO, VL/VT hot tiers, vlselect/vtselect multi-level select, loki-vl-proxy, DuckDB + ClickHouse analytics, 11 Grafana datasources |
 
 ---
 

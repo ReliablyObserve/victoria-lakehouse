@@ -7,22 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Multi-level select architecture — vlselect/vtselect fan out queries to both hot (disk) and cold (lakehouse S3) storage nodes for unified hot+cold results
+- VictoriaTraces hot tier in Docker Compose — standalone VT instance with 24h disk retention
+- Datagen trace dual-write — `--vt-endpoint` flag pushes traces to VictoriaTraces via Zipkin `/api/v2/spans` alongside S3 Parquet writes
+- Eleven Grafana datasources — Global VL/VT (via vlselect/vtselect), Hot VL/VT (direct disk), Cold logs/traces (lakehouse S3), Loki proxy (hot+cold), DuckDB analytics, ClickHouse analytics/logs/traces
+- DuckDB Grafana datasource — in-memory DuckDB with `httpfs` extension for direct SQL on S3 Parquet files via `read_parquet()`
+- ClickHouse analytics engine — pre-configured with `lakehouse.logs` and `lakehouse.traces` views querying MinIO Parquet via `s3()` table function, with dedicated Grafana Logs and Traces datasources for native log/trace panel visualization on raw Parquet
+- Architecture diagram in Docker Compose docs showing full data flow across all tiers
+
+### Changed
+- Docker Compose hot tier retention reduced from 7d to 24h to match cold boundary
+- Grafana default datasource changed to VictoriaLogs Global (via vlselect) for unified hot+cold queries
+- Grafana image changed from Alpine to Ubuntu (`grafana/grafana:latest-ubuntu`) — required for DuckDB plugin (glibc dependency)
+
 ## [0.18.2] - 2026-05-12
 
 ### Fixed
+- Fix Jaeger trace search returning null data — use VT-canonical field names (`"resource_attr:service.name"`, `name`, `duration`) with LogsQL quoting for colon-containing fields
+- Fix loki-vl-proxy hot+cold routing — VictoriaLogs serves hot data (<24h), lakehouse-logs serves cold data via `-cold-enabled` with 1h overlap
 - Add `external_query.go` patch to auto-release workflow — fixes binary build failure (`undefined: logstorage.QueryHasPipes`)
 - Update e2e compose loki-vl-proxy from broken local build path to published GHCR image v1.31.2
+- Format `_time` column as RFC3339Nano instead of raw nanoseconds — fixes VL handler timestamp parsing for all query endpoints
+- Recover from `writeBlock` panics caused by unsupported VL pipe processors (e.g. `CountByTimePipe` in `/hits`) — prevents query crashes, returns partial results instead
+- Add `filter.go` to traces module for metadata filter scoping — traces `GetFieldNames`/`GetFieldValues` now correctly apply LogsQL filters
+- Apply LogsQL filter scope to metadata endpoints (`GetFieldNames`, `GetFieldValues`, `GetStreamFieldNames`, `GetStreamFieldValues`) — previously returned unfiltered results
 
 ### Changed
 - Replace custom LogsQL filter parser with VL's native `Filter.MatchRow()` — full LogsQL parity including OR, AND, NOT, regex, ranges, case-insensitive matching, and all filter types VL supports
 - Apply LogsQL filter evaluation in traces `RunQuery` (was missing) — traces now filter rows same as logs module
 - Apply `filter` substring parameter in vlstorage adapter for `GetFieldNames`, `GetFieldValues`, `GetStreamFieldNames`, `GetStreamFieldValues` — was previously ignored, now matches VL behavior
-
-### Fixed
-- Format `_time` column as RFC3339Nano instead of raw nanoseconds — fixes VL handler timestamp parsing for all query endpoints
-- Recover from `writeBlock` panics caused by unsupported VL pipe processors (e.g. `CountByTimePipe` in `/hits`) — prevents query crashes, returns partial results instead
-- Add `filter.go` to traces module for metadata filter scoping — traces `GetFieldNames`/`GetFieldValues` now correctly apply LogsQL filters
-- Apply LogsQL filter scope to metadata endpoints (`GetFieldNames`, `GetFieldValues`, `GetStreamFieldNames`, `GetStreamFieldValues`) — previously returned unfiltered results
+- Improve loki-vl-proxy config for Grafana Loki Drilldown — switch to translated metadata mode, add structured metadata emission, expand stream fields (12 labels), add derived fields for trace-to-logs linking, enable patterns autodetect and label values indexed cache
+- Split LOC badge into separate prod code and test code badges
+- Add `GOWORK=off` to Makefile — prevents build failures from incompatible VL versions across modules
 
 ## [0.18.1] - 2026-05-11
 

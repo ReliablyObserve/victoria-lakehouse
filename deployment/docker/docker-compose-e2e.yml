@@ -31,11 +31,15 @@ services:
       echo 'MinIO bucket ready'
       "
 
+  # =========================================================================
+  # Hot Tier — Disk-based, 24h retention
+  # =========================================================================
+
   victorialogs:
     image: victoriametrics/victoria-logs:v1.50.0
     command:
       - "-storageDataPath=/data"
-      - "-retentionPeriod=7d"
+      - "-retentionPeriod=24h"
       - "-loggerLevel=INFO"
     networks: [lakehouse-net]
     volumes:
@@ -47,6 +51,26 @@ services:
       retries: 10
       start_period: 5s
 
+  victoriatraces:
+    image: victoriametrics/victoria-traces:v0.8.2
+    command:
+      - "-storageDataPath=/data"
+      - "-retentionPeriod=24h"
+      - "-loggerLevel=INFO"
+    networks: [lakehouse-net]
+    volumes:
+      - vt-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:10428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # =========================================================================
+  # Data Generation — dual-write to hot (disk) + cold (S3) in parallel
+  # =========================================================================
+
   datagen-seed:
     build:
       context: ../../
@@ -55,6 +79,8 @@ services:
       minio-init:
         condition: service_completed_successfully
       victorialogs:
+        condition: service_healthy
+      victoriatraces:
         condition: service_healthy
     networks: [lakehouse-net]
     command:
@@ -67,6 +93,7 @@ services:
       - "--hours-back=48"
       - "--dual-write"
       - "--vl-endpoint=http://victorialogs:9428"
+      - "--vt-endpoint=http://victoriatraces:10428"
 
   datagen-continuous:
     build:
@@ -88,6 +115,11 @@ services:
       - "--interval=30s"
       - "--dual-write"
       - "--vl-endpoint=http://victorialogs:9428"
+      - "--vt-endpoint=http://victoriatraces:10428"
+
+  # =========================================================================
+  # Cold Tier — S3 Parquet, 7d+ retention (lakehouse)
+  # =========================================================================
 
   lakehouse-logs:
     build:
@@ -132,7 +164,6 @@ services:
       - "-loggerLevel=INFO"
     volumes:
       - lakehouse-cache-traces:/data/lakehouse
-
     healthcheck:
       test: ["CMD", "/usr/local/bin/healthcheck", "http://localhost:10428/health"]
       interval: 5s
@@ -140,19 +171,74 @@ services:
       retries: 10
       start_period: 10s
 
+  # =========================================================================
+  # Multi-Level Select — fan out to hot (disk) + cold (lakehouse)
+  # =========================================================================
+
+  vlselect:
+    image: victoriametrics/victoria-logs:v1.50.0
+    command:
+      - "-storageNode=victorialogs:9428,lakehouse-logs:9428"
+      - "-httpListenAddr=:9428"
+      - "-loggerLevel=INFO"
+    depends_on:
+      victorialogs:
+        condition: service_healthy
+      lakehouse-logs:
+        condition: service_healthy
+    networks: [lakehouse-net]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  vtselect:
+    image: victoriametrics/victoria-traces:v0.8.2
+    command:
+      - "-storageNode=victoriatraces:10428,lakehouse-traces:10428"
+      - "-httpListenAddr=:10428"
+      - "-loggerLevel=INFO"
+    depends_on:
+      victoriatraces:
+        condition: service_healthy
+      lakehouse-traces:
+        condition: service_healthy
+    networks: [lakehouse-net]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:10428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # =========================================================================
+  # Loki-VL-proxy — hot+cold routing via Loki API
+  # =========================================================================
+
   loki-vl-proxy:
     image: ghcr.io/reliablyobserve/loki-vl-proxy:v1.31.2
     environment:
-      VL_BACKEND_URL: "http://lakehouse-logs:9428"
-      LABEL_STYLE: "underscores"
-      METADATA_FIELD_MODE: "hybrid"
+      VL_BACKEND_URL: "http://victorialogs:9428"
     command:
       - "-label-style=underscores"
-      - "-metadata-field-mode=hybrid"
-      - "-stream-fields=service.name,k8s.namespace.name,k8s.pod.name,deployment.environment"
-      - "-extra-label-fields=level,cloud.region,host.name"
+      - "-metadata-field-mode=translated"
+      - "-emit-structured-metadata=true"
+      - "-stream-fields=service.name,k8s.namespace.name,k8s.pod.name,k8s.deployment.name,deployment.environment"
+      - "-extra-label-fields=level,cloud.region,host.name,k8s.node.name,trace_id,span_id,scope.name"
+      - "-derived-fields=[{\"name\":\"traceID\",\"matcherRegex\":\"trace_id=([a-f0-9]+)\",\"url\":\"http://localhost:3003/explore?left=%5B%22now-1h%22,%22now%22,%22victoria-lakehouse-traces%22,%7B%22query%22:%22$${__value.raw}%22%7D%5D\"}]"
+      - "-patterns-autodetect-from-queries=true"
+      - "-label-values-indexed-cache=true"
+      - "-cold-enabled=true"
+      - "-cold-backend=http://lakehouse-logs:9428"
+      - "-cold-boundary=24h"
+      - "-cold-overlap=1h"
+      - "-cold-manifest-refresh=30s"
     depends_on:
       lakehouse-logs:
+        condition: service_healthy
+      victorialogs:
         condition: service_healthy
     networks: [lakehouse-net]
     healthcheck:
@@ -162,27 +248,77 @@ services:
       retries: 10
       start_period: 5s
 
+  # =========================================================================
+  # Analytics — ClickHouse for direct S3 Parquet queries
+  # =========================================================================
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    depends_on:
+      datagen-seed:
+        condition: service_completed_successfully
+    networks: [lakehouse-net]
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - ./clickhouse/init-s3.sql:/docker-entrypoint-initdb.d/init-s3.sql:ro
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # =========================================================================
+  # Grafana — pre-configured with all datasources
+  # =========================================================================
+
+  # DuckDB plugin install — downloads from GitHub release (unsigned, requires allow list)
+  grafana-duckdb-init:
+    image: curlimages/curl:latest
+    networks: [lakehouse-net]
+    volumes:
+      - grafana-plugins:/plugins
+    entrypoint: >
+      /bin/sh -c "
+      curl -fsSL https://github.com/motherduckdb/grafana-duckdb-datasource/releases/download/v0.4.1/motherduck-duckdb-datasource-0.4.1.linux_amd64.zip -o /tmp/duckdb.zip &&
+      unzip -o /tmp/duckdb.zip -d /plugins/ &&
+      echo 'DuckDB plugin installed'
+      "
+
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:latest-ubuntu
     ports:
       - "3003:3000"
     networks: [lakehouse-net]
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
-      GF_INSTALL_PLUGINS: "https://github.com/VictoriaMetrics/victorialogs-datasource/releases/download/v0.26.3/victoriametrics-logs-datasource-v0.26.3.zip;victoriametrics-logs-datasource"
-      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "victoriametrics-logs-datasource"
+      GF_INSTALL_PLUGINS: "https://github.com/VictoriaMetrics/victorialogs-datasource/releases/download/v0.26.3/victoriametrics-logs-datasource-v0.26.3.zip;victoriametrics-logs-datasource,grafana-clickhouse-datasource"
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "victoriametrics-logs-datasource,motherduck-duckdb-datasource"
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning
       - grafana-data:/var/lib/grafana
+      - grafana-plugins:/var/lib/grafana/plugins
     depends_on:
-      lakehouse-logs:
+      grafana-duckdb-init:
+        condition: service_completed_successfully
+      clickhouse:
         condition: service_healthy
-      lakehouse-traces:
+      vlselect:
+        condition: service_healthy
+      vtselect:
+        condition: service_healthy
+      loki-vl-proxy:
         condition: service_healthy
 
 volumes:
   vl-data: {}
+  vt-data: {}
   lakehouse-cache-logs: {}
   lakehouse-cache-traces: {}
   grafana-data: {}
+  grafana-plugins: {}

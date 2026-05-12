@@ -60,7 +60,7 @@ func (h *Handler) handleJaegerOperations(w http.ResponseWriter, r *http.Request)
 	}
 
 	if len(parts) >= 2 && parts[1] == "operations" {
-		q, err := logstorage.ParseQuery(fmt.Sprintf(`service.name:="%s"`, parts[0]))
+		q, err := logstorage.ParseQuery(fmt.Sprintf(`"resource_attr:service.name":="%s"`, parts[0]))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -284,9 +284,9 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var queryParts []string
-	queryParts = append(queryParts, fmt.Sprintf(`service.name:="%s"`, service))
+	queryParts = append(queryParts, fmt.Sprintf(`"resource_attr:service.name":="%s"`, service))
 	if operation != "" {
-		queryParts = append(queryParts, fmt.Sprintf(`span.name:="%s"`, operation))
+		queryParts = append(queryParts, fmt.Sprintf(`name:="%s"`, operation))
 	}
 
 	var minDurNs, maxDurNs int64
@@ -317,7 +317,11 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		for k, v := range tagFilters {
-			queryParts = append(queryParts, fmt.Sprintf(`%s:="%s"`, k, v))
+			if strings.ContainsRune(k, ':') {
+				queryParts = append(queryParts, fmt.Sprintf(`"%s":="%s"`, k, v))
+			} else {
+				queryParts = append(queryParts, fmt.Sprintf(`%s:="%s"`, k, v))
+			}
 		}
 	}
 

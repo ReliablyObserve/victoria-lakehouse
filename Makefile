@@ -1,6 +1,10 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=$(VERSION)
 
+# Both Go modules use different VL commits with incompatible interfaces.
+# go.work exists for IDE support only; CLI builds must disable it.
+export GOWORK=off
+
 # VictoriaLogs — Go module proxy has stale cache with wrong module path.
 # We clone the correct version locally and use a replace directive in go.mod.
 VL_VERSION_LOGS := v1.50.0

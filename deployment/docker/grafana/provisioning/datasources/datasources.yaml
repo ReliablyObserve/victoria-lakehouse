@@ -1,16 +1,70 @@
 apiVersion: 1
 
 datasources:
-  - name: Victoria Lakehouse Logs (Cold)
+  # =========================================================================
+  # Global Datasources — unified hot+cold via multi-level select
+  # =========================================================================
+
+  - name: "VictoriaLogs Global (Hot+Cold)"
     type: victoriametrics-logs-datasource
-    uid: victoria-lakehouse-cold
+    uid: victorialogs-global
     access: proxy
-    url: http://lakehouse-logs:9428
+    url: http://vlselect:9428
     isDefault: true
     jsonData:
       maxLines: 1000
 
-  - name: Victoria Lakehouse Traces (Jaeger)
+  - name: "VictoriaTraces Global (Hot+Cold)"
+    type: jaeger
+    uid: victoriatraces-global
+    access: proxy
+    url: http://vtselect:10428
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: victorialogs-global
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+        filterByTraceID: true
+        filterBySpanID: false
+
+  # =========================================================================
+  # Hot Tier — disk-based, 24h retention
+  # =========================================================================
+
+  - name: "VictoriaLogs Hot (Disk 24h)"
+    type: victoriametrics-logs-datasource
+    uid: victorialogs-hot
+    access: proxy
+    url: http://victorialogs:9428
+    jsonData:
+      maxLines: 1000
+
+  - name: "VictoriaTraces Hot (Disk 24h)"
+    type: jaeger
+    uid: victoriatraces-hot
+    access: proxy
+    url: http://victoriatraces:10428
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: victorialogs-hot
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+        filterByTraceID: true
+        filterBySpanID: false
+
+  # =========================================================================
+  # Cold Tier — S3 Parquet via lakehouse
+  # =========================================================================
+
+  - name: "Lakehouse Logs Cold (S3)"
+    type: victoriametrics-logs-datasource
+    uid: victoria-lakehouse-cold
+    access: proxy
+    url: http://lakehouse-logs:9428
+    jsonData:
+      maxLines: 1000
+
+  - name: "Lakehouse Traces Cold (S3 Jaeger)"
     type: jaeger
     uid: victoria-lakehouse-traces
     access: proxy
@@ -23,18 +77,89 @@ datasources:
         filterByTraceID: true
         filterBySpanID: false
 
-  - name: VictoriaLogs Hot
-    type: victoriametrics-logs-datasource
-    uid: victorialogs-hot
-    access: proxy
-    url: http://victorialogs:9428
-    jsonData:
-      maxLines: 1000
+  # =========================================================================
+  # Loki API — hot+cold routing via loki-vl-proxy
+  # =========================================================================
 
-  - name: Loki via Proxy
+  - name: "Loki via Proxy (Hot+Cold)"
     type: loki
     uid: loki-vl-proxy
     access: proxy
     url: http://loki-vl-proxy:3100
     jsonData:
       maxLines: 1000
+      derivedFields:
+        - datasourceUid: victoriatraces-global
+          matcherRegex: "trace_id=(\\w+)"
+          name: traceID
+          url: "$${__value.raw}"
+
+  # =========================================================================
+  # Analytics — DuckDB direct Parquet query on S3/MinIO
+  # =========================================================================
+
+  - name: "DuckDB Analytics (S3 Parquet)"
+    type: motherduck-duckdb-datasource
+    uid: duckdb-analytics
+    access: proxy
+    jsonData:
+      path: ""
+      initSQL: |
+        INSTALL httpfs;
+        LOAD httpfs;
+        SET s3_endpoint='minio:9000';
+        SET s3_access_key_id='minioadmin';
+        SET s3_secret_access_key='minioadmin';
+        SET s3_use_ssl=false;
+        SET s3_url_style='path';
+
+  # =========================================================================
+  # ClickHouse — S3 Parquet analytics, logs, and traces
+  # =========================================================================
+
+  - name: "ClickHouse Analytics (S3 Parquet)"
+    type: grafana-clickhouse-datasource
+    uid: clickhouse-analytics
+    access: proxy
+    jsonData:
+      host: clickhouse
+      port: 9000
+      protocol: native
+      username: default
+      defaultDatabase: lakehouse
+
+  - name: "ClickHouse Logs (S3 Parquet)"
+    type: grafana-clickhouse-datasource
+    uid: clickhouse-logs
+    access: proxy
+    jsonData:
+      host: clickhouse
+      port: 9000
+      protocol: native
+      username: default
+      defaultDatabase: lakehouse
+      defaultTable: logs
+      logsTimestampField: timestamp_unix_nano
+      logsBodyField: body
+      logsSeverityField: severity_text
+      logsServiceNameField: "service.name"
+
+  - name: "ClickHouse Traces (S3 Parquet)"
+    type: grafana-clickhouse-datasource
+    uid: clickhouse-traces
+    access: proxy
+    jsonData:
+      host: clickhouse
+      port: 9000
+      protocol: native
+      username: default
+      defaultDatabase: lakehouse
+      defaultTable: traces
+      tracesTimestampField: timestamp_unix_nano
+      tracesDurationField: duration_ns
+      tracesTraceIdField: trace_id
+      tracesSpanIdField: span_id
+      tracesParentSpanIdField: parent_span_id
+      tracesServiceNameField: "service.name"
+      tracesOperationNameField: "span.name"
+      tracesStatusCodeField: "status.code"
