@@ -1232,12 +1232,12 @@ func TestHandleJaegerTrace_ScopeAttrAsSpanTag(t *testing.T) {
 	foundScope := false
 	for _, tag := range tags {
 		tg := tag.(map[string]any)
-		if tg["key"] == "scope_attr:lib.version" {
+		if tg["key"] == "lib.version" {
 			foundScope = true
 		}
 	}
 	if !foundScope {
-		t.Error("expected scope_attr:lib.version as span tag")
+		t.Error("expected lib.version as span tag (scope_attr: prefix stripped)")
 	}
 }
 
