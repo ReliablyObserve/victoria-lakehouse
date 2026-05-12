@@ -4,87 +4,32 @@ import (
 	"testing"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
-	"github.com/parquet-go/parquet-go"
 )
 
-func TestParseFilterPredicates(t *testing.T) {
+func TestParseFilter(t *testing.T) {
 	tests := []struct {
-		query string
-		want  int
+		query    string
+		wantNil  bool
 	}{
-		{"*", 0},
-		{"", 0},
-		{`service.name:="checkout"`, 1},
-		{`service.name:="checkout" level:="error"`, 2},
-		{`service.name:"checkout"`, 1},
-		{`service.name:~"check.*"`, 1},
-		{`service.name:="checkout" | limit 10`, 1},
-		{`NOT service.name:="checkout"`, 1},
-		{`_time:[2024-01-01, 2024-01-02) service.name:="web"`, 1},
-		{`error`, 1},
-		{`service.name:="checkout" AND level:="error"`, 2},
+		{"*", true},
+		{"", true},
+		{`service.name:="checkout"`, false},
+		{`service.name:="checkout" level:="error"`, false},
+		{`service.name:"checkout"`, false},
+		{`service.name:~"check.*"`, false},
+		{`service.name:="checkout" | limit 10`, false},
+		{`NOT service.name:="checkout"`, false},
+		{`service.name:="checkout" OR level:="error"`, false},
 	}
 
 	for _, tt := range tests {
-		preds := parseFilterPredicates(tt.query)
-		if len(preds) != tt.want {
-			t.Errorf("parseFilterPredicates(%q) = %d predicates, want %d; got %+v", tt.query, len(preds), tt.want, preds)
+		f := parseFilter(tt.query)
+		if tt.wantNil && f != nil {
+			t.Errorf("parseFilter(%q) = non-nil, want nil", tt.query)
 		}
-	}
-}
-
-func TestParseFieldPredicate(t *testing.T) {
-	tests := []struct {
-		tok     string
-		wantOp  filterOp
-		wantOK  bool
-		wantVal string
-	}{
-		{`service.name:="checkout"`, filterExact, true, "checkout"},
-		{`service.name:"checkout"`, filterSubstring, true, "checkout"},
-		{`service.name:~"check.*"`, filterRegex, true, "check.*"},
-		{`service.name:checkout`, filterSubstring, true, "checkout"},
-		{`_time:[2024,2025)`, filterOp(0), false, ""},
-		{`*`, filterOp(0), false, ""},
-		{`error`, filterSubstring, true, "error"},
-	}
-
-	for _, tt := range tests {
-		p, ok := parseFieldPredicate(tt.tok, false)
-		if ok != tt.wantOK {
-			t.Errorf("parseFieldPredicate(%q): ok = %v, want %v", tt.tok, ok, tt.wantOK)
-			continue
+		if !tt.wantNil && f == nil {
+			t.Errorf("parseFilter(%q) = nil, want non-nil", tt.query)
 		}
-		if ok && p.op != tt.wantOp {
-			t.Errorf("parseFieldPredicate(%q): op = %v, want %v", tt.tok, p.op, tt.wantOp)
-		}
-		if ok && p.value != tt.wantVal {
-			t.Errorf("parseFieldPredicate(%q): value = %q, want %q", tt.tok, p.value, tt.wantVal)
-		}
-	}
-}
-
-func TestParseFieldPredicate_RegexInvalid(t *testing.T) {
-	_, ok := parseFieldPredicate(`field:~"[invalid"`, false)
-	if ok {
-		t.Error("expected invalid regex to return ok=false")
-	}
-}
-
-func TestFilterPredicateNegation(t *testing.T) {
-	preds := parseFilterPredicates(`NOT service.name:="checkout"`)
-	if len(preds) != 1 {
-		t.Fatalf("expected 1 predicate, got %d", len(preds))
-	}
-	if !preds[0].negated {
-		t.Error("expected negated predicate")
-	}
-}
-
-func TestExtractQuoted_NoClosingQuote(t *testing.T) {
-	got := extractQuoted("no-closing-quote")
-	if got != "no-closing-quote" {
-		t.Errorf("extractQuoted with no closing quote = %q, want %q", got, "no-closing-quote")
 	}
 }
 
@@ -115,8 +60,8 @@ func TestFilterDataBlock(t *testing.T) {
 	})
 
 	t.Run("exact match", func(t *testing.T) {
-		preds := parseFilterPredicates(`service.name:="checkout"`)
-		result := filterDataBlock(db, preds)
+		f := parseFilter(`service.name:="checkout"`)
+		result := filterDataBlock(db, f)
 		if result == nil {
 			t.Fatal("expected non-nil result")
 		}
@@ -126,8 +71,8 @@ func TestFilterDataBlock(t *testing.T) {
 	})
 
 	t.Run("substring match", func(t *testing.T) {
-		preds := parseFilterPredicates(`service.name:"check"`)
-		result := filterDataBlock(db, preds)
+		f := parseFilter(`service.name:"checkout"`)
+		result := filterDataBlock(db, f)
 		if result == nil {
 			t.Fatal("expected non-nil result")
 		}
@@ -136,9 +81,9 @@ func TestFilterDataBlock(t *testing.T) {
 		}
 	})
 
-	t.Run("combined filters", func(t *testing.T) {
-		preds := parseFilterPredicates(`service.name:="checkout" level:="error"`)
-		result := filterDataBlock(db, preds)
+	t.Run("combined AND filters", func(t *testing.T) {
+		f := parseFilter(`service.name:="checkout" level:="error"`)
+		result := filterDataBlock(db, f)
 		if result == nil {
 			t.Fatal("expected non-nil result")
 		}
@@ -147,17 +92,20 @@ func TestFilterDataBlock(t *testing.T) {
 		}
 	})
 
-	t.Run("no match", func(t *testing.T) {
-		preds := parseFilterPredicates(`service.name:="nonexistent"`)
-		result := filterDataBlock(db, preds)
-		if result != nil {
-			t.Errorf("expected nil result, got %d rows", result.RowsCount())
+	t.Run("OR filter", func(t *testing.T) {
+		f := parseFilter(`service.name:="checkout" OR service.name:="auth"`)
+		result := filterDataBlock(db, f)
+		if result == nil {
+			t.Fatal("expected non-nil result")
+		}
+		if result.RowsCount() != 3 {
+			t.Errorf("got %d rows, want 3 (checkout x2 + auth x1)", result.RowsCount())
 		}
 	})
 
-	t.Run("negated filter", func(t *testing.T) {
-		preds := parseFilterPredicates(`NOT service.name:="checkout"`)
-		result := filterDataBlock(db, preds)
+	t.Run("complex OR+AND", func(t *testing.T) {
+		f := parseFilter(`(service.name:="checkout" AND level:="error") OR (service.name:="auth" AND level:="error")`)
+		result := filterDataBlock(db, f)
 		if result == nil {
 			t.Fatal("expected non-nil result")
 		}
@@ -166,16 +114,35 @@ func TestFilterDataBlock(t *testing.T) {
 		}
 	})
 
-	t.Run("nil predicates passthrough", func(t *testing.T) {
+	t.Run("no match", func(t *testing.T) {
+		f := parseFilter(`service.name:="nonexistent"`)
+		result := filterDataBlock(db, f)
+		if result != nil {
+			t.Errorf("expected nil result, got %d rows", result.RowsCount())
+		}
+	})
+
+	t.Run("negated filter", func(t *testing.T) {
+		f := parseFilter(`NOT service.name:="checkout"`)
+		result := filterDataBlock(db, f)
+		if result == nil {
+			t.Fatal("expected non-nil result")
+		}
+		if result.RowsCount() != 2 {
+			t.Errorf("got %d rows, want 2", result.RowsCount())
+		}
+	})
+
+	t.Run("nil filter passthrough", func(t *testing.T) {
 		result := filterDataBlock(db, nil)
 		if result != db {
-			t.Error("expected same DataBlock back with nil predicates")
+			t.Error("expected same DataBlock back with nil filter")
 		}
 	})
 
 	t.Run("bare word matches _msg", func(t *testing.T) {
-		preds := parseFilterPredicates(`denied`)
-		result := filterDataBlock(db, preds)
+		f := parseFilter(`denied`)
+		result := filterDataBlock(db, f)
 		if result == nil {
 			t.Fatal("expected non-nil result")
 		}
@@ -185,8 +152,8 @@ func TestFilterDataBlock(t *testing.T) {
 	})
 
 	t.Run("regex match", func(t *testing.T) {
-		preds := parseFilterPredicates(`service.name:~"check.*"`)
-		result := filterDataBlock(db, preds)
+		f := parseFilter(`service.name:~"check.*"`)
+		result := filterDataBlock(db, f)
 		if result == nil {
 			t.Fatal("expected non-nil result")
 		}
@@ -195,17 +162,9 @@ func TestFilterDataBlock(t *testing.T) {
 		}
 	})
 
-	t.Run("missing field returns nil", func(t *testing.T) {
-		preds := []filterPredicate{{field: "nonexistent", op: filterExact, value: "x"}}
-		result := filterDataBlock(db, preds)
-		if result != nil {
-			t.Errorf("expected nil result for missing field, got %d rows", result.RowsCount())
-		}
-	})
-
 	t.Run("nil DataBlock passthrough", func(t *testing.T) {
-		preds := parseFilterPredicates(`service.name:="checkout"`)
-		result := filterDataBlock(nil, preds)
+		f := parseFilter(`service.name:="checkout"`)
+		result := filterDataBlock(nil, f)
 		if result != nil {
 			t.Error("expected nil result for nil DataBlock")
 		}
@@ -213,8 +172,8 @@ func TestFilterDataBlock(t *testing.T) {
 
 	t.Run("empty DataBlock passthrough", func(t *testing.T) {
 		empty := &logstorage.DataBlock{}
-		preds := parseFilterPredicates(`service.name:="checkout"`)
-		result := filterDataBlock(empty, preds)
+		f := parseFilter(`service.name:="checkout"`)
+		result := filterDataBlock(empty, f)
 		if result != empty {
 			t.Error("expected same empty DataBlock back")
 		}
@@ -225,10 +184,43 @@ func TestFilterDataBlock(t *testing.T) {
 		allMatch.SetColumns([]logstorage.BlockColumn{
 			{Name: "service.name", Values: []string{"checkout", "checkout"}},
 		})
-		preds := parseFilterPredicates(`service.name:="checkout"`)
-		result := filterDataBlock(allMatch, preds)
+		f := parseFilter(`service.name:="checkout"`)
+		result := filterDataBlock(allMatch, f)
 		if result != allMatch {
 			t.Error("expected same DataBlock when all rows match")
+		}
+	})
+}
+
+func TestFilterMatchesRow(t *testing.T) {
+	t.Run("nil filter matches all", func(t *testing.T) {
+		fields := []logstorage.Field{{Name: "service.name", Value: "checkout"}}
+		if !filterMatchesRow(nil, fields) {
+			t.Error("nil filter should match all rows")
+		}
+	})
+
+	t.Run("exact match", func(t *testing.T) {
+		f := parseFilter(`service.name:="checkout"`)
+		fields := []logstorage.Field{{Name: "service.name", Value: "checkout"}, {Name: "level", Value: "error"}}
+		if !filterMatchesRow(f, fields) {
+			t.Error("expected match")
+		}
+	})
+
+	t.Run("exact no match", func(t *testing.T) {
+		f := parseFilter(`service.name:="checkout"`)
+		fields := []logstorage.Field{{Name: "service.name", Value: "payment"}}
+		if filterMatchesRow(f, fields) {
+			t.Error("expected no match")
+		}
+	})
+
+	t.Run("OR match", func(t *testing.T) {
+		f := parseFilter(`service.name:="checkout" OR service.name:="payment"`)
+		fields := []logstorage.Field{{Name: "service.name", Value: "payment"}}
+		if !filterMatchesRow(f, fields) {
+			t.Error("expected OR to match second alternative")
 		}
 	})
 }
@@ -270,120 +262,4 @@ func TestExtractTraceIDs_NoColumn(t *testing.T) {
 	if len(ids) != 0 {
 		t.Errorf("expected 0 trace IDs when no trace_id column, got %d", len(ids))
 	}
-}
-
-func TestRowMatchesPredicates(t *testing.T) {
-	colNames := []string{"service.name", "level", "_msg"}
-	colMap := map[string]int{
-		"service.name": 0,
-		"level":        1,
-		"_msg":         2,
-	}
-
-	mkRow := func(svc, level, msg string) parquet.Row {
-		return parquet.Row{
-			parquet.ValueOf(svc),
-			parquet.ValueOf(level),
-			parquet.ValueOf(msg),
-		}
-	}
-
-	t.Run("exact match", func(t *testing.T) {
-		preds := parseFilterPredicates(`service.name:="checkout"`)
-		if !rowMatchesPredicates(mkRow("checkout", "error", "fail"), colNames, colMap, preds, nil) {
-			t.Error("expected match")
-		}
-		if rowMatchesPredicates(mkRow("payment", "error", "fail"), colNames, colMap, preds, nil) {
-			t.Error("expected no match")
-		}
-	})
-
-	t.Run("combined predicates", func(t *testing.T) {
-		preds := parseFilterPredicates(`service.name:="checkout" level:="error"`)
-		if !rowMatchesPredicates(mkRow("checkout", "error", "fail"), colNames, colMap, preds, nil) {
-			t.Error("expected match for checkout+error")
-		}
-		if rowMatchesPredicates(mkRow("checkout", "info", "ok"), colNames, colMap, preds, nil) {
-			t.Error("expected no match for checkout+info")
-		}
-	})
-
-	t.Run("negated predicate", func(t *testing.T) {
-		preds := parseFilterPredicates(`NOT service.name:="checkout"`)
-		if rowMatchesPredicates(mkRow("checkout", "error", "fail"), colNames, colMap, preds, nil) {
-			t.Error("expected no match for negated checkout")
-		}
-		if !rowMatchesPredicates(mkRow("payment", "error", "fail"), colNames, colMap, preds, nil) {
-			t.Error("expected match for payment with NOT checkout")
-		}
-	})
-
-	t.Run("missing field", func(t *testing.T) {
-		preds := []filterPredicate{{field: "nonexistent", op: filterExact, value: "x"}}
-		if rowMatchesPredicates(mkRow("checkout", "error", "fail"), colNames, colMap, preds, nil) {
-			t.Error("expected no match for missing field")
-		}
-	})
-
-	t.Run("missing field negated", func(t *testing.T) {
-		preds := []filterPredicate{{field: "nonexistent", op: filterExact, value: "x", negated: true}}
-		if !rowMatchesPredicates(mkRow("checkout", "error", "fail"), colNames, colMap, preds, nil) {
-			t.Error("expected match for negated missing field")
-		}
-	})
-
-	t.Run("no predicates matches all", func(t *testing.T) {
-		if !rowMatchesPredicates(mkRow("anything", "any", "any"), colNames, colMap, nil, nil) {
-			t.Error("expected match with no predicates")
-		}
-	})
-}
-
-func TestCollectFilteredValues(t *testing.T) {
-	mkRow := func(svc, level string) parquet.Row {
-		return parquet.Row{
-			parquet.ValueOf(svc),
-			parquet.ValueOf(level),
-		}
-	}
-
-	colNames := []string{"service.name", "level"}
-	rows := []parquet.Row{
-		mkRow("checkout", "error"),
-		mkRow("payment", "info"),
-		mkRow("checkout", "warn"),
-		mkRow("auth", "error"),
-	}
-
-	t.Run("no predicates collects all", func(t *testing.T) {
-		seen := make(map[string]uint64)
-		collectFilteredValues(rows, colNames, 1, nil, nil, seen)
-		if len(seen) != 3 {
-			t.Errorf("expected 3 unique level values, got %d: %v", len(seen), seen)
-		}
-	})
-
-	t.Run("with filter collects matching only", func(t *testing.T) {
-		seen := make(map[string]uint64)
-		preds := parseFilterPredicates(`service.name:="checkout"`)
-		collectFilteredValues(rows, colNames, 1, preds, nil, seen)
-		if len(seen) != 2 {
-			t.Errorf("expected 2 level values for checkout, got %d: %v", len(seen), seen)
-		}
-		if _, ok := seen["error"]; !ok {
-			t.Error("expected 'error' in results")
-		}
-		if _, ok := seen["warn"]; !ok {
-			t.Error("expected 'warn' in results")
-		}
-	})
-
-	t.Run("filter excludes all", func(t *testing.T) {
-		seen := make(map[string]uint64)
-		preds := parseFilterPredicates(`service.name:="nonexistent"`)
-		collectFilteredValues(rows, colNames, 1, preds, nil, seen)
-		if len(seen) != 0 {
-			t.Errorf("expected 0 values, got %d: %v", len(seen), seen)
-		}
-	})
 }

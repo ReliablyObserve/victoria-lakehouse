@@ -133,6 +133,86 @@ func TestDeleteActiveTasks_NilTombstones(t *testing.T) {
 	}
 }
 
+func TestFilterValuesBySubstring(t *testing.T) {
+	values := []logstorage.ValueWithHits{
+		{Value: "service.name", Hits: 10},
+		{Value: "level", Hits: 5},
+		{Value: "service.version", Hits: 3},
+		{Value: "host.name", Hits: 2},
+	}
+
+	t.Run("empty filter returns all", func(t *testing.T) {
+		result := filterValuesBySubstring(values, "")
+		if len(result) != 4 {
+			t.Errorf("expected 4 results, got %d", len(result))
+		}
+	})
+
+	t.Run("filter by substring", func(t *testing.T) {
+		result := filterValuesBySubstring(values, "service")
+		if len(result) != 2 {
+			t.Errorf("expected 2 results matching 'service', got %d", len(result))
+		}
+	})
+
+	t.Run("filter matches none", func(t *testing.T) {
+		result := filterValuesBySubstring(values, "nonexistent")
+		if len(result) != 0 {
+			t.Errorf("expected 0 results, got %d", len(result))
+		}
+	})
+
+	t.Run("filter matches one", func(t *testing.T) {
+		result := filterValuesBySubstring(values, "level")
+		if len(result) != 1 {
+			t.Errorf("expected 1 result, got %d", len(result))
+		}
+	})
+}
+
+// mockStoreWithFields returns predefined field names/values for testing filter passthrough.
+type mockStoreWithFields struct {
+	mockStore
+	fieldNames []logstorage.ValueWithHits
+}
+
+func (m mockStoreWithFields) GetFieldNames(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query) ([]logstorage.ValueWithHits, error) {
+	return m.fieldNames, nil
+}
+
+func TestGetFieldNames_FilterSubstring(t *testing.T) {
+	store := mockStoreWithFields{
+		fieldNames: []logstorage.ValueWithHits{
+			{Value: "service.name", Hits: 10},
+			{Value: "level", Hits: 5},
+			{Value: "service.version", Hits: 3},
+		},
+	}
+	a := &adapter{store: store}
+
+	qctx := &logstorage.QueryContext{Context: context.Background()}
+
+	t.Run("no filter", func(t *testing.T) {
+		results, err := a.GetFieldNames(qctx, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 3 {
+			t.Errorf("expected 3 results, got %d", len(results))
+		}
+	})
+
+	t.Run("with filter", func(t *testing.T) {
+		results, err := a.GetFieldNames(qctx, "service")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 2 {
+			t.Errorf("expected 2 results matching 'service', got %d", len(results))
+		}
+	})
+}
+
 func TestDeleteActiveTasks_ReturnsTombstones(t *testing.T) {
 	ts := delete.NewTombstoneStore()
 	ts.Add(delete.Tombstone{ID: "t-1", Query: "*", Mode: "auto"})
