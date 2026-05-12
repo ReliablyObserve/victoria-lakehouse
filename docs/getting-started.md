@@ -229,15 +229,27 @@ lakehouse-logs --lakehouse.role=select \
 
 Select pods discover insert pods via headless DNS and query their `/internal/buffer/query` endpoint for unflushed data.
 
-### Pattern 5: Loki-VL-proxy Upstream
+### Pattern 5: Loki-VL-proxy Upstream (Hot+Cold)
 
-Route cold queries through Loki-VL-proxy:
+Route queries through Loki-VL-proxy with automatic hot+cold routing:
 
+```bash
+loki-vl-proxy \
+  -backend-url=http://victorialogs:9428 \
+  -label-style=underscores \
+  -metadata-field-mode=translated \
+  -emit-structured-metadata=true \
+  -stream-fields=service.name,k8s.namespace.name,k8s.pod.name,deployment.environment \
+  -extra-label-fields=level,cloud.region,host.name,trace_id,span_id \
+  -patterns-autodetect-from-queries=true \
+  -label-values-indexed-cache=true \
+  -cold-enabled=true \
+  -cold-backend=http://lakehouse-logs:9428 \
+  -cold-boundary=24h \
+  -cold-overlap=1h
 ```
-COLD_BACKEND_URL=http://lakehouse-logs:9428
-COLD_BOUNDARY=7d
-COLD_ENABLED=true
-```
+
+Queries for the last 24h go to VictoriaLogs (hot), older queries route to lakehouse (cold). The 1h overlap ensures no data gaps at the boundary. Use `-metadata-field-mode=translated` for full Grafana Loki Drilldown compatibility.
 
 ### Pattern 6: Disaster Recovery / Maintenance Fallback
 

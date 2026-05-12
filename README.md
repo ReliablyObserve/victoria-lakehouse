@@ -71,6 +71,8 @@ docker run -p 10428:10428 \
 docker compose -f deployment/docker/docker-compose-e2e.yml up
 ```
 
+Starts MinIO, lakehouse-logs, lakehouse-traces, VictoriaLogs (hot tier), loki-vl-proxy (hot+cold routing), and Grafana with pre-configured datasources. See [Docker Compose Setup](docs/docker-compose-setup.md).
+
 ### Helm
 
 ```bash
@@ -113,7 +115,7 @@ For full setup, cluster integration, and deployment patterns, see [Getting Start
 
 Victoria Lakehouse reimplements the VL/VT storage interface (`RunQuery`, `GetFieldNames`, `GetFieldValues`, `GetStreams`, etc.) backed by Parquet files on S3. All HTTP APIs (`/select/logsql/*`, `/insert/jsonline`, `/insert/loki/api/v1/push`, `/insert/elasticsearch/_bulk`, `/delete/logsql/*`), the binary DataBlock protocol, and the LogsQL query engine are implemented from the VL/VT spec — same endpoints, same wire format, same query syntax.
 
-It integrates with vlagent (logs) and OTEL Collector (traces) to mirror data to both hot and cold tiers simultaneously, providing unlimited retention, disaster recovery, and open-format analytics.
+It integrates with vlagent (logs) and OTEL Collector (traces) to mirror data to both hot and cold tiers simultaneously, providing unlimited retention, disaster recovery, and open-format analytics. For Grafana users, [loki-vl-proxy](https://github.com/ReliablyObserve/loki-vl-proxy) provides automatic hot+cold routing with full **Grafana Loki Drilldown** compatibility — queries for the last 24h go to VictoriaLogs (hot), older queries route to lakehouse (cold).
 
 ```mermaid
 graph TB
@@ -263,7 +265,16 @@ graph LR
 
 ```mermaid
 graph LR
-    subgraph "Pattern 5: Analytics (open Parquet)"
+    subgraph "Pattern 5: Loki-VL-proxy (Hot+Cold)"
+        G5["Grafana<br/>Loki Drilldown"] --> LVP["loki-vl-proxy"]
+        LVP -->|"hot (<24h)"| VL5["VictoriaLogs"]
+        LVP -->|"cold (>24h)"| LH5["lakehouse-logs<br/>(select)"]
+    end
+```
+
+```mermaid
+graph LR
+    subgraph "Pattern 6: Analytics (open Parquet)"
         S5[("S3 Parquet")] --> DDB["DuckDB"]
         S5 --> TRI["Trino"]
         S5 --> SPK["Spark"]
@@ -334,6 +345,11 @@ Each binary supports three roles:
 - **Un-delete**: remove a tombstone to restore data visibility instantly.
 - **Glacier-safe**: never triggers retrieval fees. Tombstone suppresses reads; data ages out via lifecycle.
 - **GDPR compliant**: immediate inaccessibility satisfies right-to-erasure. Optional physical delete for strict compliance.
+
+### Loki Drilldown Compatibility
+- **loki-vl-proxy hot+cold routing** with automatic time-based query routing: recent queries to VictoriaLogs (hot), older queries to lakehouse (cold), with configurable overlap.
+- **Translated metadata mode** (`-metadata-field-mode=translated`) and structured metadata emission for full Grafana Loki Drilldown support.
+- **Trace-to-logs linking** via derived fields — click a trace ID in Grafana to jump to correlated logs.
 
 ### Infrastructure
 - **Metadata persistence**: manifest, label index, cache metadata, and smart cache snapshots survive restarts.

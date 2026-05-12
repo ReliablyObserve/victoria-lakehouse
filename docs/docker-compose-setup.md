@@ -101,24 +101,48 @@ Serves Jaeger-compatible trace query APIs backed by the same MinIO bucket.
 
 ```yaml
 victorialogs:
-  image: victoriametrics/victoria-logs:v1.20.0-victorialogs
+  image: victoriametrics/victoria-logs:v1.50.0
   command:
     - "-storageDataPath=/data"
     - "-retentionPeriod=7d"
+    - "-loggerLevel=INFO"
 ```
 
-A standalone VictoriaLogs instance acting as the hot tier with 7-day retention and EBS-equivalent local storage.
+A standalone VictoriaLogs instance acting as the hot tier with 7-day retention and EBS-equivalent local storage. Receives dual-written data from `datagen-seed` and `datagen-continuous` for hot+cold query verification.
 
-### Loki-VL-proxy
+### Loki-VL-proxy (Hot+Cold Routing)
 
 ```yaml
 loki-vl-proxy:
-  image: ghcr.io/reliablyobserve/loki-vl-proxy:latest
+  image: ghcr.io/reliablyobserve/loki-vl-proxy:v1.31.2
   environment:
-    BACKEND_URL: "http://lakehouse-logs:9428"
+    VL_BACKEND_URL: "http://victorialogs:9428"
+  command:
+    - "-label-style=underscores"
+    - "-metadata-field-mode=translated"
+    - "-emit-structured-metadata=true"
+    - "-stream-fields=service.name,k8s.namespace.name,k8s.pod.name,k8s.deployment.name,deployment.environment"
+    - "-extra-label-fields=level,cloud.region,host.name,k8s.node.name,trace_id,span_id,scope.name"
+    - "-derived-fields=[{...traceID linking config...}]"
+    - "-patterns-autodetect-from-queries=true"
+    - "-label-values-indexed-cache=true"
+    - "-cold-enabled=true"
+    - "-cold-backend=http://lakehouse-logs:9428"
+    - "-cold-boundary=24h"
+    - "-cold-overlap=1h"
+    - "-cold-manifest-refresh=30s"
 ```
 
-Translates Loki API requests to VictoriaLogs API, allowing Grafana's built-in Loki datasource to query lakehouse data using LogQL syntax.
+Translates Loki API requests to VictoriaLogs API with **hot+cold routing**: queries for the last 24 hours go to VictoriaLogs (hot tier), older queries route to lakehouse-logs (cold tier). The 1-hour overlap ensures no data gaps at the boundary. Key configuration:
+
+- **`VL_BACKEND_URL`** — hot tier (VictoriaLogs) as primary backend
+- **`-cold-enabled=true`** — enables cold storage routing
+- **`-cold-backend`** — lakehouse-logs URL for cold queries
+- **`-cold-boundary=24h`** — time boundary between hot and cold tiers
+- **`-label-style=underscores`** — translates OTEL dot notation to Loki-compatible underscores (e.g., `service_name`)
+- **`-metadata-field-mode=translated`** — full field translation for Grafana Loki Drilldown compatibility
+- **`-emit-structured-metadata=true`** — emits all fields as structured metadata labels
+- **`-derived-fields`** — enables trace-to-logs linking via `traceID` derived field
 
 - **Internal endpoint**: `http://loki-vl-proxy:3100`
 
@@ -142,7 +166,7 @@ Pre-configured with four datasources via provisioning files in `deployment/docke
 | Victoria Lakehouse Logs (Cold) | VictoriaLogs | `http://lakehouse-logs:9428` | Direct cold tier queries |
 | Victoria Lakehouse Traces (Jaeger) | Jaeger | `http://lakehouse-traces:10428` | Trace search and visualization |
 | VictoriaLogs Hot | VictoriaLogs | `http://victorialogs:9428` | Hot tier only |
-| Loki via Proxy | Loki | `http://loki-vl-proxy:3100` | LogQL-compatible access |
+| Loki via Proxy (Hot+Cold) | Loki | `http://loki-vl-proxy:3100` | Unified hot+cold via LogQL with Loki Drilldown support |
 
 - **Grafana UI**: [http://localhost:3003](http://localhost:3003)
 
@@ -167,7 +191,7 @@ The compose file uses health checks and `depends_on` conditions to ensure correc
 4. **datagen-seed** writes historical data to MinIO and VictoriaLogs, then exits
 5. **lakehouse-logs** and **lakehouse-traces** start (depend on seed completion)
 6. **datagen-continuous** begins generating fresh data every 30 seconds
-7. **loki-vl-proxy** starts (depends on lakehouse-logs)
+7. **loki-vl-proxy** starts (depends on lakehouse-logs and victorialogs for hot+cold routing)
 8. **grafana** starts last (depends on both lakehouse services)
 
 ## Verifying the Setup

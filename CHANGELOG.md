@@ -10,19 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.18.2] - 2026-05-12
 
 ### Fixed
+- Fix Jaeger trace search returning null data — use VT-canonical field names (`"resource_attr:service.name"`, `name`, `duration`) with LogsQL quoting for colon-containing fields
+- Fix loki-vl-proxy hot+cold routing — VictoriaLogs serves hot data (<24h), lakehouse-logs serves cold data via `-cold-enabled` with 1h overlap
 - Add `external_query.go` patch to auto-release workflow — fixes binary build failure (`undefined: logstorage.QueryHasPipes`)
 - Update e2e compose loki-vl-proxy from broken local build path to published GHCR image v1.31.2
+- Format `_time` column as RFC3339Nano instead of raw nanoseconds — fixes VL handler timestamp parsing for all query endpoints
+- Recover from `writeBlock` panics caused by unsupported VL pipe processors (e.g. `CountByTimePipe` in `/hits`) — prevents query crashes, returns partial results instead
+- Add `filter.go` to traces module for metadata filter scoping — traces `GetFieldNames`/`GetFieldValues` now correctly apply LogsQL filters
+- Apply LogsQL filter scope to metadata endpoints (`GetFieldNames`, `GetFieldValues`, `GetStreamFieldNames`, `GetStreamFieldValues`) — previously returned unfiltered results
 
 ### Changed
 - Replace custom LogsQL filter parser with VL's native `Filter.MatchRow()` — full LogsQL parity including OR, AND, NOT, regex, ranges, case-insensitive matching, and all filter types VL supports
 - Apply LogsQL filter evaluation in traces `RunQuery` (was missing) — traces now filter rows same as logs module
 - Apply `filter` substring parameter in vlstorage adapter for `GetFieldNames`, `GetFieldValues`, `GetStreamFieldNames`, `GetStreamFieldValues` — was previously ignored, now matches VL behavior
-
-### Fixed
-- Format `_time` column as RFC3339Nano instead of raw nanoseconds — fixes VL handler timestamp parsing for all query endpoints
-- Recover from `writeBlock` panics caused by unsupported VL pipe processors (e.g. `CountByTimePipe` in `/hits`) — prevents query crashes, returns partial results instead
-- Add `filter.go` to traces module for metadata filter scoping — traces `GetFieldNames`/`GetFieldValues` now correctly apply LogsQL filters
-- Apply LogsQL filter scope to metadata endpoints (`GetFieldNames`, `GetFieldValues`, `GetStreamFieldNames`, `GetStreamFieldValues`) — previously returned unfiltered results
+- Improve loki-vl-proxy config for Grafana Loki Drilldown — switch to translated metadata mode, add structured metadata emission, expand stream fields (12 labels), add derived fields for trace-to-logs linking, enable patterns autodetect and label values indexed cache
+- Split LOC badge into separate prod code and test code badges
+- Add `GOWORK=off` to Makefile — prevents build failures from incompatible VL versions across modules
 
 ## [0.18.1] - 2026-05-11
 
