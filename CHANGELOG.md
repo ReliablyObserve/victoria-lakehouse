@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-05-12
+
 ### Fixed
 - Add `external_query.go` patch to auto-release workflow — fixes binary build failure (`undefined: logstorage.QueryHasPipes`)
 - Update e2e compose loki-vl-proxy from broken local build path to published GHCR image v1.31.2
