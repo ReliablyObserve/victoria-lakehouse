@@ -133,6 +133,10 @@ datasources:
       logsServiceNameField: ServiceName
       logsTraceIdField: TraceId
       logsSpanIdField: SpanId
+      logsResourceAttributeField: ResourceAttributes
+      logsLogAttributeField: LogAttributes
+      logsScopeAttributeField: ScopeAttributes
+      logsScopeNameField: ScopeName
       tracesToLogsV2:
         datasourceUid: clickhouse-traces
         spanStartTimeShift: "-1h"
@@ -166,6 +170,15 @@ datasources:
       tracesStatusMessageField: StatusMessage
       tracesSpanKindField: SpanKind
       tracesTraceStateField: TraceState
+      tracesResourceAttributeField: ResourceAttributes
+      tracesSpanAttributeField: SpanAttributes
+      tracesScopeAttributeField: ScopeAttributes
+      tracesScopeNameField: ScopeName
+      tracesEventsTimestampField: Events.Timestamp
+      tracesEventsNameField: Events.Name
+      tracesEventsAttributeField: Events.Attributes
+      tracesLinksTraceIdField: Links.TraceId
+      tracesLinksSpanIdField: Links.SpanId
       tracesToLogsV2:
         datasourceUid: clickhouse-logs
         spanStartTimeShift: "-1h"
