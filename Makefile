@@ -15,6 +15,9 @@ deps-logs: $(VL_DIR_LOGS)/go.mod
 $(VL_DIR_LOGS)/go.mod:
 	@mkdir -p deps
 	git clone --depth 1 --branch $(VL_VERSION_LOGS) $(VL_REPO) $(VL_DIR_LOGS)
+	cp patches/vl-logs/external.go $(VL_DIR_LOGS)/app/vlstorage/external.go
+	cp patches/vl-logs/external_query.go $(VL_DIR_LOGS)/lib/logstorage/external_query.go
+	cd $(VL_DIR_LOGS) && git apply ../../patches/vl-logs/vlstorage-dispatch.patch
 
 deps-traces: $(VL_DIR_TRACES)/go.mod
 

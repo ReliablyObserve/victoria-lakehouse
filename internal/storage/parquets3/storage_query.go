@@ -47,7 +47,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 
 	queryStr := q.String()
-	filter := parseFilter(queryStr)
+	filter := parseFilterFromQuery(q)
 
 	var rowsEmitted atomic.Int64
 	maxRows := s.cfg.Query.MaxRows

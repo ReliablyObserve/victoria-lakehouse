@@ -144,7 +144,7 @@ func TestMatchesRow_EmptyQuery(t *testing.T) {
 	}
 }
 
-func TestMatchesRow_FallbackBodySubstring(t *testing.T) {
+func TestMatchesRow_BareWordMatchesMsgField(t *testing.T) {
 	ts := Tombstone{
 		ID:      "t1",
 		Query:   "panic",
@@ -152,14 +152,14 @@ func TestMatchesRow_FallbackBodySubstring(t *testing.T) {
 		EndNs:   2000,
 	}
 
-	row := map[string]string{"body": "goroutine panic in handler"}
+	row := map[string]string{"_msg": "goroutine panic in handler"}
 	if !ts.MatchesRow(row, 1500) {
-		t.Fatal("expected fallback body substring to match")
+		t.Fatal("expected bare word to match _msg field via VL's ParseFilter")
 	}
 
-	row2 := map[string]string{"body": "normal operation"}
+	row2 := map[string]string{"_msg": "normal operation"}
 	if ts.MatchesRow(row2, 1500) {
-		t.Fatal("expected fallback body substring to not match")
+		t.Fatal("expected bare word to not match non-matching _msg")
 	}
 }
 

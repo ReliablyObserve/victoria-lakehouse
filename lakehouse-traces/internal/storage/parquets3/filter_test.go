@@ -6,10 +6,19 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
 
-func TestParseFilter(t *testing.T) {
+func mustParseFilter(t *testing.T, s string) *logstorage.Filter {
+	t.Helper()
+	f, err := logstorage.ParseFilter(s)
+	if err != nil {
+		t.Fatalf("ParseFilter(%q): %v", s, err)
+	}
+	return f
+}
+
+func TestParseFilterFromQuery(t *testing.T) {
 	tests := []struct {
-		query    string
-		wantNil  bool
+		query   string
+		wantNil bool
 	}{
 		{"*", true},
 		{"", true},
@@ -23,31 +32,21 @@ func TestParseFilter(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		f := parseFilter(tt.query)
+		q := mustParseQuery(t, tt.query)
+		f := parseFilterFromQuery(q)
 		if tt.wantNil && f != nil {
-			t.Errorf("parseFilter(%q) = non-nil, want nil", tt.query)
+			t.Errorf("parseFilterFromQuery(%q) = non-nil, want nil", tt.query)
 		}
 		if !tt.wantNil && f == nil {
-			t.Errorf("parseFilter(%q) = nil, want non-nil", tt.query)
+			t.Errorf("parseFilterFromQuery(%q) = nil, want non-nil", tt.query)
 		}
 	}
 }
 
-func TestStripPipes(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{`service.name:="web" | limit 10`, `service.name:="web"`},
-		{`service.name:="web"`, `service.name:="web"`},
-		{`field:"val|ue"`, `field:"val|ue"`},
-		{`*`, `*`},
-	}
-	for _, tt := range tests {
-		got := stripPipes(tt.input)
-		if got != tt.want {
-			t.Errorf("stripPipes(%q) = %q, want %q", tt.input, got, tt.want)
-		}
+func TestParseFilterFromQuery_NilQuery(t *testing.T) {
+	f := parseFilterFromQuery(nil)
+	if f != nil {
+		t.Error("expected nil for nil query")
 	}
 }
 
@@ -60,7 +59,7 @@ func TestFilterDataBlock(t *testing.T) {
 	})
 
 	t.Run("exact match", func(t *testing.T) {
-		f := parseFilter(`service.name:="checkout"`)
+		f := mustParseFilter(t, `service.name:="checkout"`)
 		result := filterDataBlock(db, f)
 		if result == nil {
 			t.Fatal("expected non-nil result")
@@ -71,7 +70,7 @@ func TestFilterDataBlock(t *testing.T) {
 	})
 
 	t.Run("substring match", func(t *testing.T) {
-		f := parseFilter(`service.name:"checkout"`)
+		f := mustParseFilter(t, `service.name:"checkout"`)
 		result := filterDataBlock(db, f)
 		if result == nil {
 			t.Fatal("expected non-nil result")
@@ -82,7 +81,7 @@ func TestFilterDataBlock(t *testing.T) {
 	})
 
 	t.Run("combined AND filters", func(t *testing.T) {
-		f := parseFilter(`service.name:="checkout" level:="error"`)
+		f := mustParseFilter(t, `service.name:="checkout" level:="error"`)
 		result := filterDataBlock(db, f)
 		if result == nil {
 			t.Fatal("expected non-nil result")
@@ -93,7 +92,7 @@ func TestFilterDataBlock(t *testing.T) {
 	})
 
 	t.Run("OR filter", func(t *testing.T) {
-		f := parseFilter(`service.name:="checkout" OR service.name:="auth"`)
+		f := mustParseFilter(t, `service.name:="checkout" OR service.name:="auth"`)
 		result := filterDataBlock(db, f)
 		if result == nil {
 			t.Fatal("expected non-nil result")
@@ -104,7 +103,7 @@ func TestFilterDataBlock(t *testing.T) {
 	})
 
 	t.Run("complex OR+AND", func(t *testing.T) {
-		f := parseFilter(`(service.name:="checkout" AND level:="error") OR (service.name:="auth" AND level:="error")`)
+		f := mustParseFilter(t, `(service.name:="checkout" AND level:="error") OR (service.name:="auth" AND level:="error")`)
 		result := filterDataBlock(db, f)
 		if result == nil {
 			t.Fatal("expected non-nil result")
@@ -115,7 +114,7 @@ func TestFilterDataBlock(t *testing.T) {
 	})
 
 	t.Run("no match", func(t *testing.T) {
-		f := parseFilter(`service.name:="nonexistent"`)
+		f := mustParseFilter(t, `service.name:="nonexistent"`)
 		result := filterDataBlock(db, f)
 		if result != nil {
 			t.Errorf("expected nil result, got %d rows", result.RowsCount())
@@ -123,7 +122,7 @@ func TestFilterDataBlock(t *testing.T) {
 	})
 
 	t.Run("negated filter", func(t *testing.T) {
-		f := parseFilter(`NOT service.name:="checkout"`)
+		f := mustParseFilter(t, `NOT service.name:="checkout"`)
 		result := filterDataBlock(db, f)
 		if result == nil {
 			t.Fatal("expected non-nil result")
@@ -141,7 +140,7 @@ func TestFilterDataBlock(t *testing.T) {
 	})
 
 	t.Run("bare word matches _msg", func(t *testing.T) {
-		f := parseFilter(`denied`)
+		f := mustParseFilter(t, `denied`)
 		result := filterDataBlock(db, f)
 		if result == nil {
 			t.Fatal("expected non-nil result")
@@ -152,7 +151,7 @@ func TestFilterDataBlock(t *testing.T) {
 	})
 
 	t.Run("regex match", func(t *testing.T) {
-		f := parseFilter(`service.name:~"check.*"`)
+		f := mustParseFilter(t, `service.name:~"check.*"`)
 		result := filterDataBlock(db, f)
 		if result == nil {
 			t.Fatal("expected non-nil result")
@@ -163,7 +162,7 @@ func TestFilterDataBlock(t *testing.T) {
 	})
 
 	t.Run("nil DataBlock passthrough", func(t *testing.T) {
-		f := parseFilter(`service.name:="checkout"`)
+		f := mustParseFilter(t, `service.name:="checkout"`)
 		result := filterDataBlock(nil, f)
 		if result != nil {
 			t.Error("expected nil result for nil DataBlock")
@@ -172,7 +171,7 @@ func TestFilterDataBlock(t *testing.T) {
 
 	t.Run("empty DataBlock passthrough", func(t *testing.T) {
 		empty := &logstorage.DataBlock{}
-		f := parseFilter(`service.name:="checkout"`)
+		f := mustParseFilter(t, `service.name:="checkout"`)
 		result := filterDataBlock(empty, f)
 		if result != empty {
 			t.Error("expected same empty DataBlock back")
@@ -184,7 +183,7 @@ func TestFilterDataBlock(t *testing.T) {
 		allMatch.SetColumns([]logstorage.BlockColumn{
 			{Name: "service.name", Values: []string{"checkout", "checkout"}},
 		})
-		f := parseFilter(`service.name:="checkout"`)
+		f := mustParseFilter(t, `service.name:="checkout"`)
 		result := filterDataBlock(allMatch, f)
 		if result != allMatch {
 			t.Error("expected same DataBlock when all rows match")
@@ -201,7 +200,7 @@ func TestFilterMatchesRow(t *testing.T) {
 	})
 
 	t.Run("exact match", func(t *testing.T) {
-		f := parseFilter(`service.name:="checkout"`)
+		f := mustParseFilter(t, `service.name:="checkout"`)
 		fields := []logstorage.Field{{Name: "service.name", Value: "checkout"}, {Name: "level", Value: "error"}}
 		if !filterMatchesRow(f, fields) {
 			t.Error("expected match")
@@ -209,7 +208,7 @@ func TestFilterMatchesRow(t *testing.T) {
 	})
 
 	t.Run("exact no match", func(t *testing.T) {
-		f := parseFilter(`service.name:="checkout"`)
+		f := mustParseFilter(t, `service.name:="checkout"`)
 		fields := []logstorage.Field{{Name: "service.name", Value: "payment"}}
 		if filterMatchesRow(f, fields) {
 			t.Error("expected no match")
@@ -217,7 +216,7 @@ func TestFilterMatchesRow(t *testing.T) {
 	})
 
 	t.Run("OR match", func(t *testing.T) {
-		f := parseFilter(`service.name:="checkout" OR service.name:="payment"`)
+		f := mustParseFilter(t, `service.name:="checkout" OR service.name:="payment"`)
 		fields := []logstorage.Field{{Name: "service.name", Value: "payment"}}
 		if !filterMatchesRow(f, fields) {
 			t.Error("expected OR to match second alternative")

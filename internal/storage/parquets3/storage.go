@@ -293,6 +293,10 @@ func (s *Storage) Manifest() *manifest.Manifest {
 	return s.manifest
 }
 
+func (s *Storage) HasDataForRange(startNs, endNs int64) bool {
+	return s.manifest.HasDataForRange(startNs, endNs)
+}
+
 func (s *Storage) Close() error {
 	if s.writer != nil {
 		s.writer.Stop()

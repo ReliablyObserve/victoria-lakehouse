@@ -6,41 +6,42 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
 
-// parseFilter extracts the filter portion from a LogsQL query string and parses it
-// using VL's own parser. This gives full LogsQL filter support: AND, OR, NOT, regex,
-// ranges, case-insensitive matching — everything VL supports natively.
-// Returns nil for empty or wildcard queries (caller treats nil as "match all").
-func parseFilter(queryStr string) *logstorage.Filter {
-	if queryStr == "" || queryStr == "*" {
+// parseFilterFromQuery extracts the filter from a parsed Query using VL's own
+// DropAllPipes() and ParseFilter(). Returns nil for wildcard or time-only queries
+// (caller treats nil as "match all").
+func parseFilterFromQuery(q *logstorage.Query) *logstorage.Filter {
+	if q == nil {
+		return nil
+	}
+	// Clone the query and strip pipes using VL's exported method,
+	// then get the filter-only string representation.
+	clone := q.Clone(q.GetTimestamp())
+	clone.DropAllPipes()
+	filterStr := clone.String()
+
+	if filterStr == "" || filterStr == "*" {
 		return nil
 	}
 
-	filterPart := stripPipes(queryStr)
-	if filterPart == "" || filterPart == "*" {
+	// Time-only queries have no field filters to evaluate at row level —
+	// time filtering is handled by partition/row-group pruning.
+	if isTimeOnlyFilter(filterStr) {
 		return nil
 	}
 
-	// Time-only queries (e.g. just "_time:[start, end]") have no field filters
-	// to evaluate — treat them as match-all for field-level filtering.
-	if isTimeOnlyFilter(filterPart) {
-		return nil
-	}
-
-	f, err := logstorage.ParseFilter(filterPart)
+	f, err := logstorage.ParseFilter(filterStr)
 	if err != nil {
 		return nil
 	}
 	return f
 }
 
-// isTimeOnlyFilter returns true if the filter string contains only _time predicates
-// and no field-level filters. This allows fast-path label index usage.
+// isTimeOnlyFilter returns true if the filter string contains only _time predicates.
 func isTimeOnlyFilter(s string) bool {
 	s = strings.TrimSpace(s)
 	if s == "" || s == "*" {
 		return true
 	}
-	// Remove all _time:[...] predicates and check if anything remains
 	cleaned := stripTimePredicates(s)
 	cleaned = strings.TrimSpace(cleaned)
 	return cleaned == "" || cleaned == "*"
@@ -55,7 +56,6 @@ func stripTimePredicates(s string) string {
 		}
 		end := idx + len("_time:")
 		if end < len(s) && s[end] == '[' {
-			// Find matching closing bracket
 			depth := 0
 			for i := end; i < len(s); i++ {
 				if s[i] == '[' {
@@ -69,7 +69,6 @@ func stripTimePredicates(s string) string {
 				}
 			}
 		} else {
-			// _time:value without brackets — skip to next space
 			spaceIdx := strings.IndexByte(s[end:], ' ')
 			if spaceIdx < 0 {
 				s = s[:idx]
@@ -78,25 +77,6 @@ func stripTimePredicates(s string) string {
 			}
 		}
 	}
-}
-
-// stripPipes removes the pipe portion from a LogsQL query string.
-func stripPipes(q string) string {
-	depth := 0
-	inQuote := false
-	for i, c := range q {
-		switch {
-		case c == '"' && (i == 0 || q[i-1] != '\\'):
-			inQuote = !inQuote
-		case c == '(' && !inQuote:
-			depth++
-		case c == ')' && !inQuote:
-			depth--
-		case c == '|' && !inQuote && depth == 0:
-			return strings.TrimSpace(q[:i])
-		}
-	}
-	return strings.TrimSpace(q)
 }
 
 // filterDataBlock removes rows from a DataBlock that don't match the given filter.

@@ -12,8 +12,7 @@ import (
 )
 
 func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
-	queryStr := q.String()
-	filter := parseFilter(queryStr)
+	filter := parseFilterFromQuery(q)
 
 	if filter == nil && s.labelIndex.Len() > 0 {
 		names := s.labelIndex.GetFieldNames()
@@ -62,8 +61,7 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 }
 
 func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
-	queryStr := q.String()
-	filter := parseFilter(queryStr)
+	filter := parseFilterFromQuery(q)
 
 	if filter == nil && limit > 0 && s.labelIndex.Len() > 0 {
 		vals := s.labelIndex.GetFieldValues(fieldName, limit)
@@ -162,8 +160,7 @@ func (s *Storage) GetStreamFieldValues(ctx context.Context, tenantIDs []logstora
 }
 
 func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, limit uint64) ([]logstorage.ValueWithHits, error) {
-	queryStr := q.String()
-	filter := parseFilter(queryStr)
+	filter := parseFilterFromQuery(q)
 
 	startNs, endNs := q.GetFilterTimeRange()
 
@@ -233,8 +230,7 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 }
 
 func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, limit uint64) ([]logstorage.ValueWithHits, error) {
-	queryStr := q.String()
-	filter := parseFilter(queryStr)
+	filter := parseFilterFromQuery(q)
 
 	startNs, endNs := q.GetFilterTimeRange()
 

@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
 
 // S3Pool abstracts S3 operations for tombstone persistence.
@@ -41,51 +42,23 @@ func (t *Tombstone) AffectsFile(fileMinNs, fileMaxNs int64) bool {
 
 // MatchesRow returns true if the given row matches this tombstone's query
 // and the timestamp falls within the tombstone's time range.
+// Uses VL's ParseFilter + Filter.MatchRow for full LogsQL evaluation.
 func (t *Tombstone) MatchesRow(row map[string]string, timestampNs int64) bool {
 	if timestampNs < t.StartNs || timestampNs > t.EndNs {
 		return false
 	}
-	return matchQuery(t.Query, row)
-}
-
-// matchQuery evaluates a query string against a row.
-// Supported patterns:
-//   - "*" or empty string: matches all rows
-//   - "field:=\"exact\"": exact match on field value
-//   - "field:\"substring\"": substring match on field value
-//   - fallback: substring match on "body" field
-func matchQuery(query string, row map[string]string) bool {
-	if query == "" || query == "*" {
+	if t.Query == "" || t.Query == "*" {
 		return true
 	}
-
-	// Exact match: field:="value"
-	if idx := strings.Index(query, `:="`); idx > 0 {
-		field := query[:idx]
-		// Extract value between quotes
-		rest := query[idx+3:]
-		endQuote := strings.Index(rest, `"`)
-		if endQuote < 0 {
-			return false
-		}
-		value := rest[:endQuote]
-		return row[field] == value
+	f, err := logstorage.ParseFilter(t.Query)
+	if err != nil {
+		return false
 	}
-
-	// Substring match: field:"value"
-	if idx := strings.Index(query, `:"`); idx > 0 {
-		field := query[:idx]
-		rest := query[idx+2:]
-		endQuote := strings.Index(rest, `"`)
-		if endQuote < 0 {
-			return false
-		}
-		value := rest[:endQuote]
-		return strings.Contains(row[field], value)
+	fields := make([]logstorage.Field, 0, len(row))
+	for k, v := range row {
+		fields = append(fields, logstorage.Field{Name: k, Value: v})
 	}
-
-	// Fallback: substring match on body field
-	return strings.Contains(row["body"], query)
+	return f.MatchRow(fields)
 }
 
 // TombstoneStore is a thread-safe in-memory store for tombstones.
