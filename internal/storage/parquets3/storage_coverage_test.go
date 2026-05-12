@@ -1591,8 +1591,8 @@ func TestGetFileData_DiskCacheCorruptedFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.Remove(path)
-	os.Mkdir(path, 0o755) // Replace file with directory
+	_ = os.Remove(path)
+	_ = os.Mkdir(path, 0o755) // Replace file with directory
 
 	s := testStorage()
 	s.diskCache = dc
@@ -1609,7 +1609,7 @@ func TestGetFileData_DiskCacheCorruptedFile(t *testing.T) {
 				panicked = true
 			}
 		}()
-		s.getFileData(context.Background(), "corrupt-key", 17)
+		_, _ = s.getFileData(context.Background(), "corrupt-key", 17)
 	}()
 
 	if !panicked {
@@ -1617,7 +1617,7 @@ func TestGetFileData_DiskCacheCorruptedFile(t *testing.T) {
 	}
 
 	// Clean up directory
-	os.Remove(path)
+	_ = os.Remove(path)
 }
 
 // --- l2Adapter ReadFile error path ---
@@ -1635,8 +1635,8 @@ func TestL2Adapter_ReadFileError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.Remove(path)
-	os.Mkdir(path, 0o755) // Replace file with directory
+	_ = os.Remove(path)
+	_ = os.Mkdir(path, 0o755) // Replace file with directory
 
 	adapter := &l2Adapter{dc: dc}
 	data, ok := adapter.Get("file-err-key")
@@ -1645,7 +1645,7 @@ func TestL2Adapter_ReadFileError(t *testing.T) {
 	}
 
 	// Clean up: remove the directory so disk cache cleanup doesn't fail
-	os.Remove(path)
+	_ = os.Remove(path)
 }
 
 // --- Close with persister save error ---
@@ -1658,7 +1658,7 @@ func TestClose_PersisterSaveError(t *testing.T) {
 	}
 
 	// Remove the directory so WriteFile fails
-	os.RemoveAll(dir)
+	_ = os.RemoveAll(dir)
 
 	s := testStorage()
 	s.persister = p
@@ -1795,8 +1795,8 @@ func TestClearCaches_WithDiskCacheData(t *testing.T) {
 	}
 
 	// Put data in disk cache
-	dc.Put("key1", []byte("data1"))
-	dc.Put("key2", []byte("data2"))
+	_, _ = dc.Put("key1", []byte("data1"))
+	_, _ = dc.Put("key2", []byte("data2"))
 
 	s := testStorage()
 	s.diskCache = dc
@@ -1832,7 +1832,7 @@ func TestGetFileData_DiskCacheNilEntry_MissCounter(t *testing.T) {
 				panicked = true
 			}
 		}()
-		s.getFileData(context.Background(), "nonexistent-key", 100)
+		_, _ = s.getFileData(context.Background(), "nonexistent-key", 100)
 	}()
 
 	if !panicked {
@@ -1875,7 +1875,7 @@ func TestGetFileData_PeerCacheMiss(t *testing.T) {
 				panicked = true
 			}
 		}()
-		s.getFileData(context.Background(), nonLocalKey, 100)
+		_, _ = s.getFileData(context.Background(), nonLocalKey, 100)
 	}()
 
 	if !panicked {
@@ -1909,7 +1909,7 @@ func TestCanWriteData_WithWriter(t *testing.T) {
 				panicked = true
 			}
 		}()
-		s.CanWriteData()
+		_ = s.CanWriteData()
 	}()
 
 	if !panicked {

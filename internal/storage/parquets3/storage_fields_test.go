@@ -373,11 +373,9 @@ func TestGetFieldValues_CancelledContext(t *testing.T) {
 		time.Date(2026, 5, 2, 11, 0, 0, 0, time.UTC).UnixNano(),
 	)
 
-	_, err := s.GetFieldValues(ctx, nil, q, "service.name", 10)
-	if err == nil {
-		// Context cancellation may or may not cause an error depending on timing
-		// The important thing is it doesn't hang
-	}
+	// Context cancellation may or may not cause an error depending on timing.
+	// The important thing is it doesn't hang.
+	_, _ = s.GetFieldValues(ctx, nil, q, "service.name", 10)
 }
 
 // --- GetStreamFieldNames tests ---
@@ -563,10 +561,8 @@ func TestGetStreams_CancelledContext(t *testing.T) {
 		time.Date(2026, 5, 2, 11, 0, 0, 0, time.UTC).UnixNano(),
 	)
 
-	_, err := s.GetStreams(ctx, nil, q, 10)
-	if err == nil {
-		// Context may or may not produce error depending on timing
-	}
+	// Context may or may not produce error depending on timing.
+	_, _ = s.GetStreams(ctx, nil, q, 10)
 }
 
 func TestGetStreams_WithFilter(t *testing.T) {
@@ -698,10 +694,8 @@ func TestGetStreamIDs_CancelledContext(t *testing.T) {
 		time.Date(2026, 5, 2, 11, 0, 0, 0, time.UTC).UnixNano(),
 	)
 
-	_, err := s.GetStreamIDs(ctx, nil, q, 10)
-	if err == nil {
-		// Context may or may not produce error
-	}
+	// Context may or may not produce error.
+	_, _ = s.GetStreamIDs(ctx, nil, q, 10)
 }
 
 func TestGetStreamIDs_WithFilter(t *testing.T) {
@@ -909,7 +903,8 @@ func TestParquetRowToFields_Basic(t *testing.T) {
 		}
 	}
 
-	for _, rg := range f.RowGroups() {
+	if rgs := f.RowGroups(); len(rgs) > 0 {
+		rg := rgs[0]
 		rRows := rg.Rows()
 		buf := make([]parquet.Row, 1)
 		n, _ := rRows.ReadRows(buf)
@@ -956,7 +951,6 @@ func TestParquetRowToFields_Basic(t *testing.T) {
 		}
 
 		_ = rRows.Close()
-		break
 	}
 }
 
@@ -976,7 +970,8 @@ func TestParquetRowToFields_NilStorage(t *testing.T) {
 
 	colNames := columnNames(f.Root())
 
-	for _, rg := range f.RowGroups() {
+	if rgs := f.RowGroups(); len(rgs) > 0 {
+		rg := rgs[0]
 		rRows := rg.Rows()
 		buf := make([]parquet.Row, 1)
 		n, _ := rRows.ReadRows(buf)
@@ -1004,7 +999,6 @@ func TestParquetRowToFields_NilStorage(t *testing.T) {
 		}
 
 		_ = rRows.Close()
-		break
 	}
 }
 

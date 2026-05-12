@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 )
@@ -519,9 +518,7 @@ func TestAutoElector_K8sMode(t *testing.T) {
 // is set, which triggers the K8s path.
 func TestAutoElector_AutoModeK8sEnv(t *testing.T) {
 	// Set env var to simulate K8s environment.
-	old := os.Getenv("KUBERNETES_SERVICE_HOST")
-	os.Setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
-	defer os.Setenv("KUBERNETES_SERVICE_HOST", old)
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
 
 	ae := NewAutoElector(AutoElectorConfig{
 		Mode: "auto",
@@ -593,9 +590,7 @@ func TestAutoElector_S3Mode(t *testing.T) {
 // TestAutoElector_AutoModeNoK8sWithS3 tests "auto" mode without K8s env but with S3 store.
 func TestAutoElector_AutoModeNoK8sWithS3(t *testing.T) {
 	// Ensure KUBERNETES_SERVICE_HOST is not set.
-	old := os.Getenv("KUBERNETES_SERVICE_HOST")
-	os.Unsetenv("KUBERNETES_SERVICE_HOST")
-	defer os.Setenv("KUBERNETES_SERVICE_HOST", old)
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
 
 	store := newMockS3Store()
 	ae := NewAutoElector(AutoElectorConfig{
@@ -619,9 +614,8 @@ func TestAutoElector_AutoModeNoK8sWithS3(t *testing.T) {
 // TestAutoElector_AutoModeNoK8sNoS3 tests "auto" mode without K8s or S3 — falls back to noop.
 func TestAutoElector_AutoModeNoK8sNoS3(t *testing.T) {
 	// Ensure KUBERNETES_SERVICE_HOST is not set.
-	old := os.Getenv("KUBERNETES_SERVICE_HOST")
-	os.Unsetenv("KUBERNETES_SERVICE_HOST")
-	defer os.Setenv("KUBERNETES_SERVICE_HOST", old)
+	// Ensure KUBERNETES_SERVICE_HOST is not set.
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
 
 	ae := NewAutoElector(AutoElectorConfig{
 		Mode:    "auto",
