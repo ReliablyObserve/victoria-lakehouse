@@ -18,6 +18,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
 func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
@@ -230,17 +231,19 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 }
 
 func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
-	schema := f.Root()
-	rows := rg.Rows()
-	defer func() { _ = rows.Close() }()
+	if s.cfg.Mode == config.ModeTraces {
+		return readRowGroupTyped[schema.TraceRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, traceRowToFields)
+	}
+	return readRowGroupTyped[schema.LogRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, logRowToFields)
+}
 
-	colNames := columnNames(schema)
-
-	buf := make([]parquet.Row, 256)
+func readRowGroupTyped[T any](s *Storage, f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, toFields func(*T) []field) error {
+	reader := parquet.NewGenericRowGroupReader[T](rg)
+	buf := make([]T, 256)
 	for {
-		n, err := rows.ReadRows(buf)
+		n, err := reader.Read(buf)
 		if n > 0 {
-			db := s.rowsToDataBlock(buf[:n], colNames, schema, startNs, endNs)
+			db := typedRowsToDataBlock(s, buf[:n], startNs, endNs, toFields)
 			if db != nil && db.RowsCount() > 0 {
 				writeBlock(0, db)
 				if traceIDs != nil {
@@ -255,8 +258,145 @@ func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, en
 			return err
 		}
 	}
-
 	return nil
+}
+
+type field struct {
+	name  string
+	value string
+}
+
+func logRowToFields(r *schema.LogRow) []field {
+	fields := []field{
+		{"_time", time.Unix(0, r.TimestampUnixNano).UTC().Format(time.RFC3339Nano)},
+		{"_msg", r.Body},
+		{"level", r.SeverityText},
+		{"severity_number", fmt.Sprintf("%d", r.SeverityNumber)},
+		{"service.name", r.ServiceName},
+		{"k8s.namespace.name", r.K8sNamespaceName},
+		{"k8s.pod.name", r.K8sPodName},
+		{"k8s.deployment.name", r.K8sDeploymentName},
+		{"k8s.node.name", r.K8sNodeName},
+		{"deployment.environment", r.DeployEnv},
+		{"cloud.region", r.CloudRegion},
+		{"host.name", r.HostName},
+		{"trace_id", r.TraceID},
+		{"span_id", r.SpanID},
+		{"_stream", r.Stream},
+		{"_stream_id", r.StreamID},
+		{"scope.name", r.ScopeName},
+	}
+	for k, v := range r.ResourceAttributes {
+		fields = append(fields, field{k, v})
+	}
+	for k, v := range r.LogAttributes {
+		fields = append(fields, field{k, v})
+	}
+	return fields
+}
+
+func traceRowToFields(r *schema.TraceRow) []field {
+	fields := []field{
+		{"_time", time.Unix(0, r.TimestampUnixNano).UTC().Format(time.RFC3339Nano)},
+		{"start_time", time.Unix(0, r.StartTimeUnixNano).UTC().Format(time.RFC3339Nano)},
+		{"trace_id", r.TraceID},
+		{"span_id", r.SpanID},
+		{"parent_span_id", r.ParentSpanID},
+		{"name", r.SpanName},
+		{"span.kind", fmt.Sprintf("%d", r.SpanKind)},
+		{"status_code", fmt.Sprintf("%d", r.StatusCode)},
+		{"status.message", r.StatusMessage},
+		{"duration", fmt.Sprintf("%d", r.DurationNs)},
+		{"service.name", r.ServiceName},
+		{"scope.name", r.ScopeName},
+		{"resource_attr:deployment.environment", r.DeployEnv},
+		{"resource_attr:cloud.region", r.CloudRegion},
+		{"resource_attr:host.name", r.HostName},
+		{"resource_attr:k8s.namespace.name", r.K8sNamespaceName},
+		{"resource_attr:k8s.deployment.name", r.K8sDeploymentName},
+		{"resource_attr:k8s.node.name", r.K8sNodeName},
+		{"span_attr:http.method", r.HTTPMethod},
+		{"span_attr:http.status_code", r.HTTPStatusCode},
+		{"span_attr:http.url", r.HTTPUrl},
+		{"span_attr:db.system", r.DBSystem},
+		{"span_attr:db.statement", r.DBStatement},
+	}
+	for k, v := range r.ResourceAttributes {
+		fields = append(fields, field{k, v})
+	}
+	for k, v := range r.SpanAttributes {
+		fields = append(fields, field{k, v})
+	}
+	for k, v := range r.ScopeAttributes {
+		fields = append(fields, field{k, v})
+	}
+	return fields
+}
+
+func typedRowsToDataBlock[T any](s *Storage, rows []T, startNs, endNs int64, toFields func(*T) []field) *logstorage.DataBlock {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	type colData struct {
+		name   string
+		values []string
+	}
+	colMap := make(map[string]int)
+	var cols []colData
+
+	getCol := func(name string) int {
+		if idx, ok := colMap[name]; ok {
+			return idx
+		}
+		idx := len(cols)
+		colMap[name] = idx
+		cols = append(cols, colData{name: name, values: make([]string, 0, len(rows))})
+		for len(cols[idx].values) < len(cols[0].values)-1 {
+			cols[idx].values = append(cols[idx].values, "")
+		}
+		return idx
+	}
+
+	for rowNum, row := range rows {
+		fields := toFields(&row)
+
+		seen := make(map[int]bool)
+		for _, f := range fields {
+			if f.value == "" {
+				continue
+			}
+			idx := getCol(f.name)
+			seen[idx] = true
+			cols[idx].values = append(cols[idx].values, f.value)
+		}
+
+		for i := range cols {
+			if !seen[i] && len(cols[i].values) <= rowNum {
+				cols[i].values = append(cols[i].values, "")
+			}
+		}
+	}
+
+	if len(cols) == 0 {
+		return nil
+	}
+
+	blockCols := make([]logstorage.BlockColumn, len(cols))
+	for i, col := range cols {
+		internalName := col.name
+		if m := s.registry.ResolveFromParquet(col.name); m != nil {
+			internalName = bytesutil.InternString(m.InternalName)
+		}
+		blockCols[i] = logstorage.BlockColumn{
+			Name:   internalName,
+			Values: col.values,
+		}
+	}
+
+	db := &logstorage.DataBlock{}
+	db.SetColumns(blockCols)
+	return db
 }
 
 // extractTraceIDs collects unique, non-empty trace_id values from a DataBlock
