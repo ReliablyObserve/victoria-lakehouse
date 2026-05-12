@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 )
@@ -473,5 +474,164 @@ func TestS3Elector_HttpHealthCheck_NonOK(t *testing.T) {
 	// Health check against a server that returns 500 should return false.
 	if e.httpHealthCheck(ts.Listener.Addr().String()) {
 		t.Error("expected httpHealthCheck to return false for 500 response")
+	}
+}
+
+// TestS3Elector_HttpHealthCheck_ConnectionRefused tests the httpHealthCheck
+// error path when the target host refuses the connection.
+func TestS3Elector_HttpHealthCheck_ConnectionRefused(t *testing.T) {
+	store := newMockS3Store()
+	cfg := S3ElectorConfig{
+		LockKey:            "election/hc-refused.json",
+		Identity:           "test-node",
+		HealthCheckTimeout: 100 * time.Millisecond,
+	}
+	e := NewS3Elector(store, cfg)
+
+	// Use an address that will refuse connections.
+	if e.httpHealthCheck("127.0.0.1:1") {
+		t.Error("expected httpHealthCheck to return false for connection refused")
+	}
+}
+
+// TestAutoElector_K8sMode tests the "k8s" mode branch in NewAutoElector.
+// NewK8sElector always succeeds, so this exercises the success branch (inner = e).
+func TestAutoElector_K8sMode(t *testing.T) {
+	ae := NewAutoElector(AutoElectorConfig{
+		Mode: "k8s",
+		K8sConfig: K8sElectorConfig{
+			LeaseName: "test-lease",
+			Identity:  "test-node",
+		},
+	})
+	if ae == nil {
+		t.Fatal("expected non-nil AutoElector")
+	}
+	// The inner elector should be a K8sElector. IsLeader should be false initially.
+	if ae.IsLeader() {
+		t.Error("expected IsLeader=false for fresh K8sElector")
+	}
+	// Stop should not panic (exercises delegate).
+	ae.Stop()
+}
+
+// TestAutoElector_AutoModeK8sEnv tests the "auto" mode when KUBERNETES_SERVICE_HOST
+// is set, which triggers the K8s path.
+func TestAutoElector_AutoModeK8sEnv(t *testing.T) {
+	// Set env var to simulate K8s environment.
+	old := os.Getenv("KUBERNETES_SERVICE_HOST")
+	os.Setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+	defer os.Setenv("KUBERNETES_SERVICE_HOST", old)
+
+	ae := NewAutoElector(AutoElectorConfig{
+		Mode: "auto",
+		K8sConfig: K8sElectorConfig{
+			LeaseName: "test-lease",
+			Identity:  "test-node",
+		},
+	})
+	if ae == nil {
+		t.Fatal("expected non-nil AutoElector")
+	}
+	// The inner elector should be a K8sElector.
+	if ae.IsLeader() {
+		t.Error("expected IsLeader=false for fresh K8sElector")
+	}
+	ae.Stop()
+}
+
+// TestAutoElector_DefaultMode tests the default/unknown mode branch.
+func TestAutoElector_DefaultMode(t *testing.T) {
+	ae := NewAutoElector(AutoElectorConfig{
+		Mode: "unknown-mode",
+	})
+	if ae == nil {
+		t.Fatal("expected non-nil AutoElector")
+	}
+	// Default mode falls back to NoopElector which is always leader.
+	if !ae.IsLeader() {
+		t.Error("expected IsLeader=true for noop fallback (unknown mode)")
+	}
+}
+
+// TestAutoElector_S3Mode tests the "s3" mode branch.
+func TestAutoElector_S3Mode(t *testing.T) {
+	store := newMockS3Store()
+	ae := NewAutoElector(AutoElectorConfig{
+		Mode:    "s3",
+		S3Store: store,
+		S3Config: S3ElectorConfig{
+			LockKey:            "election/auto-s3.json",
+			Identity:           "auto-s3-node",
+			HeartbeatInterval:  100 * time.Millisecond,
+			LockTTL:            1 * time.Second,
+			HealthCheckTimeout: 200 * time.Millisecond,
+		},
+	})
+	if ae == nil {
+		t.Fatal("expected non-nil AutoElector")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ae.Start(ctx)
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if ae.IsLeader() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !ae.IsLeader() {
+		t.Fatal("expected to acquire leadership in S3 mode")
+	}
+
+	cancel()
+	ae.Stop()
+}
+
+// TestAutoElector_AutoModeNoK8sWithS3 tests "auto" mode without K8s env but with S3 store.
+func TestAutoElector_AutoModeNoK8sWithS3(t *testing.T) {
+	// Ensure KUBERNETES_SERVICE_HOST is not set.
+	old := os.Getenv("KUBERNETES_SERVICE_HOST")
+	os.Unsetenv("KUBERNETES_SERVICE_HOST")
+	defer os.Setenv("KUBERNETES_SERVICE_HOST", old)
+
+	store := newMockS3Store()
+	ae := NewAutoElector(AutoElectorConfig{
+		Mode:    "auto",
+		S3Store: store,
+		S3Config: S3ElectorConfig{
+			LockKey:            "election/auto-s3-fallback.json",
+			Identity:           "auto-s3-fallback-node",
+			HeartbeatInterval:  100 * time.Millisecond,
+			LockTTL:            1 * time.Second,
+			HealthCheckTimeout: 200 * time.Millisecond,
+		},
+	})
+	if ae == nil {
+		t.Fatal("expected non-nil AutoElector")
+	}
+	// Should be S3Elector.
+	ae.Stop()
+}
+
+// TestAutoElector_AutoModeNoK8sNoS3 tests "auto" mode without K8s or S3 — falls back to noop.
+func TestAutoElector_AutoModeNoK8sNoS3(t *testing.T) {
+	// Ensure KUBERNETES_SERVICE_HOST is not set.
+	old := os.Getenv("KUBERNETES_SERVICE_HOST")
+	os.Unsetenv("KUBERNETES_SERVICE_HOST")
+	defer os.Setenv("KUBERNETES_SERVICE_HOST", old)
+
+	ae := NewAutoElector(AutoElectorConfig{
+		Mode:    "auto",
+		S3Store: nil,
+	})
+	if ae == nil {
+		t.Fatal("expected non-nil AutoElector")
+	}
+	// No S3 store, no K8s → noop which is always leader.
+	if !ae.IsLeader() {
+		t.Error("expected IsLeader=true for noop fallback")
 	}
 }

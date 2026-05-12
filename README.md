@@ -265,16 +265,28 @@ graph LR
 
 ```mermaid
 graph LR
-    subgraph "Pattern 5: Loki-VL-proxy (Hot+Cold)"
-        G5["Grafana<br/>Loki Drilldown"] --> LVP["loki-vl-proxy"]
-        LVP -->|"hot (<24h)"| VL5["VictoriaLogs"]
-        LVP -->|"cold (>24h)"| LH5["lakehouse-logs<br/>(select)"]
+    subgraph "Pattern 5: Multi-Level Select (Hot+Cold unified)"
+        G5L["Grafana<br/>(logs)"] --> VLS5["vlselect"]
+        VLS5 -->|hot| VLSTO5["vlstorage<br/>(disk 24h)"]
+        VLS5 -->|cold| LHL5["lakehouse-logs<br/>(S3)"]
+        G5T["Grafana<br/>(traces)"] --> VTS5["vtselect"]
+        VTS5 -->|hot| VTSTO5["vtstorage<br/>(disk 24h)"]
+        VTS5 -->|cold| LHT5["lakehouse-traces<br/>(S3)"]
     end
 ```
 
 ```mermaid
 graph LR
-    subgraph "Pattern 6: Analytics (open Parquet)"
+    subgraph "Pattern 6: Loki-VL-proxy (Hot+Cold)"
+        G6["Grafana<br/>Loki Drilldown"] --> LVP["loki-vl-proxy"]
+        LVP -->|"hot (<24h)"| VL6["VictoriaLogs"]
+        LVP -->|"cold (>24h)"| LH6["lakehouse-logs<br/>(select)"]
+    end
+```
+
+```mermaid
+graph LR
+    subgraph "Pattern 7: Analytics (open Parquet)"
         S5[("S3 Parquet")] --> DDB["DuckDB"]
         S5 --> TRI["Trino"]
         S5 --> SPK["Spark"]

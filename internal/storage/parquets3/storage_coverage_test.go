@@ -11,11 +11,14 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/parquet-go/parquet-go"
 
+	"net"
+
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/discovery"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/smartcache"
 )
@@ -1109,14 +1112,26 @@ func TestWarmFile_CacheMiss_NoPanic(t *testing.T) {
 
 // --- Close with writer ---
 
-func TestClose_WriterStopCalled(t *testing.T) {
-	// Verify that Close() with a non-nil writer doesn't panic even with nil pool,
-	// as long as the writer has no buffered data and is not running.
-	// We test the nil-writer path instead because Stop() calls FlushAll() which needs S3.
+func TestClose_WriterWithEmptyBuffers(t *testing.T) {
+	// Close() with a non-nil writer that has empty buffers.
+	// Stop() calls FlushAll() which with empty bufs does nothing needing S3.
 	s := testStorage()
-	s.writer = nil
+	insertCfg := &config.InsertConfig{
+		MaxBufferRows: 1000000,
+		FlushInterval: 10 * time.Second,
+	}
+	bw := &BatchWriter{
+		cfg:       insertCfg,
+		mode:      config.ModeLogs,
+		logBufs:   make(map[string][]schema.LogRow),
+		traceBufs: make(map[string][]schema.TraceRow),
+		stopCh:    make(chan struct{}),
+	}
+	s.writer = bw
+	bw.Start() // Start the flush loop
+
 	if err := s.Close(); err != nil {
-		t.Errorf("Close with nil writer: %v", err)
+		t.Errorf("Close with empty writer: %v", err)
 	}
 }
 
@@ -1152,6 +1167,70 @@ func TestRefreshDiscovery_EmptyConfig(t *testing.T) {
 	s := testStorage()
 	if err := s.RefreshDiscovery(context.Background()); err != nil {
 		t.Errorf("RefreshDiscovery: %v", err)
+	}
+}
+
+func TestRefreshDiscovery_DiscoverError(t *testing.T) {
+	s := testStorage()
+	// Create a discovery with a headless service that always fails DNS
+	s.discovery = discovery.New("failing.svc.cluster.local", nil, "", "", "9428", 5*time.Second,
+		discovery.WithLookupSRV(func(_ context.Context, _, _, _ string) (string, []*net.SRV, error) {
+			return "", nil, &net.DNSError{Err: "no such host"}
+		}),
+		discovery.WithLookupHost(func(_ context.Context, _ string) ([]string, error) {
+			return nil, &net.DNSError{Err: "dns lookup failed"}
+		}),
+	)
+
+	err := s.RefreshDiscovery(context.Background())
+	if err == nil {
+		t.Error("expected error from RefreshDiscovery with failing DNS")
+	}
+}
+
+func TestRefreshDiscovery_PollPartitionListError(t *testing.T) {
+	s := testStorage()
+	// Create a discovery with static storage nodes and a headless service for partition polling
+	// DiscoverStorageNodes succeeds (static nodes), but PollPartitionList calls fetchPartitions
+	// which makes HTTP calls to unreachable nodes -> returns nil anyway (it warns but doesn't error)
+	s.discovery = discovery.New("", []string{"unreachable:9428"}, "", "", "9428", 100*time.Millisecond)
+
+	err := s.RefreshDiscovery(context.Background())
+	// PollPartitionList is lenient - it warns but doesn't return an error for HTTP failures
+	_ = err // may or may not error depending on implementation
+}
+
+func TestRefreshDiscovery_WithPeerCache(t *testing.T) {
+	s := testStorage()
+	pc := peercache.New("self:9428", "", 5*time.Second, 10)
+	s.peerCache = pc
+
+	// With empty discovery config, DiscoverStorageNodes/PollPartitionList/DiscoverPeers all return nil,nil.
+	// This exercises the peerCache != nil path and UpdatePeers call.
+	if err := s.RefreshDiscovery(context.Background()); err != nil {
+		t.Errorf("RefreshDiscovery with peerCache: %v", err)
+	}
+}
+
+func TestRefreshDiscovery_DiscoverPeersError(t *testing.T) {
+	s := testStorage()
+	pc := peercache.New("self:9428", "", 5*time.Second, 10)
+	s.peerCache = pc
+
+	// Create a discovery where DiscoverStorageNodes and PollPartitionList succeed,
+	// but DiscoverPeers fails (peerHeadlessService resolves to error).
+	s.discovery = discovery.New("", nil, "", "failing-peers.svc.cluster.local", "9428", 5*time.Second,
+		discovery.WithLookupSRV(func(_ context.Context, _, _, _ string) (string, []*net.SRV, error) {
+			return "", nil, &net.DNSError{Err: "peer DNS failed"}
+		}),
+		discovery.WithLookupHost(func(_ context.Context, _ string) ([]string, error) {
+			return nil, &net.DNSError{Err: "peer DNS failed"}
+		}),
+	)
+
+	err := s.RefreshDiscovery(context.Background())
+	if err == nil {
+		t.Error("expected error from RefreshDiscovery when DiscoverPeers fails")
 	}
 }
 
@@ -1474,6 +1553,141 @@ func TestHasDataForRange_BeforeData(t *testing.T) {
 	}
 }
 
+// --- StartWriter with non-nil writer (exercises ReplayWAL + Start) ---
+
+func TestStartWriter_WithWriter(t *testing.T) {
+	s := testStorage()
+	insertCfg := &config.InsertConfig{
+		MaxBufferRows: 1000000,
+		FlushInterval: 10 * time.Second,
+	}
+	bw := &BatchWriter{
+		cfg:       insertCfg,
+		mode:      config.ModeLogs,
+		logBufs:   make(map[string][]schema.LogRow),
+		traceBufs: make(map[string][]schema.TraceRow),
+		stopCh:    make(chan struct{}),
+	}
+	s.writer = bw
+	// wal is nil, so ReplayWAL returns (0,0) quickly
+	s.StartWriter() // exercises: ReplayWAL call, condition check, Start()
+
+	// Clean up: stop the writer goroutine
+	bw.Stop()
+}
+
+// --- getFileData disk cache corrupted file (ReadFile fails -> Delete + L2 miss) ---
+
+func TestGetFileData_DiskCacheCorruptedFile(t *testing.T) {
+	dir := t.TempDir()
+	dc, err := cache.NewDiskCache(dir, 100*1024*1024, 0.8)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Put a valid file, then replace with a directory so os.Stat passes but os.ReadFile fails
+	testData := []byte("will-be-corrupted")
+	path, err := dc.Put("corrupt-key", testData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(path)
+	os.Mkdir(path, 0o755) // Replace file with directory
+
+	s := testStorage()
+	s.diskCache = dc
+	s.smartCache = nil // use manual cache chain
+
+	// getFileData: L1 miss -> L2 hit (path from dc.Get, Stat passes on dir)
+	// -> ReadFile fails (it's a directory) -> Delete from disk cache -> L2 miss counter
+	// Then peerCache nil -> skip -> S3 path -> pool.Download panics (nil pool).
+	// We catch the panic to verify the L2 corruption handling ran.
+	panicked := false
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicked = true
+			}
+		}()
+		s.getFileData(context.Background(), "corrupt-key", 17)
+	}()
+
+	if !panicked {
+		t.Error("expected panic from nil S3 pool after L2 corruption handling")
+	}
+
+	// Clean up directory
+	os.Remove(path)
+}
+
+// --- l2Adapter ReadFile error path ---
+
+func TestL2Adapter_ReadFileError(t *testing.T) {
+	dir := t.TempDir()
+	dc, err := cache.NewDiskCache(dir, 100*1024*1024, 0.8)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Put a valid file, then replace it with a directory
+	// This makes os.Stat succeed (dc.Get returns path+true) but os.ReadFile fails (it's a dir)
+	path, err := dc.Put("file-err-key", []byte("data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(path)
+	os.Mkdir(path, 0o755) // Replace file with directory
+
+	adapter := &l2Adapter{dc: dc}
+	data, ok := adapter.Get("file-err-key")
+	if ok {
+		t.Errorf("expected false from Get after file replaced with dir, got data=%q", data)
+	}
+
+	// Clean up: remove the directory so disk cache cleanup doesn't fail
+	os.Remove(path)
+}
+
+// --- Close with persister save error ---
+
+func TestClose_PersisterSaveError(t *testing.T) {
+	dir := t.TempDir()
+	p, err := cache.NewPersister(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Remove the directory so WriteFile fails
+	os.RemoveAll(dir)
+
+	s := testStorage()
+	s.persister = p
+	s.labelIndex.Add("test-label", nil)
+
+	// Close should not error (the persister failure is logged, not returned)
+	if err := s.Close(); err != nil {
+		t.Errorf("Close should not return error even with persister failure: %v", err)
+	}
+}
+
+// --- WarmLabelIndex error paths ---
+
+func TestWarmLabelIndex_ParquetParseError(t *testing.T) {
+	s := testStorage()
+	s.manifest.AddFile("dt=2026-05-02/hour=10", manifest.FileInfo{
+		Key:  "bad.parquet",
+		Size: 100,
+	})
+	// Put invalid data in mem cache so getFileData succeeds but parquet.OpenFile fails
+	s.memCache.Put("bad.parquet", []byte("this is not a valid parquet file"))
+
+	s.WarmLabelIndex(context.Background())
+	// The parquet parse error causes continue, label index stays empty
+	if s.labelIndex.Len() != 0 {
+		t.Errorf("labelIndex.Len() = %d, want 0 (bad parquet should be skipped)", s.labelIndex.Len())
+	}
+}
+
 // --- filterTombstonedRows with timestamp_unix_nano column name ---
 
 func TestFilterTombstonedRows_TimestampUnixNanoColumn(t *testing.T) {
@@ -1500,5 +1714,205 @@ func TestFilterTombstonedRows_TimestampUnixNanoColumn(t *testing.T) {
 	result := s.filterTombstonedRows(db, now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 	if result != nil {
 		t.Error("expected nil when all rows match tombstone with timestamp_unix_nano column")
+	}
+}
+
+// --- peerLookupAdapter with real PeerCache ---
+
+func TestPeerLookupAdapter_RealPeerCache(t *testing.T) {
+	pc := peercache.New("self:9428", "", 5*time.Second, 10)
+	adapter := &peerLookupAdapter{pc: pc}
+
+	peer, isLocal := adapter.Lookup("some-key")
+	if peer != "self:9428" {
+		t.Errorf("Lookup peer = %q, want %q", peer, "self:9428")
+	}
+	if !isLocal {
+		t.Error("expected isLocal=true for self-owned key")
+	}
+
+	members := adapter.Members()
+	if len(members) != 0 {
+		// With no peers set, Members returns empty
+		t.Logf("Members() = %v (expected empty for no peers configured)", members)
+	}
+
+	count := adapter.MemberCount()
+	if count != len(members) {
+		t.Errorf("MemberCount() = %d, want %d", count, len(members))
+	}
+}
+
+// --- peerFetchAdapter with real PeerCache ---
+
+func TestPeerFetchAdapter_RealPeerCache(t *testing.T) {
+	pc := peercache.New("self:9428", "", 5*time.Second, 10)
+	adapter := &peerFetchAdapter{pc: pc}
+
+	// Fetch to a non-existent peer should return an error
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, _, err := adapter.Fetch(ctx, "nonexistent:9428", "some-key")
+	if err == nil {
+		t.Error("expected error fetching from nonexistent peer")
+	}
+}
+
+// --- updateLabelIndex with missing promoted column (colIdx < 0 path) ---
+
+func TestUpdateLabelIndex_MissingPromotedColumn(t *testing.T) {
+	// Create a parquet file that has service.name column (promoted) but NOT span.name
+	dir := t.TempDir()
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	rows := []logRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "test", SeverityText: "INFO", ServiceName: "api"},
+	}
+	path := writeTestParquet(t, dir, rows)
+	data := mustReadFile(t, path)
+
+	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := testStorage()
+	s.updateLabelIndex(f)
+
+	// The log parquet won't have "span.name" (a trace field), so colIdx < 0 triggers.
+	// After update, the label index should contain the columns present, including service.name
+	if s.labelIndex.Len() == 0 {
+		t.Error("expected label index to contain columns after updateLabelIndex")
+	}
+}
+
+// --- ClearCaches with disk cache that has data ---
+
+func TestClearCaches_WithDiskCacheData(t *testing.T) {
+	dir := t.TempDir()
+	dc, err := cache.NewDiskCache(dir, 100*1024*1024, 0.8)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Put data in disk cache
+	dc.Put("key1", []byte("data1"))
+	dc.Put("key2", []byte("data2"))
+
+	s := testStorage()
+	s.diskCache = dc
+	s.memCache.Put("key1", []byte("data1"))
+
+	s.ClearCaches()
+
+	// Verify L1 is cleared
+	if _, ok := s.memCache.Get("key1"); ok {
+		t.Error("expected L1 cache to be cleared")
+	}
+}
+
+// --- getFileData disk cache miss counter (L2 miss after disk cache has no entry) ---
+
+func TestGetFileData_DiskCacheNilEntry_MissCounter(t *testing.T) {
+	dir := t.TempDir()
+	dc, err := cache.NewDiskCache(dir, 100*1024*1024, 0.8)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := testStorage()
+	s.diskCache = dc
+	s.smartCache = nil
+
+	// L1 miss -> L2 miss (key doesn't exist) -> metrics.CacheMissesTotal.Inc("L2")
+	// Then peerCache nil -> S3 -> panic (nil pool)
+	panicked := false
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicked = true
+			}
+		}()
+		s.getFileData(context.Background(), "nonexistent-key", 100)
+	}()
+
+	if !panicked {
+		t.Error("expected panic from nil S3 pool after cache misses")
+	}
+}
+
+// --- getFileData peer cache miss path ---
+
+func TestGetFileData_PeerCacheMiss(t *testing.T) {
+	s := testStorage()
+	s.smartCache = nil
+
+	// Set up a real peer cache with multiple peers
+	pc := peercache.New("self:9428", "", 100*time.Millisecond, 10)
+	pc.UpdatePeers([]string{"self:9428", "peer1:9428", "peer2:9428"})
+	s.peerCache = pc
+
+	// We need to find a key that hashes to a non-self peer.
+	// Try several keys until we find one that is not local.
+	var nonLocalKey string
+	for i := 0; i < 100; i++ {
+		key := fmt.Sprintf("test-key-%d", i)
+		_, isLocal := pc.Lookup(key)
+		if !isLocal {
+			nonLocalKey = key
+			break
+		}
+	}
+	if nonLocalKey == "" {
+		t.Skip("could not find a key that hashes to non-local peer")
+	}
+
+	// getFileData: L1 miss -> no disk cache -> peer cache Lookup (not local) -> Fetch (fails, connection refused)
+	// -> L3 miss counter -> S3 path -> pool.Download panics
+	panicked := false
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicked = true
+			}
+		}()
+		s.getFileData(context.Background(), nonLocalKey, 100)
+	}()
+
+	if !panicked {
+		t.Error("expected panic from nil S3 pool after peer cache miss")
+	}
+}
+
+// --- CanWriteData with non-nil writer (exercises the timeout + CanWriteData delegation) ---
+
+func TestCanWriteData_WithWriter(t *testing.T) {
+	s := testStorage()
+	insertCfg := &config.InsertConfig{
+		MaxBufferRows: 1000000,
+		FlushInterval: 10 * time.Second,
+	}
+	bw := &BatchWriter{
+		cfg:       insertCfg,
+		mode:      config.ModeLogs,
+		logBufs:   make(map[string][]schema.LogRow),
+		traceBufs: make(map[string][]schema.TraceRow),
+		stopCh:    make(chan struct{}),
+	}
+	s.writer = bw
+
+	// CanWriteData calls writer.CanWriteData(ctx) which tries S3 Upload.
+	// With nil pool, this will panic. Catch it to verify the path is exercised.
+	panicked := false
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicked = true
+			}
+		}()
+		s.CanWriteData()
+	}()
+
+	if !panicked {
+		t.Error("expected panic from nil S3 pool in CanWriteData")
 	}
 }

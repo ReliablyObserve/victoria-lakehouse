@@ -31,11 +31,15 @@ services:
       echo 'MinIO bucket ready'
       "
 
+  # =========================================================================
+  # Hot Tier — Disk-based, 24h retention
+  # =========================================================================
+
   victorialogs:
     image: victoriametrics/victoria-logs:v1.50.0
     command:
       - "-storageDataPath=/data"
-      - "-retentionPeriod=7d"
+      - "-retentionPeriod=24h"
       - "-loggerLevel=INFO"
     networks: [lakehouse-net]
     volumes:
@@ -47,6 +51,26 @@ services:
       retries: 10
       start_period: 5s
 
+  victoriatraces:
+    image: victoriametrics/victoria-traces:v0.8.2
+    command:
+      - "-storageDataPath=/data"
+      - "-retentionPeriod=24h"
+      - "-loggerLevel=INFO"
+    networks: [lakehouse-net]
+    volumes:
+      - vt-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:10428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # =========================================================================
+  # Data Generation — dual-write to hot (disk) + cold (S3) in parallel
+  # =========================================================================
+
   datagen-seed:
     build:
       context: ../../
@@ -55,6 +79,8 @@ services:
       minio-init:
         condition: service_completed_successfully
       victorialogs:
+        condition: service_healthy
+      victoriatraces:
         condition: service_healthy
     networks: [lakehouse-net]
     command:
@@ -67,6 +93,7 @@ services:
       - "--hours-back=48"
       - "--dual-write"
       - "--vl-endpoint=http://victorialogs:9428"
+      - "--vt-endpoint=http://victoriatraces:10428"
 
   datagen-continuous:
     build:
@@ -88,6 +115,11 @@ services:
       - "--interval=30s"
       - "--dual-write"
       - "--vl-endpoint=http://victorialogs:9428"
+      - "--vt-endpoint=http://victoriatraces:10428"
+
+  # =========================================================================
+  # Cold Tier — S3 Parquet, 7d+ retention (lakehouse)
+  # =========================================================================
 
   lakehouse-logs:
     build:
@@ -132,13 +164,58 @@ services:
       - "-loggerLevel=INFO"
     volumes:
       - lakehouse-cache-traces:/data/lakehouse
-
     healthcheck:
       test: ["CMD", "/usr/local/bin/healthcheck", "http://localhost:10428/health"]
       interval: 5s
       timeout: 3s
       retries: 10
       start_period: 10s
+
+  # =========================================================================
+  # Multi-Level Select — fan out to hot (disk) + cold (lakehouse)
+  # =========================================================================
+
+  vlselect:
+    image: victoriametrics/victoria-logs:v1.50.0
+    command:
+      - "-storageNode=victorialogs:9428,lakehouse-logs:9428"
+      - "-httpListenAddr=:9428"
+      - "-loggerLevel=INFO"
+    depends_on:
+      victorialogs:
+        condition: service_healthy
+      lakehouse-logs:
+        condition: service_healthy
+    networks: [lakehouse-net]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  vtselect:
+    image: victoriametrics/victoria-traces:v0.8.2
+    command:
+      - "-storageNode=victoriatraces:10428,lakehouse-traces:10428"
+      - "-httpListenAddr=:10428"
+      - "-loggerLevel=INFO"
+    depends_on:
+      victoriatraces:
+        condition: service_healthy
+      lakehouse-traces:
+        condition: service_healthy
+    networks: [lakehouse-net]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:10428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # =========================================================================
+  # Loki-VL-proxy — hot+cold routing via Loki API
+  # =========================================================================
 
   loki-vl-proxy:
     image: ghcr.io/reliablyobserve/loki-vl-proxy:v1.31.2
@@ -171,6 +248,10 @@ services:
       retries: 10
       start_period: 5s
 
+  # =========================================================================
+  # Grafana — pre-configured with all datasources
+  # =========================================================================
+
   grafana:
     image: grafana/grafana:latest
     ports:
@@ -185,13 +266,16 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning
       - grafana-data:/var/lib/grafana
     depends_on:
-      lakehouse-logs:
+      vlselect:
         condition: service_healthy
-      lakehouse-traces:
+      vtselect:
+        condition: service_healthy
+      loki-vl-proxy:
         condition: service_healthy
 
 volumes:
   vl-data: {}
+  vt-data: {}
   lakehouse-cache-logs: {}
   lakehouse-cache-traces: {}
   grafana-data: {}

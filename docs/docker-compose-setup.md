@@ -5,7 +5,79 @@ sidebar_position: 7
 
 # Docker Compose Setup
 
-Victoria Lakehouse provides a complete Docker Compose environment for local development, testing, and evaluation. The compose file at `deployment/docker/docker-compose-e2e.yml` starts all components needed for an end-to-end workflow: S3-compatible storage, data generation, log and trace lakehouse instances, a hot VictoriaLogs tier, a Loki-compatible proxy, and Grafana with pre-configured datasources.
+Victoria Lakehouse provides a complete Docker Compose environment for local development, testing, and evaluation. The compose file at `deployment/docker/docker-compose-e2e.yml` starts all components needed for an end-to-end workflow: S3-compatible storage, data generation, hot VictoriaLogs and VictoriaTraces tiers (disk, 24h retention), cold lakehouse instances (S3 Parquet), multi-level select fan-out (vlselect/vtselect), a Loki-compatible proxy with hot+cold routing, and Grafana with pre-configured datasources.
+
+## Architecture
+
+```mermaid
+graph TB
+    subgraph "Data Generation"
+        DS["datagen-seed<br/>(48h historical)"]
+        DC["datagen-continuous<br/>(every 30s)"]
+    end
+
+    subgraph "S3 Storage"
+        MINIO[("MinIO<br/>obs-archive")]
+    end
+
+    subgraph "Hot Tier — Disk, 24h retention"
+        VL["victorialogs<br/>:9428"]
+        VT["victoriatraces<br/>:10428"]
+    end
+
+    subgraph "Cold Tier — S3 Parquet (lakehouse)"
+        LHL["lakehouse-logs<br/>:9428"]
+        LHT["lakehouse-traces<br/>:10428"]
+    end
+
+    subgraph "Multi-Level Select — fan out to hot+cold"
+        VLS["vlselect<br/>:9428"]
+        VTS["vtselect<br/>:10428"]
+    end
+
+    subgraph "Loki API"
+        LVP["loki-vl-proxy<br/>:3100"]
+    end
+
+    subgraph "Grafana :3003"
+        G["7 datasources"]
+    end
+
+    DS -->|"logs (jsonline)"| VL
+    DS -->|"traces (zipkin)"| VT
+    DS -->|"logs parquet"| MINIO
+    DS -->|"traces parquet"| MINIO
+    DC -->|"dual-write"| VL
+    DC -->|"dual-write"| VT
+    DC -->|"parquet"| MINIO
+
+    MINIO --> LHL
+    MINIO --> LHT
+
+    VLS -->|"fan-out"| VL
+    VLS -->|"fan-out"| LHL
+    VTS -->|"fan-out"| VT
+    VTS -->|"fan-out"| LHT
+
+    LVP -->|"hot (<24h)"| VL
+    LVP -->|"cold (>24h)"| LHL
+
+    G --> VLS
+    G --> VTS
+    G --> VL
+    G --> VT
+    G --> LHL
+    G --> LHT
+    G --> LVP
+
+    style VL fill:#264653,color:#fff
+    style VT fill:#264653,color:#fff
+    style LHL fill:#5a189a,color:#fff
+    style LHT fill:#5a189a,color:#fff
+    style VLS fill:#2d6a4f,color:#fff
+    style VTS fill:#2d6a4f,color:#fff
+    style MINIO fill:#e76f51,color:#fff
+```
 
 ## Quick Start
 
@@ -50,18 +122,18 @@ Two datagen services populate the environment with realistic test data:
 **datagen-seed** runs once on startup and writes 48 hours of historical data:
 
 ```bash
---logs=5000 --traces=1000 --hours-back=48 --dual-write --vl-endpoint=http://victorialogs:9428
+--logs=5000 --traces=1000 --hours-back=48 --dual-write --vl-endpoint=http://victorialogs:9428 --vt-endpoint=http://victoriatraces:10428
 ```
 
-This writes Parquet files directly to S3 (MinIO) and also pushes logs to VictoriaLogs via `/insert/jsonline` for dual-write testing.
+This writes Parquet files directly to S3 (MinIO) and dual-writes to both hot tiers: logs to VictoriaLogs via `/insert/jsonline` and traces to VictoriaTraces via Zipkin `/api/v2/spans`.
 
 **datagen-continuous** runs indefinitely after seeding completes, generating fresh data every 30 seconds:
 
 ```bash
---logs=500 --traces=200 --hours-back=1 --interval=30s --dual-write
+--logs=500 --traces=200 --hours-back=1 --interval=30s --dual-write --vl-endpoint=http://victorialogs:9428 --vt-endpoint=http://victoriatraces:10428
 ```
 
-The datagen tool produces five realistic log patterns (JSON access logs, logfmt, nginx combined, Java stack traces, OTEL-formatted) across five services (`api-gateway`, `user-service`, `order-service`, `payment-service`, `notification-service`) with full OTEL semantic convention attributes.
+The datagen tool produces five realistic log patterns (JSON access logs, logfmt, nginx combined, Java stack traces, OTEL-formatted) across five services (`api-gateway`, `user-service`, `order-service`, `payment-service`, `notification-service`) with full OTEL semantic convention attributes. All data is dual-written to both hot tiers (VL disk + VT disk) and cold tier (S3 Parquet) in parallel.
 
 ### Lakehouse Logs
 
@@ -104,11 +176,54 @@ victorialogs:
   image: victoriametrics/victoria-logs:v1.50.0
   command:
     - "-storageDataPath=/data"
-    - "-retentionPeriod=7d"
+    - "-retentionPeriod=24h"
     - "-loggerLevel=INFO"
 ```
 
-A standalone VictoriaLogs instance acting as the hot tier with 7-day retention and EBS-equivalent local storage. Receives dual-written data from `datagen-seed` and `datagen-continuous` for hot+cold query verification.
+A standalone VictoriaLogs instance acting as the hot log tier with 24-hour retention and local disk storage. Receives dual-written logs from datagen via `/insert/jsonline`.
+
+- **Internal endpoint**: `http://victorialogs:9428`
+
+### VictoriaTraces (Hot Tier)
+
+```yaml
+victoriatraces:
+  image: victoriametrics/victoria-traces:v0.8.2
+  command:
+    - "-storageDataPath=/data"
+    - "-retentionPeriod=24h"
+    - "-loggerLevel=INFO"
+```
+
+A standalone VictoriaTraces instance acting as the hot trace tier with 24-hour retention and local disk storage. Receives dual-written traces from datagen via Zipkin `/api/v2/spans`.
+
+- **Internal endpoint**: `http://victoriatraces:10428`
+
+### vlselect (Multi-Level Select — Logs)
+
+```yaml
+vlselect:
+  image: victoriametrics/victoria-logs:v1.50.0
+  command:
+    - "-storageNode=victorialogs:9428,lakehouse-logs:9428"
+```
+
+VictoriaLogs in cluster select mode. Fans out every query to both hot (victorialogs disk) and cold (lakehouse-logs S3) storage nodes and merges results. This is the **global logs datasource** — queries transparently span both tiers.
+
+- **Internal endpoint**: `http://vlselect:9428`
+
+### vtselect (Multi-Level Select — Traces)
+
+```yaml
+vtselect:
+  image: victoriametrics/victoria-traces:v0.8.2
+  command:
+    - "-storageNode=victoriatraces:10428,lakehouse-traces:10428"
+```
+
+VictoriaTraces in cluster select mode. Fans out trace queries to both hot (victoriatraces disk) and cold (lakehouse-traces S3) storage nodes. This is the **global traces datasource** — Jaeger queries span both tiers.
+
+- **Internal endpoint**: `http://vtselect:10428`
 
 ### Loki-VL-proxy (Hot+Cold Routing)
 
@@ -159,24 +274,28 @@ grafana:
     GF_INSTALL_PLUGINS: "victoriametrics-logs-datasource"
 ```
 
-Pre-configured with four datasources via provisioning files in `deployment/docker/grafana/provisioning/`:
+Pre-configured with seven datasources via provisioning files in `deployment/docker/grafana/provisioning/`:
 
 | Datasource | Type | URL | Purpose |
 |---|---|---|---|
-| Victoria Lakehouse Logs (Cold) | VictoriaLogs | `http://lakehouse-logs:9428` | Direct cold tier queries |
-| Victoria Lakehouse Traces (Jaeger) | Jaeger | `http://lakehouse-traces:10428` | Trace search and visualization |
-| VictoriaLogs Hot | VictoriaLogs | `http://victorialogs:9428` | Hot tier only |
-| Loki via Proxy (Hot+Cold) | Loki | `http://loki-vl-proxy:3100` | Unified hot+cold via LogQL with Loki Drilldown support |
+| **VictoriaLogs Global (Hot+Cold)** | VictoriaLogs | `http://vlselect:9428` | Unified hot+cold logs via multi-level select (default) |
+| **VictoriaTraces Global (Hot+Cold)** | Jaeger | `http://vtselect:10428` | Unified hot+cold traces via multi-level select |
+| VictoriaLogs Hot (Disk 24h) | VictoriaLogs | `http://victorialogs:9428` | Hot tier only (disk, 24h retention) |
+| VictoriaTraces Hot (Disk 24h) | Jaeger | `http://victoriatraces:10428` | Hot tier only (disk, 24h retention) |
+| Lakehouse Logs Cold (S3) | VictoriaLogs | `http://lakehouse-logs:9428` | Cold tier only (S3 Parquet) |
+| Lakehouse Traces Cold (S3 Jaeger) | Jaeger | `http://lakehouse-traces:10428` | Cold tier only (S3 Parquet) |
+| Loki via Proxy (Hot+Cold) | Loki | `http://loki-vl-proxy:3100` | Unified hot+cold via Loki API with Drilldown support |
 
 - **Grafana UI**: [http://localhost:3003](http://localhost:3003)
 
 ## Volumes
 
-The compose file defines four named volumes:
+The compose file defines five named volumes:
 
 | Volume | Mount | Purpose |
 |---|---|---|
-| `vl-data` | `/data` on victorialogs | VictoriaLogs hot storage |
+| `vl-data` | `/data` on victorialogs | VictoriaLogs hot log storage (24h) |
+| `vt-data` | `/data` on victoriatraces | VictoriaTraces hot trace storage (24h) |
 | `lakehouse-cache-logs` | `/data/lakehouse` on lakehouse-logs | L2 disk cache + manifest persistence |
 | `lakehouse-cache-traces` | `/data/lakehouse` on lakehouse-traces | L2 disk cache + manifest persistence |
 | `grafana-data` | `/var/lib/grafana` on grafana | Grafana state |
@@ -187,12 +306,13 @@ The compose file uses health checks and `depends_on` conditions to ensure correc
 
 1. **minio** starts and becomes healthy
 2. **minio-init** creates the `obs-archive` bucket, then exits
-3. **victorialogs** starts and becomes healthy
-4. **datagen-seed** writes historical data to MinIO and VictoriaLogs, then exits
+3. **victorialogs** and **victoriatraces** start and become healthy (hot tiers)
+4. **datagen-seed** writes historical data to MinIO, VictoriaLogs, and VictoriaTraces, then exits
 5. **lakehouse-logs** and **lakehouse-traces** start (depend on seed completion)
-6. **datagen-continuous** begins generating fresh data every 30 seconds
-7. **loki-vl-proxy** starts (depends on lakehouse-logs and victorialogs for hot+cold routing)
-8. **grafana** starts last (depends on both lakehouse services)
+6. **datagen-continuous** begins generating fresh data every 30 seconds (dual-write to all tiers)
+7. **vlselect** and **vtselect** start (depend on hot + cold tiers being healthy)
+8. **loki-vl-proxy** starts (depends on lakehouse-logs and victorialogs for hot+cold routing)
+9. **grafana** starts last (depends on vlselect, vtselect, and loki-vl-proxy)
 
 ## Verifying the Setup
 

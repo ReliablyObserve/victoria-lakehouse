@@ -54,8 +54,9 @@ func main() {
 	tracesCount := flag.Int("traces", 1000, "number of trace spans per batch")
 	hoursBack := flag.Int("hours-back", 48, "generate historical data for this many hours back")
 	interval := flag.Duration("interval", 0, "continuous mode: generate new data every interval (e.g. 30s)")
-	dualWrite := flag.Bool("dual-write", false, "also push logs to VictoriaLogs via /insert/jsonline")
+	dualWrite := flag.Bool("dual-write", false, "also push logs to VictoriaLogs and traces to VictoriaTraces")
 	vlEndpoint := flag.String("vl-endpoint", "http://localhost:9428", "VictoriaLogs endpoint for dual-write")
+	vtEndpoint := flag.String("vt-endpoint", "", "VictoriaTraces endpoint for dual-write (Zipkin format)")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -73,19 +74,19 @@ func main() {
 		o.UsePathStyle = true
 	})
 
-	generateBatch(ctx, client, *bucket, *logsCount, *tracesCount, *hoursBack, *dualWrite, *vlEndpoint)
+	generateBatch(ctx, client, *bucket, *logsCount, *tracesCount, *hoursBack, *dualWrite, *vlEndpoint, *vtEndpoint)
 
 	if *interval > 0 {
 		log.Printf("Continuous mode: generating %d logs + %d traces every %s", *logsCount, *tracesCount, *interval)
 		ticker := time.NewTicker(*interval)
 		defer ticker.Stop()
 		for range ticker.C {
-			generateBatch(ctx, client, *bucket, *logsCount, *tracesCount, 1, *dualWrite, *vlEndpoint)
+			generateBatch(ctx, client, *bucket, *logsCount, *tracesCount, 1, *dualWrite, *vlEndpoint, *vtEndpoint)
 		}
 	}
 }
 
-func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCount, tracesCount, hoursBack int, dualWrite bool, vlEndpoint string) {
+func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCount, tracesCount, hoursBack int, dualWrite bool, vlEndpoint, vtEndpoint string) {
 	now := time.Now().UTC()
 	rng := mrand.New(mrand.NewSource(now.UnixNano())) // #nosec G404 -- synthetic test data, not security-sensitive
 
@@ -265,6 +266,18 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCo
 		log.Printf("  uploaded %s (%d rows, %d bytes)", key, len(rows), len(data))
 	}
 
+	if dualWrite && vtEndpoint != "" {
+		var allTraces []TraceRow
+		for _, rows := range tracesByPartition {
+			allTraces = append(allTraces, rows...)
+		}
+		if err := pushZipkinTraces(vtEndpoint, allTraces); err != nil {
+			log.Printf("WARNING: dual-write to VT failed: %v", err)
+		} else {
+			log.Printf("  dual-write: pushed %d traces to VT at %s", len(allTraces), vtEndpoint)
+		}
+	}
+
 	totalLogs := 0
 	for _, rows := range logsByPartition {
 		totalLogs += len(rows)
@@ -328,6 +341,84 @@ func randomHex(length int) string {
 		return fmt.Sprintf("%0*x", length, n)
 	}
 	return fmt.Sprintf("%x", b)
+}
+
+var spanKindNames = map[int32]string{1: "CLIENT", 2: "SERVER", 3: "PRODUCER", 4: "CONSUMER"}
+
+func pushZipkinTraces(endpoint string, rows []TraceRow) error {
+	type zipkinEndpoint struct {
+		ServiceName string `json:"serviceName"`
+	}
+	type zipkinSpan struct {
+		TraceID       string            `json:"traceId"`
+		ID            string            `json:"id"`
+		ParentID      string            `json:"parentId,omitempty"`
+		Name          string            `json:"name"`
+		Timestamp     int64             `json:"timestamp"`
+		Duration      int64             `json:"duration"`
+		Kind          string            `json:"kind,omitempty"`
+		LocalEndpoint zipkinEndpoint    `json:"localEndpoint"`
+		Tags          map[string]string `json:"tags"`
+	}
+
+	spans := make([]zipkinSpan, 0, len(rows))
+	for _, r := range rows {
+		tags := map[string]string{
+			"deployment.environment": r.DeployEnv,
+			"cloud.region":           r.CloudRegion,
+			"host.name":              r.HostName,
+			"k8s.namespace.name":     r.K8sNamespaceName,
+			"k8s.deployment.name":    r.K8sDeploymentName,
+			"k8s.node.name":          r.K8sNodeName,
+		}
+		if r.HTTPMethod != "" {
+			tags["http.method"] = r.HTTPMethod
+		}
+		if r.HTTPStatusCode != "" {
+			tags["http.status_code"] = r.HTTPStatusCode
+		}
+		if r.HTTPUrl != "" {
+			tags["http.url"] = r.HTTPUrl
+		}
+		if r.DBSystem != "" {
+			tags["db.system"] = r.DBSystem
+		}
+		if r.DBStatement != "" {
+			tags["db.statement"] = r.DBStatement
+		}
+		if r.StatusCode == 2 {
+			tags["error"] = "true"
+			tags["otel.status_code"] = "ERROR"
+		}
+
+		spans = append(spans, zipkinSpan{
+			TraceID:       r.TraceID,
+			ID:            r.SpanID,
+			ParentID:      r.ParentSpanID,
+			Name:          r.SpanName,
+			Timestamp:     r.StartTimeUnixNano / 1000,
+			Duration:      r.DurationNs / 1000,
+			Kind:          spanKindNames[r.SpanKind],
+			LocalEndpoint: zipkinEndpoint{ServiceName: r.ServiceName},
+			Tags:          tags,
+		})
+	}
+
+	data, err := json.Marshal(spans)
+	if err != nil {
+		return fmt.Errorf("marshal zipkin: %w", err)
+	}
+
+	resp, err := http.Post(endpoint+"/api/v2/spans", "application/json", bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("push to VT: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("push to VT: status %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
 }
 
 func pushNDJSON(endpoint string, rows []LogRow) error {

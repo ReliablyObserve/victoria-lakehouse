@@ -1,16 +1,70 @@
 apiVersion: 1
 
 datasources:
-  - name: Victoria Lakehouse Logs (Cold)
+  # =========================================================================
+  # Global Datasources — unified hot+cold via multi-level select
+  # =========================================================================
+
+  - name: "VictoriaLogs Global (Hot+Cold)"
     type: victoriametrics-logs-datasource
-    uid: victoria-lakehouse-cold
+    uid: victorialogs-global
     access: proxy
-    url: http://lakehouse-logs:9428
+    url: http://vlselect:9428
     isDefault: true
     jsonData:
       maxLines: 1000
 
-  - name: Victoria Lakehouse Traces (Jaeger)
+  - name: "VictoriaTraces Global (Hot+Cold)"
+    type: jaeger
+    uid: victoriatraces-global
+    access: proxy
+    url: http://vtselect:10428
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: victorialogs-global
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+        filterByTraceID: true
+        filterBySpanID: false
+
+  # =========================================================================
+  # Hot Tier — disk-based, 24h retention
+  # =========================================================================
+
+  - name: "VictoriaLogs Hot (Disk 24h)"
+    type: victoriametrics-logs-datasource
+    uid: victorialogs-hot
+    access: proxy
+    url: http://victorialogs:9428
+    jsonData:
+      maxLines: 1000
+
+  - name: "VictoriaTraces Hot (Disk 24h)"
+    type: jaeger
+    uid: victoriatraces-hot
+    access: proxy
+    url: http://victoriatraces:10428
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: victorialogs-hot
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+        filterByTraceID: true
+        filterBySpanID: false
+
+  # =========================================================================
+  # Cold Tier — S3 Parquet via lakehouse
+  # =========================================================================
+
+  - name: "Lakehouse Logs Cold (S3)"
+    type: victoriametrics-logs-datasource
+    uid: victoria-lakehouse-cold
+    access: proxy
+    url: http://lakehouse-logs:9428
+    jsonData:
+      maxLines: 1000
+
+  - name: "Lakehouse Traces Cold (S3 Jaeger)"
     type: jaeger
     uid: victoria-lakehouse-traces
     access: proxy
@@ -23,18 +77,19 @@ datasources:
         filterByTraceID: true
         filterBySpanID: false
 
-  - name: VictoriaLogs Hot
-    type: victoriametrics-logs-datasource
-    uid: victorialogs-hot
-    access: proxy
-    url: http://victorialogs:9428
-    jsonData:
-      maxLines: 1000
+  # =========================================================================
+  # Loki API — hot+cold routing via loki-vl-proxy
+  # =========================================================================
 
-  - name: Loki via Proxy
+  - name: "Loki via Proxy (Hot+Cold)"
     type: loki
     uid: loki-vl-proxy
     access: proxy
     url: http://loki-vl-proxy:3100
     jsonData:
       maxLines: 1000
+      derivedFields:
+        - datasourceUid: victoriatraces-global
+          matcherRegex: "trace_id=(\\w+)"
+          name: traceID
+          url: "$${__value.raw}"
