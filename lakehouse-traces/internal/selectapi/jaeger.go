@@ -152,10 +152,12 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 
 			knownFields := map[string]bool{
 				"trace_id": true, "span_id": true, "parent_span_id": true,
-				"name": true, "span.name": true, "_time": true,
-				"start_time_unix_nano": true, "duration": true, "duration_ns": true,
+				"name": true, "span.name": true, "_time": true, "start_time": true,
+				"start_time_unix_nano": true, "timestamp_unix_nano": true,
+				"duration": true, "duration_ns": true,
 				"resource_attr:service.name": true, "service.name": true,
-				"_stream": true, "_stream_id": true, "timestamp_unix_nano": true,
+				"_stream": true, "_stream_id": true,
+				"scope.name": true, "severity_number": true,
 			}
 
 			for colName, vals := range colMap {
@@ -185,8 +187,14 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 						processTags = append(processTags, jaegerTag{
 							Key: strings.TrimPrefix(colName, "resource_attr:"), Type: "string", Value: v,
 						})
+					} else if strings.HasPrefix(colName, "span_attr:") {
+						span.Tags = append(span.Tags, jaegerTag{
+							Key: strings.TrimPrefix(colName, "span_attr:"), Type: "string", Value: v,
+						})
 					} else if strings.HasPrefix(colName, "scope_attr:") {
-						span.Tags = append(span.Tags, jaegerTag{Key: colName, Type: "string", Value: v})
+						span.Tags = append(span.Tags, jaegerTag{
+							Key: strings.TrimPrefix(colName, "scope_attr:"), Type: "string", Value: v,
+						})
 					} else {
 						span.Tags = append(span.Tags, jaegerTag{Key: colName, Type: "string", Value: v})
 					}

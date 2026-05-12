@@ -302,6 +302,8 @@ func traceRowToFields(r *schema.TraceRow) []field {
 	fields := []field{
 		{"_time", time.Unix(0, r.TimestampUnixNano).UTC().Format(time.RFC3339Nano)},
 		{"start_time", time.Unix(0, r.StartTimeUnixNano).UTC().Format(time.RFC3339Nano)},
+		{"timestamp_unix_nano", fmt.Sprintf("%d", r.TimestampUnixNano)},
+		{"start_time_unix_nano", fmt.Sprintf("%d", r.StartTimeUnixNano)},
 		{"trace_id", r.TraceID},
 		{"span_id", r.SpanID},
 		{"parent_span_id", r.ParentSpanID},
