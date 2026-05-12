@@ -135,7 +135,7 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket, tenantPrefix 
 			HostName:          host,
 			TraceID:           traceID,
 			SpanID:            spanID,
-			Stream:            fmt.Sprintf("{service.name=%q,k8s.namespace.name=%q}", svc, ns),
+			Stream:            fmt.Sprintf("{service.name=%q,k8s.namespace.name=%q,k8s.deployment.name=%q,deployment.environment=%q,cloud.region=%q}", svc, ns, svc, env, region),
 			StreamID:          randomHex(16),
 			ScopeName:         "github.com/reliablyobserve/instrumentation",
 			LogAttributes:     logAttrs,
@@ -449,7 +449,7 @@ func pushNDJSON(endpoint string, rows []LogRow) error {
 		buf.WriteByte('\n')
 	}
 
-	resp, err := http.Post(endpoint+"/insert/jsonline?_stream_fields=service.name,k8s.namespace.name", "application/x-ndjson", &buf)
+	resp, err := http.Post(endpoint+"/insert/jsonline?_stream_fields=service.name,k8s.namespace.name,k8s.deployment.name,deployment.environment,cloud.region", "application/x-ndjson", &buf)
 	if err != nil {
 		return fmt.Errorf("push to VL: %w", err)
 	}
