@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-05-12
+
 ### Added
 - Multi-level select architecture — vlselect/vtselect fan out queries to both hot (disk) and cold (lakehouse S3) storage nodes for unified hot+cold results
 - VictoriaTraces hot tier in Docker Compose — standalone VT instance with 24h disk retention
