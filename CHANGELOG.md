@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-05-12
+
 ### Added
 - Multi-tenancy — single binary serves all tenants via header-based routing with S3 prefix isolation (`{AccountID}/{ProjectID}/`, default `0/0/`), matching Grafana Loki/Tempo pattern. Enterprise option for bucket-per-tenant isolation with separate IAM policies
 - Global read mode — optional `--lakehouse.tenant.global-read-header` / `--lakehouse.tenant.global-read-value` for admin dashboards that query across all tenants (disabled by default, explicit opt-in)
