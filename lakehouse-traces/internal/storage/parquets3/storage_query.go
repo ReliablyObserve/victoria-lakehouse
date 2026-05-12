@@ -299,8 +299,6 @@ func traceRowToFields(r *schema.TraceRow) []field {
 	fields := []field{
 		{"_time", time.Unix(0, r.TimestampUnixNano).UTC().Format(time.RFC3339Nano)},
 		{"start_time", time.Unix(0, r.StartTimeUnixNano).UTC().Format(time.RFC3339Nano)},
-		{"timestamp_unix_nano", fmt.Sprintf("%d", r.TimestampUnixNano)},
-		{"start_time_unix_nano", fmt.Sprintf("%d", r.StartTimeUnixNano)},
 		{"trace_id", r.TraceID},
 		{"span_id", r.SpanID},
 		{"parent_span_id", r.ParentSpanID},
@@ -369,6 +367,9 @@ func typedRowsToDataBlock[T any](s *Storage, rows []T, startNs, endNs int64, toF
 				continue
 			}
 			idx := getCol(f.name)
+			if seen[idx] {
+				continue
+			}
 			seen[idx] = true
 			cols[idx].values = append(cols[idx].values, f.value)
 		}
@@ -384,16 +385,21 @@ func typedRowsToDataBlock[T any](s *Storage, rows []T, startNs, endNs int64, toF
 		return nil
 	}
 
-	blockCols := make([]logstorage.BlockColumn, len(cols))
-	for i, col := range cols {
+	seen := make(map[string]int, len(cols))
+	blockCols := make([]logstorage.BlockColumn, 0, len(cols))
+	for _, col := range cols {
 		internalName := col.name
 		if m := s.registry.ResolveFromParquet(col.name); m != nil {
 			internalName = bytesutil.InternString(m.InternalName)
 		}
-		blockCols[i] = logstorage.BlockColumn{
+		if _, dup := seen[internalName]; dup {
+			continue
+		}
+		seen[internalName] = len(blockCols)
+		blockCols = append(blockCols, logstorage.BlockColumn{
 			Name:   internalName,
 			Values: col.values,
-		}
+		})
 	}
 
 	db := &logstorage.DataBlock{}
