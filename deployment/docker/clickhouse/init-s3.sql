@@ -12,6 +12,7 @@ CREATE DATABASE IF NOT EXISTS lakehouse;
 CREATE OR REPLACE VIEW lakehouse.otel_logs AS
 SELECT
     fromUnixTimestamp64Nano(timestamp_unix_nano) AS Timestamp,
+    toDateTime(fromUnixTimestamp64Nano(timestamp_unix_nano)) AS TimestampTime,
     toUInt32(0) AS TraceFlags,
     severity_text AS SeverityText,
     toInt32(severity_number) AS SeverityNumber,
@@ -54,6 +55,7 @@ FROM s3(
 CREATE OR REPLACE VIEW lakehouse.otel_traces AS
 SELECT
     fromUnixTimestamp64Nano(timestamp_unix_nano) AS Timestamp,
+    toDateTime(fromUnixTimestamp64Nano(timestamp_unix_nano)) AS TimestampTime,
     trace_id AS TraceId,
     span_id AS SpanId,
     parent_span_id AS ParentSpanId,
