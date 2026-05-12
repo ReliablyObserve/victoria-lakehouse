@@ -249,23 +249,65 @@ services:
       start_period: 5s
 
   # =========================================================================
+  # Analytics — ClickHouse for direct S3 Parquet queries
+  # =========================================================================
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    depends_on:
+      datagen-seed:
+        condition: service_completed_successfully
+    networks: [lakehouse-net]
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - ./clickhouse/init-s3.sql:/docker-entrypoint-initdb.d/init-s3.sql:ro
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # =========================================================================
   # Grafana — pre-configured with all datasources
   # =========================================================================
 
+  # DuckDB plugin install — downloads from GitHub release (unsigned, requires allow list)
+  grafana-duckdb-init:
+    image: curlimages/curl:latest
+    networks: [lakehouse-net]
+    volumes:
+      - grafana-plugins:/plugins
+    entrypoint: >
+      /bin/sh -c "
+      curl -fsSL https://github.com/motherduckdb/grafana-duckdb-datasource/releases/download/v0.4.1/motherduck-duckdb-datasource-0.4.1.linux_amd64.zip -o /tmp/duckdb.zip &&
+      unzip -o /tmp/duckdb.zip -d /plugins/ &&
+      echo 'DuckDB plugin installed'
+      "
+
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:latest-ubuntu
     ports:
       - "3003:3000"
     networks: [lakehouse-net]
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
-      GF_INSTALL_PLUGINS: "https://github.com/VictoriaMetrics/victorialogs-datasource/releases/download/v0.26.3/victoriametrics-logs-datasource-v0.26.3.zip;victoriametrics-logs-datasource"
-      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "victoriametrics-logs-datasource"
+      GF_INSTALL_PLUGINS: "https://github.com/VictoriaMetrics/victorialogs-datasource/releases/download/v0.26.3/victoriametrics-logs-datasource-v0.26.3.zip;victoriametrics-logs-datasource,grafana-clickhouse-datasource"
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "victoriametrics-logs-datasource,motherduck-duckdb-datasource"
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning
       - grafana-data:/var/lib/grafana
+      - grafana-plugins:/var/lib/grafana/plugins
     depends_on:
+      grafana-duckdb-init:
+        condition: service_completed_successfully
+      clickhouse:
+        condition: service_healthy
       vlselect:
         condition: service_healthy
       vtselect:
@@ -279,3 +321,4 @@ volumes:
   lakehouse-cache-logs: {}
   lakehouse-cache-traces: {}
   grafana-data: {}
+  grafana-plugins: {}

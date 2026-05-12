@@ -5,7 +5,7 @@ sidebar_position: 7
 
 # Docker Compose Setup
 
-Victoria Lakehouse provides a complete Docker Compose environment for local development, testing, and evaluation. The compose file at `deployment/docker/docker-compose-e2e.yml` starts all components needed for an end-to-end workflow: S3-compatible storage, data generation, hot VictoriaLogs and VictoriaTraces tiers (disk, 24h retention), cold lakehouse instances (S3 Parquet), multi-level select fan-out (vlselect/vtselect), a Loki-compatible proxy with hot+cold routing, and Grafana with pre-configured datasources.
+Victoria Lakehouse provides a complete Docker Compose environment for local development, testing, and evaluation. The compose file at `deployment/docker/docker-compose-e2e.yml` starts all components needed for an end-to-end workflow: S3-compatible storage, data generation, hot VictoriaLogs and VictoriaTraces tiers (disk, 24h retention), cold lakehouse instances (S3 Parquet), multi-level select fan-out (vlselect/vtselect), a Loki-compatible proxy with hot+cold routing, analytics engines (DuckDB + ClickHouse) for direct Parquet SQL, and Grafana with pre-configured datasources.
 
 ## Architecture
 
@@ -39,8 +39,13 @@ graph TB
         LVP["loki-vl-proxy<br/>:3100"]
     end
 
+    subgraph "Analytics — direct Parquet SQL"
+        DDB["DuckDB<br/>(in-memory)"]
+        CH["ClickHouse<br/>:9000"]
+    end
+
     subgraph "Grafana :3003"
-        G["7 datasources"]
+        G["11 datasources"]
     end
 
     DS -->|"logs (jsonline)"| VL
@@ -53,6 +58,8 @@ graph TB
 
     MINIO --> LHL
     MINIO --> LHT
+    MINIO -->|"s3()"| CH
+    MINIO -->|"read_parquet()"| DDB
 
     VLS -->|"fan-out"| VL
     VLS -->|"fan-out"| LHL
@@ -69,6 +76,8 @@ graph TB
     G --> LHL
     G --> LHT
     G --> LVP
+    G --> DDB
+    G --> CH
 
     style VL fill:#264653,color:#fff
     style VT fill:#264653,color:#fff
@@ -77,6 +86,8 @@ graph TB
     style VLS fill:#2d6a4f,color:#fff
     style VTS fill:#2d6a4f,color:#fff
     style MINIO fill:#e76f51,color:#fff
+    style DDB fill:#ff6b35,color:#fff
+    style CH fill:#fabd2f,color:#000
 ```
 
 ## Quick Start
@@ -261,20 +272,87 @@ Translates Loki API requests to VictoriaLogs API with **hot+cold routing**: quer
 
 - **Internal endpoint**: `http://loki-vl-proxy:3100`
 
+### ClickHouse (Analytics — S3 Parquet)
+
+```yaml
+clickhouse:
+  image: clickhouse/clickhouse-server:latest
+  environment:
+    CLICKHOUSE_DB: default
+    CLICKHOUSE_USER: default
+```
+
+ClickHouse provides SQL analytics directly on the Parquet files stored in MinIO, using the `s3()` table function. Pre-configured with named collections for MinIO credentials and views for both logs and traces datasets.
+
+Example queries in Grafana:
+
+```sql
+-- Query logs Parquet files directly from S3
+SELECT * FROM s3(
+  'http://minio:9000/obs-archive/logs/dt=2026-05-12/**/*.parquet',
+  'minioadmin', 'minioadmin', 'Parquet'
+) LIMIT 100
+
+-- Query traces Parquet files
+SELECT * FROM s3(
+  'http://minio:9000/obs-archive/traces/dt=2026-05-12/**/*.parquet',
+  'minioadmin', 'minioadmin', 'Parquet'
+) LIMIT 100
+
+-- Aggregation example: error rate per service
+SELECT
+  "service.name" as service,
+  countIf(severity_text = 'ERROR') as errors,
+  count() as total,
+  round(errors / total * 100, 2) as error_pct
+FROM s3(
+  'http://minio:9000/obs-archive/logs/**/*.parquet',
+  'minioadmin', 'minioadmin', 'Parquet'
+)
+GROUP BY service ORDER BY errors DESC
+```
+
+- **Internal endpoint**: `http://clickhouse:9000` (native), `http://clickhouse:8123` (HTTP)
+
+### DuckDB (Analytics — S3 Parquet via Grafana)
+
+DuckDB runs in-memory inside the Grafana DuckDB datasource plugin (no separate server). It connects to MinIO via the `httpfs` extension, configured automatically via `initSQL` in the datasource provisioning.
+
+Example queries in Grafana:
+
+```sql
+-- Query logs Parquet from MinIO
+SELECT * FROM read_parquet('s3://obs-archive/logs/dt=2026-05-12/**/*.parquet') LIMIT 100
+
+-- Query traces Parquet from MinIO
+SELECT * FROM read_parquet('s3://obs-archive/traces/dt=2026-05-12/**/*.parquet') LIMIT 100
+
+-- Time series: log volume over time
+SELECT
+  time_bucket(INTERVAL '5 minutes', make_timestamp(timestamp_unix_nano / 1000)) as time,
+  count(*) as log_count
+FROM read_parquet('s3://obs-archive/logs/**/*.parquet')
+WHERE $__timeFilter(make_timestamp(timestamp_unix_nano / 1000))
+GROUP BY 1 ORDER BY 1
+```
+
 ### Grafana
 
 ```yaml
 grafana:
-  image: grafana/grafana:latest
+  image: grafana/grafana:latest-ubuntu
   ports:
     - "3003:3000"
   environment:
     GF_AUTH_ANONYMOUS_ENABLED: "true"
     GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
     GF_INSTALL_PLUGINS: "victoriametrics-logs-datasource"
+    GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "victoriametrics-logs-datasource,motherduck-duckdb-datasource"
 ```
 
-Pre-configured with seven datasources via provisioning files in `deployment/docker/grafana/provisioning/`:
+The Ubuntu-based Grafana image is required for the DuckDB datasource plugin (uses glibc, not compatible with Alpine/musl). A `grafana-duckdb-init` sidecar downloads the DuckDB plugin from GitHub releases before Grafana starts.
+
+Pre-configured with eleven datasources via provisioning files in `deployment/docker/grafana/provisioning/`:
 
 | Datasource | Type | URL | Purpose |
 |---|---|---|---|
@@ -285,6 +363,10 @@ Pre-configured with seven datasources via provisioning files in `deployment/dock
 | Lakehouse Logs Cold (S3) | VictoriaLogs | `http://lakehouse-logs:9428` | Cold tier only (S3 Parquet) |
 | Lakehouse Traces Cold (S3 Jaeger) | Jaeger | `http://lakehouse-traces:10428` | Cold tier only (S3 Parquet) |
 | Loki via Proxy (Hot+Cold) | Loki | `http://loki-vl-proxy:3100` | Unified hot+cold via Loki API with Drilldown support |
+| DuckDB Analytics (S3 Parquet) | DuckDB | in-memory + MinIO S3 | Direct SQL on Parquet files via DuckDB `read_parquet()` |
+| ClickHouse Analytics (S3 Parquet) | ClickHouse | `http://clickhouse:9000` | SQL analytics on Parquet via `lakehouse.logs`/`lakehouse.traces` views |
+| ClickHouse Logs (S3 Parquet) | ClickHouse | `http://clickhouse:9000` | Grafana Logs panel on S3 Parquet — `body`, `severity_text`, `service.name` |
+| ClickHouse Traces (S3 Parquet) | ClickHouse | `http://clickhouse:9000` | Grafana Traces panel on S3 Parquet — `trace_id`, `span_id`, `duration_ns` |
 
 - **Grafana UI**: [http://localhost:3003](http://localhost:3003)
 
@@ -299,6 +381,7 @@ The compose file defines five named volumes:
 | `lakehouse-cache-logs` | `/data/lakehouse` on lakehouse-logs | L2 disk cache + manifest persistence |
 | `lakehouse-cache-traces` | `/data/lakehouse` on lakehouse-traces | L2 disk cache + manifest persistence |
 | `grafana-data` | `/var/lib/grafana` on grafana | Grafana state |
+| `grafana-plugins` | `/var/lib/grafana/plugins` on grafana | DuckDB plugin install |
 
 ## Startup Order
 

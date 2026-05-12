@@ -11,12 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-level select architecture — vlselect/vtselect fan out queries to both hot (disk) and cold (lakehouse S3) storage nodes for unified hot+cold results
 - VictoriaTraces hot tier in Docker Compose — standalone VT instance with 24h disk retention
 - Datagen trace dual-write — `--vt-endpoint` flag pushes traces to VictoriaTraces via Zipkin `/api/v2/spans` alongside S3 Parquet writes
-- Seven Grafana datasources — Global VL/VT (via vlselect/vtselect), Hot VL/VT (direct disk), Cold logs/traces (lakehouse S3), Loki proxy (hot+cold)
+- Eleven Grafana datasources — Global VL/VT (via vlselect/vtselect), Hot VL/VT (direct disk), Cold logs/traces (lakehouse S3), Loki proxy (hot+cold), DuckDB analytics, ClickHouse analytics/logs/traces
+- DuckDB Grafana datasource — in-memory DuckDB with `httpfs` extension for direct SQL on S3 Parquet files via `read_parquet()`
+- ClickHouse analytics engine — pre-configured with `lakehouse.logs` and `lakehouse.traces` views querying MinIO Parquet via `s3()` table function, with dedicated Grafana Logs and Traces datasources for native log/trace panel visualization on raw Parquet
 - Architecture diagram in Docker Compose docs showing full data flow across all tiers
 
 ### Changed
 - Docker Compose hot tier retention reduced from 7d to 24h to match cold boundary
 - Grafana default datasource changed to VictoriaLogs Global (via vlselect) for unified hot+cold queries
+- Grafana image changed from Alpine to Ubuntu (`grafana/grafana:latest-ubuntu`) — required for DuckDB plugin (glibc dependency)
 
 ## [0.18.2] - 2026-05-12
 

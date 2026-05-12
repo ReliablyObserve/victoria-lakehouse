@@ -223,11 +223,14 @@ graph LR
     subgraph "Pattern 1: Hot+Cold with vlagent/OTEL (recommended)"
         VA["vlagent"] -->|mirror| VLI["vlinsert<br/>(hot)"]
         VA -->|mirror| LHL["lakehouse-logs<br/>(cold)"]
-        OC["OTEL<br/>Collector"] -->|export| VTI["vtinsert"]
+        OC["OTEL<br/>Collector"] -->|export| VTI["vtinsert<br/>(hot)"]
         OC -->|export| LHT["lakehouse-traces<br/>(cold)"]
-        G1["Grafana"] --> VS1["vlselect"]
-        VS1 --> VLS1["vlstorage"]
-        VS1 -->|cold| LHLS["lakehouse-logs<br/>(select)"]
+        G1L["Grafana<br/>(logs)"] --> VLS1["vlselect"]
+        VLS1 -->|hot| VLSTO1["vlstorage"]
+        VLS1 -->|cold| LHLS["lakehouse-logs"]
+        G1T["Grafana<br/>(traces)"] --> VTS1["vtselect"]
+        VTS1 -->|hot| VTSTO1["vtstorage"]
+        VTS1 -->|cold| LHTS["lakehouse-traces"]
     end
 ```
 
@@ -266,11 +269,15 @@ graph LR
 ```mermaid
 graph LR
     subgraph "Pattern 5: Multi-Level Select (Hot+Cold unified)"
+        VA5["vlagent"] -->|mirror| VLI5["vlinsert"]
+        VA5 -->|mirror| LHI5["lakehouse-logs<br/>(insert)"]
+        OC5["OTEL Collector"] -->|export| VTI5["vtinsert"]
+        OC5 -->|export| LTI5["lakehouse-traces<br/>(insert)"]
         G5L["Grafana<br/>(logs)"] --> VLS5["vlselect"]
-        VLS5 -->|hot| VLSTO5["vlstorage<br/>(disk 24h)"]
+        VLS5 -->|hot| VLSTO5["vlstorage<br/>(disk)"]
         VLS5 -->|cold| LHL5["lakehouse-logs<br/>(S3)"]
         G5T["Grafana<br/>(traces)"] --> VTS5["vtselect"]
-        VTS5 -->|hot| VTSTO5["vtstorage<br/>(disk 24h)"]
+        VTS5 -->|hot| VTSTO5["vtstorage<br/>(disk)"]
         VTS5 -->|cold| LHT5["lakehouse-traces<br/>(S3)"]
     end
 ```
@@ -287,10 +294,12 @@ graph LR
 ```mermaid
 graph LR
     subgraph "Pattern 7: Analytics (open Parquet)"
-        S5[("S3 Parquet")] --> DDB["DuckDB"]
-        S5 --> TRI["Trino"]
-        S5 --> SPK["Spark"]
-        S5 --> CH["ClickHouse"]
+        G7["Grafana"] --> DDB["DuckDB<br/>datasource"]
+        G7 --> CH7["ClickHouse<br/>datasource"]
+        DDB -->|"read_parquet()"| S7[("S3 Parquet")]
+        CH7 -->|"s3() table fn"| S7
+        S7 --> TRI["Trino"]
+        S7 --> SPK["Spark"]
     end
 ```
 
