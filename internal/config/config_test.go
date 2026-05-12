@@ -174,16 +174,24 @@ func TestListenAddr(t *testing.T) {
 func TestAutoPrefix(t *testing.T) {
 	cfg := Default()
 	cfg.Mode = ModeLogs
-	if p := cfg.AutoPrefix(); p != "logs/" {
-		t.Errorf("logs auto prefix = %q, want logs/", p)
+	if p := cfg.AutoPrefix(); p != "0/0/logs/" {
+		t.Errorf("logs auto prefix = %q, want 0/0/logs/", p)
 	}
 	cfg.Mode = ModeTraces
-	if p := cfg.AutoPrefix(); p != "traces/" {
-		t.Errorf("traces auto prefix = %q, want traces/", p)
+	if p := cfg.AutoPrefix(); p != "0/0/traces/" {
+		t.Errorf("traces auto prefix = %q, want 0/0/traces/", p)
 	}
 	cfg.S3.Prefix = "custom/"
 	if p := cfg.AutoPrefix(); p != "custom/" {
 		t.Errorf("custom prefix = %q, want custom/", p)
+	}
+
+	cfg.S3.Prefix = ""
+	cfg.Tenant.DefaultAccount = ""
+	cfg.Tenant.DefaultProject = ""
+	cfg.Mode = ModeLogs
+	if p := cfg.AutoPrefix(); p != "logs/" {
+		t.Errorf("no-tenant logs prefix = %q, want logs/", p)
 	}
 }
 

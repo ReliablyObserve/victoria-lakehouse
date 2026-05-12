@@ -12,6 +12,7 @@ import (
 func TestHits_Basic(t *testing.T) {
 	params := defaultTimeParams()
 	params.Set("query", "*")
+	params.Set("step", "3600s")
 
 	body := httpGetBody(t, logsBaseURL, "/select/logsql/hits", params)
 	resp := assertHitsResponse(t, body)
@@ -65,6 +66,7 @@ func TestHits_GroupByLevel(t *testing.T) {
 	params := defaultTimeParams()
 	params.Set("query", "*")
 	params.Set("field", "level")
+	params.Set("step", "3600s")
 
 	body := httpGetBody(t, logsBaseURL, "/select/logsql/hits", params)
 	resp := assertHitsResponse(t, body)
@@ -95,6 +97,7 @@ func TestHits_GroupByLevel_AllLevels(t *testing.T) {
 	params := defaultTimeParams()
 	params.Set("query", "*")
 	params.Set("field", "level")
+	params.Set("step", "3600s")
 
 	body := httpGetBody(t, logsBaseURL, "/select/logsql/hits", params)
 	resp := assertHitsResponse(t, body)
@@ -126,9 +129,11 @@ func TestHits_TimeRange(t *testing.T) {
 
 	wideParams := defaultTimeParams()
 	wideParams.Set("query", "*")
+	wideParams.Set("step", "3600s")
 
 	narrowParams := url.Values{
 		"query": {"*"},
+		"step":  {"3600s"},
 		"start": {fmt.Sprintf("%d", start.UnixNano())},
 		"end":   {fmt.Sprintf("%d", end.UnixNano())},
 	}

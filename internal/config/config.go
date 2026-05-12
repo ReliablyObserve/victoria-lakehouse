@@ -244,6 +244,17 @@ type TenantConfig struct {
 	GlobalReadToken  string `yaml:"global_read_token"`
 }
 
+func (t TenantConfig) ResolvedPrefix() string {
+	if t.DefaultPrefix != "" {
+		return t.DefaultPrefix
+	}
+	if t.PrefixTemplate == "" || (t.DefaultAccount == "" && t.DefaultProject == "") {
+		return ""
+	}
+	r := strings.NewReplacer("{AccountID}", t.DefaultAccount, "{ProjectID}", t.DefaultProject)
+	return r.Replace(t.PrefixTemplate)
+}
+
 type CompactionConfig struct {
 	Enabled        bool          `yaml:"enabled"`
 	Interval       time.Duration `yaml:"interval"`
@@ -628,10 +639,17 @@ func (c *Config) AutoPrefix() string {
 	if c.S3.Prefix != "" {
 		return c.S3.Prefix
 	}
+
+	signal := "logs/"
 	if c.Mode == ModeTraces {
-		return "traces/"
+		signal = "traces/"
 	}
-	return "logs/"
+
+	tp := c.Tenant.ResolvedPrefix()
+	if tp != "" {
+		return tp + signal
+	}
+	return signal
 }
 
 func mergeConfig(base, overlay *Config) *Config {

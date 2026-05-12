@@ -510,6 +510,7 @@ func TestMultitenancy_QueryNonexistentService(t *testing.T) {
 
 func TestMultitenancy_FieldNamesIncludeServiceName(t *testing.T) {
 	params := defaultTimeParams()
+	params.Set("query", "*")
 	body := httpGetBody(t, logsBaseURL, "/select/logsql/field_names", params)
 	entries := assertValuesResponse(t, body)
 	names := extractValueStrings(t, entries)
@@ -521,6 +522,7 @@ func TestMultitenancy_FieldNamesIncludeServiceName(t *testing.T) {
 
 func TestMultitenancy_FieldValuesServiceName(t *testing.T) {
 	params := defaultTimeParams()
+	params.Set("query", "*")
 	params.Set("field", "service.name")
 	body := httpGetBody(t, logsBaseURL, "/select/logsql/field_values", params)
 	entries := assertValuesResponse(t, body)
@@ -825,6 +827,7 @@ func TestMultitenancy_LakehouseAllExpectedFields(t *testing.T) {
 
 func TestMultitenancy_ServiceCountMatchesSeedData(t *testing.T) {
 	params := defaultTimeParams()
+	params.Set("query", "*")
 	params.Set("field", "service.name")
 	body := httpGetBody(t, logsBaseURL, "/select/logsql/field_values", params)
 	entries := assertValuesResponse(t, body)
@@ -838,6 +841,7 @@ func TestMultitenancy_ServiceCountMatchesSeedData(t *testing.T) {
 
 func TestMultitenancy_LevelDistribution(t *testing.T) {
 	params := defaultTimeParams()
+	params.Set("query", "*")
 	params.Set("field", "level")
 	body := httpGetBody(t, logsBaseURL, "/select/logsql/field_values", params)
 	entries := assertValuesResponse(t, body)
@@ -869,6 +873,7 @@ func TestMultitenancy_LevelDistribution(t *testing.T) {
 func TestMultitenancy_HitsEndpointWorks(t *testing.T) {
 	params := defaultTimeParams()
 	params.Set("query", "*")
+	params.Set("step", "3600s")
 
 	now := time.Now()
 	params.Set("start", fmt.Sprintf("%d", now.Add(-48*time.Hour).UnixNano()))

@@ -205,6 +205,108 @@ func TestTenantConfig_GlobalReadBothMethods(t *testing.T) {
 	}
 }
 
+func TestTenantConfig_ResolvedPrefix(t *testing.T) {
+	tests := []struct {
+		name     string
+		tenant   TenantConfig
+		expected string
+	}{
+		{
+			"default single tenant",
+			TenantConfig{PrefixTemplate: "{AccountID}/{ProjectID}/", DefaultAccount: "0", DefaultProject: "0"},
+			"0/0/",
+		},
+		{
+			"multi-tenant",
+			TenantConfig{PrefixTemplate: "{AccountID}/{ProjectID}/", DefaultAccount: "100", DefaultProject: "42"},
+			"100/42/",
+		},
+		{
+			"custom template",
+			TenantConfig{PrefixTemplate: "tenants/{AccountID}/", DefaultAccount: "org1", DefaultProject: ""},
+			"tenants/org1/",
+		},
+		{
+			"default prefix overrides template",
+			TenantConfig{DefaultPrefix: "custom/", PrefixTemplate: "{AccountID}/{ProjectID}/", DefaultAccount: "0", DefaultProject: "0"},
+			"custom/",
+		},
+		{
+			"empty template returns empty",
+			TenantConfig{PrefixTemplate: "", DefaultAccount: "0", DefaultProject: "0"},
+			"",
+		},
+		{
+			"no account or project returns empty",
+			TenantConfig{PrefixTemplate: "{AccountID}/{ProjectID}/", DefaultAccount: "", DefaultProject: ""},
+			"",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.tenant.ResolvedPrefix(); got != tt.expected {
+				t.Errorf("ResolvedPrefix() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestTenantConfig_AutoPrefixWithTenant(t *testing.T) {
+	tests := []struct {
+		name     string
+		mode     Mode
+		tenant   TenantConfig
+		s3prefix string
+		expected string
+	}{
+		{
+			"logs with default tenant",
+			ModeLogs,
+			TenantConfig{PrefixTemplate: "{AccountID}/{ProjectID}/", DefaultAccount: "0", DefaultProject: "0"},
+			"",
+			"0/0/logs/",
+		},
+		{
+			"traces with default tenant",
+			ModeTraces,
+			TenantConfig{PrefixTemplate: "{AccountID}/{ProjectID}/", DefaultAccount: "0", DefaultProject: "0"},
+			"",
+			"0/0/traces/",
+		},
+		{
+			"logs with multi-tenant",
+			ModeLogs,
+			TenantConfig{PrefixTemplate: "{AccountID}/{ProjectID}/", DefaultAccount: "100", DefaultProject: "1"},
+			"",
+			"100/1/logs/",
+		},
+		{
+			"s3 prefix overrides everything",
+			ModeLogs,
+			TenantConfig{PrefixTemplate: "{AccountID}/{ProjectID}/", DefaultAccount: "0", DefaultProject: "0"},
+			"override/",
+			"override/",
+		},
+		{
+			"no tenant config falls back to signal only",
+			ModeLogs,
+			TenantConfig{},
+			"",
+			"logs/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{Mode: tt.mode, Tenant: tt.tenant, S3: S3Config{Prefix: tt.s3prefix}}
+			if got := cfg.AutoPrefix(); got != tt.expected {
+				t.Errorf("AutoPrefix() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestTenantConfig_AllFieldsMerge(t *testing.T) {
 	base := Default()
 	overlay := &Config{}
