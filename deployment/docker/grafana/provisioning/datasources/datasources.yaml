@@ -18,7 +18,7 @@ datasources:
     type: jaeger
     uid: victoriatraces-global
     access: proxy
-    url: http://vtselect:10428
+    url: http://vtselect:10428/select/jaeger
     jsonData:
       tracesToLogsV2:
         datasourceUid: victorialogs-global
@@ -43,7 +43,7 @@ datasources:
     type: jaeger
     uid: victoriatraces-hot
     access: proxy
-    url: http://victoriatraces:10428
+    url: http://victoriatraces:10428/select/jaeger
     jsonData:
       tracesToLogsV2:
         datasourceUid: victorialogs-hot

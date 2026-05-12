@@ -57,7 +57,7 @@ func main() {
 	tenantPrefix := flag.String("tenant-prefix", "", "S3 key prefix for tenant isolation (e.g. '0/0/' or '1/1/')")
 	dualWrite := flag.Bool("dual-write", false, "also push logs to VictoriaLogs and traces to VictoriaTraces")
 	vlEndpoint := flag.String("vl-endpoint", "http://localhost:9428", "VictoriaLogs endpoint for dual-write")
-	vtEndpoint := flag.String("vt-endpoint", "", "VictoriaTraces endpoint for dual-write (Zipkin format)")
+	vtEndpoint := flag.String("vt-endpoint", "", "VictoriaTraces endpoint for dual-write (OTLP JSON format)")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -289,7 +289,7 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket, tenantPrefix 
 		for _, rows := range tracesByPartition {
 			allTraces = append(allTraces, rows...)
 		}
-		if err := pushZipkinTraces(vtEndpoint, allTraces); err != nil {
+		if err := pushOTLPTraces(vtEndpoint, allTraces); err != nil {
 			log.Printf("WARNING: dual-write to VT failed: %v", err)
 		} else {
 			log.Printf("  dual-write: pushed %d traces to VT at %s", len(allTraces), vtEndpoint)
@@ -363,71 +363,125 @@ func randomHex(length int) string {
 
 var spanKindNames = map[int32]string{1: "CLIENT", 2: "SERVER", 3: "PRODUCER", 4: "CONSUMER"}
 
-func pushZipkinTraces(endpoint string, rows []TraceRow) error {
-	type zipkinEndpoint struct {
-		ServiceName string `json:"serviceName"`
+func pushOTLPTraces(endpoint string, rows []TraceRow) error {
+	type otlpKV struct {
+		Key   string      `json:"key"`
+		Value interface{} `json:"value"`
 	}
-	type zipkinSpan struct {
-		TraceID       string            `json:"traceId"`
-		ID            string            `json:"id"`
-		ParentID      string            `json:"parentId,omitempty"`
-		Name          string            `json:"name"`
-		Timestamp     int64             `json:"timestamp"`
-		Duration      int64             `json:"duration"`
-		Kind          string            `json:"kind,omitempty"`
-		LocalEndpoint zipkinEndpoint    `json:"localEndpoint"`
-		Tags          map[string]string `json:"tags"`
+	type otlpSpan struct {
+		TraceID           string   `json:"traceId"`
+		SpanID            string   `json:"spanId"`
+		ParentSpanID      string   `json:"parentSpanId,omitempty"`
+		Name              string   `json:"name"`
+		Kind              int32    `json:"kind"`
+		StartTimeUnixNano string   `json:"startTimeUnixNano"`
+		EndTimeUnixNano   string   `json:"endTimeUnixNano"`
+		Attributes        []otlpKV `json:"attributes"`
+		Status            *struct {
+			Code int32 `json:"code"`
+		} `json:"status,omitempty"`
+	}
+	type otlpScopeSpans struct {
+		Scope struct {
+			Name string `json:"name"`
+		} `json:"scope"`
+		Spans []otlpSpan `json:"spans"`
+	}
+	type otlpResourceSpans struct {
+		Resource struct {
+			Attributes []otlpKV `json:"attributes"`
+		} `json:"resource"`
+		ScopeSpans []otlpScopeSpans `json:"scopeSpans"`
+	}
+	type otlpPayload struct {
+		ResourceSpans []otlpResourceSpans `json:"resourceSpans"`
 	}
 
-	spans := make([]zipkinSpan, 0, len(rows))
+	strVal := func(s string) interface{} {
+		return map[string]interface{}{"stringValue": s}
+	}
+	intVal := func(n int64) interface{} {
+		return map[string]interface{}{"intValue": fmt.Sprintf("%d", n)}
+	}
+
+	byService := map[string][]TraceRow{}
 	for _, r := range rows {
-		tags := map[string]string{
-			"deployment.environment": r.DeployEnv,
-			"cloud.region":           r.CloudRegion,
-			"host.name":              r.HostName,
-			"k8s.namespace.name":     r.K8sNamespaceName,
-			"k8s.deployment.name":    r.K8sDeploymentName,
-			"k8s.node.name":          r.K8sNodeName,
-		}
-		if r.HTTPMethod != "" {
-			tags["http.method"] = r.HTTPMethod
-		}
-		if r.HTTPStatusCode != "" {
-			tags["http.status_code"] = r.HTTPStatusCode
-		}
-		if r.HTTPUrl != "" {
-			tags["http.url"] = r.HTTPUrl
-		}
-		if r.DBSystem != "" {
-			tags["db.system"] = r.DBSystem
-		}
-		if r.DBStatement != "" {
-			tags["db.statement"] = r.DBStatement
-		}
-		if r.StatusCode == 2 {
-			tags["error"] = "true"
-			tags["otel.status_code"] = "ERROR"
-		}
-
-		spans = append(spans, zipkinSpan{
-			TraceID:       r.TraceID,
-			ID:            r.SpanID,
-			ParentID:      r.ParentSpanID,
-			Name:          r.SpanName,
-			Timestamp:     r.StartTimeUnixNano / 1000,
-			Duration:      r.DurationNs / 1000,
-			Kind:          spanKindNames[r.SpanKind],
-			LocalEndpoint: zipkinEndpoint{ServiceName: r.ServiceName},
-			Tags:          tags,
-		})
+		byService[r.ServiceName] = append(byService[r.ServiceName], r)
 	}
 
-	data, err := json.Marshal(spans)
+	var resourceSpans []otlpResourceSpans
+	for svc, svcRows := range byService {
+		r0 := svcRows[0]
+		resAttrs := []otlpKV{
+			{"service.name", strVal(svc)},
+			{"deployment.environment", strVal(r0.DeployEnv)},
+			{"cloud.region", strVal(r0.CloudRegion)},
+			{"host.name", strVal(r0.HostName)},
+			{"k8s.namespace.name", strVal(r0.K8sNamespaceName)},
+			{"k8s.deployment.name", strVal(r0.K8sDeploymentName)},
+			{"k8s.node.name", strVal(r0.K8sNodeName)},
+		}
+
+		var spans []otlpSpan
+		for _, r := range svcRows {
+			spanAttrs := []otlpKV{}
+			if r.HTTPMethod != "" {
+				spanAttrs = append(spanAttrs, otlpKV{"http.method", strVal(r.HTTPMethod)})
+			}
+			if r.HTTPStatusCode != "" {
+				spanAttrs = append(spanAttrs, otlpKV{"http.status_code", strVal(r.HTTPStatusCode)})
+			}
+			if r.HTTPUrl != "" {
+				spanAttrs = append(spanAttrs, otlpKV{"http.url", strVal(r.HTTPUrl)})
+			}
+			if r.DBSystem != "" {
+				spanAttrs = append(spanAttrs, otlpKV{"db.system", strVal(r.DBSystem)})
+			}
+			if r.DBStatement != "" {
+				spanAttrs = append(spanAttrs, otlpKV{"db.statement", strVal(r.DBStatement)})
+			}
+			spanAttrs = append(spanAttrs, otlpKV{"service.version", strVal("1." + fmt.Sprintf("%d", mrand.Intn(5)) + ".0")})
+
+			endTimeNano := r.StartTimeUnixNano + r.DurationNs
+
+			span := otlpSpan{
+				TraceID:           r.TraceID,
+				SpanID:            r.SpanID,
+				ParentSpanID:      r.ParentSpanID,
+				Name:              r.SpanName,
+				Kind:              r.SpanKind,
+				StartTimeUnixNano: fmt.Sprintf("%d", r.StartTimeUnixNano),
+				EndTimeUnixNano:   fmt.Sprintf("%d", endTimeNano),
+				Attributes:        spanAttrs,
+			}
+			if r.StatusCode == 2 {
+				span.Status = &struct {
+					Code int32 `json:"code"`
+				}{Code: 2}
+			}
+			spans = append(spans, span)
+		}
+
+		_ = intVal // suppress unused if not needed
+
+		rs := otlpResourceSpans{}
+		rs.Resource.Attributes = resAttrs
+		rs.ScopeSpans = []otlpScopeSpans{{
+			Scope: struct {
+				Name string `json:"name"`
+			}{Name: "github.com/reliablyobserve/instrumentation"},
+			Spans: spans,
+		}}
+		resourceSpans = append(resourceSpans, rs)
+	}
+
+	payload := otlpPayload{ResourceSpans: resourceSpans}
+	data, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("marshal zipkin: %w", err)
+		return fmt.Errorf("marshal otlp: %w", err)
 	}
 
-	resp, err := http.Post(endpoint+"/api/v2/spans", "application/json", bytes.NewReader(data))
+	resp, err := http.Post(endpoint+"/insert/opentelemetry/v1/traces", "application/json", bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("push to VT: %w", err)
 	}
@@ -462,7 +516,7 @@ func pushNDJSON(endpoint string, rows []LogRow) error {
 		buf.WriteByte('\n')
 	}
 
-	resp, err := http.Post(endpoint+"/insert/jsonline?_stream_fields=service.name,k8s.namespace.name,k8s.deployment.name,deployment.environment,cloud.region", "application/x-ndjson", &buf)
+	resp, err := http.Post(endpoint+"/insert/jsonline?_stream_fields=service.name,k8s.namespace.name,k8s.deployment.name,deployment.environment,cloud.region,host.name,k8s.node.name,k8s.pod.name,level", "application/x-ndjson", &buf)
 	if err != nil {
 		return fmt.Errorf("push to VL: %w", err)
 	}
