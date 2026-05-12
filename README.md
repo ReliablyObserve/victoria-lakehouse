@@ -119,56 +119,37 @@ It integrates with any log/trace shipper — [vlagent](https://docs.victoriametr
 
 ```mermaid
 graph TB
-    subgraph "Log Collection (any shipper)"
-        K8S["Kubernetes /<br/>Infrastructure"]
-        K8S --> VA["vlagent"]
-        K8S --> FB["Fluent Bit"]
-        K8S --> VEC["Vector"]
-        K8S --> OC["OTEL Collector"]
-        K8S --> FD["Fluentd"]
-    end
-
-    subgraph "Trace Collection"
-        APP["Applications<br/>(OTEL SDK / Zipkin)"]
-        APP --> OC2["OTEL Collector"]
-        APP --> JA["Jaeger Agent"]
+    subgraph "Data Collection"
+        K8S["Kubernetes / Infrastructure"]
+        LOG["Log Shippers<br/>vlagent · Fluent Bit · Vector<br/>OTEL Collector · Fluentd"]
+        APP["Applications (OTEL SDK / Zipkin)"]
+        TRACE["Trace Collectors<br/>OTEL Collector · Jaeger Agent"]
+        K8S --> LOG
+        APP --> TRACE
     end
 
     subgraph "Hot Tier — 1 Month (EBS, multi-AZ)"
-        VA -->|mirror 1| VLI["vlinsert"]
-        FB -->|mirror 1| VLI
-        VEC -->|mirror 1| VLI
-        OC -->|mirror 1| VLI
-        OC2 -->|export 1| VTI["vtinsert"]
-        JA -->|export 1| VTI
-        VLI --> VLSTO["vlstorage"]
-        VTI --> VTSTO["vtstorage"]
-        VLSEL["vlselect"]
-        VTSEL["vtselect"]
-        VLSEL --> VLSTO
-        VTSEL --> VTSTO
+        VLI["vlinsert"] --> VLSTO["vlstorage"]
+        VTI["vtinsert"] --> VTSTO["vtstorage"]
+        VLSEL["vlselect"] --> VLSTO
+        VTSEL["vtselect"] --> VTSTO
     end
 
     subgraph "Cold Tier — Unlimited (S3) — Victoria Lakehouse"
-        VA -->|mirror 2| LHL["lakehouse-logs<br/>(insert)"]
-        FB -->|mirror 2| LHL
-        VEC -->|mirror 2| LHL
-        OC -->|mirror 2| LHL
-        OC2 -->|export 2| LHT["lakehouse-traces<br/>(insert)"]
-        JA -->|export 2| LHT
-        LHL --> WAL1["WAL"]
-        LHT --> WAL2["WAL"]
-        WAL1 --> BUF1["Buffers"]
-        WAL2 --> BUF2["Buffers"]
-        BUF1 -->|flush| S3[("S3 Parquet<br/>(11 nines)")]
-        BUF2 -->|flush| S3
-        LHLS["lakehouse-logs<br/>(select)"]
-        LHTS["lakehouse-traces<br/>(select)"]
-        LHLS --> S3
-        LHTS --> S3
-        LHLS -.->|buffer query| BUF1
-        LHTS -.->|buffer query| BUF2
+        LHL["lakehouse-logs<br/>(insert)"] --> WAL1["WAL → Buffers"]
+        LHT["lakehouse-traces<br/>(insert)"] --> WAL2["WAL → Buffers"]
+        WAL1 -->|flush| S3[("S3 Parquet<br/>(11 nines)")]
+        WAL2 -->|flush| S3
+        LHLS["lakehouse-logs<br/>(select)"] --> S3
+        LHTS["lakehouse-traces<br/>(select)"] --> S3
+        LHLS -.->|buffer query| WAL1
+        LHTS -.->|buffer query| WAL2
     end
+
+    LOG -->|"mirror (hot)"| VLI
+    LOG -->|"mirror (cold)"| LHL
+    TRACE -->|"export (hot)"| VTI
+    TRACE -->|"export (cold)"| LHT
 
     subgraph "Consumers"
         GF["Grafana"] --> VLSEL
@@ -178,12 +159,9 @@ graph TB
     end
 
     subgraph "Analytics — Direct S3 Parquet"
-        GF --> DDB["DuckDB<br/>(Grafana plugin)"]
-        GF --> CH["ClickHouse<br/>(server)"]
-        DDB -->|"read_parquet()"| S3
-        CH -->|"s3() table fn"| S3
-        TRI["Trino"] --> S3
-        SPK["Spark"] --> S3
+        GF --> DDB["DuckDB · ClickHouse"]
+        DDB --> S3
+        TRI["Trino · Spark · pandas"] --> S3
     end
 
     style S3 fill:#e76f51,color:#fff
@@ -191,12 +169,9 @@ graph TB
     style LHT fill:#5a189a,color:#fff
     style LHLS fill:#2d6a4f,color:#fff
     style LHTS fill:#2d6a4f,color:#fff
-    style VA fill:#264653,color:#fff
-    style FB fill:#264653,color:#fff
-    style VEC fill:#264653,color:#fff
-    style OC fill:#264653,color:#fff
+    style LOG fill:#264653,color:#fff
+    style TRACE fill:#264653,color:#fff
     style DDB fill:#ff6b35,color:#fff
-    style CH fill:#fabd2f,color:#000
 ```
 
 **Key points:**
