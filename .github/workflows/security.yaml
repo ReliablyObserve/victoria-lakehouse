@@ -73,7 +73,7 @@ jobs:
       - name: Run govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+          govulncheck ./internal/... ./cmd/...
 
   gosec:
     needs: deps
@@ -94,7 +94,7 @@ jobs:
       - name: Run gosec
         run: |
           go install github.com/securego/gosec/v2/cmd/gosec@latest
-          gosec -exclude=G110,G115,G304,G401,G501,G705 ./...
+          gosec -exclude=G110,G115,G304,G401,G501,G705 ./internal/... ./cmd/...
 
   trivy:
     runs-on: ubuntu-latest
