@@ -20,12 +20,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Eleven Grafana datasources — Global VL/VT (via vlselect/vtselect), Hot VL/VT (direct disk), Cold logs/traces (lakehouse S3), Loki proxy (hot+cold), DuckDB analytics, ClickHouse analytics/logs/traces
 - DuckDB Grafana datasource — in-memory DuckDB with `httpfs` extension for direct SQL on S3 Parquet files via `read_parquet()`
 - ClickHouse analytics engine — pre-configured with `lakehouse.logs` and `lakehouse.traces` views querying MinIO Parquet via `s3()` table function, with dedicated Grafana Logs and Traces datasources for native log/trace panel visualization on raw Parquet
+- ClickHouse OTEL-compatible views — `lakehouse.otel_logs` and `lakehouse.otel_traces` map Parquet columns to OpenTelemetry standard naming (Timestamp, Body, SeverityText, ServiceName, TraceId, SpanName, SpanKind, Duration, StatusCode, ResourceAttributes, SpanAttributes)
+- Tenant-scoped ClickHouse views — `logs_tenant_default`, `traces_tenant_default`, `logs_tenant_test`, `traces_tenant_test` with direct s3() glob patterns per tenant (workaround: `_file` virtual column unavailable through view chain)
+- Raw ClickHouse views — `lakehouse.logs_raw` and `lakehouse.traces_raw` with explicit Parquet schema for ad-hoc SQL analytics without needing files at view creation time
+- Grafana ClickHouse datasources preconfigured with OTEL mode (`otelEnabled: true`, `otelVersion: latest`), default tables (`otel_logs`, `otel_traces`, `logs_raw`), and bidirectional logs↔traces cross-linking via `tracesToLogsV2`
+- Expanded datagen `_stream` labels from 2 to 5 — added `k8s.deployment.name`, `deployment.environment`, `cloud.region` for full Loki label filtering support
+- Multi-tenancy E2E tests and CI workflow
+- Gitleaks allowlist (`.gitleaks.toml`) for false positives in documentation and test example values
+- Loki-VL-proxy Dockerfile — builds from GitHub release binary instead of non-existent GHCR image
 - Architecture diagram in Docker Compose docs showing full data flow across all tiers
+
+### Fixed
+- Tenant-aware S3 prefix resolution — `TenantConfig.ResolvedPrefix()` and updated `AutoPrefix()` prepend `{AccountID}/{ProjectID}/` to signal prefix (e.g. `0/0/logs/` instead of `logs/`)
+- E2E test params — add missing `step` for /hits, `query` for /field_names and /field_values, stats pipe syntax for /stats_query
+- Datagen Dockerfile — add `GOWORK=off` to prevent go.work from pulling in lakehouse-traces module dependencies
+- Auto-release workflow — remove auto-merge (repo setting not enabled), just create PR for manual merge
+- Remove broken DuckDB plugin init container (v0.4.1 release has no downloadable assets)
 
 ### Changed
 - Docker Compose hot tier retention reduced from 7d to 24h to match cold boundary
 - Grafana default datasource changed to VictoriaLogs Global (via vlselect) for unified hot+cold queries
 - Grafana image changed from Alpine to Ubuntu (`grafana/grafana:latest-ubuntu`) — required for DuckDB plugin (glibc dependency)
+- Grafana ClickHouse datasource names explicitly show S3 Parquet origin
+- `_stream_fields` in VL NDJSON push updated to match expanded 5-label _stream
 
 ## [0.18.2] - 2026-05-12
 
