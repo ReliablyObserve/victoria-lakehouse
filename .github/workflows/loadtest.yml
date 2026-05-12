@@ -22,11 +22,11 @@ jobs:
       - name: Wait for lakehouse ready
         run: |
           for i in $(seq 1 30); do
-            curl -sf http://localhost:19428/ready && break
+            curl -sf http://localhost:29428/ready && break
             sleep 2
           done
       - name: Run load tests
-        run: go run ./cmd/loadtest --target=http://localhost:19428 --mode=all --duration=120s --output=loadtest-results.json
+        run: go run ./cmd/loadtest --target=http://localhost:29428 --mode=all --duration=120s --output=loadtest-results.json
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v7

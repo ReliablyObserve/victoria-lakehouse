@@ -54,6 +54,7 @@ func main() {
 	tracesCount := flag.Int("traces", 1000, "number of trace spans per batch")
 	hoursBack := flag.Int("hours-back", 48, "generate historical data for this many hours back")
 	interval := flag.Duration("interval", 0, "continuous mode: generate new data every interval (e.g. 30s)")
+	tenantPrefix := flag.String("tenant-prefix", "", "S3 key prefix for tenant isolation (e.g. '0/0/' or '1/1/')")
 	dualWrite := flag.Bool("dual-write", false, "also push logs to VictoriaLogs and traces to VictoriaTraces")
 	vlEndpoint := flag.String("vl-endpoint", "http://localhost:9428", "VictoriaLogs endpoint for dual-write")
 	vtEndpoint := flag.String("vt-endpoint", "", "VictoriaTraces endpoint for dual-write (Zipkin format)")
@@ -74,23 +75,27 @@ func main() {
 		o.UsePathStyle = true
 	})
 
-	generateBatch(ctx, client, *bucket, *logsCount, *tracesCount, *hoursBack, *dualWrite, *vlEndpoint, *vtEndpoint)
+	generateBatch(ctx, client, *bucket, *tenantPrefix, *logsCount, *tracesCount, *hoursBack, *dualWrite, *vlEndpoint, *vtEndpoint)
 
 	if *interval > 0 {
 		log.Printf("Continuous mode: generating %d logs + %d traces every %s", *logsCount, *tracesCount, *interval)
 		ticker := time.NewTicker(*interval)
 		defer ticker.Stop()
 		for range ticker.C {
-			generateBatch(ctx, client, *bucket, *logsCount, *tracesCount, 1, *dualWrite, *vlEndpoint, *vtEndpoint)
+			generateBatch(ctx, client, *bucket, *tenantPrefix, *logsCount, *tracesCount, 1, *dualWrite, *vlEndpoint, *vtEndpoint)
 		}
 	}
 }
 
-func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCount, tracesCount, hoursBack int, dualWrite bool, vlEndpoint, vtEndpoint string) {
+func generateBatch(ctx context.Context, client *s3.Client, bucket, tenantPrefix string, logsCount, tracesCount, hoursBack int, dualWrite bool, vlEndpoint, vtEndpoint string) {
 	now := time.Now().UTC()
 	rng := mrand.New(mrand.NewSource(now.UnixNano())) // #nosec G404 -- synthetic test data, not security-sensitive
 
-	log.Printf("Generating %d log rows and %d trace spans over %d hours...", logsCount, tracesCount, hoursBack)
+	if tenantPrefix != "" {
+		log.Printf("Generating %d log rows and %d trace spans over %d hours (tenant prefix: %s)...", logsCount, tracesCount, hoursBack, tenantPrefix)
+	} else {
+		log.Printf("Generating %d log rows and %d trace spans over %d hours...", logsCount, tracesCount, hoursBack)
+	}
 
 	batchID := randomHex(8)
 	logsByPartition := make(map[string][]LogRow)
@@ -130,13 +135,13 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCo
 			HostName:          host,
 			TraceID:           traceID,
 			SpanID:            spanID,
-			Stream:            fmt.Sprintf("{service.name=%q,k8s.namespace.name=%q}", svc, ns),
+			Stream:            fmt.Sprintf("{service.name=%q,k8s.namespace.name=%q,k8s.deployment.name=%q,deployment.environment=%q,cloud.region=%q}", svc, ns, svc, env, region),
 			StreamID:          randomHex(16),
 			ScopeName:         "github.com/reliablyobserve/instrumentation",
 			LogAttributes:     logAttrs,
 		}
 
-		key := partitionKeyBatch("logs", ts, batchID)
+		key := partitionKeyBatch(tenantPrefix, "logs", ts, batchID)
 		logsByPartition[key] = append(logsByPartition[key], row)
 	}
 
@@ -247,7 +252,7 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCo
 				DBStatement:       dbStmt,
 			}
 
-			key := partitionKeyBatch("traces", startTime, batchID)
+			key := partitionKeyBatch(tenantPrefix, "traces", startTime, batchID)
 			tracesByPartition[key] = append(tracesByPartition[key], row)
 			parentSpanID = spanID
 		}
@@ -291,9 +296,9 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket string, logsCo
 		totalLogs, len(logsByPartition), totalTraces, len(tracesByPartition))
 }
 
-func partitionKeyBatch(signal string, ts time.Time, batchID string) string {
-	return fmt.Sprintf("%s/dt=%s/hour=%02d/%s.parquet",
-		signal, ts.Format("2006-01-02"), ts.Hour(), batchID)
+func partitionKeyBatch(prefix, signal string, ts time.Time, batchID string) string {
+	return fmt.Sprintf("%s%s/dt=%s/hour=%02d/%s.parquet",
+		prefix, signal, ts.Format("2006-01-02"), ts.Hour(), batchID)
 }
 
 func writeLogsParquet(rows []LogRow) ([]byte, error) {
@@ -444,7 +449,7 @@ func pushNDJSON(endpoint string, rows []LogRow) error {
 		buf.WriteByte('\n')
 	}
 
-	resp, err := http.Post(endpoint+"/insert/jsonline?_stream_fields=service.name,k8s.namespace.name", "application/x-ndjson", &buf)
+	resp, err := http.Post(endpoint+"/insert/jsonline?_stream_fields=service.name,k8s.namespace.name,k8s.deployment.name,deployment.environment,cloud.region", "application/x-ndjson", &buf)
 	if err != nil {
 		return fmt.Errorf("push to VL: %w", err)
 	}

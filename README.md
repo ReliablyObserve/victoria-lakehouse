@@ -159,9 +159,9 @@ graph TB
     end
 
     subgraph "Analytics — Direct S3 Parquet"
-        GF --> DDB["DuckDB · ClickHouse"]
+        GF --> DDB["DuckDB · ClickHouse · Trino"]
         DDB --> S3
-        TRI["Trino · Spark · pandas"] --> S3
+        TRI["Spark · Databricks · Snowflake<br/>StarRocks · Doris · pandas"] --> S3
     end
 
     style S3 fill:#e76f51,color:#fff
@@ -301,19 +301,28 @@ graph LR
     subgraph "Pattern 7: Analytics (open Parquet on S3)"
         G7["Grafana"] --> DDB["DuckDB<br/>(in-memory plugin)"]
         G7 --> CH7["ClickHouse<br/>(server)"]
+        G7 --> TRI7["Trino<br/>(Hive connector)"]
         DDB -->|"read_parquet()"| S7[("S3 Parquet")]
         CH7 -->|"s3() table fn"| S7
-        TRI["Trino<br/>(Hive connector)"] --> S7
-        SPK["Spark<br/>(spark.read.parquet)"] --> S7
+        TRI7 -->|"Hive SerDe"| S7
+        SPK["Spark · Databricks<br/>Snowflake · StarRocks"] --> S7
     end
 ```
 
-**How each engine queries S3 Parquet:**
-- **[DuckDB](https://duckdb.org/docs/extensions/httpfs/s3api.html)**: `SELECT * FROM read_parquet('s3://obs-archive/logs/**/*.parquet')` — in-memory, zero infrastructure, [Grafana plugin](https://github.com/motherduckdb/grafana-duckdb-datasource)
-- **[ClickHouse](https://clickhouse.com/docs/sql-reference/table-functions/s3)**: `SELECT * FROM s3('http://s3/bucket/logs/**/*.parquet', 'Parquet')` — server with native [Grafana datasource](https://grafana.com/grafana/plugins/grafana-clickhouse-datasource/) supporting Logs and Traces panels
-- **[Trino](https://trino.io/docs/current/connector/hive-s3.html)**: Hive connector with Parquet SerDe on S3
-- **[Spark](https://spark.apache.org/docs/latest/sql-data-sources-parquet.html)**: `spark.read.parquet("s3a://obs-archive/logs/")` — batch analytics, ML pipelines
-- **[pandas](https://pandas.pydata.org/docs/reference/api/pandas.read_parquet.html)**: `pd.read_parquet("s3://obs-archive/logs/")` — notebooks, data science
+**Analytics Engines with Grafana Datasources:**
+
+| Engine | Grafana Plugin | Status | License |
+|---|---|---|---|
+| [DuckDB](https://duckdb.org/docs/extensions/httpfs/s3api.html) | [`motherduck-duckdb-datasource`](https://github.com/motherduckdb/grafana-duckdb-datasource) | Unsigned, GitHub only | Free |
+| [ClickHouse](https://clickhouse.com/docs/sql-reference/table-functions/s3) | [`grafana-clickhouse-datasource`](https://grafana.com/grafana/plugins/grafana-clickhouse-datasource/) | Official (Grafana Labs), 27.7M downloads | Free |
+| [Trino](https://trino.io/docs/current/connector/hive-s3.html) | [`trino-datasource`](https://grafana.com/grafana/plugins/trino-datasource/) | Community-signed, in catalog, 1.4M downloads | Free |
+| [Databricks](https://docs.databricks.com/en/connect/storage/index.html) | [`grafana-databricks-datasource`](https://grafana.com/grafana/plugins/grafana-databricks-datasource/) | Official (Grafana Labs) | Enterprise only |
+| [Snowflake](https://docs.snowflake.com/en/user-guide/data-load-s3) | [`grafana-snowflake-datasource`](https://grafana.com/grafana/plugins/grafana-snowflake-datasource/) | Official (Grafana Labs) | Enterprise only |
+| [StarRocks](https://docs.starrocks.io/docs/data_source/External_table/) / [Doris](https://doris.apache.org/docs/lakehouse/datalake-analytics/hive/) | Built-in MySQL datasource | MySQL wire protocol compat | Free |
+| [Spark](https://spark.apache.org/docs/latest/sql-data-sources-parquet.html) | None | No plugin exists | — |
+| [pandas](https://pandas.pydata.org/docs/reference/api/pandas.read_parquet.html) | None | CLI/notebook only | — |
+
+Full engine comparison with query examples: [Analytics Engines](docs/analytics-engines.md)
 
 ---
 
@@ -386,6 +395,15 @@ Each binary supports three roles for independent scaling:
 - **Translated metadata mode** (`-metadata-field-mode=translated`) and structured metadata emission for full Grafana Loki Drilldown support.
 - **Trace-to-logs linking** via derived fields — click a trace ID in Grafana to jump to correlated logs.
 
+### Multi-Tenancy
+- **Single binary, all tenants**: one lakehouse-logs/traces process serves all tenants simultaneously via header-based routing. Same pattern as Grafana Loki and Tempo.
+- **S3 prefix isolation**: each tenant gets `{AccountID}/{ProjectID}/` S3 prefix (default `0/0/`). Tenant data is never mixed in shared files.
+- **Enterprise bucket isolation**: optional `--lakehouse.tenant.isolation=bucket` with `--lakehouse.tenant.bucket-template` for IAM-level hard isolation.
+- **Global read mode**: configurable `X-Lakehouse-Global-Read` header allows admin/Grafana dashboards to query across all tenants (must be explicitly enabled).
+- **vmauth header extraction**: `X-Scope-AccountID` / `X-Scope-ProjectID` headers for tenant routing.
+- **Analytics compatible**: all Parquet tools (DuckDB, ClickHouse, Trino, Spark) query per-tenant prefix directly.
+- **Cost attribution**: per-prefix S3 Inventory or per-bucket billing for tenant cost allocation.
+
 ### Infrastructure
 - **Metadata persistence**: manifest, label index, cache metadata, and smart cache snapshots survive restarts.
 - **Distributed peer cache**: consistent hash routing across fleet instances via headless DNS.
@@ -430,6 +448,25 @@ lakehouse:
   query:
     file_workers: 8
 ```
+
+### Multi-Tenancy Config
+
+```yaml
+lakehouse:
+  tenant:
+    prefix_template: "{AccountID}/{ProjectID}/"  # S3 prefix per tenant
+    isolation: prefix           # prefix (default) | bucket (enterprise)
+    bucket_template: ""         # e.g., "obs-{AccountID}-{ProjectID}" for bucket isolation
+    default_account: "0"        # single-tenant default AccountID
+    default_project: "0"        # single-tenant default ProjectID
+    header_account: "X-Scope-AccountID"   # HTTP header for AccountID
+    header_project: "X-Scope-ProjectID"   # HTTP header for ProjectID
+    global_read_header: ""      # e.g., "X-Lakehouse-Global-Read" — cross-tenant reads via custom header
+    global_read_value: ""       # required value for the custom header
+    global_read_token: ""       # Bearer token for cross-tenant reads via Authorization header
+```
+
+Full reference: [Multi-Tenancy](docs/multi-tenancy.md)
 
 ### Mode-Specific Config
 
@@ -493,7 +530,7 @@ See [Observability](docs/observability.md).
 - **Internal endpoint auth**: `/internal/cache/*`, `/internal/manifest/update`, `/internal/prefetch/hint` endpoints require Bearer token when configured (`peer.auth_key`, `partition_auth_key`)
 - **Cross-signal auth**: optional `X-Cross-Signal-Key` header for securing cross-deployment prefetch hints between logs and traces instances
 - **S3 credential isolation**: each binary has its own S3 credentials via flags, environment variables, or IAM roles
-- **Tenant isolation**: each Lakehouse deployment serves a single tenant's S3 prefix. Multi-tenancy is achieved at the deployment level, not row-level filtering
+- **Multi-tenant isolation**: S3 prefix per tenant (`{AccountID}/{ProjectID}/`) with explicit default `0/0/`, single binary serving all tenants. Enterprise option for bucket-per-tenant with separate IAM policies. Optional global read mode for admin dashboards. See [Multi-Tenancy](docs/multi-tenancy.md)
 
 ### CI Security Pipeline
 - **[govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck)** — Go vulnerability database scanning
@@ -511,7 +548,7 @@ See [Security](docs/security.md).
 
 Victoria Lakehouse reads and writes **OTLP-standard Parquet files**. Column names use OTEL semantic convention dot-notation directly (e.g., `service.name`, `k8s.namespace.name`) for zero-translation compatibility with OTEL Collector exporters and standard tooling. High-frequency fields are promoted to top-level columns with statistics and optional bloom filters. Everything else is preserved in MAP columns — no data is ever lost.
 
-**S3 layout**: Hive partitioned `s3://{bucket}/{signal}/dt=YYYY-MM-DD/hour=HH/{batch}.parquet`
+**S3 layout**: Hive partitioned `s3://{bucket}/{AccountID}/{ProjectID}/{signal}/dt=YYYY-MM-DD/hour=HH/{batch}.parquet` (default tenant: `0/0/`)
 
 ### Logs Schema
 
@@ -545,7 +582,7 @@ Victoria Lakehouse reads and writes **OTLP-standard Parquet files**. Column name
 | `span.attributes` | MAP | | All span attributes |
 | `scope.attributes` | MAP | | Instrumentation scope attributes |
 
-Any tool that reads Parquet can query these files: DuckDB, ClickHouse, Trino, Spark, pandas. Full schema reference: [Architecture](docs/architecture.md)
+Any tool that reads Parquet can query these files: DuckDB, ClickHouse, Trino, Spark, Databricks, Snowflake, StarRocks, Doris, pandas. Full engine list with Grafana plugin status: [Analytics Engines](docs/analytics-engines.md). Schema reference: [Architecture](docs/architecture.md)
 
 ---
 
@@ -577,8 +614,10 @@ See [Performance](docs/performance.md).
 - [Deletion Strategy](docs/deletion-strategy.md) — cost-aware tombstone + selective rewrite, Glacier-safe, three modes
 
 ### Analytics (Open Parquet)
-- [Analytics](docs/analytics.md) — DuckDB, ClickHouse, Trino, Spark, pandas examples on S3 Parquet
+- [Analytics](docs/analytics.md) — DuckDB, ClickHouse, Trino, Spark, pandas query examples on S3 Parquet
+- [Analytics Engines](docs/analytics-engines.md) — all 9 engines with Grafana datasource status (DuckDB, ClickHouse, Trino, Databricks, Snowflake, StarRocks, Doris, Spark, pandas)
 - [Use Cases](docs/use-cases.md) — disaster recovery, compliance/audit, capacity planning, cost allocation, ML pipelines
+- [Multi-Tenancy](docs/multi-tenancy.md) — S3 prefix isolation, bucket-per-tenant enterprise option, vmauth integration, analytics tool compatibility
 
 ### Operations
 - [Operations](docs/operations.md) — day-2 operations, scaling, troubleshooting

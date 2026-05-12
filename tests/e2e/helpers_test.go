@@ -22,10 +22,10 @@ func envOrDefault(key, def string) string {
 }
 
 var (
-	logsBaseURL   = envOrDefault("LOGS_BASE_URL", "http://localhost:19428")
+	logsBaseURL   = envOrDefault("LOGS_BASE_URL", "http://localhost:29428")
 	tracesBaseURL = envOrDefault("TRACES_BASE_URL", "http://localhost:20428")
-	lokiProxyURL  = envOrDefault("LOKI_PROXY_URL", "http://localhost:3100")
-	vlselectURL   = envOrDefault("VLSELECT_URL", "http://localhost:9471")
+	lokiProxyURL  = envOrDefault("LOKI_PROXY_URL", "http://localhost:23100")
+	vlselectURL   = envOrDefault("VLSELECT_URL", "http://localhost:29471")
 )
 
 // httpGet performs an HTTP GET and returns the response, failing the test on error.
@@ -56,7 +56,7 @@ func httpGet(t *testing.T, baseURL, path string, params url.Values) *http.Respon
 func httpGetBody(t *testing.T, baseURL, path string, params url.Values) []byte {
 	t.Helper()
 	resp := httpGet(t, baseURL, path, params)
-	defer _ = resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

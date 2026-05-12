@@ -1,0 +1,134 @@
+name: E2E Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'internal/**'
+      - 'cmd/**'
+      - 'tests/e2e/**'
+      - 'deployment/docker/**'
+      - 'Dockerfile.*'
+      - 'go.mod'
+      - 'go.sum'
+      - 'lakehouse-traces/**'
+  push:
+    branches: [main]
+    paths:
+      - 'internal/**'
+      - 'cmd/**'
+      - 'tests/e2e/**'
+      - 'deployment/docker/**'
+      - 'Dockerfile.*'
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOWORK: "off"
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Start E2E stack
+        run: |
+          docker compose -f deployment/docker/docker-compose-e2e.yml up -d --build
+          echo "Waiting for services to start..."
+
+      - name: Wait for lakehouse-logs
+        run: |
+          for i in $(seq 1 90); do
+            if curl -sf http://localhost:29428/health > /dev/null 2>&1; then
+              echo "lakehouse-logs healthy"
+              break
+            fi
+            echo "waiting... ($i/90)"
+            sleep 2
+          done
+          curl -sf http://localhost:29428/health || (echo "FATAL: lakehouse-logs not healthy" && exit 1)
+
+      - name: Wait for lakehouse-traces
+        run: |
+          for i in $(seq 1 90); do
+            if curl -sf http://localhost:20428/health > /dev/null 2>&1; then
+              echo "lakehouse-traces healthy"
+              break
+            fi
+            echo "waiting... ($i/90)"
+            sleep 2
+          done
+          curl -sf http://localhost:20428/health || (echo "FATAL: lakehouse-traces not healthy" && exit 1)
+
+      - name: Wait for vlselect
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:29471/health > /dev/null 2>&1; then
+              echo "vlselect healthy"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Wait for loki-vl-proxy
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:23100/ready > /dev/null 2>&1; then
+              echo "loki-vl-proxy healthy"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Verify S3 data seeded
+        run: |
+          docker compose -f deployment/docker/docker-compose-e2e.yml exec -T minio mc alias set local http://localhost:9000 minioadmin minioadmin
+          echo "=== Default tenant (0/0) ==="
+          docker compose -f deployment/docker/docker-compose-e2e.yml exec -T minio mc ls --recursive local/obs-archive/0/0/ | head -20
+          echo "=== Test tenant (1/1) ==="
+          docker compose -f deployment/docker/docker-compose-e2e.yml exec -T minio mc ls --recursive local/obs-archive/1/1/ | head -20
+
+      - name: Run E2E tests
+        env:
+          LOGS_BASE_URL: http://localhost:29428
+          TRACES_BASE_URL: http://localhost:20428
+          LOKI_PROXY_URL: http://localhost:23100
+          VLSELECT_URL: http://localhost:29471
+          MINIO_URL: http://localhost:29000
+          MINIO_BUCKET: obs-archive
+          MINIO_USER: minioadmin
+          MINIO_PASSWORD: minioadmin
+        run: go test -tags=e2e -v -count=1 -timeout=10m ./tests/e2e/ 2>&1 | tee e2e-results.txt
+
+      - name: Upload E2E results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-results
+          path: e2e-results.txt
+
+      - name: Show docker logs on failure
+        if: failure()
+        run: |
+          echo "=== lakehouse-logs ==="
+          docker compose -f deployment/docker/docker-compose-e2e.yml logs lakehouse-logs --tail=100
+          echo "=== lakehouse-traces ==="
+          docker compose -f deployment/docker/docker-compose-e2e.yml logs lakehouse-traces --tail=100
+          echo "=== datagen-seed ==="
+          docker compose -f deployment/docker/docker-compose-e2e.yml logs datagen-seed --tail=50
+          echo "=== datagen-seed-tenant1 ==="
+          docker compose -f deployment/docker/docker-compose-e2e.yml logs datagen-seed-tenant1 --tail=50
+
+      - name: Stop E2E stack
+        if: always()
+        run: docker compose -f deployment/docker/docker-compose-e2e.yml down -v

@@ -7,6 +7,8 @@ sidebar_position: 19
 
 Victoria Lakehouse stores all data as standard Apache Parquet files on S3 with Hive partitioning. Any tool that reads Parquet can query this data directly — no proprietary format, no vendor lock-in.
 
+> **See also**: [Analytics Engines](analytics-engines.md) for the complete list of 9 engines with Grafana datasource availability (DuckDB, ClickHouse, Trino, Databricks, Snowflake, StarRocks, Doris, Spark, pandas).
+
 ## S3 Layout
 
 ```

@@ -9,7 +9,7 @@ import (
 
 func TestStatsQuery_Count(t *testing.T) {
 	params := defaultTimeParams()
-	params.Set("query", "*")
+	params.Set("query", "* | stats count() total")
 
 	body := httpGetBody(t, logsBaseURL, "/select/logsql/stats_query", params)
 	resp := assertVectorResponse(t, body)
@@ -39,7 +39,7 @@ func TestStatsQuery_Count(t *testing.T) {
 func TestStatsQuery_Filtered(t *testing.T) {
 	// Get wildcard count
 	wildcardParams := defaultTimeParams()
-	wildcardParams.Set("query", "*")
+	wildcardParams.Set("query", "* | stats count() total")
 
 	wildcardBody := httpGetBody(t, logsBaseURL, "/select/logsql/stats_query", wildcardParams)
 	wildcardResp := assertVectorResponse(t, wildcardBody)
@@ -52,7 +52,7 @@ func TestStatsQuery_Filtered(t *testing.T) {
 
 	// Get filtered count
 	errorParams := defaultTimeParams()
-	errorParams.Set("query", `level:="ERROR"`)
+	errorParams.Set("query", `level:="ERROR" | stats count() total`)
 
 	errorBody := httpGetBody(t, logsBaseURL, "/select/logsql/stats_query", errorParams)
 	errorResp := assertVectorResponse(t, errorBody)
@@ -72,7 +72,7 @@ func TestStatsQuery_Filtered(t *testing.T) {
 
 func TestStatsQueryRange(t *testing.T) {
 	params := defaultTimeParams()
-	params.Set("query", "*")
+	params.Set("query", "* | stats count() total")
 	params.Set("step", "3600s")
 
 	body := httpGetBody(t, logsBaseURL, "/select/logsql/stats_query_range", params)

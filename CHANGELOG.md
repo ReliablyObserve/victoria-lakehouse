@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Multi-tenancy — single binary serves all tenants via header-based routing with S3 prefix isolation (`{AccountID}/{ProjectID}/`, default `0/0/`), matching Grafana Loki/Tempo pattern. Enterprise option for bucket-per-tenant isolation with separate IAM policies
+- Global read mode — optional `--lakehouse.tenant.global-read-header` / `--lakehouse.tenant.global-read-value` for admin dashboards that query across all tenants (disabled by default, explicit opt-in)
+- Analytics engines documentation — comprehensive guide covering 9 Parquet engines (DuckDB, ClickHouse, Trino, Databricks, Snowflake, StarRocks, Doris, Spark, pandas) with Grafana datasource status, query examples, and integration guides
+- Tenant configuration flags — `--lakehouse.tenant.isolation` (prefix/bucket), `--lakehouse.tenant.bucket-template`, `--lakehouse.tenant.default-account`, `--lakehouse.tenant.default-project`, `--lakehouse.tenant.header-account`, `--lakehouse.tenant.header-project`, `--lakehouse.tenant.global-read-header`, `--lakehouse.tenant.global-read-value`
 - Multi-level select architecture — vlselect/vtselect fan out queries to both hot (disk) and cold (lakehouse S3) storage nodes for unified hot+cold results
 - VictoriaTraces hot tier in Docker Compose — standalone VT instance with 24h disk retention
 - Datagen trace dual-write — `--vt-endpoint` flag pushes traces to VictoriaTraces via Zipkin `/api/v2/spans` alongside S3 Parquet writes

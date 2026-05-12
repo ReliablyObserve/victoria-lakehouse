@@ -72,6 +72,7 @@ func TestPerf_FieldNames(t *testing.T) {
 	waitForHealth(t, logsBaseURL, 30*time.Second)
 
 	params := defaultTimeParams()
+	params.Set("query", "*")
 
 	start := time.Now()
 	body := httpGetBody(t, logsBaseURL, "/select/logsql/field_names", params)

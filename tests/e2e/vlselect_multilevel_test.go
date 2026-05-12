@@ -28,6 +28,7 @@ func TestVLSelect_FieldNames(t *testing.T) {
 	waitForHealth(t, vlselectURL, 30*time.Second)
 
 	params := defaultTimeParams()
+	params.Set("query", "*")
 	body := httpGetBody(t, vlselectURL, "/select/logsql/field_names", params)
 
 	if len(body) == 0 {

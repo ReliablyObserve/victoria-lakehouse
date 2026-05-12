@@ -99,13 +99,52 @@ Use Kubernetes NetworkPolicy to restrict `/internal/*` to cluster CIDR.
 
 ## Tenant Isolation
 
-Multi-tenant deployments route queries to tenant-specific S3 prefixes:
+Victoria Lakehouse uses **S3 prefix isolation** for multi-tenancy — the same pattern as Grafana Loki and Grafana Tempo. Each tenant's data lives in a separate S3 prefix, providing physical data separation.
+
+### Prefix Isolation (Default)
 
 ```
 --lakehouse.tenant.prefix-template="{AccountID}/{ProjectID}/"
+--lakehouse.tenant.default-account=0
+--lakehouse.tenant.default-project=0
 ```
 
-`AccountID` and `ProjectID` are extracted from vmauth headers. A query from tenant-A cannot access tenant-B's S3 prefix.
+`AccountID` and `ProjectID` are extracted from vmauth headers (`X-Scope-AccountID`, `X-Scope-ProjectID`). A query from tenant-A cannot access tenant-B's S3 prefix. Single-tenant deployments use the default `0/0/` prefix.
+
+S3 layout per tenant:
+```
+s3://obs-archive/{AccountID}/{ProjectID}/logs/dt=YYYY-MM-DD/hour=HH/*.parquet
+s3://obs-archive/{AccountID}/{ProjectID}/traces/dt=YYYY-MM-DD/hour=HH/*.parquet
+```
+
+### Enterprise: Bucket-Per-Tenant Isolation
+
+For regulated environments requiring IAM-level hard isolation (HIPAA, SOC2, FedRAMP):
+
+```
+--lakehouse.tenant.isolation=bucket
+--lakehouse.tenant.bucket-template="obs-{AccountID}-{ProjectID}"
+```
+
+Each tenant gets its own S3 bucket with independent:
+- IAM policies (cross-account access control)
+- KMS encryption keys
+- Lifecycle rules (different retention per tenant)
+- S3 Access Logs for compliance audit
+- CloudTrail object-level logging
+
+### Security Properties
+
+| Property | Prefix Isolation | Bucket Isolation |
+|---|---|---|
+| Data separation | Physical (S3 path) | Physical (S3 bucket) |
+| IAM boundary | Shared bucket IAM | Per-bucket IAM |
+| Encryption keys | Shared KMS key | Per-tenant KMS |
+| Audit trail | S3 Access Logs by prefix | Per-bucket Access Logs |
+| Cost attribution | S3 Inventory by prefix | Per-bucket billing |
+| Parquet tool access | Per-tenant glob pattern | Per-tenant bucket |
+
+Full documentation: [Multi-Tenancy](multi-tenancy.md)
 
 ## S3 Access
 

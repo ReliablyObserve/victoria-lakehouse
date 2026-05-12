@@ -8,6 +8,8 @@ services:
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
+    ports:
+      - "29000:9000"
     networks: [lakehouse-net]
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -91,9 +93,32 @@ services:
       - "--logs=5000"
       - "--traces=1000"
       - "--hours-back=48"
+      - "--tenant-prefix=0/0/"
       - "--dual-write"
       - "--vl-endpoint=http://victorialogs:9428"
       - "--vt-endpoint=http://victoriatraces:10428"
+
+  datagen-seed-tenant1:
+    build:
+      context: ../../
+      dockerfile: Dockerfile.datagen
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      victorialogs:
+        condition: service_healthy
+      victoriatraces:
+        condition: service_healthy
+    networks: [lakehouse-net]
+    command:
+      - "--endpoint=http://minio:9000"
+      - "--bucket=obs-archive"
+      - "--access-key=minioadmin"
+      - "--secret-key=minioadmin"
+      - "--logs=1000"
+      - "--traces=200"
+      - "--hours-back=48"
+      - "--tenant-prefix=1/1/"
 
   datagen-continuous:
     build:
@@ -113,6 +138,7 @@ services:
       - "--traces=200"
       - "--hours-back=1"
       - "--interval=30s"
+      - "--tenant-prefix=0/0/"
       - "--dual-write"
       - "--vl-endpoint=http://victorialogs:9428"
       - "--vt-endpoint=http://victoriatraces:10428"
@@ -128,6 +154,8 @@ services:
     depends_on:
       datagen-seed:
         condition: service_completed_successfully
+    ports:
+      - "29428:9428"
     networks: [lakehouse-net]
     command:
       - "-lakehouse.s3.bucket=obs-archive"
@@ -136,6 +164,8 @@ services:
       - "-lakehouse.s3.secret-key=minioadmin"
       - "-lakehouse.s3.force-path-style=true"
       - "-lakehouse.manifest.refresh-interval=30s"
+      - "-lakehouse.tenant.global-read-header=X-Lakehouse-Global-Read"
+      - "-lakehouse.tenant.global-read-value=lakehouse-e2e-global-key"
       - "-loggerLevel=INFO"
     volumes:
       - lakehouse-cache-logs:/data/lakehouse
@@ -153,6 +183,8 @@ services:
     depends_on:
       datagen-seed:
         condition: service_completed_successfully
+    ports:
+      - "20428:10428"
     networks: [lakehouse-net]
     command:
       - "-lakehouse.s3.bucket=obs-archive"
@@ -161,6 +193,8 @@ services:
       - "-lakehouse.s3.secret-key=minioadmin"
       - "-lakehouse.s3.force-path-style=true"
       - "-lakehouse.manifest.refresh-interval=30s"
+      - "-lakehouse.tenant.global-read-header=X-Lakehouse-Global-Read"
+      - "-lakehouse.tenant.global-read-value=lakehouse-e2e-global-key"
       - "-loggerLevel=INFO"
     volumes:
       - lakehouse-cache-traces:/data/lakehouse
@@ -186,6 +220,8 @@ services:
         condition: service_healthy
       lakehouse-logs:
         condition: service_healthy
+    ports:
+      - "29471:9428"
     networks: [lakehouse-net]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9428/health"]
@@ -205,6 +241,8 @@ services:
         condition: service_healthy
       lakehouse-traces:
         condition: service_healthy
+    ports:
+      - "20471:10428"
     networks: [lakehouse-net]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:10428/health"]
@@ -218,7 +256,9 @@ services:
   # =========================================================================
 
   loki-vl-proxy:
-    image: ghcr.io/reliablyobserve/loki-vl-proxy:v1.31.2
+    build:
+      context: .
+      dockerfile: Dockerfile.loki-vl-proxy
     environment:
       VL_BACKEND_URL: "http://victorialogs:9428"
     command:
@@ -240,9 +280,11 @@ services:
         condition: service_healthy
       victorialogs:
         condition: service_healthy
+    ports:
+      - "23100:3100"
     networks: [lakehouse-net]
     healthcheck:
-      test: ["CMD", "/usr/local/bin/healthcheck", "http://127.0.0.1:3100/ready"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/ready"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -276,19 +318,6 @@ services:
   # Grafana — pre-configured with all datasources
   # =========================================================================
 
-  # DuckDB plugin install — downloads from GitHub release (unsigned, requires allow list)
-  grafana-duckdb-init:
-    image: curlimages/curl:latest
-    networks: [lakehouse-net]
-    volumes:
-      - grafana-plugins:/plugins
-    entrypoint: >
-      /bin/sh -c "
-      curl -fsSL https://github.com/motherduckdb/grafana-duckdb-datasource/releases/download/v0.4.1/motherduck-duckdb-datasource-0.4.1.linux_amd64.zip -o /tmp/duckdb.zip &&
-      unzip -o /tmp/duckdb.zip -d /plugins/ &&
-      echo 'DuckDB plugin installed'
-      "
-
   grafana:
     image: grafana/grafana:latest-ubuntu
     ports:
@@ -298,19 +327,12 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
       GF_INSTALL_PLUGINS: "https://github.com/VictoriaMetrics/victorialogs-datasource/releases/download/v0.26.3/victoriametrics-logs-datasource-v0.26.3.zip;victoriametrics-logs-datasource,grafana-clickhouse-datasource"
-      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "victoriametrics-logs-datasource,motherduck-duckdb-datasource"
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "victoriametrics-logs-datasource"
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning
       - grafana-data:/var/lib/grafana
-      - grafana-plugins:/var/lib/grafana/plugins
     depends_on:
-      grafana-duckdb-init:
-        condition: service_completed_successfully
-      clickhouse:
-        condition: service_healthy
       vlselect:
-        condition: service_healthy
-      vtselect:
         condition: service_healthy
       loki-vl-proxy:
         condition: service_healthy
@@ -321,4 +343,3 @@ volumes:
   lakehouse-cache-logs: {}
   lakehouse-cache-traces: {}
   grafana-data: {}
-  grafana-plugins: {}

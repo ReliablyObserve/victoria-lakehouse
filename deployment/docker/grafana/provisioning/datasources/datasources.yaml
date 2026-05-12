@@ -95,29 +95,10 @@ datasources:
           url: "$${__value.raw}"
 
   # =========================================================================
-  # Analytics — DuckDB direct Parquet query on S3/MinIO
+  # ClickHouse — OTEL-compatible logs and traces from S3 Parquet
   # =========================================================================
 
-  - name: "DuckDB Analytics (S3 Parquet)"
-    type: motherduck-duckdb-datasource
-    uid: duckdb-analytics
-    access: proxy
-    jsonData:
-      path: ""
-      initSQL: |
-        INSTALL httpfs;
-        LOAD httpfs;
-        SET s3_endpoint='minio:9000';
-        SET s3_access_key_id='minioadmin';
-        SET s3_secret_access_key='minioadmin';
-        SET s3_use_ssl=false;
-        SET s3_url_style='path';
-
-  # =========================================================================
-  # ClickHouse — S3 Parquet analytics, logs, and traces
-  # =========================================================================
-
-  - name: "ClickHouse Analytics (S3 Parquet)"
+  - name: "ClickHouse Analytics (S3 Parquet SQL)"
     type: grafana-clickhouse-datasource
     uid: clickhouse-analytics
     access: proxy
@@ -127,8 +108,9 @@ datasources:
       protocol: native
       username: default
       defaultDatabase: lakehouse
+      defaultTable: logs_raw
 
-  - name: "ClickHouse Logs (S3 Parquet)"
+  - name: "ClickHouse Logs (OTEL S3 Parquet)"
     type: grafana-clickhouse-datasource
     uid: clickhouse-logs
     access: proxy
@@ -138,13 +120,26 @@ datasources:
       protocol: native
       username: default
       defaultDatabase: lakehouse
-      defaultTable: logs
-      logsTimestampField: timestamp_unix_nano
-      logsBodyField: body
-      logsSeverityField: severity_text
-      logsServiceNameField: "service.name"
+      defaultTable: otel_logs
+      otelEnabled: true
+      otelVersion: latest
+      logsTable: otel_logs
+      logsTimestamp: Timestamp
+      logsSeverityTextField: SeverityText
+      logsSeverityNumberField: SeverityNumber
+      logsBodyField: Body
+      logsTimeField: Timestamp
+      logsServiceNameField: ServiceName
+      logsTraceIdField: TraceId
+      logsSpanIdField: SpanId
+      tracesToLogsV2:
+        datasourceUid: clickhouse-traces
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+        filterByTraceID: true
+        filterBySpanID: false
 
-  - name: "ClickHouse Traces (S3 Parquet)"
+  - name: "ClickHouse Traces (OTEL S3 Parquet)"
     type: grafana-clickhouse-datasource
     uid: clickhouse-traces
     access: proxy
@@ -154,12 +149,22 @@ datasources:
       protocol: native
       username: default
       defaultDatabase: lakehouse
-      defaultTable: traces
-      tracesTimestampField: timestamp_unix_nano
-      tracesDurationField: duration_ns
-      tracesTraceIdField: trace_id
-      tracesSpanIdField: span_id
-      tracesParentSpanIdField: parent_span_id
-      tracesServiceNameField: "service.name"
-      tracesOperationNameField: "span.name"
-      tracesStatusCodeField: "status.code"
+      defaultTable: otel_traces
+      otelEnabled: true
+      otelVersion: latest
+      tracesTable: otel_traces
+      tracesTimestamp: Timestamp
+      tracesDurationField: Duration
+      tracesTraceIdField: TraceId
+      tracesSpanIdField: SpanId
+      tracesParentSpanIdField: ParentSpanId
+      tracesServiceNameField: ServiceName
+      tracesOperationNameField: SpanName
+      tracesStatusCodeField: StatusCode
+      tracesStatusMessageField: StatusMessage
+      tracesToLogsV2:
+        datasourceUid: clickhouse-logs
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+        filterByTraceID: true
+        filterBySpanID: false

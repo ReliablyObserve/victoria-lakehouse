@@ -81,8 +81,22 @@ docker-traces:
 docker: docker-logs docker-traces
 
 e2e:
-	docker compose -f deployment/docker/docker-compose-e2e.yml up --build --abort-on-container-exit --exit-code-from e2e-test
-	docker compose -f deployment/docker/docker-compose-e2e.yml down -v
+	docker compose -f deployment/docker/docker-compose-e2e.yml up -d --build
+	@echo "Waiting for services..."
+	@for i in $$(seq 1 90); do curl -sf http://localhost:29428/health > /dev/null 2>&1 && break; sleep 2; done
+	@for i in $$(seq 1 90); do curl -sf http://localhost:20428/health > /dev/null 2>&1 && break; sleep 2; done
+	LOGS_BASE_URL=http://localhost:29428 \
+	TRACES_BASE_URL=http://localhost:20428 \
+	LOKI_PROXY_URL=http://localhost:23100 \
+	VLSELECT_URL=http://localhost:29471 \
+	MINIO_URL=http://localhost:29000 \
+	go test -tags=e2e -v -count=1 -timeout=10m ./tests/e2e/; \
+	rc=$$?; docker compose -f deployment/docker/docker-compose-e2e.yml down -v; exit $$rc
 
 e2e-test: deps-logs
+	LOGS_BASE_URL=http://localhost:29428 \
+	TRACES_BASE_URL=http://localhost:20428 \
+	LOKI_PROXY_URL=http://localhost:23100 \
+	VLSELECT_URL=http://localhost:29471 \
+	MINIO_URL=http://localhost:29000 \
 	go test -tags=e2e -v -count=1 -timeout=10m ./tests/e2e/

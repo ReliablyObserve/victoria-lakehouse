@@ -174,16 +174,24 @@ func TestListenAddr(t *testing.T) {
 func TestAutoPrefix(t *testing.T) {
 	cfg := Default()
 	cfg.Mode = ModeLogs
-	if p := cfg.AutoPrefix(); p != "logs/" {
-		t.Errorf("logs auto prefix = %q, want logs/", p)
+	if p := cfg.AutoPrefix(); p != "0/0/logs/" {
+		t.Errorf("logs auto prefix = %q, want 0/0/logs/", p)
 	}
 	cfg.Mode = ModeTraces
-	if p := cfg.AutoPrefix(); p != "traces/" {
-		t.Errorf("traces auto prefix = %q, want traces/", p)
+	if p := cfg.AutoPrefix(); p != "0/0/traces/" {
+		t.Errorf("traces auto prefix = %q, want 0/0/traces/", p)
 	}
 	cfg.S3.Prefix = "custom/"
 	if p := cfg.AutoPrefix(); p != "custom/" {
 		t.Errorf("custom prefix = %q, want custom/", p)
+	}
+
+	cfg.S3.Prefix = ""
+	cfg.Tenant.DefaultAccount = ""
+	cfg.Tenant.DefaultProject = ""
+	cfg.Mode = ModeLogs
+	if p := cfg.AutoPrefix(); p != "logs/" {
+		t.Errorf("no-tenant logs prefix = %q, want logs/", p)
 	}
 }
 
@@ -757,6 +765,14 @@ func TestMergeConfig_TenantFields(t *testing.T) {
 	overlay := &Config{}
 	overlay.Tenant.DefaultPrefix = "org1/"
 	overlay.Tenant.PrefixTemplate = "{OrgID}/"
+	overlay.Tenant.Isolation = "bucket"
+	overlay.Tenant.BucketTemplate = "obs-{AccountID}-{ProjectID}"
+	overlay.Tenant.DefaultAccount = "42"
+	overlay.Tenant.DefaultProject = "7"
+	overlay.Tenant.HeaderAccount = "X-Custom-Account"
+	overlay.Tenant.HeaderProject = "X-Custom-Project"
+	overlay.Tenant.GlobalReadHeader = "X-Global-Read"
+	overlay.Tenant.GlobalReadValue = "secret-key"
 
 	result := mergeConfig(base, overlay)
 
@@ -765,6 +781,49 @@ func TestMergeConfig_TenantFields(t *testing.T) {
 	}
 	if result.Tenant.PrefixTemplate != "{OrgID}/" {
 		t.Errorf("PrefixTemplate = %q", result.Tenant.PrefixTemplate)
+	}
+	if result.Tenant.Isolation != "bucket" {
+		t.Errorf("Isolation = %q, want bucket", result.Tenant.Isolation)
+	}
+	if result.Tenant.BucketTemplate != "obs-{AccountID}-{ProjectID}" {
+		t.Errorf("BucketTemplate = %q", result.Tenant.BucketTemplate)
+	}
+	if result.Tenant.DefaultAccount != "42" {
+		t.Errorf("DefaultAccount = %q, want 42", result.Tenant.DefaultAccount)
+	}
+	if result.Tenant.DefaultProject != "7" {
+		t.Errorf("DefaultProject = %q, want 7", result.Tenant.DefaultProject)
+	}
+	if result.Tenant.HeaderAccount != "X-Custom-Account" {
+		t.Errorf("HeaderAccount = %q", result.Tenant.HeaderAccount)
+	}
+	if result.Tenant.HeaderProject != "X-Custom-Project" {
+		t.Errorf("HeaderProject = %q", result.Tenant.HeaderProject)
+	}
+	if result.Tenant.GlobalReadHeader != "X-Global-Read" {
+		t.Errorf("GlobalReadHeader = %q", result.Tenant.GlobalReadHeader)
+	}
+	if result.Tenant.GlobalReadValue != "secret-key" {
+		t.Errorf("GlobalReadValue = %q", result.Tenant.GlobalReadValue)
+	}
+}
+
+func TestDefaultConfig_TenantDefaults(t *testing.T) {
+	cfg := Default()
+	if cfg.Tenant.Isolation != "prefix" {
+		t.Errorf("default isolation = %q, want prefix", cfg.Tenant.Isolation)
+	}
+	if cfg.Tenant.DefaultAccount != "0" {
+		t.Errorf("default account = %q, want 0", cfg.Tenant.DefaultAccount)
+	}
+	if cfg.Tenant.DefaultProject != "0" {
+		t.Errorf("default project = %q, want 0", cfg.Tenant.DefaultProject)
+	}
+	if cfg.Tenant.HeaderAccount != "X-Scope-AccountID" {
+		t.Errorf("default header account = %q", cfg.Tenant.HeaderAccount)
+	}
+	if cfg.Tenant.HeaderProject != "X-Scope-ProjectID" {
+		t.Errorf("default header project = %q", cfg.Tenant.HeaderProject)
 	}
 }
 

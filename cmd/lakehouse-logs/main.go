@@ -67,6 +67,18 @@ var (
 
 	logsBloomColumns = flag.String("lakehouse.logs.bloom-columns", "", "Comma-separated bloom filter columns for logs (default: service.name)")
 	logsDeletePrefix = flag.String("lakehouse.logs.delete-prefix", "", "Delete API prefix (default: /delete/logsql)")
+
+	tenantDefaultAccount = flag.String("lakehouse.tenant.default-account", "", "Default tenant account ID (default: 0)")
+	tenantDefaultProject = flag.String("lakehouse.tenant.default-project", "", "Default tenant project ID (default: 0)")
+	tenantHeaderAccount  = flag.String("lakehouse.tenant.header-account", "", "HTTP header for account ID (default: X-Scope-AccountID)")
+	tenantHeaderProject  = flag.String("lakehouse.tenant.header-project", "", "HTTP header for project ID (default: X-Scope-ProjectID)")
+	tenantGlobalHeader   = flag.String("lakehouse.tenant.global-read-header", "", "Header name for global read access")
+	tenantGlobalValue    = flag.String("lakehouse.tenant.global-read-value", "", "Expected header value for global read access")
+	tenantGlobalToken    = flag.String("lakehouse.tenant.global-read-token", "", "Bearer token for global read access")
+	tenantIsolation      = flag.String("lakehouse.tenant.isolation", "", "Tenant isolation mode: prefix or bucket")
+	tenantPrefixTemplate = flag.String("lakehouse.tenant.prefix-template", "", "S3 prefix template (default: {AccountID}/{ProjectID}/)")
+	tenantBucketTemplate = flag.String("lakehouse.tenant.bucket-template", "", "Bucket name template for bucket isolation")
+	tenantDefaultPrefix  = flag.String("lakehouse.tenant.default-prefix", "", "Static S3 key prefix override")
 )
 
 func main() {
@@ -539,6 +551,40 @@ func applyFlags(cfg *config.Config) {
 	}
 	if s := *logsDeletePrefix; s != "" {
 		cfg.Logs.DeletePrefix = s
+	}
+
+	if s := *tenantDefaultAccount; s != "" {
+		cfg.Tenant.DefaultAccount = s
+	}
+	if s := *tenantDefaultProject; s != "" {
+		cfg.Tenant.DefaultProject = s
+	}
+	if s := *tenantHeaderAccount; s != "" {
+		cfg.Tenant.HeaderAccount = s
+	}
+	if s := *tenantHeaderProject; s != "" {
+		cfg.Tenant.HeaderProject = s
+	}
+	if s := *tenantGlobalHeader; s != "" {
+		cfg.Tenant.GlobalReadHeader = s
+	}
+	if s := *tenantGlobalValue; s != "" {
+		cfg.Tenant.GlobalReadValue = s
+	}
+	if s := *tenantGlobalToken; s != "" {
+		cfg.Tenant.GlobalReadToken = s
+	}
+	if s := *tenantIsolation; s != "" {
+		cfg.Tenant.Isolation = s
+	}
+	if s := *tenantPrefixTemplate; s != "" {
+		cfg.Tenant.PrefixTemplate = s
+	}
+	if s := *tenantBucketTemplate; s != "" {
+		cfg.Tenant.BucketTemplate = s
+	}
+	if s := *tenantDefaultPrefix; s != "" {
+		cfg.Tenant.DefaultPrefix = s
 	}
 }
 
