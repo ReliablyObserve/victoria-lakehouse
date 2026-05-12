@@ -121,12 +121,14 @@ datasources:
       username: default
       defaultDatabase: lakehouse
       defaultTable: otel_logs
-      otelEnabled: true
-      otelVersion: latest
-      logsTable: otel_logs
-      timeColumn: Timestamp
-      levelColumn: SeverityText
-      messageColumn: Body
+      logs:
+        defaultDatabase: lakehouse
+        defaultTable: otel_logs
+        otelEnabled: true
+        otelVersion: latest
+        timeColumn: Timestamp
+        levelColumn: SeverityText
+        messageColumn: Body
       tracesToLogsV2:
         datasourceUid: clickhouse-traces
         spanStartTimeShift: "-1h"
@@ -145,26 +147,29 @@ datasources:
       username: default
       defaultDatabase: lakehouse
       defaultTable: otel_traces
-      otelEnabled: true
-      otelVersion: latest
-      traceIdColumn: TraceId
-      spanIdColumn: SpanId
-      parentSpanIdColumn: ParentSpanId
-      serviceNameColumn: ServiceName
-      operationNameColumn: SpanName
-      startTimeColumn: Timestamp
-      durationColumn: Duration
-      durationUnit: ns
-      tagsColumn: SpanAttributes
-      serviceTagsColumn: ResourceAttributes
-      kindColumn: SpanKind
-      statusCodeColumn: StatusCode
-      statusMessageColumn: StatusMessage
-      stateColumn: TraceState
-      instrumentationLibraryNameColumn: ScopeName
-      instrumentationLibraryVersionColumn: ScopeVersion
-      traceEventsColumnPrefix: Events
-      traceLinksColumnPrefix: Links
+      traces:
+        defaultDatabase: lakehouse
+        defaultTable: otel_traces
+        otelEnabled: true
+        otelVersion: latest
+        traceIdColumn: TraceId
+        spanIdColumn: SpanId
+        parentSpanIdColumn: ParentSpanId
+        serviceNameColumn: ServiceName
+        operationNameColumn: SpanName
+        startTimeColumn: Timestamp
+        durationColumn: Duration
+        durationUnit: ns
+        tagsColumn: SpanAttributes
+        serviceTagsColumn: ResourceAttributes
+        kindColumn: SpanKind
+        statusCodeColumn: StatusCode
+        statusMessageColumn: StatusMessage
+        stateColumn: TraceState
+        instrumentationLibraryNameColumn: ScopeName
+        instrumentationLibraryVersionColumn: ScopeVersion
+        traceEventsColumnPrefix: Events
+        traceLinksColumnPrefix: Links
       tracesToLogsV2:
         datasourceUid: clickhouse-logs
         spanStartTimeShift: "-1h"
