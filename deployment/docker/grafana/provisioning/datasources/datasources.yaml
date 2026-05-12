@@ -108,6 +108,7 @@ datasources:
       protocol: native
       username: default
       defaultDatabase: lakehouse
+      defaultTable: logs_raw
 
   - name: "ClickHouse Logs (OTEL S3 Parquet)"
     type: grafana-clickhouse-datasource
@@ -119,9 +120,11 @@ datasources:
       protocol: native
       username: default
       defaultDatabase: lakehouse
+      defaultTable: otel_logs
       otelEnabled: true
       otelVersion: latest
       logsTable: otel_logs
+      logsTimestamp: Timestamp
       logsSeverityTextField: SeverityText
       logsSeverityNumberField: SeverityNumber
       logsBodyField: Body
@@ -129,6 +132,12 @@ datasources:
       logsServiceNameField: ServiceName
       logsTraceIdField: TraceId
       logsSpanIdField: SpanId
+      tracesToLogsV2:
+        datasourceUid: clickhouse-traces
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+        filterByTraceID: true
+        filterBySpanID: false
 
   - name: "ClickHouse Traces (OTEL S3 Parquet)"
     type: grafana-clickhouse-datasource
@@ -140,10 +149,11 @@ datasources:
       protocol: native
       username: default
       defaultDatabase: lakehouse
+      defaultTable: otel_traces
       otelEnabled: true
       otelVersion: latest
       tracesTable: otel_traces
-      tracesTimeField: Timestamp
+      tracesTimestamp: Timestamp
       tracesDurationField: Duration
       tracesTraceIdField: TraceId
       tracesSpanIdField: SpanId
@@ -152,3 +162,9 @@ datasources:
       tracesOperationNameField: SpanName
       tracesStatusCodeField: StatusCode
       tracesStatusMessageField: StatusMessage
+      tracesToLogsV2:
+        datasourceUid: clickhouse-logs
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+        filterByTraceID: true
+        filterBySpanID: false
