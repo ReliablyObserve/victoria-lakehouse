@@ -1,0 +1,6 @@
+[allowlist]
+description = "Allowlist for false positives in documentation and test examples"
+paths = [
+    '''docs/multi-tenancy\.md''',
+    '''internal/config/tenant_test\.go''',
+]

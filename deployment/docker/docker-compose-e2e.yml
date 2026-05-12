@@ -256,7 +256,9 @@ services:
   # =========================================================================
 
   loki-vl-proxy:
-    image: ghcr.io/reliablyobserve/loki-vl-proxy:v1.31.2
+    build:
+      context: .
+      dockerfile: Dockerfile.loki-vl-proxy
     environment:
       VL_BACKEND_URL: "http://victorialogs:9428"
     command:
@@ -282,7 +284,7 @@ services:
       - "23100:3100"
     networks: [lakehouse-net]
     healthcheck:
-      test: ["CMD", "/usr/local/bin/healthcheck", "http://127.0.0.1:3100/ready"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/ready"]
       interval: 5s
       timeout: 3s
       retries: 10
