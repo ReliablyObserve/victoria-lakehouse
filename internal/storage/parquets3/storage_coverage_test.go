@@ -1916,3 +1916,41 @@ func TestCanWriteData_WithWriter(t *testing.T) {
 		t.Error("expected panic from nil S3 pool in CanWriteData")
 	}
 }
+
+// --- errorS3Fetcher for testing smartcache error paths ---
+
+type errorS3Fetcher struct{}
+
+func (e *errorS3Fetcher) Download(ctx context.Context, key string) ([]byte, error) {
+	return nil, fmt.Errorf("s3 unavailable")
+}
+
+// --- WarmLabelIndex with smartCache getFileData error (not panic) ---
+
+func TestWarmLabelIndex_SmartCacheGetFileDataError(t *testing.T) {
+	s := testStorage()
+
+	// Set up a smartCache that returns errors (L1 miss, L2 miss, S3 error)
+	sc := smartcache.NewController(smartcache.ControllerConfig{
+		L1:         &l1Adapter{lru: cache.NewLRU(1024)},
+		L2:         &l2Adapter{dc: nil},
+		PeerLookup: &localOnlyLookup{},
+		S3Fetcher:  &errorS3Fetcher{},
+		Metadata:   smartcache.NewMetadataMap(),
+	})
+	s.smartCache = sc
+
+	s.manifest.AddFile("dt=2026-05-02/hour=10", manifest.FileInfo{
+		Key:  "error-file.parquet",
+		Size: 100,
+	})
+
+	// WarmLabelIndex calls getFileData -> smartCache.Get -> L1 miss -> L2 miss (nil dc) -> S3 error
+	// The error makes WarmLabelIndex continue, not panic.
+	s.WarmLabelIndex(context.Background())
+
+	// Label index should be empty since the file couldn't be loaded
+	if s.labelIndex.Len() != 0 {
+		t.Errorf("labelIndex.Len() = %d, want 0 (file load should have failed)", s.labelIndex.Len())
+	}
+}
