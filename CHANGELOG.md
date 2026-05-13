@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ClickHouse OTEL views — `ScopeAttributes` was `Map(Nothing, Nothing)`, now `Map(String, String)` via typed CAST; Events/Links arrays were `Array(Nothing)`, now properly typed (`Array(DateTime64(9))`, `Array(String)`, `Array(Map(String, String))`); removed non-standard `LogStreamId` from `otel_logs`; added `TraceFlags`, `ResourceSchemaUrl`, `ScopeSchemaUrl` columns; traces Duration now in nanoseconds (OTEL standard) instead of milliseconds; empty promoted fields filtered via `mapFilter` to avoid clutter in ResourceAttributes/SpanAttributes
 - Datagen now populates `ResourceAttributes` MAP column for logs (with `service.version`, `telemetry.sdk.name`) and `ResourceAttributes`, `SpanAttributes`, `ScopeAttributes` MAP columns for traces
 - Grafana ClickHouse datasource config — added `logsLevelField: SeverityText`, `tracesDurationUnit: ns`, `tracesSpanKindField`, `tracesTraceStateField` for proper OTEL auto-discovery
+- Auto-release workflow `[skip release]` check now examines only commit title instead of entire multiline message — squash-merged PRs with `[skip release]` in body paragraphs no longer incorrectly skip releases
+- Lint/gosec/CodeQL warnings — unhandled `w.Write()` errors in VMUI inject, unchecked `json.Unmarshal` in stats regression tests, unused Preact `h` import, unused `getCPUTime` function, redundant nil check
+- VMUI regression test skips missing build assets (favicon.svg, config.json) in CI instead of failing
+- Bloom columns test expectations updated to match actual defaults (`[service.name, trace_id]` for logs)
 
 ### Changed
 - Datagen seed volume increased — 10K logs + 2K traces over 72h (was 5K + 1K over 48h) to better populate both hot (disk 24h) and cold (S3 lakehouse) tiers
