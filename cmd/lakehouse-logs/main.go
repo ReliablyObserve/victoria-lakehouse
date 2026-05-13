@@ -21,7 +21,9 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/selectapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/stats"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/ui"
 	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/internal/vlstorage"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/internalselect"
@@ -206,6 +208,34 @@ func run(cfg *config.Config, addr string) {
 	}
 	store.SetTombstoneStore(tombstoneStore)
 
+	// --- Tenant stats ---
+	registry := stats.NewTenantRegistry(hostname())
+
+	// Load snapshot from S3 if configured.
+	if cfg.Stats.Enabled && cfg.Stats.SnapshotPrefix != "" {
+		snapshotBucket := cfg.Stats.MetaBucket
+		if snapshotBucket == "" {
+			snapshotBucket = cfg.S3.Bucket
+		}
+		_ = snapshotBucket // bucket selection for future multi-bucket support
+		snapshotKey := cfg.AutoPrefix() + cfg.Stats.SnapshotPrefix + "/snapshot.json"
+		s3Pool := store.Pool()
+		data, err := s3Pool.Download(context.Background(), snapshotKey)
+		if err == nil && len(data) > 0 {
+			if err := registry.LoadSnapshot(hostname(), data); err != nil {
+				logger.Warnf("failed to load stats snapshot: %s", err)
+			} else {
+				logger.Infof("loaded stats snapshot from S3; tenants=%d", registry.TenantCount())
+			}
+		}
+	}
+
+	cardLimiter := stats.NewCardinalityLimiter(cfg.Stats.MetricsCardinalityLimit)
+
+	classTracker := stats.NewStorageClassTracker(cfg.Stats.S3LifecycleRules, nil)
+
+	costCalc := stats.NewCostCalculator(cfg.Stats.S3PricePerGB, cfg.Stats.S3RequestPrices)
+
 	lifecycleRules := make([]delete.LifecycleRule, len(cfg.Delete.LifecycleRules))
 	for i, r := range cfg.Delete.LifecycleRules {
 		lifecycleRules[i] = delete.LifecycleRule{
@@ -235,6 +265,100 @@ func run(cfg *config.Config, addr string) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
+	// Stats background loops
+	if cfg.Stats.Enabled {
+		// Peer sync pusher
+		var syncPusher *stats.SyncPusher
+		if disc := store.Discovery(); disc != nil {
+			syncPusher = stats.NewSyncPusher(stats.SyncPusherConfig{
+				Registry: registry,
+				GetPeers: func() []string {
+					peers := disc.GetPeers()
+					urls := make([]string, len(peers))
+					for i, p := range peers {
+						urls[i] = "http://" + p + "/internal/stats/sync"
+					}
+					return urls
+				},
+				AuthKey:  cfg.Peer.AuthKey,
+				SelfAddr: addr,
+				Compress: cfg.Stats.PushCompression,
+			})
+		}
+
+		// Push loop
+		go func() {
+			if syncPusher == nil {
+				return
+			}
+			ticker := time.NewTicker(cfg.Stats.PushInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					if err := syncPusher.PushDelta(context.Background()); err != nil {
+						logger.Warnf("stats push failed: %s", err)
+					}
+				case <-stopCh:
+					return
+				}
+			}
+		}()
+
+		// Snapshot loop
+		go func() {
+			if cfg.Stats.SnapshotPrefix == "" {
+				return
+			}
+			snapshotBucket := cfg.Stats.MetaBucket
+			if snapshotBucket == "" {
+				snapshotBucket = cfg.S3.Bucket
+			}
+			_ = snapshotBucket // bucket selection for future multi-bucket support
+			snapshotKey := cfg.AutoPrefix() + cfg.Stats.SnapshotPrefix + "/snapshot.json"
+			ticker := time.NewTicker(cfg.Stats.SnapshotInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					data, err := registry.MarshalSnapshot()
+					if err != nil {
+						logger.Warnf("stats snapshot marshal failed: %s", err)
+						metrics.StatsSnapshotErrors.Inc()
+						continue
+					}
+					if err := store.Pool().Upload(context.Background(), snapshotKey, data); err != nil {
+						logger.Warnf("stats snapshot upload failed: %s", err)
+						metrics.StatsSnapshotErrors.Inc()
+					} else {
+						metrics.StatsSnapshotTotal.Inc()
+					}
+				case <-stopCh:
+					return
+				}
+			}
+		}()
+
+		// Prometheus metrics update loop
+		go func() {
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					for _, ts := range registry.All() {
+						key := ts.AccountID + ":" + ts.ProjectID
+						metrics.TenantFiles.Set(key, ts.TotalFiles)
+						metrics.TenantBytes.Set(key, ts.TotalBytes)
+						metrics.TenantRawBytes.Set(key, ts.RawBytes)
+					}
+				case <-stopCh:
+					return
+				}
+			}
+		}()
+	}
+
 	if sc := store.SmartCache(); sc != nil {
 		sc.StartEvictionLoop(30*time.Second, stopCh)
 		snapshotPath := ""
@@ -246,7 +370,7 @@ func run(cfg *config.Config, addr string) {
 			cfg.SmartCache.MaxAge, cfg.SmartCache.SnapshotInterval)
 	}
 
-	mux := newMux(cfg, store, sm, tombstoneStore, detector)
+	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc)
 
 	requestHandler := func(w http.ResponseWriter, r *http.Request) bool {
 		mux.ServeHTTP(w, r)
@@ -274,6 +398,21 @@ func run(cfg *config.Config, addr string) {
 		logger.Errorf("failed to persist tombstones to disk: %s", err)
 	}
 
+	// Final stats snapshot on shutdown
+	if cfg.Stats.Enabled && cfg.Stats.SnapshotPrefix != "" {
+		snapshotBucket := cfg.Stats.MetaBucket
+		if snapshotBucket == "" {
+			snapshotBucket = cfg.S3.Bucket
+		}
+		_ = snapshotBucket // bucket selection for future multi-bucket support
+		snapshotKey := cfg.AutoPrefix() + cfg.Stats.SnapshotPrefix + "/snapshot.json"
+		if data, err := registry.MarshalSnapshot(); err == nil {
+			if err := store.Pool().Upload(context.Background(), snapshotKey, data); err != nil {
+				logger.Errorf("failed to persist stats snapshot on shutdown: %s", err)
+			}
+		}
+	}
+
 	if err := store.Close(); err != nil {
 		logger.Errorf("storage close error: %s", err)
 	}
@@ -281,7 +420,7 @@ func run(cfg *config.Config, addr string) {
 	logger.Infof("lakehouse-logs stopped")
 }
 
-func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector) *http.ServeMux {
+func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	metrics.NewInfoGauge("lakehouse_info", map[string]string{
@@ -453,6 +592,38 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		metrics.ManifestUpdateReceivedTotal.Inc()
 		w.WriteHeader(http.StatusOK)
 	})
+
+	// Stats sync handler
+	if cfg.Stats.Enabled {
+		syncHandler := stats.NewSyncHandler(registry, cfg.Peer.AuthKey)
+		mux.Handle("/internal/stats/sync", syncHandler)
+	}
+
+	// Stats API
+	if cfg.Stats.Enabled {
+		statsAPI := stats.NewAPI(stats.APIConfig{
+			Registry:        registry,
+			Manifest:        store.Manifest(),
+			CostCalc:        costCalc,
+			ClassTracker:    classTracker,
+			LabelIndex:      store.LabelIndex(),
+			SchemaRegistry:  store.SchemaRegistry(),
+			Mode:            "logs",
+			Bucket:          cfg.S3.Bucket,
+			BloomColumns:    cfg.ActiveBloomColumns(),
+			BreakdownLabels: cfg.Stats.BreakdownLabels,
+		})
+		statsAPI.Register(mux)
+	}
+
+	// Lakehouse UI
+	uiHandler := ui.NewHandler(ui.HandlerConfig{
+		Enabled: cfg.UI.Enabled,
+	})
+	uiHandler.Register(mux)
+
+	// VMUI with Lakehouse tab injection
+	ui.RegisterVMUI(mux, cfg.UI.VMUITab)
 
 	return mux
 }

@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lakehouse Explorer</title>
+  <style>
+    :root {
+      --color-primary: #3f51b5;
+      --color-secondary: #e91e63;
+      --color-error: #fd080e;
+      --color-warning: #ff8308;
+      --color-info: #03a9f4;
+      --color-success: #4caf50;
+      --color-background-body: #fefeff;
+      --color-background-block: #fff;
+      --color-text: #110f0f;
+      --color-text-secondary: #706f6f;
+      --color-text-disabled: #a09f9f;
+      --color-hover-black: #0000000f;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --color-primary: #7986cb;
+        --color-secondary: #f48fb1;
+        --color-error: #ef5350;
+        --color-warning: #ffb74d;
+        --color-info: #4fc3f7;
+        --color-success: #66bb6a;
+        --color-background-body: #1e1e1e;
+        --color-background-block: #2d2d2d;
+        --color-text: #e0e0e0;
+        --color-text-secondary: #a0a0a0;
+        --color-text-disabled: #666;
+        --color-hover-black: #ffffff0f;
+      }
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--color-background-body);
+      color: var(--color-text);
+      line-height: 1.5;
+    }
+    .app-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 24px; border-bottom: 1px solid var(--color-text-disabled);
+      background: var(--color-background-block);
+    }
+    .app-header h1 { font-size: 1.25rem; font-weight: 600; color: var(--color-primary); }
+    .refresh-control { display: flex; align-items: center; gap: 8px; font-size: .85rem; }
+    .refresh-control label { color: var(--color-text-secondary); }
+    .refresh-control select {
+      padding: 4px 8px; border: 1px solid var(--color-text-disabled);
+      border-radius: 4px; background: var(--color-background-body);
+      color: var(--color-text); font-size: .85rem;
+    }
+    .tabs {
+      display: flex; gap: 0; border-bottom: 2px solid var(--color-text-disabled);
+      padding: 0 24px; background: var(--color-background-block);
+    }
+    .tab {
+      padding: 10px 20px; cursor: pointer; border: none;
+      background: transparent; color: var(--color-text-secondary);
+      font-size: .9rem; font-weight: 500;
+      border-bottom: 2px solid transparent; margin-bottom: -2px;
+      transition: color .15s, border-color .15s;
+    }
+    .tab:hover { color: var(--color-text); }
+    .tab.active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
+    .content { padding: 24px; }
+    .cards-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 12px; margin-bottom: 20px;
+    }
+    .card {
+      background: var(--color-background-block);
+      border: 1px solid var(--color-text-disabled);
+      border-radius: 6px; padding: 16px; text-align: center;
+    }
+    .card .label {
+      font-size: 11px; color: var(--color-text-secondary);
+      text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px;
+    }
+    .card .value { font-size: 1.6rem; font-weight: 700; }
+    .info-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; font-size: 13px; }
+    .info-item { color: var(--color-text-secondary); }
+    .info-item strong { color: var(--color-text); }
+    .section-title { font-size: 14px; font-weight: 600; margin: 20px 0 10px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--color-text-disabled); }
+    th {
+      background: var(--color-background-block); font-weight: 600;
+      cursor: pointer; user-select: none; white-space: nowrap;
+    }
+    th:hover { opacity: .8; }
+    tr:hover td { background: var(--color-hover-black); }
+    .badge {
+      display: inline-block; padding: 1px 7px; border-radius: 10px;
+      font-size: 11px; font-weight: 600;
+    }
+    .badge-high { background: #fd080e22; color: var(--color-error); }
+    .badge-ok { background: #4caf5022; color: var(--color-success); }
+    .badge-promoted { background: #3f51b522; color: var(--color-primary); }
+    .badge-map { background: #706f6f22; color: var(--color-text-secondary); }
+    .bar-chart { display: flex; align-items: flex-end; gap: 3px; height: 120px; margin: 12px 0 4px; }
+    .bar {
+      flex: 1; min-width: 8px; border-radius: 3px 3px 0 0;
+      background: var(--color-primary); cursor: pointer;
+    }
+    .bar:hover { opacity: .8; }
+    .bar-labels { display: flex; gap: 3px; font-size: 10px; color: var(--color-text-secondary); }
+    .bar-labels span { flex: 1; text-align: center; overflow: hidden; text-overflow: ellipsis; }
+    .loading { text-align: center; padding: 40px; color: var(--color-text-secondary); }
+    .error { text-align: center; padding: 40px; color: var(--color-error); }
+    .empty { padding: 24px; text-align: center; color: var(--color-text-secondary); font-style: italic; }
+    @media (max-width: 600px) {
+      .cards-grid { grid-template-columns: 1fr 1fr; }
+      .app-header { flex-direction: column; gap: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module">
+    import { render } from "https://esm.sh/preact@10.19.3";
+    import { useState, useEffect, useRef, useCallback } from "https://esm.sh/preact@10.19.3/hooks";
+    import { html } from "https://esm.sh/htm@3.1.1/preact";
+
+    function fmtBytes(b) {
+      if (b == null || isNaN(b) || b === 0) return "0 B";
+      if (b < 1024) return b + " B";
+      if (b < 1048576) return (b / 1024).toFixed(1) + " KB";
+      if (b < 1073741824) return (b / 1048576).toFixed(1) + " MB";
+      return (b / 1073741824).toFixed(2) + " GB";
+    }
+    function fmtNum(n) { if (n == null || isNaN(n)) return "\u2014"; return Number(n).toLocaleString(); }
+    function fmtUSD(n) { if (n == null || isNaN(n)) return "\u2014"; return "$" + Number(n).toFixed(4); }
+
+    async function fetchJSON(url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(res.status + " " + res.statusText);
+      return res.json();
+    }
+
+    function StorageOverview() {
+      const [ov, setOv] = useState(null);
+      const [ing, setIng] = useState(null);
+      const [err, setErr] = useState(null);
+
+      const load = useCallback(() => {
+        Promise.all([
+          fetchJSON("/lakehouse/api/v1/stats/overview"),
+          fetchJSON("/lakehouse/api/v1/stats/ingestion?period=day&range=7d"),
+        ]).then(([o, i]) => { setOv(o); setIng(i); }).catch(e => setErr(e.message));
+      }, []);
+
+      useEffect(() => { load(); }, [load]);
+      StorageOverview._reload = load;
+
+      if (err) return html`<div class="error">Error: ${err}</div>`;
+      if (!ov) return html`<div class="loading">Loading overview\u2026</div>`;
+
+      const maxBytes = ing && ing.buckets ? Math.max(...ing.buckets.map(b => b.bytes)) : 0;
+
+      return html`
+        <div class="cards-grid">
+          <div class="card"><div class="label">Files</div><div class="value">${fmtNum(ov.total_files)}</div></div>
+          <div class="card"><div class="label">Total Size</div><div class="value">${fmtBytes(ov.total_bytes)}</div></div>
+          <div class="card"><div class="label">Partitions</div><div class="value">${fmtNum(ov.partition_count)}</div></div>
+          <div class="card"><div class="label">Mode</div><div class="value">${ov.mode || "\u2014"}</div></div>
+          <div class="card"><div class="label">Data Range</div><div class="value" style="font-size:1rem">${(ov.oldest_data||"").slice(0,10)} \u2192 ${(ov.newest_data||"").slice(0,10)}</div></div>
+          ${ov.avg_compression_ratio > 0 ? html`<div class="card"><div class="label">Compression</div><div class="value">${ov.avg_compression_ratio.toFixed(1)}x</div></div>` : null}
+        </div>
+        <div class="info-row">
+          <span class="info-item">Bucket: <strong>${ov.bucket || "\u2014"}</strong></span>
+          ${ov.fleet_nodes > 0 ? html`<span class="info-item">Fleet Nodes: <strong>${ov.fleet_nodes}</strong></span>` : null}
+          ${ov.tenant_count > 0 ? html`<span class="info-item">Tenants: <strong>${ov.tenant_count}</strong></span>` : null}
+        </div>
+        ${ing && ing.buckets && ing.buckets.length > 0 ? html`
+          <div class="section-title">Ingestion (last 7 days)</div>
+          <div class="bar-chart">
+            ${ing.buckets.map(b => html`
+              <div class="bar" style="height:${maxBytes > 0 ? Math.max((b.bytes / maxBytes) * 100, 2) : 2}%"
+                   title="${b.timestamp}: ${fmtBytes(b.bytes)} (${b.files} files)"></div>
+            `)}
+          </div>
+          <div class="bar-labels">
+            ${ing.buckets.map(b => html`<span>${b.timestamp.slice(5)}</span>`)}
+          </div>
+          <div class="info-row">
+            <span class="info-item">Total ingested: <strong>${fmtBytes(ing.total_bytes_ingested)}</strong></span>
+            <span class="info-item">Total files: <strong>${fmtNum(ing.total_files_written)}</strong></span>
+          </div>
+        ` : null}
+        ${ov.storage_by_class && ov.storage_by_class.length > 0 ? html`
+          <div class="section-title">Storage Classes</div>
+          <table>
+            <thead><tr><th>Class</th><th>Files</th><th>Size</th></tr></thead>
+            <tbody>
+              ${ov.storage_by_class.map(c => html`<tr><td>${c.class}</td><td>${fmtNum(c.files)}</td><td>${fmtBytes(c.bytes)}</td></tr>`)}
+            </tbody>
+          </table>
+        ` : null}
+      `;
+    }
+
+    function Tenants() {
+      const [data, setData] = useState(null);
+      const [err, setErr] = useState(null);
+      const [sort, setSort] = useState("bytes");
+
+      const load = useCallback(() => {
+        fetchJSON("/lakehouse/api/v1/tenants?sort=" + sort).then(setData).catch(e => setErr(e.message));
+      }, [sort]);
+
+      useEffect(() => { load(); }, [load]);
+      Tenants._reload = load;
+
+      if (err) return html`<div class="error">Error: ${err}</div>`;
+      if (!data) return html`<div class="loading">Loading tenants\u2026</div>`;
+
+      const tenants = data.tenants || [];
+
+      return html`
+        <div class="cards-grid">
+          <div class="card"><div class="label">Tenants</div><div class="value">${fmtNum(data.total_tenants)}</div></div>
+          <div class="card"><div class="label">Total Size</div><div class="value">${fmtBytes(data.total_bytes)}</div></div>
+          <div class="card"><div class="label">Total Files</div><div class="value">${fmtNum(data.total_files)}</div></div>
+        </div>
+        ${tenants.length === 0
+          ? html`<div class="empty">No tenant data available yet.</div>`
+          : html`
+            <table>
+              <thead>
+                <tr>
+                  <th onClick=${() => setSort("bytes")}>Tenant ${sort === "bytes" ? "\u25bc" : ""}</th>
+                  <th onClick=${() => setSort("files")}>Files ${sort === "files" ? "\u25bc" : ""}</th>
+                  <th>Size</th>
+                  <th>Partitions</th>
+                  <th onClick=${() => setSort("cost")}>Est. Cost ${sort === "cost" ? "\u25bc" : ""}</th>
+                  <th>Time Range</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${tenants.map(t => html`
+                  <tr>
+                    <td><strong>${t.account_id}:${t.project_id}</strong></td>
+                    <td>${fmtNum(t.total_files)}</td>
+                    <td>${fmtBytes(t.total_bytes)}</td>
+                    <td>${fmtNum(t.partitions)}</td>
+                    <td>${fmtUSD(t.monthly_cost_usd)}</td>
+                    <td>${(t.min_time||"").slice(0,10)} \u2192 ${(t.max_time||"").slice(0,10)}</td>
+                  </tr>
+                `)}
+              </tbody>
+            </table>
+          `
+        }
+      `;
+    }
+
+    function StorageDetails() {
+      const [data, setData] = useState(null);
+      const [err, setErr] = useState(null);
+
+      useEffect(() => {
+        fetch("/lakehouse/api/v1/stats/breakdown")
+          .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+          .then(setData).catch(e => setErr(e.message));
+      }, []);
+
+      if (err) return html`<div class="error">Error: ${err}</div>`;
+      if (!data) return html`<div class="loading">Loading breakdown\u2026</div>`;
+
+      const labels = data.labels || [];
+      if (labels.length === 0) return html`<div class="loading">No breakdown labels configured.</div>`;
+
+      return html`
+        <div class="section-title">Storage Breakdown by Label</div>
+        <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:16px">
+          Sizes are proportionally estimated from total storage. Configured via stats.breakdown_labels.
+        </div>
+        ${labels.map(label => html`
+          <div style="margin-bottom:24px">
+            <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
+              <h3 style="font-size:1rem;margin:0">${label.name}</h3>
+              <span class="badge ${label.type === 'promoted' ? 'badge-promoted' : 'badge-map'}">${label.type}</span>
+              <span style="font-size:12px;color:var(--color-text-secondary)">${label.cardinality} values</span>
+            </div>
+            ${!label.values || label.values.length === 0
+              ? html`<div style="padding:12px;color:var(--color-text-secondary);font-style:italic">No values discovered yet. Run a query to populate.</div>`
+              : html`<div style="display:flex;flex-direction:column;gap:4px">
+                  ${label.values.map(v => {
+                    const maxBytes = Math.max(...label.values.map(x => x.estimated_bytes || 0), 1);
+                    const pct = (v.estimated_bytes || 0) / maxBytes * 100;
+                    return html`
+                      <div style="display:flex;align-items:center;gap:8px;font-size:13px">
+                        <div style="width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0">${v.value}</div>
+                        <div style="flex:1;height:18px;background:var(--color-hover-black,#0000000f);border-radius:3px;overflow:hidden">
+                          <div style="height:100%;width:${Math.max(pct, 1)}%;background:var(--color-primary);border-radius:3px"></div>
+                        </div>
+                        <div style="width:70px;text-align:right;flex-shrink:0;font-size:12px;color:var(--color-text-secondary)">${fmtBytes(v.estimated_bytes)}</div>
+                        <div style="width:50px;text-align:right;flex-shrink:0;font-size:12px;color:var(--color-text-secondary)">${(v.share_pct || 0).toFixed(1)}%</div>
+                      </div>
+                    `;
+                  })}
+                </div>`
+            }
+          </div>
+        `)}
+      `;
+    }
+
+    function CardinalityExplorer() {
+      const [data, setData] = useState(null);
+      const [err, setErr] = useState(null);
+
+      const load = useCallback(() => {
+        fetchJSON("/lakehouse/api/v1/cardinality/fields").then(setData).catch(e => setErr(e.message));
+      }, []);
+
+      useEffect(() => { load(); }, [load]);
+      CardinalityExplorer._reload = load;
+
+      if (err) return html`<div class="error">Error: ${err}</div>`;
+      if (!data) return html`<div class="loading">Loading cardinality\u2026</div>`;
+
+      const fields = data.fields || [];
+
+      return html`
+        <div class="cards-grid">
+          <div class="card"><div class="label">Total Fields</div><div class="value">${fmtNum(data.total_fields)}</div></div>
+          <div class="card"><div class="label">Promoted</div><div class="value">${fmtNum(data.total_promoted)}</div></div>
+          <div class="card"><div class="label">MAP Columns</div><div class="value">${fmtNum(data.total_map)}</div></div>
+          ${data.high_cardinality_warning && data.high_cardinality_warning.length > 0
+            ? html`<div class="card"><div class="label">High Cardinality</div><div class="value"><span class="badge badge-high">${data.high_cardinality_warning.length} fields</span></div></div>`
+            : null}
+        </div>
+        ${fields.length === 0
+          ? html`<div class="empty">No field data available yet.</div>`
+          : html`
+            <table>
+              <thead><tr><th>Field Name</th><th>Cardinality</th><th>Type</th><th>Bloom Filter</th></tr></thead>
+              <tbody>
+                ${fields.map(f => html`
+                  <tr>
+                    <td>
+                      ${f.name}${" "}
+                      ${f.cardinality >= data.cardinality_threshold ? html`<span class="badge badge-high">HIGH</span>` : ""}
+                    </td>
+                    <td>${fmtNum(f.cardinality)}</td>
+                    <td>${f.type === "promoted"
+                      ? html`<span class="badge badge-promoted">promoted</span>`
+                      : html`<span class="badge badge-map">map</span>`}</td>
+                    <td>${f.has_bloom ? "\u2705" : "\u2014"}</td>
+                  </tr>
+                `)}
+              </tbody>
+            </table>
+          `
+        }
+      `;
+    }
+
+    function App() {
+      const [tab, setTab] = useState("overview");
+      const [refreshInterval, setRefreshInterval] = useState(0);
+      const timerRef = useRef(null);
+
+      useEffect(() => {
+        if (timerRef.current) clearInterval(timerRef.current);
+        if (refreshInterval > 0) {
+          timerRef.current = setInterval(() => {
+            if (StorageOverview._reload) StorageOverview._reload();
+            if (Tenants._reload) Tenants._reload();
+            if (CardinalityExplorer._reload) CardinalityExplorer._reload();
+          }, refreshInterval * 1000);
+        }
+        return () => { if (timerRef.current) clearInterval(timerRef.current); };
+      }, [refreshInterval]);
+
+      const tabs = [
+        { id: "overview", label: "Storage Overview" },
+        { id: "details", label: "Storage Details" },
+        { id: "tenants", label: "Tenants" },
+        { id: "cardinality", label: "Cardinality Explorer" },
+      ];
+
+      return html`
+        <div class="app-header">
+          <h1>Lakehouse Explorer</h1>
+          <div class="refresh-control">
+            <label for="refresh-select">Auto-refresh:</label>
+            <select id="refresh-select" value=${refreshInterval} onChange=${e => setRefreshInterval(Number(e.target.value))}>
+              <option value="0">Off</option>
+              <option value="10">10s</option>
+              <option value="30">30s</option>
+              <option value="60">60s</option>
+            </select>
+          </div>
+        </div>
+        <div class="tabs">
+          ${tabs.map(t => html`
+            <button class="tab ${tab === t.id ? "active" : ""}" onClick=${() => setTab(t.id)}>
+              ${t.label}
+            </button>
+          `)}
+        </div>
+        <div class="content">
+          ${tab === "overview" && html`<${StorageOverview} />`}
+          ${tab === "details" && html`<${StorageDetails} />`}
+          ${tab === "tenants" && html`<${Tenants} />`}
+          ${tab === "cardinality" && html`<${CardinalityExplorer} />`}
+        </div>
+      `;
+    }
+
+    render(html`<${App} />`, document.getElementById("app"));
+  </script>
+</body>
+</html>

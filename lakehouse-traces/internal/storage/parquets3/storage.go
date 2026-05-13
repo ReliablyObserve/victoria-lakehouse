@@ -427,6 +427,10 @@ func (s *Storage) LabelIndex() *cache.LabelIndex {
 	return s.labelIndex
 }
 
+func (s *Storage) SchemaRegistry() *schema.Registry {
+	return s.registry
+}
+
 func (s *Storage) Discovery() *discovery.Discovery {
 	return s.discovery
 }

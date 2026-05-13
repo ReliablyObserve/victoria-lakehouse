@@ -455,3 +455,45 @@ This works because each tenant prefix follows the same Hive partition structure.
 - **Audit trail**: S3 Access Logs and CloudTrail record all object-level operations per tenant.
 - **No row-level filtering**: we do NOT mix tenants in shared Parquet files. Each file belongs to exactly one tenant. This eliminates the risk class where a missing `WHERE tenant=X` leaks data.
 - **Global read is opt-in**: cross-tenant reads require explicit configuration of both header name and secret value. Without this configuration, no request can read across tenants.
+
+## Tenant Statistics & Monitoring
+
+Victoria Lakehouse tracks per-tenant storage statistics in real-time. See [Tenant Stats](tenant-stats.md) for the full reference.
+
+### Per-Tenant Prometheus Metrics
+
+Subject to a configurable cardinality cap (`stats.metrics_cardinality_limit`, default 100):
+
+```
+lakehouse_tenant_files{tenant="100/1"}        # File count
+lakehouse_tenant_bytes{tenant="100/1"}        # Compressed bytes
+lakehouse_tenant_rows_total{tenant="100/1"}   # Cumulative rows
+lakehouse_tenant_queries_total{tenant="100/1"} # Cumulative queries
+```
+
+When the cap is reached, additional tenants are still visible in the JSON API but not emitted as Prometheus metrics.
+
+### JSON API
+
+Per-tenant drill-down, cost allocation, and cardinality analysis:
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /lakehouse/api/v1/tenants` | Tenant summary list |
+| `GET /lakehouse/api/v1/tenants/{accountID}/{projectID}` | Tenant drill-down |
+| `GET /lakehouse/api/v1/stats/cost` | Cost breakdown by tenant |
+| `GET /lakehouse/api/v1/cardinality/fields?tenant=100/1` | Per-tenant field cardinality |
+
+### Lakehouse Explorer UI
+
+The built-in [Lakehouse Explorer](lakehouse-explorer.md) provides a visual tenant dashboard with storage breakdown, cost allocation, and field cardinality analysis. It integrates into VL/VT's VMUI as an optional tab.
+
+### Cost Allocation
+
+The cost estimation model tracks storage class distribution per tenant and applies configurable per-GB pricing. This enables:
+
+- **Chargeback**: bill each tenant for their actual S3 cost
+- **Showback**: visibility into cost distribution without billing
+- **Lifecycle savings**: show how much each tenant saves from S3 lifecycle transitions
+
+Per-tenant lifecycle and pricing overrides are supported in bucket-isolation mode via `tenant.known_tenants[]`.

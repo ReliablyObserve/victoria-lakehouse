@@ -7,7 +7,7 @@ sidebar_position: 11
 
 ## Metrics
 
-Victoria Lakehouse exposes ~80 Prometheus metrics at `/metrics` using the `lakehouse_` prefix. Metrics use the same library as VL/VT: `github.com/VictoriaMetrics/metrics`.
+Victoria Lakehouse exposes ~110 Prometheus metrics at `/metrics` using the `lakehouse_` prefix. Metrics use the same library as VL/VT: `github.com/VictoriaMetrics/metrics`.
 
 ### RED Metrics (Client-Facing)
 
@@ -128,6 +128,60 @@ Victoria Lakehouse exposes ~80 Prometheus metrics at `/metrics` using the `lakeh
 | `lakehouse_manifest_push_errors_total` | Counter | | Failed push attempts |
 | `lakehouse_manifest_push_peers` | Gauge | | Number of peers currently notified |
 | `lakehouse_manifest_update_received_total` | Counter | | Manifest update notifications received from peers |
+
+### Tenant Metrics
+
+Per-tenant metrics subject to cardinality cap (`stats.metrics_cardinality_limit`, default 100).
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `lakehouse_tenant_files` | Gauge | `tenant` | Files per tenant |
+| `lakehouse_tenant_bytes` | Gauge | `tenant` | Compressed bytes per tenant |
+| `lakehouse_tenant_raw_bytes` | Gauge | `tenant` | Uncompressed bytes per tenant |
+| `lakehouse_tenant_rows_total` | Counter | `tenant` | Cumulative rows per tenant |
+| `lakehouse_tenant_ingestion_bytes_total` | Counter | `tenant` | Cumulative bytes ingested per tenant |
+| `lakehouse_tenant_queries_total` | Counter | `tenant` | Cumulative queries per tenant |
+| `lakehouse_tenant_last_write_timestamp` | Gauge | `tenant` | Unix seconds of last write |
+| `lakehouse_tenant_last_query_timestamp` | Gauge | `tenant` | Unix seconds of last query |
+
+### Global Storage Metrics
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `lakehouse_storage_files_total` | Gauge | | Total files across all tenants |
+| `lakehouse_storage_bytes_total` | Gauge | | Total compressed bytes |
+| `lakehouse_storage_raw_bytes_total` | Gauge | | Total uncompressed bytes |
+| `lakehouse_storage_compression_ratio` | Gauge | | Global average compression ratio |
+| `lakehouse_storage_rows_total` | Gauge | | Total rows |
+| `lakehouse_storage_partitions_total` | Gauge | | Total partitions |
+| `lakehouse_storage_oldest_data_seconds` | Gauge | | Unix timestamp of oldest data |
+| `lakehouse_storage_newest_data_seconds` | Gauge | | Unix timestamp of newest data |
+| `lakehouse_storage_tenants_total` | Gauge | | Number of active tenants |
+| `lakehouse_storage_bytes_by_class` | Gauge | `class` | Bytes per storage class |
+| `lakehouse_storage_files_by_class` | Gauge | `class` | Files per storage class |
+| `lakehouse_storage_cost_monthly_usd` | Gauge | | Estimated monthly cost |
+| `lakehouse_storage_cost_by_class_usd` | Gauge | `class` | Cost per storage class |
+| `lakehouse_storage_ingestion_rate_bytes` | Gauge | | Rolling ingestion rate (bytes/sec) |
+
+### Cardinality Limiter Metrics
+
+| Metric | Type | Description |
+|---|---|---|
+| `lakehouse_metrics_cardinality_limit` | Gauge | Configured tenant cardinality cap |
+| `lakehouse_metrics_cardinality_tracked` | Gauge | Currently tracked tenants |
+| `lakehouse_metrics_cardinality_overflow_total` | Counter | Tenants dropped due to cap |
+
+### Stats Sync Metrics
+
+| Metric | Type | Description |
+|---|---|---|
+| `lakehouse_stats_push_total` | Counter | Delta broadcasts sent to peers |
+| `lakehouse_stats_push_errors_total` | Counter | Failed broadcasts |
+| `lakehouse_stats_push_bytes_total` | Counter | Bytes transmitted in sync |
+| `lakehouse_stats_snapshot_total` | Counter | S3 snapshots written |
+| `lakehouse_stats_snapshot_errors_total` | Counter | Failed snapshots |
+| `lakehouse_stats_merges_total` | Counter | CRDT merge operations |
+| `lakehouse_stats_headobject_total` | Counter | HeadObject verification calls |
 
 ### Startup Metrics
 

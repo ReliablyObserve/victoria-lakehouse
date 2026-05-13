@@ -56,6 +56,8 @@ type Config struct {
 	Delete         DeleteConfig         `yaml:"delete"`
 	SmartCache  SmartCacheConfig  `yaml:"smart_cache"`
 	CrossSignal CrossSignalConfig `yaml:"cross_signal"`
+	Stats       StatsConfig       `yaml:"stats"`
+	UI          UIConfig          `yaml:"ui"`
 
 	Logs   LogsModeConfig   `yaml:"logs"`
 	Traces TracesModeConfig `yaml:"traces"`
@@ -231,17 +233,51 @@ type QueryConfig struct {
 }
 
 type TenantConfig struct {
-	DefaultPrefix    string `yaml:"default_prefix"`
-	PrefixTemplate   string `yaml:"prefix_template"`
-	Isolation        string `yaml:"isolation"`
-	BucketTemplate   string `yaml:"bucket_template"`
-	DefaultAccount   string `yaml:"default_account"`
-	DefaultProject   string `yaml:"default_project"`
-	HeaderAccount    string `yaml:"header_account"`
-	HeaderProject    string `yaml:"header_project"`
-	GlobalReadHeader string `yaml:"global_read_header"`
-	GlobalReadValue  string `yaml:"global_read_value"`
-	GlobalReadToken  string `yaml:"global_read_token"`
+	DefaultPrefix    string         `yaml:"default_prefix"`
+	PrefixTemplate   string         `yaml:"prefix_template"`
+	Isolation        string         `yaml:"isolation"`
+	BucketTemplate   string         `yaml:"bucket_template"`
+	DefaultAccount   string         `yaml:"default_account"`
+	DefaultProject   string         `yaml:"default_project"`
+	HeaderAccount    string         `yaml:"header_account"`
+	HeaderProject    string         `yaml:"header_project"`
+	GlobalReadHeader string         `yaml:"global_read_header"`
+	GlobalReadValue  string         `yaml:"global_read_value"`
+	GlobalReadToken  string         `yaml:"global_read_token"`
+	KnownTenants     []KnownTenant  `yaml:"known_tenants"`
+}
+
+type KnownTenant struct {
+	AccountID      string                `yaml:"account_id"`
+	ProjectID      string                `yaml:"project_id"`
+	LifecycleRules []LifecycleRuleConfig `yaml:"lifecycle_rules"`
+	PricePerGB     map[string]float64    `yaml:"price_per_gb"`
+}
+
+type StatsConfig struct {
+	Enabled                     bool              `yaml:"enabled"`
+	PushInterval                time.Duration     `yaml:"push_interval"`
+	PushCompression             bool              `yaml:"push_compression"`
+	SnapshotInterval            time.Duration     `yaml:"snapshot_interval"`
+	SnapshotPrefix              string            `yaml:"snapshot_prefix"`
+	MetaBucket                  string            `yaml:"meta_bucket"`
+	MaxDeltaCount               int               `yaml:"max_delta_count"`
+	MetricsCardinalityLimit     int               `yaml:"metrics_cardinality_limit"`
+	CardinalityWarningThreshold int               `yaml:"cardinality_warning_threshold"`
+	BreakdownLabels             []string          `yaml:"breakdown_labels"`
+	S3LifecycleRules            []LifecycleRuleConfig `yaml:"s3_lifecycle_rules"`
+	S3PricePerGB                map[string]float64    `yaml:"s3_price_per_gb"`
+	S3RequestPrices             map[string]float64    `yaml:"s3_request_prices"`
+	S3InventoryBucket           string            `yaml:"s3_inventory_bucket"`
+	HeadObjectSampleInterval    time.Duration     `yaml:"headobject_sample_interval"`
+	HeadObjectMaxPerRefresh     int               `yaml:"headobject_max_per_refresh"`
+}
+
+type UIConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	VMUITab        bool   `yaml:"vmui_tab"`
+	RefreshDefault int    `yaml:"refresh_default"`
+	Theme          string `yaml:"theme"`
 }
 
 func (t TenantConfig) ResolvedPrefix() string {
@@ -388,7 +424,7 @@ func Default() *Config {
 			TargetFileSize:   "128MB",
 			RowGroupSize:     10000,
 			BloomColumns:     []string{"service.name", "trace_id"},
-			CompressionLevel: 3,
+			CompressionLevel: 7,
 			WALEnabled:       true,
 			WALDir:           "/data/lakehouse/wal",
 			WALMaxBytes:      "512MB",
@@ -451,8 +487,41 @@ func Default() *Config {
 			BatchInterval: 500 * time.Millisecond,
 		},
 
+		Stats: StatsConfig{
+			Enabled:                     true,
+			PushInterval:                30 * time.Second,
+			PushCompression:             true,
+			SnapshotInterval:            5 * time.Minute,
+			SnapshotPrefix:              "_meta/tenant-stats",
+			MaxDeltaCount:               1000,
+			MetricsCardinalityLimit:     100,
+			CardinalityWarningThreshold: 10000,
+			BreakdownLabels:             []string{"service.name", "deployment.environment", "k8s.namespace.name", "k8s.cluster.name"},
+			S3PricePerGB: map[string]float64{
+				"STANDARD":     0.023,
+				"STANDARD_IA":  0.0125,
+				"GLACIER_IR":   0.004,
+				"GLACIER":      0.0036,
+				"DEEP_ARCHIVE": 0.00099,
+			},
+			S3RequestPrices: map[string]float64{
+				"PUT":  0.005,
+				"GET":  0.0004,
+				"LIST": 0.005,
+			},
+			HeadObjectSampleInterval: 6 * time.Hour,
+			HeadObjectMaxPerRefresh:  50,
+		},
+
+		UI: UIConfig{
+			Enabled:        true,
+			VMUITab:        true,
+			RefreshDefault: 0,
+			Theme:          "auto",
+		},
+
 		Logs: LogsModeConfig{
-			BloomColumns:  []string{"service.name"},
+			BloomColumns:  []string{"service.name", "trace_id"},
 			DeletePrefix:  "/delete/logsql",
 			CompatVersion: "",
 		},
@@ -574,6 +643,26 @@ func (c *Config) Validate() error {
 		if c.Compaction.MinFilesL1 < 2 {
 			return fmt.Errorf("--lakehouse.compaction.min-files-l1 must be >= 2")
 		}
+	}
+
+	if c.Stats.Enabled {
+		if c.Stats.PushInterval <= 0 {
+			return fmt.Errorf("--lakehouse.stats.push-interval must be positive")
+		}
+		if c.Stats.MetricsCardinalityLimit < 0 {
+			return fmt.Errorf("--lakehouse.stats.metrics-cardinality-limit must be >= 0")
+		}
+		if c.Stats.HeadObjectMaxPerRefresh < 0 {
+			return fmt.Errorf("--lakehouse.stats.headobject-max-per-refresh must be >= 0")
+		}
+	}
+	if c.Tenant.Isolation == "bucket" && c.Tenant.BucketTemplate == "" {
+		return fmt.Errorf("--lakehouse.tenant.bucket-template is required when isolation=bucket")
+	}
+	switch c.UI.Theme {
+	case "auto", "dark", "light", "":
+	default:
+		return fmt.Errorf("--lakehouse.ui.theme must be auto, dark, or light; got %q", c.UI.Theme)
 	}
 
 	return nil
@@ -850,6 +939,70 @@ func mergeConfig(base, overlay *Config) *Config {
 	}
 	if overlay.Tenant.GlobalReadToken != "" {
 		base.Tenant.GlobalReadToken = overlay.Tenant.GlobalReadToken
+	}
+	if len(overlay.Tenant.KnownTenants) > 0 {
+		base.Tenant.KnownTenants = overlay.Tenant.KnownTenants
+	}
+
+	// Stats
+	if overlay.Stats.Enabled {
+		base.Stats.Enabled = true
+	}
+	if overlay.Stats.PushInterval > 0 {
+		base.Stats.PushInterval = overlay.Stats.PushInterval
+	}
+	if overlay.Stats.PushCompression {
+		base.Stats.PushCompression = true
+	}
+	if overlay.Stats.SnapshotInterval > 0 {
+		base.Stats.SnapshotInterval = overlay.Stats.SnapshotInterval
+	}
+	if overlay.Stats.SnapshotPrefix != "" {
+		base.Stats.SnapshotPrefix = overlay.Stats.SnapshotPrefix
+	}
+	if overlay.Stats.MetaBucket != "" {
+		base.Stats.MetaBucket = overlay.Stats.MetaBucket
+	}
+	if overlay.Stats.MaxDeltaCount > 0 {
+		base.Stats.MaxDeltaCount = overlay.Stats.MaxDeltaCount
+	}
+	if overlay.Stats.MetricsCardinalityLimit > 0 {
+		base.Stats.MetricsCardinalityLimit = overlay.Stats.MetricsCardinalityLimit
+	}
+	if overlay.Stats.CardinalityWarningThreshold > 0 {
+		base.Stats.CardinalityWarningThreshold = overlay.Stats.CardinalityWarningThreshold
+	}
+	if len(overlay.Stats.S3LifecycleRules) > 0 {
+		base.Stats.S3LifecycleRules = overlay.Stats.S3LifecycleRules
+	}
+	if len(overlay.Stats.S3PricePerGB) > 0 {
+		base.Stats.S3PricePerGB = overlay.Stats.S3PricePerGB
+	}
+	if len(overlay.Stats.S3RequestPrices) > 0 {
+		base.Stats.S3RequestPrices = overlay.Stats.S3RequestPrices
+	}
+	if overlay.Stats.S3InventoryBucket != "" {
+		base.Stats.S3InventoryBucket = overlay.Stats.S3InventoryBucket
+	}
+	if overlay.Stats.HeadObjectSampleInterval > 0 {
+		base.Stats.HeadObjectSampleInterval = overlay.Stats.HeadObjectSampleInterval
+	}
+	if overlay.Stats.HeadObjectMaxPerRefresh > 0 {
+		base.Stats.HeadObjectMaxPerRefresh = overlay.Stats.HeadObjectMaxPerRefresh
+	}
+
+	// UI
+	if overlay.UI.Enabled {
+		base.UI.Enabled = true
+	}
+	if overlay.UI.VMUITab {
+		base.UI.VMUITab = true
+	}
+	if overlay.UI.RefreshDefault > 0 {
+		base.UI.RefreshDefault = overlay.UI.RefreshDefault
+	}
+	if overlay.UI.Theme != "" {
+		base.UI.Theme = overlay.UI.Theme
 	}
 
 	// HotBoundary

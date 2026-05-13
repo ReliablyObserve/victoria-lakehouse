@@ -24,6 +24,7 @@ RUN cp /tmp/patches/vl-traces/external.go lakehouse-traces/deps/VictoriaLogs/app
     cp /tmp/patches/vl-traces/external_query.go lakehouse-traces/deps/VictoriaLogs/lib/logstorage/external_query.go && \
     cd lakehouse-traces/deps/VictoriaLogs && git apply /tmp/patches/vl-traces/vlstorage-dispatch.patch
 COPY . .
+RUN cp -r lakehouse-traces/deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmui/
 RUN cd lakehouse-traces && \
     CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}" -o /lakehouse-traces .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /healthcheck ./cmd/healthcheck

@@ -1080,8 +1080,8 @@ func TestMergeConfig_EmptySchemaPreservesBase(t *testing.T) {
 
 func TestDefaultConfig_CompressionLevel(t *testing.T) {
 	cfg := Default()
-	if cfg.Insert.CompressionLevel != 3 {
-		t.Errorf("default CompressionLevel = %d, want 3", cfg.Insert.CompressionLevel)
+	if cfg.Insert.CompressionLevel != 7 {
+		t.Errorf("default CompressionLevel = %d, want 7", cfg.Insert.CompressionLevel)
 	}
 }
 
@@ -1261,8 +1261,8 @@ func TestMergeConfig_TargetFileSize(t *testing.T) {
 func TestDefaultConfig_ModeConfigs(t *testing.T) {
 	cfg := Default()
 
-	if len(cfg.Logs.BloomColumns) != 1 || cfg.Logs.BloomColumns[0] != "service.name" {
-		t.Errorf("Logs.BloomColumns = %v, want [service.name]", cfg.Logs.BloomColumns)
+	if len(cfg.Logs.BloomColumns) != 2 || cfg.Logs.BloomColumns[0] != "service.name" || cfg.Logs.BloomColumns[1] != "trace_id" {
+		t.Errorf("Logs.BloomColumns = %v, want [service.name trace_id]", cfg.Logs.BloomColumns)
 	}
 	if cfg.Logs.DeletePrefix != "/delete/logsql" {
 		t.Errorf("Logs.DeletePrefix = %q, want /delete/logsql", cfg.Logs.DeletePrefix)
@@ -1290,8 +1290,8 @@ func TestActiveBloomColumns_LogsMode(t *testing.T) {
 	cfg.Mode = ModeLogs
 
 	cols := cfg.ActiveBloomColumns()
-	if len(cols) != 1 || cols[0] != "service.name" {
-		t.Errorf("ActiveBloomColumns(logs) = %v, want [service.name]", cols)
+	if len(cols) != 2 || cols[0] != "service.name" || cols[1] != "trace_id" {
+		t.Errorf("ActiveBloomColumns(logs) = %v, want [service.name trace_id]", cols)
 	}
 }
 

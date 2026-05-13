@@ -586,7 +586,7 @@ flowchart TD
 | `insert.target_file_size` | `128MB` | `--lakehouse.insert.target-file-size` |
 | `insert.row_group_size` | `10000` | `--lakehouse.insert.row-group-size` |
 | `insert.bloom_columns` | `service.name,trace_id` | `--lakehouse.insert.bloom-columns` |
-| `insert.compression_level` | `3` | `--lakehouse.insert.compression-level` |
+| `insert.compression_level` | `7` | `--lakehouse.insert.compression-level` |
 
 ## Query Configuration
 

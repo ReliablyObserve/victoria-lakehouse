@@ -131,7 +131,7 @@ go run ./cmd/loadtest -mode=benchmark -output=benchmark-results.json
 | 50 MB | ~25,000 rows | 1K, 5K, 10K, 50K |
 | 100 MB | ~50,000 rows | 1K, 5K, 10K, 50K |
 
-Each combination is tested with ZSTD compression levels 1, 3, 9, and 19.
+Each combination is tested with ZSTD compression levels 1, 3, 7 (default), and 11.
 
 For each combination, the benchmark measures:
 - **Write time** (ms) -- time to write the Parquet file in memory
@@ -141,16 +141,19 @@ For each combination, the benchmark measures:
 
 ### Interpreting Results
 
-The optimal configuration for most workloads is **10-50 MB files with 10K row groups and ZSTD level 3**:
+The optimal configuration for most workloads is **10-50 MB files with 10K row groups and ZSTD level 7**:
 
 - Larger files reduce the number of S3 GET requests per query
 - 10K row groups provide enough granularity for row group stats pruning
-- ZSTD level 3 balances compression speed (~300 MB/s) with ratio (5-7x)
+- ZSTD level 7 compresses 25% better than level 3 on real data (~260 MB/s, 6.1x logs / 9.4x traces)
+- Read performance is nearly flat across levels (decompression is not the bottleneck)
 
 Extreme settings to avoid:
 - Files under 5 MB create excessive S3 request overhead
 - Row groups over 50K reduce the effectiveness of statistics-based skipping
-- ZSTD level 19 compresses at ~20 MB/s -- only suitable for archival data that is rarely queried
+- ZSTD level 11+ compresses <2% better than level 7 at 5x the CPU cost
+
+See [ZSTD Compression Benchmark](zstd-compression-benchmark.md) for detailed real-data results.
 
 ## Running All Benchmarks
 

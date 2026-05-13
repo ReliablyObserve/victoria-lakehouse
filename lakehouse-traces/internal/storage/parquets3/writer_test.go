@@ -219,7 +219,7 @@ func testInsertConfig() *config.InsertConfig {
 		TargetFileSize:   "128MB",
 		RowGroupSize:     50,
 		BloomColumns:     []string{"service.name", "trace_id"},
-		CompressionLevel: 3,
+		CompressionLevel: 7,
 	}
 }
 

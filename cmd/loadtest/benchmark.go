@@ -35,7 +35,7 @@ func runBenchmarks(cfg BenchmarkConfig) []BenchmarkResult {
 	}
 
 	rowGroupSizes := []int{1000, 5000, 10000, 50000}
-	compressionLevels := []int{1, 3, 9, 19}
+	compressionLevels := []int{1, 3, 7, 11}
 
 	log.Println("Starting benchmark suite...")
 	for _, fs := range fileSizes {

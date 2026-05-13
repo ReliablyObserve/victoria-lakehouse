@@ -15,18 +15,33 @@ env:
 jobs:
   release:
     runs-on: ubuntu-latest
-    if: "!contains(github.event.head_commit.message, '[skip release]')"
     steps:
+      - name: Check skip release
+        id: skip_release
+        run: |
+          TITLE=$(echo "$COMMIT_MSG" | head -1)
+          if echo "$TITLE" | grep -q '\[skip release\]'; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping: title contains [skip release]"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+
       - uses: actions/checkout@v6
+        if: steps.skip_release.outputs.skip != 'true'
         with:
           fetch-depth: 0
           token: ${{ secrets.TOKEN_GITHUB || secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-go@v6
+        if: steps.skip_release.outputs.skip != 'true'
         with:
           go-version-file: go.mod
 
       - name: Determine version bump
+        if: steps.skip_release.outputs.skip != 'true'
         id: version
         run: |
           LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
@@ -74,6 +89,7 @@ jobs:
           COMMIT_MSG: ${{ github.event.head_commit.message }}
 
       - name: Check for skip conditions
+        if: steps.skip_release.outputs.skip != 'true'
         id: skip
         run: |
           # Skip if only non-code files changed (docs, CI, website, release metadata)
@@ -86,7 +102,7 @@ jobs:
           fi
 
       - name: Clone VL deps
-        if: steps.skip.outputs.skip != 'true'
+        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
         run: |
           mkdir -p deps lakehouse-traces/deps
           git clone --depth 1 --branch v1.50.0 \
@@ -96,7 +112,7 @@ jobs:
           cp -r /tmp/vl-src ${{ github.workspace }}/lakehouse-traces/deps/VictoriaLogs
 
       - name: Apply ExternalStorage patches
-        if: steps.skip.outputs.skip != 'true'
+        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
         run: |
           cp patches/vl-logs/external.go deps/VictoriaLogs/app/vlstorage/external.go
           cp patches/vl-logs/external_query.go deps/VictoriaLogs/lib/logstorage/external_query.go
@@ -107,7 +123,7 @@ jobs:
           cd lakehouse-traces/deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-traces/vlstorage-dispatch.patch
 
       - name: Build binaries
-        if: steps.skip.outputs.skip != 'true'
+        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
         run: |
           VERSION=${{ steps.version.outputs.next }}
           LDFLAGS="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}"
@@ -132,7 +148,7 @@ jobs:
           cd dist && sha256sum lakehouse-* > checksums.txt
 
       - name: Build and push Docker images
-        if: steps.skip.outputs.skip != 'true'
+        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
         run: |
           VERSION=${{ steps.version.outputs.next }}
           REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
@@ -157,7 +173,7 @@ jobs:
             --push .
 
       - name: Package Helm chart
-        if: steps.skip.outputs.skip != 'true'
+        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
         run: |
           VERSION=${{ steps.version.outputs.next }}
           # Update Chart.yaml version
@@ -166,7 +182,7 @@ jobs:
           helm package charts/victoria-lakehouse/ -d dist/
 
       - name: Create release
-        if: steps.skip.outputs.skip != 'true'
+        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
         run: |
           VERSION=${{ steps.version.outputs.next }}
           REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
@@ -219,14 +235,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push Helm chart to GHCR
-        if: steps.skip.outputs.skip != 'true'
+        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           helm push dist/victoria-lakehouse-*.tgz oci://ghcr.io/${OWNER}/charts
 
       - name: Create release metadata PR
-        if: steps.skip.outputs.skip != 'true'
+        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
         run: |
           VERSION=${{ steps.version.outputs.next }}
           REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')

@@ -10,10 +10,12 @@ import (
 )
 
 type LabelInfo struct {
-	Name        string   `json:"name"`
-	Cardinality int      `json:"cardinality"`
-	Values      []string `json:"values,omitempty"`
-	SeenInFiles int      `json:"seen_in_files"`
+	Name        string         `json:"name"`
+	Cardinality int            `json:"cardinality"`
+	Values      []string       `json:"values,omitempty"`
+	ValueCounts map[string]int `json:"value_counts,omitempty"`
+	SeenInFiles int            `json:"seen_in_files"`
+	PerTenant   map[string]int `json:"per_tenant,omitempty"`
 }
 
 type LabelIndex struct {
@@ -29,6 +31,19 @@ func (idx *LabelIndex) Add(name string, values []string) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
+	idx.addLocked(name, values, nil)
+}
+
+// AddWithValueCounts is like Add but also merges sampled per-value frequency
+// counts. This produces differentiated storage estimates in the breakdown API.
+func (idx *LabelIndex) AddWithValueCounts(name string, values []string, counts map[string]int) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	idx.addLocked(name, values, counts)
+}
+
+func (idx *LabelIndex) addLocked(name string, values []string, counts map[string]int) {
 	if li, ok := idx.labels[name]; ok {
 		li.SeenInFiles++
 		existing := make(map[string]bool, len(li.Values))
@@ -41,16 +56,39 @@ func (idx *LabelIndex) Add(name string, values []string) {
 				existing[v] = true
 			}
 		}
+		if li.ValueCounts == nil {
+			li.ValueCounts = make(map[string]int)
+		}
+		if len(counts) > 0 {
+			for v, c := range counts {
+				li.ValueCounts[v] += c
+			}
+		} else {
+			for _, v := range values {
+				li.ValueCounts[v]++
+			}
+		}
 		li.Cardinality = len(li.Values)
 	} else {
 		capped := values
 		if len(capped) > 10000 {
 			capped = capped[:10000]
 		}
+		vc := make(map[string]int, len(capped))
+		if len(counts) > 0 {
+			for v, c := range counts {
+				vc[v] = c
+			}
+		} else {
+			for _, v := range capped {
+				vc[v]++
+			}
+		}
 		idx.labels[name] = &LabelInfo{
 			Name:        name,
 			Cardinality: len(capped),
 			Values:      capped,
+			ValueCounts: vc,
 			SeenInFiles: 1,
 		}
 	}
@@ -85,6 +123,58 @@ func (idx *LabelIndex) Len() int {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	return len(idx.labels)
+}
+
+// AddWithTenant is like Add but also tracks per-tenant unique value count.
+// The per-tenant cardinality reflects the number of unique values the tenant
+// has been seen with. Each call updates the count to be at least the number
+// of unique values in the passed slice.
+func (idx *LabelIndex) AddWithTenant(name string, values []string, tenant string) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	idx.addLocked(name, values, nil)
+	li := idx.labels[name]
+
+	// Track per-tenant cardinality
+	if tenant != "" {
+		if li.PerTenant == nil {
+			li.PerTenant = make(map[string]int)
+		}
+		// Count unique values in the input slice
+		unique := make(map[string]struct{}, len(values))
+		for _, v := range values {
+			unique[v] = struct{}{}
+		}
+		count := len(unique)
+		if count > li.PerTenant[tenant] {
+			li.PerTenant[tenant] = count
+		}
+	}
+}
+
+// GetLabelInfo returns the LabelInfo for the given field name, or nil if not found.
+func (idx *LabelIndex) GetLabelInfo(name string) *LabelInfo {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	li, ok := idx.labels[name]
+	if !ok {
+		return nil
+	}
+	return li
+}
+
+// GetAllLabelInfo returns all label infos in the index.
+func (idx *LabelIndex) GetAllLabelInfo() []*LabelInfo {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	result := make([]*LabelInfo, 0, len(idx.labels))
+	for _, li := range idx.labels {
+		result = append(result, li)
+	}
+	return result
 }
 
 type ManifestState struct {
