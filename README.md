@@ -357,6 +357,7 @@ Each binary supports three roles for independent scaling:
 - **Manifest label pruning**: `FileInfo.Labels` enables query-time file skipping based on label values without opening Parquet files.
 
 ### Read Path
+- **Schema-driven FieldType system**: centralized type-aware formatting for all Parquet column types (INT64 nanoseconds to RFC3339Nano, INT32 to decimal, etc.) via `FieldType.FormatValue()`. Eliminates scattered `fmt.Sprintf`/`time.Format` calls — all query paths use the schema registry for consistent output.
 - **Auto-discovery of hot boundary** via `/internal/partition/list` on vlstorage/vtstorage. Zero manual config.
 - **Partition manifest** for sub-ms "nothing here" responses. Recent queries cost zero S3 I/O.
 - **LogsQL filter evaluation**: field matchers (exact, substring, regex, NOT) are applied post-scan to filter DataBlock rows at the storage layer.
@@ -407,7 +408,7 @@ Each binary supports three roles for independent scaling:
 ### Infrastructure
 - **Metadata persistence**: manifest, label index, cache metadata, and smart cache snapshots survive restarts.
 - **Distributed peer cache**: consistent hash routing across fleet instances via headless DNS.
-- **Schema auto-discovery**: OTLP column names in Parquet, mapped to VL/VT names at query time.
+- **Schema auto-discovery**: OTLP column names in Parquet, mapped to VL/VT names at query time. Schema registry carries per-column type information (FieldType) for type-aware formatting, extensible via `--lakehouse.schema.extra-promoted` with typed columns (string, int32, int64, float64, bool, timestamp_nano).
 - **SQS/SNS support**: optional near-real-time manifest updates from S3 event notifications.
 
 ---
@@ -557,32 +558,45 @@ Victoria Lakehouse reads and writes **OTLP-standard Parquet files**. Column name
 | `timestamp_unix_nano` | INT64 | | Log timestamp (nanoseconds) |
 | `body` | STRING | | Log message body |
 | `severity_text` | STRING | | Log level (INFO, ERROR, etc.) |
+| `severity_number` | INT32 | | OTEL severity number (1-24) |
 | `service.name` | STRING | Yes | Originating service |
 | `k8s.namespace.name` | STRING | | Kubernetes namespace |
 | `k8s.pod.name` | STRING | | Kubernetes pod |
+| `k8s.deployment.name` | STRING | | Kubernetes deployment |
+| `k8s.node.name` | STRING | | Kubernetes node |
+| `deployment.environment` | STRING | | production, staging, canary |
+| `cloud.region` | STRING | | AWS/GCP region |
+| `host.name` | STRING | | Hostname |
 | `trace_id` | STRING | Yes | Correlated trace ID |
 | `span_id` | STRING | | Correlated span ID |
 | `_stream` / `_stream_id` | STRING | | VL stream identity |
-| `resource.attributes` | MAP | | All resource attributes |
-| `log.attributes` | MAP | | All log attributes |
+| `scope.name` | STRING | | Instrumentation scope name |
+| `resource.attributes` | MAP(STRING,STRING) | | All resource attributes not promoted |
+| `log.attributes` | MAP(STRING,STRING) | | All log record attributes |
 
 ### Traces Schema
 
 | Column | Type | Bloom | Description |
 |---|---|---|---|
-| `timestamp_unix_nano` | INT64 | | Span start time (nanoseconds) |
+| `timestamp_unix_nano` | INT64 | | Span end time (nanoseconds) |
+| `start_time_unix_nano` | INT64 | | Span start time (nanoseconds) |
 | `trace_id` | STRING | Yes | Trace identifier |
 | `span_id` | STRING | | Span identifier |
 | `parent_span_id` | STRING | | Parent span for tree structure |
 | `span.name` | STRING | | Operation name |
+| `span.kind` | INT32 | | Span kind (1=Internal, 2=Server, 3=Client, 4=Producer, 5=Consumer) |
 | `service.name` | STRING | Yes | Originating service |
 | `duration_ns` | INT64 | | Span duration (nanoseconds) |
-| `status.code` | INT32 | | Span status (OK, ERROR, UNSET) |
-| `resource.attributes` | MAP | | All resource attributes |
-| `span.attributes` | MAP | | All span attributes |
-| `scope.attributes` | MAP | | Instrumentation scope attributes |
+| `status.code` | INT32 | | Span status (0=Unset, 1=OK, 2=Error) |
+| `status.message` | STRING | | Error details |
+| `scope.name` | STRING | | Instrumentation library name |
+| `resource.attributes` | MAP(STRING,STRING) | | Resource attributes (environment, region, K8s metadata) |
+| `span.attributes` | MAP(STRING,STRING) | | Span attributes (HTTP method, status code, DB system) |
+| `scope.attributes` | MAP(STRING,STRING) | | Instrumentation scope attributes |
 
-Any tool that reads Parquet can query these files: DuckDB, ClickHouse, Trino, Spark, Databricks, Snowflake, StarRocks, Doris, pandas. Full engine list with Grafana plugin status: [Analytics Engines](docs/analytics-engines.md). Schema reference: [Architecture](docs/architecture.md)
+All typed columns (INT32, INT64) are stored as native Parquet types with column statistics for efficient predicate pushdown. The schema registry provides centralized type-aware formatting via `FieldType.FormatValue()` for the VL/VT read path (e.g., INT64 nanoseconds to RFC3339Nano timestamps, INT32 to decimal strings).
+
+Any tool that reads Parquet can query these files directly — DuckDB, ClickHouse, Trino, Spark, Databricks, Snowflake, StarRocks, Doris, pandas. Full engine list with Grafana plugin status: [Analytics Engines](docs/analytics-engines.md). Schema reference: [Open Parquet Format](docs/open-parquet-format.md)
 
 ---
 
@@ -614,8 +628,9 @@ See [Performance](docs/performance.md).
 - [Deletion Strategy](docs/deletion-strategy.md) — cost-aware tombstone + selective rewrite, Glacier-safe, three modes
 
 ### Analytics (Open Parquet)
-- [Analytics](docs/analytics.md) — DuckDB, ClickHouse, Trino, Spark, pandas query examples on S3 Parquet
+- [Analytics](docs/analytics.md) — DuckDB, ClickHouse, Trino, Spark, pandas query examples on S3 Parquet, 11 Grafana datasource reference, ClickHouse OTEL views setup
 - [Analytics Engines](docs/analytics-engines.md) — all 9 engines with Grafana datasource status (DuckDB, ClickHouse, Trino, Databricks, Snowflake, StarRocks, Doris, Spark, pandas)
+- [Open Parquet Format](docs/open-parquet-format.md) — full schema reference, typed columns, bloom filters, compression, row group statistics, external tool examples
 - [Use Cases](docs/use-cases.md) — disaster recovery, compliance/audit, capacity planning, cost allocation, ML pipelines
 - [Multi-Tenancy](docs/multi-tenancy.md) — S3 prefix isolation, bucket-per-tenant enterprise option, vmauth integration, analytics tool compatibility
 

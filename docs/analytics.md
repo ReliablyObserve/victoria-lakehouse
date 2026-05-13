@@ -29,9 +29,36 @@ s3://obs-archive/{tenant}/
 
 ## DuckDB
 
-[DuckDB](https://duckdb.org/) is an in-process analytical database. It reads Parquet directly from S3 with zero setup — ideal for ad-hoc investigation, incident response, and local analysis.
+[DuckDB](https://duckdb.org/) is an in-process analytical database. It reads Parquet directly from S3 with zero setup — ideal for ad-hoc investigation, incident response, and local analysis. The Docker Compose environment includes a Grafana DuckDB datasource pre-configured for MinIO S3 access.
 
 ### Setup
+
+#### Docker Compose (pre-configured)
+
+The DuckDB Grafana datasource is auto-provisioned. Open Grafana (http://localhost:3003), select "DuckDB Analytics" datasource, and run `read_parquet()` queries directly.
+
+**Note**: Requires Grafana Ubuntu image (`grafana/grafana:latest-ubuntu`) — DuckDB plugin uses glibc, not compatible with Alpine. The compose file handles this automatically.
+
+#### Local CLI
+
+```bash
+# Install DuckDB
+brew install duckdb  # macOS
+# or: pip install duckdb
+
+# Connect to MinIO (Docker Compose)
+duckdb -c "
+  INSTALL httpfs; LOAD httpfs;
+  SET s3_endpoint = 'localhost:9000';
+  SET s3_access_key_id = 'minioadmin';
+  SET s3_secret_access_key = 'minioadmin';
+  SET s3_use_ssl = false;
+  SET s3_url_style = 'path';
+  SELECT severity_text, COUNT(*) FROM read_parquet('s3://obs-archive/0/0/logs/dt=*/hour=*/*.parquet', hive_partitioning=true) GROUP BY severity_text;
+"
+```
+
+#### Production S3
 
 ```sql
 -- Install and load httpfs extension for S3 access
@@ -531,7 +558,34 @@ glue.create_crawler(
 
 ## ClickHouse
 
-[ClickHouse](https://clickhouse.com/) can read Parquet directly from S3 for high-performance analytical queries.
+[ClickHouse](https://clickhouse.com/) can read Parquet directly from S3 for high-performance analytical queries. The Docker Compose environment includes ClickHouse pre-configured with OTEL-compatible views and three Grafana datasources.
+
+### Quick Start (Docker Compose)
+
+The Docker Compose environment auto-configures ClickHouse with:
+- **`lakehouse.otel_logs`** / **`lakehouse.otel_traces`** — OTEL-compatible views mapping Parquet columns to OpenTelemetry standard naming (Timestamp, Body, SeverityText, ServiceName, TraceId, SpanName, SpanKind, Duration, StatusCode, ResourceAttributes, SpanAttributes)
+- **`lakehouse.logs_raw`** / **`lakehouse.traces_raw`** — raw views with original Parquet column names for ad-hoc SQL
+- **`lakehouse.logs_tenant_default`** / **`lakehouse.traces_tenant_default`** — tenant-scoped views (AccountID=0, ProjectID=0)
+- **`lakehouse.logs_tenant_test`** / **`lakehouse.traces_tenant_test`** — test tenant views (AccountID=1, ProjectID=1)
+
+Three Grafana datasources are auto-provisioned:
+1. **ClickHouse Analytics** — points to `lakehouse.logs_raw`, for arbitrary SQL queries
+2. **ClickHouse Logs (OTEL)** — points to `lakehouse.otel_logs` with OTEL auto-discovery enabled (`otelEnabled: true`), renders in Grafana's native Logs panel
+3. **ClickHouse Traces (OTEL)** — points to `lakehouse.otel_traces` with full trace column mapping (TraceId, SpanId, Duration in ns, SpanKind, StatusCode, etc.), renders in Grafana's native Traces panel with bidirectional logs-to-traces linking
+
+### OTEL Views
+
+The OTEL views (`deployment/docker/clickhouse/init-s3.sql`) transform Lakehouse Parquet columns into the exact schema the [OTEL ClickHouse exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/clickhouseexporter) produces. This means Grafana's ClickHouse datasource with `otelEnabled: true` auto-discovers all columns with zero configuration.
+
+Key mappings:
+- `timestamp_unix_nano` INT64 → `Timestamp` DateTime64(9) via `fromUnixTimestamp64Nano()`
+- `severity_text` → `SeverityText`, `body` → `Body`, `service.name` → `ServiceName`
+- `span.kind` INT32 → `SpanKind` string (SPAN_KIND_SERVER, SPAN_KIND_CLIENT, etc.)
+- `status.code` INT32 → `StatusCode` string (STATUS_CODE_OK, STATUS_CODE_ERROR, etc.)
+- `duration_ns` INT64 → `Duration` (nanoseconds, matching OTEL standard)
+- Promoted fields merged into `ResourceAttributes` MAP via `mapConcat()` + `mapFilter()` (empty values excluded)
+
+### Direct S3 Queries
 
 ```sql
 -- Query logs directly from S3
@@ -549,6 +603,89 @@ AS SELECT * FROM s3('https://obs-archive.s3.us-east-1.amazonaws.com/logs/dt=2026
                     'access_key', 'secret_key', 'Parquet')
 LIMIT 0;
 ```
+
+### OTEL View Queries
+
+```sql
+-- Using pre-configured OTEL views (same column names as OTEL ClickHouse exporter)
+SELECT Timestamp, SeverityText, Body, ServiceName
+FROM lakehouse.otel_logs
+WHERE SeverityText = 'ERROR'
+ORDER BY Timestamp DESC
+LIMIT 100;
+
+-- Trace analysis via OTEL view
+SELECT TraceId, SpanName, ServiceName, SpanKind, Duration / 1e6 as duration_ms, StatusCode
+FROM lakehouse.otel_traces
+WHERE ServiceName = 'api-gateway'
+  AND StatusCode = 'STATUS_CODE_ERROR'
+ORDER BY Timestamp DESC
+LIMIT 50;
+
+-- Service error rate using raw views
+SELECT `service.name`, countIf(severity_text = 'ERROR') * 100.0 / count() AS error_pct
+FROM lakehouse.logs_raw
+GROUP BY `service.name`
+ORDER BY error_pct DESC;
+
+-- Per-tenant analysis
+SELECT severity_text, count() as cnt
+FROM lakehouse.logs_tenant_default
+GROUP BY severity_text;
+```
+
+### Production ClickHouse Setup
+
+For production (not Docker Compose), create similar views pointing to your S3 bucket:
+
+```sql
+CREATE DATABASE IF NOT EXISTS lakehouse;
+
+-- Logs view (adapt S3 URL, credentials, and tenant glob pattern)
+CREATE OR REPLACE VIEW lakehouse.otel_logs AS
+SELECT
+    fromUnixTimestamp64Nano(timestamp_unix_nano) AS Timestamp,
+    severity_text AS SeverityText,
+    toInt32(severity_number) AS SeverityNumber,
+    body AS Body,
+    `service.name` AS ServiceName,
+    trace_id AS TraceId,
+    span_id AS SpanId,
+    `resource.attributes` AS ResourceAttributes,
+    `log.attributes` AS LogAttributes
+FROM s3(
+    'https://obs-archive.s3.us-east-1.amazonaws.com/*/*/logs/dt=*/hour=*/*.parquet',
+    'access_key', 'secret_key', 'Parquet'
+);
+
+-- Traces view
+CREATE OR REPLACE VIEW lakehouse.otel_traces AS
+SELECT
+    fromUnixTimestamp64Nano(timestamp_unix_nano) AS Timestamp,
+    trace_id AS TraceId,
+    span_id AS SpanId,
+    parent_span_id AS ParentSpanId,
+    `span.name` AS SpanName,
+    CASE `span.kind`
+        WHEN 1 THEN 'SPAN_KIND_INTERNAL' WHEN 2 THEN 'SPAN_KIND_SERVER'
+        WHEN 3 THEN 'SPAN_KIND_CLIENT' WHEN 4 THEN 'SPAN_KIND_PRODUCER'
+        WHEN 5 THEN 'SPAN_KIND_CONSUMER' ELSE 'SPAN_KIND_UNSPECIFIED'
+    END AS SpanKind,
+    `service.name` AS ServiceName,
+    duration_ns AS Duration,
+    CASE `status.code`
+        WHEN 1 THEN 'STATUS_CODE_OK' WHEN 2 THEN 'STATUS_CODE_ERROR'
+        ELSE 'STATUS_CODE_UNSET'
+    END AS StatusCode,
+    `resource.attributes` AS ResourceAttributes,
+    `span.attributes` AS SpanAttributes
+FROM s3(
+    'https://obs-archive.s3.us-east-1.amazonaws.com/*/*/traces/dt=*/hour=*/*.parquet',
+    'access_key', 'secret_key', 'Parquet'
+);
+```
+
+Then configure Grafana ClickHouse datasource with `otelEnabled: true` and `otelVersion: latest` to auto-discover all columns. See the full init SQL at `deployment/docker/clickhouse/init-s3.sql`.
 
 ## Pandas / Jupyter Notebooks
 
@@ -584,6 +721,34 @@ df['timestamp'] = pd.to_datetime(df['timestamp_unix_nano'], unit='ns')
 hourly = df.set_index('timestamp').resample('1h').size()
 hourly.plot(title='Errors per Hour', figsize=(12, 4))
 ```
+
+## Grafana Datasources (Docker Compose)
+
+The Docker Compose environment (`deployment/docker/docker-compose-e2e.yml`) provisions 11 Grafana datasources covering all access patterns:
+
+| Datasource | Type | Target | Use Case |
+|---|---|---|---|
+| **VictoriaLogs Global (Hot+Cold)** | VictoriaLogs | vlselect:9428 | Default. Unified hot+cold log queries via multi-level select |
+| **VictoriaTraces Global (Hot+Cold)** | Jaeger | vtselect:10428 | Unified hot+cold trace queries with logs cross-linking |
+| **VictoriaLogs Hot (Disk 24h)** | VictoriaLogs | victorialogs:9428 | Direct hot tier queries (last 24h only) |
+| **VictoriaTraces Hot (Disk 24h)** | Jaeger | victoriatraces:10428 | Direct hot tier trace queries |
+| **Lakehouse Logs Cold (S3)** | VictoriaLogs | lakehouse-logs:9428 | Direct cold tier log queries (S3 Parquet) |
+| **Lakehouse Traces Cold (S3 Jaeger)** | Jaeger | lakehouse-traces:10428 | Direct cold tier trace queries (S3 Parquet) |
+| **Loki via Proxy (Hot+Cold)** | Loki | loki-vl-proxy:3100 | Grafana Loki Drilldown with automatic hot/cold routing |
+| **ClickHouse Analytics (S3 Parquet SQL)** | ClickHouse | clickhouse:9000 | Raw SQL on `lakehouse.logs_raw` / `lakehouse.traces_raw` |
+| **ClickHouse Logs (OTEL S3 Parquet)** | ClickHouse | clickhouse:9000 | Native Logs panel via `lakehouse.otel_logs` (OTEL auto-discovery) |
+| **ClickHouse Traces (OTEL S3 Parquet)** | ClickHouse | clickhouse:9000 | Native Traces panel via `lakehouse.otel_traces` (OTEL auto-discovery) |
+| **DuckDB Analytics** | DuckDB | in-memory | Ad-hoc `read_parquet()` SQL on S3 Parquet files |
+
+**Which datasource to use:**
+- **General querying**: Use "VictoriaLogs Global" (default) — it merges hot + cold data transparently
+- **Grafana Loki Drilldown**: Use "Loki via Proxy" — automatic time-based hot/cold routing
+- **Trace exploration**: Use "VictoriaTraces Global" — unified Jaeger UI with hot+cold data
+- **SQL analytics**: Use "ClickHouse Analytics" for ad-hoc SQL, or "DuckDB Analytics" for zero-infrastructure queries
+- **OTEL-native panels**: Use "ClickHouse Logs/Traces (OTEL)" for native Grafana log/trace panel rendering from S3 Parquet
+- **Debugging lakehouse**: Use "Lakehouse Logs/Traces Cold" to query cold tier directly
+
+All datasources are defined in `deployment/docker/grafana/provisioning/datasources/datasources.yaml`. The ClickHouse OTEL views are initialized by `deployment/docker/clickhouse/init-s3.sql`.
 
 ## Common Analytics Use Cases
 
