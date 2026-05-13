@@ -22,7 +22,9 @@ func TestGuard_FileInfoStorageClassFields(t *testing.T) {
 	}
 
 	var m map[string]any
-	json.Unmarshal(data, &m)
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
 
 	requiredFields := map[string]string{
 		"key":              "key",
@@ -47,7 +49,9 @@ func TestGuard_FileInfoStorageClassOmitEmpty(t *testing.T) {
 	}
 	data, _ := json.Marshal(fi)
 	var m map[string]any
-	json.Unmarshal(data, &m)
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
 
 	// String fields with omitempty are omitted when zero
 	stringFields := []string{"storage_class", "class_source"}

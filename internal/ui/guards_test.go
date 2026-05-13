@@ -54,7 +54,7 @@ func TestGuard_VMUIInjectOnlyModifiesHTML(t *testing.T) {
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/javascript")
 		w.WriteHeader(200)
-		w.Write([]byte("var x = 1;"))
+		_, _ = w.Write([]byte("var x = 1;"))
 	})
 
 	handler := InjectLakehouseTab(upstream)
@@ -72,7 +72,7 @@ func TestGuard_VMUIInjectPreservesBody(t *testing.T) {
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(200)
-		w.Write([]byte("<html><body><h1>VMUI</h1></body></html>"))
+		_, _ = w.Write([]byte("<html><body><h1>VMUI</h1></body></html>"))
 	})
 
 	handler := InjectLakehouseTab(upstream)

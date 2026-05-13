@@ -121,7 +121,9 @@ func TestGuard_TenantsResponseJSONFields(t *testing.T) {
 	var resp TenantsResponse
 	data, _ := json.Marshal(resp)
 	var m map[string]any
-	json.Unmarshal(data, &m)
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
 	for _, f := range required {
 		if _, ok := m[f]; !ok {
 			t.Errorf("TenantsResponse missing JSON field %q", f)
@@ -138,7 +140,9 @@ func TestGuard_TenantEntryJSONFields(t *testing.T) {
 	entry := TenantEntry{AccountID: "a", ProjectID: "p"}
 	data, _ := json.Marshal(entry)
 	var m map[string]any
-	json.Unmarshal(data, &m)
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
 	for _, f := range required {
 		if _, ok := m[f]; !ok {
 			t.Errorf("TenantEntry missing JSON field %q", f)
@@ -155,7 +159,9 @@ func TestGuard_OverviewResponseJSONFields(t *testing.T) {
 	resp := OverviewResponse{StorageByClass: []ClassBreakdown{}}
 	data, _ := json.Marshal(resp)
 	var m map[string]any
-	json.Unmarshal(data, &m)
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
 	for _, f := range required {
 		if _, ok := m[f]; !ok {
 			t.Errorf("OverviewResponse missing JSON field %q", f)
@@ -168,7 +174,9 @@ func TestGuard_CostResponseJSONFields(t *testing.T) {
 	resp := CostResponse{ByClass: []ClassCost{}, PerTenant: []TenantCostEntry{}}
 	data, _ := json.Marshal(resp)
 	var m map[string]any
-	json.Unmarshal(data, &m)
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
 	for _, f := range required {
 		if _, ok := m[f]; !ok {
 			t.Errorf("CostResponse missing JSON field %q", f)
@@ -184,7 +192,9 @@ func TestGuard_CardinalityResponseJSONFields(t *testing.T) {
 	resp := CardinalityResponse{Fields: []FieldEntry{}}
 	data, _ := json.Marshal(resp)
 	var m map[string]any
-	json.Unmarshal(data, &m)
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
 	for _, f := range required {
 		if _, ok := m[f]; !ok {
 			t.Errorf("CardinalityResponse missing JSON field %q", f)
@@ -197,7 +207,9 @@ func TestGuard_FieldEntryJSONFields(t *testing.T) {
 	entry := FieldEntry{Name: "x"}
 	data, _ := json.Marshal(entry)
 	var m map[string]any
-	json.Unmarshal(data, &m)
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
 	for _, f := range required {
 		if _, ok := m[f]; !ok {
 			t.Errorf("FieldEntry missing JSON field %q", f)
@@ -210,7 +222,9 @@ func TestGuard_CompressionResponseJSONFields(t *testing.T) {
 	resp := CompressionResponse{PerTenant: []TenantCompressionEntry{}}
 	data, _ := json.Marshal(resp)
 	var m map[string]any
-	json.Unmarshal(data, &m)
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
 	for _, f := range required {
 		if _, ok := m[f]; !ok {
 			t.Errorf("CompressionResponse missing JSON field %q", f)
@@ -223,7 +237,9 @@ func TestGuard_IngestionResponseJSONFields(t *testing.T) {
 	resp := IngestionResponse{Buckets: []IngestionBucket{}}
 	data, _ := json.Marshal(resp)
 	var m map[string]any
-	json.Unmarshal(data, &m)
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
 	for _, f := range required {
 		if _, ok := m[f]; !ok {
 			t.Errorf("IngestionResponse missing JSON field %q", f)
@@ -336,7 +352,9 @@ func TestGuard_TenantDeltaJSONFieldNames(t *testing.T) {
 	dj := tenantDeltaToJSON(d)
 	data, _ := json.Marshal(dj)
 	var m map[string]any
-	json.Unmarshal(data, &m)
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
 
 	required := []string{"node_id", "generation", "tenants", "timestamp"}
 	for _, f := range required {
@@ -702,8 +720,7 @@ func TestGuard_StorageClassNames(t *testing.T) {
 func TestGuard_NewTenantRegistrySignature(t *testing.T) {
 	// This test exists to catch if someone adds parameters to NewTenantRegistry.
 	// If the function signature changes, this will fail to compile.
-	var fn func(string) *TenantRegistry = NewTenantRegistry
-	reg := fn("test")
+	reg := NewTenantRegistry("test")
 	if reg == nil {
 		t.Fatal("NewTenantRegistry returned nil")
 	}
@@ -748,8 +765,8 @@ func TestGuard_AllReturnsSlice(t *testing.T) {
 	if all == nil {
 		t.Fatal("All() returned nil")
 	}
-	// Verify it's []*TenantStats at the type level — compile-time guard.
-	var _ []*TenantStats = all
+	// Type is []*TenantStats — if All() return type changes, element access below breaks.
+	_ = all[0].AccountID
 	if len(all) != 1 {
 		t.Errorf("All() len=%d want 1", len(all))
 	}
@@ -875,7 +892,9 @@ func TestGuard_FileInfoJSONTags(t *testing.T) {
 	}
 	data, _ := json.Marshal(fi)
 	var m map[string]any
-	json.Unmarshal(data, &m)
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
 
 	requiredFields := []string{
 		"key", "size", "storage_class", "class_source", "created_at",
@@ -1064,7 +1083,9 @@ func TestGuard_APITenantDetailPathParsing(t *testing.T) {
 	}
 
 	var resp map[string]any
-	json.NewDecoder(rec.Body).Decode(&resp)
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
 	if resp["account_id"] != "myaccount" {
 		t.Errorf("account_id=%v want myaccount", resp["account_id"])
 	}
@@ -1279,7 +1300,9 @@ func TestGuard_TenantsResponseSortedByBytes(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 
 	var resp TenantsResponse
-	json.NewDecoder(rec.Body).Decode(&resp)
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
 
 	if len(resp.Tenants) < 3 {
 		t.Fatalf("expected 3 tenants, got %d", len(resp.Tenants))

@@ -176,7 +176,7 @@ func (sp *SyncPusher) push(ctx context.Context, delta *TenantDelta) error {
 			lastErr = err
 			continue
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
 			metrics.StatsPushErrors.Inc()

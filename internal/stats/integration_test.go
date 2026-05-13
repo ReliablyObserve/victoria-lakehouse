@@ -669,7 +669,9 @@ func TestIntegration_AllAPIEndpoints(t *testing.T) {
 		mux.ServeHTTP(rec, req)
 
 		var resp TenantsResponse
-		json.NewDecoder(rec.Body).Decode(&resp)
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatal(err)
+		}
 		if resp.TotalTenants != 3 {
 			t.Errorf("TotalTenants = %d, want 3", resp.TotalTenants)
 		}
@@ -684,7 +686,9 @@ func TestIntegration_AllAPIEndpoints(t *testing.T) {
 		mux.ServeHTTP(rec, req)
 
 		var resp OverviewResponse
-		json.NewDecoder(rec.Body).Decode(&resp)
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatal(err)
+		}
 		if resp.Bucket != "prod-bucket" {
 			t.Errorf("Bucket = %q, want prod-bucket", resp.Bucket)
 		}
@@ -702,7 +706,9 @@ func TestIntegration_AllAPIEndpoints(t *testing.T) {
 		mux.ServeHTTP(rec, req)
 
 		var resp CostResponse
-		json.NewDecoder(rec.Body).Decode(&resp)
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatal(err)
+		}
 		if resp.TotalMonthlyUSD <= 0 {
 			t.Error("TotalMonthlyUSD should be positive")
 		}
@@ -720,7 +726,9 @@ func TestIntegration_AllAPIEndpoints(t *testing.T) {
 		mux.ServeHTTP(rec, req)
 
 		var resp CardinalityResponse
-		json.NewDecoder(rec.Body).Decode(&resp)
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatal(err)
+		}
 		if resp.TotalFields != 2 {
 			t.Errorf("TotalFields = %d, want 2", resp.TotalFields)
 		}

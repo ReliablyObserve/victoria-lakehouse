@@ -20,7 +20,9 @@ func TestGuard_LabelInfoPerTenantJSONTag(t *testing.T) {
 	}
 
 	var m map[string]any
-	json.Unmarshal(data, &m)
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, ok := m["per_tenant"]; !ok {
 		t.Error("LabelInfo JSON missing per_tenant field — tag changed")
