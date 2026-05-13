@@ -34,5 +34,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	}
 	sub, _ := fs.Sub(staticFiles, "static")
 	fileServer := http.FileServer(http.FS(sub))
+	mux.HandleFunc("/lakehouse/ui", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/lakehouse/ui/", http.StatusMovedPermanently)
+	})
 	mux.Handle("/lakehouse/ui/", http.StripPrefix("/lakehouse/ui/", fileServer))
 }
