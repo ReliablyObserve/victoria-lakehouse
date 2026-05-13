@@ -44,6 +44,9 @@ Three layers: a distributed TenantRegistry (CRDT-style peer-synced, S3-durable),
 type TenantStats struct {
     AccountID       string
     ProjectID       string
+    Isolation       string             // "prefix" or "bucket"
+    Bucket          string             // S3 bucket (differs per tenant in bucket isolation)
+    Prefix          string             // S3 key prefix (e.g., "100/1/logs/")
     TotalFiles      int64
     TotalBytes      int64
     RawBytes        int64
@@ -74,24 +77,60 @@ type TenantRegistry struct {
 }
 ```
 
+### Tenant Isolation Modes
+
+The registry supports both tenant isolation modes configured via `--lakehouse.tenant.isolation`:
+
+**Prefix isolation** (default): All tenants share one S3 bucket, separated by key prefix (`{AccountID}/{ProjectID}/`). Discovery scans the shared bucket root with delimiter `/` to find all tenant prefixes. S3 snapshots and lifecycle rules apply to the single bucket.
+
+**Bucket isolation**: Each tenant gets a dedicated S3 bucket (via `--lakehouse.tenant.bucket-template`, e.g., `obs-{AccountID}-{ProjectID}`). Discovery requires a configured tenant list or S3 API calls per known bucket. Each bucket may have different lifecycle rules and IAM policies.
+
+**Differences by mode:**
+
+| Aspect | Prefix Isolation | Bucket Isolation |
+|---|---|---|
+| Discovery | ListObjectsV2 with `/` delimiter on shared bucket | Iterate configured tenant list, HeadBucket per tenant |
+| S3 snapshots | `s3://{bucket}/_meta/tenant-stats/` (shared) | `s3://{tenant-bucket}/_meta/tenant-stats/` (per-bucket) |
+| Lifecycle rules | One set for shared bucket | Per-tenant rules (may differ per bucket) |
+| IAM | Shared bucket policy | Per-bucket IAM policy (full isolation) |
+| Cost calculation | Single pricing config | Per-tenant pricing possible (different regions/classes) |
+| Manifest refresh | One ListObjects call covers all tenants | One ListObjects per tenant bucket |
+
+**Bucket isolation tenant list** — since we can't discover buckets by scanning, tenants must be declared:
+```yaml
+lakehouse:
+  tenant:
+    isolation: bucket
+    bucket_template: "obs-{AccountID}-{ProjectID}"
+    known_tenants:              # required for bucket isolation discovery
+      - account_id: "100"
+        project_id: "1"
+      - account_id: "200"
+        project_id: "5"
+```
+
+Alternatively, if the lakehouse serves requests from multiple tenants (via header routing), the registry auto-discovers tenants from incoming traffic — no static list needed for active tenants. The `known_tenants` list is only needed to discover cold/dormant tenants in bucket isolation mode.
+
 ### Feed Points
 
 **Write path** — on every `manifest.AddFile()`:
-- Extract tenant from S3 key prefix
+- Extract tenant from S3 key prefix (prefix mode) or from configured bucket mapping (bucket mode)
+- Record `Isolation`, `Bucket`, `Prefix` on TenantStats
 - Update TenantStats: increment files, bytes, rawBytes, rows
 - Set storage class to STANDARD, record CreatedAt
 - Update labels from FileInfo.Labels
 - Increment generation
 
 **Query path** — on every `RunQuery()`:
-- Extract tenant from prefix
+- Extract tenant from prefix or bucket context
 - Update LastQueryAt
 - Increment queries counter
 
 **Manifest refresh** — on periodic S3 scan:
-- Recalculate per-tenant aggregates from full manifest
-- Recalculate predicted storage classes based on file age + lifecycle rules
-- Discover cold tenants not seen by write/query path
+- **Prefix mode**: scan shared bucket, group files by tenant prefix, recalculate per-tenant aggregates
+- **Bucket mode**: for each known tenant, scan their bucket, recalculate aggregates
+- Recalculate predicted storage classes based on file age + lifecycle rules (per-tenant rules in bucket mode)
+- Discover cold tenants: prefix mode via prefix scan, bucket mode via `known_tenants` + HeadBucket
 
 ### CRDT Merge Strategy
 
@@ -151,9 +190,14 @@ type TenantDelta struct {
 **Full sync:** After `max_delta_count` pushes (default 1000), or on startup, send full registry instead of delta. Peers detect via `Generation` field.
 
 **S3 snapshots:**
-- Path: `_meta/tenant-stats/{nodeID}.json.zst`
+- **Prefix isolation**: `s3://{shared-bucket}/_meta/tenant-stats/{nodeID}.json.zst`
+  - Single snapshot file covers all tenants (they share the bucket)
+  - On startup: load all node snapshots, merge into registry
+- **Bucket isolation**: `s3://{primary-bucket}/_meta/tenant-stats/{nodeID}.json.zst`
+  - Primary bucket is the first tenant's bucket or a dedicated meta bucket (`--lakehouse.stats.meta-bucket`)
+  - Contains stats for ALL tenants (cross-bucket aggregation) — avoids needing read access to every tenant bucket just for stats
+  - On startup: load from primary bucket, merge into registry
 - Written every `snapshot_interval` (default 5m), ZSTD compressed
-- On startup: load all node snapshots from `_meta/tenant-stats/`, merge into registry
 - Startup then triggers peer sync to fill any gap since last snapshot
 
 ### Config
@@ -208,26 +252,51 @@ type FileInfo struct {
 
 ### Lifecycle Config
 
+**Default rules** apply to all tenants (prefix isolation) or as fallback (bucket isolation):
+
 ```yaml
 lakehouse:
   stats:
-    s3_lifecycle_rules:
+    s3_lifecycle_rules:                 # default rules (shared bucket or fallback)
       - transition_days: 30
         storage_class: STANDARD_IA
       - transition_days: 90
         storage_class: GLACIER
       - transition_days: 365
         storage_class: DEEP_ARCHIVE
-    s3_price_per_gb:
+    s3_price_per_gb:                    # default pricing
       STANDARD: 0.023
       STANDARD_IA: 0.0125
       GLACIER_IR: 0.004
       GLACIER: 0.0036
       DEEP_ARCHIVE: 0.00099
-    s3_inventory_bucket: ""         # optional inventory source
-    headobject_sample_interval: 6h  # how often to spot-check near boundaries
-    headobject_max_per_refresh: 50  # cap HeadObject calls per refresh cycle
+    s3_inventory_bucket: ""             # optional inventory source
+    headobject_sample_interval: 6h      # how often to spot-check near boundaries
+    headobject_max_per_refresh: 50      # cap HeadObject calls per refresh cycle
 ```
+
+**Per-tenant overrides** (bucket isolation only — each bucket may have different lifecycle policies):
+
+```yaml
+lakehouse:
+  tenant:
+    isolation: bucket
+    known_tenants:
+      - account_id: "100"
+        project_id: "1"
+        lifecycle_rules:                # override for this tenant's bucket
+          - transition_days: 14
+            storage_class: STANDARD_IA
+          - transition_days: 60
+            storage_class: GLACIER
+        price_per_gb:                   # override if different region/class
+          STANDARD: 0.025               # e.g., eu-west-1 pricing
+      - account_id: "200"
+        project_id: "5"
+        # no overrides — uses default rules
+```
+
+The StorageClassTracker resolves rules per-tenant: check tenant-specific rules first, fall back to defaults.
 
 ### Compaction Integration
 
@@ -254,6 +323,8 @@ Tenant summary list.
     {
       "account_id": "100",
       "project_id": "1",
+      "isolation": "prefix",
+      "bucket": "obs-archive",
       "total_files": 1247,
       "total_bytes": 52428800000,
       "raw_bytes": 104857600000,
@@ -326,6 +397,7 @@ Global storage summary.
   "file_size_p50": 45000000,
   "file_size_p99": 128000000,
   "tenant_count": 15,
+  "tenant_isolation": "prefix",
   "storage_by_class": [
     {"class": "STANDARD", "bytes": 180000000000, "files": 12000},
     {"class": "STANDARD_IA", "bytes": 80000000000, "files": 5000},
@@ -703,23 +775,37 @@ Both paths now receive tenant context and update `PerTenant` cardinality.
 
 ```yaml
 lakehouse:
+  tenant:
+    isolation: prefix                   # "prefix" (shared bucket) or "bucket" (per-tenant bucket)
+    bucket_template: "obs-{AccountID}-{ProjectID}"  # bucket name template (bucket mode)
+    known_tenants:                      # required for bucket-mode cold tenant discovery
+      - account_id: "100"
+        project_id: "1"
+        lifecycle_rules:                # optional per-tenant lifecycle override
+          - transition_days: 14
+            storage_class: STANDARD_IA
+        price_per_gb:                   # optional per-tenant pricing override
+          STANDARD: 0.025
+      - account_id: "200"
+        project_id: "5"                 # uses default rules
   stats:
     enabled: true                       # master switch for all stats features
     push_interval: 30s                  # peer sync delta broadcast interval
     push_compression: true              # ZSTD compress peer deltas
     snapshot_interval: 5m               # S3 registry snapshot interval
     snapshot_prefix: "_meta/tenant-stats"  # S3 prefix for snapshots
+    meta_bucket: ""                     # dedicated meta bucket for stats (bucket mode, optional)
     max_delta_count: 1000               # force full peer sync after N deltas
     metrics_cardinality_limit: 100      # max tenant label values in Prometheus (0=disable)
     cardinality_warning_threshold: 10000  # high-cardinality field warning
-    s3_lifecycle_rules:                 # declare bucket lifecycle for class prediction
+    s3_lifecycle_rules:                 # default lifecycle rules (all tenants in prefix mode)
       - transition_days: 30
         storage_class: STANDARD_IA
       - transition_days: 90
         storage_class: GLACIER
       - transition_days: 365
         storage_class: DEEP_ARCHIVE
-    s3_price_per_gb:                    # per-class storage pricing
+    s3_price_per_gb:                    # default per-class storage pricing
       STANDARD: 0.023
       STANDARD_IA: 0.0125
       GLACIER_IR: 0.004
