@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-05-13
+
 ### Added
 - Schema-driven FieldType system — centralized type-aware formatting for all Parquet column types (TypeTimestampNano, TypeInt32, TypeInt64, TypeFloat64, TypeBool, TypeString). `FormatValue()` on each type replaces scattered `fmt.Sprintf`/`time.Format` calls across all query paths (RunQuery, GetFieldNames, GetFieldValues, buffer reads). `ParseFieldType()` enables typed ExtraPromoted columns via config.
 - `FormatField(internalName, value)` registry method for one-call schema-driven formatting in all read paths
