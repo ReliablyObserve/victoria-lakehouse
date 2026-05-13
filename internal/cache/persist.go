@@ -13,6 +13,7 @@ type LabelInfo struct {
 	Name        string         `json:"name"`
 	Cardinality int            `json:"cardinality"`
 	Values      []string       `json:"values,omitempty"`
+	ValueCounts map[string]int `json:"value_counts,omitempty"`
 	SeenInFiles int            `json:"seen_in_files"`
 	PerTenant   map[string]int `json:"per_tenant,omitempty"`
 }
@@ -30,6 +31,19 @@ func (idx *LabelIndex) Add(name string, values []string) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
+	idx.addLocked(name, values, nil)
+}
+
+// AddWithValueCounts is like Add but also merges sampled per-value frequency
+// counts. This produces differentiated storage estimates in the breakdown API.
+func (idx *LabelIndex) AddWithValueCounts(name string, values []string, counts map[string]int) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	idx.addLocked(name, values, counts)
+}
+
+func (idx *LabelIndex) addLocked(name string, values []string, counts map[string]int) {
 	if li, ok := idx.labels[name]; ok {
 		li.SeenInFiles++
 		existing := make(map[string]bool, len(li.Values))
@@ -42,16 +56,39 @@ func (idx *LabelIndex) Add(name string, values []string) {
 				existing[v] = true
 			}
 		}
+		if li.ValueCounts == nil {
+			li.ValueCounts = make(map[string]int)
+		}
+		if len(counts) > 0 {
+			for v, c := range counts {
+				li.ValueCounts[v] += c
+			}
+		} else {
+			for _, v := range values {
+				li.ValueCounts[v]++
+			}
+		}
 		li.Cardinality = len(li.Values)
 	} else {
 		capped := values
 		if len(capped) > 10000 {
 			capped = capped[:10000]
 		}
+		vc := make(map[string]int, len(capped))
+		if len(counts) > 0 {
+			for v, c := range counts {
+				vc[v] = c
+			}
+		} else {
+			for _, v := range capped {
+				vc[v]++
+			}
+		}
 		idx.labels[name] = &LabelInfo{
 			Name:        name,
 			Cardinality: len(capped),
 			Values:      capped,
+			ValueCounts: vc,
 			SeenInFiles: 1,
 		}
 	}
@@ -96,33 +133,8 @@ func (idx *LabelIndex) AddWithTenant(name string, values []string, tenant string
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	li, ok := idx.labels[name]
-	if ok {
-		li.SeenInFiles++
-		existing := make(map[string]bool, len(li.Values))
-		for _, v := range li.Values {
-			existing[v] = true
-		}
-		for _, v := range values {
-			if !existing[v] && len(li.Values) < 10000 {
-				li.Values = append(li.Values, v)
-				existing[v] = true
-			}
-		}
-		li.Cardinality = len(li.Values)
-	} else {
-		capped := values
-		if len(capped) > 10000 {
-			capped = capped[:10000]
-		}
-		li = &LabelInfo{
-			Name:        name,
-			Cardinality: len(capped),
-			Values:      capped,
-			SeenInFiles: 1,
-		}
-		idx.labels[name] = li
-	}
+	idx.addLocked(name, values, nil)
+	li := idx.labels[name]
 
 	// Track per-tenant cardinality
 	if tenant != "" {

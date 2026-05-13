@@ -343,8 +343,42 @@ func (s *Storage) updateLabelIndex(f *parquet.File) {
 		}
 
 		vals := extractDistinctFromStats(f, colIdx)
-		s.labelIndex.Add(internalName, vals)
+		counts := sampleValueFrequency(f, colIdx)
+		s.labelIndex.AddWithValueCounts(internalName, vals, counts)
 	}
+}
+
+// sampleValueFrequency reads up to 1024 rows from the first row group
+// and counts how many times each value appears. This gives a frequency
+// distribution for proportional storage estimation in the breakdown API.
+func sampleValueFrequency(f *parquet.File, colIdx int) map[string]int {
+	rgs := f.RowGroups()
+	if len(rgs) == 0 {
+		return nil
+	}
+	rg := rgs[0]
+	if rg.NumRows() == 0 {
+		return nil
+	}
+	rows := rg.Rows()
+	buf := make([]parquet.Row, 1024)
+	n, _ := rows.ReadRows(buf)
+	_ = rows.Close()
+	if n == 0 {
+		return nil
+	}
+	counts := make(map[string]int)
+	for i := 0; i < n; i++ {
+		if colIdx < len(buf[i]) {
+			val := buf[i][colIdx]
+			if !val.IsNull() {
+				if b := val.Bytes(); len(b) > 0 && len(b) < 256 && isPrintable(b) {
+					counts[string(b)]++
+				}
+			}
+		}
+	}
+	return counts
 }
 
 func extractDistinctFromStats(f *parquet.File, colIdx int) []string {
@@ -425,6 +459,10 @@ func (s *Storage) DiskCacheStats() *cache.Stats {
 
 func (s *Storage) LabelIndex() *cache.LabelIndex {
 	return s.labelIndex
+}
+
+func (s *Storage) SchemaRegistry() *schema.Registry {
+	return s.registry
 }
 
 func (s *Storage) Discovery() *discovery.Discovery {

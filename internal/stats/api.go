@@ -10,17 +10,21 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
 // APIConfig holds all dependencies for the stats API.
 type APIConfig struct {
-	Registry     *TenantRegistry
-	Manifest     *manifest.Manifest
-	CostCalc     *CostCalculator
-	ClassTracker *StorageClassTracker
-	LabelIndex   *cache.LabelIndex
-	Mode         string // "logs" or "traces"
-	Bucket       string
+	Registry        *TenantRegistry
+	Manifest        *manifest.Manifest
+	CostCalc        *CostCalculator
+	ClassTracker    *StorageClassTracker
+	LabelIndex      *cache.LabelIndex
+	SchemaRegistry  *schema.Registry
+	Mode            string // "logs" or "traces"
+	Bucket          string
+	BloomColumns    []string
+	BreakdownLabels []string
 }
 
 // API serves JSON endpoints for tenant statistics, cost, cardinality, etc.
@@ -42,6 +46,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/lakehouse/api/v1/stats/cost", a.handleCost)
 	mux.HandleFunc("/lakehouse/api/v1/stats/compression", a.handleCompression)
 	mux.HandleFunc("/lakehouse/api/v1/cardinality/fields", a.handleCardinality)
+	mux.HandleFunc("/lakehouse/api/v1/stats/breakdown", a.handleBreakdown)
 }
 
 // ---- Response types ----
@@ -169,6 +174,27 @@ type FieldEntry struct {
 	HasBloom    bool   `json:"has_bloom"`
 }
 
+// BreakdownResponse is the response for the storage breakdown endpoint.
+type BreakdownResponse struct {
+	Labels []BreakdownLabel `json:"labels"`
+}
+
+// BreakdownLabel contains per-value stats for a single breakdown label.
+type BreakdownLabel struct {
+	Name        string           `json:"name"`
+	Cardinality int              `json:"cardinality"`
+	Type        string           `json:"type"`
+	Values      []BreakdownValue `json:"values"`
+}
+
+// BreakdownValue is one distinct value of a breakdown label with estimated storage share.
+type BreakdownValue struct {
+	Value          string  `json:"value"`
+	EstimatedBytes int64   `json:"estimated_bytes"`
+	EstimatedFiles int64   `json:"estimated_files"`
+	SharePct       float64 `json:"share_pct"`
+}
+
 // ---- Handlers ----
 
 func (a *API) handleTenants(w http.ResponseWriter, r *http.Request) {
@@ -198,6 +224,32 @@ func (a *API) handleTenants(w http.ResponseWriter, r *http.Request) {
 		totalFiles += ts.TotalFiles
 	}
 
+	// Fall back to manifest-derived tenants when registry is empty.
+	if len(entries) == 0 && a.cfg.Manifest != nil {
+		summaries := a.cfg.Manifest.TenantSummaries()
+		for _, s := range summaries {
+			entry := TenantEntry{
+				AccountID:  s.AccountID,
+				ProjectID:  s.ProjectID,
+				TotalFiles: int64(s.TotalFiles),
+				TotalBytes: s.TotalBytes,
+				Partitions: s.Partitions,
+			}
+			if !s.MinTime.IsZero() {
+				entry.MinTime = s.MinTime.UTC().Format(time.RFC3339)
+			}
+			if !s.MaxTime.IsZero() {
+				entry.MaxTime = s.MaxTime.UTC().Format(time.RFC3339)
+			}
+			if a.cfg.CostCalc != nil {
+				entry.MonthlyCostUSD = a.cfg.CostCalc.MonthlyStorageCost("STANDARD", s.TotalBytes)
+			}
+			entries = append(entries, entry)
+			totalBytes += s.TotalBytes
+			totalFiles += int64(s.TotalFiles)
+		}
+	}
+
 	sortTenantEntries(entries, sortBy)
 
 	resp := TenantsResponse{
@@ -208,6 +260,20 @@ func (a *API) handleTenants(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, resp)
+}
+
+// TenantDetailResponse is the drill-down response for a single tenant.
+type TenantDetailResponse struct {
+	TenantEntry
+	PartitionList     []manifest.PartitionSummary `json:"partition_list,omitempty"`
+	FileSizeHistogram *FileSizeHistogram          `json:"file_size_histogram,omitempty"`
+	AvgRowsPerFile    int64                       `json:"avg_rows_per_file"`
+}
+
+// FileSizeHistogram groups files into size buckets.
+type FileSizeHistogram struct {
+	Buckets []string `json:"buckets"`
+	Counts  []int    `json:"counts"`
 }
 
 func (a *API) handleTenantDetail(w http.ResponseWriter, r *http.Request) {
@@ -227,14 +293,86 @@ func (a *API) handleTenantDetail(w http.ResponseWriter, r *http.Request) {
 	projectID := parts[1]
 	tenantKey := accountID + ":" + projectID
 
+	var entry TenantEntry
+
 	ts := a.cfg.Registry.Get(tenantKey)
-	if ts == nil {
+	if ts != nil {
+		entry = tenantStatsToEntry(ts, a.cfg.CostCalc)
+	} else if a.cfg.Manifest != nil {
+		// Fall back to manifest-derived tenant.
+		found := false
+		for _, s := range a.cfg.Manifest.TenantSummaries() {
+			if s.AccountID == accountID && s.ProjectID == projectID {
+				entry = TenantEntry{
+					AccountID:  s.AccountID,
+					ProjectID:  s.ProjectID,
+					TotalFiles: int64(s.TotalFiles),
+					TotalBytes: s.TotalBytes,
+					Partitions: s.Partitions,
+				}
+				if !s.MinTime.IsZero() {
+					entry.MinTime = s.MinTime.UTC().Format(time.RFC3339)
+				}
+				if !s.MaxTime.IsZero() {
+					entry.MaxTime = s.MaxTime.UTC().Format(time.RFC3339)
+				}
+				if a.cfg.CostCalc != nil {
+					entry.MonthlyCostUSD = a.cfg.CostCalc.MonthlyStorageCost("STANDARD", s.TotalBytes)
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+	} else {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
 
-	entry := tenantStatsToEntry(ts, a.cfg.CostCalc)
-	writeJSON(w, entry)
+	resp := TenantDetailResponse{TenantEntry: entry}
+
+	// Add partition drill-down from manifest.
+	if a.cfg.Manifest != nil {
+		tenantPrefix := accountID + "/" + projectID + "/"
+		allFiles := a.cfg.Manifest.AllFiles()
+
+		// File size histogram.
+		bucketLabels := []string{"<1MB", "1-10MB", "10-50MB", "50-128MB", ">128MB"}
+		counts := make([]int, 5)
+
+		for _, files := range allFiles {
+			for _, fi := range files {
+				if !strings.HasPrefix(fi.Key, tenantPrefix) {
+					continue
+				}
+				switch {
+				case fi.Size < 1<<20:
+					counts[0]++
+				case fi.Size < 10<<20:
+					counts[1]++
+				case fi.Size < 50<<20:
+					counts[2]++
+				case fi.Size < 128<<20:
+					counts[3]++
+				default:
+					counts[4]++
+				}
+			}
+		}
+		resp.FileSizeHistogram = &FileSizeHistogram{Buckets: bucketLabels, Counts: counts}
+
+		// Partitions for this tenant.
+		resp.PartitionList = a.cfg.Manifest.GetPartitions("", "")
+
+		if entry.TotalFiles > 0 && entry.TotalRows > 0 {
+			resp.AvgRowsPerFile = entry.TotalRows / entry.TotalFiles
+		}
+	}
+
+	writeJSON(w, resp)
 }
 
 func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
@@ -256,6 +394,14 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(classBD, func(i, j int) bool {
 		return classBD[i].Bytes > classBD[j].Bytes
 	})
+	// Fall back: assume STANDARD when registry has no class data but manifest has files.
+	if len(classBD) == 0 && a.cfg.Manifest != nil && a.cfg.Manifest.TotalFiles() > 0 {
+		classBD = append(classBD, ClassBreakdown{
+			Class: "STANDARD",
+			Bytes: a.cfg.Manifest.TotalBytes(),
+			Files: int64(a.cfg.Manifest.TotalFiles()),
+		})
+	}
 
 	var avgRatio float64
 	if gs.TotalBytes > 0 {
@@ -289,6 +435,11 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 	// Count distinct nodes across all tenants.
 	fleetNodes := countFleetNodes(a.cfg.Registry)
 
+	tenantCount := gs.TenantCount
+	if tenantCount == 0 && a.cfg.Manifest != nil {
+		tenantCount = len(a.cfg.Manifest.TenantSummaries())
+	}
+
 	resp := OverviewResponse{
 		Bucket:              a.cfg.Bucket,
 		Mode:                a.cfg.Mode,
@@ -300,7 +451,7 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 		PartitionCount:      partitionCount,
 		OldestData:          oldestData,
 		NewestData:          newestData,
-		TenantCount:         gs.TenantCount,
+		TenantCount:         tenantCount,
 		StorageByClass:      classBD,
 		FleetNodes:          fleetNodes,
 		RegistryGeneration:  a.cfg.Registry.Generation(),
@@ -416,30 +567,54 @@ func (a *API) handleCost(w http.ResponseWriter, r *http.Request) {
 
 	var totalCost float64
 	byClass := make([]ClassCost, 0, len(gs.BytesByClass))
-	for class, bytes := range gs.BytesByClass {
-		cost := a.cfg.CostCalc.MonthlyStorageCost(class, bytes)
+	perTenant := make([]TenantCostEntry, 0)
+
+	if len(gs.BytesByClass) > 0 {
+		for class, bytes := range gs.BytesByClass {
+			cost := a.cfg.CostCalc.MonthlyStorageCost(class, bytes)
+			byClass = append(byClass, ClassCost{
+				Class:   class,
+				Bytes:   bytes,
+				CostUSD: cost,
+			})
+			totalCost += cost
+		}
+
+		all := a.cfg.Registry.All()
+		for _, ts := range all {
+			cost := a.cfg.CostCalc.CostPerTenant(ts.BytesByClass)
+			perTenant = append(perTenant, TenantCostEntry{
+				AccountID:  ts.AccountID,
+				ProjectID:  ts.ProjectID,
+				CostUSD:    cost,
+				TotalBytes: ts.TotalBytes,
+			})
+		}
+	} else if a.cfg.Manifest != nil {
+		// Fall back to manifest when registry is empty (e.g. read-only / datagen).
+		summaries := a.cfg.Manifest.TenantSummaries()
+		var allBytes int64
+		for _, s := range summaries {
+			allBytes += s.TotalBytes
+			cost := a.cfg.CostCalc.MonthlyStorageCost("STANDARD", s.TotalBytes)
+			perTenant = append(perTenant, TenantCostEntry{
+				AccountID:  s.AccountID,
+				ProjectID:  s.ProjectID,
+				CostUSD:    cost,
+				TotalBytes: s.TotalBytes,
+			})
+		}
+		totalCost = a.cfg.CostCalc.MonthlyStorageCost("STANDARD", allBytes)
 		byClass = append(byClass, ClassCost{
-			Class:   class,
-			Bytes:   bytes,
-			CostUSD: cost,
+			Class:   "STANDARD",
+			Bytes:   allBytes,
+			CostUSD: totalCost,
 		})
-		totalCost += cost
 	}
+
 	sort.Slice(byClass, func(i, j int) bool {
 		return byClass[i].CostUSD > byClass[j].CostUSD
 	})
-
-	all := a.cfg.Registry.All()
-	perTenant := make([]TenantCostEntry, 0, len(all))
-	for _, ts := range all {
-		cost := a.cfg.CostCalc.CostPerTenant(ts.BytesByClass)
-		perTenant = append(perTenant, TenantCostEntry{
-			AccountID:  ts.AccountID,
-			ProjectID:  ts.ProjectID,
-			CostUSD:    cost,
-			TotalBytes: ts.TotalBytes,
-		})
-	}
 	sort.Slice(perTenant, func(i, j int) bool {
 		return perTenant[i].CostUSD > perTenant[j].CostUSD
 	})
@@ -463,25 +638,40 @@ func (a *API) handleCompression(w http.ResponseWriter, r *http.Request) {
 
 	var totalBytes, totalRaw int64
 	perTenant := make([]TenantCompressionEntry, 0, len(all))
-	for _, ts := range all {
-		totalBytes += ts.TotalBytes
-		totalRaw += ts.RawBytes
 
-		var ratio float64
-		if ts.TotalBytes > 0 {
-			ratio = float64(ts.RawBytes) / float64(ts.TotalBytes)
+	if len(all) > 0 {
+		for _, ts := range all {
+			totalBytes += ts.TotalBytes
+			totalRaw += ts.RawBytes
+
+			var ratio float64
+			if ts.TotalBytes > 0 {
+				ratio = float64(ts.RawBytes) / float64(ts.TotalBytes)
+			}
+			perTenant = append(perTenant, TenantCompressionEntry{
+				AccountID:        ts.AccountID,
+				ProjectID:        ts.ProjectID,
+				CompressionRatio: ratio,
+				TotalBytes:       ts.TotalBytes,
+				RawBytes:         ts.RawBytes,
+			})
 		}
-		perTenant = append(perTenant, TenantCompressionEntry{
-			AccountID:        ts.AccountID,
-			ProjectID:        ts.ProjectID,
-			CompressionRatio: ratio,
-			TotalBytes:       ts.TotalBytes,
-			RawBytes:         ts.RawBytes,
-		})
+	} else if a.cfg.Manifest != nil {
+		// Fall back to manifest. Without write-path raw bytes, show
+		// compressed bytes only so the endpoint is not empty.
+		summaries := a.cfg.Manifest.TenantSummaries()
+		for _, s := range summaries {
+			totalBytes += s.TotalBytes
+			perTenant = append(perTenant, TenantCompressionEntry{
+				AccountID:  s.AccountID,
+				ProjectID:  s.ProjectID,
+				TotalBytes: s.TotalBytes,
+			})
+		}
 	}
 
 	var avgRatio float64
-	if totalBytes > 0 {
+	if totalBytes > 0 && totalRaw > 0 {
 		avgRatio = float64(totalRaw) / float64(totalBytes)
 	}
 
@@ -520,6 +710,23 @@ func (a *API) handleCardinality(w http.ResponseWriter, r *http.Request) {
 		allLabels = a.cfg.LabelIndex.GetAllLabelInfo()
 	}
 
+	bloomSet := make(map[string]struct{}, len(a.cfg.BloomColumns))
+	for _, col := range a.cfg.BloomColumns {
+		bloomSet[col] = struct{}{}
+	}
+	hasBloomFilter := func(name string) bool {
+		if _, ok := bloomSet[name]; ok {
+			return true
+		}
+		// Match "resource_attr:service.name" against bloom column "service.name".
+		if idx := strings.LastIndex(name, ":"); idx >= 0 {
+			if _, ok := bloomSet[name[idx+1:]]; ok {
+				return true
+			}
+		}
+		return false
+	}
+
 	const highCardThreshold = 10000
 
 	fields := make([]FieldEntry, 0, len(allLabels))
@@ -529,25 +736,23 @@ func (a *API) handleCardinality(w http.ResponseWriter, r *http.Request) {
 	for _, li := range allLabels {
 		card := li.Cardinality
 
-		// If tenant filter is specified and this label has per-tenant data,
-		// use the per-tenant cardinality instead.
 		if tenantFilter != "" && li.PerTenant != nil {
 			if tc, ok := li.PerTenant[tenantFilter]; ok {
 				card = tc
 			} else {
-				continue // label not seen for this tenant
+				continue
 			}
 		}
 
 		fieldType := "map"
-		hasBloom := false
-		if card > 0 && card <= 1000 {
+		if a.cfg.SchemaRegistry != nil && a.cfg.SchemaRegistry.IsPromoted(li.Name) {
 			fieldType = "promoted"
 			totalPromoted++
 		} else {
 			totalMap++
-			hasBloom = card > 100
 		}
+
+		hasBloom := hasBloomFilter(li.Name)
 
 		if card >= highCardThreshold {
 			warnings = append(warnings, li.Name)
@@ -588,6 +793,109 @@ func (a *API) handleCardinality(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, resp)
+}
+
+func (a *API) handleBreakdown(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Optional: request a single label only.
+	filterLabel := r.URL.Query().Get("label")
+
+	labels := a.cfg.BreakdownLabels
+	if filterLabel != "" {
+		labels = []string{filterLabel}
+	}
+
+	// Total bytes/files from manifest for proportional estimation.
+	var totalBytes int64
+	var totalFiles int64
+	if a.cfg.Manifest != nil {
+		totalBytes = a.cfg.Manifest.TotalBytes()
+		totalFiles = int64(a.cfg.Manifest.TotalFiles())
+	}
+
+	result := make([]BreakdownLabel, 0, len(labels))
+
+	for _, name := range labels {
+		// Try the exact name first; fall back to prefix-stripped name
+		// (e.g. "service.name" matches label index entry "resource_attr:service.name").
+		li := a.cfg.LabelIndex.GetLabelInfo(name)
+		if li == nil && a.cfg.LabelIndex != nil {
+			for _, candidate := range a.cfg.LabelIndex.GetAllLabelInfo() {
+				if idx := strings.LastIndex(candidate.Name, ":"); idx >= 0 {
+					if candidate.Name[idx+1:] == name {
+						li = candidate
+						break
+					}
+				}
+			}
+		}
+
+		fieldType := "map"
+		if a.cfg.SchemaRegistry != nil && a.cfg.SchemaRegistry.IsPromoted(name) {
+			fieldType = "promoted"
+		} else if li != nil && a.cfg.SchemaRegistry != nil && a.cfg.SchemaRegistry.IsPromoted(li.Name) {
+			fieldType = "promoted"
+		}
+
+		bl := BreakdownLabel{
+			Name: name,
+			Type: fieldType,
+		}
+
+		if li != nil && len(li.Values) > 0 {
+			bl.Cardinality = li.Cardinality
+			values := li.Values
+
+			// Compute total occurrence weight across all values for proportional split.
+			var totalWeight int64
+			for _, v := range values {
+				c := li.ValueCounts[v]
+				if c < 1 {
+					c = 1
+				}
+				totalWeight += int64(c)
+			}
+
+			// Cap displayed values after weight calculation.
+			if len(values) > 50 {
+				values = values[:50]
+			}
+
+			bv := make([]BreakdownValue, 0, len(values))
+			for _, v := range values {
+				c := int64(li.ValueCounts[v])
+				if c < 1 {
+					c = 1
+				}
+				share := float64(c) / float64(max64(totalWeight, 1))
+				estBytes := int64(share * float64(totalBytes))
+				estFiles := int64(share * float64(totalFiles))
+				sharePct := share * 100.0
+				bv = append(bv, BreakdownValue{
+					Value:          v,
+					EstimatedBytes: estBytes,
+					EstimatedFiles: estFiles,
+					SharePct:       sharePct,
+				})
+			}
+			bl.Values = bv
+		}
+
+		result = append(result, bl)
+	}
+
+	writeJSON(w, BreakdownResponse{Labels: result})
+}
+
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // ---- Helpers ----

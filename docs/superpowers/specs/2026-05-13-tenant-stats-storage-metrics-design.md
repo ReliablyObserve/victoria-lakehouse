@@ -865,3 +865,92 @@ All changes mirrored to `lakehouse-traces/` module.
 - S3 Inventory automated setup — user configures Inventory externally, we only consume
 - Billing/chargeback integration — we expose cost estimates, not invoicing
 - Authentication on UI — relies on existing network/proxy auth (same as VMUI)
+
+---
+
+## Implementation Notes (2026-05-13)
+
+### Manifest Fallback Pattern
+
+The TenantRegistry is only populated when data flows through the write path (RecordWrite on AddFile). In read-only deployments (datagen, external ETL, or when lakehouse only serves cold data from S3), the registry is empty. Every API handler implements a **manifest fallback**: when registry data is empty, derive stats from the partition manifest which always has accurate S3 file metadata.
+
+Affected endpoints:
+- **GET /tenants**: falls back to `Manifest.TenantSummaries()` — extracts `AccountID/ProjectID` from S3 keys
+- **GET /tenants/{a}/{p}**: falls back to manifest, adds drill-down (partitions, file_size_histogram)
+- **GET /stats/overview**: `tenant_count` falls back to manifest count; `storage_by_class` defaults to STANDARD when class tracker is empty
+- **GET /stats/cost**: derives per-tenant cost from manifest bytes at STANDARD class pricing
+- **GET /stats/compression**: shows per-tenant byte totals from manifest (compression ratio unavailable without raw bytes)
+
+### VMUI Tab: Inline Rendering (Not Iframe)
+
+The spec described iframe-based injection. Implementation uses **inline rendering** instead:
+- `vmui-tab.js` (~412 lines) fetches Lakehouse API directly and renders cards/tables/charts inside VMUI's content area
+- Saves/restores VMUI's original content when switching between Lakehouse tab and other VMUI tabs
+- Uses VMUI CSS variables (`--color-primary`, `--color-background-body`, `--color-text`, etc.) for visual consistency
+- Has 3 sub-tabs matching the spec: Storage Overview, Tenants, Cardinality Explorer
+
+### Cardinality: Schema-Based Type Classification
+
+Field type (promoted vs map) is determined by `SchemaRegistry.IsPromoted()` — checking whether a field has a top-level Parquet column mapping. This replaces the original cardinality-based heuristic which was unreliable. The `SchemaRegistry` is now wired into `stats.APIConfig` from both main binaries.
+
+### Bloom Filter Detection
+
+Bloom filter status uses the configured `BloomColumns` list (from `config.ActiveBloomColumns()`) with suffix matching. This handles traces where label index discovers `resource_attr:service.name` but bloom config has `service.name`.
+
+```go
+hasBloomFilter := func(name string) bool {
+    if _, ok := bloomSet[name]; ok { return true }
+    if idx := strings.LastIndex(name, ":"); idx >= 0 {
+        if _, ok := bloomSet[name[idx+1:]]; ok { return true }
+    }
+    return false
+}
+```
+
+### Default Bloom Columns
+
+- **Logs mode**: `service.name`, `trace_id` (both promoted, bloom-enabled in Parquet)
+- **Traces mode**: `trace_id`, `service.name` (both promoted, bloom-enabled in Parquet)
+
+### Tenant Discovery from S3 Keys
+
+S3 key structure: `{AccountID}/{ProjectID}/{signal}/dt=YYYY-MM-DD/hour=HH/{hash}.parquet`
+
+`Manifest.TenantSummaries()` parses the first two path components from all file keys to extract tenant identity. This provides tenant discovery for read-only deployments without requiring the write path.
+
+---
+
+## UI Safeguards
+
+### Data Availability Guards
+
+All UI components must handle the case where API data is incomplete or empty:
+
+1. **Empty state**: Every card, table, and chart shows a meaningful empty state (e.g., "No data available", "No tenants found") instead of blank/broken rendering
+2. **Zero values**: Fields like `compression_ratio`, `total_rows`, `raw_bytes` may be 0 in read-only deployments. UI should display "N/A" or "—" for zero compression ratios rather than "0.00x"
+3. **Missing fields**: API responses may omit optional fields (`omitempty`). UI must check for existence before accessing nested properties
+
+### Error Handling
+
+1. **Fetch failures**: All API fetches use try/catch. On failure, display an inline error message in the affected component, not a global error
+2. **Partial failures**: If one endpoint fails (e.g., cost), other tabs continue working independently
+3. **Timeout**: Fetch calls should use AbortController with a 10s timeout to prevent hanging UI
+
+### VMUI Integration Safety
+
+1. **MutationObserver cleanup**: Always disconnect the observer once the nav is found to avoid memory leaks
+2. **Content preservation**: Save/restore VMUI's original main content when toggling between Lakehouse tab and native VMUI tabs
+3. **No global state pollution**: All Lakehouse JS is scoped — no global variables that could conflict with VMUI's React app
+4. **Graceful degradation**: If VMUI DOM structure changes (upstream VL update), the injection script silently fails without breaking VMUI functionality
+
+### Refresh Safety
+
+1. **Cancel on tab switch**: Auto-refresh intervals are cleared when switching tabs or navigating away
+2. **Debounce**: Rapid tab switches don't trigger concurrent API calls — previous pending fetches are aborted
+3. **Stale data indicator**: If auto-refresh is off and data is older than 5 minutes, show a "stale data" badge
+
+### Tenant Detail Drill-Down
+
+1. **Large partition lists**: If a tenant has >365 partitions, paginate or truncate the partition list with a "show more" control
+2. **File histogram**: Always show all buckets even if count is 0 (consistent axes)
+3. **Time range formatting**: Display human-readable relative time (e.g., "4 days ago") alongside absolute timestamps

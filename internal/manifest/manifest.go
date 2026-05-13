@@ -473,3 +473,76 @@ func (m *Manifest) GetPartitions(startDate, endDate string) []PartitionSummary {
 	})
 	return result
 }
+
+// TenantSummary holds per-tenant aggregate stats derived from manifest S3 keys.
+type TenantSummary struct {
+	AccountID  string
+	ProjectID  string
+	TotalFiles int
+	TotalBytes int64
+	Partitions int
+	MinTime    time.Time
+	MaxTime    time.Time
+}
+
+// TenantSummaries extracts per-tenant stats from S3 keys.
+// Keys are expected to have the form: {AccountID}/{ProjectID}/{signal}/dt=.../hour=.../file.parquet
+func (m *Manifest) TenantSummaries() []TenantSummary {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	type key struct{ account, project string }
+	type accum struct {
+		files      int
+		bytes      int64
+		partitions map[string]struct{}
+		minT, maxT time.Time
+	}
+
+	byTenant := make(map[key]*accum)
+
+	for partition, files := range m.files {
+		for _, fi := range files {
+			parts := strings.SplitN(fi.Key, "/", 4)
+			if len(parts) < 3 {
+				continue
+			}
+			k := key{account: parts[0], project: parts[1]}
+			a, ok := byTenant[k]
+			if !ok {
+				a = &accum{partitions: make(map[string]struct{})}
+				byTenant[k] = a
+			}
+			a.files++
+			a.bytes += fi.Size
+			a.partitions[partition] = struct{}{}
+
+			if t, err := parsePartitionTime(partition); err == nil {
+				if a.minT.IsZero() || t.Before(a.minT) {
+					a.minT = t
+				}
+				end := t.Add(time.Hour)
+				if a.maxT.IsZero() || end.After(a.maxT) {
+					a.maxT = end
+				}
+			}
+		}
+	}
+
+	result := make([]TenantSummary, 0, len(byTenant))
+	for k, a := range byTenant {
+		result = append(result, TenantSummary{
+			AccountID:  k.account,
+			ProjectID:  k.project,
+			TotalFiles: a.files,
+			TotalBytes: a.bytes,
+			Partitions: len(a.partitions),
+			MinTime:    a.minT,
+			MaxTime:    a.maxT,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].TotalBytes > result[j].TotalBytes
+	})
+	return result
+}
