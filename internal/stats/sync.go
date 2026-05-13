@@ -9,7 +9,7 @@ import (
 	"net/http"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
-	"github.com/valyala/gozstd"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/encoding/zstd"
 )
 
 // ---------------------------------------------------------------------------
@@ -236,10 +236,10 @@ func tenantDeltaFromJSON(dj tenantDeltaJSON) *TenantDelta {
 
 // compressZSTD compresses data using ZSTD.
 func compressZSTD(data []byte) []byte {
-	return gozstd.Compress(nil, data)
+	return zstd.CompressLevel(nil, data, 1)
 }
 
 // decompressZSTD decompresses ZSTD-encoded data.
 func decompressZSTD(data []byte) ([]byte, error) {
-	return gozstd.Decompress(nil, data)
+	return zstd.Decompress(nil, data)
 }
