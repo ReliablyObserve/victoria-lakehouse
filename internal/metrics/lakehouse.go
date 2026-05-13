@@ -146,6 +146,54 @@ var (
 	ElectionHealthChecksTotal = NewCounterVec("lakehouse_election_health_checks_total", "result")
 )
 
+// Tenant metrics (per-tenant, subject to cardinality cap)
+var (
+	TenantFiles              = NewGaugeVec("lakehouse_tenant_files", "tenant")
+	TenantBytes              = NewGaugeVec("lakehouse_tenant_bytes", "tenant")
+	TenantRawBytes           = NewGaugeVec("lakehouse_tenant_raw_bytes", "tenant")
+	TenantRowsTotal          = NewCounterVec("lakehouse_tenant_rows_total", "tenant")
+	TenantIngestionBytesTotal = NewCounterVec("lakehouse_tenant_ingestion_bytes_total", "tenant")
+	TenantQueriesTotal       = NewCounterVec("lakehouse_tenant_queries_total", "tenant")
+	TenantLastWriteTimestamp = NewGaugeVec("lakehouse_tenant_last_write_timestamp", "tenant")
+	TenantLastQueryTimestamp = NewGaugeVec("lakehouse_tenant_last_query_timestamp", "tenant")
+)
+
+// Global storage metrics
+var (
+	StorageFilesTotal       = NewGauge("lakehouse_storage_files_total")
+	StorageBytesTotal       = NewGauge("lakehouse_storage_bytes_total")
+	StorageRawBytesTotal    = NewGauge("lakehouse_storage_raw_bytes_total")
+	StorageCompressionRatio = NewFloatGauge("lakehouse_storage_compression_ratio")
+	StorageRowsTotal        = NewGauge("lakehouse_storage_rows_total")
+	StoragePartitionsTotal  = NewGauge("lakehouse_storage_partitions_total")
+	StorageOldestData       = NewGauge("lakehouse_storage_oldest_data_seconds")
+	StorageNewestData       = NewGauge("lakehouse_storage_newest_data_seconds")
+	StorageTenantsTotal     = NewGauge("lakehouse_storage_tenants_total")
+	StorageBytesByClass     = NewGaugeVec("lakehouse_storage_bytes_by_class", "class")
+	StorageFilesByClass     = NewGaugeVec("lakehouse_storage_files_by_class", "class")
+	StorageCostMonthlyUSD   = NewFloatGauge("lakehouse_storage_cost_monthly_usd")
+	StorageCostByClassUSD   = NewFloatGaugeVec("lakehouse_storage_cost_by_class_usd", "class")
+	StorageIngestionRate    = NewGauge("lakehouse_storage_ingestion_rate_bytes")
+)
+
+// Cardinality limiter meta-metrics
+var (
+	MetricsCardinalityLimit    = NewGauge("lakehouse_metrics_cardinality_limit")
+	MetricsCardinalityTracked  = NewGauge("lakehouse_metrics_cardinality_tracked")
+	MetricsCardinalityOverflow = NewCounter("lakehouse_metrics_cardinality_overflow_total")
+)
+
+// Stats sync metrics
+var (
+	StatsPushTotal         = NewCounter("lakehouse_stats_push_total")
+	StatsPushErrors        = NewCounter("lakehouse_stats_push_errors_total")
+	StatsPushBytesTotal    = NewCounter("lakehouse_stats_push_bytes_total")
+	StatsSnapshotTotal     = NewCounter("lakehouse_stats_snapshot_total")
+	StatsSnapshotErrors    = NewCounter("lakehouse_stats_snapshot_errors_total")
+	StatsMergesTotal       = NewCounter("lakehouse_stats_merges_total")
+	StatsHeadObjectTotal   = NewCounter("lakehouse_stats_headobject_total")
+)
+
 // Delete metrics
 var (
 	DeleteTombstonesActive      = NewGauge("lakehouse_delete_tombstones_active")

@@ -93,6 +93,42 @@ func (cv *CounterVec) Get(labelValue string) uint64 {
 	return vmmetrics.GetOrCreateCounter(fmt.Sprintf(`%s{%s=%q}`, cv.name, cv.label, labelValue)).Get()
 }
 
+// GaugeVec is a set of gauges indexed by a single label value.
+type GaugeVec struct {
+	name  string
+	label string
+}
+
+func NewGaugeVec(name, label string) *GaugeVec {
+	return &GaugeVec{name: name, label: label}
+}
+
+func (gv *GaugeVec) Set(labelValue string, v int64) {
+	vmmetrics.GetOrCreateGauge(fmt.Sprintf(`%s{%s=%q}`, gv.name, gv.label, labelValue), nil).Set(float64(v))
+}
+
+func (gv *GaugeVec) Get(labelValue string) int64 {
+	return int64(vmmetrics.GetOrCreateGauge(fmt.Sprintf(`%s{%s=%q}`, gv.name, gv.label, labelValue), nil).Get())
+}
+
+// FloatGaugeVec is a set of float gauges indexed by a single label value.
+type FloatGaugeVec struct {
+	name  string
+	label string
+}
+
+func NewFloatGaugeVec(name, label string) *FloatGaugeVec {
+	return &FloatGaugeVec{name: name, label: label}
+}
+
+func (gv *FloatGaugeVec) Set(labelValue string, v float64) {
+	vmmetrics.GetOrCreateGauge(fmt.Sprintf(`%s{%s=%q}`, gv.name, gv.label, labelValue), nil).Set(v)
+}
+
+func (gv *FloatGaugeVec) Get(labelValue string) float64 {
+	return vmmetrics.GetOrCreateGauge(fmt.Sprintf(`%s{%s=%q}`, gv.name, gv.label, labelValue), nil).Get()
+}
+
 // NewGaugeFunc creates a gauge backed by a callback function.
 func NewGaugeFunc(name string, fn func() float64) {
 	vmmetrics.NewGauge(name, fn)

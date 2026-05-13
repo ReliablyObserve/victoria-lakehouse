@@ -12,6 +12,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `FormatField(internalName, value)` registry method for one-call schema-driven formatting in all read paths
 - Architecture documentation with mermaid diagrams — cache architecture (L1→L2→L3→S3 tiers, SmartCache controller, eviction, prefetch, cross-signal, sizing), manifest system (structure, sync, persistence, API), storage & Parquet flow (end-to-end write/read paths, VL adapter, schema registry)
 - CodeQL configuration to exclude vendored VictoriaLogs code from security scanning
+- Tenant stats & storage metrics — `StatsConfig` (15 fields) and `UIConfig` (4 fields) config structs, `KnownTenant` for bucket-isolation cold discovery with per-tenant lifecycle/pricing overrides
+- Per-tenant Prometheus metrics — 8 metrics (`lakehouse_tenant_files`, `_bytes`, `_raw_bytes`, `_rows_total`, `_ingestion_bytes_total`, `_queries_total`, `_last_write_timestamp`, `_last_query_timestamp`) with configurable cardinality cap
+- Global storage metrics — 14 metrics (`lakehouse_storage_files_total`, `_bytes_total`, `_compression_ratio`, `_cost_monthly_usd`, `_bytes_by_class`, etc.) for fleet-wide storage visibility
+- Cardinality limiter meta-metrics — `lakehouse_metrics_cardinality_limit`, `_tracked`, `_overflow_total`
+- Stats sync metrics — 7 metrics for peer delta broadcast, S3 snapshots, CRDT merges, HeadObject verification
+- `GaugeVec` and `FloatGaugeVec` metric helper types for per-label gauge tracking
+- Helm chart updates — `lakehouseConfig.stats.*` (15 fields), `lakehouseConfig.ui.*` (4 fields), complete `lakehouseConfig.tenant.*` (isolation, bucket_template, known_tenants with lifecycle/pricing overrides)
+- Tenant stats documentation (`docs/tenant-stats.md`) — 7 JSON API endpoints, CRDT fleet sync, storage class tracking, cost estimation, all metrics reference
+- Lakehouse Explorer UI documentation (`docs/lakehouse-explorer.md`) — 3-tab Preact+uPlot dashboard (Storage Overview, Tenants, Cardinality), VMUI tab injection
+- Updated observability docs with tenant, storage, cardinality, and stats sync metric tables
+- Updated multi-tenancy docs with tenant stats, monitoring, cost allocation sections
+- Updated configuration docs with stats, UI, and tenant config examples
+- Updated README — tenant stats in Key Features, Observability section, Configuration section, Documentation navigation
 
 ### Fixed
 - Jaeger test `TestHandleJaegerTrace_ScopeAttrAsSpanTag` assertion — handler strips `scope_attr:` prefix from tag keys, test now expects `lib.version` instead of `scope_attr:lib.version`

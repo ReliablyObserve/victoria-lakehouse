@@ -307,4 +307,38 @@ lakehouse:
     max_concurrent: 32
     timeout: 60s
     slow_threshold: 5s
+
+  stats:
+    enabled: true
+    push_interval: 30s
+    push_compression: true
+    snapshot_interval: 5m
+    metrics_cardinality_limit: 100
+    cardinality_warning_threshold: 10000
+    s3_lifecycle_rules:
+      - transition_days: 30
+        storage_class: STANDARD_IA
+      - transition_days: 90
+        storage_class: GLACIER
+    s3_price_per_gb:
+      STANDARD: 0.023
+      STANDARD_IA: 0.0125
+      GLACIER: 0.0036
+      DEEP_ARCHIVE: 0.00099
+
+  ui:
+    enabled: true
+    vmui_tab: true
+    refresh_default: 0
+    theme: auto
+
+  tenant:
+    prefix_template: "{AccountID}/{ProjectID}/"
+    isolation: prefix
+    # For bucket isolation mode:
+    # isolation: bucket
+    # bucket_template: "obs-{AccountID}-{ProjectID}"
+    # known_tenants:
+    #   - account_id: "100"
+    #     project_id: "1"
 ```

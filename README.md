@@ -404,6 +404,16 @@ Each binary supports three roles for independent scaling:
 - **vmauth header extraction**: `X-Scope-AccountID` / `X-Scope-ProjectID` headers for tenant routing.
 - **Analytics compatible**: all Parquet tools (DuckDB, ClickHouse, Trino, Spark) query per-tenant prefix directly.
 - **Cost attribution**: per-prefix S3 Inventory or per-bucket billing for tenant cost allocation.
+- **Tenant stats & monitoring**: real-time per-tenant statistics (files, bytes, rows, cost) with CRDT fleet sync, JSON API, and Prometheus metrics.
+- **Cardinality cap**: configurable limit on per-tenant Prometheus label cardinality prevents metric explosion.
+
+### Tenant Stats & Storage Metrics
+- **TenantRegistry**: CRDT-based in-memory registry tracking per-tenant files, bytes, rows, time ranges, storage classes, and query activity.
+- **Fleet synchronization**: delta broadcast with ZSTD compression (configurable interval), S3 snapshot fallback for crash recovery.
+- **S3 storage class awareness**: lifecycle prediction (zero API cost), HeadObject sampling, optional S3 Inventory import.
+- **Cost estimation**: per-class pricing model with lifecycle savings calculation, request cost tracking, per-tenant cost allocation.
+- **JSON API**: 7 endpoints under `/lakehouse/api/v1/` — tenants, overview, ingestion, cost, compression, cardinality.
+- **Lakehouse Explorer UI**: built-in Preact+uPlot dashboard with Storage Overview, Tenants, and Cardinality Explorer tabs. Injected into VL/VT VMUI as optional tab (zero upstream modifications).
 
 ### Infrastructure
 - **Metadata persistence**: manifest, label index, cache metadata, and smart cache snapshots survive restarts.
@@ -415,7 +425,7 @@ Each binary supports three roles for independent scaling:
 
 ## Configuration
 
-Minimal config (S3 bucket) works out of the box. All 110+ config options have production-ready defaults. Each binary automatically applies mode-appropriate defaults (port, S3 prefix, bloom columns, delete prefix).
+Minimal config (S3 bucket) works out of the box. All 130+ config options have production-ready defaults. Each binary automatically applies mode-appropriate defaults (port, S3 prefix, bloom columns, delete prefix).
 
 ### Shared Config (both binaries)
 
@@ -469,6 +479,35 @@ lakehouse:
 
 Full reference: [Multi-Tenancy](docs/multi-tenancy.md)
 
+### Tenant Stats & Storage Metrics Config
+
+```yaml
+lakehouse:
+  stats:
+    enabled: true
+    push_interval: 30s              # peer delta broadcast interval
+    push_compression: true           # ZSTD compress deltas
+    snapshot_interval: 5m            # S3 snapshot persistence
+    metrics_cardinality_limit: 100   # max tenant label values (0=disable)
+    cardinality_warning_threshold: 10000
+    s3_lifecycle_rules:              # for zero-cost storage class prediction
+      - transition_days: 30
+        storage_class: STANDARD_IA
+      - transition_days: 90
+        storage_class: GLACIER
+    s3_price_per_gb:                 # cost estimation pricing
+      STANDARD: 0.023
+      STANDARD_IA: 0.0125
+      GLACIER: 0.0036
+      DEEP_ARCHIVE: 0.00099
+  ui:
+    enabled: true                    # serve /lakehouse/ui/
+    vmui_tab: true                   # inject tab into VL/VT VMUI
+    theme: auto                      # auto | dark | light
+```
+
+Full reference: [Tenant Stats](docs/tenant-stats.md) | [Lakehouse Explorer](docs/lakehouse-explorer.md)
+
 ### Mode-Specific Config
 
 Each binary reads its own section for mode-specific overrides:
@@ -508,12 +547,15 @@ Full reference: [Configuration](docs/configuration.md)
 
 ## Observability
 
-- **~100 Prometheus metrics** under `lakehouse_*` prefix (RED, USE, S3, cache, peer, manifest, Parquet engine, prefetch, smart cache, cross-signal, startup)
+- **~110 Prometheus metrics** under `lakehouse_*` prefix (RED, USE, S3, cache, peer, manifest, Parquet engine, prefetch, smart cache, cross-signal, tenant, storage, cost, stats sync, startup)
+- **Per-tenant metrics** with configurable cardinality cap (files, bytes, rows, queries, ingestion, timestamps)
+- **Global storage metrics** (compression ratio, partitions, oldest/newest data, cost by storage class, ingestion rate)
 - **Grafana dashboards** (single-instance + cluster + supplementary panels for VL/VT dashboards)
 - **10 alerting rules** with severity and annotations
+- **Lakehouse Explorer UI** at `/lakehouse/ui/` with Storage Overview, Tenants, and Cardinality tabs
 - **Structured JSON logs** via `slog`
 
-See [Observability](docs/observability.md).
+See [Observability](docs/observability.md) and [Tenant Stats](docs/tenant-stats.md).
 
 ---
 
@@ -633,11 +675,13 @@ See [Performance](docs/performance.md).
 - [Open Parquet Format](docs/open-parquet-format.md) — full schema reference, typed columns, bloom filters, compression, row group statistics, external tool examples
 - [Use Cases](docs/use-cases.md) — disaster recovery, compliance/audit, capacity planning, cost allocation, ML pipelines
 - [Multi-Tenancy](docs/multi-tenancy.md) — S3 prefix isolation, bucket-per-tenant enterprise option, vmauth integration, analytics tool compatibility
+- [Tenant Stats & Storage Metrics](docs/tenant-stats.md) — per-tenant statistics, CRDT fleet sync, S3 storage class tracking, cost estimation, JSON API, Prometheus metrics
+- [Lakehouse Explorer UI](docs/lakehouse-explorer.md) — built-in web UI with Storage Overview, Tenants, and Cardinality Explorer tabs, VMUI integration
 
 ### Operations
 - [Operations](docs/operations.md) — day-2 operations, scaling, troubleshooting
 - [Security](docs/security.md) — container hardening, auth, network policies, credentials
-- [Observability](docs/observability.md) — ~100 metrics, Grafana dashboards, 10 alerting rules
+- [Observability](docs/observability.md) — ~110 metrics, Grafana dashboards, 10 alerting rules
 - [Performance](docs/performance.md) — benchmarks, tuning guides, p95 targets
 - [Scaling](docs/scaling.md) — horizontal (insert/select separation) and vertical scaling
 
