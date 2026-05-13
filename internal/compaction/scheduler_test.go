@@ -48,7 +48,7 @@ func TestScheduler_SkipsWhenNotLeader(t *testing.T) {
 		Interval:         time.Minute,
 		MaxConcurrent:    2,
 		RowGroupSize:     1000,
-		CompressionLevel: 3,
+		CompressionLevel: 7,
 	})
 
 	n, err := sched.Scan(context.Background())
@@ -114,7 +114,7 @@ func TestScheduler_CompactsEligiblePartition(t *testing.T) {
 		Interval:         time.Minute,
 		MaxConcurrent:    2,
 		RowGroupSize:     1000,
-		CompressionLevel: 3,
+		CompressionLevel: 7,
 		OnCompacted: func(added []manifest.FileInfo, removed []string) {
 			callbackCalled = true
 		},
@@ -257,7 +257,7 @@ func TestScheduler_SkipsLockedPartition(t *testing.T) {
 		Interval:         time.Minute,
 		MaxConcurrent:    2,
 		RowGroupSize:     1000,
-		CompressionLevel: 3,
+		CompressionLevel: 7,
 	})
 
 	n, err := sched.Scan(ctx)
@@ -335,7 +335,7 @@ func TestScheduler_SentinelCheckError(t *testing.T) {
 		Interval:         time.Minute,
 		MaxConcurrent:    2,
 		RowGroupSize:     1000,
-		CompressionLevel: 3,
+		CompressionLevel: 7,
 	})
 
 	n, err := sched.Scan(ctx)
@@ -391,7 +391,7 @@ func TestScheduler_MaxConcurrentLimit(t *testing.T) {
 		Interval:         time.Minute,
 		MaxConcurrent:    1, // Only allow 1 at a time.
 		RowGroupSize:     1000,
-		CompressionLevel: 3,
+		CompressionLevel: 7,
 	})
 
 	n, err := sched.Scan(ctx)
@@ -434,7 +434,7 @@ func TestScheduler_SkipsUnparseablePartition(t *testing.T) {
 		Interval:         time.Minute,
 		MaxConcurrent:    2,
 		RowGroupSize:     1000,
-		CompressionLevel: 3,
+		CompressionLevel: 7,
 	})
 
 	n, err := sched.Scan(ctx)
@@ -492,7 +492,7 @@ func TestScheduler_SkipsWhenLessThan2FilesSelected(t *testing.T) {
 		Interval:         time.Minute,
 		MaxConcurrent:    2,
 		RowGroupSize:     1000,
-		CompressionLevel: 3,
+		CompressionLevel: 7,
 	})
 
 	n, err := sched.Scan(ctx)
@@ -564,7 +564,7 @@ func TestScheduler_SentinelAcquireError(t *testing.T) {
 		Interval:         time.Minute,
 		MaxConcurrent:    2,
 		RowGroupSize:     1000,
-		CompressionLevel: 3,
+		CompressionLevel: 7,
 	})
 
 	n, err := sched.Scan(ctx)
@@ -634,7 +634,7 @@ func TestScheduler_CompactionFailure(t *testing.T) {
 		Interval:         time.Minute,
 		MaxConcurrent:    2,
 		RowGroupSize:     1000,
-		CompressionLevel: 3,
+		CompressionLevel: 7,
 	})
 
 	n, err := sched.Scan(ctx)

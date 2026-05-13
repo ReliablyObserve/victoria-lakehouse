@@ -35,7 +35,7 @@ VL/VT's 47-70x compression makes EBS-only cheapest for short retention. With 3 A
 | Scenario (500 GB/day, 1yr, 3 AZ) | VL/VT EBS Only | Lakehouse Hybrid | Loki + Tempo |
 |---|---|---|---|
 | **Monthly cost** | **$2,679/mo** | $2,814/mo | $3,610/mo |
-| **Compression** | 47-70x | 6x (Parquet) | 3.5x |
+| **Compression** | 47-70x | 6-9x (Parquet ZSTD L7) | 3.5x |
 | **Query speed (cold)** | <10ms (all EBS) | <500ms (Parquet) | 1-10s |
 | **Data format** | Proprietary | **Open Parquet** | Proprietary |
 | **S3 durability** | EBS per-AZ | **11 nines** | 11 nines |
@@ -654,6 +654,19 @@ Any tool that reads Parquet can query these files directly — DuckDB, ClickHous
 
 See [Performance](docs/performance.md).
 
+### Parquet Compression (ZSTD, real E2E data)
+
+Default: **level 7** (`SpeedBetterCompression`) — best cost/performance compromise.
+
+| Signal | Ratio | Write Speed | Read Speed | vs Level 3 |
+|--------|-------|------------|-----------|-----------|
+| Logs (377K rows) | 6.13x | 257 MB/s | 53 MB/s | **25% smaller**, 80% write speed |
+| Traces (159K rows) | 9.39x | 335 MB/s | 39 MB/s | **16% smaller**, 91% write speed |
+
+Read latency is nearly flat across all levels — decompression is not the bottleneck. Level 7 saves **$50/month per 2 TB/day** vs level 3 ($608/year). Level 11+ buys <2% better ratio at 5x CPU cost — never recommended.
+
+See [ZSTD Compression Benchmark](docs/zstd-compression-benchmark.md) for full results.
+
 ---
 
 ## Documentation
@@ -683,6 +696,7 @@ See [Performance](docs/performance.md).
 - [Security](docs/security.md) — container hardening, auth, network policies, credentials
 - [Observability](docs/observability.md) — ~110 metrics, Grafana dashboards, 10 alerting rules
 - [Performance](docs/performance.md) — benchmarks, tuning guides, p95 targets
+- [ZSTD Compression Benchmark](docs/zstd-compression-benchmark.md) — real-data compression levels, write/read performance, S3 cost impact
 - [Scaling](docs/scaling.md) — horizontal (insert/select separation) and vertical scaling
 
 ### Cost & Comparison

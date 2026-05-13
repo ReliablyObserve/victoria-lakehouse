@@ -120,12 +120,14 @@ False positive rate is controlled by the Parquet writer's bloom filter configura
 
 All files use ZSTD compression. The compression level is configurable via `--lakehouse.insert.compression-level` with these trade-offs:
 
-| Level | Encode Speed | Typical Ratio | Best For |
+| Level | Encode Speed | Ratio (real data) | Best For |
 |---|---|---|---|
-| 1 (fastest) | ~500 MB/s | 3-5x | High ingest rate |
-| 3 (default) | ~300 MB/s | 5-7x | General production use |
-| 9 | ~100 MB/s | 6-10x | Storage cost optimization |
-| 19 (best) | ~20 MB/s | 8-12x | Archival, rarely queried |
+| 1 (fastest) | ~340 MB/s | 4.4x logs / 6.9x traces | High ingest rate (>500 MB/s) |
+| 3 | ~320 MB/s | 4.6x logs / 7.9x traces | Maximum write speed |
+| 7 (default) | ~260 MB/s | 6.1x logs / 9.4x traces | Best cost/performance compromise |
+| 11+ (best) | ~63 MB/s | 6.2x logs / 9.7x traces | Never recommended (<2% gain, 5x slower) |
+
+Ratios measured on real E2E data (377K logs, 159K traces). See [ZSTD Benchmark](zstd-compression-benchmark.md).
 
 Low-cardinality string columns (`service.name`, `k8s.namespace.name`) achieve 50-200x compression due to Parquet's dictionary encoding combined with ZSTD. High-entropy columns (`body`, `trace_id`) compress 2-4x.
 

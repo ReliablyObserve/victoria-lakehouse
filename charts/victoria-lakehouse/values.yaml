@@ -151,8 +151,10 @@ lakehouseConfig:
       - service.name
       - trace_id
     # -- ZSTD compression level (1=fast, 22=max compression).
+    # Level 7 (SpeedBetterCompression) is the default: 25% smaller logs, 16% smaller
+    # traces vs level 3, with only 15-20% slower writes. See docs/zstd-compression-benchmark.md
     # --lakehouse.insert.compression-level
-    compression_level: 3
+    compression_level: 7
     # -- Enable write-ahead log for crash recovery.
     # --lakehouse.insert.wal-enabled
     wal_enabled: true

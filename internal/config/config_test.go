@@ -1080,8 +1080,8 @@ func TestMergeConfig_EmptySchemaPreservesBase(t *testing.T) {
 
 func TestDefaultConfig_CompressionLevel(t *testing.T) {
 	cfg := Default()
-	if cfg.Insert.CompressionLevel != 3 {
-		t.Errorf("default CompressionLevel = %d, want 3", cfg.Insert.CompressionLevel)
+	if cfg.Insert.CompressionLevel != 7 {
+		t.Errorf("default CompressionLevel = %d, want 7", cfg.Insert.CompressionLevel)
 	}
 }
 

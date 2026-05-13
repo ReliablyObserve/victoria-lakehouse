@@ -61,14 +61,17 @@ The benchmark suite tests these combinations:
 
 ## Compression Ratios
 
-ZSTD levels tested: 1, 3, 9, 19
+Measured on **real E2E production data** (377K log rows, 159K trace rows from Docker compose).
 
-| ZSTD Level | Speed | Typical Ratio | Use Case |
-|---|---|---|---|
-| 1 (Fastest) | ~500 MB/s | 3-5x | High ingest rate, latency-sensitive |
-| 3 (Default) | ~300 MB/s | 5-7x | Balanced (recommended) |
-| 9 (Better) | ~100 MB/s | 6-10x | Storage cost optimization |
-| 19 (Best) | ~20 MB/s | 8-12x | Archival, rarely queried |
+| ZSTD Level | Write Speed | Logs Ratio | Traces Ratio | Use Case |
+|---|---|---|---|---|
+| 1 (Fastest) | ~340 MB/s | 4.43x | 6.90x | High ingest rate (>500 MB/s) |
+| 3 | ~320 MB/s | 4.60x | 7.93x | Maximum write speed |
+| **7 (Default)** | **~260 MB/s** | **6.13x** | **9.39x** | **Best cost/performance** |
+| 11+ (Best) | ~63 MB/s | 6.23x | 9.67x | Never recommended (<2% gain, 5x slower) |
+
+Read latency is nearly flat across all levels (1.3x variation). Level 7 saves
+**$50/month per 2 TB/day** vs level 3. See [ZSTD Benchmark](zstd-compression-benchmark.md).
 
 **Column breakdown** (typical log data):
 - `body` (text): 2-4x compression (high entropy)

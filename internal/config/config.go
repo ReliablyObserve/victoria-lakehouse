@@ -264,6 +264,7 @@ type StatsConfig struct {
 	MaxDeltaCount               int               `yaml:"max_delta_count"`
 	MetricsCardinalityLimit     int               `yaml:"metrics_cardinality_limit"`
 	CardinalityWarningThreshold int               `yaml:"cardinality_warning_threshold"`
+	BreakdownLabels             []string          `yaml:"breakdown_labels"`
 	S3LifecycleRules            []LifecycleRuleConfig `yaml:"s3_lifecycle_rules"`
 	S3PricePerGB                map[string]float64    `yaml:"s3_price_per_gb"`
 	S3RequestPrices             map[string]float64    `yaml:"s3_request_prices"`
@@ -423,7 +424,7 @@ func Default() *Config {
 			TargetFileSize:   "128MB",
 			RowGroupSize:     10000,
 			BloomColumns:     []string{"service.name", "trace_id"},
-			CompressionLevel: 3,
+			CompressionLevel: 7,
 			WALEnabled:       true,
 			WALDir:           "/data/lakehouse/wal",
 			WALMaxBytes:      "512MB",
@@ -495,6 +496,7 @@ func Default() *Config {
 			MaxDeltaCount:               1000,
 			MetricsCardinalityLimit:     100,
 			CardinalityWarningThreshold: 10000,
+			BreakdownLabels:             []string{"service.name", "deployment.environment", "k8s.namespace.name", "k8s.cluster.name"},
 			S3PricePerGB: map[string]float64{
 				"STANDARD":     0.023,
 				"STANDARD_IA":  0.0125,
@@ -519,7 +521,7 @@ func Default() *Config {
 		},
 
 		Logs: LogsModeConfig{
-			BloomColumns:  []string{"service.name"},
+			BloomColumns:  []string{"service.name", "trace_id"},
 			DeletePrefix:  "/delete/logsql",
 			CompatVersion: "",
 		},

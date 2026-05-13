@@ -79,7 +79,7 @@ On flush, the buffer snapshot is written as a Parquet file:
 
 1. Sort rows by timestamp within partition
 2. Write Parquet with configured row group size (default 10K rows)
-3. Apply ZSTD compression (default level 3)
+3. Apply ZSTD compression (default level 7, SpeedBetterCompression)
 4. Generate bloom filters on `service.name` and `trace_id`
 5. Compute file-level label summary (for manifest label pruning)
 

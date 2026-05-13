@@ -84,7 +84,7 @@ func TestCompactor_MergeLogRows(t *testing.T) {
 		Prefix:           "logs/",
 		Mode:             config.ModeLogs,
 		RowGroupSize:     1000,
-		CompressionLevel: 3,
+		CompressionLevel: 7,
 	})
 
 	result, err := compactor.Compact(context.Background(), partition, []manifest.FileInfo{fi1, fi2}, 0)
@@ -272,7 +272,7 @@ func TestCompactor_MergeTraceRows(t *testing.T) {
 		Prefix:           "traces/",
 		Mode:             config.ModeTraces,
 		RowGroupSize:     1000,
-		CompressionLevel: 3,
+		CompressionLevel: 7,
 	})
 
 	result, err := compactor.Compact(context.Background(), partition, []manifest.FileInfo{fi1, fi2}, 0)
@@ -636,7 +636,7 @@ func TestCompactor_SchemaFingerprintMismatchSkipped(t *testing.T) {
 		Prefix:           "logs/",
 		Mode:             config.ModeLogs,
 		RowGroupSize:     1000,
-		CompressionLevel: 3,
+		CompressionLevel: 7,
 	})
 
 	_, err := compactor.Compact(context.Background(), partition, []manifest.FileInfo{fi1, fi2}, 0)
