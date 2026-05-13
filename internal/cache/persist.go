@@ -10,10 +10,11 @@ import (
 )
 
 type LabelInfo struct {
-	Name        string   `json:"name"`
-	Cardinality int      `json:"cardinality"`
-	Values      []string `json:"values,omitempty"`
-	SeenInFiles int      `json:"seen_in_files"`
+	Name        string         `json:"name"`
+	Cardinality int            `json:"cardinality"`
+	Values      []string       `json:"values,omitempty"`
+	SeenInFiles int            `json:"seen_in_files"`
+	PerTenant   map[string]int `json:"per_tenant,omitempty"`
 }
 
 type LabelIndex struct {
@@ -85,6 +86,83 @@ func (idx *LabelIndex) Len() int {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	return len(idx.labels)
+}
+
+// AddWithTenant is like Add but also tracks per-tenant unique value count.
+// The per-tenant cardinality reflects the number of unique values the tenant
+// has been seen with. Each call updates the count to be at least the number
+// of unique values in the passed slice.
+func (idx *LabelIndex) AddWithTenant(name string, values []string, tenant string) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	li, ok := idx.labels[name]
+	if ok {
+		li.SeenInFiles++
+		existing := make(map[string]bool, len(li.Values))
+		for _, v := range li.Values {
+			existing[v] = true
+		}
+		for _, v := range values {
+			if !existing[v] && len(li.Values) < 10000 {
+				li.Values = append(li.Values, v)
+				existing[v] = true
+			}
+		}
+		li.Cardinality = len(li.Values)
+	} else {
+		capped := values
+		if len(capped) > 10000 {
+			capped = capped[:10000]
+		}
+		li = &LabelInfo{
+			Name:        name,
+			Cardinality: len(capped),
+			Values:      capped,
+			SeenInFiles: 1,
+		}
+		idx.labels[name] = li
+	}
+
+	// Track per-tenant cardinality
+	if tenant != "" {
+		if li.PerTenant == nil {
+			li.PerTenant = make(map[string]int)
+		}
+		// Count unique values in the input slice
+		unique := make(map[string]struct{}, len(values))
+		for _, v := range values {
+			unique[v] = struct{}{}
+		}
+		count := len(unique)
+		if count > li.PerTenant[tenant] {
+			li.PerTenant[tenant] = count
+		}
+	}
+}
+
+// GetLabelInfo returns the LabelInfo for the given field name, or nil if not found.
+func (idx *LabelIndex) GetLabelInfo(name string) *LabelInfo {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	li, ok := idx.labels[name]
+	if !ok {
+		return nil
+	}
+	return li
+}
+
+// GetAllLabelInfo returns all label infos in the index.
+func (idx *LabelIndex) GetAllLabelInfo() []*LabelInfo {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	result := make([]*LabelInfo, 0, len(idx.labels))
+	for _, li := range idx.labels {
+		result = append(result, li)
+	}
+	return result
 }
 
 type ManifestState struct {
