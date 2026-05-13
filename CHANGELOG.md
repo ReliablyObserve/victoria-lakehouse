@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-05-13
+
 ### Added
 - Tenant stats & storage metrics — `StatsConfig` (15 fields) and `UIConfig` (4 fields) config structs, `KnownTenant` for bucket-isolation cold discovery with per-tenant lifecycle/pricing overrides
 - Per-tenant Prometheus metrics — 8 metrics (`lakehouse_tenant_files`, `_bytes`, `_raw_bytes`, `_rows_total`, `_ingestion_bytes_total`, `_queries_total`, `_last_write_timestamp`, `_last_query_timestamp`) with configurable cardinality cap
