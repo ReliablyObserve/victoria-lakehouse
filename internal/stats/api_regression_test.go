@@ -132,7 +132,9 @@ func TestConfigS3PricePerGBAffectsCost(t *testing.T) {
 	rec1 := httptest.NewRecorder()
 	mux1.ServeHTTP(rec1, httptest.NewRequest("GET", "/lakehouse/api/v1/stats/cost", nil))
 	var resp1 CostResponse
-	json.Unmarshal(rec1.Body.Bytes(), &resp1)
+	if err := json.Unmarshal(rec1.Body.Bytes(), &resp1); err != nil {
+		t.Fatalf("unmarshal resp1: %v", err)
+	}
 
 	// Custom pricing (e.g. GCS or discounted)
 	cc2 := NewCostCalculator(map[string]float64{"STANDARD": 0.020}, nil)
@@ -145,7 +147,9 @@ func TestConfigS3PricePerGBAffectsCost(t *testing.T) {
 	rec2 := httptest.NewRecorder()
 	mux2.ServeHTTP(rec2, httptest.NewRequest("GET", "/lakehouse/api/v1/stats/cost", nil))
 	var resp2 CostResponse
-	json.Unmarshal(rec2.Body.Bytes(), &resp2)
+	if err := json.Unmarshal(rec2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("unmarshal resp2: %v", err)
+	}
 
 	if resp1.TotalMonthlyUSD <= 0 {
 		t.Fatalf("cost should be > 0, got %f", resp1.TotalMonthlyUSD)
@@ -183,7 +187,9 @@ func TestConfigMultiClassPricing(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/lakehouse/api/v1/stats/cost", nil))
 
 	var resp CostResponse
-	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 
 	if len(resp.ByClass) != 2 {
 		t.Fatalf("expected 2 storage classes, got %d", len(resp.ByClass))
@@ -229,7 +235,9 @@ func TestConfigBreakdownLabelFilterOverridesConfig(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/lakehouse/api/v1/stats/breakdown?label=level", nil))
 
 	var resp BreakdownResponse
-	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 
 	if len(resp.Labels) != 1 {
 		t.Fatalf("label filter should return 1, got %d", len(resp.Labels))
@@ -356,7 +364,9 @@ func TestRegressionBreakdownZeroTotalBytes(t *testing.T) {
 	}
 
 	var resp BreakdownResponse
-	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 
 	for _, l := range resp.Labels {
 		for _, v := range l.Values {
@@ -455,7 +465,9 @@ func TestRegressionEmptyRegistryManifestFallback(t *testing.T) {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest("GET", "/lakehouse/api/v1/tenants", nil))
 		var resp TenantsResponse
-		json.Unmarshal(rec.Body.Bytes(), &resp)
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
 
 		if resp.TotalTenants == 0 {
 			t.Error("REGRESSION: empty registry should fall back to manifest tenants")
@@ -469,7 +481,9 @@ func TestRegressionEmptyRegistryManifestFallback(t *testing.T) {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest("GET", "/lakehouse/api/v1/stats/overview", nil))
 		var resp OverviewResponse
-		json.Unmarshal(rec.Body.Bytes(), &resp)
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
 
 		if resp.TotalFiles == 0 {
 			t.Error("REGRESSION: overview should show manifest file count")
@@ -486,7 +500,9 @@ func TestRegressionEmptyRegistryManifestFallback(t *testing.T) {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest("GET", "/lakehouse/api/v1/stats/cost", nil))
 		var resp CostResponse
-		json.Unmarshal(rec.Body.Bytes(), &resp)
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
 
 		if resp.TotalMonthlyUSD == 0 {
 			t.Error("REGRESSION: cost should compute from manifest data when registry empty")
@@ -500,7 +516,9 @@ func TestRegressionEmptyRegistryManifestFallback(t *testing.T) {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest("GET", "/lakehouse/api/v1/stats/compression", nil))
 		var resp CompressionResponse
-		json.Unmarshal(rec.Body.Bytes(), &resp)
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
 
 		if len(resp.PerTenant) == 0 {
 			t.Error("REGRESSION: compression should show tenants from manifest")
@@ -539,7 +557,9 @@ func TestRegressionOverviewStorageByClassFallback(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/lakehouse/api/v1/stats/overview", nil))
 
 	var resp OverviewResponse
-	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 
 	if len(resp.StorageByClass) == 0 {
 		t.Error("REGRESSION: overview storage_by_class should fall back to STANDARD when registry empty")
@@ -569,7 +589,9 @@ func TestRegressionCardinalityPromotedVsMapType(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/lakehouse/api/v1/cardinality/fields", nil))
 
 	var resp CardinalityResponse
-	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 
 	fieldMap := make(map[string]FieldEntry)
 	for _, f := range resp.Fields {
@@ -855,7 +877,9 @@ func TestRegressionHighCardinalityWarning(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/lakehouse/api/v1/cardinality/fields", nil))
 
 	var resp CardinalityResponse
-	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 
 	found := false
 	for _, w := range resp.HighCardinalityWarning {

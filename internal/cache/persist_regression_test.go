@@ -149,7 +149,7 @@ func TestRegressionEmptyTenantIgnored(t *testing.T) {
 	idx.AddWithTenant("field", []string{"a"}, "")
 
 	li := idx.GetLabelInfo("field")
-	if li.PerTenant != nil && len(li.PerTenant) > 0 {
+	if len(li.PerTenant) > 0 {
 		t.Error("empty tenant string should not create a PerTenant entry")
 	}
 }

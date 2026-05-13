@@ -72,7 +72,7 @@ func loadRealLogRows(t *testing.T, dir string, maxFiles int) ([]schema.LogRow, i
 			t.Fatalf("read rows from %s: %v", path, err)
 		}
 		allRows = append(allRows, buf[:n]...)
-		r.Close()
+		_ = r.Close()
 	}
 
 	return allRows, origSize
@@ -107,7 +107,7 @@ func loadRealTraceRows(t *testing.T, dir string, maxFiles int) ([]schema.TraceRo
 			t.Fatalf("read rows from %s: %v", path, err)
 		}
 		allRows = append(allRows, buf[:n]...)
-		r.Close()
+		_ = r.Close()
 	}
 
 	return allRows, origSize
@@ -180,7 +180,7 @@ func readLogRows(data []byte) (int, error) {
 		return 0, err
 	}
 	r := parquet.NewGenericReader[schema.LogRow](f)
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	total := 0
 	buf := make([]schema.LogRow, 1000)
@@ -200,7 +200,7 @@ func readTraceRows(data []byte) (int, error) {
 		return 0, err
 	}
 	r := parquet.NewGenericReader[schema.TraceRow](f)
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	total := 0
 	buf := make([]schema.TraceRow, 1000)
@@ -212,12 +212,6 @@ func readTraceRows(data []byte) (int, error) {
 		}
 	}
 	return total, nil
-}
-
-func getCPUTime() time.Duration {
-	var usage runtime.MemStats
-	runtime.ReadMemStats(&usage)
-	return time.Duration(usage.PauseTotalNs)
 }
 
 func TestRealDataCompressionBenchmark(t *testing.T) {

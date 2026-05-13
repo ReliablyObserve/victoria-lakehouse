@@ -27,7 +27,7 @@ func InjectLakehouseTab(upstream http.Handler) http.Handler {
 		ct := rec.Header().Get("Content-Type")
 		if !strings.HasPrefix(ct, "text/html") {
 			w.WriteHeader(statusCode)
-			w.Write(rec.body.Bytes()) //nolint:errcheck
+			_, _ = w.Write(rec.body.Bytes()) // #nosec G104
 			return
 		}
 
@@ -35,14 +35,14 @@ func InjectLakehouseTab(upstream http.Handler) http.Handler {
 		idx := strings.LastIndex(body, "</body>")
 		if idx < 0 {
 			w.WriteHeader(statusCode)
-			w.Write(rec.body.Bytes()) //nolint:errcheck
+			_, _ = w.Write(rec.body.Bytes()) // #nosec G104
 			return
 		}
 
 		modified := body[:idx] + injectScript + "\n" + body[idx:]
 		rec.Header().Del("Content-Length")
 		w.WriteHeader(statusCode)
-		w.Write([]byte(modified)) //nolint:errcheck
+		_, _ = w.Write([]byte(modified)) // #nosec G104
 	})
 }
 

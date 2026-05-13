@@ -268,7 +268,7 @@ func BenchmarkWriteParquet_Level1(b *testing.B) {
 	rows := generateRealisticLogRows(10000)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		writeParquetAtLevel(rows, 1, 10000)
+		_, _, _ = writeParquetAtLevel(rows, 1, 10000)
 	}
 }
 
@@ -276,7 +276,7 @@ func BenchmarkWriteParquet_Level3(b *testing.B) {
 	rows := generateRealisticLogRows(10000)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		writeParquetAtLevel(rows, 3, 10000)
+		_, _, _ = writeParquetAtLevel(rows, 3, 10000)
 	}
 }
 
@@ -284,7 +284,7 @@ func BenchmarkWriteParquet_Level7(b *testing.B) {
 	rows := generateRealisticLogRows(10000)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		writeParquetAtLevel(rows, 7, 10000)
+		_, _, _ = writeParquetAtLevel(rows, 7, 10000)
 	}
 }
 
@@ -292,6 +292,6 @@ func BenchmarkWriteParquet_Level11(b *testing.B) {
 	rows := generateRealisticLogRows(10000)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		writeParquetAtLevel(rows, 11, 10000)
+		_, _, _ = writeParquetAtLevel(rows, 11, 10000)
 	}
 }
