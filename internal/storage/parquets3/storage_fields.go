@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/parquet-go/parquet-go"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
 func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
@@ -303,10 +304,21 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 // Uses VL's Filter.MatchRow() for full LogsQL evaluation.
 // When filter is nil, all rows contribute values (no filtering).
 func collectFilteredValues(rows []parquet.Row, colNames []string, targetColIdx int, filter *logstorage.Filter, s *Storage, seen map[string]uint64) {
+	var targetMapping *schema.FieldMapping
+	if s != nil && targetColIdx >= 0 && targetColIdx < len(colNames) {
+		targetMapping = s.registry.ResolveFromParquet(colNames[targetColIdx])
+	}
+	formatTarget := func(v parquet.Value) string {
+		if targetMapping != nil {
+			return targetMapping.Type.FormatValue(parquetValueToAny(v))
+		}
+		return valueToString(v)
+	}
+
 	if filter == nil {
 		for _, row := range rows {
 			if targetColIdx < len(row) {
-				val := valueToString(row[targetColIdx])
+				val := formatTarget(row[targetColIdx])
 				if val != "" {
 					seen[val]++
 				}
@@ -327,7 +339,7 @@ func collectFilteredValues(rows []parquet.Row, colNames []string, targetColIdx i
 		fields := parquetRowToFields(row, colNames, tsColIdx, s)
 		if filter.MatchRow(fields) {
 			if targetColIdx < len(row) {
-				val := valueToString(row[targetColIdx])
+				val := formatTarget(row[targetColIdx])
 				if val != "" {
 					seen[val]++
 				}
@@ -344,15 +356,15 @@ func parquetRowToFields(row parquet.Row, colNames []string, tsColIdx int, s *Sto
 			break
 		}
 		internalName := name
+		var val string
 		if s != nil {
 			if m := s.registry.ResolveFromParquet(name); m != nil {
 				internalName = m.InternalName
+				native := parquetValueToAny(row[i])
+				val = m.Type.FormatValue(native)
+			} else {
+				val = valueToString(row[i])
 			}
-		}
-		var val string
-		if i == tsColIdx {
-			ns := valueToInt64(row[i])
-			val = time.Unix(0, ns).UTC().Format(time.RFC3339Nano)
 		} else {
 			val = valueToString(row[i])
 		}

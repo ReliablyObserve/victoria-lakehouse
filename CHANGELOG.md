@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Schema-driven FieldType system — centralized type-aware formatting for all Parquet column types (TypeTimestampNano, TypeInt32, TypeInt64, TypeFloat64, TypeBool, TypeString). `FormatValue()` on each type replaces scattered `fmt.Sprintf`/`time.Format` calls across all query paths (RunQuery, GetFieldNames, GetFieldValues, buffer reads). `ParseFieldType()` enables typed ExtraPromoted columns via config.
+- `FormatField(internalName, value)` registry method for one-call schema-driven formatting in all read paths
+- Architecture documentation with mermaid diagrams — cache architecture (L1→L2→L3→S3 tiers, SmartCache controller, eviction, prefetch, cross-signal, sizing), manifest system (structure, sync, persistence, API), storage & Parquet flow (end-to-end write/read paths, VL adapter, schema registry)
+- CodeQL configuration to exclude vendored VictoriaLogs code from security scanning
+
+### Fixed
+- Jaeger test `TestHandleJaegerTrace_ScopeAttrAsSpanTag` assertion — handler strips `scope_attr:` prefix from tag keys, test now expects `lib.version` instead of `scope_attr:lib.version`
+- ClickHouse OTEL views — `ScopeAttributes` was `Map(Nothing, Nothing)`, now `Map(String, String)` via typed CAST; Events/Links arrays were `Array(Nothing)`, now properly typed (`Array(DateTime64(9))`, `Array(String)`, `Array(Map(String, String))`); removed non-standard `LogStreamId` from `otel_logs`; added `TraceFlags`, `ResourceSchemaUrl`, `ScopeSchemaUrl` columns; traces Duration now in nanoseconds (OTEL standard) instead of milliseconds; empty promoted fields filtered via `mapFilter` to avoid clutter in ResourceAttributes/SpanAttributes
+- Datagen now populates `ResourceAttributes` MAP column for logs (with `service.version`, `telemetry.sdk.name`) and `ResourceAttributes`, `SpanAttributes`, `ScopeAttributes` MAP columns for traces
+- Grafana ClickHouse datasource config — added `logsLevelField: SeverityText`, `tracesDurationUnit: ns`, `tracesSpanKindField`, `tracesTraceStateField` for proper OTEL auto-discovery
+
+### Changed
+- Datagen seed volume increased — 10K logs + 2K traces over 72h (was 5K + 1K over 48h) to better populate both hot (disk 24h) and cold (S3 lakehouse) tiers
+- Tenant1 seed increased — 2K logs + 500 traces over 72h (was 1K + 200 over 48h)
+
 ## [0.20.0] - 2026-05-12
 
 ### Added

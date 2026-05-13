@@ -58,6 +58,7 @@ jobs:
         with:
           languages: go
           build-mode: manual
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Build
         run: |

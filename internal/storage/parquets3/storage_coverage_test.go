@@ -738,8 +738,9 @@ func TestLogRowsToDataBlock_SingleRow(t *testing.T) {
 		}
 	}
 
-	if colMap["_time"][0] != "1234567890" {
-		t.Errorf("_time = %q, want %q", colMap["_time"][0], "1234567890")
+	wantTime := time.Unix(0, 1234567890).UTC().Format(time.RFC3339Nano)
+	if colMap["_time"][0] != wantTime {
+		t.Errorf("_time = %q, want %q", colMap["_time"][0], wantTime)
 	}
 	if colMap["deployment.environment"][0] != "staging" {
 		t.Errorf("deployment.environment = %q, want %q", colMap["deployment.environment"][0], "staging")
@@ -829,8 +830,9 @@ func TestTraceRowsToDataBlock_SingleRow(t *testing.T) {
 		}
 	}
 
-	if colMap["_time"][0] != "9876543210" {
-		t.Errorf("_time = %q, want %q", colMap["_time"][0], "9876543210")
+	wantTraceTime := time.Unix(0, 9876543210).UTC().Format(time.RFC3339Nano)
+	if colMap["_time"][0] != wantTraceTime {
+		t.Errorf("_time = %q, want %q", colMap["_time"][0], wantTraceTime)
 	}
 	if colMap["duration"][0] != "12345678" {
 		t.Errorf("duration = %q, want %q", colMap["duration"][0], "12345678")

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
 func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
@@ -230,17 +232,19 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 }
 
 func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
-	schema := f.Root()
-	rows := rg.Rows()
-	defer func() { _ = rows.Close() }()
+	if s.cfg.Mode == config.ModeTraces {
+		return readRowGroupTyped[schema.TraceRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, traceRowToFields)
+	}
+	return readRowGroupTyped[schema.LogRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, logRowToFields)
+}
 
-	colNames := columnNames(schema)
-
-	buf := make([]parquet.Row, 256)
+func readRowGroupTyped[T any](s *Storage, f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, toFields func(*T) []field) error {
+	reader := parquet.NewGenericRowGroupReader[T](rg)
+	buf := make([]T, 256)
 	for {
-		n, err := rows.ReadRows(buf)
+		n, err := reader.Read(buf)
 		if n > 0 {
-			db := s.rowsToDataBlock(buf[:n], colNames, schema, startNs, endNs)
+			db := typedRowsToDataBlock(s, buf[:n], startNs, endNs, toFields)
 			if db != nil && db.RowsCount() > 0 {
 				writeBlock(0, db)
 				if traceIDs != nil {
@@ -255,8 +259,150 @@ func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, en
 			return err
 		}
 	}
-
 	return nil
+}
+
+type field struct {
+	name  string
+	value any
+}
+
+func logRowToFields(r *schema.LogRow) []field {
+	fields := []field{
+		{"_time", r.TimestampUnixNano},
+		{"_msg", r.Body},
+		{"level", r.SeverityText},
+		{"severity_number", r.SeverityNumber},
+		{"service.name", r.ServiceName},
+		{"k8s.namespace.name", r.K8sNamespaceName},
+		{"k8s.pod.name", r.K8sPodName},
+		{"k8s.deployment.name", r.K8sDeploymentName},
+		{"k8s.node.name", r.K8sNodeName},
+		{"deployment.environment", r.DeployEnv},
+		{"cloud.region", r.CloudRegion},
+		{"host.name", r.HostName},
+		{"trace_id", r.TraceID},
+		{"span_id", r.SpanID},
+		{"_stream", r.Stream},
+		{"_stream_id", r.StreamID},
+		{"scope.name", r.ScopeName},
+	}
+	for k, v := range r.ResourceAttributes {
+		fields = append(fields, field{k, v})
+	}
+	for k, v := range r.LogAttributes {
+		fields = append(fields, field{k, v})
+	}
+	return fields
+}
+
+func traceRowToFields(r *schema.TraceRow) []field {
+	fields := []field{
+		{"_time", r.TimestampUnixNano},
+		{"start_time", r.StartTimeUnixNano},
+		{"trace_id", r.TraceID},
+		{"span_id", r.SpanID},
+		{"parent_span_id", r.ParentSpanID},
+		{"name", r.SpanName},
+		{"kind", r.SpanKind},
+		{"status_code", r.StatusCode},
+		{"status_message", r.StatusMessage},
+		{"duration", r.DurationNs},
+		{"resource_attr:service.name", r.ServiceName},
+		{"scope_attr:otel.library.name", r.ScopeName},
+		{"resource_attr:deployment.environment", r.DeployEnv},
+		{"resource_attr:cloud.region", r.CloudRegion},
+		{"resource_attr:host.name", r.HostName},
+		{"resource_attr:k8s.namespace.name", r.K8sNamespaceName},
+		{"resource_attr:k8s.deployment.name", r.K8sDeploymentName},
+		{"resource_attr:k8s.node.name", r.K8sNodeName},
+		{"span_attr:http.method", r.HTTPMethod},
+		{"span_attr:http.status_code", r.HTTPStatusCode},
+		{"span_attr:http.url", r.HTTPUrl},
+		{"span_attr:db.system", r.DBSystem},
+		{"span_attr:db.statement", r.DBStatement},
+	}
+	for k, v := range r.ResourceAttributes {
+		fields = append(fields, field{k, v})
+	}
+	for k, v := range r.SpanAttributes {
+		fields = append(fields, field{k, v})
+	}
+	for k, v := range r.ScopeAttributes {
+		fields = append(fields, field{k, v})
+	}
+	return fields
+}
+
+func typedRowsToDataBlock[T any](s *Storage, rows []T, startNs, endNs int64, toFields func(*T) []field) *logstorage.DataBlock {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	type colData struct {
+		name   string
+		values []string
+	}
+	colMap := make(map[string]int)
+	var cols []colData
+
+	getCol := func(name string) int {
+		if idx, ok := colMap[name]; ok {
+			return idx
+		}
+		idx := len(cols)
+		colMap[name] = idx
+		cols = append(cols, colData{name: name, values: make([]string, 0, len(rows))})
+		for len(cols[idx].values) < len(cols[0].values)-1 {
+			cols[idx].values = append(cols[idx].values, "")
+		}
+		return idx
+	}
+
+	for rowNum, row := range rows {
+		fields := toFields(&row)
+
+		seen := make(map[int]bool)
+		for _, f := range fields {
+			formatted := s.registry.FormatField(f.name, f.value)
+			if formatted == "" {
+				continue
+			}
+			idx := getCol(f.name)
+			if seen[idx] {
+				continue
+			}
+			seen[idx] = true
+			cols[idx].values = append(cols[idx].values, formatted)
+		}
+
+		for i := range cols {
+			if !seen[i] && len(cols[i].values) <= rowNum {
+				cols[i].values = append(cols[i].values, "")
+			}
+		}
+	}
+
+	if len(cols) == 0 {
+		return nil
+	}
+
+	blockCols := make([]logstorage.BlockColumn, 0, len(cols))
+	seen := make(map[string]bool, len(cols))
+	for _, col := range cols {
+		if seen[col.name] {
+			continue
+		}
+		seen[col.name] = true
+		blockCols = append(blockCols, logstorage.BlockColumn{
+			Name:   col.name,
+			Values: col.values,
+		})
+	}
+
+	db := &logstorage.DataBlock{}
+	db.SetColumns(blockCols)
+	return db
 }
 
 // extractTraceIDs collects unique, non-empty trace_id values from a DataBlock
@@ -276,70 +422,6 @@ func extractTraceIDs(db *logstorage.DataBlock, dest *[]string) {
 		}
 		return
 	}
-}
-
-func (s *Storage) rowsToDataBlock(rows []parquet.Row, colNames []string, root *parquet.Column, startNs, endNs int64) *logstorage.DataBlock {
-	if len(rows) == 0 {
-		return nil
-	}
-
-	projected := s.projectColumns(colNames, nil)
-
-	columns := make([][]string, len(projected))
-	for i := range columns {
-		columns[i] = make([]string, 0, len(rows))
-	}
-
-	tsColIdx := -1
-	for i, name := range colNames {
-		if name == "timestamp_unix_nano" {
-			tsColIdx = i
-			break
-		}
-	}
-
-	for _, row := range rows {
-		if tsColIdx >= 0 && startNs != 0 && endNs != 0 {
-			ts := valueToInt64(row[tsColIdx])
-			if ts < startNs || ts >= endNs {
-				continue
-			}
-		}
-
-		for outIdx, srcIdx := range projected {
-			if srcIdx < len(row) {
-				if srcIdx == tsColIdx {
-					ns := valueToInt64(row[srcIdx])
-					columns[outIdx] = append(columns[outIdx], time.Unix(0, ns).UTC().Format(time.RFC3339Nano))
-				} else {
-					columns[outIdx] = append(columns[outIdx], valueToString(row[srcIdx]))
-				}
-			} else {
-				columns[outIdx] = append(columns[outIdx], "")
-			}
-		}
-	}
-
-	if len(columns) == 0 || len(columns[0]) == 0 {
-		return nil
-	}
-
-	blockCols := make([]logstorage.BlockColumn, 0, len(projected))
-	for outIdx, srcIdx := range projected {
-		name := colNames[srcIdx]
-		internalName := name
-		if m := s.registry.ResolveFromParquet(name); m != nil {
-			internalName = bytesutil.InternString(m.InternalName)
-		}
-		blockCols = append(blockCols, logstorage.BlockColumn{
-			Name:   internalName,
-			Values: columns[outIdx],
-		})
-	}
-
-	db := &logstorage.DataBlock{}
-	db.SetColumns(blockCols)
-	return db
 }
 
 func (s *Storage) projectColumns(allCols []string, requested []string) []int {
@@ -504,21 +586,47 @@ func columnNames(root *parquet.Column) []string {
 	return names
 }
 
+func parquetValueToAny(v parquet.Value) any {
+	if v.IsNull() {
+		return ""
+	}
+	switch v.Kind() {
+	case parquet.Int32:
+		return v.Int32()
+	case parquet.Int64:
+		return v.Int64()
+	case parquet.Float:
+		return float64(v.Float())
+	case parquet.Double:
+		return v.Double()
+	case parquet.Boolean:
+		return v.Boolean()
+	case parquet.ByteArray, parquet.FixedLenByteArray:
+		b := v.ByteArray()
+		if isPrintable(b) {
+			return bytesutil.InternBytes(b)
+		}
+		return fmt.Sprintf("%x", b)
+	default:
+		return v.String()
+	}
+}
+
 func valueToString(v parquet.Value) string {
 	if v.IsNull() {
 		return ""
 	}
 	switch v.Kind() {
 	case parquet.Int32:
-		return fmt.Sprintf("%d", v.Int32())
+		return strconv.FormatInt(int64(v.Int32()), 10)
 	case parquet.Int64:
-		return fmt.Sprintf("%d", v.Int64())
+		return strconv.FormatInt(v.Int64(), 10)
 	case parquet.Int96:
 		return v.String()
 	case parquet.Float:
-		return fmt.Sprintf("%g", v.Float())
+		return strconv.FormatFloat(float64(v.Float()), 'g', -1, 32)
 	case parquet.Double:
-		return fmt.Sprintf("%g", v.Double())
+		return strconv.FormatFloat(v.Double(), 'g', -1, 64)
 	case parquet.ByteArray, parquet.FixedLenByteArray:
 		b := v.ByteArray()
 		if isPrintable(b) {

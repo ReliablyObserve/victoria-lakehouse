@@ -1,7 +1,10 @@
 package schema
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
+	"time"
 )
 
 type FieldOrigin int
@@ -14,9 +17,79 @@ const (
 	OriginScopeAttrMap                    // inside scope.attributes MAP
 )
 
+type FieldType int
+
+const (
+	TypeString        FieldType = iota // default: passthrough string
+	TypeTimestampNano                  // int64 nanoseconds → RFC3339Nano
+	TypeInt32                          // int32/int → decimal string
+	TypeInt64                          // int64 → decimal string
+	TypeFloat64                        // float64 → %g string
+	TypeBool                           // bool → "true"/"false"
+)
+
+func (ft FieldType) FormatValue(v any) string {
+	switch ft {
+	case TypeTimestampNano:
+		if n, ok := v.(int64); ok {
+			return time.Unix(0, n).UTC().Format(time.RFC3339Nano)
+		}
+	case TypeInt32:
+		switch n := v.(type) {
+		case int32:
+			return strconv.FormatInt(int64(n), 10)
+		case int64:
+			return strconv.FormatInt(n, 10)
+		case int:
+			return strconv.Itoa(n)
+		}
+	case TypeInt64:
+		switch n := v.(type) {
+		case int64:
+			return strconv.FormatInt(n, 10)
+		case int32:
+			return strconv.FormatInt(int64(n), 10)
+		}
+	case TypeFloat64:
+		if n, ok := v.(float64); ok {
+			return strconv.FormatFloat(n, 'g', -1, 64)
+		}
+	case TypeBool:
+		if b, ok := v.(bool); ok {
+			if b {
+				return "true"
+			}
+			return "false"
+		}
+	case TypeString:
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+func ParseFieldType(s string) FieldType {
+	switch s {
+	case "int32":
+		return TypeInt32
+	case "int64":
+		return TypeInt64
+	case "float64":
+		return TypeFloat64
+	case "bool":
+		return TypeBool
+	case "timestamp_nano":
+		return TypeTimestampNano
+	default:
+		return TypeString
+	}
+}
+
 type FieldMapping struct {
 	ParquetColumn string
 	InternalName  string
+	Type          FieldType
 	Origin        FieldOrigin
 	MapColumn     string // parent MAP column name when Origin != OriginPromoted
 	MapKey        string // key inside the MAP
@@ -44,23 +117,23 @@ type Registry struct {
 
 var LogsProfile = Profile{
 	Promoted: []FieldMapping{
-		{ParquetColumn: "timestamp_unix_nano", InternalName: "_time", Origin: OriginPromoted},
-		{ParquetColumn: "body", InternalName: "_msg", Origin: OriginPromoted},
-		{ParquetColumn: "severity_text", InternalName: "level", Origin: OriginPromoted},
-		{ParquetColumn: "severity_number", InternalName: "severity_number", Origin: OriginPromoted},
-		{ParquetColumn: "service.name", InternalName: "service.name", Origin: OriginPromoted, HasBloom: true},
-		{ParquetColumn: "k8s.namespace.name", InternalName: "k8s.namespace.name", Origin: OriginPromoted},
-		{ParquetColumn: "k8s.pod.name", InternalName: "k8s.pod.name", Origin: OriginPromoted},
-		{ParquetColumn: "trace_id", InternalName: "trace_id", Origin: OriginPromoted, HasBloom: true},
-		{ParquetColumn: "span_id", InternalName: "span_id", Origin: OriginPromoted},
-		{ParquetColumn: "k8s.deployment.name", InternalName: "k8s.deployment.name", Origin: OriginPromoted},
-		{ParquetColumn: "k8s.node.name", InternalName: "k8s.node.name", Origin: OriginPromoted},
-		{ParquetColumn: "deployment.environment", InternalName: "deployment.environment", Origin: OriginPromoted},
-		{ParquetColumn: "cloud.region", InternalName: "cloud.region", Origin: OriginPromoted},
-		{ParquetColumn: "host.name", InternalName: "host.name", Origin: OriginPromoted},
-		{ParquetColumn: "_stream", InternalName: "_stream", Origin: OriginPromoted},
-		{ParquetColumn: "_stream_id", InternalName: "_stream_id", Origin: OriginPromoted},
-		{ParquetColumn: "scope.name", InternalName: "scope.name", Origin: OriginPromoted},
+		{ParquetColumn: "timestamp_unix_nano", InternalName: "_time", Type: TypeTimestampNano, Origin: OriginPromoted},
+		{ParquetColumn: "body", InternalName: "_msg", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "severity_text", InternalName: "level", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "severity_number", InternalName: "severity_number", Type: TypeInt32, Origin: OriginPromoted},
+		{ParquetColumn: "service.name", InternalName: "service.name", Type: TypeString, Origin: OriginPromoted, HasBloom: true},
+		{ParquetColumn: "k8s.namespace.name", InternalName: "k8s.namespace.name", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "k8s.pod.name", InternalName: "k8s.pod.name", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "trace_id", InternalName: "trace_id", Type: TypeString, Origin: OriginPromoted, HasBloom: true},
+		{ParquetColumn: "span_id", InternalName: "span_id", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "k8s.deployment.name", InternalName: "k8s.deployment.name", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "k8s.node.name", InternalName: "k8s.node.name", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "deployment.environment", InternalName: "deployment.environment", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "cloud.region", InternalName: "cloud.region", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "host.name", InternalName: "host.name", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "_stream", InternalName: "_stream", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "_stream_id", InternalName: "_stream_id", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "scope.name", InternalName: "scope.name", Type: TypeString, Origin: OriginPromoted},
 	},
 	MapColumns:   []string{"resource.attributes", "log.attributes"},
 	StreamFields: []string{"service.name", "k8s.namespace.name", "k8s.pod.name"},
@@ -68,18 +141,18 @@ var LogsProfile = Profile{
 
 var TracesProfile = Profile{
 	Promoted: []FieldMapping{
-		{ParquetColumn: "timestamp_unix_nano", InternalName: "_time", Origin: OriginPromoted},
-		{ParquetColumn: "start_time_unix_nano", InternalName: "start_time_unix_nano", Origin: OriginPromoted},
-		{ParquetColumn: "trace_id", InternalName: "trace_id", Origin: OriginPromoted, HasBloom: true},
-		{ParquetColumn: "span_id", InternalName: "span_id", Origin: OriginPromoted},
-		{ParquetColumn: "parent_span_id", InternalName: "parent_span_id", Origin: OriginPromoted},
-		{ParquetColumn: "span.name", InternalName: "name", Origin: OriginPromoted},
-		{ParquetColumn: "span.kind", InternalName: "kind", Origin: OriginPromoted},
-		{ParquetColumn: "status.code", InternalName: "status_code", Origin: OriginPromoted},
-		{ParquetColumn: "status.message", InternalName: "status_message", Origin: OriginPromoted},
-		{ParquetColumn: "duration_ns", InternalName: "duration", Origin: OriginPromoted},
-		{ParquetColumn: "service.name", InternalName: "resource_attr:service.name", Origin: OriginPromoted, HasBloom: true},
-		{ParquetColumn: "scope.name", InternalName: "scope_attr:otel.library.name", Origin: OriginPromoted},
+		{ParquetColumn: "timestamp_unix_nano", InternalName: "_time", Type: TypeTimestampNano, Origin: OriginPromoted},
+		{ParquetColumn: "start_time_unix_nano", InternalName: "start_time", Type: TypeTimestampNano, Origin: OriginPromoted},
+		{ParquetColumn: "trace_id", InternalName: "trace_id", Type: TypeString, Origin: OriginPromoted, HasBloom: true},
+		{ParquetColumn: "span_id", InternalName: "span_id", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "parent_span_id", InternalName: "parent_span_id", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "span.name", InternalName: "name", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "span.kind", InternalName: "kind", Type: TypeInt32, Origin: OriginPromoted},
+		{ParquetColumn: "status.code", InternalName: "status_code", Type: TypeInt32, Origin: OriginPromoted},
+		{ParquetColumn: "status.message", InternalName: "status_message", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "duration_ns", InternalName: "duration", Type: TypeInt64, Origin: OriginPromoted},
+		{ParquetColumn: "service.name", InternalName: "resource_attr:service.name", Type: TypeString, Origin: OriginPromoted, HasBloom: true},
+		{ParquetColumn: "scope.name", InternalName: "scope_attr:otel.library.name", Type: TypeString, Origin: OriginPromoted},
 	},
 	MapColumns:   []string{"resource.attributes", "span.attributes", "scope.attributes"},
 	StreamFields: []string{"resource_attr:service.name", "name"},
@@ -101,6 +174,7 @@ func NewRegistry(profile Profile, extra ...ExtraPromoted) *Registry {
 		m := &FieldMapping{
 			ParquetColumn: ep.Name,
 			InternalName:  ep.Name,
+			Type:          ParseFieldType(ep.Type),
 			Origin:        OriginPromoted,
 			HasBloom:      ep.Bloom,
 		}
@@ -108,6 +182,13 @@ func NewRegistry(profile Profile, extra ...ExtraPromoted) *Registry {
 		r.byParquet[ep.Name] = m
 	}
 	return r
+}
+
+func (r *Registry) FormatField(internalName string, v any) string {
+	if m, ok := r.byInternal[internalName]; ok {
+		return m.Type.FormatValue(v)
+	}
+	return TypeString.FormatValue(v)
 }
 
 func (r *Registry) ExtraPromoted() []ExtraPromoted {

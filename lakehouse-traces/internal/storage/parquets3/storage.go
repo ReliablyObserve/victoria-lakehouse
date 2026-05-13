@@ -576,7 +576,7 @@ func (s *Storage) logRowsToDataBlock(rows []schema.LogRow) *logstorage.DataBlock
 	hosts := make([]string, len(rows))
 
 	for i, row := range rows {
-		times[i] = fmt.Sprintf("%d", row.TimestampUnixNano)
+		times[i] = s.registry.FormatField("_time", row.TimestampUnixNano)
 		bodies[i] = row.Body
 		levels[i] = row.SeverityText
 		services[i] = row.ServiceName
@@ -629,13 +629,13 @@ func (s *Storage) traceRowsToDataBlock(rows []schema.TraceRow) *logstorage.DataB
 	statusMsgs := make([]string, len(rows))
 
 	for i, row := range rows {
-		times[i] = fmt.Sprintf("%d", row.TimestampUnixNano)
+		times[i] = s.registry.FormatField("_time", row.TimestampUnixNano)
 		traceIDs[i] = row.TraceID
 		spanIDs[i] = row.SpanID
 		names[i] = row.SpanName
 		services[i] = row.ServiceName
-		durations[i] = fmt.Sprintf("%d", row.DurationNs)
-		statusCodes[i] = fmt.Sprintf("%d", row.StatusCode)
+		durations[i] = s.registry.FormatField("duration", row.DurationNs)
+		statusCodes[i] = s.registry.FormatField("status_code", int64(row.StatusCode))
 		parentSpanIDs[i] = row.ParentSpanID
 		statusMsgs[i] = row.StatusMessage
 	}
