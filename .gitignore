@@ -47,5 +47,13 @@ docker-data/
 /deps/
 /lakehouse-traces/deps/
 
+# VMUI assets (copied from VL deps at build time, keep placeholder index.html)
+internal/ui/vmui/assets/
+internal/ui/vmui/config.json
+internal/ui/vmui/favicon.svg
+internal/ui/vmui/manifest.json
+internal/ui/vmui/preview.jpg
+internal/ui/vmui/robots.txt
+
 # Go workspace
 go.work.sum

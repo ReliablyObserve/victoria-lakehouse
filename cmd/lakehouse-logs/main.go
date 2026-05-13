@@ -619,6 +619,9 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	})
 	uiHandler.Register(mux)
 
+	// VMUI with Lakehouse tab injection
+	ui.RegisterVMUI(mux, cfg.UI.VMUITab)
+
 	return mux
 }
 
