@@ -7,13 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.21.0] - 2026-05-13
-
 ### Added
-- Schema-driven FieldType system — centralized type-aware formatting for all Parquet column types (TypeTimestampNano, TypeInt32, TypeInt64, TypeFloat64, TypeBool, TypeString). `FormatValue()` on each type replaces scattered `fmt.Sprintf`/`time.Format` calls across all query paths (RunQuery, GetFieldNames, GetFieldValues, buffer reads). `ParseFieldType()` enables typed ExtraPromoted columns via config.
-- `FormatField(internalName, value)` registry method for one-call schema-driven formatting in all read paths
-- Architecture documentation with mermaid diagrams — cache architecture (L1→L2→L3→S3 tiers, SmartCache controller, eviction, prefetch, cross-signal, sizing), manifest system (structure, sync, persistence, API), storage & Parquet flow (end-to-end write/read paths, VL adapter, schema registry)
-- CodeQL configuration to exclude vendored VictoriaLogs code from security scanning
 - Tenant stats & storage metrics — `StatsConfig` (15 fields) and `UIConfig` (4 fields) config structs, `KnownTenant` for bucket-isolation cold discovery with per-tenant lifecycle/pricing overrides
 - Per-tenant Prometheus metrics — 8 metrics (`lakehouse_tenant_files`, `_bytes`, `_raw_bytes`, `_rows_total`, `_ingestion_bytes_total`, `_queries_total`, `_last_write_timestamp`, `_last_query_timestamp`) with configurable cardinality cap
 - Global storage metrics — 14 metrics (`lakehouse_storage_files_total`, `_bytes_total`, `_compression_ratio`, `_cost_monthly_usd`, `_bytes_by_class`, etc.) for fleet-wide storage visibility
@@ -29,14 +23,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated README — tenant stats in Key Features, Observability section, Configuration section, Documentation navigation
 
 ### Fixed
-- Jaeger test `TestHandleJaegerTrace_ScopeAttrAsSpanTag` assertion — handler strips `scope_attr:` prefix from tag keys, test now expects `lib.version` instead of `scope_attr:lib.version`
-- ClickHouse OTEL views — `ScopeAttributes` was `Map(Nothing, Nothing)`, now `Map(String, String)` via typed CAST; Events/Links arrays were `Array(Nothing)`, now properly typed (`Array(DateTime64(9))`, `Array(String)`, `Array(Map(String, String))`); removed non-standard `LogStreamId` from `otel_logs`; added `TraceFlags`, `ResourceSchemaUrl`, `ScopeSchemaUrl` columns; traces Duration now in nanoseconds (OTEL standard) instead of milliseconds; empty promoted fields filtered via `mapFilter` to avoid clutter in ResourceAttributes/SpanAttributes
-- Datagen now populates `ResourceAttributes` MAP column for logs (with `service.version`, `telemetry.sdk.name`) and `ResourceAttributes`, `SpanAttributes`, `ScopeAttributes` MAP columns for traces
-- Grafana ClickHouse datasource config — added `logsLevelField: SeverityText`, `tracesDurationUnit: ns`, `tracesSpanKindField`, `tracesTraceStateField` for proper OTEL auto-discovery
 - Auto-release workflow `[skip release]` check now examines only commit title instead of entire multiline message — squash-merged PRs with `[skip release]` in body paragraphs no longer incorrectly skip releases
 - Lint/gosec/CodeQL warnings — unhandled `w.Write()` errors in VMUI inject, unchecked `json.Unmarshal` in stats regression tests, unused Preact `h` import, unused `getCPUTime` function, redundant nil check
 - VMUI regression test skips missing build assets (favicon.svg, config.json) in CI instead of failing
 - Bloom columns test expectations updated to match actual defaults (`[service.name, trace_id]` for logs)
+
+## [0.21.0] - 2026-05-13
+
+### Added
+- Schema-driven FieldType system — centralized type-aware formatting for all Parquet column types (TypeTimestampNano, TypeInt32, TypeInt64, TypeFloat64, TypeBool, TypeString). `FormatValue()` on each type replaces scattered `fmt.Sprintf`/`time.Format` calls across all query paths (RunQuery, GetFieldNames, GetFieldValues, buffer reads). `ParseFieldType()` enables typed ExtraPromoted columns via config.
+- `FormatField(internalName, value)` registry method for one-call schema-driven formatting in all read paths
+- Architecture documentation with mermaid diagrams — cache architecture (L1→L2→L3→S3 tiers, SmartCache controller, eviction, prefetch, cross-signal, sizing), manifest system (structure, sync, persistence, API), storage & Parquet flow (end-to-end write/read paths, VL adapter, schema registry)
+- CodeQL configuration to exclude vendored VictoriaLogs code from security scanning
+
+### Fixed
+- Jaeger test `TestHandleJaegerTrace_ScopeAttrAsSpanTag` assertion — handler strips `scope_attr:` prefix from tag keys, test now expects `lib.version` instead of `scope_attr:lib.version`
+- ClickHouse OTEL views — `ScopeAttributes` was `Map(Nothing, Nothing)`, now `Map(String, String)` via typed CAST; Events/Links arrays were `Array(Nothing)`, now properly typed (`Array(DateTime64(9))`, `Array(String)`, `Array(Map(String, String))`); removed non-standard `LogStreamId` from `otel_logs`; added `TraceFlags`, `ResourceSchemaUrl`, `ScopeSchemaUrl` columns; traces Duration now in nanoseconds (OTEL standard) instead of milliseconds; empty promoted fields filtered via `mapFilter` to avoid clutter in ResourceAttributes/SpanAttributes
+- Datagen now populates `ResourceAttributes` MAP column for logs (with `service.version`, `telemetry.sdk.name`) and `ResourceAttributes`, `SpanAttributes`, `ScopeAttributes` MAP columns for traces
+- Grafana ClickHouse datasource config — added `logsLevelField: SeverityText`, `tracesDurationUnit: ns`, `tracesSpanKindField`, `tracesTraceStateField` for proper OTEL auto-discovery
 
 ### Changed
 - Datagen seed volume increased — 10K logs + 2K traces over 72h (was 5K + 1K over 48h) to better populate both hot (disk 24h) and cold (S3 lakehouse) tiers
