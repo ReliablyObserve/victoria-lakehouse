@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lakehouse Explorer</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js"></script>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --bg-card: #f8f9fa;
+      --bg-hover: #e9ecef;
+      --text: #212529;
+      --text-muted: #6c757d;
+      --border: #dee2e6;
+      --primary: #0d6efd;
+      --primary-hover: #0b5ed7;
+      --success: #198754;
+      --warning: #ffc107;
+      --danger: #dc3545;
+      --tab-bg: #e9ecef;
+      --tab-active: #0d6efd;
+      --tab-active-text: #ffffff;
+      --badge-high-bg: #f8d7da;
+      --badge-high-text: #842029;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1a1a2e;
+        --bg-card: #16213e;
+        --bg-hover: #0f3460;
+        --text: #e0e0e0;
+        --text-muted: #a0a0a0;
+        --border: #2a2a4a;
+        --primary: #4dabf7;
+        --primary-hover: #339af0;
+        --success: #51cf66;
+        --warning: #fcc419;
+        --danger: #ff6b6b;
+        --tab-bg: #16213e;
+        --tab-active: #4dabf7;
+        --tab-active-text: #1a1a2e;
+        --badge-high-bg: #462020;
+        --badge-high-text: #ff6b6b;
+      }
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .app-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 24px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-card);
+    }
+    .app-header h1 { font-size: 1.25rem; font-weight: 600; }
+    .refresh-control { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; }
+    .refresh-control label { color: var(--text-muted); }
+    .refresh-control select {
+      padding: 4px 8px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 0.85rem;
+    }
+    .tabs {
+      display: flex;
+      gap: 0;
+      border-bottom: 2px solid var(--border);
+      padding: 0 24px;
+      background: var(--bg-card);
+    }
+    .tab {
+      padding: 10px 20px;
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      font-weight: 500;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active {
+      color: var(--primary);
+      border-bottom-color: var(--primary);
+    }
+    .content { padding: 24px; }
+    .cards-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      text-align: center;
+    }
+    .card .label { font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+    .card .value { font-size: 1.8rem; font-weight: 700; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      background: var(--bg-card);
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }
+    th:hover { background: var(--bg-hover); }
+    th .sort-arrow { margin-left: 4px; font-size: 0.7rem; }
+    tr:hover td { background: var(--bg-hover); }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .badge-high { background: var(--badge-high-bg); color: var(--badge-high-text); }
+    .badge-ok { background: #d1e7dd; color: #0f5132; }
+    .loading { text-align: center; padding: 48px; color: var(--text-muted); }
+    .error { text-align: center; padding: 48px; color: var(--danger); }
+    @media (max-width: 600px) {
+      .cards-grid { grid-template-columns: 1fr 1fr; }
+      .app-header { flex-direction: column; gap: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module">
+    import { h, render, Component } from "https://esm.sh/preact@10.19.3";
+    import { useState, useEffect, useRef, useCallback } from "https://esm.sh/preact@10.19.3/hooks";
+    import { html } from "https://esm.sh/htm@3.1.1/preact";
+
+    // --- Helpers ---
+    function fmtBytes(b) {
+      if (b == null) return "—";
+      if (b < 1024) return b + " B";
+      if (b < 1024 * 1024) return (b / 1024).toFixed(1) + " KB";
+      if (b < 1024 * 1024 * 1024) return (b / (1024 * 1024)).toFixed(1) + " MB";
+      return (b / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+    }
+    function fmtNum(n) {
+      if (n == null) return "—";
+      return Number(n).toLocaleString();
+    }
+    function fmtUSD(n) {
+      if (n == null) return "—";
+      return "$" + Number(n).toFixed(4);
+    }
+
+    async function fetchJSON(url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(res.status + " " + res.statusText);
+      return res.json();
+    }
+
+    // --- Storage Overview Tab ---
+    function StorageOverview() {
+      const [data, setData] = useState(null);
+      const [err, setErr] = useState(null);
+
+      const load = useCallback(() => {
+        fetchJSON("/lakehouse/api/v1/stats/overview")
+          .then(setData)
+          .catch(e => setErr(e.message));
+      }, []);
+
+      useEffect(() => { load(); }, [load]);
+
+      // Expose reload for parent refresh
+      StorageOverview._reload = load;
+
+      if (err) return html`<div class="error">Error: ${err}</div>`;
+      if (!data) return html`<div class="loading">Loading overview...</div>`;
+
+      return html`
+        <div class="cards-grid">
+          <div class="card"><div class="label">Files</div><div class="value">${fmtNum(data.files)}</div></div>
+          <div class="card"><div class="label">Total Size</div><div class="value">${fmtBytes(data.bytes)}</div></div>
+          <div class="card"><div class="label">Compression</div><div class="value">${data.compression_ratio != null ? data.compression_ratio.toFixed(1) + "x" : "—"}</div></div>
+          <div class="card"><div class="label">Rows</div><div class="value">${fmtNum(data.rows)}</div></div>
+          <div class="card"><div class="label">Tenants</div><div class="value">${fmtNum(data.tenants)}</div></div>
+          <div class="card"><div class="label">Partitions</div><div class="value">${fmtNum(data.partitions)}</div></div>
+        </div>
+      `;
+    }
+
+    // --- Tenants Tab ---
+    function Tenants() {
+      const [data, setData] = useState(null);
+      const [err, setErr] = useState(null);
+      const [sort, setSort] = useState("size");
+
+      const load = useCallback(() => {
+        fetchJSON("/lakehouse/api/v1/tenants?sort=" + sort)
+          .then(d => setData(d.tenants || d))
+          .catch(e => setErr(e.message));
+      }, [sort]);
+
+      useEffect(() => { load(); }, [load]);
+
+      Tenants._reload = load;
+
+      const columns = [
+        { key: "tenant", label: "Tenant" },
+        { key: "files", label: "Files" },
+        { key: "size", label: "Size" },
+        { key: "rows", label: "Rows" },
+        { key: "compression", label: "Compression" },
+        { key: "cost", label: "Cost" },
+        { key: "last_write", label: "Last Write" },
+      ];
+
+      if (err) return html`<div class="error">Error: ${err}</div>`;
+      if (!data) return html`<div class="loading">Loading tenants...</div>`;
+
+      return html`
+        <table>
+          <thead>
+            <tr>
+              ${columns.map(c => html`
+                <th onClick=${() => setSort(c.key)}>
+                  ${c.label}
+                  <span class="sort-arrow">${sort === c.key ? "▼" : ""}</span>
+                </th>
+              `)}
+            </tr>
+          </thead>
+          <tbody>
+            ${data.map(t => html`
+              <tr>
+                <td>${t.tenant}</td>
+                <td>${fmtNum(t.files)}</td>
+                <td>${fmtBytes(t.size)}</td>
+                <td>${fmtNum(t.rows)}</td>
+                <td>${t.compression != null ? t.compression.toFixed(1) + "x" : "—"}</td>
+                <td>${fmtUSD(t.cost)}</td>
+                <td>${t.last_write || "—"}</td>
+              </tr>
+            `)}
+          </tbody>
+        </table>
+      `;
+    }
+
+    // --- Cardinality Explorer Tab ---
+    function CardinalityExplorer() {
+      const [data, setData] = useState(null);
+      const [err, setErr] = useState(null);
+
+      const HIGH_CARDINALITY_THRESHOLD = 10000;
+
+      const load = useCallback(() => {
+        fetchJSON("/lakehouse/api/v1/cardinality/fields")
+          .then(d => setData(d.fields || d))
+          .catch(e => setErr(e.message));
+      }, []);
+
+      useEffect(() => { load(); }, [load]);
+
+      CardinalityExplorer._reload = load;
+
+      if (err) return html`<div class="error">Error: ${err}</div>`;
+      if (!data) return html`<div class="loading">Loading cardinality...</div>`;
+
+      return html`
+        <table>
+          <thead>
+            <tr>
+              <th>Field Name</th>
+              <th>Cardinality</th>
+              <th>Type</th>
+              <th>Bloom Filter</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.map(f => html`
+              <tr>
+                <td>
+                  ${f.name}
+                  ${" "}
+                  ${f.cardinality >= HIGH_CARDINALITY_THRESHOLD
+                    ? html`<span class="badge badge-high">HIGH</span>`
+                    : ""}
+                </td>
+                <td>${fmtNum(f.cardinality)}</td>
+                <td>${f.type || "—"}</td>
+                <td>${f.bloom ? "Yes" : "No"}</td>
+              </tr>
+            `)}
+          </tbody>
+        </table>
+      `;
+    }
+
+    // --- App ---
+    function App() {
+      const [tab, setTab] = useState("overview");
+      const [refreshInterval, setRefreshInterval] = useState(0);
+      const timerRef = useRef(null);
+
+      useEffect(() => {
+        if (timerRef.current) clearInterval(timerRef.current);
+        if (refreshInterval > 0) {
+          timerRef.current = setInterval(() => {
+            if (StorageOverview._reload) StorageOverview._reload();
+            if (Tenants._reload) Tenants._reload();
+            if (CardinalityExplorer._reload) CardinalityExplorer._reload();
+          }, refreshInterval * 1000);
+        }
+        return () => { if (timerRef.current) clearInterval(timerRef.current); };
+      }, [refreshInterval]);
+
+      const tabs = [
+        { id: "overview", label: "Storage Overview" },
+        { id: "tenants", label: "Tenants" },
+        { id: "cardinality", label: "Cardinality Explorer" },
+      ];
+
+      return html`
+        <div class="app-header">
+          <h1>Lakehouse Explorer</h1>
+          <div class="refresh-control">
+            <label for="refresh-select">Auto-refresh:</label>
+            <select id="refresh-select" value=${refreshInterval} onChange=${e => setRefreshInterval(Number(e.target.value))}>
+              <option value="0">Off</option>
+              <option value="10">10s</option>
+              <option value="30">30s</option>
+              <option value="60">60s</option>
+            </select>
+          </div>
+        </div>
+        <div class="tabs">
+          ${tabs.map(t => html`
+            <button class="tab ${tab === t.id ? "active" : ""}" onClick=${() => setTab(t.id)}>
+              ${t.label}
+            </button>
+          `)}
+        </div>
+        <div class="content">
+          ${tab === "overview" && html`<${StorageOverview} />`}
+          ${tab === "tenants" && html`<${Tenants} />`}
+          ${tab === "cardinality" && html`<${CardinalityExplorer} />`}
+        </div>
+      `;
+    }
+
+    render(html`<${App} />`, document.getElementById("app"));
+  </script>
+</body>
+</html>
