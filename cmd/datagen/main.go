@@ -361,8 +361,6 @@ func randomHex(length int) string {
 	return fmt.Sprintf("%x", b)
 }
 
-var spanKindNames = map[int32]string{1: "CLIENT", 2: "SERVER", 3: "PRODUCER", 4: "CONSUMER"}
-
 func pushOTLPTraces(endpoint string, rows []TraceRow) error {
 	type otlpKV struct {
 		Key   string      `json:"key"`
@@ -440,7 +438,7 @@ func pushOTLPTraces(endpoint string, rows []TraceRow) error {
 			if r.DBStatement != "" {
 				spanAttrs = append(spanAttrs, otlpKV{"db.statement", strVal(r.DBStatement)})
 			}
-			spanAttrs = append(spanAttrs, otlpKV{"service.version", strVal("1." + fmt.Sprintf("%d", mrand.Intn(5)) + ".0")})
+			spanAttrs = append(spanAttrs, otlpKV{"service.version", strVal("1." + fmt.Sprintf("%d", mrand.Intn(5)) + ".0")}) // #nosec G404 -- synthetic test data
 
 			endTimeNano := r.StartTimeUnixNano + r.DurationNs
 
