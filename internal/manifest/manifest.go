@@ -29,6 +29,10 @@ type FileInfo struct {
 	SchemaFingerprint string              `json:"schema_fp,omitempty"`
 	CompactionLevel   int                 `json:"compaction_level,omitempty"`
 	Labels            map[string][]string `json:"labels,omitempty"`
+	StorageClass      string              `json:"storage_class,omitempty"`
+	ClassCheckedAt    time.Time           `json:"class_checked_at,omitempty"`
+	ClassSource       string              `json:"class_source,omitempty"`
+	CreatedAt         time.Time           `json:"created_at,omitempty"`
 }
 
 func (fi FileInfo) CompressionRatio() float64 {

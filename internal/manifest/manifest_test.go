@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -446,6 +447,104 @@ func TestManifest_GetPartitions(t *testing.T) {
 	empty := m.GetPartitions("2026-06-01", "2026-06-30")
 	if len(empty) != 0 {
 		t.Errorf("expected 0 dates, got %d", len(empty))
+	}
+}
+
+func TestFileInfoJSONBackwardCompat(t *testing.T) {
+	// Old JSON without new StorageClass fields must still deserialize correctly.
+	oldJSON := `{"key":"logs/dt=2026-05-02/hour=10/a.parquet","size":1000,"row_count":50}`
+	var fi FileInfo
+	if err := json.Unmarshal([]byte(oldJSON), &fi); err != nil {
+		t.Fatalf("unmarshal old JSON: %v", err)
+	}
+	if fi.Key != "logs/dt=2026-05-02/hour=10/a.parquet" {
+		t.Errorf("Key = %q, want logs/dt=2026-05-02/hour=10/a.parquet", fi.Key)
+	}
+	if fi.Size != 1000 {
+		t.Errorf("Size = %d, want 1000", fi.Size)
+	}
+	if fi.StorageClass != "" {
+		t.Errorf("StorageClass = %q, want empty string", fi.StorageClass)
+	}
+	if !fi.ClassCheckedAt.IsZero() {
+		t.Errorf("ClassCheckedAt = %v, want zero", fi.ClassCheckedAt)
+	}
+	if fi.ClassSource != "" {
+		t.Errorf("ClassSource = %q, want empty string", fi.ClassSource)
+	}
+	if !fi.CreatedAt.IsZero() {
+		t.Errorf("CreatedAt = %v, want zero", fi.CreatedAt)
+	}
+}
+
+func TestFileInfoJSONRoundTrip(t *testing.T) {
+	now := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	fi := FileInfo{
+		Key:            "logs/dt=2026-05-02/hour=10/a.parquet",
+		Size:           2000,
+		StorageClass:   "GLACIER",
+		ClassCheckedAt: now,
+		ClassSource:    "s3_head",
+		CreatedAt:      now.Add(-24 * time.Hour),
+	}
+
+	data, err := json.Marshal(fi)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var fi2 FileInfo
+	if err := json.Unmarshal(data, &fi2); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if fi2.StorageClass != "GLACIER" {
+		t.Errorf("StorageClass = %q, want GLACIER", fi2.StorageClass)
+	}
+	if !fi2.ClassCheckedAt.Equal(now) {
+		t.Errorf("ClassCheckedAt = %v, want %v", fi2.ClassCheckedAt, now)
+	}
+	if fi2.ClassSource != "s3_head" {
+		t.Errorf("ClassSource = %q, want s3_head", fi2.ClassSource)
+	}
+	if !fi2.CreatedAt.Equal(now.Add(-24 * time.Hour)) {
+		t.Errorf("CreatedAt = %v, want %v", fi2.CreatedAt, now.Add(-24*time.Hour))
+	}
+}
+
+func TestAddFilePreservesNewFields(t *testing.T) {
+	m := newTestManifest()
+	may2h10 := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
+	checked := time.Date(2026, 5, 13, 8, 0, 0, 0, time.UTC)
+
+	fi := FileInfo{
+		Key:            "logs/dt=2026-05-02/hour=10/abc.parquet",
+		Size:           5000,
+		MinTimeNs:      may2h10.UnixNano(),
+		MaxTimeNs:      may2h10.Add(30 * time.Minute).UnixNano(),
+		StorageClass:   "STANDARD",
+		ClassCheckedAt: checked,
+		ClassSource:    "list_objects",
+		CreatedAt:      may2h10,
+	}
+	m.AddFile("dt=2026-05-02/hour=10", fi)
+
+	files := m.GetFilesForRange(may2h10.UnixNano(), may2h10.Add(time.Hour).UnixNano())
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	got := files[0]
+	if got.StorageClass != "STANDARD" {
+		t.Errorf("StorageClass = %q, want STANDARD", got.StorageClass)
+	}
+	if !got.ClassCheckedAt.Equal(checked) {
+		t.Errorf("ClassCheckedAt = %v, want %v", got.ClassCheckedAt, checked)
+	}
+	if got.ClassSource != "list_objects" {
+		t.Errorf("ClassSource = %q, want list_objects", got.ClassSource)
+	}
+	if !got.CreatedAt.Equal(may2h10) {
+		t.Errorf("CreatedAt = %v, want %v", got.CreatedAt, may2h10)
 	}
 }
 
