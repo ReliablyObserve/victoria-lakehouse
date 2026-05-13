@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Schema-driven FieldType system — centralized type-aware formatting for all Parquet column types (TypeTimestampNano, TypeInt32, TypeInt64, TypeFloat64, TypeBool, TypeString). `FormatValue()` on each type replaces scattered `fmt.Sprintf`/`time.Format` calls across all query paths (RunQuery, GetFieldNames, GetFieldValues, buffer reads). `ParseFieldType()` enables typed ExtraPromoted columns via config.
 - `FormatField(internalName, value)` registry method for one-call schema-driven formatting in all read paths
+- Architecture documentation with mermaid diagrams — cache architecture (L1→L2→L3→S3 tiers, SmartCache controller, eviction, prefetch, cross-signal, sizing), manifest system (structure, sync, persistence, API), storage & Parquet flow (end-to-end write/read paths, VL adapter, schema registry)
+- CodeQL configuration to exclude vendored VictoriaLogs code from security scanning
 
 ### Fixed
 - Jaeger test `TestHandleJaegerTrace_ScopeAttrAsSpanTag` assertion — handler strips `scope_attr:` prefix from tag keys, test now expects `lib.version` instead of `scope_attr:lib.version`
