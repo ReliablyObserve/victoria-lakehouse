@@ -3,9 +3,9 @@ import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
 const siteTitle = 'Victoria Lakehouse';
-const siteTagline = 'Cold storage for VictoriaLogs & VictoriaTraces on S3';
+const siteTagline = 'S3 Cold Storage for VictoriaLogs & VictoriaTraces — Open Parquet, Unlimited Retention';
 const siteDescription =
-  'S3-backed cold storage for VictoriaLogs and VictoriaTraces — 22% cheaper than Loki/Tempo, within 5% of VL/VT EBS. Unlimited retention, disaster recovery, and open Parquet format for analytics.';
+  'Victoria Lakehouse is an S3 Parquet cold storage tier for VictoriaLogs and VictoriaTraces. Drop-in VL/VT storage node with full API compatibility. Ingest via Loki, Elasticsearch, OTLP, Syslog, Fluentd, Logstash, Datadog, and more. Query with LogsQL, Jaeger, Loki API, or DuckDB/Spark/Trino/ClickHouse on open Parquet files. 60-96% cheaper than all-EBS. Unlimited retention with S3 Glacier tiering. Apache 2.0 licensed.';
 
 const config: Config = {
   title: siteTitle,
@@ -27,6 +27,63 @@ const config: Config = {
     },
   },
   themes: ['@docusaurus/theme-mermaid'],
+  headTags: [
+    {
+      tagName: 'meta',
+      attributes: {
+        property: 'og:type',
+        content: 'website',
+      },
+    },
+    {
+      tagName: 'meta',
+      attributes: {
+        property: 'og:title',
+        content: 'Victoria Lakehouse — S3 Cold Storage for VictoriaLogs & VictoriaTraces',
+      },
+    },
+    {
+      tagName: 'meta',
+      attributes: {
+        property: 'og:description',
+        content: siteDescription,
+      },
+    },
+    {
+      tagName: 'meta',
+      attributes: {
+        name: 'twitter:card',
+        content: 'summary_large_image',
+      },
+    },
+    {
+      tagName: 'script',
+      attributes: {
+        type: 'application/ld+json',
+      },
+      innerHTML: JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'SoftwareApplication',
+        name: 'Victoria Lakehouse',
+        applicationCategory: 'DeveloperApplication',
+        operatingSystem: 'Linux, macOS',
+        description: siteDescription,
+        url: 'https://reliablyobserve.github.io/victoria-lakehouse/',
+        license: 'https://www.apache.org/licenses/LICENSE-2.0',
+        softwareRequirements: 'S3-compatible object storage',
+        offers: {
+          '@type': 'Offer',
+          price: '0',
+          priceCurrency: 'USD',
+        },
+        author: {
+          '@type': 'Organization',
+          name: 'ReliablyObserve',
+          url: 'https://github.com/ReliablyObserve',
+        },
+      }),
+    },
+  ],
   i18n: {
     defaultLocale: 'en',
     locales: ['en'],
@@ -61,9 +118,36 @@ const config: Config = {
       {name: 'description', content: siteDescription},
       {
         name: 'keywords',
-        content:
-          'Victoria Lakehouse, S3 storage, VictoriaLogs cold storage, VictoriaTraces cold storage, Parquet, cold tier, cost optimization, observability',
+        content: [
+          'Victoria Lakehouse',
+          'VictoriaLogs cold storage',
+          'VictoriaTraces cold storage',
+          'S3 Parquet storage',
+          'observability cold tier',
+          'log storage S3',
+          'trace storage S3',
+          'Loki alternative',
+          'Tempo alternative',
+          'open Parquet format',
+          'DuckDB observability',
+          'ClickHouse log analytics',
+          'cost optimization observability',
+          'disaster recovery logs',
+          'unlimited log retention',
+          'OTLP S3 storage',
+          'Elasticsearch bulk API',
+          'Syslog S3 storage',
+          'LogsQL',
+          'Jaeger traces S3',
+          'Grafana cold storage',
+          'VictoriaMetrics ecosystem',
+          'Apache Parquet logs',
+          'compliance log retention',
+          'multi-tenant observability',
+        ].join(', '),
       },
+      {name: 'robots', content: 'index, follow'},
+      {property: 'og:site_name', content: 'Victoria Lakehouse'},
     ],
     colorMode: {
       defaultMode: 'light',
@@ -73,7 +157,7 @@ const config: Config = {
     navbar: {
       title: 'Victoria Lakehouse',
       logo: {
-        alt: 'Victoria Lakehouse logo',
+        alt: 'Victoria Lakehouse — S3 cold storage for VictoriaLogs and VictoriaTraces',
         src: 'img/logo.svg',
         srcDark: 'img/logo.svg',
       },
@@ -86,14 +170,30 @@ const config: Config = {
           label: 'Docs',
         },
         {
-          to: '/disaster-recovery/',
           label: 'Use Cases',
           position: 'left',
+          items: [
+            {to: '/disaster-recovery/', label: 'Disaster Recovery'},
+            {to: '/cost-optimization/', label: 'Cost Optimization'},
+            {to: '/unlimited-retention/', label: 'Unlimited Retention'},
+            {to: '/analytics-compliance/', label: 'Analytics & Compliance'},
+            {to: '/loki-tempo-alternative/', label: 'Loki/Tempo Alternative'},
+            {to: '/multi-tenant-observability/', label: 'Multi-Tenant Observability'},
+          ],
         },
         {
           to: '/docs/getting-started/',
-          label: 'Guides',
+          label: 'Quick Start',
           position: 'left',
+        },
+        {
+          label: 'Integrations',
+          position: 'left',
+          items: [
+            {to: '/ingestion-formats/', label: 'Ingestion Formats'},
+            {to: '/query-interfaces/', label: 'Query Interfaces'},
+            {to: '/docs/analytics-engines/', label: 'Analytics Engines'},
+          ],
         },
         {
           href: 'https://github.com/ReliablyObserve/victoria-lakehouse',
@@ -108,55 +208,39 @@ const config: Config = {
         {
           title: 'Use Cases',
           items: [
-            {
-              label: 'Disaster Recovery',
-              to: '/disaster-recovery/',
-            },
-            {
-              label: 'Cost Optimization',
-              to: '/cost-optimization/',
-            },
-            {
-              label: 'Unlimited Retention',
-              to: '/unlimited-retention/',
-            },
-            {
-              label: 'Analytics & Compliance',
-              to: '/analytics-compliance/',
-            },
+            {label: 'Disaster Recovery', to: '/disaster-recovery/'},
+            {label: 'Cost Optimization', to: '/cost-optimization/'},
+            {label: 'Unlimited Retention', to: '/unlimited-retention/'},
+            {label: 'Analytics & Compliance', to: '/analytics-compliance/'},
+            {label: 'Loki/Tempo Alternative', to: '/loki-tempo-alternative/'},
+            {label: 'Multi-Tenant Observability', to: '/multi-tenant-observability/'},
           ],
         },
         {
-          title: 'Deployment',
+          title: 'Integrations',
           items: [
-            {
-              label: 'Getting Started',
-              to: '/docs/getting-started/',
-            },
-            {
-              label: 'Architecture',
-              to: '/docs/architecture/',
-            },
-            {
-              label: 'Operations',
-              to: '/docs/operations/',
-            },
+            {label: 'Ingestion Formats', to: '/ingestion-formats/'},
+            {label: 'Query Interfaces', to: '/query-interfaces/'},
+            {label: 'Analytics Engines', to: '/docs/analytics-engines/'},
+            {label: 'Open Parquet Format', to: '/docs/open-parquet-format/'},
           ],
         },
         {
           title: 'Docs',
           items: [
+            {label: 'Getting Started', to: '/docs/getting-started/'},
             {label: 'Architecture', to: '/docs/architecture/'},
             {label: 'Configuration', to: '/docs/configuration/'},
-            {label: 'Operations', to: '/docs/operations/'},
             {label: 'Performance', to: '/docs/performance/'},
+            {label: 'Cost Estimates', to: '/docs/cost-estimates/'},
+            {label: 'Multi-Tenancy', to: '/docs/multi-tenancy/'},
           ],
         },
         {
           title: 'Project',
           items: [
             {
-              label: 'Repository',
+              label: 'GitHub',
               href: 'https://github.com/ReliablyObserve/victoria-lakehouse',
             },
             {
@@ -167,14 +251,19 @@ const config: Config = {
               label: 'Helm Chart',
               href: 'https://github.com/ReliablyObserve/victoria-lakehouse/tree/main/charts/victoria-lakehouse',
             },
+            {
+              label: 'Apache 2.0 License',
+              href: 'https://github.com/ReliablyObserve/victoria-lakehouse/blob/main/LICENSE',
+            },
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} ReliablyObserve. Built with Docusaurus.`,
+      copyright: `Copyright © ${new Date().getFullYear()} ReliablyObserve. Apache 2.0 Licensed. Built with Docusaurus.`,
     },
     prism: {
       theme: prismThemes.github,
       darkTheme: prismThemes.vsDark,
+      additionalLanguages: ['bash', 'yaml', 'json', 'sql', 'go'],
     },
   } satisfies Preset.ThemeConfig,
 };

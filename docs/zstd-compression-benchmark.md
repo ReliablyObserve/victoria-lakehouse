@@ -1,3 +1,8 @@
+---
+title: ZSTD Compression Benchmark
+sidebar_position: 19
+---
+
 # ZSTD Compression Level Benchmark
 
 Benchmark of Parquet ZSTD compression levels on both synthetic and **real
