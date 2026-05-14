@@ -30,9 +30,33 @@ helm install lakehouse-traces oci://ghcr.io/reliablyobserve/charts/victoria-lake
   --set lakehouseConfig.s3.region=us-east-1
 ```
 
+## Architecture
+
+```mermaid
+graph TD
+    subgraph "Kubernetes Cluster"
+    VM[vmauth<br/>ClusterIP :9428] -->|/insert/*| I[Insert StatefulSet<br/>WAL + Buffers]
+    VM -->|/select/*| S[Select StatefulSet<br/>Cache Volumes]
+    I -->|headless DNS| IH[Insert Headless Svc]
+    S -->|headless DNS| SH[Select Headless Svc]
+    S -->|buffer query| IH
+    S <-->|peer cache| SH
+    end
+
+    I -->|flush Parquet| S3[(S3)]
+    S -->|read Parquet| S3
+
+    P[Prometheus] -->|ServiceMonitor| I
+    P -->|ServiceMonitor| S
+
+    style VM fill:#9C27B0,color:#fff
+    style S3 fill:#FF9800,color:#fff
+    style P fill:#4CAF50,color:#fff
+```
+
 ## Chart Structure
 
-The Helm chart (version 0.10.0) deploys these Kubernetes resources:
+The Helm chart deploys these Kubernetes resources:
 
 | Template | Resource | Purpose |
 |---|---|---|

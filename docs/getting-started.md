@@ -9,6 +9,42 @@ Victoria Lakehouse is 100% API-compatible with VictoriaLogs and VictoriaTraces. 
 
 It ships as two dedicated binaries — `lakehouse-logs` and `lakehouse-traces` — each with independent VL/VT dependency versions and optional role separation for independent scaling of insert and select workloads.
 
+## How It Works
+
+```mermaid
+graph LR
+    A[vmagent<br/>OTEL Collector] -->|insert| B[Lakehouse Insert]
+    B -->|flush Parquet| C[(S3)]
+    D[Grafana<br/>Jaeger UI] -->|query| E[Lakehouse Select]
+    E -->|read Parquet| C
+    E -->|buffer query| B
+
+    style B fill:#4CAF50,color:#fff
+    style E fill:#2196F3,color:#fff
+    style C fill:#FF9800,color:#fff
+```
+
+```mermaid
+graph TD
+    subgraph "Data Flow"
+    I1[JSON / Loki / ES Bulk<br/>OTLP / Syslog / Fluentd<br/>Logstash / Datadog / Journald] -->|11+ formats| W[WAL + Buffer]
+    W -->|periodic flush| P[Parquet + ZSTD]
+    P -->|PutObject| S3[(S3 Standard)]
+    S3 -->|lifecycle| IA[S3 Infrequent Access]
+    IA -->|lifecycle| GL[Glacier Deep Archive]
+    end
+
+    subgraph "Query Path"
+    Q[LogsQL / Jaeger / Loki API<br/>DuckDB / ClickHouse / Spark] -->|query| M{Manifest}
+    M -->|hot range| SKIP[Empty ≤1ms]
+    M -->|cold range| SCAN[Row Group Stats<br/>→ Bloom Filter<br/>→ Column Scan]
+    end
+
+    style W fill:#4CAF50,color:#fff
+    style S3 fill:#FF9800,color:#fff
+    style M fill:#2196F3,color:#fff
+```
+
 ## Prerequisites
 
 - S3-compatible storage (AWS S3, MinIO, Cloudflare R2) with Parquet files in Hive partition layout

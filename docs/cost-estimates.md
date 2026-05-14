@@ -5,6 +5,25 @@ sidebar_position: 15
 
 # Cost Estimates
 
+```mermaid
+graph LR
+    subgraph "Storage Cost per GB/month"
+    EBS["EBS gp3<br/>$0.08-0.15"] --> S3S["S3 Standard<br/>$0.023"]
+    S3S --> S3IA["S3 IA<br/>$0.0125"]
+    S3IA --> GLA["Glacier<br/>$0.004"]
+    end
+
+    subgraph "Savings at 1 PB/month"
+    VS["vs Loki/Tempo<br/>52% cheaper<br/>$614K/yr saved"]
+    end
+
+    style EBS fill:#F44336,color:#fff
+    style S3S fill:#FF9800,color:#fff
+    style S3IA fill:#8BC34A,color:#fff
+    style GLA fill:#4CAF50,color:#fff
+    style VS fill:#2196F3,color:#fff
+```
+
 ## Pricing Basis (AWS us-east-1)
 
 | Resource | Price |

@@ -20,6 +20,18 @@ sidebar_position: 10
 
 Victoria Lakehouse goes through 4 phases on startup:
 
+```mermaid
+stateDiagram-v2
+    [*] --> INIT: Parse config, bind HTTP
+    INIT --> DISK_RECOVERY: /health → 200
+    DISK_RECOVERY --> S3_REFRESH: Load manifest, index (~1-3s)
+    S3_REFRESH --> READY: ListObjects (~2-10s warm)
+    READY --> [*]: /ready → 200
+
+    note right of INIT: Liveness probe passes
+    note right of READY: Readiness probe passes,<br/>K8s routes traffic
+```
+
 1. **INIT** — parse config, bind HTTP port. `/health` returns 200.
 2. **DISK_RECOVERY** — load persisted manifest, label index, and footers from disk (~1-3s warm, N/A cold).
 3. **S3_REFRESH** — incremental S3 ListObjects for new files since last persist (~2-10s warm, 30-60s cold).
@@ -58,6 +70,21 @@ When running separate insert and select pods:
 - **Graceful shutdown flush**: all buffers flushed before process exit (preStop hook)
 
 ## Graceful Shutdown
+
+```mermaid
+sequenceDiagram
+    participant K8s
+    participant Lakehouse
+    participant S3
+
+    K8s->>Lakehouse: SIGTERM
+    Lakehouse->>Lakehouse: readiness → false
+    Lakehouse->>S3: Flush all write buffers
+    Lakehouse->>Lakehouse: Drain in-flight queries (30s)
+    Lakehouse->>Lakehouse: Truncate WAL
+    Lakehouse->>Lakehouse: Persist manifest + index to disk
+    Lakehouse->>K8s: Exit 0
+```
 
 On SIGTERM:
 1. Stop accepting new queries (readiness -> false)
@@ -111,6 +138,19 @@ Victoria Lakehouse polls vlstorage/vtstorage nodes to learn the hot tier's data 
 - Alert: `LakehouseHotBoundaryGap` if gap > 1 day between cold and hot data
 
 ## Circuit Breaker
+
+```mermaid
+stateDiagram-v2
+    [*] --> Closed
+    Closed --> Open: N consecutive S3 failures
+    Open --> HalfOpen: After timeout expires
+    HalfOpen --> Closed: N probe successes
+    HalfOpen --> Open: Probe fails
+
+    note right of Closed: Normal operation
+    note right of Open: Requests fail fast
+    note right of HalfOpen: Probe requests only
+```
 
 S3 failures trigger a circuit breaker:
 - **Closed** (normal): requests flow through

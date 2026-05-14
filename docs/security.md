@@ -73,6 +73,29 @@ containerSecurityContext:
 
 ## Network Boundaries
 
+```mermaid
+graph TD
+    subgraph "Public (Grafana, Users)"
+    G[Grafana] -->|/select/logsql/*| LB[Load Balancer]
+    G -->|/select/jaeger/*| LB
+    end
+
+    subgraph "Cluster Network"
+    LB --> S[Lakehouse Select]
+    S -->|/internal/cache/*| P[Peer Instances]
+    S -->|/internal/buffer/query| I[Lakehouse Insert]
+    VL[vlselect] -->|/internal/select/*| S
+    end
+
+    subgraph "AWS"
+    S --> S3[(S3)]
+    I --> S3
+    end
+
+    style G fill:#4CAF50,color:#fff
+    style S3 fill:#FF9800,color:#fff
+```
+
 ### Internal Endpoints (cluster-only)
 
 These endpoints should NOT be exposed externally:
