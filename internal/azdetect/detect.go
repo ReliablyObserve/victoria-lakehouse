@@ -129,14 +129,14 @@ func detectK8sNodeLabel(ctx context.Context, timeout time.Duration) (string, err
 	}
 
 	client := &http.Client{Timeout: timeout}
-	url := fmt.Sprintf("https://kubernetes.default.svc/api/v1/nodes/%s", nodeName) // #nosec G704 -- host is hardcoded, nodeName from K8s downward API
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	url := fmt.Sprintf("https://kubernetes.default.svc/api/v1/nodes/%s", nodeName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil) // #nosec G704 -- host is hardcoded, nodeName from K8s downward API
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+string(tokenBytes))
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704
 	if err != nil {
 		return "", fmt.Errorf("k8s API: %w", err)
 	}
