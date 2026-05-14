@@ -15,11 +15,14 @@ import (
 // Select pods use this to achieve zero-delay reads by merging buffered rows
 // from insert pods with already-flushed Parquet data from S3.
 type BufferBridge struct {
-	cfg       *config.SelectConfig
-	mode      config.Mode
-	client    *http.Client
-	mu        sync.RWMutex
-	endpoints []string
+	cfg              *config.SelectConfig
+	mode             config.Mode
+	client           *http.Client
+	mu               sync.RWMutex
+	endpoints        []string
+	sameAZEndpoints  []string
+	crossAZEndpoints []string
+	selfAZ           string
 }
 
 // NewBufferBridge creates a BufferBridge configured for the given mode.
@@ -41,6 +44,36 @@ func (b *BufferBridge) SetEndpoints(endpoints []string) {
 	b.mu.Unlock()
 }
 
+// SetEndpointsWithZones updates insert pod endpoints with AZ classification.
+func (b *BufferBridge) SetEndpointsWithZones(epZones map[string]string, selfAZ string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.selfAZ = selfAZ
+	b.endpoints = make([]string, 0, len(epZones))
+	b.sameAZEndpoints = nil
+	b.crossAZEndpoints = nil
+
+	for ep, zone := range epZones {
+		b.endpoints = append(b.endpoints, ep)
+		if zone == selfAZ {
+			b.sameAZEndpoints = append(b.sameAZEndpoints, ep)
+		} else {
+			b.crossAZEndpoints = append(b.crossAZEndpoints, ep)
+		}
+	}
+}
+
+func (b *BufferBridge) getQueryEndpoints() []string {
+	if !b.cfg.AZAware || b.selfAZ == "" {
+		return b.endpoints
+	}
+	if !b.cfg.CrossAZFallback && len(b.sameAZEndpoints) > 0 {
+		return b.sameAZEndpoints
+	}
+	return b.endpoints
+}
+
 // QueryLogs fans out to all insert pod endpoints in parallel and returns
 // the merged set of buffered log rows within the given time range.
 // Endpoint errors are silently ignored for graceful degradation.
@@ -50,7 +83,7 @@ func (b *BufferBridge) QueryLogs(ctx context.Context, startNs, endNs int64) ([]s
 	}
 
 	b.mu.RLock()
-	eps := b.endpoints
+	eps := b.getQueryEndpoints()
 	b.mu.RUnlock()
 
 	if len(eps) == 0 {
@@ -119,7 +152,7 @@ func (b *BufferBridge) QueryTraces(ctx context.Context, startNs, endNs int64) ([
 	}
 
 	b.mu.RLock()
-	eps := b.endpoints
+	eps := b.getQueryEndpoints()
 	b.mu.RUnlock()
 
 	if len(eps) == 0 {

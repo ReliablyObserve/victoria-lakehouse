@@ -9,7 +9,7 @@ import (
 )
 
 func TestPeerCache_Fetch_Hit(t *testing.T) {
-	handler := NewHandler("")
+	handler := NewHandler("", "")
 	handler.Put("test-key", []byte("test-data"))
 
 	srv := httptest.NewServer(handler)
@@ -35,7 +35,7 @@ func TestPeerCache_Fetch_Hit(t *testing.T) {
 }
 
 func TestPeerCache_Fetch_Miss(t *testing.T) {
-	handler := NewHandler("")
+	handler := NewHandler("", "")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -56,7 +56,7 @@ func TestPeerCache_Fetch_Miss(t *testing.T) {
 }
 
 func TestPeerCache_Fetch_WithAuth(t *testing.T) {
-	handler := NewHandler("secret-key")
+	handler := NewHandler("secret-key", "")
 	handler.Put("k", []byte("v"))
 
 	srv := httptest.NewServer(handler)
@@ -73,7 +73,7 @@ func TestPeerCache_Fetch_WithAuth(t *testing.T) {
 }
 
 func TestPeerCache_Fetch_AuthRejected(t *testing.T) {
-	handler := NewHandler("correct-key")
+	handler := NewHandler("correct-key", "")
 	handler.Put("k", []byte("v"))
 
 	srv := httptest.NewServer(handler)
@@ -87,7 +87,7 @@ func TestPeerCache_Fetch_AuthRejected(t *testing.T) {
 }
 
 func TestPeerCache_Has(t *testing.T) {
-	handler := NewHandler("")
+	handler := NewHandler("", "")
 	handler.Put("exists", []byte("data"))
 
 	srv := httptest.NewServer(handler)
@@ -139,7 +139,7 @@ func TestPeerCache_Lookup(t *testing.T) {
 }
 
 func TestHandler_MissingKey(t *testing.T) {
-	handler := NewHandler("")
+	handler := NewHandler("", "")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -154,7 +154,7 @@ func TestHandler_MissingKey(t *testing.T) {
 }
 
 func TestHandler_UnknownPath(t *testing.T) {
-	handler := NewHandler("")
+	handler := NewHandler("", "")
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -169,7 +169,7 @@ func TestHandler_UnknownPath(t *testing.T) {
 }
 
 func TestHandler_DataCopy(t *testing.T) {
-	handler := NewHandler("")
+	handler := NewHandler("", "")
 	original := []byte("original-data")
 	handler.Put("k", original)
 

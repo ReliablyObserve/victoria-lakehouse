@@ -179,6 +179,10 @@ lakehouseConfig:
     # -- Timeout for buffer query requests to insert pods.
     # --lakehouse.select.buffer-query-timeout
     buffer_query_timeout: 2s
+    # -- Enable AZ-aware buffer bridge routing (prefer same-AZ insert pods).
+    az_aware: true
+    # -- Allow cross-AZ fallback for buffer queries when same-AZ insert pods unavailable.
+    cross_az_fallback: true
 
   # ---------------------------------------------------------------------------
   # Discovery — Hot tier auto-detection and peer fleet discovery
@@ -221,6 +225,16 @@ lakehouseConfig:
     # -- Maximum HTTP connections per peer node.
     # --lakehouse.peer.max-connections
     max_connections: 32
+    # -- Enable AZ-aware routing to prefer same-AZ peers (reduces cross-AZ costs).
+    az_aware: true
+    # -- AZ routing mode: "preferred" (same-AZ first, cross-AZ fallback) or "strict" (same-AZ only).
+    az_mode: "preferred"
+    # -- Allow cross-AZ fallback when same-AZ peers unavailable.
+    cross_az_fallback: true
+    # -- Environment variable name for AZ override (fallback chain: env → IMDS → GCP → K8s API).
+    az_env_var: "LAKEHOUSE_AZ"
+    # -- Minimum same-AZ peers required in strict mode before falling back to preferred.
+    az_min_peers_per_az: 2
 
   # ---------------------------------------------------------------------------
   # Manifest — Partition manifest and persistence
@@ -714,7 +728,13 @@ select:
   podLabels: {}
   terminationGracePeriodSeconds: 60
   priorityClassName: ""
-  topologySpreadConstraints: []
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/component: select
 
 insertComponent:
   enabled: true
@@ -788,7 +808,13 @@ insertComponent:
   podLabels: {}
   terminationGracePeriodSeconds: 60
   priorityClassName: ""
-  topologySpreadConstraints: []
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/component: insert
 
 vmauth:
   enabled: false

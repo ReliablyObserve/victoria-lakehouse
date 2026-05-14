@@ -111,6 +111,14 @@ var (
 	CrossPrefetchReceived = NewCounter("lakehouse_cache_cross_prefetch_received_total")
 )
 
+// AZ-aware routing metrics
+var (
+	PeerSameAZMembers           = NewGauge("lakehouse_peer_same_az_members")
+	PeerCrossAZMembers          = NewGauge("lakehouse_peer_cross_az_members")
+	PeerAZRequestsTotal         = NewCounterVec("lakehouse_peer_az_requests_total", "az_type")
+	BufferBridgeAZRequestsTotal = NewCounterVec("lakehouse_buffer_bridge_az_requests_total", "az_type")
+)
+
 // Startup & health metrics
 var (
 	StartupPhase        = NewGauge("lakehouse_startup_phase")

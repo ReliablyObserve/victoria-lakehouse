@@ -3,7 +3,9 @@ package parquets3
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 	"time"
@@ -41,6 +43,7 @@ type Storage struct {
 	bufferBridge *BufferBridge
 	tombstones   *delete.TombstoneStore
 	smartCache   *smartcache.Controller
+	selfAZ       string
 }
 
 func New(cfg *config.Config) (*Storage, error) {
@@ -106,7 +109,7 @@ func New(cfg *config.Config) (*Storage, error) {
 			cfg.Peer.Timeout,
 			cfg.Peer.MaxConnections,
 		)
-		ph = peercache.NewHandler(cfg.Peer.AuthKey)
+		ph = peercache.NewHandler(cfg.Peer.AuthKey, "")
 	}
 
 	var sc *smartcache.Controller
@@ -659,6 +662,15 @@ func (s *Storage) traceRowsToDataBlock(rows []schema.TraceRow) *logstorage.DataB
 	return db
 }
 
+func (s *Storage) SetSelfAZ(az string) {
+	s.selfAZ = az
+	if s.peerHandler != nil {
+		s.peerHandler.SetSelfAZ(az)
+	}
+}
+
+func (s *Storage) SelfAZ() string { return s.selfAZ }
+
 func (s *Storage) RefreshDiscovery(ctx context.Context) error {
 	if _, err := s.discovery.DiscoverStorageNodes(ctx); err != nil {
 		return fmt.Errorf("discover storage nodes: %w", err)
@@ -671,9 +683,59 @@ func (s *Storage) RefreshDiscovery(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("discover peers: %w", err)
 		}
-		s.peerCache.UpdatePeers(peers)
+
+		if s.selfAZ != "" && s.cfg.Peer.AZAware {
+			peerZones := s.queryPeerAZs(ctx, peers)
+			s.peerCache.UpdatePeersWithZones(peerZones, s.selfAZ)
+
+			stats := s.peerCache.StatsAZ()
+			metrics.PeerSameAZMembers.Set(int64(stats.SameAZMembers))
+			metrics.PeerCrossAZMembers.Set(int64(stats.CrossAZMembers))
+
+			if s.cfg.Peer.AZMode == "strict" && stats.SameAZMembers < s.cfg.Peer.AZMinPeersPerAZ {
+				logger.Warnf("strict AZ mode: only %d same-AZ peers (need %d); falling back to preferred",
+					stats.SameAZMembers, s.cfg.Peer.AZMinPeersPerAZ)
+			}
+		} else {
+			s.peerCache.UpdatePeers(peers)
+		}
 	}
 	return nil
+}
+
+func (s *Storage) queryPeerAZs(ctx context.Context, peers []string) map[string]string {
+	peerZones := make(map[string]string, len(peers))
+	for _, peer := range peers {
+		az := s.fetchPeerAZ(ctx, peer)
+		peerZones[peer] = az
+	}
+	return peerZones
+}
+
+func (s *Storage) fetchPeerAZ(ctx context.Context, peer string) string {
+	url := fmt.Sprintf("http://%s/internal/cache/stats", peer)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return ""
+	}
+	if s.cfg.Peer.AuthKey != "" {
+		req.Header.Set("X-Peer-Auth-Key", s.cfg.Peer.AuthKey)
+	}
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var result struct {
+		AZ string `json:"az"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return ""
+	}
+	return result.AZ
 }
 
 func (s *Storage) RefreshManifest(ctx context.Context) error {

@@ -159,6 +159,8 @@ type SelectConfig struct {
 	BufferQueryEnabled    bool          `yaml:"buffer_query_enabled"`
 	InsertHeadlessService string        `yaml:"insert_headless_service"`
 	BufferQueryTimeout    time.Duration `yaml:"buffer_query_timeout"`
+	AZAware               bool          `yaml:"az_aware"`
+	CrossAZFallback       bool          `yaml:"cross_az_fallback"`
 }
 
 type S3Config struct {
@@ -213,9 +215,14 @@ type PrefetchConfig struct {
 }
 
 type PeerConfig struct {
-	AuthKey        string        `yaml:"auth_key"`
-	Timeout        time.Duration `yaml:"timeout"`
-	MaxConnections int           `yaml:"max_connections"`
+	AuthKey         string        `yaml:"auth_key"`
+	Timeout         time.Duration `yaml:"timeout"`
+	MaxConnections  int           `yaml:"max_connections"`
+	AZAware         bool          `yaml:"az_aware"`
+	AZMode          string        `yaml:"az_mode"`
+	CrossAZFallback bool          `yaml:"cross_az_fallback"`
+	AZEnvVar        string        `yaml:"az_env_var"`
+	AZMinPeersPerAZ int           `yaml:"az_min_peers_per_az"`
 }
 
 type StartupConfig struct {
@@ -399,8 +406,13 @@ func Default() *Config {
 		},
 
 		Peer: PeerConfig{
-			Timeout:        5 * time.Second,
-			MaxConnections: 32,
+			Timeout:         5 * time.Second,
+			MaxConnections:  32,
+			AZAware:         true,
+			AZMode:          "preferred",
+			CrossAZFallback: true,
+			AZEnvVar:        "LAKEHOUSE_AZ",
+			AZMinPeersPerAZ: 2,
 		},
 
 		Startup: StartupConfig{
@@ -433,6 +445,8 @@ func Default() *Config {
 		Select: SelectConfig{
 			BufferQueryEnabled: true,
 			BufferQueryTimeout: 2 * time.Second,
+			AZAware:            true,
+			CrossAZFallback:    true,
 		},
 
 		Tenant: TenantConfig{
@@ -594,6 +608,12 @@ func (c *Config) Validate() error {
 		if c.Insert.CompressionLevel < 1 || c.Insert.CompressionLevel > 22 {
 			return fmt.Errorf("--lakehouse.insert.compression-level must be 1-22, got %d", c.Insert.CompressionLevel)
 		}
+	}
+
+	switch c.Peer.AZMode {
+	case "preferred", "strict", "":
+	default:
+		return fmt.Errorf("--lakehouse.peer.az-mode must be preferred or strict, got %q", c.Peer.AZMode)
 	}
 
 	for _, ep := range c.Schema.ExtraPromoted {
@@ -877,6 +897,21 @@ func mergeConfig(base, overlay *Config) *Config {
 	if overlay.Peer.MaxConnections > 0 {
 		base.Peer.MaxConnections = overlay.Peer.MaxConnections
 	}
+	if overlay.Peer.AZEnvVar != "" {
+		base.Peer.AZEnvVar = overlay.Peer.AZEnvVar
+	}
+	if overlay.Peer.AZMode != "" {
+		base.Peer.AZMode = overlay.Peer.AZMode
+	}
+	if overlay.Peer.AZMinPeersPerAZ > 0 {
+		base.Peer.AZMinPeersPerAZ = overlay.Peer.AZMinPeersPerAZ
+	}
+	if overlay.Peer.AZAware {
+		base.Peer.AZAware = true
+	}
+	if overlay.Peer.CrossAZFallback {
+		base.Peer.CrossAZFallback = true
+	}
 
 	// Startup
 	if overlay.Startup.ServeStale {
@@ -1056,6 +1091,12 @@ func mergeConfig(base, overlay *Config) *Config {
 	}
 	if overlay.Select.BufferQueryTimeout > 0 {
 		base.Select.BufferQueryTimeout = overlay.Select.BufferQueryTimeout
+	}
+	if overlay.Select.AZAware {
+		base.Select.AZAware = true
+	}
+	if overlay.Select.CrossAZFallback {
+		base.Select.CrossAZFallback = true
 	}
 
 	// Schema

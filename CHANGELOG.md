@@ -8,14 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Mermaid diagrams added to 14 docs: getting-started, read-path, performance, scaling, security, operations, observability, open-parquet-format, benchmarks, kubernetes-deployment, analytics-engines, cost-estimates, configuration, vl-comparison
-- Cross-AZ cost optimization guide — VPC Gateway Endpoint, AZ-aware peer cache, S3 Express One Zone hot tier, topology-aware scheduling, AutoMQ comparison, industry case studies (Grafana Loki 77% savings, Thanos, CockroachDB)
+- AZ auto-detection at startup with fallback chain (env var → AWS IMDSv2 → GCP metadata → K8s node label API)
+- AZ-aware peer cache routing — consistent hash ring maintains same-AZ sub-ring, prefers same-AZ peers for L3 cache lookups
+- AZ-aware buffer bridge — select pods prefer same-AZ insert pods for `/internal/buffer/query` fan-out
+- Preferred vs strict AZ modes with configurable `az_min_peers_per_az` threshold
+- AZ metrics: `lakehouse_peer_same_az_members`, `lakehouse_peer_cross_az_members`, `lakehouse_peer_az_requests_total`, `lakehouse_buffer_bridge_az_requests_total`
+- Peer AZ reporting via `/internal/cache/stats` endpoint (`"az"` field in JSON response)
+- Default topology spread constraints in Helm chart for even AZ distribution
+- NODE_NAME env injection in Helm templates for K8s API AZ detection fallback
+- 8 fuzz test targets across azdetect, peercache, config, and storage packages
+- 60+ edge case tests for AZ components (K8s labels, ring wrap-around, concurrent access, special chars)
+- Cross-AZ cost optimization guide with AutoMQ comparison and industry case studies
+- Mermaid diagrams added to 14 documentation pages
 - 4 new website landing pages: ingestion-formats, query-interfaces, loki-tempo-alternative, multi-tenant-observability
-- Homepage expansion: ingestion format grid (11 formats), query interface cards (8 interfaces), deployment patterns section, CTA section
-- SEO: OpenGraph meta tags, JSON-LD structured data (Schema.org SoftwareApplication), 25+ keywords, Twitter card metadata
-- Docusaurus sidebar: added 9 docs (storage-flow, manifest-system, cache-architecture, multi-tenancy, tenant-stats, lakehouse-explorer, vl-comparison, zstd-compression-benchmark, analytics-engines)
-- Navbar dropdown menus for Use Cases (6 items) and Integrations (3 items)
-- Updated all use case pages (cost-optimization, disaster-recovery, unlimited-retention, analytics-compliance) with richer content and SEO titles
+- SEO: OpenGraph meta tags, JSON-LD structured data, 25+ keywords, Twitter card metadata
+- Docusaurus sidebar: added 9 docs, navbar dropdown menus for Use Cases and Integrations
+
+### Fixed
+- Peer AZ discovery auth header mismatch — `fetchPeerAZ()` used `Authorization: Bearer` but handler expects `X-Peer-Auth-Key`, causing silent failure when auth configured
+- Data race in `/internal/cache/stats` endpoint — `ServeHTTP` read `selfAZ` without lock while `SetSelfAZ` writes with lock
+- Invalid JSON in stats endpoint for non-UTF8 AZ names — `%q` format produces Go-style escapes not valid in JSON, switched to `json.Marshal`
+- `mergeConfig()` missed boolean fields `Peer.AZAware`, `Peer.CrossAZFallback`, `Select.AZAware`, `Select.CrossAZFallback` — config overlay could not enable these
 
 ## [0.22.0] - 2026-05-13
 

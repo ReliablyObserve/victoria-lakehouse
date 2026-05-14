@@ -69,7 +69,7 @@ func TestRing_ConcurrentMembersLookup(t *testing.T) {
 }
 
 func TestHandler_ConcurrentPutGet(t *testing.T) {
-	h := NewHandler("secret")
+	h := NewHandler("secret", "")
 	const goroutines = 30
 	const ops = 200
 	var wg sync.WaitGroup
