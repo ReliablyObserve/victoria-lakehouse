@@ -13,6 +13,11 @@ datasources:
     isDefault: true
     jsonData:
       maxLines: 1000
+      derivedFields:
+        - datasourceUid: victoriatraces-global
+          matcherRegex: 'trace_id=(\w+)'
+          name: traceID
+          url: "$${__value.raw}"
 
   - name: "VictoriaTraces Global (Hot+Cold)"
     type: jaeger
@@ -38,6 +43,11 @@ datasources:
     url: http://victorialogs:9428
     jsonData:
       maxLines: 1000
+      derivedFields:
+        - datasourceUid: victoriatraces-hot
+          matcherRegex: 'trace_id=(\w+)'
+          name: traceID
+          url: "$${__value.raw}"
 
   - name: "VictoriaTraces Hot (Disk 24h)"
     type: jaeger
@@ -63,6 +73,11 @@ datasources:
     url: http://lakehouse-logs:9428
     jsonData:
       maxLines: 1000
+      derivedFields:
+        - datasourceUid: victoria-lakehouse-traces
+          matcherRegex: 'trace_id=(\w+)'
+          name: traceID
+          url: "$${__value.raw}"
 
   - name: "Lakehouse Traces Cold (S3 Jaeger)"
     type: jaeger
@@ -72,6 +87,23 @@ datasources:
     jsonData:
       tracesToLogsV2:
         datasourceUid: victoria-lakehouse-cold
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+        filterByTraceID: true
+        filterBySpanID: false
+
+  # =========================================================================
+  # Tempo API — backed by VictoriaTraces for Loki→trace correlation
+  # =========================================================================
+
+  - name: "Tempo via VictoriaTraces (Hot+Cold)"
+    type: tempo
+    uid: tempo-global
+    access: proxy
+    url: http://vtselect:10428/select/tempo
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki-vl-proxy
         spanStartTimeShift: "-1h"
         spanEndTimeShift: "1h"
         filterByTraceID: true
@@ -89,8 +121,8 @@ datasources:
     jsonData:
       maxLines: 1000
       derivedFields:
-        - datasourceUid: victoriatraces-global
-          matcherRegex: "trace_id=(\\w+)"
+        - datasourceUid: tempo-global
+          matcherRegex: 'trace_id=(\w+)'
           name: traceID
           url: "$${__value.raw}"
 
@@ -110,7 +142,7 @@ datasources:
       defaultDatabase: lakehouse
       defaultTable: logs_raw
 
-  - name: "ClickHouse Logs (OTEL S3 Parquet)"
+  - name: "ClickHouse Logs (S3 Parquet)"
     type: grafana-clickhouse-datasource
     uid: clickhouse-logs
     access: proxy
@@ -129,14 +161,8 @@ datasources:
         timeColumn: Timestamp
         levelColumn: SeverityText
         messageColumn: Body
-      tracesToLogsV2:
-        datasourceUid: clickhouse-traces
-        spanStartTimeShift: "-1h"
-        spanEndTimeShift: "1h"
-        filterByTraceID: true
-        filterBySpanID: false
 
-  - name: "ClickHouse Traces (OTEL S3 Parquet)"
+  - name: "ClickHouse Traces (S3 Parquet)"
     type: grafana-clickhouse-datasource
     uid: clickhouse-traces
     access: proxy

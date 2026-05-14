@@ -87,6 +87,18 @@ func main() {
 	}
 }
 
+type traceCtx struct {
+	traceID  string
+	spanIDs  []string
+	svc      string
+	ns       string
+	env      string
+	region   string
+	node     string
+	host     string
+	baseTime time.Time
+}
+
 func generateBatch(ctx context.Context, client *s3.Client, bucket, tenantPrefix string, logsCount, tracesCount, hoursBack int, dualWrite bool, vlEndpoint, vtEndpoint string) {
 	now := time.Now().UTC()
 	rng := mrand.New(mrand.NewSource(now.UnixNano())) // #nosec G404 -- synthetic test data, not security-sensitive
@@ -98,27 +110,180 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket, tenantPrefix 
 	}
 
 	batchID := randomHex(8)
-	logsByPartition := make(map[string][]LogRow)
-	for i := 0; i < logsCount; i++ {
+
+	// ── Phase 1: Generate traces first so logs can reference their IDs ──
+
+	tracesByPartition := make(map[string][]TraceRow)
+	var traceContexts []traceCtx
+	numTraces := tracesCount / 3
+	if numTraces < 1 {
+		numTraces = 1
+	}
+	for t := 0; t < numTraces; t++ {
 		hoursAgo := rng.Intn(hoursBack) + 1
 		if hoursBack <= 1 {
 			hoursAgo = 0
 		}
-		ts := now.Add(-time.Duration(hoursAgo) * time.Hour).Add(time.Duration(rng.Intn(3600)) * time.Second)
+		baseTime := now.Add(-time.Duration(hoursAgo) * time.Hour).Add(time.Duration(rng.Intn(3600)) * time.Second)
 		if hoursBack <= 1 {
-			ts = now.Add(-time.Duration(rng.Intn(3600)) * time.Second)
+			baseTime = now.Add(-time.Duration(rng.Intn(3600)) * time.Second)
 		}
+		traceID := randomHex(32)
 		svc := services[rng.Intn(len(services))]
 		ns := namespaces[rng.Intn(len(namespaces))]
 		env := deployEnvs[rng.Intn(len(deployEnvs))]
 		region := regions[rng.Intn(len(regions))]
 		node := k8sNodes[rng.Intn(len(k8sNodes))]
 		host := hostNames[rng.Intn(len(hostNames))]
+
+		tc := traceCtx{
+			traceID: traceID, svc: svc, ns: ns, env: env,
+			region: region, node: node, host: host, baseTime: baseTime,
+		}
+
+		spansPerTrace := 2 + rng.Intn(4)
+		parentSpanID := ""
+		for s := 0; s < spansPerTrace; s++ {
+			spanID := randomHex(16)
+			tc.spanIDs = append(tc.spanIDs, spanID)
+			startTime := baseTime.Add(time.Duration(s*10) * time.Millisecond)
+			dur := time.Duration(5+rng.Intn(50)) * time.Millisecond
+			endTime := startTime.Add(dur)
+
+			statusCode := int32(0)
+			statusMsg := ""
+			if rng.Float64() < 0.1 {
+				statusCode = 2
+				statusMsg = "internal error"
+			}
+
+			spanName := spanNames[rng.Intn(len(spanNames))]
+			httpMethod := ""
+			httpCode := ""
+			httpUrl := ""
+			dbSystem := ""
+			dbStmt := ""
+
+			if len(spanName) > 4 && spanName[:4] == "HTTP" {
+				httpMethod = httpMethods[rng.Intn(len(httpMethods))]
+				httpCode = httpCodes[rng.Intn(len(httpCodes))]
+				httpUrl = fmt.Sprintf("http://%s:8080%s", svc, spanName[len("HTTP "+httpMethod):])
+			} else if len(spanName) > 2 && spanName[:2] == "DB" {
+				dbSystem = dbSystems[0]
+				dbStmt = fmt.Sprintf("SELECT * FROM %s WHERE id = $1", spanName[3:])
+			} else if spanName == "Redis GET session" {
+				dbSystem = "redis"
+				dbStmt = "GET session:user:" + randomHex(8)
+			}
+
+			row := TraceRow{
+				TimestampUnixNano:  endTime.UnixNano(),
+				StartTimeUnixNano:  startTime.UnixNano(),
+				TraceID:            traceID,
+				SpanID:             spanID,
+				ParentSpanID:       parentSpanID,
+				SpanName:           spanName,
+				SpanKind:           int32(1 + rng.Intn(3)),
+				StatusCode:         statusCode,
+				StatusMessage:      statusMsg,
+				DurationNs:         dur.Nanoseconds(),
+				ServiceName:        svc,
+				ScopeName:          "github.com/reliablyobserve/instrumentation",
+				DeployEnv:          env,
+				CloudRegion:        region,
+				HostName:           host,
+				K8sNamespaceName:   ns,
+				K8sDeploymentName:  svc,
+				K8sNodeName:        node,
+				HTTPMethod:         httpMethod,
+				HTTPStatusCode:     httpCode,
+				HTTPUrl:            httpUrl,
+				DBSystem:           dbSystem,
+				DBStatement:        dbStmt,
+				ResourceAttributes: map[string]string{
+					"service.version":    fmt.Sprintf("1.%d.0", rng.Intn(10)),
+					"telemetry.sdk.name": "opentelemetry",
+				},
+				SpanAttributes:  map[string]string{},
+				ScopeAttributes: map[string]string{},
+			}
+
+			key := partitionKeyBatch(tenantPrefix, "traces", startTime, batchID)
+			tracesByPartition[key] = append(tracesByPartition[key], row)
+			parentSpanID = spanID
+		}
+		traceContexts = append(traceContexts, tc)
+	}
+
+	for key, rows := range tracesByPartition {
+		data, err := writeTracesParquet(rows)
+		if err != nil {
+			log.Printf("ERROR write traces parquet: %v", err)
+			return
+		}
+		if err := upload(ctx, client, bucket, key, data); err != nil {
+			log.Printf("ERROR upload %s: %v", key, err)
+			return
+		}
+		log.Printf("  uploaded %s (%d rows, %d bytes)", key, len(rows), len(data))
+	}
+
+	if dualWrite && vtEndpoint != "" {
+		var allTraces []TraceRow
+		for _, rows := range tracesByPartition {
+			allTraces = append(allTraces, rows...)
+		}
+		if err := pushOTLPTraces(vtEndpoint, allTraces); err != nil {
+			log.Printf("WARNING: dual-write to VT failed: %v", err)
+		} else {
+			log.Printf("  dual-write: pushed %d traces to VT at %s", len(allTraces), vtEndpoint)
+		}
+	}
+
+	// ── Phase 2: Generate logs — 70% correlated to traces, 30% independent ──
+
+	logsByPartition := make(map[string][]LogRow)
+	correlatedCount := 0
+	for i := 0; i < logsCount; i++ {
+		var traceID, spanID, svc, ns, env, region, node, host string
+		var ts time.Time
+
+		correlated := len(traceContexts) > 0 && rng.Float64() < 0.7
+		if correlated {
+			tc := traceContexts[rng.Intn(len(traceContexts))]
+			traceID = tc.traceID
+			spanID = tc.spanIDs[rng.Intn(len(tc.spanIDs))]
+			svc = tc.svc
+			ns = tc.ns
+			env = tc.env
+			region = tc.region
+			node = tc.node
+			host = tc.host
+			ts = tc.baseTime.Add(time.Duration(rng.Intn(10000)-5000) * time.Millisecond)
+			correlatedCount++
+		} else {
+			hoursAgo := rng.Intn(hoursBack) + 1
+			if hoursBack <= 1 {
+				hoursAgo = 0
+			}
+			ts = now.Add(-time.Duration(hoursAgo) * time.Hour).Add(time.Duration(rng.Intn(3600)) * time.Second)
+			if hoursBack <= 1 {
+				ts = now.Add(-time.Duration(rng.Intn(3600)) * time.Second)
+			}
+			svc = services[rng.Intn(len(services))]
+			ns = namespaces[rng.Intn(len(namespaces))]
+			env = deployEnvs[rng.Intn(len(deployEnvs))]
+			region = regions[rng.Intn(len(regions))]
+			node = k8sNodes[rng.Intn(len(k8sNodes))]
+			host = hostNames[rng.Intn(len(hostNames))]
+			traceID = randomHex(32)
+			spanID = randomHex(16)
+		}
+
 		lvl := levels[rng.Intn(len(levels))]
 		pattern := pickPattern(rng)
 		body, logAttrs := pattern(rng, ts, svc, lvl)
-		traceID := randomHex(32)
-		spanID := randomHex(16)
+		body = fmt.Sprintf("%s trace_id=%s span_id=%s", body, traceID, spanID)
 
 		row := LogRow{
 			TimestampUnixNano: ts.UnixNano(),
@@ -174,128 +339,6 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket, tenantPrefix 
 		}
 	}
 
-	tracesByPartition := make(map[string][]TraceRow)
-	numTraces := tracesCount / 3
-	if numTraces < 1 {
-		numTraces = 1
-	}
-	for t := 0; t < numTraces; t++ {
-		hoursAgo := rng.Intn(hoursBack) + 1
-		if hoursBack <= 1 {
-			hoursAgo = 0
-		}
-		baseTime := now.Add(-time.Duration(hoursAgo) * time.Hour).Add(time.Duration(rng.Intn(3600)) * time.Second)
-		if hoursBack <= 1 {
-			baseTime = now.Add(-time.Duration(rng.Intn(3600)) * time.Second)
-		}
-		traceID := randomHex(32)
-		svc := services[rng.Intn(len(services))]
-		ns := namespaces[rng.Intn(len(namespaces))]
-		env := deployEnvs[rng.Intn(len(deployEnvs))]
-		region := regions[rng.Intn(len(regions))]
-		node := k8sNodes[rng.Intn(len(k8sNodes))]
-		host := hostNames[rng.Intn(len(hostNames))]
-
-		spansPerTrace := 2 + rng.Intn(4)
-		parentSpanID := ""
-		for s := 0; s < spansPerTrace; s++ {
-			spanID := randomHex(16)
-			startTime := baseTime.Add(time.Duration(s*10) * time.Millisecond)
-			dur := time.Duration(5+rng.Intn(50)) * time.Millisecond
-			endTime := startTime.Add(dur)
-
-			statusCode := int32(0)
-			statusMsg := ""
-			if rng.Float64() < 0.1 {
-				statusCode = 2
-				statusMsg = "internal error"
-			}
-
-			spanName := spanNames[rng.Intn(len(spanNames))]
-			httpMethod := ""
-			httpCode := ""
-			httpUrl := ""
-			dbSystem := ""
-			dbStmt := ""
-
-			if len(spanName) > 4 && spanName[:4] == "HTTP" {
-				httpMethod = httpMethods[rng.Intn(len(httpMethods))]
-				httpCode = httpCodes[rng.Intn(len(httpCodes))]
-				httpUrl = fmt.Sprintf("http://%s:8080%s", svc, spanName[len("HTTP "+httpMethod):])
-			} else if len(spanName) > 2 && spanName[:2] == "DB" {
-				dbSystem = dbSystems[0]
-				dbStmt = fmt.Sprintf("SELECT * FROM %s WHERE id = $1", spanName[3:])
-			} else if spanName == "Redis GET session" {
-				dbSystem = "redis"
-				dbStmt = "GET session:user:" + randomHex(8)
-			}
-
-			resAttrs := map[string]string{
-				"service.version":    fmt.Sprintf("1.%d.0", rng.Intn(10)),
-				"telemetry.sdk.name": "opentelemetry",
-			}
-			spanAttrs := map[string]string{}
-
-			row := TraceRow{
-				TimestampUnixNano:  endTime.UnixNano(),
-				StartTimeUnixNano:  startTime.UnixNano(),
-				TraceID:            traceID,
-				SpanID:             spanID,
-				ParentSpanID:       parentSpanID,
-				SpanName:           spanName,
-				SpanKind:           int32(1 + rng.Intn(3)),
-				StatusCode:         statusCode,
-				StatusMessage:      statusMsg,
-				DurationNs:         dur.Nanoseconds(),
-				ServiceName:        svc,
-				ScopeName:          "github.com/reliablyobserve/instrumentation",
-				DeployEnv:          env,
-				CloudRegion:        region,
-				HostName:           host,
-				K8sNamespaceName:   ns,
-				K8sDeploymentName:  svc,
-				K8sNodeName:        node,
-				HTTPMethod:         httpMethod,
-				HTTPStatusCode:     httpCode,
-				HTTPUrl:            httpUrl,
-				DBSystem:           dbSystem,
-				DBStatement:        dbStmt,
-				ResourceAttributes: resAttrs,
-				SpanAttributes:     spanAttrs,
-				ScopeAttributes:    map[string]string{},
-			}
-
-			key := partitionKeyBatch(tenantPrefix, "traces", startTime, batchID)
-			tracesByPartition[key] = append(tracesByPartition[key], row)
-			parentSpanID = spanID
-		}
-	}
-
-	for key, rows := range tracesByPartition {
-		data, err := writeTracesParquet(rows)
-		if err != nil {
-			log.Printf("ERROR write traces parquet: %v", err)
-			return
-		}
-		if err := upload(ctx, client, bucket, key, data); err != nil {
-			log.Printf("ERROR upload %s: %v", key, err)
-			return
-		}
-		log.Printf("  uploaded %s (%d rows, %d bytes)", key, len(rows), len(data))
-	}
-
-	if dualWrite && vtEndpoint != "" {
-		var allTraces []TraceRow
-		for _, rows := range tracesByPartition {
-			allTraces = append(allTraces, rows...)
-		}
-		if err := pushOTLPTraces(vtEndpoint, allTraces); err != nil {
-			log.Printf("WARNING: dual-write to VT failed: %v", err)
-		} else {
-			log.Printf("  dual-write: pushed %d traces to VT at %s", len(allTraces), vtEndpoint)
-		}
-	}
-
 	totalLogs := 0
 	for _, rows := range logsByPartition {
 		totalLogs += len(rows)
@@ -305,8 +348,8 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket, tenantPrefix 
 		totalTraces += len(rows)
 	}
 
-	log.Printf("Batch done: %d log rows in %d partitions, %d trace spans in %d partitions",
-		totalLogs, len(logsByPartition), totalTraces, len(tracesByPartition))
+	log.Printf("Batch done: %d log rows (%d correlated) in %d partitions, %d trace spans in %d partitions",
+		totalLogs, correlatedCount, len(logsByPartition), totalTraces, len(tracesByPartition))
 }
 
 func partitionKeyBatch(prefix, signal string, ts time.Time, batchID string) string {

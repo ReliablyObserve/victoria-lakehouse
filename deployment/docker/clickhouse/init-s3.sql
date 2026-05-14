@@ -19,24 +19,34 @@ SELECT
     body AS Body,
     `service.name` AS ServiceName,
     trace_id AS TraceId,
+    trace_id AS traceID,
     span_id AS SpanId,
     `scope.name` AS ScopeName,
     '' AS ScopeVersion,
     '' AS ResourceSchemaUrl,
     '' AS ScopeSchemaUrl,
+    `resource.attributes` AS ResourceAttributes,
     mapConcat(
-        `resource.attributes`,
+        `log.attributes`,
         mapFilter((k, v) -> v != '',
             mapFromArrays(
-                ['k8s.namespace.name', 'k8s.pod.name', 'k8s.deployment.name',
-                 'k8s.node.name', 'deployment.environment', 'cloud.region', 'host.name'],
-                [`k8s.namespace.name`, `k8s.pod.name`, `k8s.deployment.name`,
-                 `k8s.node.name`, `deployment.environment`, `cloud.region`, `host.name`]
+                ['level', 'service.name', 'k8s.namespace.name', 'k8s.pod.name',
+                 'k8s.deployment.name', 'k8s.node.name', 'deployment.environment',
+                 'cloud.region', 'host.name', 'trace_id', 'span_id', 'scope.name'],
+                [severity_text, `service.name`, `k8s.namespace.name`, `k8s.pod.name`,
+                 `k8s.deployment.name`, `k8s.node.name`, `deployment.environment`,
+                 `cloud.region`, `host.name`, trace_id, span_id, `scope.name`]
             )
         )
-    ) AS ResourceAttributes,
-    `log.attributes` AS LogAttributes,
-    CAST(map() AS Map(String, String)) AS ScopeAttributes
+    ) AS LogAttributes,
+    CAST(map() AS Map(String, String)) AS ScopeAttributes,
+    CAST([] AS Array(DateTime64(9))) AS `Events.Timestamp`,
+    CAST([] AS Array(String)) AS `Events.Name`,
+    CAST([] AS Array(Map(String, String))) AS `Events.Attributes`,
+    CAST([] AS Array(String)) AS `Links.TraceId`,
+    CAST([] AS Array(String)) AS `Links.SpanId`,
+    CAST([] AS Array(String)) AS `Links.TraceState`,
+    CAST([] AS Array(Map(String, String))) AS `Links.Attributes`
 FROM s3(
     'http://minio:9000/obs-archive/*/*/logs/dt=*/hour=*/*.parquet',
     'minioadmin', 'minioadmin', 'Parquet',

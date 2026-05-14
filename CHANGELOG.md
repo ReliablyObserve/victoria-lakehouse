@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- E2E datagen trace-log correlation — traces now generated first with 70% of logs sharing trace IDs, span IDs, and service context for realistic cross-signal testing
+- Grafana datasource log→trace links — added `derivedFields` to all VictoriaLogs and Loki datasources with `trace_id=(\w+)` regex linking to Jaeger trace views
+- ClickHouse otel_logs view promoted fields — moved service.name, k8s.*, etc. into LogAttributes map only (removed ResourceAttributes duplication)
+- Bump loki-vl-proxy to v1.33.0
+
 ## [0.23.0] - 2026-05-14
 
 ### Added
