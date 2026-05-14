@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-05-14
+
 ### Added
 - AZ auto-detection at startup with fallback chain (env var → AWS IMDSv2 → GCP metadata → K8s node label API)
 - AZ-aware peer cache routing — consistent hash ring maintains same-AZ sub-ring, prefers same-AZ peers for L3 cache lookups
