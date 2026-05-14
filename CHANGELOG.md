@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- 4 new website landing pages: ingestion-formats, query-interfaces, loki-tempo-alternative, multi-tenant-observability
+- Homepage expansion: ingestion format grid (11 formats), query interface cards (8 interfaces), deployment patterns section, CTA section
+- SEO: OpenGraph meta tags, JSON-LD structured data (Schema.org SoftwareApplication), 25+ keywords, Twitter card metadata
+- Docusaurus sidebar: added 9 docs (storage-flow, manifest-system, cache-architecture, multi-tenancy, tenant-stats, lakehouse-explorer, vl-comparison, zstd-compression-benchmark, analytics-engines)
+- Navbar dropdown menus for Use Cases (6 items) and Integrations (3 items)
+- Updated all use case pages (cost-optimization, disaster-recovery, unlimited-retention, analytics-compliance) with richer content and SEO titles
+
 ## [0.22.0] - 2026-05-13
 
 ### Added

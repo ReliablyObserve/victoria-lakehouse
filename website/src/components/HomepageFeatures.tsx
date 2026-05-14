@@ -3,7 +3,6 @@ import styles from './HomepageFeatures.module.css';
 
 type FeatureItem = {
   title: string;
-  image?: string;
   description: JSX.Element;
 };
 
@@ -12,15 +11,31 @@ const FeatureList: FeatureItem[] = [
     title: '60-96% Cost Reduction',
     description: (
       <>
-        S3 storage is 3-6x cheaper per GB than EBS. At scale (1 PB/month), hybrid deployments save $3-9.5M/year compared to all-EBS.
+        S3 Standard at $0.023/GB vs EBS at $0.08-0.15/GB. Glacier tiering at $0.004/GB for compliance retention. At 1 PB/month, save $614K/year vs Loki/Tempo.
       </>
     ),
   },
   {
-    title: 'Unlimited Retention',
+    title: '11+ Ingestion Formats',
     description: (
       <>
-        Store years of historical data on S3 Glacier while keeping hot data on EBS. Query spanning both tiers transparently via vlselect/vtselect.
+        Loki push, Elasticsearch bulk, OTLP, Syslog, Fluentd, Logstash, Datadog, Journald, NDJSON, Zipkin, Jaeger. Every VL/VT-supported format works unchanged.
+      </>
+    ),
+  },
+  {
+    title: 'Full Query Compatibility',
+    description: (
+      <>
+        LogsQL full-text search, Jaeger trace UI, Loki API via proxy, Grafana dashboards. Every VL/VT query endpoint implemented. Sub-100ms bloom filter lookups.
+      </>
+    ),
+  },
+  {
+    title: '9+ Analytics Engines',
+    description: (
+      <>
+        DuckDB, ClickHouse, Spark, Trino, Databricks, Snowflake, StarRocks, Doris, pandas. Standard Apache Parquet — query cold data with any tool, zero lock-in.
       </>
     ),
   },
@@ -28,23 +43,7 @@ const FeatureList: FeatureItem[] = [
     title: 'Disaster Recovery',
     description: (
       <>
-        When the hot cluster is down, lakehouse serves all data from S3 — slower but always available. Zero data loss.
-      </>
-    ),
-  },
-  {
-    title: 'Sub-Millisecond Hot Path',
-    description: (
-      <>
-        Queries within the hot tier's range get an immediate empty response via the partition manifest. Zero S3 I/O for recent queries.
-      </>
-    ),
-  },
-  {
-    title: 'Open Parquet Format',
-    description: (
-      <>
-        DuckDB, Trino, Spark, and ClickHouse read the same files directly for analytics, compliance, and ML — no proprietary formats.
+        When the hot cluster is down, Lakehouse serves all data from S3. 11 nines durability, always available. 10-20x cheaper than maintaining a hot standby.
       </>
     ),
   },
@@ -52,7 +51,23 @@ const FeatureList: FeatureItem[] = [
     title: 'Drop-In Storage Node',
     description: (
       <>
-        Register as a -storageNode on vlselect/vtselect. Existing VL/VT clusters handle hot data on EBS, lakehouse handles cold on S3.
+        Register as a -storageNode on vlselect/vtselect. Hot cluster handles recent data on EBS, Lakehouse handles cold on S3. Transparent to queries and Grafana.
+      </>
+    ),
+  },
+  {
+    title: 'Multi-Tenant',
+    description: (
+      <>
+        Per-tenant S3 prefix or bucket isolation. 8 per-tenant Prometheus metrics for cost allocation. Built-in Lakehouse Explorer UI for tenant management.
+      </>
+    ),
+  },
+  {
+    title: 'Apache 2.0 Licensed',
+    description: (
+      <>
+        No AGPL restrictions. Fork it, embed it, build on it. Full source on GitHub. No vendor lock-in on code or data format.
       </>
     ),
   },
@@ -60,7 +75,7 @@ const FeatureList: FeatureItem[] = [
 
 function Feature({title, description}: FeatureItem) {
   return (
-    <div className={clsx('col col--6')}>
+    <div className={clsx('col col--3')}>
       <div className="text--center padding-horiz--md padding-vert--md">
         <div className={styles.featureBox}>
           <h3>{title}</h3>

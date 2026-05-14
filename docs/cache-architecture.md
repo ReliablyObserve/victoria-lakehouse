@@ -1,3 +1,8 @@
+---
+title: Cache Architecture
+sidebar_position: 10
+---
+
 # Cache Architecture
 
 Victoria Lakehouse uses a multi-tier cache to minimize S3 latency and cost. Every Parquet file read passes through a four-level hierarchy before hitting object storage.

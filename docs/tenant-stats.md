@@ -1,3 +1,8 @@
+---
+title: Tenant Statistics
+sidebar_position: 36
+---
+
 # Tenant Statistics & Storage Metrics
 
 Victoria Lakehouse tracks per-tenant and global storage statistics in real-time, with CRDT-based fleet synchronization, S3 storage class awareness, and cost estimation.

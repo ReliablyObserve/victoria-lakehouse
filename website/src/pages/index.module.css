@@ -21,11 +21,11 @@
 .heroDescription {
   font-size: 1.1rem;
   margin-bottom: 2rem;
-  max-width: 700px;
+  max-width: 750px;
   margin-left: auto;
   margin-right: auto;
   opacity: 0.85;
-  line-height: 1.5;
+  line-height: 1.6;
 }
 
 .buttons {
@@ -68,6 +68,94 @@
 .stepCard p {
   color: var(--ifm-text-color);
   line-height: 1.6;
+  text-align: left;
+}
+
+/* Ingestion Formats */
+.ingestionSection {
+  padding: 4rem 0;
+}
+
+.formatGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 1rem;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.formatItem {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 1rem;
+  background: var(--ifm-color-emphasis-100);
+  border-radius: 8px;
+  border-left: 3px solid var(--ifm-color-primary);
+}
+
+.formatDesc {
+  font-size: 0.85rem;
+  color: var(--ifm-color-emphasis-600);
+  font-family: var(--ifm-font-family-monospace);
+}
+
+.formatBadge {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  width: fit-content;
+}
+
+.badgelogs {
+  background: rgba(45, 106, 79, 0.15);
+  color: var(--ifm-color-primary-dark);
+}
+
+.badgetraces {
+  background: rgba(59, 130, 246, 0.15);
+  color: #2563eb;
+}
+
+.badgeboth {
+  background: rgba(139, 92, 246, 0.15);
+  color: #7c3aed;
+}
+
+/* Query Interfaces */
+.querySection {
+  padding: 4rem 0;
+  background: var(--ifm-color-emphasis-100);
+}
+
+.queryItem {
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+  background: var(--ifm-background-color);
+  border-radius: 8px;
+  height: calc(100% - 1rem);
+}
+
+.queryItem h4 {
+  margin-bottom: 0.5rem;
+  color: var(--ifm-color-primary);
+}
+
+.queryItem p {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin-bottom: 0.5rem;
+}
+
+.queryTarget {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  color: var(--ifm-color-emphasis-600);
 }
 
 /* Comparison Section */
@@ -111,9 +199,54 @@
 }
 
 .comparisonCard p {
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   line-height: 1.5;
   color: var(--ifm-text-color);
+}
+
+/* Deployment Section */
+.deploymentSection {
+  padding: 4rem 0;
+  background: var(--ifm-color-emphasis-100);
+}
+
+.deployCard {
+  padding: 2rem 1.5rem;
+  background: var(--ifm-background-color);
+  border-radius: 12px;
+  height: 100%;
+}
+
+.deployCard h3 {
+  color: var(--ifm-color-primary);
+  margin-bottom: 0.75rem;
+}
+
+.deployCard p {
+  font-size: 0.95rem;
+  line-height: 1.6;
+  margin-bottom: 1rem;
+}
+
+.deployCard code {
+  font-size: 0.8rem;
+  display: block;
+  word-break: break-all;
+}
+
+/* CTA Section */
+.ctaSection {
+  padding: 4rem 0;
+  background: linear-gradient(135deg, #2d6a4f 0%, #40916c 100%);
+  color: white;
+}
+
+.ctaSection h2 {
+  color: white;
+}
+
+.ctaSection p {
+  color: rgba(255, 255, 255, 0.9);
 }
 
 @media screen and (max-width: 996px) {
@@ -142,7 +275,11 @@
     width: 100%;
   }
 
-  .howItWorks {
+  .howItWorks,
+  .ingestionSection,
+  .querySection,
+  .deploymentSection,
+  .ctaSection {
     padding: 2rem 0;
   }
 
@@ -156,5 +293,9 @@
 
   .statValue {
     font-size: 2.5rem;
+  }
+
+  .formatGrid {
+    grid-template-columns: 1fr;
   }
 }
