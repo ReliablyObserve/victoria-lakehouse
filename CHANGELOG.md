@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- AZ auto-detection at startup with fallback chain (env var → AWS IMDSv2 → GCP metadata → K8s node label API)
+- AZ-aware peer cache routing — consistent hash ring maintains same-AZ sub-ring, prefers same-AZ peers for L3 cache lookups
+- AZ-aware buffer bridge — select pods prefer same-AZ insert pods for `/internal/buffer/query` fan-out
+- Preferred vs strict AZ modes with configurable `az_min_peers_per_az` threshold
+- AZ metrics: `lakehouse_peer_same_az_members`, `lakehouse_peer_cross_az_members`, `lakehouse_peer_az_requests_total`, `lakehouse_buffer_bridge_az_requests_total`
+- Peer AZ reporting via `/internal/cache/stats` endpoint (`"az"` field in JSON response)
+- Default topology spread constraints in Helm chart for even AZ distribution
+- NODE_NAME env injection in Helm templates for K8s API AZ detection fallback
+- AZ integration tests and E2E tests for docker-compose setup
 - Mermaid diagrams added to 14 docs: getting-started, read-path, performance, scaling, security, operations, observability, open-parquet-format, benchmarks, kubernetes-deployment, analytics-engines, cost-estimates, configuration, vl-comparison
 - Cross-AZ cost optimization guide — VPC Gateway Endpoint, AZ-aware peer cache, S3 Express One Zone hot tier, topology-aware scheduling, AutoMQ comparison, industry case studies (Grafana Loki 77% savings, Thanos, CockroachDB)
 - 4 new website landing pages: ingestion-formats, query-interfaces, loki-tempo-alternative, multi-tenant-observability

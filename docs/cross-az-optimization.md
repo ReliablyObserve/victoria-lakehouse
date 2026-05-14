@@ -5,7 +5,9 @@ sidebar_position: 16
 
 # Cross-AZ Cost Optimization
 
-Victoria Lakehouse is designed to minimize or eliminate cross-AZ data transfer costs in AWS deployments. This page documents the cost problem, available mitigations, and recommended configurations for achieving near-zero inter-AZ transfer costs.
+> **Implementation Status**: AZ-aware routing is **enabled by default** since v0.7.0. AZ is auto-detected at startup via a fallback chain: `LAKEHOUSE_AZ` env var → AWS IMDSv2 → GCP metadata → Kubernetes node label API. Two modes: `preferred` (default, cross-AZ fallback) and `strict` (same-AZ only, requires `az_min_peers_per_az` same-AZ peers).
+
+Victoria Lakehouse is designed to minimize or eliminate cross-AZ data transfer costs in multi-AZ deployments. This page documents the cost problem, the implementation architecture, and recommended configurations for achieving near-zero inter-AZ transfer costs.
 
 ```mermaid
 graph TD
@@ -61,6 +63,105 @@ S3 is a **regional service** — data transfer between S3 and EC2 within the sam
 | 100 GB/day | $60/mo |
 | 1 TB/day | $600/mo |
 
+## AZ Detection Architecture
+
+At startup, each Lakehouse pod auto-detects which Availability Zone it is running in. The detection uses a fallback chain that works across AWS, GCP, and bare Kubernetes:
+
+```mermaid
+flowchart TD
+    START[Pod Startup] --> ENV{LAKEHOUSE_AZ<br/>env var set?}
+    ENV -->|Yes| USE_ENV[Use env var value]
+    ENV -->|No| IMDS{AWS IMDSv2<br/>reachable?}
+    IMDS -->|Yes| USE_IMDS[Use placement/availability-zone]
+    IMDS -->|No| GCP{GCP metadata<br/>reachable?}
+    GCP -->|Yes| USE_GCP[Use instance/zone<br/>extract zone suffix]
+    GCP -->|No| K8S{K8s API +<br/>NODE_NAME set?}
+    K8S -->|Yes| USE_K8S["Read node label<br/>topology.kubernetes.io/zone"]
+    K8S -->|No| EMPTY[AZ unknown<br/>all routing is AZ-unaware]
+
+    USE_ENV --> DETECTED[AZ Detected]
+    USE_IMDS --> DETECTED
+    USE_GCP --> DETECTED
+    USE_K8S --> DETECTED
+
+    DETECTED --> RING[Configure peer cache<br/>same-AZ sub-ring]
+    DETECTED --> BRIDGE[Configure buffer bridge<br/>same-AZ endpoints]
+    DETECTED --> STATS[Expose AZ in<br/>/internal/cache/stats]
+
+    style START fill:#2196F3,color:#fff
+    style DETECTED fill:#4CAF50,color:#fff
+    style EMPTY fill:#FF9800,color:#fff
+```
+
+### Peer Discovery and AZ Classification
+
+Once each pod knows its own AZ, it discovers peer AZs by querying the `/internal/cache/stats` endpoint on each peer during the discovery loop:
+
+```mermaid
+sequenceDiagram
+    participant Self as lakehouse-0 (az-a)
+    participant DNS as Headless DNS
+    participant P1 as lakehouse-1 (az-a)
+    participant P2 as lakehouse-2 (az-b)
+
+    Self->>DNS: Resolve peers
+    DNS-->>Self: [lakehouse-1, lakehouse-2]
+
+    par Query peer AZs
+        Self->>P1: GET /internal/cache/stats
+        P1-->>Self: {"az": "az-a"}
+    and
+        Self->>P2: GET /internal/cache/stats
+        P2-->>Self: {"az": "az-b"}
+    end
+
+    Note over Self: Build two sub-rings:<br/>same-AZ: [self, lakehouse-1]<br/>cross-AZ: [lakehouse-2]
+
+    Self->>Self: LookupAZ("file.parquet")<br/>→ check same-AZ ring first<br/>→ cross-AZ only on fallback
+```
+
+### Write Path — AZ-Aware Routing
+
+The write path is where cross-AZ costs matter most. S3 reads/writes are free (regional service), but inter-pod traffic (peer cache L3, buffer bridge) crosses AZ boundaries at $0.01/GB:
+
+```mermaid
+graph TD
+    subgraph "AZ-a"
+        SEL_A[Select Pod<br/>lakehouse-select-0] -->|"L3 cache<br/>$0.00"| INS_A[Insert Pod<br/>lakehouse-insert-0]
+        SEL_A -->|"buffer query<br/>$0.00"| INS_A
+        SEL_A -->|"L3 cache<br/>$0.00"| SEL_A2[Select Pod<br/>lakehouse-select-1]
+    end
+
+    subgraph "AZ-b"
+        SEL_B[Select Pod<br/>lakehouse-select-2] -->|"L3 cache<br/>$0.00"| INS_B[Insert Pod<br/>lakehouse-insert-1]
+        SEL_B -->|"buffer query<br/>$0.00"| INS_B
+    end
+
+    SEL_A -.->|"cross-AZ fallback<br/>$0.01/GB ⚠️"| SEL_B
+    SEL_A -.->|"cross-AZ buffer<br/>$0.01/GB ⚠️"| INS_B
+
+    INS_A -->|"$0.00"| S3[(S3<br/>Regional)]
+    INS_B -->|"$0.00"| S3
+    SEL_A -->|"$0.00"| S3
+    SEL_B -->|"$0.00"| S3
+
+    style S3 fill:#FF9800,color:#fff
+    style SEL_A fill:#4CAF50,color:#fff
+    style SEL_A2 fill:#4CAF50,color:#fff
+    style INS_A fill:#4CAF50,color:#fff
+    style SEL_B fill:#2196F3,color:#fff
+    style INS_B fill:#2196F3,color:#fff
+```
+
+### Preferred vs Strict Mode
+
+| Mode | Behavior | Cross-AZ Traffic | Cache Hit Rate |
+|---|---|---|---|
+| `preferred` (default) | Same-AZ first, cross-AZ fallback | Near-zero (5-10% of requests) | Higher (fleet-wide L3) |
+| `strict` | Same-AZ only, no fallback | Zero | Lower (AZ-local L3 only) |
+
+Strict mode requires `az_min_peers_per_az` same-AZ peers. If not met, it logs a warning and falls back to preferred mode to prevent data unavailability.
+
 ## Mitigation Strategies
 
 ### Strategy 1: VPC Gateway Endpoint for S3 (Required)
@@ -100,10 +201,12 @@ The peer cache (L3) uses a consistent hash ring to distribute cached Parquet fil
 ```yaml
 # values.yaml
 lakehouseConfig:
-  peer-cache:
-    az-aware: true
-    cross-az-fallback: true  # fall back to cross-AZ on local miss
-    az-label: "topology.kubernetes.io/zone"
+  peer:
+    az_aware: true              # enable AZ-aware routing
+    az_mode: "preferred"        # "preferred" or "strict"
+    cross_az_fallback: true     # fall back to cross-AZ on local miss
+    az_env_var: "LAKEHOUSE_AZ"  # env var override (auto-detect if empty)
+    az_min_peers_per_az: 2      # min same-AZ peers for strict mode
 ```
 
 ```mermaid
@@ -126,10 +229,11 @@ graph LR
 
 **How it works:**
 
-1. Pod discovers its own AZ from Kubernetes downward API (`topology.kubernetes.io/zone`)
-2. Hash ring is partitioned: same-AZ peers are primary, cross-AZ peers are fallback
-3. Cache lookup sequence: L1 memory → L2 disk → **L3 same-AZ peer** → L3 cross-AZ peer → S3
-4. Cross-AZ fallback is configurable — disable for zero cross-AZ peer traffic at the cost of lower fleet-wide cache hit rate
+1. Pod auto-detects its AZ at startup (env var → AWS IMDSv2 → GCP metadata → K8s node label API)
+2. Peers report their AZ via `/internal/cache/stats` endpoint, queried during discovery loop
+3. Hash ring maintains a same-AZ sub-ring alongside the full ring
+4. Cache lookup sequence: L1 memory → L2 disk → **L3 same-AZ peer** → L3 cross-AZ peer (if fallback enabled) → S3
+5. Cross-AZ fallback is configurable — disable for zero cross-AZ peer traffic at the cost of lower fleet-wide cache hit rate
 
 **Cost impact at scale (6 pods, 2 per AZ, 50% L3 hit rate, 500 GB/day reads):**
 
@@ -148,10 +252,8 @@ When select pods query insert pods for unflushed data (`/internal/buffer/query`)
 ```yaml
 lakehouseConfig:
   select:
-    buffer-bridge:
-      az-aware: true
-      # Query same-AZ insert pods first, then cross-AZ if needed
-      cross-az-fallback: true
+    az_aware: true            # enable AZ-aware buffer bridge routing
+    cross_az_fallback: true   # query cross-AZ insert pods on same-AZ miss
 ```
 
 Since buffer data is typically small (seconds of unflushed rows), the cost savings are modest but the latency improvement is significant (same-AZ: <1ms, cross-AZ: 1-5ms).
@@ -316,20 +418,24 @@ For deployments where cross-AZ transfer cost must be exactly $0:
 
 # 2. Helm values
 lakehouseConfig:
-  peer-cache:
-    az-aware: true
-    cross-az-fallback: false  # NEVER cross AZ for cache
-    az-label: "topology.kubernetes.io/zone"
+  peer:
+    az_aware: true
+    az_mode: "strict"
+    cross_az_fallback: false     # NEVER cross AZ for cache
+    az_min_peers_per_az: 2       # require 2+ same-AZ peers
   select:
-    buffer-bridge:
-      az-aware: true
-      cross-az-fallback: false
+    az_aware: true
+    cross_az_fallback: false     # NEVER cross AZ for buffer queries
 
-# 3. Pod scheduling
-topologySpreadConstraints:
-  - maxSkew: 1
-    topologyKey: topology.kubernetes.io/zone
-    whenUnsatisfiable: DoNotSchedule
+# 3. Pod scheduling (default in Helm chart)
+select:
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/component: select
 ```
 
 **Trade-off**: Lower fleet-wide cache hit rate (each AZ has independent L3 cache). Compensate with larger L2 disk cache per pod.
@@ -340,41 +446,56 @@ For most deployments — near-zero cross-AZ with good cache utilization:
 
 ```yaml
 lakehouseConfig:
-  peer-cache:
-    az-aware: true
-    cross-az-fallback: true  # allow cross-AZ on local miss
-    az-label: "topology.kubernetes.io/zone"
+  peer:
+    az_aware: true
+    az_mode: "preferred"        # same-AZ first, cross-AZ fallback
+    cross_az_fallback: true
   select:
-    buffer-bridge:
-      az-aware: true
-      cross-az-fallback: true
+    az_aware: true
+    cross_az_fallback: true     # query cross-AZ insert pods on miss
 ```
 
 Cross-AZ traffic is limited to L3 cache misses that hit a cross-AZ peer before falling through to S3. At typical cache hit rates, this is 5-10% of total traffic.
 
 ## Monitoring Cross-AZ Traffic
 
-Victoria Lakehouse exposes metrics to track cross-AZ data transfer:
+Victoria Lakehouse exposes metrics to track AZ-aware routing:
 
 | Metric | Description |
 |---|---|
-| `lakehouse_peer_cache_bytes_total{az="same"}` | Bytes transferred to same-AZ peers |
-| `lakehouse_peer_cache_bytes_total{az="cross"}` | Bytes transferred to cross-AZ peers |
-| `lakehouse_buffer_bridge_bytes_total{az="same"}` | Buffer bridge bytes, same-AZ |
-| `lakehouse_buffer_bridge_bytes_total{az="cross"}` | Buffer bridge bytes, cross-AZ |
-| `lakehouse_s3_bytes_downloaded_total` | Total bytes from S3 (free via Gateway Endpoint) |
+| `lakehouse_peer_same_az_members` | Number of same-AZ peers in the ring |
+| `lakehouse_peer_cross_az_members` | Number of cross-AZ peers in the ring |
+| `lakehouse_peer_az_requests_total{az_type="same"}` | Peer cache requests routed to same-AZ |
+| `lakehouse_peer_az_requests_total{az_type="cross"}` | Peer cache requests routed cross-AZ |
+| `lakehouse_buffer_bridge_az_requests_total{az_type="same"}` | Buffer queries to same-AZ insert pods |
+| `lakehouse_buffer_bridge_az_requests_total{az_type="cross"}` | Buffer queries to cross-AZ insert pods |
+| `lakehouse_s3_bytes_read_total` | Total bytes from S3 (free via Gateway Endpoint) |
 
-**Alert rule** for unexpected cross-AZ traffic:
+The AZ is also exposed via `/internal/cache/stats` JSON endpoint (field `"az"`), used during peer discovery.
+
+**Alert rule** for insufficient same-AZ peers:
 
 ```yaml
-- alert: LakehouseCrossAZTrafficHigh
-  expr: rate(lakehouse_peer_cache_bytes_total{az="cross"}[5m]) > 10e6  # 10 MB/s
+- alert: LakehouseLowSameAZPeers
+  expr: lakehouse_peer_same_az_members < 2
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Low same-AZ peer count"
+    description: "Only {{ $value }} same-AZ peers available. Cross-AZ traffic may increase."
+
+- alert: LakehouseHighCrossAZRate
+  expr: >
+    rate(lakehouse_peer_az_requests_total{az_type="cross"}[5m])
+    / (rate(lakehouse_peer_az_requests_total{az_type="same"}[5m]) + rate(lakehouse_peer_az_requests_total{az_type="cross"}[5m]))
+    > 0.1
   for: 15m
   labels:
     severity: warning
   annotations:
-    summary: "High cross-AZ peer cache traffic"
-    description: "Cross-AZ peer cache traffic exceeds 10 MB/s. Check AZ-aware routing configuration."
+    summary: "High cross-AZ peer cache request rate"
+    description: "More than 10% of peer cache requests are cross-AZ. Check AZ-aware routing configuration."
 ```
 
 ## Cost Summary
