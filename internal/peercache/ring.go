@@ -9,12 +9,15 @@ import (
 const defaultVnodes = 150
 
 type Ring struct {
-	mu       sync.RWMutex
-	vnodes   int
-	keys     []uint32
-	ring     map[uint32]string
-	members  map[string]bool
-	selfAddr string
+	mu          sync.RWMutex
+	vnodes      int
+	keys        []uint32
+	ring        map[uint32]string
+	members     map[string]bool
+	selfAddr    string
+	sameAZRing  map[uint32]string
+	sameAZKeys  []uint32
+	hasZoneInfo bool
 }
 
 func NewRing(selfAddr string, vnodes int) *Ring {
@@ -22,10 +25,11 @@ func NewRing(selfAddr string, vnodes int) *Ring {
 		vnodes = defaultVnodes
 	}
 	return &Ring{
-		vnodes:   vnodes,
-		ring:     make(map[uint32]string),
-		members:  make(map[string]bool),
-		selfAddr: selfAddr,
+		vnodes:     vnodes,
+		ring:       make(map[uint32]string),
+		members:    make(map[string]bool),
+		selfAddr:   selfAddr,
+		sameAZRing: make(map[uint32]string),
 	}
 }
 
@@ -83,6 +87,79 @@ func (r *Ring) MemberCount() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.members)
+}
+
+func (r *Ring) SetWithZones(peerZones map[string]string, selfZone string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.ring = make(map[uint32]string)
+	r.members = make(map[string]bool)
+	r.keys = nil
+	r.sameAZRing = make(map[uint32]string)
+	r.sameAZKeys = nil
+	r.hasZoneInfo = selfZone != ""
+
+	for peer, zone := range peerZones {
+		r.members[peer] = true
+		for i := 0; i < r.vnodes; i++ {
+			h := hashKey(peer, i)
+			r.ring[h] = peer
+			r.keys = append(r.keys, h)
+
+			if zone == selfZone {
+				r.sameAZRing[h] = peer
+				r.sameAZKeys = append(r.sameAZKeys, h)
+			}
+		}
+	}
+
+	sort.Slice(r.keys, func(i, j int) bool { return r.keys[i] < r.keys[j] })
+	sort.Slice(r.sameAZKeys, func(i, j int) bool { return r.sameAZKeys[i] < r.sameAZKeys[j] })
+}
+
+func (r *Ring) LookupAZ(key string) (peer string, isLocal bool, isSameAZ bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if len(r.keys) == 0 {
+		return r.selfAddr, true, true
+	}
+
+	if !r.hasZoneInfo || len(r.sameAZKeys) == 0 {
+		h := crc32.ChecksumIEEE([]byte(key))
+		idx := sort.Search(len(r.keys), func(i int) bool { return r.keys[i] >= h })
+		if idx >= len(r.keys) {
+			idx = 0
+		}
+		peer = r.ring[r.keys[idx]]
+		return peer, peer == r.selfAddr, true
+	}
+
+	h := crc32.ChecksumIEEE([]byte(key))
+	idx := sort.Search(len(r.sameAZKeys), func(i int) bool { return r.sameAZKeys[i] >= h })
+	if idx >= len(r.sameAZKeys) {
+		idx = 0
+	}
+	peer = r.sameAZRing[r.sameAZKeys[idx]]
+	return peer, peer == r.selfAddr, true
+}
+
+func (r *Ring) MemberCountByZone() (sameAZ, crossAZ int) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if !r.hasZoneInfo {
+		return len(r.members), 0
+	}
+
+	sameAZMembers := make(map[string]bool)
+	for _, peer := range r.sameAZRing {
+		sameAZMembers[peer] = true
+	}
+	sameAZ = len(sameAZMembers)
+	crossAZ = len(r.members) - sameAZ
+	return sameAZ, crossAZ
 }
 
 func hashKey(peer string, vnode int) uint32 {
