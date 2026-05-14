@@ -50,7 +50,7 @@ func TestStorage_SetSelfAZ_PropagesToHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result struct {
 		AZ string `json:"az"`
@@ -79,7 +79,7 @@ func TestStorage_FetchPeerAZ_Success(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"az":"us-west-2a"}`))
+		_, _ = w.Write([]byte(`{"az":"us-west-2a"}`))
 	}))
 	defer srv.Close()
 
@@ -94,7 +94,7 @@ func TestStorage_FetchPeerAZ_WithAuth(t *testing.T) {
 	var gotHeader string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotHeader = r.Header.Get("X-Peer-Auth-Key")
-		w.Write([]byte(`{"az":"az-a"}`))
+		_, _ = w.Write([]byte(`{"az":"az-a"}`))
 	}))
 	defer srv.Close()
 
@@ -118,7 +118,7 @@ func TestStorage_FetchPeerAZ_ServerDown(t *testing.T) {
 
 func TestStorage_FetchPeerAZ_InvalidJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("not json"))
+		_, _ = w.Write([]byte("not json"))
 	}))
 	defer srv.Close()
 
@@ -131,7 +131,7 @@ func TestStorage_FetchPeerAZ_InvalidJSON(t *testing.T) {
 
 func TestStorage_FetchPeerAZ_EmptyAZ(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"az":""}`))
+		_, _ = w.Write([]byte(`{"az":""}`))
 	}))
 	defer srv.Close()
 
@@ -144,12 +144,12 @@ func TestStorage_FetchPeerAZ_EmptyAZ(t *testing.T) {
 
 func TestStorage_QueryPeerAZs(t *testing.T) {
 	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"az":"az-a"}`))
+		_, _ = w.Write([]byte(`{"az":"az-a"}`))
 	}))
 	defer srv1.Close()
 
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"az":"az-b"}`))
+		_, _ = w.Write([]byte(`{"az":"az-b"}`))
 	}))
 	defer srv2.Close()
 
@@ -170,7 +170,7 @@ func TestStorage_QueryPeerAZs(t *testing.T) {
 
 func TestStorage_QueryPeerAZs_MixedAvailability(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"az":"az-a"}`))
+		_, _ = w.Write([]byte(`{"az":"az-a"}`))
 	}))
 	defer srv.Close()
 

@@ -130,7 +130,7 @@ func TestDetectGCPMetadata_MissingHeader(t *testing.T) {
 			http.Error(w, "missing", 400)
 			return
 		}
-		w.Write([]byte("projects/1/zones/zone-a"))
+		_, _ = w.Write([]byte("projects/1/zones/zone-a"))
 	}))
 	defer srv.Close()
 
@@ -147,7 +147,7 @@ func TestDetectGCPMetadata_MissingHeader(t *testing.T) {
 
 func TestDetectGCPMetadata_SinglePathSegment(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("just-a-zone"))
+		_, _ = w.Write([]byte("just-a-zone"))
 	}))
 	defer srv.Close()
 
@@ -162,7 +162,7 @@ func TestDetectGCPMetadata_SinglePathSegment(t *testing.T) {
 
 func TestDetectGCPMetadata_TrailingSlash(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("projects/1/zones/zone-b/"))
+		_, _ = w.Write([]byte("projects/1/zones/zone-b/"))
 	}))
 	defer srv.Close()
 
@@ -178,7 +178,7 @@ func TestDetectGCPMetadata_TrailingSlash(t *testing.T) {
 
 func TestDetectGCPMetadata_EmptyResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(""))
+		_, _ = w.Write([]byte(""))
 	}))
 	defer srv.Close()
 

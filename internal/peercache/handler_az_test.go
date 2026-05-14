@@ -100,7 +100,7 @@ func TestHandler_StatsEndpoint_ContentType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	ct := resp.Header.Get("Content-Type")
 	if ct != "application/json" {
@@ -114,7 +114,7 @@ func fetchAZFromStats(t *testing.T, baseURL string) string {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result struct {
 		AZ string `json:"az"`

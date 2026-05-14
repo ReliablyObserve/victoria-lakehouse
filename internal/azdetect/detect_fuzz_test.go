@@ -76,10 +76,10 @@ func FuzzDetectAWSIMDS_Response(f *testing.F) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/latest/api/token":
-				w.Write([]byte("token"))
+				_, _ = w.Write([]byte("token"))
 			case "/latest/meta-data/placement/availability-zone":
 				w.WriteHeader(statusCode)
-				w.Write([]byte(body))
+				_, _ = w.Write([]byte(body))
 			default:
 				http.NotFound(w, r)
 			}
@@ -129,7 +129,7 @@ func FuzzDetectGCPMetadata_Response(f *testing.F) {
 				return
 			}
 			w.WriteHeader(statusCode)
-			w.Write([]byte(body))
+			_, _ = w.Write([]byte(body))
 		}))
 		defer srv.Close()
 

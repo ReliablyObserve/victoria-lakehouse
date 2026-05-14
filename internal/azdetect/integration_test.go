@@ -46,13 +46,13 @@ func TestIntegration_AWSIMDS_WhenEnvEmpty(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/latest/api/token":
-			w.Write([]byte("test-token"))
+			_, _ = w.Write([]byte("test-token"))
 		case "/latest/meta-data/placement/availability-zone":
 			if r.Header.Get("X-aws-ec2-metadata-token") != "test-token" {
 				http.Error(w, "bad token", http.StatusUnauthorized)
 				return
 			}
-			w.Write([]byte("us-east-1d"))
+			_, _ = w.Write([]byte("us-east-1d"))
 		}
 	}))
 	defer srv.Close()
@@ -70,7 +70,7 @@ func TestIntegration_AWSIMDS_NonOKStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/latest/api/token":
-			w.Write([]byte("token"))
+			_, _ = w.Write([]byte("token"))
 		case "/latest/meta-data/placement/availability-zone":
 			w.WriteHeader(http.StatusForbidden)
 		}
@@ -101,7 +101,7 @@ func TestIntegration_GCPMetadata_SimpleZonePath(t *testing.T) {
 			http.Error(w, "missing header", 400)
 			return
 		}
-		w.Write([]byte("us-central1-f"))
+		_, _ = w.Write([]byte("us-central1-f"))
 	}))
 	defer srv.Close()
 

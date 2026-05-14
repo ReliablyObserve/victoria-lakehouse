@@ -39,13 +39,13 @@ func TestDetectAWSIMDS(t *testing.T) {
 				return
 			}
 			tokenCalled = true
-			w.Write([]byte("mock-token"))
+			_, _ = w.Write([]byte("mock-token"))
 		case "/latest/meta-data/placement/availability-zone":
 			if r.Header.Get("X-aws-ec2-metadata-token") != "mock-token" {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-			w.Write([]byte("us-west-2b"))
+			_, _ = w.Write([]byte("us-west-2b"))
 		default:
 			http.NotFound(w, r)
 		}
@@ -70,7 +70,7 @@ func TestDetectGCPMetadata(t *testing.T) {
 			http.Error(w, "missing header", 400)
 			return
 		}
-		w.Write([]byte("projects/123/zones/europe-west1-b"))
+		_, _ = w.Write([]byte("projects/123/zones/europe-west1-b"))
 	}))
 	defer srv.Close()
 

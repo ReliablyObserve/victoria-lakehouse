@@ -34,7 +34,7 @@ func FuzzStorageFetchPeerAZ(f *testing.F) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotAuthHeader = r.Header.Get("X-Peer-Auth-Key")
 			w.WriteHeader(statusCode)
-			w.Write([]byte(body))
+			_, _ = w.Write([]byte(body))
 		}))
 		defer srv.Close()
 
@@ -57,7 +57,7 @@ func FuzzStorageFetchPeerAZ(f *testing.F) {
 func TestStorage_FetchPeerAZ_HTTP500(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
-		w.Write([]byte(`{"az":"should-still-parse"}`))
+		_, _ = w.Write([]byte(`{"az":"should-still-parse"}`))
 	}))
 	defer srv.Close()
 
@@ -72,7 +72,7 @@ func TestStorage_FetchPeerAZ_HTTP500(t *testing.T) {
 func TestStorage_FetchPeerAZ_SlowServer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Don't sleep — just verify short timeout doesn't block
-		w.Write([]byte(`{"az":"az-a"}`))
+		_, _ = w.Write([]byte(`{"az":"az-a"}`))
 	}))
 	defer srv.Close()
 
@@ -85,7 +85,7 @@ func TestStorage_FetchPeerAZ_SlowServer(t *testing.T) {
 
 func TestStorage_FetchPeerAZ_ExtraFields(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"az":"az-a","members":5,"version":"1.0"}`))
+		_, _ = w.Write([]byte(`{"az":"az-a","members":5,"version":"1.0"}`))
 	}))
 	defer srv.Close()
 
@@ -100,7 +100,7 @@ func TestStorage_FetchPeerAZ_NoAuthKeySet(t *testing.T) {
 	var gotAuthHeader string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuthHeader = r.Header.Get("X-Peer-Auth-Key")
-		w.Write([]byte(`{"az":"az-a"}`))
+		_, _ = w.Write([]byte(`{"az":"az-a"}`))
 	}))
 	defer srv.Close()
 
@@ -142,7 +142,7 @@ func TestStorage_QueryPeerAZs_AllDown(t *testing.T) {
 func TestStorage_QueryPeerAZs_LargePeerSet(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/internal/cache/stats", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"az":"az-a"}`))
+		_, _ = w.Write([]byte(`{"az":"az-a"}`))
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -200,7 +200,7 @@ func TestStorage_FetchPeerAZ_ValidatesJSONStructure(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Write([]byte(tc.body))
+				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer srv.Close()
 

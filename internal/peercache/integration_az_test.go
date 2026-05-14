@@ -59,7 +59,7 @@ func TestAZIntegration_StatsEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stats request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result struct {
 		AZ string `json:"az"`
