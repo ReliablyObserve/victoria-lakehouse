@@ -1,9 +1,5 @@
 apiVersion: 1
 
-deleteDatasources:
-  - name: "Tempo via VictoriaTraces (Hot+Cold)"
-    orgId: 1
-
 datasources:
   # =========================================================================
   # Global Datasources — unified hot+cold via multi-level select
@@ -97,6 +93,23 @@ datasources:
         filterBySpanID: false
 
   # =========================================================================
+  # Tempo API — backed by VictoriaTraces for Loki→trace correlation
+  # =========================================================================
+
+  - name: "Tempo via VictoriaTraces (Hot+Cold)"
+    type: tempo
+    uid: tempo-global
+    access: proxy
+    url: http://vtselect:10428/select/tempo
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki-vl-proxy
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+        filterByTraceID: true
+        filterBySpanID: false
+
+  # =========================================================================
   # Loki API — hot+cold routing via loki-vl-proxy
   # =========================================================================
 
@@ -108,7 +121,7 @@ datasources:
     jsonData:
       maxLines: 1000
       derivedFields:
-        - datasourceUid: victoriatraces-global
+        - datasourceUid: tempo-global
           matcherRegex: 'trace_id=(\w+)'
           name: traceID
           url: "$${__value.raw}"
