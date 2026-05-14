@@ -7,6 +7,30 @@ sidebar_position: 20
 
 Victoria Lakehouse stores data as standard Apache Parquet on S3. Any Parquet-capable engine can query it directly. This page covers all engines with known Grafana datasource support — both as standalone query tools and as Grafana-integrated datasources.
 
+```mermaid
+graph TD
+    S3[(S3 Parquet)] --> LH[Lakehouse APIs<br/>LogsQL / Jaeger / Loki]
+    S3 --> DDB[DuckDB<br/>Zero infra, in-process]
+    S3 --> CH[ClickHouse<br/>OLAP, Grafana plugin]
+    S3 --> TR[Trino<br/>Federated SQL]
+    S3 --> SP[Spark<br/>ML pipelines]
+    S3 --> DB[Databricks<br/>Delta Lake]
+    S3 --> SF[Snowflake<br/>External tables]
+    S3 --> SR[StarRocks / Doris<br/>Real-time OLAP]
+    S3 --> PD[pandas<br/>Notebooks]
+
+    LH --> GR[Grafana]
+    CH --> GR
+    TR --> GR
+    DDB --> GR
+    DB --> GR
+    SF --> GR
+    SR --> GR
+
+    style S3 fill:#FF9800,color:#fff
+    style GR fill:#4CAF50,color:#fff
+```
+
 ## Engine Overview
 
 | Engine | Grafana Plugin | Plugin Status | License | S3 Parquet Method |

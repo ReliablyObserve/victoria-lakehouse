@@ -15,6 +15,29 @@ sidebar_position: 14
 | stats_query (aggregation) | <300ms | Aggregation over matched data |
 | field_names / field_values | <1ms | Label index lookup |
 
+## Query Latency Profile
+
+```mermaid
+graph LR
+    subgraph "≤1ms"
+    A[Manifest Fast Path]
+    B[field_names / field_values]
+    end
+    subgraph "≤100ms"
+    C[Bloom Point Query<br/>trace_id lookup]
+    end
+    subgraph "≤500ms"
+    D[Time Range Scan<br/>1h window]
+    E[stats_query<br/>Aggregation]
+    end
+
+    style A fill:#4CAF50,color:#fff
+    style B fill:#4CAF50,color:#fff
+    style C fill:#8BC34A,color:#fff
+    style D fill:#FF9800,color:#fff
+    style E fill:#FF9800,color:#fff
+```
+
 ## Running Benchmarks
 
 ### Quick start

@@ -7,6 +7,20 @@ sidebar_position: 18
 
 > **Methodology note:** All numbers were verified with response body size tracking to ensure both systems actually return data. Scenarios where either system returns empty responses are flagged. Previous versions of this document contained misleading 1h numbers where VLH had zero data in that range — those have been corrected.
 
+```mermaid
+graph LR
+    DG[cmd/datagen<br/>--dual-write] -->|insert| VL[VictoriaLogs<br/>EBS, port 9428]
+    DG -->|insert| VLH[Victoria Lakehouse<br/>S3 via MinIO, port 19429]
+    LT[cmd/loadtest<br/>-mode=compare-ext] -->|query| VL
+    LT -->|query| VLH
+    VLH --> PROXY[S3 Latency Proxy<br/>65ms GET, 80ms LIST]
+    PROXY --> MINIO[(MinIO)]
+
+    style VL fill:#4CAF50,color:#fff
+    style VLH fill:#2196F3,color:#fff
+    style PROXY fill:#FF9800,color:#fff
+```
+
 ## Test Setup
 
 | Component | Configuration |

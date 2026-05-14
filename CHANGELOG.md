@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Mermaid diagrams added to 14 docs: getting-started, read-path, performance, scaling, security, operations, observability, open-parquet-format, benchmarks, kubernetes-deployment, analytics-engines, cost-estimates, configuration, vl-comparison
 - 4 new website landing pages: ingestion-formats, query-interfaces, loki-tempo-alternative, multi-tenant-observability
 - Homepage expansion: ingestion format grid (11 formats), query interface cards (8 interfaces), deployment patterns section, CTA section
 - SEO: OpenGraph meta tags, JSON-LD structured data (Schema.org SoftwareApplication), 25+ keywords, Twitter card metadata

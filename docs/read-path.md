@@ -24,6 +24,24 @@ The query context carries:
 
 Victoria Lakehouse applies five levels of pruning, each eliminating work before the next level begins.
 
+```mermaid
+flowchart TD
+    Q[Query arrives] --> L1{L1: Hot Boundary<br/>Suppression}
+    L1 -->|within hot range| EMPTY1[Return empty ≤1ms]
+    L1 -->|outside hot range| L2{L2: Manifest<br/>Fast Path}
+    L2 -->|no files overlap| EMPTY2[Return empty ≤1ms]
+    L2 -->|files found| L3[L3: Row Group Stats<br/>min/max timestamp check]
+    L3 -->|skip non-overlapping| L4[L4: Bloom Filter<br/>exact-match check]
+    L4 -->|value absent| SKIP[Skip row group]
+    L4 -->|value may exist| L5[L5: Column Read<br/>+ Row Filter + Tombstone]
+    L5 --> DB[DataBlock emission]
+
+    style EMPTY1 fill:#4CAF50,color:#fff
+    style EMPTY2 fill:#4CAF50,color:#fff
+    style SKIP fill:#FF9800,color:#fff
+    style DB fill:#2196F3,color:#fff
+```
+
 ### Level 1: Hot Boundary Suppression
 
 Before touching any manifest or S3 data, the query checks the discovery layer's hot boundary. If the query time range falls entirely within the hot tier's data range (as reported by vlstorage/vtstorage nodes), the query returns empty immediately.
@@ -88,6 +106,22 @@ After all skip checks pass, the engine reads row data from the surviving row gro
 ## Cache Hierarchy
 
 File data retrieval follows a four-tier cache hierarchy in `getFileData()`:
+
+```mermaid
+flowchart LR
+    R[getFileData] --> L1[L1 Memory<br/>≤1ms]
+    L1 -->|miss| L2[L2 Disk<br/>≤50ms]
+    L2 -->|miss| L3[L3 Peer Cache<br/>≤30ms]
+    L3 -->|miss| L4[L4 S3<br/>50-150ms]
+    L4 -->|singleflight| S3[(S3)]
+    L4 -->|store| L2
+    L4 -->|store| L1
+
+    style L1 fill:#4CAF50,color:#fff
+    style L2 fill:#8BC34A,color:#fff
+    style L3 fill:#FF9800,color:#fff
+    style L4 fill:#F44336,color:#fff
+```
 
 | Tier | Backend | Latency | Implementation |
 |---|---|---|---|

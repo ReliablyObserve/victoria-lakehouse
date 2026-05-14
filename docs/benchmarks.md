@@ -20,6 +20,26 @@ The benchmark suite validates these p95 latency targets:
 | `field_names` | <1ms | List available field/column names |
 | `field_values` | <1ms | List values for `service.name` |
 
+## Benchmark Workflow
+
+```mermaid
+flowchart LR
+    A[Start MinIO] --> B[Generate Data<br/>cmd/datagen]
+    B --> C[Start Lakehouse]
+    C --> D{Benchmark Mode}
+    D -->|latency| E[p50/p95/p99<br/>per query type]
+    D -->|throughput| F[Max rows/s<br/>Max QPS]
+    D -->|benchmark| G[File size ×<br/>Row group ×<br/>ZSTD matrix]
+    D -->|mixed| H[70/30<br/>insert/query]
+    E --> R[Results JSON]
+    F --> R
+    G --> R
+    H --> R
+
+    style D fill:#2196F3,color:#fff
+    style R fill:#4CAF50,color:#fff
+```
+
 ## Generating Test Data
 
 The `cmd/datagen` tool writes Parquet files directly to S3/MinIO and optionally dual-writes to a VictoriaLogs instance:

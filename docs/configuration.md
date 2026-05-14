@@ -9,6 +9,25 @@ Victoria Lakehouse uses a `--lakehouse.*` flag prefix for all settings. Flags ca
 
 All flags have production-ready defaults. A minimal config requires only `--lakehouse.s3.bucket`. Mode is determined by which binary you run (`lakehouse-logs` or `lakehouse-traces`).
 
+```mermaid
+graph TD
+    subgraph "Configuration Sources"
+    CLI["CLI Flags<br/>--lakehouse.*"] -->|highest priority| CFG[Merged Config]
+    YAML["YAML File<br/>--lakehouse.config=path"] -->|lower priority| CFG
+    ENV["Defaults<br/>Production-ready"] -->|lowest priority| CFG
+    end
+
+    CFG --> CORE[Core<br/>role, topology]
+    CFG --> S3C[S3<br/>bucket, region, endpoint]
+    CFG --> CACHE[Cache<br/>L1 memory, L2 disk]
+    CFG --> DISC[Discovery<br/>headless svc, hot boundary]
+    CFG --> INS[Insert<br/>flush, WAL, buffer]
+    CFG --> COMP[Compaction<br/>levels, leader election]
+    CFG --> TENANT[Tenant<br/>isolation, stats, UI]
+
+    style CFG fill:#2196F3,color:#fff
+```
+
 ## Core Settings
 
 | Flag | Default | Description |

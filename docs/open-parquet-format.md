@@ -26,6 +26,31 @@ After compaction, merged files are named with level prefixes: `compacted-L1-<uui
 
 All query engines that support Hive partitioning (DuckDB, Spark, Trino) will automatically prune partitions when filtering by `dt` or `hour`, reading only the directories that match the query time range.
 
+```mermaid
+graph TD
+    subgraph "Write Path"
+    VL[VL/VT Insert APIs] -->|LogRows| B[Buffer + WAL]
+    B -->|flush| PW[Parquet Writer<br/>ZSTD + Bloom]
+    PW -->|PutObject| S3
+    end
+
+    subgraph "S3 Hive Layout"
+    S3[(s3://bucket/)] --> L[logs/dt=YYYY-MM-DD/hour=HH/]
+    S3 --> T[traces/dt=YYYY-MM-DD/hour=HH/]
+    end
+
+    subgraph "Read — Any Engine"
+    S3 --> LH[Lakehouse<br/>LogsQL / Jaeger]
+    S3 --> DDB[DuckDB]
+    S3 --> CH[ClickHouse]
+    S3 --> SP[Spark / Trino]
+    S3 --> PD[pandas]
+    end
+
+    style S3 fill:#FF9800,color:#fff
+    style LH fill:#2196F3,color:#fff
+```
+
 ## Logs Schema
 
 The log Parquet schema is defined in `internal/schema/row.go` as the `LogRow` struct. Column names use OTEL semantic convention dot-notation directly.
