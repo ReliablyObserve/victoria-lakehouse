@@ -1,6 +1,6 @@
 ---
 title: Cost Comparison
-sidebar_position: 16
+sidebar_position: 17
 ---
 
 # Victoria Lakehouse vs Loki vs Tempo — Cost, Performance & Architecture Comparison
