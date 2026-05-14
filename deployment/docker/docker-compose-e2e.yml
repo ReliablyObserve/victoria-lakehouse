@@ -266,7 +266,7 @@ services:
     environment:
       VL_BACKEND_URL: "http://victorialogs:9428"
     command:
-      - "-label-style=underscores"
+      - "-label-style=passthrough"
       - "-metadata-field-mode=translated"
       - "-emit-structured-metadata=true"
       - "-stream-fields=service.name,k8s.namespace.name,k8s.pod.name,k8s.deployment.name,deployment.environment"

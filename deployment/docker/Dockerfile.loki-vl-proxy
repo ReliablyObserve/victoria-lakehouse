@@ -1,5 +1,5 @@
 FROM alpine:3.21
-ARG VERSION=1.31.2
+ARG VERSION=1.33.0
 ARG TARGETARCH=amd64
 RUN wget -qO /usr/local/bin/loki-vl-proxy \
       "https://github.com/ReliablyObserve/loki-vl-proxy/releases/download/v${VERSION}/loki-vl-proxy-linux-${TARGETARCH}" \
