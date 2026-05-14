@@ -157,6 +157,8 @@ services:
     ports:
       - "29428:9428"
     networks: [lakehouse-net]
+    environment:
+      LAKEHOUSE_AZ: "az-a"
     command:
       - "-lakehouse.s3.bucket=obs-archive"
       - "-lakehouse.s3.endpoint=http://minio:9000"
@@ -186,6 +188,8 @@ services:
     ports:
       - "20428:10428"
     networks: [lakehouse-net]
+    environment:
+      LAKEHOUSE_AZ: "az-a"
     command:
       - "-lakehouse.s3.bucket=obs-archive"
       - "-lakehouse.s3.endpoint=http://minio:9000"
