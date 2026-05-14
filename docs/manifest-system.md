@@ -1,3 +1,8 @@
+---
+title: Manifest System
+sidebar_position: 9
+---
+
 # Manifest System
 
 The partition manifest is the bridge between the write and read paths. It tracks every Parquet file in S3, organized by Hive partition keys, and enables sub-millisecond "nothing here" responses for queries outside the data range.

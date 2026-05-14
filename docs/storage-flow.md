@@ -1,3 +1,8 @@
+---
+title: Storage & Parquet Flow
+sidebar_position: 8
+---
+
 # Storage & Parquet Flow
 
 End-to-end data flow through Victoria Lakehouse, from VL/VT upstream input through Parquet storage to query output.

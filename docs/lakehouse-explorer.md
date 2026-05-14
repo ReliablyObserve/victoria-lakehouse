@@ -1,3 +1,8 @@
+---
+title: Lakehouse Explorer UI
+sidebar_position: 35
+---
+
 # Lakehouse Explorer UI
 
 The Lakehouse Explorer is a built-in web UI for monitoring storage, tenants, and field cardinality. It is served at `/lakehouse/ui/` and optionally injected as a tab into VL/VT's VMUI.
