@@ -1,12 +1,70 @@
-# AZ-Aware Cost Optimization — Implementation Plan
+# AZ-Aware Cost Optimization — Implementation Plan (v2)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make Victoria Lakehouse fully AZ cost-optimized by default — peer cache prefers same-AZ peers, buffer bridge prefers same-AZ insert pods, cross-AZ traffic is monitored, and Helm chart deploys with topology-aware defaults.
+**Goal:** Make Victoria Lakehouse prefer same-AZ peers for peer cache and buffer bridge queries, eliminating cross-AZ data transfer costs ($0.01/GB each direction). Auto-detect AZ at startup. Support strict and preferred modes.
 
-**Architecture:** Add AZ detection at startup (from env var injected by K8s downward API). Partition the peer cache hash ring into same-AZ (primary) and cross-AZ (fallback) tiers. Route buffer bridge queries to same-AZ insert pods first. Expose per-AZ metrics. Set sensible Helm defaults for topology spread constraints.
+**Architecture:** Simple — a single `internal/azdetect` package detects the pod's AZ at startup via a fallback chain (env var → AWS IMDS → GCP metadata → K8s node label API). Each peer reports its AZ via a new field in `/internal/cache/stats`. The discovery loop collects peer AZs and passes them to the existing `ring.SetWithZones()` and `buffer_bridge.SetEndpointsWithZones()`. No new goroutines, no new protocols, no complex components.
 
-**Tech Stack:** Go 1.24, CRC32 consistent hashing, Kubernetes topology labels, Prometheus metrics via VictoriaMetrics/metrics
+**Tech Stack:** Go 1.24, net/http for IMDS/GCP metadata, k8s.io/client-go for node label lookup
+
+---
+
+## Completed
+
+### Task 1: AZ Configuration ✅
+Added `AZAware`, `CrossAZFallback`, `AZEnvVar` to `PeerConfig` and `AZAware`, `CrossAZFallback` to `SelectConfig` in `internal/config/config.go`. All 197 config tests pass.
+
+### Task 2: AZ-Aware Consistent Hash Ring ✅
+Added `SetWithZones()`, `LookupAZ()`, `MemberCountByZone()` to `internal/peercache/ring.go`. Same-AZ sub-ring with fallback to full ring. All 60 peercache tests pass.
+
+---
+
+## Revised Design: Strict vs Preferred AZ Modes
+
+### Config
+
+```yaml
+lakehouse:
+  peer:
+    az_aware: true           # enable AZ-aware routing (default: true)
+    az_mode: "preferred"     # "preferred" = same-AZ first, fallback to cross-AZ
+                             # "strict" = same-AZ only, fail if no same-AZ peers
+    az_env_var: "LAKEHOUSE_AZ"  # env var checked first
+    az_min_peers_per_az: 2   # strict mode: require >= N same-AZ peers to start
+    cross_az_fallback: true  # preferred mode: include cross-AZ in results
+  select:
+    az_aware: true
+    cross_az_fallback: true
+```
+
+### AZ Detection Fallback Chain (at startup, once)
+
+```
+1. os.Getenv(cfg.Peer.AZEnvVar)       → "us-east-1a"  (operator override)
+2. AWS IMDSv2 /meta-data/placement/az → "us-east-1a"  (EKS/EC2, no IAM needed)
+3. GCP metadata /instance/zone         → "us-central1-a" (GKE/GCE)
+4. K8s API: get node label             → "us-east-1a"  (any K8s, needs RBAC)
+5. Give up → "" (AZ-aware routing disabled, log warning)
+```
+
+### Peer AZ Discovery (during discovery loop, not per-request)
+
+Each peer already exposes `/internal/cache/stats`. We add `"az": "us-east-1a"` to that response. During the periodic discovery refresh, after DNS resolves peer IPs, we query each peer's `/internal/cache/stats` to get their AZ. This is done once per refresh interval (default 30s), not per cache lookup.
+
+### Strict Mode Behavior
+
+When `az_mode: "strict"`:
+- At startup: verify `>= az_min_peers_per_az` same-AZ peers exist. If not, log error and fall back to preferred mode (don't block startup).
+- During operation: `LookupAZ()` returns only same-AZ peers. If the only same-AZ peer is self, the lookup returns self (local cache hit).
+- If all same-AZ peers go down: log alert, do NOT fall back to cross-AZ (that's the point of strict — user pays $0 cross-AZ).
+
+### Preferred Mode Behavior (default)
+
+When `az_mode: "preferred"`:
+- Same-AZ peers are preferred but cross-AZ is used as fallback.
+- No minimum peer requirement.
+- `LookupAZ()` uses same-AZ sub-ring. If same-AZ ring is empty, uses full ring.
 
 ---
 
@@ -14,394 +72,459 @@
 
 | File | Responsibility |
 |---|---|
-| `internal/config/config.go` | Add `AZConfig` struct, `AZAware`/`CrossAZFallback`/`AZLabel` fields to `PeerConfig` |
-| `internal/peercache/ring.go` | Add AZ-aware `LookupAZ()` method, `SetWithZones()` for zone-partitioned ring |
-| `internal/peercache/ring_test.go` | Tests for AZ-aware lookup, zone isolation, fallback behavior |
-| `internal/peercache/peercache.go` | Add `LookupAZ()` delegation, `FetchAZ()` with zone-aware stats |
-| `internal/peercache/peercache_test.go` | Tests for AZ-aware peer cache operations |
-| `internal/storage/parquets3/buffer_bridge.go` | Add AZ-aware endpoint prioritization |
-| `internal/storage/parquets3/buffer_bridge_test.go` | Tests for AZ-aware buffer bridge |
-| `internal/metrics/lakehouse.go` | Add 6 AZ-aware metrics |
-| `cmd/lakehouse-logs/main.go` | AZ detection at startup, wire AZ config |
-| `charts/victoria-lakehouse/values.yaml` | Default topology spread constraints, AZ config |
-| `charts/victoria-lakehouse/templates/select-statefulset.yaml` | Inject AZ env var from downward API |
-| `charts/victoria-lakehouse/templates/insert-statefulset.yaml` | Inject AZ env var from downward API |
-| `docs/cross-az-optimization.md` | Update with implementation status |
+| `internal/azdetect/detect.go` | AZ detection: env → IMDS → GCP → K8s API fallback chain |
+| `internal/azdetect/detect_test.go` | Unit tests with mock HTTP servers |
+| `internal/config/config.go` | Add `AZMode`, `AZMinPeersPerAZ` to PeerConfig (extend Task 1) |
+| `internal/config/config_az_test.go` | Tests for new config fields |
+| `internal/peercache/peercache.go` | Add `UpdatePeersWithZones()`, `LookupAZ()`, `StatsAZ()`, selfAZ field |
+| `internal/peercache/peercache_az_test.go` | Tests for AZ-aware peer cache |
+| `internal/peercache/peercache.go` Handler | Add `selfAZ` to Handler, expose in `/internal/cache/stats` response |
+| `internal/storage/parquets3/buffer_bridge.go` | Add `SetEndpointsWithZones()`, `getQueryEndpoints()` |
+| `internal/storage/parquets3/buffer_bridge_az_test.go` | Tests for AZ-aware buffer bridge |
+| `internal/storage/parquets3/storage.go` | Wire AZ into `RefreshDiscovery()` |
+| `internal/metrics/lakehouse.go` | 4 AZ metrics |
+| `cmd/lakehouse-logs/main.go` | Call `azdetect.Detect()` at startup, pass to storage |
+| `charts/victoria-lakehouse/values.yaml` | AZ config defaults, topology spread |
+| `charts/victoria-lakehouse/templates/*.yaml` | NODE_NAME env var injection |
+| `tests/e2e/az_test.go` | E2E test: verify AZ detection, peer AZ reporting, routing |
+| `deployment/docker/docker-compose-e2e.yml` | Add LAKEHOUSE_AZ env vars to services |
 
 ---
 
-### Task 1: AZ Configuration
+### Task 3: AZ Auto-Detection Package
 
 **Files:**
-- Modify: `internal/config/config.go`
+- Create: `internal/azdetect/detect.go`
+- Create: `internal/azdetect/detect_test.go`
 
 - [ ] **Step 1: Write the test**
 
-Create `internal/config/config_az_test.go`:
+Create `internal/azdetect/detect_test.go`:
 
 ```go
-package config
+package azdetect
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"testing"
+	"time"
 )
 
-func TestDefaultConfig_AZDefaults(t *testing.T) {
-	cfg := DefaultConfig()
+func TestDetect_EnvVar(t *testing.T) {
+	os.Setenv("TEST_AZ_VAR", "us-east-1a")
+	defer os.Unsetenv("TEST_AZ_VAR")
 
-	if !cfg.Peer.AZAware {
-		t.Error("AZAware should default to true")
-	}
-	if !cfg.Peer.CrossAZFallback {
-		t.Error("CrossAZFallback should default to true")
-	}
-	if cfg.Peer.AZEnvVar != "LAKEHOUSE_AZ" {
-		t.Errorf("AZEnvVar should default to LAKEHOUSE_AZ, got %q", cfg.Peer.AZEnvVar)
+	az := Detect(context.Background(), Options{EnvVar: "TEST_AZ_VAR"})
+	if az != "us-east-1a" {
+		t.Errorf("expected us-east-1a, got %q", az)
 	}
 }
 
-func TestDefaultConfig_BufferBridgeAZDefaults(t *testing.T) {
-	cfg := DefaultConfig()
+func TestDetect_EnvVarEmpty_FallsThrough(t *testing.T) {
+	os.Unsetenv("NONEXISTENT_AZ")
 
-	if !cfg.Select.AZAware {
-		t.Error("Select.AZAware should default to true")
+	// No IMDS/GCP/K8s available either, should return empty
+	az := Detect(context.Background(), Options{
+		EnvVar:  "NONEXISTENT_AZ",
+		Timeout: 100 * time.Millisecond,
+	})
+	if az != "" {
+		t.Errorf("expected empty, got %q", az)
 	}
-	if !cfg.Select.CrossAZFallback {
-		t.Error("Select.CrossAZFallback should default to true")
+}
+
+func TestDetect_AWSIMDS(t *testing.T) {
+	// Mock IMDSv2 token + AZ endpoint
+	tokenCalled := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/latest/api/token":
+			if r.Method != http.MethodPut {
+				http.Error(w, "method", 405)
+				return
+			}
+			tokenCalled = true
+			w.Write([]byte("mock-token"))
+		case "/latest/meta-data/placement/availability-zone":
+			if r.Header.Get("X-aws-ec2-metadata-token") != "mock-token" {
+				http.Error(w, "unauthorized", 401)
+				return
+			}
+			w.Write([]byte("us-west-2b"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	az, err := detectAWSIMDS(context.Background(), srv.URL, 2*time.Second)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if az != "us-west-2b" {
+		t.Errorf("expected us-west-2b, got %q", az)
+	}
+	if !tokenCalled {
+		t.Error("IMDSv2 token endpoint was not called")
+	}
+}
+
+func TestDetect_GCPMetadata(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Metadata-Flavor") != "Google" {
+			http.Error(w, "missing header", 400)
+			return
+		}
+		w.Write([]byte("projects/123/zones/europe-west1-b"))
+	}))
+	defer srv.Close()
+
+	az, err := detectGCPMetadata(context.Background(), srv.URL, 2*time.Second)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if az != "europe-west1-b" {
+		t.Errorf("expected europe-west1-b, got %q", az)
+	}
+}
+
+func TestDetect_Timeout(t *testing.T) {
+	// Server that never responds
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Second)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err := detectAWSIMDS(ctx, srv.URL, 100*time.Millisecond)
+	if err == nil {
+		t.Error("expected timeout error")
 	}
 }
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/config/ -run TestDefaultConfig_AZ -v`
-Expected: FAIL — `AZAware` field does not exist
+Run: `cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/azdetect/ -v`
+Expected: FAIL — package doesn't exist
 
-- [ ] **Step 3: Add AZ fields to PeerConfig and SelectConfig**
+- [ ] **Step 3: Implement azdetect package**
 
-In `internal/config/config.go`, modify `PeerConfig`:
+Create `internal/azdetect/detect.go`:
+
+```go
+package azdetect
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+)
+
+const (
+	awsIMDSBase = "http://169.254.169.254"
+	gcpMetaBase = "http://metadata.google.internal"
+)
+
+type Options struct {
+	EnvVar  string
+	Timeout time.Duration
+}
+
+func Detect(ctx context.Context, opts Options) string {
+	if opts.Timeout == 0 {
+		opts.Timeout = 2 * time.Second
+	}
+
+	// 1. Explicit env var (fastest, always works)
+	if opts.EnvVar != "" {
+		if az := os.Getenv(opts.EnvVar); az != "" {
+			logger.Infof("AZ detected from env %s: %s", opts.EnvVar, az)
+			return az
+		}
+	}
+
+	// 2. AWS IMDSv2
+	if az, err := detectAWSIMDS(ctx, awsIMDSBase, opts.Timeout); err == nil && az != "" {
+		logger.Infof("AZ detected from AWS IMDS: %s", az)
+		return az
+	}
+
+	// 3. GCP metadata
+	if az, err := detectGCPMetadata(ctx, gcpMetaBase, opts.Timeout); err == nil && az != "" {
+		logger.Infof("AZ detected from GCP metadata: %s", az)
+		return az
+	}
+
+	// 4. K8s node label (requires NODE_NAME env + RBAC)
+	if az, err := detectK8sNodeLabel(ctx, opts.Timeout); err == nil && az != "" {
+		logger.Infof("AZ detected from K8s node label: %s", az)
+		return az
+	}
+
+	logger.Infof("AZ not detected; AZ-aware routing will be disabled")
+	return ""
+}
+
+func detectAWSIMDS(ctx context.Context, baseURL string, timeout time.Duration) (string, error) {
+	client := &http.Client{Timeout: timeout}
+
+	// IMDSv2: get session token
+	tokenReq, err := http.NewRequestWithContext(ctx, http.MethodPut,
+		baseURL+"/latest/api/token", nil)
+	if err != nil {
+		return "", err
+	}
+	tokenReq.Header.Set("X-aws-ec2-metadata-token-ttl-seconds", "21600")
+
+	tokenResp, err := client.Do(tokenReq)
+	if err != nil {
+		return "", fmt.Errorf("IMDS token: %w", err)
+	}
+	token, _ := io.ReadAll(tokenResp.Body)
+	tokenResp.Body.Close()
+
+	// Get AZ
+	azReq, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		baseURL+"/latest/meta-data/placement/availability-zone", nil)
+	if err != nil {
+		return "", err
+	}
+	azReq.Header.Set("X-aws-ec2-metadata-token", string(token))
+
+	azResp, err := client.Do(azReq)
+	if err != nil {
+		return "", fmt.Errorf("IMDS az: %w", err)
+	}
+	defer azResp.Body.Close()
+
+	if azResp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("IMDS az status %d", azResp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(azResp.Body)
+	return strings.TrimSpace(string(body)), nil
+}
+
+func detectGCPMetadata(ctx context.Context, baseURL string, timeout time.Duration) (string, error) {
+	client := &http.Client{Timeout: timeout}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		baseURL+"/computeMetadata/v1/instance/zone", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Metadata-Flavor", "Google")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("GCP metadata: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GCP metadata status %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	// Response: "projects/123/zones/us-central1-a" → extract last segment
+	parts := strings.Split(strings.TrimSpace(string(body)), "/")
+	return parts[len(parts)-1], nil
+}
+
+func detectK8sNodeLabel(ctx context.Context, timeout time.Duration) (string, error) {
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		return "", fmt.Errorf("NODE_NAME not set")
+	}
+
+	// Use raw HTTP to avoid k8s client-go dependency weight.
+	// In-cluster: service account token at known path, API at kubernetes.default.svc
+	tokenBytes, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
+	if err != nil {
+		return "", fmt.Errorf("read SA token: %w", err)
+	}
+
+	client := &http.Client{Timeout: timeout}
+	url := fmt.Sprintf("https://kubernetes.default.svc/api/v1/nodes/%s", nodeName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+string(tokenBytes))
+
+	// Skip TLS verify for in-cluster (CA cert would be at /var/run/secrets/kubernetes.io/serviceaccount/ca.crt)
+	// In production, use proper TLS. For AZ detection this is acceptable.
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("k8s API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("k8s API status %d", resp.StatusCode)
+	}
+
+	// Parse just the labels from the node JSON
+	var node struct {
+		Metadata struct {
+			Labels map[string]string `json:"labels"`
+		} `json:"metadata"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&node); err != nil {
+		return "", fmt.Errorf("decode node: %w", err)
+	}
+
+	if az := node.Metadata.Labels["topology.kubernetes.io/zone"]; az != "" {
+		return az, nil
+	}
+	// Legacy label
+	return node.Metadata.Labels["failure-domain.beta.kubernetes.io/zone"], nil
+}
+```
+
+Add `"encoding/json"` to imports.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/azdetect/ -v`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/azdetect/
+git commit -m "feat: add AZ auto-detection package with env/IMDS/GCP/K8s fallback chain"
+```
+
+---
+
+### Task 4: Extend Config — AZ Mode and Min Peers
+
+**Files:**
+- Modify: `internal/config/config.go`
+- Modify: `internal/config/config_az_test.go`
+
+- [ ] **Step 1: Add test for new fields**
+
+Append to `internal/config/config_az_test.go`:
+
+```go
+func TestDefaultConfig_AZMode(t *testing.T) {
+	cfg := Default()
+
+	if cfg.Peer.AZMode != "preferred" {
+		t.Errorf("AZMode should default to preferred, got %q", cfg.Peer.AZMode)
+	}
+	if cfg.Peer.AZMinPeersPerAZ != 2 {
+		t.Errorf("AZMinPeersPerAZ should default to 2, got %d", cfg.Peer.AZMinPeersPerAZ)
+	}
+}
+
+func TestValidate_AZMode(t *testing.T) {
+	cfg := Default()
+	cfg.Mode = "logs"
+	cfg.S3.Bucket = "test"
+
+	cfg.Peer.AZMode = "invalid"
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for invalid AZMode")
+	}
+
+	cfg.Peer.AZMode = "strict"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("strict should be valid: %v", err)
+	}
+
+	cfg.Peer.AZMode = "preferred"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("preferred should be valid: %v", err)
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/config/ -run TestDefaultConfig_AZMode -v`
+
+- [ ] **Step 3: Add AZMode and AZMinPeersPerAZ to PeerConfig**
+
+In `internal/config/config.go`, add fields to `PeerConfig`:
 
 ```go
 type PeerConfig struct {
-	AuthKey         string        `yaml:"auth_key"`
-	Timeout         time.Duration `yaml:"timeout"`
-	MaxConnections  int           `yaml:"max_connections"`
-	AZAware         bool          `yaml:"az_aware"`
-	CrossAZFallback bool          `yaml:"cross_az_fallback"`
-	AZEnvVar        string        `yaml:"az_env_var"`
+	AuthKey          string        `yaml:"auth_key"`
+	Timeout          time.Duration `yaml:"timeout"`
+	MaxConnections   int           `yaml:"max_connections"`
+	AZAware          bool          `yaml:"az_aware"`
+	AZMode           string        `yaml:"az_mode"`
+	CrossAZFallback  bool          `yaml:"cross_az_fallback"`
+	AZEnvVar         string        `yaml:"az_env_var"`
+	AZMinPeersPerAZ  int           `yaml:"az_min_peers_per_az"`
 }
 ```
 
-Modify `SelectConfig`:
-
-```go
-type SelectConfig struct {
-	BufferQueryEnabled    bool          `yaml:"buffer_query_enabled"`
-	InsertHeadlessService string        `yaml:"insert_headless_service"`
-	BufferQueryTimeout    time.Duration `yaml:"buffer_query_timeout"`
-	AZAware               bool          `yaml:"az_aware"`
-	CrossAZFallback       bool          `yaml:"cross_az_fallback"`
-}
-```
-
-Update `DefaultConfig()` in the `Peer:` section:
+Update `Default()`:
 
 ```go
 Peer: PeerConfig{
 	Timeout:         5 * time.Second,
 	MaxConnections:  32,
 	AZAware:         true,
+	AZMode:          "preferred",
 	CrossAZFallback: true,
 	AZEnvVar:        "LAKEHOUSE_AZ",
+	AZMinPeersPerAZ: 2,
 },
 ```
 
-Update `DefaultConfig()` in the `Select:` section:
+Add validation in `Validate()`:
 
 ```go
-Select: SelectConfig{
-	BufferQueryEnabled: true,
-	BufferQueryTimeout: 2 * time.Second,
-	AZAware:            true,
-	CrossAZFallback:    true,
-},
+switch cfg.Peer.AZMode {
+case "preferred", "strict", "":
+default:
+	return fmt.Errorf("--lakehouse.peer.az-mode must be preferred or strict, got %q", cfg.Peer.AZMode)
+}
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+Add merge support in `mergeConfig()`:
 
-Run: `cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/config/ -run TestDefaultConfig_AZ -v`
-Expected: PASS
+```go
+if overlay.Peer.AZMode != "" {
+	base.Peer.AZMode = overlay.Peer.AZMode
+}
+if overlay.Peer.AZMinPeersPerAZ > 0 {
+	base.Peer.AZMinPeersPerAZ = overlay.Peer.AZMinPeersPerAZ
+}
+```
 
-- [ ] **Step 5: Verify full config test suite**
+- [ ] **Step 4: Run tests**
 
 Run: `cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/config/ -v`
 Expected: All PASS
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-cd /private/tmp/victoria-lakehouse-fresh
-git add internal/config/config.go internal/config/config_az_test.go
-git commit -m "feat: add AZ-aware config fields to PeerConfig and SelectConfig"
+git add internal/config/
+git commit -m "feat: add AZ mode (strict/preferred) and min-peers-per-AZ config"
 ```
 
 ---
 
-### Task 2: AZ-Aware Consistent Hash Ring
-
-**Files:**
-- Modify: `internal/peercache/ring.go`
-- Create: `internal/peercache/ring_az_test.go`
-
-- [ ] **Step 1: Write the test**
-
-Create `internal/peercache/ring_az_test.go`:
-
-```go
-package peercache
-
-import (
-	"testing"
-)
-
-func TestRing_SetWithZones(t *testing.T) {
-	r := NewRing("self:9428", 150)
-
-	peers := map[string]string{
-		"peer-a1:9428": "us-east-1a",
-		"peer-a2:9428": "us-east-1a",
-		"peer-b1:9428": "us-east-1b",
-		"peer-b2:9428": "us-east-1b",
-		"self:9428":    "us-east-1a",
-	}
-	r.SetWithZones(peers, "us-east-1a")
-
-	if r.MemberCount() != 5 {
-		t.Fatalf("expected 5 members, got %d", r.MemberCount())
-	}
-}
-
-func TestRing_LookupAZ_PrefersSameZone(t *testing.T) {
-	r := NewRing("self:9428", 150)
-
-	peers := map[string]string{
-		"peer-a1:9428": "us-east-1a",
-		"peer-a2:9428": "us-east-1a",
-		"peer-b1:9428": "us-east-1b",
-		"peer-b2:9428": "us-east-1b",
-		"self:9428":    "us-east-1a",
-	}
-	r.SetWithZones(peers, "us-east-1a")
-
-	sameAZ := 0
-	crossAZ := 0
-	total := 1000
-	for i := 0; i < total; i++ {
-		peer, isLocal, isSameAZ := r.LookupAZ(fmt.Sprintf("key-%d", i))
-		_ = peer
-		_ = isLocal
-		if isSameAZ {
-			sameAZ++
-		} else {
-			crossAZ++
-		}
-	}
-
-	// With AZ-aware routing, ALL lookups should return same-AZ peers
-	if sameAZ != total {
-		t.Errorf("expected all %d lookups to be same-AZ, got sameAZ=%d crossAZ=%d", total, sameAZ, crossAZ)
-	}
-}
-
-func TestRing_LookupAZ_FallbackToCrossZone(t *testing.T) {
-	r := NewRing("self:9428", 150)
-
-	// Only cross-AZ peers (no same-AZ peers except self)
-	peers := map[string]string{
-		"peer-b1:9428": "us-east-1b",
-		"peer-b2:9428": "us-east-1b",
-		"self:9428":    "us-east-1a",
-	}
-	r.SetWithZones(peers, "us-east-1a")
-
-	// With only self in same-AZ, lookups should route to self or fall back to cross-AZ
-	peer, isLocal, isSameAZ := r.LookupAZ("test-key")
-	if isLocal {
-		// Self is the only same-AZ peer, so this is expected for some keys
-		return
-	}
-	if isSameAZ {
-		t.Error("non-local peer should be cross-AZ since only self is in same zone")
-	}
-	if peer == "" {
-		t.Error("should always return a peer")
-	}
-}
-
-func TestRing_LookupAZ_NoZoneInfo_FallsBackToNormal(t *testing.T) {
-	r := NewRing("self:9428", 150)
-
-	// Use regular Set (no zone info)
-	r.Set([]string{"self:9428", "peer-1:9428", "peer-2:9428"})
-
-	// LookupAZ should work even without zone info (isSameAZ always true)
-	peer, _, isSameAZ := r.LookupAZ("test-key")
-	if peer == "" {
-		t.Error("should return a peer")
-	}
-	if !isSameAZ {
-		t.Error("without zone info, all peers should be considered same-AZ")
-	}
-}
-
-func TestRing_LookupAZ_EmptyRing(t *testing.T) {
-	r := NewRing("self:9428", 150)
-	r.SetWithZones(map[string]string{}, "us-east-1a")
-
-	peer, isLocal, isSameAZ := r.LookupAZ("test-key")
-	if peer != "self:9428" {
-		t.Errorf("empty ring should return self, got %q", peer)
-	}
-	if !isLocal {
-		t.Error("empty ring should return isLocal=true")
-	}
-	if !isSameAZ {
-		t.Error("self should be same-AZ")
-	}
-}
-```
-
-Add `"fmt"` to imports.
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/peercache/ -run TestRing_.*AZ -v`
-Expected: FAIL — `SetWithZones` and `LookupAZ` do not exist
-
-- [ ] **Step 3: Implement AZ-aware ring**
-
-Add to `internal/peercache/ring.go`:
-
-```go
-// SetWithZones updates the ring with zone information. Builds two sub-rings:
-// a same-AZ ring (primary) and a full ring (fallback). selfZone identifies
-// the current pod's AZ for partitioning.
-func (r *Ring) SetWithZones(peerZones map[string]string, selfZone string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.ring = make(map[uint32]string)
-	r.members = make(map[string]bool)
-	r.keys = nil
-	r.sameAZRing = make(map[uint32]string)
-	r.sameAZKeys = nil
-	r.hasZoneInfo = selfZone != ""
-
-	for peer, zone := range peerZones {
-		r.members[peer] = true
-		for i := 0; i < r.vnodes; i++ {
-			h := hashKey(peer, i)
-			r.ring[h] = peer
-			r.keys = append(r.keys, h)
-
-			if zone == selfZone {
-				r.sameAZRing[h] = peer
-				r.sameAZKeys = append(r.sameAZKeys, h)
-			}
-		}
-	}
-
-	sort.Slice(r.keys, func(i, j int) bool { return r.keys[i] < r.keys[j] })
-	sort.Slice(r.sameAZKeys, func(i, j int) bool { return r.sameAZKeys[i] < r.sameAZKeys[j] })
-}
-
-// LookupAZ routes a key to a peer, preferring same-AZ peers when zone info
-// is available. Returns the peer address, whether it's the local instance,
-// and whether the peer is in the same AZ.
-func (r *Ring) LookupAZ(key string) (peer string, isLocal bool, isSameAZ bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	if len(r.keys) == 0 {
-		return r.selfAddr, true, true
-	}
-
-	// If no zone info, fall back to normal lookup
-	if !r.hasZoneInfo || len(r.sameAZKeys) == 0 {
-		h := crc32.ChecksumIEEE([]byte(key))
-		idx := sort.Search(len(r.keys), func(i int) bool { return r.keys[i] >= h })
-		if idx >= len(r.keys) {
-			idx = 0
-		}
-		peer = r.ring[r.keys[idx]]
-		return peer, peer == r.selfAddr, true
-	}
-
-	// Try same-AZ ring first
-	h := crc32.ChecksumIEEE([]byte(key))
-	idx := sort.Search(len(r.sameAZKeys), func(i int) bool { return r.sameAZKeys[i] >= h })
-	if idx >= len(r.sameAZKeys) {
-		idx = 0
-	}
-	peer = r.sameAZRing[r.sameAZKeys[idx]]
-	return peer, peer == r.selfAddr, true
-}
-```
-
-Add the new fields to the `Ring` struct:
-
-```go
-type Ring struct {
-	mu          sync.RWMutex
-	vnodes      int
-	keys        []uint32
-	ring        map[uint32]string
-	members     map[string]bool
-	selfAddr    string
-	sameAZRing  map[uint32]string
-	sameAZKeys  []uint32
-	hasZoneInfo bool
-}
-```
-
-Update `NewRing` to initialize the new fields:
-
-```go
-func NewRing(selfAddr string, vnodes int) *Ring {
-	if vnodes <= 0 {
-		vnodes = defaultVnodes
-	}
-	return &Ring{
-		vnodes:     vnodes,
-		ring:       make(map[uint32]string),
-		members:    make(map[string]bool),
-		selfAddr:   selfAddr,
-		sameAZRing: make(map[uint32]string),
-	}
-}
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/peercache/ -run TestRing_.*AZ -v`
-Expected: PASS
-
-- [ ] **Step 5: Run full peercache test suite**
-
-Run: `cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/peercache/ -v -count=1`
-Expected: All PASS (existing tests unaffected)
-
-- [ ] **Step 6: Commit**
-
-```bash
-cd /private/tmp/victoria-lakehouse-fresh
-git add internal/peercache/ring.go internal/peercache/ring_az_test.go
-git commit -m "feat: add AZ-aware consistent hash ring with same-AZ preference"
-```
-
----
-
-### Task 3: AZ-Aware PeerCache Client
+### Task 5: AZ-Aware PeerCache Client
 
 **Files:**
 - Modify: `internal/peercache/peercache.go`
@@ -415,21 +538,26 @@ Create `internal/peercache/peercache_az_test.go`:
 package peercache
 
 import (
+	"fmt"
 	"testing"
+	"time"
 )
 
 func TestPeerCache_UpdatePeersWithZones(t *testing.T) {
 	pc := New("self:9428", "", 5*time.Second, 10)
 
 	peerZones := map[string]string{
-		"self:9428":    "az-a",
-		"peer-a:9428":  "az-a",
-		"peer-b:9428":  "az-b",
+		"self:9428":   "az-a",
+		"peer-a:9428": "az-a",
+		"peer-b:9428": "az-b",
 	}
 	pc.UpdatePeersWithZones(peerZones, "az-a")
 
 	if len(pc.Members()) != 3 {
 		t.Errorf("expected 3 members, got %d", len(pc.Members()))
+	}
+	if pc.SelfAZ() != "az-a" {
+		t.Errorf("expected selfAZ=az-a, got %q", pc.SelfAZ())
 	}
 }
 
@@ -453,7 +581,7 @@ func TestPeerCache_LookupAZ_RoutesSameZone(t *testing.T) {
 	}
 
 	if crossAZ > 0 {
-		t.Errorf("expected 0 cross-AZ lookups when same-AZ peers exist, got %d", crossAZ)
+		t.Errorf("expected 0 cross-AZ lookups, got %d", crossAZ)
 	}
 }
 
@@ -466,8 +594,8 @@ func TestPeerCache_StatsAZ(t *testing.T) {
 	}
 
 	peerZones := map[string]string{
-		"self:9428":   "az-a",
-		"peer:9428":   "az-b",
+		"self:9428":  "az-a",
+		"peer:9428":  "az-b",
 	}
 	pc.UpdatePeersWithZones(peerZones, "az-a")
 
@@ -484,40 +612,10 @@ func TestPeerCache_StatsAZ(t *testing.T) {
 }
 ```
 
-Add required imports: `"fmt"`, `"time"`, `"testing"`.
+- [ ] **Step 2: Run test — expect fail**
+- [ ] **Step 3: Implement**
 
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/peercache/ -run TestPeerCache_.*AZ -v`
-Expected: FAIL — methods don't exist
-
-- [ ] **Step 3: Implement AZ-aware PeerCache methods**
-
-Add to `internal/peercache/peercache.go`:
-
-```go
-// selfAZ tracks this pod's availability zone.
-// Added to PeerCache struct.
-```
-
-Add `selfAZ string` field to `PeerCache` struct:
-
-```go
-type PeerCache struct {
-	ring       *Ring
-	authKey    string
-	httpClient *http.Client
-	selfAZ     string
-
-	hits       atomic.Uint64
-	misses     atomic.Uint64
-	errors     atomic.Uint64
-	sameAZHits atomic.Uint64
-	crossAZHits atomic.Uint64
-}
-```
-
-Add methods:
+Add `selfAZ string` field to PeerCache struct. Add methods:
 
 ```go
 func (pc *PeerCache) UpdatePeersWithZones(peerZones map[string]string, selfAZ string) {
@@ -533,13 +631,13 @@ func (pc *PeerCache) LookupAZ(key string) (peer string, isLocal bool, isSameAZ b
 	return pc.ring.LookupAZ(key)
 }
 
+func (pc *PeerCache) SelfAZ() string { return pc.selfAZ }
+
 type StatsAZ struct {
 	Stats
 	SelfAZ         string
 	SameAZMembers  int
 	CrossAZMembers int
-	SameAZHits     uint64
-	CrossAZHits    uint64
 }
 
 func (pc *PeerCache) StatsAZ() StatsAZ {
@@ -550,54 +648,49 @@ func (pc *PeerCache) StatsAZ() StatsAZ {
 		SelfAZ:         pc.selfAZ,
 		SameAZMembers:  sameAZ,
 		CrossAZMembers: crossAZ,
-		SameAZHits:     pc.sameAZHits.Load(),
-		CrossAZHits:    pc.crossAZHits.Load(),
 	}
 }
 ```
 
-Add `MemberCountByZone()` to `ring.go`:
+Add `selfAZ` field to Handler, expose in `/internal/cache/stats`:
 
 ```go
-func (r *Ring) MemberCountByZone() (sameAZ, crossAZ int) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+type Handler struct {
+	mu      sync.RWMutex
+	cache   map[string][]byte
+	authKey string
+	selfAZ  string
+}
 
-	if !r.hasZoneInfo {
-		return len(r.members), 0
+func NewHandler(authKey, selfAZ string) *Handler {
+	return &Handler{
+		cache:   make(map[string][]byte),
+		authKey: authKey,
+		selfAZ:  selfAZ,
 	}
-
-	sameAZMembers := make(map[string]bool)
-	for _, peer := range r.sameAZRing {
-		sameAZMembers[peer] = true
-	}
-	sameAZ = len(sameAZMembers)
-	crossAZ = len(r.members) - sameAZ
-	return sameAZ, crossAZ
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+Add `/internal/cache/stats` case to `ServeHTTP`:
 
-Run: `cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/peercache/ -run TestPeerCache_.*AZ -v`
-Expected: PASS
+```go
+case "/internal/cache/stats":
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"az":%q}`, h.selfAZ)
+```
 
-- [ ] **Step 5: Run full test suite**
-
-Run: `cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/peercache/ -v -count=1`
-Expected: All PASS
-
+- [ ] **Step 4: Run tests — expect pass**
+- [ ] **Step 5: Run full peercache suite**
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /private/tmp/victoria-lakehouse-fresh
-git add internal/peercache/peercache.go internal/peercache/ring.go internal/peercache/peercache_az_test.go
-git commit -m "feat: add AZ-aware PeerCache client with zone-partitioned lookups"
+git add internal/peercache/
+git commit -m "feat: add AZ-aware PeerCache with zone stats and AZ reporting endpoint"
 ```
 
 ---
 
-### Task 4: AZ-Aware Buffer Bridge
+### Task 6: AZ-Aware Buffer Bridge
 
 **Files:**
 - Modify: `internal/storage/parquets3/buffer_bridge.go`
@@ -634,23 +727,20 @@ func TestBufferBridge_SetEndpointsWithZones(t *testing.T) {
 	bb.SetEndpointsWithZones(epZones, "az-a")
 
 	bb.mu.RLock()
-	sameAZ := len(bb.sameAZEndpoints)
-	crossAZ := len(bb.crossAZEndpoints)
-	allEPs := len(bb.endpoints)
-	bb.mu.RUnlock()
+	defer bb.mu.RUnlock()
 
-	if allEPs != 3 {
-		t.Errorf("expected 3 total endpoints, got %d", allEPs)
+	if len(bb.endpoints) != 3 {
+		t.Errorf("expected 3 total endpoints, got %d", len(bb.endpoints))
 	}
-	if sameAZ != 2 {
-		t.Errorf("expected 2 same-AZ endpoints, got %d", sameAZ)
+	if len(bb.sameAZEndpoints) != 2 {
+		t.Errorf("expected 2 same-AZ endpoints, got %d", len(bb.sameAZEndpoints))
 	}
-	if crossAZ != 1 {
-		t.Errorf("expected 1 cross-AZ endpoint, got %d", crossAZ)
+	if len(bb.crossAZEndpoints) != 1 {
+		t.Errorf("expected 1 cross-AZ endpoint, got %d", len(bb.crossAZEndpoints))
 	}
 }
 
-func TestBufferBridge_AZAware_QueriesSameAZFirst(t *testing.T) {
+func TestBufferBridge_StrictMode_SameAZOnly(t *testing.T) {
 	cfg := &config.SelectConfig{
 		BufferQueryEnabled: true,
 		BufferQueryTimeout: 2 * time.Second,
@@ -665,20 +755,19 @@ func TestBufferBridge_AZAware_QueriesSameAZFirst(t *testing.T) {
 	}
 	bb.SetEndpointsWithZones(epZones, "az-a")
 
-	// With CrossAZFallback=false, only same-AZ endpoints should be used
 	bb.mu.RLock()
 	eps := bb.getQueryEndpoints()
 	bb.mu.RUnlock()
 
 	if len(eps) != 1 {
-		t.Errorf("with CrossAZFallback=false, expected 1 endpoint (same-AZ only), got %d", len(eps))
+		t.Errorf("strict: expected 1 endpoint (same-AZ only), got %d", len(eps))
 	}
-	if eps[0] != "http://insert-0:9428" {
+	if len(eps) > 0 && eps[0] != "http://insert-0:9428" {
 		t.Errorf("expected same-AZ endpoint, got %q", eps[0])
 	}
 }
 
-func TestBufferBridge_AZAware_FallbackIncludesAll(t *testing.T) {
+func TestBufferBridge_PreferredMode_AllEndpoints(t *testing.T) {
 	cfg := &config.SelectConfig{
 		BufferQueryEnabled: true,
 		BufferQueryTimeout: 2 * time.Second,
@@ -693,25 +782,39 @@ func TestBufferBridge_AZAware_FallbackIncludesAll(t *testing.T) {
 	}
 	bb.SetEndpointsWithZones(epZones, "az-a")
 
-	// With CrossAZFallback=true, all endpoints should be used
 	bb.mu.RLock()
 	eps := bb.getQueryEndpoints()
 	bb.mu.RUnlock()
 
 	if len(eps) != 2 {
-		t.Errorf("with CrossAZFallback=true, expected 2 endpoints, got %d", len(eps))
+		t.Errorf("preferred: expected 2 endpoints, got %d", len(eps))
+	}
+}
+
+func TestBufferBridge_NoAZ_AllEndpoints(t *testing.T) {
+	cfg := &config.SelectConfig{
+		BufferQueryEnabled: true,
+		BufferQueryTimeout: 2 * time.Second,
+		AZAware:            false,
+	}
+	bb := NewBufferBridge(cfg, config.ModeLogs)
+
+	bb.SetEndpoints([]string{"http://a:9428", "http://b:9428"})
+
+	bb.mu.RLock()
+	eps := bb.getQueryEndpoints()
+	bb.mu.RUnlock()
+
+	if len(eps) != 2 {
+		t.Errorf("no AZ: expected 2 endpoints, got %d", len(eps))
 	}
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run test — expect fail**
+- [ ] **Step 3: Implement**
 
-Run: `cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/storage/parquets3/ -run TestBufferBridge_.*AZ -v`
-Expected: FAIL — methods/fields don't exist
-
-- [ ] **Step 3: Implement AZ-aware buffer bridge**
-
-Modify `internal/storage/parquets3/buffer_bridge.go`. Add fields to `BufferBridge`:
+Add fields to BufferBridge struct:
 
 ```go
 type BufferBridge struct {
@@ -748,395 +851,319 @@ func (b *BufferBridge) SetEndpointsWithZones(epZones map[string]string, selfAZ s
 	}
 }
 
-// getQueryEndpoints returns the endpoints to query based on AZ awareness config.
-// Must be called with b.mu held (at least RLock).
 func (b *BufferBridge) getQueryEndpoints() []string {
 	if !b.cfg.AZAware || b.selfAZ == "" {
 		return b.endpoints
 	}
-
-	if b.cfg.CrossAZFallback {
-		// Same-AZ first, then cross-AZ (all endpoints)
-		return b.endpoints
-	}
-
-	// Same-AZ only
-	if len(b.sameAZEndpoints) > 0 {
+	if !b.cfg.CrossAZFallback && len(b.sameAZEndpoints) > 0 {
 		return b.sameAZEndpoints
 	}
 	return b.endpoints
 }
 ```
 
-Update `QueryLogs` and `QueryTraces` to use `getQueryEndpoints()` instead of `b.endpoints` directly:
+Update `QueryLogs` and `QueryTraces` to use `b.getQueryEndpoints()` instead of `b.endpoints`.
 
-Replace `eps := b.endpoints` with `eps := b.getQueryEndpoints()` in both methods (lines 53 and 122).
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/storage/parquets3/ -run TestBufferBridge_.*AZ -v`
-Expected: PASS
-
+- [ ] **Step 4: Run tests — expect pass**
 - [ ] **Step 5: Run full storage test suite**
-
-Run: `cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/storage/parquets3/ -v -count=1 -timeout 120s`
-Expected: All PASS
-
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /private/tmp/victoria-lakehouse-fresh
 git add internal/storage/parquets3/buffer_bridge.go internal/storage/parquets3/buffer_bridge_az_test.go
 git commit -m "feat: add AZ-aware buffer bridge with same-AZ endpoint preference"
 ```
 
 ---
 
-### Task 5: AZ Metrics
+### Task 7: AZ Metrics
 
 **Files:**
 - Modify: `internal/metrics/lakehouse.go`
 
 - [ ] **Step 1: Add AZ metrics**
 
-Add to `internal/metrics/lakehouse.go` after the peer cache metrics section:
-
 ```go
-// AZ-aware peer cache metrics
+// AZ-aware routing metrics
 var (
-	PeerAZBytesTotal      = NewCounterVec("lakehouse_peer_bytes_total", "az")
-	PeerAZRequestsTotal   = NewCounterVec("lakehouse_peer_az_requests_total", "az")
 	PeerSameAZMembers     = NewGauge("lakehouse_peer_same_az_members")
 	PeerCrossAZMembers    = NewGauge("lakehouse_peer_cross_az_members")
-	BufferBridgeBytesTotal    = NewCounterVec("lakehouse_buffer_bridge_bytes_total", "az")
-	BufferBridgeRequestsTotal = NewCounterVec("lakehouse_buffer_bridge_requests_total", "az")
+	PeerAZRequestsTotal   = NewCounterVec("lakehouse_peer_az_requests_total", "az_type")
+	BufferBridgeAZRequestsTotal = NewCounterVec("lakehouse_buffer_bridge_az_requests_total", "az_type")
 )
 ```
 
-- [ ] **Step 2: Run metrics coverage test**
+Label values: `az_type="same"` or `az_type="cross"`.
 
-Run: `cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/metrics/ -v`
-Expected: PASS
-
+- [ ] **Step 2: Build to verify compilation**
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /private/tmp/victoria-lakehouse-fresh
 git add internal/metrics/lakehouse.go
-git commit -m "feat: add AZ-aware peer cache and buffer bridge metrics"
+git commit -m "feat: add AZ routing metrics"
 ```
 
 ---
 
-### Task 6: AZ Detection at Startup
+### Task 8: Wire AZ Into Startup and Discovery
 
 **Files:**
 - Modify: `cmd/lakehouse-logs/main.go`
+- Modify: `internal/storage/parquets3/storage.go`
 
-- [ ] **Step 1: Read current main.go to understand startup wiring**
+This is the wiring task — connects azdetect, peercache, and buffer bridge.
 
-Read `cmd/lakehouse-logs/main.go` to find the exact peer cache init location (around lines 100-110) and discovery wiring.
+- [ ] **Step 1: Add AZ detection at startup in main.go**
 
-- [ ] **Step 2: Add AZ detection**
-
-After config loading and before peer cache initialization, add AZ detection:
+After config load and before `parquets3.New(cfg)`:
 
 ```go
-selfAZ := os.Getenv(cfg.Peer.AZEnvVar)
-if selfAZ != "" {
-	logger.Infof("detected AZ from %s: %s", cfg.Peer.AZEnvVar, selfAZ)
-} else if cfg.Peer.AZAware {
-	logger.Infof("AZ env var %s not set; AZ-aware routing disabled", cfg.Peer.AZEnvVar)
+selfAZ := azdetect.Detect(context.Background(), azdetect.Options{
+	EnvVar:  cfg.Peer.AZEnvVar,
+	Timeout: 2 * time.Second,
+})
+```
+
+Pass `selfAZ` to storage constructor (add parameter or set on config).
+
+- [ ] **Step 2: Update NewHandler call to include selfAZ**
+
+Change `peercache.NewHandler(cfg.Peer.AuthKey)` to `peercache.NewHandler(cfg.Peer.AuthKey, selfAZ)`.
+
+- [ ] **Step 3: Add `/internal/cache/stats` AZ field to main.go handler**
+
+The existing `/internal/cache/stats` handler at line 510 needs to include the AZ:
+
+```go
+_ = json.NewEncoder(w).Encode(map[string]any{
+	"l1_entries":   stats.Entries,
+	"l1_size":      stats.Size,
+	"l1_max_size":  stats.MaxSize,
+	"l1_hits":      stats.Hits,
+	"l1_misses":    stats.Misses,
+	"l1_evictions": stats.Evictions,
+	"az":           selfAZ,
+})
+```
+
+- [ ] **Step 4: Wire AZ into RefreshDiscovery**
+
+In `internal/storage/parquets3/storage.go`, modify `RefreshDiscovery()`:
+
+```go
+func (s *Storage) RefreshDiscovery(ctx context.Context) error {
+	if _, err := s.discovery.DiscoverStorageNodes(ctx); err != nil {
+		return fmt.Errorf("discover storage nodes: %w", err)
+	}
+	if _, err := s.discovery.PollPartitionList(ctx); err != nil {
+		return fmt.Errorf("poll partition list: %w", err)
+	}
+	if s.peerCache != nil {
+		peers, err := s.discovery.DiscoverPeers(ctx)
+		if err != nil {
+			return fmt.Errorf("discover peers: %w", err)
+		}
+
+		if s.selfAZ != "" && s.cfg.Peer.AZAware {
+			peerZones := s.queryPeerAZs(ctx, peers)
+			s.peerCache.UpdatePeersWithZones(peerZones, s.selfAZ)
+
+			// Update metrics
+			stats := s.peerCache.StatsAZ()
+			metrics.PeerSameAZMembers.Set(int64(stats.SameAZMembers))
+			metrics.PeerCrossAZMembers.Set(int64(stats.CrossAZMembers))
+
+			// Strict mode validation
+			if s.cfg.Peer.AZMode == "strict" && stats.SameAZMembers < s.cfg.Peer.AZMinPeersPerAZ {
+				logger.Warnf("strict AZ mode: only %d same-AZ peers (need %d); falling back to preferred",
+					stats.SameAZMembers, s.cfg.Peer.AZMinPeersPerAZ)
+			}
+		} else {
+			s.peerCache.UpdatePeers(peers)
+		}
+	}
+	return nil
 }
 ```
 
-- [ ] **Step 3: Wire AZ into peer discovery loop**
-
-Find the discovery refresh loop where `pc.UpdatePeers()` is called. Modify it to:
-1. Resolve peer DNS to get pod IPs
-2. For each peer, query its AZ via the `/lakehouse/info` endpoint or use the `LAKEHOUSE_AZ` env-based approach where all peers report their AZ
-3. Call `pc.UpdatePeersWithZones(peerZones, selfAZ)` instead of `pc.UpdatePeers(peers)`
-
-The simplest approach: each peer advertises its AZ in the `/internal/cache/has` response headers, or we resolve AZ from the Kubernetes API. For now, use the convention that pods in the same headless service share the same Kubernetes namespace, and AZ is injected via downward API into every pod's env:
+Add `queryPeerAZs()` helper to storage.go:
 
 ```go
-// In the discovery refresh goroutine:
-if selfAZ != "" && cfg.Peer.AZAware {
-	peerZones := make(map[string]string)
+func (s *Storage) queryPeerAZs(ctx context.Context, peers []string) map[string]string {
+	peerZones := make(map[string]string, len(peers))
 	for _, peer := range peers {
-		// Query peer's AZ via GET /internal/cache/stats
-		az := queryPeerAZ(ctx, peer, pc.authKey)
+		az := s.fetchPeerAZ(ctx, peer)
 		peerZones[peer] = az
 	}
-	pc.UpdatePeersWithZones(peerZones, selfAZ)
-} else {
-	pc.UpdatePeers(peers)
+	return peerZones
 }
-```
 
-- [ ] **Step 4: Add `/internal/cache/stats` AZ response**
-
-Modify `internal/peercache/peercache.go` Handler to include the pod's AZ in the `/internal/cache/stats` response. Add a `selfAZ` field to `Handler`:
-
-```go
-type Handler struct {
-	mu      sync.RWMutex
-	cache   map[string][]byte
-	authKey string
-	selfAZ  string
-}
-```
-
-Update `NewHandler`:
-
-```go
-func NewHandler(authKey, selfAZ string) *Handler {
-	return &Handler{
-		cache:   make(map[string][]byte),
-		authKey: authKey,
-		selfAZ:  selfAZ,
+func (s *Storage) fetchPeerAZ(ctx context.Context, peer string) string {
+	url := fmt.Sprintf("http://%s/internal/cache/stats", peer)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return ""
 	}
-}
-```
-
-Add stats endpoint to `ServeHTTP`:
-
-```go
-case "/internal/cache/stats":
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"az":%q}`, h.selfAZ)
-```
-
-- [ ] **Step 5: Wire AZ into buffer bridge discovery**
-
-Similarly, when buffer bridge endpoints are discovered, include their AZ:
-
-```go
-if selfAZ != "" && cfg.Select.AZAware {
-	epZones := make(map[string]string)
-	for _, ep := range insertEndpoints {
-		az := queryPeerAZ(ctx, ep, "")
-		epZones[ep] = az
+	if s.cfg.Peer.AuthKey != "" {
+		req.Header.Set("Authorization", "Bearer "+s.cfg.Peer.AuthKey)
 	}
-	bb.SetEndpointsWithZones(epZones, selfAZ)
-} else {
-	bb.SetEndpoints(insertEndpoints)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		AZ string `json:"az"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return ""
+	}
+	return result.AZ
 }
 ```
 
-- [ ] **Step 6: Update metrics reporting**
+Add `selfAZ string` field to Storage struct, set during construction.
 
-In the metrics reporting goroutine (if exists) or where peer stats are reported, add:
-
-```go
-if selfAZ != "" {
-	azStats := pc.StatsAZ()
-	metrics.PeerSameAZMembers.Set(int64(azStats.SameAZMembers))
-	metrics.PeerCrossAZMembers.Set(int64(azStats.CrossAZMembers))
-}
-```
-
-- [ ] **Step 7: Build to verify compilation**
+- [ ] **Step 5: Build to verify compilation**
 
 Run: `cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go build ./cmd/lakehouse-logs/`
-Expected: Success
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-cd /private/tmp/victoria-lakehouse-fresh
-git add cmd/lakehouse-logs/main.go internal/peercache/peercache.go
-git commit -m "feat: wire AZ detection and zone-aware peer/buffer discovery at startup"
+git add cmd/lakehouse-logs/main.go internal/storage/parquets3/storage.go
+git commit -m "feat: wire AZ detection and zone-aware peer discovery at startup"
 ```
 
 ---
 
-### Task 7: Helm Chart Defaults
+### Task 9: Helm Chart Defaults
 
 **Files:**
 - Modify: `charts/victoria-lakehouse/values.yaml`
 - Modify: `charts/victoria-lakehouse/templates/select-statefulset.yaml`
 - Modify: `charts/victoria-lakehouse/templates/insert-statefulset.yaml`
 
-- [ ] **Step 1: Add AZ env var injection via downward API**
-
-In `charts/victoria-lakehouse/templates/select-statefulset.yaml`, add to the container env section (after existing `extraEnv`):
-
-```yaml
-        - name: LAKEHOUSE_AZ
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.labels['topology.kubernetes.io/zone']
-```
-
-Note: Kubernetes downward API doesn't support node labels directly in pod env. The correct approach is to use the node name and a label, or use an init container. The simplest portable approach is:
-
-```yaml
-        env:
-        - name: LAKEHOUSE_AZ
-          valueFrom:
-            fieldRef:
-              fieldPath: spec.nodeName
-```
-
-Then resolve AZ from the node name. OR use a more standard approach with the `NODE_NAME` env var:
-
-```yaml
-        env:
-        - name: NODE_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: spec.nodeName
-```
-
-Actually, the best approach for Kubernetes is the `topology.kubernetes.io/zone` label on the node, accessible via the downward API as a `metadata.labels` on the pod IF we set it. The cleanest way:
-
-Add to both StatefulSet templates in the `containers[0].env` section:
-
-```yaml
-        {{- if .Values.lakehouseConfig.peer.az_aware }}
-        - name: LAKEHOUSE_AZ
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.annotations['topology.kubernetes.io/zone']
-        {{- end }}
-```
-
-And add a `topologyZoneAnnotation` helper that copies the node's zone label to the pod's annotation via a mutating webhook or init container. 
-
-The simplest approach for EKS/GKE/AKS: The cloud provider's CCM already labels nodes with `topology.kubernetes.io/zone`. We can use the Kubernetes API from within the pod to read the node's label. But that requires RBAC.
-
-**Simplest reliable approach**: Use an init container that reads the node zone and writes it to a shared volume, or just set the `LAKEHOUSE_AZ` as an extraEnv in values.yaml and document that users should set it from their cloud provider.
-
-For the values.yaml, add the AZ config:
+- [ ] **Step 1: Add AZ config to values.yaml**
 
 ```yaml
 lakehouseConfig:
   peer:
     az_aware: true
+    az_mode: "preferred"
     cross_az_fallback: true
-    az_env_var: LAKEHOUSE_AZ
+    az_env_var: "LAKEHOUSE_AZ"
+    az_min_peers_per_az: 2
   select:
     az_aware: true
     cross_az_fallback: true
 ```
 
-- [ ] **Step 2: Add default topology spread constraints**
+- [ ] **Step 2: Add NODE_NAME env var to statefulset templates**
 
-In `charts/victoria-lakehouse/values.yaml`, change the select and insert defaults from:
+In both select and insert StatefulSet templates, add to container env:
 
 ```yaml
-  topologySpreadConstraints: []
+- name: NODE_NAME
+  valueFrom:
+    fieldRef:
+      fieldPath: spec.nodeName
 ```
 
-To:
+This enables the K8s API fallback for AZ detection (reads node's topology label).
+
+- [ ] **Step 3: Add default topology spread constraints**
+
+Change default `topologySpreadConstraints: []` to:
 
 ```yaml
-  topologySpreadConstraints:
-    - maxSkew: 1
-      topologyKey: topology.kubernetes.io/zone
-      whenUnsatisfiable: ScheduleAnyway
-      labelSelector:
-        matchLabels:
-          app.kubernetes.io/component: select
-```
-
-(And similarly for insert with `component: insert`.)
-
-- [ ] **Step 3: Add pod affinity for insert/select co-location**
-
-Add default affinity to values.yaml for select pods to prefer running in same AZs as insert pods:
-
-```yaml
-select:
-  affinity:
-    podAffinity:
-      preferredDuringSchedulingIgnoredDuringExecution:
-        - weight: 100
-          podAffinityTerm:
-            labelSelector:
-              matchLabels:
-                app.kubernetes.io/component: insert
-            topologyKey: topology.kubernetes.io/zone
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/component: select  # or insert for insert template
 ```
 
 - [ ] **Step 4: Lint Helm chart**
 
 Run: `helm lint charts/victoria-lakehouse/`
-Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /private/tmp/victoria-lakehouse-fresh
 git add charts/victoria-lakehouse/
-git commit -m "feat: add AZ-aware Helm defaults — topology spread, pod affinity, AZ env var"
+git commit -m "feat: add AZ-aware Helm defaults — topology spread, NODE_NAME injection, AZ config"
 ```
 
 ---
 
-### Task 8: Traces Module Mirror
+### Task 10: Traces Module — Verify Shared Code
 
-**Files:**
-- Modify: `lakehouse-traces/cmd/lakehouse-traces/main.go`
-- Modify: `lakehouse-traces/internal/config/config.go`
-- Modify: `lakehouse-traces/internal/peercache/` (if separate)
-- Modify: `lakehouse-traces/internal/metrics/lakehouse.go`
+**Files:** None to create (verify only)
 
-Both Go modules (root for logs, `lakehouse-traces/` for traces) need identical changes. The traces module may share code via replace directives or have its own copies.
+The traces module shares `internal/config`, `internal/peercache`, `internal/metrics`, and `internal/storage/parquets3` via Go workspace replace directive. Changes propagate automatically.
 
-- [ ] **Step 1: Check traces module structure**
+- [ ] **Step 1: Verify traces module imports shared code**
 
-Run: `ls lakehouse-traces/internal/peercache/ lakehouse-traces/internal/config/ lakehouse-traces/internal/metrics/ 2>/dev/null`
+```bash
+grep -r "victoria-lakehouse/internal/peercache" lakehouse-traces/
+grep -r "victoria-lakehouse/internal/config" lakehouse-traces/
+```
 
-Determine if traces shares code with logs or has its own copies.
+- [ ] **Step 2: Check traces main.go for parallel wiring needs**
 
-- [ ] **Step 2: Apply same config, ring, peercache, buffer bridge, and metrics changes**
+Read `lakehouse-traces/cmd/lakehouse-traces/main.go` (or `lakehouse-traces/main.go`) to find `NewHandler(authKey)` calls that need the `selfAZ` parameter added.
 
-Mirror all changes from Tasks 1-6 into the traces module. If the traces module imports from the root module, changes may already be visible.
+- [ ] **Step 3: Update traces main.go**
 
-- [ ] **Step 3: Build traces module**
+Mirror the same azdetect + NewHandler changes from Task 8.
 
-Run: `cd /private/tmp/victoria-lakehouse-fresh/lakehouse-traces && GOWORK=off go build ./cmd/lakehouse-traces/`
-Expected: Success
+- [ ] **Step 4: Build traces binary**
 
-- [ ] **Step 4: Run traces tests**
+Run: `cd /private/tmp/victoria-lakehouse-fresh/lakehouse-traces && GOWORK=off go build ./...`
+
+- [ ] **Step 5: Run traces tests**
 
 Run: `cd /private/tmp/victoria-lakehouse-fresh/lakehouse-traces && GOWORK=off go test ./... -v -count=1 -timeout 120s`
-Expected: All PASS
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-cd /private/tmp/victoria-lakehouse-fresh
 git add lakehouse-traces/
-git commit -m "feat: mirror AZ-aware changes to traces module"
+git commit -m "feat: wire AZ detection into traces module"
 ```
 
 ---
 
-### Task 9: Integration Test
+### Task 11: Integration Tests — Startup Verification
 
 **Files:**
 - Create: `internal/peercache/integration_az_test.go`
+- Create: `internal/azdetect/integration_test.go`
 
-- [ ] **Step 1: Write integration test**
+- [ ] **Step 1: Peer cache AZ integration test**
 
-Test the full AZ-aware flow: create peer cache with zones → lookup routes to same-AZ → stats reflect zone breakdown:
+Test full flow: create handlers in different AZs → create peer cache → verify routing + stats:
 
 ```go
 package peercache
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 )
 
-func TestAZAwareIntegration(t *testing.T) {
-	// Set up two HTTP handlers simulating peers in different AZs
+func TestAZIntegration_FullFlow(t *testing.T) {
+	// Two peers in different AZs
 	handlerA := NewHandler("", "az-a")
 	handlerA.Put("shared-key", []byte("data-from-az-a"))
 
@@ -1145,11 +1172,10 @@ func TestAZAwareIntegration(t *testing.T) {
 
 	serverA := httptest.NewServer(handlerA)
 	defer serverA.Close()
-
 	serverB := httptest.NewServer(handlerB)
 	defer serverB.Close()
 
-	// Create peer cache for a pod in az-a
+	// Peer cache for pod in az-a
 	pc := New("self:9428", "", 5*time.Second, 10)
 
 	peerZones := map[string]string{
@@ -1161,79 +1187,229 @@ func TestAZAwareIntegration(t *testing.T) {
 
 	// Verify zone stats
 	stats := pc.StatsAZ()
-	if stats.SameAZMembers != 2 { // self + serverA
-		t.Errorf("expected 2 same-AZ members, got %d", stats.SameAZMembers)
+	if stats.SameAZMembers != 2 {
+		t.Errorf("expected 2 same-AZ, got %d", stats.SameAZMembers)
 	}
-	if stats.CrossAZMembers != 1 { // serverB
-		t.Errorf("expected 1 cross-AZ member, got %d", stats.CrossAZMembers)
+	if stats.CrossAZMembers != 1 {
+		t.Errorf("expected 1 cross-AZ, got %d", stats.CrossAZMembers)
 	}
 
-	// Verify lookups route to same-AZ peers
-	crossAZCount := 0
+	// Verify all lookups route same-AZ
+	crossAZ := 0
 	for i := 0; i < 200; i++ {
 		_, _, isSameAZ := pc.LookupAZ(fmt.Sprintf("key-%d", i))
 		if !isSameAZ {
-			crossAZCount++
+			crossAZ++
 		}
 	}
-	if crossAZCount > 0 {
-		t.Errorf("expected 0 cross-AZ lookups, got %d out of 200", crossAZCount)
-	}
-
-	// Verify we can still fetch from same-AZ peer
-	peer, isLocal, _ := pc.LookupAZ("shared-key")
-	if !isLocal {
-		data, found, err := pc.Fetch(context.Background(), peer, "shared-key")
-		if err != nil {
-			t.Fatalf("fetch from same-AZ peer failed: %v", err)
-		}
-		if !found {
-			t.Error("expected to find shared-key on same-AZ peer")
-		}
-		if string(data) != "data-from-az-a" {
-			t.Errorf("expected data-from-az-a, got %q", string(data))
-		}
+	if crossAZ > 0 {
+		t.Errorf("expected 0 cross-AZ lookups, got %d/200", crossAZ)
 	}
 }
 
-func TestAZAwareIntegration_StatsEndpoint(t *testing.T) {
+func TestAZIntegration_StatsEndpoint(t *testing.T) {
 	handler := NewHandler("", "us-east-1a")
-	handler.Put("test-key", []byte("test-data"))
-
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	// Test /internal/cache/stats returns AZ
 	resp, err := http.Get(server.URL + "/internal/cache/stats")
 	if err != nil {
 		t.Fatalf("stats request failed: %v", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected 200, got %d", resp.StatusCode)
+	var result struct {
+		AZ string `json:"az"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if result.AZ != "us-east-1a" {
+		t.Errorf("expected az=us-east-1a, got %q", result.AZ)
+	}
+}
+
+func TestAZIntegration_PeerAZDiscovery(t *testing.T) {
+	// Simulate what RefreshDiscovery does: query /internal/cache/stats for AZ
+	handler1 := NewHandler("", "az-a")
+	handler2 := NewHandler("", "az-b")
+	srv1 := httptest.NewServer(handler1)
+	defer srv1.Close()
+	srv2 := httptest.NewServer(handler2)
+	defer srv2.Close()
+
+	peers := []string{srv1.Listener.Addr().String(), srv2.Listener.Addr().String()}
+	peerZones := make(map[string]string)
+
+	for _, peer := range peers {
+		resp, err := http.Get(fmt.Sprintf("http://%s/internal/cache/stats", peer))
+		if err != nil {
+			t.Fatalf("query peer %s: %v", peer, err)
+		}
+		var result struct {
+			AZ string `json:"az"`
+		}
+		json.NewDecoder(resp.Body).Decode(&result)
+		resp.Body.Close()
+		peerZones[peer] = result.AZ
+	}
+
+	if len(peerZones) != 2 {
+		t.Fatalf("expected 2 peer zones, got %d", len(peerZones))
+	}
+	if peerZones[peers[0]] != "az-a" {
+		t.Errorf("peer 0 should be az-a, got %q", peerZones[peers[0]])
+	}
+	if peerZones[peers[1]] != "az-b" {
+		t.Errorf("peer 1 should be az-b, got %q", peerZones[peers[1]])
 	}
 }
 ```
 
-Add `"fmt"` to imports.
+- [ ] **Step 2: AZ detect integration test**
 
-- [ ] **Step 2: Run integration test**
+```go
+package azdetect
 
-Run: `cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/peercache/ -run TestAZAwareIntegration -v`
-Expected: PASS
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"testing"
+	"time"
+)
 
-- [ ] **Step 3: Commit**
+func TestDetect_FullChain_EnvWins(t *testing.T) {
+	// Even if IMDS/GCP would work, env var wins
+	os.Setenv("MY_AZ", "override-zone")
+	defer os.Unsetenv("MY_AZ")
+
+	imds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("imds-zone"))
+	}))
+	defer imds.Close()
+
+	az := Detect(context.Background(), Options{EnvVar: "MY_AZ", Timeout: time.Second})
+	if az != "override-zone" {
+		t.Errorf("env var should win, got %q", az)
+	}
+}
+
+func TestDetect_AllFail_ReturnsEmpty(t *testing.T) {
+	os.Unsetenv("NONEXISTENT")
+
+	az := Detect(context.Background(), Options{
+		EnvVar:  "NONEXISTENT",
+		Timeout: 100 * time.Millisecond,
+	})
+	if az != "" {
+		t.Errorf("expected empty when all methods fail, got %q", az)
+	}
+}
+```
+
+- [ ] **Step 3: Run all integration tests**
 
 ```bash
-cd /private/tmp/victoria-lakehouse-fresh
-git add internal/peercache/integration_az_test.go
-git commit -m "test: add AZ-aware peer cache integration tests"
+cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/peercache/ -run TestAZIntegration -v
+cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/azdetect/ -v
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add internal/peercache/integration_az_test.go internal/azdetect/
+git commit -m "test: add AZ integration tests for peer discovery, routing, and stats endpoint"
 ```
 
 ---
 
-### Task 10: Documentation Update
+### Task 12: E2E Test — Real Setup
+
+**Files:**
+- Create: `tests/e2e/az_test.go`
+- Modify: `deployment/docker/docker-compose-e2e.yml`
+
+- [ ] **Step 1: Add LAKEHOUSE_AZ env vars to docker-compose**
+
+In `docker-compose-e2e.yml`, add to both lakehouse-logs and lakehouse-traces services:
+
+```yaml
+environment:
+  LAKEHOUSE_AZ: "az-a"
+```
+
+This simulates a single-AZ deployment for E2E testing.
+
+- [ ] **Step 2: Write E2E test**
+
+Create `tests/e2e/az_test.go`:
+
+```go
+//go:build e2e
+
+package e2e
+
+import (
+	"encoding/json"
+	"net/url"
+	"testing"
+)
+
+func TestAZ_CacheStatsIncludesAZ(t *testing.T) {
+	body := httpGetBody(t, logsBaseURL, "/internal/cache/stats", nil)
+
+	var stats map[string]any
+	if err := json.Unmarshal(body, &stats); err != nil {
+		t.Fatalf("decode cache stats: %v", err)
+	}
+
+	az, ok := stats["az"]
+	if !ok {
+		t.Fatal("cache stats should include 'az' field")
+	}
+
+	azStr, ok := az.(string)
+	if !ok {
+		t.Fatalf("az field should be string, got %T", az)
+	}
+	if azStr != "az-a" {
+		t.Errorf("expected AZ=az-a (from LAKEHOUSE_AZ env), got %q", azStr)
+	}
+}
+
+func TestAZ_HealthAndReadyWork(t *testing.T) {
+	// Verify startup succeeded with AZ detection
+	_ = httpGetBody(t, logsBaseURL, "/health", nil)
+	_ = httpGetBody(t, logsBaseURL, "/ready", nil)
+}
+
+func TestAZ_QueriesStillWorkWithAZ(t *testing.T) {
+	// Verify AZ-aware routing doesn't break normal queries
+	params := url.Values{
+		"query": {"*"},
+		"start": {nsToISO(dataMinTime)},
+		"end":   {nsToISO(dataMaxTime)},
+		"limit": {"5"},
+	}
+	body := httpGetBody(t, logsBaseURL, "/select/logsql/query", params)
+	if len(body) == 0 {
+		t.Error("query should return data even with AZ-aware routing")
+	}
+}
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add tests/e2e/az_test.go deployment/docker/docker-compose-e2e.yml
+git commit -m "test: add E2E tests for AZ-aware routing on real docker-compose setup"
+```
+
+---
+
+### Task 13: Documentation and CHANGELOG
 
 **Files:**
 - Modify: `docs/cross-az-optimization.md`
@@ -1241,71 +1417,73 @@ git commit -m "test: add AZ-aware peer cache integration tests"
 
 - [ ] **Step 1: Update cross-az-optimization.md**
 
-Add an "Implementation Status" section at the top:
+Add implementation status section at top:
 
 ```markdown
 :::info Implementation Status
-AZ-aware routing is **enabled by default** in Victoria Lakehouse. The peer cache and buffer bridge
-automatically prefer same-AZ peers when the `LAKEHOUSE_AZ` environment variable is set (injected
-automatically by the Helm chart via Kubernetes downward API).
+AZ-aware routing is **enabled by default**. AZ is auto-detected at startup via:
+1. `LAKEHOUSE_AZ` env var (operator override)
+2. AWS IMDSv2 (EKS/EC2)
+3. GCP metadata (GKE/GCE)
+4. Kubernetes node label API (any K8s, needs node `get` RBAC)
+
+Two modes: `preferred` (default, cross-AZ fallback) and `strict` (same-AZ only, requires `az_min_peers_per_az` same-AZ peers).
 :::
 ```
 
-Update the config examples to reflect the actual implemented values.
-
 - [ ] **Step 2: Update CHANGELOG.md**
 
-Add under `[Unreleased]` → `### Added`:
-
 ```markdown
-- AZ-aware peer cache — consistent hash ring partitioned by availability zone, same-AZ peers preferred by default
-- AZ-aware buffer bridge — select pods prefer same-AZ insert pods for unflushed data queries
-- AZ detection via `LAKEHOUSE_AZ` environment variable (injected by Helm chart)
-- 6 new AZ metrics: `lakehouse_peer_bytes_total{az=same|cross}`, `lakehouse_peer_az_requests_total{az}`, `lakehouse_peer_same_az_members`, `lakehouse_peer_cross_az_members`, `lakehouse_buffer_bridge_bytes_total{az}`, `lakehouse_buffer_bridge_requests_total{az}`
-- Default topology spread constraints in Helm chart for even AZ distribution
-- Pod affinity defaults for insert/select co-location in same AZ
+### Added
+- AZ auto-detection at startup (env var → AWS IMDS → GCP metadata → K8s node label)
+- AZ-aware peer cache routing — same-AZ peers preferred by default
+- AZ-aware buffer bridge — select pods prefer same-AZ insert pods
+- Strict vs preferred AZ modes with configurable min-peers-per-AZ
+- AZ metrics: `lakehouse_peer_same_az_members`, `lakehouse_peer_cross_az_members`, `lakehouse_peer_az_requests_total`, `lakehouse_buffer_bridge_az_requests_total`
+- Peer AZ reporting via `/internal/cache/stats` endpoint
+- Default topology spread constraints in Helm chart
+- E2E tests for AZ-aware routing
 ```
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /private/tmp/victoria-lakehouse-fresh
 git add docs/cross-az-optimization.md CHANGELOG.md
-git commit -m "docs: update cross-AZ optimization with implementation status"
+git commit -m "docs: add AZ-aware routing implementation status and CHANGELOG"
 ```
 
 ---
 
-### Task 11: Final Verification
+### Task 14: Final Verification
 
 - [ ] **Step 1: Build both binaries**
 
 ```bash
 cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go build ./cmd/lakehouse-logs/
-cd /private/tmp/victoria-lakehouse-fresh/lakehouse-traces && GOWORK=off go build ./cmd/lakehouse-traces/
+cd /private/tmp/victoria-lakehouse-fresh/lakehouse-traces && GOWORK=off go build ./...
 ```
 
 - [ ] **Step 2: Run full test suites**
 
 ```bash
-cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./... -v -count=1 -timeout 120s
-cd /private/tmp/victoria-lakehouse-fresh/lakehouse-traces && GOWORK=off go test ./... -v -count=1 -timeout 120s
+cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./... -count=1 -timeout 120s
+cd /private/tmp/victoria-lakehouse-fresh/lakehouse-traces && GOWORK=off go test ./... -count=1 -timeout 120s
 ```
 
-- [ ] **Step 3: Lint Helm chart**
+- [ ] **Step 3: Race detector on peercache**
 
 ```bash
-helm lint charts/victoria-lakehouse/
+cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/peercache/ -race -count=1
 ```
 
-- [ ] **Step 4: Verify no regressions in existing peercache tests**
-
-```bash
-cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go test ./internal/peercache/ -v -count=1 -race
-```
-
-- [ ] **Step 5: Run gosec and go vet**
+- [ ] **Step 4: Go vet**
 
 ```bash
 cd /private/tmp/victoria-lakehouse-fresh && GOWORK=off go vet ./...
+```
+
+- [ ] **Step 5: Helm lint**
+
+```bash
+helm lint charts/victoria-lakehouse/
 ```
