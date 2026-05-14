@@ -159,6 +159,8 @@ type SelectConfig struct {
 	BufferQueryEnabled    bool          `yaml:"buffer_query_enabled"`
 	InsertHeadlessService string        `yaml:"insert_headless_service"`
 	BufferQueryTimeout    time.Duration `yaml:"buffer_query_timeout"`
+	AZAware               bool          `yaml:"az_aware"`
+	CrossAZFallback       bool          `yaml:"cross_az_fallback"`
 }
 
 type S3Config struct {
@@ -213,9 +215,12 @@ type PrefetchConfig struct {
 }
 
 type PeerConfig struct {
-	AuthKey        string        `yaml:"auth_key"`
-	Timeout        time.Duration `yaml:"timeout"`
-	MaxConnections int           `yaml:"max_connections"`
+	AuthKey         string        `yaml:"auth_key"`
+	Timeout         time.Duration `yaml:"timeout"`
+	MaxConnections  int           `yaml:"max_connections"`
+	AZAware         bool          `yaml:"az_aware"`
+	CrossAZFallback bool          `yaml:"cross_az_fallback"`
+	AZEnvVar        string        `yaml:"az_env_var"`
 }
 
 type StartupConfig struct {
@@ -399,8 +404,11 @@ func Default() *Config {
 		},
 
 		Peer: PeerConfig{
-			Timeout:        5 * time.Second,
-			MaxConnections: 32,
+			Timeout:         5 * time.Second,
+			MaxConnections:  32,
+			AZAware:         true,
+			CrossAZFallback: true,
+			AZEnvVar:        "LAKEHOUSE_AZ",
 		},
 
 		Startup: StartupConfig{
@@ -433,6 +441,8 @@ func Default() *Config {
 		Select: SelectConfig{
 			BufferQueryEnabled: true,
 			BufferQueryTimeout: 2 * time.Second,
+			AZAware:            true,
+			CrossAZFallback:    true,
 		},
 
 		Tenant: TenantConfig{
@@ -876,6 +886,9 @@ func mergeConfig(base, overlay *Config) *Config {
 	}
 	if overlay.Peer.MaxConnections > 0 {
 		base.Peer.MaxConnections = overlay.Peer.MaxConnections
+	}
+	if overlay.Peer.AZEnvVar != "" {
+		base.Peer.AZEnvVar = overlay.Peer.AZEnvVar
 	}
 
 	// Startup
