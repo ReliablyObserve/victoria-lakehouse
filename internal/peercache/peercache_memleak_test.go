@@ -70,7 +70,7 @@ func TestRing_MemLeak_LookupCycles(t *testing.T) {
 }
 
 func TestHandler_MemLeak_PutGetCycles(t *testing.T) {
-	h := NewHandler("test-key")
+	h := NewHandler("test-key", "")
 
 	for i := 0; i < 1000; i++ {
 		key := fmt.Sprintf("k%d", i)

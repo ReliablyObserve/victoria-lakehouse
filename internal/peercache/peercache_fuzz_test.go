@@ -43,7 +43,7 @@ func FuzzHandlerServeHTTP(f *testing.F) {
 	f.Add("/internal/cache/has", "key-with/slash", "secret")
 
 	f.Fuzz(func(t *testing.T, path, key, authKey string) {
-		h := NewHandler("secret")
+		h := NewHandler("secret", "")
 		h.Put("test-key", []byte("data"))
 
 		req, err := http.NewRequest(http.MethodGet, path+"?key="+key, nil)

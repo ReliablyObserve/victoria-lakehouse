@@ -49,7 +49,7 @@ func TestRing_Race_MaxGoroutines(t *testing.T) {
 }
 
 func TestHandler_Race_MaxGoroutines(t *testing.T) {
-	h := NewHandler("test-key")
+	h := NewHandler("test-key", "")
 
 	const goroutines = 500
 	const ops = 500
@@ -117,7 +117,7 @@ func TestPeerCache_Race_ConcurrentOps(t *testing.T) {
 }
 
 func BenchmarkHandler_PutGet(b *testing.B) {
-	h := NewHandler("test-key")
+	h := NewHandler("test-key", "")
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

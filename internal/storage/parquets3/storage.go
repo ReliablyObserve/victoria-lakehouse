@@ -106,7 +106,7 @@ func New(cfg *config.Config) (*Storage, error) {
 			cfg.Peer.Timeout,
 			cfg.Peer.MaxConnections,
 		)
-		ph = peercache.NewHandler(cfg.Peer.AuthKey)
+		ph = peercache.NewHandler(cfg.Peer.AuthKey, "")
 	}
 
 	var sc *smartcache.Controller

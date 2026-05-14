@@ -16,6 +16,7 @@ type PeerCache struct {
 	ring       *Ring
 	authKey    string
 	httpClient *http.Client
+	selfAZ     string
 
 	hits   atomic.Uint64
 	misses atomic.Uint64
@@ -127,16 +128,51 @@ func (pc *PeerCache) Members() []string {
 	return pc.ring.Members()
 }
 
+func (pc *PeerCache) UpdatePeersWithZones(peerZones map[string]string, selfAZ string) {
+	pc.selfAZ = selfAZ
+	old := pc.ring.MemberCount()
+	pc.ring.SetWithZones(peerZones, selfAZ)
+	if pc.ring.MemberCount() != old {
+		logger.Infof("peer ring updated with zones; members=%d, selfAZ=%s", pc.ring.MemberCount(), selfAZ)
+	}
+}
+
+func (pc *PeerCache) LookupAZ(key string) (peer string, isLocal bool, isSameAZ bool) {
+	return pc.ring.LookupAZ(key)
+}
+
+func (pc *PeerCache) SelfAZ() string { return pc.selfAZ }
+
+type StatsAZ struct {
+	Stats
+	SelfAZ         string
+	SameAZMembers  int
+	CrossAZMembers int
+}
+
+func (pc *PeerCache) StatsAZ() StatsAZ {
+	s := pc.Stats()
+	sameAZ, crossAZ := pc.ring.MemberCountByZone()
+	return StatsAZ{
+		Stats:          s,
+		SelfAZ:         pc.selfAZ,
+		SameAZMembers:  sameAZ,
+		CrossAZMembers: crossAZ,
+	}
+}
+
 type Handler struct {
 	mu      sync.RWMutex
 	cache   map[string][]byte
 	authKey string
+	selfAZ  string
 }
 
-func NewHandler(authKey string) *Handler {
+func NewHandler(authKey, selfAZ string) *Handler {
 	return &Handler{
 		cache:   make(map[string][]byte),
 		authKey: authKey,
+		selfAZ:  selfAZ,
 	}
 }
 
@@ -166,6 +202,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+	}
+
+	if r.URL.Path == "/internal/cache/stats" {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"az":%q}`, h.selfAZ)
+		return
 	}
 
 	key := r.URL.Query().Get("key")
