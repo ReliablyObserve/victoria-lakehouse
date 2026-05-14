@@ -906,6 +906,12 @@ func mergeConfig(base, overlay *Config) *Config {
 	if overlay.Peer.AZMinPeersPerAZ > 0 {
 		base.Peer.AZMinPeersPerAZ = overlay.Peer.AZMinPeersPerAZ
 	}
+	if overlay.Peer.AZAware {
+		base.Peer.AZAware = true
+	}
+	if overlay.Peer.CrossAZFallback {
+		base.Peer.CrossAZFallback = true
+	}
 
 	// Startup
 	if overlay.Startup.ServeStale {
@@ -1085,6 +1091,12 @@ func mergeConfig(base, overlay *Config) *Config {
 	}
 	if overlay.Select.BufferQueryTimeout > 0 {
 		base.Select.BufferQueryTimeout = overlay.Select.BufferQueryTimeout
+	}
+	if overlay.Select.AZAware {
+		base.Select.AZAware = true
+	}
+	if overlay.Select.CrossAZFallback {
+		base.Select.CrossAZFallback = true
 	}
 
 	// Schema

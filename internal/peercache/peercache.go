@@ -2,6 +2,7 @@ package peercache
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -211,8 +212,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.URL.Path == "/internal/cache/stats" {
+		h.mu.RLock()
+		az := h.selfAZ
+		h.mu.RUnlock()
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"az":%q}`, h.selfAZ)
+		azJSON, _ := json.Marshal(az)
+		fmt.Fprintf(w, `{"az":%s}`, azJSON)
 		return
 	}
 

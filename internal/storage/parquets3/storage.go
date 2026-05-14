@@ -753,7 +753,7 @@ func (s *Storage) fetchPeerAZ(ctx context.Context, peer string) string {
 		return ""
 	}
 	if s.cfg.Peer.AuthKey != "" {
-		req.Header.Set("Authorization", "Bearer "+s.cfg.Peer.AuthKey)
+		req.Header.Set("X-Peer-Auth-Key", s.cfg.Peer.AuthKey)
 	}
 
 	client := &http.Client{Timeout: 2 * time.Second}

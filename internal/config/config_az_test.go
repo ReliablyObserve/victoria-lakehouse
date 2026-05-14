@@ -60,3 +60,69 @@ func TestValidate_AZMode(t *testing.T) {
 		t.Errorf("preferred should be valid: %v", err)
 	}
 }
+
+func TestValidate_AZModeEmpty(t *testing.T) {
+	cfg := Default()
+	cfg.Mode = "logs"
+	cfg.S3.Bucket = "test"
+	cfg.Peer.AZMode = ""
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("empty AZMode should be valid: %v", err)
+	}
+}
+
+func TestMergeConfig_PeerAZFields(t *testing.T) {
+	base := Default()
+
+	overlay := &Config{}
+	overlay.Peer.AZMode = "strict"
+	overlay.Peer.AZEnvVar = "CUSTOM_AZ"
+	overlay.Peer.AZMinPeersPerAZ = 5
+
+	merged := mergeConfig(base, overlay)
+
+	if merged.Peer.AZMode != "strict" {
+		t.Errorf("AZMode should be overridden to strict, got %q", merged.Peer.AZMode)
+	}
+	if merged.Peer.AZEnvVar != "CUSTOM_AZ" {
+		t.Errorf("AZEnvVar should be overridden, got %q", merged.Peer.AZEnvVar)
+	}
+	if merged.Peer.AZMinPeersPerAZ != 5 {
+		t.Errorf("AZMinPeersPerAZ should be overridden, got %d", merged.Peer.AZMinPeersPerAZ)
+	}
+}
+
+func TestMergeConfig_SelectAZFields(t *testing.T) {
+	base := Default()
+
+	overlay := &Config{}
+	overlay.Select.AZAware = true
+	overlay.Select.CrossAZFallback = true
+
+	merged := mergeConfig(base, overlay)
+
+	if !merged.Select.AZAware {
+		t.Error("Select.AZAware should be true after merge")
+	}
+	if !merged.Select.CrossAZFallback {
+		t.Error("Select.CrossAZFallback should be true after merge")
+	}
+}
+
+func TestMergeConfig_PeerAZDefaults_NotOverridden(t *testing.T) {
+	base := Default()
+
+	overlay := &Config{}
+
+	merged := mergeConfig(base, overlay)
+
+	if merged.Peer.AZMode != "preferred" {
+		t.Errorf("AZMode default should be preserved, got %q", merged.Peer.AZMode)
+	}
+	if merged.Peer.AZEnvVar != "LAKEHOUSE_AZ" {
+		t.Errorf("AZEnvVar default should be preserved, got %q", merged.Peer.AZEnvVar)
+	}
+	if merged.Peer.AZMinPeersPerAZ != 2 {
+		t.Errorf("AZMinPeersPerAZ default should be preserved, got %d", merged.Peer.AZMinPeersPerAZ)
+	}
+}
