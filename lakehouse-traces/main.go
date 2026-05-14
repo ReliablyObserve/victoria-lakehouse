@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/azdetect"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/compaction"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/crosssignal"
@@ -125,6 +126,15 @@ func run(cfg *config.Config, addr string) {
 	if err != nil {
 		logger.Errorf("failed to initialize storage: %s", err)
 		os.Exit(1)
+	}
+
+	selfAZ := azdetect.Detect(context.Background(), azdetect.Options{
+		EnvVar:  cfg.Peer.AZEnvVar,
+		Timeout: 2 * time.Second,
+	})
+	if selfAZ != "" {
+		logger.Infof("detected AZ: %s", selfAZ)
+		store.SetSelfAZ(selfAZ)
 	}
 
 	store.StartWriter()
@@ -525,6 +535,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			"l1_hits":      stats.Hits,
 			"l1_misses":    stats.Misses,
 			"l1_evictions": stats.Evictions,
+			"az":           store.SelfAZ(),
 		})
 	})
 
