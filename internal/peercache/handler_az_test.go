@@ -51,7 +51,7 @@ func TestHandler_StatsEndpoint_WithAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("expected 401 without auth, got %d", resp.StatusCode)
 	}
@@ -63,7 +63,7 @@ func TestHandler_StatsEndpoint_WithAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("expected 401 with wrong auth, got %d", resp.StatusCode)
 	}
@@ -75,7 +75,7 @@ func TestHandler_StatsEndpoint_WithAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200 with correct auth, got %d", resp.StatusCode)
 	}
@@ -83,7 +83,9 @@ func TestHandler_StatsEndpoint_WithAuth(t *testing.T) {
 	var result struct {
 		AZ string `json:"az"`
 	}
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if result.AZ != "az-a" {
 		t.Errorf("expected az=az-a, got %q", result.AZ)
 	}
@@ -117,6 +119,8 @@ func fetchAZFromStats(t *testing.T, baseURL string) string {
 	var result struct {
 		AZ string `json:"az"`
 	}
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	return result.AZ
 }

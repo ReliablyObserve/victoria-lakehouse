@@ -4,14 +4,12 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 )
 
 func TestIntegration_FullChain_EnvWins(t *testing.T) {
-	os.Setenv("MY_AZ", "override-zone")
-	defer os.Unsetenv("MY_AZ")
+	t.Setenv("MY_AZ", "override-zone")
 
 	az := Detect(context.Background(), Options{EnvVar: "MY_AZ", Timeout: time.Second})
 	if az != "override-zone" {
@@ -20,7 +18,7 @@ func TestIntegration_FullChain_EnvWins(t *testing.T) {
 }
 
 func TestIntegration_AllFail_ReturnsEmpty(t *testing.T) {
-	os.Unsetenv("NONEXISTENT")
+	t.Setenv("NONEXISTENT", "")
 
 	az := Detect(context.Background(), Options{
 		EnvVar:  "NONEXISTENT",
@@ -32,7 +30,7 @@ func TestIntegration_AllFail_ReturnsEmpty(t *testing.T) {
 }
 
 func TestIntegration_DefaultTimeoutUsed(t *testing.T) {
-	os.Unsetenv("NONEXISTENT")
+	t.Setenv("NONEXISTENT", "")
 
 	az := Detect(context.Background(), Options{
 		EnvVar: "NONEXISTENT",
@@ -43,7 +41,7 @@ func TestIntegration_DefaultTimeoutUsed(t *testing.T) {
 }
 
 func TestIntegration_AWSIMDS_WhenEnvEmpty(t *testing.T) {
-	os.Unsetenv("NONEXISTENT")
+	t.Setenv("NONEXISTENT", "")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -51,7 +49,7 @@ func TestIntegration_AWSIMDS_WhenEnvEmpty(t *testing.T) {
 			w.Write([]byte("test-token"))
 		case "/latest/meta-data/placement/availability-zone":
 			if r.Header.Get("X-aws-ec2-metadata-token") != "test-token" {
-				http.Error(w, "bad token", 401)
+				http.Error(w, "bad token", http.StatusUnauthorized)
 				return
 			}
 			w.Write([]byte("us-east-1d"))

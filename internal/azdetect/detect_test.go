@@ -4,14 +4,12 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 )
 
 func TestDetect_EnvVar(t *testing.T) {
-	os.Setenv("TEST_AZ_VAR", "us-east-1a")
-	defer os.Unsetenv("TEST_AZ_VAR")
+	t.Setenv("TEST_AZ_VAR", "us-east-1a")
 
 	az := Detect(context.Background(), Options{EnvVar: "TEST_AZ_VAR"})
 	if az != "us-east-1a" {
@@ -20,7 +18,7 @@ func TestDetect_EnvVar(t *testing.T) {
 }
 
 func TestDetect_EnvVarEmpty_FallsThrough(t *testing.T) {
-	os.Unsetenv("NONEXISTENT_AZ")
+	t.Setenv("NONEXISTENT_AZ", "")
 
 	az := Detect(context.Background(), Options{
 		EnvVar:  "NONEXISTENT_AZ",
@@ -37,14 +35,14 @@ func TestDetectAWSIMDS(t *testing.T) {
 		switch r.URL.Path {
 		case "/latest/api/token":
 			if r.Method != http.MethodPut {
-				http.Error(w, "method", 405)
+				http.Error(w, "method", http.StatusMethodNotAllowed)
 				return
 			}
 			tokenCalled = true
 			w.Write([]byte("mock-token"))
 		case "/latest/meta-data/placement/availability-zone":
 			if r.Header.Get("X-aws-ec2-metadata-token") != "mock-token" {
-				http.Error(w, "unauthorized", 401)
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
 			w.Write([]byte("us-west-2b"))
@@ -101,8 +99,7 @@ func TestDetectAWSIMDS_Timeout(t *testing.T) {
 }
 
 func TestDetect_FullChain_EnvWins(t *testing.T) {
-	os.Setenv("MY_AZ", "override-zone")
-	defer os.Unsetenv("MY_AZ")
+	t.Setenv("MY_AZ", "override-zone")
 
 	az := Detect(context.Background(), Options{EnvVar: "MY_AZ", Timeout: time.Second})
 	if az != "override-zone" {
@@ -111,7 +108,7 @@ func TestDetect_FullChain_EnvWins(t *testing.T) {
 }
 
 func TestDetect_AllFail_ReturnsEmpty(t *testing.T) {
-	os.Unsetenv("NONEXISTENT")
+	t.Setenv("NONEXISTENT", "")
 
 	az := Detect(context.Background(), Options{
 		EnvVar:  "NONEXISTENT",

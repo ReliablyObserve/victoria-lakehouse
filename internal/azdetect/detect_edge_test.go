@@ -4,14 +4,13 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestDetect_DefaultTimeout(t *testing.T) {
-	os.Unsetenv("NONEXISTENT")
+	t.Setenv("NONEXISTENT", "")
 	az := Detect(context.Background(), Options{EnvVar: "NONEXISTENT"})
 	if az != "" {
 		t.Errorf("expected empty, got %q", az)
@@ -29,8 +28,7 @@ func TestDetect_EmptyEnvVarName(t *testing.T) {
 }
 
 func TestDetect_EnvVarWithWhitespaceValue(t *testing.T) {
-	os.Setenv("WS_AZ", "  us-east-1a  ")
-	defer os.Unsetenv("WS_AZ")
+	t.Setenv("WS_AZ", "  us-east-1a  ")
 
 	az := Detect(context.Background(), Options{EnvVar: "WS_AZ"})
 	if az != "  us-east-1a  " {
@@ -39,7 +37,7 @@ func TestDetect_EnvVarWithWhitespaceValue(t *testing.T) {
 }
 
 func TestDetect_ContextCancelled(t *testing.T) {
-	os.Unsetenv("NONEXISTENT")
+	t.Setenv("NONEXISTENT", "")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -69,9 +67,9 @@ func TestDetectAWSIMDS_WhitespaceInResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/latest/api/token":
-			w.Write([]byte("token"))
+			_, _ = w.Write([]byte("token"))
 		case "/latest/meta-data/placement/availability-zone":
-			w.Write([]byte("  us-east-1a\n"))
+			_, _ = w.Write([]byte("  us-east-1a\n"))
 		}
 	}))
 	defer srv.Close()
@@ -89,9 +87,9 @@ func TestDetectAWSIMDS_EmptyResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/latest/api/token":
-			w.Write([]byte("token"))
+			_, _ = w.Write([]byte("token"))
 		case "/latest/meta-data/placement/availability-zone":
-			w.Write([]byte(""))
+			_, _ = w.Write([]byte(""))
 		}
 	}))
 	defer srv.Close()
@@ -110,9 +108,9 @@ func TestDetectAWSIMDS_LargeResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/latest/api/token":
-			w.Write([]byte("token"))
+			_, _ = w.Write([]byte("token"))
 		case "/latest/meta-data/placement/availability-zone":
-			w.Write([]byte(large))
+			_, _ = w.Write([]byte(large))
 		}
 	}))
 	defer srv.Close()

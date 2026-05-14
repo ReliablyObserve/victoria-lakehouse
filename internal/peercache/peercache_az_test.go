@@ -117,7 +117,9 @@ func TestHandler_StatsEndpoint_EmptyAZ(t *testing.T) {
 	var result struct {
 		AZ string `json:"az"`
 	}
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if result.AZ != "" {
 		t.Errorf("expected empty az, got %q", result.AZ)
 	}

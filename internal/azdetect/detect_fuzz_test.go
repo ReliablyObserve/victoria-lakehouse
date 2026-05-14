@@ -38,7 +38,7 @@ func FuzzDetect_EnvVar(f *testing.F) {
 		if err := os.Setenv(envName, envValue); err != nil {
 			return
 		}
-		defer os.Unsetenv(envName)
+		defer func() { _ = os.Unsetenv(envName) }()
 
 		// Verify env var was actually set before asserting
 		if os.Getenv(envName) != envValue {

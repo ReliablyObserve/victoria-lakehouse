@@ -761,7 +761,7 @@ func (s *Storage) fetchPeerAZ(ctx context.Context, peer string) string {
 	if err != nil {
 		return ""
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result struct {
 		AZ string `json:"az"`

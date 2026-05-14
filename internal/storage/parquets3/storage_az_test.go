@@ -55,7 +55,9 @@ func TestStorage_SetSelfAZ_PropagesToHandler(t *testing.T) {
 	var result struct {
 		AZ string `json:"az"`
 	}
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if result.AZ != "az-b" {
 		t.Errorf("expected handler AZ=az-b, got %q", result.AZ)
 	}

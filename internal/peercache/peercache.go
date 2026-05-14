@@ -217,7 +217,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.mu.RUnlock()
 		w.Header().Set("Content-Type", "application/json")
 		azJSON, _ := json.Marshal(az)
-		fmt.Fprintf(w, `{"az":%s}`, azJSON)
+		_, _ = fmt.Fprintf(w, `{"az":%s}`, azJSON)
 		return
 	}
 

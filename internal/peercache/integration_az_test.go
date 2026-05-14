@@ -91,8 +91,10 @@ func TestAZIntegration_PeerAZDiscovery(t *testing.T) {
 		var result struct {
 			AZ string `json:"az"`
 		}
-		json.NewDecoder(resp.Body).Decode(&result)
-		resp.Body.Close()
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("decode peer %s: %v", peer, err)
+		}
+		_ = resp.Body.Close()
 		peerZones[peer] = result.AZ
 	}
 

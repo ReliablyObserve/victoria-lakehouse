@@ -261,7 +261,7 @@ func newPeerCacheHandler(authKey, selfAZ string) http.Handler {
 		}
 		if r.URL.Path == "/internal/cache/stats" {
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"az":%s}`, mustMarshal(selfAZ))
+			_, _ = fmt.Fprintf(w, `{"az":%s}`, mustMarshal(selfAZ))
 			return
 		}
 		http.NotFound(w, r)

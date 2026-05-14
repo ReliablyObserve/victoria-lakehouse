@@ -9,7 +9,7 @@ import (
 )
 
 func TestDetectK8sNodeLabel_NoNodeName(t *testing.T) {
-	os.Unsetenv("NODE_NAME")
+	t.Setenv("NODE_NAME", "")
 
 	_, err := detectK8sNodeLabel(context.Background(), time.Second)
 	if err == nil {
@@ -21,8 +21,7 @@ func TestDetectK8sNodeLabel_NoNodeName(t *testing.T) {
 }
 
 func TestDetectK8sNodeLabel_NoTokenFile(t *testing.T) {
-	os.Setenv("NODE_NAME", "test-node")
-	defer os.Unsetenv("NODE_NAME")
+	t.Setenv("NODE_NAME", "test-node")
 
 	_, err := detectK8sNodeLabel(context.Background(), time.Second)
 	if err == nil {
@@ -31,13 +30,16 @@ func TestDetectK8sNodeLabel_NoTokenFile(t *testing.T) {
 }
 
 func TestDetectK8sNodeLabel_Unreachable(t *testing.T) {
-	os.Setenv("NODE_NAME", "test-node")
-	defer os.Unsetenv("NODE_NAME")
+	t.Setenv("NODE_NAME", "test-node")
 
 	tmpDir := t.TempDir()
 	tokenDir := tmpDir + "/var/run/secrets/kubernetes.io/serviceaccount"
-	os.MkdirAll(tokenDir, 0755)
-	os.WriteFile(tokenDir+"/token", []byte("mock-token"), 0644)
+	if err := os.MkdirAll(tokenDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tokenDir+"/token", []byte("mock-token"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// K8s API at kubernetes.default.svc won't resolve in tests
 	_, err := detectK8sNodeLabel(context.Background(), 100*time.Millisecond)

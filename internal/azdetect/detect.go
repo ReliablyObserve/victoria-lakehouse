@@ -69,7 +69,7 @@ func detectAWSIMDS(ctx context.Context, baseURL string, timeout time.Duration) (
 		return "", fmt.Errorf("IMDS token: %w", err)
 	}
 	token, _ := io.ReadAll(tokenResp.Body)
-	tokenResp.Body.Close()
+	_ = tokenResp.Body.Close()
 
 	azReq, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		baseURL+"/latest/meta-data/placement/availability-zone", nil)
@@ -82,7 +82,7 @@ func detectAWSIMDS(ctx context.Context, baseURL string, timeout time.Duration) (
 	if err != nil {
 		return "", fmt.Errorf("IMDS az: %w", err)
 	}
-	defer azResp.Body.Close()
+	defer func() { _ = azResp.Body.Close() }()
 
 	if azResp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("IMDS az status %d", azResp.StatusCode)
@@ -106,7 +106,7 @@ func detectGCPMetadata(ctx context.Context, baseURL string, timeout time.Duratio
 	if err != nil {
 		return "", fmt.Errorf("GCP metadata: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("GCP metadata status %d", resp.StatusCode)
@@ -129,7 +129,7 @@ func detectK8sNodeLabel(ctx context.Context, timeout time.Duration) (string, err
 	}
 
 	client := &http.Client{Timeout: timeout}
-	url := fmt.Sprintf("https://kubernetes.default.svc/api/v1/nodes/%s", nodeName)
+	url := fmt.Sprintf("https://kubernetes.default.svc/api/v1/nodes/%s", nodeName) // #nosec G704 -- host is hardcoded, nodeName from K8s downward API
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
@@ -140,7 +140,7 @@ func detectK8sNodeLabel(ctx context.Context, timeout time.Duration) (string, err
 	if err != nil {
 		return "", fmt.Errorf("k8s API: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("k8s API status %d", resp.StatusCode)
