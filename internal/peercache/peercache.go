@@ -176,6 +176,12 @@ func NewHandler(authKey, selfAZ string) *Handler {
 	}
 }
 
+func (h *Handler) SetSelfAZ(az string) {
+	h.mu.Lock()
+	h.selfAZ = az
+	h.mu.Unlock()
+}
+
 func (h *Handler) Put(key string, data []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
