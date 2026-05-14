@@ -37,6 +37,22 @@ L2 disk cache. Size to hold 2-4 weeks of frequently queried data.
 
 Add replicas to increase throughput. No coordination between instances.
 
+```mermaid
+graph TD
+    LB[Load Balancer / vlselect] --> A[lakehouse-0<br/>AZ-a]
+    LB --> B[lakehouse-1<br/>AZ-b]
+    LB --> C[lakehouse-2<br/>AZ-c]
+    A <-->|peer cache| B
+    B <-->|peer cache| C
+    A <-->|peer cache| C
+    A --> S3[(S3)]
+    B --> S3
+    C --> S3
+
+    style LB fill:#2196F3,color:#fff
+    style S3 fill:#FF9800,color:#fff
+```
+
 | Component | Scales With | Notes |
 |---|---|---|
 | Query throughput | Replicas | Linear scaling |

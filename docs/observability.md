@@ -9,6 +9,26 @@ sidebar_position: 11
 
 Victoria Lakehouse exposes ~110 Prometheus metrics at `/metrics` using the `lakehouse_` prefix. Metrics use the same library as VL/VT: `github.com/VictoriaMetrics/metrics`.
 
+```mermaid
+graph LR
+    L[Lakehouse] -->|/metrics| P[Prometheus]
+    P --> G[Grafana]
+    L -->|logs| STDOUT[stdout/stderr]
+
+    subgraph "~110 Metrics"
+    R[RED<br/>Rate/Error/Duration]
+    S[S3 Operations]
+    C[Cache Tiers L1-L3]
+    PQ[Parquet Engine]
+    M[Manifest + Discovery]
+    T[Tenant Stats]
+    end
+
+    style L fill:#2196F3,color:#fff
+    style P fill:#FF9800,color:#fff
+    style G fill:#4CAF50,color:#fff
+```
+
 ### RED Metrics (Client-Facing)
 
 | Metric | Type | Labels | Description |
