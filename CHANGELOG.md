@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docusaurus sidebar: added 9 docs, navbar dropdown menus for Use Cases and Integrations
 
 ### Fixed
+- E2E datagen trace-log correlation — traces now generated first with 70% of logs sharing trace IDs, span IDs, and service context for realistic cross-signal testing
+- Grafana datasource log→trace links — added `derivedFields` to all VictoriaLogs and Loki datasources with `trace_id=(\w+)` regex linking to Jaeger trace views
+- ClickHouse otel_logs view promoted fields — moved service.name, k8s.*, etc. into LogAttributes map only (removed ResourceAttributes duplication)
 - Peer AZ discovery auth header mismatch — `fetchPeerAZ()` used `Authorization: Bearer` but handler expects `X-Peer-Auth-Key`, causing silent failure when auth configured
 - Data race in `/internal/cache/stats` endpoint — `ServeHTTP` read `selfAZ` without lock while `SetSelfAZ` writes with lock
 - Invalid JSON in stats endpoint for non-UTF8 AZ names — `%q` format produces Go-style escapes not valid in JSON, switched to `json.Marshal`
