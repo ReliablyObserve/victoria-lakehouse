@@ -219,8 +219,10 @@ type PeerConfig struct {
 	Timeout         time.Duration `yaml:"timeout"`
 	MaxConnections  int           `yaml:"max_connections"`
 	AZAware         bool          `yaml:"az_aware"`
+	AZMode          string        `yaml:"az_mode"`
 	CrossAZFallback bool          `yaml:"cross_az_fallback"`
 	AZEnvVar        string        `yaml:"az_env_var"`
+	AZMinPeersPerAZ int           `yaml:"az_min_peers_per_az"`
 }
 
 type StartupConfig struct {
@@ -407,8 +409,10 @@ func Default() *Config {
 			Timeout:         5 * time.Second,
 			MaxConnections:  32,
 			AZAware:         true,
+			AZMode:          "preferred",
 			CrossAZFallback: true,
 			AZEnvVar:        "LAKEHOUSE_AZ",
+			AZMinPeersPerAZ: 2,
 		},
 
 		Startup: StartupConfig{
@@ -604,6 +608,12 @@ func (c *Config) Validate() error {
 		if c.Insert.CompressionLevel < 1 || c.Insert.CompressionLevel > 22 {
 			return fmt.Errorf("--lakehouse.insert.compression-level must be 1-22, got %d", c.Insert.CompressionLevel)
 		}
+	}
+
+	switch c.Peer.AZMode {
+	case "preferred", "strict", "":
+	default:
+		return fmt.Errorf("--lakehouse.peer.az-mode must be preferred or strict, got %q", c.Peer.AZMode)
 	}
 
 	for _, ep := range c.Schema.ExtraPromoted {
@@ -889,6 +899,12 @@ func mergeConfig(base, overlay *Config) *Config {
 	}
 	if overlay.Peer.AZEnvVar != "" {
 		base.Peer.AZEnvVar = overlay.Peer.AZEnvVar
+	}
+	if overlay.Peer.AZMode != "" {
+		base.Peer.AZMode = overlay.Peer.AZMode
+	}
+	if overlay.Peer.AZMinPeersPerAZ > 0 {
+		base.Peer.AZMinPeersPerAZ = overlay.Peer.AZMinPeersPerAZ
 	}
 
 	// Startup
