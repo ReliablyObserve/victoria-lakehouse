@@ -2,6 +2,7 @@ package tenant
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -131,4 +132,19 @@ func (r *TenantResolver) AllAliases() []AliasEntry {
 
 func (r *TenantResolver) Config() ResolverConfig {
 	return r.config
+}
+
+func CountTemplateSegments(template string) int {
+	if template == "" {
+		return 0
+	}
+	if !strings.Contains(template, "{") {
+		return 0
+	}
+	clean := strings.TrimSuffix(template, "/")
+	return len(strings.Split(clean, "/"))
+}
+
+func HasOrgIDTemplate(template string) bool {
+	return strings.Contains(template, "{OrgID}")
 }
