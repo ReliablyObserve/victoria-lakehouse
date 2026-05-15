@@ -761,7 +761,7 @@ func (c *Config) AutoPrefix() string {
 	return signal
 }
 
-func mergeConfig(base, overlay *Config) *Config {
+func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-field merge is inherently high complexity
 	if overlay.Mode != "" {
 		base.Mode = overlay.Mode
 	}
