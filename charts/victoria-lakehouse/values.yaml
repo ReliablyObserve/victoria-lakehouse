@@ -481,6 +481,8 @@ lakehouseConfig:
 logs:
   # -- Enable logs signal. Deploys logs-select and logs-insert components.
   enabled: true
+  # -- Per-signal profile override for logs. Empty = inherit lakehouseConfig.profile.
+  profile: ""
 
   # -- Logs-specific lakehouse configuration (merged with shared lakehouseConfig).
   config:
@@ -495,6 +497,8 @@ logs:
   # -- Logs select component (read path).
   select:
     enabled: true
+    # -- Per-role profile override for logs select. Empty = inherit logs.profile.
+    profile: ""
     replicaCount: 2
     image: {}
     extraArgs: {}
@@ -576,6 +580,8 @@ logs:
   # -- Logs insert component (write path).
   insert:
     enabled: true
+    # -- Per-role profile override for logs insert. Empty = inherit logs.profile.
+    profile: ""
     replicaCount: 2
     image: {}
     extraArgs: {}
@@ -661,6 +667,8 @@ logs:
 traces:
   # -- Enable traces signal. Deploys traces-select and traces-insert components.
   enabled: false
+  # -- Per-signal profile override for traces. Empty = inherit lakehouseConfig.profile.
+  profile: ""
 
   # -- Traces-specific lakehouse configuration (merged with shared lakehouseConfig).
   config:
@@ -682,6 +690,8 @@ traces:
   # -- Traces select component (read path).
   select:
     enabled: true
+    # -- Per-role profile override for traces select. Empty = inherit traces.profile.
+    profile: ""
     replicaCount: 2
     image: {}
     extraArgs: {}
@@ -763,6 +773,8 @@ traces:
   # -- Traces insert component (write path).
   insert:
     enabled: true
+    # -- Per-role profile override for traces insert. Empty = inherit traces.profile.
+    profile: ""
     replicaCount: 2
     image: {}
     extraArgs: {}
