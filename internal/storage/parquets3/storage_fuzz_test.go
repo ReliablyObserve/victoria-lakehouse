@@ -178,9 +178,9 @@ func FuzzTraceRowWithMapAttributes(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, rk, rv, sk, sv string) {
 		row := schema.TraceRow{
-			TimestampUnixNano: time.Now().UnixNano(),
-			TraceID:           "t1",
-			SpanID:            "s1",
+			TimestampUnixNano:  time.Now().UnixNano(),
+			TraceID:            "t1",
+			SpanID:             "s1",
 			ResourceAttributes: map[string]string{rk: rv},
 			SpanAttributes:     map[string]string{sk: sv},
 		}

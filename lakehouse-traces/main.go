@@ -15,11 +15,11 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/crosssignal"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/prefetch"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/election"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/insertapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/prefetch"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/stats"
@@ -67,8 +67,8 @@ var (
 	compactionInterval = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
 	compactionElection = flag.String("lakehouse.compaction.leader-election", "", "Election mode: auto, k8s, s3, none")
 
-	tracesBloomColumns = flag.String("lakehouse.traces.bloom-columns", "", "Comma-separated bloom filter columns for traces (default: trace_id,service.name)")
-	tracesDeletePrefix = flag.String("lakehouse.traces.delete-prefix", "", "Delete API prefix (default: /delete/tracessql)")
+	tracesBloomColumns  = flag.String("lakehouse.traces.bloom-columns", "", "Comma-separated bloom filter columns for traces (default: trace_id,service.name)")
+	tracesDeletePrefix  = flag.String("lakehouse.traces.delete-prefix", "", "Delete API prefix (default: /delete/tracessql)")
 	tracesJaegerEnabled = flag.Bool("lakehouse.traces.jaeger-enabled", true, "Enable Jaeger query API")
 	tracesJaegerGRPC    = flag.String("lakehouse.traces.jaeger-grpc-addr", "", "Jaeger gRPC listen address (default: :16685)")
 

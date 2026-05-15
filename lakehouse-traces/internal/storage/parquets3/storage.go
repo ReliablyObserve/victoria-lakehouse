@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
@@ -291,7 +291,6 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 	return data, nil
 }
 
-
 func (s *Storage) Manifest() *manifest.Manifest {
 	return s.manifest
 }
@@ -318,14 +317,14 @@ func (s *Storage) Close() error {
 func (s *Storage) updateLabelIndex(f *parquet.File) {
 	// Columns that should have values extracted (use Parquet column names)
 	promotedWithValues := map[string]bool{
-		"service.name":            true,
-		"severity_text":           true,
-		"k8s.namespace.name":      true,
-		"k8s.deployment.name":     true,
-		"k8s.node.name":           true,
-		"deployment.environment":  true,
-		"cloud.region":            true,
-		"span.name":               true,
+		"service.name":           true,
+		"severity_text":          true,
+		"k8s.namespace.name":     true,
+		"k8s.deployment.name":    true,
+		"k8s.node.name":          true,
+		"deployment.environment": true,
+		"cloud.region":           true,
+		"span.name":              true,
 	}
 
 	for _, name := range columnNames(f.Root()) {
@@ -799,7 +798,7 @@ func (s *Storage) WarmFile(ctx context.Context, key string) error {
 type l1Adapter struct{ lru *cache.LRU }
 
 func (a *l1Adapter) Get(key string) ([]byte, bool) { return a.lru.Get(key) }
-func (a *l1Adapter) Put(key string, val []byte)     { a.lru.Put(key, val) }
+func (a *l1Adapter) Put(key string, val []byte)    { a.lru.Put(key, val) }
 
 type l2Adapter struct{ dc *cache.DiskCache }
 
@@ -863,4 +862,3 @@ type s3Adapter struct{ pool *s3reader.ClientPool }
 func (a *s3Adapter) Download(ctx context.Context, key string) ([]byte, error) {
 	return a.pool.Download(ctx, key)
 }
-

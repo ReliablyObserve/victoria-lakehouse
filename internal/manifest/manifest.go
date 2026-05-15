@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"

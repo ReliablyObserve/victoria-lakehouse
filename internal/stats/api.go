@@ -128,9 +128,9 @@ type CostResponse struct {
 
 // ClassCost is a per-class cost breakdown.
 type ClassCost struct {
-	Class      string  `json:"class"`
-	Bytes      int64   `json:"bytes"`
-	CostUSD    float64 `json:"cost_usd"`
+	Class   string  `json:"class"`
+	Bytes   int64   `json:"bytes"`
+	CostUSD float64 `json:"cost_usd"`
 }
 
 // TenantCostEntry is a per-tenant cost entry.
@@ -143,7 +143,7 @@ type TenantCostEntry struct {
 
 // CompressionResponse is the response for the compression stats endpoint.
 type CompressionResponse struct {
-	AvgRatio  float64                 `json:"avg_compression_ratio"`
+	AvgRatio  float64                  `json:"avg_compression_ratio"`
 	PerTenant []TenantCompressionEntry `json:"per_tenant"`
 }
 

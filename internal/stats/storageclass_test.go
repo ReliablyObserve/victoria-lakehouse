@@ -24,8 +24,8 @@ func TestLifecyclePrediction(t *testing.T) {
 	sct := NewStorageClassTracker(defaultTestRules, nil)
 
 	tests := []struct {
-		name     string
-		ageDays  int
+		name      string
+		ageDays   int
 		wantClass string
 	}{
 		{"fresh_1d", 1, "STANDARD"},
@@ -70,13 +70,13 @@ func TestNearTransitionBoundary(t *testing.T) {
 		ageDays int
 		want    bool
 	}{
-		{"28d_near_30d_boundary", 28, true},   // diff=2, within window
-		{"29d_near_30d_boundary", 29, true},   // diff=1, within window
-		{"10d_not_near", 10, false},           // diff=20 to nearest
-		{"32d_past_30d_boundary", 32, false},  // past the 30d boundary
-		{"30d_exactly_at", 30, false},         // at boundary, diff=0, not "before"
-		{"88d_near_90d", 88, true},            // diff=2
-		{"363d_near_365d", 363, true},         // diff=2
+		{"28d_near_30d_boundary", 28, true},  // diff=2, within window
+		{"29d_near_30d_boundary", 29, true},  // diff=1, within window
+		{"10d_not_near", 10, false},          // diff=20 to nearest
+		{"32d_past_30d_boundary", 32, false}, // past the 30d boundary
+		{"30d_exactly_at", 30, false},        // at boundary, diff=0, not "before"
+		{"88d_near_90d", 88, true},           // diff=2
+		{"363d_near_365d", 363, true},        // diff=2
 	}
 
 	for _, tc := range tests {

@@ -15,9 +15,9 @@ var (
 	S3RequestsTotal   = NewCounterVec("lakehouse_s3_requests_total", "op")
 	S3RequestDuration = NewHistogram("lakehouse_s3_request_duration_seconds",
 		[]float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5})
-	S3ErrorsTotal         = NewCounterVec("lakehouse_s3_errors_total", "op")
-	S3BytesReadTotal      = NewCounter("lakehouse_s3_bytes_read_total")
-	S3ThrottleTotal       = NewCounter("lakehouse_s3_throttle_total")
+	S3ErrorsTotal    = NewCounterVec("lakehouse_s3_errors_total", "op")
+	S3BytesReadTotal = NewCounter("lakehouse_s3_bytes_read_total")
+	S3ThrottleTotal  = NewCounter("lakehouse_s3_throttle_total")
 )
 
 // Cache metrics
@@ -156,14 +156,14 @@ var (
 
 // Tenant metrics (per-tenant, subject to cardinality cap)
 var (
-	TenantFiles              = NewGaugeVec("lakehouse_tenant_files", "tenant")
-	TenantBytes              = NewGaugeVec("lakehouse_tenant_bytes", "tenant")
-	TenantRawBytes           = NewGaugeVec("lakehouse_tenant_raw_bytes", "tenant")
-	TenantRowsTotal          = NewCounterVec("lakehouse_tenant_rows_total", "tenant")
+	TenantFiles               = NewGaugeVec("lakehouse_tenant_files", "tenant")
+	TenantBytes               = NewGaugeVec("lakehouse_tenant_bytes", "tenant")
+	TenantRawBytes            = NewGaugeVec("lakehouse_tenant_raw_bytes", "tenant")
+	TenantRowsTotal           = NewCounterVec("lakehouse_tenant_rows_total", "tenant")
 	TenantIngestionBytesTotal = NewCounterVec("lakehouse_tenant_ingestion_bytes_total", "tenant")
-	TenantQueriesTotal       = NewCounterVec("lakehouse_tenant_queries_total", "tenant")
-	TenantLastWriteTimestamp = NewGaugeVec("lakehouse_tenant_last_write_timestamp", "tenant")
-	TenantLastQueryTimestamp = NewGaugeVec("lakehouse_tenant_last_query_timestamp", "tenant")
+	TenantQueriesTotal        = NewCounterVec("lakehouse_tenant_queries_total", "tenant")
+	TenantLastWriteTimestamp  = NewGaugeVec("lakehouse_tenant_last_write_timestamp", "tenant")
+	TenantLastQueryTimestamp  = NewGaugeVec("lakehouse_tenant_last_query_timestamp", "tenant")
 )
 
 // Global storage metrics
@@ -193,13 +193,13 @@ var (
 
 // Stats sync metrics
 var (
-	StatsPushTotal         = NewCounter("lakehouse_stats_push_total")
-	StatsPushErrors        = NewCounter("lakehouse_stats_push_errors_total")
-	StatsPushBytesTotal    = NewCounter("lakehouse_stats_push_bytes_total")
-	StatsSnapshotTotal     = NewCounter("lakehouse_stats_snapshot_total")
-	StatsSnapshotErrors    = NewCounter("lakehouse_stats_snapshot_errors_total")
-	StatsMergesTotal       = NewCounter("lakehouse_stats_merges_total")
-	StatsHeadObjectTotal   = NewCounter("lakehouse_stats_headobject_total")
+	StatsPushTotal       = NewCounter("lakehouse_stats_push_total")
+	StatsPushErrors      = NewCounter("lakehouse_stats_push_errors_total")
+	StatsPushBytesTotal  = NewCounter("lakehouse_stats_push_bytes_total")
+	StatsSnapshotTotal   = NewCounter("lakehouse_stats_snapshot_total")
+	StatsSnapshotErrors  = NewCounter("lakehouse_stats_snapshot_errors_total")
+	StatsMergesTotal     = NewCounter("lakehouse_stats_merges_total")
+	StatsHeadObjectTotal = NewCounter("lakehouse_stats_headobject_total")
 )
 
 // Delete metrics

@@ -20,24 +20,24 @@ type CompareConfig struct {
 }
 
 type CompareReport struct {
-	Timestamp          string               `json:"timestamp"`
-	LakehouseURL       string               `json:"lakehouse_url"`
-	VLURL              string               `json:"vl_url"`
-	CorrectnessChecks  []CorrectnessCheck   `json:"correctness_checks"`
-	CorrectnessPass    bool                 `json:"correctness_pass"`
-	PerfWarmLH         []ComparePerf        `json:"perf_warm_lakehouse"`
-	PerfWarmVL         []ComparePerf        `json:"perf_warm_vl"`
-	PerfColdLH         []ComparePerf        `json:"perf_cold_lakehouse"`
-	PerfColdVL         []ComparePerf        `json:"perf_cold_vl"`
-	PerfComparison     []PerfComparisonRow  `json:"perf_comparison"`
+	Timestamp         string              `json:"timestamp"`
+	LakehouseURL      string              `json:"lakehouse_url"`
+	VLURL             string              `json:"vl_url"`
+	CorrectnessChecks []CorrectnessCheck  `json:"correctness_checks"`
+	CorrectnessPass   bool                `json:"correctness_pass"`
+	PerfWarmLH        []ComparePerf       `json:"perf_warm_lakehouse"`
+	PerfWarmVL        []ComparePerf       `json:"perf_warm_vl"`
+	PerfColdLH        []ComparePerf       `json:"perf_cold_lakehouse"`
+	PerfColdVL        []ComparePerf       `json:"perf_cold_vl"`
+	PerfComparison    []PerfComparisonRow `json:"perf_comparison"`
 }
 
 type CorrectnessCheck struct {
-	Name       string `json:"name"`
-	Pass       bool   `json:"pass"`
-	Details    string `json:"details"`
-	LHValue    string `json:"lh_value,omitempty"`
-	VLValue    string `json:"vl_value,omitempty"`
+	Name    string `json:"name"`
+	Pass    bool   `json:"pass"`
+	Details string `json:"details"`
+	LHValue string `json:"lh_value,omitempty"`
+	VLValue string `json:"vl_value,omitempty"`
 }
 
 type ComparePerf struct {
@@ -51,13 +51,13 @@ type ComparePerf struct {
 }
 
 type PerfComparisonRow struct {
-	Scenario     string  `json:"scenario"`
-	LHWarmP95    float64 `json:"lh_warm_p95_ms"`
-	VLWarmP95    float64 `json:"vl_warm_p95_ms"`
-	LHColdP95   float64 `json:"lh_cold_p95_ms"`
-	VLColdP95   float64 `json:"vl_cold_p95_ms"`
-	WarmRatio    float64 `json:"warm_ratio"`
-	ColdRatio    float64 `json:"cold_ratio"`
+	Scenario  string  `json:"scenario"`
+	LHWarmP95 float64 `json:"lh_warm_p95_ms"`
+	VLWarmP95 float64 `json:"vl_warm_p95_ms"`
+	LHColdP95 float64 `json:"lh_cold_p95_ms"`
+	VLColdP95 float64 `json:"vl_cold_p95_ms"`
+	WarmRatio float64 `json:"warm_ratio"`
+	ColdRatio float64 `json:"cold_ratio"`
 }
 
 func runCompare(cfg CompareConfig) CompareReport {
@@ -195,7 +195,7 @@ func compareFieldNames(client *http.Client, lhURL, vlURL string, start, end time
 
 	if len(missing) > 0 {
 		return CorrectnessCheck{Name: name, Pass: false,
-			Details:  fmt.Sprintf("shared fields missing: %s", strings.Join(missing, ", ")),
+			Details: fmt.Sprintf("shared fields missing: %s", strings.Join(missing, ", ")),
 			LHValue: fmt.Sprintf("%d fields", len(lhFields)),
 			VLValue: fmt.Sprintf("%d fields", len(vlFields)),
 		}
@@ -945,4 +945,3 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "..."
 }
-

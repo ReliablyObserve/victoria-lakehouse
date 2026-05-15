@@ -40,13 +40,13 @@ func FuzzValidateAZMode(f *testing.F) {
 
 func TestMergeConfig_AZFields_Comprehensive(t *testing.T) {
 	tests := []struct {
-		name          string
-		baseAZAware   bool
-		baseMode      string
-		overAZAware   bool
-		overMode      string
-		wantAZAware   bool
-		wantMode      string
+		name        string
+		baseAZAware bool
+		baseMode    string
+		overAZAware bool
+		overMode    string
+		wantAZAware bool
+		wantMode    string
 	}{
 		{"default_base_no_overlay", true, "preferred", false, "", true, "preferred"},
 		{"overlay_strict", true, "preferred", false, "strict", true, "strict"},
@@ -78,10 +78,10 @@ func TestMergeConfig_AZFields_Comprehensive(t *testing.T) {
 
 func TestMergeConfig_AZEnvVar_EdgeCases(t *testing.T) {
 	tests := []struct {
-		name     string
-		baseVar  string
-		overVar  string
-		wantVar  string
+		name    string
+		baseVar string
+		overVar string
+		wantVar string
 	}{
 		{"default_preserved", "LAKEHOUSE_AZ", "", "LAKEHOUSE_AZ"},
 		{"overlay_wins", "LAKEHOUSE_AZ", "CUSTOM_AZ", "CUSTOM_AZ"},
@@ -107,10 +107,10 @@ func TestMergeConfig_AZEnvVar_EdgeCases(t *testing.T) {
 
 func TestMergeConfig_AZMinPeersPerAZ_EdgeCases(t *testing.T) {
 	tests := []struct {
-		name     string
-		baseMin  int
-		overMin  int
-		wantMin  int
+		name    string
+		baseMin int
+		overMin int
+		wantMin int
 	}{
 		{"default_preserved", 2, 0, 2},
 		{"overlay_wins", 2, 5, 5},

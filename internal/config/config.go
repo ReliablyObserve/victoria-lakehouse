@@ -39,21 +39,21 @@ type Config struct {
 	Role     Role     `yaml:"role"`
 	Topology Topology `yaml:"topology"`
 
-	S3             S3Config             `yaml:"s3"`
-	Cache          CacheConfig          `yaml:"cache"`
-	Discovery      DiscoveryConfig      `yaml:"discovery"`
-	HotBoundary    string               `yaml:"hot_boundary"`
-	Manifest       ManifestConfig       `yaml:"manifest"`
-	Prefetch       PrefetchConfig       `yaml:"prefetch"`
-	Peer           PeerConfig           `yaml:"peer"`
-	Startup        StartupConfig        `yaml:"startup"`
-	Query          QueryConfig          `yaml:"query"`
-	Insert         InsertConfig         `yaml:"insert"`
-	Select         SelectConfig         `yaml:"select"`
-	Schema         SchemaConfig         `yaml:"schema"`
-	Tenant TenantConfig `yaml:"tenant"`
-	Compaction     CompactionConfig     `yaml:"compaction"`
-	Delete         DeleteConfig         `yaml:"delete"`
+	S3          S3Config          `yaml:"s3"`
+	Cache       CacheConfig       `yaml:"cache"`
+	Discovery   DiscoveryConfig   `yaml:"discovery"`
+	HotBoundary string            `yaml:"hot_boundary"`
+	Manifest    ManifestConfig    `yaml:"manifest"`
+	Prefetch    PrefetchConfig    `yaml:"prefetch"`
+	Peer        PeerConfig        `yaml:"peer"`
+	Startup     StartupConfig     `yaml:"startup"`
+	Query       QueryConfig       `yaml:"query"`
+	Insert      InsertConfig      `yaml:"insert"`
+	Select      SelectConfig      `yaml:"select"`
+	Schema      SchemaConfig      `yaml:"schema"`
+	Tenant      TenantConfig      `yaml:"tenant"`
+	Compaction  CompactionConfig  `yaml:"compaction"`
+	Delete      DeleteConfig      `yaml:"delete"`
 	SmartCache  SmartCacheConfig  `yaml:"smart_cache"`
 	CrossSignal CrossSignalConfig `yaml:"cross_signal"`
 	Stats       StatsConfig       `yaml:"stats"`
@@ -164,15 +164,15 @@ type SelectConfig struct {
 }
 
 type S3Config struct {
-	Bucket         string        `yaml:"bucket"`
-	Region         string        `yaml:"region"`
-	Prefix         string        `yaml:"prefix"`
-	Endpoint       string        `yaml:"endpoint"`
-	AccessKey      string        `yaml:"access_key"`
-	SecretKey      string        `yaml:"secret_key"`
-	ForcePathStyle bool          `yaml:"force_path_style"`
-	MaxConnections int           `yaml:"max_connections"`
-	Timeout        time.Duration `yaml:"timeout"`
+	Bucket                 string        `yaml:"bucket"`
+	Region                 string        `yaml:"region"`
+	Prefix                 string        `yaml:"prefix"`
+	Endpoint               string        `yaml:"endpoint"`
+	AccessKey              string        `yaml:"access_key"`
+	SecretKey              string        `yaml:"secret_key"`
+	ForcePathStyle         bool          `yaml:"force_path_style"`
+	MaxConnections         int           `yaml:"max_connections"`
+	Timeout                time.Duration `yaml:"timeout"`
 	RetryMax               int           `yaml:"retry_max"`
 	RetryBaseDelay         time.Duration `yaml:"retry_base_delay"`
 	MaxConcurrentDownloads int           `yaml:"max_concurrent_downloads"`
@@ -240,18 +240,18 @@ type QueryConfig struct {
 }
 
 type TenantConfig struct {
-	DefaultPrefix    string         `yaml:"default_prefix"`
-	PrefixTemplate   string         `yaml:"prefix_template"`
-	Isolation        string         `yaml:"isolation"`
-	BucketTemplate   string         `yaml:"bucket_template"`
-	DefaultAccount   string         `yaml:"default_account"`
-	DefaultProject   string         `yaml:"default_project"`
-	HeaderAccount    string         `yaml:"header_account"`
-	HeaderProject    string         `yaml:"header_project"`
-	GlobalReadHeader string         `yaml:"global_read_header"`
-	GlobalReadValue  string         `yaml:"global_read_value"`
-	GlobalReadToken  string         `yaml:"global_read_token"`
-	KnownTenants     []KnownTenant  `yaml:"known_tenants"`
+	DefaultPrefix    string        `yaml:"default_prefix"`
+	PrefixTemplate   string        `yaml:"prefix_template"`
+	Isolation        string        `yaml:"isolation"`
+	BucketTemplate   string        `yaml:"bucket_template"`
+	DefaultAccount   string        `yaml:"default_account"`
+	DefaultProject   string        `yaml:"default_project"`
+	HeaderAccount    string        `yaml:"header_account"`
+	HeaderProject    string        `yaml:"header_project"`
+	GlobalReadHeader string        `yaml:"global_read_header"`
+	GlobalReadValue  string        `yaml:"global_read_value"`
+	GlobalReadToken  string        `yaml:"global_read_token"`
+	KnownTenants     []KnownTenant `yaml:"known_tenants"`
 }
 
 type KnownTenant struct {
@@ -262,22 +262,22 @@ type KnownTenant struct {
 }
 
 type StatsConfig struct {
-	Enabled                     bool              `yaml:"enabled"`
-	PushInterval                time.Duration     `yaml:"push_interval"`
-	PushCompression             bool              `yaml:"push_compression"`
-	SnapshotInterval            time.Duration     `yaml:"snapshot_interval"`
-	SnapshotPrefix              string            `yaml:"snapshot_prefix"`
-	MetaBucket                  string            `yaml:"meta_bucket"`
-	MaxDeltaCount               int               `yaml:"max_delta_count"`
-	MetricsCardinalityLimit     int               `yaml:"metrics_cardinality_limit"`
-	CardinalityWarningThreshold int               `yaml:"cardinality_warning_threshold"`
-	BreakdownLabels             []string          `yaml:"breakdown_labels"`
+	Enabled                     bool                  `yaml:"enabled"`
+	PushInterval                time.Duration         `yaml:"push_interval"`
+	PushCompression             bool                  `yaml:"push_compression"`
+	SnapshotInterval            time.Duration         `yaml:"snapshot_interval"`
+	SnapshotPrefix              string                `yaml:"snapshot_prefix"`
+	MetaBucket                  string                `yaml:"meta_bucket"`
+	MaxDeltaCount               int                   `yaml:"max_delta_count"`
+	MetricsCardinalityLimit     int                   `yaml:"metrics_cardinality_limit"`
+	CardinalityWarningThreshold int                   `yaml:"cardinality_warning_threshold"`
+	BreakdownLabels             []string              `yaml:"breakdown_labels"`
 	S3LifecycleRules            []LifecycleRuleConfig `yaml:"s3_lifecycle_rules"`
 	S3PricePerGB                map[string]float64    `yaml:"s3_price_per_gb"`
 	S3RequestPrices             map[string]float64    `yaml:"s3_request_prices"`
-	S3InventoryBucket           string            `yaml:"s3_inventory_bucket"`
-	HeadObjectSampleInterval    time.Duration     `yaml:"headobject_sample_interval"`
-	HeadObjectMaxPerRefresh     int               `yaml:"headobject_max_per_refresh"`
+	S3InventoryBucket           string                `yaml:"s3_inventory_bucket"`
+	HeadObjectSampleInterval    time.Duration         `yaml:"headobject_sample_interval"`
+	HeadObjectMaxPerRefresh     int                   `yaml:"headobject_max_per_refresh"`
 }
 
 type UIConfig struct {

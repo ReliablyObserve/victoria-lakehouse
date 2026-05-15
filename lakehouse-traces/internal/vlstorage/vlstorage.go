@@ -151,4 +151,3 @@ func filterHiddenValues(results []logstorage.ValueWithHits, filters []string) []
 	}
 	return filtered
 }
-

@@ -41,13 +41,13 @@ type E2EBenchConfig struct {
 }
 
 type E2EReport struct {
-	Timestamp         string                   `json:"timestamp"`
-	DirectResults     []E2EResult              `json:"direct_minio"`
-	ProxyResults      []E2EResult              `json:"proxy_65ms"`
-	ColdProxyResults  []E2EResult              `json:"cold_proxy_65ms"`
-	VLResults         []E2EResult              `json:"victorialogs_disk"`
-	Comparison        []ComparisonRow          `json:"comparison"`
-	PBScaleAnalysis   PBScaleAnalysis          `json:"pb_scale_analysis"`
+	Timestamp        string          `json:"timestamp"`
+	DirectResults    []E2EResult     `json:"direct_minio"`
+	ProxyResults     []E2EResult     `json:"proxy_65ms"`
+	ColdProxyResults []E2EResult     `json:"cold_proxy_65ms"`
+	VLResults        []E2EResult     `json:"victorialogs_disk"`
+	Comparison       []ComparisonRow `json:"comparison"`
+	PBScaleAnalysis  PBScaleAnalysis `json:"pb_scale_analysis"`
 }
 
 type ComparisonRow struct {

@@ -315,12 +315,12 @@ func TestHandleJaegerSearch_ValidService(t *testing.T) {
 	store := &dataStore{
 		runQuerySpans: []map[string]string{
 			{
-				"trace_id":                    "trace-001",
-				"span_id":                     "span-a",
-				"resource_attr:service.name":  "my-service",
-				"name":                        "GET /health",
-				"start_time_unix_nano":        "1700000000000000000",
-				"duration":                    "1000000",
+				"trace_id":                   "trace-001",
+				"span_id":                    "span-a",
+				"resource_attr:service.name": "my-service",
+				"name":                       "GET /health",
+				"start_time_unix_nano":       "1700000000000000000",
+				"duration":                   "1000000",
 			},
 		},
 	}
@@ -756,12 +756,12 @@ func TestHandleJaegerSearch_ColonInTagKey(t *testing.T) {
 	store := &dataStore{
 		runQuerySpans: []map[string]string{
 			{
-				"trace_id":                    "trace-010",
-				"span_id":                     "span-j",
-				"resource_attr:service.name":  "svc",
-				"name":                        "op",
-				"start_time_unix_nano":        "1700000000000000000",
-				"duration":                    "1000000",
+				"trace_id":                   "trace-010",
+				"span_id":                    "span-j",
+				"resource_attr:service.name": "svc",
+				"name":                       "op",
+				"start_time_unix_nano":       "1700000000000000000",
+				"duration":                   "1000000",
 			},
 		},
 	}
@@ -829,24 +829,24 @@ func TestHandleJaegerTrace_WithData(t *testing.T) {
 	store := &dataStore{
 		runQuerySpans: []map[string]string{
 			{
-				"trace_id":                    "abc123",
-				"span_id":                     "span-1",
-				"parent_span_id":              "",
-				"name":                        "HTTP GET /api",
-				"resource_attr:service.name":  "frontend",
-				"start_time_unix_nano":        "1700000000000000000",
-				"duration":                    "5000000",
-				"kind":                        "2",
+				"trace_id":                   "abc123",
+				"span_id":                    "span-1",
+				"parent_span_id":             "",
+				"name":                       "HTTP GET /api",
+				"resource_attr:service.name": "frontend",
+				"start_time_unix_nano":       "1700000000000000000",
+				"duration":                   "5000000",
+				"kind":                       "2",
 			},
 			{
-				"trace_id":                    "abc123",
-				"span_id":                     "span-2",
-				"parent_span_id":              "span-1",
-				"name":                        "DB query",
-				"resource_attr:service.name":  "backend",
-				"start_time_unix_nano":        "1700000001000000000",
-				"duration":                    "2000000",
-				"kind":                        "3",
+				"trace_id":                   "abc123",
+				"span_id":                    "span-2",
+				"parent_span_id":             "span-1",
+				"name":                       "DB query",
+				"resource_attr:service.name": "backend",
+				"start_time_unix_nano":       "1700000001000000000",
+				"duration":                   "2000000",
+				"kind":                       "3",
 			},
 		},
 	}
@@ -1144,13 +1144,13 @@ func TestHandleJaegerTrace_ResourceAttrAsProcessTags(t *testing.T) {
 	store := &dataStore{
 		runQuerySpans: []map[string]string{
 			{
-				"trace_id":                    "res-trace",
-				"span_id":                     "res-span",
-				"name":                        "res-op",
-				"resource_attr:service.name":  "svc",
-				"resource_attr:host.name":     "host-1",
-				"start_time_unix_nano":        "1700000000000000000",
-				"duration":                    "1000000",
+				"trace_id":                   "res-trace",
+				"span_id":                    "res-span",
+				"name":                       "res-op",
+				"resource_attr:service.name": "svc",
+				"resource_attr:host.name":    "host-1",
+				"start_time_unix_nano":       "1700000000000000000",
+				"duration":                   "1000000",
 			},
 		},
 	}
@@ -1196,13 +1196,13 @@ func TestHandleJaegerTrace_ScopeAttrAsSpanTag(t *testing.T) {
 	store := &dataStore{
 		runQuerySpans: []map[string]string{
 			{
-				"trace_id":                    "scope-trace",
-				"span_id":                     "scope-span",
-				"name":                        "scope-op",
-				"resource_attr:service.name":  "svc",
-				"scope_attr:lib.version":      "1.2.3",
-				"start_time_unix_nano":        "1700000000000000000",
-				"duration":                    "1000000",
+				"trace_id":                   "scope-trace",
+				"span_id":                    "scope-span",
+				"name":                       "scope-op",
+				"resource_attr:service.name": "svc",
+				"scope_attr:lib.version":     "1.2.3",
+				"start_time_unix_nano":       "1700000000000000000",
+				"duration":                   "1000000",
 			},
 		},
 	}

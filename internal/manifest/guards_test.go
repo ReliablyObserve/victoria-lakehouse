@@ -134,8 +134,8 @@ func TestGuard_CompressionRatioNeverNegative(t *testing.T) {
 
 func TestGuard_ExtractPartitionStability(t *testing.T) {
 	cases := map[string]string{
-		"prefix/logs/dt=2026-05-13/hour=10/abc.parquet":   "dt=2026-05-13/hour=10",
-		"100/1/logs/dt=2026-01-01/hour=00/f.parquet":      "dt=2026-01-01/hour=00",
+		"prefix/logs/dt=2026-05-13/hour=10/abc.parquet": "dt=2026-05-13/hour=10",
+		"100/1/logs/dt=2026-01-01/hour=00/f.parquet":    "dt=2026-01-01/hour=00",
 	}
 	for key, want := range cases {
 		got := ExtractPartition(key)
