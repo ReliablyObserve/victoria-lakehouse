@@ -1,10 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
+  "$defs": {
+    "profileEnum": {
+      "type": "string",
+      "enum": ["", "balanced", "max-performance", "max-durability", "max-cost-savings", "dev"]
+    }
+  },
   "properties": {
     "lakehouseConfig": {
       "type": "object",
       "properties": {
+        "profile": { "$ref": "#/$defs/profileEnum" },
         "s3": {
           "type": "object",
           "properties": {
@@ -33,11 +40,13 @@
       "type": "object",
       "properties": {
         "enabled": { "type": "boolean" },
+        "profile": { "$ref": "#/$defs/profileEnum" },
         "config": { "type": "object" },
         "select": {
           "type": "object",
           "properties": {
             "enabled": { "type": "boolean" },
+            "profile": { "$ref": "#/$defs/profileEnum" },
             "replicaCount": { "type": "integer", "minimum": 0 }
           }
         },
@@ -45,6 +54,7 @@
           "type": "object",
           "properties": {
             "enabled": { "type": "boolean" },
+            "profile": { "$ref": "#/$defs/profileEnum" },
             "replicaCount": { "type": "integer", "minimum": 0 }
           }
         }
@@ -54,11 +64,13 @@
       "type": "object",
       "properties": {
         "enabled": { "type": "boolean" },
+        "profile": { "$ref": "#/$defs/profileEnum" },
         "config": { "type": "object" },
         "select": {
           "type": "object",
           "properties": {
             "enabled": { "type": "boolean" },
+            "profile": { "$ref": "#/$defs/profileEnum" },
             "replicaCount": { "type": "integer", "minimum": 0 }
           }
         },
@@ -66,6 +78,7 @@
           "type": "object",
           "properties": {
             "enabled": { "type": "boolean" },
+            "profile": { "$ref": "#/$defs/profileEnum" },
             "replicaCount": { "type": "integer", "minimum": 0 }
           }
         }
