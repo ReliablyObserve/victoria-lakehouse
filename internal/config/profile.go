@@ -57,6 +57,35 @@ func ProfileConfig(p Profile) *Config {
 	}
 }
 
+func (c *Config) ResolveEffectiveProfile() Profile {
+	if c.Mode == ModeLogs {
+		if c.Role == RoleInsert && c.Logs.Insert.Profile != "" {
+			return c.Logs.Insert.Profile
+		}
+		if c.Role == RoleSelect && c.Logs.Select.Profile != "" {
+			return c.Logs.Select.Profile
+		}
+		if c.Logs.Profile != "" {
+			return c.Logs.Profile
+		}
+	}
+	if c.Mode == ModeTraces {
+		if c.Role == RoleInsert && c.Traces.Insert.Profile != "" {
+			return c.Traces.Insert.Profile
+		}
+		if c.Role == RoleSelect && c.Traces.Select.Profile != "" {
+			return c.Traces.Select.Profile
+		}
+		if c.Traces.Profile != "" {
+			return c.Traces.Profile
+		}
+	}
+	if c.Profile != "" {
+		return c.Profile
+	}
+	return ProfileBalanced
+}
+
 func balancedConfig() *Config {
 	cfg := Default()
 	cfg.Profile = ProfileBalanced
