@@ -91,31 +91,37 @@ VL stored: ~18.2 TB/mo (~55x avg). Parquet stored: ~164 TB/mo (6.1x). EBS includ
 
 ## Annual Savings Summary
 
+> **Hybrid = full Lakehouse S3 cost (all retained data) + additional VL/VT hot tier (1 month EBS + VL/VT compute)**. Not "1 month EBS + remaining months on LH" — all data is always on S3, EBS is additional.
+
 Lakehouse Hybrid vs Loki+Tempo (full infrastructure, Lakehouse always cheaper):
 
 | Scenario | 1yr Retention Savings | 2yr Retention Savings |
 |---|---|---|
 | 250 GB/mo (hybrid) | $456/yr (21%) | $792/yr (31%) |
-| 500 GB/mo (hybrid) | $1,104/yr (43%) | $2,064/yr (51%) |
+| 500 GB/mo (hybrid) | $1,104/yr (38%) | $2,064/yr (51%) |
 | 1 PB/mo (hybrid) | $745K/yr (54%) | $1.50M/yr (56%) |
 | 1 PB/mo (standalone) | $798K/yr (58%) | $1.55M/yr (58%) |
 
 Standalone Lakehouse vs Hybrid vs VL/VT EBS:
 
-| Scenario | Standalone (cheapest) | Hybrid vs VL/VT EBS |
+| Scenario | Standalone LH vs VL/VT EBS | Hybrid vs VL/VT EBS |
 |---|---|---|
-| 250 GB/mo, 1yr | $1,668/yr (saves 11% vs VL) | +$60/yr (4% more than VL) |
-| 500 GB/mo, 1yr | $1,776/yr (saves 11% vs VL) | +$108/yr (6% more than VL) |
-| 1 PB/mo, 1yr | $88,800/yr (saves 13% vs VL) | -$36,000/yr (**6% cheaper than VL**) |
-| 1 PB/mo, 2yr | $175,200/yr (saves 14% vs VL) | -$123,600/yr (**10% cheaper than VL**) |
+| 250 GB/mo, 1yr | +$48/yr (3% more — compute dominates) | +$60/yr (4% more than VL) |
+| 500 GB/mo, 1yr | +$96/yr (6% more — compute dominates) | +$108/yr (6% more than VL) |
+| 1 PB/mo, 1yr | -$88,800/yr (**13% cheaper than VL**) | -$36,000/yr (**5% cheaper than VL**) |
+| 1 PB/mo, 2yr | -$175,200/yr (**14% cheaper than VL**) | -$123,600/yr (**10% cheaper than VL**) |
 
-**Key**: Hybrid crosses below VL/VT EBS at ~8 months retention. At scale (1 PB/mo), the S3 cost advantage over 3-AZ EBS is dramatic. Standalone Lakehouse is cheapest at all scales and retention periods — the right choice when sub-10ms hot queries aren't needed.
+**Key insights**:
+- At **small scale** (≤500 GB/mo), **VL/VT EBS is cheapest** — compute dominates and VL's 55x compression keeps storage negligible. The S3 per-raw-GB advantage doesn't overcome the compute premium at this scale.
+- At **large scale** (1 PB/mo), **Lakehouse is cheapest** — storage dominates and S3's per-raw-GB cost ($0.023/6.1 = $0.0038) beats 3-AZ EBS ($0.24/55 = $0.0044) by 14%. Hybrid crosses below VL/VT EBS at ~8 months retained data at this scale.
+- The **break-even retention for Hybrid vs VL/VT** is scale-dependent: ~8 months at 1 PB/mo, but 30+ months at 500 GB/day — because the fixed VL/VT compute premium takes longer to amortize at smaller volumes.
+- **Lakehouse value beyond cost**: open Parquet format, S3 11-nines durability, disaster recovery, direct analytics access (DuckDB, Spark, Trino).
 
 ## Why Lakehouse Despite VL/VT's Better Compression
 
 VL/VT's 47-70x compression beats Parquet's 6.1-9.4x per-byte, but Lakehouse wins on total cost of ownership:
 
-1. **S3 grows slower than EBS at scale**: S3 $0.023/GB vs EBS $0.08/GB × 3 AZ = $0.24/GB. Even with 9× worse compression, Lakehouse is cheaper per-raw-GB beyond ~8 months retention.
+1. **S3 is cheaper per-raw-GB than 3-AZ EBS**: S3 $0.023/6.1x = $0.0038/raw-GB vs EBS $0.24/55x = $0.0044/raw-GB. Lakehouse is 14% cheaper per stored raw-GB at any retention. At large scale (1 PB/mo), this per-GB advantage compounds — Hybrid crosses below VL/VT EBS at ~8 months retained data. At small scale, compute dominates so VL/VT EBS is cheaper overall.
 2. **No replication needed**: S3 provides 11-nines multi-AZ durability for free. VL/VT needs explicit replication across AZs (EBS × N). Loki/Tempo need RF=3 with cross-AZ transfer costs.
 3. **No deduplication needed**: Each Lakehouse pod writes unique partitioned files. S3 PutObject is atomic. Loki/Tempo need compactor deduplication after WAL replays.
 4. **Open Parquet format**: DuckDB, Spark, Trino, ClickHouse query cold data directly. No export needed.
@@ -129,9 +135,10 @@ VL/VT's 47-70x compression beats Parquet's 6.1-9.4x per-byte, but Lakehouse wins
 
 | Scenario | Recommendation |
 |---|---|
-| Cold-only, archive, analytics, compliance | Standalone Lakehouse (cheapest at all periods) |
-| ≤ 8mo retention, sub-10ms queries needed | VL/VT EBS Only (cheapest with hot queries) |
-| > 8mo retention, need hot+cold | Hybrid (crosses below VL/VT EBS, open format + DR) |
+| Small scale (≤500 GB/mo), any retention | VL/VT EBS Only (cheapest — compute dominates, 55x compression wins) |
+| Cold-only, archive, analytics, compliance | Standalone Lakehouse (cheapest cold storage at PB scale) |
+| Large scale (PB/mo), ≤ 8mo retention | VL/VT EBS Only (cheapest at short retention) |
+| Large scale (PB/mo), > 8mo retention | Hybrid (crosses below VL/VT EBS, open format + DR) |
 | 3yr+ retention | Hybrid + S3 lifecycle (Glacier = 27× cheaper than 3-AZ EBS) |
-| Analytics on cold data | Lakehouse (DuckDB, Spark, Trino on open Parquet) |
-| Loki/Tempo replacement | Lakehouse Hybrid (50%+ cheaper, no replication/dedup overhead) |
+| Open format + analytics on cold data | Lakehouse (DuckDB, Spark, Trino on open Parquet) |
+| Loki/Tempo replacement | Lakehouse Hybrid (38-56% cheaper, no replication/dedup overhead) |

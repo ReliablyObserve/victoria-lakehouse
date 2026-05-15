@@ -128,11 +128,12 @@ flowchart LR
 | **Annual Total** | **$42,564/yr** | **$23,652/yr** | **$85,596/yr** | **$41,712/yr** |
 
 **Key insights**:
-- **Hybrid > Standalone Lakehouse** at all retention periods (by the EBS hot cost ~$65/mo), but hybrid provides sub-10ms hot queries that standalone cannot.
-- **Hybrid crosses below VL/VT EBS at ~8 months retention**: S3 at $0.023/GB grows slower per-month than EBS at $0.08/GB × 3 AZ. At 1yr, hybrid is $2,859 vs VL/VT $2,679 — within 7%. At 2yr, hybrid is cheaper ($3,547 vs $3,476) and the gap widens with retention.
+- **Hybrid = full Lakehouse S3 + additional VL/VT hot tier.** All data always on S3 Parquet (full retention). VL/VT EBS (30 days) is an addition, not a replacement. Hybrid cost = Standalone LH + VL/VT compute + 30d EBS.
+- **At this scale (500 GB/day), Hybrid is 7% more expensive than VL/VT EBS at 1yr** ($2,859 vs $2,679). The VL/VT compute premium ($1,728/mo) dominates the S3 per-raw-GB savings. At 2yr the gap narrows to 2% ($3,547 vs $3,476).
+- **Break-even is scale-dependent.** At 1 PB/month (storage-dominated), Hybrid crosses below VL/VT EBS at ~8 months retained data. At 500 GB/day, the break-even is ~30+ months because the compute premium takes longer to amortize.
 - **Loki+Tempo is 2x more expensive than hybrid** when you account for full infrastructure: separate Loki and Tempo systems, RF=3 cross-AZ replication costs, compaction I/O, and dual compute stacks.
-- **Standalone Lakehouse is cheapest** at all retention periods — 52% cheaper than hybrid at 1yr, 75% cheaper than Loki+Tempo. Best for cold-only / archive / analytics use cases.
-- Lakehouse wins at 3+ year retention when S3 lifecycle moves data to Glacier Instant ($0.004/GB) or Deep Archive ($0.00099/GB) — at 3yr with lifecycle, Lakehouse storage drops to ~$710/mo vs VL/VT EBS ~$2,389/mo (3× AZ).
+- **Standalone Lakehouse is cheapest** at all retention periods — 55% cheaper than hybrid at 1yr, 78% cheaper than Loki+Tempo. Best for cold-only / archive / analytics use cases where sub-10ms hot queries aren't needed.
+- At 3+ year retention, S3 lifecycle tiering (Glacier Instant $0.004/GB) makes Lakehouse dramatically cheaper — storage drops to ~$710/mo vs VL/VT EBS ~$2,389/mo (3× AZ).
 - Lakehouse's value beyond cost: open Parquet format, S3 11-nines durability, disaster recovery independence, and direct analytics access (DuckDB, Spark, Trino).
 
 ---
@@ -347,6 +348,26 @@ At 500 GB/day raw ingestion, 1 year retention. Lakehouse ratios are from real E2
 | **Complete cluster wipe** | **All S3 data survives.** Deploy new cluster → manifest rebuilds from S3 → queries work. | S3 chunks survive. **Index must be rebuilt** (hours). | S3 blocks survive. Bloom rebuild needed. | **All data lost.** No external copy. |
 | **Manifest/index corruption** | Manifest is rebuildable: scan S3 Hive partitions → reconstruct in minutes. Zero data loss. | BoltDB index corruption = queries fail. Must rebuild from chunks (hours-days at scale). | Search index corruption = slow queries. Bloom rebuild needed. | VL index rebuild from data blocks. |
 
+### S3 Write Path — Durability & Availability Comparison
+
+How each system writes data to S3, and what that means for durability:
+
+| Aspect | Lakehouse | Loki | Tempo |
+|---|---|---|---|
+| **Write unit** | Complete Parquet file (10-50MB, atomic S3 PutObject) | Chunk (~1.5MB compressed, eventually flushed) | Block (~100MB, periodically flushed) |
+| **Write path** | Buffer → sort → write Parquet → S3 PutObject → manifest.AddFile() | Ingester memory → WAL (EBS) → chunk flush → S3 → index update | Ingester memory → WAL (EBS) → block flush → S3 → bloom build |
+| **Atomicity** | S3 PutObject is atomic — file either fully exists or doesn't. No partial writes possible. | Chunk upload is atomic, but chunk + index update is NOT atomic. Crash between = orphaned chunk. | Block upload is atomic, but bloom + index can lag behind block. |
+| **Write amplification** | **1×** — data written once to S3 as Parquet. No rewrites of old data. | **3-5×** — WAL write + chunk flush + index write + compaction rewrite of ALL chunks over time. | **2-3×** — WAL write + block flush + compaction rewrite of ALL blocks. |
+| **Durability before S3** | Flush-interval worth of data in memory (10s default). Optional WAL for crash recovery. | WAL on single-AZ EBS. RF=3 ingesters replicate to survive single ingester loss. | Same as Loki — WAL + RF=3 replication. |
+| **Durability after S3** | **Immediately durable** (11-nines, multi-AZ). Manifest records file. | Durable once chunk + index both written. Index corruption = data exists but unfindable. | Durable once block written. Bloom/search index can be rebuilt if lost. |
+| **Compaction impact** | Merges only recent small files. Old data **never read or rewritten** — safe for S3-IA/Glacier lifecycle. | Compactor reads and **rewrites ALL chunks** regardless of age. Triggers S3-IA retrieval fees. Produces new chunks = dedup needed. | Same as Loki — rewrites all blocks, triggers lifecycle retrieval fees. |
+| **Deduplication** | **Not needed.** Each insert pod writes unique time-partitioned files. Manifest prevents double-counting. | **Required.** Ingester restart replays WAL → duplicate chunks. Compactor deduplicates. | **Required.** Same WAL replay issue. |
+| **Write availability** | S3 is 99.99% available. Single insert pod failure = max 10s data gap. Other pods unaffected (no shared state). | RF=3 means 1 ingester failure is tolerated. 2+ failures in same RF group = write rejection. Cross-AZ WAL replication needed. | Same as Loki. |
+| **Recovery** | Restart pod → WAL replay (if enabled) → resume. No coordination with other pods. | Restart → WAL replay → re-register with ring. May produce duplicate chunks requiring compaction. | Same as Loki. |
+| **Data lifecycle friendliness** | Excellent — once a file reaches optimal size, it's never touched again. S3 lifecycle transitions (Standard → IA → Glacier) are safe. | Poor — compactor rewrites old data, triggering retrieval fees on S3-IA/Glacier objects. Must keep all data on S3 Standard or carefully tune compaction windows. | Same as Loki — compaction conflicts with lifecycle tiering. |
+
+**Bottom line**: Lakehouse writes are simpler (atomic PutObject, no WAL replication, no dedup), more lifecycle-friendly (old files never rewritten), and cheaper (1× write amplification vs 3-5×). Loki/Tempo need WAL + RF=3 + compactor + dedup to achieve durability that S3 provides inherently.
+
 ### Data Format & Portability
 
 | Aspect | Lakehouse (Parquet) | Loki (chunks) | Tempo (blocks) |
@@ -410,11 +431,13 @@ At 500 GB/day raw ingestion, 1 year retention. Lakehouse ratios are from real E2
 | 18 | $23,094 | $54,816 | $53,004 | $110,988 |
 | 24 | **$30,792** | **$75,324** | **$73,860** | **$152,820** |
 
-**Cost ranking at all retention periods:**
-1. **Standalone Lakehouse** — cheapest at all periods ($1,283/mo), but no sub-10ms hot queries
-2. **VL/VT EBS Only** — within 3% of hybrid, simplest ops, but no open format or S3 durability
-3. **Lakehouse Hybrid** — within 7% of VL/VT EBS at 1yr, crosses below at ~8mo retained data, best feature set
-4. **Loki + Tempo** — most expensive at all periods (2× hybrid) due to dual-system infrastructure, lower compression, compaction I/O, and RF=3 cross-AZ costs
+> **Note**: Table uses steady-state monthly rates (at full retention). Actual cumulative cost during initial ramp-up is lower as stored data grows from 0 to full retention.
+
+**Cost ranking at 500 GB/day (this scenario):**
+1. **Standalone Lakehouse** — cheapest at all retention periods ($1,283/mo), but no sub-10ms hot queries
+2. **VL/VT EBS Only** — second cheapest ($2,679/mo at 1yr), simplest ops, but no open format or S3 durability
+3. **Lakehouse Hybrid** — 7% more than VL/VT at 1yr ($2,859/mo), provides open format + DR + 11-nine durability
+4. **Loki + Tempo** — most expensive (2× hybrid) due to dual-system infrastructure, lower compression, compaction I/O, and RF=3 cross-AZ costs
 
 **Lakehouse catches VL/VT EBS Only** when S3 lifecycle tiering activates:
 - With 3 AZ, VL/VT EBS per-raw-GB cost is $0.08 × 3 / 55 = $0.0044/raw-GB
@@ -429,11 +452,12 @@ flowchart TB
     subgraph "Lakehouse vs Loki+Tempo (cheaper from day 1)"
         LvL["Hybrid: $2,859/mo vs Loki+Tempo: $5,763/mo\nSavings: $2,904/mo ($34,848/yr)\nStandalone: $1,283/mo — saves $4,480/mo ($53,760/yr)"]
     end
-    subgraph "Hybrid vs VL/VT EBS Only (3 AZ)"
-        LvV1["1yr: Hybrid $2,859 vs VL/VT $2,679\n(+$180/mo, Hybrid 7% more)"]
-        LvV2["2yr: gap narrows to +$71/mo\n(3× EBS grows linearly, S3 grows slower)"]
-        LvV3["3yr + lifecycle: Hybrid ~$1,700/mo cheaper\n(Glacier tiering crossover at ~2.5yr)"]
-        LvV1 --> LvV2 --> LvV3
+    subgraph "Hybrid vs VL/VT EBS Only (500 GB/day, 3 AZ)"
+        LvV1["1yr: Hybrid $2,859 vs VL/VT $2,679\n(+$180/mo — compute premium dominates)"]
+        LvV2["2yr: gap narrows to +$71/mo\n(S3 per-raw-GB 14% cheaper, amortizes over time)"]
+        LvV3["Break-even: ~30mo at 500GB/d, ~8mo at 1PB/mo\n(scale-dependent: storage vs compute ratio)"]
+        LvV4["3yr + lifecycle: Hybrid cheaper\n(Glacier $0.004/GB = 6.7× cheaper than 3-AZ EBS)"]
+        LvV1 --> LvV2 --> LvV3 --> LvV4
     end
     subgraph "Lakehouse value beyond cost"
         V1["S3 11-nines durability — no replication needed"]
@@ -549,20 +573,20 @@ Full design: [Deletion Strategy](./deletion-strategy.md)
 - Want open Parquet + S3 durability without VL/VT infrastructure
 
 ### Choose VL/VT EBS Only when:
-- Retention ≤ 8 months (cheapest option with hot queries)
+- Small to medium scale (≤500 GB/day) at any retention — cheapest option due to compute dominance and 55x compression
+- Large scale with short retention (≤8 months at PB/mo) — cheapest at short retention where EBS storage is small
 - Query speed is top priority (sub-10ms for ALL data, not just hot)
 - Simplest architecture (single system, no cold tier)
-- EBS volume management at scale is acceptable
 - No requirement for open format or external analytics
 
 ### Choose Lakehouse Hybrid when:
 - Need both sub-10ms hot queries AND open-format cold storage
-- Retention > 8 months (crosses below VL/VT EBS cost; gap widens with retention)
+- Large scale (PB/mo) with retention > 8 months (crosses below VL/VT EBS; gap widens with retention)
 - Open format required (compliance, analytics, data portability — DuckDB, Spark, Trino)
 - Disaster recovery needed (complete cluster wipe = zero data loss, rebuild from S3)
 - S3 11-nines durability with no replication overhead
 - Unified logs + traces in open format desired
-- 50% cheaper than Loki+Tempo at 1yr retention
+- 38-56% cheaper than Loki+Tempo depending on scale and retention
 
 ### Choose Loki + Tempo when:
 - Grafana-native ecosystem already invested

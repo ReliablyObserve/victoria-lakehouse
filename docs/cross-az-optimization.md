@@ -85,7 +85,7 @@ flowchart TD
     USE_K8S --> DETECTED
 
     DETECTED --> RING[Configure peer cache<br/>same-AZ sub-ring]
-    DETECTED --> BRIDGE[Configure buffer bridge<br/>same-AZ endpoints]
+    DETECTED --> BRIDGE[Buffer bridge queries<br/>ALL insert pods (all AZs)]
     DETECTED --> STATS[Expose AZ in<br/>/internal/cache/stats]
 
     style START fill:#2196F3,color:#fff
@@ -138,7 +138,7 @@ graph TD
     end
 
     SEL_A -.->|"cross-AZ fallback<br/>$0.01/GB ⚠️"| SEL_B
-    SEL_A -.->|"cross-AZ buffer<br/>$0.01/GB ⚠️"| INS_B
+    SEL_A -->|"buffer query (always)<br/>$0.01/GB — required"| INS_B
 
     INS_A -->|"$0.00"| S3[(S3<br/>Regional)]
     INS_B -->|"$0.00"| S3
@@ -243,20 +243,25 @@ graph LR
 | AZ-aware (with fallback) | ~20 GB/day | $12/mo |
 | AZ-aware (no fallback) | 0 GB/day | $0/mo |
 
-### Strategy 3: AZ-Aware Buffer Bridge (Recommended)
+### Strategy 3: Buffer Bridge — Always Query ALL Insert Pods
 
-**Impact: Eliminates cross-AZ buffer query traffic.**
+**Buffer queries ALWAYS fan out to ALL insert pods across ALL AZs.** Unlike peer cache (L3) where AZ-aware routing avoids cross-AZ traffic, buffer queries MUST reach every insert pod to avoid missing unflushed data.
 
-When select pods query insert pods for unflushed data (`/internal/buffer/query`), they should prefer insert pods in the same AZ.
+**Why**: With 3 AZs, each AZ has ~1/3 of insert pods. If buffer queries only went to same-AZ insert pods, select pods would miss 2/3 of recently buffered data — unacceptable for query completeness. The cross-AZ transfer cost is minimal (buffer data is typically seconds of unflushed rows, <1MB per query) compared to the cost of returning incomplete results.
+
+**Cost impact**: At 10K buffer queries/day with ~100KB response per insert pod across 2 cross-AZ pods: 10K × 100KB × 2 = ~2 GB/day cross-AZ = **$0.60/month**. Negligible compared to the data completeness guarantee.
 
 ```yaml
 lakehouseConfig:
   select:
-    az_aware: true            # enable AZ-aware buffer bridge routing
-    cross_az_fallback: true   # query cross-AZ insert pods on same-AZ miss
+    buffer_query_enabled: true    # query insert pods for unflushed data
+    buffer_query_timeout: 2s      # per-pod timeout
+    # NOTE: AZ-aware routing does NOT apply to buffer queries.
+    # Buffer queries always reach all insert pods regardless of AZ.
+    # Use az_aware/cross_az_fallback for peer cache (L3) only.
 ```
 
-Since buffer data is typically small (seconds of unflushed rows), the cost savings are modest but the latency improvement is significant (same-AZ: <1ms, cross-AZ: 1-5ms).
+**Key distinction**: Peer cache (L3) can safely use AZ-aware routing because cached S3 data is also available directly from S3 — a cache miss just falls through to S3. Buffer data exists ONLY in the insert pod's memory — there is no fallback source. Missing an insert pod means missing data.
 
 ### Strategy 4: S3 Express One Zone (Optional, Advanced)
 
@@ -421,11 +426,12 @@ lakehouseConfig:
   peer:
     az_aware: true
     az_mode: "strict"
-    cross_az_fallback: false     # NEVER cross AZ for cache
+    cross_az_fallback: false     # NEVER cross AZ for peer cache (L3)
     az_min_peers_per_az: 2       # require 2+ same-AZ peers
   select:
-    az_aware: true
-    cross_az_fallback: false     # NEVER cross AZ for buffer queries
+    buffer_query_enabled: true   # buffer queries always go to ALL insert pods
+    # NOTE: buffer bridge is NOT AZ-filtered — must reach all insert pods
+    # for complete data visibility. Only peer cache uses AZ-aware routing.
 
 # 3. Pod scheduling (default in Helm chart)
 select:
@@ -438,7 +444,7 @@ select:
           app.kubernetes.io/component: select
 ```
 
-**Trade-off**: Lower fleet-wide cache hit rate (each AZ has independent L3 cache). Compensate with larger L2 disk cache per pod.
+**Trade-off**: Lower fleet-wide cache hit rate (each AZ has independent L3 cache). Compensate with larger L2 disk cache per pod. Buffer bridge cross-AZ traffic is negligible (~$0.60/mo at typical scales).
 
 ### Balanced Configuration (Recommended)
 
@@ -448,14 +454,13 @@ For most deployments — near-zero cross-AZ with good cache utilization:
 lakehouseConfig:
   peer:
     az_aware: true
-    az_mode: "preferred"        # same-AZ first, cross-AZ fallback
+    az_mode: "preferred"        # same-AZ first, cross-AZ fallback for peer cache
     cross_az_fallback: true
   select:
-    az_aware: true
-    cross_az_fallback: true     # query cross-AZ insert pods on miss
+    buffer_query_enabled: true  # buffer queries always reach ALL insert pods
 ```
 
-Cross-AZ traffic is limited to L3 cache misses that hit a cross-AZ peer before falling through to S3. At typical cache hit rates, this is 5-10% of total traffic.
+Cross-AZ traffic is limited to L3 peer cache misses (5-10% of requests) plus buffer bridge queries to cross-AZ insert pods (negligible volume — buffered data is small).
 
 ## Monitoring Cross-AZ Traffic
 
@@ -467,8 +472,8 @@ Victoria Lakehouse exposes metrics to track AZ-aware routing:
 | `lakehouse_peer_cross_az_members` | Number of cross-AZ peers in the ring |
 | `lakehouse_peer_az_requests_total{az_type="same"}` | Peer cache requests routed to same-AZ |
 | `lakehouse_peer_az_requests_total{az_type="cross"}` | Peer cache requests routed cross-AZ |
-| `lakehouse_buffer_bridge_az_requests_total{az_type="same"}` | Buffer queries to same-AZ insert pods |
-| `lakehouse_buffer_bridge_az_requests_total{az_type="cross"}` | Buffer queries to cross-AZ insert pods |
+| `lakehouse_buffer_bridge_queries_total` | Buffer queries to insert pods (always all AZs) |
+| `lakehouse_buffer_bridge_endpoints_queried` | Number of insert pods reached per buffer query |
 | `lakehouse_s3_bytes_read_total` | Total bytes from S3 (free via Gateway Endpoint) |
 
 The AZ is also exposed via `/internal/cache/stats` JSON endpoint (field `"az"`), used during peer discovery.
@@ -504,11 +509,11 @@ The AZ is also exposed via `/internal/cache/stats` JSON endpoint (field `"az"`),
 |---|---|---|---|
 | VPC Gateway Endpoint | AWS infra (one-time) | **100% of S3 traffic** | Low |
 | AZ-aware peer cache | Config change | 90-100% of L3 traffic | Low |
-| AZ-aware buffer bridge | Config change | 90-100% of buffer traffic | Low |
+| Buffer bridge (always all AZs) | Default behavior | N/A (must query all for completeness) | None |
 | S3 Express One Zone | Additional bucket + lifecycle | Latency improvement | Medium |
 | Topology-aware scheduling | K8s manifests | Enables other strategies | Low |
 
-**Bottom line**: VPC Gateway Endpoint + AZ-aware peer cache achieves near-zero cross-AZ costs with minimal effort. S3 Express One Zone is an advanced optimization for latency-sensitive deployments.
+**Bottom line**: VPC Gateway Endpoint + AZ-aware peer cache achieves near-zero cross-AZ costs with minimal effort. Buffer bridge intentionally queries all AZs for data completeness — the cross-AZ cost is negligible (~$0.60/mo). S3 Express One Zone is an advanced optimization for latency-sensitive deployments.
 
 ## Industry Case Studies
 
