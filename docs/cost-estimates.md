@@ -141,4 +141,4 @@ VL/VT's 47-70x compression beats Parquet's 6.1-9.4x per-byte, but Lakehouse wins
 | Large scale (PB/mo), > 8mo retention | Hybrid (crosses below VL/VT EBS, open format + DR) |
 | 3yr+ retention | Hybrid + S3 lifecycle (Glacier = 27× cheaper than 3-AZ EBS) |
 | Open format + analytics on cold data | Lakehouse (DuckDB, Spark, Trino on open Parquet) |
-| Loki/Tempo replacement | Lakehouse Hybrid (38-56% cheaper, no replication/dedup overhead) |
+| Loki/Tempo replacement | Lakehouse Hybrid (48-56% cheaper, no replication/dedup overhead) |

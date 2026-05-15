@@ -101,11 +101,13 @@ flowchart LR
 
 | Transfer Type | Lakehouse Hybrid | Standalone Lakehouse | Loki + Tempo | VL/VT EBS Only |
 |---|---|---|---|---|
-| **Cross-AZ (ingest)** | $0.01/GB × 500GB/day × 30<br>= **$150/mo** | Same = **$150/mo** | Loki RF=3: 2× cross-AZ replication<br>$0.01/GB × 500GB × 2 × 30 = **$300/mo**<br>Tempo RF=3: same = **$300/mo**<br>Combined: **$600/mo** | $0.01/GB × 500GB/day × 30<br>= **$150/mo** |
+| **Cross-AZ (ingest)** | $0.01/GB × 500GB/day × **2 destinations** × 30<br>= **$300/mo** ⚠️ doubled (mirror to VL/VT + LH) | Same = **$150/mo** | Loki RF=3: 2× cross-AZ replication<br>$0.01/GB × 500GB × 2 × 30 = **$300/mo**<br>Tempo RF=3: same = **$300/mo**<br>Combined: **$600/mo** | $0.01/GB × 500GB/day × 30<br>= **$150/mo** |
 | **Cross-AZ (query read)** | Hot: minimal (local EBS)<br>Cold: $0.01/GB × ~2TB = **$20/mo** | $0.01/GB × ~3TB = **$30/mo** | Loki: $0.01/GB × 5TB = **$50/mo**<br>Tempo: $0.01/GB × 2TB = **$20/mo** | Minimal (local EBS)<br>= **$5/mo** |
 | **S3 egress** | Free (same region) | Free (same region) | Free (same region) | N/A |
-| **Total transfer** | **$170/mo** | **$180/mo** | **$670/mo** | **$155/mo** |
+| **Total transfer** | **$320/mo** | **$180/mo** | **$670/mo** | **$155/mo** |
 
+> **Hybrid dual-destination ingest cost**: Hybrid mirrors data to both VL/VT insert (hot) and Lakehouse insert (cold), doubling the cross-AZ delivery cost compared to single-destination architectures. At 500 GB/day this adds $150/mo.
+>
 > **Loki+Tempo RF=3 cross-AZ cost**: With replication factor 3, each ingested log/trace is replicated to 2 additional ingesters in different AZs before flushing to S3. This is $0.01/GB × 2 replicas × data volume — a significant hidden cost at scale.
 
 #### Total Monthly Cost (500 GB/day, 1yr retention)
@@ -115,24 +117,24 @@ flowchart LR
 | Storage | $753 | $688 | $1,484 | $796 |
 | Compute | $1,935 | $414 | $3,525 | $1,728 |
 | S3 Requests | $1 | $1 | $84 | $0 |
-| Data Transfer | $170 | $180 | $670 | $155 |
-| **Monthly Total** | **$2,859/mo** | **$1,283/mo** | **$5,763/mo** | **$2,679/mo** |
-| **Annual Total** | **$34,308/yr** | **$15,396/yr** | **$69,156/yr** | **$32,148/yr** |
+| Data Transfer | $320 | $180 | $670 | $155 |
+| **Monthly Total** | **$3,009/mo** | **$1,283/mo** | **$5,763/mo** | **$2,679/mo** |
+| **Annual Total** | **$36,108/yr** | **$15,396/yr** | **$69,156/yr** | **$32,148/yr** |
 
 #### Scaling to 2-Year Retention
 
 | | Lakehouse Hybrid | Standalone Lakehouse | Loki + Tempo | VL/VT EBS Only |
 |---|---|---|---|---|
 | Storage (2yr) | Hot: $65 + S3 ALL: 730d × 500GB ÷ 6.1x<br>= 59.8TB × $0.023 = $1,376<br>Total = **$1,441/mo** | 59.8TB × $0.023<br>= **$1,376/mo** | WAL: $120 + S3: $2,399<br>+ Index: $230 + Compaction: $100<br>= **$2,849/mo** | 730d × 500GB ÷ 55x × 3 AZ = 19.9TB<br>**$1,593/mo** |
-| **Monthly Total** | **$3,547/mo** | **$1,971/mo** | **$7,133/mo** | **$3,476/mo** |
-| **Annual Total** | **$42,564/yr** | **$23,652/yr** | **$85,596/yr** | **$41,712/yr** |
+| **Monthly Total** | **$3,697/mo** | **$1,971/mo** | **$7,133/mo** | **$3,476/mo** |
+| **Annual Total** | **$44,364/yr** | **$23,652/yr** | **$85,596/yr** | **$41,712/yr** |
 
 **Key insights**:
-- **Hybrid = full Lakehouse S3 + additional VL/VT hot tier.** All data always on S3 Parquet (full retention). VL/VT EBS (30 days) is an addition, not a replacement. Hybrid cost = Standalone LH + VL/VT compute + 30d EBS.
-- **At this scale (500 GB/day), Hybrid is 7% more expensive than VL/VT EBS at 1yr** ($2,859 vs $2,679). The VL/VT compute premium ($1,728/mo) dominates the S3 per-raw-GB savings. At 2yr the gap narrows to 2% ($3,547 vs $3,476).
-- **Break-even is scale-dependent.** At 1 PB/month (storage-dominated), Hybrid crosses below VL/VT EBS at ~8 months retained data. At 500 GB/day, the break-even is ~30+ months because the compute premium takes longer to amortize.
-- **Loki+Tempo is 2x more expensive than hybrid** when you account for full infrastructure: separate Loki and Tempo systems, RF=3 cross-AZ replication costs, compaction I/O, and dual compute stacks.
-- **Standalone Lakehouse is cheapest** at all retention periods — 55% cheaper than hybrid at 1yr, 78% cheaper than Loki+Tempo. Best for cold-only / archive / analytics use cases where sub-10ms hot queries aren't needed.
+- **Hybrid = full Lakehouse S3 + additional VL/VT hot tier + doubled delivery network.** All data always on S3 Parquet (full retention). VL/VT EBS (30 days) is an addition, not a replacement. Mirroring data to both VL/VT and Lakehouse inserts doubles the cross-AZ ingestion delivery cost. Hybrid cost = Standalone LH + VL/VT compute + 30d EBS + 2× ingest delivery.
+- **At this scale (500 GB/day), Hybrid is 12% more expensive than VL/VT EBS at 1yr** ($3,009 vs $2,679). The VL/VT compute premium ($1,728/mo) plus doubled delivery cost ($300 vs $150) dominate the S3 per-raw-GB savings. At 2yr the gap narrows to 6% ($3,697 vs $3,476).
+- **Break-even is scale-dependent.** At 1 PB/month (storage-dominated), Hybrid crosses below VL/VT EBS at ~8 months retained data. At 500 GB/day, the break-even is ~30+ months because the compute + delivery premium takes longer to amortize.
+- **Loki+Tempo is 92% more expensive than hybrid** ($5,763 vs $3,009) when you account for full infrastructure: separate Loki and Tempo systems, RF=3 cross-AZ replication costs, compaction I/O, and dual compute stacks.
+- **Standalone Lakehouse is cheapest** at all retention periods — 57% cheaper than hybrid at 1yr, 78% cheaper than Loki+Tempo. Best for cold-only / archive / analytics use cases where sub-10ms hot queries aren't needed.
 - At 3+ year retention, S3 lifecycle tiering (Glacier Instant $0.004/GB) makes Lakehouse dramatically cheaper — storage drops to ~$710/mo vs VL/VT EBS ~$2,389/mo (3× AZ).
 - Lakehouse's value beyond cost: open Parquet format, S3 11-nines durability, disaster recovery independence, and direct analytics access (DuckDB, Spark, Trino).
 
@@ -426,17 +428,17 @@ How each system writes data to S3, and what that means for durability:
 
 | Month | Standalone LH (cumulative) | Lakehouse Hybrid (cumulative) | VL/VT EBS Only (cumulative) | Loki + Tempo (cumulative) |
 |---|---|---|---|---|
-| 6 | $7,698 | $17,154 | $16,074 | $34,578 |
-| 12 | $15,396 | $34,308 | $32,148 | $69,156 |
-| 18 | $23,094 | $54,816 | $53,004 | $110,988 |
-| 24 | **$30,792** | **$75,324** | **$73,860** | **$152,820** |
+| 6 | $7,698 | $18,054 | $16,074 | $34,578 |
+| 12 | $15,396 | $36,108 | $32,148 | $69,156 |
+| 18 | $23,094 | $57,516 | $53,004 | $110,988 |
+| 24 | **$30,792** | **$79,128** | **$73,860** | **$152,820** |
 
 > **Note**: Table uses steady-state monthly rates (at full retention). Actual cumulative cost during initial ramp-up is lower as stored data grows from 0 to full retention.
 
 **Cost ranking at 500 GB/day (this scenario):**
 1. **Standalone Lakehouse** — cheapest at all retention periods ($1,283/mo), but no sub-10ms hot queries
 2. **VL/VT EBS Only** — second cheapest ($2,679/mo at 1yr), simplest ops, but no open format or S3 durability
-3. **Lakehouse Hybrid** — 7% more than VL/VT at 1yr ($2,859/mo), provides open format + DR + 11-nine durability
+3. **Lakehouse Hybrid** — 12% more than VL/VT at 1yr ($3,009/mo, includes doubled delivery network for dual-destination mirroring), provides open format + DR + 11-nine durability
 4. **Loki + Tempo** — most expensive (2× hybrid) due to dual-system infrastructure, lower compression, compaction I/O, and RF=3 cross-AZ costs
 
 **Lakehouse catches VL/VT EBS Only** when S3 lifecycle tiering activates:
@@ -450,12 +452,12 @@ How each system writes data to S3, and what that means for durability:
 ```mermaid
 flowchart TB
     subgraph "Lakehouse vs Loki+Tempo (cheaper from day 1)"
-        LvL["Hybrid: $2,859/mo vs Loki+Tempo: $5,763/mo\nSavings: $2,904/mo ($34,848/yr)\nStandalone: $1,283/mo — saves $4,480/mo ($53,760/yr)"]
+        LvL["Hybrid: $3,009/mo vs Loki+Tempo: $5,763/mo\nSavings: $2,754/mo ($33,048/yr)\nStandalone: $1,283/mo — saves $4,480/mo ($53,760/yr)"]
     end
     subgraph "Hybrid vs VL/VT EBS Only (500 GB/day, 3 AZ)"
-        LvV1["1yr: Hybrid $2,859 vs VL/VT $2,679\n(+$180/mo — compute premium dominates)"]
-        LvV2["2yr: gap narrows to +$71/mo\n(S3 per-raw-GB 14% cheaper, amortizes over time)"]
-        LvV3["Break-even: ~30mo at 500GB/d, ~8mo at 1PB/mo\n(scale-dependent: storage vs compute ratio)"]
+        LvV1["1yr: Hybrid $3,009 vs VL/VT $2,679\n(+$330/mo — compute + doubled delivery dominates)"]
+        LvV2["2yr: gap narrows to +$221/mo\n(S3 per-raw-GB 14% cheaper, amortizes over time)"]
+        LvV3["Break-even: ~30mo at 500GB/d, ~8mo at 1PB/mo\n(scale-dependent: storage vs compute+delivery ratio)"]
         LvV4["3yr + lifecycle: Hybrid cheaper\n(Glacier $0.004/GB = 6.7× cheaper than 3-AZ EBS)"]
         LvV1 --> LvV2 --> LvV3 --> LvV4
     end
@@ -549,8 +551,8 @@ Full design: [Deletion Strategy](./deletion-strategy.md)
 
 | Criterion | Weight | Lakehouse Hybrid | Standalone LH | Loki + Tempo | VL/VT EBS Only | Winner |
 |---|---|---|---|---|---|---|
-| **Monthly cost (<1yr)** | 20% | $2,859 | $1,283 | $5,763 | $2,679 | **Standalone LH** |
-| **Monthly cost (2yr)** | 15% | $3,547 | $1,971 | $7,133 | $3,476 | **Standalone LH** |
+| **Monthly cost (<1yr)** | 20% | $3,009 | $1,283 | $5,763 | $2,679 | **Standalone LH** |
+| **Monthly cost (2yr)** | 15% | $3,697 | $1,971 | $7,133 | $3,476 | **Standalone LH** |
 | **Hot query speed** | 15% | <10ms (VL hot) | <500ms (S3) | 100-500ms | <10ms | **Hybrid / VL/VT** |
 | **Cold query speed** | 10% | <500ms (Parquet) | <500ms | 1-10s | <10ms (all hot) | **VL/VT EBS** |
 | **Compression** | 10% | 6.1x logs / 9.4x traces | Same | 3-3.5x | 47-70x | **VL/VT** |
@@ -586,7 +588,7 @@ Full design: [Deletion Strategy](./deletion-strategy.md)
 - Disaster recovery needed (complete cluster wipe = zero data loss, rebuild from S3)
 - S3 11-nines durability with no replication overhead
 - Unified logs + traces in open format desired
-- 38-56% cheaper than Loki+Tempo depending on scale and retention
+- 48-56% cheaper than Loki+Tempo depending on scale and retention
 
 ### Choose Loki + Tempo when:
 - Grafana-native ecosystem already invested
