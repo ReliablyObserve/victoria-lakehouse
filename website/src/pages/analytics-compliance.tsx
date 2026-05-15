@@ -64,7 +64,7 @@ export default function AnalyticsCompliance() {
             <h2>Two Access Patterns, One Dataset</h2>
             <p style={{fontSize: '1.1rem', lineHeight: 1.7}}>
               <strong>Observability APIs</strong> for day-to-day operations:
-              LogsQL full-text search, Jaeger trace visualization, Loki API via proxy,
+              LogsQL full-text search, Jaeger and Tempo trace visualization, Loki API via proxy,
               Grafana dashboards. Every VL/VT query endpoint works unchanged.
             </p>
             <p style={{fontSize: '1.1rem', lineHeight: 1.7}}>
