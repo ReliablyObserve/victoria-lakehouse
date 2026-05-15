@@ -24,6 +24,7 @@ type LogRow struct {
 
 type TraceRow struct {
 	TimestampUnixNano  int64             `json:"timestamp_unix_nano" parquet:"timestamp_unix_nano"`
+	StartTimeUnixNano  int64             `json:"start_time_unix_nano" parquet:"start_time_unix_nano"`
 	TraceID            string            `json:"trace_id" parquet:"trace_id"`
 	SpanID             string            `json:"span_id" parquet:"span_id"`
 	ParentSpanID       string            `json:"parent_span_id" parquet:"parent_span_id"`
