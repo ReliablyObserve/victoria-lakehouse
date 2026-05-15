@@ -59,6 +59,7 @@ var (
 	topology        = flag.String("lakehouse.topology", "", "Deployment topology: auto, storage-node, direct, loki-proxy")
 	hotBoundary     = flag.String("lakehouse.hot-boundary", "", "Manual hot boundary override (e.g., 7d)")
 	role            = flag.String("lakehouse.role", "", "Role: all, insert, select (default: all)")
+	profileFlag     = flag.String("lakehouse.profile", "", "Configuration profile: balanced, max-performance, max-durability, max-cost-savings, dev")
 	flushInterval   = flag.Duration("lakehouse.insert.flush-interval", 0, "Insert flush interval (e.g., 10s)")
 	listenAddr      = flag.String("httpListenAddr", ":10428", "HTTP listen address")
 	manifestRefresh = flag.Duration("lakehouse.manifest.refresh-interval", 0, "Manifest refresh interval (e.g., 30s)")
@@ -104,13 +105,12 @@ func main() {
 
 	logger.Infof("lakehouse-traces starting; vt_compat=%s, memory_allowed_bytes=%d", vtCompat, memAllowed)
 
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.LoadWithMode(*configPath, config.ModeTraces, config.Role(*role))
 	if err != nil {
 		logger.Errorf("failed to load config: %s", err)
 		os.Exit(1)
 	}
 
-	cfg.Mode = config.ModeTraces
 	applyFlags(cfg)
 
 	if err := cfg.Validate(); err != nil {
@@ -708,6 +708,11 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 }
 
 func applyFlags(cfg *config.Config) {
+	if p := *profileFlag; p != "" {
+		profileCfg := config.ProfileConfig(config.Profile(p))
+		*cfg = *config.MergeConfigs(profileCfg, cfg)
+		cfg.Profile = config.Profile(p)
+	}
 	if r := *role; r != "" {
 		cfg.Role = config.Role(r)
 	}
