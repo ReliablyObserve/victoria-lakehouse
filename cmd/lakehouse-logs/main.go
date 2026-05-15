@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/stats"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/ui"
 	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/internal/vlstorage"
 
@@ -82,6 +84,9 @@ var (
 	tenantPrefixTemplate = flag.String("lakehouse.tenant.prefix-template", "", "S3 prefix template (default: {AccountID}/{ProjectID}/)")
 	tenantBucketTemplate = flag.String("lakehouse.tenant.bucket-template", "", "Bucket name template for bucket isolation")
 	tenantDefaultPrefix  = flag.String("lakehouse.tenant.default-prefix", "", "Static S3 key prefix override")
+	tenantOrgIDHeader    = flag.String("lakehouse.tenant.orgid-header", "", "HTTP header for string tenant ID (default: X-Scope-OrgID)")
+	tenantMetricsFormat  = flag.String("lakehouse.tenant.metrics-format", "", "Prometheus tenant label format: id, name, both (default: id)")
+	tenantAutoRegister   = flag.Bool("lakehouse.tenant.auto-register", false, "Auto-register unknown X-Scope-OrgID tenants")
 )
 
 func main() {
@@ -217,6 +222,49 @@ func run(cfg *config.Config, addr string) {
 		}
 	}
 	store.SetTombstoneStore(tombstoneStore)
+
+	// --- Tenant resolver ---
+	resolverCfg := tenant.ResolverConfig{
+		MetricsFormat: tenant.ParseMetricsFormat(cfg.Tenant.MetricsFormat),
+		AutoRegister:  cfg.Tenant.AutoRegister,
+		OrgIDHeader:   cfg.Tenant.OrgIDHeader,
+	}
+	resolver := tenant.NewResolver(resolverCfg)
+
+	for orgID, target := range cfg.Tenant.Aliases {
+		if err := resolver.AddAlias(orgID, tenant.TenantID{
+			AccountID: target.AccountID,
+			ProjectID: target.ProjectID,
+		}); err != nil {
+			logger.Warnf("invalid tenant alias %q: %s", orgID, err)
+		}
+	}
+
+	var persister *tenant.S3Persister
+	persister = tenant.NewS3Persister(store.Pool(), cfg.AutoPrefix()+"_meta/tenant-aliases.json")
+	s3Aliases, err := persister.LoadAliases()
+	if err != nil {
+		logger.Warnf("failed to load tenant aliases from S3: %s", err)
+	} else {
+		for _, ae := range s3Aliases {
+			if _, exists := resolver.Resolve(ae.OrgID); !exists {
+				_ = resolver.AddAlias(ae.OrgID, tenant.TenantID{
+					AccountID: ae.AccountID,
+					ProjectID: ae.ProjectID,
+				})
+			}
+		}
+		if len(s3Aliases) > 0 {
+			logger.Infof("loaded %d tenant aliases from S3", len(s3Aliases))
+		}
+	}
+
+	if resolver.HasAliases() {
+		logger.Infof("tenant resolver active; aliases=%d, metrics_format=%s, auto_register=%v",
+			len(resolver.AllAliases()), cfg.Tenant.MetricsFormat, cfg.Tenant.AutoRegister)
+	}
+
+	store.Manifest().SetPrefixTemplate(cfg.Tenant.PrefixTemplate)
 
 	// --- Tenant stats ---
 	registry := stats.NewTenantRegistry(hostname())
@@ -357,7 +405,9 @@ func run(cfg *config.Config, addr string) {
 				select {
 				case <-ticker.C:
 					for _, ts := range registry.All() {
-						key := ts.AccountID + ":" + ts.ProjectID
+						accID, _ := strconv.ParseUint(ts.AccountID, 10, 32)
+						projID, _ := strconv.ParseUint(ts.ProjectID, 10, 32)
+						key := resolver.MetricLabel(uint32(accID), uint32(projID))
 						metrics.TenantFiles.Set(key, ts.TotalFiles)
 						metrics.TenantBytes.Set(key, ts.TotalBytes)
 						metrics.TenantRawBytes.Set(key, ts.RawBytes)
@@ -380,10 +430,15 @@ func run(cfg *config.Config, addr string) {
 			cfg.SmartCache.MaxAge, cfg.SmartCache.SnapshotInterval)
 	}
 
-	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc)
+	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister)
+
+	var handler http.Handler = mux
+	if resolver != nil && resolver.HasAliases() {
+		handler = resolver.Middleware(mux)
+	}
 
 	requestHandler := func(w http.ResponseWriter, r *http.Request) bool {
-		mux.ServeHTTP(w, r)
+		handler.ServeHTTP(w, r)
 		return true
 	}
 
@@ -430,7 +485,7 @@ func run(cfg *config.Config, addr string) {
 	logger.Infof("lakehouse-logs stopped")
 }
 
-func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator) *http.ServeMux {
+func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	metrics.NewInfoGauge("lakehouse_info", map[string]string{
@@ -610,6 +665,12 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		mux.Handle("/internal/stats/sync", syncHandler)
 	}
 
+	// Tenant alias handler
+	if resolver != nil {
+		aliasHandler := tenant.NewHandler(resolver, persister)
+		aliasHandler.Register(mux)
+	}
+
 	// Stats API
 	if cfg.Stats.Enabled {
 		statsAPI := stats.NewAPI(stats.APIConfig{
@@ -619,6 +680,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			ClassTracker:    classTracker,
 			LabelIndex:      store.LabelIndex(),
 			SchemaRegistry:  store.SchemaRegistry(),
+			Resolver:        resolver,
 			Mode:            "logs",
 			Bucket:          cfg.S3.Bucket,
 			BloomColumns:    cfg.ActiveBloomColumns(),
@@ -767,6 +829,15 @@ func applyFlags(cfg *config.Config) {
 	}
 	if s := *tenantDefaultPrefix; s != "" {
 		cfg.Tenant.DefaultPrefix = s
+	}
+	if s := *tenantOrgIDHeader; s != "" {
+		cfg.Tenant.OrgIDHeader = s
+	}
+	if s := *tenantMetricsFormat; s != "" {
+		cfg.Tenant.MetricsFormat = s
+	}
+	if *tenantAutoRegister {
+		cfg.Tenant.AutoRegister = true
 	}
 }
 
