@@ -1,8 +1,0 @@
-# Default owners for everything
-* @slawomirskowron
-
-# Critical paths require explicit review
-internal/protocol/    @slawomirskowron
-internal/storage/     @slawomirskowron
-charts/               @slawomirskowron
-.github/workflows/    @slawomirskowron
