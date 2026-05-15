@@ -174,7 +174,7 @@ lakehouse-traces:
     - "-lakehouse.s3.force-path-style=true"
 ```
 
-Serves Jaeger-compatible trace query APIs backed by the same MinIO bucket.
+Serves Jaeger and Tempo-compatible trace query APIs backed by the same MinIO bucket.
 
 - **Internal endpoint**: `http://lakehouse-traces:10428`
 - **Health check**: `GET /health` every 5 seconds
@@ -231,7 +231,7 @@ vtselect:
     - "-storageNode=victoriatraces:10428,lakehouse-traces:10428"
 ```
 
-VictoriaTraces in cluster select mode. Fans out trace queries to both hot (victoriatraces disk) and cold (lakehouse-traces S3) storage nodes. This is the **global traces datasource** — Jaeger queries span both tiers.
+VictoriaTraces in cluster select mode. Fans out trace queries to both hot (victoriatraces disk) and cold (lakehouse-traces S3) storage nodes. This is the **global traces datasource** — Jaeger and Tempo queries span both tiers.
 
 - **Internal endpoint**: `http://vtselect:10428`
 
@@ -372,11 +372,11 @@ Pre-configured with eleven datasources via provisioning files in `deployment/doc
 | Datasource | Type | URL | Purpose |
 |---|---|---|---|
 | **VictoriaLogs Global (Hot+Cold)** | VictoriaLogs | `http://vlselect:9428` | Unified hot+cold logs via multi-level select (default) |
-| **VictoriaTraces Global (Hot+Cold)** | Jaeger | `http://vtselect:10428` | Unified hot+cold traces via multi-level select |
+| **VictoriaTraces Global (Hot+Cold)** | Jaeger / Tempo | `http://vtselect:10428` | Unified hot+cold traces via multi-level select |
 | VictoriaLogs Hot (Disk 24h) | VictoriaLogs | `http://victorialogs:9428` | Hot tier only (disk, 24h retention) |
-| VictoriaTraces Hot (Disk 24h) | Jaeger | `http://victoriatraces:10428` | Hot tier only (disk, 24h retention) |
+| VictoriaTraces Hot (Disk 24h) | Jaeger / Tempo | `http://victoriatraces:10428` | Hot tier only (disk, 24h retention) |
 | Lakehouse Logs Cold (S3) | VictoriaLogs | `http://lakehouse-logs:9428` | Cold tier only (S3 Parquet) |
-| Lakehouse Traces Cold (S3 Jaeger) | Jaeger | `http://lakehouse-traces:10428` | Cold tier only (S3 Parquet) |
+| Lakehouse Traces Cold (S3) | Jaeger / Tempo | `http://lakehouse-traces:10428` | Cold tier only (S3 Parquet) |
 | Loki via Proxy (Hot+Cold) | Loki | `http://loki-vl-proxy:3100` | Unified hot+cold via Loki API with Drilldown support |
 | DuckDB Analytics (S3 Parquet) | DuckDB | in-memory + MinIO S3 | Direct SQL on Parquet files via DuckDB `read_parquet()` |
 | ClickHouse Analytics (S3 Parquet) | ClickHouse | `http://clickhouse:9000` | SQL analytics on Parquet via `lakehouse.logs`/`lakehouse.traces` views |

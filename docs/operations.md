@@ -23,10 +23,10 @@ Victoria Lakehouse goes through 4 phases on startup:
 ```mermaid
 stateDiagram-v2
     [*] --> INIT: Parse config, bind HTTP
-    INIT --> DISK_RECOVERY: /health → 200
+    INIT --> DISK_RECOVERY: health endpoint returns 200
     DISK_RECOVERY --> S3_REFRESH: Load manifest, index (~1-3s)
     S3_REFRESH --> READY: ListObjects (~2-10s warm)
-    READY --> [*]: /ready → 200
+    READY --> [*]: ready endpoint returns 200
 
     note right of INIT: Liveness probe passes
     note right of READY: Readiness probe passes,<br/>K8s routes traffic

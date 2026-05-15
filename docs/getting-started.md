@@ -11,11 +11,21 @@ It ships as two dedicated binaries — `lakehouse-logs` and `lakehouse-traces` �
 
 ## How It Works
 
+Victoria Lakehouse handles both logs and traces through the same architecture — the same ingest pipeline, same S3 storage, same Parquet format, same cache tiers. The only difference is the schema profile and query API surface.
+
 ```mermaid
 graph LR
-    A[vmagent<br/>OTEL Collector] -->|insert| B[Lakehouse Insert]
+    subgraph Ingest
+        A1[vmagent] -->|logs| B[Lakehouse Insert]
+        A2[OTEL Collector] -->|traces| B
+    end
     B -->|flush Parquet| C[(S3)]
-    D[Grafana<br/>Jaeger UI] -->|query| E[Lakehouse Select]
+    subgraph Query
+        D1[Grafana VL] -->|LogsQL| E[Lakehouse Select]
+        D2[Grafana Jaeger] -->|Jaeger API| E
+        D3[Grafana Tempo] -->|Tempo API| E
+        D4[DuckDB / Spark] -->|S3 direct| C
+    end
     E -->|read Parquet| C
     E -->|buffer query| B
 
@@ -26,8 +36,8 @@ graph LR
 
 ```mermaid
 graph TD
-    subgraph "Data Flow"
-    I1[JSON / Loki / ES Bulk<br/>OTLP / Syslog / Fluentd<br/>Logstash / Datadog / Journald] -->|11+ formats| W[WAL + Buffer]
+    subgraph "Data Flow (Logs + Traces)"
+    I1["JSON / Loki / ES Bulk<br/>OTLP / Syslog / Fluentd<br/>Logstash / Datadog / Journald"] -->|"11+ formats"| W[WAL + Buffer]
     W -->|periodic flush| P[Parquet + ZSTD]
     P -->|PutObject| S3[(S3 Standard)]
     S3 -->|lifecycle| IA[S3 Infrequent Access]
@@ -35,15 +45,17 @@ graph TD
     end
 
     subgraph "Query Path"
-    Q[LogsQL / Jaeger / Loki API<br/>DuckDB / ClickHouse / Spark] -->|query| M{Manifest}
-    M -->|hot range| SKIP[Empty ≤1ms]
-    M -->|cold range| SCAN[Row Group Stats<br/>→ Bloom Filter<br/>→ Column Scan]
+    Q["LogsQL / Jaeger / Tempo / Loki API<br/>DuckDB / ClickHouse / Spark"] -->|query| M{"Manifest"}
+    M -->|hot range| SKIP["Empty ≤1ms"]
+    M -->|cold range| SCAN["Row Group Stats<br/>→ Bloom Filter<br/>→ Column Scan"]
     end
 
     style W fill:#4CAF50,color:#fff
     style S3 fill:#FF9800,color:#fff
     style M fill:#2196F3,color:#fff
 ```
+
+> **Note**: Tempo API support is provided by VictoriaTraces upstream. Lakehouse inherits VT's Tempo handlers automatically via the storage dispatch layer — no custom implementation needed.
 
 ## Prerequisites
 
@@ -243,8 +255,13 @@ datasources:
     type: victorialogs-datasource
     url: http://lakehouse-logs:9428
 
-  - name: Cold Traces
+  - name: Cold Traces (Jaeger)
     type: jaeger
+    url: http://lakehouse-traces:10428
+
+  # Tempo datasource — requires VT with Tempo API support
+  - name: Cold Traces (Tempo)
+    type: tempo
     url: http://lakehouse-traces:10428
 ```
 

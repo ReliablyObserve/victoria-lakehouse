@@ -12,9 +12,9 @@ End-to-end data flow through Victoria Lakehouse, from VL/VT upstream input throu
 ```mermaid
 graph TD
     subgraph Input
-        APP[Applications] -->|JSON, Loki, ES bulk| INS[Insert API]
-        VL[VL/VT Select] -->|/internal/select/*| SEL[Select API]
-        GF[Grafana] -->|/select/logsql/*| SEL
+        APP[Applications] -->|"JSON, Loki, ES bulk"| INS[Insert API]
+        VL["VL/VT Select"] -->|"internal/select/*"| SEL[Select API]
+        GF[Grafana] -->|"select/logsql/*"| SEL
     end
 
     subgraph Victoria Lakehouse
@@ -258,8 +258,8 @@ graph LR
 
 ```mermaid
 flowchart TD
-    QUERY["Query: _time:[2026-05-02T10:00, 2026-05-02T12:00)"] 
-    QUERY --> FAST{HasDataForRange?}
+    QUERY["Query: _time: 2026-05-02T10:00 to 2026-05-02T12:00"] 
+    QUERY --> FAST{"HasDataForRange?"}
     FAST -->|manifest.minTime > endNs<br/>or maxTime < startNs| EMPTY[Return empty<br/>< 1ms]
     FAST -->|overlap| RANGE[GetFilesForRange]
     RANGE --> MATCH["Match partitions:<br/>dt=2026-05-02/hour=10<br/>dt=2026-05-02/hour=11"]

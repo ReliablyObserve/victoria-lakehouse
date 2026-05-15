@@ -9,7 +9,7 @@ Victoria Lakehouse stores data as standard Apache Parquet on S3. Any Parquet-cap
 
 ```mermaid
 graph TD
-    S3[(S3 Parquet)] --> LH[Lakehouse APIs<br/>LogsQL / Jaeger / Loki]
+    S3[(S3 Parquet)] --> LH[Lakehouse APIs<br/>LogsQL / Jaeger / Tempo / Loki]
     S3 --> DDB[DuckDB<br/>Zero infra, in-process]
     S3 --> CH[ClickHouse<br/>OLAP, Grafana plugin]
     S3 --> TR[Trino<br/>Federated SQL]

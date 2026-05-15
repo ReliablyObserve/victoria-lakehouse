@@ -17,7 +17,7 @@ RunQuery(ctx, qctx, writeBlock)
 
 The query context carries:
 - `StartNs` / `EndNs` -- nanosecond time range boundaries
-- `Query` -- the raw LogsQL or Jaeger query string
+- `Query` -- the raw LogsQL, Jaeger, or Tempo query string
 - `RequestedColumns` -- optional column projection list
 
 ## Pruning Cascade

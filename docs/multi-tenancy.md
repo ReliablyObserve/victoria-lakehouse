@@ -7,6 +7,10 @@ sidebar_position: 14
 
 Victoria Lakehouse supports **logical multi-tenancy within a single binary** — one `lakehouse-logs` or `lakehouse-traces` process serves all tenants simultaneously. Both binaries use the **identical tenant configuration** — the same flags, headers, S3 prefix templates, and global read auth apply to logs and traces. Tenant isolation is enforced at the S3 prefix level using the same pattern as Grafana Loki and Grafana Tempo.
 
+**Two tenant identification methods:**
+- **Integer headers** (VL/VT native): `X-Scope-AccountID` + `X-Scope-ProjectID` — direct integer IDs
+- **String aliases** (Loki/Tempo compatible): `X-Scope-OrgID: prod-team-eu_staging` — human-readable names mapped to integer IDs
+
 ## Architecture
 
 ### How It Works — Single Binary, Multiple Tenants
@@ -15,27 +19,34 @@ Victoria Lakehouse supports **logical multi-tenancy within a single binary** —
 graph LR
     subgraph "Tenant Routing (single binary)"
         LH["lakehouse-logs / lakehouse-traces"]
-        LH --> EXT["Extract AccountID:ProjectID<br/>from HTTP headers"]
+        LH --> TR["TenantResolver<br/>(OrgID → integers)"]
+        TR --> EXT["Extract AccountID:ProjectID<br/>from headers or alias"]
         EXT --> RES["Resolve S3 prefix<br/>via template"]
         RES --> MAN["Tenant-scoped manifest<br/>lookup"]
     end
 
-    TA["Tenant A Request<br/>(X-Scope-AccountID: 100<br/>X-Scope-ProjectID: 1)"] --> LH
-    TB["Tenant B Request<br/>(X-Scope-AccountID: 200<br/>X-Scope-ProjectID: 5)"] --> LH
+    TA["Tenant A<br/>X-Scope-OrgID: prod-team-eu_staging"] --> LH
+    TB["Tenant B<br/>X-Scope-AccountID: 200<br/>X-Scope-ProjectID: 5"] --> LH
+    TC["Tenant C<br/>X-Scope-OrgID: dev_default"] --> LH
 
-    MAN -->|"100/1/logs/**"| SA[("S3: 100/1/")]
-    MAN -->|"200/5/logs/**"| SB[("S3: 200/5/")]
+    MAN -->|"42/3/logs/**"| SA["S3: 42/3/"]
+    MAN -->|"200/5/logs/**"| SB["S3: 200/5/"]
+    MAN -->|"1/1/logs/**"| SC["S3: 1/1/"]
 
     style SA fill:#2d6a4f,color:#fff
     style SB fill:#5a189a,color:#fff
+    style SC fill:#e76f51,color:#fff
     style LH fill:#264653,color:#fff
+    style TR fill:#e9c46a,color:#000
 ```
 
-1. Every incoming request carries `AccountID` and `ProjectID` via HTTP headers (from vmauth, API gateway, or direct)
-2. The prefix template `{AccountID}/{ProjectID}/` resolves to the tenant's S3 prefix
-3. The manifest is tenant-scoped internally: `map[tenantKey]map[partition][]FileInfo` — a query for tenant-A only sees tenant-A's file index
-4. All S3 reads and writes are scoped to that prefix — a tenant cannot access another tenant's data
-5. When no tenant headers are present, the default `0/0/` prefix is used (single-tenant mode)
+1. Every incoming request carries tenant identity via **integer headers** (`X-Scope-AccountID` + `X-Scope-ProjectID`) or a **string alias** (`X-Scope-OrgID`)
+2. When `X-Scope-OrgID` is present, the TenantResolver translates it to integer IDs via the configured alias map
+3. The prefix template `{AccountID}/{ProjectID}/` (or `{OrgID}/` for standalone) resolves to the tenant's S3 prefix
+4. The manifest is tenant-scoped internally: `map[tenantKey]map[partition][]FileInfo` — a query for tenant-A only sees tenant-A's file index
+5. All S3 reads and writes are scoped to that prefix — a tenant cannot access another tenant's data
+6. When no tenant headers are present, the default `0/0/` prefix is used (single-tenant mode)
+7. Requests using integer headers bypass the resolver entirely (zero overhead)
 
 ### S3 Layout
 
@@ -52,6 +63,119 @@ s3://obs-archive/
   200/5/                        ← tenant 200:5
     logs/dt=2026-01-15/hour=00/batch-006.parquet
 ```
+
+### Tenant Name Mapping (X-Scope-OrgID)
+
+Victoria Lakehouse supports Loki/Tempo-compatible string-based tenant identification via the `X-Scope-OrgID` header. String aliases are mapped to VL/VT integer `{AccountID, ProjectID}` pairs at the system boundary — all internal operations remain pure integer.
+
+**Boundary principle:** String aliases exist only at external surfaces (HTTP headers, API responses, metrics labels, UI, logs). Everything inside uses integer IDs for VL/VT compatibility.
+
+#### Alias Format
+
+Aliases follow the [Loki/Tempo tenant ID spec](https://github.com/grafana/dskit/blob/main/tenant/tenant.go):
+- **Allowed characters:** `a-z A-Z 0-9 ! - _ . * ' ( )`
+- **Max length:** 150 bytes
+- **Reserved:** `|` (multi-tenant), `:` (metadata), `/` (not allowed)
+- **Compound convention:** Use underscore `_` to combine account and project: `prod-team-eu_staging`
+
+```bash
+# String alias (Loki/Tempo compatible)
+curl -H "X-Scope-OrgID: prod-team-eu_staging" \
+  "http://lakehouse-logs:9428/select/logsql/query?query=*"
+
+# Equivalent integer headers (VL/VT native)
+curl -H "X-Scope-AccountID: 42" -H "X-Scope-ProjectID: 3" \
+  "http://lakehouse-logs:9428/select/logsql/query?query=*"
+```
+
+#### Three Mapping Sources
+
+| Source | Priority | Persistence | Use Case |
+|--------|----------|-------------|----------|
+| **Static config** | Highest | Config file / Helm | Known tenants at deploy time |
+| **Runtime API** | Medium | S3 `_meta/tenant-aliases.json` | Dynamic tenant onboarding without restarts |
+| **Auto-discovery** | Lowest | S3 (immediate) | Dynamic environments, first-seen auto-registration |
+
+Static config aliases cannot be overridden by runtime aliases. Runtime aliases are synced across the fleet via the existing stats delta mechanism (default 30s).
+
+#### Configuration
+
+```yaml
+lakehouse:
+  tenant:
+    orgid_header: "X-Scope-OrgID"      # Header name for string tenant ID
+    auto_register: false                 # Auto-register unknown OrgIDs
+    alias_sync_interval: "30s"           # Fleet sync interval for runtime aliases
+    metrics_format: "id"                 # Prometheus label: id | name | both
+    aliases:                             # Static alias mappings
+      prod-team-eu_staging:
+        account_id: 42
+        project_id: 3
+      prod-team-eu_prod:
+        account_id: 42
+        project_id: 7
+      dev_default:
+        account_id: 1
+        project_id: 1
+```
+
+```bash
+--lakehouse.tenant.orgid-header=X-Scope-OrgID
+--lakehouse.tenant.auto-register=false
+--lakehouse.tenant.alias-sync-interval=30s
+--lakehouse.tenant.metrics-format=id
+```
+
+#### Aliases CRUD API
+
+Manage aliases at runtime without restarts:
+
+```bash
+# List all aliases
+curl http://lakehouse-logs:9428/lakehouse/api/v1/tenants/aliases
+
+# Create alias
+curl -X POST http://lakehouse-logs:9428/lakehouse/api/v1/tenants/aliases \
+  -d '{"org_id":"staging_analytics","account_id":50,"project_id":1}'
+
+# Delete alias
+curl -X DELETE http://lakehouse-logs:9428/lakehouse/api/v1/tenants/aliases/staging_analytics
+```
+
+Runtime aliases are persisted to `s3://{bucket}/_meta/tenant-aliases.json` and broadcast to all fleet nodes.
+
+#### S3 Prefix Templates
+
+Three template modes for S3 key organization:
+
+| Template | S3 Key Example | Use Case |
+|----------|---------------|----------|
+| `{AccountID}/{ProjectID}/` (default) | `42/3/logs/dt=2026-05-15/...` | VL/VT compatible |
+| `{OrgID}/` | `prod-team-eu_staging/logs/dt=2026-05-15/...` | Standalone deployment |
+| `{OrgID}/{ProjectID}/` | `prod-team-eu/3/logs/dt=2026-05-15/...` | Hybrid string + integer |
+
+The `{OrgID}` template requires at least one alias configured (or `auto_register: true`) and is not compatible with VL/VT upstream storage node integration.
+
+#### Prometheus Metrics Format
+
+Controlled by `--lakehouse.tenant.metrics-format`:
+
+| Value | Label Example | Notes |
+|-------|--------------|-------|
+| `id` (default) | `tenant="42:3"` | Zero change from current behavior |
+| `name` | `tenant="prod-team-eu_staging"` | Falls back to `"42:3"` if no alias |
+| `both` | `tenant="42:3"` + `tenant_name="prod-team-eu_staging"` | Extra label — opt-in for cardinality |
+
+#### Display Names on External Surfaces
+
+When aliases are configured, friendly names appear on all external surfaces:
+
+- **API responses**: `"name": "prod-team-eu_staging"` field added to all tenant entries
+- **Explorer UI**: tenant selector shows friendly names, tables show name when available
+- **Structured logs**: `tenant=prod-team-eu_staging tenant_id=42:3`
+- **Prometheus metrics**: configurable via `metrics_format`
+
+Integer IDs are always available alongside names for correlation and debugging.
 
 ### Enterprise: Bucket-Per-Tenant Isolation
 
@@ -78,6 +202,12 @@ Each tenant gets its own S3 bucket with independent IAM policies, encryption key
 --lakehouse.tenant.header-account=X-Scope-AccountID
 --lakehouse.tenant.header-project=X-Scope-ProjectID
 
+# Tenant name mapping (Loki/Tempo compatible)
+--lakehouse.tenant.orgid-header=X-Scope-OrgID
+--lakehouse.tenant.metrics-format=id
+--lakehouse.tenant.auto-register=false
+--lakehouse.tenant.alias-sync-interval=30s
+
 # Enterprise bucket isolation
 --lakehouse.tenant.isolation=bucket
 --lakehouse.tenant.bucket-template="obs-{AccountID}-{ProjectID}"
@@ -91,13 +221,17 @@ Each tenant gets its own S3 bucket with independent IAM policies, encryption key
 
 | Flag | Default | Description |
 |---|---|---|
-| `--lakehouse.tenant.prefix-template` | `{AccountID}/{ProjectID}/` | S3 prefix pattern per tenant |
+| `--lakehouse.tenant.prefix-template` | `{AccountID}/{ProjectID}/` | S3 prefix pattern. Supports `{AccountID}`, `{ProjectID}`, `{OrgID}` |
 | `--lakehouse.tenant.isolation` | `prefix` | Isolation mode: `prefix` (shared bucket) or `bucket` (separate buckets) |
 | `--lakehouse.tenant.bucket-template` | (empty) | Bucket name pattern for `bucket` isolation mode |
 | `--lakehouse.tenant.default-account` | `0` | Default AccountID when header is absent (single-tenant mode) |
 | `--lakehouse.tenant.default-project` | `0` | Default ProjectID when header is absent (single-tenant mode) |
 | `--lakehouse.tenant.header-account` | `X-Scope-AccountID` | HTTP header for AccountID extraction |
 | `--lakehouse.tenant.header-project` | `X-Scope-ProjectID` | HTTP header for ProjectID extraction |
+| `--lakehouse.tenant.orgid-header` | `X-Scope-OrgID` | HTTP header for string-based tenant identification (Loki/Tempo compatible) |
+| `--lakehouse.tenant.metrics-format` | `id` | Prometheus tenant label format: `id`, `name`, or `both` |
+| `--lakehouse.tenant.auto-register` | `false` | Auto-register unknown X-Scope-OrgID values as new aliases |
+| `--lakehouse.tenant.alias-sync-interval` | `30s` | Fleet sync interval for runtime-added aliases |
 | `--lakehouse.tenant.global-read-header` | (empty, disabled) | HTTP header name to trigger global read across all tenants |
 | `--lakehouse.tenant.global-read-value` | (empty) | Required value for the global read header (acts as a shared secret) |
 | `--lakehouse.tenant.global-read-token` | (empty, disabled) | Bearer token for global read via `Authorization: Bearer <token>` header |
@@ -117,6 +251,19 @@ lakehouse:
     global_read_header: ""      # empty = disabled (custom header method)
     global_read_value: ""       # shared secret for custom header method
     global_read_token: ""       # empty = disabled (Bearer token method)
+
+    # Tenant Name Mapping (X-Scope-OrgID)
+    orgid_header: "X-Scope-OrgID"   # Loki/Tempo compatible header
+    metrics_format: "id"             # id | name | both
+    auto_register: false             # auto-register unknown OrgIDs
+    alias_sync_interval: "30s"       # fleet sync interval
+    aliases:                         # static alias → integer ID mappings
+      prod-team-eu_staging:
+        account_id: 42
+        project_id: 3
+      prod-team-eu_prod:
+        account_id: 42
+        project_id: 7
 ```
 
 ### Single-Tenant (Default)
@@ -238,10 +385,20 @@ Compaction runs per-tenant. Each tenant's files are merged independently.
 
 ### Metrics
 
-All metrics include a `tenant` label when multi-tenancy is enabled:
-- `lakehouse_insert_rows_total{tenant="100/1"}`
-- `lakehouse_query_duration_seconds{tenant="200/5"}`
-- `lakehouse_s3_bytes_read_total{tenant="100/1"}`
+All metrics include a `tenant` label when multi-tenancy is enabled. The label format is controlled by `--lakehouse.tenant.metrics-format`:
+
+```
+# metrics_format=id (default)
+lakehouse_insert_rows_total{tenant="42:3"}
+lakehouse_query_duration_seconds{tenant="200:5"}
+
+# metrics_format=name (when alias configured)
+lakehouse_insert_rows_total{tenant="prod-team-eu_staging"}
+lakehouse_query_duration_seconds{tenant="200:5"}  # fallback if no alias
+
+# metrics_format=both
+lakehouse_insert_rows_total{tenant="42:3",tenant_name="prod-team-eu_staging"}
+```
 
 ## Analytics Tool Compatibility
 
@@ -465,22 +622,31 @@ Victoria Lakehouse tracks per-tenant storage statistics in real-time. See [Tenan
 Subject to a configurable cardinality cap (`stats.metrics_cardinality_limit`, default 100):
 
 ```
-lakehouse_tenant_files{tenant="100/1"}        # File count
-lakehouse_tenant_bytes{tenant="100/1"}        # Compressed bytes
-lakehouse_tenant_rows_total{tenant="100/1"}   # Cumulative rows
-lakehouse_tenant_queries_total{tenant="100/1"} # Cumulative queries
+# Default (metrics_format=id)
+lakehouse_tenant_files{tenant="42:3"}
+lakehouse_tenant_bytes{tenant="42:3"}
+lakehouse_tenant_rows_total{tenant="42:3"}
+lakehouse_tenant_queries_total{tenant="42:3"}
+
+# With metrics_format=name and alias configured
+lakehouse_tenant_files{tenant="prod-team-eu_staging"}
+lakehouse_tenant_bytes{tenant="prod-team-eu_staging"}
 ```
 
 When the cap is reached, additional tenants are still visible in the JSON API but not emitted as Prometheus metrics.
 
 ### JSON API
 
-Per-tenant drill-down, cost allocation, and cardinality analysis:
+Per-tenant drill-down, cost allocation, cardinality analysis, and alias management:
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /lakehouse/api/v1/tenants` | Tenant summary list |
-| `GET /lakehouse/api/v1/tenants/{accountID}/{projectID}` | Tenant drill-down |
+| `GET /lakehouse/api/v1/tenants` | Tenant summary list (includes `name` field when alias configured) |
+| `GET /lakehouse/api/v1/tenants/{accountID}/{projectID}` | Tenant drill-down by integer IDs |
+| `GET /lakehouse/api/v1/tenants/{orgId}` | Tenant drill-down by alias (e.g., `prod-team-eu_staging`) |
+| `GET /lakehouse/api/v1/tenants/aliases` | List all alias mappings |
+| `POST /lakehouse/api/v1/tenants/aliases` | Create or update alias |
+| `DELETE /lakehouse/api/v1/tenants/aliases/{orgId}` | Remove alias |
 | `GET /lakehouse/api/v1/stats/cost` | Cost breakdown by tenant |
 | `GET /lakehouse/api/v1/cardinality/fields?tenant=100/1` | Per-tenant field cardinality |
 
