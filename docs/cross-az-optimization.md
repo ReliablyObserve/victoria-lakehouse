@@ -321,6 +321,124 @@ lakehouse --lakehouse.insert.ack-mode=wal \
 | **PB-scale, zero-loss mandate** | `flush-sync` | At PB scale, buffer mode risks 1+ GB per pod. flush-sync eliminates this at near-zero cost. |
 | **Loki/Tempo replacement** | `flush-sync` | Matches Loki/Tempo RF=3 durability guarantee at $0 cross-AZ cost and zero operational complexity. |
 
+#### AZ Failure Resilience — Write Availability Under Partial Outage
+
+With `flush-sync`, accepted data is always safe (S3 multi-AZ). The remaining question: **can the surviving AZs keep accepting new data at full ingest rate?**
+
+```mermaid
+graph TD
+    subgraph "Normal: 3 AZs, 6 insert pods"
+        A1[AZ-a<br/>pod-0, pod-1] -->|"33% load"| S3A[(S3)]
+        B1[AZ-b<br/>pod-2, pod-3] -->|"33% load"| S3A
+        C1[AZ-c<br/>pod-4, pod-5] -->|"33% load"| S3A
+    end
+
+    subgraph "AZ-a fails: 2 AZs absorb full load"
+        B2["AZ-b<br/>pod-2, pod-3<br/>50% load ✅"] -->|"50% load"| S3B[(S3)]
+        C2["AZ-c<br/>pod-4, pod-5<br/>50% load ✅"] -->|"50% load"| S3B
+    end
+
+    subgraph "AZ-a + AZ-b fail: 1 AZ absorbs all"
+        C3["AZ-c<br/>pod-4, pod-5<br/>100% load ⚠️"] -->|"100% load"| S3C[(S3)]
+    end
+
+    style A1 fill:#F44336,color:#fff
+    style B2 fill:#4CAF50,color:#fff
+    style C2 fill:#4CAF50,color:#fff
+    style C3 fill:#FF9800,color:#fff
+```
+
+##### Capacity Planning
+
+The rule is simple: **size each AZ's insert pods to handle the full ingest load divided by (total AZs minus max tolerated failures).**
+
+| Setup | Tolerate | Pods per AZ needed | Total pods | Headroom per pod |
+|---|---|---|---|---|
+| 3 AZ, survive 1 AZ loss | 1 failure | `ceil(N / 2)` | N × 1.5 | 50% spare capacity |
+| 3 AZ, survive 2 AZ loss | 2 failures | `N` (each AZ = full capacity) | N × 3 | 200% spare capacity |
+| 4 AZ, survive 1 AZ loss | 1 failure | `ceil(N / 3)` | N × 1.33 | 33% spare capacity |
+| 4 AZ, survive 2 AZ loss | 2 failures | `ceil(N / 2)` | N × 2 | 100% spare capacity |
+
+Where `N` = pods needed to handle full ingest load (e.g., 3 pods for 500 GB/day).
+
+**Example — 500 GB/day, 3 AZs, tolerate 1 AZ failure:**
+- Need 3 pods for normal load → 2 pods per AZ → 6 total
+- Normal: each pod handles 83 GB/day (33% of 500/2)
+- AZ-a fails: 4 pods handle 500 GB/day → 125 GB/day each (50% headroom used)
+- Cost: 6 × ~$35/mo EKS pod = $210/mo (vs $105/mo for 3 pods without resilience)
+
+**Example — 1 PB/mo, 3 AZs, tolerate 1 AZ failure:**
+- Need 6 pods for normal load → 4 pods per AZ → 12 total
+- Normal: each pod handles ~2.8 TB/day
+- AZ-a fails: 8 pods handle 33 TB/day → 4.1 TB/day each
+- Cost: 12 × ~$140/mo m5.xlarge = $1,680/mo (vs $840/mo without resilience)
+
+##### What Protects Data at Each Stage
+
+Data flows through four stages from client to S3. Here's what protects it at each point and what happens when an AZ fails:
+
+```
+Stage 1        Stage 2          Stage 3         Stage 4
+Client  ──→  Network/LB  ──→  Insert Pod  ──→  S3
+```
+
+| Stage | What Happens on AZ Failure | Protection Mechanism | Complexity |
+|---|---|---|---|
+| **1. Client → Network** | Client detects connection failure | **Client retry** — all VL/VT-compatible clients retry on error. Load balancer health checks remove dead pods within seconds. | Built-in (HTTP) |
+| **2. Network → Insert Pod** | Request in transit is lost | **Client retry** — no response received = client resends. TCP guarantees: no partial delivery without error. | Built-in (TCP/HTTP) |
+| **3. In Insert Pod buffer** | Buffer lost with pod | **`flush-sync`** — buffer was never acknowledged (no 200 sent). Client retries. **`buffer`** — data was acknowledged, lost. **`wal`** — on local EBS, at risk if AZ fails. | Config: `ack_mode` |
+| **4. Insert Pod → S3** | PutObject may or may not complete | **S3 is regional** — once PUT succeeds, data survives any AZ failure. If PUT fails, no 200 sent (flush-sync), client retries. | Built-in (S3) |
+
+**The only stage where `ack_mode` matters is Stage 3.** Every other stage is inherently protected by HTTP retry semantics and S3's regional architecture.
+
+##### Decision Matrix: AZ Tolerance + Durability
+
+| Goal | `ack_mode` | Insert pod sizing | Monthly cost premium | Result |
+|---|---|---|---|---|
+| **Best effort** (standard observability) | `buffer` | Normal (no over-provision) | $0 | Pod crash: lose 10s. AZ fail: lose 10s + wait for LB failover. |
+| **Pod crash safe** | `wal` | Normal | ~$10/mo (EBS for WAL) | Pod crash: zero loss. AZ fail: WAL at risk. |
+| **Zero data loss** | `flush-sync` | Normal | ~$0.15/mo (extra S3 PUTs) | Any failure: zero loss. Surviving pods may be overloaded. |
+| **Zero loss + HA** | `flush-sync` | Over-provision (N-1 AZ) | +50% pod cost | Any single AZ failure: zero loss, full throughput maintained. |
+| **Zero loss + multi-AZ HA** | `flush-sync` | Over-provision (N-2 AZ) | +200% pod cost | Two AZ failures: zero loss, full throughput maintained. |
+
+##### Helm Configuration for AZ-Resilient Insert
+
+```yaml
+# 3 AZ, tolerate 1 AZ failure, zero data loss
+lakehouseConfig:
+  insert:
+    ack_mode: "flush-sync"
+    flush_linger: "200ms"
+
+insert:
+  replicaCount: 6              # 2 per AZ (over-provisioned for N-1)
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/component: insert
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+```
+
+This ensures: pods spread evenly across AZs (`maxSkew: 1`), scheduler won't place 2 pods in the same AZ if another AZ has 0 (`DoNotSchedule`), and each pod has headroom for 1.5× normal load.
+
+##### Monitoring AZ Failure Readiness
+
+| Metric | Alert Threshold | Meaning |
+|---|---|---|
+| `lakehouse_insert_pods_per_az` | < 2 | Not enough pods in an AZ for N-1 tolerance |
+| `lakehouse_insert_buffer_rows` | > 80% of `flush_max_rows` | Pod approaching flush threshold — may need more pods |
+| `lakehouse_insert_flush_duration_seconds` | p99 > 1s | S3 write latency too high — check network/S3 throttling |
+| `kube_pod_status_ready` by AZ | < expected per AZ | AZ may be degrading |
+
 ### Preferred vs Strict Mode
 
 | Mode | Behavior | Cross-AZ Traffic | Cache Hit Rate |
