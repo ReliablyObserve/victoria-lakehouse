@@ -1,0 +1,97 @@
+name: Check Upstream Releases
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check VictoriaLogs releases
+        id: vl
+        run: |
+          LATEST=$(gh api repos/VictoriaMetrics/VictoriaLogs/releases/latest --jq .tag_name 2>/dev/null || echo "unknown")
+          CURRENT=$(jq -r '.victorialogs' .upstream-versions.json 2>/dev/null || echo "none")
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          if [ "$LATEST" != "$CURRENT" ] && [ "$LATEST" != "unknown" ] && [ "$CURRENT" != "none" ]; then
+            echo "outdated=true" >> $GITHUB_OUTPUT
+          else
+            echo "outdated=false" >> $GITHUB_OUTPUT
+          fi
+          echo "VL: current=$CURRENT latest=$LATEST"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check VictoriaTraces releases
+        id: vt
+        run: |
+          LATEST=$(gh api repos/VictoriaMetrics/VictoriaTraces/releases/latest --jq .tag_name 2>/dev/null || echo "unknown")
+          CURRENT=$(jq -r '.victoriatraces' .upstream-versions.json 2>/dev/null || echo "none")
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          if [ "$LATEST" != "$CURRENT" ] && [ "$LATEST" != "unknown" ] && [ "$CURRENT" != "none" ]; then
+            echo "outdated=true" >> $GITHUB_OUTPUT
+          else
+            echo "outdated=false" >> $GITHUB_OUTPUT
+          fi
+          echo "VT: current=$CURRENT latest=$LATEST"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create sync PR
+        if: steps.vl.outputs.outdated == 'true' || steps.vt.outputs.outdated == 'true'
+        run: |
+          BRANCH="upstream-sync/$(date +%Y%m%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+
+          # Update version tracking file
+          jq --arg vl "${{ steps.vl.outputs.latest }}" \
+             --arg vt "${{ steps.vt.outputs.latest }}" \
+             '.victorialogs = $vl | .victoriatraces = $vt' \
+             .upstream-versions.json > .upstream-versions.json.tmp
+          mv .upstream-versions.json.tmp .upstream-versions.json
+
+          # Update docker-compose image tags
+          if [ "${{ steps.vl.outputs.outdated }}" = "true" ]; then
+            sed -i "s|victoriametrics/victoria-logs:[^ ]*|victoriametrics/victoria-logs:${{ steps.vl.outputs.latest }}|g" \
+              deployment/docker/docker-compose-e2e.yml
+          fi
+
+          git add .upstream-versions.json deployment/docker/docker-compose-e2e.yml
+          git commit -m "deps: upstream sync VL=${{ steps.vl.outputs.latest }} VT=${{ steps.vt.outputs.latest }}"
+          git push -u origin "$BRANCH"
+
+          gh pr create \
+            --title "Upstream sync: VL ${{ steps.vl.outputs.latest }}, VT ${{ steps.vt.outputs.latest }}" \
+            --label "dependencies" \
+            --body "$(cat <<'EOF'
+          ## Upstream Release Update
+
+          | Component | Previous | Latest |
+          |---|---|---|
+          | VictoriaLogs | ${{ steps.vl.outputs.current }} | ${{ steps.vl.outputs.latest }} |
+          | VictoriaTraces | ${{ steps.vt.outputs.current }} | ${{ steps.vt.outputs.latest }} |
+
+          ### Changelog
+          - [VL releases](https://github.com/VictoriaMetrics/VictoriaLogs/releases)
+          - [VT releases](https://github.com/VictoriaMetrics/VictoriaTraces/releases)
+
+          ### Review Checklist
+          - [ ] E2E tests pass with new images
+          - [ ] No breaking API changes
+          - [ ] Performance regression check
+          EOF
+          )"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

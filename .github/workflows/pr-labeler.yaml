@@ -1,0 +1,104 @@
+name: PR Labeler
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Label by size
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+
+            let additions = 0, deletions = 0;
+            for (const f of files) {
+              additions += f.additions;
+              deletions += f.deletions;
+            }
+            const total = additions + deletions;
+
+            const sizeLabels = ['size/XS', 'size/S', 'size/M', 'size/L', 'size/XL'];
+            let label;
+            if (total <= 10) label = 'size/XS';
+            else if (total <= 50) label = 'size/S';
+            else if (total <= 200) label = 'size/M';
+            else if (total <= 500) label = 'size/L';
+            else label = 'size/XL';
+
+            // Remove old size labels
+            const { data: currentLabels } = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            for (const l of currentLabels) {
+              if (sizeLabels.includes(l.name) && l.name !== label) {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  name: l.name,
+                });
+              }
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: [label],
+            });
+
+      - name: Label by scope
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+
+            const scopes = new Set();
+            for (const f of files) {
+              const p = f.filename;
+              if (p.startsWith('internal/config/')) scopes.add('scope/config');
+              if (p.startsWith('internal/storage/')) scopes.add('scope/storage');
+              if (p.startsWith('internal/s3reader/')) scopes.add('scope/s3');
+              if (p.startsWith('internal/cache/')) scopes.add('scope/cache');
+              if (p.startsWith('internal/manifest/')) scopes.add('scope/manifest');
+              if (p.startsWith('internal/schema/')) scopes.add('scope/schema');
+              if (p.startsWith('internal/metrics/')) scopes.add('scope/metrics');
+              if (p.startsWith('internal/startup/')) scopes.add('scope/startup');
+              if (p.startsWith('internal/protocol/')) scopes.add('scope/protocol');
+              if (p.startsWith('internal/discovery/')) scopes.add('scope/discovery');
+              if (p.startsWith('internal/peercache/')) scopes.add('scope/peercache');
+              if (p.startsWith('charts/')) scopes.add('scope/helm');
+              if (p.startsWith('.github/')) scopes.add('scope/ci');
+              if (p.startsWith('dashboards/')) scopes.add('scope/dashboards');
+              if (p.startsWith('docs/')) scopes.add('scope/docs');
+              if (p.includes('_test.go')) scopes.add('scope/tests');
+            }
+
+            if (scopes.size > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: [...scopes],
+              });
+            }
