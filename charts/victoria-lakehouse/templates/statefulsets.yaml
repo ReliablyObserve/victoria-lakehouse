@@ -1,0 +1,162 @@
+{{- range $signal := list "logs" "traces" }}
+{{- $signalVals := index $.Values $signal }}
+{{- if $signalVals.enabled }}
+{{- range $role := list "select" "insert" }}
+{{- $roleVals := index $signalVals $role }}
+{{- if $roleVals.enabled }}
+{{- $componentName := printf "%s-%s" $signal $role }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $componentName }}
+  labels:
+    {{- include "victoria-lakehouse.componentLabels" (dict "root" $ "signal" $signal "role" $role) | nindent 4 }}
+spec:
+  replicas: {{ $roleVals.replicaCount }}
+  serviceName: {{ include "victoria-lakehouse.fullname" $ }}-{{ $componentName }}-headless
+  selector:
+    matchLabels:
+      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "root" $ "signal" $signal "role" $role) | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ toYaml (dict "shared" $.Values.lakehouseConfig "signal" $signalVals.config) | sha256sum }}
+        {{- with $roleVals.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "victoria-lakehouse.componentSelectorLabels" (dict "root" $ "signal" $signal "role" $role) | nindent 8 }}
+        {{- with $roleVals.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with $.Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ default (printf "%s-%s" (include "victoria-lakehouse.fullname" $) $componentName) (dig "serviceAccount" "name" "" $roleVals) }}
+      terminationGracePeriodSeconds: {{ $roleVals.terminationGracePeriodSeconds }}
+      {{- with (include "victoria-lakehouse.podSecurityContext" (dict "component" $roleVals "common" $.Values.common)) }}
+      securityContext:
+        {{- . | nindent 8 }}
+      {{- end }}
+      {{- with $roleVals.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $role }}
+          image: {{ include "victoria-lakehouse.signalImage" (dict "root" $ "signal" $signal) }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          args:
+            - "--lakehouse.config=/etc/lakehouse/config.yaml"
+            - "--lakehouse.role={{ $role }}"
+            {{- range $key, $val := $roleVals.extraArgs }}
+            - "--{{ $key }}={{ $val }}"
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ include "victoria-lakehouse.signalPort" (dict "signal" $signal) }}
+              protocol: TCP
+            {{- if and (eq $signal "traces") (eq $role "select") (dig "jaeger_enabled" false $signalVals.config) }}
+            - name: jaeger-grpc
+              containerPort: {{ dig "jaeger_grpc_port" 16685 $signalVals.config }}
+              protocol: TCP
+            {{- end }}
+          {{- with (include "victoria-lakehouse.securityContext" (dict "component" $roleVals "common" $.Values.common)) }}
+          securityContext:
+            {{- . | nindent 12 }}
+          {{- end }}
+          {{- with (include "victoria-lakehouse.resources" (dict "component" $roleVals "common" $.Values.common)) }}
+          resources:
+            {{- . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          {{- with $roleVals.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $roleVals.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/lakehouse
+              readOnly: true
+            - name: data
+              mountPath: /data/lakehouse
+            {{- with $roleVals.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: {{ $roleVals.probe.liveness.initialDelaySeconds }}
+            periodSeconds: {{ $roleVals.probe.liveness.periodSeconds }}
+            failureThreshold: {{ $roleVals.probe.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: {{ $roleVals.probe.readiness.initialDelaySeconds }}
+            periodSeconds: {{ $roleVals.probe.readiness.periodSeconds }}
+            failureThreshold: {{ $roleVals.probe.readiness.failureThreshold }}
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: {{ $roleVals.probe.startup.periodSeconds }}
+            failureThreshold: {{ $roleVals.probe.startup.failureThreshold }}
+        {{- with $roleVals.extraContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $signal }}-config
+        {{- with $roleVals.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with (include "victoria-lakehouse.nodeSelector" (dict "component" $roleVals "common" $.Values.common)) }}
+      nodeSelector:
+        {{- . | nindent 8 }}
+      {{- end }}
+      {{- with (include "victoria-lakehouse.tolerations" (dict "component" $roleVals "common" $.Values.common)) }}
+      tolerations:
+        {{- . | nindent 8 }}
+      {{- end }}
+      {{- with (include "victoria-lakehouse.affinity" (dict "component" $roleVals "common" $.Values.common)) }}
+      affinity:
+        {{- . | nindent 8 }}
+      {{- end }}
+      {{- with $roleVals.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $roleVals.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+  {{- if $roleVals.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          {{- toYaml $roleVals.persistence.accessModes | nindent 10 }}
+        {{- with $roleVals.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $roleVals.persistence.size }}
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -14,8 +14,18 @@ spec:
     - Egress
   ingress:
     - ports:
-        - port: {{ include "victoria-lakehouse.servicePort" . | int }}
+        {{- if .Values.logs.enabled }}
+        - port: 9428
           protocol: TCP
+        {{- end }}
+        {{- if .Values.traces.enabled }}
+        - port: 10428
+          protocol: TCP
+        {{- if (dig "jaeger_enabled" false .Values.traces.config) }}
+        - port: {{ dig "jaeger_grpc_port" 16685 .Values.traces.config }}
+          protocol: TCP
+        {{- end }}
+        {{- end }}
       {{- if .Values.networkPolicy.ingressFrom }}
       from:
         {{- toYaml .Values.networkPolicy.ingressFrom | nindent 8 }}

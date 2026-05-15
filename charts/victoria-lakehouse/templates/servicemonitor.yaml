@@ -1,21 +1,50 @@
-{{- range $name, $spec := dict "select" $.Values.select "insert" $.Values.insertComponent "vmauth" $.Values.vmauth }}
-{{- if and $spec.enabled (dig "serviceMonitor" "enabled" false $spec) }}
+{{- range $signal := list "logs" "traces" }}
+{{- $signalVals := index $.Values $signal }}
+{{- if $signalVals.enabled }}
+{{- range $role := list "select" "insert" }}
+{{- $roleVals := index $signalVals $role }}
+{{- if and $roleVals.enabled (dig "serviceMonitor" "enabled" false $roleVals) }}
+{{- $componentName := printf "%s-%s" $signal $role }}
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $name }}
+  name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $componentName }}
   labels:
-    {{- include "victoria-lakehouse.componentLabels" (dict "root" $ "component" $name) | nindent 4 }}
-    {{- with $spec.serviceMonitor.labels }}
+    {{- include "victoria-lakehouse.componentLabels" (dict "root" $ "signal" $signal "role" $role) | nindent 4 }}
+    {{- with $roleVals.serviceMonitor.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
   selector:
     matchLabels:
-      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "root" $ "component" $name) | nindent 6 }}
+      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "root" $ "signal" $signal "role" $role) | nindent 6 }}
   endpoints:
     - port: http
-      interval: {{ $spec.serviceMonitor.interval }}
+      interval: {{ $roleVals.serviceMonitor.interval }}
 {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- if and $.Values.vmauth.enabled (dig "serviceMonitor" "enabled" false $.Values.vmauth) }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "victoria-lakehouse.fullname" $ }}-vmauth
+  labels:
+    {{- include "victoria-lakehouse.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: vmauth
+    {{- with $.Values.vmauth.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "victoria-lakehouse.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: vmauth
+  endpoints:
+    - port: http
+      interval: {{ $.Values.vmauth.serviceMonitor.interval }}
 {{- end }}

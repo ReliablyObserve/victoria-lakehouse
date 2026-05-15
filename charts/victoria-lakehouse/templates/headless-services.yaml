@@ -1,0 +1,39 @@
+{{- range $signal := list "logs" "traces" }}
+{{- $signalVals := index $.Values $signal }}
+{{- if $signalVals.enabled }}
+{{- range $role := list "select" "insert" }}
+{{- $roleVals := index $signalVals $role }}
+{{- if and $roleVals.enabled $roleVals.headlessService.enabled }}
+{{- $componentName := printf "%s-%s" $signal $role }}
+{{- $port := include "victoria-lakehouse.signalPort" (dict "signal" $signal) }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $componentName }}-headless
+  labels:
+    {{- include "victoria-lakehouse.componentLabels" (dict "root" $ "signal" $signal "role" $role) | nindent 4 }}
+  {{- with $roleVals.headlessService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: http
+      port: {{ $port }}
+      targetPort: http
+      protocol: TCP
+    {{- if and (eq $signal "traces") (eq $role "select") (dig "jaeger_enabled" false $signalVals.config) }}
+    - name: jaeger-grpc
+      port: {{ dig "jaeger_grpc_port" 16685 $signalVals.config }}
+      targetPort: jaeger-grpc
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "victoria-lakehouse.componentSelectorLabels" (dict "root" $ "signal" $signal "role" $role) | nindent 4 }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

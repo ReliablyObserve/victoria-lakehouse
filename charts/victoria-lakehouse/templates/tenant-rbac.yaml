@@ -1,0 +1,36 @@
+{{- $le := .Values.lakehouseConfig.tenant.leader_election | default "auto" }}
+{{- if or (eq $le "auto") (eq $le "k8s") }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "victoria-lakehouse.fullname" . }}-tenant-leader
+  labels:
+    {{- include "victoria-lakehouse.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+{{- range $signal := list "logs" "traces" }}
+{{- $signalVals := index $.Values $signal }}
+{{- if $signalVals.enabled }}
+{{- $insertVals := $signalVals.insert }}
+{{- if $insertVals.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $signal }}-insert-leader
+  labels:
+    {{- include "victoria-lakehouse.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "victoria-lakehouse.fullname" $ }}-tenant-leader
+subjects:
+  - kind: ServiceAccount
+    name: {{ default (printf "%s-%s-insert" (include "victoria-lakehouse.fullname" $) $signal) (dig "serviceAccount" "name" "" $insertVals) }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -1,16 +1,23 @@
-{{- range $name, $spec := dict "select" $.Values.select "insert" $.Values.insertComponent }}
-{{- if and $spec.enabled (dig "podDisruptionBudget" "enabled" false $spec) }}
+{{- range $signal := list "logs" "traces" }}
+{{- $signalVals := index $.Values $signal }}
+{{- if $signalVals.enabled }}
+{{- range $role := list "select" "insert" }}
+{{- $roleVals := index $signalVals $role }}
+{{- if and $roleVals.enabled (dig "podDisruptionBudget" "enabled" false $roleVals) }}
+{{- $componentName := printf "%s-%s" $signal $role }}
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $name }}
+  name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $componentName }}
   labels:
-    {{- include "victoria-lakehouse.componentLabels" (dict "root" $ "component" $name) | nindent 4 }}
+    {{- include "victoria-lakehouse.componentLabels" (dict "root" $ "signal" $signal "role" $role) | nindent 4 }}
 spec:
-  minAvailable: {{ $spec.podDisruptionBudget.minAvailable }}
+  minAvailable: {{ $roleVals.podDisruptionBudget.minAvailable }}
   selector:
     matchLabels:
-      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "root" $ "component" $name) | nindent 6 }}
+      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "root" $ "signal" $signal "role" $role) | nindent 6 }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- end }}

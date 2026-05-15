@@ -1,25 +1,32 @@
-{{- range $name, $spec := dict "select" $.Values.select "insert" $.Values.insertComponent }}
-{{- if and $spec.enabled (dig "horizontalPodAutoscaler" "enabled" false $spec) }}
+{{- range $signal := list "logs" "traces" }}
+{{- $signalVals := index $.Values $signal }}
+{{- if $signalVals.enabled }}
+{{- range $role := list "select" "insert" }}
+{{- $roleVals := index $signalVals $role }}
+{{- if and $roleVals.enabled (dig "horizontalPodAutoscaler" "enabled" false $roleVals) }}
+{{- $componentName := printf "%s-%s" $signal $role }}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $name }}
+  name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $componentName }}
   labels:
-    {{- include "victoria-lakehouse.componentLabels" (dict "root" $ "component" $name) | nindent 4 }}
+    {{- include "victoria-lakehouse.componentLabels" (dict "root" $ "signal" $signal "role" $role) | nindent 4 }}
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: StatefulSet
-    name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $name }}
-  minReplicas: {{ $spec.horizontalPodAutoscaler.minReplicas }}
-  maxReplicas: {{ $spec.horizontalPodAutoscaler.maxReplicas }}
+    name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $componentName }}
+  minReplicas: {{ $roleVals.horizontalPodAutoscaler.minReplicas }}
+  maxReplicas: {{ $roleVals.horizontalPodAutoscaler.maxReplicas }}
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: {{ $spec.horizontalPodAutoscaler.targetCPUUtilizationPercentage }}
+          averageUtilization: {{ $roleVals.horizontalPodAutoscaler.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- end }}

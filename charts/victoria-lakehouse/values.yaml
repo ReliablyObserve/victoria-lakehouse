@@ -38,24 +38,13 @@ common:
       type: RuntimeDefault
 
 # =============================================================================
-# Lakehouse configuration
+# Shared lakehouse configuration
+# Applied to all signal modes. Per-signal overrides in logs.config / traces.config.
 # All flags available as --lakehouse.<section>.<key> CLI args.
-# See docs/configuration.md for full reference.
 # =============================================================================
 lakehouseConfig:
-  # -- Signal mode. Determines Parquet schema, port, and upstream compatibility.
-  # --lakehouse.mode (required)
-  # Allowed values: "logs" (port 9428, VL-compatible), "traces" (port 10428, VT-compatible)
-  mode: logs
-
-  # -- Binary role. Controls which handlers are registered.
-  # --lakehouse.role
-  # Allowed values: "all" (insert+select), "insert" (write only), "select" (read only)
-  role: all
-
   # -- Deployment topology detection mode.
   # --lakehouse.topology
-  # Allowed values: "auto", "storage-node", "direct", "loki-proxy"
   topology: auto
 
   # -- Static hot boundary override (e.g., "30d"). Empty = auto-detect from vlstorage.
@@ -67,37 +56,26 @@ lakehouseConfig:
   # ---------------------------------------------------------------------------
   s3:
     # -- S3 bucket name (required).
-    # --lakehouse.s3.bucket
     bucket: ""
     # -- AWS region.
-    # --lakehouse.s3.region
     region: us-east-1
     # -- S3 key prefix. Empty = auto-prefix from mode+tenant.
-    # --lakehouse.s3.prefix
     prefix: ""
     # -- Custom S3 endpoint (e.g., "http://minio:9000" for MinIO).
-    # --lakehouse.s3.endpoint
     endpoint: ""
     # -- S3 access key. Prefer IRSA/IAM roles in production.
-    # --lakehouse.s3.access-key
     access_key: ""
     # -- S3 secret key.
-    # --lakehouse.s3.secret-key
     secret_key: ""
     # -- Force path-style S3 URLs (required for MinIO).
-    # --lakehouse.s3.force-path-style
     force_path_style: false
     # -- Maximum HTTP connections to S3.
-    # --lakehouse.s3.max-connections
     max_connections: 128
     # -- S3 request timeout.
-    # --lakehouse.s3.timeout
     timeout: 30s
     # -- Maximum retry attempts for failed S3 requests.
-    # --lakehouse.s3.retry-max
     retry_max: 3
     # -- Base delay between retries (exponential backoff).
-    # --lakehouse.s3.retry-base-delay
     retry_base_delay: 200ms
 
   # ---------------------------------------------------------------------------
@@ -105,25 +83,18 @@ lakehouseConfig:
   # ---------------------------------------------------------------------------
   cache:
     # -- L1 memory cache size limit.
-    # --lakehouse.cache.memory-limit
     memory_limit: 512MB
     # -- L2 disk cache directory path.
-    # --lakehouse.cache.disk-path
     disk_path: /data/lakehouse/cache
     # -- L2 disk cache size limit.
-    # --lakehouse.cache.disk-limit
     disk_limit: 50GB
-    # -- Disk cache eviction watermark (0.0-1.0). Eviction starts at limit*watermark.
-    # --lakehouse.cache.eviction-watermark
+    # -- Disk cache eviction watermark (0.0-1.0).
     eviction_watermark: 0.8
     # -- TTL for cached Parquet file footers.
-    # --lakehouse.cache.footer-ttl
     footer_ttl: 1h
     # -- TTL for cached bloom filter data.
-    # --lakehouse.cache.bloom-ttl
     bloom_ttl: 1h
     # -- TTL for cached Parquet data pages.
-    # --lakehouse.cache.page-ttl
     page_ttl: 10m
 
   # ---------------------------------------------------------------------------
@@ -131,38 +102,26 @@ lakehouseConfig:
   # ---------------------------------------------------------------------------
   insert:
     # -- Periodic flush interval. Lower = less read delay, more S3 PUTs.
-    # --lakehouse.insert.flush-interval
     flush_interval: 10s
     # -- Max rows per partition buffer before triggering flush.
-    # --lakehouse.insert.max-buffer-rows
     max_buffer_rows: 50000
     # -- Total buffer memory limit across all partitions.
-    # --lakehouse.insert.max-buffer-bytes
     max_buffer_bytes: 256MB
     # -- Target Parquet file size before starting a new file.
-    # --lakehouse.insert.target-file-size
     target_file_size: 128MB
     # -- Rows per Parquet row group.
-    # --lakehouse.insert.row-group-size
     row_group_size: 10000
     # -- Columns to create bloom filters for (point lookup acceleration).
-    # --lakehouse.insert.bloom-columns
     bloom_columns:
       - service.name
       - trace_id
     # -- ZSTD compression level (1=fast, 22=max compression).
-    # Level 7 (SpeedBetterCompression) is the default: 25% smaller logs, 16% smaller
-    # traces vs level 3, with only 15-20% slower writes. See docs/zstd-compression-benchmark.md
-    # --lakehouse.insert.compression-level
     compression_level: 7
     # -- Enable write-ahead log for crash recovery.
-    # --lakehouse.insert.wal-enabled
     wal_enabled: true
     # -- WAL directory path.
-    # --lakehouse.insert.wal-dir
     wal_dir: /data/lakehouse/wal
     # -- Maximum WAL size before blocking writes.
-    # --lakehouse.insert.wal-max-bytes
     wal_max_bytes: 512MB
 
   # ---------------------------------------------------------------------------
@@ -170,46 +129,33 @@ lakehouseConfig:
   # ---------------------------------------------------------------------------
   select:
     # -- Query insert pods for unflushed data (zero-delay reads).
-    # --lakehouse.select.buffer-query-enabled
     buffer_query_enabled: true
     # -- Headless service for discovering insert pods.
-    # --lakehouse.select.insert-headless-service
-    # Example: "lakehouse-logs-insert-headless.monitoring.svc.cluster.local"
     insert_headless_service: ""
     # -- Timeout for buffer query requests to insert pods.
-    # --lakehouse.select.buffer-query-timeout
     buffer_query_timeout: 2s
-    # -- Enable AZ-aware buffer bridge routing (prefer same-AZ insert pods).
+    # -- Enable AZ-aware buffer bridge routing.
     az_aware: true
-    # -- Allow cross-AZ fallback for buffer queries when same-AZ insert pods unavailable.
+    # -- Allow cross-AZ fallback for buffer queries.
     cross_az_fallback: true
 
   # ---------------------------------------------------------------------------
   # Discovery — Hot tier auto-detection and peer fleet discovery
   # ---------------------------------------------------------------------------
   discovery:
-    # -- Headless service for VL/VT storage node discovery (hot boundary auto-detect).
-    # --lakehouse.discovery.headless-service
-    # Example: "vlstorage.monitoring.svc.cluster.local"
+    # -- Headless service for VL/VT storage node discovery.
     headless_service: ""
-    # -- Static list of VL/VT storage node addresses (alternative to headless service).
-    # --lakehouse.discovery.storage-nodes
+    # -- Static list of VL/VT storage node addresses.
     storage_nodes: []
     # -- Auth key for VL/VT /internal/partition/list endpoint.
-    # --lakehouse.discovery.partition-auth-key
     partition_auth_key: ""
     # -- Headless service for peer cache fleet discovery.
-    # --lakehouse.discovery.peer-headless-service
-    # Example: "lakehouse-logs-select-headless.monitoring.svc.cluster.local"
     peer_headless_service: ""
     # -- Interval for refreshing storage node list.
-    # --lakehouse.discovery.refresh-interval
     refresh_interval: 5m
     # -- Interval for refreshing peer cache ring membership.
-    # --lakehouse.discovery.peer-refresh-interval
     peer_refresh_interval: 30s
     # -- Timeout for discovery HTTP requests.
-    # --lakehouse.discovery.timeout
     timeout: 10s
 
   # ---------------------------------------------------------------------------
@@ -217,23 +163,20 @@ lakehouseConfig:
   # ---------------------------------------------------------------------------
   peer:
     # -- Bearer auth key for peer cache HTTP endpoints.
-    # --lakehouse.peer.auth-key
     auth_key: ""
     # -- Timeout for peer cache fetch requests.
-    # --lakehouse.peer.timeout
     timeout: 5s
     # -- Maximum HTTP connections per peer node.
-    # --lakehouse.peer.max-connections
     max_connections: 32
-    # -- Enable AZ-aware routing to prefer same-AZ peers (reduces cross-AZ costs).
+    # -- Enable AZ-aware routing to prefer same-AZ peers.
     az_aware: true
-    # -- AZ routing mode: "preferred" (same-AZ first, cross-AZ fallback) or "strict" (same-AZ only).
+    # -- AZ routing mode: "preferred" or "strict".
     az_mode: "preferred"
     # -- Allow cross-AZ fallback when same-AZ peers unavailable.
     cross_az_fallback: true
-    # -- Environment variable name for AZ override (fallback chain: env → IMDS → GCP → K8s API).
+    # -- Environment variable name for AZ override.
     az_env_var: "LAKEHOUSE_AZ"
-    # -- Minimum same-AZ peers required in strict mode before falling back to preferred.
+    # -- Minimum same-AZ peers required in strict mode.
     az_min_peers_per_az: 2
 
   # ---------------------------------------------------------------------------
@@ -241,22 +184,16 @@ lakehouseConfig:
   # ---------------------------------------------------------------------------
   manifest:
     # -- Interval for full S3 manifest refresh.
-    # --lakehouse.manifest.refresh-interval
     refresh_interval: 5m
     # -- Directory for manifest and metadata persistence.
-    # --lakehouse.manifest.persist-path
     persist_path: /data/lakehouse
     # -- Interval for persisting manifest to disk.
-    # --lakehouse.manifest.persist-interval
     persist_interval: 5m
-    # -- SQS queue URL for near-real-time S3 event manifest updates (optional).
-    # --lakehouse.manifest.sqs-queue-url
+    # -- SQS queue URL for near-real-time S3 event manifest updates.
     sqs_queue_url: ""
     # -- AWS region for SQS queue.
-    # --lakehouse.manifest.sqs-region
     sqs_region: ""
     # -- Long-poll wait time for SQS receive.
-    # --lakehouse.manifest.sqs-wait-time
     sqs_wait_time: 20s
 
   # ---------------------------------------------------------------------------
@@ -264,16 +201,12 @@ lakehouseConfig:
   # ---------------------------------------------------------------------------
   prefetch:
     # -- Enable correlated prefetch (logs↔traces via trace_id).
-    # --lakehouse.prefetch.correlated
     correlated: true
     # -- Number of partitions to read ahead during sequential scans.
-    # --lakehouse.prefetch.read-ahead-depth
     read_ahead_depth: 2
     # -- Maximum concurrent prefetch downloads.
-    # --lakehouse.prefetch.max-concurrent
     max_concurrent: 4
     # -- Maximum pending prefetch tasks in queue.
-    # --lakehouse.prefetch.max-queue
     max_queue: 64
 
   # ---------------------------------------------------------------------------
@@ -281,28 +214,20 @@ lakehouseConfig:
   # ---------------------------------------------------------------------------
   smart_cache:
     # -- Maximum age for cached entries before TTL eviction.
-    # --lakehouse.smart-cache.max-age
     max_age: 24h
     # -- Interval for persisting cache metadata snapshots to disk.
-    # --lakehouse.smart-cache.snapshot-interval
     snapshot_interval: 60s
     # -- Grace period after query completes before unpinning entries.
-    # --lakehouse.smart-cache.query-grace-period
     query_grace_period: 5m
     # -- Access count threshold within hot_window to classify entry as "hot".
-    # --lakehouse.smart-cache.hot-access-threshold
     hot_access_threshold: 3
     # -- Time window for hot access counting.
-    # --lakehouse.smart-cache.hot-window
     hot_window: 10m
-    # -- Target hours of query data to keep cached (sizing calculator).
-    # --lakehouse.smart-cache.target-hours
+    # -- Target hours of query data to keep cached.
     target_hours: 24
     # -- Maximum disk cache size the sizing calculator may recommend.
-    # --lakehouse.smart-cache.disk-limit-max
     disk_limit_max: 100GB
     # -- Manual ingestion rate hint for sizing (e.g., "100MB"). Empty = auto-detect.
-    # --lakehouse.smart-cache.ingestion-rate-hint
     ingestion_rate_hint: ""
 
   # ---------------------------------------------------------------------------
@@ -310,26 +235,18 @@ lakehouseConfig:
   # ---------------------------------------------------------------------------
   cross_signal:
     # -- Enable cross-signal prefetch/eviction between logs and traces instances.
-    # --lakehouse.cross-signal.enabled
     enabled: false
     # -- Direct endpoint of the other signal's lakehouse instance.
-    # --lakehouse.cross-signal.endpoint
-    # Example: "http://lakehouse-traces:10428" (set on lakehouse-logs)
     endpoint: ""
     # -- Headless service for discovering other signal's instances.
-    # --lakehouse.cross-signal.headless-service
     headless_service: ""
     # -- Bearer auth key for cross-signal HTTP endpoints.
-    # --lakehouse.cross-signal.auth-key
     auth_key: ""
     # -- Timeout for cross-signal HTTP requests.
-    # --lakehouse.cross-signal.timeout
     timeout: 2s
     # -- Maximum trace IDs per cross-signal batch.
-    # --lakehouse.cross-signal.max-batch
     max_batch: 100
     # -- Batching interval for cross-signal hints.
-    # --lakehouse.cross-signal.batch-interval
     batch_interval: 500ms
 
   # ---------------------------------------------------------------------------
@@ -337,19 +254,14 @@ lakehouseConfig:
   # ---------------------------------------------------------------------------
   query:
     # -- Maximum concurrent select queries (HTTP 429 when exceeded).
-    # --lakehouse.query.max-concurrent
     max_concurrent: 32
     # -- Query execution timeout.
-    # --lakehouse.query.timeout
     timeout: 60s
-    # -- Maximum rows returned per query (safety limit).
-    # --lakehouse.query.max-rows
+    # -- Maximum rows returned per query.
     max_rows: 10000000
     # -- Slow query logging threshold.
-    # --lakehouse.query.slow-threshold
     slow_threshold: 5s
     # -- Number of parallel file workers per query.
-    # --lakehouse.query.file-workers
     file_workers: 8
 
   # ---------------------------------------------------------------------------
@@ -357,30 +269,17 @@ lakehouseConfig:
   # ---------------------------------------------------------------------------
   startup:
     # -- Serve stale data from disk cache while refreshing from S3.
-    # --lakehouse.startup.serve-stale
     serve_stale: false
     # -- Time window of recent partitions to warm on startup.
-    # --lakehouse.startup.warmup-window
     warmup_window: 24h
     # -- Maximum time to spend on startup warmup before marking ready.
-    # --lakehouse.startup.max-warmup-time
     max_warmup_time: 5m
 
   # ---------------------------------------------------------------------------
   # Schema — Parquet column extensibility
   # ---------------------------------------------------------------------------
   schema:
-    # -- Additional promoted columns beyond defaults. Written as top-level Parquet
-    # columns with statistics and optional bloom filters.
-    # --lakehouse.schema.extra-promoted
-    # Example:
-    # extra_promoted:
-    #   - name: "http.status_code"
-    #     type: "int32"
-    #     bloom: true
-    #   - name: "deployment.environment"
-    #     type: "string"
-    #     bloom: false
+    # -- Additional promoted columns beyond defaults.
     extra_promoted: []
 
   # ---------------------------------------------------------------------------
@@ -388,200 +287,145 @@ lakehouseConfig:
   # ---------------------------------------------------------------------------
   circuit_breaker:
     # -- Number of consecutive failures to open circuit.
-    # --lakehouse.circuit-breaker.threshold
     threshold: 5
     # -- Duration circuit stays open before half-open probe.
-    # --lakehouse.circuit-breaker.timeout
     timeout: 30s
     # -- Successful probes required to close circuit.
-    # --lakehouse.circuit-breaker.success-threshold
     success_threshold: 2
 
   # ---------------------------------------------------------------------------
   # Tenant — Multi-tenancy routing and isolation
   # ---------------------------------------------------------------------------
   tenant:
-    # -- Static S3 prefix override (bypasses template resolution).
-    # --lakehouse.tenant.default-prefix
+    # -- Static S3 prefix override.
     default_prefix: ""
     # -- S3 prefix template. {AccountID} and {ProjectID} replaced from headers.
-    # --lakehouse.tenant.prefix-template
     prefix_template: "{AccountID}/{ProjectID}/"
-    # -- Tenant isolation mode.
-    # --lakehouse.tenant.isolation
-    # "prefix" — shared bucket, tenants separated by S3 key prefix (default)
-    # "bucket" — per-tenant bucket with IAM isolation (enterprise)
+    # -- Tenant isolation mode: "prefix" or "bucket".
     isolation: prefix
     # -- Bucket name template for bucket isolation mode.
-    # --lakehouse.tenant.bucket-template
-    # Example: "obs-{AccountID}-{ProjectID}"
     bucket_template: ""
-    # -- Default AccountID when no tenant header present (single-tenant mode).
-    # --lakehouse.tenant.default-account
+    # -- Default AccountID when no tenant header present.
     default_account: "0"
     # -- Default ProjectID when no tenant header present.
-    # --lakehouse.tenant.default-project
     default_project: "0"
     # -- HTTP header name for AccountID extraction.
-    # --lakehouse.tenant.header-account
     header_account: X-Scope-AccountID
     # -- HTTP header name for ProjectID extraction.
-    # --lakehouse.tenant.header-project
     header_project: X-Scope-ProjectID
     # -- HTTP header name for global (cross-tenant) read access.
-    # --lakehouse.tenant.global-read-header
-    # Example: "X-Lakehouse-Global-Read"
     global_read_header: ""
     # -- Required header value for global read access.
-    # --lakehouse.tenant.global-read-value
     global_read_value: ""
     # -- Bearer token for global read access via Authorization header.
-    # --lakehouse.tenant.global-read-token
     global_read_token: ""
-    # -- Known tenants for bucket-isolation mode cold discovery.
-    # --lakehouse.tenant.known-tenants
-    # Each entry can optionally override lifecycle rules and per-GB pricing.
-    # Required for bucket isolation (auto-discovery not possible across buckets).
-    # Example:
-    # known_tenants:
-    #   - account_id: "100"
-    #     project_id: "1"
-    #     lifecycle_rules:
-    #       - transition_days: 14
-    #         storage_class: STANDARD_IA
-    #       - transition_days: 60
-    #         storage_class: GLACIER
-    #     price_per_gb:
-    #       STANDARD: 0.025
-    #       STANDARD_IA: 0.0125
-    #   - account_id: "200"
-    #     project_id: "5"
+    # -- Known tenants for bucket-isolation mode.
     known_tenants: []
+
+    # -- HTTP header name for string-based tenant identification (Loki/Tempo compatible).
+    # When present, the header value is resolved to AccountID/ProjectID via aliases.
+    orgid_header: X-Scope-OrgID
+    # -- Prometheus tenant label format: "id" (42:3), "name" (prod-team-eu_staging), "both".
+    metrics_format: id
+    # -- Auto-register unknown X-Scope-OrgID values as new tenant aliases.
+    auto_register: false
+    # -- Fleet sync interval for runtime-added aliases.
+    alias_sync_interval: 30s
+    # -- Static alias mappings: string alias → {account_id, project_id}.
+    # Example:
+    #   aliases:
+    #     prod-team-eu_staging:
+    #       account_id: 42
+    #       project_id: 3
+    #     dev_default:
+    #       account_id: 1
+    #       project_id: 1
+    aliases: {}
+    # -- Leader election mode for alias sync writer: "auto", "k8s", "s3", "none".
+    # Only one node should write _meta/tenant-aliases.json at a time.
+    # "auto" uses K8s Lease in-cluster, falls back to S3 lock outside K8s.
+    leader_election: auto
+    # -- K8s Lease lock duration for alias sync.
+    lease_duration: 15s
 
   # ---------------------------------------------------------------------------
   # Compaction — Background Parquet file merging
   # ---------------------------------------------------------------------------
   compaction:
     # -- Enable background compaction (requires leader election).
-    # --lakehouse.compaction.enabled
     enabled: false
     # -- Compaction scan interval.
-    # --lakehouse.compaction.interval
     interval: 5m
     # -- Maximum concurrent compaction workers.
-    # --lakehouse.compaction.max-concurrent
     max_concurrent: 1
     # -- Minimum L0 files in a partition to trigger compaction.
-    # --lakehouse.compaction.min-files-l0
     min_files_l0: 10
     # -- Minimum L1 files in a partition to trigger compaction.
-    # --lakehouse.compaction.min-files-l1
     min_files_l1: 10
     # -- Minimum file age before eligible for compaction.
-    # --lakehouse.compaction.min-age
     min_age: 1h
-    # -- Leader election mode: "auto" (k8s if available, else s3), "k8s", "s3", "none".
-    # --lakehouse.compaction.leader-election
+    # -- Leader election mode: "auto", "k8s", "s3", "none".
     leader_election: auto
-    # -- K8s Lease lock duration (k8s leader election only).
-    # --lakehouse.compaction.lease-duration
+    # -- K8s Lease lock duration.
     lease_duration: 15s
-    # -- S3 lock object TTL (s3 leader election only).
-    # --lakehouse.compaction.s3-lock-ttl
+    # -- S3 lock object TTL.
     s3_lock_ttl: 60s
     # -- S3 lock heartbeat/renewal interval.
-    # --lakehouse.compaction.s3-heartbeat
     s3_heartbeat: 15s
 
   # ---------------------------------------------------------------------------
   # Delete — Cost-aware deletion (tombstone + selective rewrite)
   # ---------------------------------------------------------------------------
   delete:
-    # -- Enable delete API endpoints (/delete/logsql/* or /delete/tracessql/*).
-    # --lakehouse.delete.enabled
+    # -- Enable delete API endpoints.
     enabled: true
-    # -- Default delete mode. "auto" = tombstone + compaction removal + rewrite Standard.
-    # --lakehouse.delete.default-mode
-    # Allowed values: "hide" (tombstone only), "permanent" (rewrite all), "auto"
+    # -- Default delete mode: "hide", "permanent", "auto".
     default_mode: auto
-    # -- Storage classes eligible for active rewrite in auto/permanent modes.
-    # --lakehouse.delete.auto-rewrite-classes
+    # -- Storage classes eligible for active rewrite.
     auto_rewrite_classes:
       - STANDARD
     # -- Delay before rewriting files after tombstone creation.
-    # --lakehouse.delete.rewrite-delay
     rewrite_delay: 1h
     # -- Maximum files per rewrite batch.
-    # --lakehouse.delete.rewrite-batch-size
     rewrite_batch_size: 50
     # -- Maximum concurrent rewrite workers.
-    # --lakehouse.delete.rewrite-max-concurrent
     rewrite_max_concurrent: 2
     # -- Directory for tombstone persistence.
-    # --lakehouse.delete.persist-path
     persist_path: /data/lakehouse/tombstones
-    # -- Cost threshold ($) that triggers a warning in /delete/logsql/estimate.
-    # --lakehouse.delete.cost-warning-threshold
+    # -- Cost threshold ($) that triggers a warning.
     cost_warning_threshold: 10.0
-    # -- HTTP header to force Glacier file deletion (bypass safety check).
-    # --lakehouse.delete.force-glacier-header
+    # -- HTTP header to force Glacier file deletion.
     force_glacier_header: X-Force-Glacier-Delete
     # -- Interval for continuous deletion verification.
-    # --lakehouse.delete.verify-interval
     verify_interval: 6h
-    # -- S3 lifecycle rules for storage class prediction in delete cost estimation.
-    # --lakehouse.delete.lifecycle-rules
+    # -- S3 lifecycle rules for delete cost estimation.
     lifecycle_rules: []
 
   # ---------------------------------------------------------------------------
   # Stats — Tenant statistics, storage class tracking, cost estimation
   # ---------------------------------------------------------------------------
   stats:
-    # -- Enable tenant stats collection, CRDT fleet sync, and storage class tracking.
-    # --lakehouse.stats.enabled
+    # -- Enable tenant stats collection and fleet sync.
     enabled: true
     # -- Interval for broadcasting tenant stat deltas to peer nodes.
-    # --lakehouse.stats.push-interval
     push_interval: 30s
-    # -- ZSTD-compress delta broadcasts (reduces bandwidth ~5-10x).
-    # --lakehouse.stats.push-compression
+    # -- ZSTD-compress delta broadcasts.
     push_compression: true
     # -- Interval for persisting full registry snapshot to S3.
-    # --lakehouse.stats.snapshot-interval
     snapshot_interval: 5m
     # -- S3 key prefix for stat snapshots.
-    # --lakehouse.stats.snapshot-prefix
     snapshot_prefix: "_meta/tenant-stats"
-    # -- Dedicated S3 bucket for metadata (bucket-isolation mode, optional).
-    # --lakehouse.stats.meta-bucket
-    # When empty in bucket mode, uses the first known_tenant's bucket.
+    # -- Dedicated S3 bucket for metadata (bucket-isolation mode).
     meta_bucket: ""
-    # -- Force full sync after N incremental deltas (prevent drift).
-    # --lakehouse.stats.max-delta-count
+    # -- Force full sync after N incremental deltas.
     max_delta_count: 1000
     # -- Maximum unique tenant label values in Prometheus metrics.
-    # --lakehouse.stats.metrics-cardinality-limit
-    # 0 = disable per-tenant Prometheus metrics (API still works).
-    # Tenants beyond this cap are visible in JSON API but not emitted as metrics.
     metrics_cardinality_limit: 100
-    # -- Field cardinality threshold for high-cardinality warnings in Explorer UI.
-    # --lakehouse.stats.cardinality-warning-threshold
+    # -- Field cardinality threshold for high-cardinality warnings.
     cardinality_warning_threshold: 10000
     # -- S3 lifecycle rules for zero-cost storage class prediction.
-    # --lakehouse.stats.s3-lifecycle-rules
-    # Predicts file storage class from file age vs transition thresholds.
-    # Example:
-    # s3_lifecycle_rules:
-    #   - transition_days: 30
-    #     storage_class: STANDARD_IA
-    #   - transition_days: 90
-    #     storage_class: GLACIER
-    #   - transition_days: 365
-    #     storage_class: DEEP_ARCHIVE
     s3_lifecycle_rules: []
     # -- Per-class pricing in $/GB/month for cost estimation.
-    # --lakehouse.stats.s3-price-per-gb
-    # Default: AWS us-east-1 pricing (May 2026).
     s3_price_per_gb:
       STANDARD: 0.023
       STANDARD_IA: 0.0125
@@ -589,19 +433,15 @@ lakehouseConfig:
       GLACIER: 0.0036
       DEEP_ARCHIVE: 0.00099
     # -- Per-1000-requests pricing for cost estimation.
-    # --lakehouse.stats.s3-request-prices
     s3_request_prices:
       PUT: 0.005
       GET: 0.0004
       LIST: 0.005
-    # -- S3 Inventory source bucket for exact storage class verification (optional).
-    # --lakehouse.stats.s3-inventory-bucket
+    # -- S3 Inventory source bucket for exact storage class verification.
     s3_inventory_bucket: ""
-    # -- Interval for HeadObject spot-checks on files near lifecycle transition boundaries.
-    # --lakehouse.stats.headobject-sample-interval
+    # -- Interval for HeadObject spot-checks near lifecycle transitions.
     headobject_sample_interval: 6h
-    # -- Maximum HeadObject API calls per refresh cycle (cost cap).
-    # --lakehouse.stats.headobject-max-per-refresh
+    # -- Maximum HeadObject API calls per refresh cycle.
     headobject_max_per_refresh: 50
 
   # ---------------------------------------------------------------------------
@@ -609,213 +449,384 @@ lakehouseConfig:
   # ---------------------------------------------------------------------------
   ui:
     # -- Serve Lakehouse Explorer at /lakehouse/ui/.
-    # --lakehouse.ui.enabled
     enabled: true
-    # -- Inject "Lakehouse" tab into VL/VT VMUI navigation (zero upstream mods).
-    # --lakehouse.ui.vmui-tab
+    # -- Inject "Lakehouse" tab into VL/VT VMUI navigation.
     vmui_tab: true
     # -- Default auto-refresh interval in seconds (0 = off).
-    # --lakehouse.ui.refresh-default
     refresh_default: 0
-    # -- UI color theme.
-    # --lakehouse.ui.theme
-    # Allowed values: "auto" (follows system), "dark", "light"
+    # -- UI color theme: "auto", "dark", "light".
     theme: auto
 
-  # ---------------------------------------------------------------------------
-  # Mode-specific config — Only the active mode's section is used by the binary.
-  # Set lakehouseConfig.mode above to select which binary/config applies.
-  # ---------------------------------------------------------------------------
-  logs:
+# =============================================================================
+# Logs signal — VictoriaLogs-compatible lakehouse (port 9428)
+# Set logs.enabled=true to deploy logs components.
+# =============================================================================
+logs:
+  # -- Enable logs signal. Deploys logs-select and logs-insert components.
+  enabled: true
+
+  # -- Logs-specific lakehouse configuration (merged with shared lakehouseConfig).
+  config:
     # -- Bloom filter columns for logs mode.
-    # --lakehouse.logs.bloom-columns
     bloom_columns:
       - service.name
     # -- Delete API endpoint prefix for logs mode.
-    # --lakehouse.logs.delete-prefix
     delete_prefix: /delete/logsql
     # -- VL compatibility version override (empty = latest).
-    # --lakehouse.logs.compat-version
     compat_version: ""
-  traces:
+
+  # -- Logs select component (read path).
+  select:
+    enabled: true
+    replicaCount: 2
+    image: {}
+    extraArgs: {}
+    extraEnv: []
+    extraEnvFrom: []
+    extraVolumes: []
+    extraVolumeMounts: []
+    extraContainers: []
+    initContainers: []
+    resources: {}
+    podSecurityContext: {}
+    securityContext: {}
+    service:
+      type: ClusterIP
+      port: ""
+      annotations: {}
+      labels: {}
+    headlessService:
+      enabled: true
+      annotations: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    podDisruptionBudget:
+      enabled: false
+      minAvailable: 1
+    serviceAccount:
+      create: true
+      name: ""
+      annotations: {}
+    horizontalPodAutoscaler:
+      enabled: false
+      minReplicas: 2
+      maxReplicas: 10
+      targetCPUUtilizationPercentage: 80
+    verticalPodAutoscaler:
+      enabled: false
+      updateMode: "Off"
+    ingress:
+      enabled: false
+      className: ""
+      annotations: {}
+      hosts: []
+      tls: []
+    serviceMonitor:
+      enabled: false
+      interval: 30s
+      labels: {}
+    persistence:
+      enabled: true
+      size: 50Gi
+      storageClass: ""
+      accessModes:
+        - ReadWriteOnce
+    probe:
+      liveness:
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        failureThreshold: 3
+      readiness:
+        initialDelaySeconds: 2
+        periodSeconds: 5
+        failureThreshold: 60
+      startup:
+        periodSeconds: 5
+        failureThreshold: 120
+    podAnnotations: {}
+    podLabels: {}
+    terminationGracePeriodSeconds: 60
+    priorityClassName: ""
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: logs-select
+
+  # -- Logs insert component (write path).
+  insert:
+    enabled: true
+    replicaCount: 2
+    image: {}
+    extraArgs: {}
+    extraEnv: []
+    extraEnvFrom: []
+    extraVolumes: []
+    extraVolumeMounts: []
+    extraContainers: []
+    initContainers: []
+    resources: {}
+    podSecurityContext: {}
+    securityContext: {}
+    service:
+      type: ClusterIP
+      port: ""
+      annotations: {}
+      labels: {}
+    headlessService:
+      enabled: true
+      annotations: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    podDisruptionBudget:
+      enabled: false
+      minAvailable: 1
+    serviceAccount:
+      create: true
+      name: ""
+      annotations: {}
+    horizontalPodAutoscaler:
+      enabled: false
+      minReplicas: 2
+      maxReplicas: 10
+      targetCPUUtilizationPercentage: 80
+    verticalPodAutoscaler:
+      enabled: false
+      updateMode: "Off"
+    ingress:
+      enabled: false
+      className: ""
+      annotations: {}
+      hosts: []
+      tls: []
+    serviceMonitor:
+      enabled: false
+      interval: 30s
+      labels: {}
+    persistence:
+      enabled: true
+      size: 50Gi
+      storageClass: ""
+      accessModes:
+        - ReadWriteOnce
+    probe:
+      liveness:
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        failureThreshold: 3
+      readiness:
+        initialDelaySeconds: 2
+        periodSeconds: 5
+        failureThreshold: 60
+      startup:
+        periodSeconds: 5
+        failureThreshold: 120
+    podAnnotations: {}
+    podLabels: {}
+    terminationGracePeriodSeconds: 60
+    priorityClassName: ""
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: logs-insert
+
+# =============================================================================
+# Traces signal — VictoriaTraces-compatible lakehouse (port 10428)
+# Set traces.enabled=true to deploy traces components.
+# =============================================================================
+traces:
+  # -- Enable traces signal. Deploys traces-select and traces-insert components.
+  enabled: false
+
+  # -- Traces-specific lakehouse configuration (merged with shared lakehouseConfig).
+  config:
     # -- Bloom filter columns for traces mode.
-    # --lakehouse.traces.bloom-columns
     bloom_columns:
       - trace_id
       - service.name
     # -- Delete API endpoint prefix for traces mode.
-    # --lakehouse.traces.delete-prefix
     delete_prefix: /delete/tracessql
     # -- VT compatibility version override (empty = latest).
-    # --lakehouse.traces.compat-version
     compat_version: ""
     # -- Enable Jaeger gRPC API for traces.
-    # --lakehouse.traces.jaeger-enabled
     jaeger_enabled: true
     # -- Jaeger gRPC listen address.
-    # --lakehouse.traces.jaeger-grpc-addr
     jaeger_grpc_addr: ":16685"
+    # -- Jaeger gRPC port for K8s service/container (matches jaeger_grpc_addr).
+    jaeger_grpc_port: 16685
 
-select:
-  enabled: true
-  replicaCount: 2
-  image: {}
-  extraArgs: {}
-  extraEnv: []
-  extraEnvFrom: []
-  extraVolumes: []
-  extraVolumeMounts: []
-  extraContainers: []
-  initContainers: []
-  resources: {}
-  podSecurityContext: {}
-  securityContext: {}
-  service:
-    type: ClusterIP
-    port: ""
-    annotations: {}
-    labels: {}
-  headlessService:
+  # -- Traces select component (read path).
+  select:
     enabled: true
-    annotations: {}
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
-  podDisruptionBudget:
-    enabled: false
-    minAvailable: 1
-  serviceAccount:
-    create: true
-    name: ""
-    annotations: {}
-  horizontalPodAutoscaler:
-    enabled: false
-    minReplicas: 2
-    maxReplicas: 10
-    targetCPUUtilizationPercentage: 80
-  verticalPodAutoscaler:
-    enabled: false
-    updateMode: "Off"
-  ingress:
-    enabled: false
-    className: ""
-    annotations: {}
-    hosts: []
-    tls: []
-  serviceMonitor:
-    enabled: false
-    interval: 30s
-    labels: {}
-  persistence:
-    enabled: true
-    size: 50Gi
-    storageClass: ""
-    accessModes:
-      - ReadWriteOnce
-  probe:
-    liveness:
-      initialDelaySeconds: 5
-      periodSeconds: 10
-      failureThreshold: 3
-    readiness:
-      initialDelaySeconds: 2
-      periodSeconds: 5
-      failureThreshold: 60
-    startup:
-      periodSeconds: 5
-      failureThreshold: 120
-  podAnnotations: {}
-  podLabels: {}
-  terminationGracePeriodSeconds: 60
-  priorityClassName: ""
-  topologySpreadConstraints:
-    - maxSkew: 1
-      topologyKey: topology.kubernetes.io/zone
-      whenUnsatisfiable: ScheduleAnyway
-      labelSelector:
-        matchLabels:
-          app.kubernetes.io/component: select
+    replicaCount: 2
+    image: {}
+    extraArgs: {}
+    extraEnv: []
+    extraEnvFrom: []
+    extraVolumes: []
+    extraVolumeMounts: []
+    extraContainers: []
+    initContainers: []
+    resources: {}
+    podSecurityContext: {}
+    securityContext: {}
+    service:
+      type: ClusterIP
+      port: ""
+      annotations: {}
+      labels: {}
+    headlessService:
+      enabled: true
+      annotations: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    podDisruptionBudget:
+      enabled: false
+      minAvailable: 1
+    serviceAccount:
+      create: true
+      name: ""
+      annotations: {}
+    horizontalPodAutoscaler:
+      enabled: false
+      minReplicas: 2
+      maxReplicas: 10
+      targetCPUUtilizationPercentage: 80
+    verticalPodAutoscaler:
+      enabled: false
+      updateMode: "Off"
+    ingress:
+      enabled: false
+      className: ""
+      annotations: {}
+      hosts: []
+      tls: []
+    serviceMonitor:
+      enabled: false
+      interval: 30s
+      labels: {}
+    persistence:
+      enabled: true
+      size: 50Gi
+      storageClass: ""
+      accessModes:
+        - ReadWriteOnce
+    probe:
+      liveness:
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        failureThreshold: 3
+      readiness:
+        initialDelaySeconds: 2
+        periodSeconds: 5
+        failureThreshold: 60
+      startup:
+        periodSeconds: 5
+        failureThreshold: 120
+    podAnnotations: {}
+    podLabels: {}
+    terminationGracePeriodSeconds: 60
+    priorityClassName: ""
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: traces-select
 
-insertComponent:
-  enabled: true
-  replicaCount: 2
-  image: {}
-  extraArgs: {}
-  extraEnv: []
-  extraEnvFrom: []
-  extraVolumes: []
-  extraVolumeMounts: []
-  extraContainers: []
-  initContainers: []
-  resources: {}
-  podSecurityContext: {}
-  securityContext: {}
-  service:
-    type: ClusterIP
-    port: ""
-    annotations: {}
-    labels: {}
-  headlessService:
+  # -- Traces insert component (write path).
+  insert:
     enabled: true
-    annotations: {}
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
-  podDisruptionBudget:
-    enabled: false
-    minAvailable: 1
-  serviceAccount:
-    create: true
-    name: ""
-    annotations: {}
-  horizontalPodAutoscaler:
-    enabled: false
-    minReplicas: 2
-    maxReplicas: 10
-    targetCPUUtilizationPercentage: 80
-  verticalPodAutoscaler:
-    enabled: false
-    updateMode: "Off"
-  ingress:
-    enabled: false
-    className: ""
-    annotations: {}
-    hosts: []
-    tls: []
-  serviceMonitor:
-    enabled: false
-    interval: 30s
-    labels: {}
-  persistence:
-    enabled: true
-    size: 50Gi
-    storageClass: ""
-    accessModes:
-      - ReadWriteOnce
-  probe:
-    liveness:
-      initialDelaySeconds: 5
-      periodSeconds: 10
-      failureThreshold: 3
-    readiness:
-      initialDelaySeconds: 2
-      periodSeconds: 5
-      failureThreshold: 60
-    startup:
-      periodSeconds: 5
-      failureThreshold: 120
-  podAnnotations: {}
-  podLabels: {}
-  terminationGracePeriodSeconds: 60
-  priorityClassName: ""
-  topologySpreadConstraints:
-    - maxSkew: 1
-      topologyKey: topology.kubernetes.io/zone
-      whenUnsatisfiable: ScheduleAnyway
-      labelSelector:
-        matchLabels:
-          app.kubernetes.io/component: insert
+    replicaCount: 2
+    image: {}
+    extraArgs: {}
+    extraEnv: []
+    extraEnvFrom: []
+    extraVolumes: []
+    extraVolumeMounts: []
+    extraContainers: []
+    initContainers: []
+    resources: {}
+    podSecurityContext: {}
+    securityContext: {}
+    service:
+      type: ClusterIP
+      port: ""
+      annotations: {}
+      labels: {}
+    headlessService:
+      enabled: true
+      annotations: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    podDisruptionBudget:
+      enabled: false
+      minAvailable: 1
+    serviceAccount:
+      create: true
+      name: ""
+      annotations: {}
+    horizontalPodAutoscaler:
+      enabled: false
+      minReplicas: 2
+      maxReplicas: 10
+      targetCPUUtilizationPercentage: 80
+    verticalPodAutoscaler:
+      enabled: false
+      updateMode: "Off"
+    ingress:
+      enabled: false
+      className: ""
+      annotations: {}
+      hosts: []
+      tls: []
+    serviceMonitor:
+      enabled: false
+      interval: 30s
+      labels: {}
+    persistence:
+      enabled: true
+      size: 50Gi
+      storageClass: ""
+      accessModes:
+        - ReadWriteOnce
+    probe:
+      liveness:
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        failureThreshold: 3
+      readiness:
+        initialDelaySeconds: 2
+        periodSeconds: 5
+        failureThreshold: 60
+      startup:
+        periodSeconds: 5
+        failureThreshold: 120
+    podAnnotations: {}
+    podLabels: {}
+    terminationGracePeriodSeconds: 60
+    priorityClassName: ""
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: traces-insert
 
+# =============================================================================
+# vmauth — Shared request router
+# =============================================================================
 vmauth:
   enabled: false
   image:
@@ -850,37 +861,21 @@ vmauth:
   podLabels: {}
   terminationGracePeriodSeconds: 30
 
-# =============================================================================
-# Compaction configuration
-# =============================================================================
-
-# -- Compaction configuration for background Parquet file compaction
-compaction:
-  # -- Enable the compaction job
-  enabled: false
-  # -- How often to run compaction
-  interval: 5m
-  # -- Maximum number of concurrent compaction workers
-  maxConcurrent: 1
-  # -- Minimum number of L0 files required to trigger compaction
-  minFilesL0: 10
-  # -- Minimum number of L1 files required to trigger compaction
-  minFilesL1: 10
-  # -- Minimum age of files before they are eligible for compaction
-  minAge: 1h
-  # -- Leader election mode: auto, k8s, s3, none
-  # auto selects k8s when running in Kubernetes, s3 otherwise
-  leaderElection: auto
-  # -- Duration for k8s lease lock (k8s leader election only)
-  leaseDuration: 15s
-  # -- TTL for S3 lock object (s3 leader election only)
-  s3LockTTL: 60s
-  # -- Heartbeat interval for S3 lock renewal (s3 leader election only)
-  s3Heartbeat: 15s
-
 networkPolicy:
   enabled: false
   ingressFrom: []
   extraEgress: []
 
+# -- Extra Kubernetes manifests to deploy alongside the chart.
+# Each entry is a complete YAML manifest. Supports Go template syntax.
+# Useful for custom Lease objects, ConfigMaps, Secrets, RBAC, etc.
+# Example:
+#   extraManifests:
+#     - apiVersion: coordination.k8s.io/v1
+#       kind: Lease
+#       metadata:
+#         name: my-custom-election
+#         namespace: "{{ .Release.Namespace }}"
+#       spec:
+#         leaseDurationSeconds: 15
 extraManifests: []

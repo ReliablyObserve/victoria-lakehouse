@@ -1,5 +1,6 @@
-{{- if .Values.compaction.enabled }}
-{{- if or (eq .Values.compaction.leaderElection "auto") (eq .Values.compaction.leaderElection "k8s") }}
+{{- if .Values.lakehouseConfig.compaction.enabled }}
+{{- $le := .Values.lakehouseConfig.compaction.leader_election }}
+{{- if or (eq $le "auto") (eq $le "k8s") }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
