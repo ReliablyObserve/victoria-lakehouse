@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-05-14
+
 ### Fixed
 - E2E datagen trace-log correlation — traces now generated first with 70% of logs sharing trace IDs, span IDs, and service context for realistic cross-signal testing
 - Grafana datasource log→trace links — added `derivedFields` to all VictoriaLogs and Loki datasources with `trace_id=(\w+)` regex linking to Jaeger trace views
