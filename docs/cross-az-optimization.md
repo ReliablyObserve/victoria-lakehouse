@@ -69,7 +69,10 @@ At startup, each Lakehouse pod auto-detects which Availability Zone it is runnin
 
 ```mermaid
 flowchart TD
-    START[Pod Startup] --> ENV{LAKEHOUSE_AZ<br/>env var set?}
+    START[Pod Startup] --> AZ_DETECT[AZ Detection]
+    START --> BRIDGE[Buffer bridge: discover<br/>ALL insert pods via DNS]
+
+    AZ_DETECT --> ENV{LAKEHOUSE_AZ<br/>env var set?}
     ENV -->|Yes| USE_ENV[Use env var value]
     ENV -->|No| IMDS{AWS IMDSv2<br/>reachable?}
     IMDS -->|Yes| USE_IMDS[Use placement/availability-zone]
@@ -77,21 +80,26 @@ flowchart TD
     GCP -->|Yes| USE_GCP[Use instance/zone<br/>extract zone suffix]
     GCP -->|No| K8S{K8s API +<br/>NODE_NAME set?}
     K8S -->|Yes| USE_K8S["Read node label<br/>topology.kubernetes.io/zone"]
-    K8S -->|No| EMPTY[AZ unknown<br/>all routing is AZ-unaware]
+    K8S -->|No| EMPTY[AZ unknown<br/>peer cache is AZ-unaware]
 
     USE_ENV --> DETECTED[AZ Detected]
     USE_IMDS --> DETECTED
     USE_GCP --> DETECTED
     USE_K8S --> DETECTED
 
-    DETECTED --> RING[Configure peer cache<br/>same-AZ sub-ring]
-    DETECTED --> BRIDGE[Buffer bridge queries<br/>ALL insert pods (all AZs)]
+    DETECTED --> RING[Peer cache L3:<br/>same-AZ sub-ring]
     DETECTED --> STATS[Expose AZ in<br/>/internal/cache/stats]
+
+    BRIDGE --> ALL_INSERT[Query ALL insert pods<br/>regardless of AZ]
 
     style START fill:#2196F3,color:#fff
     style DETECTED fill:#4CAF50,color:#fff
     style EMPTY fill:#FF9800,color:#fff
+    style BRIDGE fill:#9C27B0,color:#fff
+    style ALL_INSERT fill:#9C27B0,color:#fff
 ```
+
+> **Key distinction**: AZ detection affects **peer cache (L3) routing only**. Buffer bridge always queries ALL insert pods across ALL AZs — it is independent of AZ detection because missing any insert pod means missing unflushed data.
 
 ### Peer Discovery and AZ Classification
 
