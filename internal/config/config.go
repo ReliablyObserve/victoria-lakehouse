@@ -38,7 +38,7 @@ type Config struct {
 	Mode     Mode     `yaml:"mode"`
 	Role     Role     `yaml:"role"`
 	Topology Topology `yaml:"topology"`
-	Profile  string   `yaml:"profile"`
+	Profile  Profile  `yaml:"profile"`
 
 	S3          S3Config          `yaml:"s3"`
 	Cache       CacheConfig       `yaml:"cache"`
@@ -67,17 +67,23 @@ type Config struct {
 }
 
 type LogsModeConfig struct {
-	BloomColumns  []string `yaml:"bloom_columns"`
-	DeletePrefix  string   `yaml:"delete_prefix"`
-	CompatVersion string   `yaml:"compat_version"`
+	BloomColumns  []string       `yaml:"bloom_columns"`
+	DeletePrefix  string         `yaml:"delete_prefix"`
+	CompatVersion string         `yaml:"compat_version"`
+	Profile       Profile        `yaml:"profile"`
+	Insert        RoleProfileRef `yaml:"insert"`
+	Select        RoleProfileRef `yaml:"select"`
 }
 
 type TracesModeConfig struct {
-	BloomColumns   []string `yaml:"bloom_columns"`
-	DeletePrefix   string   `yaml:"delete_prefix"`
-	CompatVersion  string   `yaml:"compat_version"`
-	JaegerEnabled  bool     `yaml:"jaeger_enabled"`
-	JaegerGRPCAddr string   `yaml:"jaeger_grpc_addr"`
+	BloomColumns   []string       `yaml:"bloom_columns"`
+	DeletePrefix   string         `yaml:"delete_prefix"`
+	CompatVersion  string         `yaml:"compat_version"`
+	JaegerEnabled  bool           `yaml:"jaeger_enabled"`
+	JaegerGRPCAddr string         `yaml:"jaeger_grpc_addr"`
+	Profile        Profile        `yaml:"profile"`
+	Insert         RoleProfileRef `yaml:"insert"`
+	Select         RoleProfileRef `yaml:"select"`
 }
 
 func (c *Config) ActiveBloomColumns() []string {
@@ -401,6 +407,10 @@ type SchemaConfig struct {
 	ExtraPromoted []ExtraPromotedColumn `yaml:"extra_promoted"`
 }
 
+type RoleProfileRef struct {
+	Profile Profile `yaml:"profile"`
+}
+
 func Default() *Config {
 	return &Config{
 		Role:     RoleAll,
@@ -640,10 +650,10 @@ func Load(path string) (*Config, error) {
 	// which mergeConfig cannot convey (it skips zero-valued booleans).
 	profileName := wrapper.Lakehouse.Profile
 	if profileName != "" {
-		if !IsValidProfile(profileName) {
+		if !IsValidProfile(string(profileName)) {
 			return nil, fmt.Errorf("invalid profile %q, valid profiles: %s", profileName, ValidProfileNames())
 		}
-		cfg = ProfileConfig(Profile(profileName))
+		cfg = ProfileConfig(profileName)
 	}
 
 	merged := mergeConfig(cfg, &wrapper.Lakehouse)
@@ -651,7 +661,7 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) Validate() error {
-	if c.Profile != "" && !IsValidProfile(c.Profile) {
+	if c.Profile != "" && !IsValidProfile(string(c.Profile)) {
 		return fmt.Errorf("--lakehouse.profile must be one of: %s; got %q", ValidProfileNames(), c.Profile)
 	}
 	if c.Mode == "" {
@@ -671,6 +681,13 @@ func (c *Config) Validate() error {
 	}
 	if c.Role == "" {
 		c.Role = RoleAll
+	}
+
+	switch c.Profile {
+	case ProfileBalanced, ProfileMaxPerformance, ProfileMaxDurability,
+		ProfileMaxCostSavings, ProfileDev, "":
+	default:
+		return fmt.Errorf("--lakehouse.profile must be one of: balanced, max-performance, max-durability, max-cost-savings, dev; got %q", c.Profile)
 	}
 
 	if c.InsertEnabled() {
@@ -1209,6 +1226,11 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 		base.Role = overlay.Role
 	}
 
+	// Profile
+	if overlay.Profile != "" {
+		base.Profile = overlay.Profile
+	}
+
 	// Insert
 	if overlay.Insert.FlushInterval > 0 {
 		base.Insert.FlushInterval = overlay.Insert.FlushInterval
@@ -1438,6 +1460,15 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	if overlay.Logs.CompatVersion != "" {
 		base.Logs.CompatVersion = overlay.Logs.CompatVersion
 	}
+	if overlay.Logs.Profile != "" {
+		base.Logs.Profile = overlay.Logs.Profile
+	}
+	if overlay.Logs.Insert.Profile != "" {
+		base.Logs.Insert.Profile = overlay.Logs.Insert.Profile
+	}
+	if overlay.Logs.Select.Profile != "" {
+		base.Logs.Select.Profile = overlay.Logs.Select.Profile
+	}
 
 	// Traces mode config
 	if len(overlay.Traces.BloomColumns) > 0 {
@@ -1454,6 +1485,15 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Traces.JaegerGRPCAddr != "" {
 		base.Traces.JaegerGRPCAddr = overlay.Traces.JaegerGRPCAddr
+	}
+	if overlay.Traces.Profile != "" {
+		base.Traces.Profile = overlay.Traces.Profile
+	}
+	if overlay.Traces.Insert.Profile != "" {
+		base.Traces.Insert.Profile = overlay.Traces.Insert.Profile
+	}
+	if overlay.Traces.Select.Profile != "" {
+		base.Traces.Select.Profile = overlay.Traces.Select.Profile
 	}
 
 	return base
