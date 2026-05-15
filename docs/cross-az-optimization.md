@@ -496,6 +496,180 @@ insert:
 
 This ensures: pods spread evenly across AZs (`maxSkew: 1`), scheduler won't place 2 pods in the same AZ if another AZ has 0 (`DoNotSchedule`), and each pod has headroom for 1.5× normal load.
 
+##### AZ Failure Lifecycle — From Failure to Recovery
+
+This section traces the complete lifecycle: what happens when an AZ fails, how data is protected during the outage, and how the system recovers when the AZ comes back — including how duplicates are prevented.
+
+**Phase 1: AZ Failure**
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant LB as Load Balancer
+    participant A as Insert Pod (AZ-a)
+    participant B as Insert Pod (AZ-b)
+    participant S3 as S3 (regional)
+    participant M as Manifest
+
+    C->>LB: POST /insert/jsonline (batch X)
+    LB->>A: Route to AZ-a
+    A->>S3: PutObject (batch X as Parquet)
+    
+    rect rgb(255, 200, 200)
+        Note over A: 💥 AZ-a fails
+        Note over A: Pod dies mid-S3-PUT
+        Note over A: 200 never sent to client
+    end
+
+    Note over S3: S3 PUT may or may not<br/>complete (S3 is regional)
+
+    C->>LB: No response → retry batch X
+    LB->>B: Route to AZ-b (AZ-a failed health check)
+    B->>S3: PutObject (batch X as NEW file)
+    S3-->>B: Confirmed
+    B->>M: manifest.AddFile(batch-X-from-B)
+    B-->>C: 200 OK
+
+    Note over S3: Two possible files on S3:<br/>1. AZ-a's orphaned file (maybe)<br/>2. AZ-b's manifested file (confirmed)
+    Note over M: Only AZ-b's file is in manifest<br/>→ only AZ-b's file is queryable
+```
+
+**Key outcomes:**
+- **Client data safe**: client only got 200 after AZ-b confirmed S3 write
+- **No query duplicates**: manifest only contains AZ-b's file. AZ-a's orphaned file (if it completed) is on S3 but NOT in manifest → invisible to queries
+- **Zero coordination needed**: AZ-b doesn't know about AZ-a's failed write. It doesn't need to. Each insert pod operates independently.
+
+**Phase 2: During Outage — Surviving AZs Handle All Traffic**
+
+```mermaid
+graph TD
+    subgraph "AZ-a (DOWN)"
+        A_DEAD["Insert pods: DEAD ❌"]
+    end
+
+    subgraph "AZ-b (absorbing extra load)"
+        B1["Insert pod-2 ✅"] -->|"S3 PUT"| S3[(S3)]
+        B2["Insert pod-3 ✅"] -->|"S3 PUT"| S3
+    end
+
+    subgraph "AZ-c (absorbing extra load)"
+        C1["Insert pod-4 ✅"] -->|"S3 PUT"| S3
+        C2["Insert pod-5 ✅"] -->|"S3 PUT"| S3
+    end
+
+    LB[Load Balancer] -->|"0%"| A_DEAD
+    LB -->|"50%"| B1
+    LB -->|"50%"| C1
+
+    S3 --> MANIFEST[Manifest: tracks<br/>all confirmed files]
+
+    style A_DEAD fill:#F44336,color:#fff
+    style B1 fill:#4CAF50,color:#fff
+    style B2 fill:#4CAF50,color:#fff
+    style C1 fill:#4CAF50,color:#fff
+    style C2 fill:#4CAF50,color:#fff
+```
+
+- All new data flows to AZ-b/c insert pods
+- Each S3 write is confirmed → added to manifest → queryable
+- Select pods query data from manifest (all data on S3, regardless of which AZ wrote it)
+- **No data gaps in queries** — S3 is regional, readable from any AZ
+
+**Phase 3: AZ Recovers**
+
+```mermaid
+sequenceDiagram
+    participant A as Insert Pods (AZ-a, restarting)
+    participant LB as Load Balancer
+    participant S3 as S3
+    participant M as Manifest
+    participant GC as Orphan GC (periodic)
+
+    Note over A: AZ-a comes back online
+    A->>A: Pods restart FRESH<br/>(no local state, no WAL, stateless)
+    A->>M: Load manifest from S3/peers
+    Note over A: Manifest already has ALL data<br/>(written by AZ-b/c during outage)
+    
+    A->>LB: Pass health check
+    LB->>A: Resume routing traffic to AZ-a
+    Note over A: Accept NEW data normally
+    Note over A: No recovery, no replay,<br/>no special handling needed
+
+    GC->>S3: List files in partitions
+    GC->>M: Compare with manifest entries
+    Note over GC: Find AZ-a's orphaned files<br/>(on S3 but not in manifest)
+    GC->>S3: Delete orphaned files
+    Note over GC: Storage reclaimed
+```
+
+**Why this is so simple:**
+1. **Insert pods are stateless** — restart fresh, no state to recover, no WAL to replay
+2. **Manifest is the source of truth** — all data written during outage is already in manifest
+3. **No dedup needed at query time** — orphaned files from AZ-a are not in manifest → not queried
+4. **Orphan cleanup is background** — periodic GC compares S3 files vs manifest, deletes orphans
+5. **No coordination between insert pods** — each pod writes independently to S3, manifest tracks everything
+
+##### Why No Duplicates
+
+The dedup question resolves itself through the manifest architecture:
+
+| Scenario | AZ-a's file | AZ-b's file | Query result | Why |
+|---|---|---|---|---|
+| AZ-a PUT failed, client retried to AZ-b | Does not exist on S3 | In S3 + manifest ✅ | **One copy** | AZ-a's write never completed |
+| AZ-a PUT completed, client retried to AZ-b | On S3, NOT in manifest | In S3 + manifest ✅ | **One copy** | Manifest only knows about AZ-b's file. AZ-a's file is orphaned. |
+| AZ-a PUT completed AND manifest.AddFile() completed | In S3 + manifest | In S3 + manifest | **Two copies ⚠️** | Extremely rare: pod survived long enough for both S3 PUT and manifest update, then died before HTTP 200. |
+
+The third scenario (both copies in manifest) is **extremely rare** — it requires the pod to complete S3 PutObject + manifest.AddFile() but die before sending HTTP 200. The timing window is microseconds (manifest update is in-memory). If it does happen:
+
+**Compaction dedup handles it**: during the normal compaction merge of small files, rows are deduped by `(timestamp_ns, _stream_id, body)`. Identical rows from the two copies are merged into one. Zero operator intervention needed.
+
+##### Orphan Garbage Collection
+
+Orphaned files (on S3 but not in manifest) waste storage but don't affect query correctness. A periodic GC scan cleans them up:
+
+```yaml
+lakehouseConfig:
+  gc:
+    enabled: true
+    interval: "6h"              # scan every 6 hours
+    orphan_grace_period: "1h"   # don't delete files younger than 1h (may be in-flight)
+```
+
+**How GC works:**
+1. List S3 files in each Hive partition
+2. Compare with manifest entries
+3. Files on S3 but not in manifest AND older than `orphan_grace_period` → delete
+4. Cost: one S3 ListObjects per partition + one DeleteObject per orphan. Negligible.
+
+**At-scale impact**: AZ failures produce ~1-10 orphaned files per event (one per in-flight batch per insert pod in the failed AZ). At 3 insert pods with 200ms linger, that's ~3 orphaned files × ~5 MB each = ~15 MB of orphaned storage per AZ failure event. GC reclaims this within hours.
+
+##### Two-AZ Failure — Same Mechanism, Larger Scale
+
+When 2 out of 3 AZs fail simultaneously:
+
+1. **During failure**: one surviving AZ absorbs all traffic (if over-provisioned for N-2)
+2. **Data safety**: flush-sync ensures zero loss — clients retry to the surviving AZ
+3. **Orphaned files**: both failed AZs may leave orphans on S3 → GC cleans up
+4. **Recovery**: both AZs restart fresh, manifest already has all data from the surviving AZ
+5. **Duplicates**: same mechanism — manifest is source of truth, compaction handles the rare edge case
+
+The only additional concern: **can one AZ handle the full ingest load?** This is the capacity planning question (see sizing table above). With N-2 over-provisioning, each AZ can handle 100% of traffic.
+
+##### Summary: End-to-End AZ Failure Protection
+
+| Component | Mechanism | Complexity |
+|---|---|---|
+| **Data safety** | `flush-sync` — 200 only after S3 confirms | Config flag |
+| **Client failover** | HTTP retry — no 200 = resend to another AZ | Built-in (HTTP) |
+| **LB failover** | Health check removes failed AZ pods | Built-in (K8s/LB) |
+| **Load absorption** | Over-provisioned insert pods in surviving AZs | Capacity planning |
+| **Dedup prevention** | Manifest is source of truth — orphans not queryable | Built-in (architecture) |
+| **Orphan cleanup** | Periodic GC compares S3 vs manifest | Background job |
+| **Edge-case dedup** | Compaction merges duplicate rows | Built-in (compaction) |
+| **AZ recovery** | Pods restart stateless — no recovery logic needed | Zero — stateless |
+
+**No replication protocol. No WAL replay. No ring management. No compactor dedup queue.** The entire AZ failure protection relies on three things that already exist: S3's regional durability, HTTP retry semantics, and the manifest's role as source of truth for queries.
+
 ##### Monitoring AZ Failure Readiness
 
 | Metric | Alert Threshold | Meaning |
@@ -504,6 +678,8 @@ This ensures: pods spread evenly across AZs (`maxSkew: 1`), scheduler won't plac
 | `lakehouse_insert_buffer_rows` | > 80% of `flush_max_rows` | Pod approaching flush threshold — may need more pods |
 | `lakehouse_insert_flush_duration_seconds` | p99 > 1s | S3 write latency too high — check network/S3 throttling |
 | `kube_pod_status_ready` by AZ | < expected per AZ | AZ may be degrading |
+| `lakehouse_gc_orphans_deleted_total` | > 0 after AZ event | Confirms GC is cleaning up orphaned files |
+| `lakehouse_gc_orphan_bytes_total` | spike | Quantifies orphaned storage from AZ failure |
 
 ### Preferred vs Strict Mode
 
