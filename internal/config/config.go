@@ -55,6 +55,7 @@ type Config struct {
 	Tenant      TenantConfig      `yaml:"tenant"`
 	Compaction  CompactionConfig  `yaml:"compaction"`
 	Delete      DeleteConfig      `yaml:"delete"`
+	GC          GCConfig          `yaml:"gc"`
 	SmartCache  SmartCacheConfig  `yaml:"smart_cache"`
 	CrossSignal CrossSignalConfig `yaml:"cross_signal"`
 	Retention   RetentionConfig   `yaml:"retention"`
@@ -123,6 +124,15 @@ type InsertConfig struct {
 	WALEnabled       bool          `yaml:"wal_enabled"`
 	WALDir           string        `yaml:"wal_dir"`
 	WALMaxBytes      string        `yaml:"wal_max_bytes"`
+
+	AckMode              string        `yaml:"ack_mode"`
+	FlushLinger          time.Duration `yaml:"flush_linger"`
+	FlushMaxRows         int           `yaml:"flush_max_rows"`
+	PeerReplicate        bool          `yaml:"peer_replicate"`
+	PeerReplicateTimeout time.Duration `yaml:"peer_replicate_timeout"`
+	PeerReplicateTTL     time.Duration `yaml:"peer_replicate_ttl"`
+	AsyncWALEnabled      bool          `yaml:"async_wal_enabled"`
+	AsyncWALBatchLinger  time.Duration `yaml:"async_wal_batch_linger"`
 }
 
 func (c *InsertConfig) MaxBufferBytesN() int64 {
@@ -147,6 +157,12 @@ func (c *InsertConfig) WALMaxBytesN() int64 {
 		return 512 * 1024 * 1024
 	}
 	return n
+}
+
+type GCConfig struct {
+	Enabled           bool          `yaml:"enabled"`
+	Interval          time.Duration `yaml:"interval"`
+	OrphanGracePeriod time.Duration `yaml:"orphan_grace_period"`
 }
 
 func (c *Config) InsertEnabled() bool {
@@ -464,6 +480,15 @@ func Default() *Config {
 			WALEnabled:       true,
 			WALDir:           "/data/lakehouse/wal",
 			WALMaxBytes:      "512MB",
+
+			AckMode:              "buffer",
+			FlushLinger:          200 * time.Millisecond,
+			FlushMaxRows:         5000,
+			PeerReplicate:        false,
+			PeerReplicateTimeout: 5 * time.Millisecond,
+			PeerReplicateTTL:     30 * time.Second,
+			AsyncWALEnabled:      false,
+			AsyncWALBatchLinger:  50 * time.Millisecond,
 		},
 
 		Select: SelectConfig{
@@ -510,6 +535,12 @@ func Default() *Config {
 			CostWarningThreshold: 10.0,
 			ForceGlacierHeader:   "X-Force-Glacier-Delete",
 			VerifyInterval:       6 * time.Hour,
+		},
+
+		GC: GCConfig{
+			Enabled:           true,
+			Interval:          6 * time.Hour,
+			OrphanGracePeriod: 1 * time.Hour,
 		},
 
 		SmartCache: SmartCacheConfig{
@@ -671,6 +702,20 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("--lakehouse.insert.wal-max-bytes: invalid size %q: %w", c.Insert.WALMaxBytes, err)
 			}
 		}
+		switch c.Insert.AckMode {
+		case "buffer", "wal", "flush-sync":
+		default:
+			return fmt.Errorf("--lakehouse.insert.ack-mode must be one of: buffer, wal, flush-sync; got %q", c.Insert.AckMode)
+		}
+		if c.Insert.FlushLinger < 0 {
+			return fmt.Errorf("--lakehouse.insert.flush-linger must be non-negative")
+		}
+		if c.Insert.FlushMaxRows < 0 {
+			return fmt.Errorf("--lakehouse.insert.flush-max-rows must be non-negative")
+		}
+		if c.Insert.PeerReplicateTTL < 0 {
+			return fmt.Errorf("--lakehouse.insert.peer-replicate-ttl must be non-negative")
+		}
 	}
 
 	switch c.Peer.AZMode {
@@ -725,6 +770,15 @@ func (c *Config) Validate() error {
 		}
 		if c.Compaction.MinFilesL1 < 2 {
 			return fmt.Errorf("--lakehouse.compaction.min-files-l1 must be >= 2")
+		}
+	}
+
+	if c.GC.Enabled {
+		if c.GC.Interval <= 0 {
+			return fmt.Errorf("--lakehouse.gc.interval must be positive")
+		}
+		if c.GC.OrphanGracePeriod <= 0 {
+			return fmt.Errorf("--lakehouse.gc.orphan-grace-period must be positive")
 		}
 	}
 
@@ -1186,6 +1240,30 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	if overlay.Insert.WALMaxBytes != "" {
 		base.Insert.WALMaxBytes = overlay.Insert.WALMaxBytes
 	}
+	if overlay.Insert.AckMode != "" {
+		base.Insert.AckMode = overlay.Insert.AckMode
+	}
+	if overlay.Insert.FlushLinger > 0 {
+		base.Insert.FlushLinger = overlay.Insert.FlushLinger
+	}
+	if overlay.Insert.FlushMaxRows > 0 {
+		base.Insert.FlushMaxRows = overlay.Insert.FlushMaxRows
+	}
+	if overlay.Insert.PeerReplicate {
+		base.Insert.PeerReplicate = true
+	}
+	if overlay.Insert.PeerReplicateTimeout > 0 {
+		base.Insert.PeerReplicateTimeout = overlay.Insert.PeerReplicateTimeout
+	}
+	if overlay.Insert.PeerReplicateTTL > 0 {
+		base.Insert.PeerReplicateTTL = overlay.Insert.PeerReplicateTTL
+	}
+	if overlay.Insert.AsyncWALEnabled {
+		base.Insert.AsyncWALEnabled = true
+	}
+	if overlay.Insert.AsyncWALBatchLinger > 0 {
+		base.Insert.AsyncWALBatchLinger = overlay.Insert.AsyncWALBatchLinger
+	}
 
 	// Select
 	if overlay.Select.BufferQueryEnabled {
@@ -1337,6 +1415,17 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if len(overlay.Retention.Rules) > 0 {
 		base.Retention.Rules = overlay.Retention.Rules
+	}
+
+	// GC
+	if overlay.GC.Enabled {
+		base.GC.Enabled = true
+	}
+	if overlay.GC.Interval > 0 {
+		base.GC.Interval = overlay.GC.Interval
+	}
+	if overlay.GC.OrphanGracePeriod > 0 {
+		base.GC.OrphanGracePeriod = overlay.GC.OrphanGracePeriod
 	}
 
 	// Logs mode config
