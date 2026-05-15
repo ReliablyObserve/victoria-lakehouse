@@ -373,6 +373,71 @@ Where `N` = pods needed to handle full ingest load (e.g., 3 pods for 500 GB/day)
 - AZ-a fails: 8 pods handle 33 TB/day → 4.1 TB/day each
 - Cost: 12 × ~$140/mo m5.xlarge = $1,680/mo (vs $840/mo without resilience)
 
+##### The Accepted-But-Not-Flushed Gap
+
+This is the critical risk to understand: **in `buffer` and `wal` modes, the insert pod sends 200 OK BEFORE data reaches S3.** The client believes the data is safe, but it only exists in the pod's memory (buffer) or local disk (wal). If the AZ fails, that data is gone — and the client won't retry because it already got 200.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant I as Insert Pod (AZ-a)
+    participant S3 as S3
+
+    C->>I: POST /insert/jsonline
+    I->>I: Buffer in memory
+    I-->>C: 200 OK ← client thinks data is safe
+    Note over I: Data only in memory!
+    Note over I,S3: ⏳ 10 seconds pass...
+    
+    rect rgb(255, 200, 200)
+        Note over I: 💥 AZ-a fails here
+        Note over I: Buffer lost — data gone
+        Note over C: Client already got 200
+        Note over C: Will NOT retry
+    end
+```
+
+**This gap does NOT exist in `flush-sync` mode** — the 200 is only sent after S3 confirms. But for customers who need buffer-mode performance with near-zero data loss, there is an additional option:
+
+##### Protecting Accepted Data — Three Approaches
+
+| Approach | How It Works | Data at Risk | Latency | Cost | Complexity |
+|---|---|---|---|---|---|
+| **`flush-sync`** (recommended) | Don't send 200 until S3 PutObject confirms | **Zero** | +100-500ms | ~$0.15/mo | None — config flag |
+| **`buffer` + async S3 WAL** | Send 200 after buffer, THEN async write raw batch to S3 as WAL file | **~50-150ms race window** (~0.1-0.3 MB/pod) | ~0ms (async) | ~$0.30/mo (WAL PUTs) | Low — background S3 writer |
+| **`buffer` + shorter flush** | Send 200 after buffer, flush to S3 every 1-2s instead of 10s | **1-2s of data** (~2-4 MB/pod at 500GB/day) | ~0ms | ~$0.15/mo | None — config flag |
+
+**`flush-sync`** eliminates the gap entirely and is the simplest. Use it unless you have a hard sub-5ms insert latency requirement.
+
+**Async S3 WAL** is for customers who need both buffer-mode speed AND near-zero data loss:
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant I as Insert Pod
+    participant S3 as S3
+
+    C->>I: POST /insert/jsonline
+    I->>I: Buffer in memory
+    I-->>C: 200 OK (fast!)
+    I->>S3: Async: PutObject (WAL record, ~20KB)
+    Note over S3: WAL on S3 within 50-150ms
+    Note over I: If AZ fails after WAL reaches S3:<br/>WAL recovered on next startup → zero loss
+    Note over I: If AZ fails before WAL reaches S3:<br/>~50-150ms of data lost (tiny)
+```
+
+The race window (data accepted but WAL not yet on S3) is 50-150ms — at 500 GB/day ingest rate, that's ~0.1-0.3 MB per pod. Compared to buffer mode's 10-second window (19 MB), this is a 99% reduction in risk.
+
+```yaml
+# Async S3 WAL — near-zero risk with buffer-mode speed
+lakehouseConfig:
+  insert:
+    ack_mode: "buffer"
+    flush_interval: "10s"          # Parquet flush (unchanged)
+    async_wal_enabled: true        # async WAL to S3 after each accepted batch
+    async_wal_batch_linger: "50ms" # batch WAL writes for efficiency
+```
+
 ##### What Protects Data at Each Stage
 
 Data flows through four stages from client to S3. Here's what protects it at each point and what happens when an AZ fails:
@@ -386,20 +451,21 @@ Client  ──→  Network/LB  ──→  Insert Pod  ──→  S3
 |---|---|---|---|
 | **1. Client → Network** | Client detects connection failure | **Client retry** — all VL/VT-compatible clients retry on error. Load balancer health checks remove dead pods within seconds. | Built-in (HTTP) |
 | **2. Network → Insert Pod** | Request in transit is lost | **Client retry** — no response received = client resends. TCP guarantees: no partial delivery without error. | Built-in (TCP/HTTP) |
-| **3. In Insert Pod buffer** | Buffer lost with pod | **`flush-sync`** — buffer was never acknowledged (no 200 sent). Client retries. **`buffer`** — data was acknowledged, lost. **`wal`** — on local EBS, at risk if AZ fails. | Config: `ack_mode` |
+| **3. In Insert Pod buffer** | Buffer lost with pod | **`flush-sync`** — 200 never sent, client retries → **zero loss**. **`buffer` + async WAL** — WAL on S3 recovers all but ~50-150ms → **near-zero loss**. **`buffer`** — data acknowledged but lost → **flush-interval of data lost**. **`wal`** — on local EBS, at risk if AZ fails → **WAL data lost**. | Config: `ack_mode` + `async_wal` |
 | **4. Insert Pod → S3** | PutObject may or may not complete | **S3 is regional** — once PUT succeeds, data survives any AZ failure. If PUT fails, no 200 sent (flush-sync), client retries. | Built-in (S3) |
 
-**The only stage where `ack_mode` matters is Stage 3.** Every other stage is inherently protected by HTTP retry semantics and S3's regional architecture.
+**Stage 3 is the only stage where configuration choices matter.** Every other stage is inherently protected by HTTP retry semantics and S3's regional architecture.
 
 ##### Decision Matrix: AZ Tolerance + Durability
 
-| Goal | `ack_mode` | Insert pod sizing | Monthly cost premium | Result |
+| Goal | Configuration | Cost Premium | Data at Risk on AZ Failure | New Ingest Availability |
 |---|---|---|---|---|
-| **Best effort** (standard observability) | `buffer` | Normal (no over-provision) | $0 | Pod crash: lose 10s. AZ fail: lose 10s + wait for LB failover. |
-| **Pod crash safe** | `wal` | Normal | ~$10/mo (EBS for WAL) | Pod crash: zero loss. AZ fail: WAL at risk. |
-| **Zero data loss** | `flush-sync` | Normal | ~$0.15/mo (extra S3 PUTs) | Any failure: zero loss. Surviving pods may be overloaded. |
-| **Zero loss + HA** | `flush-sync` | Over-provision (N-1 AZ) | +50% pod cost | Any single AZ failure: zero loss, full throughput maintained. |
-| **Zero loss + multi-AZ HA** | `flush-sync` | Over-provision (N-2 AZ) | +200% pod cost | Two AZ failures: zero loss, full throughput maintained. |
+| **Best effort** (standard observability) | `ack_mode=buffer` | $0 | flush-interval per pod (19 MB at 500GB/day) | Wait for LB failover (~5-30s) |
+| **Reduced risk** | `ack_mode=buffer` + `flush_interval=2s` | ~$0.15/mo | 2s per pod (~4 MB at 500GB/day) | Wait for LB failover |
+| **Near-zero risk, fast ingest** | `ack_mode=buffer` + `async_wal=true` | ~$0.30/mo | ~0.1-0.3 MB per pod (50-150ms race) | Wait for LB failover |
+| **Zero data loss** | `ack_mode=flush-sync` | ~$0.15/mo | **Zero** — 200 only after S3 | Wait for LB failover, surviving pods may be overloaded |
+| **Zero loss + HA** | `flush-sync` + over-provision (N-1 AZ) | +50% pod cost | **Zero** | Full throughput maintained |
+| **Zero loss + multi-AZ HA** | `flush-sync` + over-provision (N-2 AZ) | +200% pod cost | **Zero** | Full throughput through 2 AZ failures |
 
 ##### Helm Configuration for AZ-Resilient Insert
 
