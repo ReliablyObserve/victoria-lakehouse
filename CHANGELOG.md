@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.2] - 2026-05-15
+
 ### Changed
 - Apply `gofmt -s` simplifications across all Go files in both modules
 - Enable gofmt, gocyclo, and misspell linters in golangci-lint v2 configs
