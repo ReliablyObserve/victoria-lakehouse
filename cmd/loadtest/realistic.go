@@ -43,8 +43,8 @@ func buildRealisticScenarios() []RealisticScenario {
 	return []RealisticScenario{
 		// === MANIFEST FAST PATH ===
 		{
-			Name:     "manifest_nothing_here",
-			Category: "fast_path",
+			Name:        "manifest_nothing_here",
+			Category:    "fast_path",
 			Description: "Query future time range — manifest returns empty instantly",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/query?query=*&start=%d&end=%d",
@@ -55,8 +55,8 @@ func buildRealisticScenarios() []RealisticScenario {
 
 		// === POINT LOOKUPS (Bloom Filter) ===
 		{
-			Name:     "bloom_trace_id_hit",
-			Category: "point_lookup",
+			Name:        "bloom_trace_id_hit",
+			Category:    "point_lookup",
 			Description: "Exact trace_id match via bloom filter",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/query?query=%s&start=%d&end=%d&limit=1",
@@ -66,8 +66,8 @@ func buildRealisticScenarios() []RealisticScenario {
 			TargetP95Ms: 100.0,
 		},
 		{
-			Name:     "bloom_trace_id_miss",
-			Category: "point_lookup",
+			Name:        "bloom_trace_id_miss",
+			Category:    "point_lookup",
 			Description: "trace_id that doesn't exist — bloom says no",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/query?query=%s&start=%d&end=%d&limit=1",
@@ -77,8 +77,8 @@ func buildRealisticScenarios() []RealisticScenario {
 			TargetP95Ms: 100.0,
 		},
 		{
-			Name:     "bloom_service_exact",
-			Category: "point_lookup",
+			Name:        "bloom_service_exact",
+			Category:    "point_lookup",
 			Description: "Exact service.name match via bloom filter",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/query?query=%s&start=%d&end=%d&limit=10",
@@ -90,8 +90,8 @@ func buildRealisticScenarios() []RealisticScenario {
 
 		// === SHORT RANGE QUERIES (cached after first hit) ===
 		{
-			Name:     "short_range_1h_wildcard",
-			Category: "short_range",
+			Name:        "short_range_1h_wildcard",
+			Category:    "short_range",
 			Description: "Last 1 hour, wildcard, limit 100",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/query?query=*&start=%d&end=%d&limit=100",
@@ -100,8 +100,8 @@ func buildRealisticScenarios() []RealisticScenario {
 			TargetP95Ms: 500.0,
 		},
 		{
-			Name:     "short_range_1h_filtered",
-			Category: "short_range",
+			Name:        "short_range_1h_filtered",
+			Category:    "short_range",
 			Description: "Last 1 hour, ERROR level filter",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/query?query=%s&start=%d&end=%d&limit=100",
@@ -111,8 +111,8 @@ func buildRealisticScenarios() []RealisticScenario {
 			TargetP95Ms: 500.0,
 		},
 		{
-			Name:     "short_range_1h_service_level",
-			Category: "short_range",
+			Name:        "short_range_1h_service_level",
+			Category:    "short_range",
 			Description: "Last 1 hour, service + level compound filter",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/query?query=%s&start=%d&end=%d&limit=50",
@@ -124,8 +124,8 @@ func buildRealisticScenarios() []RealisticScenario {
 
 		// === MEDIUM RANGE QUERIES ===
 		{
-			Name:     "medium_range_6h_wildcard",
-			Category: "medium_range",
+			Name:        "medium_range_6h_wildcard",
+			Category:    "medium_range",
 			Description: "Last 6 hours, wildcard, limit 200",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/query?query=*&start=%d&end=%d&limit=200",
@@ -134,8 +134,8 @@ func buildRealisticScenarios() []RealisticScenario {
 			TargetP95Ms: 1000.0,
 		},
 		{
-			Name:     "medium_range_6h_substring",
-			Category: "medium_range",
+			Name:        "medium_range_6h_substring",
+			Category:    "medium_range",
 			Description: "Last 6 hours, substring match in body",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/query?query=%s&start=%d&end=%d&limit=100",
@@ -147,8 +147,8 @@ func buildRealisticScenarios() []RealisticScenario {
 
 		// === LONG RANGE QUERIES ===
 		{
-			Name:     "long_range_24h_wildcard",
-			Category: "long_range",
+			Name:        "long_range_24h_wildcard",
+			Category:    "long_range",
 			Description: "Last 24 hours, wildcard, limit 500",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/query?query=*&start=%d&end=%d&limit=500",
@@ -157,8 +157,8 @@ func buildRealisticScenarios() []RealisticScenario {
 			TargetP95Ms: 3000.0,
 		},
 		{
-			Name:     "long_range_48h_service_filter",
-			Category: "long_range",
+			Name:        "long_range_48h_service_filter",
+			Category:    "long_range",
 			Description: "Full 48 hours, exact service filter, limit 200",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/query?query=%s&start=%d&end=%d&limit=200",
@@ -168,8 +168,8 @@ func buildRealisticScenarios() []RealisticScenario {
 			TargetP95Ms: 5000.0,
 		},
 		{
-			Name:     "long_range_48h_all_errors",
-			Category: "long_range",
+			Name:        "long_range_48h_all_errors",
+			Category:    "long_range",
 			Description: "Full 48 hours, all ERROR logs, limit 500",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/query?query=%s&start=%d&end=%d&limit=500",
@@ -181,8 +181,8 @@ func buildRealisticScenarios() []RealisticScenario {
 
 		// === AGGREGATION QUERIES ===
 		{
-			Name:     "stats_1h_count",
-			Category: "aggregation",
+			Name:        "stats_1h_count",
+			Category:    "aggregation",
 			Description: "stats_query: count over last 1 hour",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/stats_query?query=*&start=%d&end=%d",
@@ -191,8 +191,8 @@ func buildRealisticScenarios() []RealisticScenario {
 			TargetP95Ms: 300.0,
 		},
 		{
-			Name:     "stats_24h_count",
-			Category: "aggregation",
+			Name:        "stats_24h_count",
+			Category:    "aggregation",
 			Description: "stats_query: count over last 24 hours",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/stats_query?query=*&start=%d&end=%d",
@@ -201,8 +201,8 @@ func buildRealisticScenarios() []RealisticScenario {
 			TargetP95Ms: 2000.0,
 		},
 		{
-			Name:     "stats_range_1h_step_5m",
-			Category: "aggregation",
+			Name:        "stats_range_1h_step_5m",
+			Category:    "aggregation",
 			Description: "stats_query_range: 1h with 5m step (12 buckets)",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/stats_query_range?query=*&start=%d&end=%d&step=300s",
@@ -211,8 +211,8 @@ func buildRealisticScenarios() []RealisticScenario {
 			TargetP95Ms: 500.0,
 		},
 		{
-			Name:     "stats_range_24h_step_1h",
-			Category: "aggregation",
+			Name:        "stats_range_24h_step_1h",
+			Category:    "aggregation",
 			Description: "stats_query_range: 24h with 1h step (24 buckets)",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/stats_query_range?query=*&start=%d&end=%d&step=3600s",
@@ -223,8 +223,8 @@ func buildRealisticScenarios() []RealisticScenario {
 
 		// === METADATA / LABEL QUERIES ===
 		{
-			Name:     "field_names_cached",
-			Category: "metadata",
+			Name:        "field_names_cached",
+			Category:    "metadata",
 			Description: "List all field names (label index)",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/field_names?start=%d&end=%d",
@@ -233,8 +233,8 @@ func buildRealisticScenarios() []RealisticScenario {
 			TargetP95Ms: 1.0,
 		},
 		{
-			Name:     "field_values_service",
-			Category: "metadata",
+			Name:        "field_values_service",
+			Category:    "metadata",
 			Description: "List values for service.name",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/field_values?field=service.name&limit=100&start=%d&end=%d",
@@ -243,8 +243,8 @@ func buildRealisticScenarios() []RealisticScenario {
 			TargetP95Ms: 100.0,
 		},
 		{
-			Name:     "streams_list",
-			Category: "metadata",
+			Name:        "streams_list",
+			Category:    "metadata",
 			Description: "List log streams",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/streams?start=%d&end=%d",
@@ -255,8 +255,8 @@ func buildRealisticScenarios() []RealisticScenario {
 
 		// === HITS ENDPOINT (histogram) ===
 		{
-			Name:     "hits_1h_step_5m",
-			Category: "histogram",
+			Name:        "hits_1h_step_5m",
+			Category:    "histogram",
 			Description: "Hits histogram: 1h range, 5m buckets",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/hits?query=*&start=%d&end=%d&step=300s",
@@ -265,8 +265,8 @@ func buildRealisticScenarios() []RealisticScenario {
 			TargetP95Ms: 500.0,
 		},
 		{
-			Name:     "hits_24h_step_1h",
-			Category: "histogram",
+			Name:        "hits_24h_step_1h",
+			Category:    "histogram",
 			Description: "Hits histogram: 24h range, 1h buckets",
 			URLFn: func(t string) string {
 				return fmt.Sprintf("%s/select/logsql/hits?query=*&start=%d&end=%d&step=3600s",

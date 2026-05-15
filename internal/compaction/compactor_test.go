@@ -453,14 +453,14 @@ func TestZstdLevel_AllLevels(t *testing.T) {
 		input int
 		want  zstd.Level
 	}{
-		{0, zstd.SpeedFastest},          // level <= 1
-		{1, zstd.SpeedFastest},          // level <= 1
-		{2, zstd.SpeedDefault},          // 2 <= level <= 5
-		{5, zstd.SpeedDefault},          // 2 <= level <= 5
-		{6, zstd.SpeedBetterCompression}, // 6 <= level <= 10
+		{0, zstd.SpeedFastest},            // level <= 1
+		{1, zstd.SpeedFastest},            // level <= 1
+		{2, zstd.SpeedDefault},            // 2 <= level <= 5
+		{5, zstd.SpeedDefault},            // 2 <= level <= 5
+		{6, zstd.SpeedBetterCompression},  // 6 <= level <= 10
 		{10, zstd.SpeedBetterCompression}, // 6 <= level <= 10
-		{11, zstd.SpeedBestCompression}, // level > 10
-		{100, zstd.SpeedBestCompression}, // large value
+		{11, zstd.SpeedBestCompression},   // level > 10
+		{100, zstd.SpeedBestCompression},  // large value
 	}
 	for _, tc := range tests {
 		got := zstdLevel(tc.input)

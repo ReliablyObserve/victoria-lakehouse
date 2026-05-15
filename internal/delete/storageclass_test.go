@@ -138,13 +138,13 @@ func TestPredictClassFromAge(t *testing.T) {
 		fileAgeHours float64
 		want         StorageClass
 	}{
-		{"before_first_threshold", 24 * 10, ClassStandard},         // 10 days
-		{"at_first_threshold", 24 * 30, ClassStandardIA},           // 30 days
-		{"between_first_and_second", 24 * 60, ClassStandardIA},     // 60 days
-		{"at_second_threshold", 24 * 90, ClassGlacier},             // 90 days
-		{"between_second_and_third", 24 * 200, ClassGlacier},       // 200 days
-		{"at_third_threshold", 24 * 365, ClassDeepArchive},         // 365 days
-		{"well_past_all_thresholds", 24 * 1000, ClassDeepArchive},  // 1000 days
+		{"before_first_threshold", 24 * 10, ClassStandard},        // 10 days
+		{"at_first_threshold", 24 * 30, ClassStandardIA},          // 30 days
+		{"between_first_and_second", 24 * 60, ClassStandardIA},    // 60 days
+		{"at_second_threshold", 24 * 90, ClassGlacier},            // 90 days
+		{"between_second_and_third", 24 * 200, ClassGlacier},      // 200 days
+		{"at_third_threshold", 24 * 365, ClassDeepArchive},        // 365 days
+		{"well_past_all_thresholds", 24 * 1000, ClassDeepArchive}, // 1000 days
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

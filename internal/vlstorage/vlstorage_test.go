@@ -422,4 +422,3 @@ func TestDeleteActiveTasks_ReturnsTombstones(t *testing.T) {
 		t.Errorf("expected task IDs t-1 and t-2, got %v", ids)
 	}
 }
-

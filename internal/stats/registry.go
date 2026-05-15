@@ -111,10 +111,10 @@ type TenantDelta struct {
 
 // tenantDeltaJSON is the JSON-serialisable mirror of TenantDelta.
 type tenantDeltaJSON struct {
-	NodeID     string                        `json:"node_id"`
-	Generation uint64                        `json:"generation"`
-	Tenants    map[string]tenantStatsJSON    `json:"tenants"`
-	Timestamp  time.Time                     `json:"timestamp"`
+	NodeID     string                     `json:"node_id"`
+	Generation uint64                     `json:"generation"`
+	Tenants    map[string]tenantStatsJSON `json:"tenants"`
+	Timestamp  time.Time                  `json:"timestamp"`
 }
 
 // GlobalStats aggregates stats across all tenants.
@@ -321,11 +321,11 @@ func (r *TenantRegistry) LastPushGen() uint64 {
 
 // registrySnapshot is the top-level structure for MarshalSnapshot / LoadSnapshot.
 type registrySnapshot struct {
-	NodeID           string                        `json:"node_id"`
-	Generation       uint64                        `json:"generation"`
-	LastPushGen      uint64                        `json:"last_push_gen"`
-	Tenants          map[string]tenantStatsJSON    `json:"tenants"`
-	TenantGeneration map[string]uint64             `json:"tenant_generation"`
+	NodeID           string                     `json:"node_id"`
+	Generation       uint64                     `json:"generation"`
+	LastPushGen      uint64                     `json:"last_push_gen"`
+	Tenants          map[string]tenantStatsJSON `json:"tenants"`
+	TenantGeneration map[string]uint64          `json:"tenant_generation"`
 }
 
 // MarshalSnapshot serialises the entire registry to JSON.

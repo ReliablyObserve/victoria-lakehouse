@@ -11,6 +11,7 @@
 [![Prod Code](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ReliablyObserve/victoria-lakehouse/badges/prod-loc.json)](https://github.com/ReliablyObserve/victoria-lakehouse)
 [![Test Code](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ReliablyObserve/victoria-lakehouse/badges/test-loc.json)](https://github.com/ReliablyObserve/victoria-lakehouse)
 [![Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ReliablyObserve/victoria-lakehouse/badges/tests.json)](#tests)
+[![Go Report Card](https://goreportcard.com/badge/github.com/ReliablyObserve/victoria-lakehouse)](https://goreportcard.com/report/github.com/ReliablyObserve/victoria-lakehouse)
 [![License](https://img.shields.io/github/license/ReliablyObserve/victoria-lakehouse)](LICENSE)
 
 **S3-backed cold storage for VictoriaLogs and VictoriaTraces.** Two dedicated binaries — `lakehouse-logs` and `lakehouse-traces` — each 100% API-compatible with VL/VT. Same endpoints, same protocols, same query language. Implements the VL/VT storage interface with an S3 Parquet backend. Registers as a `-storageNode` and works transparently alongside existing VL/VT clusters.

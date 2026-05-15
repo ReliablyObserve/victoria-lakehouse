@@ -1107,10 +1107,10 @@ func TestGuard_TenantMetricVariablesExist(t *testing.T) {
 		"TenantBytes":               metrics.TenantBytes,
 		"TenantRawBytes":            metrics.TenantRawBytes,
 		"TenantRowsTotal":           metrics.TenantRowsTotal,
-		"TenantIngestionBytesTotal":  metrics.TenantIngestionBytesTotal,
+		"TenantIngestionBytesTotal": metrics.TenantIngestionBytesTotal,
 		"TenantQueriesTotal":        metrics.TenantQueriesTotal,
-		"TenantLastWriteTimestamp":   metrics.TenantLastWriteTimestamp,
-		"TenantLastQueryTimestamp":   metrics.TenantLastQueryTimestamp,
+		"TenantLastWriteTimestamp":  metrics.TenantLastWriteTimestamp,
+		"TenantLastQueryTimestamp":  metrics.TenantLastQueryTimestamp,
 	}
 	for name, v := range vars {
 		if v == nil {

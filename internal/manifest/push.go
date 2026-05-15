@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 )
 
 type ManifestUpdate struct {

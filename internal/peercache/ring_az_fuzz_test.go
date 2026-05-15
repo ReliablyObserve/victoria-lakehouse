@@ -163,8 +163,8 @@ func TestRing_MemberCountByZone_ManyZones(t *testing.T) {
 func TestRing_LookupAZ_WrapAround(t *testing.T) {
 	r := NewRing("self:9428", 1)
 	r.SetWithZones(map[string]string{
-		"self:9428":  "az-a",
-		"peer:9428":  "az-a",
+		"self:9428": "az-a",
+		"peer:9428": "az-a",
 	}, "az-a")
 
 	// With only 1 vnode each, hash wrap-around is very likely for most keys

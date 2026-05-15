@@ -26,7 +26,7 @@ func TestAZIntegration_FullFlow(t *testing.T) {
 	peerZones := map[string]string{
 		serverA.Listener.Addr().String(): "az-a",
 		serverB.Listener.Addr().String(): "az-b",
-		"self:9428":                       "az-a",
+		"self:9428":                      "az-a",
 	}
 	pc.UpdatePeersWithZones(peerZones, "az-a")
 

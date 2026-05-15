@@ -501,15 +501,15 @@ func buildTestTraceParquet(t *testing.T, rows []schema.TraceRow) []byte {
 
 func TestTraceRowToMap(t *testing.T) {
 	row := schema.TraceRow{
-		TraceID:      "trace123",
-		SpanID:       "span456",
-		SpanName:     "HTTP GET /users",
-		ServiceName:  "user-service",
-		StatusCode:   2,
-		DurationNs:   50000000,
-		HTTPMethod:   "GET",
-		HTTPUrl:      "http://user-service:8080/users",
-		DeployEnv:    "production",
+		TraceID:        "trace123",
+		SpanID:         "span456",
+		SpanName:       "HTTP GET /users",
+		ServiceName:    "user-service",
+		StatusCode:     2,
+		DurationNs:     50000000,
+		HTTPMethod:     "GET",
+		HTTPUrl:        "http://user-service:8080/users",
+		DeployEnv:      "production",
 		SpanAttributes: map[string]string{"custom.field": "value1"},
 	}
 

@@ -526,11 +526,11 @@ func TestIntegration_TraceDelete_FullRoundTrip(t *testing.T) {
 	}}
 
 	cfg := &config.DeleteConfig{
-		Enabled:             true,
-		DefaultMode:         "auto",
-		AutoRewriteClasses:  []string{"STANDARD"},
-		RewriteDelay:        0,
-		RewriteBatchSize:    10,
+		Enabled:              true,
+		DefaultMode:          "auto",
+		AutoRewriteClasses:   []string{"STANDARD"},
+		RewriteDelay:         0,
+		RewriteBatchSize:     10,
 		RewriteMaxConcurrent: 2,
 	}
 

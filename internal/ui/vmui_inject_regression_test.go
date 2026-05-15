@@ -122,7 +122,7 @@ func TestRegressionVMUIStaticAssets(t *testing.T) {
 	// and may not be present in CI (they are gitignored).
 	// Only test if they are available in the embedded FS.
 	assets := []struct {
-		path    string
+		path     string
 		noInject bool
 	}{
 		{"/select/vmui/favicon.svg", true},

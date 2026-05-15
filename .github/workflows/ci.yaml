@@ -69,6 +69,14 @@ jobs:
             lakehouse-traces/deps/VictoriaLogs
           key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ hashFiles('patches/**') }}
 
+      - name: Check gofmt -s (logs)
+        run: |
+          DIFF=$(gofmt -s -l cmd/ internal/)
+          if [ -n "$DIFF" ]; then
+            echo "::error::gofmt -s required on: $DIFF"
+            exit 1
+          fi
+
       - name: Test logs module
         run: go test ./internal/... -race -count=1 -timeout=10m
 
@@ -91,6 +99,15 @@ jobs:
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
           key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ hashFiles('patches/**') }}
+
+      - name: Check gofmt -s (traces)
+        working-directory: lakehouse-traces
+        run: |
+          DIFF=$(gofmt -s -l internal/ *.go)
+          if [ -n "$DIFF" ]; then
+            echo "::error::gofmt -s required on: $DIFF"
+            exit 1
+          fi
 
       - name: Test traces module
         working-directory: lakehouse-traces
@@ -251,7 +268,6 @@ jobs:
           key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ hashFiles('patches/**') }}
 
       - name: Run govulncheck (logs)
-        continue-on-error: true
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./internal/... ./cmd/...
@@ -274,7 +290,6 @@ jobs:
           key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ hashFiles('patches/**') }}
 
       - name: Run govulncheck (traces)
-        continue-on-error: true
         working-directory: lakehouse-traces
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -287,7 +302,7 @@ jobs:
 
       - name: Lint Helm chart
         run: |
-          helm lint charts/victoria-lakehouse/ || true
+          helm lint charts/victoria-lakehouse/ --strict
 
   benchmarks-logs:
     needs: deps

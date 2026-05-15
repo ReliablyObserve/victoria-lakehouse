@@ -380,12 +380,12 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 			}
 
 			span := map[string]string{
-				"trace_id":    tid,
-				"span_id":     getVal(colMap, "span_id", i),
+				"trace_id":     tid,
+				"span_id":      getVal(colMap, "span_id", i),
 				"service.name": getValAny(colMap, i, "resource_attr:service.name", "service.name"),
-				"span.name":   getValAny(colMap, i, "name", "span.name"),
-				"start_time":  getValAny(colMap, i, "start_time", "start_time_unix_nano"),
-				"duration_ns": durStr,
+				"span.name":    getValAny(colMap, i, "name", "span.name"),
+				"start_time":   getValAny(colMap, i, "start_time", "start_time_unix_nano"),
+				"duration_ns":  durStr,
 			}
 			traceMap[tid] = append(traceMap[tid], span)
 		}

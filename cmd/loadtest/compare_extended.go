@@ -40,10 +40,10 @@ type ExtResult struct {
 }
 
 type ExtCompareReport struct {
-	Timestamp  string             `json:"timestamp"`
-	LHResults  []ExtResult        `json:"lakehouse_s3"`
-	VLResults  []ExtResult        `json:"victorialogs_ebs"`
-	Comparison []ExtCompareRow    `json:"comparison"`
+	Timestamp  string          `json:"timestamp"`
+	LHResults  []ExtResult     `json:"lakehouse_s3"`
+	VLResults  []ExtResult     `json:"victorialogs_ebs"`
+	Comparison []ExtCompareRow `json:"comparison"`
 }
 
 type ExtCompareRow struct {
