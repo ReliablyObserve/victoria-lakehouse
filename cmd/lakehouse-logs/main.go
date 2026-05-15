@@ -324,6 +324,23 @@ func run(cfg *config.Config, addr string) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
+	// Tenant alias fleet sync
+	if resolver != nil && resolver.HasAliases() {
+		if disc := store.Discovery(); disc != nil {
+			aliasSyncCtx, aliasSyncCancel := context.WithCancel(context.Background())
+			aliasSyncPusher := tenant.NewSyncPusher(tenant.SyncPusherConfig{
+				Resolver: resolver,
+				GetPeers: func() []string { return disc.GetPeers() },
+				AuthKey:  cfg.Peer.AuthKey,
+				SelfAddr: addr,
+				Interval: cfg.Tenant.AliasSyncInterval,
+			})
+			aliasSyncPusher.Start(aliasSyncCtx)
+			defer aliasSyncCancel()
+			logger.Infof("tenant alias sync started; interval=%v", cfg.Tenant.AliasSyncInterval)
+		}
+	}
+
 	// Stats background loops
 	if cfg.Stats.Enabled {
 		// Peer sync pusher
@@ -668,8 +685,11 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 
 	// Tenant alias handler
 	if resolver != nil {
-		aliasHandler := tenant.NewHandler(resolver, persister)
+		aliasHandler := tenant.NewHandler(resolver, persister, cfg.Peer.AuthKey)
 		aliasHandler.Register(mux)
+
+		syncHandler := tenant.NewSyncHandler(resolver, cfg.Peer.AuthKey)
+		mux.Handle("/internal/tenant/sync", syncHandler)
 	}
 
 	// Stats API

@@ -42,7 +42,7 @@ func TestIntegration_FullRoundTrip(t *testing.T) {
 		t.Errorf("MetricLabel = %q, want %q", label, "prod-team-eu_staging")
 	}
 
-	h := NewHandler(r, nil)
+	h := NewHandler(r, nil, "")
 	body, _ := json.Marshal(AliasEntry{OrgID: "dev_default", AccountID: 1, ProjectID: 1})
 	createReq := httptest.NewRequest("POST", "/lakehouse/api/v1/tenants/aliases", bytes.NewReader(body))
 	createRR := httptest.NewRecorder()

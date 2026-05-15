@@ -17,10 +17,11 @@ type Persister interface {
 type Handler struct {
 	resolver  *TenantResolver
 	persister Persister
+	authKey   string
 }
 
-func NewHandler(r *TenantResolver, p Persister) *Handler {
-	return &Handler{resolver: r, persister: p}
+func NewHandler(r *TenantResolver, p Persister, authKey string) *Handler {
+	return &Handler{resolver: r, persister: p, authKey: authKey}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -28,11 +29,26 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/lakehouse/api/v1/tenants/aliases/", h.handleAliasDelete)
 }
 
+func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request) bool {
+	if h.authKey == "" {
+		return true
+	}
+	auth := r.Header.Get("Authorization")
+	if auth != "Bearer "+h.authKey {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return false
+	}
+	return true
+}
+
 func (h *Handler) handleAliases(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		h.listAliases(w, r)
 	case http.MethodPost:
+		if !h.checkAuth(w, r) {
+			return
+		}
 		h.createAlias(w, r)
 	default:
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -73,6 +89,10 @@ func (h *Handler) createAlias(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleAliasDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	if !h.checkAuth(w, r) {
 		return
 	}
 

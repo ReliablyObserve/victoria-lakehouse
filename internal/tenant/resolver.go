@@ -118,6 +118,8 @@ func (r *TenantResolver) HasAliases() bool {
 }
 
 func (r *TenantResolver) AllAliases() []AliasEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	var entries []AliasEntry
 	r.forward.Range(func(k, v any) bool {
 		orgID := k.(string)
