@@ -26,7 +26,7 @@ type WAL struct {
 
 func Open(path string, maxBytes int64) (*WAL, error) {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("create WAL dir: %w", err)
 	}
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
@@ -35,8 +35,10 @@ func Open(path string, maxBytes int64) (*WAL, error) {
 	}
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
-		return nil, err
+		if closeErr := f.Close(); closeErr != nil {
+			return nil, fmt.Errorf("stat WAL: %w; close WAL: %v", err, closeErr)
+		}
+		return nil, fmt.Errorf("stat WAL: %w", err)
 	}
 	return &WAL{file: f, maxBytes: maxBytes, size: info.Size()}, nil
 }

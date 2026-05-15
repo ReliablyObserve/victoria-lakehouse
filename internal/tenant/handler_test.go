@@ -10,7 +10,7 @@ import (
 
 func TestHandler_ListAliases(t *testing.T) {
 	r := NewResolver(ResolverConfig{})
-	r.AddAlias("prod_staging", TenantID{AccountID: 42, ProjectID: 3})
+	_ = r.AddAlias("prod_staging", TenantID{AccountID: 42, ProjectID: 3})
 	h := NewHandler(r, nil, "")
 
 	req := httptest.NewRequest("GET", "/lakehouse/api/v1/tenants/aliases", nil)
@@ -71,7 +71,7 @@ func TestHandler_CreateAlias_InvalidOrgID(t *testing.T) {
 
 func TestHandler_DeleteAlias(t *testing.T) {
 	r := NewResolver(ResolverConfig{})
-	r.AddAlias("to_delete", TenantID{AccountID: 5, ProjectID: 6})
+	_ = r.AddAlias("to_delete", TenantID{AccountID: 5, ProjectID: 6})
 	h := NewHandler(r, nil, "")
 
 	req := httptest.NewRequest("DELETE", "/lakehouse/api/v1/tenants/aliases/to_delete", nil)
@@ -114,7 +114,7 @@ func TestHandler_CreateAlias_AuthRequired(t *testing.T) {
 
 func TestHandler_DeleteAlias_AuthRequired(t *testing.T) {
 	r := NewResolver(ResolverConfig{})
-	r.AddAlias("to_delete", TenantID{AccountID: 5, ProjectID: 6})
+	_ = r.AddAlias("to_delete", TenantID{AccountID: 5, ProjectID: 6})
 	h := NewHandler(r, nil, "my-secret")
 
 	req := httptest.NewRequest("DELETE", "/lakehouse/api/v1/tenants/aliases/to_delete", nil)
@@ -142,7 +142,7 @@ func TestHandler_DeleteAlias_AuthRequired(t *testing.T) {
 
 func TestHandler_ListAliases_NoAuthRequired(t *testing.T) {
 	r := NewResolver(ResolverConfig{})
-	r.AddAlias("test_alias", TenantID{AccountID: 1, ProjectID: 1})
+	_ = r.AddAlias("test_alias", TenantID{AccountID: 1, ProjectID: 1})
 	h := NewHandler(r, nil, "my-secret")
 
 	req := httptest.NewRequest("GET", "/lakehouse/api/v1/tenants/aliases", nil)

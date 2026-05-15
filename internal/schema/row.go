@@ -18,9 +18,9 @@ type LogRow struct {
 	Stream             string            `json:"_stream" parquet:"_stream"`
 	StreamID           string            `json:"_stream_id" parquet:"_stream_id"`
 	ScopeName          string            `json:"scope.name" parquet:"scope.name"`
-	ResourceAttributes map[string]string `json:"resource.attributes,omitempty" parquet:"-"`
-	LogAttributes      map[string]string `json:"log.attributes,omitempty" parquet:"-"`
-	ScopeAttributes    map[string]string `json:"scope.attributes,omitempty" parquet:"-"`
+	ResourceAttributes map[string]string `json:"resource.attributes,omitempty" parquet:"resource.attributes,optional"`
+	LogAttributes      map[string]string `json:"log.attributes,omitempty" parquet:"log.attributes,optional"`
+	ScopeAttributes    map[string]string `json:"scope.attributes,omitempty" parquet:"scope.attributes,optional"`
 }
 
 type TraceRow struct {
@@ -50,7 +50,7 @@ type TraceRow struct {
 	Stream             string            `json:"_stream" parquet:"_stream"`
 	StreamID           string            `json:"_stream_id" parquet:"_stream_id"`
 	ScopeName          string            `json:"scope.name" parquet:"scope.name"`
-	ResourceAttributes map[string]string `json:"resource.attributes,omitempty" parquet:"-"`
-	SpanAttributes     map[string]string `json:"span.attributes,omitempty" parquet:"-"`
-	ScopeAttributes    map[string]string `json:"scope.attributes,omitempty" parquet:"-"`
+	ResourceAttributes map[string]string `json:"resource.attributes,omitempty" parquet:"resource.attributes,optional"`
+	SpanAttributes     map[string]string `json:"span.attributes,omitempty" parquet:"span.attributes,optional"`
+	ScopeAttributes    map[string]string `json:"scope.attributes,omitempty" parquet:"scope.attributes,optional"`
 }

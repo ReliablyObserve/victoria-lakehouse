@@ -56,7 +56,7 @@ func TestTenantCompressionEntry_HasNameField(t *testing.T) {
 
 func TestDecorateCostName(t *testing.T) {
 	resolver := tenant.NewResolver(tenant.ResolverConfig{})
-	resolver.AddAlias("prod_staging", tenant.TenantID{AccountID: 42, ProjectID: 3})
+	_ = resolver.AddAlias("prod_staging", tenant.TenantID{AccountID: 42, ProjectID: 3})
 
 	api := NewAPI(APIConfig{Resolver: resolver})
 
@@ -75,7 +75,7 @@ func TestDecorateCostName(t *testing.T) {
 
 func TestDecorateCompressionName(t *testing.T) {
 	resolver := tenant.NewResolver(tenant.ResolverConfig{})
-	resolver.AddAlias("dev_default", tenant.TenantID{AccountID: 1, ProjectID: 1})
+	_ = resolver.AddAlias("dev_default", tenant.TenantID{AccountID: 1, ProjectID: 1})
 
 	api := NewAPI(APIConfig{Resolver: resolver})
 
@@ -88,7 +88,7 @@ func TestDecorateCompressionName(t *testing.T) {
 
 func TestTenantDetail_AliasRoute(t *testing.T) {
 	resolver := tenant.NewResolver(tenant.ResolverConfig{})
-	resolver.AddAlias("prod_staging", tenant.TenantID{AccountID: 42, ProjectID: 3})
+	_ = resolver.AddAlias("prod_staging", tenant.TenantID{AccountID: 42, ProjectID: 3})
 
 	registry := NewTenantRegistry("test-node")
 	registry.RecordWrite("42:3", 1000, 2000, 10, "STANDARD")

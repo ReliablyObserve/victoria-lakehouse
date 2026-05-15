@@ -157,6 +157,6 @@ func (sp *SyncPusher) Push(ctx context.Context) {
 		if err != nil {
 			continue
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 }

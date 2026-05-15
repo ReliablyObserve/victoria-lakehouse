@@ -12,7 +12,7 @@ func TestIntegration_FullRoundTrip(t *testing.T) {
 	r := NewResolver(ResolverConfig{
 		MetricsFormat: MetricsFormatName,
 	})
-	r.AddAlias("prod-team-eu_staging", TenantID{AccountID: 42, ProjectID: 3})
+	_ = r.AddAlias("prod-team-eu_staging", TenantID{AccountID: 42, ProjectID: 3})
 
 	var capturedAccount, capturedProject string
 	backend := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
