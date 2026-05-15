@@ -44,6 +44,8 @@ func TestResolver_MetricLabel(t *testing.T) {
 		{MetricsFormatID, 42, 3, "42:3"},
 		{MetricsFormatName, 42, 3, "prod-team-eu_staging"},
 		{MetricsFormatName, 99, 99, "99:99"},
+		{MetricsFormatBoth, 42, 3, "prod-team-eu_staging"},
+		{MetricsFormatBoth, 99, 99, "99:99"},
 	}
 
 	for _, tc := range tests {

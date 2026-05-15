@@ -101,6 +101,8 @@ func (r *TenantResolver) MetricLabel(accountID, projectID uint32) string {
 	switch r.config.MetricsFormat {
 	case MetricsFormatName:
 		return r.DisplayName(accountID, projectID)
+	case MetricsFormatBoth:
+		return r.DisplayName(accountID, projectID)
 	default:
 		return fmt.Sprintf("%d:%d", accountID, projectID)
 	}

@@ -84,9 +84,10 @@ var (
 	tenantPrefixTemplate = flag.String("lakehouse.tenant.prefix-template", "", "S3 prefix template (default: {AccountID}/{ProjectID}/)")
 	tenantBucketTemplate = flag.String("lakehouse.tenant.bucket-template", "", "Bucket name template for bucket isolation")
 	tenantDefaultPrefix  = flag.String("lakehouse.tenant.default-prefix", "", "Static S3 key prefix override")
-	tenantOrgIDHeader    = flag.String("lakehouse.tenant.orgid-header", "", "HTTP header for string tenant ID (default: X-Scope-OrgID)")
-	tenantMetricsFormat  = flag.String("lakehouse.tenant.metrics-format", "", "Prometheus tenant label format: id, name, both (default: id)")
-	tenantAutoRegister   = flag.Bool("lakehouse.tenant.auto-register", false, "Auto-register unknown X-Scope-OrgID tenants")
+	tenantOrgIDHeader      = flag.String("lakehouse.tenant.orgid-header", "", "HTTP header for string tenant ID (default: X-Scope-OrgID)")
+	tenantMetricsFormat    = flag.String("lakehouse.tenant.metrics-format", "", "Prometheus tenant label format: id, name, both (default: id)")
+	tenantAutoRegister     = flag.Bool("lakehouse.tenant.auto-register", false, "Auto-register unknown X-Scope-OrgID tenants")
+	tenantAliasSyncInterval = flag.Duration("lakehouse.tenant.alias-sync-interval", 0, "Fleet sync interval for runtime aliases (default: 30s)")
 )
 
 func main() {
@@ -838,6 +839,9 @@ func applyFlags(cfg *config.Config) {
 	}
 	if *tenantAutoRegister {
 		cfg.Tenant.AutoRegister = true
+	}
+	if *tenantAliasSyncInterval > 0 {
+		cfg.Tenant.AliasSyncInterval = *tenantAliasSyncInterval
 	}
 }
 

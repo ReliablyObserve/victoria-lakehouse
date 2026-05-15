@@ -99,6 +99,29 @@ func TestMiddleware_AutoRegister(t *testing.T) {
 	}
 }
 
+func TestMiddleware_AutoRegister_InvalidOrgID(t *testing.T) {
+	r := NewResolver(ResolverConfig{AutoRegister: true})
+
+	handler := r.Middleware(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		t.Error("handler should not be called for invalid org ID")
+	}))
+
+	req := httptest.NewRequest("POST", "/insert/jsonline", nil)
+	req.Header.Set("X-Scope-OrgID", "has/slash")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for invalid org ID", rr.Code)
+	}
+
+	_, ok := r.Resolve("has/slash")
+	if ok {
+		t.Error("invalid org ID should not be registered")
+	}
+}
+
 func TestMiddleware_CustomHeader(t *testing.T) {
 	r := NewResolver(ResolverConfig{OrgIDHeader: "X-Custom-Tenant"})
 	r.AddAlias("custom_tenant", TenantID{AccountID: 5, ProjectID: 6})

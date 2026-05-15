@@ -20,9 +20,25 @@ func (r *TenantResolver) Middleware(next http.Handler) http.Handler {
 		tid, ok := r.Resolve(orgID)
 		if !ok {
 			if r.config.AutoRegister {
+				if err := ValidateOrgID(orgID); err != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(w).Encode(map[string]string{
+						"error":  "invalid org ID: " + err.Error(),
+						"org_id": orgID,
+					})
+					return
+				}
 				newID := atomic.AddUint32(&autoIDCounter, 1)
 				tid = TenantID{AccountID: newID, ProjectID: 0}
-				_ = r.AddAlias(orgID, tid)
+				if err := r.AddAlias(orgID, tid); err != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					_ = json.NewEncoder(w).Encode(map[string]string{
+						"error": "auto-register failed: " + err.Error(),
+					})
+					return
+				}
 			} else {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadRequest)
