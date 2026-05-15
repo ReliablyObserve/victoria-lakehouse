@@ -39,6 +39,53 @@ func TestTenantCostEntry_HasNameField(t *testing.T) {
 	}
 }
 
+func TestTenantCompressionEntry_HasNameField(t *testing.T) {
+	entry := TenantCompressionEntry{
+		AccountID: "42",
+		ProjectID: "3",
+		Name:      "prod_staging",
+	}
+	data, _ := json.Marshal(entry)
+	var m map[string]any
+	_ = json.Unmarshal(data, &m)
+
+	if m["name"] != "prod_staging" {
+		t.Errorf("name field = %v, want %q", m["name"], "prod_staging")
+	}
+}
+
+func TestDecorateCostName(t *testing.T) {
+	resolver := tenant.NewResolver(tenant.ResolverConfig{})
+	resolver.AddAlias("prod_staging", tenant.TenantID{AccountID: 42, ProjectID: 3})
+
+	api := NewAPI(APIConfig{Resolver: resolver})
+
+	entry := TenantCostEntry{AccountID: "42", ProjectID: "3"}
+	api.decorateCostName(&entry)
+	if entry.Name != "prod_staging" {
+		t.Errorf("cost name = %q, want %q", entry.Name, "prod_staging")
+	}
+
+	noAlias := TenantCostEntry{AccountID: "99", ProjectID: "1"}
+	api.decorateCostName(&noAlias)
+	if noAlias.Name != "" {
+		t.Errorf("cost name = %q, want empty for unknown tenant", noAlias.Name)
+	}
+}
+
+func TestDecorateCompressionName(t *testing.T) {
+	resolver := tenant.NewResolver(tenant.ResolverConfig{})
+	resolver.AddAlias("dev_default", tenant.TenantID{AccountID: 1, ProjectID: 1})
+
+	api := NewAPI(APIConfig{Resolver: resolver})
+
+	entry := TenantCompressionEntry{AccountID: "1", ProjectID: "1"}
+	api.decorateCompressionName(&entry)
+	if entry.Name != "dev_default" {
+		t.Errorf("compression name = %q, want %q", entry.Name, "dev_default")
+	}
+}
+
 func TestTenantDetail_AliasRoute(t *testing.T) {
 	resolver := tenant.NewResolver(tenant.ResolverConfig{})
 	resolver.AddAlias("prod_staging", tenant.TenantID{AccountID: 42, ProjectID: 3})

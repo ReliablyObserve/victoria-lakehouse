@@ -554,7 +554,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		mux.HandleFunc("/internal/select/", internalHandler)
 		mux.HandleFunc("/internal/delete/", internalHandler)
 
-		publicHandler := selectapi.NewHandler(store, cfg)
+		publicHandler := selectapi.NewHandler(store, cfg, selectapi.WithResolver(resolver))
 		publicHandler.Register(mux)
 	}
 

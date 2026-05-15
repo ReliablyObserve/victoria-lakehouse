@@ -631,6 +631,10 @@ func (a *API) handleCost(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	for i := range perTenant {
+		a.decorateCostName(&perTenant[i])
+	}
+
 	sort.Slice(byClass, func(i, j int) bool {
 		return byClass[i].CostUSD > byClass[j].CostUSD
 	})
@@ -687,6 +691,10 @@ func (a *API) handleCompression(w http.ResponseWriter, r *http.Request) {
 				TotalBytes: s.TotalBytes,
 			})
 		}
+	}
+
+	for i := range perTenant {
+		a.decorateCompressionName(&perTenant[i])
 	}
 
 	var avgRatio float64
@@ -924,16 +932,29 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func (a *API) decorateName(entry *TenantEntry) {
+func (a *API) resolveName(accountID, projectID string) string {
 	if a.cfg.Resolver == nil {
-		return
+		return ""
 	}
-	accID, _ := strconv.ParseUint(entry.AccountID, 10, 32)
-	projID, _ := strconv.ParseUint(entry.ProjectID, 10, 32)
+	accID, _ := strconv.ParseUint(accountID, 10, 32)
+	projID, _ := strconv.ParseUint(projectID, 10, 32)
 	name := a.cfg.Resolver.DisplayName(uint32(accID), uint32(projID))
-	if name != entry.AccountID+":"+entry.ProjectID {
-		entry.Name = name
+	if name == accountID+":"+projectID {
+		return ""
 	}
+	return name
+}
+
+func (a *API) decorateName(entry *TenantEntry) {
+	entry.Name = a.resolveName(entry.AccountID, entry.ProjectID)
+}
+
+func (a *API) decorateCostName(entry *TenantCostEntry) {
+	entry.Name = a.resolveName(entry.AccountID, entry.ProjectID)
+}
+
+func (a *API) decorateCompressionName(entry *TenantCompressionEntry) {
+	entry.Name = a.resolveName(entry.AccountID, entry.ProjectID)
 }
 
 func tenantStatsToEntry(ts *TenantStats, cc *CostCalculator) TenantEntry {
