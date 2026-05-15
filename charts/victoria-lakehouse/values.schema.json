@@ -4,16 +4,7 @@
   "properties": {
     "lakehouseConfig": {
       "type": "object",
-      "required": ["mode"],
       "properties": {
-        "mode": {
-          "type": "string",
-          "enum": ["logs", "traces"]
-        },
-        "role": {
-          "type": "string",
-          "enum": ["all", "insert", "select"]
-        },
         "s3": {
           "type": "object",
           "properties": {
@@ -25,21 +16,59 @@
               "minLength": 1
             }
           }
+        },
+        "tenant": {
+          "type": "object",
+          "properties": {
+            "orgid_header": { "type": "string" },
+            "metrics_format": { "type": "string", "enum": ["id", "name", "both"] },
+            "auto_register": { "type": "boolean" },
+            "alias_sync_interval": { "type": "string" },
+            "aliases": { "type": "object" }
+          }
         }
       }
     },
-    "select": {
+    "logs": {
       "type": "object",
       "properties": {
         "enabled": { "type": "boolean" },
-        "replicaCount": { "type": "integer", "minimum": 0 }
+        "config": { "type": "object" },
+        "select": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "replicaCount": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "insert": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "replicaCount": { "type": "integer", "minimum": 0 }
+          }
+        }
       }
     },
-    "insertComponent": {
+    "traces": {
       "type": "object",
       "properties": {
         "enabled": { "type": "boolean" },
-        "replicaCount": { "type": "integer", "minimum": 0 }
+        "config": { "type": "object" },
+        "select": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "replicaCount": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "insert": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "replicaCount": { "type": "integer", "minimum": 0 }
+          }
+        }
       }
     },
     "vmauth": {
