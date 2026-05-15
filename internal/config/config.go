@@ -626,9 +626,12 @@ func Default() *Config {
 }
 
 func Load(path string) (*Config, error) {
-	cfg := Default()
+	return LoadWithMode(path, "", "")
+}
+
+func LoadWithMode(path string, mode Mode, role Role) (*Config, error) {
 	if path == "" {
-		return cfg, nil
+		return Default(), nil
 	}
 
 	data, err := os.ReadFile(path)
@@ -643,21 +646,26 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config file %s: %w", path, err)
 	}
 
-	// Apply profile between defaults and file config.
-	// Profile sets the complete base config; file config overrides it.
-	// We use the profile config directly as the base (not merged on top of
-	// defaults) because profiles may set booleans to false (e.g., WALEnabled),
-	// which mergeConfig cannot convey (it skips zero-valued booleans).
-	profileName := wrapper.Lakehouse.Profile
-	if profileName != "" {
-		if !IsValidProfile(string(profileName)) {
-			return nil, fmt.Errorf("invalid profile %q, valid profiles: %s", profileName, ValidProfileNames())
-		}
-		cfg = ProfileConfig(profileName)
+	fileConfig := &wrapper.Lakehouse
+
+	if mode != "" {
+		fileConfig.Mode = mode
+	}
+	if role != "" {
+		fileConfig.Role = role
 	}
 
-	merged := mergeConfig(cfg, &wrapper.Lakehouse)
+	profile := fileConfig.ResolveEffectiveProfile()
+
+	base := ProfileConfig(profile)
+	merged := mergeConfig(base, fileConfig)
+	merged.Profile = profile
+
 	return merged, nil
+}
+
+func MergeConfigs(base, overlay *Config) *Config {
+	return mergeConfig(base, overlay)
 }
 
 func (c *Config) Validate() error {
