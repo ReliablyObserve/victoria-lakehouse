@@ -241,6 +241,63 @@ func TestInsertAdapter_MustAddRows_NoMsgField(t *testing.T) {
 	}
 }
 
+func TestUnmarshalStreamTags_InvalidData(t *testing.T) {
+	st := logstorage.GetStreamTags()
+	defer logstorage.PutStreamTags(st)
+
+	err := unmarshalStreamTags(st, "\x00\x01\x02invalid")
+	if err == nil {
+		t.Error("expected error for invalid canonical data, got nil")
+	}
+}
+
+func TestMapFieldToRow_AllCases(t *testing.T) {
+	row := &schema.LogRow{}
+
+	mapFieldToRow(row, "", "body text")
+	mapFieldToRow(row, "_level", "warn")
+	mapFieldToRow(row, "service.name", "svc")
+	mapFieldToRow(row, "trace_id", "t1")
+	mapFieldToRow(row, "span_id", "s1")
+	mapFieldToRow(row, "k8s.namespace.name", "ns")
+	mapFieldToRow(row, "k8s.pod.name", "pod")
+	mapFieldToRow(row, "k8s.deployment.name", "dep")
+	mapFieldToRow(row, "k8s.node.name", "node")
+	mapFieldToRow(row, "deployment.environment", "prod")
+	mapFieldToRow(row, "cloud.region", "us-east-1")
+	mapFieldToRow(row, "host.name", "host1")
+	mapFieldToRow(row, "scope.name", "scope1")
+	mapFieldToRow(row, "custom_field", "custom_val")
+
+	checks := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"Body", row.Body, "body text"},
+		{"SeverityText", row.SeverityText, "warn"},
+		{"ServiceName", row.ServiceName, "svc"},
+		{"TraceID", row.TraceID, "t1"},
+		{"SpanID", row.SpanID, "s1"},
+		{"K8sNamespaceName", row.K8sNamespaceName, "ns"},
+		{"K8sPodName", row.K8sPodName, "pod"},
+		{"K8sDeploymentName", row.K8sDeploymentName, "dep"},
+		{"K8sNodeName", row.K8sNodeName, "node"},
+		{"DeployEnv", row.DeployEnv, "prod"},
+		{"CloudRegion", row.CloudRegion, "us-east-1"},
+		{"HostName", row.HostName, "host1"},
+		{"ScopeName", row.ScopeName, "scope1"},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s = %q, want %q", c.name, c.got, c.want)
+		}
+	}
+	if row.LogAttributes["custom_field"] != "custom_val" {
+		t.Errorf("custom_field = %q, want %q", row.LogAttributes["custom_field"], "custom_val")
+	}
+}
+
 func BenchmarkLogRowsToSchemaRows(b *testing.B) {
 	lr := logstorage.GetLogRows(nil, nil, nil, nil, "")
 	for i := 0; i < 1000; i++ {

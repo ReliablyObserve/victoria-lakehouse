@@ -18,17 +18,33 @@ type Querier interface {
 // Handler serves the internal buffer query endpoint, allowing select
 // pods to read unflushed data from insert pods over HTTP.
 type Handler struct {
-	store Querier
+	store   Querier
+	authKey string
 }
 
 // NewHandler creates a handler backed by the given Querier.
-func NewHandler(store Querier) *Handler {
-	return &Handler{store: store}
+// If authKey is non-empty, requests must include a matching
+// Authorization: Bearer <key> header.
+func NewHandler(store Querier, authKey string) *Handler {
+	return &Handler{store: store, authKey: authKey}
 }
 
 // ServeHTTP streams matching rows as newline-delimited JSON.
 // Query parameters: start (ns), end (ns), mode (logs|traces).
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if h.authKey != "" {
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer "+h.authKey {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+
 	startStr := r.URL.Query().Get("start")
 	endStr := r.URL.Query().Get("end")
 	mode := r.URL.Query().Get("mode")

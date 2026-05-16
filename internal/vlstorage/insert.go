@@ -1,6 +1,8 @@
 package vlstorage
 
 import (
+	"fmt"
+
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlinsert/insertutil"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
@@ -77,7 +79,9 @@ func unmarshalStreamTags(dst *logstorage.StreamTags, canonical string) error {
 	if err != nil {
 		return err
 	}
-	_ = tail
+	if len(tail) > 0 {
+		return fmt.Errorf("unexpected trailing data in stream tags: %d bytes", len(tail))
+	}
 	return nil
 }
 

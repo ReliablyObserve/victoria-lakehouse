@@ -48,7 +48,7 @@ func TestBufferQuery_Logs(t *testing.T) {
 		},
 	}
 
-	h := NewHandler(store)
+	h := NewHandler(store, "")
 	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start="+
 		fmt.Sprintf("%d", base.UnixNano())+"&end="+fmt.Sprintf("%d", base.Add(time.Minute).UnixNano())+
 		"&mode=logs", nil)
@@ -76,7 +76,7 @@ func TestBufferQuery_Traces(t *testing.T) {
 		},
 	}
 
-	h := NewHandler(store)
+	h := NewHandler(store, "")
 	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start="+
 		fmt.Sprintf("%d", base.UnixNano())+"&end="+fmt.Sprintf("%d", base.Add(time.Minute).UnixNano())+
 		"&mode=traces", nil)
@@ -96,7 +96,7 @@ func TestBufferQuery_Traces(t *testing.T) {
 }
 
 func TestBufferQuery_MissingParams(t *testing.T) {
-	h := NewHandler(&mockBufferStore{})
+	h := NewHandler(&mockBufferStore{}, "")
 
 	tests := []struct {
 		name string
@@ -121,7 +121,7 @@ func TestBufferQuery_MissingParams(t *testing.T) {
 }
 
 func TestBufferQuery_InvalidStart(t *testing.T) {
-	h := NewHandler(&mockBufferStore{})
+	h := NewHandler(&mockBufferStore{}, "")
 	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=abc&end=1000&mode=logs", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -131,7 +131,7 @@ func TestBufferQuery_InvalidStart(t *testing.T) {
 }
 
 func TestBufferQuery_InvalidEnd(t *testing.T) {
-	h := NewHandler(&mockBufferStore{})
+	h := NewHandler(&mockBufferStore{}, "")
 	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=abc&mode=logs", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -141,7 +141,7 @@ func TestBufferQuery_InvalidEnd(t *testing.T) {
 }
 
 func TestBufferQuery_InvalidMode(t *testing.T) {
-	h := NewHandler(&mockBufferStore{})
+	h := NewHandler(&mockBufferStore{}, "")
 	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=1000&mode=invalid", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -151,7 +151,7 @@ func TestBufferQuery_InvalidMode(t *testing.T) {
 }
 
 func TestBufferQuery_Empty(t *testing.T) {
-	h := NewHandler(&mockBufferStore{})
+	h := NewHandler(&mockBufferStore{}, "")
 	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=1000&mode=logs", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -162,6 +162,63 @@ func TestBufferQuery_Empty(t *testing.T) {
 	body, _ := io.ReadAll(rec.Body)
 	if len(body) != 0 {
 		t.Errorf("empty buffer should return empty body, got %d bytes", len(body))
+	}
+}
+
+func TestBufferQuery_MethodNotAllowed(t *testing.T) {
+	h := NewHandler(&mockBufferStore{}, "")
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/internal/buffer/query?start=0&end=1000&mode=logs", nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Errorf("status = %d, want 405", rec.Code)
+			}
+		})
+	}
+}
+
+func TestBufferQuery_AuthRequired(t *testing.T) {
+	h := NewHandler(&mockBufferStore{}, "secret-key")
+
+	t.Run("no auth header", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=1000&mode=logs", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("status = %d, want 401", rec.Code)
+		}
+	})
+
+	t.Run("wrong key", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=1000&mode=logs", nil)
+		req.Header.Set("Authorization", "Bearer wrong-key")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("status = %d, want 401", rec.Code)
+		}
+	})
+
+	t.Run("correct key", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=1000&mode=logs", nil)
+		req.Header.Set("Authorization", "Bearer secret-key")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("status = %d, want 200", rec.Code)
+		}
+	})
+}
+
+func TestBufferQuery_NoAuthWhenKeyEmpty(t *testing.T) {
+	h := NewHandler(&mockBufferStore{}, "")
+	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=1000&mode=logs", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 when no auth key configured", rec.Code)
 	}
 }
 

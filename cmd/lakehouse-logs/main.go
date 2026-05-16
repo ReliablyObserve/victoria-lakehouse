@@ -577,7 +577,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		mux.HandleFunc("/services/collector/", vlinsertHandler)
 
 		if w := store.Writer(); w != nil {
-			bh := buffer.NewHandler(w)
+			bh := buffer.NewHandler(w, cfg.Peer.AuthKey)
 			mux.Handle("/internal/buffer/query", bh)
 		}
 	}
