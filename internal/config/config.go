@@ -38,6 +38,7 @@ type Config struct {
 	Mode     Mode     `yaml:"mode"`
 	Role     Role     `yaml:"role"`
 	Topology Topology `yaml:"topology"`
+	Profile  string   `yaml:"profile"`
 
 	S3          S3Config          `yaml:"s3"`
 	Cache       CacheConfig       `yaml:"cache"`
@@ -56,6 +57,7 @@ type Config struct {
 	Delete      DeleteConfig      `yaml:"delete"`
 	SmartCache  SmartCacheConfig  `yaml:"smart_cache"`
 	CrossSignal CrossSignalConfig `yaml:"cross_signal"`
+	Retention   RetentionConfig   `yaml:"retention"`
 	Stats       StatsConfig       `yaml:"stats"`
 	UI          UIConfig          `yaml:"ui"`
 
@@ -361,6 +363,18 @@ type CrossSignalConfig struct {
 	BatchInterval   time.Duration `yaml:"batch_interval"`
 }
 
+type RetentionConfig struct {
+	Enabled       bool            `yaml:"enabled"`
+	Default       string          `yaml:"default"`
+	CheckInterval string          `yaml:"check_interval"`
+	Rules         []RetentionRule `yaml:"rules"`
+}
+
+type RetentionRule struct {
+	Match map[string]string `yaml:"match"`
+	Keep  string            `yaml:"keep"`
+}
+
 type ExtraPromotedColumn struct {
 	Name  string `yaml:"name"`
 	Type  string `yaml:"type"`
@@ -515,6 +529,12 @@ func Default() *Config {
 			BatchInterval: 500 * time.Millisecond,
 		},
 
+		Retention: RetentionConfig{
+			Enabled:       false,
+			Default:       "90d",
+			CheckInterval: "1h",
+		},
+
 		Stats: StatsConfig{
 			Enabled:                     true,
 			PushInterval:                30 * time.Second,
@@ -582,11 +602,27 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config file %s: %w", path, err)
 	}
 
+	// Apply profile between defaults and file config.
+	// Profile sets the complete base config; file config overrides it.
+	// We use the profile config directly as the base (not merged on top of
+	// defaults) because profiles may set booleans to false (e.g., WALEnabled),
+	// which mergeConfig cannot convey (it skips zero-valued booleans).
+	profileName := wrapper.Lakehouse.Profile
+	if profileName != "" {
+		if !IsValidProfile(profileName) {
+			return nil, fmt.Errorf("invalid profile %q, valid profiles: %s", profileName, ValidProfileNames())
+		}
+		cfg = ProfileConfig(Profile(profileName))
+	}
+
 	merged := mergeConfig(cfg, &wrapper.Lakehouse)
 	return merged, nil
 }
 
 func (c *Config) Validate() error {
+	if c.Profile != "" && !IsValidProfile(c.Profile) {
+		return fmt.Errorf("--lakehouse.profile must be one of: %s; got %q", ValidProfileNames(), c.Profile)
+	}
 	if c.Mode == "" {
 		return fmt.Errorf("mode is required (logs or traces)")
 	}
@@ -833,6 +869,9 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Topology != "" {
 		base.Topology = overlay.Topology
+	}
+	if overlay.Profile != "" {
+		base.Profile = overlay.Profile
 	}
 
 	// S3
@@ -1284,6 +1323,20 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.CrossSignal.BatchInterval > 0 {
 		base.CrossSignal.BatchInterval = overlay.CrossSignal.BatchInterval
+	}
+
+	// Retention
+	if overlay.Retention.Enabled {
+		base.Retention.Enabled = true
+	}
+	if overlay.Retention.Default != "" {
+		base.Retention.Default = overlay.Retention.Default
+	}
+	if overlay.Retention.CheckInterval != "" {
+		base.Retention.CheckInterval = overlay.Retention.CheckInterval
+	}
+	if len(overlay.Retention.Rules) > 0 {
+		base.Retention.Rules = overlay.Retention.Rules
 	}
 
 	// Logs mode config

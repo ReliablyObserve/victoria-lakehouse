@@ -202,6 +202,11 @@ var (
 	StatsHeadObjectTotal = NewCounter("lakehouse_stats_headobject_total")
 )
 
+// Retention metrics
+var (
+	RetentionFilesDeleted = NewCounter("lakehouse_retention_files_deleted_total")
+)
+
 // Delete metrics
 var (
 	DeleteTombstonesActive      = NewGauge("lakehouse_delete_tombstones_active")

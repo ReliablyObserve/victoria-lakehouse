@@ -43,6 +43,12 @@ common:
 # All flags available as --lakehouse.<section>.<key> CLI args.
 # =============================================================================
 lakehouseConfig:
+  # -- Configuration profile preset. Sets defaults for all settings below.
+  # Any explicit setting overrides the profile value.
+  # Options: balanced (default), max-performance, max-durability, max-cost-savings, dev
+  # --lakehouse.profile
+  profile: ""
+
   # -- Deployment topology detection mode.
   # --lakehouse.topology
   topology: auto
