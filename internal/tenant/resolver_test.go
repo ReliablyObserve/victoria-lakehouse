@@ -61,7 +61,7 @@ func TestResolver_MetricLabel(t *testing.T) {
 
 func TestResolver_RemoveAlias(t *testing.T) {
 	r := NewResolver(ResolverConfig{})
-	r.AddAlias("test_alias", TenantID{AccountID: 10, ProjectID: 20})
+	_ = r.AddAlias("test_alias", TenantID{AccountID: 10, ProjectID: 20})
 
 	_, ok := r.Resolve("test_alias")
 	if !ok {
@@ -83,8 +83,8 @@ func TestResolver_RemoveAlias(t *testing.T) {
 
 func TestResolver_AllAliases(t *testing.T) {
 	r := NewResolver(ResolverConfig{})
-	r.AddAlias("a_one", TenantID{AccountID: 1, ProjectID: 1})
-	r.AddAlias("b_two", TenantID{AccountID: 2, ProjectID: 2})
+	_ = r.AddAlias("a_one", TenantID{AccountID: 1, ProjectID: 1})
+	_ = r.AddAlias("b_two", TenantID{AccountID: 2, ProjectID: 2})
 
 	all := r.AllAliases()
 	if len(all) != 2 {
