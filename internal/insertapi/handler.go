@@ -246,6 +246,10 @@ func jsonFieldsToLogRow(fields map[string]any, promoted map[string]bool) schema.
 	}
 	if v, ok := fields["level"].(string); ok {
 		row.SeverityText = v
+		row.SeverityNumber = severityTextToNumber(v)
+	}
+	if v, ok := fields["severity_number"].(float64); ok {
+		row.SeverityNumber = int32(v)
 	}
 	if v, ok := fields["service.name"].(string); ok {
 		row.ServiceName = v
@@ -323,6 +327,7 @@ func applyStreamLabels(row *schema.LogRow, labels map[string]string) {
 			row.HostName = v
 		case "level":
 			row.SeverityText = v
+			row.SeverityNumber = severityTextToNumber(v)
 		default:
 			if row.ResourceAttributes == nil {
 				row.ResourceAttributes = make(map[string]string)
@@ -337,5 +342,24 @@ func applyStreamLabels(row *schema.LogRow, labels map[string]string) {
 	}
 	if len(streamParts) > 0 {
 		row.Stream = "{" + strings.Join(streamParts, ",") + "}"
+	}
+}
+
+func severityTextToNumber(text string) int32 {
+	switch strings.ToUpper(text) {
+	case "TRACE":
+		return 1
+	case "DEBUG":
+		return 5
+	case "INFO":
+		return 9
+	case "WARN", "WARNING":
+		return 13
+	case "ERROR":
+		return 17
+	case "FATAL", "CRITICAL":
+		return 21
+	default:
+		return 0
 	}
 }
