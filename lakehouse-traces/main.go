@@ -11,14 +11,13 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/azdetect"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/compaction"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/crosssignal"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/election"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 
-	"github.com/VictoriaMetrics/VictoriaLogs/app/vlinsert"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/prefetch"
@@ -29,6 +28,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/selectapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3"
 	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
+	"github.com/VictoriaMetrics/VictoriaLogs/app/vlinsert"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/internalselect"
 
