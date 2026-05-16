@@ -19,7 +19,7 @@
 > **Two binaries, one architecture.** `lakehouse-logs` reimplements the VL storage layer. `lakehouse-traces` reimplements the VT storage layer. Both use Parquet on S3 and expose identical HTTP APIs, LogsQL query syntax, binary DataBlock protocol, and insert endpoints as their upstream counterparts. Each binary pins to its own VL/VT dependency version for maximum compatibility.
 
 - **Drop-in VL/VT storage node.** Register as a `-storageNode` on vlselect/vtselect. Queries spanning hot and cold data work transparently.
-- **Write path with crash recovery.** VL-compatible insert APIs (`/insert/jsonline`, Loki push, ES bulk) buffer data, flush to S3 Parquet, and survive process crashes via WAL.
+- **Write path with crash recovery.** Full VL insert protocol support (jsonline, Loki JSON+protobuf, ES bulk, syslog, journald, Datadog, OTLP, Splunk) via upstream `vlinsert` handlers. Data buffers in memory, flushes to S3 Parquet, and survives process crashes via WAL.
 - **Zero-delay reads.** Select pods query ALL insert pods across ALL AZs for unflushed buffer data, merging with S3 results for immediate read-after-write visibility.
 - **Open format + S3 durability.** 48-56% cheaper than Loki/Tempo at scale. At small scale (≤500 GB/mo), VL/VT EBS is cheapest; at PB/mo with >8mo retention, Lakehouse Hybrid wins. S3's 11-nines durability for compliance, Glacier tiering for 3yr+.
 - **Sub-millisecond fast path.** Queries within the hot tier's range get an immediate empty response via the partition manifest. Zero S3 I/O.
@@ -117,7 +117,7 @@ For full setup, cluster integration, and deployment patterns, see [Getting Start
 
 ## Architecture
 
-Victoria Lakehouse reimplements the VL/VT storage interface (`RunQuery`, `GetFieldNames`, `GetFieldValues`, `GetStreams`, etc.) backed by Parquet files on S3. All HTTP APIs (`/select/logsql/*`, `/insert/jsonline`, `/insert/loki/api/v1/push`, `/insert/elasticsearch/_bulk`, `/delete/logsql/*`), the binary DataBlock protocol, and the LogsQL query engine are implemented from the VL/VT spec — same endpoints, same wire format, same query syntax.
+Victoria Lakehouse replaces the VL/VT storage layer with S3 Parquet while reusing all upstream code for insert and select. Insert uses VL's native `vlinsert` handlers via `insertutil.SetLogRowsStorage()` — supporting all VL protocols (jsonline, Loki JSON+protobuf, ES bulk, syslog, journald, Datadog, OTLP, Splunk, native insert). Select uses VL's `vlselect` via `vlstorage.SetExternalStorage()`. Both paths go through thin adapters that convert between VL's internal types and our Parquet schema. The LogsQL query engine, binary DataBlock protocol, and all HTTP APIs work unchanged.
 
 It integrates with any log/trace shipper — [vlagent](https://docs.victoriametrics.com/victorialogs/data-ingestion/vlogscli/), [Fluent Bit](https://fluentbit.io/), [Vector](https://vector.dev/), [OTEL Collector](https://opentelemetry.io/docs/collector/), [Fluentd](https://www.fluentd.org/), [Logstash](https://www.elastic.co/logstash), [Promtail](https://grafana.com/docs/loki/latest/send-data/promtail/) — to mirror data to both hot and cold tiers simultaneously, providing unlimited retention, disaster recovery, and open-format analytics. For Grafana users, [loki-vl-proxy](https://github.com/ReliablyObserve/loki-vl-proxy) provides automatic hot+cold routing with full **Grafana Loki Drilldown** compatibility — queries for the last 24h go to VictoriaLogs (hot), older queries route to lakehouse (cold).
 
@@ -179,7 +179,7 @@ graph TB
 ```
 
 **Key points:**
-- **Any log shipper** (vlagent, Fluent Bit, Vector, OTEL Collector, Fluentd, Logstash, Promtail) mirrors to both VictoriaLogs (hot) and `lakehouse-logs` (cold) — all support VL's `/insert/jsonline`, Loki push, or ES bulk API
+- **Any log shipper** (vlagent, Fluent Bit, Vector, OTEL Collector, Fluentd, Logstash, Promtail) mirrors to both VictoriaLogs (hot) and `lakehouse-logs` (cold) — all VL insert protocols supported (jsonline, Loki, ES bulk, syslog, OTLP, Datadog, Splunk, journald)
 - **Any trace shipper** (OTEL Collector, Jaeger Agent) fans out to both VictoriaTraces (hot) and `lakehouse-traces` (cold) via OTLP or Zipkin protocols
 - **vlselect/vtselect** transparently fan out queries to hot + cold — users see unified results
 - **Lakehouse as DR**: when hot cluster is down, Grafana queries lakehouse directly (slower but always available)
@@ -336,7 +336,7 @@ Two separate binaries, each pinned to its own VL/VT upstream version for maximum
 
 | Binary | Port | Upstream Compat | Insert APIs | Select APIs | Docker Image |
 |---|---|---|---|---|---|
-| `lakehouse-logs` | 9428 | VL v1.50.0 | `/insert/jsonline`, `/insert/loki/api/v1/push`, `/insert/elasticsearch/_bulk` | `/select/logsql/*`, `/delete/logsql/*`, `/internal/select/*` | `ghcr.io/reliablyobserve/lakehouse-logs` |
+| `lakehouse-logs` | 9428 | VL v1.50.0 | All VL insert protocols (jsonline, Loki, ES bulk, syslog, journald, Datadog, OTLP, Splunk) | `/select/logsql/*`, `/delete/logsql/*`, `/internal/select/*` | `ghcr.io/reliablyobserve/lakehouse-logs` |
 | `lakehouse-traces` | 10428 | VT v0.8.2 | `/insert/jsonline`, Zipkin `/api/v2/spans`, OTLP | `/select/logsql/*`, Jaeger `/select/jaeger/api/*`, `/delete/tracessql/*` | `ghcr.io/reliablyobserve/lakehouse-traces` |
 
 Each binary supports three roles for independent scaling:
@@ -354,7 +354,7 @@ Each binary supports three roles for independent scaling:
 ## Key Features
 
 ### Write Path
-- **VL-compatible insert APIs**: `/insert/jsonline`, `/insert/loki/api/v1/push`, `/insert/elasticsearch/_bulk` — same protocols as VictoriaLogs.
+- **Full VL insert protocol support**: jsonline, Loki (JSON + protobuf), ES bulk, syslog, journald, Datadog, OTLP, Splunk, native insert — all via VL's upstream `vlinsert` handlers.
 - **Write-ahead log (WAL)**: crash-safe durability with gob-encoded append-only log and automatic replay on restart.
 - **Adaptive file sizing**: per-partition byte estimates trigger flush when approaching `--lakehouse.insert.target-file-size` for optimal Parquet file sizes.
 - **Buffer query bridge**: select pods fan out to ALL insert pods across ALL AZs via `/internal/buffer/query` for zero-delay reads of unflushed data. AZ-aware routing is only used for peer cache (L3), never for buffer queries — same-AZ-only would miss 2/3 of buffered rows in a 3-AZ deployment.
@@ -724,7 +724,7 @@ All core milestones are **complete**. The project is in production-readiness and
 | **M5: Cluster Integration** | Complete | `/internal/select/*` binary protocol with ZSTD DataBlock streaming, `-storageNode` registration on vlselect/vtselect |
 | **M6: Filter AST + E2E** | Complete | Full LogsQL predicate engine (exact, substring, regex, NOT, AND, OR, ranges), Playwright E2E, schema validation |
 | **M7: Observability** | Complete | ~100 Prometheus metrics, Grafana dashboards (single-instance + cluster), 10 alerting rules, circuit breaker, structured JSON logging |
-| **M8: Write Path** | Complete | VL-compatible insert APIs (`/insert/jsonline`, Loki push, ES bulk), WAL with crash recovery, adaptive flush, buffer query bridge for zero-delay reads |
+| **M8: Write Path** | Complete | Full VL insert protocol support via upstream `vlinsert` handlers (jsonline, Loki JSON+protobuf, ES bulk, syslog, journald, Datadog, OTLP, Splunk), WAL with crash recovery, adaptive flush, buffer query bridge for zero-delay reads |
 | **M9: Compaction** | Complete | Background merge of small Parquet files, size-tiered strategy, manifest atomic updates, tombstone integration |
 | **M10: Testing & Helm** | Complete | E2E test suite (VL + vlselect + loki-vl-proxy chain), benchmarks, Victoria-pattern Helm chart, upstream sync GHA |
 | **M11: Cost-Aware Deletion** | Complete | Three-tier deletion (tombstone → rewrite → lifecycle), `/delete/logsql/*` and `/delete/tracessql/*` APIs, storage-class detection, Glacier-safe, verify endpoint |

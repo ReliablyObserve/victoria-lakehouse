@@ -13,10 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parquet MAP columns — LogAttributes, ResourceAttributes, SpanAttributes, and ScopeAttributes stored as native Parquet MAP type columns
 - LogRow.SeverityNumber field for severity-based log filtering
 - TraceRow.StartTimeUnixNano field for trace span start time queries
-- Full insert API handlers — jsonline, Loki push, and Elasticsearch bulk insert with promoted field extraction
 - Stats API tenant name decoration on cost and compression endpoints
 
 ### Changed
+- Replace custom insert handler with VL's upstream `vlinsert` handlers via `insertutil.SetLogRowsStorage()` adapter — same pattern as select path's `vlstorage.SetExternalStorage()`
+- Full VL insert protocol parity: jsonline, Loki JSON+protobuf, ES bulk, syslog, journald, Datadog, OTLP, Splunk, native insert (previously only jsonline, Loki JSON, ES bulk)
+- Extract buffer handler to `internal/buffer` package (from `internal/insertapi`)
+- Logs binary no longer uses custom insert parsing — all protocol handling by VL upstream
 - Apply `gofmt -s` simplifications across all Go files in both modules
 - Enable gofmt, gocyclo, and misspell linters in golangci-lint v2 configs
 - Add standalone `gofmt -s` check and Go Report Card badge to CI

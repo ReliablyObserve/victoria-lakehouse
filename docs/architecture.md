@@ -15,7 +15,8 @@ graph TD
         HTTP["HTTP Server"]
         
         subgraph "Insert Path"
-            INS["Insert API<br/>insert/jsonline<br/>insert/loki/api/v1/push<br/>insert/elasticsearch/_bulk"]
+            INS["VL vlinsert Handlers<br/>(all protocols: jsonline, Loki,<br/>ES bulk, syslog, journald,<br/>Datadog, OTLP, Splunk, native)"]
+            INSAD["Insert Adapter<br/>insertutil.LogRowsStorage"]
             WAL["WAL<br/>(crash recovery)"]
             BW["BatchWriter<br/>(per-partition buffers)"]
             BB["Buffer Query<br/>internal/buffer/query"]
@@ -52,11 +53,12 @@ graph TD
     end
     
     HTTP --> INS
+    INS --> INSAD
     HTTP --> API
     HTTP --> IS
     HTTP --> BB
     HTTP --> CSH
-    INS --> WAL
+    INSAD --> WAL
     WAL --> BW
     BW -->|flush Parquet| S3R
     BW -->|manifest.AddFile| MF
@@ -578,18 +580,27 @@ Configuration: `--lakehouse.insert.wal-enabled` (default true), `--lakehouse.ins
 
 ### Insert → Buffer → Flush Pipeline
 
+Both INSERT and SELECT now use the same adapter pattern — Lakehouse only replaces the storage layer, never modifies VL/VT upstream code:
+
+- **INSERT**: `insertutil.SetLogRowsStorage(&insertAdapter{})` — VL's `vlinsert` handlers call `MustAddRows(*LogRows)` on our adapter
+- **SELECT**: `vlstorage.SetExternalStorage(&selectAdapter{})` — VL's `vlselect`/`internalselect` handlers call `RunQuery()` on our adapter
+
 ```mermaid
 sequenceDiagram
     participant Client
-    participant Insert as Insert API
+    participant VLInsert as VL vlinsert Handler
+    participant Adapter as insertAdapter
     participant WAL
     participant Buffer as Partition Buffer
     participant S3
     participant Manifest
 
-    Client->>Insert: POST /insert/jsonline
-    Insert->>WAL: Append entries
-    Insert->>Buffer: AddLogRows (per-partition)
+    Client->>VLInsert: POST /insert/* (any protocol)
+    VLInsert->>VLInsert: Parse protocol (upstream code)
+    VLInsert->>Adapter: MustAddRows(*LogRows)
+    Adapter->>Adapter: logRowsToSchemaRows()
+    Adapter->>WAL: Append entries
+    Adapter->>Buffer: AddLogRows (per-partition)
     
     alt Periodic flush or adaptive trigger
         Buffer->>Buffer: Snapshot & swap
@@ -759,7 +770,7 @@ For analytics tool setup (DuckDB, Trino, Spark, ClickHouse, Pandas), see [Analyt
 ```mermaid
 flowchart TB
     subgraph "Write Path (Lakehouse Insert)"
-        OTEL["OTEL Collector /<br/>Loki Push / ES Bulk"] --> INS["Lakehouse Insert<br/>/insert/*"]
+        OTEL["OTEL Collector /<br/>Loki / ES Bulk /<br/>Syslog / Datadog / OTLP / Splunk"] --> INS["VL vlinsert Handlers<br/>→ insertAdapter<br/>/insert/*"]
         INS --> WWAL["WAL"]
         WWAL --> WBUF["Partition Buffers"]
         WBUF -->|flush| PQ["Parquet + ZSTD"]
