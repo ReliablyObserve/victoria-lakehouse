@@ -36,7 +36,7 @@ func TestInsertAdapter_MustAddRows_BasicFields(t *testing.T) {
 
 	lr := makeLogRows(t,
 		logstorage.Field{Name: "_msg", Value: "hello world"},
-		logstorage.Field{Name: "_level", Value: "info"},
+		logstorage.Field{Name: "level", Value: "info"},
 		logstorage.Field{Name: "service.name", Value: "api-gateway"},
 	)
 	defer logstorage.PutLogRows(lr)
@@ -255,7 +255,7 @@ func TestMapFieldToRow_AllCases(t *testing.T) {
 	row := &schema.LogRow{}
 
 	mapFieldToRow(row, "", "body text")
-	mapFieldToRow(row, "_level", "warn")
+	mapFieldToRow(row, "level", "warn")
 	mapFieldToRow(row, "service.name", "svc")
 	mapFieldToRow(row, "trace_id", "t1")
 	mapFieldToRow(row, "span_id", "s1")

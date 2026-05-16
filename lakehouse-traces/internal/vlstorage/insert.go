@@ -47,6 +47,11 @@ func (a *vtInsertAdapter) IsLocalStorage() bool {
 
 // logRowsToTraceRows converts VL's LogRows into trace schema rows.
 // VL handles all protocol parsing — we map fields to TraceRow columns.
+//
+// IMPORTANT: All string values are cloned via strings.Clone because VL uses
+// arena-allocated unsafe strings that become invalid after ResetKeepSettings()
+// is called (immediately after MustAddRows returns). Since our writer buffers
+// rows asynchronously, we must own the string memory.
 func logRowsToTraceRows(lr *logstorage.LogRows) []schema.TraceRow {
 	n := lr.RowsCount()
 	if n == 0 {
@@ -63,7 +68,7 @@ func logRowsToTraceRows(lr *logstorage.LogRows) []schema.TraceRow {
 		if r.StreamTagsCanonical != "" {
 			st := logstorage.GetStreamTags()
 			if err := unmarshalStreamTags(st, r.StreamTagsCanonical); err == nil {
-				row.Stream = st.String()
+				row.Stream = strings.Clone(st.String())
 			}
 			logstorage.PutStreamTags(st)
 		}
@@ -94,6 +99,7 @@ func unmarshalStreamTags(dst *logstorage.StreamTags, canonical string) error {
 // mapFieldToTraceRow maps a VL/VT field to the appropriate TraceRow column.
 // Handles both VT's prefixed naming (resource_attr:, span_attr:) and VL's
 // flat naming from jsonline ingestion.
+// All stored string values are cloned to detach from VL's arena memory.
 func mapFieldToTraceRow(row *schema.TraceRow, name, value string) {
 	if value == "-" && name == "_msg" {
 		return
@@ -102,16 +108,16 @@ func mapFieldToTraceRow(row *schema.TraceRow, name, value string) {
 	// VT OTLP trace fields (from vtinsert/opentelemetry)
 	switch name {
 	case otelpb.TraceIDField:
-		row.TraceID = value
+		row.TraceID = strings.Clone(value)
 		return
 	case otelpb.SpanIDField:
-		row.SpanID = value
+		row.SpanID = strings.Clone(value)
 		return
 	case otelpb.ParentSpanIDField:
-		row.ParentSpanID = value
+		row.ParentSpanID = strings.Clone(value)
 		return
 	case otelpb.NameField:
-		row.SpanName = value
+		row.SpanName = strings.Clone(value)
 		return
 	case otelpb.KindField:
 		if v, err := strconv.ParseInt(value, 10, 32); err == nil {
@@ -136,10 +142,10 @@ func mapFieldToTraceRow(row *schema.TraceRow, name, value string) {
 		}
 		return
 	case otelpb.StatusMessageField:
-		row.StatusMessage = value
+		row.StatusMessage = strings.Clone(value)
 		return
 	case otelpb.InstrumentationScopeName:
-		row.ScopeName = value
+		row.ScopeName = strings.Clone(value)
 		return
 	case otelpb.InstrumentationScopeVersion:
 		return
@@ -162,7 +168,7 @@ func mapFieldToTraceRow(row *schema.TraceRow, name, value string) {
 		return
 	}
 
-	// VT scope attributes, events, links — store in span attributes
+	// VT scope attributes, events, links — ignored
 	if strings.HasPrefix(name, otelpb.InstrumentationScopeAttrPrefix) ||
 		strings.HasPrefix(name, otelpb.EventPrefix) ||
 		strings.HasPrefix(name, otelpb.LinkPrefix) {
@@ -174,15 +180,15 @@ func mapFieldToTraceRow(row *schema.TraceRow, name, value string) {
 	case "", "_msg":
 		return
 	case "trace_id":
-		row.TraceID = value
+		row.TraceID = strings.Clone(value)
 	case "span_id":
-		row.SpanID = value
+		row.SpanID = strings.Clone(value)
 	case "parent_span_id":
-		row.ParentSpanID = value
+		row.ParentSpanID = strings.Clone(value)
 	case "span.name":
-		row.SpanName = value
+		row.SpanName = strings.Clone(value)
 	case "service.name":
-		row.ServiceName = value
+		row.ServiceName = strings.Clone(value)
 	case "duration_ns":
 		if v, err := strconv.ParseInt(value, 10, 64); err == nil {
 			row.DurationNs = v
@@ -196,87 +202,87 @@ func mapFieldToTraceRow(row *schema.TraceRow, name, value string) {
 			row.StatusCode = int32(v)
 		}
 	case "status.message":
-		row.StatusMessage = value
+		row.StatusMessage = strings.Clone(value)
 	case "span.kind":
 		if v, err := strconv.ParseInt(value, 10, 32); err == nil {
 			row.SpanKind = int32(v)
 		}
 	case "scope.name":
-		row.ScopeName = value
+		row.ScopeName = strings.Clone(value)
 	case "http.method":
-		row.HTTPMethod = value
+		row.HTTPMethod = strings.Clone(value)
 	case "http.status_code":
-		row.HTTPStatusCode = value
+		row.HTTPStatusCode = strings.Clone(value)
 	case "http.url":
-		row.HTTPUrl = value
+		row.HTTPUrl = strings.Clone(value)
 	case "db.system":
-		row.DBSystem = value
+		row.DBSystem = strings.Clone(value)
 	case "db.statement":
-		row.DBStatement = value
+		row.DBStatement = strings.Clone(value)
 	case "k8s.namespace.name":
-		row.K8sNamespaceName = value
+		row.K8sNamespaceName = strings.Clone(value)
 	case "k8s.pod.name":
-		row.K8sPodName = value
+		row.K8sPodName = strings.Clone(value)
 	case "k8s.deployment.name":
-		row.K8sDeploymentName = value
+		row.K8sDeploymentName = strings.Clone(value)
 	case "k8s.node.name":
-		row.K8sNodeName = value
+		row.K8sNodeName = strings.Clone(value)
 	case "deployment.environment":
-		row.DeployEnv = value
+		row.DeployEnv = strings.Clone(value)
 	case "cloud.region":
-		row.CloudRegion = value
+		row.CloudRegion = strings.Clone(value)
 	case "host.name":
-		row.HostName = value
+		row.HostName = strings.Clone(value)
 	default:
 		if row.SpanAttributes == nil {
 			row.SpanAttributes = make(map[string]string)
 		}
-		row.SpanAttributes[name] = value
+		row.SpanAttributes[strings.Clone(name)] = strings.Clone(value)
 	}
 }
 
 func mapResourceAttr(row *schema.TraceRow, key, value string) {
 	switch key {
 	case "service.name":
-		row.ServiceName = value
+		row.ServiceName = strings.Clone(value)
 	case "k8s.namespace.name":
-		row.K8sNamespaceName = value
+		row.K8sNamespaceName = strings.Clone(value)
 	case "k8s.pod.name":
-		row.K8sPodName = value
+		row.K8sPodName = strings.Clone(value)
 	case "k8s.deployment.name":
-		row.K8sDeploymentName = value
+		row.K8sDeploymentName = strings.Clone(value)
 	case "k8s.node.name":
-		row.K8sNodeName = value
+		row.K8sNodeName = strings.Clone(value)
 	case "deployment.environment":
-		row.DeployEnv = value
+		row.DeployEnv = strings.Clone(value)
 	case "cloud.region":
-		row.CloudRegion = value
+		row.CloudRegion = strings.Clone(value)
 	case "host.name":
-		row.HostName = value
+		row.HostName = strings.Clone(value)
 	default:
 		if row.ResourceAttributes == nil {
 			row.ResourceAttributes = make(map[string]string)
 		}
-		row.ResourceAttributes[key] = value
+		row.ResourceAttributes[strings.Clone(key)] = strings.Clone(value)
 	}
 }
 
 func mapSpanAttr(row *schema.TraceRow, key, value string) {
 	switch key {
 	case "http.method":
-		row.HTTPMethod = value
+		row.HTTPMethod = strings.Clone(value)
 	case "http.status_code":
-		row.HTTPStatusCode = value
+		row.HTTPStatusCode = strings.Clone(value)
 	case "http.url":
-		row.HTTPUrl = value
+		row.HTTPUrl = strings.Clone(value)
 	case "db.system":
-		row.DBSystem = value
+		row.DBSystem = strings.Clone(value)
 	case "db.statement":
-		row.DBStatement = value
+		row.DBStatement = strings.Clone(value)
 	default:
 		if row.SpanAttributes == nil {
 			row.SpanAttributes = make(map[string]string)
 		}
-		row.SpanAttributes[key] = value
+		row.SpanAttributes[strings.Clone(key)] = strings.Clone(value)
 	}
 }

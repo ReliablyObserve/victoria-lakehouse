@@ -2,6 +2,8 @@ package vlstorage
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlinsert/insertutil"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -40,6 +42,11 @@ func (a *insertAdapter) CanWriteData() error {
 // logRowsToSchemaRows converts VL's LogRows into our Parquet schema rows.
 // VL has already parsed all protocols, extracted timestamps, built stream
 // tags, and normalized field names — we only map fields to columns.
+//
+// IMPORTANT: All string values are cloned via strings.Clone because VL uses
+// arena-allocated unsafe strings that become invalid after ResetKeepSettings()
+// is called (immediately after MustAddRows returns). Since our writer buffers
+// rows asynchronously, we must own the string memory.
 func logRowsToSchemaRows(lr *logstorage.LogRows) []schema.LogRow {
 	n := lr.RowsCount()
 	if n == 0 {
@@ -53,11 +60,10 @@ func logRowsToSchemaRows(lr *logstorage.LogRows) []schema.LogRow {
 			TimestampUnixNano: r.Timestamp,
 		}
 
-		// Recover _stream string from canonical binary representation.
 		if r.StreamTagsCanonical != "" {
 			st := logstorage.GetStreamTags()
 			if err := unmarshalStreamTags(st, r.StreamTagsCanonical); err == nil {
-				row.Stream = st.String()
+				row.Stream = strings.Clone(st.String())
 			}
 			logstorage.PutStreamTags(st)
 		}
@@ -87,38 +93,43 @@ func unmarshalStreamTags(dst *logstorage.StreamTags, canonical string) error {
 
 // mapFieldToRow maps a single VL field to the appropriate schema.LogRow column.
 // Empty field name is VL's canonical form for _msg.
+// All stored values are cloned to detach from VL's arena memory.
 func mapFieldToRow(row *schema.LogRow, name, value string) {
 	switch name {
 	case "":
-		row.Body = value
-	case "_level":
-		row.SeverityText = value
+		row.Body = strings.Clone(value)
+	case "level":
+		row.SeverityText = strings.Clone(value)
+	case "severity_number":
+		if v, err := strconv.ParseInt(value, 10, 32); err == nil {
+			row.SeverityNumber = int32(v)
+		}
 	case "service.name":
-		row.ServiceName = value
+		row.ServiceName = strings.Clone(value)
 	case "trace_id":
-		row.TraceID = value
+		row.TraceID = strings.Clone(value)
 	case "span_id":
-		row.SpanID = value
+		row.SpanID = strings.Clone(value)
 	case "k8s.namespace.name":
-		row.K8sNamespaceName = value
+		row.K8sNamespaceName = strings.Clone(value)
 	case "k8s.pod.name":
-		row.K8sPodName = value
+		row.K8sPodName = strings.Clone(value)
 	case "k8s.deployment.name":
-		row.K8sDeploymentName = value
+		row.K8sDeploymentName = strings.Clone(value)
 	case "k8s.node.name":
-		row.K8sNodeName = value
+		row.K8sNodeName = strings.Clone(value)
 	case "deployment.environment":
-		row.DeployEnv = value
+		row.DeployEnv = strings.Clone(value)
 	case "cloud.region":
-		row.CloudRegion = value
+		row.CloudRegion = strings.Clone(value)
 	case "host.name":
-		row.HostName = value
+		row.HostName = strings.Clone(value)
 	case "scope.name":
-		row.ScopeName = value
+		row.ScopeName = strings.Clone(value)
 	default:
 		if row.LogAttributes == nil {
 			row.LogAttributes = make(map[string]string)
 		}
-		row.LogAttributes[name] = value
+		row.LogAttributes[strings.Clone(name)] = strings.Clone(value)
 	}
 }
