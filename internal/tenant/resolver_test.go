@@ -7,8 +7,8 @@ func TestResolver_ResolveAndDisplayName(t *testing.T) {
 		MetricsFormat: MetricsFormatID,
 	})
 
-	r.AddAlias("prod-team-eu_staging", TenantID{AccountID: 42, ProjectID: 3})
-	r.AddAlias("dev_default", TenantID{AccountID: 1, ProjectID: 1})
+	_ = r.AddAlias("prod-team-eu_staging", TenantID{AccountID: 42, ProjectID: 3})
+	_ = r.AddAlias("dev_default", TenantID{AccountID: 1, ProjectID: 1})
 
 	tid, ok := r.Resolve("prod-team-eu_staging")
 	if !ok {
@@ -50,7 +50,7 @@ func TestResolver_MetricLabel(t *testing.T) {
 
 	for _, tc := range tests {
 		r := NewResolver(ResolverConfig{MetricsFormat: tc.format})
-		r.AddAlias("prod-team-eu_staging", TenantID{AccountID: 42, ProjectID: 3})
+		_ = r.AddAlias("prod-team-eu_staging", TenantID{AccountID: 42, ProjectID: 3})
 
 		got := r.MetricLabel(tc.acc, tc.proj)
 		if got != tc.want {

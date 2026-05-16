@@ -1,6 +1,7 @@
 package tenant
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -47,7 +48,7 @@ func TestSyncHandler_MergesAliases(t *testing.T) {
 
 func TestSyncHandler_NoOverwriteExisting(t *testing.T) {
 	r := NewResolver(ResolverConfig{})
-	r.AddAlias("prod_staging", TenantID{AccountID: 42, ProjectID: 3})
+	_ = r.AddAlias("prod_staging", TenantID{AccountID: 42, ProjectID: 3})
 
 	sh := NewSyncHandler(r, "")
 
@@ -94,7 +95,7 @@ func TestSyncHandler_AuthRequired(t *testing.T) {
 
 func TestSyncPusher_DeltaDetection(t *testing.T) {
 	r := NewResolver(ResolverConfig{})
-	r.AddAlias("prod_staging", TenantID{AccountID: 42, ProjectID: 3})
+	_ = r.AddAlias("prod_staging", TenantID{AccountID: 42, ProjectID: 3})
 
 	var pushCount int
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -111,18 +112,18 @@ func TestSyncPusher_DeltaDetection(t *testing.T) {
 		SelfAddr: "self:9428",
 	})
 
-	sp.Push(nil)
+	sp.Push(context.TODO())
 	if pushCount != 1 {
 		t.Errorf("first push: count=%d, want 1", pushCount)
 	}
 
-	sp.Push(nil)
+	sp.Push(context.TODO())
 	if pushCount != 1 {
 		t.Errorf("second push (no changes): count=%d, want 1", pushCount)
 	}
 
-	r.AddAlias("dev_default", TenantID{AccountID: 1, ProjectID: 1})
-	sp.Push(nil)
+	_ = r.AddAlias("dev_default", TenantID{AccountID: 1, ProjectID: 1})
+	sp.Push(context.TODO())
 	if pushCount != 2 {
 		t.Errorf("third push (new alias): count=%d, want 2", pushCount)
 	}

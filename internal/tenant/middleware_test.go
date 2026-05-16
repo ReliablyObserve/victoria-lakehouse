@@ -8,7 +8,7 @@ import (
 
 func TestMiddleware_OrgIDResolved(t *testing.T) {
 	r := NewResolver(ResolverConfig{})
-	r.AddAlias("prod-team-eu_staging", TenantID{AccountID: 42, ProjectID: 3})
+	_ = r.AddAlias("prod-team-eu_staging", TenantID{AccountID: 42, ProjectID: 3})
 
 	var gotAccount, gotProject string
 	handler := r.Middleware(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -124,7 +124,7 @@ func TestMiddleware_AutoRegister_InvalidOrgID(t *testing.T) {
 
 func TestMiddleware_CustomHeader(t *testing.T) {
 	r := NewResolver(ResolverConfig{OrgIDHeader: "X-Custom-Tenant"})
-	r.AddAlias("custom_tenant", TenantID{AccountID: 5, ProjectID: 6})
+	_ = r.AddAlias("custom_tenant", TenantID{AccountID: 5, ProjectID: 6})
 
 	var gotAccount string
 	handler := r.Middleware(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
