@@ -8,6 +8,7 @@ export GOWORK=off
 # VictoriaLogs — Go module proxy has stale cache with wrong module path.
 # We clone the correct version locally and use a replace directive in go.mod.
 VL_VERSION_LOGS := v1.50.0
+VL_COMMIT_TRACES := a408207c2242
 VL_REPO := https://github.com/VictoriaMetrics/VictoriaLogs.git
 VL_DIR_LOGS := deps/VictoriaLogs
 VL_DIR_TRACES := lakehouse-traces/deps/VictoriaLogs
@@ -26,8 +27,12 @@ $(VL_DIR_LOGS)/go.mod:
 deps-traces: $(VL_DIR_TRACES)/go.mod
 
 $(VL_DIR_TRACES)/go.mod:
-	@echo "VictoriaLogs traces dep must be prepared manually (specific commit for VT v0.8.2 compat)"
-	@test -f $(VL_DIR_TRACES)/go.mod || (echo "Missing $(VL_DIR_TRACES)/go.mod — see README" && exit 1)
+	@mkdir -p lakehouse-traces/deps
+	git clone $(VL_REPO) $(VL_DIR_TRACES)
+	cd $(VL_DIR_TRACES) && git checkout $(VL_COMMIT_TRACES)
+	cp patches/vl-traces/external.go $(VL_DIR_TRACES)/app/vlstorage/external.go
+	cp patches/vl-traces/external_query.go $(VL_DIR_TRACES)/lib/logstorage/external_query.go
+	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vlstorage-dispatch.patch
 
 build: build-logs build-traces
 	go build -ldflags "-s -w" -o bin/healthcheck ./cmd/healthcheck
@@ -36,7 +41,7 @@ build-logs: deps-logs
 	go build -ldflags "$(LDFLAGS)" -o bin/lakehouse-logs ./cmd/lakehouse-logs
 
 build-traces: deps-traces
-	go build -ldflags "$(LDFLAGS)" -o bin/lakehouse-traces ./lakehouse-traces
+	cd lakehouse-traces && go build -ldflags "$(LDFLAGS)" -o ../bin/lakehouse-traces .
 
 test: test-logs test-traces
 
