@@ -18,6 +18,7 @@ require (
 )
 
 require (
+	github.com/VictoriaMetrics/easyproto v1.2.0 // indirect
 	github.com/VictoriaMetrics/metrics v1.43.2 // indirect
 	github.com/VictoriaMetrics/metricsql v0.87.0 // indirect
 	github.com/andybalholm/brotli v1.1.1 // indirect
@@ -45,6 +46,7 @@ require (
 	github.com/go-openapi/jsonpointer v0.21.0 // indirect
 	github.com/go-openapi/jsonreference v0.20.2 // indirect
 	github.com/go-openapi/swag v0.23.0 // indirect
+	github.com/golang/snappy v1.0.0 // indirect
 	github.com/google/gnostic-models v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
