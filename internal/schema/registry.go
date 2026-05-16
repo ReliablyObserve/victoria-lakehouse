@@ -245,8 +245,11 @@ func (r *Registry) ResolveToParquet(internalName string) *FieldMapping {
 		}
 	}
 
-	// VL dotted convention: try resource.attributes, then log.attributes
-	for _, mapCol := range r.profile.MapColumns {
+	// Fallback: unrecognized fields map to the first MAP column (resource.attributes
+	// for traces, log.attributes for logs). Fields that shouldn't hit this fallback
+	// must be registered as Promoted in the profile.
+	if len(r.profile.MapColumns) > 0 {
+		mapCol := r.profile.MapColumns[0]
 		origin := mapColumnToOrigin(mapCol)
 		return &FieldMapping{
 			ParquetColumn: mapCol,

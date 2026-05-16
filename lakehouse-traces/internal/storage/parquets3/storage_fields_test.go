@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -507,5 +508,190 @@ func TestGetStreamFieldNames_ReturnsRegisteredStreamFields(t *testing.T) {
 	}
 	if len(fields) == 0 {
 		t.Fatal("expected stream field names from registry")
+	}
+}
+
+// --- Edge cases and regression tests ---
+
+func TestCollectFilteredValues_NilFilter_AllValues(t *testing.T) {
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	rows := []fullTraceRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "s1", ServiceName: "alpha", Stream: `{svc="alpha"}`, StreamID: "id1", TraceID: "t1", SpanID: "sp1"},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "s2", ServiceName: "beta", Stream: `{svc="beta"}`, StreamID: "id2", TraceID: "t2", SpanID: "sp2"},
+		{TimestampUnixNano: now.Add(2 * time.Second).UnixNano(), Body: "s3", ServiceName: "alpha", Stream: `{svc="alpha"}`, StreamID: "id1", TraceID: "t3", SpanID: "sp3"},
+	}
+	s := testFieldStorageTraces(t, rows)
+
+	q := mustParseQueryWithTime(t, "*",
+		now.Add(-time.Hour).UnixNano(),
+		now.Add(time.Hour).UnixNano(),
+	)
+
+	vals, err := s.GetFieldValues(context.Background(), nil, q, "resource_attr:service.name", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valSet := make(map[string]bool)
+	for _, v := range vals {
+		valSet[v.Value] = true
+	}
+	if !valSet["alpha"] || !valSet["beta"] {
+		t.Errorf("expected alpha and beta in values, got %v", vals)
+	}
+}
+
+func TestCollectFilteredValues_EmptyValues_NotIncluded(t *testing.T) {
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	rows := []fullTraceRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "s1", ServiceName: "alpha", Stream: `{svc="alpha"}`, StreamID: "id1", TraceID: "t1", SpanID: "sp1"},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "s2", ServiceName: "", Stream: `{svc=""}`, StreamID: "id2", TraceID: "t2", SpanID: "sp2"},
+	}
+	s := testFieldStorageTraces(t, rows)
+
+	q := mustParseQueryWithTime(t, "*",
+		now.Add(-time.Hour).UnixNano(),
+		now.Add(time.Hour).UnixNano(),
+	)
+
+	vals, err := s.GetFieldValues(context.Background(), nil, q, "resource_attr:service.name", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range vals {
+		if v.Value == "" {
+			t.Error("empty string values should not be included in results")
+		}
+	}
+}
+
+func TestGetFieldValues_LimitRespected(t *testing.T) {
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	rows := make([]fullTraceRow, 0, 50)
+	for i := 0; i < 50; i++ {
+		rows = append(rows, fullTraceRow{
+			TimestampUnixNano: now.Add(time.Duration(i) * time.Second).UnixNano(),
+			Body:              fmt.Sprintf("span%d", i),
+			ServiceName:       fmt.Sprintf("svc-%d", i),
+			Stream:            fmt.Sprintf(`{svc="svc-%d"}`, i),
+			StreamID:          fmt.Sprintf("sid-%d", i),
+			TraceID:           fmt.Sprintf("trace-%d", i),
+			SpanID:            fmt.Sprintf("span-%d", i),
+		})
+	}
+	s := testFieldStorageTraces(t, rows)
+
+	q := mustParseQueryWithTime(t, "*",
+		now.Add(-time.Hour).UnixNano(),
+		now.Add(time.Hour).UnixNano(),
+	)
+
+	vals, err := s.GetFieldValues(context.Background(), nil, q, "resource_attr:service.name", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uint64(len(vals)) > 5 {
+		t.Errorf("expected at most 5 values, got %d", len(vals))
+	}
+}
+
+func TestGetFieldValues_UnknownField_ReturnsNil(t *testing.T) {
+	cfg := config.Default()
+	cfg.Mode = config.ModeTraces
+	s := &Storage{
+		cfg:      cfg,
+		manifest: manifest.New("test", "traces/"),
+		registry: schema.NewRegistry(schema.TracesProfile),
+		memCache: cache.NewLRU(64 * 1024 * 1024),
+		sfGroup:  cache.NewGroup(),
+		labelIndex: cache.NewLabelIndex(),
+		discovery: discovery.New("", nil, "", "", "9428", 5*time.Second),
+	}
+
+	q := mustParseQueryWithTime(t, "*",
+		time.Now().Add(-time.Hour).UnixNano(),
+		time.Now().UnixNano(),
+	)
+
+	vals, err := s.GetFieldValues(context.Background(), nil, q, "nonexistent_field_xyz", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vals) != 0 {
+		t.Errorf("expected nil/empty for unknown field with no manifest files, got %v", vals)
+	}
+}
+
+func TestGetStreams_DuplicatesDeduped(t *testing.T) {
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	rows := []fullTraceRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "s1", ServiceName: "api", Stream: `{svc="api"}`, StreamID: "s1", TraceID: "t1", SpanID: "sp1"},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "s2", ServiceName: "api", Stream: `{svc="api"}`, StreamID: "s1", TraceID: "t2", SpanID: "sp2"},
+		{TimestampUnixNano: now.Add(2 * time.Second).UnixNano(), Body: "s3", ServiceName: "api", Stream: `{svc="api"}`, StreamID: "s1", TraceID: "t3", SpanID: "sp3"},
+	}
+	s := testFieldStorageTraces(t, rows)
+
+	q := mustParseQueryWithTime(t, "*",
+		now.Add(-time.Hour).UnixNano(),
+		now.Add(time.Hour).UnixNano(),
+	)
+
+	streams, err := s.GetStreams(context.Background(), nil, q, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(streams) != 1 {
+		t.Errorf("expected 1 unique stream, got %d: %v", len(streams), streams)
+	}
+	if streams[0].Hits != 3 {
+		t.Errorf("expected 3 hits for deduplicated stream, got %d", streams[0].Hits)
+	}
+}
+
+func TestGetStreamIDs_LimitZero_ReturnsAll(t *testing.T) {
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	rows := []fullTraceRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "s1", ServiceName: "api", Stream: `{svc="api"}`, StreamID: "sid-1", TraceID: "t1", SpanID: "sp1"},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "s2", ServiceName: "web", Stream: `{svc="web"}`, StreamID: "sid-2", TraceID: "t2", SpanID: "sp2"},
+	}
+	s := testFieldStorageTraces(t, rows)
+
+	q := mustParseQueryWithTime(t, "*",
+		now.Add(-time.Hour).UnixNano(),
+		now.Add(time.Hour).UnixNano(),
+	)
+
+	ids, err := s.GetStreamIDs(context.Background(), nil, q, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 {
+		t.Errorf("limit=0 should return all stream IDs, got %d", len(ids))
+	}
+}
+
+func TestGetFieldNames_NoDuplicatesFromPromotedAndMap(t *testing.T) {
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	rows := []fullTraceRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "s1", ServiceName: "api", Stream: `{svc="api"}`, StreamID: "s1", TraceID: "t1", SpanID: "sp1"},
+	}
+	s := testFieldStorageTraces(t, rows)
+
+	q := mustParseQueryWithTime(t, "*",
+		now.Add(-time.Hour).UnixNano(),
+		now.Add(time.Hour).UnixNano(),
+	)
+
+	names, err := s.GetFieldNames(context.Background(), nil, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[string]int)
+	for _, n := range names {
+		seen[n.Value]++
+	}
+	for name, count := range seen {
+		if count > 1 {
+			t.Errorf("field %q appears %d times (should be unique)", name, count)
+		}
 	}
 }
