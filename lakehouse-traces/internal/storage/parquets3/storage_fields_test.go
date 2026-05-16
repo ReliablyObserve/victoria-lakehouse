@@ -598,13 +598,13 @@ func TestGetFieldValues_UnknownField_ReturnsNil(t *testing.T) {
 	cfg := config.Default()
 	cfg.Mode = config.ModeTraces
 	s := &Storage{
-		cfg:      cfg,
-		manifest: manifest.New("test", "traces/"),
-		registry: schema.NewRegistry(schema.TracesProfile),
-		memCache: cache.NewLRU(64 * 1024 * 1024),
-		sfGroup:  cache.NewGroup(),
+		cfg:        cfg,
+		manifest:   manifest.New("test", "traces/"),
+		registry:   schema.NewRegistry(schema.TracesProfile),
+		memCache:   cache.NewLRU(64 * 1024 * 1024),
+		sfGroup:    cache.NewGroup(),
 		labelIndex: cache.NewLabelIndex(),
-		discovery: discovery.New("", nil, "", "", "9428", 5*time.Second),
+		discovery:  discovery.New("", nil, "", "", "9428", 5*time.Second),
 	}
 
 	q := mustParseQueryWithTime(t, "*",

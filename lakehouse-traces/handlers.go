@@ -90,12 +90,12 @@ func HandleLakehouseInfo(cfg LakehouseInfoConfig) http.HandlerFunc {
 			compatKey = "vl_compat"
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"version":   cfg.Version,
-			"mode":      cfg.Mode,
-			"topology":  cfg.Topology,
-			"ready":     cfg.IsReady(),
-			"phase":     cfg.Phase(),
-			compatKey:   cfg.Compat,
+			"version":  cfg.Version,
+			"mode":     cfg.Mode,
+			"topology": cfg.Topology,
+			"ready":    cfg.IsReady(),
+			"phase":    cfg.Phase(),
+			compatKey:  cfg.Compat,
 		})
 	}
 }

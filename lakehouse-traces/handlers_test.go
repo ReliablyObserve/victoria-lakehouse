@@ -18,9 +18,9 @@ type mockCacheStore struct {
 	az      string
 }
 
-func (m *mockCacheStore) ClearCaches()          { m.cleared = true }
+func (m *mockCacheStore) ClearCaches()               { m.cleared = true }
 func (m *mockCacheStore) MemCacheStats() cache.Stats { return m.stats }
-func (m *mockCacheStore) SelfAZ() string         { return m.az }
+func (m *mockCacheStore) SelfAZ() string             { return m.az }
 
 // mockManifestStore implements ManifestStore for testing.
 type mockManifestStore struct {

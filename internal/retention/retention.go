@@ -16,7 +16,7 @@ import (
 // Config holds the retention policy configuration.
 type Config struct {
 	Enabled       bool   `yaml:"enabled"`
-	Default       string `yaml:"default"`         // e.g. "90d" or "2160h"
+	Default       string `yaml:"default"`        // e.g. "90d" or "2160h"
 	CheckInterval string `yaml:"check_interval"` // e.g. "1h"
 	Rules         []Rule `yaml:"rules"`
 }

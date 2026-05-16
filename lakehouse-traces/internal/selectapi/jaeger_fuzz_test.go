@@ -49,4 +49,3 @@ func FuzzSpanKindName(f *testing.F) {
 		}
 	})
 }
-
