@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"encoding/json"
 	"flag"
@@ -13,17 +12,7 @@ import (
 	mrand "math/rand"
 	"net/http"
 	"time"
-
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/parquet-go/parquet-go"
 )
-
-type LogRow = schema.LogRow
-type TraceRow = schema.TraceRow
 
 var (
 	services    = []string{"api-gateway", "user-service", "order-service", "payment-service", "notification-service"}
@@ -46,43 +35,30 @@ var (
 )
 
 func main() {
-	endpoint := flag.String("endpoint", "http://localhost:9000", "S3/MinIO endpoint")
-	bucket := flag.String("bucket", "obs-archive", "S3 bucket name")
-	accessKey := flag.String("access-key", "minioadmin", "S3 access key")
-	secretKey := flag.String("secret-key", "minioadmin", "S3 secret key")
 	logsCount := flag.Int("logs", 5000, "number of log rows per batch")
 	tracesCount := flag.Int("traces", 1000, "number of trace spans per batch")
 	hoursBack := flag.Int("hours-back", 48, "generate historical data for this many hours back")
 	interval := flag.Duration("interval", 0, "continuous mode: generate new data every interval (e.g. 30s)")
-	tenantPrefix := flag.String("tenant-prefix", "", "S3 key prefix for tenant isolation (e.g. '0/0/' or '1/1/')")
-	dualWrite := flag.Bool("dual-write", false, "also push logs to VictoriaLogs and traces to VictoriaTraces")
-	vlEndpoint := flag.String("vl-endpoint", "http://localhost:9428", "VictoriaLogs endpoint for dual-write")
-	vtEndpoint := flag.String("vt-endpoint", "", "VictoriaTraces endpoint for dual-write (OTLP JSON format)")
+	vlEndpoint := flag.String("vl-endpoint", "", "VictoriaLogs hot endpoint (e.g. http://victorialogs:9428)")
+	vtEndpoint := flag.String("vt-endpoint", "", "VictoriaTraces hot endpoint (e.g. http://victoriatraces:10428)")
+	lhLogsEndpoint := flag.String("lh-logs-endpoint", "", "Lakehouse logs cold endpoint (e.g. http://lakehouse-logs:9428)")
+	lhTracesEndpoint := flag.String("lh-traces-endpoint", "", "Lakehouse traces cold endpoint (e.g. http://lakehouse-traces:10428)")
+	accountID := flag.String("account-id", "0", "tenant AccountID header")
+	projectID := flag.String("project-id", "0", "tenant ProjectID header")
 	flag.Parse()
 
-	ctx := context.Background()
-
-	cfg, err := awsconfig.LoadDefaultConfig(ctx,
-		awsconfig.WithRegion("us-east-1"),
-		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(*accessKey, *secretKey, "")),
-	)
-	if err != nil {
-		log.Fatalf("load aws config: %v", err)
+	if *vlEndpoint == "" && *lhLogsEndpoint == "" {
+		log.Fatal("at least one of --vl-endpoint or --lh-logs-endpoint is required")
 	}
 
-	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(*endpoint)
-		o.UsePathStyle = true
-	})
-
-	generateBatch(ctx, client, *bucket, *tenantPrefix, *logsCount, *tracesCount, *hoursBack, *dualWrite, *vlEndpoint, *vtEndpoint)
+	generateBatch(*logsCount, *tracesCount, *hoursBack, *vlEndpoint, *vtEndpoint, *lhLogsEndpoint, *lhTracesEndpoint, *accountID, *projectID)
 
 	if *interval > 0 {
 		log.Printf("Continuous mode: generating %d logs + %d traces every %s", *logsCount, *tracesCount, *interval)
 		ticker := time.NewTicker(*interval)
 		defer ticker.Stop()
 		for range ticker.C {
-			generateBatch(ctx, client, *bucket, *tenantPrefix, *logsCount, *tracesCount, 1, *dualWrite, *vlEndpoint, *vtEndpoint)
+			generateBatch(*logsCount, *tracesCount, 1, *vlEndpoint, *vtEndpoint, *lhLogsEndpoint, *lhTracesEndpoint, *accountID, *projectID)
 		}
 	}
 }
@@ -99,21 +75,65 @@ type traceCtx struct {
 	baseTime time.Time
 }
 
-func generateBatch(ctx context.Context, client *s3.Client, bucket, tenantPrefix string, logsCount, tracesCount, hoursBack int, dualWrite bool, vlEndpoint, vtEndpoint string) {
+type traceRow struct {
+	TimestampUnixNano int64
+	StartTimeUnixNano int64
+	TraceID           string
+	SpanID            string
+	ParentSpanID      string
+	SpanName          string
+	SpanKind          int32
+	StatusCode        int32
+	StatusMessage     string
+	DurationNs        int64
+	ServiceName       string
+	ScopeName         string
+	DeployEnv         string
+	CloudRegion       string
+	HostName          string
+	K8sNamespaceName  string
+	K8sDeploymentName string
+	K8sNodeName       string
+	HTTPMethod        string
+	HTTPStatusCode    string
+	HTTPUrl           string
+	DBSystem          string
+	DBStatement       string
+	ResourceAttrs     map[string]string
+	SpanAttrs         map[string]string
+	ScopeAttrs        map[string]string
+}
+
+type logRow struct {
+	TimestampUnixNano int64
+	Body              string
+	SeverityText      string
+	SeverityNumber    int32
+	ServiceName       string
+	K8sNamespaceName  string
+	K8sPodName        string
+	K8sDeploymentName string
+	K8sNodeName       string
+	DeployEnv         string
+	CloudRegion       string
+	HostName          string
+	TraceID           string
+	SpanID            string
+	ScopeName         string
+	ResourceAttrs     map[string]string
+	LogAttrs          map[string]string
+}
+
+func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint, lhLogsEndpoint, lhTracesEndpoint, accountID, projectID string) {
 	now := time.Now().UTC()
-	rng := mrand.New(mrand.NewSource(now.UnixNano())) // #nosec G404 -- synthetic test data, not security-sensitive
+	rng := mrand.New(mrand.NewSource(now.UnixNano())) // #nosec G404 -- synthetic test data
 
-	if tenantPrefix != "" {
-		log.Printf("Generating %d log rows and %d trace spans over %d hours (tenant prefix: %s)...", logsCount, tracesCount, hoursBack, tenantPrefix)
-	} else {
-		log.Printf("Generating %d log rows and %d trace spans over %d hours...", logsCount, tracesCount, hoursBack)
-	}
+	log.Printf("Generating %d logs + %d trace spans over %dh (account=%s, project=%s)...",
+		logsCount, tracesCount, hoursBack, accountID, projectID)
 
-	batchID := randomHex(8)
+	// ── Phase 1: Generate traces ──
 
-	// ── Phase 1: Generate traces first so logs can reference their IDs ──
-
-	tracesByPartition := make(map[string][]TraceRow)
+	var allTraces []traceRow
 	var traceContexts []traceCtx
 	numTraces := tracesCount / 3
 	if numTraces < 1 {
@@ -158,11 +178,8 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket, tenantPrefix 
 			}
 
 			spanName := spanNames[rng.Intn(len(spanNames))]
-			httpMethod := ""
-			httpCode := ""
-			httpUrl := ""
-			dbSystem := ""
-			dbStmt := ""
+			httpMethod, httpCode, httpUrl := "", "", ""
+			dbSystem, dbStmt := "", ""
 
 			if len(spanName) > 4 && spanName[:4] == "HTTP" {
 				httpMethod = httpMethods[rng.Intn(len(httpMethods))]
@@ -176,7 +193,74 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket, tenantPrefix 
 				dbStmt = "GET session:user:" + randomHex(8)
 			}
 
-			row := TraceRow{
+			resAttrs := map[string]string{
+				"service.name":           svc,
+				"service.version":        fmt.Sprintf("1.%d.0", rng.Intn(10)),
+				"service.instance.id":    fmt.Sprintf("%s-%s", svc, randomHex(8)),
+				"telemetry.sdk.name":     "opentelemetry",
+				"telemetry.sdk.language": "go",
+				"telemetry.sdk.version":  "1.28.0",
+				"deployment.environment": env,
+				"cloud.region":           region,
+				"cloud.provider":         "aws",
+				"cloud.account.id":       "123456789012",
+				"host.name":             host,
+				"host.arch":             "amd64",
+				"os.type":               "linux",
+				"process.runtime.name":  "go",
+				"process.runtime.version": "1.22.4",
+				"container.id":          randomHex(64),
+				"k8s.namespace.name":    ns,
+				"k8s.deployment.name":   svc,
+				"k8s.node.name":         node,
+				"k8s.pod.name":          fmt.Sprintf("%s-%s", svc, randomHex(10)),
+				"k8s.cluster.name":      "prod-" + region,
+			}
+
+			spanAttrs := map[string]string{
+				"thread.id":     fmt.Sprintf("%d", 1+rng.Intn(32)),
+				"code.function": spanName,
+			}
+			if httpMethod != "" {
+				spanAttrs["http.method"] = httpMethod
+				spanAttrs["http.request.method"] = httpMethod
+				spanAttrs["http.route"] = fmt.Sprintf("/api/v1/%s", svc)
+				spanAttrs["http.scheme"] = "http"
+				spanAttrs["url.scheme"] = "http"
+				spanAttrs["server.address"] = fmt.Sprintf("%s.%s.svc.cluster.local", svc, ns)
+				spanAttrs["server.port"] = "8080"
+				spanAttrs["network.protocol.version"] = "1.1"
+				spanAttrs["user_agent.original"] = "Go-http-client/2.0"
+			}
+			if httpCode != "" {
+				spanAttrs["http.status_code"] = httpCode
+				spanAttrs["http.response.status_code"] = httpCode
+			}
+			if httpUrl != "" {
+				spanAttrs["http.url"] = httpUrl
+				spanAttrs["url.full"] = httpUrl
+			}
+			if dbSystem != "" {
+				spanAttrs["db.system"] = dbSystem
+				spanAttrs["db.name"] = "appdb"
+				spanAttrs["db.operation"] = "SELECT"
+				spanAttrs["db.connection_string"] = fmt.Sprintf("%s:6379", dbSystem)
+				spanAttrs["server.address"] = fmt.Sprintf("%s.%s.svc.cluster.local", dbSystem, ns)
+				spanAttrs["server.port"] = "6379"
+			}
+			if dbStmt != "" {
+				spanAttrs["db.statement"] = dbStmt
+			}
+			if httpMethod == "" && dbSystem == "" {
+				spanAttrs["rpc.system"] = "grpc"
+				spanAttrs["rpc.service"] = fmt.Sprintf("com.reliablyobserve.%s.v1.Service", svc)
+				spanAttrs["rpc.method"] = spanName
+				spanAttrs["rpc.grpc.status_code"] = "0"
+				spanAttrs["server.address"] = fmt.Sprintf("%s.%s.svc.cluster.local", svc, ns)
+				spanAttrs["server.port"] = "9090"
+			}
+
+			row := traceRow{
 				TimestampUnixNano: endTime.UnixNano(),
 				StartTimeUnixNano: startTime.UnixNano(),
 				TraceID:           traceID,
@@ -200,49 +284,38 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket, tenantPrefix 
 				HTTPUrl:           httpUrl,
 				DBSystem:          dbSystem,
 				DBStatement:       dbStmt,
-				ResourceAttributes: map[string]string{
-					"service.version":    fmt.Sprintf("1.%d.0", rng.Intn(10)),
-					"telemetry.sdk.name": "opentelemetry",
+				ResourceAttrs:     resAttrs,
+				SpanAttrs:         spanAttrs,
+				ScopeAttrs: map[string]string{
+					"otel.scope.name":    "github.com/reliablyobserve/instrumentation",
+					"otel.scope.version": "0.5.0",
 				},
-				SpanAttributes:  map[string]string{},
-				ScopeAttributes: map[string]string{},
 			}
-
-			key := partitionKeyBatch(tenantPrefix, "traces", startTime, batchID)
-			tracesByPartition[key] = append(tracesByPartition[key], row)
+			allTraces = append(allTraces, row)
 			parentSpanID = spanID
 		}
 		traceContexts = append(traceContexts, tc)
 	}
 
-	for key, rows := range tracesByPartition {
-		data, err := writeTracesParquet(rows)
-		if err != nil {
-			log.Printf("ERROR write traces parquet: %v", err)
-			return
-		}
-		if err := upload(ctx, client, bucket, key, data); err != nil {
-			log.Printf("ERROR upload %s: %v", key, err)
-			return
-		}
-		log.Printf("  uploaded %s (%d rows, %d bytes)", key, len(rows), len(data))
-	}
-
-	if dualWrite && vtEndpoint != "" {
-		var allTraces []TraceRow
-		for _, rows := range tracesByPartition {
-			allTraces = append(allTraces, rows...)
-		}
-		if err := pushOTLPTraces(vtEndpoint, allTraces); err != nil {
-			log.Printf("WARNING: dual-write to VT failed: %v", err)
+	// Push traces to all configured endpoints
+	if vtEndpoint != "" {
+		if err := pushOTLPTraces(vtEndpoint, allTraces, accountID, projectID); err != nil {
+			log.Printf("WARNING: push traces to VT hot failed: %v", err)
 		} else {
-			log.Printf("  dual-write: pushed %d traces to VT at %s", len(allTraces), vtEndpoint)
+			log.Printf("  pushed %d traces to VT hot at %s", len(allTraces), vtEndpoint)
+		}
+	}
+	if lhTracesEndpoint != "" {
+		if err := pushOTLPTraces(lhTracesEndpoint, allTraces, accountID, projectID); err != nil {
+			log.Printf("WARNING: push traces to LH cold failed: %v", err)
+		} else {
+			log.Printf("  pushed %d traces to LH cold at %s", len(allTraces), lhTracesEndpoint)
 		}
 	}
 
 	// ── Phase 2: Generate logs — 70% correlated to traces, 30% independent ──
 
-	logsByPartition := make(map[string][]LogRow)
+	var allLogs []logRow
 	correlatedCount := 0
 	for i := 0; i < logsCount; i++ {
 		var traceID, spanID, svc, ns, env, region, node, host string
@@ -285,7 +358,7 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket, tenantPrefix 
 		body, logAttrs := pattern(rng, ts, svc, lvl)
 		body = fmt.Sprintf("%s trace_id=%s span_id=%s", body, traceID, spanID)
 
-		row := LogRow{
+		row := logRow{
 			TimestampUnixNano: ts.UnixNano(),
 			Body:              body,
 			SeverityText:      lvl,
@@ -300,99 +373,52 @@ func generateBatch(ctx context.Context, client *s3.Client, bucket, tenantPrefix 
 			HostName:          host,
 			TraceID:           traceID,
 			SpanID:            spanID,
-			Stream:            fmt.Sprintf("{service.name=%q,k8s.namespace.name=%q,k8s.deployment.name=%q,deployment.environment=%q,cloud.region=%q}", svc, ns, svc, env, region),
-			StreamID:          randomHex(16),
 			ScopeName:         "github.com/reliablyobserve/instrumentation",
-			ResourceAttributes: map[string]string{
-				"service.version":    fmt.Sprintf("1.%d.0", rng.Intn(10)),
-				"telemetry.sdk.name": "opentelemetry",
+			ResourceAttrs: map[string]string{
+				"service.name":           svc,
+				"service.version":        fmt.Sprintf("1.%d.0", rng.Intn(10)),
+				"service.instance.id":    fmt.Sprintf("%s-%s", svc, randomHex(8)),
+				"telemetry.sdk.name":     "opentelemetry",
+				"telemetry.sdk.language": "go",
+				"telemetry.sdk.version":  "1.28.0",
+				"deployment.environment": env,
+				"cloud.region":           region,
+				"cloud.provider":         "aws",
+				"cloud.account.id":       "123456789012",
+				"host.name":             host,
+				"host.arch":             "amd64",
+				"os.type":               "linux",
+				"process.runtime.name":  "go",
+				"process.runtime.version": "1.22.4",
+				"container.id":          randomHex(64),
+				"k8s.namespace.name":    ns,
+				"k8s.deployment.name":   svc,
+				"k8s.node.name":         node,
+				"k8s.pod.name":          fmt.Sprintf("%s-%s", svc, randomHex(10)),
+				"k8s.cluster.name":      "prod-" + region,
 			},
-			LogAttributes: logAttrs,
+			LogAttrs: logAttrs,
 		}
-
-		key := partitionKeyBatch(tenantPrefix, "logs", ts, batchID)
-		logsByPartition[key] = append(logsByPartition[key], row)
+		allLogs = append(allLogs, row)
 	}
 
-	for key, rows := range logsByPartition {
-		data, err := writeLogsParquet(rows)
-		if err != nil {
-			log.Printf("ERROR write logs parquet: %v", err)
-			return
-		}
-		if err := upload(ctx, client, bucket, key, data); err != nil {
-			log.Printf("ERROR upload %s: %v", key, err)
-			return
-		}
-		log.Printf("  uploaded %s (%d rows, %d bytes)", key, len(rows), len(data))
-	}
-
-	if dualWrite && vlEndpoint != "" {
-		var allLogs []LogRow
-		for _, rows := range logsByPartition {
-			allLogs = append(allLogs, rows...)
-		}
-		if err := pushNDJSON(vlEndpoint, allLogs); err != nil {
-			log.Printf("WARNING: dual-write to VL failed: %v", err)
+	// Push logs to all configured endpoints
+	if vlEndpoint != "" {
+		if err := pushNDJSON(vlEndpoint, allLogs, accountID, projectID); err != nil {
+			log.Printf("WARNING: push logs to VL hot failed: %v", err)
 		} else {
-			log.Printf("  dual-write: pushed %d logs to VL at %s", len(allLogs), vlEndpoint)
+			log.Printf("  pushed %d logs to VL hot at %s", len(allLogs), vlEndpoint)
+		}
+	}
+	if lhLogsEndpoint != "" {
+		if err := pushNDJSON(lhLogsEndpoint, allLogs, accountID, projectID); err != nil {
+			log.Printf("WARNING: push logs to LH cold failed: %v", err)
+		} else {
+			log.Printf("  pushed %d logs to LH cold at %s", len(allLogs), lhLogsEndpoint)
 		}
 	}
 
-	totalLogs := 0
-	for _, rows := range logsByPartition {
-		totalLogs += len(rows)
-	}
-	totalTraces := 0
-	for _, rows := range tracesByPartition {
-		totalTraces += len(rows)
-	}
-
-	log.Printf("Batch done: %d log rows (%d correlated) in %d partitions, %d trace spans in %d partitions",
-		totalLogs, correlatedCount, len(logsByPartition), totalTraces, len(tracesByPartition))
-}
-
-func partitionKeyBatch(prefix, signal string, ts time.Time, batchID string) string {
-	return fmt.Sprintf("%s%s/dt=%s/hour=%02d/%s.parquet",
-		prefix, signal, ts.Format("2006-01-02"), ts.Hour(), batchID)
-}
-
-func writeLogsParquet(rows []LogRow) ([]byte, error) {
-	var buf bytes.Buffer
-	writer := parquet.NewGenericWriter[LogRow](&buf,
-		parquet.Compression(&parquet.Zstd),
-	)
-	if _, err := writer.Write(rows); err != nil {
-		return nil, err
-	}
-	if err := writer.Close(); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-func writeTracesParquet(rows []TraceRow) ([]byte, error) {
-	var buf bytes.Buffer
-	writer := parquet.NewGenericWriter[TraceRow](&buf,
-		parquet.Compression(&parquet.Zstd),
-	)
-	if _, err := writer.Write(rows); err != nil {
-		return nil, err
-	}
-	if err := writer.Close(); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-func upload(ctx context.Context, client *s3.Client, bucket, key string, data []byte) error {
-	_, err := client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(bucket),
-		Key:         aws.String(key),
-		Body:        bytes.NewReader(data),
-		ContentType: aws.String("application/octet-stream"),
-	})
-	return err
+	log.Printf("Batch done: %d logs (%d correlated), %d trace spans", len(allLogs), correlatedCount, len(allTraces))
 }
 
 func randomHex(length int) string {
@@ -404,7 +430,64 @@ func randomHex(length int) string {
 	return fmt.Sprintf("%x", b)
 }
 
-func pushOTLPTraces(endpoint string, rows []TraceRow) error {
+
+func pushNDJSON(endpoint string, rows []logRow, accountID, projectID string) error {
+	var buf bytes.Buffer
+	for _, r := range rows {
+		line := map[string]any{
+			"_time":                  time.Unix(0, r.TimestampUnixNano).Format(time.RFC3339Nano),
+			"_msg":                   r.Body,
+			"level":                  r.SeverityText,
+			"severity_number":        r.SeverityNumber,
+			"service.name":           r.ServiceName,
+			"k8s.namespace.name":     r.K8sNamespaceName,
+			"k8s.pod.name":           r.K8sPodName,
+			"k8s.deployment.name":    r.K8sDeploymentName,
+			"k8s.node.name":          r.K8sNodeName,
+			"deployment.environment": r.DeployEnv,
+			"cloud.region":           r.CloudRegion,
+			"host.name":              r.HostName,
+			"trace_id":               r.TraceID,
+			"span_id":                r.SpanID,
+			"scope.name":             r.ScopeName,
+		}
+		for k, v := range r.ResourceAttrs {
+			if _, exists := line[k]; !exists {
+				line[k] = v
+			}
+		}
+		for k, v := range r.LogAttrs {
+			if _, exists := line[k]; !exists {
+				line[k] = v
+			}
+		}
+		enc, _ := json.Marshal(line)
+		buf.Write(enc)
+		buf.WriteByte('\n')
+	}
+
+	url := endpoint + "/insert/jsonline?_stream_fields=service.name,k8s.namespace.name,k8s.deployment.name,deployment.environment,cloud.region,host.name,k8s.node.name,k8s.pod.name,level"
+	req, err := http.NewRequest("POST", url, &buf)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-ndjson")
+	req.Header.Set("AccountID", accountID)
+	req.Header.Set("ProjectID", projectID)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("push to %s: %w", endpoint, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("push to %s: status %d: %s", endpoint, resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+func pushOTLPTraces(endpoint string, rows []traceRow, accountID, projectID string) error {
 	type otlpKV struct {
 		Key   string      `json:"key"`
 		Value interface{} `json:"value"`
@@ -441,11 +524,8 @@ func pushOTLPTraces(endpoint string, rows []TraceRow) error {
 	strVal := func(s string) interface{} {
 		return map[string]interface{}{"stringValue": s}
 	}
-	intVal := func(n int64) interface{} {
-		return map[string]interface{}{"intValue": fmt.Sprintf("%d", n)}
-	}
 
-	byService := map[string][]TraceRow{}
+	byService := map[string][]traceRow{}
 	for _, r := range rows {
 		byService[r.ServiceName] = append(byService[r.ServiceName], r)
 	}
@@ -453,38 +533,23 @@ func pushOTLPTraces(endpoint string, rows []TraceRow) error {
 	var resourceSpans []otlpResourceSpans
 	for svc, svcRows := range byService {
 		r0 := svcRows[0]
-		resAttrs := []otlpKV{
-			{"service.name", strVal(svc)},
-			{"deployment.environment", strVal(r0.DeployEnv)},
-			{"cloud.region", strVal(r0.CloudRegion)},
-			{"host.name", strVal(r0.HostName)},
-			{"k8s.namespace.name", strVal(r0.K8sNamespaceName)},
-			{"k8s.deployment.name", strVal(r0.K8sDeploymentName)},
-			{"k8s.node.name", strVal(r0.K8sNodeName)},
+
+		var resAttrs []otlpKV
+		for k, v := range r0.ResourceAttrs {
+			resAttrs = append(resAttrs, otlpKV{k, strVal(v)})
+		}
+		if _, ok := r0.ResourceAttrs["service.name"]; !ok {
+			resAttrs = append(resAttrs, otlpKV{"service.name", strVal(svc)})
 		}
 
 		var spans []otlpSpan
 		for _, r := range svcRows {
-			spanAttrs := []otlpKV{}
-			if r.HTTPMethod != "" {
-				spanAttrs = append(spanAttrs, otlpKV{"http.method", strVal(r.HTTPMethod)})
+			var spanAttrs []otlpKV
+			for k, v := range r.SpanAttrs {
+				spanAttrs = append(spanAttrs, otlpKV{k, strVal(v)})
 			}
-			if r.HTTPStatusCode != "" {
-				spanAttrs = append(spanAttrs, otlpKV{"http.status_code", strVal(r.HTTPStatusCode)})
-			}
-			if r.HTTPUrl != "" {
-				spanAttrs = append(spanAttrs, otlpKV{"http.url", strVal(r.HTTPUrl)})
-			}
-			if r.DBSystem != "" {
-				spanAttrs = append(spanAttrs, otlpKV{"db.system", strVal(r.DBSystem)})
-			}
-			if r.DBStatement != "" {
-				spanAttrs = append(spanAttrs, otlpKV{"db.statement", strVal(r.DBStatement)})
-			}
-			spanAttrs = append(spanAttrs, otlpKV{"service.version", strVal("1." + fmt.Sprintf("%d", mrand.Intn(5)) + ".0")}) // #nosec G404 -- synthetic test data
 
 			endTimeNano := r.StartTimeUnixNano + r.DurationNs
-
 			span := otlpSpan{
 				TraceID:           r.TraceID,
 				SpanID:            r.SpanID,
@@ -503,8 +568,6 @@ func pushOTLPTraces(endpoint string, rows []TraceRow) error {
 			spans = append(spans, span)
 		}
 
-		_ = intVal // suppress unused if not needed
-
 		rs := otlpResourceSpans{}
 		rs.Resource.Attributes = resAttrs
 		rs.ScopeSpans = []otlpScopeSpans{{
@@ -522,49 +585,22 @@ func pushOTLPTraces(endpoint string, rows []TraceRow) error {
 		return fmt.Errorf("marshal otlp: %w", err)
 	}
 
-	resp, err := http.Post(endpoint+"/insert/opentelemetry/v1/traces", "application/json", bytes.NewReader(data))
+	req, err := http.NewRequest("POST", endpoint+"/insert/opentelemetry/v1/traces", bytes.NewReader(data))
 	if err != nil {
-		return fmt.Errorf("push to VT: %w", err)
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("AccountID", accountID)
+	req.Header.Set("ProjectID", projectID)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("push to %s: %w", endpoint, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("push to VT: status %d: %s", resp.StatusCode, string(body))
-	}
-	return nil
-}
-
-func pushNDJSON(endpoint string, rows []LogRow) error {
-	var buf bytes.Buffer
-	for _, r := range rows {
-		line := map[string]any{
-			"_time":                  time.Unix(0, r.TimestampUnixNano).Format(time.RFC3339Nano),
-			"_msg":                   r.Body,
-			"level":                  r.SeverityText,
-			"service.name":           r.ServiceName,
-			"k8s.namespace.name":     r.K8sNamespaceName,
-			"k8s.pod.name":           r.K8sPodName,
-			"k8s.deployment.name":    r.K8sDeploymentName,
-			"k8s.node.name":          r.K8sNodeName,
-			"deployment.environment": r.DeployEnv,
-			"cloud.region":           r.CloudRegion,
-			"host.name":              r.HostName,
-			"trace_id":               r.TraceID,
-			"span_id":                r.SpanID,
-		}
-		enc, _ := json.Marshal(line)
-		buf.Write(enc)
-		buf.WriteByte('\n')
-	}
-
-	resp, err := http.Post(endpoint+"/insert/jsonline?_stream_fields=service.name,k8s.namespace.name,k8s.deployment.name,deployment.environment,cloud.region,host.name,k8s.node.name,k8s.pod.name,level", "application/x-ndjson", &buf)
-	if err != nil {
-		return fmt.Errorf("push to VL: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("push to VL: status %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("push to %s: status %d: %s", endpoint, resp.StatusCode, string(body))
 	}
 	return nil
 }

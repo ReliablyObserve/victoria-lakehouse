@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	otelpb "github.com/VictoriaMetrics/VictoriaTraces/lib/protoparser/opentelemetry/pb"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
@@ -29,9 +30,9 @@ func makeLogRows(t *testing.T, fields ...logstorage.Field) *logstorage.LogRows {
 	return lr
 }
 
-func TestInsertAdapter_MustAddRows_BasicFields(t *testing.T) {
+func TestVTInsertAdapter_Legacy_MustAddRows_BasicFields(t *testing.T) {
 	w := &mockTraceWriter{}
-	a := &insertAdapter{writer: w}
+	a := &vtInsertAdapter{writer: w}
 
 	lr := makeLogRows(t,
 		logstorage.Field{Name: "trace_id", Value: "abc123"},
@@ -64,9 +65,9 @@ func TestInsertAdapter_MustAddRows_BasicFields(t *testing.T) {
 	}
 }
 
-func TestInsertAdapter_MustAddRows_AllPromotedFields(t *testing.T) {
+func TestVTInsertAdapter_Legacy_MustAddRows_AllPromotedFields(t *testing.T) {
 	w := &mockTraceWriter{}
-	a := &insertAdapter{writer: w}
+	a := &vtInsertAdapter{writer: w}
 
 	lr := makeLogRows(t,
 		logstorage.Field{Name: "trace_id", Value: "t1"},
@@ -147,9 +148,9 @@ func TestInsertAdapter_MustAddRows_AllPromotedFields(t *testing.T) {
 	}
 }
 
-func TestInsertAdapter_MustAddRows_UnpromotedGoToSpanAttributes(t *testing.T) {
+func TestVTInsertAdapter_Legacy_MustAddRows_UnpromotedGoToSpanAttributes(t *testing.T) {
 	w := &mockTraceWriter{}
-	a := &insertAdapter{writer: w}
+	a := &vtInsertAdapter{writer: w}
 
 	lr := makeLogRows(t,
 		logstorage.Field{Name: "trace_id", Value: "t1"},
@@ -176,9 +177,9 @@ func TestInsertAdapter_MustAddRows_UnpromotedGoToSpanAttributes(t *testing.T) {
 	}
 }
 
-func TestInsertAdapter_MustAddRows_EmptyRows(t *testing.T) {
+func TestVTInsertAdapter_Legacy_MustAddRows_EmptyRows(t *testing.T) {
 	w := &mockTraceWriter{}
-	a := &insertAdapter{writer: w}
+	a := &vtInsertAdapter{writer: w}
 
 	lr := logstorage.GetLogRows(nil, nil, nil, nil, "")
 	defer logstorage.PutLogRows(lr)
@@ -190,9 +191,9 @@ func TestInsertAdapter_MustAddRows_EmptyRows(t *testing.T) {
 	}
 }
 
-func TestInsertAdapter_MustAddRows_MultipleRows(t *testing.T) {
+func TestVTInsertAdapter_Legacy_MustAddRows_MultipleRows(t *testing.T) {
 	w := &mockTraceWriter{}
-	a := &insertAdapter{writer: w}
+	a := &vtInsertAdapter{writer: w}
 
 	lr := logstorage.GetLogRows(nil, nil, nil, nil, "")
 	for i := 0; i < 100; i++ {
@@ -208,9 +209,9 @@ func TestInsertAdapter_MustAddRows_MultipleRows(t *testing.T) {
 	}
 }
 
-func TestInsertAdapter_MustAddRows_StreamPreserved(t *testing.T) {
+func TestVTInsertAdapter_Legacy_MustAddRows_StreamPreserved(t *testing.T) {
 	w := &mockTraceWriter{}
-	a := &insertAdapter{writer: w}
+	a := &vtInsertAdapter{writer: w}
 
 	streamFields := []string{"service.name", "k8s.namespace.name"}
 	lr := logstorage.GetLogRows(streamFields, nil, nil, nil, "")
@@ -236,15 +237,15 @@ func TestInsertAdapter_MustAddRows_StreamPreserved(t *testing.T) {
 	}
 }
 
-func TestInsertAdapter_CanWriteData_Healthy(t *testing.T) {
-	a := &insertAdapter{writer: &mockTraceWriter{}}
+func TestVTInsertAdapter_Legacy_CanWriteData_Healthy(t *testing.T) {
+	a := &vtInsertAdapter{writer: &mockTraceWriter{}}
 	if err := a.CanWriteData(); err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}
 }
 
-func TestInsertAdapter_CanWriteData_Unhealthy(t *testing.T) {
-	a := &insertAdapter{writer: &mockTraceWriter{writeErr: errors.New("s3 unavailable")}}
+func TestVTInsertAdapter_Legacy_CanWriteData_Unhealthy(t *testing.T) {
+	a := &vtInsertAdapter{writer: &mockTraceWriter{writeErr: errors.New("s3 unavailable")}}
 	err := a.CanWriteData()
 	if err == nil {
 		t.Error("expected error, got nil")
@@ -254,9 +255,9 @@ func TestInsertAdapter_CanWriteData_Unhealthy(t *testing.T) {
 	}
 }
 
-func TestInsertAdapter_MustAddRows_SpanNameFromEmptyField(t *testing.T) {
+func TestVTInsertAdapter_Legacy_MustAddRows_EmptyFieldIgnored(t *testing.T) {
 	w := &mockTraceWriter{}
-	a := &insertAdapter{writer: w}
+	a := &vtInsertAdapter{writer: w}
 
 	lr := makeLogRows(t,
 		logstorage.Field{Name: "", Value: "GET /health"},
@@ -268,14 +269,14 @@ func TestInsertAdapter_MustAddRows_SpanNameFromEmptyField(t *testing.T) {
 	if len(w.rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(w.rows))
 	}
-	if w.rows[0].SpanName != "GET /health" {
-		t.Errorf("SpanName = %q, want %q", w.rows[0].SpanName, "GET /health")
+	if w.rows[0].SpanName != "" {
+		t.Errorf("SpanName = %q, want empty (field name '' is ignored)", w.rows[0].SpanName)
 	}
 }
 
-func TestInsertAdapter_MustAddRows_NumericParsingErrors(t *testing.T) {
+func TestVTInsertAdapter_Legacy_MustAddRows_NumericParsingErrors(t *testing.T) {
 	w := &mockTraceWriter{}
-	a := &insertAdapter{writer: w}
+	a := &vtInsertAdapter{writer: w}
 
 	lr := makeLogRows(t,
 		logstorage.Field{Name: "duration_ns", Value: "not-a-number"},
@@ -389,6 +390,355 @@ func TestMapFieldToTraceRow_AllCases(t *testing.T) {
 	}
 	if row.SpanAttributes["custom_attr"] != "custom_val" {
 		t.Errorf("custom_attr = %q, want %q", row.SpanAttributes["custom_attr"], "custom_val")
+	}
+}
+
+// --- VT OTLP path tests (vtInsertAdapter with prefixed field names) ---
+
+func TestVTInsertAdapter_MustAddRows_OTLPFields(t *testing.T) {
+	w := &mockTraceWriter{}
+	a := &vtInsertAdapter{writer: w}
+
+	lr := makeLogRows(t,
+		logstorage.Field{Name: otelpb.TraceIDField, Value: "abc123"},
+		logstorage.Field{Name: otelpb.SpanIDField, Value: "span456"},
+		logstorage.Field{Name: otelpb.ParentSpanIDField, Value: "parent789"},
+		logstorage.Field{Name: otelpb.NameField, Value: "HTTP GET /users"},
+		logstorage.Field{Name: otelpb.KindField, Value: "2"},
+		logstorage.Field{Name: otelpb.DurationField, Value: "15000000"},
+		logstorage.Field{Name: otelpb.StartTimeUnixNanoField, Value: "1700000000000000000"},
+		logstorage.Field{Name: otelpb.EndTimeUnixNanoField, Value: "1700000015000000000"},
+		logstorage.Field{Name: otelpb.StatusCodeField, Value: "1"},
+		logstorage.Field{Name: otelpb.StatusMessageField, Value: "OK"},
+		logstorage.Field{Name: otelpb.InstrumentationScopeName, Value: "my-instrumentation"},
+	)
+	defer logstorage.PutLogRows(lr)
+
+	a.MustAddRows(lr)
+
+	if len(w.rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(w.rows))
+	}
+	row := w.rows[0]
+
+	checks := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"TraceID", row.TraceID, "abc123"},
+		{"SpanID", row.SpanID, "span456"},
+		{"ParentSpanID", row.ParentSpanID, "parent789"},
+		{"SpanName", row.SpanName, "HTTP GET /users"},
+		{"StatusMessage", row.StatusMessage, "OK"},
+		{"ScopeName", row.ScopeName, "my-instrumentation"},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s = %q, want %q", c.name, c.got, c.want)
+		}
+	}
+	if row.SpanKind != 2 {
+		t.Errorf("SpanKind = %d, want 2", row.SpanKind)
+	}
+	if row.DurationNs != 15_000_000 {
+		t.Errorf("DurationNs = %d, want 15000000", row.DurationNs)
+	}
+	if row.StartTimeUnixNano != 1_700_000_000_000_000_000 {
+		t.Errorf("StartTimeUnixNano = %d, want 1700000000000000000", row.StartTimeUnixNano)
+	}
+	if row.StatusCode != 1 {
+		t.Errorf("StatusCode = %d, want 1", row.StatusCode)
+	}
+}
+
+func TestVTInsertAdapter_MustAddRows_ResourceAttrs(t *testing.T) {
+	w := &mockTraceWriter{}
+	a := &vtInsertAdapter{writer: w}
+
+	lr := makeLogRows(t,
+		logstorage.Field{Name: otelpb.TraceIDField, Value: "t1"},
+		logstorage.Field{Name: otelpb.NameField, Value: "op"},
+		logstorage.Field{Name: otelpb.ResourceAttrPrefix + "service.name", Value: "payment-svc"},
+		logstorage.Field{Name: otelpb.ResourceAttrPrefix + "k8s.namespace.name", Value: "production"},
+		logstorage.Field{Name: otelpb.ResourceAttrPrefix + "k8s.pod.name", Value: "payment-abc123"},
+		logstorage.Field{Name: otelpb.ResourceAttrPrefix + "k8s.deployment.name", Value: "payment"},
+		logstorage.Field{Name: otelpb.ResourceAttrPrefix + "k8s.node.name", Value: "node-pool-a-1"},
+		logstorage.Field{Name: otelpb.ResourceAttrPrefix + "deployment.environment", Value: "production"},
+		logstorage.Field{Name: otelpb.ResourceAttrPrefix + "cloud.region", Value: "us-east-1"},
+		logstorage.Field{Name: otelpb.ResourceAttrPrefix + "host.name", Value: "ip-10-0-1-42"},
+		logstorage.Field{Name: otelpb.ResourceAttrPrefix + "custom.resource", Value: "custom-val"},
+	)
+	defer logstorage.PutLogRows(lr)
+
+	a.MustAddRows(lr)
+
+	if len(w.rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(w.rows))
+	}
+	row := w.rows[0]
+
+	checks := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"ServiceName", row.ServiceName, "payment-svc"},
+		{"K8sNamespaceName", row.K8sNamespaceName, "production"},
+		{"K8sPodName", row.K8sPodName, "payment-abc123"},
+		{"K8sDeploymentName", row.K8sDeploymentName, "payment"},
+		{"K8sNodeName", row.K8sNodeName, "node-pool-a-1"},
+		{"DeployEnv", row.DeployEnv, "production"},
+		{"CloudRegion", row.CloudRegion, "us-east-1"},
+		{"HostName", row.HostName, "ip-10-0-1-42"},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s = %q, want %q", c.name, c.got, c.want)
+		}
+	}
+
+	if row.ResourceAttributes == nil {
+		t.Fatal("ResourceAttributes should not be nil")
+	}
+	if row.ResourceAttributes["custom.resource"] != "custom-val" {
+		t.Errorf("ResourceAttributes[custom.resource] = %q, want %q",
+			row.ResourceAttributes["custom.resource"], "custom-val")
+	}
+}
+
+func TestVTInsertAdapter_MustAddRows_SpanAttrs(t *testing.T) {
+	w := &mockTraceWriter{}
+	a := &vtInsertAdapter{writer: w}
+
+	lr := makeLogRows(t,
+		logstorage.Field{Name: otelpb.TraceIDField, Value: "t1"},
+		logstorage.Field{Name: otelpb.SpanAttrPrefixField + "http.method", Value: "POST"},
+		logstorage.Field{Name: otelpb.SpanAttrPrefixField + "http.status_code", Value: "201"},
+		logstorage.Field{Name: otelpb.SpanAttrPrefixField + "http.url", Value: "https://api.example.com/orders"},
+		logstorage.Field{Name: otelpb.SpanAttrPrefixField + "db.system", Value: "redis"},
+		logstorage.Field{Name: otelpb.SpanAttrPrefixField + "db.statement", Value: "GET session:abc"},
+		logstorage.Field{Name: otelpb.SpanAttrPrefixField + "rpc.system", Value: "grpc"},
+	)
+	defer logstorage.PutLogRows(lr)
+
+	a.MustAddRows(lr)
+
+	if len(w.rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(w.rows))
+	}
+	row := w.rows[0]
+
+	checks := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"HTTPMethod", row.HTTPMethod, "POST"},
+		{"HTTPStatusCode", row.HTTPStatusCode, "201"},
+		{"HTTPUrl", row.HTTPUrl, "https://api.example.com/orders"},
+		{"DBSystem", row.DBSystem, "redis"},
+		{"DBStatement", row.DBStatement, "GET session:abc"},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s = %q, want %q", c.name, c.got, c.want)
+		}
+	}
+
+	if row.SpanAttributes == nil {
+		t.Fatal("SpanAttributes should not be nil")
+	}
+	if row.SpanAttributes["rpc.system"] != "grpc" {
+		t.Errorf("SpanAttributes[rpc.system] = %q, want %q",
+			row.SpanAttributes["rpc.system"], "grpc")
+	}
+}
+
+func TestVTInsertAdapter_MustAddRows_IgnoredFields(t *testing.T) {
+	w := &mockTraceWriter{}
+	a := &vtInsertAdapter{writer: w}
+
+	lr := makeLogRows(t,
+		logstorage.Field{Name: otelpb.TraceIDField, Value: "t1"},
+		logstorage.Field{Name: otelpb.EndTimeUnixNanoField, Value: "99999"},
+		logstorage.Field{Name: otelpb.InstrumentationScopeVersion, Value: "1.0"},
+		logstorage.Field{Name: otelpb.TraceStateField, Value: "congo=t"},
+		logstorage.Field{Name: otelpb.FlagsField, Value: "1"},
+		logstorage.Field{Name: otelpb.DroppedAttributesCountField, Value: "0"},
+		logstorage.Field{Name: otelpb.DroppedEventsCountField, Value: "0"},
+		logstorage.Field{Name: otelpb.DroppedLinksCountField, Value: "0"},
+		logstorage.Field{Name: otelpb.InstrumentationScopeAttrPrefix + "key", Value: "val"},
+		logstorage.Field{Name: otelpb.EventPrefix + "0.name", Value: "exception"},
+		logstorage.Field{Name: otelpb.LinkPrefix + "0.trace_id", Value: "linked"},
+		logstorage.Field{Name: "_msg", Value: "-"},
+	)
+	defer logstorage.PutLogRows(lr)
+
+	a.MustAddRows(lr)
+
+	if len(w.rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(w.rows))
+	}
+	row := w.rows[0]
+
+	if row.TraceID != "t1" {
+		t.Errorf("TraceID = %q, want %q", row.TraceID, "t1")
+	}
+	if len(row.SpanAttributes) != 0 {
+		t.Errorf("SpanAttributes should be empty for ignored fields, got %v", row.SpanAttributes)
+	}
+	if len(row.ResourceAttributes) != 0 {
+		t.Errorf("ResourceAttributes should be empty for ignored fields, got %v", row.ResourceAttributes)
+	}
+}
+
+func TestVTInsertAdapter_IsLocalStorage(t *testing.T) {
+	a := &vtInsertAdapter{writer: &mockTraceWriter{}}
+	if !a.IsLocalStorage() {
+		t.Error("IsLocalStorage() should return true")
+	}
+}
+
+func TestVTInsertAdapter_CanWriteData(t *testing.T) {
+	t.Run("healthy", func(t *testing.T) {
+		a := &vtInsertAdapter{writer: &mockTraceWriter{}}
+		if err := a.CanWriteData(); err != nil {
+			t.Errorf("expected nil, got %v", err)
+		}
+	})
+	t.Run("unhealthy", func(t *testing.T) {
+		a := &vtInsertAdapter{writer: &mockTraceWriter{writeErr: errors.New("disk full")}}
+		if err := a.CanWriteData(); err == nil {
+			t.Error("expected error, got nil")
+		}
+	})
+}
+
+func TestVTInsertAdapter_MustAddRows_FullOTLPSpan(t *testing.T) {
+	w := &mockTraceWriter{}
+	a := &vtInsertAdapter{writer: w}
+
+	lr := makeLogRows(t,
+		logstorage.Field{Name: otelpb.TraceIDField, Value: "aabbccdd11223344"},
+		logstorage.Field{Name: otelpb.SpanIDField, Value: "1122334455"},
+		logstorage.Field{Name: otelpb.ParentSpanIDField, Value: "0011223344"},
+		logstorage.Field{Name: otelpb.NameField, Value: "gRPC /payment.Process"},
+		logstorage.Field{Name: otelpb.KindField, Value: "3"},
+		logstorage.Field{Name: otelpb.DurationField, Value: "250000000"},
+		logstorage.Field{Name: otelpb.StartTimeUnixNanoField, Value: "1700000000000000000"},
+		logstorage.Field{Name: otelpb.EndTimeUnixNanoField, Value: "1700000250000000000"},
+		logstorage.Field{Name: otelpb.StatusCodeField, Value: "2"},
+		logstorage.Field{Name: otelpb.StatusMessageField, Value: "internal error"},
+		logstorage.Field{Name: otelpb.InstrumentationScopeName, Value: "payment-instrumentation"},
+		logstorage.Field{Name: otelpb.ResourceAttrPrefix + "service.name", Value: "payment-service"},
+		logstorage.Field{Name: otelpb.ResourceAttrPrefix + "deployment.environment", Value: "production"},
+		logstorage.Field{Name: otelpb.ResourceAttrPrefix + "cloud.region", Value: "eu-west-1"},
+		logstorage.Field{Name: otelpb.ResourceAttrPrefix + "host.name", Value: "ip-10-0-3-88"},
+		logstorage.Field{Name: otelpb.ResourceAttrPrefix + "k8s.namespace.name", Value: "production"},
+		logstorage.Field{Name: otelpb.ResourceAttrPrefix + "k8s.pod.name", Value: "payment-xyz789"},
+		logstorage.Field{Name: otelpb.ResourceAttrPrefix + "k8s.deployment.name", Value: "payment"},
+		logstorage.Field{Name: otelpb.ResourceAttrPrefix + "k8s.node.name", Value: "node-pool-b-1"},
+		logstorage.Field{Name: otelpb.SpanAttrPrefixField + "http.method", Value: "POST"},
+		logstorage.Field{Name: otelpb.SpanAttrPrefixField + "http.status_code", Value: "500"},
+		logstorage.Field{Name: otelpb.SpanAttrPrefixField + "http.url", Value: "https://payment.internal/process"},
+		logstorage.Field{Name: otelpb.SpanAttrPrefixField + "rpc.system", Value: "grpc"},
+		logstorage.Field{Name: otelpb.SpanAttrPrefixField + "rpc.method", Value: "Process"},
+	)
+	defer logstorage.PutLogRows(lr)
+
+	a.MustAddRows(lr)
+
+	if len(w.rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(w.rows))
+	}
+	row := w.rows[0]
+
+	if row.TraceID != "aabbccdd11223344" {
+		t.Errorf("TraceID = %q", row.TraceID)
+	}
+	if row.SpanID != "1122334455" {
+		t.Errorf("SpanID = %q", row.SpanID)
+	}
+	if row.ParentSpanID != "0011223344" {
+		t.Errorf("ParentSpanID = %q", row.ParentSpanID)
+	}
+	if row.SpanName != "gRPC /payment.Process" {
+		t.Errorf("SpanName = %q", row.SpanName)
+	}
+	if row.SpanKind != 3 {
+		t.Errorf("SpanKind = %d", row.SpanKind)
+	}
+	if row.DurationNs != 250_000_000 {
+		t.Errorf("DurationNs = %d", row.DurationNs)
+	}
+	if row.StartTimeUnixNano != 1_700_000_000_000_000_000 {
+		t.Errorf("StartTimeUnixNano = %d", row.StartTimeUnixNano)
+	}
+	if row.StatusCode != 2 {
+		t.Errorf("StatusCode = %d", row.StatusCode)
+	}
+	if row.StatusMessage != "internal error" {
+		t.Errorf("StatusMessage = %q", row.StatusMessage)
+	}
+	if row.ScopeName != "payment-instrumentation" {
+		t.Errorf("ScopeName = %q", row.ScopeName)
+	}
+	if row.ServiceName != "payment-service" {
+		t.Errorf("ServiceName = %q", row.ServiceName)
+	}
+	if row.DeployEnv != "production" {
+		t.Errorf("DeployEnv = %q", row.DeployEnv)
+	}
+	if row.CloudRegion != "eu-west-1" {
+		t.Errorf("CloudRegion = %q", row.CloudRegion)
+	}
+	if row.HostName != "ip-10-0-3-88" {
+		t.Errorf("HostName = %q", row.HostName)
+	}
+	if row.K8sNamespaceName != "production" {
+		t.Errorf("K8sNamespaceName = %q", row.K8sNamespaceName)
+	}
+	if row.K8sPodName != "payment-xyz789" {
+		t.Errorf("K8sPodName = %q", row.K8sPodName)
+	}
+	if row.K8sDeploymentName != "payment" {
+		t.Errorf("K8sDeploymentName = %q", row.K8sDeploymentName)
+	}
+	if row.K8sNodeName != "node-pool-b-1" {
+		t.Errorf("K8sNodeName = %q", row.K8sNodeName)
+	}
+	if row.HTTPMethod != "POST" {
+		t.Errorf("HTTPMethod = %q", row.HTTPMethod)
+	}
+	if row.HTTPStatusCode != "500" {
+		t.Errorf("HTTPStatusCode = %q", row.HTTPStatusCode)
+	}
+	if row.HTTPUrl != "https://payment.internal/process" {
+		t.Errorf("HTTPUrl = %q", row.HTTPUrl)
+	}
+	if row.SpanAttributes == nil {
+		t.Fatal("SpanAttributes should not be nil")
+	}
+	if row.SpanAttributes["rpc.system"] != "grpc" {
+		t.Errorf("SpanAttributes[rpc.system] = %q", row.SpanAttributes["rpc.system"])
+	}
+	if row.SpanAttributes["rpc.method"] != "Process" {
+		t.Errorf("SpanAttributes[rpc.method] = %q", row.SpanAttributes["rpc.method"])
+	}
+}
+
+func TestVTInsertAdapter_MustAddRows_EmptyRows(t *testing.T) {
+	w := &mockTraceWriter{}
+	a := &vtInsertAdapter{writer: w}
+
+	lr := logstorage.GetLogRows(nil, nil, nil, nil, "")
+	defer logstorage.PutLogRows(lr)
+
+	a.MustAddRows(lr)
+
+	if len(w.rows) != 0 {
+		t.Errorf("expected 0 rows, got %d", len(w.rows))
 	}
 }
 

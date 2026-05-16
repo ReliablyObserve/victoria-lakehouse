@@ -1,3 +1,5 @@
+//go:build ignore
+
 package logstorage
 
 // RunQueryExternal executes a query with full pipe processing for external

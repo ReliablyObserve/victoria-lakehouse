@@ -142,6 +142,46 @@ datasources:
       defaultDatabase: lakehouse
       defaultTable: logs_raw
 
+  - name: "ClickHouse OTEL (Logs+Traces)"
+    type: grafana-clickhouse-datasource
+    uid: clickhouse-otel
+    access: proxy
+    jsonData:
+      host: clickhouse
+      port: 9000
+      protocol: native
+      username: default
+      defaultDatabase: lakehouse
+      logs:
+        defaultDatabase: lakehouse
+        defaultTable: otel_logs
+        otelEnabled: true
+        otelVersion: latest
+        timeColumn: Timestamp
+        levelColumn: SeverityText
+        messageColumn: Body
+      traces:
+        defaultDatabase: lakehouse
+        defaultTable: otel_traces
+        otelEnabled: true
+        otelVersion: latest
+        durationUnit: ns
+        traceIdColumn: TraceId
+        spanIdColumn: SpanId
+        parentSpanIdColumn: ParentSpanId
+        serviceNameColumn: ServiceName
+        operationNameColumn: SpanName
+        startTimeColumn: Timestamp
+        durationColumn: Duration
+        tagsColumn: SpanAttributes
+        serviceTagsColumn: ResourceAttributes
+        kindColumn: SpanKind
+        statusCodeColumn: StatusCode
+        statusMessageColumn: StatusMessage
+        stateColumn: TraceState
+        instrumentationLibraryNameColumn: ScopeName
+        instrumentationLibraryVersionColumn: ScopeVersion
+
   - name: "ClickHouse Logs (S3 Parquet)"
     type: grafana-clickhouse-datasource
     uid: clickhouse-logs
@@ -161,6 +201,27 @@ datasources:
         timeColumn: Timestamp
         levelColumn: SeverityText
         messageColumn: Body
+      traces:
+        defaultDatabase: lakehouse
+        defaultTable: otel_traces
+        otelEnabled: true
+        otelVersion: latest
+        durationUnit: ns
+        traceIdColumn: TraceId
+        spanIdColumn: SpanId
+        parentSpanIdColumn: ParentSpanId
+        serviceNameColumn: ServiceName
+        operationNameColumn: SpanName
+        startTimeColumn: Timestamp
+        durationColumn: Duration
+        tagsColumn: SpanAttributes
+        serviceTagsColumn: ResourceAttributes
+        kindColumn: SpanKind
+        statusCodeColumn: StatusCode
+        statusMessageColumn: StatusMessage
+        stateColumn: TraceState
+        instrumentationLibraryNameColumn: ScopeName
+        instrumentationLibraryVersionColumn: ScopeVersion
 
   - name: "ClickHouse Traces (S3 Parquet)"
     type: grafana-clickhouse-datasource
@@ -173,11 +234,20 @@ datasources:
       username: default
       defaultDatabase: lakehouse
       defaultTable: otel_traces
+      logs:
+        defaultDatabase: lakehouse
+        defaultTable: otel_logs
+        otelEnabled: true
+        otelVersion: latest
+        timeColumn: Timestamp
+        levelColumn: SeverityText
+        messageColumn: Body
       traces:
         defaultDatabase: lakehouse
         defaultTable: otel_traces
         otelEnabled: true
         otelVersion: latest
+        durationUnit: ns
         traceIdColumn: TraceId
         spanIdColumn: SpanId
         parentSpanIdColumn: ParentSpanId
@@ -185,7 +255,6 @@ datasources:
         operationNameColumn: SpanName
         startTimeColumn: Timestamp
         durationColumn: Duration
-        durationUnit: ns
         tagsColumn: SpanAttributes
         serviceTagsColumn: ResourceAttributes
         kindColumn: SpanKind
@@ -194,10 +263,8 @@ datasources:
         stateColumn: TraceState
         instrumentationLibraryNameColumn: ScopeName
         instrumentationLibraryVersionColumn: ScopeVersion
-        traceEventsColumnPrefix: Events
-        traceLinksColumnPrefix: Links
       tracesToLogsV2:
-        datasourceUid: clickhouse-logs
+        datasourceUid: clickhouse-otel
         spanStartTimeShift: "-1h"
         spanEndTimeShift: "1h"
         filterByTraceID: true

@@ -27,7 +27,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/selectapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3"
 	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
-	"github.com/VictoriaMetrics/VictoriaLogs/app/vlinsert"
+	"github.com/VictoriaMetrics/VictoriaTraces/app/vtinsert"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/internalselect"
 
@@ -397,7 +397,7 @@ func run(cfg *config.Config, addr string) {
 		logger.Errorf("HTTP server shutdown error: %s", err)
 	}
 
-	vlinsert.Stop()
+	vtinsert.Stop()
 	internalselect.Stop()
 
 	if rewriteSched != nil {
@@ -486,18 +486,14 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 
 	if cfg.InsertEnabled() {
 		internalvlstorage.SetInsertStorage(store)
-		vlinsert.Init()
+		vtinsert.Init()
 
-		vlinsertHandler := func(w http.ResponseWriter, r *http.Request) {
-			if !vlinsert.RequestHandler(w, r) {
+		vtinsertHandler := func(w http.ResponseWriter, r *http.Request) {
+			if !vtinsert.RequestHandler(w, r) {
 				http.NotFound(w, r)
 			}
 		}
-		mux.HandleFunc("/insert/", vlinsertHandler)
-		mux.HandleFunc("/internal/insert", vlinsertHandler)
-		mux.HandleFunc("/api/v2/logs", vlinsertHandler)
-		mux.HandleFunc("/api/v1/validate", vlinsertHandler)
-		mux.HandleFunc("/services/collector/", vlinsertHandler)
+		mux.HandleFunc("/insert/", vtinsertHandler)
 
 		if w := store.Writer(); w != nil {
 			bh := buffer.NewHandler(w, cfg.Peer.AuthKey)

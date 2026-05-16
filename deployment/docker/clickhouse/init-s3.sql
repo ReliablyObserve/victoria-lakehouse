@@ -59,6 +59,22 @@ FROM s3(
 );
 
 -- ==========================================================================
+-- OTEL Traces — trace_id → timestamp index (required by Grafana plugin)
+-- ==========================================================================
+
+CREATE OR REPLACE VIEW lakehouse.otel_traces_trace_id_ts AS
+SELECT
+    trace_id AS TraceId,
+    fromUnixTimestamp64Nano(min(timestamp_unix_nano)) AS Start,
+    fromUnixTimestamp64Nano(max(timestamp_unix_nano)) AS End
+FROM s3(
+    'http://minio:9000/obs-archive/*/*/traces/dt=*/hour=*/*.parquet',
+    'minioadmin', 'minioadmin', 'Parquet',
+    'timestamp_unix_nano Int64, trace_id String'
+)
+GROUP BY trace_id;
+
+-- ==========================================================================
 -- OTEL Traces — matches otel-collector clickhouseexporter span schema
 -- ==========================================================================
 
@@ -79,14 +95,17 @@ SELECT
         WHEN 5 THEN 'SPAN_KIND_CONSUMER'
         ELSE 'SPAN_KIND_UNSPECIFIED'
     END AS SpanKind,
+    `span.kind` AS SpanKindNumber,
     `service.name` AS ServiceName,
     duration_ns AS Duration,
+    toFloat64(duration_ns) / 1000000.0 AS DurationMs,
     CASE `status.code`
         WHEN 0 THEN 'STATUS_CODE_UNSET'
         WHEN 1 THEN 'STATUS_CODE_OK'
         WHEN 2 THEN 'STATUS_CODE_ERROR'
         ELSE 'STATUS_CODE_UNSET'
     END AS StatusCode,
+    `status.code` AS StatusNumber,
     `status.message` AS StatusMessage,
     `scope.name` AS ScopeName,
     '' AS ScopeVersion,
@@ -94,27 +113,8 @@ SELECT
     toUInt32(0) AS TraceFlags,
     '' AS ResourceSchemaUrl,
     '' AS ScopeSchemaUrl,
-    mapConcat(
-        `resource.attributes`,
-        mapFilter((k, v) -> v != '',
-            mapFromArrays(
-                ['deployment.environment', 'cloud.region', 'host.name',
-                 'k8s.namespace.name', 'k8s.deployment.name', 'k8s.node.name'],
-                [`resource_attr:deployment.environment`, `resource_attr:cloud.region`, `resource_attr:host.name`,
-                 `resource_attr:k8s.namespace.name`, `resource_attr:k8s.deployment.name`, `resource_attr:k8s.node.name`]
-            )
-        )
-    ) AS ResourceAttributes,
-    mapConcat(
-        `span.attributes`,
-        mapFilter((k, v) -> v != '',
-            mapFromArrays(
-                ['http.method', 'http.status_code', 'http.url', 'db.system', 'db.statement'],
-                [`span_attr:http.method`, `span_attr:http.status_code`, `span_attr:http.url`,
-                 `span_attr:db.system`, `span_attr:db.statement`]
-            )
-        )
-    ) AS SpanAttributes,
+    `resource.attributes` AS ResourceAttributes,
+    `span.attributes` AS SpanAttributes,
     CAST(map() AS Map(String, String)) AS ScopeAttributes,
     CAST([] AS Array(DateTime64(9))) AS `Events.Timestamp`,
     CAST([] AS Array(String)) AS `Events.Name`,
@@ -130,12 +130,12 @@ FROM s3(
      parent_span_id String, `span.name` String, `span.kind` Int32,
      `status.code` Int32, `status.message` String, duration_ns Int64,
      `service.name` String, `scope.name` String,
-     `resource_attr:deployment.environment` String, `resource_attr:cloud.region` String,
-     `resource_attr:host.name` String, `resource_attr:k8s.namespace.name` String,
-     `resource_attr:k8s.deployment.name` String, `resource_attr:k8s.node.name` String,
-     `span_attr:http.method` String, `span_attr:http.status_code` String,
-     `span_attr:http.url` String, `span_attr:db.system` String,
-     `span_attr:db.statement` String,
+     `deployment.environment` String, `cloud.region` String,
+     `host.name` String, `k8s.namespace.name` String,
+     `k8s.deployment.name` String, `k8s.node.name` String,
+     `http.method` String, `http.status_code` String,
+     `http.url` String, `db.system` String,
+     `db.statement` String,
      `resource.attributes` Map(String, String), `span.attributes` Map(String, String),
      `scope.attributes` Map(String, String)'
 );
@@ -166,12 +166,12 @@ FROM s3(
      parent_span_id String, `span.name` String, `span.kind` Int32,
      `status.code` Int32, `status.message` String, duration_ns Int64,
      `service.name` String, `scope.name` String,
-     `resource_attr:deployment.environment` String, `resource_attr:cloud.region` String,
-     `resource_attr:host.name` String, `resource_attr:k8s.namespace.name` String,
-     `resource_attr:k8s.deployment.name` String, `resource_attr:k8s.node.name` String,
-     `span_attr:http.method` String, `span_attr:http.status_code` String,
-     `span_attr:http.url` String, `span_attr:db.system` String,
-     `span_attr:db.statement` String,
+     `deployment.environment` String, `cloud.region` String,
+     `host.name` String, `k8s.namespace.name` String,
+     `k8s.deployment.name` String, `k8s.node.name` String,
+     `http.method` String, `http.status_code` String,
+     `http.url` String, `db.system` String,
+     `db.statement` String,
      `resource.attributes` Map(String, String), `span.attributes` Map(String, String),
      `scope.attributes` Map(String, String)'
 );
@@ -203,12 +203,12 @@ FROM s3(
      parent_span_id String, `span.name` String, `span.kind` Int32,
      `status.code` Int32, `status.message` String, duration_ns Int64,
      `service.name` String, `scope.name` String,
-     `resource_attr:deployment.environment` String, `resource_attr:cloud.region` String,
-     `resource_attr:host.name` String, `resource_attr:k8s.namespace.name` String,
-     `resource_attr:k8s.deployment.name` String, `resource_attr:k8s.node.name` String,
-     `span_attr:http.method` String, `span_attr:http.status_code` String,
-     `span_attr:http.url` String, `span_attr:db.system` String,
-     `span_attr:db.statement` String,
+     `deployment.environment` String, `cloud.region` String,
+     `host.name` String, `k8s.namespace.name` String,
+     `k8s.deployment.name` String, `k8s.node.name` String,
+     `http.method` String, `http.status_code` String,
+     `http.url` String, `db.system` String,
+     `db.statement` String,
      `resource.attributes` Map(String, String), `span.attributes` Map(String, String),
      `scope.attributes` Map(String, String)'
 );
@@ -235,12 +235,12 @@ FROM s3(
      parent_span_id String, `span.name` String, `span.kind` Int32,
      `status.code` Int32, `status.message` String, duration_ns Int64,
      `service.name` String, `scope.name` String,
-     `resource_attr:deployment.environment` String, `resource_attr:cloud.region` String,
-     `resource_attr:host.name` String, `resource_attr:k8s.namespace.name` String,
-     `resource_attr:k8s.deployment.name` String, `resource_attr:k8s.node.name` String,
-     `span_attr:http.method` String, `span_attr:http.status_code` String,
-     `span_attr:http.url` String, `span_attr:db.system` String,
-     `span_attr:db.statement` String,
+     `deployment.environment` String, `cloud.region` String,
+     `host.name` String, `k8s.namespace.name` String,
+     `k8s.deployment.name` String, `k8s.node.name` String,
+     `http.method` String, `http.status_code` String,
+     `http.url` String, `db.system` String,
+     `db.statement` String,
      `resource.attributes` Map(String, String), `span.attributes` Map(String, String),
      `scope.attributes` Map(String, String)'
 );

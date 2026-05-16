@@ -78,47 +78,48 @@ services:
       context: ../../
       dockerfile: Dockerfile.datagen
     depends_on:
-      minio-init:
-        condition: service_completed_successfully
       victorialogs:
         condition: service_healthy
       victoriatraces:
         condition: service_healthy
+      lakehouse-logs:
+        condition: service_healthy
+      lakehouse-traces:
+        condition: service_healthy
     networks: [lakehouse-net]
     command:
-      - "--endpoint=http://minio:9000"
-      - "--bucket=obs-archive"
-      - "--access-key=minioadmin"
-      - "--secret-key=minioadmin"
       - "--logs=10000"
       - "--traces=2000"
       - "--hours-back=72"
-      - "--tenant-prefix=0/0/"
-      - "--dual-write"
       - "--vl-endpoint=http://victorialogs:9428"
       - "--vt-endpoint=http://victoriatraces:10428"
+      - "--lh-logs-endpoint=http://lakehouse-logs:9428"
+      - "--lh-traces-endpoint=http://lakehouse-traces:10428"
 
   datagen-seed-tenant1:
     build:
       context: ../../
       dockerfile: Dockerfile.datagen
     depends_on:
-      minio-init:
-        condition: service_completed_successfully
       victorialogs:
         condition: service_healthy
       victoriatraces:
         condition: service_healthy
+      lakehouse-logs:
+        condition: service_healthy
+      lakehouse-traces:
+        condition: service_healthy
     networks: [lakehouse-net]
     command:
-      - "--endpoint=http://minio:9000"
-      - "--bucket=obs-archive"
-      - "--access-key=minioadmin"
-      - "--secret-key=minioadmin"
       - "--logs=2000"
       - "--traces=500"
       - "--hours-back=72"
-      - "--tenant-prefix=1/1/"
+      - "--vl-endpoint=http://victorialogs:9428"
+      - "--vt-endpoint=http://victoriatraces:10428"
+      - "--lh-logs-endpoint=http://lakehouse-logs:9428"
+      - "--lh-traces-endpoint=http://lakehouse-traces:10428"
+      - "--account-id=1"
+      - "--project-id=1"
 
   datagen-continuous:
     build:
@@ -130,18 +131,14 @@ services:
     restart: unless-stopped
     networks: [lakehouse-net]
     command:
-      - "--endpoint=http://minio:9000"
-      - "--bucket=obs-archive"
-      - "--access-key=minioadmin"
-      - "--secret-key=minioadmin"
       - "--logs=500"
       - "--traces=200"
       - "--hours-back=1"
       - "--interval=30s"
-      - "--tenant-prefix=0/0/"
-      - "--dual-write"
       - "--vl-endpoint=http://victorialogs:9428"
       - "--vt-endpoint=http://victoriatraces:10428"
+      - "--lh-logs-endpoint=http://lakehouse-logs:9428"
+      - "--lh-traces-endpoint=http://lakehouse-traces:10428"
 
   # =========================================================================
   # Cold Tier — S3 Parquet, 7d+ retention (lakehouse)
@@ -152,7 +149,7 @@ services:
       context: ../../
       dockerfile: Dockerfile.logs
     depends_on:
-      datagen-seed:
+      minio-init:
         condition: service_completed_successfully
     ports:
       - "29428:9428"
@@ -183,7 +180,7 @@ services:
       context: ../../
       dockerfile: Dockerfile.traces
     depends_on:
-      datagen-seed:
+      minio-init:
         condition: service_completed_successfully
     ports:
       - "20428:10428"
@@ -301,7 +298,7 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:latest
     depends_on:
-      datagen-seed:
+      minio-init:
         condition: service_completed_successfully
     networks: [lakehouse-net]
     environment:
