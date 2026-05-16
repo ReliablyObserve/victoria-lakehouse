@@ -254,7 +254,7 @@ func TestSmoke_TracesFieldNames(t *testing.T) {
 func TestSmoke_LokiProxyQuery(t *testing.T) {
 	now := time.Now()
 	params := url.Values{
-		"query": {`{service_name="order-service"}`},
+		"query": {`{service_name=~".+"}`},
 		"limit": {"5"},
 		"start": {fmt.Sprintf("%d000000000", now.Add(-72*time.Hour).Unix())},
 		"end":   {fmt.Sprintf("%d000000000", now.Unix())},

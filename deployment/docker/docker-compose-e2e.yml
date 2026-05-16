@@ -266,11 +266,11 @@ services:
     environment:
       VL_BACKEND_URL: "http://victorialogs:9428"
     command:
-      - "-label-style=passthrough"
-      - "-metadata-field-mode=translated"
+      - "-label-style=underscores"
+      - "-metadata-field-mode=hybrid"
       - "-emit-structured-metadata=true"
-      - "-stream-fields=service.name,k8s.namespace.name,k8s.pod.name,k8s.deployment.name,deployment.environment"
-      - "-extra-label-fields=level,cloud.region,host.name,k8s.node.name,trace_id,span_id,scope.name"
+      - "-stream-fields=service_name,k8s_namespace_name,k8s_pod_name,k8s_deployment_name,deployment_environment"
+      - "-extra-label-fields=level,cloud_region"
       - "-derived-fields=[{\"name\":\"traceID\",\"matcherRegex\":\"trace_id=([a-f0-9]+)\",\"url\":\"http://localhost:3003/explore?left=%5B%22now-1h%22,%22now%22,%22victoria-lakehouse-traces%22,%7B%22query%22:%22$${__value.raw}%22%7D%5D\"}]"
       - "-patterns-autodetect-from-queries=true"
       - "-label-values-indexed-cache=true"

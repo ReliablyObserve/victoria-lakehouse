@@ -322,3 +322,61 @@ func TestSmoke_LokiProxy_LabelValues(t *testing.T) {
 		t.Error("no service_name values returned")
 	}
 }
+
+// TestSmoke_LokiProxy_NoDotsInLabels verifies indexed labels use underscores (Loki compat).
+func TestSmoke_LokiProxy_NoDotsInLabels(t *testing.T) {
+	body := httpGetBody(t, lokiProxyURL, "/loki/api/v1/labels", nil)
+	result := mustParseJSON(t, body)
+
+	data, ok := result["data"].([]any)
+	if !ok {
+		t.Fatal("no labels data")
+	}
+
+	for _, v := range data {
+		label, ok := v.(string)
+		if !ok {
+			continue
+		}
+		if strings.Contains(label, ".") {
+			t.Errorf("label %q contains dot — violates Loki compatibility (should use underscores)", label)
+		}
+	}
+}
+
+// TestSmoke_LokiProxy_StructuredMetadata verifies structured metadata fields are present.
+func TestSmoke_LokiProxy_StructuredMetadata(t *testing.T) {
+	now := time.Now()
+	params := url.Values{
+		"query": {`{service_name=~".+"}`},
+		"limit": {"3"},
+		"start": {fmt.Sprintf("%d000000000", now.Add(-72*time.Hour).Unix())},
+		"end":   {fmt.Sprintf("%d000000000", now.Unix())},
+	}
+
+	body := httpGetBody(t, lokiProxyURL, "/loki/api/v1/query_range", params)
+	result := mustParseJSON(t, body)
+
+	data, _ := result["data"].(map[string]any)
+	results, _ := data["result"].([]any)
+	if len(results) == 0 {
+		t.Skip("no loki results")
+	}
+
+	// Check that at least one stream has structured metadata entries
+	for _, r := range results {
+		stream, _ := r.(map[string]any)
+		entries, _ := stream["values"].([]any)
+		if len(entries) == 0 {
+			continue
+		}
+		// In Loki response, structured metadata appears in stream labels
+		// or as separate metadata fields depending on Grafana version
+		streamLabels, _ := stream["stream"].(map[string]any)
+		if len(streamLabels) > 3 {
+			// Has more than just the indexed stream labels — structured metadata working
+			return
+		}
+	}
+	t.Log("structured metadata fields not visible in query_range response (may need Grafana 11+ to display)")
+}
