@@ -1,0 +1,9 @@
+FROM grafana/grafana:latest-ubuntu
+
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN /usr/share/grafana/bin/grafana cli plugins install grafana-clickhouse-datasource
+
+USER grafana

@@ -320,14 +320,15 @@ services:
   # =========================================================================
 
   grafana:
-    image: grafana/grafana:latest-ubuntu
+    build:
+      context: .
+      dockerfile: Dockerfile.grafana
     ports:
       - "3003:3000"
     networks: [lakehouse-net]
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
-      GF_INSTALL_PLUGINS: "https://github.com/VictoriaMetrics/victorialogs-datasource/releases/download/v0.26.3/victoriametrics-logs-datasource-v0.26.3.zip;victoriametrics-logs-datasource,grafana-clickhouse-datasource"
       GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "victoriametrics-logs-datasource"
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning

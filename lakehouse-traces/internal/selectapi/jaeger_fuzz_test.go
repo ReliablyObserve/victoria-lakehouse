@@ -21,10 +21,6 @@ func FuzzParseTimestampNanos(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, input string) {
 		ns, ok := parseTimestampNanos(input)
-		if ok && ns == 0 && input != "0" && input != "1970-01-01T00:00:00Z" {
-			// Valid but zero result — only acceptable for literal "0" or epoch
-			// This is fine, just a note for coverage
-		}
 		_ = ns
 		_ = ok
 	})

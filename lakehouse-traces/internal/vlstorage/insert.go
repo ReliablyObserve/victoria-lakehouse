@@ -100,6 +100,8 @@ func unmarshalStreamTags(dst *logstorage.StreamTags, canonical string) error {
 // Handles both VT's prefixed naming (resource_attr:, span_attr:) and VL's
 // flat naming from jsonline ingestion.
 // All stored string values are cloned to detach from VL's arena memory.
+//
+//nolint:gocyclo // field-routing switch is inherently branchy but readable
 func mapFieldToTraceRow(row *schema.TraceRow, name, value string) {
 	if value == "-" && name == "_msg" {
 		return
