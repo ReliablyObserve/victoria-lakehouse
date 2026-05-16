@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-05-16
+
 ### Added
 - Tenant name mapping — bidirectional alias system (X-Scope-OrgID ↔ integer TenantID) with O(1) sync.Map lookups, Loki/Tempo charset validation, HTTP middleware, CRUD API, S3 persistence, fleet sync, and configurable Prometheus metrics format
 - WAL implementation — file-based write-ahead log with gob encoding, crash recovery, truncation, and size tracking for insert path durability
