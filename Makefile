@@ -13,7 +13,7 @@ VL_REPO := https://github.com/VictoriaMetrics/VictoriaLogs.git
 VL_DIR_LOGS := deps/VictoriaLogs
 VL_DIR_TRACES := lakehouse-traces/deps/VictoriaLogs
 
-.PHONY: build build-logs build-traces test test-logs test-traces lint vet clean e2e deps-logs deps-traces
+.PHONY: build build-logs build-traces test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces
 
 deps-logs: $(VL_DIR_LOGS)/go.mod
 
@@ -46,10 +46,18 @@ build-traces: deps-traces
 test: test-logs test-traces
 
 test-logs: deps-logs
-	go test ./internal/... -race -count=1 -timeout=5m
+	go test ./internal/... -short -race -count=1 -timeout=5m
 
 test-traces: deps-traces
-	cd lakehouse-traces && go test ./internal/... -race -count=1 -timeout=5m
+	cd lakehouse-traces && go test ./internal/... -short -race -count=1 -timeout=5m
+
+test-full-logs: deps-logs
+	go test ./internal/... -race -count=1 -timeout=10m
+
+test-full-traces: deps-traces
+	cd lakehouse-traces && go test ./internal/... -race -count=1 -timeout=10m
+
+test-full: test-full-logs test-full-traces
 
 test-integration-logs: deps-logs
 	go test -tags=integration ./internal/... -race -count=1 -timeout=15m
