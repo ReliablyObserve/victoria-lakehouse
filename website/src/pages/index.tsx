@@ -16,7 +16,7 @@ function HomepageHeader() {
         <p className={styles.heroDescription}>
           Drop-in storage node for VictoriaLogs and VictoriaTraces.
           Ingest via Loki, Elasticsearch, OTLP, Syslog, Fluentd, Datadog, and 10+ formats.
-          Query with LogsQL, Jaeger, Loki API, or any Parquet engine.
+          Query with LogsQL, Jaeger, Tempo, Loki API, or any Parquet engine.
           60&ndash;96% cheaper than all-EBS. Apache 2.0 licensed.
         </p>
         <div className={styles.buttons}>
@@ -69,9 +69,10 @@ function HowItWorks() {
               <h3>Query &mdash; Full VL/VT API</h3>
               <p>
                 Every VictoriaLogs and VictoriaTraces query endpoint works:
-                {' '}<strong>LogsQL</strong> full-text search, <strong>Jaeger</strong> trace UI,{' '}
+                {' '}<strong>LogsQL</strong> full-text search, <strong>Jaeger</strong> and{' '}
+                <strong>Tempo</strong> trace UIs,{' '}
                 <strong>Loki API</strong> via loki-vl-proxy, <strong>Grafana</strong> with
-                VictoriaLogs and Jaeger datasources.
+                VictoriaLogs, Jaeger, and Tempo datasources.
                 vlselect/vtselect fans out to both hot (EBS) and cold (S3).
                 Manifest check skips S3 for recent data in under 1ms.
                 Bloom filters on service.name and trace_id enable sub-100ms point lookups.
@@ -147,8 +148,9 @@ function QueryInterfaces() {
   const interfaces = [
     {name: 'LogsQL', desc: 'Full-text search, regex, field ops, pipes, stats', target: 'Logs'},
     {name: 'Jaeger UI', desc: 'Native trace search, service graph, compare', target: 'Traces'},
+    {name: 'Tempo API', desc: 'Grafana Tempo datasource, TraceQL search', target: 'Traces'},
     {name: 'Loki API', desc: 'Via loki-vl-proxy, Grafana Loki datasource', target: 'Logs'},
-    {name: 'Grafana', desc: 'VictoriaLogs + Jaeger datasources, Explore, dashboards', target: 'Both'},
+    {name: 'Grafana', desc: 'VictoriaLogs + Jaeger + Tempo datasources, Explore', target: 'Both'},
     {name: 'DuckDB', desc: 'SQL on Parquet, local or httpfs from S3', target: 'Analytics'},
     {name: 'ClickHouse', desc: 'OTEL views, s3() table function, Grafana plugin', target: 'Analytics'},
     {name: 'Spark / Trino', desc: 'Distributed SQL at petabyte scale', target: 'Analytics'},

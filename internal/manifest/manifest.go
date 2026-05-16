@@ -55,15 +55,16 @@ func (fi FileInfo) MatchesLabel(field, value string) bool {
 }
 
 type Manifest struct {
-	mu          sync.RWMutex
-	files       map[string][]FileInfo // "dt=2026-05-02/hour=10" -> files
-	minTime     time.Time
-	maxTime     time.Time
-	totalFiles  int
-	totalBytes  int64
-	lastRefresh time.Time
-	prefix      string
-	bucket      string
+	mu             sync.RWMutex
+	files          map[string][]FileInfo // "dt=2026-05-02/hour=10" -> files
+	minTime        time.Time
+	maxTime        time.Time
+	totalFiles     int
+	totalBytes     int64
+	lastRefresh    time.Time
+	prefix         string
+	bucket         string
+	prefixTemplate string
 }
 
 func New(bucket, prefix string) *Manifest {
@@ -72,6 +73,12 @@ func New(bucket, prefix string) *Manifest {
 		prefix: prefix,
 		bucket: bucket,
 	}
+}
+
+func (m *Manifest) SetPrefixTemplate(tmpl string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.prefixTemplate = tmpl
 }
 
 func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
@@ -486,7 +493,7 @@ type TenantSummary struct {
 }
 
 // TenantSummaries extracts per-tenant stats from S3 keys.
-// Keys are expected to have the form: {AccountID}/{ProjectID}/{signal}/dt=.../hour=.../file.parquet
+// Supports both integer template ({AccountID}/{ProjectID}/) and OrgID template ({OrgID}/).
 func (m *Manifest) TenantSummaries() []TenantSummary {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -499,15 +506,28 @@ func (m *Manifest) TenantSummaries() []TenantSummary {
 		minT, maxT time.Time
 	}
 
+	segments := 2
+	hasOrgID := strings.Contains(m.prefixTemplate, "{OrgID}")
+	if hasOrgID && !strings.Contains(m.prefixTemplate, "{ProjectID}") {
+		segments = 1
+	}
+
 	byTenant := make(map[key]*accum)
 
 	for partition, files := range m.files {
 		for _, fi := range files {
-			parts := strings.SplitN(fi.Key, "/", 4)
-			if len(parts) < 3 {
+			parts := strings.SplitN(fi.Key, "/", segments+2)
+			if len(parts) < segments+1 {
 				continue
 			}
-			k := key{account: parts[0], project: parts[1]}
+
+			var k key
+			if segments == 1 {
+				k = key{account: parts[0], project: ""}
+			} else {
+				k = key{account: parts[0], project: parts[1]}
+			}
+
 			a, ok := byTenant[k]
 			if !ok {
 				a = &accum{partitions: make(map[string]struct{})}

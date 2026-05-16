@@ -4,7 +4,7 @@ kind: Service
 metadata:
   name: {{ include "victoria-lakehouse.fullname" . }}-vmauth
   labels:
-    {{- include "victoria-lakehouse.componentLabels" (dict "root" . "component" "vmauth") | nindent 4 }}
+    {{- include "victoria-lakehouse.genericComponentLabels" (dict "root" . "component" "vmauth") | nindent 4 }}
   {{- with .Values.vmauth.service.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
@@ -17,5 +17,5 @@ spec:
       targetPort: http
       protocol: TCP
   selector:
-    {{- include "victoria-lakehouse.componentSelectorLabels" (dict "root" . "component" "vmauth") | nindent 4 }}
+    {{- include "victoria-lakehouse.genericComponentSelectorLabels" (dict "root" . "component" "vmauth") | nindent 4 }}
 {{- end }}

@@ -5,7 +5,7 @@ export default function UnlimitedRetention() {
   return (
     <Layout
       title="Unlimited Log and Trace Retention — S3 Glacier Tiering for Compliance"
-      description="Store years of logs and traces on S3 with Victoria Lakehouse. Glacier Deep Archive at $0.004/GB/month. SOC 2, ISO 27001, HIPAA, GDPR compliance-ready. Queryable with LogsQL, Jaeger, DuckDB, ClickHouse, Spark, Trino. 90% cheaper than EBS at 2-year retention.">
+      description="Store years of logs and traces on S3 with Victoria Lakehouse. Glacier Deep Archive at $0.004/GB/month. SOC 2, ISO 27001, HIPAA, GDPR compliance-ready. Queryable with LogsQL, Jaeger, Tempo, DuckDB, ClickHouse, Spark, Trino. 90% cheaper than EBS at 2-year retention.">
       <header className="hero hero--primary" style={{padding: '3rem 0', textAlign: 'center'}}>
         <div className="container">
           <h1 className="hero__title">Unlimited Retention</h1>
@@ -39,7 +39,7 @@ export default function UnlimitedRetention() {
               automatically.
             </p>
             <p style={{fontSize: '1.1rem', lineHeight: 1.7}}>
-              Data on S3 is queryable with LogsQL, Jaeger, Loki API, DuckDB,
+              Data on S3 is queryable with LogsQL, Jaeger, Tempo, Loki API, DuckDB,
               ClickHouse, Spark, Trino, and 5+ more engines. Open Parquet format
               means you're never locked in.
             </p>

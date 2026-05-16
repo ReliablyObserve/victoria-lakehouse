@@ -52,58 +52,49 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
-Component labels — pass dict with "root" (top-level context) and "component" (string)
-Usage: {{ include "victoria-lakehouse.componentLabels" (dict "root" . "component" "select") }}
+Component labels — signal-aware.
+Usage: {{ include "victoria-lakehouse.componentLabels" (dict "root" . "signal" "logs" "role" "select") }}
 */}}
 {{- define "victoria-lakehouse.componentLabels" -}}
 {{ include "victoria-lakehouse.labels" .root }}
-app.kubernetes.io/component: {{ .component }}
+app.kubernetes.io/component: {{ .signal }}-{{ .role }}
+app.kubernetes.io/signal: {{ .signal }}
 {{- end }}
 
 {{/*
-Component selector labels
-Usage: {{ include "victoria-lakehouse.componentSelectorLabels" (dict "root" . "component" "select") }}
+Component selector labels — signal-aware.
+Usage: {{ include "victoria-lakehouse.componentSelectorLabels" (dict "root" . "signal" "logs" "role" "select") }}
 */}}
 {{- define "victoria-lakehouse.componentSelectorLabels" -}}
 {{ include "victoria-lakehouse.selectorLabels" .root }}
-app.kubernetes.io/component: {{ .component }}
+app.kubernetes.io/component: {{ .signal }}-{{ .role }}
+app.kubernetes.io/signal: {{ .signal }}
 {{- end }}
 
 {{/*
-Container image with tag fallback to appVersion.
-Selects lakehouse-logs or lakehouse-traces image based on lakehouseConfig.mode.
-Usage: {{ include "victoria-lakehouse.image" . }}
+Container image for a signal.
+Usage: {{ include "victoria-lakehouse.signalImage" (dict "root" . "signal" "logs") }}
 */}}
-{{- define "victoria-lakehouse.image" -}}
-{{- $mode := default "logs" .Values.lakehouseConfig.mode -}}
-{{- $tag := default .Chart.AppVersion .Values.image.tag -}}
-{{- if eq $mode "traces" -}}
-{{- printf "%s:%s" .Values.image.traces.repository $tag -}}
+{{- define "victoria-lakehouse.signalImage" -}}
+{{- $tag := default .root.Chart.AppVersion .root.Values.image.tag -}}
+{{- if eq .signal "traces" -}}
+{{- printf "%s:%s" .root.Values.image.traces.repository $tag -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.image.logs.repository $tag -}}
+{{- printf "%s:%s" .root.Values.image.logs.repository $tag -}}
 {{- end -}}
 {{- end }}
 
 {{/*
-Service port based on mode: 9428 for logs, 10428 for traces
+Service port for a signal: 9428 for logs, 10428 for traces.
+Usage: {{ include "victoria-lakehouse.signalPort" (dict "signal" "logs") }}
 */}}
-{{- define "victoria-lakehouse.servicePort" -}}
-{{- if eq (default "logs" .Values.lakehouseConfig.mode) "traces" -}}
-10428
-{{- else -}}
-9428
-{{- end -}}
+{{- define "victoria-lakehouse.signalPort" -}}
+{{- if eq .signal "traces" -}}10428{{- else -}}9428{{- end -}}
 {{- end }}
 
 {{/*
-Merge common values into component — returns the merged value for a given key.
-Components override common. Empty component values fall through to common.
-This is a helper for the templates to resolve per-key.
-*/}}
-
-{{/*
-Resolve podSecurityContext: component-specific overrides common
-Usage: {{ include "victoria-lakehouse.podSecurityContext" (dict "component" .Values.select "common" .Values.common) }}
+Resolve podSecurityContext: component-specific overrides common.
+Usage: {{ include "victoria-lakehouse.podSecurityContext" (dict "component" .Values.logs.select "common" .Values.common) }}
 */}}
 {{- define "victoria-lakehouse.podSecurityContext" -}}
 {{- if .component.podSecurityContext }}
@@ -114,7 +105,7 @@ Usage: {{ include "victoria-lakehouse.podSecurityContext" (dict "component" .Val
 {{- end }}
 
 {{/*
-Resolve securityContext: component-specific overrides common
+Resolve securityContext: component-specific overrides common.
 */}}
 {{- define "victoria-lakehouse.securityContext" -}}
 {{- if .component.securityContext }}
@@ -125,7 +116,7 @@ Resolve securityContext: component-specific overrides common
 {{- end }}
 
 {{/*
-Resolve nodeSelector: component-specific overrides common
+Resolve nodeSelector: component-specific overrides common.
 */}}
 {{- define "victoria-lakehouse.nodeSelector" -}}
 {{- if .component.nodeSelector }}
@@ -136,7 +127,7 @@ Resolve nodeSelector: component-specific overrides common
 {{- end }}
 
 {{/*
-Resolve tolerations: component-specific overrides common
+Resolve tolerations: component-specific overrides common.
 */}}
 {{- define "victoria-lakehouse.tolerations" -}}
 {{- if .component.tolerations }}
@@ -147,7 +138,7 @@ Resolve tolerations: component-specific overrides common
 {{- end }}
 
 {{/*
-Resolve affinity: component-specific overrides common
+Resolve affinity: component-specific overrides common.
 */}}
 {{- define "victoria-lakehouse.affinity" -}}
 {{- if .component.affinity }}
@@ -158,7 +149,7 @@ Resolve affinity: component-specific overrides common
 {{- end }}
 
 {{/*
-Resolve resources: component-specific overrides common
+Resolve resources: component-specific overrides common.
 */}}
 {{- define "victoria-lakehouse.resources" -}}
 {{- if .component.resources }}
@@ -166,4 +157,22 @@ Resolve resources: component-specific overrides common
 {{- else if .common.resources }}
 {{- toYaml .common.resources }}
 {{- end }}
+{{- end }}
+
+{{/*
+Generic component labels — for non-signal components (vmauth, compaction).
+Usage: {{ include "victoria-lakehouse.genericComponentLabels" (dict "root" . "component" "vmauth") }}
+*/}}
+{{- define "victoria-lakehouse.genericComponentLabels" -}}
+{{ include "victoria-lakehouse.labels" .root }}
+app.kubernetes.io/component: {{ .component }}
+{{- end }}
+
+{{/*
+Generic component selector labels — for non-signal components.
+Usage: {{ include "victoria-lakehouse.genericComponentSelectorLabels" (dict "root" . "component" "vmauth") }}
+*/}}
+{{- define "victoria-lakehouse.genericComponentSelectorLabels" -}}
+{{ include "victoria-lakehouse.selectorLabels" .root }}
+app.kubernetes.io/component: {{ .component }}
 {{- end }}

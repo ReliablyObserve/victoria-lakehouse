@@ -1,17 +1,47 @@
-Victoria Lakehouse has been installed in {{ .Values.lakehouseConfig.mode }} mode.
+Victoria Lakehouse has been installed.
+
+Enabled signals:
+{{- if .Values.logs.enabled }}
+  - Logs (VL-compatible, port 9428)
+{{- end }}
+{{- if .Values.traces.enabled }}
+  - Traces (VT-compatible, port 10428)
+{{- end }}
 
 {{- if .Values.vmauth.enabled }}
 Access via vmauth:
-  kubectl port-forward svc/{{ include "victoria-lakehouse.fullname" . }}-vmauth {{ include "victoria-lakehouse.servicePort" . }}:{{ include "victoria-lakehouse.servicePort" . }}
-{{- else if .Values.select.enabled }}
-Access select API:
-  kubectl port-forward svc/{{ include "victoria-lakehouse.fullname" . }}-select {{ include "victoria-lakehouse.servicePort" . }}:{{ include "victoria-lakehouse.servicePort" . }}
+  kubectl port-forward svc/{{ include "victoria-lakehouse.fullname" . }}-vmauth 8427:8427
 {{- end }}
 
-Query endpoint: http://localhost:{{ include "victoria-lakehouse.servicePort" . }}/select/logsql/query
-
-{{- if .Values.insertComponent.enabled }}
-Insert endpoint: http://localhost:{{ include "victoria-lakehouse.servicePort" . }}/insert/jsonline
+{{- if .Values.logs.enabled }}
+{{- if .Values.logs.select.enabled }}
+Logs select API:
+  kubectl port-forward svc/{{ include "victoria-lakehouse.fullname" . }}-logs-select 9428:9428
+  Query: http://localhost:9428/select/logsql/query
 {{- end }}
+{{- if .Values.logs.insert.enabled }}
+Logs insert API:
+  kubectl port-forward svc/{{ include "victoria-lakehouse.fullname" . }}-logs-insert 9428:9428
+  Insert: http://localhost:9428/insert/jsonline
+{{- end }}
+{{- end }}
+
+{{- if .Values.traces.enabled }}
+{{- if .Values.traces.select.enabled }}
+Traces select API:
+  kubectl port-forward svc/{{ include "victoria-lakehouse.fullname" . }}-traces-select 10428:10428
+  Jaeger: http://localhost:10428/select/jaeger/api/traces
+  Tempo:  http://localhost:10428/tempo/api/search
+{{- end }}
+{{- if .Values.traces.insert.enabled }}
+Traces insert API:
+  kubectl port-forward svc/{{ include "victoria-lakehouse.fullname" . }}-traces-insert 10428:10428
+{{- end }}
+{{- end }}
+
+Deployment modes:
+  All-in-one: logs.enabled=true, traces.enabled=true (default)
+  Logs only:  logs.enabled=true, traces.enabled=false
+  Traces only: logs.enabled=false, traces.enabled=true
 
 Documentation: https://reliablyobserve.github.io/victoria-lakehouse/

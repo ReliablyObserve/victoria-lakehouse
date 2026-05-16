@@ -20,8 +20,8 @@
 
 - **Drop-in VL/VT storage node.** Register as a `-storageNode` on vlselect/vtselect. Queries spanning hot and cold data work transparently.
 - **Write path with crash recovery.** VL-compatible insert APIs (`/insert/jsonline`, Loki push, ES bulk) buffer data, flush to S3 Parquet, and survive process crashes via WAL.
-- **Zero-delay reads.** Select pods query insert pods for unflushed buffer data, merging with S3 results for immediate read-after-write visibility.
-- **Open format + S3 durability.** 22% cheaper than Loki/Tempo. Within 5% of VL/VT EBS cost at 1yr, cheapest at 3yr+ with Glacier tiering. S3's 11-nines durability for compliance.
+- **Zero-delay reads.** Select pods query ALL insert pods across ALL AZs for unflushed buffer data, merging with S3 results for immediate read-after-write visibility.
+- **Open format + S3 durability.** 48-56% cheaper than Loki/Tempo at scale. At small scale (≤500 GB/mo), VL/VT EBS is cheapest; at PB/mo with >8mo retention, Lakehouse Hybrid wins. S3's 11-nines durability for compliance, Glacier tiering for 3yr+.
 - **Sub-millisecond fast path.** Queries within the hot tier's range get an immediate empty response via the partition manifest. Zero S3 I/O.
 - **Disaster recovery.** When the hot cluster is down (outage, upgrade, migration), lakehouse serves all data from S3 — slower but always available.
 - **Cost-aware deletion.** VL-compatible delete APIs with tombstone-based soft delete. Three modes: `hide` (instant, $0), `permanent` (physical removal), `auto` (smart). Glacier-safe — never triggers retrieval fees.
@@ -31,11 +31,11 @@
 
 ## The Cost Case
 
-VL/VT's 47-70x compression makes EBS-only cheapest for short retention. With 3 AZ replication, VL/VT EBS and Lakehouse Hybrid are within 5% of each other. Lakehouse adds **open Parquet format, S3 11-nines durability, disaster recovery, and Glacier tiering** — and is always cheaper than Loki/Tempo.
+Cost leadership is **scale-dependent**. At small scale (≤500 GB/mo), VL/VT EBS is cheapest — compute dominates and 55x compression wins. At PB/mo with >8 months retention, Lakehouse Hybrid crosses below VL/VT EBS because S3's per-raw-GB cost ($0.0038) beats 3-AZ EBS ($0.0044) by 14%. Lakehouse is **always 48-56% cheaper than Loki/Tempo** at any scale, and adds **open Parquet format, S3 11-nines durability, disaster recovery, and Glacier tiering**.
 
 | Scenario (500 GB/day, 1yr, 3 AZ) | VL/VT EBS Only | Lakehouse Hybrid | Loki + Tempo |
 |---|---|---|---|
-| **Monthly cost** | **$2,679/mo** | $2,814/mo | $3,610/mo |
+| **Monthly cost** | **$2,679/mo** | $3,009/mo | $5,763/mo |
 | **Compression** | 47-70x | 6-9x (Parquet ZSTD L7) | 3.5x |
 | **Query speed (cold)** | <10ms (all EBS) | <500ms (Parquet) | 1-10s |
 | **Data format** | Proprietary | **Open Parquet** | Proprietary |
@@ -43,8 +43,11 @@ VL/VT's 47-70x compression makes EBS-only cheapest for short retention. With 3 A
 | **Glacier tiering** | N/A | **Yes (cheapest at 3yr+)** | No (compaction breaks it) |
 | **Analytics access** | VL/VT API only | **DuckDB, Spark, Trino** | Loki API only |
 | **Disaster recovery** | N/A | **Independent cold tier** | N/A |
+| **S3 write amplification** | N/A (EBS) | **1x (atomic PutObject)** | 3-5x (WAL→chunk→S3) |
 
-Full cost worksheet: [Cost Estimates](docs/cost-estimates.md) | Deep comparison vs Loki/Tempo: [Cost Comparison](docs/cost-comparison.md)
+> **Hybrid = full Lakehouse S3 cost + additional VL/VT hot tier + doubled delivery network** (1 month EBS + compute + 2× cross-AZ ingest from mirroring to both VL/VT and LH inserts). All data always on S3; EBS is additional for sub-10ms queries on recent data. At 500 GB/day, VL/VT EBS is cheapest (compute + delivery dominates). At PB/mo with >8mo retention, Hybrid crosses below VL/VT EBS.
+
+Full cost worksheet: [Cost Estimates](docs/cost-estimates.md) | Deep comparison vs Loki/Tempo: [Cost Comparison](docs/cost-comparison.md) | Cross-AZ cost: [Cross-AZ Optimization](docs/cross-az-optimization.md)
 
 ---
 
@@ -354,7 +357,8 @@ Each binary supports three roles for independent scaling:
 - **VL-compatible insert APIs**: `/insert/jsonline`, `/insert/loki/api/v1/push`, `/insert/elasticsearch/_bulk` — same protocols as VictoriaLogs.
 - **Write-ahead log (WAL)**: crash-safe durability with gob-encoded append-only log and automatic replay on restart.
 - **Adaptive file sizing**: per-partition byte estimates trigger flush when approaching `--lakehouse.insert.target-file-size` for optimal Parquet file sizes.
-- **Buffer query bridge**: select pods fan out to insert pods via `/internal/buffer/query` for zero-delay reads of unflushed data.
+- **Buffer query bridge**: select pods fan out to ALL insert pods across ALL AZs via `/internal/buffer/query` for zero-delay reads of unflushed data. AZ-aware routing is only used for peer cache (L3), never for buffer queries — same-AZ-only would miss 2/3 of buffered rows in a 3-AZ deployment.
+- **Atomic S3 writes**: each Parquet file is written via a single S3 PutObject (1x write amplification). No WAL replay deduplication, no compactor reconciliation — contrast with Loki/Tempo's 3-5x write amplification from WAL→chunk→S3 pipelines.
 - **Manifest label pruning**: `FileInfo.Labels` enables query-time file skipping based on label values without opening Parquet files.
 
 ### Read Path
@@ -701,8 +705,9 @@ See [ZSTD Compression Benchmark](docs/zstd-compression-benchmark.md) for full re
 - [Scaling](docs/scaling.md) — horizontal (insert/select separation) and vertical scaling
 
 ### Cost & Comparison
-- [Cost Estimates](docs/cost-estimates.md) — EBS vs S3 vs Glacier cost breakdown
-- [Cost Comparison vs Loki/Tempo](docs/cost-comparison.md) — comprehensive competitive analysis at 500 GB/day
+- [Cost Estimates](docs/cost-estimates.md) — EBS vs S3 vs Glacier cost breakdown, scale-dependent recommendations
+- [Cost Comparison vs Loki/Tempo](docs/cost-comparison.md) — comprehensive competitive analysis at 500 GB/day, S3 write path durability comparison
+- [Cross-AZ Optimization](docs/cross-az-optimization.md) — AZ-aware routing strategy, buffer bridge design, cross-AZ cost analysis
 
 ---
 

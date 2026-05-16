@@ -22,11 +22,11 @@ graph TD
     subgraph Peer Sync
         TR -->|delta broadcast| P1[Peer Node 1]
         TR -->|delta broadcast| P2[Peer Node 2]
-        TR -->|snapshot| S3M[S3 _meta/tenant-stats/]
+        TR -->|snapshot| S3M["S3 _meta/tenant-stats/"]
     end
 
     subgraph Consumers
-        TR --> API[JSON API /lakehouse/api/v1/]
+        TR --> API["JSON API /lakehouse/api/v1/"]
         TR --> PROM[Prometheus Metrics]
         TR --> UI[Lakehouse Explorer UI]
     end
@@ -158,6 +158,7 @@ List all tenants with summary statistics.
     {
       "account_id": "100",
       "project_id": "1",
+      "name": "prod-team-eu_staging",
       "isolation": "prefix",
       "bucket": "obs-archive",
       "prefix": "100/1/logs/",
@@ -186,7 +187,13 @@ List all tenants with summary statistics.
 
 ### GET /lakehouse/api/v1/tenants/{accountID}/{projectID}
 
-Tenant drill-down with partition breakdown.
+Tenant drill-down with partition breakdown. Also accepts alias-based lookup:
+
+```
+GET /lakehouse/api/v1/tenants/prod-team-eu_staging
+```
+
+If the path segment contains non-digit characters, it is treated as an alias and resolved via the TenantResolver.
 
 **Response:**
 ```json
@@ -322,6 +329,46 @@ Field cardinality explorer.
   "total_fields": 85
 }
 ```
+
+### Tenant Aliases API
+
+CRUD endpoints for managing tenant name aliases at runtime. Changes are persisted to S3 and broadcast to all fleet nodes.
+
+#### GET /lakehouse/api/v1/tenants/aliases
+
+List all configured aliases (static + runtime).
+
+**Response:**
+```json
+{
+  "aliases": [
+    {"org_id": "prod-team-eu_staging", "account_id": 42, "project_id": 3, "source": "config"},
+    {"org_id": "prod-team-eu_prod", "account_id": 42, "project_id": 7, "source": "config"},
+    {"org_id": "staging_analytics", "account_id": 50, "project_id": 1, "source": "runtime"}
+  ]
+}
+```
+
+#### POST /lakehouse/api/v1/tenants/aliases
+
+Create or update a runtime alias. Static config aliases cannot be overridden.
+
+**Request:**
+```json
+{
+  "org_id": "staging_analytics",
+  "account_id": 50,
+  "project_id": 1
+}
+```
+
+**Response:** `201 Created` or `200 OK` (update)
+
+#### DELETE /lakehouse/api/v1/tenants/aliases/{orgId}
+
+Remove a runtime alias. Static config aliases cannot be deleted.
+
+**Response:** `204 No Content`
 
 ### POST /internal/stats/sync
 

@@ -83,7 +83,7 @@ export default function LokiTempoAlternative() {
                 </tr>
                 <tr>
                   <td><strong>Traces</strong></td>
-                  <td>Native VT + Jaeger API (same binary)</td>
+                  <td>Native VT + Jaeger + Tempo API (same binary)</td>
                   <td>Separate Tempo deployment</td>
                 </tr>
                 <tr>
@@ -108,7 +108,7 @@ export default function LokiTempoAlternative() {
                 </tr>
                 <tr>
                   <td><strong>Grafana compatibility</strong></td>
-                  <td>VL + Jaeger datasources, Loki via proxy</td>
+                  <td>VL + Jaeger + Tempo datasources, Loki via proxy</td>
                   <td>Native Loki + Tempo datasources</td>
                 </tr>
                 <tr>

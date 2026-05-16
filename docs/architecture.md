@@ -15,15 +15,15 @@ graph TD
         HTTP["HTTP Server"]
         
         subgraph "Insert Path"
-            INS["Insert API<br/>/insert/jsonline<br/>/insert/loki/api/v1/push<br/>/insert/elasticsearch/_bulk"]
+            INS["Insert API<br/>insert/jsonline<br/>insert/loki/api/v1/push<br/>insert/elasticsearch/_bulk"]
             WAL["WAL<br/>(crash recovery)"]
             BW["BatchWriter<br/>(per-partition buffers)"]
-            BB["Buffer Query<br/>/internal/buffer/query"]
+            BB["Buffer Query<br/>internal/buffer/query"]
         end
         
         subgraph "Select Path"
-            API["Select API<br/>/select/logsql/* + Jaeger"]
-            IS["Internal Select<br/>/internal/select/*"]
+            API["Select API<br/>select/logsql/* + Jaeger + Tempo"]
+            IS["Internal Select<br/>internal/select/*"]
             BRIDGE["Buffer Bridge<br/>(fan-out to insert pods)"]
         end
         
@@ -77,7 +77,7 @@ graph TD
     CSH -->|prefetch| SC
     
     S3R --> S3[("S3<br/>Parquet Files")]
-    DISC --> HOT["vlstorage /<br/>vtstorage"]
+    DISC --> HOT["vlstorage<br/>vtstorage"]
 
     style MF fill:#2d6a4f,color:#fff
     style QE fill:#264653,color:#fff
@@ -124,7 +124,7 @@ sequenceDiagram
     participant Cache as Cache Layer
     participant S3
 
-    Client->>Handler: LogsQL / Jaeger query
+    Client->>Handler: LogsQL / Jaeger / Tempo query
     Handler->>Manifest: HasDataForRange(start, end)
     
     alt Within hot boundary or no data
@@ -251,7 +251,7 @@ flowchart TB
         L2D["Full Parquet files from S3\nLRU eviction at 80% watermark\nAsync background download\nTarget: >80% hit rate"]
     end
     subgraph L3["L3: Peer Cache (HTTP) — < 30ms"]
-        L3D["Consistent hash ring + headless DNS\nGET /internal/cache/fetch\nShared secret auth\nsingleflight coalescence"]
+        L3D["Consistent hash ring + headless DNS<br/>GET internal/cache/fetch<br/>Shared secret auth<br/>singleflight coalescence"]
     end
     subgraph L4["L4: S3 (source of truth) — 50–150ms"]
         L4D["io.ReaderAt → S3 GetObject Range\nSection hints for prefetch\nConnection pooling + circuit breaker"]
@@ -267,9 +267,9 @@ In-memory index of all Parquet files in S3. Enables sub-millisecond "nothing her
 
 ```mermaid
 flowchart LR
-    Q["HasDataForRange\n(start, end)"] -->|O(1) check| D{Range within\nminTime..maxTime?}
-    D -->|outside| EMPTY["Return empty\n(FAST PATH)"]
-    D -->|overlaps| FILES["GetFiles(start, end)\n→ only matching files"]
+    Q["HasDataForRange<br/>(start, end)"] -->|"O(1) check"| D{"Range within<br/>minTime..maxTime?"}
+    D -->|outside| EMPTY["Return empty<br/>(FAST PATH)"]
+    D -->|overlaps| FILES["GetFiles(start, end)<br/>→ only matching files"]
 ```
 
 Refreshed via S3 ListObjects (configurable interval) and/or SQS event notifications. ~100 bytes per partition-hour (~850KB for 1 year of hourly data).
@@ -429,7 +429,7 @@ flowchart LR
     end
     
     subgraph "Victoria Lakehouse"
-        Poll["Poll<br/>/internal/partition/list"]
+        Poll["Poll<br/>internal/partition/list"]
         Derive["Derive hot range<br/>union of partitions"]
         Suppress["Suppress queries<br/>within hot range"]
     end

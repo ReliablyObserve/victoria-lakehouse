@@ -1,0 +1,20 @@
+{{- range $signal := list "logs" "traces" }}
+{{- $signalVals := index $.Values $signal }}
+{{- if $signalVals.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $signal }}-config
+  labels:
+    {{- include "victoria-lakehouse.labels" $ | nindent 4 }}
+    app.kubernetes.io/signal: {{ $signal }}
+data:
+  config.yaml: |
+    lakehouse:
+      mode: {{ $signal }}
+      {{- $.Values.lakehouseConfig | toYaml | nindent 6 }}
+      {{ $signal }}:
+        {{- $signalVals.config | toYaml | nindent 8 }}
+{{- end }}
+{{- end }}

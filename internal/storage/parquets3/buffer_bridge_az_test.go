@@ -37,7 +37,7 @@ func TestBufferBridge_SetEndpointsWithZones(t *testing.T) {
 	}
 }
 
-func TestBufferBridge_StrictMode_SameAZOnly(t *testing.T) {
+func TestBufferBridge_AlwaysQueriesAllEndpoints(t *testing.T) {
 	cfg := &config.SelectConfig{
 		BufferQueryEnabled: true,
 		BufferQueryTimeout: 2 * time.Second,
@@ -56,11 +56,8 @@ func TestBufferBridge_StrictMode_SameAZOnly(t *testing.T) {
 	eps := bb.getQueryEndpoints()
 	bb.mu.RUnlock()
 
-	if len(eps) != 1 {
-		t.Errorf("strict: expected 1 endpoint (same-AZ only), got %d", len(eps))
-	}
-	if len(eps) > 0 && eps[0] != "http://insert-0:9428" {
-		t.Errorf("expected same-AZ endpoint, got %q", eps[0])
+	if len(eps) != 2 {
+		t.Errorf("buffer queries must reach ALL insert pods, got %d (want 2)", len(eps))
 	}
 }
 

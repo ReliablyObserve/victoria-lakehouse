@@ -1,58 +1,56 @@
 package schema
 
-// LogRow defines the Parquet schema for log records.
-// Field names use OTEL semantic convention dot-notation.
-// Non-promoted fields are captured in ResourceAttributes and LogAttributes MAP columns.
 type LogRow struct {
-	TimestampUnixNano  int64             `parquet:"timestamp_unix_nano"`
-	Body               string            `parquet:"body"`
-	SeverityText       string            `parquet:"severity_text"`
-	SeverityNumber     int32             `parquet:"severity_number"`
-	ServiceName        string            `parquet:"service.name"`
-	K8sNamespaceName   string            `parquet:"k8s.namespace.name"`
-	K8sPodName         string            `parquet:"k8s.pod.name"`
-	K8sDeploymentName  string            `parquet:"k8s.deployment.name"`
-	K8sNodeName        string            `parquet:"k8s.node.name"`
-	DeployEnv          string            `parquet:"deployment.environment"`
-	CloudRegion        string            `parquet:"cloud.region"`
-	HostName           string            `parquet:"host.name"`
-	TraceID            string            `parquet:"trace_id"`
-	SpanID             string            `parquet:"span_id"`
-	Stream             string            `parquet:"_stream"`
-	StreamID           string            `parquet:"_stream_id"`
-	ScopeName          string            `parquet:"scope.name"`
-	ResourceAttributes map[string]string `parquet:"resource.attributes"`
-	LogAttributes      map[string]string `parquet:"log.attributes"`
+	TimestampUnixNano  int64             `json:"timestamp_unix_nano" parquet:"timestamp_unix_nano"`
+	Body               string            `json:"body" parquet:"body"`
+	SeverityText       string            `json:"severity_text" parquet:"severity_text"`
+	SeverityNumber     int32             `json:"severity_number" parquet:"severity_number"`
+	ServiceName        string            `json:"service.name" parquet:"service.name"`
+	TraceID            string            `json:"trace_id" parquet:"trace_id"`
+	SpanID             string            `json:"span_id" parquet:"span_id"`
+	K8sNamespaceName   string            `json:"k8s.namespace.name" parquet:"k8s.namespace.name"`
+	K8sPodName         string            `json:"k8s.pod.name" parquet:"k8s.pod.name"`
+	K8sDeploymentName  string            `json:"k8s.deployment.name" parquet:"k8s.deployment.name"`
+	K8sNodeName        string            `json:"k8s.node.name" parquet:"k8s.node.name"`
+	DeployEnv          string            `json:"deployment.environment" parquet:"deployment.environment"`
+	CloudRegion        string            `json:"cloud.region" parquet:"cloud.region"`
+	HostName           string            `json:"host.name" parquet:"host.name"`
+	Stream             string            `json:"_stream" parquet:"_stream"`
+	StreamID           string            `json:"_stream_id" parquet:"_stream_id"`
+	ScopeName          string            `json:"scope.name" parquet:"scope.name"`
+	ResourceAttributes map[string]string `json:"resource.attributes,omitempty" parquet:"resource.attributes,optional"`
+	LogAttributes      map[string]string `json:"log.attributes,omitempty" parquet:"log.attributes,optional"`
+	ScopeAttributes    map[string]string `json:"scope.attributes,omitempty" parquet:"scope.attributes,optional"`
 }
 
-// TraceRow defines the Parquet schema for trace span records.
-// Prefixed fields (resource_attr:, span_attr:) map to MAP columns on read.
-// Non-promoted fields are captured in ResourceAttributes, SpanAttributes, and ScopeAttributes.
 type TraceRow struct {
-	TimestampUnixNano  int64             `parquet:"timestamp_unix_nano"`
-	StartTimeUnixNano  int64             `parquet:"start_time_unix_nano"`
-	TraceID            string            `parquet:"trace_id"`
-	SpanID             string            `parquet:"span_id"`
-	ParentSpanID       string            `parquet:"parent_span_id"`
-	SpanName           string            `parquet:"span.name"`
-	SpanKind           int32             `parquet:"span.kind"`
-	StatusCode         int32             `parquet:"status.code"`
-	StatusMessage      string            `parquet:"status.message"`
-	DurationNs         int64             `parquet:"duration_ns"`
-	ServiceName        string            `parquet:"service.name"`
-	ScopeName          string            `parquet:"scope.name"`
-	DeployEnv          string            `parquet:"resource_attr:deployment.environment"`
-	CloudRegion        string            `parquet:"resource_attr:cloud.region"`
-	HostName           string            `parquet:"resource_attr:host.name"`
-	K8sNamespaceName   string            `parquet:"resource_attr:k8s.namespace.name"`
-	K8sDeploymentName  string            `parquet:"resource_attr:k8s.deployment.name"`
-	K8sNodeName        string            `parquet:"resource_attr:k8s.node.name"`
-	HTTPMethod         string            `parquet:"span_attr:http.method"`
-	HTTPStatusCode     string            `parquet:"span_attr:http.status_code"`
-	HTTPUrl            string            `parquet:"span_attr:http.url"`
-	DBSystem           string            `parquet:"span_attr:db.system"`
-	DBStatement        string            `parquet:"span_attr:db.statement"`
-	ResourceAttributes map[string]string `parquet:"resource.attributes"`
-	SpanAttributes     map[string]string `parquet:"span.attributes"`
-	ScopeAttributes    map[string]string `parquet:"scope.attributes"`
+	TimestampUnixNano  int64             `json:"timestamp_unix_nano" parquet:"timestamp_unix_nano"`
+	StartTimeUnixNano  int64             `json:"start_time_unix_nano" parquet:"start_time_unix_nano"`
+	TraceID            string            `json:"trace_id" parquet:"trace_id"`
+	SpanID             string            `json:"span_id" parquet:"span_id"`
+	ParentSpanID       string            `json:"parent_span_id" parquet:"parent_span_id"`
+	SpanName           string            `json:"span.name" parquet:"span.name"`
+	ServiceName        string            `json:"service.name" parquet:"service.name"`
+	DurationNs         int64             `json:"duration_ns" parquet:"duration_ns"`
+	StatusCode         int32             `json:"status.code" parquet:"status.code"`
+	StatusMessage      string            `json:"status.message" parquet:"status.message"`
+	SpanKind           int32             `json:"span.kind" parquet:"span.kind"`
+	HTTPMethod         string            `json:"http.method" parquet:"http.method"`
+	HTTPStatusCode     string            `json:"http.status_code" parquet:"http.status_code"`
+	HTTPUrl            string            `json:"http.url" parquet:"http.url"`
+	DBSystem           string            `json:"db.system" parquet:"db.system"`
+	DBStatement        string            `json:"db.statement" parquet:"db.statement"`
+	K8sNamespaceName   string            `json:"k8s.namespace.name" parquet:"k8s.namespace.name"`
+	K8sPodName         string            `json:"k8s.pod.name" parquet:"k8s.pod.name"`
+	K8sDeploymentName  string            `json:"k8s.deployment.name" parquet:"k8s.deployment.name"`
+	K8sNodeName        string            `json:"k8s.node.name" parquet:"k8s.node.name"`
+	DeployEnv          string            `json:"deployment.environment" parquet:"deployment.environment"`
+	CloudRegion        string            `json:"cloud.region" parquet:"cloud.region"`
+	HostName           string            `json:"host.name" parquet:"host.name"`
+	Stream             string            `json:"_stream" parquet:"_stream"`
+	StreamID           string            `json:"_stream_id" parquet:"_stream_id"`
+	ScopeName          string            `json:"scope.name" parquet:"scope.name"`
+	ResourceAttributes map[string]string `json:"resource.attributes,omitempty" parquet:"resource.attributes,optional"`
+	SpanAttributes     map[string]string `json:"span.attributes,omitempty" parquet:"span.attributes,optional"`
+	ScopeAttributes    map[string]string `json:"scope.attributes,omitempty" parquet:"scope.attributes,optional"`
 }

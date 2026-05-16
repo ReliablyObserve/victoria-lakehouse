@@ -29,18 +29,18 @@ All query engines that support Hive partitioning (DuckDB, Spark, Trino) will aut
 ```mermaid
 graph TD
     subgraph "Write Path"
-    VL[VL/VT Insert APIs] -->|LogRows| B[Buffer + WAL]
+    VL["VL/VT Insert APIs"] -->|LogRows| B[Buffer + WAL]
     B -->|flush| PW[Parquet Writer<br/>ZSTD + Bloom]
     PW -->|PutObject| S3
     end
 
     subgraph "S3 Hive Layout"
-    S3[(s3://bucket/)] --> L[logs/dt=YYYY-MM-DD/hour=HH/]
-    S3 --> T[traces/dt=YYYY-MM-DD/hour=HH/]
+    S3[("s3://bucket/")] --> L["logs/dt=YYYY-MM-DD/hour=HH/"]
+    S3 --> T["traces/dt=YYYY-MM-DD/hour=HH/"]
     end
 
     subgraph "Read — Any Engine"
-    S3 --> LH[Lakehouse<br/>LogsQL / Jaeger]
+    S3 --> LH["Lakehouse<br/>LogsQL / Jaeger / Tempo"]
     S3 --> DDB[DuckDB]
     S3 --> CH[ClickHouse]
     S3 --> SP[Spark / Trino]

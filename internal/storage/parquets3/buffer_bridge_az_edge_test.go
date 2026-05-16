@@ -178,7 +178,7 @@ func TestBufferBridge_MixedModes(t *testing.T) {
 	}{
 		{"az_off", false, true, "az-a", 1, 3},
 		{"preferred_with_same", true, true, "az-a", 1, 3},
-		{"strict_with_same", true, false, "az-a", 1, 1},
+		{"strict_with_same", true, false, "az-a", 1, 3},
 		{"strict_no_same", true, false, "az-x", 0, 3},
 		{"no_selfaz", true, false, "", 0, 3},
 	}

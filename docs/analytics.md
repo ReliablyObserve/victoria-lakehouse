@@ -729,11 +729,11 @@ The Docker Compose environment (`deployment/docker/docker-compose-e2e.yml`) prov
 | Datasource | Type | Target | Use Case |
 |---|---|---|---|
 | **VictoriaLogs Global (Hot+Cold)** | VictoriaLogs | vlselect:9428 | Default. Unified hot+cold log queries via multi-level select |
-| **VictoriaTraces Global (Hot+Cold)** | Jaeger | vtselect:10428 | Unified hot+cold trace queries with logs cross-linking |
+| **VictoriaTraces Global (Hot+Cold)** | Jaeger / Tempo | vtselect:10428 | Unified hot+cold trace queries with logs cross-linking |
 | **VictoriaLogs Hot (Disk 24h)** | VictoriaLogs | victorialogs:9428 | Direct hot tier queries (last 24h only) |
-| **VictoriaTraces Hot (Disk 24h)** | Jaeger | victoriatraces:10428 | Direct hot tier trace queries |
+| **VictoriaTraces Hot (Disk 24h)** | Jaeger / Tempo | victoriatraces:10428 | Direct hot tier trace queries |
 | **Lakehouse Logs Cold (S3)** | VictoriaLogs | lakehouse-logs:9428 | Direct cold tier log queries (S3 Parquet) |
-| **Lakehouse Traces Cold (S3 Jaeger)** | Jaeger | lakehouse-traces:10428 | Direct cold tier trace queries (S3 Parquet) |
+| **Lakehouse Traces Cold (S3)** | Jaeger / Tempo | lakehouse-traces:10428 | Direct cold tier trace queries (S3 Parquet) |
 | **Loki via Proxy (Hot+Cold)** | Loki | loki-vl-proxy:3100 | Grafana Loki Drilldown with automatic hot/cold routing |
 | **ClickHouse Analytics (S3 Parquet SQL)** | ClickHouse | clickhouse:9000 | Raw SQL on `lakehouse.logs_raw` / `lakehouse.traces_raw` |
 | **ClickHouse Logs (OTEL S3 Parquet)** | ClickHouse | clickhouse:9000 | Native Logs panel via `lakehouse.otel_logs` (OTEL auto-discovery) |
@@ -743,7 +743,7 @@ The Docker Compose environment (`deployment/docker/docker-compose-e2e.yml`) prov
 **Which datasource to use:**
 - **General querying**: Use "VictoriaLogs Global" (default) — it merges hot + cold data transparently
 - **Grafana Loki Drilldown**: Use "Loki via Proxy" — automatic time-based hot/cold routing
-- **Trace exploration**: Use "VictoriaTraces Global" — unified Jaeger UI with hot+cold data
+- **Trace exploration**: Use "VictoriaTraces Global" — unified Jaeger/Tempo UI with hot+cold data
 - **SQL analytics**: Use "ClickHouse Analytics" for ad-hoc SQL, or "DuckDB Analytics" for zero-infrastructure queries
 - **OTEL-native panels**: Use "ClickHouse Logs/Traces (OTEL)" for native Grafana log/trace panel rendering from S3 Parquet
 - **Debugging lakehouse**: Use "Lakehouse Logs/Traces Cold" to query cold tier directly

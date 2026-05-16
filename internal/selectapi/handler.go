@@ -3,6 +3,7 @@ package selectapi
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/logsql"
@@ -11,26 +12,38 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 )
 
 type Handler struct {
-	store   storage.Storage
-	cfg     *config.Config
-	timeout time.Duration
-	sem     chan struct{}
+	store    storage.Storage
+	cfg      *config.Config
+	resolver *tenant.TenantResolver
+	timeout  time.Duration
+	sem      chan struct{}
 }
 
-func NewHandler(store storage.Storage, cfg *config.Config) *Handler {
+func NewHandler(store storage.Storage, cfg *config.Config, opts ...HandlerOption) *Handler {
 	maxConcurrent := cfg.Query.MaxConcurrent
 	if maxConcurrent <= 0 {
 		maxConcurrent = 32
 	}
-	return &Handler{
+	h := &Handler{
 		store:   store,
 		cfg:     cfg,
 		timeout: cfg.Query.Timeout,
 		sem:     make(chan struct{}, maxConcurrent),
 	}
+	for _, o := range opts {
+		o(h)
+	}
+	return h
+}
+
+type HandlerOption func(*Handler)
+
+func WithResolver(r *tenant.TenantResolver) HandlerOption {
+	return func(h *Handler) { h.resolver = r }
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -81,9 +94,28 @@ func (h *Handler) wrapVL(fn func(ctx context.Context, w http.ResponseWriter, r *
 		metrics.QueryDuration.Observe(dur.Seconds())
 		if h.cfg.Query.SlowThreshold > 0 && dur >= h.cfg.Query.SlowThreshold {
 			metrics.SlowQueriesTotal.Inc()
-			logger.Warnf("slow query: path=%s duration=%s query=%s", r.URL.Path, dur, r.FormValue("query"))
+			tenantLog := h.tenantFromRequest(r)
+			logger.Warnf("slow query: path=%s duration=%s%s query=%s", r.URL.Path, dur, tenantLog, r.FormValue("query"))
 		}
 	}
+}
+
+func (h *Handler) tenantFromRequest(r *http.Request) string {
+	accStr := r.Header.Get("X-Scope-AccountID")
+	projStr := r.Header.Get("X-Scope-ProjectID")
+	if accStr == "" && projStr == "" {
+		return ""
+	}
+	tenantID := accStr + ":" + projStr
+	if h.resolver != nil {
+		accID, _ := strconv.ParseUint(accStr, 10, 32)
+		projID, _ := strconv.ParseUint(projStr, 10, 32)
+		name := h.resolver.DisplayName(uint32(accID), uint32(projID))
+		if name != tenantID {
+			return " tenant=" + name + " tenant_id=" + tenantID
+		}
+	}
+	return " tenant_id=" + tenantID
 }
 
 func (h *Handler) handleTailNoop(w http.ResponseWriter, _ *http.Request) {

@@ -225,8 +225,9 @@ The compaction scheduler also uses `Pusher.Notify()` after merging files — bro
 
 ```mermaid
 flowchart TD
-    START[RefreshFromS3] --> LIST[ListObjectsV2 Paginator<br/>prefix=logs/]
-    LIST --> FILTER{.parquet?}
+    START[RefreshFromS3] --> LIST["ListObjectsV2 Paginator<br/>prefix=logs/"]
+    LIST --> FILTER{".parquet?"}
+
     FILTER -->|Yes| EXTRACT[ExtractPartition<br/>Create FileInfo]
     FILTER -->|No| SKIP[Skip]
     EXTRACT --> GROUP[Group by partition]

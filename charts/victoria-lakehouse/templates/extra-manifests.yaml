@@ -1,4 +1,4 @@
 {{- range .Values.extraManifests }}
 ---
-{{ toYaml . }}
+{{ tpl (toYaml .) $ }}
 {{- end }}

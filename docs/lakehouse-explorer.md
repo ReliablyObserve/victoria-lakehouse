@@ -17,14 +17,14 @@ The Lakehouse Explorer is a built-in web UI for monitoring storage, tenants, and
 ```mermaid
 graph TD
     subgraph Lakehouse Binary
-        VMUI[VL/VT VMUI Handler] -->|HTML response| INJ[VMUI Injection Middleware]
-        INJ -->|inject script tag| BROWSER[Browser]
-        UI[/lakehouse/ui/ Handler] --> BROWSER
-        API[/lakehouse/api/v1/* Handlers] --> BROWSER
+        VMUI["VL/VT VMUI Handler"] -->|HTML response| INJ["VMUI Injection Middleware"]
+        INJ -->|inject script tag| BROWSER["Browser"]
+        UI["/lakehouse/ui/ Handler"] --> BROWSER
+        API["/lakehouse/api/v1/* Handlers"] --> BROWSER
     end
 
     BROWSER -->|fetch JSON| API
-    BROWSER -->|render| PREACT[Preact + uPlot]
+    BROWSER -->|render| PREACT["Preact + uPlot"]
 ```
 
 The UI is a single HTML file using Preact (3KB), uPlot (35KB), and HTM (1KB) loaded from CDN. No build step required. All data comes from the JSON API endpoints.
@@ -59,13 +59,17 @@ Global storage health at a glance.
 Per-tenant storage breakdown with drill-down.
 
 **Panels:**
-- **Tenant table** — sortable by bytes, files, cost, rows, last activity. Columns: tenant ID, files, compressed/raw bytes, compression ratio, cost, last write, last query
+- **Tenant table** — sortable by bytes, files, cost, rows, last activity. Columns: tenant name (or ID if no alias), files, compressed/raw bytes, compression ratio, cost, last write, last query
+- **Tenant selector dropdown** — shows friendly names when aliases are configured (e.g., "prod-team-eu_staging" instead of "42:3")
 - **Storage pie chart** — bytes distribution across top 10 tenants + "other"
 - **Tenant drill-down** (click a row):
+  - Tenant name prominently displayed, integer IDs shown as secondary
   - Partition heatmap — files per hour over date range
   - File size histogram — distribution for this tenant
   - Storage class breakdown — bar chart by class with cost
   - Top labels — field name, cardinality, bloom status
+
+When tenant name aliases are configured (detected from API response `name` field), the UI automatically displays friendly names everywhere. No frontend configuration needed — purely driven by API data.
 
 ### Tab 3: Cardinality Explorer
 

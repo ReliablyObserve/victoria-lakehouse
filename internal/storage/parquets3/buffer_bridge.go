@@ -64,13 +64,11 @@ func (b *BufferBridge) SetEndpointsWithZones(epZones map[string]string, selfAZ s
 	}
 }
 
+// getQueryEndpoints always returns ALL insert pod endpoints regardless of AZ.
+// Buffer queries must reach every insert pod to avoid missing unflushed data —
+// with 3 AZs, same-AZ-only would miss 2/3 of buffered rows.
+// AZ-aware routing is only appropriate for peer cache (L3), not buffer queries.
 func (b *BufferBridge) getQueryEndpoints() []string {
-	if !b.cfg.AZAware || b.selfAZ == "" {
-		return b.endpoints
-	}
-	if !b.cfg.CrossAZFallback && len(b.sameAZEndpoints) > 0 {
-		return b.sameAZEndpoints
-	}
 	return b.endpoints
 }
 

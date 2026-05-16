@@ -240,18 +240,28 @@ type QueryConfig struct {
 }
 
 type TenantConfig struct {
-	DefaultPrefix    string        `yaml:"default_prefix"`
-	PrefixTemplate   string        `yaml:"prefix_template"`
-	Isolation        string        `yaml:"isolation"`
-	BucketTemplate   string        `yaml:"bucket_template"`
-	DefaultAccount   string        `yaml:"default_account"`
-	DefaultProject   string        `yaml:"default_project"`
-	HeaderAccount    string        `yaml:"header_account"`
-	HeaderProject    string        `yaml:"header_project"`
-	GlobalReadHeader string        `yaml:"global_read_header"`
-	GlobalReadValue  string        `yaml:"global_read_value"`
-	GlobalReadToken  string        `yaml:"global_read_token"`
-	KnownTenants     []KnownTenant `yaml:"known_tenants"`
+	DefaultPrefix     string                 `yaml:"default_prefix"`
+	PrefixTemplate    string                 `yaml:"prefix_template"`
+	Isolation         string                 `yaml:"isolation"`
+	BucketTemplate    string                 `yaml:"bucket_template"`
+	DefaultAccount    string                 `yaml:"default_account"`
+	DefaultProject    string                 `yaml:"default_project"`
+	HeaderAccount     string                 `yaml:"header_account"`
+	HeaderProject     string                 `yaml:"header_project"`
+	GlobalReadHeader  string                 `yaml:"global_read_header"`
+	GlobalReadValue   string                 `yaml:"global_read_value"`
+	GlobalReadToken   string                 `yaml:"global_read_token"`
+	KnownTenants      []KnownTenant          `yaml:"known_tenants"`
+	OrgIDHeader       string                 `yaml:"orgid_header"`
+	MetricsFormat     string                 `yaml:"metrics_format"`
+	AutoRegister      bool                   `yaml:"auto_register"`
+	AliasSyncInterval time.Duration          `yaml:"alias_sync_interval"`
+	Aliases           map[string]AliasTarget `yaml:"aliases"`
+}
+
+type AliasTarget struct {
+	AccountID uint32 `yaml:"account_id"`
+	ProjectID uint32 `yaml:"project_id"`
 }
 
 type KnownTenant struct {
@@ -450,12 +460,16 @@ func Default() *Config {
 		},
 
 		Tenant: TenantConfig{
-			PrefixTemplate: "{AccountID}/{ProjectID}/",
-			Isolation:      "prefix",
-			DefaultAccount: "0",
-			DefaultProject: "0",
-			HeaderAccount:  "X-Scope-AccountID",
-			HeaderProject:  "X-Scope-ProjectID",
+			PrefixTemplate:    "{AccountID}/{ProjectID}/",
+			Isolation:         "prefix",
+			DefaultAccount:    "0",
+			DefaultProject:    "0",
+			HeaderAccount:     "X-Scope-AccountID",
+			HeaderProject:     "X-Scope-ProjectID",
+			OrgIDHeader:       "X-Scope-OrgID",
+			MetricsFormat:     "id",
+			AutoRegister:      false,
+			AliasSyncInterval: 30 * time.Second,
 		},
 
 		Compaction: CompactionConfig{

@@ -11,6 +11,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 )
 
 // APIConfig holds all dependencies for the stats API.
@@ -21,6 +22,7 @@ type APIConfig struct {
 	ClassTracker    *StorageClassTracker
 	LabelIndex      *cache.LabelIndex
 	SchemaRegistry  *schema.Registry
+	Resolver        *tenant.TenantResolver
 	Mode            string // "logs" or "traces"
 	Bucket          string
 	BloomColumns    []string
@@ -63,6 +65,7 @@ type TenantsResponse struct {
 type TenantEntry struct {
 	AccountID        string           `json:"account_id"`
 	ProjectID        string           `json:"project_id"`
+	Name             string           `json:"name,omitempty"`
 	TotalFiles       int64            `json:"total_files"`
 	TotalBytes       int64            `json:"total_bytes"`
 	RawBytes         int64            `json:"raw_bytes"`
@@ -137,6 +140,7 @@ type ClassCost struct {
 type TenantCostEntry struct {
 	AccountID  string  `json:"account_id"`
 	ProjectID  string  `json:"project_id"`
+	Name       string  `json:"name,omitempty"`
 	CostUSD    float64 `json:"cost_usd"`
 	TotalBytes int64   `json:"total_bytes"`
 }
@@ -151,6 +155,7 @@ type CompressionResponse struct {
 type TenantCompressionEntry struct {
 	AccountID        string  `json:"account_id"`
 	ProjectID        string  `json:"project_id"`
+	Name             string  `json:"name,omitempty"`
 	CompressionRatio float64 `json:"compression_ratio"`
 	TotalBytes       int64   `json:"total_bytes"`
 	RawBytes         int64   `json:"raw_bytes"`
@@ -219,6 +224,7 @@ func (a *API) handleTenants(w http.ResponseWriter, r *http.Request) {
 
 	for _, ts := range all {
 		entry := tenantStatsToEntry(ts, a.cfg.CostCalc)
+		a.decorateName(&entry)
 		entries = append(entries, entry)
 		totalBytes += ts.TotalBytes
 		totalFiles += ts.TotalFiles
@@ -283,14 +289,26 @@ func (a *API) handleTenantDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	trimmed := strings.TrimPrefix(r.URL.Path, "/lakehouse/api/v1/tenants/")
+
+	var accountID, projectID string
+
 	parts := strings.SplitN(trimmed, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+		accountID = parts[0]
+		projectID = parts[1]
+	} else if a.cfg.Resolver != nil && trimmed != "" && !strings.Contains(trimmed, "/") {
+		tid, ok := a.cfg.Resolver.Resolve(trimmed)
+		if !ok {
+			http.Error(w, `{"error":"unknown tenant alias"}`, http.StatusNotFound)
+			return
+		}
+		accountID = strconv.FormatUint(uint64(tid.AccountID), 10)
+		projectID = strconv.FormatUint(uint64(tid.ProjectID), 10)
+	} else {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
 
-	accountID := parts[0]
-	projectID := parts[1]
 	tenantKey := accountID + ":" + projectID
 
 	var entry TenantEntry
@@ -332,6 +350,7 @@ func (a *API) handleTenantDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.decorateName(&entry)
 	resp := TenantDetailResponse{TenantEntry: entry}
 
 	// Add partition drill-down from manifest.
@@ -612,6 +631,10 @@ func (a *API) handleCost(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	for i := range perTenant {
+		a.decorateCostName(&perTenant[i])
+	}
+
 	sort.Slice(byClass, func(i, j int) bool {
 		return byClass[i].CostUSD > byClass[j].CostUSD
 	})
@@ -668,6 +691,10 @@ func (a *API) handleCompression(w http.ResponseWriter, r *http.Request) {
 				TotalBytes: s.TotalBytes,
 			})
 		}
+	}
+
+	for i := range perTenant {
+		a.decorateCompressionName(&perTenant[i])
 	}
 
 	var avgRatio float64
@@ -903,6 +930,31 @@ func max64(a, b int64) int64 {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func (a *API) resolveName(accountID, projectID string) string {
+	if a.cfg.Resolver == nil {
+		return ""
+	}
+	accID, _ := strconv.ParseUint(accountID, 10, 32)
+	projID, _ := strconv.ParseUint(projectID, 10, 32)
+	name := a.cfg.Resolver.DisplayName(uint32(accID), uint32(projID))
+	if name == accountID+":"+projectID {
+		return ""
+	}
+	return name
+}
+
+func (a *API) decorateName(entry *TenantEntry) {
+	entry.Name = a.resolveName(entry.AccountID, entry.ProjectID)
+}
+
+func (a *API) decorateCostName(entry *TenantCostEntry) {
+	entry.Name = a.resolveName(entry.AccountID, entry.ProjectID)
+}
+
+func (a *API) decorateCompressionName(entry *TenantCompressionEntry) {
+	entry.Name = a.resolveName(entry.AccountID, entry.ProjectID)
 }
 
 func tenantStatsToEntry(ts *TenantStats, cc *CostCalculator) TenantEntry {

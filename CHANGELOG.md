@@ -7,11 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Tenant name mapping — bidirectional alias system (X-Scope-OrgID ↔ integer TenantID) with O(1) sync.Map lookups, Loki/Tempo charset validation, HTTP middleware, CRUD API, S3 persistence, fleet sync, and configurable Prometheus metrics format
+- WAL implementation — file-based write-ahead log with gob encoding, crash recovery, truncation, and size tracking for insert path durability
+- Parquet MAP columns — LogAttributes, ResourceAttributes, SpanAttributes, and ScopeAttributes stored as native Parquet MAP type columns
+- LogRow.SeverityNumber field for severity-based log filtering
+- TraceRow.StartTimeUnixNano field for trace span start time queries
+- Full insert API handlers — jsonline, Loki push, and Elasticsearch bulk insert with promoted field extraction
+- Stats API tenant name decoration on cost and compression endpoints
+
 ### Changed
 - Apply `gofmt -s` simplifications across all Go files in both modules
 - Enable gofmt, gocyclo, and misspell linters in golangci-lint v2 configs
 - Add standalone `gofmt -s` check and Go Report Card badge to CI
 - Treat govulncheck and helm lint warnings as CI failures
+- Extract startStatsLoops from run() to reduce cyclomatic complexity
 
 ## [0.23.1] - 2026-05-14
 

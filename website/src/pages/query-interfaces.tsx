@@ -17,6 +17,13 @@ const interfaces = [
     grafana: 'Jaeger datasource',
   },
   {
+    name: 'Tempo API',
+    category: 'Observability',
+    description: 'Grafana Tempo-compatible trace query API. Search traces, browse tags and tag values, retrieve traces by ID. TraceQL query support. Provided by VictoriaTraces upstream — Lakehouse inherits the Tempo API via the VT storage dispatch layer.',
+    endpoints: ['/tempo/api/search', '/tempo/api/v2/search/tags', '/tempo/api/v2/search/tag/{name}/values', '/tempo/api/v2/traces/{id}', '/tempo/api/echo'],
+    grafana: 'Tempo datasource',
+  },
+  {
     name: 'Loki API (via loki-vl-proxy)',
     category: 'Observability',
     description: 'Grafana Loki-compatible query API through loki-vl-proxy. LogQL queries are translated to LogsQL. Use with Grafana Loki datasource, Grafana Explore, and Loki Drilldown. Supports label discovery, log volume, and structured metadata.',
@@ -84,11 +91,11 @@ const interfaces = [
 export default function QueryInterfaces() {
   return (
     <Layout
-      title="Query Interfaces — LogsQL, Jaeger, Loki, DuckDB, ClickHouse, Spark, and More"
-      description="Victoria Lakehouse supports 11+ query interfaces: LogsQL full-text search, Jaeger trace UI, Loki API, VL/VT binary protocol, DuckDB, ClickHouse, Spark, Trino, Databricks, Snowflake, StarRocks, Doris, and pandas. Observability APIs for operations, SQL analytics for business intelligence.">
+      title="Query Interfaces — LogsQL, Jaeger, Tempo, Loki, DuckDB, ClickHouse, Spark, and More"
+      description="Victoria Lakehouse supports 12+ query interfaces: LogsQL full-text search, Jaeger trace UI, Tempo API, Loki API, VL/VT binary protocol, DuckDB, ClickHouse, Spark, Trino, Databricks, Snowflake, StarRocks, Doris, and pandas. Observability APIs for operations, SQL analytics for business intelligence.">
       <header className="hero hero--primary" style={{padding: '3rem 0', textAlign: 'center'}}>
         <div className="container">
-          <h1 className="hero__title">11+ Query Interfaces</h1>
+          <h1 className="hero__title">12+ Query Interfaces</h1>
           <p className="hero__subtitle" style={{maxWidth: 700, margin: '0 auto'}}>
             Observability APIs for operations. SQL analytics for business intelligence.
             Same data, every access pattern.
@@ -100,8 +107,8 @@ export default function QueryInterfaces() {
         <div className="row margin-bottom--xl">
           <div className="col col--4">
             <div className="cost-metric" style={{textAlign: 'center', height: '100%'}}>
-              <strong style={{fontSize: '2rem', display: 'block', marginBottom: '0.5rem'}}>4</strong>
-              Observability query APIs (LogsQL, Jaeger, Loki, VL/VT binary)
+              <strong style={{fontSize: '2rem', display: 'block', marginBottom: '0.5rem'}}>5</strong>
+              Observability query APIs (LogsQL, Jaeger, Tempo, Loki, VL/VT binary)
             </div>
           </div>
           <div className="col col--4">

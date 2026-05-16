@@ -9,11 +9,11 @@ sidebar_position: 18
 
 ```mermaid
 graph LR
-    DG[cmd/datagen<br/>--dual-write] -->|insert| VL[VictoriaLogs<br/>EBS, port 9428]
-    DG -->|insert| VLH[Victoria Lakehouse<br/>S3 via MinIO, port 19429]
-    LT[cmd/loadtest<br/>-mode=compare-ext] -->|query| VL
+    DG["cmd/datagen<br/>--dual-write"] -->|insert| VL["VictoriaLogs<br/>EBS, port 9428"]
+    DG -->|insert| VLH["Victoria Lakehouse<br/>S3 via MinIO, port 19429"]
+    LT["cmd/loadtest<br/>-mode=compare-ext"] -->|query| VL
     LT -->|query| VLH
-    VLH --> PROXY[S3 Latency Proxy<br/>65ms GET, 80ms LIST]
+    VLH --> PROXY["S3 Latency Proxy<br/>65ms GET, 80ms LIST"]
     PROXY --> MINIO[(MinIO)]
 
     style VL fill:#4CAF50,color:#fff

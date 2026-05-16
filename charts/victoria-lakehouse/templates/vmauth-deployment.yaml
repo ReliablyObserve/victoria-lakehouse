@@ -4,12 +4,12 @@ kind: Deployment
 metadata:
   name: {{ include "victoria-lakehouse.fullname" . }}-vmauth
   labels:
-    {{- include "victoria-lakehouse.componentLabels" (dict "root" . "component" "vmauth") | nindent 4 }}
+    {{- include "victoria-lakehouse.genericComponentLabels" (dict "root" . "component" "vmauth") | nindent 4 }}
 spec:
   replicas: {{ .Values.vmauth.replicaCount }}
   selector:
     matchLabels:
-      {{- include "victoria-lakehouse.componentSelectorLabels" (dict "root" . "component" "vmauth") | nindent 6 }}
+      {{- include "victoria-lakehouse.genericComponentSelectorLabels" (dict "root" . "component" "vmauth") | nindent 6 }}
   template:
     metadata:
       annotations:
@@ -18,7 +18,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       labels:
-        {{- include "victoria-lakehouse.componentSelectorLabels" (dict "root" . "component" "vmauth") | nindent 8 }}
+        {{- include "victoria-lakehouse.genericComponentSelectorLabels" (dict "root" . "component" "vmauth") | nindent 8 }}
         {{- with .Values.vmauth.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

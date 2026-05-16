@@ -40,7 +40,7 @@ export default function DisasterRecovery() {
               transparently falls back to querying cold data from S3.
             </p>
             <p style={{fontSize: '1.1rem', lineHeight: 1.7}}>
-              Same query APIs (LogsQL, Jaeger, Loki via proxy), same Grafana
+              Same query APIs (LogsQL, Jaeger, Tempo, Loki via proxy), same Grafana
               datasources. Slower (50&ndash;300ms vs &lt;10ms) but always available.
               Recovery is automatic via vmauth health checks or manual Grafana
               datasource switch.
@@ -90,7 +90,7 @@ export default function DisasterRecovery() {
               <li><strong>Transparent to Applications</strong> &mdash; no changes to vmagent, OTEL Collector, or Grafana</li>
               <li><strong>Cost-Effective DR</strong> &mdash; S3 is 10&ndash;20x cheaper than maintaining a hot standby</li>
               <li><strong>Multi-AZ Built-In</strong> &mdash; S3 provides durability across AZs with no extra cost</li>
-              <li><strong>Same Query APIs</strong> &mdash; LogsQL, Jaeger, Loki API all work against cold tier</li>
+              <li><strong>Same Query APIs</strong> &mdash; LogsQL, Jaeger, Tempo, Loki API all work against cold tier</li>
               <li><strong>Full History Available</strong> &mdash; cold tier has complete data history, not just recent</li>
             </ul>
           </div>
