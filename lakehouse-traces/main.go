@@ -16,7 +16,9 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/crosssignal"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/election"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/insertapi"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
+
+	"github.com/VictoriaMetrics/VictoriaLogs/app/vlinsert"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/prefetch"
@@ -396,6 +398,7 @@ func run(cfg *config.Config, addr string) {
 		logger.Errorf("HTTP server shutdown error: %s", err)
 	}
 
+	vlinsert.Stop()
 	internalselect.Stop()
 
 	if rewriteSched != nil {
@@ -468,8 +471,11 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		})
 	})
 
-	if cfg.SelectEnabled() {
+	if cfg.InsertEnabled() || cfg.SelectEnabled() {
 		internalvlstorage.SetStorage(store, tombstoneStore)
+	}
+
+	if cfg.SelectEnabled() {
 		internalselect.Init()
 
 		internalHandler := func(w http.ResponseWriter, r *http.Request) {
@@ -483,12 +489,24 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	}
 
 	if cfg.InsertEnabled() {
-		var bq insertapi.BufferQuerier
-		if w := store.Writer(); w != nil {
-			bq = w
+		internalvlstorage.SetInsertStorage(store)
+		vlinsert.Init()
+
+		vlinsertHandler := func(w http.ResponseWriter, r *http.Request) {
+			if !vlinsert.RequestHandler(w, r) {
+				http.NotFound(w, r)
+			}
 		}
-		ih := insertapi.NewHandler(store, cfg, bq)
-		ih.Register(mux)
+		mux.HandleFunc("/insert/", vlinsertHandler)
+		mux.HandleFunc("/internal/insert", vlinsertHandler)
+		mux.HandleFunc("/api/v2/logs", vlinsertHandler)
+		mux.HandleFunc("/api/v1/validate", vlinsertHandler)
+		mux.HandleFunc("/services/collector/", vlinsertHandler)
+
+		if w := store.Writer(); w != nil {
+			bh := buffer.NewHandler(w, cfg.Peer.AuthKey)
+			mux.Handle("/internal/buffer/query", bh)
+		}
 	}
 
 	if cfg.Delete.Enabled && tombstoneStore != nil {
