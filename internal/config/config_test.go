@@ -1433,3 +1433,139 @@ lakehouse:
 		t.Errorf("Traces.JaegerGRPCAddr = %q", cfg.Traces.JaegerGRPCAddr)
 	}
 }
+
+// --- Task 1: Size string parse error validation ---
+
+func TestValidate_MalformedSizeStrings(t *testing.T) {
+	tests := []struct {
+		name   string
+		modify func(c *Config)
+	}{
+		{
+			"invalid MaxBufferBytes",
+			func(c *Config) { c.Insert.MaxBufferBytes = "notasize" },
+		},
+		{
+			"invalid TargetFileSize",
+			func(c *Config) { c.Insert.TargetFileSize = "xyz" },
+		},
+		{
+			"invalid WALMaxBytes",
+			func(c *Config) { c.Insert.WALMaxBytes = "abc123def" },
+		},
+		{
+			"MaxBufferBytes with bad suffix",
+			func(c *Config) { c.Insert.MaxBufferBytes = "256ZZ" },
+		},
+		{
+			"TargetFileSize non-numeric",
+			func(c *Config) { c.Insert.TargetFileSize = "twohundredMB" },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Mode = ModeLogs
+			cfg.S3.Bucket = "test"
+			tt.modify(cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Error("expected validation error for malformed size string")
+			}
+		})
+	}
+}
+
+func TestValidate_ValidSizeStrings(t *testing.T) {
+	cfg := Default()
+	cfg.Mode = ModeLogs
+	cfg.S3.Bucket = "test"
+	cfg.Insert.MaxBufferBytes = "512MB"
+	cfg.Insert.TargetFileSize = "128MB"
+	cfg.Insert.WALMaxBytes = "1GB"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected no error for valid sizes, got: %v", err)
+	}
+}
+
+// --- Task 1: Cross-field validation ---
+
+func TestValidate_CompactionEnabledWithNoLeaderElection(t *testing.T) {
+	cfg := Default()
+	cfg.Mode = ModeLogs
+	cfg.S3.Bucket = "test"
+	cfg.Compaction.Enabled = true
+	cfg.Compaction.LeaderElection = "none"
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("expected error when compaction enabled with leader_election=none")
+	}
+}
+
+func TestValidate_CompactionEnabledWithValidLeaderElection(t *testing.T) {
+	for _, le := range []string{"auto", "k8s", "s3"} {
+		t.Run(le, func(t *testing.T) {
+			cfg := Default()
+			cfg.Mode = ModeLogs
+			cfg.S3.Bucket = "test"
+			cfg.Compaction.Enabled = true
+			cfg.Compaction.LeaderElection = le
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("unexpected error with leader_election=%q: %v", le, err)
+			}
+		})
+	}
+}
+
+func TestValidate_CompactionDisabledWithNoneLeaderElection(t *testing.T) {
+	cfg := Default()
+	cfg.Mode = ModeLogs
+	cfg.S3.Bucket = "test"
+	cfg.Compaction.Enabled = false
+	cfg.Compaction.LeaderElection = "none"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("disabled compaction with leader_election=none should be fine, got: %v", err)
+	}
+}
+
+// --- Task 1: HotBoundary format validation ---
+
+func TestValidate_HotBoundaryValid(t *testing.T) {
+	tests := []string{"7d", "14d", "30d", "1h", "168h", "24h30m"}
+	for _, hb := range tests {
+		t.Run(hb, func(t *testing.T) {
+			cfg := Default()
+			cfg.Mode = ModeLogs
+			cfg.S3.Bucket = "test"
+			cfg.HotBoundary = hb
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("valid HotBoundary %q should pass, got: %v", hb, err)
+			}
+		})
+	}
+}
+
+func TestValidate_HotBoundaryInvalid(t *testing.T) {
+	tests := []string{"notaduration", "14x", "abc", "d", "7dd"}
+	for _, hb := range tests {
+		t.Run(hb, func(t *testing.T) {
+			cfg := Default()
+			cfg.Mode = ModeLogs
+			cfg.S3.Bucket = "test"
+			cfg.HotBoundary = hb
+			if err := cfg.Validate(); err == nil {
+				t.Errorf("invalid HotBoundary %q should fail validation", hb)
+			}
+		})
+	}
+}
+
+func TestValidate_HotBoundaryEmpty(t *testing.T) {
+	cfg := Default()
+	cfg.Mode = ModeLogs
+	cfg.S3.Bucket = "test"
+	cfg.HotBoundary = ""
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("empty HotBoundary should be valid, got: %v", err)
+	}
+}

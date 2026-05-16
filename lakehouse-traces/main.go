@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
@@ -459,17 +458,14 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	mux.HandleFunc("/manifest/range", m.RangeHandler())
 	mux.HandleFunc("/manifest/partitions", m.PartitionsHandler())
 
-	mux.HandleFunc("/lakehouse/info", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"version":   buildinfo.Version,
-			"mode":      "traces",
-			"topology":  cfg.Topology,
-			"ready":     sm.IsReady(),
-			"phase":     sm.Phase().String(),
-			"vt_compat": vtCompat,
-		})
-	})
+	mux.HandleFunc("/lakehouse/info", HandleLakehouseInfo(LakehouseInfoConfig{
+		Version:  buildinfo.Version,
+		Mode:     "traces",
+		Topology: string(cfg.Topology),
+		Compat:   vtCompat,
+		IsReady:  sm.IsReady,
+		Phase:    func() string { return sm.Phase().String() },
+	}))
 
 	if cfg.InsertEnabled() || cfg.SelectEnabled() {
 		internalvlstorage.SetStorage(store, tombstoneStore)
@@ -515,47 +511,9 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		dh.Register(mux)
 	}
 
-	mux.HandleFunc("/internal/cache/clear", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if cfg.Peer.AuthKey != "" {
-			auth := r.Header.Get("Authorization")
-			if auth != "Bearer "+cfg.Peer.AuthKey {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-		}
-		store.ClearCaches()
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]bool{"cleared": true})
-	})
+	mux.HandleFunc("/internal/cache/clear", HandleCacheClear(store, cfg.Peer.AuthKey))
 
-	mux.HandleFunc("/internal/cache/stats", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if cfg.Peer.AuthKey != "" {
-			auth := r.Header.Get("Authorization")
-			if auth != "Bearer "+cfg.Peer.AuthKey {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-		}
-		stats := store.MemCacheStats()
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"l1_entries":   stats.Entries,
-			"l1_size":      stats.Size,
-			"l1_max_size":  stats.MaxSize,
-			"l1_hits":      stats.Hits,
-			"l1_misses":    stats.Misses,
-			"l1_evictions": stats.Evictions,
-			"az":           store.SelfAZ(),
-		})
-	})
+	mux.HandleFunc("/internal/cache/stats", HandleCacheStats(store, cfg.Peer.AuthKey))
 
 	if ph := store.PeerHandler(); ph != nil {
 		mux.Handle("/internal/cache/", ph)
@@ -582,42 +540,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		csHandler.Register(mux)
 	}
 
-	mux.HandleFunc("/internal/manifest/update", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if cfg.Peer.AuthKey != "" {
-			auth := r.Header.Get("Authorization")
-			if auth != "Bearer "+cfg.Peer.AuthKey {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-		}
-
-		var update manifest.ManifestUpdate
-		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-
-		m := store.Manifest()
-		for _, fi := range update.Added {
-			partition := manifest.ExtractPartition(fi.Key)
-			if partition != "" {
-				m.AddFile(partition, fi)
-			}
-		}
-		for _, key := range update.Removed {
-			partition := manifest.ExtractPartition(key)
-			if partition != "" {
-				m.RemoveFile(partition, key)
-			}
-		}
-
-		metrics.ManifestUpdateReceivedTotal.Inc()
-		w.WriteHeader(http.StatusOK)
-	})
+	mux.HandleFunc("/internal/manifest/update", HandleManifestUpdate(store, cfg.Peer.AuthKey))
 
 	// Stats sync handler
 	if cfg.Stats.Enabled {

@@ -52,6 +52,14 @@ spec:
           args:
             - "--lakehouse.config=/etc/lakehouse/config.yaml"
             - "--lakehouse.role={{ $role }}"
+            {{- with $.Values.lakehouseConfig.shutdown }}
+            {{- if .delay }}
+            - "-http.shutdownDelay={{ .delay }}"
+            {{- end }}
+            {{- if .max_graceful_duration }}
+            - "-http.maxGracefulShutdownDuration={{ .max_graceful_duration }}"
+            {{- end }}
+            {{- end }}
             {{- range $key, $val := $roleVals.extraArgs }}
             - "--{{ $key }}={{ $val }}"
             {{- end }}
@@ -72,11 +80,19 @@ spec:
           resources:
             {{- . | nindent 12 }}
           {{- end }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep {{ trimSuffix "s" (default "5s" $.Values.lakehouseConfig.shutdown.delay) }}"]
           env:
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
           {{- with $roleVals.extraEnv }}
             {{- toYaml . | nindent 12 }}
           {{- end }}

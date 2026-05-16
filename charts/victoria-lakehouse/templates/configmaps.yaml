@@ -13,7 +13,8 @@ data:
   config.yaml: |
     lakehouse:
       mode: {{ $signal }}
-      {{- $.Values.lakehouseConfig | toYaml | nindent 6 }}
+      {{- $cfg := omit $.Values.lakehouseConfig "shutdown" }}
+      {{- $cfg | toYaml | nindent 6 }}
       {{ $signal }}:
         {{- $signalVals.config | toYaml | nindent 8 }}
 {{- end }}

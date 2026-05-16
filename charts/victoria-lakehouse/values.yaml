@@ -250,6 +250,17 @@ lakehouseConfig:
     batch_interval: 500ms
 
   # ---------------------------------------------------------------------------
+  # Shutdown — Graceful shutdown behavior (coupled with K8s terminationGracePeriodSeconds)
+  # ---------------------------------------------------------------------------
+  shutdown:
+    # -- Delay before starting HTTP server shutdown (allows LB to drain).
+    # Maps to -http.shutdownDelay flag. Must be < terminationGracePeriodSeconds - 40s.
+    delay: 5s
+    # -- Maximum time for in-flight HTTP requests to complete.
+    # Maps to -http.maxGracefulShutdownDuration flag.
+    max_graceful_duration: 7s
+
+  # ---------------------------------------------------------------------------
   # Query — Read path limits and parallelism
   # ---------------------------------------------------------------------------
   query:
