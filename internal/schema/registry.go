@@ -153,6 +153,8 @@ var TracesProfile = Profile{
 		{ParquetColumn: "duration_ns", InternalName: "duration", Type: TypeInt64, Origin: OriginPromoted},
 		{ParquetColumn: "service.name", InternalName: "resource_attr:service.name", Type: TypeString, Origin: OriginPromoted, HasBloom: true},
 		{ParquetColumn: "scope.name", InternalName: "scope_attr:otel.library.name", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "_stream", InternalName: "_stream", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "_stream_id", InternalName: "_stream_id", Type: TypeString, Origin: OriginPromoted},
 	},
 	MapColumns:   []string{"resource.attributes", "span.attributes", "scope.attributes"},
 	StreamFields: []string{"resource_attr:service.name", "name"},
