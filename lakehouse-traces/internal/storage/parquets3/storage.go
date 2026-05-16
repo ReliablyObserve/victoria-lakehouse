@@ -677,7 +677,7 @@ func (s *Storage) RefreshDiscovery(ctx context.Context) error {
 	if _, err := s.discovery.PollPartitionList(ctx); err != nil {
 		return fmt.Errorf("poll partition list: %w", err)
 	}
-	if s.peerCache != nil {
+	if s.peerCache != nil || s.bufferBridge != nil {
 		peers, err := s.discovery.DiscoverPeers(ctx)
 		if err != nil {
 			return fmt.Errorf("discover peers: %w", err)
@@ -685,18 +685,28 @@ func (s *Storage) RefreshDiscovery(ctx context.Context) error {
 
 		if s.selfAZ != "" && s.cfg.Peer.AZAware {
 			peerZones := s.queryPeerAZs(ctx, peers)
-			s.peerCache.UpdatePeersWithZones(peerZones, s.selfAZ)
+			if s.peerCache != nil {
+				s.peerCache.UpdatePeersWithZones(peerZones, s.selfAZ)
 
-			stats := s.peerCache.StatsAZ()
-			metrics.PeerSameAZMembers.Set(int64(stats.SameAZMembers))
-			metrics.PeerCrossAZMembers.Set(int64(stats.CrossAZMembers))
+				stats := s.peerCache.StatsAZ()
+				metrics.PeerSameAZMembers.Set(int64(stats.SameAZMembers))
+				metrics.PeerCrossAZMembers.Set(int64(stats.CrossAZMembers))
 
-			if s.cfg.Peer.AZMode == "strict" && stats.SameAZMembers < s.cfg.Peer.AZMinPeersPerAZ {
-				logger.Warnf("strict AZ mode: only %d same-AZ peers (need %d); falling back to preferred",
-					stats.SameAZMembers, s.cfg.Peer.AZMinPeersPerAZ)
+				if s.cfg.Peer.AZMode == "strict" && stats.SameAZMembers < s.cfg.Peer.AZMinPeersPerAZ {
+					logger.Warnf("strict AZ mode: only %d same-AZ peers (need %d); falling back to preferred",
+						stats.SameAZMembers, s.cfg.Peer.AZMinPeersPerAZ)
+				}
+			}
+			if s.bufferBridge != nil {
+				s.bufferBridge.SetEndpointsWithZones(peerZones, s.selfAZ)
 			}
 		} else {
-			s.peerCache.UpdatePeers(peers)
+			if s.peerCache != nil {
+				s.peerCache.UpdatePeers(peers)
+			}
+			if s.bufferBridge != nil {
+				s.bufferBridge.SetEndpoints(peers)
+			}
 		}
 	}
 	return nil

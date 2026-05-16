@@ -112,6 +112,16 @@ graph LR
 
 Promoted fields (logs): `_time`, `_msg`, `level`, `service.name`, `k8s.namespace.name`, `k8s.pod.name`, `k8s.deployment.name`, `k8s.node.name`, `deployment.environment`, `cloud.region`, `host.name`, `trace_id`, `span_id`, `scope.name`
 
+#### Traces Insert Adapter
+
+**File:** `lakehouse-traces/internal/vlstorage/insert.go`
+
+The traces binary uses the identical pattern with `TraceWriter` interface. The `logRowsToTraceRows()` function maps VL fields to trace-specific promoted columns:
+
+Promoted fields (traces): `trace_id`, `span_id`, `parent_span_id`, `span.name`, `service.name`, `duration_ns`, `start_time_unix_nano`, `status.code`, `status.message`, `span.kind`, `http.method`, `http.status_code`, `http.url`, `db.system`, `db.statement`, `k8s.namespace.name`, `k8s.pod.name`, `k8s.deployment.name`, `k8s.node.name`, `deployment.environment`, `cloud.region`, `host.name`, `scope.name`
+
+Non-promoted fields go to `span.attributes` MAP column.
+
 ### BatchWriter
 
 **File:** `internal/storage/parquets3/writer.go`
