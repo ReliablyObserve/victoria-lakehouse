@@ -125,7 +125,7 @@ func TestBloomCache_LRUEviction(t *testing.T) {
 	}
 
 	// Access p1 to make it more recent
-	c.Get(context.Background(), "p1")
+	_, _ = c.Get(context.Background(), "p1")
 
 	// Adding p3 should evict p2 (least recently used)
 	idx3 := New()
@@ -200,7 +200,7 @@ func TestBloomCache_ConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 50; j++ {
 				partition := "p" + itoa(j%10)
-				c.Get(context.Background(), partition)
+				_, _ = c.Get(context.Background(), partition)
 				c.Len()
 				c.Size()
 			}
