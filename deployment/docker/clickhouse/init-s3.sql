@@ -72,6 +72,7 @@ FROM s3(
     'minioadmin', 'minioadmin', 'Parquet',
     'timestamp_unix_nano Int64, trace_id String'
 )
+WHERE trace_id != ''
 GROUP BY trace_id;
 
 -- ==========================================================================
@@ -138,7 +139,8 @@ FROM s3(
      `db.statement` String,
      `resource.attributes` Map(String, String), `span.attributes` Map(String, String),
      `scope.attributes` Map(String, String)'
-);
+)
+WHERE trace_id != '';
 
 -- ==========================================================================
 -- Convenience: raw views (no OTEL mapping) for ad-hoc analytics

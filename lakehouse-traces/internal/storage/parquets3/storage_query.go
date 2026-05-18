@@ -23,6 +23,9 @@ import (
 )
 
 func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	queryStart := time.Now()
 	metrics.ConcurrentSelects.Inc()
 	defer func() {
@@ -62,6 +65,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			return
 		}
 		if maxRows > 0 && rowsEmitted.Load() >= maxRows {
+			cancel()
 			return
 		}
 		db = filterDataBlock(db, filter)
@@ -87,6 +91,22 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 
 	files := s.manifest.GetFilesForRange(startNs, endNs)
+	if len(files) == 0 {
+		return nil
+	}
+
+	// Label-based file pre-filtering: skip files that definitely don't
+	// contain the queried value based on manifest labels.
+	files = s.filterFilesByLabels(files, queryStr)
+
+	if len(files) == 0 {
+		return nil
+	}
+
+	// Bloom index pre-filtering: skip files that definitely don't contain
+	// the queried trace_id based on the in-memory bloom index.
+	files = s.filterFilesByBloomIndex(files, queryStr)
+
 	if len(files) == 0 {
 		return nil
 	}
@@ -149,8 +169,12 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	wg.Wait()
 
 	if v := firstErr.Load(); v != nil {
-		if err, ok := v.(error); ok && ctx.Err() != nil {
-			return err
+		if err, ok := v.(error); ok {
+			if maxRows > 0 && rowsEmitted.Load() >= maxRows {
+				// Cancelled due to maxRows — not an error.
+			} else {
+				return err
+			}
 		}
 	}
 
@@ -519,11 +543,12 @@ func (s *Storage) bloomFilterSkip(f *parquet.File, rg parquet.RowGroup, checks [
 }
 
 func extractExactMatch(query, fieldName string) string {
-	patterns := []string{
+	// Quoted patterns: trace_id:="abc" or trace_id:"abc"
+	quotedPatterns := []string{
 		fieldName + `:="`,
 		fieldName + `:"`,
 	}
-	for _, prefix := range patterns {
+	for _, prefix := range quotedPatterns {
 		idx := strings.Index(query, prefix)
 		if idx < 0 {
 			continue
@@ -535,7 +560,128 @@ func extractExactMatch(query, fieldName string) string {
 		}
 		return query[start : start+end]
 	}
+
+	// Unquoted pattern: trace_id:=abc123 (produced by q.String())
+	unquotedPrefix := fieldName + `:=`
+	if idx := strings.Index(query, unquotedPrefix); idx >= 0 {
+		start := idx + len(unquotedPrefix)
+		end := strings.IndexAny(query[start:], " |)")
+		if end < 0 {
+			return query[start:]
+		}
+		return query[start : start+end]
+	}
+
 	return ""
+}
+
+// filterFilesByLabels uses manifest-level labels to skip files that definitely
+// don't contain the queried values. This avoids downloading files from S3.
+// A file is skipped only if it HAS labels for the field (meaning the label was
+// populated at flush time) but does NOT contain the target value.
+func (s *Storage) filterFilesByLabels(files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
+	type labelCheck struct {
+		field string
+		value string
+	}
+
+	var checks []labelCheck
+	for _, col := range s.registry.PromotedColumns() {
+		if !col.HasBloom {
+			continue
+		}
+		val := extractExactMatch(queryStr, col.InternalName)
+		if val == "" {
+			val = extractExactMatch(queryStr, col.ParquetColumn)
+		}
+		if val != "" {
+			checks = append(checks, labelCheck{field: col.ParquetColumn, value: val})
+		}
+	}
+
+	if len(checks) == 0 {
+		return files
+	}
+
+	filtered := files[:0]
+	skipped := 0
+	for _, fi := range files {
+		skip := false
+		for _, check := range checks {
+			if fi.Labels != nil && len(fi.Labels[check.field]) > 0 && !fi.MatchesLabel(check.field, check.value) {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			skipped++
+		} else {
+			filtered = append(filtered, fi)
+		}
+	}
+
+	if skipped > 0 {
+		metrics.ParquetRowGroupsSkipped.Inc("label_index")
+		logger.Infof("label pre-filter: skipped %d/%d files", skipped, len(files))
+	}
+
+	return filtered
+}
+
+func (s *Storage) filterFilesByBloomIndex(files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
+	if s.bloomIdx == nil || s.bloomIdx.Len() == 0 {
+		return files
+	}
+
+	// Build checks for all bloom-enabled columns that have exact matches in the query
+	var checks []bloomindex.ColumnCheck
+	for _, col := range s.registry.PromotedColumns() {
+		if !col.HasBloom {
+			continue
+		}
+		val := extractExactMatch(queryStr, col.InternalName)
+		if val == "" {
+			val = extractExactMatch(queryStr, col.ParquetColumn)
+		}
+		if val != "" {
+			checks = append(checks, bloomindex.ColumnCheck{
+				Column: col.ParquetColumn,
+				Value:  val,
+			})
+		}
+	}
+
+	if len(checks) == 0 {
+		return files
+	}
+
+	keys := make([]string, len(files))
+	for i, fi := range files {
+		keys[i] = fi.Key
+	}
+
+	matching := s.bloomIdx.MayContainAll(keys, checks)
+	if len(matching) == len(files) {
+		return files
+	}
+
+	matchSet := make(map[string]struct{}, len(matching))
+	for _, k := range matching {
+		matchSet[k] = struct{}{}
+	}
+
+	filtered := make([]manifest.FileInfo, 0, len(matching))
+	for _, fi := range files {
+		if _, ok := matchSet[fi.Key]; ok {
+			filtered = append(filtered, fi)
+		}
+	}
+
+	skipped := len(files) - len(filtered)
+	if skipped > 0 {
+		logger.Infof("bloom index pre-filter: skipped %d/%d files (checks=%d)", skipped, len(files), len(checks))
+	}
+	return filtered
 }
 
 func rowGroupMatchesTimeRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs int64) bool {

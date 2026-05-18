@@ -244,6 +244,11 @@ func mapFieldToTraceRow(row *schema.TraceRow, name, value string) {
 }
 
 func mapResourceAttr(row *schema.TraceRow, key, value string) {
+	if row.ResourceAttributes == nil {
+		row.ResourceAttributes = make(map[string]string)
+	}
+	row.ResourceAttributes[strings.Clone(key)] = strings.Clone(value)
+
 	switch key {
 	case "service.name":
 		row.ServiceName = strings.Clone(value)
@@ -261,11 +266,6 @@ func mapResourceAttr(row *schema.TraceRow, key, value string) {
 		row.CloudRegion = strings.Clone(value)
 	case "host.name":
 		row.HostName = strings.Clone(value)
-	default:
-		if row.ResourceAttributes == nil {
-			row.ResourceAttributes = make(map[string]string)
-		}
-		row.ResourceAttributes[strings.Clone(key)] = strings.Clone(value)
 	}
 }
 

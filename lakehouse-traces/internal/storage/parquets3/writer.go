@@ -29,6 +29,10 @@ import (
 
 // BatchWriter buffers incoming rows per partition and flushes them as
 // Parquet files to S3 on a configurable interval or size threshold.
+// FlushHook is called after a successful parquet file flush with the
+// file key and per-column distinct values for bloom indexing.
+type FlushHook func(key string, columnValues map[string][]string)
+
 type BatchWriter struct {
 	cfg      *config.InsertConfig
 	pool     *s3reader.ClientPool
@@ -43,6 +47,8 @@ type BatchWriter struct {
 	totalBytes atomic.Int64
 
 	wal *wal.WAL // nil if WAL disabled
+
+	onFlush FlushHook
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -78,6 +84,10 @@ func NewBatchWriter(cfg *config.InsertConfig, pool *s3reader.ClientPool,
 func (w *BatchWriter) Start() {
 	w.wg.Add(1)
 	go w.flushLoop()
+}
+
+func (w *BatchWriter) SetFlushHook(hook FlushHook) {
+	w.onFlush = hook
 }
 
 func (w *BatchWriter) Stop() {
@@ -346,6 +356,10 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 	w.manifest.AddFile(partition, fi)
 
 	w.totalBytes.Add(int64(len(result.Data)))
+
+	if w.onFlush != nil {
+		w.onFlush(key, fi.Labels)
+	}
 
 	logger.Infof("flushed trace partition; partition=%s, rows=%d, bytes=%d, ratio=%v, key=%s",
 		partition, len(rows), len(result.Data), fi.CompressionRatio(), key)

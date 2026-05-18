@@ -1,9 +1,18 @@
 FROM grafana/grafana:latest-ubuntu
 
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates unzip && \
     rm -rf /var/lib/apt/lists/*
 
-RUN /usr/share/grafana/bin/grafana cli plugins install grafana-clickhouse-datasource
+ENV GF_PATHS_PLUGINS="/opt/grafana-plugins"
+RUN mkdir -p /opt/grafana-plugins
+
+RUN /usr/share/grafana/bin/grafana cli --pluginsDir /opt/grafana-plugins plugins install grafana-clickhouse-datasource
+
+COPY vml-plugin.zip /tmp/vml-plugin.zip
+RUN unzip /tmp/vml-plugin.zip -d /opt/grafana-plugins/ && \
+    rm /tmp/vml-plugin.zip
+
+RUN chown -R grafana:root /opt/grafana-plugins
 
 USER grafana

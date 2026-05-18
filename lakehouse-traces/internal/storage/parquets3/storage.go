@@ -14,6 +14,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
@@ -43,6 +44,8 @@ type Storage struct {
 	bufferBridge *BufferBridge
 	tombstones   *delete.TombstoneStore
 	smartCache   *smartcache.Controller
+	bloomIdx     *bloomindex.Index
+	s3Prefix     string
 	selfAZ       string
 }
 
@@ -174,6 +177,8 @@ func New(cfg *config.Config) (*Storage, error) {
 		writer:       bw,
 		bufferBridge: bb,
 		smartCache:   sc,
+		bloomIdx:     bloomindex.New(),
+		s3Prefix:     prefix,
 	}, nil
 }
 
@@ -183,6 +188,25 @@ func (s *Storage) StartWriter() {
 	if s.writer == nil {
 		return
 	}
+	s.writer.SetFlushHook(func(key string, columnValues map[string][]string) {
+		if len(columnValues) == 0 {
+			return
+		}
+		cols := make(map[string]*bloomindex.Filter, len(columnValues))
+		for col, vals := range columnValues {
+			if len(vals) == 0 {
+				continue
+			}
+			f := bloomindex.NewFilter(len(vals), 0.01)
+			for _, v := range vals {
+				f.Add(v)
+			}
+			cols[col] = f
+		}
+		if len(cols) > 0 {
+			s.bloomIdx.AddColumns(key, cols)
+		}
+	})
 	logCount, traceCount := s.writer.ReplayWAL()
 	if logCount > 0 || traceCount > 0 {
 		logger.Infof("WAL recovery complete; logs=%d, traces=%d", logCount, traceCount)
@@ -309,6 +333,15 @@ func (s *Storage) Close() error {
 			logger.Warnf("failed to persist label index: %s", err)
 		} else {
 			logger.Infof("persisted label index; labels=%d", s.labelIndex.Len())
+		}
+	}
+	if s.bloomIdx != nil && s.bloomIdx.Len() > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := s.PersistBloomIndex(ctx); err != nil {
+			logger.Warnf("failed to persist bloom index: %s", err)
+		} else {
+			logger.Infof("persisted bloom index; entries=%d", s.bloomIdx.Len())
 		}
 	}
 	return nil
@@ -748,7 +781,160 @@ func (s *Storage) fetchPeerAZ(ctx context.Context, peer string) string {
 }
 
 func (s *Storage) RefreshManifest(ctx context.Context) error {
-	return s.manifest.RefreshFromS3(ctx, s.pool.S3Client())
+	if err := s.manifest.RefreshFromS3(ctx, s.pool.S3Client()); err != nil {
+		return err
+	}
+	s.loadBloomIndex(ctx)
+	if s.cfg.InsertEnabled() && s.bloomIdx.Len() > 0 {
+		if err := s.PersistBloomIndex(ctx); err != nil {
+			logger.Warnf("bloom index persist failed: %s", err)
+		}
+	}
+	return nil
+}
+
+func (s *Storage) bloomIndexKey() string {
+	return s.s3Prefix + "_bloom_index.bin"
+}
+
+func (s *Storage) loadBloomIndex(ctx context.Context) {
+	key := s.bloomIndexKey()
+	data, err := s.pool.Download(ctx, key)
+	if err != nil {
+		return
+	}
+	idx, err := bloomindex.Unmarshal(data)
+	if err != nil {
+		logger.Warnf("bloom index unmarshal failed: %s", err)
+		return
+	}
+	s.bloomIdx.MergeFrom(idx)
+	logger.Infof("bloom index loaded from S3; entries=%d", idx.Len())
+}
+
+// BackfillBloomIndex scans existing parquet files that aren't yet in the bloom
+// index and builds bloom filters for them. Runs in background at startup.
+func (s *Storage) BackfillBloomIndex(ctx context.Context) {
+	if s.bloomIdx == nil || s.cfg.Mode != config.ModeTraces {
+		return
+	}
+
+	files := s.manifest.GetFilesForRange(0, 1<<62)
+	if len(files) == 0 {
+		return
+	}
+
+	var bloomColumns []string
+	for _, col := range s.registry.PromotedColumns() {
+		if col.HasBloom {
+			bloomColumns = append(bloomColumns, col.ParquetColumn)
+		}
+	}
+
+	var added int
+	for _, fi := range files {
+		if ctx.Err() != nil {
+			break
+		}
+		if s.bloomIdx.Has(fi.Key) {
+			continue
+		}
+
+		data, err := s.getFileData(ctx, fi.Key, fi.Size)
+		if err != nil {
+			continue
+		}
+
+		f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+		if err != nil {
+			continue
+		}
+
+		// Find column indices for all bloom-enabled columns
+		type colRef struct {
+			name string
+			idx  int
+		}
+		var cols []colRef
+		for _, bc := range bloomColumns {
+			idx := findColumnIndex(f.Root(), bc)
+			if idx >= 0 {
+				cols = append(cols, colRef{name: bc, idx: idx})
+			}
+		}
+
+		if len(cols) == 0 {
+			// No bloom columns found — mark as indexed with empty filters
+			empty := make(map[string]*bloomindex.Filter)
+			for _, bc := range bloomColumns {
+				empty[bc] = bloomindex.NewFilter(1, 0.01)
+			}
+			s.bloomIdx.AddColumns(fi.Key, empty)
+			added++
+			continue
+		}
+
+		// Extract distinct values per column
+		perCol := make(map[string]map[string]struct{}, len(cols))
+		for _, c := range cols {
+			perCol[c.name] = make(map[string]struct{})
+		}
+
+		for _, rg := range f.RowGroups() {
+			rows := rg.Rows()
+			buf := make([]parquet.Row, 256)
+			for {
+				n, err := rows.ReadRows(buf)
+				for i := 0; i < n; i++ {
+					for _, c := range cols {
+						if c.idx < len(buf[i]) {
+							v := valueToString(buf[i][c.idx])
+							if v != "" {
+								perCol[c.name][v] = struct{}{}
+							}
+						}
+					}
+				}
+				if err != nil {
+					break
+				}
+			}
+			_ = rows.Close()
+		}
+
+		// Build bloom filters per column
+		filters := make(map[string]*bloomindex.Filter, len(cols))
+		for _, c := range cols {
+			vals := perCol[c.name]
+			if len(vals) == 0 {
+				filters[c.name] = bloomindex.NewFilter(1, 0.01)
+				continue
+			}
+			bf := bloomindex.NewFilter(len(vals), 0.01)
+			for v := range vals {
+				bf.Add(v)
+			}
+			filters[c.name] = bf
+		}
+		s.bloomIdx.AddColumns(fi.Key, filters)
+		added++
+	}
+
+	if added > 0 {
+		logger.Infof("bloom index backfill complete; added=%d, total=%d", added, s.bloomIdx.Len())
+		if err := s.PersistBloomIndex(ctx); err != nil {
+			logger.Warnf("bloom index persist after backfill failed: %s", err)
+		}
+	}
+}
+
+func (s *Storage) PersistBloomIndex(ctx context.Context) error {
+	if s.bloomIdx == nil || s.bloomIdx.Len() == 0 || s.pool == nil {
+		return nil
+	}
+	data := s.bloomIdx.Marshal()
+	key := s.bloomIndexKey()
+	return s.pool.Upload(ctx, key, data)
 }
 
 func (s *Storage) WarmLabelIndex(ctx context.Context) {

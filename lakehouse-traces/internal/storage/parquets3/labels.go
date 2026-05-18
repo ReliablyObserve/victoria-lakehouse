@@ -34,6 +34,7 @@ func extractTraceLabels(rows []schema.TraceRow) map[string][]string {
 	for i := range rows {
 		addLabel(sets, "service.name", rows[i].ServiceName)
 		addLabel(sets, "span.name", rows[i].SpanName)
+		addLabel(sets, "trace_id", rows[i].TraceID)
 	}
 	return setsToLabels(sets)
 }
@@ -62,4 +63,18 @@ func setsToLabels(sets map[string]map[string]bool) map[string][]string {
 		labels[k] = vals
 	}
 	return labels
+}
+
+func distinctTraceIDs(rows []schema.TraceRow) []string {
+	seen := make(map[string]struct{}, len(rows))
+	for i := range rows {
+		if rows[i].TraceID != "" {
+			seen[rows[i].TraceID] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for id := range seen {
+		result = append(result, id)
+	}
+	return result
 }

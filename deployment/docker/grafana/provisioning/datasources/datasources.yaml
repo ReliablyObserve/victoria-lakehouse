@@ -14,7 +14,7 @@ datasources:
     jsonData:
       maxLines: 1000
       derivedFields:
-        - datasourceUid: victoriatraces-global
+        - datasourceUid: victoria-lakehouse-traces
           matcherRegex: 'trace_id=(\w+)'
           name: traceID
           url: "$${__value.raw}"
@@ -44,7 +44,7 @@ datasources:
     jsonData:
       maxLines: 1000
       derivedFields:
-        - datasourceUid: victoriatraces-hot
+        - datasourceUid: victoria-lakehouse-traces
           matcherRegex: 'trace_id=(\w+)'
           name: traceID
           url: "$${__value.raw}"
@@ -121,7 +121,7 @@ datasources:
     jsonData:
       maxLines: 1000
       derivedFields:
-        - datasourceUid: tempo-global
+        - datasourceUid: victoria-lakehouse-traces
           matcherRegex: 'trace_id=(\w+)'
           name: traceID
           url: "$${__value.raw}"

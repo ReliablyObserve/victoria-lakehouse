@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -66,6 +68,16 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 
 	if filter == nil && limit > 0 && s.labelIndex.Len() > 0 {
 		vals := s.labelIndex.GetFieldValues(fieldName, limit)
+		if len(vals) == 0 {
+			if m := s.registry.ResolveToParquet(fieldName); m != nil && m.InternalName != fieldName {
+				vals = s.labelIndex.GetFieldValues(m.InternalName, limit)
+			}
+		}
+		if len(vals) == 0 {
+			if m := s.registry.ResolveFromParquet(fieldName); m != nil && m.InternalName != fieldName {
+				vals = s.labelIndex.GetFieldValues(m.InternalName, limit)
+			}
+		}
 		if len(vals) > 0 {
 			result := make([]logstorage.ValueWithHits, len(vals))
 			for i, v := range vals {
@@ -90,52 +102,87 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 		return nil, nil
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	fileWorkers := s.cfg.Query.FileWorkers
+	if fileWorkers <= 0 {
+		fileWorkers = 8
+	}
+	if fileWorkers > len(files) {
+		fileWorkers = len(files)
+	}
+
+	var mu sync.Mutex
 	seen := make(map[string]uint64)
 
+	taskCh := make(chan manifest.FileInfo, len(files))
 	for _, fi := range files {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
+		taskCh <- fi
+	}
+	close(taskCh)
 
-		data, err := s.getFileData(ctx, fi.Key, fi.Size)
-		if err != nil {
-			logger.Warnf("get file data for field values: %s; key=%s", err, fi.Key)
-			continue
-		}
-
-		f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
-		if err != nil {
-			logger.Warnf("open parquet for field values: %s; key=%s", err, fi.Key)
-			continue
-		}
-
-		s.updateLabelIndex(f)
-
-		colNames := columnNames(f.Root())
-		colIdx := findColumnIndex(f.Root(), mapping.ParquetColumn)
-		if colIdx < 0 {
-			continue
-		}
-
-		for _, rg := range f.RowGroups() {
-			rows := rg.Rows()
-			buf := make([]parquet.Row, 256)
-			for {
-				n, err := rows.ReadRows(buf)
-				if n > 0 {
-					collectFilteredValues(buf[:n], colNames, colIdx, filter, s, seen)
+	var wg sync.WaitGroup
+	for i := 0; i < fileWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for fi := range taskCh {
+				if ctx.Err() != nil {
+					return
 				}
+
+				data, err := s.getFileData(ctx, fi.Key, fi.Size)
 				if err != nil {
-					break
+					logger.Warnf("get file data for field values: %s; key=%s", err, fi.Key)
+					continue
+				}
+
+				f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+				if err != nil {
+					logger.Warnf("open parquet for field values: %s; key=%s", err, fi.Key)
+					continue
+				}
+
+				s.updateLabelIndex(f)
+
+				colNames := columnNames(f.Root())
+				colIdx := findColumnIndex(f.Root(), mapping.ParquetColumn)
+				if colIdx < 0 {
+					continue
+				}
+
+				localSeen := make(map[string]uint64)
+				for _, rg := range f.RowGroups() {
+					rows := rg.Rows()
+					buf := make([]parquet.Row, 256)
+					for {
+						n, err := rows.ReadRows(buf)
+						if n > 0 {
+							collectFilteredValues(buf[:n], colNames, colIdx, filter, s, localSeen)
+						}
+						if err != nil {
+							break
+						}
+					}
+					_ = rows.Close()
+				}
+
+				mu.Lock()
+				for k, v := range localSeen {
+					seen[k] += v
+				}
+				limitReached := limit > 0 && uint64(len(seen)) >= limit
+				mu.Unlock()
+
+				if limitReached {
+					cancel()
+					return
 				}
 			}
-			_ = rows.Close()
-		}
-
-		if limit > 0 && uint64(len(seen)) >= limit {
-			break
-		}
+		}()
 	}
+	wg.Wait()
 
 	result := make([]logstorage.ValueWithHits, 0, len(seen))
 	for v, hits := range seen {

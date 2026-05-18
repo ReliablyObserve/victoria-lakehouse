@@ -68,6 +68,8 @@ var (
 	compactionInterval = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
 	compactionElection = flag.String("lakehouse.compaction.leader-election", "", "Election mode: auto, k8s, s3, none")
 
+	queryFileWorkers = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 8)")
+
 	tracesBloomColumns  = flag.String("lakehouse.traces.bloom-columns", "", "Comma-separated bloom filter columns for traces (default: trace_id,service.name)")
 	tracesDeletePrefix  = flag.String("lakehouse.traces.delete-prefix", "", "Delete API prefix (default: /delete/tracessql)")
 	tracesJaegerEnabled = flag.Bool("lakehouse.traces.jaeger-enabled", true, "Enable Jaeger query API")
@@ -592,6 +594,12 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 
 	sm.SetPhase(startup.PhaseReady)
 
+	go func() {
+		bctx, bcancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer bcancel()
+		store.BackfillBloomIndex(bctx)
+	}()
+
 	ticker := time.NewTicker(cfg.Manifest.RefreshInterval)
 	defer ticker.Stop()
 	for range ticker.C {
@@ -660,6 +668,10 @@ func applyFlags(cfg *config.Config) {
 	}
 	if e := *compactionElection; e != "" {
 		cfg.Compaction.LeaderElection = e
+	}
+
+	if *queryFileWorkers > 0 {
+		cfg.Query.FileWorkers = *queryFileWorkers
 	}
 
 	if s := *tracesBloomColumns; s != "" {

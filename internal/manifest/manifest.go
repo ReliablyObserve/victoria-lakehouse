@@ -132,6 +132,24 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	}
 
 	m.mu.Lock()
+	// Preserve labels from previously tracked files (labels are lost on S3 list).
+	for partition, newFiles := range files {
+		oldFiles := m.files[partition]
+		if len(oldFiles) == 0 {
+			continue
+		}
+		oldByKey := make(map[string]map[string][]string, len(oldFiles))
+		for _, of := range oldFiles {
+			if of.Labels != nil {
+				oldByKey[of.Key] = of.Labels
+			}
+		}
+		for i := range newFiles {
+			if labels, ok := oldByKey[newFiles[i].Key]; ok {
+				newFiles[i].Labels = labels
+			}
+		}
+	}
 	m.files = files
 	m.minTime = minT
 	m.maxTime = maxT

@@ -91,6 +91,12 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		return nil
 	}
 
+	// Label-based file pre-filtering
+	files = s.filterFilesByLabels(files, queryStr)
+	if len(files) == 0 {
+		return nil
+	}
+
 	// Parallel file worker pool
 	fileWorkers := s.cfg.Query.FileWorkers
 	if fileWorkers <= 0 {
@@ -528,11 +534,12 @@ func (s *Storage) bloomFilterSkip(f *parquet.File, rg parquet.RowGroup, checks [
 }
 
 func extractExactMatch(query, fieldName string) string {
-	patterns := []string{
+	// Quoted patterns: trace_id:="abc" or trace_id:"abc"
+	quotedPatterns := []string{
 		fieldName + `:="`,
 		fieldName + `:"`,
 	}
-	for _, prefix := range patterns {
+	for _, prefix := range quotedPatterns {
 		idx := strings.Index(query, prefix)
 		if idx < 0 {
 			continue
@@ -544,7 +551,70 @@ func extractExactMatch(query, fieldName string) string {
 		}
 		return query[start : start+end]
 	}
+
+	// Unquoted pattern: trace_id:=abc123 (produced by q.String())
+	unquotedPrefix := fieldName + `:=`
+	if idx := strings.Index(query, unquotedPrefix); idx >= 0 {
+		start := idx + len(unquotedPrefix)
+		end := strings.IndexAny(query[start:], " |)")
+		if end < 0 {
+			return query[start:]
+		}
+		return query[start : start+end]
+	}
+
 	return ""
+}
+
+// filterFilesByLabels uses manifest-level labels to skip files that definitely
+// don't contain the queried values. This avoids downloading files from S3.
+func (s *Storage) filterFilesByLabels(files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
+	type labelCheck struct {
+		field string
+		value string
+	}
+
+	var checks []labelCheck
+	for _, col := range s.registry.PromotedColumns() {
+		if !col.HasBloom {
+			continue
+		}
+		val := extractExactMatch(queryStr, col.InternalName)
+		if val == "" {
+			val = extractExactMatch(queryStr, col.ParquetColumn)
+		}
+		if val != "" {
+			checks = append(checks, labelCheck{field: col.ParquetColumn, value: val})
+		}
+	}
+
+	if len(checks) == 0 {
+		return files
+	}
+
+	filtered := files[:0]
+	skipped := 0
+	for _, fi := range files {
+		skip := false
+		for _, check := range checks {
+			if fi.Labels != nil && len(fi.Labels[check.field]) > 0 && !fi.MatchesLabel(check.field, check.value) {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			skipped++
+		} else {
+			filtered = append(filtered, fi)
+		}
+	}
+
+	if skipped > 0 {
+		metrics.ParquetRowGroupsSkipped.Inc("label_index")
+		logger.Infof("label pre-filter: skipped %d/%d files", skipped, len(files))
+	}
+
+	return filtered
 }
 
 func rowGroupMatchesTimeRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs int64) bool {
