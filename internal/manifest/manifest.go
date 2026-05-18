@@ -54,9 +54,18 @@ func (fi FileInfo) MatchesLabel(field, value string) bool {
 	return false
 }
 
+type PartitionMeta struct {
+	BloomAvailable bool      `json:"bloom_available,omitempty"`
+	BloomSize      int64     `json:"bloom_size,omitempty"`
+	BloomUpdatedAt time.Time `json:"bloom_updated_at,omitempty"`
+	BloomColumns   []string  `json:"bloom_columns,omitempty"`
+	LabelsAvailable bool     `json:"labels_available,omitempty"`
+}
+
 type Manifest struct {
 	mu             sync.RWMutex
 	files          map[string][]FileInfo // "dt=2026-05-02/hour=10" -> files
+	partitionMeta  map[string]*PartitionMeta
 	minTime        time.Time
 	maxTime        time.Time
 	totalFiles     int
@@ -69,10 +78,30 @@ type Manifest struct {
 
 func New(bucket, prefix string) *Manifest {
 	return &Manifest{
-		files:  make(map[string][]FileInfo),
-		prefix: prefix,
-		bucket: bucket,
+		files:         make(map[string][]FileInfo),
+		partitionMeta: make(map[string]*PartitionMeta),
+		prefix:        prefix,
+		bucket:        bucket,
 	}
+}
+
+func (m *Manifest) SetBloomMeta(partition string, meta PartitionMeta) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.partitionMeta[partition] = &meta
+}
+
+func (m *Manifest) GetBloomMeta(partition string) *PartitionMeta {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.partitionMeta[partition]
+}
+
+func (m *Manifest) BloomAvailable(partition string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	pm := m.partitionMeta[partition]
+	return pm != nil && pm.BloomAvailable
 }
 
 func (m *Manifest) SetPrefixTemplate(tmpl string) {

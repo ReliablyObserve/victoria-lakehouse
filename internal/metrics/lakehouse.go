@@ -60,6 +60,7 @@ var (
 	ParquetBloomChecks      = NewCounterVec("lakehouse_parquet_bloom_checks_total", "result")
 	ParquetColumnBytesRead  = NewCounter("lakehouse_parquet_column_bytes_read_total")
 	ParquetFilesOpened      = NewCounter("lakehouse_parquet_files_opened_total")
+	ParquetFilesSkipped     = NewCounter("lakehouse_parquet_files_skipped_bloom_total")
 )
 
 // Insert / writer metrics

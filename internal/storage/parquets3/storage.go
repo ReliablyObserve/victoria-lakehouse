@@ -14,6 +14,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
@@ -43,6 +44,7 @@ type Storage struct {
 	bufferBridge *BufferBridge
 	tombstones   *delete.TombstoneStore
 	smartCache   *smartcache.Controller
+	bloomCache   *bloomindex.BloomCache
 	selfAZ       string
 }
 
