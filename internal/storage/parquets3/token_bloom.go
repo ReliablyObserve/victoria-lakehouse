@@ -102,7 +102,7 @@ func (b *TokenBloom) UnmarshalBinary(data []byte) error {
 // Uses FNV-1a as h1 and a murmur-inspired mix as h2.
 func doubleHash(s string) (uint64, uint64) {
 	h := fnv.New64a()
-	h.Write([]byte(s))
+	_, _ = h.Write([]byte(s))
 	h1 := h.Sum64()
 
 	// Murmur-style finalizer for h2 (independent from h1)
