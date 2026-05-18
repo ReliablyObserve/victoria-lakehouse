@@ -24,6 +24,11 @@ type CompactorPool interface {
 	Delete(ctx context.Context, key string) error
 }
 
+// BloomRebuilder rebuilds bloom entries for a partition after compaction.
+type BloomRebuilder interface {
+	RebuildPartition(ctx context.Context, partition string, files []manifest.FileInfo) error
+}
+
 // CompactorConfig holds all dependencies for the Compactor.
 type CompactorConfig struct {
 	Pool             CompactorPool
@@ -32,6 +37,7 @@ type CompactorConfig struct {
 	Mode             config.Mode
 	RowGroupSize     int
 	CompressionLevel int
+	BloomRebuilder   BloomRebuilder
 }
 
 // CompactResult summarises one compaction run.
@@ -54,6 +60,7 @@ type Compactor struct {
 	mode             config.Mode
 	rowGroupSize     int
 	compressionLevel int
+	bloomRebuilder   BloomRebuilder
 }
 
 // NewCompactor creates a Compactor from the given config.
@@ -65,6 +72,7 @@ func NewCompactor(cfg CompactorConfig) *Compactor {
 		mode:             cfg.Mode,
 		rowGroupSize:     cfg.RowGroupSize,
 		compressionLevel: cfg.CompressionLevel,
+		bloomRebuilder:   cfg.BloomRebuilder,
 	}
 }
 
@@ -187,6 +195,13 @@ func (c *Compactor) Compact(ctx context.Context, partition string, files []manif
 		c.manifest.RemoveFile(partition, f.Key)
 		if err := c.pool.Delete(ctx, f.Key); err != nil {
 			logger.Warnf("failed to delete source file; key=%s, error=%s", f.Key, err)
+		}
+	}
+
+	if c.bloomRebuilder != nil {
+		currentFiles := c.manifest.FilesForPartition(partition)
+		if err := c.bloomRebuilder.RebuildPartition(ctx, partition, currentFiles); err != nil {
+			logger.Warnf("bloom rebuild after compaction failed for %s: %v", partition, err)
 		}
 	}
 
