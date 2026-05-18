@@ -3,6 +3,10 @@ package bloomindex
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
+	"time"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
 // BloomStatusResponse is the JSON shape of /api/v1/bloom/status.
@@ -97,9 +101,47 @@ func HandleBloomStatus(sp *StatusProvider) http.HandlerFunc {
 				MemoryBytesLimit: sp.Cache.maxSize,
 				Partitions:       sp.Cache.Len(),
 			}
+
+			var tc TierConfig
+			if sp.Controller != nil {
+				tc = sp.Controller.TierConfig()
+			} else {
+				tc = DefaultTierConfig()
+			}
+			tierCounts := map[string]int{"hot": 0, "warm": 0, "cold": 0, "archive": 0}
+			now := time.Now()
+			for _, name := range sp.Cache.PartitionNames() {
+				age := partitionAge(name, now)
+				tier := TierForAge(age, tc)
+				tierCounts[tier.String()]++
+			}
+			for tierName, count := range tierCounts {
+				if ts, ok := resp.Tiers[tierName]; ok {
+					ts.Partitions = count
+					resp.Tiers[tierName] = ts
+				}
+				metrics.BloomTierPartitions.Set(tierName, int64(count))
+			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	}
+}
+
+func partitionAge(partition string, now time.Time) time.Duration {
+	dtIdx := strings.Index(partition, "dt=")
+	if dtIdx < 0 {
+		return 0
+	}
+	dateStr := partition[dtIdx+3:]
+	if len(dateStr) < 10 {
+		return 0
+	}
+	dateStr = dateStr[:10]
+	t, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		return 0
+	}
+	return now.Sub(t)
 }

@@ -4,9 +4,7 @@ package e2e
 
 import (
 	"encoding/json"
-	"net/url"
 	"testing"
-	"time"
 )
 
 func TestAZ_CacheStatsIncludesAZ(t *testing.T) {
@@ -37,12 +35,9 @@ func TestAZ_HealthAndReadyWork(t *testing.T) {
 }
 
 func TestAZ_QueriesStillWorkWithAZ(t *testing.T) {
-	params := url.Values{
-		"query": {"*"},
-		"start": {time.Now().Add(-72 * time.Hour).UTC().Format(time.RFC3339)},
-		"end":   {time.Now().UTC().Format(time.RFC3339)},
-		"limit": {"5"},
-	}
+	params := defaultTimeParams()
+	params.Set("query", "*")
+	params.Set("limit", "5")
 	body := httpGetBody(t, logsBaseURL, "/select/logsql/query", params)
 	if len(body) == 0 {
 		t.Error("query should return data even with AZ-aware routing")
@@ -72,12 +67,9 @@ func TestAZ_TracesCacheStatsIncludesAZ(t *testing.T) {
 }
 
 func TestAZ_TracesQueriesWorkWithAZ(t *testing.T) {
-	params := url.Values{
-		"query": {"*"},
-		"start": {time.Now().Add(-72 * time.Hour).UTC().Format(time.RFC3339)},
-		"end":   {time.Now().UTC().Format(time.RFC3339)},
-		"limit": {"5"},
-	}
+	params := defaultTimeParams()
+	params.Set("query", "*")
+	params.Set("limit", "5")
 	body := httpGetBody(t, tracesBaseURL, "/select/logsql/query", params)
 	if len(body) == 0 {
 		t.Error("traces query should return data with AZ-aware routing")
@@ -85,11 +77,8 @@ func TestAZ_TracesQueriesWorkWithAZ(t *testing.T) {
 }
 
 func TestAZ_TracesStreamsWork(t *testing.T) {
-	params := url.Values{
-		"query": {"*"},
-		"start": {time.Now().Add(-72 * time.Hour).UTC().Format(time.RFC3339)},
-		"end":   {time.Now().UTC().Format(time.RFC3339)},
-	}
+	params := defaultTimeParams()
+	params.Set("query", "*")
 	body := httpGetBody(t, tracesBaseURL, "/select/logsql/streams", params)
 	if len(body) == 0 {
 		t.Error("traces streams should return data")
@@ -97,11 +86,8 @@ func TestAZ_TracesStreamsWork(t *testing.T) {
 }
 
 func TestAZ_TracesFieldNamesWork(t *testing.T) {
-	params := url.Values{
-		"query": {"*"},
-		"start": {time.Now().Add(-72 * time.Hour).UTC().Format(time.RFC3339)},
-		"end":   {time.Now().UTC().Format(time.RFC3339)},
-	}
+	params := defaultTimeParams()
+	params.Set("query", "*")
 	body := httpGetBody(t, tracesBaseURL, "/select/logsql/field_names", params)
 	if len(body) == 0 {
 		t.Error("traces field_names should return data")
@@ -109,11 +95,8 @@ func TestAZ_TracesFieldNamesWork(t *testing.T) {
 }
 
 func TestAZ_LogsStreamsWork(t *testing.T) {
-	params := url.Values{
-		"query": {"*"},
-		"start": {time.Now().Add(-72 * time.Hour).UTC().Format(time.RFC3339)},
-		"end":   {time.Now().UTC().Format(time.RFC3339)},
-	}
+	params := defaultTimeParams()
+	params.Set("query", "*")
 	body := httpGetBody(t, logsBaseURL, "/select/logsql/streams", params)
 	if len(body) == 0 {
 		t.Error("logs streams should return data")
@@ -121,11 +104,8 @@ func TestAZ_LogsStreamsWork(t *testing.T) {
 }
 
 func TestAZ_LogsStreamIDsWork(t *testing.T) {
-	params := url.Values{
-		"query": {"*"},
-		"start": {time.Now().Add(-72 * time.Hour).UTC().Format(time.RFC3339)},
-		"end":   {time.Now().UTC().Format(time.RFC3339)},
-	}
+	params := defaultTimeParams()
+	params.Set("query", "*")
 	body := httpGetBody(t, logsBaseURL, "/select/logsql/stream_ids", params)
 	if len(body) == 0 {
 		t.Error("logs stream_ids should return data")

@@ -22,6 +22,12 @@ func (o *storageBloomObserver) OnFileFlush(partition, fileKey string, columnValu
 		return
 	}
 	o.bloom.AddFile(partition, fileKey, columnValues)
+	metrics.BloomBuildTotal.Inc("flush")
+	totalEntries := 0
+	for _, vals := range columnValues {
+		totalEntries += len(vals)
+	}
+	metrics.BloomEntriesTotal.Add(int64(totalEntries))
 }
 
 func (o *storageBloomObserver) PersistDirty(ctx context.Context, prefix string) {
@@ -36,6 +42,7 @@ func (o *storageBloomObserver) PersistDirty(ctx context.Context, prefix string) 
 		key := fmt.Sprintf("%s%s/_bloom.bin", prefix, partition)
 		if err := o.pool.Upload(ctx, key, data); err != nil {
 			metrics.InsertFlushErrorsTotal.Inc()
+			metrics.BloomBuildErrors.Inc()
 			logger.Warnf("bloom persist failed for %s: %v", partition, err)
 			continue
 		}

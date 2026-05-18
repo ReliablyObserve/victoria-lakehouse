@@ -60,23 +60,31 @@ func TestBloom_ServiceList(t *testing.T) {
 
 	body := httpGetBody(t, logsBaseURL, "/select/logsql/field_values", params)
 
-	var values []struct {
+	type fieldValue struct {
 		Value string `json:"value"`
 		Hits  int64  `json:"hits"`
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
-		if line == "" {
-			continue
+
+	// Try JSON wrapper format first: {"values":[...]}
+	var wrapper struct {
+		Values []fieldValue `json:"values"`
+	}
+	var values []fieldValue
+	if err := json.Unmarshal(body, &wrapper); err == nil && wrapper.Values != nil {
+		values = wrapper.Values
+	} else {
+		// Fallback: try NDJSON
+		for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+			if line == "" {
+				continue
+			}
+			var v fieldValue
+			if err := json.Unmarshal([]byte(line), &v); err != nil {
+				t.Logf("skipping non-JSON line: %s", line)
+				continue
+			}
+			values = append(values, v)
 		}
-		var v struct {
-			Value string `json:"value"`
-			Hits  int64  `json:"hits"`
-		}
-		if err := json.Unmarshal([]byte(line), &v); err != nil {
-			t.Logf("skipping non-JSON line: %s", line)
-			continue
-		}
-		values = append(values, v)
 	}
 
 	if len(values) == 0 {

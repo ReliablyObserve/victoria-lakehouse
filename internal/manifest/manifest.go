@@ -187,6 +187,21 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	m.lastRefresh = time.Now()
 	m.mu.Unlock()
 
+	metrics.StorageFilesTotal.Set(int64(totalFiles))
+	metrics.StorageBytesTotal.Set(totalBytes)
+	metrics.StoragePartitionsTotal.Set(int64(len(files)))
+
+	tenants := make(map[string]bool)
+	for _, pFiles := range files {
+		for _, fi := range pFiles {
+			parts := strings.SplitN(fi.Key, "/", 3)
+			if len(parts) >= 2 {
+				tenants[parts[0]+"/"+parts[1]] = true
+			}
+		}
+	}
+	metrics.StorageTenantsTotal.Set(int64(len(tenants)))
+
 	logger.Infof("manifest refreshed; partitions=%d, files=%d, bytes=%d, min_time=%v, max_time=%v", len(files), totalFiles, totalBytes, minT, maxT)
 
 	return nil

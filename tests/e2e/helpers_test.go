@@ -134,9 +134,18 @@ func waitForHealth(t *testing.T, baseURL string, timeout time.Duration) {
 	t.Fatalf("health check at %s did not become healthy within %s", baseURL, timeout)
 }
 
-// defaultTimeParams returns url.Values with start/end covering the last 72 hours
-// to encompass all datagen data (48h window + margin).
+// defaultTimeParams returns url.Values with start/end covering the last 2 hours.
+// This keeps queries fast (~160 files vs 9600+ for 72h). Tests that need the
+// full datagen range should use wideTimeParams().
 func defaultTimeParams() url.Values {
+	now := time.Now()
+	return url.Values{
+		"start": {fmt.Sprintf("%d", now.Add(-2*time.Hour).UnixNano())},
+		"end":   {fmt.Sprintf("%d", now.UnixNano())},
+	}
+}
+
+func wideTimeParams() url.Values {
 	now := time.Now()
 	return url.Values{
 		"start": {fmt.Sprintf("%d", now.Add(-72*time.Hour).UnixNano())},

@@ -67,6 +67,9 @@ func New(cfg *config.Config) (*Storage, error) {
 	m := manifest.New(cfg.S3.Bucket, prefix)
 
 	memCache := cache.NewLRU(cfg.CacheMemoryBytes())
+	metrics.SmartCacheBytesLimit.Set(cfg.CacheMemoryBytes())
+	metrics.ConcurrentSelectsCap.Set(int64(cfg.Query.MaxConcurrent))
+	metrics.MetricsCardinalityLimit.Set(int64(cfg.Stats.MetricsCardinalityLimit))
 
 	var diskCacheInst *cache.DiskCache
 	if cfg.Cache.DiskPath != "" {
@@ -852,6 +855,11 @@ func (s *Storage) PersistState() error {
 // SmartCache returns the SmartCacheController (nil if not configured).
 func (s *Storage) SmartCache() *smartcache.Controller {
 	return s.smartCache
+}
+
+// BloomCache returns the bloom index cache (nil if select is not enabled).
+func (s *Storage) BloomCache() *bloomindex.BloomCache {
+	return s.bloomCache
 }
 
 // WarmFile fetches a file into cache without returning the data.

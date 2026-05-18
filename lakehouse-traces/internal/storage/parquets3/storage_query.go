@@ -612,7 +612,8 @@ func (s *Storage) filterFilesByLabels(files []manifest.FileInfo, queryStr string
 	for _, fi := range files {
 		skip := false
 		for _, check := range checks {
-			if fi.Labels != nil && len(fi.Labels[check.field]) > 0 && !fi.MatchesLabel(check.field, check.value) {
+			labelValues := fi.Labels[check.field]
+			if fi.Labels != nil && len(labelValues) > 0 && len(labelValues) < maxLabelsPerField && !fi.MatchesLabel(check.field, check.value) {
 				skip = true
 				break
 			}

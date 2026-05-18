@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
 // MetadataCompactor handles local bloom tier transitions based on data age.
@@ -42,10 +44,13 @@ func (mc *MetadataCompactor) CompactPartition(ctx context.Context, partition str
 
 	switch tier {
 	case TierWarm:
+		metrics.BloomTierTransitions.Inc("hot_to_warm")
 		return mc.downgradeToPerFile(ctx, partition, idx)
 	case TierCold:
+		metrics.BloomTierTransitions.Inc("warm_to_cold")
 		return mc.downgradeToSummary(ctx, partition, idx)
 	case TierArchive:
+		metrics.BloomTierTransitions.Inc("cold_to_archive")
 		mc.cache.Invalidate(partition)
 		return nil
 	default:

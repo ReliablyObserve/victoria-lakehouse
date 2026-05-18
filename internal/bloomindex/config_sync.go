@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
 // ConfigStore abstracts S3 operations for config persistence.
@@ -43,6 +45,7 @@ func (cs *ConfigSync) Sync(ctx context.Context) error {
 	data, err := cs.store.Get(ctx, cs.key)
 	if err != nil {
 		cs.syncErrors++
+		metrics.BloomConfigSyncError.Inc()
 		logger.Warnf("config sync failed: %v", err)
 		return err
 	}
@@ -59,6 +62,7 @@ func (cs *ConfigSync) Sync(ctx context.Context) error {
 	var cfg BloomControllerConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		cs.syncErrors++
+		metrics.BloomConfigSyncError.Inc()
 		logger.Warnf("config sync unmarshal failed: %v", err)
 		return err
 	}
@@ -67,6 +71,7 @@ func (cs *ConfigSync) Sync(ctx context.Context) error {
 	cs.lastConfig = data
 	cs.lastSync = time.Now()
 	cs.syncErrors = 0
+	metrics.BloomConfigSyncTotal.Inc()
 
 	return nil
 }
@@ -88,12 +93,14 @@ func (cs *ConfigSync) Push(ctx context.Context) error {
 
 	if err := cs.store.Put(ctx, cs.key, data); err != nil {
 		cs.syncErrors++
+		metrics.BloomConfigSyncError.Inc()
 		return err
 	}
 
 	cs.lastConfig = data
 	cs.lastSync = time.Now()
 	cs.syncErrors = 0
+	metrics.BloomConfigSyncTotal.Inc()
 	return nil
 }
 

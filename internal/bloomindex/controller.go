@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
 // BloomControllerConfig holds runtime-tunable bloom parameters.
@@ -167,6 +169,7 @@ func (bc *BloomController) recordAdjustment(param, oldVal, newVal, reason string
 		Reason:    reason,
 	}
 	bc.adjustments = append(bc.adjustments, adj)
+	metrics.BloomControllerAdj.Inc(param)
 	logger.Infof("bloom_controller: adjusted %s from %s to %s — %s", param, oldVal, newVal, reason)
 }
 

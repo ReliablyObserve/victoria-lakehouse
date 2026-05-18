@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/azdetect"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/compaction"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
@@ -647,6 +648,12 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		})
 		statsAPI.Register(mux)
 	}
+
+	// Bloom status API
+	mux.HandleFunc("/api/v1/bloom/status", bloomindex.HandleBloomStatus(&bloomindex.StatusProvider{
+		Cache: store.BloomCache(),
+		Mode:  "logs",
+	}))
 
 	// Lakehouse UI
 	uiHandler := ui.NewHandler(ui.HandlerConfig{

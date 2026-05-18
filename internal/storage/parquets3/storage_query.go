@@ -188,6 +188,10 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}
 	}
 
+	if n := rowsEmitted.Load(); n > 0 {
+		metrics.QueryRowsTotal.Add(int(n))
+	}
+
 	return nil
 }
 
@@ -534,6 +538,8 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 		return files
 	}
 
+	metrics.BloomQueriesTotal.Inc("attempt")
+
 	byPartition := make(map[string][]manifest.FileInfo)
 	for _, fi := range files {
 		partition := partitionFromKey(fi.Key)
@@ -559,14 +565,23 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 		}
 
 		before := len(pFiles)
+		var bytesAvoided int64
 		for _, fi := range pFiles {
 			if matchSet[fi.Key] {
 				result = append(result, fi)
+			} else {
+				bytesAvoided += fi.Size
 			}
 		}
 		skipped := before - len(matchSet)
 		if skipped > 0 {
 			metrics.ParquetFilesSkipped.Add(skipped)
+			metrics.BloomFilesSkipped.Add(skipped)
+			metrics.BloomBytesAvoided.Add(int(bytesAvoided))
+			metrics.ParquetBloomChecks.Add("miss", skipped)
+		}
+		if len(matchSet) > 0 {
+			metrics.ParquetBloomChecks.Add("hit", len(matchSet))
 		}
 	}
 	return result
@@ -688,7 +703,8 @@ func (s *Storage) filterFilesByLabels(files []manifest.FileInfo, queryStr string
 	for _, fi := range files {
 		skip := false
 		for _, check := range checks {
-			if fi.Labels != nil && len(fi.Labels[check.field]) > 0 && !fi.MatchesLabel(check.field, check.value) {
+			labelValues := fi.Labels[check.field]
+			if fi.Labels != nil && len(labelValues) > 0 && len(labelValues) < maxLabelsPerField && !fi.MatchesLabel(check.field, check.value) {
 				skip = true
 				break
 			}

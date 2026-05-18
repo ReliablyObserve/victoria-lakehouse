@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
 type BloomCache struct {
@@ -61,6 +63,7 @@ func (c *BloomCache) Get(ctx context.Context, partition string) (*Index, error) 
 		size:     size,
 		lastUsed: time.Now(),
 	}
+	metrics.BloomBytesMemory.Set(int64(c.currentSizeLocked()))
 	c.mu.Unlock()
 
 	return idx, nil
@@ -77,12 +80,14 @@ func (c *BloomCache) Put(partition string, idx *Index) {
 		size:     size,
 		lastUsed: time.Now(),
 	}
+	metrics.BloomBytesMemory.Set(int64(c.currentSizeLocked()))
 	c.mu.Unlock()
 }
 
 func (c *BloomCache) Invalidate(partition string) {
 	c.mu.Lock()
 	delete(c.entries, partition)
+	metrics.BloomBytesMemory.Set(int64(c.currentSizeLocked()))
 	c.mu.Unlock()
 }
 
@@ -103,6 +108,16 @@ func (c *BloomCache) Len() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.entries)
+}
+
+func (c *BloomCache) PartitionNames() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	names := make([]string, 0, len(c.entries))
+	for k := range c.entries {
+		names = append(names, k)
+	}
+	return names
 }
 
 func (c *BloomCache) Size() int {

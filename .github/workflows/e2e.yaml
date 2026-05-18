@@ -33,7 +33,7 @@ env:
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
@@ -99,7 +99,7 @@ jobs:
           docker compose -f deployment/docker/docker-compose-e2e.yml exec -T minio mc ls --recursive local/obs-archive/1/1/ | head -20
 
       - name: Run E2E smoke tests
-        env:
+        env: &e2e-env
           LOGS_BASE_URL: http://localhost:29428
           TRACES_BASE_URL: http://localhost:20428
           LOKI_PROXY_URL: http://localhost:23100
@@ -111,18 +111,25 @@ jobs:
           MINIO_PASSWORD: minioadmin
         run: go test -tags=e2e -v -count=1 -timeout=5m ./tests/e2e/ -run "TestSmoke" 2>&1 | tee e2e-results.txt
 
-      - name: Run E2E full suite
-        env:
-          LOGS_BASE_URL: http://localhost:29428
-          TRACES_BASE_URL: http://localhost:20428
-          LOKI_PROXY_URL: http://localhost:23100
-          VLSELECT_URL: http://localhost:29471
-          VTSELECT_URL: http://localhost:20471
-          MINIO_URL: http://localhost:29000
-          MINIO_BUCKET: obs-archive
-          MINIO_USER: minioadmin
-          MINIO_PASSWORD: minioadmin
-        run: go test -tags=e2e -v -count=1 -timeout=10m ./tests/e2e/ 2>&1 | tee -a e2e-results.txt
+      - name: Verify metrics (all 147+ Prometheus metrics)
+        env: *e2e-env
+        run: go test -tags=e2e -v -count=1 -timeout=8m ./tests/e2e/ -run "TestMetrics_" 2>&1 | tee -a e2e-results.txt
+
+      - name: Verify endpoints (all API endpoints)
+        env: *e2e-env
+        run: go test -tags=e2e -v -count=1 -timeout=8m ./tests/e2e/ -run "TestEndpoint_" 2>&1 | tee -a e2e-results.txt
+
+      - name: Verify settings (all config settings behavior)
+        env: *e2e-env
+        run: go test -tags=e2e -v -count=1 -timeout=8m ./tests/e2e/ -run "TestSetting_" 2>&1 | tee -a e2e-results.txt
+
+      - name: Verify bloom (bloom index deep verification)
+        env: *e2e-env
+        run: go test -tags=e2e -v -count=1 -timeout=8m ./tests/e2e/ -run "TestBloomVerify_" 2>&1 | tee -a e2e-results.txt
+
+      - name: Run remaining E2E tests
+        env: *e2e-env
+        run: go test -tags=e2e -v -count=1 -timeout=10m ./tests/e2e/ -run "^(?!TestSmoke|TestMetrics_|TestEndpoint_|TestSetting_|TestBloomVerify_)" 2>&1 | tee -a e2e-results.txt
 
       - name: Upload E2E results
         if: always()
