@@ -38,7 +38,7 @@ type Config struct {
 	Mode     Mode     `yaml:"mode"`
 	Role     Role     `yaml:"role"`
 	Topology Topology `yaml:"topology"`
-	Profile  string   `yaml:"profile"`
+	Profile  Profile  `yaml:"profile"`
 
 	S3          S3Config          `yaml:"s3"`
 	Cache       CacheConfig       `yaml:"cache"`
@@ -55,6 +55,7 @@ type Config struct {
 	Tenant      TenantConfig      `yaml:"tenant"`
 	Compaction  CompactionConfig  `yaml:"compaction"`
 	Delete      DeleteConfig      `yaml:"delete"`
+	GC          GCConfig          `yaml:"gc"`
 	SmartCache  SmartCacheConfig  `yaml:"smart_cache"`
 	CrossSignal CrossSignalConfig `yaml:"cross_signal"`
 	Retention   RetentionConfig   `yaml:"retention"`
@@ -66,17 +67,23 @@ type Config struct {
 }
 
 type LogsModeConfig struct {
-	BloomColumns  []string `yaml:"bloom_columns"`
-	DeletePrefix  string   `yaml:"delete_prefix"`
-	CompatVersion string   `yaml:"compat_version"`
+	BloomColumns  []string       `yaml:"bloom_columns"`
+	DeletePrefix  string         `yaml:"delete_prefix"`
+	CompatVersion string         `yaml:"compat_version"`
+	Profile       Profile        `yaml:"profile"`
+	Insert        RoleProfileRef `yaml:"insert"`
+	Select        RoleProfileRef `yaml:"select"`
 }
 
 type TracesModeConfig struct {
-	BloomColumns   []string `yaml:"bloom_columns"`
-	DeletePrefix   string   `yaml:"delete_prefix"`
-	CompatVersion  string   `yaml:"compat_version"`
-	JaegerEnabled  bool     `yaml:"jaeger_enabled"`
-	JaegerGRPCAddr string   `yaml:"jaeger_grpc_addr"`
+	BloomColumns   []string       `yaml:"bloom_columns"`
+	DeletePrefix   string         `yaml:"delete_prefix"`
+	CompatVersion  string         `yaml:"compat_version"`
+	JaegerEnabled  bool           `yaml:"jaeger_enabled"`
+	JaegerGRPCAddr string         `yaml:"jaeger_grpc_addr"`
+	Profile        Profile        `yaml:"profile"`
+	Insert         RoleProfileRef `yaml:"insert"`
+	Select         RoleProfileRef `yaml:"select"`
 }
 
 func (c *Config) ActiveBloomColumns() []string {
@@ -123,6 +130,15 @@ type InsertConfig struct {
 	WALEnabled       bool          `yaml:"wal_enabled"`
 	WALDir           string        `yaml:"wal_dir"`
 	WALMaxBytes      string        `yaml:"wal_max_bytes"`
+
+	AckMode              string        `yaml:"ack_mode"`
+	FlushLinger          time.Duration `yaml:"flush_linger"`
+	FlushMaxRows         int           `yaml:"flush_max_rows"`
+	PeerReplicate        bool          `yaml:"peer_replicate"`
+	PeerReplicateTimeout time.Duration `yaml:"peer_replicate_timeout"`
+	PeerReplicateTTL     time.Duration `yaml:"peer_replicate_ttl"`
+	AsyncWALEnabled      bool          `yaml:"async_wal_enabled"`
+	AsyncWALBatchLinger  time.Duration `yaml:"async_wal_batch_linger"`
 }
 
 func (c *InsertConfig) MaxBufferBytesN() int64 {
@@ -147,6 +163,12 @@ func (c *InsertConfig) WALMaxBytesN() int64 {
 		return 512 * 1024 * 1024
 	}
 	return n
+}
+
+type GCConfig struct {
+	Enabled           bool          `yaml:"enabled"`
+	Interval          time.Duration `yaml:"interval"`
+	OrphanGracePeriod time.Duration `yaml:"orphan_grace_period"`
 }
 
 func (c *Config) InsertEnabled() bool {
@@ -385,6 +407,10 @@ type SchemaConfig struct {
 	ExtraPromoted []ExtraPromotedColumn `yaml:"extra_promoted"`
 }
 
+type RoleProfileRef struct {
+	Profile Profile `yaml:"profile"`
+}
+
 func Default() *Config {
 	return &Config{
 		Role:     RoleAll,
@@ -464,6 +490,15 @@ func Default() *Config {
 			WALEnabled:       true,
 			WALDir:           "/data/lakehouse/wal",
 			WALMaxBytes:      "512MB",
+
+			AckMode:              "buffer",
+			FlushLinger:          200 * time.Millisecond,
+			FlushMaxRows:         5000,
+			PeerReplicate:        false,
+			PeerReplicateTimeout: 5 * time.Millisecond,
+			PeerReplicateTTL:     30 * time.Second,
+			AsyncWALEnabled:      false,
+			AsyncWALBatchLinger:  50 * time.Millisecond,
 		},
 
 		Select: SelectConfig{
@@ -510,6 +545,12 @@ func Default() *Config {
 			CostWarningThreshold: 10.0,
 			ForceGlacierHeader:   "X-Force-Glacier-Delete",
 			VerifyInterval:       6 * time.Hour,
+		},
+
+		GC: GCConfig{
+			Enabled:           true,
+			Interval:          6 * time.Hour,
+			OrphanGracePeriod: 1 * time.Hour,
 		},
 
 		SmartCache: SmartCacheConfig{
@@ -585,9 +626,12 @@ func Default() *Config {
 }
 
 func Load(path string) (*Config, error) {
-	cfg := Default()
+	return LoadWithMode(path, "", "")
+}
+
+func LoadWithMode(path string, mode Mode, role Role) (*Config, error) {
 	if path == "" {
-		return cfg, nil
+		return Default(), nil
 	}
 
 	data, err := os.ReadFile(path)
@@ -602,25 +646,30 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config file %s: %w", path, err)
 	}
 
-	// Apply profile between defaults and file config.
-	// Profile sets the complete base config; file config overrides it.
-	// We use the profile config directly as the base (not merged on top of
-	// defaults) because profiles may set booleans to false (e.g., WALEnabled),
-	// which mergeConfig cannot convey (it skips zero-valued booleans).
-	profileName := wrapper.Lakehouse.Profile
-	if profileName != "" {
-		if !IsValidProfile(profileName) {
-			return nil, fmt.Errorf("invalid profile %q, valid profiles: %s", profileName, ValidProfileNames())
-		}
-		cfg = ProfileConfig(Profile(profileName))
+	fileConfig := &wrapper.Lakehouse
+
+	if mode != "" {
+		fileConfig.Mode = mode
+	}
+	if role != "" {
+		fileConfig.Role = role
 	}
 
-	merged := mergeConfig(cfg, &wrapper.Lakehouse)
+	profile := fileConfig.ResolveEffectiveProfile()
+
+	base := ProfileConfig(profile)
+	merged := mergeConfig(base, fileConfig)
+	merged.Profile = profile
+
 	return merged, nil
 }
 
+func MergeConfigs(base, overlay *Config) *Config {
+	return mergeConfig(base, overlay)
+}
+
 func (c *Config) Validate() error {
-	if c.Profile != "" && !IsValidProfile(c.Profile) {
+	if c.Profile != "" && !IsValidProfile(string(c.Profile)) {
 		return fmt.Errorf("--lakehouse.profile must be one of: %s; got %q", ValidProfileNames(), c.Profile)
 	}
 	if c.Mode == "" {
@@ -640,6 +689,13 @@ func (c *Config) Validate() error {
 	}
 	if c.Role == "" {
 		c.Role = RoleAll
+	}
+
+	switch c.Profile {
+	case ProfileBalanced, ProfileMaxPerformance, ProfileMaxDurability,
+		ProfileMaxCostSavings, ProfileDev, "":
+	default:
+		return fmt.Errorf("--lakehouse.profile must be one of: balanced, max-performance, max-durability, max-cost-savings, dev; got %q", c.Profile)
 	}
 
 	if c.InsertEnabled() {
@@ -670,6 +726,20 @@ func (c *Config) Validate() error {
 			if _, err := ParseSizeBytes(c.Insert.WALMaxBytes); err != nil {
 				return fmt.Errorf("--lakehouse.insert.wal-max-bytes: invalid size %q: %w", c.Insert.WALMaxBytes, err)
 			}
+		}
+		switch c.Insert.AckMode {
+		case "buffer", "wal", "flush-sync":
+		default:
+			return fmt.Errorf("--lakehouse.insert.ack-mode must be one of: buffer, wal, flush-sync; got %q", c.Insert.AckMode)
+		}
+		if c.Insert.FlushLinger < 0 {
+			return fmt.Errorf("--lakehouse.insert.flush-linger must be non-negative")
+		}
+		if c.Insert.FlushMaxRows < 0 {
+			return fmt.Errorf("--lakehouse.insert.flush-max-rows must be non-negative")
+		}
+		if c.Insert.PeerReplicateTTL < 0 {
+			return fmt.Errorf("--lakehouse.insert.peer-replicate-ttl must be non-negative")
 		}
 	}
 
@@ -725,6 +795,15 @@ func (c *Config) Validate() error {
 		}
 		if c.Compaction.MinFilesL1 < 2 {
 			return fmt.Errorf("--lakehouse.compaction.min-files-l1 must be >= 2")
+		}
+	}
+
+	if c.GC.Enabled {
+		if c.GC.Interval <= 0 {
+			return fmt.Errorf("--lakehouse.gc.interval must be positive")
+		}
+		if c.GC.OrphanGracePeriod <= 0 {
+			return fmt.Errorf("--lakehouse.gc.orphan-grace-period must be positive")
 		}
 	}
 
@@ -1155,6 +1234,11 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 		base.Role = overlay.Role
 	}
 
+	// Profile
+	if overlay.Profile != "" {
+		base.Profile = overlay.Profile
+	}
+
 	// Insert
 	if overlay.Insert.FlushInterval > 0 {
 		base.Insert.FlushInterval = overlay.Insert.FlushInterval
@@ -1185,6 +1269,30 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Insert.WALMaxBytes != "" {
 		base.Insert.WALMaxBytes = overlay.Insert.WALMaxBytes
+	}
+	if overlay.Insert.AckMode != "" {
+		base.Insert.AckMode = overlay.Insert.AckMode
+	}
+	if overlay.Insert.FlushLinger > 0 {
+		base.Insert.FlushLinger = overlay.Insert.FlushLinger
+	}
+	if overlay.Insert.FlushMaxRows > 0 {
+		base.Insert.FlushMaxRows = overlay.Insert.FlushMaxRows
+	}
+	if overlay.Insert.PeerReplicate {
+		base.Insert.PeerReplicate = true
+	}
+	if overlay.Insert.PeerReplicateTimeout > 0 {
+		base.Insert.PeerReplicateTimeout = overlay.Insert.PeerReplicateTimeout
+	}
+	if overlay.Insert.PeerReplicateTTL > 0 {
+		base.Insert.PeerReplicateTTL = overlay.Insert.PeerReplicateTTL
+	}
+	if overlay.Insert.AsyncWALEnabled {
+		base.Insert.AsyncWALEnabled = true
+	}
+	if overlay.Insert.AsyncWALBatchLinger > 0 {
+		base.Insert.AsyncWALBatchLinger = overlay.Insert.AsyncWALBatchLinger
 	}
 
 	// Select
@@ -1339,6 +1447,17 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 		base.Retention.Rules = overlay.Retention.Rules
 	}
 
+	// GC
+	if overlay.GC.Enabled {
+		base.GC.Enabled = true
+	}
+	if overlay.GC.Interval > 0 {
+		base.GC.Interval = overlay.GC.Interval
+	}
+	if overlay.GC.OrphanGracePeriod > 0 {
+		base.GC.OrphanGracePeriod = overlay.GC.OrphanGracePeriod
+	}
+
 	// Logs mode config
 	if len(overlay.Logs.BloomColumns) > 0 {
 		base.Logs.BloomColumns = overlay.Logs.BloomColumns
@@ -1348,6 +1467,15 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Logs.CompatVersion != "" {
 		base.Logs.CompatVersion = overlay.Logs.CompatVersion
+	}
+	if overlay.Logs.Profile != "" {
+		base.Logs.Profile = overlay.Logs.Profile
+	}
+	if overlay.Logs.Insert.Profile != "" {
+		base.Logs.Insert.Profile = overlay.Logs.Insert.Profile
+	}
+	if overlay.Logs.Select.Profile != "" {
+		base.Logs.Select.Profile = overlay.Logs.Select.Profile
 	}
 
 	// Traces mode config
@@ -1365,6 +1493,15 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Traces.JaegerGRPCAddr != "" {
 		base.Traces.JaegerGRPCAddr = overlay.Traces.JaegerGRPCAddr
+	}
+	if overlay.Traces.Profile != "" {
+		base.Traces.Profile = overlay.Traces.Profile
+	}
+	if overlay.Traces.Insert.Profile != "" {
+		base.Traces.Insert.Profile = overlay.Traces.Insert.Profile
+	}
+	if overlay.Traces.Select.Profile != "" {
+		base.Traces.Select.Profile = overlay.Traces.Select.Profile
 	}
 
 	return base

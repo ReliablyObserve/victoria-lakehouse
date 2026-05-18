@@ -1,12 +1,10 @@
 package config
 
 import (
-	"fmt"
 	"strings"
 	"time"
 )
 
-// Profile represents a named configuration preset.
 type Profile string
 
 const (
@@ -17,7 +15,6 @@ const (
 	ProfileDev            Profile = "dev"
 )
 
-// ValidProfiles returns all valid profile names.
 func ValidProfiles() []Profile {
 	return []Profile{
 		ProfileBalanced,
@@ -28,17 +25,15 @@ func ValidProfiles() []Profile {
 	}
 }
 
-// IsValidProfile returns true if p is a recognized profile name.
-func IsValidProfile(p string) bool {
-	for _, valid := range ValidProfiles() {
-		if Profile(p) == valid {
+func IsValidProfile(name string) bool {
+	for _, p := range ValidProfiles() {
+		if string(p) == name {
 			return true
 		}
 	}
 	return false
 }
 
-// ValidProfileNames returns a formatted string of valid profile names for error messages.
 func ValidProfileNames() string {
 	names := make([]string, len(ValidProfiles()))
 	for i, p := range ValidProfiles() {
@@ -47,57 +42,257 @@ func ValidProfileNames() string {
 	return strings.Join(names, ", ")
 }
 
-// ProfileConfig returns a complete Config for the given profile.
-// Currently sets INSERT PATH settings (the most impactful path).
-// Other settings use Default() values.
 func ProfileConfig(p Profile) *Config {
-	cfg := Default()
-
 	switch p {
-	case ProfileBalanced:
-		// balanced is identical to Default() — no changes needed
-		return cfg
-
 	case ProfileMaxPerformance:
-		cfg.Insert.FlushInterval = 5 * time.Second
-		cfg.Insert.WALEnabled = false
-		cfg.Insert.WALMaxBytes = "512MB"
-		cfg.Insert.CompressionLevel = 3
-		cfg.Insert.MaxBufferRows = 100000
-		cfg.Insert.MaxBufferBytes = "512MB"
-		cfg.Insert.TargetFileSize = "64MB"
-
+		return maxPerformanceConfig()
 	case ProfileMaxDurability:
-		cfg.Insert.FlushInterval = 10 * time.Second
-		cfg.Insert.WALEnabled = true
-		cfg.Insert.WALMaxBytes = "1GB"
-		cfg.Insert.CompressionLevel = 7
-		cfg.Insert.MaxBufferRows = 50000
-		cfg.Insert.MaxBufferBytes = "256MB"
-		cfg.Insert.TargetFileSize = "128MB"
-
+		return maxDurabilityConfig()
 	case ProfileMaxCostSavings:
-		cfg.Insert.FlushInterval = 30 * time.Second
-		cfg.Insert.WALEnabled = false
-		cfg.Insert.WALMaxBytes = "256MB"
-		cfg.Insert.CompressionLevel = 11
-		cfg.Insert.MaxBufferRows = 25000
-		cfg.Insert.MaxBufferBytes = "128MB"
-		cfg.Insert.TargetFileSize = "256MB"
-
+		return maxCostSavingsConfig()
 	case ProfileDev:
-		cfg.Insert.FlushInterval = 1 * time.Second
-		cfg.Insert.WALEnabled = false
-		cfg.Insert.WALMaxBytes = "32MB"
-		cfg.Insert.CompressionLevel = 1
-		cfg.Insert.MaxBufferRows = 1000
-		cfg.Insert.MaxBufferBytes = "32MB"
-		cfg.Insert.TargetFileSize = "8MB"
-		cfg.S3.ForcePathStyle = true
-
+		return devConfig()
 	default:
-		panic(fmt.Sprintf("unknown profile %q", p))
+		return balancedConfig()
 	}
+}
+
+func (c *Config) ResolveEffectiveProfile() Profile {
+	if c.Mode == ModeLogs {
+		if c.Role == RoleInsert && c.Logs.Insert.Profile != "" {
+			return c.Logs.Insert.Profile
+		}
+		if c.Role == RoleSelect && c.Logs.Select.Profile != "" {
+			return c.Logs.Select.Profile
+		}
+		if c.Logs.Profile != "" {
+			return c.Logs.Profile
+		}
+	}
+	if c.Mode == ModeTraces {
+		if c.Role == RoleInsert && c.Traces.Insert.Profile != "" {
+			return c.Traces.Insert.Profile
+		}
+		if c.Role == RoleSelect && c.Traces.Select.Profile != "" {
+			return c.Traces.Select.Profile
+		}
+		if c.Traces.Profile != "" {
+			return c.Traces.Profile
+		}
+	}
+	if c.Profile != "" {
+		return c.Profile
+	}
+	return ProfileBalanced
+}
+
+func balancedConfig() *Config {
+	cfg := Default()
+	cfg.Profile = ProfileBalanced
+	return cfg
+}
+
+func maxPerformanceConfig() *Config {
+	cfg := Default()
+	cfg.Profile = ProfileMaxPerformance
+
+	cfg.Insert.FlushInterval = 5 * time.Second
+	cfg.Insert.WALEnabled = false
+	cfg.Insert.CompressionLevel = 3
+	cfg.Insert.MaxBufferRows = 100000
+	cfg.Insert.MaxBufferBytes = "512MB"
+	cfg.Insert.TargetFileSize = "64MB"
+	cfg.Insert.RowGroupSize = 5000
+
+	cfg.Select.BufferQueryTimeout = 1 * time.Second
+	cfg.Query.FileWorkers = 16
+	cfg.Query.MaxConcurrent = 64
+	cfg.Query.Timeout = 120 * time.Second
+	cfg.Query.MaxRows = 50_000_000
+	cfg.Query.SlowThreshold = 10 * time.Second
+
+	cfg.Cache.MemoryLimit = "2GB"
+	cfg.Cache.DiskLimit = "100GB"
+	cfg.Cache.FooterTTL = 4 * time.Hour
+	cfg.Cache.BloomTTL = 4 * time.Hour
+	cfg.Cache.PageTTL = 1 * time.Hour
+
+	cfg.SmartCache.TargetHours = 72
+	cfg.SmartCache.MaxAge = 72 * time.Hour
+	cfg.SmartCache.SnapshotInterval = 30 * time.Second
+	cfg.SmartCache.HotAccessThreshold = 2
+	cfg.SmartCache.HotWindow = 15 * time.Minute
+	cfg.SmartCache.DiskLimitMax = "200GB"
+
+	cfg.Prefetch.ReadAheadDepth = 4
+	cfg.Prefetch.MaxConcurrent = 16
+	cfg.Prefetch.MaxQueue = 256
+	cfg.CrossSignal.Enabled = true
+
+	cfg.S3.MaxConnections = 256
+	cfg.S3.MaxConcurrentDownloads = 32
+	cfg.S3.Timeout = 15 * time.Second
+	cfg.S3.RetryMax = 5
+
+	cfg.Compaction.Enabled = true
+	cfg.Compaction.Interval = 2 * time.Minute
+	cfg.Compaction.MaxConcurrent = 2
+	cfg.Compaction.MinFilesL0 = 5
+
+	cfg.Manifest.PersistInterval = 1 * time.Minute
+	cfg.Manifest.RefreshInterval = 1 * time.Minute
+	cfg.Startup.ServeStale = true
+	cfg.Startup.WarmupWindow = 72 * time.Hour
+	cfg.Startup.MaxWarmupTime = 10 * time.Minute
+
+	cfg.Delete.RewriteDelay = 30 * time.Minute
+	cfg.Delete.RewriteBatchSize = 100
+
+	cfg.Stats.PushInterval = 15 * time.Second
+
+	cfg.Peer.MaxConnections = 64
+	cfg.Peer.Timeout = 2 * time.Second
+	cfg.Discovery.PeerRefreshInterval = 10 * time.Second
+
+	return cfg
+}
+
+func maxDurabilityConfig() *Config {
+	cfg := Default()
+	cfg.Profile = ProfileMaxDurability
+
+	cfg.Insert.AckMode = "flush-sync"
+	cfg.Insert.WALMaxBytes = "1GB"
+
+	cfg.Compaction.Enabled = true
+
+	cfg.S3.RetryMax = 5
+
+	cfg.Delete.DefaultMode = "permanent"
+	cfg.Delete.VerifyInterval = 1 * time.Hour
+
+	cfg.Manifest.PersistInterval = 1 * time.Minute
+	cfg.SmartCache.SnapshotInterval = 30 * time.Second
+
+	cfg.Stats.SnapshotInterval = 1 * time.Minute
+
+	return cfg
+}
+
+func maxCostSavingsConfig() *Config {
+	cfg := Default()
+	cfg.Profile = ProfileMaxCostSavings
+
+	cfg.Insert.FlushInterval = 30 * time.Second
+	cfg.Insert.WALEnabled = false
+	cfg.Insert.CompressionLevel = 11
+	cfg.Insert.MaxBufferRows = 25000
+	cfg.Insert.MaxBufferBytes = "128MB"
+	cfg.Insert.TargetFileSize = "256MB"
+	cfg.Insert.RowGroupSize = 50000
+
+	cfg.Select.BufferQueryEnabled = false
+	cfg.Query.FileWorkers = 4
+	cfg.Query.MaxConcurrent = 16
+	cfg.Query.Timeout = 30 * time.Second
+	cfg.Query.MaxRows = 1_000_000
+	cfg.Query.SlowThreshold = 3 * time.Second
+
+	cfg.Cache.MemoryLimit = "128MB"
+	cfg.Cache.DiskLimit = "10GB"
+	cfg.Cache.FooterTTL = 30 * time.Minute
+	cfg.Cache.BloomTTL = 30 * time.Minute
+	cfg.Cache.PageTTL = 5 * time.Minute
+
+	cfg.SmartCache.TargetHours = 6
+	cfg.SmartCache.MaxAge = 6 * time.Hour
+	cfg.SmartCache.SnapshotInterval = 5 * time.Minute
+	cfg.SmartCache.HotAccessThreshold = 5
+	cfg.SmartCache.HotWindow = 5 * time.Minute
+	cfg.SmartCache.DiskLimitMax = "20GB"
+
+	cfg.Prefetch.Correlated = false
+	cfg.Prefetch.ReadAheadDepth = 0
+	cfg.Prefetch.MaxConcurrent = 2
+	cfg.Prefetch.MaxQueue = 32
+
+	cfg.S3.MaxConnections = 64
+	cfg.S3.MaxConcurrentDownloads = 8
+	cfg.S3.Timeout = 60 * time.Second
+
+	cfg.Manifest.PersistInterval = 15 * time.Minute
+	cfg.Manifest.RefreshInterval = 15 * time.Minute
+	cfg.Startup.WarmupWindow = 6 * time.Hour
+	cfg.Startup.MaxWarmupTime = 2 * time.Minute
+
+	cfg.Delete.DefaultMode = "hide"
+	cfg.Delete.VerifyInterval = 24 * time.Hour
+	cfg.Delete.RewriteDelay = 6 * time.Hour
+	cfg.Delete.RewriteBatchSize = 25
+
+	cfg.Stats.Enabled = false
+	cfg.Stats.PushInterval = 5 * time.Minute
+	cfg.Stats.SnapshotInterval = 30 * time.Minute
+
+	cfg.UI.Enabled = false
+
+	cfg.Peer.MaxConnections = 16
+	cfg.Peer.Timeout = 10 * time.Second
+	cfg.Discovery.PeerRefreshInterval = 60 * time.Second
+
+	return cfg
+}
+
+func devConfig() *Config {
+	cfg := Default()
+	cfg.Profile = ProfileDev
+
+	cfg.Insert.FlushInterval = 1 * time.Second
+	cfg.Insert.WALEnabled = false
+	cfg.Insert.CompressionLevel = 1
+	cfg.Insert.MaxBufferRows = 1000
+	cfg.Insert.MaxBufferBytes = "32MB"
+	cfg.Insert.TargetFileSize = "8MB"
+	cfg.Insert.RowGroupSize = 1000
+	cfg.Insert.WALMaxBytes = "32MB"
+
+	cfg.Select.BufferQueryTimeout = 2 * time.Second
+	cfg.Query.FileWorkers = 2
+	cfg.Query.MaxConcurrent = 4
+	cfg.Query.MaxRows = 100_000
+	cfg.Query.SlowThreshold = 1 * time.Second
+
+	cfg.Cache.MemoryLimit = "64MB"
+	cfg.Cache.DiskLimit = "1GB"
+	cfg.Cache.FooterTTL = 1 * time.Minute
+	cfg.Cache.BloomTTL = 1 * time.Minute
+	cfg.Cache.PageTTL = 1 * time.Minute
+
+	cfg.SmartCache.TargetHours = 1
+	cfg.SmartCache.MaxAge = 1 * time.Hour
+	cfg.SmartCache.DiskLimitMax = "2GB"
+
+	cfg.Prefetch.Correlated = false
+	cfg.Prefetch.ReadAheadDepth = 0
+	cfg.Prefetch.MaxConcurrent = 1
+	cfg.Prefetch.MaxQueue = 8
+
+	cfg.S3.ForcePathStyle = true
+	cfg.S3.MaxConnections = 16
+	cfg.S3.MaxConcurrentDownloads = 4
+	cfg.S3.RetryMax = 1
+
+	cfg.Manifest.PersistInterval = 5 * time.Second
+	cfg.Manifest.RefreshInterval = 5 * time.Second
+	cfg.Startup.ServeStale = true
+	cfg.Startup.WarmupWindow = 1 * time.Hour
+	cfg.Startup.MaxWarmupTime = 10 * time.Second
+
+	cfg.Delete.RewriteDelay = 10 * time.Second
+	cfg.Delete.RewriteBatchSize = 5
+
+	cfg.Peer.AZAware = false
+	cfg.Peer.MaxConnections = 8
 
 	return cfg
 }

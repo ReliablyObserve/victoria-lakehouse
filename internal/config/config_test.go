@@ -1569,3 +1569,140 @@ func TestValidate_HotBoundaryEmpty(t *testing.T) {
 		t.Errorf("empty HotBoundary should be valid, got: %v", err)
 	}
 }
+
+func TestDefaultConfig_DurabilityFields(t *testing.T) {
+	cfg := Default()
+
+	if cfg.Insert.AckMode != "buffer" {
+		t.Errorf("default ack_mode = %q, want buffer", cfg.Insert.AckMode)
+	}
+	if cfg.Insert.FlushLinger != 200*time.Millisecond {
+		t.Errorf("default flush_linger = %v, want 200ms", cfg.Insert.FlushLinger)
+	}
+	if cfg.Insert.FlushMaxRows != 5000 {
+		t.Errorf("default flush_max_rows = %d, want 5000", cfg.Insert.FlushMaxRows)
+	}
+	if cfg.Insert.PeerReplicate {
+		t.Error("default peer_replicate should be false")
+	}
+	if cfg.Insert.PeerReplicateTimeout != 5*time.Millisecond {
+		t.Errorf("default peer_replicate_timeout = %v, want 5ms", cfg.Insert.PeerReplicateTimeout)
+	}
+	if cfg.Insert.PeerReplicateTTL != 30*time.Second {
+		t.Errorf("default peer_replicate_ttl = %v, want 30s", cfg.Insert.PeerReplicateTTL)
+	}
+	if cfg.Insert.AsyncWALEnabled {
+		t.Error("default async_wal_enabled should be false")
+	}
+	if cfg.Insert.AsyncWALBatchLinger != 50*time.Millisecond {
+		t.Errorf("default async_wal_batch_linger = %v, want 50ms", cfg.Insert.AsyncWALBatchLinger)
+	}
+}
+
+func TestDefaultConfig_GCFields(t *testing.T) {
+	cfg := Default()
+
+	if !cfg.GC.Enabled {
+		t.Error("default GC should be enabled")
+	}
+	if cfg.GC.Interval != 6*time.Hour {
+		t.Errorf("default GC interval = %v, want 6h", cfg.GC.Interval)
+	}
+	if cfg.GC.OrphanGracePeriod != 1*time.Hour {
+		t.Errorf("default GC orphan grace = %v, want 1h", cfg.GC.OrphanGracePeriod)
+	}
+}
+
+func TestValidate_AckMode(t *testing.T) {
+	for _, mode := range []string{"buffer", "wal", "flush-sync"} {
+		cfg := Default()
+		cfg.Mode = ModeLogs
+		cfg.S3.Bucket = "test"
+		cfg.Insert.AckMode = mode
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("ack_mode=%q should be valid: %v", mode, err)
+		}
+	}
+
+	cfg := Default()
+	cfg.Mode = ModeLogs
+	cfg.S3.Bucket = "test"
+	cfg.Insert.AckMode = "invalid"
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid ack_mode")
+	}
+}
+
+func TestValidate_PeerReplicateWarning(t *testing.T) {
+	cfg := Default()
+	cfg.Mode = ModeLogs
+	cfg.S3.Bucket = "test"
+	cfg.Insert.AckMode = "flush-sync"
+	cfg.Insert.PeerReplicate = true
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("flush-sync + peer_replicate should be valid (with warning): %v", err)
+	}
+}
+
+func TestLoad_DurabilityFields(t *testing.T) {
+	content := `
+lakehouse:
+  mode: logs
+  s3:
+    bucket: test
+  insert:
+    ack_mode: flush-sync
+    flush_linger: 500ms
+    flush_max_rows: 10000
+    peer_replicate: true
+    peer_replicate_timeout: 10ms
+    peer_replicate_ttl: 60s
+    async_wal_enabled: true
+    async_wal_batch_linger: 100ms
+  gc:
+    enabled: true
+    interval: 12h
+    orphan_grace_period: 2h
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Insert.AckMode != "flush-sync" {
+		t.Errorf("ack_mode = %q, want flush-sync", cfg.Insert.AckMode)
+	}
+	if cfg.Insert.FlushLinger != 500*time.Millisecond {
+		t.Errorf("flush_linger = %v, want 500ms", cfg.Insert.FlushLinger)
+	}
+	if cfg.Insert.FlushMaxRows != 10000 {
+		t.Errorf("flush_max_rows = %d, want 10000", cfg.Insert.FlushMaxRows)
+	}
+	if !cfg.Insert.PeerReplicate {
+		t.Error("peer_replicate should be true")
+	}
+	if cfg.Insert.PeerReplicateTimeout != 10*time.Millisecond {
+		t.Errorf("peer_replicate_timeout = %v, want 10ms", cfg.Insert.PeerReplicateTimeout)
+	}
+	if cfg.Insert.PeerReplicateTTL != 60*time.Second {
+		t.Errorf("peer_replicate_ttl = %v, want 60s", cfg.Insert.PeerReplicateTTL)
+	}
+	if !cfg.Insert.AsyncWALEnabled {
+		t.Error("async_wal_enabled should be true")
+	}
+	if cfg.Insert.AsyncWALBatchLinger != 100*time.Millisecond {
+		t.Errorf("async_wal_batch_linger = %v, want 100ms", cfg.Insert.AsyncWALBatchLinger)
+	}
+	if cfg.GC.Interval != 12*time.Hour {
+		t.Errorf("GC interval = %v, want 12h", cfg.GC.Interval)
+	}
+	if cfg.GC.OrphanGracePeriod != 2*time.Hour {
+		t.Errorf("GC orphan grace = %v, want 2h", cfg.GC.OrphanGracePeriod)
+	}
+}
