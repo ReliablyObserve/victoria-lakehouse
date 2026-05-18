@@ -43,9 +43,10 @@ type Storage struct {
 	writer       *BatchWriter
 	bufferBridge *BufferBridge
 	tombstones   *delete.TombstoneStore
-	smartCache   *smartcache.Controller
-	bloomCache   *bloomindex.BloomCache
-	selfAZ       string
+	smartCache    *smartcache.Controller
+	bloomCache    *bloomindex.BloomCache
+	bloomObserver *storageBloomObserver
+	selfAZ        string
 }
 
 func New(cfg *config.Config) (*Storage, error) {
@@ -160,7 +161,15 @@ func New(cfg *config.Config) (*Storage, error) {
 		bb = NewBufferBridge(&cfg.Select, cfg.Mode)
 	}
 
-	return &Storage{
+	var bc *bloomindex.BloomCache
+	if cfg.SelectEnabled() {
+		bc = bloomindex.NewBloomCache(
+			10*1024*1024,
+			bloomS3Loader(pool, prefix),
+		)
+	}
+
+	s := &Storage{
 		cfg:          cfg,
 		pool:         pool,
 		manifest:     m,
@@ -176,7 +185,19 @@ func New(cfg *config.Config) (*Storage, error) {
 		writer:       bw,
 		bufferBridge: bb,
 		smartCache:   sc,
-	}, nil
+		bloomCache:   bc,
+	}
+
+	if bw != nil {
+		obs := &storageBloomObserver{
+			bloom: bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01),
+			pool:  pool,
+		}
+		bw.bloomObserver = obs
+		s.bloomObserver = obs
+	}
+
+	return s, nil
 }
 
 // StartWriter begins the background flush loop. Call after New().
