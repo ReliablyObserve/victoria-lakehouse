@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1121,5 +1122,143 @@ func TestGetFieldValues_FieldNotInLabelIndex(t *testing.T) {
 	// Empty manifest returns nil
 	if len(vals) != 0 {
 		t.Errorf("expected 0 values, got %d", len(vals))
+	}
+}
+
+// --- Edge cases ported from traces ---
+
+func TestCollectFilteredValues_EmptyValues_NotIncluded(t *testing.T) {
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	rows := []fullLogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "msg1", SeverityText: "INFO", ServiceName: "alpha",
+			Stream: `{svc="alpha"}`, StreamID: "id1"},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "msg2", SeverityText: "WARN", ServiceName: "",
+			Stream: `{svc=""}`, StreamID: "id2"},
+	}
+	s, _ := testFieldStorage(t, rows)
+
+	q := mustParseQueryWithTime(t, "*",
+		now.Add(-time.Hour).UnixNano(),
+		now.Add(time.Hour).UnixNano(),
+	)
+
+	vals, err := s.GetFieldValues(context.Background(), nil, q, "service.name", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range vals {
+		if v.Value == "" {
+			t.Error("empty string values should not be included in results")
+		}
+	}
+}
+
+func TestGetFieldValues_LimitRespected(t *testing.T) {
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	rows := make([]fullLogRow, 0, 50)
+	for i := 0; i < 50; i++ {
+		rows = append(rows, fullLogRow{
+			TimestampUnixNano: now.Add(time.Duration(i) * time.Second).UnixNano(),
+			Body:              fmt.Sprintf("msg%d", i),
+			SeverityText:      "INFO",
+			ServiceName:       fmt.Sprintf("svc-%d", i),
+			Stream:            fmt.Sprintf(`{svc="svc-%d"}`, i),
+			StreamID:          fmt.Sprintf("sid-%d", i),
+		})
+	}
+	s, _ := testFieldStorage(t, rows)
+
+	q := mustParseQueryWithTime(t, "*",
+		now.Add(-time.Hour).UnixNano(),
+		now.Add(time.Hour).UnixNano(),
+	)
+
+	vals, err := s.GetFieldValues(context.Background(), nil, q, "service.name", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uint64(len(vals)) > 5 {
+		t.Errorf("expected at most 5 values, got %d", len(vals))
+	}
+}
+
+func TestGetStreams_DuplicatesDeduped(t *testing.T) {
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	rows := []fullLogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "msg1", SeverityText: "INFO", ServiceName: "api",
+			Stream: `{service.name="api"}`, StreamID: "s1"},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "msg2", SeverityText: "WARN", ServiceName: "api",
+			Stream: `{service.name="api"}`, StreamID: "s1"},
+		{TimestampUnixNano: now.Add(2 * time.Second).UnixNano(), Body: "msg3", SeverityText: "ERROR", ServiceName: "api",
+			Stream: `{service.name="api"}`, StreamID: "s1"},
+	}
+	s, _ := testFieldStorage(t, rows)
+
+	q := mustParseQueryWithTime(t, "*",
+		now.Add(-time.Hour).UnixNano(),
+		now.Add(time.Hour).UnixNano(),
+	)
+
+	streams, err := s.GetStreams(context.Background(), nil, q, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(streams) != 1 {
+		t.Errorf("expected 1 unique stream, got %d: %v", len(streams), streams)
+	}
+	if streams[0].Hits != 3 {
+		t.Errorf("expected 3 hits for deduplicated stream, got %d", streams[0].Hits)
+	}
+}
+
+func TestGetStreamIDs_LimitZero_ReturnsAll(t *testing.T) {
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	rows := []fullLogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "msg1", SeverityText: "INFO", ServiceName: "api",
+			Stream: `{svc="api"}`, StreamID: "sid-1"},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "msg2", SeverityText: "ERROR", ServiceName: "web",
+			Stream: `{svc="web"}`, StreamID: "sid-2"},
+	}
+	s, _ := testFieldStorage(t, rows)
+
+	q := mustParseQueryWithTime(t, "*",
+		now.Add(-time.Hour).UnixNano(),
+		now.Add(time.Hour).UnixNano(),
+	)
+
+	ids, err := s.GetStreamIDs(context.Background(), nil, q, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 {
+		t.Errorf("limit=0 should return all stream IDs, got %d", len(ids))
+	}
+}
+
+func TestGetFieldNames_NoDuplicatesFromPromotedAndMap(t *testing.T) {
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	rows := []fullLogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "msg", SeverityText: "INFO", ServiceName: "api",
+			Stream: `{svc="api"}`, StreamID: "s1"},
+	}
+	s, _ := testFieldStorage(t, rows)
+
+	q := mustParseQueryWithTime(t, "*",
+		now.Add(-time.Hour).UnixNano(),
+		now.Add(time.Hour).UnixNano(),
+	)
+
+	names, err := s.GetFieldNames(context.Background(), nil, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[string]int)
+	for _, n := range names {
+		seen[n.Value]++
+	}
+	for name, count := range seen {
+		if count > 1 {
+			t.Errorf("field %q appears %d times (should be unique)", name, count)
+		}
 	}
 }

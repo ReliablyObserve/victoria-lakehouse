@@ -21,7 +21,13 @@ func (h *Handler) handleJaegerServices(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	q.AddTimeFilter(time.Now().Add(-720*time.Hour).UnixNano(), time.Now().UnixNano())
+	lookback := 6 * time.Hour
+	if lb := r.URL.Query().Get("lookback"); lb != "" {
+		if d, err := time.ParseDuration(lb); err == nil && d > 0 {
+			lookback = d
+		}
+	}
+	q.AddTimeFilter(time.Now().Add(-lookback).UnixNano(), time.Now().UnixNano())
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
@@ -106,15 +112,98 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q, err := logstorage.ParseQuery(fmt.Sprintf(`trace_id:="%s"`, traceID))
+	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
+	defer cancel()
+
+	spans, err := h.findTraceSpans(ctx, traceID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	q.AddTimeFilter(0, time.Now().Add(time.Hour).UnixNano())
 
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
-	defer cancel()
+	if len(spans) == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(jaegerTracesResponse{
+			Data:   []jaegerTraceData{},
+			Errors: []map[string]any{{"code": 404, "msg": "trace not found"}},
+		})
+		return
+	}
+
+	processes := make(map[string]jaegerProcess)
+	for i := range spans {
+		pid := fmt.Sprintf("p%d", len(processes)+1)
+		svcName := spans[i].ServiceName
+		if svcName == "" {
+			svcName = "unknown"
+		}
+		found := false
+		for k, p := range processes {
+			if p.ServiceName == svcName {
+				pid = k
+				found = true
+				break
+			}
+		}
+		if !found {
+			tags := spans[i].processTags
+			if tags == nil {
+				tags = []jaegerTag{}
+			}
+			processes[pid] = jaegerProcess{ServiceName: svcName, Tags: tags}
+		}
+		spans[i].ProcessID = pid
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(jaegerTracesResponse{
+		Data: []jaegerTraceData{
+			{TraceID: traceID, Spans: spans, Processes: processes},
+		},
+		Total: 1,
+	})
+}
+
+// findTraceSpans searches for trace spans using progressive time expansion.
+// Tries recent windows first (1h, 6h, 24h, 72h, all) to avoid full-scan
+// latency for recently ingested traces.
+func (h *Handler) findTraceSpans(ctx context.Context, traceID string) ([]jaegerSpan, error) {
+	windows := []time.Duration{
+		1 * time.Hour,
+		6 * time.Hour,
+		24 * time.Hour,
+		72 * time.Hour,
+		0, // 0 = all time
+	}
+
+	now := time.Now().Add(time.Hour).UnixNano()
+	for _, window := range windows {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		var startNs int64
+		if window > 0 {
+			startNs = time.Now().Add(-window).UnixNano()
+		}
+
+		spans, err := h.queryTraceInRange(ctx, traceID, startNs, now)
+		if err != nil {
+			return nil, err
+		}
+		if len(spans) > 0 {
+			return spans, nil
+		}
+	}
+	return nil, nil
+}
+
+func (h *Handler) queryTraceInRange(ctx context.Context, traceID string, startNs, endNs int64) ([]jaegerSpan, error) {
+	q, err := logstorage.ParseQuery(fmt.Sprintf(`trace_id:="%s"`, traceID))
+	if err != nil {
+		return nil, err
+	}
+	q.AddTimeFilter(startNs, endNs)
 
 	var spans []jaegerSpan
 	err = h.store.RunQuery(ctx, nil, q, func(_ uint, db *logstorage.DataBlock) {
@@ -216,52 +305,9 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, err
 	}
-
-	if len(spans) == 0 {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(w).Encode(jaegerTracesResponse{
-			Data:   []jaegerTraceData{},
-			Errors: []map[string]any{{"code": 404, "msg": "trace not found"}},
-		})
-		return
-	}
-
-	processes := make(map[string]jaegerProcess)
-	for i := range spans {
-		pid := fmt.Sprintf("p%d", len(processes)+1)
-		svcName := spans[i].ServiceName
-		if svcName == "" {
-			svcName = "unknown"
-		}
-		found := false
-		for k, p := range processes {
-			if p.ServiceName == svcName {
-				pid = k
-				found = true
-				break
-			}
-		}
-		if !found {
-			tags := spans[i].processTags
-			if tags == nil {
-				tags = []jaegerTag{}
-			}
-			processes[pid] = jaegerProcess{ServiceName: svcName, Tags: tags}
-		}
-		spans[i].ProcessID = pid
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(jaegerTracesResponse{
-		Data: []jaegerTraceData{
-			{TraceID: traceID, Spans: spans, Processes: processes},
-		},
-		Total: 1,
-	})
+	return spans, nil
 }
 
 func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {

@@ -153,7 +153,19 @@ helm install lakehouse-logs oci://ghcr.io/reliablyobserve/charts/victoria-lakeho
 
 ## Ingesting Data
 
-Victoria Lakehouse accepts data through VL-compatible insert APIs:
+Victoria Lakehouse accepts data through all VL-compatible insert APIs. It uses VictoriaLogs' native `vlinsert` handlers directly — full protocol parity with VL upstream:
+
+| Protocol | Endpoint | Typical Source |
+|---|---|---|
+| NDJSON (VL native) | `/insert/jsonline` | vlagent, curl |
+| Loki push (JSON + protobuf) | `/insert/loki/api/v1/push` | Promtail, Grafana Agent |
+| Elasticsearch bulk | `/insert/elasticsearch/_bulk` | Filebeat, Fluentd |
+| Syslog (RFC 5424) | `/insert/syslog` | rsyslog, syslog-ng |
+| systemd journal | `/insert/journald` | journald export |
+| Datadog logs | `/insert/datadog/api/v2/logs` | Datadog Agent |
+| OTLP logs | `/insert/opentelemetry/v1/logs` | OTEL Collector |
+| Splunk HEC | `/insert/splunk/services/collector/event` | Splunk forwarders |
+| VL native binary | `/insert/native` | VL-to-VL replication |
 
 ```bash
 # JSON line format (VL-native)
@@ -173,6 +185,19 @@ curl -X POST http://localhost:9428/insert/loki/api/v1/push -d '{
 curl -X POST http://localhost:9428/insert/elasticsearch/_bulk -d '
 {"index":{}}
 {"_time":"2026-05-04T10:00:00Z","_msg":"hello world","service.name":"test"}'
+
+# OTLP logs (OTEL Collector)
+curl -X POST http://localhost:9428/insert/opentelemetry/v1/logs \
+  -H 'Content-Type: application/json' -d '{
+  "resourceLogs": [{
+    "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "api-gw"}}]},
+    "scopeLogs": [{"logRecords": [{"body": {"stringValue": "request completed"}}]}]
+  }]
+}'
+
+# Syslog
+echo '<165>1 2026-05-04T10:00:00Z myhost myapp 1234 - - request completed' | \
+  curl -X POST http://localhost:9428/insert/syslog --data-binary @-
 ```
 
 Data flows through the WAL (crash safety) into per-partition buffers, then flushes as Parquet files to S3. Queries see data immediately via the buffer query bridge.

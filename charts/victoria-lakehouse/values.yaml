@@ -43,6 +43,12 @@ common:
 # All flags available as --lakehouse.<section>.<key> CLI args.
 # =============================================================================
 lakehouseConfig:
+  # -- Configuration profile preset. Sets defaults for all settings below.
+  # Any explicit setting overrides the profile value.
+  # Options: balanced (default), max-performance, max-durability, max-cost-savings, dev
+  # --lakehouse.profile
+  profile: ""
+
   # -- Deployment topology detection mode.
   # --lakehouse.topology
   topology: auto
@@ -248,6 +254,17 @@ lakehouseConfig:
     max_batch: 100
     # -- Batching interval for cross-signal hints.
     batch_interval: 500ms
+
+  # ---------------------------------------------------------------------------
+  # Shutdown — Graceful shutdown behavior (coupled with K8s terminationGracePeriodSeconds)
+  # ---------------------------------------------------------------------------
+  shutdown:
+    # -- Delay before starting HTTP server shutdown (allows LB to drain).
+    # Maps to -http.shutdownDelay flag. Must be < terminationGracePeriodSeconds - 40s.
+    delay: 5s
+    # -- Maximum time for in-flight HTTP requests to complete.
+    # Maps to -http.maxGracefulShutdownDuration flag.
+    max_graceful_duration: 7s
 
   # ---------------------------------------------------------------------------
   # Query — Read path limits and parallelism

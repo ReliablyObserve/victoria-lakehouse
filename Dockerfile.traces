@@ -17,11 +17,11 @@ RUN mkdir -p deps lakehouse-traces/deps && \
     cd /app && go mod download && \
     cd /app/lakehouse-traces && go mod download
 COPY patches/ /tmp/patches/
-RUN cp /tmp/patches/vl-logs/external.go deps/VictoriaLogs/app/vlstorage/external.go && \
-    cp /tmp/patches/vl-logs/external_query.go deps/VictoriaLogs/lib/logstorage/external_query.go && \
+RUN cp /tmp/patches/vl-logs/external.go.src deps/VictoriaLogs/app/vlstorage/external.go && \
+    cp /tmp/patches/vl-logs/external_query.go.src deps/VictoriaLogs/lib/logstorage/external_query.go && \
     cd deps/VictoriaLogs && git apply /tmp/patches/vl-logs/vlstorage-dispatch.patch
-RUN cp /tmp/patches/vl-traces/external.go lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go && \
-    cp /tmp/patches/vl-traces/external_query.go lakehouse-traces/deps/VictoriaLogs/lib/logstorage/external_query.go && \
+RUN cp /tmp/patches/vl-traces/external.go.src lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go && \
+    cp /tmp/patches/vl-traces/external_query.go.src lakehouse-traces/deps/VictoriaLogs/lib/logstorage/external_query.go && \
     cd lakehouse-traces/deps/VictoriaLogs && git apply /tmp/patches/vl-traces/vlstorage-dispatch.patch
 COPY . .
 RUN cp -r lakehouse-traces/deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmui/

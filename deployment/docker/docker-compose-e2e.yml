@@ -78,47 +78,48 @@ services:
       context: ../../
       dockerfile: Dockerfile.datagen
     depends_on:
-      minio-init:
-        condition: service_completed_successfully
       victorialogs:
         condition: service_healthy
       victoriatraces:
         condition: service_healthy
+      lakehouse-logs:
+        condition: service_healthy
+      lakehouse-traces:
+        condition: service_healthy
     networks: [lakehouse-net]
     command:
-      - "--endpoint=http://minio:9000"
-      - "--bucket=obs-archive"
-      - "--access-key=minioadmin"
-      - "--secret-key=minioadmin"
       - "--logs=10000"
       - "--traces=2000"
       - "--hours-back=72"
-      - "--tenant-prefix=0/0/"
-      - "--dual-write"
       - "--vl-endpoint=http://victorialogs:9428"
       - "--vt-endpoint=http://victoriatraces:10428"
+      - "--lh-logs-endpoint=http://lakehouse-logs:9428"
+      - "--lh-traces-endpoint=http://lakehouse-traces:10428"
 
   datagen-seed-tenant1:
     build:
       context: ../../
       dockerfile: Dockerfile.datagen
     depends_on:
-      minio-init:
-        condition: service_completed_successfully
       victorialogs:
         condition: service_healthy
       victoriatraces:
         condition: service_healthy
+      lakehouse-logs:
+        condition: service_healthy
+      lakehouse-traces:
+        condition: service_healthy
     networks: [lakehouse-net]
     command:
-      - "--endpoint=http://minio:9000"
-      - "--bucket=obs-archive"
-      - "--access-key=minioadmin"
-      - "--secret-key=minioadmin"
       - "--logs=2000"
       - "--traces=500"
       - "--hours-back=72"
-      - "--tenant-prefix=1/1/"
+      - "--vl-endpoint=http://victorialogs:9428"
+      - "--vt-endpoint=http://victoriatraces:10428"
+      - "--lh-logs-endpoint=http://lakehouse-logs:9428"
+      - "--lh-traces-endpoint=http://lakehouse-traces:10428"
+      - "--account-id=1"
+      - "--project-id=1"
 
   datagen-continuous:
     build:
@@ -130,18 +131,14 @@ services:
     restart: unless-stopped
     networks: [lakehouse-net]
     command:
-      - "--endpoint=http://minio:9000"
-      - "--bucket=obs-archive"
-      - "--access-key=minioadmin"
-      - "--secret-key=minioadmin"
       - "--logs=500"
       - "--traces=200"
       - "--hours-back=1"
       - "--interval=30s"
-      - "--tenant-prefix=0/0/"
-      - "--dual-write"
       - "--vl-endpoint=http://victorialogs:9428"
       - "--vt-endpoint=http://victoriatraces:10428"
+      - "--lh-logs-endpoint=http://lakehouse-logs:9428"
+      - "--lh-traces-endpoint=http://lakehouse-traces:10428"
 
   # =========================================================================
   # Cold Tier — S3 Parquet, 7d+ retention (lakehouse)
@@ -152,7 +149,7 @@ services:
       context: ../../
       dockerfile: Dockerfile.logs
     depends_on:
-      datagen-seed:
+      minio-init:
         condition: service_completed_successfully
     ports:
       - "29428:9428"
@@ -183,7 +180,7 @@ services:
       context: ../../
       dockerfile: Dockerfile.traces
     depends_on:
-      datagen-seed:
+      minio-init:
         condition: service_completed_successfully
     ports:
       - "20428:10428"
@@ -197,6 +194,7 @@ services:
       - "-lakehouse.s3.secret-key=minioadmin"
       - "-lakehouse.s3.force-path-style=true"
       - "-lakehouse.manifest.refresh-interval=30s"
+      - "-lakehouse.query.file-workers=64"
       - "-lakehouse.tenant.global-read-header=X-Lakehouse-Global-Read"
       - "-lakehouse.tenant.global-read-value=lakehouse-e2e-global-key"
       - "-loggerLevel=INFO"
@@ -266,11 +264,11 @@ services:
     environment:
       VL_BACKEND_URL: "http://victorialogs:9428"
     command:
-      - "-label-style=passthrough"
-      - "-metadata-field-mode=translated"
+      - "-label-style=underscores"
+      - "-metadata-field-mode=native"
       - "-emit-structured-metadata=true"
-      - "-stream-fields=service.name,k8s.namespace.name,k8s.pod.name,k8s.deployment.name,deployment.environment"
-      - "-extra-label-fields=level,cloud.region,host.name,k8s.node.name,trace_id,span_id,scope.name"
+      - "-stream-fields=service_name,k8s_namespace_name,k8s_pod_name,k8s_deployment_name,deployment_environment"
+      - "-extra-label-fields=level,cloud_region"
       - "-derived-fields=[{\"name\":\"traceID\",\"matcherRegex\":\"trace_id=([a-f0-9]+)\",\"url\":\"http://localhost:3003/explore?left=%5B%22now-1h%22,%22now%22,%22victoria-lakehouse-traces%22,%7B%22query%22:%22$${__value.raw}%22%7D%5D\"}]"
       - "-patterns-autodetect-from-queries=true"
       - "-label-values-indexed-cache=true"
@@ -301,7 +299,7 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:latest
     depends_on:
-      datagen-seed:
+      minio-init:
         condition: service_completed_successfully
     networks: [lakehouse-net]
     environment:
@@ -323,14 +321,15 @@ services:
   # =========================================================================
 
   grafana:
-    image: grafana/grafana:latest-ubuntu
+    build:
+      context: .
+      dockerfile: Dockerfile.grafana
     ports:
       - "3003:3000"
     networks: [lakehouse-net]
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
-      GF_INSTALL_PLUGINS: "https://github.com/VictoriaMetrics/victorialogs-datasource/releases/download/v0.26.3/victoriametrics-logs-datasource-v0.26.3.zip;victoriametrics-logs-datasource,grafana-clickhouse-datasource"
       GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "victoriametrics-logs-datasource"
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning

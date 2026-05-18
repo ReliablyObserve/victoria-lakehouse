@@ -153,6 +153,8 @@ var TracesProfile = Profile{
 		{ParquetColumn: "duration_ns", InternalName: "duration", Type: TypeInt64, Origin: OriginPromoted},
 		{ParquetColumn: "service.name", InternalName: "resource_attr:service.name", Type: TypeString, Origin: OriginPromoted, HasBloom: true},
 		{ParquetColumn: "scope.name", InternalName: "scope_attr:otel.library.name", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "_stream", InternalName: "_stream", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "_stream_id", InternalName: "_stream_id", Type: TypeString, Origin: OriginPromoted},
 	},
 	MapColumns:   []string{"resource.attributes", "span.attributes", "scope.attributes"},
 	StreamFields: []string{"resource_attr:service.name", "name"},
@@ -243,8 +245,11 @@ func (r *Registry) ResolveToParquet(internalName string) *FieldMapping {
 		}
 	}
 
-	// VL dotted convention: try resource.attributes, then log.attributes
-	for _, mapCol := range r.profile.MapColumns {
+	// Fallback: unrecognized fields map to the first MAP column (resource.attributes
+	// for traces, log.attributes for logs). Fields that shouldn't hit this fallback
+	// must be registered as Promoted in the profile.
+	if len(r.profile.MapColumns) > 0 {
+		mapCol := r.profile.MapColumns[0]
 		origin := mapColumnToOrigin(mapCol)
 		return &FieldMapping{
 			ParquetColumn: mapCol,

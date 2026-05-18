@@ -1442,3 +1442,35 @@ func TestGetVal_EmptyColMap(t *testing.T) {
 		t.Errorf("getVal(nil map) = %q, want empty", v)
 	}
 }
+
+func TestParseTimestampNanos(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		wantNs int64
+		wantOk bool
+	}{
+		{name: "integer nanoseconds", input: "1714650000000000000", wantNs: 1714650000000000000, wantOk: true},
+		{name: "zero", input: "0", wantNs: 0, wantOk: true},
+		{name: "negative ns", input: "-1000000000", wantNs: -1000000000, wantOk: true},
+		{name: "rfc3339nano", input: "2024-05-02T14:00:00.123456789Z", wantNs: 1714658400123456789, wantOk: true},
+		{name: "rfc3339 no nanos", input: "2024-05-02T14:00:00Z", wantNs: 1714658400000000000, wantOk: true},
+		{name: "rfc3339 with offset", input: "2024-05-02T16:00:00+02:00", wantNs: 1714658400000000000, wantOk: true},
+		{name: "empty string", input: "", wantNs: 0, wantOk: false},
+		{name: "invalid text", input: "not-a-timestamp", wantNs: 0, wantOk: false},
+		{name: "partial date", input: "2024-05-02", wantNs: 0, wantOk: false},
+		{name: "float string", input: "1714650000.123", wantNs: 0, wantOk: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ns, ok := parseTimestampNanos(tt.input)
+			if ok != tt.wantOk {
+				t.Fatalf("parseTimestampNanos(%q) ok=%v, want %v", tt.input, ok, tt.wantOk)
+			}
+			if ok && ns != tt.wantNs {
+				t.Errorf("parseTimestampNanos(%q) = %d, want %d", tt.input, ns, tt.wantNs)
+			}
+		})
+	}
+}

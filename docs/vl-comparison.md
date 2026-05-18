@@ -256,6 +256,8 @@ Bloom filter miss test: VLH's bloom filters reject the non-existent trace_id 3.9
 
 ### Honest Assessment
 
+**Insert protocol parity:** Victoria Lakehouse supports ALL VictoriaLogs insert protocols (jsonline, Loki JSON+protobuf, ES bulk, syslog, journald, Datadog, OTLP, Splunk, native insert) via VL's upstream `vlinsert` handlers. There are no protocol gaps on the insert path.
+
 **VLH is NOT a replacement for VL.** It's a complementary cold storage tier.
 
 | Workload | Recommendation | Why |

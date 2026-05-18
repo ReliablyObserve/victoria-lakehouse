@@ -98,17 +98,31 @@ jobs:
           echo "=== Test tenant (1/1) ==="
           docker compose -f deployment/docker/docker-compose-e2e.yml exec -T minio mc ls --recursive local/obs-archive/1/1/ | head -20
 
-      - name: Run E2E tests
+      - name: Run E2E smoke tests
         env:
           LOGS_BASE_URL: http://localhost:29428
           TRACES_BASE_URL: http://localhost:20428
           LOKI_PROXY_URL: http://localhost:23100
           VLSELECT_URL: http://localhost:29471
+          VTSELECT_URL: http://localhost:20471
           MINIO_URL: http://localhost:29000
           MINIO_BUCKET: obs-archive
           MINIO_USER: minioadmin
           MINIO_PASSWORD: minioadmin
-        run: go test -tags=e2e -v -count=1 -timeout=10m ./tests/e2e/ 2>&1 | tee e2e-results.txt
+        run: go test -tags=e2e -v -count=1 -timeout=5m ./tests/e2e/ -run "TestSmoke" 2>&1 | tee e2e-results.txt
+
+      - name: Run E2E full suite
+        env:
+          LOGS_BASE_URL: http://localhost:29428
+          TRACES_BASE_URL: http://localhost:20428
+          LOKI_PROXY_URL: http://localhost:23100
+          VLSELECT_URL: http://localhost:29471
+          VTSELECT_URL: http://localhost:20471
+          MINIO_URL: http://localhost:29000
+          MINIO_BUCKET: obs-archive
+          MINIO_USER: minioadmin
+          MINIO_PASSWORD: minioadmin
+        run: go test -tags=e2e -v -count=1 -timeout=10m ./tests/e2e/ 2>&1 | tee -a e2e-results.txt
 
       - name: Upload E2E results
         if: always()

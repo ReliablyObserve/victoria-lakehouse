@@ -11,8 +11,9 @@ Victoria Lakehouse accepts data through VL-compatible insert APIs, buffers rows 
 
 ```mermaid
 flowchart LR
-    Client --> InsertAPI["Insert API"]
-    InsertAPI --> WAL["WAL\n(disk)"]
+    Client --> VLInsert["VL vlinsert\nHandlers"]
+    VLInsert --> Adapter["insertAdapter\nlogRowsToSchemaRows"]
+    Adapter --> WAL["WAL\n(disk)"]
     WAL --> Buffer["Buffer\n(memory)"]
     Buffer --> Flush
     Flush --> S3["S3 Parquet"]
@@ -22,15 +23,33 @@ flowchart LR
 
 ## Insert APIs
 
-All VL-compatible insert endpoints are supported:
+Victoria Lakehouse uses VictoriaLogs' native `vlinsert` handlers directly via `insertutil.SetLogRowsStorage()`. This is the same adapter pattern used on the SELECT path (`vlstorage.SetExternalStorage()`). No custom protocol parsing — Lakehouse only replaces the storage layer.
+
+All VL-compatible insert endpoints are supported (full parity with VictoriaLogs upstream):
 
 | Endpoint | Protocol | Use Case |
 |---|---|---|
 | `/insert/jsonline` | NDJSON | Native VL ingest, vlagent |
-| `/insert/loki/api/v1/push` | Loki push protocol | Promtail, Grafana Agent |
+| `/insert/loki/api/v1/push` | Loki push (JSON + protobuf) | Promtail, Grafana Agent, Loki clients |
 | `/insert/elasticsearch/_bulk` | ES bulk API | Filebeat, Fluentd |
+| `/insert/syslog` | Syslog (RFC 5424) | rsyslog, syslog-ng |
+| `/insert/journald` | systemd journal | journald export |
+| `/insert/datadog/api/v2/logs` | Datadog logs API | Datadog Agent |
+| `/insert/opentelemetry/v1/logs` | OTLP logs (protobuf/JSON) | OTEL Collector |
+| `/insert/splunk/services/collector/event` | Splunk HEC | Splunk forwarders |
+| `/insert/native` | VL native binary format | VL-to-VL replication |
 
-Each endpoint parses the incoming format and converts to internal `LogRows` — the common representation used by the buffer and flush pipeline.
+Each handler is VL upstream code (unchanged). Parsed rows flow through the `insertutil.LogRowsStorage` adapter interface:
+
+```
+HTTP request
+  → VL vlinsert handler (upstream, unchanged)
+  → insertutil.logRowsStorage.MustAddRows(*logstorage.LogRows)
+  → insertAdapter.MustAddRows → logRowsToSchemaRows → storage.MustAddLogRows
+  → WAL → S3 Parquet
+```
+
+The `logRowsToSchemaRows()` function converts VL's `*logstorage.LogRows` into `[]schema.LogRow` for Parquet storage.
 
 ## Pipeline Stages
 

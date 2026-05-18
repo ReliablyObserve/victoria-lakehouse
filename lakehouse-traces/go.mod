@@ -12,12 +12,14 @@ require (
 	github.com/ReliablyObserve/victoria-lakehouse v0.0.0
 	github.com/VictoriaMetrics/VictoriaLogs v1.50.0
 	github.com/VictoriaMetrics/VictoriaMetrics v1.140.1-0.20260414051809-8a20ccf21db7
+	github.com/VictoriaMetrics/VictoriaTraces v0.8.2
 	github.com/aws/aws-sdk-go-v2 v1.41.7
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.100.1
 	github.com/parquet-go/parquet-go v0.29.0
 )
 
 require (
+	github.com/VictoriaMetrics/easyproto v1.2.0 // indirect
 	github.com/VictoriaMetrics/metrics v1.43.2 // indirect
 	github.com/VictoriaMetrics/metricsql v0.87.0 // indirect
 	github.com/andybalholm/brotli v1.1.1 // indirect
@@ -45,6 +47,7 @@ require (
 	github.com/go-openapi/jsonpointer v0.21.0 // indirect
 	github.com/go-openapi/jsonreference v0.20.2 // indirect
 	github.com/go-openapi/swag v0.23.0 // indirect
+	github.com/golang/snappy v1.0.0 // indirect
 	github.com/google/gnostic-models v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect

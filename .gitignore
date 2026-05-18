@@ -40,6 +40,9 @@ Thumbs.db
 # Docker volumes
 docker-data/
 
+# Grafana plugin archives (pre-downloaded for offline Docker builds)
+deployment/docker/*.zip
+
 # Git worktrees
 .worktrees/
 

@@ -34,6 +34,7 @@ func extractTraceLabels(rows []schema.TraceRow) map[string][]string {
 	for i := range rows {
 		addLabel(sets, "service.name", rows[i].ServiceName)
 		addLabel(sets, "span.name", rows[i].SpanName)
+		addLabel(sets, "trace_id", rows[i].TraceID)
 	}
 	return setsToLabels(sets)
 }

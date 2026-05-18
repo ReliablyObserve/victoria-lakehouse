@@ -12,13 +12,14 @@ End-to-end data flow through Victoria Lakehouse, from VL/VT upstream input throu
 ```mermaid
 graph TD
     subgraph Input
-        APP[Applications] -->|"JSON, Loki, ES bulk"| INS[Insert API]
+        APP[Applications] -->|"jsonline, Loki, ES bulk,<br/>syslog, journald, Datadog,<br/>OTLP, Splunk, native"| INS["VL vlinsert Handlers<br/>(upstream, unchanged)"]
         VL["VL/VT Select"] -->|"internal/select/*"| SEL[Select API]
         GF[Grafana] -->|"select/logsql/*"| SEL
     end
 
     subgraph Victoria Lakehouse
-        INS --> BW[BatchWriter]
+        INS --> INSAD["insertAdapter<br/>logRowsToSchemaRows"]
+        INSAD --> BW[BatchWriter]
         BW --> WAL[WAL]
         BW -->|flush| PQ[Parquet Writer]
         PQ --> S3[(S3)]
@@ -33,7 +34,8 @@ graph TD
         DB --> SEL
     end
 
-    subgraph VL/VT Adapter
+    subgraph "VL/VT Adapters (storage layer only)"
+        VLIAD["insertutil.SetLogRowsStorage"] --> INSAD
         VLAD[vlstorage.SetExternalStorage] --> STOR
     end
 ```
@@ -45,7 +47,8 @@ graph TD
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant H as InsertHandler
+    participant VLH as VL vlinsert Handler
+    participant A as insertAdapter
     participant BW as BatchWriter
     participant W as WAL
     participant PW as Parquet Writer
@@ -53,10 +56,11 @@ sequenceDiagram
     participant M as Manifest
     participant P as Pusher
 
-    C->>H: POST /insert/jsonline
-    H->>H: Parse JSON fields
-    H->>H: jsonFieldsToLogRow()
-    H->>BW: MustAddLogRows([]LogRow)
+    C->>VLH: POST /insert/* (any protocol)
+    VLH->>VLH: Parse protocol (upstream code)
+    VLH->>A: MustAddRows(*LogRows)
+    A->>A: logRowsToSchemaRows()
+    A->>BW: MustAddLogRows([]LogRow)
     BW->>W: AppendLog(rows)
     BW->>BW: Buffer by partition
     
@@ -78,28 +82,45 @@ sequenceDiagram
 
 ### Insert API
 
-**File:** `internal/insertapi/handler.go`
+**Files:** VL upstream `vlinsert` handlers (unchanged) + `internal/vlstorage/insert.go` (adapter)
 
-Three ingestion endpoints, each parsing a different format into the same `LogRow` struct:
+Victoria Lakehouse uses VL's native `vlinsert` handlers via `insertutil.SetLogRowsStorage()`. The insert adapter implements the `insertutil.LogRowsStorage` interface (`MustAddRows` + `CanWriteData`). All protocol parsing is VL upstream code — Lakehouse only provides the storage backend.
 
-| Endpoint | Format | Parser |
-|----------|--------|--------|
-| `POST /insert/jsonline` | Newline-delimited JSON | `parseJSONLine` |
-| `POST /insert/loki/api/v1/push` | Loki push protobuf/JSON | `lokiPushRequest` |
-| `POST /insert/elasticsearch/_bulk` | Elasticsearch bulk | ES bulk parser |
+All VL insert protocols are supported:
 
-**Field Promotion:**
+| Endpoint | Format |
+|----------|--------|
+| `POST /insert/jsonline` | Newline-delimited JSON |
+| `POST /insert/loki/api/v1/push` | Loki push (JSON + protobuf) |
+| `POST /insert/elasticsearch/_bulk` | Elasticsearch bulk |
+| `POST /insert/syslog` | Syslog (RFC 5424) |
+| `POST /insert/journald` | systemd journal |
+| `POST /insert/datadog/api/v2/logs` | Datadog logs API |
+| `POST /insert/opentelemetry/v1/logs` | OTLP logs |
+| `POST /insert/splunk/services/collector/event` | Splunk HEC |
+| `POST /insert/native` | VL native binary format |
 
-Each parser separates fields into promoted (top-level Parquet columns) and unpromoted (MAP columns):
+The adapter's `logRowsToSchemaRows()` converts VL's `*logstorage.LogRows` into `[]schema.LogRow`, mapping fields to promoted Parquet columns or MAP columns:
 
 ```mermaid
 graph LR
-    RAW[Raw JSON Fields] --> PROM{Promoted?}
+    LR["*logstorage.LogRows<br/>(VL internal format)"] --> CONV["logRowsToSchemaRows()"]
+    CONV --> PROM{Promoted?}
     PROM -->|Yes| TOP[Top-level columns<br/>service.name, trace_id,<br/>k8s.namespace.name, ...]
     PROM -->|No| MAP[MAP columns<br/>resource.attributes,<br/>log.attributes]
 ```
 
 Promoted fields (logs): `_time`, `_msg`, `level`, `service.name`, `k8s.namespace.name`, `k8s.pod.name`, `k8s.deployment.name`, `k8s.node.name`, `deployment.environment`, `cloud.region`, `host.name`, `trace_id`, `span_id`, `scope.name`
+
+#### Traces Insert Adapter
+
+**File:** `lakehouse-traces/internal/vlstorage/insert.go`
+
+The traces binary uses the identical pattern with `TraceWriter` interface. The `logRowsToTraceRows()` function maps VL fields to trace-specific promoted columns:
+
+Promoted fields (traces): `trace_id`, `span_id`, `parent_span_id`, `span.name`, `service.name`, `duration_ns`, `start_time_unix_nano`, `status.code`, `status.message`, `span.kind`, `http.method`, `http.status_code`, `http.url`, `db.system`, `db.statement`, `k8s.namespace.name`, `k8s.pod.name`, `k8s.deployment.name`, `k8s.node.name`, `deployment.environment`, `cloud.region`, `host.name`, `scope.name`
+
+Non-promoted fields go to `span.attributes` MAP column.
 
 ### BatchWriter
 
@@ -234,25 +255,33 @@ sequenceDiagram
     end
 ```
 
-### VL/VT Adapter
+### VL/VT Adapters
 
-**File:** `internal/vlstorage/vlstorage.go`
+**Files:** `internal/vlstorage/vlstorage.go` (select adapter), `internal/vlstorage/insert.go` (insert adapter)
 
-The adapter bridges VictoriaLogs' internal storage dispatch to our Parquet backend:
+Both INSERT and SELECT use the same adapter pattern — Lakehouse only replaces the storage layer, never modifies VL/VT upstream code:
 
 ```mermaid
 graph LR
-    VL[VL vlstorage dispatch] -->|SetExternalStorage| AD[adapter]
-    AD -->|RunQuery| STOR[Storage]
-    AD -->|GetFieldNames| STOR
-    AD -->|GetFieldValues| STOR
-    AD -->|GetStreams| STOR
-    AD -->|DeleteRunTask| TS[TombstoneStore]
+    subgraph "Insert Path"
+        VLI["VL vlinsert handlers"] -->|"SetLogRowsStorage"| IA["insertAdapter"]
+        IA -->|"MustAddRows → logRowsToSchemaRows"| STOR[Storage]
+    end
+    subgraph "Select Path"
+        VLS[VL vlstorage dispatch] -->|SetExternalStorage| SA[selectAdapter]
+        SA -->|RunQuery| STOR
+        SA -->|GetFieldNames| STOR
+        SA -->|GetFieldValues| STOR
+        SA -->|GetStreams| STOR
+        SA -->|DeleteRunTask| TS[TombstoneStore]
+    end
 ```
 
-- `vlstorage.SetExternalStorage(&adapter{store, tombstones})` wires our storage into VL's dispatch
-- All VL `/select/logsql/*` and `/internal/select/*` endpoints automatically route through our Parquet backend
-- No VL/VT code is modified — only the storage dispatch seam is replaced
+- `insertutil.SetLogRowsStorage(&insertAdapter{store})` wires our storage into VL's insert dispatch
+- `vlstorage.SetExternalStorage(&selectAdapter{store, tombstones})` wires our storage into VL's select dispatch
+- All VL `/insert/*` endpoints route through the insert adapter to our Parquet backend
+- All VL `/select/logsql/*` and `/internal/select/*` endpoints route through the select adapter
+- No VL/VT code is modified — only the storage dispatch seams are replaced
 
 ### Manifest Lookup
 

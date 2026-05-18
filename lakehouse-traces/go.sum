@@ -2,6 +2,10 @@ github.com/DATA-DOG/go-sqlmock v1.5.2 h1:OcvFkGmslmlZibjAjaHm3L//6LiuBgolP7Oputl
 github.com/DATA-DOG/go-sqlmock v1.5.2/go.mod h1:88MAG/4G7SMwSE3CeA0ZKzrT5CiOU3OJ+JlNzwDqpNU=
 github.com/VictoriaMetrics/VictoriaMetrics v1.140.1-0.20260414051809-8a20ccf21db7 h1:A8OqgN4bvAxMljys6ZnbVoGis4xvUo81oRyTFk0h09E=
 github.com/VictoriaMetrics/VictoriaMetrics v1.140.1-0.20260414051809-8a20ccf21db7/go.mod h1:OdIXraLYzYY1qO8j3OSKDPKf8VdTczDKi5Svt9ZjTjY=
+github.com/VictoriaMetrics/VictoriaTraces v0.8.2 h1:eAr6k0UAYrN1tzbiZNRPzVy3VQYG1CZFsFIxO1TbQB8=
+github.com/VictoriaMetrics/VictoriaTraces v0.8.2/go.mod h1:tatknn/oZ22ELgm/AiajHDnlOVschK2DpOwGDP0ox1Q=
+github.com/VictoriaMetrics/easyproto v1.2.0 h1:FJT9uNXA2isppFuJErbLqD306KoFlehl7Wn2dg/6oIE=
+github.com/VictoriaMetrics/easyproto v1.2.0/go.mod h1:QlGlzaJnDfFd8Lk6Ci/fuLxfTo3/GThPs2KH23mv710=
 github.com/VictoriaMetrics/metrics v1.43.2 h1:+8pIQEGwchKS5CYFyvv3LKvNXGi7baZ9hmIV4RHqibY=
 github.com/VictoriaMetrics/metrics v1.43.2/go.mod h1:xDM82ULLYCYdFRgQ2JBxi8Uf1+8En1So9YUwlGTOqTc=
 github.com/VictoriaMetrics/metricsql v0.87.0 h1:Koxh3GkB/Z0f3O0bEChVFxiE4YZoxYyn5TzmGJfSfaw=

@@ -9,8 +9,8 @@ RUN mkdir -p deps && \
     git clone --depth 1 --branch ${VL_VERSION} https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs && \
     go mod download
 COPY patches/vl-logs/ /tmp/patches/
-RUN cp /tmp/patches/external.go deps/VictoriaLogs/app/vlstorage/external.go && \
-    cp /tmp/patches/external_query.go deps/VictoriaLogs/lib/logstorage/external_query.go && \
+RUN cp /tmp/patches/external.go.src deps/VictoriaLogs/app/vlstorage/external.go && \
+    cp /tmp/patches/external_query.go.src deps/VictoriaLogs/lib/logstorage/external_query.go && \
     cd deps/VictoriaLogs && git apply /tmp/patches/vlstorage-dispatch.patch
 COPY . .
 RUN cp -r deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmui/

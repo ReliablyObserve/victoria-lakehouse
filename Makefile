@@ -8,26 +8,31 @@ export GOWORK=off
 # VictoriaLogs — Go module proxy has stale cache with wrong module path.
 # We clone the correct version locally and use a replace directive in go.mod.
 VL_VERSION_LOGS := v1.50.0
+VL_COMMIT_TRACES := a408207c2242
 VL_REPO := https://github.com/VictoriaMetrics/VictoriaLogs.git
 VL_DIR_LOGS := deps/VictoriaLogs
 VL_DIR_TRACES := lakehouse-traces/deps/VictoriaLogs
 
-.PHONY: build build-logs build-traces test test-logs test-traces lint vet clean e2e deps-logs deps-traces
+.PHONY: build build-logs build-traces test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces
 
 deps-logs: $(VL_DIR_LOGS)/go.mod
 
 $(VL_DIR_LOGS)/go.mod:
 	@mkdir -p deps
 	git clone --depth 1 --branch $(VL_VERSION_LOGS) $(VL_REPO) $(VL_DIR_LOGS)
-	cp patches/vl-logs/external.go $(VL_DIR_LOGS)/app/vlstorage/external.go
-	cp patches/vl-logs/external_query.go $(VL_DIR_LOGS)/lib/logstorage/external_query.go
+	cp patches/vl-logs/external.go.src $(VL_DIR_LOGS)/app/vlstorage/external.go
+	cp patches/vl-logs/external_query.go.src $(VL_DIR_LOGS)/lib/logstorage/external_query.go
 	cd $(VL_DIR_LOGS) && git apply ../../patches/vl-logs/vlstorage-dispatch.patch
 
 deps-traces: $(VL_DIR_TRACES)/go.mod
 
 $(VL_DIR_TRACES)/go.mod:
-	@echo "VictoriaLogs traces dep must be prepared manually (specific commit for VT v0.8.2 compat)"
-	@test -f $(VL_DIR_TRACES)/go.mod || (echo "Missing $(VL_DIR_TRACES)/go.mod — see README" && exit 1)
+	@mkdir -p lakehouse-traces/deps
+	git clone $(VL_REPO) $(VL_DIR_TRACES)
+	cd $(VL_DIR_TRACES) && git checkout $(VL_COMMIT_TRACES)
+	cp patches/vl-traces/external.go.src $(VL_DIR_TRACES)/app/vlstorage/external.go
+	cp patches/vl-traces/external_query.go.src $(VL_DIR_TRACES)/lib/logstorage/external_query.go
+	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vlstorage-dispatch.patch
 
 build: build-logs build-traces
 	go build -ldflags "-s -w" -o bin/healthcheck ./cmd/healthcheck
@@ -36,15 +41,23 @@ build-logs: deps-logs
 	go build -ldflags "$(LDFLAGS)" -o bin/lakehouse-logs ./cmd/lakehouse-logs
 
 build-traces: deps-traces
-	go build -ldflags "$(LDFLAGS)" -o bin/lakehouse-traces ./lakehouse-traces
+	cd lakehouse-traces && go build -ldflags "$(LDFLAGS)" -o ../bin/lakehouse-traces .
 
 test: test-logs test-traces
 
 test-logs: deps-logs
-	go test ./internal/... -race -count=1 -timeout=5m
+	go test ./internal/... -short -race -count=1 -timeout=5m
 
 test-traces: deps-traces
-	cd lakehouse-traces && go test ./internal/... -race -count=1 -timeout=5m
+	cd lakehouse-traces && go test ./internal/... -short -race -count=1 -timeout=5m
+
+test-full-logs: deps-logs
+	go test ./internal/... -race -count=1 -timeout=10m
+
+test-full-traces: deps-traces
+	cd lakehouse-traces && go test ./internal/... -race -count=1 -timeout=10m
+
+test-full: test-full-logs test-full-traces
 
 test-integration-logs: deps-logs
 	go test -tags=integration ./internal/... -race -count=1 -timeout=15m

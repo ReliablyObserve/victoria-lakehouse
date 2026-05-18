@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
@@ -12,12 +11,12 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/azdetect"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/compaction"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/crosssignal"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/election"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/insertapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/prefetch"
@@ -29,6 +28,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/ui"
 	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/internal/vlstorage"
 
+	"github.com/VictoriaMetrics/VictoriaLogs/app/vlinsert"
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/internalselect"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo"
@@ -379,6 +379,7 @@ func run(cfg *config.Config, addr string) {
 		logger.Errorf("HTTP server shutdown error: %s", err)
 	}
 
+	vlinsert.Stop()
 	internalselect.Stop()
 
 	if rewriteSched != nil {
@@ -530,20 +531,20 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	mux.HandleFunc("/manifest/range", m.RangeHandler())
 	mux.HandleFunc("/manifest/partitions", m.PartitionsHandler())
 
-	mux.HandleFunc("/lakehouse/info", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"version":   buildinfo.Version,
-			"mode":      "logs",
-			"topology":  cfg.Topology,
-			"ready":     sm.IsReady(),
-			"phase":     sm.Phase().String(),
-			"vl_compat": vlCompat,
-		})
-	})
+	mux.HandleFunc("/lakehouse/info", HandleLakehouseInfo(LakehouseInfoConfig{
+		Version:  buildinfo.Version,
+		Mode:     "logs",
+		Topology: string(cfg.Topology),
+		Compat:   vlCompat,
+		IsReady:  sm.IsReady,
+		Phase:    func() string { return sm.Phase().String() },
+	}))
+
+	if cfg.InsertEnabled() || cfg.SelectEnabled() {
+		internalvlstorage.SetStorage(store, tombstoneStore)
+	}
 
 	if cfg.SelectEnabled() {
-		internalvlstorage.SetStorage(store, tombstoneStore)
 		internalselect.Init()
 
 		internalHandler := func(w http.ResponseWriter, r *http.Request) {
@@ -557,12 +558,24 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	}
 
 	if cfg.InsertEnabled() {
-		var bq insertapi.BufferQuerier
-		if w := store.Writer(); w != nil {
-			bq = w
+		internalvlstorage.SetInsertStorage(store)
+		vlinsert.Init()
+
+		vlinsertHandler := func(w http.ResponseWriter, r *http.Request) {
+			if !vlinsert.RequestHandler(w, r) {
+				http.NotFound(w, r)
+			}
 		}
-		ih := insertapi.NewHandler(store, cfg, bq)
-		ih.Register(mux)
+		mux.HandleFunc("/insert/", vlinsertHandler)
+		mux.HandleFunc("/internal/insert", vlinsertHandler)
+		mux.HandleFunc("/api/v2/logs", vlinsertHandler)
+		mux.HandleFunc("/api/v1/validate", vlinsertHandler)
+		mux.HandleFunc("/services/collector/", vlinsertHandler)
+
+		if w := store.Writer(); w != nil {
+			bh := buffer.NewHandler(w, cfg.Peer.AuthKey)
+			mux.Handle("/internal/buffer/query", bh)
+		}
 	}
 
 	if cfg.Delete.Enabled && tombstoneStore != nil {
@@ -571,47 +584,9 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		dh.Register(mux)
 	}
 
-	mux.HandleFunc("/internal/cache/clear", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if cfg.Peer.AuthKey != "" {
-			auth := r.Header.Get("Authorization")
-			if auth != "Bearer "+cfg.Peer.AuthKey {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-		}
-		store.ClearCaches()
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]bool{"cleared": true})
-	})
+	mux.HandleFunc("/internal/cache/clear", HandleCacheClear(store, cfg.Peer.AuthKey))
 
-	mux.HandleFunc("/internal/cache/stats", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if cfg.Peer.AuthKey != "" {
-			auth := r.Header.Get("Authorization")
-			if auth != "Bearer "+cfg.Peer.AuthKey {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-		}
-		stats := store.MemCacheStats()
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"l1_entries":   stats.Entries,
-			"l1_size":      stats.Size,
-			"l1_max_size":  stats.MaxSize,
-			"l1_hits":      stats.Hits,
-			"l1_misses":    stats.Misses,
-			"l1_evictions": stats.Evictions,
-			"az":           store.SelfAZ(),
-		})
-	})
+	mux.HandleFunc("/internal/cache/stats", HandleCacheStats(store, cfg.Peer.AuthKey))
 
 	if ph := store.PeerHandler(); ph != nil {
 		mux.Handle("/internal/cache/", ph)
@@ -638,42 +613,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		csHandler.Register(mux)
 	}
 
-	mux.HandleFunc("/internal/manifest/update", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if cfg.Peer.AuthKey != "" {
-			auth := r.Header.Get("Authorization")
-			if auth != "Bearer "+cfg.Peer.AuthKey {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-		}
-
-		var update manifest.ManifestUpdate
-		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-
-		m := store.Manifest()
-		for _, fi := range update.Added {
-			partition := manifest.ExtractPartition(fi.Key)
-			if partition != "" {
-				m.AddFile(partition, fi)
-			}
-		}
-		for _, key := range update.Removed {
-			partition := manifest.ExtractPartition(key)
-			if partition != "" {
-				m.RemoveFile(partition, key)
-			}
-		}
-
-		metrics.ManifestUpdateReceivedTotal.Inc()
-		w.WriteHeader(http.StatusOK)
-	})
+	mux.HandleFunc("/internal/manifest/update", HandleManifestUpdate(store, cfg.Peer.AuthKey))
 
 	// Stats sync handler
 	if cfg.Stats.Enabled {

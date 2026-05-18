@@ -1,0 +1,21 @@
+FROM grafana/grafana:latest-ubuntu
+
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates unzip curl && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV GF_PATHS_PLUGINS="/opt/grafana-plugins"
+RUN mkdir -p /opt/grafana-plugins
+
+RUN /usr/share/grafana/bin/grafana cli --pluginsDir /opt/grafana-plugins plugins install grafana-clickhouse-datasource
+
+# Install VictoriaMetrics logs datasource plugin.
+# Try grafana-cli first; fall back to GitHub release download.
+RUN /usr/share/grafana/bin/grafana cli --pluginsDir /opt/grafana-plugins plugins install victoriametrics-logs-datasource || \
+    (curl -sSfL "https://github.com/VictoriaMetrics/victoriametrics-datasource/releases/latest/download/victoriametrics-logs-datasource.zip" -o /tmp/vml-plugin.zip && \
+     unzip /tmp/vml-plugin.zip -d /opt/grafana-plugins/ && \
+     rm /tmp/vml-plugin.zip)
+
+RUN chown -R grafana:root /opt/grafana-plugins
+
+USER grafana
