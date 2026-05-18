@@ -120,6 +120,22 @@ var (
 	BufferBridgeAZRequestsTotal = NewCounterVec("lakehouse_buffer_bridge_az_requests_total", "az_type")
 )
 
+// Bloom index metrics
+var (
+	BloomBuildTotal      = NewCounterVec("lakehouse_bloom_build_total", "trigger")
+	BloomBuildErrors     = NewCounter("lakehouse_bloom_build_errors_total")
+	BloomEntriesTotal    = NewGauge("lakehouse_bloom_entries_total")
+	BloomBytesMemory     = NewGauge("lakehouse_bloom_bytes_memory")
+	BloomQueriesTotal    = NewCounterVec("lakehouse_bloom_queries_total", "result")
+	BloomFilesSkipped    = NewCounter("lakehouse_bloom_files_skipped_total")
+	BloomBytesAvoided    = NewCounter("lakehouse_bloom_bytes_avoided_total")
+	BloomTierPartitions  = NewGaugeVec("lakehouse_bloom_tier_partitions", "tier")
+	BloomTierTransitions = NewCounterVec("lakehouse_bloom_tier_transitions_total", "transition")
+	BloomConfigSyncTotal = NewCounter("lakehouse_bloom_config_sync_total")
+	BloomConfigSyncError = NewCounter("lakehouse_bloom_config_sync_errors_total")
+	BloomControllerAdj   = NewCounterVec("lakehouse_bloom_controller_adjustments_total", "parameter")
+)
+
 // Startup & health metrics
 var (
 	StartupPhase        = NewGauge("lakehouse_startup_phase")
