@@ -64,4 +64,3 @@ func setsToLabels(sets map[string]map[string]bool) map[string][]string {
 	}
 	return labels
 }
-
