@@ -28,21 +28,21 @@ import (
 )
 
 type Storage struct {
-	cfg          *config.Config
-	pool         *s3reader.ClientPool
-	manifest     *manifest.Manifest
-	registry     *schema.Registry
-	memCache     *cache.LRU
-	diskCache    *cache.DiskCache
-	sfGroup      *cache.Group
-	labelIndex   *cache.LabelIndex
-	persister    *cache.Persister
-	discovery    *discovery.Discovery
-	peerCache    *peercache.PeerCache
-	peerHandler  *peercache.Handler
-	writer       *BatchWriter
-	bufferBridge *BufferBridge
-	tombstones   *delete.TombstoneStore
+	cfg           *config.Config
+	pool          *s3reader.ClientPool
+	manifest      *manifest.Manifest
+	registry      *schema.Registry
+	memCache      *cache.LRU
+	diskCache     *cache.DiskCache
+	sfGroup       *cache.Group
+	labelIndex    *cache.LabelIndex
+	persister     *cache.Persister
+	discovery     *discovery.Discovery
+	peerCache     *peercache.PeerCache
+	peerHandler   *peercache.Handler
+	writer        *BatchWriter
+	bufferBridge  *BufferBridge
+	tombstones    *delete.TombstoneStore
 	smartCache    *smartcache.Controller
 	bloomCache    *bloomindex.BloomCache
 	bloomObserver *storageBloomObserver

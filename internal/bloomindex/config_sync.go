@@ -50,7 +50,7 @@ func (cs *ConfigSync) Sync(ctx context.Context) error {
 		return err
 	}
 
-	if data == nil || len(data) == 0 {
+	if len(data) == 0 {
 		return nil
 	}
 

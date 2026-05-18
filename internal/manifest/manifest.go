@@ -55,11 +55,11 @@ func (fi FileInfo) MatchesLabel(field, value string) bool {
 }
 
 type PartitionMeta struct {
-	BloomAvailable bool      `json:"bloom_available,omitempty"`
-	BloomSize      int64     `json:"bloom_size,omitempty"`
-	BloomUpdatedAt time.Time `json:"bloom_updated_at,omitempty"`
-	BloomColumns   []string  `json:"bloom_columns,omitempty"`
-	LabelsAvailable bool     `json:"labels_available,omitempty"`
+	BloomAvailable  bool      `json:"bloom_available,omitempty"`
+	BloomSize       int64     `json:"bloom_size,omitempty"`
+	BloomUpdatedAt  time.Time `json:"bloom_updated_at,omitempty"`
+	BloomColumns    []string  `json:"bloom_columns,omitempty"`
+	LabelsAvailable bool      `json:"labels_available,omitempty"`
 }
 
 type Manifest struct {

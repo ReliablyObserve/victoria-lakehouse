@@ -1,6 +1,7 @@
 package bloomindex
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -115,7 +116,7 @@ func TestHandleBloomStatus_WithCacheData(t *testing.T) {
 func TestHandleBloomStatus_WithAdjustments(t *testing.T) {
 	bc := NewBloomController(DefaultBloomControllerConfig())
 	bc.SetLeader(true)
-	bc.Observe(nil, Observation{FilesPerHour: 5000})
+	bc.Observe(context.Background(), Observation{FilesPerHour: 5000})
 
 	sp := &StatusProvider{
 		Controller: bc,

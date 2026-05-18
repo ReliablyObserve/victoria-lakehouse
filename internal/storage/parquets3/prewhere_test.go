@@ -48,7 +48,7 @@ func TestPREWHERE_FilterColumnReadFirst(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	// Open and verify row group structure
 	data, err := os.ReadFile(path)
@@ -122,7 +122,7 @@ func TestPREWHERE_RGStatsElimination(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	data, err := os.ReadFile(path)
 	if err != nil {

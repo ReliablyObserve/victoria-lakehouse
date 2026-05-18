@@ -14,8 +14,8 @@ import (
 )
 
 var (
-	vtselectURL    = envOrDefault("VTSELECT_URL", "http://localhost:20471")
-	clickhouseURL  = envOrDefault("CLICKHOUSE_URL", "http://localhost:8123")
+	vtselectURL   = envOrDefault("VTSELECT_URL", "http://localhost:20471")
+	clickhouseURL = envOrDefault("CLICKHOUSE_URL", "http://localhost:8123")
 )
 
 // TestSmoke_LogsHealth verifies the lakehouse-logs /health endpoint returns OK.

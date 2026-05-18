@@ -367,7 +367,7 @@ Each binary supports three roles for independent scaling:
 - **Partition manifest** for sub-ms "nothing here" responses. Recent queries cost zero S3 I/O.
 - **LogsQL filter evaluation**: field matchers (exact, substring, regex, NOT) are applied post-scan to filter DataBlock rows at the storage layer.
 - **max_rows enforcement**: `query.max_rows` (default 10M) caps emitted rows per query, preventing unbounded cold-query resource usage.
-- **Bloom filters** on `trace_id` and `service_name` for fast point lookups.
+- **Multi-tier bloom index** on `trace_id` and `service.name` for fast point lookups. Age-based tiering (Hot/Warm/Cold/Archive) with automatic downgrade, LRU cache, auto-tuning controller, and `/api/v1/bloom/status` API. See [Bloom Index](docs/bloom-index.md).
 - **Parallel file workers**: configurable bounded worker pool for concurrent Parquet file processing (default 8 workers).
 - **Correlated prefetch**: log query warms trace Parquet for same time+service, and vice versa.
 - **Read-ahead**: sequential time scans prefetch next partitions.
@@ -552,7 +552,7 @@ Full reference: [Configuration](docs/configuration.md)
 
 ## Observability
 
-- **~110 Prometheus metrics** under `lakehouse_*` prefix (RED, USE, S3, cache, peer, manifest, Parquet engine, prefetch, smart cache, cross-signal, tenant, storage, cost, stats sync, startup)
+- **~147 Prometheus metrics** under `lakehouse_*` prefix (RED, USE, S3, cache, peer, manifest, Parquet engine, prefetch, smart cache, cross-signal, tenant, storage, cost, stats sync, startup, bloom index)
 - **Per-tenant metrics** with configurable cardinality cap (files, bytes, rows, queries, ingestion, timestamps)
 - **Global storage metrics** (compression ratio, partitions, oldest/newest data, cost by storage class, ingestion rate)
 - **Grafana dashboards** (single-instance + cluster + supplementary panels for VL/VT dashboards)
@@ -723,7 +723,7 @@ All core milestones are **complete**. The project is in production-readiness and
 | **M4: Discovery + Peer Cache** | Complete | Hot boundary auto-discovery via `/internal/partition/list`, consistent hash peer cache (L3) via headless DNS, `/manifest/range` API |
 | **M5: Cluster Integration** | Complete | `/internal/select/*` binary protocol with ZSTD DataBlock streaming, `-storageNode` registration on vlselect/vtselect |
 | **M6: Filter AST + E2E** | Complete | Full LogsQL predicate engine (exact, substring, regex, NOT, AND, OR, ranges), Playwright E2E, schema validation |
-| **M7: Observability** | Complete | ~100 Prometheus metrics, Grafana dashboards (single-instance + cluster), 10 alerting rules, circuit breaker, structured JSON logging |
+| **M7: Observability** | Complete | ~147 Prometheus metrics (including 12 bloom-specific), Grafana dashboards (single-instance + cluster), 10 alerting rules, circuit breaker, structured JSON logging |
 | **M8: Write Path** | Complete | Full VL insert protocol support via upstream `vlinsert` handlers (jsonline, Loki JSON+protobuf, ES bulk, syslog, journald, Datadog, OTLP, Splunk), WAL with crash recovery, adaptive flush, buffer query bridge for zero-delay reads |
 | **M9: Compaction** | Complete | Background merge of small Parquet files, size-tiered strategy, manifest atomic updates, tombstone integration |
 | **M10: Testing & Helm** | Complete | E2E test suite (VL + vlselect + loki-vl-proxy chain), benchmarks, Victoria-pattern Helm chart, upstream sync GHA |
@@ -731,6 +731,7 @@ All core milestones are **complete**. The project is in production-readiness and
 | **Binary Split** | Complete | Separate `lakehouse-logs` + `lakehouse-traces` binaries with independent Go modules, mode-specific config/flags/schemas |
 | **Smart Cache** | Complete | Unified cache controller (L1-L4), active query pinning, cache sizing calculator, snapshot persistence, cross-signal prefetch between logs↔traces |
 | **E2E Compose** | Complete | Full Docker Compose with MinIO, VL/VT hot tiers, vlselect/vtselect multi-level select, loki-vl-proxy, DuckDB + ClickHouse analytics, 11 Grafana datasources |
+| **Bloom Index** | Complete | Multi-tier bloom index (Hot/Warm/Cold/Archive), per-column bloom filters, LRU cache, auto-tuning controller, config sync, metadata compactor, `/api/v1/bloom/status` API, 12 Prometheus metrics, 44 unit tests + E2E verification |
 
 ---
 
