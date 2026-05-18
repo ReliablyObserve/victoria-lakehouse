@@ -16,6 +16,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
@@ -565,6 +566,9 @@ func extractExactMatch(query, fieldName string) string {
 	unquotedPrefix := fieldName + `:=`
 	if idx := strings.Index(query, unquotedPrefix); idx >= 0 {
 		start := idx + len(unquotedPrefix)
+		if start < len(query) && query[start] == '"' {
+			return ""
+		}
 		end := strings.IndexAny(query[start:], " |)")
 		if end < 0 {
 			return query[start:]

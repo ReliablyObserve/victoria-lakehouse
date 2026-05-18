@@ -556,6 +556,9 @@ func extractExactMatch(query, fieldName string) string {
 	unquotedPrefix := fieldName + `:=`
 	if idx := strings.Index(query, unquotedPrefix); idx >= 0 {
 		start := idx + len(unquotedPrefix)
+		if start < len(query) && query[start] == '"' {
+			return ""
+		}
 		end := strings.IndexAny(query[start:], " |)")
 		if end < 0 {
 			return query[start:]
