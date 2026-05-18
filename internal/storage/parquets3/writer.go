@@ -27,6 +27,12 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/wal"
 )
 
+// BloomObserver is called after each file flush to populate bloom entries.
+type BloomObserver interface {
+	OnFileFlush(partition, fileKey string, columnValues map[string][]string)
+	PersistDirty(ctx context.Context, prefix string)
+}
+
 // BatchWriter buffers incoming rows per partition and flushes them as
 // Parquet files to S3 on a configurable interval or size threshold.
 type BatchWriter struct {
@@ -43,6 +49,8 @@ type BatchWriter struct {
 	totalBytes atomic.Int64
 
 	wal *wal.WAL // nil if WAL disabled
+
+	bloomObserver BloomObserver
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -255,6 +263,10 @@ func (w *BatchWriter) FlushAll(ctx context.Context) error {
 	if len(logSnap) > 0 || len(traceSnap) > 0 {
 		metrics.InsertFlushTotal.Inc()
 		metrics.InsertFlushDuration.Observe(time.Since(flushStart).Seconds())
+
+		if w.bloomObserver != nil {
+			w.bloomObserver.PersistDirty(ctx, w.prefix)
+		}
 	}
 
 	if len(errs) == 0 && w.wal != nil {
@@ -305,6 +317,10 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 	}
 	w.manifest.AddFile(partition, fi)
 
+	if w.bloomObserver != nil {
+		w.bloomObserver.OnFileFlush(partition, key, extractLogBloomValues(rows))
+	}
+
 	w.totalBytes.Add(int64(len(result.Data)))
 
 	logger.Infof("flushed log partition; partition=%s, rows=%d, bytes=%d, ratio=%v, key=%s",
@@ -344,6 +360,10 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 		Labels:            extractTraceLabels(rows),
 	}
 	w.manifest.AddFile(partition, fi)
+
+	if w.bloomObserver != nil {
+		w.bloomObserver.OnFileFlush(partition, key, extractTraceBloomValues(rows))
+	}
 
 	w.totalBytes.Add(int64(len(result.Data)))
 
