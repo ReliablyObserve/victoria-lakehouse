@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Bloom age-tiering: 4-tier model (hot/warm/cold/archive) with configurable boundaries, tier downgrade logic (per-RG → per-file → summary → none), Filter.MergeFrom bitwise OR merge, SHA256 integrity checks
+- PartitionedIndex: per-partition bloom management with dirty tracking, hourly/daily granularity, high-cardinality skip gate (>50K)
+- BloomCache: LRU-cached bloom index access with lazy loading, size-based eviction, warm preload
+- Comprehensive bloom test suite: 84 tests covering properties, edge cases, race conditions, fuzz, tiering, partitioning, and cache behavior
+
 ### Changed
 - Traces binary insert path rewritten to use VL upstream vlinsert handlers (same adapter pattern as logs)
 - Automate `deps-traces` in Makefile — clones VL at commit a408207c2242 and applies patches (was manual)
