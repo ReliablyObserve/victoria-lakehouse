@@ -177,6 +177,22 @@ func (f *Filter) MayContain(value string) bool {
 	return true
 }
 
+// MergeFrom performs a bitwise OR merge of other's bits into this filter.
+// Both filters should have the same size (same n and fpRate parameters).
+// If sizes differ, the OR applies to the overlapping prefix.
+func (f *Filter) MergeFrom(other *Filter) {
+	if other == nil {
+		return
+	}
+	n := len(f.bits)
+	if len(other.bits) < n {
+		n = len(other.bits)
+	}
+	for i := 0; i < n; i++ {
+		f.bits[i] |= other.bits[i]
+	}
+}
+
 // Size returns the size in bytes of the bloom filter.
 func (f *Filter) Size() int {
 	return len(f.bits) + 1 // bits + numHash byte
