@@ -319,6 +319,7 @@ services:
       - "-cold-boundary=24h"
       - "-cold-overlap=1h"
       - "-cold-manifest-refresh=30s"
+      - "-server.admin-auth-token=dev-token"
     depends_on:
       lakehouse-logs:
         condition: service_healthy
