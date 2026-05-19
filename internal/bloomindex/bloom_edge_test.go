@@ -335,13 +335,13 @@ func TestUnmarshal_InvalidFilterLength(t *testing.T) {
 	// Craft a v2 payload with filter length exceeding remaining data:
 	// [version=2][count=1][keyLen=1][key='k'][colCount=1][colNameLen=1][colName='c'][filterLen=0x7FFFFFFF]
 	data := []byte{
-		2,                   // version
-		1, 0, 0, 0,          // entry count = 1
-		1, 0,                // key len = 1
-		'k',                 // key
-		1, 0,                // col count = 1
-		1,                   // col name len = 1
-		'c',                 // col name
+		2,          // version
+		1, 0, 0, 0, // entry count = 1
+		1, 0, // key len = 1
+		'k',  // key
+		1, 0, // col count = 1
+		1,                      // col name len = 1
+		'c',                    // col name
 		0xFF, 0xFF, 0xFF, 0x7F, // filter len = huge
 	}
 	_, err := Unmarshal(data)

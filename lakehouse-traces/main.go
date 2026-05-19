@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -336,94 +337,8 @@ func run(cfg *config.Config, addr string) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
-	// Stats background loops
 	if cfg.Stats.Enabled {
-		var syncPusher *stats.SyncPusher
-		if disc := store.Discovery(); disc != nil {
-			syncPusher = stats.NewSyncPusher(stats.SyncPusherConfig{
-				Registry: registry,
-				GetPeers: func() []string {
-					peers := disc.GetPeers()
-					urls := make([]string, len(peers))
-					for i, p := range peers {
-						urls[i] = "http://" + p + "/internal/stats/sync"
-					}
-					return urls
-				},
-				AuthKey:  cfg.Peer.AuthKey,
-				SelfAddr: addr,
-				Compress: cfg.Stats.PushCompression,
-			})
-		}
-
-		go func() {
-			if syncPusher == nil {
-				return
-			}
-			ticker := time.NewTicker(cfg.Stats.PushInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					if err := syncPusher.PushDelta(context.Background()); err != nil {
-						logger.Warnf("stats push failed: %s", err)
-					}
-				case <-stopCh:
-					return
-				}
-			}
-		}()
-
-		go func() {
-			if cfg.Stats.SnapshotPrefix == "" {
-				return
-			}
-			snapshotBucket := cfg.Stats.MetaBucket
-			if snapshotBucket == "" {
-				snapshotBucket = cfg.S3.Bucket
-			}
-			_ = snapshotBucket
-			snapshotKey := cfg.AutoPrefix() + cfg.Stats.SnapshotPrefix + "/snapshot.json"
-			ticker := time.NewTicker(cfg.Stats.SnapshotInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					data, err := registry.MarshalSnapshot()
-					if err != nil {
-						logger.Warnf("stats snapshot marshal failed: %s", err)
-						metrics.StatsSnapshotErrors.Inc()
-						continue
-					}
-					if err := store.Pool().Upload(context.Background(), snapshotKey, data); err != nil {
-						logger.Warnf("stats snapshot upload failed: %s", err)
-						metrics.StatsSnapshotErrors.Inc()
-					} else {
-						metrics.StatsSnapshotTotal.Inc()
-					}
-				case <-stopCh:
-					return
-				}
-			}
-		}()
-
-		go func() {
-			ticker := time.NewTicker(15 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					for _, ts := range registry.All() {
-						key := ts.AccountID + ":" + ts.ProjectID
-						metrics.TenantFiles.Set(key, ts.TotalFiles)
-						metrics.TenantBytes.Set(key, ts.TotalBytes)
-						metrics.TenantRawBytes.Set(key, ts.RawBytes)
-					}
-				case <-stopCh:
-					return
-				}
-			}
-		}()
+		startStatsLoops(cfg, store, registry, resolver, addr, stopCh)
 	}
 
 	if sc := store.SmartCache(); sc != nil {
@@ -508,6 +423,92 @@ func run(cfg *config.Config, addr string) {
 	}
 
 	logger.Infof("lakehouse-traces stopped")
+}
+
+func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, resolver *tenant.TenantResolver, addr string, stopCh chan struct{}) {
+	var syncPusher *stats.SyncPusher
+	if disc := store.Discovery(); disc != nil {
+		syncPusher = stats.NewSyncPusher(stats.SyncPusherConfig{
+			Registry: registry,
+			GetPeers: func() []string {
+				peers := disc.GetPeers()
+				urls := make([]string, len(peers))
+				for i, p := range peers {
+					urls[i] = "http://" + p + "/internal/stats/sync"
+				}
+				return urls
+			},
+			AuthKey:  cfg.Peer.AuthKey,
+			SelfAddr: addr,
+			Compress: cfg.Stats.PushCompression,
+		})
+	}
+
+	go func() {
+		if syncPusher == nil {
+			return
+		}
+		ticker := time.NewTicker(cfg.Stats.PushInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := syncPusher.PushDelta(context.Background()); err != nil {
+					logger.Warnf("stats push failed: %s", err)
+				}
+			case <-stopCh:
+				return
+			}
+		}
+	}()
+
+	go func() {
+		if cfg.Stats.SnapshotPrefix == "" {
+			return
+		}
+		snapshotKey := cfg.AutoPrefix() + cfg.Stats.SnapshotPrefix + "/snapshot.json"
+		ticker := time.NewTicker(cfg.Stats.SnapshotInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				data, err := registry.MarshalSnapshot()
+				if err != nil {
+					logger.Warnf("stats snapshot marshal failed: %s", err)
+					metrics.StatsSnapshotErrors.Inc()
+					continue
+				}
+				if err := store.Pool().Upload(context.Background(), snapshotKey, data); err != nil {
+					logger.Warnf("stats snapshot upload failed: %s", err)
+					metrics.StatsSnapshotErrors.Inc()
+				} else {
+					metrics.StatsSnapshotTotal.Inc()
+				}
+			case <-stopCh:
+				return
+			}
+		}
+	}()
+
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				for _, ts := range registry.All() {
+					accID, _ := strconv.ParseUint(ts.AccountID, 10, 32)
+					projID, _ := strconv.ParseUint(ts.ProjectID, 10, 32)
+					key := resolver.MetricLabel(uint32(accID), uint32(projID))
+					metrics.TenantFiles.Set(key, ts.TotalFiles)
+					metrics.TenantBytes.Set(key, ts.TotalBytes)
+					metrics.TenantRawBytes.Set(key, ts.RawBytes)
+				}
+			case <-stopCh:
+				return
+			}
+		}
+	}()
 }
 
 func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister) *http.ServeMux {
