@@ -699,50 +699,69 @@ func (c *Config) Validate() error {
 	}
 
 	if c.InsertEnabled() {
-		if c.Insert.TargetFileSize == "" {
-			return fmt.Errorf("--lakehouse.insert.target-file-size is required when insert enabled")
-		}
-		if c.Insert.FlushInterval <= 0 {
-			return fmt.Errorf("--lakehouse.insert.flush-interval must be positive")
-		}
-		if c.Insert.MaxBufferRows <= 0 {
-			return fmt.Errorf("--lakehouse.insert.max-buffer-rows must be positive")
-		}
-		if c.Insert.RowGroupSize <= 0 {
-			return fmt.Errorf("--lakehouse.insert.row-group-size must be positive")
-		}
-		if c.Insert.CompressionLevel < 1 || c.Insert.CompressionLevel > 22 {
-			return fmt.Errorf("--lakehouse.insert.compression-level must be 1-22, got %d", c.Insert.CompressionLevel)
-		}
-		if c.Insert.MaxBufferBytes != "" {
-			if _, err := ParseSizeBytes(c.Insert.MaxBufferBytes); err != nil {
-				return fmt.Errorf("--lakehouse.insert.max-buffer-bytes: invalid size %q: %w", c.Insert.MaxBufferBytes, err)
-			}
-		}
-		if _, err := ParseSizeBytes(c.Insert.TargetFileSize); err != nil {
-			return fmt.Errorf("--lakehouse.insert.target-file-size: invalid size %q: %w", c.Insert.TargetFileSize, err)
-		}
-		if c.Insert.WALMaxBytes != "" {
-			if _, err := ParseSizeBytes(c.Insert.WALMaxBytes); err != nil {
-				return fmt.Errorf("--lakehouse.insert.wal-max-bytes: invalid size %q: %w", c.Insert.WALMaxBytes, err)
-			}
-		}
-		switch c.Insert.AckMode {
-		case "buffer", "wal", "flush-sync":
-		default:
-			return fmt.Errorf("--lakehouse.insert.ack-mode must be one of: buffer, wal, flush-sync; got %q", c.Insert.AckMode)
-		}
-		if c.Insert.FlushLinger < 0 {
-			return fmt.Errorf("--lakehouse.insert.flush-linger must be non-negative")
-		}
-		if c.Insert.FlushMaxRows < 0 {
-			return fmt.Errorf("--lakehouse.insert.flush-max-rows must be non-negative")
-		}
-		if c.Insert.PeerReplicateTTL < 0 {
-			return fmt.Errorf("--lakehouse.insert.peer-replicate-ttl must be non-negative")
+		if err := c.validateInsert(); err != nil {
+			return err
 		}
 	}
 
+	if err := c.validateEnums(); err != nil {
+		return err
+	}
+
+	if err := c.validateSubsystems(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *Config) validateInsert() error {
+	if c.Insert.TargetFileSize == "" {
+		return fmt.Errorf("--lakehouse.insert.target-file-size is required when insert enabled")
+	}
+	if c.Insert.FlushInterval <= 0 {
+		return fmt.Errorf("--lakehouse.insert.flush-interval must be positive")
+	}
+	if c.Insert.MaxBufferRows <= 0 {
+		return fmt.Errorf("--lakehouse.insert.max-buffer-rows must be positive")
+	}
+	if c.Insert.RowGroupSize <= 0 {
+		return fmt.Errorf("--lakehouse.insert.row-group-size must be positive")
+	}
+	if c.Insert.CompressionLevel < 1 || c.Insert.CompressionLevel > 22 {
+		return fmt.Errorf("--lakehouse.insert.compression-level must be 1-22, got %d", c.Insert.CompressionLevel)
+	}
+	if c.Insert.MaxBufferBytes != "" {
+		if _, err := ParseSizeBytes(c.Insert.MaxBufferBytes); err != nil {
+			return fmt.Errorf("--lakehouse.insert.max-buffer-bytes: invalid size %q: %w", c.Insert.MaxBufferBytes, err)
+		}
+	}
+	if _, err := ParseSizeBytes(c.Insert.TargetFileSize); err != nil {
+		return fmt.Errorf("--lakehouse.insert.target-file-size: invalid size %q: %w", c.Insert.TargetFileSize, err)
+	}
+	if c.Insert.WALMaxBytes != "" {
+		if _, err := ParseSizeBytes(c.Insert.WALMaxBytes); err != nil {
+			return fmt.Errorf("--lakehouse.insert.wal-max-bytes: invalid size %q: %w", c.Insert.WALMaxBytes, err)
+		}
+	}
+	switch c.Insert.AckMode {
+	case "buffer", "wal", "flush-sync":
+	default:
+		return fmt.Errorf("--lakehouse.insert.ack-mode must be one of: buffer, wal, flush-sync; got %q", c.Insert.AckMode)
+	}
+	if c.Insert.FlushLinger < 0 {
+		return fmt.Errorf("--lakehouse.insert.flush-linger must be non-negative")
+	}
+	if c.Insert.FlushMaxRows < 0 {
+		return fmt.Errorf("--lakehouse.insert.flush-max-rows must be non-negative")
+	}
+	if c.Insert.PeerReplicateTTL < 0 {
+		return fmt.Errorf("--lakehouse.insert.peer-replicate-ttl must be non-negative")
+	}
+	return nil
+}
+
+func (c *Config) validateEnums() error {
 	switch c.Peer.AZMode {
 	case "preferred", "strict", "":
 	default:
@@ -766,6 +785,22 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("--lakehouse.topology must be one of: auto, storage-node, direct, loki-proxy; got %q", c.Topology)
 	}
 
+	switch c.Compaction.LeaderElection {
+	case "auto", "k8s", "s3", "none", "":
+	default:
+		return fmt.Errorf("--lakehouse.compaction.leader-election must be one of: auto, k8s, s3, none; got %q", c.Compaction.LeaderElection)
+	}
+
+	switch c.UI.Theme {
+	case "auto", "dark", "light", "":
+	default:
+		return fmt.Errorf("--lakehouse.ui.theme must be auto, dark, or light; got %q", c.UI.Theme)
+	}
+
+	return nil
+}
+
+func (c *Config) validateSubsystems() error {
 	if c.Cache.EvictionWatermark <= 0 || c.Cache.EvictionWatermark > 1 {
 		return fmt.Errorf("--lakehouse.cache.eviction-watermark must be in (0, 1], got %f", c.Cache.EvictionWatermark)
 	}
@@ -777,11 +812,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Query.MaxRows <= 0 {
 		return fmt.Errorf("--lakehouse.query.max-rows must be positive, got %d", c.Query.MaxRows)
-	}
-	switch c.Compaction.LeaderElection {
-	case "auto", "k8s", "s3", "none", "":
-	default:
-		return fmt.Errorf("--lakehouse.compaction.leader-election must be one of: auto, k8s, s3, none; got %q", c.Compaction.LeaderElection)
 	}
 	if c.Compaction.Enabled {
 		if c.Compaction.Interval <= 0 {
@@ -821,20 +851,13 @@ func (c *Config) Validate() error {
 	if c.Tenant.Isolation == "bucket" && c.Tenant.BucketTemplate == "" {
 		return fmt.Errorf("--lakehouse.tenant.bucket-template is required when isolation=bucket")
 	}
-	switch c.UI.Theme {
-	case "auto", "dark", "light", "":
-	default:
-		return fmt.Errorf("--lakehouse.ui.theme must be auto, dark, or light; got %q", c.UI.Theme)
-	}
 
-	// HotBoundary format validation: must parse as a duration if non-empty.
 	if c.HotBoundary != "" {
 		if err := validateDuration(c.HotBoundary); err != nil {
 			return fmt.Errorf("--lakehouse.hot-boundary: invalid duration %q: %w", c.HotBoundary, err)
 		}
 	}
 
-	// Cross-field validation: compaction with no leader election is risky.
 	if c.Compaction.Enabled && c.Compaction.LeaderElection == "none" {
 		return fmt.Errorf("--lakehouse.compaction.leader-election must not be \"none\" when compaction is enabled; concurrent compactors may corrupt data")
 	}
