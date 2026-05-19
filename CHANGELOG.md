@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-05-19
+
 ### Added
 - Bloom age-tiering: 4-tier model (hot/warm/cold/archive) with configurable boundaries, tier downgrade logic (per-RG → per-file → summary → none), Filter.MergeFrom bitwise OR merge, SHA256 integrity checks
 - PartitionedIndex: per-partition bloom management with dirty tracking, hourly/daily granularity, high-cardinality skip gate (>50K)
