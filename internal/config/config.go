@@ -631,7 +631,14 @@ func Load(path string) (*Config, error) {
 
 func LoadWithMode(path string, mode Mode, role Role) (*Config, error) {
 	if path == "" {
-		return Default(), nil
+		cfg := Default()
+		if mode != "" {
+			cfg.Mode = mode
+		}
+		if role != "" {
+			cfg.Role = role
+		}
+		return cfg, nil
 	}
 
 	data, err := os.ReadFile(path)

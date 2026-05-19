@@ -277,6 +277,19 @@ func TestLoad_EmptyPath(t *testing.T) {
 	}
 }
 
+func TestLoadWithMode_EmptyPath(t *testing.T) {
+	cfg, err := LoadWithMode("", ModeLogs, RoleInsert)
+	if err != nil {
+		t.Fatalf("LoadWithMode empty path: %v", err)
+	}
+	if cfg.Mode != ModeLogs {
+		t.Errorf("mode = %q, want %q", cfg.Mode, ModeLogs)
+	}
+	if cfg.Role != RoleInsert {
+		t.Errorf("role = %q, want %q", cfg.Role, RoleInsert)
+	}
+}
+
 func TestLoad_InvalidFile(t *testing.T) {
 	_, err := Load("/nonexistent/path/config.yaml")
 	if err == nil {
