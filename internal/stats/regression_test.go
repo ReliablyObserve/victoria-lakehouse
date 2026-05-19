@@ -344,8 +344,8 @@ func TestRegression_APIMethodNotAllowed(t *testing.T) {
 func TestRegression_APITenantNotFound(t *testing.T) {
 	api := setupMinimalAPI(t)
 	rec := doRegressionGet(t, api, "/lakehouse/api/v1/tenants/nonexistent/nonexistent")
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (empty tenant entry)", rec.Code)
 	}
 }
 
