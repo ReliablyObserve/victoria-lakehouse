@@ -359,6 +359,33 @@ services:
       start_period: 10s
 
   # =========================================================================
+  # VictoriaMetrics — scrapes lakehouse metrics for dashboards
+  # =========================================================================
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.143.0
+    networks: [lakehouse-net]
+    command:
+      - "-promscrape.config=/etc/prometheus/prometheus.yml"
+      - "-retentionPeriod=7d"
+      - "-httpListenAddr=:8428"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - vm-data:/victoria-metrics-data
+    depends_on:
+      lakehouse-logs:
+        condition: service_healthy
+      lakehouse-traces:
+        condition: service_healthy
+    ports:
+      - "28428:8428"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # =========================================================================
   # Grafana — pre-configured with all datasources
   # =========================================================================
 
@@ -387,4 +414,5 @@ volumes:
   vt-data: {}
   lakehouse-cache-logs: {}
   lakehouse-cache-traces: {}
+  vm-data: {}
   grafana-data: {}

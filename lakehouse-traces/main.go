@@ -429,7 +429,7 @@ func run(cfg *config.Config, addr string) {
 	}
 
 	// Tenant alias fleet sync
-	if resolver != nil && resolver.HasAliases() {
+	if resolver != nil && (resolver.HasAliases() || cfg.Tenant.AutoRegister) {
 		if disc := store.Discovery(); disc != nil {
 			aliasSyncCtx, aliasSyncCancel := context.WithCancel(context.Background())
 			aliasSyncPusher := tenant.NewSyncPusher(tenant.SyncPusherConfig{
@@ -448,7 +448,7 @@ func run(cfg *config.Config, addr string) {
 	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister)
 
 	var handler http.Handler = mux
-	if resolver != nil && resolver.HasAliases() {
+	if resolver != nil && (resolver.HasAliases() || cfg.Tenant.AutoRegister) {
 		handler = resolver.Middleware(mux)
 	}
 
@@ -625,6 +625,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			ClassTracker:    classTracker,
 			LabelIndex:      store.LabelIndex(),
 			SchemaRegistry:  store.SchemaRegistry(),
+			Resolver:        resolver,
 			Mode:            "traces",
 			Bucket:          cfg.S3.Bucket,
 			BloomColumns:    cfg.ActiveBloomColumns(),

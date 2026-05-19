@@ -14,12 +14,12 @@
       },
       "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
       "id": 1,
-      "options": { "content": "# Lakehouse Tenant Overview\nShows all registered string-based tenants (OrgID aliases) and their mapped numeric IDs. Data sourced from `lakehouse_tenant_*` metrics.", "mode": "markdown" },
+      "options": { "content": "# Lakehouse Tenant Overview\nShows storage tenants from manifest and auto-registered OrgID aliases. Top-level stats from `lakehouse_manifest_*` and `lakehouse_storage_*` metrics.", "mode": "markdown" },
       "title": "",
       "type": "text"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "victoriametrics-metrics" },
       "fieldConfig": {
         "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 3 }, { "color": "red", "value": 10 }] } },
         "overrides": []
@@ -27,38 +27,38 @@
       "gridPos": { "h": 6, "w": 4, "x": 0, "y": 3 },
       "id": 2,
       "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
-      "title": "Active Tenants",
+      "title": "Storage Tenants",
       "type": "stat",
-      "targets": [{ "expr": "count(lakehouse_tenant_files > 0)", "legendFormat": "", "refId": "A" }]
+      "targets": [{ "expr": "lakehouse_storage_tenants_total", "legendFormat": "", "refId": "A" }]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "victoriametrics-metrics" },
       "fieldConfig": {
         "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "unit": "bytes", "thresholds": { "steps": [{ "color": "green", "value": null }] } },
         "overrides": []
       },
       "gridPos": { "h": 6, "w": 4, "x": 4, "y": 3 },
       "id": 3,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "options": { "colorMode": "background", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
       "title": "Total Storage",
       "type": "stat",
-      "targets": [{ "expr": "sum(lakehouse_tenant_bytes)", "legendFormat": "", "refId": "A" }]
+      "targets": [{ "expr": "lakehouse_manifest_bytes", "legendFormat": "", "refId": "A" }]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "victoriametrics-metrics" },
       "fieldConfig": {
         "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "thresholds": { "steps": [{ "color": "green", "value": null }] } },
         "overrides": []
       },
       "gridPos": { "h": 6, "w": 4, "x": 8, "y": 3 },
       "id": 4,
-      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "options": { "colorMode": "background", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
       "title": "Total Files",
       "type": "stat",
-      "targets": [{ "expr": "sum(lakehouse_tenant_files)", "legendFormat": "", "refId": "A" }]
+      "targets": [{ "expr": "lakehouse_manifest_files", "legendFormat": "", "refId": "A" }]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "victoriametrics-metrics" },
       "fieldConfig": {
         "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "unit": "none", "thresholds": { "steps": [{ "color": "green", "value": null }] } },
         "overrides": []
@@ -71,110 +71,102 @@
       "targets": [{ "expr": "lakehouse_bloom_entries_total", "legendFormat": "", "refId": "A" }]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "victoriametrics-metrics" },
       "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
-          "mappings": [],
-          "thresholds": { "steps": [{ "color": "green", "value": null }] }
-        },
-        "overrides": [
-          { "matcher": { "id": "byName", "options": "Bytes" }, "properties": [{ "id": "unit", "value": "bytes" }] },
-          { "matcher": { "id": "byName", "options": "Raw Bytes" }, "properties": [{ "id": "unit", "value": "bytes" }] }
-        ]
+        "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "unit": "short", "thresholds": { "steps": [{ "color": "green", "value": null }] } },
+        "overrides": []
       },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 9 },
-      "id": 6,
-      "options": { "showHeader": true, "cellHeight": "sm", "footer": { "show": true, "reducer": ["sum"], "countRows": false, "fields": ["Files", "Bytes", "Raw Bytes"] }, "sortBy": [{ "displayName": "Bytes", "desc": true }] },
-      "title": "Per-Tenant Storage",
-      "type": "table",
+      "gridPos": { "h": 6, "w": 4, "x": 16, "y": 3 },
+      "id": 11,
+      "options": { "colorMode": "background", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "title": "Rows Ingested",
+      "type": "stat",
+      "targets": [{ "expr": "lakehouse_insert_rows_total", "legendFormat": "", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "victoriametrics-metrics" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "unit": "short", "thresholds": { "steps": [{ "color": "green", "value": null }] } },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 4, "x": 20, "y": 3 },
+      "id": 12,
+      "options": { "colorMode": "background", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "title": "Rows Buffered",
+      "type": "stat",
+      "targets": [{ "expr": "lakehouse_insert_rows_buffered", "legendFormat": "", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "victoriametrics-metrics" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "insertNulls": false, "lineInterpolation": "smooth", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "never", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } }, "unit": "short" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "id": 7,
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "title": "Insert Rate (rows/s)",
+      "type": "timeseries",
       "targets": [
-        { "expr": "lakehouse_tenant_files", "format": "table", "instant": true, "legendFormat": "", "refId": "files" },
-        { "expr": "lakehouse_tenant_bytes", "format": "table", "instant": true, "legendFormat": "", "refId": "bytes" },
-        { "expr": "lakehouse_tenant_raw_bytes", "format": "table", "instant": true, "legendFormat": "", "refId": "raw" }
-      ],
-      "transformations": [
-        { "id": "seriesToColumns", "options": { "byField": "tenant" } },
-        { "id": "organize", "options": { "excludeByName": { "Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "__name__": true, "__name__ 1": true, "__name__ 2": true, "__name__ 3": true, "instance": true, "instance 1": true, "instance 2": true, "instance 3": true, "job": true, "job 1": true, "job 2": true, "job 3": true }, "renameByName": { "tenant": "Tenant", "Value #files": "Files", "Value #bytes": "Bytes", "Value #raw": "Raw Bytes" } } }
+        { "expr": "rate(lakehouse_insert_rows_total{job=\"lakehouse-logs\"}[5m])", "legendFormat": "logs", "refId": "A" },
+        { "expr": "rate(lakehouse_insert_rows_total{job=\"lakehouse-traces\"}[5m])", "legendFormat": "traces", "refId": "B" }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "victoriametrics-metrics" },
       "fieldConfig": {
-        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "insertNulls": false, "lineInterpolation": "smooth", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "never", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } }, "unit": "short" },
+        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "insertNulls": false, "lineInterpolation": "smooth", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "never", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } }, "unit": "bytes" },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
-      "id": 7,
-      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "title": "Rows Ingested by Tenant",
-      "type": "timeseries",
-      "targets": [{ "expr": "rate(lakehouse_tenant_rows_total[5m])", "legendFormat": "{{ tenant }}", "refId": "A" }]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "insertNulls": false, "lineInterpolation": "smooth", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "never", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } }, "unit": "Bps" },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
       "id": 8,
       "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "title": "Ingestion Rate by Tenant",
+      "title": "Manifest Size Over Time",
       "type": "timeseries",
-      "targets": [{ "expr": "rate(lakehouse_tenant_ingestion_bytes_total[5m])", "legendFormat": "{{ tenant }}", "refId": "A" }]
+      "targets": [
+        { "expr": "lakehouse_manifest_bytes{job=\"lakehouse-logs\"}", "legendFormat": "logs bytes", "refId": "A" },
+        { "expr": "lakehouse_manifest_bytes{job=\"lakehouse-traces\"}", "legendFormat": "traces bytes", "refId": "B" }
+      ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "victoriametrics-metrics" },
       "fieldConfig": {
-        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "hideFrom": { "legend": false, "tooltip": false, "viz": false } }, "unit": "bytes" },
+        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "insertNulls": false, "lineInterpolation": "smooth", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "never", "spanNulls": false, "stacking": { "group": "A", "mode": "normal" }, "thresholdsStyle": { "mode": "off" } }, "unit": "Bps" },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
       "id": 9,
-      "options": { "legend": { "displayMode": "list", "placement": "right", "showLegend": true }, "pieType": "donut", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "tooltip": { "mode": "single", "sort": "none" } },
-      "title": "Storage Distribution by Tenant",
-      "type": "piechart",
-      "targets": [{ "expr": "lakehouse_tenant_bytes", "legendFormat": "{{ tenant }}", "refId": "A" }]
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "title": "S3 Write Rate",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "rate(lakehouse_s3_bytes_written_total{job=\"lakehouse-logs\"}[5m])", "legendFormat": "logs", "refId": "A" },
+        { "expr": "rate(lakehouse_s3_bytes_written_total{job=\"lakehouse-traces\"}[5m])", "legendFormat": "traces", "refId": "B" }
+      ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "victoriametrics-metrics" },
       "fieldConfig": {
         "defaults": { "color": { "mode": "palette-classic" }, "custom": { "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "insertNulls": false, "lineInterpolation": "smooth", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "never", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } }, "unit": "short" },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 27 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
       "id": 10,
       "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "title": "Queries by Tenant",
+      "title": "S3 Operations",
       "type": "timeseries",
-      "targets": [{ "expr": "rate(lakehouse_tenant_queries_total[5m])", "legendFormat": "{{ tenant }}", "refId": "A" }]
+      "targets": [
+        { "expr": "rate(lakehouse_s3_requests_total[5m])", "legendFormat": "{{ op }}", "refId": "A" }
+      ]
     }
   ],
   "schemaVersion": 39,
   "tags": ["lakehouse", "tenants"],
-  "templating": {
-    "list": [
-      {
-        "current": { "selected": false, "text": "Prometheus", "value": "Prometheus" },
-        "hide": 0,
-        "includeAll": false,
-        "multi": false,
-        "name": "DS_PROMETHEUS",
-        "options": [],
-        "query": "prometheus",
-        "refresh": 1,
-        "regex": "",
-        "skipUrlSync": false,
-        "type": "datasource"
-      }
-    ]
-  },
-  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
   "title": "Lakehouse Tenants",
   "uid": "lakehouse-tenants",
-  "version": 1
+  "version": 2
 }

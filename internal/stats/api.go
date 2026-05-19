@@ -66,6 +66,8 @@ type TenantEntry struct {
 	AccountID        string           `json:"account_id"`
 	ProjectID        string           `json:"project_id"`
 	Name             string           `json:"name,omitempty"`
+	OrgID            string           `json:"org_id,omitempty"`
+	Source           string           `json:"source,omitempty"`
 	TotalFiles       int64            `json:"total_files"`
 	TotalBytes       int64            `json:"total_bytes"`
 	RawBytes         int64            `json:"raw_bytes"`
@@ -253,6 +255,31 @@ func (a *API) handleTenants(w http.ResponseWriter, r *http.Request) {
 			entries = append(entries, entry)
 			totalBytes += s.TotalBytes
 			totalFiles += int64(s.TotalFiles)
+		}
+	}
+
+	// Decorate entries with OrgID from resolver and add alias-only tenants.
+	if a.cfg.Resolver != nil {
+		seen := make(map[string]bool, len(entries))
+		for i := range entries {
+			seen[entries[i].AccountID+":"+entries[i].ProjectID] = true
+			entries[i].OrgID = a.resolveOrgID(entries[i].AccountID, entries[i].ProjectID)
+			if entries[i].Source == "" {
+				entries[i].Source = "manifest"
+			}
+		}
+		for _, alias := range a.cfg.Resolver.AllAliases() {
+			key := strconv.FormatUint(uint64(alias.AccountID), 10) + ":" + strconv.FormatUint(uint64(alias.ProjectID), 10)
+			if !seen[key] {
+				entries = append(entries, TenantEntry{
+					AccountID: strconv.FormatUint(uint64(alias.AccountID), 10),
+					ProjectID: strconv.FormatUint(uint64(alias.ProjectID), 10),
+					Name:      alias.OrgID,
+					OrgID:     alias.OrgID,
+					Source:    "alias",
+				})
+				seen[key] = true
+			}
 		}
 	}
 
@@ -933,6 +960,19 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func (a *API) resolveName(accountID, projectID string) string {
+	if a.cfg.Resolver == nil {
+		return ""
+	}
+	accID, _ := strconv.ParseUint(accountID, 10, 32)
+	projID, _ := strconv.ParseUint(projectID, 10, 32)
+	name := a.cfg.Resolver.DisplayName(uint32(accID), uint32(projID))
+	if name == accountID+":"+projectID {
+		return ""
+	}
+	return name
+}
+
+func (a *API) resolveOrgID(accountID, projectID string) string {
 	if a.cfg.Resolver == nil {
 		return ""
 	}

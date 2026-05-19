@@ -325,7 +325,7 @@ func run(cfg *config.Config, addr string) {
 	defer close(stopCh)
 
 	// Tenant alias fleet sync
-	if resolver != nil && resolver.HasAliases() {
+	if resolver != nil && (resolver.HasAliases() || cfg.Tenant.AutoRegister) {
 		if disc := store.Discovery(); disc != nil {
 			aliasSyncCtx, aliasSyncCancel := context.WithCancel(context.Background())
 			aliasSyncPusher := tenant.NewSyncPusher(tenant.SyncPusherConfig{
@@ -359,7 +359,7 @@ func run(cfg *config.Config, addr string) {
 	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister)
 
 	var handler http.Handler = mux
-	if resolver != nil && resolver.HasAliases() {
+	if resolver != nil && (resolver.HasAliases() || cfg.Tenant.AutoRegister) {
 		handler = resolver.Middleware(mux)
 	}
 
