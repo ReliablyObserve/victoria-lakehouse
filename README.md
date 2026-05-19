@@ -359,7 +359,7 @@ Each binary supports three roles for independent scaling:
 
 ### Write Path
 - **Full VL insert protocol support**: jsonline, Loki (JSON + protobuf), ES bulk, syslog, journald, Datadog, OTLP, Splunk, native insert — all via VL's upstream `vlinsert` handlers.
-- **Write-ahead log (WAL)**: crash-safe durability with gob-encoded append-only log and automatic replay on restart.
+- **Write-ahead log (WAL)**: crash-safe durability with gob-encoded append-only log and automatic replay on restart. Configurable `ack_mode`: `buffer` (default, fast) or `flush-sync` (zero data loss, used by `max-durability` profile).
 - **Adaptive file sizing**: per-partition byte estimates trigger flush when approaching `--lakehouse.insert.target-file-size` for optimal Parquet file sizes.
 - **Buffer query bridge**: select pods fan out to ALL insert pods across ALL AZs via `/internal/buffer/query` for zero-delay reads of unflushed data. AZ-aware routing is only used for peer cache (L3), never for buffer queries — same-AZ-only would miss 2/3 of buffered rows in a 3-AZ deployment.
 - **Atomic S3 writes**: each Parquet file is written via a single S3 PutObject (1x write amplification). No WAL replay deduplication, no compactor reconciliation — contrast with Loki/Tempo's 3-5x write amplification from WAL→chunk→S3 pipelines.
@@ -424,6 +424,11 @@ Each binary supports three roles for independent scaling:
 - **JSON API**: 7 endpoints under `/lakehouse/api/v1/` — tenants, overview, ingestion, cost, compression, cardinality.
 - **Lakehouse Explorer UI**: built-in Preact+uPlot dashboard with Storage Overview, Tenants, and Cardinality Explorer tabs. Injected into VL/VT VMUI as optional tab (zero upstream modifications).
 
+### Configuration Profiles
+- **Five named presets** (`balanced`, `max-performance`, `max-durability`, `max-cost-savings`, `dev`) tune 40+ settings for a specific operational goal.
+- **Three-level hierarchy** in Helm: global → per-signal (logs/traces) → per-role (insert/select). More specific levels override less specific.
+- **Any explicit setting wins**: profiles provide defaults, not constraints. Override individual flags without switching profiles.
+
 ### Infrastructure
 - **Metadata persistence**: manifest, label index, cache metadata, and smart cache snapshots survive restarts.
 - **Distributed peer cache**: consistent hash routing across fleet instances via headless DNS.
@@ -435,6 +440,37 @@ Each binary supports three roles for independent scaling:
 ## Configuration
 
 Minimal config (S3 bucket) works out of the box. All 130+ config options have production-ready defaults. Each binary automatically applies mode-appropriate defaults (port, S3 prefix, bloom columns, delete prefix).
+
+### Configuration Profiles
+
+Five named presets tune 40+ settings with one flag. Any explicit setting overrides the profile:
+
+```bash
+lakehouse-logs --lakehouse.profile=max-durability --lakehouse.s3.bucket=obs-archive
+```
+
+| Profile | ack_mode | WAL | Cache | GC | Retention | Target |
+|---|---|---|---|---|---|---|
+| `balanced` (default) | buffer | On | 512MB/50GB | 6h | Off | General production |
+| `max-performance` | buffer | Off | 2GB/100GB | 3h | Off | Lowest latency |
+| `max-durability` | flush-sync | On (1GB) | 512MB/50GB | 1h | On | Zero data loss |
+| `max-cost-savings` | buffer | Off | 128MB/10GB | Off | On | Minimize cost |
+| `dev` | buffer | Off | 64MB/1GB | Off | Off | Local MinIO dev |
+
+Profiles support three-level hierarchy in Helm: global → per-signal → per-role:
+
+```yaml
+lakehouseConfig:
+  profile: balanced           # global default
+logs:
+  profile: max-durability     # logs override
+  select:
+    profile: max-performance  # logs-select override
+traces:
+  profile: max-cost-savings   # traces override
+```
+
+Full reference: [Getting Started — Configuration Profiles](docs/getting-started.md#configuration-profiles) | [Configuration](docs/configuration.md#configuration-profiles)
 
 ### Shared Config (both binaries)
 
@@ -736,6 +772,7 @@ All core milestones are **complete**. The project is in production-readiness and
 | **Smart Cache** | Complete | Unified cache controller (L1-L4), active query pinning, cache sizing calculator, snapshot persistence, cross-signal prefetch between logs↔traces |
 | **E2E Compose** | Complete | Full Docker Compose with MinIO, VL/VT hot tiers, vlselect/vtselect multi-level select, loki-vl-proxy, DuckDB + ClickHouse analytics, 11 Grafana datasources |
 | **Bloom Index** | Complete | Multi-tier bloom index (Hot/Warm/Cold/Archive), per-column bloom filters, LRU cache, auto-tuning controller, config sync, metadata compactor, `/api/v1/bloom/status` API, 12 Prometheus metrics, 44 unit tests + E2E verification |
+| **Settings Profiles** | Complete | 5 named presets (balanced, max-performance, max-durability, max-cost-savings, dev) with three-level hierarchy (global → per-signal → per-role), Helm `coalesce` resolution, JSON schema validation, 24 regression tests |
 
 ---
 
