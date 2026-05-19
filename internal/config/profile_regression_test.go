@@ -279,9 +279,9 @@ func TestProfileRegression_Prefetch(t *testing.T) {
 
 func TestProfileRegression_InsertDurability(t *testing.T) {
 	type durExpect struct {
-		flushLinger    time.Duration
-		peerReplicate  bool
-		asyncWAL       bool
+		flushLinger   time.Duration
+		peerReplicate bool
+		asyncWAL      bool
 	}
 
 	tests := map[Profile]durExpect{
