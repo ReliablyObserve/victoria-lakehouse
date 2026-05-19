@@ -52,6 +52,13 @@ spec:
           args:
             - "--lakehouse.config=/etc/lakehouse/config.yaml"
             - "--lakehouse.role={{ $role }}"
+            {{- $globalProfile := dig "profile" "" $.Values.lakehouseConfig }}
+            {{- $signalProfile := dig "profile" "" $signalVals }}
+            {{- $roleProfile := dig "profile" "" $roleVals }}
+            {{- $resolvedProfile := coalesce $roleProfile $signalProfile $globalProfile }}
+            {{- if $resolvedProfile }}
+            - "--lakehouse.profile={{ $resolvedProfile }}"
+            {{- end }}
             {{- with $.Values.lakehouseConfig.shutdown }}
             {{- if .delay }}
             - "-http.shutdownDelay={{ .delay }}"

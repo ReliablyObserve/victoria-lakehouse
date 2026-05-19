@@ -375,6 +375,106 @@ lakehouse --lakehouse.config=/etc/lakehouse/config.yaml
 
 CLI flags override YAML values.
 
+## Configuration Profiles
+
+Victoria Lakehouse ships with five configuration profiles — named presets that
+tune 40+ settings for a specific operational goal. Profiles are base defaults:
+any explicit flag or config file setting overrides the profile value.
+
+### Quick Reference
+
+| Profile | Target Use Case | Insert Latency | WAL | Cache | Compaction | GC | Retention | Stats |
+|---|---|---|---|---|---|---|---|---|
+| `balanced` (default) | Production general-purpose | ~0ms | On | 512MB/50GB | Off | On (6h) | Off | On |
+| `max-performance` | Lowest latency, higher resources | ~0ms | Off | 2GB/100GB | On (aggressive) | On (3h) | Off | On |
+| `max-durability` | Zero data loss priority | +200-400ms | On (1GB) | 512MB/50GB | On | On (1h) | On | On |
+| `max-cost-savings` | Minimize S3/compute/network | ~0ms | Off | 128MB/10GB | Off | Off | On | Off |
+| `dev` | Local development, MinIO-friendly | ~0ms | Off | 64MB/1GB | Off | Off | Off | Off |
+
+### When to Use Each Profile
+
+- **`balanced`**: Default for production. Good trade-offs everywhere. GC enabled (6h interval) for orphan cleanup. Accepts 10s data-at-risk window per pod crash. No AZ failure protection (rare event).
+- **`max-performance`**: When query latency and ingest speed are top priority. Larger caches, more workers, aggressive prefetch, cross-signal enabled. GC runs every 3h. WAL disabled to eliminate fsync overhead.
+- **`max-durability`**: When zero data loss is required (compliance, regulated environments). Uses `flush-sync` ack_mode with zero flush linger — HTTP 200 only after S3 confirms write. Retention enabled, GC aggressive (1h), S3 retries hardened (5x with 500ms backoff). See [Write Path Durability](./cross-az-optimization.md#write-path-durability).
+- **`max-cost-savings`**: For archive/cold-only workloads where cost is paramount. GC and stats disabled to minimize S3 LIST/PUT operations. Retention enabled to auto-expire old data. Fewer S3 PUTs, smaller caches, no prefetch, no buffer queries. ZSTD-11 saves ~$50/mo per 2TB/day on compression.
+- **`dev`**: For local development with MinIO. Tiny footprint, instant flush (1s), `force_path_style=true` for MinIO. GC, stats, compaction, and retention all disabled. Not for production.
+
+### Setting a Profile
+
+```yaml
+# Helm values.yaml — one line sets 40+ defaults
+lakehouseConfig:
+  profile: max-durability
+  s3:
+    bucket: obs-archive
+```
+
+```bash
+# CLI flag
+lakehouse-logs --lakehouse.profile=max-durability --lakehouse.s3.bucket=obs-archive
+```
+
+### Overriding Profile Settings
+
+Any explicit setting overrides the profile default:
+
+```yaml
+lakehouseConfig:
+  profile: max-performance
+  insert:
+    wal_enabled: true           # override: enable WAL despite max-performance saying off
+    compression_level: 7        # override: prefer space savings over speed
+```
+
+### Per-Signal and Per-Role Profiles
+
+Profiles can be set at three levels. More specific levels override less specific:
+
+| Level | Scope | Example |
+|---|---|---|
+| **Global** | All signals, all roles | `lakehouseConfig.profile: balanced` |
+| **Per-signal** | One signal (logs or traces) | `logs.profile: max-durability` |
+| **Per-role** | One signal + one role | `logs.insert.profile: max-performance` |
+
+**Different profiles for logs vs traces:**
+
+```yaml
+lakehouseConfig:
+  profile: balanced          # global fallback
+
+logs:
+  profile: max-durability    # logs are business-critical
+
+traces:
+  profile: max-cost-savings  # traces are best-effort archive
+```
+
+**Different profiles for insert vs select within a signal:**
+
+```yaml
+logs:
+  profile: max-durability    # signal-level default
+  insert:
+    profile: max-durability  # inherits from logs.profile
+  select:
+    profile: max-performance # query speed matters most for reads
+```
+
+Logs insert uses `max-durability` (WAL on, flush-sync, conservative settings). Logs select uses
+`max-performance` (big caches, more workers, aggressive prefetch).
+
+### Cost Impact Comparison (500 GB/day, 1 year retention)
+
+| Profile | S3 Storage | S3 Requests | Compute (est.) | Data at Risk (pod crash) |
+|---|---|---|---|---|
+| `balanced` | ~$570/yr | ~$4/yr | Standard | 19 MB per pod |
+| `max-performance` | ~$720/yr (+25%) | ~$8/yr | Higher (more workers) | 10 MB per pod |
+| `max-durability` | ~$570/yr | ~$4/yr | Standard | **Zero** |
+| `max-cost-savings` | ~$525/yr (-8%) | ~$2/yr | Lower (fewer workers) | 57 MB per pod |
+| `dev` | N/A | N/A | Minimal | N/A |
+
+Storage cost difference comes from compression level (ZSTD-1 to ZSTD-11) and flush frequency (more PUTs = more small files = slightly more total bytes before compaction).
+
 ## Verifying the Setup
 
 After starting, check these endpoints:

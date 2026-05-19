@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Settings profiles: 5 named presets (balanced, max-performance, max-durability, max-cost-savings, dev) with three-level hierarchy (global → per-signal → per-role), Helm chart integration via `coalesce` resolution, JSON schema validation, and comprehensive profile integration tests
+
 ## [0.26.0] - 2026-05-19
 
 ### Added
