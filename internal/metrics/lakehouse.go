@@ -124,7 +124,7 @@ var (
 var (
 	BloomBuildTotal      = NewCounterVec("lakehouse_bloom_build_total", "trigger")
 	BloomBuildErrors     = NewCounter("lakehouse_bloom_build_errors_total")
-	BloomEntriesTotal    = NewGauge("lakehouse_bloom_entries_total")
+	BloomEntriesTotal    = NewCounter("lakehouse_bloom_entries_total")
 	BloomBytesMemory     = NewGauge("lakehouse_bloom_bytes_memory")
 	BloomQueriesTotal    = NewCounterVec("lakehouse_bloom_queries_total", "result")
 	BloomFilesSkipped    = NewCounter("lakehouse_bloom_files_skipped_total")

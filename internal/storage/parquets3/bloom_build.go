@@ -27,7 +27,7 @@ func (o *storageBloomObserver) OnFileFlush(partition, fileKey string, columnValu
 	for _, vals := range columnValues {
 		totalEntries += len(vals)
 	}
-	metrics.BloomEntriesTotal.Add(int64(totalEntries))
+	metrics.BloomEntriesTotal.Add(totalEntries)
 }
 
 func (o *storageBloomObserver) PersistDirty(ctx context.Context, prefix string) {

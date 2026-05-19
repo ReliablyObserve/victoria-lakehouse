@@ -566,7 +566,8 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 
 	// Bloom status API
 	mux.HandleFunc("/api/v1/bloom/status", bloomindex.HandleBloomStatus(&bloomindex.StatusProvider{
-		Mode: "traces",
+		Mode:           "traces",
+		IndexedColumns: cfg.Traces.BloomColumns,
 	}))
 
 	// Lakehouse UI

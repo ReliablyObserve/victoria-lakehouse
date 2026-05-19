@@ -1,8 +1,12 @@
 package bloomindex
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestEmptyPartition_NoBloom(t *testing.T) {
@@ -285,5 +289,120 @@ func TestFilter_MarshalUnmarshal_EdgeCases(t *testing.T) {
 	_, err = UnmarshalFilter([]byte{1})
 	if err == nil {
 		t.Error("single-byte data should fail")
+	}
+}
+
+func TestNewFilter_MaxItemsCap(t *testing.T) {
+	f := NewFilter(100_000_000, 0.01)
+	if f == nil {
+		t.Fatal("should create filter even with capped n")
+	}
+	f.Add("test")
+	if !f.MayContain("test") {
+		t.Error("capped filter should still work")
+	}
+}
+
+func TestNewFilter_InvalidParams(t *testing.T) {
+	f := NewFilter(-1, 0.01)
+	if f == nil {
+		t.Fatal("negative n should be clamped to 1")
+	}
+	f2 := NewFilter(10, 0)
+	if f2 == nil {
+		t.Fatal("zero fpRate should use default")
+	}
+	f3 := NewFilter(10, 1.5)
+	if f3 == nil {
+		t.Fatal("fpRate > 1 should use default")
+	}
+}
+
+func TestUnmarshal_ExcessiveEntryCount(t *testing.T) {
+	data := make([]byte, 5)
+	data[0] = 2
+	data[1] = 0xFF
+	data[2] = 0xFF
+	data[3] = 0xFF
+	data[4] = 0x7F
+	_, err := Unmarshal(data)
+	if err == nil {
+		t.Error("entry count exceeding max should fail")
+	}
+}
+
+func TestUnmarshal_InvalidFilterLength(t *testing.T) {
+	// Craft a v2 payload with filter length exceeding remaining data:
+	// [version=2][count=1][keyLen=1][key='k'][colCount=1][colNameLen=1][colName='c'][filterLen=0x7FFFFFFF]
+	data := []byte{
+		2,                   // version
+		1, 0, 0, 0,          // entry count = 1
+		1, 0,                // key len = 1
+		'k',                 // key
+		1, 0,                // col count = 1
+		1,                   // col name len = 1
+		'c',                 // col name
+		0xFF, 0xFF, 0xFF, 0x7F, // filter len = huge
+	}
+	_, err := Unmarshal(data)
+	if err == nil {
+		t.Error("corrupted filter length should fail")
+	}
+}
+
+func TestBloomHash_ZeroModulus(t *testing.T) {
+	result := bloomHash(12345, 0, 0)
+	if result != 0 {
+		t.Errorf("bloomHash with m=0 should return 0, got %d", result)
+	}
+}
+
+func TestPartitionAge_EdgeCases(t *testing.T) {
+	now := time.Now()
+
+	if d := partitionAge("no-date-here", now); d != 0 {
+		t.Error("no dt= should return 0")
+	}
+	if d := partitionAge("dt=short", now); d != 0 {
+		t.Error("short date should return 0")
+	}
+	if d := partitionAge("dt=not-a-date", now); d != 0 {
+		t.Error("invalid date should return 0")
+	}
+	if d := partitionAge("dt=2026-05-18", now); d <= 0 {
+		t.Error("valid date should return positive age")
+	}
+	if d := partitionAge("tenant/signal/dt=2026-01-01/hour=00", now); d <= 0 {
+		t.Error("nested partition path should work")
+	}
+}
+
+func TestFilter_MergeFrom_DifferentSizes(t *testing.T) {
+	f1 := NewFilter(10, 0.01)
+	f2 := NewFilter(100, 0.01)
+	f1.Add("a")
+	f2.Add("b")
+	f1.MergeFrom(f2)
+	if !f1.MayContain("a") {
+		t.Error("original values should be preserved")
+	}
+}
+
+func TestStatusResponse_IndexedColumns(t *testing.T) {
+	sp := &StatusProvider{
+		Mode:           "logs",
+		IndexedColumns: []string{"service.name", "trace_id"},
+	}
+	handler := HandleBloomStatus(sp)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/bloom/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var resp BloomStatusResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.IndexedColumns) != 2 {
+		t.Errorf("expected 2 indexed columns, got %d", len(resp.IndexedColumns))
 	}
 }

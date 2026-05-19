@@ -11,11 +11,12 @@ import (
 
 // BloomStatusResponse is the JSON shape of /api/v1/bloom/status.
 type BloomStatusResponse struct {
-	Enabled    bool                 `json:"enabled"`
-	Mode       string               `json:"mode"`
-	AutoTuning *AutoTuningStatus    `json:"auto_tuning,omitempty"`
-	Tiers      map[string]TierStats `json:"tiers"`
-	Cache      CacheStats           `json:"cache"`
+	Enabled        bool                 `json:"enabled"`
+	Mode           string               `json:"mode"`
+	IndexedColumns []string             `json:"indexed_columns,omitempty"`
+	AutoTuning     *AutoTuningStatus    `json:"auto_tuning,omitempty"`
+	Tiers          map[string]TierStats `json:"tiers"`
+	Cache          CacheStats           `json:"cache"`
 }
 
 // AutoTuningStatus contains current auto-tuning state.
@@ -46,9 +47,10 @@ type CacheStats struct {
 
 // StatusProvider supplies data for the bloom status endpoint.
 type StatusProvider struct {
-	Controller *BloomController
-	Cache      *BloomCache
-	Mode       string
+	Controller     *BloomController
+	Cache          *BloomCache
+	Mode           string
+	IndexedColumns []string
 }
 
 // HandleBloomStatus returns an HTTP handler for GET /api/v1/bloom/status.
@@ -60,7 +62,8 @@ func HandleBloomStatus(sp *StatusProvider) http.HandlerFunc {
 		}
 
 		resp := BloomStatusResponse{
-			Mode: sp.Mode,
+			Mode:           sp.Mode,
+			IndexedColumns: sp.IndexedColumns,
 			Tiers: map[string]TierStats{
 				"hot":     {AgeRange: "0-7d"},
 				"warm":    {AgeRange: "7-30d"},
