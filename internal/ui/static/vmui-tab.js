@@ -358,9 +358,10 @@
           el("div", { className: "lh-card-value", textContent: fmtRatio(d.compression_ratio) }),
         ]));
       }
+      var partCount = d.partition_list ? d.partition_list.reduce(function (s, p) { return s + p.hours.length; }, 0) : d.partitions;
       cards.appendChild(el("div", { className: "lh-card" }, [
         el("div", { className: "lh-card-label", textContent: "Partitions" }),
-        el("div", { className: "lh-card-value", textContent: fmtNum(d.partitions) }),
+        el("div", { className: "lh-card-value", textContent: fmtNum(partCount) }),
       ]));
       cards.appendChild(el("div", { className: "lh-card" }, [
         el("div", { className: "lh-card-label", textContent: "Est. Cost" }),
