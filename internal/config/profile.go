@@ -97,12 +97,15 @@ func maxPerformanceConfig() *Config {
 	cfg.Profile = ProfileMaxPerformance
 
 	cfg.Insert.FlushInterval = 5 * time.Second
+	cfg.Insert.FlushLinger = 100 * time.Millisecond
+	cfg.Insert.AckMode = "buffer"
 	cfg.Insert.WALEnabled = false
 	cfg.Insert.CompressionLevel = 3
 	cfg.Insert.MaxBufferRows = 100000
 	cfg.Insert.MaxBufferBytes = "512MB"
 	cfg.Insert.TargetFileSize = "64MB"
 	cfg.Insert.RowGroupSize = 5000
+	cfg.Insert.AsyncWALEnabled = false
 
 	cfg.Select.BufferQueryTimeout = 1 * time.Second
 	cfg.Query.FileWorkers = 16
@@ -139,6 +142,9 @@ func maxPerformanceConfig() *Config {
 	cfg.Compaction.MaxConcurrent = 2
 	cfg.Compaction.MinFilesL0 = 5
 
+	cfg.GC.Enabled = true
+	cfg.GC.Interval = 3 * time.Hour
+
 	cfg.Manifest.PersistInterval = 1 * time.Minute
 	cfg.Manifest.RefreshInterval = 1 * time.Minute
 	cfg.Startup.ServeStale = true
@@ -162,11 +168,21 @@ func maxDurabilityConfig() *Config {
 	cfg.Profile = ProfileMaxDurability
 
 	cfg.Insert.AckMode = "flush-sync"
+	cfg.Insert.FlushLinger = 0
+	cfg.Insert.WALEnabled = true
 	cfg.Insert.WALMaxBytes = "1GB"
+	cfg.Insert.CompressionLevel = 7
+	cfg.Insert.AsyncWALEnabled = false
 
 	cfg.Compaction.Enabled = true
 
+	cfg.GC.Enabled = true
+	cfg.GC.Interval = 1 * time.Hour
+
+	cfg.Retention.Enabled = true
+
 	cfg.S3.RetryMax = 5
+	cfg.S3.RetryBaseDelay = 500 * time.Millisecond
 
 	cfg.Delete.DefaultMode = "permanent"
 	cfg.Delete.VerifyInterval = 1 * time.Hour
@@ -174,7 +190,9 @@ func maxDurabilityConfig() *Config {
 	cfg.Manifest.PersistInterval = 1 * time.Minute
 	cfg.SmartCache.SnapshotInterval = 30 * time.Second
 
+	cfg.Stats.Enabled = true
 	cfg.Stats.SnapshotInterval = 1 * time.Minute
+	cfg.Stats.PushCompression = true
 
 	return cfg
 }
@@ -184,12 +202,16 @@ func maxCostSavingsConfig() *Config {
 	cfg.Profile = ProfileMaxCostSavings
 
 	cfg.Insert.FlushInterval = 30 * time.Second
+	cfg.Insert.FlushLinger = 1 * time.Second
 	cfg.Insert.WALEnabled = false
 	cfg.Insert.CompressionLevel = 11
 	cfg.Insert.MaxBufferRows = 25000
 	cfg.Insert.MaxBufferBytes = "128MB"
 	cfg.Insert.TargetFileSize = "256MB"
 	cfg.Insert.RowGroupSize = 50000
+	cfg.Insert.AckMode = "buffer"
+	cfg.Insert.PeerReplicate = false
+	cfg.Insert.AsyncWALEnabled = false
 
 	cfg.Select.BufferQueryEnabled = false
 	cfg.Query.FileWorkers = 4
@@ -210,15 +232,24 @@ func maxCostSavingsConfig() *Config {
 	cfg.SmartCache.HotAccessThreshold = 5
 	cfg.SmartCache.HotWindow = 5 * time.Minute
 	cfg.SmartCache.DiskLimitMax = "20GB"
+	cfg.SmartCache.QueryGracePeriod = 1 * time.Minute
 
 	cfg.Prefetch.Correlated = false
 	cfg.Prefetch.ReadAheadDepth = 0
 	cfg.Prefetch.MaxConcurrent = 2
 	cfg.Prefetch.MaxQueue = 32
+	cfg.CrossSignal.Enabled = false
 
 	cfg.S3.MaxConnections = 64
 	cfg.S3.MaxConcurrentDownloads = 8
 	cfg.S3.Timeout = 60 * time.Second
+
+	cfg.Compaction.Enabled = false
+
+	cfg.GC.Enabled = false
+
+	cfg.Retention.Enabled = true
+	cfg.Retention.Default = "90d"
 
 	cfg.Manifest.PersistInterval = 15 * time.Minute
 	cfg.Manifest.RefreshInterval = 15 * time.Minute
@@ -248,6 +279,8 @@ func devConfig() *Config {
 	cfg.Profile = ProfileDev
 
 	cfg.Insert.FlushInterval = 1 * time.Second
+	cfg.Insert.FlushLinger = 0
+	cfg.Insert.AckMode = "buffer"
 	cfg.Insert.WALEnabled = false
 	cfg.Insert.CompressionLevel = 1
 	cfg.Insert.MaxBufferRows = 1000
@@ -255,6 +288,8 @@ func devConfig() *Config {
 	cfg.Insert.TargetFileSize = "8MB"
 	cfg.Insert.RowGroupSize = 1000
 	cfg.Insert.WALMaxBytes = "32MB"
+	cfg.Insert.PeerReplicate = false
+	cfg.Insert.AsyncWALEnabled = false
 
 	cfg.Select.BufferQueryTimeout = 2 * time.Second
 	cfg.Query.FileWorkers = 2
@@ -276,11 +311,20 @@ func devConfig() *Config {
 	cfg.Prefetch.ReadAheadDepth = 0
 	cfg.Prefetch.MaxConcurrent = 1
 	cfg.Prefetch.MaxQueue = 8
+	cfg.CrossSignal.Enabled = false
 
 	cfg.S3.ForcePathStyle = true
 	cfg.S3.MaxConnections = 16
 	cfg.S3.MaxConcurrentDownloads = 4
 	cfg.S3.RetryMax = 1
+
+	cfg.Compaction.Enabled = false
+
+	cfg.GC.Enabled = false
+
+	cfg.Retention.Enabled = false
+
+	cfg.Stats.Enabled = false
 
 	cfg.Manifest.PersistInterval = 5 * time.Second
 	cfg.Manifest.RefreshInterval = 5 * time.Second

@@ -241,9 +241,9 @@ lakehouse:
 		t.Errorf("ack_mode = %q, want flush-sync", cfg.Insert.AckMode)
 	}
 
-	// flush_linger from balanced defaults (max-durability inherits Default())
-	if cfg.Insert.FlushLinger != 200*time.Millisecond {
-		t.Errorf("flush_linger = %v, want 200ms", cfg.Insert.FlushLinger)
+	// flush_linger is 0 for max-durability (immediate flush for durability)
+	if cfg.Insert.FlushLinger != 0 {
+		t.Errorf("flush_linger = %v, want 0", cfg.Insert.FlushLinger)
 	}
 
 	// flush_max_rows from balanced defaults

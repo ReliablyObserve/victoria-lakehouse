@@ -277,6 +277,118 @@ func TestProfileRegression_Prefetch(t *testing.T) {
 	}
 }
 
+func TestProfileRegression_InsertDurability(t *testing.T) {
+	type durExpect struct {
+		flushLinger    time.Duration
+		peerReplicate  bool
+		asyncWAL       bool
+	}
+
+	tests := map[Profile]durExpect{
+		ProfileBalanced:       {200 * time.Millisecond, false, false},
+		ProfileMaxPerformance: {100 * time.Millisecond, false, false},
+		ProfileMaxDurability:  {0, false, false},
+		ProfileMaxCostSavings: {1 * time.Second, false, false},
+		ProfileDev:            {0, false, false},
+	}
+
+	for profile, expect := range tests {
+		t.Run(string(profile), func(t *testing.T) {
+			cfg := ProfileConfig(profile)
+
+			if cfg.Insert.FlushLinger != expect.flushLinger {
+				t.Errorf("flush_linger = %v, want %v", cfg.Insert.FlushLinger, expect.flushLinger)
+			}
+			if cfg.Insert.PeerReplicate != expect.peerReplicate {
+				t.Errorf("peer_replicate = %v, want %v", cfg.Insert.PeerReplicate, expect.peerReplicate)
+			}
+			if cfg.Insert.AsyncWALEnabled != expect.asyncWAL {
+				t.Errorf("async_wal_enabled = %v, want %v", cfg.Insert.AsyncWALEnabled, expect.asyncWAL)
+			}
+		})
+	}
+}
+
+func TestProfileRegression_GC(t *testing.T) {
+	type gcExpect struct {
+		enabled  bool
+		interval time.Duration
+	}
+
+	tests := map[Profile]gcExpect{
+		ProfileBalanced:       {true, 6 * time.Hour},
+		ProfileMaxPerformance: {true, 3 * time.Hour},
+		ProfileMaxDurability:  {true, 1 * time.Hour},
+		ProfileMaxCostSavings: {false, 6 * time.Hour},
+		ProfileDev:            {false, 6 * time.Hour},
+	}
+
+	for profile, expect := range tests {
+		t.Run(string(profile), func(t *testing.T) {
+			cfg := ProfileConfig(profile)
+
+			if cfg.GC.Enabled != expect.enabled {
+				t.Errorf("gc.enabled = %v, want %v", cfg.GC.Enabled, expect.enabled)
+			}
+			if cfg.GC.Interval != expect.interval {
+				t.Errorf("gc.interval = %v, want %v", cfg.GC.Interval, expect.interval)
+			}
+		})
+	}
+}
+
+func TestProfileRegression_Retention(t *testing.T) {
+	type retExpect struct {
+		enabled    bool
+		defaultVal string
+	}
+
+	tests := map[Profile]retExpect{
+		ProfileBalanced:       {false, "90d"},
+		ProfileMaxPerformance: {false, "90d"},
+		ProfileMaxDurability:  {true, "90d"},
+		ProfileMaxCostSavings: {true, "90d"},
+		ProfileDev:            {false, "90d"},
+	}
+
+	for profile, expect := range tests {
+		t.Run(string(profile), func(t *testing.T) {
+			cfg := ProfileConfig(profile)
+
+			if cfg.Retention.Enabled != expect.enabled {
+				t.Errorf("retention.enabled = %v, want %v", cfg.Retention.Enabled, expect.enabled)
+			}
+			if cfg.Retention.Default != expect.defaultVal {
+				t.Errorf("retention.default = %q, want %q", cfg.Retention.Default, expect.defaultVal)
+			}
+		})
+	}
+}
+
+func TestProfileRegression_Stats(t *testing.T) {
+	type statsExpect struct {
+		enabled bool
+	}
+
+	tests := map[Profile]statsExpect{
+		ProfileBalanced:       {true},
+		ProfileMaxPerformance: {true},
+		ProfileMaxDurability:  {true},
+		ProfileMaxCostSavings: {false},
+		ProfileDev:            {false},
+	}
+
+	for profile, expect := range tests {
+		t.Run(string(profile), func(t *testing.T) {
+			cfg := ProfileConfig(profile)
+
+			if cfg.Stats.Enabled != expect.enabled {
+				t.Errorf("stats.enabled = %v, want %v", cfg.Stats.Enabled, expect.enabled)
+			}
+		})
+	}
+}
+
 func TestProfileRegression_Peer(t *testing.T) {
 	type peerExpect struct {
 		maxConns int
