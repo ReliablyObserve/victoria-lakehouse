@@ -148,6 +148,8 @@ func run(cfg *config.Config, addr string) {
 
 	store.StartWriter()
 
+	writerTenantKey := deriveTenantKey(cfg.AutoPrefix())
+
 	var pusher *manifest.Pusher
 	if cfg.Discovery.PeerHeadlessService != "" {
 		disc := store.Discovery()
@@ -272,6 +274,13 @@ func run(cfg *config.Config, addr string) {
 
 	// --- Tenant stats ---
 	registry := stats.NewTenantRegistry(hostname())
+
+	if w := store.Writer(); w != nil {
+		tenantKey := writerTenantKey
+		w.SetStatsCallback(func(compressedBytes, rawBytes, rows int64, storageClass string) {
+			registry.RecordWrite(tenantKey, compressedBytes, rawBytes, rows, storageClass)
+		})
+	}
 
 	// Load snapshot from S3 if configured.
 	if cfg.Stats.Enabled && cfg.Stats.SnapshotPrefix != "" {
@@ -823,6 +832,17 @@ func hostname() string {
 	}
 	h, _ := os.Hostname()
 	return h
+}
+
+func deriveTenantKey(prefix string) string {
+	parts := strings.SplitN(strings.TrimSuffix(prefix, "/"), "/", 3)
+	if len(parts) >= 2 {
+		return parts[0] + ":" + parts[1]
+	}
+	if len(parts) == 1 && parts[0] != "" {
+		return parts[0] + ":"
+	}
+	return "0:0"
 }
 
 type s3PoolAdapter struct {

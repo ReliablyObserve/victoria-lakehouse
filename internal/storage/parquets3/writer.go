@@ -33,6 +33,10 @@ type BloomObserver interface {
 	PersistDirty(ctx context.Context, prefix string)
 }
 
+// StatsCallback is called after each successful file flush with the
+// compressed size, raw size, row count, and storage class.
+type StatsCallback func(compressedBytes, rawBytes, rows int64, storageClass string)
+
 // BatchWriter buffers incoming rows per partition and flushes them as
 // Parquet files to S3 on a configurable interval or size threshold.
 type BatchWriter struct {
@@ -51,6 +55,7 @@ type BatchWriter struct {
 	wal *wal.WAL // nil if WAL disabled
 
 	bloomObserver BloomObserver
+	statsCallback StatsCallback
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -81,6 +86,10 @@ func NewBatchWriter(cfg *config.InsertConfig, pool *s3reader.ClientPool,
 	}
 
 	return bw
+}
+
+func (w *BatchWriter) SetStatsCallback(cb StatsCallback) {
+	w.statsCallback = cb
 }
 
 func (w *BatchWriter) Start() {
@@ -321,6 +330,10 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 		w.bloomObserver.OnFileFlush(partition, key, extractLogBloomValues(rows))
 	}
 
+	if w.statsCallback != nil {
+		w.statsCallback(int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
+	}
+
 	w.totalBytes.Add(int64(len(result.Data)))
 
 	logger.Infof("flushed log partition; partition=%s, rows=%d, bytes=%d, ratio=%v, key=%s",
@@ -363,6 +376,10 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 
 	if w.bloomObserver != nil {
 		w.bloomObserver.OnFileFlush(partition, key, extractTraceBloomValues(rows))
+	}
+
+	if w.statsCallback != nil {
+		w.statsCallback(int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
 	}
 
 	w.totalBytes.Add(int64(len(result.Data)))

@@ -136,6 +136,8 @@
     }
     function fmtNum(n) { if (n == null || isNaN(n)) return "\u2014"; return Number(n).toLocaleString(); }
     function fmtUSD(n) { if (n == null || isNaN(n)) return "\u2014"; return "$" + Number(n).toFixed(4); }
+    function fmtTime(s) { if (!s) return "\u2014"; const d = new Date(s); return isNaN(d) ? s : d.toLocaleString(undefined, {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
+    function fmtRatio(r) { if (!r || r <= 0) return "\u2014"; return r.toFixed(1) + "x"; }
 
     async function fetchJSON(url) {
       const res = await fetch(url);
@@ -166,14 +168,17 @@
       return html`
         <div class="cards-grid">
           <div class="card"><div class="label">Files</div><div class="value">${fmtNum(ov.total_files)}</div></div>
-          <div class="card"><div class="label">Total Size</div><div class="value">${fmtBytes(ov.total_bytes)}</div></div>
-          <div class="card"><div class="label">Partitions</div><div class="value">${fmtNum(ov.partition_count)}</div></div>
-          <div class="card"><div class="label">Mode</div><div class="value">${ov.mode || "\u2014"}</div></div>
-          <div class="card"><div class="label">Data Range</div><div class="value" style="font-size:1rem">${(ov.oldest_data||"").slice(0,10)} \u2192 ${(ov.newest_data||"").slice(0,10)}</div></div>
+          <div class="card"><div class="label">Compressed</div><div class="value">${fmtBytes(ov.total_bytes)}</div></div>
+          <div class="card"><div class="label">Raw Bytes</div><div class="value">${fmtBytes(ov.total_raw_bytes)}</div></div>
+          <div class="card"><div class="label">Total Rows</div><div class="value">${fmtNum(ov.total_rows)}</div></div>
+          <div class="card"><div class="label">Avg Row Size</div><div class="value">${fmtBytes(ov.avg_row_bytes)}</div></div>
           ${ov.avg_compression_ratio > 0 ? html`<div class="card"><div class="label">Compression</div><div class="value">${ov.avg_compression_ratio.toFixed(1)}x</div></div>` : null}
+          <div class="card"><div class="label">Partitions</div><div class="value">${fmtNum(ov.partition_count)}</div></div>
+          <div class="card"><div class="label">Data Range</div><div class="value" style="font-size:1rem">${(ov.oldest_data||"").slice(0,10)} \u2192 ${(ov.newest_data||"").slice(0,10)}</div></div>
         </div>
         <div class="info-row">
           <span class="info-item">Bucket: <strong>${ov.bucket || "\u2014"}</strong></span>
+          <span class="info-item">Mode: <strong>${ov.mode || "\u2014"}</strong></span>
           ${ov.fleet_nodes > 0 ? html`<span class="info-item">Fleet Nodes: <strong>${ov.fleet_nodes}</strong></span>` : null}
           ${ov.tenant_count > 0 ? html`<span class="info-item">Tenants: <strong>${ov.tenant_count}</strong></span>` : null}
         </div>
@@ -225,20 +230,25 @@
       return html`
         <div class="cards-grid">
           <div class="card"><div class="label">Tenants</div><div class="value">${fmtNum(data.total_tenants)}</div></div>
-          <div class="card"><div class="label">Total Size</div><div class="value">${fmtBytes(data.total_bytes)}</div></div>
+          <div class="card"><div class="label">Compressed</div><div class="value">${fmtBytes(data.total_bytes)}</div></div>
           <div class="card"><div class="label">Total Files</div><div class="value">${fmtNum(data.total_files)}</div></div>
         </div>
         ${tenants.length === 0
           ? html`<div class="empty">No tenant data available yet.</div>`
           : html`
+            <div style="overflow-x:auto">
             <table>
               <thead>
                 <tr>
-                  <th onClick=${() => setSort("bytes")}>Tenant ${sort === "bytes" ? "\u25bc" : ""}</th>
+                  <th onClick=${() => setSort("bytes")}>Victoria ID ${sort === "bytes" ? "\u25bc" : ""}</th>
+                  <th>Org / Name</th>
                   <th onClick=${() => setSort("files")}>Files ${sort === "files" ? "\u25bc" : ""}</th>
-                  <th>Size</th>
-                  <th>Partitions</th>
+                  <th onClick=${() => setSort("bytes")}>Compressed ${sort === "bytes" ? "\u25bc" : ""}</th>
+                  <th>Raw Bytes</th>
+                  <th>Rows</th>
+                  <th>Compression</th>
                   <th onClick=${() => setSort("cost")}>Est. Cost ${sort === "cost" ? "\u25bc" : ""}</th>
+                  <th>Last Write</th>
                   <th>Time Range</th>
                 </tr>
               </thead>
@@ -246,15 +256,20 @@
                 ${tenants.map(t => html`
                   <tr>
                     <td><strong>${t.account_id}:${t.project_id}</strong></td>
+                    <td>${t.org_id || t.name || "\u2014"}</td>
                     <td>${fmtNum(t.total_files)}</td>
                     <td>${fmtBytes(t.total_bytes)}</td>
-                    <td>${fmtNum(t.partitions)}</td>
+                    <td>${fmtBytes(t.raw_bytes)}</td>
+                    <td>${fmtNum(t.total_rows)}</td>
+                    <td>${fmtRatio(t.compression_ratio)}</td>
                     <td>${fmtUSD(t.monthly_cost_usd)}</td>
+                    <td>${fmtTime(t.last_write_at)}</td>
                     <td>${(t.min_time||"").slice(0,10)} \u2192 ${(t.max_time||"").slice(0,10)}</td>
                   </tr>
                 `)}
               </tbody>
             </table>
+            </div>
           `
         }
       `;

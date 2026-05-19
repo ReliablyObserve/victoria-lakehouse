@@ -33,6 +33,10 @@ import (
 // file key and per-column distinct values for bloom indexing.
 type FlushHook func(key string, columnValues map[string][]string)
 
+// StatsCallback is called after each successful file flush with the
+// compressed size, raw size, row count, and storage class.
+type StatsCallback func(compressedBytes, rawBytes, rows int64, storageClass string)
+
 type BatchWriter struct {
 	cfg      *config.InsertConfig
 	pool     *s3reader.ClientPool
@@ -48,7 +52,8 @@ type BatchWriter struct {
 
 	wal *wal.WAL // nil if WAL disabled
 
-	onFlush FlushHook
+	onFlush       FlushHook
+	statsCallback StatsCallback
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -88,6 +93,10 @@ func (w *BatchWriter) Start() {
 
 func (w *BatchWriter) SetFlushHook(hook FlushHook) {
 	w.onFlush = hook
+}
+
+func (w *BatchWriter) SetStatsCallback(cb StatsCallback) {
+	w.statsCallback = cb
 }
 
 func (w *BatchWriter) Stop() {
@@ -315,6 +324,10 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 	}
 	w.manifest.AddFile(partition, fi)
 
+	if w.statsCallback != nil {
+		w.statsCallback(int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
+	}
+
 	w.totalBytes.Add(int64(len(result.Data)))
 
 	logger.Infof("flushed log partition; partition=%s, rows=%d, bytes=%d, ratio=%v, key=%s",
@@ -359,6 +372,10 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 
 	if w.onFlush != nil {
 		w.onFlush(key, fi.Labels)
+	}
+
+	if w.statsCallback != nil {
+		w.statsCallback(int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
 	}
 
 	logger.Infof("flushed trace partition; partition=%s, rows=%d, bytes=%d, ratio=%v, key=%s",

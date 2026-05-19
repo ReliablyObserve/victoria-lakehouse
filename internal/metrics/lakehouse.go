@@ -190,6 +190,7 @@ var (
 	StorageRawBytesTotal    = NewGauge("lakehouse_storage_raw_bytes_total")
 	StorageCompressionRatio = NewFloatGauge("lakehouse_storage_compression_ratio")
 	StorageRowsTotal        = NewGauge("lakehouse_storage_rows_total")
+	StorageAvgRowBytes      = NewGauge("lakehouse_storage_avg_row_bytes")
 	StoragePartitionsTotal  = NewGauge("lakehouse_storage_partitions_total")
 	StorageOldestData       = NewGauge("lakehouse_storage_oldest_data_seconds")
 	StorageNewestData       = NewGauge("lakehouse_storage_newest_data_seconds")

@@ -18,6 +18,8 @@
   }
   function fmtNum(n) { if (n == null || isNaN(n)) return "\u2014"; return Number(n).toLocaleString(); }
   function fmtUSD(n) { if (n == null || isNaN(n)) return "\u2014"; return "$" + Number(n).toFixed(4); }
+  function fmtTime(s) { if (!s) return "\u2014"; var d = new Date(s); return isNaN(d) ? s : d.toLocaleString(undefined, {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
+  function fmtRatio(r) { if (!r || r <= 0) return "\u2014"; return r.toFixed(1) + "x"; }
 
   function fetchJSON(url) {
     var ctrl = new AbortController();
@@ -151,12 +153,16 @@
       var cards = el("div", { className: "lh-cards" });
       var cardData = [
         ["Files", fmtNum(ov.total_files)],
-        ["Total Size", fmtBytes(ov.total_bytes)],
+        ["Compressed", fmtBytes(ov.total_bytes)],
+        ["Raw Bytes", fmtBytes(ov.total_raw_bytes)],
+        ["Total Rows", fmtNum(ov.total_rows)],
+        ["Avg Row Size", fmtBytes(ov.avg_row_bytes)],
         ["Partitions", fmtNum(ov.partition_count)],
         ["Tenants", fmtNum(ov.tenant_count || 0)],
         ["Data Range", (ov.oldest_data ? ov.oldest_data.slice(0, 10) : "\u2014") + " \u2192 " + (ov.newest_data ? ov.newest_data.slice(0, 10) : "\u2014")],
-        ["Mode", ov.mode || "\u2014"],
       ];
+      if (ov.avg_compression_ratio > 0) cardData.push(["Compression", fmtRatio(ov.avg_compression_ratio)]);
+      cardData.push(["Mode", ov.mode || "\u2014"]);
       cardData.forEach(function (d) {
         cards.appendChild(el("div", { className: "lh-card" }, [
           el("div", { className: "lh-card-label", textContent: d[0] }),
@@ -277,7 +283,7 @@
         el("div", { className: "lh-card-value", textContent: fmtNum(data.total_tenants) }),
       ]));
       cards.appendChild(el("div", { className: "lh-card" }, [
-        el("div", { className: "lh-card-label", textContent: "Total Size" }),
+        el("div", { className: "lh-card-label", textContent: "Compressed" }),
         el("div", { className: "lh-card-value", textContent: fmtBytes(data.total_bytes) }),
       ]));
       cards.appendChild(el("div", { className: "lh-card" }, [
@@ -291,19 +297,22 @@
         return;
       }
 
+      var wrapper = el("div", { style: "overflow-x:auto" });
       var tbl = el("table", { className: "lh-table" });
-      tbl.innerHTML = "<thead><tr><th>Tenant</th><th>Files</th><th>Size</th><th>Partitions</th><th>Est. Cost</th><th>Time Range</th></tr></thead>";
+      tbl.innerHTML = "<thead><tr><th>Victoria ID</th><th>Org / Name</th><th>Files</th><th>Compressed</th><th>Raw Bytes</th><th>Rows</th><th>Compression</th><th>Est. Cost</th><th>Last Write</th><th>Time Range</th></tr></thead>";
       var tbody = el("tbody");
       tenants.forEach(function (t) {
         var row = el("tr", { style: "cursor:pointer" });
         var tenantID = t.account_id + ":" + t.project_id;
+        var orgName = t.org_id || t.name || "\u2014";
         var timeRange = (t.min_time ? t.min_time.slice(0, 10) : "\u2014") + " \u2192 " + (t.max_time ? t.max_time.slice(0, 10) : "\u2014");
-        row.innerHTML = "<td><strong>" + tenantID + "</strong></td><td>" + fmtNum(t.total_files) + "</td><td>" + fmtBytes(t.total_bytes) + "</td><td>" + fmtNum(t.partitions) + "</td><td>" + fmtUSD(t.monthly_cost_usd) + "</td><td>" + timeRange + "</td>";
+        row.innerHTML = "<td><strong>" + tenantID + "</strong></td><td>" + orgName + "</td><td>" + fmtNum(t.total_files) + "</td><td>" + fmtBytes(t.total_bytes) + "</td><td>" + fmtBytes(t.raw_bytes) + "</td><td>" + fmtNum(t.total_rows) + "</td><td>" + fmtRatio(t.compression_ratio) + "</td><td>" + fmtUSD(t.monthly_cost_usd) + "</td><td>" + fmtTime(t.last_write_at) + "</td><td>" + timeRange + "</td>";
         row.addEventListener("click", function () { renderTenantDetail(container, t.account_id, t.project_id); });
         tbody.appendChild(row);
       });
       tbl.appendChild(tbody);
-      container.appendChild(tbl);
+      wrapper.appendChild(tbl);
+      container.appendChild(wrapper);
     }).catch(function (e) {
       container.innerHTML = '<div class="lh-error">Error: ' + e.message + "</div>";
     });
@@ -321,7 +330,9 @@
         onClick: function () { renderTenants(container); },
       }));
 
-      container.appendChild(el("h3", { textContent: "Tenant: " + accountID + ":" + projectID, style: "margin:12px 0 8px" }));
+      var title = "Tenant: " + accountID + ":" + projectID;
+      if (d.org_id || d.name) title += " (" + (d.org_id || d.name) + ")";
+      container.appendChild(el("h3", { textContent: title, style: "margin:12px 0 8px" }));
 
       // Summary cards
       var cards = el("div", { className: "lh-cards" });
@@ -330,9 +341,23 @@
         el("div", { className: "lh-card-value", textContent: fmtNum(d.total_files) }),
       ]));
       cards.appendChild(el("div", { className: "lh-card" }, [
-        el("div", { className: "lh-card-label", textContent: "Size" }),
+        el("div", { className: "lh-card-label", textContent: "Compressed" }),
         el("div", { className: "lh-card-value", textContent: fmtBytes(d.total_bytes) }),
       ]));
+      cards.appendChild(el("div", { className: "lh-card" }, [
+        el("div", { className: "lh-card-label", textContent: "Raw Bytes" }),
+        el("div", { className: "lh-card-value", textContent: fmtBytes(d.raw_bytes) }),
+      ]));
+      cards.appendChild(el("div", { className: "lh-card" }, [
+        el("div", { className: "lh-card-label", textContent: "Rows" }),
+        el("div", { className: "lh-card-value", textContent: fmtNum(d.total_rows) }),
+      ]));
+      if (d.compression_ratio > 0) {
+        cards.appendChild(el("div", { className: "lh-card" }, [
+          el("div", { className: "lh-card-label", textContent: "Compression" }),
+          el("div", { className: "lh-card-value", textContent: fmtRatio(d.compression_ratio) }),
+        ]));
+      }
       cards.appendChild(el("div", { className: "lh-card" }, [
         el("div", { className: "lh-card-label", textContent: "Partitions" }),
         el("div", { className: "lh-card-value", textContent: fmtNum(d.partitions) }),
@@ -342,6 +367,13 @@
         el("div", { className: "lh-card-value", textContent: fmtUSD(d.monthly_cost_usd) }),
       ]));
       container.appendChild(cards);
+
+      // Info row with timestamps
+      var info = el("div", { className: "lh-info-row" });
+      if (d.last_write_at) info.appendChild(el("span", { className: "lh-info-item", innerHTML: "Last Write: <strong>" + fmtTime(d.last_write_at) + "</strong>" }));
+      if (d.last_query_at) info.appendChild(el("span", { className: "lh-info-item", innerHTML: "Last Query: <strong>" + fmtTime(d.last_query_at) + "</strong>" }));
+      if (d.source) info.appendChild(el("span", { className: "lh-info-item", innerHTML: "Source: <strong>" + d.source + "</strong>" }));
+      if (info.children.length > 0) container.appendChild(info);
 
       // File size histogram
       if (d.file_size_histogram && d.file_size_histogram.buckets) {
@@ -381,7 +413,13 @@
         }
       }
     }).catch(function (e) {
-      container.innerHTML = '<div class="lh-error">Error loading tenant detail: ' + e.message + "</div>";
+      container.innerHTML = "";
+      container.appendChild(el("button", {
+        className: "lh-tab",
+        textContent: "\u2190 Back to Tenants",
+        onClick: function () { renderTenants(container); },
+      }));
+      container.appendChild(el("div", { className: "lh-error", textContent: "Error loading tenant detail: " + e.message }));
     });
   }
 
