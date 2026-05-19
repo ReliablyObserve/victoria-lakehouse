@@ -16,6 +16,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
@@ -96,6 +97,9 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	if len(files) == 0 {
 		return nil
 	}
+
+	// Partition-level bloom file skip
+	files = s.bloomFilterFiles(ctx, files, queryStr)
 
 	// Parallel file worker pool
 	fileWorkers := s.cfg.Query.FileWorkers
@@ -182,6 +186,10 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				}
 			}
 		}
+	}
+
+	if n := rowsEmitted.Load(); n > 0 {
+		metrics.QueryRowsTotal.Add(int(n))
 	}
 
 	return nil
@@ -505,6 +513,101 @@ func (s *Storage) buildBloomChecks(queryStr string) []bloomCheck {
 	return checks
 }
 
+func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
+	if s.bloomCache == nil || queryStr == "" {
+		return files
+	}
+
+	var checks []bloomindex.ColumnCheck
+	for _, col := range s.registry.PromotedColumns() {
+		if !col.HasBloom {
+			continue
+		}
+		val := extractExactMatch(queryStr, col.InternalName)
+		if val == "" {
+			val = extractExactMatch(queryStr, col.ParquetColumn)
+		}
+		if val != "" {
+			checks = append(checks, bloomindex.ColumnCheck{
+				Column: col.ParquetColumn,
+				Value:  val,
+			})
+		}
+	}
+	if len(checks) == 0 {
+		return files
+	}
+
+	metrics.BloomQueriesTotal.Inc("attempt")
+
+	byPartition := make(map[string][]manifest.FileInfo)
+	for _, fi := range files {
+		partition := partitionFromKey(fi.Key)
+		byPartition[partition] = append(byPartition[partition], fi)
+	}
+
+	var result []manifest.FileInfo
+	for partition, pFiles := range byPartition {
+		idx, err := s.bloomCache.Get(ctx, partition)
+		if err != nil || idx == nil {
+			result = append(result, pFiles...)
+			continue
+		}
+
+		keys := make([]string, len(pFiles))
+		for i, fi := range pFiles {
+			keys[i] = fi.Key
+		}
+		matching := idx.MayContainAll(keys, checks)
+		matchSet := make(map[string]bool, len(matching))
+		for _, k := range matching {
+			matchSet[k] = true
+		}
+
+		before := len(pFiles)
+		var bytesAvoided int64
+		for _, fi := range pFiles {
+			if matchSet[fi.Key] {
+				result = append(result, fi)
+			} else {
+				bytesAvoided += fi.Size
+			}
+		}
+		skipped := before - len(matchSet)
+		if skipped > 0 {
+			metrics.ParquetFilesSkipped.Add(skipped)
+			metrics.BloomFilesSkipped.Add(skipped)
+			metrics.BloomBytesAvoided.Add(int(bytesAvoided))
+			metrics.ParquetBloomChecks.Add("miss", skipped)
+		}
+		if len(matchSet) > 0 {
+			metrics.ParquetBloomChecks.Add("hit", len(matchSet))
+		}
+	}
+	return result
+}
+
+func partitionFromKey(key string) string {
+	// Extract "dt=YYYY-MM-DD/hour=HH" from file key
+	idx := strings.Index(key, "/hour=")
+	if idx < 0 {
+		// Try daily partition
+		if dtIdx := strings.Index(key, "dt="); dtIdx >= 0 {
+			end := strings.IndexByte(key[dtIdx:], '/')
+			if end < 0 {
+				return key[dtIdx:]
+			}
+			return key[dtIdx : dtIdx+end]
+		}
+		return key
+	}
+	hourEnd := idx + len("/hour=")
+	for hourEnd < len(key) && key[hourEnd] != '/' {
+		hourEnd++
+	}
+	return key[:hourEnd]
+}
+
 func (s *Storage) bloomFilterSkip(f *parquet.File, rg parquet.RowGroup, checks []bloomCheck) bool {
 	if len(checks) == 0 {
 		return false
@@ -600,7 +703,8 @@ func (s *Storage) filterFilesByLabels(files []manifest.FileInfo, queryStr string
 	for _, fi := range files {
 		skip := false
 		for _, check := range checks {
-			if fi.Labels != nil && len(fi.Labels[check.field]) > 0 && !fi.MatchesLabel(check.field, check.value) {
+			labelValues := fi.Labels[check.field]
+			if fi.Labels != nil && len(labelValues) > 0 && len(labelValues) < maxLabelsPerField && !fi.MatchesLabel(check.field, check.value) {
 				skip = true
 				break
 			}

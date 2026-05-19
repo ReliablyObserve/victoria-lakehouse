@@ -14,6 +14,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
@@ -27,23 +28,25 @@ import (
 )
 
 type Storage struct {
-	cfg          *config.Config
-	pool         *s3reader.ClientPool
-	manifest     *manifest.Manifest
-	registry     *schema.Registry
-	memCache     *cache.LRU
-	diskCache    *cache.DiskCache
-	sfGroup      *cache.Group
-	labelIndex   *cache.LabelIndex
-	persister    *cache.Persister
-	discovery    *discovery.Discovery
-	peerCache    *peercache.PeerCache
-	peerHandler  *peercache.Handler
-	writer       *BatchWriter
-	bufferBridge *BufferBridge
-	tombstones   *delete.TombstoneStore
-	smartCache   *smartcache.Controller
-	selfAZ       string
+	cfg           *config.Config
+	pool          *s3reader.ClientPool
+	manifest      *manifest.Manifest
+	registry      *schema.Registry
+	memCache      *cache.LRU
+	diskCache     *cache.DiskCache
+	sfGroup       *cache.Group
+	labelIndex    *cache.LabelIndex
+	persister     *cache.Persister
+	discovery     *discovery.Discovery
+	peerCache     *peercache.PeerCache
+	peerHandler   *peercache.Handler
+	writer        *BatchWriter
+	bufferBridge  *BufferBridge
+	tombstones    *delete.TombstoneStore
+	smartCache    *smartcache.Controller
+	bloomCache    *bloomindex.BloomCache
+	bloomObserver *storageBloomObserver
+	selfAZ        string
 }
 
 func New(cfg *config.Config) (*Storage, error) {
@@ -64,6 +67,9 @@ func New(cfg *config.Config) (*Storage, error) {
 	m := manifest.New(cfg.S3.Bucket, prefix)
 
 	memCache := cache.NewLRU(cfg.CacheMemoryBytes())
+	metrics.SmartCacheBytesLimit.Set(cfg.CacheMemoryBytes())
+	metrics.ConcurrentSelectsCap.Set(int64(cfg.Query.MaxConcurrent))
+	metrics.MetricsCardinalityLimit.Set(int64(cfg.Stats.MetricsCardinalityLimit))
 
 	var diskCacheInst *cache.DiskCache
 	if cfg.Cache.DiskPath != "" {
@@ -158,7 +164,15 @@ func New(cfg *config.Config) (*Storage, error) {
 		bb = NewBufferBridge(&cfg.Select, cfg.Mode)
 	}
 
-	return &Storage{
+	var bc *bloomindex.BloomCache
+	if cfg.SelectEnabled() {
+		bc = bloomindex.NewBloomCache(
+			10*1024*1024,
+			bloomS3Loader(pool, prefix),
+		)
+	}
+
+	s := &Storage{
 		cfg:          cfg,
 		pool:         pool,
 		manifest:     m,
@@ -174,7 +188,19 @@ func New(cfg *config.Config) (*Storage, error) {
 		writer:       bw,
 		bufferBridge: bb,
 		smartCache:   sc,
-	}, nil
+		bloomCache:   bc,
+	}
+
+	if bw != nil {
+		obs := &storageBloomObserver{
+			bloom: bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01),
+			pool:  pool,
+		}
+		bw.bloomObserver = obs
+		s.bloomObserver = obs
+	}
+
+	return s, nil
 }
 
 // StartWriter begins the background flush loop. Call after New().
@@ -829,6 +855,11 @@ func (s *Storage) PersistState() error {
 // SmartCache returns the SmartCacheController (nil if not configured).
 func (s *Storage) SmartCache() *smartcache.Controller {
 	return s.smartCache
+}
+
+// BloomCache returns the bloom index cache (nil if select is not enabled).
+func (s *Storage) BloomCache() *bloomindex.BloomCache {
+	return s.bloomCache
 }
 
 // WarmFile fetches a file into cache without returning the data.

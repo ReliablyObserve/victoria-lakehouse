@@ -54,9 +54,18 @@ func (fi FileInfo) MatchesLabel(field, value string) bool {
 	return false
 }
 
+type PartitionMeta struct {
+	BloomAvailable  bool      `json:"bloom_available,omitempty"`
+	BloomSize       int64     `json:"bloom_size,omitempty"`
+	BloomUpdatedAt  time.Time `json:"bloom_updated_at,omitempty"`
+	BloomColumns    []string  `json:"bloom_columns,omitempty"`
+	LabelsAvailable bool      `json:"labels_available,omitempty"`
+}
+
 type Manifest struct {
 	mu             sync.RWMutex
 	files          map[string][]FileInfo // "dt=2026-05-02/hour=10" -> files
+	partitionMeta  map[string]*PartitionMeta
 	minTime        time.Time
 	maxTime        time.Time
 	totalFiles     int
@@ -69,10 +78,30 @@ type Manifest struct {
 
 func New(bucket, prefix string) *Manifest {
 	return &Manifest{
-		files:  make(map[string][]FileInfo),
-		prefix: prefix,
-		bucket: bucket,
+		files:         make(map[string][]FileInfo),
+		partitionMeta: make(map[string]*PartitionMeta),
+		prefix:        prefix,
+		bucket:        bucket,
 	}
+}
+
+func (m *Manifest) SetBloomMeta(partition string, meta PartitionMeta) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.partitionMeta[partition] = &meta
+}
+
+func (m *Manifest) GetBloomMeta(partition string) *PartitionMeta {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.partitionMeta[partition]
+}
+
+func (m *Manifest) BloomAvailable(partition string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	pm := m.partitionMeta[partition]
+	return pm != nil && pm.BloomAvailable
 }
 
 func (m *Manifest) SetPrefixTemplate(tmpl string) {
@@ -132,21 +161,27 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	}
 
 	m.mu.Lock()
-	// Preserve labels from previously tracked files (labels are lost on S3 list).
+	// Preserve enrichment fields from previously tracked files (lost on S3 list).
 	for partition, newFiles := range files {
 		oldFiles := m.files[partition]
 		if len(oldFiles) == 0 {
 			continue
 		}
-		oldByKey := make(map[string]map[string][]string, len(oldFiles))
+		oldByKey := make(map[string]FileInfo, len(oldFiles))
 		for _, of := range oldFiles {
-			if of.Labels != nil {
-				oldByKey[of.Key] = of.Labels
-			}
+			oldByKey[of.Key] = of
 		}
 		for i := range newFiles {
-			if labels, ok := oldByKey[newFiles[i].Key]; ok {
-				newFiles[i].Labels = labels
+			if old, ok := oldByKey[newFiles[i].Key]; ok {
+				newFiles[i].Labels = old.Labels
+				newFiles[i].RowCount = old.RowCount
+				newFiles[i].RawBytes = old.RawBytes
+				newFiles[i].MinTimeNs = old.MinTimeNs
+				newFiles[i].MaxTimeNs = old.MaxTimeNs
+				newFiles[i].SchemaFingerprint = old.SchemaFingerprint
+				newFiles[i].StorageClass = old.StorageClass
+				newFiles[i].CompactionLevel = old.CompactionLevel
+				newFiles[i].CreatedAt = old.CreatedAt
 			}
 		}
 	}
@@ -157,6 +192,33 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	m.totalBytes = totalBytes
 	m.lastRefresh = time.Now()
 	m.mu.Unlock()
+
+	metrics.StorageFilesTotal.Set(int64(totalFiles))
+	metrics.StorageBytesTotal.Set(totalBytes)
+	metrics.StoragePartitionsTotal.Set(int64(len(files)))
+
+	var totalRows int64
+	var totalRawBytes int64
+	tenants := make(map[string]bool)
+	for _, pFiles := range files {
+		for _, fi := range pFiles {
+			totalRows += fi.RowCount
+			totalRawBytes += fi.RawBytes
+			parts := strings.SplitN(fi.Key, "/", 3)
+			if len(parts) >= 2 {
+				tenants[parts[0]+"/"+parts[1]] = true
+			}
+		}
+	}
+	metrics.StorageTenantsTotal.Set(int64(len(tenants)))
+	metrics.StorageRowsTotal.Set(totalRows)
+	metrics.StorageRawBytesTotal.Set(totalRawBytes)
+	if totalRows > 0 {
+		metrics.StorageAvgRowBytes.Set(totalRawBytes / totalRows)
+	}
+	if totalBytes > 0 && totalRawBytes > 0 {
+		metrics.StorageCompressionRatio.Set(float64(totalRawBytes) / float64(totalBytes))
+	}
 
 	logger.Infof("manifest refreshed; partitions=%d, files=%d, bytes=%d, min_time=%v, max_time=%v", len(files), totalFiles, totalBytes, minT, maxT)
 
@@ -213,6 +275,30 @@ func (m *Manifest) TotalBytes() int64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.totalBytes
+}
+
+func (m *Manifest) TotalRows() int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var total int64
+	for _, files := range m.files {
+		for _, fi := range files {
+			total += fi.RowCount
+		}
+	}
+	return total
+}
+
+func (m *Manifest) TotalRawBytes() int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var total int64
+	for _, files := range m.files {
+		for _, fi := range files {
+			total += fi.RawBytes
+		}
+	}
+	return total
 }
 
 func (m *Manifest) MinTime() time.Time {
@@ -505,6 +591,8 @@ type TenantSummary struct {
 	ProjectID  string
 	TotalFiles int
 	TotalBytes int64
+	TotalRows  int64
+	RawBytes   int64
 	Partitions int
 	MinTime    time.Time
 	MaxTime    time.Time
@@ -520,6 +608,8 @@ func (m *Manifest) TenantSummaries() []TenantSummary {
 	type accum struct {
 		files      int
 		bytes      int64
+		rows       int64
+		rawBytes   int64
 		partitions map[string]struct{}
 		minT, maxT time.Time
 	}
@@ -553,6 +643,8 @@ func (m *Manifest) TenantSummaries() []TenantSummary {
 			}
 			a.files++
 			a.bytes += fi.Size
+			a.rows += fi.RowCount
+			a.rawBytes += fi.RawBytes
 			a.partitions[partition] = struct{}{}
 
 			if t, err := parsePartitionTime(partition); err == nil {
@@ -574,6 +666,8 @@ func (m *Manifest) TenantSummaries() []TenantSummary {
 			ProjectID:  k.project,
 			TotalFiles: a.files,
 			TotalBytes: a.bytes,
+			TotalRows:  a.rows,
+			RawBytes:   a.rawBytes,
 			Partitions: len(a.partitions),
 			MinTime:    a.minT,
 			MaxTime:    a.maxT,

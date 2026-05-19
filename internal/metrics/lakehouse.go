@@ -60,6 +60,7 @@ var (
 	ParquetBloomChecks      = NewCounterVec("lakehouse_parquet_bloom_checks_total", "result")
 	ParquetColumnBytesRead  = NewCounter("lakehouse_parquet_column_bytes_read_total")
 	ParquetFilesOpened      = NewCounter("lakehouse_parquet_files_opened_total")
+	ParquetFilesSkipped     = NewCounter("lakehouse_parquet_files_skipped_bloom_total")
 )
 
 // Insert / writer metrics
@@ -119,6 +120,22 @@ var (
 	BufferBridgeAZRequestsTotal = NewCounterVec("lakehouse_buffer_bridge_az_requests_total", "az_type")
 )
 
+// Bloom index metrics
+var (
+	BloomBuildTotal      = NewCounterVec("lakehouse_bloom_build_total", "trigger")
+	BloomBuildErrors     = NewCounter("lakehouse_bloom_build_errors_total")
+	BloomEntriesTotal    = NewCounter("lakehouse_bloom_entries_total")
+	BloomBytesMemory     = NewGauge("lakehouse_bloom_bytes_memory")
+	BloomQueriesTotal    = NewCounterVec("lakehouse_bloom_queries_total", "result")
+	BloomFilesSkipped    = NewCounter("lakehouse_bloom_files_skipped_total")
+	BloomBytesAvoided    = NewCounter("lakehouse_bloom_bytes_avoided_total")
+	BloomTierPartitions  = NewGaugeVec("lakehouse_bloom_tier_partitions", "tier")
+	BloomTierTransitions = NewCounterVec("lakehouse_bloom_tier_transitions_total", "transition")
+	BloomConfigSyncTotal = NewCounter("lakehouse_bloom_config_sync_total")
+	BloomConfigSyncError = NewCounter("lakehouse_bloom_config_sync_errors_total")
+	BloomControllerAdj   = NewCounterVec("lakehouse_bloom_controller_adjustments_total", "parameter")
+)
+
 // Startup & health metrics
 var (
 	StartupPhase        = NewGauge("lakehouse_startup_phase")
@@ -173,6 +190,7 @@ var (
 	StorageRawBytesTotal    = NewGauge("lakehouse_storage_raw_bytes_total")
 	StorageCompressionRatio = NewFloatGauge("lakehouse_storage_compression_ratio")
 	StorageRowsTotal        = NewGauge("lakehouse_storage_rows_total")
+	StorageAvgRowBytes      = NewGauge("lakehouse_storage_avg_row_bytes")
 	StoragePartitionsTotal  = NewGauge("lakehouse_storage_partitions_total")
 	StorageOldestData       = NewGauge("lakehouse_storage_oldest_data_seconds")
 	StorageNewestData       = NewGauge("lakehouse_storage_newest_data_seconds")

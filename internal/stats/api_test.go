@@ -266,8 +266,18 @@ func TestAPITenantDetailNotFound(t *testing.T) {
 	api, _, _ := setupTestAPI(t)
 	rec := doGet(t, api, "/lakehouse/api/v1/tenants/999/99")
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (empty tenant)", rec.Code)
+	}
+	var resp TenantDetailResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.AccountID != "999" || resp.ProjectID != "99" {
+		t.Errorf("tenant IDs = %s:%s, want 999:99", resp.AccountID, resp.ProjectID)
+	}
+	if resp.TotalFiles != 0 {
+		t.Errorf("total_files = %d, want 0", resp.TotalFiles)
 	}
 }
 

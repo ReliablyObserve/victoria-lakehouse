@@ -269,3 +269,16 @@ datasources:
         spanEndTimeShift: "1h"
         filterByTraceID: true
         filterBySpanID: false
+
+  # =========================================================================
+  # VictoriaMetrics — scrapes lakehouse metrics for operational dashboards
+  # =========================================================================
+
+  - name: "VictoriaMetrics (Metrics)"
+    type: prometheus
+    uid: victoriametrics-metrics
+    access: proxy
+    url: http://victoriametrics:8428
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s

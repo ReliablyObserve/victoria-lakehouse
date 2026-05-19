@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: lakehouse-logs
+    static_configs:
+      - targets: ["lakehouse-logs:9428"]
+
+  - job_name: lakehouse-traces
+    static_configs:
+      - targets: ["lakehouse-traces:10428"]

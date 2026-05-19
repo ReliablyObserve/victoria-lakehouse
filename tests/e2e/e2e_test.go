@@ -45,6 +45,13 @@ func TestMain(m *testing.M) {
 		time.Unix(0, dataMaxTime).UTC().Format(time.RFC3339),
 	)
 
+	// Phase 4: Warm the smart cache so individual tests don't each pay cold-start cost.
+	fmt.Println("e2e: warming smart cache (logs)...")
+	warmCache(logsBaseURL)
+	fmt.Println("e2e: warming smart cache (traces)...")
+	warmCache(tracesBaseURL)
+	fmt.Println("e2e: cache warm-up complete")
+
 	os.Exit(m.Run())
 }
 
@@ -125,4 +132,20 @@ func storeTimeRange() {
 		dataMinTime = now.Add(-72 * time.Hour).UnixNano()
 		dataMaxTime = now.UnixNano()
 	}
+}
+
+// warmCache fires a wildcard query against each service to populate the smart
+// cache. Subsequent tests hit warm cache instead of scanning S3 from scratch.
+func warmCache(baseURL string) {
+	client := &http.Client{Timeout: 120 * time.Second}
+	now := time.Now()
+	params := fmt.Sprintf("query=*&limit=1&start=%d&end=%d",
+		now.Add(-30*time.Minute).UnixNano(), now.UnixNano())
+	resp, err := client.Get(baseURL + "/select/logsql/query?" + params)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WARN: cache warm-up failed for %s: %v\n", baseURL, err)
+		return
+	}
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
 }

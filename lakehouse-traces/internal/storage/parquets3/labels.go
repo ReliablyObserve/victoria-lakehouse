@@ -21,7 +21,8 @@ func extractLogLabels(rows []schema.LogRow) map[string][]string {
 		addLabel(sets, "deployment.environment", rows[i].DeployEnv)
 		addLabel(sets, "cloud.region", rows[i].CloudRegion)
 		addLabel(sets, "host.name", rows[i].HostName)
-		addLabel(sets, "trace_id", rows[i].TraceID)
+		// trace_id omitted: high-cardinality (unique per row), always exceeds
+		// maxLabelsPerField cap — bloom filters handle it instead.
 	}
 	return setsToLabels(sets)
 }
@@ -34,7 +35,7 @@ func extractTraceLabels(rows []schema.TraceRow) map[string][]string {
 	for i := range rows {
 		addLabel(sets, "service.name", rows[i].ServiceName)
 		addLabel(sets, "span.name", rows[i].SpanName)
-		addLabel(sets, "trace_id", rows[i].TraceID)
+		// trace_id omitted: high-cardinality, bloom filters handle it.
 	}
 	return setsToLabels(sets)
 }

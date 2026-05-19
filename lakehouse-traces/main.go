@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/azdetect"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/compaction"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
@@ -23,6 +25,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/stats"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/ui"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/selectapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3"
@@ -75,17 +78,21 @@ var (
 	tracesJaegerEnabled = flag.Bool("lakehouse.traces.jaeger-enabled", true, "Enable Jaeger query API")
 	tracesJaegerGRPC    = flag.String("lakehouse.traces.jaeger-grpc-addr", "", "Jaeger gRPC listen address (default: :16685)")
 
-	tenantDefaultAccount = flag.String("lakehouse.tenant.default-account", "", "Default tenant account ID (default: 0)")
-	tenantDefaultProject = flag.String("lakehouse.tenant.default-project", "", "Default tenant project ID (default: 0)")
-	tenantHeaderAccount  = flag.String("lakehouse.tenant.header-account", "", "HTTP header for account ID (default: X-Scope-AccountID)")
-	tenantHeaderProject  = flag.String("lakehouse.tenant.header-project", "", "HTTP header for project ID (default: X-Scope-ProjectID)")
-	tenantGlobalHeader   = flag.String("lakehouse.tenant.global-read-header", "", "Header name for global read access")
-	tenantGlobalValue    = flag.String("lakehouse.tenant.global-read-value", "", "Expected header value for global read access")
-	tenantGlobalToken    = flag.String("lakehouse.tenant.global-read-token", "", "Bearer token for global read access")
-	tenantIsolation      = flag.String("lakehouse.tenant.isolation", "", "Tenant isolation mode: prefix or bucket")
-	tenantPrefixTemplate = flag.String("lakehouse.tenant.prefix-template", "", "S3 prefix template (default: {AccountID}/{ProjectID}/)")
-	tenantBucketTemplate = flag.String("lakehouse.tenant.bucket-template", "", "Bucket name template for bucket isolation")
-	tenantDefaultPrefix  = flag.String("lakehouse.tenant.default-prefix", "", "Static S3 key prefix override")
+	tenantDefaultAccount    = flag.String("lakehouse.tenant.default-account", "", "Default tenant account ID (default: 0)")
+	tenantDefaultProject    = flag.String("lakehouse.tenant.default-project", "", "Default tenant project ID (default: 0)")
+	tenantHeaderAccount     = flag.String("lakehouse.tenant.header-account", "", "HTTP header for account ID (default: X-Scope-AccountID)")
+	tenantHeaderProject     = flag.String("lakehouse.tenant.header-project", "", "HTTP header for project ID (default: X-Scope-ProjectID)")
+	tenantGlobalHeader      = flag.String("lakehouse.tenant.global-read-header", "", "Header name for global read access")
+	tenantGlobalValue       = flag.String("lakehouse.tenant.global-read-value", "", "Expected header value for global read access")
+	tenantGlobalToken       = flag.String("lakehouse.tenant.global-read-token", "", "Bearer token for global read access")
+	tenantIsolation         = flag.String("lakehouse.tenant.isolation", "", "Tenant isolation mode: prefix or bucket")
+	tenantPrefixTemplate    = flag.String("lakehouse.tenant.prefix-template", "", "S3 prefix template (default: {AccountID}/{ProjectID}/)")
+	tenantBucketTemplate    = flag.String("lakehouse.tenant.bucket-template", "", "Bucket name template for bucket isolation")
+	tenantDefaultPrefix     = flag.String("lakehouse.tenant.default-prefix", "", "Static S3 key prefix override")
+	tenantOrgIDHeader       = flag.String("lakehouse.tenant.orgid-header", "", "HTTP header for string tenant ID (default: X-Scope-OrgID)")
+	tenantMetricsFormat     = flag.String("lakehouse.tenant.metrics-format", "", "Tenant metrics label format: id, name, both (default: id)")
+	tenantAutoRegister      = flag.Bool("lakehouse.tenant.auto-register", false, "Auto-register unknown X-Scope-OrgID tenants")
+	tenantAliasSyncInterval = flag.Duration("lakehouse.tenant.alias-sync-interval", 0, "Fleet sync interval for runtime aliases (default: 30s)")
 )
 
 func main() {
@@ -141,6 +148,8 @@ func run(cfg *config.Config, addr string) {
 	}
 
 	store.StartWriter()
+
+	writerTenantKey := deriveTenantKey(cfg.AutoPrefix())
 
 	var pusher *manifest.Pusher
 	if cfg.Discovery.PeerHeadlessService != "" {
@@ -222,8 +231,57 @@ func run(cfg *config.Config, addr string) {
 	}
 	store.SetTombstoneStore(tombstoneStore)
 
+	// --- Tenant resolver ---
+	resolverCfg := tenant.ResolverConfig{
+		MetricsFormat: tenant.ParseMetricsFormat(cfg.Tenant.MetricsFormat),
+		AutoRegister:  cfg.Tenant.AutoRegister,
+		OrgIDHeader:   cfg.Tenant.OrgIDHeader,
+	}
+	resolver := tenant.NewResolver(resolverCfg)
+
+	for orgID, target := range cfg.Tenant.Aliases {
+		if err := resolver.AddAlias(orgID, tenant.TenantID{
+			AccountID: target.AccountID,
+			ProjectID: target.ProjectID,
+		}); err != nil {
+			logger.Warnf("invalid tenant alias %q: %s", orgID, err)
+		}
+	}
+
+	persister := tenant.NewS3Persister(store.Pool(), cfg.AutoPrefix()+"_meta/tenant-aliases.json")
+	s3Aliases, err := persister.LoadAliases()
+	if err != nil {
+		logger.Warnf("failed to load tenant aliases from S3: %s", err)
+	} else {
+		for _, ae := range s3Aliases {
+			if _, exists := resolver.Resolve(ae.OrgID); !exists {
+				_ = resolver.AddAlias(ae.OrgID, tenant.TenantID{
+					AccountID: ae.AccountID,
+					ProjectID: ae.ProjectID,
+				})
+			}
+		}
+		if len(s3Aliases) > 0 {
+			logger.Infof("loaded %d tenant aliases from S3", len(s3Aliases))
+		}
+	}
+
+	if resolver.HasAliases() {
+		logger.Infof("tenant resolver active; aliases=%d, metrics_format=%s, auto_register=%v",
+			len(resolver.AllAliases()), cfg.Tenant.MetricsFormat, cfg.Tenant.AutoRegister)
+	}
+
+	store.Manifest().SetPrefixTemplate(cfg.Tenant.PrefixTemplate)
+
 	// --- Tenant stats ---
 	registry := stats.NewTenantRegistry(hostname())
+
+	if w := store.Writer(); w != nil {
+		tenantKey := writerTenantKey
+		w.SetStatsCallback(func(compressedBytes, rawBytes, rows int64, storageClass string) {
+			registry.RecordWrite(tenantKey, compressedBytes, rawBytes, rows, storageClass)
+		})
+	}
 
 	// Load snapshot from S3 if configured.
 	if cfg.Stats.Enabled && cfg.Stats.SnapshotPrefix != "" {
@@ -279,94 +337,8 @@ func run(cfg *config.Config, addr string) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
-	// Stats background loops
 	if cfg.Stats.Enabled {
-		var syncPusher *stats.SyncPusher
-		if disc := store.Discovery(); disc != nil {
-			syncPusher = stats.NewSyncPusher(stats.SyncPusherConfig{
-				Registry: registry,
-				GetPeers: func() []string {
-					peers := disc.GetPeers()
-					urls := make([]string, len(peers))
-					for i, p := range peers {
-						urls[i] = "http://" + p + "/internal/stats/sync"
-					}
-					return urls
-				},
-				AuthKey:  cfg.Peer.AuthKey,
-				SelfAddr: addr,
-				Compress: cfg.Stats.PushCompression,
-			})
-		}
-
-		go func() {
-			if syncPusher == nil {
-				return
-			}
-			ticker := time.NewTicker(cfg.Stats.PushInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					if err := syncPusher.PushDelta(context.Background()); err != nil {
-						logger.Warnf("stats push failed: %s", err)
-					}
-				case <-stopCh:
-					return
-				}
-			}
-		}()
-
-		go func() {
-			if cfg.Stats.SnapshotPrefix == "" {
-				return
-			}
-			snapshotBucket := cfg.Stats.MetaBucket
-			if snapshotBucket == "" {
-				snapshotBucket = cfg.S3.Bucket
-			}
-			_ = snapshotBucket
-			snapshotKey := cfg.AutoPrefix() + cfg.Stats.SnapshotPrefix + "/snapshot.json"
-			ticker := time.NewTicker(cfg.Stats.SnapshotInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					data, err := registry.MarshalSnapshot()
-					if err != nil {
-						logger.Warnf("stats snapshot marshal failed: %s", err)
-						metrics.StatsSnapshotErrors.Inc()
-						continue
-					}
-					if err := store.Pool().Upload(context.Background(), snapshotKey, data); err != nil {
-						logger.Warnf("stats snapshot upload failed: %s", err)
-						metrics.StatsSnapshotErrors.Inc()
-					} else {
-						metrics.StatsSnapshotTotal.Inc()
-					}
-				case <-stopCh:
-					return
-				}
-			}
-		}()
-
-		go func() {
-			ticker := time.NewTicker(15 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					for _, ts := range registry.All() {
-						key := ts.AccountID + ":" + ts.ProjectID
-						metrics.TenantFiles.Set(key, ts.TotalFiles)
-						metrics.TenantBytes.Set(key, ts.TotalBytes)
-						metrics.TenantRawBytes.Set(key, ts.RawBytes)
-					}
-				case <-stopCh:
-					return
-				}
-			}
-		}()
+		startStatsLoops(cfg, store, registry, resolver, addr, stopCh)
 	}
 
 	if sc := store.SmartCache(); sc != nil {
@@ -380,10 +352,32 @@ func run(cfg *config.Config, addr string) {
 			cfg.SmartCache.MaxAge, cfg.SmartCache.SnapshotInterval)
 	}
 
-	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc)
+	// Tenant alias fleet sync
+	if resolver != nil && (resolver.HasAliases() || cfg.Tenant.AutoRegister) {
+		if disc := store.Discovery(); disc != nil {
+			aliasSyncCtx, aliasSyncCancel := context.WithCancel(context.Background())
+			aliasSyncPusher := tenant.NewSyncPusher(tenant.SyncPusherConfig{
+				Resolver: resolver,
+				GetPeers: func() []string { return disc.GetPeers() },
+				AuthKey:  cfg.Peer.AuthKey,
+				SelfAddr: addr,
+				Interval: cfg.Tenant.AliasSyncInterval,
+			})
+			aliasSyncPusher.Start(aliasSyncCtx)
+			defer aliasSyncCancel()
+			logger.Infof("tenant alias sync started; interval=%v", cfg.Tenant.AliasSyncInterval)
+		}
+	}
+
+	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister)
+
+	var handler http.Handler = mux
+	if resolver != nil && (resolver.HasAliases() || cfg.Tenant.AutoRegister) {
+		handler = resolver.Middleware(mux)
+	}
 
 	requestHandler := func(w http.ResponseWriter, r *http.Request) bool {
-		mux.ServeHTTP(w, r)
+		handler.ServeHTTP(w, r)
 		return true
 	}
 
@@ -431,7 +425,93 @@ func run(cfg *config.Config, addr string) {
 	logger.Infof("lakehouse-traces stopped")
 }
 
-func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator) *http.ServeMux {
+func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, resolver *tenant.TenantResolver, addr string, stopCh chan struct{}) {
+	var syncPusher *stats.SyncPusher
+	if disc := store.Discovery(); disc != nil {
+		syncPusher = stats.NewSyncPusher(stats.SyncPusherConfig{
+			Registry: registry,
+			GetPeers: func() []string {
+				peers := disc.GetPeers()
+				urls := make([]string, len(peers))
+				for i, p := range peers {
+					urls[i] = "http://" + p + "/internal/stats/sync"
+				}
+				return urls
+			},
+			AuthKey:  cfg.Peer.AuthKey,
+			SelfAddr: addr,
+			Compress: cfg.Stats.PushCompression,
+		})
+	}
+
+	go func() {
+		if syncPusher == nil {
+			return
+		}
+		ticker := time.NewTicker(cfg.Stats.PushInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := syncPusher.PushDelta(context.Background()); err != nil {
+					logger.Warnf("stats push failed: %s", err)
+				}
+			case <-stopCh:
+				return
+			}
+		}
+	}()
+
+	go func() {
+		if cfg.Stats.SnapshotPrefix == "" {
+			return
+		}
+		snapshotKey := cfg.AutoPrefix() + cfg.Stats.SnapshotPrefix + "/snapshot.json"
+		ticker := time.NewTicker(cfg.Stats.SnapshotInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				data, err := registry.MarshalSnapshot()
+				if err != nil {
+					logger.Warnf("stats snapshot marshal failed: %s", err)
+					metrics.StatsSnapshotErrors.Inc()
+					continue
+				}
+				if err := store.Pool().Upload(context.Background(), snapshotKey, data); err != nil {
+					logger.Warnf("stats snapshot upload failed: %s", err)
+					metrics.StatsSnapshotErrors.Inc()
+				} else {
+					metrics.StatsSnapshotTotal.Inc()
+				}
+			case <-stopCh:
+				return
+			}
+		}
+	}()
+
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				for _, ts := range registry.All() {
+					accID, _ := strconv.ParseUint(ts.AccountID, 10, 32)
+					projID, _ := strconv.ParseUint(ts.ProjectID, 10, 32)
+					key := resolver.MetricLabel(uint32(accID), uint32(projID))
+					metrics.TenantFiles.Set(key, ts.TotalFiles)
+					metrics.TenantBytes.Set(key, ts.TotalBytes)
+					metrics.TenantRawBytes.Set(key, ts.RawBytes)
+				}
+			case <-stopCh:
+				return
+			}
+		}
+	}()
+}
+
+func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	metrics.NewInfoGauge("lakehouse_info", map[string]string{
@@ -555,12 +635,25 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			ClassTracker:    classTracker,
 			LabelIndex:      store.LabelIndex(),
 			SchemaRegistry:  store.SchemaRegistry(),
+			Resolver:        resolver,
 			Mode:            "traces",
 			Bucket:          cfg.S3.Bucket,
 			BloomColumns:    cfg.ActiveBloomColumns(),
 			BreakdownLabels: cfg.Stats.BreakdownLabels,
 		})
 		statsAPI.Register(mux)
+	}
+
+	// Bloom status API
+	mux.HandleFunc("/api/v1/bloom/status", bloomindex.HandleBloomStatus(&bloomindex.StatusProvider{
+		Mode:           "traces",
+		IndexedColumns: cfg.Traces.BloomColumns,
+	}))
+
+	// Tenant alias management API
+	if resolver != nil {
+		tenantHandler := tenant.NewHandler(resolver, persister, cfg.Peer.AuthKey)
+		tenantHandler.Register(mux)
 	}
 
 	// Lakehouse UI
@@ -720,6 +813,18 @@ func applyFlags(cfg *config.Config) {
 	if s := *tenantDefaultPrefix; s != "" {
 		cfg.Tenant.DefaultPrefix = s
 	}
+	if s := *tenantOrgIDHeader; s != "" {
+		cfg.Tenant.OrgIDHeader = s
+	}
+	if s := *tenantMetricsFormat; s != "" {
+		cfg.Tenant.MetricsFormat = s
+	}
+	if *tenantAutoRegister {
+		cfg.Tenant.AutoRegister = true
+	}
+	if *tenantAliasSyncInterval > 0 {
+		cfg.Tenant.AliasSyncInterval = *tenantAliasSyncInterval
+	}
 }
 
 func hostname() string {
@@ -728,6 +833,17 @@ func hostname() string {
 	}
 	h, _ := os.Hostname()
 	return h
+}
+
+func deriveTenantKey(prefix string) string {
+	parts := strings.SplitN(strings.TrimSuffix(prefix, "/"), "/", 3)
+	if len(parts) >= 2 {
+		return parts[0] + ":" + parts[1]
+	}
+	if len(parts) == 1 && parts[0] != "" {
+		return parts[0] + ":"
+	}
+	return "0:0"
 }
 
 type s3PoolAdapter struct {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/azdetect"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/compaction"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
@@ -144,6 +145,10 @@ func run(cfg *config.Config, addr string) {
 
 	store.StartWriter()
 
+	// Wire stats callback after writer is initialized but before heavy use.
+	// We derive the tenant key from the configured prefix (e.g. "0/0/logs/" → "0:0").
+	writerTenantKey := deriveTenantKey(cfg.AutoPrefix())
+
 	var pusher *manifest.Pusher
 	if cfg.Discovery.PeerHeadlessService != "" {
 		disc := store.Discovery()
@@ -269,6 +274,13 @@ func run(cfg *config.Config, addr string) {
 	// --- Tenant stats ---
 	registry := stats.NewTenantRegistry(hostname())
 
+	if w := store.Writer(); w != nil {
+		tenantKey := writerTenantKey
+		w.SetStatsCallback(func(compressedBytes, rawBytes, rows int64, storageClass string) {
+			registry.RecordWrite(tenantKey, compressedBytes, rawBytes, rows, storageClass)
+		})
+	}
+
 	// Load snapshot from S3 if configured.
 	if cfg.Stats.Enabled && cfg.Stats.SnapshotPrefix != "" {
 		snapshotBucket := cfg.Stats.MetaBucket
@@ -324,7 +336,7 @@ func run(cfg *config.Config, addr string) {
 	defer close(stopCh)
 
 	// Tenant alias fleet sync
-	if resolver != nil && resolver.HasAliases() {
+	if resolver != nil && (resolver.HasAliases() || cfg.Tenant.AutoRegister) {
 		if disc := store.Discovery(); disc != nil {
 			aliasSyncCtx, aliasSyncCancel := context.WithCancel(context.Background())
 			aliasSyncPusher := tenant.NewSyncPusher(tenant.SyncPusherConfig{
@@ -358,7 +370,7 @@ func run(cfg *config.Config, addr string) {
 	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister)
 
 	var handler http.Handler = mux
-	if resolver != nil && resolver.HasAliases() {
+	if resolver != nil && (resolver.HasAliases() || cfg.Tenant.AutoRegister) {
 		handler = resolver.Middleware(mux)
 	}
 
@@ -648,6 +660,13 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		statsAPI.Register(mux)
 	}
 
+	// Bloom status API
+	mux.HandleFunc("/api/v1/bloom/status", bloomindex.HandleBloomStatus(&bloomindex.StatusProvider{
+		Cache:          store.BloomCache(),
+		Mode:           "logs",
+		IndexedColumns: cfg.Logs.BloomColumns,
+	}))
+
 	// Lakehouse UI
 	uiHandler := ui.NewHandler(ui.HandlerConfig{
 		Enabled: cfg.UI.Enabled,
@@ -809,6 +828,17 @@ func hostname() string {
 	}
 	h, _ := os.Hostname()
 	return h
+}
+
+func deriveTenantKey(prefix string) string {
+	parts := strings.SplitN(strings.TrimSuffix(prefix, "/"), "/", 3)
+	if len(parts) >= 2 {
+		return parts[0] + ":" + parts[1]
+	}
+	if len(parts) == 1 && parts[0] != "" {
+		return parts[0] + ":"
+	}
+	return "0:0"
 }
 
 type s3PoolAdapter struct {

@@ -3,6 +3,7 @@ package bloomindex
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash"
 	"hash/fnv"
 	"math"
@@ -141,9 +142,14 @@ type Filter struct {
 
 // NewFilter creates a bloom filter sized for n items with the given
 // false positive rate.
+const maxFilterItems = 10_000_000
+
 func NewFilter(n int, fpRate float64) *Filter {
 	if n <= 0 {
 		n = 1
+	}
+	if n > maxFilterItems {
+		n = maxFilterItems
 	}
 	if fpRate <= 0 || fpRate >= 1 {
 		fpRate = 0.01
@@ -175,6 +181,22 @@ func (f *Filter) MayContain(value string) bool {
 		}
 	}
 	return true
+}
+
+// MergeFrom performs a bitwise OR merge of other's bits into this filter.
+// Both filters should have the same size (same n and fpRate parameters).
+// If sizes differ, the OR applies to the overlapping prefix.
+func (f *Filter) MergeFrom(other *Filter) {
+	if other == nil {
+		return
+	}
+	n := len(f.bits)
+	if len(other.bits) < n {
+		n = len(other.bits)
+	}
+	for i := 0; i < n; i++ {
+		f.bits[i] |= other.bits[i]
+	}
 }
 
 // Size returns the size in bytes of the bloom filter.
@@ -255,8 +277,13 @@ func Unmarshal(data []byte) (*Index, error) {
 	}
 }
 
+const maxIndexEntries = 1_000_000
+
 func unmarshalV1(data []byte) (*Index, error) {
 	count := binary.LittleEndian.Uint32(data[1:5])
+	if count > maxIndexEntries {
+		return nil, fmt.Errorf("bloom index entry count %d exceeds max %d", count, maxIndexEntries)
+	}
 	idx := &Index{entries: make(map[string]map[string]*Filter, count)}
 	pos := 5
 
@@ -278,15 +305,14 @@ func unmarshalV1(data []byte) (*Index, error) {
 		}
 		fLen := int(binary.LittleEndian.Uint32(data[pos:]))
 		pos += 4
-
-		if pos+fLen > len(data) {
-			return nil, errors.New("truncated bloom index filter data")
+		if fLen < 0 || fLen > len(data)-pos {
+			return nil, errors.New("invalid bloom index filter length")
 		}
+
 		f, err := UnmarshalFilter(data[pos : pos+fLen])
 		if err != nil {
 			return nil, err
 		}
-		// V1 stored single filter as "trace_id" column
 		idx.entries[key] = map[string]*Filter{"trace_id": f}
 		pos += fLen
 	}
@@ -295,6 +321,9 @@ func unmarshalV1(data []byte) (*Index, error) {
 
 func unmarshalV2(data []byte) (*Index, error) {
 	count := binary.LittleEndian.Uint32(data[1:5])
+	if count > maxIndexEntries {
+		return nil, fmt.Errorf("bloom index entry count %d exceeds max %d", count, maxIndexEntries)
+	}
 	idx := &Index{entries: make(map[string]map[string]*Filter, count)}
 	pos := 5
 
@@ -336,10 +365,10 @@ func unmarshalV2(data []byte) (*Index, error) {
 			}
 			fLen := int(binary.LittleEndian.Uint32(data[pos:]))
 			pos += 4
-
-			if pos+fLen > len(data) {
-				return nil, errors.New("truncated bloom index filter data")
+			if fLen < 0 || fLen > len(data)-pos {
+				return nil, errors.New("invalid bloom index filter length")
 			}
+
 			f, err := UnmarshalFilter(data[pos : pos+fLen])
 			if err != nil {
 				return nil, err
@@ -398,6 +427,9 @@ func fnvHash(s string) uint64 {
 
 // Double hashing: h(i) = h1 + i*h2
 func bloomHash(h uint64, i, m uint32) uint32 {
+	if m == 0 {
+		return 0
+	}
 	h1 := uint32(h)
 	h2 := uint32(h >> 32)
 	return (h1 + i*h2) % m

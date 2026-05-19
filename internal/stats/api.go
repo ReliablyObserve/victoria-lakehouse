@@ -66,6 +66,8 @@ type TenantEntry struct {
 	AccountID        string           `json:"account_id"`
 	ProjectID        string           `json:"project_id"`
 	Name             string           `json:"name,omitempty"`
+	OrgID            string           `json:"org_id,omitempty"`
+	Source           string           `json:"source,omitempty"`
 	TotalFiles       int64            `json:"total_files"`
 	TotalBytes       int64            `json:"total_bytes"`
 	RawBytes         int64            `json:"raw_bytes"`
@@ -90,6 +92,7 @@ type OverviewResponse struct {
 	TotalRawBytes       int64            `json:"total_raw_bytes"`
 	AvgCompressionRatio float64          `json:"avg_compression_ratio"`
 	TotalRows           int64            `json:"total_rows"`
+	AvgRowBytes         int64            `json:"avg_row_bytes"`
 	PartitionCount      int              `json:"partition_count"`
 	OldestData          string           `json:"oldest_data,omitempty"`
 	NewestData          string           `json:"newest_data,omitempty"`
@@ -234,12 +237,19 @@ func (a *API) handleTenants(w http.ResponseWriter, r *http.Request) {
 	if len(entries) == 0 && a.cfg.Manifest != nil {
 		summaries := a.cfg.Manifest.TenantSummaries()
 		for _, s := range summaries {
+			var ratio float64
+			if s.TotalBytes > 0 && s.RawBytes > 0 {
+				ratio = float64(s.RawBytes) / float64(s.TotalBytes)
+			}
 			entry := TenantEntry{
-				AccountID:  s.AccountID,
-				ProjectID:  s.ProjectID,
-				TotalFiles: int64(s.TotalFiles),
-				TotalBytes: s.TotalBytes,
-				Partitions: s.Partitions,
+				AccountID:        s.AccountID,
+				ProjectID:        s.ProjectID,
+				TotalFiles:       int64(s.TotalFiles),
+				TotalBytes:       s.TotalBytes,
+				RawBytes:         s.RawBytes,
+				TotalRows:        s.TotalRows,
+				CompressionRatio: ratio,
+				Partitions:       s.Partitions,
 			}
 			if !s.MinTime.IsZero() {
 				entry.MinTime = s.MinTime.UTC().Format(time.RFC3339)
@@ -253,6 +263,31 @@ func (a *API) handleTenants(w http.ResponseWriter, r *http.Request) {
 			entries = append(entries, entry)
 			totalBytes += s.TotalBytes
 			totalFiles += int64(s.TotalFiles)
+		}
+	}
+
+	// Decorate entries with OrgID from resolver and add alias-only tenants.
+	if a.cfg.Resolver != nil {
+		seen := make(map[string]bool, len(entries))
+		for i := range entries {
+			seen[entries[i].AccountID+":"+entries[i].ProjectID] = true
+			entries[i].OrgID = a.resolveOrgID(entries[i].AccountID, entries[i].ProjectID)
+			if entries[i].Source == "" {
+				entries[i].Source = "manifest"
+			}
+		}
+		for _, alias := range a.cfg.Resolver.AllAliases() {
+			key := strconv.FormatUint(uint64(alias.AccountID), 10) + ":" + strconv.FormatUint(uint64(alias.ProjectID), 10)
+			if !seen[key] {
+				entries = append(entries, TenantEntry{
+					AccountID: strconv.FormatUint(uint64(alias.AccountID), 10),
+					ProjectID: strconv.FormatUint(uint64(alias.ProjectID), 10),
+					Name:      alias.OrgID,
+					OrgID:     alias.OrgID,
+					Source:    "alias",
+				})
+				seen[key] = true
+			}
 		}
 	}
 
@@ -317,16 +352,22 @@ func (a *API) handleTenantDetail(w http.ResponseWriter, r *http.Request) {
 	if ts != nil {
 		entry = tenantStatsToEntry(ts, a.cfg.CostCalc)
 	} else if a.cfg.Manifest != nil {
-		// Fall back to manifest-derived tenant.
 		found := false
 		for _, s := range a.cfg.Manifest.TenantSummaries() {
 			if s.AccountID == accountID && s.ProjectID == projectID {
+				var ratio float64
+				if s.TotalBytes > 0 && s.RawBytes > 0 {
+					ratio = float64(s.RawBytes) / float64(s.TotalBytes)
+				}
 				entry = TenantEntry{
-					AccountID:  s.AccountID,
-					ProjectID:  s.ProjectID,
-					TotalFiles: int64(s.TotalFiles),
-					TotalBytes: s.TotalBytes,
-					Partitions: s.Partitions,
+					AccountID:        s.AccountID,
+					ProjectID:        s.ProjectID,
+					TotalFiles:       int64(s.TotalFiles),
+					TotalBytes:       s.TotalBytes,
+					RawBytes:         s.RawBytes,
+					TotalRows:        s.TotalRows,
+					CompressionRatio: ratio,
+					Partitions:       s.Partitions,
 				}
 				if !s.MinTime.IsZero() {
 					entry.MinTime = s.MinTime.UTC().Format(time.RFC3339)
@@ -342,19 +383,17 @@ func (a *API) handleTenantDetail(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !found {
-			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-			return
+			entry = TenantEntry{AccountID: accountID, ProjectID: projectID}
 		}
 	} else {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-		return
+		entry = TenantEntry{AccountID: accountID, ProjectID: projectID}
 	}
 
 	a.decorateName(&entry)
 	resp := TenantDetailResponse{TenantEntry: entry}
 
-	// Add partition drill-down from manifest.
-	if a.cfg.Manifest != nil {
+	// Add partition drill-down from manifest (only for tenants with data).
+	if a.cfg.Manifest != nil && entry.TotalFiles > 0 {
 		tenantPrefix := accountID + "/" + projectID + "/"
 		allFiles := a.cfg.Manifest.AllFiles()
 
@@ -386,7 +425,7 @@ func (a *API) handleTenantDetail(w http.ResponseWriter, r *http.Request) {
 		// Partitions for this tenant.
 		resp.PartitionList = a.cfg.Manifest.GetPartitions("", "")
 
-		if entry.TotalFiles > 0 && entry.TotalRows > 0 {
+		if entry.TotalRows > 0 {
 			resp.AvgRowsPerFile = entry.TotalRows / entry.TotalFiles
 		}
 	}
@@ -430,12 +469,16 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 	var partitionCount int
 	var totalFiles int64
 	var totalBytes int64
+	var totalRows int64
+	var totalRawBytes int64
 	var oldestData, newestData string
 
 	if a.cfg.Manifest != nil {
 		partitionCount = a.cfg.Manifest.PartitionCount()
 		totalFiles = int64(a.cfg.Manifest.TotalFiles())
 		totalBytes = a.cfg.Manifest.TotalBytes()
+		totalRows = a.cfg.Manifest.TotalRows()
+		totalRawBytes = a.cfg.Manifest.TotalRawBytes()
 		if !a.cfg.Manifest.MinTime().IsZero() {
 			oldestData = a.cfg.Manifest.MinTime().UTC().Format(time.RFC3339)
 		}
@@ -443,12 +486,17 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 			newestData = a.cfg.Manifest.MaxTime().UTC().Format(time.RFC3339)
 		}
 	}
-	// If manifest has no data, fall back to registry totals.
 	if totalFiles == 0 {
 		totalFiles = gs.TotalFiles
 	}
 	if totalBytes == 0 {
 		totalBytes = gs.TotalBytes
+	}
+	if gs.TotalRows > totalRows {
+		totalRows = gs.TotalRows
+	}
+	if gs.RawBytes > totalRawBytes {
+		totalRawBytes = gs.RawBytes
 	}
 
 	// Count distinct nodes across all tenants.
@@ -459,14 +507,24 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 		tenantCount = len(a.cfg.Manifest.TenantSummaries())
 	}
 
+	if avgRatio == 0 && totalRawBytes > 0 && totalBytes > 0 {
+		avgRatio = float64(totalRawBytes) / float64(totalBytes)
+	}
+
+	var avgRowBytes int64
+	if totalRows > 0 {
+		avgRowBytes = totalRawBytes / totalRows
+	}
+
 	resp := OverviewResponse{
 		Bucket:              a.cfg.Bucket,
 		Mode:                a.cfg.Mode,
 		TotalFiles:          totalFiles,
 		TotalBytes:          totalBytes,
-		TotalRawBytes:       gs.RawBytes,
+		TotalRawBytes:       totalRawBytes,
 		AvgCompressionRatio: avgRatio,
-		TotalRows:           gs.TotalRows,
+		TotalRows:           totalRows,
+		AvgRowBytes:         avgRowBytes,
 		PartitionCount:      partitionCount,
 		OldestData:          oldestData,
 		NewestData:          newestData,
@@ -933,6 +991,19 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func (a *API) resolveName(accountID, projectID string) string {
+	if a.cfg.Resolver == nil {
+		return ""
+	}
+	accID, _ := strconv.ParseUint(accountID, 10, 32)
+	projID, _ := strconv.ParseUint(projectID, 10, 32)
+	name := a.cfg.Resolver.DisplayName(uint32(accID), uint32(projID))
+	if name == accountID+":"+projectID {
+		return ""
+	}
+	return name
+}
+
+func (a *API) resolveOrgID(accountID, projectID string) string {
 	if a.cfg.Resolver == nil {
 		return ""
 	}

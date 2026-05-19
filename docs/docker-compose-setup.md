@@ -159,7 +159,7 @@ lakehouse-logs:
     - "-lakehouse.tenant.global-read-value=lakehouse-e2e-global-key"
 ```
 
-Serves VictoriaLogs-compatible select APIs backed by Parquet files on MinIO. Pre-configured with tenant `0/0` (default) and global read access via the `X-Lakehouse-Global-Read` header for admin/testing dashboards.
+Serves VictoriaLogs-compatible select APIs backed by Parquet files on MinIO. Pre-configured with tenant `0/0` (default), global read access via the `X-Lakehouse-Global-Read` header, and string-based tenant auto-registration via the `X-Scope-OrgID` header. String tenants (e.g., `acme-corp`, `staging-team`) are automatically mapped to numeric IDs on first insert.
 
 - **Internal endpoint**: `http://lakehouse-logs:9428`
 - **Health check**: `GET /health` every 5 seconds
@@ -462,3 +462,52 @@ ports:
   - "9000:9000"
   - "9001:9001"
 ```
+
+## String-Based Tenants
+
+Both `lakehouse-logs` and `lakehouse-traces` support string-based tenant IDs via the `X-Scope-OrgID` header. The compose stack enables auto-registration, so any new OrgID is automatically mapped to a numeric `AccountID:ProjectID` pair on first insert.
+
+### Pre-configured String Tenants
+
+The compose stack seeds data for two string tenants alongside the numeric ones:
+
+| OrgID | Signal | Data | Notes |
+|-------|--------|------|-------|
+| `acme-corp` | logs + traces | 2000 logs, 500 traces, 72h | Auto-registered on first insert |
+| `staging-team` | logs + traces | 1000 logs, 250 traces, 48h | Auto-registered on first insert |
+| `0:0` (default) | logs + traces | 10000 logs, 2000 traces, 72h | Numeric tenant |
+| `1:1` (secondary) | logs + traces | 2000 logs, 500 traces, 72h | Numeric tenant |
+
+### datagen `--org-id` Flag
+
+```bash
+# Send data as a string tenant
+datagen --logs=1000 --org-id=my-team --lh-logs-endpoint=http://lakehouse-logs:9428
+
+# Send data as a numeric tenant (existing behavior)
+datagen --logs=1000 --account-id=1 --project-id=1 --lh-logs-endpoint=http://lakehouse-logs:9428
+```
+
+### Tenant Alias API
+
+```bash
+# List all registered aliases (both logs and traces)
+curl http://localhost:29428/lakehouse/api/v1/tenants/aliases
+curl http://localhost:20428/lakehouse/api/v1/tenants/aliases
+
+# Create a manual alias
+curl -X POST http://localhost:29428/lakehouse/api/v1/tenants/aliases \
+  -H "Content-Type: application/json" \
+  -d '{"org_id":"prod-team","account_id":5,"project_id":0}'
+
+# Delete an alias
+curl -X DELETE http://localhost:29428/lakehouse/api/v1/tenants/aliases/prod-team
+
+# Query scoped to a string tenant
+curl "http://localhost:29428/select/logsql/query?query=*&limit=10" \
+  -H "X-Scope-OrgID: acme-corp"
+```
+
+### Grafana Dashboard
+
+The **Lakehouse Tenants** dashboard (provisioned automatically) shows per-tenant storage, ingestion rates, and query activity. Requires a Prometheus datasource scraping the lakehouse metrics endpoints.

@@ -31,20 +31,24 @@
 
 ## The Cost Case
 
-Cost leadership is **scale-dependent**. At small scale (≤500 GB/mo), VL/VT EBS is cheapest — compute dominates and 55x compression wins. At PB/mo with >8 months retention, Lakehouse Hybrid crosses below VL/VT EBS because S3's per-raw-GB cost ($0.0038) beats 3-AZ EBS ($0.0044) by 14%. Lakehouse is **always 48-56% cheaper than Loki/Tempo** at any scale, and adds **open Parquet format, S3 11-nines durability, disaster recovery, and Glacier tiering**.
+Cost leadership is **scale-dependent**. At small scale (≤500 GB/mo), VL/VT EBS is cheapest — compute dominates and 55x compression wins. At PB/mo with >8 months retention, Lakehouse Hybrid crosses below VL/VT EBS because S3's per-raw-GB cost ($0.0038) beats 3-AZ EBS ($0.0044) by 14%. Standalone Lakehouse is **cheapest at all retention periods** — 57% cheaper than hybrid, 78% cheaper than Loki/Tempo. It adds **open Parquet format, S3 11-nines durability, disaster recovery, and Glacier tiering**.
 
-| Scenario (500 GB/day, 1yr, 3 AZ) | VL/VT EBS Only | Lakehouse Hybrid | Loki + Tempo |
-|---|---|---|---|
-| **Monthly cost** | **$2,679/mo** | $3,009/mo | $5,763/mo |
-| **Compression** | 47-70x | 6-9x (Parquet ZSTD L7) | 3.5x |
-| **Query speed (cold)** | <10ms (all EBS) | <500ms (Parquet) | 1-10s |
-| **Data format** | Proprietary | **Open Parquet** | Proprietary |
-| **S3 durability** | EBS per-AZ | **11 nines** | 11 nines |
-| **Glacier tiering** | N/A | **Yes (cheapest at 3yr+)** | No (compaction breaks it) |
-| **Analytics access** | VL/VT API only | **DuckDB, Spark, Trino** | Loki API only |
-| **Disaster recovery** | N/A | **Independent cold tier** | N/A |
-| **S3 write amplification** | N/A (EBS) | **1x (atomic PutObject)** | 3-5x (WAL→chunk→S3) |
+| Scenario (500 GB/day, 1yr, 3 AZ) | Standalone Lakehouse | VL/VT EBS Only | Lakehouse Hybrid | Loki + Tempo |
+|---|---|---|---|---|
+| **Monthly cost** | **$1,283/mo** | $2,679/mo | $3,009/mo | $5,763/mo |
+| **Compression (logs)** | 6.1x (ZSTD L7) | ~70x | 6.1x (ZSTD L7) | 3-3.5x (Snappy) |
+| **Compression (traces)** | 9.4x (ZSTD L7) | ~47x | 9.4x (ZSTD L7) | 3-4x (Snappy) |
+| **Query latency (point)** | <100ms (bloom) | <10ms (EBS) | <10ms hot / <100ms cold | 1-10s |
+| **Query latency (scan)** | <500ms | <10ms (EBS) | <10ms hot / <500ms cold | 1-10s |
+| **Data format** | **Open Parquet** | Proprietary | **Open Parquet** | Proprietary |
+| **S3 durability** | **11 nines** | EBS per-AZ | **11 nines** | 11 nines |
+| **Glacier tiering** | **Yes (cheapest at 3yr+)** | N/A | **Yes (cheapest at 3yr+)** | No (compaction breaks it) |
+| **Analytics access** | **DuckDB, Spark, Trino** | VL/VT API only | **DuckDB, Spark, Trino** | Loki API only |
+| **Disaster recovery** | **Independent** | N/A | **Independent cold tier** | N/A |
+| **Write path** | WAL + S3 + compaction (~2.1x) | EBS WAL + LSM (~3-10x) | EBS + WAL + S3 + compaction | WAL→chunk→S3→compact (3-5x) |
 
+> **Write amplification detail**: Lakehouse writes each byte ~2.1x: (1) local WAL (uncompressed gob, crash recovery), (2) S3 PutObject (ZSTD Parquet), (3) compaction reads N files and writes 1 merged file (~0.1x at 10:1 ratio). VL/VT LSM write amplification is 3-10x (WAL → L0 → L1 → L2 compaction levels). Loki/Tempo write 3-5x: WAL → in-memory chunk → flushed chunk → S3 + compacted S3.
+>
 > **Hybrid = full Lakehouse S3 cost + additional VL/VT hot tier + doubled delivery network** (1 month EBS + compute + 2× cross-AZ ingest from mirroring to both VL/VT and LH inserts). All data always on S3; EBS is additional for sub-10ms queries on recent data. At 500 GB/day, VL/VT EBS is cheapest (compute + delivery dominates). At PB/mo with >8mo retention, Hybrid crosses below VL/VT EBS.
 
 Full cost worksheet: [Cost Estimates](docs/cost-estimates.md) | Deep comparison vs Loki/Tempo: [Cost Comparison](docs/cost-comparison.md) | Cross-AZ cost: [Cross-AZ Optimization](docs/cross-az-optimization.md)
@@ -367,7 +371,7 @@ Each binary supports three roles for independent scaling:
 - **Partition manifest** for sub-ms "nothing here" responses. Recent queries cost zero S3 I/O.
 - **LogsQL filter evaluation**: field matchers (exact, substring, regex, NOT) are applied post-scan to filter DataBlock rows at the storage layer.
 - **max_rows enforcement**: `query.max_rows` (default 10M) caps emitted rows per query, preventing unbounded cold-query resource usage.
-- **Bloom filters** on `trace_id` and `service_name` for fast point lookups.
+- **Multi-tier bloom index** on `trace_id` and `service.name` for fast point lookups. Age-based tiering (Hot/Warm/Cold/Archive) with automatic downgrade, LRU cache, auto-tuning controller, and `/api/v1/bloom/status` API. See [Bloom Index](docs/bloom-index.md).
 - **Parallel file workers**: configurable bounded worker pool for concurrent Parquet file processing (default 8 workers).
 - **Correlated prefetch**: log query warms trace Parquet for same time+service, and vice versa.
 - **Read-ahead**: sequential time scans prefetch next partitions.
@@ -552,7 +556,7 @@ Full reference: [Configuration](docs/configuration.md)
 
 ## Observability
 
-- **~110 Prometheus metrics** under `lakehouse_*` prefix (RED, USE, S3, cache, peer, manifest, Parquet engine, prefetch, smart cache, cross-signal, tenant, storage, cost, stats sync, startup)
+- **~147 Prometheus metrics** under `lakehouse_*` prefix (RED, USE, S3, cache, peer, manifest, Parquet engine, prefetch, smart cache, cross-signal, tenant, storage, cost, stats sync, startup, bloom index)
 - **Per-tenant metrics** with configurable cardinality cap (files, bytes, rows, queries, ingestion, timestamps)
 - **Global storage metrics** (compression ratio, partitions, oldest/newest data, cost by storage class, ingestion rate)
 - **Grafana dashboards** (single-instance + cluster + supplementary panels for VL/VT dashboards)
@@ -723,7 +727,7 @@ All core milestones are **complete**. The project is in production-readiness and
 | **M4: Discovery + Peer Cache** | Complete | Hot boundary auto-discovery via `/internal/partition/list`, consistent hash peer cache (L3) via headless DNS, `/manifest/range` API |
 | **M5: Cluster Integration** | Complete | `/internal/select/*` binary protocol with ZSTD DataBlock streaming, `-storageNode` registration on vlselect/vtselect |
 | **M6: Filter AST + E2E** | Complete | Full LogsQL predicate engine (exact, substring, regex, NOT, AND, OR, ranges), Playwright E2E, schema validation |
-| **M7: Observability** | Complete | ~100 Prometheus metrics, Grafana dashboards (single-instance + cluster), 10 alerting rules, circuit breaker, structured JSON logging |
+| **M7: Observability** | Complete | ~147 Prometheus metrics (including 12 bloom-specific), Grafana dashboards (single-instance + cluster), 10 alerting rules, circuit breaker, structured JSON logging |
 | **M8: Write Path** | Complete | Full VL insert protocol support via upstream `vlinsert` handlers (jsonline, Loki JSON+protobuf, ES bulk, syslog, journald, Datadog, OTLP, Splunk), WAL with crash recovery, adaptive flush, buffer query bridge for zero-delay reads |
 | **M9: Compaction** | Complete | Background merge of small Parquet files, size-tiered strategy, manifest atomic updates, tombstone integration |
 | **M10: Testing & Helm** | Complete | E2E test suite (VL + vlselect + loki-vl-proxy chain), benchmarks, Victoria-pattern Helm chart, upstream sync GHA |
@@ -731,6 +735,7 @@ All core milestones are **complete**. The project is in production-readiness and
 | **Binary Split** | Complete | Separate `lakehouse-logs` + `lakehouse-traces` binaries with independent Go modules, mode-specific config/flags/schemas |
 | **Smart Cache** | Complete | Unified cache controller (L1-L4), active query pinning, cache sizing calculator, snapshot persistence, cross-signal prefetch between logs↔traces |
 | **E2E Compose** | Complete | Full Docker Compose with MinIO, VL/VT hot tiers, vlselect/vtselect multi-level select, loki-vl-proxy, DuckDB + ClickHouse analytics, 11 Grafana datasources |
+| **Bloom Index** | Complete | Multi-tier bloom index (Hot/Warm/Cold/Archive), per-column bloom filters, LRU cache, auto-tuning controller, config sync, metadata compactor, `/api/v1/bloom/status` API, 12 Prometheus metrics, 44 unit tests + E2E verification |
 
 ---
 

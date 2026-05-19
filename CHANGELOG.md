@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Bloom age-tiering: 4-tier model (hot/warm/cold/archive) with configurable boundaries, tier downgrade logic (per-RG → per-file → summary → none), Filter.MergeFrom bitwise OR merge, SHA256 integrity checks
+- PartitionedIndex: per-partition bloom management with dirty tracking, hourly/daily granularity, high-cardinality skip gate (>50K)
+- BloomCache: LRU-cached bloom index access with lazy loading, size-based eviction, warm preload
+- Bloom build on flush: automatic bloom population from trace_id and service.name when parquet files are written to S3
+- Bloom persist: dirty partitions written to S3 as `_bloom.bin` after each flush cycle
+- BloomFilterFiles: query path integration between label filtering and file workers for partition-level bloom skip
+- Manifest PartitionMeta: per-partition bloom availability, size, and column tracking
+- MetadataCompactor: automatic bloom tier transitions (hot→warm→cold→archive) with S3 persist callback
+- BloomRebuilder: post-compaction bloom rebuild hook on existing Compactor
+- TTL recompression: age-based compression levels (ZSTD 3/7/17) for hot/warm/cold data
+- BloomController: auto-tuning of bloom parameters based on file rate, SSD usage, and cache metrics with operator pin overrides
+- ConfigSync: S3-based live configuration with read/write, error tracking, and last-known fallback
+- Bloom status API: GET /api/v1/bloom/status with tier stats, cache stats, auto-tuning state
+- Cost projection engine: per-tier storage cost analysis with S3 class mapping (STANDARD/IA/GLACIER)
+- 12 bloom-specific Prometheus metrics (build, query, tier transitions, controller adjustments)
+- PREWHERE concept tests for column-selective reads and row group stats elimination
+- Comprehensive bloom test suite: 132+ unit tests, 30+ integration tests, 4 E2E smoke tests, 10 regression tests
+
 ### Changed
 - Traces binary insert path rewritten to use VL upstream vlinsert handlers (same adapter pattern as logs)
 - Automate `deps-traces` in Makefile — clones VL at commit a408207c2242 and applies patches (was manual)
