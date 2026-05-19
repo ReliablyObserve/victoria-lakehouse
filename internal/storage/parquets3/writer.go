@@ -459,12 +459,27 @@ func estimateRawBytesLogs(rows []schema.LogRow) int64 {
 	for i := range rows {
 		total += int64(unsafe.Sizeof(rows[i]))
 		total += int64(len(rows[i].Body))
+		total += int64(len(rows[i].SeverityText))
 		total += int64(len(rows[i].ServiceName))
 		total += int64(len(rows[i].TraceID))
+		total += int64(len(rows[i].SpanID))
+		total += int64(len(rows[i].K8sNamespaceName))
+		total += int64(len(rows[i].K8sPodName))
+		total += int64(len(rows[i].K8sDeploymentName))
+		total += int64(len(rows[i].K8sNodeName))
+		total += int64(len(rows[i].DeployEnv))
+		total += int64(len(rows[i].CloudRegion))
+		total += int64(len(rows[i].HostName))
+		total += int64(len(rows[i].Stream))
+		total += int64(len(rows[i].StreamID))
+		total += int64(len(rows[i].ScopeName))
 		for k, v := range rows[i].ResourceAttributes {
 			total += int64(len(k) + len(v))
 		}
 		for k, v := range rows[i].LogAttributes {
+			total += int64(len(k) + len(v))
+		}
+		for k, v := range rows[i].ScopeAttributes {
 			total += int64(len(k) + len(v))
 		}
 	}
@@ -476,8 +491,26 @@ func estimateRawBytesTraces(rows []schema.TraceRow) int64 {
 	for i := range rows {
 		total += int64(unsafe.Sizeof(rows[i]))
 		total += int64(len(rows[i].TraceID))
+		total += int64(len(rows[i].SpanID))
+		total += int64(len(rows[i].ParentSpanID))
 		total += int64(len(rows[i].SpanName))
 		total += int64(len(rows[i].ServiceName))
+		total += int64(len(rows[i].StatusMessage))
+		total += int64(len(rows[i].HTTPMethod))
+		total += int64(len(rows[i].HTTPStatusCode))
+		total += int64(len(rows[i].HTTPUrl))
+		total += int64(len(rows[i].DBSystem))
+		total += int64(len(rows[i].DBStatement))
+		total += int64(len(rows[i].K8sNamespaceName))
+		total += int64(len(rows[i].K8sPodName))
+		total += int64(len(rows[i].K8sDeploymentName))
+		total += int64(len(rows[i].K8sNodeName))
+		total += int64(len(rows[i].DeployEnv))
+		total += int64(len(rows[i].CloudRegion))
+		total += int64(len(rows[i].HostName))
+		total += int64(len(rows[i].Stream))
+		total += int64(len(rows[i].StreamID))
+		total += int64(len(rows[i].ScopeName))
 		for k, v := range rows[i].ResourceAttributes {
 			total += int64(len(k) + len(v))
 		}
