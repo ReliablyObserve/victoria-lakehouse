@@ -97,6 +97,9 @@ jobs:
           docker compose -f deployment/docker/docker-compose-e2e.yml exec -T minio mc ls --recursive local/obs-archive/0/0/ | head -20
           echo "=== Test tenant (1/1) ==="
           docker compose -f deployment/docker/docker-compose-e2e.yml exec -T minio mc ls --recursive local/obs-archive/1/1/ | head -20
+          echo "=== String tenant aliases ==="
+          curl -sf http://localhost:29428/lakehouse/api/v1/tenants/aliases 2>/dev/null || echo "aliases not ready yet"
+          curl -sf http://localhost:20428/lakehouse/api/v1/tenants/aliases 2>/dev/null || echo "traces aliases not ready yet"
 
       - name: Run E2E smoke tests
         env: &e2e-env
@@ -127,9 +130,13 @@ jobs:
         env: *e2e-env
         run: go test -tags=e2e -v -count=1 -timeout=8m ./tests/e2e/ -run "TestBloomVerify_" 2>&1 | tee -a e2e-results.txt
 
+      - name: Verify string tenants (OrgID aliases, auto-register)
+        env: *e2e-env
+        run: go test -tags=e2e -v -count=1 -timeout=5m ./tests/e2e/ -run "TestStringTenant_" 2>&1 | tee -a e2e-results.txt
+
       - name: Run remaining E2E tests
         env: *e2e-env
-        run: go test -tags=e2e -v -count=1 -timeout=10m ./tests/e2e/ -run "^(?!TestSmoke|TestMetrics_|TestEndpoint_|TestSetting_|TestBloomVerify_)" 2>&1 | tee -a e2e-results.txt
+        run: go test -tags=e2e -v -count=1 -timeout=10m ./tests/e2e/ -run "^(?!TestSmoke|TestMetrics_|TestEndpoint_|TestSetting_|TestBloomVerify_|TestStringTenant_)" 2>&1 | tee -a e2e-results.txt
 
       - name: Upload E2E results
         if: always()
@@ -149,6 +156,10 @@ jobs:
           docker compose -f deployment/docker/docker-compose-e2e.yml logs datagen-seed --tail=50
           echo "=== datagen-seed-tenant1 ==="
           docker compose -f deployment/docker/docker-compose-e2e.yml logs datagen-seed-tenant1 --tail=50
+          echo "=== datagen-seed-orgid ==="
+          docker compose -f deployment/docker/docker-compose-e2e.yml logs datagen-seed-orgid --tail=50
+          echo "=== datagen-seed-orgid2 ==="
+          docker compose -f deployment/docker/docker-compose-e2e.yml logs datagen-seed-orgid2 --tail=50
 
       - name: Stop E2E stack
         if: always()

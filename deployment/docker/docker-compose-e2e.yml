@@ -121,6 +121,42 @@ services:
       - "--account-id=1"
       - "--project-id=1"
 
+  datagen-seed-orgid:
+    build:
+      context: ../../
+      dockerfile: Dockerfile.datagen
+    depends_on:
+      lakehouse-logs:
+        condition: service_healthy
+      lakehouse-traces:
+        condition: service_healthy
+    networks: [lakehouse-net]
+    command:
+      - "--logs=2000"
+      - "--traces=500"
+      - "--hours-back=72"
+      - "--lh-logs-endpoint=http://lakehouse-logs:9428"
+      - "--lh-traces-endpoint=http://lakehouse-traces:10428"
+      - "--org-id=acme-corp"
+
+  datagen-seed-orgid2:
+    build:
+      context: ../../
+      dockerfile: Dockerfile.datagen
+    depends_on:
+      lakehouse-logs:
+        condition: service_healthy
+      lakehouse-traces:
+        condition: service_healthy
+    networks: [lakehouse-net]
+    command:
+      - "--logs=1000"
+      - "--traces=250"
+      - "--hours-back=48"
+      - "--lh-logs-endpoint=http://lakehouse-logs:9428"
+      - "--lh-traces-endpoint=http://lakehouse-traces:10428"
+      - "--org-id=staging-team"
+
   datagen-continuous:
     build:
       context: ../../
@@ -165,6 +201,9 @@ services:
       - "-lakehouse.manifest.refresh-interval=30s"
       - "-lakehouse.tenant.global-read-header=X-Lakehouse-Global-Read"
       - "-lakehouse.tenant.global-read-value=lakehouse-e2e-global-key"
+      - "-lakehouse.tenant.orgid-header=X-Scope-OrgID"
+      - "-lakehouse.tenant.auto-register=true"
+      - "-lakehouse.tenant.metrics-format=name"
       - "-loggerLevel=INFO"
     volumes:
       - lakehouse-cache-logs:/data/lakehouse
@@ -197,6 +236,9 @@ services:
       - "-lakehouse.query.file-workers=64"
       - "-lakehouse.tenant.global-read-header=X-Lakehouse-Global-Read"
       - "-lakehouse.tenant.global-read-value=lakehouse-e2e-global-key"
+      - "-lakehouse.tenant.orgid-header=X-Scope-OrgID"
+      - "-lakehouse.tenant.auto-register=true"
+      - "-lakehouse.tenant.metrics-format=name"
       - "-loggerLevel=INFO"
     volumes:
       - lakehouse-cache-traces:/data/lakehouse

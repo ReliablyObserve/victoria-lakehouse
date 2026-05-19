@@ -45,20 +45,21 @@ func main() {
 	lhTracesEndpoint := flag.String("lh-traces-endpoint", "", "Lakehouse traces cold endpoint (e.g. http://lakehouse-traces:10428)")
 	accountID := flag.String("account-id", "0", "tenant AccountID header")
 	projectID := flag.String("project-id", "0", "tenant ProjectID header")
+	orgID := flag.String("org-id", "", "string tenant ID via X-Scope-OrgID header (overrides account-id/project-id)")
 	flag.Parse()
 
 	if *vlEndpoint == "" && *lhLogsEndpoint == "" {
 		log.Fatal("at least one of --vl-endpoint or --lh-logs-endpoint is required")
 	}
 
-	generateBatch(*logsCount, *tracesCount, *hoursBack, *vlEndpoint, *vtEndpoint, *lhLogsEndpoint, *lhTracesEndpoint, *accountID, *projectID)
+	generateBatch(*logsCount, *tracesCount, *hoursBack, *vlEndpoint, *vtEndpoint, *lhLogsEndpoint, *lhTracesEndpoint, *accountID, *projectID, *orgID)
 
 	if *interval > 0 {
 		log.Printf("Continuous mode: generating %d logs + %d traces every %s", *logsCount, *tracesCount, *interval)
 		ticker := time.NewTicker(*interval)
 		defer ticker.Stop()
 		for range ticker.C {
-			generateBatch(*logsCount, *tracesCount, 1, *vlEndpoint, *vtEndpoint, *lhLogsEndpoint, *lhTracesEndpoint, *accountID, *projectID)
+			generateBatch(*logsCount, *tracesCount, 1, *vlEndpoint, *vtEndpoint, *lhLogsEndpoint, *lhTracesEndpoint, *accountID, *projectID, *orgID)
 		}
 	}
 }
@@ -124,12 +125,17 @@ type logRow struct {
 	LogAttrs          map[string]string
 }
 
-func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint, lhLogsEndpoint, lhTracesEndpoint, accountID, projectID string) {
+func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint, lhLogsEndpoint, lhTracesEndpoint, accountID, projectID, orgID string) {
 	now := time.Now().UTC()
 	rng := mrand.New(mrand.NewSource(now.UnixNano())) // #nosec G404 -- synthetic test data
 
-	log.Printf("Generating %d logs + %d trace spans over %dh (account=%s, project=%s)...",
-		logsCount, tracesCount, hoursBack, accountID, projectID)
+	if orgID != "" {
+		log.Printf("Generating %d logs + %d trace spans over %dh (org_id=%s)...",
+			logsCount, tracesCount, hoursBack, orgID)
+	} else {
+		log.Printf("Generating %d logs + %d trace spans over %dh (account=%s, project=%s)...",
+			logsCount, tracesCount, hoursBack, accountID, projectID)
+	}
 
 	// ── Phase 1: Generate traces ──
 
@@ -299,14 +305,14 @@ func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint
 
 	// Push traces to all configured endpoints
 	if vtEndpoint != "" {
-		if err := pushOTLPTraces(vtEndpoint, allTraces, accountID, projectID); err != nil {
+		if err := pushOTLPTraces(vtEndpoint, allTraces, accountID, projectID, orgID); err != nil {
 			log.Printf("WARNING: push traces to VT hot failed: %v", err)
 		} else {
 			log.Printf("  pushed %d traces to VT hot at %s", len(allTraces), vtEndpoint)
 		}
 	}
 	if lhTracesEndpoint != "" {
-		if err := pushOTLPTraces(lhTracesEndpoint, allTraces, accountID, projectID); err != nil {
+		if err := pushOTLPTraces(lhTracesEndpoint, allTraces, accountID, projectID, orgID); err != nil {
 			log.Printf("WARNING: push traces to LH cold failed: %v", err)
 		} else {
 			log.Printf("  pushed %d traces to LH cold at %s", len(allTraces), lhTracesEndpoint)
@@ -404,14 +410,14 @@ func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint
 
 	// Push logs to all configured endpoints
 	if vlEndpoint != "" {
-		if err := pushNDJSON(vlEndpoint, allLogs, accountID, projectID); err != nil {
+		if err := pushNDJSON(vlEndpoint, allLogs, accountID, projectID, orgID); err != nil {
 			log.Printf("WARNING: push logs to VL hot failed: %v", err)
 		} else {
 			log.Printf("  pushed %d logs to VL hot at %s", len(allLogs), vlEndpoint)
 		}
 	}
 	if lhLogsEndpoint != "" {
-		if err := pushNDJSON(lhLogsEndpoint, allLogs, accountID, projectID); err != nil {
+		if err := pushNDJSON(lhLogsEndpoint, allLogs, accountID, projectID, orgID); err != nil {
 			log.Printf("WARNING: push logs to LH cold failed: %v", err)
 		} else {
 			log.Printf("  pushed %d logs to LH cold at %s", len(allLogs), lhLogsEndpoint)
@@ -430,7 +436,16 @@ func randomHex(length int) string {
 	return fmt.Sprintf("%x", b)
 }
 
-func pushNDJSON(endpoint string, rows []logRow, accountID, projectID string) error {
+func setTenantHeaders(req *http.Request, accountID, projectID, orgID string) {
+	if orgID != "" {
+		req.Header.Set("X-Scope-OrgID", orgID)
+	} else {
+		req.Header.Set("AccountID", accountID)
+		req.Header.Set("ProjectID", projectID)
+	}
+}
+
+func pushNDJSON(endpoint string, rows []logRow, accountID, projectID, orgID string) error {
 	var buf bytes.Buffer
 	for _, r := range rows {
 		line := map[string]any{
@@ -471,8 +486,7 @@ func pushNDJSON(endpoint string, rows []logRow, accountID, projectID string) err
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-ndjson")
-	req.Header.Set("AccountID", accountID)
-	req.Header.Set("ProjectID", projectID)
+	setTenantHeaders(req, accountID, projectID, orgID)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -486,7 +500,7 @@ func pushNDJSON(endpoint string, rows []logRow, accountID, projectID string) err
 	return nil
 }
 
-func pushOTLPTraces(endpoint string, rows []traceRow, accountID, projectID string) error {
+func pushOTLPTraces(endpoint string, rows []traceRow, accountID, projectID, orgID string) error {
 	type otlpKV struct {
 		Key   string      `json:"key"`
 		Value interface{} `json:"value"`
@@ -589,8 +603,7 @@ func pushOTLPTraces(endpoint string, rows []traceRow, accountID, projectID strin
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("AccountID", accountID)
-	req.Header.Set("ProjectID", projectID)
+	setTenantHeaders(req, accountID, projectID, orgID)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

@@ -24,6 +24,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/stats"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/ui"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/selectapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3"
@@ -76,17 +77,21 @@ var (
 	tracesJaegerEnabled = flag.Bool("lakehouse.traces.jaeger-enabled", true, "Enable Jaeger query API")
 	tracesJaegerGRPC    = flag.String("lakehouse.traces.jaeger-grpc-addr", "", "Jaeger gRPC listen address (default: :16685)")
 
-	tenantDefaultAccount = flag.String("lakehouse.tenant.default-account", "", "Default tenant account ID (default: 0)")
-	tenantDefaultProject = flag.String("lakehouse.tenant.default-project", "", "Default tenant project ID (default: 0)")
-	tenantHeaderAccount  = flag.String("lakehouse.tenant.header-account", "", "HTTP header for account ID (default: X-Scope-AccountID)")
-	tenantHeaderProject  = flag.String("lakehouse.tenant.header-project", "", "HTTP header for project ID (default: X-Scope-ProjectID)")
-	tenantGlobalHeader   = flag.String("lakehouse.tenant.global-read-header", "", "Header name for global read access")
-	tenantGlobalValue    = flag.String("lakehouse.tenant.global-read-value", "", "Expected header value for global read access")
-	tenantGlobalToken    = flag.String("lakehouse.tenant.global-read-token", "", "Bearer token for global read access")
-	tenantIsolation      = flag.String("lakehouse.tenant.isolation", "", "Tenant isolation mode: prefix or bucket")
-	tenantPrefixTemplate = flag.String("lakehouse.tenant.prefix-template", "", "S3 prefix template (default: {AccountID}/{ProjectID}/)")
-	tenantBucketTemplate = flag.String("lakehouse.tenant.bucket-template", "", "Bucket name template for bucket isolation")
-	tenantDefaultPrefix  = flag.String("lakehouse.tenant.default-prefix", "", "Static S3 key prefix override")
+	tenantDefaultAccount    = flag.String("lakehouse.tenant.default-account", "", "Default tenant account ID (default: 0)")
+	tenantDefaultProject    = flag.String("lakehouse.tenant.default-project", "", "Default tenant project ID (default: 0)")
+	tenantHeaderAccount     = flag.String("lakehouse.tenant.header-account", "", "HTTP header for account ID (default: X-Scope-AccountID)")
+	tenantHeaderProject     = flag.String("lakehouse.tenant.header-project", "", "HTTP header for project ID (default: X-Scope-ProjectID)")
+	tenantGlobalHeader      = flag.String("lakehouse.tenant.global-read-header", "", "Header name for global read access")
+	tenantGlobalValue       = flag.String("lakehouse.tenant.global-read-value", "", "Expected header value for global read access")
+	tenantGlobalToken       = flag.String("lakehouse.tenant.global-read-token", "", "Bearer token for global read access")
+	tenantIsolation         = flag.String("lakehouse.tenant.isolation", "", "Tenant isolation mode: prefix or bucket")
+	tenantPrefixTemplate    = flag.String("lakehouse.tenant.prefix-template", "", "S3 prefix template (default: {AccountID}/{ProjectID}/)")
+	tenantBucketTemplate    = flag.String("lakehouse.tenant.bucket-template", "", "Bucket name template for bucket isolation")
+	tenantDefaultPrefix     = flag.String("lakehouse.tenant.default-prefix", "", "Static S3 key prefix override")
+	tenantOrgIDHeader       = flag.String("lakehouse.tenant.orgid-header", "", "HTTP header for string tenant ID (default: X-Scope-OrgID)")
+	tenantMetricsFormat     = flag.String("lakehouse.tenant.metrics-format", "", "Tenant metrics label format: id, name, both (default: id)")
+	tenantAutoRegister      = flag.Bool("lakehouse.tenant.auto-register", false, "Auto-register unknown X-Scope-OrgID tenants")
+	tenantAliasSyncInterval = flag.Duration("lakehouse.tenant.alias-sync-interval", 0, "Fleet sync interval for runtime aliases (default: 30s)")
 )
 
 func main() {
@@ -222,6 +227,48 @@ func run(cfg *config.Config, addr string) {
 		}
 	}
 	store.SetTombstoneStore(tombstoneStore)
+
+	// --- Tenant resolver ---
+	resolverCfg := tenant.ResolverConfig{
+		MetricsFormat: tenant.ParseMetricsFormat(cfg.Tenant.MetricsFormat),
+		AutoRegister:  cfg.Tenant.AutoRegister,
+		OrgIDHeader:   cfg.Tenant.OrgIDHeader,
+	}
+	resolver := tenant.NewResolver(resolverCfg)
+
+	for orgID, target := range cfg.Tenant.Aliases {
+		if err := resolver.AddAlias(orgID, tenant.TenantID{
+			AccountID: target.AccountID,
+			ProjectID: target.ProjectID,
+		}); err != nil {
+			logger.Warnf("invalid tenant alias %q: %s", orgID, err)
+		}
+	}
+
+	persister := tenant.NewS3Persister(store.Pool(), cfg.AutoPrefix()+"_meta/tenant-aliases.json")
+	s3Aliases, err := persister.LoadAliases()
+	if err != nil {
+		logger.Warnf("failed to load tenant aliases from S3: %s", err)
+	} else {
+		for _, ae := range s3Aliases {
+			if _, exists := resolver.Resolve(ae.OrgID); !exists {
+				_ = resolver.AddAlias(ae.OrgID, tenant.TenantID{
+					AccountID: ae.AccountID,
+					ProjectID: ae.ProjectID,
+				})
+			}
+		}
+		if len(s3Aliases) > 0 {
+			logger.Infof("loaded %d tenant aliases from S3", len(s3Aliases))
+		}
+	}
+
+	if resolver.HasAliases() {
+		logger.Infof("tenant resolver active; aliases=%d, metrics_format=%s, auto_register=%v",
+			len(resolver.AllAliases()), cfg.Tenant.MetricsFormat, cfg.Tenant.AutoRegister)
+	}
+
+	store.Manifest().SetPrefixTemplate(cfg.Tenant.PrefixTemplate)
 
 	// --- Tenant stats ---
 	registry := stats.NewTenantRegistry(hostname())
@@ -381,10 +428,32 @@ func run(cfg *config.Config, addr string) {
 			cfg.SmartCache.MaxAge, cfg.SmartCache.SnapshotInterval)
 	}
 
-	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc)
+	// Tenant alias fleet sync
+	if resolver != nil && resolver.HasAliases() {
+		if disc := store.Discovery(); disc != nil {
+			aliasSyncCtx, aliasSyncCancel := context.WithCancel(context.Background())
+			aliasSyncPusher := tenant.NewSyncPusher(tenant.SyncPusherConfig{
+				Resolver: resolver,
+				GetPeers: func() []string { return disc.GetPeers() },
+				AuthKey:  cfg.Peer.AuthKey,
+				SelfAddr: addr,
+				Interval: cfg.Tenant.AliasSyncInterval,
+			})
+			aliasSyncPusher.Start(aliasSyncCtx)
+			defer aliasSyncCancel()
+			logger.Infof("tenant alias sync started; interval=%v", cfg.Tenant.AliasSyncInterval)
+		}
+	}
+
+	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister)
+
+	var handler http.Handler = mux
+	if resolver != nil && resolver.HasAliases() {
+		handler = resolver.Middleware(mux)
+	}
 
 	requestHandler := func(w http.ResponseWriter, r *http.Request) bool {
-		mux.ServeHTTP(w, r)
+		handler.ServeHTTP(w, r)
 		return true
 	}
 
@@ -432,7 +501,7 @@ func run(cfg *config.Config, addr string) {
 	logger.Infof("lakehouse-traces stopped")
 }
 
-func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator) *http.ServeMux {
+func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	metrics.NewInfoGauge("lakehouse_info", map[string]string{
@@ -569,6 +638,12 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		Mode:           "traces",
 		IndexedColumns: cfg.Traces.BloomColumns,
 	}))
+
+	// Tenant alias management API
+	if resolver != nil {
+		tenantHandler := tenant.NewHandler(resolver, persister, cfg.Peer.AuthKey)
+		tenantHandler.Register(mux)
+	}
 
 	// Lakehouse UI
 	uiHandler := ui.NewHandler(ui.HandlerConfig{
@@ -726,6 +801,18 @@ func applyFlags(cfg *config.Config) {
 	}
 	if s := *tenantDefaultPrefix; s != "" {
 		cfg.Tenant.DefaultPrefix = s
+	}
+	if s := *tenantOrgIDHeader; s != "" {
+		cfg.Tenant.OrgIDHeader = s
+	}
+	if s := *tenantMetricsFormat; s != "" {
+		cfg.Tenant.MetricsFormat = s
+	}
+	if *tenantAutoRegister {
+		cfg.Tenant.AutoRegister = true
+	}
+	if *tenantAliasSyncInterval > 0 {
+		cfg.Tenant.AliasSyncInterval = *tenantAliasSyncInterval
 	}
 }
 
