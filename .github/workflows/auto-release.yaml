@@ -269,9 +269,11 @@ jobs:
           git commit -m "chore: release metadata for ${VERSION} [skip release]"
           git push origin "$BRANCH"
 
-          PR_URL=$(gh pr create \
-            --title "chore: release metadata for ${VERSION} [skip release]" \
-            --body "$(cat <<EOF
+          for ATTEMPT in 1 2 3 4 5; do
+            echo "Attempt $ATTEMPT: creating release metadata PR..."
+            PR_URL=$(gh pr create \
+              --title "chore: release metadata for ${VERSION} [skip release]" \
+              --body "$(cat <<EOF
           ## Release ${VERSION}
 
           Auto-generated after ${VERSION} release. Updates:
@@ -288,9 +290,19 @@ jobs:
           ${NOTES}
           EOF
           )" \
-            --base main \
-            --head "$BRANCH" \
-            --label "release:patch")
+              --base main \
+              --head "$BRANCH" \
+              --label "release:patch" 2>&1) && break
+            echo "Attempt $ATTEMPT failed: $PR_URL"
+            if [ "$ATTEMPT" -lt 5 ]; then
+              DELAY=$((30 * ATTEMPT))
+              echo "Retrying in ${DELAY}s..."
+              sleep "$DELAY"
+            else
+              echo "::warning::Failed to create release metadata PR after 5 attempts. Branch $BRANCH was pushed — create PR manually."
+              exit 0
+            fi
+          done
 
           echo "Release metadata PR created: $PR_URL"
         env:
