@@ -497,11 +497,11 @@ func TestHandleJaegerTrace_WithStatusAndResourceAttrs(t *testing.T) {
 				"trace_id":             "xyz789",
 				"span_id":              "span-b",
 				"name":                 "cache hit",
-				"service.name":        "cache-service",
+				"service.name":         "cache-service",
 				"start_time_unix_nano": "1700000001000000000",
 				"duration_ns":          "100000",
-				"status_code":         "1", // STATUS_CODE_OK
-				"kind":                "2",
+				"status_code":          "1", // STATUS_CODE_OK
+				"kind":                 "2",
 			},
 		},
 	}

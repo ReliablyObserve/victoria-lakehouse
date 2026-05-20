@@ -12,10 +12,10 @@ func CompareGolden(goldenPath string, actual []byte) error {
 	expected, err := os.ReadFile(goldenPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			if err := os.MkdirAll(filepath.Dir(goldenPath), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(goldenPath), 0o750); err != nil {
 				return fmt.Errorf("creating golden dir: %w", err)
 			}
-			return os.WriteFile(goldenPath, actual, 0o644)
+			return os.WriteFile(goldenPath, actual, 0o600)
 		}
 		return err
 	}
@@ -35,10 +35,10 @@ func CompareGoldenJSON(goldenPath string, actual []byte) error {
 	expected, err := os.ReadFile(goldenPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			if err := os.MkdirAll(filepath.Dir(goldenPath), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(goldenPath), 0o750); err != nil {
 				return fmt.Errorf("creating golden dir: %w", err)
 			}
-			return os.WriteFile(goldenPath, actualNorm.Bytes(), 0o644)
+			return os.WriteFile(goldenPath, actualNorm.Bytes(), 0o600)
 		}
 		return err
 	}
@@ -56,6 +56,6 @@ func CompareGoldenJSON(goldenPath string, actual []byte) error {
 }
 
 func UpdateGolden(goldenPath string, data []byte) {
-	_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
-	_ = os.WriteFile(goldenPath, data, 0o644)
+	_ = os.MkdirAll(filepath.Dir(goldenPath), 0o750)
+	_ = os.WriteFile(goldenPath, data, 0o600)
 }

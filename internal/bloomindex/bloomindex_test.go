@@ -333,7 +333,7 @@ func TestUnmarshal_TooShort(t *testing.T) {
 func TestUnmarshalV1_TruncatedKey(t *testing.T) {
 	// v1 header: [version=1][count=1 as uint32][keyLen=1000 as uint16] but no key data
 	data := make([]byte, 7)
-	data[0] = 1 // version
+	data[0] = 1                                    // version
 	binary.LittleEndian.PutUint32(data[1:5], 1)    // count = 1
 	binary.LittleEndian.PutUint16(data[5:7], 1000) // keyLen = 1000 (truncated)
 	_, err := unmarshalV1(data)
