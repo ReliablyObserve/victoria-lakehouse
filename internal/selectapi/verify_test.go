@@ -8,6 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/vlstorage"
 )
@@ -183,5 +187,36 @@ func TestVerify_TracesMode_HasJaegerEndpoints(t *testing.T) {
 				t.Errorf("jaeger path %s returned 404 in traces mode; expected it to be registered", path)
 			}
 		})
+	}
+}
+
+// TestVerify_WrapVL_CreatesOTELSpan verifies that wrapVL creates an OTEL span
+// named "vl.handler.<path>" with http.method and http.path attributes.
+func TestVerify_WrapVL_CreatesOTELSpan(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	cfg := testConfig(config.ModeLogs)
+	h := NewHandler(mockStore{}, cfg)
+	handler := h.wrapVL(func(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest("GET", "/select/logsql/query?query=*", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	spans := exporter.GetSpans()
+	found := false
+	for _, s := range spans {
+		if strings.HasPrefix(s.Name, "vl.handler.") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("wrapVL should create a vl.handler.* span")
 	}
 }

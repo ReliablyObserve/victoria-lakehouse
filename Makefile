@@ -13,7 +13,7 @@ VL_REPO := https://github.com/VictoriaMetrics/VictoriaLogs.git
 VL_DIR_LOGS := deps/VictoriaLogs
 VL_DIR_TRACES := lakehouse-traces/deps/VictoriaLogs
 
-.PHONY: build build-logs build-traces test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces
+.PHONY: build build-logs build-traces bench test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces
 
 deps-logs: $(VL_DIR_LOGS)/go.mod
 
@@ -36,6 +36,9 @@ $(VL_DIR_TRACES)/go.mod:
 
 build: build-logs build-traces
 	go build -ldflags "-s -w" -o bin/healthcheck ./cmd/healthcheck
+
+bench:
+	go build -o bin/lakehouse-bench ./cmd/bench/
 
 build-logs: deps-logs
 	go build -ldflags "$(LDFLAGS)" -o bin/lakehouse-logs ./cmd/lakehouse-logs

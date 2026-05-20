@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- OTEL tracing: HTTP, query, and insert paths instrumented with OpenTelemetry spans
+- Benchmark CLI (`cmd/bench`): seed data and measure cold/warm/hot query latency with baseline JSON output
 - Phase 0 correctness gate: golden file test infrastructure, verification tests for all output surfaces (LogsQL, Jaeger, insert, metrics, stats, manifest, schema), E2E regression suite, Helm chart template tests, architecture and performance documentation
 
 ## [0.27.1] - 2026-05-20

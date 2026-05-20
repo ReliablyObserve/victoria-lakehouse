@@ -25,6 +25,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/stats"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/telemetry"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/ui"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/selectapi"
@@ -43,6 +44,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 const vtCompat = "0.8.2"
@@ -137,6 +140,13 @@ func run(cfg *config.Config, addr string) {
 		logger.Errorf("failed to initialize storage: %s", err)
 		os.Exit(1)
 	}
+
+	shutdownTelemetry, err := telemetry.Init(context.Background(), cfg.Telemetry, "lakehouse-traces")
+	if err != nil {
+		logger.Errorf("telemetry init failed: %s", err)
+		os.Exit(1)
+	}
+	defer func() { _ = shutdownTelemetry(context.Background()) }()
 
 	selfAZ := azdetect.Detect(context.Background(), azdetect.Options{
 		EnvVar:  cfg.Peer.AZEnvVar,
@@ -375,6 +385,9 @@ func run(cfg *config.Config, addr string) {
 	if resolver != nil && (resolver.HasAliases() || cfg.Tenant.AutoRegister) {
 		handler = resolver.Middleware(mux)
 	}
+	if cfg.Telemetry.Enabled {
+		handler = otelhttp.NewHandler(handler, "lakehouse-traces")
+	}
 
 	requestHandler := func(w http.ResponseWriter, r *http.Request) bool {
 		handler.ServeHTTP(w, r)
@@ -550,7 +563,11 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	}))
 
 	if cfg.InsertEnabled() || cfg.SelectEnabled() {
-		internalvlstorage.SetStorage(store, tombstoneStore)
+		if cfg.Telemetry.Enabled {
+			internalvlstorage.SetStorage(internalvlstorage.NewTracedStorage(store), tombstoneStore)
+		} else {
+			internalvlstorage.SetStorage(store, tombstoneStore)
+		}
 	}
 
 	if cfg.SelectEnabled() {
