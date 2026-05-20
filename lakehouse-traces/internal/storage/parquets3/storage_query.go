@@ -221,6 +221,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 
 	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
 	bloomChecks := s.buildBloomChecks(queryStr)
+	pdf := buildPushDownFilter(queryStr, s.registry)
 
 	var collectedTraceIDs []string
 	var traceIDsPtr *[]string
@@ -240,6 +241,11 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 
 		if s.bloomFilterSkip(f, rg, bloomChecks) {
 			metrics.ParquetRowGroupsSkipped.Inc("bloom")
+			continue
+		}
+
+		if pdf != nil && !rowGroupMatchesFilter(f, rg, pdf) {
+			metrics.ParquetRowGroupsSkipped.Inc("pushdown")
 			continue
 		}
 
