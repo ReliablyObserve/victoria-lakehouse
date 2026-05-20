@@ -102,7 +102,6 @@ func runAtConcurrency(target string, queryURLs []string, concurrency int, dur ti
 
 				if resp.StatusCode == http.StatusTooManyRequests {
 					atomic.AddInt64(&rejected429, 1)
-					atomic.AddInt64(&errors, 1)
 					continue
 				}
 
