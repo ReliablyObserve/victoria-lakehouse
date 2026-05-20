@@ -198,7 +198,73 @@ func TestTracedStorage_HasDataForRange_NoSpan(t *testing.T) {
 	}
 }
 
+func TestTracedStorage_GetStreamFieldNames_CreatesSpan(t *testing.T) {
+	exporter := setupTracer(t)
+	mock := &mockStorage{}
+	ts := NewTracedStorage(mock)
+	_, _ = ts.GetStreamFieldNames(context.Background(), nil, nil)
+	if !mock.getStreamFieldNamesCalled {
+		t.Fatal("inner not called")
+	}
+	spans := exporter.GetSpans()
+	if len(spans) != 1 || spans[0].Name != "storage.get_stream_field_names" {
+		t.Errorf("unexpected spans: %v", spans)
+	}
+}
+
+func TestTracedStorage_GetStreamFieldValues_CreatesSpan(t *testing.T) {
+	exporter := setupTracer(t)
+	mock := &mockStorage{}
+	ts := NewTracedStorage(mock)
+	_, _ = ts.GetStreamFieldValues(context.Background(), nil, nil, "f", 10)
+	if !mock.getStreamFieldValuesCalled {
+		t.Fatal("inner not called")
+	}
+	spans := exporter.GetSpans()
+	if len(spans) != 1 || spans[0].Name != "storage.get_stream_field_values" {
+		t.Errorf("unexpected spans: %v", spans)
+	}
+}
+
+func TestTracedStorage_GetStreams_CreatesSpan(t *testing.T) {
+	exporter := setupTracer(t)
+	mock := &mockStorage{}
+	ts := NewTracedStorage(mock)
+	_, _ = ts.GetStreams(context.Background(), nil, nil, 10)
+	if !mock.getStreamsCalled {
+		t.Fatal("inner not called")
+	}
+	spans := exporter.GetSpans()
+	if len(spans) != 1 || spans[0].Name != "storage.get_streams" {
+		t.Errorf("unexpected spans: %v", spans)
+	}
+}
+
+func TestTracedStorage_GetStreamIDs_CreatesSpan(t *testing.T) {
+	exporter := setupTracer(t)
+	mock := &mockStorage{}
+	ts := NewTracedStorage(mock)
+	_, _ = ts.GetStreamIDs(context.Background(), nil, nil, 10)
+	if !mock.getStreamIDsCalled {
+		t.Fatal("inner not called")
+	}
+	spans := exporter.GetSpans()
+	if len(spans) != 1 || spans[0].Name != "storage.get_stream_ids" {
+		t.Errorf("unexpected spans: %v", spans)
+	}
+}
+
+func TestTracedStorage_Close_Delegates(t *testing.T) {
+	mock := &mockStorage{}
+	ts := NewTracedStorage(mock)
+	if err := ts.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !mock.closeCalled {
+		t.Fatal("inner Close not called")
+	}
+}
+
 func TestTracedStorage_ImplementsInterface(t *testing.T) {
-	// Compile-time check (also in traced_storage.go).
 	var _ storage.Storage = (*TracedStorage)(nil)
 }
