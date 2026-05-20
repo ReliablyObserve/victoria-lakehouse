@@ -89,11 +89,17 @@ func (r *Report) ComputePass() {
 	if r.VerifyResults != nil && !r.VerifyResults.Pass {
 		r.Pass = false
 	}
-	// Concurrent: p95 at C>=50 must be <= 2x p95 at lowest concurrency (baseline).
 	if len(r.ConcurrentResults) > 0 {
+		minConc := r.ConcurrentResults[0].Concurrency
 		baselineP95 := r.ConcurrentResults[0].P95Ms
 		for _, cr := range r.ConcurrentResults {
-			if cr.Concurrency >= 50 && cr.P95Ms > 2*baselineP95 {
+			if cr.Concurrency < minConc {
+				minConc = cr.Concurrency
+				baselineP95 = cr.P95Ms
+			}
+		}
+		for _, cr := range r.ConcurrentResults {
+			if cr.Concurrency >= 50 && baselineP95 > 0 && cr.P95Ms > 2*baselineP95 {
 				r.Pass = false
 				break
 			}
