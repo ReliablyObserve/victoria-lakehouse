@@ -62,18 +62,27 @@ type PartitionMeta struct {
 	LabelsAvailable bool      `json:"labels_available,omitempty"`
 }
 
+// partitionEntry holds a parsed partition key with pre-computed time bounds
+// for use in the sorted partition index.
+type partitionEntry struct {
+	key   string    // "dt=2026-01-01/hour=00"
+	start time.Time // parsed partition start
+	end   time.Time // start + 1 hour
+}
+
 type Manifest struct {
-	mu             sync.RWMutex
-	files          map[string][]FileInfo // "dt=2026-05-02/hour=10" -> files
-	partitionMeta  map[string]*PartitionMeta
-	minTime        time.Time
-	maxTime        time.Time
-	totalFiles     int
-	totalBytes     int64
-	lastRefresh    time.Time
-	prefix         string
-	bucket         string
-	prefixTemplate string
+	mu               sync.RWMutex
+	files            map[string][]FileInfo // "dt=2026-05-02/hour=10" -> files
+	sortedPartitions []partitionEntry
+	partitionMeta    map[string]*PartitionMeta
+	minTime          time.Time
+	maxTime          time.Time
+	totalFiles       int
+	totalBytes       int64
+	lastRefresh      time.Time
+	prefix           string
+	bucket           string
+	prefixTemplate   string
 }
 
 func New(bucket, prefix string) *Manifest {
@@ -186,6 +195,7 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 		}
 	}
 	m.files = files
+	m.rebuildIndex()
 	m.minTime = minT
 	m.maxTime = maxT
 	m.totalFiles = totalFiles
@@ -246,16 +256,19 @@ func (m *Manifest) GetFilesForRange(startNs, endNs int64) []FileInfo {
 	start := time.Unix(0, startNs)
 	end := time.Unix(0, endNs)
 
+	// Binary search: find first partition whose end is after query start.
+	idx := sort.Search(len(m.sortedPartitions), func(i int) bool {
+		return m.sortedPartitions[i].end.After(start)
+	})
+
 	var result []FileInfo
-	for partition, files := range m.files {
-		t, err := parsePartitionTime(partition)
-		if err != nil {
-			continue
+	for i := idx; i < len(m.sortedPartitions); i++ {
+		p := &m.sortedPartitions[i]
+		// Stop once partition start is at or after query end.
+		if !p.start.Before(end) {
+			break
 		}
-		partEnd := t.Add(time.Hour)
-		if t.Before(end) && partEnd.After(start) {
-			result = append(result, files...)
-		}
+		result = append(result, m.files[p.key]...)
 	}
 
 	sort.Slice(result, func(i, j int) bool {
@@ -263,6 +276,29 @@ func (m *Manifest) GetFilesForRange(startNs, endNs int64) []FileInfo {
 	})
 
 	return result
+}
+
+// rebuildIndex rebuilds the sorted partition index from m.files.
+// Must be called while holding the write lock (m.mu).
+func (m *Manifest) rebuildIndex() {
+	// Reuse existing slice capacity.
+	m.sortedPartitions = m.sortedPartitions[:0]
+
+	for key := range m.files {
+		t, err := parsePartitionTime(key)
+		if err != nil {
+			continue
+		}
+		m.sortedPartitions = append(m.sortedPartitions, partitionEntry{
+			key:   key,
+			start: t,
+			end:   t.Add(time.Hour),
+		})
+	}
+
+	sort.Slice(m.sortedPartitions, func(i, j int) bool {
+		return m.sortedPartitions[i].start.Before(m.sortedPartitions[j].start)
+	})
 }
 
 func (m *Manifest) TotalFiles() int {
@@ -353,6 +389,7 @@ func (m *Manifest) RemoveFile(partition string, key string) {
 			if len(m.files[partition]) == 0 {
 				delete(m.files, partition)
 			}
+			m.rebuildIndex()
 			return
 		}
 	}
@@ -365,6 +402,7 @@ func (m *Manifest) AddFile(partition string, fi FileInfo) {
 	m.files[partition] = append(m.files[partition], fi)
 	m.totalFiles++
 	m.totalBytes += fi.Size
+	m.rebuildIndex()
 	metrics.ManifestFiles.Set(int64(m.totalFiles))
 	metrics.ManifestBytes.Set(m.totalBytes)
 
@@ -468,6 +506,7 @@ func (m *Manifest) LoadFrom(path string) error {
 
 	m.mu.Lock()
 	m.files = snap.Files
+	m.rebuildIndex()
 	m.totalFiles = snap.TotalFiles_
 	m.totalBytes = snap.TotalBytes_
 	if snap.MinTimeNs != 0 {

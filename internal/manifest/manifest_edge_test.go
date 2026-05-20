@@ -362,6 +362,7 @@ func TestGetFilesForRange_InvalidPartitionSkipped(t *testing.T) {
 	m.minTime = time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
 	m.maxTime = time.Date(2026, 5, 1, 11, 0, 0, 0, time.UTC)
 	m.totalFiles = 2
+	m.rebuildIndex()
 	m.mu.Unlock()
 
 	start := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC).UnixNano()

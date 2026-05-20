@@ -114,6 +114,7 @@ func TestManifest_GetFilesForRange(t *testing.T) {
 	m.minTime = may2.Add(10 * time.Hour)
 	m.maxTime = may2.Add(15 * time.Hour)
 	m.totalFiles = 4
+	m.rebuildIndex()
 	m.mu.Unlock()
 
 	// Query for hour 10-12 should get 3 files (hour=10 and hour=11)
