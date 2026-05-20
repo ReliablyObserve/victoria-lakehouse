@@ -89,7 +89,7 @@ Before fetching a file from the cache, `bloomindex.Index.MayContain(keys, column
 
 ```mermaid
 flowchart TD
-    A["exact-match filter (field:=\"value\")"] --> B["bloomindex.MayContain(fileKeys, column, value)"]
+    A["exact-match filter (field:=value)"] --> B["bloomindex.MayContain(fileKeys, column, value)"]
     B -->|bloom says NO| C["skip file (no S3/cache access)"]
     B -->|bloom says MAYBE| D["proceed to cache lookup → row verify"]
 ```
