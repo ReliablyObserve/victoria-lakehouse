@@ -99,12 +99,16 @@ func TestVerifySchema_TracesProfile_AllPromotedFields(t *testing.T) {
 	}
 }
 
-// TestVerifySchema_BloomEnabled_Logs verifies that service.name and trace_id
+// TestVerifySchema_BloomEnabled_Logs verifies that high-cardinality fields
 // have HasBloom=true in the logs profile.
 func TestVerifySchema_BloomEnabled_Logs(t *testing.T) {
 	r := NewRegistry(LogsProfile)
 
-	bloomFields := []string{"service.name", "trace_id"}
+	bloomFields := []string{
+		"service.name", "trace_id",
+		"host.name", "k8s.namespace.name", "k8s.pod.name",
+		"k8s.deployment.name", "deployment.environment",
+	}
 	for _, name := range bloomFields {
 		t.Run(name, func(t *testing.T) {
 			m := r.ResolveToParquet(name)
@@ -118,7 +122,7 @@ func TestVerifySchema_BloomEnabled_Logs(t *testing.T) {
 	}
 
 	// Verify non-bloom fields do NOT have bloom enabled.
-	nonBloomFields := []string{"_msg", "level", "severity_number", "span_id", "host.name"}
+	nonBloomFields := []string{"_msg", "level", "severity_number", "span_id"}
 	for _, name := range nonBloomFields {
 		t.Run("no_bloom_"+name, func(t *testing.T) {
 			m := r.ResolveToParquet(name)
@@ -138,12 +142,12 @@ func TestVerifySchema_BloomEnabled_Logs(t *testing.T) {
 			bloomCount++
 		}
 	}
-	if bloomCount != 2 {
-		t.Errorf("logs profile: bloom column count = %d, want 2 (service.name, trace_id)", bloomCount)
+	if bloomCount != 7 {
+		t.Errorf("logs profile: bloom column count = %d, want 7", bloomCount)
 	}
 }
 
-// TestVerifySchema_BloomEnabled_Traces verifies that trace_id and service.name
+// TestVerifySchema_BloomEnabled_Traces verifies that high-cardinality fields
 // have HasBloom=true in the traces profile.
 func TestVerifySchema_BloomEnabled_Traces(t *testing.T) {
 	r := NewRegistry(TracesProfile)
@@ -166,6 +170,15 @@ func TestVerifySchema_BloomEnabled_Traces(t *testing.T) {
 		t.Error("traces profile: service.name (resource_attr:service.name) HasBloom = false, want true")
 	}
 
+	// span.name is looked up by its parquet column name.
+	m = r.ResolveFromParquet("span.name")
+	if m == nil {
+		t.Fatal("ResolveFromParquet(span.name) = nil")
+	}
+	if !m.HasBloom {
+		t.Error("traces profile: span.name HasBloom = false, want true")
+	}
+
 	// Verify exact bloom count.
 	bloomCount := 0
 	for _, col := range r.PromotedColumns() {
@@ -173,8 +186,8 @@ func TestVerifySchema_BloomEnabled_Traces(t *testing.T) {
 			bloomCount++
 		}
 	}
-	if bloomCount != 2 {
-		t.Errorf("traces profile: bloom column count = %d, want 2 (trace_id, service.name)", bloomCount)
+	if bloomCount != 3 {
+		t.Errorf("traces profile: bloom column count = %d, want 3 (trace_id, service.name, span.name)", bloomCount)
 	}
 }
 
