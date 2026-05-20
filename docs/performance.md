@@ -5,170 +5,161 @@ sidebar_position: 14
 
 # Performance
 
-## Performance Targets
+## Latency Targets
 
-| Operation | Target p95 | Notes |
-|---|---|---|
-| Manifest "nothing here" fast path | <1ms | Query range outside cold data |
-| Point query (trace_id, bloom filter) | <100ms | Single bloom filter lookup |
-| Time-range scan (1h) | <500ms | Row group stats pruning |
-| stats_query (aggregation) | <300ms | Aggregation over matched data |
-| field_names / field_values | <1ms | Label index lookup |
+End-to-end latency from HTTP request to first response byte. "Cold" means L1/L2 cache empty (S3 fetch required). "Warm" means L2 disk hit (no S3 call).
 
-## Query Latency Profile
+| Query type | Lakehouse cold | Lakehouse warm | Loki (S3+TSDB) | VL/VT (disk) |
+|---|---|---|---|---|
+| Exact filter (trace_id) | <2s | <500ms | 3–8s | 100–300ms |
+| Exact filter (service_name) | <1.5s | <400ms | 2–5s | 80–200ms |
+| Wildcard / hits volume graph | <1s | <300ms | 2–5s | 50–200ms |
+| stats_query_range | <2s | <1s | 3–10s | 100–400ms |
+| field_names / field_values | <500ms | <200ms | 1–3s | 20–80ms |
+| Manifest fast path (no data) | <1ms | <1ms | 50–200ms | <1ms |
 
-```mermaid
-graph LR
-    subgraph "≤1ms"
-    A[Manifest Fast Path]
-    B[field_names / field_values]
-    end
-    subgraph "≤100ms"
-    C[Bloom Point Query<br/>trace_id lookup]
-    end
-    subgraph "≤500ms"
-    D[Time Range Scan<br/>1h window]
-    E[stats_query<br/>Aggregation]
-    end
+VL/VT values are reference baselines for hot-tier data served from local disk. Lakehouse is not intended to match disk latency; it targets 2–5x better than Loki on equivalent cold data.
 
-    style A fill:#4CAF50,color:#fff
-    style B fill:#4CAF50,color:#fff
-    style C fill:#8BC34A,color:#fff
-    style D fill:#FF9800,color:#fff
-    style E fill:#FF9800,color:#fff
-```
+---
 
-## Running Benchmarks
+## Benchmark Methodology
 
-### Quick start
+All benchmarks run locally against MinIO (Docker). MinIO eliminates S3 network variance and gives a reproducible baseline. S3 estimates are derived by adding the first-byte overhead formula below.
 
-```bash
-# Start MinIO
-docker run -d -p 9000:9000 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin minio/minio server /data
+### Three data tiers
 
-# Generate test data
-go run ./cmd/datagen --endpoint=http://localhost:9000 --logs=50000 --hours-back=48
-
-# Run latency benchmarks
-go run ./cmd/loadtest -mode=latency -target=http://localhost:9428
-
-# Run file size / compression benchmarks
-go run ./cmd/loadtest -mode=benchmark -output=benchmark-results.json
-```
+| Tier | File count | Approx rows | Target use |
+|---|---|---|---|
+| Small | 500 files | ~250K rows | Unit / CI gate |
+| Medium | 10K files | ~5M rows | Integration / nightly |
+| Large | 50K files | ~25M rows | Full load test |
 
 ### Benchmark modes
 
-| Mode | Description |
-|---|---|
-| `latency` | Measures p50/p95/p99 for each query type against targets |
-| `throughput` | Stress tests insert and query concurrency |
-| `benchmark` | File size × row group × compression matrix |
-| `all` | Runs latency + throughput |
+```bash
+# Start MinIO
+docker run -d -p 9000:9000 \
+  -e MINIO_ROOT_USER=minioadmin \
+  -e MINIO_ROOT_PASSWORD=minioadmin \
+  minio/minio server /data
 
-## File Size Optimization
+# Generate test data (medium tier example)
+go run ./cmd/datagen \
+  --endpoint=http://localhost:9000 \
+  --logs=5000000 \
+  --hours-back=168
 
-The benchmark suite tests these combinations:
+# Latency benchmark (reports p50/p95/p99, fails if targets missed)
+go run ./cmd/loadtest -mode=latency -target=http://localhost:9428
 
-| Target Size | Row Count | Row Group Sizes Tested |
+# Throughput stress (insert + query concurrency)
+go run ./cmd/loadtest -mode=throughput -target=http://localhost:9428
+
+# File size / compression matrix
+go run ./cmd/loadtest -mode=benchmark -output=results.json
+
+# All modes in sequence
+go run ./cmd/loadtest -mode=all -target=http://localhost:9428
+```
+
+Nightly CI runs the full suite via `.github/workflows/nightly-loadtest.yaml`. Latency benchmarks fail the workflow if targets are exceeded.
+
+### S3 latency extrapolation
+
+```
+same-region p95 estimate = minio_p95 + 80ms
+
+For scans touching N row groups with concurrency C:
+  s3_scan_p95 = minio_scan_p95 + (N × 80ms / C)
+
+Example: 10 row groups, default C=128
+  s3_scan_p95 ≈ minio_scan_p95 + 6ms
+```
+
+---
+
+## Tuning Guide
+
+### Query concurrency and parallelism
+
+| Setting | Default | Impact |
 |---|---|---|
-| 1 MB | ~500 rows | 1K |
-| 5 MB | ~2,500 rows | 1K, 5K |
-| 10 MB | ~5,000 rows | 1K, 5K, 10K |
-| 50 MB | ~25,000 rows | 1K, 5K, 10K, 50K |
-| 100 MB | ~50,000 rows | 1K, 5K, 10K, 50K |
+| `query.max_concurrent` | 32 | Max simultaneous queries. Excess requests return HTTP 429. Increase on multi-core nodes with high query rate. |
+| `query.file_workers` | 8 | Parquet files processed in parallel per query. Higher values reduce latency on wide time ranges at the cost of memory. |
+| `query.timeout` | 30s | Per-request deadline. Increase for large time-range scans; keep low for interactive dashboards. |
+| `query.slow_threshold` | 5s | Queries exceeding this are logged as slow. Set to 0 to disable. |
 
-**Recommendation:** 10-50MB files with 10K row groups provide the best balance of:
-- S3 GET efficiency (fewer requests per query)
-- Row group stats pruning (skip irrelevant groups)
-- Write throughput (reasonable flush frequency)
+### Cache sizing
 
-## Compression Ratios
+| Setting | Default | Impact |
+|---|---|---|
+| `cache.memory_limit` | 512MB | L1 in-process LRU. Should hold the working set of hot Parquet footers and bloom filters. Increase to reduce L2 reads. |
+| `cache.disk_path` | `/data/lakehouse/cache` | L2 disk cache location. Use a fast local SSD (gp3 or io1). |
+| `cache.disk_limit` | 50GB | L2 LRU cap. Size to cover the most frequently queried time window. |
+| `cache.eviction_watermark` | 0.8 | L2 eviction starts at 80% full. Lower to be more aggressive. |
 
-Measured on **real E2E production data** (377K log rows, 159K trace rows from Docker compose).
+Smart cache TTL settings (in `smart_cache`):
 
-| ZSTD Level | Write Speed | Logs Ratio | Traces Ratio | Use Case |
-|---|---|---|---|---|
-| 1 (Fastest) | ~340 MB/s | 4.43x | 6.90x | High ingest rate (>500 MB/s) |
-| 3 | ~320 MB/s | 4.60x | 7.93x | Maximum write speed |
-| **7 (Default)** | **~260 MB/s** | **6.13x** | **9.39x** | **Best cost/performance** |
-| 11+ (Best) | ~63 MB/s | 6.23x | 9.67x | Never recommended (<2% gain, 5x slower) |
+| Setting | Default | Impact |
+|---|---|---|
+| `smart_cache.max_age` | 24h | Entry TTL. Hot entries and pinned entries survive past this. |
+| `smart_cache.hot_access_threshold` | 3 | Accesses within `hot_window` to mark an entry hot. |
+| `smart_cache.hot_window` | 10m | Rolling window for hot detection. |
+| `smart_cache.target_hours` | 24 | Sizing target for automatic cache budget estimation. |
+| `smart_cache.query_grace_period` | 5m | Pin grace period after query completes. |
 
-Read latency is nearly flat across all levels (1.3x variation). Level 7 saves
-**$50/month per 2 TB/day** vs level 3. See [ZSTD Benchmark](zstd-compression-benchmark.md).
+### Insert path
 
-**Column breakdown** (typical log data):
-- `body` (text): 2-4x compression (high entropy)
-- `service.name`: 50-200x (low cardinality, dictionary encoding)
-- `timestamp_unix_nano`: 10-50x (delta encoding)
-- `trace_id`: 1.5-3x (random, high entropy)
-- `k8s.*` fields: 20-100x (low cardinality)
+| Setting | Default | Impact |
+|---|---|---|
+| `insert.flush_interval` | 60s | How often partition buffers are flushed to S3. Lower reduces tail latency to S3; higher improves write throughput and compression. |
+| `insert.target_file_size` | 128MB | Compressed size threshold that triggers an early flush. Tune with `insert.row_group_size` together. |
+| `insert.row_group_size` | 10000 | Rows per Parquet row group. Larger row groups improve column stats pruning; smaller groups reduce memory per flush. |
+| `insert.compression_level` | 7 | ZSTD compression level. Level 7 gives 6x+ compression at ~260 MB/s write speed. Level 3 is 5x faster writes with ~25% less compression. Level 11+ gives <2% gain at 5x slower writes — not recommended. |
+| `insert.wal_enabled` | false | Enable WAL for crash recovery. Required for `ack_mode: committed`. |
+| `insert.wal_max_bytes` | 512MB | WAL size cap. Writes block when full. |
 
-## MinIO vs S3 Latency
+### Bloom index
 
-MinIO provides a local baseline. Real S3 adds network overhead:
+Bloom columns are configured per mode. Adding columns increases index memory and write overhead but enables file-skip for exact-match queries on that field.
 
-```
-Estimated S3 latency = MinIO latency + S3 first-byte overhead
-
-Where:
-  MinIO first-byte: 1-5ms (local network)
-  S3 first-byte:    50-150ms (us-east-1, same region)
-  S3 cross-region:  100-300ms
-```
-
-**Extrapolation formula:**
-
-```
-s3_p95 = minio_p95 + 80ms  (same-region estimate)
+```yaml
+logs:
+  bloom_columns: [trace_id, service.name]
+traces:
+  bloom_columns: [trace_id, service.name]
 ```
 
-For multi-GET queries (scanning multiple row groups):
+For high-cardinality fields (trace_id), bloom filters skip the vast majority of files on point lookups, reducing cold latency from seconds to the cost of a single file fetch.
 
-```
-s3_scan_p95 = minio_scan_p95 + (num_gets × 80ms / concurrency)
-```
+### File size and row group recommendations
 
-With default concurrency=128, a query touching 10 row groups:
-```
-s3_scan_p95 ≈ minio_scan_p95 + (10 × 80 / 128) ≈ minio + 6ms
-```
+| Target file size | Row group size | Use case |
+|---|---|---|
+| 10 MB | 1K–5K rows | Low ingest rate, many small tenants |
+| 50 MB | 10K rows | Recommended default: best balance of S3 GET efficiency and row group stats pruning |
+| 100 MB | 10K–50K rows | High ingest rate, large time-range queries |
 
-## Cost Projections
+Larger files reduce S3 LIST and GET request counts. Larger row groups improve timestamp statistics pruning for time-range scans.
 
-### Storage cost
+---
 
-```
-Monthly storage = ingestion_gb_day × retention_days × (1/compression_ratio) × $0.023/GB
+## Compression Reference
 
-Example (500 GB/day, 365 day retention, 6x compression):
-  = 500 × 365 × (1/6) × $0.023 = $699/month
-```
+Measured on production-realistic data (ZSTD, logs and traces).
 
-### Request cost
-
-```
-Monthly requests = queries_per_day × 30 × avg_gets_per_query × $0.0004/1000
-
-Example (10K queries/day, 5 GETs each):
-  = 10,000 × 30 × 5 × $0.0004/1000 = $0.60/month
-```
-
-### Total cost comparison
-
-| Scenario | Hot (EBS) | Cold (S3) | Total |
+| ZSTD Level | Write speed | Logs ratio | Traces ratio |
 |---|---|---|---|
-| 100 GB/day, 30d hot + 335d cold | $1,080/mo | $168/mo | $1,248/mo |
-| 500 GB/day, 30d hot + 335d cold | $5,400/mo | $839/mo | $6,239/mo |
-| 1 TB/day, 30d hot + 335d cold | $10,800/mo | $1,678/mo | $12,478/mo |
+| 1 | ~340 MB/s | 4.4x | 6.9x |
+| 3 | ~320 MB/s | 4.6x | 7.9x |
+| **7 (default)** | **~260 MB/s** | **6.1x** | **9.4x** |
+| 11+ | ~63 MB/s | 6.2x | 9.7x |
 
-**EBS cost:** $0.08/GB/month × uncompressed hot data (VL handles its own compression)
-**S3 cost:** $0.023/GB/month × compressed cold data
+Read latency is nearly flat across levels (1.3x variation). Level 7 is the default; level 11+ is not recommended (< 2% gain at 5x write cost).
 
-## CI Integration
-
-The nightly workflow (`.github/workflows/nightly-loadtest.yaml`) runs:
-1. Latency benchmarks against performance targets
-2. Throughput stress tests
-3. File size / compression matrix
-
-Results are uploaded as workflow artifacts. The latency benchmarks fail the workflow if targets are not met.
+Column breakdown for typical log data:
+- `body` (free text): 2–4x
+- `service.name` (low cardinality): 50–200x
+- `timestamp_unix_nano` (monotone): 10–50x
+- `trace_id` (random): 1.5–3x
+- `k8s.*` fields (low cardinality): 20–100x
