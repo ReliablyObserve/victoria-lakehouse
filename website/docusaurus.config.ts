@@ -263,7 +263,7 @@ const config: Config = {
     prism: {
       theme: prismThemes.github,
       darkTheme: prismThemes.vsDark,
-      additionalLanguages: ['bash', 'yaml', 'json', 'sql', 'go'],
+      additionalLanguages: ['bash', 'yaml', 'json', 'sql', 'go', 'toml'],
     },
   } satisfies Preset.ThemeConfig,
 };
