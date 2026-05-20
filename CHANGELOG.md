@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.1] - 2026-05-20
+
 ### Added
 - Per-tenant observability: string-based tenant support for logs and traces, per-tenant stats API, enhanced tenants dashboard with row count accuracy
 - Query performance optimization design spec (Phase 0–3 roadmap)
