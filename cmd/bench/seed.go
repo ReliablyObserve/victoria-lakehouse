@@ -59,7 +59,7 @@ func seedData(cfg seedConfig) error {
 		if err != nil {
 			return fmt.Errorf("insert batch at %d: %w", sent, err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode >= 400 {
 			return fmt.Errorf("insert returned %d at batch %d", resp.StatusCode, sent)
 		}

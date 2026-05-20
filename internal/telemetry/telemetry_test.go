@@ -18,7 +18,7 @@ func TestInit_Disabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init returned error: %v", err)
 	}
-	defer shutdown(ctx)
+	defer func() { _ = shutdown(ctx) }()
 
 	// With disabled config, the global provider should be noop.
 	tp := otel.GetTracerProvider()
@@ -47,7 +47,7 @@ func TestInit_Enabled_NoEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init returned error: %v", err)
 	}
-	defer shutdown(ctx)
+	defer func() { _ = shutdown(ctx) }()
 
 	// With enabled config and no endpoint, we should get an SDK provider
 	// (not noop) that records spans via the discard exporter.
@@ -79,7 +79,7 @@ func TestTracer_ReturnsNamedTracer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init returned error: %v", err)
 	}
-	defer shutdown(ctx)
+	defer func() { _ = shutdown(ctx) }()
 
 	tracer := Tracer()
 	if tracer == nil {
@@ -132,7 +132,7 @@ func TestInit_ZeroSampleRate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init returned error: %v", err)
 	}
-	defer shutdown(ctx)
+	defer func() { _ = shutdown(ctx) }()
 
 	tracer := Tracer()
 	_, span := tracer.Start(ctx, "sample-span")
@@ -153,7 +153,7 @@ func TestInit_WithBatchTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init returned error: %v", err)
 	}
-	defer shutdown(ctx)
+	defer func() { _ = shutdown(ctx) }()
 
 	tracer := Tracer()
 	_, span := tracer.Start(ctx, "batch-span")

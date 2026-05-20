@@ -89,7 +89,7 @@ func benchmarkSingleQuery(client *http.Client, rawURL string, runs int) float64 
 			continue
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		latencies = append(latencies, float64(elapsed.Milliseconds()))
 	}
 	if len(latencies) == 0 {

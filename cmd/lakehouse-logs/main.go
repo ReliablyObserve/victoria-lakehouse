@@ -142,7 +142,7 @@ func run(cfg *config.Config, addr string) {
 		logger.Errorf("telemetry init failed: %s", err)
 		os.Exit(1)
 	}
-	defer shutdownTelemetry(context.Background())
+	defer func() { _ = shutdownTelemetry(context.Background()) }()
 
 	selfAZ := azdetect.Detect(context.Background(), azdetect.Options{
 		EnvVar:  cfg.Peer.AZEnvVar,
