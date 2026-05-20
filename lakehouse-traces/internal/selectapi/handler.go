@@ -3,6 +3,7 @@ package selectapi
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/logsql"
@@ -73,6 +74,7 @@ func (h *Handler) wrapVL(fn func(ctx context.Context, w http.ResponseWriter, r *
 			http.Error(w, "too many concurrent queries, please retry later", http.StatusTooManyRequests)
 			return
 		}
+		normalizeTimeParams(r)
 		start := time.Now()
 		ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 		defer cancel()
@@ -83,6 +85,30 @@ func (h *Handler) wrapVL(fn func(ctx context.Context, w http.ResponseWriter, r *
 			metrics.SlowQueriesTotal.Inc()
 			logger.Warnf("slow query: path=%s duration=%s query=%s", r.URL.Path, dur, r.FormValue("query"))
 		}
+	}
+}
+
+func normalizeTimeParams(r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		return
+	}
+	changed := false
+	for _, key := range []string{"start", "end", "time"} {
+		v := r.Form.Get(key)
+		if v == "" {
+			continue
+		}
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			continue
+		}
+		if n > 1e12 {
+			r.Form.Set(key, strconv.FormatInt(n/1000, 10))
+			changed = true
+		}
+	}
+	if changed {
+		r.URL.RawQuery = r.Form.Encode()
 	}
 }
 

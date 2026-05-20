@@ -808,3 +808,51 @@ func TestHandleJaegerServices_FallbackToResourceAttr(t *testing.T) {
 		t.Errorf("expected [otel-svc], got %v", resp.Data)
 	}
 }
+
+func TestNormalizeTimeParams(t *testing.T) {
+	tests := []struct {
+		name      string
+		query     string
+		wantStart string
+		wantEnd   string
+	}{
+		{
+			name:      "millisecond epochs converted to seconds",
+			query:     "start=1779224481316&end=1779231681365&query=*",
+			wantStart: "1779224481",
+			wantEnd:   "1779231681",
+		},
+		{
+			name:      "second epochs unchanged",
+			query:     "start=1779224481&end=1779231681&query=*",
+			wantStart: "1779224481",
+			wantEnd:   "1779231681",
+		},
+		{
+			name:      "ISO timestamps unchanged",
+			query:     "start=2026-05-19T00:00:00Z&end=2026-05-20T00:00:00Z&query=*",
+			wantStart: "2026-05-19T00:00:00Z",
+			wantEnd:   "2026-05-20T00:00:00Z",
+		},
+		{
+			name:      "relative durations unchanged",
+			query:     "start=1h&query=*",
+			wantStart: "1h",
+			wantEnd:   "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/select/logsql/hits?"+tc.query, nil)
+			normalizeTimeParams(req)
+			if got := req.FormValue("start"); got != tc.wantStart {
+				t.Errorf("start = %q, want %q", got, tc.wantStart)
+			}
+			if tc.wantEnd != "" {
+				if got := req.FormValue("end"); got != tc.wantEnd {
+					t.Errorf("end = %q, want %q", got, tc.wantEnd)
+				}
+			}
+		})
+	}
+}

@@ -307,7 +307,7 @@ services:
       VL_BACKEND_URL: "http://victorialogs:9428"
     command:
       - "-label-style=underscores"
-      - "-metadata-field-mode=native"
+      - "-metadata-field-mode=translated"
       - "-emit-structured-metadata=true"
       - "-stream-fields=service_name,k8s_namespace_name,k8s_pod_name,k8s_deployment_name,deployment_environment"
       - "-extra-label-fields=level,cloud_region"
@@ -319,6 +319,7 @@ services:
       - "-cold-boundary=24h"
       - "-cold-overlap=1h"
       - "-cold-manifest-refresh=30s"
+      - "-server.admin-auth-token=dev-token"
     depends_on:
       lakehouse-logs:
         condition: service_healthy
