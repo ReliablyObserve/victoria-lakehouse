@@ -15,24 +15,23 @@ Two binaries are produced: `lakehouse-logs` and `lakehouse-traces`. Each is iden
 
 ## Query Execution Flow
 
-```
-HTTP request
-  └─ http.ServeMux (Register)
-       └─ wrapVL (semaphore: max-concurrent, context timeout)
-            └─ VL handler (logsql.ProcessQueryRequest etc.)
-                 └─ vlstorage.adapter.RunQuery
-                      └─ storage.Storage.RunQuery
-                           └─ manifest.HasDataForRange
-                                ├─ [outside range] → return empty (<1ms fast path)
-                                └─ [has data] manifest.GetFiles(start, end)
-                                     └─ parallel file workers (QueryConfig.FileWorkers)
-                                          └─ per file:
-                                               ├─ bloomindex.MayContain (skip if definite miss)
-                                               ├─ cache lookup: L1 → L2 → peer → S3
-                                               ├─ parquet open (footer decode)
-                                               ├─ row group stats skip (timestamp min/max)
-                                               ├─ column projection (only requested columns)
-                                               └─ row read + filter → emit DataBlock
+```mermaid
+flowchart TD
+    A[HTTP request] --> B[http.ServeMux Register]
+    B --> C["wrapVL (semaphore: max-concurrent, context timeout)"]
+    C --> D["VL handler (logsql.ProcessQueryRequest etc.)"]
+    D --> E[vlstorage.adapter.RunQuery]
+    E --> F[storage.Storage.RunQuery]
+    F --> G[manifest.HasDataForRange]
+    G -->|outside range| H["return empty (<1ms fast path)"]
+    G -->|has data| I["manifest.GetFiles(start, end)"]
+    I --> J["parallel file workers (QueryConfig.FileWorkers)"]
+    J --> K["bloomindex.MayContain (skip if definite miss)"]
+    J --> L["cache lookup: L1 → L2 → peer → S3"]
+    J --> M["parquet open (footer decode)"]
+    J --> N["row group stats skip (timestamp min/max)"]
+    J --> O["column projection (only requested columns)"]
+    J --> P["row read + filter → emit DataBlock"]
 ```
 
 `wrapVL` uses a buffered channel semaphore (`chan struct{}` of size `MaxConcurrent`). If the semaphore is full the request is rejected immediately with HTTP 429. A `context.WithTimeout` wraps each request.
@@ -43,27 +42,21 @@ HTTP request
 
 Four tiers are consulted in order on each file fetch. Once a tier hits, the result is promoted to all upstream tiers.
 
-```
-L1  In-process memory   LRU (container/list + sync.Mutex)
-      default 512 MB, configurable via cache.memory_limit
-      stores: Parquet footers, bloom filters, hot row group pages
-      target hit rate: >90%
-
-L2  Local disk (EBS)    LRU with eviction watermark
-      default 50 GB, configurable via cache.disk_limit
-      stores: full Parquet files downloaded from S3
-      eviction at 80% full (watermark configurable)
-      target hit rate: >80%
-
-L3  Peer cache          HTTP GET /internal/cache/fetch
-      consistent hash ring over fleet peers (headless DNS or static list)
-      singleflight coalescence: one in-flight fetch per key across concurrent callers
-      optional shared-secret auth via X-Cross-Signal-Key
-
-L4  S3 (source of truth)
-      io.ReaderAt → S3 GetObject Range reads
-      connection pool + retry with backoff
-      first-byte latency 50–150 ms (same-region)
+```mermaid
+flowchart LR
+    subgraph L1["L1 — In-process memory"]
+        L1D["LRU (container/list + sync.Mutex)\ndefault 512 MB\nstores: footers, bloom filters, hot pages\ntarget hit rate: >90%"]
+    end
+    subgraph L2["L2 — Local disk (EBS)"]
+        L2D["LRU with eviction watermark\ndefault 50 GB\nstores: full Parquet files from S3\neviction at 80% full\ntarget hit rate: >80%"]
+    end
+    subgraph L3["L3 — Peer cache"]
+        L3D["HTTP GET /internal/cache/fetch\nconsistent hash ring over fleet peers\nsingleflight coalescence\noptional shared-secret auth"]
+    end
+    subgraph L4["L4 — S3 (source of truth)"]
+        L4D["io.ReaderAt → S3 GetObject Range reads\nconnection pool + retry with backoff\nfirst-byte latency 50–150 ms"]
+    end
+    L1 --> L2 --> L3 --> L4
 ```
 
 Cache misses at L1/L2 are deduplicated with a singleflight implementation (`internal/cache/coalesce.go`) so only one S3 download fires per key regardless of concurrent callers.
@@ -94,11 +87,11 @@ traces:
 
 Before fetching a file from the cache, `bloomindex.Index.MayContain(keys, column, value)` is called for exact-match filters. Files where the bloom filter reports a definite miss are dropped from the candidate list and never fetched. Files with no bloom entry are always included (conservative).
 
-```
-exact-match filter (field:="value")
-  └─ bloomindex.MayContain(fileKeys, column, value)
-       ├─ bloom says NO  → skip file (no S3/cache access)
-       └─ bloom says MAYBE → proceed to cache lookup → row verify
+```mermaid
+flowchart TD
+    A["exact-match filter (field:=\"value\")"] --> B["bloomindex.MayContain(fileKeys, column, value)"]
+    B -->|bloom says NO| C["skip file (no S3/cache access)"]
+    B -->|bloom says MAYBE| D["proceed to cache lookup → row verify"]
 ```
 
 The bloom index is persisted via `BloomObserver.PersistDirty` at shutdown and periodically during operation, so it survives restarts.
@@ -107,21 +100,20 @@ The bloom index is persisted via `BloomObserver.PersistDirty` at shutdown and pe
 
 ## Insert Path
 
-```
-HTTP (any VL protocol: jsonline, Loki, ES bulk, syslog, journald, Datadog, OTLP, Splunk, native)
-  └─ VL vlinsert handler (unchanged upstream code)
-       └─ insertutil.LogRowsStorage interface
-            └─ vlstorage.insertAdapter.MustAddRows
-                 └─ logRowsToSchemaRows (field mapping; strings.Clone for arena safety)
-                      └─ BatchWriter.AddLogRows / AddTraceRows
-                           ├─ WAL.AppendLog (if WAL enabled; crash recovery)
-                           └─ partition buffer (map[partition][]Row, per hour)
-                                └─ [flush trigger: interval or size threshold]
-                                     └─ BatchWriter.flushPartition
-                                          ├─ parquet-go write (ZSTD level 7 default)
-                                          ├─ s3reader.ClientPool.PutObject
-                                          ├─ manifest.AddFile
-                                          └─ BloomObserver.OnFileFlush
+```mermaid
+flowchart TD
+    A["HTTP (any VL protocol: jsonline, Loki, ES bulk,\nsyslog, journald, Datadog, OTLP, Splunk, native)"] --> B["VL vlinsert handler (unchanged upstream code)"]
+    B --> C[insertutil.LogRowsStorage interface]
+    C --> D[vlstorage.insertAdapter.MustAddRows]
+    D --> E["logRowsToSchemaRows\n(field mapping; strings.Clone for arena safety)"]
+    E --> F[BatchWriter.AddLogRows / AddTraceRows]
+    F --> G["WAL.AppendLog\n(if WAL enabled; crash recovery)"]
+    F --> H["partition buffer\n(map[partition][]Row, per hour)"]
+    H -->|"flush trigger:\ninterval or size threshold"| I[BatchWriter.flushPartition]
+    I --> J["parquet-go write\n(ZSTD level 7 default)"]
+    I --> K[s3reader.ClientPool.PutObject]
+    I --> L[manifest.AddFile]
+    I --> M[BloomObserver.OnFileFlush]
 ```
 
 Key points:
@@ -138,23 +130,24 @@ Tenant isolation is implemented as S3 prefix partitioning. Each tenant's data li
 
 ### Header resolution
 
-```
-X-Scope-OrgID                   →  TenantResolver maps OrgID to (AccountID, ProjectID)
-                                    sets X-Scope-AccountID + X-Scope-ProjectID
-X-Scope-AccountID / ProjectID   →  used directly by VL's logstorage.TenantID
+```mermaid
+flowchart LR
+    A[X-Scope-OrgID] --> B["TenantResolver maps OrgID\nto (AccountID, ProjectID)"]
+    B --> C["sets X-Scope-AccountID\n+ X-Scope-ProjectID"]
+    D["X-Scope-AccountID\n/ ProjectID"] --> E["used directly by\nVL's logstorage.TenantID"]
 ```
 
 The `TenantResolver.Middleware` intercepts requests, resolves `X-Scope-OrgID` to a `TenantID{AccountID, ProjectID}`, and rewrites the headers before passing the request to VL handlers. Unknown tenants return HTTP 400; `auto_register: true` creates a new ID automatically.
 
 ### S3 layout
 
-```
-s3://obs-archive/{prefix}/{tenant}/
-  logs/
-    dt=2026-04-01/hour=00/00000-abc.parquet
-    dt=2026-04-01/hour=01/00000-def.parquet
-  traces/
-    dt=2026-04-01/hour=00/00000-ghi.parquet
+```mermaid
+flowchart TD
+    A["s3://obs-archive/{prefix}/{tenant}/"] --> B[logs/]
+    A --> C[traces/]
+    B --> D["dt=2026-04-01/hour=00/00000-abc.parquet"]
+    B --> E["dt=2026-04-01/hour=01/00000-def.parquet"]
+    C --> F["dt=2026-04-01/hour=00/00000-ghi.parquet"]
 ```
 
 The prefix template is configurable (`tenant.prefix_template`). Isolation modes:
@@ -189,10 +182,10 @@ The `vlstorage.adapter` wraps `Storage` and registers it with VL's `vlstorage.Se
 
 The manifest is an in-memory index of all Parquet files in S3. It enables sub-millisecond "nothing here" responses for queries outside the cold data range.
 
-```
-HasDataForRange(start, end)
-  ├─ [start > maxTime or end < minTime] → return empty (O(1))
-  └─ GetFiles(start, end) → hive partition pruning → file list
+```mermaid
+flowchart TD
+    A["HasDataForRange(start, end)"] -->|"start > maxTime or end < minTime"| B["return empty (O(1))"]
+    A -->|has overlap| C["GetFiles(start, end)\n→ hive partition pruning → file list"]
 ```
 
 The manifest is refreshed via:

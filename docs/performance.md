@@ -66,14 +66,11 @@ Nightly CI runs the full suite via `.github/workflows/nightly-loadtest.yaml`. La
 
 ### S3 latency extrapolation
 
-```
-same-region p95 estimate = minio_p95 + 80ms
-
-For scans touching N row groups with concurrency C:
-  s3_scan_p95 = minio_scan_p95 + (N × 80ms / C)
-
-Example: 10 row groups, default C=128
-  s3_scan_p95 ≈ minio_scan_p95 + 6ms
+```mermaid
+flowchart TD
+    A["same-region p95 estimate\n= minio_p95 + 80ms"] --> B["For scans touching N row groups\nwith concurrency C"]
+    B --> C["s3_scan_p95 =\nminio_scan_p95 + (N × 80ms / C)"]
+    C --> D["Example: 10 row groups, C=128\ns3_scan_p95 ≈ minio_scan_p95 + 6ms"]
 ```
 
 ---
