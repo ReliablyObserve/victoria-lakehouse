@@ -61,6 +61,7 @@ type Config struct {
 	Retention   RetentionConfig   `yaml:"retention"`
 	Stats       StatsConfig       `yaml:"stats"`
 	UI          UIConfig          `yaml:"ui"`
+	Telemetry   TelemetryConfig   `yaml:"telemetry"`
 
 	Logs   LogsModeConfig   `yaml:"logs"`
 	Traces TracesModeConfig `yaml:"traces"`
@@ -607,6 +608,13 @@ func Default() *Config {
 			VMUITab:        true,
 			RefreshDefault: 0,
 			Theme:          "auto",
+		},
+
+		Telemetry: TelemetryConfig{
+			Enabled:          false,
+			SampleRate:       0.1,
+			AlwaysSampleSlow: true,
+			BatchTimeout:     5 * time.Second,
 		},
 
 		Logs: LogsModeConfig{
@@ -1486,6 +1494,26 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.GC.OrphanGracePeriod > 0 {
 		base.GC.OrphanGracePeriod = overlay.GC.OrphanGracePeriod
+	}
+
+	// Telemetry
+	if overlay.Telemetry.Enabled {
+		base.Telemetry.Enabled = true
+	}
+	if overlay.Telemetry.Endpoint != "" {
+		base.Telemetry.Endpoint = overlay.Telemetry.Endpoint
+	}
+	if overlay.Telemetry.SampleRate > 0 {
+		base.Telemetry.SampleRate = overlay.Telemetry.SampleRate
+	}
+	if !overlay.Telemetry.AlwaysSampleSlow {
+		base.Telemetry.AlwaysSampleSlow = false
+	}
+	if overlay.Telemetry.ServiceName != "" {
+		base.Telemetry.ServiceName = overlay.Telemetry.ServiceName
+	}
+	if overlay.Telemetry.BatchTimeout > 0 {
+		base.Telemetry.BatchTimeout = overlay.Telemetry.BatchTimeout
 	}
 
 	// Logs mode config
