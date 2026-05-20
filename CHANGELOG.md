@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+- Concurrent query benchmark: validates latency targets at 1/10/50/100 parallel queries with mixed endpoint types
+- Mixed read/write benchmark: measures mutual interference with ≤20% degradation target
+- Config sweep script for automated `max_concurrent` / `file_workers` tuning validation
+- Deployment-size recommendations for query concurrency settings
+
 ## [0.28.1] - 2026-05-20
 
 ### Fixed

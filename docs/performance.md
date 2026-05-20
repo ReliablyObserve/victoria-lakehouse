@@ -141,6 +141,50 @@ Column projection is automatic — no configuration needed. Wildcard or free-tex
 
 `GetFilesForRange` uses a sorted partition index with binary search (O(log P)) instead of iterating all partitions linearly (O(P)). This is most impactful for large time ranges with thousands of hourly partitions.
 
+### Concurrency stress testing
+
+The `cmd/loadtest` CLI includes modes for validating performance under concurrent load:
+
+```bash
+# Concurrent queries at 1, 10, 50, 100 parallel workers
+go run ./cmd/loadtest -mode=concurrent -target=http://localhost:9428 \
+  -concurrency=1,10,50,100 -duration=30s
+
+# Mixed read/write: measures insert and query degradation under concurrent load
+go run ./cmd/loadtest -mode=mixed-rw -target=http://localhost:9428 -duration=60s
+
+# Full suite (includes latency, throughput, concurrent, and mixed R/W)
+go run ./cmd/loadtest -mode=all -target=http://localhost:9428 -duration=60s
+```
+
+#### Pass criteria
+
+| Test | Threshold | Rationale |
+|---|---|---|
+| Concurrent queries (C=50) | p95 ≤ 2x baseline (C=1) | Linear degradation acceptable; super-linear means contention |
+| Mixed R/W interference | ≤ 20% degradation | Insert and query paths should be largely independent |
+
+#### Configuration sweep
+
+Use `scripts/config-sweep.sh` to test different `query.max_concurrent` and `query.file_workers` values:
+
+```bash
+./scripts/config-sweep.sh http://localhost:9428 ./lakehouse-logs config.yaml results/
+```
+
+The script tests 0.5x, 1x, and 2x of the default values and produces a comparison table.
+
+#### Recommended settings by deployment size
+
+| Deployment | Cores | `max_concurrent` | `file_workers` | Notes |
+|---|---|---|---|---|
+| Dev / CI | 2–4 | 8 | 4 | Low resource, prevent OOM |
+| Small prod | 4–8 | 32 | 8 | Default — good balance |
+| Medium prod | 8–16 | 64 | 16 | Higher parallelism for wide scans |
+| Large prod | 16+ | 128 | 32 | Scale with available cores |
+
+`file_workers` should generally be ≤ half the CPU cores. `max_concurrent` can be higher since queries often block on S3 I/O, not CPU.
+
 ### File size and row group recommendations
 
 | Target file size | Row group size | Use case |
