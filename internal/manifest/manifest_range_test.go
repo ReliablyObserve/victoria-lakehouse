@@ -26,11 +26,8 @@ func TestGetFilesForRange_BinarySearchCorrectness(t *testing.T) {
 
 	files := m.GetFilesForRange(startNs, endNs)
 
-	if len(files) < 3 {
-		t.Fatalf("expected at least 3 files for 3-hour window, got %d", len(files))
-	}
-	if len(files) > 4 {
-		t.Fatalf("expected at most 4 files, got %d", len(files))
+	if len(files) != 3 {
+		t.Fatalf("expected 3 files for 3-hour window (partitions 50,51,52), got %d", len(files))
 	}
 }
 
