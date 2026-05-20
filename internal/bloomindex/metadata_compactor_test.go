@@ -2,6 +2,7 @@ package bloomindex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -176,6 +177,55 @@ func TestMetadataCompactor_AlreadyPerFile_NoDoubleDowngrade(t *testing.T) {
 	}
 	if idx.Len() != 2 {
 		t.Errorf("per-file entries should be unchanged, got %d", idx.Len())
+	}
+}
+
+// TestMetadataCompactor_ColdDowngrade_SingleEntry exercises downgradeToSummary
+// early-return when idx.Len() <= 1 (previously 50%).
+func TestMetadataCompactor_ColdDowngrade_SingleEntry(t *testing.T) {
+	cache := NewBloomCache(1024*1024, nil)
+
+	pi := NewPartitionedIndex(GranularityHour, 0.01)
+	// Only 1 file entry — downgradeToSummary should return early.
+	pi.AddFile("p1", "single_file.parquet", map[string][]string{"trace_id": {"aaa"}})
+	cache.Put("p1", pi.GetPartition("p1"))
+
+	mc := NewMetadataCompactor(cache, DefaultTierConfig(), nil)
+	err := mc.CompactPartition(context.Background(), "p1", 45*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Index should still exist with 1 entry (early return, no summary merge).
+	idx, _ := cache.Get(context.Background(), "p1")
+	if idx == nil {
+		t.Fatal("partition should still exist after cold downgrade with single entry")
+	}
+	if idx.Len() != 1 {
+		t.Errorf("single-entry summary should still have 1 entry, got %d", idx.Len())
+	}
+}
+
+// TestMetadataCompactor_downgradeToSummary_PersistError exercises the persistFn error branch.
+func TestMetadataCompactor_downgradeToSummary_PersistError(t *testing.T) {
+	cache := NewBloomCache(1024*1024, nil)
+
+	pi := NewPartitionedIndex(GranularityHour, 0.01)
+	// Add 2+ files so the early-return guard (idx.Len() <= 1) is skipped.
+	pi.AddFile("p1", "file1.parquet", map[string][]string{"trace_id": {"aaa"}})
+	pi.AddFile("p1", "file2.parquet", map[string][]string{"trace_id": {"bbb"}})
+	cache.Put("p1", pi.GetPartition("p1"))
+
+	wantErr := errors.New("s3 write failed")
+	persistFn := func(_ context.Context, _ string, _ []byte) error {
+		return wantErr
+	}
+
+	mc := NewMetadataCompactor(cache, DefaultTierConfig(), persistFn)
+	// Cold tier is 30-90 days, so 45 days triggers downgradeToSummary.
+	err := mc.CompactPartition(context.Background(), "p1", 45*24*time.Hour)
+	if err == nil {
+		t.Error("expected persist error to propagate, got nil")
 	}
 }
 

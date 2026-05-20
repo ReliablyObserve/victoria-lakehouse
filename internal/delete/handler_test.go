@@ -829,3 +829,16 @@ func TestHandler_TraceMode_LogsEndpointReturns404(t *testing.T) {
 		t.Fatalf("logs endpoints should not be registered in traces mode, got %d", w.Code)
 	}
 }
+
+// TestNewHandler_DefaultMode exercises the empty-mode branch (previously 66.7%).
+func TestNewHandler_DefaultMode(t *testing.T) {
+	store := NewTombstoneStore()
+	manifest := &mockManifest{}
+	detector := NewStorageClassDetector(nil)
+	cfg := defaultCfg()
+
+	h := NewHandler(store, manifest, detector, cfg, "")
+	if h.mode != "logs" {
+		t.Errorf("empty mode should default to 'logs', got %q", h.mode)
+	}
+}

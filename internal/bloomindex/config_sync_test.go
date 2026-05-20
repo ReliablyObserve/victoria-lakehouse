@@ -183,6 +183,41 @@ func TestConfigSync_InvalidJSON(t *testing.T) {
 	}
 }
 
+// TestConfigSync_Push_StoreError exercises the Put failure branch in Push (previously 76.5%).
+func TestConfigSync_Push_StoreError(t *testing.T) {
+	store := newMockConfigStore()
+	store.mu.Lock()
+	store.fail = true
+	store.mu.Unlock()
+
+	bc := NewBloomController(DefaultBloomControllerConfig())
+	cs := NewConfigSync(store, "bloom/live.json", bc)
+
+	err := cs.Push(context.Background())
+	if err == nil {
+		t.Error("expected error when store Put fails")
+	}
+	if cs.SyncErrors() != 1 {
+		t.Errorf("sync errors = %d, want 1", cs.SyncErrors())
+	}
+}
+
+// TestConfigSync_bytesEqual exercises the bytesEqual helper branches.
+func TestConfigSync_bytesEqual(t *testing.T) {
+	if !bytesEqual([]byte("abc"), []byte("abc")) {
+		t.Error("equal slices should be equal")
+	}
+	if bytesEqual([]byte("abc"), []byte("abcd")) {
+		t.Error("different length slices should not be equal")
+	}
+	if bytesEqual([]byte("abc"), []byte("abd")) {
+		t.Error("slices with different content should not be equal")
+	}
+	if !bytesEqual(nil, nil) {
+		t.Error("nil slices should be equal")
+	}
+}
+
 func TestConfigSync_ResetErrorsOnSuccess(t *testing.T) {
 	store := newMockConfigStore()
 	bc := NewBloomController(DefaultBloomControllerConfig())

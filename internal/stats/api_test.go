@@ -484,6 +484,41 @@ func TestAPICardinalityLimit(t *testing.T) {
 	}
 }
 
+func TestMax64(t *testing.T) {
+	tests := []struct {
+		a, b int64
+		want int64
+	}{
+		{5, 3, 5},
+		{3, 5, 5},
+		{7, 7, 7},
+		{0, -1, 0},
+		{-1, 0, 0},
+	}
+	for _, tt := range tests {
+		if got := max64(tt.a, tt.b); got != tt.want {
+			t.Errorf("max64(%d, %d) = %d, want %d", tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
+func TestPadHour(t *testing.T) {
+	tests := []struct {
+		h    int
+		want string
+	}{
+		{0, "00"},
+		{9, "09"},
+		{10, "10"},
+		{23, "23"},
+	}
+	for _, tt := range tests {
+		if got := padHour(tt.h); got != tt.want {
+			t.Errorf("padHour(%d) = %q, want %q", tt.h, got, tt.want)
+		}
+	}
+}
+
 func TestAPIOverviewCompressionRatio(t *testing.T) {
 	api, _, _ := setupTestAPI(t)
 	rec := doGet(t, api, "/lakehouse/api/v1/stats/overview")

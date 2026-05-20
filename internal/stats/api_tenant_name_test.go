@@ -86,6 +86,36 @@ func TestDecorateCompressionName(t *testing.T) {
 	}
 }
 
+// TestResolveOrgID exercises the resolveOrgID method (previously 0%).
+func TestResolveOrgID(t *testing.T) {
+	t.Run("nil resolver returns empty", func(t *testing.T) {
+		api := NewAPI(APIConfig{})
+		got := api.resolveOrgID("42", "3")
+		if got != "" {
+			t.Errorf("nil resolver: got %q, want empty", got)
+		}
+	})
+
+	t.Run("known tenant returns alias", func(t *testing.T) {
+		resolver := tenant.NewResolver(tenant.ResolverConfig{})
+		_ = resolver.AddAlias("prod_staging", tenant.TenantID{AccountID: 42, ProjectID: 3})
+		api := NewAPI(APIConfig{Resolver: resolver})
+		got := api.resolveOrgID("42", "3")
+		if got != "prod_staging" {
+			t.Errorf("got %q, want prod_staging", got)
+		}
+	})
+
+	t.Run("unknown tenant returns empty", func(t *testing.T) {
+		resolver := tenant.NewResolver(tenant.ResolverConfig{})
+		api := NewAPI(APIConfig{Resolver: resolver})
+		got := api.resolveOrgID("99", "99")
+		if got != "" {
+			t.Errorf("unknown tenant: got %q, want empty", got)
+		}
+	})
+}
+
 func TestTenantDetail_AliasRoute(t *testing.T) {
 	resolver := tenant.NewResolver(tenant.ResolverConfig{})
 	_ = resolver.AddAlias("prod_staging", tenant.TenantID{AccountID: 42, ProjectID: 3})

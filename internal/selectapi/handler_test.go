@@ -12,6 +12,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/vlstorage"
 )
 
@@ -472,6 +473,61 @@ func TestHandleJaegerTrace_WithData(t *testing.T) {
 	}
 }
 
+// TestHandleJaegerTrace_WithStatusAndResourceAttrs exercises the status_code,
+// resource_attr, scope_attr, and status_message column branches.
+func TestHandleJaegerTrace_WithStatusAndResourceAttrs(t *testing.T) {
+	store := &dataStore{
+		runQuerySpans: []map[string]string{
+			{
+				"trace_id":                   "xyz789",
+				"span_id":                    "span-a",
+				"parent_span_id":             "span-parent",
+				"name":                       "DB insert",
+				"service.name":               "db-service",
+				"start_time_unix_nano":       "1700000000000000000",
+				"duration_ns":                "3000000",
+				"status_code":                "2", // STATUS_CODE_ERROR
+				"status_message":             "connection reset",
+				"resource_attr:service.name": "db-service",
+				"resource_attr:k8s.pod.name": "db-pod-1",
+				"scope_attr:scope.version":   "v1.0",
+				"custom_tag":                 "custom_value",
+			},
+			{
+				"trace_id":             "xyz789",
+				"span_id":              "span-b",
+				"name":                 "cache hit",
+				"service.name":        "cache-service",
+				"start_time_unix_nano": "1700000001000000000",
+				"duration_ns":          "100000",
+				"status_code":         "1", // STATUS_CODE_OK
+				"kind":                "2",
+			},
+		},
+	}
+
+	cfg := testConfig(config.ModeTraces)
+	h := NewHandler(store, cfg)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/traces/xyz789", nil)
+	h.handleJaegerTrace(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp jaegerTracesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	dataSlice, ok := resp.Data.([]any)
+	if !ok || len(dataSlice) == 0 {
+		t.Fatal("expected trace data, got empty")
+	}
+}
+
 func TestHandleJaegerTrace_EmptyTraceID_TracesSuffix(t *testing.T) {
 	cfg := testConfig(config.ModeTraces)
 	h := NewHandler(mockStore{}, cfg)
@@ -807,6 +863,69 @@ func TestHandleJaegerServices_FallbackToResourceAttr(t *testing.T) {
 	if len(resp.Data) != 1 || resp.Data[0] != "otel-svc" {
 		t.Errorf("expected [otel-svc], got %v", resp.Data)
 	}
+}
+
+// TestWithResolver exercises the WithResolver HandlerOption (previously 0%).
+func TestWithResolver(t *testing.T) {
+	cfg := testConfig(config.ModeLogs)
+	r := tenant.NewResolver(tenant.ResolverConfig{})
+
+	h := NewHandler(mockStore{}, cfg, WithResolver(r))
+	if h == nil {
+		t.Fatal("NewHandler returned nil")
+	}
+	if h.resolver != r {
+		t.Error("WithResolver should set the resolver field")
+	}
+}
+
+// TestTenantFromRequest exercises tenantFromRequest (previously 0%).
+func TestTenantFromRequest(t *testing.T) {
+	cfg := testConfig(config.ModeLogs)
+	h := NewHandler(mockStore{}, cfg)
+
+	t.Run("no headers returns empty string", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/", nil)
+		got := h.tenantFromRequest(req)
+		if got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+
+	t.Run("with account and project headers", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("X-Scope-AccountID", "42")
+		req.Header.Set("X-Scope-ProjectID", "3")
+		got := h.tenantFromRequest(req)
+		if got == "" {
+			t.Error("expected non-empty tenant string")
+		}
+	})
+
+	t.Run("with resolver and unknown tenant uses numeric ID", func(t *testing.T) {
+		r := tenant.NewResolver(tenant.ResolverConfig{})
+		h2 := NewHandler(mockStore{}, cfg, WithResolver(r))
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("X-Scope-AccountID", "42")
+		req.Header.Set("X-Scope-ProjectID", "3")
+		got := h2.tenantFromRequest(req)
+		if got == "" {
+			t.Error("expected non-empty tenant string with resolver")
+		}
+	})
+
+	t.Run("with resolver and named alias", func(t *testing.T) {
+		r := tenant.NewResolver(tenant.ResolverConfig{})
+		_ = r.AddAlias("prod_team", tenant.TenantID{AccountID: 42, ProjectID: 3})
+		h3 := NewHandler(mockStore{}, cfg, WithResolver(r))
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("X-Scope-AccountID", "42")
+		req.Header.Set("X-Scope-ProjectID", "3")
+		got := h3.tenantFromRequest(req)
+		if got == "" {
+			t.Error("expected non-empty tenant string with resolver and alias")
+		}
+	})
 }
 
 func TestNormalizeTimeParams(t *testing.T) {

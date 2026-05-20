@@ -252,6 +252,172 @@ func filterWith(values ...string) *Filter {
 	return f
 }
 
+// TestFilter_MergeFrom_NilOther exercises the nil guard in Filter.MergeFrom (previously 71.4%).
+func TestFilter_MergeFrom_NilOther(t *testing.T) {
+	f := NewFilter(10, 0.01)
+	f.Add("value1")
+	// Merging nil should not panic and should leave filter unchanged.
+	f.MergeFrom(nil)
+	if !f.MayContain("value1") {
+		t.Error("filter should still contain value1 after nil merge")
+	}
+}
+
+// TestFilter_MergeFrom_DifferentSizes2 exercises size mismatch path in MergeFrom.
+func TestFilter_MergeFrom_DifferentSizes2(t *testing.T) {
+	f1 := NewFilter(10, 0.01)
+	f1.Add("hello")
+
+	f2 := NewFilter(1000, 0.01) // larger filter
+	f2.Add("world")
+
+	// Merge larger into smaller — should not panic.
+	f1.MergeFrom(f2)
+	// f1 should still contain "hello".
+	if !f1.MayContain("hello") {
+		t.Error("filter should still contain hello after merge from larger")
+	}
+}
+
+// TestMayContainAll_EmptyChecks exercises the early-return for empty checks.
+func TestMayContainAll_EmptyChecks(t *testing.T) {
+	idx := New()
+	idx.Add("f1.parquet", "trace_id", filterWith("abc"))
+
+	keys := []string{"f1.parquet", "f2.parquet"}
+	result := idx.MayContainAll(keys, nil)
+	if len(result) != 2 {
+		t.Errorf("empty checks should return all keys, got %d", len(result))
+	}
+}
+
+// TestMayContainAll_MissingColumn exercises the "no filter for column" path.
+func TestMayContainAll_MissingColumn(t *testing.T) {
+	idx := New()
+	cols := map[string]*Filter{
+		"trace_id": NewFilter(10, 0.01),
+	}
+	cols["trace_id"].Add("abc")
+	idx.AddColumns("f1.parquet", cols)
+
+	// Check on a column that doesn't exist should not exclude the file.
+	checks := []ColumnCheck{
+		{Column: "nonexistent_col", Value: "anything"},
+	}
+	result := idx.MayContainAll([]string{"f1.parquet"}, checks)
+	if len(result) != 1 {
+		t.Errorf("missing column should not exclude file, got %d results", len(result))
+	}
+}
+
+// TestUnmarshal_UnknownVersion exercises the unknown version error path.
+func TestUnmarshal_UnknownVersion(t *testing.T) {
+	// Create data with version byte = 99.
+	data := make([]byte, 10)
+	data[0] = 99 // unknown version
+	_, err := Unmarshal(data)
+	if err == nil {
+		t.Error("expected error for unknown version")
+	}
+}
+
+// TestUnmarshal_TooShort exercises the too-short data error path.
+func TestUnmarshal_TooShort(t *testing.T) {
+	_, err := Unmarshal([]byte{1, 2})
+	if err == nil {
+		t.Error("expected error for too-short data")
+	}
+}
+
+// TestUnmarshalV1_TruncatedKey exercises truncated key error path.
+func TestUnmarshalV1_TruncatedKey(t *testing.T) {
+	// v1 header: [version=1][count=1 as uint32][keyLen=1000 as uint16] but no key data
+	data := make([]byte, 7)
+	data[0] = 1 // version
+	binary.LittleEndian.PutUint32(data[1:5], 1)    // count = 1
+	binary.LittleEndian.PutUint16(data[5:7], 1000) // keyLen = 1000 (truncated)
+	_, err := unmarshalV1(data)
+	if err == nil {
+		t.Error("expected error for truncated key in v1")
+	}
+}
+
+// TestUnmarshalV1_MaxEntriesExceeded exercises the max entries guard.
+func TestUnmarshalV1_MaxEntriesExceeded(t *testing.T) {
+	data := make([]byte, 10)
+	data[0] = 1
+	binary.LittleEndian.PutUint32(data[1:5], 2_000_000) // count > maxIndexEntries
+	_, err := unmarshalV1(data)
+	if err == nil {
+		t.Error("expected error for count exceeding max")
+	}
+}
+
+// TestUnmarshalV2_MaxEntriesExceeded exercises the max entries guard in v2.
+func TestUnmarshalV2_MaxEntriesExceeded(t *testing.T) {
+	data := make([]byte, 10)
+	data[0] = 2
+	binary.LittleEndian.PutUint32(data[1:5], 2_000_000) // count > maxIndexEntries
+	_, err := unmarshalV2(data)
+	if err == nil {
+		t.Error("expected error for count exceeding max in v2")
+	}
+}
+
+// TestUnmarshalV2_TruncatedData exercises various truncation paths in v2.
+func TestUnmarshalV2_TruncatedData(t *testing.T) {
+	// Truncated at key length position.
+	data := make([]byte, 5)
+	data[0] = 2
+	binary.LittleEndian.PutUint32(data[1:5], 1) // count = 1, but no key data
+	_, err := unmarshalV2(data)
+	if err == nil {
+		t.Error("expected error for truncated v2 data")
+	}
+}
+
+// TestIndex_MergeFrom_NilOther exercises nil guard in Index.MergeFrom.
+func TestIndex_MergeFrom_NilOther(t *testing.T) {
+	idx := New()
+	idx.Add("f1", "trace_id", filterWith("abc"))
+
+	// Merging nil should not panic.
+	idx.MergeFrom(nil)
+	if idx.Len() != 1 {
+		t.Errorf("len = %d after nil merge, want 1", idx.Len())
+	}
+}
+
+// TestIndex_AddColumns_EmptyColumns exercises the early-return for empty columns map.
+func TestIndex_AddColumns_EmptyColumns(t *testing.T) {
+	idx := New()
+	// Adding empty columns should be a no-op.
+	idx.AddColumns("f1.parquet", map[string]*Filter{})
+	if idx.Len() != 0 {
+		t.Errorf("empty columns should not add entry, len = %d", idx.Len())
+	}
+	// Adding nil columns should also be a no-op.
+	idx.AddColumns("f1.parquet", nil)
+	if idx.Len() != 0 {
+		t.Errorf("nil columns should not add entry, len = %d", idx.Len())
+	}
+}
+
+// TestNewPartitionedIndex_InvalidFPRate exercises boundary validation for fpRate.
+func TestNewPartitionedIndex_InvalidFPRate(t *testing.T) {
+	// fpRate <= 0 should use default 0.01
+	pi := NewPartitionedIndex(GranularityHour, 0)
+	if pi == nil {
+		t.Fatal("expected non-nil PartitionedIndex")
+	}
+
+	// fpRate >= 1 should use default 0.01
+	pi2 := NewPartitionedIndex(GranularityHour, 1.5)
+	if pi2 == nil {
+		t.Fatal("expected non-nil PartitionedIndex for invalid rate")
+	}
+}
+
 func BenchmarkFilter_MayContain(b *testing.B) {
 	f := NewFilter(200, 0.01)
 	for i := 0; i < 200; i++ {

@@ -767,3 +767,10 @@ func BenchmarkLogRowsToTraceRows(b *testing.B) {
 		}
 	}
 }
+
+// TestSetInsertStorage_NoPanic exercises SetInsertStorage (previously 0%).
+func TestSetInsertStorage_NoPanic(t *testing.T) {
+	w := &mockTraceWriter{}
+	// Should not panic — just registers the adapter with vtinsert.
+	SetInsertStorage(w)
+}

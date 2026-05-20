@@ -8,6 +8,29 @@ import (
 	"time"
 )
 
+func TestCopyMapStringInt_Nil(t *testing.T) {
+	result := copyMapStringInt(nil)
+	if result != nil {
+		t.Errorf("expected nil for nil input, got %v", result)
+	}
+}
+
+func TestCopyMapStringInt_NonNil(t *testing.T) {
+	m := map[string]int{"a": 1, "b": 2}
+	cp := copyMapStringInt(m)
+	if len(cp) != 2 {
+		t.Errorf("expected 2 entries, got %d", len(cp))
+	}
+	if cp["a"] != 1 || cp["b"] != 2 {
+		t.Errorf("unexpected values: %v", cp)
+	}
+	// Modification of copy should not affect original
+	cp["a"] = 99
+	if m["a"] != 1 {
+		t.Error("modifying copy should not affect original")
+	}
+}
+
 func TestRegistryRecordWrite(t *testing.T) {
 	reg := NewTenantRegistry("node-1")
 	reg.RecordWrite("acme:proj1", 1024, 2048, 10, "STANDARD")

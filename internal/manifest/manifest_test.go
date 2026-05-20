@@ -551,3 +551,77 @@ func TestAddFilePreservesNewFields(t *testing.T) {
 func newTestManifest() *Manifest {
 	return New("test-bucket", "logs/")
 }
+
+func TestManifest_TotalRows(t *testing.T) {
+	m := New("bucket", "logs/")
+
+	// Empty manifest returns 0.
+	if got := m.TotalRows(); got != 0 {
+		t.Errorf("TotalRows() on empty = %d, want 0", got)
+	}
+
+	m.AddFile("dt=2026-05-01/hour=10", FileInfo{Key: "a.parquet", Size: 100, RowCount: 50})
+	m.AddFile("dt=2026-05-01/hour=10", FileInfo{Key: "b.parquet", Size: 200, RowCount: 75})
+	m.AddFile("dt=2026-05-01/hour=11", FileInfo{Key: "c.parquet", Size: 300, RowCount: 25})
+
+	if got := m.TotalRows(); got != 150 {
+		t.Errorf("TotalRows() = %d, want 150", got)
+	}
+}
+
+func TestManifest_TotalRawBytes(t *testing.T) {
+	m := New("bucket", "logs/")
+
+	// Empty manifest returns 0.
+	if got := m.TotalRawBytes(); got != 0 {
+		t.Errorf("TotalRawBytes() on empty = %d, want 0", got)
+	}
+
+	m.AddFile("dt=2026-05-01/hour=10", FileInfo{Key: "a.parquet", Size: 100, RawBytes: 1000})
+	m.AddFile("dt=2026-05-01/hour=10", FileInfo{Key: "b.parquet", Size: 200, RawBytes: 2000})
+	m.AddFile("dt=2026-05-01/hour=11", FileInfo{Key: "c.parquet", Size: 300, RawBytes: 3000})
+
+	if got := m.TotalRawBytes(); got != 6000 {
+		t.Errorf("TotalRawBytes() = %d, want 6000", got)
+	}
+}
+
+func TestManifest_BloomMeta(t *testing.T) {
+	m := New("bucket", "logs/")
+
+	// BloomAvailable returns false for unknown partition.
+	if m.BloomAvailable("dt=2026-05-01") {
+		t.Error("BloomAvailable() should be false for unknown partition")
+	}
+
+	// GetBloomMeta returns nil for unknown partition.
+	if got := m.GetBloomMeta("dt=2026-05-01"); got != nil {
+		t.Errorf("GetBloomMeta() = %v, want nil", got)
+	}
+
+	// SetBloomMeta and GetBloomMeta round-trip.
+	meta := PartitionMeta{BloomAvailable: true, BloomSize: 1024}
+	m.SetBloomMeta("dt=2026-05-01", meta)
+
+	if !m.BloomAvailable("dt=2026-05-01") {
+		t.Error("BloomAvailable() should be true after SetBloomMeta")
+	}
+
+	got := m.GetBloomMeta("dt=2026-05-01")
+	if got == nil {
+		t.Fatal("GetBloomMeta() returned nil after SetBloomMeta")
+	}
+	if !got.BloomAvailable {
+		t.Error("BloomAvailable in returned meta should be true")
+	}
+	if got.BloomSize != 1024 {
+		t.Errorf("BloomSize = %d, want 1024", got.BloomSize)
+	}
+
+	// BloomAvailable returns false when BloomAvailable field is false.
+	meta2 := PartitionMeta{BloomAvailable: false}
+	m.SetBloomMeta("dt=2026-05-02", meta2)
+	if m.BloomAvailable("dt=2026-05-02") {
+		t.Error("BloomAvailable() should be false when BloomAvailable=false in meta")
+	}
+}

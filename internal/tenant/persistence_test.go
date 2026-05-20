@@ -3,9 +3,22 @@ package tenant
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 )
+
+type errPool struct {
+	err error
+}
+
+func (e *errPool) Upload(_ context.Context, _ string, _ []byte) error {
+	return e.err
+}
+
+func (e *errPool) Download(_ context.Context, _ string) ([]byte, error) {
+	return nil, e.err
+}
 
 type mockPool struct {
 	mu   sync.Mutex
@@ -70,6 +83,38 @@ func TestS3Persister_LoadEmpty(t *testing.T) {
 	}
 	if len(loaded) != 0 {
 		t.Errorf("expected 0 aliases from empty store, got %d", len(loaded))
+	}
+}
+
+func TestS3Persister_SaveAliases_UploadError(t *testing.T) {
+	pool := &errPool{err: errors.New("s3 upload failed")}
+	p := NewS3Persister(pool, "_meta/tenant-aliases.json")
+
+	err := p.SaveAliases([]AliasEntry{{OrgID: "test", AccountID: 1, ProjectID: 1}})
+	if err == nil {
+		t.Error("expected upload error, got nil")
+	}
+}
+
+func TestS3Persister_LoadAliases_DownloadError(t *testing.T) {
+	pool := &errPool{err: errors.New("s3 download failed")}
+	p := NewS3Persister(pool, "_meta/tenant-aliases.json")
+
+	_, err := p.LoadAliases()
+	if err == nil {
+		t.Error("expected download error, got nil")
+	}
+}
+
+func TestS3Persister_LoadAliases_InvalidJSON(t *testing.T) {
+	pool := newMockPool()
+	// Store invalid JSON at the expected key.
+	_ = pool.Upload(context.Background(), "_meta/tenant-aliases.json", []byte("not-json["))
+	p := NewS3Persister(pool, "_meta/tenant-aliases.json")
+
+	_, err := p.LoadAliases()
+	if err == nil {
+		t.Error("expected error for invalid JSON in storage, got nil")
 	}
 }
 

@@ -562,3 +562,39 @@ func TestWAL_Size_AfterMultipleAppends(t *testing.T) {
 		t.Errorf("size should grow: %d <= %d", s2, s1)
 	}
 }
+
+// TestOpen_DirIsFile_Error exercises the MkdirAll failure branch in Open.
+func TestOpen_DirIsFile_Error(t *testing.T) {
+	// Create a regular file, then try to use it as a directory component.
+	tmp := t.TempDir()
+	filePath := filepath.Join(tmp, "notadir")
+	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// filePath/sub/wal.bin — MkdirAll fails because filePath is a file
+	_, err := Open(filepath.Join(filePath, "sub", "wal.bin"), 0)
+	if err == nil {
+		t.Error("expected error when dir path contains a file component, got nil")
+	}
+}
+
+// TestWAL_Write_Reader exercises the stub Write/Reader methods (previously 0%).
+// These are no-op stubs — Write returns nil and Reader returns nil.
+func TestWAL_Write_Reader(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(filepath.Join(dir, "wal-stub.bin"), 512*1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = w.Close() }()
+
+	// Write is a no-op stub.
+	if err := w.Write([]byte("test data")); err != nil {
+		t.Errorf("Write() error = %v, want nil", err)
+	}
+
+	// Reader is a no-op stub returning nil.
+	if r := w.Reader(); r != nil {
+		t.Errorf("Reader() = %v, want nil", r)
+	}
+}

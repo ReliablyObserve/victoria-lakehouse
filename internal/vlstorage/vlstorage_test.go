@@ -2,6 +2,7 @@ package vlstorage
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -420,5 +421,222 @@ func TestDeleteActiveTasks_ReturnsTombstones(t *testing.T) {
 	}
 	if !ids["t-1"] || !ids["t-2"] {
 		t.Errorf("expected task IDs t-1 and t-2, got %v", ids)
+	}
+}
+
+// mockStoreWithValues returns predefined results for stream/field value calls.
+type mockStoreWithValues struct {
+	mockStore
+	fieldValues       []logstorage.ValueWithHits
+	streamFieldNames  []logstorage.ValueWithHits
+	streamFieldValues []logstorage.ValueWithHits
+	streams           []logstorage.ValueWithHits
+	streamIDs         []logstorage.ValueWithHits
+}
+
+func (m mockStoreWithValues) GetFieldValues(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, _ string, _ uint64) ([]logstorage.ValueWithHits, error) {
+	return m.fieldValues, nil
+}
+func (m mockStoreWithValues) GetStreamFieldNames(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query) ([]logstorage.ValueWithHits, error) {
+	return m.streamFieldNames, nil
+}
+func (m mockStoreWithValues) GetStreamFieldValues(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, _ string, _ uint64) ([]logstorage.ValueWithHits, error) {
+	return m.streamFieldValues, nil
+}
+func (m mockStoreWithValues) GetStreams(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, _ uint64) ([]logstorage.ValueWithHits, error) {
+	return m.streams, nil
+}
+func (m mockStoreWithValues) GetStreamIDs(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, _ uint64) ([]logstorage.ValueWithHits, error) {
+	return m.streamIDs, nil
+}
+
+// TestGetFieldValues exercises adapter.GetFieldValues (previously 0%).
+func TestGetFieldValues(t *testing.T) {
+	store := mockStoreWithValues{
+		fieldValues: []logstorage.ValueWithHits{
+			{Value: "info", Hits: 100},
+			{Value: "error", Hits: 50},
+			{Value: "warn", Hits: 25},
+		},
+	}
+	a := &adapter{store: store}
+	qctx := &logstorage.QueryContext{Context: context.Background()}
+
+	t.Run("no filter", func(t *testing.T) {
+		results, err := a.GetFieldValues(qctx, "level", "", 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 3 {
+			t.Errorf("expected 3 results, got %d", len(results))
+		}
+	})
+
+	t.Run("substring filter", func(t *testing.T) {
+		results, err := a.GetFieldValues(qctx, "level", "err", 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 1 {
+			t.Errorf("expected 1 result matching 'err', got %d", len(results))
+		}
+		if results[0].Value != "error" {
+			t.Errorf("expected 'error', got %q", results[0].Value)
+		}
+	})
+}
+
+// TestGetStreamFieldNames exercises adapter.GetStreamFieldNames (previously 0%).
+func TestGetStreamFieldNames(t *testing.T) {
+	store := mockStoreWithValues{
+		streamFieldNames: []logstorage.ValueWithHits{
+			{Value: "service.name", Hits: 200},
+			{Value: "k8s.namespace.name", Hits: 150},
+		},
+	}
+	a := &adapter{store: store}
+	qctx := &logstorage.QueryContext{Context: context.Background()}
+
+	results, err := a.GetStreamFieldNames(qctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Errorf("expected 2 results, got %d", len(results))
+	}
+}
+
+// TestGetStreamFieldValues exercises adapter.GetStreamFieldValues (previously 0%).
+func TestGetStreamFieldValues(t *testing.T) {
+	store := mockStoreWithValues{
+		streamFieldValues: []logstorage.ValueWithHits{
+			{Value: "api-gateway", Hits: 300},
+			{Value: "auth-service", Hits: 100},
+		},
+	}
+	a := &adapter{store: store}
+	qctx := &logstorage.QueryContext{Context: context.Background()}
+
+	t.Run("no filter", func(t *testing.T) {
+		results, err := a.GetStreamFieldValues(qctx, "service.name", "", 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 2 {
+			t.Errorf("expected 2 results, got %d", len(results))
+		}
+	})
+
+	t.Run("substring filter", func(t *testing.T) {
+		results, err := a.GetStreamFieldValues(qctx, "service.name", "api", 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 1 {
+			t.Errorf("expected 1 result matching 'api', got %d", len(results))
+		}
+	})
+}
+
+// TestGetStreams exercises adapter.GetStreams (previously 0%).
+func TestGetStreams(t *testing.T) {
+	store := mockStoreWithValues{
+		streams: []logstorage.ValueWithHits{
+			{Value: `{service.name="api"}`, Hits: 500},
+			{Value: `{service.name="auth"}`, Hits: 200},
+		},
+	}
+	a := &adapter{store: store}
+	qctx := &logstorage.QueryContext{Context: context.Background()}
+
+	results, err := a.GetStreams(qctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Errorf("expected 2 streams, got %d", len(results))
+	}
+}
+
+// TestGetStreamIDs exercises adapter.GetStreamIDs (previously 0%).
+func TestGetStreamIDs(t *testing.T) {
+	store := mockStoreWithValues{
+		streamIDs: []logstorage.ValueWithHits{
+			{Value: "stream-id-001", Hits: 100},
+		},
+	}
+	a := &adapter{store: store}
+	qctx := &logstorage.QueryContext{Context: context.Background()}
+
+	results, err := a.GetStreamIDs(qctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 stream ID, got %d", len(results))
+	}
+}
+
+// TestSetInsertStorage_NoPanic exercises SetInsertStorage (previously 0%).
+func TestSetInsertStorage_NoPanic(t *testing.T) {
+	// SetInsertStorage registers with VL global state — just ensure no panic.
+	w := &mockLogWriter{}
+	SetInsertStorage(w)
+}
+
+// errStoreForFieldValues returns an error from GetFieldValues and GetStreamFieldValues.
+type errStoreForFieldValues struct {
+	mockStore
+	err error
+}
+
+func (e errStoreForFieldValues) GetFieldValues(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, _ string, _ uint64) ([]logstorage.ValueWithHits, error) {
+	return nil, e.err
+}
+func (e errStoreForFieldValues) GetStreamFieldValues(_ context.Context, _ []logstorage.TenantID, _ *logstorage.Query, _ string, _ uint64) ([]logstorage.ValueWithHits, error) {
+	return nil, e.err
+}
+
+// TestGetFieldValues_Error exercises the error branch of GetFieldValues.
+func TestGetFieldValues_Error(t *testing.T) {
+	a := &adapter{store: errStoreForFieldValues{err: errors.New("storage error")}}
+	qctx := &logstorage.QueryContext{Context: context.Background()}
+	_, err := a.GetFieldValues(qctx, "level", "", 100)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// TestGetStreamFieldValues_Error exercises the error branch of GetStreamFieldValues.
+func TestGetStreamFieldValues_Error(t *testing.T) {
+	a := &adapter{store: errStoreForFieldValues{err: errors.New("storage error")}}
+	qctx := &logstorage.QueryContext{Context: context.Background()}
+	_, err := a.GetStreamFieldValues(qctx, "host", "", 100)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// TestRunQuery_WithPipes exercises the pipe branch of adapter.RunQuery.
+func TestRunQuery_WithPipes(t *testing.T) {
+	store := mockStore{}
+	a := &adapter{store: store}
+
+	// Query with a pipe triggers RunQueryExternal path.
+	q, err := logstorage.ParseQuery("* | limit 10")
+	if err != nil {
+		t.Fatalf("parse pipe query: %v", err)
+	}
+
+	qctx := &logstorage.QueryContext{
+		Context:    context.Background(),
+		TenantIDs:  []logstorage.TenantID{{AccountID: 0, ProjectID: 0}},
+		Query:      q,
+		QueryStats: &logstorage.QueryStats{},
+	}
+
+	err = a.RunQuery(qctx, func(_ uint, _ *logstorage.DataBlock) {})
+	if err != nil {
+		t.Fatalf("RunQuery with pipes: %v", err)
 	}
 }

@@ -166,3 +166,89 @@ func TestBloomController_NoDoubleAdjust(t *testing.T) {
 		t.Errorf("same value should not produce duplicate adjustments, got %d", len(bc.Adjustments()))
 	}
 }
+
+// TestBloomController_IsLeader exercises the IsLeader method (previously 0%).
+func TestBloomController_IsLeader(t *testing.T) {
+	bc := NewBloomController(DefaultBloomControllerConfig())
+
+	if bc.IsLeader() {
+		t.Error("new controller should not be leader")
+	}
+
+	bc.SetLeader(true)
+	if !bc.IsLeader() {
+		t.Error("controller should be leader after SetLeader(true)")
+	}
+
+	bc.SetLeader(false)
+	if bc.IsLeader() {
+		t.Error("controller should not be leader after SetLeader(false)")
+	}
+}
+
+// TestFormatBytes exercises formatBytes (previously 75%).
+func TestFormatBytes(t *testing.T) {
+	tests := []struct {
+		input int64
+		want  string
+	}{
+		{0, "0MB"},
+		{128 * 1024 * 1024, "128MB"},
+		{512 * 1024 * 1024, "512MB"},
+		{1024 * 1024 * 1024, "1GB"},   // >= 1GB
+		{2048 * 1024 * 1024, "2GB"},
+	}
+	for _, tt := range tests {
+		got := formatBytes(tt.input)
+		if got != tt.want {
+			t.Errorf("formatBytes(%d) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+// TestFormatInt exercises formatInt (previously 85.7%).
+func TestFormatInt(t *testing.T) {
+	tests := []struct {
+		input int64
+		want  string
+	}{
+		{0, "0"},
+		{1, "1"},
+		{42, "42"},
+		{128, "128"},
+		{1000, "1000"},
+	}
+	for _, tt := range tests {
+		got := formatInt(tt.input)
+		if got != tt.want {
+			t.Errorf("formatInt(%d) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+// TestBloomController_IsPinned exercises the IsPinned method (previously 0%).
+func TestBloomController_IsPinned(t *testing.T) {
+	bc := NewBloomController(DefaultBloomControllerConfig())
+
+	if bc.IsPinned("target_file_size") {
+		t.Error("parameter should not be pinned before PinOverride")
+	}
+	if bc.IsPinned("tier1_max_age") {
+		t.Error("tier1_max_age should not be pinned before PinOverride")
+	}
+
+	bc.PinOverride("target_file_size")
+	if !bc.IsPinned("target_file_size") {
+		t.Error("target_file_size should be pinned after PinOverride")
+	}
+
+	// Other parameters should remain unpinned.
+	if bc.IsPinned("tier1_max_age") {
+		t.Error("tier1_max_age should not be pinned")
+	}
+
+	// IsPinned for unknown param should return false.
+	if bc.IsPinned("nonexistent_param") {
+		t.Error("unknown parameter should not be pinned")
+	}
+}

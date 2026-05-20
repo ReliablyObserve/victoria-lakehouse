@@ -80,3 +80,52 @@ func TestGoldenCompareJSON_IgnoresWhitespace(t *testing.T) {
 		t.Errorf("JSON comparison should ignore whitespace, got: %v", err)
 	}
 }
+
+func TestCompareGoldenJSON_InvalidActual(t *testing.T) {
+	dir := t.TempDir()
+	golden := filepath.Join(dir, "json.golden")
+	err := CompareGoldenJSON(golden, []byte("not-json"))
+	if err == nil {
+		t.Error("expected error for invalid actual JSON, got nil")
+	}
+}
+
+func TestCompareGoldenJSON_Mismatch(t *testing.T) {
+	dir := t.TempDir()
+	golden := filepath.Join(dir, "json.golden")
+	if err := os.WriteFile(golden, []byte(`{"a":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := CompareGoldenJSON(golden, []byte(`{"a":2}`))
+	if err == nil {
+		t.Error("expected mismatch error, got nil")
+	}
+}
+
+func TestCompareGoldenJSON_MissingFile_Creates(t *testing.T) {
+	dir := t.TempDir()
+	golden := filepath.Join(dir, "new.json.golden")
+	err := CompareGoldenJSON(golden, []byte(`{"key":"value"}`))
+	if err != nil {
+		t.Errorf("missing golden should create file, got: %v", err)
+	}
+	data, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"key":"value"}` {
+		t.Errorf("created golden = %q, want %q", string(data), `{"key":"value"}`)
+	}
+}
+
+func TestCompareGoldenJSON_InvalidGolden(t *testing.T) {
+	dir := t.TempDir()
+	golden := filepath.Join(dir, "bad.golden")
+	if err := os.WriteFile(golden, []byte("not-json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := CompareGoldenJSON(golden, []byte(`{"a":1}`))
+	if err == nil {
+		t.Error("expected error for invalid golden JSON, got nil")
+	}
+}

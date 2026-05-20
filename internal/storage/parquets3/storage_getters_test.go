@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/discovery"
@@ -106,5 +107,32 @@ func TestWriter_NilBeforeStart(t *testing.T) {
 	s := newMinimalStorage()
 	if s.Writer() != nil {
 		t.Error("Writer() should be nil before StartWriter()")
+	}
+}
+
+// TestBloomCache_ReturnsNilByDefault exercises BloomCache() (previously 0%).
+func TestBloomCache_ReturnsNilByDefault(t *testing.T) {
+	s := newMinimalStorage()
+	// bloomCache is nil until initialized
+	if s.BloomCache() != nil {
+		t.Error("BloomCache() should be nil on minimal storage")
+	}
+}
+
+// TestBloomCache_ReturnsInstance exercises BloomCache() when set.
+func TestBloomCache_ReturnsInstance(t *testing.T) {
+	s := newMinimalStorage()
+	s.bloomCache = bloomindex.NewBloomCache(1024*1024, nil)
+	if s.BloomCache() == nil {
+		t.Error("BloomCache() should not be nil after setting bloomCache")
+	}
+}
+
+// TestSetStatsCallback_NoPanic exercises BatchWriter.SetStatsCallback (previously 0%).
+func TestSetStatsCallback_NoPanic(t *testing.T) {
+	bw := &BatchWriter{}
+	bw.SetStatsCallback(func(_ int64, _ int64, _ int64, _ string) {})
+	if bw.statsCallback == nil {
+		t.Error("statsCallback should be set after SetStatsCallback")
 	}
 }

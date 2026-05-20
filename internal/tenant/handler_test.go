@@ -153,3 +153,69 @@ func TestHandler_ListAliases_NoAuthRequired(t *testing.T) {
 		t.Errorf("GET should not require auth: status = %d, want 200", rr.Code)
 	}
 }
+
+// TestHandler_DeleteAlias_WrongMethod exercises the method check in handleAliasDelete.
+func TestHandler_DeleteAlias_WrongMethod(t *testing.T) {
+	r := NewResolver(ResolverConfig{})
+	h := NewHandler(r, nil, "")
+
+	req := httptest.NewRequest("GET", "/lakehouse/api/v1/tenants/aliases/my_alias", nil)
+	rr := httptest.NewRecorder()
+	h.handleAliasDelete(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("wrong method: status = %d, want 405", rr.Code)
+	}
+}
+
+// TestHandler_DeleteAlias_EmptyOrgID exercises the empty orgID branch in handleAliasDelete.
+func TestHandler_DeleteAlias_EmptyOrgID(t *testing.T) {
+	r := NewResolver(ResolverConfig{})
+	h := NewHandler(r, nil, "")
+
+	// URL path with trailing slash but no orgID
+	req := httptest.NewRequest("DELETE", "/lakehouse/api/v1/tenants/aliases/", nil)
+	rr := httptest.NewRecorder()
+	h.handleAliasDelete(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("empty orgID: status = %d, want 400", rr.Code)
+	}
+}
+
+// TestHandler_CreateAlias_InvalidJSON exercises the JSON decode error branch in createAlias.
+func TestHandler_CreateAlias_InvalidJSON(t *testing.T) {
+	r := NewResolver(ResolverConfig{})
+	h := NewHandler(r, nil, "")
+
+	req := httptest.NewRequest("POST", "/lakehouse/api/v1/tenants/aliases", bytes.NewReader([]byte("not-json{")))
+	rr := httptest.NewRecorder()
+	h.handleAliases(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("invalid JSON: status = %d, want 400", rr.Code)
+	}
+}
+
+// TestHandler_Register exercises the Register method (previously 0%).
+func TestHandler_Register(t *testing.T) {
+	r := NewResolver(ResolverConfig{})
+	h := NewHandler(r, nil, "")
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	// Both registered paths should be accessible (not 404).
+	paths := []string{
+		"/lakehouse/api/v1/tenants/aliases",
+		"/lakehouse/api/v1/tenants/aliases/",
+	}
+	for _, p := range paths {
+		req := httptest.NewRequest("GET", p, nil)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		if rr.Code == http.StatusNotFound {
+			t.Errorf("path %s returned 404 — should be registered", p)
+		}
+	}
+}

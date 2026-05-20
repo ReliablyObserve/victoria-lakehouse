@@ -3,6 +3,7 @@ package delete
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -355,6 +356,22 @@ func TestLoadFromDisk_NonExistentDir(t *testing.T) {
 
 	if store.Count() != 0 {
 		t.Fatalf("expected empty store, got count %d", store.Count())
+	}
+}
+
+func TestPersistToDisk_DirIsFile_Error(t *testing.T) {
+	store := NewTombstoneStore()
+
+	// Use an existing file as the "dir" — MkdirAll will fail
+	tmp := t.TempDir()
+	filePath := filepath.Join(tmp, "notadir")
+	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := store.PersistToDisk(filepath.Join(filePath, "subdir"))
+	if err == nil {
+		t.Error("expected error when dir path contains a file component, got nil")
 	}
 }
 
