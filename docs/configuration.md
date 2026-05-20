@@ -28,6 +28,43 @@ graph TD
     style CFG fill:#2196F3,color:#fff
 ```
 
+## Configuration Profiles
+
+Victoria Lakehouse ships with five named profiles that set production-tuned defaults for 40+ settings. Any explicit flag or config file setting overrides the profile value.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--lakehouse.profile` | `""` (balanced) | Configuration profile preset |
+
+Available profiles: `balanced`, `max-performance`, `max-durability`, `max-cost-savings`, `dev`.
+
+**Precedence**: explicit flag > config file > profile defaults > built-in defaults.
+
+Profiles can be set at three levels (more specific wins):
+
+| Level | Flag/YAML | Example |
+|---|---|---|
+| Global | `--lakehouse.profile` | All signals and roles |
+| Per-signal | `logs.profile` / `traces.profile` (Helm only) | One signal |
+| Per-role | `logs.insert.profile` / `logs.select.profile` (Helm only) | One signal + role |
+
+See [Getting Started — Configuration Profiles](getting-started.md#configuration-profiles) for profile details, cost comparison, and per-signal/per-role examples.
+
+### Profile Tuning Summary
+
+| Setting Area | balanced | max-performance | max-durability | max-cost-savings | dev |
+|---|---|---|---|---|---|
+| **ack_mode** | buffer | buffer | flush-sync | buffer | buffer |
+| **WAL** | on | off | on (1GB) | off | off |
+| **flush_linger** | 200ms | 100ms | 0 (immediate) | 1s | 0 |
+| **Compression** | ZSTD-7 | ZSTD-3 | ZSTD-7 | ZSTD-11 | ZSTD-1 |
+| **Cache (mem/disk)** | 512MB/50GB | 2GB/100GB | 512MB/50GB | 128MB/10GB | 64MB/1GB |
+| **Compaction** | off | on (aggressive) | on | off | off |
+| **GC** | on (6h) | on (3h) | on (1h) | off | off |
+| **Retention** | off | off | on | on | off |
+| **Stats** | on | on | on | off | off |
+| **Cross-signal** | off | on | off | off | off |
+
 ## Core Settings
 
 | Flag | Default | Description |
@@ -89,12 +126,27 @@ When empty, Victoria Lakehouse auto-discovers the hot boundary by polling vlstor
 | Flag | Default | Description |
 |---|---|---|
 | `--lakehouse.insert.flush-interval` | `10s` | Periodic flush interval (1s-60s) |
+| `--lakehouse.insert.flush-linger` | `200ms` | Delay before flushing to coalesce small writes |
+| `--lakehouse.insert.flush-max-rows` | `5000` | Max rows per flush batch |
 | `--lakehouse.insert.max-buffer-rows` | `50000` | Per-partition buffer row limit |
 | `--lakehouse.insert.max-buffer-bytes` | `256MB` | Total buffer memory limit |
-| `--lakehouse.insert.row-group-size` | `10000` | Rows per Parquet row group |
 | `--lakehouse.insert.target-file-size` | `128MB` | Target Parquet file size (adaptive flush trigger) |
+| `--lakehouse.insert.row-group-size` | `10000` | Rows per Parquet row group |
 | `--lakehouse.insert.bloom-columns` | `service.name,trace_id` | Columns with bloom filters |
-| `--lakehouse.insert.compression-level` | `default` | ZSTD level: `fastest`, `default`, `better`, `best` |
+| `--lakehouse.insert.compression-level` | `7` | ZSTD compression level (1=fast, 22=max) |
+| `--lakehouse.insert.ack-mode` | `buffer` | Acknowledgement mode: `buffer` or `flush-sync` |
+| `--lakehouse.insert.peer-replicate` | `false` | Replicate inserts to peer nodes |
+| `--lakehouse.insert.peer-replicate-timeout` | `5ms` | Timeout for peer replication |
+| `--lakehouse.insert.peer-replicate-ttl` | `30s` | TTL for replicated data on peers |
+| `--lakehouse.insert.async-wal-enabled` | `false` | Use async WAL writes (less durable, faster) |
+| `--lakehouse.insert.async-wal-batch-linger` | `50ms` | Async WAL batch coalesce delay |
+
+**Acknowledgement modes:**
+
+| Mode | Behavior | Latency | Durability |
+|---|---|---|---|
+| `buffer` (default) | HTTP 200 after data buffered in memory | ~0ms | Data at risk until next flush |
+| `flush-sync` | HTTP 200 after S3 confirms write | +200-400ms | Zero data loss |
 
 ## WAL Settings
 
@@ -111,6 +163,8 @@ When empty, Victoria Lakehouse auto-discovers the hot boundary by polling vlstor
 | `--lakehouse.select.buffer-query-enabled` | `true` | Query insert pods for unflushed data |
 | `--lakehouse.select.insert-headless-service` | `""` | K8s headless service for insert pod discovery |
 | `--lakehouse.select.buffer-query-timeout` | `2s` | Timeout for buffer query fan-out |
+| `--lakehouse.select.az-aware` | `true` | Prefer same-AZ insert pods for buffer queries |
+| `--lakehouse.select.cross-az-fallback` | `true` | Fall back to other AZs if same-AZ unavailable |
 
 ## Schema Extensibility
 
@@ -242,6 +296,64 @@ Compaction is disabled by default. Enable it for production deployments with mor
 | `k8s` | Kubernetes `coordination.k8s.io/v1` Lease — requires RBAC (provided by Helm chart) |
 | `s3` | S3 lock file with HTTP liveness detection before stealing an expired lock |
 | `none` | No coordination — every instance is always the leader (single-instance only) |
+
+## Delete Settings
+
+| Flag | Default | Description |
+|---|---|---|
+| `--lakehouse.delete.enabled` | `true` | Enable delete API endpoints |
+| `--lakehouse.delete.default-mode` | `auto` | Default mode: `hide`, `permanent`, `auto` |
+| `--lakehouse.delete.auto-rewrite-classes` | `STANDARD` | Storage classes eligible for rewrite |
+| `--lakehouse.delete.rewrite-delay` | `1h` | Wait before rewriting files after tombstone |
+| `--lakehouse.delete.rewrite-batch-size` | `50` | Max files per rewrite batch |
+| `--lakehouse.delete.rewrite-max-concurrent` | `2` | Max concurrent rewrite workers |
+| `--lakehouse.delete.persist-path` | `/data/lakehouse/tombstones` | Tombstone persistence directory |
+| `--lakehouse.delete.cost-warning-threshold` | `10.0` | Cost ($) that triggers a warning |
+| `--lakehouse.delete.verify-interval` | `6h` | Continuous verification interval |
+
+## GC Settings
+
+| Flag | Default | Description |
+|---|---|---|
+| `--lakehouse.gc.enabled` | `true` | Enable orphan file garbage collection |
+| `--lakehouse.gc.interval` | `6h` | How often to scan for orphan files |
+| `--lakehouse.gc.orphan-grace-period` | `1h` | Grace period before deleting orphans |
+
+GC scans for S3 files not referenced by any manifest entry. Disabled by `max-cost-savings` and `dev` profiles to avoid LIST operation costs.
+
+## Retention Settings
+
+| Flag | Default | Description |
+|---|---|---|
+| `--lakehouse.retention.enabled` | `false` | Enable automatic data retention |
+| `--lakehouse.retention.default` | `90d` | Default retention period |
+| `--lakehouse.retention.check-interval` | `1h` | How often to check for expired data |
+
+Enabled by `max-durability` and `max-cost-savings` profiles. When enabled, data older than the retention period is automatically deleted during GC scans.
+
+## Stats Settings
+
+| Flag | Default | Description |
+|---|---|---|
+| `--lakehouse.stats.enabled` | `true` | Enable tenant statistics collection |
+| `--lakehouse.stats.push-interval` | `30s` | Delta broadcast interval to peers |
+| `--lakehouse.stats.push-compression` | `true` | ZSTD-compress delta broadcasts |
+| `--lakehouse.stats.snapshot-interval` | `5m` | Full registry snapshot to S3 |
+| `--lakehouse.stats.snapshot-prefix` | `_meta/tenant-stats` | S3 key prefix for snapshots |
+| `--lakehouse.stats.max-delta-count` | `1000` | Force full sync after N deltas |
+| `--lakehouse.stats.metrics-cardinality-limit` | `100` | Max tenant label values in metrics |
+
+Disabled by `max-cost-savings` and `dev` profiles to reduce S3 overhead.
+
+## UI Settings
+
+| Flag | Default | Description |
+|---|---|---|
+| `--lakehouse.ui.enabled` | `true` | Serve Lakehouse Explorer at `/lakehouse/ui/` |
+| `--lakehouse.ui.vmui-tab` | `true` | Inject tab into VL/VT VMUI navigation |
+| `--lakehouse.ui.theme` | `auto` | Color theme: `auto`, `dark`, `light` |
+
+Disabled by `max-cost-savings` profile.
 
 ## Inherited VL/VT Flags
 

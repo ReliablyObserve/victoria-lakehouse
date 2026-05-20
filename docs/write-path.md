@@ -81,10 +81,21 @@ Rows accumulate in per-partition memory buffers. Partition key: `dt=YYYY-MM-DD/h
 lakehouse:
   insert:
     flush_interval: 10s       # Time-based flush trigger
+    flush_linger: 200ms       # Coalesce delay before flushing
     max_buffer_rows: 50000    # Per-partition row limit
     max_buffer_bytes: 256MB   # Total memory budget
     target_file_size: 128MB   # Target Parquet file size
+    ack_mode: buffer          # When to ack: "buffer" or "flush-sync"
 ```
+
+**Acknowledgement modes:**
+
+| Mode | HTTP 200 After | Data at Risk | Profile |
+|---|---|---|---|
+| `buffer` (default) | Buffered in memory | Until next flush (10s default) | balanced, max-performance, dev |
+| `flush-sync` | S3 confirms write | Zero | max-durability |
+
+The `flush_linger` setting controls how long to wait after receiving a row before flushing, to coalesce small writes. Set to `0` for immediate flush (max-durability), `100ms` for low-latency (max-performance), or `1s` to batch aggressively (max-cost-savings).
 
 **Flush triggers (any one fires):**
 - Timer: `flush_interval` elapsed since last flush (default 10s)

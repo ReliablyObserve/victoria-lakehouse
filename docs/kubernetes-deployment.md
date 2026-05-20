@@ -30,6 +30,33 @@ helm install lakehouse-traces oci://ghcr.io/reliablyobserve/charts/victoria-lake
   --set lakehouseConfig.s3.region=us-east-1
 ```
 
+## Configuration Profiles
+
+Set a profile globally or per-signal/per-role to tune 40+ settings with one value:
+
+```yaml
+# values.yaml — global profile
+lakehouseConfig:
+  profile: max-durability
+  s3:
+    bucket: obs-archive
+
+# Per-signal: logs are business-critical, traces are best-effort
+logs:
+  profile: max-durability
+traces:
+  profile: max-cost-savings
+
+# Per-role: fast queries for reads, durable writes
+logs:
+  insert:
+    profile: max-durability
+  select:
+    profile: max-performance
+```
+
+Resolution order: per-role > per-signal > global. See [Getting Started — Configuration Profiles](getting-started.md#configuration-profiles) for the full profile reference.
+
 ## Architecture
 
 ```mermaid
