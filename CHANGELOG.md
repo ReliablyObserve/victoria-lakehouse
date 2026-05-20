@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Per-tenant observability: string-based tenant support for logs and traces, per-tenant stats API, enhanced tenants dashboard with row count accuracy
+- Query performance optimization design spec (Phase 0–3 roadmap)
+
+### Fixed
+- Normalize millisecond epoch timestamps for VL hits endpoint
+- Label filter false negatives on high-cardinality fields with bloom index coverage
+
+### Changed
+- Update loki-vl-proxy to v1.36.0
+
 ## [0.27.0] - 2026-05-19
 
 ### Added
