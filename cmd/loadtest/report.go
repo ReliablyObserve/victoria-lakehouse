@@ -34,6 +34,30 @@ type BenchmarkResult struct {
 	RowCount       int     `json:"row_count"`
 }
 
+type ConcurrentResult struct {
+	Concurrency  int     `json:"concurrency"`
+	Duration     string  `json:"duration"`
+	TotalQueries int64   `json:"total_queries"`
+	Errors       int64   `json:"errors"`
+	Rejected429  int64   `json:"rejected_429"`
+	P50Ms        float64 `json:"p50_ms"`
+	P95Ms        float64 `json:"p95_ms"`
+	P99Ms        float64 `json:"p99_ms"`
+	QPS          float64 `json:"qps"`
+	ErrorRate    float64 `json:"error_rate"`
+}
+
+type MixedRWResult struct {
+	Duration             string  `json:"duration"`
+	InsertBaselineRPS    float64 `json:"insert_baseline_rps"`
+	QueryBaselineP95Ms   float64 `json:"query_baseline_p95_ms"`
+	MixedInsertRPS       float64 `json:"mixed_insert_rps"`
+	MixedQueryP95Ms      float64 `json:"mixed_query_p95_ms"`
+	InsertDegradationPct float64 `json:"insert_degradation_pct"`
+	QueryDegradationPct  float64 `json:"query_degradation_pct"`
+	Pass                 bool    `json:"pass"`
+}
+
 type Report struct {
 	Mode              string                       `json:"mode"`
 	Duration          string                       `json:"duration"`
@@ -43,6 +67,8 @@ type Report struct {
 	Benchmarks        []BenchmarkResult            `json:"benchmarks,omitempty"`
 	RealisticResults  []RealisticResult            `json:"realistic_results,omitempty"`
 	VerifyResults     *VerifyResult                `json:"verify_results,omitempty"`
+	ConcurrentResults []ConcurrentResult           `json:"concurrent_results,omitempty"`
+	MixedRWResults    *MixedRWResult               `json:"mixed_rw_results,omitempty"`
 	Pass              bool                         `json:"pass"`
 }
 
@@ -62,6 +88,24 @@ func (r *Report) ComputePass() {
 	}
 	if r.VerifyResults != nil && !r.VerifyResults.Pass {
 		r.Pass = false
+	}
+	// Concurrent: p95 at C>=50 must be <= 2x p95 at lowest concurrency (baseline).
+	if len(r.ConcurrentResults) > 0 {
+		baselineP95 := r.ConcurrentResults[0].P95Ms
+		for _, cr := range r.ConcurrentResults {
+			if cr.Concurrency >= 50 && cr.P95Ms > 2*baselineP95 {
+				r.Pass = false
+				break
+			}
+		}
+	}
+	// Mixed R/W: both InsertDegradationPct and QueryDegradationPct must be < 20.
+	if r.MixedRWResults != nil {
+		mwr := r.MixedRWResults
+		mwr.Pass = mwr.InsertDegradationPct < 20 && mwr.QueryDegradationPct < 20
+		if !mwr.Pass {
+			r.Pass = false
+		}
 	}
 }
 
@@ -103,6 +147,32 @@ func (r *Report) PrintSummary() {
 			fmt.Printf("  %-8s %8d %6d %12d %12d %7.2fx %7.1fms\n",
 				b.FileSize, b.RowGroupSize, b.CompressionLvl, b.FileSizeBytes, b.RawSizeBytes, b.Ratio, b.WriteTimeMs)
 		}
+	}
+
+	if len(r.ConcurrentResults) > 0 {
+		fmt.Println("\nConcurrency Stress Results:")
+		fmt.Printf("  %-12s %12s %12s %8s %8s %8s %10s %8s\n",
+			"Concurrency", "TotalQueries", "Errors", "p50", "p95", "p99", "QPS", "ErrRate%")
+		fmt.Println("  " + strings.Repeat("-", 90))
+		for _, cr := range r.ConcurrentResults {
+			fmt.Printf("  %-12d %12d %12d %7.1fms %7.1fms %7.1fms %10.1f %7.2f%%\n",
+				cr.Concurrency, cr.TotalQueries, cr.Errors,
+				cr.P50Ms, cr.P95Ms, cr.P99Ms, cr.QPS, cr.ErrorRate)
+		}
+	}
+
+	if r.MixedRWResults != nil {
+		mwr := r.MixedRWResults
+		pass := "PASS"
+		if !mwr.Pass {
+			pass = "FAIL"
+		}
+		fmt.Println("\nMixed R/W Results:")
+		fmt.Printf("  Insert baseline RPS:   %.1f\n", mwr.InsertBaselineRPS)
+		fmt.Printf("  Query baseline p95:    %.1fms\n", mwr.QueryBaselineP95Ms)
+		fmt.Printf("  Mixed insert RPS:      %.1f  (degradation: %.1f%%)\n", mwr.MixedInsertRPS, mwr.InsertDegradationPct)
+		fmt.Printf("  Mixed query p95:       %.1fms  (degradation: %.1f%%)\n", mwr.MixedQueryP95Ms, mwr.QueryDegradationPct)
+		fmt.Printf("  Result: %s\n", pass)
 	}
 
 	if r.Pass {
