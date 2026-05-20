@@ -222,6 +222,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
 	bloomChecks := s.buildBloomChecks(queryStr)
 	pdf := buildPushDownFilter(queryStr, s.registry)
+	projectedCols := queryColumns(queryStr, s.registry)
 
 	var collectedTraceIDs []string
 	var traceIDsPtr *[]string
@@ -250,8 +251,14 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 		}
 
 		metrics.ParquetRowGroupsScanned.Inc()
-		if err := s.readRowGroup(f, rg, startNs, endNs, writeBlock, traceIDsPtr); err != nil {
-			return err
+		if projectedCols != nil {
+			if err := s.readRowGroupWithProjection(f, rg, startNs, endNs, projectedCols, writeBlock, traceIDsPtr); err != nil {
+				return err
+			}
+		} else {
+			if err := s.readRowGroup(f, rg, startNs, endNs, writeBlock, traceIDsPtr); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -291,6 +298,117 @@ func readRowGroupTyped[T any](s *Storage, f *parquet.File, rg parquet.RowGroup, 
 		}
 	}
 	return nil
+}
+
+func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, cols map[string]bool, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
+	allFields, err := readRowGroupProjected(f, rg, cols)
+	if err != nil {
+		return err
+	}
+
+	db := s.projectedFieldsToDataBlock(allFields, startNs, endNs)
+	if db != nil && db.RowsCount() > 0 {
+		writeBlock(0, db)
+		if traceIDs != nil {
+			extractTraceIDs(db, traceIDs)
+		}
+	}
+	return nil
+}
+
+func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int64) *logstorage.DataBlock {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	type colData struct {
+		name   string
+		values []string
+	}
+	colMap := make(map[string]int)
+	var cols []colData
+
+	getCol := func(name string) int {
+		if idx, ok := colMap[name]; ok {
+			return idx
+		}
+		idx := len(cols)
+		colMap[name] = idx
+		cols = append(cols, colData{name: name, values: make([]string, 0, len(rows))})
+		return idx
+	}
+
+	rowNum := 0
+	for _, fields := range rows {
+		// Time-range filter
+		skip := false
+		for _, fld := range fields {
+			if fld.name == "timestamp_unix_nano" {
+				if ts, ok := fld.value.(int64); ok {
+					if ts < startNs || ts > endNs {
+						skip = true
+						break
+					}
+				}
+			}
+		}
+		if skip {
+			continue
+		}
+
+		seen := make(map[int]bool)
+		for _, fld := range fields {
+			// Map parquet column name to internal name
+			internalName := fld.name
+			if m := s.registry.ResolveFromParquet(fld.name); m != nil {
+				internalName = m.InternalName
+			}
+
+			formatted := s.registry.FormatField(internalName, fld.value)
+			if formatted == "" {
+				continue
+			}
+			idx := getCol(internalName)
+			if seen[idx] {
+				continue
+			}
+			seen[idx] = true
+			// Pad with empty strings if this column appeared late
+			for len(cols[idx].values) < rowNum {
+				cols[idx].values = append(cols[idx].values, "")
+			}
+			cols[idx].values = append(cols[idx].values, formatted)
+		}
+
+		// Fill empty for columns not present in this row
+		for i := range cols {
+			if !seen[i] && len(cols[i].values) <= rowNum {
+				cols[i].values = append(cols[i].values, "")
+			}
+		}
+		rowNum++
+	}
+
+	if len(cols) == 0 {
+		return nil
+	}
+
+	blockCols := make([]logstorage.BlockColumn, 0, len(cols))
+	seen := make(map[string]bool, len(cols))
+	for _, col := range cols {
+		if seen[col.name] {
+			continue
+		}
+		seen[col.name] = true
+		blockCols = append(blockCols, logstorage.BlockColumn{
+			Name:   col.name,
+			Values: col.values,
+		})
+	}
+
+	db := &logstorage.DataBlock{}
+	db.SetColumns(blockCols)
+	return db
 }
 
 type field struct {
