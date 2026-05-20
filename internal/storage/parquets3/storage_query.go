@@ -617,11 +617,11 @@ func (s *Storage) buildBloomChecks(queryStr string) []bloomCheck {
 		if !col.HasBloom {
 			continue
 		}
-		val := extractExactMatch(queryStr, col.InternalName)
-		if val == "" {
-			val = extractExactMatch(queryStr, col.ParquetColumn)
+		vals := extractFilterValues(queryStr, col.InternalName)
+		if len(vals) == 0 {
+			vals = extractFilterValues(queryStr, col.ParquetColumn)
 		}
-		if val != "" {
+		for _, val := range vals {
 			checks = append(checks, bloomCheck{
 				colName: col.ParquetColumn,
 				value:   parquet.ValueOf(val),
@@ -641,11 +641,11 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 		if !col.HasBloom {
 			continue
 		}
-		val := extractExactMatch(queryStr, col.InternalName)
-		if val == "" {
-			val = extractExactMatch(queryStr, col.ParquetColumn)
+		vals := extractFilterValues(queryStr, col.InternalName)
+		if len(vals) == 0 {
+			vals = extractFilterValues(queryStr, col.ParquetColumn)
 		}
-		if val != "" {
+		for _, val := range vals {
 			checks = append(checks, bloomindex.ColumnCheck{
 				Column: col.ParquetColumn,
 				Value:  val,
@@ -752,6 +752,40 @@ func (s *Storage) bloomFilterSkip(f *parquet.File, rg parquet.RowGroup, checks [
 		}
 	}
 	return false
+}
+
+func extractInValues(query, fieldName string) []string {
+	prefix := fieldName + `:in(`
+	idx := strings.Index(query, prefix)
+	if idx < 0 {
+		return nil
+	}
+	start := idx + len(prefix)
+	end := strings.Index(query[start:], ")")
+	if end < 0 {
+		return nil
+	}
+	inner := query[start : start+end]
+
+	var vals []string
+	for _, part := range strings.Split(inner, ",") {
+		part = strings.TrimSpace(part)
+		part = strings.Trim(part, `"`)
+		if part != "" {
+			vals = append(vals, part)
+		}
+	}
+	return vals
+}
+
+func extractFilterValues(query, fieldName string) []string {
+	if vals := extractInValues(query, fieldName); len(vals) > 0 {
+		return vals
+	}
+	if val := extractExactMatch(query, fieldName); val != "" {
+		return []string{val}
+	}
+	return nil
 }
 
 func extractExactMatch(query, fieldName string) string {
