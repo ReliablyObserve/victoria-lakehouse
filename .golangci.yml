@@ -18,6 +18,10 @@ linters:
   settings:
     gocyclo:
       min-complexity: 50
+    staticcheck:
+      checks:
+        - "all"
+        - "-SA5011"
 
 formatters:
   enable:

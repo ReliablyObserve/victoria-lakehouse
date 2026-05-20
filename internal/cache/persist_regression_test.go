@@ -22,13 +22,11 @@ func TestRegressionValueCountsMergeAcrossFiles(t *testing.T) {
 	})
 
 	li := idx.GetLabelInfo("service.name")
-	if li == nil { //nolint:staticcheck // t.Fatal terminates
-		t.Fatal("label info should exist")
+	if li == nil {		t.Fatal("label info should exist")
 	}
 
 	// api should have 50+20=70
-	if li.ValueCounts["api"] != 70 { //nolint:staticcheck // guarded by t.Fatal above
-		t.Errorf("api count = %d, want 70", li.ValueCounts["api"])
+	if li.ValueCounts["api"] != 70 {		t.Errorf("api count = %d, want 70", li.ValueCounts["api"])
 	}
 	// web should stay 30
 	if li.ValueCounts["web"] != 30 {
@@ -51,13 +49,11 @@ func TestRegressionAddWithValueCountsNilCounts(t *testing.T) {
 	idx.AddWithValueCounts("field", []string{"a", "b", "a"}, nil)
 
 	li := idx.GetLabelInfo("field")
-	if li == nil { //nolint:staticcheck // t.Fatal terminates
-		t.Fatal("label info should exist")
+	if li == nil {		t.Fatal("label info should exist")
 	}
 
 	// "a" appears twice in values, but gets count=1 per add (backward compat)
-	if li.ValueCounts["a"] != 2 { //nolint:staticcheck // guarded by t.Fatal above
-		t.Errorf("a count = %d, want 2 (once per occurrence in values)", li.ValueCounts["a"])
+	if li.ValueCounts["a"] != 2 {		t.Errorf("a count = %d, want 2 (once per occurrence in values)", li.ValueCounts["a"])
 	}
 	if li.ValueCounts["b"] != 1 {
 		t.Errorf("b count = %d, want 1", li.ValueCounts["b"])
@@ -71,12 +67,10 @@ func TestRegressionAddInitializesValueCounts(t *testing.T) {
 	idx.Add("field", []string{"x", "y"})
 
 	li := idx.GetLabelInfo("field")
-	if li == nil { //nolint:staticcheck // t.Fatal terminates
-		t.Fatal("label info should exist")
+	if li == nil {		t.Fatal("label info should exist")
 	}
 
-	if li.ValueCounts == nil { //nolint:staticcheck // guarded by t.Fatal above
-		t.Error("REGRESSION: ValueCounts should be initialized even by plain Add")
+	if li.ValueCounts == nil {		t.Error("REGRESSION: ValueCounts should be initialized even by plain Add")
 	}
 
 	// Then AddWithValueCounts should merge cleanly
@@ -100,16 +94,13 @@ func TestRegressionPerTenantCardinality(t *testing.T) {
 	idx.AddWithTenant("field", []string{"x", "y"}, "tenant2")
 
 	li := idx.GetLabelInfo("field")
-	if li == nil { //nolint:staticcheck // t.Fatal terminates
-		t.Fatal("label info should exist")
+	if li == nil {		t.Fatal("label info should exist")
 	}
 
-	if li.PerTenant == nil { //nolint:staticcheck // guarded by t.Fatal above
-		t.Fatal("PerTenant should be initialized")
+	if li.PerTenant == nil {		t.Fatal("PerTenant should be initialized")
 	}
 
-	if li.PerTenant["tenant1"] != 3 { //nolint:staticcheck // guarded by t.Fatal above
-		t.Errorf("tenant1 cardinality = %d, want 3", li.PerTenant["tenant1"])
+	if li.PerTenant["tenant1"] != 3 {		t.Errorf("tenant1 cardinality = %d, want 3", li.PerTenant["tenant1"])
 	}
 	if li.PerTenant["tenant2"] != 2 {
 		t.Errorf("tenant2 cardinality = %d, want 2", li.PerTenant["tenant2"])
@@ -263,12 +254,10 @@ func TestFuzzyValueCountsAlwaysNonNegative(t *testing.T) {
 	}
 
 	li := idx.GetLabelInfo("fuzz_field")
-	if li == nil { //nolint:staticcheck // t.Fatal terminates
-		t.Fatal("label should exist")
+	if li == nil {		t.Fatal("label should exist")
 	}
 
-	for v, c := range li.ValueCounts {
-		if c < 0 {
+	for v, c := range li.ValueCounts {		if c < 0 {
 			t.Errorf("REGRESSION: negative ValueCount for %q: %d", v, c)
 		}
 	}
