@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Phase 0 correctness gate: golden file test infrastructure, verification tests for all output surfaces (LogsQL, Jaeger, insert, metrics, stats, manifest, schema), E2E regression suite, Helm chart template tests, architecture and performance documentation
+
 ## [0.27.1] - 2026-05-20
 
 ### Added

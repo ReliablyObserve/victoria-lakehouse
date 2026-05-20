@@ -29,3 +29,45 @@ func TestCounterVec_Add(t *testing.T) {
 		t.Errorf("CounterVec.Add write: expected 1, got %d", got)
 	}
 }
+
+// TestGaugeVec_SetGet exercises GaugeVec.Set and GaugeVec.Get (previously 0%).
+func TestGaugeVec_SetGet(t *testing.T) {
+	gv := NewGaugeVec("test_gaugevec_setget_cov", "tenant")
+
+	gv.Set("prod", 42)
+	if got := gv.Get("prod"); got != 42 {
+		t.Errorf("GaugeVec.Get(prod) = %d, want 42", got)
+	}
+
+	gv.Set("staging", 7)
+	if got := gv.Get("staging"); got != 7 {
+		t.Errorf("GaugeVec.Get(staging) = %d, want 7", got)
+	}
+
+	// Update the same label.
+	gv.Set("prod", 100)
+	if got := gv.Get("prod"); got != 100 {
+		t.Errorf("GaugeVec.Get(prod) after update = %d, want 100", got)
+	}
+}
+
+// TestFloatGaugeVec_SetGet exercises FloatGaugeVec.Set and FloatGaugeVec.Get (previously 0%).
+func TestFloatGaugeVec_SetGet(t *testing.T) {
+	fgv := NewFloatGaugeVec("test_floatgaugevec_setget_cov", "region")
+
+	fgv.Set("us-east-1", 0.75)
+	if got := fgv.Get("us-east-1"); got != 0.75 {
+		t.Errorf("FloatGaugeVec.Get(us-east-1) = %f, want 0.75", got)
+	}
+
+	fgv.Set("eu-west-1", 0.5)
+	if got := fgv.Get("eu-west-1"); got != 0.5 {
+		t.Errorf("FloatGaugeVec.Get(eu-west-1) = %f, want 0.5", got)
+	}
+
+	// Update the same label.
+	fgv.Set("us-east-1", 0.99)
+	if got := fgv.Get("us-east-1"); got != 0.99 {
+		t.Errorf("FloatGaugeVec.Get(us-east-1) after update = %f, want 0.99", got)
+	}
+}

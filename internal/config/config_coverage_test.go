@@ -403,3 +403,26 @@ func TestMergeConfig_SelectBufferQueryEnabled(t *testing.T) {
 		t.Error("Select.BufferQueryEnabled should be true")
 	}
 }
+
+// TestMergeConfigs_ExportedWrapper exercises the exported MergeConfigs function
+// (previously 0% coverage).
+func TestMergeConfigs_ExportedWrapper(t *testing.T) {
+	base := Default()
+	base.Mode = ModeLogs
+	base.S3.Bucket = "base-bucket"
+
+	overlay := &Config{}
+	overlay.S3.Bucket = "overlay-bucket"
+
+	result := MergeConfigs(base, overlay)
+	if result == nil {
+		t.Fatal("MergeConfigs returned nil")
+	}
+	if result.S3.Bucket != "overlay-bucket" {
+		t.Errorf("S3.Bucket = %q, want overlay-bucket", result.S3.Bucket)
+	}
+	// Mode from base should be preserved when overlay is empty.
+	if result.Mode != ModeLogs {
+		t.Errorf("Mode = %q, want logs", result.Mode)
+	}
+}

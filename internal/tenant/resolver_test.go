@@ -103,3 +103,64 @@ func TestResolver_AddAlias_Validation(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
+
+// TestParseMetricsFormat exercises ParseMetricsFormat (previously 0%).
+func TestParseMetricsFormat(t *testing.T) {
+	tests := []struct {
+		input string
+		want  MetricsFormat
+	}{
+		{"name", MetricsFormatName},
+		{"both", MetricsFormatBoth},
+		{"id", MetricsFormatID},
+		{"", MetricsFormatID},
+		{"unknown", MetricsFormatID},
+	}
+
+	for _, tt := range tests {
+		got := ParseMetricsFormat(tt.input)
+		if got != tt.want {
+			t.Errorf("ParseMetricsFormat(%q) = %d, want %d", tt.input, got, tt.want)
+		}
+	}
+}
+
+// TestResolver_HasAliases exercises HasAliases (previously 0%).
+func TestResolver_HasAliases(t *testing.T) {
+	r := NewResolver(ResolverConfig{})
+
+	if r.HasAliases() {
+		t.Error("fresh resolver should have no aliases")
+	}
+
+	_ = r.AddAlias("prod_team", TenantID{AccountID: 1, ProjectID: 1})
+	if !r.HasAliases() {
+		t.Error("resolver should have aliases after AddAlias")
+	}
+
+	r.RemoveAlias("prod_team")
+	if r.HasAliases() {
+		t.Error("resolver should have no aliases after removing all")
+	}
+}
+
+// TestResolver_Config exercises Config (previously 0%).
+func TestResolver_Config(t *testing.T) {
+	cfg := ResolverConfig{
+		MetricsFormat: MetricsFormatName,
+		AutoRegister:  true,
+		OrgIDHeader:   "X-Custom-OrgID",
+	}
+	r := NewResolver(cfg)
+
+	got := r.Config()
+	if got.MetricsFormat != MetricsFormatName {
+		t.Errorf("Config().MetricsFormat = %d, want %d", got.MetricsFormat, MetricsFormatName)
+	}
+	if !got.AutoRegister {
+		t.Error("Config().AutoRegister should be true")
+	}
+	if got.OrgIDHeader != "X-Custom-OrgID" {
+		t.Errorf("Config().OrgIDHeader = %q, want X-Custom-OrgID", got.OrgIDHeader)
+	}
+}

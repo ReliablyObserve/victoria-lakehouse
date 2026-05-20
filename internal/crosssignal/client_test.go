@@ -223,3 +223,77 @@ func TestClient_EmptyTraceIDs_NoOp(t *testing.T) {
 	client.EnqueueHint([]string{}, 1000, 2000, "logs")
 	client.SendEvictionHint([]string{}, "logs")
 }
+
+// TestClient_SendPrefetchHint_WithAuthKey exercises the auth key header path.
+func TestClient_SendPrefetchHint_WithAuthKey(t *testing.T) {
+	var gotAuthKey string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuthKey = r.Header.Get("X-Cross-Signal-Key")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := NewClient(ClientConfig{
+		Endpoint:      srv.URL,
+		Timeout:       2 * time.Second,
+		MaxBatch:      100,
+		BatchInterval: 10 * time.Second,
+		AuthKey:       "secret-key",
+	})
+	defer client.Close()
+
+	// Directly invoke sendPrefetchHint with auth key set
+	client.sendPrefetchHint(PrefetchHint{
+		TraceIDs:     []string{"trace-1"},
+		StartNs:      1000,
+		EndNs:        2000,
+		SourceSignal: "logs",
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	if gotAuthKey != "secret-key" {
+		t.Errorf("X-Cross-Signal-Key = %q, want %q", gotAuthKey, "secret-key")
+	}
+}
+
+// TestClient_SendEvictionHint_WithAuthKey exercises the auth key header path in sendEvictionHint.
+func TestClient_SendEvictionHint_WithAuthKey(t *testing.T) {
+	var gotAuthKey string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuthKey = r.Header.Get("X-Cross-Signal-Key")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := NewClient(ClientConfig{
+		Endpoint:      srv.URL,
+		Timeout:       2 * time.Second,
+		MaxBatch:      100,
+		BatchInterval: 10 * time.Second,
+		AuthKey:       "evict-key",
+	})
+	defer client.Close()
+
+	client.SendEvictionHint([]string{"trace-evict"}, "logs")
+	time.Sleep(50 * time.Millisecond)
+
+	if gotAuthKey != "evict-key" {
+		t.Errorf("X-Cross-Signal-Key = %q, want %q", gotAuthKey, "evict-key")
+	}
+}
+
+// TestClient_SendPrefetchHint_HTTPError exercises the HTTP error path.
+func TestClient_SendPrefetchHint_HTTPError(t *testing.T) {
+	// Connect to a closed server to trigger HTTP error
+	client := NewClient(ClientConfig{
+		Endpoint:      "http://127.0.0.1:1", // port 1 is always refused
+		Timeout:       100 * time.Millisecond,
+		MaxBatch:      100,
+		BatchInterval: 10 * time.Second,
+	})
+	defer client.Close()
+
+	// Should not panic — just logs an error
+	client.sendPrefetchHint(PrefetchHint{TraceIDs: []string{"t1"}, StartNs: 1, EndNs: 2, SourceSignal: "logs"})
+	client.sendEvictionHint(EvictionHint{TraceIDs: []string{"t1"}, SourceSignal: "logs"})
+}

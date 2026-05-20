@@ -363,3 +363,47 @@ func TestRegister_TracesMode_TraceAndSearchPaths(t *testing.T) {
 		}
 	}
 }
+
+// TestNormalizeTimeParams exercises all branches of normalizeTimeParams.
+func TestNormalizeTimeParams(t *testing.T) {
+	t.Run("no params — no-op", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/query", nil)
+		normalizeTimeParams(req)
+		// should not panic
+	})
+
+	t.Run("params already in seconds (small value)", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/query?start=1700000000&end=1700003600", nil)
+		normalizeTimeParams(req)
+		// values are below 1e12 — no conversion
+		if req.FormValue("start") != "1700000000" {
+			t.Errorf("start should remain seconds, got %q", req.FormValue("start"))
+		}
+	})
+
+	t.Run("params in milliseconds (> 1e12) get divided by 1000", func(t *testing.T) {
+		// Use millisecond timestamps > 1e12
+		req := httptest.NewRequest("GET", "/query?start=1700000000000&end=1700003600000&time=1700001800000", nil)
+		normalizeTimeParams(req)
+		if req.FormValue("start") != "1700000000" {
+			t.Errorf("start ms→s: got %q, want 1700000000", req.FormValue("start"))
+		}
+		if req.FormValue("end") != "1700003600" {
+			t.Errorf("end ms→s: got %q, want 1700003600", req.FormValue("end"))
+		}
+		if req.FormValue("time") != "1700001800" {
+			t.Errorf("time ms→s: got %q, want 1700001800", req.FormValue("time"))
+		}
+	})
+
+	t.Run("non-numeric param — skipped", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/query?start=notanumber", nil)
+		normalizeTimeParams(req)
+		// should not panic, non-numeric is skipped
+	})
+
+	t.Run("empty param — skipped", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/query?start=", nil)
+		normalizeTimeParams(req)
+	})
+}

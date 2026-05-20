@@ -265,3 +265,53 @@ func TestDiskCache_DefaultWatermark(t *testing.T) {
 		t.Fatal("expected non-nil cache with invalid watermark")
 	}
 }
+
+// TestDiskCache_PutFromPath_NonExistentSrc exercises the os.Stat error path.
+func TestDiskCache_PutFromPath_NonExistentSrc(t *testing.T) {
+	dir := t.TempDir()
+	dc, err := NewDiskCache(dir, 1024*1024, 0.8)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = dc.PutFromPath("key", "/nonexistent/path/to/file.dat")
+	if err == nil {
+		t.Error("expected error for non-existent source file")
+	}
+}
+
+// TestDiskCache_PutFromPath_UpdateExisting exercises the "key already exists" branch.
+func TestDiskCache_PutFromPath_UpdateExisting(t *testing.T) {
+	dir := t.TempDir()
+	dc, err := NewDiskCache(dir, 1024*1024, 0.8)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srcPath := filepath.Join(t.TempDir(), "source.dat")
+	if err := os.WriteFile(srcPath, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// First put.
+	if err := dc.PutFromPath("key1", srcPath); err != nil {
+		t.Fatalf("first PutFromPath: %v", err)
+	}
+
+	// Update with new content.
+	if err := os.WriteFile(srcPath, []byte("updated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := dc.PutFromPath("key1", srcPath); err != nil {
+		t.Fatalf("second PutFromPath: %v", err)
+	}
+
+	cachedPath, ok := dc.Get("key1")
+	if !ok {
+		t.Fatal("expected cache hit after update")
+	}
+	data, _ := os.ReadFile(cachedPath)
+	if string(data) != "updated" {
+		t.Errorf("content = %q, want 'updated'", data)
+	}
+}

@@ -318,3 +318,59 @@ func TestTier_String(t *testing.T) {
 func itoa(i int) string {
 	return strconv.Itoa(i)
 }
+
+// TestTier_String_UnknownValue exercises the default branch in Tier.String() (previously 83.3%).
+func TestTier_String_UnknownValue(t *testing.T) {
+	unknownTier := Tier(99)
+	got := unknownTier.String()
+	if got == "" {
+		t.Error("expected non-empty string for unknown tier")
+	}
+	// Should contain "tier" or the number.
+	if got != "tier(99)" {
+		t.Errorf("unexpected string for unknown tier: %q", got)
+	}
+}
+
+// TestTierConfig_ApplyOverride exercises TierConfig.ApplyOverride (previously 75%).
+func TestTierConfig_ApplyOverride(t *testing.T) {
+	cfg := DefaultTierConfig()
+
+	t.Run("no overrides leaves config unchanged", func(t *testing.T) {
+		result := cfg.ApplyOverride(TierConfigOverride{})
+		if result.Tier1MaxAge != cfg.Tier1MaxAge {
+			t.Errorf("Tier1MaxAge changed without override")
+		}
+	})
+
+	t.Run("override Tier1MaxAge only", func(t *testing.T) {
+		d := 3 * 24 * time.Hour
+		result := cfg.ApplyOverride(TierConfigOverride{Tier1MaxAge: &d})
+		if result.Tier1MaxAge != d {
+			t.Errorf("Tier1MaxAge = %v, want %v", result.Tier1MaxAge, d)
+		}
+		if result.Tier2MaxAge != cfg.Tier2MaxAge {
+			t.Errorf("Tier2MaxAge changed unexpectedly")
+		}
+	})
+
+	t.Run("override all tiers", func(t *testing.T) {
+		d1 := 3 * 24 * time.Hour
+		d2 := 15 * 24 * time.Hour
+		d3 := 45 * 24 * time.Hour
+		result := cfg.ApplyOverride(TierConfigOverride{
+			Tier1MaxAge: &d1,
+			Tier2MaxAge: &d2,
+			Tier3MaxAge: &d3,
+		})
+		if result.Tier1MaxAge != d1 {
+			t.Errorf("Tier1MaxAge = %v, want %v", result.Tier1MaxAge, d1)
+		}
+		if result.Tier2MaxAge != d2 {
+			t.Errorf("Tier2MaxAge = %v, want %v", result.Tier2MaxAge, d2)
+		}
+		if result.Tier3MaxAge != d3 {
+			t.Errorf("Tier3MaxAge = %v, want %v", result.Tier3MaxAge, d3)
+		}
+	})
+}
