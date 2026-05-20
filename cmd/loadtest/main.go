@@ -4,11 +4,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 )
 
 func main() {
 	target := flag.String("target", "http://localhost:9428", "Lakehouse target URL")
-	mode := flag.String("mode", "all", "Test mode: latency, throughput, mixed, all, realistic, benchmark, verify, e2e, compare")
+	mode := flag.String("mode", "all", "Test mode: latency, throughput, mixed, mixed-rw, concurrent, all, realistic, benchmark, verify, e2e, compare")
 	duration := flag.String("duration", "60s", "Test duration")
 	iterations := flag.Int("iterations", 100, "Iterations per latency test")
 	warmup := flag.Int("warmup", 3, "Warmup iterations per test (realistic mode)")
@@ -17,6 +19,7 @@ func main() {
 	e2eProxy := flag.String("e2e-proxy", "", "E2E: lakehouse through proxy URL")
 	e2eVL := flag.String("e2e-vl", "", "E2E: VictoriaLogs URL for comparison")
 	compareVL := flag.String("compare-vl", "", "Compare: VictoriaLogs URL for head-to-head")
+	concurrency := flag.String("concurrency", "1,10,50,100", "Comma-separated concurrency levels for concurrent mode")
 	flag.Parse()
 
 	report := &Report{
@@ -34,9 +37,17 @@ func main() {
 		report.ThroughputTests = map[string]*ThroughputResult{
 			"mixed_workload": runMixedWorkload(*target, *duration),
 		}
+	case "concurrent":
+		levels := parseConcurrencyLevels(*concurrency)
+		report.ConcurrentResults = runConcurrentBenchmark(*target, *duration, levels)
+	case "mixed-rw":
+		report.MixedRWResults = runMixedRWBenchmark(*target, *duration)
 	case "all":
 		report.LatencyBenchmarks = runLatencyBenchmarks(*target, *iterations)
 		report.ThroughputTests = runThroughputTests(*target, *duration)
+		levels := parseConcurrencyLevels(*concurrency)
+		report.ConcurrentResults = runConcurrentBenchmark(*target, *duration, levels)
+		report.MixedRWResults = runMixedRWBenchmark(*target, *duration)
 	case "realistic":
 		report.RealisticResults = runRealisticBenchmarks(*target, *iterations, *warmup)
 		printRealisticSummary(report.RealisticResults)
@@ -126,4 +137,24 @@ func main() {
 	if !report.Pass {
 		os.Exit(1)
 	}
+}
+
+func parseConcurrencyLevels(s string) []int {
+	parts := strings.Split(s, ",")
+	var levels []int
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil || n <= 0 {
+			continue
+		}
+		levels = append(levels, n)
+	}
+	if len(levels) == 0 {
+		return []int{1, 10, 50, 100}
+	}
+	return levels
 }
