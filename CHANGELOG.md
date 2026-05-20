@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Fix errcheck lint failure on `rows.Close()` in projected reader (logs and traces modules)
+
 ## [0.28.0] - 2026-05-20
 
 ### Added

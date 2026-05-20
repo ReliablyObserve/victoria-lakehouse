@@ -38,7 +38,7 @@ func readRowGroupProjected(f *parquet.File, rg parquet.RowGroup, wantCols map[st
 	}
 
 	rows := rg.Rows()
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	buf := make([]parquet.Row, 256)
 	var result [][]field

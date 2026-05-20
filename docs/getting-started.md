@@ -16,7 +16,7 @@ Victoria Lakehouse handles both logs and traces through the same architecture â€
 ```mermaid
 graph LR
     subgraph Ingest
-        A1[vmagent] -->|logs| B[Lakehouse Insert]
+        A1[vlagent] -->|logs| B[Lakehouse Insert]
         A2[OTEL Collector] -->|traces| B
     end
     B -->|flush Parquet| C[(S3)]
