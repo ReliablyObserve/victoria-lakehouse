@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Config sweep script for automated `max_concurrent` / `file_workers` tuning validation
 - Deployment-size recommendations for query concurrency settings
 
+## [0.28.1] - 2026-05-20
+
 ### Fixed
 - Fix errcheck lint failure on `rows.Close()` in projected reader (logs and traces modules)
 

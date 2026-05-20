@@ -103,7 +103,7 @@ func measureQueryP95(target string, concurrency int, dur time.Duration) float64 
 		go func(workerIdx int) {
 			defer wg.Done()
 			client := &http.Client{Timeout: 30 * time.Second}
-			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerIdx)))
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerIdx))) // #nosec G404
 			var localLatencies []float64
 
 			for time.Now().Before(deadline) {
@@ -181,7 +181,7 @@ func measureMixedRW(target string, insertConc, queryConc int, dur time.Duration)
 		go func(workerIdx int) {
 			defer wg.Done()
 			client := &http.Client{Timeout: 30 * time.Second}
-			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerIdx)))
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerIdx))) // #nosec G404
 			var localLatencies []float64
 
 			for time.Now().Before(deadline) {

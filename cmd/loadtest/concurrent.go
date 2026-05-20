@@ -81,7 +81,7 @@ func runAtConcurrency(target string, queryURLs []string, concurrency int, dur ti
 			defer wg.Done()
 
 			client := &http.Client{Timeout: 30 * time.Second}
-			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerIdx)))
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerIdx))) // #nosec G404
 			var localLatencies []float64
 
 			for time.Now().Before(deadline) {
