@@ -35,7 +35,7 @@ func runConcurrentBenchmark(target string, durationStr string, concurrencyLevels
 	fmt.Printf("Target: %s  Duration per level: %s  Query mix: %d URLs\n\n", target, durationStr, len(queryURLs))
 	fmt.Printf("  %-12s %12s %10s %8s %8s %8s %10s %8s\n",
 		"Concurrency", "TotalQueries", "Errors", "p50", "p95", "p99", "QPS", "ErrRate%")
-	fmt.Printf("  %s\n", fmt.Sprintf("%s", repeatStr("-", 90)))
+	fmt.Printf("  %s\n", repeatStr("-", 90))
 
 	results := make([]ConcurrentResult, 0, len(concurrencyLevels))
 	for _, c := range concurrencyLevels {
