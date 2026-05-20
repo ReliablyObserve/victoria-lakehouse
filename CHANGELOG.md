@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OTEL tracing: HTTP, query, and insert paths instrumented with OpenTelemetry spans
 - Benchmark CLI (`cmd/bench`): seed data and measure cold/warm/hot query latency with baseline JSON output
 
+### Performance
+- Manifest `GetFilesForRange` uses sorted partition index with binary search (O(log P) vs O(P))
+- Column projection pushdown: queries reading 2-3 fields skip deserializing unused columns
+- Traces module: added pushdown filter parity with logs module for row group stats pruning
+- Expanded bloom index coverage: `host.name`, `k8s.namespace.name`, `k8s.pod.name`, `k8s.deployment.name`, `deployment.environment`, `span.name` (traces)
+- Bloom index supports `in()` operator for multi-value exact match queries
+
 ## [0.27.2] - 2026-05-20
 
 ### Added

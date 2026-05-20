@@ -122,12 +122,24 @@ Bloom columns are configured per mode. Adding columns increases index memory and
 
 ```yaml
 logs:
-  bloom_columns: [trace_id, service.name]
+  bloom_columns: [trace_id, service.name, host.name, k8s.namespace.name, k8s.pod.name, k8s.deployment.name, deployment.environment]
 traces:
-  bloom_columns: [trace_id, service.name]
+  bloom_columns: [trace_id, service.name, span.name]
 ```
 
 For high-cardinality fields (trace_id), bloom filters skip the vast majority of files on point lookups, reducing cold latency from seconds to the cost of a single file fetch.
+
+Bloom filters now support the `in()` operator for multi-value queries (e.g., `service.name:in("api","web")`), generating one bloom check per value.
+
+### Column projection
+
+When a query references only a few fields (e.g., `trace_id:="abc123"`), the query engine automatically detects the referenced columns and skips deserializing unused parquet columns. This reduces I/O and CPU for narrow queries by 2-4x.
+
+Column projection is automatic — no configuration needed. Wildcard or free-text queries fall back to reading all columns.
+
+### Manifest partition index
+
+`GetFilesForRange` uses a sorted partition index with binary search (O(log P)) instead of iterating all partitions linearly (O(P)). This is most impactful for large time ranges with thousands of hourly partitions.
 
 ### File size and row group recommendations
 
