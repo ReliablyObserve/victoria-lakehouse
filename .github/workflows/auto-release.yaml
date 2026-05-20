@@ -299,8 +299,8 @@ jobs:
               echo "Retrying in ${DELAY}s..."
               sleep "$DELAY"
             else
-              echo "::warning::Failed to create release metadata PR after 5 attempts. Branch $BRANCH was pushed — create PR manually."
-              exit 0
+              echo "::error::Failed to create release metadata PR after 5 attempts. Branch $BRANCH was pushed — create PR manually."
+              exit 1
             fi
           done
 
