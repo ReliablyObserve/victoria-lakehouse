@@ -35,7 +35,8 @@ services:
       mc alias set local http://minio:9000 minioadmin minioadmin &&
       mc mb local/obs-archive --ignore-existing &&
       mc mb local/loki-data --ignore-existing &&
-      echo 'MinIO buckets ready (obs-archive, loki-data)'
+      mc mb local/tempo-data --ignore-existing &&
+      echo 'MinIO buckets ready (obs-archive, loki-data, tempo-data)'
       "
 
   # =========================================================================
@@ -121,7 +122,91 @@ services:
       disable: true
 
   # =========================================================================
-  # Data Generation — write to all 3 systems
+  # System D: Victoria Lakehouse Traces (S3 cold tier)
+  # =========================================================================
+
+  lakehouse-traces:
+    build:
+      context: ../../
+      dockerfile: Dockerfile.traces
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "30428:10428"
+    networks: [bench-net]
+    command:
+      - "-lakehouse.s3.bucket=obs-archive"
+      - "-lakehouse.s3.endpoint=http://minio:9000"
+      - "-lakehouse.s3.access-key=minioadmin"
+      - "-lakehouse.s3.secret-key=minioadmin"
+      - "-lakehouse.s3.force-path-style=true"
+      - "-lakehouse.manifest.refresh-interval=10s"
+      - "-lakehouse.insert.flush-interval=30s"
+      - "-lakehouse.query.file-workers=16"
+      - "-lakehouse.cache.memory-mb=2048"
+      - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
+      - "-lakehouse.cache.disk-max-mb=20480"
+      - "-lakehouse.cache.warmup-partitions=168"
+      - "-lakehouse.cache.warmup-max-files=5000"
+      - "-loggerLevel=INFO"
+    volumes:
+      - lakehouse-cache-traces:/data/lakehouse
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://localhost:10428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # =========================================================================
+  # System E: VictoriaTraces (disk hot tier)
+  # =========================================================================
+
+  victoriatraces:
+    image: victoriametrics/victoria-logs:v1.50.0
+    command:
+      - "-storageDataPath=/data"
+      - "-retentionPeriod=30d"
+      - "-search.maxConcurrentRequests=64"
+      - "-httpListenAddr=:10428"
+      - "-loggerLevel=INFO"
+    ports:
+      - "30401:10428"
+    networks: [bench-net]
+    volumes:
+      - vt-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:10428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # =========================================================================
+  # System F: Grafana Tempo (S3 cold tier)
+  # =========================================================================
+
+  tempo:
+    image: grafana/tempo:2.7.2
+    user: "0"
+    ports:
+      - "33200:3200"
+      - "34318:4318"
+    networks: [bench-net]
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./tempo-benchmark-config.yml:/etc/tempo/config.yaml:ro
+      - tempo-data:/data/tempo
+    command: -config.file=/etc/tempo/config.yaml
+    healthcheck:
+      test: ["NONE"]
+      disable: true
+
+  # =========================================================================
+  # Data Generation — write to all 6 systems (3 logs + 3 traces)
   # =========================================================================
 
   datagen-seed:
@@ -135,13 +220,23 @@ services:
         condition: service_healthy
       loki:
         condition: service_started
+      victoriatraces:
+        condition: service_healthy
+      lakehouse-traces:
+        condition: service_healthy
+      tempo:
+        condition: service_started
     networks: [bench-net]
     command:
       - "--logs=500000"
+      - "--traces=5000"
       - "--hours-back=168"
       - "--vl-endpoint=http://victorialogs:9428"
       - "--lh-logs-endpoint=http://lakehouse-logs:9428"
       - "--loki-endpoint=http://loki:3100"
+      - "--vt-endpoint=http://victoriatraces:10428"
+      - "--lh-traces-endpoint=http://lakehouse-traces:10428"
+      - "--tempo-endpoint=http://tempo:4318"
 
   # =========================================================================
   # VictoriaMetrics — scrapes metrics from all systems
@@ -170,6 +265,9 @@ services:
 
 volumes:
   lakehouse-cache-logs: {}
+  lakehouse-cache-traces: {}
   vl-data: {}
+  vt-data: {}
   loki-data: {}
+  tempo-data: {}
   vm-data: {}

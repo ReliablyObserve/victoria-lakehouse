@@ -44,6 +44,7 @@ func main() {
 	lhLogsEndpoint := flag.String("lh-logs-endpoint", "", "Lakehouse logs cold endpoint (e.g. http://lakehouse-logs:9428)")
 	lhTracesEndpoint := flag.String("lh-traces-endpoint", "", "Lakehouse traces cold endpoint (e.g. http://lakehouse-traces:10428)")
 	lokiEndpoint := flag.String("loki-endpoint", "", "Grafana Loki push endpoint (e.g. http://loki:3100)")
+	tempoEndpoint := flag.String("tempo-endpoint", "", "Grafana Tempo OTLP endpoint (e.g. http://tempo:4318)")
 	accountID := flag.String("account-id", "0", "tenant AccountID header")
 	projectID := flag.String("project-id", "0", "tenant ProjectID header")
 	orgID := flag.String("org-id", "", "string tenant ID via X-Scope-OrgID header (overrides account-id/project-id)")
@@ -53,14 +54,14 @@ func main() {
 		log.Fatal("at least one of --vl-endpoint, --lh-logs-endpoint, or --loki-endpoint is required")
 	}
 
-	generateBatch(*logsCount, *tracesCount, *hoursBack, *vlEndpoint, *vtEndpoint, *lhLogsEndpoint, *lhTracesEndpoint, *lokiEndpoint, *accountID, *projectID, *orgID)
+	generateBatch(*logsCount, *tracesCount, *hoursBack, *vlEndpoint, *vtEndpoint, *lhLogsEndpoint, *lhTracesEndpoint, *lokiEndpoint, *tempoEndpoint, *accountID, *projectID, *orgID)
 
 	if *interval > 0 {
 		log.Printf("Continuous mode: generating %d logs + %d traces every %s", *logsCount, *tracesCount, *interval)
 		ticker := time.NewTicker(*interval)
 		defer ticker.Stop()
 		for range ticker.C {
-			generateBatch(*logsCount, *tracesCount, 1, *vlEndpoint, *vtEndpoint, *lhLogsEndpoint, *lhTracesEndpoint, *lokiEndpoint, *accountID, *projectID, *orgID)
+			generateBatch(*logsCount, *tracesCount, 1, *vlEndpoint, *vtEndpoint, *lhLogsEndpoint, *lhTracesEndpoint, *lokiEndpoint, *tempoEndpoint, *accountID, *projectID, *orgID)
 		}
 	}
 }
@@ -126,7 +127,7 @@ type logRow struct {
 	LogAttrs          map[string]string
 }
 
-func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint, lhLogsEndpoint, lhTracesEndpoint, lokiEndpoint, accountID, projectID, orgID string) {
+func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint, lhLogsEndpoint, lhTracesEndpoint, lokiEndpoint, tempoEndpoint, accountID, projectID, orgID string) {
 	now := time.Now().UTC()
 	rng := mrand.New(mrand.NewSource(now.UnixNano())) // #nosec G404 -- synthetic test data
 
@@ -319,6 +320,13 @@ func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint
 			log.Printf("  pushed %d traces to LH cold at %s", len(allTraces), lhTracesEndpoint)
 		}
 	}
+	if tempoEndpoint != "" {
+		if err := pushTempoTraces(tempoEndpoint, allTraces); err != nil {
+			log.Printf("WARNING: push traces to Tempo failed: %v", err)
+		} else {
+			log.Printf("  pushed %d traces to Tempo at %s", len(allTraces), tempoEndpoint)
+		}
+	}
 
 	// ── Phase 2: Generate logs — 70% correlated to traces, 30% independent ──
 
@@ -509,6 +517,10 @@ func pushNDJSON(endpoint string, rows []logRow, accountID, projectID, orgID stri
 }
 
 func pushOTLPTraces(endpoint string, rows []traceRow, accountID, projectID, orgID string) error {
+	return pushOTLPTracesToURL(endpoint+"/insert/opentelemetry/v1/traces", rows, accountID, projectID, orgID)
+}
+
+func pushOTLPTracesToURL(url string, rows []traceRow, accountID, projectID, orgID string) error {
 	type otlpKV struct {
 		Key   string      `json:"key"`
 		Value interface{} `json:"value"`
@@ -606,7 +618,7 @@ func pushOTLPTraces(endpoint string, rows []traceRow, accountID, projectID, orgI
 		return fmt.Errorf("marshal otlp: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", endpoint+"/insert/opentelemetry/v1/traces", bytes.NewReader(data))
+	req, err := http.NewRequest("POST", url, bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -615,14 +627,20 @@ func pushOTLPTraces(endpoint string, rows []traceRow, accountID, projectID, orgI
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("push to %s: %w", endpoint, err)
+		return fmt.Errorf("push to %s: %w", url, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("push to %s: status %d: %s", endpoint, resp.StatusCode, string(body))
+		return fmt.Errorf("push to %s: status %d: %s", url, resp.StatusCode, string(body))
 	}
 	return nil
+}
+
+func pushTempoTraces(endpoint string, rows []traceRow) error {
+	// Tempo accepts OTLP at /otlp/v1/traces. Reuse the OTLP payload builder
+	// but post to Tempo's endpoint without VL/VT tenant headers.
+	return pushOTLPTracesToURL(endpoint+"/otlp/v1/traces", rows, "", "", "")
 }
 
 func pushLoki(endpoint string, rows []logRow) error {
