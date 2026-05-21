@@ -893,12 +893,14 @@ func extractExactMatch(query, fieldName string) string {
 
 // filterFilesByLabels uses manifest-level labels to skip files that definitely
 // don't contain the queried values. This avoids downloading files from S3.
-// A file is skipped only if it HAS labels for the field (meaning the label was
-// populated at flush time) but does NOT contain the target value.
 func (s *Storage) filterFilesByLabels(files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
 	pdf := buildPushDownFilter(queryStr, s.registry)
 	if pdf == nil || len(pdf.Checks) == 0 {
 		return files
+	}
+
+	if result := s.filterByLabelIndex(files, pdf); result != nil {
+		return result
 	}
 
 	filtered := files[:0]
@@ -932,6 +934,47 @@ func (s *Storage) filterFilesByLabels(files []manifest.FileInfo, queryStr string
 	}
 
 	return filtered
+}
+
+func (s *Storage) filterByLabelIndex(files []manifest.FileInfo, pdf *PushDownFilter) []manifest.FileInfo {
+	var candidateKeys map[string]bool
+
+	for _, check := range pdf.Checks {
+		if check.Op != PushDownExact {
+			return nil
+		}
+		keys := s.manifest.GetFileKeysByLabel(check.Column, check.Value)
+		if keys == nil {
+			return nil
+		}
+		if candidateKeys == nil {
+			candidateKeys = keys
+		} else {
+			for k := range candidateKeys {
+				if !keys[k] {
+					delete(candidateKeys, k)
+				}
+			}
+		}
+	}
+
+	if candidateKeys == nil {
+		return nil
+	}
+
+	var result []manifest.FileInfo
+	for _, fi := range files {
+		if candidateKeys[fi.Key] {
+			result = append(result, fi)
+		}
+	}
+
+	skipped := len(files) - len(result)
+	if skipped > 0 {
+		metrics.ParquetRowGroupsSkipped.Inc("label_index")
+		logger.Infof("label index fast-path: matched %d/%d files", len(result), len(files))
+	}
+	return result
 }
 
 func fileLabelsMatch(values []string, check PushDownCheck) bool {

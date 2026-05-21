@@ -995,6 +995,13 @@ func (s *Storage) filterFilesByLabels(files []manifest.FileInfo, queryStr string
 		return files
 	}
 
+	// Fast path: use inverted label index for exact-match checks.
+	// If ALL checks are exact-match and we get index hits, intersect candidate
+	// keys to get the result set in O(candidates) instead of O(files).
+	if result := s.filterByLabelIndex(files, pdf); result != nil {
+		return result
+	}
+
 	filtered := files[:0]
 	skipped := 0
 	for _, fi := range files {
@@ -1026,6 +1033,50 @@ func (s *Storage) filterFilesByLabels(files []manifest.FileInfo, queryStr string
 	}
 
 	return filtered
+}
+
+// filterByLabelIndex tries to use the manifest's inverted label index for O(1)
+// file lookup. Returns nil if the index can't handle this query (non-exact
+// checks, missing index entries), falling back to the O(N) scan.
+func (s *Storage) filterByLabelIndex(files []manifest.FileInfo, pdf *PushDownFilter) []manifest.FileInfo {
+	var candidateKeys map[string]bool
+
+	for _, check := range pdf.Checks {
+		if check.Op != PushDownExact {
+			return nil
+		}
+		keys := s.manifest.GetFileKeysByLabel(check.Column, check.Value)
+		if keys == nil {
+			return nil
+		}
+		if candidateKeys == nil {
+			candidateKeys = keys
+		} else {
+			for k := range candidateKeys {
+				if !keys[k] {
+					delete(candidateKeys, k)
+				}
+			}
+		}
+	}
+
+	if candidateKeys == nil {
+		return nil
+	}
+
+	var result []manifest.FileInfo
+	for _, fi := range files {
+		if candidateKeys[fi.Key] {
+			result = append(result, fi)
+		}
+	}
+
+	skipped := len(files) - len(result)
+	if skipped > 0 {
+		metrics.ParquetRowGroupsSkipped.Inc("label_index")
+		logger.Infof("label index fast-path: matched %d/%d files", len(result), len(files))
+	}
+	return result
 }
 
 func fileLabelsMatch(values []string, check PushDownCheck) bool {

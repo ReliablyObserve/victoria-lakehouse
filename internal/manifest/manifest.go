@@ -19,6 +19,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
+const maxLabelsPerField = 100
+
 type FileInfo struct {
 	Key               string              `json:"key"`
 	Size              int64               `json:"size"`
@@ -75,6 +77,7 @@ type Manifest struct {
 	files            map[string][]FileInfo // "dt=2026-05-02/hour=10" -> files
 	sortedPartitions []partitionEntry
 	partitionMeta    map[string]*PartitionMeta
+	labelIndex       map[string]map[string]map[string]bool // field -> value -> fileKey -> exists
 	minTime          time.Time
 	maxTime          time.Time
 	totalFiles       int
@@ -278,11 +281,12 @@ func (m *Manifest) GetFilesForRange(startNs, endNs int64) []FileInfo {
 	return result
 }
 
-// rebuildIndex rebuilds the sorted partition index from m.files.
+// rebuildIndex rebuilds the sorted partition index and inverted label index from m.files.
 // Must be called while holding the write lock (m.mu).
 func (m *Manifest) rebuildIndex() {
-	// Reuse existing slice capacity.
 	m.sortedPartitions = m.sortedPartitions[:0]
+
+	m.labelIndex = make(map[string]map[string]map[string]bool)
 
 	for key := range m.files {
 		t, err := parsePartitionTime(key)
@@ -294,11 +298,75 @@ func (m *Manifest) rebuildIndex() {
 			start: t,
 			end:   t.Add(time.Hour),
 		})
+
+		for _, fi := range m.files[key] {
+			m.indexFileLabels(fi)
+		}
 	}
 
 	sort.Slice(m.sortedPartitions, func(i, j int) bool {
 		return m.sortedPartitions[i].start.Before(m.sortedPartitions[j].start)
 	})
+}
+
+func (m *Manifest) indexFileLabels(fi FileInfo) {
+	for field, values := range fi.Labels {
+		if len(values) >= maxLabelsPerField {
+			continue
+		}
+		fieldMap, ok := m.labelIndex[field]
+		if !ok {
+			fieldMap = make(map[string]map[string]bool)
+			m.labelIndex[field] = fieldMap
+		}
+		for _, v := range values {
+			keySet, ok := fieldMap[v]
+			if !ok {
+				keySet = make(map[string]bool)
+				fieldMap[v] = keySet
+			}
+			keySet[fi.Key] = true
+		}
+	}
+}
+
+func (m *Manifest) removeFileFromLabelIndex(fi FileInfo) {
+	for field, values := range fi.Labels {
+		fieldMap := m.labelIndex[field]
+		if fieldMap == nil {
+			continue
+		}
+		for _, v := range values {
+			delete(fieldMap[v], fi.Key)
+			if len(fieldMap[v]) == 0 {
+				delete(fieldMap, v)
+			}
+		}
+		if len(fieldMap) == 0 {
+			delete(m.labelIndex, field)
+		}
+	}
+}
+
+// GetFileKeysByLabel returns the set of file keys that contain the given label field=value.
+// Returns nil if no index exists for that field/value pair.
+func (m *Manifest) GetFileKeysByLabel(field, value string) map[string]bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	fieldMap := m.labelIndex[field]
+	if fieldMap == nil {
+		return nil
+	}
+	keys := fieldMap[value]
+	if len(keys) == 0 {
+		return nil
+	}
+	cp := make(map[string]bool, len(keys))
+	for k := range keys {
+		cp[k] = true
+	}
+	return cp
 }
 
 func (m *Manifest) TotalFiles() int {

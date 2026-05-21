@@ -626,3 +626,117 @@ func TestManifest_BloomMeta(t *testing.T) {
 		t.Error("BloomAvailable() should be false when BloomAvailable=false in meta")
 	}
 }
+
+func TestManifest_LabelIndex(t *testing.T) {
+	m := newTestManifest()
+
+	m.AddFile("dt=2026-05-01/hour=10", FileInfo{
+		Key:  "logs/dt=2026-05-01/hour=10/a.parquet",
+		Size: 1000,
+		Labels: map[string][]string{
+			"service.name": {"api", "worker"},
+			"level":        {"error"},
+		},
+	})
+	m.AddFile("dt=2026-05-01/hour=10", FileInfo{
+		Key:  "logs/dt=2026-05-01/hour=10/b.parquet",
+		Size: 2000,
+		Labels: map[string][]string{
+			"service.name": {"api"},
+			"level":        {"info"},
+		},
+	})
+	m.AddFile("dt=2026-05-01/hour=11", FileInfo{
+		Key:  "logs/dt=2026-05-01/hour=11/c.parquet",
+		Size: 3000,
+		Labels: map[string][]string{
+			"service.name": {"worker"},
+			"level":        {"warn"},
+		},
+	})
+
+	// Exact match: service.name=api should return files a and b
+	keys := m.GetFileKeysByLabel("service.name", "api")
+	if len(keys) != 2 {
+		t.Fatalf("service.name=api: got %d keys, want 2", len(keys))
+	}
+	if !keys["logs/dt=2026-05-01/hour=10/a.parquet"] || !keys["logs/dt=2026-05-01/hour=10/b.parquet"] {
+		t.Errorf("service.name=api: wrong keys %v", keys)
+	}
+
+	// Exact match: service.name=worker should return files a and c
+	keys = m.GetFileKeysByLabel("service.name", "worker")
+	if len(keys) != 2 {
+		t.Fatalf("service.name=worker: got %d keys, want 2", len(keys))
+	}
+	if !keys["logs/dt=2026-05-01/hour=10/a.parquet"] || !keys["logs/dt=2026-05-01/hour=11/c.parquet"] {
+		t.Errorf("service.name=worker: wrong keys %v", keys)
+	}
+
+	// Exact match: level=error should return only file a
+	keys = m.GetFileKeysByLabel("level", "error")
+	if len(keys) != 1 {
+		t.Fatalf("level=error: got %d keys, want 1", len(keys))
+	}
+	if !keys["logs/dt=2026-05-01/hour=10/a.parquet"] {
+		t.Errorf("level=error: wrong keys %v", keys)
+	}
+
+	// Non-existent value returns nil
+	keys = m.GetFileKeysByLabel("service.name", "nonexistent")
+	if keys != nil {
+		t.Errorf("nonexistent value: got %v, want nil", keys)
+	}
+
+	// Non-existent field returns nil
+	keys = m.GetFileKeysByLabel("unknown_field", "api")
+	if keys != nil {
+		t.Errorf("unknown field: got %v, want nil", keys)
+	}
+
+	// After removing a file, index is updated
+	m.RemoveFile("dt=2026-05-01/hour=10", "logs/dt=2026-05-01/hour=10/a.parquet")
+	keys = m.GetFileKeysByLabel("service.name", "api")
+	if len(keys) != 1 {
+		t.Fatalf("after remove, service.name=api: got %d keys, want 1", len(keys))
+	}
+	if !keys["logs/dt=2026-05-01/hour=10/b.parquet"] {
+		t.Errorf("after remove: wrong keys %v", keys)
+	}
+
+	// worker should now only be in file c
+	keys = m.GetFileKeysByLabel("service.name", "worker")
+	if len(keys) != 1 {
+		t.Fatalf("after remove, service.name=worker: got %d keys, want 1", len(keys))
+	}
+}
+
+func TestManifest_LabelIndex_SaveLoadRoundTrip(t *testing.T) {
+	m := newTestManifest()
+
+	m.AddFile("dt=2026-05-01/hour=10", FileInfo{
+		Key:  "logs/dt=2026-05-01/hour=10/a.parquet",
+		Size: 1000,
+		Labels: map[string][]string{
+			"service.name": {"api"},
+		},
+	})
+
+	path := t.TempDir() + "/manifest.json"
+	if err := m.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+
+	m2 := newTestManifest()
+	if err := m2.LoadFrom(path); err != nil {
+		t.Fatal(err)
+	}
+
+	keys := m2.GetFileKeysByLabel("service.name", "api")
+	if len(keys) != 1 {
+		t.Fatalf("after load, service.name=api: got %d keys, want 1", len(keys))
+	}
+	if !keys["logs/dt=2026-05-01/hour=10/a.parquet"] {
+		t.Error("label index not rebuilt after LoadFrom")
+	}
+}
