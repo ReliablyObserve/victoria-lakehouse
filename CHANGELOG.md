@@ -7,8 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.29.0] - 2026-05-20
-
 ### Performance
 - Parquet footer LRU cache (10K entries) avoids re-parsing file metadata on repeated accesses
 - Write lock optimization moves filtering out of serialized mutex, reducing contention
@@ -17,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cache warmup on startup pre-fetches recent partitions into L1/L2 and footer cache
 - S3 range read capability (DownloadRange with HTTP Range header)
 - Tightened all 21 benchmark targets by 40-60%
+
+## [0.29.0] - 2026-05-20
+
+### Performance
 - Concurrent query benchmark: validates latency targets at 1/10/50/100 parallel queries with mixed endpoint types
 - Mixed read/write benchmark: measures mutual interference with ≤20% degradation target
 - Config sweep script for automated `max_concurrent` / `file_workers` tuning validation
