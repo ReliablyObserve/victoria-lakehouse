@@ -17,7 +17,7 @@ set -euo pipefail
 
 COMPOSE_FILE="deployment/docker/docker-compose-benchmark.yml"
 DATASET_SIZE="medium"
-TARGET="http://localhost:29428"
+TARGET="http://localhost:39428"
 OUTPUT=""
 SKIP_INGEST=false
 

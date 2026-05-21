@@ -14,8 +14,8 @@ set -euo pipefail
 #   --query-load      Run query load during monitoring (default: false)
 #   --output FILE     Output JSON file (default: results/cache-sizing-YYYYMMDD.json)
 
-TARGET="http://localhost:29428"
-VM_URL="http://localhost:28428"
+TARGET="http://localhost:39428"
+VM_URL="http://localhost:38428"
 DURATION=10
 QUERY_LOAD=false
 OUTPUT=""

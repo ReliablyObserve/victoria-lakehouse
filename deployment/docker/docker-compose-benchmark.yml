@@ -13,7 +13,7 @@ services:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     ports:
-      - "29000:9000"
+      - "39000:9000"
     networks: [bench-net]
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -50,7 +50,7 @@ services:
       minio-init:
         condition: service_completed_successfully
     ports:
-      - "29428:9428"
+      - "39428:9428"
     networks: [bench-net]
     command:
       - "-lakehouse.s3.bucket=obs-archive"
@@ -60,9 +60,7 @@ services:
       - "-lakehouse.s3.force-path-style=true"
       - "-lakehouse.manifest.refresh-interval=10s"
       - "-lakehouse.insert.flush-interval=30s"
-      - "-lakehouse.insert.row-group-size=10000"
       - "-lakehouse.query.file-workers=16"
-      - "-lakehouse.query.max-concurrent=64"
       - "-lakehouse.cache.memory-mb=2048"
       - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
       - "-lakehouse.cache.disk-max-mb=20480"
@@ -90,7 +88,7 @@ services:
       - "-search.maxConcurrentRequests=64"
       - "-loggerLevel=INFO"
     ports:
-      - "29401:9428"
+      - "39401:9428"
     networks: [bench-net]
     volumes:
       - vl-data:/data
@@ -106,9 +104,10 @@ services:
   # =========================================================================
 
   loki:
-    image: grafana/loki:3.5.0
+    image: grafana/loki:3.7.1
+    user: "0"
     ports:
-      - "23100:3100"
+      - "33100:3100"
     networks: [bench-net]
     depends_on:
       minio-init:
@@ -119,10 +118,10 @@ services:
     command: -config.file=/etc/loki/config.yaml
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/ready"]
-      interval: 5s
+      interval: 10s
       timeout: 5s
-      retries: 20
-      start_period: 15s
+      retries: 30
+      start_period: 60s
 
   # =========================================================================
   # Data Generation — write to all 3 systems
@@ -165,7 +164,7 @@ services:
       lakehouse-logs:
         condition: service_healthy
     ports:
-      - "28428:8428"
+      - "38428:8428"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8428/health"]
       interval: 5s

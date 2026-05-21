@@ -668,13 +668,25 @@ func pushLoki(endpoint string, rows []logRow) error {
 		streams = append(streams, *s)
 	}
 
-	const batchSize = 50
-	for i := 0; i < len(streams); i += batchSize {
-		end := i + batchSize
-		if end > len(streams) {
-			end = len(streams)
+	const maxValuesPerBatch = 5000
+	var batches [][]lokiStream
+	var current []lokiStream
+	currentValues := 0
+	for _, s := range streams {
+		if currentValues+len(s.Values) > maxValuesPerBatch && len(current) > 0 {
+			batches = append(batches, current)
+			current = nil
+			currentValues = 0
 		}
-		payload := lokiPush{Streams: streams[i:end]}
+		current = append(current, s)
+		currentValues += len(s.Values)
+	}
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+
+	for _, batch := range batches {
+		payload := lokiPush{Streams: batch}
 		data, err := json.Marshal(payload)
 		if err != nil {
 			return fmt.Errorf("marshal loki payload: %w", err)

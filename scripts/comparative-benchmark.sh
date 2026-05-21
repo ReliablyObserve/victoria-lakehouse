@@ -16,9 +16,9 @@ set -euo pipefail
 #   --output FILE   Output JSON file (default: results/comparative-YYYYMMDD.json)
 #   --skip-ingest   Skip data generation (data already loaded)
 
-LH_URL="http://localhost:29428"
-VL_URL="http://localhost:29401"
-LOKI_URL="http://localhost:23100"
+LH_URL="http://localhost:39428"
+VL_URL="http://localhost:39401"
+LOKI_URL="http://localhost:33100"
 ITERATIONS=10
 WARMUP=3
 OUTPUT=""

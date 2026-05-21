@@ -29,20 +29,18 @@ storage_config:
   aws:
     s3: http://minioadmin:minioadmin@minio:9000/loki-data
     s3forcepathstyle: true
+    region: us-east-1
 
 ingester:
   chunk_encoding: snappy
   chunk_idle_period: 30s
   chunk_block_size: 262144
   chunk_retain_period: 1m
-  max_transfer_retries: 0
   wal:
     dir: /data/loki/wal
 
 querier:
   max_concurrent: 64
-  engine:
-    timeout: 5m
 
 query_range:
   parallelise_shardable_queries: true
