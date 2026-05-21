@@ -117,11 +117,8 @@ services:
       - loki-data:/data/loki
     command: -config.file=/etc/loki/config.yaml
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/ready"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 60s
+      test: ["NONE"]
+      disable: true
 
   # =========================================================================
   # Data Generation — write to all 3 systems
@@ -137,7 +134,7 @@ services:
       lakehouse-logs:
         condition: service_healthy
       loki:
-        condition: service_healthy
+        condition: service_started
     networks: [bench-net]
     command:
       - "--logs=500000"
