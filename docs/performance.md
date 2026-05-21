@@ -468,3 +468,39 @@ Validation script:
 ```
 
 Reports: RSS, L1/L2 hit ratios, footer cache hit ratio, S3 request count, eviction rate.
+
+### Running the full benchmark suite
+
+Complete end-to-end benchmark covering all three test types:
+
+```bash
+# 1. Start the benchmark compose stack
+docker compose -f deployment/docker/docker-compose-benchmark.yml up -d
+
+# 2. Wait for data ingestion (datagen-seed runs automatically)
+docker compose -f deployment/docker/docker-compose-benchmark.yml logs -f datagen-seed
+
+# 3. Run comparative benchmark (LH vs VL vs Loki, 21 scenarios)
+./scripts/comparative-benchmark.sh --skip-ingest \
+  --iterations=10 --warmup=3
+
+# 4. Run fresh restore test (validates cold-start SLAs)
+./scripts/fresh-restore-test.sh --skip-ingest --dataset-size=medium
+
+# 5. Run cache sizing test under query load
+./scripts/cache-sizing-test.sh --query-load --duration=10
+
+# 6. Collect results
+ls results/*.json
+```
+
+### Benchmark results
+
+> **Status:** benchmark infrastructure is in place. Results will be populated after first physical benchmark run.
+
+Results from the most recent comparative benchmark run will be added here, including:
+
+- Per-scenario p50/p95/p99 latencies for Lakehouse, VictoriaLogs, and Loki
+- LH/VL and LH/Loki latency ratios
+- Fresh restore timings vs SLA thresholds
+- Cache sizing observations at medium scale (500K logs, 168h)
