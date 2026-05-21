@@ -206,6 +206,8 @@ services:
       - "-lakehouse.cache.memory-mb=512"
       - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
       - "-lakehouse.cache.disk-max-mb=2048"
+      - "-lakehouse.cache.warmup-partitions=6"
+      - "-lakehouse.cache.warmup-max-files=500"
       - "-lakehouse.tenant.global-read-header=X-Lakehouse-Global-Read"
       - "-lakehouse.tenant.global-read-value=lakehouse-e2e-global-key"
       - "-lakehouse.tenant.orgid-header=X-Scope-OrgID"

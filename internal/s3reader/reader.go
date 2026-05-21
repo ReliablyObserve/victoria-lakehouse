@@ -219,6 +219,39 @@ func (p *ClientPool) Download(ctx context.Context, key string) ([]byte, error) {
 	return data, nil
 }
 
+func (p *ClientPool) DownloadRange(ctx context.Context, key string, offset, length int64) ([]byte, error) {
+	start := time.Now()
+	metrics.S3RequestsTotal.Inc("GetObject")
+	metrics.S3RangeReadsTotal.Inc()
+
+	rangeHeader := fmt.Sprintf("bytes=%d-%d", offset, offset+length-1)
+
+	var out *s3.GetObjectOutput
+	err := retryS3(ctx, 3, func() error {
+		var getErr error
+		out, getErr = p.client.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(p.bucket),
+			Key:    aws.String(key),
+			Range:  aws.String(rangeHeader),
+		})
+		return getErr
+	})
+	metrics.S3RequestDuration.Observe(time.Since(start).Seconds())
+	if err != nil {
+		metrics.S3ErrorsTotal.Inc("GetObject")
+		return nil, fmt.Errorf("s3 GetObject range %s key=%s: %w", rangeHeader, key, err)
+	}
+	defer func() { _ = out.Body.Close() }()
+
+	data, err := io.ReadAll(out.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read s3 body range %s key=%s: %w", rangeHeader, key, err)
+	}
+	metrics.S3BytesReadTotal.Add(len(data))
+	metrics.S3RangeBytesRead.Add(len(data))
+	return data, nil
+}
+
 func (p *ClientPool) Delete(ctx context.Context, key string) error {
 	start := time.Now()
 	metrics.S3RequestsTotal.Inc("DeleteObject")

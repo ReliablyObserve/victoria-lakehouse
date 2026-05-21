@@ -21,6 +21,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
@@ -57,25 +58,37 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	// Wrap writeBlock to apply LogsQL filter evaluation, tombstone filtering,
 	// and max_rows enforcement before passing to caller.
+	// Pre-filter runs in each worker goroutine without locks.
+	// Only the final writeBlock call is serialized.
 	var writeBlockPanic atomic.Bool
-	filteredWriteBlock := func(workerID uint, db *logstorage.DataBlock) {
+	preFilter := func(db *logstorage.DataBlock) *logstorage.DataBlock {
 		if writeBlockPanic.Load() {
-			return
+			return nil
 		}
 		if maxRows > 0 && rowsEmitted.Load() >= maxRows {
-			return
+			return nil
 		}
 		db = filterDataBlock(db, filter)
 		if db == nil || db.RowsCount() == 0 {
-			return
+			return nil
 		}
 		if s.tombstones != nil {
 			db = s.filterTombstonedRows(db, startNs, endNs)
 			if db == nil || db.RowsCount() == 0 {
-				return
+				return nil
 			}
 		}
+		return db
+	}
+
+	var wbMu sync.Mutex
+	filteredWriteBlock := func(workerID uint, db *logstorage.DataBlock) {
+		db = preFilter(db)
+		if db == nil {
+			return
+		}
 		rowsEmitted.Add(int64(db.RowsCount()))
+		wbMu.Lock()
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -85,6 +98,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			}()
 			writeBlock(workerID, db)
 		}()
+		wbMu.Unlock()
 	}
 
 	files := s.manifest.GetFilesForRange(startNs, endNs)
@@ -124,13 +138,6 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}()
 	}
 
-	var wbMu sync.Mutex
-	serializedWriteBlock := func(workerID uint, db *logstorage.DataBlock) {
-		wbMu.Lock()
-		filteredWriteBlock(workerID, db)
-		wbMu.Unlock()
-	}
-
 	taskCh := make(chan manifest.FileInfo, len(files))
 	for _, fi := range files {
 		taskCh <- fi
@@ -142,7 +149,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	for i := 0; i < fileWorkers; i++ {
 		wg.Add(1)
-		go func() {
+		go func(workerIdx int) {
 			defer wg.Done()
 			for fi := range taskCh {
 				if err := ctx.Err(); err != nil {
@@ -152,12 +159,12 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				if maxRows > 0 && rowsEmitted.Load() >= maxRows {
 					return
 				}
-				if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, serializedWriteBlock); err != nil {
+				if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, filteredWriteBlock); err != nil {
 					logger.Warnf("query file error: %s; key=%s", err, fi.Key)
 					continue
 				}
 			}
-		}()
+		}(i)
 	}
 	wg.Wait()
 
@@ -204,9 +211,27 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	metrics.ParquetFilesOpened.Inc()
 	metrics.ParquetColumnBytesRead.Add(len(data))
 
-	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return fmt.Errorf("open parquet file %s: %w", fi.Key, err)
+	var f *parquet.File
+	if s.footerCache != nil {
+		if cached, ok := s.footerCache.Get(fi.Key); ok && cached.FileSize == int64(len(data)) {
+			f = cached.File
+		}
+	}
+	if f == nil {
+		var parseErr error
+		if s.footerCache != nil {
+			var cached *CachedFooter
+			cached, f, parseErr = ParseFooterFromData(fi.Key, data)
+			if parseErr != nil {
+				return parseErr
+			}
+			s.footerCache.Put(fi.Key, cached)
+		} else {
+			f, parseErr = parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+			if parseErr != nil {
+				return fmt.Errorf("open parquet file %s: %w", fi.Key, parseErr)
+			}
+		}
 	}
 
 	s.updateLabelIndex(f)
@@ -216,39 +241,79 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	pdf := buildPushDownFilter(queryStr, s.registry)
 	projectedCols := queryColumns(queryStr, s.registry)
 
+	// Hits/stats fast path: when the endpoint only needs timestamps (set via
+	// context hint) and the query has no column-specific filters, project only
+	// the timestamp column to avoid deserializing all row data.
+	if projectedCols == nil && storage.IsTimestampOnly(ctx) {
+		projectedCols = map[string]bool{s.registry.TimestampColumn(): true}
+	}
+
 	var collectedTraceIDs []string
 	var traceIDsPtr *[]string
 	if s.smartCache != nil {
 		traceIDsPtr = &collectedTraceIDs
 	}
 
-	for _, rg := range f.RowGroups() {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
+	rowGroups := f.RowGroups()
 
+	// Pre-filter row groups using metadata (time range, bloom, pushdown).
+	var matchedRGs []parquet.RowGroup
+	for _, rg := range rowGroups {
 		if tsIdx >= 0 && !rowGroupMatchesTimeRange(rg, tsIdx, startNs, endNs) {
 			metrics.ParquetRowGroupsSkipped.Inc("stats")
 			continue
 		}
-
 		if s.bloomFilterSkip(f, rg, bloomChecks) {
 			metrics.ParquetRowGroupsSkipped.Inc("bloom")
 			continue
 		}
-
 		if pdf != nil && !rowGroupMatchesFilter(f, rg, pdf) {
 			metrics.ParquetRowGroupsSkipped.Inc("pushdown")
 			continue
 		}
+		matchedRGs = append(matchedRGs, rg)
+	}
 
-		metrics.ParquetRowGroupsScanned.Inc()
-		if projectedCols != nil {
-			if err := s.readRowGroupWithProjection(f, rg, startNs, endNs, projectedCols, writeBlock, traceIDsPtr); err != nil {
+	// Process matched row groups — parallel when >1 to reduce per-file latency.
+	if len(matchedRGs) <= 1 {
+		for _, rg := range matchedRGs {
+			metrics.ParquetRowGroupsScanned.Inc()
+			if err := s.readOneRowGroup(f, rg, startNs, endNs, projectedCols, writeBlock, traceIDsPtr); err != nil {
 				return err
 			}
-		} else {
-			if err := s.readRowGroup(f, rg, startNs, endNs, writeBlock, traceIDsPtr); err != nil {
+		}
+	} else {
+		rgWorkers := len(matchedRGs)
+		if rgWorkers > 3 {
+			rgWorkers = 3
+		}
+		rgCh := make(chan parquet.RowGroup, len(matchedRGs))
+		for _, rg := range matchedRGs {
+			rgCh <- rg
+		}
+		close(rgCh)
+
+		var rgWg sync.WaitGroup
+		var rgErr atomic.Value
+		for i := 0; i < rgWorkers; i++ {
+			rgWg.Add(1)
+			go func() {
+				defer rgWg.Done()
+				for rg := range rgCh {
+					if ctx.Err() != nil {
+						return
+					}
+					metrics.ParquetRowGroupsScanned.Inc()
+					if err := s.readOneRowGroup(f, rg, startNs, endNs, projectedCols, writeBlock, traceIDsPtr); err != nil {
+						rgErr.CompareAndSwap(nil, err)
+						return
+					}
+				}
+			}()
+		}
+		rgWg.Wait()
+		if v := rgErr.Load(); v != nil {
+			if err, ok := v.(error); ok {
 				return err
 			}
 		}
@@ -259,6 +324,13 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	}
 
 	return nil
+}
+
+func (s *Storage) readOneRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, projectedCols map[string]bool, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
+	if projectedCols != nil {
+		return s.readRowGroupWithProjection(f, rg, startNs, endNs, projectedCols, writeBlock, traceIDs)
+	}
+	return s.readRowGroup(f, rg, startNs, endNs, writeBlock, traceIDs)
 }
 
 func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {

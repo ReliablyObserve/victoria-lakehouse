@@ -67,9 +67,11 @@ var (
 	listenAddr      = flag.String("httpListenAddr", ":9428", "HTTP listen address")
 	manifestRefresh = flag.Duration("lakehouse.manifest.refresh-interval", 0, "Manifest refresh interval (e.g., 30s)")
 
-	cacheMemoryMB = flag.Int("lakehouse.cache.memory-mb", 0, "L1 memory cache size in MB (default: 256)")
-	cacheDiskPath = flag.String("lakehouse.cache.disk-path", "", "L2 disk cache directory path")
-	cacheDiskMB   = flag.Int("lakehouse.cache.disk-max-mb", 0, "L2 disk cache max size in MB (default: 1024)")
+	cacheMemoryMB        = flag.Int("lakehouse.cache.memory-mb", 0, "L1 memory cache size in MB (default: 256)")
+	cacheDiskPath        = flag.String("lakehouse.cache.disk-path", "", "L2 disk cache directory path")
+	cacheDiskMB          = flag.Int("lakehouse.cache.disk-max-mb", 0, "L2 disk cache max size in MB (default: 1024)")
+	cacheWarmupPartitions = flag.Int("lakehouse.cache.warmup-partitions", 0, "Number of recent hourly partitions to warm on startup (0=disabled)")
+	cacheWarmupMaxFiles  = flag.Int("lakehouse.cache.warmup-max-files", 0, "Max files to warm on startup (default: 500)")
 
 	compactionEnabled  = flag.Bool("lakehouse.compaction.enabled", false, "Enable compaction scheduler")
 	compactionInterval = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
@@ -720,6 +722,12 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 			int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
 			m.MinTime().UnixNano(), m.MaxTime().UnixNano())
 		store.WarmLabelIndex(ctx)
+
+		if cfg.Cache.WarmupPartitions > 0 || cfg.Cache.WarmupMaxFiles > 0 {
+			warmCtx, warmCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			store.WarmupCache(warmCtx)
+			warmCancel()
+		}
 	}
 
 	sm.SetPhase(startup.PhaseReady)
@@ -791,6 +799,12 @@ func applyFlags(cfg *config.Config) {
 	}
 	if *cacheDiskMB > 0 {
 		cfg.Cache.DiskLimit = fmt.Sprintf("%dMB", *cacheDiskMB)
+	}
+	if *cacheWarmupPartitions > 0 {
+		cfg.Cache.WarmupPartitions = *cacheWarmupPartitions
+	}
+	if *cacheWarmupMaxFiles > 0 {
+		cfg.Cache.WarmupMaxFiles = *cacheWarmupMaxFiles
 	}
 	if *compactionEnabled {
 		cfg.Compaction.Enabled = true
