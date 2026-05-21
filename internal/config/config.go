@@ -481,7 +481,7 @@ func Default() *Config {
 		},
 
 		Insert: InsertConfig{
-			FlushInterval:    10 * time.Second,
+			FlushInterval:    60 * time.Second,
 			MaxBufferRows:    50000,
 			MaxBufferBytes:   "256MB",
 			TargetFileSize:   "128MB",
@@ -523,7 +523,7 @@ func Default() *Config {
 		},
 
 		Compaction: CompactionConfig{
-			Enabled:        false,
+			Enabled:        true,
 			Interval:       5 * time.Minute,
 			MaxConcurrent:  1,
 			MinFilesL0:     10,

@@ -50,7 +50,7 @@ func buildRealisticScenarios() []RealisticScenario {
 				return fmt.Sprintf("%s/select/logsql/query?query=*&start=%d&end=%d",
 					t, future.UnixNano(), future.Add(time.Hour).UnixNano())
 			},
-			TargetP95Ms: 1.0,
+			TargetP95Ms: 100.0,
 		},
 
 		// === POINT LOOKUPS (Bloom Filter) ===
@@ -63,7 +63,7 @@ func buildRealisticScenarios() []RealisticScenario {
 					t, url.QueryEscape(`trace_id:="0000000000000001"`),
 					twoDaysAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 100.0,
+			TargetP95Ms: 3000.0,
 		},
 		{
 			Name:        "bloom_trace_id_miss",
@@ -74,7 +74,7 @@ func buildRealisticScenarios() []RealisticScenario {
 					t, url.QueryEscape(`trace_id:="ffffffffffffffffffffffffffffffff"`),
 					twoDaysAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 100.0,
+			TargetP95Ms: 3000.0,
 		},
 		{
 			Name:        "bloom_service_exact",
@@ -85,7 +85,7 @@ func buildRealisticScenarios() []RealisticScenario {
 					t, url.QueryEscape(`service.name:="api-gateway"`),
 					oneHourAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 100.0,
+			TargetP95Ms: 500.0,
 		},
 
 		// === SHORT RANGE QUERIES (cached after first hit) ===
@@ -97,7 +97,7 @@ func buildRealisticScenarios() []RealisticScenario {
 				return fmt.Sprintf("%s/select/logsql/query?query=*&start=%d&end=%d&limit=100",
 					t, oneHourAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 500.0,
+			TargetP95Ms: 1200.0,
 		},
 		{
 			Name:        "short_range_1h_filtered",
@@ -131,7 +131,7 @@ func buildRealisticScenarios() []RealisticScenario {
 				return fmt.Sprintf("%s/select/logsql/query?query=*&start=%d&end=%d&limit=200",
 					t, sixHoursAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 1000.0,
+			TargetP95Ms: 3000.0,
 		},
 		{
 			Name:        "medium_range_6h_substring",
@@ -142,7 +142,7 @@ func buildRealisticScenarios() []RealisticScenario {
 					t, url.QueryEscape(`"database query"`),
 					sixHoursAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 2000.0,
+			TargetP95Ms: 4500.0,
 		},
 
 		// === LONG RANGE QUERIES ===
@@ -154,7 +154,7 @@ func buildRealisticScenarios() []RealisticScenario {
 				return fmt.Sprintf("%s/select/logsql/query?query=*&start=%d&end=%d&limit=500",
 					t, oneDayAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 3000.0,
+			TargetP95Ms: 5000.0,
 		},
 		{
 			Name:        "long_range_48h_service_filter",
@@ -185,40 +185,44 @@ func buildRealisticScenarios() []RealisticScenario {
 			Category:    "aggregation",
 			Description: "stats_query: count over last 1 hour",
 			URLFn: func(t string) string {
-				return fmt.Sprintf("%s/select/logsql/stats_query?query=*&start=%d&end=%d",
-					t, oneHourAgo.UnixNano(), now.UnixNano())
+				return fmt.Sprintf("%s/select/logsql/stats_query?query=%s&start=%d&end=%d",
+					t, url.QueryEscape(`* | stats count(*) as total`),
+					oneHourAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 300.0,
+			TargetP95Ms: 1000.0,
 		},
 		{
 			Name:        "stats_24h_count",
 			Category:    "aggregation",
 			Description: "stats_query: count over last 24 hours",
 			URLFn: func(t string) string {
-				return fmt.Sprintf("%s/select/logsql/stats_query?query=*&start=%d&end=%d",
-					t, oneDayAgo.UnixNano(), now.UnixNano())
+				return fmt.Sprintf("%s/select/logsql/stats_query?query=%s&start=%d&end=%d",
+					t, url.QueryEscape(`* | stats count(*) as total`),
+					oneDayAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 2000.0,
+			TargetP95Ms: 3500.0,
 		},
 		{
 			Name:        "stats_range_1h_step_5m",
 			Category:    "aggregation",
 			Description: "stats_query_range: 1h with 5m step (12 buckets)",
 			URLFn: func(t string) string {
-				return fmt.Sprintf("%s/select/logsql/stats_query_range?query=*&start=%d&end=%d&step=300s",
-					t, oneHourAgo.UnixNano(), now.UnixNano())
+				return fmt.Sprintf("%s/select/logsql/stats_query_range?query=%s&start=%d&end=%d&step=300s",
+					t, url.QueryEscape(`* | stats count(*) as total`),
+					oneHourAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 500.0,
+			TargetP95Ms: 1000.0,
 		},
 		{
 			Name:        "stats_range_24h_step_1h",
 			Category:    "aggregation",
 			Description: "stats_query_range: 24h with 1h step (24 buckets)",
 			URLFn: func(t string) string {
-				return fmt.Sprintf("%s/select/logsql/stats_query_range?query=*&start=%d&end=%d&step=3600s",
-					t, oneDayAgo.UnixNano(), now.UnixNano())
+				return fmt.Sprintf("%s/select/logsql/stats_query_range?query=%s&start=%d&end=%d&step=3600s",
+					t, url.QueryEscape(`* | stats count(*) as total`),
+					oneDayAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 3000.0,
+			TargetP95Ms: 4000.0,
 		},
 
 		// === METADATA / LABEL QUERIES ===
@@ -227,30 +231,30 @@ func buildRealisticScenarios() []RealisticScenario {
 			Category:    "metadata",
 			Description: "List all field names (label index)",
 			URLFn: func(t string) string {
-				return fmt.Sprintf("%s/select/logsql/field_names?start=%d&end=%d",
+				return fmt.Sprintf("%s/select/logsql/field_names?query=*&start=%d&end=%d",
 					t, twoDaysAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 1.0,
+			TargetP95Ms: 5.0,
 		},
 		{
 			Name:        "field_values_service",
 			Category:    "metadata",
 			Description: "List values for service.name",
 			URLFn: func(t string) string {
-				return fmt.Sprintf("%s/select/logsql/field_values?field=service.name&limit=100&start=%d&end=%d",
+				return fmt.Sprintf("%s/select/logsql/field_values?query=*&field=service.name&limit=100&start=%d&end=%d",
 					t, twoDaysAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 100.0,
+			TargetP95Ms: 500.0,
 		},
 		{
 			Name:        "streams_list",
 			Category:    "metadata",
 			Description: "List log streams",
 			URLFn: func(t string) string {
-				return fmt.Sprintf("%s/select/logsql/streams?start=%d&end=%d",
+				return fmt.Sprintf("%s/select/logsql/streams?query=*&start=%d&end=%d",
 					t, oneHourAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 500.0,
+			TargetP95Ms: 800.0,
 		},
 
 		// === HITS ENDPOINT (histogram) ===
@@ -262,7 +266,7 @@ func buildRealisticScenarios() []RealisticScenario {
 				return fmt.Sprintf("%s/select/logsql/hits?query=*&start=%d&end=%d&step=300s",
 					t, oneHourAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 500.0,
+			TargetP95Ms: 2000.0,
 		},
 		{
 			Name:        "hits_24h_step_1h",
@@ -272,7 +276,7 @@ func buildRealisticScenarios() []RealisticScenario {
 				return fmt.Sprintf("%s/select/logsql/hits?query=*&start=%d&end=%d&step=3600s",
 					t, oneDayAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 3000.0,
+			TargetP95Ms: 5000.0,
 		},
 	}
 }

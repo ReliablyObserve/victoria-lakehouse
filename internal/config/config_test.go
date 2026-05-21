@@ -377,8 +377,8 @@ func TestDefaultInsertConfig(t *testing.T) {
 	if cfg.Role != RoleAll {
 		t.Errorf("default role = %q, want %q", cfg.Role, RoleAll)
 	}
-	if cfg.Insert.FlushInterval != 10*time.Second {
-		t.Errorf("default flush interval = %v, want 10s", cfg.Insert.FlushInterval)
+	if cfg.Insert.FlushInterval != 60*time.Second {
+		t.Errorf("default flush interval = %v, want 60s", cfg.Insert.FlushInterval)
 	}
 	if cfg.Insert.MaxBufferRows != 50000 {
 		t.Errorf("default max buffer rows = %d, want 50000", cfg.Insert.MaxBufferRows)

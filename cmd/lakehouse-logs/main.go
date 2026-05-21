@@ -75,6 +75,8 @@ var (
 	compactionInterval = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
 	compactionElection = flag.String("lakehouse.compaction.leader-election", "", "Election mode: auto, k8s, s3, none")
 
+	queryFileWorkers = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 8)")
+
 	logsBloomColumns = flag.String("lakehouse.logs.bloom-columns", "", "Comma-separated bloom filter columns for logs (default: service.name)")
 	logsDeletePrefix = flag.String("lakehouse.logs.delete-prefix", "", "Delete API prefix (default: /delete/logsql)")
 
@@ -392,7 +394,7 @@ func run(cfg *config.Config, addr string) {
 		return true
 	}
 
-	go runStartup(sm, cfg, store)
+	go runStartup(sm, cfg, store, registry, writerTenantKey)
 
 	httpserver.Serve([]string{addr}, requestHandler, httpserver.ServeOptions{})
 	logger.Infof("lakehouse-logs listening; addr=%s", addr)
@@ -700,7 +702,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	return mux
 }
 
-func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage) {
+func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, tenantKey string) {
 	sm.SetPhase(startup.PhaseDiskRecovery)
 	logger.Infof("disk recovery complete")
 
@@ -714,6 +716,9 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 		m := store.Manifest()
 		logger.Infof("manifest S3 refresh complete; files=%d, bytes=%d, min_time=%v, max_time=%v",
 			m.TotalFiles(), m.TotalBytes(), m.MinTime(), m.MaxTime())
+		registry.ReconcileWithManifest(tenantKey,
+			int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
+			m.MinTime().UnixNano(), m.MaxTime().UnixNano())
 		store.WarmLabelIndex(ctx)
 	}
 
@@ -728,6 +733,9 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 		} else {
 			m := store.Manifest()
 			logger.Infof("manifest refreshed; files=%d, bytes=%d", m.TotalFiles(), m.TotalBytes())
+			registry.ReconcileWithManifest(tenantKey,
+				int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
+				m.MinTime().UnixNano(), m.MaxTime().UnixNano())
 		}
 		rcancel()
 	}
@@ -792,6 +800,9 @@ func applyFlags(cfg *config.Config) {
 	}
 	if e := *compactionElection; e != "" {
 		cfg.Compaction.LeaderElection = e
+	}
+	if *queryFileWorkers > 0 {
+		cfg.Query.FileWorkers = *queryFileWorkers
 	}
 
 	if s := *logsBloomColumns; s != "" {

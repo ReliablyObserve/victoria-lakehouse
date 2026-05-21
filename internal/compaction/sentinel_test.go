@@ -2,6 +2,7 @@ package compaction
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -85,6 +86,40 @@ func TestSentinel_AcquireAndRelease(t *testing.T) {
 	if locked {
 		t.Fatal("expected IsLocked=false after release")
 	}
+}
+
+func TestSentinel_DownloadError_TreatedAsNotLocked(t *testing.T) {
+	pool := &errorDownloadPool{}
+	s := NewSentinel(pool, time.Hour)
+	ctx := context.Background()
+
+	locked, err := s.IsLocked(ctx, "prefix/", "dt=2026-05-04")
+	if err != nil {
+		t.Fatalf("IsLocked should not return error for download failure, got: %v", err)
+	}
+	if locked {
+		t.Fatal("expected IsLocked=false when download fails (sentinel not found)")
+	}
+
+	ok, err := s.Acquire(ctx, "prefix/", "dt=2026-05-04", "worker-1")
+	if err == nil {
+		t.Fatal("expected Acquire to fail when upload also fails")
+	}
+	if ok {
+		t.Fatal("expected Acquire ok=false when upload fails")
+	}
+}
+
+type errorDownloadPool struct{}
+
+func (e *errorDownloadPool) Upload(_ context.Context, _ string, _ []byte) error {
+	return fmt.Errorf("s3 PutObject: access denied")
+}
+func (e *errorDownloadPool) Download(_ context.Context, _ string) ([]byte, error) {
+	return nil, fmt.Errorf("s3 GetObject: NoSuchKey")
+}
+func (e *errorDownloadPool) Delete(_ context.Context, _ string) error {
+	return nil
 }
 
 func TestSentinel_StaleIsUnlocked(t *testing.T) {

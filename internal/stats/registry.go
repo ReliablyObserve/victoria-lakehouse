@@ -403,6 +403,43 @@ func parseTenantKey(key string) [2]string {
 	return [2]string{key, ""}
 }
 
+// ReconcileWithManifest resets per-node tracking to match the actual manifest
+// state, pruning contributions from dead nodes (previous container restarts).
+// Only the current node's contributions are kept, set to match manifest totals.
+func (r *TenantRegistry) ReconcileWithManifest(tenant string, files, bytes, rawBytes, rows int64, minTimeNs, maxTimeNs int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.generation++
+	r.tenantGeneration[tenant] = r.generation
+
+	ts, ok := r.tenants[tenant]
+	if !ok {
+		return
+	}
+
+	ts.nodeBytes = map[string]int64{r.nodeID: bytes}
+	ts.nodeRows = map[string]int64{r.nodeID: rows}
+	ts.nodeFiles = map[string]int64{r.nodeID: files}
+
+	ts.TotalBytes = bytes
+	ts.TotalRows = rows
+	ts.TotalFiles = files
+	ts.RawBytes = rawBytes
+
+	ts.NodeContribs = map[string]int64{r.nodeID: bytes}
+
+	if minTimeNs != 0 {
+		ts.MinTimeNs = minTimeNs
+	}
+	if maxTimeNs != 0 {
+		ts.MaxTimeNs = maxTimeNs
+	}
+
+	ts.BytesByClass = map[string]int64{"STANDARD": bytes}
+	ts.FilesByClass = map[string]int64{"STANDARD": files}
+}
+
 // mergeTenant applies CRDT merge rules from remote into local.
 func (r *TenantRegistry) mergeTenant(local, remote *TenantStats, remoteNodeID string) {
 	// 1. Per-node counters: overwrite our view of the remote node's contribution.

@@ -19,9 +19,9 @@ func TestProfileRegression_InsertPath(t *testing.T) {
 	}
 
 	tests := map[Profile]insertExpect{
-		ProfileBalanced:       {10 * time.Second, true, "512MB", 7, 50000, "256MB", "128MB", 10000, "buffer"},
+		ProfileBalanced:       {60 * time.Second, true, "512MB", 7, 50000, "256MB", "128MB", 10000, "buffer"},
 		ProfileMaxPerformance: {5 * time.Second, false, "512MB", 3, 100000, "512MB", "64MB", 5000, "buffer"},
-		ProfileMaxDurability:  {10 * time.Second, true, "1GB", 7, 50000, "256MB", "128MB", 10000, "flush-sync"},
+		ProfileMaxDurability:  {60 * time.Second, true, "1GB", 7, 50000, "256MB", "128MB", 10000, "flush-sync"},
 		ProfileMaxCostSavings: {30 * time.Second, false, "512MB", 11, 25000, "128MB", "256MB", 50000, "buffer"},
 		ProfileDev:            {1 * time.Second, false, "32MB", 1, 1000, "32MB", "8MB", 1000, "buffer"},
 	}
@@ -190,7 +190,7 @@ func TestProfileRegression_Compaction(t *testing.T) {
 	}
 
 	tests := map[Profile]compactExpect{
-		ProfileBalanced:       {false, 5 * time.Minute, 1, 10},
+		ProfileBalanced:       {true, 5 * time.Minute, 1, 10},
 		ProfileMaxPerformance: {true, 2 * time.Minute, 2, 5},
 		ProfileMaxDurability:  {true, 5 * time.Minute, 1, 10},
 		ProfileMaxCostSavings: {false, 5 * time.Minute, 1, 10},

@@ -298,8 +298,8 @@ lakehouse:
 	if tracesCfg.Insert.AckMode != "buffer" {
 		t.Errorf("traces ack_mode = %q, want buffer (balanced)", tracesCfg.Insert.AckMode)
 	}
-	if tracesCfg.Insert.FlushInterval != 10*time.Second {
-		t.Errorf("traces flush_interval = %v, want 10s (balanced)", tracesCfg.Insert.FlushInterval)
+	if tracesCfg.Insert.FlushInterval != 60*time.Second {
+		t.Errorf("traces flush_interval = %v, want 60s (balanced)", tracesCfg.Insert.FlushInterval)
 	}
 }
 

@@ -114,6 +114,9 @@ func TestValidate_LeaderElectionModes(t *testing.T) {
 		cfg.Mode = ModeLogs
 		cfg.S3.Bucket = "test"
 		cfg.Compaction.LeaderElection = mode
+		if mode == "none" {
+			cfg.Compaction.Enabled = false
+		}
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("Validate() with leader election %q: %v", mode, err)
 		}
