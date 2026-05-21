@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-05-21
+
 ### Performance
 - Parquet footer LRU cache (10K entries) avoids re-parsing file metadata on repeated accesses
 - Write lock optimization moves filtering out of serialized mutex, reducing contention
