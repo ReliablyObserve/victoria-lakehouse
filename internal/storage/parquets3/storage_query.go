@@ -107,14 +107,44 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		return nil
 	}
 
-	// Label-based file pre-filtering
-	files = s.filterFilesByLabels(files, queryStr)
-	if len(files) == 0 {
-		return nil
+	// SmartCache trace_id fast-path: if query is a trace_id exact match and
+	// cache knows which files contain it, skip manifest/bloom/label filtering
+	// and query only those files directly.
+	traceIDFastPath := false
+	if s.smartCache != nil {
+		if tid := extractExactMatch(queryStr, "trace_id"); tid != "" {
+			cachedKeys := s.smartCache.FindFilesByTraceID(tid)
+			if len(cachedKeys) > 0 {
+				keySet := make(map[string]bool, len(cachedKeys))
+				for _, k := range cachedKeys {
+					keySet[k] = true
+				}
+				var matched []manifest.FileInfo
+				for _, fi := range files {
+					if keySet[fi.Key] {
+						matched = append(matched, fi)
+					}
+				}
+				if len(matched) > 0 {
+					files = matched
+					traceIDFastPath = true
+					metrics.TraceIDCacheHits.Inc()
+					logger.Infof("trace_id fast-path: cache hit for %s, scanning %d/%d files", tid, len(matched), len(files))
+				}
+			}
+		}
 	}
 
-	// Partition-level bloom file skip
-	files = s.bloomFilterFiles(ctx, files, queryStr)
+	if !traceIDFastPath {
+		// Label-based file pre-filtering
+		files = s.filterFilesByLabels(files, queryStr)
+		if len(files) == 0 {
+			return nil
+		}
+
+		// Partition-level bloom file skip
+		files = s.bloomFilterFiles(ctx, files, queryStr)
+	}
 
 	// Parallel file worker pool
 	fileWorkers := s.cfg.Query.FileWorkers

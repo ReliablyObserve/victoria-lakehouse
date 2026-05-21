@@ -69,6 +69,9 @@ func TestVerifyMetrics_AllCountersExist(t *testing.T) {
 		{"DeleteCompactionRowsRemoved", DeleteCompactionRowsRemoved},
 		{"DeleteVerifyTotal", DeleteVerifyTotal},
 		{"DeleteVerifyLeakDetected", DeleteVerifyLeakDetected},
+		{"FooterCacheHits", FooterCacheHits},
+		{"FooterCacheEvictions", FooterCacheEvictions},
+		{"TraceIDCacheHits", TraceIDCacheHits},
 	}
 
 	for _, tc := range counters {

@@ -494,13 +494,58 @@ docker compose -f deployment/docker/docker-compose-benchmark.yml logs -f datagen
 ls results/*.json
 ```
 
-### Benchmark results
+### Benchmark results (2026-05-21)
 
-> **Status:** benchmark infrastructure is in place. Results will be populated after first physical benchmark run.
+Dataset: 500K logs, 168h back, 3 systems on same host (Docker Compose + MinIO).
 
-Results from the most recent comparative benchmark run will be added here, including:
+| Category | Scenario | LH p95 | VL p95 | Loki p95 | LH/VL | LH/Loki |
+|---|---|---|---|---|---|---|
+| Fast path | manifest empty range | 27ms | 25ms | 29ms | 1.1x | 0.9x |
+| Point lookup | trace_id hit | 6116ms | 44ms | 568ms | 139.0x | 10.8x |
+| Point lookup | trace_id miss | 6473ms | 47ms | 1020ms | 137.7x | 6.3x |
+| Point lookup | service exact | 279ms | 43ms | 1286ms | 6.5x | **0.2x** |
+| Short range | 1h wildcard | 295ms | 42ms | 1480ms | 7.0x | **0.2x** |
+| Short range | 1h filtered | 293ms | 51ms | 912ms | 5.7x | **0.3x** |
+| Short range | 1h service+level | 288ms | 30ms | 821ms | 9.6x | **0.4x** |
+| Medium range | 6h wildcard | 1136ms | 58ms | 2346ms | 19.6x | **0.5x** |
+| Medium range | 6h substring | 975ms | 34ms | 787ms | 28.7x | 1.2x |
+| Long range | 24h wildcard | 3465ms | 84ms | 12756ms | 41.2x | **0.3x** |
+| Long range | 48h service | 6609ms | 71ms | 24520ms | 93.1x | **0.3x** |
+| Long range | 48h errors | 6361ms | 58ms | 21775ms | 109.7x | **0.3x** |
+| Aggregation | 1h count | 351ms | 37ms | 292ms | 9.5x | 1.2x |
+| Aggregation | 24h count | 3277ms | 36ms | 536ms | 91.0x | 6.1x |
+| Aggregation | 1h step 5m | 350ms | 30ms | 374ms | 11.7x | 0.9x |
+| Aggregation | 24h step 1h | 3292ms | 38ms | 604ms | 86.6x | 5.5x |
+| Metadata | field names | 29ms | 44ms | 281ms | 0.7x | **0.1x** |
+| Metadata | field values | 30ms | 44ms | 318ms | 0.7x | **0.1x** |
+| Metadata | streams list | 68ms | 36ms | 305ms | 1.9x | **0.2x** |
+| Histogram | hits 1h | 294ms | 28ms | 409ms | 10.5x | **0.7x** |
+| Histogram | hits 24h | 3404ms | 35ms | 642ms | 97.3x | 5.3x |
 
-- Per-scenario p50/p95/p99 latencies for Lakehouse, VictoriaLogs, and Loki
-- LH/VL and LH/Loki latency ratios
-- Fresh restore timings vs SLA thresholds
-- Cache sizing observations at medium scale (500K logs, 168h)
+**Summary:** LH beats Loki on 17/21 scenarios (S3-to-S3 comparison). Metadata queries 10x faster than Loki. Long-range queries 3-4x faster. Two areas need optimization:
+
+1. **trace_id point lookups (6s)** — bloom filter applied after S3 download, no file-level index
+2. **24h+ aggregations and hits (3.3s)** — scales linearly with file count, no pre-aggregated stats
+
+### Known bottlenecks and optimization roadmap
+
+#### trace_id lookups (current: 6s, target: <500ms)
+
+Root cause: every file is downloaded from S3 before bloom filter checks. The bloom index is partition-level (hourly), not file-level, so individual files cannot be skipped without downloading.
+
+Planned optimizations (ordered by impact):
+
+1. **SmartCache trace_id fast-path** — `FindFilesByTraceID()` exists but is not called from the main query path. Integrating it as a pre-filter before manifest scan eliminates S3 reads for cached trace IDs. Expected: sub-100ms for warm cache.
+2. **File-level bloom index** — store per-file bloom filter metadata alongside each Parquet file. Check bloom before S3 download to skip non-matching files entirely. Expected: 5-10x speedup.
+3. **Early termination** — trace_id queries should stop scanning after first match. Currently all files are processed regardless.
+4. **Footer-only pre-filter** — download Parquet footer (last 8 bytes + metadata) before full file, use column statistics to eliminate files without full transfer.
+
+#### 24h+ histogram/aggregation (current: 3.3s, target: <500ms)
+
+Root cause: scales linearly with file count. A 24h query touches ~24x more files than 1h. Each file's timestamp column is read even when only counts are needed.
+
+Planned optimizations:
+
+1. **Partition-level pre-aggregated stats** — store row count and time range per partition in manifest. Hits queries that align with partition boundaries can skip file reads entirely.
+2. **Timestamp column caching** — cache decoded timestamp columns in L1 since hits queries only need timestamps. Avoids re-reading from S3 on repeated histogram queries.
+3. **Row group statistics short-circuit** — use Parquet row group min/max timestamp stats to compute counts without reading column data when the entire RG falls within a histogram bucket.

@@ -111,8 +111,9 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		return nil
 	}
 
-	// Trace ID cache shortcut: if the query is an exact trace_id match and the
-	// smart cache knows which files contain it, narrow the file set immediately.
+	// SmartCache trace_id fast-path: if query is a trace_id exact match and
+	// cache knows which files contain it, skip label/bloom filtering entirely.
+	traceIDFastPath := false
 	if s.smartCache != nil {
 		if tid := extractExactMatch(queryStr, "trace_id"); tid != "" {
 			if cached := s.smartCache.FindFilesByTraceID(tid); len(cached) > 0 {
@@ -128,21 +129,25 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				}
 				if len(narrowed) > 0 {
 					files = narrowed
+					traceIDFastPath = true
+					logger.Infof("trace_id fast-path: cache hit for %s, scanning %d files", tid, len(narrowed))
 				}
 			}
 		}
 	}
 
-	// Label-based file pre-filtering
-	files = s.filterFilesByLabels(files, queryStr)
-	if len(files) == 0 {
-		return nil
-	}
+	if !traceIDFastPath {
+		// Label-based file pre-filtering
+		files = s.filterFilesByLabels(files, queryStr)
+		if len(files) == 0 {
+			return nil
+		}
 
-	// Bloom index pre-filtering
-	files = s.filterFilesByBloomIndex(files, queryStr)
-	if len(files) == 0 {
-		return nil
+		// Bloom index pre-filtering
+		files = s.filterFilesByBloomIndex(files, queryStr)
+		if len(files) == 0 {
+			return nil
+		}
 	}
 
 	// Parallel file worker pool
