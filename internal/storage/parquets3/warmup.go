@@ -1,0 +1,104 @@
+package parquets3
+
+import (
+	"context"
+	"sort"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+)
+
+func (s *Storage) WarmupCache(ctx context.Context) {
+	partitionsBack := s.cfg.Cache.WarmupPartitions
+	if partitionsBack <= 0 {
+		partitionsBack = 6
+	}
+	maxFiles := s.cfg.Cache.WarmupMaxFiles
+	if maxFiles <= 0 {
+		maxFiles = 500
+	}
+	concurrency := s.cfg.Cache.WarmupConcurrency
+	if concurrency <= 0 {
+		concurrency = 16
+	}
+
+	now := time.Now()
+	end := now.UnixNano()
+	start := now.Add(-time.Duration(partitionsBack) * time.Hour).UnixNano()
+
+	files := s.manifest.GetFilesForRange(start, end)
+	if len(files) == 0 {
+		logger.Infof("warmup: no files in range [-%dh, now]", partitionsBack)
+		return
+	}
+
+	// Sort by recency (newest first) so most recent data is warmed first
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].Key > files[j].Key
+	})
+
+	if len(files) > maxFiles {
+		files = files[:maxFiles]
+	}
+
+	logger.Infof("warmup: starting cache warmup; files=%d partitions_back=%d concurrency=%d",
+		len(files), partitionsBack, concurrency)
+
+	warmupStart := time.Now()
+	var warmed atomic.Int64
+	var errors atomic.Int64
+	var bytesLoaded atomic.Int64
+
+	taskCh := make(chan manifest.FileInfo, len(files))
+	for _, fi := range files {
+		taskCh <- fi
+	}
+	close(taskCh)
+
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for fi := range taskCh {
+				if ctx.Err() != nil {
+					return
+				}
+				data, err := s.getFileData(ctx, fi.Key, fi.Size)
+				if err != nil {
+					errors.Add(1)
+					continue
+				}
+				warmed.Add(1)
+				bytesLoaded.Add(int64(len(data)))
+
+				if s.footerCache != nil {
+					cached, _, parseErr := ParseFooterFromData(fi.Key, data)
+					if parseErr == nil {
+						s.footerCache.Put(fi.Key, cached)
+					}
+				}
+
+				n := warmed.Load()
+				if n%100 == 0 {
+					logger.Infof("warmup: progress %d/%d files, %.1f MB loaded",
+						n, len(files), float64(bytesLoaded.Load())/(1024*1024))
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	elapsed := time.Since(warmupStart)
+	logger.Infof("warmup: complete; files=%d errors=%d bytes=%.1fMB elapsed=%s",
+		warmed.Load(), errors.Load(),
+		float64(bytesLoaded.Load())/(1024*1024), elapsed)
+
+	metrics.PrefetchTasksTotal.Add("warmup", int(warmed.Load()))
+	metrics.PrefetchBytesTotal.Add(int(bytesLoaded.Load()))
+}

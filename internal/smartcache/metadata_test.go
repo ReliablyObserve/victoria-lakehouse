@@ -1,6 +1,7 @@
 package smartcache
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -204,4 +205,38 @@ func TestMetadataMap_Reconcile(t *testing.T) {
 	if got.Size != 300 {
 		t.Errorf("untracked size = %d, want 300", got.Size)
 	}
+}
+
+func TestMetadataMap_SaveSnapshot_ConcurrentPin(t *testing.T) {
+	m := NewMetadataMap()
+	now := time.Now()
+	for i := 0; i < 100; i++ {
+		key := filepath.Join("partition", fmt.Sprintf("file%d.parquet", i))
+		m.Set(key, EntryMeta{
+			CreatedAt:  now,
+			LastAccess: now,
+			Signal:     "logs",
+			Size:       1024,
+		})
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "snapshot.json")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for j := 0; j < 200; j++ {
+			key := filepath.Join("partition", fmt.Sprintf("file%d.parquet", j%100))
+			m.Pin(key, fmt.Sprintf("query-%d", j), 5*time.Minute)
+			m.RecordAccess(key)
+		}
+	}()
+
+	for k := 0; k < 20; k++ {
+		if err := m.SaveSnapshot(path); err != nil {
+			t.Fatalf("SaveSnapshot failed: %v", err)
+		}
+	}
+	<-done
 }

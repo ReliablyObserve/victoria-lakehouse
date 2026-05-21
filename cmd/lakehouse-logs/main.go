@@ -67,13 +67,17 @@ var (
 	listenAddr      = flag.String("httpListenAddr", ":9428", "HTTP listen address")
 	manifestRefresh = flag.Duration("lakehouse.manifest.refresh-interval", 0, "Manifest refresh interval (e.g., 30s)")
 
-	cacheMemoryMB = flag.Int("lakehouse.cache.memory-mb", 0, "L1 memory cache size in MB (default: 256)")
-	cacheDiskPath = flag.String("lakehouse.cache.disk-path", "", "L2 disk cache directory path")
-	cacheDiskMB   = flag.Int("lakehouse.cache.disk-max-mb", 0, "L2 disk cache max size in MB (default: 1024)")
+	cacheMemoryMB         = flag.Int("lakehouse.cache.memory-mb", 0, "L1 memory cache size in MB (default: 256)")
+	cacheDiskPath         = flag.String("lakehouse.cache.disk-path", "", "L2 disk cache directory path")
+	cacheDiskMB           = flag.Int("lakehouse.cache.disk-max-mb", 0, "L2 disk cache max size in MB (default: 1024)")
+	cacheWarmupPartitions = flag.Int("lakehouse.cache.warmup-partitions", 0, "Number of recent hourly partitions to warm on startup (0=disabled)")
+	cacheWarmupMaxFiles   = flag.Int("lakehouse.cache.warmup-max-files", 0, "Max files to warm on startup (default: 500)")
 
 	compactionEnabled  = flag.Bool("lakehouse.compaction.enabled", false, "Enable compaction scheduler")
 	compactionInterval = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
 	compactionElection = flag.String("lakehouse.compaction.leader-election", "", "Election mode: auto, k8s, s3, none")
+
+	queryFileWorkers = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 8)")
 
 	logsBloomColumns = flag.String("lakehouse.logs.bloom-columns", "", "Comma-separated bloom filter columns for logs (default: service.name)")
 	logsDeletePrefix = flag.String("lakehouse.logs.delete-prefix", "", "Delete API prefix (default: /delete/logsql)")
@@ -392,7 +396,7 @@ func run(cfg *config.Config, addr string) {
 		return true
 	}
 
-	go runStartup(sm, cfg, store)
+	go runStartup(sm, cfg, store, registry, writerTenantKey)
 
 	httpserver.Serve([]string{addr}, requestHandler, httpserver.ServeOptions{})
 	logger.Infof("lakehouse-logs listening; addr=%s", addr)
@@ -700,7 +704,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	return mux
 }
 
-func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage) {
+func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, tenantKey string) {
 	sm.SetPhase(startup.PhaseDiskRecovery)
 	logger.Infof("disk recovery complete")
 
@@ -714,7 +718,16 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 		m := store.Manifest()
 		logger.Infof("manifest S3 refresh complete; files=%d, bytes=%d, min_time=%v, max_time=%v",
 			m.TotalFiles(), m.TotalBytes(), m.MinTime(), m.MaxTime())
+		registry.ReconcileWithManifest(tenantKey,
+			int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
+			m.MinTime().UnixNano(), m.MaxTime().UnixNano())
 		store.WarmLabelIndex(ctx)
+
+		if cfg.Cache.WarmupPartitions > 0 || cfg.Cache.WarmupMaxFiles > 0 {
+			warmCtx, warmCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			store.WarmupCache(warmCtx)
+			warmCancel()
+		}
 	}
 
 	sm.SetPhase(startup.PhaseReady)
@@ -728,6 +741,9 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 		} else {
 			m := store.Manifest()
 			logger.Infof("manifest refreshed; files=%d, bytes=%d", m.TotalFiles(), m.TotalBytes())
+			registry.ReconcileWithManifest(tenantKey,
+				int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
+				m.MinTime().UnixNano(), m.MaxTime().UnixNano())
 		}
 		rcancel()
 	}
@@ -784,6 +800,12 @@ func applyFlags(cfg *config.Config) {
 	if *cacheDiskMB > 0 {
 		cfg.Cache.DiskLimit = fmt.Sprintf("%dMB", *cacheDiskMB)
 	}
+	if *cacheWarmupPartitions > 0 {
+		cfg.Cache.WarmupPartitions = *cacheWarmupPartitions
+	}
+	if *cacheWarmupMaxFiles > 0 {
+		cfg.Cache.WarmupMaxFiles = *cacheWarmupMaxFiles
+	}
 	if *compactionEnabled {
 		cfg.Compaction.Enabled = true
 	}
@@ -792,6 +814,9 @@ func applyFlags(cfg *config.Config) {
 	}
 	if e := *compactionElection; e != "" {
 		cfg.Compaction.LeaderElection = e
+	}
+	if *queryFileWorkers > 0 {
+		cfg.Query.FileWorkers = *queryFileWorkers
 	}
 
 	if s := *logsBloomColumns; s != "" {

@@ -75,8 +75,8 @@ lakehouse:
 		t.Fatalf("Load: %v", err)
 	}
 
-	if cfg.Insert.FlushInterval != 10*time.Second {
-		t.Errorf("default (balanced) flush_interval = %v, want 10s", cfg.Insert.FlushInterval)
+	if cfg.Insert.FlushInterval != 60*time.Second {
+		t.Errorf("default (balanced) flush_interval = %v, want 60s", cfg.Insert.FlushInterval)
 	}
 	if !cfg.Insert.WALEnabled {
 		t.Error("default (balanced) WAL should be enabled")

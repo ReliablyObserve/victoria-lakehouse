@@ -51,7 +51,8 @@ func (s *Sentinel) IsLocked(ctx context.Context, prefix, partition string) (bool
 	key := sentinelKey(prefix, partition)
 	data, err := s.store.Download(ctx, key)
 	if err != nil {
-		return false, err
+		// Sentinel file does not exist (S3 404) — not locked.
+		return false, nil
 	}
 	if data == nil {
 		return false, nil

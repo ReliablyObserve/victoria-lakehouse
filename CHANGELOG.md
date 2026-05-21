@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+- Parquet footer LRU cache (10K entries) avoids re-parsing file metadata on repeated accesses
+- Write lock optimization moves filtering out of serialized mutex, reducing contention
+- Parallel row group processing (up to 3 goroutines per file) reduces per-file latency
+- Timestamp-only projection for hits/stats/stats_range endpoints via context hint
+- Cache warmup on startup pre-fetches recent partitions into L1/L2 and footer cache
+- S3 range read capability (DownloadRange with HTTP Range header)
+- Tightened all 21 benchmark targets by 40-60%
+
 ## [0.29.0] - 2026-05-20
 
 ### Performance

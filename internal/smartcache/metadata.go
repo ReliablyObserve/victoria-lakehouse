@@ -116,9 +116,25 @@ func (m *MetadataMap) All() map[string]EntryMeta {
 	defer m.mu.RUnlock()
 	cp := make(map[string]EntryMeta, len(m.items))
 	for k, v := range m.items {
-		cp[k] = v
+		cp[k] = deepCopyEntry(v)
 	}
 	return cp
+}
+
+func deepCopyEntry(e EntryMeta) EntryMeta {
+	if e.PinnedBy != nil {
+		pinCopy := make(map[string]time.Time, len(e.PinnedBy))
+		for k, v := range e.PinnedBy {
+			pinCopy[k] = v
+		}
+		e.PinnedBy = pinCopy
+	}
+	if e.TraceIDs != nil {
+		tidCopy := make([]string, len(e.TraceIDs))
+		copy(tidCopy, e.TraceIDs)
+		e.TraceIDs = tidCopy
+	}
+	return e
 }
 
 func (m *MetadataMap) Reconcile(diskFiles map[string]int64) {
@@ -148,7 +164,7 @@ func (m *MetadataMap) SaveSnapshot(path string) error {
 	m.mu.RLock()
 	cp := make(map[string]EntryMeta, len(m.items))
 	for k, v := range m.items {
-		cp[k] = v
+		cp[k] = deepCopyEntry(v)
 	}
 	m.mu.RUnlock()
 

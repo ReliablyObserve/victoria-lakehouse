@@ -574,3 +574,65 @@ func TestRegistryThreeNodeConvergence(t *testing.T) {
 		}
 	}
 }
+
+func TestReconcileWithManifest_PrunesDeadNodes(t *testing.T) {
+	reg := NewTenantRegistry("node-C")
+
+	// Simulate loading a snapshot with contributions from dead nodes.
+	regOld := NewTenantRegistry("node-A")
+	regOld.RecordWrite("0:0", 1000, 2000, 10, "STANDARD")
+	regOld.RecordWrite("0:0", 2000, 4000, 20, "STANDARD")
+
+	regOld2 := NewTenantRegistry("node-B")
+	regOld2.RecordWrite("0:0", 500, 1000, 5, "STANDARD")
+
+	// Merge old nodes into node-C.
+	deltaA := regOld.BuildDelta(0)
+	reg.Merge(deltaA)
+	deltaB := regOld2.BuildDelta(0)
+	reg.Merge(deltaB)
+
+	// Add node-C's own contribution.
+	reg.RecordWrite("0:0", 100, 200, 1, "STANDARD")
+
+	ts := reg.Get("0:0")
+	if ts == nil {
+		t.Fatal("expected tenant 0:0")
+	}
+	// Before reconcile: node-A(3000) + node-B(500) + node-C(100) = 3600 bytes.
+	if ts.TotalBytes != 3600 {
+		t.Fatalf("pre-reconcile TotalBytes = %d, want 3600", ts.TotalBytes)
+	}
+	if ts.TotalFiles != 4 {
+		t.Fatalf("pre-reconcile TotalFiles = %d, want 4", ts.TotalFiles)
+	}
+
+	// Reconcile: manifest says 190 files, 28MB, 50MB raw, 100K rows.
+	reg.ReconcileWithManifest("0:0", 190, 28_000_000, 50_000_000, 100_000,
+		time.Now().Add(-48*time.Hour).UnixNano(), time.Now().UnixNano())
+
+	ts = reg.Get("0:0")
+	if ts == nil {
+		t.Fatal("expected tenant 0:0 after reconcile")
+	}
+	if ts.TotalFiles != 190 {
+		t.Errorf("post-reconcile TotalFiles = %d, want 190", ts.TotalFiles)
+	}
+	if ts.TotalBytes != 28_000_000 {
+		t.Errorf("post-reconcile TotalBytes = %d, want 28000000", ts.TotalBytes)
+	}
+	if ts.RawBytes != 50_000_000 {
+		t.Errorf("post-reconcile RawBytes = %d, want 50000000", ts.RawBytes)
+	}
+	if ts.TotalRows != 100_000 {
+		t.Errorf("post-reconcile TotalRows = %d, want 100000", ts.TotalRows)
+	}
+
+	// Verify only node-C remains in NodeContribs.
+	if len(ts.NodeContribs) != 1 {
+		t.Errorf("post-reconcile NodeContribs has %d entries, want 1", len(ts.NodeContribs))
+	}
+	if _, ok := ts.NodeContribs["node-C"]; !ok {
+		t.Error("expected node-C in NodeContribs")
+	}
+}

@@ -45,6 +45,7 @@ type Storage struct {
 	tombstones   *delete.TombstoneStore
 	smartCache   *smartcache.Controller
 	bloomIdx     *bloomindex.Index
+	footerCache  *FooterCache
 	s3Prefix     string
 	selfAZ       string
 }
@@ -161,6 +162,11 @@ func New(cfg *config.Config) (*Storage, error) {
 		bb = NewBufferBridge(&cfg.Select, cfg.Mode)
 	}
 
+	var fc *FooterCache
+	if cfg.SelectEnabled() {
+		fc = NewFooterCache(10000)
+	}
+
 	return &Storage{
 		cfg:          cfg,
 		pool:         pool,
@@ -178,6 +184,7 @@ func New(cfg *config.Config) (*Storage, error) {
 		bufferBridge: bb,
 		smartCache:   sc,
 		bloomIdx:     bloomindex.New(),
+		footerCache:  fc,
 		s3Prefix:     prefix,
 	}, nil
 }

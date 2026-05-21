@@ -394,7 +394,7 @@ func run(cfg *config.Config, addr string) {
 		return true
 	}
 
-	go runStartup(sm, cfg, store)
+	go runStartup(sm, cfg, store, registry, writerTenantKey)
 
 	httpserver.Serve([]string{addr}, requestHandler, httpserver.ServeOptions{})
 	logger.Infof("lakehouse-traces listening; addr=%s", addr)
@@ -685,7 +685,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	return mux
 }
 
-func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage) {
+func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, tenantKey string) {
 	sm.SetPhase(startup.PhaseDiskRecovery)
 	logger.Infof("disk recovery complete")
 
@@ -699,7 +699,16 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 		m := store.Manifest()
 		logger.Infof("manifest S3 refresh complete; files=%d, bytes=%d, min_time=%v, max_time=%v",
 			m.TotalFiles(), m.TotalBytes(), m.MinTime(), m.MaxTime())
+		registry.ReconcileWithManifest(tenantKey,
+			int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
+			m.MinTime().UnixNano(), m.MaxTime().UnixNano())
 		store.WarmLabelIndex(ctx)
+
+		if cfg.Cache.WarmupPartitions > 0 || cfg.Cache.WarmupMaxFiles > 0 {
+			warmCtx, warmCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			store.WarmupCache(warmCtx)
+			warmCancel()
+		}
 	}
 
 	sm.SetPhase(startup.PhaseReady)
@@ -719,6 +728,9 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 		} else {
 			m := store.Manifest()
 			logger.Infof("manifest refreshed; files=%d, bytes=%d", m.TotalFiles(), m.TotalBytes())
+			registry.ReconcileWithManifest(tenantKey,
+				int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
+				m.MinTime().UnixNano(), m.MaxTime().UnixNano())
 		}
 		rcancel()
 	}

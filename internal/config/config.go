@@ -211,6 +211,9 @@ type CacheConfig struct {
 	FooterTTL         time.Duration `yaml:"footer_ttl"`
 	BloomTTL          time.Duration `yaml:"bloom_ttl"`
 	PageTTL           time.Duration `yaml:"page_ttl"`
+	WarmupPartitions  int           `yaml:"warmup_partitions"`
+	WarmupMaxFiles    int           `yaml:"warmup_max_files"`
+	WarmupConcurrency int           `yaml:"warmup_concurrency"`
 }
 
 type DiscoveryConfig struct {
@@ -481,7 +484,7 @@ func Default() *Config {
 		},
 
 		Insert: InsertConfig{
-			FlushInterval:    10 * time.Second,
+			FlushInterval:    60 * time.Second,
 			MaxBufferRows:    50000,
 			MaxBufferBytes:   "256MB",
 			TargetFileSize:   "128MB",
@@ -523,7 +526,7 @@ func Default() *Config {
 		},
 
 		Compaction: CompactionConfig{
-			Enabled:        false,
+			Enabled:        true,
 			Interval:       5 * time.Minute,
 			MaxConcurrent:  1,
 			MinFilesL0:     10,

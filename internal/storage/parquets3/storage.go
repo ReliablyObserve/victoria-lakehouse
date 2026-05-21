@@ -46,6 +46,7 @@ type Storage struct {
 	smartCache    *smartcache.Controller
 	bloomCache    *bloomindex.BloomCache
 	bloomObserver *storageBloomObserver
+	footerCache   *FooterCache
 	selfAZ        string
 }
 
@@ -172,6 +173,11 @@ func New(cfg *config.Config) (*Storage, error) {
 		)
 	}
 
+	var fc *FooterCache
+	if cfg.SelectEnabled() {
+		fc = NewFooterCache(10000)
+	}
+
 	s := &Storage{
 		cfg:          cfg,
 		pool:         pool,
@@ -189,6 +195,7 @@ func New(cfg *config.Config) (*Storage, error) {
 		bufferBridge: bb,
 		smartCache:   sc,
 		bloomCache:   bc,
+		footerCache:  fc,
 	}
 
 	if bw != nil {

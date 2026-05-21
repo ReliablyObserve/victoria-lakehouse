@@ -3,7 +3,7 @@ package compaction
 import (
 	"context"
 	"fmt"
-	"sync"
+	"strings"
 	"testing"
 	"time"
 
@@ -275,28 +275,22 @@ func TestScheduler_SkipsLockedPartition(t *testing.T) {
 	}
 }
 
-// --- Sentinel acquire failure test ---
+// --- Sentinel 404 treated as not locked ---
 
-type failingSentinelPool struct {
+type sentinelNotFoundPool struct {
 	*mockPool
-	acquireFailCount int
-	mu2              sync.Mutex
 }
 
-func (f *failingSentinelPool) Download(ctx context.Context, key string) ([]byte, error) {
-	// If the key is a sentinel key (_compacting), return error to simulate IsLocked failure.
-	f.mu2.Lock()
-	defer f.mu2.Unlock()
-	if f.acquireFailCount > 0 {
-		f.acquireFailCount--
-		return nil, fmt.Errorf("simulated sentinel check failure")
+func (f *sentinelNotFoundPool) Download(ctx context.Context, key string) ([]byte, error) {
+	if strings.HasSuffix(key, "/_compacting") {
+		return nil, fmt.Errorf("s3 GetObject: NoSuchKey")
 	}
 	return f.mockPool.Download(ctx, key)
 }
 
-func TestScheduler_SentinelCheckError(t *testing.T) {
+func TestScheduler_SentinelNotFound_CompactionProceeds(t *testing.T) {
 	base := newMockPool()
-	pool := &failingSentinelPool{mockPool: base, acquireFailCount: 100}
+	pool := &sentinelNotFoundPool{mockPool: base}
 	m := manifest.New("test-bucket", "logs/")
 	sentinel := NewSentinel(pool, time.Hour)
 	policy := NewLevelPolicy(10, 20, 0)
@@ -311,7 +305,6 @@ func TestScheduler_SentinelCheckError(t *testing.T) {
 		}
 		data := makeTestParquet(t, rows)
 		key := fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i)
-		// Upload to base pool so mockPool has the data.
 		if err := base.Upload(ctx, key, data); err != nil {
 			t.Fatal(err)
 		}
@@ -342,9 +335,8 @@ func TestScheduler_SentinelCheckError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Scan error: %v", err)
 	}
-	// Sentinel check fails, so no compaction should happen.
-	if n != 0 {
-		t.Fatalf("expected 0 compactions when sentinel check fails, got %d", n)
+	if n == 0 {
+		t.Fatal("expected compaction to proceed when sentinel returns 404 (not locked)")
 	}
 }
 
