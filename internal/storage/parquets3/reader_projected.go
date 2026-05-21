@@ -11,6 +11,13 @@ import (
 // typed reader instead.
 // Returns a slice of rows, where each row is a slice of fields for the projected columns.
 func readRowGroupProjected(f *parquet.File, rg parquet.RowGroup, wantCols map[string]bool) ([][]field, error) {
+	return readRowGroupProjectedBitmap(f, rg, wantCols, nil)
+}
+
+// readRowGroupProjectedBitmap is like readRowGroupProjected but applies a
+// pre-where bitmap filter: only rows where bitmap[i]==true are included.
+// If bitmap is nil, all rows are included.
+func readRowGroupProjectedBitmap(f *parquet.File, rg parquet.RowGroup, wantCols map[string]bool, bitmap []bool) ([][]field, error) {
 	if len(wantCols) == 0 {
 		return nil, nil
 	}
@@ -18,9 +25,6 @@ func readRowGroupProjected(f *parquet.File, rg parquet.RowGroup, wantCols map[st
 	pqSchema := f.Schema()
 	allCols := pqSchema.Columns()
 
-	// Build column index mask. For MAP columns (e.g. resource.attributes),
-	// the schema expands into nested paths like ["resource.attributes", "key_value", "key"].
-	// We match only on path[0] (the top-level column name) and deduplicate.
 	var colIndices []int
 	var colNames []string
 	seen := make(map[string]bool)
@@ -42,9 +46,15 @@ func readRowGroupProjected(f *parquet.File, rg parquet.RowGroup, wantCols map[st
 
 	buf := make([]parquet.Row, 256)
 	var result [][]field
+	rowIdx := 0
 	for {
 		n, err := rows.ReadRows(buf)
 		for i := 0; i < n; i++ {
+			if bitmap != nil && rowIdx < len(bitmap) && !bitmap[rowIdx] {
+				rowIdx++
+				continue
+			}
+			rowIdx++
 			row := buf[i]
 			fields := make([]field, 0, len(colIndices))
 			for ci, colIdx := range colIndices {

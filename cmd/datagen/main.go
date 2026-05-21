@@ -43,23 +43,24 @@ func main() {
 	vtEndpoint := flag.String("vt-endpoint", "", "VictoriaTraces hot endpoint (e.g. http://victoriatraces:10428)")
 	lhLogsEndpoint := flag.String("lh-logs-endpoint", "", "Lakehouse logs cold endpoint (e.g. http://lakehouse-logs:9428)")
 	lhTracesEndpoint := flag.String("lh-traces-endpoint", "", "Lakehouse traces cold endpoint (e.g. http://lakehouse-traces:10428)")
+	lokiEndpoint := flag.String("loki-endpoint", "", "Grafana Loki push endpoint (e.g. http://loki:3100)")
 	accountID := flag.String("account-id", "0", "tenant AccountID header")
 	projectID := flag.String("project-id", "0", "tenant ProjectID header")
 	orgID := flag.String("org-id", "", "string tenant ID via X-Scope-OrgID header (overrides account-id/project-id)")
 	flag.Parse()
 
-	if *vlEndpoint == "" && *lhLogsEndpoint == "" {
-		log.Fatal("at least one of --vl-endpoint or --lh-logs-endpoint is required")
+	if *vlEndpoint == "" && *lhLogsEndpoint == "" && *lokiEndpoint == "" {
+		log.Fatal("at least one of --vl-endpoint, --lh-logs-endpoint, or --loki-endpoint is required")
 	}
 
-	generateBatch(*logsCount, *tracesCount, *hoursBack, *vlEndpoint, *vtEndpoint, *lhLogsEndpoint, *lhTracesEndpoint, *accountID, *projectID, *orgID)
+	generateBatch(*logsCount, *tracesCount, *hoursBack, *vlEndpoint, *vtEndpoint, *lhLogsEndpoint, *lhTracesEndpoint, *lokiEndpoint, *accountID, *projectID, *orgID)
 
 	if *interval > 0 {
 		log.Printf("Continuous mode: generating %d logs + %d traces every %s", *logsCount, *tracesCount, *interval)
 		ticker := time.NewTicker(*interval)
 		defer ticker.Stop()
 		for range ticker.C {
-			generateBatch(*logsCount, *tracesCount, 1, *vlEndpoint, *vtEndpoint, *lhLogsEndpoint, *lhTracesEndpoint, *accountID, *projectID, *orgID)
+			generateBatch(*logsCount, *tracesCount, 1, *vlEndpoint, *vtEndpoint, *lhLogsEndpoint, *lhTracesEndpoint, *lokiEndpoint, *accountID, *projectID, *orgID)
 		}
 	}
 }
@@ -125,7 +126,7 @@ type logRow struct {
 	LogAttrs          map[string]string
 }
 
-func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint, lhLogsEndpoint, lhTracesEndpoint, accountID, projectID, orgID string) {
+func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint, lhLogsEndpoint, lhTracesEndpoint, lokiEndpoint, accountID, projectID, orgID string) {
 	now := time.Now().UTC()
 	rng := mrand.New(mrand.NewSource(now.UnixNano())) // #nosec G404 -- synthetic test data
 
@@ -423,6 +424,13 @@ func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint
 			log.Printf("  pushed %d logs to LH cold at %s", len(allLogs), lhLogsEndpoint)
 		}
 	}
+	if lokiEndpoint != "" {
+		if err := pushLoki(lokiEndpoint, allLogs); err != nil {
+			log.Printf("WARNING: push logs to Loki failed: %v", err)
+		} else {
+			log.Printf("  pushed %d logs to Loki at %s", len(allLogs), lokiEndpoint)
+		}
+	}
 
 	log.Printf("Batch done: %d logs (%d correlated), %d trace spans", len(allLogs), correlatedCount, len(allTraces))
 }
@@ -613,6 +621,81 @@ func pushOTLPTraces(endpoint string, rows []traceRow, accountID, projectID, orgI
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("push to %s: status %d: %s", endpoint, resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+func pushLoki(endpoint string, rows []logRow) error {
+	type lokiValue [2]string
+	type lokiStream struct {
+		Stream map[string]string `json:"stream"`
+		Values []lokiValue       `json:"values"`
+	}
+	type lokiPush struct {
+		Streams []lokiStream `json:"streams"`
+	}
+
+	byStream := map[string]*lokiStream{}
+	for _, r := range rows {
+		labels := map[string]string{
+			"service_name":           r.ServiceName,
+			"level":                  r.SeverityText,
+			"k8s_namespace_name":     r.K8sNamespaceName,
+			"k8s_deployment_name":    r.K8sDeploymentName,
+			"k8s_node_name":          r.K8sNodeName,
+			"deployment_environment": r.DeployEnv,
+			"cloud_region":           r.CloudRegion,
+			"host_name":              r.HostName,
+		}
+		key := fmt.Sprintf("%s|%s|%s|%s", r.ServiceName, r.SeverityText, r.K8sNamespaceName, r.DeployEnv)
+		s, ok := byStream[key]
+		if !ok {
+			s = &lokiStream{Stream: labels}
+			byStream[key] = s
+		}
+		line := r.Body
+		if r.TraceID != "" {
+			line = fmt.Sprintf("trace_id=%s %s", r.TraceID, line)
+		}
+		s.Values = append(s.Values, lokiValue{
+			fmt.Sprintf("%d", r.TimestampUnixNano),
+			line,
+		})
+	}
+
+	var streams []lokiStream
+	for _, s := range byStream {
+		streams = append(streams, *s)
+	}
+
+	const batchSize = 50
+	for i := 0; i < len(streams); i += batchSize {
+		end := i + batchSize
+		if end > len(streams) {
+			end = len(streams)
+		}
+		payload := lokiPush{Streams: streams[i:end]}
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("marshal loki payload: %w", err)
+		}
+
+		req, err := http.NewRequest("POST", endpoint+"/loki/api/v1/push", bytes.NewReader(data))
+		if err != nil {
+			return fmt.Errorf("create loki request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("push to loki %s: %w", endpoint, err)
+		}
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusAccepted {
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			return fmt.Errorf("push to loki %s: status %d: %s", endpoint, resp.StatusCode, string(body))
+		}
+		_ = resp.Body.Close()
 	}
 	return nil
 }

@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: lakehouse-logs
+    static_configs:
+      - targets: ["lakehouse-logs:9428"]
+
+  - job_name: victorialogs
+    static_configs:
+      - targets: ["victorialogs:9428"]
+
+  - job_name: loki
+    static_configs:
+      - targets: ["loki:3100"]
+    metrics_path: /metrics

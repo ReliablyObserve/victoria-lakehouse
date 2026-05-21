@@ -243,6 +243,26 @@ func (c *Controller) StartSnapshotLoop(path string, interval time.Duration, stop
 	}()
 }
 
+// FindFilesByTraceID returns file keys whose recorded TraceIDs contain the
+// given trace ID. Used for trace parent-child prefetch: once a trace is known,
+// skip bloom/label checks and go directly to the right files.
+func (c *Controller) FindFilesByTraceID(traceID string) []string {
+	if traceID == "" {
+		return nil
+	}
+	all := c.metadata.All()
+	var keys []string
+	for key, meta := range all {
+		for _, tid := range meta.TraceIDs {
+			if tid == traceID {
+				keys = append(keys, key)
+				break
+			}
+		}
+	}
+	return keys
+}
+
 // DeprioritizeByTraceIDs resets access counts and timestamps for any cached
 // entries whose TraceIDs overlap with the provided set. This supports
 // cross-signal deprioritization where resolved traces should no longer be

@@ -9,16 +9,32 @@ sidebar_position: 14
 
 End-to-end latency from HTTP request to first response byte. "Cold" means L1/L2 cache empty (S3 fetch required). "Warm" means L2 disk hit (no S3 call).
 
-| Query type | Lakehouse cold | Lakehouse warm | Loki (S3+TSDB) | VL/VT (disk) |
-|---|---|---|---|---|
-| Exact filter (trace_id) | <2s | <500ms | 3–8s | 100–300ms |
-| Exact filter (service_name) | <1.5s | <400ms | 2–5s | 80–200ms |
-| Wildcard / hits volume graph | <1s | <300ms | 2–5s | 50–200ms |
-| stats_query_range | <2s | <1s | 3–10s | 100–400ms |
-| field_names / field_values | <500ms | <200ms | 1–3s | 20–80ms |
-| Manifest fast path (no data) | <1ms | <1ms | 50–200ms | <1ms |
+| Query type | Lakehouse cold | Lakehouse warm | Loki (S3+TSDB) | VL/VT (disk) | vs Loki | vs VL/VT warm |
+|---|---|---|---|---|---|---|
+| Manifest fast path (no data) | <3ms | <3ms | 50–200ms | <1ms | 17–67x faster | 3x slower (expected: S3 vs disk) |
+| Exact trace_id (bloom hit) | <1s | <200ms | 3–8s | 100–300ms | 3–8x faster | comparable warm |
+| Exact trace_id (bloom miss) | <150ms | <150ms | 3–8s | <50ms | 20–53x faster | 3x slower |
+| Exact service.name | <200ms | <200ms | 2–5s | 80–200ms | 10–25x faster | at parity warm |
+| Short range 1h wildcard | <400ms | <400ms | 2–5s | 50–100ms | 5–12x faster | 4x slower |
+| Short range 1h filtered | <200ms | <200ms | 1–3s | 30–80ms | 5–15x faster | 2.5–6x slower |
+| Medium range 6h wildcard | <1s | <1s | 3–8s | 100–300ms | 3–8x faster | 3–10x slower |
+| Long range 24h wildcard | <1.8s | <1.8s | 5–15s | 200–500ms | 3–8x faster | 4–9x slower |
+| Long range 48h filtered | <1.5s | <1.5s | 5–12s | 150–400ms | 3–8x faster | 4–10x slower |
+| stats_query 1h | <250ms | <250ms | 1–3s | 50–150ms | 4–12x faster | 1.7–5x slower |
+| stats_query_range 24h | <1.5s | <1.5s | 3–10s | 100–400ms | 2–7x faster | 4–15x slower |
+| field_names | <2ms | <2ms | 1–3s | 20–50ms | 500–1500x faster | 10–25x faster |
+| field_values | <150ms | <150ms | 1–3s | 20–80ms | 7–20x faster | 2–7.5x slower |
+| hits 1h | <350ms | <350ms | 2–5s | 50–200ms | 6–14x faster | 1.75–7x slower |
+| hits 24h | <1.5s | <1.5s | 5–12s | 100–400ms | 3–8x faster | 4–15x slower |
 
-VL/VT values are reference baselines for hot-tier data served from local disk. Lakehouse is not intended to match disk latency; it targets 2–5x better than Loki on equivalent cold data.
+**Important:** Loki and VL/VT columns are **estimated reference baselines** from published benchmarks and community reports — not measured side-by-side with Lakehouse. A comparative benchmark with identical data on the same hardware is planned (see [Comparative Benchmark](#comparative-benchmark) below). Lakehouse p95 targets are enforced by the benchmark suite against MinIO.
+
+**Key takeaways (estimated):**
+
+- **vs Loki**: Lakehouse targets 3–67x faster across all query types on equivalent cold (S3-backed) data
+- **vs VL/VT**: Lakehouse warm targets approach VL/VT disk latency for point lookups and metadata queries. For scan-heavy queries (wildcard, long range), Lakehouse is expected to be 4–15x slower — VL/VT serves from local disk while Lakehouse reads from S3
+- **field_names** is the standout: Lakehouse's in-memory label index resolves in <2ms, potentially faster than both Loki and VL/VT
+- Bloom filter misses are extremely fast (<150ms) because the bloom definitively eliminates all files without downloading data
 
 ---
 
@@ -137,6 +153,81 @@ When a query references only a few fields (e.g., `trace_id:="abc123"`), the quer
 
 Column projection is automatic — no configuration needed. Wildcard or free-text queries fall back to reading all columns.
 
+### Push-down filter (column statistics pruning)
+
+The query engine extracts predicates from the query string (exact match, prefix, greater-than, less-than) and evaluates them against Parquet column statistics (min/max per row group page). Row groups whose statistics prove no rows can match are skipped without reading any row data.
+
+Push-down filters support:
+
+| Operator | Example | Stats check |
+|---|---|---|
+| Exact | `service.name:="api-gateway"` | value ∈ [min, max] |
+| Prefix | `service.name:="api-*"` | prefix range overlaps [min, max] |
+| Greater than | `status_code:>"400"` | max > threshold |
+| Less than | `duration_ms:<"1000"` | min < threshold |
+
+**Column-type-aware comparisons**: For numeric columns (`Int32`, `Int64`, `TimestampNano`), push-down uses native integer comparisons instead of lexicographic string comparisons. This prevents false negatives where `"9" > "10"` in string ordering but `9 < 10` numerically.
+
+**Pre-resolved column indices**: Column indices are resolved once per file via `resolvePushDownIndices()` and reused across all row groups, avoiding repeated schema traversal.
+
+### Dictionary page filtering
+
+For exact-match and prefix predicates on dictionary-encoded columns, the engine reads the dictionary page (a compact, in-memory list of distinct values) before scanning row data. If no dictionary entry matches the predicate, the entire row group is skipped.
+
+Dictionary pages are typically a few KB and are already loaded as part of the Parquet column chunk metadata. This adds near-zero cost but can skip entire row groups that column statistics alone cannot eliminate (e.g., when min="a" and max="z" but the dictionary contains only ["alpha", "beta", "gamma"]).
+
+Columns with more than 10,000 dictionary entries skip this check to avoid linear scan overhead on high-cardinality columns.
+
+### Constant column optimization
+
+When all values in a row group column are identical (min == max across all pages in the column index), the engine detects this and skips deserializing that column entirely. The constant value is injected into every output row without reading column data.
+
+This is common for low-cardinality columns like `service.name`, `level`, or `k8s.namespace.name` within a single row group, where all rows typically share the same value after partitioning.
+
+### Bitmap-based row filtering (pre-where)
+
+After row-group-level pruning, the engine applies a "pre-where" filter that reads only the filter columns first (e.g., `service.name`), builds a boolean bitmap of matching rows, and then reads the remaining projected columns only for matching rows.
+
+The pruning cascade is: column statistics → dictionary → bitmap → projected read. Each level reduces the work for the next.
+
+If all rows match the filter (100% selectivity), the bitmap is discarded and the full projected read proceeds normally, avoiding unnecessary overhead.
+
+### Parquet footer cache
+
+A dedicated LRU cache (default: 10,000 entries) stores parsed `parquet.File` metadata (footer, schema, column indices). This avoids re-parsing the Parquet footer on every query for recently accessed files.
+
+The footer cache is populated on first access and during cache warmup. It is separate from the L1/L2 data cache — it stores only the parsed metadata structure, not the file data itself.
+
+| Setting | Default | Impact |
+|---|---|---|
+| `cache.footer_max_items` | 10000 | Max parsed footers in memory. Each footer is a few KB. |
+
+### Parallel row group processing
+
+When a Parquet file contains multiple row groups that survive pruning, the engine processes them in parallel (up to 3 concurrent goroutines per file). Row groups are sorted by estimated cost (row count) in ascending order so workers finish small groups quickly and load-balance across larger ones.
+
+### Label-based file pre-filtering
+
+Before downloading file data from S3 or cache, the engine checks manifest-level labels stored per file. These labels are extracted during flush and contain the distinct values for promoted columns within each file.
+
+If a query's filter predicate (exact match, prefix, GT, LT) definitively excludes all label values for a file, the file is skipped entirely — no download, no footer parse, no row group scan.
+
+### Trace parent-child prefetching (traces module)
+
+For exact `trace_id` lookups in the traces module, the smart cache maintains a reverse index from trace IDs to file keys. When a `trace_id:="..."` query arrives, the engine checks this index first and narrows the file set to only files known to contain that trace, bypassing bloom filter and label checks entirely.
+
+This index is populated as a side effect of query execution: when rows are read, their `trace_id` values are recorded in the smart cache metadata for the source file.
+
+### Cache warmup
+
+On startup, the engine pre-fetches the most recent partitions into L1/L2 cache and parses their footers. This eliminates cold-start latency for the most commonly queried time window.
+
+| Setting | Default | Impact |
+|---|---|---|
+| `cache.warmup_partitions` | 6 | Hours of recent data to warm |
+| `cache.warmup_max_files` | 500 | Max files to fetch during warmup |
+| `cache.warmup_concurrency` | 16 | Parallel S3 downloads during warmup |
+
 ### Manifest partition index
 
 `GetFilesForRange` uses a sorted partition index with binary search (O(log P)) instead of iterating all partitions linearly (O(P)). This is most impactful for large time ranges with thousands of hourly partitions.
@@ -216,3 +307,164 @@ Column breakdown for typical log data:
 - `timestamp_unix_nano` (monotone): 10–50x
 - `trace_id` (random): 1.5–3x
 - `k8s.*` fields (low cardinality): 20–100x
+
+---
+
+## Comparative Benchmark
+
+> **Status: Planned.** The latency comparison table above uses estimated baselines. This section describes the planned side-by-side benchmark to produce real measured numbers.
+
+### Goal
+
+Run identical queries against the same dataset on three systems deployed in Docker Compose, each tuned for best performance:
+
+| System | Storage | Role |
+|---|---|---|
+| Victoria Lakehouse | MinIO (S3) + L2 disk cache | Cold-tier under test |
+| VictoriaLogs (VL) | Local disk (volume mount) | Hot-tier baseline |
+| Grafana Loki | MinIO (S3) + TSDB index | Cold-tier competitor |
+
+### Dataset
+
+Generate a single canonical dataset and ingest into all three systems:
+
+- **Size**: 5M log lines, 168 hours (7 days), 10 services, 5 log levels
+- **Cardinality**: ~50K unique trace IDs, 10 service names, realistic k8s labels
+- **Format**: OTLP JSON (ingest into all three via their respective OTLP endpoints)
+
+```bash
+# Generate canonical dataset
+go run ./cmd/datagen --format=otlp-json --logs=5000000 --hours-back=168 --output=/tmp/benchmark-data/
+
+# Ingest into each system
+./scripts/benchmark-ingest.sh /tmp/benchmark-data/ lakehouse http://localhost:9428
+./scripts/benchmark-ingest.sh /tmp/benchmark-data/ victorialogs http://localhost:9401
+./scripts/benchmark-ingest.sh /tmp/benchmark-data/ loki http://localhost:3100
+```
+
+### System configurations (optimized)
+
+**Victoria Lakehouse** — tuned for best cold-tier performance:
+```yaml
+cache:
+  memory_limit: "2GB"
+  disk_path: "/data/cache"
+  disk_limit: "20GB"
+  warmup_partitions: 168    # full dataset
+  warmup_max_files: 5000
+  warmup_concurrency: 32
+query:
+  max_concurrent: 64
+  file_workers: 16
+insert:
+  row_group_size: 10000
+  compression_level: 7
+```
+
+**VictoriaLogs** — tuned for best disk performance:
+```yaml
+# VL with local disk, all defaults optimized
+-storageDataPath=/data/vl
+-retentionPeriod=30d
+-search.maxConcurrentRequests=64
+```
+
+**Grafana Loki** — tuned for best S3 performance:
+```yaml
+schema_config:
+  configs:
+    - from: "2024-01-01"
+      store: tsdb
+      object_store: s3
+      schema: v13
+      index:
+        prefix: loki_index_
+        period: 24h
+storage_config:
+  tsdb_shipper:
+    active_index_directory: /data/loki/index
+    cache_location: /data/loki/cache
+  aws:
+    s3: s3://minioadmin:minioadmin@localhost:9000/loki
+    s3forcepathstyle: true
+querier:
+  max_concurrent: 64
+query_range:
+  parallelise_shardable_queries: true
+  results_cache:
+    cache:
+      embedded_cache:
+        enabled: true
+        max_size_mb: 2048
+```
+
+### Benchmark queries (21 scenarios)
+
+The same 21 scenarios from `cmd/loadtest/realistic.go` translated to each system's query language:
+
+| # | Scenario | Lakehouse (LogsQL) | VL (LogsQL) | Loki (LogQL) |
+|---|---|---|---|---|
+| 1 | Manifest fast path | `*` future range | `*` future range | `{job="lakehouse"}` future range |
+| 2 | trace_id hit | `trace_id:="..."` | `trace_id:="..."` | `{job="lakehouse"} \|= "trace_id"` |
+| 3 | trace_id miss | `trace_id:="fff..."` | `trace_id:="fff..."` | `{job="lakehouse"} \|= "fff..."` |
+| 4 | service exact | `service.name:="api-gateway"` | `service.name:="api-gateway"` | `{service_name="api-gateway"}` |
+| ... | ... | ... | ... | ... |
+
+### Measurement protocol
+
+Each scenario runs:
+1. **Cold run**: restart system, clear all caches, run query (measures worst case)
+2. **Warm run**: run same query 3x, measure 3rd iteration (measures cache behavior)
+3. **Hot run**: run query 10x with 1s interval, report p50/p95/p99
+
+```bash
+# Full comparative benchmark
+./scripts/comparative-benchmark.sh \
+  --dataset=/tmp/benchmark-data/ \
+  --iterations=10 \
+  --warmup=3 \
+  --output=results/comparative-$(date +%Y%m%d).json
+```
+
+### Fresh instance restore test
+
+Validates that a brand-new Lakehouse instance with zero cache can:
+1. Start and become ready within SLA
+2. Serve queries at acceptable latency during warmup
+3. Reach steady-state cache hit ratio within expected time
+
+| Dataset size | Expected ready time | Expected warmup time | Steady-state L2 hit ratio |
+|---|---|---|---|
+| 500 files (small) | <10s | <30s | >90% within 2m |
+| 10K files (medium) | <30s | <2m | >80% within 5m |
+| 50K files (large) | <60s | <5m | >70% within 10m |
+
+```bash
+# Fresh restore test
+./scripts/fresh-restore-test.sh \
+  --compose-file=deployment/docker/docker-compose-benchmark.yml \
+  --dataset-size=medium \
+  --output=results/restore-$(date +%Y%m%d).json
+```
+
+### Cache sizing validation
+
+Measures actual memory and disk usage at different scales to validate capacity planning:
+
+| Dataset | Files | L1 needed (working set) | L2 needed (hot window) | Footer cache entries | Peak RSS |
+|---|---|---|---|---|---|
+| 500 files | ~250K rows | ~128MB | ~2GB | 500 | ~400MB |
+| 10K files | ~5M rows | ~512MB | ~20GB | 5K | ~1.2GB |
+| 50K files | ~25M rows | ~2GB | ~50GB | 10K | ~4GB |
+| 100K files | ~50M rows | ~4GB | ~100GB | 10K (capped) | ~8GB |
+
+Validation script:
+```bash
+# Monitor cache and memory during benchmark
+./scripts/cache-sizing-test.sh \
+  --target=http://localhost:9428 \
+  --duration=10m \
+  --output=results/cache-sizing-$(date +%Y%m%d).json
+```
+
+Reports: RSS, L1/L2 hit ratios, footer cache hit ratio, S3 request count, eviction rate.

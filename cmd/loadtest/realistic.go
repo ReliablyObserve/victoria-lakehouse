@@ -50,7 +50,7 @@ func buildRealisticScenarios() []RealisticScenario {
 				return fmt.Sprintf("%s/select/logsql/query?query=*&start=%d&end=%d",
 					t, future.UnixNano(), future.Add(time.Hour).UnixNano())
 			},
-			TargetP95Ms: 5.0,
+			TargetP95Ms: 3.0,
 		},
 
 		// === POINT LOOKUPS (Bloom Filter) ===
@@ -63,7 +63,7 @@ func buildRealisticScenarios() []RealisticScenario {
 					t, url.QueryEscape(`trace_id:="0000000000000001"`),
 					twoDaysAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 1500.0,
+			TargetP95Ms: 1000.0,
 		},
 		{
 			Name:        "bloom_trace_id_miss",
@@ -74,7 +74,7 @@ func buildRealisticScenarios() []RealisticScenario {
 					t, url.QueryEscape(`trace_id:="ffffffffffffffffffffffffffffffff"`),
 					twoDaysAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 200.0,
+			TargetP95Ms: 150.0,
 		},
 		{
 			Name:        "bloom_service_exact",
@@ -85,7 +85,7 @@ func buildRealisticScenarios() []RealisticScenario {
 					t, url.QueryEscape(`service.name:="api-gateway"`),
 					oneHourAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 300.0,
+			TargetP95Ms: 200.0,
 		},
 
 		// === SHORT RANGE QUERIES (cached after first hit) ===
@@ -97,7 +97,7 @@ func buildRealisticScenarios() []RealisticScenario {
 				return fmt.Sprintf("%s/select/logsql/query?query=*&start=%d&end=%d&limit=100",
 					t, oneHourAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 600.0,
+			TargetP95Ms: 400.0,
 		},
 		{
 			Name:        "short_range_1h_filtered",
@@ -108,7 +108,7 @@ func buildRealisticScenarios() []RealisticScenario {
 					t, url.QueryEscape(`level:="ERROR"`),
 					oneHourAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 300.0,
+			TargetP95Ms: 200.0,
 		},
 		{
 			Name:        "short_range_1h_service_level",
@@ -119,7 +119,7 @@ func buildRealisticScenarios() []RealisticScenario {
 					t, url.QueryEscape(`service.name:="api-gateway" AND level:="ERROR"`),
 					oneHourAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 300.0,
+			TargetP95Ms: 200.0,
 		},
 
 		// === MEDIUM RANGE QUERIES ===
@@ -131,7 +131,7 @@ func buildRealisticScenarios() []RealisticScenario {
 				return fmt.Sprintf("%s/select/logsql/query?query=*&start=%d&end=%d&limit=200",
 					t, sixHoursAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 1500.0,
+			TargetP95Ms: 1000.0,
 		},
 		{
 			Name:        "medium_range_6h_substring",
@@ -142,7 +142,7 @@ func buildRealisticScenarios() []RealisticScenario {
 					t, url.QueryEscape(`"database query"`),
 					sixHoursAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 2000.0,
+			TargetP95Ms: 1500.0,
 		},
 
 		// === LONG RANGE QUERIES ===
@@ -154,7 +154,7 @@ func buildRealisticScenarios() []RealisticScenario {
 				return fmt.Sprintf("%s/select/logsql/query?query=*&start=%d&end=%d&limit=500",
 					t, oneDayAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 2500.0,
+			TargetP95Ms: 1800.0,
 		},
 		{
 			Name:        "long_range_48h_service_filter",
@@ -165,7 +165,7 @@ func buildRealisticScenarios() []RealisticScenario {
 					t, url.QueryEscape(`service.name:="payment-service"`),
 					twoDaysAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 2000.0,
+			TargetP95Ms: 1500.0,
 		},
 		{
 			Name:        "long_range_48h_all_errors",
@@ -176,7 +176,7 @@ func buildRealisticScenarios() []RealisticScenario {
 					t, url.QueryEscape(`level:="ERROR"`),
 					twoDaysAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 2500.0,
+			TargetP95Ms: 1800.0,
 		},
 
 		// === AGGREGATION QUERIES ===
@@ -189,7 +189,7 @@ func buildRealisticScenarios() []RealisticScenario {
 					t, url.QueryEscape(`* | stats count(*) as total`),
 					oneHourAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 400.0,
+			TargetP95Ms: 250.0,
 		},
 		{
 			Name:        "stats_24h_count",
@@ -200,7 +200,7 @@ func buildRealisticScenarios() []RealisticScenario {
 					t, url.QueryEscape(`* | stats count(*) as total`),
 					oneDayAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 1500.0,
+			TargetP95Ms: 1000.0,
 		},
 		{
 			Name:        "stats_range_1h_step_5m",
@@ -211,7 +211,7 @@ func buildRealisticScenarios() []RealisticScenario {
 					t, url.QueryEscape(`* | stats count(*) as total`),
 					oneHourAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 400.0,
+			TargetP95Ms: 300.0,
 		},
 		{
 			Name:        "stats_range_24h_step_1h",
@@ -222,7 +222,7 @@ func buildRealisticScenarios() []RealisticScenario {
 					t, url.QueryEscape(`* | stats count(*) as total`),
 					oneDayAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 2000.0,
+			TargetP95Ms: 1500.0,
 		},
 
 		// === METADATA / LABEL QUERIES ===
@@ -234,7 +234,7 @@ func buildRealisticScenarios() []RealisticScenario {
 				return fmt.Sprintf("%s/select/logsql/field_names?query=*&start=%d&end=%d",
 					t, twoDaysAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 3.0,
+			TargetP95Ms: 2.0,
 		},
 		{
 			Name:        "field_values_service",
@@ -244,7 +244,7 @@ func buildRealisticScenarios() []RealisticScenario {
 				return fmt.Sprintf("%s/select/logsql/field_values?query=*&field=service.name&limit=100&start=%d&end=%d",
 					t, twoDaysAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 200.0,
+			TargetP95Ms: 150.0,
 		},
 		{
 			Name:        "streams_list",
@@ -254,7 +254,7 @@ func buildRealisticScenarios() []RealisticScenario {
 				return fmt.Sprintf("%s/select/logsql/streams?query=*&start=%d&end=%d",
 					t, oneHourAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 400.0,
+			TargetP95Ms: 300.0,
 		},
 
 		// === HITS ENDPOINT (histogram) ===
@@ -266,7 +266,7 @@ func buildRealisticScenarios() []RealisticScenario {
 				return fmt.Sprintf("%s/select/logsql/hits?query=*&start=%d&end=%d&step=300s",
 					t, oneHourAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 500.0,
+			TargetP95Ms: 350.0,
 		},
 		{
 			Name:        "hits_24h_step_1h",
@@ -276,7 +276,7 @@ func buildRealisticScenarios() []RealisticScenario {
 				return fmt.Sprintf("%s/select/logsql/hits?query=*&start=%d&end=%d&step=3600s",
 					t, oneDayAgo.UnixNano(), now.UnixNano())
 			},
-			TargetP95Ms: 2000.0,
+			TargetP95Ms: 1500.0,
 		},
 	}
 }

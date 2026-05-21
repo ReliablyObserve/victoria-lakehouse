@@ -1,0 +1,179 @@
+name: victoria-lakehouse-benchmark
+
+networks:
+  bench-net:
+    driver: bridge
+
+services:
+  # =========================================================================
+  # Shared storage — MinIO for Lakehouse + Loki
+  # =========================================================================
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "29000:9000"
+    networks: [bench-net]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks: [bench-net]
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb local/obs-archive --ignore-existing &&
+      mc mb local/loki-data --ignore-existing &&
+      echo 'MinIO buckets ready (obs-archive, loki-data)'
+      "
+
+  # =========================================================================
+  # System A: Victoria Lakehouse (S3 cold tier) — tuned for best performance
+  # =========================================================================
+
+  lakehouse-logs:
+    build:
+      context: ../../
+      dockerfile: Dockerfile.logs
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "29428:9428"
+    networks: [bench-net]
+    command:
+      - "-lakehouse.s3.bucket=obs-archive"
+      - "-lakehouse.s3.endpoint=http://minio:9000"
+      - "-lakehouse.s3.access-key=minioadmin"
+      - "-lakehouse.s3.secret-key=minioadmin"
+      - "-lakehouse.s3.force-path-style=true"
+      - "-lakehouse.manifest.refresh-interval=10s"
+      - "-lakehouse.insert.flush-interval=30s"
+      - "-lakehouse.insert.row-group-size=10000"
+      - "-lakehouse.query.file-workers=16"
+      - "-lakehouse.query.max-concurrent=64"
+      - "-lakehouse.cache.memory-mb=2048"
+      - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
+      - "-lakehouse.cache.disk-max-mb=20480"
+      - "-lakehouse.cache.warmup-partitions=168"
+      - "-lakehouse.cache.warmup-max-files=5000"
+      - "-loggerLevel=INFO"
+    volumes:
+      - lakehouse-cache-logs:/data/lakehouse
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://localhost:9428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # =========================================================================
+  # System B: VictoriaLogs (disk hot tier) — tuned for best performance
+  # =========================================================================
+
+  victorialogs:
+    image: victoriametrics/victoria-logs:v1.50.0
+    command:
+      - "-storageDataPath=/data"
+      - "-retentionPeriod=30d"
+      - "-search.maxConcurrentRequests=64"
+      - "-loggerLevel=INFO"
+    ports:
+      - "29401:9428"
+    networks: [bench-net]
+    volumes:
+      - vl-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # =========================================================================
+  # System C: Grafana Loki (S3 cold tier) — tuned for best performance
+  # =========================================================================
+
+  loki:
+    image: grafana/loki:3.5.0
+    ports:
+      - "23100:3100"
+    networks: [bench-net]
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./loki-benchmark-config.yml:/etc/loki/config.yaml:ro
+      - loki-data:/data/loki
+    command: -config.file=/etc/loki/config.yaml
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  # =========================================================================
+  # Data Generation — write to all 3 systems
+  # =========================================================================
+
+  datagen-seed:
+    build:
+      context: ../../
+      dockerfile: Dockerfile.datagen
+    depends_on:
+      victorialogs:
+        condition: service_healthy
+      lakehouse-logs:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    networks: [bench-net]
+    command:
+      - "--logs=500000"
+      - "--hours-back=168"
+      - "--vl-endpoint=http://victorialogs:9428"
+      - "--lh-logs-endpoint=http://lakehouse-logs:9428"
+      - "--loki-endpoint=http://loki:3100"
+
+  # =========================================================================
+  # VictoriaMetrics — scrapes metrics from all systems
+  # =========================================================================
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.143.0
+    networks: [bench-net]
+    command:
+      - "-promscrape.config=/etc/prometheus/prometheus.yml"
+      - "-retentionPeriod=7d"
+      - "-httpListenAddr=:8428"
+    volumes:
+      - ./prometheus/prometheus-benchmark.yml:/etc/prometheus/prometheus.yml:ro
+      - vm-data:/victoria-metrics-data
+    depends_on:
+      lakehouse-logs:
+        condition: service_healthy
+    ports:
+      - "28428:8428"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  lakehouse-cache-logs: {}
+  vl-data: {}
+  loki-data: {}
+  vm-data: {}
