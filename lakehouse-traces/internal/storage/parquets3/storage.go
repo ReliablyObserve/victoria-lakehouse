@@ -44,10 +44,10 @@ type Storage struct {
 	bufferBridge *BufferBridge
 	tombstones   *delete.TombstoneStore
 	smartCache   *smartcache.Controller
-	bloomIdx    *bloomindex.Index
-	footerCache *FooterCache
-	s3Prefix    string
-	selfAZ      string
+	bloomIdx     *bloomindex.Index
+	footerCache  *FooterCache
+	s3Prefix     string
+	selfAZ       string
 }
 
 func New(cfg *config.Config) (*Storage, error) {

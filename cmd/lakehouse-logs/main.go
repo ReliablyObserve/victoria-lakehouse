@@ -67,11 +67,11 @@ var (
 	listenAddr      = flag.String("httpListenAddr", ":9428", "HTTP listen address")
 	manifestRefresh = flag.Duration("lakehouse.manifest.refresh-interval", 0, "Manifest refresh interval (e.g., 30s)")
 
-	cacheMemoryMB        = flag.Int("lakehouse.cache.memory-mb", 0, "L1 memory cache size in MB (default: 256)")
-	cacheDiskPath        = flag.String("lakehouse.cache.disk-path", "", "L2 disk cache directory path")
-	cacheDiskMB          = flag.Int("lakehouse.cache.disk-max-mb", 0, "L2 disk cache max size in MB (default: 1024)")
+	cacheMemoryMB         = flag.Int("lakehouse.cache.memory-mb", 0, "L1 memory cache size in MB (default: 256)")
+	cacheDiskPath         = flag.String("lakehouse.cache.disk-path", "", "L2 disk cache directory path")
+	cacheDiskMB           = flag.Int("lakehouse.cache.disk-max-mb", 0, "L2 disk cache max size in MB (default: 1024)")
 	cacheWarmupPartitions = flag.Int("lakehouse.cache.warmup-partitions", 0, "Number of recent hourly partitions to warm on startup (0=disabled)")
-	cacheWarmupMaxFiles  = flag.Int("lakehouse.cache.warmup-max-files", 0, "Max files to warm on startup (default: 500)")
+	cacheWarmupMaxFiles   = flag.Int("lakehouse.cache.warmup-max-files", 0, "Max files to warm on startup (default: 500)")
 
 	compactionEnabled  = flag.Bool("lakehouse.compaction.enabled", false, "Enable compaction scheduler")
 	compactionInterval = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")

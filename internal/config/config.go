@@ -204,16 +204,16 @@ type S3Config struct {
 }
 
 type CacheConfig struct {
-	MemoryLimit        string        `yaml:"memory_limit"`
-	DiskPath           string        `yaml:"disk_path"`
-	DiskLimit          string        `yaml:"disk_limit"`
-	EvictionWatermark  float64       `yaml:"eviction_watermark"`
-	FooterTTL          time.Duration `yaml:"footer_ttl"`
-	BloomTTL           time.Duration `yaml:"bloom_ttl"`
-	PageTTL            time.Duration `yaml:"page_ttl"`
-	WarmupPartitions   int           `yaml:"warmup_partitions"`
-	WarmupMaxFiles     int           `yaml:"warmup_max_files"`
-	WarmupConcurrency  int           `yaml:"warmup_concurrency"`
+	MemoryLimit       string        `yaml:"memory_limit"`
+	DiskPath          string        `yaml:"disk_path"`
+	DiskLimit         string        `yaml:"disk_limit"`
+	EvictionWatermark float64       `yaml:"eviction_watermark"`
+	FooterTTL         time.Duration `yaml:"footer_ttl"`
+	BloomTTL          time.Duration `yaml:"bloom_ttl"`
+	PageTTL           time.Duration `yaml:"page_ttl"`
+	WarmupPartitions  int           `yaml:"warmup_partitions"`
+	WarmupMaxFiles    int           `yaml:"warmup_max_files"`
+	WarmupConcurrency int           `yaml:"warmup_concurrency"`
 }
 
 type DiscoveryConfig struct {

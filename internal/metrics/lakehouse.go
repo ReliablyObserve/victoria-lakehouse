@@ -15,11 +15,11 @@ var (
 	S3RequestsTotal   = NewCounterVec("lakehouse_s3_requests_total", "op")
 	S3RequestDuration = NewHistogram("lakehouse_s3_request_duration_seconds",
 		[]float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5})
-	S3ErrorsTotal    = NewCounterVec("lakehouse_s3_errors_total", "op")
-	S3BytesReadTotal   = NewCounter("lakehouse_s3_bytes_read_total")
-	S3ThrottleTotal    = NewCounter("lakehouse_s3_throttle_total")
-	S3RangeReadsTotal  = NewCounter("lakehouse_s3_range_reads_total")
-	S3RangeBytesRead   = NewCounter("lakehouse_s3_range_bytes_read_total")
+	S3ErrorsTotal     = NewCounterVec("lakehouse_s3_errors_total", "op")
+	S3BytesReadTotal  = NewCounter("lakehouse_s3_bytes_read_total")
+	S3ThrottleTotal   = NewCounter("lakehouse_s3_throttle_total")
+	S3RangeReadsTotal = NewCounter("lakehouse_s3_range_reads_total")
+	S3RangeBytesRead  = NewCounter("lakehouse_s3_range_bytes_read_total")
 )
 
 // Cache metrics
