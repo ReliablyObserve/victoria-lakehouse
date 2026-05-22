@@ -31,6 +31,7 @@ type FileInfo struct {
 	SchemaFingerprint string              `json:"schema_fp,omitempty"`
 	CompactionLevel   int                 `json:"compaction_level,omitempty"`
 	Labels            map[string][]string `json:"labels,omitempty"`
+	ColumnStats       map[string]ColumnMinMax `json:"column_stats,omitempty"`
 	StorageClass      string              `json:"storage_class,omitempty"`
 	ClassCheckedAt    time.Time           `json:"class_checked_at,omitempty"`
 	ClassSource       string              `json:"class_source,omitempty"`
@@ -186,6 +187,7 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 		for i := range newFiles {
 			if old, ok := oldByKey[newFiles[i].Key]; ok {
 				newFiles[i].Labels = old.Labels
+				newFiles[i].ColumnStats = old.ColumnStats
 				newFiles[i].RowCount = old.RowCount
 				newFiles[i].RawBytes = old.RawBytes
 				newFiles[i].MinTimeNs = old.MinTimeNs
@@ -459,6 +461,21 @@ func (m *Manifest) RemoveFile(partition string, key string) {
 			}
 			m.rebuildIndex()
 			return
+		}
+	}
+}
+
+// UpdateFileColumnStats stores min/max stats for the named columns in the FileInfo
+// identified by key. It is safe for concurrent use.
+func (m *Manifest) UpdateFileColumnStats(key string, stats map[string]ColumnMinMax) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, files := range m.files {
+		for i := range files {
+			if files[i].Key == key {
+				files[i].ColumnStats = stats
+				return
+			}
 		}
 	}
 }

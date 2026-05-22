@@ -269,6 +269,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	}
 
 	s.updateLabelIndex(f)
+	s.updateColumnStats(fi.Key, f)
 
 	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
 	bloomChecks := resolveBloomCheckIndices(f, s.buildBloomChecks(queryStr))
@@ -1005,6 +1006,30 @@ func (s *Storage) filterFilesByLabels(files []manifest.FileInfo, queryStr string
 		return result
 	}
 
+	// Column stats pre-filter: skip files where exact-match value is outside [min, max].
+	// This avoids downloading files that can't possibly contain the queried value.
+	statsFiltered := files[:0]
+	statsSkipped := 0
+	for _, fi := range files {
+		skip := false
+		for _, check := range pdf.Checks {
+			if check.Op == PushDownExact && !fi.ColumnStatsContains(check.Column, check.Value) {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			statsSkipped++
+		} else {
+			statsFiltered = append(statsFiltered, fi)
+		}
+	}
+	if statsSkipped > 0 {
+		metrics.ParquetRowGroupsSkipped.Inc("column_stats")
+		logger.Infof("column stats pre-filter: skipped %d/%d files", statsSkipped, len(files))
+		files = statsFiltered
+	}
+
 	filtered := files[:0]
 	skipped := 0
 	for _, fi := range files {
@@ -1236,4 +1261,55 @@ func isPrintable(b []byte) bool {
 		}
 	}
 	return true
+}
+
+// updateColumnStats extracts min/max column statistics from the Parquet file
+// footer and stores them in the manifest for use by the column-stats pre-filter.
+// It only reads the column index metadata — no data pages are downloaded.
+func (s *Storage) updateColumnStats(fileKey string, f *parquet.File) {
+	statsColumns := []string{"service.name", "severity_text", "level", "status_code", "service_name", "trace_id", "span.name"}
+
+	stats := make(map[string]manifest.ColumnMinMax)
+	for _, col := range statsColumns {
+		colIdx := findColumnIndex(f.Root(), col)
+		if colIdx < 0 {
+			continue
+		}
+		var globalMin, globalMax string
+		for _, rg := range f.RowGroups() {
+			cols := rg.ColumnChunks()
+			if colIdx >= len(cols) {
+				continue
+			}
+			cidx, err := cols[colIdx].ColumnIndex()
+			if err != nil || cidx == nil {
+				continue
+			}
+			for p := 0; p < cidx.NumPages(); p++ {
+				minVal := cidx.MinValue(p)
+				maxVal := cidx.MaxValue(p)
+				if minVal.IsNull() || maxVal.IsNull() {
+					continue
+				}
+				pageMin := string(minVal.Bytes())
+				pageMax := string(maxVal.Bytes())
+				if len(pageMin) == 0 || len(pageMin) > 256 {
+					continue
+				}
+				if globalMin == "" || pageMin < globalMin {
+					globalMin = pageMin
+				}
+				if globalMax == "" || pageMax > globalMax {
+					globalMax = pageMax
+				}
+			}
+		}
+		if globalMin != "" {
+			stats[col] = manifest.ColumnMinMax{Min: globalMin, Max: globalMax}
+		}
+	}
+
+	if len(stats) > 0 {
+		s.manifest.UpdateFileColumnStats(fileKey, stats)
+	}
 }
