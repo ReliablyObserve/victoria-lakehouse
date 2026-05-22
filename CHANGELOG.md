@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-05-22
+
 ### Fixed
 
 - Map column reading: properly reconstruct key-value pairs from Parquet MAP columns (resource.attributes, span.attributes, log.attributes, scope.attributes) and expand into VL-compatible attribute columns (resource_attr:*, span_attr:*, log_attr:*, scope_attr:*)
