@@ -194,6 +194,9 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				if maxRows > 0 && rowsEmitted.Load() >= maxRows {
 					return
 				}
+				if skip, _ := shouldSkipByFooter(ctx, s.pool, fi, queryStr, s.registry, s.footerCache); skip {
+					continue
+				}
 				if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, filteredWriteBlock); err != nil {
 					logger.Warnf("query file error: %s; key=%s", err, fi.Key)
 					continue
