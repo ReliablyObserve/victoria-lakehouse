@@ -398,10 +398,18 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 }
 
 func (s *Storage) readOneRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, projectedCols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
-	if projectedCols != nil {
-		return s.readRowGroupWithProjection(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDs)
+	if projectedCols == nil {
+		projectedCols = allLeafColumns(f)
 	}
-	return s.readRowGroup(f, rg, startNs, endNs, writeBlock, traceIDs)
+	return s.readRowGroupWithProjection(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDs)
+}
+
+func allLeafColumns(f *parquet.File) map[string]bool {
+	cols := make(map[string]bool)
+	for _, path := range f.Schema().Columns() {
+		cols[path[0]] = true
+	}
+	return cols
 }
 
 func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
@@ -532,7 +540,26 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 
 		seen := make(map[int]bool)
 		for _, fld := range fields {
-			// Map parquet column name to internal name
+			if mapVal, ok := fld.value.(map[string]string); ok {
+				prefix := mapColumnToAttrPrefix(fld.name)
+				for k, v := range mapVal {
+					if v == "" {
+						continue
+					}
+					attrName := prefix + k
+					idx := getCol(attrName)
+					if seen[idx] {
+						continue
+					}
+					seen[idx] = true
+					for len(cols[idx].values) < rowNum {
+						cols[idx].values = append(cols[idx].values, "")
+					}
+					cols[idx].values = append(cols[idx].values, v)
+				}
+				continue
+			}
+
 			internalName := fld.name
 			if m := s.registry.ResolveFromParquet(fld.name); m != nil {
 				internalName = m.InternalName
@@ -547,7 +574,6 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 				continue
 			}
 			seen[idx] = true
-			// Pad with empty strings if this column appeared late
 			for len(cols[idx].values) < rowNum {
 				cols[idx].values = append(cols[idx].values, "")
 			}
@@ -583,6 +609,21 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 	db := &logstorage.DataBlock{}
 	db.SetColumns(blockCols)
 	return db
+}
+
+func mapColumnToAttrPrefix(col string) string {
+	switch col {
+	case "resource.attributes":
+		return "resource_attr:"
+	case "log.attributes":
+		return "log_attr:"
+	case "span.attributes":
+		return "span_attr:"
+	case "scope.attributes":
+		return "scope_attr:"
+	default:
+		return col + ":"
+	}
 }
 
 type field struct {

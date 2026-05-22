@@ -14,6 +14,14 @@ func readRowGroupProjected(f *parquet.File, rg parquet.RowGroup, wantCols map[st
 	return readRowGroupProjectedBitmap(f, rg, wantCols, nil)
 }
 
+type colSpec struct {
+	name   string
+	idx    int
+	isMap  bool
+	keyIdx int
+	valIdx int
+}
+
 // readRowGroupProjectedBitmap is like readRowGroupProjected but applies a
 // pre-where bitmap filter: only rows where bitmap[i]==true are included.
 // If bitmap is nil, all rows are included.
@@ -25,19 +33,47 @@ func readRowGroupProjectedBitmap(f *parquet.File, rg parquet.RowGroup, wantCols 
 	pqSchema := f.Schema()
 	allCols := pqSchema.Columns()
 
-	var colIndices []int
-	var colNames []string
-	seen := make(map[string]bool)
+	type leafInfo struct {
+		indices []int
+		paths   [][]string
+	}
+	leafMap := make(map[string]*leafInfo)
 	for i, path := range allCols {
 		name := path[0]
-		if wantCols[name] && !seen[name] {
-			colIndices = append(colIndices, i)
-			colNames = append(colNames, name)
-			seen[name] = true
+		if !wantCols[name] {
+			continue
+		}
+		li, ok := leafMap[name]
+		if !ok {
+			li = &leafInfo{}
+			leafMap[name] = li
+		}
+		li.indices = append(li.indices, i)
+		li.paths = append(li.paths, path)
+	}
+
+	var specs []colSpec
+	for name, li := range leafMap {
+		if len(li.indices) == 1 {
+			specs = append(specs, colSpec{name: name, idx: li.indices[0]})
+		} else if len(li.indices) >= 2 {
+			keyIdx, valIdx := -1, -1
+			for j, p := range li.paths {
+				if len(p) >= 3 && p[2] == "key" {
+					keyIdx = li.indices[j]
+				} else if len(p) >= 3 && p[2] == "value" {
+					valIdx = li.indices[j]
+				}
+			}
+			if keyIdx >= 0 && valIdx >= 0 {
+				specs = append(specs, colSpec{name: name, isMap: true, keyIdx: keyIdx, valIdx: valIdx})
+			} else {
+				specs = append(specs, colSpec{name: name, idx: li.indices[0]})
+			}
 		}
 	}
 
-	if len(colIndices) == 0 {
+	if len(specs) == 0 {
 		return nil, nil
 	}
 
@@ -56,15 +92,35 @@ func readRowGroupProjectedBitmap(f *parquet.File, rg parquet.RowGroup, wantCols 
 			}
 			rowIdx++
 			row := buf[i]
-			fields := make([]field, 0, len(colIndices))
-			for ci, colIdx := range colIndices {
-				for _, v := range row {
-					if v.Column() == colIdx {
-						fields = append(fields, field{
-							name:  colNames[ci],
-							value: parquetValueToInterface(v),
-						})
-						break
+			fields := make([]field, 0, len(specs))
+			for _, spec := range specs {
+				if spec.isMap {
+					var keys, vals []string
+					for _, v := range row {
+						col := v.Column()
+						if col == spec.keyIdx {
+							keys = append(keys, parquetValueToString(v))
+						} else if col == spec.valIdx {
+							vals = append(vals, parquetValueToString(v))
+						}
+					}
+					m := make(map[string]string, len(keys))
+					for j := 0; j < len(keys) && j < len(vals); j++ {
+						m[keys[j]] = vals[j]
+					}
+					fields = append(fields, field{
+						name:  spec.name,
+						value: m,
+					})
+				} else {
+					for _, v := range row {
+						if v.Column() == spec.idx {
+							fields = append(fields, field{
+								name:  spec.name,
+								value: parquetValueToInterface(v),
+							})
+							break
+						}
 					}
 				}
 			}
