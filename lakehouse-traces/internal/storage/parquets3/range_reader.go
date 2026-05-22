@@ -16,16 +16,4 @@ func shouldUseRangeRead(fileSize int64, projectedCols, totalCols int) bool {
 	return ratio < rangeReadThreshold
 }
 
-// estimateColumnChunkBytes estimates how many bytes would be fetched
-// with range reads for the projected columns.
-func estimateColumnChunkBytes(fileSize int64, totalCols, projectedCols int, footerSize int) int64 {
-	if totalCols == 0 {
-		return fileSize
-	}
-	dataBytes := fileSize - int64(footerSize)
-	if dataBytes < 0 {
-		dataBytes = fileSize
-	}
-	estimated := (dataBytes * int64(projectedCols)) / int64(totalCols)
-	return estimated + int64(footerSize)
-}
+

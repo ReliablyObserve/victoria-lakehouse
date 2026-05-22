@@ -22,20 +22,20 @@ import (
 const maxLabelsPerField = 100
 
 type FileInfo struct {
-	Key               string              `json:"key"`
-	Size              int64               `json:"size"`
-	RowCount          int64               `json:"row_count,omitempty"`
-	MinTimeNs         int64               `json:"min_time_ns,omitempty"`
-	MaxTimeNs         int64               `json:"max_time_ns,omitempty"`
-	RawBytes          int64               `json:"raw_bytes,omitempty"`
-	SchemaFingerprint string              `json:"schema_fp,omitempty"`
-	CompactionLevel   int                 `json:"compaction_level,omitempty"`
-	Labels            map[string][]string `json:"labels,omitempty"`
+	Key               string                  `json:"key"`
+	Size              int64                   `json:"size"`
+	RowCount          int64                   `json:"row_count,omitempty"`
+	MinTimeNs         int64                   `json:"min_time_ns,omitempty"`
+	MaxTimeNs         int64                   `json:"max_time_ns,omitempty"`
+	RawBytes          int64                   `json:"raw_bytes,omitempty"`
+	SchemaFingerprint string                  `json:"schema_fp,omitempty"`
+	CompactionLevel   int                     `json:"compaction_level,omitempty"`
+	Labels            map[string][]string     `json:"labels,omitempty"`
 	ColumnStats       map[string]ColumnMinMax `json:"column_stats,omitempty"`
-	StorageClass      string              `json:"storage_class,omitempty"`
-	ClassCheckedAt    time.Time           `json:"class_checked_at,omitempty"`
-	ClassSource       string              `json:"class_source,omitempty"`
-	CreatedAt         time.Time           `json:"created_at,omitempty"`
+	StorageClass      string                  `json:"storage_class,omitempty"`
+	ClassCheckedAt    time.Time               `json:"class_checked_at,omitempty"`
+	ClassSource       string                  `json:"class_source,omitempty"`
+	CreatedAt         time.Time               `json:"created_at,omitempty"`
 }
 
 func (fi FileInfo) CompressionRatio() float64 {
@@ -355,24 +355,6 @@ func (m *Manifest) indexFileLabels(fi FileInfo) {
 				fieldMap[v] = keySet
 			}
 			keySet[fi.Key] = true
-		}
-	}
-}
-
-func (m *Manifest) removeFileFromLabelIndex(fi FileInfo) {
-	for field, values := range fi.Labels {
-		fieldMap := m.labelIndex[field]
-		if fieldMap == nil {
-			continue
-		}
-		for _, v := range values {
-			delete(fieldMap[v], fi.Key)
-			if len(fieldMap[v]) == 0 {
-				delete(fieldMap, v)
-			}
-		}
-		if len(fieldMap) == 0 {
-			delete(m.labelIndex, field)
 		}
 	}
 }

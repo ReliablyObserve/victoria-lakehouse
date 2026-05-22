@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"context"
 	"fmt"
 	"testing"
 )
@@ -206,7 +207,7 @@ func TestMetadataSidecarKey(t *testing.T) {
 
 func TestWritePartitionSidecar_EmptyPartition(t *testing.T) {
 	m := New("test-bucket", "prefix/")
-	err := m.WritePartitionSidecar(nil, nil, "nonexistent")
+	err := m.WritePartitionSidecar(context.TODO(), nil, "nonexistent")
 	if err != nil {
 		t.Errorf("expected nil for empty partition, got %v", err)
 	}
@@ -218,7 +219,7 @@ func TestWritePartitionSidecar_NoEnrichedFiles(t *testing.T) {
 		Key:  "prefix/dt=2026-05-20/hour=11/abc.parquet",
 		Size: 1000,
 	})
-	err := m.WritePartitionSidecar(nil, nil, "dt=2026-05-20/hour=11")
+	err := m.WritePartitionSidecar(context.TODO(), nil, "dt=2026-05-20/hour=11")
 	if err != nil {
 		t.Errorf("expected nil for no enriched files, got %v", err)
 	}

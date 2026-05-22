@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Map column reading: properly reconstruct key-value pairs from Parquet MAP columns (resource.attributes, span.attributes, log.attributes, scope.attributes) and expand into VL-compatible attribute columns (resource_attr:*, span_attr:*, log_attr:*, scope_attr:*)
+- Column projection: only activate for column-selecting pipes (fields, stats, uniq, top) rather than VL-internal pipes (sort, limit, offset) that VL adds automatically to queries
+
 ## [0.30.0] - 2026-05-21
 
 ### Performance

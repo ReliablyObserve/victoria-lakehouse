@@ -97,10 +97,10 @@ func readRowGroupProjectedBitmap(f *parquet.File, rg parquet.RowGroup, wantCols 
 				if spec.isMap {
 					var keys, vals []string
 					for _, v := range row {
-						col := v.Column()
-						if col == spec.keyIdx {
+						switch v.Column() {
+						case spec.keyIdx:
 							keys = append(keys, parquetValueToString(v))
-						} else if col == spec.valIdx {
+						case spec.valIdx:
 							vals = append(vals, parquetValueToString(v))
 						}
 					}

@@ -170,7 +170,7 @@ func (m *Manifest) LoadSidecars(ctx context.Context, client *s3.Client, concurre
 						break
 					}
 				}
-				resp.Body.Close()
+				_ = resp.Body.Close()
 
 				sc, err := UnmarshalFileMetaSidecar(data)
 				if err != nil {

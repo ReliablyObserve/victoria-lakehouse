@@ -111,43 +111,9 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		return nil
 	}
 
-	// SmartCache trace_id fast-path: if query is a trace_id exact match and
-	// cache knows which files contain it, skip label/bloom filtering entirely.
-	traceIDFastPath := false
-	if s.smartCache != nil {
-		if tid := extractExactMatch(queryStr, "trace_id"); tid != "" {
-			if cached := s.smartCache.FindFilesByTraceID(tid); len(cached) > 0 {
-				cacheSet := make(map[string]bool, len(cached))
-				for _, k := range cached {
-					cacheSet[k] = true
-				}
-				var narrowed []manifest.FileInfo
-				for _, fi := range files {
-					if cacheSet[fi.Key] {
-						narrowed = append(narrowed, fi)
-					}
-				}
-				if len(narrowed) > 0 {
-					files = narrowed
-					traceIDFastPath = true
-					logger.Infof("trace_id fast-path: cache hit for %s, scanning %d files", tid, len(narrowed))
-				}
-			}
-		}
-	}
-
-	if !traceIDFastPath {
-		// Label-based file pre-filtering
-		files = s.filterFilesByLabels(files, queryStr)
-		if len(files) == 0 {
-			return nil
-		}
-
-		// Bloom index pre-filtering
-		files = s.filterFilesByBloomIndex(files, queryStr)
-		if len(files) == 0 {
-			return nil
-		}
+	files = s.preFilterFiles(files, queryStr)
+	if len(files) == 0 {
+		return nil
 	}
 
 	// Parallel file worker pool
@@ -219,28 +185,64 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}
 	}
 
-	if s.bufferBridge != nil {
-		switch s.cfg.Mode {
-		case config.ModeLogs:
-			bufRows, _ := s.bufferBridge.QueryLogs(ctx, startNs, endNs)
-			if len(bufRows) > 0 {
-				db := s.logRowsToDataBlock(bufRows)
-				if db != nil && db.RowsCount() > 0 {
-					filteredWriteBlock(0, db)
+	s.queryBufferBridge(ctx, startNs, endNs, filteredWriteBlock)
+
+	return nil
+}
+
+func (s *Storage) preFilterFiles(files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
+	if s.smartCache != nil {
+		if tid := extractExactMatch(queryStr, "trace_id"); tid != "" {
+			if cached := s.smartCache.FindFilesByTraceID(tid); len(cached) > 0 {
+				cacheSet := make(map[string]bool, len(cached))
+				for _, k := range cached {
+					cacheSet[k] = true
 				}
-			}
-		case config.ModeTraces:
-			bufRows, _ := s.bufferBridge.QueryTraces(ctx, startNs, endNs)
-			if len(bufRows) > 0 {
-				db := s.traceRowsToDataBlock(bufRows)
-				if db != nil && db.RowsCount() > 0 {
-					filteredWriteBlock(0, db)
+				var narrowed []manifest.FileInfo
+				for _, fi := range files {
+					if cacheSet[fi.Key] {
+						narrowed = append(narrowed, fi)
+					}
+				}
+				if len(narrowed) > 0 {
+					logger.Infof("trace_id fast-path: cache hit for %s, scanning %d files", tid, len(narrowed))
+					return narrowed
 				}
 			}
 		}
 	}
 
-	return nil
+	files = s.filterFilesByLabels(files, queryStr)
+	if len(files) == 0 {
+		return nil
+	}
+
+	files = s.filterFilesByBloomIndex(files, queryStr)
+	return files
+}
+
+func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, filteredWriteBlock logstorage.WriteDataBlockFunc) {
+	if s.bufferBridge == nil {
+		return
+	}
+	switch s.cfg.Mode {
+	case config.ModeLogs:
+		bufRows, _ := s.bufferBridge.QueryLogs(ctx, startNs, endNs)
+		if len(bufRows) > 0 {
+			db := s.logRowsToDataBlock(bufRows)
+			if db != nil && db.RowsCount() > 0 {
+				filteredWriteBlock(0, db)
+			}
+		}
+	case config.ModeTraces:
+		bufRows, _ := s.bufferBridge.QueryTraces(ctx, startNs, endNs)
+		if len(bufRows) > 0 {
+			db := s.traceRowsToDataBlock(bufRows)
+			if db != nil && db.RowsCount() > 0 {
+				filteredWriteBlock(0, db)
+			}
+		}
+	}
 }
 
 // openParquetFile returns a parquet.File for the given FileInfo.
@@ -483,7 +485,7 @@ func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGrou
 		}
 		for i := range allFields {
 			for _, cc := range constants {
-				allFields[i] = append(allFields[i], field{name: cc.name, value: cc.value})
+				allFields[i] = append(allFields[i], field(cc))
 			}
 		}
 	}

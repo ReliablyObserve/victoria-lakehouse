@@ -118,25 +118,9 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		return nil
 	}
 
-	// Manifest-only fast path: for wildcard stats/hits queries (timestamp-only
-	// hint, no column filters, no active tombstones in range), emit synthetic
-	// DataBlocks using RowCount from manifest metadata for files fully within
-	// the query range. This skips all S3 I/O (no file downloads, no footer reads).
 	hasTombstones := s.tombstones != nil && len(s.tombstones.ForRange(startNs, endNs)) > 0
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
-		var remaining []manifest.FileInfo
-		for _, fi := range files {
-			if fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
-				fi.MinTimeNs >= startNs && fi.MaxTimeNs <= endNs {
-				db := s.syntheticManifestBlock(fi)
-				if db != nil && db.RowsCount() > 0 {
-					filteredWriteBlock(0, db)
-					metrics.MetadataOnlyFiles.Inc()
-				}
-			} else {
-				remaining = append(remaining, fi)
-			}
-		}
+		remaining := s.manifestFastPath(files, startNs, endNs, filteredWriteBlock)
 		if len(remaining) == 0 {
 			close(resultCh)
 			resultWg.Wait()
@@ -145,48 +129,14 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			}
 			return nil
 		}
-		logger.Infof("metadata fast path: resolved %d/%d files from manifest, %d remain for S3",
-			len(files)-len(remaining), len(files), len(remaining))
 		files = remaining
 	}
 
-	// SmartCache trace_id fast-path: if query is a trace_id exact match and
-	// cache knows which files contain it, skip manifest/bloom/label filtering
-	// and query only those files directly.
-	traceIDFastPath := false
-	if s.smartCache != nil {
-		if tid := extractExactMatch(queryStr, "trace_id"); tid != "" {
-			cachedKeys := s.smartCache.FindFilesByTraceID(tid)
-			if len(cachedKeys) > 0 {
-				keySet := make(map[string]bool, len(cachedKeys))
-				for _, k := range cachedKeys {
-					keySet[k] = true
-				}
-				var matched []manifest.FileInfo
-				for _, fi := range files {
-					if keySet[fi.Key] {
-						matched = append(matched, fi)
-					}
-				}
-				if len(matched) > 0 {
-					files = matched
-					traceIDFastPath = true
-					metrics.TraceIDCacheHits.Inc()
-					logger.Infof("trace_id fast-path: cache hit for %s, scanning %d/%d files", tid, len(matched), len(files))
-				}
-			}
-		}
-	}
-
-	if !traceIDFastPath {
-		// Label-based file pre-filtering
-		files = s.filterFilesByLabels(files, queryStr)
-		if len(files) == 0 {
-			return nil
-		}
-
-		// Partition-level bloom file skip
-		files = s.bloomFilterFiles(ctx, files, queryStr)
+	files = s.preFilterFiles(ctx, files, queryStr)
+	if len(files) == 0 {
+		close(resultCh)
+		resultWg.Wait()
+		return nil
 	}
 
 	// Prefetch footers for all files in parallel using 16KB range reads.
@@ -253,26 +203,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 	wg.Wait()
 
-	if s.bufferBridge != nil && (maxRows <= 0 || rowsEmitted.Load() < maxRows) {
-		switch s.cfg.Mode {
-		case config.ModeLogs:
-			bufRows, _ := s.bufferBridge.QueryLogs(ctx, startNs, endNs)
-			if len(bufRows) > 0 {
-				db := s.logRowsToDataBlock(bufRows)
-				if db != nil && db.RowsCount() > 0 {
-					filteredWriteBlock(0, db)
-				}
-			}
-		case config.ModeTraces:
-			bufRows, _ := s.bufferBridge.QueryTraces(ctx, startNs, endNs)
-			if len(bufRows) > 0 {
-				db := s.traceRowsToDataBlock(bufRows)
-				if db != nil && db.RowsCount() > 0 {
-					filteredWriteBlock(0, db)
-				}
-			}
-		}
-	}
+	s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, filteredWriteBlock)
 
 	close(resultCh)
 	resultWg.Wait()
@@ -288,6 +219,81 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 
 	return nil
+}
+
+func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, writeBlock logstorage.WriteDataBlockFunc) {
+	if s.bufferBridge == nil || (maxRows > 0 && rowsEmitted.Load() >= maxRows) {
+		return
+	}
+	switch s.cfg.Mode {
+	case config.ModeLogs:
+		bufRows, _ := s.bufferBridge.QueryLogs(ctx, startNs, endNs)
+		if len(bufRows) > 0 {
+			db := s.logRowsToDataBlock(bufRows)
+			if db != nil && db.RowsCount() > 0 {
+				writeBlock(0, db)
+			}
+		}
+	case config.ModeTraces:
+		bufRows, _ := s.bufferBridge.QueryTraces(ctx, startNs, endNs)
+		if len(bufRows) > 0 {
+			db := s.traceRowsToDataBlock(bufRows)
+			if db != nil && db.RowsCount() > 0 {
+				writeBlock(0, db)
+			}
+		}
+	}
+}
+
+func (s *Storage) manifestFastPath(files []manifest.FileInfo, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc) []manifest.FileInfo {
+	var remaining []manifest.FileInfo
+	for _, fi := range files {
+		if fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
+			fi.MinTimeNs >= startNs && fi.MaxTimeNs <= endNs {
+			db := s.syntheticManifestBlock(fi)
+			if db != nil && db.RowsCount() > 0 {
+				writeBlock(0, db)
+				metrics.MetadataOnlyFiles.Inc()
+			}
+		} else {
+			remaining = append(remaining, fi)
+		}
+	}
+	if len(remaining) < len(files) {
+		logger.Infof("metadata fast path: resolved %d/%d files from manifest, %d remain for S3",
+			len(files)-len(remaining), len(files), len(remaining))
+	}
+	return remaining
+}
+
+func (s *Storage) preFilterFiles(ctx context.Context, files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
+	if s.smartCache != nil {
+		if tid := extractExactMatch(queryStr, "trace_id"); tid != "" {
+			cachedKeys := s.smartCache.FindFilesByTraceID(tid)
+			if len(cachedKeys) > 0 {
+				keySet := make(map[string]bool, len(cachedKeys))
+				for _, k := range cachedKeys {
+					keySet[k] = true
+				}
+				var matched []manifest.FileInfo
+				for _, fi := range files {
+					if keySet[fi.Key] {
+						matched = append(matched, fi)
+					}
+				}
+				if len(matched) > 0 {
+					metrics.TraceIDCacheHits.Inc()
+					logger.Infof("trace_id fast-path: cache hit for %s, scanning %d/%d files", tid, len(matched), len(files))
+					return matched
+				}
+			}
+		}
+	}
+	files = s.filterFilesByLabels(files, queryStr)
+	if len(files) == 0 {
+		return nil
+	}
+	return s.bloomFilterFiles(ctx, files, queryStr)
 }
 
 // openParquetFile returns a parquet.File for the given FileInfo.
@@ -585,7 +591,7 @@ func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGrou
 		}
 		for i := range allFields {
 			for _, cc := range constants {
-				allFields[i] = append(allFields[i], field{name: cc.name, value: cc.value})
+				allFields[i] = append(allFields[i], field(cc))
 			}
 		}
 	}
