@@ -239,44 +239,60 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	return nil
 }
 
-func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, writeBlock logstorage.WriteDataBlockFunc) error {
+// openParquetFile returns a parquet.File for the given FileInfo.
+// When a cached footer is available and the query projects few columns,
+// it uses S3ReaderAt so parquet-go fetches only the needed column chunks
+// via HTTP range requests. Falls back to full download on any error.
+func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, projectedCols map[string]bool) (*parquet.File, error) {
+	// Range-read path: requires footer cache (to know total column count)
+	// and a non-empty projection that covers fewer than half the columns.
+	if s.footerCache != nil && projectedCols != nil && s.pool != nil {
+		if cached, ok := s.footerCache.Get(fi.Key); ok {
+			totalCols := len(cached.File.Root().Columns())
+			if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
+				readerAt := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
+				f, err := parquet.OpenFile(readerAt, fi.Size)
+				if err == nil {
+					metrics.S3RangeReadsTotal.Inc()
+					return f, nil
+				}
+				// Fall through to full download on error.
+			}
+		}
+	}
+
+	// Full download path (existing behaviour).
 	data, err := s.getFileData(ctx, fi.Key, fi.Size)
 	if err != nil {
-		return fmt.Errorf("get file data %s: %w", fi.Key, err)
+		return nil, fmt.Errorf("get file data %s: %w", fi.Key, err)
 	}
 
 	metrics.ParquetFilesOpened.Inc()
 	metrics.ParquetColumnBytesRead.Add(len(data))
 
-	var f *parquet.File
 	if s.footerCache != nil {
 		if cached, ok := s.footerCache.Get(fi.Key); ok && cached.FileSize == int64(len(data)) {
-			f = cached.File
-		}
-	}
-	if f == nil {
-		var parseErr error
-		if s.footerCache != nil {
-			var cached *CachedFooter
-			cached, f, parseErr = ParseFooterFromData(fi.Key, data)
-			if parseErr != nil {
-				return parseErr
-			}
-			s.footerCache.Put(fi.Key, cached)
-		} else {
-			f, parseErr = parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
-			if parseErr != nil {
-				return fmt.Errorf("open parquet file %s: %w", fi.Key, parseErr)
-			}
+			return cached.File, nil
 		}
 	}
 
-	s.updateLabelIndex(f)
-	s.updateColumnStats(fi.Key, f)
+	if s.footerCache != nil {
+		cached, f, parseErr := ParseFooterFromData(fi.Key, data)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		s.footerCache.Put(fi.Key, cached)
+		return f, nil
+	}
 
-	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
-	bloomChecks := resolveBloomCheckIndices(f, s.buildBloomChecks(queryStr))
-	pdf := resolvePushDownIndices(f, buildPushDownFilter(queryStr, s.registry))
+	f, parseErr := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+	if parseErr != nil {
+		return nil, fmt.Errorf("open parquet file %s: %w", fi.Key, parseErr)
+	}
+	return f, nil
+}
+
+func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, writeBlock logstorage.WriteDataBlockFunc) error {
 	projectedCols := queryColumns(queryStr, s.registry)
 
 	// Hits/stats fast path: when the endpoint only needs timestamps (set via
@@ -285,6 +301,18 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	if projectedCols == nil && storage.IsTimestampOnly(ctx) {
 		projectedCols = map[string]bool{s.registry.TimestampColumn(): true}
 	}
+
+	f, err := s.openParquetFile(ctx, fi, projectedCols)
+	if err != nil {
+		return err
+	}
+
+	s.updateLabelIndex(f)
+	s.updateColumnStats(fi.Key, f)
+
+	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
+	bloomChecks := resolveBloomCheckIndices(f, s.buildBloomChecks(queryStr))
+	pdf := resolvePushDownIndices(f, buildPushDownFilter(queryStr, s.registry))
 
 	var collectedTraceIDs []string
 	var traceIDsPtr *[]string
