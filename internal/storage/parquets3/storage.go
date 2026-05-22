@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -45,9 +46,10 @@ type Storage struct {
 	tombstones    *delete.TombstoneStore
 	smartCache    *smartcache.Controller
 	bloomCache    *bloomindex.BloomCache
-	bloomObserver *storageBloomObserver
-	footerCache   *FooterCache
-	selfAZ        string
+	bloomObserver    *storageBloomObserver
+	footerCache      *FooterCache
+	fileBloomCache   sync.Map
+	selfAZ           string
 }
 
 func New(cfg *config.Config) (*Storage, error) {
@@ -850,6 +852,69 @@ func (s *Storage) WarmLabelIndex(ctx context.Context) {
 		sampled++
 	}
 	logger.Infof("label index warmed; labels=%d, files_sampled=%d", s.labelIndex.Len(), sampled)
+}
+
+// WarmMetadata batch-prefetches Parquet footers for all manifest files that
+// lack RowCount and populates RowCount + precise time bounds. This enables
+// the manifest-only fast path for stats/hits queries from the first query
+// after startup.
+func (s *Storage) WarmMetadata(ctx context.Context) {
+	files := s.manifest.GetFilesForRange(0, 1<<62)
+	var needEnrich []manifest.FileInfo
+	for _, fi := range files {
+		if fi.RowCount == 0 {
+			needEnrich = append(needEnrich, fi)
+		}
+	}
+	if len(needEnrich) == 0 {
+		return
+	}
+
+	if s.footerCache == nil {
+		logger.Infof("metadata warmup: footer cache not available, skipping")
+		return
+	}
+
+	fetched := prefetchFooters(ctx, s.pool, needEnrich, s.footerCache, 0)
+	logger.Infof("metadata warmup: prefetched %d footers for %d files", fetched, len(needEnrich))
+
+	enriched := 0
+	for _, fi := range needEnrich {
+		cached, ok := s.footerCache.Get(fi.Key)
+		if !ok {
+			continue
+		}
+		var totalRows int64
+		var minTs, maxTs int64
+		tsIdx := findColumnIndex(cached.File.Root(), s.registry.TimestampColumn())
+		for _, rg := range cached.File.RowGroups() {
+			totalRows += rg.NumRows()
+			if tsIdx < 0 {
+				continue
+			}
+			cols := rg.ColumnChunks()
+			if tsIdx >= len(cols) {
+				continue
+			}
+			idx, err := cols[tsIdx].ColumnIndex()
+			if err != nil || idx == nil || idx.NumPages() == 0 {
+				continue
+			}
+			rgMin := idx.MinValue(0).Int64()
+			rgMax := idx.MaxValue(idx.NumPages() - 1).Int64()
+			if minTs == 0 || rgMin < minTs {
+				minTs = rgMin
+			}
+			if rgMax > maxTs {
+				maxTs = rgMax
+			}
+		}
+		if totalRows > 0 {
+			s.manifest.EnrichFileMetadata(fi.Key, totalRows, minTs, maxTs)
+			enriched++
+		}
+	}
+	logger.Infof("metadata warmup: enriched %d/%d files with row counts and time bounds", enriched, len(needEnrich))
 }
 
 func (s *Storage) PersistState() error {

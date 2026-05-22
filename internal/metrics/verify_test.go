@@ -72,6 +72,7 @@ func TestVerifyMetrics_AllCountersExist(t *testing.T) {
 		{"FooterCacheHits", FooterCacheHits},
 		{"FooterCacheEvictions", FooterCacheEvictions},
 		{"TraceIDCacheHits", TraceIDCacheHits},
+		{"MetadataOnlyFiles", MetadataOnlyFiles},
 	}
 
 	for _, tc := range counters {

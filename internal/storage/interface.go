@@ -7,6 +7,7 @@ import (
 )
 
 type queryHintKey struct{}
+type countOnlyKey struct{}
 
 func WithTimestampOnlyHint(ctx context.Context) context.Context {
 	return context.WithValue(ctx, queryHintKey{}, true)
@@ -14,6 +15,15 @@ func WithTimestampOnlyHint(ctx context.Context) context.Context {
 
 func IsTimestampOnly(ctx context.Context) bool {
 	v, _ := ctx.Value(queryHintKey{}).(bool)
+	return v
+}
+
+func WithCountOnlyHint(ctx context.Context) context.Context {
+	return context.WithValue(ctx, countOnlyKey{}, true)
+}
+
+func IsCountOnly(ctx context.Context) bool {
+	v, _ := ctx.Value(countOnlyKey{}).(bool)
 	return v
 }
 

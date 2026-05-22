@@ -199,6 +199,26 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 			}
 		}
 	}
+	// Infer MinTimeNs/MaxTimeNs from partition key for files that don't
+	// have explicit time bounds (e.g. files from before this process or
+	// after a restart). Hourly partitions give us [hour, hour+1h) bounds.
+	for partition, pFiles := range files {
+		t, err := parsePartitionTime(partition)
+		if err != nil {
+			continue
+		}
+		pMinNs := t.UnixNano()
+		pMaxNs := t.Add(time.Hour).UnixNano() - 1
+		for i := range pFiles {
+			if pFiles[i].MinTimeNs == 0 {
+				pFiles[i].MinTimeNs = pMinNs
+			}
+			if pFiles[i].MaxTimeNs == 0 {
+				pFiles[i].MaxTimeNs = pMaxNs
+			}
+		}
+	}
+
 	m.files = files
 	m.rebuildIndex()
 	m.minTime = minT
@@ -273,7 +293,14 @@ func (m *Manifest) GetFilesForRange(startNs, endNs int64) []FileInfo {
 		if !p.start.Before(end) {
 			break
 		}
-		result = append(result, m.files[p.key]...)
+		for _, fi := range m.files[p.key] {
+			if fi.MinTimeNs != 0 && fi.MaxTimeNs != 0 {
+				if fi.MaxTimeNs < startNs || fi.MinTimeNs > endNs {
+					continue
+				}
+			}
+			result = append(result, fi)
+		}
 	}
 
 	sort.Slice(result, func(i, j int) bool {
@@ -474,6 +501,30 @@ func (m *Manifest) UpdateFileColumnStats(key string, stats map[string]ColumnMinM
 		for i := range files {
 			if files[i].Key == key {
 				files[i].ColumnStats = stats
+				return
+			}
+		}
+	}
+}
+
+// EnrichFileMetadata updates RowCount and time bounds for a file identified
+// by key. Called after first opening a file during a query, using metadata
+// from the Parquet footer. Only updates fields that are zero (not already set).
+func (m *Manifest) EnrichFileMetadata(key string, rowCount int64, minTimeNs, maxTimeNs int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, files := range m.files {
+		for i := range files {
+			if files[i].Key == key {
+				if files[i].RowCount == 0 && rowCount > 0 {
+					files[i].RowCount = rowCount
+				}
+				if files[i].MinTimeNs == 0 && minTimeNs > 0 {
+					files[i].MinTimeNs = minTimeNs
+				}
+				if files[i].MaxTimeNs == 0 && maxTimeNs > 0 {
+					files[i].MaxTimeNs = maxTimeNs
+				}
 				return
 			}
 		}

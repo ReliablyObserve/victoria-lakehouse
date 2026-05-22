@@ -67,6 +67,7 @@ var (
 	FooterCacheEvictions    = NewCounter("lakehouse_footer_cache_evictions_total")
 	FooterCacheEntries      = NewGauge("lakehouse_footer_cache_entries")
 	TraceIDCacheHits        = NewCounter("lakehouse_trace_id_cache_hits_total")
+	MetadataOnlyFiles       = NewCounter("lakehouse_metadata_only_files_total")
 )
 
 // Insert / writer metrics

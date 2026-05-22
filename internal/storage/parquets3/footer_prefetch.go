@@ -2,6 +2,9 @@ package parquets3
 
 import (
 	"context"
+	"sync"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
@@ -128,4 +131,106 @@ func shouldSkipByFooter(
 	}
 
 	return false, nil
+}
+
+// prefetchFooters fetches parquet footers for all given files in parallel using
+// 16KB range reads and populates the footer cache. This ensures subsequent file
+// processing can use range reads instead of full file downloads.
+func prefetchFooters(ctx context.Context, pool *s3reader.ClientPool, files []manifest.FileInfo, footerCache *FooterCache, concurrency int) int {
+	if pool == nil || footerCache == nil || len(files) == 0 {
+		return 0
+	}
+	if concurrency <= 0 {
+		concurrency = 16
+	}
+	if concurrency > len(files) {
+		concurrency = len(files)
+	}
+
+	var uncached []manifest.FileInfo
+	for _, fi := range files {
+		if fi.Size < minFileSizeForPrefetch {
+			continue
+		}
+		if _, ok := footerCache.Get(fi.Key); !ok {
+			uncached = append(uncached, fi)
+		}
+	}
+	if len(uncached) == 0 {
+		return 0
+	}
+
+	taskCh := make(chan manifest.FileInfo, len(uncached))
+	for _, fi := range uncached {
+		taskCh <- fi
+	}
+	close(taskCh)
+
+	var fetched int
+	var dlErrors, parseErrors, tooBig int
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for fi := range taskCh {
+				if ctx.Err() != nil {
+					return
+				}
+				offset := fi.Size - footerPrefetchSize
+				if offset < 0 {
+					offset = 0
+				}
+				length := fi.Size - offset
+				tail, err := pool.DownloadRange(ctx, fi.Key, offset, length)
+				if err != nil || len(tail) < 8 {
+					mu.Lock()
+					dlErrors++
+					mu.Unlock()
+					continue
+				}
+				footerLen, err := FooterLength(tail[len(tail)-8:])
+				if err != nil {
+					mu.Lock()
+					parseErrors++
+					mu.Unlock()
+					continue
+				}
+				totalFooterBytes := footerLen + 8
+				if totalFooterBytes > len(tail) {
+					mu.Lock()
+					tooBig++
+					mu.Unlock()
+					continue
+				}
+				footerSlice := tail[len(tail)-totalFooterBytes:]
+				cached, _, err := ParseFooterFromBytes(fi.Key, footerSlice, fi.Size)
+				if err != nil {
+					mu.Lock()
+					parseErrors++
+					if parseErrors == 1 {
+						logger.Warnf("footer prefetch: first parse error: key=%s size=%d footer_slice=%d err=%v", fi.Key, fi.Size, len(footerSlice), err)
+					}
+					mu.Unlock()
+					continue
+				}
+				footerCache.Put(fi.Key, cached)
+				mu.Lock()
+				fetched++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if dlErrors > 0 || parseErrors > 0 || tooBig > 0 {
+		logger.Infof("footer prefetch: errors: dl=%d parse=%d too_big=%d", dlErrors, parseErrors, tooBig)
+	}
+
+	if fetched > 0 {
+		metrics.PrefetchTasksTotal.Add("footer_prefetch", fetched)
+		logger.Infof("footer prefetch: cached %d/%d footers", fetched, len(uncached))
+	}
+	return fetched
 }
