@@ -2,9 +2,17 @@ package parquets3
 
 import (
 	"io"
+	"sync"
 
 	"github.com/parquet-go/parquet-go"
 )
+
+var fieldSlicePool = sync.Pool{
+	New: func() any {
+		s := make([]field, 0, 32)
+		return &s
+	},
+}
 
 // readRowGroupProjected reads only the columns in wantCols from the row group.
 // If wantCols is nil or empty, returns (nil, nil) — caller should use the full
@@ -81,7 +89,12 @@ func readRowGroupProjectedBitmap(f *parquet.File, rg parquet.RowGroup, wantCols 
 	defer func() { _ = rows.Close() }()
 
 	buf := make([]parquet.Row, 256)
-	var result [][]field
+	numRows := rg.NumRows()
+	result := make([][]field, 0, numRows)
+
+	// Pre-allocate reusable key/value slices for MAP columns.
+	var mapKeys, mapVals []string
+
 	rowIdx := 0
 	for {
 		n, err := rows.ReadRows(buf)
@@ -92,21 +105,25 @@ func readRowGroupProjectedBitmap(f *parquet.File, rg parquet.RowGroup, wantCols 
 			}
 			rowIdx++
 			row := buf[i]
-			fields := make([]field, 0, len(specs))
+
+			fp := fieldSlicePool.Get().(*[]field)
+			fields := (*fp)[:0]
+
 			for _, spec := range specs {
 				if spec.isMap {
-					var keys, vals []string
+					mapKeys = mapKeys[:0]
+					mapVals = mapVals[:0]
 					for _, v := range row {
 						switch v.Column() {
 						case spec.keyIdx:
-							keys = append(keys, parquetValueToString(v))
+							mapKeys = append(mapKeys, parquetValueToString(v))
 						case spec.valIdx:
-							vals = append(vals, parquetValueToString(v))
+							mapVals = append(mapVals, parquetValueToString(v))
 						}
 					}
-					m := make(map[string]string, len(keys))
-					for j := 0; j < len(keys) && j < len(vals); j++ {
-						m[keys[j]] = vals[j]
+					m := make(map[string]string, len(mapKeys))
+					for j := 0; j < len(mapKeys) && j < len(mapVals); j++ {
+						m[mapKeys[j]] = mapVals[j]
 					}
 					fields = append(fields, field{
 						name:  spec.name,
@@ -124,7 +141,14 @@ func readRowGroupProjectedBitmap(f *parquet.File, rg parquet.RowGroup, wantCols 
 					}
 				}
 			}
-			result = append(result, fields)
+
+			// Copy fields out so the pooled slice can be reused.
+			out := make([]field, len(fields))
+			copy(out, fields)
+			*fp = fields
+			fieldSlicePool.Put(fp)
+
+			result = append(result, out)
 		}
 		if err != nil {
 			if err == io.EOF {

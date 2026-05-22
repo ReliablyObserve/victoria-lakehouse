@@ -32,7 +32,7 @@ func TestTraceRowToFields_NoDuplicateNames(t *testing.T) {
 		DurationNs:        42000,
 	}
 
-	fields := traceRowToFields(row)
+	fields := traceRowToFields(row, nil)
 	seen := make(map[string]int)
 	for i, f := range fields {
 		if prev, exists := seen[f.name]; exists {
@@ -53,7 +53,7 @@ func TestTraceRowToFields_NoCollisionCausingRenames(t *testing.T) {
 		ServiceName:       "svc",
 	}
 
-	fields := traceRowToFields(row)
+	fields := traceRowToFields(row, nil)
 	explicitNames := make(map[string]bool)
 	for _, f := range fields {
 		explicitNames[f.name] = true
@@ -79,7 +79,7 @@ func TestLogRowToFields_NoDuplicateNames(t *testing.T) {
 		TraceID:           "trace1",
 	}
 
-	fields := logRowToFields(row)
+	fields := logRowToFields(row, nil)
 	seen := make(map[string]int)
 	for i, f := range fields {
 		if prev, exists := seen[f.name]; exists {
@@ -178,12 +178,12 @@ func TestTypedRowsToDataBlock_NoDuplicateColumns(t *testing.T) {
 func TestTypedRowsToDataBlock_DeduplicationGuard(t *testing.T) {
 	s := testTracesStorage()
 
-	toFieldsWithDup := func(r *schema.TraceRow) []field {
-		return []field{
-			{"_time", r.TimestampUnixNano},
-			{"_time", r.TimestampUnixNano},
-			{"trace_id", r.TraceID},
-		}
+	toFieldsWithDup := func(r *schema.TraceRow, buf []field) []field {
+		return append(buf,
+			field{"_time", r.TimestampUnixNano},
+			field{"_time", r.TimestampUnixNano},
+			field{"trace_id", r.TraceID},
+		)
 	}
 
 	rows := []schema.TraceRow{
@@ -242,7 +242,7 @@ func TestSchemaRegistry_RenameDoesNotCollideWithExplicitFields(t *testing.T) {
 		ServiceName:       "svc",
 	}
 
-	fields := traceRowToFields(traceRow)
+	fields := traceRowToFields(traceRow, nil)
 	explicitNames := make(map[string]bool)
 	for _, f := range fields {
 		explicitNames[f.name] = true
@@ -295,7 +295,7 @@ func TestTypedRowsToDataBlock_RowCountConsistency(t *testing.T) {
 
 func TestTraceRowToFields_EmptyRow(t *testing.T) {
 	row := &schema.TraceRow{}
-	fields := traceRowToFields(row)
+	fields := traceRowToFields(row, nil)
 	if len(fields) == 0 {
 		t.Fatal("expected at least some fields from empty row")
 	}
@@ -332,7 +332,7 @@ func TestTraceRowToFields_MapAttributes(t *testing.T) {
 		},
 	}
 
-	fields := traceRowToFields(row)
+	fields := traceRowToFields(row, nil)
 	found := make(map[string]bool)
 	for _, f := range fields {
 		found[f.name] = true
@@ -429,7 +429,7 @@ func TestLogRowToFields_NoParquetColumnNames(t *testing.T) {
 		ServiceName:       "svc",
 	}
 
-	fields := logRowToFields(row)
+	fields := logRowToFields(row, nil)
 	for _, f := range fields {
 		if s, ok := f.value.(string); ok && s == "" {
 			continue
@@ -630,7 +630,7 @@ func TestTraceRowToFields_AllFieldsHaveValidNames(t *testing.T) {
 		DBStatement:       "SELECT 1",
 	}
 
-	fields := traceRowToFields(row)
+	fields := traceRowToFields(row, nil)
 	for _, f := range fields {
 		if f.name == "" {
 			t.Error("field has empty name")
