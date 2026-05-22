@@ -461,6 +461,19 @@ func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGrou
 
 	bitmap := prewhereFilter(f, rg, pdf)
 
+	// Fast path: columnar reading when no constant columns need merging.
+	if len(constants) == 0 && len(readCols) > 0 {
+		db := readRowGroupColumnar(f, rg, readCols, s.registry, startNs, endNs, bitmap)
+		if db != nil && db.RowsCount() > 0 {
+			writeBlock(0, db)
+			if traceIDs != nil {
+				extractTraceIDs(db, traceIDs)
+			}
+		}
+		return nil
+	}
+
+	// Slow path: row-oriented reading with constant column merging.
 	var allFields [][]field
 	if len(readCols) > 0 {
 		var err error
