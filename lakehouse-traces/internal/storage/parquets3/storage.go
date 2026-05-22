@@ -195,6 +195,7 @@ func (s *Storage) StartWriter() {
 	if s.writer == nil {
 		return
 	}
+	pool := s.pool
 	s.writer.SetFlushHook(func(key string, columnValues map[string][]string) {
 		if len(columnValues) == 0 {
 			return
@@ -212,6 +213,11 @@ func (s *Storage) StartWriter() {
 		}
 		if len(cols) > 0 {
 			s.bloomIdx.AddColumns(key, cols)
+		}
+
+		// Also write per-file bloom sidecar for file-level query skipping.
+		if pool != nil {
+			go writeFileBloom(context.Background(), pool, key, columnValues)
 		}
 	})
 	logCount, traceCount := s.writer.ReplayWAL()

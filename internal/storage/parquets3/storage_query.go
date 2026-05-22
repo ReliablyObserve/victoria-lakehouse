@@ -193,6 +193,9 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				if skip, _ := shouldSkipByFooter(ctx, s.pool, fi, queryStr, s.registry, s.footerCache); skip {
 					continue
 				}
+				if s.checkFileBloom(ctx, fi, queryStr) {
+					continue
+				}
 				if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, filteredWriteBlock); err != nil {
 					logger.Warnf("query file error: %s; key=%s", err, fi.Key)
 					continue
@@ -856,6 +859,49 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 		}
 	}
 	return result
+}
+
+func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, queryStr string) bool {
+	if queryStr == "" {
+		return false
+	}
+
+	var checks []bloomindex.ColumnCheck
+	for _, col := range s.registry.PromotedColumns() {
+		if !col.HasBloom {
+			continue
+		}
+		vals := extractFilterValues(queryStr, col.InternalName)
+		if len(vals) == 0 {
+			vals = extractFilterValues(queryStr, col.ParquetColumn)
+		}
+		for _, val := range vals {
+			checks = append(checks, bloomindex.ColumnCheck{
+				Column: col.ParquetColumn,
+				Value:  val,
+			})
+		}
+	}
+	if len(checks) == 0 {
+		return false
+	}
+
+	bloomKey := fi.Key + ".bloom"
+	data, err := s.pool.Download(ctx, bloomKey)
+	if err != nil || len(data) == 0 {
+		return false // no sidecar, can't skip
+	}
+
+	idx, err := bloomindex.Unmarshal(data)
+	if err != nil {
+		return false
+	}
+
+	if !bloomindex.FileBloomMayContainAll(idx, checks) {
+		metrics.ParquetBloomChecks.Inc("file_bloom_skip")
+		return true
+	}
+	return false
 }
 
 func partitionFromKey(key string) string {
