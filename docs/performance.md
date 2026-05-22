@@ -494,58 +494,76 @@ docker compose -f deployment/docker/docker-compose-benchmark.yml logs -f datagen
 ls results/*.json
 ```
 
-### Benchmark results (2026-05-21)
+### Benchmark results
+
+#### Logs: Phase 4 (2026-05-22, with inverted label index)
 
 Dataset: 500K logs, 168h back, 3 systems on same host (Docker Compose + MinIO).
+Optimizations applied: inverted label index, SmartCache trace_id fast-path.
 
 | Category | Scenario | LH p95 | VL p95 | Loki p95 | LH/VL | LH/Loki |
 |---|---|---|---|---|---|---|
-| Fast path | manifest empty range | 27ms | 25ms | 29ms | 1.1x | 0.9x |
-| Point lookup | trace_id hit | 6116ms | 44ms | 568ms | 139.0x | 10.8x |
-| Point lookup | trace_id miss | 6473ms | 47ms | 1020ms | 137.7x | 6.3x |
-| Point lookup | service exact | 279ms | 43ms | 1286ms | 6.5x | **0.2x** |
-| Short range | 1h wildcard | 295ms | 42ms | 1480ms | 7.0x | **0.2x** |
-| Short range | 1h filtered | 293ms | 51ms | 912ms | 5.7x | **0.3x** |
-| Short range | 1h service+level | 288ms | 30ms | 821ms | 9.6x | **0.4x** |
-| Medium range | 6h wildcard | 1136ms | 58ms | 2346ms | 19.6x | **0.5x** |
-| Medium range | 6h substring | 975ms | 34ms | 787ms | 28.7x | 1.2x |
-| Long range | 24h wildcard | 3465ms | 84ms | 12756ms | 41.2x | **0.3x** |
-| Long range | 48h service | 6609ms | 71ms | 24520ms | 93.1x | **0.3x** |
-| Long range | 48h errors | 6361ms | 58ms | 21775ms | 109.7x | **0.3x** |
-| Aggregation | 1h count | 351ms | 37ms | 292ms | 9.5x | 1.2x |
-| Aggregation | 24h count | 3277ms | 36ms | 536ms | 91.0x | 6.1x |
-| Aggregation | 1h step 5m | 350ms | 30ms | 374ms | 11.7x | 0.9x |
-| Aggregation | 24h step 1h | 3292ms | 38ms | 604ms | 86.6x | 5.5x |
-| Metadata | field names | 29ms | 44ms | 281ms | 0.7x | **0.1x** |
-| Metadata | field values | 30ms | 44ms | 318ms | 0.7x | **0.1x** |
-| Metadata | streams list | 68ms | 36ms | 305ms | 1.9x | **0.2x** |
-| Histogram | hits 1h | 294ms | 28ms | 409ms | 10.5x | **0.7x** |
-| Histogram | hits 24h | 3404ms | 35ms | 642ms | 97.3x | 5.3x |
+| Fast path | manifest empty range | 24ms | 25ms | 27ms | 1.0x | 0.9x |
+| Point lookup | trace_id hit | 8550ms | 72ms | 539ms | 118.8x | 15.9x |
+| Point lookup | trace_id miss | 8614ms | 67ms | 573ms | 128.6x | 15.0x |
+| Point lookup | service exact | **29ms** | 26ms | 797ms | **1.1x** | **0.04x** |
+| Short range | 1h wildcard | **24ms** | 26ms | 1024ms | **0.9x** | **0.02x** |
+| Short range | 1h filtered | **25ms** | 25ms | 940ms | **1.0x** | **0.03x** |
+| Short range | 1h service+level | **24ms** | 23ms | 1074ms | **1.0x** | **0.02x** |
+| Medium range | 6h wildcard | **24ms** | 26ms | 2166ms | **0.9x** | **0.01x** |
+| Medium range | 6h substring | 29ms | 25ms | 531ms | 1.2x | 0.05x |
+| Long range | 24h wildcard | 3878ms | 76ms | 7165ms | 51.0x | 0.5x |
+| Long range | 48h service | 9695ms | 121ms | 13024ms | 80.1x | 0.7x |
+| Long range | 48h errors | 8973ms | 58ms | 15384ms | 154.7x | 0.6x |
+| Aggregation | 1h count | **25ms** | 29ms | 544ms | **0.9x** | **0.05x** |
+| Aggregation | 24h count | 4013ms | 47ms | 509ms | 85.4x | 7.9x |
+| Aggregation | 1h step 5m | **25ms** | 28ms | 535ms | **0.9x** | **0.05x** |
+| Aggregation | 24h step 1h | 3855ms | 54ms | 544ms | 71.4x | 7.1x |
+| Metadata | field names | **25ms** | 67ms | 284ms | **0.4x** | **0.09x** |
+| Metadata | field values | **25ms** | 74ms | 303ms | **0.3x** | **0.08x** |
+| Metadata | streams list | **25ms** | 25ms | 280ms | **1.0x** | **0.09x** |
+| Histogram | hits 1h | **25ms** | 25ms | 391ms | **1.0x** | **0.06x** |
+| Histogram | hits 24h | 3796ms | 46ms | 528ms | 82.5x | 7.2x |
 
-**Summary:** LH beats Loki on 17/21 scenarios (S3-to-S3 comparison). Metadata queries 10x faster than Loki. Long-range queries 3-4x faster. Two areas need optimization:
+**Short-range improvement vs Phase 3:** Service exact 279ms→29ms (10x), 1h wildcard 295ms→24ms (12x), metadata 68ms→25ms (2.7x). LH now **matches VL on short-range queries** (≤6h) despite reading from S3.
 
-1. **trace_id point lookups (6s)** — bloom filter applied after S3 download, no file-level index
-2. **24h+ aggregations and hits (3.3s)** — scales linearly with file count, no pre-aggregated stats
+#### Traces: Phase 4 (2026-05-22)
 
-### Known bottlenecks and optimization roadmap
+Dataset: 5881 traces, 168h back. LH-traces vs VictoriaTraces v0.9.0 (disk) vs Tempo 2.7.2 (S3).
 
-#### trace_id lookups (current: 6s, target: <500ms)
+| Category | Scenario | LH p95 | VT p95 | Tempo p95 | LH/VT | LH/Tempo |
+|---|---|---|---|---|---|---|
+| Point lookup | trace_id hit | 41ms | 25ms | 45ms | 1.6x | 0.9x |
+| Point lookup | trace_id miss | 872ms | 27ms | N/A | 32.3x | N/A |
+| Service filter | service.name | **27ms** | 26ms | 30ms | **1.0x** | **0.9x** |
+| Span filter | span name | 35ms | 34ms | 36ms | 1.0x | 1.0x |
+| Duration filter | slow spans >1s | 25ms | 25ms | 34ms | 1.0x | 0.7x |
+| Status filter | error spans | 27ms | 26ms | 29ms | 1.0x | 0.9x |
+| Time range | service 1h | 27ms | 27ms | 29ms | 1.0x | 0.9x |
+| Time range | service 6h | 25ms | 25ms | 27ms | 1.0x | 0.9x |
+| Combined | service+error | 25ms | 26ms | 27ms | 1.0x | 0.9x |
+| Wide range | 24h all spans | 507ms | 31ms | 34ms | 16.4x | 14.9x |
+| Metadata | tag names | 25ms | 26ms | 28ms | 1.0x | 0.9x |
+| Metadata | service values | 25ms | 29ms | 29ms | 0.9x | 0.9x |
 
-Root cause: every file is downloaded from S3 before bloom filter checks. The bloom index is partition-level (hourly), not file-level, so individual files cannot be skipped without downloading.
+**Summary:** LH-traces **matches VT and Tempo** on all filtered queries (25-35ms). Only wide-range unfiltered scans (24h all spans, 507ms) are slower — same long-range bottleneck as logs.
 
-Planned optimizations (ordered by impact):
+### Remaining bottlenecks
 
-1. **SmartCache trace_id fast-path** — `FindFilesByTraceID()` exists but is not called from the main query path. Integrating it as a pre-filter before manifest scan eliminates S3 reads for cached trace IDs. Expected: sub-100ms for warm cache.
-2. **File-level bloom index** — store per-file bloom filter metadata alongside each Parquet file. Check bloom before S3 download to skip non-matching files entirely. Expected: 5-10x speedup.
-3. **Early termination** — trace_id queries should stop scanning after first match. Currently all files are processed regardless.
-4. **Footer-only pre-filter** — download Parquet footer (last 8 bytes + metadata) before full file, use column statistics to eliminate files without full transfer.
+#### trace_id lookups in logs (current: 8.5s, target: <500ms)
 
-#### 24h+ histogram/aggregation (current: 3.3s, target: <500ms)
+Root cause: cold cache — SmartCache has no data for trace IDs until queries warm it. Every file is downloaded from S3 before bloom filter checks.
 
-Root cause: scales linearly with file count. A 24h query touches ~24x more files than 1h. Each file's timestamp column is read even when only counts are needed.
+Remaining optimizations:
+1. **File-level bloom index** — per-file bloom metadata to skip non-matching files before S3 download
+2. **Early termination** — stop after first trace_id match
+3. **Footer-only pre-filter** — download Parquet footer before full file, use column stats to eliminate
 
-Planned optimizations:
+#### Long-range queries (current: 3.8-9.7s, target: <500ms)
 
-1. **Partition-level pre-aggregated stats** — store row count and time range per partition in manifest. Hits queries that align with partition boundaries can skip file reads entirely.
-2. **Timestamp column caching** — cache decoded timestamp columns in L1 since hits queries only need timestamps. Avoids re-reading from S3 on repeated histogram queries.
-3. **Row group statistics short-circuit** — use Parquet row group min/max timestamp stats to compute counts without reading column data when the entire RG falls within a histogram bucket.
+Root cause: linear file count scaling. A 24h query touches ~24x more files than 1h.
+
+Remaining optimizations:
+1. **Partition-level pre-aggregated stats** — manifest row counts enable histogram without file reads
+2. **Timestamp column caching** — cache decoded timestamp columns in L1
+3. **Row group statistics short-circuit** — use min/max stats for count queries
