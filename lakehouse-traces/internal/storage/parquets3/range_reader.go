@@ -15,5 +15,3 @@ func shouldUseRangeRead(fileSize int64, projectedCols, totalCols int) bool {
 	ratio := float64(projectedCols) / float64(totalCols)
 	return ratio < rangeReadThreshold
 }
-
-
