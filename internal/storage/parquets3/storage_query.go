@@ -119,10 +119,11 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 
 	// Manifest-only fast path: for wildcard stats/hits queries (timestamp-only
-	// hint, no column filters, no tombstones), emit synthetic DataBlocks using
-	// RowCount from manifest metadata for files fully within the query range.
-	// This skips all S3 I/O (no file downloads, no footer reads).
-	if storage.IsTimestampOnly(ctx) && filter == nil && s.tombstones == nil {
+	// hint, no column filters, no active tombstones in range), emit synthetic
+	// DataBlocks using RowCount from manifest metadata for files fully within
+	// the query range. This skips all S3 I/O (no file downloads, no footer reads).
+	hasTombstones := s.tombstones != nil && len(s.tombstones.ForRange(startNs, endNs)) > 0
+	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
 		var remaining []manifest.FileInfo
 		for _, fi := range files {
 			if fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
