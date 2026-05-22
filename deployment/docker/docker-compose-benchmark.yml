@@ -147,8 +147,6 @@ services:
       - "-lakehouse.cache.memory-mb=2048"
       - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
       - "-lakehouse.cache.disk-max-mb=20480"
-      - "-lakehouse.cache.warmup-partitions=168"
-      - "-lakehouse.cache.warmup-max-files=5000"
       - "-loggerLevel=INFO"
     volumes:
       - lakehouse-cache-traces:/data/lakehouse
@@ -164,11 +162,10 @@ services:
   # =========================================================================
 
   victoriatraces:
-    image: victoriametrics/victoria-logs:v1.50.0
+    image: victoriametrics/victoria-traces:v0.9.0
     command:
       - "-storageDataPath=/data"
       - "-retentionPeriod=30d"
-      - "-search.maxConcurrentRequests=64"
       - "-httpListenAddr=:10428"
       - "-loggerLevel=INFO"
     ports:

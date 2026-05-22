@@ -56,7 +56,7 @@ ONE_DAY_AGO_S=$(( NOW_S - 86400 ))
 TWO_DAYS_AGO_S=$(( NOW_S - 172800 ))
 
 # --- Sample trace/span IDs for point lookups ---
-SAMPLE_TRACE_ID="0000000000000001"
+SAMPLE_TRACE_ID="82ad65251702e15f9823289f4748b11b"
 SAMPLE_TRACE_ID_MISS="ffffffffffffffffffffffffffffffff"
 
 # --- Measurement function ---
@@ -167,15 +167,15 @@ echo ""
 echo "--- Service & Span Filters ---"
 run_scenario "service_name_filter" \
   "${LH_URL}/select/logsql/query?query=service.name%3A%3D%22api-gateway%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
-  "${VT_URL}/select/logsql/query?query=service.name%3A%3D%22api-gateway%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
+  "${VT_URL}/select/logsql/query?query=resource_attr%3Aservice.name%3A%3D%22api-gateway%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
   "${TEMPO_URL}/api/search?tags=service.name%3Dapi-gateway&start=${ONE_HOUR_AGO_S}&end=${NOW_S}&limit=50"
 
 # ============================================================
 # Scenario 3: span name filter
 # ============================================================
 run_scenario "span_name_filter" \
-  "${LH_URL}/select/logsql/query?query=span.name%3A%3D%22HTTP%20GET%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
-  "${VT_URL}/select/logsql/query?query=span.name%3A%3D%22HTTP%20GET%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
+  "${LH_URL}/select/logsql/query?query=name%3A~%22HTTP%20GET%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
+  "${VT_URL}/select/logsql/query?query=name%3A~%22HTTP%20GET%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
   "${TEMPO_URL}/api/search?tags=name%3D%22HTTP%20GET%22&start=${ONE_HOUR_AGO_S}&end=${NOW_S}&limit=50"
 
 # ============================================================
@@ -190,8 +190,8 @@ run_scenario "duration_slow_spans" \
 # Scenario 5: status error filter
 # ============================================================
 run_scenario "status_error_filter" \
-  "${LH_URL}/select/logsql/query?query=status%3A%3D%22ERROR%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
-  "${VT_URL}/select/logsql/query?query=status%3A%3D%22ERROR%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
+  "${LH_URL}/select/logsql/query?query=status_code%3A%3D%222%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
+  "${VT_URL}/select/logsql/query?query=status_code%3A%3D%222%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
   "${TEMPO_URL}/api/search?tags=status%3Derror&start=${ONE_HOUR_AGO_S}&end=${NOW_S}&limit=50"
 
 # ============================================================
@@ -201,7 +201,7 @@ echo ""
 echo "--- Time Range Queries ---"
 run_scenario "service_range_1h" \
   "${LH_URL}/select/logsql/query?query=service.name%3A%3D%22api-gateway%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=100" \
-  "${VT_URL}/select/logsql/query?query=service.name%3A%3D%22api-gateway%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=100" \
+  "${VT_URL}/select/logsql/query?query=resource_attr%3Aservice.name%3A%3D%22api-gateway%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=100" \
   "${TEMPO_URL}/api/search?tags=service.name%3Dapi-gateway&start=${ONE_HOUR_AGO_S}&end=${NOW_S}&limit=100"
 
 # ============================================================
@@ -209,7 +209,7 @@ run_scenario "service_range_1h" \
 # ============================================================
 run_scenario "service_range_6h" \
   "${LH_URL}/select/logsql/query?query=service.name%3A%3D%22api-gateway%22&start=${SIX_HOURS_AGO_NS}&end=${NOW_NS}&limit=200" \
-  "${VT_URL}/select/logsql/query?query=service.name%3A%3D%22api-gateway%22&start=${SIX_HOURS_AGO_NS}&end=${NOW_NS}&limit=200" \
+  "${VT_URL}/select/logsql/query?query=resource_attr%3Aservice.name%3A%3D%22api-gateway%22&start=${SIX_HOURS_AGO_NS}&end=${NOW_NS}&limit=200" \
   "${TEMPO_URL}/api/search?tags=service.name%3Dapi-gateway&start=${SIX_HOURS_AGO_S}&end=${NOW_S}&limit=200"
 
 # ============================================================
@@ -218,8 +218,8 @@ run_scenario "service_range_6h" \
 echo ""
 echo "--- Combined Filters ---"
 run_scenario "service_and_error" \
-  "${LH_URL}/select/logsql/query?query=service.name%3A%3D%22api-gateway%22%20AND%20status%3A%3D%22ERROR%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
-  "${VT_URL}/select/logsql/query?query=service.name%3A%3D%22api-gateway%22%20AND%20status%3A%3D%22ERROR%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
+  "${LH_URL}/select/logsql/query?query=service.name%3A%3D%22api-gateway%22%20AND%20status_code%3A%3D%222%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
+  "${VT_URL}/select/logsql/query?query=resource_attr%3Aservice.name%3A%3D%22api-gateway%22%20AND%20status_code%3A%3D%222%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
   "${TEMPO_URL}/api/search?tags=service.name%3Dapi-gateway%20status%3Derror&start=${ONE_HOUR_AGO_S}&end=${NOW_S}&limit=50"
 
 # ============================================================

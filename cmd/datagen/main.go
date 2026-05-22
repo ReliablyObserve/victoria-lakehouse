@@ -638,9 +638,7 @@ func pushOTLPTracesToURL(url string, rows []traceRow, accountID, projectID, orgI
 }
 
 func pushTempoTraces(endpoint string, rows []traceRow) error {
-	// Tempo accepts OTLP at /otlp/v1/traces. Reuse the OTLP payload builder
-	// but post to Tempo's endpoint without VL/VT tenant headers.
-	return pushOTLPTracesToURL(endpoint+"/otlp/v1/traces", rows, "", "", "")
+	return pushOTLPTracesToURL(endpoint+"/v1/traces", rows, "", "", "")
 }
 
 func pushLoki(endpoint string, rows []logRow) error {
