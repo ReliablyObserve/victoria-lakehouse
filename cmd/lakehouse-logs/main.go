@@ -722,6 +722,7 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 			int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
 			m.MinTime().UnixNano(), m.MaxTime().UnixNano())
 		store.WarmLabelIndex(ctx)
+		store.WarmMetadata(ctx)
 
 		if cfg.Cache.WarmupPartitions > 0 || cfg.Cache.WarmupMaxFiles > 0 {
 			warmCtx, warmCancel := context.WithTimeout(context.Background(), 2*time.Minute)

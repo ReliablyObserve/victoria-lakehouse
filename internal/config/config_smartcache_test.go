@@ -50,8 +50,8 @@ func TestCrossSignalConfig_Defaults(t *testing.T) {
 
 func TestQueryConfig_FileWorkers(t *testing.T) {
 	cfg := Default()
-	if cfg.Query.FileWorkers != 8 {
-		t.Errorf("file_workers = %d, want 8", cfg.Query.FileWorkers)
+	if cfg.Query.FileWorkers != 64 {
+		t.Errorf("file_workers = %d, want 64", cfg.Query.FileWorkers)
 	}
 }
 

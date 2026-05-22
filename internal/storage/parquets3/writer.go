@@ -326,6 +326,8 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 	}
 	w.manifest.AddFile(partition, fi)
 
+	w.writeMetadataSidecarAsync(ctx, partition)
+
 	if w.bloomObserver != nil {
 		w.bloomObserver.OnFileFlush(partition, key, extractLogBloomValues(rows))
 	}
@@ -374,6 +376,8 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 	}
 	w.manifest.AddFile(partition, fi)
 
+	w.writeMetadataSidecarAsync(ctx, partition)
+
 	if w.bloomObserver != nil {
 		w.bloomObserver.OnFileFlush(partition, key, extractTraceBloomValues(rows))
 	}
@@ -388,6 +392,14 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 		partition, len(rows), len(result.Data), fi.CompressionRatio(), key)
 
 	return nil
+}
+
+func (w *BatchWriter) writeMetadataSidecarAsync(ctx context.Context, partition string) {
+	go func() {
+		if err := w.manifest.WritePartitionSidecar(ctx, w.pool.S3Client(), partition); err != nil {
+			logger.Warnf("metadata sidecar write failed; partition=%s err=%v", partition, err)
+		}
+	}()
 }
 
 type flushResult struct {

@@ -7,6 +7,7 @@ lakehouse-traces/lakehouse-traces
 /datagen
 /healthcheck
 /loadtest
+/bench
 /s3proxy
 *.exe
 

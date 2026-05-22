@@ -12,6 +12,23 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
+func (o *storageBloomObserver) writeFileBloom(ctx context.Context, fileKey string, columnValues map[string][]string) {
+	idx := bloomindex.NewFileBloomIndex(columnValues, 0.01)
+	if idx.Len() == 0 {
+		return
+	}
+	data := idx.Marshal()
+	if len(data) == 0 {
+		return
+	}
+	bloomKey := fileKey + ".bloom"
+	if err := o.pool.Upload(ctx, bloomKey, data); err != nil {
+		logger.Warnf("file bloom upload failed: %s; key=%s", err, bloomKey)
+		return
+	}
+	metrics.BloomBuildTotal.Inc("file_bloom")
+}
+
 type storageBloomObserver struct {
 	bloom *bloomindex.PartitionedIndex
 	pool  *s3reader.ClientPool
@@ -28,6 +45,11 @@ func (o *storageBloomObserver) OnFileFlush(partition, fileKey string, columnValu
 		totalEntries += len(vals)
 	}
 	metrics.BloomEntriesTotal.Add(totalEntries)
+
+	// Also write per-file bloom sidecar for file-level query skipping.
+	if o.pool != nil {
+		go o.writeFileBloom(context.Background(), fileKey, columnValues)
+	}
 }
 
 func (o *storageBloomObserver) PersistDirty(ctx context.Context, prefix string) {

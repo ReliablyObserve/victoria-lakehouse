@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -28,26 +29,27 @@ import (
 )
 
 type Storage struct {
-	cfg           *config.Config
-	pool          *s3reader.ClientPool
-	manifest      *manifest.Manifest
-	registry      *schema.Registry
-	memCache      *cache.LRU
-	diskCache     *cache.DiskCache
-	sfGroup       *cache.Group
-	labelIndex    *cache.LabelIndex
-	persister     *cache.Persister
-	discovery     *discovery.Discovery
-	peerCache     *peercache.PeerCache
-	peerHandler   *peercache.Handler
-	writer        *BatchWriter
-	bufferBridge  *BufferBridge
-	tombstones    *delete.TombstoneStore
-	smartCache    *smartcache.Controller
-	bloomCache    *bloomindex.BloomCache
-	bloomObserver *storageBloomObserver
-	footerCache   *FooterCache
-	selfAZ        string
+	cfg            *config.Config
+	pool           *s3reader.ClientPool
+	manifest       *manifest.Manifest
+	registry       *schema.Registry
+	memCache       *cache.LRU
+	diskCache      *cache.DiskCache
+	sfGroup        *cache.Group
+	labelIndex     *cache.LabelIndex
+	persister      *cache.Persister
+	discovery      *discovery.Discovery
+	peerCache      *peercache.PeerCache
+	peerHandler    *peercache.Handler
+	writer         *BatchWriter
+	bufferBridge   *BufferBridge
+	tombstones     *delete.TombstoneStore
+	smartCache     *smartcache.Controller
+	bloomCache     *bloomindex.BloomCache
+	bloomObserver  *storageBloomObserver
+	footerCache    *FooterCache
+	fileBloomCache sync.Map
+	selfAZ         string
 }
 
 func New(cfg *config.Config) (*Storage, error) {
@@ -852,10 +854,206 @@ func (s *Storage) WarmLabelIndex(ctx context.Context) {
 	logger.Infof("label index warmed; labels=%d, files_sampled=%d", s.labelIndex.Len(), sampled)
 }
 
+// WarmMetadata loads file metadata from disk cache and S3 sidecars first,
+// then batch-prefetches Parquet footers only for remaining files that still
+// lack RowCount. This enables the manifest-only fast path for stats/hits
+// queries from the first query after startup.
+func (s *Storage) WarmMetadata(ctx context.Context) {
+	// Phase 1: Load from disk cache (instant, no S3).
+	diskLoaded := s.loadFileMetadataFromDisk()
+
+	// Phase 2: Load from S3 sidecars (one GET per partition, much cheaper than footer reads).
+	sidecarLoaded := s.manifest.LoadSidecars(ctx, s.pool.S3Client(), 16)
+
+	// Phase 3: Footer prefetch for anything still missing.
+	files := s.manifest.GetFilesForRange(0, 1<<62)
+	var needEnrich []manifest.FileInfo
+	for _, fi := range files {
+		if fi.RowCount == 0 {
+			needEnrich = append(needEnrich, fi)
+		}
+	}
+
+	footerEnriched := 0
+	if len(needEnrich) > 0 && s.footerCache != nil {
+		fetched := prefetchFooters(ctx, s.pool, needEnrich, s.footerCache, 0)
+		logger.Infof("metadata warmup: prefetched %d footers for %d files", fetched, len(needEnrich))
+
+		for _, fi := range needEnrich {
+			cached, ok := s.footerCache.Get(fi.Key)
+			if !ok {
+				continue
+			}
+			enriched := s.enrichFromCachedFooter(fi, cached)
+			if enriched {
+				footerEnriched++
+			}
+		}
+	}
+
+	// Phase 3b: Small files that footer prefetch skipped (< 32KB).
+	// Download fully — they're tiny and cheaper than range reads.
+	smallEnriched := 0
+	if len(needEnrich) > 0 {
+		var stillMissing []manifest.FileInfo
+		enrichedKeys := make(map[string]bool, footerEnriched)
+		for _, fi := range needEnrich {
+			if _, ok := s.footerCache.Get(fi.Key); ok {
+				enrichedKeys[fi.Key] = true
+			}
+		}
+		for _, fi := range needEnrich {
+			if !enrichedKeys[fi.Key] {
+				stillMissing = append(stillMissing, fi)
+			}
+		}
+		if len(stillMissing) > 0 {
+			smallEnriched = s.enrichSmallFiles(ctx, stillMissing)
+		}
+	}
+
+	logger.Infof("metadata warmup: disk=%d sidecar=%d footer=%d small=%d need_enrich=%d total_files=%d",
+		diskLoaded, sidecarLoaded, footerEnriched, smallEnriched, len(needEnrich), len(files))
+
+	// Phase 4: Save enriched metadata to disk for next restart.
+	s.saveFileMetadataToDisk()
+}
+
+func (s *Storage) enrichFromCachedFooter(fi manifest.FileInfo, cached *CachedFooter) bool {
+	var totalRows int64
+	var minTs, maxTs int64
+	tsIdx := findColumnIndex(cached.File.Root(), s.registry.TimestampColumn())
+	for _, rg := range cached.File.RowGroups() {
+		totalRows += rg.NumRows()
+		if tsIdx < 0 {
+			continue
+		}
+		cols := rg.ColumnChunks()
+		if tsIdx >= len(cols) {
+			continue
+		}
+		idx, err := cols[tsIdx].ColumnIndex()
+		if err != nil || idx == nil || idx.NumPages() == 0 {
+			continue
+		}
+		rgMin := idx.MinValue(0).Int64()
+		rgMax := idx.MaxValue(idx.NumPages() - 1).Int64()
+		if minTs == 0 || rgMin < minTs {
+			minTs = rgMin
+		}
+		if rgMax > maxTs {
+			maxTs = rgMax
+		}
+	}
+	if totalRows > 0 {
+		s.manifest.EnrichFileMetadata(fi.Key, totalRows, minTs, maxTs)
+		return true
+	}
+	return false
+}
+
+func (s *Storage) enrichSmallFiles(ctx context.Context, files []manifest.FileInfo) int {
+	if len(files) == 0 {
+		return 0
+	}
+	concurrency := 16
+	if concurrency > len(files) {
+		concurrency = len(files)
+	}
+
+	taskCh := make(chan manifest.FileInfo, len(files))
+	for _, fi := range files {
+		taskCh <- fi
+	}
+	close(taskCh)
+
+	var enriched int
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for fi := range taskCh {
+				if ctx.Err() != nil {
+					return
+				}
+				data, err := s.pool.Download(ctx, fi.Key)
+				if err != nil || len(data) == 0 {
+					continue
+				}
+				cached, _, err := ParseFooterFromData(fi.Key, data)
+				if err != nil {
+					continue
+				}
+				if s.footerCache != nil {
+					s.footerCache.Put(fi.Key, cached)
+				}
+				if s.enrichFromCachedFooter(fi, cached) {
+					mu.Lock()
+					enriched++
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	return enriched
+}
+
+func (s *Storage) loadFileMetadataFromDisk() int {
+	if s.persister == nil {
+		return 0
+	}
+	fmc, err := s.persister.LoadFileMetadata()
+	if err != nil {
+		return 0
+	}
+	enriched := 0
+	for _, entry := range fmc.Entries {
+		if entry.RowCount > 0 {
+			s.manifest.EnrichFileMetadata(entry.Key, entry.RowCount, entry.MinTimeNs, entry.MaxTimeNs)
+			enriched++
+		}
+	}
+	return enriched
+}
+
+func (s *Storage) saveFileMetadataToDisk() {
+	if s.persister == nil {
+		return
+	}
+	files := s.manifest.GetFilesForRange(0, 1<<62)
+	var entries []cache.FileMetaEntry
+	for _, fi := range files {
+		if fi.RowCount > 0 {
+			entries = append(entries, cache.FileMetaEntry{
+				Key:               fi.Key,
+				RowCount:          fi.RowCount,
+				MinTimeNs:         fi.MinTimeNs,
+				MaxTimeNs:         fi.MaxTimeNs,
+				RawBytes:          fi.RawBytes,
+				SchemaFingerprint: fi.SchemaFingerprint,
+				Labels:            fi.Labels,
+			})
+		}
+	}
+	if len(entries) == 0 {
+		return
+	}
+	fmc := &cache.FileMetadataCache{Entries: entries}
+	if err := s.persister.SaveFileMetadata(fmc); err != nil {
+		logger.Warnf("failed to save file metadata to disk: %v", err)
+	} else {
+		logger.Infof("saved %d file metadata entries to disk", len(entries))
+	}
+}
+
 func (s *Storage) PersistState() error {
 	if s.persister == nil {
 		return nil
 	}
+	s.saveFileMetadataToDisk()
 	return s.persister.SaveLabelIndex(s.labelIndex)
 }
 

@@ -22,7 +22,7 @@ The query context carries:
 
 ## Pruning Cascade
 
-Victoria Lakehouse applies five levels of pruning, each eliminating work before the next level begins.
+Victoria Lakehouse applies a ten-level pruning cascade, each eliminating work before the next level begins. The cascade is split into three phases: file-level pruning (avoids downloading data), row-group-level pruning (avoids reading row data), and row-level pruning (minimizes deserialized rows).
 
 ```mermaid
 flowchart TD
@@ -30,15 +30,28 @@ flowchart TD
     L1 -->|within hot range| EMPTY1[Return empty ≤1ms]
     L1 -->|outside hot range| L2{L2: Manifest<br/>Fast Path}
     L2 -->|no files overlap| EMPTY2[Return empty ≤1ms]
-    L2 -->|files found| L3[L3: Row Group Stats<br/>min/max timestamp check]
-    L3 -->|skip non-overlapping| L4[L4: Bloom Filter<br/>exact-match check]
-    L4 -->|value absent| SKIP[Skip row group]
-    L4 -->|value may exist| L5[L5: Column Read<br/>+ Row Filter + Tombstone]
-    L5 --> DB[DataBlock emission]
+    L2 -->|files found| L2b{L2b: Trace ID<br/>Cache Shortcut}
+    L2b --> L2c{L2c: Label-Based<br/>File Pre-Filter}
+    L2c -->|labels exclude file| FSKIP[Skip file — no download]
+    L2c -->|labels match or absent| L2d{L2d: Bloom File<br/>Skip}
+    L2d -->|bloom says absent| FSKIP
+    L2d -->|may contain| L3[L3: Footer Parse<br/>+ Cache]
+    L3 --> L4{L4: Row Group Stats<br/>min/max timestamp}
+    L4 -->|skip non-overlapping| L5{L5: Push-Down Filter<br/>column statistics}
+    L5 -->|stats exclude| RGSKIP[Skip row group]
+    L5 -->|may match| L5b{L5b: Dictionary<br/>Page Check}
+    L5b -->|no dict match| RGSKIP
+    L5b -->|dict match or no dict| L6{L6: Bloom Filter<br/>exact-match check}
+    L6 -->|value absent| RGSKIP
+    L6 -->|value may exist| L7[L7: Pre-Where<br/>Bitmap Filter]
+    L7 --> L8[L8: Constant Column<br/>Detection]
+    L8 --> L9[L9: Projected Read<br/>+ Row Filter + Tombstone]
+    L9 --> DB[DataBlock emission]
 
     style EMPTY1 fill:#4CAF50,color:#fff
     style EMPTY2 fill:#4CAF50,color:#fff
-    style SKIP fill:#FF9800,color:#fff
+    style FSKIP fill:#4CAF50,color:#fff
+    style RGSKIP fill:#FF9800,color:#fff
     style DB fill:#2196F3,color:#fff
 ```
 
@@ -63,9 +76,37 @@ manifest.HasDataForRange(startNs, endNs) -> bool
   - If overlap exists -> manifest.GetFilesForRange(startNs, endNs) -> []FileInfo
 ```
 
-Each `FileInfo` contains the S3 key, file size, and label values extracted during flush. The manifest can also skip files whose labels do not match query predicates (label-based pruning from `FileInfo.Labels`).
+Each `FileInfo` contains the S3 key, file size, and label values extracted during flush.
 
-### Level 3: Row Group Statistics Pruning
+### Level 2b: Trace ID Cache Shortcut (traces module)
+
+For exact `trace_id` lookups, the smart cache maintains a reverse index (trace ID → file keys). If the index knows which files contain the trace, the file set is narrowed immediately — bypassing bloom and label checks.
+
+```go
+if tid := extractExactMatch(queryStr, "trace_id"); tid != "" {
+    if cached := s.smartCache.FindFilesByTraceID(tid); len(cached) > 0 {
+        files = narrowToCache(files, cached)
+    }
+}
+```
+
+### Level 2c: Label-Based File Pre-Filter
+
+Each `FileInfo` carries label values extracted during flush (the distinct values of promoted columns within that file). The engine evaluates query predicates against these labels. If a predicate definitively excludes all label values for a file, the file is skipped without downloading it.
+
+Supports exact match, prefix, greater-than, and less-than operators. Files with no labels for a queried column are conservatively included.
+
+### Level 2d: Bloom File Skip
+
+For exact-match queries on bloom-enabled columns, the engine checks partition-level bloom filters to skip entire files. This runs before any file data is downloaded.
+
+### Level 3: Footer Parse and Cache
+
+The Parquet footer (file metadata, schema, column indices) is parsed once per file access and stored in an LRU cache (`FooterCache`, default 10K entries). On subsequent accesses, the parsed `parquet.File` is reused without re-parsing.
+
+The footer cache is also populated during cache warmup on startup.
+
+### Level 4: Row Group Timestamp Pruning
 
 For each Parquet file, the engine reads the column index of the `timestamp_unix_nano` column. Row groups whose min/max timestamp ranges do not overlap with the query range are skipped entirely.
 
@@ -75,11 +116,30 @@ rowGroupMatchesTimeRange(rg, tsColIdx, startNs, endNs)
   -> skip if rgMax < startNs or rgMin >= endNs
 ```
 
-This is implemented in `rowGroupMatchesTimeRange()` and uses the Parquet column index metadata -- no row data is read.
+This uses the Parquet column index metadata — no row data is read.
 
-### Level 4: Bloom Filter Checks
+### Level 5: Push-Down Filter (Column Statistics)
 
-For exact-match queries on bloom-enabled columns (`service.name`, `trace_id`), the engine checks bloom filters before scanning row data. The `buildBloomChecks()` method extracts exact-match values from the query string by parsing `field:="value"` patterns.
+For predicates on promoted columns, the engine evaluates column min/max statistics to determine if any row in the row group could match. Numeric columns use native int64 comparisons; string columns use lexicographic comparisons.
+
+| Operator | Stats check |
+|---|---|
+| Exact | value ∈ [min, max] |
+| Prefix | prefix range overlaps [min, max] |
+| Greater than | max > threshold |
+| Less than | min < threshold |
+
+Column indices are pre-resolved once per file (`resolvePushDownIndices()`) to avoid repeated schema traversal across row groups.
+
+### Level 5b: Dictionary Page Check
+
+For exact-match and prefix predicates on dictionary-encoded columns, the engine reads the dictionary page (a compact in-memory list of distinct values). If no dictionary entry matches the predicate, the entire row group is skipped.
+
+This adds near-zero cost (dictionary pages are a few KB) but catches cases that column statistics alone cannot — e.g., when min="a" and max="z" but only ["alpha", "beta", "gamma"] exist. Columns with >10K dictionary entries skip this check.
+
+### Level 6: Bloom Filter Checks
+
+For exact-match queries on bloom-enabled columns (`service.name`, `trace_id`), the engine checks bloom filters before scanning row data.
 
 ```go
 bloomFilterSkip(file, rowGroup, checks) -> bool
@@ -90,18 +150,30 @@ bloomFilterSkip(file, rowGroup, checks) -> bool
 
 Bloom filters provide definite negative answers: if the bloom filter says a value is absent, the row group is guaranteed to not contain it. The columns with bloom filters configured are defined in the schema registry:
 
-- **Logs**: `service.name`, `trace_id`
-- **Traces**: `trace_id`, `service.name`
+- **Logs**: `service.name`, `trace_id`, `host.name`, `k8s.namespace.name`, `k8s.pod.name`, `k8s.deployment.name`, `deployment.environment`
+- **Traces**: `trace_id`, `service.name`, `span.name`
 
-### Level 5: Column Projection and Row-Level Filtering
+### Level 7: Pre-Where Bitmap Filter
 
-After all skip checks pass, the engine reads row data from the surviving row groups.
+After row-group-level pruning passes, the engine reads only the filter columns first and builds a boolean bitmap of matching rows. The projected read (Level 9) then skips rows where `bitmap[i] == false`.
 
-**Column projection**: When `RequestedColumns` is set, only those columns (plus `timestamp_unix_nano` always) are included in the output `DataBlock`. The `projectColumns()` method resolves internal names to Parquet column indices via the schema registry, reducing memory allocation and data transfer.
+If all rows match (100% selectivity), the bitmap is discarded to avoid overhead.
+
+### Level 8: Constant Column Detection
+
+The engine examines column index statistics to find columns where min == max across all pages in the row group. These columns are skipped during deserialization; the constant value is injected into every output row. This is common for `service.name`, `level`, and `k8s.*` columns within a single row group.
+
+### Level 9: Projected Read, Row Filtering, and Tombstone Check
+
+After all pruning, the engine reads row data from surviving row groups.
+
+**Column projection**: Only referenced columns (plus `timestamp_unix_nano` always) are deserialized. Wildcard queries fall back to reading all columns.
 
 **Row-level timestamp filtering**: Each row's `timestamp_unix_nano` is checked against the exact query range boundaries, since row group statistics only provide coarse pruning.
 
 **Tombstone filtering**: If a `TombstoneStore` is configured (for soft deletes), `filterTombstonedRows()` removes rows matching any active tombstone before emitting results.
+
+**Parallel row group processing**: When multiple row groups survive pruning within a file, they are processed in parallel (up to 3 goroutines). Row groups are sorted by estimated cost (row count ascending) for optimal load balancing.
 
 ## Cache Hierarchy
 
@@ -175,10 +247,16 @@ The read path emits Prometheus metrics at each stage:
 |---|---|
 | `lakehouse_manifest_fast_path_total` | Queries resolved by manifest without file access |
 | `lakehouse_parquet_files_opened` | Files opened for scanning |
-| `lakehouse_parquet_row_groups_skipped` | Row groups skipped (by stats or bloom) |
+| `lakehouse_parquet_row_groups_skipped` | Row groups skipped by reason label: `stats`, `bloom`, `pushdown`, `label_index` |
 | `lakehouse_parquet_row_groups_scanned` | Row groups fully scanned |
-| `lakehouse_cache_hits_total` | Cache hits by tier (L1, L2, L3) |
-| `lakehouse_cache_misses_total` | Cache misses by tier |
+| `lakehouse_parquet_column_bytes_read` | Total bytes of Parquet file data read |
+| `lakehouse_footer_cache_hits_total` | Footer cache hits (parsed `parquet.File` reused) |
+| `lakehouse_footer_cache_evictions_total` | Footer cache LRU evictions |
+| `lakehouse_cache_hits_total` | Data cache hits by tier (L1, L2, L3) |
+| `lakehouse_cache_misses_total` | Data cache misses by tier |
 | `lakehouse_s3_requests_total` | S3 API calls |
 | `lakehouse_query_duration_seconds` | End-to-end query latency histogram |
+| `lakehouse_query_rows_total` | Total rows emitted across all queries |
 | `lakehouse_concurrent_selects` | Currently in-flight select queries |
+| `lakehouse_prefetch_tasks_total` | Cache warmup/prefetch tasks completed by type |
+| `lakehouse_prefetch_bytes_total` | Total bytes loaded during warmup/prefetch |

@@ -80,8 +80,8 @@ func TestProfileConfig_BalancedSettings(t *testing.T) {
 	if cfg.Cache.MemoryLimit != "512MB" {
 		t.Errorf("balanced cache memory = %q, want 512MB", cfg.Cache.MemoryLimit)
 	}
-	if cfg.Query.FileWorkers != 8 {
-		t.Errorf("balanced file_workers = %d, want 8", cfg.Query.FileWorkers)
+	if cfg.Query.FileWorkers != 64 {
+		t.Errorf("balanced file_workers = %d, want 64", cfg.Query.FileWorkers)
 	}
 	if cfg.Prefetch.Correlated != true {
 		t.Error("balanced prefetch.correlated should be true")

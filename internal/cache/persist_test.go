@@ -561,3 +561,148 @@ func TestLabelIndexValuesCapped(t *testing.T) {
 		t.Errorf("t1 cardinality = %d, want at least 10000", li.PerTenant["t1"])
 	}
 }
+
+func TestPersister_SaveLoadFileMetadata(t *testing.T) {
+	dir := t.TempDir()
+	p, err := NewPersister(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cache := &FileMetadataCache{
+		Entries: []FileMetaEntry{
+			{
+				Key:       "dt=2026-05-20/hour=11/abc.parquet",
+				RowCount:  1000,
+				MinTimeNs: 1716000000000000000,
+				MaxTimeNs: 1716003600000000000,
+				RawBytes:  50000,
+				Labels:    map[string][]string{"service": {"api"}},
+			},
+			{
+				Key:       "dt=2026-05-20/hour=11/def.parquet",
+				RowCount:  2000,
+				MinTimeNs: 1716003600000000000,
+				MaxTimeNs: 1716007200000000000,
+			},
+		},
+	}
+
+	if err := p.SaveFileMetadata(cache); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	loaded, err := p.LoadFileMetadata()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if len(loaded.Entries) != 2 {
+		t.Fatalf("entries = %d, want 2", len(loaded.Entries))
+	}
+	if loaded.Entries[0].Key != "dt=2026-05-20/hour=11/abc.parquet" {
+		t.Errorf("key = %q, want abc.parquet", loaded.Entries[0].Key)
+	}
+	if loaded.Entries[0].RowCount != 1000 {
+		t.Errorf("row_count = %d, want 1000", loaded.Entries[0].RowCount)
+	}
+	if loaded.Entries[0].MinTimeNs != 1716000000000000000 {
+		t.Errorf("min_time = %d, want 1716000000000000000", loaded.Entries[0].MinTimeNs)
+	}
+	if loaded.Entries[1].RowCount != 2000 {
+		t.Errorf("entry[1] row_count = %d, want 2000", loaded.Entries[1].RowCount)
+	}
+	if loaded.SavedAt.IsZero() {
+		t.Error("SavedAt should be set")
+	}
+	if len(loaded.Entries[0].Labels["service"]) != 1 {
+		t.Errorf("labels not preserved: %v", loaded.Entries[0].Labels)
+	}
+}
+
+func TestPersister_LoadFileMetadata_NotExist(t *testing.T) {
+	dir := t.TempDir()
+	p, err := NewPersister(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.LoadFileMetadata()
+	if err == nil {
+		t.Error("expected error for non-existent file")
+	}
+}
+
+func TestPersister_FileMetadata_Overwrite(t *testing.T) {
+	dir := t.TempDir()
+	p, err := NewPersister(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cache1 := &FileMetadataCache{
+		Entries: []FileMetaEntry{{Key: "a.parquet", RowCount: 100}},
+	}
+	if err := p.SaveFileMetadata(cache1); err != nil {
+		t.Fatal(err)
+	}
+
+	cache2 := &FileMetadataCache{
+		Entries: []FileMetaEntry{
+			{Key: "b.parquet", RowCount: 200},
+			{Key: "c.parquet", RowCount: 300},
+		},
+	}
+	if err := p.SaveFileMetadata(cache2); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := p.LoadFileMetadata()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Entries) != 2 {
+		t.Fatalf("entries = %d, want 2 (overwritten)", len(loaded.Entries))
+	}
+	if loaded.Entries[0].Key != "b.parquet" {
+		t.Errorf("key = %q, want b.parquet", loaded.Entries[0].Key)
+	}
+}
+
+func TestPersister_FileMetadata_LargeDataset(t *testing.T) {
+	dir := t.TempDir()
+	p, err := NewPersister(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	n := 10000
+	entries := make([]FileMetaEntry, n)
+	for i := range entries {
+		entries[i] = FileMetaEntry{
+			Key:       fmt.Sprintf("0/0/logs/dt=2026-05-20/hour=%02d/%016x.parquet", i%24, i),
+			RowCount:  int64(1000 + i),
+			MinTimeNs: 1716000000000000000 + int64(i)*3600000000000,
+			MaxTimeNs: 1716000000000000000 + int64(i+1)*3600000000000,
+			RawBytes:  int64(100000 + i*1000),
+		}
+	}
+
+	cache := &FileMetadataCache{Entries: entries}
+	if err := p.SaveFileMetadata(cache); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := p.LoadFileMetadata()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Entries) != n {
+		t.Fatalf("entries = %d, want %d", len(loaded.Entries), n)
+	}
+	if loaded.Entries[0].RowCount != 1000 {
+		t.Errorf("first entry row_count = %d, want 1000", loaded.Entries[0].RowCount)
+	}
+	if loaded.Entries[n-1].RowCount != int64(1000+n-1) {
+		t.Errorf("last entry row_count = %d, want %d", loaded.Entries[n-1].RowCount, 1000+n-1)
+	}
+}

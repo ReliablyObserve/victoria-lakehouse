@@ -7,16 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Map column reading: properly reconstruct key-value pairs from Parquet MAP columns (resource.attributes, span.attributes, log.attributes, scope.attributes) and expand into VL-compatible attribute columns (resource_attr:*, span_attr:*, log_attr:*, scope_attr:*)
+- Column projection: only activate for column-selecting pipes (fields, stats, uniq, top) rather than VL-internal pipes (sort, limit, offset) that VL adds automatically to queries
+
 ## [0.30.0] - 2026-05-21
 
 ### Performance
+
+**VL/VT-inspired query optimizations (8 techniques, zero Parquet format changes):**
+
+- Column-type-aware push-down: numeric columns use native int64 comparisons for row group statistics pruning instead of lexicographic string comparisons
+- Constant column optimization: detects columns where min == max across all pages and skips deserialization, injecting the constant value directly
+- Label-based file pre-filtering: evaluates query predicates (exact, prefix, GT, LT) against manifest-level labels to skip files before S3 download
+- Dictionary page filtering: reads dictionary pages for exact-match/prefix predicates; skips row groups when no dictionary entry matches
+- Bitmap-based pre-where filtering: reads filter columns first, builds boolean bitmap, then reads remaining columns only for matching rows
+- Parallel row group scheduling: sorts by estimated cost (row count ascending), processes up to 3 in parallel per file
+- Pre-resolved column indices: resolves column indices once per file, reuses across all row groups
+- Trace parent-child prefetching (traces): smart cache reverse index from trace ID → file keys for instant file narrowing
+
+**Infrastructure optimizations:**
+
 - Parquet footer LRU cache (10K entries) avoids re-parsing file metadata on repeated accesses
 - Write lock optimization moves filtering out of serialized mutex, reducing contention
 - Parallel row group processing (up to 3 goroutines per file) reduces per-file latency
 - Timestamp-only projection for hits/stats/stats_range endpoints via context hint
 - Cache warmup on startup pre-fetches recent partitions into L1/L2 and footer cache
 - S3 range read capability (DownloadRange with HTTP Range header)
-- Tightened all 21 benchmark targets by 40-60%
+- Tightened all 21 benchmark targets by 25-30% reflecting combined optimization impact
 
 ## [0.29.0] - 2026-05-20
 

@@ -1,0 +1,46 @@
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+  log_level: warn
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: "0.0.0.0:4318"
+
+ingester:
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 744h
+
+storage:
+  trace:
+    backend: s3
+    wal:
+      path: /data/tempo/wal
+    s3:
+      bucket: tempo-data
+      endpoint: minio:9000
+      access_key: minioadmin
+      secret_key: minioadmin
+      insecure: true
+      forcepathstyle: true
+
+querier:
+  max_concurrent_queries: 64
+
+query_frontend:
+  max_outstanding_per_tenant: 4096
+
+overrides:
+  defaults:
+    ingestion:
+      rate_limit_bytes: 104857600
+      burst_size_bytes: 209715200
+    global:
+      max_bytes_per_trace: 52428800

@@ -290,7 +290,7 @@ func TestRowGroupMatchesFilter_ExactMatchSkip(t *testing.T) {
 	// "zzz" is above all service names (alpha, beta, gamma) → should skip
 	pdf := &PushDownFilter{
 		Checks: []PushDownCheck{
-			{Column: "service.name", Op: PushDownExact, Value: "zzz"},
+			{Column: "service.name", Op: PushDownExact, Value: "zzz", ColIdx: -1},
 		},
 	}
 	if rowGroupMatchesFilter(f, rgs[0], pdf) {
@@ -316,7 +316,7 @@ func TestRowGroupMatchesFilter_ExactMatchNoSkip(t *testing.T) {
 	// "beta" is within [alpha, gamma] → should NOT skip
 	pdf := &PushDownFilter{
 		Checks: []PushDownCheck{
-			{Column: "service.name", Op: PushDownExact, Value: "beta"},
+			{Column: "service.name", Op: PushDownExact, Value: "beta", ColIdx: -1},
 		},
 	}
 	if !rowGroupMatchesFilter(f, rgs[0], pdf) {
@@ -340,7 +340,7 @@ func TestRowGroupMatchesFilter_UnknownColumn(t *testing.T) {
 	// Unknown column → should return true (can't skip)
 	pdf := &PushDownFilter{
 		Checks: []PushDownCheck{
-			{Column: "nonexistent.column", Op: PushDownExact, Value: "anything"},
+			{Column: "nonexistent.column", Op: PushDownExact, Value: "anything", ColIdx: -1},
 		},
 	}
 	if !rowGroupMatchesFilter(f, rgs[0], pdf) {
@@ -365,8 +365,8 @@ func TestRowGroupMatchesFilter_MultipleChecksAllMustPass(t *testing.T) {
 	// First check passes (beta in [alpha, beta]), second fails (zzz not in [info, warn])
 	pdf := &PushDownFilter{
 		Checks: []PushDownCheck{
-			{Column: "service.name", Op: PushDownExact, Value: "beta"},
-			{Column: "severity_text", Op: PushDownExact, Value: "zzz"},
+			{Column: "service.name", Op: PushDownExact, Value: "beta", ColIdx: -1},
+			{Column: "severity_text", Op: PushDownExact, Value: "zzz", ColIdx: -1},
 		},
 	}
 	if rowGroupMatchesFilter(f, rgs[0], pdf) {
@@ -391,7 +391,7 @@ func TestRowGroupMatchesFilter_GreaterThan(t *testing.T) {
 	// GT "aaa" → max is "beta" > "aaa" → should NOT skip
 	pdf := &PushDownFilter{
 		Checks: []PushDownCheck{
-			{Column: "service.name", Op: PushDownGreaterThan, Value: "aaa"},
+			{Column: "service.name", Op: PushDownGreaterThan, Value: "aaa", ColIdx: -1},
 		},
 	}
 	if !rowGroupMatchesFilter(f, rgs[0], pdf) {
@@ -401,7 +401,7 @@ func TestRowGroupMatchesFilter_GreaterThan(t *testing.T) {
 	// GT "zzz" → max is "beta" <= "zzz" → should skip
 	pdf = &PushDownFilter{
 		Checks: []PushDownCheck{
-			{Column: "service.name", Op: PushDownGreaterThan, Value: "zzz"},
+			{Column: "service.name", Op: PushDownGreaterThan, Value: "zzz", ColIdx: -1},
 		},
 	}
 	if rowGroupMatchesFilter(f, rgs[0], pdf) {
@@ -426,7 +426,7 @@ func TestRowGroupMatchesFilter_LessThan(t *testing.T) {
 	// LT "zzz" → min is "mmm" < "zzz" → should NOT skip
 	pdf := &PushDownFilter{
 		Checks: []PushDownCheck{
-			{Column: "service.name", Op: PushDownLessThan, Value: "zzz"},
+			{Column: "service.name", Op: PushDownLessThan, Value: "zzz", ColIdx: -1},
 		},
 	}
 	if !rowGroupMatchesFilter(f, rgs[0], pdf) {
@@ -436,7 +436,7 @@ func TestRowGroupMatchesFilter_LessThan(t *testing.T) {
 	// LT "aaa" → min is "mmm" >= "aaa" → should skip
 	pdf = &PushDownFilter{
 		Checks: []PushDownCheck{
-			{Column: "service.name", Op: PushDownLessThan, Value: "aaa"},
+			{Column: "service.name", Op: PushDownLessThan, Value: "aaa", ColIdx: -1},
 		},
 	}
 	if rowGroupMatchesFilter(f, rgs[0], pdf) {
@@ -461,7 +461,7 @@ func TestRowGroupMatchesFilter_Prefix(t *testing.T) {
 	// prefix "prod-" overlaps [prod-api, prod-web] → should NOT skip
 	pdf := &PushDownFilter{
 		Checks: []PushDownCheck{
-			{Column: "service.name", Op: PushDownPrefix, Value: "prod-"},
+			{Column: "service.name", Op: PushDownPrefix, Value: "prod-", ColIdx: -1},
 		},
 	}
 	if !rowGroupMatchesFilter(f, rgs[0], pdf) {
@@ -471,7 +471,7 @@ func TestRowGroupMatchesFilter_Prefix(t *testing.T) {
 	// prefix "zzz" > max "prod-web" → should skip
 	pdf = &PushDownFilter{
 		Checks: []PushDownCheck{
-			{Column: "service.name", Op: PushDownPrefix, Value: "zzz"},
+			{Column: "service.name", Op: PushDownPrefix, Value: "zzz", ColIdx: -1},
 		},
 	}
 	if rowGroupMatchesFilter(f, rgs[0], pdf) {
@@ -481,7 +481,7 @@ func TestRowGroupMatchesFilter_Prefix(t *testing.T) {
 	// prefix "aaa" with successor "aab" <= min "prod-api" → should skip
 	pdf = &PushDownFilter{
 		Checks: []PushDownCheck{
-			{Column: "service.name", Op: PushDownPrefix, Value: "aaa"},
+			{Column: "service.name", Op: PushDownPrefix, Value: "aaa", ColIdx: -1},
 		},
 	}
 	if rowGroupMatchesFilter(f, rgs[0], pdf) {

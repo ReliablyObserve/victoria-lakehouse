@@ -191,6 +191,21 @@ type FileInfoState struct {
 	Size int64  `json:"size"`
 }
 
+type FileMetaEntry struct {
+	Key               string              `json:"k"`
+	RowCount          int64               `json:"rc,omitempty"`
+	MinTimeNs         int64               `json:"mn,omitempty"`
+	MaxTimeNs         int64               `json:"mx,omitempty"`
+	RawBytes          int64               `json:"rb,omitempty"`
+	SchemaFingerprint string              `json:"sf,omitempty"`
+	Labels            map[string][]string `json:"lb,omitempty"`
+}
+
+type FileMetadataCache struct {
+	Entries []FileMetaEntry `json:"entries"`
+	SavedAt time.Time       `json:"saved_at"`
+}
+
 type Persister struct {
 	dir string
 }
@@ -268,6 +283,19 @@ func (p *Persister) readJSON(filename string, v any) error {
 		return err
 	}
 	return json.Unmarshal(data, v)
+}
+
+func (p *Persister) SaveFileMetadata(cache *FileMetadataCache) error {
+	cache.SavedAt = time.Now()
+	return p.writeJSON("file-metadata.json", cache)
+}
+
+func (p *Persister) LoadFileMetadata() (*FileMetadataCache, error) {
+	var cache FileMetadataCache
+	if err := p.readJSON("file-metadata.json", &cache); err != nil {
+		return nil, err
+	}
+	return &cache, nil
 }
 
 func (p *Persister) Dir() string {

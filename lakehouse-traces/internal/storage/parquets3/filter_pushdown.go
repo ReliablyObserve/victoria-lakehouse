@@ -1,6 +1,7 @@
 package parquets3
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/parquet-go/parquet-go"
@@ -20,9 +21,11 @@ const (
 
 // PushDownCheck is a single predicate that can be evaluated against row-group column stats.
 type PushDownCheck struct {
-	Column string
-	Op     PushDownOp
-	Value  string
+	Column    string
+	Op        PushDownOp
+	Value     string
+	FieldType schema.FieldType
+	ColIdx    int // pre-resolved column index; -1 if unresolved
 }
 
 // PushDownFilter holds all push-down-able predicates extracted from a query.
@@ -51,26 +54,32 @@ func buildPushDownFilter(queryStr string, registry *schema.Registry) *PushDownFi
 			if val := extractQuotedOp(queryStr, name, `:="`); val != "" {
 				if strings.HasSuffix(val, "*") && !strings.HasSuffix(val, `\*`) {
 					checks = append(checks, PushDownCheck{
-						Column: col.ParquetColumn,
-						Op:     PushDownPrefix,
-						Value:  val[:len(val)-1], // strip trailing *
+						Column:    col.ParquetColumn,
+						Op:        PushDownPrefix,
+						Value:     val[:len(val)-1],
+						FieldType: col.Type,
+						ColIdx:    -1,
 					})
 				} else {
 					checks = append(checks, PushDownCheck{
-						Column: col.ParquetColumn,
-						Op:     PushDownExact,
-						Value:  val,
+						Column:    col.ParquetColumn,
+						Op:        PushDownExact,
+						Value:     val,
+						FieldType: col.Type,
+						ColIdx:    -1,
 					})
 				}
-				break // found match for this column, skip alternate name
+				break
 			}
 
 			// Greater than: field:>"value"
 			if val := extractQuotedOp(queryStr, name, `:>"`); val != "" {
 				checks = append(checks, PushDownCheck{
-					Column: col.ParquetColumn,
-					Op:     PushDownGreaterThan,
-					Value:  val,
+					Column:    col.ParquetColumn,
+					Op:        PushDownGreaterThan,
+					Value:     val,
+					FieldType: col.Type,
+					ColIdx:    -1,
 				})
 				break
 			}
@@ -78,9 +87,11 @@ func buildPushDownFilter(queryStr string, registry *schema.Registry) *PushDownFi
 			// Less than: field:<"value"
 			if val := extractQuotedOp(queryStr, name, `:<"`); val != "" {
 				checks = append(checks, PushDownCheck{
-					Column: col.ParquetColumn,
-					Op:     PushDownLessThan,
-					Value:  val,
+					Column:    col.ParquetColumn,
+					Op:        PushDownLessThan,
+					Value:     val,
+					FieldType: col.Type,
+					ColIdx:    -1,
 				})
 				break
 			}
@@ -109,14 +120,21 @@ func extractQuotedOp(query, fieldName, op string) string {
 	return query[start : start+end]
 }
 
+// resolvePushDownIndices pre-computes column indices for pushdown checks.
+func resolvePushDownIndices(f *parquet.File, pdf *PushDownFilter) *PushDownFilter {
+	if pdf == nil {
+		return nil
+	}
+	resolved := &PushDownFilter{Checks: make([]PushDownCheck, 0, len(pdf.Checks))}
+	for _, check := range pdf.Checks {
+		check.ColIdx = findColumnIndex(f.Root(), check.Column)
+		resolved.Checks = append(resolved.Checks, check)
+	}
+	return resolved
+}
+
 // rowGroupMatchesFilter checks whether a row group might contain rows matching
 // the push-down filter by examining column statistics (min/max per page).
-// Returns true (conservative) if:
-//   - filter is nil
-//   - column not found in the file
-//   - column index unavailable
-//   - stats indicate possible match
-//
 // Returns false only when stats definitively prove no match is possible.
 func rowGroupMatchesFilter(f *parquet.File, rg parquet.RowGroup, pdf *PushDownFilter) bool {
 	if pdf == nil || len(pdf.Checks) == 0 {
@@ -126,9 +144,11 @@ func rowGroupMatchesFilter(f *parquet.File, rg parquet.RowGroup, pdf *PushDownFi
 	cols := rg.ColumnChunks()
 
 	for _, check := range pdf.Checks {
-		colIdx := findColumnIndex(f.Root(), check.Column)
+		colIdx := check.ColIdx
+		if colIdx < 0 {
+			colIdx = findColumnIndex(f.Root(), check.Column)
+		}
 		if colIdx < 0 || colIdx >= len(cols) {
-			// Column not found — can't skip, be conservative
 			continue
 		}
 
@@ -142,28 +162,129 @@ func rowGroupMatchesFilter(f *parquet.File, rg parquet.RowGroup, pdf *PushDownFi
 			continue
 		}
 
-		// Get overall min and max across all pages in this row group
-		rgMin := valueToString(cidx.MinValue(0))
-		rgMax := valueToString(cidx.MaxValue(numPages - 1))
+		isNumeric := check.FieldType == schema.TypeInt32 ||
+			check.FieldType == schema.TypeInt64 ||
+			check.FieldType == schema.TypeTimestampNano
 
-		// For multi-page row groups, find the true min/max across all pages
-		for p := 1; p < numPages; p++ {
-			pageMin := valueToString(cidx.MinValue(p))
-			pageMax := valueToString(cidx.MaxValue(p))
-			if pageMin < rgMin {
-				rgMin = pageMin
+		if isNumeric {
+			minVal := valueToInt64(cidx.MinValue(0))
+			maxVal := valueToInt64(cidx.MaxValue(0))
+			for p := 1; p < numPages; p++ {
+				if v := valueToInt64(cidx.MinValue(p)); v < minVal {
+					minVal = v
+				}
+				if v := valueToInt64(cidx.MaxValue(p)); v > maxVal {
+					maxVal = v
+				}
 			}
-			if pageMax > rgMax {
-				rgMax = pageMax
+			if !checkMatchesStatsNumeric(check, minVal, maxVal) {
+				return false
+			}
+		} else {
+			rgMin := valueToString(cidx.MinValue(0))
+			rgMax := valueToString(cidx.MaxValue(numPages - 1))
+			for p := 1; p < numPages; p++ {
+				pageMin := valueToString(cidx.MinValue(p))
+				pageMax := valueToString(cidx.MaxValue(p))
+				if pageMin < rgMin {
+					rgMin = pageMin
+				}
+				if pageMax > rgMax {
+					rgMax = pageMax
+				}
+			}
+			if !checkMatchesStats(check, rgMin, rgMax) {
+				return false
 			}
 		}
+	}
 
-		if !checkMatchesStats(check, rgMin, rgMax) {
+	for _, check := range pdf.Checks {
+		if check.Op != PushDownExact && check.Op != PushDownPrefix {
+			continue
+		}
+		colIdx := check.ColIdx
+		if colIdx < 0 {
+			colIdx = findColumnIndex(f.Root(), check.Column)
+		}
+		if colIdx < 0 || colIdx >= len(cols) {
+			continue
+		}
+		if !dictionaryContainsMatch(cols[colIdx], check) {
 			return false
 		}
 	}
 
 	return true
+}
+
+// dictionaryContainsMatch reads the first page of a column chunk and, if it has
+// a dictionary, checks whether any dictionary entry matches the predicate.
+// Returns true (conservative) if the column is not dictionary-encoded or if any
+// dictionary entry matches.
+func dictionaryContainsMatch(cc parquet.ColumnChunk, check PushDownCheck) bool {
+	pages := cc.Pages()
+	defer func() { _ = pages.Close() }()
+
+	page, err := pages.ReadPage()
+	if err != nil || page == nil {
+		return true
+	}
+
+	dict := page.Dictionary()
+	if dict == nil {
+		return true
+	}
+
+	n := dict.Len()
+	if n > 10000 {
+		return true
+	}
+
+	for i := 0; i < n; i++ {
+		v := dict.Index(int32(i))
+		s := parquetValueToString(v)
+		switch check.Op {
+		case PushDownExact:
+			if s == check.Value {
+				return true
+			}
+		case PushDownPrefix:
+			if strings.HasPrefix(s, check.Value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func parquetValueToString(v parquet.Value) string {
+	if v.IsNull() {
+		return ""
+	}
+	switch v.Kind() {
+	case parquet.ByteArray, parquet.FixedLenByteArray:
+		return string(v.ByteArray())
+	default:
+		return v.String()
+	}
+}
+
+func checkMatchesStatsNumeric(check PushDownCheck, rgMin, rgMax int64) bool {
+	val, err := strconv.ParseInt(check.Value, 10, 64)
+	if err != nil {
+		return true
+	}
+	switch check.Op {
+	case PushDownExact:
+		return val >= rgMin && val <= rgMax
+	case PushDownGreaterThan:
+		return rgMax > val
+	case PushDownLessThan:
+		return rgMin < val
+	default:
+		return true
+	}
 }
 
 // checkMatchesStats evaluates a single push-down check against column min/max stats.

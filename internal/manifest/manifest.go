@@ -19,20 +19,23 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
+const maxLabelsPerField = 100
+
 type FileInfo struct {
-	Key               string              `json:"key"`
-	Size              int64               `json:"size"`
-	RowCount          int64               `json:"row_count,omitempty"`
-	MinTimeNs         int64               `json:"min_time_ns,omitempty"`
-	MaxTimeNs         int64               `json:"max_time_ns,omitempty"`
-	RawBytes          int64               `json:"raw_bytes,omitempty"`
-	SchemaFingerprint string              `json:"schema_fp,omitempty"`
-	CompactionLevel   int                 `json:"compaction_level,omitempty"`
-	Labels            map[string][]string `json:"labels,omitempty"`
-	StorageClass      string              `json:"storage_class,omitempty"`
-	ClassCheckedAt    time.Time           `json:"class_checked_at,omitempty"`
-	ClassSource       string              `json:"class_source,omitempty"`
-	CreatedAt         time.Time           `json:"created_at,omitempty"`
+	Key               string                  `json:"key"`
+	Size              int64                   `json:"size"`
+	RowCount          int64                   `json:"row_count,omitempty"`
+	MinTimeNs         int64                   `json:"min_time_ns,omitempty"`
+	MaxTimeNs         int64                   `json:"max_time_ns,omitempty"`
+	RawBytes          int64                   `json:"raw_bytes,omitempty"`
+	SchemaFingerprint string                  `json:"schema_fp,omitempty"`
+	CompactionLevel   int                     `json:"compaction_level,omitempty"`
+	Labels            map[string][]string     `json:"labels,omitempty"`
+	ColumnStats       map[string]ColumnMinMax `json:"column_stats,omitempty"`
+	StorageClass      string                  `json:"storage_class,omitempty"`
+	ClassCheckedAt    time.Time               `json:"class_checked_at,omitempty"`
+	ClassSource       string                  `json:"class_source,omitempty"`
+	CreatedAt         time.Time               `json:"created_at,omitempty"`
 }
 
 func (fi FileInfo) CompressionRatio() float64 {
@@ -75,6 +78,7 @@ type Manifest struct {
 	files            map[string][]FileInfo // "dt=2026-05-02/hour=10" -> files
 	sortedPartitions []partitionEntry
 	partitionMeta    map[string]*PartitionMeta
+	labelIndex       map[string]map[string]map[string]bool // field -> value -> fileKey -> exists
 	minTime          time.Time
 	maxTime          time.Time
 	totalFiles       int
@@ -88,6 +92,7 @@ type Manifest struct {
 func New(bucket, prefix string) *Manifest {
 	return &Manifest{
 		files:         make(map[string][]FileInfo),
+		labelIndex:    make(map[string]map[string]map[string]bool),
 		partitionMeta: make(map[string]*PartitionMeta),
 		prefix:        prefix,
 		bucket:        bucket,
@@ -183,6 +188,7 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 		for i := range newFiles {
 			if old, ok := oldByKey[newFiles[i].Key]; ok {
 				newFiles[i].Labels = old.Labels
+				newFiles[i].ColumnStats = old.ColumnStats
 				newFiles[i].RowCount = old.RowCount
 				newFiles[i].RawBytes = old.RawBytes
 				newFiles[i].MinTimeNs = old.MinTimeNs
@@ -194,6 +200,26 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 			}
 		}
 	}
+	// Infer MinTimeNs/MaxTimeNs from partition key for files that don't
+	// have explicit time bounds (e.g. files from before this process or
+	// after a restart). Hourly partitions give us [hour, hour+1h) bounds.
+	for partition, pFiles := range files {
+		t, err := parsePartitionTime(partition)
+		if err != nil {
+			continue
+		}
+		pMinNs := t.UnixNano()
+		pMaxNs := t.Add(time.Hour).UnixNano() - 1
+		for i := range pFiles {
+			if pFiles[i].MinTimeNs == 0 {
+				pFiles[i].MinTimeNs = pMinNs
+			}
+			if pFiles[i].MaxTimeNs == 0 {
+				pFiles[i].MaxTimeNs = pMaxNs
+			}
+		}
+	}
+
 	m.files = files
 	m.rebuildIndex()
 	m.minTime = minT
@@ -268,7 +294,14 @@ func (m *Manifest) GetFilesForRange(startNs, endNs int64) []FileInfo {
 		if !p.start.Before(end) {
 			break
 		}
-		result = append(result, m.files[p.key]...)
+		for _, fi := range m.files[p.key] {
+			if fi.MinTimeNs != 0 && fi.MaxTimeNs != 0 {
+				if fi.MaxTimeNs < startNs || fi.MinTimeNs > endNs {
+					continue
+				}
+			}
+			result = append(result, fi)
+		}
 	}
 
 	sort.Slice(result, func(i, j int) bool {
@@ -278,11 +311,12 @@ func (m *Manifest) GetFilesForRange(startNs, endNs int64) []FileInfo {
 	return result
 }
 
-// rebuildIndex rebuilds the sorted partition index from m.files.
+// rebuildIndex rebuilds the sorted partition index and inverted label index from m.files.
 // Must be called while holding the write lock (m.mu).
 func (m *Manifest) rebuildIndex() {
-	// Reuse existing slice capacity.
 	m.sortedPartitions = m.sortedPartitions[:0]
+
+	m.labelIndex = make(map[string]map[string]map[string]bool)
 
 	for key := range m.files {
 		t, err := parsePartitionTime(key)
@@ -294,11 +328,57 @@ func (m *Manifest) rebuildIndex() {
 			start: t,
 			end:   t.Add(time.Hour),
 		})
+
+		for _, fi := range m.files[key] {
+			m.indexFileLabels(fi)
+		}
 	}
 
 	sort.Slice(m.sortedPartitions, func(i, j int) bool {
 		return m.sortedPartitions[i].start.Before(m.sortedPartitions[j].start)
 	})
+}
+
+func (m *Manifest) indexFileLabels(fi FileInfo) {
+	for field, values := range fi.Labels {
+		if len(values) >= maxLabelsPerField {
+			continue
+		}
+		fieldMap, ok := m.labelIndex[field]
+		if !ok {
+			fieldMap = make(map[string]map[string]bool)
+			m.labelIndex[field] = fieldMap
+		}
+		for _, v := range values {
+			keySet, ok := fieldMap[v]
+			if !ok {
+				keySet = make(map[string]bool)
+				fieldMap[v] = keySet
+			}
+			keySet[fi.Key] = true
+		}
+	}
+}
+
+// GetFileKeysByLabel returns the set of file keys that contain the given label field=value.
+// Returns nil if no index exists for that field/value pair.
+func (m *Manifest) GetFileKeysByLabel(field, value string) map[string]bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	fieldMap := m.labelIndex[field]
+	if fieldMap == nil {
+		return nil
+	}
+	keys := fieldMap[value]
+	if len(keys) == 0 {
+		return nil
+	}
+	cp := make(map[string]bool, len(keys))
+	for k := range keys {
+		cp[k] = true
+	}
+	return cp
 }
 
 func (m *Manifest) TotalFiles() int {
@@ -395,14 +475,67 @@ func (m *Manifest) RemoveFile(partition string, key string) {
 	}
 }
 
+// UpdateFileColumnStats stores min/max stats for the named columns in the FileInfo
+// identified by key. It is safe for concurrent use.
+func (m *Manifest) UpdateFileColumnStats(key string, stats map[string]ColumnMinMax) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, files := range m.files {
+		for i := range files {
+			if files[i].Key == key {
+				files[i].ColumnStats = stats
+				return
+			}
+		}
+	}
+}
+
+// EnrichFileMetadata updates RowCount and time bounds for a file identified
+// by key. Called after first opening a file during a query, using metadata
+// from the Parquet footer. Only updates fields that are zero (not already set).
+func (m *Manifest) EnrichFileMetadata(key string, rowCount int64, minTimeNs, maxTimeNs int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, files := range m.files {
+		for i := range files {
+			if files[i].Key == key {
+				if files[i].RowCount == 0 && rowCount > 0 {
+					files[i].RowCount = rowCount
+				}
+				if files[i].MinTimeNs == 0 && minTimeNs > 0 {
+					files[i].MinTimeNs = minTimeNs
+				}
+				if files[i].MaxTimeNs == 0 && maxTimeNs > 0 {
+					files[i].MaxTimeNs = maxTimeNs
+				}
+				return
+			}
+		}
+	}
+}
+
 func (m *Manifest) AddFile(partition string, fi FileInfo) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	isNew := len(m.files[partition]) == 0
 	m.files[partition] = append(m.files[partition], fi)
 	m.totalFiles++
 	m.totalBytes += fi.Size
-	m.rebuildIndex()
+
+	if isNew {
+		if t, err := parsePartitionTime(partition); err == nil {
+			entry := partitionEntry{key: partition, start: t, end: t.Add(time.Hour)}
+			i := sort.Search(len(m.sortedPartitions), func(j int) bool {
+				return !m.sortedPartitions[j].start.Before(t)
+			})
+			m.sortedPartitions = append(m.sortedPartitions, partitionEntry{})
+			copy(m.sortedPartitions[i+1:], m.sortedPartitions[i:])
+			m.sortedPartitions[i] = entry
+		}
+	}
+	m.indexFileLabels(fi)
+
 	metrics.ManifestFiles.Set(int64(m.totalFiles))
 	metrics.ManifestBytes.Set(m.totalBytes)
 

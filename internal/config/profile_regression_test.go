@@ -71,9 +71,9 @@ func TestProfileRegression_SelectQuery(t *testing.T) {
 	}
 
 	tests := map[Profile]queryExpect{
-		ProfileBalanced:       {true, 8, 32, 60 * time.Second, 10_000_000},
+		ProfileBalanced:       {true, 64, 32, 60 * time.Second, 10_000_000},
 		ProfileMaxPerformance: {true, 16, 64, 120 * time.Second, 50_000_000},
-		ProfileMaxDurability:  {true, 8, 32, 60 * time.Second, 10_000_000},
+		ProfileMaxDurability:  {true, 64, 32, 60 * time.Second, 10_000_000},
 		ProfileMaxCostSavings: {false, 4, 16, 30 * time.Second, 1_000_000},
 		ProfileDev:            {true, 2, 4, 60 * time.Second, 100_000},
 	}

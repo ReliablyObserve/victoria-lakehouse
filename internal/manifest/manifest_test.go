@@ -553,6 +553,104 @@ func newTestManifest() *Manifest {
 	return New("test-bucket", "logs/")
 }
 
+func TestManifest_PartitionStats(t *testing.T) {
+	m := New("test-bucket", "logs/")
+
+	m.AddFile("dt=2026-05-01/hour=10", FileInfo{
+		Key: "logs/dt=2026-05-01/hour=10/a.parquet", Size: 1000, RowCount: 500,
+	})
+	m.AddFile("dt=2026-05-01/hour=10", FileInfo{
+		Key: "logs/dt=2026-05-01/hour=10/b.parquet", Size: 2000, RowCount: 300,
+	})
+	m.AddFile("dt=2026-05-01/hour=11", FileInfo{
+		Key: "logs/dt=2026-05-01/hour=11/c.parquet", Size: 1500, RowCount: 400,
+	})
+
+	stats := m.GetPartitionStats()
+	if len(stats) != 2 {
+		t.Fatalf("expected 2 partitions, got %d", len(stats))
+	}
+
+	h10 := stats["dt=2026-05-01/hour=10"]
+	if h10.TotalRows != 800 {
+		t.Errorf("hour=10 rows = %d, want 800", h10.TotalRows)
+	}
+	if h10.FileCount != 2 {
+		t.Errorf("hour=10 files = %d, want 2", h10.FileCount)
+	}
+
+	h11 := stats["dt=2026-05-01/hour=11"]
+	if h11.TotalRows != 400 {
+		t.Errorf("hour=11 rows = %d, want 400", h11.TotalRows)
+	}
+}
+
+func TestManifest_GetRowCountForRange(t *testing.T) {
+	m := New("test-bucket", "logs/")
+
+	may1h10 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	may1h11 := time.Date(2026, 5, 1, 11, 0, 0, 0, time.UTC)
+	may1h12 := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	m.AddFile("dt=2026-05-01/hour=10", FileInfo{
+		Key: "logs/dt=2026-05-01/hour=10/a.parquet", Size: 1000, RowCount: 500,
+		MinTimeNs: may1h10.UnixNano(), MaxTimeNs: may1h10.Add(30 * time.Minute).UnixNano(),
+	})
+	m.AddFile("dt=2026-05-01/hour=11", FileInfo{
+		Key: "logs/dt=2026-05-01/hour=11/b.parquet", Size: 2000, RowCount: 300,
+		MinTimeNs: may1h11.UnixNano(), MaxTimeNs: may1h11.Add(30 * time.Minute).UnixNano(),
+	})
+	m.AddFile("dt=2026-05-01/hour=12", FileInfo{
+		Key: "logs/dt=2026-05-01/hour=12/c.parquet", Size: 1500, RowCount: 400,
+		MinTimeNs: may1h12.UnixNano(), MaxTimeNs: may1h12.Add(30 * time.Minute).UnixNano(),
+	})
+
+	// Range covering hours 10-11 should return 800 rows
+	total := m.GetRowCountForRange(may1h10.UnixNano(), may1h12.UnixNano())
+	if total != 800 {
+		t.Errorf("row count for 10-12 range = %d, want 800", total)
+	}
+
+	// Full range should return 1200
+	total = m.GetRowCountForRange(may1h10.UnixNano(), may1h12.Add(time.Hour).UnixNano())
+	if total != 1200 {
+		t.Errorf("row count for full range = %d, want 1200", total)
+	}
+}
+
+func TestManifest_GetRowCountsByPartition(t *testing.T) {
+	m := New("test-bucket", "logs/")
+
+	may1h10 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	may1h11 := time.Date(2026, 5, 1, 11, 0, 0, 0, time.UTC)
+
+	m.AddFile("dt=2026-05-01/hour=10", FileInfo{
+		Key: "logs/dt=2026-05-01/hour=10/a.parquet", Size: 1000, RowCount: 500,
+	})
+	m.AddFile("dt=2026-05-01/hour=10", FileInfo{
+		Key: "logs/dt=2026-05-01/hour=10/b.parquet", Size: 2000, RowCount: 300,
+	})
+	m.AddFile("dt=2026-05-01/hour=11", FileInfo{
+		Key: "logs/dt=2026-05-01/hour=11/c.parquet", Size: 1500, RowCount: 400,
+	})
+
+	// Add a third partition that should be excluded by the range
+	m.AddFile("dt=2026-05-01/hour=12", FileInfo{
+		Key: "logs/dt=2026-05-01/hour=12/d.parquet", Size: 3000, RowCount: 600,
+	})
+
+	buckets := m.GetRowCountsByPartition(may1h10.UnixNano(), may1h11.Add(time.Hour).UnixNano())
+	if len(buckets) != 2 {
+		t.Fatalf("expected 2 buckets (hour=12 excluded), got %d", len(buckets))
+	}
+	if buckets[0].RowCount != 800 {
+		t.Errorf("bucket[0] rows = %d, want 800", buckets[0].RowCount)
+	}
+	if buckets[1].RowCount != 400 {
+		t.Errorf("bucket[1] rows = %d, want 400", buckets[1].RowCount)
+	}
+}
+
 func TestManifest_TotalRows(t *testing.T) {
 	m := New("bucket", "logs/")
 
@@ -624,5 +722,119 @@ func TestManifest_BloomMeta(t *testing.T) {
 	m.SetBloomMeta("dt=2026-05-02", meta2)
 	if m.BloomAvailable("dt=2026-05-02") {
 		t.Error("BloomAvailable() should be false when BloomAvailable=false in meta")
+	}
+}
+
+func TestManifest_LabelIndex(t *testing.T) {
+	m := newTestManifest()
+
+	m.AddFile("dt=2026-05-01/hour=10", FileInfo{
+		Key:  "logs/dt=2026-05-01/hour=10/a.parquet",
+		Size: 1000,
+		Labels: map[string][]string{
+			"service.name": {"api", "worker"},
+			"level":        {"error"},
+		},
+	})
+	m.AddFile("dt=2026-05-01/hour=10", FileInfo{
+		Key:  "logs/dt=2026-05-01/hour=10/b.parquet",
+		Size: 2000,
+		Labels: map[string][]string{
+			"service.name": {"api"},
+			"level":        {"info"},
+		},
+	})
+	m.AddFile("dt=2026-05-01/hour=11", FileInfo{
+		Key:  "logs/dt=2026-05-01/hour=11/c.parquet",
+		Size: 3000,
+		Labels: map[string][]string{
+			"service.name": {"worker"},
+			"level":        {"warn"},
+		},
+	})
+
+	// Exact match: service.name=api should return files a and b
+	keys := m.GetFileKeysByLabel("service.name", "api")
+	if len(keys) != 2 {
+		t.Fatalf("service.name=api: got %d keys, want 2", len(keys))
+	}
+	if !keys["logs/dt=2026-05-01/hour=10/a.parquet"] || !keys["logs/dt=2026-05-01/hour=10/b.parquet"] {
+		t.Errorf("service.name=api: wrong keys %v", keys)
+	}
+
+	// Exact match: service.name=worker should return files a and c
+	keys = m.GetFileKeysByLabel("service.name", "worker")
+	if len(keys) != 2 {
+		t.Fatalf("service.name=worker: got %d keys, want 2", len(keys))
+	}
+	if !keys["logs/dt=2026-05-01/hour=10/a.parquet"] || !keys["logs/dt=2026-05-01/hour=11/c.parquet"] {
+		t.Errorf("service.name=worker: wrong keys %v", keys)
+	}
+
+	// Exact match: level=error should return only file a
+	keys = m.GetFileKeysByLabel("level", "error")
+	if len(keys) != 1 {
+		t.Fatalf("level=error: got %d keys, want 1", len(keys))
+	}
+	if !keys["logs/dt=2026-05-01/hour=10/a.parquet"] {
+		t.Errorf("level=error: wrong keys %v", keys)
+	}
+
+	// Non-existent value returns nil
+	keys = m.GetFileKeysByLabel("service.name", "nonexistent")
+	if keys != nil {
+		t.Errorf("nonexistent value: got %v, want nil", keys)
+	}
+
+	// Non-existent field returns nil
+	keys = m.GetFileKeysByLabel("unknown_field", "api")
+	if keys != nil {
+		t.Errorf("unknown field: got %v, want nil", keys)
+	}
+
+	// After removing a file, index is updated
+	m.RemoveFile("dt=2026-05-01/hour=10", "logs/dt=2026-05-01/hour=10/a.parquet")
+	keys = m.GetFileKeysByLabel("service.name", "api")
+	if len(keys) != 1 {
+		t.Fatalf("after remove, service.name=api: got %d keys, want 1", len(keys))
+	}
+	if !keys["logs/dt=2026-05-01/hour=10/b.parquet"] {
+		t.Errorf("after remove: wrong keys %v", keys)
+	}
+
+	// worker should now only be in file c
+	keys = m.GetFileKeysByLabel("service.name", "worker")
+	if len(keys) != 1 {
+		t.Fatalf("after remove, service.name=worker: got %d keys, want 1", len(keys))
+	}
+}
+
+func TestManifest_LabelIndex_SaveLoadRoundTrip(t *testing.T) {
+	m := newTestManifest()
+
+	m.AddFile("dt=2026-05-01/hour=10", FileInfo{
+		Key:  "logs/dt=2026-05-01/hour=10/a.parquet",
+		Size: 1000,
+		Labels: map[string][]string{
+			"service.name": {"api"},
+		},
+	})
+
+	path := t.TempDir() + "/manifest.json"
+	if err := m.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+
+	m2 := newTestManifest()
+	if err := m2.LoadFrom(path); err != nil {
+		t.Fatal(err)
+	}
+
+	keys := m2.GetFileKeysByLabel("service.name", "api")
+	if len(keys) != 1 {
+		t.Fatalf("after load, service.name=api: got %d keys, want 1", len(keys))
+	}
+	if !keys["logs/dt=2026-05-01/hour=10/a.parquet"] {
+		t.Error("label index not rebuilt after LoadFrom")
 	}
 }

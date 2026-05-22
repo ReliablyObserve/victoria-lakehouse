@@ -477,7 +477,7 @@ func Default() *Config {
 
 		Query: QueryConfig{
 			MaxConcurrent: 32,
-			FileWorkers:   8,
+			FileWorkers:   64,
 			Timeout:       60 * time.Second,
 			MaxRows:       10_000_000,
 			SlowThreshold: 5 * time.Second,

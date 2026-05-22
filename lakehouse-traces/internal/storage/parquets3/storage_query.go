@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -110,14 +111,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		return nil
 	}
 
-	// Label-based file pre-filtering
-	files = s.filterFilesByLabels(files, queryStr)
-	if len(files) == 0 {
-		return nil
-	}
-
-	// Bloom index pre-filtering
-	files = s.filterFilesByBloomIndex(files, queryStr)
+	files = s.preFilterFiles(files, queryStr)
 	if len(files) == 0 {
 		return nil
 	}
@@ -166,6 +160,12 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				if maxRows > 0 && rowsEmitted.Load() >= maxRows {
 					return
 				}
+				if skip, _ := shouldSkipByFooter(ctx, s.pool, fi, queryStr, s.registry, s.footerCache); skip {
+					continue
+				}
+				if s.checkFileBloom(ctx, fi, queryStr) {
+					continue
+				}
 				if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, filteredWriteBlock); err != nil {
 					logger.Warnf("query file error: %s; key=%s", err, fi.Key)
 					continue
@@ -185,72 +185,137 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}
 	}
 
-	if s.bufferBridge != nil {
-		switch s.cfg.Mode {
-		case config.ModeLogs:
-			bufRows, _ := s.bufferBridge.QueryLogs(ctx, startNs, endNs)
-			if len(bufRows) > 0 {
-				db := s.logRowsToDataBlock(bufRows)
-				if db != nil && db.RowsCount() > 0 {
-					filteredWriteBlock(0, db)
+	s.queryBufferBridge(ctx, startNs, endNs, filteredWriteBlock)
+
+	return nil
+}
+
+func (s *Storage) preFilterFiles(files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
+	if s.smartCache != nil {
+		if tid := extractExactMatch(queryStr, "trace_id"); tid != "" {
+			if cached := s.smartCache.FindFilesByTraceID(tid); len(cached) > 0 {
+				cacheSet := make(map[string]bool, len(cached))
+				for _, k := range cached {
+					cacheSet[k] = true
 				}
-			}
-		case config.ModeTraces:
-			bufRows, _ := s.bufferBridge.QueryTraces(ctx, startNs, endNs)
-			if len(bufRows) > 0 {
-				db := s.traceRowsToDataBlock(bufRows)
-				if db != nil && db.RowsCount() > 0 {
-					filteredWriteBlock(0, db)
+				var narrowed []manifest.FileInfo
+				for _, fi := range files {
+					if cacheSet[fi.Key] {
+						narrowed = append(narrowed, fi)
+					}
+				}
+				if len(narrowed) > 0 {
+					logger.Infof("trace_id fast-path: cache hit for %s, scanning %d files", tid, len(narrowed))
+					return narrowed
 				}
 			}
 		}
 	}
 
-	return nil
+	files = s.filterFilesByLabels(files, queryStr)
+	if len(files) == 0 {
+		return nil
+	}
+
+	files = s.filterFilesByBloomIndex(files, queryStr)
+	return files
 }
 
-func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, writeBlock logstorage.WriteDataBlockFunc) error {
+func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, filteredWriteBlock logstorage.WriteDataBlockFunc) {
+	if s.bufferBridge == nil {
+		return
+	}
+	switch s.cfg.Mode {
+	case config.ModeLogs:
+		bufRows, _ := s.bufferBridge.QueryLogs(ctx, startNs, endNs)
+		if len(bufRows) > 0 {
+			db := s.logRowsToDataBlock(bufRows)
+			if db != nil && db.RowsCount() > 0 {
+				filteredWriteBlock(0, db)
+			}
+		}
+	case config.ModeTraces:
+		bufRows, _ := s.bufferBridge.QueryTraces(ctx, startNs, endNs)
+		if len(bufRows) > 0 {
+			db := s.traceRowsToDataBlock(bufRows)
+			if db != nil && db.RowsCount() > 0 {
+				filteredWriteBlock(0, db)
+			}
+		}
+	}
+}
+
+// openParquetFile returns a parquet.File for the given FileInfo.
+// When a cached footer is available and the query projects few columns,
+// it uses S3ReaderAt so parquet-go fetches only the needed column chunks
+// via HTTP range requests. Falls back to full download on any error.
+func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, projectedCols map[string]bool) (*parquet.File, error) {
+	// Range-read path: requires footer cache (to know total column count)
+	// and a non-empty projection that covers fewer than half the columns.
+	if s.footerCache != nil && projectedCols != nil && s.pool != nil {
+		if cached, ok := s.footerCache.Get(fi.Key); ok {
+			totalCols := len(cached.File.Root().Columns())
+			if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
+				readerAt := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
+				f, err := parquet.OpenFile(readerAt, fi.Size)
+				if err == nil {
+					metrics.S3RangeReadsTotal.Inc()
+					return f, nil
+				}
+				// Fall through to full download on error.
+			}
+		}
+	}
+
+	// Full download path (existing behaviour).
 	data, err := s.getFileData(ctx, fi.Key, fi.Size)
 	if err != nil {
-		return fmt.Errorf("get file data %s: %w", fi.Key, err)
+		return nil, fmt.Errorf("get file data %s: %w", fi.Key, err)
 	}
 
 	metrics.ParquetFilesOpened.Inc()
 	metrics.ParquetColumnBytesRead.Add(len(data))
 
-	var f *parquet.File
 	if s.footerCache != nil {
 		if cached, ok := s.footerCache.Get(fi.Key); ok && cached.FileSize == int64(len(data)) {
-			f = cached.File
-		}
-	}
-	if f == nil {
-		var parseErr error
-		if s.footerCache != nil {
-			var cached *CachedFooter
-			cached, f, parseErr = ParseFooterFromData(fi.Key, data)
-			if parseErr != nil {
-				return parseErr
-			}
-			s.footerCache.Put(fi.Key, cached)
-		} else {
-			f, parseErr = parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
-			if parseErr != nil {
-				return fmt.Errorf("open parquet file %s: %w", fi.Key, parseErr)
-			}
+			return cached.File, nil
 		}
 	}
 
-	s.updateLabelIndex(f)
+	if s.footerCache != nil {
+		cached, f, parseErr := ParseFooterFromData(fi.Key, data)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		s.footerCache.Put(fi.Key, cached)
+		return f, nil
+	}
 
-	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
-	bloomChecks := s.buildBloomChecks(queryStr)
-	pdf := buildPushDownFilter(queryStr, s.registry)
+	f, parseErr := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+	if parseErr != nil {
+		return nil, fmt.Errorf("open parquet file %s: %w", fi.Key, parseErr)
+	}
+	return f, nil
+}
+
+func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, writeBlock logstorage.WriteDataBlockFunc) error {
 	projectedCols := queryColumns(queryStr, s.registry)
 
 	if projectedCols == nil && storage.IsTimestampOnly(ctx) {
 		projectedCols = map[string]bool{s.registry.TimestampColumn(): true}
 	}
+
+	f, err := s.openParquetFile(ctx, fi, projectedCols)
+	if err != nil {
+		return err
+	}
+
+	s.updateLabelIndex(f)
+	s.updateColumnStats(fi.Key, f)
+
+	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
+	bloomChecks := resolveBloomCheckIndices(f, s.buildBloomChecks(queryStr))
+	pdf := resolvePushDownIndices(f, buildPushDownFilter(queryStr, s.registry))
 
 	var collectedTraceIDs []string
 	var traceIDsPtr *[]string
@@ -278,11 +343,15 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 		matchedRGs = append(matchedRGs, rg)
 	}
 
+	sort.Slice(matchedRGs, func(i, j int) bool {
+		return matchedRGs[i].NumRows() < matchedRGs[j].NumRows()
+	})
+
 	// Process matched row groups — parallel when >1 to reduce per-file latency.
 	if len(matchedRGs) <= 1 {
 		for _, rg := range matchedRGs {
 			metrics.ParquetRowGroupsScanned.Inc()
-			if err := s.readOneRowGroup(f, rg, startNs, endNs, projectedCols, writeBlock, traceIDsPtr); err != nil {
+			if err := s.readOneRowGroup(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr); err != nil {
 				return err
 			}
 		}
@@ -308,7 +377,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 						return
 					}
 					metrics.ParquetRowGroupsScanned.Inc()
-					if err := s.readOneRowGroup(f, rg, startNs, endNs, projectedCols, writeBlock, traceIDsPtr); err != nil {
+					if err := s.readOneRowGroup(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr); err != nil {
 						rgErr.CompareAndSwap(nil, err)
 						return
 					}
@@ -330,11 +399,19 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	return nil
 }
 
-func (s *Storage) readOneRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, projectedCols map[string]bool, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
-	if projectedCols != nil {
-		return s.readRowGroupWithProjection(f, rg, startNs, endNs, projectedCols, writeBlock, traceIDs)
+func (s *Storage) readOneRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, projectedCols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
+	if projectedCols == nil {
+		projectedCols = allLeafColumns(f)
 	}
-	return s.readRowGroup(f, rg, startNs, endNs, writeBlock, traceIDs)
+	return s.readRowGroupWithProjection(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDs)
+}
+
+func allLeafColumns(f *parquet.File) map[string]bool {
+	cols := make(map[string]bool)
+	for _, path := range f.Schema().Columns() {
+		cols[path[0]] = true
+	}
+	return cols
 }
 
 func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
@@ -368,10 +445,49 @@ func readRowGroupTyped[T any](s *Storage, f *parquet.File, rg parquet.RowGroup, 
 	return nil
 }
 
-func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, cols map[string]bool, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
-	allFields, err := readRowGroupProjected(f, rg, cols)
-	if err != nil {
-		return err
+func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, cols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
+	constants := detectConstantColumns(f, rg, cols)
+
+	readCols := cols
+	if len(constants) > 0 {
+		readCols = make(map[string]bool, len(cols))
+		for k, v := range cols {
+			readCols[k] = v
+		}
+		for _, cc := range constants {
+			delete(readCols, cc.name)
+		}
+	}
+
+	bitmap := prewhereFilter(f, rg, pdf)
+
+	var allFields [][]field
+	if len(readCols) > 0 {
+		var err error
+		allFields, err = readRowGroupProjectedBitmap(f, rg, readCols, bitmap)
+		if err != nil {
+			return err
+		}
+	}
+
+	if len(constants) > 0 {
+		if allFields == nil {
+			n := int(rg.NumRows())
+			if bitmap != nil {
+				n = 0
+				for _, b := range bitmap {
+					if b {
+						n++
+					}
+				}
+			}
+			allFields = make([][]field, n)
+		}
+		for i := range allFields {
+			for _, cc := range constants {
+				allFields[i] = append(allFields[i], field(cc))
+			}
+		}
 	}
 
 	db := s.projectedFieldsToDataBlock(allFields, startNs, endNs)
@@ -426,7 +542,26 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 
 		seen := make(map[int]bool)
 		for _, fld := range fields {
-			// Map parquet column name to internal name
+			if mapVal, ok := fld.value.(map[string]string); ok {
+				prefix := mapColumnToAttrPrefix(fld.name)
+				for k, v := range mapVal {
+					if v == "" {
+						continue
+					}
+					attrName := prefix + k
+					idx := getCol(attrName)
+					if seen[idx] {
+						continue
+					}
+					seen[idx] = true
+					for len(cols[idx].values) < rowNum {
+						cols[idx].values = append(cols[idx].values, "")
+					}
+					cols[idx].values = append(cols[idx].values, v)
+				}
+				continue
+			}
+
 			internalName := fld.name
 			if m := s.registry.ResolveFromParquet(fld.name); m != nil {
 				internalName = m.InternalName
@@ -441,7 +576,6 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 				continue
 			}
 			seen[idx] = true
-			// Pad with empty strings if this column appeared late
 			for len(cols[idx].values) < rowNum {
 				cols[idx].values = append(cols[idx].values, "")
 			}
@@ -477,6 +611,21 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 	db := &logstorage.DataBlock{}
 	db.SetColumns(blockCols)
 	return db
+}
+
+func mapColumnToAttrPrefix(col string) string {
+	switch col {
+	case "resource.attributes":
+		return "resource_attr:"
+	case "log.attributes":
+		return "log_attr:"
+	case "span.attributes":
+		return "span_attr:"
+	case "scope.attributes":
+		return "scope_attr:"
+	default:
+		return col + ":"
+	}
 }
 
 type field struct {
@@ -680,6 +829,7 @@ func (s *Storage) projectColumns(allCols []string, requested []string) []int {
 
 type bloomCheck struct {
 	colName string
+	colIdx  int
 	value   parquet.Value
 }
 
@@ -707,19 +857,33 @@ func (s *Storage) buildBloomChecks(queryStr string) []bloomCheck {
 	return checks
 }
 
-func (s *Storage) bloomFilterSkip(f *parquet.File, rg parquet.RowGroup, checks []bloomCheck) bool {
+func resolveBloomCheckIndices(f *parquet.File, checks []bloomCheck) []bloomCheck {
+	resolved := make([]bloomCheck, 0, len(checks))
+	for _, check := range checks {
+		idx := findColumnIndex(f.Root(), check.colName)
+		if idx >= 0 {
+			resolved = append(resolved, bloomCheck{
+				colName: check.colName,
+				colIdx:  idx,
+				value:   check.value,
+			})
+		}
+	}
+	return resolved
+}
+
+func (s *Storage) bloomFilterSkip(_ *parquet.File, rg parquet.RowGroup, checks []bloomCheck) bool {
 	if len(checks) == 0 {
 		return false
 	}
 
 	cols := rg.ColumnChunks()
 	for _, check := range checks {
-		colIdx := findColumnIndex(f.Root(), check.colName)
-		if colIdx < 0 || colIdx >= len(cols) {
+		if check.colIdx >= len(cols) {
 			continue
 		}
 
-		bf := cols[colIdx].BloomFilter()
+		bf := cols[check.colIdx].BloomFilter()
 		if bf == nil || bf.Size() == 0 {
 			continue
 		}
@@ -807,39 +971,54 @@ func extractExactMatch(query, fieldName string) string {
 
 // filterFilesByLabels uses manifest-level labels to skip files that definitely
 // don't contain the queried values. This avoids downloading files from S3.
-// A file is skipped only if it HAS labels for the field (meaning the label was
-// populated at flush time) but does NOT contain the target value.
 func (s *Storage) filterFilesByLabels(files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
-	type labelCheck struct {
-		field string
-		value string
-	}
-
-	var checks []labelCheck
-	for _, col := range s.registry.PromotedColumns() {
-		if !col.HasBloom {
-			continue
-		}
-		val := extractExactMatch(queryStr, col.InternalName)
-		if val == "" {
-			val = extractExactMatch(queryStr, col.ParquetColumn)
-		}
-		if val != "" {
-			checks = append(checks, labelCheck{field: col.ParquetColumn, value: val})
-		}
-	}
-
-	if len(checks) == 0 {
+	pdf := buildPushDownFilter(queryStr, s.registry)
+	if pdf == nil || len(pdf.Checks) == 0 {
 		return files
+	}
+
+	if result := s.filterByLabelIndex(files, pdf); result != nil {
+		return result
+	}
+
+	// Column stats pre-filter: skip files where exact-match value is outside [min, max].
+	// This avoids downloading files that can't possibly contain the queried value.
+	statsFiltered := files[:0]
+	statsSkipped := 0
+	for _, fi := range files {
+		skip := false
+		for _, check := range pdf.Checks {
+			if check.Op == PushDownExact && !fi.ColumnStatsContains(check.Column, check.Value) {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			statsSkipped++
+		} else {
+			statsFiltered = append(statsFiltered, fi)
+		}
+	}
+	if statsSkipped > 0 {
+		metrics.ParquetRowGroupsSkipped.Inc("column_stats")
+		logger.Infof("column stats pre-filter: skipped %d/%d files", statsSkipped, len(files))
+		files = statsFiltered
 	}
 
 	filtered := files[:0]
 	skipped := 0
 	for _, fi := range files {
+		if fi.Labels == nil {
+			filtered = append(filtered, fi)
+			continue
+		}
 		skip := false
-		for _, check := range checks {
-			labelValues := fi.Labels[check.field]
-			if fi.Labels != nil && len(labelValues) > 0 && len(labelValues) < maxLabelsPerField && !fi.MatchesLabel(check.field, check.value) {
+		for _, check := range pdf.Checks {
+			labelValues := fi.Labels[check.Column]
+			if len(labelValues) == 0 || len(labelValues) >= maxLabelsPerField {
+				continue
+			}
+			if !fileLabelsMatch(labelValues, check) {
 				skip = true
 				break
 			}
@@ -857,6 +1036,73 @@ func (s *Storage) filterFilesByLabels(files []manifest.FileInfo, queryStr string
 	}
 
 	return filtered
+}
+
+func (s *Storage) filterByLabelIndex(files []manifest.FileInfo, pdf *PushDownFilter) []manifest.FileInfo {
+	var candidateKeys map[string]bool
+
+	for _, check := range pdf.Checks {
+		if check.Op != PushDownExact {
+			return nil
+		}
+		keys := s.manifest.GetFileKeysByLabel(check.Column, check.Value)
+		if keys == nil {
+			return nil
+		}
+		if candidateKeys == nil {
+			candidateKeys = keys
+		} else {
+			for k := range candidateKeys {
+				if !keys[k] {
+					delete(candidateKeys, k)
+				}
+			}
+		}
+	}
+
+	if candidateKeys == nil {
+		return nil
+	}
+
+	var result []manifest.FileInfo
+	for _, fi := range files {
+		if candidateKeys[fi.Key] {
+			result = append(result, fi)
+		}
+	}
+
+	skipped := len(files) - len(result)
+	if skipped > 0 {
+		metrics.ParquetRowGroupsSkipped.Inc("label_index")
+		logger.Infof("label index fast-path: matched %d/%d files", len(result), len(files))
+	}
+	return result
+}
+
+func fileLabelsMatch(values []string, check PushDownCheck) bool {
+	for _, v := range values {
+		switch check.Op {
+		case PushDownExact:
+			if v == check.Value {
+				return true
+			}
+		case PushDownPrefix:
+			if strings.HasPrefix(v, check.Value) {
+				return true
+			}
+		case PushDownGreaterThan:
+			if v > check.Value {
+				return true
+			}
+		case PushDownLessThan:
+			if v < check.Value {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Storage) filterFilesByBloomIndex(files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
@@ -913,6 +1159,49 @@ func (s *Storage) filterFilesByBloomIndex(files []manifest.FileInfo, queryStr st
 		logger.Infof("bloom index pre-filter: skipped %d/%d files (checks=%d)", skipped, len(files), len(checks))
 	}
 	return filtered
+}
+
+func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, queryStr string) bool {
+	if queryStr == "" {
+		return false
+	}
+
+	var checks []bloomindex.ColumnCheck
+	for _, col := range s.registry.PromotedColumns() {
+		if !col.HasBloom {
+			continue
+		}
+		val := extractExactMatch(queryStr, col.InternalName)
+		if val == "" {
+			val = extractExactMatch(queryStr, col.ParquetColumn)
+		}
+		if val != "" {
+			checks = append(checks, bloomindex.ColumnCheck{
+				Column: col.ParquetColumn,
+				Value:  val,
+			})
+		}
+	}
+	if len(checks) == 0 {
+		return false
+	}
+
+	bloomKey := fi.Key + ".bloom"
+	data, err := s.pool.Download(ctx, bloomKey)
+	if err != nil || len(data) == 0 {
+		return false // no sidecar, can't skip
+	}
+
+	idx, err := bloomindex.Unmarshal(data)
+	if err != nil {
+		return false
+	}
+
+	if !bloomindex.FileBloomMayContainAll(idx, checks) {
+		metrics.ParquetBloomChecks.Inc("file_bloom_skip")
+		return true
+	}
+	return false
 }
 
 func rowGroupMatchesTimeRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs int64) bool {
@@ -1043,4 +1332,55 @@ func isPrintable(b []byte) bool {
 		}
 	}
 	return true
+}
+
+// updateColumnStats extracts min/max column statistics from the Parquet file
+// footer and stores them in the manifest for use by the column-stats pre-filter.
+// It only reads the column index metadata — no data pages are downloaded.
+func (s *Storage) updateColumnStats(fileKey string, f *parquet.File) {
+	statsColumns := []string{"service.name", "severity_text", "level", "status_code", "service_name", "trace_id", "span.name"}
+
+	stats := make(map[string]manifest.ColumnMinMax)
+	for _, col := range statsColumns {
+		colIdx := findColumnIndex(f.Root(), col)
+		if colIdx < 0 {
+			continue
+		}
+		var globalMin, globalMax string
+		for _, rg := range f.RowGroups() {
+			cols := rg.ColumnChunks()
+			if colIdx >= len(cols) {
+				continue
+			}
+			cidx, err := cols[colIdx].ColumnIndex()
+			if err != nil || cidx == nil {
+				continue
+			}
+			for p := 0; p < cidx.NumPages(); p++ {
+				minVal := cidx.MinValue(p)
+				maxVal := cidx.MaxValue(p)
+				if minVal.IsNull() || maxVal.IsNull() {
+					continue
+				}
+				pageMin := string(minVal.Bytes())
+				pageMax := string(maxVal.Bytes())
+				if len(pageMin) == 0 || len(pageMin) > 256 {
+					continue
+				}
+				if globalMin == "" || pageMin < globalMin {
+					globalMin = pageMin
+				}
+				if globalMax == "" || pageMax > globalMax {
+					globalMax = pageMax
+				}
+			}
+		}
+		if globalMin != "" {
+			stats[col] = manifest.ColumnMinMax{Min: globalMin, Max: globalMax}
+		}
+	}
+
+	if len(stats) > 0 {
+		s.manifest.UpdateFileColumnStats(fileKey, stats)
+	}
 }
