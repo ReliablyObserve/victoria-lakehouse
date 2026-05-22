@@ -526,6 +526,56 @@ Measured with warm caches on all systems. Docker Compose e2e stack with MinIO (S
 - **LH's hits endpoint has no Loki equivalent** — provides histogram data from manifest metadata alone
 - At **PB scale**, the manifest fast path advantage grows — more files = higher fast path hit rate
 
+### Lakehouse vs Loki vs VictoriaLogs — Full Logs Benchmark
+
+Measured with warm caches. ~59K logs/hour, identical data across all three systems.
+
+| Query Type | LH (S3 Parquet) | VL (disk) | Loki (S3 chunks) | LH vs Best |
+|---|---|---|---|---|
+| **field_names 1h** | **0.8ms** | 13.9ms | 2.5ms | **LH 3x faster than Loki** |
+| field_values level 1h | 988ms | 12.9ms | 2.5ms | VL/Loki faster |
+| stats count 1h | 831ms | 12.5ms | 156ms | VL fastest (hot data) |
+| **stats count 24h** | **390ms** | 62.7ms | **2,413ms** | **LH 6.2x faster than Loki** |
+| **stats count 72h** | **106ms** | 73.7ms | — | **LH at VL parity** |
+| hits 1h | 875ms | 13.7ms | — | VL fastest (hot data) |
+| **hits 24h** | **70ms** | 62ms | — | **At parity with VL** |
+| **hits 72h** | **86ms** | 69.8ms | — | **At parity with VL** |
+| wildcard 1h (limit 100) | 310ms | 21ms | 17.6ms | Loki/VL fastest |
+| level:error 1h (limit 100) | 1,107ms | 14.4ms | 2.2ms | Loki fastest |
+| wildcard 6h (limit 100) | 1,614ms | 24.1ms | 16.1ms | Loki/VL fastest |
+| stats+filter 1h | 1,250ms | 14.6ms | — | VL fastest |
+
+### Lakehouse vs VictoriaTraces vs Tempo — Full Traces Benchmark
+
+| Query Type | LH (S3 Parquet) | VT (disk) | Tempo (S3) | LH vs Best |
+|---|---|---|---|---|
+| **jaeger services** | **0.5ms** | 16.3ms | 6.9ms | **LH 14x faster than Tempo** |
+| operations (api-gateway) | 2,378ms | 1,246ms | — | VT faster |
+| trace search 1h (limit 20) | 323ms | 331ms | 9.3ms | Tempo fastest |
+| **trace by ID** | **225ms** | **1,737ms** | 17ms | **LH 7.7x faster than VT** |
+| trace search 6h (limit 20) | 979ms | 304ms | 3.3ms | Tempo fastest |
+| trace search 24h (limit 20) | 1,290ms | 394ms | 4.1ms | Tempo fastest |
+
+### Key Insights
+
+**LH advantages (cold storage reading from S3):**
+- **Metadata queries are fastest** — in-memory label/service index resolves in <1ms
+- **Long-range aggregations beat Loki** — manifest fast path eliminates 80-93% of S3 I/O
+- **Point trace lookups beat VT** — 7.7x faster trace-by-ID via bloom filter + S3 range read
+- **At parity with VL/VT on 24h+ hits** — synthetic DataBlocks from manifest metadata
+
+**Where VL/VT/Tempo/Loki win:**
+- **Hot data queries** — VL/VT serve from local SSD, always <20ms for short ranges
+- **Loki label filtering** — Loki's chunk index enables instant label-based filtering
+- **Tempo trace search** — Tempo's dedicated trace index optimized for search by tags
+- **Boundary file overhead** — LH scans ~28 files that straddle query boundaries via S3
+
+**PB-scale projection:**
+- At 5M files / 72h query, manifest fast path resolves ~4.65M files from memory
+- Only ~200 boundary files need S3 reads — total latency dominated by 200 × ~40ms = ~8s
+- VL/VT would need to scan proportionally more local disk
+- Loki's count_over_time already takes 2.4s at ~59K logs/hr — at PB scale, would be prohibitive
+
 ### WarmMetadata Startup Performance
 
 | Phase | Source | Files Enriched | Time |
