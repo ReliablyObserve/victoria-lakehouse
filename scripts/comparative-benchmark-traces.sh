@@ -74,21 +74,25 @@ measure_query() {
 
   # Measure
   local latencies=()
+  local total_bytes=0
   for (( i=0; i<iters; i++ )); do
     local start_ms
     start_ms=$(python3 -c "import time; print(int(time.time()*1000))")
-    local status
-    status=$(curl -sf -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) || status="000"
+    local curl_out
+    curl_out=$(curl -sf -o /dev/null -w "%{http_code} %{size_download}" "$url" 2>/dev/null) || curl_out="000 0"
     local end_ms
     end_ms=$(python3 -c "import time; print(int(time.time()*1000))")
     local elapsed=$(( end_ms - start_ms ))
+    local status=${curl_out%% *}
+    local bytes=${curl_out##* }
     if [[ "$status" =~ ^2 ]]; then
       latencies+=("$elapsed")
+      total_bytes=$(( total_bytes + ${bytes%%.*} ))
     fi
   done
 
   if [[ ${#latencies[@]} -eq 0 ]]; then
-    echo "{\"name\":\"$name\",\"system\":\"$system\",\"p50_ms\":null,\"p95_ms\":null,\"p99_ms\":null,\"iterations\":0,\"errors\":$iters}"
+    echo "{\"name\":\"$name\",\"system\":\"$system\",\"p50_ms\":null,\"p95_ms\":null,\"p99_ms\":null,\"iterations\":0,\"errors\":$iters,\"avg_bytes\":0}"
     return
   fi
 
@@ -102,8 +106,9 @@ measure_query() {
   [[ $p95_idx -ge $n ]] && p95_idx=$(( n - 1 ))
   [[ $p99_idx -ge $n ]] && p99_idx=$(( n - 1 ))
   local errors=$(( iters - n ))
+  local avg_bytes=$(( total_bytes / n ))
 
-  echo "{\"name\":\"$name\",\"system\":\"$system\",\"p50_ms\":${sorted[$p50_idx]},\"p95_ms\":${sorted[$p95_idx]},\"p99_ms\":${sorted[$p99_idx]},\"min_ms\":${sorted[0]},\"max_ms\":${sorted[$((n-1))]},\"iterations\":$n,\"errors\":$errors}"
+  echo "{\"name\":\"$name\",\"system\":\"$system\",\"p50_ms\":${sorted[$p50_idx]},\"p95_ms\":${sorted[$p95_idx]},\"p99_ms\":${sorted[$p99_idx]},\"min_ms\":${sorted[0]},\"max_ms\":${sorted[$((n-1))]},\"iterations\":$n,\"errors\":$errors,\"avg_bytes\":$avg_bytes}"
 }
 
 # --- Scenario runner ---
