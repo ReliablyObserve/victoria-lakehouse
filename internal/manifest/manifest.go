@@ -92,6 +92,7 @@ type Manifest struct {
 func New(bucket, prefix string) *Manifest {
 	return &Manifest{
 		files:         make(map[string][]FileInfo),
+		labelIndex:    make(map[string]map[string]map[string]bool),
 		partitionMeta: make(map[string]*PartitionMeta),
 		prefix:        prefix,
 		bucket:        bucket,
@@ -517,10 +518,24 @@ func (m *Manifest) AddFile(partition string, fi FileInfo) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	isNew := len(m.files[partition]) == 0
 	m.files[partition] = append(m.files[partition], fi)
 	m.totalFiles++
 	m.totalBytes += fi.Size
-	m.rebuildIndex()
+
+	if isNew {
+		if t, err := parsePartitionTime(partition); err == nil {
+			entry := partitionEntry{key: partition, start: t, end: t.Add(time.Hour)}
+			i := sort.Search(len(m.sortedPartitions), func(j int) bool {
+				return !m.sortedPartitions[j].start.Before(t)
+			})
+			m.sortedPartitions = append(m.sortedPartitions, partitionEntry{})
+			copy(m.sortedPartitions[i+1:], m.sortedPartitions[i:])
+			m.sortedPartitions[i] = entry
+		}
+	}
+	m.indexFileLabels(fi)
+
 	metrics.ManifestFiles.Set(int64(m.totalFiles))
 	metrics.ManifestBytes.Set(m.totalBytes)
 
