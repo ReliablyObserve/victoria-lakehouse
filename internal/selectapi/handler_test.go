@@ -928,6 +928,66 @@ func TestTenantFromRequest(t *testing.T) {
 	})
 }
 
+func TestRequestNeedsFieldData(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{"no field param", "/hits?query=*&step=60s", false},
+		{"empty field param", "/hits?query=*&field=", false},
+		{"field=level", "/hits?query=*&field=level", true},
+		{"field=service.name", "/hits?query=*&field=service.name", true},
+		{"fields[] array", "/hits?query=*&fields[]=level&fields[]=host", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tc.url, nil)
+			got := requestNeedsFieldData(req)
+			if got != tc.want {
+				t.Errorf("requestNeedsFieldData(%q) = %v, want %v", tc.url, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWrapVLTimestampOnly_FieldParamSkipsHint(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(config.ModeLogs)
+	h := NewHandler(mockStore{}, cfg)
+
+	tests := []struct {
+		name            string
+		url             string
+		wantTSOnly      bool
+	}{
+		{"no field - timestamp only", "/select/logsql/hits?query=*&step=60s", true},
+		{"field=level - NOT timestamp only", "/select/logsql/hits?query=*&step=60s&field=level", false},
+		{"field=service.name - NOT timestamp only", "/select/logsql/hits?query=*&field=service.name", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotTSOnly bool
+			wrapped := h.wrapVLTimestampOnly(func(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+				gotTSOnly = storage.IsTimestampOnly(ctx)
+				w.WriteHeader(http.StatusOK)
+			})
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest("GET", tc.url, nil)
+			wrapped(rec, req)
+
+			if gotTSOnly != tc.wantTSOnly {
+				t.Errorf("IsTimestampOnly = %v, want %v", gotTSOnly, tc.wantTSOnly)
+			}
+		})
+	}
+}
+
 func TestNormalizeTimeParams(t *testing.T) {
 	tests := []struct {
 		name      string
