@@ -239,6 +239,93 @@ func TestQueryColumns_StatsByLevel_NoFilter(t *testing.T) {
 	}
 }
 
+// Verify narrow projection for filtered stats count() without by() clause.
+// service.name:"api-gateway" | stats count() should project only timestamp + service.name,
+// reducing S3 data transfer by ~80-90% vs reading all columns.
+func TestQueryColumns_FilteredStatsCount(t *testing.T) {
+	reg := schema.NewRegistry(schema.LogsProfile)
+	cols := queryColumns(`service.name:"api-gateway" | stats count()`, reg, nil)
+
+	if cols == nil {
+		t.Fatal("filtered stats count() must return projected columns, not nil")
+	}
+	if !cols["timestamp_unix_nano"] {
+		t.Error("timestamp_unix_nano must always be projected")
+	}
+	if !cols["service.name"] {
+		t.Error("service.name must be projected from filter")
+	}
+	if len(cols) != 2 {
+		t.Errorf("expected exactly 2 projected columns (timestamp + service.name), got %d: %v", len(cols), cols)
+	}
+}
+
+// Wildcard stats count() without a field filter: isFreeTextSearch sees no ":"
+// in the query string, so body is added alongside timestamp. This is the
+// expected behavior — the function conservatively includes body for
+// unstructured queries, and the higher-level isTimestampOnly path handles
+// the pure-count optimisation separately.
+func TestQueryColumns_UnfilteredStatsCount(t *testing.T) {
+	reg := schema.NewRegistry(schema.LogsProfile)
+	cols := queryColumns("* | stats count()", reg, nil)
+
+	if cols == nil {
+		t.Fatal("expected non-nil projection (timestamp + body from free-text heuristic)")
+	}
+	if !cols["timestamp_unix_nano"] {
+		t.Error("timestamp_unix_nano must always be projected")
+	}
+	if !cols["body"] {
+		t.Error("body expected: isFreeTextSearch returns true when query has no ':'")
+	}
+	if len(cols) != 2 {
+		t.Errorf("expected 2 columns (timestamp + body), got %d: %v", len(cols), cols)
+	}
+}
+
+// stats count() by(service.name) with pipeFields should project service.name.
+// The wildcard prefix has no ":" so isFreeTextSearch adds body as well.
+func TestQueryColumns_StatsCountByService(t *testing.T) {
+	reg := schema.NewRegistry(schema.LogsProfile)
+	cols := queryColumns("* | stats count() by(service.name)", reg, []string{"service.name"})
+
+	if cols == nil {
+		t.Fatal("stats count() by(service.name) with pipeFields must return projected columns")
+	}
+	if !cols["service.name"] {
+		t.Error("service.name must be projected from pipeFields")
+	}
+	if !cols["timestamp_unix_nano"] {
+		t.Error("timestamp_unix_nano must always be projected")
+	}
+	if !cols["body"] {
+		t.Error("body expected: isFreeTextSearch returns true for wildcard query without ':'")
+	}
+	if len(cols) != 3 {
+		t.Errorf("expected 3 projected columns (timestamp + body + service.name), got %d: %v", len(cols), cols)
+	}
+}
+
+// Filtered stats count() by(service.name) with a field filter produces a
+// narrow projection because isFreeTextSearch returns false (query has ":").
+func TestQueryColumns_FilteredStatsCountByService(t *testing.T) {
+	reg := schema.NewRegistry(schema.LogsProfile)
+	cols := queryColumns(`service.name:"api-gateway" | stats count() by(service.name)`, reg, []string{"service.name"})
+
+	if cols == nil {
+		t.Fatal("filtered stats count() by(service.name) must return projected columns")
+	}
+	if !cols["service.name"] {
+		t.Error("service.name must be projected from both filter and pipeFields")
+	}
+	if !cols["timestamp_unix_nano"] {
+		t.Error("timestamp_unix_nano must always be projected")
+	}
+	if len(cols) != 2 {
+		t.Errorf("expected exactly 2 projected columns (timestamp + service.name), got %d: %v", len(cols), cols)
+	}
+}
+
 // Regression: pipeFields=nil with no column-selecting pipe → nil (all columns).
 func TestQueryColumns_NilPipeFields_NoSelectingPipe(t *testing.T) {
 	reg := schema.NewRegistry(schema.LogsProfile)
