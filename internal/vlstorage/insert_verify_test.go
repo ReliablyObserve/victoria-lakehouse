@@ -169,13 +169,12 @@ func TestVerifyInsert_UnknownFieldGoesToLogAttributes(t *testing.T) {
 	}
 }
 
-// TestVerifyInsert_ResourceAttributeDualStorage verifies that each field with
-// dual storage (promoted column + ResourceAttributes map) is written to both
-// locations simultaneously.
-func TestVerifyInsert_ResourceAttributeDualStorage(t *testing.T) {
+// TestVerifyInsert_PromotedFieldsNotInMAP verifies that promoted fields go
+// ONLY to their promoted columns, NOT duplicated in ResourceAttributes MAP.
+func TestVerifyInsert_PromotedFieldsNotInMAP(t *testing.T) {
 	t.Parallel()
 
-	dualFields := []struct {
+	promotedFields := []struct {
 		name     string
 		value    string
 		promoted func(r schema.LogRow) string
@@ -190,24 +189,26 @@ func TestVerifyInsert_ResourceAttributeDualStorage(t *testing.T) {
 		{"host.name", "host-abc", func(r schema.LogRow) string { return r.HostName }},
 	}
 
-	for _, tc := range dualFields {
+	for _, tc := range promotedFields {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
 			row := schema.LogRow{}
 			mapFieldToRow(&row, tc.name, tc.value)
 
-			// Check promoted column.
 			if got := tc.promoted(row); got != tc.value {
 				t.Errorf("promoted field %q = %q, want %q", tc.name, got, tc.value)
 			}
 
-			// Check ResourceAttributes map.
-			if row.ResourceAttributes == nil {
-				t.Fatalf("ResourceAttributes must not be nil for dual-storage field %q", tc.name)
+			if row.ResourceAttributes != nil {
+				if _, exists := row.ResourceAttributes[tc.name]; exists {
+					t.Errorf("promoted field %q must NOT be duplicated in ResourceAttributes MAP", tc.name)
+				}
 			}
-			if got := row.ResourceAttributes[tc.name]; got != tc.value {
-				t.Errorf("ResourceAttributes[%q] = %q, want %q", tc.name, got, tc.value)
+			if row.LogAttributes != nil {
+				if _, exists := row.LogAttributes[tc.name]; exists {
+					t.Errorf("promoted field %q must NOT be in LogAttributes MAP", tc.name)
+				}
 			}
 		})
 	}

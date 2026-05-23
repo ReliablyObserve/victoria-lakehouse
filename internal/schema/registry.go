@@ -243,6 +243,7 @@ var TracesProfile = Profile{
 		{ParquetColumn: "cloud.region", InternalName: "resource_attr:cloud.region", Type: TypeString, Origin: OriginPromoted},
 		{ParquetColumn: "host.name", InternalName: "resource_attr:host.name", Type: TypeString, Origin: OriginPromoted},
 		{ParquetColumn: "k8s.namespace.name", InternalName: "resource_attr:k8s.namespace.name", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "k8s.pod.name", InternalName: "resource_attr:k8s.pod.name", Type: TypeString, Origin: OriginPromoted},
 		{ParquetColumn: "k8s.deployment.name", InternalName: "resource_attr:k8s.deployment.name", Type: TypeString, Origin: OriginPromoted},
 		{ParquetColumn: "k8s.node.name", InternalName: "resource_attr:k8s.node.name", Type: TypeString, Origin: OriginPromoted},
 		{ParquetColumn: "http.method", InternalName: "span_attr:http.method", Type: TypeString, Origin: OriginPromoted},

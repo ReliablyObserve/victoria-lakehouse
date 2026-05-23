@@ -106,32 +106,24 @@ func mapFieldToRow(row *schema.LogRow, name, value string) {
 		}
 	case "service.name":
 		row.ServiceName = strings.Clone(value)
-		addResourceAttr(row, name, value)
 	case "trace_id":
 		row.TraceID = strings.Clone(value)
 	case "span_id":
 		row.SpanID = strings.Clone(value)
 	case "k8s.namespace.name":
 		row.K8sNamespaceName = strings.Clone(value)
-		addResourceAttr(row, name, value)
 	case "k8s.pod.name":
 		row.K8sPodName = strings.Clone(value)
-		addResourceAttr(row, name, value)
 	case "k8s.deployment.name":
 		row.K8sDeploymentName = strings.Clone(value)
-		addResourceAttr(row, name, value)
 	case "k8s.node.name":
 		row.K8sNodeName = strings.Clone(value)
-		addResourceAttr(row, name, value)
 	case "deployment.environment":
 		row.DeployEnv = strings.Clone(value)
-		addResourceAttr(row, name, value)
 	case "cloud.region":
 		row.CloudRegion = strings.Clone(value)
-		addResourceAttr(row, name, value)
 	case "host.name":
 		row.HostName = strings.Clone(value)
-		addResourceAttr(row, name, value)
 	case "scope.name":
 		row.ScopeName = strings.Clone(value)
 	default:
@@ -142,9 +134,3 @@ func mapFieldToRow(row *schema.LogRow, name, value string) {
 	}
 }
 
-func addResourceAttr(row *schema.LogRow, name, value string) {
-	if row.ResourceAttributes == nil {
-		row.ResourceAttributes = make(map[string]string)
-	}
-	row.ResourceAttributes[strings.Clone(name)] = strings.Clone(value)
-}

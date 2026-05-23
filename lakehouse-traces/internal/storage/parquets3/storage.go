@@ -381,10 +381,18 @@ func (s *Storage) updateLabelIndex(f *parquet.File) {
 		"scope.attributes":    true,
 	}
 
+	promotedParquetNames := make(map[string]bool)
+	for _, m := range s.registry.PromotedColumns() {
+		promotedParquetNames[m.ParquetColumn] = true
+	}
+
 	for _, name := range columnNames(f.Root()) {
 		if mapColumns[name] {
 			prefix := mapColumnToAttrPrefix(name)
 			for _, k := range extractMapDistinctKeys(f, name) {
+				if promotedParquetNames[k] {
+					continue
+				}
 				s.labelIndex.Add(prefix+k, nil)
 			}
 			continue
