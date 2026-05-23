@@ -1113,7 +1113,32 @@ Trace partitions can be skewed (some hours have 10x more spans). Static sharding
 
 ### Problem
 
-Scaling query capacity by adding more `role=all` (combined) nodes has a side effect: each new node also adds insert capacity, compaction work, and S3 write load. More nodes = more flush targets = smaller files per node per partition = more fragmentation. Scaling to 10 combined nodes means each partition gets files from 10 writers, creating 10x the file count and defeating the compaction gains from Phase E.
+Scaling query capacity by adding more `role=all` (combined) nodes has a side effect: each new node also adds insert capacity, compaction work, and S3 write load. More nodes = more flush targets = smaller files per node per partition = more fragmentation. This creates a vicious cycle:
+
+**The Fragmentation Cascade:**
+```
+Need more query capacity
+  → Add combined nodes (only option without select tier)
+  → More writers per partition
+  → More small fragmented files per flush
+  → Compaction must work harder to merge them
+  → More S3 GET/PUT/LIST requests for compaction
+  → Higher S3 costs AND higher compaction CPU
+  → Compaction can't keep up → file count grows
+  → Query performance degrades (more files to scan)
+  → Need even more query capacity...
+```
+
+**Concrete numbers — the cost of scaling combined nodes for queries:**
+
+| Combined nodes | Files/day (72 partitions) | Compaction merges/day | S3 ops/day (compaction) |
+|---|---|---|---|
+| 3 | 216 | ~72 (3→1 per partition) | ~432 (GET+PUT) |
+| 5 | 360 | ~288 (5→1 per partition) | ~1,080 |
+| 10 | 720 | ~648 (10→1 per partition) | ~2,592 |
+| 20 | 1,440 | ~1,368 (20→1 per partition) | ~5,472 |
+
+At 10 combined nodes, compaction S3 traffic is **6x worse** than at 3 nodes — all because query scaling forced insert scaling. And compaction now needs 10→1 merges instead of 3→1, producing larger intermediate files and consuming more memory.
 
 ### Solution
 
@@ -1153,15 +1178,17 @@ Add a **stateless select tier** that sits in front of the combined nodes, exactl
 
 ### Why This Solves Insert Fragmentation
 
-**Without select tier (scaling combined nodes):**
+**Without select tier (scaling combined nodes for queries):**
 ```
 3 combined nodes → each writes to every partition
   → partition dt=05-22/hour=14 gets 3 files (one per node)
   → 72 partitions × 3 nodes = 216 files/day
 
-Scale to 10 combined nodes:
+Need 10x query capacity? Scale to 10 combined nodes:
   → partition dt=05-22/hour=14 gets 10 files
-  → 72 partitions × 10 nodes = 720 files/day  ← 3x worse fragmentation
+  → 72 partitions × 10 nodes = 720 files/day  ← 3.3x worse fragmentation
+  → Compaction: 10 small files → 1 merged, 6x more S3 ops
+  → Each node writes ~0.6MB/flush (small, suboptimal Parquet files)
 ```
 
 **With select tier (fixed combined nodes + scaling selects):**
@@ -1169,12 +1196,212 @@ Scale to 10 combined nodes:
 3 combined nodes (fixed) + 10 select nodes
   → partition dt=05-22/hour=14 still gets only 3 files
   → 72 partitions × 3 nodes = 216 files/day  ← unchanged
+  → Compaction: 3 files → 1 merged, minimal S3 ops
+  → Each node writes ~2MB/flush (larger, better-optimized Parquet files)
 
 Query capacity: 10 select nodes handle 10x the queries
 Insert capacity: 3 combined nodes (can scale independently if needed)
 ```
 
-**Key insight:** File fragmentation scales with **insert node count**, not query node count. Decoupling query scaling from insert scaling keeps file count stable.
+**Key insight:** File fragmentation scales with **insert node count**, not query node count. Decoupling query scaling from insert scaling keeps file count stable. Fewer writers also produce **larger files per flush** — better Parquet row groups, better compression ratios, less compaction work.
+
+### Flush Safety & Data Protection
+
+With fewer combined nodes (e.g., 3 instead of 10), each node handles more ingest volume. This raises questions about flush timing and data durability.
+
+#### Flush Timing: Fewer Nodes = Larger Files = Better
+
+Each combined node writes more data per flush interval, producing larger Parquet files:
+
+| Combined nodes | Data per node per flush (120s) | File size (ZSTD) | Quality |
+|---|---|---|---|
+| 10 | ~0.6MB raw | ~60-120KB | Poor — too small for Parquet efficiency |
+| 5 | ~1.2MB raw | ~120-240KB | Acceptable |
+| 3 | ~2MB raw | ~200-400KB | Good — better row groups, compression |
+| 1 | ~6MB raw | ~600KB-1.2MB | Excellent — optimal Parquet file sizes |
+
+The actual Parquet write + ZSTD compress + S3 upload for a 2MB file takes ~200-400ms. The flush timer runs every 60-120s regardless of data volume. Larger files don't slow the flush — they produce better output.
+
+#### WAL Protection: Zero Data Loss
+
+Every ingested row is written to WAL **before** buffering in memory (`internal/wal/wal.go`). On crash, `ReplayWAL()` restores all unflushed rows. WAL is truncated only after successful S3 flush.
+
+```
+Insert path:
+  HTTP request → WAL append (disk, fsync) → memory buffer → [timer] → Parquet write → S3 upload → WAL truncate
+
+Crash recovery:
+  Startup → ReplayWAL() → rows re-buffered → normal flush resumes
+```
+
+Data loss window: sub-millisecond (rows accepted by HTTP handler but not yet WAL-appended). Effectively zero.
+
+#### Buffer Bridge: Unflushed Data Is Queryable
+
+The existing buffer bridge (`internal/storage/parquets3/buffer_bridge.go`) ensures select queries never miss unflushed data:
+
+```
+Select query execution:
+  1. Query S3 Parquet files (via manifest)                    ← flushed data
+  2. Fan-out HTTP GET /internal/buffer/query to ALL insert pods  ← unflushed data
+  3. Merge both results → client sees complete data
+```
+
+With a 120s flush interval, at most 120s of data lives in memory+WAL — all of it queryable via the buffer bridge, all of it crash-protected by WAL.
+
+### Hybrid Fan-Out Design
+
+LH combined nodes all access the same S3 data (unlike VL/VT where each storageNode has disjoint data on local disk). Pure fan-out would produce **duplicate rows** because every combined node would process every file. Three approaches were evaluated:
+
+#### Option 1: Pure Fan-Out (Not Viable)
+
+Select tier fans out query to all combined nodes. Each combined node processes all files independently.
+
+**Problem:** Every file processed N times (once per combined node). Select tier receives N copies of every row. VL's `MergeValuesWithHits()` handles dedup for metadata queries, but `RunQuery()` streams rows directly — duplicate rows returned to the client.
+
+**Verdict:** Does not work for data queries. Only viable for metadata queries where VL already deduplicates.
+
+#### Option 2: Sharded File Assignment (Correct but Wasteful)
+
+Select tier pre-assigns files to combined nodes (round-robin or hash). Each node processes only its assigned subset.
+
+**Problem:** Ignores cache locality. A file cached on `all-0` might be assigned to `all-1`, causing an S3 download when a cache hit was available. Defeats Phase G's cache partitioning.
+
+**Verdict:** Correct results but poor cache utilization.
+
+#### Option 3: Hybrid — Cache-Aware Self-Filtering (Recommended)
+
+Combined nodes use Phase G's cache ring to **self-filter** to files they own. Each node only processes files assigned to it by the consistent hash ring, which is the same ring used for cache partitioning.
+
+```go
+// In combined node's RunQuery handler — self-filter to owned files
+func (s *Storage) RunQuery(ctx context.Context, q *Query, writeBlock func(db DataBlock)) error {
+    files := s.manifest.GetFilesForRange(q.StartNano, q.EndNano)
+    
+    var owned []FileInfo
+    for _, f := range files {
+        if _, isLocal := s.cacheRing.Lookup(f.Key); isLocal {
+            owned = append(owned, f)
+        }
+    }
+    
+    return s.queryFiles(ctx, owned, q, writeBlock)
+}
+```
+
+**Why this works:**
+- Each file processed by exactly one combined node (the cache owner)
+- Cache ring assignment matches cache storage — owned files are always in local L1/L2
+- Zero S3 downloads for cached data
+- Select tier receives non-overlapping results — no dedup needed
+- ~10 lines of code change in the query path
+
+**Trade-offs:**
+- Depends on Phase G's cache ring being active
+- Ring changes during scale events need grace period handling (see Gap Detection below)
+
+### Gap Detection & Failover
+
+With hybrid fan-out, each combined node only processes its owned files. If a node goes down, its files become orphaned. Two-layer failover handles this:
+
+#### Layer 1: Select Tier Redistributes Orphaned Files (Immediate)
+
+The select tier maintains the same cache ring as combined nodes. When a fan-out to a combined node fails (HTTP error/timeout), the select tier identifies orphaned files and redistributes them to surviving nodes:
+
+```go
+// In select tier's query handler
+results, failedNodes := s.fanOutQuery(ctx, query, combinedNodes)
+
+if len(failedNodes) > 0 {
+    // Determine which files the failed nodes owned
+    orphanedFiles := s.ring.FilesOwnedBy(failedNodes, manifestFiles)
+    
+    // Assign orphaned files to surviving nodes (ring successor)
+    reassigned := s.redistributeFiles(orphanedFiles, survivingNodes)
+    
+    // Second fan-out: ask survivors to process specific files
+    // Uses /internal/query/files endpoint (from Phase G Mode 3)
+    extraResults := s.fanOutFileQuery(ctx, query, reassigned)
+    results = merge(results, extraResults)
+}
+```
+
+**Cost:** One extra round-trip (~50-100ms) only on node failure. Zero overhead in the happy path. Surviving nodes may need to download orphaned files from S3 (cache miss), but the query still completes.
+
+#### Layer 2: Combined Nodes Self-Heal via Health Check (Background)
+
+Combined nodes periodically health-check peers (HTTP GET /health, every 5s). When a peer is unreachable for 15s, it is evicted from the local cache ring:
+
+```go
+type HealthAwareRing struct {
+    ring       *peercache.Ring
+    peers      map[string]*peerState
+    checkEvery time.Duration  // 5s
+    evictAfter time.Duration  // 15s
+}
+
+func (r *HealthAwareRing) checkPeers() {
+    for addr, peer := range r.peers {
+        resp, err := http.Get("http://" + addr + "/health")
+        if err != nil || resp.StatusCode != 200 {
+            peer.failures++
+            if time.Since(peer.lastSeen) > r.evictAfter {
+                r.ring.Remove(addr)
+                // Orphaned files redistributed by consistent hashing
+            }
+        } else {
+            peer.lastSeen = time.Now()
+            peer.failures = 0
+        }
+    }
+}
+```
+
+After ring eviction, files previously owned by the dead node get reassigned to surviving nodes via consistent hashing. Subsequent queries process them normally — no special logic needed.
+
+#### Failover Timeline
+
+```
+T+0s:    all-1 crashes
+T+0s:    Select tier gets HTTP error from all-1
+T+0s:    Select tier redistributes all-1's files to all-0, all-2 (Layer 1)
+         → Query completes with full results, ~50-100ms extra latency
+         → Surviving nodes download orphaned files from S3 (cold cache)
+
+T+5s:    all-0 and all-2 health checks detect all-1 is down
+T+15s:   all-0 and all-2 evict all-1 from their local cache rings
+         → all-0 and all-2 now "own" all-1's former files
+         → Subsequent queries: zero extra latency (no redistribution needed)
+         → Surviving nodes start caching newly-owned files
+
+T+30s:   Phase G grace period expires. Old L2 entries from ring change evicted.
+
+T+???:   all-1 recovers, rejoins ring → files rebalance back gradually
+```
+
+#### Buffer Bridge During Failure
+
+The buffer bridge queries ALL insert pods for unflushed data. If a combined node is down:
+- Already-flushed data is in S3 → covered by gap redistribution (Layer 1 + 2)
+- Unflushed data was in the dead node's WAL → replays when node restarts
+- Buffer bridge silently ignores failed pods (errors swallowed in `buffer_bridge.go`)
+- Net result: at most 120s of the dead node's most recent data temporarily invisible, fully recovers on restart
+
+#### Completeness Guarantees
+
+| Scenario | Data completeness | Latency impact |
+|---|---|---|
+| All nodes healthy | 100% — each processes owned files | Optimal (cache hits) |
+| 1 node down, select tier active | 100% flushed, ~120s gap unflushed | +50-100ms (redistribution) |
+| 1 node down, after ring eviction (15s) | 100% flushed, ~120s gap unflushed | Optimal (new owners cached) |
+| 1 node down, no select tier | `AllowPartialResponse` — missing ~33% | N/A — degraded |
+| Multiple nodes down | Proportional gap in unflushed data | Scales with failures |
+
+**No gossip, no consensus, no external dependencies.** Uses only:
+- HTTP health checks (GET /health, already exists)
+- Static peer list or headless DNS (already exists)
+- Consistent hash ring (`internal/peercache/ring.go`, already exists)
+- Timer-based eviction (~20 lines new code)
 
 ### Design
 
@@ -1187,7 +1414,7 @@ VL's `netselect.Storage` (in `deps/VictoriaLogs/app/vlstorage/netselect/netselec
 - `GetStreams()` → fans out, coalesces
 - Error handling: `AllowPartialResponse` for graceful degradation
 
-LH select nodes already speak the VL wire protocol. The select tier just needs to be configured with `-storageNode` pointing to the combined nodes — **zero new code for basic fan-out**.
+LH select nodes already speak the VL wire protocol. The select tier just needs to be configured with `-storageNode` pointing to the combined nodes — **zero new code for basic fan-out**. The hybrid self-filtering happens on the combined node side, transparent to the fan-out protocol.
 
 #### Discovery
 
@@ -1211,8 +1438,9 @@ Select nodes maintain their own L1 (memory) + L2 (disk) cache for **query result
 Query hits select-0:
   1. Check select-0's local L1/L2 cache → hit = instant response
   2. Miss → fan-out to all combined nodes
-     a. Combined nodes check their own L1/L2/peer cache
-     b. Combined nodes fall back to S3
+     a. Combined nodes self-filter to owned files (hybrid)
+     b. Combined nodes check their own L1/L2/peer cache
+     c. Combined nodes fall back to S3
   3. Select-0 caches the results in its local L1/L2
   4. Next identical query → served from select-0's cache
 ```
@@ -1266,14 +1494,16 @@ func mergeStats(partial []map[string]int64) map[string]int64 {
 
 ### Scaling Guidelines
 
-| Deployment size | Combined nodes | Select nodes | Total query capacity |
-|---|---|---|---|
-| Small (dev/staging) | 1 (`role=all`) | 0 (query combined directly) | 1x |
-| Medium (team) | 3 (`role=all`) | 0 (query combined directly) | 3x |
-| Large (org-wide) | 3 (`role=all`) | 3-10 (`role=select`) | 3-10x queries, 3x ingest |
-| XL (platform) | 5 (`role=all`) | 10-50 (`role=select`) | 10-50x queries, 5x ingest |
+| Deployment size | Combined nodes | Select nodes | Total query capacity | Files/day |
+|---|---|---|---|---|
+| Small (dev/staging) | 1 (`role=all`) | 0 (query combined directly) | 1x | 72 |
+| Medium (team) | 3 (`role=all`) | 0 (query combined directly) | 3x | 216 |
+| Large (org-wide) | 3 (`role=all`) | 3-10 (`role=select`) | 3-10x queries, 3x ingest | 216 |
+| XL (platform) | 5 (`role=all`) | 10-50 (`role=select`) | 10-50x queries, 5x ingest | 360 |
 
-**Rule of thumb:** Scale combined nodes for ingest throughput and storage capacity. Scale select nodes for query concurrency. File count stays proportional to combined node count only.
+**Rule of thumb:** Scale combined nodes for ingest throughput and storage capacity. Scale select nodes for query concurrency. File count stays proportional to combined node count only — never grows with query scaling.
+
+**Anti-pattern:** Never scale combined nodes just because you need more query capacity. That's what the select tier is for. Combined nodes should only be added when ingest throughput is the bottleneck.
 
 ### Expected Impact
 
@@ -1281,18 +1511,25 @@ func mergeStats(partial []map[string]int64) map[string]int64 {
 |---|---|---|
 | Query scaling | Coupled to insert scaling | Independent |
 | File fragmentation | Grows with query scaling | Fixed (combined count only) |
+| S3 compaction cost | Grows quadratically | Fixed (combined count only) |
 | Cache efficiency | Single tier | Two-tier (query cache + file cache) |
 | Query storm protection | Affects ingest | Select tier absorbs, combined unaffected |
+| Node failure | Partial response only | Full results via gap redistribution |
+| Unflushed data visibility | Direct only | Buffer bridge through select tier |
 | Operational complexity | One pod type | Two pod types (but same binary) |
 
 ### Testing
 
 - Integration test: 3 combined + 2 select, verify queries through select return same results as direct
 - Fan-out test: verify all combined nodes are queried for RunQuery
+- Hybrid test: verify each combined node returns only its owned files (no duplicates across nodes)
 - Metadata test: verify field_names queries only hit 1 combined node
 - Cache test: repeat same query through select, verify second request served from select's cache
 - Fragmentation test: add select nodes, verify file count in S3 doesn't increase
-- Failover test: kill 1 combined node, verify partial response from select (not error)
+- Failover test: kill 1 combined node, verify select tier redistributes orphaned files
+- Completeness test: compare query results with and without a killed node — flushed data must match
+- Buffer bridge test: ingest data, query before flush, verify unflushed rows returned through select tier
+- Ring eviction test: kill node, wait 15s, verify surviving nodes take ownership without select tier help
 
 ### Logs-specific
 
@@ -1317,9 +1554,9 @@ Trace correlation queries (`trace_id:="X"`) benefit from fan-out — each combin
 | H: Cache maximization | 7 days | A, B (benefits from chunk-level reads) | Near-ClickHouse for cached data |
 | G: Cache-partitioned reads | 5 days | H (benefits from chunk-level cache) | 2-8x via cache deduplication |
 | I: Distributed compaction | 3 days | E (builds on compaction infra) | Linear scaling of compaction |
-| J: Select tier | 4 days | Discovery (already exists) | Independent query scaling |
+| J: Select tier + hybrid fan-out + failover | 6 days | G (cache ring), Discovery (already exists) | Independent query scaling, gap-free failover |
 
-**Total: ~31 days for all phases.**
+**Total: ~33 days for all phases.**
 
 **Phase A-F (S3 I/O):** ~12 days → VLH within 3-5x of VL for most query types.
-**Phase G-J (distributed):** ~19 days → Near-ClickHouse cached, linear scaling, decoupled query/ingest.
+**Phase G-J (distributed):** ~21 days → Near-ClickHouse cached, linear scaling, decoupled query/ingest, gap-free failover.
