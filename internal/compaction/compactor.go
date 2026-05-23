@@ -222,7 +222,10 @@ func (c *Compactor) mergeLogFiles(allData [][]byte) ([]schema.LogRow, error) {
 		merged = append(merged, rows...)
 	}
 	sort.Slice(merged, func(i, j int) bool {
-		return merged[i].TimestampUnixNano < merged[j].TimestampUnixNano
+		if merged[i].TimestampUnixNano != merged[j].TimestampUnixNano {
+			return merged[i].TimestampUnixNano < merged[j].TimestampUnixNano
+		}
+		return merged[i].ServiceName < merged[j].ServiceName
 	})
 	return merged, nil
 }
@@ -237,7 +240,13 @@ func (c *Compactor) mergeTraceFiles(allData [][]byte) ([]schema.TraceRow, error)
 		merged = append(merged, rows...)
 	}
 	sort.Slice(merged, func(i, j int) bool {
-		return merged[i].TimestampUnixNano < merged[j].TimestampUnixNano
+		if merged[i].TimestampUnixNano != merged[j].TimestampUnixNano {
+			return merged[i].TimestampUnixNano < merged[j].TimestampUnixNano
+		}
+		if merged[i].ServiceName != merged[j].ServiceName {
+			return merged[i].ServiceName < merged[j].ServiceName
+		}
+		return merged[i].TraceID < merged[j].TraceID
 	})
 	return merged, nil
 }
