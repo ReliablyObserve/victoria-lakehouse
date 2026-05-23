@@ -197,6 +197,36 @@ func TestBufferedReaderAt_ConcurrentReads(t *testing.T) {
 	t.Logf("%d goroutines × %d reads completed without data corruption", numGoroutines, readsPerGoroutine)
 }
 
+func TestBufferedReaderAt_ZeroLengthRead(t *testing.T) {
+	data := []byte("hello")
+	inner := &mockReaderAt{data: data}
+	br := NewBufferedReaderAt(inner, inner.Size(), 1024)
+
+	n, err := br.ReadAt([]byte{}, 0)
+	if n != 0 || err != nil {
+		t.Fatalf("zero-length read: got n=%d, err=%v, want n=0, err=nil", n, err)
+	}
+}
+
+func TestBufferedReaderAt_DefaultPrefetch(t *testing.T) {
+	data := make([]byte, 4*1024*1024) // 4MB
+	inner := &mockReaderAt{data: data}
+	br := NewBufferedReaderAt(inner, inner.Size(), 0) // 0 → should default to 2MB
+
+	buf := make([]byte, 100)
+	_, _ = br.ReadAt(buf, 0)
+	// Read at 1.5MB — should be within 2MB default prefetch
+	_, _ = br.ReadAt(buf, 1500*1024)
+	if inner.readCalls.Load() != 1 {
+		t.Fatalf("expected 1 inner read (within 2MB default prefetch), got %d", inner.readCalls.Load())
+	}
+	// Read at 2.5MB — outside default prefetch, should trigger new fetch
+	_, _ = br.ReadAt(buf, 2500*1024)
+	if inner.readCalls.Load() != 2 {
+		t.Fatalf("expected 2 inner reads (past 2MB default prefetch), got %d", inner.readCalls.Load())
+	}
+}
+
 func TestBufferedReaderAt_LargeReadBeyondPrefetch(t *testing.T) {
 	// Verify that a read larger than the prefetch window succeeds mid-file
 	// (the io.ReaderAt contract fix).

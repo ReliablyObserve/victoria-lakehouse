@@ -17,11 +17,14 @@ func mergeRanges(ranges []readRange, gapThreshold int64) []readRange {
 	if len(ranges) <= 1 {
 		return ranges
 	}
-	sort.Slice(ranges, func(i, j int) bool {
-		return ranges[i].off < ranges[j].off
+	// Copy to avoid mutating the caller's slice.
+	sorted := make([]readRange, len(ranges))
+	copy(sorted, ranges)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].off < sorted[j].off
 	})
-	merged := []readRange{ranges[0]}
-	for _, r := range ranges[1:] {
+	merged := []readRange{sorted[0]}
+	for _, r := range sorted[1:] {
 		last := &merged[len(merged)-1]
 		lastEnd := last.off + int64(last.length)
 		gap := r.off - lastEnd

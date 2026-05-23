@@ -144,6 +144,54 @@ func TestCoalescingReaderAt_Clear(t *testing.T) {
 	}
 }
 
+func TestCoalescingReaderAt_DefaultGapThreshold(t *testing.T) {
+	data := make([]byte, 256*1024)
+	inner := &mockReaderAt{data: data}
+	cr := NewCoalescingReaderAt(inner, inner.Size(), 0) // 0 → should default to 64KB
+
+	// Two ranges with 32KB gap — should merge with 64KB default threshold
+	err := cr.PreloadRanges([]readRange{
+		{off: 0, length: 1000},
+		{off: 33 * 1024, length: 1000},
+	})
+	if err != nil {
+		t.Fatalf("PreloadRanges: %v", err)
+	}
+	if inner.readCalls.Load() != 1 {
+		t.Fatalf("expected 1 merged read with default 64KB threshold, got %d", inner.readCalls.Load())
+	}
+}
+
+func TestMergeRanges_UnsortedInput(t *testing.T) {
+	// Ranges in reverse order — mergeRanges should sort first
+	ranges := []readRange{
+		{off: 400, length: 100},
+		{off: 100, length: 100},
+		{off: 250, length: 100},
+	}
+	merged := mergeRanges(ranges, 64*1024)
+	if len(merged) != 1 {
+		t.Fatalf("expected 1 merged range from unsorted input, got %d", len(merged))
+	}
+	if merged[0].off != 100 || merged[0].length != 400 {
+		t.Fatalf("expected [100, 500), got [%d, %d)", merged[0].off, merged[0].off+int64(merged[0].length))
+	}
+}
+
+func TestMergeRanges_DoesNotMutateInput(t *testing.T) {
+	ranges := []readRange{
+		{off: 300, length: 100},
+		{off: 100, length: 100},
+	}
+	// Save original order
+	origFirst := ranges[0].off
+	_ = mergeRanges(ranges, 64*1024)
+	// Input should not be sorted
+	if ranges[0].off != origFirst {
+		t.Fatalf("mergeRanges mutated input: first range offset changed from %d to %d", origFirst, ranges[0].off)
+	}
+}
+
 func TestCoalescingReaderAt_PreloadEmpty(t *testing.T) {
 	inner := &mockReaderAt{data: make([]byte, 1024)}
 	cr := NewCoalescingReaderAt(inner, inner.Size(), 64*1024)
