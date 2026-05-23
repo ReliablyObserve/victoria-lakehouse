@@ -569,6 +569,99 @@ func TestScheduler_SentinelAcquireError(t *testing.T) {
 	}
 }
 
+// --- Partition sharding filter test ---
+
+func TestScheduler_ScanRespectsSharding(t *testing.T) {
+	pool := newMockPool()
+	m := manifest.New("test-bucket", "logs/")
+	sentinel := NewSentinel(pool, time.Hour)
+	policy := NewLevelPolicy(10, 20, 0)
+	ctx := context.Background()
+	const fp = "abc123"
+
+	// 6 partitions: hour=00 through hour=05.
+	// With shardCount=3, shard 0 owns: hour=01, hour=03 (2 partitions).
+	partitions := []string{
+		"dt=2026-05-22/hour=00",
+		"dt=2026-05-22/hour=01",
+		"dt=2026-05-22/hour=02",
+		"dt=2026-05-22/hour=03",
+		"dt=2026-05-22/hour=04",
+		"dt=2026-05-22/hour=05",
+	}
+
+	for _, partition := range partitions {
+		for i := 0; i < 12; i++ {
+			rows := []schema.LogRow{
+				{TimestampUnixNano: int64(i*1000 + 1), Body: fmt.Sprintf("log-%d", i), ServiceName: "svc"},
+			}
+			data := makeTestParquet(t, rows)
+			key := fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i)
+			if err := pool.Upload(ctx, key, data); err != nil {
+				t.Fatal(err)
+			}
+			m.AddFile(partition, manifest.FileInfo{
+				Key:               key,
+				Size:              int64(len(data)),
+				RowCount:          1,
+				MinTimeNs:         int64(i*1000 + 1),
+				MaxTimeNs:         int64(i*1000 + 1),
+				SchemaFingerprint: fp,
+				CompactionLevel:   0,
+			})
+		}
+	}
+
+	sharding := NewPartitionSharding(0, 3)
+
+	sched := NewScheduler(SchedulerConfig{
+		Leader:           &staticLeader{leader: true},
+		Manifest:         m,
+		Pool:             pool,
+		Sentinel:         sentinel,
+		Policy:           policy,
+		Prefix:           "logs/",
+		Mode:             config.ModeLogs,
+		Interval:         time.Minute,
+		MaxConcurrent:    6, // allow all partitions if owned
+		RowGroupSize:     1000,
+		CompressionLevel: 7,
+		Sharding:         sharding,
+	})
+
+	n, err := sched.Scan(ctx)
+	if err != nil {
+		t.Fatalf("Scan error: %v", err)
+	}
+
+	// Shard 0 owns 2 of 6 partitions; compaction count must not exceed that.
+	const ownedCount = 2
+	if n > ownedCount {
+		t.Fatalf("expected at most %d compactions (owned partitions), got %d", ownedCount, n)
+	}
+	if n == 0 {
+		t.Fatal("expected at least 1 compaction for partitions owned by shard 0")
+	}
+
+	// Verify that only owned partitions were compacted (files reduced to 1).
+	ownedPartitions := []string{"dt=2026-05-22/hour=01", "dt=2026-05-22/hour=03"}
+	notOwnedPartitions := []string{"dt=2026-05-22/hour=00", "dt=2026-05-22/hour=02", "dt=2026-05-22/hour=04", "dt=2026-05-22/hour=05"}
+
+	for _, p := range notOwnedPartitions {
+		files := m.FilesForPartition(p)
+		if len(files) != 12 {
+			t.Errorf("partition %s should be untouched (not owned by shard 0), but has %d files", p, len(files))
+		}
+	}
+	for _, p := range ownedPartitions {
+		files := m.FilesForPartition(p)
+		// After compaction, owned partitions should have fewer than 12 files.
+		if len(files) >= 12 {
+			t.Errorf("partition %s should have been compacted, but still has %d files", p, len(files))
+		}
+	}
+}
+
 // --- Compaction failure within Scan ---
 // Pool that fails on download of parquet files (not sentinel keys).
 
