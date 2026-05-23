@@ -31,7 +31,11 @@ func (p *LevelPolicy) Eligible(files []manifest.FileInfo, partitionTime time.Tim
 		return 1, true
 	}
 	// Daily rollup: merge any L1 files (≥2) in partitions older than DailyRollupAge.
-	if p.DailyRollupAge > 0 && time.Since(partitionTime) >= p.DailyRollupAge && l1Count >= 2 {
+	rollupAge := p.DailyRollupAge
+	if rollupAge > 0 && rollupAge < time.Hour {
+		rollupAge = time.Hour
+	}
+	if rollupAge > 0 && time.Since(partitionTime) >= rollupAge && l1Count >= 2 {
 		return 1, true
 	}
 	return 0, false

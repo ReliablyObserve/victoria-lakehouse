@@ -131,6 +131,33 @@ func TestLevelPolicy_DailyRollupNeedsMultipleFiles(t *testing.T) {
 	}
 }
 
+func TestLevelPolicy_DailyRollupDisabledWhenZero(t *testing.T) {
+	p := NewLevelPolicy(10, 15, time.Hour)
+	// DailyRollupAge defaults to 0 from NewLevelPolicy
+	files := makeFiles(1, "fp1", 3)
+	partitionTime := time.Now().Add(-48 * time.Hour)
+	_, eligible := p.Eligible(files, partitionTime)
+	if eligible {
+		t.Fatal("expected eligible=false when DailyRollupAge=0 (disabled)")
+	}
+}
+
+func TestLevelPolicy_DailyRollupMinFloor(t *testing.T) {
+	p := &LevelPolicy{
+		MinFilesL0:     10,
+		MinFilesL1:     15,
+		MinAge:         0,
+		DailyRollupAge: time.Second, // below 1h floor
+	}
+	// 30 minutes old partition — below the 1h floor
+	files := makeFiles(1, "fp1", 3)
+	partitionTime := time.Now().Add(-30 * time.Minute)
+	_, eligible := p.Eligible(files, partitionTime)
+	if eligible {
+		t.Fatal("expected eligible=false: DailyRollupAge below 1h floor, partition only 30m old")
+	}
+}
+
 func TestLevelPolicy_SelectFiles(t *testing.T) {
 	p := NewLevelPolicy(10, 15, time.Hour)
 	files := []manifest.FileInfo{

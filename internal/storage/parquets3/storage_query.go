@@ -1559,9 +1559,13 @@ func (s *Storage) enrichManifestFromFooter(fi manifest.FileInfo, f *parquet.File
 // Used by the manifest-only fast path to avoid all S3 I/O for files fully
 // within the query range.
 func (s *Storage) syntheticManifestBlock(fi manifest.FileInfo) *logstorage.DataBlock {
+	const maxSyntheticRows = 50_000_000
 	n := int(fi.RowCount)
 	if n == 0 {
 		return nil
+	}
+	if n > maxSyntheticRows {
+		n = maxSyntheticRows
 	}
 
 	tsCol := s.registry.TimestampColumn()
