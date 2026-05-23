@@ -44,6 +44,8 @@ services:
       - "-retentionPeriod=24h"
       - "-loggerLevel=INFO"
     networks: [lakehouse-net]
+    ports:
+      - "9428:9428"
     volumes:
       - vl-data:/data
     healthcheck:
