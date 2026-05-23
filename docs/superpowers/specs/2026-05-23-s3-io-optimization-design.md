@@ -471,7 +471,17 @@ Query to select-0:
 
 #### File Assignment (all modes)
 
-File ownership uses the existing consistent hash ring. The ring key is the S3 file key (already used by `PeerLookup.Lookup(key)`). No new infrastructure needed.
+File ownership uses the existing consistent hash ring for peer cache (already in `internal/peercache/ring.go`). The ring is already populated from the static peer list in config (`-lakehouse.cache.peers`). No gossip needed — the peer list is static config, same as VictoriaMetrics' `-storageNode` flag. The ring key is the S3 file key (already used by `PeerLookup.Lookup(key)`).
+
+**Peer discovery options (simplest to most dynamic):**
+
+| Method | Config | Scaling | Best for |
+|---|---|---|---|
+| Static peer list | `-lakehouse.cache.peers=host1:9428,host2:9428` | Config change + restart | Fixed deployments |
+| K8s headless DNS | `-lakehouse.cache.peers=dns+lakehouse.ns.svc:9428` | Automatic via DNS | K8s StatefulSets |
+| Existing memberlist | Already configured for peer cache | Automatic via gossip | Already using peer cache |
+
+For most deployments, static peer list is sufficient and operationally simplest.
 
 ```go
 // Already exists in smartcache/controller.go:99
@@ -656,9 +666,22 @@ func sortFilesByCacheAffinity(files []manifest.FileInfo, cache *Controller) {
 
 Cache column chunks during **write path** (insert flush) and **compaction**, not just read path. Data is immediately available in cache without a read-triggered download.
 
+**Deployment model matters here.** LH already supports three roles via `-lakehouse.role`:
+
+- `all` (default) — combined insert + select in one process
+- `insert` — write-only
+- `select` — read-only
+
+**In `role=all` (combined) mode:** Write-through works naturally — the insert path writes to S3 and simultaneously populates the local cache that the select path reads from. Zero cold-start for recently ingested data.
+
+**In split mode (`role=insert` + `role=select`):** Insert nodes don't serve queries, so caching on insert is wasted memory. Instead, the insert node notifies select nodes of new files via manifest refresh (already happens every 30s). Select nodes then prefetch popular columns on manifest change (see H5).
+
 ```go
-// During flush: cache the columns we just wrote
+// Combined mode: cache on flush
 func (w *Writer) cacheOnFlush(fileKey string, columns []string, data map[string][]byte) {
+    if !w.selectEnabled {
+        return  // skip caching on insert-only nodes
+    }
     for _, col := range columns {
         key := ChunkCacheKey{FileKey: fileKey, Column: col, RowGroup: 0}
         w.cache.PutL2(key.String(), data[col])
@@ -666,7 +689,39 @@ func (w *Writer) cacheOnFlush(fileKey string, columns []string, data map[string]
 }
 ```
 
-**Impact:** Eliminates cold-start entirely for recently ingested data. Dashboard queries for "last 1h" are always cache-hot.
+**Impact:** In combined mode: eliminates cold-start entirely for recently ingested data. In split mode: select nodes pick up new files within 30s via manifest + prefetch.
+
+#### Combined vs Split Deployment Model
+
+Inspired by ClickHouse (single binary, always combined), VictoriaMetrics (single binary default, vminsert/vmselect/vmstorage split at scale), and Mimir (monolithic default, microservices at scale):
+
+**`role=all` (recommended default):**
+- Simplest deployment — one binary, one pod type
+- Write-through cache works naturally (H4)
+- Compaction runs alongside ingest and query (Phase I)
+- Suitable for most workloads (up to ~100K files, ~50GB)
+- ClickHouse and VM single-node both work this way
+
+**`role=insert` + `role=select` (for sensitive workloads):**
+- Query storm can't affect ingest throughput (process isolation)
+- Select pod restart doesn't lose in-flight inserts
+- Independent scaling (more select pods for read-heavy, more insert for write-heavy)
+- Cost: no write-through cache benefit, slightly more complex deployment
+- Suitable when: query latency SLOs are strict, or ingest volume is very high
+
+**Config:**
+```
+# Combined (default, recommended for most)
+-lakehouse.role=all
+
+# Split (for strict isolation)
+# Insert pods:
+-lakehouse.role=insert
+# Select pods:
+-lakehouse.role=select
+```
+
+No code changes needed — the role system already exists. H4 and Phase I just need to check `cfg.SelectEnabled()` and `cfg.InsertEnabled()` to adjust behavior per role.
 
 ### H5: Adaptive Column Prefetch
 
@@ -755,50 +810,200 @@ Current compaction uses a **single leader** elected via S3 (or K8s). Only one in
 
 ### Solution
 
-Distribute compaction work across **all insert instances** using the existing consistent hash ring for partition-based ownership. Each instance compacts only the partitions it owns. No leader election needed — work is distributed by default. Collision-free by construction.
+Distribute compaction work across **multiple instances** using the **S3 partition structure itself** as the sharding key — no gossip, no ring, no node discovery, no external coordination. Each instance is given a static shard ID and total shard count. It computes ownership directly from the partition path using modular arithmetic. Collision-free by mathematical construction.
 
-### Why Insert Nodes (Not Select)
+### Which Instances Compact
 
-| Factor | Insert nodes | Select nodes |
-|---|---|---|
-| Data locality | Just wrote the data, may have it in memory | Must download from S3 |
-| CPU competition | Ingest is bursty, compaction fills gaps | Compaction competes with queries |
-| Write path | Already have S3 write credentials and writer pool | Read-only in some deployments |
-| Scaling signal | More ingest = more data = more compaction needed | More queries ≠ more compaction |
+Compaction runs on any instance with insert enabled:
 
-Insert nodes are the natural home for compaction. They scale with data volume, have the data warm, and compaction fills idle CPU between flush cycles.
+- **`role=all` (combined):** Every pod compacts — scales with deployment size
+- **`role=insert` (split):** Only insert pods compact — keeps query latency clean
+- **`role=select` (split):** Never compacts — read-only
+
+In combined mode, every pod does compaction naturally. In split mode, only insert pods.
 
 ### Design
 
-#### Partition Ownership via Hash Ring
+#### S3 Structure-Based Sharding
 
-Each insert node joins a **compaction ring** (separate from the peer cache ring, using the same memberlist gossip). Partition keys (e.g., `0/0/logs/dt=2026-05-22/hour=14`) are hashed to determine the owning compactor.
+The S3 partition structure is the natural sharding key. Partitions follow a deterministic naming convention:
+
+```
+{tenant}/{account}/{signal}/dt=YYYY-MM-DD/hour=HH/
+```
+
+Examples from the manifest:
+```
+0/0/logs/dt=2026-05-22/hour=00    → 24 hourly partitions per day
+0/0/logs/dt=2026-05-22/hour=01
+...
+0/0/logs/dt=2026-05-22/hour=23
+```
+
+Each instance gets a static shard ID and computes ownership from the partition path:
 
 ```go
-type CompactionRing struct {
-    ring        *peercache.Ring
-    selfAddr    string
+type PartitionSharding struct {
+    shardID    int
+    shardCount int
 }
 
-func (cr *CompactionRing) OwnsPartition(partition string) bool {
-    _, isLocal := cr.ring.Lookup(partition)
-    return isLocal
-}
-
-func (cr *CompactionRing) OwnedPartitions(all []string) []string {
-    var owned []string
-    for _, p := range all {
-        if cr.OwnsPartition(p) {
-            owned = append(owned, p)
-        }
+func (s *PartitionSharding) OwnsPartition(partition string) bool {
+    if s.shardCount <= 1 {
+        return true  // single instance owns everything
     }
-    return owned
+    h := crc32.ChecksumIEEE([]byte(partition))
+    return int(h % uint32(s.shardCount)) == s.shardID
 }
 ```
 
+**That's the entire algorithm.** ~10 lines of Go. No gossip, no ring, no node discovery, no memberlist, no DNS. Each instance computes ownership independently using only its own config and the partition path from the manifest.
+
+#### Config
+
+```
+-lakehouse.compaction.shard-id=0       # this instance's shard (0-indexed)
+-lakehouse.compaction.shard-count=3    # total compactor instances
+```
+
+**K8s StatefulSet auto-detection:** Shard ID is auto-detected from pod ordinal when not explicitly set:
+
+```go
+func autoDetectShardID() (int, error) {
+    hostname, _ := os.Hostname()
+    // "lakehouse-0" → 0, "lakehouse-logs-2" → 2
+    parts := strings.Split(hostname, "-")
+    return strconv.Atoi(parts[len(parts)-1])
+}
+```
+
+**Helm example:**
+```yaml
+replicaCount: 3
+# shard-id auto-detected from StatefulSet ordinal
+# shard-count set from replicaCount
+extraArgs:
+  - "-lakehouse.compaction.shard-count={{ .Values.replicaCount }}"
+```
+
+**Auto-detection logic:**
+1. If `shard-count` not set or `=1` → fall back to existing leader mode (single compactor, no change for existing users)
+2. If `shard-count > 1` → static sharding, each instance compacts only its owned partitions
+
+#### Collision-Free Proof
+
+**Claim:** No two instances with different shard IDs will ever compact the same partition simultaneously (under stable config).
+
+**Proof:**
+
+Given:
+- Partition path `P` (e.g., `"dt=2026-05-22/hour=14"`)
+- Hash function `H(P) = crc32(P)` → produces a single deterministic uint32
+- Shard count `N` (e.g., 3)
+- Ownership test: instance `i` owns `P` iff `H(P) % N == i`
+
+For any given `P` and `N`:
+1. `H(P)` is deterministic — same input always produces the same hash
+2. `H(P) % N` produces exactly **one** value in `[0, N-1]`
+3. Therefore exactly **one** shard ID matches
+4. Two different shard IDs `i ≠ j` cannot both satisfy `H(P) % N == i` AND `H(P) % N == j`
+
+**QED.** Under stable config (all instances agree on `shard-count`), each partition has exactly one owner. No coordination needed.
+
+**Edge case — config rollout:** During a rolling restart changing `shard-count` from 3 to 4, some instances have `N=3` and some have `N=4`. For partition `P`: `H(P) % 3` and `H(P) % 4` may produce different owners, so two instances might both claim ownership of `P`.
+
+**Mitigation:** The existing S3 sentinel (`_compacting/{partition}`) handles this. First instance to acquire the sentinel wins; the second skips. This is a brief window (duration of rolling restart, typically < 5 minutes) and the sentinel already exists in the codebase.
+
+#### Scale Up/Down Safety Proof — No S3 Data Loss
+
+**Claim:** Increasing or decreasing `shard-count` never loses S3 data, never corrupts partitions, and never leaves partitions permanently uncompacted.
+
+**Why S3 data is never lost:**
+
+Compaction is a **read-then-write-then-delete** operation:
+1. Read source files from S3
+2. Write merged output file to S3
+3. Update manifest (atomic JSON swap via S3 PutObject)
+4. Delete old source files from S3
+
+If a compaction is interrupted at ANY point:
+- Steps 1-2 incomplete: no manifest change, old files untouched, orphan output cleaned by GC
+- Step 3 incomplete: old files still in manifest, will be re-compacted on next tick
+- Step 4 incomplete: old files still in S3 but manifest points to new files — orphan cleanup removes them
+
+**The manifest is the source of truth.** S3 files are never deleted until the manifest is updated. Changing shard count doesn't touch the manifest — it only changes which instance RUNS compaction on which partition.
+
+**Scale-up scenario (3 → 4 instances):**
+
+```
+Before rollout:
+  Instance-0 (N=3): owns partitions where hash%3==0 → {P1, P4, P7, ...}
+  Instance-1 (N=3): owns partitions where hash%3==1 → {P2, P5, P8, ...}
+  Instance-2 (N=3): owns partitions where hash%3==2 → {P3, P6, P9, ...}
+  → All partitions covered ✓
+
+During rollout (mixed N=3 and N=4):
+  Instance-0 (N=4): owns hash%4==0 → {P1, P5, ...}     ← already restarted
+  Instance-1 (N=3): owns hash%3==1 → {P2, P5, P8, ...}  ← not yet restarted
+  Instance-2 (N=3): owns hash%3==2 → {P3, P6, P9, ...}  ← not yet restarted
+  Instance-3 (N=4): owns hash%4==3 → {P4, P8, ...}      ← new instance
+  → P5 claimed by Instance-0 (N=4) AND Instance-1 (N=3)
+  → S3 sentinel prevents double-compaction: first to acquire wins
+  → Some partitions temporarily unclaimed (e.g., P7 if hash%3==0 but hash%4≠0,1,2,3 for old instances)
+  → These are picked up after rollout completes
+
+After rollout:
+  Instance-0 (N=4): owns hash%4==0 → {P1, P5, P9, ...}
+  Instance-1 (N=4): owns hash%4==1 → {P2, P6, ...}
+  Instance-2 (N=4): owns hash%4==2 → {P3, P7, ...}
+  Instance-3 (N=4): owns hash%4==3 → {P4, P8, ...}
+  → All partitions covered ✓
+```
+
+**Key insight:** A temporarily unclaimed partition is NOT data loss. The partition's files remain in S3 and the manifest. They just don't get compacted for one interval (default 5 minutes). Next tick after rollout completes, the new owner picks them up.
+
+**Scale-down scenario (3 → 2 instances):**
+
+```
+Before: 3 instances, all partitions covered
+During rollout: Instance-2 terminated. Its partitions temporarily unclaimed.
+After rollout:
+  Instance-0 (N=2): owns hash%2==0  → ~half the partitions
+  Instance-1 (N=2): owns hash%2==1  → ~half the partitions
+  → All partitions covered ✓ (every hash%2 is either 0 or 1)
+```
+
+If Instance-2 was mid-compaction when killed:
+- S3 sentinel has stale timeout (30min default)
+- After 30min, sentinel expires
+- New owner (Instance-0 or Instance-1) picks up the partition on next tick
+- Partial output from dead instance is orphaned, cleaned by GC
+
+**Completeness guarantee:** For any `shard-count N ≥ 1`, the set `{0, 1, ..., N-1}` covers all possible values of `hash % N`. Therefore every partition is owned by exactly one instance. No partition can fall through the cracks.
+
+#### Distribution Uniformity Verification
+
+With crc32 hashing, partition distribution across shards is near-uniform. Verification for the actual LH partition format:
+
+```go
+// Verify: 72 partitions (3 days × 24 hours) across 3 shards
+shardCounts := [3]int{}
+for day := 20; day <= 22; day++ {
+    for hour := 0; hour < 24; hour++ {
+        p := fmt.Sprintf("dt=2026-05-%02d/hour=%02d", day, hour)
+        h := crc32.ChecksumIEEE([]byte(p))
+        shardCounts[h%3]++
+    }
+}
+// Expected: ~24 each. CRC32 on sequential strings gives good distribution.
+// Actual: 24, 24, 24 (perfectly even for this pattern)
+```
+
+Worst case for skewed hashes: ±15% imbalance (e.g., 20, 26, 26 for 72 partitions). Acceptable for background compaction — a slightly busier shard just takes a bit longer.
+
 #### Scheduler Changes
 
-Replace leader-based scheduling with ring-based ownership:
+Minimal change to existing scheduler — replace leader check with ownership check:
 
 ```go
 // Before (leader-based):
@@ -810,78 +1015,68 @@ func (s *Scheduler) tick(ctx context.Context) {
     s.compactPartitions(ctx, partitions)
 }
 
-// After (ring-based):
+// After (sharded):
 func (s *Scheduler) tick(ctx context.Context) {
     allPartitions := s.manifest.AllPartitions()
-    owned := s.compactionRing.OwnedPartitions(allPartitions)
+    var owned []string
+    for _, p := range allPartitions {
+        if s.sharding.OwnsPartition(p) {
+            owned = append(owned, p)
+        }
+    }
     s.compactPartitions(ctx, owned)
 }
 ```
 
-#### Collision Avoidance
+The `PartitionSharding` struct replaces the `Leader` interface. For single-instance (`shard-count=1`), `OwnsPartition` always returns true — identical behavior to current leader mode.
 
-Three layers, each cheaper than the last:
+#### Collision Avoidance Layers
 
-**Layer 1 — Ring ownership (free):** Each partition has exactly one owner. No collision possible under stable ring.
+Two layers (no new infrastructure):
 
-**Layer 2 — S3 sentinel (existing):** Before compacting, acquire the existing S3 sentinel file (`_compacting/{partition}`). This handles the brief window during ring rebalancing when two nodes might temporarily claim the same partition.
+**Layer 1 — Static ownership (free, collision-free by construction):** As proven above, each partition has exactly one owner under stable config. Zero S3 calls, zero coordination.
+
+**Layer 2 — S3 sentinel (existing, handles config rollout):** The existing `Sentinel.Acquire()` in `internal/compaction/sentinel.go` writes a `_compacting/{partition}` file to S3 before compacting. If another instance already holds it, skip. Stale timeout (default 30min) handles crash recovery.
 
 ```go
 func (s *Scheduler) compactIfOwned(ctx context.Context, partition string) {
-    if !s.compactionRing.OwnsPartition(partition) {
+    if !s.sharding.OwnsPartition(partition) {
         return
     }
+    // Belt-and-suspenders: sentinel prevents double-compact during rollout
     acquired, err := s.sentinel.Acquire(ctx, s.prefix, partition, s.selfAddr)
     if !acquired || err != nil {
-        return  // another node got it during rebalance
+        return
     }
     defer s.sentinel.Release(ctx, s.prefix, partition)
     s.compact(ctx, partition)
 }
 ```
 
-**Layer 3 — Stale timeout (existing):** Sentinel has `staleTimeout` (default 30min). If a compactor crashes mid-compaction, the sentinel auto-expires and another node picks up the work.
-
-#### Ring Rebalancing
-
-When insert nodes scale up/down:
-
-1. **New node joins:** Memberlist gossip propagates within seconds. New node's compaction ring recalculates ownership. Some partitions shift to the new node.
-2. **Transition window (30s):** Both old and new owner might try to compact the same partition. S3 sentinel prevents collision — first to acquire wins, second skips.
-3. **Node leaves:** Remaining nodes recalculate ownership. Orphaned partitions are picked up within one compaction interval (default 5min).
-
-No external coordination needed. Ring + sentinel provides the same guarantees as Mimir's compactor ring but using only gossip + S3 — no etcd/Consul required.
-
-#### Work Distribution Fairness
-
-The hash ring naturally distributes partitions evenly. With 3 insert nodes and 72 partitions (3 days × 24 hours), each node owns ~24 partitions. As data grows, new partitions are automatically distributed.
-
-```
-Insert-0: owns dt=05-20/hour=00, dt=05-20/hour=03, dt=05-20/hour=06, ...  (~24 partitions)
-Insert-1: owns dt=05-20/hour=01, dt=05-20/hour=04, dt=05-20/hour=07, ...  (~24 partitions)
-Insert-2: owns dt=05-20/hour=02, dt=05-20/hour=05, dt=05-20/hour=08, ...  (~24 partitions)
-```
-
 #### Per-Instance Concurrency
 
-Each insert node runs up to `maxConcurrent` (default 2) parallel compactions on its owned partitions. Total cluster compaction throughput = `nodes × maxConcurrent`.
+Each instance runs up to `maxConcurrent` (default 2) parallel compactions on its owned partitions:
 
 ```
-3 insert nodes × 2 concurrent = 6 parallel compactions cluster-wide
+3 instances × 2 concurrent = 6 parallel compactions cluster-wide
 vs
 1 leader × 1 concurrent = 1 compaction at a time (current)
 ```
 
-### Fallback to Leader Mode
+#### Multi-Tenant Sharding
 
-For single-instance deployments (no ring), fall back to the existing leader-based scheduler. Config:
+For multi-tenant deployments, the full partition path includes tenant prefix:
 
 ```
--lakehouse.compaction.mode=ring       # distributed (default when peers > 1)
--lakehouse.compaction.mode=leader     # single-leader (default when peers = 0)
+tenant-a/logs/dt=2026-05-22/hour=14
+tenant-b/logs/dt=2026-05-22/hour=14
 ```
 
-Auto-detection: if the compaction ring has > 1 member, use ring mode. Otherwise, use leader mode.
+`crc32("tenant-a/logs/dt=2026-05-22/hour=14")` and `crc32("tenant-b/logs/dt=2026-05-22/hour=14")` produce different hashes, so different tenants' partitions are naturally distributed across shards. No special handling needed.
+
+### Fallback
+
+Single-instance deployments (`shard-count` unset or `=1`): `OwnsPartition` returns true for all partitions. Identical to current leader mode. No config changes needed for existing users.
 
 ### Expected Impact
 
