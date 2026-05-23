@@ -73,7 +73,8 @@ var (
 
 	compactionEnabled  = flag.Bool("lakehouse.compaction.enabled", false, "Enable compaction scheduler")
 	compactionInterval = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
-	compactionElection = flag.String("lakehouse.compaction.leader-election", "", "Election mode: auto, k8s, s3, none")
+	compactionElection      = flag.String("lakehouse.compaction.leader-election", "", "Election mode: auto, k8s, s3, none")
+	compactionDailyRollupAge = flag.Duration("lakehouse.compaction.daily-rollup-age", 0, "Minimum partition age for daily rollup compaction (default: 24h)")
 
 	queryFileWorkers = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 8)")
 
@@ -201,6 +202,7 @@ func run(cfg *config.Config, addr string) {
 			cfg.Compaction.MinFilesL1,
 			cfg.Compaction.MinAge,
 		)
+		policy.DailyRollupAge = cfg.Compaction.DailyRollupAge
 
 		sched = compaction.NewScheduler(compaction.SchedulerConfig{
 			Leader:           leader,
@@ -804,6 +806,9 @@ func applyFlags(cfg *config.Config) {
 	}
 	if e := *compactionElection; e != "" {
 		cfg.Compaction.LeaderElection = e
+	}
+	if *compactionDailyRollupAge > 0 {
+		cfg.Compaction.DailyRollupAge = *compactionDailyRollupAge
 	}
 
 	if *queryFileWorkers > 0 {
