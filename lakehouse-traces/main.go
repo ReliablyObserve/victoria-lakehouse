@@ -77,6 +77,8 @@ var (
 
 	queryFileWorkers = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 8)")
 
+	s3ReadAhead = flag.Int("lakehouse.s3.read-ahead-bytes", 0, "S3 read-ahead buffer size in bytes (default: 2MB)")
+
 	tracesBloomColumns  = flag.String("lakehouse.traces.bloom-columns", "", "Comma-separated bloom filter columns for traces (default: trace_id,service.name)")
 	tracesDeletePrefix  = flag.String("lakehouse.traces.delete-prefix", "", "Delete API prefix (default: /delete/tracessql)")
 	tracesJaegerEnabled = flag.Bool("lakehouse.traces.jaeger-enabled", true, "Enable Jaeger query API")
@@ -768,6 +770,9 @@ func applyFlags(cfg *config.Config) {
 	}
 	if *s3PathStyle {
 		cfg.S3.ForcePathStyle = true
+	}
+	if *s3ReadAhead > 0 {
+		cfg.S3.ReadAheadBytes = *s3ReadAhead
 	}
 	if t := *topology; t != "" {
 		cfg.Topology = config.Topology(t)

@@ -79,6 +79,8 @@ var (
 
 	queryFileWorkers = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 8)")
 
+	s3ReadAhead = flag.Int("lakehouse.s3.read-ahead-bytes", 0, "S3 read-ahead buffer size in bytes (default: 2MB)")
+
 	logsBloomColumns = flag.String("lakehouse.logs.bloom-columns", "", "Comma-separated bloom filter columns for logs (default: service.name)")
 	logsDeletePrefix = flag.String("lakehouse.logs.delete-prefix", "", "Delete API prefix (default: /delete/logsql)")
 
@@ -782,6 +784,9 @@ func applyFlags(cfg *config.Config) {
 	}
 	if *s3PathStyle {
 		cfg.S3.ForcePathStyle = true
+	}
+	if *s3ReadAhead > 0 {
+		cfg.S3.ReadAheadBytes = *s3ReadAhead
 	}
 	if t := *topology; t != "" {
 		cfg.Topology = config.Topology(t)

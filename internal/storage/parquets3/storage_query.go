@@ -21,6 +21,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
@@ -308,7 +309,8 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 		if cached, ok := s.footerCache.Get(fi.Key); ok {
 			totalCols := len(cached.File.Root().Columns())
 			if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
-				readerAt := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
+				rawReader := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
+				readerAt := s3reader.NewBufferedReaderAt(rawReader, fi.Size, int64(s.cfg.S3.ReadAheadBytes))
 				f, err := parquet.OpenFile(readerAt, fi.Size)
 				if err == nil {
 					metrics.S3RangeReadsTotal.Inc()
@@ -333,7 +335,8 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 							s.footerCache.Put(fi.Key, cachedF)
 							totalCols := len(cachedF.File.Root().Columns())
 							if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
-								readerAt := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
+								rawReader := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
+								readerAt := s3reader.NewBufferedReaderAt(rawReader, fi.Size, int64(s.cfg.S3.ReadAheadBytes))
 								f, rErr := parquet.OpenFile(readerAt, fi.Size)
 								if rErr == nil {
 									metrics.S3RangeReadsTotal.Inc()
