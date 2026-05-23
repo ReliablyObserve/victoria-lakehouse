@@ -202,6 +202,7 @@ type S3Config struct {
 	RetryBaseDelay         time.Duration `yaml:"retry_base_delay"`
 	MaxConcurrentDownloads int           `yaml:"max_concurrent_downloads"`
 	ReadAheadBytes         int           `yaml:"read_ahead_bytes"`
+	CoalesceGapBytes       int           `yaml:"coalesce_gap_bytes"`
 }
 
 type CacheConfig struct {
@@ -429,6 +430,7 @@ func Default() *Config {
 			RetryBaseDelay:         200 * time.Millisecond,
 			MaxConcurrentDownloads: 16,
 			ReadAheadBytes:         2 * 1024 * 1024, // 2MB
+			CoalesceGapBytes:       64 * 1024,       // 64KB
 		},
 
 		Cache: CacheConfig{
@@ -1035,6 +1037,9 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.S3.ReadAheadBytes > 0 {
 		base.S3.ReadAheadBytes = overlay.S3.ReadAheadBytes
+	}
+	if overlay.S3.CoalesceGapBytes > 0 {
+		base.S3.CoalesceGapBytes = overlay.S3.CoalesceGapBytes
 	}
 
 	// Cache

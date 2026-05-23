@@ -259,7 +259,8 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 			totalCols := len(cached.File.Root().Columns())
 			if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
 				rawReader := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
-				readerAt := s3reader.NewBufferedReaderAt(rawReader, fi.Size, int64(s.cfg.S3.ReadAheadBytes))
+				buffered := s3reader.NewBufferedReaderAt(rawReader, fi.Size, int64(s.cfg.S3.ReadAheadBytes))
+				readerAt := s3reader.NewCoalescingReaderAt(buffered, fi.Size, int64(s.cfg.S3.CoalesceGapBytes))
 				f, err := parquet.OpenFile(readerAt, fi.Size)
 				if err == nil {
 					metrics.S3RangeReadsTotal.Inc()
