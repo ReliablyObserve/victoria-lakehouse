@@ -126,6 +126,24 @@ func TestCoalescingReaderAt_FallbackToInner(t *testing.T) {
 	}
 }
 
+func TestCoalescingReaderAt_Clear(t *testing.T) {
+	data := make([]byte, 1024)
+	inner := &mockReaderAt{data: data}
+	cr := NewCoalescingReaderAt(inner, inner.Size(), 64*1024)
+
+	_ = cr.PreloadRanges([]readRange{{off: 0, length: 100}})
+	cr.Clear()
+
+	// After clear, reads should fall through to inner
+	buf := make([]byte, 100)
+	before := inner.readCalls.Load()
+	_, _ = cr.ReadAt(buf, 0)
+	after := inner.readCalls.Load()
+	if after <= before {
+		t.Fatal("expected inner read after Clear(), got cache hit")
+	}
+}
+
 func TestCoalescingReaderAt_PreloadEmpty(t *testing.T) {
 	inner := &mockReaderAt{data: make([]byte, 1024)}
 	cr := NewCoalescingReaderAt(inner, inner.Size(), 64*1024)

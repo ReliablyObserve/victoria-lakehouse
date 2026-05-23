@@ -54,6 +54,10 @@ func NewCoalescingReaderAt(inner io.ReaderAt, fileSize int64, gapThreshold int64
 	if gapThreshold <= 0 {
 		gapThreshold = 64 * 1024
 	}
+	const maxGapThreshold = 1024 * 1024 // 1MB safety cap
+	if gapThreshold > maxGapThreshold {
+		gapThreshold = maxGapThreshold
+	}
 	return &CoalescingReaderAt{
 		inner:        inner,
 		fileSize:     fileSize,
@@ -97,4 +101,12 @@ func (c *CoalescingReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	}
 	c.mu.Unlock()
 	return c.inner.ReadAt(p, off)
+}
+
+// Clear evicts all cached data, allowing the GC to reclaim memory
+// after a query completes.
+func (c *CoalescingReaderAt) Clear() {
+	c.mu.Lock()
+	c.cache = make(map[int64][]byte)
+	c.mu.Unlock()
 }

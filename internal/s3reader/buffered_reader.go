@@ -34,6 +34,10 @@ func NewBufferedReaderAt(inner ReaderAtSizer, fileSize int64, prefetch int64) *B
 	if prefetch <= 0 {
 		prefetch = 2 * 1024 * 1024
 	}
+	const maxPrefetch = 64 * 1024 * 1024 // 64MB safety cap
+	if prefetch > maxPrefetch {
+		prefetch = maxPrefetch
+	}
 	return &BufferedS3ReaderAt{
 		inner:    inner,
 		fileSize: fileSize,
