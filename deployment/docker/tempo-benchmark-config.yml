@@ -3,6 +3,8 @@ stream_over_http_enabled: true
 server:
   http_listen_port: 3200
   log_level: warn
+  http_server_read_timeout: 300s
+  http_server_write_timeout: 300s
 
 distributor:
   receivers:

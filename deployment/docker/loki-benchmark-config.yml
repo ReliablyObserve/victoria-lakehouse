@@ -27,9 +27,12 @@ storage_config:
     active_index_directory: /data/loki/tsdb-index
     cache_location: /data/loki/tsdb-cache
   aws:
-    s3: http://minioadmin:minioadmin@minio:9000/loki-data
+    bucketnames: loki-data
+    endpoint: minio:9000
+    access_key_id: minioadmin
+    secret_access_key: minioadmin
+    insecure: true
     s3forcepathstyle: true
-    region: us-east-1
 
 ingester:
   chunk_encoding: snappy
@@ -62,6 +65,7 @@ limits_config:
   max_global_streams_per_user: 100000
   reject_old_samples: false
   reject_old_samples_max_age: 744h
+  unordered_writes: true
 
 chunk_store_config:
   chunk_cache_config:

@@ -717,7 +717,7 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 		field{"status_message", r.StatusMessage},
 		field{"duration", r.DurationNs},
 		field{"resource_attr:service.name", r.ServiceName},
-		field{"scope_attr:otel.library.name", r.ScopeName},
+		field{"scope_name", r.ScopeName},
 		field{"resource_attr:deployment.environment", r.DeployEnv},
 		field{"resource_attr:cloud.region", r.CloudRegion},
 		field{"resource_attr:host.name", r.HostName},

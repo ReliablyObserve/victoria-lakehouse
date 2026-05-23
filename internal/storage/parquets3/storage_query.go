@@ -765,14 +765,8 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 
 func mapColumnToAttrPrefix(col string) string {
 	switch col {
-	case "resource.attributes":
-		return "resource_attr:"
-	case "log.attributes":
-		return "log_attr:"
-	case "span.attributes":
-		return "span_attr:"
-	case "scope.attributes":
-		return "scope_attr:"
+	case "resource.attributes", "log.attributes", "span.attributes", "scope.attributes":
+		return ""
 	default:
 		return col + ":"
 	}
@@ -824,19 +818,19 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 		field{"status_code", r.StatusCode},
 		field{"status_message", r.StatusMessage},
 		field{"duration", r.DurationNs},
-		field{"resource_attr:service.name", r.ServiceName},
-		field{"scope_attr:otel.library.name", r.ScopeName},
-		field{"resource_attr:deployment.environment", r.DeployEnv},
-		field{"resource_attr:cloud.region", r.CloudRegion},
-		field{"resource_attr:host.name", r.HostName},
-		field{"resource_attr:k8s.namespace.name", r.K8sNamespaceName},
-		field{"resource_attr:k8s.deployment.name", r.K8sDeploymentName},
-		field{"resource_attr:k8s.node.name", r.K8sNodeName},
-		field{"span_attr:http.method", r.HTTPMethod},
-		field{"span_attr:http.status_code", r.HTTPStatusCode},
-		field{"span_attr:http.url", r.HTTPUrl},
-		field{"span_attr:db.system", r.DBSystem},
-		field{"span_attr:db.statement", r.DBStatement},
+		field{"service.name", r.ServiceName},
+		field{"otel.library.name", r.ScopeName},
+		field{"deployment.environment", r.DeployEnv},
+		field{"cloud.region", r.CloudRegion},
+		field{"host.name", r.HostName},
+		field{"k8s.namespace.name", r.K8sNamespaceName},
+		field{"k8s.deployment.name", r.K8sDeploymentName},
+		field{"k8s.node.name", r.K8sNodeName},
+		field{"http.method", r.HTTPMethod},
+		field{"http.status_code", r.HTTPStatusCode},
+		field{"http.url", r.HTTPUrl},
+		field{"db.system", r.DBSystem},
+		field{"db.statement", r.DBStatement},
 	)
 	for k, v := range r.ResourceAttributes {
 		if !tracePromotedResourceKeys[k] {

@@ -31,9 +31,6 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 		return nil, nil
 	}
 
-	seen := make(map[string]bool)
-	var result []logstorage.ValueWithHits
-
 	fi := files[0]
 	data, err := s.getFileData(ctx, fi.Key, fi.Size)
 	if err != nil {
@@ -47,18 +44,16 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 
 	s.updateLabelIndex(f)
 
-	for _, name := range columnNames(f.Root()) {
-		internalName := name
-		if m := s.registry.ResolveFromParquet(name); m != nil {
-			internalName = m.InternalName
+	if s.labelIndex.Len() > 0 {
+		names := s.labelIndex.GetFieldNames()
+		result := make([]logstorage.ValueWithHits, len(names))
+		for i, name := range names {
+			result[i] = logstorage.ValueWithHits{Value: name, Hits: 1}
 		}
-		if !seen[internalName] {
-			seen[internalName] = true
-			result = append(result, logstorage.ValueWithHits{Value: internalName, Hits: 1})
-		}
+		return result, nil
 	}
 
-	return result, nil
+	return nil, nil
 }
 
 func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
