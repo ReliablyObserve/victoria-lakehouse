@@ -23,3 +23,41 @@ func RunQueryExternal(qctx *QueryContext, searchFn func(writeBlock WriteDataBloc
 func QueryHasPipes(q *Query) bool {
 	return len(q.pipes) > 0
 }
+
+// GetQueryPipeFields returns field names referenced by pipe operators
+// (stats by(), uniq by(), top by(), fields). Uses VL's parsed pipe types
+// directly — no string re-parsing needed.
+func GetQueryPipeFields(q *Query) []string {
+	if q == nil {
+		return nil
+	}
+	var fields []string
+	seen := make(map[string]bool)
+	add := func(name string) {
+		if name != "" && !seen[name] {
+			seen[name] = true
+			fields = append(fields, name)
+		}
+	}
+	for _, p := range q.pipes {
+		switch t := p.(type) {
+		case *pipeStats:
+			for _, bf := range t.byFields {
+				add(bf.name)
+			}
+		case *pipeUniq:
+			for _, name := range t.byFields {
+				add(name)
+			}
+		case *pipeTop:
+			for _, name := range t.byFields {
+				add(name)
+			}
+		case *pipeFields:
+			for _, name := range t.fieldFilters {
+				add(name)
+			}
+		}
+	}
+	return fields
+}

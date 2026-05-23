@@ -52,6 +52,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 
 	queryStr := q.String()
+	pipeFields := logstorage.GetQueryPipeFields(q)
 	filter := parseFilterFromQuery(q)
 
 	var rowsEmitted atomic.Int64
@@ -194,7 +195,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				if s.checkFileBloom(ctx, fi, queryStr) {
 					continue
 				}
-				if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, filteredWriteBlock); err != nil {
+				if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filteredWriteBlock); err != nil {
 					logger.Warnf("query file error: %s; key=%s", err, fi.Key)
 					continue
 				}
@@ -377,8 +378,8 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 	return f, nil
 }
 
-func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, writeBlock logstorage.WriteDataBlockFunc) error {
-	projectedCols := queryColumns(queryStr, s.registry)
+func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, writeBlock logstorage.WriteDataBlockFunc) error {
+	projectedCols := queryColumns(queryStr, s.registry, pipeFields)
 
 	// Hits/stats fast path: when the endpoint only needs timestamps (set via
 	// context hint) and the query has no column-specific filters, project only

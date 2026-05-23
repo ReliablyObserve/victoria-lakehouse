@@ -8,7 +8,7 @@ import (
 
 func TestQueryColumns_TracesExactMatch(t *testing.T) {
 	reg := schema.NewRegistry(schema.TracesProfile)
-	cols := queryColumns(`trace_id:="abc123"`, reg)
+	cols := queryColumns(`trace_id:="abc123"`, reg, nil)
 
 	if cols != nil {
 		t.Error("filter-only trace_id query should return nil (all columns for span rendering)")
@@ -17,7 +17,7 @@ func TestQueryColumns_TracesExactMatch(t *testing.T) {
 
 func TestQueryColumns_TracesWildcard(t *testing.T) {
 	reg := schema.NewRegistry(schema.TracesProfile)
-	cols := queryColumns(`*`, reg)
+	cols := queryColumns(`*`, reg, nil)
 	if cols != nil {
 		t.Error("wildcard query should return nil")
 	}
@@ -25,7 +25,7 @@ func TestQueryColumns_TracesWildcard(t *testing.T) {
 
 func TestQueryColumns_TracesWildcardWithSort(t *testing.T) {
 	reg := schema.NewRegistry(schema.TracesProfile)
-	cols := queryColumns(`* | sort by (_time) desc limit 1`, reg)
+	cols := queryColumns(`* | sort by (_time) desc limit 1`, reg, nil)
 	if cols != nil {
 		t.Error("wildcard with sort/limit pipes should return nil")
 	}
@@ -33,7 +33,7 @@ func TestQueryColumns_TracesWildcardWithSort(t *testing.T) {
 
 func TestQueryColumns_TracesServiceName(t *testing.T) {
 	reg := schema.NewRegistry(schema.TracesProfile)
-	cols := queryColumns(`service.name:="api"`, reg)
+	cols := queryColumns(`service.name:="api"`, reg, nil)
 
 	if cols != nil {
 		t.Error("filter-only query should return nil (all columns)")
@@ -42,7 +42,7 @@ func TestQueryColumns_TracesServiceName(t *testing.T) {
 
 func TestQueryColumns_TracesEmpty(t *testing.T) {
 	reg := schema.NewRegistry(schema.TracesProfile)
-	cols := queryColumns(``, reg)
+	cols := queryColumns(``, reg, nil)
 	if cols != nil {
 		t.Error("empty query should return nil")
 	}
@@ -50,7 +50,7 @@ func TestQueryColumns_TracesEmpty(t *testing.T) {
 
 func TestQueryColumns_TracesSpanName(t *testing.T) {
 	reg := schema.NewRegistry(schema.TracesProfile)
-	cols := queryColumns(`name:="GET /api"`, reg)
+	cols := queryColumns(`name:="GET /api"`, reg, nil)
 
 	if cols != nil {
 		t.Error("filter-only query should return nil (all columns)")
@@ -59,7 +59,7 @@ func TestQueryColumns_TracesSpanName(t *testing.T) {
 
 func TestQueryColumns_TracesMultipleFilters(t *testing.T) {
 	reg := schema.NewRegistry(schema.TracesProfile)
-	cols := queryColumns(`trace_id:="abc" AND service.name:="api"`, reg)
+	cols := queryColumns(`trace_id:="abc" AND service.name:="api"`, reg, nil)
 
 	if cols != nil {
 		t.Error("filter-only query should return nil (all columns)")
@@ -68,7 +68,7 @@ func TestQueryColumns_TracesMultipleFilters(t *testing.T) {
 
 func TestQueryColumns_TracesWithFieldsPipe(t *testing.T) {
 	reg := schema.NewRegistry(schema.TracesProfile)
-	cols := queryColumns(`trace_id:="abc" | fields _time, trace_id`, reg)
+	cols := queryColumns(`trace_id:="abc" | fields _time, trace_id`, reg, []string{"_time", "trace_id"})
 
 	if cols == nil {
 		t.Fatal("pipe with fields should return projected columns")
@@ -83,9 +83,31 @@ func TestQueryColumns_TracesWithFieldsPipe(t *testing.T) {
 
 func TestQueryColumns_TracesWithStatsPipe(t *testing.T) {
 	reg := schema.NewRegistry(schema.TracesProfile)
-	cols := queryColumns(`service.name:="api" | stats count() by (service.name)`, reg)
+	cols := queryColumns(`service.name:="api" | stats count() by (service.name)`, reg, []string{"service.name"})
 
 	if cols == nil {
 		t.Fatal("pipe with stats should return projected columns")
+	}
+	if !cols["service.name"] {
+		t.Error("service.name must be included from by(service.name)")
+	}
+}
+
+func TestQueryColumns_TracesStatsByName_WithFilter(t *testing.T) {
+	reg := schema.NewRegistry(schema.TracesProfile)
+	cols := queryColumns(
+		`service.name:="api" | stats by(name) count() as count`,
+		reg,
+		[]string{"name"},
+	)
+
+	if cols == nil {
+		t.Fatal("stats by(name) with filter must return projected columns")
+	}
+	if !cols["span.name"] {
+		t.Error("span.name (VL 'name') must be projected for stats by(name)")
+	}
+	if !cols["service.name"] {
+		t.Error("service.name must be projected for filter")
 	}
 }
