@@ -20,6 +20,8 @@ var (
 	S3ThrottleTotal   = NewCounter("lakehouse_s3_throttle_total")
 	S3RangeReadsTotal = NewCounter("lakehouse_s3_range_reads_total")
 	S3RangeBytesRead  = NewCounter("lakehouse_s3_range_bytes_read_total")
+	S3BufferHits      = NewCounter("lakehouse_s3_buffer_hits_total")
+	S3BufferMisses    = NewCounter("lakehouse_s3_buffer_misses_total")
 )
 
 // Cache metrics
