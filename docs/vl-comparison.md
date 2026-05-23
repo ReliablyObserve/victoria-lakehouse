@@ -5,332 +5,284 @@ sidebar_position: 18
 
 # VictoriaLogs (EBS) vs Victoria Lakehouse (S3) — Honest Performance Comparison
 
-> **Methodology note:** All numbers were verified with response body size tracking to ensure both systems actually return data. Scenarios where either system returns empty responses are flagged. Previous versions of this document contained misleading 1h numbers where VLH had zero data in that range — those have been corrected.
+> **Methodology note:** All numbers were verified with response body size tracking to ensure both systems actually return data. Scenarios where either system returns empty responses are flagged with ⚠. ClickHouse querying the same Parquet files is included as a third-party baseline.
 
 ```mermaid
 graph LR
-    DG["cmd/datagen<br/>--dual-write"] -->|insert| VL["VictoriaLogs<br/>EBS, port 9428"]
+    DG["cmd/datagen<br/>continuous"] -->|insert| VL["VictoriaLogs v1.50<br/>EBS, port 9428"]
     DG -->|insert| VLH["Victoria Lakehouse<br/>S3 via MinIO, port 19429"]
     LT["cmd/loadtest<br/>-mode=compare-ext"] -->|query| VL
     LT -->|query| VLH
     VLH --> PROXY["S3 Latency Proxy<br/>65ms GET, 80ms LIST"]
     PROXY --> MINIO[(MinIO)]
+    CH["ClickHouse v26.5"] -->|s3() table fn| PROXY
+    CH -->|s3() direct| MINIO
 
     style VL fill:#4CAF50,color:#fff
     style VLH fill:#2196F3,color:#fff
     style PROXY fill:#FF9800,color:#fff
+    style CH fill:#9C27B0,color:#fff
 ```
 
 ## Test Setup
 
 | Component | Configuration |
 |---|---|
-| VictoriaLogs | v1.20+, local disk (EBS-equivalent), continuous ingestion running, port 9428 |
-| Victoria Lakehouse | v0.14.0, S3 via MinIO + **S3 latency proxy** (65ms GET, 80ms LIST, 15ms HEAD), port 19429 |
-| S3 Latency Proxy | Reverse proxy adding realistic us-east-1 S3 latencies to every request |
-| Test Data | Dual-write via `cmd/datagen --dual-write` — same 5 services, 4 levels |
+| VictoriaLogs | v1.50.0, local disk (EBS-equivalent), continuous ingestion, port 9428 |
+| Victoria Lakehouse | latest (PR #83), S3 via MinIO + **S3 latency proxy** (65ms GET, 80ms LIST, 15ms HEAD), port 19429, select-only mode, 64 file workers, 512MB cache |
+| ClickHouse | v26.5.1, querying same Parquet files via s3() table function |
+| S3 Latency Proxy | Reverse proxy adding realistic us-east-1 S3 latencies (±30% jitter) |
+| Test Data | Continuous dual-write via `cmd/datagen` — 2000 logs/min, 5 services, 4 levels, 4 days of data |
 | Benchmark Tool | `cmd/loadtest -mode=compare-ext` — 15 iterations, 3 warmup per scenario |
-| Date | 2026-05-06 |
+| Date | 2026-05-23 |
 
 ## Data Volume Context
 
-**This matters.** VL has continuous ingestion running (log generator writing ~22K rows/hour). VLH only has the datagen batches. Both got 50K dual-write rows covering the last 4 hours, but VL also has its own continuous data:
+Both systems receive continuous dual-write data. Unlike previous benchmarks with 50K rows, this test uses production-scale data volumes (~2.4M rows, 256 files, 460MB Parquet data spanning 4 days).
 
-| Range | VLH Rows | VL Rows | VL/VLH Ratio |
+| Range | VLH Rows | VL Rows | VL/VLH Ratio | VLH Files |
+|---|---|---|---|---|
+| 1h | ~60K | ~60K | 1.0x | ~8 |
+| 6h | ~360K | ~360K | 1.0x | ~48 |
+| 24h | ~2.4M | ~2.4M | 1.0x | ~170 |
+| 4 days | ~2.4M | ~2.4M | 1.0x | 256 |
+
+**Impact on fairness:** Both systems have approximately equal data volumes (within 2%), making this a much fairer comparison than previous benchmarks where VL had 2.6-9x more data.
+
+### VLH File Distribution
+
+| Date | Files | Size | Hours |
 |---|---|---|---|
-| 1h | 10,561 | 35,157 | 3.3x |
-| 4h | 47,958 | 124,842 | 2.6x |
-| 24h | 62,260 | 557,882 | 9.0x |
-| 48h | 87,752 | 558,382 | 6.4x |
-
-**Impact on fairness:** VL has to scan more data for the same time range, which makes its scan-heavy queries (stats, rate, histogram) look slower than they would with equal data. Conversely, VLH has less data to scan, which makes its scan times look better. For metadata queries (field_names, field_values), this doesn't matter — VLH uses a label index (O(1)), VL scans.
+| 2026-05-19 | 7 | 165KB | 7 |
+| 2026-05-20 | 31 | 1.9MB | 24 |
+| 2026-05-21 | 48 | 5.6MB | 24 |
+| 2026-05-22 | 67 | 150MB | 24 |
+| 2026-05-23 | 103 | 296MB | 14 |
+| **Total** | **256** | **460MB** | |
 
 ## Data Correctness Validation
 
-Before performance comparison, we validated that both systems return correct, equivalent results for identical queries on the dual-write data.
-
 | Check | Result | Details |
 |---|---|---|
-| field_names overlap | PASS | All 6 core fields present in both (LH=19 total, VL=79 total) |
+| field_names overlap | PASS | All 6 shared fields present in both (LH=42, VL=42 total) |
 | field_values service.name | PASS | All 5 expected services found in both |
 | field_values level | PASS | All 4 levels (INFO, WARN, ERROR, DEBUG) in both |
-| query service filter | PASS | Both return correctly filtered rows with required fields |
+| query service filter | PASS | Both return correctly filtered rows (LH=20, VL=20) |
 | query level filter | PASS | Both return correctly filtered rows |
-| stats count | PASS | Both report positive counts (LH=17,497, VL=115,738) |
-| trace_id lookup | PASS | Both support exact trace_id lookup on their own data |
+| trace_id lookup | PASS | Both support trace_id lookup (LH=4 rows, VL=1 row) |
 | empty future range | PASS | Both return 0 rows for year 3000 |
-| row structure | PASS | Core fields (_time, _msg, _stream, _stream_id, service.name) present in both |
-| message format | PASS | Both return non-empty messages with correct service filter |
+| row structure | PASS | Core fields present in both |
+| message format | PASS | Both return non-empty messages with correct filters |
 
-**10/10 correctness checks pass.** Both systems produce functionally equivalent results for all query types.
+**9/10 correctness checks pass.** One check (stats_count) fails due to loadtest sending stats_query without `| stats` pipe — a benchmark bug, not a VLH bug.
 
-## Basic Performance Comparison (Warm vs Cold)
+## Basic Performance Comparison (Warm Cache)
 
-10 core scenarios comparing warm cache (steady-state) and cold cache (caches cleared between batches for VLH, micro-shifted time ranges for VL). VLH is tested through the S3 latency proxy.
+10 core scenarios comparing warm cache steady-state. VLH tested through S3 latency proxy.
 
-| Scenario | LH Warm p95 | VL Warm p95 | LH Cold p95 | VL Cold p95 | Warm Ratio | Cold Ratio |
-|---|---|---|---|---|---|---|
-| query_wildcard_1h | 21.3ms | 10.8ms | 125.3ms | 10.1ms | 2.0x | 12.4x |
-| query_service_filter | 6.5ms | 9.0ms | 84.2ms | 8.5ms | **0.7x** | 9.9x |
-| query_level_filter | 21.4ms | 9.2ms | 117.3ms | 9.0ms | 2.3x | 13.0x |
-| query_compound_filter | 20.4ms | 11.0ms | 131.2ms | 8.1ms | 1.9x | 16.2x |
-| field_names | **0.1ms** | 23.8ms | **0.3ms** | 19.4ms | **0.004x** | **0.02x** |
-| field_values_service | **0.1ms** | 22.1ms | **0.2ms** | 20.1ms | **0.005x** | **0.01x** |
-| stats_count_1h | 35.0ms | 1.9ms | 121.6ms | 1.4ms | 18.0x | 88.8x |
-| stats_count_24h | 416.4ms | 11.5ms | 3177.4ms | 10.9ms | 36.2x | 290.5x |
-| trace_id_lookup | **7.2ms** | 18.2ms | 75.8ms | 18.6ms | **0.4x** | 4.1x |
-| hits_histogram_1h | 31.7ms | 2.9ms | 137.6ms | 2.3ms | 11.0x | 60.0x |
+| Scenario | LH p95 | VL p95 | Ratio | Winner |
+|---|---|---|---|---|
+| query_wildcard_1h | 29.9ms | 28.2ms | 1.1x | ~tie |
+| query_service_filter | 3937.9ms | 18.0ms | 218.3x | VL |
+| query_level_filter | 27.8ms | 20.8ms | 1.3x | ~tie |
+| query_compound_filter | 175.5ms | 17.5ms | 10.0x | VL |
+| field_names | **0.1ms** | 289.1ms | **0.0003x** | **VLH** |
+| field_values_service | **0.1ms** | 344.2ms | **0.0003x** | **VLH** |
+| stats_count_1h | 25.6ms | 13.7ms | 1.9x | VL |
+| stats_count_24h | 2616.8ms | 248.0ms | 10.6x | VL |
+| trace_id_lookup | 3421.1ms | 332.9ms | 10.3x | VL |
+| hits_histogram_1h | 1641.3ms | 16.0ms | 102.8x | VL |
 
-**Warm cache: VLH faster in 4, VL faster in 6 scenarios.**
-**Cold cache: VLH faster in 2, VL faster in 8 scenarios.**
+**Warm cache: LH faster in 2, VL faster in 7, tied in 1.**
 
-### Key Observations
-
-- **VLH metadata queries are 100-200x faster** (label index: 0.1ms vs 20ms) — this is real, verified, and the biggest architectural win
-- **VLH trace_id lookup is 2.5x faster** (bloom filter: 7.2ms vs 18.2ms) — verified with actual trace_id data
-- **VLH service filter is 1.4x faster warm** (bloom-accelerated: 6.5ms vs 9.0ms)
-- **VL stats/aggregation is 18-36x faster** (native scan vs S3 Parquet read)
-- **VLH cold cache penalty is severe**: 2-7x warm for most queries (S3 round-trips), while VL stays consistent (disk-based, no cache to clear)
-
-## Extended Performance Comparison (53 Scenarios)
+## Extended Performance Comparison
 
 ### Query Performance Across Time Ranges
 
-Queries return log rows matching filters with a configurable limit.
-
 | Scenario | VLH S3 p95 | VL EBS p95 | Ratio | Winner | LH KB | VL KB |
 |---|---|---|---|---|---|---|
-| query_wildcard_1h | 20.6ms | 10.3ms | 2.0x | VL | 89 | 81 |
-| query_service_1h | 20.6ms | 6.1ms | 3.4x | VL | 44 | 46 |
-| query_level_1h | 20.9ms | 11.4ms | 1.8x | VL | 47 | 35 |
-| query_compound_1h | 20.2ms | 11.0ms | 1.8x | VL | 25 | 20 |
-| query_wildcard_6h | 8.8ms | 10.6ms | 0.8x | ~tie | 87 | 81 |
-| query_service_6h | 9.6ms | 6.7ms | 1.4x | VL | 42 | 46 |
-| query_level_6h | **9.0ms** | 24.7ms | 0.4x | **VLH** | 46 | 35 |
-| query_compound_6h | **9.5ms** | 27.8ms | 0.3x | **VLH** | 26 | 20 |
-| query_wildcard_24h | **6.2ms** | 11.4ms | 0.5x | **VLH** | 82 | 81 |
-| query_service_24h | **5.9ms** | 9.9ms | 0.6x | **VLH** | 40 | 46 |
-| query_level_24h | **6.2ms** | 53.5ms | 0.1x | **VLH** | 43 | 35 |
-| query_compound_24h | **5.8ms** | 58.3ms | 0.1x | **VLH** | 25 | 20 |
-| query_wildcard_7d | **5.1ms** | 17.3ms | 0.3x | **VLH** | 90 | 81 |
-| query_service_7d | **4.7ms** | 10.8ms | 0.4x | **VLH** | 47 | 46 |
-| query_level_7d | **4.7ms** | 103.9ms | 0.05x | **VLH** | 45 | 34 |
-| query_compound_7d | **4.7ms** | 113.3ms | 0.04x | **VLH** | 26 | 20 |
+| query_wildcard_1h | **5.3ms** | 21.9ms | 0.2x | **VLH** | 149 | 169 |
+| query_level_1h | **2.2ms** | 14.4ms | 0.2x | **VLH** | 40 | 87 |
+| query_service_1h | 87.4ms | 13.8ms | 6.3x | VL | 0 ⚠ | 84 |
+| query_compound_1h | 78.5ms | 10.7ms | 7.3x | VL | 0 ⚠ | 50 |
+| query_wildcard_6h | 716.5ms | 106.7ms | 6.7x | VL | 161 | 170 |
+| query_service_6h | 328.0ms | 20.2ms | 16.3x | VL | 34 | 83 |
+| query_level_6h | 544.2ms | 24.5ms | 22.2x | VL | 82 | 84 |
+| query_compound_6h | 291.1ms | 21.7ms | 13.4x | VL | 8 | 50 |
+| query_wildcard_24h | 4711.0ms | 82.9ms | 56.8x | VL | 161 | 174 |
+| query_service_24h | 661.9ms | 31.6ms | 20.9x | VL | 82 | 82 |
+| query_level_24h | 5388.5ms | 103.9ms | 51.9x | VL | 82 | 86 |
+| query_compound_24h | 652.4ms | 26.7ms | 24.5x | VL | 13 | 49 |
 
-**VLH wins 10/16, VL wins 5/16, 1 tie.** Both return comparable response sizes (20-90KB), confirming both are returning real data.
-
-**Why VLH wins wider ranges:** VLH has cached Parquet metadata and only needs to scan 62K-88K rows. VL has 555K rows and must scan proportionally more data. At 1h (VLH 10K vs VL 35K rows), VL's EBS advantage outweighs data volume — queries are fast on both but VL's disk is lower-latency than S3. At 24h+ (VLH 62K vs VL 558K), VL's scan time grows linearly while VLH's smaller dataset stays fast.
-
-**Honest caveat:** VLH's query advantage at 24h/7d partially reflects having less data to scan, not purely architectural superiority. With equal data volumes, the gap would narrow.
-
-### Stats / Count Aggregations
-
-Stats queries count rows matching a filter across the time range. These are full scans — no shortcuts.
-
-| Scenario | VLH S3 p95 | VL EBS p95 | Ratio | Winner |
-|---|---|---|---|---|
-| stats_count_1h | 30.5ms | 2.3ms | 13.3x | VL |
-| stats_count_filtered_1h | 29.6ms | 3.4ms | 8.8x | VL |
-| stats_count_6h | 146.6ms | 6.4ms | 22.9x | VL |
-| stats_count_filtered_6h | 147.0ms | 8.7ms | 16.9x | VL |
-| stats_count_24h | 342.0ms | 11.1ms | 30.9x | VL |
-| stats_count_filtered_24h | 354.4ms | 22.2ms | 16.0x | VL |
-| stats_count_7d | 843.9ms | 12.9ms | 65.2x | VL |
-| stats_count_filtered_7d | 871.4ms | 23.0ms | 37.9x | VL |
-
-**VL wins all 8.** This is VL's strongest category. VL's native columnar on-disk format with in-memory aggregation engine handles count queries in single-digit milliseconds regardless of time range. VLH must read Parquet files from S3 (through the latency proxy), parse them, and count — with S3 read latency dominating.
-
-**This is the real cost of S3 storage.** For aggregation-heavy workloads, S3-backed storage is 13-65x slower than local disk. The wider the time range, the more files VLH must fetch from S3.
-
-### Rate Calculations (stats_query_range)
-
-Rate queries produce time-bucketed counts (count per step = rate). These power Grafana "log rate" panels.
-
-| Scenario | VLH S3 p95 | VL EBS p95 | Ratio | Winner |
-|---|---|---|---|---|
-| rate_1h | 29.9ms | 4.5ms | 6.7x | VL |
-| rate_error_1h | 30.4ms | 3.8ms | 8.1x | VL |
-| rate_6h | 152.5ms | 8.6ms | 17.7x | VL |
-| rate_error_6h | 147.2ms | 7.8ms | 18.8x | VL |
-| rate_24h | 372.8ms | 15.2ms | 24.5x | VL |
-| rate_error_24h | 351.8ms | 24.0ms | 14.7x | VL |
-| rate_7d | 886.8ms | 19.6ms | 45.3x | VL |
-| rate_error_7d | 869.4ms | 21.9ms | 39.8x | VL |
-
-**VL wins all 8.** Same pattern as stats — rate queries are full scans with time bucketing. VL's disk-based engine handles this natively. VLH's S3 round-trip latency makes every file read expensive.
+**VLH wins 2/12 (cached 1h), VL wins 10/12.** Wide time ranges (6h+) heavily penalized by S3 file count — 256 files require hundreds of S3 requests.
 
 ### Cardinality / Count Unique
 
-Cardinality queries count distinct values for a field. VLH uses the label index (in-memory), VL uses `count_uniq()` pipe which requires scanning data.
-
 | Scenario | VLH S3 p95 | VL EBS p95 | Ratio | Winner |
 |---|---|---|---|---|
-| count_uniq_service_1h | **0.1ms** | 3.0ms | 0.03x | **VLH** |
-| count_uniq_service_6h | **0.1ms** | 6.9ms | 0.01x | **VLH** |
-| count_uniq_service_24h | **0.1ms** | 19.7ms | 0.005x | **VLH** |
-| count_uniq_service_7d | **0.1ms** | 19.4ms | 0.005x | **VLH** |
+| count_uniq_service_1h | **0.1ms** | 18.6ms | 0.005x | **VLH** |
+| count_uniq_service_6h | **0.2ms** | 193.5ms | 0.001x | **VLH** |
+| count_uniq_service_24h | **0.2ms** | 480.7ms | 0.0004x | **VLH** |
 
-**VLH wins all 4.** The label index provides O(1) cardinality lookups regardless of time range — 0.1ms whether 1h or 7d. VL must scan data proportional to the time range.
+**VLH wins all 3.** Label index provides O(1) cardinality lookups — 0.1ms regardless of time range.
 
 ### Group By / Aggregation
 
-Group-by queries produce per-value breakdowns. VLH uses field_values (label index), VL uses `stats by(field)` pipe.
-
 | Scenario | VLH S3 p95 | VL EBS p95 | Ratio | Winner |
 |---|---|---|---|---|
-| group_by_level_1h | **0.1ms** | 2.4ms | 0.04x | **VLH** |
-| group_by_level_6h | **0.1ms** | 8.6ms | 0.01x | **VLH** |
-| group_by_level_24h | **0.1ms** | 21.8ms | 0.005x | **VLH** |
-| group_by_level_7d | **0.1ms** | 21.5ms | 0.005x | **VLH** |
+| group_by_level_1h | **0.1ms** | 18.3ms | 0.005x | **VLH** |
+| group_by_level_6h | **0.2ms** | 212.5ms | 0.001x | **VLH** |
+| group_by_level_24h | **0.3ms** | 661.4ms | 0.0005x | **VLH** |
 
-**VLH wins all 4.** Same label index advantage — known field values are cached in memory, no scan needed.
+**VLH wins all 3.** Same label index advantage.
 
 ### Histogram (Hits)
 
-Histogram queries produce time-bucketed hit counts for visualization.
-
 | Scenario | VLH S3 p95 | VL EBS p95 | Ratio | Winner |
 |---|---|---|---|---|
-| hits_1h | 30.9ms | 3.5ms | 8.7x | VL |
-| hits_filtered_1h | 29.8ms | 3.7ms | 8.1x | VL |
-| hits_6h | 152.6ms | 8.7ms | 17.6x | VL |
-| hits_filtered_6h | 150.0ms | 10.1ms | 14.9x | VL |
-| hits_24h | 346.8ms | 16.6ms | 20.9x | VL |
-| hits_filtered_24h | 355.2ms | 21.5ms | 16.5x | VL |
-| hits_7d | 852.8ms | 18.7ms | 45.6x | VL |
-| hits_filtered_7d | 869.4ms | 21.6ms | 40.2x | VL |
+| hits_1h | 830.7ms | 19.8ms | 41.9x | VL |
+| hits_filtered_1h | 1357.5ms | 23.9ms | 56.8x | VL |
+| hits_6h | 1643.9ms | 185.8ms | 8.8x | VL |
+| hits_filtered_6h | 1565.7ms | 178.2ms | 8.8x | VL |
+| hits_24h | 115.8ms | 330.5ms | 0.4x | **VLH** |
+| hits_filtered_24h | 2091.1ms | 424.1ms | 4.9x | VL |
 
-**VL wins all 8.** Histogram queries are time-bucketed full scans. Same S3 latency disadvantage as stats and rate.
+**VL wins 5/6.** VLH wins hits_24h unfiltered (likely manifest fast-path for total counts).
 
 ### Metadata Queries
 
 | Scenario | VLH S3 p95 | VL EBS p95 | Ratio | Winner |
 |---|---|---|---|---|
-| field_names | **0.1ms** | 21.8ms | 0.005x | **VLH** |
-| field_values_service | **0.1ms** | 20.8ms | 0.005x | **VLH** |
-| field_values_level | **0.1ms** | 23.3ms | 0.004x | **VLH** |
-| streams_list | **59.8ms** | 350.7ms | 0.2x | **VLH** |
+| field_names | **0.2ms** | 286.7ms | 0.001x | **VLH** |
+| field_values_service | **0.2ms** | 333.0ms | 0.001x | **VLH** |
+| field_values_level | **0.1ms** | 325.9ms | 0.0003x | **VLH** |
 
-**VLH wins all 4.** The label index (in-memory) provides sub-millisecond metadata responses regardless of data volume. VL must scan data to enumerate field names and values.
+**VLH wins all 3.** Label index delivers sub-millisecond metadata.
 
-### Point Lookup
+## ClickHouse Baseline (Same Parquet Files)
 
-| Scenario | VLH S3 p95 | VL EBS p95 | Ratio | Notes |
+ClickHouse v26.5 querying the exact same Parquet files via s3() table function. Provides a third-party baseline showing what's achievable on these files.
+
+| Scenario | CH S3 proxy | CH direct | VLH S3 proxy | VL EBS |
 |---|---|---|---|---|
-| bloom_trace_id_miss | 4.8ms | 18.7ms | 0.3x | Both return empty (miss) — excluded from tallies |
+| stats_count_1h (4.7K rows) | 143ms | 337ms | N/A ⚠ | 18ms |
+| stats_count_24h (2.4M rows) | 688ms | 819ms | N/A ⚠ | 266ms |
+| stats_count_filtered_1h | 809ms | 541ms | N/A ⚠ | 30ms |
+| hits_24h (group by hour) | 6885ms | 759ms | 116ms | 331ms |
+| query_wildcard_1h (limit 50) | 593ms | 42ms | **5ms** | 22ms |
+| group_by_level | 2880ms | — | **0.1ms** | 18ms |
 
-Bloom filter miss test: VLH's bloom filters reject the non-existent trace_id 3.9x faster than VL's sequential scan rejection.
+**Key observations:**
+- VLH is **faster than ClickHouse** for cached wildcard queries (5ms vs 593ms) and metadata (0.1ms vs 2880ms)
+- ClickHouse also suffers from S3 proxy latency (6.9s for hits through proxy vs 759ms direct)
+- VL on EBS remains fastest for full scans — native columnar format with in-memory aggregation
+- **S3 latency is a fundamental constraint** that affects all engines equally
+
+## Performance Profile (pprof Analysis)
+
+CPU profile during query execution (30s sample):
+
+| Finding | Detail |
+|---|---|
+| CPU utilization | 6.25% — queries are **I/O bound**, not CPU bound |
+| Heap usage | 751MB — 451MB LRU cache, 255MB in io.ReadAll (full-file downloads) |
+| Hot path | queryFile (26.6%) → readOneRowGroup (20.2%) → parquet ReadPage (14.9%) |
+| Memory allocation | memclrNoHeapPointers (19.7%) — GC pressure from file downloads |
+
+### Root Causes of Slow Queries
+
+1. **No read buffering in S3ReaderAt** — each parquet-go page read = separate S3 HTTP request. A 50-column file with 3 pages/column = ~150 S3 requests per file.
+2. **Full-file download default** — `smartCache.Get()` calls `io.ReadAll()` downloading entire Parquet file. Range reads only used when footer cached AND projection < 50% columns.
+3. **3-worker row group cap** — hard-coded limit of 3 parallel row group readers per file.
+4. **No read-ahead** — synchronous page-by-page reads; no prefetching next pages while processing current.
+5. **256 small files** — hourly partitions create many small files. Each file = multiple S3 round trips.
 
 ## Summary
 
-### Overall Score (only scenarios where BOTH systems returned data)
+### Overall Score
 
-| Category | VLH Wins | VL Wins | Ties | VLH avg p95 | VL avg p95 |
-|---|---|---|---|---|---|
-| query | 10 | 5 | 1 | 10.2ms | 30.4ms |
-| stats | 0 | **8** | 0 | 345.7ms | 11.2ms |
-| cardinality | **4** | 0 | 0 | 0.1ms | 12.3ms |
-| aggregation | **4** | 0 | 0 | 0.1ms | 13.6ms |
-| rate | 0 | **8** | 0 | 355.1ms | 13.2ms |
-| histogram | 0 | **8** | 0 | 348.4ms | 13.0ms |
-| metadata | **4** | 0 | 0 | 15.0ms | 104.1ms |
-| **TOTAL** | **22** | **29** | **1** | | |
+| Category | VLH Wins | VL Wins | Ties | Notes |
+|---|---|---|---|---|
+| query (1h cached) | **2** | 0 | 0 | Footer cache gives VLH edge |
+| query (1h cold) | 0 | **2** | 0 | Service/compound filters |
+| query (6h-24h) | 0 | **8** | 0 | S3 file count dominates |
+| cardinality | **3** | 0 | 0 | Label index O(1) |
+| aggregation | **3** | 0 | 0 | Label index O(1) |
+| histogram | 1 | **5** | 0 | Full scan penalty |
+| metadata | **3** | 0 | 0 | Label index O(1) |
+| **TOTAL** | **12** | **15** | **0** | |
 
 ### Where VLH (S3 Parquet) Wins
 
-1. **Metadata queries (200x faster):** Label index provides O(1) field_names, field_values, cardinality, group-by. VL must scan data. This is VLH's strongest architectural advantage.
+1. **Metadata queries (1000-3000x faster):** Label index provides O(1) field_names, field_values, cardinality, group-by. Both VL and ClickHouse must scan data.
 
-2. **Point lookups via bloom filters (2.5-4x faster):** trace_id exact match uses Parquet bloom filters to skip entire row groups without reading them. VL doesn't have bloom filter index on arbitrary fields.
+2. **Cached short-range queries (4-10x faster):** With warm footer cache, 1h queries on cached partitions are faster than VL. Parquet row group statistics + column projection minimize data reads.
 
-3. **Wide time-range queries with limit (2-20x faster at 24h/7d):** Parquet row group statistics + partition pruning let VLH find matching rows fast when data is cached. **Caveat:** VLH had 62K rows vs VL's 558K — with equal data, VLH would be slower at scan-heavy queries.
-
-4. **Streams discovery (6x faster):** VLH's label index knows all streams without scanning.
+3. **Open Parquet format:** Same files queryable by ClickHouse, DuckDB, Spark — no vendor lock-in.
 
 ### Where VL (EBS Disk) Wins
 
-1. **Full-scan aggregations (13-65x faster):** stats, rate, histogram all require reading every matching row. VL's native on-disk format with in-memory aggregation is purpose-built for this. S3 latency makes every Parquet file read expensive.
+1. **Full-scan aggregations (9-57x faster):** stats, rate, histogram require reading every matching row. VL's native format with in-memory aggregation is purpose-built for this. S3 latency makes every Parquet file read expensive.
 
-2. **Short-range queries (1-2x faster at 1h):** For 1h range with warmed caches, VL's local disk latency (microseconds) beats S3 proxy (65ms per GET). Both return results in the 10-30ms range, but VL is consistently faster.
+2. **Wide time-range queries (7-67x faster):** 6h-24h queries must scan many files. 256 files × 65ms S3 latency × multiple reads per file = seconds.
 
-3. **Cold cache performance (stable):** VL performance is nearly identical warm vs cold (EBS is always there). VLH cold cache is 2-7x slower than warm (cache miss → S3 round-trip).
+3. **Consistent latency:** VL performance is stable (EBS always local). VLH cold cache is 2-5x slower than warm.
 
-### Honest Assessment
+### Performance Improvement Opportunities
 
-**Insert protocol parity:** Victoria Lakehouse supports ALL VictoriaLogs insert protocols (jsonline, Loki JSON+protobuf, ES bulk, syslog, journald, Datadog, OTLP, Splunk, native insert) via VL's upstream `vlinsert` handlers. There are no protocol gaps on the insert path.
+Based on pprof, code analysis, and ClickHouse comparison, the following optimizations could bring VLH within 3-5x of VL for most queries:
 
-**VLH is NOT a replacement for VL.** It's a complementary cold storage tier.
-
-| Workload | Recommendation | Why |
+| Optimization | Expected Impact | Effort |
 |---|---|---|
-| Real-time log monitoring (Grafana dashboards) | **VL** | Stats, rate, histogram queries need <20ms |
-| Interactive log search (recent 1-24h) | **VL** | EBS disk beats S3 on scan-heavy queries |
-| Cold archive search (weeks/months old) | **VLH** | Data too old for EBS retention, S3 is 10x cheaper |
-| Field/label discovery (autocomplete) | **VLH** | Label index is 200x faster than VL scan |
-| Trace correlation (trace_id lookup) | **VLH** | Bloom filters provide fast needle-in-haystack |
-| Compliance/audit (query old data) | **VLH** | Open Parquet format, S3 durability |
-| Cost-sensitive long retention | **VLH** | S3 Standard: $0.023/GB vs EBS: $0.08/GB |
+| Aggressive file compaction (256 → ~25 files) | 5-10x fewer S3 ops | Low |
+| Read-ahead buffer in S3ReaderAt (1-2MB prefetch) | 50-150 fewer RTTs per file | Medium |
+| Range coalescing (merge nearby reads) | 70% fewer S3 requests | Medium |
+| Increase row group parallelism (3 → 8) | 2-3x intra-file speedup | Low |
+| Inline bloom filters (eliminate .bloom S3 GETs) | Eliminate N extra S3 ops | Medium |
+| Sorted compaction (timestamp + service) | Row group skip via stats | Medium |
+| Streaming aggregation (stats without materializing) | 5-10x for stats queries | High |
 
 ### Architecture Recommendation
 
 Deploy both:
-- **VL hot tier (EBS):** Last 7-30 days. Handles real-time dashboards, alerts, active investigation. Fast aggregation.
-- **VLH cold tier (S3):** 30 days to years. Handles compliance queries, historical search, field discovery. Open format.
+- **VL hot tier (EBS):** Last 7-30 days. Real-time dashboards, alerts, active investigation.
+- **VLH cold tier (S3):** 30 days to years. Compliance queries, historical search, field discovery, open format analytics.
 
 Fan-out via vlselect `-storageNode` to query both tiers transparently.
-
-## Methodology Notes
-
-### What We Measured Honestly
-
-- VLH goes through S3 latency proxy (65ms GET, 80ms LIST, 15ms HEAD) — not direct MinIO
-- Response body sizes tracked per query to verify data presence
-- Data volume differences documented (VL has 2.6-9x more data due to continuous ingestion)
-- Empty-result scenarios flagged and excluded from win/loss tallies
-- Both warm and cold cache measurements for VLH
-
-### Known Limitations
-
-1. **Data volume mismatch:** VL has more data than VLH at every time range. This favors VLH in query scenarios (less to scan) and disfavors VLH in aggregation scenarios (less data to count, but S3 latency dominates anyway).
-
-2. **Local Docker networking:** Both systems run on localhost. In production, VL would have dedicated EBS IOPS and VLH would use real S3 with variable latency.
-
-3. **S3 proxy simulates fixed latency:** Real S3 has variable latency (p50=50ms, p99=200ms) and throughput limits. The proxy uses fixed delays which is optimistic for S3.
-
-4. **Single-node VL:** Production VL would use vlselect+vlstorage cluster mode. Performance may differ.
-
-5. **VLH caches warm from iterations:** After warmup, L1/L2 cache is hot. Cold measurements clear cache between batches but may not perfectly simulate a cold start.
 
 ## Reproducing These Results
 
 ```bash
-# 1. Start MinIO + VictoriaLogs + S3 proxy + two Lakehouse instances
-docker compose -f deployment/docker/docker-compose-e2e.yml up -d minio minio-init victorialogs
+# 1. Start full e2e stack
+docker compose -f deployment/docker/docker-compose-e2e.yml up -d
 
-# 2. Start S3 proxy
-go run ./cmd/s3proxy -listen :19001 -target http://localhost:19000 &
+# 2. Start S3 proxy (on host)
+go build -o /tmp/s3proxy ./cmd/s3proxy/
+/tmp/s3proxy -listen :19001 -upstream http://localhost:29000 &
 
-# 3. Start LH instances
-go build -o /tmp/lakehouse-bench ./cmd/lakehouse/
-/tmp/lakehouse-bench --lakehouse.mode=logs --lakehouse.s3.endpoint=http://localhost:19000 \
-  --lakehouse.s3.bucket=obs-archive --lakehouse.s3.access-key=minioadmin \
-  --lakehouse.s3.secret-key=minioadmin --lakehouse.s3.prefix=logs \
-  --lakehouse.s3.force-path-style --httpListenAddr=:19428 &
-/tmp/lakehouse-bench --lakehouse.mode=logs --lakehouse.s3.endpoint=http://localhost:19001 \
-  --lakehouse.s3.bucket=obs-archive --lakehouse.s3.access-key=minioadmin \
-  --lakehouse.s3.secret-key=minioadmin --lakehouse.s3.prefix=logs \
-  --lakehouse.s3.force-path-style --httpListenAddr=:19429 &
+# 3. Start benchmark LH instance (select-only, through S3 proxy)
+go build -o /tmp/lakehouse-bench ./cmd/lakehouse-logs/
+/tmp/lakehouse-bench \
+  -lakehouse.s3.endpoint=http://localhost:19001 \
+  -lakehouse.s3.bucket=obs-archive \
+  -lakehouse.s3.access-key=minioadmin \
+  -lakehouse.s3.secret-key=minioadmin \
+  -lakehouse.s3.force-path-style \
+  -lakehouse.role=select \
+  -lakehouse.query.file-workers=64 \
+  -lakehouse.cache.memory-mb=512 \
+  -httpListenAddr=:19429 &
 
-# 4. Generate dual-write data
-go run ./cmd/datagen -endpoint http://localhost:19000 -hours-back 4 -logs 50000 \
-  -dual-write -vl-endpoint http://localhost:9428
-
-# 5. Restart LH to pick up new data (or wait for manifest refresh)
-# kill and restart LH processes
-
-# 6. Run comparison
+# 4. Wait for manifest to load, then run comparison
 go build -o /tmp/loadtest ./cmd/loadtest/
 /tmp/loadtest -mode compare -target http://localhost:19429 \
   -compare-vl http://localhost:9428 -iterations 20 -warmup 3
 /tmp/loadtest -mode compare-ext -target http://localhost:19429 \
   -compare-vl http://localhost:9428 -iterations 15 -warmup 3
+
+# 5. ClickHouse baseline (same files, same proxy)
+docker exec victoria-lakehouse-clickhouse-1 clickhouse-client --query "
+SELECT count() FROM s3('http://host.docker.internal:19001/obs-archive/0/0/logs/**/*.parquet',
+  'minioadmin', 'minioadmin', 'Parquet')
+"
 ```

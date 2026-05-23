@@ -8,15 +8,16 @@ import (
 
 // queryColumns returns the set of parquet column names needed for a query.
 // Returns nil when all columns should be read (the common case).
-// Column projection is only applied when the query contains LogsQL pipes
-// that explicitly select or aggregate fields (e.g. "| fields ...", "| stats ...").
-// VL-internal pipes (sort, limit, offset) don't reduce the column set.
-func queryColumns(queryStr string, registry *schema.Registry) map[string]bool {
+//
+// pipeFields are field names extracted from VL's parsed pipe operators
+// (stats by(), uniq by(), top by(), fields) via logstorage.GetQueryPipeFields.
+// Using VL's actual parsed representation avoids duplicating query parsing.
+func queryColumns(queryStr string, registry *schema.Registry, pipeFields []string) map[string]bool {
 	if queryStr == "" || queryStr == "*" {
 		return nil
 	}
 
-	if !hasColumnSelectingPipe(queryStr) {
+	if len(pipeFields) == 0 && !hasColumnSelectingPipe(queryStr) {
 		return nil
 	}
 
@@ -29,6 +30,12 @@ func queryColumns(queryStr string, registry *schema.Registry) map[string]bool {
 
 	for _, fm := range registry.PromotedColumns() {
 		if referencesField(queryStr, fm.InternalName) || referencesField(queryStr, fm.ParquetColumn) {
+			cols[fm.ParquetColumn] = true
+		}
+	}
+
+	for _, name := range pipeFields {
+		if fm := registry.ResolveToParquet(name); fm != nil {
 			cols[fm.ParquetColumn] = true
 		}
 	}

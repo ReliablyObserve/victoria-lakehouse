@@ -74,7 +74,7 @@ func FuzzTraceRowToDataBlock(f *testing.F) {
 			HTTPStatusCode:    statusCode,
 		}
 
-		fields := traceRowToFields(&row)
+		fields := traceRowToFields(&row, nil)
 		seen := make(map[string]bool)
 		for _, f := range fields {
 			if seen[f.name] {
@@ -135,7 +135,7 @@ func FuzzLogRowToDataBlock(f *testing.F) {
 			TraceID:           traceID,
 		}
 
-		fields := logRowToFields(&row)
+		fields := logRowToFields(&row, nil)
 		seen := make(map[string]bool)
 		for _, f := range fields {
 			if seen[f.name] {

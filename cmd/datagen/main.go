@@ -11,6 +11,7 @@ import (
 	"math/big"
 	mrand "math/rand"
 	"net/http"
+	"sort"
 	"time"
 )
 
@@ -638,7 +639,17 @@ func pushOTLPTracesToURL(url string, rows []traceRow, accountID, projectID, orgI
 }
 
 func pushTempoTraces(endpoint string, rows []traceRow) error {
-	return pushOTLPTracesToURL(endpoint+"/v1/traces", rows, "", "", "")
+	const batchSize = 2000
+	for i := 0; i < len(rows); i += batchSize {
+		end := i + batchSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		if err := pushOTLPTracesToURL(endpoint+"/v1/traces", rows[i:end], "", "", ""); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func pushLoki(endpoint string, rows []logRow) error {
@@ -681,21 +692,31 @@ func pushLoki(endpoint string, rows []logRow) error {
 
 	var streams []lokiStream
 	for _, s := range byStream {
+		sort.Slice(s.Values, func(i, j int) bool {
+			return s.Values[i][0] < s.Values[j][0]
+		})
 		streams = append(streams, *s)
 	}
 
-	const maxValuesPerBatch = 5000
+	const maxValuesPerBatch = 1000
 	var batches [][]lokiStream
 	var current []lokiStream
 	currentValues := 0
 	for _, s := range streams {
-		if currentValues+len(s.Values) > maxValuesPerBatch && len(current) > 0 {
-			batches = append(batches, current)
-			current = nil
-			currentValues = 0
+		for i := 0; i < len(s.Values); i += maxValuesPerBatch {
+			end := i + maxValuesPerBatch
+			if end > len(s.Values) {
+				end = len(s.Values)
+			}
+			chunk := lokiStream{Stream: s.Stream, Values: s.Values[i:end]}
+			if currentValues+len(chunk.Values) > maxValuesPerBatch && len(current) > 0 {
+				batches = append(batches, current)
+				current = nil
+				currentValues = 0
+			}
+			current = append(current, chunk)
+			currentValues += len(chunk.Values)
 		}
-		current = append(current, s)
-		currentValues += len(s.Values)
 	}
 	if len(current) > 0 {
 		batches = append(batches, current)

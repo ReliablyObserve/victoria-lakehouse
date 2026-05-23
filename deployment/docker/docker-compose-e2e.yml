@@ -44,6 +44,8 @@ services:
       - "-retentionPeriod=24h"
       - "-loggerLevel=INFO"
     networks: [lakehouse-net]
+    ports:
+      - "9428:9428"
     volumes:
       - vl-data:/data
     healthcheck:
@@ -341,7 +343,40 @@ services:
       victorialogs:
         condition: service_healthy
     ports:
-      - "23100:3100"
+      - "23200:3100"
+    networks: [lakehouse-net]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # =========================================================================
+  # Loki-VL-proxy — cold-only (LH backend, no VL hot tier)
+  # =========================================================================
+
+  loki-vl-proxy-cold:
+    build:
+      context: .
+      dockerfile: Dockerfile.loki-vl-proxy
+    environment:
+      VL_BACKEND_URL: "http://lakehouse-logs:9428"
+    command:
+      - "-label-style=underscores"
+      - "-metadata-field-mode=translated"
+      - "-emit-structured-metadata=true"
+      - "-stream-fields=service_name,k8s_namespace_name,k8s_pod_name,k8s_deployment_name,deployment_environment"
+      - "-extra-label-fields=level,cloud_region"
+      - "-derived-fields=[{\"name\":\"traceID\",\"matcherRegex\":\"trace_id=([a-f0-9]+)\",\"url\":\"http://localhost:3003/explore?left=%5B%22now-1h%22,%22now%22,%22victoria-lakehouse-traces%22,%7B%22query%22:%22$${__value.raw}%22%7D%5D\"}]"
+      - "-patterns-autodetect-from-queries=true"
+      - "-label-values-indexed-cache=true"
+      - "-server.admin-auth-token=dev-token"
+    depends_on:
+      lakehouse-logs:
+        condition: service_healthy
+    ports:
+      - "23201:3100"
     networks: [lakehouse-net]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/ready"]

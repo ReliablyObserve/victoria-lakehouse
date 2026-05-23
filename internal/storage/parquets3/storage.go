@@ -50,6 +50,7 @@ type Storage struct {
 	footerCache    *FooterCache
 	fileBloomCache sync.Map
 	selfAZ         string
+	dlSem          chan struct{}
 }
 
 func New(cfg *config.Config) (*Storage, error) {
@@ -121,6 +122,11 @@ func New(cfg *config.Config) (*Storage, error) {
 		ph = peercache.NewHandler(cfg.Peer.AuthKey, "")
 	}
 
+	maxDL := cfg.S3.MaxConcurrentDownloads
+	if maxDL <= 0 {
+		maxDL = 16
+	}
+
 	var sc *smartcache.Controller
 	if cfg.SelectEnabled() {
 		metaMap := smartcache.NewMetadataMap()
@@ -147,7 +153,7 @@ func New(cfg *config.Config) (*Storage, error) {
 			L2:           &l2Adapter{dc: diskCacheInst},
 			PeerLookup:   peerLookupImpl,
 			PeerFetcher:  peerFetchImpl,
-			S3Fetcher:    &s3Adapter{pool: pool},
+			S3Fetcher:    &s3Adapter{pool: pool, dlSem: make(chan struct{}, maxDL)},
 			Metadata:     metaMap,
 			MaxAge:       cfg.SmartCache.MaxAge,
 			HotThreshold: cfg.SmartCache.HotAccessThreshold,
@@ -198,6 +204,7 @@ func New(cfg *config.Config) (*Storage, error) {
 		smartCache:   sc,
 		bloomCache:   bc,
 		footerCache:  fc,
+		dlSem:        make(chan struct{}, maxDL),
 	}
 
 	if bw != nil {
@@ -293,6 +300,12 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 	}
 
 	data, err, shared := s.sfGroup.Do(key, func() ([]byte, error) {
+		select {
+		case s.dlSem <- struct{}{}:
+			defer func() { <-s.dlSem }()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		s3Start := time.Now()
 		metrics.S3RequestsTotal.Inc("GET")
 		d, dlErr := s.pool.Download(ctx, key)
@@ -362,7 +375,30 @@ func (s *Storage) updateLabelIndex(f *parquet.File) {
 		"span.name":              true,
 	}
 
+	// MAP columns whose keys should be expanded into individual field names
+	mapColumns := map[string]bool{
+		"resource.attributes": true,
+		"log.attributes":      true,
+		"span.attributes":     true,
+		"scope.attributes":    true,
+	}
+
+	promotedParquetNames := make(map[string]bool)
+	for _, m := range s.registry.PromotedColumns() {
+		promotedParquetNames[m.ParquetColumn] = true
+	}
+
 	for _, name := range columnNames(f.Root()) {
+		if mapColumns[name] {
+			for _, k := range extractMapDistinctKeys(f, name) {
+				if promotedParquetNames[k] {
+					continue
+				}
+				s.labelIndex.Add(k, nil)
+			}
+			continue
+		}
+
 		internalName := name
 		if m := s.registry.ResolveFromParquet(name); m != nil {
 			internalName = m.InternalName
@@ -383,6 +419,61 @@ func (s *Storage) updateLabelIndex(f *parquet.File) {
 		counts := sampleValueFrequency(f, colIdx)
 		s.labelIndex.AddWithValueCounts(internalName, vals, counts)
 	}
+}
+
+// extractMapDistinctKeys reads the key leaf column of a MAP column and returns
+// all distinct key names. This expands MAP columns like resource.attributes
+// into individual field names matching VL's flat field model.
+func extractMapDistinctKeys(f *parquet.File, mapColName string) []string {
+	allCols := f.Schema().Columns()
+	keyIdx := -1
+	for i, path := range allCols {
+		if len(path) >= 3 && path[0] == mapColName && path[2] == "key" {
+			keyIdx = i
+			break
+		}
+	}
+	if keyIdx < 0 {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	for _, rg := range f.RowGroups() {
+		chunks := rg.ColumnChunks()
+		if keyIdx >= len(chunks) {
+			continue
+		}
+		pages := chunks[keyIdx].Pages()
+		buf := make([]parquet.Value, 256)
+		for {
+			page, err := pages.ReadPage()
+			if err != nil {
+				break
+			}
+			vr := page.Values()
+			for {
+				n, readErr := vr.ReadValues(buf[:])
+				for i := 0; i < n; i++ {
+					if !buf[i].IsNull() {
+						if b := buf[i].Bytes(); len(b) > 0 && len(b) < 256 {
+							seen[string(b)] = true
+						}
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+		}
+		_ = pages.Close()
+		break // One row group is enough
+	}
+
+	result := make([]string, 0, len(seen))
+	for k := range seen {
+		result = append(result, k)
+	}
+	return result
 }
 
 // sampleValueFrequency reads up to 1024 rows from the first row group
@@ -1137,8 +1228,19 @@ func (l *localOnlyLookup) Lookup(key string) (string, bool) { return "self", tru
 func (l *localOnlyLookup) Members() []string                { return []string{"self"} }
 func (l *localOnlyLookup) MemberCount() int                 { return 1 }
 
-type s3Adapter struct{ pool *s3reader.ClientPool }
+type s3Adapter struct {
+	pool  *s3reader.ClientPool
+	dlSem chan struct{}
+}
 
 func (a *s3Adapter) Download(ctx context.Context, key string) ([]byte, error) {
+	if a.dlSem != nil {
+		select {
+		case a.dlSem <- struct{}{}:
+			defer func() { <-a.dlSem }()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	return a.pool.Download(ctx, key)
 }

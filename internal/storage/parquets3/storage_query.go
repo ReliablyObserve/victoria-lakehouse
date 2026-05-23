@@ -52,6 +52,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 
 	queryStr := q.String()
+	pipeFields := logstorage.GetQueryPipeFields(q)
 	filter := parseFilterFromQuery(q)
 
 	var rowsEmitted atomic.Int64
@@ -194,7 +195,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				if s.checkFileBloom(ctx, fi, queryStr) {
 					continue
 				}
-				if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, filteredWriteBlock); err != nil {
+				if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filteredWriteBlock); err != nil {
 					logger.Warnf("query file error: %s; key=%s", err, fi.Key)
 					continue
 				}
@@ -377,8 +378,8 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 	return f, nil
 }
 
-func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, writeBlock logstorage.WriteDataBlockFunc) error {
-	projectedCols := queryColumns(queryStr, s.registry)
+func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, writeBlock logstorage.WriteDataBlockFunc) error {
+	projectedCols := queryColumns(queryStr, s.registry, pipeFields)
 
 	// Hits/stats fast path: when the endpoint only needs timestamps (set via
 	// context hint) and the query has no column-specific filters, project only
@@ -392,7 +393,9 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 		return err
 	}
 
-	s.updateLabelIndex(f)
+	if s.labelIndex.Len() == 0 {
+		s.updateLabelIndex(f)
+	}
 	s.updateColumnStats(fi.Key, f)
 	s.enrichManifestFromFooter(fi, f)
 
@@ -527,7 +530,7 @@ func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, en
 	return readRowGroupTyped[schema.LogRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, logRowToFields)
 }
 
-func readRowGroupTyped[T any](s *Storage, f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, toFields func(*T) []field) error {
+func readRowGroupTyped[T any](s *Storage, f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, toFields func(*T, []field) []field) error {
 	reader := parquet.NewGenericRowGroupReader[T](rg)
 	buf := make([]T, 256)
 	for {
@@ -567,6 +570,19 @@ func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGrou
 
 	bitmap := prewhereFilter(f, rg, pdf)
 
+	// Fast path: columnar reading when no constant columns need merging.
+	if len(constants) == 0 && len(readCols) > 0 {
+		db := readRowGroupColumnar(f, rg, readCols, s.registry, startNs, endNs, bitmap)
+		if db != nil && db.RowsCount() > 0 {
+			writeBlock(0, db)
+			if traceIDs != nil {
+				extractTraceIDs(db, traceIDs)
+			}
+		}
+		return nil
+	}
+
+	// Slow path: row-oriented reading with constant column merging.
 	var allFields [][]field
 	if len(readCols) > 0 {
 		var err error
@@ -629,6 +645,7 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 	}
 
 	rowNum := 0
+	var seenBitmap []bool
 	for _, fields := range rows {
 		// Time-range filter
 		skip := false
@@ -646,7 +663,23 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 			continue
 		}
 
-		seen := make(map[int]bool)
+		// Grow bitmap to match column count; clear previous bits.
+		if cap(seenBitmap) >= len(cols) {
+			seenBitmap = seenBitmap[:len(cols)]
+		} else {
+			seenBitmap = make([]bool, len(cols), len(cols)*2)
+		}
+		for i := range seenBitmap {
+			seenBitmap[i] = false
+		}
+
+		scalarFieldNames := make(map[string]bool)
+		for _, fld := range fields {
+			if _, ok := fld.value.(map[string]string); !ok {
+				scalarFieldNames[fld.name] = true
+			}
+		}
+
 		for _, fld := range fields {
 			if mapVal, ok := fld.value.(map[string]string); ok {
 				prefix := mapColumnToAttrPrefix(fld.name)
@@ -654,12 +687,19 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 					if v == "" {
 						continue
 					}
-					attrName := prefix + k
-					idx := getCol(attrName)
-					if seen[idx] {
+					if scalarFieldNames[k] {
 						continue
 					}
-					seen[idx] = true
+					attrName := bytesutil.InternString(prefix + k)
+					idx := getCol(attrName)
+					// Grow bitmap for new columns discovered via MAP.
+					for idx >= len(seenBitmap) {
+						seenBitmap = append(seenBitmap, false)
+					}
+					if seenBitmap[idx] {
+						continue
+					}
+					seenBitmap[idx] = true
 					for len(cols[idx].values) < rowNum {
 						cols[idx].values = append(cols[idx].values, "")
 					}
@@ -678,10 +718,13 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 				continue
 			}
 			idx := getCol(internalName)
-			if seen[idx] {
+			for idx >= len(seenBitmap) {
+				seenBitmap = append(seenBitmap, false)
+			}
+			if seenBitmap[idx] {
 				continue
 			}
-			seen[idx] = true
+			seenBitmap[idx] = true
 			for len(cols[idx].values) < rowNum {
 				cols[idx].values = append(cols[idx].values, "")
 			}
@@ -690,7 +733,9 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 
 		// Fill empty for columns not present in this row
 		for i := range cols {
-			if !seen[i] && len(cols[i].values) <= rowNum {
+			if i < len(seenBitmap) && !seenBitmap[i] && len(cols[i].values) <= rowNum {
+				cols[i].values = append(cols[i].values, "")
+			} else if i >= len(seenBitmap) && len(cols[i].values) <= rowNum {
 				cols[i].values = append(cols[i].values, "")
 			}
 		}
@@ -721,14 +766,8 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 
 func mapColumnToAttrPrefix(col string) string {
 	switch col {
-	case "resource.attributes":
-		return "resource_attr:"
-	case "log.attributes":
-		return "log_attr:"
-	case "span.attributes":
-		return "span_attr:"
-	case "scope.attributes":
-		return "scope_attr:"
+	case "resource.attributes", "log.attributes", "span.attributes", "scope.attributes":
+		return ""
 	default:
 		return col + ":"
 	}
@@ -739,74 +778,96 @@ type field struct {
 	value any
 }
 
-func logRowToFields(r *schema.LogRow) []field {
-	fields := []field{
-		{"_time", r.TimestampUnixNano},
-		{"_msg", r.Body},
-		{"level", r.SeverityText},
-		{"severity_number", r.SeverityNumber},
-		{"service.name", r.ServiceName},
-		{"k8s.namespace.name", r.K8sNamespaceName},
-		{"k8s.pod.name", r.K8sPodName},
-		{"k8s.deployment.name", r.K8sDeploymentName},
-		{"k8s.node.name", r.K8sNodeName},
-		{"deployment.environment", r.DeployEnv},
-		{"cloud.region", r.CloudRegion},
-		{"host.name", r.HostName},
-		{"trace_id", r.TraceID},
-		{"span_id", r.SpanID},
-		{"_stream", r.Stream},
-		{"_stream_id", r.StreamID},
-		{"scope.name", r.ScopeName},
-	}
+func logRowToFields(r *schema.LogRow, buf []field) []field {
+	buf = append(buf,
+		field{"_time", r.TimestampUnixNano},
+		field{"_msg", r.Body},
+		field{"level", r.SeverityText},
+		field{"severity_number", r.SeverityNumber},
+		field{"service.name", r.ServiceName},
+		field{"k8s.namespace.name", r.K8sNamespaceName},
+		field{"k8s.pod.name", r.K8sPodName},
+		field{"k8s.deployment.name", r.K8sDeploymentName},
+		field{"k8s.node.name", r.K8sNodeName},
+		field{"deployment.environment", r.DeployEnv},
+		field{"cloud.region", r.CloudRegion},
+		field{"host.name", r.HostName},
+		field{"trace_id", r.TraceID},
+		field{"span_id", r.SpanID},
+		field{"_stream", r.Stream},
+		field{"_stream_id", r.StreamID},
+		field{"scope.name", r.ScopeName},
+	)
 	for k, v := range r.ResourceAttributes {
-		fields = append(fields, field{k, v})
+		buf = append(buf, field{k, v})
 	}
 	for k, v := range r.LogAttributes {
-		fields = append(fields, field{k, v})
+		buf = append(buf, field{k, v})
 	}
-	return fields
+	return buf
 }
 
-func traceRowToFields(r *schema.TraceRow) []field {
-	fields := []field{
-		{"_time", r.TimestampUnixNano},
-		{"start_time", r.StartTimeUnixNano},
-		{"trace_id", r.TraceID},
-		{"span_id", r.SpanID},
-		{"parent_span_id", r.ParentSpanID},
-		{"name", r.SpanName},
-		{"kind", r.SpanKind},
-		{"status_code", r.StatusCode},
-		{"status_message", r.StatusMessage},
-		{"duration", r.DurationNs},
-		{"resource_attr:service.name", r.ServiceName},
-		{"scope_attr:otel.library.name", r.ScopeName},
-		{"resource_attr:deployment.environment", r.DeployEnv},
-		{"resource_attr:cloud.region", r.CloudRegion},
-		{"resource_attr:host.name", r.HostName},
-		{"resource_attr:k8s.namespace.name", r.K8sNamespaceName},
-		{"resource_attr:k8s.deployment.name", r.K8sDeploymentName},
-		{"resource_attr:k8s.node.name", r.K8sNodeName},
-		{"span_attr:http.method", r.HTTPMethod},
-		{"span_attr:http.status_code", r.HTTPStatusCode},
-		{"span_attr:http.url", r.HTTPUrl},
-		{"span_attr:db.system", r.DBSystem},
-		{"span_attr:db.statement", r.DBStatement},
-	}
+func traceRowToFields(r *schema.TraceRow, buf []field) []field {
+	buf = append(buf,
+		field{"_time", r.TimestampUnixNano},
+		field{"start_time", r.StartTimeUnixNano},
+		field{"trace_id", r.TraceID},
+		field{"span_id", r.SpanID},
+		field{"parent_span_id", r.ParentSpanID},
+		field{"name", r.SpanName},
+		field{"kind", r.SpanKind},
+		field{"status_code", r.StatusCode},
+		field{"status_message", r.StatusMessage},
+		field{"duration", r.DurationNs},
+		field{"service.name", r.ServiceName},
+		field{"otel.library.name", r.ScopeName},
+		field{"deployment.environment", r.DeployEnv},
+		field{"cloud.region", r.CloudRegion},
+		field{"host.name", r.HostName},
+		field{"k8s.namespace.name", r.K8sNamespaceName},
+		field{"k8s.deployment.name", r.K8sDeploymentName},
+		field{"k8s.node.name", r.K8sNodeName},
+		field{"http.method", r.HTTPMethod},
+		field{"http.status_code", r.HTTPStatusCode},
+		field{"http.url", r.HTTPUrl},
+		field{"db.system", r.DBSystem},
+		field{"db.statement", r.DBStatement},
+	)
 	for k, v := range r.ResourceAttributes {
-		fields = append(fields, field{k, v})
+		if !tracePromotedResourceKeys[k] {
+			buf = append(buf, field{k, v})
+		}
 	}
 	for k, v := range r.SpanAttributes {
-		fields = append(fields, field{k, v})
+		if !tracePromotedSpanKeys[k] {
+			buf = append(buf, field{k, v})
+		}
 	}
 	for k, v := range r.ScopeAttributes {
-		fields = append(fields, field{k, v})
+		buf = append(buf, field{k, v})
 	}
-	return fields
+	return buf
 }
 
-func typedRowsToDataBlock[T any](s *Storage, rows []T, startNs, endNs int64, toFields func(*T) []field) *logstorage.DataBlock {
+var tracePromotedResourceKeys = map[string]bool{
+	"service.name":          true,
+	"deployment.environment": true,
+	"cloud.region":          true,
+	"host.name":             true,
+	"k8s.namespace.name":    true,
+	"k8s.deployment.name":   true,
+	"k8s.node.name":         true,
+}
+
+var tracePromotedSpanKeys = map[string]bool{
+	"http.method":      true,
+	"http.status_code": true,
+	"http.url":         true,
+	"db.system":        true,
+	"db.statement":     true,
+}
+
+func typedRowsToDataBlock[T any](s *Storage, rows []T, startNs, endNs int64, toFields func(*T, []field) []field) *logstorage.DataBlock {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -831,25 +892,41 @@ func typedRowsToDataBlock[T any](s *Storage, rows []T, startNs, endNs int64, toF
 		return idx
 	}
 
+	var seenBitmap []bool
+	var fieldBuf []field
 	for rowNum, row := range rows {
-		fields := toFields(&row)
+		fieldBuf = toFields(&row, fieldBuf[:0])
+		fields := fieldBuf
 
-		seen := make(map[int]bool)
+		if cap(seenBitmap) >= len(cols) {
+			seenBitmap = seenBitmap[:len(cols)]
+		} else {
+			seenBitmap = make([]bool, len(cols), len(cols)*2)
+		}
+		for i := range seenBitmap {
+			seenBitmap[i] = false
+		}
+
 		for _, f := range fields {
 			formatted := s.registry.FormatField(f.name, f.value)
 			if formatted == "" {
 				continue
 			}
 			idx := getCol(f.name)
-			if seen[idx] {
+			for idx >= len(seenBitmap) {
+				seenBitmap = append(seenBitmap, false)
+			}
+			if seenBitmap[idx] {
 				continue
 			}
-			seen[idx] = true
+			seenBitmap[idx] = true
 			cols[idx].values = append(cols[idx].values, formatted)
 		}
 
 		for i := range cols {
-			if !seen[i] && len(cols[i].values) <= rowNum {
+			if i < len(seenBitmap) && !seenBitmap[i] && len(cols[i].values) <= rowNum {
+				cols[i].values = append(cols[i].values, "")
+			} else if i >= len(seenBitmap) && len(cols[i].values) <= rowNum {
 				cols[i].values = append(cols[i].values, "")
 			}
 		}

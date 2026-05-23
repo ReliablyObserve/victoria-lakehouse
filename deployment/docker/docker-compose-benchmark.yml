@@ -203,6 +203,35 @@ services:
       disable: true
 
   # =========================================================================
+  # System G: ClickHouse — reads Lakehouse Parquet files directly from S3
+  # =========================================================================
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.5
+    ports:
+      - "38123:8123"
+      - "39009:9000"
+    networks: [bench-net]
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./clickhouse/init-s3.sql:/docker-entrypoint-initdb.d/init-s3.sql:ro
+    environment:
+      CLICKHOUSE_DB: lakehouse
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: benchmark
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # =========================================================================
   # Data Generation — write to all 6 systems (3 logs + 3 traces)
   # =========================================================================
 
@@ -225,8 +254,8 @@ services:
         condition: service_started
     networks: [bench-net]
     command:
-      - "--logs=500000"
-      - "--traces=50000"
+      - "--logs=100000"
+      - "--traces=20000"
       - "--hours-back=168"
       - "--vl-endpoint=http://victorialogs:9428"
       - "--lh-logs-endpoint=http://lakehouse-logs:9428"
@@ -234,6 +263,73 @@ services:
       - "--vt-endpoint=http://victoriatraces:10428"
       - "--lh-traces-endpoint=http://lakehouse-traces:10428"
       - "--tempo-endpoint=http://tempo:4318"
+
+  # =========================================================================
+  # Loki-VL-Proxy — LH only (cold-only mode, no VL hot tier)
+  # =========================================================================
+
+  loki-vl-proxy-lh:
+    build:
+      context: .
+      dockerfile: Dockerfile.loki-vl-proxy
+    environment:
+      VL_BACKEND_URL: "http://lakehouse-logs:9428"
+    command:
+      - "-label-style=underscores"
+      - "-metadata-field-mode=translated"
+      - "-emit-structured-metadata=true"
+      - "-stream-fields=service_name,k8s_namespace_name,k8s_pod_name,k8s_deployment_name,deployment_environment"
+      - "-extra-label-fields=level,cloud_region"
+      - "-server.admin-auth-token=bench-token"
+    depends_on:
+      lakehouse-logs:
+        condition: service_healthy
+    ports:
+      - "23100:3100"
+    networks: [bench-net]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # =========================================================================
+  # Loki-VL-Proxy — VL + LH (hot+cold routing)
+  # =========================================================================
+
+  loki-vl-proxy-vl-lh:
+    build:
+      context: .
+      dockerfile: Dockerfile.loki-vl-proxy
+    environment:
+      VL_BACKEND_URL: "http://victorialogs:9428"
+    command:
+      - "-label-style=underscores"
+      - "-metadata-field-mode=translated"
+      - "-emit-structured-metadata=true"
+      - "-stream-fields=service_name,k8s_namespace_name,k8s_pod_name,k8s_deployment_name,deployment_environment"
+      - "-extra-label-fields=level,cloud_region"
+      - "-cold-enabled=true"
+      - "-cold-backend=http://lakehouse-logs:9428"
+      - "-cold-boundary=24h"
+      - "-cold-overlap=1h"
+      - "-cold-manifest-refresh=30s"
+      - "-server.admin-auth-token=bench-token"
+    depends_on:
+      lakehouse-logs:
+        condition: service_healthy
+      victorialogs:
+        condition: service_healthy
+    ports:
+      - "23101:3100"
+    networks: [bench-net]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   # =========================================================================
   # VictoriaMetrics — scrapes metrics from all systems

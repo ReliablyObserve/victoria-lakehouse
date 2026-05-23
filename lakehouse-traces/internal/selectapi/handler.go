@@ -45,8 +45,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/select/logsql/streams", h.wrapVL(logsql.ProcessStreamsRequest))
 	mux.HandleFunc("/select/logsql/stream_ids", h.wrapVL(logsql.ProcessStreamIDsRequest))
 	mux.HandleFunc("/select/logsql/hits", h.wrapVLTimestampOnly(logsql.ProcessHitsRequest))
-	mux.HandleFunc("/select/logsql/stats_query", h.wrapVLTimestampOnly(logsql.ProcessStatsQueryRequest))
-	mux.HandleFunc("/select/logsql/stats_query_range", h.wrapVLTimestampOnly(logsql.ProcessStatsQueryRangeRequest))
+	mux.HandleFunc("/select/logsql/stats_query", h.wrapVL(logsql.ProcessStatsQueryRequest))
+	mux.HandleFunc("/select/logsql/stats_query_range", h.wrapVL(logsql.ProcessStatsQueryRangeRequest))
 	mux.HandleFunc("/select/logsql/tail", h.handleTailNoop)
 	mux.HandleFunc("/select/tenant_ids", h.wrapVL(logsql.ProcessTenantIDsRequest))
 
@@ -67,9 +67,21 @@ func (h *Handler) Register(mux *http.ServeMux) {
 func (h *Handler) wrapVLTimestampOnly(fn func(ctx context.Context, w http.ResponseWriter, r *http.Request)) http.HandlerFunc {
 	inner := h.wrapVL(fn)
 	return func(w http.ResponseWriter, r *http.Request) {
-		r = r.WithContext(storage.WithTimestampOnlyHint(r.Context()))
+		if !requestNeedsFieldData(r) {
+			r = r.WithContext(storage.WithTimestampOnlyHint(r.Context()))
+		}
 		inner.ServeHTTP(w, r)
 	}
+}
+
+func requestNeedsFieldData(r *http.Request) bool {
+	if r.FormValue("field") != "" {
+		return true
+	}
+	if vals, ok := r.Form["fields[]"]; ok && len(vals) > 0 {
+		return true
+	}
+	return false
 }
 
 func (h *Handler) wrapVL(fn func(ctx context.Context, w http.ResponseWriter, r *http.Request)) http.HandlerFunc {

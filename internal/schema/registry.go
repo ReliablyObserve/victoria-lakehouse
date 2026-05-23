@@ -7,6 +7,93 @@ import (
 	"time"
 )
 
+// fastFormatTimestampNano formats nanosecond-epoch int64 to RFC3339Nano
+// without the per-call overhead of time.Time allocation + time.Format.
+// Uses direct digit extraction into a fixed-size buffer.
+func fastFormatTimestampNano(ns int64) string {
+	const rfc3339NanoLen = len("2006-01-02T15:04:05.999999999Z")
+	t := time.Unix(0, ns).UTC()
+	y, mo, d := t.Date()
+	h, mi, s := t.Clock()
+	nsec := t.Nanosecond()
+
+	var buf [rfc3339NanoLen]byte
+	buf[0] = byte('0' + y/1000)
+	buf[1] = byte('0' + (y/100)%10)
+	buf[2] = byte('0' + (y/10)%10)
+	buf[3] = byte('0' + y%10)
+	buf[4] = '-'
+	buf[5] = byte('0' + mo/10)
+	buf[6] = byte('0' + mo%10)
+	buf[7] = '-'
+	buf[8] = byte('0' + d/10)
+	buf[9] = byte('0' + d%10)
+	buf[10] = 'T'
+	buf[11] = byte('0' + h/10)
+	buf[12] = byte('0' + h%10)
+	buf[13] = ':'
+	buf[14] = byte('0' + mi/10)
+	buf[15] = byte('0' + mi%10)
+	buf[16] = ':'
+	buf[17] = byte('0' + s/10)
+	buf[18] = byte('0' + s%10)
+	buf[19] = '.'
+
+	// nanosecond digits
+	for i := 28; i >= 20; i-- {
+		buf[i] = byte('0' + nsec%10)
+		nsec /= 10
+	}
+
+	// Trim trailing zeros to match time.RFC3339Nano behavior.
+	end := 29
+	for end > 20 && buf[end-1] == '0' {
+		end--
+	}
+	if end == 20 {
+		// All zeros — omit the decimal point too.
+		buf[19] = 'Z'
+		return string(buf[:20])
+	}
+	buf[end] = 'Z'
+	return string(buf[:end+1])
+}
+
+// fastFormatInt64 avoids strconv.FormatInt allocation for small values
+// by using a stack-allocated buffer.
+func fastFormatInt64(n int64) string {
+	if n >= 0 && n < 1000 {
+		return smallPosStr[n]
+	}
+	var buf [20]byte
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	i := len(buf)
+	for n >= 10 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	i--
+	buf[i] = byte('0' + n)
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}
+
+var smallPosStr [1000]string
+
+func init() {
+	for i := range smallPosStr {
+		smallPosStr[i] = strconv.Itoa(i)
+	}
+}
+
+
 type FieldOrigin int
 
 const (
@@ -32,23 +119,23 @@ func (ft FieldType) FormatValue(v any) string {
 	switch ft {
 	case TypeTimestampNano:
 		if n, ok := v.(int64); ok {
-			return time.Unix(0, n).UTC().Format(time.RFC3339Nano)
+			return fastFormatTimestampNano(n)
 		}
 	case TypeInt32:
 		switch n := v.(type) {
 		case int32:
-			return strconv.FormatInt(int64(n), 10)
+			return fastFormatInt64(int64(n))
 		case int64:
-			return strconv.FormatInt(n, 10)
+			return fastFormatInt64(n)
 		case int:
-			return strconv.Itoa(n)
+			return fastFormatInt64(int64(n))
 		}
 	case TypeInt64:
 		switch n := v.(type) {
 		case int64:
-			return strconv.FormatInt(n, 10)
+			return fastFormatInt64(n)
 		case int32:
-			return strconv.FormatInt(int64(n), 10)
+			return fastFormatInt64(int64(n))
 		}
 	case TypeFloat64:
 		if n, ok := v.(float64); ok {
@@ -152,7 +239,19 @@ var TracesProfile = Profile{
 		{ParquetColumn: "status.message", InternalName: "status_message", Type: TypeString, Origin: OriginPromoted},
 		{ParquetColumn: "duration_ns", InternalName: "duration", Type: TypeInt64, Origin: OriginPromoted},
 		{ParquetColumn: "service.name", InternalName: "resource_attr:service.name", Type: TypeString, Origin: OriginPromoted, HasBloom: true},
-		{ParquetColumn: "scope.name", InternalName: "scope_attr:otel.library.name", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "deployment.environment", InternalName: "resource_attr:deployment.environment", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "cloud.region", InternalName: "resource_attr:cloud.region", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "host.name", InternalName: "resource_attr:host.name", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "k8s.namespace.name", InternalName: "resource_attr:k8s.namespace.name", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "k8s.pod.name", InternalName: "resource_attr:k8s.pod.name", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "k8s.deployment.name", InternalName: "resource_attr:k8s.deployment.name", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "k8s.node.name", InternalName: "resource_attr:k8s.node.name", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "http.method", InternalName: "span_attr:http.method", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "http.status_code", InternalName: "span_attr:http.status_code", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "http.url", InternalName: "span_attr:http.url", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "db.system", InternalName: "span_attr:db.system", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "db.statement", InternalName: "span_attr:db.statement", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "scope.name", InternalName: "scope_name", Type: TypeString, Origin: OriginPromoted},
 		{ParquetColumn: "_stream", InternalName: "_stream", Type: TypeString, Origin: OriginPromoted},
 		{ParquetColumn: "_stream_id", InternalName: "_stream_id", Type: TypeString, Origin: OriginPromoted},
 	},

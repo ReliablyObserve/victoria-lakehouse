@@ -373,7 +373,31 @@ func (s *Storage) updateLabelIndex(f *parquet.File) {
 		"span.name":              true,
 	}
 
+	// MAP columns whose keys should be expanded into individual field names
+	mapColumns := map[string]bool{
+		"resource.attributes": true,
+		"log.attributes":      true,
+		"span.attributes":     true,
+		"scope.attributes":    true,
+	}
+
+	promotedParquetNames := make(map[string]bool)
+	for _, m := range s.registry.PromotedColumns() {
+		promotedParquetNames[m.ParquetColumn] = true
+	}
+
 	for _, name := range columnNames(f.Root()) {
+		if mapColumns[name] {
+			prefix := mapColumnToAttrPrefix(name)
+			for _, k := range extractMapDistinctKeys(f, name) {
+				if promotedParquetNames[k] {
+					continue
+				}
+				s.labelIndex.Add(prefix+k, nil)
+			}
+			continue
+		}
+
 		internalName := name
 		if m := s.registry.ResolveFromParquet(name); m != nil {
 			internalName = m.InternalName
@@ -393,6 +417,58 @@ func (s *Storage) updateLabelIndex(f *parquet.File) {
 		vals := extractDistinctFromStats(f, colIdx)
 		s.labelIndex.Add(internalName, vals)
 	}
+}
+
+func extractMapDistinctKeys(f *parquet.File, mapColName string) []string {
+	allCols := f.Schema().Columns()
+	keyIdx := -1
+	for i, path := range allCols {
+		if len(path) >= 3 && path[0] == mapColName && path[2] == "key" {
+			keyIdx = i
+			break
+		}
+	}
+	if keyIdx < 0 {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	for _, rg := range f.RowGroups() {
+		chunks := rg.ColumnChunks()
+		if keyIdx >= len(chunks) {
+			continue
+		}
+		pages := chunks[keyIdx].Pages()
+		buf := make([]parquet.Value, 256)
+		for {
+			page, err := pages.ReadPage()
+			if err != nil {
+				break
+			}
+			vr := page.Values()
+			for {
+				n, readErr := vr.ReadValues(buf[:])
+				for i := 0; i < n; i++ {
+					if !buf[i].IsNull() {
+						if b := buf[i].Bytes(); len(b) > 0 && len(b) < 256 {
+							seen[string(b)] = true
+						}
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+		}
+		_ = pages.Close()
+		break
+	}
+
+	result := make([]string, 0, len(seen))
+	for k := range seen {
+		result = append(result, k)
+	}
+	return result
 }
 
 func extractDistinctFromStats(f *parquet.File, colIdx int) []string {

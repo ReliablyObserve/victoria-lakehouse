@@ -126,6 +126,19 @@ datasources:
           name: traceID
           url: "$${__value.raw}"
 
+  - name: "Loki via Proxy (Cold Only)"
+    type: loki
+    uid: loki-vl-proxy-cold
+    access: proxy
+    url: http://loki-vl-proxy-cold:3100
+    jsonData:
+      maxLines: 1000
+      derivedFields:
+        - datasourceUid: victoria-lakehouse-traces
+          matcherRegex: 'trace_id=(\w+)'
+          name: traceID
+          url: "$${__value.raw}"
+
   # =========================================================================
   # ClickHouse — OTEL-compatible logs and traces from S3 Parquet
   # =========================================================================
