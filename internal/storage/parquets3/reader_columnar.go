@@ -99,6 +99,14 @@ func readRowGroupColumnar(
 
 	var blockCols []logstorage.BlockColumn
 
+	// Collect scalar column names so MAP expansion can skip duplicates.
+	scalarNames := make(map[string]bool)
+	for name, li := range leafMap {
+		if len(li.indices) == 1 {
+			scalarNames[name] = true
+		}
+	}
+
 	for name, li := range leafMap {
 		if len(li.indices) == 1 {
 			// Scalar column.
@@ -125,7 +133,7 @@ func readRowGroupColumnar(
 				}
 			}
 			if keyIdx >= 0 && valIdx >= 0 {
-				mapCols := readMapColumnToBlockCols(chunks[keyIdx], chunks[valIdx], numRows, rowMask, passCount, name)
+				mapCols := readMapColumnToBlockCols(chunks[keyIdx], chunks[valIdx], numRows, rowMask, passCount, name, scalarNames)
 				blockCols = append(blockCols, mapCols...)
 			}
 		}
@@ -219,6 +227,7 @@ func readMapColumnToBlockCols(
 	rowMask []bool,
 	passCount int,
 	mapColName string,
+	promotedKeys map[string]bool,
 ) []logstorage.BlockColumn {
 	prefix := mapColumnToAttrPrefix(mapColName)
 
@@ -305,6 +314,9 @@ func readMapColumnToBlockCols(
 			continue
 		}
 		if i >= len(vals) || vals[i] == "" {
+			continue
+		}
+		if promotedKeys[kv.key] {
 			continue
 		}
 		attrName := bytesutil.InternString(prefix + kv.key)

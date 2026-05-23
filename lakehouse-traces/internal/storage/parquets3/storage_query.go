@@ -310,7 +310,9 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 		return err
 	}
 
-	s.updateLabelIndex(f)
+	if s.labelIndex.Len() == 0 {
+		s.updateLabelIndex(f)
+	}
 	s.updateColumnStats(fi.Key, f)
 
 	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
@@ -563,11 +565,21 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 			seenBitmap[i] = false
 		}
 
+		scalarFieldNames := make(map[string]bool)
+		for _, fld := range fields {
+			if _, ok := fld.value.(map[string]string); !ok {
+				scalarFieldNames[fld.name] = true
+			}
+		}
+
 		for _, fld := range fields {
 			if mapVal, ok := fld.value.(map[string]string); ok {
 				prefix := mapColumnToAttrPrefix(fld.name)
 				for k, v := range mapVal {
 					if v == "" {
+						continue
+					}
+					if scalarFieldNames[k] {
 						continue
 					}
 					attrName := bytesutil.InternString(prefix + k)
@@ -719,15 +731,37 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 		field{"span_attr:db.statement", r.DBStatement},
 	)
 	for k, v := range r.ResourceAttributes {
-		buf = append(buf, field{k, v})
+		if !tracePromotedResourceKeys[k] {
+			buf = append(buf, field{k, v})
+		}
 	}
 	for k, v := range r.SpanAttributes {
-		buf = append(buf, field{k, v})
+		if !tracePromotedSpanKeys[k] {
+			buf = append(buf, field{k, v})
+		}
 	}
 	for k, v := range r.ScopeAttributes {
 		buf = append(buf, field{k, v})
 	}
 	return buf
+}
+
+var tracePromotedResourceKeys = map[string]bool{
+	"service.name":          true,
+	"deployment.environment": true,
+	"cloud.region":          true,
+	"host.name":             true,
+	"k8s.namespace.name":    true,
+	"k8s.deployment.name":   true,
+	"k8s.node.name":         true,
+}
+
+var tracePromotedSpanKeys = map[string]bool{
+	"http.method":      true,
+	"http.status_code": true,
+	"http.url":         true,
+	"db.system":        true,
+	"db.statement":     true,
 }
 
 func typedRowsToDataBlock[T any](s *Storage, rows []T, startNs, endNs int64, toFields func(*T, []field) []field) *logstorage.DataBlock {
