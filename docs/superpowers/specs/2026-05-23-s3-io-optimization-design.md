@@ -1125,7 +1125,7 @@ Need more query capacity
   → More writer streams per partition (10 instead of 3)
   → Same total files, but split across 10 independent series
   → Compaction does 10-way merge instead of 3-way (3.3x more memory, S3 GETs)
-  → 10 compactors running (one per node) — collision risk, wasted resources
+  → 10 compactors running (one per node) — collision-free via Phase I path sharding, but wasted resources
   → Each compactor does S3 LIST across all 10 writer prefixes
   → Higher S3 LIST/GET costs for compaction, 3.3x more merge buffers
   → Meanwhile: 10 insert pipelines, 10 WALs, 10 flush goroutines
@@ -1192,7 +1192,7 @@ Add a **stateless select tier** that sits in front of the combined nodes, exactl
   → Same 800K files/day (data volume drives file count, not node count)
   → BUT: 10 writer streams per partition instead of 3
   → Compaction: 10-way merge per partition (10 S3 GETs + 1 PUT per merge)
-  → 10 compactors competing for same partitions (collision risk even with sharding)
+  → 10 compactors each handling 1/10 of partitions (Phase I sharding — no collisions, but 7 are unnecessary)
   → 10 WALs, 10 flush pipelines, 10 insert handlers — all unnecessary overhead
   → 33 TB/node/day → 10 TB/node/day (each node underutilized on ingest)
   → S3 LIST calls: 10 writer prefixes per partition scan
@@ -1516,7 +1516,7 @@ func mergeStats(partial []map[string]int64) map[string]int64 {
 
 **Scale select nodes for query concurrency.** Select nodes are stateless and cheap. Adding 10 select nodes costs zero additional S3 writes, zero additional compaction work, zero additional writer streams.
 
-**Anti-pattern:** Never scale combined nodes just for query capacity. At 100 TB/day, going from 3 to 10 combined nodes means 7 unnecessary insert pipelines, 10-way compaction merges, and 10 compactors competing — all for queries that a select tier handles better.
+**Anti-pattern:** Never scale combined nodes just for query capacity. At 100 TB/day, going from 3 to 10 combined nodes means 7 unnecessary insert pipelines, 10-way compaction merges, and 7 wasted compactors (Phase I sharding distributes evenly, but the resources exist only because you needed queries).
 
 ### Expected Impact
 
@@ -1573,3 +1573,341 @@ Trace correlation queries (`trace_id:="X"`) benefit from fan-out — each combin
 
 **Phase A-F (S3 I/O):** ~12 days → VLH within 3-5x of VL for most query types.
 **Phase G-J (distributed):** ~21 days → Near-ClickHouse cached, linear scaling, decoupled query/ingest, gap-free failover.
+
+---
+
+## Production Capacity Model
+
+Reference deployment for resource estimation. All numbers assume balanced profile defaults unless noted.
+
+### Scenario Parameters
+
+| Parameter | Value |
+|---|---|
+| **Ingestion rate** | 100 TB/day (~1.16 GB/s) |
+| **Retention** | 30 days (S3), 24h hot (VL disk) |
+| **S3 stored** | ~3 PB (100 TB × 30 days) |
+| **Query clients** | 500 concurrent |
+| **Avg log line** | ~500 bytes (with attributes) |
+| **Rows/day** | ~200 billion (100 TB / 500 bytes) |
+| **Partitions active** | 24/day × 30 days = 720 total partitions |
+| **Target file size** | 128 MB (balanced profile) |
+| **Compression ratio** | ~5-8x ZSTD level 7 |
+| **Files/day (pre-compaction)** | ~800K (100 TB / 128 MB) |
+| **Files/day (post-compaction)** | ~24K target (1 merged file per partition-hour per writer batch) |
+
+---
+
+### Scenario A: 10 Combined Nodes (No Select Tier)
+
+All 10 nodes run insert + select + compaction. 500 query clients hit all 10 nodes directly.
+
+#### Per-Node Resource Breakdown
+
+**Ingest path:**
+
+| Resource | Per node | Calculation |
+|---|---|---|
+| Ingest throughput | 10 TB/day = 116 MB/s | 100 TB / 10 nodes |
+| Flush rate | ~80K files/day = ~0.93/s | 10 TB / 128 MB target |
+| WAL disk | up to 512 MB | WALMaxBytes default |
+| Insert buffer memory | up to 256 MB | MaxBufferBytes default |
+| ZSTD compress CPU | ~0.5-1 core sustained | 128 MB × level 7 × 0.93/s |
+| S3 PUTs (flush) | ~80K/day = ~0.93/s | 1 PUT per file |
+| Writer streams/partition | 10 | Each node writes to all partitions |
+
+**Query path (500 clients / 10 nodes = 50 concurrent per node):**
+
+| Resource | Per node | Calculation |
+|---|---|---|
+| Concurrent queries | 50 | 500 / 10 (exceeds default MaxConcurrent=32!) |
+| MaxConcurrent needed | ≥64 | Must override default (max-performance profile) |
+| File workers per query | 64 (clamped to file count) | Default FileWorkers |
+| S3 GETs per query (1h range) | ~33K files / 10 nodes = 3,300 | All files in partition, split across nodes |
+| S3 GETs per query (cached) | 0-100 (cache hits) | Depends on cache coverage |
+| Query memory per request | ~50-200 MB | 64 workers × Parquet reader buffers + row assembly |
+| Peak query memory (50 concurrent) | ~2.5-10 GB | 50 × 50-200 MB |
+| S3 connections (query) | 128 | MaxConnections default |
+
+**Compaction path (Phase I sharding — collision-free):**
+
+| Resource | Per node | Calculation |
+|---|---|---|
+| Owned partitions | 72 of 720 total | 720 / 10 nodes (Phase I path sharding) |
+| Compaction jobs/day | ~72 partition merges | Each owned partition compacted ~1x/day |
+| Files to merge per partition | ~33K (from all 10 writers) | 4.17 TB per partition / 128 MB |
+| S3 GETs per compaction | N × batch_size (e.g., 10 files/batch) | Multi-pass merge |
+| Compaction S3 read/day | ~4.17 TB per node | Read all files from owned partitions |
+| Compaction S3 write/day | ~4.17 TB per node | Write merged output |
+| Compaction memory | ~256-512 MB | Merge buffer (batch_size × 128 MB compressed) |
+| Compaction CPU | ~0.5-1 core | Decompress + merge-sort + recompress |
+| MaxConcurrent compactions | 1 (default) | Concurrent partition compactions |
+
+**Cache (shared between query and insert):**
+
+| Resource | Per node | Calculation |
+|---|---|---|
+| L1 memory cache | 512 MB (default) | CacheMemoryLimit |
+| L2 disk cache | 50 GB (default) | CacheDiskLimit |
+| Footer cache entries | 10,000 | Fixed LRU |
+| Footer cache memory | ~200 MB | 10K entries × ~20 KB |
+| Bloom filter memory | ~100-500 MB | Depends on column count × partitions |
+| Effective cache coverage | ~5 GB per node (L1+L2) | 50.5 GB per node |
+| Total cluster cache | ~505 GB | 10 × 50.5 GB |
+| % of working set cached | ~12% of 1-day data (4.17 TB) | 505 GB / 4,170 GB |
+
+**Total per-node memory (10 combined):**
+
+| Component | Memory |
+|---|---|
+| Insert buffer | 256 MB |
+| WAL (disk-backed, mmap) | 512 MB |
+| L1 cache | 512 MB |
+| Footer cache | 200 MB |
+| Bloom filters | 300 MB |
+| Manifest + label index | 100-200 MB |
+| Query working set (50 concurrent) | 2.5-10 GB |
+| Compaction merge buffer | 256-512 MB |
+| Go runtime + overhead | 500 MB |
+| **Total** | **~5-13 GB** |
+
+**Total per-node CPU (10 combined):**
+
+| Component | CPU cores |
+|---|---|
+| ZSTD compression (flush) | 0.5-1 |
+| Query file scanning (50 concurrent × 64 workers) | 4-8 |
+| Compaction (decompress + merge + recompress) | 0.5-1 |
+| HTTP handling (insert + query) | 0.5-1 |
+| S3 I/O goroutines | 0.5-1 |
+| **Total** | **~6-12 cores** |
+
+**S3 request budget (10 combined, entire cluster):**
+
+| Operation | Requests/day | GB/day | Cost estimate ($0.005/1K GET, $0.005/1K PUT) |
+|---|---|---|---|
+| Flush PUTs | 800K | 100 TB (pre-compress ~15-20 TB) | $4.00 |
+| Query GETs (500 clients, avg 10 queries/hour) | ~12M (with cache) | varies | $60.00 |
+| Compaction GETs | ~8M (multi-pass merge) | ~100 TB read | $40.00 |
+| Compaction PUTs | ~800K (merged output) | ~15-20 TB | $4.00 |
+| Compaction DELETEs | ~800K | 0 | $4.00 |
+| LIST (manifest/partition scan) | ~100K | 0 | $0.50 |
+| **Total** | **~22M requests** | — | **~$112/day** |
+
+**Problems with this configuration:**
+
+1. **MaxConcurrent overflow:** 50 queries/node exceeds default 32 → queries rejected with HTTP 429
+2. **Query-insert contention:** 50 concurrent queries × 64 file workers = 3,200 goroutines competing with flush for CPU/S3 connections
+3. **Cache thrash:** 500 clients with diverse query patterns evict cached data before reuse
+4. **Wasted resources:** 10 insert pipelines when 3-5 would handle 100 TB/day
+5. **10-way compaction merges:** 33K files per partition from 10 independent writers
+6. **Memory pressure:** 5-13 GB per node, queries and insert competing for same L1 cache
+
+---
+
+### Scenario B: 3 Combined + 10 Select Nodes (Recommended)
+
+3 combined nodes handle insert + compaction + S3 query backend. 10 select nodes handle query fan-out + local cache. 500 clients hit select tier only.
+
+#### Combined Node (×3) — Insert + Compaction + Backend Query
+
+**Ingest path:**
+
+| Resource | Per node | Calculation |
+|---|---|---|
+| Ingest throughput | 33 TB/day = 386 MB/s | 100 TB / 3 nodes |
+| Flush rate | ~267K files/day = ~3.1/s | 33 TB / 128 MB target |
+| WAL disk | up to 512 MB | WALMaxBytes default |
+| Insert buffer memory | up to 256 MB | MaxBufferBytes default |
+| ZSTD compress CPU | ~2-3 cores sustained | 128 MB × level 7 × 3.1/s |
+| S3 PUTs (flush) | ~267K/day = ~3.1/s | 1 PUT per file |
+| Writer streams/partition | 3 | Only 3 nodes write |
+
+**Backend query path (fan-out from select tier, not direct clients):**
+
+| Resource | Per node | Calculation |
+|---|---|---|
+| Concurrent backend queries | ~15-30 | Select tier fans out to all 3 → 500/10 selects × 3 combined |
+| MaxConcurrent needed | 32 (default sufficient) | Backend load is distributed |
+| Query memory per request | ~50-100 MB | Self-filtered to owned files only (hybrid) |
+| Peak query memory | 1-3 GB | 30 × 50-100 MB |
+| S3 GETs per query | 0 (mostly cache hits) | L1/L2 warm from write-through (Phase H4) |
+
+**Compaction path (Phase I sharding):**
+
+| Resource | Per node | Calculation |
+|---|---|---|
+| Owned partitions | 240 of 720 total | 720 / 3 nodes |
+| Files to merge per partition | ~33K (from 3 writers only) | 4.17 TB per partition / 128 MB |
+| Merge width | 3-way (not 10-way) | Only 3 writer streams |
+| Compaction S3 read/day | ~13.9 TB per node | 720/3 partitions × 4.17 TB |
+| Compaction S3 write/day | ~13.9 TB per node | Merged output |
+| Compaction memory | ~256-512 MB | 3-way merge buffer (smaller than 10-way) |
+| Compaction CPU | ~1-2 cores | Decompress + merge-sort + recompress |
+| MaxConcurrent compactions | 2 (recommended for this load) | Parallel partition compactions |
+
+**Cache (combined node — file-level data + write-through):**
+
+| Resource | Per node | Calculation |
+|---|---|---|
+| L1 memory cache | 2 GB (recommended) | Increase from 512 MB for production |
+| L2 disk cache | 100 GB (recommended) | Increase from 50 GB |
+| Write-through hit rate | ~80-95% for recent data | Phase H4: insert path populates cache |
+| Effective cache per node | ~102 GB | L1 + L2 |
+| Total combined cache | ~306 GB (3 nodes) | Without Phase G dedup |
+| With Phase G (az-local) | ~306 GB unique data cached | Cache ring dedup |
+
+**Total per-node memory (3 combined):**
+
+| Component | Memory |
+|---|---|
+| Insert buffer | 256 MB |
+| WAL | 512 MB |
+| L1 cache | 2 GB (production tuned) |
+| Footer cache | 200 MB |
+| Bloom filters | 300 MB |
+| Manifest + label index | 200 MB |
+| Backend query working set (30 concurrent) | 1-3 GB |
+| Compaction merge buffer | 256-512 MB |
+| Go runtime + overhead | 500 MB |
+| **Total** | **~5-7 GB** |
+
+**Total per-node CPU (3 combined):**
+
+| Component | CPU cores |
+|---|---|
+| ZSTD compression (flush at 3.1/s) | 2-3 |
+| Backend query scanning (30 concurrent, owned files only) | 2-4 |
+| Compaction (2 concurrent) | 1-2 |
+| HTTP handling (insert + backend query) | 0.5-1 |
+| S3 I/O goroutines | 1-2 |
+| **Total** | **~7-12 cores** |
+
+#### Select Node (×10) — Stateless Query Fan-Out + Cache
+
+**Query path (500 clients / 10 select nodes = 50 per node):**
+
+| Resource | Per node | Calculation |
+|---|---|---|
+| Concurrent queries | 50 | 500 / 10 select nodes |
+| MaxConcurrent needed | 64 | Override default |
+| Fan-out per query | 3 HTTP requests | 1 to each combined node |
+| Result merge | Streaming, low CPU | VL netselect protocol |
+| Query latency (cached) | 5-50 ms | Select L1 hit or combined L1 hit |
+| Query latency (uncached, 1h) | 100-500 ms | Combined reads from S3 via Phase A/B |
+
+**Cache (select node — query result cache):**
+
+| Resource | Per node | Calculation |
+|---|---|---|
+| L1 memory cache | 1 GB | Query result cache, smaller than combined |
+| L2 disk cache | 20 GB | Hot query results |
+| Cache key | QueryHash + TimeRange + Tenant | Exact query dedup |
+| Cache hit rate (dashboard) | ~60-80% | Same dashboards hit repeatedly |
+| Cache hit rate (ad-hoc) | ~10-20% | Unique queries, low reuse |
+
+**Total per-node memory (10 select):**
+
+| Component | Memory |
+|---|---|
+| L1 query cache | 1 GB |
+| Fan-out connection pool | 100 MB |
+| Result merge buffers (50 concurrent) | 500 MB - 1 GB |
+| Ring + peer state | 50 MB |
+| Go runtime + overhead | 300 MB |
+| **Total** | **~2-3 GB** |
+
+**Total per-node CPU (10 select):**
+
+| Component | CPU cores |
+|---|---|
+| HTTP handling (50 concurrent clients) | 1-2 |
+| Fan-out + result merge | 1-2 |
+| Cache management | 0.5 |
+| Gap detection / health checks | 0.1 |
+| **Total** | **~3-5 cores** |
+
+**S3 request budget (3 combined + 10 select, entire cluster):**
+
+| Operation | Requests/day | Notes |
+|---|---|---|
+| Flush PUTs | 800K | Same total data, 3 nodes flush more each |
+| Query GETs | ~2-4M | 60-80% lower: combined cache hits, select cache hits |
+| Compaction GETs | ~2.4M | 3-way merge vs 10-way → 3.3x fewer GETs per merge |
+| Compaction PUTs | ~800K | Same output volume |
+| Compaction DELETEs | ~800K | Same cleanup |
+| **Total** | **~7-9M requests** | **~60-65% fewer than Scenario A** |
+
+---
+
+### Scenario Comparison
+
+| Metric | A: 10 combined | B: 3 combined + 10 select |
+|---|---|---|
+| **Total nodes** | 10 | 13 |
+| **Total memory** | 50-130 GB | 35-51 GB |
+| **Total CPU cores** | 60-120 | 51-66 |
+| **S3 requests/day** | ~22M | ~7-9M |
+| **S3 cost/day** | ~$112 | ~$40-50 |
+| **Query capacity** | 320 concurrent (10×32) | 640 concurrent (10×64 select) |
+| **Query rejected risk** | High (50/node > default 32) | Low (50/node with 64 cap) |
+| **Insert-query contention** | Severe (shared CPU/cache/S3) | None (separate nodes) |
+| **Compaction merge width** | 10-way (10 writer streams) | 3-way (3 writer streams) |
+| **Cache hit rate** | ~12% working set | ~30-50% (write-through + two-tier) |
+| **Failover** | Partial response only | Gap detection + redistribution |
+| **Scaling independence** | Coupled | Decoupled |
+
+**Scenario B uses fewer total resources, handles more queries, achieves better cache hit rates, and produces 60% fewer S3 requests.** The 3 extra nodes (13 vs 10) are lightweight select pods (~2-3 GB each) that replace 7 heavy combined pods (~5-13 GB each).
+
+### Recommended Production Configuration
+
+```yaml
+# Combined nodes (StatefulSet, 3 replicas)
+combined:
+  replicas: 3
+  resources:
+    requests:
+      cpu: 8
+      memory: 8Gi
+    limits:
+      cpu: 12
+      memory: 12Gi
+  args:
+    - "-lakehouse.role=all"
+    - "-lakehouse.compaction.shard-count=3"
+    # shard-id auto-detected from StatefulSet ordinal
+    - "-lakehouse.cache.memory-mb=2048"
+    - "-lakehouse.cache.disk-max-mb=102400"
+    - "-lakehouse.cache.partition-mode=az-local"
+    - "-lakehouse.query.max-concurrent=32"
+    - "-lakehouse.s3.max-connections=256"
+    - "-lakehouse.s3.max-concurrent-downloads=32"
+
+# Select nodes (Deployment, 10 replicas, HPA target)
+select:
+  replicas: 10
+  resources:
+    requests:
+      cpu: 4
+      memory: 3Gi
+    limits:
+      cpu: 6
+      memory: 4Gi
+  args:
+    - "-lakehouse.role=select"
+    - "-lakehouse.discovery.storage-nodes=dns+lakehouse-combined.ns.svc:9428"
+    - "-lakehouse.cache.memory-mb=1024"
+    - "-lakehouse.cache.disk-max-mb=20480"
+    - "-lakehouse.query.max-concurrent=64"
+```
+
+### Scaling Triggers
+
+| Signal | Action |
+|---|---|
+| Insert buffer utilization > 80% sustained | Add combined node (update shard-count) |
+| Query reject rate (HTTP 429) > 1% | Add select node |
+| Compaction lag > 2 hours behind | Increase compaction maxConcurrent, or add combined node |
+| Cache hit ratio < 40% | Increase L1/L2 sizes, or add select nodes for Phase G ring |
+| S3 throttle events > 0 | Increase S3 connection pool or spread across S3 prefixes |
+| P99 query latency > 5s | Check cache coverage, consider Phase G `distributed` mode |
