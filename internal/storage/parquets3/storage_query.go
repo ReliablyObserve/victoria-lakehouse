@@ -469,8 +469,8 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 		}
 	} else {
 		rgWorkers := len(matchedRGs)
-		if rgWorkers > 3 {
-			rgWorkers = 3
+		if rgWorkers > 8 {
+			rgWorkers = 8
 		}
 		rgCh := make(chan parquet.RowGroup, len(matchedRGs))
 		for _, rg := range matchedRGs {
