@@ -988,6 +988,104 @@ func TestWrapVLTimestampOnly_FieldParamSkipsHint(t *testing.T) {
 	}
 }
 
+func TestWrapVL_NeverSetsTimestampOnlyHint(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(config.ModeLogs)
+	h := NewHandler(mockStore{}, cfg)
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"stats query by level", "/select/logsql/stats_query?query=*+|+stats+by(level)+count()+rows"},
+		{"stats query range by level", "/select/logsql/stats_query_range?query=*+|+stats+by(level)+count()+rows&step=300"},
+		{"stats query no grouping", "/select/logsql/stats_query?query=*+|+stats+count()+rows"},
+		{"plain query", "/select/logsql/query?query=*"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotTSOnly bool
+			wrapped := h.wrapVL(func(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+				gotTSOnly = storage.IsTimestampOnly(ctx)
+				w.WriteHeader(http.StatusOK)
+			})
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest("GET", tc.url, nil)
+			wrapped(rec, req)
+
+			if gotTSOnly {
+				t.Errorf("wrapVL should NEVER set TimestampOnlyHint, but it was set for %s", tc.url)
+			}
+		})
+	}
+}
+
+func TestHitsEndpoint_TimestampOnlyBehavior(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(config.ModeLogs)
+	h := NewHandler(mockStore{}, cfg)
+
+	tests := []struct {
+		name       string
+		url        string
+		wantTSOnly bool
+	}{
+		{"hits no field - timestamp only", "/select/logsql/hits?query=*&step=60s", true},
+		{"hits field=level - NOT timestamp only", "/select/logsql/hits?query=*&step=60s&field=level", false},
+		{"hits field=service.name - NOT timestamp only", "/select/logsql/hits?query=*&field=service.name", false},
+		{"hits fields[] array - NOT timestamp only", "/select/logsql/hits?query=*&fields[]=level&fields[]=host&step=60s", false},
+		{"hits empty field - timestamp only", "/select/logsql/hits?query=*&field=&step=60s", true},
+		{"hits field with dots - NOT timestamp only", "/select/logsql/hits?query=*&field=k8s.pod.name&step=60s", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotTSOnly bool
+			wrapped := h.wrapVLTimestampOnly(func(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+				gotTSOnly = storage.IsTimestampOnly(ctx)
+				w.WriteHeader(http.StatusOK)
+			})
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest("GET", tc.url, nil)
+			wrapped(rec, req)
+
+			if gotTSOnly != tc.wantTSOnly {
+				t.Errorf("IsTimestampOnly = %v, want %v", gotTSOnly, tc.wantTSOnly)
+			}
+		})
+	}
+}
+
+func TestRequestNeedsFieldData_EdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{"no params at all", "/hits", false},
+		{"field with whitespace value", "/hits?field=%20", true},
+		{"multiple empty fields[]", "/hits?fields[]=&fields[]=", true},
+		{"field param with other params", "/hits?query=*&field=level&step=60s&start=1000", true},
+		{"POST with field in query", "/hits?query=*&step=60s", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tc.url, nil)
+			got := requestNeedsFieldData(req)
+			if got != tc.want {
+				t.Errorf("requestNeedsFieldData(%q) = %v, want %v", tc.url, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeTimeParams(t *testing.T) {
 	tests := []struct {
 		name      string

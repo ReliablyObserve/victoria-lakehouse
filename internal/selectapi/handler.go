@@ -59,8 +59,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/select/logsql/streams", h.wrapVL(logsql.ProcessStreamsRequest))
 	mux.HandleFunc("/select/logsql/stream_ids", h.wrapVL(logsql.ProcessStreamIDsRequest))
 	mux.HandleFunc("/select/logsql/hits", h.wrapVLTimestampOnly(logsql.ProcessHitsRequest))
-	mux.HandleFunc("/select/logsql/stats_query", h.wrapVLTimestampOnly(logsql.ProcessStatsQueryRequest))
-	mux.HandleFunc("/select/logsql/stats_query_range", h.wrapVLTimestampOnly(logsql.ProcessStatsQueryRangeRequest))
+	mux.HandleFunc("/select/logsql/stats_query", h.wrapVL(logsql.ProcessStatsQueryRequest))
+	mux.HandleFunc("/select/logsql/stats_query_range", h.wrapVL(logsql.ProcessStatsQueryRangeRequest))
 	mux.HandleFunc("/select/logsql/tail", h.handleTailNoop)
 	mux.HandleFunc("/select/tenant_ids", h.wrapVL(logsql.ProcessTenantIDsRequest))
 

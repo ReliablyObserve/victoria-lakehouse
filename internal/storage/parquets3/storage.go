@@ -50,6 +50,7 @@ type Storage struct {
 	footerCache    *FooterCache
 	fileBloomCache sync.Map
 	selfAZ         string
+	dlSem          chan struct{}
 }
 
 func New(cfg *config.Config) (*Storage, error) {
@@ -121,6 +122,11 @@ func New(cfg *config.Config) (*Storage, error) {
 		ph = peercache.NewHandler(cfg.Peer.AuthKey, "")
 	}
 
+	maxDL := cfg.S3.MaxConcurrentDownloads
+	if maxDL <= 0 {
+		maxDL = 16
+	}
+
 	var sc *smartcache.Controller
 	if cfg.SelectEnabled() {
 		metaMap := smartcache.NewMetadataMap()
@@ -147,7 +153,7 @@ func New(cfg *config.Config) (*Storage, error) {
 			L2:           &l2Adapter{dc: diskCacheInst},
 			PeerLookup:   peerLookupImpl,
 			PeerFetcher:  peerFetchImpl,
-			S3Fetcher:    &s3Adapter{pool: pool},
+			S3Fetcher:    &s3Adapter{pool: pool, dlSem: make(chan struct{}, maxDL)},
 			Metadata:     metaMap,
 			MaxAge:       cfg.SmartCache.MaxAge,
 			HotThreshold: cfg.SmartCache.HotAccessThreshold,
@@ -198,6 +204,7 @@ func New(cfg *config.Config) (*Storage, error) {
 		smartCache:   sc,
 		bloomCache:   bc,
 		footerCache:  fc,
+		dlSem:        make(chan struct{}, maxDL),
 	}
 
 	if bw != nil {
@@ -293,6 +300,12 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 	}
 
 	data, err, shared := s.sfGroup.Do(key, func() ([]byte, error) {
+		select {
+		case s.dlSem <- struct{}{}:
+			defer func() { <-s.dlSem }()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		s3Start := time.Now()
 		metrics.S3RequestsTotal.Inc("GET")
 		d, dlErr := s.pool.Download(ctx, key)
@@ -1215,8 +1228,19 @@ func (l *localOnlyLookup) Lookup(key string) (string, bool) { return "self", tru
 func (l *localOnlyLookup) Members() []string                { return []string{"self"} }
 func (l *localOnlyLookup) MemberCount() int                 { return 1 }
 
-type s3Adapter struct{ pool *s3reader.ClientPool }
+type s3Adapter struct {
+	pool  *s3reader.ClientPool
+	dlSem chan struct{}
+}
 
 func (a *s3Adapter) Download(ctx context.Context, key string) ([]byte, error) {
+	if a.dlSem != nil {
+		select {
+		case a.dlSem <- struct{}{}:
+			defer func() { <-a.dlSem }()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	return a.pool.Download(ctx, key)
 }
