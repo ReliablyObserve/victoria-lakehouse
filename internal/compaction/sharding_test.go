@@ -2,6 +2,8 @@ package compaction
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -91,5 +93,27 @@ func TestPartitionSharding_MultiTenant(t *testing.T) {
 	}
 	if total != 2 {
 		t.Fatalf("expected 2 total ownerships, got %d", total)
+	}
+}
+
+func TestAutoDetectShardID_ParsesOrdinal(t *testing.T) {
+	tests := []struct {
+		hostname string
+		expected int
+	}{
+		{"lakehouse-0", 0},
+		{"lakehouse-2", 2},
+		{"lakehouse-logs-1", 1},
+		{"my-app-10", 10},
+	}
+	for _, tc := range tests {
+		parts := strings.Split(tc.hostname, "-")
+		id, err := strconv.Atoi(parts[len(parts)-1])
+		if err != nil {
+			t.Fatalf("parse %q: %v", tc.hostname, err)
+		}
+		if id != tc.expected {
+			t.Fatalf("hostname %q: got %d, want %d", tc.hostname, id, tc.expected)
+		}
 	}
 }

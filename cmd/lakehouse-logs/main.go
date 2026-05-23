@@ -77,6 +77,8 @@ var (
 	compactionInterval = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
 	compactionElection      = flag.String("lakehouse.compaction.leader-election", "", "Election mode: auto, k8s, s3, none")
 	compactionDailyRollupAge = flag.Duration("lakehouse.compaction.daily-rollup-age", 0, "Minimum partition age for daily rollup compaction (default: 24h)")
+	compactionShardID        = flag.Int("lakehouse.compaction.shard-id", -1, "Compaction shard ID (default: auto-detect from hostname ordinal)")
+	compactionShardCount     = flag.Int("lakehouse.compaction.shard-count", 0, "Total compaction shards (0 or 1 = leader mode)")
 
 	queryFileWorkers = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 8)")
 
@@ -206,12 +208,27 @@ func run(cfg *config.Config, addr string) {
 		)
 		policy.DailyRollupAge = cfg.Compaction.DailyRollupAge
 
+		var sharding *compaction.PartitionSharding
+		if cfg.Compaction.ShardCount > 1 {
+			shardID := cfg.Compaction.ShardID
+			if shardID < 0 {
+				var err error
+				shardID, err = compaction.AutoDetectShardID()
+				if err != nil {
+					logger.Fatalf("cannot auto-detect shard ID: %v", err)
+				}
+			}
+			sharding = compaction.NewPartitionSharding(shardID, cfg.Compaction.ShardCount)
+			logger.Infof("compaction sharding enabled; shard_id=%d, shard_count=%d", shardID, cfg.Compaction.ShardCount)
+		}
+
 		sched = compaction.NewScheduler(compaction.SchedulerConfig{
 			Leader:           leader,
 			Manifest:         store.Manifest(),
 			Pool:             store.Pool(),
 			Sentinel:         sentinel,
 			Policy:           policy,
+			Sharding:         sharding,
 			Prefix:           cfg.AutoPrefix(),
 			Mode:             cfg.Mode,
 			Interval:         cfg.Compaction.Interval,
@@ -829,6 +846,12 @@ func applyFlags(cfg *config.Config) {
 	}
 	if *compactionDailyRollupAge > 0 {
 		cfg.Compaction.DailyRollupAge = *compactionDailyRollupAge
+	}
+	if *compactionShardID >= 0 {
+		cfg.Compaction.ShardID = *compactionShardID
+	}
+	if *compactionShardCount > 0 {
+		cfg.Compaction.ShardCount = *compactionShardCount
 	}
 	if *queryFileWorkers > 0 {
 		cfg.Query.FileWorkers = *queryFileWorkers

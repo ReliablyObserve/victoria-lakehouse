@@ -1,7 +1,11 @@
 package compaction
 
 import (
+	"fmt"
 	"hash/crc32"
+	"os"
+	"strconv"
+	"strings"
 )
 
 // PartitionSharding assigns partition ownership across compaction shards
@@ -22,6 +26,21 @@ func NewPartitionSharding(shardID, shardCount int) *PartitionSharding {
 		shardID:    shardID,
 		shardCount: shardCount,
 	}
+}
+
+// AutoDetectShardID detects the shard ID from the K8s StatefulSet hostname ordinal.
+// K8s StatefulSet pods have hostnames like "lakehouse-logs-0", "lakehouse-logs-1", etc.
+// The ordinal is the numeric suffix after the last "-".
+func AutoDetectShardID() (int, error) {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return 0, fmt.Errorf("hostname: %w", err)
+	}
+	parts := strings.Split(hostname, "-")
+	if len(parts) == 0 {
+		return 0, fmt.Errorf("cannot parse ordinal from hostname: %s", hostname)
+	}
+	return strconv.Atoi(parts[len(parts)-1])
 }
 
 // OwnsPartition returns true if this shard owns the given partition key.

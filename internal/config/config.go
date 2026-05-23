@@ -350,6 +350,8 @@ type CompactionConfig struct {
 	LeaseDuration  time.Duration `yaml:"lease_duration"`
 	S3LockTTL      time.Duration `yaml:"s3_lock_ttl"`
 	S3Heartbeat    time.Duration `yaml:"s3_heartbeat"`
+	ShardID        int           `yaml:"shard_id"`
+	ShardCount     int           `yaml:"shard_count"`
 }
 
 type DeleteConfig struct {
@@ -542,6 +544,8 @@ func Default() *Config {
 			LeaseDuration:  15 * time.Second,
 			S3LockTTL:      60 * time.Second,
 			S3Heartbeat:    15 * time.Second,
+			ShardID:        -1,
+			ShardCount:     1,
 		},
 
 		Delete: DeleteConfig{
