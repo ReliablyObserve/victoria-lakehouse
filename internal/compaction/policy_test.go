@@ -80,6 +80,57 @@ func TestLevelPolicy_L0PrioritizedOverL1(t *testing.T) {
 	}
 }
 
+func TestLevelPolicy_EligibleDailyRollup(t *testing.T) {
+	p := &LevelPolicy{
+		MinFilesL0:     10,
+		MinFilesL1:     15,
+		MinAge:         time.Hour,
+		DailyRollupAge: 24 * time.Hour,
+	}
+	// Partition 48h old with 3 L1 files — eligible for daily rollup
+	files := makeFiles(1, "fp1", 3)
+	partitionTime := time.Now().Add(-48 * time.Hour)
+	level, eligible := p.Eligible(files, partitionTime)
+	if !eligible {
+		t.Fatal("expected eligible=true for daily rollup (48h old, 3 L1 files)")
+	}
+	if level != 1 {
+		t.Fatalf("expected level=1, got %d", level)
+	}
+}
+
+func TestLevelPolicy_DailyRollupNotEligibleTooRecent(t *testing.T) {
+	p := &LevelPolicy{
+		MinFilesL0:     10,
+		MinFilesL1:     15,
+		MinAge:         time.Hour,
+		DailyRollupAge: 24 * time.Hour,
+	}
+	// Partition only 6h old with 3 L1 files — not eligible (too recent for daily rollup)
+	files := makeFiles(1, "fp1", 3)
+	partitionTime := time.Now().Add(-6 * time.Hour)
+	_, eligible := p.Eligible(files, partitionTime)
+	if eligible {
+		t.Fatal("expected eligible=false for partition only 6h old")
+	}
+}
+
+func TestLevelPolicy_DailyRollupNeedsMultipleFiles(t *testing.T) {
+	p := &LevelPolicy{
+		MinFilesL0:     10,
+		MinFilesL1:     15,
+		MinAge:         time.Hour,
+		DailyRollupAge: 24 * time.Hour,
+	}
+	// Only 1 L1 file in a 48h old partition — nothing to merge
+	files := makeFiles(1, "fp1", 1)
+	partitionTime := time.Now().Add(-48 * time.Hour)
+	_, eligible := p.Eligible(files, partitionTime)
+	if eligible {
+		t.Fatal("expected eligible=false with only 1 L1 file")
+	}
+}
+
 func TestLevelPolicy_SelectFiles(t *testing.T) {
 	p := NewLevelPolicy(10, 15, time.Hour)
 	files := []manifest.FileInfo{

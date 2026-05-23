@@ -345,6 +345,7 @@ type CompactionConfig struct {
 	MinFilesL0     int           `yaml:"min_files_l0"`
 	MinFilesL1     int           `yaml:"min_files_l1"`
 	MinAge         time.Duration `yaml:"min_age"`
+	DailyRollupAge time.Duration `yaml:"daily_rollup_age"`
 	LeaderElection string        `yaml:"leader_election"`
 	LeaseDuration  time.Duration `yaml:"lease_duration"`
 	S3LockTTL      time.Duration `yaml:"s3_lock_ttl"`
@@ -536,6 +537,7 @@ func Default() *Config {
 			MinFilesL0:     10,
 			MinFilesL1:     10,
 			MinAge:         1 * time.Hour,
+			DailyRollupAge: 24 * time.Hour,
 			LeaderElection: "auto",
 			LeaseDuration:  15 * time.Second,
 			S3LockTTL:      60 * time.Second,
@@ -1386,6 +1388,9 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Compaction.MinAge > 0 {
 		base.Compaction.MinAge = overlay.Compaction.MinAge
+	}
+	if overlay.Compaction.DailyRollupAge > 0 {
+		base.Compaction.DailyRollupAge = overlay.Compaction.DailyRollupAge
 	}
 	if overlay.Compaction.LeaderElection != "" {
 		base.Compaction.LeaderElection = overlay.Compaction.LeaderElection

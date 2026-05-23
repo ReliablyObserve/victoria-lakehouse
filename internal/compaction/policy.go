@@ -7,9 +7,10 @@ import (
 )
 
 type LevelPolicy struct {
-	MinFilesL0 int
-	MinFilesL1 int
-	MinAge     time.Duration
+	MinFilesL0     int
+	MinFilesL1     int
+	MinAge         time.Duration
+	DailyRollupAge time.Duration
 }
 
 func NewLevelPolicy(minFilesL0, minFilesL1 int, minAge time.Duration) *LevelPolicy {
@@ -27,6 +28,10 @@ func (p *LevelPolicy) Eligible(files []manifest.FileInfo, partitionTime time.Tim
 		return 0, true
 	}
 	if l1Count >= p.MinFilesL1 {
+		return 1, true
+	}
+	// Daily rollup: merge any L1 files (≥2) in partitions older than DailyRollupAge.
+	if p.DailyRollupAge > 0 && time.Since(partitionTime) >= p.DailyRollupAge && l1Count >= 2 {
 		return 1, true
 	}
 	return 0, false
