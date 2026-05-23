@@ -1115,30 +1115,38 @@ Trace partitions can be skewed (some hours have 10x more spans). Static sharding
 
 Scaling query capacity by adding more `role=all` (combined) nodes has a side effect: each new node also adds insert capacity, compaction work, and S3 write load. More nodes = more flush targets = smaller files per node per partition = more fragmentation. This creates a vicious cycle:
 
-**The Fragmentation Cascade:**
+**The Fragmentation Cascade at Production Scale (100+ TB/day):**
+
+At production volumes, size thresholds (`TargetFileSize=128MB`) trigger flushes long before the 60s timer. Each node flushes near-continuously. The total file count is driven by **data volume / target file size** — it's the same regardless of node count. What changes is the number of **concurrent writer streams per partition** and the resulting compaction complexity.
+
 ```
 Need more query capacity
   → Add combined nodes (only option without select tier)
-  → More writers per partition
-  → More small fragmented files per flush
-  → Compaction must work harder to merge them
-  → More S3 GET/PUT/LIST requests for compaction
-  → Higher S3 costs AND higher compaction CPU
-  → Compaction can't keep up → file count grows
-  → Query performance degrades (more files to scan)
-  → Need even more query capacity...
+  → More writer streams per partition (10 instead of 3)
+  → Same total files, but split across 10 independent series
+  → Compaction does 10-way merge instead of 3-way (3.3x more memory, S3 GETs)
+  → 10 compactors running (one per node) — collision risk, wasted resources
+  → Each compactor does S3 LIST across all 10 writer prefixes
+  → Higher S3 LIST/GET costs for compaction, 3.3x more merge buffers
+  → Meanwhile: 10 insert pipelines, 10 WALs, 10 flush goroutines
+  → All running for query scaling you didn't need
 ```
 
-**Concrete numbers — the cost of scaling combined nodes for queries:**
+**Concrete numbers — production scale (100 TB/day ingestion):**
 
-| Combined nodes | Files/day (72 partitions) | Compaction merges/day | S3 ops/day (compaction) |
-|---|---|---|---|
-| 3 | 216 | ~72 (3→1 per partition) | ~432 (GET+PUT) |
-| 5 | 360 | ~288 (5→1 per partition) | ~1,080 |
-| 10 | 720 | ~648 (10→1 per partition) | ~2,592 |
-| 20 | 1,440 | ~1,368 (20→1 per partition) | ~5,472 |
+Total files/day: `100 TB / 128 MB target = ~800,000 files` (fixed, regardless of node count)
+Per partition/hour: `800,000 / 24 = ~33,300 files`
 
-At 10 combined nodes, compaction S3 traffic is **6x worse** than at 3 nodes — all because query scaling forced insert scaling. And compaction now needs 10→1 merges instead of 3→1, producing larger intermediate files and consuming more memory.
+| Combined nodes | Data/node/day | Flush rate/node | Writer streams/partition | Compaction merge width | Compaction S3 GETs/merge | Wasted insert pipelines |
+|---|---|---|---|---|---|---|
+| 3 | 33 TB | ~267K flushes | 3 | 3-way | 3 GETs + 1 PUT | 0 |
+| 5 | 20 TB | ~160K flushes | 5 | 5-way | 5 GETs + 1 PUT | +2 |
+| 10 | 10 TB | ~80K flushes | 10 | 10-way | 10 GETs + 1 PUT | +7 |
+| 20 | 5 TB | ~40K flushes | 20 | 20-way | 20 GETs + 1 PUT | +17 |
+
+At 10 combined nodes: compaction does **10-way merges** (3.3x more S3 GETs, 3.3x more merge memory), runs **10 compactors** competing for the same partitions, and wastes **7 insert pipelines** that exist only because you needed query capacity. At 100 TB/day with 33K files per partition, each compaction cycle must merge 10 independent file streams — that's 10 concurrent S3 range-read streams per partition merge, vs 3 with a select tier.
+
+**The real cost is operational:** 10 nodes each running insert + flush + WAL + compaction + cache when you only need 3 for ingest. The other 7 are dead weight that creates merge complexity.
 
 ### Solution
 
@@ -1176,51 +1184,53 @@ Add a **stateless select tier** that sits in front of the combined nodes, exactl
                         └─────────┘
 ```
 
-### Why This Solves Insert Fragmentation
+### Why This Solves the Scaling Problem
 
-**Without select tier (scaling combined nodes for queries):**
+**Without select tier — scaling combined nodes for queries (100 TB/day):**
 ```
-3 combined nodes → each writes to every partition
-  → partition dt=05-22/hour=14 gets 3 files (one per node)
-  → 72 partitions × 3 nodes = 216 files/day
+3 combined nodes, need 10x query capacity → scale to 10 combined nodes:
+  → Same 800K files/day (data volume drives file count, not node count)
+  → BUT: 10 writer streams per partition instead of 3
+  → Compaction: 10-way merge per partition (10 S3 GETs + 1 PUT per merge)
+  → 10 compactors competing for same partitions (collision risk even with sharding)
+  → 10 WALs, 10 flush pipelines, 10 insert handlers — all unnecessary overhead
+  → 33 TB/node/day → 10 TB/node/day (each node underutilized on ingest)
+  → S3 LIST calls: 10 writer prefixes per partition scan
+```
 
-Need 10x query capacity? Scale to 10 combined nodes:
-  → partition dt=05-22/hour=14 gets 10 files
-  → 72 partitions × 10 nodes = 720 files/day  ← 3.3x worse fragmentation
-  → Compaction: 10 small files → 1 merged, 6x more S3 ops
-  → Each node writes ~0.6MB/flush (small, suboptimal Parquet files)
+**With select tier — fixed combined nodes + scaling selects (100 TB/day):**
 ```
-
-**With select tier (fixed combined nodes + scaling selects):**
-```
-3 combined nodes (fixed) + 10 select nodes
-  → partition dt=05-22/hour=14 still gets only 3 files
-  → 72 partitions × 3 nodes = 216 files/day  ← unchanged
-  → Compaction: 3 files → 1 merged, minimal S3 ops
-  → Each node writes ~2MB/flush (larger, better-optimized Parquet files)
+3 combined nodes (fixed) + 10 select nodes:
+  → Same 800K files/day (unchanged)
+  → Only 3 writer streams per partition
+  → Compaction: 3-way merge (3 S3 GETs + 1 PUT per merge) — 3.3x fewer GETs
+  → 3 compactors with clean partition sharding (Phase I)
+  → 3 WALs, 3 flush pipelines — all fully utilized at 33 TB/node/day
+  → S3 LIST calls: 3 writer prefixes per partition scan
 
 Query capacity: 10 select nodes handle 10x the queries
-Insert capacity: 3 combined nodes (can scale independently if needed)
+Insert capacity: 3 combined nodes at full throughput (33 TB/day each)
 ```
 
-**Key insight:** File fragmentation scales with **insert node count**, not query node count. Decoupling query scaling from insert scaling keeps file count stable. Fewer writers also produce **larger files per flush** — better Parquet row groups, better compression ratios, less compaction work.
+**Key insight:** At production scale, total file count is fixed by data volume (`data / target_file_size`). The problem with scaling combined nodes for queries is not more files — it's **more writer streams per partition**, which means wider compaction merges, more compactors competing, and wasted insert/WAL/flush resources on nodes that exist only for query capacity. The select tier eliminates all of this by letting insert infrastructure stay right-sized while query capacity scales independently.
 
 ### Flush Safety & Data Protection
 
 With fewer combined nodes (e.g., 3 instead of 10), each node handles more ingest volume. This raises questions about flush timing and data durability.
 
-#### Flush Timing: Fewer Nodes = Larger Files = Better
+#### Flush Timing: Size-Driven at Production Scale
 
-Each combined node writes more data per flush interval, producing larger Parquet files:
+At production volumes (100+ TB/day), `TargetFileSize=128MB` triggers flushes long before the 60s timer. Each node flushes near-continuously, producing ~128MB files regardless of node count. The flush timer only matters at low volume (dev/staging).
 
-| Combined nodes | Data per node per flush (120s) | File size (ZSTD) | Quality |
-|---|---|---|---|
-| 10 | ~0.6MB raw | ~60-120KB | Poor — too small for Parquet efficiency |
-| 5 | ~1.2MB raw | ~120-240KB | Acceptable |
-| 3 | ~2MB raw | ~200-400KB | Good — better row groups, compression |
-| 1 | ~6MB raw | ~600KB-1.2MB | Excellent — optimal Parquet file sizes |
+| Combined nodes | Data/node/day (100TB total) | Flush rate | File size | Files/node/day |
+|---|---|---|---|---|
+| 3 | 33 TB | ~267K/day (~3/s) | ~128 MB | ~267,000 |
+| 5 | 20 TB | ~160K/day (~1.8/s) | ~128 MB | ~160,000 |
+| 10 | 10 TB | ~80K/day (~0.9/s) | ~128 MB | ~80,000 |
 
-The actual Parquet write + ZSTD compress + S3 upload for a 2MB file takes ~200-400ms. The flush timer runs every 60-120s regardless of data volume. Larger files don't slow the flush — they produce better output.
+Total files/day is always ~800K (100 TB / 128 MB). Each node produces the same size files — the difference is throughput per node. With 3 nodes, each handles 3.3x more ingest and flushes 3.3x more often, but file quality is identical.
+
+The actual Parquet write + ZSTD compress + S3 upload for 128MB takes ~500ms-1s. At 3 nodes with ~3 flushes/second, flush is near-continuous — the pipeline must be efficient. This is handled by per-partition buffering: only the active partition(s) flush, and multiple partitions pipeline in parallel.
 
 #### WAL Protection: Zero Data Loss
 
@@ -1494,24 +1504,27 @@ func mergeStats(partial []map[string]int64) map[string]int64 {
 
 ### Scaling Guidelines
 
-| Deployment size | Combined nodes | Select nodes | Total query capacity | Files/day |
-|---|---|---|---|---|
-| Small (dev/staging) | 1 (`role=all`) | 0 (query combined directly) | 1x | 72 |
-| Medium (team) | 3 (`role=all`) | 0 (query combined directly) | 3x | 216 |
-| Large (org-wide) | 3 (`role=all`) | 3-10 (`role=select`) | 3-10x queries, 3x ingest | 216 |
-| XL (platform) | 5 (`role=all`) | 10-50 (`role=select`) | 10-50x queries, 5x ingest | 360 |
+| Deployment | Combined | Select | Ingest/node | Files/day | Writer streams/partition | Query capacity |
+|---|---|---|---|---|---|---|
+| Dev/staging | 1 | 0 | all | ~data/128MB | 1 | 1x |
+| Team (1 TB/day) | 3 | 0 | 333 GB | ~8K | 3 | 3x |
+| Org (10 TB/day) | 3 | 3-10 | 3.3 TB | ~80K | 3 | 3-10x |
+| Platform (100 TB/day) | 5 | 10-50 | 20 TB | ~800K | 5 | 10-50x |
+| XL (500 TB/day) | 10 | 20-100 | 50 TB | ~4M | 10 | 20-100x |
 
-**Rule of thumb:** Scale combined nodes for ingest throughput and storage capacity. Scale select nodes for query concurrency. File count stays proportional to combined node count only — never grows with query scaling.
+**Scale combined nodes for ingest throughput.** Each combined node handles insert + flush + WAL + compaction. Add combined nodes when per-node ingest throughput becomes the bottleneck (depends on CPU, network, S3 bandwidth — typically 20-50 TB/day per node).
 
-**Anti-pattern:** Never scale combined nodes just because you need more query capacity. That's what the select tier is for. Combined nodes should only be added when ingest throughput is the bottleneck.
+**Scale select nodes for query concurrency.** Select nodes are stateless and cheap. Adding 10 select nodes costs zero additional S3 writes, zero additional compaction work, zero additional writer streams.
+
+**Anti-pattern:** Never scale combined nodes just for query capacity. At 100 TB/day, going from 3 to 10 combined nodes means 7 unnecessary insert pipelines, 10-way compaction merges, and 10 compactors competing — all for queries that a select tier handles better.
 
 ### Expected Impact
 
 | Metric | Without select tier | With select tier |
 |---|---|---|
 | Query scaling | Coupled to insert scaling | Independent |
-| File fragmentation | Grows with query scaling | Fixed (combined count only) |
-| S3 compaction cost | Grows quadratically | Fixed (combined count only) |
+| Writer streams/partition | Grows with query scaling (10-way merges) | Fixed (3-5 way merges) |
+| Compaction S3 GETs/merge | N per merge (N = total nodes) | N per merge (N = combined only) |
 | Cache efficiency | Single tier | Two-tier (query cache + file cache) |
 | Query storm protection | Affects ingest | Select tier absorbs, combined unaffected |
 | Node failure | Partial response only | Full results via gap redistribution |
