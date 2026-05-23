@@ -1080,30 +1080,227 @@ Single-instance deployments (`shard-count` unset or `=1`): `OwnsPartition` retur
 
 ### Expected Impact
 
-| Metric | Before (leader) | After (ring, 3 nodes) |
+| Metric | Before (leader) | After (static sharding, 3 instances) |
 |---|---|---|
 | Compaction throughput | 1 partition at a time | 6 partitions at a time |
 | Time to compact 72 partitions | ~6 hours | ~1 hour |
-| Scaling | Manual leader failover | Linear with insert nodes |
-| Coordination | S3 leader election | Gossip + S3 sentinel (existing) |
+| Scaling | Manual leader failover | Linear with instances |
+| Coordination | S3 leader election | Static hash + S3 sentinel (existing) |
+| Infrastructure | N/A | Zero new components |
 
 ### Testing
 
-- Unit test: ring assigns partitions deterministically, ownership is disjoint
-- Unit test: sentinel prevents double-compaction during rebalance
+- Unit test: static sharding assigns partitions deterministically, ownership is disjoint
+- Unit test: verify `hash(partition) % N` covers all partitions for N=1,2,3,4,5,8
+- Unit test: sentinel prevents double-compaction during shard-count change
 - Integration test: 3-instance deployment, all partitions compacted, no duplicates
-- Scale test: add/remove instance, verify repartitioning within 1 compaction interval
+- Scale test: change shard-count 3→4→2, verify all partitions still owned
 - Crash test: kill instance mid-compaction, verify sentinel expires and partition is picked up
-- Fairness test: verify partition distribution is within ±10% of even across nodes
-- Regression: single-instance deployment auto-falls back to leader mode
+- Fairness test: verify partition distribution is within ±15% of even across instances
+- Regression: single-instance deployment (shard-count=1) behaves identically to current
 
 ### Logs-specific
 
-Log partitions are typically uniform in size (each hour has similar volume). Ring distributes work evenly.
+Log partitions are typically uniform in size (each hour has similar volume). Static sharding distributes work evenly.
 
 ### Traces-specific
 
-Trace partitions can be skewed (some hours have 10x more spans). Consider weighted ring (future): nodes with more CPU/memory get more vnodes. For now, even distribution is acceptable — skewed partitions just take longer on their owning node.
+Trace partitions can be skewed (some hours have 10x more spans). Static sharding doesn't account for this — skewed partitions just take longer on their owning instance. Acceptable for background compaction.
+
+---
+
+## Phase J: Select Tier — Stateless Query Fan-Out Layer
+
+### Problem
+
+Scaling query capacity by adding more `role=all` (combined) nodes has a side effect: each new node also adds insert capacity, compaction work, and S3 write load. More nodes = more flush targets = smaller files per node per partition = more fragmentation. Scaling to 10 combined nodes means each partition gets files from 10 writers, creating 10x the file count and defeating the compaction gains from Phase E.
+
+### Solution
+
+Add a **stateless select tier** that sits in front of the combined nodes, exactly like VL/VT's vlselect with `-storageNode`. The select tier handles query fan-out, result merging, and its own local cache. Combined nodes are protected from query storms without increasing insert fragmentation.
+
+```
+                    ┌──────────────────────┐
+                    │  External queries    │
+                    │  (Grafana, dashboards)│
+                    └──────────┬───────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              ▼                ▼                ▼
+        ┌──────────┐    ┌──────────┐    ┌──────────┐
+        │ select-0 │    │ select-1 │    │ select-2 │    ← Select Tier
+        │ role=select   │ role=select   │ role=select     (stateless,
+        │ local cache│  │ local cache│  │ local cache│    scales freely)
+        └─────┬──┬──┘   └──┬──┬────┘   └──┬──┬────┘
+              │  │         │  │           │  │
+              │  └─────────┼──┼───────────┘  │     ← fan-out to all
+              │            │  │              │       combined nodes
+              ▼            ▼  ▼              ▼
+        ┌──────────┐    ┌──────────┐    ┌──────────┐
+        │  all-0   │    │  all-1   │    │  all-2   │    ← Combined Tier
+        │ insert   │    │ insert   │    │ insert   │      (fixed count,
+        │ select   │    │ select   │    │ select   │       writes + cache
+        │ compact  │    │ compact  │    │ compact  │       + compaction)
+        │ cache    │    │ cache    │    │ cache    │
+        └────┬─────┘    └────┬─────┘    └────┬─────┘
+             │               │               │
+             └───────────────┼───────────────┘
+                             ▼
+                        ┌─────────┐
+                        │   S3    │
+                        └─────────┘
+```
+
+### Why This Solves Insert Fragmentation
+
+**Without select tier (scaling combined nodes):**
+```
+3 combined nodes → each writes to every partition
+  → partition dt=05-22/hour=14 gets 3 files (one per node)
+  → 72 partitions × 3 nodes = 216 files/day
+
+Scale to 10 combined nodes:
+  → partition dt=05-22/hour=14 gets 10 files
+  → 72 partitions × 10 nodes = 720 files/day  ← 3x worse fragmentation
+```
+
+**With select tier (fixed combined nodes + scaling selects):**
+```
+3 combined nodes (fixed) + 10 select nodes
+  → partition dt=05-22/hour=14 still gets only 3 files
+  → 72 partitions × 3 nodes = 216 files/day  ← unchanged
+
+Query capacity: 10 select nodes handle 10x the queries
+Insert capacity: 3 combined nodes (can scale independently if needed)
+```
+
+**Key insight:** File fragmentation scales with **insert node count**, not query node count. Decoupling query scaling from insert scaling keeps file count stable.
+
+### Design
+
+#### Reuse VL/VT netselect Protocol
+
+VL's `netselect.Storage` (in `deps/VictoriaLogs/app/vlstorage/netselect/netselect.go`) already implements the full fan-out protocol:
+
+- `RunQuery()` → fans out to all storage nodes in parallel, merges via `writeBlock(nodeIdx, db)`
+- `GetFieldNames/Values()` → fans out, deduplicates results with hit counts
+- `GetStreams()` → fans out, coalesces
+- Error handling: `AllowPartialResponse` for graceful degradation
+
+LH select nodes already speak the VL wire protocol. The select tier just needs to be configured with `-storageNode` pointing to the combined nodes — **zero new code for basic fan-out**.
+
+#### Discovery
+
+The select tier discovers combined nodes using the existing `Discovery` system:
+
+```
+# Static list (simplest)
+-lakehouse.discovery.storage-nodes=all-0:9428,all-1:9428,all-2:9428
+
+# K8s headless DNS (auto-discovers combined pods)
+-lakehouse.discovery.headless-service=lakehouse-all.namespace.svc.cluster.local
+```
+
+Both methods already exist in `internal/discovery/discovery.go`. The `DiscoverStorageNodes()` method supports static lists and headless DNS resolution. No new code needed.
+
+#### Local Cache on Select Tier
+
+Select nodes maintain their own L1 (memory) + L2 (disk) cache for **query results and column chunks**. This provides two cache layers:
+
+```
+Query hits select-0:
+  1. Check select-0's local L1/L2 cache → hit = instant response
+  2. Miss → fan-out to all combined nodes
+     a. Combined nodes check their own L1/L2/peer cache
+     b. Combined nodes fall back to S3
+  3. Select-0 caches the results in its local L1/L2
+  4. Next identical query → served from select-0's cache
+```
+
+**Two-level caching benefit:**
+- Select tier caches **hot query patterns** (same dashboard, same time range)
+- Combined tier caches **S3 file data** (column chunks, footers)
+- Different eviction pressure: query results are small, file data is large
+
+```go
+// Select tier cache key: query signature + time range
+type QueryCacheKey struct {
+    QueryHash  uint64  // hash of LogsQL query string
+    StartNano  int64
+    EndNano    int64
+    TenantID   string
+}
+```
+
+#### Intelligent Fan-Out Optimizations
+
+Beyond basic fan-out, the select tier can apply LH-specific optimizations:
+
+**1. Metadata short-circuit:** For `field_names`, `field_values`, `count_uniq` queries that LH serves from its label index (0.1ms), the select tier can query **any single combined node** instead of all of them. All nodes share the same manifest/label index.
+
+```go
+func (s *SelectTier) GetFieldNames(qctx *logstorage.QueryContext, filter string) ([]logstorage.ValueWithHits, error) {
+    // Label index queries are identical across all nodes — ask one
+    sn := s.pickAnyHealthy()
+    return sn.getFieldNames(qctx, filter)
+}
+```
+
+**2. Time-range routing:** Partition list from `PollPartitionList()` (already implemented in Discovery) tells the select tier which time ranges have data. Fan-out can skip nodes that don't have data in the queried range.
+
+**3. Result coalescing:** For `stats by(field) count()`, intermediate results from each combined node are partial aggregates. The select tier merges them:
+
+```go
+// Each combined node returns: {"api-gateway": 1200, "web-server": 800}
+// Select tier merges: sum across nodes per key
+func mergeStats(partial []map[string]int64) map[string]int64 {
+    merged := make(map[string]int64)
+    for _, p := range partial {
+        for k, v := range p {
+            merged[k] += v
+        }
+    }
+    return merged
+}
+```
+
+### Scaling Guidelines
+
+| Deployment size | Combined nodes | Select nodes | Total query capacity |
+|---|---|---|---|
+| Small (dev/staging) | 1 (`role=all`) | 0 (query combined directly) | 1x |
+| Medium (team) | 3 (`role=all`) | 0 (query combined directly) | 3x |
+| Large (org-wide) | 3 (`role=all`) | 3-10 (`role=select`) | 3-10x queries, 3x ingest |
+| XL (platform) | 5 (`role=all`) | 10-50 (`role=select`) | 10-50x queries, 5x ingest |
+
+**Rule of thumb:** Scale combined nodes for ingest throughput and storage capacity. Scale select nodes for query concurrency. File count stays proportional to combined node count only.
+
+### Expected Impact
+
+| Metric | Without select tier | With select tier |
+|---|---|---|
+| Query scaling | Coupled to insert scaling | Independent |
+| File fragmentation | Grows with query scaling | Fixed (combined count only) |
+| Cache efficiency | Single tier | Two-tier (query cache + file cache) |
+| Query storm protection | Affects ingest | Select tier absorbs, combined unaffected |
+| Operational complexity | One pod type | Two pod types (but same binary) |
+
+### Testing
+
+- Integration test: 3 combined + 2 select, verify queries through select return same results as direct
+- Fan-out test: verify all combined nodes are queried for RunQuery
+- Metadata test: verify field_names queries only hit 1 combined node
+- Cache test: repeat same query through select, verify second request served from select's cache
+- Fragmentation test: add select nodes, verify file count in S3 doesn't increase
+- Failover test: kill 1 combined node, verify partial response from select (not error)
+
+### Logs-specific
+
+Log queries through the select tier benefit from label index short-circuit — `field_names`, `field_values`, cardinality queries hit one node only.
+
+### Traces-specific
+
+Trace correlation queries (`trace_id:="X"`) benefit from fan-out — each combined node checks its bloom index in parallel, only the node with the matching file returns data. The select tier receives results from the one relevant node and returns them.
 
 ---
 
@@ -1120,8 +1317,9 @@ Trace partitions can be skewed (some hours have 10x more spans). Consider weight
 | H: Cache maximization | 7 days | A, B (benefits from chunk-level reads) | Near-ClickHouse for cached data |
 | G: Cache-partitioned reads | 5 days | H (benefits from chunk-level cache) | 2-8x via cache deduplication |
 | I: Distributed compaction | 3 days | E (builds on compaction infra) | Linear scaling of compaction |
+| J: Select tier | 4 days | Discovery (already exists) | Independent query scaling |
 
-**Total: ~27 days for all phases.**
+**Total: ~31 days for all phases.**
 
 **Phase A-F (S3 I/O):** ~12 days → VLH within 3-5x of VL for most query types.
-**Phase G-I (distributed):** ~15 days → Near-ClickHouse for cached, linear compaction scaling.
+**Phase G-J (distributed):** ~19 days → Near-ClickHouse cached, linear scaling, decoupled query/ingest.
