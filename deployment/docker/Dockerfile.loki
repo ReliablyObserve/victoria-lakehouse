@@ -1,0 +1,2 @@
+FROM grafana/loki:3.7.2
+COPY --from=busybox:uclibc /bin/wget /usr/bin/wget

@@ -56,7 +56,17 @@ ONE_DAY_AGO_S=$(( NOW_S - 86400 ))
 TWO_DAYS_AGO_S=$(( NOW_S - 172800 ))
 
 # --- Sample trace/span IDs for point lookups ---
-SAMPLE_TRACE_ID="82ad65251702e15f9823289f4748b11b"
+# Auto-detect a real trace_id — try VT first (fastest), then LH
+SAMPLE_TRACE_ID=""
+for src_url in "$VT_URL" "$LH_URL"; do
+  SAMPLE_TRACE_ID=$(curl -sf "${src_url}/select/logsql/query?query=*&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=1" 2>/dev/null | python3 -c "import sys,json; print(json.loads(sys.stdin.readline()).get('trace_id',''))" 2>/dev/null || true)
+  if [[ -n "$SAMPLE_TRACE_ID" ]]; then break; fi
+done
+if [[ -z "$SAMPLE_TRACE_ID" ]]; then
+  SAMPLE_TRACE_ID="82ad65251702e15f9823289f4748b11b"
+  echo "WARNING: could not auto-detect trace_id, using fallback"
+fi
+echo "Sample trace_id: $SAMPLE_TRACE_ID"
 SAMPLE_TRACE_ID_MISS="ffffffffffffffffffffffffffffffff"
 
 # --- Measurement function ---

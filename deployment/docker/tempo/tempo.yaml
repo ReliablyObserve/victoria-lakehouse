@@ -1,0 +1,33 @@
+stream_over_http_enabled: true
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9096
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: "0.0.0.0:4317"
+        http:
+          endpoint: "0.0.0.0:4318"
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+
+metrics_generator:
+  storage:
+    path: /var/tempo/generator/wal
+
+overrides:
+  defaults:
+    ingestion:
+      burst_size_bytes: 100000000
+      rate_limit_bytes: 100000000
+    metrics_generator:
+      processors: []

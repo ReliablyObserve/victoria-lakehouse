@@ -1,0 +1,16 @@
+profile: max-performance
+
+insert:
+  wal_enabled: true
+  flush_interval: 30s
+
+query:
+  max_concurrent: 64
+  file_workers: 16
+
+cache:
+  memory_limit: "2GB"
+  disk_limit: "20GB"
+
+manifest:
+  refresh_interval: 10s
