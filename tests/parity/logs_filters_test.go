@@ -24,7 +24,7 @@ func TestParity_Filters(t *testing.T) {
 		{Name: "exact_msg", Endpoint: statsEndpoint(), Params: map[string]string{"query": `_msg:="specific log message" | stats count() rows`}, Compare: CountEqual},
 		{Name: "in_filter", Endpoint: statsEndpoint(), Params: map[string]string{"query": `level:in("ERROR", "WARN") | stats count() rows`}, Compare: CountEqual},
 		{Name: "range_numeric", Endpoint: statsEndpoint(), Params: map[string]string{"query": `http.status_code:range[400, 599] | stats count() rows`}, Compare: CountEqual},
-		{Name: "seq_filter", Endpoint: statsEndpoint(), Params: map[string]string{"query": `_msg:seq("connection" "refused") | stats count() rows`}, Compare: CountEqual},
+		{Name: "seq_filter", Endpoint: statsEndpoint(), Params: map[string]string{"query": `_msg:seq("connection", "refused") | stats count() rows`}, Compare: CountEqual},
 		{Name: "ipv4_filter", Endpoint: statsEndpoint(), Params: map[string]string{"query": `_msg:ipv4_range("10.0.0.0/8") | stats count() rows`}, Compare: CountEqual},
 		{Name: "len_range", Endpoint: statsEndpoint(), Params: map[string]string{"query": `_msg:len_range(100, 500) | stats count() rows`}, Compare: CountEqual},
 		{Name: "multi_exact", Endpoint: statsEndpoint(), Params: map[string]string{"query": `service.name:="api-gateway" level:="ERROR" k8s.namespace.name:="production" | stats count() rows`}, Compare: CountEqual},

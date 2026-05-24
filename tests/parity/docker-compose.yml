@@ -36,6 +36,7 @@ services:
 
   victorialogs:
     image: victoriametrics/victoria-logs:v1.50.0
+    restart: unless-stopped
     command:
       - "-storageDataPath=/data"
       - "-retentionPeriod=48h"

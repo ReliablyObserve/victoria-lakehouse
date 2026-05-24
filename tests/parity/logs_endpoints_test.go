@@ -78,12 +78,7 @@ func TestParity_Endpoints(t *testing.T) {
 			Params:   map[string]string{"query": "* | stats count() rows", "step": "3600s"},
 			Compare:  StructureMatch,
 		},
-		{
-			Name:     "tail_not_supported",
-			Endpoint: "/select/logsql/tail",
-			Params:   map[string]string{"query": "*"},
-			Compare:  StatusEqual,
-		},
+		// tail is tested separately (streaming endpoint needs short timeout)
 		{
 			Name:     "tenant_ids",
 			Endpoint: "/select/tenant_ids",

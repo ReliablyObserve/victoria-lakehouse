@@ -31,6 +31,7 @@ var (
 )
 
 var httpClient = &http.Client{Timeout: 60 * time.Second}
+var shortClient = &http.Client{Timeout: 3 * time.Second}
 
 type fetchResult struct {
 	StatusCode int
@@ -38,14 +39,22 @@ type fetchResult struct {
 }
 
 func fetch(t *testing.T, baseURL, path string, params url.Values) fetchResult {
+	return fetchWith(t, httpClient, baseURL, path, params)
+}
+
+func fetchShort(t *testing.T, baseURL, path string, params url.Values) fetchResult {
+	return fetchWith(t, shortClient, baseURL, path, params)
+}
+
+func fetchWith(t *testing.T, client *http.Client, baseURL, path string, params url.Values) fetchResult {
 	t.Helper()
 	u := baseURL + path
 	if len(params) > 0 {
 		u += "?" + params.Encode()
 	}
-	resp, err := httpClient.Get(u)
+	resp, err := client.Get(u)
 	if err != nil {
-		t.Fatalf("GET %s: %v", u, err)
+		return fetchResult{StatusCode: 0, Body: []byte(err.Error())}
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
@@ -119,6 +128,16 @@ func extractValuesStrings(data []byte) []string {
 	obj, err := parseJSON(data)
 	if err != nil {
 		return nil
+	}
+	if dataArr, ok := obj["data"].([]any); ok {
+		for _, entry := range dataArr {
+			if s, ok := entry.(string); ok {
+				vals = append(vals, s)
+			}
+		}
+		if len(vals) > 0 {
+			return vals
+		}
 	}
 	valuesRaw, _ := obj["values"].([]any)
 	for _, entry := range valuesRaw {

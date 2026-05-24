@@ -17,7 +17,7 @@ func getTraceID(t *testing.T, baseURL string) string {
 		"lookback": {"48h"},
 		"limit":    {"1"},
 	}
-	r := fetch(t, baseURL, "/api/traces", params)
+	r := fetch(t, baseURL, "/select/jaeger/api/traces", params)
 	if r.StatusCode != 200 {
 		t.Fatalf("Jaeger search returned %d", r.StatusCode)
 	}
@@ -39,28 +39,28 @@ func getTraceID(t *testing.T, baseURL string) string {
 
 func TestParity_Traces_Jaeger(t *testing.T) {
 	t.Run("jaeger_services", func(t *testing.T) {
-		ref := fetch(t, vtBaseURL, "/api/services", nil)
-		sut := fetch(t, lhtBaseURL, "/api/services", nil)
+		ref := fetch(t, vtBaseURL, "/select/jaeger/api/services", nil)
+		sut := fetch(t, lhtBaseURL, "/select/jaeger/api/services", nil)
 		compareParity(t, ParityCase{Compare: SetEqual}, ref, sut)
 	})
 
 	t.Run("jaeger_operations", func(t *testing.T) {
-		ref := fetch(t, vtBaseURL, "/api/services/api-gateway/operations", nil)
-		sut := fetch(t, lhtBaseURL, "/api/services/api-gateway/operations", nil)
+		ref := fetch(t, vtBaseURL, "/select/jaeger/api/services/api-gateway/operations", nil)
+		sut := fetch(t, lhtBaseURL, "/select/jaeger/api/services/api-gateway/operations", nil)
 		compareParity(t, ParityCase{Compare: SetEqual}, ref, sut)
 	})
 
 	t.Run("jaeger_search_service", func(t *testing.T) {
 		params := url.Values{"service": {"api-gateway"}, "lookback": {"48h"}, "limit": {"5"}}
-		ref := fetch(t, vtBaseURL, "/api/traces", params)
-		sut := fetch(t, lhtBaseURL, "/api/traces", params)
+		ref := fetch(t, vtBaseURL, "/select/jaeger/api/traces", params)
+		sut := fetch(t, lhtBaseURL, "/select/jaeger/api/traces", params)
 		compareParity(t, ParityCase{Compare: NonEmpty}, ref, sut)
 	})
 
 	t.Run("jaeger_search_limit", func(t *testing.T) {
 		params := url.Values{"service": {"api-gateway"}, "lookback": {"48h"}, "limit": {"5"}}
-		ref := fetch(t, vtBaseURL, "/api/traces", params)
-		sut := fetch(t, lhtBaseURL, "/api/traces", params)
+		ref := fetch(t, vtBaseURL, "/select/jaeger/api/traces", params)
+		sut := fetch(t, lhtBaseURL, "/select/jaeger/api/traces", params)
 		var refResp, sutResp map[string]any
 		json.Unmarshal(ref.Body, &refResp)
 		json.Unmarshal(sut.Body, &sutResp)
@@ -77,15 +77,15 @@ func TestParity_Traces_Jaeger(t *testing.T) {
 
 	t.Run("jaeger_trace_detail", func(t *testing.T) {
 		traceID := getTraceID(t, vtBaseURL)
-		ref := fetch(t, vtBaseURL, "/api/traces/"+traceID, nil)
-		sut := fetch(t, lhtBaseURL, "/api/traces/"+traceID, nil)
+		ref := fetch(t, vtBaseURL, "/select/jaeger/api/traces/"+traceID, nil)
+		sut := fetch(t, lhtBaseURL, "/select/jaeger/api/traces/"+traceID, nil)
 		compareParity(t, ParityCase{Compare: StructureMatch}, ref, sut)
 	})
 
 	t.Run("jaeger_dependencies", func(t *testing.T) {
 		params := url.Values{"lookback": {"48h"}}
-		ref := fetch(t, vtBaseURL, "/api/dependencies", params)
-		sut := fetch(t, lhtBaseURL, "/api/dependencies", params)
+		ref := fetch(t, vtBaseURL, "/select/jaeger/api/dependencies", params)
+		sut := fetch(t, lhtBaseURL, "/select/jaeger/api/dependencies", params)
 		compareParity(t, ParityCase{Compare: NonEmpty}, ref, sut)
 	})
 }
