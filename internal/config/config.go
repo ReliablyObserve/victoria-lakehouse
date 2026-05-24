@@ -262,11 +262,12 @@ type StartupConfig struct {
 }
 
 type QueryConfig struct {
-	MaxConcurrent int           `yaml:"max_concurrent"`
-	FileWorkers   int           `yaml:"file_workers"`
-	Timeout       time.Duration `yaml:"timeout"`
-	MaxRows       int64         `yaml:"max_rows"`
-	SlowThreshold time.Duration `yaml:"slow_threshold"`
+	MaxConcurrent    int           `yaml:"max_concurrent"`
+	FileWorkers      int           `yaml:"file_workers"`
+	Timeout          time.Duration `yaml:"timeout"`
+	MaxRows          int64         `yaml:"max_rows"`
+	MaxFilesPerQuery int           `yaml:"max_files_per_query"`
+	SlowThreshold    time.Duration `yaml:"slow_threshold"`
 }
 
 type TenantConfig struct {
@@ -483,11 +484,12 @@ func Default() *Config {
 		},
 
 		Query: QueryConfig{
-			MaxConcurrent: 32,
-			FileWorkers:   64,
-			Timeout:       60 * time.Second,
-			MaxRows:       10_000_000,
-			SlowThreshold: 5 * time.Second,
+			MaxConcurrent:    32,
+			FileWorkers:      64,
+			Timeout:          60 * time.Second,
+			MaxRows:          10_000_000,
+			MaxFilesPerQuery: 500,
+			SlowThreshold:    5 * time.Second,
 		},
 
 		Insert: InsertConfig{

@@ -80,7 +80,8 @@ var (
 	compactionShardID        = flag.Int("lakehouse.compaction.shard-id", -1, "Compaction shard ID (default: auto-detect from hostname ordinal)")
 	compactionShardCount     = flag.Int("lakehouse.compaction.shard-count", 0, "Total compaction shards (0 or 1 = leader mode)")
 
-	queryFileWorkers = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 8)")
+	queryFileWorkers      = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 8)")
+	queryMaxFilesPerQuery = flag.Int("lakehouse.query.max-files-per-query", 0, "Max S3 files per query before rejection (default: 500)")
 
 	s3ReadAhead    = flag.Int("lakehouse.s3.read-ahead-bytes", 0, "S3 read-ahead buffer size in bytes (default: 2MB)")
 	s3CoalesceGap  = flag.Int("lakehouse.s3.coalesce-gap-bytes", 0, "Merge S3 range reads with gaps smaller than this (default: 64KB)")
@@ -844,6 +845,9 @@ func applyFlags(cfg *config.Config) {
 
 	if *queryFileWorkers > 0 {
 		cfg.Query.FileWorkers = *queryFileWorkers
+	}
+	if *queryMaxFilesPerQuery > 0 {
+		cfg.Query.MaxFilesPerQuery = *queryMaxFilesPerQuery
 	}
 
 	if s := *tracesBloomColumns; s != "" {

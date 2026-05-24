@@ -44,6 +44,7 @@ func TestVerifyMetrics_AllCountersExist(t *testing.T) {
 		{"ElectionTransitionsTotal", ElectionTransitionsTotal},
 		{"QueryRowsTotal", QueryRowsTotal},
 		{"QueryRejectedTotal", QueryRejectedTotal},
+		{"QueryFileLimitExceeded", QueryFileLimitExceeded},
 		{"CompactionRunsTotal", CompactionRunsTotal},
 		{"CompactionFilesInputTotal", CompactionFilesInputTotal},
 		{"CompactionFilesOutputTotal", CompactionFilesOutputTotal},

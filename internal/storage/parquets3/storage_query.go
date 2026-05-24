@@ -120,6 +120,17 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		return nil
 	}
 
+	maxFiles := s.cfg.Query.MaxFilesPerQuery
+	if maxFiles <= 0 {
+		maxFiles = 500
+	}
+	if len(files) > maxFiles {
+		metrics.QueryFileLimitExceeded.Inc()
+		logger.Warnf("query file limit exceeded; files=%d, max=%d, range=%v-%v; narrow the time range",
+			len(files), maxFiles, time.Unix(0, startNs), time.Unix(0, endNs))
+		return fmt.Errorf("query matches %d files (limit %d); narrow the time range or add filters", len(files), maxFiles)
+	}
+
 	hasTombstones := s.tombstones != nil && len(s.tombstones.ForRange(startNs, endNs)) > 0
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
 		remaining := s.manifestFastPath(files, startNs, endNs, filteredWriteBlock)

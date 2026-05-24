@@ -292,6 +292,8 @@ lakehouseConfig:
     slow_threshold: 5s
     # -- Number of parallel file workers per query.
     file_workers: 8
+    # -- Maximum S3 files a single query may scan (0 = use default 500). Queries exceeding this return an error instead of OOM.
+    max_files_per_query: 500
 
   # ---------------------------------------------------------------------------
   # Startup — Warmup and readiness behavior
