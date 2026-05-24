@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -457,6 +458,10 @@ func run(cfg *config.Config, addr string) {
 		}
 	}
 
+	if err := store.Manifest().SaveTo(manifestSnapshotPath(cfg)); err != nil {
+		logger.Errorf("manifest snapshot on shutdown failed: %s", err)
+	}
+
 	if err := store.Close(); err != nil {
 		logger.Errorf("storage close error: %s", err)
 	}
@@ -711,8 +716,22 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	return mux
 }
 
+func manifestSnapshotPath(cfg *config.Config) string {
+	return filepath.Join(cfg.Manifest.PersistPath, "manifest-snapshot.json")
+}
+
 func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, tenantKey string) {
 	sm.SetPhase(startup.PhaseDiskRecovery)
+
+	mpath := manifestSnapshotPath(cfg)
+	if err := store.Manifest().LoadFrom(mpath); err != nil {
+		logger.Warnf("manifest disk load failed (will recover from S3): %s", err)
+	} else {
+		m := store.Manifest()
+		if m.TotalFiles() > 0 {
+			logger.Infof("manifest loaded from disk; files=%d, bytes=%d", m.TotalFiles(), m.TotalBytes())
+		}
+	}
 	logger.Infof("disk recovery complete")
 
 	sm.SetPhase(startup.PhaseS3Refresh)
@@ -737,6 +756,10 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 		}
 	}
 
+	if err := store.Manifest().SaveTo(mpath); err != nil {
+		logger.Errorf("manifest snapshot after S3 refresh failed: %s", err)
+	}
+
 	sm.SetPhase(startup.PhaseReady)
 
 	go func() {
@@ -745,20 +768,30 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 		store.BackfillBloomIndex(bctx)
 	}()
 
-	ticker := time.NewTicker(cfg.Manifest.RefreshInterval)
-	defer ticker.Stop()
-	for range ticker.C {
-		rctx, rcancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		if err := store.RefreshManifest(rctx); err != nil {
-			logger.Errorf("periodic manifest refresh failed: %s", err)
-		} else {
-			m := store.Manifest()
-			logger.Infof("manifest refreshed; files=%d, bytes=%d", m.TotalFiles(), m.TotalBytes())
-			registry.ReconcileWithManifest(tenantKey,
-				int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
-				m.MinTime().UnixNano(), m.MaxTime().UnixNano())
+	refreshTicker := time.NewTicker(cfg.Manifest.RefreshInterval)
+	defer refreshTicker.Stop()
+	persistTicker := time.NewTicker(cfg.Manifest.PersistInterval)
+	defer persistTicker.Stop()
+
+	for {
+		select {
+		case <-refreshTicker.C:
+			rctx, rcancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			if err := store.RefreshManifest(rctx); err != nil {
+				logger.Errorf("periodic manifest refresh failed: %s", err)
+			} else {
+				m := store.Manifest()
+				logger.Infof("manifest refreshed; files=%d, bytes=%d", m.TotalFiles(), m.TotalBytes())
+				registry.ReconcileWithManifest(tenantKey,
+					int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
+					m.MinTime().UnixNano(), m.MaxTime().UnixNano())
+			}
+			rcancel()
+		case <-persistTicker.C:
+			if err := store.Manifest().SaveTo(mpath); err != nil {
+				logger.Errorf("periodic manifest persist failed: %s", err)
+			}
 		}
-		rcancel()
 	}
 }
 

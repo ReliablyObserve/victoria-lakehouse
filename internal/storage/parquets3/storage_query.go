@@ -226,7 +226,13 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 					continue
 				}
 				if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filteredWriteBlock); err != nil {
-					logger.Warnf("query file error: %s; key=%s", err, fi.Key)
+					if isFileNotFoundError(err) {
+						metrics.QueryFileNotFoundTotal.Inc()
+						logger.Infof("query skipped compacted/deleted file; key=%s", fi.Key)
+					} else {
+						metrics.QueryFileErrorsTotal.Inc()
+						logger.Warnf("query file error: %s; key=%s", err, fi.Key)
+					}
 					continue
 				}
 			}
@@ -1885,4 +1891,16 @@ func (s *Storage) QuerySpecificFiles(ctx context.Context, fileKeys []string, sta
 	}
 
 	return nil
+}
+
+func isFileNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "NoSuchKey") ||
+		strings.Contains(s, "NotFound") ||
+		strings.Contains(s, "404") ||
+		strings.Contains(s, "does not exist") ||
+		strings.Contains(s, "file not found")
 }

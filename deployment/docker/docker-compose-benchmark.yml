@@ -67,6 +67,9 @@ services:
       - "-lakehouse.cache.disk-max-mb=20480"
       - "-lakehouse.cache.warmup-partitions=168"
       - "-lakehouse.cache.warmup-max-files=5000"
+      - "-lakehouse.compaction.enabled"
+      - "-lakehouse.compaction.interval=30s"
+      - "-lakehouse.query.max-files-per-query=10000"
       - "-loggerLevel=INFO"
     volumes:
       - lakehouse-cache-logs:/data/lakehouse
@@ -147,6 +150,9 @@ services:
       - "-lakehouse.cache.memory-mb=2048"
       - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
       - "-lakehouse.cache.disk-max-mb=20480"
+      - "-lakehouse.compaction.enabled"
+      - "-lakehouse.compaction.interval=30s"
+      - "-lakehouse.query.max-files-per-query=10000"
       - "-loggerLevel=INFO"
     volumes:
       - lakehouse-cache-traces:/data/lakehouse

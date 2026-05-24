@@ -71,6 +71,8 @@ var (
 	FooterCacheEntries      = NewGauge("lakehouse_footer_cache_entries")
 	TraceIDCacheHits        = NewCounter("lakehouse_trace_id_cache_hits_total")
 	MetadataOnlyFiles       = NewCounter("lakehouse_metadata_only_files_total")
+	QueryFileNotFoundTotal  = NewCounter("lakehouse_query_file_not_found_total")
+	QueryFileErrorsTotal    = NewCounter("lakehouse_query_file_errors_total")
 )
 
 // Insert / writer metrics

@@ -119,6 +119,7 @@ func (c *Compactor) Compact(ctx context.Context, partition string, files []manif
 	// Merge, write, and upload based on mode.
 	var outputData []byte
 	var rowsMerged int64
+	var minTime, maxTime int64
 
 	switch c.mode {
 	case config.ModeLogs:
@@ -127,6 +128,10 @@ func (c *Compactor) Compact(ctx context.Context, partition string, files []manif
 			return nil, err
 		}
 		rowsMerged = int64(len(merged))
+		if rowsMerged > 0 {
+			minTime = merged[0].TimestampUnixNano
+			maxTime = merged[len(merged)-1].TimestampUnixNano
+		}
 		out, err := writeCompactedLogs(merged, c.rowGroupSize, c.compressionLevel)
 		if err != nil {
 			return nil, fmt.Errorf("write compacted logs: %w", err)
@@ -139,6 +144,10 @@ func (c *Compactor) Compact(ctx context.Context, partition string, files []manif
 			return nil, err
 		}
 		rowsMerged = int64(len(merged))
+		if rowsMerged > 0 {
+			minTime = merged[0].TimestampUnixNano
+			maxTime = merged[len(merged)-1].TimestampUnixNano
+		}
 		out, err := writeCompactedTraces(merged, c.rowGroupSize, c.compressionLevel)
 		if err != nil {
 			return nil, fmt.Errorf("write compacted traces: %w", err)
@@ -160,23 +169,6 @@ func (c *Compactor) Compact(ctx context.Context, partition string, files []manif
 	// Upload compacted file.
 	if err := c.pool.Upload(ctx, outputKey, outputData); err != nil {
 		return nil, fmt.Errorf("upload compacted file: %w", err)
-	}
-
-	// Determine time bounds from the merged data.
-	var minTime, maxTime int64
-	if rowsMerged > 0 {
-		// We already sorted, so first/last rows give bounds.
-		// Re-read from files metadata would be heavier; use the input FileInfo instead.
-		minTime = files[0].MinTimeNs
-		maxTime = files[0].MaxTimeNs
-		for _, f := range files[1:] {
-			if f.MinTimeNs < minTime {
-				minTime = f.MinTimeNs
-			}
-			if f.MaxTimeNs > maxTime {
-				maxTime = f.MaxTimeNs
-			}
-		}
 	}
 
 	// Add compacted file to manifest.

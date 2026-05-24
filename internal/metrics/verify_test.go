@@ -74,6 +74,8 @@ func TestVerifyMetrics_AllCountersExist(t *testing.T) {
 		{"FooterCacheEvictions", FooterCacheEvictions},
 		{"TraceIDCacheHits", TraceIDCacheHits},
 		{"MetadataOnlyFiles", MetadataOnlyFiles},
+		{"QueryFileNotFoundTotal", QueryFileNotFoundTotal},
+		{"QueryFileErrorsTotal", QueryFileErrorsTotal},
 		{"S3RangeReadsTotal", S3RangeReadsTotal},
 		{"S3RangeBytesRead", S3RangeBytesRead},
 		{"S3BufferHits", S3BufferHits},
