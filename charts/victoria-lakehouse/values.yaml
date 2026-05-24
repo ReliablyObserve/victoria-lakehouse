@@ -120,7 +120,7 @@ lakehouseConfig:
   # ---------------------------------------------------------------------------
   insert:
     # -- Periodic flush interval. Lower = less read delay, more S3 PUTs.
-    flush_interval: 10s
+    flush_interval: 30s
     # -- Max rows per partition buffer before triggering flush.
     max_buffer_rows: 50000
     # -- Total buffer memory limit across all partitions.
@@ -382,7 +382,7 @@ lakehouseConfig:
   # ---------------------------------------------------------------------------
   compaction:
     # -- Enable background compaction (requires leader election).
-    enabled: false
+    enabled: true
     # -- Compaction scan interval.
     interval: 5m
     # -- Maximum concurrent compaction workers.
