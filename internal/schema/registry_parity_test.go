@@ -56,13 +56,13 @@ func TestTracesProfile_ResourceFieldsPrefixed(t *testing.T) {
 
 	// Resource attribute fields that must have resource_attr: prefix in traces.
 	resourceFields := map[string]string{
-		"service.name":          "resource_attr:service.name",
+		"service.name":           "resource_attr:service.name",
 		"deployment.environment": "resource_attr:deployment.environment",
-		"cloud.region":          "resource_attr:cloud.region",
-		"host.name":             "resource_attr:host.name",
-		"k8s.namespace.name":    "resource_attr:k8s.namespace.name",
-		"k8s.deployment.name":   "resource_attr:k8s.deployment.name",
-		"k8s.node.name":         "resource_attr:k8s.node.name",
+		"cloud.region":           "resource_attr:cloud.region",
+		"host.name":              "resource_attr:host.name",
+		"k8s.namespace.name":     "resource_attr:k8s.namespace.name",
+		"k8s.deployment.name":    "resource_attr:k8s.deployment.name",
+		"k8s.node.name":          "resource_attr:k8s.node.name",
 	}
 
 	for _, m := range TracesProfile.Promoted {
@@ -199,8 +199,8 @@ func TestLogsVsTraces_SameFieldDifferentNames(t *testing.T) {
 
 	// Fields that exist in both profiles with different internal names.
 	sharedFields := []struct {
-		parquetColumn     string
-		wantLogsInternal  string
+		parquetColumn      string
+		wantLogsInternal   string
 		wantTracesInternal string
 	}{
 		{"service.name", "service.name", "resource_attr:service.name"},

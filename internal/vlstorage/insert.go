@@ -133,4 +133,3 @@ func mapFieldToRow(row *schema.LogRow, name, value string) {
 		row.LogAttributes[strings.Clone(name)] = strings.Clone(value)
 	}
 }
-

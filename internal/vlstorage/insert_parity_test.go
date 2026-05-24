@@ -201,7 +201,7 @@ func TestMapFieldToRow_NonOTELFields(t *testing.T) {
 	t.Parallel()
 
 	customFields := map[string]string{
-		"custom.field":                   "value1",
+		"custom.field":                  "value1",
 		"business.metric":               "revenue",
 		"app.version":                   "2.1.0",
 		"request.id":                    "req-abc-123",
