@@ -589,10 +589,16 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 					if v == "" {
 						continue
 					}
-					if scalarFieldNames[k] {
-						continue
+					var effectivePrefix string
+					if schema.VTTopLevelSpanAttrKeys[k] {
+						effectivePrefix = ""
+					} else {
+						if scalarFieldNames[k] {
+							continue
+						}
+						effectivePrefix = prefix
 					}
-					attrName := bytesutil.InternString(prefix + k)
+					attrName := bytesutil.InternString(effectivePrefix + k)
 					idx := getCol(attrName)
 					for idx >= len(seenBitmap) {
 						seenBitmap = append(seenBitmap, false)
@@ -746,9 +752,10 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 		}
 	}
 	for k, v := range r.SpanAttributes {
-		if !tracePromotedSpanKeys[k] {
-			buf = append(buf, field{k, v})
+		if tracePromotedSpanKeys[k] {
+			continue
 		}
+		buf = append(buf, field{k, v})
 	}
 	for k, v := range r.ScopeAttributes {
 		buf = append(buf, field{k, v})

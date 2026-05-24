@@ -61,6 +61,10 @@ func logRowsToTraceRows(lr *logstorage.LogRows) []schema.TraceRow {
 	rows := make([]schema.TraceRow, 0, n)
 
 	lr.ForEachRow(func(_ uint64, r *logstorage.InsertRow) {
+		if isVTIndexRow(r) {
+			return
+		}
+
 		row := schema.TraceRow{
 			TimestampUnixNano: r.Timestamp,
 		}
@@ -83,6 +87,19 @@ func logRowsToTraceRows(lr *logstorage.LogRows) []schema.TraceRow {
 	return rows
 }
 
+// isVTIndexRow detects VT-internal index entries (trace_id_idx, service graph)
+// that should not be stored as trace spans.
+func isVTIndexRow(r *logstorage.InsertRow) bool {
+	for _, f := range r.Fields {
+		switch f.Name {
+		case otelpb.TraceIDIndexFieldName, otelpb.TraceIDIndexStreamName,
+			otelpb.ServiceGraphStreamName:
+			return true
+		}
+	}
+	return false
+}
+
 // unmarshalStreamTags unmarshals canonical stream tags into dst.
 func unmarshalStreamTags(dst *logstorage.StreamTags, canonical string) error {
 	src := []byte(canonical)
@@ -103,10 +120,6 @@ func unmarshalStreamTags(dst *logstorage.StreamTags, canonical string) error {
 //
 //nolint:gocyclo // field-routing switch is inherently branchy but readable
 func mapFieldToTraceRow(row *schema.TraceRow, name, value string) {
-	if value == "-" && name == "_msg" {
-		return
-	}
-
 	// VT OTLP trace fields (from vtinsert/opentelemetry)
 	switch name {
 	case otelpb.TraceIDField:
@@ -135,8 +148,7 @@ func mapFieldToTraceRow(row *schema.TraceRow, name, value string) {
 		if v, err := strconv.ParseInt(value, 10, 64); err == nil {
 			row.StartTimeUnixNano = v
 		}
-		return
-	case otelpb.EndTimeUnixNanoField:
+		storeSpanAttr(row, strings.Clone(name), strings.Clone(value))
 		return
 	case otelpb.StatusCodeField:
 		if v, err := strconv.ParseInt(value, 10, 32); err == nil {
@@ -149,10 +161,22 @@ func mapFieldToTraceRow(row *schema.TraceRow, name, value string) {
 	case otelpb.InstrumentationScopeName:
 		row.ScopeName = strings.Clone(value)
 		return
-	case otelpb.InstrumentationScopeVersion:
+
+	// OTLP metadata fields: store in span attributes for VT field parity.
+	// VT stores these as regular LogRow fields; LH preserves them in the map
+	// so field_names/field_values/query responses match VT.
+	case otelpb.EndTimeUnixNanoField,
+		otelpb.TraceStateField, otelpb.FlagsField,
+		otelpb.DroppedAttributesCountField, otelpb.DroppedEventsCountField, otelpb.DroppedLinksCountField,
+		otelpb.InstrumentationScopeVersion:
+		storeSpanAttr(row, strings.Clone(name), strings.Clone(value))
 		return
-	case otelpb.TraceStateField, otelpb.FlagsField,
-		otelpb.DroppedAttributesCountField, otelpb.DroppedEventsCountField, otelpb.DroppedLinksCountField:
+
+	// VT-internal index fields: not part of OTLP data, skip entirely.
+	case otelpb.TraceIDIndexFieldName, otelpb.TraceIDIndexStreamName,
+		otelpb.TraceIDIndexStartTimeFieldName, otelpb.TraceIDIndexEndTimeFieldName,
+		otelpb.ServiceGraphStreamName, otelpb.ServiceGraphParentFieldName,
+		otelpb.ServiceGraphChildFieldName, otelpb.ServiceGraphCallCountFieldName:
 		return
 	}
 
@@ -179,7 +203,10 @@ func mapFieldToTraceRow(row *schema.TraceRow, name, value string) {
 
 	// Legacy flat field names (from jsonline insert path)
 	switch name {
-	case "", "_msg":
+	case "":
+		return
+	case "_msg":
+		storeSpanAttr(row, "_msg", strings.Clone(value))
 		return
 	case "trace_id":
 		row.TraceID = strings.Clone(value)
@@ -241,6 +268,13 @@ func mapFieldToTraceRow(row *schema.TraceRow, name, value string) {
 		}
 		row.SpanAttributes[strings.Clone(name)] = strings.Clone(value)
 	}
+}
+
+func storeSpanAttr(row *schema.TraceRow, key, value string) {
+	if row.SpanAttributes == nil {
+		row.SpanAttributes = make(map[string]string)
+	}
+	row.SpanAttributes[key] = value
 }
 
 func mapResourceAttr(row *schema.TraceRow, key, value string) {

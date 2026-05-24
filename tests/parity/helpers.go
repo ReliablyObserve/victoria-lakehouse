@@ -114,6 +114,15 @@ func extractVectorCount(data []byte) (float64, error) {
 	return strconv.ParseFloat(s, 64)
 }
 
+func extractCount(t *testing.T, data []byte) int {
+	t.Helper()
+	v, err := extractVectorCount(data)
+	if err != nil {
+		t.Fatalf("extractCount: %v", err)
+	}
+	return int(v)
+}
+
 func extractValuesStrings(data []byte) []string {
 	lines := parseNDJSON(data)
 	var vals []string
@@ -205,15 +214,19 @@ func extractRowKeys(rows []map[string]any, skipFields []string) []string {
 	for _, row := range rows {
 		var parts []string
 		timeStr, _ := row["_time"].(string)
-		msgStr, _ := row["_msg"].(string)
-		parts = append(parts, "t="+timeStr, "m="+msgStr)
+		parts = append(parts, "t="+timeStr)
+		if !skip["_msg"] {
+			msgStr, _ := row["_msg"].(string)
+			parts = append(parts, "m="+msgStr)
+		}
+		sortStart := len(parts)
 		for k, v := range row {
 			if skip[k] || k == "_time" || k == "_msg" {
 				continue
 			}
 			parts = append(parts, fmt.Sprintf("%s=%v", k, v))
 		}
-		sort.Strings(parts[2:])
+		sort.Strings(parts[sortStart:])
 		keys = append(keys, strings.Join(parts, "|"))
 	}
 	sort.Strings(keys)
