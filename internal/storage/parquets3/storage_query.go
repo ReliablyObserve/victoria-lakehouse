@@ -1832,3 +1832,53 @@ func (s *Storage) updateColumnStats(fileKey string, f *parquet.File) {
 		s.manifest.UpdateFileColumnStats(fileKey, stats)
 	}
 }
+
+// QuerySpecificFiles queries only the Parquet files identified by the given
+// file keys, rather than discovering files via the manifest time range.
+// This is used by the select tier during gap redistribution: when a combined
+// node fails during fan-out, surviving nodes can re-query the orphaned files
+// by key.
+//
+// The method looks up files from the manifest's time-range index and filters
+// to only those whose Key appears in fileKeys. It then processes each file
+// using the existing queryFile infrastructure (bloom checks, row group
+// skipping, footer cache, etc.).
+//
+// If no matching files are found, it returns nil (no error).
+func (s *Storage) QuerySpecificFiles(ctx context.Context, fileKeys []string, startNs, endNs int64, queryStr string, pipeFields []string, writeBlock logstorage.WriteDataBlockFunc) error {
+	if len(fileKeys) == 0 {
+		return nil
+	}
+
+	// Build set for O(1) lookup; deduplicate keys to prevent double processing.
+	keySet := make(map[string]bool, len(fileKeys))
+	for _, k := range fileKeys {
+		keySet[k] = true
+	}
+
+	allFiles := s.manifest.GetFilesForRange(startNs, endNs)
+
+	var files []manifest.FileInfo
+	for _, f := range allFiles {
+		if keySet[f.Key] {
+			files = append(files, f)
+		}
+	}
+	if len(files) == 0 {
+		return nil
+	}
+
+	// Process matched files using the same per-file query pipeline as RunQuery
+	// (footer cache, bloom checks, row group skipping, projected reads).
+	for _, fi := range files {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, writeBlock); err != nil {
+			logger.Warnf("QuerySpecificFiles: file error: %s; key=%s", err, fi.Key)
+			continue
+		}
+	}
+
+	return nil
+}
