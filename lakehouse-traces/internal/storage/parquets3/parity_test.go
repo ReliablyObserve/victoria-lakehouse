@@ -760,11 +760,19 @@ func TestTracesProfile_StreamFields_UsesPrefix(t *testing.T) {
 // TestLogsProfile_StreamFields_Flat verifies that LogsProfile StreamFields
 // use flat (unprefixed) names.
 func TestLogsProfile_StreamFields_Flat(t *testing.T) {
+	allowed := map[string]bool{
+		"service.name":           true,
+		"k8s.namespace.name":     true,
+		"k8s.pod.name":           true,
+		"k8s.deployment.name":    true,
+		"deployment.environment": true,
+		"cloud.region":           true,
+		"host.name":              true,
+		"k8s.node.name":          true,
+		"level":                  true,
+	}
 	for _, sf := range schema.LogsProfile.StreamFields {
-		switch sf {
-		case "service.name", "k8s.namespace.name", "k8s.pod.name":
-			// Expected VL-compatible flat names.
-		default:
+		if !allowed[sf] {
 			t.Errorf("unexpected LogsProfile StreamField %q; expected VL-compatible flat names", sf)
 		}
 	}
