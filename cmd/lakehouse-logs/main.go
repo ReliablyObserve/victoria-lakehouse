@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -72,12 +73,20 @@ var (
 	cacheDiskMB           = flag.Int("lakehouse.cache.disk-max-mb", 0, "L2 disk cache max size in MB (default: 1024)")
 	cacheWarmupPartitions = flag.Int("lakehouse.cache.warmup-partitions", 0, "Number of recent hourly partitions to warm on startup (0=disabled)")
 	cacheWarmupMaxFiles   = flag.Int("lakehouse.cache.warmup-max-files", 0, "Max files to warm on startup (default: 500)")
+	cachePartitionMode    = flag.String("lakehouse.cache.partition-mode", "", "Cache partition mode: az-local (default), global, distributed")
 
-	compactionEnabled  = flag.Bool("lakehouse.compaction.enabled", false, "Enable compaction scheduler")
-	compactionInterval = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
-	compactionElection = flag.String("lakehouse.compaction.leader-election", "", "Election mode: auto, k8s, s3, none")
+	compactionEnabled        = flag.Bool("lakehouse.compaction.enabled", false, "Enable compaction scheduler")
+	compactionInterval       = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
+	compactionElection       = flag.String("lakehouse.compaction.leader-election", "", "Election mode: auto, k8s, s3, none")
+	compactionDailyRollupAge = flag.Duration("lakehouse.compaction.daily-rollup-age", 0, "Minimum partition age for daily rollup compaction (default: 24h)")
+	compactionShardID        = flag.Int("lakehouse.compaction.shard-id", -1, "Compaction shard ID (default: auto-detect from hostname ordinal)")
+	compactionShardCount     = flag.Int("lakehouse.compaction.shard-count", 0, "Total compaction shards (0 or 1 = leader mode)")
 
-	queryFileWorkers = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 8)")
+	queryFileWorkers      = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 8)")
+	queryMaxFilesPerQuery = flag.Int("lakehouse.query.max-files-per-query", 0, "Max S3 files per query before rejection (default: 500)")
+
+	s3ReadAhead   = flag.Int("lakehouse.s3.read-ahead-bytes", 0, "S3 read-ahead buffer size in bytes (default: 2MB)")
+	s3CoalesceGap = flag.Int("lakehouse.s3.coalesce-gap-bytes", 0, "Merge S3 range reads with gaps smaller than this (default: 64KB)")
 
 	logsBloomColumns = flag.String("lakehouse.logs.bloom-columns", "", "Comma-separated bloom filter columns for logs (default: service.name)")
 	logsDeletePrefix = flag.String("lakehouse.logs.delete-prefix", "", "Delete API prefix (default: /delete/logsql)")
@@ -200,6 +209,21 @@ func run(cfg *config.Config, addr string) {
 			cfg.Compaction.MinFilesL1,
 			cfg.Compaction.MinAge,
 		)
+		policy.DailyRollupAge = cfg.Compaction.DailyRollupAge
+
+		var sharding *compaction.PartitionSharding
+		if cfg.Compaction.ShardCount > 1 {
+			shardID := cfg.Compaction.ShardID
+			if shardID < 0 {
+				var err error
+				shardID, err = compaction.AutoDetectShardID()
+				if err != nil {
+					logger.Fatalf("cannot auto-detect shard ID: %v", err)
+				}
+			}
+			sharding = compaction.NewPartitionSharding(shardID, cfg.Compaction.ShardCount)
+			logger.Infof("compaction sharding enabled; shard_id=%d, shard_count=%d", shardID, cfg.Compaction.ShardCount)
+		}
 
 		sched = compaction.NewScheduler(compaction.SchedulerConfig{
 			Leader:           leader,
@@ -207,6 +231,7 @@ func run(cfg *config.Config, addr string) {
 			Pool:             store.Pool(),
 			Sentinel:         sentinel,
 			Policy:           policy,
+			Sharding:         sharding,
 			Prefix:           cfg.AutoPrefix(),
 			Mode:             cfg.Mode,
 			Interval:         cfg.Compaction.Interval,
@@ -431,6 +456,10 @@ func run(cfg *config.Config, addr string) {
 				logger.Errorf("failed to persist stats snapshot on shutdown: %s", err)
 			}
 		}
+	}
+
+	if err := store.Manifest().SaveTo(manifestSnapshotPath(cfg)); err != nil {
+		logger.Errorf("manifest snapshot on shutdown failed: %s", err)
 	}
 
 	if err := store.Close(); err != nil {
@@ -704,8 +733,22 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	return mux
 }
 
+func manifestSnapshotPath(cfg *config.Config) string {
+	return filepath.Join(cfg.Manifest.PersistPath, "manifest-snapshot.json")
+}
+
 func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, tenantKey string) {
 	sm.SetPhase(startup.PhaseDiskRecovery)
+
+	mpath := manifestSnapshotPath(cfg)
+	if err := store.Manifest().LoadFrom(mpath); err != nil {
+		logger.Warnf("manifest disk load failed (will recover from S3): %s", err)
+	} else {
+		m := store.Manifest()
+		if m.TotalFiles() > 0 {
+			logger.Infof("manifest loaded from disk; files=%d, bytes=%d", m.TotalFiles(), m.TotalBytes())
+		}
+	}
 	logger.Infof("disk recovery complete")
 
 	sm.SetPhase(startup.PhaseS3Refresh)
@@ -731,22 +774,36 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 		}
 	}
 
+	if err := store.Manifest().SaveTo(mpath); err != nil {
+		logger.Errorf("manifest snapshot after S3 refresh failed: %s", err)
+	}
+
 	sm.SetPhase(startup.PhaseReady)
 
-	ticker := time.NewTicker(cfg.Manifest.RefreshInterval)
-	defer ticker.Stop()
-	for range ticker.C {
-		rctx, rcancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		if err := store.RefreshManifest(rctx); err != nil {
-			logger.Errorf("periodic manifest refresh failed: %s", err)
-		} else {
-			m := store.Manifest()
-			logger.Infof("manifest refreshed; files=%d, bytes=%d", m.TotalFiles(), m.TotalBytes())
-			registry.ReconcileWithManifest(tenantKey,
-				int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
-				m.MinTime().UnixNano(), m.MaxTime().UnixNano())
+	refreshTicker := time.NewTicker(cfg.Manifest.RefreshInterval)
+	defer refreshTicker.Stop()
+	persistTicker := time.NewTicker(cfg.Manifest.PersistInterval)
+	defer persistTicker.Stop()
+
+	for {
+		select {
+		case <-refreshTicker.C:
+			rctx, rcancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			if err := store.RefreshManifest(rctx); err != nil {
+				logger.Errorf("periodic manifest refresh failed: %s", err)
+			} else {
+				m := store.Manifest()
+				logger.Infof("manifest refreshed; files=%d, bytes=%d", m.TotalFiles(), m.TotalBytes())
+				registry.ReconcileWithManifest(tenantKey,
+					int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
+					m.MinTime().UnixNano(), m.MaxTime().UnixNano())
+			}
+			rcancel()
+		case <-persistTicker.C:
+			if err := store.Manifest().SaveTo(mpath); err != nil {
+				logger.Errorf("periodic manifest persist failed: %s", err)
+			}
 		}
-		rcancel()
 	}
 }
 
@@ -783,6 +840,12 @@ func applyFlags(cfg *config.Config) {
 	if *s3PathStyle {
 		cfg.S3.ForcePathStyle = true
 	}
+	if *s3ReadAhead > 0 {
+		cfg.S3.ReadAheadBytes = *s3ReadAhead
+	}
+	if *s3CoalesceGap > 0 {
+		cfg.S3.CoalesceGapBytes = *s3CoalesceGap
+	}
 	if t := *topology; t != "" {
 		cfg.Topology = config.Topology(t)
 	}
@@ -807,6 +870,9 @@ func applyFlags(cfg *config.Config) {
 	if *cacheWarmupMaxFiles > 0 {
 		cfg.Cache.WarmupMaxFiles = *cacheWarmupMaxFiles
 	}
+	if pm := *cachePartitionMode; pm != "" {
+		cfg.Cache.PartitionMode = pm
+	}
 	if *compactionEnabled {
 		cfg.Compaction.Enabled = true
 	}
@@ -816,8 +882,20 @@ func applyFlags(cfg *config.Config) {
 	if e := *compactionElection; e != "" {
 		cfg.Compaction.LeaderElection = e
 	}
+	if *compactionDailyRollupAge > 0 {
+		cfg.Compaction.DailyRollupAge = *compactionDailyRollupAge
+	}
+	if *compactionShardID >= 0 {
+		cfg.Compaction.ShardID = *compactionShardID
+	}
+	if *compactionShardCount > 0 {
+		cfg.Compaction.ShardCount = *compactionShardCount
+	}
 	if *queryFileWorkers > 0 {
 		cfg.Query.FileWorkers = *queryFileWorkers
+	}
+	if *queryMaxFilesPerQuery > 0 {
+		cfg.Query.MaxFilesPerQuery = *queryMaxFilesPerQuery
 	}
 
 	if s := *logsBloomColumns; s != "" {

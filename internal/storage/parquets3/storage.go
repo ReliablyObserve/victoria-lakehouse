@@ -29,28 +29,29 @@ import (
 )
 
 type Storage struct {
-	cfg            *config.Config
-	pool           *s3reader.ClientPool
-	manifest       *manifest.Manifest
-	registry       *schema.Registry
-	memCache       *cache.LRU
-	diskCache      *cache.DiskCache
-	sfGroup        *cache.Group
-	labelIndex     *cache.LabelIndex
-	persister      *cache.Persister
-	discovery      *discovery.Discovery
-	peerCache      *peercache.PeerCache
-	peerHandler    *peercache.Handler
-	writer         *BatchWriter
-	bufferBridge   *BufferBridge
-	tombstones     *delete.TombstoneStore
-	smartCache     *smartcache.Controller
-	bloomCache     *bloomindex.BloomCache
-	bloomObserver  *storageBloomObserver
-	footerCache    *FooterCache
-	fileBloomCache sync.Map
-	selfAZ         string
-	dlSem          chan struct{}
+	cfg               *config.Config
+	pool              *s3reader.ClientPool
+	manifest          *manifest.Manifest
+	registry          *schema.Registry
+	memCache          *cache.LRU
+	diskCache         *cache.DiskCache
+	sfGroup           *cache.Group
+	labelIndex        *cache.LabelIndex
+	persister         *cache.Persister
+	discovery         *discovery.Discovery
+	peerCache         *peercache.PeerCache
+	peerHandler       *peercache.Handler
+	writer            *BatchWriter
+	bufferBridge      *BufferBridge
+	tombstones        *delete.TombstoneStore
+	smartCache        *smartcache.Controller
+	bloomCache        *bloomindex.BloomCache
+	bloomObserver     *storageBloomObserver
+	footerCache       *FooterCache
+	fileBloomCache    sync.Map
+	selfAZ            string
+	selfFilterEnabled bool
+	dlSem             chan struct{}
 }
 
 func New(cfg *config.Config) (*Storage, error) {
@@ -214,6 +215,15 @@ func New(cfg *config.Config) (*Storage, error) {
 		}
 		bw.bloomObserver = obs
 		s.bloomObserver = obs
+
+		// Write-through cache: when running in combined mode (role=all),
+		// cache flushed column data locally so queries avoid an S3 round-trip
+		// for recently ingested data.
+		if sc != nil {
+			bw.SetFlushCacheCallback(func(fileKey string, data []byte) {
+				cacheOnFlush(sc, fileKey, data)
+			})
+		}
 	}
 
 	return s, nil
@@ -819,6 +829,15 @@ func (s *Storage) traceRowsToDataBlock(rows []schema.TraceRow) *logstorage.DataB
 		{Name: "status_message", Values: statusMsgs},
 	})
 	return db
+}
+
+// SetSelfFilterEnabled enables or disables hybrid fan-out self-filtering.
+// When enabled and smartCache is available, RunQuery filters files to only
+// those owned by this node according to the consistent hash ring. This
+// prevents duplicate work when a select tier fans out queries to combined
+// (insert+select) nodes that each process only their partition.
+func (s *Storage) SetSelfFilterEnabled(enabled bool) {
+	s.selfFilterEnabled = enabled
 }
 
 func (s *Storage) SetSelfAZ(az string) {

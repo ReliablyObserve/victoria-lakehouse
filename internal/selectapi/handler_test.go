@@ -960,9 +960,9 @@ func TestWrapVLTimestampOnly_FieldParamSkipsHint(t *testing.T) {
 	h := NewHandler(mockStore{}, cfg)
 
 	tests := []struct {
-		name            string
-		url             string
-		wantTSOnly      bool
+		name       string
+		url        string
+		wantTSOnly bool
 	}{
 		{"no field - timestamp only", "/select/logsql/hits?query=*&step=60s", true},
 		{"field=level - NOT timestamp only", "/select/logsql/hits?query=*&step=60s&field=level", false},

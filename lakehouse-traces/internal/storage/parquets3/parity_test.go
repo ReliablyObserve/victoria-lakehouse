@@ -156,9 +156,9 @@ func TestUpdateLabelIndex_TracesUsesPrefix(t *testing.T) {
 			ServiceName:       "api-svc",
 			DurationNs:        5_000_000,
 			ResourceAttributes: map[string]string{
-				"cloud.provider":      "aws",
-				"container.id":        "ctr-abc",
-				"telemetry.sdk.name":  "opentelemetry",
+				"cloud.provider":     "aws",
+				"container.id":       "ctr-abc",
+				"telemetry.sdk.name": "opentelemetry",
 			},
 			SpanAttributes: map[string]string{
 				"rpc.system":       "grpc",
@@ -253,12 +253,12 @@ func TestUpdateLabelIndex_TracesNoPromotedDuplication(t *testing.T) {
 			ServiceName:       "svc",
 			DurationNs:        1000,
 			ResourceAttributes: map[string]string{
-				"service.name":   "svc-duplicate",  // matches promoted ParquetColumn
-				"cloud.provider": "gcp",            // non-promoted
+				"service.name":   "svc-duplicate", // matches promoted ParquetColumn
+				"cloud.provider": "gcp",           // non-promoted
 			},
 			SpanAttributes: map[string]string{
-				"http.method": "GET",           // matches promoted ParquetColumn
-				"rpc.system":  "grpc",          // non-promoted
+				"http.method": "GET",  // matches promoted ParquetColumn
+				"rpc.system":  "grpc", // non-promoted
 			},
 		},
 	}
@@ -451,12 +451,12 @@ func TestFieldNames_VTParity(t *testing.T) {
 			ServiceName:       "health-checker",
 			DurationNs:        500_000,
 			ResourceAttributes: map[string]string{
-				"cloud.provider":     "aws",
-				"os.type":            "linux",
+				"cloud.provider": "aws",
+				"os.type":        "linux",
 			},
 			SpanAttributes: map[string]string{
-				"rpc.system":         "grpc",
-				"net.peer.name":      "db-host",
+				"rpc.system":    "grpc",
+				"net.peer.name": "db-host",
 			},
 		},
 	}
@@ -549,8 +549,9 @@ func writeLogParquetWithMAP(t *testing.T, dir string, rows []logParquetRow) stri
 // For MAP keys:
 // In traces: resource.attributes key "cloud.provider" -> resource_attr:cloud.provider
 // In logs:   resource.attributes key "cloud.provider" -> resource_attr:cloud.provider
-//   (both use resource_attr: prefix for MAP keys because mapColumnToAttrPrefix
-//    is shared, but promoted column mapping differs)
+//
+//	(both use resource_attr: prefix for MAP keys because mapColumnToAttrPrefix
+//	 is shared, but promoted column mapping differs)
 //
 // This test catches regressions where someone accidentally:
 // 1. Removes prefixes from traces (breaking VT parity)
@@ -585,8 +586,8 @@ func TestTracesVsLogs_FieldNameContrast(t *testing.T) {
 
 	// Verify other promoted fields that differ between logs and traces
 	contrastFields := []struct {
-		parquetCol       string
-		wantLogsInternal string
+		parquetCol         string
+		wantLogsInternal   string
 		wantTracesInternal string
 	}{
 		{"service.name", "service.name", "resource_attr:service.name"},
@@ -629,8 +630,8 @@ func TestTracesVsLogs_FieldNameContrast(t *testing.T) {
 
 	// Verify span-promoted fields exist only in traces, not logs.
 	tracesSpanFields := []struct {
-		parquetCol     string
-		wantInternal   string
+		parquetCol   string
+		wantInternal string
 	}{
 		{"http.method", "span_attr:http.method"},
 		{"http.status_code", "span_attr:http.status_code"},
@@ -738,10 +739,8 @@ func TestTracesVsLogs_FieldNameContrast(t *testing.T) {
 
 		// Promoted column InternalName MUST differ:
 		// traces: resource_attr:service.name, logs: service.name
-		if traceNameSet["service.name"] {
-			// It is OK if this appears because it is a scalar Parquet column that
-			// gets resolved via registry. Check the InternalName matches traces profile.
-		}
+		// It is OK if service.name appears because it is a scalar Parquet column that
+		// gets resolved via registry — the InternalName matches traces profile.
 	})
 }
 
@@ -775,15 +774,15 @@ func TestLogsProfile_StreamFields_Flat(t *testing.T) {
 // field names with VT-compatible prefixes for promoted resource/span attrs.
 func TestTraceRowToFields_UsesVTPrefixes(t *testing.T) {
 	row := schema.TraceRow{
-		TimestampUnixNano: 1_000_000_000,
-		TraceID:           "t1",
-		SpanID:            "s1",
-		SpanName:          "op",
-		ServiceName:       "svc",
-		DurationNs:        1000,
-		K8sNamespaceName:  "prod",
-		HTTPMethod:        "GET",
-		DBSystem:          "postgres",
+		TimestampUnixNano:  1_000_000_000,
+		TraceID:            "t1",
+		SpanID:             "s1",
+		SpanName:           "op",
+		ServiceName:        "svc",
+		DurationNs:         1000,
+		K8sNamespaceName:   "prod",
+		HTTPMethod:         "GET",
+		DBSystem:           "postgres",
 		ResourceAttributes: map[string]string{"custom.res": "val-r"},
 		SpanAttributes:     map[string]string{"custom.span": "val-s"},
 	}

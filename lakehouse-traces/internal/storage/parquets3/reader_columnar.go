@@ -234,8 +234,8 @@ func readMapColumnToBlockCols(
 	// Read all key and value entries with their repetition levels
 	// to reconstruct per-row maps.
 	type kvEntry struct {
-		key, val string
-		row      int
+		key string
+		row int
 	}
 
 	keyPages := keyChunk.Pages()

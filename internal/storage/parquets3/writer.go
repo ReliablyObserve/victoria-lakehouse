@@ -37,6 +37,11 @@ type BloomObserver interface {
 // compressed size, raw size, row count, and storage class.
 type StatsCallback func(compressedBytes, rawBytes, rows int64, storageClass string)
 
+// FlushCacheCallback is called after a successful S3 upload to cache the
+// flushed file data locally (write-through cache). The callback receives the
+// S3 key and the raw Parquet bytes.
+type FlushCacheCallback func(fileKey string, data []byte)
+
 // BatchWriter buffers incoming rows per partition and flushes them as
 // Parquet files to S3 on a configurable interval or size threshold.
 type BatchWriter struct {
@@ -56,6 +61,7 @@ type BatchWriter struct {
 
 	bloomObserver BloomObserver
 	statsCallback StatsCallback
+	flushCacheCb  FlushCacheCallback
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -90,6 +96,13 @@ func NewBatchWriter(cfg *config.InsertConfig, pool *s3reader.ClientPool,
 
 func (w *BatchWriter) SetStatsCallback(cb StatsCallback) {
 	w.statsCallback = cb
+}
+
+// SetFlushCacheCallback sets the write-through cache callback invoked after
+// each successful S3 upload. Used by combined nodes (role=all) to cache
+// column data locally for immediate query availability.
+func (w *BatchWriter) SetFlushCacheCallback(cb FlushCacheCallback) {
+	w.flushCacheCb = cb
 }
 
 func (w *BatchWriter) Start() {
@@ -336,6 +349,10 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 		w.statsCallback(int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
 	}
 
+	if w.flushCacheCb != nil {
+		w.flushCacheCb(key, result.Data)
+	}
+
 	w.totalBytes.Add(int64(len(result.Data)))
 
 	logger.Infof("flushed log partition; partition=%s, rows=%d, bytes=%d, ratio=%v, key=%s",
@@ -384,6 +401,10 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 
 	if w.statsCallback != nil {
 		w.statsCallback(int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
+	}
+
+	if w.flushCacheCb != nil {
+		w.flushCacheCb(key, result.Data)
 	}
 
 	w.totalBytes.Add(int64(len(result.Data)))

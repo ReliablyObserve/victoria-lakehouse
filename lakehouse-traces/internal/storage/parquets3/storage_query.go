@@ -21,6 +21,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage"
 )
@@ -168,7 +169,13 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 					continue
 				}
 				if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filteredWriteBlock); err != nil {
-					logger.Warnf("query file error: %s; key=%s", err, fi.Key)
+					if isFileNotFoundError(err) {
+						metrics.QueryFileNotFoundTotal.Inc()
+						logger.Infof("query skipped compacted/deleted file; key=%s", fi.Key)
+					} else {
+						metrics.QueryFileErrorsTotal.Inc()
+						logger.Warnf("query file error: %s; key=%s", err, fi.Key)
+					}
 					continue
 				}
 			}
@@ -257,7 +264,9 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 		if cached, ok := s.footerCache.Get(fi.Key); ok {
 			totalCols := len(cached.File.Root().Columns())
 			if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
-				readerAt := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
+				rawReader := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
+				buffered := s3reader.NewBufferedReaderAt(rawReader, fi.Size, int64(s.cfg.S3.ReadAheadBytes))
+				readerAt := s3reader.NewCoalescingReaderAt(buffered, fi.Size, int64(s.cfg.S3.CoalesceGapBytes))
 				f, err := parquet.OpenFile(readerAt, fi.Size)
 				if err == nil {
 					metrics.S3RangeReadsTotal.Inc()
@@ -360,8 +369,8 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 		}
 	} else {
 		rgWorkers := len(matchedRGs)
-		if rgWorkers > 3 {
-			rgWorkers = 3
+		if rgWorkers > 8 {
+			rgWorkers = 8
 		}
 		rgCh := make(chan parquet.RowGroup, len(matchedRGs))
 		for _, rg := range matchedRGs {
@@ -748,13 +757,14 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 }
 
 var tracePromotedResourceKeys = map[string]bool{
-	"service.name":          true,
+	"service.name":           true,
 	"deployment.environment": true,
-	"cloud.region":          true,
-	"host.name":             true,
-	"k8s.namespace.name":    true,
-	"k8s.deployment.name":   true,
-	"k8s.node.name":         true,
+	"cloud.region":           true,
+	"host.name":              true,
+	"k8s.namespace.name":     true,
+	"k8s.deployment.name":    true,
+	"k8s.node.name":          true,
+	"k8s.pod.name":           true,
 }
 
 var tracePromotedSpanKeys = map[string]bool{
@@ -1464,4 +1474,16 @@ func (s *Storage) updateColumnStats(fileKey string, f *parquet.File) {
 	if len(stats) > 0 {
 		s.manifest.UpdateFileColumnStats(fileKey, stats)
 	}
+}
+
+func isFileNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "NoSuchKey") ||
+		strings.Contains(s, "NotFound") ||
+		strings.Contains(s, "404") ||
+		strings.Contains(s, "does not exist") ||
+		strings.Contains(s, "file not found")
 }

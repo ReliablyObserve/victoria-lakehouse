@@ -87,7 +87,7 @@ func TestExtractMapDistinctKeys(t *testing.T) {
 			},
 			LogAttributes: map[string]string{
 				"custom.field": "val1",
-				"request.id":  "req-1",
+				"request.id":   "req-1",
 			},
 		},
 		{
@@ -100,7 +100,7 @@ func TestExtractMapDistinctKeys(t *testing.T) {
 			},
 			LogAttributes: map[string]string{
 				"custom.field": "val2",
-				"user.id":     "u-42",
+				"user.id":      "u-42",
 			},
 		},
 	}
@@ -215,14 +215,14 @@ func TestUpdateLabelIndex_ExpandsNonPromotedMapKeys(t *testing.T) {
 			Body:              "test",
 			ServiceName:       "api-gw",
 			ResourceAttributes: map[string]string{
-				"cloud.provider":      "aws",
-				"container.id":        "abc123",
-				"telemetry.sdk.name":  "opentelemetry",
+				"cloud.provider":     "aws",
+				"container.id":       "abc123",
+				"telemetry.sdk.name": "opentelemetry",
 			},
 			LogAttributes: map[string]string{
-				"custom.metric":   "revenue",
-				"request.id":     "req-1",
-				"business.unit":  "payments",
+				"custom.metric": "revenue",
+				"request.id":    "req-1",
+				"business.unit": "payments",
 			},
 		},
 	}
@@ -306,7 +306,7 @@ func TestFieldNames_VLParity(t *testing.T) {
 			},
 			LogAttributes: map[string]string{
 				"custom.field": "value",
-				"request.id":  "req-abc",
+				"request.id":   "req-abc",
 			},
 		},
 	}
@@ -381,10 +381,10 @@ func TestFieldNames_NoResourceAttrPrefix_Regression(t *testing.T) {
 			Body:              "test",
 			ServiceName:       "svc",
 			ResourceAttributes: map[string]string{
-				"cloud.provider":       "aws",
-				"cloud.account.id":     "123456789012",
-				"telemetry.sdk.name":   "opentelemetry",
-				"service.version":      "1.2.3",
+				"cloud.provider":     "aws",
+				"cloud.account.id":   "123456789012",
+				"telemetry.sdk.name": "opentelemetry",
+				"service.version":    "1.2.3",
 			},
 		},
 	}
@@ -437,15 +437,15 @@ func TestInsertAndQuery_FieldNameParity(t *testing.T) {
 	row := schema.LogRow{}
 
 	fields := map[string]string{
-		"":                       "test log body",
-		"level":                  "INFO",
-		"service.name":           "api-gateway",
-		"k8s.namespace.name":     "production",
+		"":                      "test log body",
+		"level":                 "INFO",
+		"service.name":          "api-gateway",
+		"k8s.namespace.name":    "production",
 		"k8s.pod.name":          "api-pod-1",
 		"trace_id":              "4bf92f3577b34da6a3ce929d0e0e4736",
-		"cloud.provider":        "aws",      // non-promoted, goes to LogAttributes
-		"telemetry.sdk.name":    "otel",     // non-promoted, goes to LogAttributes
-		"custom.business.field": "revenue",  // non-promoted, goes to LogAttributes
+		"cloud.provider":        "aws",     // non-promoted, goes to LogAttributes
+		"telemetry.sdk.name":    "otel",    // non-promoted, goes to LogAttributes
+		"custom.business.field": "revenue", // non-promoted, goes to LogAttributes
 	}
 
 	// We can't call mapFieldToRow directly from parquets3 package.

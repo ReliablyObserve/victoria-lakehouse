@@ -613,6 +613,112 @@ func TestCompactor_UploadFailure(t *testing.T) {
 	}
 }
 
+func TestMergeLogFiles_SortByTimestampThenService(t *testing.T) {
+	c := NewCompactor(CompactorConfig{Mode: config.ModeLogs})
+
+	file1 := makeTestParquet(t, []schema.LogRow{
+		{TimestampUnixNano: 100, ServiceName: "zeta"},
+		{TimestampUnixNano: 200, ServiceName: "alpha"},
+	})
+	file2 := makeTestParquet(t, []schema.LogRow{
+		{TimestampUnixNano: 100, ServiceName: "alpha"},
+		{TimestampUnixNano: 200, ServiceName: "zeta"},
+	})
+
+	merged, err := c.mergeLogFiles([][]byte{file1, file2})
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+
+	if len(merged) != 4 {
+		t.Fatalf("expected 4 rows, got %d", len(merged))
+	}
+
+	// Same timestamp: sorted by service.name ascending
+	if merged[0].TimestampUnixNano != 100 || merged[0].ServiceName != "alpha" {
+		t.Errorf("row 0: expected ts=100 svc=alpha, got ts=%d svc=%s",
+			merged[0].TimestampUnixNano, merged[0].ServiceName)
+	}
+	if merged[1].TimestampUnixNano != 100 || merged[1].ServiceName != "zeta" {
+		t.Errorf("row 1: expected ts=100 svc=zeta, got ts=%d svc=%s",
+			merged[1].TimestampUnixNano, merged[1].ServiceName)
+	}
+	if merged[2].TimestampUnixNano != 200 || merged[2].ServiceName != "alpha" {
+		t.Errorf("row 2: expected ts=200 svc=alpha, got ts=%d svc=%s",
+			merged[2].TimestampUnixNano, merged[2].ServiceName)
+	}
+	if merged[3].TimestampUnixNano != 200 || merged[3].ServiceName != "zeta" {
+		t.Errorf("row 3: expected ts=200 svc=zeta, got ts=%d svc=%s",
+			merged[3].TimestampUnixNano, merged[3].ServiceName)
+	}
+}
+
+func TestMergeTraceFiles_SortByTimestampThenServiceThenTraceID(t *testing.T) {
+	c := NewCompactor(CompactorConfig{Mode: config.ModeTraces})
+
+	file1 := makeTestTraceParquet(t, []schema.TraceRow{
+		{TimestampUnixNano: 100, ServiceName: "api", TraceID: "bbb"},
+		{TimestampUnixNano: 100, ServiceName: "api", TraceID: "aaa"},
+	})
+
+	merged, err := c.mergeTraceFiles([][]byte{file1})
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+
+	if len(merged) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(merged))
+	}
+
+	if merged[0].TraceID != "aaa" {
+		t.Errorf("row 0: expected trace_id=aaa, got %s", merged[0].TraceID)
+	}
+	if merged[1].TraceID != "bbb" {
+		t.Errorf("row 1: expected trace_id=bbb, got %s", merged[1].TraceID)
+	}
+}
+
+func TestMergeTraceFiles_CrossFileSortByService(t *testing.T) {
+	c := NewCompactor(CompactorConfig{Mode: config.ModeTraces})
+
+	file1 := makeTestTraceParquet(t, []schema.TraceRow{
+		{TimestampUnixNano: 100, ServiceName: "zeta", TraceID: "t1"},
+		{TimestampUnixNano: 200, ServiceName: "alpha", TraceID: "t2"},
+	})
+	file2 := makeTestTraceParquet(t, []schema.TraceRow{
+		{TimestampUnixNano: 100, ServiceName: "alpha", TraceID: "t3"},
+		{TimestampUnixNano: 200, ServiceName: "zeta", TraceID: "t4"},
+	})
+
+	merged, err := c.mergeTraceFiles([][]byte{file1, file2})
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+
+	if len(merged) != 4 {
+		t.Fatalf("expected 4 rows, got %d", len(merged))
+	}
+
+	// ts=100: alpha before zeta
+	if merged[0].TimestampUnixNano != 100 || merged[0].ServiceName != "alpha" {
+		t.Errorf("row 0: expected ts=100 svc=alpha, got ts=%d svc=%s",
+			merged[0].TimestampUnixNano, merged[0].ServiceName)
+	}
+	if merged[1].TimestampUnixNano != 100 || merged[1].ServiceName != "zeta" {
+		t.Errorf("row 1: expected ts=100 svc=zeta, got ts=%d svc=%s",
+			merged[1].TimestampUnixNano, merged[1].ServiceName)
+	}
+	// ts=200: alpha before zeta
+	if merged[2].TimestampUnixNano != 200 || merged[2].ServiceName != "alpha" {
+		t.Errorf("row 2: expected ts=200 svc=alpha, got ts=%d svc=%s",
+			merged[2].TimestampUnixNano, merged[2].ServiceName)
+	}
+	if merged[3].TimestampUnixNano != 200 || merged[3].ServiceName != "zeta" {
+		t.Errorf("row 3: expected ts=200 svc=zeta, got ts=%d svc=%s",
+			merged[3].TimestampUnixNano, merged[3].ServiceName)
+	}
+}
+
 func TestCompactor_SchemaFingerprintMismatchSkipped(t *testing.T) {
 	pool := newMockPool()
 	m := manifest.New("test-bucket", "logs/")

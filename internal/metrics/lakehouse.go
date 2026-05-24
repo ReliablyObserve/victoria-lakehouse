@@ -20,6 +20,9 @@ var (
 	S3ThrottleTotal   = NewCounter("lakehouse_s3_throttle_total")
 	S3RangeReadsTotal = NewCounter("lakehouse_s3_range_reads_total")
 	S3RangeBytesRead  = NewCounter("lakehouse_s3_range_bytes_read_total")
+	S3BufferHits      = NewCounter("lakehouse_s3_buffer_hits_total")
+	S3BufferMisses    = NewCounter("lakehouse_s3_buffer_misses_total")
+	S3CoalescedRanges = NewCounter("lakehouse_s3_coalesced_ranges_total")
 )
 
 // Cache metrics
@@ -68,6 +71,8 @@ var (
 	FooterCacheEntries      = NewGauge("lakehouse_footer_cache_entries")
 	TraceIDCacheHits        = NewCounter("lakehouse_trace_id_cache_hits_total")
 	MetadataOnlyFiles       = NewCounter("lakehouse_metadata_only_files_total")
+	QueryFileNotFoundTotal  = NewCounter("lakehouse_query_file_not_found_total")
+	QueryFileErrorsTotal    = NewCounter("lakehouse_query_file_errors_total")
 )
 
 // Insert / writer metrics
@@ -152,9 +157,10 @@ var (
 
 // Query metrics
 var (
-	QueryDuration      = NewHistogram("lakehouse_query_duration_seconds", DefBuckets)
-	QueryRowsTotal     = NewCounter("lakehouse_query_rows_returned_total")
-	QueryRejectedTotal = NewCounter("lakehouse_query_rejected_total")
+	QueryDuration          = NewHistogram("lakehouse_query_duration_seconds", DefBuckets)
+	QueryRowsTotal         = NewCounter("lakehouse_query_rows_returned_total")
+	QueryRejectedTotal     = NewCounter("lakehouse_query_rejected_total")
+	QueryFileLimitExceeded = NewCounter("lakehouse_query_file_limit_exceeded_total")
 )
 
 // Compaction metrics

@@ -201,6 +201,8 @@ type S3Config struct {
 	RetryMax               int           `yaml:"retry_max"`
 	RetryBaseDelay         time.Duration `yaml:"retry_base_delay"`
 	MaxConcurrentDownloads int           `yaml:"max_concurrent_downloads"`
+	ReadAheadBytes         int           `yaml:"read_ahead_bytes"`
+	CoalesceGapBytes       int           `yaml:"coalesce_gap_bytes"`
 }
 
 type CacheConfig struct {
@@ -214,6 +216,7 @@ type CacheConfig struct {
 	WarmupPartitions  int           `yaml:"warmup_partitions"`
 	WarmupMaxFiles    int           `yaml:"warmup_max_files"`
 	WarmupConcurrency int           `yaml:"warmup_concurrency"`
+	PartitionMode     string        `yaml:"partition_mode"` // "az-local" (default), "global", "distributed"
 }
 
 type DiscoveryConfig struct {
@@ -260,11 +263,12 @@ type StartupConfig struct {
 }
 
 type QueryConfig struct {
-	MaxConcurrent int           `yaml:"max_concurrent"`
-	FileWorkers   int           `yaml:"file_workers"`
-	Timeout       time.Duration `yaml:"timeout"`
-	MaxRows       int64         `yaml:"max_rows"`
-	SlowThreshold time.Duration `yaml:"slow_threshold"`
+	MaxConcurrent    int           `yaml:"max_concurrent"`
+	FileWorkers      int           `yaml:"file_workers"`
+	Timeout          time.Duration `yaml:"timeout"`
+	MaxRows          int64         `yaml:"max_rows"`
+	MaxFilesPerQuery int           `yaml:"max_files_per_query"`
+	SlowThreshold    time.Duration `yaml:"slow_threshold"`
 }
 
 type TenantConfig struct {
@@ -343,10 +347,13 @@ type CompactionConfig struct {
 	MinFilesL0     int           `yaml:"min_files_l0"`
 	MinFilesL1     int           `yaml:"min_files_l1"`
 	MinAge         time.Duration `yaml:"min_age"`
+	DailyRollupAge time.Duration `yaml:"daily_rollup_age"`
 	LeaderElection string        `yaml:"leader_election"`
 	LeaseDuration  time.Duration `yaml:"lease_duration"`
 	S3LockTTL      time.Duration `yaml:"s3_lock_ttl"`
 	S3Heartbeat    time.Duration `yaml:"s3_heartbeat"`
+	ShardID        int           `yaml:"shard_id"`
+	ShardCount     int           `yaml:"shard_count"`
 }
 
 type DeleteConfig struct {
@@ -427,6 +434,8 @@ func Default() *Config {
 			RetryMax:               3,
 			RetryBaseDelay:         200 * time.Millisecond,
 			MaxConcurrentDownloads: 16,
+			ReadAheadBytes:         2 * 1024 * 1024, // 2MB
+			CoalesceGapBytes:       64 * 1024,       // 64KB
 		},
 
 		Cache: CacheConfig{
@@ -437,6 +446,7 @@ func Default() *Config {
 			FooterTTL:         1 * time.Hour,
 			BloomTTL:          1 * time.Hour,
 			PageTTL:           10 * time.Minute,
+			PartitionMode:     "az-local",
 		},
 
 		Discovery: DiscoveryConfig{
@@ -476,11 +486,12 @@ func Default() *Config {
 		},
 
 		Query: QueryConfig{
-			MaxConcurrent: 32,
-			FileWorkers:   64,
-			Timeout:       60 * time.Second,
-			MaxRows:       10_000_000,
-			SlowThreshold: 5 * time.Second,
+			MaxConcurrent:    32,
+			FileWorkers:      64,
+			Timeout:          60 * time.Second,
+			MaxRows:          10_000_000,
+			MaxFilesPerQuery: 500,
+			SlowThreshold:    5 * time.Second,
 		},
 
 		Insert: InsertConfig{
@@ -532,10 +543,13 @@ func Default() *Config {
 			MinFilesL0:     10,
 			MinFilesL1:     10,
 			MinAge:         1 * time.Hour,
+			DailyRollupAge: 24 * time.Hour,
 			LeaderElection: "auto",
 			LeaseDuration:  15 * time.Second,
 			S3LockTTL:      60 * time.Second,
 			S3Heartbeat:    15 * time.Second,
+			ShardID:        -1,
+			ShardCount:     1,
 		},
 
 		Delete: DeleteConfig{
@@ -822,6 +836,11 @@ func (c *Config) validateSubsystems() error {
 	if c.Cache.EvictionWatermark <= 0 || c.Cache.EvictionWatermark > 1 {
 		return fmt.Errorf("--lakehouse.cache.eviction-watermark must be in (0, 1], got %f", c.Cache.EvictionWatermark)
 	}
+	switch c.Cache.PartitionMode {
+	case "az-local", "global", "distributed", "":
+	default:
+		return fmt.Errorf("--lakehouse.cache.partition-mode must be one of: az-local, global, distributed; got %q", c.Cache.PartitionMode)
+	}
 	if c.S3.MaxConnections <= 0 {
 		return fmt.Errorf("--lakehouse.s3.max-connections must be positive, got %d", c.S3.MaxConnections)
 	}
@@ -1031,6 +1050,12 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	if overlay.S3.MaxConcurrentDownloads > 0 {
 		base.S3.MaxConcurrentDownloads = overlay.S3.MaxConcurrentDownloads
 	}
+	if overlay.S3.ReadAheadBytes > 0 {
+		base.S3.ReadAheadBytes = overlay.S3.ReadAheadBytes
+	}
+	if overlay.S3.CoalesceGapBytes > 0 {
+		base.S3.CoalesceGapBytes = overlay.S3.CoalesceGapBytes
+	}
 
 	// Cache
 	if overlay.Cache.MemoryLimit != "" {
@@ -1053,6 +1078,9 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Cache.PageTTL > 0 {
 		base.Cache.PageTTL = overlay.Cache.PageTTL
+	}
+	if overlay.Cache.PartitionMode != "" {
+		base.Cache.PartitionMode = overlay.Cache.PartitionMode
 	}
 
 	// Discovery
@@ -1376,6 +1404,9 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Compaction.MinAge > 0 {
 		base.Compaction.MinAge = overlay.Compaction.MinAge
+	}
+	if overlay.Compaction.DailyRollupAge > 0 {
+		base.Compaction.DailyRollupAge = overlay.Compaction.DailyRollupAge
 	}
 	if overlay.Compaction.LeaderElection != "" {
 		base.Compaction.LeaderElection = overlay.Compaction.LeaderElection

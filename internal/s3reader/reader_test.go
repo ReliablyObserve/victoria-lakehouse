@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -484,4 +485,47 @@ func TestExists_ReturnsFalseForMissingKey(t *testing.T) {
 		t.Error("expected Exists to return false for missing key")
 	}
 	_ = err // may be nil or a wrapped not-found error
+}
+
+func TestNewClientPool_UsesCustomTransport(t *testing.T) {
+	mock := newMockS3Handler()
+	mock.objects["test-key"] = []byte("test-data")
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	pool, err := NewClientPool(context.Background(), &config.S3Config{
+		Bucket:         "test-bucket",
+		Region:         "us-east-1",
+		Endpoint:       srv.URL,
+		ForcePathStyle: true,
+		AccessKey:      "test",
+		SecretKey:      "test",
+		MaxConnections: 64,
+	})
+	if err != nil {
+		t.Fatalf("NewClientPool: %v", err)
+	}
+
+	// Verify a single download works first.
+	data, err := pool.Download(context.Background(), "test-key")
+	if err != nil {
+		t.Fatalf("single Download failed: %v", err)
+	}
+	if string(data) != "test-data" {
+		t.Fatalf("unexpected data: %q", string(data))
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 9; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = pool.Download(context.Background(), "test-key")
+		}()
+	}
+	wg.Wait()
+
+	if mock.getCalls.Load() != 10 {
+		t.Fatalf("expected 10 GET calls, got %d", mock.getCalls.Load())
+	}
 }

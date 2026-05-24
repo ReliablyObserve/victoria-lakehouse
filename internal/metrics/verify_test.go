@@ -44,6 +44,7 @@ func TestVerifyMetrics_AllCountersExist(t *testing.T) {
 		{"ElectionTransitionsTotal", ElectionTransitionsTotal},
 		{"QueryRowsTotal", QueryRowsTotal},
 		{"QueryRejectedTotal", QueryRejectedTotal},
+		{"QueryFileLimitExceeded", QueryFileLimitExceeded},
 		{"CompactionRunsTotal", CompactionRunsTotal},
 		{"CompactionFilesInputTotal", CompactionFilesInputTotal},
 		{"CompactionFilesOutputTotal", CompactionFilesOutputTotal},
@@ -73,6 +74,13 @@ func TestVerifyMetrics_AllCountersExist(t *testing.T) {
 		{"FooterCacheEvictions", FooterCacheEvictions},
 		{"TraceIDCacheHits", TraceIDCacheHits},
 		{"MetadataOnlyFiles", MetadataOnlyFiles},
+		{"QueryFileNotFoundTotal", QueryFileNotFoundTotal},
+		{"QueryFileErrorsTotal", QueryFileErrorsTotal},
+		{"S3RangeReadsTotal", S3RangeReadsTotal},
+		{"S3RangeBytesRead", S3RangeBytesRead},
+		{"S3BufferHits", S3BufferHits},
+		{"S3BufferMisses", S3BufferMisses},
+		{"S3CoalescedRanges", S3CoalescedRanges},
 	}
 
 	for _, tc := range counters {
@@ -130,6 +138,7 @@ func TestVerifyMetrics_AllGaugesExist(t *testing.T) {
 		{"MetricsCardinalityLimit", MetricsCardinalityLimit},
 		{"MetricsCardinalityTracked", MetricsCardinalityTracked},
 		{"DeleteTombstonesActive", DeleteTombstonesActive},
+		{"FooterCacheEntries", FooterCacheEntries},
 	}
 
 	for _, tc := range gauges {
@@ -327,6 +336,47 @@ func TestVerifyMetrics_FloatGaugesExist(t *testing.T) {
 			tc.g.Set(1.5)
 			if got := tc.g.Get(); got != 1.5 {
 				t.Fatalf("%s.Set(1.5): expected 1.5, got %f", tc.name, got)
+			}
+		})
+	}
+}
+
+func TestVerifyMetrics_GaugeVecsExist(t *testing.T) {
+	vecs := []struct {
+		name string
+		gv   *GaugeVec
+	}{
+		{"BloomTierPartitions", BloomTierPartitions},
+		{"TenantFiles", TenantFiles},
+		{"TenantBytes", TenantBytes},
+		{"TenantRawBytes", TenantRawBytes},
+		{"TenantLastWriteTimestamp", TenantLastWriteTimestamp},
+		{"TenantLastQueryTimestamp", TenantLastQueryTimestamp},
+		{"StorageBytesByClass", StorageBytesByClass},
+		{"StorageFilesByClass", StorageFilesByClass},
+	}
+	for _, tc := range vecs {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.gv == nil {
+				t.Fatalf("gauge vec %s is nil", tc.name)
+			}
+		})
+	}
+}
+
+func TestVerifyMetrics_FloatGaugeVecsExist(t *testing.T) {
+	vecs := []struct {
+		name string
+		fgv  *FloatGaugeVec
+	}{
+		{"StorageCostByClassUSD", StorageCostByClassUSD},
+	}
+	for _, tc := range vecs {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.fgv == nil {
+				t.Fatalf("float gauge vec %s is nil", tc.name)
 			}
 		})
 	}

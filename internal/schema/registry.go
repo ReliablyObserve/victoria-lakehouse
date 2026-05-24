@@ -93,7 +93,6 @@ func init() {
 	}
 }
 
-
 type FieldOrigin int
 
 const (

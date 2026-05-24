@@ -20,6 +20,7 @@ type SchedulerConfig struct {
 	Pool             CompactorPool
 	Sentinel         *Sentinel
 	Policy           *LevelPolicy
+	Sharding         *PartitionSharding
 	Prefix           string
 	Mode             config.Mode
 	Interval         time.Duration
@@ -36,6 +37,7 @@ type Scheduler struct {
 	pool             CompactorPool
 	sentinel         *Sentinel
 	policy           *LevelPolicy
+	sharding         *PartitionSharding
 	prefix           string
 	mode             config.Mode
 	interval         time.Duration
@@ -64,6 +66,7 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 		pool:             cfg.Pool,
 		sentinel:         cfg.Sentinel,
 		policy:           cfg.Policy,
+		sharding:         cfg.Sharding,
 		prefix:           cfg.Prefix,
 		mode:             cfg.Mode,
 		interval:         interval,
@@ -115,9 +118,11 @@ type partitionCandidate struct {
 // Scan runs one compaction cycle: check leadership, find eligible partitions,
 // and compact up to MaxConcurrent of them.
 func (s *Scheduler) Scan(ctx context.Context) (int, error) {
-	if !s.leader.IsLeader() {
-		logger.Infof("not leader, skipping scan")
-		return 0, nil
+	if s.sharding == nil || s.sharding.shardCount <= 1 {
+		if !s.leader.IsLeader() {
+			logger.Infof("not leader, skipping scan")
+			return 0, nil
+		}
 	}
 
 	allFiles := s.manifest.AllFiles()
@@ -125,6 +130,11 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 	// Find eligible partitions.
 	var candidates []partitionCandidate
 	for partition, files := range allFiles {
+		if s.sharding != nil && s.sharding.shardCount > 1 {
+			if !s.sharding.OwnsPartition(partition) {
+				continue
+			}
+		}
 		pt, err := manifest.ParsePartitionTime(partition)
 		if err != nil {
 			logger.Warnf("skip partition: cannot parse time; partition=%s, error=%s", partition, err)

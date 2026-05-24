@@ -42,6 +42,21 @@ if [[ -z "$OUTPUT" ]]; then
   OUTPUT="results/comparative-$(date +%Y%m%d-%H%M%S).json"
 fi
 
+# Always run preflight validation before benchmarks.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PREFLIGHT_ARGS=(--lh "$LH_URL" --vl "$VL_URL" --loki "$LOKI_URL")
+if [[ "$SKIP_INGEST" == "true" ]]; then
+  PREFLIGHT_ARGS+=(--min-logs 100000)
+else
+  PREFLIGHT_ARGS+=(--min-logs 500000)
+fi
+echo "--- Running preflight validation ---"
+if ! bash "$SCRIPT_DIR/benchmark-preflight.sh" "${PREFLIGHT_ARGS[@]}"; then
+  echo "ABORT: Preflight validation failed. Fix issues before benchmarking."
+  exit 1
+fi
+echo ""
+
 NOW_NS=$(date +%s)000000000
 ONE_HOUR_AGO_NS=$(( ($(date +%s) - 3600) ))000000000
 SIX_HOURS_AGO_NS=$(( ($(date +%s) - 21600) ))000000000

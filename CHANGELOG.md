@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+
+**S3 I/O Layer Optimization (Phases A-J):**
+
+- Read-ahead buffer: 256KB streaming buffer reduces small S3 reads by batching sequential access
+- Range coalescing: merges nearby column ranges within 64KB gap tolerance into single S3 requests
+- Transport tuning: configurable HTTP/2 concurrency, idle connections, and response header timeouts
+- Async row group prefetch: background goroutine pre-fetches next row group while current processes
+- Compaction: merges small Parquet files into target 256MB blocks to reduce per-file S3 overhead
+- Streaming aggregation: single-pass count/sum/min/max avoids full materialization for simple aggregates
+- Cache-partitioned reads: AZ-aware partition modes (az-local/global/distributed) route cache lookups
+- Cache maximization: column-level chunk caching, scan pollution protection, LRU with L2 spilling
+- Distributed compaction: CRC32 partition sharding with K8s StatefulSet auto-detection
+- Select tier: self-filtering in RunQuery for hybrid fan-out, health-aware ring with failure tracking
+
+### Added
+
+- Column popularity tracking for adaptive prefetch decisions
+- Write-through cache on ingest flush for immediate read availability
+- QuerySpecificFiles method for gap redistribution across select nodes
+- Cache-aware file ordering to maximize cache hits during query execution
+
 ## [0.32.0] - 2026-05-23
 
 ## [0.31.0] - 2026-05-22

@@ -1,0 +1,464 @@
+{
+  "timestamp": "2026-05-23T04:48:31Z",
+  "config": {
+    "iterations": 5,
+    "warmup": 2,
+    "lakehouse_traces_url": "http://localhost:30428",
+    "victoriatraces_url": "http://localhost:30401",
+    "tempo_url": "http://localhost:33200"
+  },
+  "scenarios": {
+    "trace_id_exact_hit": {
+      "lakehouse-traces": {
+        "name": "trace_id_exact_hit",
+        "system": "lakehouse-traces",
+        "p50_ms": 40,
+        "p95_ms": 49,
+        "p99_ms": 49,
+        "min_ms": 36,
+        "max_ms": 49,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 0
+      },
+      "victoriatraces": {
+        "name": "trace_id_exact_hit",
+        "system": "victoriatraces",
+        "p50_ms": 27,
+        "p95_ms": 30,
+        "p99_ms": 30,
+        "min_ms": 25,
+        "max_ms": 30,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 0
+      },
+      "tempo": {
+        "name": "trace_id_exact_hit",
+        "system": "tempo",
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "iterations": 0,
+        "errors": 5,
+        "avg_bytes": 0
+      }
+    },
+    "trace_id_exact_miss": {
+      "lakehouse-traces": {
+        "name": "trace_id_exact_miss",
+        "system": "lakehouse-traces",
+        "p50_ms": 31,
+        "p95_ms": 33,
+        "p99_ms": 33,
+        "min_ms": 30,
+        "max_ms": 33,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 0
+      },
+      "victoriatraces": {
+        "name": "trace_id_exact_miss",
+        "system": "victoriatraces",
+        "p50_ms": 28,
+        "p95_ms": 31,
+        "p99_ms": 31,
+        "min_ms": 24,
+        "max_ms": 31,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 0
+      },
+      "tempo": {
+        "name": "trace_id_exact_miss",
+        "system": "tempo",
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "iterations": 0,
+        "errors": 5,
+        "avg_bytes": 0
+      }
+    },
+    "service_name_filter": {
+      "lakehouse-traces": {
+        "name": "service_name_filter",
+        "system": "lakehouse-traces",
+        "p50_ms": 32,
+        "p95_ms": 39,
+        "p99_ms": 39,
+        "min_ms": 30,
+        "max_ms": 39,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 0
+      },
+      "victoriatraces": {
+        "name": "service_name_filter",
+        "system": "victoriatraces",
+        "p50_ms": 28,
+        "p95_ms": 31,
+        "p99_ms": 31,
+        "min_ms": 27,
+        "max_ms": 31,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 0
+      },
+      "tempo": {
+        "name": "service_name_filter",
+        "system": "tempo",
+        "p50_ms": 34,
+        "p95_ms": 317,
+        "p99_ms": 317,
+        "min_ms": 29,
+        "max_ms": 317,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 57
+      }
+    },
+    "span_name_filter": {
+      "lakehouse-traces": {
+        "name": "span_name_filter",
+        "system": "lakehouse-traces",
+        "p50_ms": 27,
+        "p95_ms": 28,
+        "p99_ms": 28,
+        "min_ms": 25,
+        "max_ms": 28,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 0
+      },
+      "victoriatraces": {
+        "name": "span_name_filter",
+        "system": "victoriatraces",
+        "p50_ms": 26,
+        "p95_ms": 30,
+        "p99_ms": 30,
+        "min_ms": 24,
+        "max_ms": 30,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 0
+      },
+      "tempo": {
+        "name": "span_name_filter",
+        "system": "tempo",
+        "p50_ms": 27,
+        "p95_ms": 40,
+        "p99_ms": 40,
+        "min_ms": 27,
+        "max_ms": 40,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 57
+      }
+    },
+    "duration_slow_spans": {
+      "lakehouse-traces": {
+        "name": "duration_slow_spans",
+        "system": "lakehouse-traces",
+        "p50_ms": 27,
+        "p95_ms": 49,
+        "p99_ms": 49,
+        "min_ms": 26,
+        "max_ms": 49,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 0
+      },
+      "victoriatraces": {
+        "name": "duration_slow_spans",
+        "system": "victoriatraces",
+        "p50_ms": 27,
+        "p95_ms": 34,
+        "p99_ms": 34,
+        "min_ms": 26,
+        "max_ms": 34,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 0
+      },
+      "tempo": {
+        "name": "duration_slow_spans",
+        "system": "tempo",
+        "p50_ms": 28,
+        "p95_ms": 30,
+        "p99_ms": 30,
+        "min_ms": 26,
+        "max_ms": 30,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 57
+      }
+    },
+    "status_error_filter": {
+      "lakehouse-traces": {
+        "name": "status_error_filter",
+        "system": "lakehouse-traces",
+        "p50_ms": 26,
+        "p95_ms": 29,
+        "p99_ms": 29,
+        "min_ms": 25,
+        "max_ms": 29,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 0
+      },
+      "victoriatraces": {
+        "name": "status_error_filter",
+        "system": "victoriatraces",
+        "p50_ms": 27,
+        "p95_ms": 36,
+        "p99_ms": 36,
+        "min_ms": 25,
+        "max_ms": 36,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 0
+      },
+      "tempo": {
+        "name": "status_error_filter",
+        "system": "tempo",
+        "p50_ms": 26,
+        "p95_ms": 30,
+        "p99_ms": 30,
+        "min_ms": 26,
+        "max_ms": 30,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 57
+      }
+    },
+    "service_range_1h": {
+      "lakehouse-traces": {
+        "name": "service_range_1h",
+        "system": "lakehouse-traces",
+        "p50_ms": 25,
+        "p95_ms": 27,
+        "p99_ms": 27,
+        "min_ms": 25,
+        "max_ms": 27,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 0
+      },
+      "victoriatraces": {
+        "name": "service_range_1h",
+        "system": "victoriatraces",
+        "p50_ms": 26,
+        "p95_ms": 26,
+        "p99_ms": 26,
+        "min_ms": 24,
+        "max_ms": 26,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 0
+      },
+      "tempo": {
+        "name": "service_range_1h",
+        "system": "tempo",
+        "p50_ms": 26,
+        "p95_ms": 27,
+        "p99_ms": 27,
+        "min_ms": 26,
+        "max_ms": 27,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 57
+      }
+    },
+    "service_range_6h": {
+      "lakehouse-traces": {
+        "name": "service_range_6h",
+        "system": "lakehouse-traces",
+        "p50_ms": 24,
+        "p95_ms": 25,
+        "p99_ms": 25,
+        "min_ms": 23,
+        "max_ms": 25,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 0
+      },
+      "victoriatraces": {
+        "name": "service_range_6h",
+        "system": "victoriatraces",
+        "p50_ms": 26,
+        "p95_ms": 32,
+        "p99_ms": 32,
+        "min_ms": 25,
+        "max_ms": 32,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 0
+      },
+      "tempo": {
+        "name": "service_range_6h",
+        "system": "tempo",
+        "p50_ms": 26,
+        "p95_ms": 35,
+        "p99_ms": 35,
+        "min_ms": 25,
+        "max_ms": 35,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 57
+      }
+    },
+    "service_and_error": {
+      "lakehouse-traces": {
+        "name": "service_and_error",
+        "system": "lakehouse-traces",
+        "p50_ms": 26,
+        "p95_ms": 30,
+        "p99_ms": 30,
+        "min_ms": 25,
+        "max_ms": 30,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 0
+      },
+      "victoriatraces": {
+        "name": "service_and_error",
+        "system": "victoriatraces",
+        "p50_ms": 25,
+        "p95_ms": 27,
+        "p99_ms": 27,
+        "min_ms": 24,
+        "max_ms": 27,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 0
+      },
+      "tempo": {
+        "name": "service_and_error",
+        "system": "tempo",
+        "p50_ms": 26,
+        "p95_ms": 30,
+        "p99_ms": 30,
+        "min_ms": 26,
+        "max_ms": 30,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 57
+      }
+    },
+    "wide_range_24h_all_spans": {
+      "lakehouse-traces": {
+        "name": "wide_range_24h_all_spans",
+        "system": "lakehouse-traces",
+        "p50_ms": 73,
+        "p95_ms": 80,
+        "p99_ms": 80,
+        "min_ms": 68,
+        "max_ms": 80,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 891922
+      },
+      "victoriatraces": {
+        "name": "wide_range_24h_all_spans",
+        "system": "victoriatraces",
+        "p50_ms": 41,
+        "p95_ms": 43,
+        "p99_ms": 43,
+        "min_ms": 37,
+        "max_ms": 43,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 879986
+      },
+      "tempo": {
+        "name": "wide_range_24h_all_spans",
+        "system": "tempo",
+        "p50_ms": 39,
+        "p95_ms": 49,
+        "p99_ms": 49,
+        "min_ms": 34,
+        "max_ms": 49,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 32919
+      }
+    },
+    "metadata_tag_names": {
+      "lakehouse-traces": {
+        "name": "metadata_tag_names",
+        "system": "lakehouse-traces",
+        "p50_ms": 23,
+        "p95_ms": 24,
+        "p99_ms": 24,
+        "min_ms": 22,
+        "max_ms": 24,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 1017
+      },
+      "victoriatraces": {
+        "name": "metadata_tag_names",
+        "system": "victoriatraces",
+        "p50_ms": 25,
+        "p95_ms": 27,
+        "p99_ms": 27,
+        "min_ms": 24,
+        "max_ms": 27,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 3159
+      },
+      "tempo": {
+        "name": "metadata_tag_names",
+        "system": "tempo",
+        "p50_ms": 24,
+        "p95_ms": 34,
+        "p99_ms": 34,
+        "min_ms": 23,
+        "max_ms": 34,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 28
+      }
+    },
+    "metadata_tag_values_service": {
+      "lakehouse-traces": {
+        "name": "metadata_tag_values_service",
+        "system": "lakehouse-traces",
+        "p50_ms": 23,
+        "p95_ms": 24,
+        "p99_ms": 24,
+        "min_ms": 22,
+        "max_ms": 24,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 231
+      },
+      "victoriatraces": {
+        "name": "metadata_tag_values_service",
+        "system": "victoriatraces",
+        "p50_ms": 25,
+        "p95_ms": 26,
+        "p99_ms": 26,
+        "min_ms": 25,
+        "max_ms": 26,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 38
+      },
+      "tempo": {
+        "name": "metadata_tag_values_service",
+        "system": "tempo",
+        "p50_ms": 24,
+        "p95_ms": 25,
+        "p99_ms": 25,
+        "min_ms": 24,
+        "max_ms": 25,
+        "iterations": 5,
+        "errors": 0,
+        "avg_bytes": 29
+      }
+    }
+  }
+}

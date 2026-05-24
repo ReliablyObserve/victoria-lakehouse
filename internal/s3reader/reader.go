@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -77,8 +78,26 @@ type ClientPool struct {
 }
 
 func NewClientPool(ctx context.Context, cfg *config.S3Config) (*ClientPool, error) {
+	maxConns := cfg.MaxConnections
+	if maxConns <= 0 {
+		maxConns = 128
+	}
+
+	transport := &http.Transport{
+		MaxIdleConnsPerHost:   maxConns,
+		MaxIdleConns:          maxConns * 2,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		ForceAttemptHTTP2:     true,
+		DisableCompression:    true, // Parquet files are already ZSTD-compressed
+	}
+
+	httpClient := &http.Client{Transport: transport}
+
 	opts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(cfg.Region),
+		awsconfig.WithHTTPClient(httpClient),
 	}
 
 	if cfg.AccessKey != "" && cfg.SecretKey != "" {

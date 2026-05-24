@@ -403,3 +403,128 @@ type mockSuccessfulPeerFetcher struct {
 func (m *mockSuccessfulPeerFetcher) Fetch(ctx context.Context, peer, key string) ([]byte, bool, error) {
 	return m.data, true, nil
 }
+
+// --- Partition mode tests ---
+
+type mockAZPeerLookup struct {
+	selfAddr string
+	azPeer   string
+	azLocal  bool
+	sameAZ   bool
+}
+
+func (m *mockAZPeerLookup) Lookup(key string) (string, bool) {
+	return m.selfAddr, true // global ring always returns self
+}
+func (m *mockAZPeerLookup) Members() []string { return []string{m.selfAddr} }
+func (m *mockAZPeerLookup) MemberCount() int  { return 1 }
+func (m *mockAZPeerLookup) LookupAZ(key string) (string, bool, bool) {
+	return m.azPeer, m.azLocal, m.sameAZ
+}
+
+func TestController_PartitionMode_Global(t *testing.T) {
+	c := NewController(ControllerConfig{
+		L1:            newMockL1(),
+		L2:            newMockL2(),
+		PeerLookup:    &mockPeerLookup{selfAddr: "self:9428"},
+		PartitionMode: "global",
+		Metadata:      NewMetadataMap(),
+	})
+	// In global mode, lookupOwner uses Lookup (not LookupAZ)
+	peer, isLocal := c.lookupOwner("test-key")
+	if peer != "self:9428" || !isLocal {
+		t.Fatalf("expected self:9428/local, got %s/%v", peer, isLocal)
+	}
+}
+
+func TestController_PartitionMode_Distributed(t *testing.T) {
+	c := NewController(ControllerConfig{
+		L1:            newMockL1(),
+		L2:            newMockL2(),
+		PeerLookup:    &mockPeerLookup{selfAddr: "self:9428"},
+		PartitionMode: "distributed",
+		Metadata:      NewMetadataMap(),
+	})
+	peer, isLocal := c.lookupOwner("test-key")
+	if peer != "self:9428" || !isLocal {
+		t.Fatalf("expected self:9428/local, got %s/%v", peer, isLocal)
+	}
+}
+
+func TestController_PartitionMode_AZLocal_WithAZLookup(t *testing.T) {
+	azLookup := &mockAZPeerLookup{
+		selfAddr: "self:9428",
+		azPeer:   "az-peer:9428",
+		azLocal:  false,
+		sameAZ:   true,
+	}
+	c := NewController(ControllerConfig{
+		L1:            newMockL1(),
+		L2:            newMockL2(),
+		PeerLookup:    azLookup,
+		PartitionMode: "az-local",
+		Metadata:      NewMetadataMap(),
+	})
+	// In az-local mode with AZPeerLookup, should use LookupAZ
+	peer, isLocal := c.lookupOwner("test-key")
+	if peer != "az-peer:9428" {
+		t.Fatalf("expected az-peer:9428, got %s", peer)
+	}
+	if isLocal {
+		t.Fatal("expected non-local from AZ lookup")
+	}
+}
+
+func TestController_PartitionMode_AZLocal_FallbackToGlobal(t *testing.T) {
+	// When PeerLookup doesn't implement AZPeerLookup, az-local falls back to global Lookup
+	c := NewController(ControllerConfig{
+		L1:            newMockL1(),
+		L2:            newMockL2(),
+		PeerLookup:    &mockPeerLookup{selfAddr: "self:9428"},
+		PartitionMode: "az-local",
+		Metadata:      NewMetadataMap(),
+	})
+	peer, isLocal := c.lookupOwner("test-key")
+	if peer != "self:9428" || !isLocal {
+		t.Fatalf("expected self:9428/local, got %s/%v", peer, isLocal)
+	}
+}
+
+func TestController_PartitionMode_Default(t *testing.T) {
+	// Empty PartitionMode should default to az-local
+	c := NewController(ControllerConfig{
+		L1:         newMockL1(),
+		L2:         newMockL2(),
+		PeerLookup: &mockPeerLookup{selfAddr: "self:9428"},
+		Metadata:   NewMetadataMap(),
+	})
+	if c.partitionMode != "az-local" {
+		t.Fatalf("expected default partition mode 'az-local', got %q", c.partitionMode)
+	}
+}
+
+func TestController_PartitionMode_Global_IgnoresAZLookup(t *testing.T) {
+	// In global mode, even if PeerLookup implements AZPeerLookup,
+	// lookupOwner should use global Lookup, not LookupAZ
+	azLookup := &mockAZPeerLookup{
+		selfAddr: "self:9428",
+		azPeer:   "az-peer:9428",
+		azLocal:  false,
+		sameAZ:   true,
+	}
+	c := NewController(ControllerConfig{
+		L1:            newMockL1(),
+		L2:            newMockL2(),
+		PeerLookup:    azLookup,
+		PartitionMode: "global",
+		Metadata:      NewMetadataMap(),
+	})
+	peer, isLocal := c.lookupOwner("test-key")
+	// Should use Lookup (returns self:9428, true), not LookupAZ (returns az-peer:9428, false)
+	if peer != "self:9428" {
+		t.Fatalf("expected self:9428 from global Lookup, got %s", peer)
+	}
+	if !isLocal {
+		t.Fatal("expected local from global Lookup")
+	}
+}

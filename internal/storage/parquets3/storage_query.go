@@ -21,9 +21,25 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
+
+// sortFilesByCacheAffinity sorts files so that those with cached footers come
+// first. This improves first-result latency because cached files can be opened
+// via cheap range reads instead of full S3 downloads. The sort is stable so
+// relative order within cached and non-cached groups is preserved.
+func sortFilesByCacheAffinity(files []manifest.FileInfo, cachedKeys map[string]bool) {
+	sort.SliceStable(files, func(i, j int) bool {
+		iCached := cachedKeys[files[i].Key]
+		jCached := cachedKeys[files[j].Key]
+		if iCached != jCached {
+			return iCached
+		}
+		return false
+	})
+}
 
 func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
 	queryStart := time.Now()
@@ -119,6 +135,20 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		return nil
 	}
 
+	maxFiles := s.cfg.Query.MaxFilesPerQuery
+	if maxFiles <= 0 {
+		maxFiles = 500
+	}
+	if len(files) > maxFiles {
+		metrics.QueryFileLimitExceeded.Inc()
+		logger.Warnf("query file limit exceeded; files=%d, max=%d, range=%v-%v; narrow the time range",
+			len(files), maxFiles, time.Unix(0, startNs), time.Unix(0, endNs))
+		return fmt.Errorf("query matches %d files (limit %d); narrow the time range or add filters", len(files), maxFiles)
+	}
+
+	files = s.applySelfFilter(files)
+	s.applyCacheAffinity(files)
+
 	hasTombstones := s.tombstones != nil && len(s.tombstones.ForRange(startNs, endNs)) > 0
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
 		remaining := s.manifestFastPath(files, startNs, endNs, filteredWriteBlock)
@@ -196,7 +226,13 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 					continue
 				}
 				if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filteredWriteBlock); err != nil {
-					logger.Warnf("query file error: %s; key=%s", err, fi.Key)
+					if isFileNotFoundError(err) {
+						metrics.QueryFileNotFoundTotal.Inc()
+						logger.Infof("query skipped compacted/deleted file; key=%s", fi.Key)
+					} else {
+						metrics.QueryFileErrorsTotal.Inc()
+						logger.Warnf("query file error: %s; key=%s", err, fi.Key)
+					}
 					continue
 				}
 			}
@@ -220,6 +256,37 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 
 	return nil
+}
+
+func (s *Storage) applySelfFilter(files []manifest.FileInfo) []manifest.FileInfo {
+	if !s.selfFilterEnabled || s.smartCache == nil {
+		return files
+	}
+	var owned []manifest.FileInfo
+	for _, f := range files {
+		if _, isLocal := s.smartCache.LookupOwner(f.Key); isLocal {
+			owned = append(owned, f)
+		}
+	}
+	if len(owned) > 0 {
+		return owned
+	}
+	return files
+}
+
+func (s *Storage) applyCacheAffinity(files []manifest.FileInfo) {
+	if s.footerCache == nil {
+		return
+	}
+	cachedKeys := make(map[string]bool, len(files))
+	for _, f := range files {
+		if s.footerCache.Has(f.Key) {
+			cachedKeys[f.Key] = true
+		}
+	}
+	if len(cachedKeys) > 0 && len(cachedKeys) < len(files) {
+		sortFilesByCacheAffinity(files, cachedKeys)
+	}
 }
 
 func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, writeBlock logstorage.WriteDataBlockFunc) {
@@ -308,7 +375,9 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 		if cached, ok := s.footerCache.Get(fi.Key); ok {
 			totalCols := len(cached.File.Root().Columns())
 			if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
-				readerAt := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
+				rawReader := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
+				buffered := s3reader.NewBufferedReaderAt(rawReader, fi.Size, int64(s.cfg.S3.ReadAheadBytes))
+				readerAt := s3reader.NewCoalescingReaderAt(buffered, fi.Size, int64(s.cfg.S3.CoalesceGapBytes))
 				f, err := parquet.OpenFile(readerAt, fi.Size)
 				if err == nil {
 					metrics.S3RangeReadsTotal.Inc()
@@ -333,7 +402,9 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 							s.footerCache.Put(fi.Key, cachedF)
 							totalCols := len(cachedF.File.Root().Columns())
 							if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
-								readerAt := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
+								rawReader := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
+								buffered := s3reader.NewBufferedReaderAt(rawReader, fi.Size, int64(s.cfg.S3.ReadAheadBytes))
+								readerAt := s3reader.NewCoalescingReaderAt(buffered, fi.Size, int64(s.cfg.S3.CoalesceGapBytes))
 								f, rErr := parquet.OpenFile(readerAt, fi.Size)
 								if rErr == nil {
 									metrics.S3RangeReadsTotal.Inc()
@@ -466,8 +537,8 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 		}
 	} else {
 		rgWorkers := len(matchedRGs)
-		if rgWorkers > 3 {
-			rgWorkers = 3
+		if rgWorkers > 8 {
+			rgWorkers = 8
 		}
 		rgCh := make(chan parquet.RowGroup, len(matchedRGs))
 		for _, rg := range matchedRGs {
@@ -850,13 +921,13 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 }
 
 var tracePromotedResourceKeys = map[string]bool{
-	"service.name":          true,
+	"service.name":           true,
 	"deployment.environment": true,
-	"cloud.region":          true,
-	"host.name":             true,
-	"k8s.namespace.name":    true,
-	"k8s.deployment.name":   true,
-	"k8s.node.name":         true,
+	"cloud.region":           true,
+	"host.name":              true,
+	"k8s.namespace.name":     true,
+	"k8s.deployment.name":    true,
+	"k8s.node.name":          true,
 }
 
 var tracePromotedSpanKeys = map[string]bool{
@@ -1554,9 +1625,13 @@ func (s *Storage) enrichManifestFromFooter(fi manifest.FileInfo, f *parquet.File
 // Used by the manifest-only fast path to avoid all S3 I/O for files fully
 // within the query range.
 func (s *Storage) syntheticManifestBlock(fi manifest.FileInfo) *logstorage.DataBlock {
+	const maxSyntheticRows = 50_000_000
 	n := int(fi.RowCount)
 	if n == 0 {
 		return nil
+	}
+	if n > maxSyntheticRows {
+		n = maxSyntheticRows
 	}
 
 	tsCol := s.registry.TimestampColumn()
@@ -1766,4 +1841,66 @@ func (s *Storage) updateColumnStats(fileKey string, f *parquet.File) {
 	if len(stats) > 0 {
 		s.manifest.UpdateFileColumnStats(fileKey, stats)
 	}
+}
+
+// QuerySpecificFiles queries only the Parquet files identified by the given
+// file keys, rather than discovering files via the manifest time range.
+// This is used by the select tier during gap redistribution: when a combined
+// node fails during fan-out, surviving nodes can re-query the orphaned files
+// by key.
+//
+// The method looks up files from the manifest's time-range index and filters
+// to only those whose Key appears in fileKeys. It then processes each file
+// using the existing queryFile infrastructure (bloom checks, row group
+// skipping, footer cache, etc.).
+//
+// If no matching files are found, it returns nil (no error).
+func (s *Storage) QuerySpecificFiles(ctx context.Context, fileKeys []string, startNs, endNs int64, queryStr string, pipeFields []string, writeBlock logstorage.WriteDataBlockFunc) error {
+	if len(fileKeys) == 0 {
+		return nil
+	}
+
+	// Build set for O(1) lookup; deduplicate keys to prevent double processing.
+	keySet := make(map[string]bool, len(fileKeys))
+	for _, k := range fileKeys {
+		keySet[k] = true
+	}
+
+	allFiles := s.manifest.GetFilesForRange(startNs, endNs)
+
+	var files []manifest.FileInfo
+	for _, f := range allFiles {
+		if keySet[f.Key] {
+			files = append(files, f)
+		}
+	}
+	if len(files) == 0 {
+		return nil
+	}
+
+	// Process matched files using the same per-file query pipeline as RunQuery
+	// (footer cache, bloom checks, row group skipping, projected reads).
+	for _, fi := range files {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, writeBlock); err != nil {
+			logger.Warnf("QuerySpecificFiles: file error: %s; key=%s", err, fi.Key)
+			continue
+		}
+	}
+
+	return nil
+}
+
+func isFileNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "NoSuchKey") ||
+		strings.Contains(s, "NotFound") ||
+		strings.Contains(s, "404") ||
+		strings.Contains(s, "does not exist") ||
+		strings.Contains(s, "file not found")
 }

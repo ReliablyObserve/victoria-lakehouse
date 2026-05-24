@@ -1,0 +1,747 @@
+{
+  "timestamp": "2026-05-22T06:20:52Z",
+  "config": {
+    "iterations": 5,
+    "warmup": 2,
+    "lakehouse_url": "http://localhost:39428",
+    "victorialogs_url": "http://localhost:39401",
+    "loki_url": "http://localhost:33100"
+  },
+  "scenarios": {
+    "manifest_nothing_here": {
+      "lakehouse": {
+        "name": "manifest_nothing_here",
+        "system": "lakehouse",
+        "p50_ms": 24,
+        "p95_ms": 24,
+        "p99_ms": 24,
+        "min_ms": 22,
+        "max_ms": 24,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "manifest_nothing_here",
+        "system": "victorialogs",
+        "p50_ms": 25,
+        "p95_ms": 25,
+        "p99_ms": 25,
+        "min_ms": 23,
+        "max_ms": 25,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "manifest_nothing_here",
+        "system": "loki",
+        "p50_ms": 26,
+        "p95_ms": 27,
+        "p99_ms": 27,
+        "min_ms": 26,
+        "max_ms": 27,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "bloom_trace_id_hit": {
+      "lakehouse": {
+        "name": "bloom_trace_id_hit",
+        "system": "lakehouse",
+        "p50_ms": 8523,
+        "p95_ms": 8550,
+        "p99_ms": 8550,
+        "min_ms": 8366,
+        "max_ms": 8550,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "bloom_trace_id_hit",
+        "system": "victorialogs",
+        "p50_ms": 70,
+        "p95_ms": 72,
+        "p99_ms": 72,
+        "min_ms": 68,
+        "max_ms": 72,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "bloom_trace_id_hit",
+        "system": "loki",
+        "p50_ms": 518,
+        "p95_ms": 539,
+        "p99_ms": 539,
+        "min_ms": 509,
+        "max_ms": 539,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "bloom_trace_id_miss": {
+      "lakehouse": {
+        "name": "bloom_trace_id_miss",
+        "system": "lakehouse",
+        "p50_ms": 8543,
+        "p95_ms": 8614,
+        "p99_ms": 8614,
+        "min_ms": 8334,
+        "max_ms": 8614,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "bloom_trace_id_miss",
+        "system": "victorialogs",
+        "p50_ms": 67,
+        "p95_ms": 67,
+        "p99_ms": 67,
+        "min_ms": 67,
+        "max_ms": 67,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "bloom_trace_id_miss",
+        "system": "loki",
+        "p50_ms": 526,
+        "p95_ms": 573,
+        "p99_ms": 573,
+        "min_ms": 506,
+        "max_ms": 573,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "bloom_service_exact": {
+      "lakehouse": {
+        "name": "bloom_service_exact",
+        "system": "lakehouse",
+        "p50_ms": 24,
+        "p95_ms": 29,
+        "p99_ms": 29,
+        "min_ms": 23,
+        "max_ms": 29,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "bloom_service_exact",
+        "system": "victorialogs",
+        "p50_ms": 24,
+        "p95_ms": 26,
+        "p99_ms": 26,
+        "min_ms": 23,
+        "max_ms": 26,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "bloom_service_exact",
+        "system": "loki",
+        "p50_ms": 738,
+        "p95_ms": 797,
+        "p99_ms": 797,
+        "min_ms": 730,
+        "max_ms": 797,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "short_range_1h_wildcard": {
+      "lakehouse": {
+        "name": "short_range_1h_wildcard",
+        "system": "lakehouse",
+        "p50_ms": 24,
+        "p95_ms": 24,
+        "p99_ms": 24,
+        "min_ms": 23,
+        "max_ms": 24,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "short_range_1h_wildcard",
+        "system": "victorialogs",
+        "p50_ms": 23,
+        "p95_ms": 26,
+        "p99_ms": 26,
+        "min_ms": 23,
+        "max_ms": 26,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "short_range_1h_wildcard",
+        "system": "loki",
+        "p50_ms": 777,
+        "p95_ms": 1024,
+        "p99_ms": 1024,
+        "min_ms": 741,
+        "max_ms": 1024,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "short_range_1h_filtered": {
+      "lakehouse": {
+        "name": "short_range_1h_filtered",
+        "system": "lakehouse",
+        "p50_ms": 23,
+        "p95_ms": 25,
+        "p99_ms": 25,
+        "min_ms": 23,
+        "max_ms": 25,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "short_range_1h_filtered",
+        "system": "victorialogs",
+        "p50_ms": 23,
+        "p95_ms": 25,
+        "p99_ms": 25,
+        "min_ms": 23,
+        "max_ms": 25,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "short_range_1h_filtered",
+        "system": "loki",
+        "p50_ms": 809,
+        "p95_ms": 940,
+        "p99_ms": 940,
+        "min_ms": 769,
+        "max_ms": 940,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "short_range_1h_service_level": {
+      "lakehouse": {
+        "name": "short_range_1h_service_level",
+        "system": "lakehouse",
+        "p50_ms": 23,
+        "p95_ms": 24,
+        "p99_ms": 24,
+        "min_ms": 23,
+        "max_ms": 24,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "short_range_1h_service_level",
+        "system": "victorialogs",
+        "p50_ms": 23,
+        "p95_ms": 23,
+        "p99_ms": 23,
+        "min_ms": 22,
+        "max_ms": 23,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "short_range_1h_service_level",
+        "system": "loki",
+        "p50_ms": 801,
+        "p95_ms": 1074,
+        "p99_ms": 1074,
+        "min_ms": 794,
+        "max_ms": 1074,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "medium_range_6h_wildcard": {
+      "lakehouse": {
+        "name": "medium_range_6h_wildcard",
+        "system": "lakehouse",
+        "p50_ms": 24,
+        "p95_ms": 24,
+        "p99_ms": 24,
+        "min_ms": 24,
+        "max_ms": 24,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "medium_range_6h_wildcard",
+        "system": "victorialogs",
+        "p50_ms": 25,
+        "p95_ms": 26,
+        "p99_ms": 26,
+        "min_ms": 24,
+        "max_ms": 26,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "medium_range_6h_wildcard",
+        "system": "loki",
+        "p50_ms": 1940,
+        "p95_ms": 2166,
+        "p99_ms": 2166,
+        "min_ms": 1905,
+        "max_ms": 2166,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "medium_range_6h_substring": {
+      "lakehouse": {
+        "name": "medium_range_6h_substring",
+        "system": "lakehouse",
+        "p50_ms": 24,
+        "p95_ms": 29,
+        "p99_ms": 29,
+        "min_ms": 23,
+        "max_ms": 29,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "medium_range_6h_substring",
+        "system": "victorialogs",
+        "p50_ms": 24,
+        "p95_ms": 25,
+        "p99_ms": 25,
+        "min_ms": 23,
+        "max_ms": 25,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "medium_range_6h_substring",
+        "system": "loki",
+        "p50_ms": 504,
+        "p95_ms": 531,
+        "p99_ms": 531,
+        "min_ms": 494,
+        "max_ms": 531,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "long_range_24h_wildcard": {
+      "lakehouse": {
+        "name": "long_range_24h_wildcard",
+        "system": "lakehouse",
+        "p50_ms": 3510,
+        "p95_ms": 3878,
+        "p99_ms": 3878,
+        "min_ms": 3423,
+        "max_ms": 3878,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "long_range_24h_wildcard",
+        "system": "victorialogs",
+        "p50_ms": 59,
+        "p95_ms": 76,
+        "p99_ms": 76,
+        "min_ms": 54,
+        "max_ms": 76,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "long_range_24h_wildcard",
+        "system": "loki",
+        "p50_ms": 6810,
+        "p95_ms": 7165,
+        "p99_ms": 7165,
+        "min_ms": 6509,
+        "max_ms": 7165,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "long_range_48h_service_filter": {
+      "lakehouse": {
+        "name": "long_range_48h_service_filter",
+        "system": "lakehouse",
+        "p50_ms": 9008,
+        "p95_ms": 9695,
+        "p99_ms": 9695,
+        "min_ms": 8938,
+        "max_ms": 9695,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "long_range_48h_service_filter",
+        "system": "victorialogs",
+        "p50_ms": 109,
+        "p95_ms": 121,
+        "p99_ms": 121,
+        "min_ms": 108,
+        "max_ms": 121,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "long_range_48h_service_filter",
+        "system": "loki",
+        "p50_ms": 12829,
+        "p95_ms": 13024,
+        "p99_ms": 13024,
+        "min_ms": 12601,
+        "max_ms": 13024,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "long_range_48h_all_errors": {
+      "lakehouse": {
+        "name": "long_range_48h_all_errors",
+        "system": "lakehouse",
+        "p50_ms": 8865,
+        "p95_ms": 8973,
+        "p99_ms": 8973,
+        "min_ms": 8734,
+        "max_ms": 8973,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "long_range_48h_all_errors",
+        "system": "victorialogs",
+        "p50_ms": 53,
+        "p95_ms": 58,
+        "p99_ms": 58,
+        "min_ms": 52,
+        "max_ms": 58,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "long_range_48h_all_errors",
+        "system": "loki",
+        "p50_ms": 14690,
+        "p95_ms": 15384,
+        "p99_ms": 15384,
+        "min_ms": 12638,
+        "max_ms": 15384,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "stats_1h_count": {
+      "lakehouse": {
+        "name": "stats_1h_count",
+        "system": "lakehouse",
+        "p50_ms": 24,
+        "p95_ms": 25,
+        "p99_ms": 25,
+        "min_ms": 24,
+        "max_ms": 25,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "stats_1h_count",
+        "system": "victorialogs",
+        "p50_ms": 23,
+        "p95_ms": 29,
+        "p99_ms": 29,
+        "min_ms": 22,
+        "max_ms": 29,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "stats_1h_count",
+        "system": "loki",
+        "p50_ms": 519,
+        "p95_ms": 544,
+        "p99_ms": 544,
+        "min_ms": 500,
+        "max_ms": 544,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "stats_24h_count": {
+      "lakehouse": {
+        "name": "stats_24h_count",
+        "system": "lakehouse",
+        "p50_ms": 3305,
+        "p95_ms": 4013,
+        "p99_ms": 4013,
+        "min_ms": 3256,
+        "max_ms": 4013,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "stats_24h_count",
+        "system": "victorialogs",
+        "p50_ms": 45,
+        "p95_ms": 47,
+        "p99_ms": 47,
+        "min_ms": 39,
+        "max_ms": 47,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "stats_24h_count",
+        "system": "loki",
+        "p50_ms": 495,
+        "p95_ms": 509,
+        "p99_ms": 509,
+        "min_ms": 270,
+        "max_ms": 509,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "stats_range_1h_step_5m": {
+      "lakehouse": {
+        "name": "stats_range_1h_step_5m",
+        "system": "lakehouse",
+        "p50_ms": 24,
+        "p95_ms": 25,
+        "p99_ms": 25,
+        "min_ms": 24,
+        "max_ms": 25,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "stats_range_1h_step_5m",
+        "system": "victorialogs",
+        "p50_ms": 25,
+        "p95_ms": 28,
+        "p99_ms": 28,
+        "min_ms": 24,
+        "max_ms": 28,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "stats_range_1h_step_5m",
+        "system": "loki",
+        "p50_ms": 500,
+        "p95_ms": 535,
+        "p99_ms": 535,
+        "min_ms": 494,
+        "max_ms": 535,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "stats_range_24h_step_1h": {
+      "lakehouse": {
+        "name": "stats_range_24h_step_1h",
+        "system": "lakehouse",
+        "p50_ms": 3592,
+        "p95_ms": 3855,
+        "p99_ms": 3855,
+        "min_ms": 3446,
+        "max_ms": 3855,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "stats_range_24h_step_1h",
+        "system": "victorialogs",
+        "p50_ms": 48,
+        "p95_ms": 54,
+        "p99_ms": 54,
+        "min_ms": 42,
+        "max_ms": 54,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "stats_range_24h_step_1h",
+        "system": "loki",
+        "p50_ms": 510,
+        "p95_ms": 544,
+        "p99_ms": 544,
+        "min_ms": 501,
+        "max_ms": 544,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "field_names": {
+      "lakehouse": {
+        "name": "field_names",
+        "system": "lakehouse",
+        "p50_ms": 24,
+        "p95_ms": 25,
+        "p99_ms": 25,
+        "min_ms": 22,
+        "max_ms": 25,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "field_names",
+        "system": "victorialogs",
+        "p50_ms": 55,
+        "p95_ms": 67,
+        "p99_ms": 67,
+        "min_ms": 54,
+        "max_ms": 67,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "field_names",
+        "system": "loki",
+        "p50_ms": 274,
+        "p95_ms": 284,
+        "p99_ms": 284,
+        "min_ms": 263,
+        "max_ms": 284,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "field_values_service": {
+      "lakehouse": {
+        "name": "field_values_service",
+        "system": "lakehouse",
+        "p50_ms": 23,
+        "p95_ms": 25,
+        "p99_ms": 25,
+        "min_ms": 23,
+        "max_ms": 25,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "field_values_service",
+        "system": "victorialogs",
+        "p50_ms": 67,
+        "p95_ms": 74,
+        "p99_ms": 74,
+        "min_ms": 66,
+        "max_ms": 74,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "field_values_service",
+        "system": "loki",
+        "p50_ms": 293,
+        "p95_ms": 303,
+        "p99_ms": 303,
+        "min_ms": 276,
+        "max_ms": 303,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "streams_list": {
+      "lakehouse": {
+        "name": "streams_list",
+        "system": "lakehouse",
+        "p50_ms": 23,
+        "p95_ms": 25,
+        "p99_ms": 25,
+        "min_ms": 23,
+        "max_ms": 25,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "streams_list",
+        "system": "victorialogs",
+        "p50_ms": 24,
+        "p95_ms": 25,
+        "p99_ms": 25,
+        "min_ms": 23,
+        "max_ms": 25,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "streams_list",
+        "system": "loki",
+        "p50_ms": 273,
+        "p95_ms": 280,
+        "p99_ms": 280,
+        "min_ms": 262,
+        "max_ms": 280,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "hits_1h_step_5m": {
+      "lakehouse": {
+        "name": "hits_1h_step_5m",
+        "system": "lakehouse",
+        "p50_ms": 24,
+        "p95_ms": 25,
+        "p99_ms": 25,
+        "min_ms": 23,
+        "max_ms": 25,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "hits_1h_step_5m",
+        "system": "victorialogs",
+        "p50_ms": 25,
+        "p95_ms": 25,
+        "p99_ms": 25,
+        "min_ms": 22,
+        "max_ms": 25,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "hits_1h_step_5m",
+        "system": "loki",
+        "p50_ms": 281,
+        "p95_ms": 391,
+        "p99_ms": 391,
+        "min_ms": 268,
+        "max_ms": 391,
+        "iterations": 5,
+        "errors": 0
+      }
+    },
+    "hits_24h_step_1h": {
+      "lakehouse": {
+        "name": "hits_24h_step_1h",
+        "system": "lakehouse",
+        "p50_ms": 3547,
+        "p95_ms": 3796,
+        "p99_ms": 3796,
+        "min_ms": 3457,
+        "max_ms": 3796,
+        "iterations": 5,
+        "errors": 0
+      },
+      "victorialogs": {
+        "name": "hits_24h_step_1h",
+        "system": "victorialogs",
+        "p50_ms": 45,
+        "p95_ms": 46,
+        "p99_ms": 46,
+        "min_ms": 45,
+        "max_ms": 46,
+        "iterations": 5,
+        "errors": 0
+      },
+      "loki": {
+        "name": "hits_24h_step_1h",
+        "system": "loki",
+        "p50_ms": 507,
+        "p95_ms": 528,
+        "p99_ms": 528,
+        "min_ms": 501,
+        "max_ms": 528,
+        "iterations": 5,
+        "errors": 0
+      }
+    }
+  }
+}
