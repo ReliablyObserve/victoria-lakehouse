@@ -104,6 +104,20 @@ func NewController(cfg ControllerConfig) *Controller {
 	}
 }
 
+// LookupOwner routes cache key ownership through the appropriate ring based on
+// the configured partition mode and returns whether this node owns the key.
+// Exported for use by hybrid fan-out self-filtering in the select tier.
+func (c *Controller) LookupOwner(key string) (peer string, isLocal bool) {
+	return c.lookupOwner(key)
+}
+
+// IsLocal returns true if the given key is owned by this node according to
+// the cache ring. Implements OwnershipChecker for warmup filtering.
+func (c *Controller) IsLocal(key string) bool {
+	_, local := c.lookupOwner(key)
+	return local
+}
+
 // lookupOwner routes cache key ownership through the appropriate ring based on
 // the configured partition mode. In "az-local" mode it uses the AZ-scoped ring
 // when available; in "global" or "distributed" mode it uses the full ring.
