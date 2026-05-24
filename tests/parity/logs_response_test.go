@@ -102,7 +102,7 @@ func TestParity_Response(t *testing.T) {
 	})
 
 	t.Run("large_limit", func(t *testing.T) {
-		pc := ParityCase{Name: "large_limit", Endpoint: queryEndpoint(), Params: map[string]string{"query": "*", "limit": "100000"}, Compare: NonEmpty}
+		pc := ParityCase{Name: "large_limit", Endpoint: queryEndpoint(), Params: map[string]string{"query": "*", "limit": "100000"}, Compare: CountEqual}
 		RunParity(t, vlBaseURL, lhBaseURL, []ParityCase{pc})
 	})
 }

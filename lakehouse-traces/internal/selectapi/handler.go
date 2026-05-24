@@ -64,26 +64,6 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	}
 }
 
-func (h *Handler) wrapVLTimestampOnly(fn func(ctx context.Context, w http.ResponseWriter, r *http.Request)) http.HandlerFunc {
-	inner := h.wrapVL(fn)
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !requestNeedsFieldData(r) {
-			r = r.WithContext(storage.WithTimestampOnlyHint(r.Context()))
-		}
-		inner.ServeHTTP(w, r)
-	}
-}
-
-func requestNeedsFieldData(r *http.Request) bool {
-	if r.FormValue("field") != "" {
-		return true
-	}
-	if vals, ok := r.Form["fields[]"]; ok && len(vals) > 0 {
-		return true
-	}
-	return false
-}
-
 func (h *Handler) wrapVL(fn func(ctx context.Context, w http.ResponseWriter, r *http.Request)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		select {
