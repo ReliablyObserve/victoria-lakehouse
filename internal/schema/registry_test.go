@@ -134,14 +134,20 @@ func TestRegistry_BloomColumns(t *testing.T) {
 func TestRegistry_StreamFields_Logs(t *testing.T) {
 	r := NewRegistry(LogsProfile)
 	fields := r.StreamFields()
-	if len(fields) != 3 {
-		t.Errorf("expected 3 log stream fields, got %d", len(fields))
+	if len(fields) != 9 {
+		t.Errorf("expected 9 log stream fields, got %d", len(fields))
 	}
 
 	expected := map[string]bool{
-		"service.name":       true,
-		"k8s.namespace.name": true,
-		"k8s.pod.name":       true,
+		"service.name":           true,
+		"k8s.namespace.name":     true,
+		"k8s.pod.name":           true,
+		"k8s.deployment.name":    true,
+		"deployment.environment": true,
+		"cloud.region":           true,
+		"host.name":              true,
+		"k8s.node.name":          true,
+		"level":                  true,
 	}
 	for _, f := range fields {
 		if !expected[f] {
