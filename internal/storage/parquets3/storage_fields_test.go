@@ -395,14 +395,18 @@ func TestGetStreamFieldNames_Logs_ReturnsRegistryFields(t *testing.T) {
 		nameSet[f.Value] = true
 	}
 
-	expected := []string{"service.name", "k8s.namespace.name", "k8s.pod.name"}
+	expected := []string{
+		"service.name", "k8s.namespace.name", "k8s.pod.name",
+		"k8s.deployment.name", "deployment.environment", "cloud.region",
+		"host.name", "k8s.node.name", "level",
+	}
 	for _, e := range expected {
 		if !nameSet[e] {
 			t.Errorf("missing stream field %q", e)
 		}
 	}
-	if len(fields) != 3 {
-		t.Errorf("expected 3 stream fields for logs, got %d", len(fields))
+	if len(fields) != len(expected) {
+		t.Errorf("expected %d stream fields for logs, got %d", len(expected), len(fields))
 	}
 }
 

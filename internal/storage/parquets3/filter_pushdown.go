@@ -50,6 +50,10 @@ func buildPushDownFilter(queryStr string, registry *schema.Registry) *PushDownFi
 		}
 
 		for _, name := range names {
+			if isNegatedPredicate(queryStr, name) {
+				break
+			}
+
 			// Exact match: field:="value" or field:="prefix*"
 			if val := extractQuotedOp(queryStr, name, `:="`); val != "" {
 				if strings.HasSuffix(val, "*") && !strings.HasSuffix(val, `\*`) {
@@ -102,6 +106,29 @@ func buildPushDownFilter(queryStr string, registry *schema.Registry) *PushDownFi
 		return nil
 	}
 	return &PushDownFilter{Checks: checks}
+}
+
+// isNegatedPredicate checks if a field predicate is negated in the query string.
+// VL's Query.String() serializes NOT as "!" prefix (e.g., "!service.name:=...").
+// Negated predicates must not be pushed down because file-level filtering
+// inverts the match semantics.
+func isNegatedPredicate(query, fieldName string) bool {
+	idx := strings.Index(query, fieldName)
+	if idx < 0 {
+		return false
+	}
+	if idx > 0 && query[idx-1] == '!' {
+		return true
+	}
+	prefix := strings.TrimRight(query[:idx], " ")
+	if strings.HasSuffix(prefix, "NOT") {
+		return true
+	}
+	after := query[idx+len(fieldName):]
+	if strings.HasPrefix(after, ":!~") || strings.HasPrefix(after, ":!") {
+		return true
+	}
+	return false
 }
 
 // extractQuotedOp finds `fieldName + op + value"` in the query string and returns the value.
