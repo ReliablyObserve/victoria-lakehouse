@@ -261,7 +261,7 @@ services:
     networks: [bench-net]
     command:
       - "--logs=100000"
-      - "--traces=20000"
+      - "--traces=50000"
       - "--hours-back=168"
       - "--vl-endpoint=http://victorialogs:9428"
       - "--lh-logs-endpoint=http://lakehouse-logs:9428"
