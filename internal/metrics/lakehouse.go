@@ -155,10 +155,10 @@ var (
 
 // Query metrics
 var (
-	QueryDuration           = NewHistogram("lakehouse_query_duration_seconds", DefBuckets)
-	QueryRowsTotal          = NewCounter("lakehouse_query_rows_returned_total")
-	QueryRejectedTotal      = NewCounter("lakehouse_query_rejected_total")
-	QueryFileLimitExceeded  = NewCounter("lakehouse_query_file_limit_exceeded_total")
+	QueryDuration          = NewHistogram("lakehouse_query_duration_seconds", DefBuckets)
+	QueryRowsTotal         = NewCounter("lakehouse_query_rows_returned_total")
+	QueryRejectedTotal     = NewCounter("lakehouse_query_rejected_total")
+	QueryFileLimitExceeded = NewCounter("lakehouse_query_file_limit_exceeded_total")
 )
 
 // Compaction metrics

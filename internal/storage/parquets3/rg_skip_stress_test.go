@@ -60,11 +60,11 @@ func TestCanSkipByColumnStats_EdgeCases(t *testing.T) {
 	unicodeMid := "μνξ"
 
 	tests := []struct {
-		name        string
-		value       string
-		minVal      string
-		maxVal      string
-		wantSkip    bool
+		name     string
+		value    string
+		minVal   string
+		maxVal   string
+		wantSkip bool
 	}{
 		// Empty stats — never skip.
 		{

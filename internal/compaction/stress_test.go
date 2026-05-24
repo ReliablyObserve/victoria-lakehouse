@@ -61,7 +61,7 @@ func TestPolicy_SelectFiles_LargeCount(t *testing.T) {
 	fps := []string{"fpA", "fpB", "fpC"}
 	files := make([]manifest.FileInfo, 0, 2000)
 	for i := 0; i < 2000; i++ {
-		level := i % 2       // alternates 0 and 1
+		level := i % 2        // alternates 0 and 1
 		fp := fps[i%len(fps)] // cycles through fpA, fpB, fpC
 		files = append(files, manifest.FileInfo{
 			Key:               fmt.Sprintf("file-%d", i),
@@ -113,7 +113,7 @@ func TestSharding_LargePartitionCount(t *testing.T) {
 	const totalPartitions = 10000
 	const shardCount = 10
 	const expectedPerShard = totalPartitions / shardCount // 1000
-	const tolerance = 0.20                               // ±20%
+	const tolerance = 0.20                                // ±20%
 
 	// Generate 10000 distinct partition names using the index directly for uniqueness.
 	partitions := make([]string, totalPartitions)

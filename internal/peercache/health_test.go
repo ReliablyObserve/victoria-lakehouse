@@ -226,8 +226,8 @@ func TestHealthAwareRing_NoGoroutineLeak(t *testing.T) {
 	}
 
 	// Discard the ring
-	hr = nil       //nolint:ineffassign
-	_ = hr         //nolint:staticcheck
+	hr = nil //nolint:ineffassign
+	_ = hr   //nolint:staticcheck
 	runtime.GC()
 	runtime.GC()
 

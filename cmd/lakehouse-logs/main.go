@@ -74,9 +74,9 @@ var (
 	cacheWarmupMaxFiles   = flag.Int("lakehouse.cache.warmup-max-files", 0, "Max files to warm on startup (default: 500)")
 	cachePartitionMode    = flag.String("lakehouse.cache.partition-mode", "", "Cache partition mode: az-local (default), global, distributed")
 
-	compactionEnabled  = flag.Bool("lakehouse.compaction.enabled", false, "Enable compaction scheduler")
-	compactionInterval = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
-	compactionElection      = flag.String("lakehouse.compaction.leader-election", "", "Election mode: auto, k8s, s3, none")
+	compactionEnabled        = flag.Bool("lakehouse.compaction.enabled", false, "Enable compaction scheduler")
+	compactionInterval       = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
+	compactionElection       = flag.String("lakehouse.compaction.leader-election", "", "Election mode: auto, k8s, s3, none")
 	compactionDailyRollupAge = flag.Duration("lakehouse.compaction.daily-rollup-age", 0, "Minimum partition age for daily rollup compaction (default: 24h)")
 	compactionShardID        = flag.Int("lakehouse.compaction.shard-id", -1, "Compaction shard ID (default: auto-detect from hostname ordinal)")
 	compactionShardCount     = flag.Int("lakehouse.compaction.shard-count", 0, "Total compaction shards (0 or 1 = leader mode)")
@@ -84,8 +84,8 @@ var (
 	queryFileWorkers      = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 8)")
 	queryMaxFilesPerQuery = flag.Int("lakehouse.query.max-files-per-query", 0, "Max S3 files per query before rejection (default: 500)")
 
-	s3ReadAhead    = flag.Int("lakehouse.s3.read-ahead-bytes", 0, "S3 read-ahead buffer size in bytes (default: 2MB)")
-	s3CoalesceGap  = flag.Int("lakehouse.s3.coalesce-gap-bytes", 0, "Merge S3 range reads with gaps smaller than this (default: 64KB)")
+	s3ReadAhead   = flag.Int("lakehouse.s3.read-ahead-bytes", 0, "S3 read-ahead buffer size in bytes (default: 2MB)")
+	s3CoalesceGap = flag.Int("lakehouse.s3.coalesce-gap-bytes", 0, "Merge S3 range reads with gaps smaller than this (default: 64KB)")
 
 	logsBloomColumns = flag.String("lakehouse.logs.bloom-columns", "", "Comma-separated bloom filter columns for logs (default: service.name)")
 	logsDeletePrefix = flag.String("lakehouse.logs.delete-prefix", "", "Delete API prefix (default: /delete/logsql)")

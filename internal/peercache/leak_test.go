@@ -100,7 +100,7 @@ func TestRing_WithZones_NoGoroutineLeak(t *testing.T) {
 
 	r := NewRing("self:9428", defaultVnodes)
 	peerZones := map[string]string{
-		"self:9428": "az-1",
+		"self:9428":  "az-1",
 		"peer1:9428": "az-1",
 		"peer2:9428": "az-2",
 		"peer3:9428": "az-2",

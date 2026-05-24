@@ -87,7 +87,7 @@ func NewClientPool(ctx context.Context, cfg *config.S3Config) (*ClientPool, erro
 		MaxIdleConnsPerHost:   maxConns,
 		MaxIdleConns:          maxConns * 2,
 		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:  10 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
 		ForceAttemptHTTP2:     true,
 		DisableCompression:    true, // Parquet files are already ZSTD-compressed

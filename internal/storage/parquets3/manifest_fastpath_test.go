@@ -3,8 +3,8 @@ package parquets3
 import (
 	"testing"
 
-	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
 
 func TestManifestFastPath_ResolvesFilesFullyInRange(t *testing.T) {

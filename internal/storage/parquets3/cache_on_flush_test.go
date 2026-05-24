@@ -14,20 +14,20 @@ type testL1 struct {
 	data map[string][]byte
 }
 
-func newTestL1() *testL1                          { return &testL1{data: make(map[string][]byte)} }
-func (t *testL1) Get(key string) ([]byte, bool)   { v, ok := t.data[key]; return v, ok }
-func (t *testL1) Put(key string, val []byte)       { t.data[key] = val }
+func newTestL1() *testL1                        { return &testL1{data: make(map[string][]byte)} }
+func (t *testL1) Get(key string) ([]byte, bool) { v, ok := t.data[key]; return v, ok }
+func (t *testL1) Put(key string, val []byte)    { t.data[key] = val }
 
 // testL2 is a minimal L2 cache for testing.
 type testL2 struct {
 	data map[string][]byte
 }
 
-func newTestL2() *testL2                               { return &testL2{data: make(map[string][]byte)} }
-func (t *testL2) Get(key string) ([]byte, bool)        { v, ok := t.data[key]; return v, ok }
-func (t *testL2) Put(key string, data []byte) error    { t.data[key] = data; return nil }
-func (t *testL2) Delete(key string)                    { delete(t.data, key) }
-func (t *testL2) Size() int64                          { return int64(len(t.data)) }
+func newTestL2() *testL2                            { return &testL2{data: make(map[string][]byte)} }
+func (t *testL2) Get(key string) ([]byte, bool)     { v, ok := t.data[key]; return v, ok }
+func (t *testL2) Put(key string, data []byte) error { t.data[key] = data; return nil }
+func (t *testL2) Delete(key string)                 { delete(t.data, key) }
+func (t *testL2) Size() int64                       { return int64(len(t.data)) }
 
 // testPeerLookup always returns local ownership.
 type testPeerLookup struct{}

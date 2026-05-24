@@ -59,9 +59,9 @@ type BatchWriter struct {
 
 	wal *wal.WAL // nil if WAL disabled
 
-	bloomObserver  BloomObserver
-	statsCallback  StatsCallback
-	flushCacheCb   FlushCacheCallback
+	bloomObserver BloomObserver
+	statsCallback StatsCallback
+	flushCacheCb  FlushCacheCallback
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup

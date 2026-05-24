@@ -416,8 +416,8 @@ type mockAZPeerLookup struct {
 func (m *mockAZPeerLookup) Lookup(key string) (string, bool) {
 	return m.selfAddr, true // global ring always returns self
 }
-func (m *mockAZPeerLookup) Members() []string  { return []string{m.selfAddr} }
-func (m *mockAZPeerLookup) MemberCount() int   { return 1 }
+func (m *mockAZPeerLookup) Members() []string { return []string{m.selfAddr} }
+func (m *mockAZPeerLookup) MemberCount() int  { return 1 }
 func (m *mockAZPeerLookup) LookupAZ(key string) (string, bool, bool) {
 	return m.azPeer, m.azLocal, m.sameAZ
 }
