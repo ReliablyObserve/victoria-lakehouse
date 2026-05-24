@@ -216,6 +216,7 @@ type CacheConfig struct {
 	WarmupPartitions  int           `yaml:"warmup_partitions"`
 	WarmupMaxFiles    int           `yaml:"warmup_max_files"`
 	WarmupConcurrency int           `yaml:"warmup_concurrency"`
+	PartitionMode     string        `yaml:"partition_mode"` // "az-local" (default), "global", "distributed"
 }
 
 type DiscoveryConfig struct {
@@ -445,6 +446,7 @@ func Default() *Config {
 			FooterTTL:         1 * time.Hour,
 			BloomTTL:          1 * time.Hour,
 			PageTTL:           10 * time.Minute,
+			PartitionMode:     "az-local",
 		},
 
 		Discovery: DiscoveryConfig{
@@ -834,6 +836,11 @@ func (c *Config) validateSubsystems() error {
 	if c.Cache.EvictionWatermark <= 0 || c.Cache.EvictionWatermark > 1 {
 		return fmt.Errorf("--lakehouse.cache.eviction-watermark must be in (0, 1], got %f", c.Cache.EvictionWatermark)
 	}
+	switch c.Cache.PartitionMode {
+	case "az-local", "global", "distributed", "":
+	default:
+		return fmt.Errorf("--lakehouse.cache.partition-mode must be one of: az-local, global, distributed; got %q", c.Cache.PartitionMode)
+	}
 	if c.S3.MaxConnections <= 0 {
 		return fmt.Errorf("--lakehouse.s3.max-connections must be positive, got %d", c.S3.MaxConnections)
 	}
@@ -1071,6 +1078,9 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Cache.PageTTL > 0 {
 		base.Cache.PageTTL = overlay.Cache.PageTTL
+	}
+	if overlay.Cache.PartitionMode != "" {
+		base.Cache.PartitionMode = overlay.Cache.PartitionMode
 	}
 
 	// Discovery

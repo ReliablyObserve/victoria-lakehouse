@@ -24,6 +24,14 @@ type PeerLookup interface {
 	MemberCount() int
 }
 
+// AZPeerLookup extends PeerLookup with availability-zone-aware lookup.
+// When the cache partition mode is "az-local", the controller uses LookupAZ
+// to route ownership through the AZ-scoped ring instead of the global ring.
+type AZPeerLookup interface {
+	PeerLookup
+	LookupAZ(key string) (peer string, isLocal bool, isSameAZ bool)
+}
+
 type PeerFetcher interface {
 	Fetch(ctx context.Context, peer, key string) ([]byte, bool, error)
 }
@@ -33,31 +41,33 @@ type S3Fetcher interface {
 }
 
 type ControllerConfig struct {
-	L1           L1Cache
-	L2           L2Cache
-	PeerLookup   PeerLookup
-	PeerFetcher  PeerFetcher
-	S3Fetcher    S3Fetcher
-	Metadata     *MetadataMap
-	MaxAge       time.Duration
-	HotThreshold int
-	HotWindow    time.Duration
-	GracePeriod  time.Duration
-	Signal       string
+	L1            L1Cache
+	L2            L2Cache
+	PeerLookup    PeerLookup
+	PeerFetcher   PeerFetcher
+	S3Fetcher     S3Fetcher
+	Metadata      *MetadataMap
+	MaxAge        time.Duration
+	HotThreshold  int
+	HotWindow     time.Duration
+	GracePeriod   time.Duration
+	Signal        string
+	PartitionMode string // "az-local" (default), "global", "distributed"
 }
 
 type Controller struct {
-	l1           L1Cache
-	l2           L2Cache
-	peerLookup   PeerLookup
-	peerFetcher  PeerFetcher
-	s3Fetcher    S3Fetcher
-	metadata     *MetadataMap
-	maxAge       time.Duration
-	hotThreshold int
-	hotWindow    time.Duration
-	gracePeriod  time.Duration
-	signal       string
+	l1            L1Cache
+	l2            L2Cache
+	peerLookup    PeerLookup
+	peerFetcher   PeerFetcher
+	s3Fetcher     S3Fetcher
+	metadata      *MetadataMap
+	maxAge        time.Duration
+	hotThreshold  int
+	hotWindow     time.Duration
+	gracePeriod   time.Duration
+	signal        string
+	partitionMode string
 
 	sfMu       sync.Mutex
 	sfInFlight map[string]*sfCall
@@ -73,20 +83,40 @@ func NewController(cfg ControllerConfig) *Controller {
 	if cfg.GracePeriod == 0 {
 		cfg.GracePeriod = 5 * time.Minute
 	}
-	return &Controller{
-		l1:           cfg.L1,
-		l2:           cfg.L2,
-		peerLookup:   cfg.PeerLookup,
-		peerFetcher:  cfg.PeerFetcher,
-		s3Fetcher:    cfg.S3Fetcher,
-		metadata:     cfg.Metadata,
-		maxAge:       cfg.MaxAge,
-		hotThreshold: cfg.HotThreshold,
-		hotWindow:    cfg.HotWindow,
-		gracePeriod:  cfg.GracePeriod,
-		signal:       cfg.Signal,
-		sfInFlight:   make(map[string]*sfCall),
+	pm := cfg.PartitionMode
+	if pm == "" {
+		pm = "az-local"
 	}
+	return &Controller{
+		l1:            cfg.L1,
+		l2:            cfg.L2,
+		peerLookup:    cfg.PeerLookup,
+		peerFetcher:   cfg.PeerFetcher,
+		s3Fetcher:     cfg.S3Fetcher,
+		metadata:      cfg.Metadata,
+		maxAge:        cfg.MaxAge,
+		hotThreshold:  cfg.HotThreshold,
+		hotWindow:     cfg.HotWindow,
+		gracePeriod:   cfg.GracePeriod,
+		signal:        cfg.Signal,
+		partitionMode: pm,
+		sfInFlight:    make(map[string]*sfCall),
+	}
+}
+
+// lookupOwner routes cache key ownership through the appropriate ring based on
+// the configured partition mode. In "az-local" mode it uses the AZ-scoped ring
+// when available; in "global" or "distributed" mode it uses the full ring.
+func (c *Controller) lookupOwner(key string) (peer string, isLocal bool) {
+	if c.partitionMode == "global" || c.partitionMode == "distributed" {
+		return c.peerLookup.Lookup(key)
+	}
+	// az-local: use AZ-scoped ring if available
+	if azLookup, ok := c.peerLookup.(AZPeerLookup); ok {
+		peer, isLocal, _ = azLookup.LookupAZ(key)
+		return peer, isLocal
+	}
+	return c.peerLookup.Lookup(key)
 }
 
 func (c *Controller) Get(ctx context.Context, key string, size int64) ([]byte, error) {
@@ -96,7 +126,7 @@ func (c *Controller) Get(ctx context.Context, key string, size int64) ([]byte, e
 		return data, nil
 	}
 
-	peer, isLocal := c.peerLookup.Lookup(key)
+	peer, isLocal := c.lookupOwner(key)
 
 	if isLocal {
 		// Owned key: try L2 disk cache
@@ -124,7 +154,7 @@ func (c *Controller) Get(ctx context.Context, key string, size int64) ([]byte, e
 	c.l1.Put(key, data)
 
 	// Store in L2 if this node owns the key
-	if _, isLocal := c.peerLookup.Lookup(key); isLocal && c.l2 != nil {
+	if _, isLocal := c.lookupOwner(key); isLocal && c.l2 != nil {
 		_ = c.l2.Put(key, data)
 		now := time.Now()
 		c.metadata.Set(key, EntryMeta{

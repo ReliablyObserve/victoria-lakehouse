@@ -72,6 +72,7 @@ var (
 	cacheDiskMB           = flag.Int("lakehouse.cache.disk-max-mb", 0, "L2 disk cache max size in MB (default: 1024)")
 	cacheWarmupPartitions = flag.Int("lakehouse.cache.warmup-partitions", 0, "Number of recent hourly partitions to warm on startup (0=disabled)")
 	cacheWarmupMaxFiles   = flag.Int("lakehouse.cache.warmup-max-files", 0, "Max files to warm on startup (default: 500)")
+	cachePartitionMode    = flag.String("lakehouse.cache.partition-mode", "", "Cache partition mode: az-local (default), global, distributed")
 
 	compactionEnabled  = flag.Bool("lakehouse.compaction.enabled", false, "Enable compaction scheduler")
 	compactionInterval = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
@@ -835,6 +836,9 @@ func applyFlags(cfg *config.Config) {
 	}
 	if *cacheWarmupMaxFiles > 0 {
 		cfg.Cache.WarmupMaxFiles = *cacheWarmupMaxFiles
+	}
+	if pm := *cachePartitionMode; pm != "" {
+		cfg.Cache.PartitionMode = pm
 	}
 	if *compactionEnabled {
 		cfg.Compaction.Enabled = true

@@ -114,6 +114,8 @@ lakehouseConfig:
     warmup_max_files: 500
     # -- Maximum concurrent warmup downloads.
     warmup_concurrency: 4
+    # -- Cache partition mode: az-local (AZ-scoped ring), global (full ring), distributed.
+    partition_mode: az-local
 
   # ---------------------------------------------------------------------------
   # Insert — Write path (flush to Parquet + S3)
