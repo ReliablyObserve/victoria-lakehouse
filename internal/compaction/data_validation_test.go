@@ -359,9 +359,9 @@ func TestDataValidation_MediumMerge_PerServiceCountPreserved(t *testing.T) {
 	s := setupLogCompactor(t)
 
 	expectedCounts := map[string]int{
-		"api-gateway":    3000,
-		"user-service":   2000,
-		"order-service":  1500,
+		"api-gateway":     3000,
+		"user-service":    2000,
+		"order-service":   1500,
 		"payment-service": 500,
 	}
 
@@ -525,8 +525,8 @@ func TestDataValidation_TimeBounds_NotInheritedFromInaccurateInputFiles(t *testi
 		Key:               key1,
 		Size:              int64(len(data1)),
 		RowCount:          int64(len(rows1)),
-		MinTimeNs:         0,                     // inaccurate: partition start
-		MaxTimeNs:         999_999_999_999_999,    // inaccurate: partition end
+		MinTimeNs:         0,                   // inaccurate: partition start
+		MaxTimeNs:         999_999_999_999_999, // inaccurate: partition end
 		SchemaFingerprint: "fp-logs-v1",
 		CompactionLevel:   0,
 	}
@@ -1046,7 +1046,7 @@ func TestDataValidation_MultiLevel_L0_L1_L2_PreservesAllRows(t *testing.T) {
 		key := fmt.Sprintf("logs/%s/batch-%02d.parquet", partition, i)
 		_ = pool.Upload(context.Background(), key, data)
 
-		var minTS, maxTS int64 = rows[0].TimestampUnixNano, rows[len(rows)-1].TimestampUnixNano
+		minTS, maxTS := rows[0].TimestampUnixNano, rows[len(rows)-1].TimestampUnixNano
 		m.AddFile(partition, manifest.FileInfo{
 			Key: key, Size: int64(len(data)), RowCount: int64(len(rows)),
 			MinTimeNs: minTS, MaxTimeNs: maxTS, SchemaFingerprint: fp, CompactionLevel: 0,
@@ -1083,7 +1083,7 @@ func TestDataValidation_MultiLevel_L0_L1_L2_PreservesAllRows(t *testing.T) {
 		key := fmt.Sprintf("logs/%s/batch-%02d.parquet", partition, i)
 		_ = pool.Upload(context.Background(), key, data)
 
-		var minTS, maxTS int64 = rows[0].TimestampUnixNano, rows[len(rows)-1].TimestampUnixNano
+		minTS, maxTS := rows[0].TimestampUnixNano, rows[len(rows)-1].TimestampUnixNano
 		m.AddFile(partition, manifest.FileInfo{
 			Key: key, Size: int64(len(data)), RowCount: int64(len(rows)),
 			MinTimeNs: minTS, MaxTimeNs: maxTS, SchemaFingerprint: fp, CompactionLevel: 0,
