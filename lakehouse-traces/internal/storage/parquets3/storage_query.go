@@ -758,6 +758,7 @@ var tracePromotedResourceKeys = map[string]bool{
 	"k8s.namespace.name":     true,
 	"k8s.deployment.name":    true,
 	"k8s.node.name":          true,
+	"k8s.pod.name":           true,
 }
 
 var tracePromotedSpanKeys = map[string]bool{
