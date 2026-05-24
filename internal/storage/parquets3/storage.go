@@ -215,6 +215,15 @@ func New(cfg *config.Config) (*Storage, error) {
 		}
 		bw.bloomObserver = obs
 		s.bloomObserver = obs
+
+		// Write-through cache: when running in combined mode (role=all),
+		// cache flushed column data locally so queries avoid an S3 round-trip
+		// for recently ingested data.
+		if sc != nil {
+			bw.SetFlushCacheCallback(func(fileKey string, data []byte) {
+				cacheOnFlush(sc, fileKey, data)
+			})
+		}
 	}
 
 	return s, nil

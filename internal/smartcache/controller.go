@@ -307,6 +307,29 @@ func (c *Controller) FindFilesByTraceID(traceID string) []string {
 	return keys
 }
 
+// PutL2 stores data directly into the L2 disk cache and records metadata.
+// Used by write-through caching on ingest flush to pre-populate the cache
+// for recently ingested data. Errors are non-fatal and returned to the caller
+// for logging but should not abort the flush.
+func (c *Controller) PutL2(key string, data []byte) error {
+	if c.l2 == nil {
+		return nil
+	}
+	if err := c.l2.Put(key, data); err != nil {
+		return err
+	}
+	now := time.Now()
+	c.metadata.Set(key, EntryMeta{
+		CreatedAt:         now,
+		LastAccess:        now,
+		AccessCount:       1,
+		AccessWindowStart: now,
+		Signal:            c.signal,
+		Size:              int64(len(data)),
+	})
+	return nil
+}
+
 // DeprioritizeByTraceIDs resets access counts and timestamps for any cached
 // entries whose TraceIDs overlap with the provided set. This supports
 // cross-signal deprioritization where resolved traces should no longer be
