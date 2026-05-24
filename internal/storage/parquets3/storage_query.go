@@ -26,6 +26,21 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
+// sortFilesByCacheAffinity sorts files so that those with cached footers come
+// first. This improves first-result latency because cached files can be opened
+// via cheap range reads instead of full S3 downloads. The sort is stable so
+// relative order within cached and non-cached groups is preserved.
+func sortFilesByCacheAffinity(files []manifest.FileInfo, cachedKeys map[string]bool) {
+	sort.SliceStable(files, func(i, j int) bool {
+		iCached := cachedKeys[files[i].Key]
+		jCached := cachedKeys[files[j].Key]
+		if iCached != jCached {
+			return iCached
+		}
+		return false
+	})
+}
+
 func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
 	queryStart := time.Now()
 	metrics.ConcurrentSelects.Inc()
@@ -129,6 +144,21 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		logger.Warnf("query file limit exceeded; files=%d, max=%d, range=%v-%v; narrow the time range",
 			len(files), maxFiles, time.Unix(0, startNs), time.Unix(0, endNs))
 		return fmt.Errorf("query matches %d files (limit %d); narrow the time range or add filters", len(files), maxFiles)
+	}
+
+	// Sort files so those with cached footers come first, improving first-result
+	// latency by processing files that can use range reads before those requiring
+	// full S3 downloads.
+	if s.footerCache != nil {
+		cachedKeys := make(map[string]bool, len(files))
+		for _, f := range files {
+			if s.footerCache.Has(f.Key) {
+				cachedKeys[f.Key] = true
+			}
+		}
+		if len(cachedKeys) > 0 && len(cachedKeys) < len(files) {
+			sortFilesByCacheAffinity(files, cachedKeys)
+		}
 	}
 
 	hasTombstones := s.tombstones != nil && len(s.tombstones.ForRange(startNs, endNs)) > 0

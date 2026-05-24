@@ -83,6 +83,15 @@ func (fc *FooterCache) Put(key string, footer *CachedFooter) {
 	fc.items[key] = entry
 }
 
+// Has returns true if the key is present in the cache without modifying LRU
+// order or incrementing hit metrics. Used for cache-affinity sorting.
+func (fc *FooterCache) Has(key string) bool {
+	fc.mu.RLock()
+	_, ok := fc.items[key]
+	fc.mu.RUnlock()
+	return ok
+}
+
 func (fc *FooterCache) Len() int {
 	fc.mu.RLock()
 	defer fc.mu.RUnlock()
