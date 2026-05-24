@@ -623,8 +623,8 @@ func TestTracesProfile_SchemaMapping(t *testing.T) {
 func TestStreamFields_Logs(t *testing.T) {
 	r := schema.NewRegistry(schema.LogsProfile)
 	fields := r.StreamFields()
-	if len(fields) != 3 {
-		t.Errorf("expected 3 stream fields for logs, got %d", len(fields))
+	if len(fields) != 9 {
+		t.Errorf("expected 9 stream fields for logs, got %d", len(fields))
 	}
 }
 

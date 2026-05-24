@@ -44,6 +44,7 @@ func testStorage() *Storage {
 		sfGroup:    cache.NewGroup(),
 		labelIndex: cache.NewLabelIndex(),
 		discovery:  discovery.New("", nil, "", "", "9428", 5*time.Second),
+		dlSem:      make(chan struct{}, 4),
 	}
 }
 
@@ -623,8 +624,8 @@ func TestTracesProfile_SchemaMapping(t *testing.T) {
 func TestStreamFields_Logs(t *testing.T) {
 	r := schema.NewRegistry(schema.LogsProfile)
 	fields := r.StreamFields()
-	if len(fields) != 3 {
-		t.Errorf("expected 3 stream fields for logs, got %d", len(fields))
+	if len(fields) != 9 {
+		t.Errorf("expected 9 stream fields for logs, got %d", len(fields))
 	}
 }
 

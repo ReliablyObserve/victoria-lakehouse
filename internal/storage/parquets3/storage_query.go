@@ -427,24 +427,19 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 	metrics.ParquetFilesOpened.Inc()
 	metrics.ParquetColumnBytesRead.Add(len(data))
 
-	if s.footerCache != nil {
-		if cached, ok := s.footerCache.Get(fi.Key); ok && cached.FileSize == int64(len(data)) {
-			return cached.File, nil
-		}
-	}
-
-	if s.footerCache != nil {
-		cached, f, parseErr := ParseFooterFromData(fi.Key, data)
-		if parseErr != nil {
-			return nil, parseErr
-		}
-		s.footerCache.Put(fi.Key, cached)
-		return f, nil
-	}
-
+	// Always create a fresh *parquet.File per query. Parquet-go's ColumnChunk
+	// and Pages readers hold internal state that is not safe to reuse across
+	// queries. The footer cache is only used for metadata (column count, footer
+	// size) in the range-read path above.
 	f, parseErr := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
 	if parseErr != nil {
 		return nil, fmt.Errorf("open parquet file %s: %w", fi.Key, parseErr)
+	}
+	if s.footerCache != nil {
+		s.footerCache.Put(fi.Key, &CachedFooter{
+			File:     f,
+			FileSize: int64(len(data)),
+		})
 	}
 	return f, nil
 }
@@ -1097,6 +1092,9 @@ func (s *Storage) buildBloomChecks(queryStr string) []bloomCheck {
 		if !col.HasBloom {
 			continue
 		}
+		if isNegatedPredicate(queryStr, col.InternalName) || isNegatedPredicate(queryStr, col.ParquetColumn) {
+			continue
+		}
 		vals := extractFilterValues(queryStr, col.InternalName)
 		if len(vals) == 0 {
 			vals = extractFilterValues(queryStr, col.ParquetColumn)
@@ -1119,6 +1117,9 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 	var checks []bloomindex.ColumnCheck
 	for _, col := range s.registry.PromotedColumns() {
 		if !col.HasBloom {
+			continue
+		}
+		if isNegatedPredicate(queryStr, col.InternalName) || isNegatedPredicate(queryStr, col.ParquetColumn) {
 			continue
 		}
 		vals := extractFilterValues(queryStr, col.InternalName)

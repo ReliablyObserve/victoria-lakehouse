@@ -390,6 +390,10 @@ func (s *Storage) updateLabelIndex(f *parquet.File) {
 		if mapColumns[name] {
 			prefix := mapColumnToAttrPrefix(name)
 			for _, k := range extractMapDistinctKeys(f, name) {
+				if schema.VTTopLevelSpanAttrKeys[k] {
+					s.labelIndex.Add(k, nil)
+					continue
+				}
 				if promotedParquetNames[k] {
 					continue
 				}
@@ -417,6 +421,10 @@ func (s *Storage) updateLabelIndex(f *parquet.File) {
 		vals := extractDistinctFromStats(f, colIdx)
 		s.labelIndex.Add(internalName, vals)
 	}
+
+	// _msg is VL's body field — always present but not stored in parquet MAPs.
+	// VT always reports it in field_names; add it for parity.
+	s.labelIndex.Add("_msg", nil)
 }
 
 func extractMapDistinctKeys(f *parquet.File, mapColName string) []string {

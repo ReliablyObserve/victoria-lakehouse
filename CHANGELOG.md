@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Write-through cache on ingest flush for immediate read availability
 - QuerySpecificFiles method for gap redistribution across select nodes
 - Cache-aware file ordering to maximize cache hits during query execution
+- VL/VT parity test suite: 218 tests across 16 test functions validating all LogsQL endpoints, 43 filter types, 38 pipe operations, 23 stats functions, cross-validation invariants, edge cases, and traces Jaeger API against VictoriaLogs/VictoriaTraces as reference implementation
+
+### Fixed
+
+- Traces field prefix: VT metadata fields (kind, flags, dropped_*_count, start_time_unix_nano) emitted without span_attr: prefix to match VT behavior
+- Traces index entries: filter VT internal rows (trace_id_idx, service_graph) at insert time via isVTIndexRow()
+- Unused wrapVLTimestampOnly removed from traces select handler
 
 ## [0.32.0] - 2026-05-23
 

@@ -75,7 +75,7 @@ func TestVerifySchema_TracesProfile_AllPromotedFields(t *testing.T) {
 		{"status_message", "status.message", TypeString, OriginPromoted},
 		{"duration", "duration_ns", TypeInt64, OriginPromoted},
 		{"resource_attr:service.name", "service.name", TypeString, OriginPromoted},
-		{"scope_attr:otel.library.name", "scope.name", TypeString, OriginPromoted},
+		{"scope_name", "scope.name", TypeString, OriginPromoted},
 		{"_stream", "_stream", TypeString, OriginPromoted},
 		{"_stream_id", "_stream_id", TypeString, OriginPromoted},
 	}

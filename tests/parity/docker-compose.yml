@@ -1,0 +1,159 @@
+# tests/parity/docker-compose.yml
+name: parity
+
+networks:
+  parity-net:
+    driver: bridge
+
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "19000:9000"
+    networks: [parity-net]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks: [parity-net]
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb local/parity-bucket --ignore-existing &&
+      echo 'MinIO bucket ready'
+      "
+
+  victorialogs:
+    image: victoriametrics/victoria-logs:v1.50.0
+    restart: unless-stopped
+    command:
+      - "-storageDataPath=/data"
+      - "-retentionPeriod=48h"
+      - "-loggerLevel=INFO"
+    networks: [parity-net]
+    ports:
+      - "19428:9428"
+    volumes:
+      - vl-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  lakehouse-logs:
+    build:
+      context: ../../
+      dockerfile: Dockerfile.logs
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "29428:9428"
+    networks: [parity-net]
+    command:
+      - "-lakehouse.s3.bucket=parity-bucket"
+      - "-lakehouse.s3.endpoint=http://minio:9000"
+      - "-lakehouse.s3.access-key=minioadmin"
+      - "-lakehouse.s3.secret-key=minioadmin"
+      - "-lakehouse.s3.force-path-style=true"
+      - "-lakehouse.manifest.refresh-interval=5s"
+      - "-lakehouse.insert.flush-interval=5s"
+      - "-lakehouse.compaction.leader-election=s3"
+      - "-lakehouse.compaction.interval=15s"
+      - "-lakehouse.query.file-workers=64"
+      - "-lakehouse.cache.memory-mb=256"
+      - "-loggerLevel=INFO"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://localhost:9428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  victoriatraces:
+    image: victoriametrics/victoria-traces:v0.9.0
+    command:
+      - "-storageDataPath=/data"
+      - "-retentionPeriod=48h"
+      - "-loggerLevel=INFO"
+    networks: [parity-net]
+    ports:
+      - "10428:10428"
+    volumes:
+      - vt-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:10428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  lakehouse-traces:
+    build:
+      context: ../../
+      dockerfile: Dockerfile.traces
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "20428:10428"
+    networks: [parity-net]
+    command:
+      - "-lakehouse.s3.bucket=parity-bucket"
+      - "-lakehouse.s3.endpoint=http://minio:9000"
+      - "-lakehouse.s3.access-key=minioadmin"
+      - "-lakehouse.s3.secret-key=minioadmin"
+      - "-lakehouse.s3.force-path-style=true"
+      - "-lakehouse.manifest.refresh-interval=5s"
+      - "-lakehouse.insert.flush-interval=5s"
+      - "-lakehouse.compaction.leader-election=s3"
+      - "-lakehouse.compaction.interval=15s"
+      - "-lakehouse.query.file-workers=64"
+      - "-lakehouse.cache.memory-mb=256"
+      - "-loggerLevel=INFO"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://localhost:10428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  datagen-seed:
+    build:
+      context: ../../
+      dockerfile: Dockerfile.datagen
+    depends_on:
+      victorialogs:
+        condition: service_healthy
+      victoriatraces:
+        condition: service_healthy
+      lakehouse-logs:
+        condition: service_healthy
+      lakehouse-traces:
+        condition: service_healthy
+    networks: [parity-net]
+    command:
+      - "--logs=10000"
+      - "--traces=2000"
+      - "--hours-back=24"
+      - "--vl-endpoint=http://victorialogs:9428"
+      - "--vt-endpoint=http://victoriatraces:10428"
+      - "--lh-logs-endpoint=http://lakehouse-logs:9428"
+      - "--lh-traces-endpoint=http://lakehouse-traces:10428"
+
+volumes:
+  vl-data: {}
+  vt-data: {}

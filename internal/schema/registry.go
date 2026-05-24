@@ -221,8 +221,12 @@ var LogsProfile = Profile{
 		{ParquetColumn: "_stream_id", InternalName: "_stream_id", Type: TypeString, Origin: OriginPromoted},
 		{ParquetColumn: "scope.name", InternalName: "scope.name", Type: TypeString, Origin: OriginPromoted},
 	},
-	MapColumns:   []string{"resource.attributes", "log.attributes"},
-	StreamFields: []string{"service.name", "k8s.namespace.name", "k8s.pod.name"},
+	MapColumns: []string{"resource.attributes", "log.attributes"},
+	StreamFields: []string{
+		"service.name", "k8s.namespace.name", "k8s.pod.name",
+		"k8s.deployment.name", "deployment.environment", "cloud.region",
+		"host.name", "k8s.node.name", "level",
+	},
 }
 
 var TracesProfile = Profile{

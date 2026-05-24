@@ -1,0 +1,125 @@
+name: Parity Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'internal/**'
+      - 'cmd/**'
+      - 'tests/parity/**'
+      - 'Dockerfile.*'
+      - 'go.mod'
+      - 'go.sum'
+      - 'lakehouse-traces/**'
+  push:
+    branches: [main]
+    paths:
+      - 'internal/**'
+      - 'cmd/**'
+      - 'tests/parity/**'
+      - 'Dockerfile.*'
+  schedule:
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOWORK: "off"
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Start parity stack
+        run: docker compose -f tests/parity/docker-compose.yml up -d --build
+
+      - name: Wait for all services healthy
+        run: |
+          for svc in victorialogs lakehouse-logs victoriatraces lakehouse-traces; do
+            for i in $(seq 1 90); do
+              status=$(docker compose -f tests/parity/docker-compose.yml ps --format json "$svc" 2>/dev/null | jq -r '.Health // .State' 2>/dev/null)
+              if [ "$status" = "healthy" ]; then
+                echo "$svc healthy"
+                break
+              fi
+              echo "waiting for $svc... ($i/90)"
+              sleep 2
+            done
+          done
+
+      - name: Wait for datagen to complete
+        run: |
+          for i in $(seq 1 120); do
+            status=$(docker compose -f tests/parity/docker-compose.yml ps --format json datagen-seed 2>/dev/null | jq -r '.State' 2>/dev/null)
+            if [ "$status" = "exited" ]; then
+              echo "datagen-seed completed"
+              break
+            fi
+            echo "waiting for datagen-seed... ($i/120)"
+            sleep 2
+          done
+
+      - name: Wait for LH flush to S3
+        run: |
+          echo "Waiting 30s for LH to flush data and refresh manifest..."
+          sleep 30
+          curl -sf http://localhost:29428/health || echo "WARNING: lakehouse-logs not healthy"
+          curl -sf http://localhost:19428/health || echo "WARNING: victorialogs not healthy"
+
+      - name: Run parity tests
+        continue-on-error: true
+        run: |
+          go test -tags=parity -v -count=1 -timeout=5m ./tests/parity/... 2>&1 | tee parity-results.txt
+          echo "EXIT_CODE=${PIPESTATUS[0]}" >> $GITHUB_ENV
+
+      - name: Parse parity results
+        if: always()
+        run: |
+          echo "## Parity Test Results" >> $GITHUB_STEP_SUMMARY
+          PASS=$(grep -c '--- PASS' parity-results.txt 2>/dev/null || echo 0)
+          FAIL=$(grep -c '--- FAIL' parity-results.txt 2>/dev/null || echo 0)
+          echo "- **Passed:** $PASS" >> $GITHUB_STEP_SUMMARY
+          echo "- **Failed:** $FAIL (expected — tracks known LH parity gaps)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "$FAIL" -gt 0 ]; then
+            echo "<details><summary>Failed tests (click to expand)</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            grep -A2 '--- FAIL' parity-results.txt >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload parity results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: parity-results
+          path: parity-results.txt
+
+      - name: Show docker logs on failure
+        if: failure()
+        run: |
+          echo "=== victorialogs ==="
+          docker compose -f tests/parity/docker-compose.yml logs victorialogs --tail=50
+          echo "=== lakehouse-logs ==="
+          docker compose -f tests/parity/docker-compose.yml logs lakehouse-logs --tail=50
+          echo "=== victoriatraces ==="
+          docker compose -f tests/parity/docker-compose.yml logs victoriatraces --tail=50
+          echo "=== lakehouse-traces ==="
+          docker compose -f tests/parity/docker-compose.yml logs lakehouse-traces --tail=50
+          echo "=== datagen-seed ==="
+          docker compose -f tests/parity/docker-compose.yml logs datagen-seed --tail=50
+
+      - name: Stop parity stack
+        if: always()
+        run: docker compose -f tests/parity/docker-compose.yml down -v

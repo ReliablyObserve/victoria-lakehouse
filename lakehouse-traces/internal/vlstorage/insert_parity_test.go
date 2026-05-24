@@ -350,45 +350,82 @@ func TestTraceMapFieldToRow_OTELSpanAttributes(t *testing.T) {
 		t.Errorf("SpanAttributes[rpc.system] = %q, want %q",
 			row.SpanAttributes["rpc.system"], "grpc")
 	}
-	// Only 1 entry in SpanAttributes (rpc.system)
-	if len(row.SpanAttributes) != 1 {
-		t.Errorf("SpanAttributes should have 1 entry (rpc.system), got %d: %v",
+	// 2 entries: rpc.system + start_time_unix_nano (stored for VT field parity)
+	if len(row.SpanAttributes) != 2 {
+		t.Errorf("SpanAttributes should have 2 entries (rpc.system, start_time_unix_nano), got %d: %v",
 			len(row.SpanAttributes), row.SpanAttributes)
+	}
+	if row.SpanAttributes[otelpb.StartTimeUnixNanoField] != "1700000000000000000" {
+		t.Errorf("SpanAttributes[start_time_unix_nano] = %q, want %q",
+			row.SpanAttributes[otelpb.StartTimeUnixNanoField], "1700000000000000000")
 	}
 }
 
-// TestTraceMapFieldToRow_IgnoredOTELFields ensures VT OTLP fields that are
-// intentionally dropped (end_time, flags, dropped counts, scope version)
-// do not pollute any TraceRow column or MAP.
-func TestTraceMapFieldToRow_IgnoredOTELFields(t *testing.T) {
+// TestTraceMapFieldToRow_StoredOTELMetadata verifies that VT OTLP metadata
+// fields (end_time, flags, dropped counts, scope version, _msg) are stored
+// in SpanAttributes for VT field parity, while scope attrs, events, and
+// links remain truly ignored.
+func TestTraceMapFieldToRow_StoredOTELMetadata(t *testing.T) {
+	row := schema.TraceRow{}
+
+	storedFields := map[string]string{
+		otelpb.EndTimeUnixNanoField:        "9999",
+		otelpb.InstrumentationScopeVersion: "1.0",
+		otelpb.TraceStateField:             "congo=t",
+		otelpb.FlagsField:                  "1",
+		otelpb.DroppedAttributesCountField: "0",
+		otelpb.DroppedEventsCountField:     "0",
+		otelpb.DroppedLinksCountField:      "0",
+	}
+	for name, value := range storedFields {
+		mapFieldToTraceRow(&row, name, value)
+	}
+	mapFieldToTraceRow(&row, "_msg", "-")
+
+	for name, want := range storedFields {
+		got, ok := row.SpanAttributes[name]
+		if !ok {
+			t.Errorf("OTLP metadata field %q not found in SpanAttributes", name)
+			continue
+		}
+		if got != want {
+			t.Errorf("SpanAttributes[%q] = %q, want %q", name, got, want)
+		}
+	}
+	if row.SpanAttributes["_msg"] != "-" {
+		t.Errorf("SpanAttributes[_msg] = %q, want %q", row.SpanAttributes["_msg"], "-")
+	}
+	if len(row.SpanAttributes) != len(storedFields)+1 {
+		t.Errorf("SpanAttributes should have %d entries, got %d: %v",
+			len(storedFields)+1, len(row.SpanAttributes), row.SpanAttributes)
+	}
+	if len(row.ResourceAttributes) != 0 {
+		t.Errorf("ResourceAttributes should be empty, got %v", row.ResourceAttributes)
+	}
+}
+
+// TestTraceMapFieldToRow_TrulyIgnoredOTELFields ensures scope attrs, events,
+// and links are still fully dropped.
+func TestTraceMapFieldToRow_TrulyIgnoredOTELFields(t *testing.T) {
 	row := schema.TraceRow{}
 
 	ignoredFields := []struct {
 		name  string
 		value string
 	}{
-		{otelpb.EndTimeUnixNanoField, "9999"},
-		{otelpb.InstrumentationScopeVersion, "1.0"},
-		{otelpb.TraceStateField, "congo=t"},
-		{otelpb.FlagsField, "1"},
-		{otelpb.DroppedAttributesCountField, "0"},
-		{otelpb.DroppedEventsCountField, "0"},
-		{otelpb.DroppedLinksCountField, "0"},
 		{otelpb.InstrumentationScopeAttrPrefix + "lib.version", "2.0"},
 		{otelpb.EventPrefix + "0.name", "exception"},
 		{otelpb.LinkPrefix + "0.trace_id", "linked-trace"},
-		{"_msg", "-"},
 	}
-
 	for _, f := range ignoredFields {
 		mapFieldToTraceRow(&row, f.name, f.value)
 	}
 
 	if len(row.SpanAttributes) != 0 {
-		t.Errorf("SpanAttributes should be empty for ignored fields, got %v", row.SpanAttributes)
+		t.Errorf("SpanAttributes should be empty for truly ignored fields, got %v", row.SpanAttributes)
 	}
 	if len(row.ResourceAttributes) != 0 {
-		t.Errorf("ResourceAttributes should be empty for ignored fields, got %v", row.ResourceAttributes)
+		t.Errorf("ResourceAttributes should be empty for truly ignored fields, got %v", row.ResourceAttributes)
 	}
 	if row.SpanName != "" {
 		t.Errorf("SpanName should be empty, got %q", row.SpanName)

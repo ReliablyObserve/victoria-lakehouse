@@ -555,7 +555,7 @@ func TestVTInsertAdapter_MustAddRows_SpanAttrs(t *testing.T) {
 	}
 }
 
-func TestVTInsertAdapter_MustAddRows_IgnoredFields(t *testing.T) {
+func TestVTInsertAdapter_MustAddRows_OTLPMetadataStored(t *testing.T) {
 	w := &mockTraceWriter{}
 	a := &vtInsertAdapter{writer: w}
 
@@ -585,11 +585,29 @@ func TestVTInsertAdapter_MustAddRows_IgnoredFields(t *testing.T) {
 	if row.TraceID != "t1" {
 		t.Errorf("TraceID = %q, want %q", row.TraceID, "t1")
 	}
-	if len(row.SpanAttributes) != 0 {
-		t.Errorf("SpanAttributes should be empty for ignored fields, got %v", row.SpanAttributes)
+
+	// _msg is NOT in this list: VL's MustAdd extracts it as the body field,
+	// so it doesn't appear in ForEachRow's Fields slice.
+	storedKeys := []string{
+		otelpb.EndTimeUnixNanoField,
+		otelpb.InstrumentationScopeVersion,
+		otelpb.TraceStateField,
+		otelpb.FlagsField,
+		otelpb.DroppedAttributesCountField,
+		otelpb.DroppedEventsCountField,
+		otelpb.DroppedLinksCountField,
+	}
+	for _, key := range storedKeys {
+		if _, ok := row.SpanAttributes[key]; !ok {
+			t.Errorf("OTLP metadata field %q not found in SpanAttributes", key)
+		}
+	}
+	if len(row.SpanAttributes) != len(storedKeys) {
+		t.Errorf("SpanAttributes should have %d entries, got %d: %v",
+			len(storedKeys), len(row.SpanAttributes), row.SpanAttributes)
 	}
 	if len(row.ResourceAttributes) != 0 {
-		t.Errorf("ResourceAttributes should be empty for ignored fields, got %v", row.ResourceAttributes)
+		t.Errorf("ResourceAttributes should be empty, got %v", row.ResourceAttributes)
 	}
 }
 
