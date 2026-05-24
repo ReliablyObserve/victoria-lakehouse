@@ -83,6 +83,12 @@ lakehouseConfig:
     retry_max: 3
     # -- Base delay between retries (exponential backoff).
     retry_base_delay: 200ms
+    # -- Maximum concurrent S3 downloads per query.
+    max_concurrent_downloads: 16
+    # -- S3 read-ahead buffer size in bytes (0 = use default 2MB).
+    read_ahead_bytes: 0
+    # -- Merge S3 range reads with gaps smaller than this in bytes (0 = use default 64KB).
+    coalesce_gap_bytes: 0
 
   # ---------------------------------------------------------------------------
   # Cache — Multi-tier L1 (memory) + L2 (disk) cache
@@ -102,6 +108,12 @@ lakehouseConfig:
     bloom_ttl: 1h
     # -- TTL for cached Parquet data pages.
     page_ttl: 10m
+    # -- Number of recent hourly partitions to warm on startup (0=disabled).
+    warmup_partitions: 0
+    # -- Maximum files to warm on startup.
+    warmup_max_files: 500
+    # -- Maximum concurrent warmup downloads.
+    warmup_concurrency: 4
 
   # ---------------------------------------------------------------------------
   # Insert — Write path (flush to Parquet + S3)
@@ -381,6 +393,8 @@ lakehouseConfig:
     min_files_l1: 10
     # -- Minimum file age before eligible for compaction.
     min_age: 1h
+    # -- Minimum partition age for daily rollup compaction (merges ≥2 L1 files in old partitions).
+    daily_rollup_age: 24h
     # -- Leader election mode: "auto", "k8s", "s3", "none".
     leader_election: auto
     # -- K8s Lease lock duration.
@@ -389,6 +403,10 @@ lakehouseConfig:
     s3_lock_ttl: 60s
     # -- S3 lock heartbeat/renewal interval.
     s3_heartbeat: 15s
+    # -- Compaction shard ID (-1 = auto-detect from K8s StatefulSet hostname ordinal).
+    shard_id: -1
+    # -- Total compaction shards (0 or 1 = single instance with leader election).
+    shard_count: 1
 
   # ---------------------------------------------------------------------------
   # Delete — Cost-aware deletion (tombstone + selective rewrite)

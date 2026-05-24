@@ -69,12 +69,16 @@ var (
 
 	cacheMemoryMB = flag.Int("lakehouse.cache.memory-mb", 0, "L1 memory cache size in MB (default: 256)")
 	cacheDiskPath = flag.String("lakehouse.cache.disk-path", "", "L2 disk cache directory path")
-	cacheDiskMB   = flag.Int("lakehouse.cache.disk-max-mb", 0, "L2 disk cache max size in MB (default: 1024)")
+	cacheDiskMB           = flag.Int("lakehouse.cache.disk-max-mb", 0, "L2 disk cache max size in MB (default: 1024)")
+	cacheWarmupPartitions = flag.Int("lakehouse.cache.warmup-partitions", 0, "Number of recent hourly partitions to warm on startup (0=disabled)")
+	cacheWarmupMaxFiles   = flag.Int("lakehouse.cache.warmup-max-files", 0, "Max files to warm on startup (default: 500)")
 
 	compactionEnabled  = flag.Bool("lakehouse.compaction.enabled", false, "Enable compaction scheduler")
 	compactionInterval = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
 	compactionElection      = flag.String("lakehouse.compaction.leader-election", "", "Election mode: auto, k8s, s3, none")
 	compactionDailyRollupAge = flag.Duration("lakehouse.compaction.daily-rollup-age", 0, "Minimum partition age for daily rollup compaction (default: 24h)")
+	compactionShardID        = flag.Int("lakehouse.compaction.shard-id", -1, "Compaction shard ID (default: auto-detect from hostname ordinal)")
+	compactionShardCount     = flag.Int("lakehouse.compaction.shard-count", 0, "Total compaction shards (0 or 1 = leader mode)")
 
 	queryFileWorkers = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 8)")
 
@@ -204,12 +208,27 @@ func run(cfg *config.Config, addr string) {
 		)
 		policy.DailyRollupAge = cfg.Compaction.DailyRollupAge
 
+		var sharding *compaction.PartitionSharding
+		if cfg.Compaction.ShardCount > 1 {
+			shardID := cfg.Compaction.ShardID
+			if shardID < 0 {
+				var err error
+				shardID, err = compaction.AutoDetectShardID()
+				if err != nil {
+					logger.Fatalf("cannot auto-detect shard ID: %v", err)
+				}
+			}
+			sharding = compaction.NewPartitionSharding(shardID, cfg.Compaction.ShardCount)
+			logger.Infof("compaction sharding enabled; shard_id=%d, shard_count=%d", shardID, cfg.Compaction.ShardCount)
+		}
+
 		sched = compaction.NewScheduler(compaction.SchedulerConfig{
 			Leader:           leader,
 			Manifest:         store.Manifest(),
 			Pool:             store.Pool(),
 			Sentinel:         sentinel,
 			Policy:           policy,
+			Sharding:         sharding,
 			Prefix:           cfg.AutoPrefix(),
 			Mode:             cfg.Mode,
 			Interval:         cfg.Compaction.Interval,
@@ -798,6 +817,12 @@ func applyFlags(cfg *config.Config) {
 	if *cacheDiskMB > 0 {
 		cfg.Cache.DiskLimit = fmt.Sprintf("%dMB", *cacheDiskMB)
 	}
+	if *cacheWarmupPartitions > 0 {
+		cfg.Cache.WarmupPartitions = *cacheWarmupPartitions
+	}
+	if *cacheWarmupMaxFiles > 0 {
+		cfg.Cache.WarmupMaxFiles = *cacheWarmupMaxFiles
+	}
 	if *compactionEnabled {
 		cfg.Compaction.Enabled = true
 	}
@@ -809,6 +834,12 @@ func applyFlags(cfg *config.Config) {
 	}
 	if *compactionDailyRollupAge > 0 {
 		cfg.Compaction.DailyRollupAge = *compactionDailyRollupAge
+	}
+	if *compactionShardID >= 0 {
+		cfg.Compaction.ShardID = *compactionShardID
+	}
+	if *compactionShardCount > 0 {
+		cfg.Compaction.ShardCount = *compactionShardCount
 	}
 
 	if *queryFileWorkers > 0 {
