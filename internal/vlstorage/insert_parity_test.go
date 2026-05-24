@@ -103,7 +103,7 @@ func TestMapFieldToRow_UnknownFieldsGoToLogAttributes(t *testing.T) {
 	}
 
 	// Verify ResourceAttributes was not populated.
-	if row.ResourceAttributes != nil && len(row.ResourceAttributes) > 0 {
+	if len(row.ResourceAttributes) > 0 {
 		t.Errorf("ResourceAttributes should be nil/empty for unknown fields, got %v", row.ResourceAttributes)
 	}
 }
@@ -253,7 +253,7 @@ func TestMapFieldToRow_NonOTELFields(t *testing.T) {
 	}
 
 	// ResourceAttributes must not be populated.
-	if row.ResourceAttributes != nil && len(row.ResourceAttributes) > 0 {
+	if len(row.ResourceAttributes) > 0 {
 		t.Errorf("ResourceAttributes should be empty for custom fields, got %v", row.ResourceAttributes)
 	}
 }

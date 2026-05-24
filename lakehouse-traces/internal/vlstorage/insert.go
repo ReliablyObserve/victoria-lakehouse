@@ -288,4 +288,3 @@ func mapSpanAttr(row *schema.TraceRow, key, value string) {
 		row.SpanAttributes[strings.Clone(key)] = strings.Clone(value)
 	}
 }
-

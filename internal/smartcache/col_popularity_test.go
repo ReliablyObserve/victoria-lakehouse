@@ -157,7 +157,7 @@ func TestColumnPopularity_NoGoroutineLeak(t *testing.T) {
 		cp.Record(fmt.Sprintf("col_%d", i%100))
 	}
 	cp.TopN(10)
-	cp = nil //nolint:ineffassign
+	_ = cp
 
 	runtime.GC()
 	after := runtime.NumGoroutine()

@@ -146,35 +146,8 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		return fmt.Errorf("query matches %d files (limit %d); narrow the time range or add filters", len(files), maxFiles)
 	}
 
-	// Hybrid fan-out self-filtering: when enabled, restrict files to those owned
-	// by this node according to the consistent hash ring. This prevents duplicate
-	// work when a select tier fans out queries to combined nodes.
-	if s.selfFilterEnabled && s.smartCache != nil {
-		var owned []manifest.FileInfo
-		for _, f := range files {
-			if _, isLocal := s.smartCache.LookupOwner(f.Key); isLocal {
-				owned = append(owned, f)
-			}
-		}
-		if len(owned) > 0 {
-			files = owned
-		}
-	}
-
-	// Sort files so those with cached footers come first, improving first-result
-	// latency by processing files that can use range reads before those requiring
-	// full S3 downloads.
-	if s.footerCache != nil {
-		cachedKeys := make(map[string]bool, len(files))
-		for _, f := range files {
-			if s.footerCache.Has(f.Key) {
-				cachedKeys[f.Key] = true
-			}
-		}
-		if len(cachedKeys) > 0 && len(cachedKeys) < len(files) {
-			sortFilesByCacheAffinity(files, cachedKeys)
-		}
-	}
+	files = s.applySelfFilter(files)
+	s.applyCacheAffinity(files)
 
 	hasTombstones := s.tombstones != nil && len(s.tombstones.ForRange(startNs, endNs)) > 0
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
@@ -277,6 +250,37 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 
 	return nil
+}
+
+func (s *Storage) applySelfFilter(files []manifest.FileInfo) []manifest.FileInfo {
+	if !s.selfFilterEnabled || s.smartCache == nil {
+		return files
+	}
+	var owned []manifest.FileInfo
+	for _, f := range files {
+		if _, isLocal := s.smartCache.LookupOwner(f.Key); isLocal {
+			owned = append(owned, f)
+		}
+	}
+	if len(owned) > 0 {
+		return owned
+	}
+	return files
+}
+
+func (s *Storage) applyCacheAffinity(files []manifest.FileInfo) {
+	if s.footerCache == nil {
+		return
+	}
+	cachedKeys := make(map[string]bool, len(files))
+	for _, f := range files {
+		if s.footerCache.Has(f.Key) {
+			cachedKeys[f.Key] = true
+		}
+	}
+	if len(cachedKeys) > 0 && len(cachedKeys) < len(files) {
+		sortFilesByCacheAffinity(files, cachedKeys)
+	}
 }
 
 func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, writeBlock logstorage.WriteDataBlockFunc) {

@@ -36,13 +36,6 @@ func (t *testPeerLookup) Lookup(key string) (string, bool) { return "self", true
 func (t *testPeerLookup) Members() []string                { return []string{"self"} }
 func (t *testPeerLookup) MemberCount() int                 { return 1 }
 
-// testS3Fetcher is a no-op S3 fetcher.
-type testS3Fetcher struct{}
-
-func (t *testS3Fetcher) Download(_ interface{ Deadline() (time.Time, bool) }, key string) ([]byte, error) {
-	return nil, nil
-}
-
 func newTestController(l2 *testL2) *smartcache.Controller {
 	return smartcache.NewController(smartcache.ControllerConfig{
 		L1:         newTestL1(),

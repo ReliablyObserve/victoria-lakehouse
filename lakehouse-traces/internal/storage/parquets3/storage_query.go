@@ -751,13 +751,13 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 }
 
 var tracePromotedResourceKeys = map[string]bool{
-	"service.name":          true,
+	"service.name":           true,
 	"deployment.environment": true,
-	"cloud.region":          true,
-	"host.name":             true,
-	"k8s.namespace.name":    true,
-	"k8s.deployment.name":   true,
-	"k8s.node.name":         true,
+	"cloud.region":           true,
+	"host.name":              true,
+	"k8s.namespace.name":     true,
+	"k8s.deployment.name":    true,
+	"k8s.node.name":          true,
 }
 
 var tracePromotedSpanKeys = map[string]bool{

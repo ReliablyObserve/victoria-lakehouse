@@ -24,14 +24,14 @@ func TestTraceMapResourceAttr_PromotedFieldsNotInMAP(t *testing.T) {
 		value   string
 		checker func(row schema.TraceRow) string
 	}{
-		"service.name":          {"my-svc", func(r schema.TraceRow) string { return r.ServiceName }},
-		"k8s.namespace.name":    {"production", func(r schema.TraceRow) string { return r.K8sNamespaceName }},
-		"k8s.pod.name":          {"api-pod-1", func(r schema.TraceRow) string { return r.K8sPodName }},
-		"k8s.deployment.name":   {"api-deploy", func(r schema.TraceRow) string { return r.K8sDeploymentName }},
-		"k8s.node.name":         {"node-a-1", func(r schema.TraceRow) string { return r.K8sNodeName }},
+		"service.name":           {"my-svc", func(r schema.TraceRow) string { return r.ServiceName }},
+		"k8s.namespace.name":     {"production", func(r schema.TraceRow) string { return r.K8sNamespaceName }},
+		"k8s.pod.name":           {"api-pod-1", func(r schema.TraceRow) string { return r.K8sPodName }},
+		"k8s.deployment.name":    {"api-deploy", func(r schema.TraceRow) string { return r.K8sDeploymentName }},
+		"k8s.node.name":          {"node-a-1", func(r schema.TraceRow) string { return r.K8sNodeName }},
 		"deployment.environment": {"prod", func(r schema.TraceRow) string { return r.DeployEnv }},
-		"cloud.region":          {"us-east-1", func(r schema.TraceRow) string { return r.CloudRegion }},
-		"host.name":             {"ip-10-0-1-42", func(r schema.TraceRow) string { return r.HostName }},
+		"cloud.region":           {"us-east-1", func(r schema.TraceRow) string { return r.CloudRegion }},
+		"host.name":              {"ip-10-0-1-42", func(r schema.TraceRow) string { return r.HostName }},
 	}
 
 	for key, tc := range promotedResourceAttrs {
@@ -60,7 +60,7 @@ func TestTraceMapResourceAttr_PromotedFieldsNotInMAP(t *testing.T) {
 			mapResourceAttr(&row, key, tc.value)
 		}
 
-		if row.ResourceAttributes != nil && len(row.ResourceAttributes) > 0 {
+		if len(row.ResourceAttributes) > 0 {
 			t.Errorf("ResourceAttributes MAP should be empty when only promoted keys are set, got %v", row.ResourceAttributes)
 		}
 	})
@@ -184,7 +184,7 @@ func TestTraceMapSpanAttr_PromotedFieldsNotInMAP(t *testing.T) {
 			mapSpanAttr(&row, key, tc.value)
 		}
 
-		if row.SpanAttributes != nil && len(row.SpanAttributes) > 0 {
+		if len(row.SpanAttributes) > 0 {
 			t.Errorf("SpanAttributes MAP should be empty when only promoted keys are set, got %v", row.SpanAttributes)
 		}
 	})
@@ -296,14 +296,14 @@ func TestTraceMapFieldToRow_OTELSpanAttributes(t *testing.T) {
 		got  string
 		want string
 	}{
-		"ServiceName":      {row.ServiceName, "payment-svc"},
-		"K8sNamespaceName": {row.K8sNamespaceName, "production"},
-		"K8sPodName":       {row.K8sPodName, "payment-abc"},
+		"ServiceName":       {row.ServiceName, "payment-svc"},
+		"K8sNamespaceName":  {row.K8sNamespaceName, "production"},
+		"K8sPodName":        {row.K8sPodName, "payment-abc"},
 		"K8sDeploymentName": {row.K8sDeploymentName, "payment"},
-		"K8sNodeName":      {row.K8sNodeName, "node-1"},
-		"DeployEnv":        {row.DeployEnv, "prod"},
-		"CloudRegion":      {row.CloudRegion, "us-east-1"},
-		"HostName":         {row.HostName, "ip-10-0-1-1"},
+		"K8sNodeName":       {row.K8sNodeName, "node-1"},
+		"DeployEnv":         {row.DeployEnv, "prod"},
+		"CloudRegion":       {row.CloudRegion, "us-east-1"},
+		"HostName":          {row.HostName, "ip-10-0-1-1"},
 	}
 	for name, c := range resourceChecks {
 		if c.got != c.want {
