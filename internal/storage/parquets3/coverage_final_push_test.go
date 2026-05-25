@@ -866,7 +866,7 @@ func TestNew_WithPersistPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New(with persist) failed: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	if s.persister == nil {
 		t.Error("expected non-nil persister when PersistPath is set")
