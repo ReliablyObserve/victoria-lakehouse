@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- K8s scaling safety: phased shutdown orchestrator (drain → flush → persist → release) with per-phase timeouts
+- K8s scaling safety: startup staleness detection with WAL reconciliation and cache revalidation
+- K8s scaling safety: ring change detection with shadow member stabilization during scaling events
+- K8s scaling safety: lifecycle HTTP endpoints (`/internal/lifecycle/drain`, `/ready`, `/ring`, `/stale`)
+- K8s scaling safety: 14 new Prometheus metrics for shutdown, startup, ring change, and query continuity
+- Helm: HPA scaleDown stabilization window, preStop drain hook, lifecycle readiness probe
+
 ## [0.36.0] - 2026-05-25
 
 ### Fixed

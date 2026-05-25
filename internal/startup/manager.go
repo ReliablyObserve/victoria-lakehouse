@@ -14,8 +14,11 @@ type Phase int32
 const (
 	PhaseInit         Phase = 0
 	PhaseDiskRecovery Phase = 1
-	PhaseS3Refresh    Phase = 2
-	PhaseReady        Phase = 3
+	PhaseStaleCheck   Phase = 2
+	PhaseS3Refresh    Phase = 3
+	PhasePeerSync     Phase = 4
+	PhaseCacheWarmup  Phase = 5
+	PhaseReady        Phase = 6
 )
 
 func (p Phase) String() string {
@@ -24,8 +27,14 @@ func (p Phase) String() string {
 		return "init"
 	case PhaseDiskRecovery:
 		return "disk_recovery"
+	case PhaseStaleCheck:
+		return "stale_check"
 	case PhaseS3Refresh:
 		return "s3_refresh"
+	case PhasePeerSync:
+		return "peer_sync"
+	case PhaseCacheWarmup:
+		return "cache_warmup"
 	case PhaseReady:
 		return "ready"
 	default:
@@ -67,8 +76,14 @@ func (m *Manager) SetPhase(p Phase) {
 	switch p {
 	case PhaseDiskRecovery:
 		// nothing extra
+	case PhaseStaleCheck:
+		logger.Infof("startup: entering stale check phase")
 	case PhaseS3Refresh:
 		m.recoveryTime = time.Since(m.startTime)
+	case PhasePeerSync:
+		logger.Infof("startup: entering peer sync phase")
+	case PhaseCacheWarmup:
+		logger.Infof("startup: entering cache warmup phase")
 	case PhaseReady:
 		m.totalTime = time.Since(m.startTime)
 		m.refreshTime = m.totalTime - m.recoveryTime

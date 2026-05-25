@@ -12,7 +12,10 @@ func TestPhaseString(t *testing.T) {
 	}{
 		{PhaseInit, "init"},
 		{PhaseDiskRecovery, "disk_recovery"},
+		{PhaseStaleCheck, "stale_check"},
 		{PhaseS3Refresh, "s3_refresh"},
+		{PhasePeerSync, "peer_sync"},
+		{PhaseCacheWarmup, "cache_warmup"},
 		{PhaseReady, "ready"},
 		{Phase(99), "unknown"},
 	}
