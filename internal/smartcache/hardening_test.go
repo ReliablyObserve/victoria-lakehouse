@@ -452,6 +452,60 @@ func TestConcurrentGetAndEviction(t *testing.T) {
 	wg.Wait()
 }
 
+func TestCollectLRU_AllPinned(t *testing.T) {
+	m := NewMetadataMap()
+	now := time.Now()
+	m.Set("p1", EntryMeta{
+		LastAccess: now.Add(-time.Hour),
+		Size:       100,
+		PinnedBy:   map[string]time.Time{"q1": now.Add(10 * time.Minute)},
+	})
+	m.Set("p2", EntryMeta{
+		LastAccess: now.Add(-30 * time.Minute),
+		Size:       200,
+		PinnedBy:   map[string]time.Time{"q2": now.Add(10 * time.Minute)},
+	})
+
+	toEvict := CollectLRU(m, 500, 3, 10*time.Minute)
+	if len(toEvict) != 0 {
+		t.Errorf("expected 0 evictions when all entries pinned, got %d: %v", len(toEvict), toEvict)
+	}
+}
+
+func TestCollectExpired_HotEntryRecentAccess(t *testing.T) {
+	now := time.Now()
+	m := NewMetadataMap()
+	m.Set("hot-recent", EntryMeta{
+		CreatedAt:         now.Add(-2 * time.Hour),
+		LastAccess:        now.Add(-1 * time.Minute),
+		AccessCount:       10,
+		AccessWindowStart: now.Add(-5 * time.Minute),
+		Size:              100,
+	})
+
+	expired := CollectExpired(m, 1*time.Hour, 3, 10*time.Minute)
+	if len(expired) != 0 {
+		t.Errorf("hot entry with recent access should not be expired, got %v", expired)
+	}
+}
+
+func TestCollectExpired_HotEntryStaleAccess(t *testing.T) {
+	now := time.Now()
+	m := NewMetadataMap()
+	m.Set("hot-stale", EntryMeta{
+		CreatedAt:         now.Add(-3 * time.Hour),
+		LastAccess:        now.Add(-2 * time.Hour),
+		AccessCount:       10,
+		AccessWindowStart: now.Add(-5 * time.Minute),
+		Size:              100,
+	})
+
+	expired := CollectExpired(m, 1*time.Hour, 3, 10*time.Minute)
+	if len(expired) != 1 {
+		t.Errorf("hot entry with stale access should be expired, got %d", len(expired))
+	}
+}
+
 func writeTestFile(path string, data []byte) error {
 	return os.WriteFile(path, data, 0600)
 }
