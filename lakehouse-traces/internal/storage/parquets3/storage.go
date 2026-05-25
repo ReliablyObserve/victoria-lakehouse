@@ -46,6 +46,8 @@ type Storage struct {
 	tombstones        *delete.TombstoneStore
 	smartCache        *smartcache.Controller
 	bloomIdx          *bloomindex.Index
+	bloomCache        *bloomindex.BloomCache
+	fileBloomCache    sync.Map
 	footerCache       *FooterCache
 	s3Prefix          string
 	selfAZ            string
@@ -173,6 +175,14 @@ func New(cfg *config.Config) (*Storage, error) {
 		bb = NewBufferBridge(&cfg.Select, cfg.Mode)
 	}
 
+	var bc *bloomindex.BloomCache
+	if cfg.SelectEnabled() {
+		bc = bloomindex.NewBloomCache(
+			10*1024*1024,
+			bloomS3Loader(pool, prefix),
+		)
+	}
+
 	var fc *FooterCache
 	if cfg.SelectEnabled() {
 		fc = NewFooterCache(10000)
@@ -195,6 +205,7 @@ func New(cfg *config.Config) (*Storage, error) {
 		bufferBridge: bb,
 		smartCache:   sc,
 		bloomIdx:     bloomindex.New(),
+		bloomCache:   bc,
 		footerCache:  fc,
 		s3Prefix:     prefix,
 		dlSem:        make(chan struct{}, maxDL),
@@ -229,7 +240,8 @@ func (s *Storage) StartWriter() {
 
 		// Also write per-file bloom sidecar for file-level query skipping.
 		if pool != nil {
-			go writeFileBloom(context.Background(), pool, key, columnValues)
+			obs := &storageBloomObserver{pool: pool}
+			go obs.writeFileBloom(context.Background(), key, columnValues)
 		}
 	})
 	if s.smartCache != nil {
@@ -347,6 +359,10 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 
 func (s *Storage) SetSelfFilterEnabled(enabled bool) {
 	s.selfFilterEnabled = enabled
+}
+
+func (s *Storage) BloomCache() *bloomindex.BloomCache {
+	return s.bloomCache
 }
 
 func (s *Storage) Manifest() *manifest.Manifest {

@@ -8,6 +8,8 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/logsql"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
@@ -90,6 +92,12 @@ func (h *Handler) wrapVL(fn func(ctx context.Context, w http.ResponseWriter, r *
 		start := time.Now()
 		ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 		defer cancel()
+		ctx, span := otel.Tracer("lakehouse-traces").Start(ctx, "vl.handler."+r.URL.Path)
+		defer span.End()
+		span.SetAttributes(
+			attribute.String("http.method", r.Method),
+			attribute.String("http.path", r.URL.Path),
+		)
 		fn(ctx, w, r)
 		dur := time.Since(start)
 		metrics.QueryDuration.Observe(dur.Seconds())

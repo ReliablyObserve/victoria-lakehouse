@@ -1612,3 +1612,38 @@ func isFileNotFoundError(err error) bool {
 		strings.Contains(s, "does not exist") ||
 		strings.Contains(s, "file not found")
 }
+
+func (s *Storage) QuerySpecificFiles(ctx context.Context, fileKeys []string, startNs, endNs int64, queryStr string, pipeFields []string, writeBlock logstorage.WriteDataBlockFunc) error {
+	if len(fileKeys) == 0 {
+		return nil
+	}
+
+	keySet := make(map[string]bool, len(fileKeys))
+	for _, k := range fileKeys {
+		keySet[k] = true
+	}
+
+	allFiles := s.manifest.GetFilesForRange(startNs, endNs)
+
+	var files []manifest.FileInfo
+	for _, f := range allFiles {
+		if keySet[f.Key] {
+			files = append(files, f)
+		}
+	}
+	if len(files) == 0 {
+		return nil
+	}
+
+	for _, fi := range files {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, writeBlock); err != nil {
+			logger.Warnf("QuerySpecificFiles: file error: %s; key=%s", err, fi.Key)
+			continue
+		}
+	}
+
+	return nil
+}

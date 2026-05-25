@@ -50,6 +50,10 @@ func buildPushDownFilter(queryStr string, registry *schema.Registry) *PushDownFi
 		}
 
 		for _, name := range names {
+			if isNegatedPredicate(queryStr, name) {
+				continue
+			}
+
 			// Exact match: field:="value" or field:="prefix*"
 			if val := extractQuotedOp(queryStr, name, `:="`); val != "" {
 				if strings.HasSuffix(val, "*") && !strings.HasSuffix(val, `\*`) {
@@ -336,4 +340,23 @@ func prefixSuccessor(prefix string) string {
 		}
 	}
 	return "" // all 0xFF, no successor
+}
+
+func isNegatedPredicate(query, fieldName string) bool {
+	idx := strings.Index(query, fieldName)
+	if idx < 0 {
+		return false
+	}
+	if idx > 0 && query[idx-1] == '!' {
+		return true
+	}
+	prefix := strings.TrimRight(query[:idx], " ")
+	if strings.HasSuffix(prefix, "NOT") {
+		return true
+	}
+	after := query[idx+len(fieldName):]
+	if strings.HasPrefix(after, ":!~") || strings.HasPrefix(after, ":!") {
+		return true
+	}
+	return false
 }
