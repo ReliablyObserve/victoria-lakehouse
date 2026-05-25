@@ -127,11 +127,11 @@ func TestCovFinal_QueryFile_SmartCacheTraceIDs(t *testing.T) {
 	cfg.S3.CoalesceGapBytes = 1024
 
 	sc := smartcache.NewController(smartcache.ControllerConfig{
-		L1:         &mockL1{},
-		L2:         &mockL2{},
-		PeerLookup: &mockPeerLookup{localKeys: map[string]bool{}},
-		S3Fetcher: &poolS3Fetcher{pool: pool},
-		Metadata:   smartcache.NewMetadataMap(),
+		L1:          &mockL1{},
+		L2:          &mockL2{},
+		PeerLookup:  &mockPeerLookup{localKeys: map[string]bool{}},
+		S3Fetcher:   &poolS3Fetcher{pool: pool},
+		Metadata:    smartcache.NewMetadataMap(),
 		GracePeriod: 5 * time.Minute,
 	})
 
