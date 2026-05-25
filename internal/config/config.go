@@ -48,6 +48,7 @@ type Config struct {
 	Prefetch    PrefetchConfig    `yaml:"prefetch"`
 	Peer        PeerConfig        `yaml:"peer"`
 	Startup     StartupConfig     `yaml:"startup"`
+	Shutdown    ShutdownConfig    `yaml:"shutdown"`
 	Query       QueryConfig       `yaml:"query"`
 	Insert      InsertConfig      `yaml:"insert"`
 	Select      SelectConfig      `yaml:"select"`
@@ -220,13 +221,15 @@ type CacheConfig struct {
 }
 
 type DiscoveryConfig struct {
-	HeadlessService     string        `yaml:"headless_service"`
-	StorageNodes        []string      `yaml:"storage_nodes"`
-	PartitionAuthKey    string        `yaml:"partition_auth_key"`
-	RefreshInterval     time.Duration `yaml:"refresh_interval"`
-	Timeout             time.Duration `yaml:"timeout"`
-	PeerHeadlessService string        `yaml:"peer_headless_service"`
-	PeerRefreshInterval time.Duration `yaml:"peer_refresh_interval"`
+	HeadlessService       string        `yaml:"headless_service"`
+	StorageNodes          []string      `yaml:"storage_nodes"`
+	PartitionAuthKey      string        `yaml:"partition_auth_key"`
+	RefreshInterval       time.Duration `yaml:"refresh_interval"`
+	Timeout               time.Duration `yaml:"timeout"`
+	PeerHeadlessService   string        `yaml:"peer_headless_service"`
+	PeerRefreshInterval   time.Duration `yaml:"peer_refresh_interval"`
+	RingStabilizeDuration time.Duration `yaml:"ring_stabilize_duration"`
+	RingChangeNotify      bool          `yaml:"ring_change_notify"`
 }
 
 type ManifestConfig struct {
@@ -257,9 +260,23 @@ type PeerConfig struct {
 }
 
 type StartupConfig struct {
-	ServeStale    bool          `yaml:"serve_stale"`
-	WarmupWindow  time.Duration `yaml:"warmup_window"`
-	MaxWarmupTime time.Duration `yaml:"max_warmup_time"`
+	ServeStale          bool          `yaml:"serve_stale"`
+	WarmupWindow        time.Duration `yaml:"warmup_window"`
+	MaxWarmupTime       time.Duration `yaml:"max_warmup_time"`
+	PeerSyncTimeout     time.Duration `yaml:"peer_sync_timeout"`
+	RequireManifestSync bool          `yaml:"require_manifest_sync"`
+	StaleThreshold      time.Duration `yaml:"stale_threshold"`
+	WALReconciliation   bool          `yaml:"wal_reconciliation"`
+	CacheRevalidation   bool          `yaml:"cache_revalidation"`
+	MaxResyncTime       time.Duration `yaml:"max_resync_time"`
+}
+
+type ShutdownConfig struct {
+	Delay          time.Duration `yaml:"delay"`
+	MaxGraceful    time.Duration `yaml:"max_graceful_duration"`
+	FlushTimeout   time.Duration `yaml:"flush_timeout"`
+	PersistTimeout time.Duration `yaml:"persist_timeout"`
+	ReleaseTimeout time.Duration `yaml:"release_timeout"`
 }
 
 type QueryConfig struct {
@@ -450,9 +467,11 @@ func Default() *Config {
 		},
 
 		Discovery: DiscoveryConfig{
-			RefreshInterval:     5 * time.Minute,
-			Timeout:             10 * time.Second,
-			PeerRefreshInterval: 30 * time.Second,
+			RefreshInterval:       5 * time.Minute,
+			Timeout:               10 * time.Second,
+			PeerRefreshInterval:   30 * time.Second,
+			RingStabilizeDuration: 60 * time.Second,
+			RingChangeNotify:      true,
 		},
 
 		Manifest: ManifestConfig{
@@ -480,9 +499,23 @@ func Default() *Config {
 		},
 
 		Startup: StartupConfig{
-			ServeStale:    false,
-			WarmupWindow:  24 * time.Hour,
-			MaxWarmupTime: 5 * time.Minute,
+			ServeStale:          false,
+			WarmupWindow:        24 * time.Hour,
+			MaxWarmupTime:       5 * time.Minute,
+			PeerSyncTimeout:     30 * time.Second,
+			RequireManifestSync: true,
+			StaleThreshold:      1 * time.Hour,
+			WALReconciliation:   true,
+			CacheRevalidation:   true,
+			MaxResyncTime:       10 * time.Minute,
+		},
+
+		Shutdown: ShutdownConfig{
+			Delay:          5 * time.Second,
+			MaxGraceful:    7 * time.Second,
+			FlushTimeout:   30 * time.Second,
+			PersistTimeout: 10 * time.Second,
+			ReleaseTimeout: 5 * time.Second,
 		},
 
 		Query: QueryConfig{
@@ -902,6 +935,15 @@ func (c *Config) validateSubsystems() error {
 	return nil
 }
 
+func (c *Config) ValidateShutdown(terminationGracePeriod time.Duration) error {
+	total := c.Shutdown.Delay + c.Shutdown.FlushTimeout + c.Shutdown.PersistTimeout + c.Shutdown.ReleaseTimeout
+	margin := 5 * time.Second
+	if total > terminationGracePeriod-margin {
+		return fmt.Errorf("shutdown phase total (%s) exceeds terminationGracePeriodSeconds (%s) minus %s safety margin", total, terminationGracePeriod, margin)
+	}
+	return nil
+}
+
 func ParseSizeBytes(s string) (int64, error) {
 	if s == "" {
 		return 0, nil
@@ -1105,6 +1147,12 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	if overlay.Discovery.PeerRefreshInterval > 0 {
 		base.Discovery.PeerRefreshInterval = overlay.Discovery.PeerRefreshInterval
 	}
+	if overlay.Discovery.RingStabilizeDuration > 0 {
+		base.Discovery.RingStabilizeDuration = overlay.Discovery.RingStabilizeDuration
+	}
+	if overlay.Discovery.RingChangeNotify {
+		base.Discovery.RingChangeNotify = true
+	}
 
 	// Manifest
 	if overlay.Manifest.RefreshInterval > 0 {
@@ -1175,6 +1223,41 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Startup.MaxWarmupTime > 0 {
 		base.Startup.MaxWarmupTime = overlay.Startup.MaxWarmupTime
+	}
+	if overlay.Startup.PeerSyncTimeout > 0 {
+		base.Startup.PeerSyncTimeout = overlay.Startup.PeerSyncTimeout
+	}
+	if overlay.Startup.RequireManifestSync {
+		base.Startup.RequireManifestSync = true
+	}
+	if overlay.Startup.StaleThreshold > 0 {
+		base.Startup.StaleThreshold = overlay.Startup.StaleThreshold
+	}
+	if overlay.Startup.WALReconciliation {
+		base.Startup.WALReconciliation = true
+	}
+	if overlay.Startup.CacheRevalidation {
+		base.Startup.CacheRevalidation = true
+	}
+	if overlay.Startup.MaxResyncTime > 0 {
+		base.Startup.MaxResyncTime = overlay.Startup.MaxResyncTime
+	}
+
+	// Shutdown
+	if overlay.Shutdown.Delay > 0 {
+		base.Shutdown.Delay = overlay.Shutdown.Delay
+	}
+	if overlay.Shutdown.MaxGraceful > 0 {
+		base.Shutdown.MaxGraceful = overlay.Shutdown.MaxGraceful
+	}
+	if overlay.Shutdown.FlushTimeout > 0 {
+		base.Shutdown.FlushTimeout = overlay.Shutdown.FlushTimeout
+	}
+	if overlay.Shutdown.PersistTimeout > 0 {
+		base.Shutdown.PersistTimeout = overlay.Shutdown.PersistTimeout
+	}
+	if overlay.Shutdown.ReleaseTimeout > 0 {
+		base.Shutdown.ReleaseTimeout = overlay.Shutdown.ReleaseTimeout
 	}
 
 	// Query
