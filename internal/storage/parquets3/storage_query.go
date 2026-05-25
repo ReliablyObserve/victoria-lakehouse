@@ -227,18 +227,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				}
 				if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filteredWriteBlock); err != nil {
 					if isFileNotFoundError(err) {
-						metrics.QueryFileNotFoundTotal.Inc()
-						if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones &&
-							fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 {
-							db := s.syntheticManifestBlock(fi)
-							if db != nil && db.RowsCount() > 0 {
-								filteredWriteBlock(0, db)
-								metrics.MetadataOnlyFiles.Inc()
-							}
-							logger.Infof("query recovered compacted file via manifest metadata; key=%s rows=%d", fi.Key, fi.RowCount)
-						} else {
-							logger.Infof("query skipped compacted/deleted file; key=%s", fi.Key)
-						}
+						s.handle404Recovery(ctx, fi, filter, hasTombstones, filteredWriteBlock)
 					} else {
 						metrics.QueryFileErrorsTotal.Inc()
 						logger.Warnf("query file error: %s; key=%s", err, fi.Key)
@@ -1934,4 +1923,19 @@ func isFileNotFoundError(err error) bool {
 		strings.Contains(s, "404") ||
 		strings.Contains(s, "does not exist") ||
 		strings.Contains(s, "file not found")
+}
+
+func (s *Storage) handle404Recovery(ctx context.Context, fi manifest.FileInfo, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock func(uint, *logstorage.DataBlock)) {
+	metrics.QueryFileNotFoundTotal.Inc()
+	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones &&
+		fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 {
+		db := s.syntheticManifestBlock(fi)
+		if db != nil && db.RowsCount() > 0 {
+			filteredWriteBlock(0, db)
+			metrics.MetadataOnlyFiles.Inc()
+		}
+		logger.Infof("query recovered compacted file via manifest metadata; key=%s rows=%d", fi.Key, fi.RowCount)
+	} else {
+		logger.Infof("query skipped compacted/deleted file; key=%s", fi.Key)
+	}
 }

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
-	"go.opentelemetry.io/otel/trace"
 )
 
 func TestMemLeak_Telemetry_InitNoopCycles(t *testing.T) {
@@ -137,7 +136,7 @@ func TestMemLeak_Telemetry_TracerGetCycles(t *testing.T) {
 	const cycles = 1000
 	for c := 0; c < cycles; c++ {
 		tr := Tracer()
-		var _ trace.Tracer = tr
+		_ = tr
 	}
 
 	runtime.GC()
