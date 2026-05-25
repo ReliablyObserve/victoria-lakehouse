@@ -214,10 +214,13 @@ func (m *MetadataMap) LoadSnapshot(path string) error {
 	}
 
 	var env snapshotEnvelope
-	if err := json.Unmarshal(data, &env); err != nil {
+	if err := json.Unmarshal(data, &env); err != nil || env.Items == nil {
 		var items map[string]EntryMeta
 		if err2 := json.Unmarshal(data, &items); err2 != nil {
-			return err
+			if err != nil {
+				return err
+			}
+			return err2
 		}
 		env = snapshotEnvelope{Version: 0, Items: items}
 	}
