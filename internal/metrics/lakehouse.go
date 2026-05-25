@@ -143,7 +143,7 @@ var (
 
 // Startup lifecycle metrics
 var (
-	StartupPhaseDuration     = NewHistogram("lakehouse_startup_phase_duration_seconds",
+	StartupPhaseDuration = NewHistogram("lakehouse_startup_phase_duration_seconds",
 		[]float64{0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300})
 	StartupStalePVDetected   = NewGauge("lakehouse_startup_stale_pv_detected")
 	StartupStalenessHours    = NewFloatGauge("lakehouse_startup_staleness_hours")
