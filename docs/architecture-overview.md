@@ -420,9 +420,9 @@ graph LR
 | election | 91.1% | Good |
 | compaction | 90.2% | Good |
 | azdetect | 90.0% | Good |
-| parquets3 | 82.9% | Needs S3 integration tests |
+| parquets3 | 90.3% | Good |
 
-**26 of 29 packages at 90%+ coverage.** parquets3 remaining gap is in S3-dependent integration functions (RunQuery, queryFile, openParquetFile).
+**27 of 29 packages at 90%+ coverage.** Remaining 2 are testutil (test utilities) and storage (interfaces only).
 
 ### Missing Benchmarks
 
