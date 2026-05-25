@@ -46,7 +46,7 @@ type Storage struct {
 	tombstones        *delete.TombstoneStore
 	smartCache        *smartcache.Controller
 	bloomIdx          *bloomindex.Index
-	bloomCache *bloomindex.BloomCache
+	bloomCache        *bloomindex.BloomCache
 	footerCache       *FooterCache
 	s3Prefix          string
 	selfAZ            string
