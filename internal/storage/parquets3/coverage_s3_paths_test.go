@@ -1598,16 +1598,16 @@ func TestInteg_queryFile_MultipleRowGroups(t *testing.T) {
 	startNs := now.Add(-time.Minute).UnixNano()
 	endNs := now.Add(time.Minute).UnixNano()
 
-	var totalRows int
+	var totalRows atomic.Int64
 	err := s.queryFile(context.Background(), fi, startNs, endNs, "", nil, func(_ uint, db *logstorage.DataBlock) {
-		totalRows += db.RowsCount()
+		totalRows.Add(int64(db.RowsCount()))
 	})
 	if err != nil {
 		t.Fatalf("queryFile with multiple RGs: %v", err)
 	}
 
-	if totalRows < 1000 {
-		t.Errorf("expected at least 1000 rows from multiple row groups, got %d", totalRows)
+	if totalRows.Load() < 1000 {
+		t.Errorf("expected at least 1000 rows from multiple row groups, got %d", totalRows.Load())
 	}
 }
 

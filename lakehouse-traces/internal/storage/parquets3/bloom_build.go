@@ -79,7 +79,7 @@ func (o *storageBloomObserver) PersistDirty(ctx context.Context, prefix string) 
 	}
 }
 
-func extractTraceBloomValues(rows []schema.TraceRow) map[string][]string {
+func extractTraceBloomValues(rows []schema.TraceRow) map[string][]string { //nolint:unused // VL/VT parity port
 	if len(rows) == 0 {
 		return nil
 	}
@@ -98,7 +98,7 @@ func extractTraceBloomValues(rows []schema.TraceRow) map[string][]string {
 	return bloomSetsToMap(sets)
 }
 
-func bloomSetsToMap(sets map[string]map[string]bool) map[string][]string {
+func bloomSetsToMap(sets map[string]map[string]bool) map[string][]string { //nolint:unused // VL/VT parity port
 	result := make(map[string][]string, len(sets))
 	for col, vs := range sets {
 		if len(vs) == 0 {

@@ -112,7 +112,7 @@ func doubleHash(s string) (uint64, uint64) {
 	return h1, h2
 }
 
-func tokenize(s string) []string {
+func tokenize(s string) []string { //nolint:unused // VL/VT parity port, wired in follow-up
 	words := strings.FieldsFunc(s, func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
@@ -133,7 +133,7 @@ func tokenize(s string) []string {
 	return result
 }
 
-func buildTokenBloomMetadata(bodies []string, rgIndex int) (key string, value []byte) {
+func buildTokenBloomMetadata(bodies []string, rgIndex int) (key string, value []byte) { //nolint:unused // VL/VT parity port
 	allTokens := make(map[string]struct{})
 	for _, body := range bodies {
 		for _, tok := range tokenize(body) {
@@ -156,7 +156,7 @@ func buildTokenBloomMetadata(bodies []string, rgIndex int) (key string, value []
 	return key, data
 }
 
-func tokenBloomSkip(metadata map[string]string, rgIndex int, searchTokens []string) bool {
+func tokenBloomSkip(metadata map[string]string, rgIndex int, searchTokens []string) bool { //nolint:unused // VL/VT parity port
 	if len(searchTokens) == 0 {
 		return false
 	}
@@ -180,7 +180,7 @@ func tokenBloomSkip(metadata map[string]string, rgIndex int, searchTokens []stri
 	return false
 }
 
-func extractSearchTokens(queryStr string) []string {
+func extractSearchTokens(queryStr string) []string { //nolint:unused // VL/VT parity port
 	if queryStr == "" {
 		return nil
 	}
@@ -254,7 +254,7 @@ func extractSearchTokens(queryStr string) []string {
 	return deduped
 }
 
-func isLogsQLKeyword(s string) bool {
+func isLogsQLKeyword(s string) bool { //nolint:unused // VL/VT parity port
 	switch strings.ToLower(s) {
 	case "and", "or", "not", "in", "by", "with", "limit", "offset",
 		"asc", "desc", "pipe", "|", "*", "_time", "_stream":
