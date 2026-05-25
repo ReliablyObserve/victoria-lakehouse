@@ -50,14 +50,6 @@ func newTestSmartCache() *smartcache.Controller {
 	})
 }
 
-// testStorageWithS3AndSmartCache creates a Storage with S3, smart cache and trace ID collection.
-func testStorageWithS3AndSmartCache(t *testing.T, s3url string) *Storage {
-	t.Helper()
-	s := testStorageWithS3(t, s3url)
-	s.smartCache = newTestSmartCache()
-	return s
-}
-
 // ---------------------------------------------------------------------------
 // 1. queryFile — parallel row group processing path
 // ---------------------------------------------------------------------------

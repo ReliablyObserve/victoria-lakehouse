@@ -78,21 +78,22 @@ func TestCoverageBoost_HasDataForRange_EmptyManifest(t *testing.T) {
 func TestCoverageBoost_HasDataForRange_WithFile(t *testing.T) {
 	s := testStorage()
 
-	now := time.Now()
+	// Use a fixed time matching the partition key to avoid time-of-day sensitivity.
+	baseTime := time.Date(2026, 5, 25, 14, 30, 0, 0, time.UTC)
 	s.manifest.AddFile("dt=2026-05-25/hour=14", manifest.FileInfo{
 		Key:       "test.parquet",
 		Size:      100,
-		MinTimeNs: now.Add(-time.Hour).UnixNano(),
-		MaxTimeNs: now.UnixNano(),
+		MinTimeNs: baseTime.Add(-30 * time.Minute).UnixNano(),
+		MaxTimeNs: baseTime.UnixNano(),
 	})
 
 	// Overlapping range should return true
-	if !s.HasDataForRange(now.Add(-2*time.Hour).UnixNano(), now.Add(time.Hour).UnixNano()) {
+	if !s.HasDataForRange(baseTime.Add(-2*time.Hour).UnixNano(), baseTime.Add(time.Hour).UnixNano()) {
 		t.Error("should have data for overlapping range")
 	}
 
 	// Non-overlapping range (far future) should return false
-	farFuture := now.Add(24 * time.Hour)
+	farFuture := baseTime.Add(24 * time.Hour)
 	if s.HasDataForRange(farFuture.UnixNano(), farFuture.Add(time.Hour).UnixNano()) {
 		t.Error("should not have data for far-future range")
 	}
