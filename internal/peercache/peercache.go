@@ -22,7 +22,12 @@ type PeerCache struct {
 	hits   atomic.Uint64
 	misses atomic.Uint64
 	errors atomic.Uint64
+
+	rcm *ringChangeManager
 }
+
+// DefaultStabilizeDuration is used when no explicit stabilize duration is provided.
+const DefaultStabilizeDuration = 60 * time.Second
 
 func New(selfAddr, authKey string, timeout time.Duration, maxConns int) *PeerCache {
 	transport := &http.Transport{
@@ -36,14 +41,25 @@ func New(selfAddr, authKey string, timeout time.Duration, maxConns int) *PeerCac
 			Timeout:   timeout,
 			Transport: transport,
 		},
+		rcm: newRingChangeManager(DefaultStabilizeDuration),
 	}
 }
 
+// NewWithStabilize creates a PeerCache with a custom ring stabilization duration.
+func NewWithStabilize(selfAddr, authKey string, timeout time.Duration, maxConns int, stabilizeDuration time.Duration) *PeerCache {
+	pc := New(selfAddr, authKey, timeout, maxConns)
+	pc.rcm = newRingChangeManager(stabilizeDuration)
+	return pc
+}
+
 func (pc *PeerCache) UpdatePeers(peers []string) {
-	old := pc.ring.MemberCount()
+	oldMembers := pc.ring.Members()
 	pc.ring.Set(peers)
-	if pc.ring.MemberCount() != old {
-		logger.Infof("peer ring updated; members=%d, peers=%v", pc.ring.MemberCount(), peers)
+	newMembers := pc.ring.Members()
+
+	events := pc.rcm.detectChanges(oldMembers, newMembers)
+	if len(events) > 0 {
+		pc.rcm.processChanges(events, oldMembers, len(newMembers))
 	}
 }
 
@@ -68,6 +84,12 @@ func (pc *PeerCache) Fetch(ctx context.Context, peer, key string) ([]byte, bool,
 		return nil, false, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	// Detect draining peer from response header
+	if resp.Header.Get("X-Lakehouse-Draining") != "" {
+		pc.rcm.RecordDraining(peer)
+		logger.Infof("peer %s is draining (X-Lakehouse-Draining header detected)", peer)
+	}
 
 	if resp.StatusCode == http.StatusNotFound {
 		pc.misses.Add(1)
@@ -131,10 +153,13 @@ func (pc *PeerCache) Members() []string {
 
 func (pc *PeerCache) UpdatePeersWithZones(peerZones map[string]string, selfAZ string) {
 	pc.selfAZ = selfAZ
-	old := pc.ring.MemberCount()
+	oldMembers := pc.ring.Members()
 	pc.ring.SetWithZones(peerZones, selfAZ)
-	if pc.ring.MemberCount() != old {
-		logger.Infof("peer ring updated with zones; members=%d, selfAZ=%s", pc.ring.MemberCount(), selfAZ)
+	newMembers := pc.ring.Members()
+
+	events := pc.rcm.detectChanges(oldMembers, newMembers)
+	if len(events) > 0 {
+		pc.rcm.processChanges(events, oldMembers, len(newMembers))
 	}
 }
 
@@ -143,6 +168,37 @@ func (pc *PeerCache) LookupAZ(key string) (peer string, isLocal bool, isSameAZ b
 }
 
 func (pc *PeerCache) SelfAZ() string { return pc.selfAZ }
+
+// OnRingChange registers a callback to be invoked when ring membership changes.
+// Callbacks are called asynchronously to avoid blocking the refresh loop.
+func (pc *PeerCache) OnRingChange(fn func(RingChangeEvent)) {
+	pc.rcm.OnRingChange(fn)
+}
+
+// IsStabilizing returns true if the ring is in a stabilization period after a change.
+func (pc *PeerCache) IsStabilizing() bool {
+	return pc.rcm.IsStabilizing()
+}
+
+// IsShadowMember returns true if the peer is in the shadow set during stabilization.
+func (pc *PeerCache) IsShadowMember(peer string) bool {
+	return pc.rcm.IsShadowMember(peer)
+}
+
+// ShadowMembers returns the shadow member set active during stabilization. Returns nil otherwise.
+func (pc *PeerCache) ShadowMembers() []string {
+	return pc.rcm.ShadowMembers()
+}
+
+// IsDraining returns true if the peer has sent an X-Lakehouse-Draining header.
+func (pc *PeerCache) IsDraining(peer string) bool {
+	return pc.rcm.IsDraining(peer)
+}
+
+// DrainingPeers returns all peers that have indicated they are draining.
+func (pc *PeerCache) DrainingPeers() map[string]time.Time {
+	return pc.rcm.DrainingPeers()
+}
 
 type StatsAZ struct {
 	Stats
