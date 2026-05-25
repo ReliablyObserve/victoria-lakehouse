@@ -191,7 +191,6 @@ func TestVerifyMetrics_CounterVecsExist(t *testing.T) {
 		{"ParquetBloomChecks", ParquetBloomChecks},
 		{"PrefetchTasksTotal", PrefetchTasksTotal},
 		{"SmartCacheEvictionsTotal", SmartCacheEvictionsTotal},
-		{"SmartCacheRecommendedBytes", SmartCacheRecommendedBytes},
 		{"PeerAZRequestsTotal", PeerAZRequestsTotal},
 		{"BufferBridgeAZRequestsTotal", BufferBridgeAZRequestsTotal},
 		{"BloomBuildTotal", BloomBuildTotal},
@@ -346,6 +345,7 @@ func TestVerifyMetrics_GaugeVecsExist(t *testing.T) {
 		name string
 		gv   *GaugeVec
 	}{
+		{"SmartCacheRecommendedBytes", SmartCacheRecommendedBytes},
 		{"BloomTierPartitions", BloomTierPartitions},
 		{"TenantFiles", TenantFiles},
 		{"TenantBytes", TenantBytes},

@@ -10,5 +10,5 @@ func NewNoopElector() *NoopElector {
 }
 
 func (n *NoopElector) IsLeader() bool          { return true }
-func (n *NoopElector) Start(_ context.Context) {}
-func (n *NoopElector) Stop()                   {}
+func (n *NoopElector) Start(_ context.Context) { _ = n }
+func (n *NoopElector) Stop()                   { _ = n }

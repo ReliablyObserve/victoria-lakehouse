@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 )
 
 type AliasListResponse struct {
@@ -78,7 +80,9 @@ func (h *Handler) createAlias(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.persister != nil {
-		_ = h.persister.SaveAliases(h.resolver.AllAliases())
+		if err := h.persister.SaveAliases(h.resolver.AllAliases()); err != nil {
+			logger.Errorf("failed to persist tenant aliases: %s", err)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -105,7 +109,9 @@ func (h *Handler) handleAliasDelete(w http.ResponseWriter, r *http.Request) {
 	h.resolver.RemoveAlias(orgID)
 
 	if h.persister != nil {
-		_ = h.persister.SaveAliases(h.resolver.AllAliases())
+		if err := h.persister.SaveAliases(h.resolver.AllAliases()); err != nil {
+			logger.Errorf("failed to persist tenant aliases: %s", err)
+		}
 	}
 
 	w.WriteHeader(http.StatusNoContent)

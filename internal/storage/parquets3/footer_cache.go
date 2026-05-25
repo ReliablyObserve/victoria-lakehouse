@@ -44,17 +44,17 @@ func NewFooterCache(maxItems int) *FooterCache {
 }
 
 func (fc *FooterCache) Get(key string) (*CachedFooter, bool) {
-	fc.mu.RLock()
+	fc.mu.Lock()
 	entry, ok := fc.items[key]
-	fc.mu.RUnlock()
 	if !ok {
+		fc.mu.Unlock()
 		return nil, false
 	}
-	fc.mu.Lock()
 	fc.lru.MoveToFront(entry.elem)
+	footer := entry.footer
 	fc.mu.Unlock()
 	metrics.FooterCacheHits.Inc()
-	return entry.footer, true
+	return footer, true
 }
 
 func (fc *FooterCache) Put(key string, footer *CachedFooter) {

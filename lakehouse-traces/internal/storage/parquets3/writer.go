@@ -37,6 +37,10 @@ type FlushHook func(key string, columnValues map[string][]string)
 // compressed size, raw size, row count, and storage class.
 type StatsCallback func(compressedBytes, rawBytes, rows int64, storageClass string)
 
+// FlushCacheCallback is called after a successful S3 upload to cache the
+// flushed file data locally (write-through cache).
+type FlushCacheCallback func(fileKey string, data []byte)
+
 type BatchWriter struct {
 	cfg      *config.InsertConfig
 	pool     *s3reader.ClientPool
@@ -54,6 +58,7 @@ type BatchWriter struct {
 
 	onFlush       FlushHook
 	statsCallback StatsCallback
+	flushCacheCb  FlushCacheCallback
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -97,6 +102,10 @@ func (w *BatchWriter) SetFlushHook(hook FlushHook) {
 
 func (w *BatchWriter) SetStatsCallback(cb StatsCallback) {
 	w.statsCallback = cb
+}
+
+func (w *BatchWriter) SetFlushCacheCallback(cb FlushCacheCallback) {
+	w.flushCacheCb = cb
 }
 
 func (w *BatchWriter) Stop() {
@@ -324,8 +333,14 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 	}
 	w.manifest.AddFile(partition, fi)
 
+	w.writeMetadataSidecarAsync(ctx, partition)
+
 	if w.statsCallback != nil {
 		w.statsCallback(int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
+	}
+
+	if w.flushCacheCb != nil {
+		w.flushCacheCb(key, result.Data)
 	}
 
 	w.totalBytes.Add(int64(len(result.Data)))
@@ -368,6 +383,8 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 	}
 	w.manifest.AddFile(partition, fi)
 
+	w.writeMetadataSidecarAsync(ctx, partition)
+
 	w.totalBytes.Add(int64(len(result.Data)))
 
 	if w.onFlush != nil {
@@ -378,10 +395,22 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 		w.statsCallback(int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
 	}
 
+	if w.flushCacheCb != nil {
+		w.flushCacheCb(key, result.Data)
+	}
+
 	logger.Infof("flushed trace partition; partition=%s, rows=%d, bytes=%d, ratio=%v, key=%s",
 		partition, len(rows), len(result.Data), fi.CompressionRatio(), key)
 
 	return nil
+}
+
+func (w *BatchWriter) writeMetadataSidecarAsync(ctx context.Context, partition string) {
+	go func() {
+		if err := w.manifest.WritePartitionSidecar(ctx, w.pool.S3Client(), partition); err != nil {
+			logger.Warnf("metadata sidecar write failed; partition=%s err=%v", partition, err)
+		}
+	}()
 }
 
 type flushResult struct {
@@ -405,14 +434,36 @@ func zstdLevel(level int) zstd.Level {
 func writeLogsParquet(rows []schema.LogRow, rowGroupSize int, compressionLevel int) (*flushResult, error) {
 	var buf bytes.Buffer
 	codec := &zstd.Codec{Level: zstdLevel(compressionLevel)}
-	writer := parquet.NewGenericWriter[schema.LogRow](&buf,
+
+	// Pre-compute token bloom metadata for each row group so it can be
+	// embedded as file-level key-value metadata in the Parquet footer.
+	opts := []parquet.WriterOption{
 		parquet.Compression(codec),
 		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
 		parquet.BloomFilters(
 			parquet.SplitBlockFilter(10, "service.name"),
 			parquet.SplitBlockFilter(10, "trace_id"),
 		),
-	)
+	}
+	for rgIdx := 0; rgIdx*rowGroupSize < len(rows); rgIdx++ {
+		start := rgIdx * rowGroupSize
+		end := start + rowGroupSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		bodies := make([]string, 0, end-start)
+		for i := start; i < end; i++ {
+			if rows[i].Body != "" {
+				bodies = append(bodies, rows[i].Body)
+			}
+		}
+		if len(bodies) > 0 {
+			key, value := buildTokenBloomMetadata(bodies, rgIdx)
+			opts = append(opts, parquet.KeyValueMetadata(key, string(value)))
+		}
+	}
+
+	writer := parquet.NewGenericWriter[schema.LogRow](&buf, opts...)
 	if _, err := writer.Write(rows); err != nil {
 		return nil, err
 	}
@@ -428,14 +479,36 @@ func writeLogsParquet(rows []schema.LogRow, rowGroupSize int, compressionLevel i
 func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLevel int) (*flushResult, error) {
 	var buf bytes.Buffer
 	codec := &zstd.Codec{Level: zstdLevel(compressionLevel)}
-	writer := parquet.NewGenericWriter[schema.TraceRow](&buf,
+
+	// Pre-compute token bloom metadata for each row group so it can be
+	// embedded as file-level key-value metadata in the Parquet footer.
+	opts := []parquet.WriterOption{
 		parquet.Compression(codec),
 		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
 		parquet.BloomFilters(
 			parquet.SplitBlockFilter(10, "service.name"),
 			parquet.SplitBlockFilter(10, "trace_id"),
 		),
-	)
+	}
+	for rgIdx := 0; rgIdx*rowGroupSize < len(rows); rgIdx++ {
+		start := rgIdx * rowGroupSize
+		end := start + rowGroupSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		bodies := make([]string, 0, end-start)
+		for i := start; i < end; i++ {
+			if rows[i].SpanName != "" {
+				bodies = append(bodies, rows[i].SpanName)
+			}
+		}
+		if len(bodies) > 0 {
+			key, value := buildTokenBloomMetadata(bodies, rgIdx)
+			opts = append(opts, parquet.KeyValueMetadata(key, string(value)))
+		}
+	}
+
+	writer := parquet.NewGenericWriter[schema.TraceRow](&buf, opts...)
 	if _, err := writer.Write(rows); err != nil {
 		return nil, err
 	}

@@ -26,6 +26,107 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage"
 )
 
+func sortFilesByCacheAffinity(files []manifest.FileInfo, cachedKeys map[string]bool) {
+	sort.SliceStable(files, func(i, j int) bool {
+		iCached := cachedKeys[files[i].Key]
+		jCached := cachedKeys[files[j].Key]
+		if iCached != jCached {
+			return iCached
+		}
+		return false
+	})
+}
+
+func (s *Storage) applySelfFilter(files []manifest.FileInfo) []manifest.FileInfo {
+	if !s.selfFilterEnabled || s.smartCache == nil {
+		return files
+	}
+	var owned []manifest.FileInfo
+	for _, f := range files {
+		if _, isLocal := s.smartCache.LookupOwner(f.Key); isLocal {
+			owned = append(owned, f)
+		}
+	}
+	if len(owned) > 0 {
+		return owned
+	}
+	return files
+}
+
+func (s *Storage) applyCacheAffinity(files []manifest.FileInfo) {
+	if s.footerCache == nil {
+		return
+	}
+	cachedKeys := make(map[string]bool, len(files))
+	for _, f := range files {
+		if s.footerCache.Has(f.Key) {
+			cachedKeys[f.Key] = true
+		}
+	}
+	if len(cachedKeys) > 0 && len(cachedKeys) < len(files) {
+		sortFilesByCacheAffinity(files, cachedKeys)
+	}
+}
+
+func (s *Storage) manifestFastPath(files []manifest.FileInfo, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc) []manifest.FileInfo {
+	var remaining []manifest.FileInfo
+	for _, fi := range files {
+		if fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
+			fi.MinTimeNs >= startNs && fi.MaxTimeNs <= endNs {
+			db := s.syntheticManifestBlock(fi)
+			if db != nil && db.RowsCount() > 0 {
+				writeBlock(0, db)
+				metrics.MetadataOnlyFiles.Inc()
+			}
+		} else {
+			remaining = append(remaining, fi)
+		}
+	}
+	if len(remaining) < len(files) {
+		logger.Infof("metadata fast path: resolved %d/%d files from manifest, %d remain for S3",
+			len(files)-len(remaining), len(files), len(remaining))
+	}
+	return remaining
+}
+
+func (s *Storage) syntheticManifestBlock(fi manifest.FileInfo) *logstorage.DataBlock {
+	const maxSyntheticRows = 50_000_000
+	n := int(fi.RowCount)
+	if n == 0 {
+		return nil
+	}
+	if n > maxSyntheticRows {
+		n = maxSyntheticRows
+	}
+
+	tsCol := s.registry.TimestampColumn()
+	internalName := tsCol
+	if m := s.registry.ResolveFromParquet(tsCol); m != nil {
+		internalName = m.InternalName
+	}
+
+	values := make([]string, n)
+	if n == 1 {
+		values[0] = s.registry.FormatField(internalName, fi.MinTimeNs)
+	} else {
+		step := (fi.MaxTimeNs - fi.MinTimeNs) / int64(n-1)
+		if step == 0 {
+			step = 1
+		}
+		for i := range values {
+			ts := fi.MinTimeNs + int64(i)*step
+			if ts > fi.MaxTimeNs {
+				ts = fi.MaxTimeNs
+			}
+			values[i] = s.registry.FormatField(internalName, ts)
+		}
+	}
+
+	db := &logstorage.DataBlock{}
+	db.SetColumns([]logstorage.BlockColumn{{Name: internalName, Values: values}})
+	return db
+}
+
 func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -113,10 +214,27 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		return nil
 	}
 
+	files = s.applySelfFilter(files)
+	s.applyCacheAffinity(files)
+
+	hasTombstones := s.tombstones != nil && len(s.tombstones.ForRange(startNs, endNs)) > 0
+	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
+		remaining := s.manifestFastPath(files, startNs, endNs, filteredWriteBlock)
+		if len(remaining) == 0 {
+			if n := rowsEmitted.Load(); n > 0 {
+				metrics.QueryRowsTotal.Add(int(n))
+			}
+			return nil
+		}
+		files = remaining
+	}
+
 	files = s.preFilterFiles(files, queryStr)
 	if len(files) == 0 {
 		return nil
 	}
+
+	prefetchFooters(ctx, s.pool, files, s.footerCache, 0)
 
 	// Parallel file worker pool
 	fileWorkers := s.cfg.Query.FileWorkers
@@ -170,8 +288,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				}
 				if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filteredWriteBlock); err != nil {
 					if isFileNotFoundError(err) {
-						metrics.QueryFileNotFoundTotal.Inc()
-						logger.Infof("query skipped compacted/deleted file; key=%s", fi.Key)
+						s.handle404Recovery(ctx, fi, filter, hasTombstones, filteredWriteBlock)
 					} else {
 						metrics.QueryFileErrorsTotal.Inc()
 						logger.Warnf("query file error: %s; key=%s", err, fi.Key)
@@ -337,9 +454,21 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 
 	rowGroups := f.RowGroups()
 
-	// Pre-filter row groups using metadata (time range, bloom, pushdown).
+	// Extract file-level key-value metadata for token bloom checks.
+	searchTokens := extractSearchTokens(queryStr)
+	var fileKVMeta map[string]string
+	if len(searchTokens) > 0 {
+		if meta := f.Metadata(); meta != nil {
+			fileKVMeta = make(map[string]string, len(meta.KeyValueMetadata))
+			for _, kv := range meta.KeyValueMetadata {
+				fileKVMeta[kv.Key] = kv.Value
+			}
+		}
+	}
+
+	// Pre-filter row groups using metadata (time range, bloom, pushdown, token bloom).
 	var matchedRGs []parquet.RowGroup
-	for _, rg := range rowGroups {
+	for rgIdx, rg := range rowGroups {
 		if tsIdx >= 0 && !rowGroupMatchesTimeRange(rg, tsIdx, startNs, endNs) {
 			metrics.ParquetRowGroupsSkipped.Inc("stats")
 			continue
@@ -350,6 +479,10 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 		}
 		if pdf != nil && !rowGroupMatchesFilter(f, rg, pdf) {
 			metrics.ParquetRowGroupsSkipped.Inc("pushdown")
+			continue
+		}
+		if tokenBloomSkip(fileKVMeta, rgIdx, searchTokens) {
+			metrics.ParquetRowGroupsSkipped.Inc("token_bloom")
 			continue
 		}
 		matchedRGs = append(matchedRGs, rg)
@@ -406,6 +539,10 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 
 	if s.smartCache != nil && len(collectedTraceIDs) > 0 {
 		s.smartCache.RecordTraceIDs(fi.Key, collectedTraceIDs)
+	}
+
+	if s.crossSignalClient != nil && len(collectedTraceIDs) > 0 {
+		s.crossSignalClient.EnqueueHint(collectedTraceIDs, startNs, endNs, string(s.cfg.Mode))
 	}
 
 	return nil
@@ -1493,4 +1630,54 @@ func isFileNotFoundError(err error) bool {
 		strings.Contains(s, "404") ||
 		strings.Contains(s, "does not exist") ||
 		strings.Contains(s, "file not found")
+}
+
+func (s *Storage) handle404Recovery(ctx context.Context, fi manifest.FileInfo, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock func(uint, *logstorage.DataBlock)) {
+	metrics.QueryFileNotFoundTotal.Inc()
+	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones &&
+		fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 {
+		db := s.syntheticManifestBlock(fi)
+		if db != nil && db.RowsCount() > 0 {
+			filteredWriteBlock(0, db)
+			metrics.MetadataOnlyFiles.Inc()
+		}
+		logger.Infof("query recovered compacted file via manifest metadata; key=%s rows=%d", fi.Key, fi.RowCount)
+	} else {
+		logger.Infof("query skipped compacted/deleted file; key=%s", fi.Key)
+	}
+}
+
+func (s *Storage) QuerySpecificFiles(ctx context.Context, fileKeys []string, startNs, endNs int64, queryStr string, pipeFields []string, writeBlock logstorage.WriteDataBlockFunc) error {
+	if len(fileKeys) == 0 {
+		return nil
+	}
+
+	keySet := make(map[string]bool, len(fileKeys))
+	for _, k := range fileKeys {
+		keySet[k] = true
+	}
+
+	allFiles := s.manifest.GetFilesForRange(startNs, endNs)
+
+	var files []manifest.FileInfo
+	for _, f := range allFiles {
+		if keySet[f.Key] {
+			files = append(files, f)
+		}
+	}
+	if len(files) == 0 {
+		return nil
+	}
+
+	for _, fi := range files {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, writeBlock); err != nil {
+			logger.Warnf("QuerySpecificFiles: file error: %s; key=%s", err, fi.Key)
+			continue
+		}
+	}
+
+	return nil
 }

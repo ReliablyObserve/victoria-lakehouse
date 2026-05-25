@@ -39,5 +39,12 @@ func (p *S3Persister) LoadAliases() ([]AliasEntry, error) {
 	if err := json.Unmarshal(data, &entries); err != nil {
 		return nil, err
 	}
-	return entries, nil
+	var valid []AliasEntry
+	for _, e := range entries {
+		if err := ValidateOrgID(e.OrgID); err != nil {
+			continue
+		}
+		valid = append(valid, e)
+	}
+	return valid, nil
 }

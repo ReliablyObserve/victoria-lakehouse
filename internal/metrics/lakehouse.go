@@ -105,7 +105,7 @@ var (
 	SmartCacheEvictionsTotal   = NewCounterVec("lakehouse_cache_evictions_total", "reason")
 	SmartCacheHotEntries       = NewGauge("lakehouse_cache_hot_entries")
 	SmartCachePinnedEntries    = NewGauge("lakehouse_cache_pinned_entries")
-	SmartCacheRecommendedBytes = NewCounterVec("lakehouse_cache_recommended_bytes", "method")
+	SmartCacheRecommendedBytes = NewGaugeVec("lakehouse_cache_recommended_bytes", "method")
 	SmartCacheCoverageHours    = NewFloatGauge("lakehouse_cache_coverage_hours")
 	SmartCachePrefetchHitRatio = NewFloatGauge("lakehouse_cache_prefetch_hit_ratio")
 	SmartCacheOwnedEntries     = NewGauge("lakehouse_cache_owned_entries")

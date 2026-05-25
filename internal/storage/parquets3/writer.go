@@ -444,14 +444,36 @@ func zstdLevel(level int) zstd.Level {
 func writeLogsParquet(rows []schema.LogRow, rowGroupSize int, compressionLevel int) (*flushResult, error) {
 	var buf bytes.Buffer
 	codec := &zstd.Codec{Level: zstdLevel(compressionLevel)}
-	writer := parquet.NewGenericWriter[schema.LogRow](&buf,
+
+	// Pre-compute token bloom metadata for each row group so it can be
+	// embedded as file-level key-value metadata in the Parquet footer.
+	opts := []parquet.WriterOption{
 		parquet.Compression(codec),
 		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
 		parquet.BloomFilters(
 			parquet.SplitBlockFilter(10, "service.name"),
 			parquet.SplitBlockFilter(10, "trace_id"),
 		),
-	)
+	}
+	for rgIdx := 0; rgIdx*rowGroupSize < len(rows); rgIdx++ {
+		start := rgIdx * rowGroupSize
+		end := start + rowGroupSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		bodies := make([]string, 0, end-start)
+		for i := start; i < end; i++ {
+			if rows[i].Body != "" {
+				bodies = append(bodies, rows[i].Body)
+			}
+		}
+		if len(bodies) > 0 {
+			key, value := buildTokenBloomMetadata(bodies, rgIdx)
+			opts = append(opts, parquet.KeyValueMetadata(key, string(value)))
+		}
+	}
+
+	writer := parquet.NewGenericWriter[schema.LogRow](&buf, opts...)
 	if _, err := writer.Write(rows); err != nil {
 		return nil, err
 	}
@@ -467,14 +489,36 @@ func writeLogsParquet(rows []schema.LogRow, rowGroupSize int, compressionLevel i
 func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLevel int) (*flushResult, error) {
 	var buf bytes.Buffer
 	codec := &zstd.Codec{Level: zstdLevel(compressionLevel)}
-	writer := parquet.NewGenericWriter[schema.TraceRow](&buf,
+
+	// Pre-compute token bloom metadata for each row group so it can be
+	// embedded as file-level key-value metadata in the Parquet footer.
+	opts := []parquet.WriterOption{
 		parquet.Compression(codec),
 		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
 		parquet.BloomFilters(
 			parquet.SplitBlockFilter(10, "service.name"),
 			parquet.SplitBlockFilter(10, "trace_id"),
 		),
-	)
+	}
+	for rgIdx := 0; rgIdx*rowGroupSize < len(rows); rgIdx++ {
+		start := rgIdx * rowGroupSize
+		end := start + rowGroupSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		bodies := make([]string, 0, end-start)
+		for i := start; i < end; i++ {
+			if rows[i].SpanName != "" {
+				bodies = append(bodies, rows[i].SpanName)
+			}
+		}
+		if len(bodies) > 0 {
+			key, value := buildTokenBloomMetadata(bodies, rgIdx)
+			opts = append(opts, parquet.KeyValueMetadata(key, string(value)))
+		}
+	}
+
+	writer := parquet.NewGenericWriter[schema.TraceRow](&buf, opts...)
 	if _, err := writer.Write(rows); err != nil {
 		return nil, err
 	}

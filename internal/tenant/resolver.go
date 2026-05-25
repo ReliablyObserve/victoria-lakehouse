@@ -98,13 +98,18 @@ func (r *TenantResolver) DisplayName(accountID, projectID uint32) string {
 }
 
 func (r *TenantResolver) MetricLabel(accountID, projectID uint32) string {
+	id := fmt.Sprintf("%d:%d", accountID, projectID)
 	switch r.config.MetricsFormat {
 	case MetricsFormatName:
 		return r.DisplayName(accountID, projectID)
 	case MetricsFormatBoth:
-		return r.DisplayName(accountID, projectID)
+		name := r.DisplayName(accountID, projectID)
+		if name == id {
+			return id
+		}
+		return id + "/" + name
 	default:
-		return fmt.Sprintf("%d:%d", accountID, projectID)
+		return id
 	}
 }
 

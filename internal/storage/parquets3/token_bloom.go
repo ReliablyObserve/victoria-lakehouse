@@ -292,19 +292,12 @@ func isLogsQLKeyword(s string) bool {
 	return false
 }
 
-// Integration TODOs:
+// Token bloom integration:
 //
-// Write side: In the Parquet writer (writer.go), after writing each row group,
-// call buildTokenBloomMetadata with the body column values and store in
-// file-level key-value metadata.
+// Write side: writeLogsParquet/writeTracesParquet in writer.go pre-computes
+// token bloom metadata for each row group and embeds it as file-level
+// key-value metadata in the Parquet footer.
 //
-// Read side: In storage_query.go's row group loop, after bloom filter check,
-// add token bloom check:
-//
-//   searchTokens := extractSearchTokens(queryStr)
-//   fileMetadata := parseFileMetadata(f)
-//   // ... in row group loop:
-//   if tokenBloomSkip(fileMetadata, rgIdx, searchTokens) {
-//       metrics.ParquetRowGroupsSkipped.Inc("token_bloom")
-//       continue
-//   }
+// Read side: queryFile in storage_query.go extracts search tokens from the
+// query string and checks each row group against its token bloom before
+// processing, skipping row groups that definitely don't contain the tokens.

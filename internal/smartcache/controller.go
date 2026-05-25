@@ -47,6 +47,7 @@ type ControllerConfig struct {
 	PeerFetcher   PeerFetcher
 	S3Fetcher     S3Fetcher
 	Metadata      *MetadataMap
+	DiskLimit     int64
 	MaxAge        time.Duration
 	HotThreshold  int
 	HotWindow     time.Duration
@@ -68,6 +69,7 @@ type Controller struct {
 	gracePeriod   time.Duration
 	signal        string
 	partitionMode string
+	diskLimit     int64
 
 	sfMu       sync.Mutex
 	sfInFlight map[string]*sfCall
@@ -100,6 +102,7 @@ func NewController(cfg ControllerConfig) *Controller {
 		gracePeriod:   cfg.GracePeriod,
 		signal:        cfg.Signal,
 		partitionMode: pm,
+		diskLimit:     cfg.DiskLimit,
 		sfInFlight:    make(map[string]*sfCall),
 	}
 }
@@ -234,18 +237,31 @@ func (c *Controller) Metadata() *MetadataMap {
 }
 
 // RunEvictionOnce runs a single eviction pass, removing expired entries from
-// both the L2 cache and the metadata map. Returns the list of evicted keys.
+// both the L2 cache and the metadata map. If disk usage exceeds 90% of the
+// watermark after TTL eviction, falls back to LRU eviction. Returns all evicted keys.
 func (c *Controller) RunEvictionOnce() []string {
 	expired := CollectExpired(c.metadata, c.maxAge, c.hotThreshold, c.hotWindow)
 	for _, key := range expired {
-		meta, ok := c.metadata.Get(key)
-		if !ok {
+		if _, ok := c.metadata.Get(key); !ok {
 			continue
 		}
 		c.l2.Delete(key)
 		c.metadata.Delete(key)
-		_ = meta
 	}
+
+	if c.diskLimit > 0 {
+		watermark := int64(float64(c.diskLimit) * 0.9)
+		if c.l2.Size() > watermark {
+			excess := c.l2.Size() - watermark
+			lru := CollectLRU(c.metadata, excess, c.hotThreshold, c.hotWindow)
+			for _, key := range lru {
+				c.l2.Delete(key)
+				c.metadata.Delete(key)
+			}
+			expired = append(expired, lru...)
+		}
+	}
+
 	return expired
 }
 

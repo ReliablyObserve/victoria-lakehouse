@@ -5,6 +5,7 @@ import (
 	"container/list"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"sync"
 
 	"github.com/parquet-go/parquet-go"
@@ -43,17 +44,17 @@ func NewFooterCache(maxItems int) *FooterCache {
 }
 
 func (fc *FooterCache) Get(key string) (*CachedFooter, bool) {
-	fc.mu.RLock()
+	fc.mu.Lock()
 	entry, ok := fc.items[key]
-	fc.mu.RUnlock()
 	if !ok {
+		fc.mu.Unlock()
 		return nil, false
 	}
-	fc.mu.Lock()
 	fc.lru.MoveToFront(entry.elem)
+	footer := entry.footer
 	fc.mu.Unlock()
 	metrics.FooterCacheHits.Inc()
-	return entry.footer, true
+	return footer, true
 }
 
 func (fc *FooterCache) Put(key string, footer *CachedFooter) {
@@ -80,6 +81,13 @@ func (fc *FooterCache) Put(key string, footer *CachedFooter) {
 	entry := &footerEntry{key: key, footer: footer}
 	entry.elem = fc.lru.PushFront(entry)
 	fc.items[key] = entry
+}
+
+func (fc *FooterCache) Has(key string) bool {
+	fc.mu.RLock()
+	_, ok := fc.items[key]
+	fc.mu.RUnlock()
+	return ok
 }
 
 func (fc *FooterCache) Len() int {
@@ -112,9 +120,19 @@ func ParseFooterFromData(key string, data []byte) (*CachedFooter, *parquet.File,
 
 // ParseFooterFromBytes parses just the parquet footer from raw footer bytes.
 // footerBytes should contain the last N bytes of the file including the
-// 4-byte footer length and 4-byte magic number.
+// 4-byte footer length and 4-byte magic number. Uses a synthetic ReaderAt
+// that serves "PAR1" at offset 0 and the footer at the file tail, so
+// parquet-go's magic validation succeeds without downloading the full file.
 func ParseFooterFromBytes(key string, footerBytes []byte, fileSize int64) (*CachedFooter, *parquet.File, error) {
-	f, err := parquet.OpenFile(bytes.NewReader(footerBytes), int64(len(footerBytes)))
+	r := &footerReaderAt{
+		footer:   footerBytes,
+		fileSize: fileSize,
+	}
+	f, err := parquet.OpenFile(r, fileSize, &parquet.FileConfig{
+		SkipPageIndex:    true,
+		SkipBloomFilters: true,
+		SkipMagicBytes:   true,
+	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("parse parquet footer %s: %w", key, err)
 	}
@@ -123,6 +141,55 @@ func ParseFooterFromBytes(key string, footerBytes []byte, fileSize int64) (*Cach
 		FileSize:   fileSize,
 		footerSize: len(footerBytes),
 	}, f, nil
+}
+
+type footerReaderAt struct {
+	footer   []byte
+	fileSize int64
+}
+
+func (r *footerReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 || off >= r.fileSize {
+		return 0, io.EOF
+	}
+
+	n := 0
+	for n < len(p) && off+int64(n) < r.fileSize {
+		pos := off + int64(n)
+		if pos < 4 {
+			magic := []byte("PAR1")
+			end := int64(4)
+			if end > r.fileSize {
+				end = r.fileSize
+			}
+			copied := copy(p[n:], magic[pos:end])
+			n += copied
+			continue
+		}
+
+		footerStart := r.fileSize - int64(len(r.footer))
+		if pos >= footerStart {
+			idx := pos - footerStart
+			copied := copy(p[n:], r.footer[idx:])
+			n += copied
+			continue
+		}
+
+		gapEnd := footerStart
+		if off+int64(len(p)) < gapEnd {
+			gapEnd = off + int64(len(p))
+		}
+		gapBytes := int(gapEnd - pos)
+		for i := 0; i < gapBytes && n < len(p); i++ {
+			p[n] = 0
+			n++
+		}
+	}
+
+	if n == 0 {
+		return 0, io.EOF
+	}
+	return n, nil
 }
 
 // FooterLength reads the parquet footer length from the last 8 bytes of a file.

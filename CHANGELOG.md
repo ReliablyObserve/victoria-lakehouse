@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Smart cache: snapshot loader now correctly handles legacy (pre-envelope) format on upgrade
+- Smart cache: watermark-based LRU eviction when disk usage exceeds 90% of configured limit
+- Smart cache: reconciliation uses file mtime for CreatedAt instead of current time
+- Tenant name mapping: MetricLabel "both" format now includes numeric ID prefix (42:3/name)
+- Tenant name mapping: OrgID validation on S3 alias load rejects invalid entries
+- Tenant name mapping: persistence errors are now logged instead of silently discarded
+- Partitioned bloom: manifest metadata updated after successful bloom persist
+
 ## [0.35.0] - 2026-05-25
 
 ### Performance

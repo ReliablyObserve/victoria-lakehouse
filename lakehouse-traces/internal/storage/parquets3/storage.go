@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -17,6 +18,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/crosssignal"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/discovery"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -28,26 +30,30 @@ import (
 )
 
 type Storage struct {
-	cfg          *config.Config
-	pool         *s3reader.ClientPool
-	manifest     *manifest.Manifest
-	registry     *schema.Registry
-	memCache     *cache.LRU
-	diskCache    *cache.DiskCache
-	sfGroup      *cache.Group
-	labelIndex   *cache.LabelIndex
-	persister    *cache.Persister
-	discovery    *discovery.Discovery
-	peerCache    *peercache.PeerCache
-	peerHandler  *peercache.Handler
-	writer       *BatchWriter
-	bufferBridge *BufferBridge
-	tombstones   *delete.TombstoneStore
-	smartCache   *smartcache.Controller
-	bloomIdx     *bloomindex.Index
-	footerCache  *FooterCache
-	s3Prefix     string
-	selfAZ       string
+	cfg               *config.Config
+	pool              *s3reader.ClientPool
+	manifest          *manifest.Manifest
+	registry          *schema.Registry
+	memCache          *cache.LRU
+	diskCache         *cache.DiskCache
+	sfGroup           *cache.Group
+	labelIndex        *cache.LabelIndex
+	persister         *cache.Persister
+	discovery         *discovery.Discovery
+	peerCache         *peercache.PeerCache
+	peerHandler       *peercache.Handler
+	writer            *BatchWriter
+	bufferBridge      *BufferBridge
+	tombstones        *delete.TombstoneStore
+	smartCache        *smartcache.Controller
+	bloomIdx          *bloomindex.Index
+	bloomCache        *bloomindex.BloomCache
+	footerCache       *FooterCache
+	crossSignalClient *crosssignal.Client
+	s3Prefix          string
+	selfAZ            string
+	selfFilterEnabled bool
+	dlSem             chan struct{}
 }
 
 func New(cfg *config.Config) (*Storage, error) {
@@ -68,6 +74,9 @@ func New(cfg *config.Config) (*Storage, error) {
 	m := manifest.New(cfg.S3.Bucket, prefix)
 
 	memCache := cache.NewLRU(cfg.CacheMemoryBytes())
+	metrics.SmartCacheBytesLimit.Set(cfg.CacheMemoryBytes())
+	metrics.ConcurrentSelectsCap.Set(int64(cfg.Query.MaxConcurrent))
+	metrics.MetricsCardinalityLimit.Set(int64(cfg.Stats.MetricsCardinalityLimit))
 
 	var diskCacheInst *cache.DiskCache
 	if cfg.Cache.DiskPath != "" {
@@ -116,6 +125,11 @@ func New(cfg *config.Config) (*Storage, error) {
 		ph = peercache.NewHandler(cfg.Peer.AuthKey, "")
 	}
 
+	maxDL := cfg.S3.MaxConcurrentDownloads
+	if maxDL <= 0 {
+		maxDL = 16
+	}
+
 	var sc *smartcache.Controller
 	if cfg.SelectEnabled() {
 		metaMap := smartcache.NewMetadataMap()
@@ -142,7 +156,7 @@ func New(cfg *config.Config) (*Storage, error) {
 			L2:           &l2Adapter{dc: diskCacheInst},
 			PeerLookup:   peerLookupImpl,
 			PeerFetcher:  peerFetchImpl,
-			S3Fetcher:    &s3Adapter{pool: pool},
+			S3Fetcher:    &s3Adapter{pool: pool, dlSem: make(chan struct{}, maxDL)},
 			Metadata:     metaMap,
 			MaxAge:       cfg.SmartCache.MaxAge,
 			HotThreshold: cfg.SmartCache.HotAccessThreshold,
@@ -162,30 +176,52 @@ func New(cfg *config.Config) (*Storage, error) {
 		bb = NewBufferBridge(&cfg.Select, cfg.Mode)
 	}
 
+	var bc *bloomindex.BloomCache
+	if cfg.SelectEnabled() {
+		bc = bloomindex.NewBloomCache(
+			10*1024*1024,
+			bloomS3Loader(pool, prefix),
+		)
+	}
+
 	var fc *FooterCache
 	if cfg.SelectEnabled() {
 		fc = NewFooterCache(10000)
 	}
 
+	var csClient *crosssignal.Client
+	if cfg.CrossSignal.Enabled && cfg.CrossSignal.Endpoint != "" {
+		csClient = crosssignal.NewClient(crosssignal.ClientConfig{
+			Endpoint:      cfg.CrossSignal.Endpoint,
+			AuthKey:       cfg.CrossSignal.AuthKey,
+			Timeout:       cfg.CrossSignal.Timeout,
+			MaxBatch:      cfg.CrossSignal.MaxBatch,
+			BatchInterval: cfg.CrossSignal.BatchInterval,
+		})
+	}
+
 	return &Storage{
-		cfg:          cfg,
-		pool:         pool,
-		manifest:     m,
-		registry:     schema.NewRegistry(profile),
-		memCache:     memCache,
-		diskCache:    diskCacheInst,
-		sfGroup:      cache.NewGroup(),
-		labelIndex:   labelIdx,
-		persister:    pers,
-		discovery:    disc,
-		peerCache:    pc,
-		peerHandler:  ph,
-		writer:       bw,
-		bufferBridge: bb,
-		smartCache:   sc,
-		bloomIdx:     bloomindex.New(),
-		footerCache:  fc,
-		s3Prefix:     prefix,
+		cfg:               cfg,
+		pool:              pool,
+		manifest:          m,
+		registry:          schema.NewRegistry(profile),
+		memCache:          memCache,
+		diskCache:         diskCacheInst,
+		sfGroup:           cache.NewGroup(),
+		labelIndex:        labelIdx,
+		persister:         pers,
+		discovery:         disc,
+		peerCache:         pc,
+		peerHandler:       ph,
+		writer:            bw,
+		bufferBridge:      bb,
+		smartCache:        sc,
+		bloomIdx:          bloomindex.New(),
+		bloomCache:        bc,
+		footerCache:       fc,
+		crossSignalClient: csClient,
+		s3Prefix:          prefix,
+		dlSem:             make(chan struct{}, maxDL),
 	}, nil
 }
 
@@ -217,9 +253,15 @@ func (s *Storage) StartWriter() {
 
 		// Also write per-file bloom sidecar for file-level query skipping.
 		if pool != nil {
-			go writeFileBloom(context.Background(), pool, key, columnValues)
+			obs := &storageBloomObserver{pool: pool}
+			go obs.writeFileBloom(context.Background(), key, columnValues)
 		}
 	})
+	if s.smartCache != nil {
+		s.writer.SetFlushCacheCallback(func(fileKey string, data []byte) {
+			cacheOnFlush(s.smartCache, fileKey, data)
+		})
+	}
 	logCount, traceCount := s.writer.ReplayWAL()
 	if logCount > 0 || traceCount > 0 {
 		logger.Infof("WAL recovery complete; logs=%d, traces=%d", logCount, traceCount)
@@ -328,6 +370,14 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 	return data, nil
 }
 
+func (s *Storage) SetSelfFilterEnabled(enabled bool) {
+	s.selfFilterEnabled = enabled
+}
+
+func (s *Storage) BloomCache() *bloomindex.BloomCache {
+	return s.bloomCache
+}
+
 func (s *Storage) Manifest() *manifest.Manifest {
 	return s.manifest
 }
@@ -337,6 +387,9 @@ func (s *Storage) HasDataForRange(startNs, endNs int64) bool {
 }
 
 func (s *Storage) Close() error {
+	if s.crossSignalClient != nil {
+		s.crossSignalClient.Close()
+	}
 	if s.writer != nil {
 		s.writer.Stop()
 		logger.Infof("writer stopped and final flush completed")
@@ -1072,7 +1125,192 @@ func (s *Storage) PersistState() error {
 	if s.persister == nil {
 		return nil
 	}
+	s.saveFileMetadataToDisk()
 	return s.persister.SaveLabelIndex(s.labelIndex)
+}
+
+func (s *Storage) WarmMetadata(ctx context.Context) {
+	diskLoaded := s.loadFileMetadataFromDisk()
+
+	sidecarLoaded := s.manifest.LoadSidecars(ctx, s.pool.S3Client(), 16)
+
+	files := s.manifest.GetFilesForRange(0, 1<<62)
+	var needEnrich []manifest.FileInfo
+	for _, fi := range files {
+		if fi.RowCount == 0 {
+			needEnrich = append(needEnrich, fi)
+		}
+	}
+
+	footerEnriched := 0
+	if len(needEnrich) > 0 && s.footerCache != nil {
+		fetched := prefetchFooters(ctx, s.pool, needEnrich, s.footerCache, 0)
+		logger.Infof("metadata warmup: prefetched %d footers for %d files", fetched, len(needEnrich))
+
+		for _, fi := range needEnrich {
+			cached, ok := s.footerCache.Get(fi.Key)
+			if !ok {
+				continue
+			}
+			if s.enrichFromCachedFooter(fi, cached) {
+				footerEnriched++
+			}
+		}
+	}
+
+	smallEnriched := 0
+	if len(needEnrich) > 0 {
+		var stillMissing []manifest.FileInfo
+		enrichedKeys := make(map[string]bool, footerEnriched)
+		for _, fi := range needEnrich {
+			if _, ok := s.footerCache.Get(fi.Key); ok {
+				enrichedKeys[fi.Key] = true
+			}
+		}
+		for _, fi := range needEnrich {
+			if !enrichedKeys[fi.Key] {
+				stillMissing = append(stillMissing, fi)
+			}
+		}
+		if len(stillMissing) > 0 {
+			smallEnriched = s.enrichSmallFiles(ctx, stillMissing)
+		}
+	}
+
+	logger.Infof("metadata warmup: disk=%d sidecar=%d footer=%d small=%d need_enrich=%d total_files=%d",
+		diskLoaded, sidecarLoaded, footerEnriched, smallEnriched, len(needEnrich), len(files))
+
+	s.saveFileMetadataToDisk()
+}
+
+func (s *Storage) enrichFromCachedFooter(fi manifest.FileInfo, cached *CachedFooter) bool {
+	var totalRows int64
+	var minTs, maxTs int64
+	tsIdx := findColumnIndex(cached.File.Root(), s.registry.TimestampColumn())
+	for _, rg := range cached.File.RowGroups() {
+		totalRows += rg.NumRows()
+		if tsIdx < 0 {
+			continue
+		}
+		cols := rg.ColumnChunks()
+		if tsIdx >= len(cols) {
+			continue
+		}
+		idx, err := cols[tsIdx].ColumnIndex()
+		if err != nil || idx == nil || idx.NumPages() == 0 {
+			continue
+		}
+		rgMin := idx.MinValue(0).Int64()
+		rgMax := idx.MaxValue(idx.NumPages() - 1).Int64()
+		if minTs == 0 || rgMin < minTs {
+			minTs = rgMin
+		}
+		if rgMax > maxTs {
+			maxTs = rgMax
+		}
+	}
+	if totalRows > 0 {
+		s.manifest.EnrichFileMetadata(fi.Key, totalRows, minTs, maxTs)
+		return true
+	}
+	return false
+}
+
+func (s *Storage) enrichSmallFiles(ctx context.Context, files []manifest.FileInfo) int {
+	if len(files) == 0 {
+		return 0
+	}
+	concurrency := 16
+	if concurrency > len(files) {
+		concurrency = len(files)
+	}
+
+	taskCh := make(chan manifest.FileInfo, len(files))
+	for _, fi := range files {
+		taskCh <- fi
+	}
+	close(taskCh)
+
+	var enriched int
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for fi := range taskCh {
+				if ctx.Err() != nil {
+					return
+				}
+				data, err := s.pool.Download(ctx, fi.Key)
+				if err != nil || len(data) == 0 {
+					continue
+				}
+				cached, _, err := ParseFooterFromData(fi.Key, data)
+				if err != nil {
+					continue
+				}
+				if s.footerCache != nil {
+					s.footerCache.Put(fi.Key, cached)
+				}
+				if s.enrichFromCachedFooter(fi, cached) {
+					mu.Lock()
+					enriched++
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	return enriched
+}
+
+func (s *Storage) loadFileMetadataFromDisk() int {
+	if s.persister == nil {
+		return 0
+	}
+	fmc, err := s.persister.LoadFileMetadata()
+	if err != nil {
+		return 0
+	}
+	enriched := 0
+	for _, entry := range fmc.Entries {
+		if entry.RowCount > 0 {
+			s.manifest.EnrichFileMetadata(entry.Key, entry.RowCount, entry.MinTimeNs, entry.MaxTimeNs)
+			enriched++
+		}
+	}
+	return enriched
+}
+
+func (s *Storage) saveFileMetadataToDisk() {
+	if s.persister == nil {
+		return
+	}
+	files := s.manifest.GetFilesForRange(0, 1<<62)
+	var entries []cache.FileMetaEntry
+	for _, fi := range files {
+		if fi.RowCount > 0 {
+			entries = append(entries, cache.FileMetaEntry{
+				Key:               fi.Key,
+				RowCount:          fi.RowCount,
+				MinTimeNs:         fi.MinTimeNs,
+				MaxTimeNs:         fi.MaxTimeNs,
+				RawBytes:          fi.RawBytes,
+				SchemaFingerprint: fi.SchemaFingerprint,
+				Labels:            fi.Labels,
+			})
+		}
+	}
+	if len(entries) == 0 {
+		return
+	}
+	fmc := &cache.FileMetadataCache{Entries: entries}
+	if err := s.persister.SaveFileMetadata(fmc); err != nil {
+		logger.Warnf("failed to save file metadata to disk: %v", err)
+	} else {
+		logger.Infof("saved %d file metadata entries to disk", len(entries))
+	}
 }
 
 // SmartCache returns the SmartCacheController (nil if not configured).
@@ -1150,8 +1388,19 @@ func (l *localOnlyLookup) Lookup(key string) (string, bool) { return "self", tru
 func (l *localOnlyLookup) Members() []string                { return []string{"self"} }
 func (l *localOnlyLookup) MemberCount() int                 { return 1 }
 
-type s3Adapter struct{ pool *s3reader.ClientPool }
+type s3Adapter struct {
+	pool  *s3reader.ClientPool
+	dlSem chan struct{}
+}
 
 func (a *s3Adapter) Download(ctx context.Context, key string) ([]byte, error) {
+	if a.dlSem != nil {
+		select {
+		case a.dlSem <- struct{}{}:
+			defer func() { <-a.dlSem }()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	return a.pool.Download(ctx, key)
 }

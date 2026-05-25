@@ -80,6 +80,24 @@ jobs:
       - name: Test logs module
         run: go test ./internal/... -race -count=1 -timeout=10m
 
+      - name: Coverage check (logs)
+        run: |
+          THRESHOLD=90
+          FAILED=0
+          while IFS= read -r line; do
+            pkg=$(echo "$line" | grep -oP '/internal/\K[^/\s]+' | head -1)
+            [ -z "$pkg" ] && continue
+            case "$pkg" in testutil|storage) continue ;; esac
+            pct=$(echo "$line" | grep -oP '([0-9.]+)%' | head -1 | tr -d '%')
+            [ -z "$pct" ] && continue
+            below=$(awk "BEGIN{print ($pct < $THRESHOLD)}")
+            if [ "$below" -eq 1 ]; then
+              echo "::error::Coverage for $pkg is ${pct}% (minimum: ${THRESHOLD}%)"
+              FAILED=1
+            fi
+          done < <(go test ./internal/... -cover -count=1 -timeout=10m 2>&1 | grep 'coverage:')
+          [ "$FAILED" -eq 1 ] && exit 1 || echo "All packages above ${THRESHOLD}% coverage"
+
       - name: Vet logs module
         run: go vet ./internal/... ./cmd/...
 
@@ -112,6 +130,25 @@ jobs:
       - name: Test traces module
         working-directory: lakehouse-traces
         run: go test ./internal/... -race -count=1 -timeout=10m
+
+      - name: Coverage check (traces)
+        working-directory: lakehouse-traces
+        run: |
+          THRESHOLD=90
+          FAILED=0
+          while IFS= read -r line; do
+            pkg=$(echo "$line" | grep -oP '/internal/\K[^/\s]+' | head -1)
+            [ -z "$pkg" ] && continue
+            case "$pkg" in testutil|storage) continue ;; esac
+            pct=$(echo "$line" | grep -oP '([0-9.]+)%' | head -1 | tr -d '%')
+            [ -z "$pct" ] && continue
+            below=$(awk "BEGIN{print ($pct < $THRESHOLD)}")
+            if [ "$below" -eq 1 ]; then
+              echo "::error::Coverage for $pkg is ${pct}% (minimum: ${THRESHOLD}%)"
+              FAILED=1
+            fi
+          done < <(go test ./internal/... -cover -count=1 -timeout=10m 2>&1 | grep 'coverage:')
+          [ "$FAILED" -eq 1 ] && exit 1 || echo "All packages above ${THRESHOLD}% coverage"
 
       - name: Vet traces module
         working-directory: lakehouse-traces
