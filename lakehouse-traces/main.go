@@ -19,6 +19,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/crosssignal"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/election"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/lifecycle"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
@@ -712,6 +713,17 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 
 	// VMUI with Lakehouse tab injection
 	ui.RegisterVMUI(mux, cfg.UI.VMUITab)
+
+	// Lifecycle endpoints for K8s probes and observability
+	lcInfo := lifecycle.LifecycleInfo{
+		GetPhase:   func() string { return sm.Phase().String() },
+		IsReady:    sm.IsReady,
+		IsDraining: func() bool { return false },
+	}
+	mux.HandleFunc("/internal/lifecycle/drain", lifecycle.HandleDrain(nil))
+	mux.HandleFunc("/internal/lifecycle/ready", lifecycle.HandleLifecycleReady(lcInfo))
+	mux.HandleFunc("/internal/lifecycle/ring", lifecycle.HandleLifecycleRing(lcInfo))
+	mux.HandleFunc("/internal/lifecycle/stale", lifecycle.HandleLifecycleStale(lcInfo))
 
 	return mux
 }
