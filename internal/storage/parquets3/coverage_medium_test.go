@@ -587,7 +587,7 @@ func TestMedium_readMapColumnToBlockCols(t *testing.T) {
 
 	// MAP columns in parquet have structure: attrs -> key_value -> key, value
 	// Find the key and value leaf column indices.
-	var keyIdx, valIdx int = -1, -1
+	var keyIdx, valIdx = -1, -1
 	for _, col := range attrsCol.Columns() {
 		for _, leaf := range col.Columns() {
 			if leaf.Name() == "key" {
@@ -1231,8 +1231,8 @@ func TestMedium_traceRowToFields(t *testing.T) {
 			"service.name":    "should-be-skipped", // promoted key
 		},
 		SpanAttributes: map[string]string{
-			"custom.span":  "val2",
-			"http.method":  "should-be-skipped", // promoted key
+			"custom.span": "val2",
+			"http.method": "should-be-skipped", // promoted key
 		},
 		ScopeAttributes: map[string]string{
 			"scope.attr": "val3",

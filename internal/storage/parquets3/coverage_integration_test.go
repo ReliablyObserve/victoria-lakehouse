@@ -60,7 +60,7 @@ func (m *mockS3Server) handler(w http.ResponseWriter, r *http.Request) {
 		// ListObjectsV2 request
 		if r.URL.Query().Get("list-type") == "2" {
 			w.Header().Set("Content-Type", "application/xml")
-			fmt.Fprint(w, `<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>`)
+			_, _ = fmt.Fprint(w, `<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>`)
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -70,7 +70,7 @@ func (m *mockS3Server) handler(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPut {
 		data, _ := io.ReadAll(r.Body)
-		r.Body.Close()
+		_ = r.Body.Close()
 		m.putFile(key, data)
 		w.WriteHeader(http.StatusOK)
 		return
@@ -81,7 +81,7 @@ func (m *mockS3Server) handler(w http.ResponseWriter, r *http.Request) {
 	m.mu.RUnlock()
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
-		fmt.Fprintf(w, `<?xml version="1.0"?><Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message></Error>`)
+		_, _ = fmt.Fprintf(w, `<?xml version="1.0"?><Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message></Error>`)
 		return
 	}
 
@@ -104,13 +104,13 @@ func (m *mockS3Server) handler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(data)))
 		w.Header().Set("Content-Length", strconv.Itoa(int(end-start+1)))
 		w.WriteHeader(http.StatusPartialContent)
-		w.Write(data[start : end+1])
+		_, _ = w.Write(data[start : end+1])
 		return
 	}
 
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.WriteHeader(http.StatusOK)
-	w.Write(data)
+	_, _ = w.Write(data)
 }
 
 func (m *mockS3Server) close() {
@@ -133,16 +133,16 @@ func testStorageWithS3(t *testing.T, s3url string) *Storage {
 	cfg.S3.ReadAheadBytes = 4096
 	cfg.S3.CoalesceGapBytes = 1024
 	return &Storage{
-		cfg:        cfg,
-		pool:       pool,
-		manifest:   manifest.New("test-bucket", "logs/"),
-		registry:   schema.NewRegistry(schema.LogsProfile),
-		memCache:   cache.NewLRU(64 * 1024 * 1024),
-		sfGroup:    cache.NewGroup(),
-		labelIndex: cache.NewLabelIndex(),
-		discovery:  discovery.New("", nil, "", "", "9428", 5*time.Second),
+		cfg:         cfg,
+		pool:        pool,
+		manifest:    manifest.New("test-bucket", "logs/"),
+		registry:    schema.NewRegistry(schema.LogsProfile),
+		memCache:    cache.NewLRU(64 * 1024 * 1024),
+		sfGroup:     cache.NewGroup(),
+		labelIndex:  cache.NewLabelIndex(),
+		discovery:   discovery.New("", nil, "", "", "9428", 5*time.Second),
 		footerCache: NewFooterCache(1000),
-		dlSem:      make(chan struct{}, 4),
+		dlSem:       make(chan struct{}, 4),
 	}
 }
 
@@ -867,13 +867,9 @@ func TestInteg_filterByLabelIndex_ExactMatch(t *testing.T) {
 	}
 
 	result := s.filterByLabelIndex(files, pdf)
-	// The label index may or may not be populated; if nil, that's OK (fallback)
-	if result != nil {
-		// If the inverted index returned results, verify filtering
-		for _, fi := range result {
-			if fi.Key == "logs/dt=2026-05-10/hour=14/b.parquet" {
-				t.Error("b.parquet (worker) should not match api-gw filter")
-			}
+	for _, fi := range result {
+		if fi.Key == "logs/dt=2026-05-10/hour=14/b.parquet" {
+			t.Error("b.parquet (worker) should not match api-gw filter")
 		}
 	}
 }
@@ -2603,11 +2599,7 @@ func TestInteg_shouldSkipByFooter_FullPath_NoMatch(t *testing.T) {
 
 	// The footer should be cached if the file matched (at least one row group)
 	_, cached := footerCache.Get(key)
-	// Either the footer is cached (match found) or the file was skipped
-	if !cached && !skip {
-		// If neither cached nor skipped, something unexpected happened
-		// But this is OK — the function falls back gracefully
-	}
+	_ = cached
 }
 
 func TestInteg_shouldSkipByFooter_FullPath_Match(t *testing.T) {

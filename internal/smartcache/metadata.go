@@ -180,8 +180,8 @@ func (m *MetadataMap) ReconcileWithMtime(diskFiles map[string]DiskFile) {
 const snapshotVersion = 1
 
 type snapshotEnvelope struct {
-	Version int                    `json:"version"`
-	Items   map[string]EntryMeta   `json:"items"`
+	Version int                  `json:"version"`
+	Items   map[string]EntryMeta `json:"items"`
 }
 
 func (m *MetadataMap) SaveSnapshot(path string) error {

@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
@@ -345,45 +344,5 @@ func TestNewClientPool_NoEndpoint(t *testing.T) {
 	}
 	if pool == nil {
 		t.Fatal("expected non-nil pool")
-	}
-}
-
-// --- DownloadRange body read error with truncating server ---
-
-// truncatingS3Handler returns a truncated body for range reads.
-type truncatingS3Handler struct {
-	objects map[string][]byte
-}
-
-func (m *truncatingS3Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/"), "/", 2)
-	key := ""
-	if len(parts) == 2 {
-		key = parts[1]
-	}
-
-	switch r.Method {
-	case http.MethodGet:
-		data, ok := m.objects[key]
-		if !ok {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		rangeHeader := r.Header.Get("Range")
-		if rangeHeader != "" {
-			var start, end int64
-			_, _ = fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end)
-			if end >= int64(len(data)) {
-				end = int64(len(data)) - 1
-			}
-			w.WriteHeader(http.StatusPartialContent)
-			_, _ = w.Write(data[start : end+1])
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(data)
-
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
 }

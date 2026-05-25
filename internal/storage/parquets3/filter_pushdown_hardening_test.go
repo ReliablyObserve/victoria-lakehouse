@@ -93,11 +93,11 @@ func TestIsNegatedPredicate(t *testing.T) {
 
 func TestCheckMatchesStatsNumeric(t *testing.T) {
 	tests := []struct {
-		name   string
-		check  PushDownCheck
-		rgMin  int64
-		rgMax  int64
-		want   bool
+		name  string
+		check PushDownCheck
+		rgMin int64
+		rgMax int64
+		want  bool
 	}{
 		{
 			name:  "exact match within range",

@@ -312,7 +312,7 @@ func TestDetectConstantColumns_MultiPage(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	pf := openTestParquet(t, path)
 	rgs := pf.RowGroups()
@@ -681,7 +681,7 @@ func TestNew_LogsMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New(logs) failed: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	if s.pool == nil {
 		t.Error("expected non-nil pool")
@@ -733,7 +733,7 @@ func TestNew_TracesMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New(traces) failed: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	if s.writer == nil {
 		t.Error("expected non-nil writer")
@@ -762,7 +762,7 @@ func TestNew_SelectOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New(select-only) failed: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	if s.writer != nil {
 		t.Error("expected nil writer for select-only role")
@@ -797,7 +797,7 @@ func TestNew_InsertOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New(insert-only) failed: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	if s.writer == nil {
 		t.Error("expected non-nil writer for insert role")
@@ -836,7 +836,7 @@ func TestNew_WithDiskCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New(with disk cache) failed: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	if s.diskCache == nil {
 		t.Error("expected non-nil diskCache when DiskPath is set")
@@ -879,7 +879,7 @@ func TestRefreshManifest_EmptyBucket(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Return empty ListObjectsV2 response
 		w.Header().Set("Content-Type", "application/xml")
-		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>
+		_, _ = fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <Name>test-bucket</Name>
   <Contents></Contents>

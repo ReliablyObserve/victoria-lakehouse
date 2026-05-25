@@ -118,7 +118,7 @@ func detectGCPMetadata(ctx context.Context, baseURL string, timeout time.Duratio
 }
 
 // k8sTokenPath is the default SA token path; overridden in tests.
-var k8sTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+var k8sTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token" // #nosec G101 -- filesystem path, not a credential
 
 // k8sAPIBase is the default K8s API base URL; overridden in tests.
 var k8sAPIBase = "https://kubernetes.default.svc"

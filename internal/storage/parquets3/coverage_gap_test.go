@@ -165,8 +165,8 @@ func TestCoverage_valueMatchesCheck(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCoverage_footerReaderAt_ReadAt(t *testing.T) {
-	footer := []byte("FOOTERDATA")      // 10 bytes
-	var fileSize int64 = 4 + 20 + 10     // magic(4) + gap(20) + footer(10) = 34
+	footer := []byte("FOOTERDATA")   // 10 bytes
+	var fileSize int64 = 4 + 20 + 10 // magic(4) + gap(20) + footer(10) = 34
 
 	r := &footerReaderAt{
 		footer:   footer,

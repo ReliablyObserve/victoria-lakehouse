@@ -422,9 +422,7 @@ func TestInteg_QuerySpecificFiles_CancelledContext(t *testing.T) {
 
 	err := s.QuerySpecificFiles(ctx, keys, startNs, endNs, "", nil,
 		func(_ uint, db *logstorage.DataBlock) {})
-	if err == nil {
-		// May or may not error depending on timing, both OK
-	}
+	_ = err
 }
 
 // ---------------------------------------------------------------------------
@@ -445,7 +443,7 @@ func TestInteg_queryBufferBridge_LogsMode(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		enc := json.NewEncoder(w)
 		for _, row := range rows {
-			enc.Encode(row)
+			_ = enc.Encode(row)
 		}
 	}))
 	defer insertSrv.Close()
@@ -494,7 +492,7 @@ func TestInteg_queryBufferBridge_TracesMode(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		enc := json.NewEncoder(w)
 		for _, row := range rows {
-			enc.Encode(row)
+			_ = enc.Encode(row)
 		}
 	}))
 	defer insertSrv.Close()
@@ -1123,8 +1121,8 @@ func TestInteg_readRowGroupWithProjection_OnlyConstantCols(t *testing.T) {
 
 	// Request only columns that are constant
 	cols := map[string]bool{
-		"service.name":   true,
-		"severity_text":  true,
+		"service.name":  true,
+		"severity_text": true,
 	}
 
 	var blocks []*logstorage.DataBlock
@@ -2772,7 +2770,7 @@ func TestInteg_RunQuery_WithBufferBridge(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		enc := json.NewEncoder(w)
 		for _, row := range rows {
-			enc.Encode(row)
+			_ = enc.Encode(row)
 		}
 	}))
 	defer insertSrv.Close()
