@@ -392,26 +392,37 @@ graph LR
 
 ## Test Coverage Matrix
 
-| Package | Source Files | Test Files | Tests | Ratio | Status |
-|---------|-------------|-----------|-------|-------|--------|
-| parquets3 | 21 | 43 | ~300 | 2.0x | Good |
-| smartcache | 8 | 13 | 121 | 1.6x | Good |
-| bloomindex | 10 | 15 | 148 | 1.5x | Good |
-| manifest | 6 | 18 | 115 | 3.0x | Excellent |
-| tenant | 6 | 9 | 45 | 1.5x | Good |
-| azdetect | 1 | 5 | 33 | 5.0x | Excellent |
-| compaction | 4 | 8 | ~40 | 2.0x | Good |
-| prefetch | 2 | 5 | ~30 | 2.5x | Good |
-| selectapi | 3 | 6 | ~50 | 2.0x | Good |
-| stats | 5 | 8 | ~45 | 1.6x | Good |
-| discovery | 2 | 4 | ~20 | 2.0x | Good |
-| startup | 1 | 2 | 3 | 2.0x | Thin |
+| Package | Coverage | Status |
+|---------|----------|--------|
+| prefetch | 100.0% | Excellent |
+| startup | 100.0% | Excellent |
+| metrics | 100.0% | Excellent |
+| schema | 100.0% | Excellent |
+| retention | 99.0% | Excellent |
+| manifest | 98.0% | Excellent |
+| discovery | 97.8% | Excellent |
+| s3reader | 97.4% | Excellent |
+| bloomindex | 96.0% | Excellent |
+| peercache | 96.1% | Excellent |
+| smartcache | 95.9% | Excellent |
+| tenant | 95.8% | Excellent |
+| vlstorage | 95.0% | Excellent |
+| wal | 94.7% | Good |
+| config | 94.3% | Good |
+| stats | 93.9% | Good |
+| buffer | 93.9% | Good |
+| ui | 93.9% | Good |
+| cache | 95.3% | Excellent |
+| selectapi | 93.7% | Good |
+| delete | 93.7% | Good |
+| crosssignal | 93.3% | Good |
+| telemetry | 92.6% | Good |
+| election | 91.1% | Good |
+| compaction | 90.2% | Good |
+| azdetect | 90.0% | Good |
+| parquets3 | 82.9% | Needs S3 integration tests |
 
-### Critical Zero-Coverage Functions
-
-1. `isNegatedPredicate()` - bloom filter skip logic for `!=` queries
-2. `dictionaryContainsMatch()` - dictionary-encoded exact-match pruning
-3. `TenantSummaries()` - manifest tenant discovery
+**26 of 29 packages at 90%+ coverage.** parquets3 remaining gap is in S3-dependent integration functions (RunQuery, queryFile, openParquetFile).
 
 ### Missing Benchmarks
 
