@@ -26,6 +26,107 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage"
 )
 
+func sortFilesByCacheAffinity(files []manifest.FileInfo, cachedKeys map[string]bool) {
+	sort.SliceStable(files, func(i, j int) bool {
+		iCached := cachedKeys[files[i].Key]
+		jCached := cachedKeys[files[j].Key]
+		if iCached != jCached {
+			return iCached
+		}
+		return false
+	})
+}
+
+func (s *Storage) applySelfFilter(files []manifest.FileInfo) []manifest.FileInfo {
+	if !s.selfFilterEnabled || s.smartCache == nil {
+		return files
+	}
+	var owned []manifest.FileInfo
+	for _, f := range files {
+		if _, isLocal := s.smartCache.LookupOwner(f.Key); isLocal {
+			owned = append(owned, f)
+		}
+	}
+	if len(owned) > 0 {
+		return owned
+	}
+	return files
+}
+
+func (s *Storage) applyCacheAffinity(files []manifest.FileInfo) {
+	if s.footerCache == nil {
+		return
+	}
+	cachedKeys := make(map[string]bool, len(files))
+	for _, f := range files {
+		if s.footerCache.Has(f.Key) {
+			cachedKeys[f.Key] = true
+		}
+	}
+	if len(cachedKeys) > 0 && len(cachedKeys) < len(files) {
+		sortFilesByCacheAffinity(files, cachedKeys)
+	}
+}
+
+func (s *Storage) manifestFastPath(files []manifest.FileInfo, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc) []manifest.FileInfo {
+	var remaining []manifest.FileInfo
+	for _, fi := range files {
+		if fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
+			fi.MinTimeNs >= startNs && fi.MaxTimeNs <= endNs {
+			db := s.syntheticManifestBlock(fi)
+			if db != nil && db.RowsCount() > 0 {
+				writeBlock(0, db)
+				metrics.MetadataOnlyFiles.Inc()
+			}
+		} else {
+			remaining = append(remaining, fi)
+		}
+	}
+	if len(remaining) < len(files) {
+		logger.Infof("metadata fast path: resolved %d/%d files from manifest, %d remain for S3",
+			len(files)-len(remaining), len(files), len(remaining))
+	}
+	return remaining
+}
+
+func (s *Storage) syntheticManifestBlock(fi manifest.FileInfo) *logstorage.DataBlock {
+	const maxSyntheticRows = 50_000_000
+	n := int(fi.RowCount)
+	if n == 0 {
+		return nil
+	}
+	if n > maxSyntheticRows {
+		n = maxSyntheticRows
+	}
+
+	tsCol := s.registry.TimestampColumn()
+	internalName := tsCol
+	if m := s.registry.ResolveFromParquet(tsCol); m != nil {
+		internalName = m.InternalName
+	}
+
+	values := make([]string, n)
+	if n == 1 {
+		values[0] = s.registry.FormatField(internalName, fi.MinTimeNs)
+	} else {
+		step := (fi.MaxTimeNs - fi.MinTimeNs) / int64(n-1)
+		if step == 0 {
+			step = 1
+		}
+		for i := range values {
+			ts := fi.MinTimeNs + int64(i)*step
+			if ts > fi.MaxTimeNs {
+				ts = fi.MaxTimeNs
+			}
+			values[i] = s.registry.FormatField(internalName, ts)
+		}
+	}
+
+	db := &logstorage.DataBlock{}
+	db.SetColumns([]logstorage.BlockColumn{{Name: internalName, Values: values}})
+	return db
+}
+
 func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -113,10 +214,27 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		return nil
 	}
 
+	files = s.applySelfFilter(files)
+	s.applyCacheAffinity(files)
+
+	hasTombstones := s.tombstones != nil && len(s.tombstones.ForRange(startNs, endNs)) > 0
+	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
+		remaining := s.manifestFastPath(files, startNs, endNs, filteredWriteBlock)
+		if len(remaining) == 0 {
+			if n := rowsEmitted.Load(); n > 0 {
+				metrics.QueryRowsTotal.Add(int(n))
+			}
+			return nil
+		}
+		files = remaining
+	}
+
 	files = s.preFilterFiles(files, queryStr)
 	if len(files) == 0 {
 		return nil
 	}
+
+	prefetchFooters(ctx, s.pool, files, s.footerCache, 0)
 
 	// Parallel file worker pool
 	fileWorkers := s.cfg.Query.FileWorkers

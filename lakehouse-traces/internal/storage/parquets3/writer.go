@@ -37,6 +37,10 @@ type FlushHook func(key string, columnValues map[string][]string)
 // compressed size, raw size, row count, and storage class.
 type StatsCallback func(compressedBytes, rawBytes, rows int64, storageClass string)
 
+// FlushCacheCallback is called after a successful S3 upload to cache the
+// flushed file data locally (write-through cache).
+type FlushCacheCallback func(fileKey string, data []byte)
+
 type BatchWriter struct {
 	cfg      *config.InsertConfig
 	pool     *s3reader.ClientPool
@@ -54,6 +58,7 @@ type BatchWriter struct {
 
 	onFlush       FlushHook
 	statsCallback StatsCallback
+	flushCacheCb  FlushCacheCallback
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -97,6 +102,10 @@ func (w *BatchWriter) SetFlushHook(hook FlushHook) {
 
 func (w *BatchWriter) SetStatsCallback(cb StatsCallback) {
 	w.statsCallback = cb
+}
+
+func (w *BatchWriter) SetFlushCacheCallback(cb FlushCacheCallback) {
+	w.flushCacheCb = cb
 }
 
 func (w *BatchWriter) Stop() {
@@ -328,6 +337,10 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 		w.statsCallback(int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
 	}
 
+	if w.flushCacheCb != nil {
+		w.flushCacheCb(key, result.Data)
+	}
+
 	w.totalBytes.Add(int64(len(result.Data)))
 
 	logger.Infof("flushed log partition; partition=%s, rows=%d, bytes=%d, ratio=%v, key=%s",
@@ -376,6 +389,10 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 
 	if w.statsCallback != nil {
 		w.statsCallback(int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
+	}
+
+	if w.flushCacheCb != nil {
+		w.flushCacheCb(key, result.Data)
 	}
 
 	logger.Infof("flushed trace partition; partition=%s, rows=%d, bytes=%d, ratio=%v, key=%s",

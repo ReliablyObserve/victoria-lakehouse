@@ -11,27 +11,39 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage"
 )
 
 type Handler struct {
-	store   storage.Storage
-	cfg     *config.Config
-	timeout time.Duration
-	sem     chan struct{}
+	store    storage.Storage
+	cfg      *config.Config
+	resolver *tenant.TenantResolver
+	timeout  time.Duration
+	sem      chan struct{}
 }
 
-func NewHandler(store storage.Storage, cfg *config.Config) *Handler {
+type HandlerOption func(*Handler)
+
+func WithResolver(r *tenant.TenantResolver) HandlerOption {
+	return func(h *Handler) { h.resolver = r }
+}
+
+func NewHandler(store storage.Storage, cfg *config.Config, opts ...HandlerOption) *Handler {
 	maxConcurrent := cfg.Query.MaxConcurrent
 	if maxConcurrent <= 0 {
 		maxConcurrent = 32
 	}
-	return &Handler{
+	h := &Handler{
 		store:   store,
 		cfg:     cfg,
 		timeout: cfg.Query.Timeout,
 		sem:     make(chan struct{}, maxConcurrent),
 	}
+	for _, o := range opts {
+		o(h)
+	}
+	return h
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
