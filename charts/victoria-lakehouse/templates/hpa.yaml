@@ -26,6 +26,10 @@ spec:
         target:
           type: Utilization
           averageUtilization: {{ $roleVals.horizontalPodAutoscaler.targetCPUUtilizationPercentage }}
+  {{- with $roleVals.horizontalPodAutoscaler.behavior }}
+  behavior:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

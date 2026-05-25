@@ -177,6 +177,11 @@ lakehouseConfig:
     peer_refresh_interval: 30s
     # -- Timeout for discovery HTTP requests.
     timeout: 10s
+    # -- Duration to keep old ring members as shadow set during scaling events.
+    # During this period, both old and new ring assignments are honored for lookups.
+    ring_stabilize_duration: 60s
+    # -- Enable subscriber notifications on ring membership changes.
+    ring_change_notify: true
 
   # ---------------------------------------------------------------------------
   # Peer — Distributed peer cache (L3)
@@ -279,6 +284,12 @@ lakehouseConfig:
     # -- Maximum time for in-flight HTTP requests to complete.
     # Maps to -http.maxGracefulShutdownDuration flag.
     max_graceful_duration: 7s
+    # -- Timeout for flushing buffered data to S3 during shutdown.
+    flush_timeout: 15s
+    # -- Timeout for persisting manifest/cache/stats snapshots during shutdown.
+    persist_timeout: 10s
+    # -- Timeout for releasing leader lease and notifying peers during shutdown.
+    release_timeout: 5s
 
   # ---------------------------------------------------------------------------
   # Query — Read path limits and parallelism
@@ -307,6 +318,16 @@ lakehouseConfig:
     warmup_window: 24h
     # -- Maximum time to spend on startup warmup before marking ready.
     max_warmup_time: 5m
+    # -- Timeout for peer sync during startup.
+    peer_sync_timeout: 30s
+    # -- Duration threshold to consider persisted data stale (e.g., after PV reattach).
+    stale_threshold: 1h
+    # -- Reconcile WAL entries against manifest on stale startup.
+    wal_reconciliation: true
+    # -- Revalidate cache entries on stale startup.
+    cache_revalidation: true
+    # -- Maximum time for stale PV resync before marking ready anyway.
+    max_resync_time: 2m
 
   # ---------------------------------------------------------------------------
   # Schema — Parquet column extensibility
@@ -545,6 +566,7 @@ logs:
     tolerations: []
     affinity: {}
     podDisruptionBudget:
+      # -- Enable PDB. Recommended: true with minAvailable ≥ 7 for select (query path).
       enabled: false
       minAvailable: 1
     serviceAccount:
@@ -556,6 +578,15 @@ logs:
       minReplicas: 2
       maxReplicas: 10
       targetCPUUtilizationPercentage: 80
+      # -- HPA behavior for scale-down stabilization. Prevents ring churn during
+      # transient load drops. stabilizationWindowSeconds should be >= ring_stabilize_duration.
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 120
     verticalPodAutoscaler:
       enabled: false
       updateMode: "Off"
@@ -628,6 +659,7 @@ logs:
     tolerations: []
     affinity: {}
     podDisruptionBudget:
+      # -- Enable PDB. Recommended: true with minAvailable ≥ 2 for insert (write path).
       enabled: false
       minAvailable: 1
     serviceAccount:
@@ -639,6 +671,13 @@ logs:
       minReplicas: 2
       maxReplicas: 10
       targetCPUUtilizationPercentage: 80
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 120
     verticalPodAutoscaler:
       enabled: false
       updateMode: "Off"
@@ -738,6 +777,7 @@ traces:
     tolerations: []
     affinity: {}
     podDisruptionBudget:
+      # -- Enable PDB. Recommended: true with minAvailable ≥ 7 for select (query path).
       enabled: false
       minAvailable: 1
     serviceAccount:
@@ -749,6 +789,13 @@ traces:
       minReplicas: 2
       maxReplicas: 10
       targetCPUUtilizationPercentage: 80
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 120
     verticalPodAutoscaler:
       enabled: false
       updateMode: "Off"
@@ -821,6 +868,7 @@ traces:
     tolerations: []
     affinity: {}
     podDisruptionBudget:
+      # -- Enable PDB. Recommended: true with minAvailable ≥ 2 for insert (write path).
       enabled: false
       minAvailable: 1
     serviceAccount:
@@ -832,6 +880,13 @@ traces:
       minReplicas: 2
       maxReplicas: 10
       targetCPUUtilizationPercentage: 80
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 120
     verticalPodAutoscaler:
       enabled: false
       updateMode: "Off"

@@ -90,7 +90,7 @@ spec:
           lifecycle:
             preStop:
               exec:
-                command: ["sh", "-c", "sleep {{ trimSuffix "s" (default "5s" $.Values.lakehouseConfig.shutdown.delay) }}"]
+                command: ["sh", "-c", "curl -s -X POST http://localhost:{{ include "victoria-lakehouse.signalPort" (dict "signal" $signal) }}/internal/lifecycle/drain; sleep {{ trimSuffix "s" (default "5s" $.Values.lakehouseConfig.shutdown.delay) }}"]
           env:
             - name: NODE_NAME
               valueFrom:
@@ -125,7 +125,7 @@ spec:
             failureThreshold: {{ $roleVals.probe.liveness.failureThreshold }}
           readinessProbe:
             httpGet:
-              path: /health
+              path: /internal/lifecycle/ready
               port: http
             initialDelaySeconds: {{ $roleVals.probe.readiness.initialDelaySeconds }}
             periodSeconds: {{ $roleVals.probe.readiness.periodSeconds }}
