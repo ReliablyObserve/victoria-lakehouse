@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+
+- Benchmark: increase trace datagen volume from 20K to 50K spans for more representative optimization measurements
+
 ## [0.34.0] - 2026-05-24
 
 ### Performance
