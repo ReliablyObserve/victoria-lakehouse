@@ -210,8 +210,9 @@ func New(cfg *config.Config) (*Storage, error) {
 
 	if bw != nil {
 		obs := &storageBloomObserver{
-			bloom: bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01),
-			pool:  pool,
+			bloom:    bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01),
+			pool:     pool,
+			manifest: s.manifest,
 		}
 		bw.bloomObserver = obs
 		s.bloomObserver = obs

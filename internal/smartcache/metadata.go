@@ -137,7 +137,20 @@ func deepCopyEntry(e EntryMeta) EntryMeta {
 	return e
 }
 
+type DiskFile struct {
+	Size  int64
+	Mtime time.Time
+}
+
 func (m *MetadataMap) Reconcile(diskFiles map[string]int64) {
+	mfiles := make(map[string]DiskFile, len(diskFiles))
+	for k, size := range diskFiles {
+		mfiles[k] = DiskFile{Size: size}
+	}
+	m.ReconcileWithMtime(mfiles)
+}
+
+func (m *MetadataMap) ReconcileWithMtime(diskFiles map[string]DiskFile) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -148,16 +161,27 @@ func (m *MetadataMap) Reconcile(diskFiles map[string]int64) {
 	}
 
 	now := time.Now()
-	for key, size := range diskFiles {
+	for key, df := range diskFiles {
 		if _, exists := m.items[key]; !exists {
+			createdAt := df.Mtime
+			if createdAt.IsZero() {
+				createdAt = now
+			}
 			m.items[key] = EntryMeta{
-				CreatedAt:         now,
-				LastAccess:        now,
-				AccessWindowStart: now,
-				Size:              size,
+				CreatedAt:         createdAt,
+				LastAccess:        createdAt,
+				AccessWindowStart: createdAt,
+				Size:              df.Size,
 			}
 		}
 	}
+}
+
+const snapshotVersion = 1
+
+type snapshotEnvelope struct {
+	Version int                    `json:"version"`
+	Items   map[string]EntryMeta   `json:"items"`
 }
 
 func (m *MetadataMap) SaveSnapshot(path string) error {
@@ -168,7 +192,7 @@ func (m *MetadataMap) SaveSnapshot(path string) error {
 	}
 	m.mu.RUnlock()
 
-	data, err := json.Marshal(cp)
+	data, err := json.Marshal(snapshotEnvelope{Version: snapshotVersion, Items: cp})
 	if err != nil {
 		return err
 	}
@@ -189,13 +213,17 @@ func (m *MetadataMap) LoadSnapshot(path string) error {
 		return err
 	}
 
-	var items map[string]EntryMeta
-	if err := json.Unmarshal(data, &items); err != nil {
-		return err
+	var env snapshotEnvelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		var items map[string]EntryMeta
+		if err2 := json.Unmarshal(data, &items); err2 != nil {
+			return err
+		}
+		env = snapshotEnvelope{Version: 0, Items: items}
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.items = items
+	m.items = env.Items
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -30,8 +31,9 @@ func (o *storageBloomObserver) writeFileBloom(ctx context.Context, fileKey strin
 }
 
 type storageBloomObserver struct {
-	bloom *bloomindex.PartitionedIndex
-	pool  *s3reader.ClientPool
+	bloom    *bloomindex.PartitionedIndex
+	pool     *s3reader.ClientPool
+	manifest *manifest.Manifest
 }
 
 func (o *storageBloomObserver) OnFileFlush(partition, fileKey string, columnValues map[string][]string) {
@@ -69,6 +71,12 @@ func (o *storageBloomObserver) PersistDirty(ctx context.Context, prefix string) 
 			continue
 		}
 		o.bloom.ClearDirty(partition)
+		if o.manifest != nil {
+			o.manifest.SetBloomMeta(partition, manifest.PartitionMeta{
+				BloomAvailable: true,
+				BloomSize:      int64(len(data)),
+			})
+		}
 	}
 }
 
