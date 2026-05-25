@@ -132,6 +132,38 @@ var (
 	BufferBridgeAZRequestsTotal = NewCounterVec("lakehouse_buffer_bridge_az_requests_total", "az_type")
 )
 
+// Shutdown lifecycle metrics
+var (
+	ShutdownPhaseDuration = NewHistogram("lakehouse_shutdown_phase_duration_seconds",
+		[]float64{0.1, 0.5, 1, 2, 5, 10, 15, 30, 45, 60})
+	ShutdownPhaseActive = NewGaugeVec("lakehouse_shutdown_phase_active", "phase")
+	ShutdownFlushRows   = NewCounter("lakehouse_shutdown_flush_rows_total")
+	ShutdownSuccess     = NewGauge("lakehouse_shutdown_success")
+)
+
+// Startup lifecycle metrics
+var (
+	StartupPhaseDuration     = NewHistogram("lakehouse_startup_phase_duration_seconds",
+		[]float64{0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300})
+	StartupStalePVDetected   = NewGauge("lakehouse_startup_stale_pv_detected")
+	StartupStalenessHours    = NewFloatGauge("lakehouse_startup_staleness_hours")
+	StartupWALReconciledRows = NewCounter("lakehouse_startup_wal_reconciled_rows")
+	StartupCacheInvalidated  = NewCounter("lakehouse_startup_cache_invalidated_entries")
+)
+
+// Ring change metrics
+var (
+	RingChangeEventsTotal   = NewCounterVec("lakehouse_ring_change_events_total", "type")
+	RingStabilizeInProgress = NewGauge("lakehouse_ring_stabilize_in_progress")
+	RingPeersTotal          = NewGauge("lakehouse_ring_peers_total")
+)
+
+// Query continuity during scaling
+var (
+	QueryPeerErrorsTotal      = NewCounterVec("lakehouse_query_peer_errors_total", "type")
+	BufferBridgeFallbackTotal = NewCounter("lakehouse_buffer_bridge_fallback_total")
+)
+
 // Bloom index metrics
 var (
 	BloomBuildTotal      = NewCounterVec("lakehouse_bloom_build_total", "trigger")
