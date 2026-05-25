@@ -477,9 +477,21 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 
 	rowGroups := f.RowGroups()
 
-	// Pre-filter row groups using metadata (time range, bloom, pushdown).
+	// Extract file-level key-value metadata for token bloom checks.
+	searchTokens := extractSearchTokens(queryStr)
+	var fileKVMeta map[string]string
+	if len(searchTokens) > 0 {
+		if meta := f.Metadata(); meta != nil {
+			fileKVMeta = make(map[string]string, len(meta.KeyValueMetadata))
+			for _, kv := range meta.KeyValueMetadata {
+				fileKVMeta[kv.Key] = kv.Value
+			}
+		}
+	}
+
+	// Pre-filter row groups using metadata (time range, bloom, pushdown, token bloom).
 	var matchedRGs []parquet.RowGroup
-	for _, rg := range rowGroups {
+	for rgIdx, rg := range rowGroups {
 		if tsIdx >= 0 && !rowGroupMatchesTimeRange(rg, tsIdx, startNs, endNs) {
 			metrics.ParquetRowGroupsSkipped.Inc("stats")
 			continue
@@ -490,6 +502,10 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 		}
 		if pdf != nil && !rowGroupMatchesFilter(f, rg, pdf) {
 			metrics.ParquetRowGroupsSkipped.Inc("pushdown")
+			continue
+		}
+		if tokenBloomSkip(fileKVMeta, rgIdx, searchTokens) {
+			metrics.ParquetRowGroupsSkipped.Inc("token_bloom")
 			continue
 		}
 		matchedRGs = append(matchedRGs, rg)
@@ -569,6 +585,10 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 
 	if s.smartCache != nil && len(collectedTraceIDs) > 0 {
 		s.smartCache.RecordTraceIDs(fi.Key, collectedTraceIDs)
+	}
+
+	if s.crossSignalClient != nil && len(collectedTraceIDs) > 0 {
+		s.crossSignalClient.EnqueueHint(collectedTraceIDs, startNs, endNs, string(s.cfg.Mode))
 	}
 
 	return nil

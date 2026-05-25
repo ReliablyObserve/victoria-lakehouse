@@ -18,6 +18,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/crosssignal"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/discovery"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -48,6 +49,7 @@ type Storage struct {
 	bloomIdx          *bloomindex.Index
 	bloomCache        *bloomindex.BloomCache
 	footerCache       *FooterCache
+	crossSignalClient *crosssignal.Client
 	s3Prefix          string
 	selfAZ            string
 	selfFilterEnabled bool
@@ -187,27 +189,39 @@ func New(cfg *config.Config) (*Storage, error) {
 		fc = NewFooterCache(10000)
 	}
 
+	var csClient *crosssignal.Client
+	if cfg.CrossSignal.Enabled && cfg.CrossSignal.Endpoint != "" {
+		csClient = crosssignal.NewClient(crosssignal.ClientConfig{
+			Endpoint:      cfg.CrossSignal.Endpoint,
+			AuthKey:       cfg.CrossSignal.AuthKey,
+			Timeout:       cfg.CrossSignal.Timeout,
+			MaxBatch:      cfg.CrossSignal.MaxBatch,
+			BatchInterval: cfg.CrossSignal.BatchInterval,
+		})
+	}
+
 	return &Storage{
-		cfg:          cfg,
-		pool:         pool,
-		manifest:     m,
-		registry:     schema.NewRegistry(profile),
-		memCache:     memCache,
-		diskCache:    diskCacheInst,
-		sfGroup:      cache.NewGroup(),
-		labelIndex:   labelIdx,
-		persister:    pers,
-		discovery:    disc,
-		peerCache:    pc,
-		peerHandler:  ph,
-		writer:       bw,
-		bufferBridge: bb,
-		smartCache:   sc,
-		bloomIdx:     bloomindex.New(),
-		bloomCache:   bc,
-		footerCache:  fc,
-		s3Prefix:     prefix,
-		dlSem:        make(chan struct{}, maxDL),
+		cfg:               cfg,
+		pool:              pool,
+		manifest:          m,
+		registry:          schema.NewRegistry(profile),
+		memCache:          memCache,
+		diskCache:         diskCacheInst,
+		sfGroup:           cache.NewGroup(),
+		labelIndex:        labelIdx,
+		persister:         pers,
+		discovery:         disc,
+		peerCache:         pc,
+		peerHandler:       ph,
+		writer:            bw,
+		bufferBridge:      bb,
+		smartCache:        sc,
+		bloomIdx:          bloomindex.New(),
+		bloomCache:        bc,
+		footerCache:       fc,
+		crossSignalClient: csClient,
+		s3Prefix:          prefix,
+		dlSem:             make(chan struct{}, maxDL),
 	}, nil
 }
 
@@ -373,6 +387,9 @@ func (s *Storage) HasDataForRange(startNs, endNs int64) bool {
 }
 
 func (s *Storage) Close() error {
+	if s.crossSignalClient != nil {
+		s.crossSignalClient.Close()
+	}
 	if s.writer != nil {
 		s.writer.Stop()
 		logger.Infof("writer stopped and final flush completed")
