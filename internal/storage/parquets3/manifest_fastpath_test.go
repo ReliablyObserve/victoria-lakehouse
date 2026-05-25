@@ -1,6 +1,7 @@
 package parquets3
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -156,6 +157,27 @@ func TestManifestFastPath_MissingTimestampsNotResolved(t *testing.T) {
 	}
 	if len(remaining) != 2 {
 		t.Errorf("remaining = %d, want 2", len(remaining))
+	}
+}
+
+func TestIsFileNotFoundError(t *testing.T) {
+	tests := []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{fmt.Errorf("generic error"), false},
+		{fmt.Errorf("NoSuchKey: The specified key does not exist"), true},
+		{fmt.Errorf("NotFound"), true},
+		{fmt.Errorf("HTTP 404"), true},
+		{fmt.Errorf("object does not exist"), true},
+		{fmt.Errorf("file not found"), true},
+	}
+	for _, tc := range tests {
+		got := isFileNotFoundError(tc.err)
+		if got != tc.want {
+			t.Errorf("isFileNotFoundError(%v) = %v, want %v", tc.err, got, tc.want)
+		}
 	}
 }
 

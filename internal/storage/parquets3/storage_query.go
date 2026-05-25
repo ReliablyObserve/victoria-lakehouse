@@ -228,7 +228,17 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filteredWriteBlock); err != nil {
 					if isFileNotFoundError(err) {
 						metrics.QueryFileNotFoundTotal.Inc()
-						logger.Infof("query skipped compacted/deleted file; key=%s", fi.Key)
+						if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones &&
+							fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 {
+							db := s.syntheticManifestBlock(fi)
+							if db != nil && db.RowsCount() > 0 {
+								filteredWriteBlock(0, db)
+								metrics.MetadataOnlyFiles.Inc()
+							}
+							logger.Infof("query recovered compacted file via manifest metadata; key=%s rows=%d", fi.Key, fi.RowCount)
+						} else {
+							logger.Infof("query skipped compacted/deleted file; key=%s", fi.Key)
+						}
 					} else {
 						metrics.QueryFileErrorsTotal.Inc()
 						logger.Warnf("query file error: %s; key=%s", err, fi.Key)
