@@ -117,19 +117,25 @@ func detectGCPMetadata(ctx context.Context, baseURL string, timeout time.Duratio
 	return parts[len(parts)-1], nil
 }
 
+// k8sTokenPath is the default SA token path; overridden in tests.
+var k8sTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+// k8sAPIBase is the default K8s API base URL; overridden in tests.
+var k8sAPIBase = "https://kubernetes.default.svc"
+
 func detectK8sNodeLabel(ctx context.Context, timeout time.Duration) (string, error) {
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
 		return "", fmt.Errorf("NODE_NAME not set")
 	}
 
-	tokenBytes, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
+	tokenBytes, err := os.ReadFile(k8sTokenPath)
 	if err != nil {
 		return "", fmt.Errorf("read SA token: %w", err)
 	}
 
 	client := &http.Client{Timeout: timeout}
-	url := fmt.Sprintf("https://kubernetes.default.svc/api/v1/nodes/%s", nodeName)
+	url := fmt.Sprintf("%s/api/v1/nodes/%s", k8sAPIBase, nodeName)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil) // #nosec G704 -- host is hardcoded, nodeName from K8s downward API
 	if err != nil {
 		return "", err

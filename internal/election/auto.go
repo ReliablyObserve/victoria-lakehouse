@@ -15,6 +15,10 @@ type AutoElectorConfig struct {
 	S3Store   S3Store
 	S3Config  S3ElectorConfig
 	K8sConfig K8sElectorConfig
+
+	// newK8sElector overrides the K8s elector constructor for testing.
+	// If nil, NewK8sElector is used.
+	newK8sElector func(K8sElectorConfig) (*K8sElector, error)
 }
 
 // AutoElector selects and wraps a Leader implementation based on the configured
@@ -31,6 +35,11 @@ type AutoElector struct {
 //   - "auto"       → K8s if KUBERNETES_SERVICE_HOST is set, else S3 if S3Store
 //     is provided, else noop
 func NewAutoElector(cfg AutoElectorConfig) *AutoElector {
+	newK8s := cfg.newK8sElector
+	if newK8s == nil {
+		newK8s = NewK8sElector
+	}
+
 	var inner Leader
 	switch cfg.Mode {
 	case "none", "":
@@ -40,7 +49,7 @@ func NewAutoElector(cfg AutoElectorConfig) *AutoElector {
 		inner = NewS3Elector(cfg.S3Store, cfg.S3Config)
 		logger.Infof("election mode: s3")
 	case "k8s":
-		e, err := NewK8sElector(cfg.K8sConfig)
+		e, err := newK8s(cfg.K8sConfig)
 		if err != nil {
 			logger.Errorf("k8s election failed, falling back to noop: %s", err)
 			inner = NewNoopElector()
@@ -50,7 +59,7 @@ func NewAutoElector(cfg AutoElectorConfig) *AutoElector {
 		logger.Infof("election mode: k8s")
 	case "auto":
 		if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
-			e, err := NewK8sElector(cfg.K8sConfig)
+			e, err := newK8s(cfg.K8sConfig)
 			if err != nil {
 				logger.Warnf("k8s election failed, falling back to s3: %s", err)
 				inner = NewS3Elector(cfg.S3Store, cfg.S3Config)
