@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -747,6 +749,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("--lakehouse.s3.bucket is required")
 	}
 
+	if err := c.validateS3Endpoint(); err != nil {
+		return err
+	}
+
 	switch c.Role {
 	case RoleAll, RoleInsert, RoleSelect, "":
 	default:
@@ -777,6 +783,31 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	return nil
+}
+
+func (c *Config) validateS3Endpoint() error {
+	if c.S3.Endpoint == "" {
+		return nil
+	}
+	u, err := url.Parse(c.S3.Endpoint)
+	if err != nil {
+		return fmt.Errorf("--lakehouse.s3.endpoint: invalid URL %q: %w", c.S3.Endpoint, err)
+	}
+	switch u.Scheme {
+	case "http", "https":
+	default:
+		return fmt.Errorf("--lakehouse.s3.endpoint: scheme must be http or https, got %q", u.Scheme)
+	}
+	host := u.Hostname()
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("--lakehouse.s3.endpoint: link-local IP %q not allowed (possible SSRF)", host)
+		}
+	}
+	if host == "metadata.google.internal" {
+		return fmt.Errorf("--lakehouse.s3.endpoint: cloud metadata endpoint %q not allowed", host)
+	}
 	return nil
 }
 

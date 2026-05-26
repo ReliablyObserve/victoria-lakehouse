@@ -37,6 +37,9 @@ type Tombstone struct {
 // AffectsFile returns true if the tombstone's time range overlaps with the
 // file's time range [fileMinNs, fileMaxNs].
 func (t *Tombstone) AffectsFile(fileMinNs, fileMaxNs int64) bool {
+	if t.StartNs > t.EndNs {
+		return false
+	}
 	return t.StartNs <= fileMaxNs && t.EndNs >= fileMinNs
 }
 
