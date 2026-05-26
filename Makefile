@@ -13,7 +13,11 @@ VL_REPO := https://github.com/VictoriaMetrics/VictoriaLogs.git
 VL_DIR_LOGS := deps/VictoriaLogs
 VL_DIR_TRACES := lakehouse-traces/deps/VictoriaLogs
 
-.PHONY: build build-logs build-traces bench test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces
+VT_VERSION := v0.9.0
+VT_REPO := https://github.com/VictoriaMetrics/VictoriaTraces.git
+VT_DIR := lakehouse-traces/deps/VictoriaTraces
+
+.PHONY: build build-logs build-traces bench test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces deps-vt
 
 deps-logs: $(VL_DIR_LOGS)/go.mod
 
@@ -34,6 +38,15 @@ $(VL_DIR_TRACES)/go.mod:
 	cp patches/vl-traces/external_query.go.src $(VL_DIR_TRACES)/lib/logstorage/external_query.go
 	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vlstorage-dispatch.patch
 
+deps-vt: $(VT_DIR)/go.mod
+
+$(VT_DIR)/go.mod:
+	@mkdir -p lakehouse-traces/deps
+	git clone --depth 1 --branch $(VT_VERSION) $(VT_REPO) $(VT_DIR)
+	cp patches/vt-traces/external.go.src $(VT_DIR)/app/vtstorage/external.go
+	cd $(VT_DIR) && git apply ../../../patches/vt-traces/vtstorage-dispatch.patch
+	cd $(VT_DIR) && git apply ../../../patches/vt-traces/go-mod-replace.patch
+
 build: build-logs build-traces
 	go build -ldflags "-s -w" -o bin/healthcheck ./cmd/healthcheck
 
@@ -43,7 +56,7 @@ bench:
 build-logs: deps-logs
 	go build -ldflags "$(LDFLAGS)" -o bin/lakehouse-logs ./cmd/lakehouse-logs
 
-build-traces: deps-traces
+build-traces: deps-traces deps-vt
 	cd lakehouse-traces && go build -ldflags "$(LDFLAGS)" -o ../bin/lakehouse-traces .
 
 test: test-logs test-traces
@@ -51,13 +64,13 @@ test: test-logs test-traces
 test-logs: deps-logs
 	go test ./internal/... -short -race -count=1 -timeout=5m
 
-test-traces: deps-traces
+test-traces: deps-traces deps-vt
 	cd lakehouse-traces && go test ./internal/... -short -race -count=1 -timeout=5m
 
 test-full-logs: deps-logs
 	go test ./internal/... -race -count=1 -timeout=10m
 
-test-full-traces: deps-traces
+test-full-traces: deps-traces deps-vt
 	cd lakehouse-traces && go test ./internal/... -race -count=1 -timeout=10m
 
 test-full: test-full-logs test-full-traces
@@ -65,7 +78,7 @@ test-full: test-full-logs test-full-traces
 test-integration-logs: deps-logs
 	go test -tags=integration ./internal/... -race -count=1 -timeout=15m
 
-test-integration-traces: deps-traces
+test-integration-traces: deps-traces deps-vt
 	cd lakehouse-traces && go test -tags=integration ./internal/... -race -count=1 -timeout=15m
 
 vet: deps-logs deps-traces
