@@ -33,6 +33,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/selectapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3"
 	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
+	vtstorageadapter "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vtstorage_adapter"
 	"github.com/VictoriaMetrics/VictoriaTraces/app/vtinsert"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/internalselect"
@@ -600,6 +601,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		} else {
 			internalvlstorage.SetStorage(store, tombstoneStore)
 		}
+		vtstorageadapter.Init(store)
 	}
 
 	if cfg.SelectEnabled() {
