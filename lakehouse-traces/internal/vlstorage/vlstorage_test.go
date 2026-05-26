@@ -189,7 +189,7 @@ func TestGetFieldNames_HiddenFieldsFilters(t *testing.T) {
 		HiddenFieldsFilters: []string{"k8s.*"},
 	}
 
-	results, err := a.GetFieldNames(qctx)
+	results, err := a.GetFieldNames(qctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}
