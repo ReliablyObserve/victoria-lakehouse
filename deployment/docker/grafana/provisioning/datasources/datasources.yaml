@@ -147,7 +147,7 @@ datasources:
     jsonData:
       maxLines: 1000
       derivedFields:
-        - datasourceUid: tempo-global
+        - datasourceUid: tempo-vt-hot
           matcherRegex: 'trace_id=(\w+)'
           name: traceID
           url: "$${__value.raw}"
@@ -160,7 +160,7 @@ datasources:
     jsonData:
       maxLines: 1000
       derivedFields:
-        - datasourceUid: tempo-global
+        - datasourceUid: tempo-lh-cold
           matcherRegex: 'trace_id=(\w+)'
           name: traceID
           url: "$${__value.raw}"

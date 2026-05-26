@@ -3,8 +3,9 @@ RUN apk add --no-cache git
 WORKDIR /app
 ARG VERSION=dev
 ARG VL_VERSION=v1.50.0
-# VictoriaLogs at commit a408207c2242 (VictoriaTraces v0.8.2 compatible)
+# VictoriaLogs at commit a408207c2242 (VictoriaTraces v0.9.0 compatible)
 ARG VL_COMMIT=a408207c2242
+ARG VT_VERSION=v0.9.0
 ENV GOWORK=off
 COPY go.mod go.sum ./
 COPY lakehouse-traces/go.mod lakehouse-traces/go.sum ./lakehouse-traces/
@@ -14,6 +15,7 @@ RUN mkdir -p deps lakehouse-traces/deps && \
     cd /tmp/vl-src && git checkout ${VL_COMMIT} && \
     cp -r /tmp/vl-src /app/lakehouse-traces/deps/VictoriaLogs && \
     rm -rf /tmp/vl-src && \
+    git clone --depth 1 --branch ${VT_VERSION} https://github.com/VictoriaMetrics/VictoriaTraces.git lakehouse-traces/deps/VictoriaTraces && \
     cd /app && go mod download && \
     cd /app/lakehouse-traces && go mod download
 COPY patches/ /tmp/patches/
@@ -23,6 +25,11 @@ RUN cp /tmp/patches/vl-logs/external.go.src deps/VictoriaLogs/app/vlstorage/exte
 RUN cp /tmp/patches/vl-traces/external.go.src lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go && \
     cp /tmp/patches/vl-traces/external_query.go.src lakehouse-traces/deps/VictoriaLogs/lib/logstorage/external_query.go && \
     cd lakehouse-traces/deps/VictoriaLogs && git apply /tmp/patches/vl-traces/vlstorage-dispatch.patch
+RUN cp /tmp/patches/vt-traces/external.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/external.go && \
+    cp /tmp/patches/vt-traces/flag_dedup.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/flag_dedup.go && \
+    cd lakehouse-traces/deps/VictoriaTraces && git apply /tmp/patches/vt-traces/vtstorage-dispatch.patch && \
+    git apply /tmp/patches/vt-traces/vtstorage-flag-dedup.patch && \
+    git apply /tmp/patches/vt-traces/go-mod-replace.patch
 COPY . .
 RUN cp -r lakehouse-traces/deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmui/
 RUN cd lakehouse-traces && \
