@@ -185,6 +185,10 @@ func extractSearchTokens(queryStr string) []string {
 		return nil
 	}
 
+	if idx := strings.Index(queryStr, " | "); idx >= 0 {
+		queryStr = queryStr[:idx]
+	}
+
 	var tokens []string
 
 	for _, fieldName := range []string{"_msg", "body", "message"} {

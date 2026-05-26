@@ -13,7 +13,12 @@ import (
 // (stats by(), uniq by(), top by(), fields) via logstorage.GetQueryPipeFields.
 // Using VL's actual parsed representation avoids duplicating query parsing.
 func queryColumns(queryStr string, registry *schema.Registry, pipeFields []string) map[string]bool {
-	if queryStr == "" || queryStr == "*" {
+	filterPart := queryStr
+	if idx := strings.Index(queryStr, " | "); idx >= 0 {
+		filterPart = strings.TrimSpace(queryStr[:idx])
+	}
+
+	if filterPart == "" || filterPart == "*" {
 		return nil
 	}
 
@@ -24,12 +29,12 @@ func queryColumns(queryStr string, registry *schema.Registry, pipeFields []strin
 	cols := make(map[string]bool)
 	cols[registry.TimestampColumn()] = true
 
-	if isFreeTextSearch(queryStr) {
+	if isFreeTextSearch(filterPart) {
 		cols["body"] = true
 	}
 
 	for _, fm := range registry.PromotedColumns() {
-		if referencesField(queryStr, fm.InternalName) || referencesField(queryStr, fm.ParquetColumn) {
+		if referencesField(filterPart, fm.InternalName) || referencesField(filterPart, fm.ParquetColumn) {
 			cols[fm.ParquetColumn] = true
 		}
 	}
@@ -40,7 +45,7 @@ func queryColumns(queryStr string, registry *schema.Registry, pipeFields []strin
 		}
 	}
 
-	if len(cols) <= 1 && !isFreeTextSearch(queryStr) {
+	if len(cols) <= 1 && !isFreeTextSearch(filterPart) {
 		return nil
 	}
 

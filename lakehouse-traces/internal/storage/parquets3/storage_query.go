@@ -270,7 +270,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	for i := 0; i < fileWorkers; i++ {
 		wg.Add(1)
-		go func(workerIdx int) {
+		go func() {
 			defer wg.Done()
 			for fi := range taskCh {
 				if err := ctx.Err(); err != nil {
@@ -296,7 +296,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 					continue
 				}
 			}
-		}(i)
+		}()
 	}
 	wg.Wait()
 

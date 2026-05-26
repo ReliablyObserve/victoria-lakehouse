@@ -203,6 +203,10 @@ func extractSearchTokens(queryStr string) []string {
 		return nil
 	}
 
+	if idx := strings.Index(queryStr, " | "); idx >= 0 {
+		queryStr = queryStr[:idx]
+	}
+
 	var tokens []string
 
 	// Look for _msg:"value" or _msg:value or body:"value" patterns
