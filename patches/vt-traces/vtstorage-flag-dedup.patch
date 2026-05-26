@@ -1,0 +1,172 @@
+app/vtstorage/main.go | 90 ++++++++++++++++++++++++++++++++-------------------
+ 1 file changed, 57 insertions(+), 33 deletions(-)
+
+--- Changes ---
+
+app/vtstorage/main.go
+  @@ -3,7 +3,6 @@ package vtstorage
+  -	"flag"
+   	"fmt"
+   	"io"
+   	"math"
+  @@ -27,75 +26,75 @@ import (
+  -	retentionPeriod = flagutil.NewRetentionDuration("retentionPeriod", "7d", "Trace spans with timestamps older than now-retentionPeriod are automatically deleted; "+
+  +	retentionPeriod = safeRetentionDuration("retentionPeriod", "7d", "Trace spans with timestamps older than now-retentionPeriod are automatically deleted; "+
+   		"trace spans with timestamps outside the retention are also rejected during data ingestion; the minimum supported retention is 1d (one day); "+
+   		"see https://docs.victoriametrics.com/victoriatraces/#retention ; see also -retention.maxDiskSpaceUsageBytes and -retention.maxDiskUsagePercent")
+   
+  -	defaultParallelReaders = flag.Int("defaultParallelReaders", 2*cgroup.AvailableCPUs(), "Default number of parallel data readers to use for executing every query; "+
+  +	defaultParallelReaders = safeInt("defaultParallelReaders", 2*cgroup.AvailableCPUs(), "Default number of parallel data readers to use for executing every query; "+
+   		"higher number of readers may help increasing query performance on high-latency storage such as NFS or S3 at the cost of higher RAM usage; "+
+   		"see https://docs.victoriametrics.com/victorialogs/logsql/#parallel_readers-query-option")
+   
+  -	maxDiskSpaceUsageBytes = flagutil.NewBytes("retention.maxDiskSpaceUsageBytes", 0, "The maximum disk space usage at -storageDataPath before older per-day "+
+  +	maxDiskSpaceUsageBytes = safeBytes("retention.maxDiskSpaceUsageBytes", 0, "The maximum disk space usage at -storageDataPath before older per-day "+
+   		"partitions are automatically dropped; see https://docs.victoriametrics.com/victoriatraces/#retention-by-disk-space-usage ; see also -retentionPeriod")
+  -	maxDiskUsagePercent = flag.Int("retention.maxDiskUsagePercent", 0, "The maximum allowed disk usage percentage (1-100) for the filesystem that contains -storageDataPath before older per-day partitions are automatically dropped; mutually exclusive with -retention.maxDiskSpaceUsageBytes; see https://docs.victoriametrics.com/victoriatraces/#retention-by-disk-space-usage-percent")
+  -	futureRetention     = flagutil.NewRetentionDuration("futureRetention", "2d", "Log entries with timestamps bigger than now+futureRetention are rejected during data ingestion; "+
+  +	maxDiskUsagePercent = safeInt("retention.maxDiskUsagePercent", 0, "The maximum allowed disk usage percentage (1-100) for the filesystem that contains -storageDataPath before older per-day partitions are automatically dropped; mutually exclusive with -retention.maxDiskSpaceUsageBytes; see https://docs.victoriametrics.com/victoriatraces/#retention-by-disk-space-usage-percent")
+  +	futureRetention     = safeRetentionDuration("futureRetention", "2d", "Log entries with timestamps bigger than now+futureRetention are rejected during data ingestion; "+
+   		"see https://docs.victoriametrics.com/victoriatraces/#retention")
+  -	maxBackfillAge = flagutil.NewRetentionDuration("maxBackfillAge", "0", "Trace spans with timestamps older than now-maxBackfillAge are rejected during data ingestion; "+
+  +	maxBackfillAge = safeRetentionDuration("maxBackfillAge", "0", "Trace spans with timestamps older than now-maxBackfillAge are rejected during data ingestion; "+
+   		"see https://docs.victoriametrics.com/victorialogs/#backfilling")
+  -	snapshotsMaxAge = flagutil.NewRetentionDuration("snapshotsMaxAge", "3d", "Snapshots are automatically deleted after the given duration if it is set to positive value. "+
+  +	snapshotsMaxAge = safeRetentionDuration("snapshotsMaxAge", "3d", "Snapshots are automatically deleted after the given duration if it is set to positive value. "+
+   		"Make sure that the backup process has enough time for backing up the snapshot before its' deletion. "+
+   		"See https://docs.victoriametrics.com/victorialogs/#how-to-remove-snapshots")
+  -	storageDataPath = flag.String("storageDataPath", "victoria-traces-data", "Path to directory where to store VictoriaTraces data; "+
+  +	storageDataPath = safeString("storageDataPath", "victoria-traces-data", "Path to directory where to store VictoriaTraces data; "+
+   		"see https://docs.victoriametrics.com/victoriatraces/#storage")
+  -	inmemoryDataFlushInterval = flag.Duration("inmemoryDataFlushInterval", 5*time.Second, "The interval for guaranteed saving of in-memory data to disk. "+
+  +	inmemoryDataFlushInterval = safeDuration("inmemoryDataFlushInterval", 5*time.Second, "The interval for guaranteed saving of in-memory data to disk. "+
+   		"The saved data survives unclean shutdowns such as OOM crash, hardware reset, SIGKILL, etc. "+
+   		"Bigger intervals may help increase the lifetime of flash storage with limited write cycles (e.g. Raspberry PI). "+
+   		"Smaller intervals increase disk IO load. Minimum supported value is 1s")
+  -	logNewStreams = flag.Bool("logNewStreams", false, "Whether to log creation of new streams; this can be useful for debugging of high cardinality issues with log streams; "+
+  +	logNewStreams = safeBool("logNewStreams", false, "Whether to log creation of new streams; this can be useful for debugging of high cardinality issues with log streams; "+
+   		"see https://docs.victoriametrics.com/victoriatraces/keyconcepts/#stream-fields ; see also -logIngestedRows")
+  -	logIngestedRows = flag.Bool("logIngestedRows", false, "Whether to log all the ingested trace spans; this can be useful for debugging of data ingestion; "+
+  +	logIngestedRows = safeBool("logIngestedRows", false, "Whether to log all the ingested trace spans; this can be useful for debugging of data ingestion; "+
+   		"see https://docs.victoriametrics.com/victoriatraces/data-ingestion/ ; see also -logNewStreams")
+  -	minFreeDiskSpaceBytes = flagutil.NewBytes("storage.minFreeDiskSpaceBytes", 10e6, "The minimum free disk space at -storageDataPath after which "+
+  +	minFreeDiskSpaceBytes = safeBytes("storage.minFreeDiskSpaceBytes", 10e6, "The minimum free disk space at -storageDataPath after which "+
+   		"the storage stops accepting new data")
+   
+  -	logNewStreamsAuthKey = flagutil.NewPassword("logNewStreamsAuthKey", "authKey, which must be passed in query string to /internal/log_new_streams . It overrides -httpAuth.* . "+
+  +	logNewStreamsAuthKey = safePassword("logNewStreamsAuthKey", "authKey, which must be passed in query string to /internal/log_new_streams . It overrides -httpAuth.* . "+
+   		"See https://docs.victoriametrics.com/victorialogs/#logging-new-streams")
+  -	forceMergeAuthKey = flagutil.NewPassword("forceMergeAuthKey", "authKey, which must be passed in query string to /internal/force_merge . It overrides -httpAuth.* . "+
+  +	forceMergeAuthKey = safePassword("forceMergeAuthKey", "authKey, which must be passed in query string to /internal/force_merge . It overrides -httpAuth.* . "+
+   		"See https://docs.victoriametrics.com/victoriatraces/#forced-merge")
+  -	forceFlushAuthKey = flagutil.NewPassword("forceFlushAuthKey", "authKey, which must be passed in query string to /internal/force_flush . It overrides -httpAuth.* . "+
+  +	forceFlushAuthKey = safePassword("forceFlushAuthKey", "authKey, which must be passed in query string to /internal/force_flush . It overrides -httpAuth.* . "+
+   		"See https://docs.victoriametrics.com/victoriatraces/#forced-flush")
+   
+  -	partitionManageAuthKey = flagutil.NewPassword("partitionManageAuthKey", "authKey, which must be passed in query string to /internal/partition/* . It overrides -httpAuth.* . "+
+  +	partitionManageAuthKey = safePassword("partitionManageAuthKey", "authKey, which must be passed in query string to /internal/partition/* . It overrides -httpAuth.* . "+
+   		"See https://docs.victoriametrics.com/victoriatraces/#partitions-lifecycle")
+   
+  -	storageNodeAddrs = flagutil.NewArrayString("storageNode", "Comma-separated list of TCP addresses for storage nodes to route the ingested spans to and to send select queries to. "+
+  +	storageNodeAddrs = safeArrayString("storageNode", "Comma-separated list of TCP addresses for storage nodes to route the ingested spans to and to send select queries to. "+
+   		"If the list is empty, then the ingested spans are stored and queried locally from -storageDataPath")
+  -	insertConcurrency        = flag.Int("insert.concurrency", 2, "The average number of concurrent data ingestion requests, which can be sent to every -storageNode")
+  -	insertDisableCompression = flag.Bool("insert.disableCompression", false, "Whether to disable compression when sending the ingested data to -storageNode nodes. "+
+  +	insertConcurrency        = safeInt("insert.concurrency", 2, "The average number of concurrent data ingestion requests, which can be sent to every -storageNode")
+  +	insertDisableCompression = safeBool("insert.disableCompression", false, "Whether to disable compression when sending the ingested data to -storageNode nodes. "+
+   		"Disabled compression reduces CPU usage at the cost of higher network usage")
+  -	selectDisableCompression = flag.Bool("select.disableCompression", false, "Whether to disable compression for select query responses received from -storageNode nodes. "+
+  +	selectDisableCompression = safeBool("select.disableCompression", false, "Whether to disable compression for select query responses received from -storageNode nodes. "+
+   		"Disabled compression reduces CPU usage at the cost of higher network usage")
+   
+  -	storageNodeUsername     = flagutil.NewArrayString("storageNode.username", "Optional basic auth username to use for the corresponding -storageNode")
+  -	storageNodeUsernameFile = flagutil.NewArrayString("storageNode.usernameFile", "Optional path to basic auth username to use for the corresponding -storageNode. "+
+  +	storageNodeUsername     = safeArrayString("storageNode.username", "Optional basic auth username to use for the corresponding -storageNode")
+  +	storageNodeUsernameFile = safeArrayString("storageNode.usernameFile", "Optional path to basic auth username to use for the corresponding -storageNode. "+
+   		"The file is re-read every second")
+  -	storageNodePassword     = flagutil.NewArrayString("storageNode.password", "Optional basic auth password to use for the corresponding -storageNode")
+  -	storageNodePasswordFile = flagutil.NewArrayString("storageNode.passwordFile", "Optional path to basic auth password to use for the corresponding -storageNode. "+
+  +	storageNodePassword     = safeArrayString("storageNode.password", "Optional basic auth password to use for the corresponding -storageNode")
+  +	storageNodePasswordFile = safeArrayString("storageNode.passwordFile", "Optional path to basic auth password to use for the corresponding -storageNode. "+
+   		"The file is re-read every second")
+  -	storageNodeBearerToken     = flagutil.NewArrayString("storageNode.bearerToken", "Optional bearer auth token to use for the corresponding -storageNode")
+  -	storageNodeBearerTokenFile = flagutil.NewArrayString("storageNode.bearerTokenFile", "Optional path to bearer token file to use for the corresponding -storageNode. "+
+  +	storageNodeBearerToken     = safeArrayString("storageNode.bearerToken", "Optional bearer auth token to use for the corresponding -storageNode")
+  +	storageNodeBearerTokenFile = safeArrayString("storageNode.bearerTokenFile", "Optional path to bearer token file to use for the corresponding -storageNode. "+
+   		"The token is re-read from the file every second")
+   
+  -	storageNodeTLS = flagutil.NewArrayBool("storageNode.tls", "Whether to use TLS (HTTPS) protocol for communicating with the corresponding -storageNode. "+
+  +	storageNodeTLS = safeArrayBool("storageNode.tls", "Whether to use TLS (HTTPS) protocol for communicating with the corresponding -storageNode. "+
+   		"By default communication is performed via HTTP")
+  -	storageNodeTLSCAFile = flagutil.NewArrayString("storageNode.tlsCAFile", "Optional path to TLS CA file to use for verifying connections to the corresponding -storageNode. "+
+  +	storageNodeTLSCAFile = safeArrayString("storageNode.tlsCAFile", "Optional path to TLS CA file to use for verifying connections to the corresponding -storageNode. "+
+   		"By default, system CA is used")
+  -	storageNodeTLSCertFile = flagutil.NewArrayString("storageNode.tlsCertFile", "Optional path to client-side TLS certificate file to use when connecting "+
+  +	storageNodeTLSCertFile = safeArrayString("storageNode.tlsCertFile", "Optional path to client-side TLS certificate file to use when connecting "+
+   		"to the corresponding -storageNode")
+  -	storageNodeTLSKeyFile    = flagutil.NewArrayString("storageNode.tlsKeyFile", "Optional path to client-side TLS certificate key to use when connecting to the corresponding -storageNode")
+  -	storageNodeTLSServerName = flagutil.NewArrayString("storageNode.tlsServerName", "Optional TLS server name to use for connections to the corresponding -storageNode. "+
+  +	storageNodeTLSKeyFile    = safeArrayString("storageNode.tlsKeyFile", "Optional path to client-side TLS certificate key to use when connecting to the corresponding -storageNode")
+  +	storageNodeTLSServerName = safeArrayString("storageNode.tlsServerName", "Optional TLS server name to use for connections to the corresponding -storageNode. "+
+   		"By default, the server name from -storageNode is used")
+  -	storageNodeTLSInsecureSkipVerify = flagutil.NewArrayBool("storageNode.tlsInsecureSkipVerify", "Whether to skip tls verification when connecting to the corresponding -storageNode")
+  ... (1 lines truncated)
+  @@ -563,6 +562,10 @@ func isTimestampOutOfRetention(timestamp int64) bool {
+  +	if externalStorage != nil {
+  +		return externalStorage.RunQuery(qctx, writeBlock)
+  +	}
+  +
+   	qOpt, offset, limit := qctx.Query.GetLastNResultsQuery()
+   	if qOpt != nil {
+   		qctxOpt := qctx.WithQuery(qOpt)
+  @@ -581,6 +584,9 @@ func RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBloc
+  +	if externalStorage != nil {
+  +		return externalStorage.GetFieldNames(qctx)
+  +	}
+   	if localStorage != nil {
+   		return localStorage.GetFieldNames(qctx)
+   	}
+  @@ -591,6 +597,9 @@ func GetFieldNames(qctx *logstorage.QueryContext) ([]logstorage.ValueWithHits, e
+  +	if externalStorage != nil {
+  +		return externalStorage.GetFieldValues(qctx, fieldName, limit)
+  +	}
+   	if localStorage != nil {
+   		return localStorage.GetFieldValues(qctx, fieldName, limit)
+   	}
+  @@ -599,6 +608,9 @@ func GetFieldValues(qctx *logstorage.QueryContext, fieldName string, limit uint6
+  +	if externalStorage != nil {
+  +		return externalStorage.GetStreamFieldNames(qctx)
+  +	}
+   	if localStorage != nil {
+   		return localStorage.GetStreamFieldNames(qctx)
+   	}
+  @@ -609,6 +621,9 @@ func GetStreamFieldNames(qctx *logstorage.QueryContext) ([]logstorage.ValueWithH
+  +	if externalStorage != nil {
+  +		return externalStorage.GetStreamFieldValues(qctx, fieldName, limit)
+  +	}
+   	if localStorage != nil {
+   		return localStorage.GetStreamFieldValues(qctx, fieldName, limit)
+   	}
+  @@ -619,6 +634,9 @@ func GetStreamFieldValues(qctx *logstorage.QueryContext, fieldName string, limit
+  +	if externalStorage != nil {
+  +		return externalStorage.GetStreams(qctx, limit)
+  +	}
+   	if localStorage != nil {
+   		return localStorage.GetStreams(qctx, limit)
+   	}
+  @@ -629,6 +647,9 @@ func GetStreams(qctx *logstorage.QueryContext, limit uint64) ([]logstorage.Value
+  +	if externalStorage != nil {
+  +		return externalStorage.GetStreamIDs(qctx, limit)
+  +	}
+   	if localStorage != nil {
+   		return localStorage.GetStreamIDs(qctx, limit)
+   	}
+  @@ -673,6 +694,9 @@ func DeleteActiveTasks(ctx context.Context) ([]*logstorage.DeleteTask, error) {
+  +	if externalStorage != nil {
+  +		return externalStorage.GetTenantIDs(ctx, start, end)
+  +	}
+   	if localStorage != nil {
+   		return localStorage.GetTenantIDs(ctx, start, end)
+   	}
+  +57 -33
+[full diff: rtk git diff --no-compact]

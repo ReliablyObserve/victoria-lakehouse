@@ -8,13 +8,15 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/logsql"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	"github.com/VictoriaMetrics/VictoriaTraces/app/vtselect/traces/jaeger"
+	"github.com/VictoriaMetrics/VictoriaTraces/app/vtselect/traces/tempo"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 )
 
 type Handler struct {
@@ -65,16 +67,17 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/select/tenant_ids", h.wrapVL(logsql.ProcessTenantIDsRequest))
 
 	if h.cfg.Mode == config.ModeTraces {
-		mux.HandleFunc("/select/jaeger/api/traces/", h.handleJaegerTrace)
-		mux.HandleFunc("/select/jaeger/api/traces", h.handleJaegerSearch)
-		mux.HandleFunc("/select/jaeger/api/services", h.handleJaegerServices)
-		mux.HandleFunc("/select/jaeger/api/services/", h.handleJaegerOperations)
-		mux.HandleFunc("/select/jaeger/api/dependencies", h.handleJaegerDependencies)
-		mux.HandleFunc("/api/traces/", h.handleJaegerTrace)
-		mux.HandleFunc("/api/traces", h.handleJaegerSearch)
-		mux.HandleFunc("/api/services", h.handleJaegerServices)
-		mux.HandleFunc("/api/services/", h.handleJaegerOperations)
-		mux.HandleFunc("/api/dependencies", h.handleJaegerDependencies)
+		mux.HandleFunc("/select/jaeger/", func(w http.ResponseWriter, r *http.Request) {
+			jaeger.RequestHandler(r.Context(), w, r)
+		})
+		mux.HandleFunc("/select/tempo/", func(w http.ResponseWriter, r *http.Request) {
+			tempo.RequestHandler(r.Context(), w, r)
+		})
+		mux.HandleFunc("/api/traces/", rewriteToJaeger)
+		mux.HandleFunc("/api/traces", rewriteToJaeger)
+		mux.HandleFunc("/api/services", rewriteToJaeger)
+		mux.HandleFunc("/api/services/", rewriteToJaeger)
+		mux.HandleFunc("/api/dependencies", rewriteToJaeger)
 	}
 }
 
@@ -134,4 +137,9 @@ func normalizeTimeParams(r *http.Request) {
 
 func (h *Handler) handleTailNoop(w http.ResponseWriter, _ *http.Request) {
 	http.Error(w, "live tail not supported on cold storage", http.StatusNotImplemented)
+}
+
+func rewriteToJaeger(w http.ResponseWriter, r *http.Request) {
+	r.URL.Path = "/select/jaeger" + r.URL.Path
+	jaeger.RequestHandler(r.Context(), w, r)
 }

@@ -11,7 +11,6 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
-	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
 )
 
 // mockStore implements storage.Storage with no-op methods.
@@ -266,9 +265,25 @@ func TestHandleTailNoop(t *testing.T) {
 	}
 }
 
-func TestRegister_LogsMode(t *testing.T) {
-	vlstorage.SetStorage(mockStore{}, nil)
+func assertRouteRegistered(t *testing.T, mux *http.ServeMux, path string) {
+	t.Helper()
+	req := httptest.NewRequest("GET", path, nil)
+	_, pattern := mux.Handler(req)
+	if pattern == "" {
+		t.Errorf("path %s not registered (no matching pattern)", path)
+	}
+}
 
+func assertRouteNotRegistered(t *testing.T, mux *http.ServeMux, path string) {
+	t.Helper()
+	req := httptest.NewRequest("GET", path, nil)
+	_, pattern := mux.Handler(req)
+	if pattern != "" {
+		t.Errorf("path %s should not be registered, matched pattern %q", path, pattern)
+	}
+}
+
+func TestRegister_LogsMode(t *testing.T) {
 	cfg := testConfig(config.ModeLogs)
 	h := NewHandler(mockStore{}, cfg)
 	mux := http.NewServeMux()
@@ -291,12 +306,7 @@ func TestRegister_LogsMode(t *testing.T) {
 		"/select/tenant_ids",
 	}
 	for _, p := range paths {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("GET", p, nil)
-		mux.ServeHTTP(rec, req)
-		if rec.Code == http.StatusNotFound {
-			t.Errorf("path %s returned 404, expected registered", p)
-		}
+		assertRouteRegistered(t, mux, p)
 	}
 }
 
@@ -312,12 +322,7 @@ func TestRegister_LogsMode_NoJaegerPaths(t *testing.T) {
 		"/api/traces",
 	}
 	for _, p := range jaegerPaths {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("GET", p, nil)
-		mux.ServeHTTP(rec, req)
-		if rec.Code != http.StatusNotFound {
-			t.Errorf("jaeger path %s should be 404 in logs mode, got %d", p, rec.Code)
-		}
+		assertRouteNotRegistered(t, mux, p)
 	}
 }
 
@@ -334,12 +339,7 @@ func TestRegister_TracesMode(t *testing.T) {
 		"/select/jaeger/api/dependencies",
 	}
 	for _, p := range jaegerPaths {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("GET", p, nil)
-		mux.ServeHTTP(rec, req)
-		if rec.Code == http.StatusNotFound {
-			t.Errorf("jaeger path %s returned 404 in traces mode", p)
-		}
+		assertRouteRegistered(t, mux, p)
 	}
 }
 
@@ -349,18 +349,12 @@ func TestRegister_TracesMode_TraceAndSearchPaths(t *testing.T) {
 	mux := http.NewServeMux()
 	h.Register(mux)
 
-	// Test exact registered paths (not sub-paths which depend on mux version).
 	paths := []string{
 		"/select/jaeger/api/traces/",
 		"/api/traces/",
 	}
 	for _, p := range paths {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("GET", p, nil)
-		mux.ServeHTTP(rec, req)
-		if rec.Code == http.StatusNotFound {
-			t.Errorf("path %s returned 404 in traces mode, expected registered", p)
-		}
+		assertRouteRegistered(t, mux, p)
 	}
 }
 

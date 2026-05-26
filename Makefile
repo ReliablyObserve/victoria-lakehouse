@@ -44,7 +44,9 @@ $(VT_DIR)/go.mod:
 	@mkdir -p lakehouse-traces/deps
 	git clone --depth 1 --branch $(VT_VERSION) $(VT_REPO) $(VT_DIR)
 	cp patches/vt-traces/external.go.src $(VT_DIR)/app/vtstorage/external.go
+	cp patches/vt-traces/flag_dedup.go.src $(VT_DIR)/app/vtstorage/flag_dedup.go
 	cd $(VT_DIR) && git apply ../../../patches/vt-traces/vtstorage-dispatch.patch
+	cd $(VT_DIR) && git apply ../../../patches/vt-traces/vtstorage-flag-dedup.patch
 	cd $(VT_DIR) && git apply ../../../patches/vt-traces/go-mod-replace.patch
 
 build: build-logs build-traces
