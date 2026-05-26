@@ -7,8 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Tombstone validation: inverted time range (StartNs > EndNs) no longer falsely matches files
+- S3 endpoint SSRF protection: validates URL scheme and blocks link-local/cloud metadata IPs
+
 ### Added
 
+- Regression tests: MinTimeNs==0 sentinel handling, token bloom pipe stripping, tombstone edge cases
+- Security tests: 29 SSRF attack vector tests for S3 endpoint validation
+- Benchmarks: coalescing reader, manifest fast path, token bloom extraction, projection columns
+- Parity tests: time range, filter, pipe, and cross-validation gap-fill test suites
 - K8s scaling safety: phased shutdown orchestrator (drain → flush → persist → release) with per-phase timeouts
 - K8s scaling safety: startup staleness detection with WAL reconciliation and cache revalidation
 - K8s scaling safety: ring change detection with shadow member stabilization during scaling events

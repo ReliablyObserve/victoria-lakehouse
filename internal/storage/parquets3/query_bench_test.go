@@ -61,14 +61,14 @@ func BenchmarkManifestFastPath_LargeRowCount(b *testing.B) {
 // query strings, exercised for every query in the hot path.
 func BenchmarkTokenBloomExtraction(b *testing.B) {
 	queries := map[string]string{
-		"simple":     `error timeout`,
-		"field":      `service.name:="api-gateway" AND trace_id:="abc123"`,
-		"body":       `_msg:"connection timeout to database host"`,
-		"mixed":      `service.name:="api-gw" error connection refused`,
-		"complex":    `_msg:"kubernetes pod crashloop" AND severity_text:="error" | stats count() by service.name`,
-		"free_text":  `nginx 502 bad gateway upstream`,
-		"empty":      `*`,
-		"negated":    `NOT service.name:="internal" AND trace_id:="xyz789"`,
+		"simple":    `error timeout`,
+		"field":     `service.name:="api-gateway" AND trace_id:="abc123"`,
+		"body":      `_msg:"connection timeout to database host"`,
+		"mixed":     `service.name:="api-gw" error connection refused`,
+		"complex":   `_msg:"kubernetes pod crashloop" AND severity_text:="error" | stats count() by service.name`,
+		"free_text": `nginx 502 bad gateway upstream`,
+		"empty":     `*`,
+		"negated":   `NOT service.name:="internal" AND trace_id:="xyz789"`,
 	}
 
 	for name, q := range queries {

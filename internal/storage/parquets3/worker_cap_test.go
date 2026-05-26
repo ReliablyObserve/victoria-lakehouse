@@ -72,7 +72,6 @@ func TestRGWorkerCapEnforced(t *testing.T) {
 // TestFileWorkerCapEnforced verifies the file worker pool pattern from
 // storage_query.go:179-184 correctly caps at the configured FileWorkers limit.
 func TestFileWorkerCapEnforced(t *testing.T) {
-	const totalFiles = 200
 	const configuredCap = 64 // default from config.go:523
 
 	for _, numFiles := range []int{10, 64, 200} {

@@ -68,7 +68,7 @@ func TestValidate_S3EndpointScheme(t *testing.T) {
 	}{
 		{"http_scheme", "http://minio:9000", false},
 		{"https_scheme", "https://s3.amazonaws.com", false},
-		{"no_scheme", "s3.amazonaws.com", true},        // missing scheme should be rejected
+		{"no_scheme", "s3.amazonaws.com", true}, // missing scheme should be rejected
 		{"ftp_scheme", "ftp://storage.example.com", true},
 		{"unix_scheme", "unix:///var/run/minio.sock", true},
 	}

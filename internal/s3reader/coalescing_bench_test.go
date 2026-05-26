@@ -38,7 +38,7 @@ func BenchmarkCoalescingReaderCacheHit(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		c.ReadAt(buf, int64(i%1000)*1024)
+		_, _ = c.ReadAt(buf, int64(i%1000)*1024)
 	}
 }
 
@@ -55,7 +55,7 @@ func BenchmarkCoalescingReaderCacheMiss(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		c.ReadAt(buf, int64(i%250)*4096)
+		_, _ = c.ReadAt(buf, int64(i%250)*4096)
 	}
 }
 
