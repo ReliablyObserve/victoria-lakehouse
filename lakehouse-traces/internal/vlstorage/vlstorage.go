@@ -9,7 +9,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/prefixfilter"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
-	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 type adapter struct {

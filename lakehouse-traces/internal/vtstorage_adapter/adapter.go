@@ -6,7 +6,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaTraces/app/vtstorage"
 
-	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 var _ vtstorage.ExternalStorage = (*Adapter)(nil)

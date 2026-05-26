@@ -23,7 +23,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
-	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 func sortFilesByCacheAffinity(files []manifest.FileInfo, cachedKeys map[string]bool) {
