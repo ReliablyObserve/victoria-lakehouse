@@ -91,7 +91,7 @@ func TestGetFieldValues_DelegatesToStore(t *testing.T) {
 		Context: context.Background(),
 	}
 
-	results, err := a.GetFieldValues(qctx, "fieldName", "", 100)
+	results, err := a.GetFieldValues(qctx, "fieldName", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestGetStreamFieldNames_DelegatesToStore(t *testing.T) {
 		Context: context.Background(),
 	}
 
-	results, err := a.GetStreamFieldNames(qctx, "")
+	results, err := a.GetStreamFieldNames(qctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestGetStreamFieldNames_WithHiddenFieldsFilter(t *testing.T) {
 		HiddenFieldsFilters: []string{"k8s.*"},
 	}
 
-	results, err := a.GetStreamFieldNames(qctx, "")
+	results, err := a.GetStreamFieldNames(qctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestGetStreamFieldValues_DelegatesToStore(t *testing.T) {
 		Context: context.Background(),
 	}
 
-	results, err := a.GetStreamFieldValues(qctx, "host", "", 100)
+	results, err := a.GetStreamFieldValues(qctx, "host", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +403,7 @@ func TestGetFieldNames_NoHiddenFilters(t *testing.T) {
 		// No HiddenFieldsFilters
 	}
 
-	results, err := a.GetFieldNames(qctx, "")
+	results, err := a.GetFieldNames(qctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +445,7 @@ func (e errMockStore) GetStreamIDs(_ context.Context, _ []logstorage.TenantID, _
 func TestGetFieldValues_Error(t *testing.T) {
 	a := &adapter{store: errMockStore{err: errors.New("field values error")}}
 	qctx := &logstorage.QueryContext{Context: context.Background()}
-	_, err := a.GetFieldValues(qctx, "field", "", 100)
+	_, err := a.GetFieldValues(qctx, "field", 100)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -454,7 +454,7 @@ func TestGetFieldValues_Error(t *testing.T) {
 func TestGetStreamFieldNames_Error(t *testing.T) {
 	a := &adapter{store: errMockStore{err: errors.New("stream field names error")}}
 	qctx := &logstorage.QueryContext{Context: context.Background()}
-	_, err := a.GetStreamFieldNames(qctx, "")
+	_, err := a.GetStreamFieldNames(qctx)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -463,7 +463,7 @@ func TestGetStreamFieldNames_Error(t *testing.T) {
 func TestGetStreamFieldValues_Error(t *testing.T) {
 	a := &adapter{store: errMockStore{err: errors.New("stream field values error")}}
 	qctx := &logstorage.QueryContext{Context: context.Background()}
-	_, err := a.GetStreamFieldValues(qctx, "host", "", 100)
+	_, err := a.GetStreamFieldValues(qctx, "host", 100)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -490,7 +490,7 @@ func TestGetStreamIDs_Error(t *testing.T) {
 func TestGetFieldNames_Error(t *testing.T) {
 	a := &adapter{store: errMockStore{err: errors.New("field names error")}}
 	qctx := &logstorage.QueryContext{Context: context.Background()}
-	_, err := a.GetFieldNames(qctx, "")
+	_, err := a.GetFieldNames(qctx)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

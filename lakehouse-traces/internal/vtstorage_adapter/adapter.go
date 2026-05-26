@@ -2,7 +2,6 @@ package vtstorageadapter
 
 import (
 	"context"
-	"strings"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaTraces/app/vtstorage"
@@ -25,36 +24,20 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 	return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query, writeBlock)
 }
 
-func (a *Adapter) GetFieldNames(qctx *logstorage.QueryContext, filter string) ([]logstorage.ValueWithHits, error) {
-	results, err := a.store.GetFieldNames(qctx.Context, qctx.TenantIDs, qctx.Query)
-	if err != nil {
-		return nil, err
-	}
-	return filterValuesBySubstring(results, filter), nil
+func (a *Adapter) GetFieldNames(qctx *logstorage.QueryContext) ([]logstorage.ValueWithHits, error) {
+	return a.store.GetFieldNames(qctx.Context, qctx.TenantIDs, qctx.Query)
 }
 
-func (a *Adapter) GetFieldValues(qctx *logstorage.QueryContext, fieldName, filter string, limit uint64) ([]logstorage.ValueWithHits, error) {
-	results, err := a.store.GetFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
-	if err != nil {
-		return nil, err
-	}
-	return filterValuesBySubstring(results, filter), nil
+func (a *Adapter) GetFieldValues(qctx *logstorage.QueryContext, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
+	return a.store.GetFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
 }
 
-func (a *Adapter) GetStreamFieldNames(qctx *logstorage.QueryContext, filter string) ([]logstorage.ValueWithHits, error) {
-	results, err := a.store.GetStreamFieldNames(qctx.Context, qctx.TenantIDs, qctx.Query)
-	if err != nil {
-		return nil, err
-	}
-	return filterValuesBySubstring(results, filter), nil
+func (a *Adapter) GetStreamFieldNames(qctx *logstorage.QueryContext) ([]logstorage.ValueWithHits, error) {
+	return a.store.GetStreamFieldNames(qctx.Context, qctx.TenantIDs, qctx.Query)
 }
 
-func (a *Adapter) GetStreamFieldValues(qctx *logstorage.QueryContext, fieldName, filter string, limit uint64) ([]logstorage.ValueWithHits, error) {
-	results, err := a.store.GetStreamFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
-	if err != nil {
-		return nil, err
-	}
-	return filterValuesBySubstring(results, filter), nil
+func (a *Adapter) GetStreamFieldValues(qctx *logstorage.QueryContext, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
+	return a.store.GetStreamFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
 }
 
 func (a *Adapter) GetStreams(qctx *logstorage.QueryContext, limit uint64) ([]logstorage.ValueWithHits, error) {
@@ -70,18 +53,4 @@ func (a *Adapter) GetTenantIDs(_ context.Context, start, end int64) ([]logstorag
 		return nil, nil
 	}
 	return []logstorage.TenantID{{AccountID: 0, ProjectID: 0}}, nil
-}
-
-// filterValuesBySubstring removes entries whose Value does not contain the given filter substring.
-func filterValuesBySubstring(results []logstorage.ValueWithHits, filter string) []logstorage.ValueWithHits {
-	if filter == "" {
-		return results
-	}
-	filtered := make([]logstorage.ValueWithHits, 0, len(results))
-	for _, v := range results {
-		if strings.Contains(v.Value, filter) {
-			filtered = append(filtered, v)
-		}
-	}
-	return filtered
 }
