@@ -25,8 +25,9 @@ func (a *adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 	hiddenFilters := qctx.HiddenFieldsFilters
 
 	if logstorage.QueryHasPipes(qctx.Query) {
+		filterOnly := logstorage.CloneWithoutPipes(qctx.Query)
 		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
-			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query,
+			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, filterOnly,
 				wrapHiddenFields(wb, hiddenFilters))
 		}
 		return logstorage.RunQueryExternal(qctx, searchFn, writeBlock)

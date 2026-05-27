@@ -189,6 +189,8 @@ func extractSearchTokens(queryStr string) []string {
 		queryStr = queryStr[:idx]
 	}
 
+	queryStr = stripStreamSelectors(queryStr)
+
 	var tokens []string
 
 	for _, fieldName := range []string{"_msg", "body", "message"} {
@@ -256,6 +258,21 @@ func extractSearchTokens(queryStr string) []string {
 		}
 	}
 	return deduped
+}
+
+func stripStreamSelectors(s string) string {
+	for {
+		start := strings.IndexByte(s, '{')
+		if start < 0 {
+			break
+		}
+		end := strings.IndexByte(s[start:], '}')
+		if end < 0 {
+			break
+		}
+		s = s[:start] + s[start+end+1:]
+	}
+	return s
 }
 
 func isLogsQLKeyword(s string) bool {

@@ -15,6 +15,7 @@ RUN mkdir -p deps lakehouse-traces/deps && \
     cd /tmp/vl-src && git checkout ${VL_COMMIT} && \
     cp -r /tmp/vl-src /app/lakehouse-traces/deps/VictoriaLogs && \
     rm -rf /tmp/vl-src && \
+    cd /app && \
     git clone --depth 1 --branch ${VT_VERSION} https://github.com/VictoriaMetrics/VictoriaTraces.git lakehouse-traces/deps/VictoriaTraces && \
     cd /app && go mod download && \
     cd /app/lakehouse-traces && go mod download

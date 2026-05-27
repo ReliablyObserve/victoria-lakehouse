@@ -143,16 +143,12 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	if boundary := s.discovery.GetHotBoundary(); boundary != nil {
 		if time.Unix(0, startNs).After(boundary.MinTime) && time.Unix(0, endNs).Before(boundary.MaxTime) {
-			logger.Infof("hot boundary suppression: query within hot range; start=%v, end=%v, hot_min=%v, hot_max=%v",
-				time.Unix(0, startNs), time.Unix(0, endNs), boundary.MinTime, boundary.MaxTime)
 			return nil
 		}
 	}
 
 	if !s.manifest.HasDataForRange(startNs, endNs) {
 		metrics.ManifestFastPathTotal.Inc()
-		logger.Infof("manifest fast path: no data for range; start=%v, end=%v",
-			time.Unix(0, startNs), time.Unix(0, endNs))
 		return nil
 	}
 
@@ -230,6 +226,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 
 	files = s.preFilterFiles(files, queryStr)
+
 	if len(files) == 0 {
 		return nil
 	}
@@ -427,7 +424,6 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 
 func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, writeBlock logstorage.WriteDataBlockFunc) error {
 	projectedCols := queryColumns(queryStr, s.registry, pipeFields)
-
 	if projectedCols == nil && storage.IsTimestampOnly(ctx) {
 		projectedCols = map[string]bool{s.registry.TimestampColumn(): true}
 	}
@@ -860,7 +856,7 @@ func logRowToFields(r *schema.LogRow, buf []field) []field {
 func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 	buf = append(buf,
 		field{"_time", r.TimestampUnixNano},
-		field{"start_time", r.StartTimeUnixNano},
+		field{"start_time_unix_nano", r.StartTimeUnixNano},
 		field{"trace_id", r.TraceID},
 		field{"span_id", r.SpanID},
 		field{"parent_span_id", r.ParentSpanID},
@@ -882,6 +878,8 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 		field{"span_attr:http.url", r.HTTPUrl},
 		field{"span_attr:db.system", r.DBSystem},
 		field{"span_attr:db.statement", r.DBStatement},
+		field{"_stream", r.Stream},
+		field{"_stream_id", r.StreamID},
 	)
 	for k, v := range r.ResourceAttributes {
 		if !tracePromotedResourceKeys[k] {

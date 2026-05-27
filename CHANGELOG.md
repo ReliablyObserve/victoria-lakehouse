@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- VT v0.9.0 fork with ExternalStorage interface — same pattern as VL fork
+- VT storage adapter bridging S3/Parquet backend to VT's Jaeger and Tempo handlers
+- Tempo API datasources for hot (VT disk) and cold (S3 Parquet) tiers
+- Trace index in Parquet metadata for fast trace_id lookups
 - Regression tests: MinTimeNs==0 sentinel handling, token bloom pipe stripping, tombstone edge cases
 - Security tests: 29 SSRF attack vector tests for S3 endpoint validation
 - Benchmarks: coalescing reader, manifest fast path, token bloom extraction, projection columns
@@ -24,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - K8s scaling safety: lifecycle HTTP endpoints (`/internal/lifecycle/drain`, `/ready`, `/ring`, `/stale`)
 - K8s scaling safety: 14 new Prometheus metrics for shutdown, startup, ring change, and query continuity
 - Helm: HPA scaleDown stabilization window, preStop drain hook, lifecycle readiness probe
+
+### Changed
+
+- Replace custom Jaeger handlers with VT upstream `jaeger.RequestHandler` (deleted 2451 lines)
+- Deduplicate `storage.Storage` interface — traces module imports from root
+- Bump VictoriaTraces hot tier from v0.8.2 to v0.9.0
+- Bump loki-vl-proxy from v1.43.0 to v1.50.1
 
 ## [0.36.0] - 2026-05-25
 

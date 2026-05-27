@@ -508,6 +508,10 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 		}
 	}
 
+	if idxData := marshalTraceIndex(computeTraceIndex(rows)); len(idxData) > 0 {
+		opts = append(opts, parquet.KeyValueMetadata(traceIndexMetadataKey, string(idxData)))
+	}
+
 	writer := parquet.NewGenericWriter[schema.TraceRow](&buf, opts...)
 	if _, err := writer.Write(rows); err != nil {
 		return nil, err

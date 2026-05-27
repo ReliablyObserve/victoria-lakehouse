@@ -548,7 +548,7 @@ func TestMedium_readMapColumnToBlockCols(t *testing.T) {
 	rowMask := []bool{true, true, true}
 	passCount := 3
 
-	result := readMapColumnToBlockCols(keyChunk, valChunk, 3, rowMask, passCount, "attrs", nil)
+	result := readMapColumnToBlockCols(keyChunk, valChunk, 3, rowMask, passCount, "attrs", nil, nil)
 
 	if len(result) == 0 {
 		t.Fatal("expected at least one block column from MAP data")
@@ -571,7 +571,7 @@ func TestMedium_readMapColumnToBlockCols(t *testing.T) {
 	t.Run("with row mask filtering", func(t *testing.T) {
 		rowMask := []bool{true, false, true}
 		passCount := 2
-		result := readMapColumnToBlockCols(keyChunk, valChunk, 3, rowMask, passCount, "attrs", nil)
+		result := readMapColumnToBlockCols(keyChunk, valChunk, 3, rowMask, passCount, "attrs", nil, nil)
 
 		for _, bc := range result {
 			if len(bc.Values) != passCount {
@@ -582,7 +582,7 @@ func TestMedium_readMapColumnToBlockCols(t *testing.T) {
 
 	t.Run("with promoted keys excluded", func(t *testing.T) {
 		promoted := map[string]bool{"host": true}
-		result := readMapColumnToBlockCols(keyChunk, valChunk, 3, rowMask, 3, "attrs", promoted)
+		result := readMapColumnToBlockCols(keyChunk, valChunk, 3, rowMask, 3, "attrs", promoted, nil)
 
 		for _, bc := range result {
 			if bc.Name == "attrs:host" {

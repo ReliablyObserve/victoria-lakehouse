@@ -207,6 +207,8 @@ func extractSearchTokens(queryStr string) []string {
 		queryStr = queryStr[:idx]
 	}
 
+	queryStr = stripStreamSelectors(queryStr)
+
 	var tokens []string
 
 	// Look for _msg:"value" or _msg:value or body:"value" patterns
@@ -285,8 +287,21 @@ func extractSearchTokens(queryStr string) []string {
 	return deduped
 }
 
-// isLogsQLKeyword returns true for LogsQL reserved words that shouldn't be
-// treated as search tokens.
+func stripStreamSelectors(s string) string {
+	for {
+		start := strings.IndexByte(s, '{')
+		if start < 0 {
+			break
+		}
+		end := strings.IndexByte(s[start:], '}')
+		if end < 0 {
+			break
+		}
+		s = s[:start] + s[start+end+1:]
+	}
+	return s
+}
+
 func isLogsQLKeyword(s string) bool {
 	switch strings.ToLower(s) {
 	case "and", "or", "not", "in", "by", "with", "limit", "offset",

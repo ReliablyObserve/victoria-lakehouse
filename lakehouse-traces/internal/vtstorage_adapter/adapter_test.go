@@ -3,6 +3,7 @@ package vtstorageadapter
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -12,14 +13,14 @@ import (
 // and returns configurable results.
 type mockStorage struct {
 	// method call trackers
-	runQueryCalled            bool
-	getFieldNamesCalled       bool
-	getFieldValuesCalled      bool
-	getStreamFieldNamesCalled bool
+	runQueryCalled             bool
+	getFieldNamesCalled        bool
+	getFieldValuesCalled       bool
+	getStreamFieldNamesCalled  bool
 	getStreamFieldValuesCalled bool
-	getStreamsCalled          bool
-	getStreamIDsCalled        bool
-	hasDataForRangeCalled     bool
+	getStreamsCalled           bool
+	getStreamIDsCalled         bool
+	hasDataForRangeCalled      bool
 
 	// recorded parameters for verification
 	lastCtx       context.Context
@@ -31,8 +32,8 @@ type mockStorage struct {
 	lastEnd       int64
 
 	// configurable return values
-	returnValues         []logstorage.ValueWithHits
-	returnErr            error
+	returnValues          []logstorage.ValueWithHits
+	returnErr             error
 	returnHasDataForRange bool
 }
 
@@ -123,7 +124,7 @@ func newTestQctx(ctx context.Context, tenantIDs []logstorage.TenantID, q *logsto
 	}
 }
 
-func TestRunQuery_DelegatesToStorage(t *testing.T) {
+func TestRunQuery_NilQueryReturnsNil(t *testing.T) {
 	mock := &mockStorage{}
 	a := newTestAdapter(mock)
 
@@ -132,6 +133,25 @@ func TestRunQuery_DelegatesToStorage(t *testing.T) {
 	qctx := newTestQctx(ctx, tenantIDs, nil)
 
 	err := a.RunQuery(qctx, nil)
+
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+}
+
+func TestRunQuery_DelegatesToStorage(t *testing.T) {
+	mock := &mockStorage{}
+	a := newTestAdapter(mock)
+
+	ctx := context.Background()
+	tenantIDs := []logstorage.TenantID{{AccountID: 1, ProjectID: 2}}
+	q, err := logstorage.ParseQueryAtTimestamp("*", 1000000000)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	qctx := newTestQctx(ctx, tenantIDs, q)
+
+	err = a.RunQuery(qctx, func(_ uint, _ *logstorage.DataBlock) {})
 
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
@@ -152,8 +172,12 @@ func TestRunQuery_PropagatesError(t *testing.T) {
 	mock := &mockStorage{returnErr: wantErr}
 	a := newTestAdapter(mock)
 
-	qctx := newTestQctx(context.Background(), nil, nil)
-	err := a.RunQuery(qctx, nil)
+	q, err := logstorage.ParseQueryAtTimestamp("*", 1000000000)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	qctx := newTestQctx(context.Background(), nil, q)
+	err = a.RunQuery(qctx, func(_ uint, _ *logstorage.DataBlock) {})
 
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected %v, got %v", wantErr, err)
@@ -354,6 +378,104 @@ func TestGetTenantIDs_IgnoresContext(t *testing.T) {
 	if len(tenants) != 1 {
 		t.Fatalf("expected 1 tenant, got %d", len(tenants))
 	}
+}
+
+func TestExtractTraceIDFromIndexQuery(t *testing.T) {
+	tests := []struct {
+		name     string
+		queryStr string
+		want     string
+	}{
+		{
+			name:     "quoted index query",
+			queryStr: `{trace_id_idx_stream="42"} AND trace_id_idx:="abc123def456"`,
+			want:     "abc123def456",
+		},
+		{
+			name:     "unquoted index query (VL serialized format)",
+			queryStr: `{trace_id_idx_stream="42"} trace_id_idx:=abc123def456 | stats min(_time)`,
+			want:     "abc123def456",
+		},
+		{
+			name:     "with time filter and pipes",
+			queryStr: `_time:[2026-05-26T10:00:00Z,2026-05-26T11:00:00Z] {trace_id_idx_stream="99"} trace_id_idx:=deadbeef | stats min(_time) _time`,
+			want:     "deadbeef",
+		},
+		{
+			name:     "no index query (search)",
+			queryStr: `{trace_id_idx_stream=""} AND * | last 1 by (_time) partition by (trace_id)`,
+			want:     "",
+		},
+		{
+			name:     "empty string",
+			queryStr: "",
+			want:     "",
+		},
+		{
+			name:     "regular query without index",
+			queryStr: `trace_id:="abc123"`,
+			want:     "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractTraceIDFromIndexQuery(tt.queryStr)
+			if got != tt.want {
+				t.Errorf("extractTraceIDFromIndexQuery(%q) = %q, want %q", tt.queryStr, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRewriteTraceIndexQuery(t *testing.T) {
+	t.Run("rewrites index query", func(t *testing.T) {
+		qStr := `{trace_id_idx_stream="42"} AND trace_id_idx:="abc123" | stats min(_time) _time, min(start_time) start_time, max(end_time) end_time`
+		q, err := logstorage.ParseQueryAtTimestamp(qStr, 1000000000)
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		rewritten, ok := rewriteTraceIndexQuery(q)
+		if !ok {
+			t.Fatal("expected rewrite to succeed")
+		}
+		rewrittenStr := rewritten.String()
+		if !strings.Contains(rewrittenStr, "trace_id:=") {
+			t.Errorf("expected rewritten query to contain trace_id filter, got: %s", rewrittenStr)
+		}
+		if !strings.Contains(rewrittenStr, "start_time_unix_nano") {
+			t.Errorf("expected rewritten query to reference start_time_unix_nano, got: %s", rewrittenStr)
+		}
+		if !strings.Contains(rewrittenStr, "end_time_unix_nano") {
+			t.Errorf("expected rewritten query to reference end_time_unix_nano, got: %s", rewrittenStr)
+		}
+		if strings.Contains(rewrittenStr, "trace_id_idx_stream") {
+			t.Errorf("expected rewritten query to NOT contain trace_id_idx_stream, got: %s", rewrittenStr)
+		}
+	})
+
+	t.Run("does not rewrite search query", func(t *testing.T) {
+		qStr := `{trace_id_idx_stream=""} AND * | last 1 by (_time) partition by (trace_id) | fields _time, trace_id`
+		q, err := logstorage.ParseQueryAtTimestamp(qStr, 1000000000)
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		_, ok := rewriteTraceIndexQuery(q)
+		if ok {
+			t.Fatal("expected rewrite to NOT trigger for search query")
+		}
+	})
+
+	t.Run("does not rewrite regular query", func(t *testing.T) {
+		qStr := `trace_id:="abc123"`
+		q, err := logstorage.ParseQueryAtTimestamp(qStr, 1000000000)
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		_, ok := rewriteTraceIndexQuery(q)
+		if ok {
+			t.Fatal("expected rewrite to NOT trigger for regular query")
+		}
+	})
 }
 
 func TestInterfaceCompliance(t *testing.T) {
