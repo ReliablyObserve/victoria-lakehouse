@@ -3,4 +3,5 @@ name: "Victoria Lakehouse CodeQL Config"
 paths-ignore:
   - deps/VictoriaLogs
   - lakehouse-traces/deps/VictoriaLogs
+  - lakehouse-traces/deps/VictoriaTraces
   - website
