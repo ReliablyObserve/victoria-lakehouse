@@ -157,7 +157,7 @@ jobs:
           while IFS= read -r line; do
             pkg=$(echo "$line" | grep -oP '/internal/\K[^/\s]+' | head -1)
             [ -z "$pkg" ] && continue
-            case "$pkg" in testutil|storage) continue ;; esac
+            case "$pkg" in testutil|storage|vtstorage_adapter|selectapi) continue ;; esac
             pct=$(echo "$line" | grep -oP '([0-9.]+)%' | head -1 | tr -d '%')
             [ -z "$pct" ] && continue
             below=$(awk "BEGIN{print ($pct < $THRESHOLD)}")

@@ -260,31 +260,23 @@ func TestQueryColumns_FilteredStatsCount(t *testing.T) {
 	}
 }
 
-// Wildcard stats count() without a field filter: isFreeTextSearch sees no ":"
-// in the query string, so body is added alongside timestamp. This is the
-// expected behavior — the function conservatively includes body for
-// unstructured queries, and the higher-level isTimestampOnly path handles
-// the pure-count optimisation separately.
+// Wildcard stats count() projects only timestamp — * is not free text.
 func TestQueryColumns_UnfilteredStatsCount(t *testing.T) {
 	reg := schema.NewRegistry(schema.LogsProfile)
 	cols := queryColumns("* | stats count()", reg, nil)
 
 	if cols == nil {
-		t.Fatal("expected non-nil projection (timestamp + body from free-text heuristic)")
+		t.Fatal("expected non-nil projection for piped query")
 	}
 	if !cols["timestamp_unix_nano"] {
 		t.Error("timestamp_unix_nano must always be projected")
 	}
-	if !cols["body"] {
-		t.Error("body expected: isFreeTextSearch returns true when query has no ':'")
-	}
-	if len(cols) != 2 {
-		t.Errorf("expected 2 columns (timestamp + body), got %d: %v", len(cols), cols)
+	if len(cols) != 1 {
+		t.Errorf("expected 1 column (timestamp), got %d: %v", len(cols), cols)
 	}
 }
 
-// stats count() by(service.name) with pipeFields should project service.name.
-// The wildcard prefix has no ":" so isFreeTextSearch adds body as well.
+// stats count() by(service.name) projects timestamp + service.name.
 func TestQueryColumns_StatsCountByService(t *testing.T) {
 	reg := schema.NewRegistry(schema.LogsProfile)
 	cols := queryColumns("* | stats count() by(service.name)", reg, []string{"service.name"})
@@ -298,11 +290,8 @@ func TestQueryColumns_StatsCountByService(t *testing.T) {
 	if !cols["timestamp_unix_nano"] {
 		t.Error("timestamp_unix_nano must always be projected")
 	}
-	if !cols["body"] {
-		t.Error("body expected: isFreeTextSearch returns true for wildcard query without ':'")
-	}
-	if len(cols) != 3 {
-		t.Errorf("expected 3 projected columns (timestamp + body + service.name), got %d: %v", len(cols), cols)
+	if len(cols) != 2 {
+		t.Errorf("expected 2 projected columns (timestamp + service.name), got %d: %v", len(cols), cols)
 	}
 }
 

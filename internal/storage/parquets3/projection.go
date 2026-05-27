@@ -18,11 +18,13 @@ func queryColumns(queryStr string, registry *schema.Registry, pipeFields []strin
 		filterPart = strings.TrimSpace(queryStr[:idx])
 	}
 
-	if filterPart == "" || filterPart == "*" {
+	hasPipes := len(pipeFields) > 0 || hasColumnSelectingPipe(queryStr)
+
+	if (filterPart == "" || filterPart == "*") && !hasPipes {
 		return nil
 	}
 
-	if len(pipeFields) == 0 && !hasColumnSelectingPipe(queryStr) {
+	if !hasPipes {
 		return nil
 	}
 
@@ -45,7 +47,7 @@ func queryColumns(queryStr string, registry *schema.Registry, pipeFields []strin
 		}
 	}
 
-	if len(cols) <= 1 && !isFreeTextSearch(filterPart) {
+	if len(cols) <= 1 && !isFreeTextSearch(filterPart) && !hasPipes {
 		return nil
 	}
 

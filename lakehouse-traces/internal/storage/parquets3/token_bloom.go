@@ -185,9 +185,7 @@ func extractSearchTokens(queryStr string) []string {
 		return nil
 	}
 
-	if idx := strings.Index(queryStr, " | "); idx >= 0 {
-		queryStr = queryStr[:idx]
-	}
+	queryStr = stripPipeOutsideQuotes(queryStr)
 
 	queryStr = stripStreamSelectors(queryStr)
 
@@ -258,6 +256,19 @@ func extractSearchTokens(queryStr string) []string {
 		}
 	}
 	return deduped
+}
+
+func stripPipeOutsideQuotes(s string) string {
+	inQuote := false
+	for i := 0; i < len(s); i++ {
+		if s[i] == '"' {
+			inQuote = !inQuote
+		}
+		if !inQuote && i+3 <= len(s) && s[i:i+3] == " | " {
+			return s[:i]
+		}
+	}
+	return s
 }
 
 func stripStreamSelectors(s string) string {
