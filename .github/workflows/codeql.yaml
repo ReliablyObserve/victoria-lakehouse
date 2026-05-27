@@ -15,6 +15,7 @@ permissions:
 env:
   VL_VERSION_LOGS: v1.50.0
   VL_COMMIT_TRACES: a408207c2242
+  VT_VERSION: v0.9.0
   GOWORK: "off"
 
 jobs:
@@ -52,6 +53,20 @@ jobs:
           cp patches/vl-traces/external.go.src lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go
           cp patches/vl-traces/external_query.go.src lakehouse-traces/deps/VictoriaLogs/lib/logstorage/external_query.go
           cd lakehouse-traces/deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-traces/vlstorage-dispatch.patch
+
+      - name: Clone VT for traces
+        run: |
+          git clone --depth 1 --branch ${{ env.VT_VERSION }} \
+            https://github.com/VictoriaMetrics/VictoriaTraces.git lakehouse-traces/deps/VictoriaTraces
+
+      - name: Apply VT ExternalStorage patches (traces)
+        run: |
+          cp patches/vt-traces/external.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/external.go
+          cp patches/vt-traces/flag_dedup.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/flag_dedup.go
+          cd lakehouse-traces/deps/VictoriaTraces && \
+            git apply ${{ github.workspace }}/patches/vt-traces/vtstorage-dispatch.patch && \
+            git apply ${{ github.workspace }}/patches/vt-traces/vtstorage-flag-dedup.patch && \
+            git apply ${{ github.workspace }}/patches/vt-traces/go-mod-replace.patch
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
