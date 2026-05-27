@@ -542,7 +542,7 @@ func TestRegistry_FormatField_Traces(t *testing.T) {
 	}
 
 	got = r.FormatField("start_time_unix_nano", int64(3000000000))
-	if got != "1970-01-01T00:00:03Z" {
+	if got != "3000000000" {
 		t.Errorf("FormatField(start_time_unix_nano) = %q", got)
 	}
 
@@ -609,7 +609,7 @@ func TestTracesProfile_Types(t *testing.T) {
 		wantType FieldType
 	}{
 		{"_time", TypeTimestampNano},
-		{"start_time_unix_nano", TypeTimestampNano},
+		{"start_time_unix_nano", TypeInt64},
 		{"duration", TypeInt64},
 		{"status_code", TypeInt32},
 		{"kind", TypeInt32},

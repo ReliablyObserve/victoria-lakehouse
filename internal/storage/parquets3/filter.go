@@ -107,7 +107,6 @@ func filterDataBlock(db *logstorage.DataBlock, f *logstorage.Filter) *logstorage
 			kept++
 		}
 	}
-
 	if kept == 0 {
 		return nil
 	}

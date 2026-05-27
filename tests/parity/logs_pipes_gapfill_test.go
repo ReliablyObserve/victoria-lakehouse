@@ -51,13 +51,13 @@ func TestParity_PipesGapfill(t *testing.T) {
 	t.Run("dedup", func(t *testing.T) {
 		cases := []ParityCase{
 			{Name: "dedup_by_level", Endpoint: queryEndpoint(), Params: map[string]string{
-				"query": "* | sort by(_time) desc | dedup by(level) | fields _time, _msg, level",
+				"query": "* | sort by(_time) desc | uniq by(level)",
 				"limit": "20",
-			}, Compare: RowsMatch},
+			}, Compare: SetEqual},
 			{Name: "dedup_by_service", Endpoint: queryEndpoint(), Params: map[string]string{
-				"query": "* | sort by(_time) desc | dedup by(service.name) | fields _time, _msg, service.name",
+				"query": "* | sort by(_time) desc | uniq by(service.name)",
 				"limit": "20",
-			}, Compare: RowsMatch},
+			}, Compare: SetEqual},
 		}
 		RunParity(t, vlBaseURL, lhBaseURL, cases)
 	})

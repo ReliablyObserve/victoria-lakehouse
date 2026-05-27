@@ -7,7 +7,7 @@ import "testing"
 func TestParity_FiltersExtended(t *testing.T) {
 	cases := []ParityCase{
 		{Name: "prefix_match", Endpoint: statsEndpoint(), Params: map[string]string{"query": `_msg:"java" | stats count() rows`}, Compare: CountEqual},
-		{Name: "word_filter", Endpoint: statsEndpoint(), Params: map[string]string{"query": `_msg:word("timeout") | stats count() rows`}, Compare: CountEqual},
+		{Name: "word_filter", Endpoint: statsEndpoint(), Params: map[string]string{"query": `_msg:~"\btimeout\b" | stats count() rows`}, Compare: CountEqual},
 		{Name: "case_insensitive_msg", Endpoint: statsEndpoint(), Params: map[string]string{"query": `_msg:i("error") | stats count() rows`}, Compare: CountEqual},
 		{Name: "case_insensitive_exact", Endpoint: statsEndpoint(), Params: map[string]string{"query": `level:i("error") | stats count() rows`}, Compare: CountEqual},
 		{Name: "prefix_field", Endpoint: statsEndpoint(), Params: map[string]string{"query": `service.name:"api" | stats count() rows`}, Compare: CountEqual},

@@ -39,6 +39,9 @@ func buildPushDownFilter(queryStr string, registry *schema.Registry) *PushDownFi
 	if queryStr == "" || registry == nil {
 		return nil
 	}
+	if containsOrOperator(queryStr) {
+		return nil
+	}
 
 	var checks []PushDownCheck
 
@@ -106,6 +109,22 @@ func buildPushDownFilter(queryStr string, registry *schema.Registry) *PushDownFi
 		return nil
 	}
 	return &PushDownFilter{Checks: checks}
+}
+
+func containsOrOperator(query string) bool {
+	inQuote := false
+	for i := 0; i < len(query); i++ {
+		if query[i] == '"' {
+			inQuote = !inQuote
+		}
+		if !inQuote && i+4 <= len(query) {
+			sub := query[i : i+4]
+			if sub == " or " || sub == " OR " {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isNegatedPredicate checks if a field predicate is negated in the query string.

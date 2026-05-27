@@ -1132,6 +1132,9 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 	if s.bloomCache == nil || queryStr == "" {
 		return files
 	}
+	if containsOrOperator(queryStr) {
+		return files
+	}
 
 	var checks []bloomindex.ColumnCheck
 	for _, col := range s.registry.PromotedColumns() {

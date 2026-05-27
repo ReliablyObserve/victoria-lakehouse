@@ -221,6 +221,10 @@ func extractSearchTokens(queryStr string) []string {
 				idx = start + 1
 				continue
 			}
+			if start < len(queryStr) && isNonLiteralFilter(queryStr[start:]) {
+				idx = start + 1
+				continue
+			}
 			end := strings.IndexByte(queryStr[start:], ' ')
 			var val string
 			if end < 0 {
@@ -244,6 +248,12 @@ func extractSearchTokens(queryStr string) []string {
 		if isLogsQLKeyword(p) {
 			continue
 		}
+		if isNonLiteralFilter(p) {
+			continue
+		}
+		if isSyntaxFragment(p) {
+			continue
+		}
 		tokens = append(tokens, tokenize(p)...)
 	}
 
@@ -256,6 +266,10 @@ func extractSearchTokens(queryStr string) []string {
 		}
 	}
 	return deduped
+}
+
+func isSyntaxFragment(s string) bool {
+	return strings.ContainsAny(s, "[]()\"")
 }
 
 func stripPipeOutsideQuotes(s string) string {
@@ -284,6 +298,25 @@ func stripStreamSelectors(s string) string {
 		s = s[:start] + s[start+end+1:]
 	}
 	return s
+}
+
+func isNonLiteralFilter(s string) bool {
+	if strings.HasPrefix(s, "~") {
+		return true
+	}
+	if strings.HasPrefix(s, "!~") {
+		return true
+	}
+	if strings.HasPrefix(s, "range[") || strings.HasPrefix(s, "range(") {
+		return true
+	}
+	if strings.HasPrefix(s, "len_range(") {
+		return true
+	}
+	if strings.HasPrefix(s, "re(") {
+		return true
+	}
+	return false
 }
 
 func isLogsQLKeyword(s string) bool {

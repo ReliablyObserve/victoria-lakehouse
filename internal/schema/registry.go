@@ -233,7 +233,7 @@ var LogsProfile = Profile{
 var TracesProfile = Profile{
 	Promoted: []FieldMapping{
 		{ParquetColumn: "timestamp_unix_nano", InternalName: "_time", Type: TypeTimestampNano, Origin: OriginPromoted},
-		{ParquetColumn: "start_time_unix_nano", InternalName: "start_time_unix_nano", Type: TypeTimestampNano, Origin: OriginPromoted},
+		{ParquetColumn: "start_time_unix_nano", InternalName: "start_time_unix_nano", Type: TypeInt64, Origin: OriginPromoted},
 		{ParquetColumn: "trace_id", InternalName: "trace_id", Type: TypeString, Origin: OriginPromoted, HasBloom: true},
 		{ParquetColumn: "span_id", InternalName: "span_id", Type: TypeString, Origin: OriginPromoted},
 		{ParquetColumn: "parent_span_id", InternalName: "parent_span_id", Type: TypeString, Origin: OriginPromoted},
