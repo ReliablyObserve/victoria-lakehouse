@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Tombstone validation: inverted time range (StartNs > EndNs) no longer falsely matches files
 - S3 endpoint SSRF protection: validates URL scheme and blocks link-local/cloud metadata IPs
+- Traces `start_time_unix_nano` schema type changed from `TypeTimestampNano` to `TypeInt64` — now returns numeric epoch nanos matching VT format instead of RFC3339 formatted strings
+- Bloom filter: disable token extraction for OR queries (`" or "`) that produce false-negative filtering
+- Pushdown filter: disable file-level filtering for OR queries to prevent incorrect result exclusion
+- Token bloom: skip regex (`~`), range, and `len_range` predicates that bloom filters cannot model
+- Token bloom: skip syntax fragments containing brackets, parens, or quotes
+- Parity test syntax fixes for VL v1.50.0: `replace`/`replace_regexp` require `at` keyword, `dedup` replaced with `uniq`, `stats count() / N` split into `stats + math` pipes, quoted colon-containing field names in `stats by()`
 
 ### Added
 
@@ -21,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Regression tests: MinTimeNs==0 sentinel handling, token bloom pipe stripping, tombstone edge cases
 - Security tests: 29 SSRF attack vector tests for S3 endpoint validation
 - Benchmarks: coalescing reader, manifest fast path, token bloom extraction, projection columns
-- Parity tests: time range, filter, pipe, and cross-validation gap-fill test suites
+- Parity tests: 378 tests across 21 test functions — time range, filter, pipe, stats, cross-validation, traces LogsQL, and full data format compatibility against VL/VT reference
 - K8s scaling safety: phased shutdown orchestrator (drain → flush → persist → release) with per-phase timeouts
 - K8s scaling safety: startup staleness detection with WAL reconciliation and cache revalidation
 - K8s scaling safety: ring change detection with shadow member stabilization during scaling events
