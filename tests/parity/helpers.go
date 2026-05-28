@@ -24,10 +24,10 @@ func envOrDefault(key, def string) string {
 }
 
 var (
-	vlBaseURL  = envOrDefault("VL_BASE_URL", "http://localhost:19428")
-	lhBaseURL  = envOrDefault("LH_BASE_URL", "http://localhost:29428")
-	vtBaseURL  = envOrDefault("VT_BASE_URL", "http://localhost:10428")
-	lhtBaseURL = envOrDefault("LHT_BASE_URL", "http://localhost:20428")
+	vlBaseURL  = envOrDefault("VL_BASE_URL", "http://localhost:39428")
+	lhBaseURL  = envOrDefault("LH_BASE_URL", "http://localhost:39429")
+	vtBaseURL  = envOrDefault("VT_BASE_URL", "http://localhost:39430")
+	lhtBaseURL = envOrDefault("LHT_BASE_URL", "http://localhost:39431")
 )
 
 var httpClient = &http.Client{Timeout: 60 * time.Second}

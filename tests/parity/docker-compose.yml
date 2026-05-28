@@ -1,4 +1,12 @@
 # tests/parity/docker-compose.yml
+#
+# Fully internal — no host port mappings. Parity tests run inside the
+# parity-net network via the `parity-tests` service, which addresses
+# all services by container DNS name.
+#
+# Local debugging: to expose a port temporarily, run e.g.
+#   docker compose port victorialogs 9428
+# or override with tests/parity/docker-compose.override.yml.
 name: parity
 
 networks:
@@ -9,8 +17,6 @@ services:
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
-    ports:
-      - "19000:9000"
     networks: [parity-net]
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -42,8 +48,6 @@ services:
       - "-retentionPeriod=48h"
       - "-loggerLevel=INFO"
     networks: [parity-net]
-    ports:
-      - "19428:9428"
     volumes:
       - vl-data:/data
     healthcheck:
@@ -60,8 +64,6 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
-    ports:
-      - "29428:9428"
     networks: [parity-net]
     command:
       - "-lakehouse.s3.bucket=parity-bucket"
@@ -90,8 +92,6 @@ services:
       - "-retentionPeriod=48h"
       - "-loggerLevel=INFO"
     networks: [parity-net]
-    ports:
-      - "10428:10428"
     volumes:
       - vt-data:/data
     healthcheck:
@@ -108,8 +108,6 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
-    ports:
-      - "20428:10428"
     networks: [parity-net]
     command:
       - "-lakehouse.s3.bucket=parity-bucket"
@@ -154,6 +152,27 @@ services:
       - "--lh-logs-endpoint=http://lakehouse-logs:9428"
       - "--lh-traces-endpoint=http://lakehouse-traces:10428"
 
+  parity-tests:
+    image: golang:1.26
+    profiles: ["test"]
+    depends_on:
+      datagen-seed:
+        condition: service_completed_successfully
+    networks: [parity-net]
+    working_dir: /app/tests/parity
+    volumes:
+      - ../../:/app
+      - go-cache:/go
+    environment:
+      VL_BASE_URL: http://victorialogs:9428
+      LH_BASE_URL: http://lakehouse-logs:9428
+      VT_BASE_URL: http://victoriatraces:10428
+      LHT_BASE_URL: http://lakehouse-traces:10428
+      GOWORK: "off"
+      GOFLAGS: "-mod=mod"
+    command: ["go", "test", "-tags=parity", "-v", "-count=1", "-timeout=10m", "./..."]
+
 volumes:
   vl-data: {}
   vt-data: {}
+  go-cache: {}
