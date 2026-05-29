@@ -39,7 +39,7 @@ func buildPushDownFilter(queryStr string, registry *schema.Registry) *PushDownFi
 	if queryStr == "" || registry == nil {
 		return nil
 	}
-	if containsOrOperator(queryStr) {
+	if containsOrOperatorAST(queryStr) {
 		return nil
 	}
 
@@ -53,7 +53,7 @@ func buildPushDownFilter(queryStr string, registry *schema.Registry) *PushDownFi
 		}
 
 		for _, name := range names {
-			if isNegatedPredicate(queryStr, name) {
+			if isNegatedPredicateAST(queryStr, name) {
 				break
 			}
 

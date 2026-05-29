@@ -1151,7 +1151,7 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 	if s.bloomCache == nil || queryStr == "" {
 		return files
 	}
-	if containsOrOperator(queryStr) {
+	if containsOrOperatorAST(queryStr) {
 		return files
 	}
 
@@ -1160,12 +1160,12 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 		if !col.HasBloom {
 			continue
 		}
-		if isNegatedPredicate(queryStr, col.InternalName) || isNegatedPredicate(queryStr, col.ParquetColumn) {
+		if isNegatedPredicateAST(queryStr, col.InternalName) || isNegatedPredicateAST(queryStr, col.ParquetColumn) {
 			continue
 		}
-		vals := extractFilterValues(queryStr, col.InternalName)
+		vals := extractFilterValuesAST(queryStr, col.InternalName)
 		if len(vals) == 0 {
-			vals = extractFilterValues(queryStr, col.ParquetColumn)
+			vals = extractFilterValuesAST(queryStr, col.ParquetColumn)
 		}
 		for _, val := range vals {
 			checks = append(checks, bloomindex.ColumnCheck{
@@ -1237,9 +1237,9 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 		if !col.HasBloom {
 			continue
 		}
-		vals := extractFilterValues(queryStr, col.InternalName)
+		vals := extractFilterValuesAST(queryStr, col.InternalName)
 		if len(vals) == 0 {
-			vals = extractFilterValues(queryStr, col.ParquetColumn)
+			vals = extractFilterValuesAST(queryStr, col.ParquetColumn)
 		}
 		for _, val := range vals {
 			checks = append(checks, bloomindex.ColumnCheck{
