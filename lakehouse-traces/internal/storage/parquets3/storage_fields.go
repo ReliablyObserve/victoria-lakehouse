@@ -100,7 +100,11 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 		return nil, fmt.Errorf("get footer: %w", err)
 	}
 
-	s.updateLabelIndex(f)
+	// Footer-only file: cannot safely scan data pages for distinct
+	// values (parquet-go falls back to truncated column-index min/max).
+	// Register names; defer value extraction to the query path which
+	// has the full file open.
+	s.updateLabelIndexNamesOnly(f)
 
 	if s.labelIndex.Len() > 0 {
 		names := s.labelIndex.GetFieldNames()
