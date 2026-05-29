@@ -324,9 +324,14 @@ func (s *Storage) manifestFastPath(files []manifest.FileInfo, startNs, endNs int
 	for _, fi := range files {
 		if fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
 			fi.MinTimeNs >= startNs && fi.MaxTimeNs <= endNs {
-			db := s.syntheticManifestBlock(fi)
-			if db != nil && db.RowsCount() > 0 {
-				writeBlock(0, db)
+			emitted := false
+			s.streamSyntheticManifestBlocks(fi, func(db *logstorage.DataBlock) {
+				if db != nil && db.RowsCount() > 0 {
+					writeBlock(0, db)
+					emitted = true
+				}
+			})
+			if emitted {
 				metrics.MetadataOnlyFiles.Inc()
 			}
 		} else {
@@ -1659,18 +1664,78 @@ func (s *Storage) enrichManifestFromFooter(fi manifest.FileInfo, f *parquet.File
 	}
 }
 
+// Synthetic manifest block sizing.
+//
+//   - syntheticChunkSize bounds the per-block allocation so a multi-million
+//     row file no longer triggers a single huge []string allocation.
+//   - maxSyntheticRows is a defense-in-depth cap on the total row count
+//     emitted per file from the manifest fast path. Previously this was
+//     50M which could still allocate ~1GB of strings if the registry's
+//     timestamp formatter produced long values.
+const (
+	syntheticChunkSize = 10_000
+	maxSyntheticRows   = 1_000_000
+)
+
 // syntheticManifestBlock creates a DataBlock with fi.RowCount rows using
 // timestamps distributed across [MinTimeNs, MaxTimeNs] from manifest metadata.
-// Used by the manifest-only fast path to avoid all S3 I/O for files fully
-// within the query range.
+//
+// Prefer streamSyntheticManifestBlocks for query-path callers — it emits
+// multiple smaller blocks instead of materializing the full row count in
+// one slice. This single-block variant is preserved for legacy callers
+// (tests/benchmarks) and clamps to syntheticChunkSize to avoid surprise
+// allocations.
 func (s *Storage) syntheticManifestBlock(fi manifest.FileInfo) *logstorage.DataBlock {
-	const maxSyntheticRows = 50_000_000
 	n := int(fi.RowCount)
 	if n == 0 {
 		return nil
 	}
-	if n > maxSyntheticRows {
-		n = maxSyntheticRows
+	if n > syntheticChunkSize {
+		n = syntheticChunkSize
+	}
+	return s.buildSyntheticChunk(fi, 0, n)
+}
+
+// streamSyntheticManifestBlocks emits one or more DataBlocks covering
+// fi.RowCount rows, each of size <= syntheticChunkSize. Total row count
+// is capped at maxSyntheticRows as a safety net against pathological
+// manifest entries (the manifest fast path is metadata-only, so a wildly
+// inflated RowCount would otherwise allocate proportionally).
+func (s *Storage) streamSyntheticManifestBlocks(fi manifest.FileInfo, emit func(*logstorage.DataBlock)) {
+	total := int(fi.RowCount)
+	if total <= 0 || emit == nil {
+		return
+	}
+	if total > maxSyntheticRows {
+		total = maxSyntheticRows
+	}
+
+	for offset := 0; offset < total; offset += syntheticChunkSize {
+		chunk := syntheticChunkSize
+		if offset+chunk > total {
+			chunk = total - offset
+		}
+		db := s.buildSyntheticChunkOf(fi, offset, chunk, total)
+		if db != nil && db.RowsCount() > 0 {
+			emit(db)
+		}
+	}
+}
+
+// buildSyntheticChunk is a thin wrapper around buildSyntheticChunkOf that
+// derives the global row count from chunk size — kept for callers that
+// only emit a single chunk.
+func (s *Storage) buildSyntheticChunk(fi manifest.FileInfo, offset, chunk int) *logstorage.DataBlock {
+	return s.buildSyntheticChunkOf(fi, offset, chunk, chunk)
+}
+
+// buildSyntheticChunkOf renders `chunk` rows of synthetic timestamps
+// starting at the given offset, where the timestamp step is computed
+// against the global `total` row count so successive chunks remain
+// monotonically increasing across the file's [MinTimeNs, MaxTimeNs] range.
+func (s *Storage) buildSyntheticChunkOf(fi manifest.FileInfo, offset, chunk, total int) *logstorage.DataBlock {
+	if chunk <= 0 {
+		return nil
 	}
 
 	tsCol := s.registry.TimestampColumn()
@@ -1679,16 +1744,16 @@ func (s *Storage) syntheticManifestBlock(fi manifest.FileInfo) *logstorage.DataB
 		internalName = m.InternalName
 	}
 
-	values := make([]string, n)
-	if n == 1 {
+	values := make([]string, chunk)
+	if total == 1 {
 		values[0] = s.registry.FormatField(internalName, fi.MinTimeNs)
 	} else {
-		step := (fi.MaxTimeNs - fi.MinTimeNs) / int64(n-1)
+		step := (fi.MaxTimeNs - fi.MinTimeNs) / int64(total-1)
 		if step == 0 {
 			step = 1
 		}
 		for i := range values {
-			ts := fi.MinTimeNs + int64(i)*step
+			ts := fi.MinTimeNs + int64(offset+i)*step
 			if ts > fi.MaxTimeNs {
 				ts = fi.MaxTimeNs
 			}
@@ -1948,9 +2013,14 @@ func (s *Storage) handle404Recovery(ctx context.Context, fi manifest.FileInfo, f
 	metrics.QueryFileNotFoundTotal.Inc()
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones &&
 		fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 {
-		db := s.syntheticManifestBlock(fi)
-		if db != nil && db.RowsCount() > 0 {
-			filteredWriteBlock(0, db)
+		emitted := false
+		s.streamSyntheticManifestBlocks(fi, func(db *logstorage.DataBlock) {
+			if db != nil && db.RowsCount() > 0 {
+				filteredWriteBlock(0, db)
+				emitted = true
+			}
+		})
+		if emitted {
 			metrics.MetadataOnlyFiles.Inc()
 		}
 		logger.Infof("query recovered compacted file via manifest metadata; key=%s rows=%d", fi.Key, fi.RowCount)
