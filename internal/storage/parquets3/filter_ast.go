@@ -272,6 +272,174 @@ func FilterExtractFieldValues(f *logstorage.Filter, fieldName string) []string {
 	return values
 }
 
+// BranchCheck is a single field=value constraint within one branch of
+// an OR filter. Used by FilterExtractOrBranches to express
+// per-OR-branch bloom checks.
+type BranchCheck struct {
+	FieldName string
+	Value     string
+}
+
+// FilterExtractOrBranches returns, for a filter shaped as a top-level
+// OR of simple field predicates (or AND-of-simple-predicates within
+// each OR branch), the list of branches' constraint sets.
+//
+// Returns nil if the filter doesn't match a supported shape (no OR
+// at top level, OR nested under NOT, branches with regex/range/etc.
+// predicates that bloom can't model). In that case the caller should
+// fall back to its non-OR bloom logic.
+//
+// Used by bloomFilterFiles to evaluate OR queries per-branch: for
+// each file, take the union of branches that can match it. This
+// turns the previous "OR → return all files" bypass into actual
+// bloom-driven file pruning for the common Grafana-drilldown shape:
+//   (svc_a:="x" OR svc_b:="x" OR svc_c:="x" OR ...)
+// where most files don't have ANY of those (field, value) pairs.
+func FilterExtractOrBranches(f *logstorage.Filter) [][]BranchCheck {
+	if f == nil {
+		return nil
+	}
+	inner := filterInner(f)
+	root := derefValue(inner)
+	if astTypeName(root) == "" {
+		return nil
+	}
+
+	// Unwrap an outer filterAnd that has exactly one filterOr child plus
+	// other AND clauses — distribute the AND clauses into each OR branch.
+	// For purely-OR root, no distribution needed.
+	andClauses, orRoot := splitTopLevelAndOr(root)
+	if orRoot == (reflect.Value{}) {
+		return nil
+	}
+
+	orFilters := orRoot.FieldByName("filters")
+	if !orFilters.IsValid() || orFilters.Kind() != reflect.Slice {
+		return nil
+	}
+
+	var branches [][]BranchCheck
+	for i := 0; i < orFilters.Len(); i++ {
+		branch := extractBranchChecks(orFilters.Index(i), andClauses)
+		if branch == nil {
+			return nil // unsupported shape — bail
+		}
+		branches = append(branches, branch)
+	}
+	if len(branches) == 0 {
+		return nil
+	}
+	return branches
+}
+
+// splitTopLevelAndOr returns (andClauses, orNode) when root is either:
+//   - filterOr directly: (nil, root)
+//   - filterAnd containing exactly one filterOr child plus other simple
+//     predicates: ([other children], orChild)
+//
+// Returns (nil, zero) for shapes the helper doesn't support (e.g.
+// filterAnd with two filterOr children, OR nested under NOT, etc.).
+func splitTopLevelAndOr(root reflect.Value) ([]reflect.Value, reflect.Value) {
+	name := astTypeName(root)
+	if name == astTypeOr {
+		return nil, root
+	}
+	if name != astTypeAnd {
+		return nil, reflect.Value{}
+	}
+	filters := root.FieldByName("filters")
+	if !filters.IsValid() || filters.Kind() != reflect.Slice {
+		return nil, reflect.Value{}
+	}
+	var orChild reflect.Value
+	var andClauses []reflect.Value
+	for i := 0; i < filters.Len(); i++ {
+		child := derefValue(filters.Index(i))
+		if astTypeName(child) == astTypeOr {
+			if orChild != (reflect.Value{}) {
+				return nil, reflect.Value{} // multiple ORs — too complex
+			}
+			orChild = child
+			continue
+		}
+		andClauses = append(andClauses, child)
+	}
+	return andClauses, orChild
+}
+
+// extractBranchChecks builds the BranchCheck slice for one OR branch,
+// merging in the surrounding AND clauses (which apply to every
+// branch). Returns nil if any predicate is a shape the helper can't
+// express as a (field, value) constraint.
+func extractBranchChecks(branchNode reflect.Value, andClauses []reflect.Value) []BranchCheck {
+	var out []BranchCheck
+
+	// AND-distribute clauses first (each branch inherits them).
+	for _, c := range andClauses {
+		if bc, ok := nodeToBranchCheck(derefValue(c)); ok {
+			out = append(out, bc)
+		} else {
+			return nil
+		}
+	}
+
+	branchNode = derefValue(branchNode)
+	name := astTypeName(branchNode)
+	if name == astTypeAnd {
+		filters := branchNode.FieldByName("filters")
+		if !filters.IsValid() || filters.Kind() != reflect.Slice {
+			return nil
+		}
+		for i := 0; i < filters.Len(); i++ {
+			child := derefValue(filters.Index(i))
+			if bc, ok := nodeToBranchCheck(child); ok {
+				out = append(out, bc)
+			} else {
+				return nil
+			}
+		}
+	} else {
+		if bc, ok := nodeToBranchCheck(branchNode); ok {
+			out = append(out, bc)
+		} else {
+			return nil
+		}
+	}
+	return out
+}
+
+// nodeToBranchCheck converts a single AST node to a BranchCheck when
+// it's a simple field=value exact-match predicate (either as
+// filterGeneric{fieldName, f: filterExact} in newer VL, or directly
+// filterExact{fieldName, value} in older VL). Returns false for
+// anything else (regex, range, len_range, OR/NOT children, etc.).
+func nodeToBranchCheck(v reflect.Value) (BranchCheck, bool) {
+	name := astTypeName(v)
+	// filterGeneric wraps an inner predicate and holds fieldName.
+	if name == astTypeGeneric {
+		fn := stringField(v, "fieldName")
+		if fn == "" {
+			return BranchCheck{}, false
+		}
+		innerF := derefValue(v.FieldByName("f"))
+		if astTypeName(innerF) != astTypeExact {
+			return BranchCheck{}, false
+		}
+		val := stringField(innerF, "value")
+		return BranchCheck{FieldName: fn, Value: val}, true
+	}
+	// Older VL: filterExact directly carries fieldName + value.
+	if name == astTypeExact {
+		fn := stringField(v, "fieldName")
+		if fn == "" {
+			return BranchCheck{}, false
+		}
+		val := stringField(v, "value")
+		return BranchCheck{FieldName: fn, Value: val}, true
+	}
+	return BranchCheck{}, false
+}
+
 // FilterReferencedFields returns the set of field names referenced by
 // any predicate anywhere in the filter tree (under AND/OR/NOT, at any
 // depth). Used to compute the minimal column projection needed to

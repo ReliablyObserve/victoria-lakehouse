@@ -1152,6 +1152,15 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 		return files
 	}
 	if containsOrOperatorAST(queryStr) {
+		// OR queries used to bypass bloom filtering entirely. Try to
+		// evaluate each OR branch independently via the bloom index
+		// and union the matching files. Falls through to returning
+		// all files when the filter shape doesn't fit the supported
+		// pattern (top-level OR of simple field=value predicates,
+		// optionally distributed with surrounding AND clauses).
+		if result, ok := s.bloomFilterFilesByOrBranches(ctx, files, queryStr); ok {
+			return result
+		}
 		return files
 	}
 
@@ -1225,6 +1234,117 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 		}
 	}
 	return result
+}
+
+// bloomFilterFilesByOrBranches evaluates an OR-shaped query against
+// the bloom index per branch and unions the matching files. Returns
+// (files, false) when the filter shape isn't supported — caller
+// should fall back to its existing logic.
+//
+// Translates branch field names through the registry (internal ↔
+// parquet) so we use the actual parquet column the bloom index keys
+// on. Branches with no bloom-checkable columns force a fall-through
+// for that branch — we include all files for the partition (because
+// the bloom can't prove absence).
+func (s *Storage) bloomFilterFilesByOrBranches(ctx context.Context, files []manifest.FileInfo, queryStr string) ([]manifest.FileInfo, bool) {
+	filter := parseFilterFromQueryStr(queryStr)
+	if filter == nil {
+		return files, false
+	}
+	branches := FilterExtractOrBranches(filter)
+	if len(branches) == 0 {
+		return files, false
+	}
+
+	// Translate each branch's BranchCheck into bloomindex.ColumnCheck,
+	// using the registry to find the parquet column name for fields
+	// that have a bloom filter configured.
+	branchChecks := make([][]bloomindex.ColumnCheck, 0, len(branches))
+	for _, branch := range branches {
+		var checks []bloomindex.ColumnCheck
+		var hasUnindexedField bool
+		for _, bc := range branch {
+			col := s.resolveBloomColumn(bc.FieldName)
+			if col == "" {
+				hasUnindexedField = true
+				break
+			}
+			checks = append(checks, bloomindex.ColumnCheck{Column: col, Value: bc.Value})
+		}
+		if hasUnindexedField || len(checks) == 0 {
+			// One branch can't be bloom-evaluated — every file is a
+			// potential match for that branch, so the union must
+			// include every file. Bail out and let the caller fall
+			// through to its full-files default.
+			return files, false
+		}
+		branchChecks = append(branchChecks, checks)
+	}
+
+	metrics.BloomQueriesTotal.Inc("attempt")
+
+	byPartition := make(map[string][]manifest.FileInfo)
+	for _, fi := range files {
+		partition := partitionFromKey(fi.Key)
+		byPartition[partition] = append(byPartition[partition], fi)
+	}
+
+	var result []manifest.FileInfo
+	for partition, pFiles := range byPartition {
+		idx, err := s.bloomCache.Get(ctx, partition)
+		if err != nil || idx == nil {
+			// No bloom index for this partition — keep its files.
+			result = append(result, pFiles...)
+			continue
+		}
+
+		keys := make([]string, len(pFiles))
+		for i, fi := range pFiles {
+			keys[i] = fi.Key
+		}
+
+		unionMatch := make(map[string]bool, len(keys))
+		for _, checks := range branchChecks {
+			matching := idx.MayContainAll(keys, checks)
+			for _, k := range matching {
+				unionMatch[k] = true
+			}
+		}
+
+		before := len(pFiles)
+		var bytesAvoided int64
+		for _, fi := range pFiles {
+			if unionMatch[fi.Key] {
+				result = append(result, fi)
+			} else {
+				bytesAvoided += fi.Size
+			}
+		}
+		skipped := before - len(unionMatch)
+		if skipped > 0 {
+			metrics.ParquetFilesSkipped.Add(skipped)
+			metrics.BloomFilesSkipped.Add(skipped)
+			metrics.BloomBytesAvoided.Add(int(bytesAvoided))
+			metrics.ParquetBloomChecks.Add("miss", skipped)
+		}
+		if len(unionMatch) > 0 {
+			metrics.ParquetBloomChecks.Add("hit", len(unionMatch))
+		}
+	}
+	return result, true
+}
+
+// resolveBloomColumn maps a query field name (internal or parquet
+// form) to the parquet column name when the column has a bloom
+// filter. Returns "" when no bloom is configured for the field.
+func (s *Storage) resolveBloomColumn(fieldName string) string {
+	if m := s.registry.ResolveToParquet(fieldName); m != nil && m.HasBloom {
+		return m.ParquetColumn
+	}
+	if m := s.registry.ResolveFromParquet(fieldName); m != nil && m.HasBloom {
+		return m.ParquetColumn
+	}
+	return ""
 }
 
 func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, queryStr string) bool {

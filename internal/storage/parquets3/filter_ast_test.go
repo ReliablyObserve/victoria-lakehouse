@@ -158,3 +158,94 @@ func TestFilterReferencedFields_Nil(t *testing.T) {
 		t.Errorf("FilterReferencedFields(nil) = %v, want empty map", got)
 	}
 }
+
+func TestFilterExtractOrBranches(t *testing.T) {
+	tests := []struct {
+		name    string
+		query   string
+		want    [][]BranchCheck // nil means "should return nil — unsupported"
+	}{
+		{
+			name:  "simple_two_branch_or",
+			query: `level:="INFO" OR level:="WARN"`,
+			want: [][]BranchCheck{
+				{{FieldName: "level", Value: "INFO"}},
+				{{FieldName: "level", Value: "WARN"}},
+			},
+		},
+		{
+			name:  "three_branch_different_fields",
+			query: `service.name:="api" OR host.name:="h1" OR k8s.pod.name:="p1"`,
+			want: [][]BranchCheck{
+				{{FieldName: "service.name", Value: "api"}},
+				{{FieldName: "host.name", Value: "h1"}},
+				{{FieldName: "k8s.pod.name", Value: "p1"}},
+			},
+		},
+		// AND distributed over OR — each branch inherits the AND clauses.
+		{
+			name:  "and_distributed_into_or",
+			query: `service.name:="api" (level:="ERROR" OR level:="WARN")`,
+			want: [][]BranchCheck{
+				{{FieldName: "service.name", Value: "api"}, {FieldName: "level", Value: "ERROR"}},
+				{{FieldName: "service.name", Value: "api"}, {FieldName: "level", Value: "WARN"}},
+			},
+		},
+		// No OR at top level — unsupported.
+		{
+			name:  "no_or",
+			query: `level:="ERROR" AND service.name:="api"`,
+			want:  nil,
+		},
+		// OR branch containing regex — unsupported (bloom can't model).
+		{
+			name:  "or_with_regex_branch",
+			query: `level:="ERROR" OR _msg:~"timeout"`,
+			want:  nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := parseFilter(t, tc.query)
+			got := FilterExtractOrBranches(f)
+			if tc.want == nil {
+				if got != nil {
+					t.Errorf("expected nil for unsupported shape; got %v", got)
+				}
+				return
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %d branches, want %d: got=%v", len(got), len(tc.want), got)
+			}
+			// Compare set semantics — branch order matters but check sets
+			// inside each branch are order-insensitive.
+			for i, wantBranch := range tc.want {
+				wantSet := branchSet(wantBranch)
+				gotSet := branchSet(got[i])
+				if len(wantSet) != len(gotSet) {
+					t.Errorf("branch %d: got %d checks, want %d", i, len(gotSet), len(wantSet))
+				}
+				for k, v := range wantSet {
+					if gotSet[k] != v {
+						t.Errorf("branch %d: missing/wrong %q=%q (got %q)", i, k, v, gotSet[k])
+					}
+				}
+			}
+		})
+	}
+}
+
+func branchSet(b []BranchCheck) map[string]string {
+	m := make(map[string]string, len(b))
+	for _, c := range b {
+		m[c.FieldName] = c.Value
+	}
+	return m
+}
+
+func TestFilterExtractOrBranches_Nil(t *testing.T) {
+	if FilterExtractOrBranches(nil) != nil {
+		t.Error("expected nil for nil filter")
+	}
+}
