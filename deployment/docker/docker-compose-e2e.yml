@@ -8,8 +8,6 @@ services:
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
-    ports:
-      - "29000:9000"
     networks: [lakehouse-net]
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -44,8 +42,6 @@ services:
       - "-retentionPeriod=24h"
       - "-loggerLevel=INFO"
     networks: [lakehouse-net]
-    ports:
-      - "9428:9428"
     volumes:
       - vl-data:/data
     healthcheck:
@@ -189,6 +185,7 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
+    # Exposed for VMUI access at http://localhost:29428/select/vmui/
     ports:
       - "29428:9428"
     networks: [lakehouse-net]
@@ -232,6 +229,7 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
+    # Exposed for VMUI access at http://localhost:20428/select/vmui/
     ports:
       - "20428:10428"
     networks: [lakehouse-net]
@@ -281,8 +279,6 @@ services:
         condition: service_healthy
       lakehouse-logs:
         condition: service_healthy
-    ports:
-      - "29471:9428"
     networks: [lakehouse-net]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9428/health"]
@@ -302,8 +298,6 @@ services:
         condition: service_healthy
       lakehouse-traces:
         condition: service_healthy
-    ports:
-      - "20471:10428"
     networks: [lakehouse-net]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:10428/health"]
@@ -342,8 +336,6 @@ services:
         condition: service_healthy
       victorialogs:
         condition: service_healthy
-    ports:
-      - "23200:3100"
     networks: [lakehouse-net]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/ready"]
@@ -375,8 +367,6 @@ services:
     depends_on:
       lakehouse-logs:
         condition: service_healthy
-    ports:
-      - "23201:3100"
     networks: [lakehouse-net]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/ready"]
@@ -428,8 +418,6 @@ services:
         condition: service_healthy
       lakehouse-traces:
         condition: service_healthy
-    ports:
-      - "28428:8428"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8428/health"]
       interval: 5s
