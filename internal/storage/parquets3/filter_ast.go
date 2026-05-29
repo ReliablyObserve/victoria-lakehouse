@@ -37,6 +37,11 @@ const (
 	astTypePhrase  = "filterPhrase"
 	astTypePrefix  = "filterPrefix"
 	astTypeNoop    = "filterNoop"
+	astTypeTime    = "filterTime"
+	astTypeStream  = "filterStream"
+	astTypeStreamID = "filterStreamID"
+	astTypeDayRange  = "filterDayRange"
+	astTypeWeekRange = "filterWeekRange"
 )
 
 // filterInner returns the unwrapped inner filter value from the public
@@ -275,6 +280,12 @@ func FilterExtractFieldValues(f *logstorage.Filter, fieldName string) []string {
 // fetch a small fraction of the file's column data instead of the
 // whole body.
 //
+// Filter types that operate on implicit/well-known fields contribute
+// those field names too:
+//   - filterTime, filterDayRange, filterWeekRange → "_time"
+//   - filterStream → "_stream"
+//   - filterStreamID → "_stream_id"
+//
 // Returns an empty map when the filter is nil or its AST cannot be
 // walked via reflection (extremely rare; covers future filter types
 // the helper doesn't yet recognize).
@@ -288,10 +299,17 @@ func FilterReferencedFields(f *logstorage.Filter) map[string]bool {
 		return out
 	}
 	walkFilterAST(inner, func(name string, v reflect.Value) bool {
-		if name == astTypeGeneric {
+		switch name {
+		case astTypeGeneric:
 			if fn := stringField(v, "fieldName"); fn != "" {
 				out[fn] = true
 			}
+		case astTypeTime, astTypeDayRange, astTypeWeekRange:
+			out["_time"] = true
+		case astTypeStream:
+			out["_stream"] = true
+		case astTypeStreamID:
+			out["_stream_id"] = true
 		}
 		return true
 	})

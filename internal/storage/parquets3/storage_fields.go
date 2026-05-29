@@ -273,6 +273,92 @@ func (s *Storage) accumulateFieldHits(f *parquet.File, hits map[string]uint64) {
 	}
 }
 
+// scanProjectedFieldValues iterates a Parquet file extracting values
+// from targetParquetCol for rows matching filter, reading only the
+// column chunks needed (target + filter-referenced columns) via
+// parquet.NewColumnChunkRowReader.
+//
+// Combined with openParquetFile's range-read path this cuts S3 bytes
+// per file from the full body (~hundreds of KB) down to roughly
+// (footer + sum of projected column chunk sizes) — typically 30-80 KB
+// per file for a 2-column projection over an 8-column schema. The
+// savings compound at scale: hundreds of files × hundreds of KB
+// saved each = the difference between a healthy lakehouse-logs and
+// an OOM-killed one under Grafana drilldown load.
+//
+// On any error opening the file or finding the target column, returns
+// nil so the caller continues with the next file (matches the
+// fault-tolerance of the previous full-download path).
+func (s *Storage) scanProjectedFieldValues(
+	ctx context.Context,
+	fi manifest.FileInfo,
+	targetParquetCol string,
+	filter *logstorage.Filter,
+	seen map[string]uint64,
+) error {
+	projectedCols := map[string]bool{targetParquetCol: true}
+	if filter != nil {
+		for internalName := range FilterReferencedFields(filter) {
+			if m := s.registry.ResolveToParquet(internalName); m != nil {
+				projectedCols[m.ParquetColumn] = true
+			} else {
+				projectedCols[internalName] = true
+			}
+		}
+	}
+
+	f, err := s.openParquetFile(ctx, fi, projectedCols)
+	if err != nil {
+		return err
+	}
+
+	fullColNames := columnNames(f.Root())
+	projectedIndices := make([]int, 0, len(projectedCols))
+	projectedNames := make([]string, 0, len(projectedCols))
+	targetInProjection := -1
+	for i, n := range fullColNames {
+		if !projectedCols[n] {
+			continue
+		}
+		if n == targetParquetCol {
+			targetInProjection = len(projectedIndices)
+		}
+		projectedIndices = append(projectedIndices, i)
+		projectedNames = append(projectedNames, n)
+	}
+	if targetInProjection < 0 {
+		// Target column not present in this file — nothing to collect.
+		return nil
+	}
+
+	buf := make([]parquet.Row, 256)
+	for _, rg := range f.RowGroups() {
+		allChunks := rg.ColumnChunks()
+		projChunks := make([]parquet.ColumnChunk, 0, len(projectedIndices))
+		for _, ci := range projectedIndices {
+			if ci >= len(allChunks) {
+				continue
+			}
+			projChunks = append(projChunks, allChunks[ci])
+		}
+		if len(projChunks) == 0 {
+			continue
+		}
+		rows := parquet.NewColumnChunkRowReader(projChunks)
+		for {
+			n, err := rows.ReadRows(buf)
+			if n > 0 {
+				collectFilteredValues(buf[:n], projectedNames, targetInProjection, filter, s, seen)
+			}
+			if err != nil {
+				break
+			}
+		}
+		_ = rows.Close()
+	}
+	return nil
+}
+
 func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
 	filter := parseFilterFromQuery(q)
 
@@ -312,39 +398,11 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 			return nil, err
 		}
 
-		data, err := s.getFileData(ctx, fi.Key, fi.Size)
-		if err != nil {
-			logger.Warnf("get file data for field values: %s; key=%s", err, fi.Key)
+		// Column-projected read: fetches only (target + filter cols)
+		// chunk data from S3 rather than the entire file body.
+		if err := s.scanProjectedFieldValues(ctx, fi, mapping.ParquetColumn, filter, seen); err != nil {
+			logger.Warnf("scan projected field values: %s; key=%s", err, fi.Key)
 			continue
-		}
-
-		f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
-		if err != nil {
-			logger.Warnf("open parquet for field values: %s; key=%s", err, fi.Key)
-			continue
-		}
-
-		s.updateLabelIndex(f)
-
-		colNames := columnNames(f.Root())
-		colIdx := findColumnIndex(f.Root(), mapping.ParquetColumn)
-		if colIdx < 0 {
-			continue
-		}
-
-		for _, rg := range f.RowGroups() {
-			rows := rg.Rows()
-			buf := make([]parquet.Row, 256)
-			for {
-				n, err := rows.ReadRows(buf)
-				if n > 0 {
-					collectFilteredValues(buf[:n], colNames, colIdx, filter, s, seen)
-				}
-				if err != nil {
-					break
-				}
-			}
-			_ = rows.Close()
 		}
 
 		if limit > 0 && uint64(len(seen)) >= limit {
