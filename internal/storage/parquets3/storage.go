@@ -49,7 +49,7 @@ type Storage struct {
 	bloomCache        *bloomindex.BloomCache
 	bloomObserver     *storageBloomObserver
 	footerCache       *FooterCache
-	fileBloomCache    sync.Map
+	fileBloomCache    *BloomFileCache
 	crossSignalClient *crosssignal.Client
 	selfAZ            string
 	selfFilterEnabled bool
@@ -185,8 +185,10 @@ func New(cfg *config.Config) (*Storage, error) {
 	}
 
 	var fc *FooterCache
+	var bfc *BloomFileCache
 	if cfg.SelectEnabled() {
 		fc = NewFooterCache(10000)
+		bfc = NewBloomFileCache(1024)
 	}
 
 	var csClient *crosssignal.Client
@@ -218,6 +220,7 @@ func New(cfg *config.Config) (*Storage, error) {
 		smartCache:        sc,
 		bloomCache:        bc,
 		footerCache:       fc,
+		fileBloomCache:    bfc,
 		crossSignalClient: csClient,
 		dlSem:             make(chan struct{}, maxDL),
 	}

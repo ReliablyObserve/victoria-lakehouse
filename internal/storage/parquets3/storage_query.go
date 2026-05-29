@@ -1243,24 +1243,33 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 	bloomKey := fi.Key + ".bloom"
 
 	var idx *bloomindex.Index
-	if cached, ok := s.fileBloomCache.Load(bloomKey); ok {
-		if cached == nil {
-			return false
+	if s.fileBloomCache != nil {
+		if cached, ok := s.fileBloomCache.Get(bloomKey); ok {
+			if cached == nil {
+				return false
+			}
+			idx = cached
 		}
-		idx = cached.(*bloomindex.Index)
-	} else {
+	}
+	if idx == nil {
 		data, err := s.pool.Download(ctx, bloomKey)
 		if err != nil || len(data) == 0 {
-			s.fileBloomCache.Store(bloomKey, nil)
+			if s.fileBloomCache != nil {
+				s.fileBloomCache.Put(bloomKey, nil)
+			}
 			return false
 		}
 		parsed, err := bloomindex.Unmarshal(data)
 		if err != nil {
-			s.fileBloomCache.Store(bloomKey, nil)
+			if s.fileBloomCache != nil {
+				s.fileBloomCache.Put(bloomKey, nil)
+			}
 			return false
 		}
 		idx = parsed
-		s.fileBloomCache.Store(bloomKey, idx)
+		if s.fileBloomCache != nil {
+			s.fileBloomCache.Put(bloomKey, idx)
+		}
 	}
 
 	if !bloomindex.FileBloomMayContainAll(idx, checks) {
