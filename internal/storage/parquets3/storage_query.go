@@ -52,11 +52,18 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	startNs, endNs := q.GetFilterTimeRange()
 
-	if boundary := s.discovery.GetHotBoundary(); boundary != nil {
-		if time.Unix(0, startNs).After(boundary.MinTime) && time.Unix(0, endNs).Before(boundary.MaxTime) {
-			logger.Infof("hot boundary suppression: query within hot range; start=%v, end=%v, hot_min=%v, hot_max=%v",
-				time.Unix(0, startNs), time.Unix(0, endNs), boundary.MinTime, boundary.MaxTime)
-			return nil
+	// Hot-boundary suppression is meant to prevent insert-role nodes (which
+	// host the hot tier) from double-serving rows that select-role nodes will
+	// fetch via the hot path. Select-role and all-role nodes are responsible
+	// for the cold (S3/Parquet) tier and MUST NOT suppress — otherwise they
+	// would silently drop every row whose time range overlaps the hot boundary.
+	if s.cfg != nil && s.cfg.Role == config.RoleInsert {
+		if boundary := s.discovery.GetHotBoundary(); boundary != nil {
+			if time.Unix(0, startNs).After(boundary.MinTime) && time.Unix(0, endNs).Before(boundary.MaxTime) {
+				logger.Infof("hot boundary suppression: query within hot range; start=%v, end=%v, hot_min=%v, hot_max=%v",
+					time.Unix(0, startNs), time.Unix(0, endNs), boundary.MinTime, boundary.MaxTime)
+				return nil
+			}
 		}
 	}
 
