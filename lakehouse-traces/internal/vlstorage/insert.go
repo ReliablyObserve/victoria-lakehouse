@@ -75,6 +75,12 @@ func logRowsToTraceRows(lr *logstorage.LogRows) []schema.TraceRow {
 				row.Stream = strings.Clone(st.String())
 			}
 			logstorage.PutStreamTags(st)
+
+			// Mirror VL/VT's stream-ID computation so /select/jaeger and
+			// /select/logsql/stream_ids return the same value VT would for
+			// the equivalent insert. Required by the 100% VL/VT API
+			// compatibility rule.
+			row.StreamID = computeStreamID(r.TenantID, r.StreamTagsCanonical)
 		}
 
 		for _, f := range r.Fields {

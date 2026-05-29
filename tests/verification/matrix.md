@@ -49,7 +49,7 @@ Related rules (memories): `feedback_per_component_verification`,
 | L9 | `/select/logsql/stream_field_names` | wildcard | PASS | parity | same | identical | 2026-05-29 |
 | L10 | `/select/logsql/stream_field_values` | wildcard | PASS | parity | same | identical | 2026-05-29 |
 | L11 | `/select/logsql/streams` | wildcard | PASS | parity + unit | column-projected refactor | identical | 2026-05-29 |
-| L12 | `/select/logsql/stream_ids` | wildcard | FAIL | parity (gap) | `victorialogs:9428/select/logsql/stream_ids` | LH returns empty because external insert path doesn't populate `_stream_id`. Must compute the same hash VL does (over `_stream` labels) at insert or query time. **100% VL API compat required.** | — |
+| L12 | `/select/logsql/stream_ids` | wildcard | PASS | unit (`TestComputeStreamID_*`) + insert wiring | `internal/vlstorage/stream_id.go` + `insert.go:75` (logs); `lakehouse-traces/internal/vlstorage/stream_id.go` + `insert.go:81` (traces) | LH now populates `_stream_id` at insert time using VL's exact hash algorithm (xxhash64 + `"magic!"` suffix, 48-char lowercase hex). Mirrored to both modules. | 2026-05-29 |
 | L13 | `/select/logsql/hits` | wildcard buckets | PASS | parity | same | identical | 2026-05-29 |
 | L14 | `/select/logsql/hits` | 18-OR drilldown query | PASS | unit + integration | `TestBloomFilterFilesByOrBranches_Integration` | OR-branch bloom evaluation | 2026-05-29 |
 | L15 | `/select/logsql/stats_query` | `* \| stats count() rows` | PASS | parity | same | identical | 2026-05-29 |
