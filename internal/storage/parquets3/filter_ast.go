@@ -267,6 +267,37 @@ func FilterExtractFieldValues(f *logstorage.Filter, fieldName string) []string {
 	return values
 }
 
+// FilterReferencedFields returns the set of field names referenced by
+// any predicate anywhere in the filter tree (under AND/OR/NOT, at any
+// depth). Used to compute the minimal column projection needed to
+// evaluate the filter against a Parquet row — projecting only these
+// columns plus the target value column lets the S3 range-read path
+// fetch a small fraction of the file's column data instead of the
+// whole body.
+//
+// Returns an empty map when the filter is nil or its AST cannot be
+// walked via reflection (extremely rare; covers future filter types
+// the helper doesn't yet recognize).
+func FilterReferencedFields(f *logstorage.Filter) map[string]bool {
+	out := map[string]bool{}
+	if f == nil {
+		return out
+	}
+	inner := filterInner(f)
+	if astTypeName(derefValue(inner)) == "" {
+		return out
+	}
+	walkFilterAST(inner, func(name string, v reflect.Value) bool {
+		if name == astTypeGeneric {
+			if fn := stringField(v, "fieldName"); fn != "" {
+				out[fn] = true
+			}
+		}
+		return true
+	})
+	return out
+}
+
 // stringField returns the string-typed field by name from a struct
 // value, or "" if not present.
 func stringField(v reflect.Value, name string) string {

@@ -118,3 +118,43 @@ func TestFilterContainsOr_NestedUnderAnd(t *testing.T) {
 		t.Fatalf("FilterContainsOr should detect OR nested under AND; filter.String()=%q", f.String())
 	}
 }
+
+func TestFilterReferencedFields(t *testing.T) {
+	tests := []struct {
+		query string
+		want  []string
+	}{
+		{`service.name:="api"`, []string{"service.name"}},
+		{`level:="ERROR" AND service.name:="api"`, []string{"level", "service.name"}},
+		{`level:="ERROR" OR level:="WARN"`, []string{"level"}},
+		// Nested OR under AND — should still extract both fields.
+		{`service.name:="api" (level:="ERROR" OR level:="WARN")`, []string{"service.name", "level"}},
+		// NOT predicate — fieldName still referenced.
+		{`NOT service.name:="api"`, []string{"service.name"}},
+		// Multiple distinct fields.
+		{`a:="1" b:="2" c:="3"`, []string{"a", "b", "c"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.query, func(t *testing.T) {
+			f := parseFilter(t, tc.query)
+			got := FilterReferencedFields(f)
+			if len(got) != len(tc.want) {
+				t.Errorf("FilterReferencedFields(%q) returned %d fields, want %d: got=%v",
+					tc.query, len(got), len(tc.want), got)
+			}
+			for _, want := range tc.want {
+				if !got[want] {
+					t.Errorf("FilterReferencedFields(%q) missing %q; got=%v", tc.query, want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestFilterReferencedFields_Nil(t *testing.T) {
+	got := FilterReferencedFields(nil)
+	if len(got) != 0 {
+		t.Errorf("FilterReferencedFields(nil) = %v, want empty map", got)
+	}
+}
