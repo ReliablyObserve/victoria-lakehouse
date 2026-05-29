@@ -14,6 +14,65 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
+// fetchFooterFile returns a metadata-only *parquet.File for fi. Prefers the
+// footer cache; on miss it does a small range read (~16 KB) instead of
+// downloading the full file. Falls back to a full-file download only when
+// the S3 pool is unavailable or the file is below the prefetch threshold.
+//
+// Mirrors the helper added to the logs module — used by GetFieldNames
+// where only the schema (column names) is needed, not column data. Avoids
+// downloading a full ~1 MB parquet file just to read its schema.
+func (s *Storage) fetchFooterFile(ctx context.Context, fi manifest.FileInfo) (*parquet.File, error) {
+	if s.footerCache != nil {
+		if cached, ok := s.footerCache.Get(fi.Key); ok && cached.File != nil {
+			return cached.File, nil
+		}
+	}
+	if s.pool == nil || fi.Size < minFileSizeForPrefetch {
+		data, err := s.getFileData(ctx, fi.Key, fi.Size)
+		if err != nil {
+			return nil, err
+		}
+		cached, f, err := ParseFooterFromData(fi.Key, data)
+		if err != nil {
+			return nil, err
+		}
+		if s.footerCache != nil {
+			s.footerCache.Put(fi.Key, cached)
+		}
+		return f, nil
+	}
+	offset := fi.Size - footerPrefetchSize
+	if offset < 0 {
+		offset = 0
+	}
+	length := fi.Size - offset
+	tail, err := s.pool.DownloadRange(ctx, fi.Key, offset, length)
+	if err != nil {
+		return nil, fmt.Errorf("download footer range: %w", err)
+	}
+	if len(tail) < 8 {
+		return nil, fmt.Errorf("footer tail too short: %d bytes", len(tail))
+	}
+	footerLen, err := FooterLength(tail[len(tail)-8:])
+	if err != nil {
+		return nil, err
+	}
+	totalFooterBytes := footerLen + 8
+	if totalFooterBytes > len(tail) {
+		return nil, fmt.Errorf("footer larger than prefetch tail: %d > %d", totalFooterBytes, len(tail))
+	}
+	footerSlice := tail[len(tail)-totalFooterBytes:]
+	cached, f, err := ParseFooterFromBytes(fi.Key, footerSlice, fi.Size)
+	if err != nil {
+		return nil, err
+	}
+	if s.footerCache != nil {
+		s.footerCache.Put(fi.Key, cached)
+	}
+	return f, nil
+}
+
 func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
 	filter := parseFilterFromQuery(q)
 
@@ -33,15 +92,13 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 		return nil, nil
 	}
 
+	// Use a footer-only read instead of downloading the full ~1 MB file
+	// just to walk its schema. Matches the logs module's GetFieldNames
+	// pattern so behaviour stays consistent across signals.
 	fi := files[0]
-	data, err := s.getFileData(ctx, fi.Key, fi.Size)
+	f, err := s.fetchFooterFile(ctx, fi)
 	if err != nil {
-		return nil, fmt.Errorf("get file data: %w", err)
-	}
-
-	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return nil, fmt.Errorf("open parquet: %w", err)
+		return nil, fmt.Errorf("get footer: %w", err)
 	}
 
 	s.updateLabelIndex(f)
