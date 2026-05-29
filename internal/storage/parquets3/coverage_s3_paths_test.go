@@ -1975,11 +1975,10 @@ func TestInteg_detectConstantColumns_AllConstant(t *testing.T) {
 	cols := map[string]bool{"service.name": true}
 
 	constants := detectConstantColumns(f, rgs[0], cols)
-	if len(constants) == 0 {
-		t.Error("expected service.name to be detected as constant")
-	}
-	if len(constants) > 0 && constants[0].name != "service.name" {
-		t.Errorf("expected service.name, got %s", constants[0].name)
+	// service.name is ByteArray — never detected as constant due to
+	// parquet PageIndex truncation risk. See constant_columns.go.
+	if len(constants) != 0 {
+		t.Errorf("ByteArray column must not be detected as constant; got %d: %+v", len(constants), constants)
 	}
 }
 

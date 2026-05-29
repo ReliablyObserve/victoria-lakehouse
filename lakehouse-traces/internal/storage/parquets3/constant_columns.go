@@ -44,6 +44,17 @@ func detectConstantColumns(f *parquet.File, rg parquet.RowGroup, wantCols map[st
 			continue
 		}
 
+		// ByteArray (variable-length string/binary) min/max may be
+		// truncated by the writer per Apache Parquet's PageIndex spec.
+		// Treating a truncated min == max as a constant injects the
+		// truncated bytes as the row value, which surfaces as e.g.
+		// "notification-ser" in /select/jaeger/api/services. Skip the
+		// optimization for ByteArray; fixed-width kinds (Int64, Float,
+		// FixedLenByteArray, etc.) are not truncated and remain safe.
+		if minVal.Kind() == parquet.ByteArray {
+			continue
+		}
+
 		if parquet.Equal(minVal, maxVal) {
 			allEqual := true
 			for p := 1; p < numPages; p++ {
