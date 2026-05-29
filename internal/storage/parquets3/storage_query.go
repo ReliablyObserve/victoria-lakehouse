@@ -743,6 +743,11 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 
 	rowNum := 0
 	var seenBitmap []bool
+	// Hoist the scalar-name lookup map out of the loop. Previously this
+	// was allocated fresh per row, contributing one allocation per row at
+	// scan time. We clear via map-delete (faster than make-new for stable
+	// schemas because the backing buckets stay hot in L1).
+	scalarFieldNames := make(map[string]bool)
 	for _, fields := range rows {
 		// Time-range filter
 		skip := false
@@ -770,7 +775,9 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 			seenBitmap[i] = false
 		}
 
-		scalarFieldNames := make(map[string]bool)
+		for k := range scalarFieldNames {
+			delete(scalarFieldNames, k)
+		}
 		for _, fld := range fields {
 			if _, ok := fld.value.(map[string]string); !ok {
 				scalarFieldNames[fld.name] = true
