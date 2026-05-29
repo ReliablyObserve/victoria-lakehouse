@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -541,42 +542,42 @@ func sampleValueFrequency(f *parquet.File, colIdx int) map[string]int {
 }
 
 func extractDistinctFromStats(f *parquet.File, colIdx int) []string {
+	// IMPORTANT: do NOT read distinct values from parquet column-index
+	// min/max stats. parquet-go truncates those stat values (typically
+	// at 16 bytes per Apache Parquet's PageIndex spec) so reading them
+	// produces values like "notification-ser" alongside the full
+	// "notification-service" in the label index — visible to operators
+	// as duplicate service names in /select/jaeger/api/services and
+	// every other GetFieldValues consumer.
+	//
+	// Data-page scanning produces full, untruncated values. For
+	// low-cardinality fields like service.name this is also cheap —
+	// the first row group of any file usually contains every distinct
+	// value (datagen produces ~7 services rotated across millions of
+	// rows; production traces follow similar shape).
 	seen := make(map[string]bool)
 	for _, rg := range f.RowGroups() {
 		cols := rg.ColumnChunks()
 		if colIdx >= len(cols) {
 			continue
 		}
-		// First try column index stats (fast, no data read)
-		ci, err := cols[colIdx].ColumnIndex()
-		if err == nil && ci != nil {
-			numPages := ci.NumPages()
-			for p := 0; p < numPages; p++ {
-				if minBytes := ci.MinValue(p).Bytes(); len(minBytes) > 0 && len(minBytes) < 256 && isPrintable(minBytes) {
-					seen[string(minBytes)] = true
-				}
-				if maxBytes := ci.MaxValue(p).Bytes(); len(maxBytes) > 0 && len(maxBytes) < 256 && isPrintable(maxBytes) {
-					seen[string(maxBytes)] = true
-				}
-			}
+		if rg.NumRows() == 0 {
+			continue
 		}
-		// If stats give few values, scan first row group's actual data
-		if len(seen) < 50 && rg.NumRows() > 0 {
-			rows := rg.Rows()
-			buf := make([]parquet.Row, 512)
-			n, _ := rows.ReadRows(buf)
-			for i := 0; i < n; i++ {
-				if colIdx < len(buf[i]) {
-					val := buf[i][colIdx]
-					if !val.IsNull() {
-						if b := val.Bytes(); len(b) > 0 && len(b) < 256 && isPrintable(b) {
-							seen[string(b)] = true
-						}
+		rows := rg.Rows()
+		buf := make([]parquet.Row, 512)
+		n, _ := rows.ReadRows(buf)
+		for i := 0; i < n; i++ {
+			if colIdx < len(buf[i]) {
+				val := buf[i][colIdx]
+				if !val.IsNull() {
+					if b := val.Bytes(); len(b) > 0 && len(b) < 256 && isPrintable(b) {
+						seen[string(b)] = true
 					}
 				}
 			}
-			_ = rows.Close()
 		}
+		_ = rows.Close()
 		if len(seen) > 1000 {
 			break
 		}
@@ -589,6 +590,7 @@ func extractDistinctFromStats(f *parquet.File, colIdx int) []string {
 	for v := range seen {
 		result = append(result, v)
 	}
+	sort.Strings(result)
 	return result
 }
 
