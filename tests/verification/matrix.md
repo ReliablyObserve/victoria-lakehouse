@@ -49,7 +49,7 @@ Related rules (memories): `feedback_per_component_verification`,
 | L9 | `/select/logsql/stream_field_names` | wildcard | PASS | parity | same | identical | 2026-05-29 |
 | L10 | `/select/logsql/stream_field_values` | wildcard | PASS | parity | same | identical | 2026-05-29 |
 | L11 | `/select/logsql/streams` | wildcard | PASS | parity + unit | column-projected refactor | identical | 2026-05-29 |
-| L12 | `/select/logsql/stream_ids` | wildcard | UNVERIFIED | parity | gap — needs row | external insert path doesn't populate `_stream_id` | — |
+| L12 | `/select/logsql/stream_ids` | wildcard | FAIL | parity (gap) | `victorialogs:9428/select/logsql/stream_ids` | LH returns empty because external insert path doesn't populate `_stream_id`. Must compute the same hash VL does (over `_stream` labels) at insert or query time. **100% VL API compat required.** | — |
 | L13 | `/select/logsql/hits` | wildcard buckets | PASS | parity | same | identical | 2026-05-29 |
 | L14 | `/select/logsql/hits` | 18-OR drilldown query | PASS | unit + integration | `TestBloomFilterFilesByOrBranches_Integration` | OR-branch bloom evaluation | 2026-05-29 |
 | L15 | `/select/logsql/stats_query` | `* \| stats count() rows` | PASS | parity | same | identical | 2026-05-29 |
@@ -62,16 +62,16 @@ Related rules (memories): `feedback_per_component_verification`,
 
 | # | Endpoint | state | layer | spec | last_state | verified |
 |---|----------|-------|-------|------|-----------|----------|
-| LA1 | `/lakehouse/info` | UNVERIFIED | manual | docs/architecture.md | — | — |
+| LA1 | `/lakehouse/info` | PASS | manual | docs/architecture.md | 200, `{"mode":"logs","phase":"ready",...,"vl_compat":"1.50.0"}` | 2026-05-29 |
 | LA2 | `/internal/lifecycle/drain` | PASS | unit | K8s scaling safety spec | returns 202+metric | 2026-05-25 |
 | LA3 | `/internal/lifecycle/ready` | PASS | unit | same | returns 200/503 per state | 2026-05-25 |
 | LA4 | `/internal/lifecycle/ring` | PASS | unit | same | returns member list JSON | 2026-05-25 |
 | LA5 | `/internal/lifecycle/stale` | PASS | unit | same | returns staleness signal | 2026-05-25 |
-| LA6 | `/api/v1/bloom/status` | UNVERIFIED | manual | docs/bloom-index.md | — | — |
-| LA7 | `/internal/cache/stats` | UNVERIFIED | manual | docs/cache-architecture.md | — | — |
-| LA8 | `/internal/cache/clear` | UNVERIFIED | manual | same | — | — |
-| LA9 | `/internal/manifest/range` | UNVERIFIED | manual | docs/manifest-system.md | — | — |
-| LA10 | `/internal/manifest/partitions` | UNVERIFIED | manual | same | — | — |
+| LA6 | `/api/v1/bloom/status` | PASS | manual | docs/bloom-index.md | 200, valid tiered status JSON | 2026-05-29 |
+| LA7 | `/internal/cache/stats` | PASS | manual | docs/cache-architecture.md | 200, `{"az":"az-a","l1_entries":2,...}` | 2026-05-29 |
+| LA8 | `/internal/cache/clear` | UNVERIFIED | manual | same | needs POST + before/after check | — |
+| LA9 | `/manifest/range` | PASS | manual | docs/manifest-system.md | correct path (no `/internal/` prefix); matrix path was wrong | 2026-05-29 |
+| LA10 | `/manifest/partitions` | PASS | manual | same | correct path (no `/internal/` prefix); matrix path was wrong | 2026-05-29 |
 
 ## Logs insert
 
@@ -96,15 +96,15 @@ Related rules (memories): `feedback_per_component_verification`,
 | T4 | `/select/logsql/field_values` | filtered | PASS | unit + parity | column-projected | 2026-05-29 |
 | T5 | `/select/logsql/stats_query` | `\| stats by(service.name)` | PASS | parity | same | identical | 2026-05-29 |
 | T6 | `/select/logsql/hits` | bucketed | PASS | parity | same | identical | 2026-05-29 |
-| T7 | `/select/jaeger/api/services` | list services | DIFFER | manual | `victoriatraces:10428/select/jaeger/api/services` | service-name duplicates and truncation in response (e.g. "notification-ser" + "notification-ses" alongside "notification-service") — open bug | 2026-05-29 |
-| T8 | `/select/jaeger/api/traces` | search by service | UNVERIFIED | manual | same | needs Drilldown smoke | — |
+| T7 | `/select/jaeger/api/services` | list services | PASS | unit + manual | `victoriatraces:10428/select/jaeger/api/services` | service-name truncation fixed — see commit dropping parquet column-index extraction in extractDistinctFromStats | 2026-05-29 |
+| T8 | `/select/jaeger/api/traces` | search by service | PASS | manual | same | returns trace data with span sets | 2026-05-29 |
 | T9 | `/select/jaeger/api/traces/{id}` | trace lookup | PASS | manual | same | curl returned span set | 2026-05-29 |
 | T10 | `/select/jaeger/api/services/{svc}/operations` | operations | UNVERIFIED | manual | same | — | — |
 | T11 | `/select/jaeger/api/dependencies` | dep graph | UNVERIFIED | manual | same | — | — |
 | T12 | `/select/tempo/api/search` | `q={}` | PASS | manual | same | curl returns trace list | 2026-05-29 |
-| T13 | `/select/tempo/api/search/tags` | tag enum | UNVERIFIED | manual | same | — | — |
+| T13 | `/select/tempo/api/search/tags` | tag enum | DIFFER | manual | same | returns 200 with empty body — VT returns same shape; needs deeper check vs VT reference for non-empty case | 2026-05-29 |
 | T14 | `/select/tempo/api/search/tag/{key}/values` | tag values | UNVERIFIED | manual | same | — | — |
-| T15 | `/select/tempo/api/traces/{id}` | trace lookup | UNVERIFIED | manual | same | — | — |
+| T15 | `/select/tempo/api/traces/{id}` | trace lookup | PASS | manual | same | trace_id resolved + returned | 2026-05-29 |
 | T16 | `/select/tempo/api/metrics/query_range` | TraceQL `count_over_time() by(...)` | PASS | manual | same | curl returns series | 2026-05-29 |
 | T17 | `/select/tempo/api/metrics/instant` | instant TraceQL | UNVERIFIED | manual | same | — | — |
 
@@ -124,10 +124,10 @@ Related rules (memories): `feedback_per_component_verification`,
 | G2 | victorialogs-global | VictoriaLogs (vlselect) | PASS | hot+cold merge | 2026-05-29 |
 | G3 | victoria-lakehouse-cold | VictoriaLogs (LH) | PASS | returns logs | 2026-05-29 |
 | G4 | loki-vl-proxy | Loki | PASS | drilldown works | 2026-05-29 |
-| G5 | loki-vl-proxy-cold | Loki cold-only | DIFFER | container marked unhealthy in last check; needs investigation | 2026-05-29 |
+| G5 | loki-vl-proxy-cold | Loki cold-only | PASS | container healthy after restarting lakehouse-logs (had been OOM-stopped before the field-API fixes) | 2026-05-29 |
 | G6 | victoriatraces-hot | Jaeger (VT) | PASS | services list returns | 2026-05-29 |
 | G7 | victoriatraces-global | Jaeger (vtselect) | PASS | merged services list | 2026-05-29 |
-| G8 | victoria-lakehouse-traces | Jaeger (LH) | DIFFER | works but service-name truncation; see T7 | 2026-05-29 |
+| G8 | victoria-lakehouse-traces | Jaeger (LH) | PASS | service-name truncation fixed; see T7 | 2026-05-29 |
 | G9 | tempo-vt-hot | Tempo (VT) | PASS | metrics_query_range returns | 2026-05-29 |
 | G10 | tempo-global | Tempo (vtselect) | PASS | merged metrics | 2026-05-29 |
 | G11 | tempo-lh-cold | Tempo (LH) | PASS | metrics_query_range + search return | 2026-05-29 |
@@ -149,19 +149,48 @@ Related rules (memories): `feedback_per_component_verification`,
 
 ## Open bugs / known gaps
 
-1. **T7 / G8** — `/select/jaeger/api/services` returns duplicates and
-   truncated names (`notification-ser`, `notification-ses` alongside
-   `notification-service`). Source unclear; likely a buffer-reuse or
-   string-pooling issue in how the Jaeger handler stages service names.
-2. **L12** — `/select/logsql/stream_ids` returns empty for LH because the
-   external insert path never populates `_stream_id` (VL generates them
-   internally on the hot path). Decide whether to backfill at insert
-   time or accept the divergence.
-3. **G5** — `loki-vl-proxy-cold` container marked unhealthy. Needs log
-   inspection.
+1. ~~**T7 / G8** — Jaeger service-name truncation.~~ **FIXED** by
+   removing the parquet column-index seed in
+   `extractDistinctFromStats`; data-page scan is now the only source.
+2. **L12** — `/select/logsql/stream_ids` returns empty for LH because
+   the external insert path never populates `_stream_id`. **Design
+   decision below.**
+3. ~~**G5** — `loki-vl-proxy-cold` unhealthy.~~ **FIXED** by starting
+   the `lakehouse-logs` container (it had been OOM-stopped before the
+   field-API memory fixes landed).
 4. Roughly half of LA*, LI*, T8-T17, TI*, G12-G16 rows are
    `UNVERIFIED` — gaps in the manual/e2e layer. Build them out one
    row at a time as bugs surface or before each release.
+
+### L12 — `_stream_id` must be populated (100% VL API compat)
+
+**Status**: FAIL. Real bug, not "expected divergence".
+
+The 100% VL/VT API compatibility rule is non-negotiable
+(`feedback_vl_vt_upstream`). Every field VL itself returns from
+`/select/logsql/stream_ids` MUST be returned by LH. "Document the
+divergence as expected" is **not an acceptable resolution** — that
+was an earlier wrong call now corrected.
+
+**Background**: VL computes `_stream_id` as a uint64 hash over the
+`_stream` labels. The hash is part of VL's on-disk format and is
+present on every row VL returns to a client. Lakehouse's external
+insert path accepts already-flattened rows from `vlinsert` and writes
+to Parquet without setting `_stream_id` — so cold rows have an empty
+value.
+
+**Fix direction**: replicate VL's hash at insert time, store it in
+the Parquet `_stream_id` column. Re-deriving at query time is a
+fallback if insert-time computation isn't viable; either way the
+output MUST match what VL produces for the same `_stream` labels.
+
+**Sub-tasks**:
+1. Locate VL's stream-ID hash function (`deps/VictoriaLogs/lib/logstorage/stream_id.go` or equivalent) and verify it's pure-fn of the `_stream` label string.
+2. Call it from LH insert path (`internal/vlstorage/insert.go`) when `_stream_id` field is empty on the incoming row.
+3. Add a parity test that asserts LH's `_stream_id` for a known `_stream` label matches VL's for the same label (use VL's own implementation as the oracle).
+4. Backfill existing cold rows: optional; for new data the fix takes effect immediately.
+
+**Owner**: not assigned. Tracked as L12 FAIL.
 
 ## Process for filling gaps
 
