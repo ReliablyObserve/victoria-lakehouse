@@ -100,8 +100,13 @@ func filterDataBlock(db *logstorage.DataBlock, f *logstorage.Filter) *logstorage
 	keep := make([]bool, rowCount)
 	kept := 0
 
+	// Hoist the per-row Field slice outside the loop and reset its length
+	// via slicing. Previously buildRowFields allocated a new []Field each
+	// iteration; for a 1k-row block that produced 1k+ allocations per
+	// filterDataBlock call, dominating CPU at high QPS.
+	row := make([]logstorage.Field, len(columns))
 	for i := range rowCount {
-		row := buildRowFields(columns, i)
+		fillRowFields(row, columns, i)
 		if f.MatchRow(row) {
 			keep[i] = true
 			kept++
@@ -131,15 +136,23 @@ func filterDataBlock(db *logstorage.DataBlock, f *logstorage.Filter) *logstorage
 }
 
 // buildRowFields constructs a []logstorage.Field for a single row from DataBlock columns.
+//
+// Deprecated: prefer fillRowFields with a pre-allocated slice in hot loops.
 func buildRowFields(columns []logstorage.BlockColumn, rowIdx int) []logstorage.Field {
 	fields := make([]logstorage.Field, len(columns))
+	fillRowFields(fields, columns, rowIdx)
+	return fields
+}
+
+// fillRowFields writes one row's worth of columns into the caller-owned
+// dst slice. dst must be sized to len(columns).
+func fillRowFields(dst []logstorage.Field, columns []logstorage.BlockColumn, rowIdx int) {
 	for i, col := range columns {
-		fields[i] = logstorage.Field{
+		dst[i] = logstorage.Field{
 			Name:  col.Name,
 			Value: col.Values[rowIdx],
 		}
 	}
-	return fields
 }
 
 // filterMatchesRow checks if a single row (as fields) matches the filter.
