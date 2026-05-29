@@ -115,6 +115,85 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 	return nil, nil
 }
 
+// scanProjectedFieldValues iterates a Parquet file extracting values
+// from targetParquetCol for rows matching filter, reading only the
+// column chunks needed (target + filter-referenced columns) via
+// parquet.NewColumnChunkRowReader.
+//
+// Mirrors the equivalent helper in the logs module. Combined with
+// openParquetFile's range-read path this cuts S3 bytes per file
+// from the full body down to (footer + projected column chunk
+// sizes) — critical for keeping lakehouse-traces' parallel worker
+// pool from amplifying full-file downloads under load.
+func (s *Storage) scanProjectedFieldValues(
+	ctx context.Context,
+	fi manifest.FileInfo,
+	targetParquetCol string,
+	filter *logstorage.Filter,
+	seen map[string]uint64,
+) error {
+	projectedCols := map[string]bool{targetParquetCol: true}
+	if filter != nil {
+		for internalName := range FilterReferencedFields(filter) {
+			if m := s.registry.ResolveToParquet(internalName); m != nil {
+				projectedCols[m.ParquetColumn] = true
+			} else {
+				projectedCols[internalName] = true
+			}
+		}
+	}
+
+	f, err := s.openParquetFile(ctx, fi, projectedCols)
+	if err != nil {
+		return err
+	}
+
+	fullColNames := columnNames(f.Root())
+	projectedIndices := make([]int, 0, len(projectedCols))
+	projectedNames := make([]string, 0, len(projectedCols))
+	targetInProjection := -1
+	for i, n := range fullColNames {
+		if !projectedCols[n] {
+			continue
+		}
+		if n == targetParquetCol {
+			targetInProjection = len(projectedIndices)
+		}
+		projectedIndices = append(projectedIndices, i)
+		projectedNames = append(projectedNames, n)
+	}
+	if targetInProjection < 0 {
+		return nil
+	}
+
+	buf := make([]parquet.Row, 256)
+	for _, rg := range f.RowGroups() {
+		allChunks := rg.ColumnChunks()
+		projChunks := make([]parquet.ColumnChunk, 0, len(projectedIndices))
+		for _, ci := range projectedIndices {
+			if ci >= len(allChunks) {
+				continue
+			}
+			projChunks = append(projChunks, allChunks[ci])
+		}
+		if len(projChunks) == 0 {
+			continue
+		}
+		rows := parquet.NewColumnChunkRowReader(projChunks)
+		for {
+			n, err := rows.ReadRows(buf)
+			if n > 0 {
+				collectFilteredValues(buf[:n], projectedNames, targetInProjection, filter, s, seen)
+			}
+			if err != nil {
+				break
+			}
+		}
+		_ = rows.Close()
+	}
+	return nil
+}
+
 func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
 	filter := parseFilterFromQuery(q)
 
@@ -184,40 +263,12 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 					return
 				}
 
-				data, err := s.getFileData(ctx, fi.Key, fi.Size)
-				if err != nil {
-					logger.Warnf("get file data for field values: %s; key=%s", err, fi.Key)
-					continue
-				}
-
-				f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
-				if err != nil {
-					logger.Warnf("open parquet for field values: %s; key=%s", err, fi.Key)
-					continue
-				}
-
-				s.updateLabelIndex(f)
-
-				colNames := columnNames(f.Root())
-				colIdx := findColumnIndex(f.Root(), mapping.ParquetColumn)
-				if colIdx < 0 {
-					continue
-				}
-
+				// Column-projected read: fetches only (target + filter cols)
+				// chunk data from S3 rather than the entire file body.
 				localSeen := make(map[string]uint64)
-				for _, rg := range f.RowGroups() {
-					rows := rg.Rows()
-					buf := make([]parquet.Row, 256)
-					for {
-						n, err := rows.ReadRows(buf)
-						if n > 0 {
-							collectFilteredValues(buf[:n], colNames, colIdx, filter, s, localSeen)
-						}
-						if err != nil {
-							break
-						}
-					}
-					_ = rows.Close()
+				if err := s.scanProjectedFieldValues(ctx, fi, mapping.ParquetColumn, filter, localSeen); err != nil {
+					logger.Warnf("scan projected field values: %s; key=%s", err, fi.Key)
+					continue
 				}
 
 				mu.Lock()

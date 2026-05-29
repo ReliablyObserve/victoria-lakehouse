@@ -301,9 +301,9 @@ func FilterReferencedFields(f *logstorage.Filter) map[string]bool {
 	walkFilterAST(inner, func(name string, v reflect.Value) bool {
 		// Any filter node exposing a `fieldName` string field is
 		// constraining that field. Newer VL wraps simple predicates
-		// in filterGeneric{fieldName,f:filterExact}; older VL (the
-		// commit pinned by lakehouse-traces) puts fieldName directly
-		// on filterExact/filterIn/etc. Detect both shapes uniformly.
+		// in filterGeneric{fieldName,f:filterExact}; older VL puts
+		// fieldName directly on filterExact/filterIn/etc. Detect
+		// both shapes uniformly.
 		if fn := stringField(v, "fieldName"); fn != "" {
 			out[fn] = true
 		}
