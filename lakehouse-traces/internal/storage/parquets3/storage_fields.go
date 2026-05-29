@@ -1,7 +1,6 @@
 package parquets3
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"sync"
@@ -332,37 +331,9 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 			return nil, err
 		}
 
-		data, err := s.getFileData(ctx, fi.Key, fi.Size)
-		if err != nil {
-			logger.Warnf("get file data for streams: %s; key=%s", err, fi.Key)
+		if err := s.scanProjectedFieldValues(ctx, fi, streamColName, filter, seen); err != nil {
+			logger.Warnf("scan projected streams: %s; key=%s", err, fi.Key)
 			continue
-		}
-
-		f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
-		if err != nil {
-			logger.Warnf("open parquet for streams: %s; key=%s", err, fi.Key)
-			continue
-		}
-
-		colNames := columnNames(f.Root())
-		streamIdx := findColumnIndex(f.Root(), streamColName)
-		if streamIdx < 0 {
-			continue
-		}
-
-		for _, rg := range f.RowGroups() {
-			rows := rg.Rows()
-			buf := make([]parquet.Row, 256)
-			for {
-				n, err := rows.ReadRows(buf)
-				if n > 0 {
-					collectFilteredValues(buf[:n], colNames, streamIdx, filter, s, seen)
-				}
-				if err != nil {
-					break
-				}
-			}
-			_ = rows.Close()
 		}
 
 		if limit > 0 && uint64(len(seen)) >= limit {
@@ -402,37 +373,9 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 			return nil, err
 		}
 
-		data, err := s.getFileData(ctx, fi.Key, fi.Size)
-		if err != nil {
-			logger.Warnf("get file data for stream_ids: %s; key=%s", err, fi.Key)
+		if err := s.scanProjectedFieldValues(ctx, fi, colName, filter, seen); err != nil {
+			logger.Warnf("scan projected stream_ids: %s; key=%s", err, fi.Key)
 			continue
-		}
-
-		f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
-		if err != nil {
-			logger.Warnf("open parquet for stream_ids: %s; key=%s", err, fi.Key)
-			continue
-		}
-
-		colNames := columnNames(f.Root())
-		colIdx := findColumnIndex(f.Root(), colName)
-		if colIdx < 0 {
-			continue
-		}
-
-		for _, rg := range f.RowGroups() {
-			rows := rg.Rows()
-			buf := make([]parquet.Row, 256)
-			for {
-				n, err := rows.ReadRows(buf)
-				if n > 0 {
-					collectFilteredValues(buf[:n], colNames, colIdx, filter, s, seen)
-				}
-				if err != nil {
-					break
-				}
-			}
-			_ = rows.Close()
 		}
 
 		if limit > 0 && uint64(len(seen)) >= limit {
