@@ -8,6 +8,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -30,6 +31,7 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 		}
 		return nil, nil
 	}
+	files = dedupOverlappingFiles(files)
 
 	// Walk all files; for each, accumulate hits per (internal) field name.
 	for _, fi := range files {
@@ -74,6 +76,85 @@ func labelIndexNamesWithHits(names []string, hits map[string]uint64) []logstorag
 		result[i] = logstorage.ValueWithHits{Value: name, Hits: hits[name]}
 	}
 	return result
+}
+
+// dedupOverlappingFiles removes manifest entries that are redundant
+// because a higher-level compacted file already covers the same time
+// range. Without this, GetFieldValues (and other manifest-walking field
+// APIs) inflate value counts by ~2x during the brief overlap window
+// between a freshly-compacted output and its still-listed sources.
+//
+// Heuristic:
+//   - For every pair (A, B), if A and B overlap on >= 90% of B's time
+//     range AND A has a higher CompactionLevel than B (or equal level
+//     with strictly larger Size), B is dropped.
+//   - Disjoint or partially overlapping files are preserved.
+//
+// This is intentionally conservative: equal-level overlaps without a
+// size signal are kept (rare; usually only happens for sibling files
+// produced by the same compaction round).
+func dedupOverlappingFiles(files []manifest.FileInfo) []manifest.FileInfo {
+	if len(files) <= 1 {
+		return files
+	}
+	drop := make([]bool, len(files))
+	for i := range files {
+		if drop[i] {
+			continue
+		}
+		for j := range files {
+			if i == j || drop[j] {
+				continue
+			}
+			if shouldDropBecauseCoveredBy(files[j], files[i]) {
+				drop[j] = true
+			}
+		}
+	}
+	result := files[:0]
+	for i, fi := range files {
+		if !drop[i] {
+			result = append(result, fi)
+		}
+	}
+	return result
+}
+
+// shouldDropBecauseCoveredBy reports whether `b` is redundant given the
+// presence of `a` — i.e. `a` is the compacted output that subsumes `b`.
+func shouldDropBecauseCoveredBy(b, a manifest.FileInfo) bool {
+	if a.MinTimeNs == 0 || a.MaxTimeNs == 0 || b.MinTimeNs == 0 || b.MaxTimeNs == 0 {
+		return false
+	}
+	bRange := b.MaxTimeNs - b.MinTimeNs
+	if bRange <= 0 {
+		return false
+	}
+	overlapStart := b.MinTimeNs
+	if a.MinTimeNs > overlapStart {
+		overlapStart = a.MinTimeNs
+	}
+	overlapEnd := b.MaxTimeNs
+	if a.MaxTimeNs < overlapEnd {
+		overlapEnd = a.MaxTimeNs
+	}
+	overlap := overlapEnd - overlapStart
+	if overlap <= 0 {
+		return false
+	}
+	// Require >= 90% of B to be inside A.
+	if overlap*10 < bRange*9 {
+		return false
+	}
+	// Prefer higher compaction level; if equal, prefer the strictly
+	// larger file (the merged output).
+	if a.CompactionLevel > b.CompactionLevel {
+		return true
+	}
+	if a.CompactionLevel == b.CompactionLevel && a.Size > b.Size {
+		return true
+	}
+	return false
 }
 
 // accumulateFieldHits computes per-field non-null row counts for every
@@ -149,6 +230,9 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 	if len(files) == 0 {
 		return nil, nil
 	}
+	// Drop pre-compaction sources whose contents are already in a higher-
+	// level merged file to avoid double-counting field values.
+	files = dedupOverlappingFiles(files)
 
 	mapping := s.registry.ResolveToParquet(fieldName)
 	if mapping == nil {
@@ -237,6 +321,7 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 	if len(files) == 0 {
 		return nil, nil
 	}
+	files = dedupOverlappingFiles(files)
 
 	streamColName := "_stream"
 	if m := s.registry.ResolveToParquet(streamColName); m != nil {
@@ -307,6 +392,7 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 	if len(files) == 0 {
 		return nil, nil
 	}
+	files = dedupOverlappingFiles(files)
 
 	colName := "_stream_id"
 	if m := s.registry.ResolveToParquet(colName); m != nil {
