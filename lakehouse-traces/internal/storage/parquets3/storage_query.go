@@ -1343,6 +1343,21 @@ func (s *Storage) filterFilesByBloomIndex(files []manifest.FileInfo, queryStr st
 		return files
 	}
 
+	// Try OR-branch path first when the query contains a top-level OR
+	// of simple field=value predicates (Grafana drilldown shape). Each
+	// branch's bloom checks are evaluated independently and UNIONed.
+	// Falls through to the single-set path on unsupported shapes.
+	if containsOrOperatorAST(queryStr) {
+		if result, ok := s.filterFilesByBloomIndexOR(files, queryStr); ok {
+			return result
+		}
+		// OR shape not supported by branch helper — old code path
+		// would build a single checks set via extractExactMatch which
+		// is unlikely to find anything inside OR clauses, so we'd
+		// return `files` anyway. Make that explicit.
+		return files
+	}
+
 	// Build checks for all bloom-enabled columns that have exact matches in the query
 	var checks []bloomindex.ColumnCheck
 	for _, col := range s.registry.PromotedColumns() {
@@ -1392,6 +1407,82 @@ func (s *Storage) filterFilesByBloomIndex(files []manifest.FileInfo, queryStr st
 		logger.Infof("bloom index pre-filter: skipped %d/%d files (checks=%d)", skipped, len(files), len(checks))
 	}
 	return filtered
+}
+
+// filterFilesByBloomIndexOR evaluates each top-level OR branch's
+// bloom checks against the bloom index and unions the matching files.
+// Returns (files, false) when the filter shape isn't a supported
+// top-level OR of simple field=value predicates — caller should fall
+// back to its existing behaviour for that case.
+func (s *Storage) filterFilesByBloomIndexOR(files []manifest.FileInfo, queryStr string) ([]manifest.FileInfo, bool) {
+	filter := parseFilterFromQueryStr(queryStr)
+	if filter == nil {
+		return files, false
+	}
+	branches := FilterExtractOrBranches(filter)
+	if len(branches) == 0 {
+		return files, false
+	}
+
+	branchChecks := make([][]bloomindex.ColumnCheck, 0, len(branches))
+	for _, branch := range branches {
+		var checks []bloomindex.ColumnCheck
+		var hasUnindexed bool
+		for _, bc := range branch {
+			col := s.resolveBloomColumn(bc.FieldName)
+			if col == "" {
+				hasUnindexed = true
+				break
+			}
+			checks = append(checks, bloomindex.ColumnCheck{Column: col, Value: bc.Value})
+		}
+		if hasUnindexed || len(checks) == 0 {
+			// One branch can't be bloom-evaluated — every file is a
+			// potential match for that branch, so fall back rather
+			// than over-filter.
+			return files, false
+		}
+		branchChecks = append(branchChecks, checks)
+	}
+
+	keys := make([]string, len(files))
+	for i, fi := range files {
+		keys[i] = fi.Key
+	}
+
+	unionMatch := make(map[string]bool, len(keys))
+	for _, checks := range branchChecks {
+		matching := s.bloomIdx.MayContainAll(keys, checks)
+		for _, k := range matching {
+			unionMatch[k] = true
+		}
+	}
+
+	filtered := make([]manifest.FileInfo, 0, len(unionMatch))
+	for _, fi := range files {
+		if unionMatch[fi.Key] {
+			filtered = append(filtered, fi)
+		}
+	}
+
+	skipped := len(files) - len(filtered)
+	if skipped > 0 {
+		logger.Infof("bloom OR-branch pre-filter: skipped %d/%d files (branches=%d)", skipped, len(files), len(branches))
+	}
+	return filtered, true
+}
+
+// resolveBloomColumn maps a field name (internal or parquet) to the
+// parquet column when the column has a bloom filter configured.
+// Returns "" if no bloom is configured.
+func (s *Storage) resolveBloomColumn(fieldName string) string {
+	if m := s.registry.ResolveToParquet(fieldName); m != nil && m.HasBloom {
+		return m.ParquetColumn
+	}
+	if m := s.registry.ResolveFromParquet(fieldName); m != nil && m.HasBloom {
+		return m.ParquetColumn
+	}
+	return ""
 }
 
 func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, queryStr string) bool {
