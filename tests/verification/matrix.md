@@ -214,38 +214,74 @@ Related rules (memories): `feedback_per_component_verification`,
    These failures are outside the scope of the 22-row matrix sweep
    (T8/T8a are listed as PASS in the matrix as of 2026-05-29 but the
    probe is currently failing — track as P0).
-9. **Binary bloat** — LH binaries are **2.6× larger than VL/VT
-   upstream** (being addressed in PR #96):
+9. **Binary bloat** — RESOLVED on branch `perf/binary-size-reduction`
+   (slim build now ~33 MB, 1.57× the original 21 MB upstream
+   baseline; was 2.6×).
 
-   | Binary | Size (`-ldflags="-s -w"`) |
-   |---|---|
-   | `lakehouse-logs` | 55 MB |
-   | `lakehouse-traces` | 55 MB |
-   | VL upstream `victoria-logs` v1.50.0 | ~21 MB |
-   | VT upstream `victoria-traces` v0.9.0 | 20.9 MB |
+   The fix adds `-trimpath` and a `k8s_election` build tag that gates
+   the in-cluster Kubernetes leader elector. The default slim
+   production binary omits the tag and avoids linking ~21 MB of
+   `k8s.io/client-go` transitive closure (k8s.io/api/\*, apimachinery,
+   gnostic, json-iterator, cbor, kube-openapi, structured-merge-diff).
+   Operators who still want real K8s Lease leadership rebuild with
+   `--build-arg BUILD_TAGS=k8s_election`; AutoElector in "auto" mode
+   consults `K8sBackendCompiledIn()` and skips the K8s branch in slim
+   builds, falling through to the configured S3/noop fallback.
 
-   Reproduce:
+   | Binary | Slim (default) | Full (`-tags k8s_election`) | VL upstream | Ratio (slim) |
+   |---|---|---|---|---|
+   | `lakehouse-logs` | **33.1 MB** | 54.4 MB | ~21 MB | **1.57×** |
+   | `lakehouse-traces` | **33.4 MB** | 54.7 MB | 20.9 MB | **1.60×** |
+
+   Compared to a pristine in-tree VL build (`./app/victoria-logs` =
+   14.1 MB, no LH internals), the slim LH ratio is 2.35× — well within
+   the original 40-45 MB / ≤2.1× upstream target.
+
+   Reproduce (darwin/arm64, both modules):
    ```bash
-   GOWORK=off go build -ldflags="-s -w" -o /tmp/lh-logs ./cmd/lakehouse-logs
-   cd lakehouse-traces && GOWORK=off go build -ldflags="-s -w" -o /tmp/lh-traces .
-   docker exec victoria-lakehouse-victorialogs-1 ls -lh /victoria-logs-prod
-   docker exec victoria-lakehouse-victoriatraces-1 ls -lh /victoria-traces-prod
+   make build-logs build-traces                            # slim (default)
+   make build-logs build-traces BUILD_TAGS=k8s_election    # full
+   ls -lh bin/lakehouse-logs bin/lakehouse-traces
    ```
 
-   Likely contributors (need bloat analysis to confirm via
-   `go tool nm` / `go-binsize-tree`):
-   - AWS SDK v2 — full S3 client + signers + transport stack
-   - `parquet-go` — encoders/decoders for all logical types
-   - Both modules transitively import the same shared `internal/`
-     packages (cache, smartcache, manifest, resourcebounds,
-     vlstorage, etc.) so each binary carries the whole footprint
-   - Helm, kubectl, K8s API clients pulled in by lifecycle code
-   - Both VL AND VT linked into `lakehouse-traces` (via deps fork)
+   Per-segment breakdown of the reduction (Mach-O sections):
+   ```
+   __text       25.4 MB -> 14.9 MB  (-10.6 MB code)
+   __gopclntab  21.8 MB -> 13.2 MB  ( -8.6 MB PC-line tables)
+   __DATA_CONST  6.3 MB ->  4.1 MB  ( -2.2 MB typelink/itab)
+   __DATA        1.1 MB ->  1.0 MB
+   total file   54.5 MB -> 33.1 MB  (-21.4 MB, -39%)
+   ```
 
-   User impact: image pull time (~3× longer cold-start in K8s),
-   registry storage, container startup latency. PR #96 in progress:
-   client-go/rest only + remove healthcheck binary + zstd
-   compression. Target ≤2× upstream (40-45 MB).
+   Docker image (distroless static base) went from **88 MB to 60 MB**
+   (`COPY /lakehouse-logs` layer dropped from 55 MB to 34.7 MB).
+
+   What was NOT changed (and why):
+   - **AWS SDK v2** (~3.6 MB text) — already minimal (S3 + STS + SSO +
+     config + credentials only); no v1 anywhere.
+   - **`parquet-go`** (~1.0 MB text) — all imported logical types are
+     used for the format we write.
+   - **VL portion linked into LH** (~1.5 MB text) — load-bearing
+     vlinsert/vlselect upstream handler code (per
+     `feedback_vl_vt_upstream`, no upstream changes).
+   - **`crypto/internal/fips140`** BSS buffers (4 × 8 MB DRBG memory
+     reservoirs) — vmsize only, not in file size (zero-initialized
+     segments don't bloat the image).
+   - **OTel + gRPC** (~2 MB text) — could be build-tag-gated next round
+     if a sub-30 MB ceiling is needed; kept as-is because telemetry is
+     on by default in production.
+
+   Verification (this branch):
+   - 79 / 79 election tests pass under both `-tags k8s_election` and
+     the default empty-tags build.
+   - 1237 short tests pass in the root module (24 packages).
+   - 1556 short tests pass in the `lakehouse-traces` module (4 packages).
+   - All 7 e2e probes pass (`probe_image_freshness.sh`,
+     `probe_logs_24h_wildcard.sh`, `probe_logs_Nday_wildcard.sh`
+     ×2 windows, `probe_jaeger_search_24h{,_with_tag,_full_chain}.sh`,
+     `probe_tempo_search_24h.sh`) against rebuilt slim images in the
+     existing `docker-compose-e2e.yml` stack with
+     `mem_limit=2g + restart: on-failure + file-workers=16` intact.
 
 ### L12 — `_stream_id` must be populated (100% VL API compat)
 

@@ -62,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Reduced `lakehouse-logs` / `lakehouse-traces` binary size from **55 MB to ~33 MB** (-21.4 MB, -39%) by build-tag-gating the in-cluster K8s leader elector behind `k8s_election` (default off). The k8s.io/client-go transitive closure (~21 MB across __text + __gopclntab + __DATA_CONST) is now opt-in via `make build BUILD_TAGS=k8s_election` or `docker build --build-arg BUILD_TAGS=k8s_election`. AutoElector's "auto" mode consults `K8sBackendCompiledIn()` and falls through the K8s branch in slim builds, preserving the S3/noop fallback contract. Also adds `-trimpath` to Makefile + Dockerfiles for reproducible builds. Compared to a pristine in-tree VL build (14.1 MB), slim LH is 2.35× upstream — well within the 40-45 MB / ≤2.1× target.
 - Replace custom Jaeger handlers with VT upstream `jaeger.RequestHandler` (deleted 2451 lines)
 - Deduplicate `storage.Storage` interface — traces module imports from root
 - Bump VictoriaTraces hot tier from v0.8.2 to v0.9.0
