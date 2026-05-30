@@ -515,7 +515,18 @@ func TestAutoElector_K8sMode(t *testing.T) {
 }
 
 // TestAutoElector_AutoModeK8sEnv tests the "auto" mode when KUBERNETES_SERVICE_HOST
-// is set, which triggers the K8s path.
+// is set.
+//
+// Behaviour depends on the k8s_election build tag:
+//   - With tag (K8sBackendCompiledIn()==true): "auto" selects the K8s elector
+//     which is not leader until the lease is acquired (IsLeader==false).
+//   - Without tag (slim production build): "auto" skips the K8s branch and
+//     falls back to S3 if a store is supplied, else noop (always leader). In
+//     this test no S3 store is supplied, so the noop path is taken and
+//     IsLeader==true.
+//
+// Either outcome reflects correct behaviour; the test asserts the contract
+// that matches the build it was compiled into.
 func TestAutoElector_AutoModeK8sEnv(t *testing.T) {
 	// Set env var to simulate K8s environment.
 	t.Setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
@@ -530,9 +541,16 @@ func TestAutoElector_AutoModeK8sEnv(t *testing.T) {
 	if ae == nil {
 		t.Fatal("expected non-nil AutoElector")
 	}
-	// The inner elector should be a K8sElector.
-	if ae.IsLeader() {
-		t.Error("expected IsLeader=false for fresh K8sElector")
+	if K8sBackendCompiledIn() {
+		// Full build: K8s elector picked, not leader until lease acquired.
+		if ae.IsLeader() {
+			t.Error("expected IsLeader=false for fresh K8sElector (full build)")
+		}
+	} else {
+		// Slim build: K8s branch skipped, falls through to noop (no S3 store).
+		if !ae.IsLeader() {
+			t.Error("expected IsLeader=true for noop fallback in slim build with no S3 store")
+		}
 	}
 	ae.Stop()
 }

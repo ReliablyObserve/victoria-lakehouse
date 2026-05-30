@@ -74,7 +74,7 @@ services:
     volumes:
       - lakehouse-cache-logs:/data/lakehouse
     healthcheck:
-      test: ["CMD", "/usr/local/bin/healthcheck", "http://localhost:9428/health"]
+      test: ["CMD", "/usr/local/bin/lakehouse-logs", "healthcheck", "http://localhost:9428/health"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -157,7 +157,7 @@ services:
     volumes:
       - lakehouse-cache-traces:/data/lakehouse
     healthcheck:
-      test: ["CMD", "/usr/local/bin/healthcheck", "http://localhost:10428/health"]
+      test: ["CMD", "/usr/local/bin/lakehouse-traces", "healthcheck", "http://localhost:10428/health"]
       interval: 5s
       timeout: 3s
       retries: 10

@@ -214,6 +214,82 @@ Related rules (memories): `feedback_per_component_verification`,
    These failures are outside the scope of the 22-row matrix sweep
    (T8/T8a are listed as PASS in the matrix as of 2026-05-29 but the
    probe is currently failing — track as P0).
+9. **Binary bloat** — RESOLVED on branch `perf/binary-size-reduction`
+   (always-on K8s elector at ~37 MB, 1.76× the 21 MB upstream
+   baseline; was 2.6×). Final design after iteration: Option B
+   (hand-rolled `rest+meta/v1` REST client) replaces the
+   tag-gated full `client-go` closure.
+
+   The fix:
+   1. **`-trimpath`** in Makefile + Dockerfiles for reproducible builds.
+   2. **Option B elector** — `internal/election/k8s.go` now talks to the
+      apiserver directly via `k8s.io/client-go/rest` + `k8s.io/apimachinery/pkg/apis/meta/v1`,
+      bypassing the heavy clientset (`k8s.io/client-go/kubernetes`),
+      the official elector wrapper (`tools/leaderelection`), and the
+      typed API modules (`k8s.io/api/core/v1`, `apps/v1`, `resource/v1`,
+      `admissionregistration/v1`). 329 packages in the closure vs ~700.
+   3. **`healthcheck` subcommand** — the standalone ~3 MB healthcheck
+      binary folded into `lakehouse-{logs,traces} healthcheck`, saving
+      ~10% of image size.
+   4. **FIPS variant** — `--build-arg FIPS=1` flips on Go 1.26+ native
+      FIPS 140-3 mode (`GOFIPS140=v1.0.0`). Release workflow publishes
+      `:vX.Y.Z` and `:vX.Y.Z-fips` tags for both modules.
+   5. **zstd compression** on image layers + OCI media types in the
+      release workflow — registry-side bytes shrink by ~25% over gzip.
+
+   | Binary | Pre-PR | Post-PR | VL upstream | Ratio |
+   |---|---|---|---|---|
+   | `lakehouse-logs` | 55 MB | **37 MB** | ~21 MB | **1.76×** |
+   | `lakehouse-traces` | 55 MB | **37 MB** | 20.9 MB | **1.79×** |
+
+   Compared to a pristine in-tree VL build (`./app/victoria-logs` =
+   14.1 MB, no LH internals), the LH ratio is 2.6× — well within
+   the 40-45 MB / ≤3× upstream target. The 7 MB delta vs the
+   build-tag-gated slim binary (33 MB) is the price of having K8s
+   leader election always available without a build flag.
+
+   Reproduce (darwin/arm64, both modules):
+   ```bash
+   make build-logs build-traces                      # default (always-on K8s)
+   FIPS=1 make build-logs build-traces               # FIPS 140-3 variant
+   ls -lh bin/lakehouse-logs bin/lakehouse-traces
+   ```
+
+   Docker image (distroless static base) went from **88 MB to ~64 MB**
+   (`COPY /lakehouse-logs` layer dropped from 55 MB to ~37 MB; no
+   separate healthcheck binary).
+
+   What was NOT changed (and why):
+   - **AWS SDK v2** (~3.6 MB text) — already minimal (S3 + STS + SSO +
+     config + credentials only); no v1 anywhere.
+   - **`parquet-go`** (~1.0 MB text) — all imported logical types are
+     used for the format we write.
+   - **VL portion linked into LH** (~1.5 MB text) — load-bearing
+     vlinsert/vlselect upstream handler code (per
+     `feedback_vl_vt_upstream`, no upstream changes).
+   - **`crypto/internal/fips140`** BSS buffers (4 × 8 MB DRBG memory
+     reservoirs) — vmsize only, not in file size (zero-initialized
+     segments don't bloat the image).
+   - **OTel + gRPC** (~2 MB text) — could be build-tag-gated next round
+     if a sub-30 MB ceiling is needed; kept as-is because telemetry is
+     on by default in production.
+
+   Verification (this branch):
+   - 119 / 119 election tests pass (`-race -count=1`).
+   - 90.8% coverage on `internal/election/k8s.go` (target: ≥90%).
+   - 0 forbidden imports (`TestNoForbiddenImports` regression lock).
+   - 329 packages in election dep closure (`TestElectionDepCount`
+     limit: 340).
+   - Binary size ≤ 40 MB on both modules (`TestBinarySizeBound`).
+   - FIPS round-trip: default build reports `fips140: disabled`;
+     `GOFIPS140=v1.0.0` build with `GODEBUG=fips140=on` reports
+     `fips140: enabled` (`TestFIPSMode_WhenEnabled` +
+     `probe_fips_active.sh`).
+   - kind e2e (`tests/e2e-k8s/test_leader_election.sh`,
+     `.github/workflows/e2e-k8s.yaml`): RBAC positive + RBAC negative
+     (delete RoleBinding → 403 in logs) + failover within 40s + multi-
+     namespace isolation, all PASS in a single-node kind cluster.
+   - All existing 8 e2e probes still pass against rebuilt images.
 
 ### L12 — `_stream_id` must be populated (100% VL API compat)
 

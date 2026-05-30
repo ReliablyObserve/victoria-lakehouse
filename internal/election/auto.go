@@ -58,7 +58,11 @@ func NewAutoElector(cfg AutoElectorConfig) *AutoElector {
 		}
 		logger.Infof("election mode: k8s")
 	case "auto":
-		if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
+		// Only attempt K8s if both (a) we're actually in a cluster and (b) the
+		// k8s_election build tag is compiled in. Stub builds advertise no K8s
+		// backend, so we fall through to the configured S3/noop fallback
+		// instead of silently never electing.
+		if os.Getenv("KUBERNETES_SERVICE_HOST") != "" && K8sBackendCompiledIn() {
 			e, err := newK8s(cfg.K8sConfig)
 			if err != nil {
 				logger.Warnf("k8s election failed, falling back to s3: %s", err)
@@ -68,6 +72,9 @@ func NewAutoElector(cfg AutoElectorConfig) *AutoElector {
 				logger.Infof("election mode: auto -> k8s")
 			}
 		} else {
+			if os.Getenv("KUBERNETES_SERVICE_HOST") != "" && !K8sBackendCompiledIn() {
+				logger.Warnf("election mode: auto -> k8s requested but binary built without k8s_election tag; falling back to s3/none")
+			}
 			if cfg.S3Store != nil {
 				inner = NewS3Elector(cfg.S3Store, cfg.S3Config)
 				logger.Infof("election mode: auto -> s3")

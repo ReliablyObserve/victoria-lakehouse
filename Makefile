@@ -1,6 +1,18 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=$(VERSION)
 
+# -trimpath strips local file system paths from the recorded executable, making
+# builds reproducible and slightly smaller (~150 KB per binary).
+GOBUILDFLAGS := -trimpath
+
+# FIPS=1 enables Go 1.26+ native FIPS 140-3 mode (GOFIPS140=v1.0.0 selects the
+# certified crypto module). Default is FIPS off; tag images explicitly with
+# `-fips` when FIPS=1.
+FIPS ?= 0
+ifeq ($(FIPS),1)
+export GOFIPS140 := v1.0.0
+endif
+
 # Both Go modules use different VL commits with incompatible interfaces.
 # go.work exists for IDE support only; CLI builds must disable it.
 export GOWORK=off
@@ -50,16 +62,15 @@ $(VT_DIR)/go.mod:
 	cd $(VT_DIR) && git apply ../../../patches/vt-traces/go-mod-replace.patch
 
 build: build-logs build-traces
-	go build -ldflags "-s -w" -o bin/healthcheck ./cmd/healthcheck
 
 bench:
 	go build -o bin/lakehouse-bench ./cmd/bench/
 
 build-logs: deps-logs
-	go build -ldflags "$(LDFLAGS)" -o bin/lakehouse-logs ./cmd/lakehouse-logs
+	go build $(GOBUILDFLAGS) -ldflags "$(LDFLAGS)" -o bin/lakehouse-logs ./cmd/lakehouse-logs
 
 build-traces: deps-traces deps-vt
-	cd lakehouse-traces && go build -ldflags "$(LDFLAGS)" -o ../bin/lakehouse-traces .
+	cd lakehouse-traces && go build $(GOBUILDFLAGS) -ldflags "$(LDFLAGS)" -o ../bin/lakehouse-traces .
 
 test: test-logs test-traces
 
