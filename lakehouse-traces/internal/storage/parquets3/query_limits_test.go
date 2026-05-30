@@ -9,7 +9,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
-	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 // baseTime is a fixed reference point used across limit tests.

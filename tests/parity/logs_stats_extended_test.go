@@ -18,7 +18,7 @@ func TestParity_StatsExtended(t *testing.T) {
 		{Name: "stats_multi_agg", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* | stats count() total, min(duration) lo, max(duration) hi, avg(duration) mean"}, Compare: StructureMatch},
 		{Name: "stats_by_three_fields", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* | stats by(level, service.name, k8s.namespace.name) count() rows"}, Compare: StructureMatch},
 		{Name: "stats_by_format", Endpoint: statsEndpoint(), Params: map[string]string{"query": `* format:* | stats by(format) count() rows`}, Compare: StructureMatch},
-		{Name: "rate_count", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* | stats count() / 3600 as rate"}, Compare: CountTolerance, Tolerance: 0.05},
+		{Name: "rate_count", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* | stats count() as total | math total / 3600 as rate"}, Compare: CountTolerance, Tolerance: 0.05},
 		{Name: "stats_filtered_agg", Endpoint: statsEndpoint(), Params: map[string]string{"query": `level:="ERROR" | stats count() errors, count_uniq(service.name) affected_services`}, Compare: StructureMatch},
 		{Name: "stats_range_by_service", Endpoint: statsRangeEndpoint(), Params: map[string]string{"query": "* | stats by(service.name) count() rows", "step": "3600s"}, Compare: StructureMatch},
 	}

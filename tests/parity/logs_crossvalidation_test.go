@@ -286,8 +286,14 @@ func TestParity_CrossValidation(t *testing.T) {
 					t.Fatalf("extractVectorCount for sec: %v", err)
 				}
 
-				if nanoCount != secCount {
-					t.Errorf("nanosecond count (%v) != second count (%v)", nanoCount, secCount)
+				// Second-precision timestamps can include/exclude boundary logs
+				// due to truncation, allowing ±1 difference.
+				diff := nanoCount - secCount
+				if diff < 0 {
+					diff = -diff
+				}
+				if diff > 1 {
+					t.Errorf("nanosecond count (%v) != second count (%v), diff=%v", nanoCount, secCount, diff)
 				}
 				t.Logf("nano_count=%v sec_count=%v", nanoCount, secCount)
 			})

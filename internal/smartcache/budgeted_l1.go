@@ -60,11 +60,27 @@ func (c *BudgetedL1) Get(key string) ([]byte, bool) {
 // is replaced and the budget adjusted. After insertion, if the total
 // used bytes exceed maxBytes, the least-recently-used entries are evicted
 // to L2 until the budget is satisfied (or the cache is empty).
+//
+// Put copies the input buffer; the caller is free to mutate val after
+// this call returns. For high-throughput paths that have just allocated
+// val and will not mutate it, use PutNoCopy.
 func (c *BudgetedL1) Put(key string, val []byte) {
+	buf := make([]byte, len(val))
+	copy(buf, val)
+	c.putBuffer(key, buf)
+}
+
+// PutNoCopy stores val without copying — caller transfers ownership.
+// See internal/cache/lru.go PutNoCopy for the safety contract.
+func (c *BudgetedL1) PutNoCopy(key string, val []byte) {
+	c.putBuffer(key, val)
+}
+
+func (c *BudgetedL1) putBuffer(key string, buf []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	size := int64(len(val))
+	size := int64(len(buf))
 
 	// Overwrite path: remove old entry first.
 	if elem, ok := c.items[key]; ok {
@@ -74,11 +90,7 @@ func (c *BudgetedL1) Put(key string, val []byte) {
 		delete(c.items, key)
 	}
 
-	// Store a copy of the value.
-	cp := make([]byte, len(val))
-	copy(cp, val)
-
-	entry := &l1Entry{key: key, data: cp}
+	entry := &l1Entry{key: key, data: buf}
 	elem := c.order.PushFront(entry)
 	c.items[key] = elem
 	c.used += size

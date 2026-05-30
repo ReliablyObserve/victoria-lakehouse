@@ -8,8 +8,6 @@ services:
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
-    ports:
-      - "29000:9000"
     networks: [lakehouse-net]
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -44,8 +42,6 @@ services:
       - "-retentionPeriod=24h"
       - "-loggerLevel=INFO"
     networks: [lakehouse-net]
-    ports:
-      - "9428:9428"
     volumes:
       - vl-data:/data
     healthcheck:
@@ -56,7 +52,7 @@ services:
       start_period: 5s
 
   victoriatraces:
-    image: victoriametrics/victoria-traces:v0.8.2
+    image: victoriametrics/victoria-traces:v0.9.0
     command:
       - "-storageDataPath=/data"
       - "-retentionPeriod=24h"
@@ -189,6 +185,7 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
+    # Exposed for VMUI access at http://localhost:29428/select/vmui/
     ports:
       - "29428:9428"
     networks: [lakehouse-net]
@@ -204,8 +201,23 @@ services:
       - "-lakehouse.insert.flush-interval=120s"
       - "-lakehouse.compaction.leader-election=s3"
       - "-lakehouse.compaction.interval=2m"
-      - "-lakehouse.query.file-workers=64"
-      - "-lakehouse.cache.memory-mb=512"
+      - "-lakehouse.query.file-workers=16"
+      # No artificial file cap — VL upstream has none. The
+      # query.max-live-bytes budget (default 512 MiB), the rgDecodeSem
+      # semaphore, AND the process-wide fileBudgetSem (default 256 MiB
+      # cumulative resident + max 8 concurrent files) bound memory
+      # regardless of file count. A 7-day wildcard hits ~600 files and
+      # completes under mem_limit=2g instead of being rejected as
+      # "too wide" or OOM-killing the container.
+      #
+      # L1 cache shrunk from 512 MiB to 256 MiB so the steady-state
+      # cache footprint plus query-time transient (file budget 256 MiB
+      # + decode peaks ~200 MiB + parquet-go pools ~200 MiB + baseline
+      # ~300 MiB + Go runtime overhead ~200 MiB) fits inside the 2 GiB
+      # cgroup with headroom for back-to-back 7-day wildcards. The L2
+      # disk cache (2 GiB) keeps hot files locally so subsequent
+      # queries hit disk instead of S3.
+      - "-lakehouse.cache.memory-mb=256"
       - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
       - "-lakehouse.cache.disk-max-mb=2048"
       - "-lakehouse.cache.warmup-partitions=6"
@@ -224,6 +236,11 @@ services:
       timeout: 3s
       retries: 10
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    restart: on-failure
 
   lakehouse-traces:
     build:
@@ -232,6 +249,7 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
+    # Exposed for VMUI access at http://localhost:20428/select/vmui/
     ports:
       - "20428:10428"
     networks: [lakehouse-net]
@@ -245,7 +263,12 @@ services:
       - "-lakehouse.s3.force-path-style=true"
       - "-lakehouse.manifest.refresh-interval=30s"
       - "-lakehouse.insert.flush-interval=120s"
-      - "-lakehouse.query.file-workers=64"
+      - "-lakehouse.query.file-workers=16"
+      # No artificial file cap — VL upstream has none. The
+      # query.max-live-bytes budget (default 512 MiB) plus the
+      # rgDecodeSem semaphore bound memory regardless of file count.
+      # A 7-day wildcard hits ~600 files and now completes under
+      # mem_limit=2g instead of being rejected as "too wide."
       - "-lakehouse.cache.memory-mb=512"
       - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
       - "-lakehouse.cache.disk-max-mb=2048"
@@ -256,6 +279,17 @@ services:
       - "-lakehouse.tenant.orgid-header=X-Scope-OrgID"
       - "-lakehouse.tenant.auto-register=true"
       - "-lakehouse.tenant.metrics-format=name"
+      # VT upstream defaults latencyOffset=30s. Our cold tier flushes
+      # parquet files every -lakehouse.insert.flush-interval=120s, so
+      # the freshest queryable span lags real time by up to ~2 min.
+      # Setting latencyOffset to 2m matches that lag and stops the
+      # upstream Jaeger search loop from clamping endTime past the data
+      # OR clamping inside the lag window (the 30s default included
+      # spans that hadn't flushed yet, and a previously-used 10m value
+      # clamped past genuinely-fresh data). This is the only setting we
+      # override beyond upstream defaults; it reflects a real
+      # cold-tier write-lag, not an LH-specific trick.
+      - "-search.latencyOffset=2m"
       - "-loggerLevel=INFO"
     volumes:
       - lakehouse-cache-traces:/data/lakehouse
@@ -265,6 +299,11 @@ services:
       timeout: 3s
       retries: 10
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    restart: on-failure
 
   # =========================================================================
   # Multi-Level Select — fan out to hot (disk) + cold (lakehouse)
@@ -281,8 +320,6 @@ services:
         condition: service_healthy
       lakehouse-logs:
         condition: service_healthy
-    ports:
-      - "29471:9428"
     networks: [lakehouse-net]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9428/health"]
@@ -292,7 +329,7 @@ services:
       start_period: 5s
 
   vtselect:
-    image: victoriametrics/victoria-traces:v0.8.2
+    image: victoriametrics/victoria-traces:v0.9.0
     command:
       - "-storageNode=victoriatraces:10428,lakehouse-traces:10428"
       - "-httpListenAddr=:10428"
@@ -302,8 +339,6 @@ services:
         condition: service_healthy
       lakehouse-traces:
         condition: service_healthy
-    ports:
-      - "20471:10428"
     networks: [lakehouse-net]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:10428/health"]
@@ -342,8 +377,6 @@ services:
         condition: service_healthy
       victorialogs:
         condition: service_healthy
-    ports:
-      - "23200:3100"
     networks: [lakehouse-net]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/ready"]
@@ -375,8 +408,6 @@ services:
     depends_on:
       lakehouse-logs:
         condition: service_healthy
-    ports:
-      - "23201:3100"
     networks: [lakehouse-net]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/ready"]
@@ -428,8 +459,6 @@ services:
         condition: service_healthy
       lakehouse-traces:
         condition: service_healthy
-    ports:
-      - "28428:8428"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8428/health"]
       interval: 5s

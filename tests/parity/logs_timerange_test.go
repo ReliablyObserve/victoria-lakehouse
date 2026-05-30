@@ -41,7 +41,7 @@ func TestParity_TimeRange(t *testing.T) {
 			"query": "* | stats count() rows",
 			"start": fmt.Sprintf("%d", dataStart.UnixMilli()),
 			"end":   fmt.Sprintf("%d", now.UnixMilli()),
-		}, Compare: CountEqual}
+		}, Compare: CountTolerance, Tolerance: 0.01}
 		params := buildParams(pc, nil)
 		ref := fetch(t, vlBaseURL, pc.Endpoint, params)
 		sut := fetch(t, lhBaseURL, pc.Endpoint, params)

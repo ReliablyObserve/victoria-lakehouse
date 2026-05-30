@@ -1281,12 +1281,18 @@ func TestDetectConstantColumns_AllSameValues(t *testing.T) {
 		for _, c := range constants {
 			constMap[c.name] = true
 		}
-		// service.name and severity_text are both the same across all rows
-		if !constMap["service.name"] {
-			t.Error("service.name should be detected as constant")
+		// ByteArray columns (string types) must NEVER be detected as
+		// constant because parquet's column-index min/max may be
+		// truncated per the PageIndex spec — surfacing as e.g.
+		// "notification-ser" alongside "notification-service" in
+		// /select/jaeger/api/services. Even when all rows in the page
+		// share the value, we cannot use the truncated min/max as the
+		// row value safely. Callers must read the actual data pages.
+		if constMap["service.name"] {
+			t.Error("service.name (ByteArray) must not be detected as constant — truncation risk")
 		}
-		if !constMap["severity_text"] {
-			t.Error("severity_text should be detected as constant")
+		if constMap["severity_text"] {
+			t.Error("severity_text (ByteArray) must not be detected as constant — truncation risk")
 		}
 	}
 }
@@ -1401,15 +1407,17 @@ func TestDetectConstantColumns_MixedConstAndVariable(t *testing.T) {
 		for _, c := range constants {
 			constMap[c.name] = true
 		}
-		// service.name is same across rows, severity_text and body differ
-		if !constMap["service.name"] {
-			t.Error("service.name should be constant")
+		// All three are ByteArray (string) — none may be detected as
+		// constant regardless of whether values are the same. The
+		// PageIndex truncation rule applies uniformly to BYTE_ARRAY.
+		if constMap["service.name"] {
+			t.Error("service.name (ByteArray) must not be detected as constant — truncation risk")
 		}
 		if constMap["severity_text"] {
-			t.Error("severity_text should not be constant")
+			t.Error("severity_text (ByteArray) must not be detected as constant — truncation risk")
 		}
 		if constMap["body"] {
-			t.Error("body should not be constant")
+			t.Error("body (ByteArray) must not be detected as constant — truncation risk")
 		}
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/crosssignal"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/election"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/lifecycle"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/prefetch"
@@ -84,6 +86,7 @@ var (
 
 	queryFileWorkers      = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 8)")
 	queryMaxFilesPerQuery = flag.Int("lakehouse.query.max-files-per-query", 0, "Max S3 files per query before rejection (default: 500)")
+	queryMaxLiveBytes     = flag.Int64("lakehouse.query.max-live-bytes", 0, "Per-query ceiling on in-flight DataBlock bytes before cancellation (default: 512MiB)")
 
 	s3ReadAhead   = flag.Int("lakehouse.s3.read-ahead-bytes", 0, "S3 read-ahead buffer size in bytes (default: 2MB)")
 	s3CoalesceGap = flag.Int("lakehouse.s3.coalesce-gap-bytes", 0, "Merge S3 range reads with gaps smaller than this (default: 64KB)")
@@ -114,6 +117,20 @@ func main() {
 
 	logger.InitNoLogFlags()
 	vlMemoryAllowed := memory.Allowed()
+
+	// Tell Go's GC the soft memory ceiling. Without this, transient
+	// allocation peaks during a wildcard scan can push RSS over the
+	// cgroup limit before GC reclaims them — the kernel OOM-kills the
+	// container even when inuse_space is well below the cap. Setting
+	// GOMEMLIMIT to memory.Allowed() (60% of the cgroup limit by
+	// default) makes GC aggressive enough to keep RSS inside the cap,
+	// while leaving the remaining 40% as headroom for the kernel page
+	// cache, network/disk buffers, parquet-go internal pools, and Go
+	// runtime overhead. See https://pkg.go.dev/runtime/debug#SetMemoryLimit
+	// and https://tip.golang.org/doc/gc-guide#Memory_limit.
+	prevLimit := debug.SetMemoryLimit(int64(vlMemoryAllowed))
+	logger.Infof("Go GC memory limit set to %d bytes (was %d); cgroup_memory_limit≈%d/0.6 bytes",
+		vlMemoryAllowed, prevLimit, vlMemoryAllowed)
 
 	logger.Infof("lakehouse-logs starting; vl_compat=%s, memory_allowed_bytes=%d", vlCompat, vlMemoryAllowed)
 
@@ -730,6 +747,17 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	// VMUI with Lakehouse tab injection
 	ui.RegisterVMUI(mux, cfg.UI.VMUITab)
 
+	// Lifecycle endpoints for K8s probes and observability
+	lcInfo := lifecycle.LifecycleInfo{
+		GetPhase:   func() string { return sm.Phase().String() },
+		IsReady:    sm.IsReady,
+		IsDraining: func() bool { return false },
+	}
+	mux.HandleFunc("/internal/lifecycle/drain", lifecycle.HandleDrain(nil))
+	mux.HandleFunc("/internal/lifecycle/ready", lifecycle.HandleLifecycleReady(lcInfo))
+	mux.HandleFunc("/internal/lifecycle/ring", lifecycle.HandleLifecycleRing(lcInfo))
+	mux.HandleFunc("/internal/lifecycle/stale", lifecycle.HandleLifecycleStale(lcInfo))
+
 	return mux
 }
 
@@ -896,6 +924,9 @@ func applyFlags(cfg *config.Config) {
 	}
 	if *queryMaxFilesPerQuery > 0 {
 		cfg.Query.MaxFilesPerQuery = *queryMaxFilesPerQuery
+	}
+	if *queryMaxLiveBytes > 0 {
+		cfg.Query.MaxLiveBytes = *queryMaxLiveBytes
 	}
 
 	if s := *logsBloomColumns; s != "" {

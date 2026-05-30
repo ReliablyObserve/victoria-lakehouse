@@ -9,7 +9,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/prefixfilter"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
-	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 type adapter struct {
@@ -23,6 +23,19 @@ func SetStorage(s storage.Storage, ts *delete.TombstoneStore) {
 
 func (a *adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error {
 	hiddenFilters := qctx.HiddenFieldsFilters
+
+	// IMPORTANT: pass the FULL query (with pipes intact) to a.store.RunQuery.
+	// Our storage's queryColumns() consults logstorage.GetQueryPipeFields() to
+	// expand the parquet column projection to cover fields referenced only by
+	// pipes (e.g. `| fields _time, trace_id`). If we strip pipes here, the
+	// projection misses those fields, the emitted DataBlocks don't carry them,
+	// and downstream pipes silently drop every row. Mirrors the equivalent fix
+	// in lakehouse-traces/internal/vtstorage_adapter/adapter.go and
+	// internal/vlstorage/vlstorage.go (logs module).
+	//
+	// Stripping pipes for actual row matching happens inside RunQuery itself
+	// via parseFilterFromQuery (Clone + DropAllPipes), so passing the full
+	// query here is safe — pipes only inform column projection planning.
 
 	if logstorage.QueryHasPipes(qctx.Query) {
 		searchFn := func(wb logstorage.WriteDataBlockFunc) error {

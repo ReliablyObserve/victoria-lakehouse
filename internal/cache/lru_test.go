@@ -25,14 +25,22 @@ func TestLRU_GetMiss(t *testing.T) {
 	}
 }
 
-func TestLRU_GetReturnsCopy(t *testing.T) {
+// TestLRU_GetReturnsSharedBuffer documents the share-by-reference contract:
+// Get returns the cache-owned slice directly, so mutating it mutates the
+// cached value. This is a deliberate change to avoid per-Get allocations
+// that summed to >1 GiB heap pressure on 24h wildcard log queries (see
+// the LRU.Get docstring and the OOM regression locked in
+// internal/storage/parquets3/query_memory_budget_test.go).
+func TestLRU_GetReturnsSharedBuffer(t *testing.T) {
 	c := NewLRU(1024)
 	c.Put("k1", []byte("original"))
 	val, _ := c.Get("k1")
+	// Mutating val mutates the cached buffer — this documents the contract;
+	// real call sites must not mutate Get results.
 	val[0] = 'X'
 	val2, _ := c.Get("k1")
-	if string(val2) != "original" {
-		t.Errorf("Get should return a copy, got %q", val2)
+	if string(val2) != "Xriginal" {
+		t.Errorf("Get should return the shared cache buffer, got %q", val2)
 	}
 }
 

@@ -133,7 +133,7 @@ func readRowGroupColumnar(
 				}
 			}
 			if keyIdx >= 0 && valIdx >= 0 {
-				mapCols := readMapColumnToBlockCols(chunks[keyIdx], chunks[valIdx], numRows, rowMask, passCount, name, scalarNames)
+				mapCols := readMapColumnToBlockCols(chunks[keyIdx], chunks[valIdx], numRows, rowMask, passCount, name, scalarNames, reg.TopLevelMapKeys())
 				blockCols = append(blockCols, mapCols...)
 			}
 		}
@@ -228,6 +228,7 @@ func readMapColumnToBlockCols(
 	passCount int,
 	mapColName string,
 	promotedKeys map[string]bool,
+	topLevelKeys map[string]bool,
 ) []logstorage.BlockColumn {
 	prefix := mapColumnToAttrPrefix(mapColName)
 
@@ -319,7 +320,12 @@ func readMapColumnToBlockCols(
 		if promotedKeys[kv.key] {
 			continue
 		}
-		attrName := bytesutil.InternString(prefix + kv.key)
+		var attrName string
+		if topLevelKeys[kv.key] {
+			attrName = bytesutil.InternString(kv.key)
+		} else {
+			attrName = bytesutil.InternString(prefix + kv.key)
+		}
 		ac, ok := attrMap[attrName]
 		if !ok {
 			ac = &attrCol{values: make([]string, passCount)}

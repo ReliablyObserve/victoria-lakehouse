@@ -35,12 +35,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
+      - name: Build parity stack
+        run: docker compose -f tests/parity/docker-compose.yml build
 
-      - name: Start parity stack
-        run: docker compose -f tests/parity/docker-compose.yml up -d --build
+      - name: Start parity stack (waits for datagen via parity-tests depends_on)
+        run: docker compose -f tests/parity/docker-compose.yml up -d
 
       - name: Wait for all services healthy
         run: |
@@ -72,13 +71,11 @@ jobs:
         run: |
           echo "Waiting 30s for LH to flush data and refresh manifest..."
           sleep 30
-          curl -sf http://localhost:29428/health || echo "WARNING: lakehouse-logs not healthy"
-          curl -sf http://localhost:19428/health || echo "WARNING: victorialogs not healthy"
 
-      - name: Run parity tests
+      - name: Run parity tests in-network
         continue-on-error: true
         run: |
-          go test -tags=parity -v -count=1 -timeout=5m ./tests/parity/... 2>&1 | tee parity-results.txt
+          docker compose -f tests/parity/docker-compose.yml --profile test run --rm parity-tests 2>&1 | tee parity-results.txt
           echo "EXIT_CODE=${PIPESTATUS[0]}" >> $GITHUB_ENV
 
       - name: Parse parity results

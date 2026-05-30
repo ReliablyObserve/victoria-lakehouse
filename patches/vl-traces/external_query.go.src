@@ -24,6 +24,15 @@ func QueryHasPipes(q *Query) bool {
 	return len(q.pipes) > 0
 }
 
+// CloneWithoutPipes returns a shallow copy of q with pipes removed.
+// Use this when passing a query to a storage backend that should return
+// raw filtered data — pipe processing happens externally via RunQueryExternal.
+func CloneWithoutPipes(q *Query) *Query {
+	qCopy := *q
+	qCopy.pipes = nil
+	return &qCopy
+}
+
 // GetQueryPipeFields returns field names referenced by pipe operators
 // (stats by(), uniq by(), top by(), fields). Uses VL's parsed pipe types
 // directly — no string re-parsing needed.

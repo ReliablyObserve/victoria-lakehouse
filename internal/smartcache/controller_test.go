@@ -28,6 +28,14 @@ func (m *mockL1) Put(key string, val []byte) {
 	m.data[key] = val
 }
 
+// PutNoCopy mirrors the LRU implementation: stores the buffer without
+// copying. The mock just keeps a reference like Put does.
+func (m *mockL1) PutNoCopy(key string, val []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.data[key] = val
+}
+
 type mockL2 struct {
 	mu   sync.RWMutex
 	data map[string][]byte

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -312,7 +313,9 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 			data, err := os.ReadFile(path)
 			if err == nil {
 				metrics.CacheHitsTotal.Inc("L2")
-				s.memCache.Put(key, data)
+				// PutNoCopy: data was just read from disk, owned by us,
+				// never mutated downstream. Mirror of logs module.
+				s.memCache.PutNoCopy(key, data)
 				return data, nil
 			}
 			s.diskCache.Delete(key)
@@ -329,7 +332,9 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 				metrics.CacheHitsTotal.Inc("L3")
 				metrics.PeerHitsTotal.Inc()
 				metrics.PeerBytesTransferred.Add("rx", len(peerData))
-				s.memCache.Put(key, peerData)
+				// PutNoCopy: peer fetch buffer, owned by us, never
+				// mutated downstream. Mirror of logs module.
+				s.memCache.PutNoCopy(key, peerData)
 				return peerData, nil
 			}
 			metrics.CacheMissesTotal.Inc("L3")
@@ -366,7 +371,10 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 		metrics.CacheSingleflightDedup.Inc()
 	}
 
-	s.memCache.Put(key, data)
+	// PutNoCopy: freshly downloaded data, owned by us, never mutated
+	// downstream. Halves transient memory under 16-worker wildcard
+	// scans (per heap-diff). Mirror of logs module.
+	s.memCache.PutNoCopy(key, data)
 	return data, nil
 }
 
@@ -414,7 +422,22 @@ func (s *Storage) Close() error {
 }
 
 func (s *Storage) updateLabelIndex(f *parquet.File) {
-	// Columns that should have values extracted (use Parquet column names)
+	s.updateLabelIndexImpl(f, true)
+}
+
+// updateLabelIndexNamesOnly registers field names (and MAP-key field names)
+// without attempting to extract DISTINCT VALUES for promoted columns. Use
+// this when the parquet.File was opened in a footer-only context (where
+// data-page reads return nothing or fall back to truncated column-index
+// stats — exactly how "notification-ser" first leaked into the label
+// index from GetFieldNames over hundreds of files).
+func (s *Storage) updateLabelIndexNamesOnly(f *parquet.File) {
+	s.updateLabelIndexImpl(f, false)
+}
+
+func (s *Storage) updateLabelIndexImpl(f *parquet.File, extractValues bool) {
+	// Columns that should have values extracted (use Parquet column names).
+	// Only consulted when extractValues=true.
 	promotedWithValues := map[string]bool{
 		"service.name":           true,
 		"severity_text":          true,
@@ -460,7 +483,7 @@ func (s *Storage) updateLabelIndex(f *parquet.File) {
 			internalName = m.InternalName
 		}
 
-		if !promotedWithValues[name] {
+		if !extractValues || !promotedWithValues[name] {
 			s.labelIndex.Add(internalName, nil)
 			continue
 		}
@@ -533,42 +556,38 @@ func extractMapDistinctKeys(f *parquet.File, mapColName string) []string {
 }
 
 func extractDistinctFromStats(f *parquet.File, colIdx int) []string {
+	// IMPORTANT: do NOT read distinct values from parquet column-index
+	// min/max stats. parquet-go truncates those stat values (typically
+	// at 16 bytes per Apache Parquet's PageIndex spec) so reading them
+	// produces values like "notification-ser" alongside the full
+	// "notification-service" in the label index — visible to operators
+	// as duplicate service names in /select/jaeger/api/services and
+	// every other GetFieldValues consumer.
+	//
+	// Mirrors the equivalent fix in the logs module.
 	seen := make(map[string]bool)
 	for _, rg := range f.RowGroups() {
 		cols := rg.ColumnChunks()
 		if colIdx >= len(cols) {
 			continue
 		}
-		// First try column index stats (fast, no data read)
-		ci, err := cols[colIdx].ColumnIndex()
-		if err == nil && ci != nil {
-			numPages := ci.NumPages()
-			for p := 0; p < numPages; p++ {
-				if minBytes := ci.MinValue(p).Bytes(); len(minBytes) > 0 && len(minBytes) < 256 && isPrintable(minBytes) {
-					seen[string(minBytes)] = true
-				}
-				if maxBytes := ci.MaxValue(p).Bytes(); len(maxBytes) > 0 && len(maxBytes) < 256 && isPrintable(maxBytes) {
-					seen[string(maxBytes)] = true
-				}
-			}
+		if rg.NumRows() == 0 {
+			continue
 		}
-		// If stats give few values, scan first row group's actual data
-		if len(seen) < 50 && rg.NumRows() > 0 {
-			rows := rg.Rows()
-			buf := make([]parquet.Row, 512)
-			n, _ := rows.ReadRows(buf)
-			for i := 0; i < n; i++ {
-				if colIdx < len(buf[i]) {
-					val := buf[i][colIdx]
-					if !val.IsNull() {
-						if b := val.Bytes(); len(b) > 0 && len(b) < 256 && isPrintable(b) {
-							seen[string(b)] = true
-						}
+		rows := rg.Rows()
+		buf := make([]parquet.Row, 512)
+		n, _ := rows.ReadRows(buf)
+		for i := 0; i < n; i++ {
+			if colIdx < len(buf[i]) {
+				val := buf[i][colIdx]
+				if !val.IsNull() {
+					if b := val.Bytes(); len(b) > 0 && len(b) < 256 && isPrintable(b) {
+						seen[string(b)] = true
 					}
 				}
 			}
-			_ = rows.Close()
 		}
+		_ = rows.Close()
 		if len(seen) > 1000 {
 			break
 		}
@@ -581,6 +600,7 @@ func extractDistinctFromStats(f *parquet.File, colIdx int) []string {
 	for v := range seen {
 		result = append(result, v)
 	}
+	sort.Strings(result)
 	return result
 }
 
@@ -1328,8 +1348,9 @@ func (s *Storage) WarmFile(ctx context.Context, key string) error {
 
 type l1Adapter struct{ lru *cache.LRU }
 
-func (a *l1Adapter) Get(key string) ([]byte, bool) { return a.lru.Get(key) }
-func (a *l1Adapter) Put(key string, val []byte)    { a.lru.Put(key, val) }
+func (a *l1Adapter) Get(key string) ([]byte, bool)    { return a.lru.Get(key) }
+func (a *l1Adapter) Put(key string, val []byte)       { a.lru.Put(key, val) }
+func (a *l1Adapter) PutNoCopy(key string, val []byte) { a.lru.PutNoCopy(key, val) }
 
 type l2Adapter struct{ dc *cache.DiskCache }
 

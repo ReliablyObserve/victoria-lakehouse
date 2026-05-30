@@ -66,6 +66,13 @@ func logRowsToSchemaRows(lr *logstorage.LogRows) []schema.LogRow {
 				row.Stream = strings.Clone(st.String())
 			}
 			logstorage.PutStreamTags(st)
+
+			// Compute _stream_id deterministically from (TenantID,
+			// StreamTagsCanonical) using VL's own hash algorithm.
+			// VL's hot path computes this internally; LH's cold path
+			// must produce the same value so /select/logsql/stream_ids
+			// returns identical results.
+			row.StreamID = computeStreamID(r.TenantID, r.StreamTagsCanonical)
 		}
 
 		for _, f := range r.Fields {

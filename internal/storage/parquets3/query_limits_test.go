@@ -96,11 +96,15 @@ func TestQueryFileLimitAllowsUnderLimit(t *testing.T) {
 	}
 }
 
-// TestQueryFileLimitDefaultIs500 verifies that when MaxFilesPerQuery=0
-// the effective default of 500 is applied, so 501 files triggers an error.
-func TestQueryFileLimitDefaultIs500(t *testing.T) {
+// TestQueryFileLimitDefaultIsUnlimited verifies that when
+// MaxFilesPerQuery=0 (the new default) the file count is NOT capped —
+// VL upstream has no such cap and the memory budget
+// (query.max-live-bytes + rgDecodeSem semaphore) is the real safety net.
+// A 7-day wildcard at 600+ files used to be rejected at the 500-file
+// fallback; now it proceeds and the memory budget bounds resource use.
+func TestQueryFileLimitDefaultIsUnlimited(t *testing.T) {
 	s := testStorage()
-	// Leave MaxFilesPerQuery=0 — the RunQuery code treats 0 as "use default 500".
+	// Leave MaxFilesPerQuery=0 — RunQuery treats 0 as "unlimited".
 	s.cfg.Query.MaxFilesPerQuery = 0
 
 	addManifestFiles(s, 501)
@@ -108,19 +112,13 @@ func TestQueryFileLimitDefaultIs500(t *testing.T) {
 	startNs, endNs := queryRange(501)
 	q := mustParseQueryWithTime(t, "*", startNs, endNs)
 
-	var blocksCalled int
-	err := s.RunQuery(context.Background(), nil, q, func(workerID uint, db *logstorage.DataBlock) {
-		blocksCalled++
-	})
+	// Cancel context immediately so file workers exit without S3 I/O.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
-	if err == nil {
-		t.Fatal("expected file-limit error for 501 files with default limit=500, got nil")
-	}
-	if !strings.Contains(err.Error(), "limit") {
-		t.Errorf("error should mention limit; got: %v", err)
-	}
-	if blocksCalled > 0 {
-		t.Errorf("writeBlock should not be called; called %d times", blocksCalled)
+	err := s.RunQuery(ctx, nil, q, noopWriteBlock)
+	if err != nil && strings.Contains(err.Error(), "file limit") {
+		t.Errorf("default (0) must NOT enforce a file cap; got: %v", err)
 	}
 }
 

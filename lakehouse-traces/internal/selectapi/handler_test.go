@@ -10,8 +10,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
-	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage"
-	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 // mockStore implements storage.Storage with no-op methods.
@@ -266,9 +265,25 @@ func TestHandleTailNoop(t *testing.T) {
 	}
 }
 
-func TestRegister_LogsMode(t *testing.T) {
-	vlstorage.SetStorage(mockStore{}, nil)
+func assertRouteRegistered(t *testing.T, mux *http.ServeMux, path string) {
+	t.Helper()
+	req := httptest.NewRequest("GET", path, nil)
+	_, pattern := mux.Handler(req)
+	if pattern == "" {
+		t.Errorf("path %s not registered (no matching pattern)", path)
+	}
+}
 
+func assertRouteNotRegistered(t *testing.T, mux *http.ServeMux, path string) {
+	t.Helper()
+	req := httptest.NewRequest("GET", path, nil)
+	_, pattern := mux.Handler(req)
+	if pattern != "" {
+		t.Errorf("path %s should not be registered, matched pattern %q", path, pattern)
+	}
+}
+
+func TestRegister_LogsMode(t *testing.T) {
 	cfg := testConfig(config.ModeLogs)
 	h := NewHandler(mockStore{}, cfg)
 	mux := http.NewServeMux()
@@ -291,12 +306,7 @@ func TestRegister_LogsMode(t *testing.T) {
 		"/select/tenant_ids",
 	}
 	for _, p := range paths {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("GET", p, nil)
-		mux.ServeHTTP(rec, req)
-		if rec.Code == http.StatusNotFound {
-			t.Errorf("path %s returned 404, expected registered", p)
-		}
+		assertRouteRegistered(t, mux, p)
 	}
 }
 
@@ -312,12 +322,7 @@ func TestRegister_LogsMode_NoJaegerPaths(t *testing.T) {
 		"/api/traces",
 	}
 	for _, p := range jaegerPaths {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("GET", p, nil)
-		mux.ServeHTTP(rec, req)
-		if rec.Code != http.StatusNotFound {
-			t.Errorf("jaeger path %s should be 404 in logs mode, got %d", p, rec.Code)
-		}
+		assertRouteNotRegistered(t, mux, p)
 	}
 }
 
@@ -334,12 +339,7 @@ func TestRegister_TracesMode(t *testing.T) {
 		"/select/jaeger/api/dependencies",
 	}
 	for _, p := range jaegerPaths {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("GET", p, nil)
-		mux.ServeHTTP(rec, req)
-		if rec.Code == http.StatusNotFound {
-			t.Errorf("jaeger path %s returned 404 in traces mode", p)
-		}
+		assertRouteRegistered(t, mux, p)
 	}
 }
 
@@ -349,18 +349,12 @@ func TestRegister_TracesMode_TraceAndSearchPaths(t *testing.T) {
 	mux := http.NewServeMux()
 	h.Register(mux)
 
-	// Test exact registered paths (not sub-paths which depend on mux version).
 	paths := []string{
 		"/select/jaeger/api/traces/",
 		"/api/traces/",
 	}
 	for _, p := range paths {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("GET", p, nil)
-		mux.ServeHTTP(rec, req)
-		if rec.Code == http.StatusNotFound {
-			t.Errorf("path %s returned 404 in traces mode, expected registered", p)
-		}
+		assertRouteRegistered(t, mux, p)
 	}
 }
 
@@ -406,4 +400,136 @@ func TestNormalizeTimeParams(t *testing.T) {
 		req := httptest.NewRequest("GET", "/query?start=", nil)
 		normalizeTimeParams(req)
 	})
+}
+
+// TestNormalizeTempoSearchParams locks the workaround for the upstream VT
+// Tempo /api/search quirk where an empty `q` URL parameter clobbers the
+// default `{}` filter — see normalizeTempoSearchParams' doc comment.
+//
+// This test FAILS if normalizeTempoSearchParams stops defaulting `q` or
+// stops converting `tags` to TraceQL — both regressions the user has been
+// burned by before. The probe at tests/verification/probe_tempo_search_24h.sh
+// is the end-to-end half of the same lock.
+func TestNormalizeTempoSearchParams(t *testing.T) {
+	t.Run("non-search path: untouched", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/select/tempo/api/v2/search/tags?tags=service.name=foo", nil)
+		normalizeTempoSearchParams(req)
+		if got := req.FormValue("q"); got != "" {
+			t.Errorf("non-search path should not have q set, got %q", got)
+		}
+	})
+
+	t.Run("q already set: untouched", func(t *testing.T) {
+		req := httptest.NewRequest("GET", `/select/tempo/api/search?q={resource.service.name="foo"}`, nil)
+		normalizeTempoSearchParams(req)
+		want := `{resource.service.name="foo"}`
+		if got := req.FormValue("q"); got != want {
+			t.Errorf("existing q should be preserved: got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("q missing and no tags: defaults to {}", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/select/tempo/api/search?start=1&end=2", nil)
+		normalizeTempoSearchParams(req)
+		if got := req.FormValue("q"); got != "{}" {
+			t.Errorf("empty q should default to {}, got %q", got)
+		}
+	})
+
+	t.Run("q empty string and no tags: defaults to {}", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/select/tempo/api/search?q=", nil)
+		normalizeTempoSearchParams(req)
+		if got := req.FormValue("q"); got != "{}" {
+			t.Errorf("empty q should default to {}, got %q", got)
+		}
+	})
+
+	t.Run("q missing, tags with service.name: TraceQL with resource prefix", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/select/tempo/api/search?tags=service.name=api-gateway", nil)
+		normalizeTempoSearchParams(req)
+		want := `{resource.service.name="api-gateway"}`
+		if got := req.FormValue("q"); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("q missing, tags with two pairs: TraceQL with && and sorted keys", func(t *testing.T) {
+		// Use space-encoded as %20 to mimic URL-encoding (Grafana usually does this).
+		req := httptest.NewRequest("GET",
+			"/select/tempo/api/search?tags=service.name=api-gateway%20db.system=postgres",
+			nil)
+		normalizeTempoSearchParams(req)
+		// Sorted: db.system < resource.service.name lexically.
+		want := `{db.system="postgres" && resource.service.name="api-gateway"}`
+		if got := req.FormValue("q"); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("q missing, tags with span.* prefix: passthrough", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/select/tempo/api/search?tags=span.http.status_code=500", nil)
+		normalizeTempoSearchParams(req)
+		want := `{span.http.status_code="500"}`
+		if got := req.FormValue("q"); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("q missing, tags with quoted value containing spaces", func(t *testing.T) {
+		// "key=\"hello world\"" — outer pair, embedded space inside quotes.
+		req := httptest.NewRequest("GET", `/select/tempo/api/search?tags=service.name=%22api+gateway%22`, nil)
+		normalizeTempoSearchParams(req)
+		// + decodes to space in form values. The value should keep its spaces.
+		want := `{resource.service.name="api gateway"}`
+		if got := req.FormValue("q"); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("q missing, tags with garbage: falls back to {}", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/select/tempo/api/search?tags=garbage_no_equals", nil)
+		normalizeTempoSearchParams(req)
+		if got := req.FormValue("q"); got != "{}" {
+			t.Errorf("garbage tags should fall back to {}, got %q", got)
+		}
+	})
+
+	t.Run("tags with empty value: skipped pair, still falls back if all empty", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/select/tempo/api/search?tags=service.name=", nil)
+		normalizeTempoSearchParams(req)
+		if got := req.FormValue("q"); got != "{}" {
+			t.Errorf("got %q, want {}", got)
+		}
+	})
+}
+
+// TestTempoTagsToTraceQL exercises the conversion helper directly so we
+// catch mapping-rule regressions even if the HTTP wrapper changes.
+func TestTempoTagsToTraceQL(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"whitespace only", "   ", ""},
+		{"no equals", "garbage", ""},
+		{"service.name", "service.name=foo", `{resource.service.name="foo"}`},
+		{".service.name", ".service.name=foo", `{resource.service.name="foo"}`},
+		{"name", "name=GET", `{name="GET"}`},
+		{"status", "status=error", `{status="error"}`},
+		{"resource.* passthrough", "resource.host.name=ip-10-0-0-1", `{resource.host.name="ip-10-0-0-1"}`},
+		{"span.* passthrough", "span.http.method=GET", `{span.http.method="GET"}`},
+		{"event.* passthrough", "event.exception.type=OOM", `{event.exception.type="OOM"}`},
+		{"bare key", "custom.tag=val", `{custom.tag="val"}`},
+		{"multi sorted", "z.last=1 a.first=2", `{a.first="2" && z.last="1"}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := tempoTagsToTraceQL(c.in)
+			if got != c.want {
+				t.Errorf("tempoTagsToTraceQL(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
 }

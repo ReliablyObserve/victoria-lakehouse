@@ -17,8 +17,8 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/discovery"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/wal"
-	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage"
 )
 
 type logRow struct {

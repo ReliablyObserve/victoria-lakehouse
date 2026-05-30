@@ -1,0 +1,80 @@
+package vtstorage
+
+import (
+	"flag"
+	"time"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
+)
+
+// Safe flag registration helpers that skip registration when the flag already exists.
+// Prevents panics when both VL's vlstorage and VT's vtstorage are in the same binary.
+
+func safeRetentionDuration(name, defaultValue, description string) *flagutil.RetentionDuration {
+	if flag.Lookup(name) != nil {
+		d := &flagutil.RetentionDuration{}
+		_ = d.Set(defaultValue)
+		return d
+	}
+	return flagutil.NewRetentionDuration(name, defaultValue, description)
+}
+
+func safeBytes(name string, defaultValue int64, description string) *flagutil.Bytes {
+	if flag.Lookup(name) != nil {
+		return &flagutil.Bytes{}
+	}
+	return flagutil.NewBytes(name, defaultValue, description)
+}
+
+func safePassword(name, description string) *flagutil.Password {
+	if flag.Lookup(name) != nil {
+		return &flagutil.Password{}
+	}
+	return flagutil.NewPassword(name, description)
+}
+
+func safeArrayString(name, description string) *flagutil.ArrayString {
+	if flag.Lookup(name) != nil {
+		return &flagutil.ArrayString{}
+	}
+	return flagutil.NewArrayString(name, description)
+}
+
+func safeArrayBool(name, description string) *flagutil.ArrayBool {
+	if flag.Lookup(name) != nil {
+		return &flagutil.ArrayBool{}
+	}
+	return flagutil.NewArrayBool(name, description)
+}
+
+func safeInt(name string, value int, usage string) *int {
+	if flag.Lookup(name) != nil {
+		v := value
+		return &v
+	}
+	return flag.Int(name, value, usage)
+}
+
+func safeBool(name string, value bool, usage string) *bool {
+	if flag.Lookup(name) != nil {
+		v := value
+		return &v
+	}
+	return flag.Bool(name, value, usage)
+}
+
+func safeString(name, value, usage string) *string {
+	if flag.Lookup(name) != nil {
+		v := value
+		return &v
+	}
+	return flag.String(name, value, usage)
+}
+
+func safeDuration(name string, value time.Duration, usage string) *time.Duration {
+	if flag.Lookup(name) != nil {
+		v := value
+		return &v
+	}
+	return flag.Duration(name, value, usage)
+}

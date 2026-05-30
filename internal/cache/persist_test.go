@@ -181,6 +181,96 @@ func TestPersister_SaveLoadLabelIndex(t *testing.T) {
 	}
 }
 
+// TestPersister_LoadLabelIndex_DropsStaleValues regression-guards the
+// load-time sanitization that fixes the truncated-prefix bug.
+//
+// Before the fix, label-index.json on disk could end up with
+// LabelInfo.Values containing entries that did not appear in
+// LabelInfo.ValueCounts — typically truncated BYTE_ARRAY prefixes
+// (e.g. "notification-ser") that leaked in via extractDistinctFromStats
+// over a footer-only file or a constant-column path. The fast-path
+// GetFieldValues consumer served LabelInfo.Values as-is, surfacing
+// "notification-ser" alongside the full "notification-service" in
+// /select/jaeger/api/services and every other field-values API.
+//
+// The fix (LoadLabelIndex in persist.go): when both li.Values and
+// li.ValueCounts are populated, treat ValueCounts as authoritative
+// (it always comes from real data-page scans) and drop any Values
+// entry that isn't accounted for there. This test writes a
+// hand-crafted label-index.json with that drift on disk and asserts
+// the load reconciles it.
+//
+// To verify the fix actually works: temporarily revert the
+// reconciliation block in LoadLabelIndex and re-run — this test
+// MUST fail. If it passes without the fix, the test isn't locking
+// the contract.
+func TestPersister_LoadLabelIndex_DropsStaleValues(t *testing.T) {
+	dir := t.TempDir()
+	p, err := NewPersister(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Hand-craft a label-index.json that simulates the on-disk state
+	// from a buggy past run: Values contains the truncated prefix,
+	// ValueCounts only the real (non-truncated) entries.
+	staleJSON := `{
+  "labels": {
+    "service.name": {
+      "name": "service.name",
+      "cardinality": 3,
+      "values": ["api-gateway", "notification-ser", "notification-service"],
+      "value_counts": {
+        "api-gateway": 1000,
+        "notification-service": 2000
+      },
+      "seen_in_files": 5
+    }
+  },
+  "saved_at": "2026-05-29T20:00:00Z"
+}
+`
+	indexPath := filepath.Join(dir, "label-index.json")
+	if err := os.WriteFile(indexPath, []byte(staleJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := p.LoadLabelIndex()
+	if err != nil {
+		t.Fatalf("LoadLabelIndex: %v", err)
+	}
+
+	vals := loaded.GetFieldValues("service.name", 0)
+
+	// The truncated "notification-ser" must be gone after load.
+	for _, v := range vals {
+		if v == "notification-ser" {
+			t.Errorf("Values still contains truncated prefix %q after load; reconciliation failed. Got: %v", v, vals)
+		}
+	}
+
+	// Real values must survive.
+	got := make(map[string]bool, len(vals))
+	for _, v := range vals {
+		got[v] = true
+	}
+	for _, want := range []string{"api-gateway", "notification-service"} {
+		if !got[want] {
+			t.Errorf("LoadLabelIndex dropped a real value %q; got %v", want, vals)
+		}
+	}
+
+	// Cardinality must reflect the reconciled set, not the stale on-disk
+	// count of 3.
+	li := loaded.GetLabelInfo("service.name")
+	if li == nil {
+		t.Fatal("GetLabelInfo returned nil for service.name")
+	}
+	if li.Cardinality != len(vals) {
+		t.Errorf("Cardinality=%d, want %d (matching reconciled Values length)", li.Cardinality, len(vals))
+	}
+}
+
 func TestPersister_LoadMissing(t *testing.T) {
 	dir := t.TempDir()
 	p, err := NewPersister(dir)

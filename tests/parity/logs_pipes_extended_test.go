@@ -8,8 +8,8 @@ func TestParity_PipesExtended(t *testing.T) {
 	cases := []ParityCase{
 		{Name: "delete_field", Endpoint: queryEndpoint(), Params: map[string]string{"query": "* | delete trace_id | fields _time, _msg, level | sort by(_time) desc", "limit": "10"}, Compare: RowsMatch},
 		{Name: "rename_field", Endpoint: queryEndpoint(), Params: map[string]string{"query": "* | rename level AS severity | fields _time, _msg, severity | sort by(_time) desc", "limit": "10"}, Compare: RowsMatch},
-		{Name: "replace_field", Endpoint: queryEndpoint(), Params: map[string]string{"query": `* | replace ("ERROR", "ERR") level | fields _time, level | sort by(_time) desc`, "limit": "10"}, Compare: RowsMatch, SkipFields: []string{"_msg"}},
-		{Name: "replace_regexp_field", Endpoint: queryEndpoint(), Params: map[string]string{"query": `* | replace_regexp ("api-.*", "api-svc") service.name | fields _time, service.name | sort by(_time) desc`, "limit": "10"}, Compare: RowsMatch, SkipFields: []string{"_msg"}},
+		{Name: "replace_field", Endpoint: queryEndpoint(), Params: map[string]string{"query": `* | replace ("ERROR", "ERR") at level | fields _time, level | sort by(_time) desc`, "limit": "10"}, Compare: RowsMatch, SkipFields: []string{"_msg"}},
+		{Name: "replace_regexp_field", Endpoint: queryEndpoint(), Params: map[string]string{"query": `* | replace_regexp ("api-.*", "api-svc") at service.name | fields _time, service.name | sort by(_time) desc`, "limit": "10"}, Compare: RowsMatch, SkipFields: []string{"_msg"}},
 		{Name: "math_duration", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* duration:* | math duration / 1000 as duration_sec | stats count() rows"}, Compare: CountEqual},
 		{Name: "filter_pipe", Endpoint: statsEndpoint(), Params: map[string]string{"query": `* | filter level:="ERROR" | stats count() rows`}, Compare: CountEqual},
 		{Name: "filter_pipe_multi", Endpoint: statsEndpoint(), Params: map[string]string{"query": `* | filter level:="ERROR" | filter service.name:="api-gateway" | stats count() rows`}, Compare: CountEqual},

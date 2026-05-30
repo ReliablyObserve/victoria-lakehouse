@@ -52,11 +52,18 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	startNs, endNs := q.GetFilterTimeRange()
 
-	if boundary := s.discovery.GetHotBoundary(); boundary != nil {
-		if time.Unix(0, startNs).After(boundary.MinTime) && time.Unix(0, endNs).Before(boundary.MaxTime) {
-			logger.Infof("hot boundary suppression: query within hot range; start=%v, end=%v, hot_min=%v, hot_max=%v",
-				time.Unix(0, startNs), time.Unix(0, endNs), boundary.MinTime, boundary.MaxTime)
-			return nil
+	// Hot-boundary suppression is meant to prevent insert-role nodes (which
+	// host the hot tier) from double-serving rows that select-role nodes will
+	// fetch via the hot path. Select-role and all-role nodes are responsible
+	// for the cold (S3/Parquet) tier and MUST NOT suppress — otherwise they
+	// would silently drop every row whose time range overlaps the hot boundary.
+	if s.cfg != nil && s.cfg.Role == config.RoleInsert {
+		if boundary := s.discovery.GetHotBoundary(); boundary != nil {
+			if time.Unix(0, startNs).After(boundary.MinTime) && time.Unix(0, endNs).Before(boundary.MaxTime) {
+				logger.Infof("hot boundary suppression: query within hot range; start=%v, end=%v, hot_min=%v, hot_max=%v",
+					time.Unix(0, startNs), time.Unix(0, endNs), boundary.MinTime, boundary.MaxTime)
+				return nil
+			}
 		}
 	}
 
@@ -64,26 +71,53 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		metrics.ManifestFastPathTotal.Inc()
 		logger.Infof("manifest fast path: no data for range; start=%v, end=%v",
 			time.Unix(0, startNs), time.Unix(0, endNs))
-		return nil
+		// Don't early-return here. Buffer-bridge may still have rows newer
+		// than the latest flushed parquet. The GetFilesForRange branch below
+		// detects len(files) == 0 and calls queryBufferBridge before returning.
+		// Mirror in lakehouse-traces/internal/storage/parquets3/storage_query.go.
 	}
 
 	queryStr := q.String()
 	pipeFields := logstorage.GetQueryPipeFields(q)
 	filter := parseFilterFromQuery(q)
 
+	// Per-query memory ceiling for in-flight DataBlock rows. Bounds the live
+	// memory footprint a single wildcard query can pin: workers backpressure
+	// on the mutex when the consumer (LogsQL pipe / HTTP writer) is slow, and
+	// the budget triggers context cancellation if rows pile up faster than
+	// the consumer can drain them.
+	maxLiveBytes := s.cfg.Query.MaxLiveBytes
+	if maxLiveBytes <= 0 {
+		maxLiveBytes = defaultMaxLiveBytes
+	}
+	var liveBytes atomic.Int64
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	var rowsEmitted atomic.Int64
 	maxRows := s.cfg.Query.MaxRows
 
 	// Wrap writeBlock to apply LogsQL filter evaluation, tombstone filtering,
-	// and max_rows enforcement before passing to caller.
-	// Pre-filter runs in each worker goroutine without locks.
-	// Only the final writeBlock call is serialized.
+	// max_rows enforcement, and panic recovery. The synchronous writeBlock
+	// (guarded by wbMu) matches VL's searchParallel pattern (see
+	// deps/VictoriaLogs/lib/logstorage/storage_search.go:1334) — workers
+	// produce one block at a time and backpressure on the consumer, instead
+	// of queuing blocks in a deep channel that lets producer fanout balloon
+	// resident memory beyond the container's mem_limit.
 	var writeBlockPanic atomic.Bool
 	preFilter := func(db *logstorage.DataBlock) *logstorage.DataBlock {
 		if writeBlockPanic.Load() {
 			return nil
 		}
 		if maxRows > 0 && rowsEmitted.Load() >= maxRows {
+			cancel()
+			return nil
+		}
+		if liveBytes.Load() >= maxLiveBytes {
+			metrics.QueryMemoryBudgetExceeded.Inc()
+			logger.Warnf("query memory budget exceeded: live=%d, max=%d; cancelling",
+				liveBytes.Load(), maxLiveBytes)
+			cancel()
 			return nil
 		}
 		db = filterDataBlock(db, filter)
@@ -99,47 +133,46 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		return db
 	}
 
-	type blockMsg struct {
-		workerID uint
-		db       *logstorage.DataBlock
-	}
-	resultCh := make(chan blockMsg, 256)
-	var resultWg sync.WaitGroup
-	resultWg.Add(1)
-	go func() {
-		defer resultWg.Done()
-		for msg := range resultCh {
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						writeBlockPanic.Store(true)
-						logger.Warnf("writeBlock panic recovered (unsupported pipe in query): %v", r)
-					}
-				}()
-				writeBlock(msg.workerID, msg.db)
-			}()
-		}
-	}()
-
+	var wbMu sync.Mutex
 	filteredWriteBlock := func(workerID uint, db *logstorage.DataBlock) {
 		db = preFilter(db)
 		if db == nil {
 			return
 		}
 		rowsEmitted.Add(int64(db.RowsCount()))
-		resultCh <- blockMsg{workerID, db}
+		sz := dataBlockApproxBytes(db)
+		liveBytes.Add(sz)
+		wbMu.Lock()
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					writeBlockPanic.Store(true)
+					logger.Warnf("writeBlock panic recovered (unsupported pipe in query): %v", r)
+				}
+			}()
+			writeBlock(workerID, db)
+		}()
+		wbMu.Unlock()
+		liveBytes.Add(-sz)
 	}
 
 	files := s.manifest.GetFilesForRange(startNs, endNs)
 	if len(files) == 0 {
+		// No cold-tier files cover the requested window, but the in-flight
+		// buffer-bridge may still have rows newer than the latest flushed
+		// parquet. Keep the buffer query in the flow so narrow recent-window
+		// queries don't silently miss data that hasn't been flushed yet.
+		// Mirror in lakehouse-traces/internal/storage/parquets3/storage_query.go.
+		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, filteredWriteBlock)
 		return nil
 	}
 
+	// maxFiles <= 0 means unlimited (matches VL upstream which has no
+	// such cap). Memory safety is enforced by query.max-live-bytes +
+	// the rgDecodeSem semaphore. The hard rejection here is reserved
+	// for operators who explicitly opt into a file ceiling.
 	maxFiles := s.cfg.Query.MaxFilesPerQuery
-	if maxFiles <= 0 {
-		maxFiles = 500
-	}
-	if len(files) > maxFiles {
+	if maxFiles > 0 && len(files) > maxFiles {
 		metrics.QueryFileLimitExceeded.Inc()
 		logger.Warnf("query file limit exceeded; files=%d, max=%d, range=%v-%v; narrow the time range",
 			len(files), maxFiles, time.Unix(0, startNs), time.Unix(0, endNs))
@@ -153,11 +186,10 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
 		remaining := s.manifestFastPath(files, startNs, endNs, filteredWriteBlock)
 		if len(remaining) == 0 {
-			close(resultCh)
-			resultWg.Wait()
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
+			s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, filteredWriteBlock)
 			return nil
 		}
 		files = remaining
@@ -165,8 +197,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	files = s.preFilterFiles(ctx, files, queryStr)
 	if len(files) == 0 {
-		close(resultCh)
-		resultWg.Wait()
+		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, filteredWriteBlock)
 		return nil
 	}
 
@@ -175,10 +206,13 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// instead of full S3 downloads.
 	prefetchFooters(ctx, s.pool, files, s.footerCache, 0)
 
-	// Parallel file worker pool
+	// Parallel file worker pool. Default mirrors lakehouse-traces (8) and VL's
+	// bounded worker pattern; previously 64 here, which on wildcard queries
+	// over many files fanned out S3 downloads + parquet decode buffers wide
+	// enough to OOM a 2 GiB container.
 	fileWorkers := s.cfg.Query.FileWorkers
 	if fileWorkers <= 0 {
-		fileWorkers = 64
+		fileWorkers = 8
 	}
 	if fileWorkers > len(files) {
 		fileWorkers = len(files)
@@ -240,9 +274,6 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	wg.Wait()
 
 	s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, filteredWriteBlock)
-
-	close(resultCh)
-	resultWg.Wait()
 
 	if v := firstErr.Load(); v != nil {
 		if err, ok := v.(error); ok && ctx.Err() != nil {
@@ -317,9 +348,14 @@ func (s *Storage) manifestFastPath(files []manifest.FileInfo, startNs, endNs int
 	for _, fi := range files {
 		if fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
 			fi.MinTimeNs >= startNs && fi.MaxTimeNs <= endNs {
-			db := s.syntheticManifestBlock(fi)
-			if db != nil && db.RowsCount() > 0 {
-				writeBlock(0, db)
+			emitted := false
+			s.streamSyntheticManifestBlocks(fi, func(db *logstorage.DataBlock) {
+				if db != nil && db.RowsCount() > 0 {
+					writeBlock(0, db)
+					emitted = true
+				}
+			})
+			if emitted {
 				metrics.MetadataOnlyFiles.Inc()
 			}
 		} else {
@@ -335,13 +371,17 @@ func (s *Storage) manifestFastPath(files []manifest.FileInfo, startNs, endNs int
 
 func (s *Storage) preFilterFiles(ctx context.Context, files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
 	if s.smartCache != nil {
-		if tid := extractExactMatch(queryStr, "trace_id"); tid != "" {
-			cachedKeys := s.smartCache.FindFilesByTraceID(tid)
-			if len(cachedKeys) > 0 {
-				keySet := make(map[string]bool, len(cachedKeys))
-				for _, k := range cachedKeys {
+		// Support both trace_id:="single" and trace_id:in(t1,t2,t3) (VT spans-lookup shape).
+		// Multiple values: union the matched file sets so the lookup covers all candidates.
+		tids := extractFilterValuesAST(queryStr, "trace_id")
+		if len(tids) > 0 {
+			keySet := make(map[string]bool)
+			for _, tid := range tids {
+				for _, k := range s.smartCache.FindFilesByTraceID(tid) {
 					keySet[k] = true
 				}
+			}
+			if len(keySet) > 0 {
 				var matched []manifest.FileInfo
 				for _, fi := range files {
 					if keySet[fi.Key] {
@@ -350,7 +390,7 @@ func (s *Storage) preFilterFiles(ctx context.Context, files []manifest.FileInfo,
 				}
 				if len(matched) > 0 {
 					metrics.TraceIDCacheHits.Inc()
-					logger.Infof("trace_id fast-path: cache hit for %s, scanning %d/%d files", tid, len(matched), len(files))
+					logger.Infof("trace_id fast-path: cache hit for %d trace_id(s), scanning %d/%d files", len(tids), len(matched), len(files))
 					return matched
 				}
 			}
@@ -453,6 +493,31 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 		projectedCols = map[string]bool{s.registry.TimestampColumn(): true}
 	}
 
+	// Reserve cumulative file-resident bytes against the process-wide budget
+	// BEFORE opening (and possibly downloading) the parquet file. The file
+	// body stays resident — wired through bytes.NewReader(data) into the
+	// parquet.File — for the entire open-decode-emit window, NOT just the
+	// download. With 16 file workers this is the dominant retention path
+	// (7-day heap-diff: io.ReadAll held 808 MiB at OOM peak; that's
+	// 512 MiB L1 cache plus 16 workers × ~30 MiB file bodies all pinned
+	// concurrently). The budget naturally serializes the worker pool when
+	// cumulative file sizes exceed the cap; smaller files admit more
+	// concurrency, larger files admit fewer. See defaultMaxFileResidentBytes
+	// in query_memory_budget.go for the heap-diff rationale.
+	//
+	// Range-read paths (footer-cache hit + narrow projection) DO NOT pull
+	// the whole body, so the budget would over-account; the file ranges
+	// are page-sized and fit in scratch. For correctness across both
+	// paths we acquire here at the outer queryFile boundary and trust
+	// openParquetFile to either range-read or full-download; the budget
+	// is a soft ceiling that bounds the wildcard-fanout case (which
+	// always full-downloads, per queryColumns returning nil for `*`).
+	relFB, fbErr := acquireFileBudget(ctx, fi.Size)
+	if fbErr != nil {
+		return fbErr
+	}
+	defer relFB()
+
 	f, err := s.openParquetFile(ctx, fi, projectedCols)
 	if err != nil {
 		return err
@@ -537,48 +602,20 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 		matchedRGs = deferred
 	}
 
-	// Process matched row groups — parallel when >1 to reduce per-file latency.
-	if len(matchedRGs) <= 1 {
-		for _, rg := range matchedRGs {
-			metrics.ParquetRowGroupsScanned.Inc()
-			if err := s.readOneRowGroup(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr); err != nil {
-				return err
-			}
+	// Process matched row groups SERIALLY within a single file. The outer
+	// file-worker pool already gives us read concurrency across files; adding
+	// up-to-8x row-group parallelism on top of 16 file workers means up to
+	// 128 concurrent row-group decoders, each holding multi-MB column buffers
+	// — easily exceeding the 2 GiB container limit on wildcard queries.
+	// VL's searchParallel keeps fanout bounded by workersCount (matches
+	// cgroup.AvailableCPUs), and our adapter must do the same.
+	for _, rg := range matchedRGs {
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-	} else {
-		rgWorkers := len(matchedRGs)
-		if rgWorkers > 8 {
-			rgWorkers = 8
-		}
-		rgCh := make(chan parquet.RowGroup, len(matchedRGs))
-		for _, rg := range matchedRGs {
-			rgCh <- rg
-		}
-		close(rgCh)
-
-		var rgWg sync.WaitGroup
-		var rgErr atomic.Value
-		for i := 0; i < rgWorkers; i++ {
-			rgWg.Add(1)
-			go func() {
-				defer rgWg.Done()
-				for rg := range rgCh {
-					if ctx.Err() != nil {
-						return
-					}
-					metrics.ParquetRowGroupsScanned.Inc()
-					if err := s.readOneRowGroup(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr); err != nil {
-						rgErr.CompareAndSwap(nil, err)
-						return
-					}
-				}
-			}()
-		}
-		rgWg.Wait()
-		if v := rgErr.Load(); v != nil {
-			if err, ok := v.(error); ok {
-				return err
-			}
+		metrics.ParquetRowGroupsScanned.Inc()
+		if err := s.readOneRowGroup(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr); err != nil {
+			return err
 		}
 	}
 
@@ -640,6 +677,32 @@ func readRowGroupTyped[T any](s *Storage, f *parquet.File, rg parquet.RowGroup, 
 }
 
 func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, cols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
+	// Bound concurrent row-group decoders process-wide. Each decode buffers
+	// a full row group's projected columns (~30-50 MiB at production scale
+	// per the near-OOM heap-diff: readMapColumnToBlockCols=154 MiB flat,
+	// parquetValueToInterface=104 MiB, readScalarColumnFormatted=36 MiB).
+	// Without this gate, 16 file workers concurrently decoding wide-schema
+	// row groups across a 2-day wildcard scan over 200+ files produces
+	// 500+ MiB of transient memory on top of the 512 MiB cache, deterministic
+	// OOM on a 2 GiB container. Mirrors VL's partitionSearchConcurrencyLimitCh
+	// pattern (deps/VictoriaLogs/lib/logstorage/storage_search.go:1424).
+	release := acquireRGDecode()
+	defer release()
+
+	maxRowsPerBlock := defaultMaxRowsPerBlock
+
+	emit := func(db *logstorage.DataBlock) {
+		if db == nil || db.RowsCount() == 0 {
+			return
+		}
+		splitAndEmitDataBlock(db, maxRowsPerBlock, func(chunk *logstorage.DataBlock) {
+			writeBlock(0, chunk)
+			if traceIDs != nil {
+				extractTraceIDs(chunk, traceIDs)
+			}
+		})
+	}
+
 	constants := detectConstantColumns(f, rg, cols)
 
 	readCols := cols
@@ -658,12 +721,7 @@ func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGrou
 	// Fast path: columnar reading when no constant columns need merging.
 	if len(constants) == 0 && len(readCols) > 0 {
 		db := readRowGroupColumnar(f, rg, readCols, s.registry, startNs, endNs, bitmap)
-		if db != nil && db.RowsCount() > 0 {
-			writeBlock(0, db)
-			if traceIDs != nil {
-				extractTraceIDs(db, traceIDs)
-			}
-		}
+		emit(db)
 		return nil
 	}
 
@@ -698,12 +756,7 @@ func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGrou
 	}
 
 	db := s.projectedFieldsToDataBlock(allFields, startNs, endNs)
-	if db != nil && db.RowsCount() > 0 {
-		writeBlock(0, db)
-		if traceIDs != nil {
-			extractTraceIDs(db, traceIDs)
-		}
-	}
+	emit(db)
 	return nil
 }
 
@@ -731,6 +784,11 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 
 	rowNum := 0
 	var seenBitmap []bool
+	// Hoist the scalar-name lookup map out of the loop. Previously this
+	// was allocated fresh per row, contributing one allocation per row at
+	// scan time. We clear via map-delete (faster than make-new for stable
+	// schemas because the backing buckets stay hot in L1).
+	scalarFieldNames := make(map[string]bool)
 	for _, fields := range rows {
 		// Time-range filter
 		skip := false
@@ -758,7 +816,9 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 			seenBitmap[i] = false
 		}
 
-		scalarFieldNames := make(map[string]bool)
+		for k := range scalarFieldNames {
+			delete(scalarFieldNames, k)
+		}
 		for _, fld := range fields {
 			if _, ok := fld.value.(map[string]string); !ok {
 				scalarFieldNames[fld.name] = true
@@ -1132,27 +1192,44 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 	if s.bloomCache == nil || queryStr == "" {
 		return files
 	}
+	if containsOrOperatorAST(queryStr) {
+		// OR queries used to bypass bloom filtering entirely. Try to
+		// evaluate each OR branch independently via the bloom index
+		// and union the matching files. Falls through to returning
+		// all files when the filter shape doesn't fit the supported
+		// pattern (top-level OR of simple field=value predicates,
+		// optionally distributed with surrounding AND clauses).
+		if result, ok := s.bloomFilterFilesByOrBranches(ctx, files, queryStr); ok {
+			return result
+		}
+		return files
+	}
 
-	var checks []bloomindex.ColumnCheck
+	// Build per-column candidate value sets. A column may have multiple
+	// values via field:in(v1,v2,...) — VT's spans-lookup query uses this
+	// shape (trace_id:in(t1,t2,t3)). Per-column semantics is "any-of"
+	// (OR within a column's values), and AND across columns.
+	type bloomColumn struct {
+		Column string
+		Values []string
+	}
+	var perColumn []bloomColumn
 	for _, col := range s.registry.PromotedColumns() {
 		if !col.HasBloom {
 			continue
 		}
-		if isNegatedPredicate(queryStr, col.InternalName) || isNegatedPredicate(queryStr, col.ParquetColumn) {
+		if isNegatedPredicateAST(queryStr, col.InternalName) || isNegatedPredicateAST(queryStr, col.ParquetColumn) {
 			continue
 		}
-		vals := extractFilterValues(queryStr, col.InternalName)
+		vals := extractFilterValuesAST(queryStr, col.InternalName)
 		if len(vals) == 0 {
-			vals = extractFilterValues(queryStr, col.ParquetColumn)
+			vals = extractFilterValuesAST(queryStr, col.ParquetColumn)
 		}
-		for _, val := range vals {
-			checks = append(checks, bloomindex.ColumnCheck{
-				Column: col.ParquetColumn,
-				Value:  val,
-			})
+		if len(vals) > 0 {
+			perColumn = append(perColumn, bloomColumn{Column: col.ParquetColumn, Values: vals})
 		}
 	}
-	if len(checks) == 0 {
+	if len(perColumn) == 0 {
 		return files
 	}
 
@@ -1176,10 +1253,34 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 		for i, fi := range pFiles {
 			keys[i] = fi.Key
 		}
-		matching := idx.MayContainAll(keys, checks)
-		matchSet := make(map[string]bool, len(matching))
-		for _, k := range matching {
-			matchSet[k] = true
+
+		// For each column, union the per-value MayContainAll results
+		// (any-of). Then intersect across columns (AND-of-columns).
+		var intersection map[string]bool
+		for _, bc := range perColumn {
+			colMatch := make(map[string]bool)
+			for _, v := range bc.Values {
+				for _, k := range idx.MayContainAll(keys, []bloomindex.ColumnCheck{{Column: bc.Column, Value: v}}) {
+					colMatch[k] = true
+				}
+			}
+			if intersection == nil {
+				intersection = colMatch
+			} else {
+				for k := range intersection {
+					if !colMatch[k] {
+						delete(intersection, k)
+					}
+				}
+			}
+			if len(intersection) == 0 {
+				break
+			}
+		}
+
+		matchSet := intersection
+		if matchSet == nil {
+			matchSet = make(map[string]bool)
 		}
 
 		before := len(pFiles)
@@ -1205,6 +1306,117 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 	return result
 }
 
+// bloomFilterFilesByOrBranches evaluates an OR-shaped query against
+// the bloom index per branch and unions the matching files. Returns
+// (files, false) when the filter shape isn't supported — caller
+// should fall back to its existing logic.
+//
+// Translates branch field names through the registry (internal ↔
+// parquet) so we use the actual parquet column the bloom index keys
+// on. Branches with no bloom-checkable columns force a fall-through
+// for that branch — we include all files for the partition (because
+// the bloom can't prove absence).
+func (s *Storage) bloomFilterFilesByOrBranches(ctx context.Context, files []manifest.FileInfo, queryStr string) ([]manifest.FileInfo, bool) {
+	filter := parseFilterFromQueryStr(queryStr)
+	if filter == nil {
+		return files, false
+	}
+	branches := FilterExtractOrBranches(filter)
+	if len(branches) == 0 {
+		return files, false
+	}
+
+	// Translate each branch's BranchCheck into bloomindex.ColumnCheck,
+	// using the registry to find the parquet column name for fields
+	// that have a bloom filter configured.
+	branchChecks := make([][]bloomindex.ColumnCheck, 0, len(branches))
+	for _, branch := range branches {
+		var checks []bloomindex.ColumnCheck
+		var hasUnindexedField bool
+		for _, bc := range branch {
+			col := s.resolveBloomColumn(bc.FieldName)
+			if col == "" {
+				hasUnindexedField = true
+				break
+			}
+			checks = append(checks, bloomindex.ColumnCheck{Column: col, Value: bc.Value})
+		}
+		if hasUnindexedField || len(checks) == 0 {
+			// One branch can't be bloom-evaluated — every file is a
+			// potential match for that branch, so the union must
+			// include every file. Bail out and let the caller fall
+			// through to its full-files default.
+			return files, false
+		}
+		branchChecks = append(branchChecks, checks)
+	}
+
+	metrics.BloomQueriesTotal.Inc("attempt")
+
+	byPartition := make(map[string][]manifest.FileInfo)
+	for _, fi := range files {
+		partition := partitionFromKey(fi.Key)
+		byPartition[partition] = append(byPartition[partition], fi)
+	}
+
+	var result []manifest.FileInfo
+	for partition, pFiles := range byPartition {
+		idx, err := s.bloomCache.Get(ctx, partition)
+		if err != nil || idx == nil {
+			// No bloom index for this partition — keep its files.
+			result = append(result, pFiles...)
+			continue
+		}
+
+		keys := make([]string, len(pFiles))
+		for i, fi := range pFiles {
+			keys[i] = fi.Key
+		}
+
+		unionMatch := make(map[string]bool, len(keys))
+		for _, checks := range branchChecks {
+			matching := idx.MayContainAll(keys, checks)
+			for _, k := range matching {
+				unionMatch[k] = true
+			}
+		}
+
+		before := len(pFiles)
+		var bytesAvoided int64
+		for _, fi := range pFiles {
+			if unionMatch[fi.Key] {
+				result = append(result, fi)
+			} else {
+				bytesAvoided += fi.Size
+			}
+		}
+		skipped := before - len(unionMatch)
+		if skipped > 0 {
+			metrics.ParquetFilesSkipped.Add(skipped)
+			metrics.BloomFilesSkipped.Add(skipped)
+			metrics.BloomBytesAvoided.Add(int(bytesAvoided))
+			metrics.ParquetBloomChecks.Add("miss", skipped)
+		}
+		if len(unionMatch) > 0 {
+			metrics.ParquetBloomChecks.Add("hit", len(unionMatch))
+		}
+	}
+	return result, true
+}
+
+// resolveBloomColumn maps a query field name (internal or parquet
+// form) to the parquet column name when the column has a bloom
+// filter. Returns "" when no bloom is configured for the field.
+func (s *Storage) resolveBloomColumn(fieldName string) string {
+	if m := s.registry.ResolveToParquet(fieldName); m != nil && m.HasBloom {
+		return m.ParquetColumn
+	}
+	if m := s.registry.ResolveFromParquet(fieldName); m != nil && m.HasBloom {
+		return m.ParquetColumn
+	}
+	return ""
+}
+
 func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, queryStr string) bool {
 	if queryStr == "" {
 		return false
@@ -1215,9 +1427,9 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 		if !col.HasBloom {
 			continue
 		}
-		vals := extractFilterValues(queryStr, col.InternalName)
+		vals := extractFilterValuesAST(queryStr, col.InternalName)
 		if len(vals) == 0 {
-			vals = extractFilterValues(queryStr, col.ParquetColumn)
+			vals = extractFilterValuesAST(queryStr, col.ParquetColumn)
 		}
 		for _, val := range vals {
 			checks = append(checks, bloomindex.ColumnCheck{
@@ -1233,24 +1445,33 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 	bloomKey := fi.Key + ".bloom"
 
 	var idx *bloomindex.Index
-	if cached, ok := s.fileBloomCache.Load(bloomKey); ok {
-		if cached == nil {
-			return false
+	if s.fileBloomCache != nil {
+		if cached, ok := s.fileBloomCache.Get(bloomKey); ok {
+			if cached == nil {
+				return false
+			}
+			idx = cached
 		}
-		idx = cached.(*bloomindex.Index)
-	} else {
+	}
+	if idx == nil {
 		data, err := s.pool.Download(ctx, bloomKey)
 		if err != nil || len(data) == 0 {
-			s.fileBloomCache.Store(bloomKey, nil)
+			if s.fileBloomCache != nil {
+				s.fileBloomCache.Put(bloomKey, nil)
+			}
 			return false
 		}
 		parsed, err := bloomindex.Unmarshal(data)
 		if err != nil {
-			s.fileBloomCache.Store(bloomKey, nil)
+			if s.fileBloomCache != nil {
+				s.fileBloomCache.Put(bloomKey, nil)
+			}
 			return false
 		}
 		idx = parsed
-		s.fileBloomCache.Store(bloomKey, idx)
+		if s.fileBloomCache != nil {
+			s.fileBloomCache.Put(bloomKey, idx)
+		}
 	}
 
 	if !bloomindex.FileBloomMayContainAll(idx, checks) {
@@ -1301,22 +1522,50 @@ func (s *Storage) bloomFilterSkip(_ *parquet.File, rg parquet.RowGroup, checks [
 		return false
 	}
 
+	// Group checks by parquet column. buildBloomChecks expands `field:in(a,b,c)`
+	// into multiple checks for the same column — those are disjunctive (any
+	// value present keeps the row group). Different columns remain conjunctive
+	// (every column must possibly match). Without grouping, a `trace_id:in(a,b,c)`
+	// query would skip every row group that does not bloom-contain the FIRST
+	// value, even when later values exist in the group.
 	cols := rg.ColumnChunks()
-	for _, check := range checks {
-		if check.colIdx >= len(cols) {
+	type colGroup struct {
+		colIdx int
+		values []parquet.Value
+	}
+	groups := make(map[string]*colGroup, len(checks))
+	for _, c := range checks {
+		g, ok := groups[c.colName]
+		if !ok {
+			g = &colGroup{colIdx: c.colIdx}
+			groups[c.colName] = g
+		}
+		g.values = append(g.values, c.value)
+	}
+
+	for _, g := range groups {
+		if g.colIdx >= len(cols) {
 			continue
 		}
-
-		bf := cols[check.colIdx].BloomFilter()
+		bf := cols[g.colIdx].BloomFilter()
 		if bf == nil || bf.Size() == 0 {
 			continue
 		}
-
-		found, err := bf.Check(check.value)
-		if err != nil {
-			continue
+		anyFound := false
+		for _, v := range g.values {
+			found, err := bf.Check(v)
+			if err != nil {
+				// On any per-value error, treat the group as inconclusive
+				// and keep the row group rather than incorrectly skipping.
+				anyFound = true
+				break
+			}
+			if found {
+				anyFound = true
+				break
+			}
 		}
-		if !found {
+		if !anyFound {
 			return true
 		}
 	}
@@ -1640,18 +1889,78 @@ func (s *Storage) enrichManifestFromFooter(fi manifest.FileInfo, f *parquet.File
 	}
 }
 
+// Synthetic manifest block sizing.
+//
+//   - syntheticChunkSize bounds the per-block allocation so a multi-million
+//     row file no longer triggers a single huge []string allocation.
+//   - maxSyntheticRows is a defense-in-depth cap on the total row count
+//     emitted per file from the manifest fast path. Previously this was
+//     50M which could still allocate ~1GB of strings if the registry's
+//     timestamp formatter produced long values.
+const (
+	syntheticChunkSize = 10_000
+	maxSyntheticRows   = 1_000_000
+)
+
 // syntheticManifestBlock creates a DataBlock with fi.RowCount rows using
 // timestamps distributed across [MinTimeNs, MaxTimeNs] from manifest metadata.
-// Used by the manifest-only fast path to avoid all S3 I/O for files fully
-// within the query range.
+//
+// Prefer streamSyntheticManifestBlocks for query-path callers — it emits
+// multiple smaller blocks instead of materializing the full row count in
+// one slice. This single-block variant is preserved for legacy callers
+// (tests/benchmarks) and clamps to syntheticChunkSize to avoid surprise
+// allocations.
 func (s *Storage) syntheticManifestBlock(fi manifest.FileInfo) *logstorage.DataBlock {
-	const maxSyntheticRows = 50_000_000
 	n := int(fi.RowCount)
 	if n == 0 {
 		return nil
 	}
-	if n > maxSyntheticRows {
-		n = maxSyntheticRows
+	if n > syntheticChunkSize {
+		n = syntheticChunkSize
+	}
+	return s.buildSyntheticChunk(fi, 0, n)
+}
+
+// streamSyntheticManifestBlocks emits one or more DataBlocks covering
+// fi.RowCount rows, each of size <= syntheticChunkSize. Total row count
+// is capped at maxSyntheticRows as a safety net against pathological
+// manifest entries (the manifest fast path is metadata-only, so a wildly
+// inflated RowCount would otherwise allocate proportionally).
+func (s *Storage) streamSyntheticManifestBlocks(fi manifest.FileInfo, emit func(*logstorage.DataBlock)) {
+	total := int(fi.RowCount)
+	if total <= 0 || emit == nil {
+		return
+	}
+	if total > maxSyntheticRows {
+		total = maxSyntheticRows
+	}
+
+	for offset := 0; offset < total; offset += syntheticChunkSize {
+		chunk := syntheticChunkSize
+		if offset+chunk > total {
+			chunk = total - offset
+		}
+		db := s.buildSyntheticChunkOf(fi, offset, chunk, total)
+		if db != nil && db.RowsCount() > 0 {
+			emit(db)
+		}
+	}
+}
+
+// buildSyntheticChunk is a thin wrapper around buildSyntheticChunkOf that
+// derives the global row count from chunk size — kept for callers that
+// only emit a single chunk.
+func (s *Storage) buildSyntheticChunk(fi manifest.FileInfo, offset, chunk int) *logstorage.DataBlock {
+	return s.buildSyntheticChunkOf(fi, offset, chunk, chunk)
+}
+
+// buildSyntheticChunkOf renders `chunk` rows of synthetic timestamps
+// starting at the given offset, where the timestamp step is computed
+// against the global `total` row count so successive chunks remain
+// monotonically increasing across the file's [MinTimeNs, MaxTimeNs] range.
+func (s *Storage) buildSyntheticChunkOf(fi manifest.FileInfo, offset, chunk, total int) *logstorage.DataBlock {
+	if chunk <= 0 {
+		return nil
 	}
 
 	tsCol := s.registry.TimestampColumn()
@@ -1660,16 +1969,16 @@ func (s *Storage) syntheticManifestBlock(fi manifest.FileInfo) *logstorage.DataB
 		internalName = m.InternalName
 	}
 
-	values := make([]string, n)
-	if n == 1 {
+	values := make([]string, chunk)
+	if total == 1 {
 		values[0] = s.registry.FormatField(internalName, fi.MinTimeNs)
 	} else {
-		step := (fi.MaxTimeNs - fi.MinTimeNs) / int64(n-1)
+		step := (fi.MaxTimeNs - fi.MinTimeNs) / int64(total-1)
 		if step == 0 {
 			step = 1
 		}
 		for i := range values {
-			ts := fi.MinTimeNs + int64(i)*step
+			ts := fi.MinTimeNs + int64(offset+i)*step
 			if ts > fi.MaxTimeNs {
 				ts = fi.MaxTimeNs
 			}
@@ -1698,11 +2007,25 @@ func rowGroupMatchesTimeRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs 
 		return true
 	}
 
-	minVal := idx.MinValue(0)
-	maxVal := idx.MaxValue(numPages - 1)
-
-	rgMin := minVal.Int64()
-	rgMax := maxVal.Int64()
+	// Parquet pages within a row group are NOT guaranteed to be sorted by the
+	// timestamp column — even for logs the columnar writer can reorder rows
+	// to improve compression. Taking MinValue(0) and MaxValue(N-1) as
+	// row-group bounds silently skipped row groups whose smallest/largest
+	// timestamps lived in a middle page, which produced empty results for
+	// narrow time windows. Aggregate across every page index instead,
+	// mirroring the per-page scan already done in rowGroupMatchesFilter /
+	// detectConstantColumns. Keep this in sync with the traces module
+	// (lakehouse-traces/internal/storage/parquets3/storage_query.go).
+	rgMin := idx.MinValue(0).Int64()
+	rgMax := idx.MaxValue(0).Int64()
+	for p := 1; p < numPages; p++ {
+		if v := idx.MinValue(p).Int64(); v < rgMin {
+			rgMin = v
+		}
+		if v := idx.MaxValue(p).Int64(); v > rgMax {
+			rgMax = v
+		}
+	}
 
 	return rgMax >= startNs && rgMin < endNs
 }
@@ -1929,9 +2252,14 @@ func (s *Storage) handle404Recovery(ctx context.Context, fi manifest.FileInfo, f
 	metrics.QueryFileNotFoundTotal.Inc()
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones &&
 		fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 {
-		db := s.syntheticManifestBlock(fi)
-		if db != nil && db.RowsCount() > 0 {
-			filteredWriteBlock(0, db)
+		emitted := false
+		s.streamSyntheticManifestBlocks(fi, func(db *logstorage.DataBlock) {
+			if db != nil && db.RowsCount() > 0 {
+				filteredWriteBlock(0, db)
+				emitted = true
+			}
+		})
+		if emitted {
 			metrics.MetadataOnlyFiles.Inc()
 		}
 		logger.Infof("query recovered compacted file via manifest metadata; key=%s rows=%d", fi.Key, fi.RowCount)

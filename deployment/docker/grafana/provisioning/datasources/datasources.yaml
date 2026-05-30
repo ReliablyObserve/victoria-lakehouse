@@ -14,7 +14,7 @@ datasources:
     jsonData:
       maxLines: 1000
       derivedFields:
-        - datasourceUid: victoria-lakehouse-traces
+        - datasourceUid: victoriatraces-global
           matcherRegex: 'trace_id=(\w+)'
           name: traceID
           url: "$${__value.raw}"
@@ -44,7 +44,7 @@ datasources:
     jsonData:
       maxLines: 1000
       derivedFields:
-        - datasourceUid: victoria-lakehouse-traces
+        - datasourceUid: victoriatraces-hot
           matcherRegex: 'trace_id=(\w+)'
           name: traceID
           url: "$${__value.raw}"
@@ -74,7 +74,11 @@ datasources:
     jsonData:
       maxLines: 1000
       derivedFields:
-        - datasourceUid: victoria-lakehouse-traces
+        # Fan trace-id clicks through the global Jaeger (hot+cold fan-out)
+        # so fresh trace_ids that haven't flushed to S3 yet still resolve.
+        # Pointing this at victoria-lakehouse-traces directly returns 404
+        # for any trace newer than the cold-tier flush interval (~2 min).
+        - datasourceUid: victoriatraces-global
           matcherRegex: 'trace_id=(\w+)'
           name: traceID
           url: "$${__value.raw}"
@@ -109,6 +113,32 @@ datasources:
         filterByTraceID: true
         filterBySpanID: false
 
+  - name: "Tempo VT Hot (Disk 24h)"
+    type: tempo
+    uid: tempo-vt-hot
+    access: proxy
+    url: http://victoriatraces:10428/select/tempo
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: victorialogs-hot
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+        filterByTraceID: true
+        filterBySpanID: false
+
+  - name: "Tempo LH Cold (S3 Parquet)"
+    type: tempo
+    uid: tempo-lh-cold
+    access: proxy
+    url: http://lakehouse-traces:10428/select/tempo
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: victoria-lakehouse-cold
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+        filterByTraceID: true
+        filterBySpanID: false
+
   # =========================================================================
   # Loki API — hot+cold routing via loki-vl-proxy
   # =========================================================================
@@ -121,7 +151,7 @@ datasources:
     jsonData:
       maxLines: 1000
       derivedFields:
-        - datasourceUid: victoria-lakehouse-traces
+        - datasourceUid: tempo-vt-hot
           matcherRegex: 'trace_id=(\w+)'
           name: traceID
           url: "$${__value.raw}"
@@ -134,7 +164,7 @@ datasources:
     jsonData:
       maxLines: 1000
       derivedFields:
-        - datasourceUid: victoria-lakehouse-traces
+        - datasourceUid: tempo-lh-cold
           matcherRegex: 'trace_id=(\w+)'
           name: traceID
           url: "$${__value.raw}"

@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -285,7 +287,13 @@ type QueryConfig struct {
 	Timeout          time.Duration `yaml:"timeout"`
 	MaxRows          int64         `yaml:"max_rows"`
 	MaxFilesPerQuery int           `yaml:"max_files_per_query"`
-	SlowThreshold    time.Duration `yaml:"slow_threshold"`
+	// MaxLiveBytes is a per-query ceiling on the bytes of in-flight
+	// DataBlocks currently held by RunQuery before writeBlock has consumed
+	// them. When exceeded, the query context is cancelled, returning a
+	// partial result instead of OOM-killing the container. 0 means use the
+	// default (defaultMaxLiveBytes in storage/parquets3).
+	MaxLiveBytes  int64         `yaml:"max_live_bytes"`
+	SlowThreshold time.Duration `yaml:"slow_threshold"`
 }
 
 type TenantConfig struct {
@@ -523,8 +531,11 @@ func Default() *Config {
 			FileWorkers:      64,
 			Timeout:          60 * time.Second,
 			MaxRows:          10_000_000,
-			MaxFilesPerQuery: 500,
-			SlowThreshold:    5 * time.Second,
+			MaxFilesPerQuery: 0, // 0 = unlimited (match VL upstream); memory budget is the real safety net
+			// 512 MiB live-block budget — about 1/4 of the 2 GiB container
+			// limit, leaving room for caches + parquet decode buffers.
+			MaxLiveBytes:  512 * 1024 * 1024,
+			SlowThreshold: 5 * time.Second,
 		},
 
 		Insert: InsertConfig{
@@ -747,6 +758,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("--lakehouse.s3.bucket is required")
 	}
 
+	if err := c.validateS3Endpoint(); err != nil {
+		return err
+	}
+
 	switch c.Role {
 	case RoleAll, RoleInsert, RoleSelect, "":
 	default:
@@ -777,6 +792,31 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	return nil
+}
+
+func (c *Config) validateS3Endpoint() error {
+	if c.S3.Endpoint == "" {
+		return nil
+	}
+	u, err := url.Parse(c.S3.Endpoint)
+	if err != nil {
+		return fmt.Errorf("--lakehouse.s3.endpoint: invalid URL %q: %w", c.S3.Endpoint, err)
+	}
+	switch u.Scheme {
+	case "http", "https":
+	default:
+		return fmt.Errorf("--lakehouse.s3.endpoint: scheme must be http or https, got %q", u.Scheme)
+	}
+	host := u.Hostname()
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("--lakehouse.s3.endpoint: link-local IP %q not allowed (possible SSRF)", host)
+		}
+	}
+	if host == "metadata.google.internal" {
+		return fmt.Errorf("--lakehouse.s3.endpoint: cloud metadata endpoint %q not allowed", host)
+	}
 	return nil
 }
 
@@ -1272,6 +1312,9 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Query.MaxRows > 0 {
 		base.Query.MaxRows = overlay.Query.MaxRows
+	}
+	if overlay.Query.MaxLiveBytes > 0 {
+		base.Query.MaxLiveBytes = overlay.Query.MaxLiveBytes
 	}
 	if overlay.Query.SlowThreshold > 0 {
 		base.Query.SlowThreshold = overlay.Query.SlowThreshold

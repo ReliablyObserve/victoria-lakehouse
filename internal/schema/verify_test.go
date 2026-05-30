@@ -65,7 +65,7 @@ func TestVerifySchema_TracesProfile_AllPromotedFields(t *testing.T) {
 		wantOrigin FieldOrigin
 	}{
 		{"_time", "timestamp_unix_nano", TypeTimestampNano, OriginPromoted},
-		{"start_time", "start_time_unix_nano", TypeTimestampNano, OriginPromoted},
+		{"start_time_unix_nano", "start_time_unix_nano", TypeInt64, OriginPromoted},
 		{"trace_id", "trace_id", TypeString, OriginPromoted},
 		{"span_id", "span_id", TypeString, OriginPromoted},
 		{"parent_span_id", "parent_span_id", TypeString, OriginPromoted},

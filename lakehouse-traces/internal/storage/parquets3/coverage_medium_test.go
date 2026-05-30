@@ -175,14 +175,13 @@ func TestMedium_detectConstantColumns(t *testing.T) {
 		wantCols := map[string]bool{"service.name": true}
 		constants := detectConstantColumns(f, rgs[0], wantCols)
 
-		if len(constants) != 1 {
-			t.Fatalf("expected 1 constant column, got %d", len(constants))
-		}
-		if constants[0].name != "service.name" {
-			t.Errorf("expected name='service.name', got %q", constants[0].name)
-		}
-		if constants[0].value != "alpha" {
-			t.Errorf("expected value='alpha', got %v", constants[0].value)
+		// service.name is ByteArray — even when min == max across pages
+		// the value is unsafe to use as a constant because parquet may
+		// truncate the column-index min/max per the PageIndex spec.
+		// Callers fall through to data-page reads which return the full
+		// value.
+		if len(constants) != 0 {
+			t.Fatalf("ByteArray column must not be detected as constant; got %d: %+v", len(constants), constants)
 		}
 	})
 
@@ -256,17 +255,12 @@ func TestMedium_detectConstantColumns(t *testing.T) {
 		}
 		wantCols := map[string]bool{"service.name": true, "severity_text": true}
 		constants := detectConstantColumns(f, rgs[0], wantCols)
-		found := false
+		// Both are ByteArray — neither may be detected as constant
+		// regardless of cardinality (truncation rule applies uniformly).
 		for _, c := range constants {
-			if c.name == "service.name" {
-				found = true
+			if c.name == "service.name" || c.name == "severity_text" {
+				t.Errorf("%s (ByteArray) must not be detected as constant — truncation risk", c.name)
 			}
-			if c.name == "severity_text" {
-				t.Error("severity_text should NOT be constant")
-			}
-		}
-		if !found {
-			t.Error("service.name should be detected as constant")
 		}
 	})
 }
@@ -548,7 +542,7 @@ func TestMedium_readMapColumnToBlockCols(t *testing.T) {
 	rowMask := []bool{true, true, true}
 	passCount := 3
 
-	result := readMapColumnToBlockCols(keyChunk, valChunk, 3, rowMask, passCount, "attrs", nil)
+	result := readMapColumnToBlockCols(keyChunk, valChunk, 3, rowMask, passCount, "attrs", nil, nil)
 
 	if len(result) == 0 {
 		t.Fatal("expected at least one block column from MAP data")
@@ -571,7 +565,7 @@ func TestMedium_readMapColumnToBlockCols(t *testing.T) {
 	t.Run("with row mask filtering", func(t *testing.T) {
 		rowMask := []bool{true, false, true}
 		passCount := 2
-		result := readMapColumnToBlockCols(keyChunk, valChunk, 3, rowMask, passCount, "attrs", nil)
+		result := readMapColumnToBlockCols(keyChunk, valChunk, 3, rowMask, passCount, "attrs", nil, nil)
 
 		for _, bc := range result {
 			if len(bc.Values) != passCount {
@@ -582,7 +576,7 @@ func TestMedium_readMapColumnToBlockCols(t *testing.T) {
 
 	t.Run("with promoted keys excluded", func(t *testing.T) {
 		promoted := map[string]bool{"host": true}
-		result := readMapColumnToBlockCols(keyChunk, valChunk, 3, rowMask, 3, "attrs", promoted)
+		result := readMapColumnToBlockCols(keyChunk, valChunk, 3, rowMask, 3, "attrs", promoted, nil)
 
 		for _, bc := range result {
 			if bc.Name == "attrs:host" {

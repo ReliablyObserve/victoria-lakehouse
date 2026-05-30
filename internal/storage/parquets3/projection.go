@@ -13,25 +13,44 @@ import (
 // (stats by(), uniq by(), top by(), fields) via logstorage.GetQueryPipeFields.
 // Using VL's actual parsed representation avoids duplicating query parsing.
 func queryColumns(queryStr string, registry *schema.Registry, pipeFields []string) map[string]bool {
-	if queryStr == "" || queryStr == "*" {
+	filterPart := queryStr
+	if idx := strings.Index(queryStr, " | "); idx >= 0 {
+		filterPart = strings.TrimSpace(queryStr[:idx])
+	}
+
+	hasPipes := len(pipeFields) > 0 || hasColumnSelectingPipe(queryStr)
+
+	if (filterPart == "" || filterPart == "*") && !hasPipes {
 		return nil
 	}
 
-	if len(pipeFields) == 0 && !hasColumnSelectingPipe(queryStr) {
+	if !hasPipes {
 		return nil
 	}
 
 	cols := make(map[string]bool)
 	cols[registry.TimestampColumn()] = true
 
-	if isFreeTextSearch(queryStr) {
+	if isFreeTextSearch(filterPart) {
 		cols["body"] = true
 	}
 
 	for _, fm := range registry.PromotedColumns() {
-		if referencesField(queryStr, fm.InternalName) || referencesField(queryStr, fm.ParquetColumn) {
+		if referencesField(filterPart, fm.InternalName) || referencesField(filterPart, fm.ParquetColumn) {
 			cols[fm.ParquetColumn] = true
 		}
+	}
+
+	// Stream selector `{tag="value", ...}` doesn't carry an explicit
+	// `_stream:` prefix when VL serializes a parsed query (e.g. `_stream:{x=y}`
+	// becomes just `{x=y}` in q.String()). filterStream.matchRow needs the
+	// `_stream` field to be present in the projected DataBlock, so detect the
+	// `{...}` shape and add `_stream` to the projection. Without this, the
+	// projection-reducing path (pipeFields non-empty) would drop `_stream`
+	// and the stream filter would silently match zero rows. Mirror of the
+	// fix in lakehouse-traces/internal/storage/parquets3/projection.go.
+	if referencesStreamSelector(filterPart) {
+		cols["_stream"] = true
 	}
 
 	for _, name := range pipeFields {
@@ -40,11 +59,26 @@ func queryColumns(queryStr string, registry *schema.Registry, pipeFields []strin
 		}
 	}
 
-	if len(cols) <= 1 && !isFreeTextSearch(queryStr) {
+	if len(cols) <= 1 && !isFreeTextSearch(filterPart) && !hasPipes {
 		return nil
 	}
 
 	return cols
+}
+
+// referencesStreamSelector returns true if the filter contains an
+// unprefixed stream selector `{...}`. VL's q.String() drops the explicit
+// `_stream:` prefix from parsed queries (so `_stream:{x=y}` round-trips
+// as `{x=y}`), but filterStream.matchRow still requires the `_stream`
+// column to be present in the DataBlock.
+//
+// The `{` character is special in LogsQL only at the top level of a
+// filter expression — it cannot appear inside a field value without
+// being part of a quoted string. So a bare `{` at filter scope is a
+// reliable stream-selector signal.
+func referencesStreamSelector(filterPart string) bool {
+	s := strings.TrimSpace(filterPart)
+	return strings.Contains(s, "{")
 }
 
 func hasColumnSelectingPipe(query string) bool {
@@ -63,12 +97,18 @@ func hasColumnSelectingPipe(query string) bool {
 }
 
 func referencesField(query, name string) bool {
+	// VL serializes field names that contain `:` or other special chars
+	// (e.g. `span_attr:http.status_code`) with surrounding double quotes:
+	// `"span_attr:http.status_code":=200`. Detect both the bare and
+	// quoted forms.
 	patterns := []string{
 		name + `:="`,
 		name + `:"`,
 		name + `:=`,
 		name + `:in(`,
 		name + `:`,
+		`"` + name + `":=`,
+		`"` + name + `":`,
 	}
 	for _, p := range patterns {
 		if strings.Contains(query, p) {

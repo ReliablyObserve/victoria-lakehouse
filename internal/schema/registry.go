@@ -183,9 +183,10 @@ type FieldMapping struct {
 }
 
 type Profile struct {
-	Promoted     []FieldMapping
-	MapColumns   []string // MAP column names to scan for unknown fields
-	StreamFields []string // fields that define a stream identity
+	Promoted        []FieldMapping
+	MapColumns      []string        // MAP column names to scan for unknown fields
+	StreamFields    []string        // fields that define a stream identity
+	TopLevelMapKeys map[string]bool // MAP keys emitted without prefix (VT top-level span attrs)
 }
 
 type ExtraPromoted struct {
@@ -232,7 +233,7 @@ var LogsProfile = Profile{
 var TracesProfile = Profile{
 	Promoted: []FieldMapping{
 		{ParquetColumn: "timestamp_unix_nano", InternalName: "_time", Type: TypeTimestampNano, Origin: OriginPromoted},
-		{ParquetColumn: "start_time_unix_nano", InternalName: "start_time", Type: TypeTimestampNano, Origin: OriginPromoted},
+		{ParquetColumn: "start_time_unix_nano", InternalName: "start_time_unix_nano", Type: TypeInt64, Origin: OriginPromoted},
 		{ParquetColumn: "trace_id", InternalName: "trace_id", Type: TypeString, Origin: OriginPromoted, HasBloom: true},
 		{ParquetColumn: "span_id", InternalName: "span_id", Type: TypeString, Origin: OriginPromoted},
 		{ParquetColumn: "parent_span_id", InternalName: "parent_span_id", Type: TypeString, Origin: OriginPromoted},
@@ -258,8 +259,9 @@ var TracesProfile = Profile{
 		{ParquetColumn: "_stream", InternalName: "_stream", Type: TypeString, Origin: OriginPromoted},
 		{ParquetColumn: "_stream_id", InternalName: "_stream_id", Type: TypeString, Origin: OriginPromoted},
 	},
-	MapColumns:   []string{"resource.attributes", "span.attributes", "scope.attributes"},
-	StreamFields: []string{"resource_attr:service.name", "name"},
+	MapColumns:      []string{"resource.attributes", "span.attributes", "scope.attributes"},
+	StreamFields:    []string{"resource_attr:service.name", "name"},
+	TopLevelMapKeys: VTTopLevelSpanAttrKeys,
 }
 
 func NewRegistry(profile Profile, extra ...ExtraPromoted) *Registry {
@@ -302,6 +304,10 @@ func (r *Registry) ExtraPromoted() []ExtraPromoted {
 func (r *Registry) IsPromoted(fieldName string) bool {
 	_, ok := r.byInternal[fieldName]
 	return ok
+}
+
+func (r *Registry) TopLevelMapKeys() map[string]bool {
+	return r.profile.TopLevelMapKeys
 }
 
 func (r *Registry) ResolveToParquet(internalName string) *FieldMapping {

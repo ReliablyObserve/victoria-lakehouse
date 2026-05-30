@@ -230,14 +230,13 @@ func TestMedium_detectConstantColumns(t *testing.T) {
 		wantCols := map[string]bool{"service.name": true}
 		constants := detectConstantColumns(f, rgs[0], wantCols)
 
-		if len(constants) != 1 {
-			t.Fatalf("expected 1 constant column, got %d", len(constants))
-		}
-		if constants[0].name != "service.name" {
-			t.Errorf("expected name='service.name', got %q", constants[0].name)
-		}
-		if constants[0].value != "alpha" {
-			t.Errorf("expected value='alpha', got %v", constants[0].value)
+		// service.name is ByteArray — even when all rows in the page
+		// share the value, the column-index min/max may be truncated
+		// per Apache Parquet's PageIndex spec. We never treat ByteArray
+		// columns as constants; callers fall through to data-page reads
+		// which return the full, untruncated value.
+		if len(constants) != 0 {
+			t.Fatalf("ByteArray column must not be detected as constant; got %d: %+v", len(constants), constants)
 		}
 	})
 
@@ -311,18 +310,12 @@ func TestMedium_detectConstantColumns(t *testing.T) {
 		}
 		wantCols := map[string]bool{"service.name": true, "severity_text": true}
 		constants := detectConstantColumns(f, rgs[0], wantCols)
-		// service.name should be detected as constant, severity_text should not.
-		found := false
+		// Both are ByteArray — neither may be detected as constant
+		// regardless of cardinality (truncation rule applies uniformly).
 		for _, c := range constants {
-			if c.name == "service.name" {
-				found = true
+			if c.name == "service.name" || c.name == "severity_text" {
+				t.Errorf("%s (ByteArray) must not be detected as constant — truncation risk", c.name)
 			}
-			if c.name == "severity_text" {
-				t.Error("severity_text should NOT be constant")
-			}
-		}
-		if !found {
-			t.Error("service.name should be detected as constant")
 		}
 	})
 }

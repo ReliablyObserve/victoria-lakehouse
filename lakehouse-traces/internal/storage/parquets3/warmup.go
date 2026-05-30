@@ -103,8 +103,17 @@ func (s *Storage) WarmupCache(ctx context.Context) {
 				if ctx.Err() != nil {
 					return
 				}
+				// Reserve the process-wide file-resident budget BEFORE
+				// downloading. Mirror of internal/storage/parquets3/warmup.go
+				// — see that file for the foreground-vs-background memory
+				// collision rationale.
+				rel, fbErr := acquireFileBudget(ctx, fi.Size)
+				if fbErr != nil {
+					return
+				}
 				data, err := s.getFileData(ctx, fi.Key, fi.Size)
 				if err != nil {
+					rel()
 					errors.Add(1)
 					continue
 				}
@@ -117,6 +126,7 @@ func (s *Storage) WarmupCache(ctx context.Context) {
 						s.footerCache.Put(fi.Key, cached)
 					}
 				}
+				rel()
 
 				n := warmed.Load()
 				if n%100 == 0 {

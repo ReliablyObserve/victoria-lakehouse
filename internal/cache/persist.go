@@ -44,13 +44,27 @@ func (idx *LabelIndex) AddWithValueCounts(name string, values []string, counts m
 }
 
 func (idx *LabelIndex) addLocked(name string, values []string, counts map[string]int) {
+	// When counts is provided it is authoritative: it comes from a real
+	// data-page scan (sampleValueFrequency), whereas values may include
+	// entries from a footer-only or column-index path that returns
+	// truncated BYTE_ARRAY prefixes (e.g. "notification-ser" alongside
+	// "notification-service"). To prevent truncated values from leaking
+	// into li.Values we ignore the values slice when counts has entries.
+	effectiveValues := values
+	if len(counts) > 0 {
+		effectiveValues = make([]string, 0, len(counts))
+		for v := range counts {
+			effectiveValues = append(effectiveValues, v)
+		}
+	}
+
 	if li, ok := idx.labels[name]; ok {
 		li.SeenInFiles++
 		existing := make(map[string]bool, len(li.Values))
 		for _, v := range li.Values {
 			existing[v] = true
 		}
-		for _, v := range values {
+		for _, v := range effectiveValues {
 			if !existing[v] && len(li.Values) < 10000 {
 				li.Values = append(li.Values, v)
 				existing[v] = true
@@ -70,7 +84,7 @@ func (idx *LabelIndex) addLocked(name string, values []string, counts map[string
 		}
 		li.Cardinality = len(li.Values)
 	} else {
-		capped := values
+		capped := effectiveValues
 		if len(capped) > 10000 {
 			capped = capped[:10000]
 		}
@@ -253,6 +267,25 @@ func (p *Persister) LoadLabelIndex() (*LabelIndex, error) {
 	}
 	if data.Labels == nil {
 		data.Labels = make(map[string]*LabelInfo)
+	}
+	// Reconcile any historical drift between li.Values and li.ValueCounts.
+	// ValueCounts is always built from real data-page scans, so when both
+	// are present we trust ValueCounts and drop any Values entry that
+	// isn't accounted for there (typically a truncated BYTE_ARRAY prefix
+	// from a pre-fix run, e.g. "notification-ser" alongside the full
+	// "notification-service"). One-shot sanitization at load time.
+	for _, li := range data.Labels {
+		if li == nil || len(li.ValueCounts) == 0 || len(li.Values) == 0 {
+			continue
+		}
+		kept := li.Values[:0]
+		for _, v := range li.Values {
+			if _, ok := li.ValueCounts[v]; ok {
+				kept = append(kept, v)
+			}
+		}
+		li.Values = kept
+		li.Cardinality = len(kept)
 	}
 	return &LabelIndex{labels: data.Labels}, nil
 }

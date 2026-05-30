@@ -226,6 +226,109 @@ func TestBloomFilterFiles_Integration(t *testing.T) {
 	}
 }
 
+// TestBloomFilterFilesByOrBranches_Integration verifies that OR-shaped
+// queries route through the per-branch bloom path instead of returning
+// every file. Builds a partition where each file carries a different
+// service.name in its bloom, then queries for 2 of the 5 services via
+// OR — only the 2 matching files must come back.
+//
+// Regression guard for the OOM-trigger Grafana-drilldown shape:
+//
+//	(svc_a:="x" OR svc_b:="x" OR ...)
+//
+// where previously every file in the partition fell through to a full
+// scan because the legacy bloomFilterFiles bypassed itself on OR.
+func TestBloomFilterFilesByOrBranches_Integration(t *testing.T) {
+	s := testStorage()
+
+	pi := bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01)
+	partition := "dt=2026-05-02/hour=10"
+	services := []string{"api-gw", "user-svc", "db-svc", "auth-svc", "billing-svc"}
+	files := make([]manifest.FileInfo, len(services))
+	now := time.Now()
+	for i, svc := range services {
+		key := fmt.Sprintf("%s/file%d.parquet", partition, i)
+		pi.AddFile(partition, key, map[string][]string{
+			"service.name": {svc},
+		})
+		files[i] = manifest.FileInfo{
+			Key:       key,
+			Size:      1024,
+			MinTimeNs: now.Add(-time.Hour).UnixNano(),
+			MaxTimeNs: now.UnixNano(),
+		}
+	}
+
+	// BloomCache backed by the partitioned index — Storage hits this
+	// via bloomCache.Get(ctx, partition).
+	s.bloomCache = bloomindex.NewBloomCache(1024*1024, func(_ context.Context, p string) (*bloomindex.Index, error) {
+		return pi.GetPartition(p), nil
+	})
+
+	queryStr := `service.name:="api-gw" OR service.name:="db-svc"`
+	result := s.bloomFilterFiles(context.Background(), files, queryStr)
+
+	if len(result) != 2 {
+		t.Fatalf("got %d files, want 2 (api-gw + db-svc); keys=%v", len(result), keysOf(result))
+	}
+	got := make(map[string]bool)
+	for _, f := range result {
+		got[f.Key] = true
+	}
+	if !got[files[0].Key] {
+		t.Error("missing api-gw file (files[0])")
+	}
+	if !got[files[2].Key] {
+		t.Error("missing db-svc file (files[2])")
+	}
+	if got[files[1].Key] || got[files[3].Key] || got[files[4].Key] {
+		t.Error("included non-matching service file(s)")
+	}
+}
+
+// TestBloomFilterFilesByOrBranches_UnsupportedShapeFallsBack verifies
+// that an OR query with a regex branch (bloom can't model regex)
+// returns all files rather than over-filtering.
+func TestBloomFilterFilesByOrBranches_UnsupportedShapeFallsBack(t *testing.T) {
+	s := testStorage()
+
+	pi := bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01)
+	partition := "dt=2026-05-02/hour=10"
+	files := make([]manifest.FileInfo, 3)
+	now := time.Now()
+	for i := 0; i < 3; i++ {
+		key := fmt.Sprintf("%s/file%d.parquet", partition, i)
+		pi.AddFile(partition, key, map[string][]string{
+			"service.name": {fmt.Sprintf("svc-%d", i)},
+		})
+		files[i] = manifest.FileInfo{
+			Key:       key,
+			Size:      1024,
+			MinTimeNs: now.Add(-time.Hour).UnixNano(),
+			MaxTimeNs: now.UnixNano(),
+		}
+	}
+	s.bloomCache = bloomindex.NewBloomCache(1024*1024, func(_ context.Context, p string) (*bloomindex.Index, error) {
+		return pi.GetPartition(p), nil
+	})
+
+	// Regex predicate inside an OR branch — unsupported shape, must
+	// fall back to returning all files.
+	queryStr := `service.name:="svc-0" OR _msg:~"timeout"`
+	result := s.bloomFilterFiles(context.Background(), files, queryStr)
+	if len(result) != len(files) {
+		t.Errorf("unsupported OR shape should return all %d files; got %d", len(files), len(result))
+	}
+}
+
+func keysOf(files []manifest.FileInfo) []string {
+	out := make([]string, len(files))
+	for i, f := range files {
+		out[i] = f.Key
+	}
+	return out
+}
+
 func TestPartitionFromKey(t *testing.T) {
 	tests := []struct {
 		key  string

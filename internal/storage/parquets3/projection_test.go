@@ -260,31 +260,23 @@ func TestQueryColumns_FilteredStatsCount(t *testing.T) {
 	}
 }
 
-// Wildcard stats count() without a field filter: isFreeTextSearch sees no ":"
-// in the query string, so body is added alongside timestamp. This is the
-// expected behavior — the function conservatively includes body for
-// unstructured queries, and the higher-level isTimestampOnly path handles
-// the pure-count optimisation separately.
+// Wildcard stats count() projects only timestamp — * is not free text.
 func TestQueryColumns_UnfilteredStatsCount(t *testing.T) {
 	reg := schema.NewRegistry(schema.LogsProfile)
 	cols := queryColumns("* | stats count()", reg, nil)
 
 	if cols == nil {
-		t.Fatal("expected non-nil projection (timestamp + body from free-text heuristic)")
+		t.Fatal("expected non-nil projection for piped query")
 	}
 	if !cols["timestamp_unix_nano"] {
 		t.Error("timestamp_unix_nano must always be projected")
 	}
-	if !cols["body"] {
-		t.Error("body expected: isFreeTextSearch returns true when query has no ':'")
-	}
-	if len(cols) != 2 {
-		t.Errorf("expected 2 columns (timestamp + body), got %d: %v", len(cols), cols)
+	if len(cols) != 1 {
+		t.Errorf("expected 1 column (timestamp), got %d: %v", len(cols), cols)
 	}
 }
 
-// stats count() by(service.name) with pipeFields should project service.name.
-// The wildcard prefix has no ":" so isFreeTextSearch adds body as well.
+// stats count() by(service.name) projects timestamp + service.name.
 func TestQueryColumns_StatsCountByService(t *testing.T) {
 	reg := schema.NewRegistry(schema.LogsProfile)
 	cols := queryColumns("* | stats count() by(service.name)", reg, []string{"service.name"})
@@ -298,11 +290,8 @@ func TestQueryColumns_StatsCountByService(t *testing.T) {
 	if !cols["timestamp_unix_nano"] {
 		t.Error("timestamp_unix_nano must always be projected")
 	}
-	if !cols["body"] {
-		t.Error("body expected: isFreeTextSearch returns true for wildcard query without ':'")
-	}
-	if len(cols) != 3 {
-		t.Errorf("expected 3 projected columns (timestamp + body + service.name), got %d: %v", len(cols), cols)
+	if len(cols) != 2 {
+		t.Errorf("expected 2 projected columns (timestamp + service.name), got %d: %v", len(cols), cols)
 	}
 }
 
@@ -371,5 +360,69 @@ func TestHasColumnSelectingPipe(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("hasColumnSelectingPipe(%q) = %v, want %v", tt.query, got, tt.want)
 		}
+	}
+}
+
+// TestQueryColumns_StreamSelectorProjected guards the regression where VL's
+// q.String() emits a stream selector without the explicit `_stream:` prefix
+// (`{x=y}` instead of `_stream:{x=y}`). Our projection must still include
+// the `_stream` column so filterStream.matchRow can evaluate it.
+//
+// Negative-control: remove the referencesStreamSelector call (or its
+// `cols["_stream"] = true` line) from queryColumns and this test must fail.
+func TestQueryColumns_StreamSelectorProjected(t *testing.T) {
+	reg := schema.NewRegistry(schema.LogsProfile)
+
+	cases := []struct {
+		name     string
+		queryStr string
+		pipes    []string
+	}{
+		{
+			name:     "unprefixed stream selector + fields pipe",
+			queryStr: `{"service.name"="api-gateway"} | fields _time, _msg`,
+			pipes:    []string{"_time", "_msg"},
+		},
+		{
+			name:     "explicit _stream: prefix + fields pipe",
+			queryStr: `_stream:{service.name="api-gateway"} | fields _time, _msg`,
+			pipes:    []string{"_time", "_msg"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cols := queryColumns(tc.queryStr, reg, tc.pipes)
+			if cols == nil {
+				t.Fatalf("expected projection (pipes present), got nil for query %q", tc.queryStr)
+			}
+			if !cols["_stream"] {
+				t.Errorf("REGRESSION: `_stream` column missing from projection for query %q.\n"+
+					"  filterStream.matchRow requires the `_stream` column in the DataBlock.\n"+
+					"  Without it, the stream filter silently rejects every row.\n"+
+					"  Got cols=%v", tc.queryStr, cols)
+			}
+		})
+	}
+}
+
+// TestQueryColumns_QuotedFieldNameProjected guards the regression where VL's
+// q.String() wraps field names containing `:` in double quotes. Our projection
+// must detect both bare and quoted forms.
+//
+// Negative-control: remove the quoted-form patterns from referencesField
+// (the two `"`+name+`":...` entries) and this test must fail.
+func TestQueryColumns_QuotedFieldNameProjected(t *testing.T) {
+	reg := schema.NewRegistry(schema.LogsProfile)
+
+	// LogsProfile doesn't promote span_attr:* fields, so simulate with a
+	// known promoted field referenced in quoted form (trace_id is bloomed
+	// and uses simple name, so we focus on the regression mechanic).
+	cols := queryColumns(`"trace_id":="abc" | fields _time, trace_id`, reg, []string{"_time", "trace_id"})
+	if cols == nil {
+		t.Fatal("expected projection")
+	}
+	if !cols["trace_id"] {
+		t.Errorf("REGRESSION: `trace_id` column missing from projection for quoted-name query;\n"+
+			"  got cols=%v", cols)
 	}
 }
