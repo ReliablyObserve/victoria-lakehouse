@@ -141,7 +141,7 @@ func TestLRU_PutNoCopySharesBuffer(t *testing.T) {
 
 	got, _ := c.Get("key")
 	if &got[0] != &data[0] {
-		t.Error("PutNoCopy must store the caller's buffer by reference (the API contract); "+
+		t.Error("PutNoCopy must store the caller's buffer by reference (the API contract); " +
 			"a copy here doubles transient memory and defeats the point")
 	}
 }

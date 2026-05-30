@@ -164,7 +164,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// Per-query memory ceiling for in-flight DataBlock rows. Mirror of the
 	// budget in internal/storage/parquets3 (logs module). See that file for
 	// the rationale and VL reference.
-	maxLiveBytes := int64(s.cfg.Query.MaxLiveBytes)
+	maxLiveBytes := s.cfg.Query.MaxLiveBytes
 	if maxLiveBytes <= 0 {
 		maxLiveBytes = defaultMaxLiveBytes
 	}
@@ -464,6 +464,16 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	if projectedCols == nil && storage.IsTimestampOnly(ctx) {
 		projectedCols = map[string]bool{s.registry.TimestampColumn(): true}
 	}
+
+	// Reserve cumulative file-resident bytes against the process-wide budget
+	// BEFORE opening (and possibly downloading) the parquet file. Mirror of
+	// internal/storage/parquets3/storage_query.go — see that file for the
+	// heap-diff rationale and the OOM symptom this budget bounds.
+	relFB, fbErr := acquireFileBudget(ctx, fi.Size)
+	if fbErr != nil {
+		return fbErr
+	}
+	defer relFB()
 
 	f, err := s.openParquetFile(ctx, fi, projectedCols)
 	if err != nil {

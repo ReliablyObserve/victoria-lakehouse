@@ -203,11 +203,21 @@ services:
       - "-lakehouse.compaction.interval=2m"
       - "-lakehouse.query.file-workers=16"
       # No artificial file cap — VL upstream has none. The
-      # query.max-live-bytes budget (default 512 MiB) plus the
-      # rgDecodeSem semaphore bound memory regardless of file count.
-      # A 7-day wildcard hits ~600 files and now completes under
-      # mem_limit=2g instead of being rejected as "too wide."
-      - "-lakehouse.cache.memory-mb=512"
+      # query.max-live-bytes budget (default 512 MiB), the rgDecodeSem
+      # semaphore, AND the process-wide fileBudgetSem (default 256 MiB
+      # cumulative resident + max 8 concurrent files) bound memory
+      # regardless of file count. A 7-day wildcard hits ~600 files and
+      # completes under mem_limit=2g instead of being rejected as
+      # "too wide" or OOM-killing the container.
+      #
+      # L1 cache shrunk from 512 MiB to 256 MiB so the steady-state
+      # cache footprint plus query-time transient (file budget 256 MiB
+      # + decode peaks ~200 MiB + parquet-go pools ~200 MiB + baseline
+      # ~300 MiB + Go runtime overhead ~200 MiB) fits inside the 2 GiB
+      # cgroup with headroom for back-to-back 7-day wildcards. The L2
+      # disk cache (2 GiB) keeps hot files locally so subsequent
+      # queries hit disk instead of S3.
+      - "-lakehouse.cache.memory-mb=256"
       - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
       - "-lakehouse.cache.disk-max-mb=2048"
       - "-lakehouse.cache.warmup-partitions=6"

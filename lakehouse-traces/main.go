@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -119,6 +120,14 @@ func main() {
 
 	logger.InitNoLogFlags()
 	memAllowed := memory.Allowed()
+
+	// Tell Go's GC the soft memory ceiling so transient allocation peaks
+	// during a wildcard scan don't push RSS over the cgroup limit before
+	// GC reclaims them. Mirror of cmd/lakehouse-logs/main.go — see that
+	// file for the GOMEMLIMIT rationale.
+	prevLimit := debug.SetMemoryLimit(int64(memAllowed))
+	logger.Infof("Go GC memory limit set to %d bytes (was %d); cgroup_memory_limit≈%d/0.6 bytes",
+		memAllowed, prevLimit, memAllowed)
 
 	logger.Infof("lakehouse-traces starting; vt_compat=%s, memory_allowed_bytes=%d", vtCompat, memAllowed)
 

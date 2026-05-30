@@ -161,9 +161,9 @@ func TestFilterReferencedFields_Nil(t *testing.T) {
 
 func TestFilterExtractOrBranches(t *testing.T) {
 	tests := []struct {
-		name    string
-		query   string
-		want    [][]BranchCheck // nil means "should return nil — unsupported"
+		name  string
+		query string
+		want  [][]BranchCheck // nil means "should return nil — unsupported"
 	}{
 		{
 			name:  "simple_two_branch_or",

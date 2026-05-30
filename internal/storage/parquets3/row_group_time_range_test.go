@@ -97,7 +97,12 @@ func TestRowGroupMatchesTimeRange_OutOfOrderPages(t *testing.T) {
 	}
 	if idx == nil || idx.NumPages() < 2 {
 		t.Skipf("parquet writer produced %d pages; need 2+ to exercise the bug",
-			func() int { if idx == nil { return 0 }; return idx.NumPages() }())
+			func() int {
+				if idx == nil {
+					return 0
+				}
+				return idx.NumPages()
+			}())
 	}
 
 	tests := []struct {

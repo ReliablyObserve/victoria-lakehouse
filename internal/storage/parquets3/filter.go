@@ -135,15 +135,6 @@ func filterDataBlock(db *logstorage.DataBlock, f *logstorage.Filter) *logstorage
 	return result
 }
 
-// buildRowFields constructs a []logstorage.Field for a single row from DataBlock columns.
-//
-// Deprecated: prefer fillRowFields with a pre-allocated slice in hot loops.
-func buildRowFields(columns []logstorage.BlockColumn, rowIdx int) []logstorage.Field {
-	fields := make([]logstorage.Field, len(columns))
-	fillRowFields(fields, columns, rowIdx)
-	return fields
-}
-
 // fillRowFields writes one row's worth of columns into the caller-owned
 // dst slice. dst must be sized to len(columns).
 func fillRowFields(dst []logstorage.Field, columns []logstorage.BlockColumn, rowIdx int) {

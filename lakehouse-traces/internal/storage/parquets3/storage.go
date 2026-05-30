@@ -1348,8 +1348,8 @@ func (s *Storage) WarmFile(ctx context.Context, key string) error {
 
 type l1Adapter struct{ lru *cache.LRU }
 
-func (a *l1Adapter) Get(key string) ([]byte, bool) { return a.lru.Get(key) }
-func (a *l1Adapter) Put(key string, val []byte)    { a.lru.Put(key, val) }
+func (a *l1Adapter) Get(key string) ([]byte, bool)    { return a.lru.Get(key) }
+func (a *l1Adapter) Put(key string, val []byte)       { a.lru.Put(key, val) }
 func (a *l1Adapter) PutNoCopy(key string, val []byte) { a.lru.PutNoCopy(key, val) }
 
 type l2Adapter struct{ dc *cache.DiskCache }

@@ -20,7 +20,7 @@ func TestComputeStreamID_FormatMatchesVL(t *testing.T) {
 		t.Errorf("len = %d, want 48", len(got))
 	}
 	for i, c := range got {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			t.Errorf("char[%d] = %q, want lowercase hex", i, c)
 		}
 	}
@@ -108,11 +108,11 @@ func TestComputeStreamID_LooksLikeVLOutput(t *testing.T) {
 // passes, the test isn't pinning the contract.
 func TestComputeStreamID_MatchesVLAlgorithm(t *testing.T) {
 	cases := []struct {
-		name             string
-		tenant           logstorage.TenantID
-		streamCanonical  string
+		name            string
+		tenant          logstorage.TenantID
+		streamCanonical string
 	}{
-		{"tenant zero / simple stream", logstorage.TenantID{0, 0}, "{a=\"b\"}"},
+		{"tenant zero / simple stream", logstorage.TenantID{AccountID: 0, ProjectID: 0}, "{a=\"b\"}"},
 		{"tenant 1/2 / nested stream", logstorage.TenantID{AccountID: 1, ProjectID: 2}, "{service.name=\"api\",pod=\"x-1\"}"},
 		{"large tenant / long canonical", logstorage.TenantID{AccountID: 0x7fff_ffff, ProjectID: 0x1234_5678}, strings.Repeat("k=\"v\",", 32)},
 		{"unicode canonical", logstorage.TenantID{AccountID: 7, ProjectID: 42}, "{lbl=\"ñ→★\"}"},

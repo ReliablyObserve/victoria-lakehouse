@@ -77,10 +77,7 @@ func referencesStreamSelector(filterPart string) bool {
 	// Skip past leading `_time:[...]` predicates and `*` wildcards which
 	// frequently appear before the stream selector after VL serialization.
 	s := strings.TrimSpace(filterPart)
-	if strings.Contains(s, "{") {
-		return true
-	}
-	return false
+	return strings.Contains(s, "{")
 }
 
 func hasColumnSelectingPipe(query string) bool {

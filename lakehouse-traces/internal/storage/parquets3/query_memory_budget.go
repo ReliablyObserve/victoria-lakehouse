@@ -1,7 +1,9 @@
 package parquets3
 
 import (
+	"context"
 	"runtime"
+	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
@@ -95,4 +97,129 @@ var rgDecodeSem = func() chan struct{} {
 func acquireRGDecode() func() {
 	rgDecodeSem <- struct{}{}
 	return func() { <-rgDecodeSem }
+}
+
+// defaultMaxFileResidentBytes caps the cumulative bytes of parquet-file
+// data resident in the file-worker pool across all queries on the
+// process. Mirror of the logs module — see
+// ../../../../internal/storage/parquets3/query_memory_budget.go for
+// the heap-diff sizing rationale.
+const defaultMaxFileResidentBytes int64 = 256 * 1024 * 1024
+
+// defaultMaxConcurrentFiles caps the COUNT of concurrent file processing
+// slots. Mirror of the logs module — see the equivalent comment there
+// for the wildcard-fanout failure mode this bounds.
+func defaultMaxConcurrentFiles() int {
+	n := runtime.GOMAXPROCS(0) / 2
+	if n < 2 {
+		n = 2
+	}
+	if n > 8 {
+		n = 8
+	}
+	return n
+}
+
+// fileBudgetSem is the process-wide byte+count-budget semaphore that
+// bounds cumulative parquet-file bytes resident in the file-worker pool.
+// Mirror of the logs module.
+var fileBudgetSem = newFileBudget(defaultMaxFileResidentBytes, defaultMaxConcurrentFiles())
+
+type fileBudget struct {
+	mu       sync.Mutex
+	cond     *sync.Cond
+	max      int64
+	outBytes int64
+	maxCount int
+	outCount int
+}
+
+func newFileBudget(max int64, maxCount int) *fileBudget {
+	if maxCount < 1 {
+		maxCount = 1
+	}
+	b := &fileBudget{max: max, maxCount: maxCount}
+	b.cond = sync.NewCond(&b.mu)
+	return b
+}
+
+func (b *fileBudget) acquire(ctx context.Context, size int64) (func(), error) {
+	if size <= 0 {
+		size = 1
+	}
+	cap := b.max
+	if size > cap {
+		size = cap
+	}
+
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			b.mu.Lock()
+			b.cond.Broadcast()
+			b.mu.Unlock()
+		case <-done:
+		}
+	}()
+
+	b.mu.Lock()
+	for {
+		bytesOK := b.outBytes+size <= b.max || b.outCount == 0
+		countOK := b.outCount < b.maxCount
+		if bytesOK && countOK {
+			break
+		}
+		if ctx.Err() != nil {
+			b.mu.Unlock()
+			return func() {}, ctx.Err()
+		}
+		b.cond.Wait()
+	}
+	if ctx.Err() != nil {
+		b.mu.Unlock()
+		return func() {}, ctx.Err()
+	}
+	b.outBytes += size
+	b.outCount++
+	b.mu.Unlock()
+
+	released := false
+	return func() {
+		b.mu.Lock()
+		if !released {
+			released = true
+			b.outBytes -= size
+			b.outCount--
+			if b.outBytes < 0 {
+				b.outBytes = 0
+			}
+			if b.outCount < 0 {
+				b.outCount = 0
+			}
+			b.cond.Broadcast()
+		}
+		b.mu.Unlock()
+	}, nil
+}
+
+//nolint:unused // reserved for future metrics export; logs module mirror has identical signature exercised by tests
+func (b *fileBudget) outstanding() (int64, int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.outBytes, b.outCount
+}
+
+// acquireFileBudget reserves size bytes + a count slot from the process-wide
+// file-resident budget. Callers must defer the returned release.
+func acquireFileBudget(ctx context.Context, size int64) (func(), error) {
+	return fileBudgetSem.acquire(ctx, size)
+}
+
+// fileBudgetOutstanding returns the current resident file bytes and count.
+//
+//nolint:unused // reserved for future metrics export; logs module mirror has identical signature exercised by tests
+func fileBudgetOutstanding() (int64, int) {
+	return fileBudgetSem.outstanding()
 }

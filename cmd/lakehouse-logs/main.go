@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -116,6 +117,20 @@ func main() {
 
 	logger.InitNoLogFlags()
 	vlMemoryAllowed := memory.Allowed()
+
+	// Tell Go's GC the soft memory ceiling. Without this, transient
+	// allocation peaks during a wildcard scan can push RSS over the
+	// cgroup limit before GC reclaims them — the kernel OOM-kills the
+	// container even when inuse_space is well below the cap. Setting
+	// GOMEMLIMIT to memory.Allowed() (60% of the cgroup limit by
+	// default) makes GC aggressive enough to keep RSS inside the cap,
+	// while leaving the remaining 40% as headroom for the kernel page
+	// cache, network/disk buffers, parquet-go internal pools, and Go
+	// runtime overhead. See https://pkg.go.dev/runtime/debug#SetMemoryLimit
+	// and https://tip.golang.org/doc/gc-guide#Memory_limit.
+	prevLimit := debug.SetMemoryLimit(int64(vlMemoryAllowed))
+	logger.Infof("Go GC memory limit set to %d bytes (was %d); cgroup_memory_limit≈%d/0.6 bytes",
+		vlMemoryAllowed, prevLimit, vlMemoryAllowed)
 
 	logger.Infof("lakehouse-logs starting; vl_compat=%s, memory_allowed_bytes=%d", vlCompat, vlMemoryAllowed)
 

@@ -86,7 +86,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// on the mutex when the consumer (LogsQL pipe / HTTP writer) is slow, and
 	// the budget triggers context cancellation if rows pile up faster than
 	// the consumer can drain them.
-	maxLiveBytes := int64(s.cfg.Query.MaxLiveBytes)
+	maxLiveBytes := s.cfg.Query.MaxLiveBytes
 	if maxLiveBytes <= 0 {
 		maxLiveBytes = defaultMaxLiveBytes
 	}
@@ -492,6 +492,31 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	if projectedCols == nil && storage.IsTimestampOnly(ctx) {
 		projectedCols = map[string]bool{s.registry.TimestampColumn(): true}
 	}
+
+	// Reserve cumulative file-resident bytes against the process-wide budget
+	// BEFORE opening (and possibly downloading) the parquet file. The file
+	// body stays resident — wired through bytes.NewReader(data) into the
+	// parquet.File — for the entire open-decode-emit window, NOT just the
+	// download. With 16 file workers this is the dominant retention path
+	// (7-day heap-diff: io.ReadAll held 808 MiB at OOM peak; that's
+	// 512 MiB L1 cache plus 16 workers × ~30 MiB file bodies all pinned
+	// concurrently). The budget naturally serializes the worker pool when
+	// cumulative file sizes exceed the cap; smaller files admit more
+	// concurrency, larger files admit fewer. See defaultMaxFileResidentBytes
+	// in query_memory_budget.go for the heap-diff rationale.
+	//
+	// Range-read paths (footer-cache hit + narrow projection) DO NOT pull
+	// the whole body, so the budget would over-account; the file ranges
+	// are page-sized and fit in scratch. For correctness across both
+	// paths we acquire here at the outer queryFile boundary and trust
+	// openParquetFile to either range-read or full-download; the budget
+	// is a soft ceiling that bounds the wildcard-fanout case (which
+	// always full-downloads, per queryColumns returning nil for `*`).
+	relFB, fbErr := acquireFileBudget(ctx, fi.Size)
+	if fbErr != nil {
+		return fbErr
+	}
+	defer relFB()
 
 	f, err := s.openParquetFile(ctx, fi, projectedCols)
 	if err != nil {

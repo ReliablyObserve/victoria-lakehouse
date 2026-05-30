@@ -1,7 +1,9 @@
 package parquets3
 
 import (
+	"context"
 	"runtime"
+	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
@@ -143,4 +145,190 @@ var rgDecodeSem = func() chan struct{} {
 func acquireRGDecode() func() {
 	rgDecodeSem <- struct{}{}
 	return func() { <-rgDecodeSem }
+}
+
+// defaultMaxFileResidentBytes caps the cumulative bytes of parquet-file
+// data resident in the file-worker pool across all queries on the
+// process. Each file worker, while processing a file, holds the whole
+// downloaded body in memory via bytes.NewReader(data) wired into the
+// parquet.File — L1 cache eviction cannot reclaim those bytes until the
+// worker releases its reference. So peak memory under wildcard fanout
+// is dominated NOT by downloads (which complete in <1s) but by the
+// FILE-LIFECYCLE: 16 workers × ~30 MiB ≈ 480 MiB pinned for the entire
+// open-decode-emit-release window.
+//
+// Per the 7-day heap-diff at OOM moment, io.ReadAll retained 808 MiB
+// at the 99.88% mem peak — that's the L1 cache (512 MiB) plus
+// 16 file workers' resident bodies (~10-50 MiB each) plus pending L2
+// disk writes (sync). A 256 MiB cap here keeps the pool of "actively
+// processing" files bounded — leaving ~512 MiB L1, ~512 MiB live-block
+// budget, ~200 MiB baseline, ~400 MiB parquet-go internal pools — fits
+// inside the 2 GiB container.
+//
+// Per [[feedback_k8s_style_resource_bounds]], this is a process-wide
+// REQUEST/LIMIT ceiling: cumulative file-worker memory is bound
+// regardless of how many concurrent queries land.
+const defaultMaxFileResidentBytes int64 = 256 * 1024 * 1024
+
+// defaultMaxConcurrentFiles caps the COUNT of files admitted to the
+// file-worker pool concurrently across all queries. The byte budget alone
+// is insufficient when files are small (avg 2.5 MiB in production): 16
+// workers × 2.5 MiB = 40 MiB << 256 MiB budget, so the budget never
+// fires, and the cache/decoder burst still OOM-kills the container as
+// the worker pool grinds through hundreds of files quickly. The count
+// cap mirrors rgDecodeSem: GOMAXPROCS/2 (min 2, max 8) — small enough
+// that the decoder burst per worker (column-decode peak ~60 MiB) times
+// active workers stays under ~500 MiB, leaving room for L1 cache +
+// parquet-go internal pools inside the 2 GiB container.
+//
+// This is the K8s-style REQUEST cap (count); defaultMaxFileResidentBytes
+// is the LIMIT (bytes). A file admits when BOTH allow — both bound the
+// failure mode they target.
+func defaultMaxConcurrentFiles() int {
+	n := runtime.GOMAXPROCS(0) / 2
+	if n < 2 {
+		n = 2
+	}
+	if n > 8 {
+		n = 8
+	}
+	return n
+}
+
+// fileBudgetSem is the process-wide byte-budget semaphore that bounds
+// cumulative parquet-file bytes resident in the file-worker pool.
+// Workers call acquireFileBudget(ctx, size) BEFORE opening a parquet
+// file; the budget is released when the worker finishes processing the
+// file (including emit). This is what stops the 16-file-worker fanout
+// from pinning 16 × ~30 MiB = ~480 MiB of file bodies for the entire
+// open-decode-emit window — instead the pool naturally serializes
+// when cumulative resident bytes exceed the budget.
+//
+// Mirrors VL upstream's partitionSearchConcurrencyLimitCh pattern
+// (deps/VictoriaLogs/lib/logstorage/storage_search.go:1424) — but on
+// bytes instead of count, because parquet files have an order-of-magnitude
+// size variance (the count cap doesn't catch the OOM when files are large).
+//
+// The download itself is also gated by this budget (download is a
+// sub-step of file processing) — acquireFileBudget covers
+// open-download-decode-emit-release as one lifecycle. This is correct
+// because the bytes remain resident the entire time.
+var fileBudgetSem = newFileBudget(defaultMaxFileResidentBytes, defaultMaxConcurrentFiles())
+
+type fileBudget struct {
+	mu       sync.Mutex
+	cond     *sync.Cond
+	max      int64
+	outBytes int64
+	maxCount int
+	outCount int
+}
+
+func newFileBudget(max int64, maxCount int) *fileBudget {
+	if maxCount < 1 {
+		maxCount = 1
+	}
+	b := &fileBudget{max: max, maxCount: maxCount}
+	b.cond = sync.NewCond(&b.mu)
+	return b
+}
+
+// acquire blocks until size bytes AND a count slot can be reserved
+// against the budget. Returns a release func that must be called when
+// the file's processing completes (success OR failure). If ctx is
+// cancelled while waiting, returns ctx.Err() and a no-op release.
+//
+// A single file larger than max is admitted alone (the budget is soft
+// for sizes >= max; we'd rather process one big file slowly than fail
+// every query that hits an outlier file). Subsequent acquires wait
+// until the giant releases. The count cap (maxCount) is the request-side
+// ceiling that bounds decoder fanout when files are small.
+func (b *fileBudget) acquire(ctx context.Context, size int64) (func(), error) {
+	if size <= 0 {
+		size = 1 // still consume a count slot
+	}
+	cap := b.max
+	if size > cap {
+		// Outlier file: admit alone but block others while it's in flight.
+		size = cap
+	}
+
+	// Use a context-aware wait by signalling cond on context cancellation.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			b.mu.Lock()
+			b.cond.Broadcast()
+			b.mu.Unlock()
+		case <-done:
+		}
+	}()
+
+	b.mu.Lock()
+	for {
+		// Both gates must allow. An empty pool always admits (the outlier
+		// file case): if outCount==0 we let any single request through.
+		bytesOK := b.outBytes+size <= b.max || b.outCount == 0
+		countOK := b.outCount < b.maxCount
+		if bytesOK && countOK {
+			break
+		}
+		if ctx.Err() != nil {
+			b.mu.Unlock()
+			return func() {}, ctx.Err()
+		}
+		b.cond.Wait()
+	}
+	if ctx.Err() != nil {
+		b.mu.Unlock()
+		return func() {}, ctx.Err()
+	}
+	b.outBytes += size
+	b.outCount++
+	b.mu.Unlock()
+
+	released := false
+	return func() {
+		b.mu.Lock()
+		if !released {
+			released = true
+			b.outBytes -= size
+			b.outCount--
+			if b.outBytes < 0 {
+				b.outBytes = 0
+			}
+			if b.outCount < 0 {
+				b.outCount = 0
+			}
+			b.cond.Broadcast()
+		}
+		b.mu.Unlock()
+	}, nil
+}
+
+// outstanding returns the current resident file bytes and count. Exposed
+// for tests and metrics.
+//
+//nolint:unused // used by tests in query_memory_budget_test.go; reserved for future metrics export
+func (b *fileBudget) outstanding() (int64, int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.outBytes, b.outCount
+}
+
+// acquireFileBudget reserves size bytes + a count slot from the process-wide
+// file-resident budget. Callers must defer the returned release. If ctx is
+// cancelled while waiting, returns the cancellation error and a no-op release.
+func acquireFileBudget(ctx context.Context, size int64) (func(), error) {
+	return fileBudgetSem.acquire(ctx, size)
+}
+
+// fileBudgetOutstanding returns the current resident file bytes and count.
+// Used by tests and metrics to verify the budget is bounding peak memory.
+//
+//nolint:unused // used by tests in query_memory_budget_test.go; reserved for future metrics export
+func fileBudgetOutstanding() (int64, int) {
+	return fileBudgetSem.outstanding()
 }

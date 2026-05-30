@@ -28,18 +28,18 @@ import (
 // recognize.
 
 const (
-	astTypeAnd     = "filterAnd"
-	astTypeOr      = "filterOr"
-	astTypeNot     = "filterNot"
-	astTypeGeneric = "filterGeneric"
-	astTypeExact   = "filterExact"
-	astTypeIn      = "filterIn"
-	astTypePhrase  = "filterPhrase"
-	astTypePrefix  = "filterPrefix"
-	astTypeNoop    = "filterNoop"
-	astTypeTime    = "filterTime"
-	astTypeStream  = "filterStream"
-	astTypeStreamID = "filterStreamID"
+	astTypeAnd       = "filterAnd"
+	astTypeOr        = "filterOr"
+	astTypeNot       = "filterNot"
+	astTypeGeneric   = "filterGeneric"
+	astTypeExact     = "filterExact"
+	astTypeIn        = "filterIn"
+	astTypePhrase    = "filterPhrase"
+	astTypePrefix    = "filterPrefix"
+	astTypeNoop      = "filterNoop"
+	astTypeTime      = "filterTime"
+	astTypeStream    = "filterStream"
+	astTypeStreamID  = "filterStreamID"
 	astTypeDayRange  = "filterDayRange"
 	astTypeWeekRange = "filterWeekRange"
 )
@@ -73,7 +73,7 @@ func astTypeName(v reflect.Value) string {
 		}
 		v = v.Elem()
 	}
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return ""
 		}
@@ -120,7 +120,7 @@ func walkFilterAST(v reflect.Value, visit func(name string, node reflect.Value) 
 // derefValue unwraps interface/ptr indirection to expose the concrete
 // struct underneath.
 func derefValue(v reflect.Value) reflect.Value {
-	for v.IsValid() && (v.Kind() == reflect.Interface || v.Kind() == reflect.Ptr) {
+	for v.IsValid() && (v.Kind() == reflect.Interface || v.Kind() == reflect.Pointer) {
 		if v.IsNil() {
 			return reflect.Value{}
 		}
@@ -293,7 +293,9 @@ type BranchCheck struct {
 // each file, take the union of branches that can match it. This
 // turns the previous "OR → return all files" bypass into actual
 // bloom-driven file pruning for the common Grafana-drilldown shape:
-//   (svc_a:="x" OR svc_b:="x" OR svc_c:="x" OR ...)
+//
+//	(svc_a:="x" OR svc_b:="x" OR svc_c:="x" OR ...)
+//
 // where most files don't have ANY of those (field, value) pairs.
 func FilterExtractOrBranches(f *logstorage.Filter) [][]BranchCheck {
 	if f == nil {

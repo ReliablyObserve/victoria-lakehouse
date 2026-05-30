@@ -78,10 +78,7 @@ func queryColumns(queryStr string, registry *schema.Registry, pipeFields []strin
 // reliable stream-selector signal.
 func referencesStreamSelector(filterPart string) bool {
 	s := strings.TrimSpace(filterPart)
-	if strings.Contains(s, "{") {
-		return true
-	}
-	return false
+	return strings.Contains(s, "{")
 }
 
 func hasColumnSelectingPipe(query string) bool {

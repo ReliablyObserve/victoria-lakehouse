@@ -233,7 +233,9 @@ func TestBloomFilterFiles_Integration(t *testing.T) {
 // OR — only the 2 matching files must come back.
 //
 // Regression guard for the OOM-trigger Grafana-drilldown shape:
-//   (svc_a:="x" OR svc_b:="x" OR ...)
+//
+//	(svc_a:="x" OR svc_b:="x" OR ...)
+//
 // where previously every file in the partition fell through to a full
 // scan because the legacy bloomFilterFiles bypassed itself on OR.
 func TestBloomFilterFilesByOrBranches_Integration(t *testing.T) {
