@@ -1,6 +1,16 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=$(VERSION)
 
+# -trimpath strips local file system paths from the recorded executable, making
+# builds reproducible and slightly smaller (~150 KB per binary).
+GOBUILDFLAGS := -trimpath
+
+# Build tags that gate optional, dependency-heavy subsystems out of production
+# binaries. Default is empty (slim build). Override with
+# `make build BUILD_TAGS=k8s_election` to include the in-cluster K8s leader
+# elector and its ~8 MB of k8s.io/client-go transitive dependencies.
+BUILD_TAGS ?=
+
 # Both Go modules use different VL commits with incompatible interfaces.
 # go.work exists for IDE support only; CLI builds must disable it.
 export GOWORK=off
@@ -50,16 +60,16 @@ $(VT_DIR)/go.mod:
 	cd $(VT_DIR) && git apply ../../../patches/vt-traces/go-mod-replace.patch
 
 build: build-logs build-traces
-	go build -ldflags "-s -w" -o bin/healthcheck ./cmd/healthcheck
+	go build $(GOBUILDFLAGS) -ldflags "-s -w" -o bin/healthcheck ./cmd/healthcheck
 
 bench:
 	go build -o bin/lakehouse-bench ./cmd/bench/
 
 build-logs: deps-logs
-	go build -ldflags "$(LDFLAGS)" -o bin/lakehouse-logs ./cmd/lakehouse-logs
+	go build $(GOBUILDFLAGS) -tags "$(BUILD_TAGS)" -ldflags "$(LDFLAGS)" -o bin/lakehouse-logs ./cmd/lakehouse-logs
 
 build-traces: deps-traces deps-vt
-	cd lakehouse-traces && go build -ldflags "$(LDFLAGS)" -o ../bin/lakehouse-traces .
+	cd lakehouse-traces && go build $(GOBUILDFLAGS) -tags "$(BUILD_TAGS)" -ldflags "$(LDFLAGS)" -o ../bin/lakehouse-traces .
 
 test: test-logs test-traces
 

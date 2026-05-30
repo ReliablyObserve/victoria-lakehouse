@@ -33,9 +33,13 @@ RUN cp /tmp/patches/vt-traces/external.go.src lakehouse-traces/deps/VictoriaTrac
     git apply /tmp/patches/vt-traces/go-mod-replace.patch
 COPY . .
 RUN cp -r lakehouse-traces/deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmui/
+# BUILD_TAGS gates optional, dependency-heavy subsystems out of the slim
+# production image. Default is empty. Pass `--build-arg BUILD_TAGS=k8s_election`
+# to compile in the in-cluster K8s leader elector (adds ~21 MB).
+ARG BUILD_TAGS=""
 RUN cd lakehouse-traces && \
-    CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}" -o /lakehouse-traces .
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /healthcheck ./cmd/healthcheck
+    CGO_ENABLED=0 go build -trimpath -tags "${BUILD_TAGS}" -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}" -o /lakehouse-traces .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /healthcheck ./cmd/healthcheck
 RUN mkdir -p /data/lakehouse/cache
 
 FROM gcr.io/distroless/static-debian12:nonroot
