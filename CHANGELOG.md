@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- K8s elector: `tryRenew` now treats HTTP 404 on the Lease object as "lease lost" instead of a transient error. Previously the renew loop spun forever on a 404 (e.g., after an operator ran `kubectl delete lease`), leaving the candidate stuck as a "ghost leader" with `IsLeader=true` but no actual Lease backing it. Now 404 → step down → `acquireLoop` re-POSTs a fresh Lease. Surfaced by the regression test for "lease deleted externally" in the max-coverage suite.
+- K8s elector: `Stop()` updates the `lakehouse_leader_election_state` gauge synchronously instead of waiting for the next `fireStoppedLeading` callback. The previous race window left `state{role="leader"} 1` visible in `/metrics` for up to one tick after `Stop()` returned, even though `IsLeader()` already returned false. Fixes operator dashboard "leader count > 1" false alarms during pod rotations.
+
 ## [0.37.2] - 2026-05-31
 
 ### Changed
@@ -17,6 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **K8s leader-election maximum production-grade coverage** — 10 Tier-1 failure modes covered with unit + integration + e2e tests, each with a documented negative-control proof ("comment out X → this test must fail"):
+  1. SA token rotation mid-election (`bearerTokenForRequest` re-reads the projected token from disk on every API call so kubelet's hourly rotation doesn't 401 the elector; trimspace handles trailing-newline writes; cached token fallback on transient FS errors).
+  2. Lease deleted by operator → elector recreates (also surfaced the 404-renew-loop bug above).
+  3. Lease edited by operator → CAS retry kicks in (409 on stale resourceVersion → GET fresh → retry or step down).
+  4. Pod without SA token → loud failure at startup. New `StartupError()` accessor so `main.go` fails the Pod readiness probe instead of silently never electing.
+  5. Apiserver 5xx / timeout → backoff → RenewDeadline trigger (leader stops within RenewDeadline + ~10% slack).
+  6. Same-identity reclaim after pod restart (StatefulSet pod-name pattern: holderIdentity match → no LeaseDuration wait, leader resumes within seconds).
+  7. Concurrent identity collision → CAS picks one winner (the loser sees its own POST get 409, treats as someone-else-won).
+  8. Metrics observability lock — 6 metric families with stable label shapes (`lakehouse_leader_election_state` / `_acquire_total` / `_renew_total` / `_release_total` / `_acquire_duration_seconds` / `_lease_holder`). Wired via `MetricsHook` indirection (`internal/election/metrics_hook.go`) so `internal/election` stays free of the 190-package `vmmetrics` closure; real metric implementation lives in `internal/metrics/election_hook.go` and is wired from `main.go`. Preserves the 340-package ceiling enforced by `TestElectionDepCount`.
+  9. Helm upgrade during active election → no leaderless gap and no two-leader window (rolling-update test asserts both absent under load).
+  10. K8s version matrix — kind e2e CI job runs against both `kindest/node:v1.29.14` and `kindest/node:v1.32.5`.
+- 27 new unit tests in `internal/election/` raising the package from 116 → 143 tests, coverage 90% → **94.8%** (well above the 90% gate).
+- 4 new e2e probe scripts: `tests/e2e-k8s/test_token_rotation.sh`, `test_no_sa_token.sh`, `test_helm_upgrade.sh`, `test_soak_1hour.sh` (the 1-hour soak with random pod kills every 30s is opt-in via `SOAK=1`, not run in CI by default).
+- Matrix `tests/verification/matrix.md` entry catalogs all 10 items with their unit tests, e2e probes, and negative-control proofs in a single table for future maintainers.
 - `internal/resourcebounds` package — generalises the in-tree `fileBudget` semantics into a reusable `ResourceBound` primitive with K8s-style `Request` (always-reserved baseline), `Limit` (hard ceiling, enforced via blocking `Acquire`), `LimitCount` (per-holder count cap), and `ScalingPolicy` enum (`Fixed`, `LinearGrowth`, `ExponentialBackoff`). Preserves the legacy outlier-admit semantics (single oversized holder admitted alone when pool empty) so individual large parquet files remain processable. Includes `PrometheusSink` adapter and `Resolve` helper that handles the operator-facing flag triple resolution (new triple takes precedence, deprecated alias falls back with one-time warning).
 - 30 new per-surface metrics in `internal/metrics/lakehouse.go` — `lakehouse_resourcebound_<surface>_{acquired,rejected,outstanding_bytes,outstanding_count}_total` + `_request` / `_limit` info gauges, for all 5 surfaces (s3_concurrent_downloads, query_file_workers, cache_memory, smart_cache_disk, query_max_rows).
 - Five operator-facing K8s-style flag triples:
