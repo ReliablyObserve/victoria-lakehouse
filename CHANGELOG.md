@@ -57,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tempo HTTP shim test suite: `TestNormalizeTempoSearchParams` (11 cases) + `TestTempoTagsToTraceQL` (13 cases of the scope-prefix mapping).
 - Bloom OR-in-clause regression tests: `TestS3_bloomFilterSkip_InClauseOrSemantics` (traces) + `TestInteg_bloomFilterSkip_InClauseOrSemantics` (logs).
 - Row-group time-range page-aggregation regression tests covering out-of-order page bounds.
+- Matrix sweep: 20 of the 22 `UNVERIFIED`/`DIFFER` rows in `tests/verification/matrix.md` flipped to `PASS` (verified upstream-equivalent against the live e2e compose stack); 2 rows held as `DIFFER` with VT-version notes (`T17` `/select/tempo/api/metrics/instant`, `TI2` `/insert/zipkin/api/v2/spans` — neither exists in VT v0.9.0). `probe_matrix_sweep.sh` is the regression lock: replays all 22 rows end-to-end and asserts the minimum upstream-compat contract per row, so any future regression on a previously-verified surface fails CI rather than silently flipping the matrix back to UNVERIFIED.
 
 ### Changed
 
