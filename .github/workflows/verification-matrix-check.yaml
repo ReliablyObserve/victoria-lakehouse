@@ -1,0 +1,17 @@
+name: Verification Matrix Check
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  matrix-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check matrix.md path references resolve to real files
+        run: tests/verification/check_matrix_coverage.sh

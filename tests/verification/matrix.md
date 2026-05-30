@@ -14,6 +14,11 @@ each row needs its own verdict.
 4. Each row's `vl_vt_ref` must point to the upstream baseline (VL or VT
    running the same query against the same data). LH-only surfaces with
    no upstream (e.g. lifecycle endpoints) use `spec` instead.
+5. Every backtick-quoted in-tree path cited in a row (probe scripts,
+   test files, docs) must resolve to a real file on disk. The CI job
+   `Verification Matrix Check` runs `tests/verification/check_matrix_coverage.sh`
+   on every PR and fails the build if a cited path is missing — so a
+   renamed/deleted probe forces a matrix update in the same PR.
 
 Related rules (memories): `feedback_per_component_verification`,
 `feedback_layered_test_strategy`, `feedback_vl_vt_upstream`,
@@ -114,7 +119,7 @@ Related rules (memories): `feedback_per_component_verification`,
 | # | Endpoint | state | layer | last_state | verified |
 |---|----------|-------|-------|-----------|----------|
 | TI1 | `/insert/jsonline` | PASS | e2e | datagen succeeds | 2026-05-29 |
-| TI2 | `/insert/zipkin/api/v2/spans` | DIFFER | manual | endpoint NOT implemented in VT v0.9.0 (`vtinsert/main.go` only routes `/insert/opentelemetry/`); VT returns 400 "unsupported path", LH returns 404. Both reject. Per `feedback_vl_vt_upstream` LH should not add what VT doesn't expose. Locked by probe_matrix_sweep.sh (ROW=TI2) | 2026-05-30 |
+| TI2 | `/insert/zipkin/api/v2/spans` | DIFFER | manual | endpoint NOT implemented in VT v0.9.0 (`deps/VictoriaTraces/app/vtinsert/main.go` only routes `/insert/opentelemetry/`); VT returns 400 "unsupported path", LH returns 404. Both reject. Per `feedback_vl_vt_upstream` LH should not add what VT doesn't expose. Locked by probe_matrix_sweep.sh (ROW=TI2) | 2026-05-30 |
 | TI3 | `/insert/opentelemetry/v1/traces` | PASS | manual | 200 ingest of OTLP-JSON span, queryable in lakehouse-traces via `resource_attr:service.name:"matrix-probe-ti3"`; locked by probe_matrix_sweep.sh (ROW=TI3) | 2026-05-30 |
 
 ## Grafana datasources (e2e compose; smoke query each)
@@ -164,17 +169,18 @@ Related rules (memories): `feedback_per_component_verification`,
    22 UNVERIFIED rows and 2 DIFFER rows are now PASS or DIFFER-with-
    documentation. Probe lock: `tests/verification/probe_matrix_sweep.sh`.
 5. **T17 — `/select/tempo/api/metrics/instant` missing upstream.**
-   VT v0.9.0's tempo handler (`vtselect/traces/tempo/tempo.go`) does NOT
-   register `/metrics/instant`; only `/metrics/query_range` exists. LH
-   returns 200 with empty body, VT returns 400 "unsupported path". Per
-   `feedback_vl_vt_upstream`, LH should remove the stub OR upgrade to a
-   VT version that exposes the endpoint. Tracked DIFFER (not blocking).
+   VT v0.9.0's tempo handler (`deps/VictoriaTraces/app/vtselect/traces/tempo/tempo.go`)
+   does NOT register `/metrics/instant`; only `/metrics/query_range`
+   exists. LH returns 200 with empty body, VT returns 400 "unsupported
+   path". Per `feedback_vl_vt_upstream`, LH should remove the stub OR
+   upgrade to a VT version that exposes the endpoint. Tracked DIFFER
+   (not blocking).
 6. **TI2 — `/insert/zipkin/api/v2/spans` missing upstream.** VT v0.9.0
-   `vtinsert/main.go` only routes `/insert/opentelemetry/` and
-   `/insert/jsonline`; Zipkin is not implemented. LH returns 404,
-   VT returns 400 — both reject. Per `feedback_vl_vt_upstream`, do not
-   add Zipkin to LH without it landing in VT upstream first. Tracked
-   DIFFER (not blocking).
+   `deps/VictoriaTraces/app/vtinsert/main.go` only routes
+   `/insert/opentelemetry/` and `/insert/jsonline`; Zipkin is not
+   implemented. LH returns 404, VT returns 400 — both reject. Per
+   `feedback_vl_vt_upstream`, do not add Zipkin to LH without it
+   landing in VT upstream first. Tracked DIFFER (not blocking).
 7. **LI7 / LI8 — matrix paths were wrong.** Original entries used
    `/insert/journald` and `/insert/splunk/services/collector`; VL
    upstream registers `/insert/journald/upload` and
