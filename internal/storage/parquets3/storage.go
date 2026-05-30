@@ -59,10 +59,18 @@ type Storage struct {
 	// gate. Kept as the wire-level mechanism (preserves observable
 	// semantics 1:1) while s3DownloadsBound provides the K8s-style
 	// request/limit/metrics surface that operators see in dashboards.
-	// Acquire flow: acquire bound for metrics + count, then push on
-	// dlSem; release in reverse. See acquireS3Download / releaseS3Download.
 	dlSem            chan struct{}
 	s3DownloadsBound *resourcebounds.Bound
+	// bounds holds the K8s-style request/limit Bound set for all
+	// 5 resource surfaces. Surface owners read their bound here;
+	// the foundation lives in internal/resourcebounds with metric
+	// wiring through internal/metrics. Bounds with no live acquire
+	// site (file workers, cache memory, smart cache disk, query
+	// max rows in this PR) are present for the operator metric
+	// contract — request/limit gauges are populated at startup so
+	// dashboards render the K8s-style triple even before the
+	// runtime acquire path is migrated to the bound.
+	bounds *resourceBoundSet
 }
 
 func New(cfg *config.Config) (*Storage, error) {
@@ -134,14 +142,16 @@ func New(cfg *config.Config) (*Storage, error) {
 		ph = peercache.NewHandler(cfg.Peer.AuthKey, "")
 	}
 
-	// K8s-style request/limit bound for S3 download concurrency. The
-	// bound publishes per-surface metrics (request, limit, acquired,
-	// rejected, outstanding) and emits a startup warning when the
-	// deprecated MaxConcurrentDownloads alias is set. The legacy
-	// channel-based dlSem is constructed with the bound's Limit so
-	// the wire-level semantics remain identical to the pre-bound
-	// behaviour.
-	s3DownloadsBound := newS3DownloadsBound(cfg)
+	// K8s-style request/limit bounds for all 5 resource surfaces.
+	// Bound construction populates the per-surface request/limit
+	// info gauges at startup, emits a deprecation warning when any
+	// legacy single-value alias is set, and exposes the Acquire
+	// path for surfaces that wire through the bound (S3 downloads
+	// today). Bounds for the remaining 4 surfaces are constructed
+	// for metric exposure only; the wire-level enforcement remains
+	// in the legacy mechanism (channel/sem/eviction/MaxRows check).
+	bounds := newResourceBoundSet(cfg)
+	s3DownloadsBound := bounds.S3Downloads
 	maxDL := int(s3DownloadsBound.Config().Limit)
 	if maxDL <= 0 {
 		maxDL = 16
@@ -241,6 +251,7 @@ func New(cfg *config.Config) (*Storage, error) {
 		crossSignalClient: csClient,
 		dlSem:             make(chan struct{}, maxDL),
 		s3DownloadsBound:  s3DownloadsBound,
+		bounds:            bounds,
 	}
 
 	if bw != nil {
