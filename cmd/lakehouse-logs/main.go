@@ -881,6 +881,16 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 	}
 }
 
+// applyFlags is a flat dispatch of N CLI flag → config field assignments.
+// Cyclomatic complexity is linear in the flag count and has grown past the
+// gocyclo:50 default after adding the K8s-style resource-bound triples (5
+// surfaces × 3 fields = 15 new flags) on top of the existing tenant + S3 +
+// query + cache + compaction surfaces. A follow-up should split into per-
+// section helpers (applyS3Flags, applyQueryFlags, applyCacheFlags, etc.)
+// once the parallel PR #96 healthcheck-subcommand work has merged — doing it
+// now would conflict with that PR on the same files.
+//
+//nolint:gocyclo // tracked as follow-up; see comment above
 func applyFlags(cfg *config.Config) {
 	if p := *profileFlag; p != "" {
 		profileCfg := config.ProfileConfig(config.Profile(p))
