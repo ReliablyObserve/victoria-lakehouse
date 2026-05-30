@@ -202,7 +202,11 @@ services:
       - "-lakehouse.compaction.leader-election=s3"
       - "-lakehouse.compaction.interval=2m"
       - "-lakehouse.query.file-workers=16"
-      - "-lakehouse.query.max-files-per-query=300"
+      # No artificial file cap — VL upstream has none. The
+      # query.max-live-bytes budget (default 512 MiB) plus the
+      # rgDecodeSem semaphore bound memory regardless of file count.
+      # A 7-day wildcard hits ~600 files and now completes under
+      # mem_limit=2g instead of being rejected as "too wide."
       - "-lakehouse.cache.memory-mb=512"
       - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
       - "-lakehouse.cache.disk-max-mb=2048"
@@ -250,7 +254,11 @@ services:
       - "-lakehouse.manifest.refresh-interval=30s"
       - "-lakehouse.insert.flush-interval=120s"
       - "-lakehouse.query.file-workers=16"
-      - "-lakehouse.query.max-files-per-query=300"
+      # No artificial file cap — VL upstream has none. The
+      # query.max-live-bytes budget (default 512 MiB) plus the
+      # rgDecodeSem semaphore bound memory regardless of file count.
+      # A 7-day wildcard hits ~600 files and now completes under
+      # mem_limit=2g instead of being rejected as "too wide."
       - "-lakehouse.cache.memory-mb=512"
       - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
       - "-lakehouse.cache.disk-max-mb=2048"

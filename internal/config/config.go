@@ -531,7 +531,7 @@ func Default() *Config {
 			FileWorkers:      64,
 			Timeout:          60 * time.Second,
 			MaxRows:          10_000_000,
-			MaxFilesPerQuery: 500,
+			MaxFilesPerQuery: 0, // 0 = unlimited (match VL upstream); memory budget is the real safety net
 			// 512 MiB live-block budget — about 1/4 of the 2 GiB container
 			// limit, leaving room for caches + parquet decode buffers.
 			MaxLiveBytes:  512 * 1024 * 1024,

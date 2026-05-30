@@ -74,7 +74,11 @@ datasources:
     jsonData:
       maxLines: 1000
       derivedFields:
-        - datasourceUid: victoria-lakehouse-traces
+        # Fan trace-id clicks through the global Jaeger (hot+cold fan-out)
+        # so fresh trace_ids that haven't flushed to S3 yet still resolve.
+        # Pointing this at victoria-lakehouse-traces directly returns 404
+        # for any trace newer than the cold-tier flush interval (~2 min).
+        - datasourceUid: victoriatraces-global
           matcherRegex: 'trace_id=(\w+)'
           name: traceID
           url: "$${__value.raw}"

@@ -167,11 +167,12 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		return nil
 	}
 
+	// maxFiles <= 0 means unlimited (matches VL upstream which has no
+	// such cap). Memory safety is enforced by query.max-live-bytes +
+	// the rgDecodeSem semaphore. The hard rejection here is reserved
+	// for operators who explicitly opt into a file ceiling.
 	maxFiles := s.cfg.Query.MaxFilesPerQuery
-	if maxFiles <= 0 {
-		maxFiles = 500
-	}
-	if len(files) > maxFiles {
+	if maxFiles > 0 && len(files) > maxFiles {
 		metrics.QueryFileLimitExceeded.Inc()
 		logger.Warnf("query file limit exceeded; files=%d, max=%d, range=%v-%v; narrow the time range",
 			len(files), maxFiles, time.Unix(0, startNs), time.Unix(0, endNs))
