@@ -110,7 +110,7 @@ kubectl create namespace "$NS_PRIMARY" --dry-run=client -o yaml | kubectl apply 
 helm install "$RELEASE_PRIMARY" "$CHART_PATH" \
   --namespace "$NS_PRIMARY" \
   --set image.logs.repository="${IMAGE%:*}" \
-  --set image.logs.tag="${IMAGE##*:}" \
+  --set image.tag="${IMAGE##*:}" \
   --set image.pullPolicy=IfNotPresent \
   --set logs.enabled=true \
   --set logs.insert.replicaCount=3 \
@@ -225,7 +225,7 @@ kubectl create namespace "$NS_SECONDARY" --dry-run=client -o yaml | kubectl appl
 helm install "$RELEASE_SECONDARY" "$CHART_PATH" \
   --namespace "$NS_SECONDARY" \
   --set image.logs.repository="${IMAGE%:*}" \
-  --set image.logs.tag="${IMAGE##*:}" \
+  --set image.tag="${IMAGE##*:}" \
   --set image.pullPolicy=IfNotPresent \
   --set logs.enabled=true \
   --set logs.insert.replicaCount=2 \

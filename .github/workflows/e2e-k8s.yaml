@@ -110,7 +110,7 @@ jobs:
           kubectl get rolebinding -A || true
           echo '=== insert pod logs ==='
           for ns in lh-test-1 lh-test-2; do
-            for p in $(kubectl get pods -n "$ns" -l app.kubernetes.io/component=insert -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+            for p in $(kubectl get pods -n "$ns" -l app.kubernetes.io/component=logs-insert -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
               echo "--- $ns / $p ---"
               kubectl logs -n "$ns" "$p" --tail=200 || true
             done

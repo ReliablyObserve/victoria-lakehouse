@@ -1083,12 +1083,14 @@ func runHealthcheckSubcommand() {
 		url = os.Args[2]
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, url, nil) // #nosec G107 -- URL is from CLI arg
+	// #nosec G107,G704 -- operator subcommand; URL is hardcoded default or CLI arg.
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "health check failed: %v\n", err)
 		os.Exit(1)
 	}
-	resp, err := client.Do(req) // #nosec G107 -- healthcheck binary, URL is hardcoded default or operator CLI arg
+	// #nosec G107,G704 -- operator subcommand; URL is hardcoded default or CLI arg.
+	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "health check failed: %v\n", err)
 		os.Exit(1)

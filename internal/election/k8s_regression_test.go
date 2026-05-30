@@ -232,7 +232,7 @@ func TestRenewDeadline_LeaderExits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !(e.cfg.RenewDeadline < e.cfg.LeaseDuration) {
+	if e.cfg.RenewDeadline >= e.cfg.LeaseDuration {
 		t.Errorf("RenewDeadline (%v) must be < LeaseDuration (%v) for liveness", e.cfg.RenewDeadline, e.cfg.LeaseDuration)
 	}
 }
