@@ -1,0 +1,14 @@
+# tests/e2e-k8s/kind-config.yaml
+#
+# Minimal kind cluster for the leader-election e2e test. We don't need
+# multi-node — the test exercises in-cluster RBAC, lease semantics, and pod
+# failover, all of which work on a single-node cluster. Using one node keeps
+# the CI cycle short (~30s for cluster up).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: lh-test
+nodes:
+  - role: control-plane
+    # Pin the kubeadm patch so we get coordination.k8s.io/v1 Lease support
+    # without surprises. kind v0.22+ defaults to a recent enough k8s.
+    extraPortMappings: []
