@@ -119,7 +119,11 @@ HELM_SET_COMMON=(
   --set "logs.enabled=true"
   --set "logs.select.enabled=false"
   --set "logs.insert.replicaCount=3"
-  --set "logs.insert.persistence.enabled=false"
+  # kind ships with a default StorageClass (local-path-provisioner) so a
+  # small PVC works out of the box. The chart's StatefulSet has an
+  # unconditional volumeMounts[].data reference that requires
+  # persistence.enabled to render the PVC template, so we keep it on.
+  --set "logs.insert.persistence.size=200Mi"
   --set "traces.enabled=false"
   --set "lakehouseConfig.s3.bucket=lh-test-bucket"
   --set "lakehouseConfig.s3.endpoint=http://fake-minio:9000"
@@ -152,16 +156,28 @@ for i in $(seq 1 90); do
   sleep 1
 done
 
-# Wait for the SA + RBAC to exist (chart-rendered).
-kubectl get serviceaccount -n "$NS_PRIMARY" "${RELEASE_PRIMARY}-victoria-lakehouse-compaction" >/dev/null 2>&1 \
-  && ok "1a ServiceAccount rendered" \
-  || fail "1a ServiceAccount missing"
+# Wait for the per-component SA + RBAC to exist (chart-rendered). The
+# compaction loop runs inside the insert StatefulSet, so the SA that
+# matters is `${release}-victoria-lakehouse-logs-insert`. The
+# RoleBinding binds the Role to that SA (per the chart refactor in
+# this PR — see charts/victoria-lakehouse/templates/compaction-rbac.yaml).
+kubectl get serviceaccount -n "$NS_PRIMARY" "${RELEASE_PRIMARY}-victoria-lakehouse-logs-insert" >/dev/null 2>&1 \
+  && ok "1a ServiceAccount (logs-insert) rendered" \
+  || fail "1a ServiceAccount (logs-insert) missing"
 kubectl get role -n "$NS_PRIMARY" "${RELEASE_PRIMARY}-victoria-lakehouse-compaction-leader" >/dev/null 2>&1 \
   && ok "1b Role rendered" \
   || fail "1b Role missing"
 kubectl get rolebinding -n "$NS_PRIMARY" "${RELEASE_PRIMARY}-victoria-lakehouse-compaction-leader" >/dev/null 2>&1 \
   && ok "1c RoleBinding rendered" \
   || fail "1c RoleBinding missing"
+# Verify the RoleBinding actually points at the insert SA (not some other SA).
+binding_sa=$(kubectl get rolebinding -n "$NS_PRIMARY" "${RELEASE_PRIMARY}-victoria-lakehouse-compaction-leader" \
+              -o jsonpath='{.subjects[0].name}' 2>/dev/null || echo "")
+if [[ "$binding_sa" == "${RELEASE_PRIMARY}-victoria-lakehouse-logs-insert" ]]; then
+  ok "1e RoleBinding subject correctly bound to logs-insert SA"
+else
+  fail "1e RoleBinding subject = '$binding_sa'; expected '${RELEASE_PRIMARY}-victoria-lakehouse-logs-insert'"
+fi
 
 # Verify Role has the full verb set we expect.
 verbs=$(kubectl get role -n "$NS_PRIMARY" "${RELEASE_PRIMARY}-victoria-lakehouse-compaction-leader" \
@@ -265,7 +281,7 @@ HELM_SET_SECONDARY=(
   --set "logs.enabled=true"
   --set "logs.select.enabled=false"
   --set "logs.insert.replicaCount=2"
-  --set "logs.insert.persistence.enabled=false"
+  --set "logs.insert.persistence.size=200Mi"
   --set "traces.enabled=false"
   --set "lakehouseConfig.s3.bucket=lh-test-bucket"
   --set "lakehouseConfig.s3.endpoint=http://fake-minio:9000"
