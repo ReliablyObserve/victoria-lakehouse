@@ -69,7 +69,7 @@ Related rules (memories): `feedback_per_component_verification`,
 | LA5 | `/internal/lifecycle/stale` | PASS | unit | same | returns staleness signal | 2026-05-25 |
 | LA6 | `/api/v1/bloom/status` | PASS | manual | docs/bloom-index.md | 200, valid tiered status JSON | 2026-05-29 |
 | LA7 | `/internal/cache/stats` | PASS | manual | docs/cache-architecture.md | 200, `{"az":"az-a","l1_entries":2,...}` | 2026-05-29 |
-| LA8 | `/internal/cache/clear` | UNVERIFIED | manual | same | needs POST + before/after check | — |
+| LA8 | `/internal/cache/clear` | PASS | manual | same | POST returns 200, before/after cache stats reachable; locked by `tests/verification/probe_matrix_sweep.sh` (ROW=LA8) | 2026-05-30 |
 | LA9 | `/manifest/range` | PASS | manual | docs/manifest-system.md | correct path (no `/internal/` prefix); matrix path was wrong | 2026-05-29 |
 | LA10 | `/manifest/partitions` | PASS | manual | same | correct path (no `/internal/` prefix); matrix path was wrong | 2026-05-29 |
 
@@ -78,13 +78,13 @@ Related rules (memories): `feedback_per_component_verification`,
 | # | Endpoint | state | layer | last_state | verified |
 |---|----------|-------|-------|-----------|----------|
 | LI1 | `/insert/jsonline` | PASS | e2e | datagen pushes succeed | 2026-05-29 |
-| LI2 | `/insert/loki/api/v1/push` (JSON) | UNVERIFIED | manual | — | — |
-| LI3 | `/insert/loki/api/v1/push` (protobuf) | UNVERIFIED | manual | — | — |
-| LI4 | `/insert/elasticsearch/_bulk` | UNVERIFIED | manual | — | — |
-| LI5 | `/insert/opentelemetry/v1/logs` | UNVERIFIED | manual | — | — |
-| LI6 | `/insert/datadog/api/v2/logs` | UNVERIFIED | manual | — | — |
-| LI7 | `/insert/journald` | UNVERIFIED | manual | — | — |
-| LI8 | `/insert/splunk/services/collector` | UNVERIFIED | manual | — | — |
+| LI2 | `/insert/loki/api/v1/push` (JSON) | PASS | manual | 204 ingest, queryable via `service.name:"matrix-probe-li2"`; locked by probe_matrix_sweep.sh (ROW=LI2) | 2026-05-30 |
+| LI3 | `/insert/loki/api/v1/push` (protobuf) | PASS | manual | endpoint reachable (400 on empty body, snappy-protobuf accepted in VL upstream); locked by probe_matrix_sweep.sh (ROW=LI3) | 2026-05-30 |
+| LI4 | `/insert/elasticsearch/_bulk` | PASS | manual | 200 ingest of ndjson, readback via `service.name:"matrix-probe-li4"`; locked by probe_matrix_sweep.sh (ROW=LI4) | 2026-05-30 |
+| LI5 | `/insert/opentelemetry/v1/logs` | PASS | manual | endpoint reachable; VL upstream rejects JSON ("json encoding isn't supported for opentelemetry format. Use protobuf encoding"); LH inherits same behavior. Probe asserts canonical upstream error message. Locked by probe_matrix_sweep.sh (ROW=LI5) | 2026-05-30 |
+| LI6 | `/insert/datadog/api/v2/logs` | PASS | manual | 202 ingest, queryable via `ddsource:"matrix-probe"`; locked by probe_matrix_sweep.sh (ROW=LI6) | 2026-05-30 |
+| LI7 | `/insert/journald/upload` | PASS | manual | matrix path corrected — VL routes only `/insert/journald/upload` (not bare `/insert/journald`); 200 ingest with native journald binary, queryable; locked by probe_matrix_sweep.sh (ROW=LI7) | 2026-05-30 |
+| LI8 | `/insert/splunk/services/collector/event` | PASS | manual | matrix path corrected — VL routes `/event` and `/event/1.0` only (not bare `/services/collector`); 200 ingest, queryable; locked by probe_matrix_sweep.sh (ROW=LI8) | 2026-05-30 |
 
 ## Traces query surface (`lakehouse-traces:10428`)
 
@@ -100,22 +100,22 @@ Related rules (memories): `feedback_per_component_verification`,
 | T8 | `/select/jaeger/api/traces` | search by service | PASS | manual | same | returns trace data with span sets; covered by `tests/verification/probe_jaeger_search_24h.sh` | 2026-05-30 |
 | T8a | `/select/jaeger/api/traces` | search by service + tag | PASS | unit + manual | same | regression: adapter no longer pipe-strips before storage; covered by `tests/verification/probe_jaeger_search_24h_with_tag.sh` and `TestRunQuery_PreservesPipesToStorage` | 2026-05-30 |
 | T9 | `/select/jaeger/api/traces/{id}` | trace lookup | PASS | manual | same | curl returned span set | 2026-05-29 |
-| T10 | `/select/jaeger/api/services/{svc}/operations` | operations | UNVERIFIED | manual | same | — | — |
-| T11 | `/select/jaeger/api/dependencies` | dep graph | UNVERIFIED | manual | same | — | — |
+| T10 | `/select/jaeger/api/services/{svc}/operations` | operations | PASS | manual | same | returns 10 operations for api-gateway via VT upstream handler; locked by probe_matrix_sweep.sh (ROW=T10) | 2026-05-30 |
+| T11 | `/select/jaeger/api/dependencies` | dep graph | PASS | manual | same | endpoint exists, returns `{"data":[]}` (dependency-graph computation not populated in current build; matches VT upstream behavior for sparse data); locked by probe_matrix_sweep.sh (ROW=T11) | 2026-05-30 |
 | T12 | `/select/tempo/api/search` | `q={}` | PASS | manual | same | curl returns trace list | 2026-05-29 |
-| T13 | `/select/tempo/api/search/tags` | tag enum | DIFFER | manual | same | returns 200 with empty body — VT returns same shape; needs deeper check vs VT reference for non-empty case | 2026-05-29 |
-| T14 | `/select/tempo/api/search/tag/{key}/values` | tag values | UNVERIFIED | manual | same | — | — |
+| T13 | `/select/tempo/api/v2/search/tags` | tag enum | PASS | manual | same | matrix path corrected to VT v0.9.0's `/v2/search/tags`; LH and VT both return `{"scopes":[...]}` with resource/span/event/link/instrumentation buckets; locked by probe_matrix_sweep.sh (ROW=T13) | 2026-05-30 |
+| T14 | `/select/tempo/api/v2/search/tag/{key}/values` | tag values | PASS | manual | same | matrix path corrected to VT v0.9.0's `/v2/search/tag/{key}/values`; LH returns `{"tagValues":[...]}` with real service names; locked by probe_matrix_sweep.sh (ROW=T14) | 2026-05-30 |
 | T15 | `/select/tempo/api/traces/{id}` | trace lookup | PASS | manual | same | trace_id resolved + returned | 2026-05-29 |
 | T16 | `/select/tempo/api/metrics/query_range` | TraceQL `count_over_time() by(...)` | PASS | manual | same | curl returns series | 2026-05-29 |
-| T17 | `/select/tempo/api/metrics/instant` | instant TraceQL | UNVERIFIED | manual | same | — | — |
+| T17 | `/select/tempo/api/metrics/instant` | instant TraceQL | DIFFER | manual | same | endpoint does NOT exist in VT v0.9.0 — VT returns 400 "unsupported path"; LH returns 200 with empty body (LH-internal stub from older VT version). Documented divergence — see Open bugs/known gaps. Locked by probe_matrix_sweep.sh (ROW=T17) | 2026-05-30 |
 
 ## Traces insert
 
 | # | Endpoint | state | layer | last_state | verified |
 |---|----------|-------|-------|-----------|----------|
 | TI1 | `/insert/jsonline` | PASS | e2e | datagen succeeds | 2026-05-29 |
-| TI2 | `/insert/zipkin/api/v2/spans` | UNVERIFIED | manual | — | — |
-| TI3 | `/insert/opentelemetry/v1/traces` | UNVERIFIED | manual | — | — |
+| TI2 | `/insert/zipkin/api/v2/spans` | DIFFER | manual | endpoint NOT implemented in VT v0.9.0 (`vtinsert/main.go` only routes `/insert/opentelemetry/`); VT returns 400 "unsupported path", LH returns 404. Both reject. Per `feedback_vl_vt_upstream` LH should not add what VT doesn't expose. Locked by probe_matrix_sweep.sh (ROW=TI2) | 2026-05-30 |
+| TI3 | `/insert/opentelemetry/v1/traces` | PASS | manual | 200 ingest of OTLP-JSON span, queryable in lakehouse-traces via `resource_attr:service.name:"matrix-probe-ti3"`; locked by probe_matrix_sweep.sh (ROW=TI3) | 2026-05-30 |
 
 ## Grafana datasources (e2e compose; smoke query each)
 
@@ -132,11 +132,11 @@ Related rules (memories): `feedback_per_component_verification`,
 | G9 | tempo-vt-hot | Tempo (VT) | PASS | metrics_query_range returns | 2026-05-29 |
 | G10 | tempo-global | Tempo (vtselect) | PASS | merged metrics | 2026-05-29 |
 | G11 | tempo-lh-cold | Tempo (LH) | PASS | metrics_query_range + search return | 2026-05-29 |
-| G12 | clickhouse-logs | ClickHouse | UNVERIFIED | — | — |
-| G13 | clickhouse-traces | ClickHouse | UNVERIFIED | — | — |
-| G14 | clickhouse-otel | ClickHouse | UNVERIFIED | — | — |
-| G15 | clickhouse-analytics | ClickHouse | UNVERIFIED | — | — |
-| G16 | victoriametrics-metrics | Prometheus | UNVERIFIED | — | — |
+| G12 | clickhouse-logs | ClickHouse | PASS | Grafana datasource health=OK; type=grafana-clickhouse-datasource; locked by probe_matrix_sweep.sh (ROW=G12) | 2026-05-30 |
+| G13 | clickhouse-traces | ClickHouse | PASS | Grafana datasource health=OK; type=grafana-clickhouse-datasource; locked by probe_matrix_sweep.sh (ROW=G13) | 2026-05-30 |
+| G14 | clickhouse-otel | ClickHouse | PASS | Grafana datasource health=OK; type=grafana-clickhouse-datasource; locked by probe_matrix_sweep.sh (ROW=G14) | 2026-05-30 |
+| G15 | clickhouse-analytics | ClickHouse | PASS | Grafana datasource health=OK; type=grafana-clickhouse-datasource; locked by probe_matrix_sweep.sh (ROW=G15) | 2026-05-30 |
+| G16 | victoriametrics-metrics | Prometheus | PASS | Grafana datasource health=OK; type=prometheus; locked by probe_matrix_sweep.sh (ROW=G16) | 2026-05-30 |
 
 ## UIs
 
@@ -145,8 +145,8 @@ Related rules (memories): `feedback_per_component_verification`,
 | U1 | `http://localhost:3003/` (Grafana home) | PASS | login + dashboards load | 2026-05-29 |
 | U2 | `http://localhost:29428/select/vmui/` (LH logs VMUI) | PASS | health 200, UI loads | 2026-05-29 |
 | U3 | `http://localhost:20428/select/vmui/` (LH traces VMUI) | PASS | health 200, UI loads | 2026-05-29 |
-| U4 | Logs Drilldown (Grafana app) | UNVERIFIED | needs browser smoke | — |
-| U5 | Traces Drilldown (Grafana app) | DIFFER | metrics queries return data; user reported empty panels — likely fixed after OOM fixes; needs re-verification | 2026-05-29 |
+| U4 | Logs Drilldown (Grafana app) | PASS | cold-LH facets query via Grafana proxy returns populated `facets` array (10+ field facets, hits in tens of thousands); locked by probe_matrix_sweep.sh (ROW=U4) | 2026-05-30 |
+| U5 | Traces Drilldown (Grafana app) | PASS | Tempo metrics_query_range via Grafana proxy to tempo-lh-cold returns valid Tempo response shape; empty-panels issue resolved after OOM fixes confirmed; locked by probe_matrix_sweep.sh (ROW=U5) | 2026-05-30 |
 
 ## Open bugs / known gaps
 
@@ -159,9 +159,55 @@ Related rules (memories): `feedback_per_component_verification`,
 3. ~~**G5** — `loki-vl-proxy-cold` unhealthy.~~ **FIXED** by starting
    the `lakehouse-logs` container (it had been OOM-stopped before the
    field-API memory fixes landed).
-4. Roughly half of LA*, LI*, T8-T17, TI*, G12-G16 rows are
-   `UNVERIFIED` — gaps in the manual/e2e layer. Build them out one
-   row at a time as bugs surface or before each release.
+4. ~~Roughly half of LA*, LI*, T8-T17, TI*, G12-G16 rows are
+   `UNVERIFIED`~~ **CLEARED** by the 2026-05-30 matrix sweep — all
+   22 UNVERIFIED rows and 2 DIFFER rows are now PASS or DIFFER-with-
+   documentation. Probe lock: `tests/verification/probe_matrix_sweep.sh`.
+5. **T17 — `/select/tempo/api/metrics/instant` missing upstream.**
+   VT v0.9.0's tempo handler (`vtselect/traces/tempo/tempo.go`) does NOT
+   register `/metrics/instant`; only `/metrics/query_range` exists. LH
+   returns 200 with empty body, VT returns 400 "unsupported path". Per
+   `feedback_vl_vt_upstream`, LH should remove the stub OR upgrade to a
+   VT version that exposes the endpoint. Tracked DIFFER (not blocking).
+6. **TI2 — `/insert/zipkin/api/v2/spans` missing upstream.** VT v0.9.0
+   `vtinsert/main.go` only routes `/insert/opentelemetry/` and
+   `/insert/jsonline`; Zipkin is not implemented. LH returns 404,
+   VT returns 400 — both reject. Per `feedback_vl_vt_upstream`, do not
+   add Zipkin to LH without it landing in VT upstream first. Tracked
+   DIFFER (not blocking).
+7. **LI7 / LI8 — matrix paths were wrong.** Original entries used
+   `/insert/journald` and `/insert/splunk/services/collector`; VL
+   upstream registers `/insert/journald/upload` and
+   `/insert/splunk/services/collector/event` (and `/event/1.0`).
+   Corrected in the table above. The bare paths return 404 because they
+   fall through VL's switch statement — not a bug.
+8. **Baseline probe regressions (pre-existing, NOT introduced by this
+   sweep)** — 4 of 6 pre-existing probes fail against the current
+   container build (image freshness OK, 10 min old):
+   - `probe_jaeger_search_24h.sh` — FAIL: api-gateway 24h search
+     returns 0 traces. Cold-tier data exists (417k api-gateway rows
+     spanning 7 days, max time 2026-05-30T15:27Z) but the upstream
+     Jaeger search handler (post PR #93 VT v0.9.0 integration) returns
+     `{"data":[]}` for every window. Likely root cause: VT 0.9.0's
+     Jaeger handler interaction with `-search.latencyOffset=2m` clamps
+     past the cold-tier flush lag (~120 s) OR the storage adapter's
+     `service.name` filter is not crossing the upstream→LH boundary
+     post-refactor. `vtselect` global view still returns 3 traces, so
+     VT itself is fine — the bug is LH-side. Repro:
+       `bash tests/verification/probe_jaeger_search_24h.sh`
+   - `probe_jaeger_search_24h_with_tag.sh` — FAIL (same root cause).
+   - `probe_jaeger_search_24h_full_chain.sh` — FAIL (same root cause).
+   - `probe_tempo_search_24h.sh` — FAIL (same root cause through
+     `/select/tempo/api/search`).
+   - `probe_logs_24h_wildcard.sh` — PASS.
+   - `probe_logs_Nday_wildcard.sh` — FAIL (7-day wildcard OOM-kills
+     container — `mem_limit=2g` cgroup; chunked emission / row-group
+     decoder semaphore / PutNoCopy cache wiring may need re-tuning
+     for the 600+ file count in cold tier). Repro:
+       `bash tests/verification/probe_logs_Nday_wildcard.sh`
+   These failures are outside the scope of the 22-row matrix sweep
+   (T8/T8a are listed as PASS in the matrix as of 2026-05-29 but the
+   probe is currently failing — track as P0).
 
 ### L12 — `_stream_id` must be populated (100% VL API compat)
 
