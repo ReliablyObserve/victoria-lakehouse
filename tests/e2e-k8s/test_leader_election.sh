@@ -65,7 +65,29 @@ ensure_tool() {
 
 for t in kind kubectl helm docker; do ensure_tool "$t"; done
 
+dump_on_failure() {
+  echo
+  echo "=== dump_on_failure: kubectl state and pod logs ==="
+  kubectl get all -A 2>/dev/null || true
+  echo '--- leases ---'
+  kubectl get lease -A 2>/dev/null || true
+  echo '--- rolebindings (compaction-leader only) ---'
+  kubectl get rolebinding -A 2>/dev/null | grep -E "NAMESPACE|compaction-leader" || true
+  echo '--- insert pod logs (last 200 lines per pod) ---'
+  for ns in "$NS_PRIMARY" "$NS_SECONDARY"; do
+    for p in $(kubectl get pods -n "$ns" -l "app.kubernetes.io/component=logs-insert" \
+                -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+      echo "    >>> $ns / $p <<<"
+      kubectl logs -n "$ns" "$p" --tail=200 2>/dev/null || true
+      kubectl describe pod -n "$ns" "$p" 2>/dev/null | tail -30 || true
+    done
+  done
+}
+
 cleanup() {
+  if (( ${#FAILED[@]} > 0 )); then
+    dump_on_failure
+  fi
   if [[ "$SKIP_KIND_DELETE" != "1" ]]; then
     echo "=== cleanup: deleting kind cluster $CLUSTER_NAME ==="
     kind delete cluster --name "$CLUSTER_NAME" >/dev/null 2>&1 || true
@@ -144,17 +166,22 @@ helm install "$RELEASE_PRIMARY" "$CHART_PATH" \
   "${HELM_SET_COMMON[@]}" \
   --timeout=60s || true
 
-# Wait for pods to be at least running (not necessarily Ready).
-echo "  waiting up to 90s for insert pods to be Running..."
-for i in $(seq 1 90); do
+# Wait for at least one insert pod to be Running (not necessarily Ready —
+# the readiness probe blocks on the manifest S3 refresh phase that talks
+# to a fake S3 endpoint and never completes). 180s budget covers PVC
+# provisioning + image load + pod startup on a kind runner.
+echo "  waiting up to 180s for at least one insert pod to reach Running..."
+for i in $(seq 1 180); do
   rcount=$(kubectl get pods -n "$NS_PRIMARY" -l "app.kubernetes.io/component=logs-insert" \
              -o jsonpath='{range .items[?(@.status.phase=="Running")]}{.metadata.name} {end}' 2>/dev/null | wc -w)
   if [[ "$rcount" -ge 1 ]]; then
-    echo "  $rcount pods Running"
+    echo "  $rcount pods Running after ${i}s"
     break
   fi
   sleep 1
 done
+# Dump pod state for diagnostics regardless.
+kubectl get pods -n "$NS_PRIMARY" -o wide 2>/dev/null || true
 
 # Wait for the per-component SA + RBAC to exist (chart-rendered). The
 # compaction loop runs inside the insert StatefulSet, so the SA that
@@ -190,13 +217,15 @@ for v in get list create update patch; do
   fi
 done
 
-# Wait for the Lease to be created. Pods need to start (image load is fast
-# since pre-loaded), then config validation + parquets3 + telemetry init,
-# then the elector goroutine kicks off and POSTs the Lease within
-# RetryPeriod. Allow up to 120s for kind to pull/start the pod.
-echo "  waiting for Lease $LEASE_NAME in $NS_PRIMARY (up to 120s)..."
-for i in $(seq 1 120); do
+# Wait for the Lease to be created. After the pod is Running, the
+# elector goroutine needs to clear parquets3.New + telemetry.Init +
+# Discovery + StartWriter (no S3 calls) then POST the Lease within
+# RetryPeriod. Allow up to 180s — generous so flaky CI runners don't
+# trip the assert.
+echo "  waiting for Lease $LEASE_NAME in $NS_PRIMARY (up to 180s)..."
+for i in $(seq 1 180); do
   if kubectl get lease -n "$NS_PRIMARY" "$LEASE_NAME" >/dev/null 2>&1; then
+    echo "  Lease appeared after ${i}s"
     break
   fi
   sleep 1
