@@ -17,6 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Token bloom: skip regex (`~`), range, and `len_range` predicates that bloom filters cannot model
 - Token bloom: skip syntax fragments containing brackets, parens, or quotes
 - Parity test syntax fixes for VL v1.50.0: `replace`/`replace_regexp` require `at` keyword, `dedup` replaced with `uniq`, `stats count() / N` split into `stats + math` pipes, quoted colon-containing field names in `stats by()`
+- Bloom filter (row-group): OR within column / AND across columns for `field:in(v1,v2,v3)` — previously AND'd same-column values, dropping every row group that didn't bloom-contain the first value. Caused Jaeger spans-lookup (stage 2) to return 0 traces even after stage 1 found trace_ids.
+- File-level bloom pre-filter: handles `:in(...)` values via per-value union (`MayContainAll` per value, union of matches). `preFilterFiles` / `filterFilesByBloomIndex` / `checkFileBloom` previously only handled the single-value form.
+- Row-group time range: aggregate min/max across all pages instead of trusting edge pages (`MinValue(0)`, `MaxValue(N-1)`). Pages within a row group are not sorted by timestamp — traces especially have out-of-order spans (root emits after children). Narrow time windows from Jaeger's expansion loop were getting false-negatives skipping row groups whose true max lived in a middle page.
+- Adapter pipe-passthrough: vtstorage adapter passes the full query (with pipes) to storage.RunQuery so `queryColumns` can expand the parquet column projection to cover pipe-referenced fields (`partition by (trace_id)`, `fields _time, trace_id`). Previously `CloneWithoutPipes` stripped pipes before storage, dropping trace_id from projection — Jaeger tag-filtered searches returned 0.
+- Projection: bare `{tag=val}` stream selector (VL canonical form omits the `_stream:` prefix) now triggers `_stream` projection. Quoted field names (`"span_attr:http.status_code":=200`) now match `referencesField`. Without these, filterStream rejected every row and tag-filtered queries returned 0.
+- Tempo search: HTTP shim converts legacy Grafana `tags=service.name=foo` panel shape to TraceQL `q={resource.service.name="foo"}` when `q` is empty. Upstream VT `parseTempoAPIParam` overwrites the documented `q="{}"` default with empty string when client sends `tags=` only, then `traceql.ParseQuery("")` fails and the handler returns `{"traces":[]}`. Shim wraps the VT call without modifying `deps/`.
+- `_stream_id` populated at insert time via VL's xxhash + "magic!" suffix algorithm, producing the same 48-char lowercase hex VL produces for the same `_stream` labels. `/select/logsql/stream_ids` was returning empty for cold rows because the external insert path never set the field; required by the 100% VL/VT API compatibility rule.
+- Truncated service names in `/select/jaeger/api/services`: removed parquet column-index seed in `extractDistinctFromStats` (column-index min/max values are truncated by parquet writers at 16 bytes per Apache Parquet PageIndex spec) and skip `detectConstantColumns` for ByteArray columns. Data-page scan is now the only source. Was producing `notification-ser`/`notification-ses` alongside `notification-service` in the services dropdown.
+- LRU cache: `Get` returns the shared cached buffer instead of copying. Was the dominant heap consumer at idle (~358 MiB of transient copies on the hot path, 16 workers × ~57 files × ~2.5 MB).
+- Label-index drift on disk: `LoadLabelIndex` drops `Values` entries not accounted for in `ValueCounts` — one-shot sanitization for stale on-disk state from earlier buggy runs (truncated BYTE_ARRAY prefixes leaking into the field-values API).
+- Query memory budget: per-query `MaxLiveBytes` budget + process-wide `fileBudgetSem` (256 MiB resident, ≤8 concurrent files) + `rgDecodeSem` (GOMAXPROCS/2 concurrent row-group decoders) bound peak memory inside `mem_limit=2g` for multi-day wildcards. 7-day wildcard previously OOM-killed the container; now completes (HTTP 200) with peak heap ~1.4 GiB and stable restart count. Replaced 256-deep dispatch channel with synchronous `wbMu.Lock()` writeBlock pattern matching VL `searchParallel`; removed row-group parallel fan-out that produced 128 concurrent decoders (8 rg × 16 workers).
+- `debug.SetMemoryLimit` forces Go GC under the cgroup memory limit so the runtime targets RSS, not just Go heap.
+- Helm chart bumped from 0.36.0 → next release sequence; resource defaults updated to match the new file-budget / live-bytes / latency-offset shape used in e2e compose.
 
 ### Added
 
@@ -34,6 +47,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - K8s scaling safety: lifecycle HTTP endpoints (`/internal/lifecycle/drain`, `/ready`, `/ring`, `/stale`)
 - K8s scaling safety: 14 new Prometheus metrics for shutdown, startup, ring change, and query continuity
 - Helm: HPA scaleDown stabilization window, preStop drain hook, lifecycle readiness probe
+- `-lakehouse.query.max-live-bytes` flag — per-query live-DataBlock byte budget (default 512 MiB)
+- `lakehouse_query_memory_budget_exceeded_total` metric — counts queries cancelled because the per-query budget tripped
+- `internal/cache.LRU.PutNoCopy` — store buffer by reference for the S3-download hot path
+- Per-component verification matrix `tests/verification/matrix.md` — 78 rows tracking every exposed HTTP surface (logs/traces query + insert, admin, Grafana datasources, UIs). Companion smoke probes `tests/verification/probe_*.sh` lock per-surface behavior: `probe_jaeger_search_24h.sh`, `probe_jaeger_search_24h_with_tag.sh`, `probe_jaeger_search_24h_full_chain.sh`, `probe_tempo_search_24h.sh`, `probe_logs_24h_wildcard.sh`, `probe_logs_Nday_wildcard.sh`, `probe_matrix_sweep.sh`, `probe_image_freshness.sh`.
+- Image-freshness probe catches stale-binary deploys (compares each container image's `CreatedAt` to the newest source commit time).
+- `_stream_id` unit tests including VL-algorithm-oracle test (`TestComputeStreamID_MatchesVLAlgorithm`) that re-implements VL's hash128 inline and asserts byte-for-byte match.
+- Production-shape memory-budget integration tests: `TestRunQuery_ProductionShape_WildcardScalesUnderMemoryBudget` (200 files × 5000 rows) and `TestRunQuery_7DayProductionShape_FileBudgetBoundsPeak` (600 files × 8000 rows).
+- Tempo HTTP shim test suite: `TestNormalizeTempoSearchParams` (11 cases) + `TestTempoTagsToTraceQL` (13 cases of the scope-prefix mapping).
+- Bloom OR-in-clause regression tests: `TestS3_bloomFilterSkip_InClauseOrSemantics` (traces) + `TestInteg_bloomFilterSkip_InClauseOrSemantics` (logs).
+- Row-group time-range page-aggregation regression tests covering out-of-order page bounds.
 
 ### Changed
 
@@ -41,6 +64,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Deduplicate `storage.Storage` interface — traces module imports from root
 - Bump VictoriaTraces hot tier from v0.8.2 to v0.9.0
 - Bump loki-vl-proxy from v1.43.0 to v1.50.1
+- `lakehouse.query.max-files-per-query` default flipped from 500 to **0 (unlimited)** — matches VL upstream which has no such cap. Memory budget (`query.max-live-bytes`, `fileBudgetSem`, `rgDecodeSem`) is the real safety net.
+- `-search.latencyOffset` on lakehouse-traces set to 2m (matches `insert.flush-interval=120s`) so the upstream Jaeger search expansion loop finds freshly-flushed cold-tier spans.
+- e2e compose: `mem_limit: 2g` + `restart: on-failure` on both LH containers (Docker-level safety net), `file-workers=16`, L1 cache 512→256 MiB to leave headroom for the file budget.
+- Grafana datasource: Lakehouse Logs Cold derivedField now routes trace_id clicks to `victoriatraces-global` (hot+cold fan-out) instead of `victoria-lakehouse-traces` (cold only) so fresh trace_ids that haven't flushed to S3 yet still resolve via the hot tier instead of returning HTTP 404.
+
+### CI
+
+- `auto-release.yaml` workflow now clones + patches VictoriaTraces v0.9.0 into `lakehouse-traces/deps/VictoriaTraces/` before the build step. Prior releases failed with `replacement directory ./deps/VictoriaTraces does not exist` because the VT clone/patch was only wired into `ci.yaml`, not the release workflow.
+- Release skip-regex extended to include `tests/verification/` (matrix.md + probe scripts) and `docs/superpowers/` (specs + plans) so verification-only and design-only PRs no longer trigger a no-op release.
 
 ## [0.36.0] - 2026-05-25
 
