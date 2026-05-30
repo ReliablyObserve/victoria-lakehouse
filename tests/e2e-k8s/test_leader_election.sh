@@ -107,17 +107,50 @@ kind load docker-image --name "$CLUSTER_NAME" "$IMAGE"
 # ---------------------------------------------------------------------------
 sect "1+2: helm install $RELEASE_PRIMARY in $NS_PRIMARY, expect SA+Role+RoleBinding+Lease"
 kubectl create namespace "$NS_PRIMARY" --dry-run=client -o yaml | kubectl apply -f -
+# S3 config is a placeholder — LH pods initialize the S3 client but only contact
+# the endpoint when a query/insert actually arrives. The leader-election loop
+# does NOT use S3; it talks to the apiserver. So setting bucket=test +
+# endpoint=fake is enough to clear config.Validate() and start the elector
+# without paying for a real minio.
+HELM_SET_COMMON=(
+  --set "image.logs.repository=${IMAGE%:*}"
+  --set "image.tag=${IMAGE##*:}"
+  --set "image.pullPolicy=IfNotPresent"
+  --set "logs.enabled=true"
+  --set "logs.select.enabled=false"
+  --set "logs.insert.replicaCount=3"
+  --set "logs.insert.persistence.enabled=false"
+  --set "traces.enabled=false"
+  --set "lakehouseConfig.s3.bucket=lh-test-bucket"
+  --set "lakehouseConfig.s3.endpoint=http://fake-minio:9000"
+  --set "lakehouseConfig.s3.access_key=test"
+  --set "lakehouseConfig.s3.secret_key=test"
+  --set "lakehouseConfig.s3.force_path_style=true"
+  --set "lakehouseConfig.compaction.enabled=true"
+  --set "lakehouseConfig.compaction.leader_election=k8s"
+  --set "lakehouseConfig.compaction.interval=30s"
+)
+# We don't use --wait here: the pods may legitimately go NotReady because
+# the fake S3 is unreachable (the readiness probe needs the manifest S3
+# refresh phase to complete), but the elector goroutine runs much earlier
+# in main.go's startup. The asserts below poll for the Lease/RoleBinding
+# directly so we don't conflate "Ready" with "elector running".
 helm install "$RELEASE_PRIMARY" "$CHART_PATH" \
   --namespace "$NS_PRIMARY" \
-  --set image.logs.repository="${IMAGE%:*}" \
-  --set image.tag="${IMAGE##*:}" \
-  --set image.pullPolicy=IfNotPresent \
-  --set logs.enabled=true \
-  --set logs.insert.replicaCount=3 \
-  --set traces.enabled=false \
-  --set lakehouseConfig.compaction.enabled=true \
-  --set lakehouseConfig.compaction.leader_election=k8s \
-  --wait --timeout=180s || true  # don't bail; the asserts below catch failures
+  "${HELM_SET_COMMON[@]}" \
+  --timeout=60s || true
+
+# Wait for pods to be at least running (not necessarily Ready).
+echo "  waiting up to 90s for insert pods to be Running..."
+for i in $(seq 1 90); do
+  rcount=$(kubectl get pods -n "$NS_PRIMARY" -l "app.kubernetes.io/component=logs-insert" \
+             -o jsonpath='{range .items[?(@.status.phase=="Running")]}{.metadata.name} {end}' 2>/dev/null | wc -w)
+  if [[ "$rcount" -ge 1 ]]; then
+    echo "  $rcount pods Running"
+    break
+  fi
+  sleep 1
+done
 
 # Wait for the SA + RBAC to exist (chart-rendered).
 kubectl get serviceaccount -n "$NS_PRIMARY" "${RELEASE_PRIMARY}-victoria-lakehouse-compaction" >/dev/null 2>&1 \
@@ -141,9 +174,12 @@ for v in get list create update patch; do
   fi
 done
 
-# Wait for the Lease to be created (up to 60s of acquireLoop + RetryPeriod).
-echo "  waiting for Lease $LEASE_NAME in $NS_PRIMARY (up to 60s)..."
-for i in $(seq 1 60); do
+# Wait for the Lease to be created. Pods need to start (image load is fast
+# since pre-loaded), then config validation + parquets3 + telemetry init,
+# then the elector goroutine kicks off and POSTs the Lease within
+# RetryPeriod. Allow up to 120s for kind to pull/start the pod.
+echo "  waiting for Lease $LEASE_NAME in $NS_PRIMARY (up to 120s)..."
+for i in $(seq 1 120); do
   if kubectl get lease -n "$NS_PRIMARY" "$LEASE_NAME" >/dev/null 2>&1; then
     break
   fi
@@ -215,24 +251,35 @@ fi
 helm upgrade "$RELEASE_PRIMARY" "$CHART_PATH" \
   --namespace "$NS_PRIMARY" \
   --reuse-values \
-  --wait --timeout=120s >/dev/null 2>&1 || true
+  --timeout=60s >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
 # 5: multi-namespace — install a 2nd release in a different namespace.
 # ---------------------------------------------------------------------------
 sect "5: multi-namespace — install $RELEASE_SECONDARY in $NS_SECONDARY, expect independent lease"
 kubectl create namespace "$NS_SECONDARY" --dry-run=client -o yaml | kubectl apply -f -
+HELM_SET_SECONDARY=(
+  --set "image.logs.repository=${IMAGE%:*}"
+  --set "image.tag=${IMAGE##*:}"
+  --set "image.pullPolicy=IfNotPresent"
+  --set "logs.enabled=true"
+  --set "logs.select.enabled=false"
+  --set "logs.insert.replicaCount=2"
+  --set "logs.insert.persistence.enabled=false"
+  --set "traces.enabled=false"
+  --set "lakehouseConfig.s3.bucket=lh-test-bucket"
+  --set "lakehouseConfig.s3.endpoint=http://fake-minio:9000"
+  --set "lakehouseConfig.s3.access_key=test"
+  --set "lakehouseConfig.s3.secret_key=test"
+  --set "lakehouseConfig.s3.force_path_style=true"
+  --set "lakehouseConfig.compaction.enabled=true"
+  --set "lakehouseConfig.compaction.leader_election=k8s"
+  --set "lakehouseConfig.compaction.interval=30s"
+)
 helm install "$RELEASE_SECONDARY" "$CHART_PATH" \
   --namespace "$NS_SECONDARY" \
-  --set image.logs.repository="${IMAGE%:*}" \
-  --set image.tag="${IMAGE##*:}" \
-  --set image.pullPolicy=IfNotPresent \
-  --set logs.enabled=true \
-  --set logs.insert.replicaCount=2 \
-  --set traces.enabled=false \
-  --set lakehouseConfig.compaction.enabled=true \
-  --set lakehouseConfig.compaction.leader_election=k8s \
-  --wait --timeout=180s >/dev/null 2>&1 || true
+  "${HELM_SET_SECONDARY[@]}" \
+  --timeout=120s >/dev/null 2>&1 || true
 
 echo "  waiting up to 60s for both namespaces' leases to be held..."
 holder_a=""; holder_b=""
