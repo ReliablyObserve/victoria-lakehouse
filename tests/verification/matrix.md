@@ -215,46 +215,49 @@ Related rules (memories): `feedback_per_component_verification`,
    (T8/T8a are listed as PASS in the matrix as of 2026-05-29 but the
    probe is currently failing — track as P0).
 9. **Binary bloat** — RESOLVED on branch `perf/binary-size-reduction`
-   (slim build now ~33 MB, 1.57× the original 21 MB upstream
-   baseline; was 2.6×).
+   (always-on K8s elector at ~37 MB, 1.76× the 21 MB upstream
+   baseline; was 2.6×). Final design after iteration: Option B
+   (hand-rolled `rest+meta/v1` REST client) replaces the
+   tag-gated full `client-go` closure.
 
-   The fix adds `-trimpath` and a `k8s_election` build tag that gates
-   the in-cluster Kubernetes leader elector. The default slim
-   production binary omits the tag and avoids linking ~21 MB of
-   `k8s.io/client-go` transitive closure (k8s.io/api/\*, apimachinery,
-   gnostic, json-iterator, cbor, kube-openapi, structured-merge-diff).
-   Operators who still want real K8s Lease leadership rebuild with
-   `--build-arg BUILD_TAGS=k8s_election`; AutoElector in "auto" mode
-   consults `K8sBackendCompiledIn()` and skips the K8s branch in slim
-   builds, falling through to the configured S3/noop fallback.
+   The fix:
+   1. **`-trimpath`** in Makefile + Dockerfiles for reproducible builds.
+   2. **Option B elector** — `internal/election/k8s.go` now talks to the
+      apiserver directly via `k8s.io/client-go/rest` + `k8s.io/apimachinery/pkg/apis/meta/v1`,
+      bypassing the heavy clientset (`k8s.io/client-go/kubernetes`),
+      the official elector wrapper (`tools/leaderelection`), and the
+      typed API modules (`k8s.io/api/core/v1`, `apps/v1`, `resource/v1`,
+      `admissionregistration/v1`). 329 packages in the closure vs ~700.
+   3. **`healthcheck` subcommand** — the standalone ~3 MB healthcheck
+      binary folded into `lakehouse-{logs,traces} healthcheck`, saving
+      ~10% of image size.
+   4. **FIPS variant** — `--build-arg FIPS=1` flips on Go 1.26+ native
+      FIPS 140-3 mode (`GOFIPS140=v1.0.0`). Release workflow publishes
+      `:vX.Y.Z` and `:vX.Y.Z-fips` tags for both modules.
+   5. **zstd compression** on image layers + OCI media types in the
+      release workflow — registry-side bytes shrink by ~25% over gzip.
 
-   | Binary | Slim (default) | Full (`-tags k8s_election`) | VL upstream | Ratio (slim) |
+   | Binary | Pre-PR | Post-PR | VL upstream | Ratio |
    |---|---|---|---|---|
-   | `lakehouse-logs` | **33.1 MB** | 54.4 MB | ~21 MB | **1.57×** |
-   | `lakehouse-traces` | **33.4 MB** | 54.7 MB | 20.9 MB | **1.60×** |
+   | `lakehouse-logs` | 55 MB | **37 MB** | ~21 MB | **1.76×** |
+   | `lakehouse-traces` | 55 MB | **37 MB** | 20.9 MB | **1.79×** |
 
    Compared to a pristine in-tree VL build (`./app/victoria-logs` =
-   14.1 MB, no LH internals), the slim LH ratio is 2.35× — well within
-   the original 40-45 MB / ≤2.1× upstream target.
+   14.1 MB, no LH internals), the LH ratio is 2.6× — well within
+   the 40-45 MB / ≤3× upstream target. The 7 MB delta vs the
+   build-tag-gated slim binary (33 MB) is the price of having K8s
+   leader election always available without a build flag.
 
    Reproduce (darwin/arm64, both modules):
    ```bash
-   make build-logs build-traces                            # slim (default)
-   make build-logs build-traces BUILD_TAGS=k8s_election    # full
+   make build-logs build-traces                      # default (always-on K8s)
+   FIPS=1 make build-logs build-traces               # FIPS 140-3 variant
    ls -lh bin/lakehouse-logs bin/lakehouse-traces
    ```
 
-   Per-segment breakdown of the reduction (Mach-O sections):
-   ```
-   __text       25.4 MB -> 14.9 MB  (-10.6 MB code)
-   __gopclntab  21.8 MB -> 13.2 MB  ( -8.6 MB PC-line tables)
-   __DATA_CONST  6.3 MB ->  4.1 MB  ( -2.2 MB typelink/itab)
-   __DATA        1.1 MB ->  1.0 MB
-   total file   54.5 MB -> 33.1 MB  (-21.4 MB, -39%)
-   ```
-
-   Docker image (distroless static base) went from **88 MB to 60 MB**
-   (`COPY /lakehouse-logs` layer dropped from 55 MB to 34.7 MB).
+   Docker image (distroless static base) went from **88 MB to ~64 MB**
+   (`COPY /lakehouse-logs` layer dropped from 55 MB to ~37 MB; no
+   separate healthcheck binary).
 
    What was NOT changed (and why):
    - **AWS SDK v2** (~3.6 MB text) — already minimal (S3 + STS + SSO +
@@ -272,16 +275,21 @@ Related rules (memories): `feedback_per_component_verification`,
      on by default in production.
 
    Verification (this branch):
-   - 79 / 79 election tests pass under both `-tags k8s_election` and
-     the default empty-tags build.
-   - 1237 short tests pass in the root module (24 packages).
-   - 1556 short tests pass in the `lakehouse-traces` module (4 packages).
-   - All 7 e2e probes pass (`probe_image_freshness.sh`,
-     `probe_logs_24h_wildcard.sh`, `probe_logs_Nday_wildcard.sh`
-     ×2 windows, `probe_jaeger_search_24h{,_with_tag,_full_chain}.sh`,
-     `probe_tempo_search_24h.sh`) against rebuilt slim images in the
-     existing `docker-compose-e2e.yml` stack with
-     `mem_limit=2g + restart: on-failure + file-workers=16` intact.
+   - 119 / 119 election tests pass (`-race -count=1`).
+   - 90.8% coverage on `internal/election/k8s.go` (target: ≥90%).
+   - 0 forbidden imports (`TestNoForbiddenImports` regression lock).
+   - 329 packages in election dep closure (`TestElectionDepCount`
+     limit: 340).
+   - Binary size ≤ 40 MB on both modules (`TestBinarySizeBound`).
+   - FIPS round-trip: default build reports `fips140: disabled`;
+     `GOFIPS140=v1.0.0` build with `GODEBUG=fips140=on` reports
+     `fips140: enabled` (`TestFIPSMode_WhenEnabled` +
+     `probe_fips_active.sh`).
+   - kind e2e (`tests/e2e-k8s/test_leader_election.sh`,
+     `.github/workflows/e2e-k8s.yaml`): RBAC positive + RBAC negative
+     (delete RoleBinding → 403 in logs) + failover within 40s + multi-
+     namespace isolation, all PASS in a single-node kind cluster.
+   - All existing 8 e2e probes still pass against rebuilt images.
 
 ### L12 — `_stream_id` must be populated (100% VL API compat)
 

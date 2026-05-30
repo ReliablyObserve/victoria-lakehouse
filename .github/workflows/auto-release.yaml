@@ -164,8 +164,24 @@ jobs:
 
           cd dist && sha256sum lakehouse-* > checksums.txt
 
+      - name: Login to Docker Hub (optional)
+        # secrets.* cannot be used directly in `if:` expressions per
+        # https://docs.github.com/actions/security-guides/using-secrets-in-github-actions
+        # ; we instead gate on an env var that pulls from secrets and is empty
+        # when the secret is unset (forks, public CI).
+        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true' && env.DOCKERHUB_USERNAME != ''
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+          echo "DOCKERHUB_ENABLED=true" >> $GITHUB_ENV
+
       - name: Build and push Docker images
         if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
         run: |
           VERSION=${{ steps.version.outputs.next }}
           REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
@@ -173,21 +189,45 @@ jobs:
 
           docker buildx create --use
 
-          docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            -f Dockerfile.logs \
-            --build-arg VERSION=${VERSION} \
-            -t ghcr.io/${REPO}/lakehouse-logs:${VERSION} \
-            -t ghcr.io/${REPO}/lakehouse-logs:latest \
-            --push .
-
-          docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            -f Dockerfile.traces \
-            --build-arg VERSION=${VERSION} \
-            -t ghcr.io/${REPO}/lakehouse-traces:${VERSION} \
-            -t ghcr.io/${REPO}/lakehouse-traces:latest \
-            --push .
+          # We publish two variants per module:
+          #   default  -> :vX.Y.Z, :latest
+          #   FIPS     -> :vX.Y.Z-fips, :latest-fips
+          # Both go to ghcr.io always. Docker Hub mirroring is conditional
+          # on the DOCKERHUB_USERNAME secret being set so forks don't fail
+          # on missing creds.
+          for MODULE in logs traces; do
+            for VARIANT in default fips; do
+              TAG_SUFFIX=""
+              FIPS_ARG="0"
+              if [[ "$VARIANT" == "fips" ]]; then
+                TAG_SUFFIX="-fips"
+                FIPS_ARG="1"
+              fi
+              GHCR_TAGS="-t ghcr.io/${REPO}/lakehouse-${MODULE}:${VERSION}${TAG_SUFFIX} \
+                         -t ghcr.io/${REPO}/lakehouse-${MODULE}:latest${TAG_SUFFIX}"
+              HUB_TAGS=""
+              if [[ "${DOCKERHUB_ENABLED:-false}" == "true" && -n "$DOCKERHUB_USERNAME" ]]; then
+                # Use a configurable Docker Hub namespace (must match the
+                # secret's owner). Default to "reliablyobserve" if unset.
+                HUB_OWNER="${DOCKERHUB_NAMESPACE:-reliablyobserve}"
+                HUB_TAGS="-t docker.io/${HUB_OWNER}/lakehouse-${MODULE}:${VERSION}${TAG_SUFFIX} \
+                          -t docker.io/${HUB_OWNER}/lakehouse-${MODULE}:latest${TAG_SUFFIX}"
+              fi
+              echo "Building lakehouse-${MODULE} variant=${VARIANT} fips=${FIPS_ARG}..."
+              # zstd compression on image layers + OCI media types so
+              # registries serve the smaller streamed payload to clients.
+              # compression-level=3 is the GHA-runner-friendly default
+              # (~3% larger than -7 at ~5x the encode speed).
+              docker buildx build \
+                --platform linux/amd64,linux/arm64 \
+                -f Dockerfile.${MODULE} \
+                --build-arg VERSION=${VERSION} \
+                --build-arg FIPS=${FIPS_ARG} \
+                ${GHCR_TAGS} ${HUB_TAGS} \
+                --output type=image,compression=zstd,compression-level=3,oci-mediatypes=true,push=true \
+                .
+            done
+          done
 
       - name: Package Helm chart
         if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
@@ -226,12 +266,17 @@ jobs:
 
           ### Docker Images
           \`\`\`bash
-          # Logs
+          # Default (non-FIPS) variants
           docker pull ghcr.io/${REPO}/lakehouse-logs:${VERSION}
-
-          # Traces
           docker pull ghcr.io/${REPO}/lakehouse-traces:${VERSION}
+
+          # FIPS 140-3 variants (Go native; requires GODEBUG=fips140=on at runtime)
+          docker pull ghcr.io/${REPO}/lakehouse-logs:${VERSION}-fips
+          docker pull ghcr.io/${REPO}/lakehouse-traces:${VERSION}-fips
           \`\`\`
+
+          Variants are also published to Docker Hub when the
+          \`DOCKERHUB_USERNAME\` secret is configured: \`docker.io/reliablyobserve/lakehouse-{logs,traces}:{tag,tag-fips}\`.
 
           ### Helm Chart
           \`\`\`bash
