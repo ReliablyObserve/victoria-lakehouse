@@ -291,7 +291,16 @@ fi
 # question. Then we delete the lease and assert no new lease is created
 # in the next 30s (because no SA has create-leases permission).
 sect "4: NEGATIVE — delete RoleBinding, expect SA loses create-leases permission and lease stays gone"
-kubectl delete rolebinding -n "$NS_PRIMARY" "${RELEASE_PRIMARY}-victoria-lakehouse-compaction-leader" >/dev/null 2>&1 || true
+# Don't swallow errors here — if the RoleBinding name is wrong, the
+# test should fail loudly rather than silently misreporting "RBAC is
+# load-bearing" when we never deleted anything.
+echo "  pre-state: rolebindings in $NS_PRIMARY:"
+kubectl get rolebinding -n "$NS_PRIMARY" --no-headers 2>&1 | head -5
+echo "  deleting RoleBinding ${RELEASE_PRIMARY}-victoria-lakehouse-compaction-leader..."
+kubectl delete rolebinding -n "$NS_PRIMARY" \
+  "${RELEASE_PRIMARY}-victoria-lakehouse-compaction-leader" 2>&1 || true
+echo "  post-state: rolebindings in $NS_PRIMARY:"
+kubectl get rolebinding -n "$NS_PRIMARY" --no-headers 2>&1 | head -5
 
 # Give the apiserver authorizer cache up to 15s to invalidate.
 # We impersonate the SA with proper group memberships so the apiserver's
