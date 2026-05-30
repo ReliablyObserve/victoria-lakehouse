@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	"github.com/cespare/xxhash/v2"
 )
 
 // TestComputeStreamID_FormatMatchesVL verifies that the helper output
@@ -88,4 +89,66 @@ func TestComputeStreamID_LooksLikeVLOutput(t *testing.T) {
 	if strings.ToLower(got) != got {
 		t.Errorf("expected lowercase output, got %q", got)
 	}
+}
+
+// TestComputeStreamID_MatchesVLAlgorithm regression-locks the stream-id
+// algorithm by re-computing the expected value using the SAME primitive
+// (xxhash64 with the "magic!" suffix) that VL's logstorage.hash128
+// uses internally, then comparing byte-for-byte to computeStreamID.
+//
+// This is the only way to catch a future drift between LH and VL's
+// hash without making logstorage.hash128 public. If anyone "optimizes"
+// computeStreamID to use a different hash, drops the magic suffix,
+// changes the byte order, or alters the tenant encoding, this test
+// fails immediately.
+//
+// To verify the test is a true lock: temporarily edit
+// stream_id.go to remove the `_, _ = h.Write([]byte("magic!"))` line
+// or change the tenant encoding — this test MUST fail. If it still
+// passes, the test isn't pinning the contract.
+func TestComputeStreamID_MatchesVLAlgorithm(t *testing.T) {
+	cases := []struct {
+		name             string
+		tenant           logstorage.TenantID
+		streamCanonical  string
+	}{
+		{"tenant zero / simple stream", logstorage.TenantID{0, 0}, "{a=\"b\"}"},
+		{"tenant 1/2 / nested stream", logstorage.TenantID{AccountID: 1, ProjectID: 2}, "{service.name=\"api\",pod=\"x-1\"}"},
+		{"large tenant / long canonical", logstorage.TenantID{AccountID: 0x7fff_ffff, ProjectID: 0x1234_5678}, strings.Repeat("k=\"v\",", 32)},
+		{"unicode canonical", logstorage.TenantID{AccountID: 7, ProjectID: 42}, "{lbl=\"ñ→★\"}"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Re-implement VL's hash128 inline using the same primitives
+			// VL itself uses (xxhash + "magic!" suffix) and the same
+			// 48-char layout (tenant + hi + lo, all lowercase hex).
+			h := xxhash.New()
+			_, _ = h.Write([]byte(tc.streamCanonical))
+			hi := h.Sum64()
+			_, _ = h.Write([]byte("magic!"))
+			lo := h.Sum64()
+
+			tenant := uint64(tc.tenant.AccountID)<<32 | uint64(tc.tenant.ProjectID)
+			expected := hex64(tenant) + hex64(hi) + hex64(lo)
+
+			got := computeStreamID(tc.tenant, tc.streamCanonical)
+			if got != expected {
+				t.Errorf("computeStreamID drift\n  got      %q\n  expected %q\n  tenant=%+v canonical=%q",
+					got, expected, tc.tenant, tc.streamCanonical)
+			}
+		})
+	}
+}
+
+// hex64 returns the 16-character lowercase hex encoding of n,
+// matching VL's marshalUint64Hex byte order (most-significant first).
+func hex64(n uint64) string {
+	const hexChars = "0123456789abcdef"
+	var buf [16]byte
+	for i := 15; i >= 0; i-- {
+		buf[i] = hexChars[n&0xf]
+		n >>= 4
+	}
+	return string(buf[:])
 }
