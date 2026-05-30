@@ -591,6 +591,63 @@ func TestS3_bloomFilterSkip_NoChecks(t *testing.T) {
 	}
 }
 
+// TestS3_bloomFilterSkip_InClauseOrSemantics locks the behaviour required for
+// `field:in(a,b,c)` queries (and the Jaeger / Tempo trace-spans lookup that
+// expands one stage-2 query into multiple bloom checks for the same column).
+// Before the fix, multiple checks against the same column were AND'ed: the
+// row group was skipped if ANY single value missed the bloom filter, even
+// when other values from the same `:in()` list were present. That produced
+// `{"data":[]}` from `/select/jaeger/api/traces?service=…` for any service
+// whose stage-1 trace_id list contained even one identifier the bloom did
+// not see (which is the common case for sparse files).
+//
+// With the fix, checks are grouped per column: the row group is skipped only
+// when EVERY value in the group misses the bloom. Across columns the AND
+// remains.
+func TestS3_bloomFilterSkip_InClauseOrSemantics(t *testing.T) {
+	now := time.Date(2026, 5, 10, 14, 0, 0, 0, time.UTC)
+	rows := []logRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "hello", SeverityText: "INFO", ServiceName: "api-gw"},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "world", SeverityText: "ERROR", ServiceName: "api-gw"},
+	}
+	data := writeTestParquetWithBloomToBytes(t, rows)
+
+	f, err := parquet.OpenFile(strings.NewReader(string(data)), int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := testStorage()
+	rgs := f.RowGroups()
+	if len(rgs) == 0 {
+		t.Fatal("no row groups")
+	}
+	colIdx := findColumnIndex(f.Root(), "service.name")
+	if colIdx < 0 {
+		t.Fatal("service.name column not found")
+	}
+
+	// One IN value matches (api-gw), one does not (ghost-service). With
+	// the AND-broken implementation this returned true (skip). With the
+	// OR-within-column implementation this must return false (keep).
+	checks := []bloomCheck{
+		{colName: "service.name", colIdx: colIdx, value: parquet.ValueOf("ghost-service")},
+		{colName: "service.name", colIdx: colIdx, value: parquet.ValueOf("api-gw")},
+	}
+	if s.bloomFilterSkip(f, rgs[0], checks) {
+		t.Error("expected keep (at least one IN value bloom-matches); got skip — bloom is AND'ing inside :in(...) again")
+	}
+
+	// All IN values miss the bloom — skip is still correct.
+	checksAllMiss := []bloomCheck{
+		{colName: "service.name", colIdx: colIdx, value: parquet.ValueOf("ghost-1")},
+		{colName: "service.name", colIdx: colIdx, value: parquet.ValueOf("ghost-2")},
+	}
+	if !s.bloomFilterSkip(f, rgs[0], checksAllMiss) {
+		t.Error("expected skip (no IN value matches the bloom); got keep")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: prefetchFooters edge cases
 // ---------------------------------------------------------------------------

@@ -596,6 +596,56 @@ func TestInteg_bloomFilterSkip_NoChecks(t *testing.T) {
 	}
 }
 
+// TestInteg_bloomFilterSkip_InClauseOrSemantics is the logs-module mirror of
+// the trace-side regression. buildBloomChecks expands `field:in(a,b,c)` into
+// one bloomCheck per value, all on the same column. The pre-fix loop AND'd
+// every check, so the row group was skipped on the FIRST value miss even if
+// later values matched. The fix groups checks by column and applies OR
+// inside a column (still AND across columns) — mirrors the semantics of
+// the LogsQL parser's filterIn / filterOr lowering.
+func TestInteg_bloomFilterSkip_InClauseOrSemantics(t *testing.T) {
+	now := time.Date(2026, 5, 10, 14, 0, 0, 0, time.UTC)
+	rows := []logRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "hello", SeverityText: "INFO", ServiceName: "api-gw"},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "world", SeverityText: "ERROR", ServiceName: "api-gw"},
+	}
+	data := writeParquetWithBloomToBytes(t, rows)
+
+	f, err := parquet.OpenFile(strings.NewReader(string(data)), int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := testStorage()
+	rgs := f.RowGroups()
+	if len(rgs) == 0 {
+		t.Fatal("no row groups")
+	}
+	colIdx := findColumnIndex(f.Root(), "service.name")
+	if colIdx < 0 {
+		t.Fatal("service.name column not found")
+	}
+
+	// First value misses, second value matches. With OR-within-column the
+	// row group must be kept.
+	checks := []bloomCheck{
+		{colName: "service.name", colIdx: colIdx, value: parquet.ValueOf("ghost-service")},
+		{colName: "service.name", colIdx: colIdx, value: parquet.ValueOf("api-gw")},
+	}
+	if s.bloomFilterSkip(f, rgs[0], checks) {
+		t.Error("expected keep (at least one IN value bloom-matches); got skip — bloom is AND'ing inside :in(...) again")
+	}
+
+	// All values miss — skip is correct.
+	checksAllMiss := []bloomCheck{
+		{colName: "service.name", colIdx: colIdx, value: parquet.ValueOf("ghost-1")},
+		{colName: "service.name", colIdx: colIdx, value: parquet.ValueOf("ghost-2")},
+	}
+	if !s.bloomFilterSkip(f, rgs[0], checksAllMiss) {
+		t.Error("expected skip (no IN value matches the bloom); got keep")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: prefetchFooters with already cached entries
 // ---------------------------------------------------------------------------

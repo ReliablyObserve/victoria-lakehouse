@@ -149,7 +149,12 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	if !s.manifest.HasDataForRange(startNs, endNs) {
 		metrics.ManifestFastPathTotal.Inc()
-		return nil
+		// Don't early-return here. Buffer-bridge may still have rows newer
+		// than the latest flushed parquet (Jaeger's GetTrace lookup for
+		// trace_ids just observed in a previous search-step lookup is the
+		// canonical case). We fall through; the GetFilesForRange branch
+		// below detects len(files) == 0 and calls queryBufferBridge before
+		// returning.
 	}
 
 	queryStr := q.String()
@@ -226,6 +231,12 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	files := s.manifest.GetFilesForRange(startNs, endNs)
 	if len(files) == 0 {
+		// No cold-tier files cover the requested window, but the in-flight
+		// buffer-bridge may still have rows newer than the latest flushed
+		// parquet (Jaeger's GetTrace narrow-window lookup against trace_ids
+		// just observed in the previous search step is the canonical case).
+		// Falling through here keeps the buffer query in the flow.
+		s.queryBufferBridge(ctx, startNs, endNs, filteredWriteBlock)
 		return nil
 	}
 
@@ -239,6 +250,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
+			s.queryBufferBridge(ctx, startNs, endNs, filteredWriteBlock)
 			return nil
 		}
 		files = remaining
@@ -247,6 +259,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	files = s.preFilterFiles(files, queryStr)
 
 	if len(files) == 0 {
+		s.queryBufferBridge(ctx, startNs, endNs, filteredWriteBlock)
 		return nil
 	}
 
@@ -333,12 +346,17 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 func (s *Storage) preFilterFiles(files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
 	if s.smartCache != nil {
-		if tid := extractExactMatch(queryStr, "trace_id"); tid != "" {
-			if cached := s.smartCache.FindFilesByTraceID(tid); len(cached) > 0 {
-				cacheSet := make(map[string]bool, len(cached))
-				for _, k := range cached {
+		// Support both trace_id:="single" and trace_id:in(t1,t2,t3) (VT spans-lookup shape).
+		// Multiple values: union the matched file sets so the lookup covers all candidates.
+		tids := extractFilterValuesAST(queryStr, "trace_id")
+		if len(tids) > 0 {
+			cacheSet := make(map[string]bool)
+			for _, tid := range tids {
+				for _, k := range s.smartCache.FindFilesByTraceID(tid) {
 					cacheSet[k] = true
 				}
+			}
+			if len(cacheSet) > 0 {
 				var narrowed []manifest.FileInfo
 				for _, fi := range files {
 					if cacheSet[fi.Key] {
@@ -346,7 +364,7 @@ func (s *Storage) preFilterFiles(files []manifest.FileInfo, queryStr string) []m
 					}
 				}
 				if len(narrowed) > 0 {
-					logger.Infof("trace_id fast-path: cache hit for %s, scanning %d files", tid, len(narrowed))
+					logger.Infof("trace_id fast-path: cache hit for %d trace_id(s), scanning %d files", len(tids), len(narrowed))
 					return narrowed
 				}
 			}
@@ -502,7 +520,6 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 		}
 		matchedRGs = append(matchedRGs, rg)
 	}
-
 	sort.Slice(matchedRGs, func(i, j int) bool {
 		return matchedRGs[i].NumRows() < matchedRGs[j].NumRows()
 	})
@@ -582,6 +599,31 @@ func readRowGroupTyped[T any](s *Storage, f *parquet.File, rg parquet.RowGroup, 
 }
 
 func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, cols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
+	// Bound concurrent row-group decoders process-wide. Each decode buffers
+	// a full row group's projected columns (~30-50 MiB at production scale
+	// per the near-OOM heap-diff). Without this gate, 16 file workers
+	// concurrently decoding wide-schema row groups across a 2-day wildcard
+	// scan over 200+ files produces 500+ MiB of transient memory on top
+	// of the 512 MiB cache, deterministic OOM on a 2 GiB container.
+	// Mirrors VL's partitionSearchConcurrencyLimitCh pattern
+	// (deps/VictoriaLogs/lib/logstorage/storage_search.go:1424).
+	release := acquireRGDecode()
+	defer release()
+
+	maxRowsPerBlock := defaultMaxRowsPerBlock
+
+	emit := func(db *logstorage.DataBlock) {
+		if db == nil || db.RowsCount() == 0 {
+			return
+		}
+		splitAndEmitDataBlock(db, maxRowsPerBlock, func(chunk *logstorage.DataBlock) {
+			writeBlock(0, chunk)
+			if traceIDs != nil {
+				extractTraceIDs(chunk, traceIDs)
+			}
+		})
+	}
+
 	constants := detectConstantColumns(f, rg, cols)
 
 	readCols := cols
@@ -600,12 +642,7 @@ func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGrou
 	// Fast path: columnar reading when no constant columns need merging.
 	if len(constants) == 0 && len(readCols) > 0 {
 		db := readRowGroupColumnar(f, rg, readCols, s.registry, startNs, endNs, bitmap)
-		if db != nil && db.RowsCount() > 0 {
-			writeBlock(0, db)
-			if traceIDs != nil {
-				extractTraceIDs(db, traceIDs)
-			}
-		}
+		emit(db)
 		return nil
 	}
 
@@ -640,12 +677,7 @@ func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGrou
 	}
 
 	db := s.projectedFieldsToDataBlock(allFields, startNs, endNs)
-	if db != nil && db.RowsCount() > 0 {
-		writeBlock(0, db)
-		if traceIDs != nil {
-			extractTraceIDs(db, traceIDs)
-		}
-	}
+	emit(db)
 	return nil
 }
 
@@ -1101,22 +1133,50 @@ func (s *Storage) bloomFilterSkip(_ *parquet.File, rg parquet.RowGroup, checks [
 		return false
 	}
 
+	// Group checks by parquet column. buildBloomChecks expands `field:in(a,b,c)`
+	// into multiple checks for the same column — those are disjunctive (any
+	// value present keeps the row group). Different columns remain conjunctive
+	// (every column must possibly match). Without grouping, a `trace_id:in(a,b,c)`
+	// query would skip every row group that does not bloom-contain the FIRST
+	// value, even when later values exist in the group.
 	cols := rg.ColumnChunks()
-	for _, check := range checks {
-		if check.colIdx >= len(cols) {
+	type colGroup struct {
+		colIdx int
+		values []parquet.Value
+	}
+	groups := make(map[string]*colGroup, len(checks))
+	for _, c := range checks {
+		g, ok := groups[c.colName]
+		if !ok {
+			g = &colGroup{colIdx: c.colIdx}
+			groups[c.colName] = g
+		}
+		g.values = append(g.values, c.value)
+	}
+
+	for _, g := range groups {
+		if g.colIdx >= len(cols) {
 			continue
 		}
-
-		bf := cols[check.colIdx].BloomFilter()
+		bf := cols[g.colIdx].BloomFilter()
 		if bf == nil || bf.Size() == 0 {
 			continue
 		}
-
-		found, err := bf.Check(check.value)
-		if err != nil {
-			continue
+		anyFound := false
+		for _, v := range g.values {
+			found, err := bf.Check(v)
+			if err != nil {
+				// On any per-value error, treat the group as inconclusive
+				// and keep the row group rather than incorrectly skipping.
+				anyFound = true
+				break
+			}
+			if found {
+				anyFound = true
+				break
+			}
 		}
-		if !found {
+		if !anyFound {
 			return true
 		}
 	}
@@ -1349,25 +1409,38 @@ func (s *Storage) filterFilesByBloomIndex(files []manifest.FileInfo, queryStr st
 		return files
 	}
 
-	// Build checks for all bloom-enabled columns that have exact matches in the query
-	var checks []bloomindex.ColumnCheck
+	// Build per-column candidate value sets for all bloom-enabled columns
+	// that have exact-match OR in() predicates in the query (e.g.
+	// trace_id:in(t1,t2,t3) yields 3 values for the trace_id column).
+	//
+	// Per-column semantics across multiple values: "any-of" — a file may
+	// match the column if ANY listed value may be in its bloom. Implemented
+	// by running MayContainAll once per value and unioning the matching
+	// file sets (bloom never false-negatives, so union-of-matches is a
+	// correct superset; downstream row filter catches false-positives).
+	// Cross-column semantics remain AND (intersection).
+	type bloomColumn struct {
+		Column string
+		Values []string
+	}
+	var perColumn []bloomColumn
 	for _, col := range s.registry.PromotedColumns() {
 		if !col.HasBloom {
 			continue
 		}
-		val := extractExactMatch(queryStr, col.InternalName)
-		if val == "" {
-			val = extractExactMatch(queryStr, col.ParquetColumn)
+		if isNegatedPredicateAST(queryStr, col.InternalName) || isNegatedPredicateAST(queryStr, col.ParquetColumn) {
+			continue
 		}
-		if val != "" {
-			checks = append(checks, bloomindex.ColumnCheck{
-				Column: col.ParquetColumn,
-				Value:  val,
-			})
+		vals := extractFilterValuesAST(queryStr, col.InternalName)
+		if len(vals) == 0 {
+			vals = extractFilterValuesAST(queryStr, col.ParquetColumn)
+		}
+		if len(vals) > 0 {
+			perColumn = append(perColumn, bloomColumn{Column: col.ParquetColumn, Values: vals})
 		}
 	}
 
-	if len(checks) == 0 {
+	if len(perColumn) == 0 {
 		return files
 	}
 
@@ -1376,26 +1449,47 @@ func (s *Storage) filterFilesByBloomIndex(files []manifest.FileInfo, queryStr st
 		keys[i] = fi.Key
 	}
 
-	matching := s.bloomIdx.MayContainAll(keys, checks)
-	if len(matching) == len(files) {
+	// Intersect per-column union(values) sets (AND across columns).
+	var intersection map[string]struct{}
+	for _, bc := range perColumn {
+		colMatch := make(map[string]struct{})
+		for _, v := range bc.Values {
+			for _, k := range s.bloomIdx.MayContainAll(keys, []bloomindex.ColumnCheck{{Column: bc.Column, Value: v}}) {
+				colMatch[k] = struct{}{}
+			}
+		}
+		if intersection == nil {
+			intersection = colMatch
+		} else {
+			for k := range intersection {
+				if _, ok := colMatch[k]; !ok {
+					delete(intersection, k)
+				}
+			}
+		}
+		if len(intersection) == 0 {
+			break
+		}
+	}
+
+	if len(intersection) == len(files) {
 		return files
 	}
 
-	matchSet := make(map[string]struct{}, len(matching))
-	for _, k := range matching {
-		matchSet[k] = struct{}{}
-	}
-
-	filtered := make([]manifest.FileInfo, 0, len(matching))
+	filtered := make([]manifest.FileInfo, 0, len(intersection))
 	for _, fi := range files {
-		if _, ok := matchSet[fi.Key]; ok {
+		if _, ok := intersection[fi.Key]; ok {
 			filtered = append(filtered, fi)
 		}
 	}
 
 	skipped := len(files) - len(filtered)
 	if skipped > 0 {
-		logger.Infof("bloom index pre-filter: skipped %d/%d files (checks=%d)", skipped, len(files), len(checks))
+		totalValues := 0
+		for _, bc := range perColumn {
+			totalValues += len(bc.Values)
+		}
+		logger.Infof("bloom index pre-filter: skipped %d/%d files (cols=%d values=%d)", skipped, len(files), len(perColumn), totalValues)
 	}
 	return filtered
 }
@@ -1481,23 +1575,28 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 		return false
 	}
 
-	var checks []bloomindex.ColumnCheck
+	// Collect per-column candidate value sets (supports exact-match and in())
+	type bloomColumn struct {
+		Column string
+		Values []string
+	}
+	var perColumn []bloomColumn
 	for _, col := range s.registry.PromotedColumns() {
 		if !col.HasBloom {
 			continue
 		}
-		val := extractExactMatch(queryStr, col.InternalName)
-		if val == "" {
-			val = extractExactMatch(queryStr, col.ParquetColumn)
+		if isNegatedPredicateAST(queryStr, col.InternalName) || isNegatedPredicateAST(queryStr, col.ParquetColumn) {
+			continue
 		}
-		if val != "" {
-			checks = append(checks, bloomindex.ColumnCheck{
-				Column: col.ParquetColumn,
-				Value:  val,
-			})
+		vals := extractFilterValuesAST(queryStr, col.InternalName)
+		if len(vals) == 0 {
+			vals = extractFilterValuesAST(queryStr, col.ParquetColumn)
+		}
+		if len(vals) > 0 {
+			perColumn = append(perColumn, bloomColumn{Column: col.ParquetColumn, Values: vals})
 		}
 	}
-	if len(checks) == 0 {
+	if len(perColumn) == 0 {
 		return false
 	}
 
@@ -1512,9 +1611,21 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 		return false
 	}
 
-	if !bloomindex.FileBloomMayContainAll(idx, checks) {
-		metrics.ParquetBloomChecks.Inc("file_bloom_skip")
-		return true
+	// AND across columns, OR within a column's values: for each column, the
+	// file must possibly contain AT LEAST ONE listed value (any-of). If a
+	// column rules out all its values, the file is definitively unmatched.
+	for _, bc := range perColumn {
+		anyMatch := false
+		for _, v := range bc.Values {
+			if bloomindex.FileBloomMayContainAll(idx, []bloomindex.ColumnCheck{{Column: bc.Column, Value: v}}) {
+				anyMatch = true
+				break
+			}
+		}
+		if !anyMatch {
+			metrics.ParquetBloomChecks.Inc("file_bloom_skip")
+			return true
+		}
 	}
 	return false
 }
@@ -1535,11 +1646,27 @@ func rowGroupMatchesTimeRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs 
 		return true
 	}
 
-	minVal := idx.MinValue(0)
-	maxVal := idx.MaxValue(numPages - 1)
-
-	rgMin := minVal.Int64()
-	rgMax := maxVal.Int64()
+	// Parquet pages within a row group are NOT guaranteed to be sorted by the
+	// timestamp column — traces especially can have spans arrive out of order
+	// (e.g. a long-running root span emits AFTER its children, or rows are
+	// shuffled by the columnar writer to improve compression). Taking
+	// MinValue(0) and MaxValue(N-1) as row-group bounds silently skipped row
+	// groups whose smallest/largest timestamps lived in a middle page, which
+	// produced empty results for narrow time windows like Jaeger's expansion
+	// loop (1m → 6m → 31m queries against trace_id:in(...)). Aggregate across
+	// every page index instead, mirroring the per-page scan already done in
+	// rowGroupMatchesFilter / detectConstantColumns. Locked by
+	// TestRowGroupMatchesTimeRange_OutOfOrderPages in this package.
+	rgMin := idx.MinValue(0).Int64()
+	rgMax := idx.MaxValue(0).Int64()
+	for p := 1; p < numPages; p++ {
+		if v := idx.MinValue(p).Int64(); v < rgMin {
+			rgMin = v
+		}
+		if v := idx.MaxValue(p).Int64(); v > rgMax {
+			rgMax = v
+		}
+	}
 
 	return rgMax >= startNs && rgMin < endNs
 }

@@ -120,6 +120,32 @@ func TestLRU_PutStoresDataCopy(t *testing.T) {
 	}
 }
 
+// TestLRU_PutNoCopySharesBuffer documents the PutNoCopy contract: the
+// caller transfers ownership, so the cached buffer is the SAME []byte
+// the caller passed in. This is the canonical API for the S3-download
+// fast path where the downloaded buffer is allocated for caching and
+// the caller never mutates it.
+//
+// Why we expose this and don't just change Put: there ARE callers
+// (insert path, test scaffolding) that intentionally rely on Put's
+// copy-on-write contract. Splitting the API makes the no-copy path
+// explicit and surfaces the ownership-transfer requirement at the
+// call site.
+//
+// Negative-control: change PutNoCopy to also copy and this test
+// (sharing pointer-identity) fails.
+func TestLRU_PutNoCopySharesBuffer(t *testing.T) {
+	c := NewLRU(1024)
+	data := []byte("hello")
+	c.PutNoCopy("key", data)
+
+	got, _ := c.Get("key")
+	if &got[0] != &data[0] {
+		t.Error("PutNoCopy must store the caller's buffer by reference (the API contract); "+
+			"a copy here doubles transient memory and defeats the point")
+	}
+}
+
 func TestLRU_ClearResets(t *testing.T) {
 	c := NewLRU(1024)
 	for i := 0; i < 10; i++ {

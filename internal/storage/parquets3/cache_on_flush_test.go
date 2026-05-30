@@ -14,9 +14,10 @@ type testL1 struct {
 	data map[string][]byte
 }
 
-func newTestL1() *testL1                        { return &testL1{data: make(map[string][]byte)} }
-func (t *testL1) Get(key string) ([]byte, bool) { v, ok := t.data[key]; return v, ok }
-func (t *testL1) Put(key string, val []byte)    { t.data[key] = val }
+func newTestL1() *testL1                              { return &testL1{data: make(map[string][]byte)} }
+func (t *testL1) Get(key string) ([]byte, bool)       { v, ok := t.data[key]; return v, ok }
+func (t *testL1) Put(key string, val []byte)          { t.data[key] = val }
+func (t *testL1) PutNoCopy(key string, val []byte)    { t.data[key] = val }
 
 // testL2 is a minimal L2 cache for testing.
 type testL2 struct {

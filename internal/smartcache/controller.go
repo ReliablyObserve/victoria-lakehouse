@@ -9,6 +9,12 @@ import (
 type L1Cache interface {
 	Get(key string) ([]byte, bool)
 	Put(key string, val []byte)
+	// PutNoCopy stores val without copying. Caller transfers ownership.
+	// Used by the S3-download fast path where the downloaded buffer is
+	// allocated for caching and never mutated by the caller — eliminates
+	// the LRU copy that doubled transient memory during wildcard scans.
+	// See internal/cache/lru.go for the safety contract.
+	PutNoCopy(key string, val []byte)
 }
 
 type L2Cache interface {
@@ -167,8 +173,14 @@ func (c *Controller) Get(ctx context.Context, key string, size int64) ([]byte, e
 		return nil, err
 	}
 
-	// Store in L1
-	c.l1.Put(key, data)
+	// Store in L1 without copying. The downloaded buffer is allocated by
+	// io.ReadAll exclusively for caching+returning to the query path; no
+	// caller mutates it. Sharing the buffer between the singleflight
+	// result, the cache slot, and the returned []byte halves transient
+	// memory under 16-worker wildcard scans (heap-diff at near-OOM:
+	// io.ReadAll=253 MiB + LRU.Put=382 MiB had ~50% overlap that this
+	// elides).
+	c.l1.PutNoCopy(key, data)
 
 	// Store in L2 if this node owns the key
 	if _, isLocal := c.lookupOwner(key); isLocal && c.l2 != nil {

@@ -313,7 +313,9 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 			data, err := os.ReadFile(path)
 			if err == nil {
 				metrics.CacheHitsTotal.Inc("L2")
-				s.memCache.Put(key, data)
+				// PutNoCopy: data was just read from disk, owned by us,
+				// never mutated downstream. Mirror of logs module.
+				s.memCache.PutNoCopy(key, data)
 				return data, nil
 			}
 			s.diskCache.Delete(key)
@@ -330,7 +332,9 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 				metrics.CacheHitsTotal.Inc("L3")
 				metrics.PeerHitsTotal.Inc()
 				metrics.PeerBytesTransferred.Add("rx", len(peerData))
-				s.memCache.Put(key, peerData)
+				// PutNoCopy: peer fetch buffer, owned by us, never
+				// mutated downstream. Mirror of logs module.
+				s.memCache.PutNoCopy(key, peerData)
 				return peerData, nil
 			}
 			metrics.CacheMissesTotal.Inc("L3")
@@ -367,7 +371,10 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 		metrics.CacheSingleflightDedup.Inc()
 	}
 
-	s.memCache.Put(key, data)
+	// PutNoCopy: freshly downloaded data, owned by us, never mutated
+	// downstream. Halves transient memory under 16-worker wildcard
+	// scans (per heap-diff). Mirror of logs module.
+	s.memCache.PutNoCopy(key, data)
 	return data, nil
 }
 
@@ -1343,6 +1350,7 @@ type l1Adapter struct{ lru *cache.LRU }
 
 func (a *l1Adapter) Get(key string) ([]byte, bool) { return a.lru.Get(key) }
 func (a *l1Adapter) Put(key string, val []byte)    { a.lru.Put(key, val) }
+func (a *l1Adapter) PutNoCopy(key string, val []byte) { a.lru.PutNoCopy(key, val) }
 
 type l2Adapter struct{ dc *cache.DiskCache }
 

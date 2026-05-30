@@ -29,6 +29,7 @@ type mockL1 struct{}
 
 func (m *mockL1) Get(string) ([]byte, bool) { return nil, false }
 func (m *mockL1) Put(string, []byte)        {}
+func (m *mockL1) PutNoCopy(string, []byte)  {}
 
 // mockL2 implements smartcache.L2Cache as a no-op.
 type mockL2 struct{}

@@ -71,7 +71,10 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		metrics.ManifestFastPathTotal.Inc()
 		logger.Infof("manifest fast path: no data for range; start=%v, end=%v",
 			time.Unix(0, startNs), time.Unix(0, endNs))
-		return nil
+		// Don't early-return here. Buffer-bridge may still have rows newer
+		// than the latest flushed parquet. The GetFilesForRange branch below
+		// detects len(files) == 0 and calls queryBufferBridge before returning.
+		// Mirror in lakehouse-traces/internal/storage/parquets3/storage_query.go.
 	}
 
 	queryStr := q.String()
@@ -155,6 +158,12 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	files := s.manifest.GetFilesForRange(startNs, endNs)
 	if len(files) == 0 {
+		// No cold-tier files cover the requested window, but the in-flight
+		// buffer-bridge may still have rows newer than the latest flushed
+		// parquet. Keep the buffer query in the flow so narrow recent-window
+		// queries don't silently miss data that hasn't been flushed yet.
+		// Mirror in lakehouse-traces/internal/storage/parquets3/storage_query.go.
+		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, filteredWriteBlock)
 		return nil
 	}
 
@@ -179,6 +188,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
+			s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, filteredWriteBlock)
 			return nil
 		}
 		files = remaining
@@ -186,6 +196,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	files = s.preFilterFiles(ctx, files, queryStr)
 	if len(files) == 0 {
+		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, filteredWriteBlock)
 		return nil
 	}
 
@@ -359,13 +370,17 @@ func (s *Storage) manifestFastPath(files []manifest.FileInfo, startNs, endNs int
 
 func (s *Storage) preFilterFiles(ctx context.Context, files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
 	if s.smartCache != nil {
-		if tid := extractExactMatch(queryStr, "trace_id"); tid != "" {
-			cachedKeys := s.smartCache.FindFilesByTraceID(tid)
-			if len(cachedKeys) > 0 {
-				keySet := make(map[string]bool, len(cachedKeys))
-				for _, k := range cachedKeys {
+		// Support both trace_id:="single" and trace_id:in(t1,t2,t3) (VT spans-lookup shape).
+		// Multiple values: union the matched file sets so the lookup covers all candidates.
+		tids := extractFilterValuesAST(queryStr, "trace_id")
+		if len(tids) > 0 {
+			keySet := make(map[string]bool)
+			for _, tid := range tids {
+				for _, k := range s.smartCache.FindFilesByTraceID(tid) {
 					keySet[k] = true
 				}
+			}
+			if len(keySet) > 0 {
 				var matched []manifest.FileInfo
 				for _, fi := range files {
 					if keySet[fi.Key] {
@@ -374,7 +389,7 @@ func (s *Storage) preFilterFiles(ctx context.Context, files []manifest.FileInfo,
 				}
 				if len(matched) > 0 {
 					metrics.TraceIDCacheHits.Inc()
-					logger.Infof("trace_id fast-path: cache hit for %s, scanning %d/%d files", tid, len(matched), len(files))
+					logger.Infof("trace_id fast-path: cache hit for %d trace_id(s), scanning %d/%d files", len(tids), len(matched), len(files))
 					return matched
 				}
 			}
@@ -636,6 +651,32 @@ func readRowGroupTyped[T any](s *Storage, f *parquet.File, rg parquet.RowGroup, 
 }
 
 func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, cols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
+	// Bound concurrent row-group decoders process-wide. Each decode buffers
+	// a full row group's projected columns (~30-50 MiB at production scale
+	// per the near-OOM heap-diff: readMapColumnToBlockCols=154 MiB flat,
+	// parquetValueToInterface=104 MiB, readScalarColumnFormatted=36 MiB).
+	// Without this gate, 16 file workers concurrently decoding wide-schema
+	// row groups across a 2-day wildcard scan over 200+ files produces
+	// 500+ MiB of transient memory on top of the 512 MiB cache, deterministic
+	// OOM on a 2 GiB container. Mirrors VL's partitionSearchConcurrencyLimitCh
+	// pattern (deps/VictoriaLogs/lib/logstorage/storage_search.go:1424).
+	release := acquireRGDecode()
+	defer release()
+
+	maxRowsPerBlock := defaultMaxRowsPerBlock
+
+	emit := func(db *logstorage.DataBlock) {
+		if db == nil || db.RowsCount() == 0 {
+			return
+		}
+		splitAndEmitDataBlock(db, maxRowsPerBlock, func(chunk *logstorage.DataBlock) {
+			writeBlock(0, chunk)
+			if traceIDs != nil {
+				extractTraceIDs(chunk, traceIDs)
+			}
+		})
+	}
+
 	constants := detectConstantColumns(f, rg, cols)
 
 	readCols := cols
@@ -654,12 +695,7 @@ func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGrou
 	// Fast path: columnar reading when no constant columns need merging.
 	if len(constants) == 0 && len(readCols) > 0 {
 		db := readRowGroupColumnar(f, rg, readCols, s.registry, startNs, endNs, bitmap)
-		if db != nil && db.RowsCount() > 0 {
-			writeBlock(0, db)
-			if traceIDs != nil {
-				extractTraceIDs(db, traceIDs)
-			}
-		}
+		emit(db)
 		return nil
 	}
 
@@ -694,12 +730,7 @@ func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGrou
 	}
 
 	db := s.projectedFieldsToDataBlock(allFields, startNs, endNs)
-	if db != nil && db.RowsCount() > 0 {
-		writeBlock(0, db)
-		if traceIDs != nil {
-			extractTraceIDs(db, traceIDs)
-		}
-	}
+	emit(db)
 	return nil
 }
 
@@ -1148,7 +1179,15 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 		return files
 	}
 
-	var checks []bloomindex.ColumnCheck
+	// Build per-column candidate value sets. A column may have multiple
+	// values via field:in(v1,v2,...) — VT's spans-lookup query uses this
+	// shape (trace_id:in(t1,t2,t3)). Per-column semantics is "any-of"
+	// (OR within a column's values), and AND across columns.
+	type bloomColumn struct {
+		Column string
+		Values []string
+	}
+	var perColumn []bloomColumn
 	for _, col := range s.registry.PromotedColumns() {
 		if !col.HasBloom {
 			continue
@@ -1160,14 +1199,11 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 		if len(vals) == 0 {
 			vals = extractFilterValuesAST(queryStr, col.ParquetColumn)
 		}
-		for _, val := range vals {
-			checks = append(checks, bloomindex.ColumnCheck{
-				Column: col.ParquetColumn,
-				Value:  val,
-			})
+		if len(vals) > 0 {
+			perColumn = append(perColumn, bloomColumn{Column: col.ParquetColumn, Values: vals})
 		}
 	}
-	if len(checks) == 0 {
+	if len(perColumn) == 0 {
 		return files
 	}
 
@@ -1191,10 +1227,34 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 		for i, fi := range pFiles {
 			keys[i] = fi.Key
 		}
-		matching := idx.MayContainAll(keys, checks)
-		matchSet := make(map[string]bool, len(matching))
-		for _, k := range matching {
-			matchSet[k] = true
+
+		// For each column, union the per-value MayContainAll results
+		// (any-of). Then intersect across columns (AND-of-columns).
+		var intersection map[string]bool
+		for _, bc := range perColumn {
+			colMatch := make(map[string]bool)
+			for _, v := range bc.Values {
+				for _, k := range idx.MayContainAll(keys, []bloomindex.ColumnCheck{{Column: bc.Column, Value: v}}) {
+					colMatch[k] = true
+				}
+			}
+			if intersection == nil {
+				intersection = colMatch
+			} else {
+				for k := range intersection {
+					if !colMatch[k] {
+						delete(intersection, k)
+					}
+				}
+			}
+			if len(intersection) == 0 {
+				break
+			}
+		}
+
+		matchSet := intersection
+		if matchSet == nil {
+			matchSet = make(map[string]bool)
 		}
 
 		before := len(pFiles)
@@ -1436,22 +1496,50 @@ func (s *Storage) bloomFilterSkip(_ *parquet.File, rg parquet.RowGroup, checks [
 		return false
 	}
 
+	// Group checks by parquet column. buildBloomChecks expands `field:in(a,b,c)`
+	// into multiple checks for the same column — those are disjunctive (any
+	// value present keeps the row group). Different columns remain conjunctive
+	// (every column must possibly match). Without grouping, a `trace_id:in(a,b,c)`
+	// query would skip every row group that does not bloom-contain the FIRST
+	// value, even when later values exist in the group.
 	cols := rg.ColumnChunks()
-	for _, check := range checks {
-		if check.colIdx >= len(cols) {
+	type colGroup struct {
+		colIdx int
+		values []parquet.Value
+	}
+	groups := make(map[string]*colGroup, len(checks))
+	for _, c := range checks {
+		g, ok := groups[c.colName]
+		if !ok {
+			g = &colGroup{colIdx: c.colIdx}
+			groups[c.colName] = g
+		}
+		g.values = append(g.values, c.value)
+	}
+
+	for _, g := range groups {
+		if g.colIdx >= len(cols) {
 			continue
 		}
-
-		bf := cols[check.colIdx].BloomFilter()
+		bf := cols[g.colIdx].BloomFilter()
 		if bf == nil || bf.Size() == 0 {
 			continue
 		}
-
-		found, err := bf.Check(check.value)
-		if err != nil {
-			continue
+		anyFound := false
+		for _, v := range g.values {
+			found, err := bf.Check(v)
+			if err != nil {
+				// On any per-value error, treat the group as inconclusive
+				// and keep the row group rather than incorrectly skipping.
+				anyFound = true
+				break
+			}
+			if found {
+				anyFound = true
+				break
+			}
 		}
-		if !found {
+		if !anyFound {
 			return true
 		}
 	}
@@ -1893,11 +1981,25 @@ func rowGroupMatchesTimeRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs 
 		return true
 	}
 
-	minVal := idx.MinValue(0)
-	maxVal := idx.MaxValue(numPages - 1)
-
-	rgMin := minVal.Int64()
-	rgMax := maxVal.Int64()
+	// Parquet pages within a row group are NOT guaranteed to be sorted by the
+	// timestamp column — even for logs the columnar writer can reorder rows
+	// to improve compression. Taking MinValue(0) and MaxValue(N-1) as
+	// row-group bounds silently skipped row groups whose smallest/largest
+	// timestamps lived in a middle page, which produced empty results for
+	// narrow time windows. Aggregate across every page index instead,
+	// mirroring the per-page scan already done in rowGroupMatchesFilter /
+	// detectConstantColumns. Keep this in sync with the traces module
+	// (lakehouse-traces/internal/storage/parquets3/storage_query.go).
+	rgMin := idx.MinValue(0).Int64()
+	rgMax := idx.MaxValue(0).Int64()
+	for p := 1; p < numPages; p++ {
+		if v := idx.MinValue(p).Int64(); v < rgMin {
+			rgMin = v
+		}
+		if v := idx.MaxValue(p).Int64(); v > rgMax {
+			rgMax = v
+		}
+	}
 
 	return rgMax >= startNs && rgMin < endNs
 }

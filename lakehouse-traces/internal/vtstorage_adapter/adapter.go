@@ -28,8 +28,6 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 		return nil
 	}
 
-	logger.Infof("DIAG-ADAPTER: query=%q", qctx.Query.String())
-
 	// IMPORTANT: pass the FULL query (with pipes intact) to a.store.RunQuery.
 	// Our storage's queryColumns() consults logstorage.GetQueryPipeFields() to
 	// expand the parquet column projection to cover fields referenced only by

@@ -304,7 +304,11 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 			data, err := os.ReadFile(path)
 			if err == nil {
 				metrics.CacheHitsTotal.Inc("L2")
-				s.memCache.Put(key, data)
+				// PutNoCopy: data was just read from disk by os.ReadFile,
+				// is owned by us, and never mutated downstream. Sharing
+				// with the cache slot halves transient memory under
+				// 16-worker wildcard scans.
+				s.memCache.PutNoCopy(key, data)
 				return data, nil
 			}
 			s.diskCache.Delete(key)
@@ -321,7 +325,10 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 				metrics.CacheHitsTotal.Inc("L3")
 				metrics.PeerHitsTotal.Inc()
 				metrics.PeerBytesTransferred.Add("rx", len(peerData))
-				s.memCache.Put(key, peerData)
+				// PutNoCopy: peerData was just fetched, owned by us,
+				// never mutated downstream. See L2 hit branch above for
+				// the safety rationale.
+				s.memCache.PutNoCopy(key, peerData)
 				return peerData, nil
 			}
 			metrics.CacheMissesTotal.Inc("L3")
@@ -364,7 +371,13 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 		metrics.CacheSingleflightDedup.Inc()
 	}
 
-	s.memCache.Put(key, data)
+	// PutNoCopy: data was just downloaded by io.ReadAll inside the
+	// singleflight callback, is owned by us, and never mutated
+	// downstream — all callers pass it to parquet.OpenFile which only
+	// reads. Sharing the buffer between the singleflight return value
+	// and the cache slot halves transient memory under 16-worker
+	// wildcard scans (the OOM trigger).
+	s.memCache.PutNoCopy(key, data)
 	return data, nil
 }
 
@@ -1228,6 +1241,7 @@ type l1Adapter struct{ lru *cache.LRU }
 
 func (a *l1Adapter) Get(key string) ([]byte, bool) { return a.lru.Get(key) }
 func (a *l1Adapter) Put(key string, val []byte)    { a.lru.Put(key, val) }
+func (a *l1Adapter) PutNoCopy(key string, val []byte) { a.lru.PutNoCopy(key, val) }
 
 type l2Adapter struct{ dc *cache.DiskCache }
 

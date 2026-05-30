@@ -38,7 +38,7 @@ Related rules (memories): `feedback_per_component_verification`,
 
 | # | Endpoint | Query shape | state | layer | vl_vt_ref | last_state | verified |
 |---|----------|-------------|-------|-------|-----------|-----------|----------|
-| L1 | `/select/logsql/query` | wildcard `*` | PASS | parity + memory-regression | `tests/parity/logs_*_test.go` + `internal/storage/parquets3/query_memory_budget_test.go` + `tests/verification/probe_logs_24h_wildcard.sh` | row count + content match VL; container survives 24h wildcard (peak heap bounded, no restart, see commit message) | 2026-05-30 |
+| L1 | `/select/logsql/query` | wildcard `*` | PASS | parity + memory-regression | `tests/parity/logs_*_test.go` + `internal/storage/parquets3/query_memory_budget_test.go` (`TestRunQuery_ProductionShape_WildcardScalesUnderMemoryBudget` — 200 files × 5000 rows × wildcard projection × 16 file workers) + `tests/verification/probe_logs_24h_wildcard.sh` + `tests/verification/probe_logs_Nday_wildcard.sh` (2-day AND 7-day windows against live container) | row count + content match VL; container survives 24h AND 2-day AND 7-day wildcards on 2 GiB mem_limit (peak heap bounded by chunked DataBlock emission + row-group decoder semaphore + PutNoCopy cache wiring). Negative-control: disable all three fixes → 2-day probe restarts container. | 2026-05-30 |
 | L2 | `/select/logsql/query` | exact `level:="ERROR"` | PASS | parity | same | identical results | 2026-05-29 |
 | L3 | `/select/logsql/query` | OR `level:="ERROR" OR level:="WARN"` | PASS | parity | same | identical | 2026-05-29 |
 | L4 | `/select/logsql/query_time_range` | bucketing | PASS | parity | same | identical | 2026-05-29 |
