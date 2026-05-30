@@ -239,57 +239,82 @@ fi
 
 # ---------------------------------------------------------------------------
 # 3: failover — kill the leader pod, expect another to take over.
-# ---------------------------------------------------------------------------
-sect "3: failover — delete leader pod $holder, expect successor within 40s"
+# StatefulSets recreate pods with the same name (ordinal-based), so the
+# new pod-0 takes the same identity as the old pod-0. Detect failover via
+# leaseTransitions instead of holderIdentity — leaseTransitions increments
+# atomically every time a new candidate wins the CAS, even if the new
+# holder ends up being a recreated pod with the same name.
+sect "3: failover — delete leader pod $holder, expect leaseTransitions++ within 60s"
 if [[ -n "$holder" ]]; then
+  transitions_before=$(kubectl get lease -n "$NS_PRIMARY" "$LEASE_NAME" \
+                        -o jsonpath='{.spec.leaseTransitions}' 2>/dev/null || echo "0")
   kubectl delete pod -n "$NS_PRIMARY" "$holder" --grace-period=1 >/dev/null 2>&1 || true
   start=$(date +%s)
-  new_holder=""
-  for i in $(seq 1 40); do
-    nh=$(kubectl get lease -n "$NS_PRIMARY" "$LEASE_NAME" -o jsonpath='{.spec.holderIdentity}' 2>/dev/null || echo "")
-    if [[ -n "$nh" && "$nh" != "$holder" ]]; then
-      new_holder="$nh"
+  new_transitions=""
+  for i in $(seq 1 60); do
+    nt=$(kubectl get lease -n "$NS_PRIMARY" "$LEASE_NAME" \
+          -o jsonpath='{.spec.leaseTransitions}' 2>/dev/null || echo "")
+    if [[ -n "$nt" && "$nt" != "$transitions_before" ]]; then
+      new_transitions="$nt"
       break
     fi
     sleep 1
   done
   end=$(date +%s)
   elapsed=$((end - start))
-  if [[ -n "$new_holder" ]]; then
-    ok "3 failover succeeded — new holder=$new_holder (took ${elapsed}s, budget 40s)"
+  if [[ -n "$new_transitions" ]]; then
+    ok "3 failover succeeded — leaseTransitions $transitions_before -> $new_transitions (took ${elapsed}s, budget 60s)"
   else
-    fail "3 failover did not happen within 40s (still $holder)"
+    fail "3 failover did not happen within 60s (leaseTransitions stayed at $transitions_before)"
   fi
 else
   fail "3 skipped — no original holder to delete"
 fi
 
 # ---------------------------------------------------------------------------
-# 4: NEGATIVE — delete the RoleBinding, restart pods, expect 403 in logs.
+# 4: NEGATIVE — delete RoleBinding, assert SA cannot create leases.
 # ---------------------------------------------------------------------------
-sect "4: NEGATIVE — delete RoleBinding, restart insert pods, expect 403 in logs"
+# Asserting "elector logs 403" is racy: the apiserver's authorization cache
+# can take a few seconds to invalidate after RoleBinding delete, and pods
+# that observe an existing lease silently wait (no 403 to log). Instead we
+# use `kubectl auth can-i` which queries the apiserver directly with the
+# SA's identity — this is the authoritative "is RBAC load-bearing"
+# question. Then we delete the lease and assert no new lease is created
+# in the next 30s (because no SA has create-leases permission).
+sect "4: NEGATIVE — delete RoleBinding, expect SA loses create-leases permission and lease stays gone"
 kubectl delete rolebinding -n "$NS_PRIMARY" "${RELEASE_PRIMARY}-victoria-lakehouse-compaction-leader" >/dev/null 2>&1 || true
-# Also delete the lease so the next pod must re-acquire (and hit the missing
-# RBAC immediately on the first GET).
-kubectl delete lease -n "$NS_PRIMARY" "$LEASE_NAME" >/dev/null 2>&1 || true
-# Force a fresh pod (it'll try acquireLoop -> tryAcquire -> getLease -> 403).
-kubectl rollout restart statefulset -n "$NS_PRIMARY" "${RELEASE_PRIMARY}-victoria-lakehouse-logs-insert" >/dev/null 2>&1 || true
-echo "  waiting up to 60s for a 403 to appear in insert-pod logs..."
-saw_403=""
-for i in $(seq 1 60); do
-  for p in $(kubectl get pods -n "$NS_PRIMARY" -l "app.kubernetes.io/component=logs-insert" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-    if kubectl logs -n "$NS_PRIMARY" "$p" --tail=200 2>/dev/null \
-         | grep -qE "status (403|Forbidden)|cannot list|cannot get|cannot create"; then
-      saw_403="$p"
-      break 2
-    fi
-  done
+
+# Give the apiserver authorizer cache up to 10s to invalidate.
+sa="system:serviceaccount:${NS_PRIMARY}:${RELEASE_PRIMARY}-victoria-lakehouse-logs-insert"
+saw_denied=""
+for i in $(seq 1 10); do
+  if [[ "$(kubectl auth can-i create leases.coordination.k8s.io \
+            --as="$sa" -n "$NS_PRIMARY" 2>&1 || true)" == "no" ]]; then
+    saw_denied="yes"
+    break
+  fi
   sleep 1
 done
-if [[ -n "$saw_403" ]]; then
-  ok "4 RBAC removal caused 403/Forbidden in logs (pod=$saw_403)"
+if [[ -n "$saw_denied" ]]; then
+  ok "4a SA $sa lost create-leases permission after RoleBinding delete (RBAC load-bearing)"
 else
-  fail "4 RBAC removal did not surface a 403 in logs within 60s — chart RBAC is NOT load-bearing!"
+  fail "4a SA $sa STILL has create-leases permission — chart RBAC is NOT load-bearing!"
+fi
+
+# Delete the lease; with no RBAC, no SA can recreate it.
+kubectl delete lease -n "$NS_PRIMARY" "$LEASE_NAME" >/dev/null 2>&1 || true
+lease_came_back=""
+for i in $(seq 1 30); do
+  if kubectl get lease -n "$NS_PRIMARY" "$LEASE_NAME" >/dev/null 2>&1; then
+    lease_came_back="yes"
+    break
+  fi
+  sleep 1
+done
+if [[ -z "$lease_came_back" ]]; then
+  ok "4b Lease did not reappear in 30s after RBAC delete (elector correctly blocked)"
+else
+  fail "4b Lease reappeared within 30s — RBAC delete did not block elector"
 fi
 
 # Re-create the RoleBinding so subsequent tests pass.
