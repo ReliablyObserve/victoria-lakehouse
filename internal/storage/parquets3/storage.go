@@ -25,6 +25,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/resourcebounds"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/smartcache"
@@ -54,7 +55,14 @@ type Storage struct {
 	crossSignalClient *crosssignal.Client
 	selfAZ            string
 	selfFilterEnabled bool
-	dlSem             chan struct{}
+	// dlSem is the legacy channel-based S3 download concurrency
+	// gate. Kept as the wire-level mechanism (preserves observable
+	// semantics 1:1) while s3DownloadsBound provides the K8s-style
+	// request/limit/metrics surface that operators see in dashboards.
+	// Acquire flow: acquire bound for metrics + count, then push on
+	// dlSem; release in reverse. See acquireS3Download / releaseS3Download.
+	dlSem            chan struct{}
+	s3DownloadsBound *resourcebounds.Bound
 }
 
 func New(cfg *config.Config) (*Storage, error) {
@@ -126,7 +134,15 @@ func New(cfg *config.Config) (*Storage, error) {
 		ph = peercache.NewHandler(cfg.Peer.AuthKey, "")
 	}
 
-	maxDL := cfg.S3.MaxConcurrentDownloads
+	// K8s-style request/limit bound for S3 download concurrency. The
+	// bound publishes per-surface metrics (request, limit, acquired,
+	// rejected, outstanding) and emits a startup warning when the
+	// deprecated MaxConcurrentDownloads alias is set. The legacy
+	// channel-based dlSem is constructed with the bound's Limit so
+	// the wire-level semantics remain identical to the pre-bound
+	// behaviour.
+	s3DownloadsBound := newS3DownloadsBound(cfg)
+	maxDL := int(s3DownloadsBound.Config().Limit)
 	if maxDL <= 0 {
 		maxDL = 16
 	}
@@ -224,6 +240,7 @@ func New(cfg *config.Config) (*Storage, error) {
 		fileBloomCache:    bfc,
 		crossSignalClient: csClient,
 		dlSem:             make(chan struct{}, maxDL),
+		s3DownloadsBound:  s3DownloadsBound,
 	}
 
 	if bw != nil {
@@ -339,6 +356,20 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 		select {
 		case s.dlSem <- struct{}{}:
 			defer func() { <-s.dlSem }()
+			// Once the channel admits us we tick the K8s-style bound
+			// for metric visibility (request/limit/acquired/outstanding
+			// gauges read by operator dashboards). Acquire MUST come
+			// AFTER the channel claim — the channel is the wire-level
+			// blocking gate, and acquiring the bound first would
+			// double-gate under contention (both carry the same Limit
+			// semantics). The bound's release runs from the deferred
+			// release; bound errors here are non-fatal (the download
+			// already has its slot).
+			if s.s3DownloadsBound != nil {
+				if relBound, boundErr := s.s3DownloadsBound.Acquire(ctx, 1); boundErr == nil {
+					defer relBound()
+				}
+			}
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
