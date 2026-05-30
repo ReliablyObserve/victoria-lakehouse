@@ -865,17 +865,27 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 	}
 }
 
-// applyFlags is a flat dispatch of N CLI flag → config field assignments.
-// Cyclomatic complexity is linear in the flag count and has grown past the
-// gocyclo:50 default after adding the K8s-style resource-bound triples (5
-// surfaces × 3 fields = 15 new flags) on top of the existing tenant + S3 +
-// query + cache + compaction surfaces. A follow-up should split into per-
-// section helpers (applyS3Flags, applyQueryFlags, applyCacheFlags, etc.)
-// once the parallel PR #96 healthcheck-subcommand work has merged — doing it
-// now would conflict with that PR on the same files.
-//
-//nolint:gocyclo // tracked as follow-up; see comment above
+// applyFlags applies CLI flag overrides on top of cfg loaded from the
+// config file or profile. Split into per-section helpers because the
+// flat form crossed gocyclo:50 when the K8s-style resource-bound triples
+// were added in PR #97; per-section keeps each helper's complexity linear
+// in flag count per section and the top-level a clean sequence of calls.
+// Field-write order within each helper preserves the flat-form order for
+// diff readability.  Mirrors `cmd/lakehouse-logs/main.go.applyFlags`.
 func applyFlags(cfg *config.Config) {
+	applyTopLevelFlags(cfg)
+	applyS3Flags(&cfg.S3)
+	applyResourceBoundFlags(cfg)
+	applyTopologyFlags(cfg)
+	applyManifestFlags(&cfg.Manifest)
+	applyCacheFlags(&cfg.Cache)
+	applyCompactionFlags(&cfg.Compaction)
+	applyQueryLegacyFlags(&cfg.Query)
+	applyTracesFlags(&cfg.Traces)
+	applyTenantFlags(&cfg.Tenant)
+}
+
+func applyTopLevelFlags(cfg *config.Config) {
 	if p := *profileFlag; p != "" {
 		profileCfg := config.ProfileConfig(config.Profile(p))
 		*cfg = *config.MergeConfigs(profileCfg, cfg)
@@ -887,45 +897,56 @@ func applyFlags(cfg *config.Config) {
 	if *flushInterval > 0 {
 		cfg.Insert.FlushInterval = *flushInterval
 	}
+}
+
+func applyS3Flags(s3 *config.S3Config) {
 	if b := *s3Bucket; b != "" {
-		cfg.S3.Bucket = b
+		s3.Bucket = b
 	}
 	if r := *s3Region; r != "" {
-		cfg.S3.Region = r
+		s3.Region = r
 	}
 	if p := *s3Prefix; p != "" {
-		cfg.S3.Prefix = p
+		s3.Prefix = p
 	}
 	if e := *s3Endpoint; e != "" {
-		cfg.S3.Endpoint = e
+		s3.Endpoint = e
 	}
 	if k := *s3AccessKey; k != "" {
-		cfg.S3.AccessKey = k
+		s3.AccessKey = k
 	}
 	if k := *s3SecretKey; k != "" {
-		cfg.S3.SecretKey = k
+		s3.SecretKey = k
 	}
 	if *s3PathStyle {
-		cfg.S3.ForcePathStyle = true
+		s3.ForcePathStyle = true
 	}
 	if *s3ReadAhead > 0 {
-		cfg.S3.ReadAheadBytes = *s3ReadAhead
+		s3.ReadAheadBytes = *s3ReadAhead
 	}
 	if *s3CoalesceGap > 0 {
-		cfg.S3.CoalesceGapBytes = *s3CoalesceGap
+		s3.CoalesceGapBytes = *s3CoalesceGap
 	}
 	if *s3MaxConcurrentDownloads > 0 {
-		cfg.S3.MaxConcurrentDownloads = *s3MaxConcurrentDownloads
+		s3.MaxConcurrentDownloads = *s3MaxConcurrentDownloads
 	}
 	if *s3ConcurrentDownloadsRequest > 0 {
-		cfg.S3.ConcurrentDownloadsRequest = *s3ConcurrentDownloadsRequest
+		s3.ConcurrentDownloadsRequest = *s3ConcurrentDownloadsRequest
 	}
 	if *s3ConcurrentDownloadsLimit > 0 {
-		cfg.S3.ConcurrentDownloadsLimit = *s3ConcurrentDownloadsLimit
+		s3.ConcurrentDownloadsLimit = *s3ConcurrentDownloadsLimit
 	}
 	if s := *s3ConcurrentDownloadsScaling; s != "" {
-		cfg.S3.ConcurrentDownloadsScaling = s
+		s3.ConcurrentDownloadsScaling = s
 	}
+}
+
+// applyResourceBoundFlags applies the K8s-style request/limit/scaling
+// triples for the 4 surfaces that span multiple config sections
+// (Query.FileWorkers*, Cache.Memory*, SmartCache.Disk*, Query.MaxRows*).
+// Grouped together because they share the same triple shape and were
+// added as a single feature in PR #97.
+func applyResourceBoundFlags(cfg *config.Config) {
 	if *queryFileWorkersRequest > 0 {
 		cfg.Query.FileWorkersRequest = *queryFileWorkersRequest
 	}
@@ -962,119 +983,140 @@ func applyFlags(cfg *config.Config) {
 	if s := *queryMaxRowsScaling; s != "" {
 		cfg.Query.MaxRowsScaling = s
 	}
+}
+
+func applyTopologyFlags(cfg *config.Config) {
 	if t := *topology; t != "" {
 		cfg.Topology = config.Topology(t)
 	}
 	if h := *hotBoundary; h != "" {
 		cfg.HotBoundary = h
 	}
+}
+
+func applyManifestFlags(m *config.ManifestConfig) {
 	if *manifestRefresh > 0 {
-		cfg.Manifest.RefreshInterval = *manifestRefresh
+		m.RefreshInterval = *manifestRefresh
 	}
+}
+
+func applyCacheFlags(c *config.CacheConfig) {
 	if *cacheMemoryMB > 0 {
-		cfg.Cache.MemoryLimit = fmt.Sprintf("%dMB", *cacheMemoryMB)
+		c.MemoryLimit = fmt.Sprintf("%dMB", *cacheMemoryMB)
 	}
 	if p := *cacheDiskPath; p != "" {
-		cfg.Cache.DiskPath = p
+		c.DiskPath = p
 	}
 	if *cacheDiskMB > 0 {
-		cfg.Cache.DiskLimit = fmt.Sprintf("%dMB", *cacheDiskMB)
+		c.DiskLimit = fmt.Sprintf("%dMB", *cacheDiskMB)
 	}
 	if *cacheWarmupPartitions > 0 {
-		cfg.Cache.WarmupPartitions = *cacheWarmupPartitions
+		c.WarmupPartitions = *cacheWarmupPartitions
 	}
 	if *cacheWarmupMaxFiles > 0 {
-		cfg.Cache.WarmupMaxFiles = *cacheWarmupMaxFiles
+		c.WarmupMaxFiles = *cacheWarmupMaxFiles
 	}
 	if pm := *cachePartitionMode; pm != "" {
-		cfg.Cache.PartitionMode = pm
+		c.PartitionMode = pm
 	}
+}
+
+func applyCompactionFlags(c *config.CompactionConfig) {
 	if *compactionEnabled {
-		cfg.Compaction.Enabled = true
+		c.Enabled = true
 	}
 	if *compactionInterval > 0 {
-		cfg.Compaction.Interval = *compactionInterval
+		c.Interval = *compactionInterval
 	}
 	if e := *compactionElection; e != "" {
-		cfg.Compaction.LeaderElection = e
+		c.LeaderElection = e
 	}
 	if *compactionDailyRollupAge > 0 {
-		cfg.Compaction.DailyRollupAge = *compactionDailyRollupAge
+		c.DailyRollupAge = *compactionDailyRollupAge
 	}
 	if *compactionShardID >= 0 {
-		cfg.Compaction.ShardID = *compactionShardID
+		c.ShardID = *compactionShardID
 	}
 	if *compactionShardCount > 0 {
-		cfg.Compaction.ShardCount = *compactionShardCount
+		c.ShardCount = *compactionShardCount
 	}
+}
 
+// applyQueryLegacyFlags applies the pre-resourcebound query-related
+// flags that haven't been migrated to the request/limit/scaling triple
+// shape yet (file-workers legacy, max-files-per-query, max-live-bytes).
+func applyQueryLegacyFlags(q *config.QueryConfig) {
 	if *queryFileWorkers > 0 {
-		cfg.Query.FileWorkers = *queryFileWorkers
+		q.FileWorkers = *queryFileWorkers
 	}
 	if *queryMaxFilesPerQuery > 0 {
-		cfg.Query.MaxFilesPerQuery = *queryMaxFilesPerQuery
+		q.MaxFilesPerQuery = *queryMaxFilesPerQuery
 	}
 	if *queryMaxLiveBytes > 0 {
-		cfg.Query.MaxLiveBytes = *queryMaxLiveBytes
+		q.MaxLiveBytes = *queryMaxLiveBytes
 	}
+}
 
+func applyTracesFlags(t *config.TracesModeConfig) {
 	if s := *tracesBloomColumns; s != "" {
-		cfg.Traces.BloomColumns = strings.Split(s, ",")
+		t.BloomColumns = strings.Split(s, ",")
 	}
 	if s := *tracesDeletePrefix; s != "" {
-		cfg.Traces.DeletePrefix = s
+		t.DeletePrefix = s
 	}
 	if *tracesJaegerEnabled {
-		cfg.Traces.JaegerEnabled = true
+		t.JaegerEnabled = true
 	}
 	if s := *tracesJaegerGRPC; s != "" {
-		cfg.Traces.JaegerGRPCAddr = s
+		t.JaegerGRPCAddr = s
 	}
+}
 
+func applyTenantFlags(t *config.TenantConfig) {
 	if s := *tenantDefaultAccount; s != "" {
-		cfg.Tenant.DefaultAccount = s
+		t.DefaultAccount = s
 	}
 	if s := *tenantDefaultProject; s != "" {
-		cfg.Tenant.DefaultProject = s
+		t.DefaultProject = s
 	}
 	if s := *tenantHeaderAccount; s != "" {
-		cfg.Tenant.HeaderAccount = s
+		t.HeaderAccount = s
 	}
 	if s := *tenantHeaderProject; s != "" {
-		cfg.Tenant.HeaderProject = s
+		t.HeaderProject = s
 	}
 	if s := *tenantGlobalHeader; s != "" {
-		cfg.Tenant.GlobalReadHeader = s
+		t.GlobalReadHeader = s
 	}
 	if s := *tenantGlobalValue; s != "" {
-		cfg.Tenant.GlobalReadValue = s
+		t.GlobalReadValue = s
 	}
 	if s := *tenantGlobalToken; s != "" {
-		cfg.Tenant.GlobalReadToken = s
+		t.GlobalReadToken = s
 	}
 	if s := *tenantIsolation; s != "" {
-		cfg.Tenant.Isolation = s
+		t.Isolation = s
 	}
 	if s := *tenantPrefixTemplate; s != "" {
-		cfg.Tenant.PrefixTemplate = s
+		t.PrefixTemplate = s
 	}
 	if s := *tenantBucketTemplate; s != "" {
-		cfg.Tenant.BucketTemplate = s
+		t.BucketTemplate = s
 	}
 	if s := *tenantDefaultPrefix; s != "" {
-		cfg.Tenant.DefaultPrefix = s
+		t.DefaultPrefix = s
 	}
 	if s := *tenantOrgIDHeader; s != "" {
-		cfg.Tenant.OrgIDHeader = s
+		t.OrgIDHeader = s
 	}
 	if s := *tenantMetricsFormat; s != "" {
-		cfg.Tenant.MetricsFormat = s
+		t.MetricsFormat = s
 	}
 	if *tenantAutoRegister {
-		cfg.Tenant.AutoRegister = true
+		t.AutoRegister = true
 	}
 	if *tenantAliasSyncInterval > 0 {
-		cfg.Tenant.AliasSyncInterval = *tenantAliasSyncInterval
+		t.AliasSyncInterval = *tenantAliasSyncInterval
 	}
 }
 
