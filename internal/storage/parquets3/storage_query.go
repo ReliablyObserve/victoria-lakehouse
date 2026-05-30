@@ -457,6 +457,38 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 		}
 	}
 
+	// Wildcard range-read path (Goal B): when the query has no
+	// projection (projectedCols == nil — wildcard `*` or no field
+	// filter), fall back to the lazy S3 ReaderAt for large files
+	// instead of pulling the whole body into memory. parquet-go
+	// fetches column chunks per row group on demand, so peak
+	// resident memory stays at working-set-row-group bytes rather
+	// than the cumulative-file-bytes that the buffered path pins
+	// for the entire open-decode-emit window.
+	//
+	// Skip this path when L1/L2 cache already has the file
+	// (download is free) — the cache adapter inside getFileData
+	// returns the cached data, and the buffered Reader is the
+	// fast path. Range-read for wildcards on cache hits would
+	// add per-row-group HTTP overhead with no memory benefit.
+	if s.pool != nil && projectedCols == nil && shouldUseWildcardRangeRead(fi.Size) {
+		_, cached := s.memCache.Get(fi.Key)
+		if !cached {
+			rawReader := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
+			buffered := s3reader.NewBufferedReaderAt(rawReader, fi.Size, int64(s.cfg.S3.ReadAheadBytes))
+			readerAt := s3reader.NewCoalescingReaderAt(buffered, fi.Size, int64(s.cfg.S3.CoalesceGapBytes))
+			f, err := parquet.OpenFile(readerAt, fi.Size)
+			if err == nil {
+				metrics.S3RangeReadsTotal.Inc()
+				metrics.ParquetFilesOpened.Inc()
+				return f, nil
+			}
+			// On open failure fall through to the full download
+			// path — same defensive pattern as the projected
+			// range-read paths above.
+		}
+	}
+
 	// Full download path (existing behaviour).
 	data, err := s.getFileData(ctx, fi.Key, fi.Size)
 	if err != nil {

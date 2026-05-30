@@ -25,6 +25,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/resourcebounds"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/smartcache"
@@ -54,7 +55,22 @@ type Storage struct {
 	crossSignalClient *crosssignal.Client
 	selfAZ            string
 	selfFilterEnabled bool
-	dlSem             chan struct{}
+	// dlSem is the legacy channel-based S3 download concurrency
+	// gate. Kept as the wire-level mechanism (preserves observable
+	// semantics 1:1) while s3DownloadsBound provides the K8s-style
+	// request/limit/metrics surface that operators see in dashboards.
+	dlSem            chan struct{}
+	s3DownloadsBound *resourcebounds.Bound
+	// bounds holds the K8s-style request/limit Bound set for all
+	// 5 resource surfaces. Surface owners read their bound here;
+	// the foundation lives in internal/resourcebounds with metric
+	// wiring through internal/metrics. Bounds with no live acquire
+	// site (file workers, cache memory, smart cache disk, query
+	// max rows in this PR) are present for the operator metric
+	// contract — request/limit gauges are populated at startup so
+	// dashboards render the K8s-style triple even before the
+	// runtime acquire path is migrated to the bound.
+	bounds *resourceBoundSet
 }
 
 func New(cfg *config.Config) (*Storage, error) {
@@ -126,7 +142,17 @@ func New(cfg *config.Config) (*Storage, error) {
 		ph = peercache.NewHandler(cfg.Peer.AuthKey, "")
 	}
 
-	maxDL := cfg.S3.MaxConcurrentDownloads
+	// K8s-style request/limit bounds for all 5 resource surfaces.
+	// Bound construction populates the per-surface request/limit
+	// info gauges at startup, emits a deprecation warning when any
+	// legacy single-value alias is set, and exposes the Acquire
+	// path for surfaces that wire through the bound (S3 downloads
+	// today). Bounds for the remaining 4 surfaces are constructed
+	// for metric exposure only; the wire-level enforcement remains
+	// in the legacy mechanism (channel/sem/eviction/MaxRows check).
+	bounds := newResourceBoundSet(cfg)
+	s3DownloadsBound := bounds.S3Downloads
+	maxDL := int(s3DownloadsBound.Config().Limit)
 	if maxDL <= 0 {
 		maxDL = 16
 	}
@@ -224,6 +250,8 @@ func New(cfg *config.Config) (*Storage, error) {
 		fileBloomCache:    bfc,
 		crossSignalClient: csClient,
 		dlSem:             make(chan struct{}, maxDL),
+		s3DownloadsBound:  s3DownloadsBound,
+		bounds:            bounds,
 	}
 
 	if bw != nil {
@@ -339,6 +367,20 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 		select {
 		case s.dlSem <- struct{}{}:
 			defer func() { <-s.dlSem }()
+			// Once the channel admits us we tick the K8s-style bound
+			// for metric visibility (request/limit/acquired/outstanding
+			// gauges read by operator dashboards). Acquire MUST come
+			// AFTER the channel claim — the channel is the wire-level
+			// blocking gate, and acquiring the bound first would
+			// double-gate under contention (both carry the same Limit
+			// semantics). The bound's release runs from the deferred
+			// release; bound errors here are non-fatal (the download
+			// already has its slot).
+			if s.s3DownloadsBound != nil {
+				if relBound, boundErr := s.s3DownloadsBound.Acquire(ctx, 1); boundErr == nil {
+					defer relBound()
+				}
+			}
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}

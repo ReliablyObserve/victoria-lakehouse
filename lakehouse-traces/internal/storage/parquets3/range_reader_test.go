@@ -57,3 +57,26 @@ func TestShouldUseRangeRead(t *testing.T) {
 // NOTE: TestEstimateColumnChunkBytes is skipped because the
 // estimateColumnChunkBytes function does not exist in the traces module.
 // The traces range_reader.go only contains shouldUseRangeRead.
+
+func TestShouldUseWildcardRangeRead(t *testing.T) {
+	// Below cutoff: full download
+	if shouldUseWildcardRangeRead(1 * 1024 * 1024) {
+		t.Error("1 MiB file should not use wildcard range read")
+	}
+	if shouldUseWildcardRangeRead(minFileSizeForWildcardRangeRead - 1) {
+		t.Error("just below cutoff should not use wildcard range read")
+	}
+
+	// At/above cutoff
+	if !shouldUseWildcardRangeRead(minFileSizeForWildcardRangeRead) {
+		t.Error("at cutoff should use wildcard range read")
+	}
+	if !shouldUseWildcardRangeRead(30 * 1024 * 1024) {
+		t.Error("30 MiB file (production-typical) should use wildcard range read")
+	}
+
+	// Zero/negative
+	if shouldUseWildcardRangeRead(0) {
+		t.Error("zero file size should not use wildcard range read")
+	}
+}
