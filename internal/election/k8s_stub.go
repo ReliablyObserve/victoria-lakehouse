@@ -17,9 +17,12 @@
 // noop fallback instead of silently never electing.
 //
 // To re-enable the real in-cluster K8s leader election, rebuild with
-//   make build BUILD_TAGS=k8s_election
+//
+//	make build BUILD_TAGS=k8s_election
+//
 // or for Docker
-//   docker build --build-arg BUILD_TAGS=k8s_election ...
+//
+//	docker build --build-arg BUILD_TAGS=k8s_election ...
 package election
 
 import (
