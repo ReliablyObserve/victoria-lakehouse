@@ -214,6 +214,38 @@ Related rules (memories): `feedback_per_component_verification`,
    These failures are outside the scope of the 22-row matrix sweep
    (T8/T8a are listed as PASS in the matrix as of 2026-05-29 but the
    probe is currently failing — track as P0).
+9. **Binary bloat** — LH binaries are **2.6× larger than VL/VT
+   upstream** (being addressed in PR #96):
+
+   | Binary | Size (`-ldflags="-s -w"`) |
+   |---|---|
+   | `lakehouse-logs` | 55 MB |
+   | `lakehouse-traces` | 55 MB |
+   | VL upstream `victoria-logs` v1.50.0 | ~21 MB |
+   | VT upstream `victoria-traces` v0.9.0 | 20.9 MB |
+
+   Reproduce:
+   ```bash
+   GOWORK=off go build -ldflags="-s -w" -o /tmp/lh-logs ./cmd/lakehouse-logs
+   cd lakehouse-traces && GOWORK=off go build -ldflags="-s -w" -o /tmp/lh-traces .
+   docker exec victoria-lakehouse-victorialogs-1 ls -lh /victoria-logs-prod
+   docker exec victoria-lakehouse-victoriatraces-1 ls -lh /victoria-traces-prod
+   ```
+
+   Likely contributors (need bloat analysis to confirm via
+   `go tool nm` / `go-binsize-tree`):
+   - AWS SDK v2 — full S3 client + signers + transport stack
+   - `parquet-go` — encoders/decoders for all logical types
+   - Both modules transitively import the same shared `internal/`
+     packages (cache, smartcache, manifest, resourcebounds,
+     vlstorage, etc.) so each binary carries the whole footprint
+   - Helm, kubectl, K8s API clients pulled in by lifecycle code
+   - Both VL AND VT linked into `lakehouse-traces` (via deps fork)
+
+   User impact: image pull time (~3× longer cold-start in K8s),
+   registry storage, container startup latency. PR #96 in progress:
+   client-go/rest only + remove healthcheck binary + zstd
+   compression. Target ≤2× upstream (40-45 MB).
 
 ### L12 — `_stream_id` must be populated (100% VL API compat)
 
