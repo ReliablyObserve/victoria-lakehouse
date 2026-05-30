@@ -20,22 +20,12 @@ func TestNewResourceBoundSet_DefaultsPopulated(t *testing.T) {
 		t.Fatal("newResourceBoundSet returned nil")
 	}
 
-	type expect struct {
-		name        string
-		bound       interface{ Config() Cfg }
-		minRequest  int64
-		minLimit    int64
-		needsCount  bool // S3 + file workers use LimitCount
-		countActive bool
-	}
-	_ = expect{} // shape kept for documentation
-
 	// All five bounds must have non-zero limit so operator dashboards
 	// show the contract. Request may equal Limit (flat) when only the
 	// legacy alias is set; both must be > 0.
 	cases := []struct {
-		name      string
-		req, lim  int64
+		name     string
+		req, lim int64
 	}{
 		{"S3Downloads", set.S3Downloads.Config().Request, set.S3Downloads.Config().Limit},
 		{"FileWorkers", set.FileWorkers.Config().Request, set.FileWorkers.Config().Limit},
@@ -56,18 +46,6 @@ func TestNewResourceBoundSet_DefaultsPopulated(t *testing.T) {
 			}
 		})
 	}
-}
-
-// Cfg is a workaround for the test file living in the parquets3
-// package — we can't import resourcebounds.Config without a cycle
-// risk on certain builds, so we use the type alias here for
-// documentation only. The actual type checked at compile time is
-// resourcebounds.Config because Config() returns that.
-type Cfg = struct {
-	Request    int64
-	Limit      int64
-	LimitCount int
-	Policy     int
 }
 
 // TestNewResourceBoundSet_S3DeprecatedAliasHonored verifies that
