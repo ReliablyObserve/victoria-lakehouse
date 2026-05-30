@@ -284,3 +284,57 @@ var (
 	DeleteVerifyTotal           = NewCounter("lakehouse_delete_verify_total")
 	DeleteVerifyLeakDetected    = NewCounter("lakehouse_delete_verify_leak_detected_total")
 )
+
+// Resource bound metrics — K8s-style request/limit/usage per resource surface.
+// One block of four (acquired_total counter, rejected_total counter,
+// outstanding_bytes gauge, outstanding_count gauge) per surface, matching
+// the lakehouse_resourcebound_<surface>_* shape declared in the
+// internal/resourcebounds package. Operator dashboards key on this prefix
+// to render the request/limit/usage triple per resource.
+//
+// Surfaces (5):
+//   - s3_concurrent_downloads (count-only; the byte gauge is 0 by design)
+//   - query_file_workers (count-only)
+//   - cache_memory (size + count)
+//   - smart_cache_disk (size + count)
+//   - query_max_rows (count-only; counts rows admitted vs ceiling)
+var (
+	ResourceBoundS3ConcurrentDownloadsAcquired         = NewCounter("lakehouse_resourcebound_s3_concurrent_downloads_acquired_total")
+	ResourceBoundS3ConcurrentDownloadsRejected         = NewCounter("lakehouse_resourcebound_s3_concurrent_downloads_rejected_total")
+	ResourceBoundS3ConcurrentDownloadsOutstandingBytes = NewGauge("lakehouse_resourcebound_s3_concurrent_downloads_outstanding_bytes")
+	ResourceBoundS3ConcurrentDownloadsOutstandingCount = NewGauge("lakehouse_resourcebound_s3_concurrent_downloads_outstanding_count")
+
+	ResourceBoundQueryFileWorkersAcquired         = NewCounter("lakehouse_resourcebound_query_file_workers_acquired_total")
+	ResourceBoundQueryFileWorkersRejected         = NewCounter("lakehouse_resourcebound_query_file_workers_rejected_total")
+	ResourceBoundQueryFileWorkersOutstandingBytes = NewGauge("lakehouse_resourcebound_query_file_workers_outstanding_bytes")
+	ResourceBoundQueryFileWorkersOutstandingCount = NewGauge("lakehouse_resourcebound_query_file_workers_outstanding_count")
+
+	ResourceBoundCacheMemoryAcquired         = NewCounter("lakehouse_resourcebound_cache_memory_acquired_total")
+	ResourceBoundCacheMemoryRejected         = NewCounter("lakehouse_resourcebound_cache_memory_rejected_total")
+	ResourceBoundCacheMemoryOutstandingBytes = NewGauge("lakehouse_resourcebound_cache_memory_outstanding_bytes")
+	ResourceBoundCacheMemoryOutstandingCount = NewGauge("lakehouse_resourcebound_cache_memory_outstanding_count")
+
+	ResourceBoundSmartCacheDiskAcquired         = NewCounter("lakehouse_resourcebound_smart_cache_disk_acquired_total")
+	ResourceBoundSmartCacheDiskRejected         = NewCounter("lakehouse_resourcebound_smart_cache_disk_rejected_total")
+	ResourceBoundSmartCacheDiskOutstandingBytes = NewGauge("lakehouse_resourcebound_smart_cache_disk_outstanding_bytes")
+	ResourceBoundSmartCacheDiskOutstandingCount = NewGauge("lakehouse_resourcebound_smart_cache_disk_outstanding_count")
+
+	ResourceBoundQueryMaxRowsAcquired         = NewCounter("lakehouse_resourcebound_query_max_rows_acquired_total")
+	ResourceBoundQueryMaxRowsRejected         = NewCounter("lakehouse_resourcebound_query_max_rows_rejected_total")
+	ResourceBoundQueryMaxRowsOutstandingBytes = NewGauge("lakehouse_resourcebound_query_max_rows_outstanding_bytes")
+	ResourceBoundQueryMaxRowsOutstandingCount = NewGauge("lakehouse_resourcebound_query_max_rows_outstanding_count")
+
+	// Per-resource request/limit info gauges (set once at startup and
+	// after any runtime reconfiguration). Operators read these to size
+	// container resources against the sum of memory-class limits.
+	ResourceBoundS3ConcurrentDownloadsRequest    = NewGauge("lakehouse_resourcebound_s3_concurrent_downloads_request")
+	ResourceBoundS3ConcurrentDownloadsLimit      = NewGauge("lakehouse_resourcebound_s3_concurrent_downloads_limit")
+	ResourceBoundQueryFileWorkersRequest         = NewGauge("lakehouse_resourcebound_query_file_workers_request")
+	ResourceBoundQueryFileWorkersLimit           = NewGauge("lakehouse_resourcebound_query_file_workers_limit")
+	ResourceBoundCacheMemoryRequest              = NewGauge("lakehouse_resourcebound_cache_memory_request")
+	ResourceBoundCacheMemoryLimit                = NewGauge("lakehouse_resourcebound_cache_memory_limit")
+	ResourceBoundSmartCacheDiskRequest           = NewGauge("lakehouse_resourcebound_smart_cache_disk_request")
+	ResourceBoundSmartCacheDiskLimit             = NewGauge("lakehouse_resourcebound_smart_cache_disk_limit")
+	ResourceBoundQueryMaxRowsRequest             = NewGauge("lakehouse_resourcebound_query_max_rows_request")
+	ResourceBoundQueryMaxRowsLimit               = NewGauge("lakehouse_resourcebound_query_max_rows_limit")
+)
