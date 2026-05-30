@@ -204,8 +204,18 @@ type S3Config struct {
 	RetryMax               int           `yaml:"retry_max"`
 	RetryBaseDelay         time.Duration `yaml:"retry_base_delay"`
 	MaxConcurrentDownloads int           `yaml:"max_concurrent_downloads"`
-	ReadAheadBytes         int           `yaml:"read_ahead_bytes"`
-	CoalesceGapBytes       int           `yaml:"coalesce_gap_bytes"`
+	// K8s-style request/limit/scaling for S3 download concurrency
+	// (request = always-reserved baseline, limit = hard ceiling,
+	// scaling = ramp policy). When any of these are non-zero they
+	// take precedence over MaxConcurrentDownloads which becomes
+	// a deprecated alias (logs a startup warning once). When all
+	// three are zero, MaxConcurrentDownloads is the live value
+	// (legacy flat behaviour). See internal/resourcebounds.
+	ConcurrentDownloadsRequest int    `yaml:"concurrent_downloads_request"`
+	ConcurrentDownloadsLimit   int    `yaml:"concurrent_downloads_limit"`
+	ConcurrentDownloadsScaling string `yaml:"concurrent_downloads_scaling"`
+	ReadAheadBytes             int    `yaml:"read_ahead_bytes"`
+	CoalesceGapBytes           int    `yaml:"coalesce_gap_bytes"`
 }
 
 type CacheConfig struct {
@@ -220,6 +230,15 @@ type CacheConfig struct {
 	WarmupMaxFiles    int           `yaml:"warmup_max_files"`
 	WarmupConcurrency int           `yaml:"warmup_concurrency"`
 	PartitionMode     string        `yaml:"partition_mode"` // "az-local" (default), "global", "distributed"
+
+	// K8s-style request/limit/scaling for the L1 in-memory cache
+	// budget. When non-zero, these take precedence over MemoryLimit
+	// which becomes a deprecated alias logged once at startup. Sizes
+	// are accepted as Go size strings (e.g. "256MB"). See
+	// internal/resourcebounds.
+	MemoryRequest string `yaml:"memory_request"`
+	MemoryLimitV2 string `yaml:"memory_limit_v2"`
+	MemoryScaling string `yaml:"memory_scaling"`
 }
 
 type DiscoveryConfig struct {
@@ -294,6 +313,25 @@ type QueryConfig struct {
 	// default (defaultMaxLiveBytes in storage/parquets3).
 	MaxLiveBytes  int64         `yaml:"max_live_bytes"`
 	SlowThreshold time.Duration `yaml:"slow_threshold"`
+
+	// K8s-style request/limit/scaling for file workers (process-wide
+	// concurrent parquet-file readers). Same semantics as
+	// S3.ConcurrentDownloads{Request,Limit,Scaling}. When non-zero
+	// these take precedence over FileWorkers which becomes a
+	// deprecated alias logged once at startup. See
+	// internal/resourcebounds.
+	FileWorkersRequest int    `yaml:"file_workers_request"`
+	FileWorkersLimit   int    `yaml:"file_workers_limit"`
+	FileWorkersScaling string `yaml:"file_workers_scaling"`
+
+	// K8s-style request/limit/scaling for the per-query row ceiling.
+	// MaxRows remains the legacy hard limit (also the current Limit
+	// fallback when MaxRowsLimit is zero); MaxRowsRequest is an
+	// operator-visible baseline. Streaming hits the ceiling at
+	// MaxRowsLimit (or MaxRows if not set) regardless of Request.
+	MaxRowsRequest int64  `yaml:"max_rows_request"`
+	MaxRowsLimit   int64  `yaml:"max_rows_limit"`
+	MaxRowsScaling string `yaml:"max_rows_scaling"`
 }
 
 type TenantConfig struct {
@@ -409,6 +447,14 @@ type SmartCacheConfig struct {
 	TargetHours        int           `yaml:"target_hours"`
 	DiskLimitMax       string        `yaml:"disk_limit_max"`
 	IngestionRateHint  string        `yaml:"ingestion_rate_hint"`
+
+	// K8s-style request/limit/scaling for the smart-cache disk budget.
+	// When non-zero, these take precedence over DiskLimitMax which
+	// becomes a deprecated alias logged once at startup. Sizes accepted
+	// as Go size strings (e.g. "50GB"). See internal/resourcebounds.
+	DiskRequest string `yaml:"disk_request"`
+	DiskLimit   string `yaml:"disk_limit"`
+	DiskScaling string `yaml:"disk_scaling"`
 }
 
 type CrossSignalConfig struct {
@@ -1132,6 +1178,15 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	if overlay.S3.MaxConcurrentDownloads > 0 {
 		base.S3.MaxConcurrentDownloads = overlay.S3.MaxConcurrentDownloads
 	}
+	if overlay.S3.ConcurrentDownloadsRequest > 0 {
+		base.S3.ConcurrentDownloadsRequest = overlay.S3.ConcurrentDownloadsRequest
+	}
+	if overlay.S3.ConcurrentDownloadsLimit > 0 {
+		base.S3.ConcurrentDownloadsLimit = overlay.S3.ConcurrentDownloadsLimit
+	}
+	if overlay.S3.ConcurrentDownloadsScaling != "" {
+		base.S3.ConcurrentDownloadsScaling = overlay.S3.ConcurrentDownloadsScaling
+	}
 	if overlay.S3.ReadAheadBytes > 0 {
 		base.S3.ReadAheadBytes = overlay.S3.ReadAheadBytes
 	}
@@ -1163,6 +1218,15 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Cache.PartitionMode != "" {
 		base.Cache.PartitionMode = overlay.Cache.PartitionMode
+	}
+	if overlay.Cache.MemoryRequest != "" {
+		base.Cache.MemoryRequest = overlay.Cache.MemoryRequest
+	}
+	if overlay.Cache.MemoryLimitV2 != "" {
+		base.Cache.MemoryLimitV2 = overlay.Cache.MemoryLimitV2
+	}
+	if overlay.Cache.MemoryScaling != "" {
+		base.Cache.MemoryScaling = overlay.Cache.MemoryScaling
 	}
 
 	// Discovery
@@ -1318,6 +1382,24 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Query.SlowThreshold > 0 {
 		base.Query.SlowThreshold = overlay.Query.SlowThreshold
+	}
+	if overlay.Query.FileWorkersRequest > 0 {
+		base.Query.FileWorkersRequest = overlay.Query.FileWorkersRequest
+	}
+	if overlay.Query.FileWorkersLimit > 0 {
+		base.Query.FileWorkersLimit = overlay.Query.FileWorkersLimit
+	}
+	if overlay.Query.FileWorkersScaling != "" {
+		base.Query.FileWorkersScaling = overlay.Query.FileWorkersScaling
+	}
+	if overlay.Query.MaxRowsRequest > 0 {
+		base.Query.MaxRowsRequest = overlay.Query.MaxRowsRequest
+	}
+	if overlay.Query.MaxRowsLimit > 0 {
+		base.Query.MaxRowsLimit = overlay.Query.MaxRowsLimit
+	}
+	if overlay.Query.MaxRowsScaling != "" {
+		base.Query.MaxRowsScaling = overlay.Query.MaxRowsScaling
 	}
 
 	// Tenant
@@ -1606,6 +1688,15 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.SmartCache.IngestionRateHint != "" {
 		base.SmartCache.IngestionRateHint = overlay.SmartCache.IngestionRateHint
+	}
+	if overlay.SmartCache.DiskRequest != "" {
+		base.SmartCache.DiskRequest = overlay.SmartCache.DiskRequest
+	}
+	if overlay.SmartCache.DiskLimit != "" {
+		base.SmartCache.DiskLimit = overlay.SmartCache.DiskLimit
+	}
+	if overlay.SmartCache.DiskScaling != "" {
+		base.SmartCache.DiskScaling = overlay.SmartCache.DiskScaling
 	}
 
 	// CrossSignal

@@ -91,6 +91,39 @@ var (
 	s3ReadAhead   = flag.Int("lakehouse.s3.read-ahead-bytes", 0, "S3 read-ahead buffer size in bytes (default: 2MB)")
 	s3CoalesceGap = flag.Int("lakehouse.s3.coalesce-gap-bytes", 0, "Merge S3 range reads with gaps smaller than this (default: 64KB)")
 
+	// K8s-style request/limit/scaling for S3 download concurrency
+	// (see internal/resourcebounds). When any of these are non-zero
+	// they take precedence over the deprecated lakehouse.s3.max-concurrent-downloads
+	// flag. Triple defaults: request=4, limit=16, scaling=fixed.
+	s3ConcurrentDownloadsRequest = flag.Int("lakehouse.s3.concurrent-downloads.request", 0, "S3 download concurrency request (always-reserved baseline; default: 4)")
+	s3ConcurrentDownloadsLimit   = flag.Int("lakehouse.s3.concurrent-downloads.limit", 0, "S3 download concurrency limit (hard ceiling; default: 16)")
+	s3ConcurrentDownloadsScaling = flag.String("lakehouse.s3.concurrent-downloads.scaling", "", "S3 download concurrency scaling policy: fixed|linear|expbackoff (default: fixed)")
+	// DEPRECATED: superseded by the request/limit/scaling triple above.
+	// Setting this flag alone still works (logged as deprecation warning
+	// at startup); the value is taken as both request and limit
+	// (flat behaviour). Will be removed in v1.0.
+	s3MaxConcurrentDownloads = flag.Int("lakehouse.s3.max-concurrent-downloads", 0, "DEPRECATED: use -lakehouse.s3.concurrent-downloads.{request,limit,scaling}. Flat S3 download concurrency (default: 16).")
+
+	// K8s-style request/limit/scaling for query.file_workers.
+	queryFileWorkersRequest = flag.Int("lakehouse.query.file-workers.request", 0, "Query file-workers request (always-reserved baseline)")
+	queryFileWorkersLimit   = flag.Int("lakehouse.query.file-workers.limit", 0, "Query file-workers limit (hard ceiling)")
+	queryFileWorkersScaling = flag.String("lakehouse.query.file-workers.scaling", "", "Query file-workers scaling policy: fixed|linear|expbackoff")
+
+	// K8s-style request/limit/scaling for cache.memory (in-memory L1).
+	cacheMemoryRequest = flag.String("lakehouse.cache.memory.request", "", "Cache memory request (Go size string, e.g. 64MB)")
+	cacheMemoryLimit   = flag.String("lakehouse.cache.memory.limit", "", "Cache memory limit (Go size string, e.g. 256MB)")
+	cacheMemoryScaling = flag.String("lakehouse.cache.memory.scaling", "", "Cache memory scaling policy: fixed|linear|expbackoff")
+
+	// K8s-style request/limit/scaling for smart_cache.disk.
+	smartCacheDiskRequest = flag.String("lakehouse.smart-cache.disk.request", "", "Smart-cache disk request (Go size string)")
+	smartCacheDiskLimit   = flag.String("lakehouse.smart-cache.disk.limit", "", "Smart-cache disk limit (Go size string)")
+	smartCacheDiskScaling = flag.String("lakehouse.smart-cache.disk.scaling", "", "Smart-cache disk scaling policy: fixed|linear|expbackoff")
+
+	// K8s-style request/limit/scaling for query.max_rows.
+	queryMaxRowsRequest = flag.Int64("lakehouse.query.max-rows.request", 0, "Query max-rows request (operator-visible baseline)")
+	queryMaxRowsLimit   = flag.Int64("lakehouse.query.max-rows.limit", 0, "Query max-rows limit (hard ceiling)")
+	queryMaxRowsScaling = flag.String("lakehouse.query.max-rows.scaling", "", "Query max-rows scaling policy: fixed|linear|expbackoff")
+
 	logsBloomColumns = flag.String("lakehouse.logs.bloom-columns", "", "Comma-separated bloom filter columns for logs (default: service.name)")
 	logsDeletePrefix = flag.String("lakehouse.logs.delete-prefix", "", "Delete API prefix (default: /delete/logsql)")
 
@@ -886,6 +919,54 @@ func applyFlags(cfg *config.Config) {
 	}
 	if *s3CoalesceGap > 0 {
 		cfg.S3.CoalesceGapBytes = *s3CoalesceGap
+	}
+	if *s3MaxConcurrentDownloads > 0 {
+		cfg.S3.MaxConcurrentDownloads = *s3MaxConcurrentDownloads
+	}
+	if *s3ConcurrentDownloadsRequest > 0 {
+		cfg.S3.ConcurrentDownloadsRequest = *s3ConcurrentDownloadsRequest
+	}
+	if *s3ConcurrentDownloadsLimit > 0 {
+		cfg.S3.ConcurrentDownloadsLimit = *s3ConcurrentDownloadsLimit
+	}
+	if s := *s3ConcurrentDownloadsScaling; s != "" {
+		cfg.S3.ConcurrentDownloadsScaling = s
+	}
+	if *queryFileWorkersRequest > 0 {
+		cfg.Query.FileWorkersRequest = *queryFileWorkersRequest
+	}
+	if *queryFileWorkersLimit > 0 {
+		cfg.Query.FileWorkersLimit = *queryFileWorkersLimit
+	}
+	if s := *queryFileWorkersScaling; s != "" {
+		cfg.Query.FileWorkersScaling = s
+	}
+	if s := *cacheMemoryRequest; s != "" {
+		cfg.Cache.MemoryRequest = s
+	}
+	if s := *cacheMemoryLimit; s != "" {
+		cfg.Cache.MemoryLimitV2 = s
+	}
+	if s := *cacheMemoryScaling; s != "" {
+		cfg.Cache.MemoryScaling = s
+	}
+	if s := *smartCacheDiskRequest; s != "" {
+		cfg.SmartCache.DiskRequest = s
+	}
+	if s := *smartCacheDiskLimit; s != "" {
+		cfg.SmartCache.DiskLimit = s
+	}
+	if s := *smartCacheDiskScaling; s != "" {
+		cfg.SmartCache.DiskScaling = s
+	}
+	if *queryMaxRowsRequest > 0 {
+		cfg.Query.MaxRowsRequest = *queryMaxRowsRequest
+	}
+	if *queryMaxRowsLimit > 0 {
+		cfg.Query.MaxRowsLimit = *queryMaxRowsLimit
+	}
+	if s := *queryMaxRowsScaling; s != "" {
+		cfg.Query.MaxRowsScaling = s
 	}
 	if t := *topology; t != "" {
 		cfg.Topology = config.Topology(t)
