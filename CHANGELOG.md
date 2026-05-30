@@ -7,8 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `internal/resourcebounds` package — generalises the in-tree `fileBudget` semantics into a reusable `ResourceBound` primitive with K8s-style `Request` (always-reserved baseline), `Limit` (hard ceiling, enforced via blocking `Acquire`), `LimitCount` (per-holder count cap), and `ScalingPolicy` enum (`Fixed`, `LinearGrowth`, `ExponentialBackoff`). Preserves the legacy outlier-admit semantics (single oversized holder admitted alone when pool empty) so individual large parquet files remain processable. Includes `PrometheusSink` adapter and `Resolve` helper that handles the operator-facing flag triple resolution (new triple takes precedence, deprecated alias falls back with one-time warning).
+- 30 new per-surface metrics in `internal/metrics/lakehouse.go` — `lakehouse_resourcebound_<surface>_{acquired,rejected,outstanding_bytes,outstanding_count}_total` + `_request` / `_limit` info gauges, for all 5 surfaces (s3_concurrent_downloads, query_file_workers, cache_memory, smart_cache_disk, query_max_rows).
+- Five operator-facing K8s-style flag triples:
+  - `-lakehouse.s3.concurrent-downloads.{request,limit,scaling}`
+  - `-lakehouse.query.file-workers.{request,limit,scaling}`
+  - `-lakehouse.cache.memory.{request,limit,scaling}`
+  - `-lakehouse.smart-cache.disk.{request,limit,scaling}`
+  - `-lakehouse.query.max-rows.{request,limit,scaling}`
+- `shouldUseWildcardRangeRead` in both `internal/storage/parquets3/range_reader.go` and `lakehouse-traces/internal/storage/parquets3/range_reader.go` — switch that opens parquet files via lazy S3 ReaderAt instead of buffered full download for wildcard queries on files >=4MiB. Bounds wildcard heap to working-set-row-group bytes (<10MiB/file) instead of cumulative-file-bytes (16 workers × ~30MiB ≈ 480MiB).
+- Unit tests: 22 in `internal/resourcebounds` (Bound, Resolve, PrometheusSink, ScalingPolicy, fileBudget-legacy-semantics) + 8 in `internal/storage/parquets3/resourcebound_wiring_test.go` (5-surface defaults populated, S3 deprecated alias honored, new triple takes precedence) + 5 across both modules' `range_reader_test.go` covering the wildcard cutoff.
+
+### Changed
+
+- `openParquetFile` (both modules): wildcard (`projectedCols == nil`) queries on files >=4MiB now use lazy S3 ReaderAt + BufferedReaderAt + CoalescingReaderAt chain instead of `bytes.NewReader(getFileData())`. Cache hit short-circuit preserved (no per-row-group HTTP overhead on cached files).
+- `internal/storage/parquets3/storage.go` Storage struct: adds `bounds *resourceBoundSet` and `s3DownloadsBound *resourcebounds.Bound` fields. S3 downloads now tick the new bound for metric visibility (channel-first acquire order preserves wire semantics 1:1 with pre-bound behaviour).
+- Five YAML config field families extended on `S3Config`, `QueryConfig`, `CacheConfig`, `SmartCacheConfig` (additive — the existing single-value fields continue to work as deprecated aliases that fire one startup warning each).
+
+### Deprecated
+
+- `-lakehouse.s3.max-concurrent-downloads` (replaced by `.concurrent-downloads.{request,limit,scaling}` triple)
+- `-lakehouse.query.file-workers` (replaced by `.file-workers.{request,limit,scaling}` triple)
+- `-lakehouse.cache.memory-mb` (replaced by `.memory.{request,limit,scaling}` triple)
+- `smart_cache.disk_limit_max` YAML (replaced by `.disk.{request,limit,scaling}` triple)
+- `-lakehouse.query.max-rows` (replaced by `.max-rows.{request,limit,scaling}` triple)
+- Each fires a one-time startup `logger.Warnf` deprecation warning when set without the corresponding new triple. Behaviour preserved exactly (flat ceiling at alias value). Scheduled for removal in v1.0.
+
 ### Fixed
 
+- 7-day wildcard heap retention: 3 back-to-back 7-day wildcard runs against the production-shape compose stack peak at ~785-815 MiB container RSS post-Goal B (well under the 1.0 GiB target; pre-this-work measured peak was ~1.7 GiB per project history). `lakehouse_s3_range_reads_total` confirms Goal B fires for ~35% of file opens (1062/3063 in the 3-run sweep) — the remainder are either small files (<4MiB cutoff) or projected queries (use the original range-read path).
 - Tombstone validation: inverted time range (StartNs > EndNs) no longer falsely matches files
 - S3 endpoint SSRF protection: validates URL scheme and blocks link-local/cloud metadata IPs
 - Traces `start_time_unix_nano` schema type changed from `TypeTimestampNano` to `TypeInt64` — now returns numeric epoch nanos matching VT format instead of RFC3339 formatted strings

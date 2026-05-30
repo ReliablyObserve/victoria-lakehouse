@@ -83,8 +83,19 @@ lakehouseConfig:
     retry_max: 3
     # -- Base delay between retries (exponential backoff).
     retry_base_delay: 200ms
-    # -- Maximum concurrent S3 downloads per query.
+    # -- DEPRECATED: use concurrent_downloads_request/concurrent_downloads_limit
+    # (the K8s-style request/limit triple). When the triple is unset this flat
+    # value is still honored (request=limit=alias). Removed in v1.0.
     max_concurrent_downloads: 16
+    # -- K8s-style request: always-reserved baseline S3 download concurrency.
+    # Defaults to limit/4 when only legacy max_concurrent_downloads is set.
+    concurrent_downloads_request: 4
+    # -- K8s-style limit: hard ceiling on concurrent S3 downloads.
+    concurrent_downloads_limit: 16
+    # -- K8s-style scaling policy: fixed (default) | linear | expbackoff.
+    # Linear and expbackoff are reserved for future signal-driven scaling
+    # (queue depth, in-flight pressure); fixed behaves as flat ceiling at limit.
+    concurrent_downloads_scaling: fixed
     # -- S3 read-ahead buffer size in bytes (0 = use default 2MB).
     read_ahead_bytes: 0
     # -- Merge S3 range reads with gaps smaller than this in bytes (0 = use default 64KB).
@@ -94,8 +105,16 @@ lakehouseConfig:
   # Cache — Multi-tier L1 (memory) + L2 (disk) cache
   # ---------------------------------------------------------------------------
   cache:
-    # -- L1 memory cache size limit.
+    # -- DEPRECATED: use memory_request/memory_limit_v2 (the K8s-style triple).
+    # Honored as request=limit=alias when triple unset. Removed in v1.0.
     memory_limit: 512MB
+    # -- K8s-style request: baseline L1 memory cache size. Defaults to limit/4
+    # when only legacy memory_limit is set.
+    memory_request: ""
+    # -- K8s-style limit: hard ceiling on L1 memory cache.
+    memory_limit_v2: ""
+    # -- K8s-style scaling policy: fixed | linear | expbackoff.
+    memory_scaling: fixed
     # -- L2 disk cache directory path.
     disk_path: /data/lakehouse/cache
     # -- L2 disk cache size limit.
@@ -250,8 +269,15 @@ lakehouseConfig:
     hot_window: 10m
     # -- Target hours of query data to keep cached.
     target_hours: 24
-    # -- Maximum disk cache size the sizing calculator may recommend.
+    # -- DEPRECATED: use disk_request/disk_limit (the K8s-style triple).
+    # Honored as request=limit=alias when triple unset. Removed in v1.0.
     disk_limit_max: 100GB
+    # -- K8s-style request: baseline smart-cache disk reservation.
+    disk_request: ""
+    # -- K8s-style limit: hard ceiling on smart-cache disk.
+    disk_limit: ""
+    # -- K8s-style scaling policy: fixed | linear | expbackoff.
+    disk_scaling: fixed
     # -- Manual ingestion rate hint for sizing (e.g., "100MB"). Empty = auto-detect.
     ingestion_rate_hint: ""
 
@@ -299,12 +325,26 @@ lakehouseConfig:
     max_concurrent: 32
     # -- Query execution timeout.
     timeout: 60s
-    # -- Maximum rows returned per query.
+    # -- DEPRECATED: use max_rows_request/max_rows_limit (the K8s-style triple).
+    # Honored as request=limit=alias when triple unset. Removed in v1.0.
     max_rows: 10000000
+    # -- K8s-style request: operator-visible baseline (informational).
+    max_rows_request: 0
+    # -- K8s-style limit: hard ceiling on rows per query.
+    max_rows_limit: 0
+    # -- K8s-style scaling policy: fixed | linear | expbackoff.
+    max_rows_scaling: fixed
     # -- Slow query logging threshold.
     slow_threshold: 5s
-    # -- Number of parallel file workers per query.
+    # -- DEPRECATED: use file_workers_request/file_workers_limit (the K8s-style triple).
+    # Honored as request=limit=alias when triple unset. Removed in v1.0.
     file_workers: 8
+    # -- K8s-style request: always-reserved baseline file workers.
+    file_workers_request: 0
+    # -- K8s-style limit: hard ceiling on file workers.
+    file_workers_limit: 0
+    # -- K8s-style scaling policy: fixed | linear | expbackoff.
+    file_workers_scaling: fixed
     # -- Maximum S3 files a single query may scan (0 = use default 500). Queries exceeding this return an error instead of OOM.
     max_files_per_query: 500
 
