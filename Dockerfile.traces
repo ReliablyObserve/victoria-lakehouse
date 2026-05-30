@@ -6,7 +6,11 @@ ARG VL_VERSION=v1.50.0
 # VictoriaLogs at commit a408207c2242 (VictoriaTraces v0.9.0 compatible)
 ARG VL_COMMIT=a408207c2242
 ARG VT_VERSION=v0.9.0
+# FIPS=1 enables Go 1.26+ native FIPS 140-3 mode. See Dockerfile.logs for the
+# full activation matrix.
+ARG FIPS=0
 ENV GOWORK=off
+ENV GOFIPS140=${FIPS:+v1.0.0}
 COPY go.mod go.sum ./
 COPY lakehouse-traces/go.mod lakehouse-traces/go.sum ./lakehouse-traces/
 RUN mkdir -p deps lakehouse-traces/deps && \
@@ -33,18 +37,14 @@ RUN cp /tmp/patches/vt-traces/external.go.src lakehouse-traces/deps/VictoriaTrac
     git apply /tmp/patches/vt-traces/go-mod-replace.patch
 COPY . .
 RUN cp -r lakehouse-traces/deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmui/
-# BUILD_TAGS gates optional, dependency-heavy subsystems out of the slim
-# production image. Default is empty. Pass `--build-arg BUILD_TAGS=k8s_election`
-# to compile in the in-cluster K8s leader elector (adds ~21 MB).
-ARG BUILD_TAGS=""
+# The healthcheck binary (~3 MB) was folded into the main binary as
+# `lakehouse-traces healthcheck` in PR #96. Saves ~10% of image size.
 RUN cd lakehouse-traces && \
-    CGO_ENABLED=0 go build -trimpath -tags "${BUILD_TAGS}" -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}" -o /lakehouse-traces .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /healthcheck ./cmd/healthcheck
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}" -o /lakehouse-traces .
 RUN mkdir -p /data/lakehouse/cache
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=builder /lakehouse-traces /usr/local/bin/lakehouse-traces
-COPY --from=builder /healthcheck /usr/local/bin/healthcheck
 COPY --from=builder --chown=65532:65532 /data/lakehouse /data/lakehouse
 USER nonroot
 EXPOSE 10428

@@ -112,6 +112,19 @@ var (
 )
 
 func main() {
+	// Operator subcommands. Kept ahead of buildinfo/envflag so they don't
+	// require full lakehouse config to run inside a container's HEALTHCHECK
+	// or supply-chain verifier.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "healthcheck":
+			runHealthcheckSubcommand()
+			return
+		case "fips-status":
+			runFIPSStatusSubcommand()
+			return
+		}
+	}
 	buildinfo.Init()
 	envflag.Parse()
 
@@ -1056,4 +1069,47 @@ func (a *manifestQuerierAdapter) GetFilesForRange(startNs, endNs int64) []delete
 		}
 	}
 	return result
+}
+
+// runHealthcheckSubcommand performs a tiny HTTP probe of the running server's
+// /health endpoint and exits non-zero on failure. It replaces the previous
+// standalone /usr/local/bin/healthcheck binary (~3 MB) which was COPY'd into
+// the image purely for HEALTHCHECK lines and Docker compose healthchecks.
+//
+// Usage: `lakehouse-logs healthcheck [URL]` (default: http://localhost:9428/health)
+func runHealthcheckSubcommand() {
+	url := "http://localhost:9428/health"
+	if len(os.Args) > 2 {
+		url = os.Args[2]
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, url, nil) // #nosec G107 -- URL is from CLI arg
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "health check failed: %v\n", err)
+		os.Exit(1)
+	}
+	resp, err := client.Do(req) // #nosec G107 -- healthcheck binary, URL is hardcoded default or operator CLI arg
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "health check failed: %v\n", err)
+		os.Exit(1)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "health check returned %d\n", resp.StatusCode)
+		os.Exit(1)
+	}
+}
+
+// runFIPSStatusSubcommand prints whether Go's native FIPS 140-3 mode is
+// active in this binary and exits 0 (enabled) or 1 (disabled). Driven by
+// GOFIPS140 build env var and the GODEBUG=fips140=on runtime knob.
+//
+// Usage: `lakehouse-logs fips-status`
+func runFIPSStatusSubcommand() {
+	if fips140Enabled() {
+		fmt.Println("fips140: enabled")
+		os.Exit(0)
+	}
+	fmt.Println("fips140: disabled")
+	os.Exit(1)
 }
