@@ -85,3 +85,32 @@ func TestEstimateColumnChunkBytes(t *testing.T) {
 		t.Errorf("all columns: expected full file %d, got %d", 100*1024, est4)
 	}
 }
+
+func TestShouldUseWildcardRangeRead(t *testing.T) {
+	// Below cutoff: full download (HTTP overhead dominates)
+	if shouldUseWildcardRangeRead(1 * 1024 * 1024) {
+		t.Error("1 MiB file should not use wildcard range read")
+	}
+	if shouldUseWildcardRangeRead(minFileSizeForWildcardRangeRead - 1) {
+		t.Error("just below cutoff should not use wildcard range read")
+	}
+
+	// At and above cutoff: range read for wildcard
+	if !shouldUseWildcardRangeRead(minFileSizeForWildcardRangeRead) {
+		t.Error("at cutoff should use wildcard range read")
+	}
+	if !shouldUseWildcardRangeRead(30 * 1024 * 1024) {
+		t.Error("30 MiB file (production-typical) should use wildcard range read")
+	}
+	if !shouldUseWildcardRangeRead(100 * 1024 * 1024) {
+		t.Error("100 MiB file (outlier) should use wildcard range read")
+	}
+
+	// Zero or negative: don't use (treat as unknown)
+	if shouldUseWildcardRangeRead(0) {
+		t.Error("zero file size should not use wildcard range read")
+	}
+	if shouldUseWildcardRangeRead(-1) {
+		t.Error("negative file size should not use wildcard range read")
+	}
+}
