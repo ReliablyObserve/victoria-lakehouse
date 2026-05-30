@@ -261,6 +261,12 @@ services:
       - "-lakehouse.tenant.orgid-header=X-Scope-OrgID"
       - "-lakehouse.tenant.auto-register=true"
       - "-lakehouse.tenant.metrics-format=name"
+      # VT upstream defaults latencyOffset=30s; for cold tier with 120s
+      # flush interval the freshest span lags by minutes, so the upstream
+      # Jaeger search loop (1m → 6m → 31m windows from end-30s) keeps
+      # returning 0. 10m gives the cold tier enough breathing room for
+      # the expansion to find data on the first wider window.
+      - "-search.latencyOffset=10m"
       - "-loggerLevel=INFO"
     volumes:
       - lakehouse-cache-traces:/data/lakehouse
