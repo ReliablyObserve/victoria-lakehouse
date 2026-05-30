@@ -295,12 +295,28 @@ sect "4: NEGATIVE — delete RoleBinding, expect SA loses create-leases permissi
 # test should fail loudly rather than silently misreporting "RBAC is
 # load-bearing" when we never deleted anything.
 echo "  pre-state: rolebindings in $NS_PRIMARY:"
-kubectl get rolebinding -n "$NS_PRIMARY" --no-headers 2>&1 | head -5
-echo "  deleting RoleBinding ${RELEASE_PRIMARY}-victoria-lakehouse-compaction-leader..."
+kubectl get rolebinding -n "$NS_PRIMARY" --no-headers 2>&1 | head -10
+# The chart creates TWO RoleBindings that grant the insert SA the
+# coordination.k8s.io/leases verbs the elector needs — one per feature
+# that does leader election:
+#
+#   templates/compaction-rbac.yaml  → {{ fullName }}-compaction-leader
+#       (compaction-loop leader election, get/list/create/update/patch)
+#   templates/tenant-rbac.yaml      → {{ fullName }}-{signal}-insert-leader
+#       (tenant-alias leader election, get/create/update)
+#
+# The negative-control "delete the RoleBinding → SA loses permission"
+# claim only holds if we remove BOTH grants.  Deleting just one leaves
+# the other granting the same verbs, `kubectl auth can-i create leases`
+# stays `yes`, and the elector keeps working — which is exactly the
+# 4a/4b failure mode the previous CI run hit.
+echo "  deleting both compaction-leader AND logs-insert-leader RoleBindings..."
 kubectl delete rolebinding -n "$NS_PRIMARY" \
   "${RELEASE_PRIMARY}-victoria-lakehouse-compaction-leader" 2>&1 || true
+kubectl delete rolebinding -n "$NS_PRIMARY" \
+  "${RELEASE_PRIMARY}-victoria-lakehouse-logs-insert-leader" 2>&1 || true
 echo "  post-state: rolebindings in $NS_PRIMARY:"
-kubectl get rolebinding -n "$NS_PRIMARY" --no-headers 2>&1 | head -5
+kubectl get rolebinding -n "$NS_PRIMARY" --no-headers 2>&1 | head -10
 
 # Give the apiserver authorizer cache up to 15s to invalidate.
 # We impersonate the SA with proper group memberships so the apiserver's
