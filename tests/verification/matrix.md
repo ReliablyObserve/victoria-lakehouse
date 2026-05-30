@@ -291,6 +291,28 @@ Related rules (memories): `feedback_per_component_verification`,
      namespace isolation, all PASS in a single-node kind cluster.
    - All existing 8 e2e probes still pass against rebuilt images.
 
+10. **K8s leader-election production failure modes** — COVERED by PR #98
+    on `test/k8s-election-max-coverage`. 10 mandatory Tier 1 production
+    failure modes now have unit + e2e regressions:
+
+    | Item | Risk | Unit test(s) | E2E probe / script | Negative-control proof |
+    |---|---|---|---|---|
+    | 1 | SA token rotation mid-election → 401 after kubelet rotates token | `TestK8sElector_TokenRotation_*` (`internal/election/k8s_token_rotation_test.go`) | `tests/e2e-k8s/test_token_rotation.sh` + `tests/verification/probe_k8s_election_token_rotation.sh` | Remove `os.ReadFile` from `bearerTokenForRequest` → second-request test fails with stale TOKEN-1 header |
+    | 2 | `kubectl delete lease` → elector silently spins on 404 forever | `TestK8sElector_LeaseDeletedExternally_Recreates` (`k8s_failure_modes_test.go`) + `tests/e2e-k8s/test_leader_election.sh` section 6 | `probe_k8s_election_failure_modes.sh` | Comment out the `status == StatusNotFound { return false, nil }` branch in `tryRenew` → renew loop spins forever and test hangs |
+    | 3 | Operator patches holderIdentity to a squatter → elector keeps fighting CAS forever | `TestK8sElector_LeaseEditedExternally_ObservesNewHolder` | `probe_k8s_election_failure_modes.sh` | Remove the `if holder != e.cfg.Identity { return false, nil }` early-return in `tryRenew` → elector never observes squatter, never steps down |
+    | 4 | `automountServiceAccountToken: false` → elector silently disables election | `TestK8sElector_Bootstrap_*` (6 tests) + `TestK8sElector_NoServiceAccountToken_*` | `tests/e2e-k8s/test_no_sa_token.sh` + `probe_k8s_election_startup_errors.sh` | Remove the `os.Stat(config.BearerTokenFile)` pre-flight in `bootstrap()` → no startup error logged, pod silently never becomes leader |
+    | 5 | Apiserver 5xx / timeout → leader holds past RenewDeadline | `TestK8sElector_Apiserver5xx_BacksOffAndStopsOnRenewDeadline` + `TestK8sElector_ApiserverTimeout_StopsOnRenewDeadline` | `probe_k8s_election_failure_modes.sh` | Comment out `if e.clock.Now().Sub(lastRenew) > e.cfg.RenewDeadline { ... return }` in `renewLoop` → loop spins forever on 503s, leader never steps down |
+    | 6 | StatefulSet pod restart → same-identity reclaim waits LeaseDuration instead of seconds | `TestK8sElector_ReclaimsOwnLeaseAfterRestart` + `tests/e2e-k8s/test_leader_election.sh` section 7 | `probe_k8s_election_failure_modes.sh` | Remove `if holder != e.cfg.Identity` guard around `leaseExpired` in `tryAcquire` → restarted pod waits ~15 s (LeaseDuration) instead of ~50 ms |
+    | 7 | Two pods misconfigured with identical identity strings → both believe they lead | `TestK8sElector_SameIdentityTwoCandidates_OneWins` | `probe_k8s_election_failure_modes.sh` | Remove the `StatusConflict` branches in `tryAcquire` → loser errors out instead of treating 409 as "someone else won" |
+    | 8 | Metric drift: operator dashboards/alerts depend on stable `lakehouse_leader_election_*` shape | `TestK8sElector_EmitsExpectedMetrics` + `TestK8sElector_RenewFailure_EmitsResultLabel` + `TestK8sElector_RenewConflict_EmitsResultLabel` + `tests/e2e-k8s/test_leader_election.sh` section 8 (scrape `/metrics`) | `probe_k8s_election_metrics.sh` | Remove any `mh.Inc*` / `mh.Set*` call in `acquireLoop` / `renewLoop` / `Stop` / `observeLeader` → corresponding family fails to fire in the recording-hook unit test |
+    | 9 | `helm upgrade` triggers a rolling restart that wedges leadership for > 30 s | `TestK8sElector_ReclaimsOwnLeaseAfterRestart` (unit path) + `tests/e2e-k8s/test_helm_upgrade.sh` (rolling restart with 5 s sampler, asserts no > 30 s leaderless window) | — (e2e only) | Same as Item 6: remove the same-identity short-circuit → upgrade-time gaps grow from ~5 s to ~15 s per replica, exceeding the 30 s budget when replicas roll sequentially |
+    | 10 | K8s version drift (apiserver behaviour change across versions) | — (matrix-driven) | `.github/workflows/e2e-k8s.yaml` runs all 4 e2e scripts against `kindest/node:v1.29.14` AND `kindest/node:v1.32.5`; fail-fast disabled so both versions' results are visible | Bump only one matrix entry's K8s version and re-run; if a version-specific apiserver behaviour changed, the matrix surfaces it |
+
+    Plus Tier 2 deferred items:
+    - Item 11 (acquisition-latency benchmark) — `BenchmarkK8sElector_AcquireAndRelease_{0,10,50}ms` in `k8s_bench_test.go`; baseline numbers documented in `internal/election/README.md`.
+    - Item 12 (OOMKilled mid-renew) — hermetically un-simulatable; covered indirectly by the real-cluster soak (item 13) when run with chaos toggle on.
+    - Item 13 (1 hour soak with chaos) — `tests/e2e-k8s/test_soak_1hour.sh` (gated by `SOAK=1` env var; off by default in CI).
+
 ### L12 — `_stream_id` must be populated (100% VL API compat)
 
 **Status**: FAIL. Real bug, not "expected divergence".

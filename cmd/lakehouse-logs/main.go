@@ -247,6 +247,12 @@ func run(cfg *config.Config, addr string) {
 
 	var sched *compaction.Scheduler
 	if cfg.Compaction.Enabled {
+		// Wire the lakehouse_leader_election_* metrics so /metrics scrapers
+		// see the 6 metric families (state, acquire, renew, release,
+		// acquire_duration, lease_holder + startup_errors) that PR #98
+		// locks. Safe to call multiple times — only the last hook wins,
+		// but we only have one elector in this process.
+		election.SetMetricsHook(metrics.NewElectionHook())
 		leader := election.NewAutoElector(election.AutoElectorConfig{
 			Mode:    cfg.Compaction.LeaderElection,
 			S3Store: store.Pool(),

@@ -107,3 +107,72 @@ Role, and RoleBinding for `coordination.k8s.io/leases` (`get, list, create,
 update, patch`). The chart's negative-control kind e2e test (`tests/e2e-k8s/`)
 asserts that removing the RoleBinding makes leader election fail loudly with
 a 403 in the logs — so the chart's RBAC is load-bearing, not cosmetic.
+
+## ServiceAccount token rotation (PR #98 Item 1)
+
+The elector reads the SA bearer token via `rest.InClusterConfig` and stores
+the on-disk path (`config.BearerTokenFile`) for re-reads. Every API request
+calls `bearerTokenForRequest` which re-reads the file (kubelet rotates
+projected tokens roughly hourly; without re-reading we would 401 after the
+first rotation). A missing-file read briefly falls back to the cached
+in-memory token so a single FS hiccup doesn't tear down leadership.
+
+## Startup-error surfacing (PR #98 Item 4)
+
+A pod deployed with `automountServiceAccountToken: false` (or any
+misconfigured token projection) has `KUBERNETES_SERVICE_HOST` set but no
+token file. `rest.InClusterConfig` does NOT check the token file; the
+elector's `bootstrap()` does an explicit `os.Stat` and surfaces the
+canonical error `"service account token not found at <path>
+(automountServiceAccountToken disabled?)"`. The error is stored on the
+elector via `StartupError()` so `main.go` can fail loudly at deployment
+time instead of silently never electing.
+
+## Observability metrics (PR #98 Item 8)
+
+The K8sElector emits the following Prometheus metric families. These are
+the operator contract — names and label shapes are locked by
+`k8s_metrics_test.go::TestK8sElector_EmitsExpectedMetrics`.
+
+| Metric | Type | Labels | When emitted |
+|---|---|---|---|
+| `lakehouse_leader_election_state` | gauge | `role`, `lease`, `module` | Acquire → set role=leader → 1; Stop / step-down → role=follower → 1 |
+| `lakehouse_leader_election_acquire_total` | counter | `lease`, `module` | Successful acquire transition |
+| `lakehouse_leader_election_renew_total` | counter | `lease`, `module`, `result` | Each renew attempt (result ∈ success/conflict/failure) |
+| `lakehouse_leader_election_release_total` | counter | `lease`, `module` | Successful release at Stop |
+| `lakehouse_leader_election_acquire_duration_seconds` | histogram | `lease`, `module` | Time from Start to first IsLeader=true |
+| `lakehouse_leader_election_lease_holder` | gauge | `lease`, `module`, `identity` | Set to 1 for the current observed holder; previous holder reset to 0 |
+| `lakehouse_leader_election_startup_errors_total` | counter | `lease`, `module` | Each `bootstrap()` failure (InClusterConfig, SA token, HTTPClient) |
+
+Wiring: `main.go` calls `election.SetMetricsHook(metrics.NewElectionHook())`
+once at startup. The hook is a thin interface in `internal/election` so the
+election package does NOT depend on `internal/metrics` (and its ~190-package
+vmmetrics closure), keeping the dep count under the 340 ceiling enforced by
+`TestElectionDepCount`.
+
+## Benchmarks (PR #98 Item 11)
+
+Acquire-and-release wall time against an httptest fakeAPIServer with
+simulated network latency:
+
+| Scenario | ns/op (M5 Pro, Go 1.26) | Notes |
+|---|---|---|
+| 0 ms latency (LAN-like) | ~1.4 ms | One GET + one POST (fresh lease) |
+| 10 ms latency | ~21 ms | GET + POST round trips |
+| 50 ms latency | ~101 ms | Dominated by network |
+
+These are sequential reference points, not SLOs. Re-run via:
+
+```bash
+GOWORK=off go test -bench=BenchmarkK8sElector -benchmem ./internal/election/
+```
+
+`-count=20` gives p50/p95/p99 distribution.
+
+## K8s version matrix (PR #98 Item 10)
+
+CI runs the kind e2e against K8s **v1.29.14** and **v1.32.5**. Both must
+pass `test_leader_election.sh` (5 base sections + items 6/7/8),
+`test_token_rotation.sh`, `test_no_sa_token.sh`, and
+`test_helm_upgrade.sh`. See `.github/workflows/e2e-k8s.yaml` for the
+matrix definition.

@@ -217,6 +217,35 @@ var (
 	ElectionHealthChecksTotal = NewCounterVec("lakehouse_election_health_checks_total", "result")
 )
 
+// K8s leader-election metrics (PR #98).
+//
+// These are the operator contract for the K8s elector. Names and label
+// shapes MUST NOT drift silently — TestK8sElector_EmitsExpectedMetrics in
+// internal/election locks them via scrape assertions.
+//
+// The CounterVec / GaugeVec helpers only support a single label key, so
+// multi-label metrics (state{role,lease,module}, renew{lease,module,result},
+// holder{lease,module,identity}) are flattened by encoding the extra labels
+// into a single key=value string (e.g. role="leader",lease="x",module="y").
+// The wrappers in ElectionMetricsHook below construct those strings so the
+// emitted Prometheus output preserves the documented multi-label form.
+var (
+	LeaderElectionState        = NewGaugeVec("lakehouse_leader_election_state", "labels")
+	LeaderElectionAcquireTotal = NewCounterVec(
+		"lakehouse_leader_election_acquire_total", "labels")
+	LeaderElectionRenewTotal = NewCounterVec(
+		"lakehouse_leader_election_renew_total", "labels")
+	LeaderElectionReleaseTotal = NewCounterVec(
+		"lakehouse_leader_election_release_total", "labels")
+	LeaderElectionAcquireDuration = NewHistogram(
+		"lakehouse_leader_election_acquire_duration_seconds",
+		[]float64{0.01, 0.05, 0.1, 0.5, 1, 2.5, 5, 10, 30})
+	LeaderElectionLeaseHolder = NewGaugeVec(
+		"lakehouse_leader_election_lease_holder", "labels")
+	LeaderElectionStartupErrors = NewCounterVec(
+		"lakehouse_leader_election_startup_errors_total", "labels")
+)
+
 // Tenant metrics (per-tenant, subject to cardinality cap)
 var (
 	TenantFiles               = NewGaugeVec("lakehouse_tenant_files", "tenant")

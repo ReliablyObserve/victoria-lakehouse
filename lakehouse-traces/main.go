@@ -242,6 +242,9 @@ func run(cfg *config.Config, addr string) {
 
 	var sched *compaction.Scheduler
 	if cfg.Compaction.Enabled {
+		// Wire the lakehouse_leader_election_* metrics; see lakehouse-logs
+		// for the full doc on the 6 metric families locked by PR #98.
+		election.SetMetricsHook(metrics.NewElectionHook())
 		leader := election.NewAutoElector(election.AutoElectorConfig{
 			Mode:    cfg.Compaction.LeaderElection,
 			S3Store: store.Pool(),

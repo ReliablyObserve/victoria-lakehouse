@@ -425,6 +425,58 @@ except Exception:
   fi
 fi
 
+# --------------------- K8s leader-election probes (PR #98) ---------------
+# These run the in-tree unit tests instead of hitting a live container;
+# they're process-local smoke probes that lock the K8s elector's
+# production failure modes (items 1-8 from PR #98 Tier 1). Listed under
+# the matrix sweep so a single `probe_matrix_sweep.sh` invocation hits
+# every row's regression guard in one pass.
+
+if ! skip_row K8S_ELECTION_FAILURE_MODES; then
+  echo "=== K8S_ELECTION_FAILURE_MODES — items 2/3/5/6/7 ==="
+  if bash "$(cd "$(dirname "$0")" && pwd)/probe_k8s_election_failure_modes.sh" >/dev/null 2>&1; then
+    ok "K8S_ELECTION_FAILURE_MODES (lease deleted, lease edited, 5xx, timeout, reclaim, collision)"
+  else
+    fail "K8S_ELECTION_FAILURE_MODES — at least one Item 2/3/5/6/7 regression broke"
+  fi
+fi
+
+if ! skip_row K8S_ELECTION_METRICS; then
+  echo "=== K8S_ELECTION_METRICS — item 8 ==="
+  if bash "$(cd "$(dirname "$0")" && pwd)/probe_k8s_election_metrics.sh" >/dev/null 2>&1; then
+    ok "K8S_ELECTION_METRICS (6 metric families emit with correct labels)"
+  else
+    fail "K8S_ELECTION_METRICS — lakehouse_leader_election_* metrics broken"
+  fi
+fi
+
+if ! skip_row K8S_ELECTION_TOKEN_ROTATION; then
+  echo "=== K8S_ELECTION_TOKEN_ROTATION — item 1 ==="
+  if bash "$(cd "$(dirname "$0")" && pwd)/probe_k8s_election_token_rotation.sh" >/dev/null 2>&1; then
+    ok "K8S_ELECTION_TOKEN_ROTATION (SA token re-read on each API call)"
+  else
+    fail "K8S_ELECTION_TOKEN_ROTATION — token rotation breaks elector"
+  fi
+fi
+
+if ! skip_row K8S_ELECTION_STARTUP_ERRORS; then
+  echo "=== K8S_ELECTION_STARTUP_ERRORS — item 4 ==="
+  if bash "$(cd "$(dirname "$0")" && pwd)/probe_k8s_election_startup_errors.sh" >/dev/null 2>&1; then
+    ok "K8S_ELECTION_STARTUP_ERRORS (bootstrap surfaces missing-SA-token loudly)"
+  else
+    fail "K8S_ELECTION_STARTUP_ERRORS — silent startup failures possible"
+  fi
+fi
+
+if ! skip_row K8S_ELECTION_FAILOVER; then
+  echo "=== K8S_ELECTION_FAILOVER — pre-existing failover probe ==="
+  if bash "$(cd "$(dirname "$0")" && pwd)/probe_k8s_election_failover.sh" >/dev/null 2>&1; then
+    ok "K8S_ELECTION_FAILOVER (acquire → stop → successor)"
+  else
+    fail "K8S_ELECTION_FAILOVER — failover regression"
+  fi
+fi
+
 # ----------------------------- Summary ----------------------------------
 echo ""
 echo "============================================================"

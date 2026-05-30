@@ -35,6 +35,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -113,8 +114,16 @@ type K8sElector struct {
 	// when Start runs; tests inject directly via newK8sElectorForTest.
 	apiBase string
 	client  HTTPDoer
-	bearer  string
-	clock   Clock
+	// bearer holds the cached SA token. When bearerTokenFile is set, the token
+	// is re-read from disk on each API call (kubelet rotates projected SA
+	// tokens roughly hourly; without re-reading we would hit 401 after the
+	// first rotation).
+	bearer string
+	// bearerTokenFile is the on-disk path to the ServiceAccount token. When
+	// non-empty, doRequest re-reads it via bearerTokenForRequest before each
+	// call. Set from rest.Config.BearerTokenFile inside run().
+	bearerTokenFile string
+	clock           Clock
 
 	leader atomic.Bool
 
@@ -122,12 +131,22 @@ type K8sElector struct {
 	// suppress duplicate OnNewLeader callbacks.
 	observedHolder atomic.Value // string
 
+	// startupErr stores any error from run()'s initial InClusterConfig /
+	// HTTPClientFor / ServiceAccount-token check. It is exposed via
+	// StartupError() so callers can fail loudly at deployment time instead of
+	// silently never becoming a leader.
+	startupErr atomic.Value // error
+
 	cancel context.CancelFunc
 	doneCh chan struct{}
 
 	// stopOnce guards Stop's release attempt and cancel call.
 	stopOnce sync.Once
 }
+
+// inClusterTokenPath is the well-known path kubelet mounts the projected SA
+// token at. Override in tests via newK8sElectorForTest.
+const inClusterTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 
 // k8sBackendCompiledIn stays for backward compatibility with AutoElector,
 // which used to consult it to skip a stub backend. With the always-on K8s
@@ -187,13 +206,24 @@ func (e *K8sElector) Stop() {
 		// Best-effort release: if we hold the lease, clear holderIdentity
 		// before tearing down. This is wrapped in a tight deadline so a
 		// hung API server can't block Stop.
-		if e.leader.Load() && e.client != nil {
+		wasLeader := e.leader.Load() && e.client != nil
+		if wasLeader {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			_ = e.releaseLease(ctx)
+			if err := e.releaseLease(ctx); err == nil {
+				getMetricsHook().IncRelease(e.cfg.LeaseName, e.module())
+			}
 		}
 		if e.cancel != nil {
 			e.cancel()
+		}
+		// Update the gauge state synchronously so /metrics reflects the
+		// final state immediately, regardless of whether the renewLoop's
+		// ctx.Done handler races with our e.leader.Store(false) below.
+		if wasLeader {
+			mh := getMetricsHook()
+			mh.SetLeaderState("leader", e.cfg.LeaseName, e.module(), false)
+			mh.SetLeaderState("follower", e.cfg.LeaseName, e.module(), true)
 		}
 	})
 	e.leader.Store(false)
@@ -211,20 +241,10 @@ func (e *K8sElector) run(ctx context.Context) {
 	defer close(e.doneCh)
 
 	if e.client == nil {
-		// First start in a real environment: build the in-cluster client.
-		config, err := rest.InClusterConfig()
-		if err != nil {
-			logger.Errorf("k8s in-cluster config failed: %s", err)
+		if err := e.bootstrap(); err != nil {
+			// bootstrap already logged + recorded startupErr; just exit.
 			return
 		}
-		hc, err := rest.HTTPClientFor(config)
-		if err != nil {
-			logger.Errorf("k8s http client creation failed: %s", err)
-			return
-		}
-		e.client = hc
-		e.apiBase = config.Host
-		e.bearer = config.BearerToken
 	}
 
 	logger.Infof("k8s leader election starting; identity=%s lease=%s/%s lease_duration=%s renew_deadline=%s retry_period=%s",
@@ -247,9 +267,86 @@ func (e *K8sElector) run(ctx context.Context) {
 	}
 }
 
+// bootstrap performs the in-cluster setup: InClusterConfig, ServiceAccount
+// token pre-flight, and HTTPClientFor. On any failure it logs, stores the
+// error in startupErr, increments the startup-errors metric, and returns
+// the wrapped error. The caller (run) treats a non-nil return as
+// "give up; the elector will be inert".
+//
+// Extracted from run() so tests can exercise the failure branches
+// (token-missing, token-stat-failed, HTTPClient-failed) without
+// constructing a real in-cluster environment. Tests inject behaviour by
+// pointing at an alternate config provider via inClusterConfigFunc /
+// httpClientForFunc (the package-level vars below, which production
+// callers do NOT touch).
+func (e *K8sElector) bootstrap() error {
+	config, err := inClusterConfigFunc()
+	if err != nil {
+		wrap := fmt.Errorf("k8s in-cluster config failed: %w", err)
+		logger.Errorf("%s", wrap)
+		e.startupErr.Store(wrap)
+		getMetricsHook().IncStartupError(e.cfg.LeaseName, e.module())
+		return wrap
+	}
+	// Pre-flight: the ServiceAccount token MUST exist. rest.InClusterConfig
+	// only checks for the presence of KUBERNETES_SERVICE_HOST + the CA cert,
+	// NOT the token. A pod deployed with automountServiceAccountToken: false
+	// (or a malformed projection) has KUBERNETES_SERVICE_HOST set but no
+	// token file, and quietly returns a rest.Config with empty BearerToken.
+	// We must reject that loudly so operators see "service account token
+	// not found" at startup instead of "403 Forbidden" forever.
+	if config.BearerTokenFile != "" {
+		if _, err := os.Stat(config.BearerTokenFile); err != nil {
+			if os.IsNotExist(err) {
+				wrap := fmt.Errorf("service account token not found at %s (automountServiceAccountToken disabled?)", config.BearerTokenFile)
+				logger.Errorf("%s", wrap)
+				e.startupErr.Store(wrap)
+				getMetricsHook().IncStartupError(e.cfg.LeaseName, e.module())
+				return wrap
+			}
+			wrap := fmt.Errorf("service account token stat failed at %s: %w", config.BearerTokenFile, err)
+			logger.Errorf("%s", wrap)
+			e.startupErr.Store(wrap)
+			getMetricsHook().IncStartupError(e.cfg.LeaseName, e.module())
+			return wrap
+		}
+	} else if config.BearerToken == "" {
+		// No file path and no in-memory token: nothing to authenticate with.
+		wrap := fmt.Errorf("service account token not found (no BearerToken and no BearerTokenFile in InClusterConfig)")
+		logger.Errorf("%s", wrap)
+		e.startupErr.Store(wrap)
+		getMetricsHook().IncStartupError(e.cfg.LeaseName, e.module())
+		return wrap
+	}
+	hc, err := httpClientForFunc(config)
+	if err != nil {
+		wrap := fmt.Errorf("k8s http client creation failed: %w", err)
+		logger.Errorf("%s", wrap)
+		e.startupErr.Store(wrap)
+		getMetricsHook().IncStartupError(e.cfg.LeaseName, e.module())
+		return wrap
+	}
+	e.client = hc
+	e.apiBase = config.Host
+	e.bearer = config.BearerToken
+	e.bearerTokenFile = config.BearerTokenFile
+	return nil
+}
+
+// Function-pointer indirections so tests can inject a fake in-cluster
+// config provider and HTTPClient builder. Production callers MUST NOT
+// reassign these. The default values are rest.InClusterConfig and
+// rest.HTTPClientFor; bootstrap calls through them.
+var (
+	inClusterConfigFunc = rest.InClusterConfig
+	httpClientForFunc   = rest.HTTPClientFor
+)
+
 // acquireLoop repeatedly attempts to acquire the lease until ctx ends. It
 // returns true when this candidate has become leader.
 func (e *K8sElector) acquireLoop(ctx context.Context) bool {
+	mh := getMetricsHook()
+	start := e.clock.Now()
 	for {
 		if ctx.Err() != nil {
 			return false
@@ -261,6 +358,10 @@ func (e *K8sElector) acquireLoop(ctx context.Context) bool {
 		}
 		if got {
 			e.leader.Store(true)
+			mh.IncAcquire(e.cfg.LeaseName, e.module())
+			mh.ObserveAcquireDuration(e.cfg.LeaseName, e.module(), e.clock.Now().Sub(start).Seconds())
+			mh.SetLeaderState("leader", e.cfg.LeaseName, e.module(), true)
+			mh.SetLeaderState("follower", e.cfg.LeaseName, e.module(), false)
 			logger.Infof("k8s leader elected; identity=%s", e.cfg.Identity)
 			return true
 		}
@@ -280,6 +381,7 @@ func (e *K8sElector) renewLoop(ctx context.Context) {
 	ticker := e.clock.NewTicker(e.cfg.RetryPeriod)
 	defer ticker.Stop()
 
+	mh := getMetricsHook()
 	lastRenew := e.clock.Now()
 
 	for {
@@ -297,15 +399,18 @@ func (e *K8sElector) renewLoop(ctx context.Context) {
 			}
 			ok, err := e.tryRenew(ctx)
 			if err != nil {
+				mh.IncRenew(e.cfg.LeaseName, e.module(), "failure")
 				logger.Warnf("k8s lease renew error; identity=%s err=%s", e.cfg.Identity, err)
 				continue
 			}
 			if !ok {
 				// Conflict: another holder took it. Step down immediately.
+				mh.IncRenew(e.cfg.LeaseName, e.module(), "conflict")
 				logger.Infof("k8s lease lost to another holder; identity=%s", e.cfg.Identity)
 				e.fireStoppedLeading("conflict")
 				return
 			}
+			mh.IncRenew(e.cfg.LeaseName, e.module(), "success")
 			lastRenew = e.clock.Now()
 		}
 	}
@@ -317,6 +422,9 @@ func (e *K8sElector) fireStoppedLeading(reason string) {
 	if !e.leader.CompareAndSwap(true, false) {
 		return
 	}
+	mh := getMetricsHook()
+	mh.SetLeaderState("leader", e.cfg.LeaseName, e.module(), false)
+	mh.SetLeaderState("follower", e.cfg.LeaseName, e.module(), true)
 	logger.Infof("k8s leadership released; identity=%s reason=%s", e.cfg.Identity, reason)
 	if cb := e.cfg.OnStoppedLeading; cb != nil {
 		cb()
@@ -334,6 +442,9 @@ func (e *K8sElector) observeLeader(holder string) {
 		return
 	}
 	e.observedHolder.Store(holder)
+	// Always update the lease-holder gauge so dashboards reflect the current
+	// holder regardless of whether we are leading.
+	getMetricsHook().SetLeaseHolder(e.cfg.LeaseName, e.module(), holder)
 	if cb := e.cfg.OnNewLeader; cb != nil {
 		cb(holder)
 	}
@@ -476,11 +587,19 @@ func (e *K8sElector) tryAcquire(ctx context.Context) (bool, error) {
 }
 
 // tryRenew updates RenewTime on a Lease we already hold. Returns false (no
-// error) when another holder has the lease. Returns true,nil on success.
+// error) when another holder has the lease OR when the lease no longer
+// exists (operator ran `kubectl delete lease`). Returns true,nil on
+// success.
 func (e *K8sElector) tryRenew(ctx context.Context) (bool, error) {
 	current, status, err := e.getLease(ctx)
 	if err != nil {
 		return false, err
+	}
+	if status == http.StatusNotFound {
+		// Lease was deleted out from under us (operator action). Treat as
+		// "lease lost" so the renew loop steps down and the outer loop
+		// re-enters acquireLoop, which then POSTs a fresh lease.
+		return false, nil
 	}
 	if status != http.StatusOK {
 		return false, fmt.Errorf("k8s lease get during renew returned status %d", status)
@@ -578,6 +697,59 @@ func (e *K8sElector) leaseExpired(l *leaseObject) bool {
 	return e.clock.Now().Sub(l.Spec.RenewTime.Time) > dur
 }
 
+// bearerTokenForRequest returns the freshest SA token to attach to a request.
+// If bearerTokenFile is set, the token is re-read from disk on every call —
+// this handles kubelet's periodic rotation of projected SA tokens (default
+// ~1 h). A read failure falls back to the in-memory cached token so a
+// momentary FS hiccup doesn't tear down leadership.
+func (e *K8sElector) bearerTokenForRequest() string {
+	if e.bearerTokenFile == "" {
+		return e.bearer
+	}
+	data, err := os.ReadFile(e.bearerTokenFile)
+	if err != nil {
+		return e.bearer
+	}
+	tok := strings.TrimSpace(string(data))
+	if tok == "" {
+		return e.bearer
+	}
+	// Cache so a successful read survives a subsequent transient failure.
+	e.bearer = tok
+	return tok
+}
+
+// StartupError returns any non-nil error encountered during the elector's
+// in-cluster bootstrap (InClusterConfig, ServiceAccount token check,
+// HTTPClientFor). Callers should poll this after Start to fail loudly at
+// deployment time rather than silently never electing.
+//
+// Returns nil before Start has had a chance to attempt bootstrap, and nil
+// after a successful bootstrap.
+func (e *K8sElector) StartupError() error {
+	if v := e.startupErr.Load(); v != nil {
+		if err, ok := v.(error); ok {
+			return err
+		}
+	}
+	return nil
+}
+
+// module returns a metric-label-safe module identifier ("logs" or "traces")
+// inferred from the lease name. Falls back to "unknown" when the lease
+// doesn't follow the lakehouse-{logs,traces} convention.
+func (e *K8sElector) module() string {
+	name := e.cfg.LeaseName
+	switch {
+	case strings.Contains(name, "logs"):
+		return "logs"
+	case strings.Contains(name, "traces"):
+		return "traces"
+	default:
+		return "unknown"
+	}
+}
+
 // doRequest is the single HTTP roundtrip helper used by all CRUD calls. It
 // returns the raw body, the HTTP status, and any transport error.
 func (e *K8sElector) doRequest(ctx context.Context, method, url string, body []byte) ([]byte, int, error) {
@@ -593,8 +765,8 @@ func (e *K8sElector) doRequest(ctx context.Context, method, url string, body []b
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
-	if e.bearer != "" {
-		req.Header.Set("Authorization", "Bearer "+e.bearer)
+	if tok := e.bearerTokenForRequest(); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	req.Header.Set("User-Agent", "lakehouse-election/1.0")
 	resp, err := e.client.Do(req)

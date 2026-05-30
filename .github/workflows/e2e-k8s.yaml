@@ -49,9 +49,28 @@ env:
 
 jobs:
   leader-election-kind:
-    name: Leader election (kind)
+    name: Leader election (kind k8s ${{ matrix.k8s-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
+    strategy:
+      # Don't cancel sibling matrix runs — we want both versions' results
+      # in the same PR so reviewers can see version-specific failures.
+      fail-fast: false
+      matrix:
+        # PR #98 Item 10: run against at least two K8s versions to catch
+        # version-specific apiserver behaviour changes (CAS semantics, lease
+        # status fields, RBAC evaluation order, etc).
+        #
+        # Pinned to specific patches so this build is reproducible. Bump
+        # both pins together when the lakehouse moves its k8s.io/* deps.
+        # Image SHAs come from https://hub.docker.com/r/kindest/node/tags.
+        include:
+          - k8s-version: "v1.29.14"
+            node-image: "kindest/node:v1.29.14"
+          - k8s-version: "v1.32.5"
+            node-image: "kindest/node:v1.32.5"
+    env:
+      KIND_NODE_IMAGE: ${{ matrix.node-image }}
     steps:
       - uses: actions/checkout@v6
 
@@ -94,10 +113,31 @@ jobs:
         run: |
           helm lint charts/victoria-lakehouse
 
-      - name: Run leader-election e2e
+      - name: Run leader-election e2e (5 sections + items 6/7/8 from PR #98)
         run: |
           export IMAGE
           bash tests/e2e-k8s/test_leader_election.sh
+
+      - name: Run token-rotation e2e (PR #98 Item 1)
+        run: |
+          export IMAGE
+          # Reuse the kind cluster from the previous step? No — each script
+          # creates+deletes its own cluster (SKIP_KIND_CREATE=0). This is
+          # intentional: the negative-control patches in test_no_sa_token
+          # leave the cluster in a state we don't want to bleed across.
+          # Total per-matrix-row cost: ~3 e2e × ~4 min each = ~12 min;
+          # within the 25 min job timeout.
+          bash tests/e2e-k8s/test_token_rotation.sh
+
+      - name: Run no-SA-token e2e (PR #98 Item 4)
+        run: |
+          export IMAGE
+          bash tests/e2e-k8s/test_no_sa_token.sh
+
+      - name: Run helm-upgrade e2e (PR #98 Item 9)
+        run: |
+          export IMAGE
+          bash tests/e2e-k8s/test_helm_upgrade.sh
 
       - name: Dump cluster state on failure
         if: failure()
@@ -109,7 +149,7 @@ jobs:
           echo '=== kubectl get rolebinding -A ==='
           kubectl get rolebinding -A || true
           echo '=== insert pod logs ==='
-          for ns in lh-test-1 lh-test-2; do
+          for ns in lh-test-1 lh-test-2 lh-tokrot lh-sa-good lh-sa-bad lh-upg; do
             for p in $(kubectl get pods -n "$ns" -l app.kubernetes.io/component=logs-insert -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
               echo "--- $ns / $p ---"
               kubectl logs -n "$ns" "$p" --tail=200 || true

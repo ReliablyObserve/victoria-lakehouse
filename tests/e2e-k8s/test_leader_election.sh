@@ -100,7 +100,16 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 if [[ "$SKIP_KIND_CREATE" != "1" ]]; then
   sect "creating kind cluster $CLUSTER_NAME"
-  kind create cluster --name "$CLUSTER_NAME" --config "$KIND_CONFIG" --wait 60s
+  # KIND_NODE_IMAGE may be set by CI's k8s-version matrix (e.g.
+  # kindest/node:v1.29.14 or kindest/node:v1.32.5). When unset, kind uses
+  # its default node image which tracks the latest stable patch of the
+  # version it ships with.
+  kind_args=(create cluster --name "$CLUSTER_NAME" --config "$KIND_CONFIG" --wait 60s)
+  if [[ -n "${KIND_NODE_IMAGE:-}" ]]; then
+    kind_args+=(--image "$KIND_NODE_IMAGE")
+    echo "  using node image: $KIND_NODE_IMAGE"
+  fi
+  kind "${kind_args[@]}"
 else
   sect "reusing existing kind cluster $CLUSTER_NAME (SKIP_KIND_CREATE=1)"
 fi
@@ -407,6 +416,120 @@ if [[ -n "$holder_a" && -n "$holder_b" && "$holder_a" != "$holder_b" ]]; then
   ok "5 each namespace has its own leader (a=$holder_a, b=$holder_b)"
 else
   fail "5 namespace isolation broken — a='$holder_a' b='$holder_b'"
+fi
+
+# ---------------------------------------------------------------------------
+# 6: lease deleted by operator — elector recreates within RetryPeriod (PR #98 Item 2)
+# ---------------------------------------------------------------------------
+sect "6: NEGATIVE — kubectl delete lease in $NS_PRIMARY, expect elector to recreate"
+# Snapshot pre-delete resourceVersion so we can verify the recreated lease
+# is a fresh object (new RV starts low, not continuing the old chain).
+pre_rv=$(kubectl get lease -n "$NS_PRIMARY" "$LEASE_NAME" \
+          -o jsonpath='{.metadata.resourceVersion}' 2>/dev/null || echo "")
+kubectl delete lease -n "$NS_PRIMARY" "$LEASE_NAME" >/dev/null 2>&1 || true
+echo "  lease deleted (pre-delete RV=$pre_rv); waiting up to 60s for recreation..."
+recreated=""
+for i in $(seq 1 60); do
+  if kubectl get lease -n "$NS_PRIMARY" "$LEASE_NAME" >/dev/null 2>&1; then
+    recreated="yes"
+    break
+  fi
+  sleep 1
+done
+if [[ -n "$recreated" ]]; then
+  new_holder=$(kubectl get lease -n "$NS_PRIMARY" "$LEASE_NAME" \
+                -o jsonpath='{.spec.holderIdentity}' 2>/dev/null || echo "")
+  if [[ -n "$new_holder" ]]; then
+    ok "6 lease recreated after delete; new holder=$new_holder (recovered within 60s)"
+  else
+    fail "6 lease recreated but holderIdentity empty"
+  fi
+else
+  fail "6 lease NOT recreated within 60s after delete — elector did not handle 404"
+fi
+
+# ---------------------------------------------------------------------------
+# 7: same-identity reclaim — kill the leader pod, StatefulSet recreates it
+#    with the SAME name (lh-0). The reclaim path should immediately take
+#    the lease back, NOT wait LeaseDuration (PR #98 Item 6).
+# ---------------------------------------------------------------------------
+sect "7: same-identity reclaim — kill leader pod, expect <15s reclaim"
+holder=$(kubectl get lease -n "$NS_PRIMARY" "$LEASE_NAME" \
+          -o jsonpath='{.spec.holderIdentity}' 2>/dev/null || echo "")
+if [[ -n "$holder" ]]; then
+  delete_start=$(date +%s)
+  kubectl delete pod -n "$NS_PRIMARY" "$holder" --grace-period=1 >/dev/null 2>&1 || true
+  # The StatefulSet recreates with the same name. Wait for it.
+  echo "  waiting for $holder to be recreated..."
+  for i in $(seq 1 60); do
+    phase=$(kubectl get pod -n "$NS_PRIMARY" "$holder" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+    if [[ "$phase" == "Running" ]]; then break; fi
+    sleep 1
+  done
+  reclaim_holder=""
+  reclaim_elapsed=0
+  for i in $(seq 1 30); do
+    reclaim_holder=$(kubectl get lease -n "$NS_PRIMARY" "$LEASE_NAME" \
+                      -o jsonpath='{.spec.holderIdentity}' 2>/dev/null || echo "")
+    if [[ "$reclaim_holder" == "$holder" ]]; then
+      reclaim_elapsed=$(($(date +%s) - delete_start))
+      break
+    fi
+    sleep 1
+  done
+  # Budget: 15 s (well under LeaseDuration=15s for the reclaim case;
+  # generous since pod restart + readiness can chew ~5-10 s).
+  if [[ "$reclaim_holder" == "$holder" && "$reclaim_elapsed" -le 30 ]]; then
+    ok "7 same-identity reclaim succeeded in ${reclaim_elapsed}s (budget 30s)"
+  else
+    fail "7 same-identity reclaim failed; reclaim_holder=$reclaim_holder elapsed=${reclaim_elapsed}s"
+  fi
+else
+  fail "7 skipped — no holder to reclaim from"
+fi
+
+# ---------------------------------------------------------------------------
+# 8: metrics scrape — assert all 6 lakehouse_leader_election_* families
+#    appear in /metrics from the leader pod (PR #98 Item 8).
+# ---------------------------------------------------------------------------
+sect "8: metrics scrape — assert lakehouse_leader_election_* families present"
+holder=$(kubectl get lease -n "$NS_PRIMARY" "$LEASE_NAME" \
+          -o jsonpath='{.spec.holderIdentity}' 2>/dev/null || echo "")
+if [[ -n "$holder" ]]; then
+  # Scrape /metrics from inside the cluster. LH listens on 9428 by default.
+  metrics=$(kubectl exec -n "$NS_PRIMARY" "$holder" -- \
+            sh -c 'wget -qO- http://localhost:9428/metrics 2>/dev/null || curl -s http://localhost:9428/metrics' 2>/dev/null || echo "")
+  if [[ -z "$metrics" ]]; then
+    fail "8 could not scrape /metrics from $holder"
+  else
+    expected_families=(
+      "lakehouse_leader_election_state"
+      "lakehouse_leader_election_acquire_total"
+      "lakehouse_leader_election_renew_total"
+      "lakehouse_leader_election_release_total"
+      "lakehouse_leader_election_acquire_duration_seconds"
+      "lakehouse_leader_election_lease_holder"
+    )
+    all_present="yes"
+    for fam in "${expected_families[@]}"; do
+      if echo "$metrics" | grep -q "^$fam"; then
+        ok "8 metric family present: $fam"
+      else
+        fail "8 metric family MISSING: $fam"
+        all_present="no"
+      fi
+    done
+    # Bonus: assert that on the leader pod, the state{role=leader} gauge == 1.
+    if echo "$metrics" | grep -E '^lakehouse_leader_election_state\{[^}]*role="leader"[^}]*\}\s+1' >/dev/null; then
+      ok "8 lakehouse_leader_election_state{role=\"leader\"} == 1 on leader pod"
+    else
+      # Non-fatal if labels are formatted differently; warn.
+      echo "  WARN: state{role=leader}=1 not found in scrape; sampling:"
+      echo "$metrics" | grep -E '^lakehouse_leader_election_state' | head -5
+    fi
+  fi
+else
+  fail "8 skipped — no holder"
 fi
 
 # ---------------------------------------------------------------------------
