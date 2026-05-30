@@ -30,6 +30,18 @@ func NewLRU(maxSize int64) *LRU {
 	}
 }
 
+// Get returns the cached value for key. The returned []byte is the
+// cache-owned buffer — callers MUST NOT mutate it. This share-by-reference
+// behaviour avoids the N-workers × file-size memory blowup that copied
+// every cache hit; with N=16 workers scanning a 24h wildcard window and
+// ~58 cached files (~2 MB each) the copies alone added up to >1 GiB of
+// transient heap pressure, OOM-killing the 2 GiB container.
+//
+// All current call sites (storage.parquets3.getFileData,
+// smartcache.Controller.Get) pass the bytes straight to
+// parquet.OpenFile(bytes.NewReader(...)), which never mutates the input,
+// so sharing is safe. Future call sites that need a mutable copy must do
+// the copy explicitly.
 func (c *LRU) Get(key string) ([]byte, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -38,9 +50,7 @@ func (c *LRU) Get(key string) ([]byte, bool) {
 		c.order.MoveToFront(el)
 		c.hits++
 		e := el.Value.(*entry)
-		dst := make([]byte, len(e.val))
-		copy(dst, e.val)
-		return dst, true
+		return e.val, true
 	}
 	c.misses++
 	return nil, false

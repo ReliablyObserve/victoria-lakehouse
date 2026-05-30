@@ -640,3 +640,126 @@ func TestRunQuery_WithPipes(t *testing.T) {
 		t.Fatalf("RunQuery with pipes: %v", err)
 	}
 }
+
+// recordingStore wraps mockStore but captures the *logstorage.Query passed
+// to RunQuery so tests can assert structural properties of what the
+// storage backend actually received.
+type recordingStore struct {
+	mockStore
+	lastQuery *logstorage.Query
+	called    bool
+}
+
+func (r *recordingStore) RunQuery(_ context.Context, _ []logstorage.TenantID, q *logstorage.Query, _ logstorage.WriteDataBlockFunc) error {
+	r.called = true
+	r.lastQuery = q
+	return nil
+}
+
+// TestRunQuery_PreservesPipesToStorage is the structural regression lock for
+// the "0 results with tag filter" bug (mirror of the lakehouse-traces fix).
+// The adapter MUST pass the FULL query (with pipes intact) to a.store.RunQuery
+// so the storage layer's column-projection planning can see fields referenced
+// only by pipes (e.g. `| fields _time, trace_id`).
+//
+// If anyone re-introduces logstorage.CloneWithoutPipes here, the storage
+// projection silently drops pipe-referenced columns, the emitted DataBlocks
+// lack those fields, and downstream pipes yield zero rows.
+//
+// Negative-control procedure: in vlstorage.go, change the RunQuery call
+// inside the QueryHasPipes branch back to use
+// `filterOnly := logstorage.CloneWithoutPipes(qctx.Query)` and pass
+// filterOnly. This test MUST fail. Then restore the fix and it MUST pass.
+func TestRunQuery_PreservesPipesToStorage(t *testing.T) {
+	tests := []struct {
+		name     string
+		queryStr string
+	}{
+		{
+			name:     "fields pipe (logs trace-correlation shape)",
+			queryStr: `service.name:="api-gateway" | fields _time, _msg, trace_id`,
+		},
+		{
+			name:     "stats pipe",
+			queryStr: `* | stats count() rows`,
+		},
+		{
+			name:     "limit pipe",
+			queryStr: `level:="error" | limit 100`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rs := &recordingStore{}
+			a := &adapter{store: rs}
+
+			q, err := logstorage.ParseQuery(tt.queryStr)
+			if err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			qctx := &logstorage.QueryContext{
+				Context:    context.Background(),
+				TenantIDs:  []logstorage.TenantID{{AccountID: 0, ProjectID: 0}},
+				Query:      q,
+				QueryStats: &logstorage.QueryStats{},
+			}
+			if err := a.RunQuery(qctx, func(_ uint, _ *logstorage.DataBlock) {}); err != nil {
+				t.Fatalf("RunQuery error: %v", err)
+			}
+			if !rs.called {
+				t.Fatal("expected store.RunQuery to be called")
+			}
+			if rs.lastQuery == nil {
+				t.Fatal("expected store.RunQuery to receive a non-nil query")
+			}
+			if !logstorage.QueryHasPipes(rs.lastQuery) {
+				t.Fatalf("REGRESSION: storage received a pipe-stripped query for %q.\n"+
+					"  Storage layer relies on logstorage.GetQueryPipeFields() to expand\n"+
+					"  the parquet column projection. Without pipes, fields referenced only\n"+
+					"  by pipes (e.g. `| fields trace_id`) are dropped from the projection.",
+					tt.queryStr)
+			}
+		})
+	}
+}
+
+// TestRunQuery_PipeReferencedFieldsReachProjection verifies the specific
+// trace_id projection path: a query whose filter does NOT reference
+// trace_id, but whose `| fields _time, trace_id` pipe does. After the fix,
+// the storage must receive a query where GetQueryPipeFields includes
+// trace_id, so the projection planner can include that parquet column.
+func TestRunQuery_PipeReferencedFieldsReachProjection(t *testing.T) {
+	rs := &recordingStore{}
+	a := &adapter{store: rs}
+
+	queryStr := `service.name:="api-gateway" | fields _time, _msg, trace_id`
+	q, err := logstorage.ParseQuery(queryStr)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	qctx := &logstorage.QueryContext{
+		Context:    context.Background(),
+		TenantIDs:  []logstorage.TenantID{{AccountID: 0, ProjectID: 0}},
+		Query:      q,
+		QueryStats: &logstorage.QueryStats{},
+	}
+	if err := a.RunQuery(qctx, func(_ uint, _ *logstorage.DataBlock) {}); err != nil {
+		t.Fatalf("RunQuery error: %v", err)
+	}
+	if rs.lastQuery == nil {
+		t.Fatal("expected store.RunQuery to receive a non-nil query")
+	}
+
+	pipeFields := logstorage.GetQueryPipeFields(rs.lastQuery)
+	var sawTraceID bool
+	for _, f := range pipeFields {
+		if f == "trace_id" {
+			sawTraceID = true
+		}
+	}
+	if !sawTraceID {
+		t.Errorf("REGRESSION: trace_id missing from GetQueryPipeFields for query %q; "+
+			"projection will drop trace_id column. Got pipeFields=%v",
+			queryStr, pipeFields)
+	}
+}

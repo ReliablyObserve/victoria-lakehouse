@@ -490,3 +490,118 @@ func TestInterfaceCompliance(t *testing.T) {
 		t.Fatal("adapter.store should not be nil")
 	}
 }
+
+// TestRunQuery_PreservesPipesToStorage is the structural regression lock for
+// the Jaeger / Tempo "0 traces with tag filter" bug. The adapter MUST pass the
+// FULL query (with pipes intact) to a.store.RunQuery so the storage layer's
+// column-projection planning can see fields referenced only by pipes (e.g.
+// `| fields _time, trace_id` or `| partition by (trace_id)`).
+//
+// If anyone re-introduces CloneWithoutPipes here, the storage projection
+// will silently exclude pipe-referenced columns, the emitted DataBlocks
+// will lack `trace_id`, and `partition by (trace_id)` will yield zero rows
+// — exactly the bug this test guards against.
+//
+// Negative-control procedure: in adapter.go, change the three RunQuery
+// call sites back to `filterOnly := logstorage.CloneWithoutPipes(...)`
+// and pass filterOnly. This test MUST fail. Then restore the fix and it
+// MUST pass. That is the regression lock.
+func TestRunQuery_PreservesPipesToStorage(t *testing.T) {
+	tests := []struct {
+		name     string
+		queryStr string
+	}{
+		{
+			name:     "Jaeger search shape (last + partition by + fields)",
+			queryStr: `* AND "span_attr:http.status_code":="200" | last 1 by (_time) partition by (trace_id) | fields _time, trace_id`,
+		},
+		{
+			name:     "fields pipe alone",
+			queryStr: `service.name:="api-gateway" | fields _time, trace_id`,
+		},
+		{
+			name:     "stats pipe (no by-clause, but pipes still must reach storage)",
+			queryStr: `* | stats count() rows`,
+		},
+		{
+			name:     "stream selector strip path with pipes",
+			queryStr: `{trace_id_idx_stream="abc"} AND service.name:="api-gateway" | last 1 by (_time) partition by (trace_id) | fields _time, trace_id`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockStorage{}
+			a := newTestAdapter(mock)
+
+			q, err := logstorage.ParseQueryAtTimestamp(tt.queryStr, 1000000000)
+			if err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			qctx := newTestQctx(context.Background(), nil, q)
+			err = a.RunQuery(qctx, func(_ uint, _ *logstorage.DataBlock) {})
+			if err != nil {
+				t.Fatalf("RunQuery error: %v", err)
+			}
+			if !mock.runQueryCalled {
+				t.Fatal("expected store.RunQuery to be called")
+			}
+			if mock.lastQuery == nil {
+				t.Fatal("expected store.RunQuery to receive a non-nil query")
+			}
+			if !logstorage.QueryHasPipes(mock.lastQuery) {
+				t.Fatalf("REGRESSION: storage received a pipe-stripped query for %q.\n"+
+					"  Storage layer relies on logstorage.GetQueryPipeFields() to expand\n"+
+					"  the parquet column projection. Without pipes, fields referenced only\n"+
+					"  by pipes (e.g. `partition by (trace_id)`) are dropped from the\n"+
+					"  projection and downstream pipes yield zero rows.",
+					tt.queryStr)
+			}
+		})
+	}
+}
+
+// TestRunQuery_PipeReferencedFieldsReachProjection verifies the specific
+// trace_id projection path that failed in production: a query whose filter
+// does NOT reference trace_id, but whose `| fields _time, trace_id` pipe
+// does. After the fix, the storage must receive a query where
+// GetQueryPipeFields includes trace_id.
+func TestRunQuery_PipeReferencedFieldsReachProjection(t *testing.T) {
+	mock := &mockStorage{}
+	a := newTestAdapter(mock)
+
+	// Exact shape of the failing Jaeger query (without _stream selector
+	// since that requires extra setup; the pipe shape is what matters).
+	queryStr := `"span_attr:http.status_code":="200" | last 1 by (_time) partition by (trace_id) | fields _time, trace_id`
+	q, err := logstorage.ParseQueryAtTimestamp(queryStr, 1000000000)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	qctx := newTestQctx(context.Background(), nil, q)
+	if err := a.RunQuery(qctx, func(_ uint, _ *logstorage.DataBlock) {}); err != nil {
+		t.Fatalf("RunQuery error: %v", err)
+	}
+	if mock.lastQuery == nil {
+		t.Fatal("expected store.RunQuery to receive a non-nil query")
+	}
+
+	pipeFields := logstorage.GetQueryPipeFields(mock.lastQuery)
+	var sawTraceID, sawTime bool
+	for _, f := range pipeFields {
+		if f == "trace_id" {
+			sawTraceID = true
+		}
+		if f == "_time" {
+			sawTime = true
+		}
+	}
+	if !sawTraceID {
+		t.Errorf("REGRESSION: trace_id missing from GetQueryPipeFields for query %q; "+
+			"projection will drop trace_id column and `partition by (trace_id)` will return 0 rows. "+
+			"Got pipeFields=%v", queryStr, pipeFields)
+	}
+	if !sawTime {
+		t.Errorf("REGRESSION: _time missing from GetQueryPipeFields for query %q; "+
+			"got pipeFields=%v", queryStr, pipeFields)
+	}
+}

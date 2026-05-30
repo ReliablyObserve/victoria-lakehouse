@@ -38,7 +38,7 @@ Related rules (memories): `feedback_per_component_verification`,
 
 | # | Endpoint | Query shape | state | layer | vl_vt_ref | last_state | verified |
 |---|----------|-------------|-------|-------|-----------|-----------|----------|
-| L1 | `/select/logsql/query` | wildcard `*` | PASS | parity | `tests/parity/logs_*_test.go` | row count + content match VL | 2026-05-29 |
+| L1 | `/select/logsql/query` | wildcard `*` | PASS | parity + memory-regression | `tests/parity/logs_*_test.go` + `internal/storage/parquets3/query_memory_budget_test.go` + `tests/verification/probe_logs_24h_wildcard.sh` | row count + content match VL; container survives 24h wildcard (peak heap bounded, no restart, see commit message) | 2026-05-30 |
 | L2 | `/select/logsql/query` | exact `level:="ERROR"` | PASS | parity | same | identical results | 2026-05-29 |
 | L3 | `/select/logsql/query` | OR `level:="ERROR" OR level:="WARN"` | PASS | parity | same | identical | 2026-05-29 |
 | L4 | `/select/logsql/query_time_range` | bucketing | PASS | parity | same | identical | 2026-05-29 |
@@ -97,7 +97,8 @@ Related rules (memories): `feedback_per_component_verification`,
 | T5 | `/select/logsql/stats_query` | `\| stats by(service.name)` | PASS | parity | same | identical | 2026-05-29 |
 | T6 | `/select/logsql/hits` | bucketed | PASS | parity | same | identical | 2026-05-29 |
 | T7 | `/select/jaeger/api/services` | list services | PASS | unit + manual | `victoriatraces:10428/select/jaeger/api/services` | service-name truncation fixed — see commit dropping parquet column-index extraction in extractDistinctFromStats | 2026-05-29 |
-| T8 | `/select/jaeger/api/traces` | search by service | PASS | manual | same | returns trace data with span sets | 2026-05-29 |
+| T8 | `/select/jaeger/api/traces` | search by service | PASS | manual | same | returns trace data with span sets; covered by `tests/verification/probe_jaeger_search_24h.sh` | 2026-05-30 |
+| T8a | `/select/jaeger/api/traces` | search by service + tag | PASS | unit + manual | same | regression: adapter no longer pipe-strips before storage; covered by `tests/verification/probe_jaeger_search_24h_with_tag.sh` and `TestRunQuery_PreservesPipesToStorage` | 2026-05-30 |
 | T9 | `/select/jaeger/api/traces/{id}` | trace lookup | PASS | manual | same | curl returned span set | 2026-05-29 |
 | T10 | `/select/jaeger/api/services/{svc}/operations` | operations | UNVERIFIED | manual | same | — | — |
 | T11 | `/select/jaeger/api/dependencies` | dep graph | UNVERIFIED | manual | same | — | — |

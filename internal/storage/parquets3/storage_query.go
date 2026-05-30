@@ -78,19 +78,43 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	pipeFields := logstorage.GetQueryPipeFields(q)
 	filter := parseFilterFromQuery(q)
 
+	// Per-query memory ceiling for in-flight DataBlock rows. Bounds the live
+	// memory footprint a single wildcard query can pin: workers backpressure
+	// on the mutex when the consumer (LogsQL pipe / HTTP writer) is slow, and
+	// the budget triggers context cancellation if rows pile up faster than
+	// the consumer can drain them.
+	maxLiveBytes := int64(s.cfg.Query.MaxLiveBytes)
+	if maxLiveBytes <= 0 {
+		maxLiveBytes = defaultMaxLiveBytes
+	}
+	var liveBytes atomic.Int64
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	var rowsEmitted atomic.Int64
 	maxRows := s.cfg.Query.MaxRows
 
 	// Wrap writeBlock to apply LogsQL filter evaluation, tombstone filtering,
-	// and max_rows enforcement before passing to caller.
-	// Pre-filter runs in each worker goroutine without locks.
-	// Only the final writeBlock call is serialized.
+	// max_rows enforcement, and panic recovery. The synchronous writeBlock
+	// (guarded by wbMu) matches VL's searchParallel pattern (see
+	// deps/VictoriaLogs/lib/logstorage/storage_search.go:1334) — workers
+	// produce one block at a time and backpressure on the consumer, instead
+	// of queuing blocks in a deep channel that lets producer fanout balloon
+	// resident memory beyond the container's mem_limit.
 	var writeBlockPanic atomic.Bool
 	preFilter := func(db *logstorage.DataBlock) *logstorage.DataBlock {
 		if writeBlockPanic.Load() {
 			return nil
 		}
 		if maxRows > 0 && rowsEmitted.Load() >= maxRows {
+			cancel()
+			return nil
+		}
+		if liveBytes.Load() >= maxLiveBytes {
+			metrics.QueryMemoryBudgetExceeded.Inc()
+			logger.Warnf("query memory budget exceeded: live=%d, max=%d; cancelling",
+				liveBytes.Load(), maxLiveBytes)
+			cancel()
 			return nil
 		}
 		db = filterDataBlock(db, filter)
@@ -106,35 +130,27 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		return db
 	}
 
-	type blockMsg struct {
-		workerID uint
-		db       *logstorage.DataBlock
-	}
-	resultCh := make(chan blockMsg, 256)
-	var resultWg sync.WaitGroup
-	resultWg.Add(1)
-	go func() {
-		defer resultWg.Done()
-		for msg := range resultCh {
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						writeBlockPanic.Store(true)
-						logger.Warnf("writeBlock panic recovered (unsupported pipe in query): %v", r)
-					}
-				}()
-				writeBlock(msg.workerID, msg.db)
-			}()
-		}
-	}()
-
+	var wbMu sync.Mutex
 	filteredWriteBlock := func(workerID uint, db *logstorage.DataBlock) {
 		db = preFilter(db)
 		if db == nil {
 			return
 		}
 		rowsEmitted.Add(int64(db.RowsCount()))
-		resultCh <- blockMsg{workerID, db}
+		sz := dataBlockApproxBytes(db)
+		liveBytes.Add(sz)
+		wbMu.Lock()
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					writeBlockPanic.Store(true)
+					logger.Warnf("writeBlock panic recovered (unsupported pipe in query): %v", r)
+				}
+			}()
+			writeBlock(workerID, db)
+		}()
+		wbMu.Unlock()
+		liveBytes.Add(-sz)
 	}
 
 	files := s.manifest.GetFilesForRange(startNs, endNs)
@@ -160,8 +176,6 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
 		remaining := s.manifestFastPath(files, startNs, endNs, filteredWriteBlock)
 		if len(remaining) == 0 {
-			close(resultCh)
-			resultWg.Wait()
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
@@ -172,8 +186,6 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	files = s.preFilterFiles(ctx, files, queryStr)
 	if len(files) == 0 {
-		close(resultCh)
-		resultWg.Wait()
 		return nil
 	}
 
@@ -182,10 +194,13 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// instead of full S3 downloads.
 	prefetchFooters(ctx, s.pool, files, s.footerCache, 0)
 
-	// Parallel file worker pool
+	// Parallel file worker pool. Default mirrors lakehouse-traces (8) and VL's
+	// bounded worker pattern; previously 64 here, which on wildcard queries
+	// over many files fanned out S3 downloads + parquet decode buffers wide
+	// enough to OOM a 2 GiB container.
 	fileWorkers := s.cfg.Query.FileWorkers
 	if fileWorkers <= 0 {
-		fileWorkers = 64
+		fileWorkers = 8
 	}
 	if fileWorkers > len(files) {
 		fileWorkers = len(files)
@@ -247,9 +262,6 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	wg.Wait()
 
 	s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, filteredWriteBlock)
-
-	close(resultCh)
-	resultWg.Wait()
 
 	if v := firstErr.Load(); v != nil {
 		if err, ok := v.(error); ok && ctx.Err() != nil {
@@ -549,48 +561,20 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 		matchedRGs = deferred
 	}
 
-	// Process matched row groups — parallel when >1 to reduce per-file latency.
-	if len(matchedRGs) <= 1 {
-		for _, rg := range matchedRGs {
-			metrics.ParquetRowGroupsScanned.Inc()
-			if err := s.readOneRowGroup(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr); err != nil {
-				return err
-			}
+	// Process matched row groups SERIALLY within a single file. The outer
+	// file-worker pool already gives us read concurrency across files; adding
+	// up-to-8x row-group parallelism on top of 16 file workers means up to
+	// 128 concurrent row-group decoders, each holding multi-MB column buffers
+	// — easily exceeding the 2 GiB container limit on wildcard queries.
+	// VL's searchParallel keeps fanout bounded by workersCount (matches
+	// cgroup.AvailableCPUs), and our adapter must do the same.
+	for _, rg := range matchedRGs {
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-	} else {
-		rgWorkers := len(matchedRGs)
-		if rgWorkers > 8 {
-			rgWorkers = 8
-		}
-		rgCh := make(chan parquet.RowGroup, len(matchedRGs))
-		for _, rg := range matchedRGs {
-			rgCh <- rg
-		}
-		close(rgCh)
-
-		var rgWg sync.WaitGroup
-		var rgErr atomic.Value
-		for i := 0; i < rgWorkers; i++ {
-			rgWg.Add(1)
-			go func() {
-				defer rgWg.Done()
-				for rg := range rgCh {
-					if ctx.Err() != nil {
-						return
-					}
-					metrics.ParquetRowGroupsScanned.Inc()
-					if err := s.readOneRowGroup(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr); err != nil {
-						rgErr.CompareAndSwap(nil, err)
-						return
-					}
-				}
-			}()
-		}
-		rgWg.Wait()
-		if v := rgErr.Load(); v != nil {
-			if err, ok := v.(error); ok {
-				return err
-			}
+		metrics.ParquetRowGroupsScanned.Inc()
+		if err := s.readOneRowGroup(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr); err != nil {
+			return err
 		}
 	}
 

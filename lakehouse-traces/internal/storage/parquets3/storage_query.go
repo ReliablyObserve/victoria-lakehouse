@@ -156,6 +156,15 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	pipeFields := logstorage.GetQueryPipeFields(q)
 	filter := parseFilterFromQuery(q)
 
+	// Per-query memory ceiling for in-flight DataBlock rows. Mirror of the
+	// budget in internal/storage/parquets3 (logs module). See that file for
+	// the rationale and VL reference.
+	maxLiveBytes := int64(s.cfg.Query.MaxLiveBytes)
+	if maxLiveBytes <= 0 {
+		maxLiveBytes = defaultMaxLiveBytes
+	}
+	var liveBytes atomic.Int64
+
 	var rowsEmitted atomic.Int64
 	maxRows := s.cfg.Query.MaxRows
 
@@ -169,6 +178,13 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			return nil
 		}
 		if maxRows > 0 && rowsEmitted.Load() >= maxRows {
+			cancel()
+			return nil
+		}
+		if liveBytes.Load() >= maxLiveBytes {
+			metrics.QueryMemoryBudgetExceeded.Inc()
+			logger.Warnf("query memory budget exceeded: live=%d, max=%d; cancelling",
+				liveBytes.Load(), maxLiveBytes)
 			cancel()
 			return nil
 		}
@@ -192,6 +208,8 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			return
 		}
 		rowsEmitted.Add(int64(db.RowsCount()))
+		sz := dataBlockApproxBytes(db)
+		liveBytes.Add(sz)
 		wbMu.Lock()
 		func() {
 			defer func() {
@@ -203,6 +221,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			writeBlock(workerID, db)
 		}()
 		wbMu.Unlock()
+		liveBytes.Add(-sz)
 	}
 
 	files := s.manifest.GetFilesForRange(startNs, endNs)
@@ -488,48 +507,20 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 		return matchedRGs[i].NumRows() < matchedRGs[j].NumRows()
 	})
 
-	// Process matched row groups — parallel when >1 to reduce per-file latency.
-	if len(matchedRGs) <= 1 {
-		for _, rg := range matchedRGs {
-			metrics.ParquetRowGroupsScanned.Inc()
-			if err := s.readOneRowGroup(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr); err != nil {
-				return err
-			}
+	// Process matched row groups SERIALLY within a single file. See the
+	// equivalent change in internal/storage/parquets3/storage_query.go for
+	// the rationale: the outer file-worker pool already gives us read
+	// concurrency across files; up-to-8x row-group parallelism on top of
+	// 16 file workers means up to 128 concurrent row-group decoders, each
+	// holding multi-MB column buffers, which has OOM-killed the 2 GiB
+	// container on wildcard queries.
+	for _, rg := range matchedRGs {
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-	} else {
-		rgWorkers := len(matchedRGs)
-		if rgWorkers > 8 {
-			rgWorkers = 8
-		}
-		rgCh := make(chan parquet.RowGroup, len(matchedRGs))
-		for _, rg := range matchedRGs {
-			rgCh <- rg
-		}
-		close(rgCh)
-
-		var rgWg sync.WaitGroup
-		var rgErr atomic.Value
-		for i := 0; i < rgWorkers; i++ {
-			rgWg.Add(1)
-			go func() {
-				defer rgWg.Done()
-				for rg := range rgCh {
-					if ctx.Err() != nil {
-						return
-					}
-					metrics.ParquetRowGroupsScanned.Inc()
-					if err := s.readOneRowGroup(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr); err != nil {
-						rgErr.CompareAndSwap(nil, err)
-						return
-					}
-				}
-			}()
-		}
-		rgWg.Wait()
-		if v := rgErr.Load(); v != nil {
-			if err, ok := v.(error); ok {
-				return err
-			}
+		metrics.ParquetRowGroupsScanned.Inc()
+		if err := s.readOneRowGroup(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr); err != nil {
+			return err
 		}
 	}
 

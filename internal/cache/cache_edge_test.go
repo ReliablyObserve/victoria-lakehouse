@@ -89,17 +89,21 @@ func TestLRU_DeleteNonexistent_NoError(t *testing.T) {
 	}
 }
 
-func TestLRU_GetReturnsDataCopy(t *testing.T) {
+// TestLRU_GetSharesBufferAcrossCallers verifies the share-by-reference
+// contract that replaces the previous copy-on-Get behaviour. With 16
+// concurrent file workers all hitting the same cached parquet bytes,
+// per-Get copies summed to >1 GiB of transient heap; the contract is
+// now "callers must not mutate Get results", with all current call sites
+// passing the bytes straight to parquet.OpenFile (read-only).
+func TestLRU_GetSharesBufferAcrossCallers(t *testing.T) {
 	c := NewLRU(1024)
 	original := []byte("hello")
 	c.Put("key", original)
 
-	got, _ := c.Get("key")
-	got[0] = 'X'
-
+	got1, _ := c.Get("key")
 	got2, _ := c.Get("key")
-	if got2[0] != 'h' {
-		t.Error("modifying Get result should not affect cache")
+	if &got1[0] != &got2[0] {
+		t.Error("two Get calls should return the same underlying buffer (share-by-reference)")
 	}
 }
 

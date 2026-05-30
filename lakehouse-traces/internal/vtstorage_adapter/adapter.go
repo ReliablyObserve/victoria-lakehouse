@@ -28,11 +28,24 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 		return nil
 	}
 
+	logger.Infof("DIAG-ADAPTER: query=%q", qctx.Query.String())
+
+	// IMPORTANT: pass the FULL query (with pipes intact) to a.store.RunQuery.
+	// Our storage's queryColumns() consults logstorage.GetQueryPipeFields() to
+	// expand the parquet column projection to cover fields referenced only by
+	// pipes (e.g. `| fields _time, trace_id` or `| partition by (trace_id)`).
+	// If we strip pipes here, the projection misses those fields, the emitted
+	// DataBlocks don't carry them, and downstream pipes (e.g. `partition by`)
+	// silently drop every row.
+	//
+	// Stripping pipes for actual row matching happens inside RunQuery itself
+	// via parseFilterFromQuery (Clone + DropAllPipes), so passing the full
+	// query here is safe — pipes only inform column projection planning.
+
 	if rewritten, ok := rewriteTraceIndexQuery(qctx.Query); ok {
 		newQctx := qctx.WithQuery(rewritten)
-		filterOnly := logstorage.CloneWithoutPipes(rewritten)
 		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
-			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, filterOnly, wb)
+			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, rewritten, wb)
 		}
 		return logstorage.RunQueryExternal(newQctx, searchFn, writeBlock)
 	}
@@ -40,9 +53,8 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 	if rewritten, ok := stripTraceIndexStream(qctx.Query); ok {
 		newQctx := qctx.WithQuery(rewritten)
 		if logstorage.QueryHasPipes(rewritten) {
-			filterOnly := logstorage.CloneWithoutPipes(rewritten)
 			searchFn := func(wb logstorage.WriteDataBlockFunc) error {
-				return a.store.RunQuery(qctx.Context, qctx.TenantIDs, filterOnly, wb)
+				return a.store.RunQuery(qctx.Context, qctx.TenantIDs, rewritten, wb)
 			}
 			return logstorage.RunQueryExternal(newQctx, searchFn, writeBlock)
 		}
@@ -50,9 +62,8 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 	}
 
 	if logstorage.QueryHasPipes(qctx.Query) {
-		filterOnly := logstorage.CloneWithoutPipes(qctx.Query)
 		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
-			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, filterOnly, wb)
+			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query, wb)
 		}
 		return logstorage.RunQueryExternal(qctx, searchFn, writeBlock)
 	}

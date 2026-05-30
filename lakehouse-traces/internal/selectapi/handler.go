@@ -3,7 +3,9 @@ package selectapi
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/logsql"
@@ -71,6 +73,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 			jaeger.RequestHandler(r.Context(), w, r)
 		})
 		mux.HandleFunc("/select/tempo/", func(w http.ResponseWriter, r *http.Request) {
+			normalizeTempoSearchParams(r)
 			tempo.RequestHandler(r.Context(), w, r)
 		})
 		mux.HandleFunc("/api/traces/", rewriteToJaeger)
@@ -142,4 +145,164 @@ func (h *Handler) handleTailNoop(w http.ResponseWriter, _ *http.Request) {
 func rewriteToJaeger(w http.ResponseWriter, r *http.Request) {
 	r.URL.Path = "/select/jaeger" + r.URL.Path
 	jaeger.RequestHandler(r.Context(), w, r)
+}
+
+// normalizeTempoSearchParams works around an upstream VT quirk in
+// parseTempoAPIParam (deps/VictoriaTraces/app/vtselect/traces/tempo/tempo.go
+// ~L557): the parser sets `q="{}"` as the default but then unconditionally
+// overwrites it with the URL `q` value, even when that value is empty.
+// `traceql.ParseQuery("")` fails, and `searchTraces` returns nil/empty —
+// so clients that omit `q` (or send an empty `q`) get an empty result.
+//
+// This shim runs BEFORE the upstream Tempo handler and:
+//
+//  1. If `q` is missing or blank but `tags` is present (Tempo HTTP search
+//     also accepts logfmt-style `tags=key=value key=value`, per the
+//     public Grafana spec), it converts each pair into a TraceQL filter
+//     fragment using the same scope-prefix rules the upstream Tempo
+//     handler already applies to /v2/search/tag/*/values
+//     (service.name → resource.service.name, span.* → span attributes,
+//     etc.) and writes `q={ ... }` into the request URL.
+//  2. Otherwise, if `q` is still empty, it defaults `q` to `{}` so the
+//     upstream parser ends up with a noop TraceQL filter (the same value
+//     it documents as the default at the top of parseTempoAPIParam).
+//
+// Upstream VT source is unmodified. This is a pure HTTP-layer normalizer
+// in the LH adapter.
+func normalizeTempoSearchParams(r *http.Request) {
+	// Only normalize the /search endpoint — leave /v2/search/tags,
+	// /v2/search/tag/*/values, /api/echo, /api/metrics/query_range and
+	// /v2/traces/<id> untouched (they have their own semantics).
+	if !strings.HasSuffix(r.URL.Path, "/select/tempo/api/search") {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		return
+	}
+
+	q := strings.TrimSpace(r.Form.Get("q"))
+	if q != "" {
+		return
+	}
+
+	tags := r.Form.Get("tags")
+	if traceQL := tempoTagsToTraceQL(tags); traceQL != "" {
+		r.Form.Set("q", traceQL)
+	} else {
+		r.Form.Set("q", "{}")
+	}
+	r.URL.RawQuery = r.Form.Encode()
+}
+
+// tempoTagsToTraceQL converts a Tempo-style logfmt `tags` query parameter
+// (e.g. `service.name=api-gateway db.system=postgres`) into a TraceQL
+// filter expression (e.g. `{resource.service.name="api-gateway" && db.system="postgres"}`).
+//
+// It uses the same scope-prefix mapping that upstream VT applies in
+// /select/tempo/api/v2/search/tag/<name>/values (see tempo.go's
+// processSearchTagValuesRequest): bare service.name / name / status map
+// to the canonical resource/span fields; resource.* / span.* / event.*
+// prefixes are passed through; everything else is left bare so TraceQL
+// matches against span attributes by default.
+//
+// Returns "" if `tags` is empty or contains no valid key=value pairs.
+func tempoTagsToTraceQL(tags string) string {
+	tags = strings.TrimSpace(tags)
+	if tags == "" {
+		return ""
+	}
+	// Tempo HTTP search `tags` parameter is logfmt-encoded — pairs are
+	// space-separated, key/value joined by `=`. Values may be quoted with
+	// double quotes. We do a minimal logfmt parse here: split on spaces
+	// outside of quotes.
+	pairs := splitLogfmt(tags)
+	if len(pairs) == 0 {
+		return ""
+	}
+
+	type kv struct{ k, v string }
+	var fragments []kv
+	for _, p := range pairs {
+		eq := strings.IndexByte(p, '=')
+		if eq <= 0 || eq == len(p)-1 {
+			continue
+		}
+		k := strings.TrimSpace(p[:eq])
+		v := strings.TrimSpace(p[eq+1:])
+		v = strings.Trim(v, `"`)
+		if k == "" || v == "" {
+			continue
+		}
+
+		var mapped string
+		switch k {
+		case "service.name", ".service.name":
+			mapped = "resource.service.name"
+		case "name", ".name":
+			mapped = "name"
+		case "status":
+			mapped = "status"
+		default:
+			// resource.* / span.* / event.* prefixes pass through as-is;
+			// any other key is treated as a span attribute (TraceQL
+			// default), which matches upstream tempo.go behavior for the
+			// /v2/search/tag/*/values handler.
+			mapped = k
+		}
+
+		fragments = append(fragments, kv{k: mapped, v: v})
+	}
+	if len(fragments) == 0 {
+		return ""
+	}
+
+	// Sort for stable output (helps tests + cache keys).
+	sort.Slice(fragments, func(i, j int) bool {
+		return fragments[i].k < fragments[j].k
+	})
+
+	var b strings.Builder
+	b.WriteByte('{')
+	for i, f := range fragments {
+		if i > 0 {
+			b.WriteString(" && ")
+		}
+		b.WriteString(f.k)
+		b.WriteByte('=')
+		b.WriteByte('"')
+		// Escape any embedded double quotes the user might pass through.
+		b.WriteString(strings.ReplaceAll(f.v, `"`, `\"`))
+		b.WriteByte('"')
+	}
+	b.WriteByte('}')
+	return b.String()
+}
+
+// splitLogfmt splits a logfmt-ish string on spaces, respecting double-quoted
+// values. It is intentionally permissive — Tempo's `tags` parameter is not
+// strictly logfmt in practice, and the upstream Tempo handler ignores it
+// entirely, so any pair we can't parse is silently dropped.
+func splitLogfmt(s string) []string {
+	var out []string
+	var cur strings.Builder
+	inQuotes := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '"':
+			inQuotes = !inQuotes
+			cur.WriteByte(c)
+		case c == ' ' && !inQuotes:
+			if cur.Len() > 0 {
+				out = append(out, cur.String())
+				cur.Reset()
+			}
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
 }

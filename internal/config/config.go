@@ -287,7 +287,13 @@ type QueryConfig struct {
 	Timeout          time.Duration `yaml:"timeout"`
 	MaxRows          int64         `yaml:"max_rows"`
 	MaxFilesPerQuery int           `yaml:"max_files_per_query"`
-	SlowThreshold    time.Duration `yaml:"slow_threshold"`
+	// MaxLiveBytes is a per-query ceiling on the bytes of in-flight
+	// DataBlocks currently held by RunQuery before writeBlock has consumed
+	// them. When exceeded, the query context is cancelled, returning a
+	// partial result instead of OOM-killing the container. 0 means use the
+	// default (defaultMaxLiveBytes in storage/parquets3).
+	MaxLiveBytes  int64         `yaml:"max_live_bytes"`
+	SlowThreshold time.Duration `yaml:"slow_threshold"`
 }
 
 type TenantConfig struct {
@@ -526,7 +532,10 @@ func Default() *Config {
 			Timeout:          60 * time.Second,
 			MaxRows:          10_000_000,
 			MaxFilesPerQuery: 500,
-			SlowThreshold:    5 * time.Second,
+			// 512 MiB live-block budget — about 1/4 of the 2 GiB container
+			// limit, leaving room for caches + parquet decode buffers.
+			MaxLiveBytes:  512 * 1024 * 1024,
+			SlowThreshold: 5 * time.Second,
 		},
 
 		Insert: InsertConfig{
@@ -1303,6 +1312,9 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Query.MaxRows > 0 {
 		base.Query.MaxRows = overlay.Query.MaxRows
+	}
+	if overlay.Query.MaxLiveBytes > 0 {
+		base.Query.MaxLiveBytes = overlay.Query.MaxLiveBytes
 	}
 	if overlay.Query.SlowThreshold > 0 {
 		base.Query.SlowThreshold = overlay.Query.SlowThreshold

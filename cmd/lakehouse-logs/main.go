@@ -85,6 +85,7 @@ var (
 
 	queryFileWorkers      = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 8)")
 	queryMaxFilesPerQuery = flag.Int("lakehouse.query.max-files-per-query", 0, "Max S3 files per query before rejection (default: 500)")
+	queryMaxLiveBytes     = flag.Int64("lakehouse.query.max-live-bytes", 0, "Per-query ceiling on in-flight DataBlock bytes before cancellation (default: 512MiB)")
 
 	s3ReadAhead   = flag.Int("lakehouse.s3.read-ahead-bytes", 0, "S3 read-ahead buffer size in bytes (default: 2MB)")
 	s3CoalesceGap = flag.Int("lakehouse.s3.coalesce-gap-bytes", 0, "Merge S3 range reads with gaps smaller than this (default: 64KB)")
@@ -908,6 +909,9 @@ func applyFlags(cfg *config.Config) {
 	}
 	if *queryMaxFilesPerQuery > 0 {
 		cfg.Query.MaxFilesPerQuery = *queryMaxFilesPerQuery
+	}
+	if *queryMaxLiveBytes > 0 {
+		cfg.Query.MaxLiveBytes = *queryMaxLiveBytes
 	}
 
 	if s := *logsBloomColumns; s != "" {
