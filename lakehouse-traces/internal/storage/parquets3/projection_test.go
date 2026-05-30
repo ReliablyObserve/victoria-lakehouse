@@ -111,3 +111,105 @@ func TestQueryColumns_TracesStatsByName_WithFilter(t *testing.T) {
 		t.Error("service.name must be projected for filter")
 	}
 }
+
+// TestQueryColumns_StreamSelectorProjected guards the regression where VL's
+// q.String() emits a stream selector without the explicit `_stream:` prefix
+// (`{x=y}` instead of `_stream:{x=y}`). Our projection must still include
+// the `_stream` column so filterStream.matchRow can evaluate it.
+//
+// Negative-control: remove the referencesStreamSelector call (or its
+// `cols["_stream"] = true` line) from queryColumns and this test must fail.
+func TestQueryColumns_StreamSelectorProjected(t *testing.T) {
+	reg := schema.NewRegistry(schema.TracesProfile)
+
+	cases := []struct {
+		name     string
+		queryStr string
+		pipes    []string
+	}{
+		{
+			name:     "unprefixed stream selector + fields pipe",
+			queryStr: `{"resource_attr:service.name"="api-gateway"} | fields _time, trace_id`,
+			pipes:    []string{"_time", "trace_id"},
+		},
+		{
+			name:     "explicit _stream: prefix + fields pipe",
+			queryStr: `_stream:{resource_attr:service.name="api-gateway"} | fields _time, trace_id`,
+			pipes:    []string{"_time", "trace_id"},
+		},
+		{
+			name:     "stream selector after _time + fields pipe (VL serialization shape)",
+			queryStr: `_time:[2026-05-30T00:00:00Z,2026-05-30T01:00:00Z] {"resource_attr:service.name"="api-gateway"} | fields _time, trace_id`,
+			pipes:    []string{"_time", "trace_id"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cols := queryColumns(tc.queryStr, reg, tc.pipes)
+			if cols == nil {
+				t.Fatalf("expected projection (pipes present), got nil for query %q", tc.queryStr)
+			}
+			if !cols["_stream"] {
+				t.Errorf("REGRESSION: `_stream` column missing from projection for query %q.\n"+
+					"  filterStream.matchRow requires the `_stream` column in the DataBlock.\n"+
+					"  Without it, the stream filter silently rejects every row.\n"+
+					"  Got cols=%v", tc.queryStr, cols)
+			}
+			if !cols["trace_id"] {
+				t.Errorf("trace_id missing from projection for query %q; got cols=%v",
+					tc.queryStr, cols)
+			}
+		})
+	}
+}
+
+// TestQueryColumns_QuotedFieldNameProjected guards the regression where VL's
+// q.String() wraps field names containing `:` (e.g. `span_attr:http.status_code`)
+// in double quotes: `"span_attr:http.status_code":=200`. Our projection must
+// detect both bare and quoted forms.
+//
+// Negative-control: remove the quoted-form patterns from referencesField
+// (the two `"`+name+`":...` entries) and this test must fail.
+func TestQueryColumns_QuotedFieldNameProjected(t *testing.T) {
+	reg := schema.NewRegistry(schema.TracesProfile)
+
+	cases := []struct {
+		name           string
+		queryStr       string
+		pipes          []string
+		wantParquetCol string
+	}{
+		{
+			name:           "quoted span_attr field + fields pipe",
+			queryStr:       `"span_attr:http.status_code":="200" | fields _time, trace_id`,
+			pipes:          []string{"_time", "trace_id"},
+			wantParquetCol: "http.status_code",
+		},
+		{
+			name:           "quoted span_attr field (unquoted value) + fields pipe (VL serialized shape)",
+			queryStr:       `"span_attr:http.status_code":=200 | fields _time, trace_id`,
+			pipes:          []string{"_time", "trace_id"},
+			wantParquetCol: "http.status_code",
+		},
+		{
+			name:           "bare span_attr field + fields pipe still works",
+			queryStr:       `span_attr:http.status_code:=200 | fields _time, trace_id`,
+			pipes:          []string{"_time", "trace_id"},
+			wantParquetCol: "http.status_code",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cols := queryColumns(tc.queryStr, reg, tc.pipes)
+			if cols == nil {
+				t.Fatalf("expected projection (pipes present), got nil for query %q", tc.queryStr)
+			}
+			if !cols[tc.wantParquetCol] {
+				t.Errorf("REGRESSION: `%s` column missing from projection for query %q.\n"+
+					"  The filter references it but referencesField didn't detect the\n"+
+					"  quoted-name shape. The filter would silently reject every row.\n"+
+					"  Got cols=%v", tc.wantParquetCol, tc.queryStr, cols)
+			}
+		})
+	}
+}

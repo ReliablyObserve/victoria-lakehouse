@@ -39,6 +39,17 @@ func queryColumns(queryStr string, registry *schema.Registry, pipeFields []strin
 		}
 	}
 
+	// Stream selector `{tag="value", ...}` doesn't carry an explicit
+	// `_stream:` prefix when VL serializes a parsed query (e.g. `_stream:{x=y}`
+	// becomes just `{x=y}` in q.String()). filterStream.matchRow needs the
+	// `_stream` field to be present in the projected DataBlock, so detect the
+	// `{...}` shape and add `_stream` to the projection. Without this, the
+	// projection-reducing path (pipeFields non-empty) would drop `_stream`
+	// and the stream filter would silently match zero rows.
+	if referencesStreamSelector(filterPart) {
+		cols["_stream"] = true
+	}
+
 	for _, name := range pipeFields {
 		if fm := registry.ResolveToParquet(name); fm != nil {
 			cols[fm.ParquetColumn] = true
@@ -50,6 +61,26 @@ func queryColumns(queryStr string, registry *schema.Registry, pipeFields []strin
 	}
 
 	return cols
+}
+
+// referencesStreamSelector returns true if the filter contains an
+// unprefixed stream selector `{...}`. VL's q.String() drops the explicit
+// `_stream:` prefix from parsed queries (so `_stream:{x=y}` round-trips
+// as `{x=y}`), but filterStream.matchRow still requires the `_stream`
+// column to be present in the DataBlock.
+//
+// The `{` character is special in LogsQL only at the top level of a
+// filter expression — it cannot appear inside a field value without
+// being part of a quoted string. So a bare `{` at filter scope is a
+// reliable stream-selector signal.
+func referencesStreamSelector(filterPart string) bool {
+	// Skip past leading `_time:[...]` predicates and `*` wildcards which
+	// frequently appear before the stream selector after VL serialization.
+	s := strings.TrimSpace(filterPart)
+	if strings.Contains(s, "{") {
+		return true
+	}
+	return false
 }
 
 func hasColumnSelectingPipe(query string) bool {
@@ -68,12 +99,18 @@ func hasColumnSelectingPipe(query string) bool {
 }
 
 func referencesField(query, name string) bool {
+	// VL serializes field names that contain `:` or other special chars
+	// (e.g. `span_attr:http.status_code`) with surrounding double quotes:
+	// `"span_attr:http.status_code":=200`. Detect both the bare and
+	// quoted forms.
 	patterns := []string{
 		name + `:="`,
 		name + `:"`,
 		name + `:=`,
 		name + `:in(`,
 		name + `:`,
+		`"` + name + `":=`,
+		`"` + name + `":`,
 	}
 	for _, p := range patterns {
 		if strings.Contains(query, p) {
