@@ -11,6 +11,7 @@ permissions:
 
 env:
   GOWORK: "off"
+  VT_VERSION: "v0.9.0"
 
 jobs:
   release:
@@ -121,6 +122,22 @@ jobs:
           cp patches/vl-traces/external.go.src lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go
           cp patches/vl-traces/external_query.go.src lakehouse-traces/deps/VictoriaLogs/lib/logstorage/external_query.go
           cd lakehouse-traces/deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-traces/vlstorage-dispatch.patch
+
+      - name: Clone VT for traces
+        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
+        run: |
+          git clone --depth 1 --branch ${{ env.VT_VERSION }} \
+            https://github.com/VictoriaMetrics/VictoriaTraces.git lakehouse-traces/deps/VictoriaTraces
+
+      - name: Apply VT ExternalStorage patches (traces)
+        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
+        run: |
+          cp patches/vt-traces/external.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/external.go
+          cp patches/vt-traces/flag_dedup.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/flag_dedup.go
+          cd lakehouse-traces/deps/VictoriaTraces && \
+            git apply ${{ github.workspace }}/patches/vt-traces/vtstorage-dispatch.patch && \
+            git apply ${{ github.workspace }}/patches/vt-traces/vtstorage-flag-dedup.patch && \
+            git apply ${{ github.workspace }}/patches/vt-traces/go-mod-replace.patch
 
       - name: Build binaries
         if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
