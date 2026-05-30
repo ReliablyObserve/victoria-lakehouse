@@ -201,7 +201,8 @@ services:
       - "-lakehouse.insert.flush-interval=120s"
       - "-lakehouse.compaction.leader-election=s3"
       - "-lakehouse.compaction.interval=2m"
-      - "-lakehouse.query.file-workers=64"
+      - "-lakehouse.query.file-workers=16"
+      - "-lakehouse.query.max-files-per-query=300"
       - "-lakehouse.cache.memory-mb=512"
       - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
       - "-lakehouse.cache.disk-max-mb=2048"
@@ -221,6 +222,11 @@ services:
       timeout: 3s
       retries: 10
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    restart: on-failure
 
   lakehouse-traces:
     build:
@@ -243,7 +249,8 @@ services:
       - "-lakehouse.s3.force-path-style=true"
       - "-lakehouse.manifest.refresh-interval=30s"
       - "-lakehouse.insert.flush-interval=120s"
-      - "-lakehouse.query.file-workers=64"
+      - "-lakehouse.query.file-workers=16"
+      - "-lakehouse.query.max-files-per-query=300"
       - "-lakehouse.cache.memory-mb=512"
       - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
       - "-lakehouse.cache.disk-max-mb=2048"
@@ -263,6 +270,11 @@ services:
       timeout: 3s
       retries: 10
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    restart: on-failure
 
   # =========================================================================
   # Multi-Level Select — fan out to hot (disk) + cold (lakehouse)
