@@ -482,11 +482,28 @@ func setupCompaction(
 	policy.DailyRollupAge = cfg.Compaction.DailyRollupAge
 
 	peerCache := store.PeerCache()
+	// Mirror of cmd/lakehouse-logs/main.go: peercache.Members() is empty
+	// in single-pod / pre-discovery scenarios. Include self as a
+	// fallback so HRW always has at least one candidate; otherwise
+	// compaction never runs (lakehouse_compaction_runs_total = 0
+	// forever — confirmed via e2e compose).
 	ownership := compaction.NewOwnershipResolver(addr, func() []string {
 		if peerCache == nil {
-			return nil
+			return []string{addr}
 		}
-		return peerCache.Members()
+		members := peerCache.Members()
+		if len(members) == 0 {
+			return []string{addr}
+		}
+		for _, m := range members {
+			if m == addr {
+				return members
+			}
+		}
+		out := make([]string, 0, len(members)+1)
+		out = append(out, members...)
+		out = append(out, addr)
+		return out
 	})
 	if peerCache != nil {
 		ownership.SameAZPeers = peerCache.SameAZMembers

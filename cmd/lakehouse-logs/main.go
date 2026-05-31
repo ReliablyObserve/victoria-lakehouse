@@ -494,11 +494,32 @@ func setupCompaction(
 	// match what discovery returns for this pod or HRW silently picks
 	// the wrong primary — see CompactionOwnershipSelfInPeers alert.
 	peerCache := store.PeerCache()
+	// Single-pod / pre-discovery fallback: peercache.Members() returns
+	// an empty slice when discovery hasn't populated the ring yet (or
+	// when the pod runs alone with no peers configured). Without
+	// including `addr` here HRW returns no owner for any partition and
+	// compaction never runs (lakehouse_compaction_runs_total stays at
+	// 0 forever — confirmed via e2e compose, where peer_ring_members
+	// = 0 in single-pod mode). Including self guarantees the single-pod
+	// case trivially owns 100% of partitions while still letting the
+	// peercache add real peers as they come online.
 	ownership := compaction.NewOwnershipResolver(addr, func() []string {
 		if peerCache == nil {
-			return nil
+			return []string{addr}
 		}
-		return peerCache.Members()
+		members := peerCache.Members()
+		if len(members) == 0 {
+			return []string{addr}
+		}
+		for _, m := range members {
+			if m == addr {
+				return members
+			}
+		}
+		out := make([]string, 0, len(members)+1)
+		out = append(out, members...)
+		out = append(out, addr)
+		return out
 	})
 	if peerCache != nil {
 		ownership.SameAZPeers = peerCache.SameAZMembers
