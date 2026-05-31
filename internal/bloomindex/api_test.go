@@ -115,7 +115,6 @@ func TestHandleBloomStatus_WithCacheData(t *testing.T) {
 
 func TestHandleBloomStatus_WithAdjustments(t *testing.T) {
 	bc := NewBloomController(DefaultBloomControllerConfig())
-	bc.SetLeader(true)
 	bc.Observe(context.Background(), Observation{FilesPerHour: 5000})
 
 	sp := &StatusProvider{

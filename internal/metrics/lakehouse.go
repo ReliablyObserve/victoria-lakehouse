@@ -216,13 +216,6 @@ var (
 	CompactionSkippedTotal = NewCounterVec("lakehouse_compaction_skipped_total", "reason")
 )
 
-// Election metrics
-var (
-	ElectionLeader            = NewGauge("lakehouse_election_leader")
-	ElectionTransitionsTotal  = NewCounter("lakehouse_election_transitions_total")
-	ElectionHealthChecksTotal = NewCounterVec("lakehouse_election_health_checks_total", "result")
-)
-
 // Election-free compaction metrics (spec §6 + §11.5).
 //
 // Spec §6.1: Ownership / HRW metrics. The PartitionsOwned gauge is the

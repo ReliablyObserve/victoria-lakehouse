@@ -30,25 +30,23 @@ func TestBloomController_TierConfig(t *testing.T) {
 	}
 }
 
-func TestBloomController_LeaderOnly(t *testing.T) {
+// TestBloomController_PerPodTuning replaces the former leader-gated test.
+//
+// Negative-control proof: if the leader gate were re-introduced (any Observe
+// short-circuiting on a non-leader flag), the assertion that exactly one
+// adjustment is recorded after the high-volume observation would fail. This
+// test passes because every pod now auto-tunes its own (per-instance) state.
+func TestBloomController_PerPodTuning(t *testing.T) {
 	bc := NewBloomController(DefaultBloomControllerConfig())
 	bc.Observe(context.Background(), Observation{FilesPerHour: 5000})
 
-	if len(bc.Adjustments()) != 0 {
-		t.Error("non-leader should not make adjustments")
-	}
-
-	bc.SetLeader(true)
-	bc.Observe(context.Background(), Observation{FilesPerHour: 5000})
-
-	if len(bc.Adjustments()) == 0 {
-		t.Error("leader should make adjustments for high volume")
+	if len(bc.Adjustments()) != 1 {
+		t.Fatalf("every pod must tune its own bloom params; got %d adjustments, want 1", len(bc.Adjustments()))
 	}
 }
 
 func TestBloomController_HighVolume_IncreasesFileSize(t *testing.T) {
 	bc := NewBloomController(DefaultBloomControllerConfig())
-	bc.SetLeader(true)
 
 	bc.Observe(context.Background(), Observation{FilesPerHour: 5000})
 
@@ -65,8 +63,6 @@ func TestBloomController_HighVolume_IncreasesFileSize(t *testing.T) {
 
 func TestBloomController_SSDPressure_ShrinksTier1(t *testing.T) {
 	bc := NewBloomController(DefaultBloomControllerConfig())
-	bc.SetLeader(true)
-
 	bc.Observe(context.Background(), Observation{SSDUsageRatio: 0.95})
 
 	cfg := bc.Config()
@@ -77,8 +73,6 @@ func TestBloomController_SSDPressure_ShrinksTier1(t *testing.T) {
 
 func TestBloomController_SSDLow_ExpandsTier1(t *testing.T) {
 	bc := NewBloomController(DefaultBloomControllerConfig())
-	bc.SetLeader(true)
-
 	bc.Observe(context.Background(), Observation{SSDUsageRatio: 0.3})
 
 	cfg := bc.Config()
@@ -91,8 +85,6 @@ func TestBloomController_Tier1MaxExpand(t *testing.T) {
 	cfg := DefaultBloomControllerConfig()
 	cfg.Tier1MaxAge = 14 * 24 * time.Hour
 	bc := NewBloomController(cfg)
-	bc.SetLeader(true)
-
 	bc.Observe(context.Background(), Observation{SSDUsageRatio: 0.3})
 
 	if bc.Config().Tier1MaxAge != 14*24*time.Hour {
@@ -104,8 +96,6 @@ func TestBloomController_Tier1MinShrink(t *testing.T) {
 	cfg := DefaultBloomControllerConfig()
 	cfg.Tier1MaxAge = 24 * time.Hour
 	bc := NewBloomController(cfg)
-	bc.SetLeader(true)
-
 	bc.Observe(context.Background(), Observation{SSDUsageRatio: 0.95})
 
 	if bc.Config().Tier1MaxAge != 24*time.Hour {
@@ -115,7 +105,6 @@ func TestBloomController_Tier1MinShrink(t *testing.T) {
 
 func TestBloomController_PinnedOverride(t *testing.T) {
 	bc := NewBloomController(DefaultBloomControllerConfig())
-	bc.SetLeader(true)
 	bc.PinOverride("target_file_size")
 
 	bc.Observe(context.Background(), Observation{FilesPerHour: 5000})
@@ -128,8 +117,6 @@ func TestBloomController_PinnedOverride(t *testing.T) {
 
 func TestBloomController_LowVolume_SwitchesToDaily(t *testing.T) {
 	bc := NewBloomController(DefaultBloomControllerConfig())
-	bc.SetLeader(true)
-
 	bc.Observe(context.Background(), Observation{FilesPerHour: 10})
 
 	cfg := bc.Config()
@@ -157,32 +144,11 @@ func TestBloomController_ApplyConfig(t *testing.T) {
 
 func TestBloomController_NoDoubleAdjust(t *testing.T) {
 	bc := NewBloomController(DefaultBloomControllerConfig())
-	bc.SetLeader(true)
-
 	bc.Observe(context.Background(), Observation{FilesPerHour: 5000})
 	bc.Observe(context.Background(), Observation{FilesPerHour: 5000})
 
 	if len(bc.Adjustments()) != 1 {
 		t.Errorf("same value should not produce duplicate adjustments, got %d", len(bc.Adjustments()))
-	}
-}
-
-// TestBloomController_IsLeader exercises the IsLeader method (previously 0%).
-func TestBloomController_IsLeader(t *testing.T) {
-	bc := NewBloomController(DefaultBloomControllerConfig())
-
-	if bc.IsLeader() {
-		t.Error("new controller should not be leader")
-	}
-
-	bc.SetLeader(true)
-	if !bc.IsLeader() {
-		t.Error("controller should be leader after SetLeader(true)")
-	}
-
-	bc.SetLeader(false)
-	if bc.IsLeader() {
-		t.Error("controller should not be leader after SetLeader(false)")
 	}
 }
 
