@@ -452,22 +452,21 @@ lakehouseConfig:
     #       account_id: 1
     #       project_id: 1
     aliases: {}
-    # -- Leader election mode for alias sync writer: "auto", "k8s", "s3", "none".
-    # Only one node should write _meta/tenant-aliases.json at a time.
-    # "auto" uses K8s Lease in-cluster, falls back to S3 lock outside K8s.
-    leader_election: auto
-    # -- K8s Lease lock duration for alias sync.
-    lease_duration: 15s
+    # NOTE (PR A — election-free compaction):
+    #   tenant.aliases.leader_election + tenant.aliases.lease_duration removed.
+    #   The alias-sync writer migration to HRW ownership is tracked separately;
+    #   see spec §10 Q6.
 
   # ---------------------------------------------------------------------------
-  # Compaction — Background Parquet file merging
+  # Compaction — Background Parquet file merging (election-free, HRW-owned)
   # ---------------------------------------------------------------------------
   compaction:
-    # -- Enable background compaction (requires leader election).
+    # -- Enable background compaction. Every pod runs the scheduler; HRW
+    #    ownership assigns partitions to exactly one pod (no leader election).
     enabled: true
     # -- Compaction scan interval.
     interval: 5m
-    # -- Maximum concurrent compaction workers.
+    # -- Maximum concurrent compaction workers per pod.
     max_concurrent: 1
     # -- Minimum L0 files in a partition to trigger compaction.
     min_files_l0: 10
@@ -477,18 +476,11 @@ lakehouseConfig:
     min_age: 1h
     # -- Minimum partition age for daily rollup compaction (merges ≥2 L1 files in old partitions).
     daily_rollup_age: 24h
-    # -- Leader election mode: "auto", "k8s", "s3", "none".
-    leader_election: auto
-    # -- K8s Lease lock duration.
-    lease_duration: 15s
-    # -- S3 lock object TTL.
-    s3_lock_ttl: 60s
-    # -- S3 lock heartbeat/renewal interval.
-    s3_heartbeat: 15s
-    # -- Compaction shard ID (-1 = auto-detect from K8s StatefulSet hostname ordinal).
-    shard_id: -1
-    # -- Total compaction shards (0 or 1 = single instance with leader election).
-    shard_count: 1
+    # NOTE (PR A — election-free compaction):
+    #   Removed keys: leader_election, lease_duration, s3_lock_ttl,
+    #   s3_heartbeat, shard_id, shard_count. Partition ownership is now
+    #   computed via HRW (Highest Random Weight) hashing across the live
+    #   peer set; see internal/compaction/ownership.go and spec §2.
 
   # ---------------------------------------------------------------------------
   # Delete — Cost-aware deletion (tombstone + selective rewrite)
