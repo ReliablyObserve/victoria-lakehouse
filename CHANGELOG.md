@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.2] - 2026-05-31
+
 ### Changed
 
 - `applyFlags` in `cmd/lakehouse-logs/main.go` and `lakehouse-traces/main.go` split into nine per-section helpers (`applyTopLevelFlags`, `applyS3Flags`, `applyResourceBoundFlags`, `applyTopologyFlags`, `applyManifestFlags`, `applyCacheFlags`, `applyCompactionFlags`, `applyQueryLegacyFlags`, `applyLogsFlags` / `applyTracesFlags`, `applyTenantFlags`). Removes the `//nolint:gocyclo` suppression added in v0.37.1 when the K8s resource-bound triples pushed the flat dispatch past cyclomatic complexity 50. Each helper's complexity is linear in flag count per section; no behaviour change — every flag-assignment branch preserved in its original relative position.
