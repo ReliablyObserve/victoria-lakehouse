@@ -1848,13 +1848,17 @@ more responsive at the cost of 3× the AttemptsView reads (cheap —
 in-memory). **Recommend "every tick" with `3 × Interval` staleness
 threshold.** Confirm?
 
-**Q3. Cross-AZ ownership.**
-Deferred (R1 in §8.2). For PR A, all peers are equal in HRW. In a
-multi-AZ deployment, this could double or triple S3 cross-AZ traffic.
-Acceptable to ship PR A without and add AZ-awareness in a follow-up?
+**Q3. Cross-AZ ownership.** **DECIDED: in scope for PR A.** See §12.1.
+Maintainer requested AZ-aware HRW: each pod's discovery exposes its AZ
+label (already present via `peercache`'s AZ-aware mode); ownership
+prefers same-AZ peers, falls back to all peers if no same-AZ peer is
+alive. Estimated +50 LOC + 3 tests.
 
-**Q4. Per-tenant compaction quotas.**
-Not part of PR A (D2 in §8.2). Ship without?
+**Q4. Per-tenant compaction quotas.** **DECIDED: in scope for PR A.**
+See §12.2. Maintainer requested per-tenant fair-share scheduling so
+one noisy tenant cannot starve compaction for others. Round-robin
+across tenants by default; configurable weights per tenant in a
+follow-up. Estimated +100-150 LOC + 5 tests.
 
 **Q5. S3 bucket lifecycle for incomplete multipart uploads.**
 The chart should set `AbortIncompleteMultipartUpload: 1 day` on the
@@ -2225,6 +2229,179 @@ the partial output becomes a Tier-B orphan; (4) manifest is consistent
 `Drain()` ignore context cancellation — `Drain()` blocks past the
 timeout and the OS kills the process, leaving a corrupted manifest
 state.
+
+---
+
+## 12. In-scope additions decided post-spec
+
+Maintainer pulled Q3 and Q4 into PR A scope after reading §10. This
+section captures the design sketches; they must be implemented in PR A
+alongside §2 and §11.
+
+### 12.1 — Cross-AZ ownership awareness (Q3)
+
+**Goal:** in multi-AZ deployments, ownership prefers same-AZ peers so
+that cross-AZ network traffic (whatever LH RPCs are introduced post-PR-A:
+peer-cache fetches, heartbeats, future gossip) stays within an AZ.
+S3 reads/writes are unaffected (S3 is regional, not AZ-bound).
+
+**Design — AZ-stratified HRW:**
+
+```go
+// internal/compaction/ownership.go
+//
+// OwnerOf returns the partition owner. If self has an AZ label AND
+// any peer in self's AZ is alive AND not draining, ownership is
+// stratified to same-AZ peers. Otherwise falls back to all peers.
+func OwnerOf(partition, self string, peers []PeerInfo) string {
+    selfAZ := azOf(self, peers)
+    var azPeers []string
+    for _, p := range peers {
+        if p.AZ == selfAZ && !p.Draining {
+            azPeers = append(azPeers, p.Addr)
+        }
+    }
+    if len(azPeers) > 0 {
+        return hrwOwner(partition, azPeers)
+    }
+    // Fall back to all live peers.
+    var allPeers []string
+    for _, p := range peers {
+        if !p.Draining {
+            allPeers = append(allPeers, p.Addr)
+        }
+    }
+    return hrwOwner(partition, allPeers)
+}
+```
+
+**Membership source:**
+
+- `internal/peercache.PeerCache` ALREADY tracks AZ per peer (peer-cache
+  has an AZ-aware mode — verify by re-reading `peercache.go` and
+  `discovery/discovery.go`; the AZ label is sourced from K8s node label
+  `topology.kubernetes.io/zone` injected via downward API or
+  `kubectl get node`).
+- New `ownership.PeerInfo{Addr, AZ, Draining}` struct collected from
+  `peercache.Members()` extended to include AZ.
+
+**Failure modes:**
+
+- **Self has no AZ label:** treat all peers as same-AZ (no stratification).
+  Log a warning on startup.
+- **All same-AZ peers draining:** fall back to all-AZ HRW (already in
+  the design above).
+- **AZ topology changes mid-run** (rare): rebalance occurs through
+  the existing ring stabilization window (§11.4).
+
+**Regression tests:**
+
+- `TestOwnership_SameAZPreferred` — 4 peers across 2 AZs; verify own
+  AZ wins.
+- `TestOwnership_FallbackWhenAZEmpty` — self's AZ has only self
+  remaining; verify other-AZ peers used.
+- `TestOwnership_AllDraining_FallbackToAll` — same-AZ peers all
+  draining; verify fall-back picks any live peer.
+
+**Open dependency:** verify `peercache` exposes AZ per-member through
+`Members()`. If not, PR A adds the accessor (small change).
+
+### 12.2 — Per-tenant compaction fair-share (Q4)
+
+**Goal:** a noisy tenant (one generating many partitions, large
+backlog) cannot starve compaction for other tenants on the same pod.
+
+**Design — round-robin tenant cycling:**
+
+```go
+// internal/compaction/scheduler.go (modified)
+//
+// On each tick, group eligible partitions by tenant, then cycle
+// across tenants. Pick at most `compactionsPerTenant` (default 1)
+// from each tenant per tick. Persist the cursor across ticks so
+// no tenant gets starved.
+func (s *Scheduler) pickCandidates(eligible []partitionCandidate) []partitionCandidate {
+    byTenant := groupByTenant(eligible)
+    tenants := sortedTenantList(byTenant)
+    rotateFromCursor(tenants, &s.tenantCursor)
+
+    var picked []partitionCandidate
+    slotsRemaining := s.maxConcurrent
+    for i := 0; slotsRemaining > 0 && len(picked) < s.maxConcurrent; i++ {
+        t := tenants[i%len(tenants)]
+        if len(byTenant[t]) == 0 {
+            continue
+        }
+        // Take up to `compactionsPerTenant` from this tenant before moving on.
+        take := min(s.compactionsPerTenant, len(byTenant[t]), slotsRemaining)
+        picked = append(picked, byTenant[t][:take]...)
+        byTenant[t] = byTenant[t][take:]
+        slotsRemaining -= take
+    }
+    s.tenantCursor = (s.tenantCursor + 1) % max(len(tenants), 1)
+    return picked
+}
+```
+
+**Configuration (new):**
+
+```yaml
+compaction:
+  per_tenant:
+    compactions_per_tick: 1    # default: each tenant gets 1 slot per tick
+    weights: {}                # operator-set, e.g. {"prod-tenant-a": 3, "dev-tenant-b": 1}
+                               # PR A: read but unused; full weighted-fair in follow-up PR D
+```
+
+**Failure modes:**
+
+- **Single-tenant deployment:** degenerates to existing behavior
+  (tenant cycle has one element).
+- **Tenant with single eligible partition:** still scheduled in its
+  rotation slot; doesn't block other tenants.
+- **Tenant added mid-run:** discovered on next scan; joins cycle at
+  cursor position.
+- **Tenant removed (all partitions compacted away):** drops from cycle
+  on next scan.
+
+**Tenant identification:** the partition key already encodes tenant
+(e.g. `accountID/projectID/logs/dt=…`); `groupByTenant` parses the
+first two path segments.
+
+**Regression tests:**
+
+- `TestFairShare_RoundRobinAcrossTenants` — 3 tenants, 100 eligible
+  partitions each; verify each tenant gets ≥1 slot per N ticks.
+- `TestFairShare_NoisyTenantNoStarvation` — tenant A has 1000
+  eligible, tenant B has 1; B gets compacted within 2 ticks.
+- `TestFairShare_CursorPersists` — Stop+Start re-acquires tenants;
+  cursor doesn't reset (avoids cycling through the same tenant twice).
+- `TestFairShare_SingleTenant_DegenerateOK` — only one tenant;
+  behavior matches pre-fair-share.
+- `TestFairShare_DynamicTenantAddition` — tenant C added mid-run;
+  appears in cycle without restart.
+
+**Open dependency:** confirm partition-key format includes tenant
+prefix consistently across logs + traces modules.
+
+### 12.3 — PR A scope after Q3+Q4 inclusion
+
+| Component | LOC estimate |
+|---|---|
+| `ownership.go` (HRW + AZ stratification + draining filter) | 200 |
+| `orphan_sweep.go` (Tier A + Tier B) | 250 |
+| `scheduler.go` mods (drain, ring-rate-limit, tenant fair-share) | 200 |
+| Manifest `AddFile` idempotency guard | 30 |
+| Config + flag wiring | 80 |
+| Unit tests (ownership, sweep, scheduler, fair-share) | 600 |
+| Mirror to lakehouse-traces | 200 |
+| **Total** | **~1560 LOC** |
+
+PR A grows from ~600 (post-§11) to ~1560 LOC. Still a single coherent
+change; reviewers can read in two passes (core ownership/sweeper, then
+fair-share + AZ).
+
+PR B scope unchanged from §11.6.
 
 ---
 
