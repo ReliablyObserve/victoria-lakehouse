@@ -80,10 +80,7 @@ var (
 
 	compactionEnabled        = flag.Bool("lakehouse.compaction.enabled", false, "Enable compaction scheduler")
 	compactionInterval       = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
-	compactionElection       = flag.String("lakehouse.compaction.leader-election", "", "Election mode: auto, k8s, s3, none")
 	compactionDailyRollupAge = flag.Duration("lakehouse.compaction.daily-rollup-age", 0, "Minimum partition age for daily rollup compaction (default: 24h)")
-	compactionShardID        = flag.Int("lakehouse.compaction.shard-id", -1, "Compaction shard ID (default: auto-detect from hostname ordinal)")
-	compactionShardCount     = flag.Int("lakehouse.compaction.shard-count", 0, "Total compaction shards (0 or 1 = leader mode)")
 
 	queryFileWorkers      = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 8)")
 	queryMaxFilesPerQuery = flag.Int("lakehouse.query.max-files-per-query", 0, "Max S3 files per query before rejection (default: 500)")
@@ -1043,17 +1040,8 @@ func applyCompactionFlags(c *config.CompactionConfig) {
 	if *compactionInterval > 0 {
 		c.Interval = *compactionInterval
 	}
-	if e := *compactionElection; e != "" {
-		c.LeaderElection = e
-	}
 	if *compactionDailyRollupAge > 0 {
 		c.DailyRollupAge = *compactionDailyRollupAge
-	}
-	if *compactionShardID >= 0 {
-		c.ShardID = *compactionShardID
-	}
-	if *compactionShardCount > 0 {
-		c.ShardCount = *compactionShardCount
 	}
 }
 

@@ -107,32 +107,6 @@ func TestCacheDiskBytes_Invalid(t *testing.T) {
 	}
 }
 
-func TestValidate_LeaderElectionModes(t *testing.T) {
-	modes := []string{"auto", "k8s", "s3", "none", ""}
-	for _, mode := range modes {
-		cfg := Default()
-		cfg.Mode = ModeLogs
-		cfg.S3.Bucket = "test"
-		cfg.Compaction.LeaderElection = mode
-		if mode == "none" {
-			cfg.Compaction.Enabled = false
-		}
-		if err := cfg.Validate(); err != nil {
-			t.Errorf("Validate() with leader election %q: %v", mode, err)
-		}
-	}
-}
-
-func TestValidate_InvalidLeaderElection(t *testing.T) {
-	cfg := Default()
-	cfg.Mode = ModeLogs
-	cfg.S3.Bucket = "test"
-	cfg.Compaction.LeaderElection = "invalid-mode"
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for invalid leader election mode")
-	}
-}
-
 func TestValidate_CompactionEnabled_InvalidInterval(t *testing.T) {
 	cfg := Default()
 	cfg.Mode = ModeLogs
