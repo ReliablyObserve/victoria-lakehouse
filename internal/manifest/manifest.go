@@ -87,15 +87,24 @@ type Manifest struct {
 	prefix           string
 	bucket           string
 	prefixTemplate   string
+
+	// partitionAttempts maps "dt=YYYY-MM-DD/hour=HH" -> last MarkAttempt
+	// timestamp recorded by the compaction scheduler (see
+	// internal/compaction.OwnershipResolver + OrphanSweep). In-memory only
+	// per spec §2.2.3: after a pod restart Tier A wakes up "blind" for
+	// 3×Interval, then HRW resumes normally. Same mutex as files map so
+	// AttemptsView is a coherent snapshot relative to the manifest.
+	partitionAttempts map[string]time.Time
 }
 
 func New(bucket, prefix string) *Manifest {
 	return &Manifest{
-		files:         make(map[string][]FileInfo),
-		labelIndex:    make(map[string]map[string]map[string]bool),
-		partitionMeta: make(map[string]*PartitionMeta),
-		prefix:        prefix,
-		bucket:        bucket,
+		files:             make(map[string][]FileInfo),
+		labelIndex:        make(map[string]map[string]map[string]bool),
+		partitionMeta:     make(map[string]*PartitionMeta),
+		partitionAttempts: make(map[string]time.Time),
+		prefix:            prefix,
+		bucket:            bucket,
 	}
 }
 
@@ -518,6 +527,22 @@ func (m *Manifest) AddFile(partition string, fi FileInfo) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Idempotency guard (spec §2.2.4): two compaction loops racing on the
+	// same partition can produce duplicate AddFile calls with the same key
+	// (and also distinct UUID-suffixed keys; that case is handled by Tier B
+	// orphan sweep). For the same-key race, silently skip the second insert
+	// so the manifest never grows past one entry per (partition, key).
+	// Negative-control proof: removing this loop causes
+	// TestManifest_AddFile_IdempotentOnKey to count 2 entries and the
+	// race test TestManifest_AddFile_ConcurrentSameKeyOnlyOneEntry to
+	// produce N duplicates under -race.
+	for _, existing := range m.files[partition] {
+		if existing.Key == fi.Key {
+			metrics.ManifestAddFileDuplicateKeyTotal.Inc()
+			return
+		}
+	}
+
 	isNew := len(m.files[partition]) == 0
 	m.files[partition] = append(m.files[partition], fi)
 	m.totalFiles++
@@ -550,6 +575,61 @@ func (m *Manifest) AddFile(partition string, fi FileInfo) {
 	if m.maxTime.IsZero() || end.After(m.maxTime) {
 		m.maxTime = end
 	}
+}
+
+// MarkAttempt records that the caller began (or is about to begin) a
+// compaction attempt on the given partition. The scheduler must call this
+// BEFORE selecting files so a crash mid-compaction still leaves a fresh
+// timestamp; OrphanSweep Tier A then has to wait the full staleness window
+// (default 3×Interval) before stealing — see spec §2.2.2 and §2.4.1.
+//
+// Safe for concurrent use. Stored in-memory only (spec §2.2.3).
+func (m *Manifest) MarkAttempt(partition string, t time.Time) {
+	m.mu.Lock()
+	m.partitionAttempts[partition] = t
+	m.mu.Unlock()
+}
+
+// LastAttempt returns the most recent MarkAttempt timestamp for the given
+// partition. Returns the zero value when no attempt was ever recorded
+// (cold partition). Used by OrphanSweep Tier A. Safe for concurrent use.
+func (m *Manifest) LastAttempt(partition string) time.Time {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.partitionAttempts[partition]
+}
+
+// AttemptsView returns a snapshot of (partition, lastAttempt) for every
+// partition the manifest is aware of, including those with no attempt
+// recorded (zero-value time). Used by OrphanSweep Tier A. The returned
+// map is a copy and safe to mutate. Safe for concurrent use.
+func (m *Manifest) AttemptsView() map[string]time.Time {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]time.Time, len(m.files))
+	for p := range m.files {
+		out[p] = m.partitionAttempts[p] // zero time if absent
+	}
+	return out
+}
+
+// KeysUnderPrefix returns all manifest-tracked file keys whose key has
+// the given prefix. Used by OrphanSweep Tier B to compare manifest state
+// against an S3 LIST output. Pass empty prefix to return every key. The
+// returned slice is freshly allocated and safe to mutate. Safe for
+// concurrent use.
+func (m *Manifest) KeysUnderPrefix(prefix string) []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []string
+	for _, files := range m.files {
+		for _, fi := range files {
+			if prefix == "" || strings.HasPrefix(fi.Key, prefix) {
+				out = append(out, fi.Key)
+			}
+		}
+	}
+	return out
 }
 
 // ExtractPartition is the exported wrapper for extractPartition.

@@ -50,6 +50,12 @@ var (
 	ManifestFastPathTotal   = NewCounter("lakehouse_manifest_fast_path_total")
 	ManifestRefreshDuration = NewHistogram("lakehouse_manifest_refresh_duration_seconds",
 		[]float64{0.1, 0.5, 1, 5, 10, 30, 60})
+	// ManifestAddFileDuplicateKeyTotal ticks when AddFile is called twice
+	// with the same (partition, key) — the idempotency guard skips the
+	// second insert. Steady-state value should be 0; non-zero indicates
+	// duplicate compaction work (HRW ring flap, DNS lag dual ownership)
+	// or an upstream upload retry bug. See spec §8.1 R3 and §3.1 case 11.
+	ManifestAddFileDuplicateKeyTotal = NewCounter("lakehouse_manifest_addfile_duplicate_key_total")
 	DiscoveryHotBoundaryDays    = NewFloatGauge("lakehouse_discovery_hot_boundary_days")
 	DiscoveryGapDays            = NewFloatGauge("lakehouse_discovery_hot_boundary_gap_days")
 	ManifestPushTotal           = NewCounter("lakehouse_manifest_push_total")
