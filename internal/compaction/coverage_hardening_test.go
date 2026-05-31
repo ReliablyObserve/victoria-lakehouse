@@ -14,28 +14,9 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
-// TestNewPartitionSharding_NegativeShardCount exercises the shardCount <= 0 path.
-func TestNewPartitionSharding_NegativeShardCount(t *testing.T) {
-	s := NewPartitionSharding(0, -1)
-	if s.shardCount != 1 {
-		t.Errorf("shardCount = %d, want 1 for negative input", s.shardCount)
-	}
-	// Single shard should own all partitions.
-	if !s.OwnsPartition("dt=2026-05-22/hour=00") {
-		t.Error("single shard should own all partitions")
-	}
-}
-
-// TestNewPartitionSharding_ZeroShardCount exercises the shardCount == 0 path.
-func TestNewPartitionSharding_ZeroShardCount(t *testing.T) {
-	s := NewPartitionSharding(0, 0)
-	if s.shardCount != 1 {
-		t.Errorf("shardCount = %d, want 1 for zero input", s.shardCount)
-	}
-	if !s.OwnsPartition("any-partition") {
-		t.Error("single shard should own all partitions")
-	}
-}
+// (PartitionSharding negative/zero shardCount coverage tests removed in PR A —
+// sharding.go was deleted; HRW ownership replaces the modulo-shard scheme.
+// Single-pod and degraded-discovery behavior is covered in ownership_test.go.)
 
 // TestWriteCompactedLogs_VariousCompressionLevels exercises different
 // compression level paths through zstdLevel.

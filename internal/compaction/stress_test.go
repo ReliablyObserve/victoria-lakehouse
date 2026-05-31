@@ -108,87 +108,10 @@ func TestPolicy_SelectFiles_LargeCount(t *testing.T) {
 	}
 }
 
-// TestSharding_LargePartitionCount verifies ~equal distribution across 10 shards for 10000 partitions.
-func TestSharding_LargePartitionCount(t *testing.T) {
-	const totalPartitions = 10000
-	const shardCount = 10
-	const expectedPerShard = totalPartitions / shardCount // 1000
-	const tolerance = 0.20                                // ±20%
-
-	// Generate 10000 distinct partition names using the index directly for uniqueness.
-	partitions := make([]string, totalPartitions)
-	for i := range partitions {
-		partitions[i] = fmt.Sprintf("dt=2026-01-01/hour=%05d", i)
-	}
-
-	// Build ownership map: partition → shardID that owns it.
-	partitionOwner := make(map[string]int, totalPartitions)
-	shardCounts := make([]int, shardCount)
-
-	for shardID := 0; shardID < shardCount; shardID++ {
-		s := NewPartitionSharding(shardID, shardCount)
-		for _, p := range partitions {
-			if s.OwnsPartition(p) {
-				if existing, already := partitionOwner[p]; already {
-					t.Fatalf("partition %q owned by both shard %d and shard %d", p, existing, shardID)
-				}
-				partitionOwner[p] = shardID
-				shardCounts[shardID]++
-			}
-		}
-	}
-
-	// Verify all partitions are owned by exactly one shard (no gaps).
-	for _, p := range partitions {
-		if _, owned := partitionOwner[p]; !owned {
-			t.Fatalf("partition %q not owned by any shard", p)
-		}
-	}
-
-	// Verify distribution is within ±20% of expected.
-	low := int(float64(expectedPerShard) * (1 - tolerance))
-	high := int(float64(expectedPerShard) * (1 + tolerance))
-	for id, count := range shardCounts {
-		if count < low || count > high {
-			t.Errorf("shard %d has %d partitions, expected %d±%d%% (%d–%d)",
-				id, count, expectedPerShard, int(tolerance*100), low, high)
-		}
-	}
-	t.Logf("10 shards, 10000 partitions: distribution=%v", shardCounts)
-}
-
-// TestSharding_PartitionOwnership_Deterministic verifies same shard always owns the same partition.
-func TestSharding_PartitionOwnership_Deterministic(t *testing.T) {
-	const partitionCount = 1000
-	const shardCount = 5
-
-	partitions := make([]string, partitionCount)
-	for i := range partitions {
-		partitions[i] = fmt.Sprintf("dt=2026-05-%02d/hour=%02d", (i/24)%28+1, i%24)
-	}
-
-	// For each shard, record first-pass ownership results.
-	firstPass := make([][]bool, shardCount)
-	for shardID := 0; shardID < shardCount; shardID++ {
-		s := NewPartitionSharding(shardID, shardCount)
-		firstPass[shardID] = make([]bool, partitionCount)
-		for i, p := range partitions {
-			firstPass[shardID][i] = s.OwnsPartition(p)
-		}
-	}
-
-	// Second pass must produce identical results.
-	for shardID := 0; shardID < shardCount; shardID++ {
-		s := NewPartitionSharding(shardID, shardCount)
-		for i, p := range partitions {
-			got := s.OwnsPartition(p)
-			if got != firstPass[shardID][i] {
-				t.Errorf("non-deterministic: shard %d, partition %q: first=%v second=%v",
-					shardID, p, firstPass[shardID][i], got)
-			}
-		}
-	}
-}
+// (PartitionSharding stress tests removed in PR A — the modulo-shard scheme
+// was replaced by HRW ownership. Equivalent invariants — disjoint ownership,
+// distribution fairness, deterministic mapping — are exercised by
+// ownership_test.go and the HRW property tests.)
 
 // TestScheduler_MaxConcurrentRespected verifies Scan() caps compactions at MaxConcurrent.
 func TestScheduler_MaxConcurrentRespected(t *testing.T) {
