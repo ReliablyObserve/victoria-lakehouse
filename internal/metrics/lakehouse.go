@@ -223,6 +223,55 @@ var (
 	ElectionHealthChecksTotal = NewCounterVec("lakehouse_election_health_checks_total", "result")
 )
 
+// Election-free compaction metrics (spec §6 + §11.5).
+//
+// Spec §6.1: Ownership / HRW metrics. The PartitionsOwned gauge is the
+// load-bearing observability invariant — sum across cluster must equal
+// lakehouse_storage_partitions_total. OwnershipSelfInPeers pages
+// operators when 0 for 5m. DeferredStabilizing counts how often the
+// scheduler skipped a tick because of ring instability; the
+// SweepDeferredStabilizing counterpart is per-tier (label="tier_a"|"tier_b").
+// OwnershipEmptyPeers ticks when discovery returned []; RingChangesTotal
+// is labeled by RingChangeType ("join"/"leave").
+//
+// Spec §6.1: Orphan-sweep metrics. StolenTotal counts Tier A successes;
+// OrphansDeleted is the Tier B counter (>100/h pages); OrphansSkipped is
+// labeled by reason ("in_manifest"/"too_young"/"protected_prefix"/
+// "not_parquet"/"manifest_drift_race"/"empty_peers"/"self_not_in_peers");
+// DualOwnershipTotal is labeled by partition (cardinality bounded to a
+// handful of bad partitions in steady state; 0 expected); DoubleCountWindow
+// is the L0+L1 overlap gauge.
+//
+// Spec §11.5: HPA-visibility metrics. PartitionsInFlight + Draining
+// gauges are per-pod; AbortedDuringDrain + OwnershipChanges +
+// OrphanFilesFromDrain are counters; InFlightDuration is a histogram
+// for terminationGracePeriodSeconds tuning. DeferredRingThrash counts
+// rate-gate trips (spec §11.4).
+var (
+	CompactionPartitionsOwned          = NewGauge("lakehouse_compaction_partitions_owned")
+	CompactionOwnershipSelfInPeers     = NewGauge("lakehouse_compaction_ownership_self_in_peers")
+	CompactionDeferredStabilizing      = NewCounter("lakehouse_compaction_deferred_stabilizing_total")
+	CompactionSweepDeferredStabilizing = NewCounterVec("lakehouse_compaction_sweep_deferred_stabilizing_total", "tier")
+	CompactionOwnershipEmptyPeers      = NewCounter("lakehouse_compaction_ownership_empty_peers_total")
+	CompactionRingChangesTotal         = NewCounterVec("lakehouse_compaction_ring_changes_total", "type")
+
+	CompactionStolenTotal        = NewCounter("lakehouse_compaction_stolen_total")
+	CompactionOrphansDeleted     = NewCounter("lakehouse_compaction_orphan_files_deleted_total")
+	CompactionOrphansSkipped     = NewCounterVec("lakehouse_compaction_orphans_skipped_total", "reason")
+	CompactionDualOwnershipTotal = NewCounterVec("lakehouse_compaction_dual_ownership_total", "partition")
+	CompactionDoubleCountWindow  = NewGauge("lakehouse_compaction_double_count_window_seconds")
+
+	// §11.5 HPA-visibility (PR-B scope per spec, wired in Stage 5
+	// here because the scheduler/sweep need to set them as they run).
+	CompactionPartitionsInFlight     = NewGauge("lakehouse_compaction_partitions_in_flight")
+	CompactionDraining               = NewGauge("lakehouse_compaction_draining")
+	CompactionAbortedDuringDrain     = NewCounter("lakehouse_compaction_aborted_during_drain_total")
+	CompactionOwnershipChanges       = NewCounter("lakehouse_compaction_ownership_changes_total")
+	CompactionInFlightDuration       = NewHistogram("lakehouse_compaction_in_flight_duration_seconds", DefBuckets)
+	CompactionOrphanFilesFromDrain   = NewCounter("lakehouse_compaction_orphan_files_from_drain_total")
+	CompactionDeferredRingThrash     = NewCounter("lakehouse_compaction_deferred_ring_thrash_total")
+)
+
 // Tenant metrics (per-tenant, subject to cardinality cap)
 var (
 	TenantFiles               = NewGaugeVec("lakehouse_tenant_files", "tenant")
