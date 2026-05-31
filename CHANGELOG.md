@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Runtime `Acquire` wiring for 4 resource-bound surfaces** — turns the K8s-style resource bounds added in v0.37.1 from metric-exposure-only into real backpressure with admit/reject semantics. Surfaces wired in both modules (logs + traces):
+  - Query file workers — admit at `fileWorkerLoop`; ctx-cancel during blocked Acquire surfaces as "file workers limit exceeded" error (was: queued indefinitely on channel).
+  - Cache memory — `LRU.SetBound`; `Put` returns silently when bound rejects, cache becomes best-effort (was: silent LRU eviction only).
+  - Smart cache disk — `DiskCache.SetBound`; `Put` / `PutFromPath` return `ErrBoundFull` on rejection (was: always succeeded, watermark eviction only).
+  - Query max rows — admit at `acquireQueryMaxRowsBudget`; "query max-rows budget exhausted" error when N concurrent queries × maxRows exceed the bound's Limit (was: per-query soft check only).
+- New `resourcebounds.Bound.TryAcquire(n)` non-blocking API + exported `ErrBoundFull` sentinel for cache hot paths that cannot tolerate blocking on bound exhaustion.
+- 34 new unit tests across both modules covering admit/reject paths, release on every code path (eviction / Delete / Clear), nil-bound passthrough, outlier admission (oversized single holder admitted alone), ctx-cancel during blocked Acquire, and rejection-metric increments. Each load-bearing assertion documents a negative-control proof ("comment out X → this test must fail") per the harden-and-lock rule.
+- Live e2e metrics confirm load-bearing in production: `lakehouse_resourcebound_cache_memory_acquired_total 1162`, `…query_file_workers_acquired_total 2489`, `…query_max_rows_acquired_total 5` measured against the rebuilt e2e compose stack.
+- `cache/lru.go` and `cache/disk.go`: added `SetBound`, `RejectedByBound` accessors and per-entry `boundRelease` closures so every code path that drops an entry (eviction, Delete, Clear, Update-with-replace) releases its slot back to the bound exactly once.
+- `internal/storage/parquets3/storage_query.go`: extracted `processOneFile`, `fileWorkerLoop`, `acquireQueryMaxRowsBudget` helpers to keep `RunQuery` within the 50-line gocyclo budget after wiring the new admit points.
+
+### Deferred
+
+- S3 download bound runtime wiring in `lakehouse-traces` — the traces module's `getFileData` calls `s.pool.Download` directly without the channel-based admission point the logs module uses (v0.37.1's wiring point). Wiring it would require either adopting the logs-module `dlSem` pattern or refactoring to a different admission point — both invasive enough to deserve their own PR. The bound is constructed in traces for metric exposure (request/limit gauges populated at startup; outstanding=0 at idle). All 4 other surfaces are fully wired in traces.
+
+### Performance
+
+- `Bound.TryAcquire` hot path: 25.84 ns/op; rejection path: 4.49 ns/op (Apple M5 Pro).
+- `cache.Put` with bound wiring: 192.6 ns/op vs 144.7 ns/op baseline (+47.9 ns, +33%). Bound-rejection fast-path is actually faster: 133.8 ns/op (-7.6%) — the cache no-ops without LRU shuffle when the bound rejects.
+- `Bound.Acquire` blocking variant: 295.8 ns/op — slower than `TryAcquire` because it spawns a ctx-watch goroutine for the cancellation path.
+
 ## [0.37.2] - 2026-05-31
 
 ### Changed
