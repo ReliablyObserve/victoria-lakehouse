@@ -339,6 +339,14 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 			continue
 		}
 
+		metrics.CompactionRunsTotal.Inc()
+		metrics.CompactionFilesInputTotal.Add(len(selected))
+		metrics.CompactionFilesOutputTotal.Inc()
+		metrics.CompactionBytesReadTotal.Add(int(result.BytesRead))
+		metrics.CompactionBytesWrittenTotal.Add(int(result.BytesWritten))
+		metrics.CompactionRowsMergedTotal.Add(int(result.RowsMerged))
+		metrics.CompactionDuration.Observe(time.Since(compStart).Seconds())
+
 		if s.onCompacted != nil {
 			addedFiles := s.manifest.FilesForPartition(c.partition)
 			removedKeys := make([]string, 0, len(selected))

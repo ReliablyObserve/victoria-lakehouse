@@ -10,6 +10,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -549,5 +550,92 @@ func TestScheduler_FairShare_PicksAcrossTenants(t *testing.T) {
 	// We should have hit all 3 tenants over 3 ticks.
 	if len(tickResults) != 3 {
 		t.Fatalf("fair-share across 3 ticks: tenants compacted=%d, want 3 (results=%v)", len(tickResults), tickResults)
+	}
+}
+
+// TestScheduler_IncrementsCompactionCounters guards the
+// lakehouse_compaction_runs_total / files_input_total /
+// files_output_total / bytes_read_total / bytes_written_total /
+// rows_merged_total counter wiring inside Scan(). Removing any of
+// the .Inc()/.Add() calls in scheduler.go fails this test, which
+// caught a real silent regression where compactions ran but the
+// counters stayed at 0 in /metrics.
+func TestScheduler_IncrementsCompactionCounters(t *testing.T) {
+	pool := newMockPool()
+	m := manifest.New("test-bucket", "logs/")
+	policy := NewLevelPolicy(10, 20, 0)
+
+	const partition = "dt=2026-01-01/hour=01"
+	const fp = "test-fp"
+	ctx := context.Background()
+
+	const inputN = 12
+	var totalInputBytes int64
+	for i := 0; i < inputN; i++ {
+		rows := []schema.LogRow{
+			{TimestampUnixNano: int64(i*1000 + 1), Body: fmt.Sprintf("log-%d", i), ServiceName: "svc-test"},
+		}
+		data := makeTestParquet(t, rows)
+		key := fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i)
+		if err := pool.Upload(ctx, key, data); err != nil {
+			t.Fatal(err)
+		}
+		totalInputBytes += int64(len(data))
+		m.AddFile(partition, manifest.FileInfo{
+			Key:               key,
+			Size:              int64(len(data)),
+			RowCount:          1,
+			MinTimeNs:         int64(i*1000 + 1),
+			MaxTimeNs:         int64(i*1000 + 1),
+			SchemaFingerprint: fp,
+			CompactionLevel:   0,
+		})
+	}
+
+	runsBefore := metrics.CompactionRunsTotal.Get()
+	inputBefore := metrics.CompactionFilesInputTotal.Get()
+	outputBefore := metrics.CompactionFilesOutputTotal.Get()
+	bytesReadBefore := metrics.CompactionBytesReadTotal.Get()
+	bytesWrittenBefore := metrics.CompactionBytesWrittenTotal.Get()
+	rowsBefore := metrics.CompactionRowsMergedTotal.Get()
+
+	sched := NewScheduler(SchedulerConfig{
+		Manifest:         m,
+		Pool:             pool,
+		Ownership:        soleOwnerResolver(),
+		Policy:           policy,
+		Prefix:           "logs/",
+		Mode:             config.ModeLogs,
+		Interval:         time.Minute,
+		MaxConcurrent:    2,
+		RowGroupSize:     1000,
+		CompressionLevel: 7,
+	})
+
+	n, err := sched.Scan(ctx)
+	if err != nil {
+		t.Fatalf("Scan error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 compaction, got %d", n)
+	}
+
+	if got := metrics.CompactionRunsTotal.Get() - runsBefore; got != 1 {
+		t.Errorf("CompactionRunsTotal delta = %d, want 1", got)
+	}
+	if got := metrics.CompactionFilesInputTotal.Get() - inputBefore; got != uint64(inputN) {
+		t.Errorf("CompactionFilesInputTotal delta = %d, want %d", got, inputN)
+	}
+	if got := metrics.CompactionFilesOutputTotal.Get() - outputBefore; got != 1 {
+		t.Errorf("CompactionFilesOutputTotal delta = %d, want 1", got)
+	}
+	if got := metrics.CompactionBytesReadTotal.Get() - bytesReadBefore; got == 0 {
+		t.Errorf("CompactionBytesReadTotal did not advance (input was %d bytes)", totalInputBytes)
+	}
+	if got := metrics.CompactionBytesWrittenTotal.Get() - bytesWrittenBefore; got == 0 {
+		t.Errorf("CompactionBytesWrittenTotal did not advance")
+	}
+	if got := metrics.CompactionRowsMergedTotal.Get() - rowsBefore; got != uint64(inputN) {
+		t.Errorf("CompactionRowsMergedTotal delta = %d, want %d", got, inputN)
 	}
 }
