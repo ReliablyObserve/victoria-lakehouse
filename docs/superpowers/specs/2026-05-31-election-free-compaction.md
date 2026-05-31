@@ -44,6 +44,7 @@ HRW case (pod owns 100 %, trivially).
 8. [Risk register](#8-risk-register)
 9. [Rollback plan](#9-rollback-plan)
 10. [Open questions for the maintainer](#10-open-questions-for-the-maintainer)
+11. [HPA-safe scaling design](#11-hpa-safe-scaling-design)
 
 ---
 
@@ -755,7 +756,11 @@ partition will:
 This is the **load-bearing observation** of the whole design: duplicate
 work is safe; we just need to make it observable and self-cleaning.
 
-#### 2.3.3 `OnRingChange` subscription (optional, no behaviour change)
+#### 2.3.3 SIGTERM / drain behaviour
+
+See **§11.1** for the full SIGTERM-aware scheduler design (drain handler, `inFlight` wait group, partition-boundary invariant). PR A adds a `Drain()` method and `draining` atomic to the scheduler; the `Scan` loop checks `draining` at partition boundaries so in-flight work always completes cleanly.
+
+#### 2.3.4 `OnRingChange` subscription (optional, no behaviour change)
 
 ```go
 // In NewScheduler:
@@ -1109,7 +1114,7 @@ naturally backs off without per-component tuning.
 | 17 | Pod IP reuse — restart gets new IP, discovery sees new member | HRW on the (new) IP recomputes ownership; old IP drops out, new IP is a "join" event. `IsStabilizing()` defers both pods for 60 s. | `TestOwnership_IPReuse_TreatedAsRejoin` | LOW |
 | 18 | Discovery returns empty list (DNS down, K8s API down) | See edge case 10. | (covered by 10) | MEDIUM |
 | 19 | Discovery returns just-me at startup (cold boot) | HRW with a single peer gives me 100% of partitions. Correct. | `TestOwnership_SinglePodOwnsEverything` | LOW |
-| 20 | Wave-of-pods scaling (HPA: 1→5 in 30 s) | Each new pod triggers a ring change → `IsStabilizing()` → 60 s deferral. After stabilization, HRW redistributes 80 % of partitions to new owners. Tier A picks up any partition that the previous owner failed to advance during the stabilization window. | `TestOwnership_WaveOfPods_NoDuplicateAfterStabilization` | MEDIUM |
+| 20 | Wave-of-pods scaling (HPA: 1→5 in 30 s) | See **§11.4** ring-change rate-limit. Compaction defers all work when `rate(ringChanges, 5m) > 6`, resuming after a stabilization window of 60 s with <2 changes/5 min. Each new pod also triggers `IsStabilizing()` → 60 s deferral. After stabilization, HRW redistributes 80 % of partitions to new owners. Tier A picks up any partition that the previous owner failed to advance during the stabilization window. Regression test: `TestCompaction_WaveScaleUp_RingThrashing` (§11.6.5). | `TestOwnership_WaveOfPods_NoDuplicateAfterStabilization`, `TestCompaction_WaveScaleUp_RingThrashing` | MEDIUM |
 | 21 | Multi-AZ peer set → cross-AZ S3 traffic cost | **Deferred.** PR A uses the basic ring (`UpdatePeers`), not the AZ-aware ring (`UpdatePeersWithZones`). HRW over the cross-AZ peer set means a partition in AZ-A may be compacted from AZ-B, pulling from S3 over the AZ boundary. Mitigation: a follow-up PR adds an `AZAware` flag to `OwnershipResolver` that filters peer set to same-AZ first, falling back cross-AZ if no same-AZ peer is available — mirrors the existing pattern at `peercache/ring.go:121-146`. Track as open question Q3. | (none — follow-up PR) | MEDIUM (cost, not correctness) |
 | 22 | Partial network failure: pod reaches S3 but not peers | Discovery succeeds (DNS), but actual peer-cache RPC may fail. Ownership is computed from the *discovered* peer list, not RPC health. Worst case: a pod is in the peer set but unhealthy, and partitions HRW-assigns to it are dropped this tick. Tier A picks them up after `3×Interval`. | `TestOwnership_PeerUnreachable_TierAReclaims` | MEDIUM |
 | 23 | Pod with stale on-disk manifest snapshot on restart | `manifest.LoadFrom` (`manifest.go:626-655`) reads the snapshot, then a `RefreshFromS3` reconciles with S3 (`manifest.go:127-262`). After reconciliation the manifest is correct. HRW ownership only depends on partition keys, not file lists, so a stale snapshot doesn't affect ownership decisions during the reconciliation gap. | `TestManifest_StaleDiskSnapshot_ReconciledByRefresh` (already exists in some form, verify) | LOW |
@@ -1130,7 +1135,7 @@ naturally backs off without per-component tuning.
 | # | Edge case | Mitigation | Regression test | Severity |
 |---|---|---|---|---|
 | 30 | Clock skew between pods → watermark comparisons fail | `MarkAttempt` writes `time.Now()` from the pod doing the compaction. Tier A reads `time.Since(lastAttempt)` from the **same** pod's clock (it's an in-memory map, single-pod read). Per-pod clocks are not compared. Skew is irrelevant. | `TestOrphanSweep_ClockSkewBetweenPods_Irrelevant` (negative control: stub `time.Now` returning wildly different values on two `Manifest` instances — both should still self-clean) | LOW |
-| 31 | SIGTERM mid-compaction — graceful drain | Current shutdown sequence: `sched.Stop()` closes `stopCh`, ticker exits at the next iteration. A compaction in flight runs to completion. PR A keeps this behaviour — no change. **Negative control:** verify `sched.Stop()` does not wait for an in-flight compaction longer than `Interval + ComputeBudget`. | `TestScheduler_SIGTERMDuringCompaction_CompletesOrAborts` | MEDIUM |
+| 31 | SIGTERM mid-compaction — graceful drain | See **§11.1** drain handler and **§11.2** peer-cache draining advertisement. PR A adds `Drain()` to the scheduler: pod sets `draining=true` on SIGTERM, advertises via `X-Lakehouse-Draining` header, completes the current partition boundary, then exits. Other pods detect the draining advertisement via `peercache.IsDraining` and exclude the draining pod from HRW ownership assignments before it actually terminates. An interrupted partition's output becomes a Tier-B orphan (cleaned after `OrphanTTL`). Helm chart sets `terminationGracePeriodSeconds: 120` (§11.3). Regression test: `TestCompaction_SIGTERM_FinishesCurrentPartition` (§11.6.1). | `TestScheduler_SIGTERMDuringCompaction_CompletesOrAborts`, `TestCompaction_SIGTERM_FinishesCurrentPartition` | MEDIUM |
 
 ### 3.6 Observability
 
@@ -1240,8 +1245,20 @@ so the build is green at every intermediate commit.
    - `tests/verification/matrix.md` — update L11 (binary bloat) note
      to reflect the *new* baseline post-election-removal.
 
+**PR-A scope update (§11 additions):** Commit 1 also includes the
+SIGTERM-aware drain handler (§11.1, ~60 LoC) and peer-cache draining
+advertisement extension (§11.2, ~30 LoC); Commit 2 integrates the
+ring-change rate-limit / anti-thrashing gate (§11.4, ~40 LoC) into
+the scheduler. PR-A grows from ~400 LOC to ~600 LOC of new/modified
+production code.
+
 PR B (chart + flags) and PR C (delete election package) are split out
-in §7.
+in §7. **PR-B scope update (§11 additions):** PR B additionally adds
+Helm chart safe-scaling defaults (§11.3: `terminationGracePeriodSeconds`,
+`preStop` hook, PDB template), HPA-visibility metrics (§11.5, 6 new
+metric families), and the HPA recovery regression test suite (§11.6,
+8 new tests). PR B's test count grows from "33 edge cases" to
+**33 + 8 HPA tests = 41 tests**.
 
 ### 4.2 Files to delete (full list, applied in PR C)
 
@@ -1895,6 +1912,319 @@ Lower interval = more S3 work even when there's nothing to do.
 Default `OrphanTTL = 2h`. Long enough to cover S3 EC + most pod
 restart scenarios, short enough to avoid storage cost balloons from
 duplicate work. Confirm 2h is right, or should it be 1h / 4h?
+
+**Q13. `terminationGracePeriodSeconds` default.**
+Spec recommends 120s (up from K8s default 30s). Long enough for a
+max-size compaction + ring sync. Operators can override but the
+default should be safe. Confirm 120s, or prefer 90s / 180s?
+
+---
+
+## 11. HPA-safe scaling design
+
+This section documents a six-layer defense-in-depth strategy for safe
+operation during Kubernetes HPA scale-up and scale-down events. Layers
+§11.1, §11.2, and §11.4 are **PR-A scope**; layers §11.3, §11.5, and
+§11.6 are **PR-B scope**.
+
+---
+
+### §11.1 — SIGTERM-aware scheduler (PR-A scope)
+
+The scheduler gains an explicit drain state so that SIGTERM during
+active compaction completes safely at a partition boundary rather than
+aborting mid-merge.
+
+```go
+// internal/compaction/scheduler.go
+type Scheduler struct {
+    draining   atomic.Bool       // set by signal handler / preStop hook
+    inFlight   sync.WaitGroup    // counts running compactions
+    drainCh    chan struct{}      // closed when drain begins
+    // ... existing fields ...
+}
+
+// Drain is invoked by signal handler or preStop HTTP endpoint.
+// Blocks until all in-flight compactions reach a partition boundary.
+func (s *Scheduler) Drain() {
+    s.draining.Store(true)
+    close(s.drainCh)
+    s.inFlight.Wait()             // wait for in-flight to finish
+}
+
+// On every tick:
+//   if s.draining.Load() { return }                  // no new work
+//   for each partition I own:
+//       if s.draining.Load() { break }               // bail at partition boundary
+//       s.inFlight.Add(1)
+//       go s.compactPartition(...)                   // wraps with defer s.inFlight.Done()
+```
+
+**Invariant:** `draining` is checked only at *partition boundaries*,
+never mid-merge. An interrupted partition's in-flight work is fully
+aborted; its output file becomes a Tier-B orphan and the orphan-sweep
+infrastructure already in the spec (§2.4) cleans it up after
+`OrphanTTL`. This is simpler than checkpoint-resume and requires no
+new persistent state.
+
+Cross-reference: §2.3.3 (scheduler component) points here for the
+drain implementation detail. Edge case 31 (§3.5) cross-references
+this section.
+
+---
+
+### §11.2 — Peer-cache draining advertisement (PR-A scope)
+
+The `X-Lakehouse-Draining` header is already parsed by the peer-cache
+HTTP client (`internal/peercache/peercache.go:89-91`) and routed to
+`pc.rcm.RecordDraining(peer)` (`internal/peercache/ring_change.go:206`).
+`IsDraining(peer string) bool` is exposed at
+`internal/peercache/ring_change.go:213` and forwarded as
+`pc.IsDraining(peer)` (`internal/peercache/peercache.go:194`).
+`IsShadowMember` is at `internal/peercache/ring_change.go:179`.
+These primitives exist today; PR A wires them into the compaction
+ownership path.
+
+```go
+// pod sets draining → its HTTP responses include the header
+// other pods, on peer-cache RPCs, parse it and record via
+// pc.rcm.RecordDraining(addr) (ring_change.go:206)
+// the existing IsDraining/IsShadowMember machinery already supports it
+
+// For compaction HRW: exclude draining peers BEFORE actual termination.
+func (s *Scheduler) ownerOf(partition string) string {
+    peers := s.discovery.Peers()
+    livePeers := filterDraining(peers, s.peerCache)
+    return ownership.OwnerOf(partition, livePeers)
+}
+
+// filterDraining removes any peer for which peerCache.IsDraining returns true.
+func filterDraining(peers []string, pc *peercache.PeerCache) []string {
+    out := peers[:0:len(peers)]
+    for _, p := range peers {
+        if !pc.IsDraining(p) {
+            out = append(out, p)
+        }
+    }
+    return out
+}
+```
+
+**Effect:** the moment pod-3 sets `draining=true`, other pods stop
+assigning it new ownership *before* it actually terminates. In-flight
+compaction work on pod-3 continues to completion; new partition
+assignments go elsewhere immediately. This closes the window between
+SIGTERM and the pod disappearing from DNS.
+
+---
+
+### §11.3 — Helm chart safe-scaling defaults (PR-B scope)
+
+Two chart additions protect against data loss during HPA scale-down.
+
+**StatefulSet lifecycle hooks** (`charts/.../templates/statefulsets.yaml`):
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 120        # up from default 30s
+                                            # ≥1 max-size compaction + ring sync
+
+  containers:
+    - lifecycle:
+        preStop:
+          exec:
+            command: ["/usr/local/bin/lakehouse-logs", "drain"]
+            # sets draining=true via /-/drain endpoint
+            # blocks until inFlight.Wait() or 90s timeout
+```
+
+**PodDisruptionBudget** (`charts/.../templates/poddisruptionbudget.yaml` — new file):
+
+```yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "victoria-lakehouse.fullname" . }}-insert-pdb
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: logs-insert
+```
+
+**Recommended HPA behavior tuning** (operator-set; chart provides as
+`values.yaml` comments so operators see the guidance):
+
+```yaml
+behavior:
+  scaleDown:
+    stabilizationWindowSeconds: 300
+    policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 60
+  scaleUp:
+    stabilizationWindowSeconds: 30
+    policies:
+      - type: Pods
+        value: 2
+        periodSeconds: 60
+```
+
+The 300 s scale-down stabilization window prevents rapid oscillation
+("thrashing") that would trigger continuous ring changes and keep
+compaction deferred via `IsStabilizing()`.
+
+---
+
+### §11.4 — Ring-change rate-limit / anti-thrashing (PR-A scope)
+
+A rapid HPA cascade (e.g. 1→5 pods in 30 s = 4 ring changes in 30 s
+= ~8 changes/min) would keep `IsStabilizing()` true continuously and
+prevent compaction from running. The rate gate provides an additional,
+explicit backstop:
+
+```go
+// In scheduler, on every tick:
+//   if rate(ringChanges, 5*time.Minute) > 6 { defer this tick }
+// Prevents compaction during rapid HPA cascade (e.g. 1→5 in 30s = 4 changes/30s = 8/min)
+// Compaction resumes once ring is stable for ≥1 stabilizationWindow with <2 changes/5min.
+```
+
+Implementation: reuse `peercache.IsStabilizing` (existing) PLUS a new
+sliding-window counter in the scheduler. The counter increments on
+every `OnRingChange` callback and is read-expired every 5 minutes.
+When the 5-minute rate exceeds 6, the scheduler emits
+`lakehouse_compaction_deferred_ring_thrash_total` and skips the tick.
+
+This gate is independent of `IsStabilizing()` — it activates even
+after the 60 s stabilization window has closed if the ring continues
+to change rapidly.
+
+---
+
+### §11.5 — HPA-visibility metrics (PR-B scope)
+
+Six new metrics to make HPA-related compaction behaviour observable:
+
+| Metric | Type | Purpose |
+|---|---|---|
+| `lakehouse_compaction_partitions_in_flight{pod}` | gauge | count of running compactions on this pod |
+| `lakehouse_compaction_draining{pod}` | gauge 0/1 | this pod is draining |
+| `lakehouse_compaction_aborted_during_drain_total` | counter | partitions aborted mid-merge due to drain |
+| `lakehouse_compaction_ownership_changes_total` | counter | how often HRW reassigned a partition |
+| `lakehouse_compaction_in_flight_duration_seconds` | histogram | how long compactions actually take (for tuning gracePeriod) |
+| `lakehouse_compaction_orphan_files_from_drain_total` | counter | output files orphaned by drains specifically |
+
+**Alerting targets** (document for runbook §6.4):
+
+- `rate(lakehouse_compaction_aborted_during_drain_total[1h]) > 5` →
+  grace period too short; raise `terminationGracePeriodSeconds`
+- `rate(lakehouse_compaction_ownership_changes_total[1m]) > 1`
+  sustained → ring is flapping; check HPA config and
+  `stabilizationWindowSeconds`
+- `histogram_quantile(0.99, lakehouse_compaction_in_flight_duration_seconds) > <terminationGracePeriodSeconds>` →
+  operator must raise `terminationGracePeriodSeconds` to match p99
+  compaction duration
+
+---
+
+### §11.6 — HPA recovery regression tests (PR-B scope)
+
+Eight new tests, each with a **negative-control proof** (reverting a
+specific fix must cause the test to fail). These tests live in
+`internal/compaction/hpa_recovery_test.go`.
+
+#### §11.6.1 `TestCompaction_SIGTERM_FinishesCurrentPartition`
+
+**Setup:** scheduler with one partition in-flight, 200 ms simulated
+compaction duration. **Action:** send SIGTERM mid-compaction (call
+`Drain()` concurrently). **Assertions:** (1) `Drain()` blocks until
+the in-flight partition completes; (2) no new partitions are started
+after `draining=true`; (3) manifest is consistent (no partial output).
+**Negative-control revert:** remove the `s.draining.Load()` check from
+the partition loop — test must fail with a new partition starting after
+`Drain()` is called.
+
+#### §11.6.2 `TestCompaction_SIGKILL_OrphanRecovery`
+
+**Setup:** scheduler with a partition upload in progress. **Action:**
+simulate SIGKILL by cancelling the context mid-upload (no `Drain()`
+call). **Assertions:** (1) the partial output key appears as a
+Tier-B orphan candidate after `OrphanTTL`; (2) `RunTierB` deletes it;
+(3) manifest remains consistent (no entry for the partial output).
+**Negative-control revert:** remove the Tier-B deletion logic — the
+counter `lakehouse_compaction_orphan_files_from_drain_total` must
+never increment.
+
+#### §11.6.3 `TestCompaction_HPAScaleUp_NoDuplicate`
+
+**Setup:** three-pod cluster; HPA adds a fourth pod mid-tick. **Action:**
+ring change triggers `IsStabilizing()`; all pods defer. After 60 s
+stabilization, HRW redistributes. **Assertions:** (1) each partition
+has exactly one owner post-redistribution; (2)
+`lakehouse_compaction_dual_ownership_total` stays at 0; (3) no
+partition is double-compacted. **Negative-control revert:** remove the
+`IsStabilizing()` guard from `Scan` — dual ownership counter must
+increment during the redistribution window.
+
+#### §11.6.4 `TestCompaction_HPAScaleDown_DrainOrAbort`
+
+**Setup:** four-pod cluster; HPA removes one pod (graceful). **Action:**
+removed pod calls `Drain()`, advertises `X-Lakehouse-Draining`. Other
+pods call `filterDraining()` and exclude it from HRW. **Assertions:**
+(1) draining pod's partitions are reassigned to live peers within one
+tick after drain advertisement; (2) no partition is missed (Tier A
+picks up any that fall through); (3) `lakehouse_compaction_draining`
+gauge goes 0→1→0 on the draining pod. **Negative-control revert:**
+remove `filterDraining()` from `ownerOf()` — partitions remain
+assigned to the draining pod until it disappears from DNS.
+
+#### §11.6.5 `TestCompaction_WaveScaleUp_RingThrashing`
+
+**Setup:** single-pod cluster; HPA waves up to 5 pods in 30 s (4 ring
+changes in 30 s). **Action:** scheduler tick fires during the wave.
+**Assertions:** (1) all ticks during the wave are deferred
+(`rate(ringChanges, 5m) > 6` gate fires); (2)
+`lakehouse_compaction_deferred_ring_thrash_total` increments ≥1; (3)
+compaction resumes within 90 s after the wave settles (rate drops
+below 2/5 min). **Negative-control revert:** remove the sliding-window
+rate gate — scheduler must attempt compaction during the thrash window,
+causing a non-zero `lakehouse_compaction_dual_ownership_total`.
+
+#### §11.6.6 `TestCompaction_PDB_NoSimultaneousEviction`
+
+**Setup:** two-pod cluster with `maxUnavailable: 1` PDB. **Action:**
+simulate two simultaneous evictions (kubectl drain × 2 pods). **Assertions:**
+(1) K8s blocks the second eviction until the first pod is gone and
+a replacement is running; (2) at least one pod is always available;
+(3) no data loss (manifest consistent throughout). This is an
+integration/e2e test that requires a kind cluster or envtest. **Negative-control
+revert:** remove the PDB from the chart — both pods drain simultaneously
+and all partitions go unowned for up to 3×Interval.
+
+#### §11.6.7 `TestCompaction_GracefulShutdown_NoOrphans`
+
+**Setup:** scheduler with 5 partitions, each taking 50 ms. **Action:**
+call `Drain()` before any partitions start. **Assertions:** (1) zero
+partitions start after `draining=true`; (2) `inFlight.Wait()` returns
+immediately (no work in flight); (3) `lakehouse_compaction_orphan_files_from_drain_total`
+stays at 0. **Negative-control revert:** remove `s.draining.Load()`
+from the pre-partition check — partitions start and the orphan counter
+increments.
+
+#### §11.6.8 `TestCompaction_DrainTimeout_ForceAbort`
+
+**Setup:** scheduler with a partition that simulates a 150 s compaction
+(exceeds the 120 s `terminationGracePeriodSeconds`). **Action:** call
+`Drain()` with a 90 s context timeout (the preStop hook's practical
+limit). **Assertions:** (1) after 90 s, `Drain()` returns (context
+cancelled); (2) the in-flight compaction is forcibly cancelled; (3)
+the partial output becomes a Tier-B orphan; (4) manifest is consistent
+(no entry for the partial output). **Negative-control revert:** make
+`Drain()` ignore context cancellation — `Drain()` blocks past the
+timeout and the OS kills the process, leaving a corrupted manifest
+state.
 
 ---
 
