@@ -22,13 +22,6 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
-// ringChangeRecorder is the subset of peercache.PeerCache that the
-// scheduler needs for the §11.4 thrash gate. Defined locally so we
-// don't pull a heavy peercache dep into this package.
-type ringChangeRecorder interface {
-	OnRingChange(fn func(eventType string, peer string))
-}
-
 // SchedulerConfig holds all dependencies for the Scheduler. Compared
 // to the pre-PR-A shape this drops Leader, Sentinel, and Sharding;
 // replaces them with Ownership (HRW) + optional FairShare for
@@ -89,14 +82,14 @@ type Scheduler struct {
 	wg     sync.WaitGroup
 
 	// Drain state (spec §11.1)
-	draining   atomic.Bool
-	drainCh    chan struct{}
-	inFlight   sync.WaitGroup
-	drainOnce  sync.Once
+	draining  atomic.Bool
+	drainCh   chan struct{}
+	inFlight  sync.WaitGroup
+	drainOnce sync.Once
 
 	// Ring-change sliding window (spec §11.4)
-	ringEvents     []time.Time
-	ringEventsMu   sync.Mutex
+	ringEvents   []time.Time
+	ringEventsMu sync.Mutex
 }
 
 // NewScheduler creates a Scheduler from the given config. Panics if

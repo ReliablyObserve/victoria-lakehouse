@@ -56,12 +56,12 @@ var (
 	// duplicate compaction work (HRW ring flap, DNS lag dual ownership)
 	// or an upstream upload retry bug. See spec §8.1 R3 and §3.1 case 11.
 	ManifestAddFileDuplicateKeyTotal = NewCounter("lakehouse_manifest_addfile_duplicate_key_total")
-	DiscoveryHotBoundaryDays    = NewFloatGauge("lakehouse_discovery_hot_boundary_days")
-	DiscoveryGapDays            = NewFloatGauge("lakehouse_discovery_hot_boundary_gap_days")
-	ManifestPushTotal           = NewCounter("lakehouse_manifest_push_total")
-	ManifestPushPeers           = NewGauge("lakehouse_manifest_push_peers")
-	ManifestPushErrorsTotal     = NewCounter("lakehouse_manifest_push_errors_total")
-	ManifestUpdateReceivedTotal = NewCounter("lakehouse_manifest_update_received_total")
+	DiscoveryHotBoundaryDays         = NewFloatGauge("lakehouse_discovery_hot_boundary_days")
+	DiscoveryGapDays                 = NewFloatGauge("lakehouse_discovery_hot_boundary_gap_days")
+	ManifestPushTotal                = NewCounter("lakehouse_manifest_push_total")
+	ManifestPushPeers                = NewGauge("lakehouse_manifest_push_peers")
+	ManifestPushErrorsTotal          = NewCounter("lakehouse_manifest_push_errors_total")
+	ManifestUpdateReceivedTotal      = NewCounter("lakehouse_manifest_update_received_total")
 )
 
 // Parquet engine metrics
@@ -256,13 +256,13 @@ var (
 
 	// §11.5 HPA-visibility (PR-B scope per spec, wired in Stage 5
 	// here because the scheduler/sweep need to set them as they run).
-	CompactionPartitionsInFlight     = NewGauge("lakehouse_compaction_partitions_in_flight")
-	CompactionDraining               = NewGauge("lakehouse_compaction_draining")
-	CompactionAbortedDuringDrain     = NewCounter("lakehouse_compaction_aborted_during_drain_total")
-	CompactionOwnershipChanges       = NewCounter("lakehouse_compaction_ownership_changes_total")
-	CompactionInFlightDuration       = NewHistogram("lakehouse_compaction_in_flight_duration_seconds", DefBuckets)
-	CompactionOrphanFilesFromDrain   = NewCounter("lakehouse_compaction_orphan_files_from_drain_total")
-	CompactionDeferredRingThrash     = NewCounter("lakehouse_compaction_deferred_ring_thrash_total")
+	CompactionPartitionsInFlight   = NewGauge("lakehouse_compaction_partitions_in_flight")
+	CompactionDraining             = NewGauge("lakehouse_compaction_draining")
+	CompactionAbortedDuringDrain   = NewCounter("lakehouse_compaction_aborted_during_drain_total")
+	CompactionOwnershipChanges     = NewCounter("lakehouse_compaction_ownership_changes_total")
+	CompactionInFlightDuration     = NewHistogram("lakehouse_compaction_in_flight_duration_seconds", DefBuckets)
+	CompactionOrphanFilesFromDrain = NewCounter("lakehouse_compaction_orphan_files_from_drain_total")
+	CompactionDeferredRingThrash   = NewCounter("lakehouse_compaction_deferred_ring_thrash_total")
 )
 
 // Tenant metrics (per-tenant, subject to cardinality cap)

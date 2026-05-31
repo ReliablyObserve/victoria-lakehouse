@@ -191,7 +191,7 @@ func TestScheduler_RecordsAttemptBeforeCompact(t *testing.T) {
 		}
 		data := makeTestParquet(t, rows)
 		key := fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i)
-		if err := pool.mockPool.Upload(ctx, key, data); err != nil {
+		if err := pool.Upload(ctx, key, data); err != nil {
 			t.Fatal(err)
 		}
 		m.AddFile(partition, manifest.FileInfo{
@@ -375,7 +375,7 @@ func TestScheduler_CompactionFailure(t *testing.T) {
 		rows := []schema.LogRow{{TimestampUnixNano: int64(i*1000 + 1), Body: fmt.Sprintf("log-%d", i), ServiceName: "svc"}}
 		data := makeTestParquet(t, rows)
 		key := fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i)
-		if err := pool.mockPool.Upload(ctx, key, data); err != nil {
+		if err := pool.Upload(ctx, key, data); err != nil {
 			t.Fatal(err)
 		}
 		m.AddFile(partition, manifest.FileInfo{Key: key, Size: int64(len(data)), RowCount: 1, SchemaFingerprint: "fp", CompactionLevel: 0})
@@ -526,7 +526,7 @@ func TestScheduler_FairShare_PicksAcrossTenants(t *testing.T) {
 	sched := NewScheduler(SchedulerConfig{
 		Manifest: m, Pool: pool, Ownership: soleOwnerResolver(), Policy: policy,
 		FairShare: NewFairShareScheduler(1),
-		Prefix: "logs/", Mode: config.ModeLogs, Interval: time.Minute,
+		Prefix:    "logs/", Mode: config.ModeLogs, Interval: time.Minute,
 		MaxConcurrent: 1, RowGroupSize: 1000, CompressionLevel: 1,
 		OnCompacted: func(added []manifest.FileInfo, removed []string) {
 			mu.Lock()

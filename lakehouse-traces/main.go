@@ -237,88 +237,9 @@ func run(cfg *config.Config, addr string) {
 		})
 	}
 
-	var sched *compaction.Scheduler
-	var sweep *compaction.OrphanSweep
-	if cfg.Compaction.Enabled {
-		policy := compaction.NewLevelPolicy(
-			cfg.Compaction.MinFilesL0,
-			cfg.Compaction.MinFilesL1,
-			cfg.Compaction.MinAge,
-		)
-		policy.DailyRollupAge = cfg.Compaction.DailyRollupAge
-
-		// HRW ownership wiring (spec §2.1.2 + §12.1 + §11.2). Mirror
-		// of cmd/lakehouse-logs/main.go — per feedback_logs_traces_module_parity
-		// these two blocks MUST stay line-aligned.
-		peerCache := store.PeerCache()
-		ownership := compaction.NewOwnershipResolver(addr, func() []string {
-			if peerCache == nil {
-				return nil
-			}
-			return peerCache.Members()
-		})
-		if peerCache != nil {
-			ownership.SameAZPeers = peerCache.SameAZMembers
-			ownership.Stabilizing = peerCache.IsStabilizing
-			ownership.IsDraining = peerCache.IsDraining
-		}
-
-		s3Pool := &s3PoolAdapter{pool: store.Pool()}
-
-		sched = compaction.NewScheduler(compaction.SchedulerConfig{
-			Manifest:         store.Manifest(),
-			Pool:             store.Pool(),
-			Ownership:        ownership,
-			FairShare:        compaction.NewFairShareScheduler(1),
-			Policy:           policy,
-			Prefix:           cfg.AutoPrefix(),
-			Mode:             cfg.Mode,
-			Interval:         cfg.Compaction.Interval,
-			MaxConcurrent:    cfg.Compaction.MaxConcurrent,
-			RowGroupSize:     cfg.Insert.RowGroupSize,
-			CompressionLevel: cfg.Insert.CompressionLevel,
-			OnRingChange: func(register func(eventType string)) {
-				if peerCache != nil {
-					peerCache.OnRingChange(func(ev peercache.RingChangeEvent) {
-						register(string(ev.Type))
-					})
-				}
-			},
-			OnCompacted: func(added []manifest.FileInfo, removed []string) {
-				if pusher != nil {
-					pusher.Notify(added, removed)
-				}
-			},
-		})
-		sched.Start()
-
-		sweep = compaction.NewOrphanSweep(compaction.OrphanSweepConfig{
-			Manifest:         store.Manifest(),
-			Pool:             store.Pool(),
-			Ownership:        ownership,
-			Policy:           policy,
-			Lister:           s3Pool,
-			Prefix:           cfg.AutoPrefix(),
-			Mode:             cfg.Mode,
-			Interval:         cfg.Compaction.Interval,
-			RowGroupSize:     cfg.Insert.RowGroupSize,
-			CompressionLevel: cfg.Insert.CompressionLevel,
-			OnCompacted: func(added []manifest.FileInfo, removed []string) {
-				if pusher != nil {
-					pusher.Notify(added, removed)
-				}
-			},
-		})
-		sweep.Start()
-
-		defer func() {
-			sched.Drain()
-			sched.Stop()
-			sweep.Stop()
-		}()
-
-		logger.Infof("compaction scheduler started (HRW ownership, no leader election); interval=%v",
-			cfg.Compaction.Interval)
+	sched, sweep, stopCompaction := setupCompaction(cfg, store, pusher, addr)
+	if stopCompaction != nil {
+		defer stopCompaction()
 	}
 	_ = sweep
 
@@ -537,6 +458,97 @@ func run(cfg *config.Config, addr string) {
 	}
 
 	logger.Infof("lakehouse-traces stopped")
+}
+
+// setupCompaction wires the election-free compaction scheduler + orphan
+// sweeper for the traces module. Mirror of cmd/lakehouse-logs/main.go's
+// setupCompaction — per feedback_logs_traces_module_parity these two
+// blocks MUST stay line-aligned.
+func setupCompaction(
+	cfg *config.Config,
+	store *parquets3.Storage,
+	pusher *manifest.Pusher,
+	addr string,
+) (*compaction.Scheduler, *compaction.OrphanSweep, func()) {
+	if !cfg.Compaction.Enabled {
+		return nil, nil, nil
+	}
+
+	policy := compaction.NewLevelPolicy(
+		cfg.Compaction.MinFilesL0,
+		cfg.Compaction.MinFilesL1,
+		cfg.Compaction.MinAge,
+	)
+	policy.DailyRollupAge = cfg.Compaction.DailyRollupAge
+
+	peerCache := store.PeerCache()
+	ownership := compaction.NewOwnershipResolver(addr, func() []string {
+		if peerCache == nil {
+			return nil
+		}
+		return peerCache.Members()
+	})
+	if peerCache != nil {
+		ownership.SameAZPeers = peerCache.SameAZMembers
+		ownership.Stabilizing = peerCache.IsStabilizing
+		ownership.IsDraining = peerCache.IsDraining
+	}
+
+	s3Pool := &s3PoolAdapter{pool: store.Pool()}
+
+	notifyPusher := func(added []manifest.FileInfo, removed []string) {
+		if pusher != nil {
+			pusher.Notify(added, removed)
+		}
+	}
+
+	sched := compaction.NewScheduler(compaction.SchedulerConfig{
+		Manifest:         store.Manifest(),
+		Pool:             store.Pool(),
+		Ownership:        ownership,
+		FairShare:        compaction.NewFairShareScheduler(1),
+		Policy:           policy,
+		Prefix:           cfg.AutoPrefix(),
+		Mode:             cfg.Mode,
+		Interval:         cfg.Compaction.Interval,
+		MaxConcurrent:    cfg.Compaction.MaxConcurrent,
+		RowGroupSize:     cfg.Insert.RowGroupSize,
+		CompressionLevel: cfg.Insert.CompressionLevel,
+		OnRingChange: func(register func(eventType string)) {
+			if peerCache != nil {
+				peerCache.OnRingChange(func(ev peercache.RingChangeEvent) {
+					register(string(ev.Type))
+				})
+			}
+		},
+		OnCompacted: notifyPusher,
+	})
+	sched.Start()
+
+	sweep := compaction.NewOrphanSweep(compaction.OrphanSweepConfig{
+		Manifest:         store.Manifest(),
+		Pool:             store.Pool(),
+		Ownership:        ownership,
+		Policy:           policy,
+		Lister:           s3Pool,
+		Prefix:           cfg.AutoPrefix(),
+		Mode:             cfg.Mode,
+		Interval:         cfg.Compaction.Interval,
+		RowGroupSize:     cfg.Insert.RowGroupSize,
+		CompressionLevel: cfg.Insert.CompressionLevel,
+		OnCompacted:      notifyPusher,
+	})
+	sweep.Start()
+
+	logger.Infof("compaction scheduler started (HRW ownership, no leader election); interval=%v",
+		cfg.Compaction.Interval)
+
+	stop := func() {
+		sched.Drain()
+		sched.Stop()
+		sweep.Stop()
+	}
+	return sched, sweep, stop
 }
 
 func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, resolver *tenant.TenantResolver, addr string, stopCh chan struct{}) {

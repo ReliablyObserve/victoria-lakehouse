@@ -18,9 +18,9 @@ import (
 // to know the tenant config — the prefix is already in the partition
 // key.
 type FairShareScheduler struct {
-	mu                    sync.Mutex
-	cursor                int
-	compactionsPerTenant  int
+	mu                   sync.Mutex
+	cursor               int
+	compactionsPerTenant int
 }
 
 // NewFairShareScheduler creates a scheduler with the given per-tenant
