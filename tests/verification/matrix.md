@@ -220,6 +220,15 @@ Related rules (memories): `feedback_per_component_verification`,
    (hand-rolled `rest+meta/v1` REST client) replaces the
    tag-gated full `client-go` closure.
 
+   > **SUPERSEDED by PR A (election-free compaction).**
+   > The `internal/election/` package and its hand-rolled k8s.io/client-go
+   > REST closure have been deleted in favour of HRW partition ownership
+   > (spec §2). Binary size on this branch drops by ≈5 MB to ~32 MB
+   > per binary (re-baseline pending `make build-logs build-traces` in
+   > the final verification gate). The "kind e2e" sub-bullet at the end
+   > of this section no longer applies — see the new election-free rows
+   > below the matrix appendix.
+
    The fix:
    1. **`-trimpath`** in Makefile + Dockerfiles for reproducible builds.
    2. **Option B elector** — `internal/election/k8s.go` now talks to the
@@ -285,10 +294,8 @@ Related rules (memories): `feedback_per_component_verification`,
      `GOFIPS140=v1.0.0` build with `GODEBUG=fips140=on` reports
      `fips140: enabled` (`TestFIPSMode_WhenEnabled` +
      `probe_fips_active.sh`).
-   - kind e2e (`tests/e2e-k8s/test_leader_election.sh`,
-     `.github/workflows/e2e-k8s.yaml`): RBAC positive + RBAC negative
-     (delete RoleBinding → 403 in logs) + failover within 40s + multi-
-     namespace isolation, all PASS in a single-node kind cluster.
+   - (kind e2e suite for leader-election RBAC + failover + namespace
+     isolation was removed in PR A; the elector itself is deleted.)
    - All existing 8 e2e probes still pass against rebuilt images.
 
 ### L12 — `_stream_id` must be populated (100% VL API compat)
