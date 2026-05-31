@@ -187,33 +187,42 @@ Related rules (memories): `feedback_per_component_verification`,
    `/insert/splunk/services/collector/event` (and `/event/1.0`).
    Corrected in the table above. The bare paths return 404 because they
    fall through VL's switch statement — not a bug.
-8. **Baseline probe regressions (pre-existing, NOT introduced by this
+8. ~~**Baseline probe regressions (pre-existing, NOT introduced by this
    sweep)** — 4 of 6 pre-existing probes fail against the current
-   container build (image freshness OK, 10 min old):
-   - `probe_jaeger_search_24h.sh` — FAIL: api-gateway 24h search
-     returns 0 traces. Cold-tier data exists (417k api-gateway rows
-     spanning 7 days, max time 2026-05-30T15:27Z) but the upstream
-     Jaeger search handler (post PR #93 VT v0.9.0 integration) returns
-     `{"data":[]}` for every window. Likely root cause: VT 0.9.0's
-     Jaeger handler interaction with `-search.latencyOffset=2m` clamps
-     past the cold-tier flush lag (~120 s) OR the storage adapter's
-     `service.name` filter is not crossing the upstream→LH boundary
-     post-refactor. `vtselect` global view still returns 3 traces, so
-     VT itself is fine — the bug is LH-side. Repro:
-       `bash tests/verification/probe_jaeger_search_24h.sh`
-   - `probe_jaeger_search_24h_with_tag.sh` — FAIL (same root cause).
-   - `probe_jaeger_search_24h_full_chain.sh` — FAIL (same root cause).
-   - `probe_tempo_search_24h.sh` — FAIL (same root cause through
-     `/select/tempo/api/search`).
-   - `probe_logs_24h_wildcard.sh` — PASS.
-   - `probe_logs_Nday_wildcard.sh` — FAIL (7-day wildcard OOM-kills
-     container — `mem_limit=2g` cgroup; chunked emission / row-group
-     decoder semaphore / PutNoCopy cache wiring may need re-tuning
-     for the 600+ file count in cold tier). Repro:
-       `bash tests/verification/probe_logs_Nday_wildcard.sh`
-   These failures are outside the scope of the 22-row matrix sweep
-   (T8/T8a are listed as PASS in the matrix as of 2026-05-29 but the
-   probe is currently failing — track as P0).
+   container build.~~ **FIXED** on `feat/election-free-compaction`
+   (2026-05-31). The four trace-search probes
+   (`probe_jaeger_search_24h.sh`, `probe_jaeger_search_24h_with_tag.sh`,
+   `probe_jaeger_search_24h_full_chain.sh`, `probe_tempo_search_24h.sh`)
+   plus `probe_logs_Nday_wildcard.sh` were failing against a STALE
+   `lakehouse-traces` image that pre-dated the merged fixes in commit
+   42d7e09 (`fix(traces+logs): four root causes for Jaeger 0-traces +
+   large-data OOM`). That commit shipped four LH-side fixes:
+   `-search.latencyOffset=2m` flag on lakehouse-traces (compose),
+   pipe-preserving adapter rewrite in
+   `lakehouse-traces/internal/vtstorage_adapter/adapter.go`,
+   bloom any-of-values in
+   `internal/storage/parquets3/storage_query.go` /
+   `lakehouse-traces/internal/storage/parquets3/storage_query.go`
+   (`filterFilesByBloomIndex`), and the `normalizeTempoSearchParams`
+   shim in `lakehouse-traces/internal/selectapi/handler.go`.
+   The current branch HEAD already contains all four fixes. The
+   in-cluster `lakehouse-traces` image simply needed to be rebuilt and
+   recreated to pick them up. Reproduction & verification:
+   ```bash
+   cd deployment/docker
+   docker compose -f docker-compose-e2e.yml build --no-cache lakehouse-traces
+   docker compose -f docker-compose-e2e.yml up -d --force-recreate lakehouse-traces
+   # wait for health
+   for p in probe_jaeger_search_24h.sh probe_jaeger_search_24h_with_tag.sh \
+            probe_jaeger_search_24h_full_chain.sh probe_tempo_search_24h.sh \
+            probe_logs_24h_wildcard.sh probe_logs_Nday_wildcard.sh; do
+     bash tests/verification/$p && echo "  $p PASS" || echo "  $p FAIL"
+   done
+   ```
+   All 6 probes PASS after the rebuild + recreate. Each is locked by
+   its regression-test companion (negative-control documented in the
+   probe script header). The lockstep `tests/verification/matrix.md`
+   T8/T8a/T9 rows remain PASS.
 9. **Binary bloat** — RESOLVED on branch `perf/binary-size-reduction`
    (always-on K8s elector at ~37 MB, 1.76× the 21 MB upstream
    baseline; was 2.6×). Final design after iteration: Option B
