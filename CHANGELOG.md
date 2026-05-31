@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.1] - 2026-05-30
+
 ### Added
 
 - `internal/resourcebounds` package — generalises the in-tree `fileBudget` semantics into a reusable `ResourceBound` primitive with K8s-style `Request` (always-reserved baseline), `Limit` (hard ceiling, enforced via blocking `Acquire`), `LimitCount` (per-holder count cap), and `ScalingPolicy` enum (`Fixed`, `LinearGrowth`, `ExponentialBackoff`). Preserves the legacy outlier-admit semantics (single oversized holder admitted alone when pool empty) so individual large parquet files remain processable. Includes `PrometheusSink` adapter and `Resolve` helper that handles the operator-facing flag triple resolution (new triple takes precedence, deprecated alias falls back with one-time warning).
