@@ -100,6 +100,23 @@ lakehouseConfig:
     read_ahead_bytes: 0
     # -- Merge S3 range reads with gaps smaller than this in bytes (0 = use default 64KB).
     coalesce_gap_bytes: 0
+    # -- RECOMMENDED bucket lifecycle policy (apply OUT-OF-BAND via aws CLI,
+    # Terraform, or your S3 provider's UI — Helm does not create bucket
+    # lifecycle rules). Election-free spec §3.2 case 14 + Q5: the orphan
+    # sweep relies on the bucket cleaning up incomplete multipart uploads
+    # so they never get mistaken for orphan .parquet files.
+    #
+    #   aws s3api put-bucket-lifecycle-configuration --bucket <name> \
+    #     --lifecycle-configuration '{"Rules":[
+    #       {"ID":"abort-stale-multipart","Status":"Enabled",
+    #        "Filter":{},
+    #        "AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}'
+    #
+    # Without this policy, fragments from crashed pods sit in S3
+    # indefinitely (the AWS SDK aborts them on retry but a SIGKILL
+    # prevents the abort call). The compaction Tier B sweep is
+    # configured to NEVER touch _multipart/ keys, so this is the only
+    # way to clean them.
 
   # ---------------------------------------------------------------------------
   # Cache — Multi-tier L1 (memory) + L2 (disk) cache
@@ -711,6 +728,13 @@ logs:
       minReplicas: 2
       maxReplicas: 10
       targetCPUUtilizationPercentage: 80
+      # -- HPA behavior tuning for safe scale-up + scale-down with the
+      # election-free compaction design (spec §11.3). Rapid scale-up
+      # (1→5 pods in 30s) triggers the ring-thrash rate gate
+      # (lakehouse_compaction_deferred_ring_thrash_total) and defers
+      # compaction until the ring is stable for ≥1 stabilization window
+      # with <2 ring changes per 5min. A 300s scale-down window prevents
+      # oscillation that would chronically defer compaction.
       behavior:
         scaleDown:
           stabilizationWindowSeconds: 300
@@ -718,6 +742,12 @@ logs:
             - type: Pods
               value: 1
               periodSeconds: 120
+        scaleUp:
+          stabilizationWindowSeconds: 30
+          policies:
+            - type: Pods
+              value: 2
+              periodSeconds: 60
     verticalPodAutoscaler:
       enabled: false
       updateMode: "Off"
@@ -751,7 +781,11 @@ logs:
         failureThreshold: 120
     podAnnotations: {}
     podLabels: {}
-    terminationGracePeriodSeconds: 60
+    # -- Graceful termination window. Compaction runs on logs-insert pods,
+    # so this must accommodate the longest in-flight Compact (typical:
+    # 10-60s) plus drain timeout (default 90s). 120s gives p99 compaction
+    # duration headroom before SIGKILL. Election-free spec §11.3 + Q13.
+    terminationGracePeriodSeconds: 120
     priorityClassName: ""
     topologySpreadConstraints:
       - maxSkew: 1
@@ -829,6 +863,13 @@ traces:
       minReplicas: 2
       maxReplicas: 10
       targetCPUUtilizationPercentage: 80
+      # -- HPA behavior tuning for safe scale-up + scale-down with the
+      # election-free compaction design (spec §11.3). Rapid scale-up
+      # (1→5 pods in 30s) triggers the ring-thrash rate gate
+      # (lakehouse_compaction_deferred_ring_thrash_total) and defers
+      # compaction until the ring is stable for ≥1 stabilization window
+      # with <2 ring changes per 5min. A 300s scale-down window prevents
+      # oscillation that would chronically defer compaction.
       behavior:
         scaleDown:
           stabilizationWindowSeconds: 300
@@ -836,6 +877,12 @@ traces:
             - type: Pods
               value: 1
               periodSeconds: 120
+        scaleUp:
+          stabilizationWindowSeconds: 30
+          policies:
+            - type: Pods
+              value: 2
+              periodSeconds: 60
     verticalPodAutoscaler:
       enabled: false
       updateMode: "Off"
@@ -920,6 +967,13 @@ traces:
       minReplicas: 2
       maxReplicas: 10
       targetCPUUtilizationPercentage: 80
+      # -- HPA behavior tuning for safe scale-up + scale-down with the
+      # election-free compaction design (spec §11.3). Rapid scale-up
+      # (1→5 pods in 30s) triggers the ring-thrash rate gate
+      # (lakehouse_compaction_deferred_ring_thrash_total) and defers
+      # compaction until the ring is stable for ≥1 stabilization window
+      # with <2 ring changes per 5min. A 300s scale-down window prevents
+      # oscillation that would chronically defer compaction.
       behavior:
         scaleDown:
           stabilizationWindowSeconds: 300
@@ -927,6 +981,12 @@ traces:
             - type: Pods
               value: 1
               periodSeconds: 120
+        scaleUp:
+          stabilizationWindowSeconds: 30
+          policies:
+            - type: Pods
+              value: 2
+              periodSeconds: 60
     verticalPodAutoscaler:
       enabled: false
       updateMode: "Off"
@@ -960,7 +1020,11 @@ traces:
         failureThreshold: 120
     podAnnotations: {}
     podLabels: {}
-    terminationGracePeriodSeconds: 60
+    # -- Graceful termination window. Compaction runs on traces-insert pods,
+    # so this must accommodate the longest in-flight Compact (typical:
+    # 10-60s) plus drain timeout (default 90s). 120s gives p99 compaction
+    # duration headroom before SIGKILL. Election-free spec §11.3 + Q13.
+    terminationGracePeriodSeconds: 120
     priorityClassName: ""
     topologySpreadConstraints:
       - maxSkew: 1
