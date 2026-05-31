@@ -327,3 +327,75 @@ func TestAcquire_PreservesLegacyFileBudgetSemantics(t *testing.T) {
 		t.Fatal("queued small Acquire never admitted after outlier release")
 	}
 }
+
+// TestTryAcquire_AdmitAndReject verifies the non-blocking TryAcquire
+// API: admits while there's space, rejects with ErrBoundFull when at
+// capacity, and increments the rejected_total metric on rejection.
+//
+// This is the API the cache and disk-cache hot paths use to avoid
+// blocking the write — see internal/cache/lru.go SetBound docs.
+func TestTryAcquire_AdmitAndReject(t *testing.T) {
+	m := &fakeMetrics{}
+	b := NewBound(Config{Request: 1, Limit: 100, LimitCount: 2}, m)
+
+	rel1, err := b.TryAcquire(50)
+	if err != nil {
+		t.Fatalf("first TryAcquire: %v", err)
+	}
+	rel2, err := b.TryAcquire(40)
+	if err != nil {
+		t.Fatalf("second TryAcquire: %v", err)
+	}
+	// LimitCount=2 reached.
+	_, err = b.TryAcquire(1)
+	if err != ErrBoundFull {
+		t.Errorf("third TryAcquire: got %v, want ErrBoundFull", err)
+	}
+	if m.rejected.Load() != 1 {
+		t.Errorf("rejected metric = %d, want 1", m.rejected.Load())
+	}
+
+	rel1()
+	rel2()
+	// After release, TryAcquire admits again.
+	rel3, err := b.TryAcquire(50)
+	if err != nil {
+		t.Errorf("post-release TryAcquire: %v", err)
+	}
+	rel3()
+}
+
+// TestTryAcquire_OutlierAdmission verifies that TryAcquire honours the
+// outlier path — a single n > Limit reservation is admitted when the
+// pool is empty (count==0), matching Acquire's documented semantics.
+func TestTryAcquire_OutlierAdmission(t *testing.T) {
+	b := NewBound(Config{Limit: 100, LimitCount: 0}, nil)
+	rel, err := b.TryAcquire(1000)
+	if err != nil {
+		t.Fatalf("outlier TryAcquire: %v", err)
+	}
+	defer rel()
+	_, _, outBytes, outCount := b.Stats()
+	if outBytes != 100 {
+		t.Errorf("outlier accounting clamps to Limit; outBytes=%d (want 100)", outBytes)
+	}
+	if outCount != 1 {
+		t.Errorf("outlier counted once; outCount=%d (want 1)", outCount)
+	}
+}
+
+// TestTryAcquire_DoubleReleaseIdempotent confirms double-release is
+// safe (parity with Acquire's release contract).
+func TestTryAcquire_DoubleReleaseIdempotent(t *testing.T) {
+	b := NewBound(Config{Limit: 10, LimitCount: 1}, nil)
+	rel, err := b.TryAcquire(1)
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	rel()
+	rel() // must not panic, must not double-decrement
+	_, _, outBytes, outCount := b.Stats()
+	if outBytes != 0 || outCount != 0 {
+		t.Errorf("double-release corrupted accounting: outBytes=%d outCount=%d", outBytes, outCount)
+	}
+}

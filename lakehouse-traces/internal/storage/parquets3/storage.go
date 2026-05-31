@@ -55,6 +55,14 @@ type Storage struct {
 	selfAZ            string
 	selfFilterEnabled bool
 	dlSem             chan struct{}
+	// bounds holds the K8s-style request/limit Bound set for the 5
+	// resource surfaces. Mirror of the logs module field. Wired runtime
+	// surfaces: FileWorkers (Acquire in worker loop), CacheMemory and
+	// SmartCacheDisk (SetBound on the underlying caches), QueryMaxRows
+	// (per-query reservation in RunQuery). The S3 download bound is
+	// constructed for metric exposure only — traces' getFileData path
+	// has no dlSem-based admission point to wire through.
+	bounds *resourceBoundSet
 }
 
 func New(cfg *config.Config) (*Storage, error) {
@@ -126,9 +134,26 @@ func New(cfg *config.Config) (*Storage, error) {
 		ph = peercache.NewHandler(cfg.Peer.AuthKey, "")
 	}
 
-	maxDL := cfg.S3.MaxConcurrentDownloads
+	// K8s-style request/limit bounds for all 5 resource surfaces.
+	// Mirror of the logs module. Bound construction populates the
+	// per-surface request/limit info gauges at startup, emits a
+	// deprecation warning when the legacy single-value alias is set,
+	// and exposes the Acquire path for surfaces with runtime wiring.
+	bounds := newResourceBoundSet(cfg)
+	maxDL := int(bounds.S3Downloads.Config().Limit)
 	if maxDL <= 0 {
 		maxDL = 16
+	}
+
+	// Wire the cache-memory and smart-cache-disk bounds INTO the
+	// existing in-process caches so each Put traverses the K8s-style
+	// admission gate. TryAcquire-based: rejection means "skip caching"
+	// (best-effort), not "block the write".
+	if memCache != nil && bounds.CacheMemory != nil {
+		memCache.SetBound(bounds.CacheMemory)
+	}
+	if diskCacheInst != nil && bounds.SmartCacheDisk != nil {
+		diskCacheInst.SetBound(bounds.SmartCacheDisk)
 	}
 
 	var sc *smartcache.Controller
@@ -223,6 +248,7 @@ func New(cfg *config.Config) (*Storage, error) {
 		crossSignalClient: csClient,
 		s3Prefix:          prefix,
 		dlSem:             make(chan struct{}, maxDL),
+		bounds:            bounds,
 	}, nil
 }
 

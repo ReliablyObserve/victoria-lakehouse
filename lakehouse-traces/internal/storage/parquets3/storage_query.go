@@ -276,6 +276,20 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	queryID := fmt.Sprintf("q-%d", queryStart.UnixNano())
 
+	// K8s-style process-wide query.max_rows budget — mirror of the
+	// logs module. Reserve maxRows against the global QueryMaxRows
+	// bound up-front (one acquire per query). The bound caps cumulative
+	// reserved rows across ALL concurrent queries; the outlier path
+	// admits a single oversized query alone. Skip when maxRows is 0
+	// (unbounded) or the bound is metric-only (Limit=0).
+	if s.bounds != nil && s.bounds.QueryMaxRows != nil && maxRows > 0 {
+		relRows, boundErr := s.bounds.QueryMaxRows.Acquire(ctx, maxRows)
+		if boundErr != nil {
+			return fmt.Errorf("query max-rows budget exhausted: %w", boundErr)
+		}
+		defer relRows()
+	}
+
 	// Pin all files in smart cache before query, defer unpin
 	if s.smartCache != nil {
 		for _, fi := range files {
@@ -309,21 +323,24 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				if maxRows > 0 && rowsEmitted.Load() >= maxRows {
 					return
 				}
-				if skip, _ := shouldSkipByFooter(ctx, s.pool, fi, queryStr, s.registry, s.footerCache); skip {
-					continue
-				}
-				if s.checkFileBloom(ctx, fi, queryStr) {
-					continue
-				}
-				if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filteredWriteBlock); err != nil {
-					if isFileNotFoundError(err) {
-						s.handle404Recovery(ctx, fi, filter, hasTombstones, filteredWriteBlock)
-					} else {
-						metrics.QueryFileErrorsTotal.Inc()
-						logger.Warnf("query file error: %s; key=%s", err, fi.Key)
+				// K8s-style process-wide file-worker admission. Mirror
+				// of the logs module wiring. Acquire 1 count slot per
+				// file before any I/O; blocking acquires unstick on
+				// ctx cancellation, surfacing rejected_total++ for
+				// operator dashboards.
+				if s.bounds != nil && s.bounds.FileWorkers != nil {
+					rel, boundErr := s.bounds.FileWorkers.Acquire(ctx, 1)
+					if boundErr != nil {
+						firstErr.CompareAndSwap(nil, fmt.Errorf("file workers limit exceeded: %w", boundErr))
+						return
 					}
+					func() {
+						defer rel()
+						s.processOneFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, filteredWriteBlock)
+					}()
 					continue
 				}
+				s.processOneFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, filteredWriteBlock)
 			}
 		}()
 	}
@@ -342,6 +359,30 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	s.queryBufferBridge(ctx, startNs, endNs, filteredWriteBlock)
 
 	return nil
+}
+
+// processOneFile is the per-file work unit extracted from the
+// file-worker goroutine body so that the K8s-style FileWorkers bound
+// can scope its Acquire/Release tightly around one file's I/O.
+// Mirror of the logs module helper. Keeping the loop body behind a
+// function call also makes the negative-control test
+// (TestQueryFileWorkers_BoundEnforced) load-bearing: stripping the
+// Acquire makes the bound's Limit unenforced.
+func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock logstorage.WriteDataBlockFunc) {
+	if skip, _ := shouldSkipByFooter(ctx, s.pool, fi, queryStr, s.registry, s.footerCache); skip {
+		return
+	}
+	if s.checkFileBloom(ctx, fi, queryStr) {
+		return
+	}
+	if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filteredWriteBlock); err != nil {
+		if isFileNotFoundError(err) {
+			s.handle404Recovery(ctx, fi, filter, hasTombstones, filteredWriteBlock)
+			return
+		}
+		metrics.QueryFileErrorsTotal.Inc()
+		logger.Warnf("query file error: %s; key=%s", err, fi.Key)
+	}
 }
 
 func (s *Storage) preFilterFiles(files []manifest.FileInfo, queryStr string) []manifest.FileInfo {

@@ -23,8 +23,15 @@ package resourcebounds
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
+
+// ErrBoundFull is returned by TryAcquire when the bound is at its
+// configured ceiling. Use errors.Is to test in callers; the cache /
+// disk-cache hot paths use this signal to skip caching gracefully
+// rather than wedging the write.
+var ErrBoundFull = errors.New("resource bound full")
 
 // ScalingPolicy describes how a bound's effective ceiling grows from
 // Request toward Limit as load on the bound increases.
@@ -235,6 +242,76 @@ func (b *Bound) Acquire(ctx context.Context, n int64) (func(), error) {
 		}
 		b.mu.Unlock()
 		return func() {}, ctx.Err()
+	}
+	b.outBytes += n
+	b.outCount++
+	b.acquiredTotal++
+	if b.metrics != nil {
+		b.metrics.AcquiredAdd(1)
+		b.metrics.OutstandingBytesSet(b.outBytes)
+		b.metrics.OutstandingCountSet(int64(b.outCount))
+	}
+	b.mu.Unlock()
+
+	released := false
+	var releaseMu sync.Mutex
+	return func() {
+		releaseMu.Lock()
+		defer releaseMu.Unlock()
+		if released {
+			return
+		}
+		released = true
+		b.mu.Lock()
+		b.outBytes -= n
+		b.outCount--
+		if b.outBytes < 0 {
+			b.outBytes = 0
+		}
+		if b.outCount < 0 {
+			b.outCount = 0
+		}
+		if b.metrics != nil {
+			b.metrics.OutstandingBytesSet(b.outBytes)
+			b.metrics.OutstandingCountSet(int64(b.outCount))
+		}
+		b.cond.Broadcast()
+		b.mu.Unlock()
+	}, nil
+}
+
+// TryAcquire attempts to reserve n bytes + 1 count slot WITHOUT
+// blocking. If the bound is at capacity TryAcquire returns
+// ErrBoundFull and a no-op release; the rejected_total metric is
+// incremented (parity with Acquire's cancellation path).
+//
+// Use TryAcquire from callers that cannot tolerate blocking — most
+// commonly the cache.Put hot path, which prefers to skip caching
+// (best-effort) over wedging the write. Outlier admission (n > Limit
+// with empty pool) still applies, matching Acquire.
+//
+// Returns ErrBoundFull when at capacity, nil on successful admission.
+// The release function MUST be called exactly once when the holder is
+// done; double-release is idempotent.
+func (b *Bound) TryAcquire(n int64) (func(), error) {
+	if n <= 0 {
+		n = 1
+	}
+	limit := b.cfg.Limit
+	if limit > 0 && n > limit {
+		n = limit
+	}
+
+	b.mu.Lock()
+	bytesOK := limit <= 0 || b.outBytes+n <= limit || b.outCount == 0
+	countOK := b.cfg.LimitCount <= 0 || b.outCount < b.cfg.LimitCount
+	if !bytesOK || !countOK {
+		b.rejectedTotal++
+		if b.metrics != nil {
+			b.metrics.RejectedAdd(1)
+		}
+		b.mu.Unlock()
+		return func() {}, ErrBoundFull
 	}
 	b.outBytes += n
 	b.outCount++
