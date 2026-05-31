@@ -496,9 +496,24 @@ sect "8: metrics scrape — assert lakehouse_leader_election_* families present"
 holder=$(kubectl get lease -n "$NS_PRIMARY" "$LEASE_NAME" \
           -o jsonpath='{.spec.holderIdentity}' 2>/dev/null || echo "")
 if [[ -n "$holder" ]]; then
-  # Scrape /metrics from inside the cluster. LH listens on 9428 by default.
-  metrics=$(kubectl exec -n "$NS_PRIMARY" "$holder" -- \
-            sh -c 'wget -qO- http://localhost:9428/metrics 2>/dev/null || curl -s http://localhost:9428/metrics' 2>/dev/null || echo "")
+  # The LH runtime image is `distroless/static:nonroot` — no shell, no wget,
+  # no curl — so `kubectl exec sh -c '…'` always fails.  Use port-forward
+  # from the runner instead.  Bind to a non-conflicting local port and tear
+  # down on exit even on early failure.
+  PF_PORT=29428
+  kubectl port-forward -n "$NS_PRIMARY" "$holder" "${PF_PORT}:9428" >/dev/null 2>&1 &
+  PF_PID=$!
+  # Poll until the port is accepting (port-forward takes ~1s to bind).
+  metrics=""
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 1
+    if metrics=$(curl -fsS --max-time 5 "http://127.0.0.1:${PF_PORT}/metrics" 2>/dev/null); then
+      break
+    fi
+    metrics=""
+  done
+  kill "$PF_PID" 2>/dev/null || true
+  wait "$PF_PID" 2>/dev/null || true
   if [[ -z "$metrics" ]]; then
     fail "8 could not scrape /metrics from $holder"
   else

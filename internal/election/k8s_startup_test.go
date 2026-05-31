@@ -143,7 +143,7 @@ func TestK8sElector_NoServiceAccountToken_FailsAtStartup_FilePermDenied(t *testi
 	if err := os.Mkdir(noaccessDir, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(noaccessDir, 0o700)
+	defer func() { _ = os.Chmod(noaccessDir, 0o700) }()
 	path := filepath.Join(noaccessDir, "token")
 
 	err := preflightTokenCheck(path, "")
@@ -266,7 +266,7 @@ func TestK8sElector_Bootstrap_TokenFileStatPermDenied(t *testing.T) {
 	if err := os.Mkdir(noaccessDir, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(noaccessDir, 0o700)
+	defer func() { _ = os.Chmod(noaccessDir, 0o700) }()
 	tokenPath := filepath.Join(noaccessDir, "token")
 
 	withInClusterConfigForTest(t, &rest.Config{

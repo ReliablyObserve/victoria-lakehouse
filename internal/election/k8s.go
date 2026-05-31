@@ -144,10 +144,6 @@ type K8sElector struct {
 	stopOnce sync.Once
 }
 
-// inClusterTokenPath is the well-known path kubelet mounts the projected SA
-// token at. Override in tests via newK8sElectorForTest.
-const inClusterTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-
 // k8sBackendCompiledIn stays for backward compatibility with AutoElector,
 // which used to consult it to skip a stub backend. With the always-on K8s
 // implementation this is always true.

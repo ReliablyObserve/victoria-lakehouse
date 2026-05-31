@@ -40,9 +40,9 @@ func newBenchAPIServer(delay time.Duration) *benchAPIServer {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/apis/coordination.k8s.io/v1/namespaces/", func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(b.delay)
-		b.fakeAPIServer.handle(w, r)
+		b.handle(w, r)
 	})
-	b.fakeAPIServer.httpServer = httptest.NewServer(mux)
+	b.httpServer = httptest.NewServer(mux)
 	b.delay = delay
 	return b
 }
