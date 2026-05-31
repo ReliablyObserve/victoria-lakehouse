@@ -198,7 +198,6 @@ func TestScheduler_MaxConcurrentRespected(t *testing.T) {
 
 	pool := newMockPool()
 	m := manifest.New("test-bucket", "logs/")
-	sentinel := NewSentinel(pool, time.Hour)
 	policy := NewLevelPolicy(10, 20, 0)
 	ctx := context.Background()
 	const fp = "stress-fp"
@@ -234,10 +233,9 @@ func TestScheduler_MaxConcurrentRespected(t *testing.T) {
 	}
 
 	sched := NewScheduler(SchedulerConfig{
-		Leader:           &staticLeader{leader: true},
 		Manifest:         m,
 		Pool:             pool,
-		Sentinel:         sentinel,
+		Ownership:        soleOwnerResolver(),
 		Policy:           policy,
 		Prefix:           "logs/",
 		Mode:             config.ModeLogs,

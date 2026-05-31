@@ -28,17 +28,15 @@ func heapInUse() uint64 {
 func TestScheduler_NoGoroutineLeak_StartStop(t *testing.T) {
 	pool := newMockPool()
 	m := manifest.New("test-bucket", "logs/")
-	sentinel := NewSentinel(pool, time.Hour)
 	policy := NewLevelPolicy(10, 20, 0)
 
 	before := runtime.NumGoroutine()
 
 	for i := 0; i < 20; i++ {
 		sched := NewScheduler(SchedulerConfig{
-			Leader:           &staticLeader{leader: false},
 			Manifest:         m,
 			Pool:             pool,
-			Sentinel:         sentinel,
+			Ownership:        neverOwnsResolver(),
 			Policy:           policy,
 			Prefix:           "logs/",
 			Mode:             config.ModeLogs,
@@ -65,7 +63,6 @@ func TestScheduler_NoGoroutineLeak_StartStop(t *testing.T) {
 func TestScheduler_NoGoroutineLeak_WithScans(t *testing.T) {
 	pool := newMockPool()
 	m := manifest.New("test-bucket", "logs/")
-	sentinel := NewSentinel(pool, time.Hour)
 	policy := NewLevelPolicy(100, 200, 0) // high thresholds so nothing compacts
 
 	// Add some files to partitions so Scan has work to iterate.
@@ -83,10 +80,9 @@ func TestScheduler_NoGoroutineLeak_WithScans(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		sched := NewScheduler(SchedulerConfig{
-			Leader:           &staticLeader{leader: true},
 			Manifest:         m,
 			Pool:             pool,
-			Sentinel:         sentinel,
+			Ownership:        soleOwnerResolver(),
 			Policy:           policy,
 			Prefix:           "logs/",
 			Mode:             config.ModeLogs,

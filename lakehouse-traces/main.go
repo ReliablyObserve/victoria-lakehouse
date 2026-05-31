@@ -19,11 +19,11 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/crosssignal"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/election"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/lifecycle"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/prefetch"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
@@ -241,27 +241,8 @@ func run(cfg *config.Config, addr string) {
 	}
 
 	var sched *compaction.Scheduler
+	var sweep *compaction.OrphanSweep
 	if cfg.Compaction.Enabled {
-		leader := election.NewAutoElector(election.AutoElectorConfig{
-			Mode:    cfg.Compaction.LeaderElection,
-			S3Store: store.Pool(),
-			S3Config: election.S3ElectorConfig{
-				LockKey:           cfg.AutoPrefix() + "_compaction_lock.json",
-				Identity:          hostname(),
-				Address:           addr,
-				HeartbeatInterval: cfg.Compaction.S3Heartbeat,
-				LockTTL:           cfg.Compaction.S3LockTTL,
-			},
-			K8sConfig: election.K8sElectorConfig{
-				LeaseName:     "lakehouse-compaction-traces",
-				LeaseDuration: cfg.Compaction.LeaseDuration,
-			},
-		})
-
-		elCtx, elCancel := context.WithCancel(context.Background())
-		leader.Start(elCtx)
-
-		sentinel := compaction.NewSentinel(store.Pool(), 10*time.Minute)
 		policy := compaction.NewLevelPolicy(
 			cfg.Compaction.MinFilesL0,
 			cfg.Compaction.MinFilesL1,
@@ -269,33 +250,43 @@ func run(cfg *config.Config, addr string) {
 		)
 		policy.DailyRollupAge = cfg.Compaction.DailyRollupAge
 
-		var sharding *compaction.PartitionSharding
-		if cfg.Compaction.ShardCount > 1 {
-			shardID := cfg.Compaction.ShardID
-			if shardID < 0 {
-				var err error
-				shardID, err = compaction.AutoDetectShardID()
-				if err != nil {
-					logger.Fatalf("cannot auto-detect shard ID: %v", err)
-				}
+		// HRW ownership wiring (spec §2.1.2 + §12.1 + §11.2). Mirror
+		// of cmd/lakehouse-logs/main.go — per feedback_logs_traces_module_parity
+		// these two blocks MUST stay line-aligned.
+		peerCache := store.PeerCache()
+		ownership := compaction.NewOwnershipResolver(addr, func() []string {
+			if peerCache == nil {
+				return nil
 			}
-			sharding = compaction.NewPartitionSharding(shardID, cfg.Compaction.ShardCount)
-			logger.Infof("compaction sharding enabled; shard_id=%d, shard_count=%d", shardID, cfg.Compaction.ShardCount)
+			return peerCache.Members()
+		})
+		if peerCache != nil {
+			ownership.SameAZPeers = peerCache.SameAZMembers
+			ownership.Stabilizing = peerCache.IsStabilizing
+			ownership.IsDraining = peerCache.IsDraining
 		}
 
+		s3Pool := &s3PoolAdapter{pool: store.Pool()}
+
 		sched = compaction.NewScheduler(compaction.SchedulerConfig{
-			Leader:           leader,
 			Manifest:         store.Manifest(),
 			Pool:             store.Pool(),
-			Sentinel:         sentinel,
+			Ownership:        ownership,
+			FairShare:        compaction.NewFairShareScheduler(1),
 			Policy:           policy,
-			Sharding:         sharding,
 			Prefix:           cfg.AutoPrefix(),
 			Mode:             cfg.Mode,
 			Interval:         cfg.Compaction.Interval,
 			MaxConcurrent:    cfg.Compaction.MaxConcurrent,
 			RowGroupSize:     cfg.Insert.RowGroupSize,
 			CompressionLevel: cfg.Insert.CompressionLevel,
+			OnRingChange: func(register func(eventType string)) {
+				if peerCache != nil {
+					peerCache.OnRingChange(func(ev peercache.RingChangeEvent) {
+						register(string(ev.Type))
+					})
+				}
+			},
 			OnCompacted: func(added []manifest.FileInfo, removed []string) {
 				if pusher != nil {
 					pusher.Notify(added, removed)
@@ -304,15 +295,35 @@ func run(cfg *config.Config, addr string) {
 		})
 		sched.Start()
 
+		sweep = compaction.NewOrphanSweep(compaction.OrphanSweepConfig{
+			Manifest:         store.Manifest(),
+			Pool:             store.Pool(),
+			Ownership:        ownership,
+			Policy:           policy,
+			Lister:           s3Pool,
+			Prefix:           cfg.AutoPrefix(),
+			Mode:             cfg.Mode,
+			Interval:         cfg.Compaction.Interval,
+			RowGroupSize:     cfg.Insert.RowGroupSize,
+			CompressionLevel: cfg.Insert.CompressionLevel,
+			OnCompacted: func(added []manifest.FileInfo, removed []string) {
+				if pusher != nil {
+					pusher.Notify(added, removed)
+				}
+			},
+		})
+		sweep.Start()
+
 		defer func() {
+			sched.Drain()
 			sched.Stop()
-			leader.Stop()
-			elCancel()
+			sweep.Stop()
 		}()
 
-		logger.Infof("compaction scheduler started; election=%s, interval=%v",
-			cfg.Compaction.LeaderElection, cfg.Compaction.Interval)
+		logger.Infof("compaction scheduler started (HRW ownership, no leader election); interval=%v",
+			cfg.Compaction.Interval)
 	}
+	_ = sweep
 
 	tombstoneStore := delete.NewTombstoneStore()
 	if err := tombstoneStore.LoadFromDisk(cfg.Delete.PersistPath); err != nil {
@@ -1175,6 +1186,32 @@ func (a *s3PoolAdapter) List(ctx context.Context, prefix string) ([]string, erro
 		}
 	}
 	return keys, nil
+}
+
+// HeadObject implements compaction.S3Lister. Used by Tier B orphan
+// sweep to read LastModified for the OrphanTTL gate. Mirror of
+// cmd/lakehouse-logs/main.go's implementation — keep in sync per
+// feedback_logs_traces_module_parity.
+func (a *s3PoolAdapter) HeadObject(ctx context.Context, key string) (int64, time.Time, error) {
+	client := a.pool.S3Client()
+	bucket := a.pool.Bucket()
+
+	out, err := client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return 0, time.Time{}, err
+	}
+	var size int64
+	if out.ContentLength != nil {
+		size = *out.ContentLength
+	}
+	var mtime time.Time
+	if out.LastModified != nil {
+		mtime = *out.LastModified
+	}
+	return size, mtime, nil
 }
 
 type manifestQuerierAdapter struct {

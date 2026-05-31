@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/election"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
@@ -42,21 +41,19 @@ func TestIntegration_FullCompactionCycle(t *testing.T) {
 		t.Fatalf("expected 12 files, got %d", m.TotalFiles())
 	}
 
-	leader := election.NewNoopElector()
-	sentinel := NewSentinel(pool, 10*time.Minute)
 	policy := NewLevelPolicy(10, 10, 0)
 
 	var notifiedAdded []manifest.FileInfo
 	var notifiedRemoved []string
 
 	sched := NewScheduler(SchedulerConfig{
-		Leader:           leader,
 		Manifest:         m,
 		Pool:             pool,
-		Sentinel:         sentinel,
+		Ownership:        NewOwnershipResolver("self", staticPeers("self")),
 		Policy:           policy,
 		Prefix:           "logs/",
 		Mode:             config.ModeLogs,
+		Interval:         time.Minute,
 		RowGroupSize:     1000,
 		CompressionLevel: 1,
 		MaxConcurrent:    1,
@@ -92,12 +89,9 @@ func TestIntegration_FullCompactionCycle(t *testing.T) {
 		t.Fatal("expected added notification")
 	}
 
-	locked, err := sentinel.IsLocked(context.Background(), "logs/", "dt=2026-05-02/hour=10")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if locked {
-		t.Fatal("sentinel should be released after compaction")
+	// Watermark must be set so Tier A sees a fresh attempt.
+	if m.LastAttempt("dt=2026-05-02/hour=10").IsZero() {
+		t.Fatal("LastAttempt should be set after Scan")
 	}
 }
 
@@ -122,13 +116,13 @@ func TestIntegration_L1ToL2(t *testing.T) {
 	}
 
 	sched := NewScheduler(SchedulerConfig{
-		Leader:           election.NewNoopElector(),
 		Manifest:         m,
 		Pool:             pool,
-		Sentinel:         NewSentinel(pool, 10*time.Minute),
+		Ownership:        NewOwnershipResolver("self", staticPeers("self")),
 		Policy:           NewLevelPolicy(10, 10, 0),
 		Prefix:           "logs/",
 		Mode:             config.ModeLogs,
+		Interval:         time.Minute,
 		RowGroupSize:     1000,
 		CompressionLevel: 1,
 		MaxConcurrent:    1,
