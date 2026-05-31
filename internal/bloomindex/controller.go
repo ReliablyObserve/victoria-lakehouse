@@ -44,12 +44,16 @@ type Adjustment struct {
 }
 
 // BloomController observes system metrics and auto-tunes bloom parameters.
+//
+// PR A note: SetLeader/IsLeader were removed alongside election. Each pod now
+// auto-tunes its own bloom parameters from its own observations; tuning has
+// always been per-pod state (the cfg/overrides/adjustments fields are not
+// shared), so the previous leader gate was decorative.
 type BloomController struct {
 	mu          sync.RWMutex
 	cfg         BloomControllerConfig
 	overrides   map[string]bool
 	adjustments []Adjustment
-	isLeader    bool
 }
 
 // NewBloomController creates a controller with the given initial config.
@@ -78,20 +82,6 @@ func (bc *BloomController) TierConfig() TierConfig {
 	}
 }
 
-// SetLeader sets whether this node is the auto-tuning leader.
-func (bc *BloomController) SetLeader(leader bool) {
-	bc.mu.Lock()
-	bc.isLeader = leader
-	bc.mu.Unlock()
-}
-
-// IsLeader returns whether this node is the auto-tuning leader.
-func (bc *BloomController) IsLeader() bool {
-	bc.mu.RLock()
-	defer bc.mu.RUnlock()
-	return bc.isLeader
-}
-
 // PinOverride marks a parameter as operator-pinned, preventing auto-tuning.
 func (bc *BloomController) PinOverride(param string) {
 	bc.mu.Lock()
@@ -106,14 +96,15 @@ func (bc *BloomController) IsPinned(param string) bool {
 	return bc.overrides[param]
 }
 
-// Observe takes current system metrics and adjusts parameters if this node is leader.
+// Observe takes current system metrics and adjusts parameters.
+//
+// PR A note: previously gated on the controller being "leader". Tuning state
+// is per-pod (cfg/overrides/adjustments live on the BloomController instance
+// only), so every pod now tunes its own params from its own observations and
+// the gate has been removed.
 func (bc *BloomController) Observe(_ context.Context, obs Observation) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
-
-	if !bc.isLeader {
-		return
-	}
 
 	if obs.FilesPerHour > 3000 && !bc.overrides["target_file_size"] {
 		oldSize := bc.cfg.TargetFileSize

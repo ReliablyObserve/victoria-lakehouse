@@ -100,16 +100,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
-            # POD_NAMESPACE is consumed by internal/election/k8s.go to scope
-            # the coordination.k8s.io/v1 Lease to the running pod's namespace.
-            # Without this the elector defaults to "default" and tries to
-            # acquire a lease in the wrong namespace — leader election then
-            # 403s loudly because the RoleBinding lives in the pod's actual
-            # namespace, not "default".
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
+            # NOTE (PR A): POD_NAMESPACE was consumed by the now-deleted
+            # internal/election/k8s.go to scope the Lease object. With HRW
+            # ownership there is no Lease, so POD_NAMESPACE is no longer
+            # injected. Re-add only if a future feature needs in-pod awareness
+            # of the deployment namespace.
           {{- with $roleVals.extraEnv }}
             {{- toYaml . | nindent 12 }}
           {{- end }}

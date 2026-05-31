@@ -158,47 +158,8 @@ func TestMemLeak_MajoritySchemaFingerprint(t *testing.T) {
 	}
 }
 
-// TestMemLeak_Sentinel_AcquireRelease verifies that repeated sentinel
-// acquire+release cycles do not leak memory.
-func TestMemLeak_Sentinel_AcquireRelease(t *testing.T) {
-	pool := newMockPool()
-	sentinel := NewSentinel(pool, time.Hour)
-	ctx := t.Context()
-
-	// Warm up
-	for i := 0; i < 100; i++ {
-		partition := fmt.Sprintf("dt=2026-01-%02d/hour=%02d", (i%28)+1, i%24)
-		_, _ = sentinel.Acquire(ctx, "prefix/", partition, "worker")
-		_ = sentinel.Release(ctx, "prefix/", partition)
-	}
-	runtime.GC()
-	runtime.GC()
-
-	var mBefore runtime.MemStats
-	runtime.GC()
-	runtime.GC()
-	runtime.ReadMemStats(&mBefore)
-	before := mBefore.HeapInuse
-
-	const iterations = 10000
-	for i := 0; i < iterations; i++ {
-		partition := fmt.Sprintf("dt=2026-01-%02d/hour=%02d", (i%28)+1, i%24)
-		_, _ = sentinel.Acquire(ctx, "prefix/", partition, "worker")
-		_ = sentinel.Release(ctx, "prefix/", partition)
-	}
-	runtime.GC()
-	runtime.GC()
-
-	var mAfter runtime.MemStats
-	runtime.ReadMemStats(&mAfter)
-	after := mAfter.HeapInuse
-
-	growth := int64(after) - int64(before)
-	maxAllowed := int64(10 * 1024 * 1024)
-	if growth > maxAllowed {
-		t.Errorf("Sentinel acquire/release memory grew by %d bytes over %d iterations (max allowed %d)", growth, iterations, maxAllowed)
-	}
-}
+// (Sentinel acquire/release leak test removed alongside sentinel.go in PR A —
+// HRW ownership replaces the S3-sentinel approach; see spec §2 + §7.)
 
 // TestMemLeak_CompactionPlan_GenerationCycles verifies that generating
 // compaction eligibility plans from manifest data is bounded.

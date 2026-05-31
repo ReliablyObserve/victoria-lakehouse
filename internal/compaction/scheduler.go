@@ -1,26 +1,38 @@
+// Package compaction now drives compaction without leader election.
+// Each pod independently decides which partitions it owns via the HRW
+// OwnershipResolver, and OrphanSweep + the manifest's AddFile
+// idempotency cover the rare dual-ownership cases (ring flap, DNS lag).
+//
+// See docs/superpowers/specs/2026-05-31-election-free-compaction.md
+// §2.3 for the scheduler design and §11.1 / §11.2 / §11.4 for the
+// drain + ring-thrash gates.
 package compaction
 
 import (
 	"context"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/election"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
-// SchedulerConfig holds all dependencies for the Scheduler.
+// SchedulerConfig holds all dependencies for the Scheduler. Compared
+// to the pre-PR-A shape this drops Leader, Sentinel, and Sharding;
+// replaces them with Ownership (HRW) + optional FairShare for
+// per-tenant slotting.
 type SchedulerConfig struct {
-	Leader           election.Leader
 	Manifest         *manifest.Manifest
 	Pool             CompactorPool
-	Sentinel         *Sentinel
+	Ownership        *OwnershipResolver  // required
+	FairShare        *FairShareScheduler // optional; nil = no tenant fairness
 	Policy           *LevelPolicy
-	Sharding         *PartitionSharding
+	BloomRebuilder   BloomRebuilder
 	Prefix           string
 	Mode             config.Mode
 	Interval         time.Duration
@@ -28,16 +40,33 @@ type SchedulerConfig struct {
 	RowGroupSize     int
 	CompressionLevel int
 	OnCompacted      func(added []manifest.FileInfo, removed []string)
+
+	// OnRingChange is fired by the embedder (main.go) when peer-cache
+	// observes a ring change. Used to (a) increment the ring-change
+	// counter and (b) feed the §11.4 sliding-window rate gate.
+	// Optional.
+	OnRingChange func(register func(eventType string))
+
+	// RingChangeRateLimit (§11.4): when more than this many ring
+	// change events occur in the trailing 5 minutes, the scheduler
+	// defers every tick until the rate drops. Default 6 (= 1 per
+	// 50s sustained). Set 0 to disable.
+	RingChangeRateLimit int
+
+	// DrainTimeout is the upper bound on Drain() waiting for
+	// inFlight to drain. Default 90s — matches the preStop hook's
+	// practical limit before terminationGracePeriodSeconds fires.
+	DrainTimeout time.Duration
 }
 
 // Scheduler runs periodic compaction scans.
 type Scheduler struct {
-	leader           election.Leader
 	manifest         *manifest.Manifest
 	pool             CompactorPool
-	sentinel         *Sentinel
+	ownership        *OwnershipResolver
+	fairShare        *FairShareScheduler
 	policy           *LevelPolicy
-	sharding         *PartitionSharding
+	bloomRebuilder   BloomRebuilder
 	prefix           string
 	mode             config.Mode
 	interval         time.Duration
@@ -46,12 +75,30 @@ type Scheduler struct {
 	compressionLevel int
 	onCompacted      func(added []manifest.FileInfo, removed []string)
 
+	ringChangeRate int
+	drainTimeout   time.Duration
+
 	stopCh chan struct{}
 	wg     sync.WaitGroup
+
+	// Drain state (spec §11.1)
+	draining  atomic.Bool
+	drainCh   chan struct{}
+	inFlight  sync.WaitGroup
+	drainOnce sync.Once
+
+	// Ring-change sliding window (spec §11.4)
+	ringEvents   []time.Time
+	ringEventsMu sync.Mutex
 }
 
-// NewScheduler creates a Scheduler from the given config.
+// NewScheduler creates a Scheduler from the given config. Panics if
+// Ownership is nil — the new design has no notion of "leader-only" so
+// ownership is mandatory.
 func NewScheduler(cfg SchedulerConfig) *Scheduler {
+	if cfg.Ownership == nil {
+		panic("compaction: SchedulerConfig.Ownership is required (HRW resolver)")
+	}
 	interval := cfg.Interval
 	if interval == 0 {
 		interval = 5 * time.Minute
@@ -60,13 +107,27 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 	if maxConc == 0 {
 		maxConc = 1
 	}
-	return &Scheduler{
-		leader:           cfg.Leader,
+	rate := cfg.RingChangeRateLimit
+	if rate < 0 {
+		rate = 0
+	} else if rate == 0 && cfg.RingChangeRateLimit == 0 {
+		// Default = 6 events / 5 min (spec §11.4). Operators can
+		// disable by setting explicitly to a sentinel — but the
+		// zero-value case picks the default.
+		rate = 6
+	}
+	drainTimeout := cfg.DrainTimeout
+	if drainTimeout <= 0 {
+		drainTimeout = 90 * time.Second
+	}
+
+	s := &Scheduler{
 		manifest:         cfg.Manifest,
 		pool:             cfg.Pool,
-		sentinel:         cfg.Sentinel,
+		ownership:        cfg.Ownership,
+		fairShare:        cfg.FairShare,
 		policy:           cfg.Policy,
-		sharding:         cfg.Sharding,
+		bloomRebuilder:   cfg.BloomRebuilder,
 		prefix:           cfg.Prefix,
 		mode:             cfg.Mode,
 		interval:         interval,
@@ -74,8 +135,21 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 		rowGroupSize:     cfg.RowGroupSize,
 		compressionLevel: cfg.CompressionLevel,
 		onCompacted:      cfg.OnCompacted,
+		ringChangeRate:   rate,
+		drainTimeout:     drainTimeout,
 		stopCh:           make(chan struct{}),
+		drainCh:          make(chan struct{}),
 	}
+
+	if cfg.OnRingChange != nil {
+		// Register a recorder; main.go bridges peer-cache events
+		// to this callback via the register parameter.
+		cfg.OnRingChange(func(eventType string) {
+			s.recordRingChange(eventType)
+		})
+	}
+
+	return s
 }
 
 // Start launches the background tick goroutine.
@@ -103,10 +177,49 @@ func (s *Scheduler) Start() {
 }
 
 // Stop signals the background goroutine to stop and waits for it.
+// Stop is idempotent.
 func (s *Scheduler) Stop() {
-	close(s.stopCh)
+	select {
+	case <-s.stopCh:
+		// already stopped
+	default:
+		close(s.stopCh)
+	}
 	s.wg.Wait()
 }
+
+// Drain initiates a graceful shutdown of the scheduler. After Drain
+// returns, no new partitions will be started; in-flight compactions
+// are allowed to reach their partition boundary or until the
+// DrainTimeout elapses (whichever is first). After Drain, callers
+// should still invoke Stop to terminate the tick loop.
+//
+// Drain is idempotent. Safe to call from a signal handler.
+func (s *Scheduler) Drain() {
+	s.drainOnce.Do(func() {
+		s.draining.Store(true)
+		metrics.CompactionDraining.Set(1)
+		close(s.drainCh)
+		logger.Infof("compaction: drain initiated; timeout=%v", s.drainTimeout)
+	})
+
+	// Wait for inFlight with timeout.
+	done := make(chan struct{})
+	go func() {
+		s.inFlight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		logger.Infof("compaction: drain complete (all in-flight finished)")
+	case <-time.After(s.drainTimeout):
+		logger.Warnf("compaction: drain timed out after %v with in-flight still running", s.drainTimeout)
+		metrics.CompactionAbortedDuringDrain.Inc()
+	}
+}
+
+// IsDraining reports the current drain state. Tests + sweep coordination.
+func (s *Scheduler) IsDraining() bool { return s.draining.Load() }
 
 // partitionCandidate pairs a partition name with its eligible compaction level.
 type partitionCandidate struct {
@@ -115,26 +228,39 @@ type partitionCandidate struct {
 	time      time.Time
 }
 
-// Scan runs one compaction cycle: check leadership, find eligible partitions,
-// and compact up to MaxConcurrent of them.
+// Scan runs one compaction cycle: defer if stabilizing or thrashing,
+// enumerate owned partitions, apply fair-share, compact up to
+// MaxConcurrent of them. Returns the count of completed compactions.
+//
+// Spec §2.3.2 + §11.1 + §11.4.
 func (s *Scheduler) Scan(ctx context.Context) (int, error) {
-	if s.sharding == nil || s.sharding.shardCount <= 1 {
-		if !s.leader.IsLeader() {
-			logger.Infof("not leader, skipping scan")
-			return 0, nil
-		}
+	// (A) Drain check — no new work after Drain().
+	if s.draining.Load() {
+		return 0, nil
+	}
+
+	// (B) Stabilization check (spec §3.1 cases 3 + 22).
+	if s.ownership.IsStabilizing() {
+		metrics.CompactionDeferredStabilizing.Inc()
+		return 0, nil
+	}
+
+	// (C) Ring-thrash rate gate (spec §11.4).
+	if s.ringChangeRate > 0 && s.recentRingChanges() > s.ringChangeRate {
+		metrics.CompactionDeferredRingThrash.Inc()
+		return 0, nil
 	}
 
 	allFiles := s.manifest.AllFiles()
 
-	// Find eligible partitions.
+	// (D) HRW-based ownership + eligibility.
+	owned := 0
 	var candidates []partitionCandidate
 	for partition, files := range allFiles {
-		if s.sharding != nil && s.sharding.shardCount > 1 {
-			if !s.sharding.OwnsPartition(partition) {
-				continue
-			}
+		if !s.ownership.OwnsPartition(partition) {
+			continue
 		}
+		owned++
 		pt, err := manifest.ParsePartitionTime(partition)
 		if err != nil {
 			logger.Warnf("skip partition: cannot parse time; partition=%s, error=%s", partition, err)
@@ -150,51 +276,47 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 			time:      pt,
 		})
 	}
+	metrics.CompactionPartitionsOwned.Set(int64(owned))
+	metrics.CompactionOwnershipSelfInPeers.Set(s.ownership.SelfInPeersGauge())
 
-	// Sort by partition time, oldest first.
+	// (E) Sort candidates by partition time, oldest first — same
+	// ordering as the pre-PR-A scheduler.
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].time.Before(candidates[j].time)
 	})
 
+	// (F) Apply per-tenant fair-share (spec §12.2) if configured.
+	picked := candidates
+	if s.fairShare != nil {
+		picked = s.fairShare.PickCandidates(candidates, s.maxConcurrent)
+	} else if len(candidates) > s.maxConcurrent {
+		picked = candidates[:s.maxConcurrent]
+	}
+
 	compacted := 0
-	for _, c := range candidates {
-		if compacted >= s.maxConcurrent {
+	for _, c := range picked {
+		// Bail at partition boundary if draining (spec §11.1
+		// invariant: never mid-merge).
+		if s.draining.Load() {
 			break
 		}
 
-		locked, err := s.sentinel.IsLocked(ctx, s.prefix, c.partition)
-		if err != nil {
-			logger.Warnf("sentinel check failed; partition=%s, error=%s", c.partition, err)
-			continue
-		}
-		if locked {
-			logger.Infof("partition locked, skipping; partition=%s", c.partition)
-			continue
-		}
+		// (G) Record attempt BEFORE compaction so a crash leaves a
+		// fresh timestamp (Tier A waits 3*Interval before stealing
+		// from us).
+		s.manifest.MarkAttempt(c.partition, time.Now())
 
-		ok, err := s.sentinel.Acquire(ctx, s.prefix, c.partition, "scheduler")
-		if err != nil {
-			logger.Warnf("sentinel acquire failed; partition=%s, error=%s", c.partition, err)
-			continue
-		}
-		if !ok {
-			continue
-		}
-
-		// Find majority schema fingerprint at this level.
 		partFiles := s.manifest.FilesForPartition(c.partition)
 		fp := MajoritySchemaFingerprint(partFiles, c.level)
-
-		// Select files at the eligible level with that fingerprint.
 		selected := s.policy.SelectFiles(partFiles, c.level, fp)
 		if len(selected) < 2 {
-			if err := s.sentinel.Release(ctx, s.prefix, c.partition); err != nil {
-				logger.Warnf("sentinel release failed; partition=%s, error=%s", c.partition, err)
-			}
 			continue
 		}
 
-		// Run compaction.
+		s.inFlight.Add(1)
+		metrics.CompactionPartitionsInFlight.Inc()
+		compStart := time.Now()
+
 		compactor := NewCompactor(CompactorConfig{
 			Pool:             s.pool,
 			Manifest:         s.manifest,
@@ -202,34 +324,79 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 			Mode:             s.mode,
 			RowGroupSize:     s.rowGroupSize,
 			CompressionLevel: s.compressionLevel,
+			BloomRebuilder:   s.bloomRebuilder,
 		})
 
 		result, err := compactor.Compact(ctx, c.partition, selected, c.level)
+
+		metrics.CompactionPartitionsInFlight.Dec()
+		metrics.CompactionInFlightDuration.Observe(time.Since(compStart).Seconds())
+		s.inFlight.Done()
+
 		if err != nil {
 			logger.Errorf("compaction failed: %s; partition=%s", err, c.partition)
-			if relErr := s.sentinel.Release(ctx, s.prefix, c.partition); relErr != nil {
-				logger.Warnf("sentinel release after failure; partition=%s, error=%s", c.partition, relErr)
-			}
+			metrics.CompactionErrorsTotal.Inc()
 			continue
 		}
 
-		if err := s.sentinel.Release(ctx, s.prefix, c.partition); err != nil {
-			logger.Warnf("sentinel release failed; partition=%s, error=%s", c.partition, err)
-		}
+		metrics.CompactionRunsTotal.Inc()
+		metrics.CompactionFilesInputTotal.Add(len(selected))
+		metrics.CompactionFilesOutputTotal.Inc()
+		metrics.CompactionBytesReadTotal.Add(int(result.BytesRead))
+		metrics.CompactionBytesWrittenTotal.Add(int(result.BytesWritten))
+		metrics.CompactionRowsMergedTotal.Add(int(result.RowsMerged))
+		metrics.CompactionDuration.Observe(time.Since(compStart).Seconds())
 
-		// Call OnCompacted callback if set.
 		if s.onCompacted != nil {
 			addedFiles := s.manifest.FilesForPartition(c.partition)
-			var removedKeys []string
+			removedKeys := make([]string, 0, len(selected))
 			for _, sel := range selected {
 				removedKeys = append(removedKeys, sel.Key)
 			}
 			s.onCompacted(addedFiles, removedKeys)
 		}
 
-		logger.Infof("compacted partition; partition=%s, level=%d, input_files=%d, output=%s, rows=%d", c.partition, c.level, len(selected), result.OutputFile, result.RowsMerged)
+		logger.Infof("compacted partition; partition=%s, level=%d, input_files=%d, output=%s, rows=%d",
+			c.partition, c.level, len(selected), result.OutputFile, result.RowsMerged)
 		compacted++
 	}
 
 	return compacted, nil
+}
+
+// recordRingChange ticks the per-type counter and adds the event to
+// the sliding-window for §11.4 rate-limit gating. Called from the
+// peer-cache OnRingChange callback wired in main.go.
+func (s *Scheduler) recordRingChange(eventType string) {
+	metrics.CompactionRingChangesTotal.Inc(eventType)
+	now := time.Now()
+	s.ringEventsMu.Lock()
+	defer s.ringEventsMu.Unlock()
+	s.pruneRingEventsLocked(now)
+	s.ringEvents = append(s.ringEvents, now)
+}
+
+// recentRingChanges returns the number of ring-change events observed
+// in the trailing 5-minute window.
+func (s *Scheduler) recentRingChanges() int {
+	now := time.Now()
+	s.ringEventsMu.Lock()
+	defer s.ringEventsMu.Unlock()
+	s.pruneRingEventsLocked(now)
+	return len(s.ringEvents)
+}
+
+// pruneRingEventsLocked drops events older than 5 minutes. Caller must
+// hold ringEventsMu.
+func (s *Scheduler) pruneRingEventsLocked(now time.Time) {
+	cutoff := now.Add(-5 * time.Minute)
+	i := 0
+	for ; i < len(s.ringEvents); i++ {
+		if s.ringEvents[i].After(cutoff) {
+			break
+		}
+	}
+	if i > 0 {
+		s.ringEvents = s.ringEvents[i:]
+	}
 }

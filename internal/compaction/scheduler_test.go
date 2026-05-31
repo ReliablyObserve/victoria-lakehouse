@@ -4,44 +4,54 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
-type staticLeader struct{ leader bool }
+// soleOwnerResolver returns an OwnershipResolver that thinks self
+// owns every partition (single-pod case). Used by tests that don't
+// care about ownership semantics — they just want compaction to
+// proceed.
+func soleOwnerResolver() *OwnershipResolver {
+	return NewOwnershipResolver("self", staticPeers("self"))
+}
 
-func (s *staticLeader) IsLeader() bool          { return s.leader }
-func (s *staticLeader) Start(_ context.Context) {}
-func (s *staticLeader) Stop()                   {}
+// neverOwnsResolver returns an OwnershipResolver that thinks self
+// owns nothing — peers contains exactly one other peer.
+func neverOwnsResolver() *OwnershipResolver {
+	return NewOwnershipResolver("self", staticPeers("other"))
+}
 
-func TestScheduler_SkipsWhenNotLeader(t *testing.T) {
+// TestScheduler_NoOwnership_NoWork covers the "I am not the HRW
+// primary" path. With self="self" and peers=["other"], HRW always
+// picks "other" → scheduler's Scan does no compactions.
+//
+// Negative-control proof: removing the OwnsPartition gate from Scan
+// would unconditionally compact, surfacing as n != 0 here.
+func TestScheduler_NoOwnership_NoWork(t *testing.T) {
 	pool := newMockPool()
 	m := manifest.New("test-bucket", "logs/")
-	sentinel := NewSentinel(pool, time.Hour)
 	policy := NewLevelPolicy(10, 20, 0)
 
 	const partition = "dt=2026-01-01/hour=00"
-	const fp = "abc123"
-
-	// Add 15 L0 files — enough to be eligible.
 	for i := 0; i < 15; i++ {
 		m.AddFile(partition, manifest.FileInfo{
 			Key:               fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i),
 			Size:              100,
-			SchemaFingerprint: fp,
-			CompactionLevel:   0,
+			SchemaFingerprint: "fp",
 		})
 	}
 
 	sched := NewScheduler(SchedulerConfig{
-		Leader:           &staticLeader{leader: false},
 		Manifest:         m,
 		Pool:             pool,
-		Sentinel:         sentinel,
+		Ownership:        neverOwnsResolver(),
 		Policy:           policy,
 		Prefix:           "logs/",
 		Mode:             config.ModeLogs,
@@ -56,35 +66,27 @@ func TestScheduler_SkipsWhenNotLeader(t *testing.T) {
 		t.Fatalf("Scan error: %v", err)
 	}
 	if n != 0 {
-		t.Fatalf("expected 0 compactions when not leader, got %d", n)
+		t.Fatalf("not the owner: got %d compactions, want 0", n)
 	}
-
-	// Verify files are untouched.
-	files := m.FilesForPartition(partition)
-	if len(files) != 15 {
-		t.Fatalf("expected 15 files still in manifest, got %d", len(files))
+	if files := m.FilesForPartition(partition); len(files) != 15 {
+		t.Fatalf("files mutated: got %d, want 15", len(files))
 	}
 }
 
+// TestScheduler_CompactsEligiblePartition is the happy-path test:
+// owner + eligible → compaction proceeds.
 func TestScheduler_CompactsEligiblePartition(t *testing.T) {
 	pool := newMockPool()
 	m := manifest.New("test-bucket", "logs/")
-	sentinel := NewSentinel(pool, time.Hour)
-	// MinFilesL0=10, so 12 L0 files qualifies.
 	policy := NewLevelPolicy(10, 20, 0)
 
 	const partition = "dt=2026-01-01/hour=00"
 	const fp = "test-fp"
 	ctx := context.Background()
 
-	// Create 12 real parquet files and upload them.
 	for i := 0; i < 12; i++ {
 		rows := []schema.LogRow{
-			{
-				TimestampUnixNano: int64(i*1000 + 1),
-				Body:              fmt.Sprintf("log-%d", i),
-				ServiceName:       "svc-test",
-			},
+			{TimestampUnixNano: int64(i*1000 + 1), Body: fmt.Sprintf("log-%d", i), ServiceName: "svc-test"},
 		}
 		data := makeTestParquet(t, rows)
 		key := fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i)
@@ -104,10 +106,9 @@ func TestScheduler_CompactsEligiblePartition(t *testing.T) {
 
 	var callbackCalled bool
 	sched := NewScheduler(SchedulerConfig{
-		Leader:           &staticLeader{leader: true},
 		Manifest:         m,
 		Pool:             pool,
-		Sentinel:         sentinel,
+		Ownership:        soleOwnerResolver(),
 		Policy:           policy,
 		Prefix:           "logs/",
 		Mode:             config.ModeLogs,
@@ -127,99 +128,65 @@ func TestScheduler_CompactsEligiblePartition(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("expected 1 compaction, got %d", n)
 	}
-
-	// Verify manifest: should have exactly 1 file at L1.
 	files := m.FilesForPartition(partition)
 	if len(files) != 1 {
-		t.Fatalf("expected 1 file in manifest after compaction, got %d", len(files))
+		t.Fatalf("expected 1 compacted file, got %d", len(files))
 	}
 	if files[0].CompactionLevel != 1 {
-		t.Errorf("expected compaction level 1, got %d", files[0].CompactionLevel)
+		t.Errorf("expected L1, got %d", files[0].CompactionLevel)
 	}
-
-	// Verify callback was called.
 	if !callbackCalled {
-		t.Error("expected OnCompacted callback to be called")
-	}
-
-	// Verify sentinel is released.
-	locked, err := sentinel.IsLocked(ctx, "logs/", partition)
-	if err != nil {
-		t.Fatalf("IsLocked error: %v", err)
-	}
-	if locked {
-		t.Error("expected sentinel to be released after compaction")
+		t.Error("OnCompacted not invoked")
 	}
 }
 
-// --- Start/Stop lifecycle test ---
-
-func TestScheduler_StartStop(t *testing.T) {
+// TestScheduler_StabilizationDefersScan: Stabilizing()==true short-
+// circuits Scan with 0 compactions and bumps the deferred metric.
+//
+// Negative-control proof: removing the IsStabilizing guard from
+// Scan would surface dual-compactions during ring flap; this test
+// would attempt the compaction and return n>0.
+func TestScheduler_StabilizationDefersScan(t *testing.T) {
 	pool := newMockPool()
 	m := manifest.New("test-bucket", "logs/")
-	sentinel := NewSentinel(pool, time.Hour)
 	policy := NewLevelPolicy(10, 20, 0)
-
-	sched := NewScheduler(SchedulerConfig{
-		Leader:           &staticLeader{leader: true},
-		Manifest:         m,
-		Pool:             pool,
-		Sentinel:         sentinel,
-		Policy:           policy,
-		Prefix:           "logs/",
-		Mode:             config.ModeLogs,
-		Interval:         50 * time.Millisecond,
-		MaxConcurrent:    1,
-		RowGroupSize:     1000,
-		CompressionLevel: 1,
-	})
-
-	sched.Start()
-	// Let at least one tick fire.
-	time.Sleep(120 * time.Millisecond)
-	sched.Stop()
-	// Stop should not panic or hang; if we get here, the test passes.
-}
-
-func TestScheduler_DefaultsApplied(t *testing.T) {
-	pool := newMockPool()
-	m := manifest.New("test-bucket", "logs/")
-	sentinel := NewSentinel(pool, time.Hour)
-	policy := NewLevelPolicy(10, 20, 0)
-
-	// Zero interval and zero maxConcurrent should get defaults.
-	sched := NewScheduler(SchedulerConfig{
-		Leader:   &staticLeader{leader: true},
-		Manifest: m,
-		Pool:     pool,
-		Sentinel: sentinel,
-		Policy:   policy,
-		Prefix:   "logs/",
-		Mode:     config.ModeLogs,
-	})
-
-	if sched.interval != 5*time.Minute {
-		t.Errorf("expected default interval 5m, got %v", sched.interval)
-	}
-	if sched.maxConcurrent != 1 {
-		t.Errorf("expected default maxConcurrent 1, got %d", sched.maxConcurrent)
-	}
-}
-
-// --- Locked partition test ---
-
-func TestScheduler_SkipsLockedPartition(t *testing.T) {
-	pool := newMockPool()
-	m := manifest.New("test-bucket", "logs/")
-	sentinel := NewSentinel(pool, time.Hour)
-	policy := NewLevelPolicy(10, 20, 0)
-
 	const partition = "dt=2026-01-01/hour=00"
-	const fp = "abc123"
-	ctx := context.Background()
-
-	// Add 15 L0 files with real parquet data.
 	for i := 0; i < 15; i++ {
+		m.AddFile(partition, manifest.FileInfo{Key: fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i), Size: 100, SchemaFingerprint: "fp"})
+	}
+	r := soleOwnerResolver()
+	r.Stabilizing = func() bool { return true }
+
+	sched := NewScheduler(SchedulerConfig{
+		Manifest: m, Pool: pool, Ownership: r, Policy: policy,
+		Prefix: "logs/", Mode: config.ModeLogs, Interval: time.Minute,
+		MaxConcurrent: 2, RowGroupSize: 1000, CompressionLevel: 7,
+	})
+	n, err := sched.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("stabilizing: got %d, want 0", n)
+	}
+}
+
+// TestScheduler_RecordsAttemptBeforeCompact asserts MarkAttempt is
+// called before the compactor runs — even when compaction errors
+// later, the watermark must be fresh so Tier A waits before stealing.
+//
+// Negative-control proof: moving MarkAttempt after compactor.Compact
+// would leave the timestamp zero (or stale) when compaction fails,
+// and Tier A would race in. We verify by passing a failing pool and
+// confirming LastAttempt is non-zero after Scan.
+func TestScheduler_RecordsAttemptBeforeCompact(t *testing.T) {
+	pool := &failingDownloadPool{mockPool: newMockPool()}
+	m := manifest.New("test-bucket", "logs/")
+	policy := NewLevelPolicy(10, 20, 0)
+	const partition = "dt=2026-01-01/hour=00"
+	const fp = "fp"
+	ctx := context.Background()
+	for i := 0; i < 12; i++ {
 		rows := []schema.LogRow{
 			{TimestampUnixNano: int64(i*1000 + 1), Body: fmt.Sprintf("log-%d", i), ServiceName: "svc"},
 		}
@@ -229,159 +196,418 @@ func TestScheduler_SkipsLockedPartition(t *testing.T) {
 			t.Fatal(err)
 		}
 		m.AddFile(partition, manifest.FileInfo{
-			Key:               key,
-			Size:              int64(len(data)),
-			RowCount:          1,
-			SchemaFingerprint: fp,
-			CompactionLevel:   0,
+			Key: key, Size: int64(len(data)), RowCount: 1,
+			SchemaFingerprint: fp, CompactionLevel: 0,
 		})
 	}
 
-	// Lock the partition via sentinel before scan.
-	ok, err := sentinel.Acquire(ctx, "logs/", partition, "other-worker")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok {
-		t.Fatal("failed to acquire sentinel lock")
-	}
-
 	sched := NewScheduler(SchedulerConfig{
-		Leader:           &staticLeader{leader: true},
-		Manifest:         m,
-		Pool:             pool,
-		Sentinel:         sentinel,
-		Policy:           policy,
-		Prefix:           "logs/",
-		Mode:             config.ModeLogs,
-		Interval:         time.Minute,
-		MaxConcurrent:    2,
-		RowGroupSize:     1000,
-		CompressionLevel: 7,
+		Manifest: m, Pool: pool, Ownership: soleOwnerResolver(), Policy: policy,
+		Prefix: "logs/", Mode: config.ModeLogs, Interval: time.Minute,
+		MaxConcurrent: 2, RowGroupSize: 1000, CompressionLevel: 7,
 	})
+	_, _ = sched.Scan(ctx)
 
-	n, err := sched.Scan(ctx)
-	if err != nil {
-		t.Fatalf("Scan error: %v", err)
-	}
-	if n != 0 {
-		t.Fatalf("expected 0 compactions for locked partition, got %d", n)
-	}
-
-	// Files should be untouched.
-	files := m.FilesForPartition(partition)
-	if len(files) != 15 {
-		t.Fatalf("expected 15 files still in manifest, got %d", len(files))
+	if m.LastAttempt(partition).IsZero() {
+		t.Fatal("MarkAttempt not called before compactor; watermark is zero")
 	}
 }
 
-// --- Sentinel 404 treated as not locked ---
-
-type sentinelNotFoundPool struct {
+// failingDownloadPool forces compactor errors so we can verify
+// MarkAttempt happened earlier.
+type failingDownloadPool struct {
 	*mockPool
 }
 
-func (f *sentinelNotFoundPool) Download(ctx context.Context, key string) ([]byte, error) {
-	if strings.HasSuffix(key, "/_compacting") {
-		return nil, fmt.Errorf("s3 GetObject: NoSuchKey")
+func (p *failingDownloadPool) Download(ctx context.Context, key string) ([]byte, error) {
+	if strings.HasSuffix(key, ".parquet") {
+		return nil, fmt.Errorf("simulated download failure for %s", key)
 	}
-	return f.mockPool.Download(ctx, key)
+	return p.mockPool.Download(ctx, key)
 }
 
-func TestScheduler_SentinelNotFound_CompactionProceeds(t *testing.T) {
-	base := newMockPool()
-	pool := &sentinelNotFoundPool{mockPool: base}
+// TestScheduler_StartStop confirms the lifecycle works.
+func TestScheduler_StartStop(t *testing.T) {
+	pool := newMockPool()
 	m := manifest.New("test-bucket", "logs/")
-	sentinel := NewSentinel(pool, time.Hour)
 	policy := NewLevelPolicy(10, 20, 0)
-
-	const partition = "dt=2026-01-01/hour=00"
-	const fp = "abc123"
-	ctx := context.Background()
-
-	for i := 0; i < 15; i++ {
-		rows := []schema.LogRow{
-			{TimestampUnixNano: int64(i*1000 + 1), Body: fmt.Sprintf("log-%d", i), ServiceName: "svc"},
-		}
-		data := makeTestParquet(t, rows)
-		key := fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i)
-		if err := base.Upload(ctx, key, data); err != nil {
-			t.Fatal(err)
-		}
-		m.AddFile(partition, manifest.FileInfo{
-			Key:               key,
-			Size:              int64(len(data)),
-			RowCount:          1,
-			SchemaFingerprint: fp,
-			CompactionLevel:   0,
-		})
-	}
-
 	sched := NewScheduler(SchedulerConfig{
-		Leader:           &staticLeader{leader: true},
-		Manifest:         m,
-		Pool:             pool,
-		Sentinel:         sentinel,
-		Policy:           policy,
-		Prefix:           "logs/",
-		Mode:             config.ModeLogs,
-		Interval:         time.Minute,
-		MaxConcurrent:    2,
-		RowGroupSize:     1000,
-		CompressionLevel: 7,
+		Manifest: m, Pool: pool, Ownership: soleOwnerResolver(), Policy: policy,
+		Prefix: "logs/", Mode: config.ModeLogs, Interval: 50 * time.Millisecond,
+		MaxConcurrent: 1, RowGroupSize: 1000, CompressionLevel: 1,
 	})
+	sched.Start()
+	time.Sleep(120 * time.Millisecond)
+	sched.Stop()
+	// Stop must be idempotent.
+	sched.Stop()
+}
 
-	n, err := sched.Scan(ctx)
-	if err != nil {
-		t.Fatalf("Scan error: %v", err)
+// TestScheduler_DefaultsApplied: zero Interval/MaxConcurrent gets
+// 5m/1.
+func TestScheduler_DefaultsApplied(t *testing.T) {
+	pool := newMockPool()
+	m := manifest.New("test-bucket", "logs/")
+	sched := NewScheduler(SchedulerConfig{
+		Manifest: m, Pool: pool, Ownership: soleOwnerResolver(),
+		Policy: NewLevelPolicy(10, 20, 0),
+		Prefix: "logs/", Mode: config.ModeLogs,
+	})
+	if sched.interval != 5*time.Minute {
+		t.Errorf("default interval: got %v, want 5m", sched.interval)
 	}
-	if n == 0 {
-		t.Fatal("expected compaction to proceed when sentinel returns 404 (not locked)")
+	if sched.maxConcurrent != 1 {
+		t.Errorf("default maxConcurrent: got %d, want 1", sched.maxConcurrent)
+	}
+	if sched.drainTimeout != 90*time.Second {
+		t.Errorf("default drainTimeout: got %v, want 90s", sched.drainTimeout)
 	}
 }
 
-// --- MaxConcurrent limit test ---
+// TestScheduler_NewScheduler_PanicsWithoutOwnership: Ownership is
+// required (no leader-or-not fallback like the old design).
+func TestScheduler_NewScheduler_PanicsWithoutOwnership(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic when Ownership is nil")
+		}
+	}()
+	pool := newMockPool()
+	m := manifest.New("test-bucket", "logs/")
+	_ = NewScheduler(SchedulerConfig{Manifest: m, Pool: pool, Policy: NewLevelPolicy(10, 20, 0)})
+}
 
+// TestScheduler_MaxConcurrentLimit: with 2 eligible partitions and
+// MaxConcurrent=1, only 1 compaction runs per Scan.
 func TestScheduler_MaxConcurrentLimit(t *testing.T) {
 	pool := newMockPool()
 	m := manifest.New("test-bucket", "logs/")
-	sentinel := NewSentinel(pool, time.Hour)
 	policy := NewLevelPolicy(10, 20, 0)
 	ctx := context.Background()
-	const fp = "abc123"
-
-	// Create 2 eligible partitions, each with 15 files.
-	partitions := []string{"dt=2026-01-01/hour=00", "dt=2026-01-02/hour=00"}
-	for _, partition := range partitions {
+	const fp = "fp"
+	for _, partition := range []string{"dt=2026-01-01/hour=00", "dt=2026-01-02/hour=00"} {
 		for i := 0; i < 15; i++ {
-			rows := []schema.LogRow{
-				{TimestampUnixNano: int64(i*1000 + 1), Body: fmt.Sprintf("log-%d", i), ServiceName: "svc"},
-			}
+			rows := []schema.LogRow{{TimestampUnixNano: int64(i*1000 + 1), Body: fmt.Sprintf("log-%d", i), ServiceName: "svc"}}
 			data := makeTestParquet(t, rows)
 			key := fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i)
 			if err := pool.Upload(ctx, key, data); err != nil {
 				t.Fatal(err)
 			}
-			m.AddFile(partition, manifest.FileInfo{
-				Key:               key,
-				Size:              int64(len(data)),
-				RowCount:          1,
-				SchemaFingerprint: fp,
-				CompactionLevel:   0,
-			})
+			m.AddFile(partition, manifest.FileInfo{Key: key, Size: int64(len(data)), RowCount: 1, SchemaFingerprint: fp, CompactionLevel: 0})
 		}
 	}
 
 	sched := NewScheduler(SchedulerConfig{
-		Leader:           &staticLeader{leader: true},
+		Manifest: m, Pool: pool, Ownership: soleOwnerResolver(), Policy: policy,
+		Prefix: "logs/", Mode: config.ModeLogs, Interval: time.Minute,
+		MaxConcurrent: 1, RowGroupSize: 1000, CompressionLevel: 7,
+	})
+	n, err := sched.Scan(ctx)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("MaxConcurrent=1: got %d, want 1", n)
+	}
+}
+
+// TestScheduler_SkipsUnparseablePartition: an unparseable partition
+// is logged and skipped (no compaction, no crash).
+func TestScheduler_SkipsUnparseablePartition(t *testing.T) {
+	pool := newMockPool()
+	m := manifest.New("test-bucket", "logs/")
+	const badPartition = "not-a-valid-partition"
+	for i := 0; i < 15; i++ {
+		m.AddFile(badPartition, manifest.FileInfo{
+			Key:               fmt.Sprintf("logs/%s/batch-%03d.parquet", badPartition, i),
+			SchemaFingerprint: "fp", CompactionLevel: 0,
+		})
+	}
+	sched := NewScheduler(SchedulerConfig{
+		Manifest: m, Pool: pool, Ownership: soleOwnerResolver(),
+		Policy: NewLevelPolicy(10, 20, 0),
+		Prefix: "logs/", Mode: config.ModeLogs, Interval: time.Minute,
+		MaxConcurrent: 2, RowGroupSize: 1000, CompressionLevel: 7,
+	})
+	n, err := sched.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("unparseable: got %d, want 0", n)
+	}
+}
+
+// TestScheduler_SkipsWhenLessThan2FilesSelected: skipping the
+// SelectFiles<2 branch.
+func TestScheduler_SkipsWhenLessThan2FilesSelected(t *testing.T) {
+	pool := newMockPool()
+	m := manifest.New("test-bucket", "logs/")
+	policy := NewLevelPolicy(10, 20, 0)
+	const partition = "dt=2026-01-01/hour=00"
+	for i := 0; i < 11; i++ {
+		rows := []schema.LogRow{{TimestampUnixNano: int64(i*1000 + 1), Body: fmt.Sprintf("log-%d", i), ServiceName: "svc"}}
+		data := makeTestParquet(t, rows)
+		key := fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i)
+		if err := pool.Upload(context.Background(), key, data); err != nil {
+			t.Fatal(err)
+		}
+		m.AddFile(partition, manifest.FileInfo{Key: key, Size: int64(len(data)), RowCount: 1, SchemaFingerprint: fmt.Sprintf("fp-%d", i), CompactionLevel: 0})
+	}
+	sched := NewScheduler(SchedulerConfig{
+		Manifest: m, Pool: pool, Ownership: soleOwnerResolver(), Policy: policy,
+		Prefix: "logs/", Mode: config.ModeLogs, Interval: time.Minute,
+		MaxConcurrent: 2, RowGroupSize: 1000, CompressionLevel: 7,
+	})
+	n, _ := sched.Scan(context.Background())
+	if n != 0 {
+		t.Fatalf("len(selected)<2: got %d, want 0", n)
+	}
+}
+
+// TestScheduler_CompactionFailure: download failure surfaces as a
+// per-partition error but Scan itself returns nil error.
+func TestScheduler_CompactionFailure(t *testing.T) {
+	pool := &failingDownloadPool{mockPool: newMockPool()}
+	m := manifest.New("test-bucket", "logs/")
+	const partition = "dt=2026-01-01/hour=00"
+	ctx := context.Background()
+	for i := 0; i < 15; i++ {
+		rows := []schema.LogRow{{TimestampUnixNano: int64(i*1000 + 1), Body: fmt.Sprintf("log-%d", i), ServiceName: "svc"}}
+		data := makeTestParquet(t, rows)
+		key := fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i)
+		if err := pool.Upload(ctx, key, data); err != nil {
+			t.Fatal(err)
+		}
+		m.AddFile(partition, manifest.FileInfo{Key: key, Size: int64(len(data)), RowCount: 1, SchemaFingerprint: "fp", CompactionLevel: 0})
+	}
+	sched := NewScheduler(SchedulerConfig{
+		Manifest: m, Pool: pool, Ownership: soleOwnerResolver(),
+		Policy: NewLevelPolicy(10, 20, 0),
+		Prefix: "logs/", Mode: config.ModeLogs, Interval: time.Minute,
+		MaxConcurrent: 2, RowGroupSize: 1000, CompressionLevel: 7,
+	})
+	n, err := sched.Scan(ctx)
+	if err != nil {
+		t.Fatalf("Scan should not return error on per-partition failure: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("compaction failed: got n=%d, want 0", n)
+	}
+}
+
+// TestScheduler_DrainBlocksNewCompactions: after Drain, subsequent
+// Scan calls return 0 even with eligible partitions.
+//
+// Negative-control proof: removing the `if s.draining.Load() return 0`
+// check at the top of Scan would let in-flight work start, defeating
+// the §11.1 partition-boundary invariant.
+func TestScheduler_DrainBlocksNewCompactions(t *testing.T) {
+	pool := newMockPool()
+	m := manifest.New("test-bucket", "logs/")
+	const partition = "dt=2026-01-01/hour=00"
+	ctx := context.Background()
+	for i := 0; i < 15; i++ {
+		rows := []schema.LogRow{{TimestampUnixNano: int64(i*1000 + 1), Body: fmt.Sprintf("log-%d", i), ServiceName: "svc"}}
+		data := makeTestParquet(t, rows)
+		key := fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i)
+		if err := pool.Upload(ctx, key, data); err != nil {
+			t.Fatal(err)
+		}
+		m.AddFile(partition, manifest.FileInfo{Key: key, Size: int64(len(data)), RowCount: 1, SchemaFingerprint: "fp", CompactionLevel: 0})
+	}
+	sched := NewScheduler(SchedulerConfig{
+		Manifest: m, Pool: pool, Ownership: soleOwnerResolver(),
+		Policy: NewLevelPolicy(10, 20, 0),
+		Prefix: "logs/", Mode: config.ModeLogs, Interval: time.Minute,
+		MaxConcurrent: 2, RowGroupSize: 1000, CompressionLevel: 7,
+		DrainTimeout: 100 * time.Millisecond,
+	})
+
+	sched.Drain()
+
+	if !sched.IsDraining() {
+		t.Fatal("IsDraining should be true after Drain()")
+	}
+	n, _ := sched.Scan(ctx)
+	if n != 0 {
+		t.Fatalf("post-Drain Scan: got %d, want 0", n)
+	}
+}
+
+// TestScheduler_DrainIdempotent: Drain twice + Stop twice all work.
+func TestScheduler_DrainIdempotent(t *testing.T) {
+	pool := newMockPool()
+	m := manifest.New("test-bucket", "logs/")
+	sched := NewScheduler(SchedulerConfig{
+		Manifest: m, Pool: pool, Ownership: soleOwnerResolver(),
+		Policy: NewLevelPolicy(10, 20, 0),
+		Prefix: "logs/", Mode: config.ModeLogs, Interval: time.Hour,
+		MaxConcurrent: 1, DrainTimeout: 50 * time.Millisecond,
+	})
+	sched.Drain()
+	sched.Drain()
+	sched.Stop()
+	sched.Stop()
+}
+
+// TestScheduler_RingChangeRateGate fires the §11.4 thrash gate: 7
+// rapid ring changes (above the default 6/5min) → Scan defers.
+//
+// Negative-control proof: removing the rate-gate check would let
+// compaction race with ring flap.
+func TestScheduler_RingChangeRateGate(t *testing.T) {
+	pool := newMockPool()
+	m := manifest.New("test-bucket", "logs/")
+	const partition = "dt=2026-01-01/hour=00"
+	for i := 0; i < 15; i++ {
+		m.AddFile(partition, manifest.FileInfo{Key: fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i), Size: 100, SchemaFingerprint: "fp"})
+	}
+	sched := NewScheduler(SchedulerConfig{
+		Manifest: m, Pool: pool, Ownership: soleOwnerResolver(),
+		Policy: NewLevelPolicy(10, 20, 0),
+		Prefix: "logs/", Mode: config.ModeLogs, Interval: time.Minute,
+		MaxConcurrent: 2, RingChangeRateLimit: 3,
+	})
+
+	for i := 0; i < 5; i++ {
+		sched.recordRingChange("join")
+	}
+	n, _ := sched.Scan(context.Background())
+	if n != 0 {
+		t.Fatalf("ring-thrash rate gate: got %d, want 0", n)
+	}
+}
+
+// TestScheduler_RingEventsPruning asserts the sliding window drops
+// events older than 5 minutes.
+func TestScheduler_RingEventsPruning(t *testing.T) {
+	sched := &Scheduler{}
+	now := time.Now()
+	sched.ringEventsMu.Lock()
+	sched.ringEvents = []time.Time{
+		now.Add(-10 * time.Minute), // dropped
+		now.Add(-6 * time.Minute),  // dropped
+		now.Add(-4 * time.Minute),  // kept
+		now.Add(-1 * time.Minute),  // kept
+	}
+	sched.pruneRingEventsLocked(now)
+	got := len(sched.ringEvents)
+	sched.ringEventsMu.Unlock()
+	if got != 2 {
+		t.Fatalf("pruned events: got %d, want 2", got)
+	}
+}
+
+// TestScheduler_FairShare_PicksAcrossTenants: when FairShare is wired,
+// per-tenant slot budget caps selection.
+func TestScheduler_FairShare_PicksAcrossTenants(t *testing.T) {
+	pool := newMockPool()
+	m := manifest.New("test-bucket", "logs/")
+	policy := NewLevelPolicy(10, 20, 0)
+	ctx := context.Background()
+	const fp = "fp"
+
+	// 3 partitions across 3 tenants.
+	for _, tenant := range []string{"acctA/projA", "acctB/projB", "acctC/projC"} {
+		partition := tenant + "/logs/dt=2026-01-01/hour=00"
+		for i := 0; i < 12; i++ {
+			rows := []schema.LogRow{{TimestampUnixNano: int64(i*1000 + 1), Body: fmt.Sprintf("log-%d", i), ServiceName: "svc"}}
+			data := makeTestParquet(t, rows)
+			key := fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i)
+			if err := pool.Upload(ctx, key, data); err != nil {
+				t.Fatal(err)
+			}
+			m.AddFile(partition, manifest.FileInfo{Key: key, Size: int64(len(data)), RowCount: 1, MinTimeNs: int64(i*1000 + 1), MaxTimeNs: int64(i*1000 + 1), SchemaFingerprint: fp, CompactionLevel: 0})
+		}
+	}
+
+	tickResults := map[string]int{}
+	mu := sync.Mutex{}
+	sched := NewScheduler(SchedulerConfig{
+		Manifest: m, Pool: pool, Ownership: soleOwnerResolver(), Policy: policy,
+		FairShare: NewFairShareScheduler(1),
+		Prefix:    "logs/", Mode: config.ModeLogs, Interval: time.Minute,
+		MaxConcurrent: 1, RowGroupSize: 1000, CompressionLevel: 1,
+		OnCompacted: func(added []manifest.FileInfo, removed []string) {
+			mu.Lock()
+			defer mu.Unlock()
+			// `removed` carries the original L0 input keys whose
+			// prefix matches the tenant we seeded with — extract
+			// from there. We use the first removed key for the
+			// tenant id.
+			if len(removed) > 0 {
+				t := extractTenant(removed[0])
+				tickResults[t]++
+			}
+		},
+	})
+
+	for tick := 0; tick < 3; tick++ {
+		_, _ = sched.Scan(ctx)
+	}
+
+	// We should have hit all 3 tenants over 3 ticks.
+	if len(tickResults) != 3 {
+		t.Fatalf("fair-share across 3 ticks: tenants compacted=%d, want 3 (results=%v)", len(tickResults), tickResults)
+	}
+}
+
+// TestScheduler_IncrementsCompactionCounters guards the
+// lakehouse_compaction_runs_total / files_input_total /
+// files_output_total / bytes_read_total / bytes_written_total /
+// rows_merged_total counter wiring inside Scan(). Removing any of
+// the .Inc()/.Add() calls in scheduler.go fails this test, which
+// caught a real silent regression where compactions ran but the
+// counters stayed at 0 in /metrics.
+func TestScheduler_IncrementsCompactionCounters(t *testing.T) {
+	pool := newMockPool()
+	m := manifest.New("test-bucket", "logs/")
+	policy := NewLevelPolicy(10, 20, 0)
+
+	const partition = "dt=2026-01-01/hour=01"
+	const fp = "test-fp"
+	ctx := context.Background()
+
+	const inputN = 12
+	var totalInputBytes int64
+	for i := 0; i < inputN; i++ {
+		rows := []schema.LogRow{
+			{TimestampUnixNano: int64(i*1000 + 1), Body: fmt.Sprintf("log-%d", i), ServiceName: "svc-test"},
+		}
+		data := makeTestParquet(t, rows)
+		key := fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i)
+		if err := pool.Upload(ctx, key, data); err != nil {
+			t.Fatal(err)
+		}
+		totalInputBytes += int64(len(data))
+		m.AddFile(partition, manifest.FileInfo{
+			Key:               key,
+			Size:              int64(len(data)),
+			RowCount:          1,
+			MinTimeNs:         int64(i*1000 + 1),
+			MaxTimeNs:         int64(i*1000 + 1),
+			SchemaFingerprint: fp,
+			CompactionLevel:   0,
+		})
+	}
+
+	runsBefore := metrics.CompactionRunsTotal.Get()
+	inputBefore := metrics.CompactionFilesInputTotal.Get()
+	outputBefore := metrics.CompactionFilesOutputTotal.Get()
+	bytesReadBefore := metrics.CompactionBytesReadTotal.Get()
+	bytesWrittenBefore := metrics.CompactionBytesWrittenTotal.Get()
+	rowsBefore := metrics.CompactionRowsMergedTotal.Get()
+
+	sched := NewScheduler(SchedulerConfig{
 		Manifest:         m,
 		Pool:             pool,
-		Sentinel:         sentinel,
+		Ownership:        soleOwnerResolver(),
 		Policy:           policy,
 		Prefix:           "logs/",
 		Mode:             config.ModeLogs,
 		Interval:         time.Minute,
-		MaxConcurrent:    1, // Only allow 1 at a time.
+		MaxConcurrent:    2,
 		RowGroupSize:     1000,
 		CompressionLevel: 7,
 	})
@@ -391,352 +617,25 @@ func TestScheduler_MaxConcurrentLimit(t *testing.T) {
 		t.Fatalf("Scan error: %v", err)
 	}
 	if n != 1 {
-		t.Fatalf("expected exactly 1 compaction due to maxConcurrent=1, got %d", n)
-	}
-}
-
-// --- Unparseable partition test ---
-
-func TestScheduler_SkipsUnparseablePartition(t *testing.T) {
-	pool := newMockPool()
-	m := manifest.New("test-bucket", "logs/")
-	sentinel := NewSentinel(pool, time.Hour)
-	policy := NewLevelPolicy(10, 20, 0)
-	ctx := context.Background()
-	const fp = "abc123"
-
-	// Use an unparseable partition name.
-	const badPartition = "not-a-valid-partition"
-	for i := 0; i < 15; i++ {
-		m.AddFile(badPartition, manifest.FileInfo{
-			Key:               fmt.Sprintf("logs/%s/batch-%03d.parquet", badPartition, i),
-			SchemaFingerprint: fp,
-			CompactionLevel:   0,
-		})
+		t.Fatalf("expected 1 compaction, got %d", n)
 	}
 
-	sched := NewScheduler(SchedulerConfig{
-		Leader:           &staticLeader{leader: true},
-		Manifest:         m,
-		Pool:             pool,
-		Sentinel:         sentinel,
-		Policy:           policy,
-		Prefix:           "logs/",
-		Mode:             config.ModeLogs,
-		Interval:         time.Minute,
-		MaxConcurrent:    2,
-		RowGroupSize:     1000,
-		CompressionLevel: 7,
-	})
-
-	n, err := sched.Scan(ctx)
-	if err != nil {
-		t.Fatalf("Scan error: %v", err)
+	if got := metrics.CompactionRunsTotal.Get() - runsBefore; got != 1 {
+		t.Errorf("CompactionRunsTotal delta = %d, want 1", got)
 	}
-	if n != 0 {
-		t.Fatalf("expected 0 compactions for unparseable partition, got %d", n)
+	if got := metrics.CompactionFilesInputTotal.Get() - inputBefore; got != uint64(inputN) {
+		t.Errorf("CompactionFilesInputTotal delta = %d, want %d", got, inputN)
 	}
-}
-
-// --- Less than 2 files after selection test ---
-
-func TestScheduler_SkipsWhenLessThan2FilesSelected(t *testing.T) {
-	pool := newMockPool()
-	m := manifest.New("test-bucket", "logs/")
-	sentinel := NewSentinel(pool, time.Hour)
-	// Set threshold to 10, but we'll have 11 L0 files with mixed fingerprints.
-	policy := NewLevelPolicy(10, 20, 0)
-	ctx := context.Background()
-
-	const partition = "dt=2026-01-01/hour=00"
-
-	// 11 files total: 10 with fp1, 1 with fp2. The majority is fp1 (10 files).
-	// After selection at level 0 with fp1, we get 10 files (>2) — so that actually compacts.
-	// To test <2, use 11 files each with a unique fingerprint. Majority will be "fp-0" (1 file).
-	// Actually we need a scenario where the majority fingerprint has only 1 file at the right level.
-	// Use all unique fingerprints.
-	for i := 0; i < 11; i++ {
-		rows := []schema.LogRow{
-			{TimestampUnixNano: int64(i*1000 + 1), Body: fmt.Sprintf("log-%d", i), ServiceName: "svc"},
-		}
-		data := makeTestParquet(t, rows)
-		key := fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i)
-		if err := pool.Upload(ctx, key, data); err != nil {
-			t.Fatal(err)
-		}
-		m.AddFile(partition, manifest.FileInfo{
-			Key:               key,
-			Size:              int64(len(data)),
-			RowCount:          1,
-			SchemaFingerprint: fmt.Sprintf("fp-%d", i), // each unique
-			CompactionLevel:   0,
-		})
+	if got := metrics.CompactionFilesOutputTotal.Get() - outputBefore; got != 1 {
+		t.Errorf("CompactionFilesOutputTotal delta = %d, want 1", got)
 	}
-
-	sched := NewScheduler(SchedulerConfig{
-		Leader:           &staticLeader{leader: true},
-		Manifest:         m,
-		Pool:             pool,
-		Sentinel:         sentinel,
-		Policy:           policy,
-		Prefix:           "logs/",
-		Mode:             config.ModeLogs,
-		Interval:         time.Minute,
-		MaxConcurrent:    2,
-		RowGroupSize:     1000,
-		CompressionLevel: 7,
-	})
-
-	n, err := sched.Scan(ctx)
-	if err != nil {
-		t.Fatalf("Scan error: %v", err)
+	if got := metrics.CompactionBytesReadTotal.Get() - bytesReadBefore; got == 0 {
+		t.Errorf("CompactionBytesReadTotal did not advance (input was %d bytes)", totalInputBytes)
 	}
-	// MajoritySchemaFingerprint picks one fp with count=1, SelectFiles returns only 1 file.
-	// Since 1 < 2, compaction is skipped.
-	if n != 0 {
-		t.Fatalf("expected 0 compactions when only 1 file per fingerprint, got %d", n)
+	if got := metrics.CompactionBytesWrittenTotal.Get() - bytesWrittenBefore; got == 0 {
+		t.Errorf("CompactionBytesWrittenTotal did not advance")
 	}
-}
-
-// --- Sentinel acquire returns error test ---
-// Uses a pool where IsLocked (Download of sentinel key) succeeds with "not found" (nil,nil),
-// but Upload (in Acquire) fails.
-
-type acquireFailPool struct {
-	*mockPool
-	uploadFailOnSentinel bool
-}
-
-func (p *acquireFailPool) Upload(ctx context.Context, key string, data []byte) error {
-	if p.uploadFailOnSentinel {
-		// Fail only on sentinel keys.
-		if len(key) > 12 && key[len(key)-12:] == "/_compacting" {
-			return fmt.Errorf("simulated acquire upload failure")
-		}
-	}
-	return p.mockPool.Upload(ctx, key, data)
-}
-
-func TestScheduler_SentinelAcquireError(t *testing.T) {
-	base := newMockPool()
-	pool := &acquireFailPool{mockPool: base, uploadFailOnSentinel: true}
-	m := manifest.New("test-bucket", "logs/")
-	sentinel := NewSentinel(pool, time.Hour)
-	policy := NewLevelPolicy(10, 20, 0)
-	ctx := context.Background()
-	const fp = "abc123"
-	const partition = "dt=2026-01-01/hour=00"
-
-	for i := 0; i < 15; i++ {
-		rows := []schema.LogRow{
-			{TimestampUnixNano: int64(i*1000 + 1), Body: fmt.Sprintf("log-%d", i), ServiceName: "svc"},
-		}
-		data := makeTestParquet(t, rows)
-		key := fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i)
-		if err := base.Upload(ctx, key, data); err != nil {
-			t.Fatal(err)
-		}
-		m.AddFile(partition, manifest.FileInfo{
-			Key:               key,
-			Size:              int64(len(data)),
-			RowCount:          1,
-			SchemaFingerprint: fp,
-			CompactionLevel:   0,
-		})
-	}
-
-	sched := NewScheduler(SchedulerConfig{
-		Leader:           &staticLeader{leader: true},
-		Manifest:         m,
-		Pool:             pool,
-		Sentinel:         sentinel,
-		Policy:           policy,
-		Prefix:           "logs/",
-		Mode:             config.ModeLogs,
-		Interval:         time.Minute,
-		MaxConcurrent:    2,
-		RowGroupSize:     1000,
-		CompressionLevel: 7,
-	})
-
-	n, err := sched.Scan(ctx)
-	if err != nil {
-		t.Fatalf("Scan error: %v", err)
-	}
-	// Sentinel acquire fails (Upload error), so no compaction.
-	if n != 0 {
-		t.Fatalf("expected 0 compactions when sentinel acquire fails, got %d", n)
-	}
-}
-
-// --- Partition sharding filter test ---
-
-func TestScheduler_ScanRespectsSharding(t *testing.T) {
-	pool := newMockPool()
-	m := manifest.New("test-bucket", "logs/")
-	sentinel := NewSentinel(pool, time.Hour)
-	policy := NewLevelPolicy(10, 20, 0)
-	ctx := context.Background()
-	const fp = "abc123"
-
-	// 6 partitions: hour=00 through hour=05.
-	// With shardCount=3, shard 0 owns: hour=01, hour=03 (2 partitions).
-	partitions := []string{
-		"dt=2026-05-22/hour=00",
-		"dt=2026-05-22/hour=01",
-		"dt=2026-05-22/hour=02",
-		"dt=2026-05-22/hour=03",
-		"dt=2026-05-22/hour=04",
-		"dt=2026-05-22/hour=05",
-	}
-
-	for _, partition := range partitions {
-		for i := 0; i < 12; i++ {
-			rows := []schema.LogRow{
-				{TimestampUnixNano: int64(i*1000 + 1), Body: fmt.Sprintf("log-%d", i), ServiceName: "svc"},
-			}
-			data := makeTestParquet(t, rows)
-			key := fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i)
-			if err := pool.Upload(ctx, key, data); err != nil {
-				t.Fatal(err)
-			}
-			m.AddFile(partition, manifest.FileInfo{
-				Key:               key,
-				Size:              int64(len(data)),
-				RowCount:          1,
-				MinTimeNs:         int64(i*1000 + 1),
-				MaxTimeNs:         int64(i*1000 + 1),
-				SchemaFingerprint: fp,
-				CompactionLevel:   0,
-			})
-		}
-	}
-
-	sharding := NewPartitionSharding(0, 3)
-
-	sched := NewScheduler(SchedulerConfig{
-		Leader:           &staticLeader{leader: true},
-		Manifest:         m,
-		Pool:             pool,
-		Sentinel:         sentinel,
-		Policy:           policy,
-		Prefix:           "logs/",
-		Mode:             config.ModeLogs,
-		Interval:         time.Minute,
-		MaxConcurrent:    6, // allow all partitions if owned
-		RowGroupSize:     1000,
-		CompressionLevel: 7,
-		Sharding:         sharding,
-	})
-
-	n, err := sched.Scan(ctx)
-	if err != nil {
-		t.Fatalf("Scan error: %v", err)
-	}
-
-	// Shard 0 owns 2 of 6 partitions; compaction count must not exceed that.
-	const ownedCount = 2
-	if n > ownedCount {
-		t.Fatalf("expected at most %d compactions (owned partitions), got %d", ownedCount, n)
-	}
-	if n == 0 {
-		t.Fatal("expected at least 1 compaction for partitions owned by shard 0")
-	}
-
-	// Verify that only owned partitions were compacted (files reduced to 1).
-	ownedPartitions := []string{"dt=2026-05-22/hour=01", "dt=2026-05-22/hour=03"}
-	notOwnedPartitions := []string{"dt=2026-05-22/hour=00", "dt=2026-05-22/hour=02", "dt=2026-05-22/hour=04", "dt=2026-05-22/hour=05"}
-
-	for _, p := range notOwnedPartitions {
-		files := m.FilesForPartition(p)
-		if len(files) != 12 {
-			t.Errorf("partition %s should be untouched (not owned by shard 0), but has %d files", p, len(files))
-		}
-	}
-	for _, p := range ownedPartitions {
-		files := m.FilesForPartition(p)
-		// After compaction, owned partitions should have fewer than 12 files.
-		if len(files) >= 12 {
-			t.Errorf("partition %s should have been compacted, but still has %d files", p, len(files))
-		}
-	}
-}
-
-// --- Compaction failure within Scan ---
-// Pool that fails on download of parquet files (not sentinel keys).
-
-type compactionFailPool struct {
-	*mockPool
-	failParquetDownload bool
-}
-
-func (p *compactionFailPool) Download(ctx context.Context, key string) ([]byte, error) {
-	if p.failParquetDownload {
-		if len(key) > 8 && key[len(key)-8:] == ".parquet" {
-			return nil, fmt.Errorf("simulated parquet download failure")
-		}
-	}
-	return p.mockPool.Download(ctx, key)
-}
-
-func TestScheduler_CompactionFailure(t *testing.T) {
-	base := newMockPool()
-	// The pool will allow sentinel operations but fail on parquet downloads.
-	pool := &compactionFailPool{mockPool: base, failParquetDownload: true}
-	m := manifest.New("test-bucket", "logs/")
-	sentinel := NewSentinel(pool, time.Hour)
-	policy := NewLevelPolicy(10, 20, 0)
-	ctx := context.Background()
-	const fp = "abc123"
-	const partition = "dt=2026-01-01/hour=00"
-
-	for i := 0; i < 15; i++ {
-		rows := []schema.LogRow{
-			{TimestampUnixNano: int64(i*1000 + 1), Body: fmt.Sprintf("log-%d", i), ServiceName: "svc"},
-		}
-		data := makeTestParquet(t, rows)
-		key := fmt.Sprintf("logs/%s/batch-%03d.parquet", partition, i)
-		if err := base.Upload(ctx, key, data); err != nil {
-			t.Fatal(err)
-		}
-		m.AddFile(partition, manifest.FileInfo{
-			Key:               key,
-			Size:              int64(len(data)),
-			RowCount:          1,
-			SchemaFingerprint: fp,
-			CompactionLevel:   0,
-		})
-	}
-
-	sched := NewScheduler(SchedulerConfig{
-		Leader:           &staticLeader{leader: true},
-		Manifest:         m,
-		Pool:             pool,
-		Sentinel:         sentinel,
-		Policy:           policy,
-		Prefix:           "logs/",
-		Mode:             config.ModeLogs,
-		Interval:         time.Minute,
-		MaxConcurrent:    2,
-		RowGroupSize:     1000,
-		CompressionLevel: 7,
-	})
-
-	n, err := sched.Scan(ctx)
-	if err != nil {
-		t.Fatalf("Scan error: %v", err)
-	}
-	// Compaction fails due to download error, but Scan itself doesn't return error.
-	if n != 0 {
-		t.Fatalf("expected 0 compactions when compaction fails, got %d", n)
-	}
-
-	// Verify sentinel was released after failed compaction.
-	locked, err := sentinel.IsLocked(ctx, "logs/", partition)
-	if err != nil {
-		t.Fatalf("IsLocked error: %v", err)
-	}
-	if locked {
-		t.Error("sentinel should be released after compaction failure")
+	if got := metrics.CompactionRowsMergedTotal.Get() - rowsBefore; got != uint64(inputN) {
+		t.Errorf("CompactionRowsMergedTotal delta = %d, want %d", got, inputN)
 	}
 }

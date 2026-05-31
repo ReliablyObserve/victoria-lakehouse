@@ -411,12 +411,6 @@ type CompactionConfig struct {
 	MinFilesL1     int           `yaml:"min_files_l1"`
 	MinAge         time.Duration `yaml:"min_age"`
 	DailyRollupAge time.Duration `yaml:"daily_rollup_age"`
-	LeaderElection string        `yaml:"leader_election"`
-	LeaseDuration  time.Duration `yaml:"lease_duration"`
-	S3LockTTL      time.Duration `yaml:"s3_lock_ttl"`
-	S3Heartbeat    time.Duration `yaml:"s3_heartbeat"`
-	ShardID        int           `yaml:"shard_id"`
-	ShardCount     int           `yaml:"shard_count"`
 }
 
 type DeleteConfig struct {
@@ -634,12 +628,6 @@ func Default() *Config {
 			MinFilesL1:     10,
 			MinAge:         1 * time.Hour,
 			DailyRollupAge: 24 * time.Hour,
-			LeaderElection: "auto",
-			LeaseDuration:  15 * time.Second,
-			S3LockTTL:      60 * time.Second,
-			S3Heartbeat:    15 * time.Second,
-			ShardID:        -1,
-			ShardCount:     1,
 		},
 
 		Delete: DeleteConfig{
@@ -936,12 +924,6 @@ func (c *Config) validateEnums() error {
 		return fmt.Errorf("--lakehouse.topology must be one of: auto, storage-node, direct, loki-proxy; got %q", c.Topology)
 	}
 
-	switch c.Compaction.LeaderElection {
-	case "auto", "k8s", "s3", "none", "":
-	default:
-		return fmt.Errorf("--lakehouse.compaction.leader-election must be one of: auto, k8s, s3, none; got %q", c.Compaction.LeaderElection)
-	}
-
 	switch c.UI.Theme {
 	case "auto", "dark", "light", "":
 	default:
@@ -1012,10 +994,6 @@ func (c *Config) validateSubsystems() error {
 		if err := validateDuration(c.HotBoundary); err != nil {
 			return fmt.Errorf("--lakehouse.hot-boundary: invalid duration %q: %w", c.HotBoundary, err)
 		}
-	}
-
-	if c.Compaction.Enabled && c.Compaction.LeaderElection == "none" {
-		return fmt.Errorf("--lakehouse.compaction.leader-election must not be \"none\" when compaction is enabled; concurrent compactors may corrupt data")
 	}
 
 	return nil
@@ -1615,18 +1593,6 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Compaction.DailyRollupAge > 0 {
 		base.Compaction.DailyRollupAge = overlay.Compaction.DailyRollupAge
-	}
-	if overlay.Compaction.LeaderElection != "" {
-		base.Compaction.LeaderElection = overlay.Compaction.LeaderElection
-	}
-	if overlay.Compaction.LeaseDuration > 0 {
-		base.Compaction.LeaseDuration = overlay.Compaction.LeaseDuration
-	}
-	if overlay.Compaction.S3LockTTL > 0 {
-		base.Compaction.S3LockTTL = overlay.Compaction.S3LockTTL
-	}
-	if overlay.Compaction.S3Heartbeat > 0 {
-		base.Compaction.S3Heartbeat = overlay.Compaction.S3Heartbeat
 	}
 
 	// Delete

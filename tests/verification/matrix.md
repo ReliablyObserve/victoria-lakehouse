@@ -187,109 +187,62 @@ Related rules (memories): `feedback_per_component_verification`,
    `/insert/splunk/services/collector/event` (and `/event/1.0`).
    Corrected in the table above. The bare paths return 404 because they
    fall through VL's switch statement — not a bug.
-8. **Baseline probe regressions (pre-existing, NOT introduced by this
+8. ~~**Baseline probe regressions (pre-existing, NOT introduced by this
    sweep)** — 4 of 6 pre-existing probes fail against the current
-   container build (image freshness OK, 10 min old):
-   - `probe_jaeger_search_24h.sh` — FAIL: api-gateway 24h search
-     returns 0 traces. Cold-tier data exists (417k api-gateway rows
-     spanning 7 days, max time 2026-05-30T15:27Z) but the upstream
-     Jaeger search handler (post PR #93 VT v0.9.0 integration) returns
-     `{"data":[]}` for every window. Likely root cause: VT 0.9.0's
-     Jaeger handler interaction with `-search.latencyOffset=2m` clamps
-     past the cold-tier flush lag (~120 s) OR the storage adapter's
-     `service.name` filter is not crossing the upstream→LH boundary
-     post-refactor. `vtselect` global view still returns 3 traces, so
-     VT itself is fine — the bug is LH-side. Repro:
-       `bash tests/verification/probe_jaeger_search_24h.sh`
-   - `probe_jaeger_search_24h_with_tag.sh` — FAIL (same root cause).
-   - `probe_jaeger_search_24h_full_chain.sh` — FAIL (same root cause).
-   - `probe_tempo_search_24h.sh` — FAIL (same root cause through
-     `/select/tempo/api/search`).
-   - `probe_logs_24h_wildcard.sh` — PASS.
-   - `probe_logs_Nday_wildcard.sh` — FAIL (7-day wildcard OOM-kills
-     container — `mem_limit=2g` cgroup; chunked emission / row-group
-     decoder semaphore / PutNoCopy cache wiring may need re-tuning
-     for the 600+ file count in cold tier). Repro:
-       `bash tests/verification/probe_logs_Nday_wildcard.sh`
-   These failures are outside the scope of the 22-row matrix sweep
-   (T8/T8a are listed as PASS in the matrix as of 2026-05-29 but the
-   probe is currently failing — track as P0).
+   container build.~~ **FIXED** on `feat/election-free-compaction`
+   (2026-05-31). The four trace-search probes
+   (`probe_jaeger_search_24h.sh`, `probe_jaeger_search_24h_with_tag.sh`,
+   `probe_jaeger_search_24h_full_chain.sh`, `probe_tempo_search_24h.sh`)
+   plus `probe_logs_Nday_wildcard.sh` were failing against a STALE
+   `lakehouse-traces` image that pre-dated the merged fixes in commit
+   42d7e09 (`fix(traces+logs): four root causes for Jaeger 0-traces +
+   large-data OOM`). That commit shipped four LH-side fixes:
+   `-search.latencyOffset=2m` flag on lakehouse-traces (compose),
+   pipe-preserving adapter rewrite in
+   `lakehouse-traces/internal/vtstorage_adapter/adapter.go`,
+   bloom any-of-values in
+   `internal/storage/parquets3/storage_query.go` /
+   `lakehouse-traces/internal/storage/parquets3/storage_query.go`
+   (`filterFilesByBloomIndex`), and the `normalizeTempoSearchParams`
+   shim in `lakehouse-traces/internal/selectapi/handler.go`.
+   The current branch HEAD already contains all four fixes. The
+   in-cluster `lakehouse-traces` image simply needed to be rebuilt and
+   recreated to pick them up. Reproduction & verification:
+   ```bash
+   cd deployment/docker
+   docker compose -f docker-compose-e2e.yml build --no-cache lakehouse-traces
+   docker compose -f docker-compose-e2e.yml up -d --force-recreate lakehouse-traces
+   # wait for health
+   for p in probe_jaeger_search_24h.sh probe_jaeger_search_24h_with_tag.sh \
+            probe_jaeger_search_24h_full_chain.sh probe_tempo_search_24h.sh \
+            probe_logs_24h_wildcard.sh probe_logs_Nday_wildcard.sh; do
+     bash tests/verification/$p && echo "  $p PASS" || echo "  $p FAIL"
+   done
+   ```
+   All 6 probes PASS after the rebuild + recreate. Each is locked by
+   its regression-test companion (negative-control documented in the
+   probe script header). The lockstep `tests/verification/matrix.md`
+   T8/T8a/T9 rows remain PASS.
 9. **Binary bloat** — RESOLVED on branch `perf/binary-size-reduction`
    (always-on K8s elector at ~37 MB, 1.76× the 21 MB upstream
    baseline; was 2.6×). Final design after iteration: Option B
    (hand-rolled `rest+meta/v1` REST client) replaces the
    tag-gated full `client-go` closure.
 
-   The fix:
-   1. **`-trimpath`** in Makefile + Dockerfiles for reproducible builds.
-   2. **Option B elector** — `internal/election/k8s.go` now talks to the
-      apiserver directly via `k8s.io/client-go/rest` + `k8s.io/apimachinery/pkg/apis/meta/v1`,
-      bypassing the heavy clientset (`k8s.io/client-go/kubernetes`),
-      the official elector wrapper (`tools/leaderelection`), and the
-      typed API modules (`k8s.io/api/core/v1`, `apps/v1`, `resource/v1`,
-      `admissionregistration/v1`). 329 packages in the closure vs ~700.
-   3. **`healthcheck` subcommand** — the standalone ~3 MB healthcheck
-      binary folded into `lakehouse-{logs,traces} healthcheck`, saving
-      ~10% of image size.
-   4. **FIPS variant** — `--build-arg FIPS=1` flips on Go 1.26+ native
-      FIPS 140-3 mode (`GOFIPS140=v1.0.0`). Release workflow publishes
-      `:vX.Y.Z` and `:vX.Y.Z-fips` tags for both modules.
-   5. **zstd compression** on image layers + OCI media types in the
-      release workflow — registry-side bytes shrink by ~25% over gzip.
+   > **SUPERSEDED by PR A (election-free compaction).**
+   > The `internal/election/` package and its hand-rolled k8s.io/client-go
+   > REST closure have been deleted in favour of HRW partition ownership
+   > (spec §2). Binary size on this branch drops by ≈5 MB to ~32 MB
+   > per binary (re-baseline pending `make build-logs build-traces` in
+   > the final verification gate). The "kind e2e" sub-bullet at the end
+   > of this section no longer applies — see the new election-free rows
+   > below the matrix appendix.
 
-   | Binary | Pre-PR | Post-PR | VL upstream | Ratio |
-   |---|---|---|---|---|
-   | `lakehouse-logs` | 55 MB | **37 MB** | ~21 MB | **1.76×** |
-   | `lakehouse-traces` | 55 MB | **37 MB** | 20.9 MB | **1.79×** |
-
-   Compared to a pristine in-tree VL build (`./app/victoria-logs` =
-   14.1 MB, no LH internals), the LH ratio is 2.6× — well within
-   the 40-45 MB / ≤3× upstream target. The 7 MB delta vs the
-   build-tag-gated slim binary (33 MB) is the price of having K8s
-   leader election always available without a build flag.
-
-   Reproduce (darwin/arm64, both modules):
-   ```bash
-   make build-logs build-traces                      # default (always-on K8s)
-   FIPS=1 make build-logs build-traces               # FIPS 140-3 variant
-   ls -lh bin/lakehouse-logs bin/lakehouse-traces
-   ```
-
-   Docker image (distroless static base) went from **88 MB to ~64 MB**
-   (`COPY /lakehouse-logs` layer dropped from 55 MB to ~37 MB; no
-   separate healthcheck binary).
-
-   What was NOT changed (and why):
-   - **AWS SDK v2** (~3.6 MB text) — already minimal (S3 + STS + SSO +
-     config + credentials only); no v1 anywhere.
-   - **`parquet-go`** (~1.0 MB text) — all imported logical types are
-     used for the format we write.
-   - **VL portion linked into LH** (~1.5 MB text) — load-bearing
-     vlinsert/vlselect upstream handler code (per
-     `feedback_vl_vt_upstream`, no upstream changes).
-   - **`crypto/internal/fips140`** BSS buffers (4 × 8 MB DRBG memory
-     reservoirs) — vmsize only, not in file size (zero-initialized
-     segments don't bloat the image).
-   - **OTel + gRPC** (~2 MB text) — could be build-tag-gated next round
-     if a sub-30 MB ceiling is needed; kept as-is because telemetry is
-     on by default in production.
-
-   Verification (this branch):
-   - 119 / 119 election tests pass (`-race -count=1`).
-   - 90.8% coverage on `internal/election/k8s.go` (target: ≥90%).
-   - 0 forbidden imports (`TestNoForbiddenImports` regression lock).
-   - 329 packages in election dep closure (`TestElectionDepCount`
-     limit: 340).
-   - Binary size ≤ 40 MB on both modules (`TestBinarySizeBound`).
-   - FIPS round-trip: default build reports `fips140: disabled`;
-     `GOFIPS140=v1.0.0` build with `GODEBUG=fips140=on` reports
-     `fips140: enabled` (`TestFIPSMode_WhenEnabled` +
-     `probe_fips_active.sh`).
-   - kind e2e (`tests/e2e-k8s/test_leader_election.sh`,
-     `.github/workflows/e2e-k8s.yaml`): RBAC positive + RBAC negative
-     (delete RoleBinding → 403 in logs) + failover within 40s + multi-
-     namespace isolation, all PASS in a single-node kind cluster.
-   - All existing 8 e2e probes still pass against rebuilt images.
+   *(The detailed PR #96 description that originally lived here cited
+   the now-deleted election package source files. The superseded
+   design and its measurements are preserved in git history at the
+   commit that merged PR #96; the active design now lives in the
+   spec and the election-free matrix rows below.)*
 
 ### L12 — `_stream_id` must be populated (100% VL API compat)
 
@@ -320,6 +273,64 @@ output MUST match what VL produces for the same `_stream` labels.
 4. Backfill existing cold rows: optional; for new data the fix takes effect immediately.
 
 **Owner**: not assigned. Tracked as L12 FAIL.
+
+### Appendix A — Election-free compaction (PR A, spec 2026-05-31)
+
+| Matrix row | Surface | Test / probe | Expected | Status |
+|---|---|---|---|---|
+| EF1 | HRW ownership | `TestOwnership_OwnsPartition_TableDriven` | exactly one owner per partition | PASS |
+| EF2 | HRW ownership | `TestOwnership_AZ_SameAZWins` | same-AZ peer always wins when alive | PASS |
+| EF3 | HRW ownership | `TestOwnership_AZ_FallbackWhenAZEmpty` | falls back to all peers when same-AZ empty | PASS |
+| EF4 | HRW ownership | `TestOwnership_AllDraining_FallbackEmpty` | empty owners when every peer is draining | PASS |
+| EF5 | HRW ownership | `TestOwnership_StaleSelf_Suppressed` | refuses ownership when Self not in peers | PASS |
+| EF6 | HRW ownership | `TestOwnership_SelfInPeers_TicksOne` | `self_in_peers` gauge ticks 1 when present | PASS |
+| EF7 | HRW ownership | `TestOwnership_DrainingPeer_Excluded` | draining peer never appears in ranked owners | PASS |
+| EF8 | HRW ownership | `TestOwnership_Concurrent_RaceFree` | `-race` clean under 100 goroutines | PASS |
+| EF9 | HRW ownership | `TestOwnership_AddRemovePeer_OnlyMinorRedistribution` | < 1/N partitions move on add/remove | PASS |
+| EF10 | Manifest | `TestManifest_AddFile_Idempotent` | second add of same key no-ops + bumps canary | PASS |
+| EF11 | Sweep Tier A | `TestOrphanSweep_TierA_StalePartitionTaken` | secondary takes over after 3×Interval | PASS |
+| EF12 | Sweep Tier A | `TestOrphanSweep_TierA_PrimaryOwnerAlsoSecondary_NoSteal` | single-pod no-op | PASS |
+| EF13 | Sweep Tier A | `TestOrphanSweep_TierA_FreshAttempt_NotTaken` | fresh primary attempt blocks steal | PASS |
+| EF14 | Sweep Tier A | `TestOrphanSweep_TierA_DeferredOnStabilization` | defers while ring stabilizing | PASS |
+| EF15 | Sweep Tier A | `TestOrphanSweep_TierA_NotEligible_NoSteal` | partition with <2 files never stolen | PASS |
+| EF16 | Sweep Tier B | `TestOrphanSweep_TierB_OnlyDeletesParquet` | non-parquet keys never deleted | PASS |
+| EF17 | Sweep Tier B | `TestOrphanSweep_TierB_NeverDeletesMetaFiles` | _meta/_tombstones/_compaction_lock protected | PASS |
+| EF18 | Sweep Tier B | `TestOrphanSweep_TierB_RespectsOrphanTTL` | files younger than OrphanTTL skipped | PASS |
+| EF19 | Sweep Tier B | `TestOrphanSweep_TierB_DeletesOldOrphan` | parquet older than OrphanTTL deleted | PASS |
+| EF20 | Sweep Tier B | `TestOrphanSweep_TierB_ThreeStepSafety` | re-snapshot manifest at delete time | PASS |
+| EF21 | Sweep Tier B | `TestOrphanSweep_TierB_PrefixHashOwnership` | each date prefix owned by exactly one pod | PASS |
+| EF22 | Sweep Tier B | `TestOrphanSweep_TierB_DeferredOnStabilization` | defers while ring stabilizing | PASS |
+| EF23 | Sweep Tier B | `TestOrphanSweep_TierB_EmptyPeerList_NoWork` | bails when peer list empty | PASS |
+| EF24 | Sweep Tier B | `TestOrphanSweep_TierB_S3ThrottledList` | List failure surfaces; no orphan deletes | PASS |
+| EF25 | Sweep Tier B | `TestOrphanSweep_TierB_HeadFails_SkipsCandidate` | HEAD failure skips, retries next tick | PASS |
+| EF26 | Sweep Tier B | `TestOrphanSweep_ClockSkewBetweenPods_Irrelevant` | TTL gating uses LastModified, not local clock | PASS |
+| EF27 | Fair-share | `TestFairShare_RoundRobinAcrossTenants` | round-robin cursor across tenants | PASS |
+| EF28 | Fair-share | `TestFairShare_NoisyTenantNoStarvation` | noisy tenant capped per tick | PASS |
+| EF29 | Fair-share | `TestFairShare_CursorPersistsAcrossCalls` | cursor advances every call | PASS |
+| EF30 | Fair-share | `TestFairShare_DynamicTenantAddition` | new tenant slots into rotation | PASS |
+| EF31 | Drain API | `TestDrainHandler_HappyPath` | POST returns 200, scheduler draining | PASS |
+| EF32 | Drain API | `TestDrainHandler_Idempotent` | repeat calls safe | PASS |
+| EF33 | Drain API | `TestDrainHandler_RejectsGet` | GET method blocked | PASS |
+| EF34 | HPA safety §11.6.1 | `TestCompaction_SIGTERM_FinishesCurrentPartition` | drain blocks until in-flight done | PASS |
+| EF35 | HPA safety §11.6.2 | `TestCompaction_SIGKILL_OrphanRecovery` | partial uploads reclaimed by Tier B | PASS |
+| EF36 | HPA safety §11.6.3 | `TestCompaction_HPAScaleUp_NoDuplicate` | no dual ownership during scale-up | PASS |
+| EF37 | HPA safety §11.6.4 | `TestCompaction_HPAScaleDown_DrainOrAbort` | draining pod excluded from HRW | PASS |
+| EF38 | HPA safety §11.6.5 | `TestCompaction_WaveScaleUp_RingThrashing` | rate gate fires during wave | PASS |
+| EF39 | HPA safety §11.6.6 | `TestCompaction_PDB_NoSimultaneousEviction` | chart PDB enforces invariant | PASS |
+| EF40 | HPA safety §11.6.7 | `TestCompaction_GracefulShutdown_NoOrphans` | pre-drained scheduler emits zero work | PASS |
+| EF41 | HPA safety §11.6.8 | `TestCompaction_DrainTimeout_ForceAbort` | drain returns after DrainTimeout | PASS |
+
+**Coverage gates** (run `GOWORK=off go test -coverprofile=cover.out
+-coverpkg=./internal/compaction/... ./internal/compaction/...`):
+
+- `ownership.go`     **96.25 %** (gate >= 95 %)
+- `orphan_sweep.go`  **91.96 %** (gate >= 90 %)
+- `fair_share.go`    **94.78 %** (gate >= 90 %)
+
+**Negative-control contract:** every load-bearing assertion has a
+documented negative-control revert in the test's leading comment. Removing
+the corresponding production-code guard MUST make the test fail. This
+guarantees the test is load-bearing, not just a happy-path reaffirmation.
 
 ## Process for filling gaps
 

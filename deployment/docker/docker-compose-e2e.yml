@@ -199,7 +199,6 @@ services:
       - "-lakehouse.s3.force-path-style=true"
       - "-lakehouse.manifest.refresh-interval=30s"
       - "-lakehouse.insert.flush-interval=120s"
-      - "-lakehouse.compaction.leader-election=s3"
       - "-lakehouse.compaction.interval=2m"
       - "-lakehouse.query.file-workers=16"
       # No artificial file cap — VL upstream has none. The
@@ -272,7 +271,6 @@ services:
       - "-lakehouse.cache.memory-mb=512"
       - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
       - "-lakehouse.cache.disk-max-mb=2048"
-      - "-lakehouse.compaction.leader-election=s3"
       - "-lakehouse.compaction.interval=2m"
       - "-lakehouse.tenant.global-read-header=X-Lakehouse-Global-Read"
       - "-lakehouse.tenant.global-read-value=lakehouse-e2e-global-key"

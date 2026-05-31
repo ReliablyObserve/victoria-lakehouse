@@ -1,7 +1,6 @@
 package compaction
 
 import (
-	"context"
 	"fmt"
 	"runtime"
 	"testing"
@@ -28,17 +27,15 @@ func heapInUse() uint64 {
 func TestScheduler_NoGoroutineLeak_StartStop(t *testing.T) {
 	pool := newMockPool()
 	m := manifest.New("test-bucket", "logs/")
-	sentinel := NewSentinel(pool, time.Hour)
 	policy := NewLevelPolicy(10, 20, 0)
 
 	before := runtime.NumGoroutine()
 
 	for i := 0; i < 20; i++ {
 		sched := NewScheduler(SchedulerConfig{
-			Leader:           &staticLeader{leader: false},
 			Manifest:         m,
 			Pool:             pool,
-			Sentinel:         sentinel,
+			Ownership:        neverOwnsResolver(),
 			Policy:           policy,
 			Prefix:           "logs/",
 			Mode:             config.ModeLogs,
@@ -65,7 +62,6 @@ func TestScheduler_NoGoroutineLeak_StartStop(t *testing.T) {
 func TestScheduler_NoGoroutineLeak_WithScans(t *testing.T) {
 	pool := newMockPool()
 	m := manifest.New("test-bucket", "logs/")
-	sentinel := NewSentinel(pool, time.Hour)
 	policy := NewLevelPolicy(100, 200, 0) // high thresholds so nothing compacts
 
 	// Add some files to partitions so Scan has work to iterate.
@@ -83,10 +79,9 @@ func TestScheduler_NoGoroutineLeak_WithScans(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		sched := NewScheduler(SchedulerConfig{
-			Leader:           &staticLeader{leader: true},
 			Manifest:         m,
 			Pool:             pool,
-			Sentinel:         sentinel,
+			Ownership:        soleOwnerResolver(),
 			Policy:           policy,
 			Prefix:           "logs/",
 			Mode:             config.ModeLogs,
@@ -218,34 +213,5 @@ func TestMajoritySchemaFingerprint_NoMemoryLeak(t *testing.T) {
 	}
 }
 
-// --- Sentinel memory leak tests ---
-
-func TestSentinel_NoMemoryLeak_AcquireReleaseCycles(t *testing.T) {
-	pool := newMockPool()
-	sentinel := NewSentinel(pool, time.Hour)
-	ctx := context.Background()
-
-	// Warm up.
-	for i := 0; i < 100; i++ {
-		partition := fmt.Sprintf("dt=2026-01-%02d/hour=%02d", (i%28)+1, i%24)
-		_, _ = sentinel.Acquire(ctx, "prefix/", partition, "worker")
-		_ = sentinel.Release(ctx, "prefix/", partition)
-	}
-	forceGC()
-
-	before := heapInUse()
-
-	for i := 0; i < 10_000; i++ {
-		partition := fmt.Sprintf("dt=2026-01-%02d/hour=%02d", (i%28)+1, i%24)
-		_, _ = sentinel.Acquire(ctx, "prefix/", partition, "worker")
-		_ = sentinel.Release(ctx, "prefix/", partition)
-	}
-	forceGC()
-
-	after := heapInUse()
-	growth := int64(after) - int64(before)
-	maxGrowth := int64(10 * 1024 * 1024)
-	if growth > maxGrowth {
-		t.Errorf("memory leak: heap grew by %d bytes after 10K Sentinel acquire/release cycles (max %d)", growth, maxGrowth)
-	}
-}
+// Sentinel memory-leak tests were removed alongside sentinel.go in PR A —
+// HRW ownership replaces the S3-sentinel approach (spec §2 + §7).

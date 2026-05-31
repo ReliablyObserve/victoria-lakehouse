@@ -107,32 +107,6 @@ func TestCacheDiskBytes_Invalid(t *testing.T) {
 	}
 }
 
-func TestValidate_LeaderElectionModes(t *testing.T) {
-	modes := []string{"auto", "k8s", "s3", "none", ""}
-	for _, mode := range modes {
-		cfg := Default()
-		cfg.Mode = ModeLogs
-		cfg.S3.Bucket = "test"
-		cfg.Compaction.LeaderElection = mode
-		if mode == "none" {
-			cfg.Compaction.Enabled = false
-		}
-		if err := cfg.Validate(); err != nil {
-			t.Errorf("Validate() with leader election %q: %v", mode, err)
-		}
-	}
-}
-
-func TestValidate_InvalidLeaderElection(t *testing.T) {
-	cfg := Default()
-	cfg.Mode = ModeLogs
-	cfg.S3.Bucket = "test"
-	cfg.Compaction.LeaderElection = "invalid-mode"
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for invalid leader election mode")
-	}
-}
-
 func TestValidate_CompactionEnabled_InvalidInterval(t *testing.T) {
 	cfg := Default()
 	cfg.Mode = ModeLogs
@@ -268,10 +242,9 @@ func TestMergeConfig_CompactionFields(t *testing.T) {
 	overlay.Compaction.MinFilesL0 = 20
 	overlay.Compaction.MinFilesL1 = 15
 	overlay.Compaction.MinAge = 2 * time.Hour
-	overlay.Compaction.LeaderElection = "s3"
-	overlay.Compaction.LeaseDuration = 30 * time.Second
-	overlay.Compaction.S3LockTTL = 120 * time.Second
-	overlay.Compaction.S3Heartbeat = 30 * time.Second
+	// PR A: LeaderElection / LeaseDuration / S3LockTTL / S3Heartbeat fields
+	// removed alongside the election machinery (spec §7). The remaining
+	// Compaction overlay fields are still covered above.
 
 	result := mergeConfig(base, overlay)
 
@@ -292,18 +265,6 @@ func TestMergeConfig_CompactionFields(t *testing.T) {
 	}
 	if result.Compaction.MinAge != 2*time.Hour {
 		t.Errorf("Compaction.MinAge = %v", result.Compaction.MinAge)
-	}
-	if result.Compaction.LeaderElection != "s3" {
-		t.Errorf("Compaction.LeaderElection = %q", result.Compaction.LeaderElection)
-	}
-	if result.Compaction.LeaseDuration != 30*time.Second {
-		t.Errorf("Compaction.LeaseDuration = %v", result.Compaction.LeaseDuration)
-	}
-	if result.Compaction.S3LockTTL != 120*time.Second {
-		t.Errorf("Compaction.S3LockTTL = %v", result.Compaction.S3LockTTL)
-	}
-	if result.Compaction.S3Heartbeat != 30*time.Second {
-		t.Errorf("Compaction.S3Heartbeat = %v", result.Compaction.S3Heartbeat)
 	}
 }
 
