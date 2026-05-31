@@ -328,6 +328,64 @@ output MUST match what VL produces for the same `_stream` labels.
 
 **Owner**: not assigned. Tracked as L12 FAIL.
 
+### Appendix A — Election-free compaction (PR A, spec 2026-05-31)
+
+| Matrix row | Surface | Test / probe | Expected | Status |
+|---|---|---|---|---|
+| EF1 | HRW ownership | `TestOwnership_OwnsPartition_TableDriven` | exactly one owner per partition | PASS |
+| EF2 | HRW ownership | `TestOwnership_AZ_SameAZWins` | same-AZ peer always wins when alive | PASS |
+| EF3 | HRW ownership | `TestOwnership_AZ_FallbackWhenAZEmpty` | falls back to all peers when same-AZ empty | PASS |
+| EF4 | HRW ownership | `TestOwnership_AllDraining_FallbackEmpty` | empty owners when every peer is draining | PASS |
+| EF5 | HRW ownership | `TestOwnership_StaleSelf_Suppressed` | refuses ownership when Self not in peers | PASS |
+| EF6 | HRW ownership | `TestOwnership_SelfInPeers_TicksOne` | `self_in_peers` gauge ticks 1 when present | PASS |
+| EF7 | HRW ownership | `TestOwnership_DrainingPeer_Excluded` | draining peer never appears in ranked owners | PASS |
+| EF8 | HRW ownership | `TestOwnership_Concurrent_RaceFree` | `-race` clean under 100 goroutines | PASS |
+| EF9 | HRW ownership | `TestOwnership_AddRemovePeer_OnlyMinorRedistribution` | < 1/N partitions move on add/remove | PASS |
+| EF10 | Manifest | `TestManifest_AddFile_Idempotent` | second add of same key no-ops + bumps canary | PASS |
+| EF11 | Sweep Tier A | `TestOrphanSweep_TierA_StalePartitionTaken` | secondary takes over after 3×Interval | PASS |
+| EF12 | Sweep Tier A | `TestOrphanSweep_TierA_PrimaryOwnerAlsoSecondary_NoSteal` | single-pod no-op | PASS |
+| EF13 | Sweep Tier A | `TestOrphanSweep_TierA_FreshAttempt_NotTaken` | fresh primary attempt blocks steal | PASS |
+| EF14 | Sweep Tier A | `TestOrphanSweep_TierA_DeferredOnStabilization` | defers while ring stabilizing | PASS |
+| EF15 | Sweep Tier A | `TestOrphanSweep_TierA_NotEligible_NoSteal` | partition with <2 files never stolen | PASS |
+| EF16 | Sweep Tier B | `TestOrphanSweep_TierB_OnlyDeletesParquet` | non-parquet keys never deleted | PASS |
+| EF17 | Sweep Tier B | `TestOrphanSweep_TierB_NeverDeletesMetaFiles` | _meta/_tombstones/_compaction_lock protected | PASS |
+| EF18 | Sweep Tier B | `TestOrphanSweep_TierB_RespectsOrphanTTL` | files younger than OrphanTTL skipped | PASS |
+| EF19 | Sweep Tier B | `TestOrphanSweep_TierB_DeletesOldOrphan` | parquet older than OrphanTTL deleted | PASS |
+| EF20 | Sweep Tier B | `TestOrphanSweep_TierB_ThreeStepSafety` | re-snapshot manifest at delete time | PASS |
+| EF21 | Sweep Tier B | `TestOrphanSweep_TierB_PrefixHashOwnership` | each date prefix owned by exactly one pod | PASS |
+| EF22 | Sweep Tier B | `TestOrphanSweep_TierB_DeferredOnStabilization` | defers while ring stabilizing | PASS |
+| EF23 | Sweep Tier B | `TestOrphanSweep_TierB_EmptyPeerList_NoWork` | bails when peer list empty | PASS |
+| EF24 | Sweep Tier B | `TestOrphanSweep_TierB_S3ThrottledList` | List failure surfaces; no orphan deletes | PASS |
+| EF25 | Sweep Tier B | `TestOrphanSweep_TierB_HeadFails_SkipsCandidate` | HEAD failure skips, retries next tick | PASS |
+| EF26 | Sweep Tier B | `TestOrphanSweep_ClockSkewBetweenPods_Irrelevant` | TTL gating uses LastModified, not local clock | PASS |
+| EF27 | Fair-share | `TestFairShare_RoundRobinAcrossTenants` | round-robin cursor across tenants | PASS |
+| EF28 | Fair-share | `TestFairShare_NoisyTenantNoStarvation` | noisy tenant capped per tick | PASS |
+| EF29 | Fair-share | `TestFairShare_CursorPersistsAcrossCalls` | cursor advances every call | PASS |
+| EF30 | Fair-share | `TestFairShare_DynamicTenantAddition` | new tenant slots into rotation | PASS |
+| EF31 | Drain API | `TestDrainHandler_HappyPath` | POST returns 200, scheduler draining | PASS |
+| EF32 | Drain API | `TestDrainHandler_Idempotent` | repeat calls safe | PASS |
+| EF33 | Drain API | `TestDrainHandler_RejectsGet` | GET method blocked | PASS |
+| EF34 | HPA safety §11.6.1 | `TestCompaction_SIGTERM_FinishesCurrentPartition` | drain blocks until in-flight done | PASS |
+| EF35 | HPA safety §11.6.2 | `TestCompaction_SIGKILL_OrphanRecovery` | partial uploads reclaimed by Tier B | PASS |
+| EF36 | HPA safety §11.6.3 | `TestCompaction_HPAScaleUp_NoDuplicate` | no dual ownership during scale-up | PASS |
+| EF37 | HPA safety §11.6.4 | `TestCompaction_HPAScaleDown_DrainOrAbort` | draining pod excluded from HRW | PASS |
+| EF38 | HPA safety §11.6.5 | `TestCompaction_WaveScaleUp_RingThrashing` | rate gate fires during wave | PASS |
+| EF39 | HPA safety §11.6.6 | `TestCompaction_PDB_NoSimultaneousEviction` | chart PDB enforces invariant | PASS |
+| EF40 | HPA safety §11.6.7 | `TestCompaction_GracefulShutdown_NoOrphans` | pre-drained scheduler emits zero work | PASS |
+| EF41 | HPA safety §11.6.8 | `TestCompaction_DrainTimeout_ForceAbort` | drain returns after DrainTimeout | PASS |
+
+**Coverage gates** (run `GOWORK=off go test -coverprofile=cover.out
+-coverpkg=./internal/compaction/... ./internal/compaction/...`):
+
+- `ownership.go`     **96.25 %** (gate >= 95 %)
+- `orphan_sweep.go`  **91.96 %** (gate >= 90 %)
+- `fair_share.go`    **94.78 %** (gate >= 90 %)
+
+**Negative-control contract:** every load-bearing assertion has a
+documented negative-control revert in the test's leading comment. Removing
+the corresponding production-code guard MUST make the test fail. This
+guarantees the test is load-bearing, not just a happy-path reaffirmation.
+
 ## Process for filling gaps
 
 For each `UNVERIFIED` row:

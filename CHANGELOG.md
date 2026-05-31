@@ -9,6 +9,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Election-free compaction (spec 2026-05-31)** — replaces the K8s Lease /
+  S3-sentinel single-leader scheme with HRW (Highest Random Weight) partition
+  ownership computed in-process on every pod. Each pod independently decides
+  which partitions it owns by ranking peers (from the existing peer-cache)
+  with xxh64 — the highest-weight peer per partition wins, with deterministic
+  tie-break by peer name. The result: zero K8s coordination dependencies and
+  ~5 MB binary-size reduction per module (the entire `k8s.io/client-go` REST
+  closure + 13 transitive deps drop out).
+  - `internal/compaction/ownership.go` — `OwnershipResolver` with AZ
+    stratification (same-AZ peers preferred, fall back to all-AZ when same-AZ
+    is drained), `IsDraining` filter, ring-stabilization gate (defer ownership
+    decisions during ring change), and `RankedOwners` / `SecondaryOwner` /
+    `TertiaryOwner` ladders for Tier A failover.
+  - `internal/compaction/orphan_sweep.go` — two-tier orphan reclamation.
+    Tier A: detects stale `LastCompactionAttempt` per partition (≥3 × Interval)
+    and lets the secondary HRW owner steal compaction. Tier B: walks S3 prefix
+    layout, hash-buckets dates across pods, and deletes parquet keys that
+    survive a three-step safety gate (not-in-manifest + age-gate + post-LIST
+    manifest re-snapshot).
+  - `internal/compaction/fair_share.go` — per-tenant round-robin scheduler.
+    Cursor advances across tenants every tick so no noisy tenant can starve
+    others. Configurable `CompactionsPerTenant` budget.
+  - `internal/compaction/drain_handler.go` + `Scheduler.Drain()` —
+    HTTP `POST /lakehouse/drain` endpoint marks the pod as draining,
+    waits for in-flight compactions to finish (bounded by `DrainTimeout`,
+    default 90 s), and emits the `X-Lakehouse-Draining: true` header so peer
+    pods exclude us from the HRW ring within one tick.
+  - `manifest.AddFile` idempotency + per-partition `LastCompactionAttempt`
+    tracking — the manifest now silently no-ops on duplicate (key, partition)
+    inserts, surfacing a `lakehouse_manifest_addfile_duplicate_key_total`
+    canary for hidden upload bugs.
+  - **12 new compaction observability metrics** including
+    `compaction_partitions_owned`, `compaction_ownership_self_in_peers`,
+    `compaction_dual_ownership_total` (load-bearing — alerts on >0),
+    `compaction_orphan_files_deleted_total`, `compaction_orphans_skipped`
+    (per-reason vector), `compaction_deferred_stabilizing`,
+    `compaction_deferred_ring_thrash`, `compaction_draining`,
+    `compaction_aborted_during_drain_total`, `compaction_stolen_total`,
+    `compaction_sweep_deferred_stabilizing` (Tier A / Tier B).
+  - **41 new tests** (33 edge cases from spec §3 + 8 HPA recovery tests from
+    spec §11.6). Every load-bearing assertion documents a negative-control
+    revert in its leading comment — removing the corresponding production
+    guard must cause the test to fail. Coverage gates met:
+    `ownership.go` 96.25 % (>= 95 %), `orphan_sweep.go` 91.96 % (>= 90 %),
+    `fair_share.go` 94.78 % (>= 90 %).
+  - **HPA-safe scaling chart defaults** — PDB template (`pdb.yaml`),
+    `preStop` hook calling `POST /lakehouse/drain`, generous
+    `terminationGracePeriodSeconds`, and per-component PDB toggles
+    `select.podDisruptionBudget.enabled` / `insert.podDisruptionBudget.enabled`.
+
 - **Runtime `Acquire` wiring for 4 resource-bound surfaces** — turns the K8s-style resource bounds added in v0.37.1 from metric-exposure-only into real backpressure with admit/reject semantics. Surfaces wired in both modules (logs + traces):
   - Query file workers — admit at `fileWorkerLoop`; ctx-cancel during blocked Acquire surfaces as "file workers limit exceeded" error (was: queued indefinitely on channel).
   - Cache memory — `LRU.SetBound`; `Put` returns silently when bound rejects, cache becomes best-effort (was: silent LRU eviction only).
@@ -19,6 +69,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Live e2e metrics confirm load-bearing in production: `lakehouse_resourcebound_cache_memory_acquired_total 1162`, `…query_file_workers_acquired_total 2489`, `…query_max_rows_acquired_total 5` measured against the rebuilt e2e compose stack.
 - `cache/lru.go` and `cache/disk.go`: added `SetBound`, `RejectedByBound` accessors and per-entry `boundRelease` closures so every code path that drops an entry (eviction, Delete, Clear, Update-with-replace) releases its slot back to the bound exactly once.
 - `internal/storage/parquets3/storage_query.go`: extracted `processOneFile`, `fileWorkerLoop`, `acquireQueryMaxRowsBudget` helpers to keep `RunQuery` within the 50-line gocyclo budget after wiring the new admit points.
+
+### Removed (election-free compaction)
+
+- **`internal/election/` package** — entire directory deleted (~5 kLOC across
+  `auto.go`, `k8s.go`, `s3.go`, `noop.go`, `leader.go`, plus coverage, fuzz,
+  integration, leak, regression, and soak test suites). HRW ownership
+  (above) makes this code unnecessary.
+- **`internal/compaction/sentinel.go` + `sentinel_test.go`** — the S3
+  sentinel lock that prevented two pods from compacting the same partition.
+  Replaced by HRW: each partition has exactly one HRW-elected owner per tick.
+- **`internal/compaction/sharding.go` + `sharding_test.go`** — the
+  modulo-shard partition assignment scheme. Replaced by HRW (better
+  rebalancing properties on N→N+1 transitions: only ~1/N partitions move).
+- **`BloomController.SetLeader` / `IsLeader`** — bloom tuning state is
+  per-pod (cfg / overrides / adjustments live on the controller instance
+  only), so the previous leader gate was decorative. Every pod now auto-tunes
+  its own bloom params.
+- **`config.CompactionConfig` fields**: `LeaderElection`, `LeaseDuration`,
+  `S3LockTTL`, `S3Heartbeat`, `ShardID`, `ShardCount`.
+- **CLI flags**: `-lakehouse.compaction.leader-election`,
+  `-lakehouse.compaction.lease-duration`, `-lakehouse.compaction.s3-heartbeat`,
+  `-lakehouse.compaction.s3-lock-ttl`, `-lakehouse.compaction.shard-id`,
+  `-lakehouse.compaction.shard-count`.
+- **Election metrics**: `lakehouse_election_leader`,
+  `lakehouse_election_transitions_total`, `lakehouse_election_health_checks_total`.
+- **Chart artifacts**:
+  - `charts/.../templates/compaction-rbac.yaml` (Role + RoleBinding for
+    `coordination.k8s.io/leases`).
+  - `charts/.../templates/tenant-rbac.yaml` (same surface for the
+    tenant-alias sync leader — see spec §10 Q6; the actual alias-sync
+    migration to HRW ownership is tracked separately).
+  - `lakehouseConfig.compaction.leader_election` / `lease_duration` /
+    `s3_lock_ttl` / `s3_heartbeat` / `shard_id` / `shard_count` keys from
+    `values.yaml`.
+  - `POD_NAMESPACE` downward-API env-var injection in `statefulsets.yaml`
+    (consumed exclusively by the now-deleted elector).
+- **E2E**: `.github/workflows/e2e-k8s.yaml`,
+  `tests/e2e-k8s/{kind-config.yaml,test_leader_election.sh}`,
+  `tests/verification/probe_k8s_election_failover.sh`.
+- **Go dependencies tidied by `go mod tidy`** on both modules:
+  `k8s.io/apimachinery v0.36.0`, `k8s.io/client-go v0.36.0`,
+  `k8s.io/klog/v2 v2.140.0`, `k8s.io/kube-openapi`, `k8s.io/utils`,
+  `sigs.k8s.io/json`, `sigs.k8s.io/randfill`, plus 13 transitive deps
+  (`fxamacker/cbor/v2`, `modern-go/reflect2`, `json-iterator/go`,
+  `munnerz/goautoneg`, `golang.org/x/term`, `golang.org/x/time`,
+  `gopkg.in/inf.v0`, `go.yaml.in/yaml/v2`, `davecgh/go-spew`,
+  `x448/float16`).
 
 ### Deferred
 
