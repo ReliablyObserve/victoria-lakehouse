@@ -483,6 +483,13 @@ func run(cfg *config.Config, addr string) {
 
 	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister)
 
+	// Wire the compaction drain endpoint (spec §11.1). The preStop
+	// hook in the chart POSTs here to initiate a graceful drain
+	// before terminationGracePeriodSeconds elapses. The handler
+	// returns 200 with X-Lakehouse-Draining=true; returns 503 when
+	// compaction is disabled (sched is nil).
+	mux.HandleFunc("/lakehouse/drain", compaction.DrainHandler(sched))
+
 	var handler http.Handler = mux
 	if resolver != nil && (resolver.HasAliases() || cfg.Tenant.AutoRegister) {
 		handler = resolver.Middleware(mux)

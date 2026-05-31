@@ -477,6 +477,10 @@ func run(cfg *config.Config, addr string) {
 
 	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister)
 
+	// Wire the compaction drain endpoint (spec §11.1). Mirror of
+	// cmd/lakehouse-logs/main.go — line-parity with feedback_logs_traces_module_parity.
+	mux.HandleFunc("/lakehouse/drain", compaction.DrainHandler(sched))
+
 	var handler http.Handler = mux
 	if resolver != nil && (resolver.HasAliases() || cfg.Tenant.AutoRegister) {
 		handler = resolver.Middleware(mux)
