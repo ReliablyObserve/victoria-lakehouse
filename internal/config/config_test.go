@@ -1503,43 +1503,10 @@ func TestValidate_ValidSizeStrings(t *testing.T) {
 
 // --- Task 1: Cross-field validation ---
 
-func TestValidate_CompactionEnabledWithNoLeaderElection(t *testing.T) {
-	cfg := Default()
-	cfg.Mode = ModeLogs
-	cfg.S3.Bucket = "test"
-	cfg.Compaction.Enabled = true
-	cfg.Compaction.LeaderElection = "none"
-	err := cfg.Validate()
-	if err == nil {
-		t.Error("expected error when compaction enabled with leader_election=none")
-	}
-}
-
-func TestValidate_CompactionEnabledWithValidLeaderElection(t *testing.T) {
-	for _, le := range []string{"auto", "k8s", "s3"} {
-		t.Run(le, func(t *testing.T) {
-			cfg := Default()
-			cfg.Mode = ModeLogs
-			cfg.S3.Bucket = "test"
-			cfg.Compaction.Enabled = true
-			cfg.Compaction.LeaderElection = le
-			if err := cfg.Validate(); err != nil {
-				t.Errorf("unexpected error with leader_election=%q: %v", le, err)
-			}
-		})
-	}
-}
-
-func TestValidate_CompactionDisabledWithNoneLeaderElection(t *testing.T) {
-	cfg := Default()
-	cfg.Mode = ModeLogs
-	cfg.S3.Bucket = "test"
-	cfg.Compaction.Enabled = false
-	cfg.Compaction.LeaderElection = "none"
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("disabled compaction with leader_election=none should be fine, got: %v", err)
-	}
-}
+// PR A: TestValidate_CompactionEnabledWith*LeaderElection cases removed.
+// The leader_election config field has been deleted (spec §7); compaction
+// is now always election-free (HRW ownership). Compaction enable/disable
+// cross-field semantics remain covered by the broader Validate sweep.
 
 // --- Task 1: HotBoundary format validation ---
 
