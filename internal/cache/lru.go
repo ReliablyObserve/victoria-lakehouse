@@ -3,12 +3,19 @@ package cache
 import (
 	"container/list"
 	"sync"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/resourcebounds"
 )
 
 type entry struct {
 	key  string
 	val  []byte
 	size int64
+	// boundRelease releases the K8s-style cache-memory Bound slot
+	// reserved when this entry was admitted. Nil for entries admitted
+	// before SetBound was called; ignored on Delete/Clear when nil.
+	// Invoked on eviction (LRU size limit), explicit Delete, and Clear.
+	boundRelease func()
 }
 
 type LRU struct {
@@ -20,6 +27,22 @@ type LRU struct {
 	hits      uint64
 	misses    uint64
 	evictions uint64
+	// bound is the K8s-style cache-memory admission gate, set via
+	// SetBound at storage construction. When non-nil every Put/PutNoCopy
+	// attempts a TryAcquire on the bound BEFORE the LRU's own size
+	// accounting; rejection causes the Put to silently no-op (cache
+	// becomes best-effort), matching the LRU's existing fail-soft
+	// semantics. The bound's Release runs on eviction/Delete/Clear via
+	// the per-entry boundRelease closure.
+	//
+	// nil bound preserves pre-bound behaviour exactly (every Put
+	// admits; LRU eviction is the only memory-pressure response).
+	bound *resourcebounds.Bound
+	// rejected counts the number of Put/PutNoCopy calls that were
+	// rejected by the bound (admit failed) so callers can verify the
+	// bound is load-bearing in tests; the per-bound rejected_total
+	// Prometheus counter is the operator-facing signal.
+	rejected uint64
 }
 
 func NewLRU(maxSize int64) *LRU {
@@ -28,6 +51,29 @@ func NewLRU(maxSize int64) *LRU {
 		order:   list.New(),
 		maxSize: maxSize,
 	}
+}
+
+// SetBound attaches a K8s-style cache-memory admission gate. Call once
+// at storage construction (NOT thread-safe with concurrent Puts —
+// LRU is normally constructed before any worker goroutines are spawned).
+// Subsequent Put/PutNoCopy attempts TryAcquire on the bound; if the
+// bound is full the Put is dropped (cache is best-effort), and the
+// rejected_total metric on the bound increments by 1. Release runs
+// when the entry is evicted, deleted, or cleared.
+func (c *LRU) SetBound(b *resourcebounds.Bound) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.bound = b
+}
+
+// RejectedByBound returns the cumulative count of Put/PutNoCopy calls
+// rejected by the cache-memory bound. Exposed for regression tests that
+// assert the bound is load-bearing; operators read the same signal via
+// the bound's rejected_total Prometheus counter.
+func (c *LRU) RejectedByBound() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.rejected
 }
 
 // Get returns the cached value for key. The returned []byte is the
@@ -91,15 +137,49 @@ func (c *LRU) putBuffer(key string, buf []byte) {
 
 	size := int64(len(buf))
 
+	// K8s-style cache-memory admission. TryAcquire (non-blocking) on the
+	// bound BEFORE making any state changes — the cache is best-effort:
+	// rejection means "skip caching this entry", not "block the write".
+	// The LRU's own size-driven eviction is preserved as the
+	// load-bearing memory-pressure response; the bound is an EXTRA
+	// process-wide admission ceiling that triggers a 429-shaped signal
+	// (rejected_total++) when the operator-visible Limit is exceeded.
+	//
+	// For updates (key already present), TryAcquire against the size
+	// DELTA to avoid double-counting the bytes already held under this
+	// key's existing reservation. Update path: release old slot first,
+	// then try-acquire the new size. If new acquire fails, no-op (old
+	// entry stays, bound accounting consistent).
+	var newRelease func()
+	if c.bound != nil {
+		if el, ok := c.items[key]; ok {
+			// Update path: release existing slot, then try to reserve
+			// the new size. If reservation fails, keep the old entry
+			// (the in-place size update is dropped).
+			oldEntry := el.Value.(*entry)
+			if oldEntry.boundRelease != nil {
+				oldEntry.boundRelease()
+				oldEntry.boundRelease = nil
+			}
+		}
+		rel, err := c.bound.TryAcquire(size)
+		if err != nil {
+			c.rejected++
+			return
+		}
+		newRelease = rel
+	}
+
 	if el, ok := c.items[key]; ok {
 		e := el.Value.(*entry)
 		c.curSize -= e.size
 		e.val = buf
 		e.size = size
+		e.boundRelease = newRelease
 		c.curSize += size
 		c.order.MoveToFront(el)
 	} else {
-		e := &entry{key: key, val: buf, size: size}
+		e := &entry{key: key, val: buf, size: size, boundRelease: newRelease}
 		el := c.order.PushFront(e)
 		c.items[key] = el
 		c.curSize += size
@@ -119,6 +199,10 @@ func (c *LRU) evictOldest() {
 	c.order.Remove(el)
 	delete(c.items, e.key)
 	c.curSize -= e.size
+	if e.boundRelease != nil {
+		e.boundRelease()
+		e.boundRelease = nil
+	}
 	c.evictions++
 }
 
@@ -131,6 +215,10 @@ func (c *LRU) Delete(key string) {
 		c.order.Remove(el)
 		delete(c.items, e.key)
 		c.curSize -= e.size
+		if e.boundRelease != nil {
+			e.boundRelease()
+			e.boundRelease = nil
+		}
 	}
 }
 
@@ -175,6 +263,17 @@ func (c *LRU) Stats() Stats {
 func (c *LRU) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Release all bound slots before dropping references — without this
+	// the bound's outstanding counters would leak by the size of the
+	// cache on every Clear, eventually exhausting the limit and
+	// silently rejecting all future Puts.
+	for _, el := range c.items {
+		e := el.Value.(*entry)
+		if e.boundRelease != nil {
+			e.boundRelease()
+			e.boundRelease = nil
+		}
+	}
 	c.items = make(map[string]*list.Element)
 	c.order.Init()
 	c.curSize = 0

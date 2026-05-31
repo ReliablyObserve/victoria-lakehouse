@@ -64,12 +64,23 @@ type Storage struct {
 	// bounds holds the K8s-style request/limit Bound set for all
 	// 5 resource surfaces. Surface owners read their bound here;
 	// the foundation lives in internal/resourcebounds with metric
-	// wiring through internal/metrics. Bounds with no live acquire
-	// site (file workers, cache memory, smart cache disk, query
-	// max rows in this PR) are present for the operator metric
-	// contract — request/limit gauges are populated at startup so
-	// dashboards render the K8s-style triple even before the
-	// runtime acquire path is migrated to the bound.
+	// wiring through internal/metrics.
+	//
+	// Runtime acquire wiring (all 5 surfaces gated as of this PR):
+	//   - S3Downloads:    channel-first admit + bound tick
+	//                     (getFileData → s3DownloadsBound.Acquire
+	//                     after dlSem admit).
+	//   - FileWorkers:    per-file Acquire in fileWorkerLoop
+	//                     (storage_query.go).
+	//   - CacheMemory:    TryAcquire on LRU.Put + Release on
+	//                     evict/Delete/Clear; wired here via
+	//                     memCache.SetBound, applied in cache/lru.go.
+	//   - SmartCacheDisk: TryAcquire on DiskCache.Put + Release on
+	//                     evict/Delete/Clear; wired here via
+	//                     diskCacheInst.SetBound, applied in
+	//                     cache/disk.go.
+	//   - QueryMaxRows:   per-query reservation via
+	//                     acquireQueryMaxRowsBudget (storage_query.go).
 	bounds *resourceBoundSet
 }
 
@@ -145,16 +156,34 @@ func New(cfg *config.Config) (*Storage, error) {
 	// K8s-style request/limit bounds for all 5 resource surfaces.
 	// Bound construction populates the per-surface request/limit
 	// info gauges at startup, emits a deprecation warning when any
-	// legacy single-value alias is set, and exposes the Acquire
-	// path for surfaces that wire through the bound (S3 downloads
-	// today). Bounds for the remaining 4 surfaces are constructed
-	// for metric exposure only; the wire-level enforcement remains
-	// in the legacy mechanism (channel/sem/eviction/MaxRows check).
+	// legacy single-value alias is set, and exposes the Acquire path
+	// for surfaces with runtime wiring.
+	//
+	// As of this PR all 5 surfaces have runtime acquire wiring (see
+	// the Storage.bounds field doc above for the per-surface call
+	// sites). Operators see the K8s-style triple (request, limit,
+	// usage) plus the 429-shaped rejected_total counter for every
+	// surface — the bound is load-bearing across the board, not
+	// metric-exposure-only.
 	bounds := newResourceBoundSet(cfg)
 	s3DownloadsBound := bounds.S3Downloads
 	maxDL := int(s3DownloadsBound.Config().Limit)
 	if maxDL <= 0 {
 		maxDL = 16
+	}
+
+	// Wire the cache-memory and smart-cache-disk bounds INTO the
+	// existing in-process caches so each Put traverses the K8s-style
+	// admission gate. The bound is applied non-blockingly (TryAcquire
+	// — see resourcebounds.Bound.TryAcquire): when exhausted the cache
+	// becomes best-effort and the operator sees rejected_total tick
+	// up. Release runs on eviction/Delete/Clear via the per-entry
+	// boundRelease closure.
+	if memCache != nil && bounds.CacheMemory != nil {
+		memCache.SetBound(bounds.CacheMemory)
+	}
+	if diskCacheInst != nil && bounds.SmartCacheDisk != nil {
+		diskCacheInst.SetBound(bounds.SmartCacheDisk)
 	}
 
 	var sc *smartcache.Controller
