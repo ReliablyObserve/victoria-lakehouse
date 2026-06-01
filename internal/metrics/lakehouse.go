@@ -99,6 +99,15 @@ var (
 	// since they aren't OTLP span data; this counter, keyed by kind, exposes
 	// how many we discard so a missing-trace-index regression is visible.
 	VTInternalRowsDropped = NewCounterVec("lakehouse_vt_internal_rows_dropped_total", "kind")
+
+	// TraceIndexLookups counts VT-format trace-by-ID lookups served from the
+	// embedded `_trace_idx` Parquet footer index. `result` is one of:
+	//   hit   — index served the (start_time, end_time) bounds; no span scan
+	//   miss  — index does not know this trace; caller falls back to scan
+	//   error — footer fetch or unmarshal failed
+	// Compare hit/miss to know how cold the lookup path runs without the
+	// index — every miss is a full span-scan trace-by-ID.
+	TraceIndexLookups = NewCounterVec("lakehouse_trace_index_lookups_total", "result")
 )
 
 // Prefetch metrics

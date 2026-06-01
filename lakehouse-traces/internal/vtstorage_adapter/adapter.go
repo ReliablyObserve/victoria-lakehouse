@@ -28,6 +28,24 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 		return nil
 	}
 
+	// Trace-index fast path: VT's tempo handler issues a stats query
+	// against the trace_id_idx_stream to bound the subsequent span fetch
+	// (see vtselect/traces/tempo/query.go GetTrace). Every cold trace
+	// Parquet file embeds a `_trace_idx` footer index that already carries
+	// (start_time, end_time) per trace ID, so we can answer the bound
+	// without ever opening a row group. On a footer miss we fall through
+	// to the existing rewriteTraceIndexQuery span-scan rewrite so VT-side
+	// semantics are preserved bit-for-bit.
+	if lookup, ok := a.store.(traceIndexLookup); ok {
+		if traceID, isLookup := traceIndexLookupTraceID(qctx.Query); isLookup && traceID != "" {
+			startNs, endNs, found, _ := lookup.LookupTraceIndex(qctx.Context, traceID)
+			if found {
+				emitTraceIndexBlock(writeBlock, startNs, endNs)
+				return nil
+			}
+		}
+	}
+
 	// IMPORTANT: pass the FULL query (with pipes intact) to a.store.RunQuery.
 	// Our storage's queryColumns() consults logstorage.GetQueryPipeFields() to
 	// expand the parquet column projection to cover fields referenced only by
