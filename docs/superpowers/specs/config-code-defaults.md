@@ -383,11 +383,26 @@ This document captures all configuration settings defined in the Go code as sour
 | `role` | `all` | Role | Default() L492 | Node role (all/insert/select) | YAML only |
 | `topology` | `auto` | Topology | Default() L493 | Topology detection mode | YAML only |
 | `hot_boundary` | (empty) | string | struct field (48) | Hot/cold data boundary duration | YAML only |
-| `profile` | (empty) | Profile | struct field (43) | Performance profile (balanced/max-performance/max-durability/max-cost-savings/dev) | YAML only |
+| `profile` | `balanced` | Profile | struct field (43) | Performance profile (balanced/max-performance/max-durability/max-cost-savings/dev) | YAML only |
 
 ---
 
-## 16. Computed Defaults (from helper functions)
+## 16. Profile Enum Configuration
+
+Performance/durability profile selection. Default profile is `balanced`. Profile definitions are in `internal/config/profile.go` (lines 8-87).
+
+| Setting Name | Code Default | Data Type | Source | Purpose | Runtime Override |
+|---|---|---|---|---|---|
+| `profile` | `balanced` | enum | Default() L86 | Default profile: balanced throughput and durability | PROFILE |
+| `profile.balanced` | — | enum value | profile.go L11 | Default profile: balanced throughput and durability | — |
+| `profile.max-performance` | — | enum value | profile.go L12 | Profile: maximize throughput, relax durability | — |
+| `profile.max-durability` | — | enum value | profile.go L13 | Profile: prioritize durability over throughput | — |
+| `profile.max-cost-savings` | — | enum value | profile.go L14 | Profile: minimize resource usage and cost | — |
+| `profile.dev` | — | enum value | profile.go L15 | Profile: development mode with relaxed constraints | — |
+
+---
+
+## 17. Computed Defaults (from helper functions)
 
 These values are derived from code when string values are not set:
 
