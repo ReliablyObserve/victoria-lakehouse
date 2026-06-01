@@ -257,6 +257,45 @@ Multi-AZ deployments incur cross-AZ bandwidth charges.
 - Query patterns: [performance.md](./performance.md)
 - Cross-AZ costs: [cross-az-optimization.md](./cross-az-optimization.md)
 
+### Cost Composition by Percentage
+
+The shift from compute-dominated at small scales to storage-dominated at large scales explains why Lakehouse wins at PB scale.
+
+#### 500 GB/day, 1 year retention (Multi-AZ)
+
+| Cost Category | Lakehouse | VL/VT EBS | Hybrid | Loki+Tempo |
+|---------------|-----------|-----------|--------|-----------|
+| Storage | $688/mo | $796/mo | $753/mo | $1,484/mo |
+| Compute (vCPU) | $414/mo | $1,728/mo | $1,935/mo | $3,813/mo |
+| Network | $180/mo | $155/mo | $300/mo | $370/mo |
+| **Total** | **$1,282/mo** | **$2,679/mo** | **$2,988/mo** | **$5,667/mo** |
+| **Percentage breakdown** | | | | |
+| Storage % | 54% | 30% | 25% | 26% |
+| Compute % | 32% | 65% | 65% | 67% |
+| Network % | 14% | 6% | 10% | 7% |
+
+**Key insight:** At 500 GB/day, compute dominates for VL/VT (64%), making it competitive with Lakehouse despite worse per-raw-GB cost. Lakehouse's network cost (14%) is high because S3 request cost is significant at this scale. Hybrid's dual infrastructure doubles compute cost, making it most expensive option until retention exceeds 8 months.
+
+#### 1 PB/month, 1 year retention (Multi-AZ)
+
+| Cost Category | Lakehouse | VL/VT EBS | Hybrid | Loki+Tempo |
+|---------------|-----------|-----------|--------|-----------|
+| Storage | $3.77M/mo | $6.29M/mo | $4.46M/mo | $8.14M/mo |
+| Compute | $8.4K/mo | $14K/mo | $20K/mo | $12K/mo |
+| Network | $1.97M/mo | $5K/mo | $1.98M/mo | $2.5M/mo |
+| **Total** | **$5.75M/mo** | **$6.31M/mo** | **$6.46M/mo** | **$10.65M/mo** |
+| **Percentage breakdown** | | | | |
+| Storage % | 65.6% | 99.7% | 69.0% | 76.4% |
+| Compute % | 0.1% | 0.2% | 0.3% | 0.1% |
+| Network % | 34.3% | 0.1% | 30.7% | 23.5% |
+
+**Key insight:** At PB scale, storage dominates all solutions (65-100%). Lakehouse's 6.1x compression + $0.023/GB S3 beats VL/VT's $0.08/GB × 3-AZ EBS ($0.24/GB total), saving $540K/mo. Network cost (S3 requests and queries) becomes significant (34%) and explains why direct S3 analytics (DuckDB, Spark) provides additional value — every query avoids expensive cross-AZ bandwidth and replication overhead.
+
+**Verification notes:**
+- All percentages verified against cost totals
+- Discrepancies from README (README shows $1,283/mo vs $1,282/mo calculated) due to rounding — within <0.1%
+- 1 PB calculation uses 1 PB ingested per 30-day month; if your month is different, scale proportionally
+
 ## Recommendation
 
 | Scenario | Recommendation |
