@@ -93,6 +93,12 @@ var (
 	InsertBytesUploaded    = NewCounter("lakehouse_insert_bytes_uploaded_total")
 	InsertPartitionsActive = NewGauge("lakehouse_insert_partitions_active")
 	InsertWALBytes         = NewGauge("lakehouse_insert_wal_bytes")
+
+	// VT emits internal "index" log rows alongside span data (trace-ID index
+	// stream and service-graph stream). Lakehouse drops them at insert time
+	// since they aren't OTLP span data; this counter, keyed by kind, exposes
+	// how many we discard so a missing-trace-index regression is visible.
+	VTInternalRowsDropped = NewCounterVec("lakehouse_vt_internal_rows_dropped_total", "kind")
 )
 
 // Prefetch metrics

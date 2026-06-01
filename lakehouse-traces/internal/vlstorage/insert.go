@@ -9,7 +9,16 @@ import (
 	vtinsertutil "github.com/VictoriaMetrics/VictoriaTraces/app/vtinsert/insertutil"
 	otelpb "github.com/VictoriaMetrics/VictoriaTraces/lib/protoparser/opentelemetry/pb"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+)
+
+// VT-internal row kinds reported by vtInternalRowKind. Used as the "kind"
+// label of metrics.VTInternalRowsDropped so an operator can tell which of
+// VT's internal streams is being discarded by the cold-tier insert path.
+const (
+	vtInternalKindTraceIDIdx   = "trace_id_idx"
+	vtInternalKindServiceGraph = "service_graph"
 )
 
 // TraceWriter is the subset of parquets3.Storage needed for the insert path.
@@ -61,7 +70,8 @@ func logRowsToTraceRows(lr *logstorage.LogRows) []schema.TraceRow {
 	rows := make([]schema.TraceRow, 0, n)
 
 	lr.ForEachRow(func(_ uint64, r *logstorage.InsertRow) {
-		if isVTIndexRow(r) {
+		if kind := vtInternalRowKind(r); kind != "" {
+			metrics.VTInternalRowsDropped.Inc(kind)
 			return
 		}
 
@@ -93,17 +103,24 @@ func logRowsToTraceRows(lr *logstorage.LogRows) []schema.TraceRow {
 	return rows
 }
 
-// isVTIndexRow detects VT-internal index entries (trace_id_idx, service graph)
-// that should not be stored as trace spans.
-func isVTIndexRow(r *logstorage.InsertRow) bool {
+// vtInternalRowKind classifies VT-internal index entries (trace_id_idx,
+// service-graph) that must not be persisted as trace spans. Returns the
+// metric "kind" label for the detected stream, or "" for normal spans.
+//
+// VT's vtinsert pushes these as ordinary log rows through the same insert
+// pipeline as spans; they belong to VT's own query path (`/select/tempo`)
+// and would otherwise turn into degenerate spans with empty trace_id when
+// mapped into TraceRow.
+func vtInternalRowKind(r *logstorage.InsertRow) string {
 	for _, f := range r.Fields {
 		switch f.Name {
-		case otelpb.TraceIDIndexFieldName, otelpb.TraceIDIndexStreamName,
-			otelpb.ServiceGraphStreamName:
-			return true
+		case otelpb.TraceIDIndexFieldName, otelpb.TraceIDIndexStreamName:
+			return vtInternalKindTraceIDIdx
+		case otelpb.ServiceGraphStreamName:
+			return vtInternalKindServiceGraph
 		}
 	}
-	return false
+	return ""
 }
 
 // unmarshalStreamTags unmarshals canonical stream tags into dst.
