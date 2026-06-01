@@ -296,6 +296,52 @@ The shift from compute-dominated at small scales to storage-dominated at large s
 - Discrepancies from README (README shows $1,283/mo vs $1,282/mo calculated) due to rounding — within <0.1%
 - 1 PB calculation uses 1 PB ingested per 30-day month; if your month is different, scale proportionally
 
+## Measurement Sources and Methodology
+
+All numbers in this section are derived from one of three sources: benchmarked, configured, or measured. We distinguish between them to help readers weight the data appropriately.
+
+### Benchmarked (from test runs)
+
+- **ZSTD compression ratios:** Real E2E ingest data (logs + traces) compressed and measured. See [zstd-compression-benchmark.md](./zstd-compression-benchmark.md).
+- **Throughput (MB/s per vCPU):** Controlled load tests with measured CPU and ingest rates. See [performance.md](./performance.md).
+- **Query latency:** Production queries replayed on test data. See [performance.md](./performance.md).
+
+### Configured (from defaults and recommendations)
+
+- **CPU/memory pod sizing:** Helm chart [requests and limits](../../charts/victoria-lakehouse/values.yaml).
+- **Pod counts:** Recommended sizing from [scaling.md](./scaling.md) and [deployment-architecture.md](./deployment-architecture.md).
+- **Cache tuning:** [configuration.md](./configuration.md).
+
+### Measured (from production operations)
+
+- **Actual cluster resource utilization:** Observability dashboards from [observability.md](./observability.md).
+- **S3 request patterns:** CloudWatch metrics from real deployments (if available — otherwise estimated from query patterns).
+- **Network traffic breakdown:** VPC Flow Logs analysis (if available — otherwise estimated).
+
+### Estimation Method for Network Traffic
+
+When direct measurement unavailable, we estimate:
+
+1. **Ingest traffic to S3:** Raw bytes / compression ratio
+2. **Query traffic from S3:** Number of queries × average bytes returned
+3. **Cross-AZ traffic:** Replication factor × data volume per day
+
+**Example:** 500 GB/day ingest, 6.1x compression = 82 GB/day S3 PUTs. If 10 daily queries fetch 10 GB each, that's 100 GB/day GETs = 3,000 GB/month GET requests = 3M S3 GET requests × $0.0004/1000 = $1,200/month.
+
+### Verification Against External Sources
+
+- **VL/VT CPU/memory:** Cross-referenced with [VictoriaLogs documentation](https://docs.victoriametrics.com/victorialogs/), [performance tuning](https://docs.victoriametrics.com/victorialogs/#performance-tuning).
+- **Loki/Tempo CPU/memory:** Cross-referenced with [Loki operator docs](https://grafana.com/docs/loki/latest/operations/loki-canary/), [Tempo scaling guide](https://grafana.com/docs/tempo/latest/configuration/).
+- **AWS pricing:** [AWS S3 pricing](https://aws.amazon.com/s3/pricing/), [EC2 pricing](https://aws.amazon.com/ec2/pricing/on-demand/) (us-east-1, as of June 2026).
+
+### Known Limitations
+
+- **Compression ratios:** Measured on representative datasets; your data may compress differently (more structured = better; more random = worse).
+- **Query patterns:** Assumed 10 point queries + 5 scans per day; adjust proportionally for your workload.
+- **Cross-AZ traffic:** Estimated; actual depends on pod distribution and failure patterns.
+- **Pod sizing:** Helm defaults assume HA (2+ pods). Single-pod deployments reduce cost by ~50% but lose high availability.
+- **S3 request costs:** Extremely low at 500 GB scale (<$5/mo) but become significant at PB scale. Monitor actual CloudWatch metrics for your workload.
+
 ## Recommendation
 
 | Scenario | Recommendation |
