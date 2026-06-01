@@ -209,20 +209,59 @@ func extractTraceIDFromIndexQuery(queryStr string) string {
 	return rest[:end]
 }
 
-func (a *Adapter) GetFieldNames(qctx *logstorage.QueryContext) ([]logstorage.ValueWithHits, error) {
-	return a.store.GetFieldNames(qctx.Context, qctx.TenantIDs, qctx.Query)
+// GetFieldNames / GetFieldValues / GetStreamFieldNames / GetStreamFieldValues
+// gained a `filter string` parameter in VT v0.9.2 (upstream commit on
+// app/vtstorage/main.go that renamed the local/netstorage call signatures).
+// The shared root-module storage.Storage interface does not carry the filter
+// — applying the substring filter is the adapter's responsibility, mirroring
+// the logs-side adapter (internal/vlstorage/vlstorage.go filterValuesBySubstring).
+func (a *Adapter) GetFieldNames(qctx *logstorage.QueryContext, filter string) ([]logstorage.ValueWithHits, error) {
+	results, err := a.store.GetFieldNames(qctx.Context, qctx.TenantIDs, qctx.Query)
+	if err != nil {
+		return nil, err
+	}
+	return filterValuesBySubstring(results, filter), nil
 }
 
-func (a *Adapter) GetFieldValues(qctx *logstorage.QueryContext, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
-	return a.store.GetFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
+func (a *Adapter) GetFieldValues(qctx *logstorage.QueryContext, fieldName, filter string, limit uint64) ([]logstorage.ValueWithHits, error) {
+	results, err := a.store.GetFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
+	if err != nil {
+		return nil, err
+	}
+	return filterValuesBySubstring(results, filter), nil
 }
 
-func (a *Adapter) GetStreamFieldNames(qctx *logstorage.QueryContext) ([]logstorage.ValueWithHits, error) {
-	return a.store.GetStreamFieldNames(qctx.Context, qctx.TenantIDs, qctx.Query)
+func (a *Adapter) GetStreamFieldNames(qctx *logstorage.QueryContext, filter string) ([]logstorage.ValueWithHits, error) {
+	results, err := a.store.GetStreamFieldNames(qctx.Context, qctx.TenantIDs, qctx.Query)
+	if err != nil {
+		return nil, err
+	}
+	return filterValuesBySubstring(results, filter), nil
 }
 
-func (a *Adapter) GetStreamFieldValues(qctx *logstorage.QueryContext, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
-	return a.store.GetStreamFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
+func (a *Adapter) GetStreamFieldValues(qctx *logstorage.QueryContext, fieldName, filter string, limit uint64) ([]logstorage.ValueWithHits, error) {
+	results, err := a.store.GetStreamFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
+	if err != nil {
+		return nil, err
+	}
+	return filterValuesBySubstring(results, filter), nil
+}
+
+// filterValuesBySubstring narrows results to entries whose Value contains
+// filter. Empty filter is a no-op. Matches the substring semantics VT v0.9.2
+// applies in app/vtstorage/main.go's GetFieldNames family (which the upstream
+// docs describe as "values containing the filter substring").
+func filterValuesBySubstring(results []logstorage.ValueWithHits, filter string) []logstorage.ValueWithHits {
+	if filter == "" {
+		return results
+	}
+	filtered := make([]logstorage.ValueWithHits, 0, len(results))
+	for _, v := range results {
+		if strings.Contains(v.Value, filter) {
+			filtered = append(filtered, v)
+		}
+	}
+	return filtered
 }
 
 func (a *Adapter) GetStreams(qctx *logstorage.QueryContext, limit uint64) ([]logstorage.ValueWithHits, error) {

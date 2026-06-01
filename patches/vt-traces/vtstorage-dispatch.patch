@@ -1,6 +1,8 @@
---- a/app/vtstorage/main.go	2026-05-26 14:36:36
-+++ b/app/vtstorage/main.go	2026-05-26 14:37:29
-@@ -563,6 +563,10 @@
+diff --git a/app/vtstorage/main.go b/app/vtstorage/main.go
+index cc07666..c670511 100644
+--- a/app/vtstorage/main.go
++++ b/app/vtstorage/main.go
+@@ -565,6 +565,10 @@ func isTimestampOutOfRetention(timestamp int64) bool {
  
  // RunQuery runs the given qctx and calls writeBlock for the returned data blocks
  func RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error {
@@ -11,47 +13,47 @@
  	qOpt, offset, limit := qctx.Query.GetLastNResultsQuery()
  	if qOpt != nil {
  		qctxOpt := qctx.WithQuery(qOpt)
-@@ -581,6 +585,9 @@
- 
- // GetFieldNames executes qctx and returns field names seen in results.
- func GetFieldNames(qctx *logstorage.QueryContext) ([]logstorage.ValueWithHits, error) {
+@@ -585,6 +589,9 @@ func RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBloc
+ //
+ // If the filter isn't empty, then only the field names containing the filter substing are returned.
+ func GetFieldNames(qctx *logstorage.QueryContext, filter string) ([]logstorage.ValueWithHits, error) {
 +	if externalStorage != nil {
-+		return externalStorage.GetFieldNames(qctx)
++		return externalStorage.GetFieldNames(qctx, filter)
 +	}
  	if localStorage != nil {
- 		return localStorage.GetFieldNames(qctx)
+ 		return localStorage.GetFieldNames(qctx, filter)
  	}
-@@ -591,6 +598,9 @@
+@@ -597,6 +604,9 @@ func GetFieldNames(qctx *logstorage.QueryContext, filter string) ([]logstorage.V
  //
  // If limit > 0, then up to limit unique values are returned.
- func GetFieldValues(qctx *logstorage.QueryContext, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
+ func GetFieldValues(qctx *logstorage.QueryContext, fieldName, filter string, limit uint64) ([]logstorage.ValueWithHits, error) {
 +	if externalStorage != nil {
-+		return externalStorage.GetFieldValues(qctx, fieldName, limit)
++		return externalStorage.GetFieldValues(qctx, fieldName, filter, limit)
 +	}
  	if localStorage != nil {
- 		return localStorage.GetFieldValues(qctx, fieldName, limit)
+ 		return localStorage.GetFieldValues(qctx, fieldName, filter, limit)
  	}
-@@ -599,6 +609,9 @@
- 
- // GetStreamFieldNames executes the given qctx and returns stream field names seen in results.
- func GetStreamFieldNames(qctx *logstorage.QueryContext) ([]logstorage.ValueWithHits, error) {
+@@ -607,6 +617,9 @@ func GetFieldValues(qctx *logstorage.QueryContext, fieldName, filter string, lim
+ //
+ // If the filter is non-empty, then only the field names containing the filter substring are returned.
+ func GetStreamFieldNames(qctx *logstorage.QueryContext, filter string) ([]logstorage.ValueWithHits, error) {
 +	if externalStorage != nil {
-+		return externalStorage.GetStreamFieldNames(qctx)
++		return externalStorage.GetStreamFieldNames(qctx, filter)
 +	}
  	if localStorage != nil {
- 		return localStorage.GetStreamFieldNames(qctx)
+ 		return localStorage.GetStreamFieldNames(qctx, filter)
  	}
-@@ -609,6 +622,9 @@
+@@ -619,6 +632,9 @@ func GetStreamFieldNames(qctx *logstorage.QueryContext, filter string) ([]logsto
  //
  // If limit > 0, then up to limit unique stream field values are returned.
- func GetStreamFieldValues(qctx *logstorage.QueryContext, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
+ func GetStreamFieldValues(qctx *logstorage.QueryContext, fieldName, filter string, limit uint64) ([]logstorage.ValueWithHits, error) {
 +	if externalStorage != nil {
-+		return externalStorage.GetStreamFieldValues(qctx, fieldName, limit)
++		return externalStorage.GetStreamFieldValues(qctx, fieldName, filter, limit)
 +	}
  	if localStorage != nil {
- 		return localStorage.GetStreamFieldValues(qctx, fieldName, limit)
+ 		return localStorage.GetStreamFieldValues(qctx, fieldName, filter, limit)
  	}
-@@ -619,6 +635,9 @@
+@@ -629,6 +645,9 @@ func GetStreamFieldValues(qctx *logstorage.QueryContext, fieldName, filter strin
  //
  // If limit > 0, then up to limit unique streams are returned.
  func GetStreams(qctx *logstorage.QueryContext, limit uint64) ([]logstorage.ValueWithHits, error) {
@@ -61,7 +63,7 @@
  	if localStorage != nil {
  		return localStorage.GetStreams(qctx, limit)
  	}
-@@ -629,6 +648,9 @@
+@@ -639,6 +658,9 @@ func GetStreams(qctx *logstorage.QueryContext, limit uint64) ([]logstorage.Value
  //
  // If limit > 0, then up to limit unique streamIDs are returned.
  func GetStreamIDs(qctx *logstorage.QueryContext, limit uint64) ([]logstorage.ValueWithHits, error) {
@@ -71,7 +73,7 @@
  	if localStorage != nil {
  		return localStorage.GetStreamIDs(qctx, limit)
  	}
-@@ -673,6 +695,9 @@
+@@ -683,6 +705,9 @@ func DeleteActiveTasks(ctx context.Context) ([]*logstorage.DeleteTask, error) {
  
  // GetTenantIDs returns tenantIDs from the storage by the given start and end.
  func GetTenantIDs(ctx context.Context, start, end int64) ([]logstorage.TenantID, error) {
