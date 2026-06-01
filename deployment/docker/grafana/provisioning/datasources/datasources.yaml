@@ -188,15 +188,14 @@ datasources:
     jsonData:
       maxLines: 1000
       derivedFields:
-        # Route trace_id clicks to the Jaeger fan-out (hot+cold) instead of
-        # Tempo. Upstream VictoriaTraces only routes the v2 path
-        # /select/tempo/api/v2/traces/<id>; Grafana's Tempo datasource sends
-        # the v1 path /api/traces/<id> for "View Trace", so the lookup
-        # returns HTTP 200 / 0 bytes against Tempo. The upstream-documented
-        # trace-by-ID endpoint is the Jaeger one
-        # (/select/jaeger/api/traces/<id>), which works in both hot and cold
-        # tiers.
-        - datasourceUid: victoriatraces-global
+        # Route trace_id clicks to Tempo VT Hot. The hot-tier Tempo path was
+        # not viable before VictoriaTraces v0.9.2 — earlier releases leaked
+        # trace_id_idx_stream entries into search results, returning empty
+        # trace_id values and breaking Grafana's "View Trace" affordance.
+        # v0.9.2 fixes that (release note: "exclude unnecessary streams
+        # during trace search"), so the Tempo /api/v2/traces/<id> path now
+        # returns real spans from hot tier.
+        - datasourceUid: tempo-vt-hot
           matcherRegex: 'trace_id=(\w+)'
           name: traceID
           url: "$${__value.raw}"
@@ -209,13 +208,12 @@ datasources:
     jsonData:
       maxLines: 1000
       derivedFields:
-        # Cold-only stays cold-only — trace-id clicks resolve against the
-        # Lakehouse Jaeger datasource (S3 Parquet cold tier). Use a global
-        # datasource if you want hot fan-out for fresh trace IDs. Upstream
-        # VT's documented trace-by-ID endpoint is the Jaeger one
-        # (/select/jaeger/api/traces/<id>) — Tempo's v1 path is not routed
-        # by upstream VT, only /api/v2/traces/<id> is.
-        - datasourceUid: victoria-lakehouse-traces
+        # Cold-tier trace_id clicks drilldown to Tempo on Lakehouse cold.
+        # Lakehouse-traces serves /select/tempo/api/v2/traces/<id> from the
+        # embedded `_trace_idx` Parquet footer index added in PR #105 — the
+        # lookup never opens a row group, so cold-tier drilldown latency
+        # matches hot. Pure-tier alignment preserved: cold log → cold trace.
+        - datasourceUid: tempo-lh-cold
           matcherRegex: 'trace_id=(\w+)'
           name: traceID
           url: "$${__value.raw}"
