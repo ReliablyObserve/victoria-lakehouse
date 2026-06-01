@@ -102,6 +102,20 @@ datasources:
   # Tempo API — backed by VictoriaTraces for Loki→trace correlation
   # =========================================================================
 
+  # VT-Tempo datasource hardening (applies to all three Tempo entries below):
+  #   * nodeGraph.enabled=false   — VT exposes no service-graph endpoint, so
+  #                                 the Tempo plugin would otherwise issue 404
+  #                                 /api/node-graph requests on every trace view.
+  #   * serviceMap omitted        — leaving datasourceUid empty triggers
+  #                                 phantom /api/metrics calls from the plugin.
+  #   * streamingEnabled.{search,query}=false — VT has no Tempo gRPC stream-
+  #                                 over-http surface; the plugin would log
+  #                                 stream-connect errors on every search.
+  #   * spanBar.type="None"       — parity with the Jaeger sibling datasources
+  #                                 so opening a trace from a Loki/VL log line
+  #                                 renders identically regardless of which
+  #                                 path Grafana resolves it through.
+
   - name: "Tempo via VictoriaTraces (Hot+Cold)"
     type: tempo
     uid: tempo-global
@@ -114,6 +128,13 @@ datasources:
         spanEndTimeShift: "1h"
         filterByTraceID: true
         filterBySpanID: false
+      nodeGraph:
+        enabled: false
+      streamingEnabled:
+        search: false
+        query: false
+      spanBar:
+        type: "None"
 
   - name: "Tempo VT Hot (Disk 24h)"
     type: tempo
@@ -127,6 +148,13 @@ datasources:
         spanEndTimeShift: "1h"
         filterByTraceID: true
         filterBySpanID: false
+      nodeGraph:
+        enabled: false
+      streamingEnabled:
+        search: false
+        query: false
+      spanBar:
+        type: "None"
 
   - name: "Tempo LH Cold (S3 Parquet)"
     type: tempo
@@ -140,6 +168,13 @@ datasources:
         spanEndTimeShift: "1h"
         filterByTraceID: true
         filterBySpanID: false
+      nodeGraph:
+        enabled: false
+      streamingEnabled:
+        search: false
+        query: false
+      spanBar:
+        type: "None"
 
   # =========================================================================
   # Loki API — hot+cold routing via loki-vl-proxy
