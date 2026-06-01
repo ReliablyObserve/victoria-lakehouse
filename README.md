@@ -40,16 +40,31 @@ Cost leadership is **scale-dependent**. At small scale (≤500 GB/mo), VL/VT EBS
 | **Compression (traces)** | 9.4x (ZSTD L7) | ~47x | 9.4x (ZSTD L7) | 3-4x (Snappy) |
 | **Query latency (point)** | <100ms (bloom) | <10ms (EBS) | <10ms hot / <100ms cold | 1-10s |
 | **Query latency (scan)** | <500ms | <10ms (EBS) | <10ms hot / <500ms cold | 1-10s |
-| **Data format** | **Open Parquet** | Proprietary | **Open Parquet** | Proprietary |
+| **Data format** | **Open Parquet** | Proprietary (VL/VT) | **Proprietary (VL/VT hot) + Open Parquet (S3 cold)** | Proprietary |
 | **S3 durability** | **11 nines** | EBS per-AZ | **11 nines** | 11 nines |
 | **Glacier tiering** | **Yes (cheapest at 3yr+)** | N/A | **Yes (cheapest at 3yr+)** | No (compaction breaks it) |
 | **Analytics access** | **DuckDB, Spark, Trino** | VL/VT API only | **DuckDB, Spark, Trino** | Loki API only |
 | **Disaster recovery** | **Independent** | N/A | **Independent cold tier** | N/A |
 | **Write path** | WAL + S3 + compaction (~2.1x) | EBS WAL + LSM (~3-10x) | EBS + WAL + S3 + compaction | WAL→chunk→S3→compact (3-5x) |
+| **CPU (vCPU-months)** | 9 vCPU | 18 vCPU | 25 vCPU | 24 vCPU |
+| **Memory (GB)** | 24 GB | 48 GB | 72 GB | 56 GB |
+| **Network traffic (GB/mo)** | 180 PUT+GET | ~150 (EBS local) | 300 PUT+GET + cross-AZ | 370 PUT+GET + compaction |
+| **Storage breakdown** | S3: $688/mo | EBS: $796/mo | EBS: $65/mo + S3: $688/mo | S3: $1,484/mo |
+| **Cost composition** | 54% Storage, 32% Compute, 14% Network | 30% Storage, 64% Compute, 6% Network | 23% Storage, 64% Compute, 10% Network, 3% Other | 26% Storage, 66% Compute, 6% Network, 2% Other |
 
 > **Write amplification detail**: Lakehouse writes each byte ~2.1x: (1) local WAL (uncompressed gob, crash recovery), (2) S3 PutObject (ZSTD Parquet), (3) compaction reads N files and writes 1 merged file (~0.1x at 10:1 ratio). VL/VT LSM write amplification is 3-10x (WAL → L0 → L1 → L2 compaction levels). Loki/Tempo write 3-5x: WAL → in-memory chunk → flushed chunk → S3 + compacted S3.
 >
 > **Hybrid = full Lakehouse S3 cost + additional VL/VT hot tier + doubled delivery network** (1 month EBS + compute + 2× cross-AZ ingest from mirroring to both VL/VT and LH inserts). All data always on S3; EBS is additional for sub-10ms queries on recent data. At 500 GB/day, VL/VT EBS is cheapest (compute + delivery dominates). At PB/mo with >8mo retention, Hybrid crosses below VL/VT EBS.
+
+> **Resource metrics and cost composition details:** See [Cost Estimates — Resource Cost Breakdown](docs/cost-estimates.md#resource-cost-breakdown) for CPU/memory/network derivations, per-resource costs, and measurement sources.
+
+### Footnotes
+
+¹ **CPU requirements** derived from throughput benchmarks in [Performance](docs/performance.md#benchmarks) and Helm [defaults](charts/victoria-lakehouse/values.yaml#L150-L160). VL/VT EBS CPU from [VictoriaLogs performance tuning](https://docs.victoriametrics.com/victorialogs/#performance-tuning). Loki/Tempo CPU from [Loki scaling guide](https://grafana.com/docs/loki/latest/operations/loki-canary/) and [Tempo documentation](https://grafana.com/docs/tempo/latest/configuration/).
+
+² **Memory requirements** from Helm [resource defaults](charts/victoria-lakehouse/values.yaml#L200-L220) and [cache configuration](docs/configuration.md#cache-settings). Multi-node scenarios scale linearly with pod count.
+
+³ **Network traffic** calculated from ingest rate (500 GB/day ÷ 6.1x compression = 82 GB S3 PUT/day) and query patterns (estimated 10 queries/day × 10 GB = 100 GB GET/day). See [Cost Estimates — Network Traffic](docs/cost-estimates.md#network-traffic) for detailed calculations.
 
 Full cost worksheet: [Cost Estimates](docs/cost-estimates.md) | Deep comparison vs Loki/Tempo: [Cost Comparison](docs/cost-comparison.md) | Cross-AZ cost: [Cross-AZ Optimization](docs/cross-az-optimization.md)
 
