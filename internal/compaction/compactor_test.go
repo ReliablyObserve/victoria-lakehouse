@@ -13,6 +13,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
 )
 
 func makeTestParquet(t *testing.T, rows []schema.LogRow) []byte {
@@ -329,6 +330,107 @@ func TestCompactor_MergeTraceRows(t *testing.T) {
 	}
 	if partFiles[0].CompactionLevel != 1 {
 		t.Errorf("expected compaction level 1, got %d", partFiles[0].CompactionLevel)
+	}
+}
+
+// TestCompactor_PreservesTraceIndexFooter is the regression that closes
+// the cold-tier trace-by-ID fast path across compaction. Before this
+// fix, writeCompactedTraces dropped the `_trace_idx` Parquet KV
+// metadata, so Storage.LookupTraceIndex returned a miss for every file
+// the compactor produced — every cold trace-by-ID lookup degraded to a
+// full span scan once the original files merged. We assert the index
+// survives the round-trip with the same per-trace (start, end) bounds.
+func TestCompactor_PreservesTraceIndexFooter(t *testing.T) {
+	pool := newMockPool()
+	m := manifest.New("test-bucket", "traces/")
+
+	const partition = "dt=2026-05-04/hour=10"
+	const fp = "trace-fp"
+
+	// Two source files. Each carries a different trace; the compactor
+	// must emit a merged file whose footer index covers both.
+	src1 := []schema.TraceRow{
+		{TimestampUnixNano: 1000, TraceID: "trace-alpha", SpanID: "a1", SpanName: "op1", ServiceName: "svc", StartTimeUnixNano: 1000, DurationNs: 500},
+	}
+	src2 := []schema.TraceRow{
+		{TimestampUnixNano: 2000, TraceID: "trace-beta", SpanID: "b1", SpanName: "op2", ServiceName: "svc", StartTimeUnixNano: 2000, DurationNs: 750},
+	}
+	data1 := makeTestTraceParquet(t, src1)
+	data2 := makeTestTraceParquet(t, src2)
+	const key1 = "traces/dt=2026-05-04/hour=10/src-001.parquet"
+	const key2 = "traces/dt=2026-05-04/hour=10/src-002.parquet"
+	if err := pool.Upload(context.Background(), key1, data1); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Upload(context.Background(), key2, data2); err != nil {
+		t.Fatal(err)
+	}
+
+	fi1 := manifest.FileInfo{Key: key1, Size: int64(len(data1)), RowCount: 1, MinTimeNs: 1000, MaxTimeNs: 1000, SchemaFingerprint: fp}
+	fi2 := manifest.FileInfo{Key: key2, Size: int64(len(data2)), RowCount: 1, MinTimeNs: 2000, MaxTimeNs: 2000, SchemaFingerprint: fp}
+	m.AddFile(partition, fi1)
+	m.AddFile(partition, fi2)
+
+	compactor := NewCompactor(CompactorConfig{
+		Pool: pool, Manifest: m, Prefix: "traces/", Mode: config.ModeTraces,
+		RowGroupSize: 1000, CompressionLevel: 7,
+	})
+
+	result, err := compactor.Compact(context.Background(), partition, []manifest.FileInfo{fi1, fi2}, 0)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	pool.mu.Lock()
+	out, ok := pool.uploaded[result.OutputFile]
+	pool.mu.Unlock()
+	if !ok {
+		t.Fatalf("output file %q not in pool", result.OutputFile)
+	}
+
+	// Open the compacted file via standard parquet-go and pull the KV
+	// metadata. This is exactly what an external tool (duckdb, pyarrow,
+	// parquet-tools) would do — proves the file is still pure Parquet.
+	pf, err := parquet.OpenFile(bytes.NewReader(out), int64(len(out)))
+	if err != nil {
+		t.Fatalf("parquet.OpenFile: %v", err)
+	}
+	meta := pf.Metadata()
+	if meta == nil {
+		t.Fatal("compacted file has nil metadata")
+	}
+	var idxBlob string
+	for _, kv := range meta.KeyValueMetadata {
+		if kv.Key == traceindex.MetadataKey {
+			idxBlob = kv.Value
+			break
+		}
+	}
+	if idxBlob == "" {
+		t.Fatalf("compacted file is missing %q KV metadata — trace-by-ID fast path will miss on this file", traceindex.MetadataKey)
+	}
+
+	entries, err := traceindex.Unmarshal([]byte(idxBlob))
+	if err != nil {
+		t.Fatalf("traceindex.Unmarshal: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("merged index has %d entries, want 2 (alpha + beta)", len(entries))
+	}
+	got := map[string]traceindex.Entry{}
+	for _, e := range entries {
+		got[e.TraceID] = e
+	}
+	alpha, okA := got["trace-alpha"]
+	if !okA || alpha.StartNs != 1000 || alpha.EndNs != 1500 {
+		t.Errorf("trace-alpha index = %+v, want {Start:1000 End:1500}", alpha)
+	}
+	beta, okB := got["trace-beta"]
+	if !okB || beta.StartNs != 2000 || beta.EndNs != 2750 {
+		t.Errorf("trace-beta index = %+v, want {Start:2000 End:2750}", beta)
+	}
+	if alpha.Partition != traceindex.Partition("trace-alpha") {
+		t.Errorf("alpha partition = %d, want %d (must match VT's xxhash%%1024)", alpha.Partition, traceindex.Partition("trace-alpha"))
 	}
 }
 
