@@ -9,6 +9,105 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **VictoriaTraces parity milestone — cold-tier Tempo `/api/v2/traces/<id>`
+  fast path + Loki → Tempo drilldown (PR #105)** — closes the
+  trace-by-ID feature gap between upstream VictoriaTraces and the
+  lakehouse cold tier. Three cooperating layers:
+
+  1. **Write-side hygiene + observability**
+     (`lakehouse-traces/internal/vlstorage/insert.go`,
+     `internal/metrics/lakehouse.go`). VT's vtinsert pipeline emits
+     internal index rows alongside spans — `trace_id_idx_stream` rows
+     carrying per-trace (start, end) bounds, and `trace_service_graph_stream`
+     rows carrying service-graph edges. Both are part of VT's own query
+     path and must not become degenerate spans with empty `trace_id`
+     in cold Parquet. The existing detector (`vtInternalRowKind`) now
+     returns the metric `kind` label, and a new
+     `lakehouse_vt_internal_rows_dropped_total{kind=trace_id_idx|service_graph}`
+     counter exposes how many we discard so a future regression — VT
+     renaming a field or a new ingest path bypassing the filter —
+     becomes visible from `/metrics` immediately.
+
+  2. **`_trace_idx` Parquet footer fast path**
+     (`lakehouse-traces/internal/storage/parquets3/trace_index_lookup.go`,
+     `lakehouse-traces/internal/vtstorage_adapter/trace_index_fastpath.go`,
+     `internal/traceindex/` — a new shared package). Every trace Parquet
+     file written by the cold-tier batch writer already carries a
+     compact per-trace `(trace_id, partition, start_ns, end_ns)` summary
+     in the standard Parquet `FileMetaData.key_value_metadata` slot —
+     same documented field Apache Iceberg / Delta / Hudi use for their
+     own table metadata, so duckdb, pyarrow `pq.read_metadata`, and
+     `parquet-tools meta` all read it cleanly. The vtstorage adapter
+     now intercepts VT's `{trace_id_idx_stream=<bucket>} AND trace_id_idx:=<id>`
+     stats query *before* the previous scan-rewrite path, calls
+     `Storage.LookupTraceIndex(ctx, traceID)`, and emits a synthetic
+     `DataBlock` with the three columns VT's `findTraceIDTimeSplitTimeRange`
+     reads (`_time`, `start_time`, `end_time`). No row group is ever
+     opened. Span scan remains as the fall-through for files whose
+     footer is unreachable. The new
+     `lakehouse_trace_index_lookups_total{result=hit|miss|error}` metric
+     makes the hit ratio observable.
+
+  3. **Compaction parity for the footer index**
+     (`internal/compaction/compactor.go`,
+     `internal/traceindex/traceindex.go`). Before this milestone,
+     `writeCompactedTraces` dropped `_trace_idx` on every merge,
+     collapsing cold-tier trace-by-ID back to a full span scan as soon
+     as compaction ran. The index codec is now hoisted to the shared
+     `internal/traceindex/` package so the compactor and the writer
+     share one source of truth, and the compactor passes the recomputed
+     index through `parquet.KeyValueMetadata(traceindex.MetadataKey, …)`.
+     A regression test (`TestCompactor_PreservesTraceIndexFooter`) opens
+     the merged Parquet via plain `parquet.OpenFile` — proving the file
+     is still 100% spec-compliant — and asserts both per-trace bounds
+     plus the VT-compatible `xxhash64(traceID) % 1024` partition value
+     survive the round-trip.
+
+  4. **Upstream bump: VictoriaTraces v0.9.2 + VictoriaLogs v1.50.0**
+     (`Makefile`, `lakehouse-traces/go.mod`, `patches/{vt-traces,vl-traces}/`,
+     `deployment/docker/docker-compose-{e2e,benchmark}.yml`,
+     `tests/parity/docker-compose.yml`). v0.9.2's release note —
+     "exclude unnecessary streams during trace search" — fixes the
+     parallel hot-tier leak we'd been compensating for on cold, so the
+     two-stage cleanup composes correctly across both tiers. The
+     `filter string` parameter VT added to
+     `GetFieldNames` / `GetFieldValues` / `GetStreamFieldNames` /
+     `GetStreamFieldValues` is now forwarded through the `ExternalStorage`
+     overlay; the LH adapter applies the substring narrow client-side
+     (`filterValuesBySubstring`), mirroring the logs adapter pattern.
+     All three patches (dispatch, flag-dedup, go-mod-replace) apply
+     cleanly against the new release.
+
+  5. **Grafana drilldown completion**
+     (`deployment/docker/grafana/provisioning/datasources/datasources.yaml`).
+     Tempo datasources are hardened with `nodeGraph.enabled=false`
+     (VT has no service-graph endpoint), the empty `serviceMap` block
+     omitted (an empty `datasourceUid` triggers phantom `/api/metrics`
+     calls), `streamingEnabled.{search,query}=false` (VT exposes no
+     Tempo gRPC stream-over-http surface), and `spanBar.type=None` for
+     parity with the Jaeger sibling datasources. The Loki proxy derived
+     fields now route trace_id clicks straight to Tempo —
+     `loki-vl-proxy-cold` → `tempo-lh-cold` and `loki-vl-proxy` →
+     `tempo-vt-hot` — verified live in the e2e stack by drilling a
+     real cold trace ID from a Loki cold log into the LH cold Tempo
+     view and rendering the spans through Grafana's Tempo plugin.
+
+  Constraints honoured throughout: zero VT/VL upstream modification
+  (everything is either an adapter behind the `ExternalStorage` overlay
+  in `patches/{vl-traces,vt-traces}/` or LH-side code); zero
+  non-standard Parquet encoding (every byte LH writes to S3 is readable
+  by any spec-compliant tool); zero Jaeger regression (the three Jaeger
+  datasources remain provisioned and unchanged — explicit "open in
+  Jaeger" usage and Grafana Jaeger plugin drilldown still work).
+
+  Verified in `deployment/docker/docker-compose-e2e.yml` after rebuild:
+  all six trace drilldown paths (3 Jaeger v1 + 3 Tempo v2 across hot
+  / cold / multilevel `vtselect` fan-out) return HTTP 200 with real
+  trace bodies; `lakehouse_trace_index_lookups_total{result="hit"}`
+  climbs on every cold trace-by-ID; the cold-tier Grafana Explore
+  panel for `tempo-lh-cold` renders trace spans from a Loki cold log
+  link end-to-end.
+
 - **Election-free compaction (spec 2026-05-31)** — replaces the K8s Lease /
   S3-sentinel single-leader scheme with HRW (Highest Random Weight) partition
   ownership computed in-process on every pod. Each pod independently decides
