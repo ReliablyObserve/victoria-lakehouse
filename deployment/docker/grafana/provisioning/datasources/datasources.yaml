@@ -74,11 +74,13 @@ datasources:
     jsonData:
       maxLines: 1000
       derivedFields:
-        # Fan trace-id clicks through the global Jaeger (hot+cold fan-out)
-        # so fresh trace_ids that haven't flushed to S3 yet still resolve.
-        # Pointing this at victoria-lakehouse-traces directly returns 404
-        # for any trace newer than the cold-tier flush interval (~2 min).
-        - datasourceUid: victoriatraces-global
+        # Cold-only stays cold-only — trace-id clicks from Lakehouse Logs
+        # (S3) resolve against Lakehouse Traces (S3 Jaeger). Trace IDs
+        # newer than the cold flush interval (~2 min) will be "not found"
+        # by design; use the global VL+VT datasources for hot-or-cold
+        # fan-out. Upstream VT's documented trace-by-ID endpoint is the
+        # Jaeger one (/select/jaeger/api/traces/<id>).
+        - datasourceUid: victoria-lakehouse-traces
           matcherRegex: 'trace_id=(\w+)'
           name: traceID
           url: "$${__value.raw}"
@@ -151,7 +153,15 @@ datasources:
     jsonData:
       maxLines: 1000
       derivedFields:
-        - datasourceUid: tempo-vt-hot
+        # Route trace_id clicks to the Jaeger fan-out (hot+cold) instead of
+        # Tempo. Upstream VictoriaTraces only routes the v2 path
+        # /select/tempo/api/v2/traces/<id>; Grafana's Tempo datasource sends
+        # the v1 path /api/traces/<id> for "View Trace", so the lookup
+        # returns HTTP 200 / 0 bytes against Tempo. The upstream-documented
+        # trace-by-ID endpoint is the Jaeger one
+        # (/select/jaeger/api/traces/<id>), which works in both hot and cold
+        # tiers.
+        - datasourceUid: victoriatraces-global
           matcherRegex: 'trace_id=(\w+)'
           name: traceID
           url: "$${__value.raw}"
@@ -164,7 +174,13 @@ datasources:
     jsonData:
       maxLines: 1000
       derivedFields:
-        - datasourceUid: tempo-lh-cold
+        # Cold-only stays cold-only — trace-id clicks resolve against the
+        # Lakehouse Jaeger datasource (S3 Parquet cold tier). Use a global
+        # datasource if you want hot fan-out for fresh trace IDs. Upstream
+        # VT's documented trace-by-ID endpoint is the Jaeger one
+        # (/select/jaeger/api/traces/<id>) — Tempo's v1 path is not routed
+        # by upstream VT, only /api/v2/traces/<id> is.
+        - datasourceUid: victoria-lakehouse-traces
           matcherRegex: 'trace_id=(\w+)'
           name: traceID
           url: "$${__value.raw}"
