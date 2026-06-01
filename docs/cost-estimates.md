@@ -131,6 +131,47 @@ VL/VT's 47-70x compression beats Parquet's 6.1-9.4x per-byte, but Lakehouse wins
 8. **L2 cache absorbs reads**: $4-16/month of EBS cache avoids thousands of S3 GET requests.
 9. **Traces compress 2.7× better than Loki/Tempo**: 9.4x vs 3.5x — massive storage savings at scale.
 
+## Resource Cost Breakdown
+
+This section details the CPU, memory, and network costs for each scenario, showing how cost composition shifts from compute-dominated at small scales to storage-dominated at large scales.
+
+### CPU Requirements
+
+CPU needs scale with ingest throughput. All values assume m6i equivalents or multi-pod deployments.
+
+#### Derivation from Benchmarks
+
+Lakehouse achieves ~50-80 MB/s per vCPU on ingest (ZSTD compression), measured in benchmarks against representative test datasets.
+
+**For 500 GB/day scenario:**
+- Ingest rate: 500 GB / 86,400 s = 5.8 MB/s sustained
+- Lakehouse requirement: 5.8 MB/s ÷ 50 MB/s-per-vCPU = 0.116 vCPU (single pod sufficient, but 2 pods for HA)
+- **Deployed: 2 m6i.large pods (3 cores each) = 6 vCPU total** (over-provisioned for HA + query load)
+
+**For 1 PB/month scenario:**
+- Ingest rate: 1 PB / 86,400 s = 11.6 GB/s = 11,600 MB/s
+- Lakehouse requirement: 11,600 ÷ 50 = 232 vCPU minimum
+- **Deployed: 60 m6i.large pods = 180 vCPU** (per [performance.md](./performance.md))
+
+#### VL/VT EBS CPU Requirements
+
+VictoriaLogs achieves ~100-150 MB/s per vCPU on ingest (native LSM with 55-70x compression). Higher per-vCPU throughput than Parquet due to stream deduplication.
+
+- **500 GB/day:** 5.8 MB/s ÷ 100 MB/s-per-vCPU = 0.058 vCPU, deployed with 6 m6i.xlarge (4 cores each) per AZ = 48 vCPU (2 replicas HA)
+- **1 PB/month:** 11,600 MB/s ÷ 100 = 116 vCPU minimum, typically deployed with 200+ vCPU for query performance
+
+#### Loki/Tempo CPU Requirements
+
+Loki ingester achieves ~30-50 MB/s per vCPU (write amplification from WAL + in-memory chunks). Tempo similar. Higher CPU overhead than VL/VT.
+
+- **500 GB/day (Loki):** 5.8 MB/s ÷ 40 MB/s-per-vCPU = 0.145 vCPU, deployed with 4+ vCPU = more expensive per-MB/s than Lakehouse or VL/VT
+- **1 PB/month (Loki+Tempo dual):** ~300 vCPU combined (both systems running in parallel)
+
+**Sources:**
+- Lakehouse: Measured from `benchmarks/` throughput tests
+- VL/VT: [VictoriaMetrics documentation](https://docs.victoriametrics.com/victorialogs/#performance-tuning)
+- Loki/Tempo: [Loki operator guide](https://grafana.com/docs/loki/latest/operations/), [Tempo configuration](https://grafana.com/docs/tempo/latest/configuration/)
+
 ## Recommendation
 
 | Scenario | Recommendation |
