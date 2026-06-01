@@ -172,6 +172,91 @@ Loki ingester achieves ~30-50 MB/s per vCPU (write amplification from WAL + in-m
 - VL/VT: [VictoriaMetrics documentation](https://docs.victoriametrics.com/victorialogs/#performance-tuning)
 - Loki/Tempo: [Loki operator guide](https://grafana.com/docs/loki/latest/operations/), [Tempo configuration](https://grafana.com/docs/tempo/latest/configuration/)
 
+### Memory Requirements
+
+Memory scales with cache size and buffer allocation. Lakehouse uses tiered caching (L1 memory + L2 disk cache).
+
+#### Helm Chart Defaults
+
+From [charts/victoria-lakehouse/values.yaml](../../charts/victoria-lakehouse/values.yaml):
+
+```yaml
+resources:
+  # Resource defaults (empty — Lakehouse uses lakehouseConfig for sizing)
+
+cache:
+  memory_limit: "512MB"   # L1 in-memory cache (columnar index)
+  memory_request: "512MB" # L1 baseline for warm startup
+  memory_scaling: "fixed" # Fixed vs proportional to pod count
+
+insert_buffer: "256MB"    # Write buffer for uncompressed data
+wal_max_size: "512MB"     # Write-ahead log segment size
+l2_cache_size: "50GB"     # L2 disk cache for bloom filters
+```
+
+#### Per-Scenario Memory
+
+| Scenario | Pod Type | Pods | Memory/pod | Total Memory | Notes |
+|----------|----------|------|-----------|--------------|-------|
+| 500 GB/day | m6i.large (2vCPU, 8GB) | 3 | 512 MB request | 1.5 GB | L1 cache bounded; L2 disk unbounded |
+| 500 GB/day | m6i.xlarge (4vCPU, 16GB) | 2 | 1 GB request | 2 GB | HA pair, higher comfort margin |
+| 1 PB/month | m6i.large | 60 | 512 MB request | 30 GB | Each pod L1 independent; shared L2 |
+| 1 PB/month | m6i.xlarge | 30 | 1 GB request | 30 GB | Lower pod count, higher per-pod RAM |
+
+**VL/VT EBS** — Memory requirements similar (LSM state, block cache). Typically 8-16 GB per node for in-memory indices.
+
+**Loki/Tempo** — Higher memory overhead due to in-memory chunks. Typically 12-20 GB per ingester pod.
+
+**Sources:**
+- Helm defaults: [charts/victoria-lakehouse/values.yaml](../../charts/victoria-lakehouse/values.yaml)
+- Configuration: [docs/configuration.md](./configuration.md)
+- Kubernetes deployments: [docs/kubernetes-deployment.md](./kubernetes-deployment.md)
+
+### Network Traffic
+
+Network costs come from S3 request pricing (PUT/GET), not bandwidth in AWS (same-region is free, cross-region charged).
+
+#### S3 PUT Traffic (Ingest Write)
+
+Raw bytes are compressed before S3 write:
+
+| Scenario | Daily Ingest | Compression | S3 Stored/day | Monthly PUTs | PUT Cost @ $0.0004/1000 |
+|----------|--------------|-------------|--------------|--------------|------------------------|
+| 500 GB/day | 500 GB | 6.1x (Parquet) | 82 GB | 2.46M | $1/mo |
+| 1 PB/month | 33.3 GB/day | 6.1x | 5.5 GB | 165M | $66/mo |
+| Loki 500 GB/day | 500 GB | 3.5x | 143 GB | 4.29M | $2/mo |
+
+Lakehouse achieves 6.1x compression due to ZSTD-7 + columnar format. Loki achieves 3.5x (Snappy + row chunks).
+
+#### S3 GET Traffic (Query Reads)
+
+Queries perform point reads (small result sets) and scans (large range queries).
+
+**Estimated query pattern: 10 point queries × 10GB + 5 scan queries × 50GB = 350 GB/day**
+
+Monthly query volume: 350 GB × 30 = 10.5 TB/month = 10.5M GetObject requests
+
+Cost: 10.5M × $0.0004/1000 = $4.20/mo
+
+**VL/VT EBS** — No S3 request cost (local EBS storage). Cross-AZ replication adds $0.01/GB outbound.
+
+**Loki/Tempo** — Similar S3 PUT cost, but higher due to write amplification (compactor re-reads and re-writes data 3-5x).
+
+#### Cross-AZ Network Traffic
+
+Multi-AZ deployments incur cross-AZ bandwidth charges.
+
+| Solution | Replication Method | Cost/GB | For 500 GB/day | Notes |
+|----------|-------------------|---------|----------------|-------|
+| Lakehouse | S3 multi-AZ (built-in) | Free | $0/mo | S3 handles AZ placement automatically |
+| VL/VT EBS | 3-AZ replication (outbound) | $0.01/GB | $150/mo | 500 GB × 30 days × $0.01 |
+| Loki/Tempo | RF=3 cross-AZ | $0.02/GB | $300/mo | 2 replicas × 500 GB × 30 days × $0.01 |
+
+**Sources:**
+- S3 pricing: [AWS pricing](https://aws.amazon.com/s3/pricing/)
+- Query patterns: [performance.md](./performance.md)
+- Cross-AZ costs: [cross-az-optimization.md](./cross-az-optimization.md)
+
 ## Recommendation
 
 | Scenario | Recommendation |
