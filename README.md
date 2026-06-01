@@ -40,12 +40,17 @@ Cost leadership is **scale-dependent**. At small scale (≤500 GB/mo), VL/VT EBS
 | **Compression (traces)** | 9.4x (ZSTD L7) | ~47x | 9.4x (ZSTD L7) | 3-4x (Snappy) |
 | **Query latency (point)** | <100ms (bloom) | <10ms (EBS) | <10ms hot / <100ms cold | 1-10s |
 | **Query latency (scan)** | <500ms | <10ms (EBS) | <10ms hot / <500ms cold | 1-10s |
-| **Data format** | **Open Parquet** | Proprietary | **Open Parquet** | Proprietary |
+| **Data format** | **Open Parquet** | Proprietary (VL/VT) | **Proprietary (VL/VT hot) + Open Parquet (S3 cold)** | Proprietary |
 | **S3 durability** | **11 nines** | EBS per-AZ | **11 nines** | 11 nines |
 | **Glacier tiering** | **Yes (cheapest at 3yr+)** | N/A | **Yes (cheapest at 3yr+)** | No (compaction breaks it) |
 | **Analytics access** | **DuckDB, Spark, Trino** | VL/VT API only | **DuckDB, Spark, Trino** | Loki API only |
 | **Disaster recovery** | **Independent** | N/A | **Independent cold tier** | N/A |
 | **Write path** | WAL + S3 + compaction (~2.1x) | EBS WAL + LSM (~3-10x) | EBS + WAL + S3 + compaction | WAL→chunk→S3→compact (3-5x) |
+| **CPU (vCPU-months)** | 9 vCPU | 18 vCPU | 25 vCPU | 24 vCPU |
+| **Memory (GB)** | 24 GB | 48 GB | 72 GB | 56 GB |
+| **Network traffic (GB/mo)** | 180 PUT+GET | ~150 (EBS local) | 300 PUT+GET + cross-AZ | 370 PUT+GET + compaction |
+| **Storage breakdown** | S3: $688/mo | EBS: $796/mo | EBS: $65/mo + S3: $688/mo | S3: $1,484/mo |
+| **Cost composition** | 54% Storage, 32% Compute, 14% Network | 30% Storage, 64% Compute, 6% Network | 23% Storage, 64% Compute, 10% Network, 3% Other | 26% Storage, 66% Compute, 6% Network, 2% Other |
 
 > **Write amplification detail**: Lakehouse writes each byte ~2.1x: (1) local WAL (uncompressed gob, crash recovery), (2) S3 PutObject (ZSTD Parquet), (3) compaction reads N files and writes 1 merged file (~0.1x at 10:1 ratio). VL/VT LSM write amplification is 3-10x (WAL → L0 → L1 → L2 compaction levels). Loki/Tempo write 3-5x: WAL → in-memory chunk → flushed chunk → S3 + compacted S3.
 >
