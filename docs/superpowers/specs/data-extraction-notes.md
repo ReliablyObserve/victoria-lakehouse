@@ -436,4 +436,227 @@ Example:
 
 ---
 
+## Part 9: Network Traffic
+
+### 9.1 S3 PUT Traffic (Ingest Write)
+
+**Source:** `docs/cost-comparison.md` (lines 38–49), `docs/cost-estimates.md` (S3 pricing), compression ratios from Part 1
+
+**Scenario: 500 GB/day ingest (representative mid-scale)**
+
+**Calculation:**
+```
+Daily ingest raw: 500 GB/day
+Compression ratio: 6.1x (Parquet ZSTD-7, logs baseline)
+Stored per day: 500 GB / 6.1 = 82 GB/day on S3
+S3 PutObject requests: 82 GB/day ≈ 82,000 requests/day (assuming 1MB per request on average)
+
+Monthly volume:
+- Stored bytes: 82 GB × 30 days = 2,460 GB/month = 2.46 TB/month
+- Requests: 82,000 requests/day × 30 = 2,460,000 PutObject requests/month
+
+AWS S3 Pricing:
+- PutObject: $0.0004 per 1,000 requests = $0.0000004 per request
+- Cost: 2,460,000 requests × $0.0000004/request = $0.98/month (rounded to ~$1/mo)
+
+Alternative breakdown (per-GB write):
+- Cost is request-based, not volume-based for PUTs
+- Negligible compared to storage ($688/mo S3 storage cost for same data)
+```
+
+**Key Finding:** S3 PUT request cost is essentially negligible (<$1/mo) at this scale. The compression happens at ingestion (on compute), not during S3 writes.
+
+---
+
+### 9.2 S3 GET Traffic (Query Reads)
+
+**Source:** `docs/cost-comparison.md` (lines 38–49), query patterns from benchmarks.md
+
+**Scenario: Mixed query pattern (point + scan, 500 GB/day ingest)**
+
+**Calculation:**
+```
+Query volume assumptions (daily):
+- Point queries: 10 queries/day × 10 GB per query = 100 GB/day
+- Scan queries: 5 queries/day × 50 GB per query = 250 GB/day
+- Total: 350 GB/day read from S3 = 10.5 TB/month
+
+S3 GetObject requests:
+- Assuming 1MB average object size per request (typical Parquet block size)
+- Requests: 350 GB/day × 1000 / 1MB ≈ 350,000 requests/day
+- Monthly: 350,000 × 30 = 10,500,000 GetObject requests
+
+AWS S3 Pricing:
+- GetObject: $0.0004 per 1,000 requests = $0.0000004 per request
+- Cost: 10,500,000 requests × $0.0000004/request = $4.20/month (rounded to ~$4/mo)
+
+Storage egress (if cross-region):
+- Same region S3 → EC2: Free
+- Cross-region: $0.02/GB = 350 GB × $0.02 = $7/mo per day (not applicable here, same region)
+```
+
+**Key Finding:** GET request costs are also negligible (~$4/mo). However, the **data volume** (350 GB/day) implies 10.5 TB/month in query I/O, which has cost implications when combined with cross-AZ replication costs below.
+
+---
+
+### 9.3 Cross-AZ Traffic (Multi-AZ Replication)
+
+**Source:** `docs/cost-comparison.md` (lines 65–70), AWS cross-AZ pricing $0.01/GB
+
+**Key Finding:** Victoria Lakehouse differentiates here:
+- S3 multi-AZ replication is **automatic and free** within AWS (built into S3 durability)
+- EBS replication across AZs costs **$0.01/GB outbound per AZ**
+- VL/VT with EBS adds this cost; pure Lakehouse on S3 does not
+
+**Scenario A: Pure Lakehouse on S3 (500 GB/day ingest)**
+
+```
+S3 cross-AZ replication: Free (11-nines durability managed by AWS)
+Query cross-AZ read: Free (same region, S3 is geo-distributed)
+Cost: $0 (no additional charge)
+```
+
+**Scenario B: Hybrid (Lakehouse S3 + VL/VT hot tier EBS)**
+
+```
+Ingest cross-AZ (writing to both VL/VT insert pool and Lakehouse S3):
+- Data sent to VL/VT ingesters: 500 GB/day (RF=1 destination after replication)
+- Cross-AZ delivery: $0.01/GB × 500 GB × 30 = $150/mo (VL/VT side)
+- Lakehouse write: 82 GB/day stored = negligible cross-AZ (data already replicated within S3)
+- Subtotal: ~$150/mo ingest
+
+Query cross-AZ (reading cold data from S3):
+- Assume 10.5 TB/month query volume, with ~20% cross-AZ (local cache miss for some queries)
+- Cross-AZ reads: 10.5 TB × 0.2 = 2.1 TB/month
+- Cost: 2.1 TB × $0.01/GB = $21/mo
+- Subtotal: ~$21/mo query
+
+Hybrid ingest + query cross-AZ: $171/mo
+```
+
+**Scenario C: Loki/Tempo with RF=3 (Replication Factor 3)**
+
+```
+Loki write amplification (RF=3):
+- Ingest: 500 GB/day
+- RF=3 replication to 3 ingesters across 3 AZs
+- Cross-AZ delivery: 2 additional replicas = 2× cross-AZ traffic
+- Cost: $0.01/GB × 500 GB × 2 replicas × 30 = $300/mo (just ingest)
+
+Loki compaction I/O (chunk merging across AZs):
+- Additional 2-3x amplification during compaction (chunk reading from one AZ, writing to another)
+- Estimated: +$100-200/mo (included in "compaction rewrites" in cost-comparison.md)
+- Subtotal: ~$400-500/mo network
+
+Query cross-AZ (all queries hit S3, not local EBS):
+- 5-15M GetObject requests/month (from cost-comparison.md)
+- Most queries touch multiple chunks across multiple AZs
+- Estimated: 3-5 TB/month cross-AZ reads
+- Cost: 3-5 TB × $0.01/GB = $30-50/mo
+- Subtotal: ~$40/mo query
+
+Loki ingest + query cross-AZ: $440-550/mo
+```
+
+---
+
+### 9.4 Network Traffic Summary Table
+
+| Metric | Lakehouse S3 Only | Hybrid (S3 + VL/VT) | Loki/Tempo RF=3 |
+|---|---|---|---|
+| **S3 PUT requests** | <$1/mo | <$1/mo | $8-10/mo (WAL flushes) |
+| **S3 GET requests** | ~$4/mo | ~$4/mo | $40-84/mo (queries) |
+| **Cross-AZ ingest** | Free | $150/mo | $300/mo |
+| **Cross-AZ query read** | Free | $21/mo | $40-50/mo |
+| **Compaction I/O** | Minimal | Minimal | $100-200/mo |
+| **Total network cost** | **~$5/mo** | **~$175/mo** | **$480-630/mo** |
+
+**Key Insight:** Lakehouse's network cost advantage comes entirely from **not replicating data across AZs** (S3 handles durability). Hybrid adds $150-175/mo for dual-destination ingest + some cross-AZ queries. Loki/Tempo RF=3 incurs persistent replication overhead on every write and compaction cycle.
+
+---
+
+### 9.5 Write Amplification Comparison
+
+**Source:** `docs/cost-comparison.md` (line 66: "Write amplification: 2-3x"), Loki architecture
+
+**Lakehouse write flow (1x amplification):**
+```
+Ingester buffer (256MB)
+    ↓
+Parquet file creation (direct)
+    ↓
+S3 PutObject (1 write per file)
+No additional I/O during queries (read-only)
+Write amplification: 1x
+```
+
+**Loki write flow (3-5x amplification):**
+```
+Distributor
+    ↓
+Ingester WAL (write 1)
+    ↓
+Chunk flushing to S3 (write 2)
+    ↓
+Compactor reads chunks from S3 (read 1)
+    ↓
+Compactor merges and writes deduplicated chunks back to S3 (write 3)
+    ↓
+Deletion marks and cleanup (optional write 4-5)
+Write amplification: 3-5x
+
+Cost impact: 3-5x more S3 API calls + cross-AZ replication of intermediate results
+```
+
+**Tempo write flow (similar to Loki, 2-3x amplification):**
+```
+Distributor
+    ↓
+Ingester WAL (write 1)
+    ↓
+Block flushing to S3 (write 2)
+    ↓
+Compactor merges blocks (optional, write 3)
+Write amplification: 2-3x
+```
+
+**Implication for costs:**
+- Lakehouse: $1/mo S3 PUTs (2.46M requests/month for 82 GB/day)
+- Loki: $8-10/mo S3 PUTs (3-5x amplification = 7.4-12M requests/month)
+- Tempo: $6-8/mo S3 PUTs (2-3x amplification = 4.9-7.4M requests/month)
+
+---
+
+### 9.6 Bandwidth Cost Summary (vs. Alternative Architectures)
+
+**At 500 GB/day ingest scale (1-year retention):**
+
+| Cost Component | Pure Lakehouse | Hybrid | Loki | Tempo | VL/VT EBS |
+|---|---|---|---|---|---|
+| S3 storage | $688 | $688 | $1,199 | ~$850 | $0 |
+| S3 API (PUTs) | $1 | $1 | $9 | $7 | $0 |
+| S3 API (GETs) | $4 | $4 | $84 | $50 | $0 |
+| Cross-AZ network | Free | $171 | $550 | $400 | $150 |
+| **Network subtotal** | **~$5/mo** | **~$175/mo** | **~$630/mo** | **~$450/mo** | **$150/mo** |
+| Compute (querier/compactor) | $50 | $100 | $357 | $288 | $288 |
+| **Monthly total** | **$743** | **$963** | **$1,987** | **$1,738** | **$438** |
+
+**Monthly Breakdown:**
+- **Lakehouse network advantage:** 99% cheaper than Loki ($5 vs $630)
+- **Hybrid premium:** +$170/mo network (dual-destination ingest), fully offset by S3 per-GB savings at 2+ year retention
+- **VL/VT EBS network advantage:** $0 (local EBS, no cross-AZ for hot data). But storage cost ($150-796/mo) dominates at scale.
+
+---
+
+### 9.7 Files Referenced
+
+| File | Lines | Content |
+|---|---|---|
+| `docs/cost-comparison.md` | 38–70 | S3 pricing, cross-AZ replication costs, write amplification notes |
+| `docs/cost-estimates.md` | 38–49 | S3 request pricing ($0.0004/1K), GET/PUT breakdown |
+| `docs/benchmarks.md` | 12–21 | Query patterns (point, scan, latency targets) |
+| AWS Pricing | — | S3 storage $0.023/GB, cross-AZ $0.01/GB, requests $0.0004/1K |
+
+---
+
 **End of extraction notes**
