@@ -20,12 +20,12 @@ export GOWORK=off
 # VictoriaLogs — Go module proxy has stale cache with wrong module path.
 # We clone the correct version locally and use a replace directive in go.mod.
 VL_VERSION_LOGS := v1.50.0
-VL_COMMIT_TRACES := a408207c2242
+VL_COMMIT_TRACES := 77df0c04d532
 VL_REPO := https://github.com/VictoriaMetrics/VictoriaLogs.git
 VL_DIR_LOGS := deps/VictoriaLogs
 VL_DIR_TRACES := lakehouse-traces/deps/VictoriaLogs
 
-VT_VERSION := v0.9.0
+VT_VERSION := v0.9.2
 VT_REPO := https://github.com/VictoriaMetrics/VictoriaTraces.git
 VT_DIR := lakehouse-traces/deps/VictoriaTraces
 
