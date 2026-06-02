@@ -142,8 +142,12 @@ datasources:
     access: proxy
     url: http://victoriatraces:10428/select/tempo
     jsonData:
+      # Tempo plugin → Loki plugin pairing. The View Logs button on a
+      # trace detail panel resolves against the Loki Hot+Cold proxy so
+      # the round-trip stays inside the Tempo↔Loki ecosystem. The
+      # parallel VL→Jaeger pairing is preserved on the Jaeger datasources.
       tracesToLogsV2:
-        datasourceUid: victorialogs-hot
+        datasourceUid: loki-vl-proxy
         spanStartTimeShift: "-1h"
         spanEndTimeShift: "1h"
         filterByTraceID: true
@@ -162,8 +166,11 @@ datasources:
     access: proxy
     url: http://lakehouse-traces:10428/select/tempo
     jsonData:
+      # Pure cold-tier Tempo↔Loki pairing. View Logs from a cold trace
+      # resolves against the Loki Cold-Only proxy so the click stays on
+      # cold storage end-to-end (no accidental hot fan-out).
       tracesToLogsV2:
-        datasourceUid: victoria-lakehouse-cold
+        datasourceUid: loki-vl-proxy-cold
         spanStartTimeShift: "-1h"
         spanEndTimeShift: "1h"
         filterByTraceID: true
