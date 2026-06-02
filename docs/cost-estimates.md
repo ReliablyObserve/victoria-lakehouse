@@ -178,7 +178,7 @@ Memory scales with cache size and buffer allocation. Lakehouse uses tiered cachi
 
 #### Helm Chart Defaults
 
-From [charts/victoria-lakehouse/values.yaml](../../charts/victoria-lakehouse/values.yaml):
+From `charts/victoria-lakehouse/values.yaml` (Helm chart defaults):
 
 ```yaml
 resources:
@@ -208,7 +208,7 @@ l2_cache_size: "50GB"     # L2 disk cache for bloom filters
 **Loki/Tempo** — Higher memory overhead due to in-memory chunks. Typically 12-20 GB per ingester pod.
 
 **Sources:**
-- Helm defaults: [charts/victoria-lakehouse/values.yaml](../../charts/victoria-lakehouse/values.yaml)
+- Helm defaults: `charts/victoria-lakehouse/values.yaml`
 - Configuration: [docs/configuration.md](./configuration.md)
 - Kubernetes deployments: [docs/kubernetes-deployment.md](./kubernetes-deployment.md)
 
@@ -308,7 +308,7 @@ All numbers in this section are derived from one of three sources: benchmarked, 
 
 ### Configured (from defaults and recommendations)
 
-- **CPU/memory pod sizing:** Helm chart [requests and limits](../../charts/victoria-lakehouse/values.yaml).
+- **CPU/memory pod sizing:** Helm chart requests and limits in `charts/victoria-lakehouse/values.yaml`.
 - **Pod counts:** Recommended sizing from [scaling.md](./scaling.md) and [deployment-architecture.md](./deployment-architecture.md).
 - **Cache tuning:** [configuration.md](./configuration.md).
 
