@@ -11,7 +11,7 @@ permissions:
 
 env:
   GOWORK: "off"
-  VT_VERSION: "v0.9.0"
+  VT_VERSION: "v0.9.2"
 
 jobs:
   release:
@@ -109,7 +109,7 @@ jobs:
           git clone --depth 1 --branch v1.50.0 \
             https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs
           git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src
-          cd /tmp/vl-src && git checkout a408207c2242
+          cd /tmp/vl-src && git checkout 77df0c04d532
           cp -r /tmp/vl-src ${{ github.workspace }}/lakehouse-traces/deps/VictoriaLogs
 
       - name: Apply ExternalStorage patches
