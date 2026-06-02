@@ -116,8 +116,8 @@ The ONLY modification to upstream VL/VT:
 | Component | Version | Filter Param | Notes |
 |-----------|---------|-------------|-------|
 | Root VL | v1.50.0 | YES | ExternalStorage has filter params |
-| Traces VL | commit a408207 | NO | Older version, no filter in interface |
-| VT | v0.9.0 | NO | No filter in ExternalStorage |
+| Traces VL | commit 77df0c04d532 | YES | v0.9.2-compatible, filter in interface |
+| VT | v0.9.2 | YES | Filter param added in v0.9.2 |
 
 When upgrading traces VL to a version with filter, update:
 1. `patches/vl-traces/external.go.src` — add filter params
