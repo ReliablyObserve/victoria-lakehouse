@@ -178,7 +178,7 @@ Memory scales with cache size and buffer allocation. Lakehouse uses tiered cachi
 
 #### Helm Chart Defaults
 
-From [charts/victoria-lakehouse/values.yaml](../../charts/victoria-lakehouse/values.yaml):
+From `charts/victoria-lakehouse/values.yaml` (Helm chart defaults):
 
 ```yaml
 resources:
