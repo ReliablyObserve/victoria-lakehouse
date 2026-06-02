@@ -14,7 +14,6 @@ import (
 // while routing every operation through the single shared implementation.
 
 const traceIndexMetadataKey = traceindex.MetadataKey
-const traceIndexVersion = traceindex.Version
 
 // TraceIndexEntry mirrors the public traceindex.Entry. Aliased so the
 // existing parquets3 tests and helpers don't need to change shape.
