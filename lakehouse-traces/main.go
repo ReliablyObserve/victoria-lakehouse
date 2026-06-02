@@ -301,9 +301,10 @@ func run(cfg *config.Config, addr string) {
 	registry := stats.NewTenantRegistry(hostname())
 
 	if w := store.Writer(); w != nil {
-		tenantKey := writerTenantKey
-		w.SetStatsCallback(func(compressedBytes, rawBytes, rows int64, storageClass string) {
-			registry.RecordWrite(tenantKey, compressedBytes, rawBytes, rows, storageClass)
+		fallback := writerTenantKey
+		w.SetStatsCallback(func(accountID, projectID uint32, compressedBytes, rawBytes, rows int64, storageClass string) {
+			key := tenantStatsKey(accountID, projectID, fallback)
+			registry.RecordWrite(key, compressedBytes, rawBytes, rows, storageClass)
 		})
 	}
 
@@ -1158,6 +1159,16 @@ func hostname() string {
 	}
 	h, _ := os.Hostname()
 	return h
+}
+
+// tenantStatsKey formats a (accountID, projectID) pair as the registry's
+// "account:project" key, falling back to the writer's default key when
+// the row carries no tenant (single-tenant deployments).
+func tenantStatsKey(accountID, projectID uint32, fallback string) string {
+	if accountID == 0 && projectID == 0 {
+		return fallback
+	}
+	return strconv.FormatUint(uint64(accountID), 10) + ":" + strconv.FormatUint(uint64(projectID), 10)
 }
 
 func deriveTenantKey(prefix string) string {

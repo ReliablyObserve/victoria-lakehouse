@@ -76,6 +76,8 @@ func logRowsToTraceRows(lr *logstorage.LogRows) []schema.TraceRow {
 		}
 
 		row := schema.TraceRow{
+			AccountID:         r.TenantID.AccountID,
+			ProjectID:         r.TenantID.ProjectID,
 			TimestampUnixNano: r.Timestamp,
 		}
 

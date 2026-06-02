@@ -393,7 +393,7 @@ func TestCoverageBoost_SetStatsCallback(t *testing.T) {
 	}
 
 	var cbCalled bool
-	cb := StatsCallback(func(compressedBytes, rawBytes, rows int64, storageClass string) {
+	cb := StatsCallback(func(_, _ uint32, _, _, _ int64, _ string) {
 		cbCalled = true
 	})
 
@@ -402,7 +402,7 @@ func TestCoverageBoost_SetStatsCallback(t *testing.T) {
 		t.Fatal("expected statsCallback to be set")
 	}
 
-	bw.statsCallback(100, 200, 10, "STANDARD")
+	bw.statsCallback(1, 1, 100, 200, 10, "STANDARD")
 	if !cbCalled {
 		t.Fatal("expected stats callback to be invoked")
 	}
