@@ -397,7 +397,29 @@ func run(cfg *config.Config, addr string) {
 		}
 	}
 
-	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister)
+	policy, err := tenant.NewPolicyRegistry(cfg.Tenant.Overrides, resolver)
+	if err != nil {
+		logger.Fatalf("tenant overrides invalid: %s", err)
+	}
+	if pending := policy.PendingAliases(); len(pending) > 0 {
+		logger.Infof("tenant overrides pending alias resolution: %v", pending)
+	}
+	if cfg.Tenant.AliasSyncInterval > 0 {
+		go func() {
+			t := time.NewTicker(cfg.Tenant.AliasSyncInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-stopCh:
+					return
+				case <-t.C:
+					policy.Refresh()
+				}
+			}
+		}()
+	}
+
+	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister, policy)
 
 	// Wire the compaction drain endpoint (spec §11.1). Mirror of
 	// cmd/lakehouse-logs/main.go — line-parity with feedback_logs_traces_module_parity.
@@ -658,7 +680,7 @@ func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *sta
 	}()
 }
 
-func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister) *http.ServeMux {
+func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister, policy *tenant.PolicyRegistry) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	metrics.NewInfoGauge("lakehouse_info", map[string]string{
@@ -788,6 +810,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			LabelIndex:      store.LabelIndex(),
 			SchemaRegistry:  store.SchemaRegistry(),
 			Resolver:        resolver,
+			Policy:          policy,
 			Mode:            "traces",
 			Bucket:          cfg.S3.Bucket,
 			BloomColumns:    cfg.ActiveBloomColumns(),

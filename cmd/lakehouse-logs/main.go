@@ -387,6 +387,31 @@ func run(cfg *config.Config, addr string) {
 		}
 	}
 
+	// Per-tenant policy overrides. Pending alias-keyed entries get
+	// re-resolved on the same cadence as alias sync so late-registered
+	// tenants pick up their overrides without a restart.
+	policy, err := tenant.NewPolicyRegistry(cfg.Tenant.Overrides, resolver)
+	if err != nil {
+		logger.Fatalf("tenant overrides invalid: %s", err)
+	}
+	if pending := policy.PendingAliases(); len(pending) > 0 {
+		logger.Infof("tenant overrides pending alias resolution: %v", pending)
+	}
+	if cfg.Tenant.AliasSyncInterval > 0 {
+		go func() {
+			t := time.NewTicker(cfg.Tenant.AliasSyncInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-stopCh:
+					return
+				case <-t.C:
+					policy.Refresh()
+				}
+			}
+		}()
+	}
+
 	if cfg.Stats.Enabled {
 		startStatsLoops(cfg, store, registry, resolver, addr, stopCh)
 	}
@@ -402,7 +427,7 @@ func run(cfg *config.Config, addr string) {
 			cfg.SmartCache.MaxAge, cfg.SmartCache.SnapshotInterval)
 	}
 
-	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister)
+	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister, policy)
 
 	// Wire the compaction drain endpoint (spec §11.1). The preStop
 	// hook in the chart POSTs here to initiate a graceful drain
@@ -679,7 +704,7 @@ func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *sta
 	}()
 }
 
-func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister) *http.ServeMux {
+func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister, policy *tenant.PolicyRegistry) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	metrics.NewInfoGauge("lakehouse_info", map[string]string{
@@ -825,6 +850,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			LabelIndex:      store.LabelIndex(),
 			SchemaRegistry:  store.SchemaRegistry(),
 			Resolver:        resolver,
+			Policy:          policy,
 			Mode:            "logs",
 			Bucket:          cfg.S3.Bucket,
 			BloomColumns:    cfg.ActiveBloomColumns(),

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
@@ -23,6 +24,7 @@ type APIConfig struct {
 	LabelIndex      *cache.LabelIndex
 	SchemaRegistry  *schema.Registry
 	Resolver        *tenant.TenantResolver
+	Policy          *tenant.PolicyRegistry
 	Mode            string // "logs" or "traces"
 	Bucket          string
 	BloomColumns    []string
@@ -42,6 +44,7 @@ func NewAPI(cfg APIConfig) *API {
 // Register wires all API routes to the given ServeMux.
 func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/lakehouse/api/v1/tenants", a.handleTenants)
+	mux.HandleFunc("/lakehouse/api/v1/tenants/policy", a.handleTenantPolicy)
 	mux.HandleFunc("/lakehouse/api/v1/tenants/", a.handleTenantDetail)
 	mux.HandleFunc("/lakehouse/api/v1/stats/overview", a.handleOverview)
 	mux.HandleFunc("/lakehouse/api/v1/stats/ingestion", a.handleIngestion)
@@ -315,6 +318,94 @@ type TenantDetailResponse struct {
 	PartitionList     []manifest.PartitionSummary `json:"partition_list,omitempty"`
 	FileSizeHistogram *FileSizeHistogram          `json:"file_size_histogram,omitempty"`
 	AvgRowsPerFile    int64                       `json:"avg_rows_per_file"`
+	Policy            *TenantPolicyEntry          `json:"policy,omitempty"`
+}
+
+// TenantPolicyEntry is the JSON shape of a resolved per-tenant override.
+// Fields with zero values mean "inheriting global default".
+type TenantPolicyEntry struct {
+	AccountID         uint32                       `json:"account_id"`
+	ProjectID         uint32                       `json:"project_id"`
+	OrgID             string                       `json:"org_id,omitempty"`
+	Retention         string                       `json:"retention,omitempty"`
+	MaxFields         int                          `json:"max_fields,omitempty"`
+	MaxStreams        int                          `json:"max_streams,omitempty"`
+	MaxBytesPerSec    int64                        `json:"max_bytes_per_sec,omitempty"`
+	MaxRowsPerSec     int64                        `json:"max_rows_per_sec,omitempty"`
+	LifecycleOverride []config.LifecycleRuleConfig `json:"lifecycle,omitempty"`
+}
+
+// TenantPolicyListResponse is the response for /api/v1/tenants/policy.
+type TenantPolicyListResponse struct {
+	Entries         []TenantPolicyEntry `json:"entries"`
+	PendingAliases  []string            `json:"pending_aliases,omitempty"`
+}
+
+func (a *API) handleTenantPolicy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	resp := TenantPolicyListResponse{}
+	if a.cfg.Policy == nil {
+		writeJSON(w, resp)
+		return
+	}
+	resp.PendingAliases = a.cfg.Policy.PendingAliases()
+
+	// Iterate the registry's resolved entries by walking every tenant
+	// we know about (registry + alias-only). Anyone without an override
+	// is simply omitted, keeping the response small.
+	seen := make(map[string]bool)
+	emit := func(accountID, projectID uint32) {
+		key := strconv.FormatUint(uint64(accountID), 10) + ":" + strconv.FormatUint(uint64(projectID), 10)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		eff := a.cfg.Policy.For(accountID, projectID)
+		if eff == nil {
+			return
+		}
+		entry := effectiveToJSON(eff)
+		if a.cfg.Resolver != nil {
+			entry.OrgID = a.cfg.Resolver.DisplayName(accountID, projectID)
+			if entry.OrgID == key {
+				entry.OrgID = ""
+			}
+		}
+		resp.Entries = append(resp.Entries, entry)
+	}
+
+	if a.cfg.Registry != nil {
+		for _, ts := range a.cfg.Registry.All() {
+			acc, _ := strconv.ParseUint(ts.AccountID, 10, 32)
+			proj, _ := strconv.ParseUint(ts.ProjectID, 10, 32)
+			emit(uint32(acc), uint32(proj))
+		}
+	}
+	if a.cfg.Resolver != nil {
+		for _, alias := range a.cfg.Resolver.AllAliases() {
+			emit(alias.AccountID, alias.ProjectID)
+		}
+	}
+	writeJSON(w, resp)
+}
+
+func effectiveToJSON(eff *tenant.EffectiveConfig) TenantPolicyEntry {
+	entry := TenantPolicyEntry{
+		AccountID:         eff.AccountID,
+		ProjectID:         eff.ProjectID,
+		MaxFields:         eff.MaxFields,
+		MaxStreams:        eff.MaxStreams,
+		MaxBytesPerSec:    eff.MaxBytesPerSec,
+		MaxRowsPerSec:     eff.MaxRowsPerSec,
+		LifecycleOverride: eff.Lifecycle,
+	}
+	if eff.Retention > 0 {
+		entry.Retention = eff.Retention.String()
+	}
+	return entry
 }
 
 // FileSizeHistogram groups files into size buckets.
@@ -397,6 +488,17 @@ func (a *API) handleTenantDetail(w http.ResponseWriter, r *http.Request) {
 
 	a.decorateName(&entry)
 	resp := TenantDetailResponse{TenantEntry: entry}
+
+	// Attach effective per-tenant policy if an override is configured.
+	if a.cfg.Policy != nil {
+		acc, _ := strconv.ParseUint(accountID, 10, 32)
+		proj, _ := strconv.ParseUint(projectID, 10, 32)
+		if eff := a.cfg.Policy.For(uint32(acc), uint32(proj)); eff != nil {
+			p := effectiveToJSON(eff)
+			p.OrgID = entry.OrgID
+			resp.Policy = &p
+		}
+	}
 
 	// Add partition drill-down from manifest (only for tenants with data).
 	if a.cfg.Manifest != nil && entry.TotalFiles > 0 {
@@ -1075,6 +1177,7 @@ func (a *API) resolveOrgID(accountID, projectID string) string {
 
 func (a *API) decorateName(entry *TenantEntry) {
 	entry.Name = a.resolveName(entry.AccountID, entry.ProjectID)
+	entry.OrgID = a.resolveOrgID(entry.AccountID, entry.ProjectID)
 }
 
 func (a *API) decorateCostName(entry *TenantCostEntry) {

@@ -390,6 +390,28 @@
       ]));
       container.appendChild(cards);
 
+      // Per-tenant policy override block (omitted when no override is configured).
+      if (d.policy) {
+        var pol = el("div", { style: "margin:16px 0;padding:12px;border:1px solid #ccc;border-radius:4px;background:#fafafa" });
+        pol.appendChild(el("div", { style: "font-weight:600;margin-bottom:6px", textContent: "Effective Policy Override" }));
+        var lines = [];
+        if (d.policy.retention) lines.push(["Retention", d.policy.retention]);
+        if (d.policy.max_fields) lines.push(["Max Fields", d.policy.max_fields.toLocaleString()]);
+        if (d.policy.max_streams) lines.push(["Max Streams", d.policy.max_streams.toLocaleString()]);
+        if (d.policy.max_bytes_per_sec) lines.push(["Ingest Limit", fmtBytes(d.policy.max_bytes_per_sec) + "/s"]);
+        if (d.policy.max_rows_per_sec) lines.push(["Row Rate Limit", fmtNum(d.policy.max_rows_per_sec) + "/s"]);
+        if (d.policy.lifecycle && d.policy.lifecycle.length) {
+          lines.push(["Lifecycle", d.policy.lifecycle.map(function (r) { return r.storage_class + "@" + r.transition_days + "d"; }).join(", ")]);
+        }
+        var dl = el("dl", { style: "display:grid;grid-template-columns:max-content 1fr;gap:4px 12px;margin:0" });
+        lines.forEach(function (pair) {
+          dl.appendChild(el("dt", { style: "color:#666", textContent: pair[0] }));
+          dl.appendChild(el("dd", { style: "margin:0;font-family:monospace", textContent: pair[1] }));
+        });
+        pol.appendChild(dl);
+        container.appendChild(pol);
+      }
+
       // Info row with timestamps
       var info = el("div", { className: "lh-info-row" });
       if (d.last_write_at) info.appendChild(el("span", { className: "lh-info-item", innerHTML: "Last Write: <strong>" + fmtTime(d.last_write_at) + "</strong>" }));
