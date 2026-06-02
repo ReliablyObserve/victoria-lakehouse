@@ -39,8 +39,21 @@ func (a *adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 	// query here is safe — pipes only inform column projection planning.
 
 	if logstorage.QueryHasPipes(qctx.Query) {
+		// Field-enumerating pipes (field_names / field_values / facets /
+		// block_stats) must see every column the row carries — bypass
+		// projection narrowing via WithAllFieldsHint. Without this,
+		// queries the Tempo search/tags handler emits arrive at LH cold
+		// with pipeFields=["name"] (from `| uniq by(name)`), projection
+		// drops every resource_attr / span_attr column, and the
+		// field_names pipe reports only 2-3 names instead of the full
+		// schema. Mirror of the equivalent fix in
+		// lakehouse-traces/internal/vtstorage_adapter/adapter.go.
+		ctx := qctx.Context
+		if logstorage.QueryNeedsAllFields(qctx.Query) {
+			ctx = storage.WithAllFieldsHint(ctx)
+		}
 		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
-			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query,
+			return a.store.RunQuery(ctx, qctx.TenantIDs, qctx.Query,
 				wrapHiddenFields(wb, hiddenFilters))
 		}
 		return logstorage.RunQueryExternal(qctx, searchFn, writeBlock)

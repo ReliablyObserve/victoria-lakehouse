@@ -46,6 +46,21 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 		}
 	}
 
+	// Queries with field-enumerating pipes (field_names, field_values,
+	// facets, block_stats) must bypass projection narrowing entirely —
+	// those pipes report what fields a row carries, so handing them a
+	// pre-projected DataBlock would truncate the answer. The adapter
+	// rewrites such queries with a hint context value the parquets3
+	// storage checks at RunQuery entry. See QueryNeedsAllFields in
+	// patches/vl-traces/external_query.go.src for the pipe list.
+	if logstorage.QueryNeedsAllFields(qctx.Query) {
+		ctx := storage.WithAllFieldsHint(qctx.Context)
+		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
+			return a.store.RunQuery(ctx, qctx.TenantIDs, qctx.Query, wb)
+		}
+		return logstorage.RunQueryExternal(qctx, searchFn, writeBlock)
+	}
+
 	// IMPORTANT: pass the FULL query (with pipes intact) to a.store.RunQuery.
 	// Our storage's queryColumns() consults logstorage.GetQueryPipeFields() to
 	// expand the parquet column projection to cover fields referenced only by
