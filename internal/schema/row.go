@@ -1,6 +1,8 @@
 package schema
 
 type LogRow struct {
+	AccountID          uint32            `json:"account_id" parquet:"account_id"`
+	ProjectID          uint32            `json:"project_id" parquet:"project_id"`
 	TimestampUnixNano  int64             `json:"timestamp_unix_nano" parquet:"timestamp_unix_nano"`
 	Body               string            `json:"body" parquet:"body"`
 	SeverityText       string            `json:"severity_text" parquet:"severity_text"`
@@ -24,6 +26,8 @@ type LogRow struct {
 }
 
 type TraceRow struct {
+	AccountID          uint32            `json:"account_id" parquet:"account_id"`
+	ProjectID          uint32            `json:"project_id" parquet:"project_id"`
 	TimestampUnixNano  int64             `json:"timestamp_unix_nano" parquet:"timestamp_unix_nano"`
 	StartTimeUnixNano  int64             `json:"start_time_unix_nano" parquet:"start_time_unix_nano"`
 	TraceID            string            `json:"trace_id" parquet:"trace_id"`

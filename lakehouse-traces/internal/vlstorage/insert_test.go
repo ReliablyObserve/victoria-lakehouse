@@ -306,6 +306,72 @@ func TestVTInsertAdapter_Legacy_MustAddRows_NumericParsingErrors(t *testing.T) {
 	}
 }
 
+func TestVTInsertAdapter_DropsTraceIDIndexRow(t *testing.T) {
+	w := &mockTraceWriter{}
+	a := &vtInsertAdapter{writer: w}
+
+	// Mirror what VT's vtinsert/insertutil/index_helper.go emits per trace.
+	lr := makeLogRows(t,
+		logstorage.Field{Name: otelpb.TraceIDIndexStreamName, Value: "42"},
+		logstorage.Field{Name: "_msg", Value: "-"},
+		logstorage.Field{Name: otelpb.TraceIDIndexFieldName, Value: "0123456789abcdef0123456789abcdef"},
+		logstorage.Field{Name: otelpb.TraceIDIndexStartTimeFieldName, Value: "1000000000"},
+		logstorage.Field{Name: otelpb.TraceIDIndexEndTimeFieldName, Value: "2000000000"},
+	)
+	defer logstorage.PutLogRows(lr)
+
+	a.MustAddRows(lr)
+
+	if len(w.rows) != 0 {
+		t.Fatalf("expected VT trace_id_idx row to be dropped, got %d rows persisted", len(w.rows))
+	}
+	if kind := vtInternalRowKind(&logstorage.InsertRow{
+		Fields: []logstorage.Field{{Name: otelpb.TraceIDIndexFieldName, Value: "x"}},
+	}); kind != vtInternalKindTraceIDIdx {
+		t.Errorf("vtInternalRowKind on trace_id_idx field returned %q, want %q", kind, vtInternalKindTraceIDIdx)
+	}
+}
+
+func TestVTInsertAdapter_DropsServiceGraphRow(t *testing.T) {
+	w := &mockTraceWriter{}
+	a := &vtInsertAdapter{writer: w}
+
+	// Mirror VT's service-graph emitter (app/victoria-traces/servicegraph).
+	lr := makeLogRows(t,
+		logstorage.Field{Name: otelpb.ServiceGraphStreamName, Value: "-"},
+		logstorage.Field{Name: otelpb.ServiceGraphParentFieldName, Value: "frontend"},
+		logstorage.Field{Name: otelpb.ServiceGraphChildFieldName, Value: "backend"},
+		logstorage.Field{Name: otelpb.ServiceGraphCallCountFieldName, Value: "7"},
+	)
+	defer logstorage.PutLogRows(lr)
+
+	a.MustAddRows(lr)
+
+	if len(w.rows) != 0 {
+		t.Fatalf("expected VT service_graph row to be dropped, got %d rows persisted", len(w.rows))
+	}
+	if kind := vtInternalRowKind(&logstorage.InsertRow{
+		Fields: []logstorage.Field{{Name: otelpb.ServiceGraphStreamName, Value: "-"}},
+	}); kind != vtInternalKindServiceGraph {
+		t.Errorf("vtInternalRowKind on service_graph stream field returned %q, want %q", kind, vtInternalKindServiceGraph)
+	}
+}
+
+func TestVTInternalRowKind_SpanRowReturnsEmpty(t *testing.T) {
+	// A normal span row carries trace_id/span_id/etc. and must NOT be
+	// classified as VT-internal — otherwise span data would be dropped.
+	r := &logstorage.InsertRow{
+		Fields: []logstorage.Field{
+			{Name: "trace_id", Value: "abc"},
+			{Name: "span_id", Value: "def"},
+			{Name: "span.name", Value: "GET /"},
+		},
+	}
+	if kind := vtInternalRowKind(r); kind != "" {
+		t.Errorf("vtInternalRowKind on span row returned %q, want empty", kind)
+	}
+}
+
 func TestUnmarshalStreamTags_InvalidData(t *testing.T) {
 	st := logstorage.GetStreamTags()
 	defer logstorage.PutStreamTags(st)

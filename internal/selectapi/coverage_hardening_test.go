@@ -89,8 +89,8 @@ func TestWrapVL_SlowQueryWithTenantHeaders(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/select/logsql/query?query=slow_query", nil)
-	req.Header.Set("X-Scope-AccountID", "42")
-	req.Header.Set("X-Scope-ProjectID", "7")
+	req.Header.Set("AccountID", "42")
+	req.Header.Set("ProjectID", "7")
 	wrapped(rec, req)
 
 	if rec.Code != http.StatusOK {

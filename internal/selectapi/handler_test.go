@@ -894,8 +894,8 @@ func TestTenantFromRequest(t *testing.T) {
 
 	t.Run("with account and project headers", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/", nil)
-		req.Header.Set("X-Scope-AccountID", "42")
-		req.Header.Set("X-Scope-ProjectID", "3")
+		req.Header.Set("AccountID", "42")
+		req.Header.Set("ProjectID", "3")
 		got := h.tenantFromRequest(req)
 		if got == "" {
 			t.Error("expected non-empty tenant string")
@@ -906,8 +906,8 @@ func TestTenantFromRequest(t *testing.T) {
 		r := tenant.NewResolver(tenant.ResolverConfig{})
 		h2 := NewHandler(mockStore{}, cfg, WithResolver(r))
 		req := httptest.NewRequest("GET", "/", nil)
-		req.Header.Set("X-Scope-AccountID", "42")
-		req.Header.Set("X-Scope-ProjectID", "3")
+		req.Header.Set("AccountID", "42")
+		req.Header.Set("ProjectID", "3")
 		got := h2.tenantFromRequest(req)
 		if got == "" {
 			t.Error("expected non-empty tenant string with resolver")
@@ -919,8 +919,8 @@ func TestTenantFromRequest(t *testing.T) {
 		_ = r.AddAlias("prod_team", tenant.TenantID{AccountID: 42, ProjectID: 3})
 		h3 := NewHandler(mockStore{}, cfg, WithResolver(r))
 		req := httptest.NewRequest("GET", "/", nil)
-		req.Header.Set("X-Scope-AccountID", "42")
-		req.Header.Set("X-Scope-ProjectID", "3")
+		req.Header.Set("AccountID", "42")
+		req.Header.Set("ProjectID", "3")
 		got := h3.tenantFromRequest(req)
 		if got == "" {
 			t.Error("expected non-empty tenant string with resolver and alias")

@@ -360,7 +360,7 @@ Two separate binaries, each pinned to its own VL/VT upstream version for maximum
 | Binary | Port | Upstream Compat | Insert APIs | Select APIs | Docker Image |
 |---|---|---|---|---|---|
 | `lakehouse-logs` | 9428 | VL v1.50.0 | All VL insert protocols (jsonline, Loki, ES bulk, syslog, journald, Datadog, OTLP, Splunk) | `/select/logsql/*`, `/delete/logsql/*`, `/internal/select/*` | `ghcr.io/reliablyobserve/lakehouse-logs` |
-| `lakehouse-traces` | 10428 | VT v0.9.0 | `/insert/jsonline`, Zipkin `/api/v2/spans`, OTLP | `/select/logsql/*`, Jaeger `/select/jaeger/api/*`, Tempo `/select/tempo/api/*`, `/delete/tracessql/*` | `ghcr.io/reliablyobserve/lakehouse-traces` |
+| `lakehouse-traces` | 10428 | VT v0.9.2 | `/insert/jsonline`, Zipkin `/api/v2/spans`, OTLP | `/select/logsql/*`, Jaeger `/select/jaeger/api/*`, Tempo `/select/tempo/api/*`, `/delete/tracessql/*` | `ghcr.io/reliablyobserve/lakehouse-traces` |
 
 Each binary supports three roles for independent scaling:
 

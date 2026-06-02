@@ -131,7 +131,7 @@ func TestBloomCache_ReturnsInstance(t *testing.T) {
 // TestSetStatsCallback_NoPanic exercises BatchWriter.SetStatsCallback (previously 0%).
 func TestSetStatsCallback_NoPanic(t *testing.T) {
 	bw := &BatchWriter{}
-	bw.SetStatsCallback(func(_ int64, _ int64, _ int64, _ string) {})
+	bw.SetStatsCallback(func(_, _ uint32, _, _, _ int64, _ string) {})
 	if bw.statsCallback == nil {
 		t.Error("statsCallback should be set after SetStatsCallback")
 	}

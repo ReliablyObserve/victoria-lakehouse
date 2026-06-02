@@ -158,8 +158,8 @@ func normalizeTimeParams(r *http.Request) {
 }
 
 func (h *Handler) tenantFromRequest(r *http.Request) string {
-	accStr := r.Header.Get("X-Scope-AccountID")
-	projStr := r.Header.Get("X-Scope-ProjectID")
+	accStr := r.Header.Get("AccountID")
+	projStr := r.Header.Get("ProjectID")
 	if accStr == "" && projStr == "" {
 		return ""
 	}

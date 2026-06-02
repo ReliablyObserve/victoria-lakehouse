@@ -34,8 +34,11 @@ type BloomObserver interface {
 }
 
 // StatsCallback is called after each successful file flush with the
-// compressed size, raw size, row count, and storage class.
-type StatsCallback func(compressedBytes, rawBytes, rows int64, storageClass string)
+// compressed size, raw size, row count, and storage class. The flush
+// invokes the callback once per distinct tenant in the flushed batch,
+// with bytes attributed in proportion to that tenant's row share, so
+// the registry can track per-tenant ingest from mixed-tenant batches.
+type StatsCallback func(accountID, projectID uint32, compressedBytes, rawBytes, rows int64, storageClass string)
 
 // FlushCacheCallback is called after a successful S3 upload to cache the
 // flushed file data locally (write-through cache). The callback receives the
@@ -346,7 +349,7 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 	}
 
 	if w.statsCallback != nil {
-		w.statsCallback(int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
+		attributeLogStats(w.statsCallback, rows, int64(len(result.Data)), result.RawBytes)
 	}
 
 	if w.flushCacheCb != nil {
@@ -400,7 +403,7 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 	}
 
 	if w.statsCallback != nil {
-		w.statsCallback(int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
+		attributeTraceStats(w.statsCallback, rows, int64(len(result.Data)), result.RawBytes)
 	}
 
 	if w.flushCacheCb != nil {

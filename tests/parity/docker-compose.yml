@@ -85,7 +85,7 @@ services:
       start_period: 10s
 
   victoriatraces:
-    image: victoriametrics/victoria-traces:v0.9.0
+    image: victoriametrics/victoria-traces:v0.9.2
     command:
       - "-storageDataPath=/data"
       - "-retentionPeriod=48h"

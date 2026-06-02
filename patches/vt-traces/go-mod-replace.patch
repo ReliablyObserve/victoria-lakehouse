@@ -1,13 +1,13 @@
 diff --git a/go.mod b/go.mod
-index 4b5b198..ee0ef75 100644
+index ab90203..1530c91 100644
 --- a/go.mod
 +++ b/go.mod
-@@ -4,6 +4,8 @@ go 1.26.2
+@@ -2,6 +2,8 @@ module github.com/VictoriaMetrics/VictoriaTraces
  
- replace github.com/VictoriaMetrics/VictoriaMetrics => github.com/VictoriaMetrics/VictoriaMetrics v1.136.1-0.20260225205418-cd2026e4308c
+ go 1.26.3
  
 +replace github.com/VictoriaMetrics/VictoriaLogs => ../VictoriaLogs
 +
  require (
- 	github.com/VictoriaMetrics/VictoriaLogs v1.47.1-0.20260225221819-a408207c2242
- 	github.com/VictoriaMetrics/VictoriaMetrics v1.135.0
+ 	github.com/VictoriaMetrics/VictoriaLogs v1.121.1-0.20260414190124-77df0c04d532 // v1.50.0
+ 	github.com/VictoriaMetrics/VictoriaMetrics v1.140.1-0.20260414051809-8a20ccf21db7

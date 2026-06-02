@@ -126,8 +126,8 @@ var (
 
 	tenantDefaultAccount    = flag.String("lakehouse.tenant.default-account", "", "Default tenant account ID (default: 0)")
 	tenantDefaultProject    = flag.String("lakehouse.tenant.default-project", "", "Default tenant project ID (default: 0)")
-	tenantHeaderAccount     = flag.String("lakehouse.tenant.header-account", "", "HTTP header for account ID (default: X-Scope-AccountID)")
-	tenantHeaderProject     = flag.String("lakehouse.tenant.header-project", "", "HTTP header for project ID (default: X-Scope-ProjectID)")
+	tenantHeaderAccount     = flag.String("lakehouse.tenant.header-account", "", "HTTP header for account ID (default: AccountID)")
+	tenantHeaderProject     = flag.String("lakehouse.tenant.header-project", "", "HTTP header for project ID (default: ProjectID)")
 	tenantGlobalHeader      = flag.String("lakehouse.tenant.global-read-header", "", "Header name for global read access")
 	tenantGlobalValue       = flag.String("lakehouse.tenant.global-read-value", "", "Expected header value for global read access")
 	tenantGlobalToken       = flag.String("lakehouse.tenant.global-read-token", "", "Bearer token for global read access")
@@ -306,9 +306,10 @@ func run(cfg *config.Config, addr string) {
 	registry := stats.NewTenantRegistry(hostname())
 
 	if w := store.Writer(); w != nil {
-		tenantKey := writerTenantKey
-		w.SetStatsCallback(func(compressedBytes, rawBytes, rows int64, storageClass string) {
-			registry.RecordWrite(tenantKey, compressedBytes, rawBytes, rows, storageClass)
+		fallback := writerTenantKey
+		w.SetStatsCallback(func(accountID, projectID uint32, compressedBytes, rawBytes, rows int64, storageClass string) {
+			key := tenantStatsKey(accountID, projectID, fallback)
+			registry.RecordWrite(key, compressedBytes, rawBytes, rows, storageClass)
 		})
 	}
 
@@ -1179,6 +1180,16 @@ func hostname() string {
 	}
 	h, _ := os.Hostname()
 	return h
+}
+
+// tenantStatsKey formats a (accountID, projectID) pair as the registry's
+// "account:project" key, falling back to the writer's default key when
+// the row carries no tenant (single-tenant deployments).
+func tenantStatsKey(accountID, projectID uint32, fallback string) string {
+	if accountID == 0 && projectID == 0 {
+		return fallback
+	}
+	return strconv.FormatUint(uint64(accountID), 10) + ":" + strconv.FormatUint(uint64(projectID), 10)
 }
 
 func deriveTenantKey(prefix string) string {

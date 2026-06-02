@@ -16,8 +16,8 @@ func TestIntegration_FullRoundTrip(t *testing.T) {
 
 	var capturedAccount, capturedProject string
 	backend := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		capturedAccount = req.Header.Get("X-Scope-AccountID")
-		capturedProject = req.Header.Get("X-Scope-ProjectID")
+		capturedAccount = req.Header.Get("AccountID")
+		capturedProject = req.Header.Get("ProjectID")
 		w.WriteHeader(http.StatusOK)
 	})
 

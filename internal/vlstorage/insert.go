@@ -57,6 +57,8 @@ func logRowsToSchemaRows(lr *logstorage.LogRows) []schema.LogRow {
 
 	lr.ForEachRow(func(_ uint64, r *logstorage.InsertRow) {
 		row := schema.LogRow{
+			AccountID:         r.TenantID.AccountID,
+			ProjectID:         r.TenantID.ProjectID,
 			TimestampUnixNano: r.Timestamp,
 		}
 

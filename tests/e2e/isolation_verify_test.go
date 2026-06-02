@@ -93,8 +93,8 @@ func TestVerifyIsolation_Logs_TenantAQueryCannotSeeTenantB(t *testing.T) {
 			"end":   params.Get("end"),
 		},
 		map[string]string{
-			"X-Scope-AccountID": "1",
-			"X-Scope-ProjectID": "1",
+			"AccountID": "1",
+			"ProjectID": "1",
 		},
 	)
 

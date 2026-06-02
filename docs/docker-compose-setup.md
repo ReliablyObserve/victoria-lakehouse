@@ -198,7 +198,7 @@ A standalone VictoriaLogs instance acting as the hot log tier with 24-hour reten
 
 ```yaml
 victoriatraces:
-  image: victoriametrics/victoria-traces:v0.9.0
+  image: victoriametrics/victoria-traces:v0.9.2
   command:
     - "-storageDataPath=/data"
     - "-retentionPeriod=24h"
@@ -226,7 +226,7 @@ VictoriaLogs in cluster select mode. Fans out every query to both hot (victorial
 
 ```yaml
 vtselect:
-  image: victoriametrics/victoria-traces:v0.9.0
+  image: victoriametrics/victoria-traces:v0.9.2
   command:
     - "-storageNode=victoriatraces:10428,lakehouse-traces:10428"
 ```

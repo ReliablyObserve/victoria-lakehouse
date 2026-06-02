@@ -15,6 +15,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
 )
 
 // CompactorPool abstracts S3 operations needed by the compactor.
@@ -292,14 +293,28 @@ func writeCompactedLogs(rows []schema.LogRow, rowGroupSize int, compressionLevel
 func writeCompactedTraces(rows []schema.TraceRow, rowGroupSize int, compressionLevel int) ([]byte, error) {
 	var buf bytes.Buffer
 	codec := &zstd.Codec{Level: zstdLevel(compressionLevel)}
-	writer := parquet.NewGenericWriter[schema.TraceRow](&buf,
+	opts := []parquet.WriterOption{
 		parquet.Compression(codec),
 		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
 		parquet.BloomFilters(
 			parquet.SplitBlockFilter(10, "service.name"),
 			parquet.SplitBlockFilter(10, "trace_id"),
 		),
-	)
+	}
+
+	// Preserve the per-file `_trace_idx` footer index across compaction.
+	// Without this, every merged file loses the embedded trace-ID time
+	// bounds and the cold-tier trace-by-ID fast path collapses to a
+	// full span scan for compacted data. Index lives in standard Parquet
+	// KV metadata (see internal/traceindex.MetadataKey) — same slot as
+	// the original writer in lakehouse-traces/.../parquets3/writer.go,
+	// so a query can't tell whether the file was freshly flushed or
+	// later compacted.
+	if idxData := traceindex.Marshal(traceindex.Compute(rows)); len(idxData) > 0 {
+		opts = append(opts, parquet.KeyValueMetadata(traceindex.MetadataKey, string(idxData)))
+	}
+
+	writer := parquet.NewGenericWriter[schema.TraceRow](&buf, opts...)
 	if _, err := writer.Write(rows); err != nil {
 		return nil, err
 	}

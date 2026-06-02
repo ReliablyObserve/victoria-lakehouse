@@ -528,6 +528,15 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	if projectedCols == nil && storage.IsTimestampOnly(ctx) {
 		projectedCols = map[string]bool{s.registry.TimestampColumn(): true}
 	}
+	// Field-enumerating pipes (field_names, field_values, facets,
+	// block_stats) must see every column the row carries — projection
+	// narrowing would truncate the answer. The adapter signals this via
+	// storage.WithAllFieldsHint, which we honour by forcing read-all.
+	// Drives `/api/v2/search/tags` parity with VT hot when LH cold
+	// answers through ExternalStorage.
+	if storage.IsAllFields(ctx) {
+		projectedCols = nil
+	}
 
 	// Reserve cumulative file-resident bytes against the process-wide budget
 	// BEFORE opening (and possibly downloading) the parquet file. Mirror of

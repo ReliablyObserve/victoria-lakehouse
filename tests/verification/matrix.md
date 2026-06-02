@@ -108,18 +108,18 @@ Related rules (memories): `feedback_per_component_verification`,
 | T10 | `/select/jaeger/api/services/{svc}/operations` | operations | PASS | manual | same | returns 10 operations for api-gateway via VT upstream handler; locked by probe_matrix_sweep.sh (ROW=T10) | 2026-05-30 |
 | T11 | `/select/jaeger/api/dependencies` | dep graph | PASS | manual | same | endpoint exists, returns `{"data":[]}` (dependency-graph computation not populated in current build; matches VT upstream behavior for sparse data); locked by probe_matrix_sweep.sh (ROW=T11) | 2026-05-30 |
 | T12 | `/select/tempo/api/search` | `q={}` | PASS | manual | same | curl returns trace list | 2026-05-29 |
-| T13 | `/select/tempo/api/v2/search/tags` | tag enum | PASS | manual | same | matrix path corrected to VT v0.9.0's `/v2/search/tags`; LH and VT both return `{"scopes":[...]}` with resource/span/event/link/instrumentation buckets; locked by probe_matrix_sweep.sh (ROW=T13) | 2026-05-30 |
-| T14 | `/select/tempo/api/v2/search/tag/{key}/values` | tag values | PASS | manual | same | matrix path corrected to VT v0.9.0's `/v2/search/tag/{key}/values`; LH returns `{"tagValues":[...]}` with real service names; locked by probe_matrix_sweep.sh (ROW=T14) | 2026-05-30 |
+| T13 | `/select/tempo/api/v2/search/tags` | tag enum | PASS | manual | same | matrix path corrected to VT v0.9.2's `/v2/search/tags`; LH and VT both return `{"scopes":[...]}` with resource/span/event/link/instrumentation buckets; locked by probe_matrix_sweep.sh (ROW=T13) | 2026-05-30 |
+| T14 | `/select/tempo/api/v2/search/tag/{key}/values` | tag values | PASS | manual | same | matrix path corrected to VT v0.9.2's `/v2/search/tag/{key}/values`; LH returns `{"tagValues":[...]}` with real service names; locked by probe_matrix_sweep.sh (ROW=T14) | 2026-05-30 |
 | T15 | `/select/tempo/api/traces/{id}` | trace lookup | PASS | manual | same | trace_id resolved + returned | 2026-05-29 |
 | T16 | `/select/tempo/api/metrics/query_range` | TraceQL `count_over_time() by(...)` | PASS | manual | same | curl returns series | 2026-05-29 |
-| T17 | `/select/tempo/api/metrics/instant` | instant TraceQL | DIFFER | manual | same | endpoint does NOT exist in VT v0.9.0 — VT returns 400 "unsupported path"; LH returns 200 with empty body (LH-internal stub from older VT version). Documented divergence — see Open bugs/known gaps. Locked by probe_matrix_sweep.sh (ROW=T17) | 2026-05-30 |
+| T17 | `/select/tempo/api/metrics/instant` | instant TraceQL | DIFFER | manual | same | endpoint does NOT exist in VT v0.9.2 — VT returns 400 "unsupported path"; LH returns 200 with empty body (LH-internal stub from older VT version). Documented divergence — see Open bugs/known gaps. Locked by probe_matrix_sweep.sh (ROW=T17) | 2026-05-30 |
 
 ## Traces insert
 
 | # | Endpoint | state | layer | last_state | verified |
 |---|----------|-------|-------|-----------|----------|
 | TI1 | `/insert/jsonline` | PASS | e2e | datagen succeeds | 2026-05-29 |
-| TI2 | `/insert/zipkin/api/v2/spans` | DIFFER | manual | endpoint NOT implemented in VT v0.9.0 (`deps/VictoriaTraces/app/vtinsert/main.go` only routes `/insert/opentelemetry/`); VT returns 400 "unsupported path", LH returns 404. Both reject. Per `feedback_vl_vt_upstream` LH should not add what VT doesn't expose. Locked by probe_matrix_sweep.sh (ROW=TI2) | 2026-05-30 |
+| TI2 | `/insert/zipkin/api/v2/spans` | DIFFER | manual | endpoint NOT implemented in VT v0.9.2 (`deps/VictoriaTraces/app/vtinsert/main.go` only routes `/insert/opentelemetry/`); VT returns 400 "unsupported path", LH returns 404. Both reject. Per `feedback_vl_vt_upstream` LH should not add what VT doesn't expose. Locked by probe_matrix_sweep.sh (ROW=TI2) | 2026-05-30 |
 | TI3 | `/insert/opentelemetry/v1/traces` | PASS | manual | 200 ingest of OTLP-JSON span, queryable in lakehouse-traces via `resource_attr:service.name:"matrix-probe-ti3"`; locked by probe_matrix_sweep.sh (ROW=TI3) | 2026-05-30 |
 
 ## Grafana datasources (e2e compose; smoke query each)
@@ -169,13 +169,13 @@ Related rules (memories): `feedback_per_component_verification`,
    22 UNVERIFIED rows and 2 DIFFER rows are now PASS or DIFFER-with-
    documentation. Probe lock: `tests/verification/probe_matrix_sweep.sh`.
 5. **T17 — `/select/tempo/api/metrics/instant` missing upstream.**
-   VT v0.9.0's tempo handler (`deps/VictoriaTraces/app/vtselect/traces/tempo/tempo.go`)
+   VT v0.9.2's tempo handler (`deps/VictoriaTraces/app/vtselect/traces/tempo/tempo.go`)
    does NOT register `/metrics/instant`; only `/metrics/query_range`
    exists. LH returns 200 with empty body, VT returns 400 "unsupported
    path". Per `feedback_vl_vt_upstream`, LH should remove the stub OR
    upgrade to a VT version that exposes the endpoint. Tracked DIFFER
    (not blocking).
-6. **TI2 — `/insert/zipkin/api/v2/spans` missing upstream.** VT v0.9.0
+6. **TI2 — `/insert/zipkin/api/v2/spans` missing upstream.** VT v0.9.2
    `deps/VictoriaTraces/app/vtinsert/main.go` only routes
    `/insert/opentelemetry/` and `/insert/jsonline`; Zipkin is not
    implemented. LH returns 404, VT returns 400 — both reject. Per

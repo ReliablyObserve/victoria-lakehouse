@@ -8,6 +8,7 @@ import (
 
 type queryHintKey struct{}
 type countOnlyKey struct{}
+type allFieldsKey struct{}
 
 func WithTimestampOnlyHint(ctx context.Context) context.Context {
 	return context.WithValue(ctx, queryHintKey{}, true)
@@ -24,6 +25,22 @@ func WithCountOnlyHint(ctx context.Context) context.Context {
 
 func IsCountOnly(ctx context.Context) bool {
 	v, _ := ctx.Value(countOnlyKey{}).(bool)
+	return v
+}
+
+// WithAllFieldsHint signals to the storage layer that the query has a
+// field-enumerating pipe (field_names / field_values / facets /
+// block_stats) and projection narrowing must be bypassed — every
+// column the rows carry needs to reach the pipe processor, otherwise
+// the enumeration reports a truncated schema.
+func WithAllFieldsHint(ctx context.Context) context.Context {
+	return context.WithValue(ctx, allFieldsKey{}, true)
+}
+
+// IsAllFields reports whether the caller asked the storage to bypass
+// column-narrowing for field enumeration.
+func IsAllFields(ctx context.Context) bool {
+	v, _ := ctx.Value(allFieldsKey{}).(bool)
 	return v
 }
 

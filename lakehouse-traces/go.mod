@@ -5,7 +5,7 @@ go 1.26.3
 // VictoriaLogs at commit a408207c2242 (compatible with VictoriaTraces v0.8.2)
 replace github.com/VictoriaMetrics/VictoriaLogs => ./deps/VictoriaLogs
 
-// VictoriaTraces v0.9.0 fork with ExternalStorage interface overlay
+// VictoriaTraces v0.9.2 fork with ExternalStorage interface overlay
 replace github.com/VictoriaMetrics/VictoriaTraces => ./deps/VictoriaTraces
 
 // Shared internal packages from root module
@@ -13,9 +13,9 @@ replace github.com/ReliablyObserve/victoria-lakehouse => ../
 
 require (
 	github.com/ReliablyObserve/victoria-lakehouse v0.0.0
-	github.com/VictoriaMetrics/VictoriaLogs v1.50.0
+	github.com/VictoriaMetrics/VictoriaLogs v1.121.1-0.20260414190124-77df0c04d532
 	github.com/VictoriaMetrics/VictoriaMetrics v1.140.1-0.20260414051809-8a20ccf21db7
-	github.com/VictoriaMetrics/VictoriaTraces v0.9.0
+	github.com/VictoriaMetrics/VictoriaTraces v0.9.2
 	github.com/aws/aws-sdk-go-v2 v1.41.7
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.100.1
 	github.com/cespare/xxhash/v2 v2.3.0

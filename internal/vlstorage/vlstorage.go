@@ -41,8 +41,17 @@ func (a *adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 	// query here is safe — pipes only inform column projection planning.
 
 	if logstorage.QueryHasPipes(qctx.Query) {
+		// Field-enumerating pipes (field_names / field_values / facets /
+		// block_stats) need every column on the row — bypass projection
+		// narrowing via the all-fields hint so the projection layer
+		// reads all Parquet columns. Mirror of the vtstorage_adapter
+		// path in lakehouse-traces/internal/vtstorage_adapter/adapter.go.
+		ctx := qctx.Context
+		if logstorage.QueryNeedsAllFields(qctx.Query) {
+			ctx = storage.WithAllFieldsHint(ctx)
+		}
 		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
-			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query,
+			return a.store.RunQuery(ctx, qctx.TenantIDs, qctx.Query,
 				wrapHiddenFields(wb, hiddenFilters))
 		}
 		return logstorage.RunQueryExternal(qctx, searchFn, writeBlock)

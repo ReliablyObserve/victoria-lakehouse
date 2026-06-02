@@ -1,5 +1,9 @@
 package logstorage
 
+import (
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/prefixfilter"
+)
+
 // RunQueryExternal executes a query with full pipe processing for external
 // storage backends. The searchFn provides raw filtered rows; pipes from
 // qctx.Query are then applied to produce the final output.
@@ -24,6 +28,32 @@ func QueryHasPipes(q *Query) bool {
 	return len(q.pipes) > 0
 }
 
+// QueryNeedsAllFields returns true when the query contains a pipe that
+// enumerates every field on the input rows rather than projecting a
+// known subset. The external storage backend must bypass column-
+// narrowing for such queries — otherwise the projection would hand the
+// pipe a DataBlock with only the columns its byFields/fieldFilters
+// list mentions, and field enumeration would see an artificially
+// truncated schema.
+//
+// Currently recognises VL's `field_names`, `field_values`, `facets`,
+// and `block_stats` pipes — the ones VT's Tempo handlers use for tag
+// enumeration (`/api/v2/search/tags`), tag value enumeration
+// (`/api/v2/search/tag/<k>/values`), and compare metrics
+// (`/api/metrics/query_range` with `compare(...)`).
+func QueryNeedsAllFields(q *Query) bool {
+	if q == nil {
+		return false
+	}
+	for _, p := range q.pipes {
+		switch p.(type) {
+		case *pipeFieldNames, *pipeFieldValues, *pipeFacets, *pipeBlockStats:
+			return true
+		}
+	}
+	return false
+}
+
 // CloneWithoutPipes returns a shallow copy of q with pipes removed.
 // Use this when passing a query to a storage backend that should return
 // raw filtered data — pipe processing happens externally via RunQueryExternal.
@@ -33,9 +63,21 @@ func CloneWithoutPipes(q *Query) *Query {
 	return &qCopy
 }
 
-// GetQueryPipeFields returns field names referenced by pipe operators
-// (stats by(), uniq by(), top by(), fields). Uses VL's parsed pipe types
+// GetQueryPipeFields returns field names referenced by pipe operators.
+// Walks both `by(...)` / `fields` clauses *and* the column arguments of
+// stats aggregation functions (`histogram(duration)`, `sum(x)`,
+// `quantile(0.9, y)`, `count(z)`, …). Uses VL's parsed pipe types
 // directly — no string re-parsing needed.
+//
+// Stats funcs declare their input columns through
+// `statsFunc.updateNeededFields(*prefixfilter.Filter)`; this routine asks
+// each func what it needs and collects the allow-list. Without this,
+// projections that only see `byFields` would skip the aggregation
+// argument column entirely — e.g. a Tempo metrics query
+// `{...} | stats by(_time:1h) histogram(duration)` would project
+// `_time` but drop `duration`, and the histogram would compute over an
+// empty column. See lakehouse cold-tier parity (PR #105) for the
+// failure mode this prevents.
 func GetQueryPipeFields(q *Query) []string {
 	if q == nil {
 		return nil
@@ -48,11 +90,31 @@ func GetQueryPipeFields(q *Query) []string {
 			fields = append(fields, name)
 		}
 	}
+	addFromStatsFunc := func(f statsFunc) {
+		if f == nil {
+			return
+		}
+		var pf prefixfilter.Filter
+		f.updateNeededFields(&pf)
+		for _, name := range pf.GetAllowFilters() {
+			// updateNeededFields may emit prefix patterns (e.g. "k8s.*"); the
+			// projection layer expects exact field names, so drop wildcards —
+			// the projection will fall back to "read all columns" naturally
+			// when an essential field can't be precisely resolved.
+			if name == "" || name[len(name)-1] == '*' {
+				continue
+			}
+			add(name)
+		}
+	}
 	for _, p := range q.pipes {
 		switch t := p.(type) {
 		case *pipeStats:
 			for _, bf := range t.byFields {
 				add(bf.name)
+			}
+			for i := range t.funcs {
+				addFromStatsFunc(t.funcs[i].f)
 			}
 		case *pipeUniq:
 			for _, name := range t.byFields {

@@ -2,6 +2,7 @@ package vlstorage
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlstorage"
@@ -38,8 +39,21 @@ func (a *adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 	// query here is safe — pipes only inform column projection planning.
 
 	if logstorage.QueryHasPipes(qctx.Query) {
+		// Field-enumerating pipes (field_names / field_values / facets /
+		// block_stats) must see every column the row carries — bypass
+		// projection narrowing via WithAllFieldsHint. Without this,
+		// queries the Tempo search/tags handler emits arrive at LH cold
+		// with pipeFields=["name"] (from `| uniq by(name)`), projection
+		// drops every resource_attr / span_attr column, and the
+		// field_names pipe reports only 2-3 names instead of the full
+		// schema. Mirror of the equivalent fix in
+		// lakehouse-traces/internal/vtstorage_adapter/adapter.go.
+		ctx := qctx.Context
+		if logstorage.QueryNeedsAllFields(qctx.Query) {
+			ctx = storage.WithAllFieldsHint(ctx)
+		}
 		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
-			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query,
+			return a.store.RunQuery(ctx, qctx.TenantIDs, qctx.Query,
 				wrapHiddenFields(wb, hiddenFilters))
 		}
 		return logstorage.RunQueryExternal(qctx, searchFn, writeBlock)
@@ -49,28 +63,58 @@ func (a *adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 		wrapHiddenFields(writeBlock, hiddenFilters))
 }
 
-func (a *adapter) GetFieldNames(qctx *logstorage.QueryContext) ([]logstorage.ValueWithHits, error) {
+// VL upstream v1.50.0 added `filter string` to GetFieldNames / GetFieldValues
+// / GetStreamFieldNames / GetStreamFieldValues. The shared storage.Storage
+// interface in the root module doesn't carry it; the adapter applies the
+// substring narrowing client-side, mirroring the root-module logs adapter
+// (internal/vlstorage/vlstorage.go filterValuesBySubstring).
+func (a *adapter) GetFieldNames(qctx *logstorage.QueryContext, filter string) ([]logstorage.ValueWithHits, error) {
 	results, err := a.store.GetFieldNames(qctx.Context, qctx.TenantIDs, qctx.Query)
 	if err != nil {
 		return nil, err
 	}
-	return filterHiddenValues(results, qctx.HiddenFieldsFilters), nil
+	results = filterHiddenValues(results, qctx.HiddenFieldsFilters)
+	return filterValuesBySubstring(results, filter), nil
 }
 
-func (a *adapter) GetFieldValues(qctx *logstorage.QueryContext, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
-	return a.store.GetFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
+func (a *adapter) GetFieldValues(qctx *logstorage.QueryContext, fieldName, filter string, limit uint64) ([]logstorage.ValueWithHits, error) {
+	results, err := a.store.GetFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
+	if err != nil {
+		return nil, err
+	}
+	return filterValuesBySubstring(results, filter), nil
 }
 
-func (a *adapter) GetStreamFieldNames(qctx *logstorage.QueryContext) ([]logstorage.ValueWithHits, error) {
+func (a *adapter) GetStreamFieldNames(qctx *logstorage.QueryContext, filter string) ([]logstorage.ValueWithHits, error) {
 	results, err := a.store.GetStreamFieldNames(qctx.Context, qctx.TenantIDs, qctx.Query)
 	if err != nil {
 		return nil, err
 	}
-	return filterHiddenValues(results, qctx.HiddenFieldsFilters), nil
+	results = filterHiddenValues(results, qctx.HiddenFieldsFilters)
+	return filterValuesBySubstring(results, filter), nil
 }
 
-func (a *adapter) GetStreamFieldValues(qctx *logstorage.QueryContext, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
-	return a.store.GetStreamFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
+func (a *adapter) GetStreamFieldValues(qctx *logstorage.QueryContext, fieldName, filter string, limit uint64) ([]logstorage.ValueWithHits, error) {
+	results, err := a.store.GetStreamFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
+	if err != nil {
+		return nil, err
+	}
+	return filterValuesBySubstring(results, filter), nil
+}
+
+// filterValuesBySubstring narrows results to entries whose Value contains
+// filter. Empty filter is a no-op.
+func filterValuesBySubstring(results []logstorage.ValueWithHits, filter string) []logstorage.ValueWithHits {
+	if filter == "" {
+		return results
+	}
+	filtered := make([]logstorage.ValueWithHits, 0, len(results))
+	for _, v := range results {
+		if strings.Contains(v.Value, filter) {
+			filtered = append(filtered, v)
+		}
+	}
+	return filtered
 }
 
 func (a *adapter) GetStreams(qctx *logstorage.QueryContext, limit uint64) ([]logstorage.ValueWithHits, error) {
