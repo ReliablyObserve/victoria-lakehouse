@@ -1,5 +1,9 @@
 package logstorage
 
+import (
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/prefixfilter"
+)
+
 // RunQueryExternal executes a query with full pipe processing for external
 // storage backends. The searchFn provides raw filtered rows; pipes from
 // qctx.Query are then applied to produce the final output.
@@ -33,9 +37,21 @@ func CloneWithoutPipes(q *Query) *Query {
 	return &qCopy
 }
 
-// GetQueryPipeFields returns field names referenced by pipe operators
-// (stats by(), uniq by(), top by(), fields). Uses VL's parsed pipe types
+// GetQueryPipeFields returns field names referenced by pipe operators.
+// Walks both `by(...)` / `fields` clauses *and* the column arguments of
+// stats aggregation functions (`histogram(duration)`, `sum(x)`,
+// `quantile(0.9, y)`, `count(z)`, …). Uses VL's parsed pipe types
 // directly — no string re-parsing needed.
+//
+// Stats funcs declare their input columns through
+// `statsFunc.updateNeededFields(*prefixfilter.Filter)`; this routine asks
+// each func what it needs and collects the allow-list. Without this,
+// projections that only see `byFields` would skip the aggregation
+// argument column entirely — e.g. a Tempo metrics query
+// `{...} | stats by(_time:1h) histogram(duration)` would project
+// `_time` but drop `duration`, and the histogram would compute over an
+// empty column. See lakehouse cold-tier parity (PR #105) for the
+// failure mode this prevents.
 func GetQueryPipeFields(q *Query) []string {
 	if q == nil {
 		return nil
@@ -48,11 +64,31 @@ func GetQueryPipeFields(q *Query) []string {
 			fields = append(fields, name)
 		}
 	}
+	addFromStatsFunc := func(f statsFunc) {
+		if f == nil {
+			return
+		}
+		var pf prefixfilter.Filter
+		f.updateNeededFields(&pf)
+		for _, name := range pf.GetAllowFilters() {
+			// updateNeededFields may emit prefix patterns (e.g. "k8s.*"); the
+			// projection layer expects exact field names, so drop wildcards —
+			// the projection will fall back to "read all columns" naturally
+			// when an essential field can't be precisely resolved.
+			if name == "" || name[len(name)-1] == '*' {
+				continue
+			}
+			add(name)
+		}
+	}
 	for _, p := range q.pipes {
 		switch t := p.(type) {
 		case *pipeStats:
 			for _, bf := range t.byFields {
 				add(bf.name)
+			}
+			for i := range t.funcs {
+				addFromStatsFunc(t.funcs[i].f)
 			}
 		case *pipeUniq:
 			for _, name := range t.byFields {
