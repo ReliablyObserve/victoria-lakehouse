@@ -13,7 +13,7 @@ replace github.com/ReliablyObserve/victoria-lakehouse => ../
 
 require (
 	github.com/ReliablyObserve/victoria-lakehouse v0.0.0
-	github.com/VictoriaMetrics/VictoriaLogs v1.50.0
+	github.com/VictoriaMetrics/VictoriaLogs v1.121.1-0.20260414190124-77df0c04d532
 	github.com/VictoriaMetrics/VictoriaMetrics v1.140.1-0.20260414051809-8a20ccf21db7
 	github.com/VictoriaMetrics/VictoriaTraces v0.9.0
 	github.com/aws/aws-sdk-go-v2 v1.41.7

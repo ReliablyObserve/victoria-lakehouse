@@ -193,7 +193,7 @@ func TestGetFieldNames_DelegatesToStorage(t *testing.T) {
 	tenantIDs := []logstorage.TenantID{{AccountID: 5, ProjectID: 6}}
 	qctx := newTestQctx(ctx, tenantIDs, nil)
 
-	got, err := a.GetFieldNames(qctx)
+	got, err := a.GetFieldNames(qctx, "")
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -215,7 +215,7 @@ func TestGetFieldValues_ForwardsFieldNameAndLimit(t *testing.T) {
 	a := newTestAdapter(mock)
 
 	qctx := newTestQctx(context.Background(), nil, nil)
-	got, err := a.GetFieldValues(qctx, "myField", 42)
+	got, err := a.GetFieldValues(qctx, "myField", "", 42)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -242,7 +242,7 @@ func TestGetStreamFieldNames_DelegatesToStorage(t *testing.T) {
 	ctx := context.Background()
 	qctx := newTestQctx(ctx, nil, nil)
 
-	got, err := a.GetStreamFieldNames(qctx)
+	got, err := a.GetStreamFieldNames(qctx, "")
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -260,7 +260,7 @@ func TestGetStreamFieldValues_ForwardsFieldNameAndLimit(t *testing.T) {
 	a := newTestAdapter(mock)
 
 	qctx := newTestQctx(context.Background(), nil, nil)
-	_, err := a.GetStreamFieldValues(qctx, "streamKey", 100)
+	_, err := a.GetStreamFieldValues(qctx, "streamKey", "", 100)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
