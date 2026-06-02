@@ -242,6 +242,8 @@
                 <tr>
                   <th onClick=${() => setSort("bytes")}>Victoria ID ${sort === "bytes" ? "\u25bc" : ""}</th>
                   <th>Org / Name</th>
+                  <th>Source</th>
+                  <th>S3 Prefix</th>
                   <th onClick=${() => setSort("files")}>Files ${sort === "files" ? "\u25bc" : ""}</th>
                   <th onClick=${() => setSort("bytes")}>Compressed ${sort === "bytes" ? "\u25bc" : ""}</th>
                   <th>Raw Bytes</th>
@@ -253,10 +255,17 @@
                 </tr>
               </thead>
               <tbody>
-                ${tenants.map(t => html`
-                  <tr>
-                    <td><strong>${t.account_id}:${t.project_id}</strong></td>
-                    <td>${t.org_id || t.name || "\u2014"}</td>
+                ${tenants.map(t => {
+                  const isDefault = (t.account_id === "0" && t.project_id === "0");
+                  const aliasOnly = (t.source === "alias");
+                  const orgName = t.org_id || t.name || (isDefault ? "(default)" : "\u2014");
+                  const s3Prefix = `${t.account_id}/${t.project_id}/`;
+                  return html`
+                  <tr style=${aliasOnly ? "opacity:0.7" : ""}>
+                    <td><strong>${t.account_id}:${t.project_id}</strong>${isDefault ? html` <span style="color:#888;font-size:0.85em">(default)</span>` : null}</td>
+                    <td>${orgName}${t.org_id ? html` <span style="color:#888;font-size:0.85em">alias</span>` : null}</td>
+                    <td><span class="badge ${aliasOnly ? 'badge-map' : 'badge-promoted'}">${t.source || "registry"}</span></td>
+                    <td><code style="font-size:0.85em">${s3Prefix}</code></td>
                     <td>${fmtNum(t.total_files)}</td>
                     <td>${fmtBytes(t.total_bytes)}</td>
                     <td>${fmtBytes(t.raw_bytes)}</td>
@@ -266,7 +275,8 @@
                     <td>${fmtTime(t.last_write_at)}</td>
                     <td>${(t.min_time||"").slice(0,10)} \u2192 ${(t.max_time||"").slice(0,10)}</td>
                   </tr>
-                `)}
+                  `;
+                })}
               </tbody>
             </table>
             </div>

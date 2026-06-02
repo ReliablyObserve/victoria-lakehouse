@@ -299,14 +299,36 @@
 
       var wrapper = el("div", { style: "overflow-x:auto" });
       var tbl = el("table", { className: "lh-table" });
-      tbl.innerHTML = "<thead><tr><th>Victoria ID</th><th>Org / Name</th><th>Files</th><th>Compressed</th><th>Raw Bytes</th><th>Rows</th><th>Compression</th><th>Est. Cost</th><th>Last Write</th><th>Time Range</th></tr></thead>";
+      tbl.innerHTML = "<thead><tr><th>Victoria ID</th><th>Org / Name</th><th>Source</th><th>S3 Prefix</th><th>Files</th><th>Compressed</th><th>Raw Bytes</th><th>Rows</th><th>Compression</th><th>Est. Cost</th><th>Last Write</th><th>Time Range</th></tr></thead>";
       var tbody = el("tbody");
       tenants.forEach(function (t) {
         var row = el("tr", { style: "cursor:pointer" });
         var tenantID = t.account_id + ":" + t.project_id;
-        var orgName = t.org_id || t.name || "\u2014";
+        var isDefault = (t.account_id === "0" && t.project_id === "0");
+        var hasAlias = !!t.org_id;
+        var aliasOnly = (t.source === "alias");
+        var orgName = t.org_id || t.name || (isDefault ? "(default)" : "\u2014");
+        var s3Prefix = t.account_id + "/" + t.project_id + "/";
+        var srcBadge = "registry";
+        var srcStyle = "color:#3a3";
+        if (aliasOnly) { srcBadge = "alias-only"; srcStyle = "color:#a83;font-style:italic"; }
+        else if (t.source === "manifest") { srcBadge = "manifest"; srcStyle = "color:#39c"; }
+        var rowStyle = aliasOnly ? "cursor:pointer;opacity:0.7" : "cursor:pointer";
+        row.setAttribute("style", rowStyle);
         var timeRange = (t.min_time ? t.min_time.slice(0, 10) : "\u2014") + " \u2192 " + (t.max_time ? t.max_time.slice(0, 10) : "\u2014");
-        row.innerHTML = "<td><strong>" + tenantID + "</strong></td><td>" + orgName + "</td><td>" + fmtNum(t.total_files) + "</td><td>" + fmtBytes(t.total_bytes) + "</td><td>" + fmtBytes(t.raw_bytes) + "</td><td>" + fmtNum(t.total_rows) + "</td><td>" + fmtRatio(t.compression_ratio) + "</td><td>" + fmtUSD(t.monthly_cost_usd) + "</td><td>" + fmtTime(t.last_write_at) + "</td><td>" + timeRange + "</td>";
+        row.innerHTML =
+          "<td><strong>" + tenantID + "</strong>" + (isDefault ? " <span style='color:#888;font-size:0.85em'>(default)</span>" : "") + "</td>" +
+          "<td>" + orgName + (hasAlias ? " <span style='color:#888;font-size:0.85em'>alias</span>" : "") + "</td>" +
+          "<td><span style='" + srcStyle + ";font-size:0.85em'>" + srcBadge + "</span></td>" +
+          "<td><code style='font-size:0.85em'>" + s3Prefix + "</code></td>" +
+          "<td>" + fmtNum(t.total_files) + "</td>" +
+          "<td>" + fmtBytes(t.total_bytes) + "</td>" +
+          "<td>" + fmtBytes(t.raw_bytes) + "</td>" +
+          "<td>" + fmtNum(t.total_rows) + "</td>" +
+          "<td>" + fmtRatio(t.compression_ratio) + "</td>" +
+          "<td>" + fmtUSD(t.monthly_cost_usd) + "</td>" +
+          "<td>" + fmtTime(t.last_write_at) + "</td>" +
+          "<td>" + timeRange + "</td>";
         row.addEventListener("click", function () { renderTenantDetail(container, t.account_id, t.project_id); });
         tbody.appendChild(row);
       });

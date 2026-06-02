@@ -144,6 +144,7 @@ type TenantCostEntry struct {
 	AccountID  string  `json:"account_id"`
 	ProjectID  string  `json:"project_id"`
 	Name       string  `json:"name,omitempty"`
+	OrgID      string  `json:"org_id,omitempty"`
 	CostUSD    float64 `json:"cost_usd"`
 	TotalBytes int64   `json:"total_bytes"`
 }
@@ -159,6 +160,7 @@ type TenantCompressionEntry struct {
 	AccountID        string  `json:"account_id"`
 	ProjectID        string  `json:"project_id"`
 	Name             string  `json:"name,omitempty"`
+	OrgID            string  `json:"org_id,omitempty"`
 	CompressionRatio float64 `json:"compression_ratio"`
 	TotalBytes       int64   `json:"total_bytes"`
 	RawBytes         int64   `json:"raw_bytes"`
@@ -195,9 +197,13 @@ type BreakdownLabel struct {
 	Values      []BreakdownValue `json:"values"`
 }
 
-// BreakdownValue is one distinct value of a breakdown label with estimated storage share.
+// BreakdownValue is one distinct value of a breakdown label with estimated
+// storage share. When the breakdown groups by tenant the OrgID field carries
+// the string alias if one is registered, so UIs can surface human-friendly
+// names alongside the integer account:project key.
 type BreakdownValue struct {
 	Value          string  `json:"value"`
+	OrgID          string  `json:"org_id,omitempty"`
 	EstimatedBytes int64   `json:"estimated_bytes"`
 	EstimatedFiles int64   `json:"estimated_files"`
 	SharePct       float64 `json:"share_pct"`
@@ -887,8 +893,22 @@ func (a *API) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Optional: request a single label only.
+	// Optional: request a single label only. Accept both ?label= and
+	// ?group_by= because UIs gravitate toward "group_by" wording for
+	// faceted breakdowns.
 	filterLabel := r.URL.Query().Get("label")
+	if filterLabel == "" {
+		filterLabel = r.URL.Query().Get("group_by")
+	}
+
+	// Special-case the "tenant" breakdown: bytes/files are sourced
+	// directly from the per-tenant registry (exact, not estimated),
+	// and each value is decorated with org_id so the UI can render
+	// the string alias next to the integer account:project key.
+	if filterLabel == "tenant" {
+		writeJSON(w, BreakdownResponse{Labels: []BreakdownLabel{a.tenantBreakdown()}})
+		return
+	}
 
 	labels := a.cfg.BreakdownLabels
 	if filterLabel != "" {
@@ -977,6 +997,42 @@ func (a *API) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, BreakdownResponse{Labels: result})
 }
 
+// tenantBreakdown builds a "tenant" facet from the per-tenant registry
+// snapshot. Used by /api/v1/stats/breakdown?group_by=tenant. The values
+// include the registry's exact byte/file totals plus the resolver-decorated
+// OrgID so the UI can render the string alias next to the integer key.
+func (a *API) tenantBreakdown() BreakdownLabel {
+	bl := BreakdownLabel{Name: "tenant", Type: "registry"}
+	if a.cfg.Registry == nil {
+		return bl
+	}
+	all := a.cfg.Registry.All()
+	var totalBytes int64
+	for _, ts := range all {
+		totalBytes += ts.TotalBytes
+	}
+	values := make([]BreakdownValue, 0, len(all))
+	for _, ts := range all {
+		share := 0.0
+		if totalBytes > 0 {
+			share = float64(ts.TotalBytes) / float64(totalBytes) * 100.0
+		}
+		values = append(values, BreakdownValue{
+			Value:          ts.AccountID + ":" + ts.ProjectID,
+			OrgID:          a.resolveOrgID(ts.AccountID, ts.ProjectID),
+			EstimatedBytes: ts.TotalBytes,
+			EstimatedFiles: ts.TotalFiles,
+			SharePct:       share,
+		})
+	}
+	sort.Slice(values, func(i, j int) bool {
+		return values[i].EstimatedBytes > values[j].EstimatedBytes
+	})
+	bl.Cardinality = len(values)
+	bl.Values = values
+	return bl
+}
+
 func max64(a, b int64) int64 {
 	if a > b {
 		return a
@@ -1023,10 +1079,12 @@ func (a *API) decorateName(entry *TenantEntry) {
 
 func (a *API) decorateCostName(entry *TenantCostEntry) {
 	entry.Name = a.resolveName(entry.AccountID, entry.ProjectID)
+	entry.OrgID = a.resolveOrgID(entry.AccountID, entry.ProjectID)
 }
 
 func (a *API) decorateCompressionName(entry *TenantCompressionEntry) {
 	entry.Name = a.resolveName(entry.AccountID, entry.ProjectID)
+	entry.OrgID = a.resolveOrgID(entry.AccountID, entry.ProjectID)
 }
 
 func tenantStatsToEntry(ts *TenantStats, cc *CostCalculator) TenantEntry {
