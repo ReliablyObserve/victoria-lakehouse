@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.3] - 2026-06-02
+
 ### Added
 
 - **Election-free compaction (spec 2026-05-31)** — replaces the K8s Lease /
