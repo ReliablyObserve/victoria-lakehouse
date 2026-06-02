@@ -306,6 +306,9 @@ func run(cfg *config.Config, addr string) {
 			key := tenantStatsKey(accountID, projectID, fallback)
 			registry.RecordWrite(key, compressedBytes, rawBytes, rows, storageClass)
 		})
+		if pf := tenantPrefixResolver(cfg); pf != nil {
+			w.SetTenantPrefix(pf)
+		}
 	}
 
 	// Load snapshot from S3 if configured.
@@ -1169,6 +1172,25 @@ func tenantStatsKey(accountID, projectID uint32, fallback string) string {
 		return fallback
 	}
 	return strconv.FormatUint(uint64(accountID), 10) + ":" + strconv.FormatUint(uint64(projectID), 10)
+}
+
+// tenantPrefixResolver returns a function that expands the configured
+// tenant prefix template into a per-tenant S3 key prefix. See the
+// equivalent comment in cmd/lakehouse-logs/main.go for the contract.
+func tenantPrefixResolver(cfg *config.Config) parquets3.TenantPrefixFunc {
+	tmpl := cfg.Tenant.PrefixTemplate
+	if tmpl == "" {
+		return nil
+	}
+	if !strings.Contains(tmpl, "{AccountID}") && !strings.Contains(tmpl, "{ProjectID}") {
+		return nil
+	}
+	signal := "traces/"
+	return func(accountID, projectID uint32) string {
+		a := strconv.FormatUint(uint64(accountID), 10)
+		p := strconv.FormatUint(uint64(projectID), 10)
+		return strings.NewReplacer("{AccountID}", a, "{ProjectID}", p).Replace(tmpl) + signal
+	}
 }
 
 func deriveTenantKey(prefix string) string {

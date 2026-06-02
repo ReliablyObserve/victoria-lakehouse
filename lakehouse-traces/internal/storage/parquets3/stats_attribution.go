@@ -1,6 +1,8 @@
 package parquets3
 
 import (
+	"sort"
+
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -10,61 +12,94 @@ type tenantKey struct {
 	ProjectID uint32
 }
 
-// attributeLogStats emits one StatsCallback invocation per distinct
-// tenant in rows, with compressed/raw bytes apportioned by that
-// tenant's row share. Single-tenant batches produce a single call.
-func attributeLogStats(cb StatsCallback, rows []schema.LogRow, compressed, raw int64) {
-	if len(rows) == 0 {
-		return
-	}
-	counts := make(map[tenantKey]int64, 1)
-	for i := range rows {
-		k := tenantKey{rows[i].AccountID, rows[i].ProjectID}
-		counts[k]++
-	}
-	emitTenantStats(cb, counts, compressed, raw, int64(len(rows)))
+// logTenantGroup holds a slice of rows from one tenant carved out of a
+// mixed-tenant partition buffer. Order within the slice preserves the
+// input order so the writer's earlier timestamp sort is not undone.
+type logTenantGroup struct {
+	AccountID uint32
+	ProjectID uint32
+	Rows      []schema.LogRow
 }
 
-// attributeTraceStats mirrors attributeLogStats for trace rows.
-func attributeTraceStats(cb StatsCallback, rows []schema.TraceRow, compressed, raw int64) {
-	if len(rows) == 0 {
-		return
-	}
-	counts := make(map[tenantKey]int64, 1)
-	for i := range rows {
-		k := tenantKey{rows[i].AccountID, rows[i].ProjectID}
-		counts[k]++
-	}
-	emitTenantStats(cb, counts, compressed, raw, int64(len(rows)))
+// traceTenantGroup mirrors logTenantGroup for trace rows.
+type traceTenantGroup struct {
+	AccountID uint32
+	ProjectID uint32
+	Rows      []schema.TraceRow
 }
 
-func emitTenantStats(cb StatsCallback, counts map[tenantKey]int64, compressed, raw, total int64) {
-	// Fast path: one tenant — emit exact totals without rounding drift.
-	if len(counts) == 1 {
-		for k, n := range counts {
-			cb(k.AccountID, k.ProjectID, compressed, raw, n, "STANDARD")
+// groupLogRowsByTenant returns rows partitioned by (AccountID, ProjectID).
+// Fast path: a single-tenant batch is returned as one group sharing the
+// caller's slice (no copy). Multi-tenant batches allocate one slice per
+// tenant. Group order is deterministic (sorted by AccountID, then ProjectID)
+// so flush ordering is stable across runs.
+func groupLogRowsByTenant(rows []schema.LogRow) []logTenantGroup {
+	if len(rows) == 0 {
+		return nil
+	}
+	if singleTenantLogRows(rows) {
+		return []logTenantGroup{{AccountID: rows[0].AccountID, ProjectID: rows[0].ProjectID, Rows: rows}}
+	}
+	by := make(map[tenantKey][]schema.LogRow)
+	for i := range rows {
+		k := tenantKey{rows[i].AccountID, rows[i].ProjectID}
+		by[k] = append(by[k], rows[i])
+	}
+	out := make([]logTenantGroup, 0, len(by))
+	for k, rs := range by {
+		out = append(out, logTenantGroup{AccountID: k.AccountID, ProjectID: k.ProjectID, Rows: rs})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].AccountID != out[j].AccountID {
+			return out[i].AccountID < out[j].AccountID
 		}
-		return
+		return out[i].ProjectID < out[j].ProjectID
+	})
+	return out
+}
+
+// groupTraceRowsByTenant mirrors groupLogRowsByTenant for trace rows.
+func groupTraceRowsByTenant(rows []schema.TraceRow) []traceTenantGroup {
+	if len(rows) == 0 {
+		return nil
 	}
-	// Multi-tenant: apportion bytes by row share. Accumulate the last
-	// tenant's bytes from the remainder so totals match exactly.
-	var distributed int64
-	var distributedRaw int64
-	var lastKey tenantKey
-	var lastRows int64
-	for k, n := range counts {
-		lastKey = k
-		lastRows = n
+	if singleTenantTraceRows(rows) {
+		return []traceTenantGroup{{AccountID: rows[0].AccountID, ProjectID: rows[0].ProjectID, Rows: rows}}
 	}
-	for k, n := range counts {
-		if k == lastKey {
-			continue
+	by := make(map[tenantKey][]schema.TraceRow)
+	for i := range rows {
+		k := tenantKey{rows[i].AccountID, rows[i].ProjectID}
+		by[k] = append(by[k], rows[i])
+	}
+	out := make([]traceTenantGroup, 0, len(by))
+	for k, rs := range by {
+		out = append(out, traceTenantGroup{AccountID: k.AccountID, ProjectID: k.ProjectID, Rows: rs})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].AccountID != out[j].AccountID {
+			return out[i].AccountID < out[j].AccountID
 		}
-		c := compressed * n / total
-		r := raw * n / total
-		cb(k.AccountID, k.ProjectID, c, r, n, "STANDARD")
-		distributed += c
-		distributedRaw += r
+		return out[i].ProjectID < out[j].ProjectID
+	})
+	return out
+}
+
+func singleTenantLogRows(rows []schema.LogRow) bool {
+	a, p := rows[0].AccountID, rows[0].ProjectID
+	for i := 1; i < len(rows); i++ {
+		if rows[i].AccountID != a || rows[i].ProjectID != p {
+			return false
+		}
 	}
-	cb(lastKey.AccountID, lastKey.ProjectID, compressed-distributed, raw-distributedRaw, lastRows, "STANDARD")
+	return true
+}
+
+func singleTenantTraceRows(rows []schema.TraceRow) bool {
+	a, p := rows[0].AccountID, rows[0].ProjectID
+	for i := 1; i < len(rows); i++ {
+		if rows[i].AccountID != a || rows[i].ProjectID != p {
+			return false
+		}
+	}
+	return true
 }

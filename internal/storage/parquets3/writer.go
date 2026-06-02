@@ -45,6 +45,16 @@ type StatsCallback func(accountID, projectID uint32, compressedBytes, rawBytes, 
 // S3 key and the raw Parquet bytes.
 type FlushCacheCallback func(fileKey string, data []byte)
 
+// TenantPrefixFunc returns the S3 key prefix where a row with the given
+// (AccountID, ProjectID) tenant identity should land. The returned
+// prefix must end in "/". When nil, the writer's default prefix is used
+// for every row (single-tenant deployment).
+//
+// Per docs/multi-tenancy.md "boundary principle", the resolved prefix
+// MUST be integer-keyed (e.g. "{AccountID}/{ProjectID}/<mode>/"); the
+// string OrgID is a presentation concern surfaced only at API/UI.
+type TenantPrefixFunc func(accountID, projectID uint32) string
+
 // BatchWriter buffers incoming rows per partition and flushes them as
 // Parquet files to S3 on a configurable interval or size threshold.
 type BatchWriter struct {
@@ -65,6 +75,7 @@ type BatchWriter struct {
 	bloomObserver BloomObserver
 	statsCallback StatsCallback
 	flushCacheCb  FlushCacheCallback
+	tenantPrefix  TenantPrefixFunc
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -106,6 +117,27 @@ func (w *BatchWriter) SetStatsCallback(cb StatsCallback) {
 // column data locally for immediate query availability.
 func (w *BatchWriter) SetFlushCacheCallback(cb FlushCacheCallback) {
 	w.flushCacheCb = cb
+}
+
+// SetTenantPrefix installs a per-tenant prefix resolver. When set, the
+// flush path groups rows by (AccountID, ProjectID) and writes each
+// tenant's slice of a partition to its own Parquet file under the
+// resolved prefix. When nil, every row lands at the writer's default
+// prefix as before — preserving single-tenant deployments.
+func (w *BatchWriter) SetTenantPrefix(f TenantPrefixFunc) {
+	w.tenantPrefix = f
+}
+
+// prefixForTenant returns the configured tenant prefix, falling back to
+// the writer's default prefix when no resolver is installed.
+func (w *BatchWriter) prefixForTenant(accountID, projectID uint32) string {
+	if w.tenantPrefix == nil {
+		return w.prefix
+	}
+	if p := w.tenantPrefix(accountID, projectID); p != "" {
+		return p
+	}
+	return w.prefix
 }
 
 func (w *BatchWriter) Start() {
@@ -315,13 +347,27 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 		return rows[i].TimestampUnixNano < rows[j].TimestampUnixNano
 	})
 
+	// Group rows by tenant so each tenant's slice lands at its own
+	// S3 prefix. Fast path: a single-tenant batch (the common case in
+	// single-tenant deployments) skips the grouping allocation.
+	groups := groupLogRowsByTenant(rows)
+	for _, g := range groups {
+		if err := w.flushLogTenantGroup(ctx, partition, g.AccountID, g.ProjectID, g.Rows); err != nil {
+			return err
+		}
+	}
+	w.writeMetadataSidecarAsync(ctx, partition)
+	return nil
+}
+
+func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string, accountID, projectID uint32, rows []schema.LogRow) error {
 	result, err := writeLogsParquet(rows, w.cfg.RowGroupSize, w.cfg.CompressionLevel)
 	if err != nil {
 		return fmt.Errorf("write parquet: %w", err)
 	}
 
 	batchID := randomBatchID()
-	key := fmt.Sprintf("%s%s/%s.parquet", w.prefix, partition, batchID)
+	key := fmt.Sprintf("%s%s/%s.parquet", w.prefixForTenant(accountID, projectID), partition, batchID)
 
 	metrics.S3RequestsTotal.Inc("PUT")
 	if err := w.pool.Upload(ctx, key, result.Data); err != nil {
@@ -342,14 +388,12 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 	}
 	w.manifest.AddFile(partition, fi)
 
-	w.writeMetadataSidecarAsync(ctx, partition)
-
 	if w.bloomObserver != nil {
 		w.bloomObserver.OnFileFlush(partition, key, extractLogBloomValues(rows))
 	}
 
 	if w.statsCallback != nil {
-		attributeLogStats(w.statsCallback, rows, int64(len(result.Data)), result.RawBytes)
+		w.statsCallback(accountID, projectID, int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
 	}
 
 	if w.flushCacheCb != nil {
@@ -358,8 +402,8 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 
 	w.totalBytes.Add(int64(len(result.Data)))
 
-	logger.Infof("flushed log partition; partition=%s, rows=%d, bytes=%d, ratio=%v, key=%s",
-		partition, len(rows), len(result.Data), fi.CompressionRatio(), key)
+	logger.Infof("flushed log partition; partition=%s, tenant=%d:%d, rows=%d, bytes=%d, ratio=%v, key=%s",
+		partition, accountID, projectID, len(rows), len(result.Data), fi.CompressionRatio(), key)
 
 	return nil
 }
@@ -369,13 +413,24 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 		return rows[i].TimestampUnixNano < rows[j].TimestampUnixNano
 	})
 
+	groups := groupTraceRowsByTenant(rows)
+	for _, g := range groups {
+		if err := w.flushTraceTenantGroup(ctx, partition, g.AccountID, g.ProjectID, g.Rows); err != nil {
+			return err
+		}
+	}
+	w.writeMetadataSidecarAsync(ctx, partition)
+	return nil
+}
+
+func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition string, accountID, projectID uint32, rows []schema.TraceRow) error {
 	result, err := writeTracesParquet(rows, w.cfg.RowGroupSize, w.cfg.CompressionLevel)
 	if err != nil {
 		return fmt.Errorf("write parquet: %w", err)
 	}
 
 	batchID := randomBatchID()
-	key := fmt.Sprintf("%s%s/%s.parquet", w.prefix, partition, batchID)
+	key := fmt.Sprintf("%s%s/%s.parquet", w.prefixForTenant(accountID, projectID), partition, batchID)
 
 	metrics.S3RequestsTotal.Inc("PUT")
 	if err := w.pool.Upload(ctx, key, result.Data); err != nil {
@@ -396,14 +451,12 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 	}
 	w.manifest.AddFile(partition, fi)
 
-	w.writeMetadataSidecarAsync(ctx, partition)
-
 	if w.bloomObserver != nil {
 		w.bloomObserver.OnFileFlush(partition, key, extractTraceBloomValues(rows))
 	}
 
 	if w.statsCallback != nil {
-		attributeTraceStats(w.statsCallback, rows, int64(len(result.Data)), result.RawBytes)
+		w.statsCallback(accountID, projectID, int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
 	}
 
 	if w.flushCacheCb != nil {
@@ -412,8 +465,8 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 
 	w.totalBytes.Add(int64(len(result.Data)))
 
-	logger.Infof("flushed trace partition; partition=%s, rows=%d, bytes=%d, ratio=%v, key=%s",
-		partition, len(rows), len(result.Data), fi.CompressionRatio(), key)
+	logger.Infof("flushed trace partition; partition=%s, tenant=%d:%d, rows=%d, bytes=%d, ratio=%v, key=%s",
+		partition, accountID, projectID, len(rows), len(result.Data), fi.CompressionRatio(), key)
 
 	return nil
 }
