@@ -529,7 +529,7 @@ Optimizations applied: inverted label index, SmartCache trace_id fast-path.
 
 #### Traces: Phase 4 (2026-05-22)
 
-Dataset: 5881 traces, 168h back. LH-traces vs VictoriaTraces v0.9.0 (disk) vs Tempo 2.7.2 (S3).
+Dataset: 5881 traces, 168h back. LH-traces vs VictoriaTraces v0.9.2 (disk) vs Tempo 2.7.2 (S3).
 
 | Category | Scenario | LH p95 | VT p95 | Tempo p95 | LH/VT | LH/Tempo |
 |---|---|---|---|---|---|---|
