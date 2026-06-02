@@ -70,6 +70,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cache/lru.go` and `cache/disk.go`: added `SetBound`, `RejectedByBound` accessors and per-entry `boundRelease` closures so every code path that drops an entry (eviction, Delete, Clear, Update-with-replace) releases its slot back to the bound exactly once.
 - `internal/storage/parquets3/storage_query.go`: extracted `processOneFile`, `fileWorkerLoop`, `acquireQueryMaxRowsBudget` helpers to keep `RunQuery` within the 50-line gocyclo budget after wiring the new admit points.
 
+### Fixed
+
+- **Stats API compression endpoint fallback** — the manifest-only fallback path (when registry is empty) was not including `RawBytes` in the response, causing compression ratio to show as 0 in the Lakehouse UI. The fallback now correctly accumulates `RawBytes` from `TenantSummaries()` and includes it in per-tenant compression entries, allowing the average compression ratio calculation to properly compute `RawBytes / TotalBytes`.
+
 ### Removed (election-free compaction)
 
 - **`internal/election/` package** — entire directory deleted (~5 kLOC across

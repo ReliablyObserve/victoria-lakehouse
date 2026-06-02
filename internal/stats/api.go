@@ -738,15 +738,16 @@ func (a *API) handleCompression(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	} else if a.cfg.Manifest != nil {
-		// Fall back to manifest. Without write-path raw bytes, show
-		// compressed bytes only so the endpoint is not empty.
+		// Fall back to manifest. Manifest accumulates raw bytes from all files.
 		summaries := a.cfg.Manifest.TenantSummaries()
 		for _, s := range summaries {
 			totalBytes += s.TotalBytes
+			totalRaw += s.RawBytes
 			perTenant = append(perTenant, TenantCompressionEntry{
 				AccountID:  s.AccountID,
 				ProjectID:  s.ProjectID,
 				TotalBytes: s.TotalBytes,
+				RawBytes:   s.RawBytes,
 			})
 		}
 	}
