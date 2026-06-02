@@ -12,8 +12,8 @@ func TestMiddleware_OrgIDResolved(t *testing.T) {
 
 	var gotAccount, gotProject string
 	handler := r.Middleware(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		gotAccount = req.Header.Get("X-Scope-AccountID")
-		gotProject = req.Header.Get("X-Scope-ProjectID")
+		gotAccount = req.Header.Get("AccountID")
+		gotProject = req.Header.Get("ProjectID")
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -62,8 +62,8 @@ func TestMiddleware_NoOrgIDPassthrough(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest("GET", "/select/logsql/query", nil)
-	req.Header.Set("X-Scope-AccountID", "42")
-	req.Header.Set("X-Scope-ProjectID", "3")
+	req.Header.Set("AccountID", "42")
+	req.Header.Set("ProjectID", "3")
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
@@ -128,7 +128,7 @@ func TestMiddleware_CustomHeader(t *testing.T) {
 
 	var gotAccount string
 	handler := r.Middleware(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		gotAccount = req.Header.Get("X-Scope-AccountID")
+		gotAccount = req.Header.Get("AccountID")
 		w.WriteHeader(http.StatusOK)
 	}))
 

@@ -11,6 +11,17 @@ var autoIDCounter uint32 = 1000
 
 func (r *TenantResolver) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// Accept the public "X-Scope-AccountID"/"X-Scope-ProjectID" header
+		// pair as a synonym for VL/VT's native "AccountID"/"ProjectID".
+		// The spec exposes the X-Scope-* form externally; upstream code
+		// reads the unprefixed names. Translate here so both work.
+		if a := req.Header.Get("X-Scope-AccountID"); a != "" && req.Header.Get("AccountID") == "" {
+			req.Header.Set("AccountID", a)
+		}
+		if p := req.Header.Get("X-Scope-ProjectID"); p != "" && req.Header.Get("ProjectID") == "" {
+			req.Header.Set("ProjectID", p)
+		}
+
 		orgID := req.Header.Get(r.config.OrgIDHeader)
 		if orgID == "" {
 			next.ServeHTTP(w, req)
@@ -50,8 +61,8 @@ func (r *TenantResolver) Middleware(next http.Handler) http.Handler {
 			}
 		}
 
-		req.Header.Set("X-Scope-AccountID", fmt.Sprintf("%d", tid.AccountID))
-		req.Header.Set("X-Scope-ProjectID", fmt.Sprintf("%d", tid.ProjectID))
+		req.Header.Set("AccountID", fmt.Sprintf("%d", tid.AccountID))
+		req.Header.Set("ProjectID", fmt.Sprintf("%d", tid.ProjectID))
 		req.Header.Del(r.config.OrgIDHeader)
 
 		next.ServeHTTP(w, req)
