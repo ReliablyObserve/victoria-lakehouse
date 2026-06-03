@@ -2,6 +2,7 @@ package tenant
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -140,6 +141,69 @@ func (pr *PolicyRegistry) For(accountID, projectID uint32) *EffectiveConfig {
 	}
 	pr.cache.Store(tid, eff)
 	return eff
+}
+
+// RetentionEntries adapts the registry to retention.TenantPolicy
+// without making the retention package import internal/tenant
+// (avoids a cycle). Only entries with a non-zero retention duration
+// are returned — callers can len()-check before iterating.
+type RetentionEntry struct {
+	AccountID uint32
+	ProjectID uint32
+	Retention string
+}
+
+// RetentionEntries returns every override carrying a retention
+// duration, formatted as a Go duration string so it round-trips
+// through retention.parseDuration unchanged.
+func (pr *PolicyRegistry) RetentionEntries() []RetentionEntry {
+	if pr == nil {
+		return nil
+	}
+	all := pr.All()
+	out := make([]RetentionEntry, 0, len(all))
+	for _, e := range all {
+		if e.Retention <= 0 {
+			continue
+		}
+		out = append(out, RetentionEntry{
+			AccountID: e.AccountID,
+			ProjectID: e.ProjectID,
+			Retention: e.Retention.String(),
+		})
+	}
+	return out
+}
+
+// All returns every resolved EffectiveConfig the registry currently
+// holds, sorted by (AccountID, ProjectID). Callers walk this to
+// materialize the overrides into downstream subsystems (retention
+// rules, cardinality limits, rate caps) at startup or on refresh.
+func (pr *PolicyRegistry) All() []*EffectiveConfig {
+	if pr == nil {
+		return nil
+	}
+	pr.mu.RLock()
+	tids := make([]TenantID, 0, len(pr.rawByID))
+	for tid := range pr.rawByID {
+		tids = append(tids, tid)
+	}
+	pr.mu.RUnlock()
+
+	sort.Slice(tids, func(i, j int) bool {
+		if tids[i].AccountID != tids[j].AccountID {
+			return tids[i].AccountID < tids[j].AccountID
+		}
+		return tids[i].ProjectID < tids[j].ProjectID
+	})
+
+	out := make([]*EffectiveConfig, 0, len(tids))
+	for _, tid := range tids {
+		if eff := pr.For(tid.AccountID, tid.ProjectID); eff != nil {
+			out = append(out, eff)
+		}
+	}
+	return out
 }
 
 // PendingAliases lists override keys that haven't been resolved yet —

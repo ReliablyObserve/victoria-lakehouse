@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,6 +26,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/prefetch"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/retention"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/stats"
@@ -417,6 +419,16 @@ func run(cfg *config.Config, addr string) {
 				}
 			}
 		}()
+	}
+
+	if cfg.Retention.Enabled {
+		retentionMgr, err := buildRetentionManager(cfg, store, policy, "traces")
+		if err != nil {
+			logger.Fatalf("retention manager init failed: %s", err)
+		}
+		retentionCtx, retentionCancel := context.WithCancel(context.Background())
+		go retentionMgr.Start(retentionCtx)
+		defer retentionCancel()
 	}
 
 	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister, policy)
@@ -1195,6 +1207,43 @@ func tenantStatsKey(accountID, projectID uint32, fallback string) string {
 		return fallback
 	}
 	return strconv.FormatUint(uint64(accountID), 10) + ":" + strconv.FormatUint(uint64(projectID), 10)
+}
+
+// buildRetentionManager wires retention against the running storage +
+// per-tenant policy. Mirror of the helper in cmd/lakehouse-logs/main.go;
+// see that copy for the design rationale.
+func buildRetentionManager(cfg *config.Config, store *parquets3.Storage, policy *tenant.PolicyRegistry, mode string) (*retention.Manager, error) {
+	rules := make([]retention.Rule, 0, len(cfg.Retention.Rules))
+	for _, r := range cfg.Retention.Rules {
+		rules = append(rules, retention.Rule{Match: r.Match, Keep: r.Keep})
+	}
+	tenantEntries := []retention.TenantRetentionEntry{}
+	for _, e := range policy.RetentionEntries() {
+		tenantEntries = append(tenantEntries, retention.TenantRetentionEntry{
+			AccountID: e.AccountID,
+			ProjectID: e.ProjectID,
+			Keep:      e.Retention,
+		})
+	}
+	rules = append(rules, retention.SynthesizeRules(tenantEntries)...)
+
+	retCfg := retention.Config{
+		Enabled:       cfg.Retention.Enabled,
+		Default:       cfg.Retention.Default,
+		CheckInterval: cfg.Retention.CheckInterval,
+		Rules:         rules,
+	}
+	deleter := &poolDeleter{pool: store.Pool()}
+	slogLogger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	return retention.New(retCfg, store.Manifest(), deleter, cfg.S3.Bucket, slogLogger.With("component", "retention", "mode", mode))
+}
+
+type poolDeleter struct {
+	pool *s3reader.ClientPool
+}
+
+func (d *poolDeleter) DeleteObject(ctx context.Context, _ string, key string) error {
+	return d.pool.Delete(ctx, key)
 }
 
 // tenantPrefixResolver returns a function that expands the configured
