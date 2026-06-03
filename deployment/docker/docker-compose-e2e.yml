@@ -232,9 +232,11 @@ services:
       - "-lakehouse.tenant.auto-register=true"
       - "-lakehouse.tenant.metrics-format=name"
       - "-lakehouse.tenant.prefix-template={AccountID}/{ProjectID}/"
+      - "-lakehouse.config=/etc/lakehouse/policy.yml"
       - "-loggerLevel=INFO"
     volumes:
       - lakehouse-cache-logs:/data/lakehouse
+      - ./lakehouse-e2e-config.yml:/etc/lakehouse/policy.yml:ro
     healthcheck:
       test: ["CMD", "/usr/local/bin/lakehouse-logs", "healthcheck", "http://localhost:9428/health"]
       interval: 5s
@@ -295,9 +297,11 @@ services:
       # override beyond upstream defaults; it reflects a real
       # cold-tier write-lag, not an LH-specific trick.
       - "-search.latencyOffset=2m"
+      - "-lakehouse.config=/etc/lakehouse/policy.yml"
       - "-loggerLevel=INFO"
     volumes:
       - lakehouse-cache-traces:/data/lakehouse
+      - ./lakehouse-e2e-config.yml:/etc/lakehouse/policy.yml:ro
     healthcheck:
       test: ["CMD", "/usr/local/bin/lakehouse-traces", "healthcheck", "http://localhost:10428/health"]
       interval: 5s

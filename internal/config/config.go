@@ -486,8 +486,8 @@ type DeleteConfig struct {
 }
 
 type LifecycleRuleConfig struct {
-	TransitionDays int    `yaml:"transition_days"`
-	StorageClass   string `yaml:"storage_class"`
+	TransitionDays int    `yaml:"transition_days" json:"transition_days"`
+	StorageClass   string `yaml:"storage_class" json:"storage_class"`
 }
 
 type SmartCacheConfig struct {
@@ -1474,6 +1474,24 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if len(overlay.Tenant.KnownTenants) > 0 {
 		base.Tenant.KnownTenants = overlay.Tenant.KnownTenants
+	}
+	if overlay.Tenant.OrgIDHeader != "" {
+		base.Tenant.OrgIDHeader = overlay.Tenant.OrgIDHeader
+	}
+	if overlay.Tenant.MetricsFormat != "" {
+		base.Tenant.MetricsFormat = overlay.Tenant.MetricsFormat
+	}
+	if overlay.Tenant.AutoRegister {
+		base.Tenant.AutoRegister = true
+	}
+	if overlay.Tenant.AliasSyncInterval > 0 {
+		base.Tenant.AliasSyncInterval = overlay.Tenant.AliasSyncInterval
+	}
+	if len(overlay.Tenant.Aliases) > 0 {
+		base.Tenant.Aliases = overlay.Tenant.Aliases
+	}
+	if len(overlay.Tenant.Overrides) > 0 {
+		base.Tenant.Overrides = overlay.Tenant.Overrides
 	}
 
 	// Stats
