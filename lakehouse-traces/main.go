@@ -859,6 +859,18 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		mux.Handle("/internal/stats/sync", syncHandler)
 	}
 
+	// Admin: tenant bucket migration. Same auth surface as
+	// cmd/lakehouse-logs — see that copy for the design note.
+	{
+		mig := tenant.NewMigrator(store.Manifest(), store.Pool(), cfg.S3.Bucket)
+		admin := tenant.NewAdminHandler(mig, tenant.AdminAuthConfig{
+			HeaderName:  cfg.Tenant.GlobalReadHeader,
+			HeaderValue: cfg.Tenant.GlobalReadValue,
+			BearerToken: cfg.Tenant.GlobalReadToken,
+		})
+		admin.Register(mux)
+	}
+
 	// Stats API
 	if cfg.Stats.Enabled {
 		statsAPI := stats.NewAPI(stats.APIConfig{

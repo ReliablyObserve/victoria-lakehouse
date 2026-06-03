@@ -916,6 +916,19 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		mux.Handle("/internal/tenant/sync", syncHandler)
 	}
 
+	// Admin: tenant bucket migration. Gated by the same global-read
+	// credential the rest of the privileged surface uses (one auth
+	// surface = one operator workflow to reason about).
+	{
+		mig := tenant.NewMigrator(store.Manifest(), store.Pool(), cfg.S3.Bucket)
+		admin := tenant.NewAdminHandler(mig, tenant.AdminAuthConfig{
+			HeaderName:  cfg.Tenant.GlobalReadHeader,
+			HeaderValue: cfg.Tenant.GlobalReadValue,
+			BearerToken: cfg.Tenant.GlobalReadToken,
+		})
+		admin.Register(mux)
+	}
+
 	// Stats API
 	if cfg.Stats.Enabled {
 		statsAPI := stats.NewAPI(stats.APIConfig{

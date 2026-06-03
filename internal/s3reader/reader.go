@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -255,6 +256,38 @@ func (p *ClientPool) Upload(ctx context.Context, key string, data []byte) error 
 
 func (p *ClientPool) Bucket() string {
 	return p.bucket
+}
+
+// Copy issues an S3 server-side copy from (sourceBucket, sourceKey)
+// to (destBucket, destKey). Used by the tenant bucket migration tool
+// to retroactively move existing Parquet objects when a tenant's
+// S3.Bucket override is added after the first writes. Server-side
+// copy avoids the latency + bandwidth cost of a download/upload
+// round-trip through the LH process.
+func (p *ClientPool) Copy(ctx context.Context, sourceBucket, sourceKey, destBucket, destKey string) error {
+	if sourceBucket == "" {
+		sourceBucket = p.bucket
+	}
+	if destBucket == "" {
+		destBucket = p.bucket
+	}
+	start := time.Now()
+	metrics.S3RequestsTotal.Inc("CopyObject")
+	err := retryS3(ctx, 3, func() error {
+		_, copyErr := p.client.CopyObject(ctx, &s3.CopyObjectInput{
+			Bucket:     aws.String(destBucket),
+			Key:        aws.String(destKey),
+			CopySource: aws.String(url.PathEscape(sourceBucket + "/" + sourceKey)),
+		})
+		return copyErr
+	})
+	metrics.S3RequestDuration.Observe(time.Since(start).Seconds())
+	if err != nil {
+		metrics.S3ErrorsTotal.Inc("CopyObject")
+		return fmt.Errorf("s3 CopyObject %s/%s -> %s/%s: %w",
+			sourceBucket, sourceKey, destBucket, destKey, err)
+	}
+	return nil
 }
 
 func (p *ClientPool) Download(ctx context.Context, key string) ([]byte, error) {

@@ -500,6 +500,22 @@ func (m *Manifest) RemoveFile(partition string, key string) {
 	}
 }
 
+// SetFileBucket updates the bucket field for the file identified by
+// key. Used by the bucket migration tool to flip ownership after a
+// successful S3 server-side copy. Safe for concurrent use.
+func (m *Manifest) SetFileBucket(key, bucket string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, files := range m.files {
+		for i := range files {
+			if files[i].Key == key {
+				files[i].Bucket = bucket
+				return
+			}
+		}
+	}
+}
+
 // UpdateFileColumnStats stores min/max stats for the named columns in the FileInfo
 // identified by key. It is safe for concurrent use.
 func (m *Manifest) UpdateFileColumnStats(key string, stats map[string]ColumnMinMax) {
