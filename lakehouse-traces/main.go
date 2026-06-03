@@ -431,6 +431,26 @@ func run(cfg *config.Config, addr string) {
 		defer retentionCancel()
 	}
 
+	internalvlstorage.SetCardinalityGate(tenant.NewCardinalityLimiter(policy))
+
+	if entries := policy.LifecycleEntries(); len(entries) > 0 {
+		overrides := make([]delete.TenantLifecycleOverride, 0, len(entries))
+		for _, e := range entries {
+			classes := make([]delete.StorageClass, len(e.Classes))
+			for i, c := range e.Classes {
+				classes[i] = delete.ParseStorageClass(c)
+			}
+			overrides = append(overrides, delete.TenantLifecycleOverride{
+				AccountID:      e.AccountID,
+				ProjectID:      e.ProjectID,
+				TransitionDays: e.TransitionDays,
+				Classes:        classes,
+			})
+		}
+		detector.SetTenantRules(delete.BuildTenantRules(overrides))
+		logger.Infof("tenant lifecycle overrides installed: %d tenants", len(entries))
+	}
+
 	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister, policy)
 
 	// Wire the compaction drain endpoint (spec §11.1). Mirror of
@@ -439,7 +459,7 @@ func run(cfg *config.Config, addr string) {
 
 	var handler http.Handler = mux
 	if resolver != nil && (resolver.HasAliases() || cfg.Tenant.AutoRegister) {
-		handler = resolver.Middleware(mux)
+		handler = tenant.RateLimitMiddleware(tenant.NewIngestRateLimiter(policy))(resolver.Middleware(mux))
 	}
 	if cfg.Telemetry.Enabled {
 		handler = otelhttp.NewHandler(handler, "lakehouse-traces")

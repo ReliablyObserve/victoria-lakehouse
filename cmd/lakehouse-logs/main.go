@@ -426,6 +426,32 @@ func run(cfg *config.Config, addr string) {
 		defer retentionCancel()
 	}
 
+	// Per-tenant cardinality limiter — gates streams at the insert
+	// path so a tenant over its MaxStreams cap drops the offending
+	// rows rather than letting unbounded stream cardinality leak
+	// through to the writer.
+	internalvlstorage.SetCardinalityGate(tenant.NewCardinalityLimiter(policy))
+
+	// Per-tenant lifecycle overrides: tenants with their own transition
+	// schedule shadow the global rules; everyone else stays on global.
+	if entries := policy.LifecycleEntries(); len(entries) > 0 {
+		overrides := make([]delete.TenantLifecycleOverride, 0, len(entries))
+		for _, e := range entries {
+			classes := make([]delete.StorageClass, len(e.Classes))
+			for i, c := range e.Classes {
+				classes[i] = delete.ParseStorageClass(c)
+			}
+			overrides = append(overrides, delete.TenantLifecycleOverride{
+				AccountID:      e.AccountID,
+				ProjectID:      e.ProjectID,
+				TransitionDays: e.TransitionDays,
+				Classes:        classes,
+			})
+		}
+		detector.SetTenantRules(delete.BuildTenantRules(overrides))
+		logger.Infof("tenant lifecycle overrides installed: %d tenants", len(entries))
+	}
+
 	if cfg.Stats.Enabled {
 		startStatsLoops(cfg, store, registry, resolver, addr, stopCh)
 	}
@@ -452,7 +478,11 @@ func run(cfg *config.Config, addr string) {
 
 	var handler http.Handler = mux
 	if resolver != nil && (resolver.HasAliases() || cfg.Tenant.AutoRegister) {
-		handler = resolver.Middleware(mux)
+		// Chain order: rate-limit AFTER tenant.Middleware so the inner
+		// handler runs against already-resolved AccountID/ProjectID
+		// headers. The rate limiter is a no-op when policy is empty
+		// or the tenant has no Ingest override.
+		handler = tenant.RateLimitMiddleware(tenant.NewIngestRateLimiter(policy))(resolver.Middleware(mux))
 	}
 	if cfg.Telemetry.Enabled {
 		handler = otelhttp.NewHandler(handler, "lakehouse")

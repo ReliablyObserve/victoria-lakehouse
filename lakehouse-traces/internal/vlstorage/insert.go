@@ -27,6 +27,21 @@ type TraceWriter interface {
 	CanWriteData() error
 }
 
+// TenantCardinalityGate gates rows by per-tenant cardinality limits.
+// Implemented by *tenant.CardinalityLimiter; declared here as an
+// interface to keep this package's imports narrow.
+type TenantCardinalityGate interface {
+	AllowStream(accountID, projectID uint32, stream string) bool
+}
+
+var globalCardinalityGate TenantCardinalityGate
+
+// SetCardinalityGate installs the per-tenant cardinality limiter the
+// insert path consults before admitting a trace row. nil disables.
+func SetCardinalityGate(g TenantCardinalityGate) {
+	globalCardinalityGate = g
+}
+
 // vtInsertAdapter satisfies VT's insertutil.LogRowsStorage interface
 // (MustAddRows + CanWriteData + IsLocalStorage).
 type vtInsertAdapter struct {
@@ -93,6 +108,12 @@ func logRowsToTraceRows(lr *logstorage.LogRows) []schema.TraceRow {
 			// the equivalent insert. Required by the 100% VL/VT API
 			// compatibility rule.
 			row.StreamID = computeStreamID(r.TenantID, r.StreamTagsCanonical)
+		}
+
+		if globalCardinalityGate != nil && r.StreamTagsCanonical != "" {
+			if !globalCardinalityGate.AllowStream(r.TenantID.AccountID, r.TenantID.ProjectID, r.StreamTagsCanonical) {
+				return
+			}
 		}
 
 		for _, f := range r.Fields {

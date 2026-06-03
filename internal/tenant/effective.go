@@ -153,6 +153,45 @@ type RetentionEntry struct {
 	Retention string
 }
 
+// LifecycleEntry adapts a tenant override's lifecycle rules to the
+// shape delete.BuildTenantRules expects. Returned slices share length:
+// TransitionDays[i] / Classes[i] form the i-th rule.
+type LifecycleEntry struct {
+	AccountID      uint32
+	ProjectID      uint32
+	TransitionDays []int
+	Classes        []string
+}
+
+// LifecycleEntries returns every override carrying a non-empty
+// lifecycle rule set. Callers convert to delete.TenantLifecycleOverride
+// and install on the StorageClassDetector.
+func (pr *PolicyRegistry) LifecycleEntries() []LifecycleEntry {
+	if pr == nil {
+		return nil
+	}
+	all := pr.All()
+	out := make([]LifecycleEntry, 0, len(all))
+	for _, e := range all {
+		if len(e.Lifecycle) == 0 {
+			continue
+		}
+		days := make([]int, 0, len(e.Lifecycle))
+		classes := make([]string, 0, len(e.Lifecycle))
+		for _, r := range e.Lifecycle {
+			days = append(days, r.TransitionDays)
+			classes = append(classes, r.StorageClass)
+		}
+		out = append(out, LifecycleEntry{
+			AccountID:      e.AccountID,
+			ProjectID:      e.ProjectID,
+			TransitionDays: days,
+			Classes:        classes,
+		})
+	}
+	return out
+}
+
 // RetentionEntries returns every override carrying a retention
 // duration, formatted as a Go duration string so it round-trips
 // through retention.parseDuration unchanged.
