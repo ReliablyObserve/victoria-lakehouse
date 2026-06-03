@@ -113,6 +113,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `auto-release.yaml` workflow now clones + patches VictoriaTraces v0.9.0 into `lakehouse-traces/deps/VictoriaTraces/` before the build step. Prior releases failed with `replacement directory ./deps/VictoriaTraces does not exist` because the VT clone/patch was only wired into `ci.yaml`, not the release workflow.
 - Release skip-regex extended to include `tests/verification/` (matrix.md + probe scripts) and `docs/superpowers/` (specs + plans) so verification-only and design-only PRs no longer trigger a no-op release.
+- `Dockerfile.logs` and `Dockerfile.traces` now pin the builder stage to `--platform=$BUILDPLATFORM` and cross-compile Go via `GOOS=$TARGETOS GOARCH=$TARGETARCH`. The previous form ran the builder under QEMU on the target arch, causing `git clone` of VictoriaLogs (~70 MB packed) to fail intermittently with `fatal: cannot pread pack file: Bad address` / `invalid index-pack output` on the linux/arm64 branch of the multi-arch release build (run 26814378149). Native-host git + Go cross-compile eliminates the QEMU pack-file bug and cuts multi-arch build time from minutes to seconds per stage.
 
 ## [0.36.0] - 2026-05-25
 
