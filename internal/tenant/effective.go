@@ -38,6 +38,10 @@ type EffectiveConfig struct {
 	// Lifecycle override (nil = inherit). Stored as the raw config
 	// rules; the storage-class detector parses TransitionDays directly.
 	Lifecycle []config.LifecycleRuleConfig
+
+	// S3Bucket overrides the bucket where this tenant's Parquet
+	// objects land. Empty = default bucket (prefix isolation only).
+	S3Bucket string
 }
 
 // PolicyRegistry resolves per-tenant overrides against the alias map.
@@ -133,6 +137,7 @@ func (pr *PolicyRegistry) For(accountID, projectID uint32) *EffectiveConfig {
 		MaxBytesPerSec: raw.Ingest.MaxBytesPerSec,
 		MaxRowsPerSec:  raw.Ingest.MaxRowsPerSec,
 		Lifecycle:      raw.Lifecycle,
+		S3Bucket:       raw.S3.Bucket,
 	}
 	if raw.Retention.Keep != "" {
 		if d, err := ParseDayDuration(raw.Retention.Keep); err == nil {
@@ -151,6 +156,36 @@ type RetentionEntry struct {
 	AccountID uint32
 	ProjectID uint32
 	Retention string
+}
+
+// BucketEntry pairs a (account, project) tenant with its configured
+// S3 bucket override. Only tenants with a non-empty S3.Bucket appear.
+type BucketEntry struct {
+	AccountID uint32
+	ProjectID uint32
+	Bucket    string
+}
+
+// BucketEntries returns every override carrying an S3 bucket. main.go
+// uses these to populate the BucketRouter on the default ClientPool
+// and seed pools in s3reader.PoolRegistry.
+func (pr *PolicyRegistry) BucketEntries() []BucketEntry {
+	if pr == nil {
+		return nil
+	}
+	all := pr.All()
+	out := make([]BucketEntry, 0, len(all))
+	for _, e := range all {
+		if e.S3Bucket == "" {
+			continue
+		}
+		out = append(out, BucketEntry{
+			AccountID: e.AccountID,
+			ProjectID: e.ProjectID,
+			Bucket:    e.S3Bucket,
+		})
+	}
+	return out
 }
 
 // LifecycleEntry adapts a tenant override's lifecycle rules to the

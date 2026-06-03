@@ -432,6 +432,38 @@ func run(cfg *config.Config, addr string) {
 	// through to the writer.
 	internalvlstorage.SetCardinalityGate(tenant.NewCardinalityLimiter(policy))
 
+	// Bucket isolation: tenants with an S3 bucket override route
+	// writes (via TenantPool/TenantBucket on the writer) and reads
+	// (via the pool's BucketRouter) to their dedicated bucket.
+	// Manifest sidecars stay in the default bucket so a single
+	// fleet-wide manifest still resolves files across tenant buckets.
+	if entries := policy.BucketEntries(); len(entries) > 0 {
+		poolRegistry := s3reader.NewPoolRegistry(store.Pool())
+		bucketByTenant := make(map[uint64]string, len(entries))
+		for _, e := range entries {
+			bucketByTenant[uint64(e.AccountID)<<32|uint64(e.ProjectID)] = e.Bucket
+			_ = poolRegistry.PoolFor(e.Bucket) // warm up
+		}
+		bucketFor := func(a, p uint32) string {
+			return bucketByTenant[uint64(a)<<32|uint64(p)]
+		}
+		store.Pool().SetBucketRouter(func(key string) string {
+			acc, proj, ok := parseTenantFromS3Key(key)
+			if !ok {
+				return ""
+			}
+			return bucketFor(acc, proj)
+		})
+		if w := store.Writer(); w != nil {
+			w.SetTenantBucket(bucketFor)
+			w.SetTenantPool(func(bucket string) parquets3.PoolWriter {
+				return poolRegistry.PoolFor(bucket)
+			})
+		}
+		logger.Infof("tenant bucket isolation installed: %d tenants across %d buckets",
+			len(entries), len(poolRegistry.Buckets()))
+	}
+
 	// Per-tenant lifecycle overrides: tenants with their own transition
 	// schedule shadow the global rules; everyone else stays on global.
 	if entries := policy.LifecycleEntries(); len(entries) > 0 {
@@ -1263,6 +1295,27 @@ func tenantStatsKey(accountID, projectID uint32, fallback string) string {
 		return fallback
 	}
 	return strconv.FormatUint(uint64(accountID), 10) + ":" + strconv.FormatUint(uint64(projectID), 10)
+}
+
+// parseTenantFromS3Key extracts (account, project) from a
+// tenant-isolated key like "1002/0/logs/dt=.../foo.parquet". Returns
+// ok=false for keys outside that layout (manifest sidecars under
+// _meta/, single-prefix legacy files, etc.) so the bucket router
+// can short-circuit to the default bucket for them.
+func parseTenantFromS3Key(key string) (uint32, uint32, bool) {
+	parts := strings.SplitN(key, "/", 4)
+	if len(parts) < 3 {
+		return 0, 0, false
+	}
+	acc, err := strconv.ParseUint(parts[0], 10, 32)
+	if err != nil {
+		return 0, 0, false
+	}
+	proj, err := strconv.ParseUint(parts[1], 10, 32)
+	if err != nil {
+		return 0, 0, false
+	}
+	return uint32(acc), uint32(proj), true
 }
 
 // buildRetentionManager wires the retention package against the

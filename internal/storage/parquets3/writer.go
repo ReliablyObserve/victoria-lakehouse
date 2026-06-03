@@ -55,6 +55,30 @@ type FlushCacheCallback func(fileKey string, data []byte)
 // string OrgID is a presentation concern surfaced only at API/UI.
 type TenantPrefixFunc func(accountID, projectID uint32) string
 
+// TenantBucketFunc returns the S3 bucket where a tenant's files
+// should land. Empty string means "use the writer's default bucket"
+// (the common case: prefix isolation, single bucket). Non-empty
+// strings trigger bucket-isolation mode, where the writer routes
+// writes via the pool registry and stamps FileInfo.Bucket so reads
+// land on the same bucket later.
+type TenantBucketFunc func(accountID, projectID uint32) string
+
+// TenantPoolFunc returns the s3reader.ClientPool that owns the
+// given bucket. Wired together with TenantBucketFunc so the writer
+// can look up the right pool per tenant flush. nil means
+// single-bucket mode (use the writer's default pool unconditionally).
+//
+// Declared as a pluggable function rather than an interface on the
+// pool registry so this package stays leaf-level — main.go composes
+// the two.
+type TenantPoolFunc func(bucket string) PoolWriter
+
+// PoolWriter is the subset of s3reader.ClientPool the BatchWriter
+// needs. Keeps the dependency narrow and lets tests substitute fakes.
+type PoolWriter interface {
+	Upload(ctx context.Context, key string, data []byte) error
+}
+
 // BatchWriter buffers incoming rows per partition and flushes them as
 // Parquet files to S3 on a configurable interval or size threshold.
 type BatchWriter struct {
@@ -76,6 +100,8 @@ type BatchWriter struct {
 	statsCallback StatsCallback
 	flushCacheCb  FlushCacheCallback
 	tenantPrefix  TenantPrefixFunc
+	tenantBucket  TenantBucketFunc
+	tenantPool    TenantPoolFunc
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -126,6 +152,38 @@ func (w *BatchWriter) SetFlushCacheCallback(cb FlushCacheCallback) {
 // prefix as before — preserving single-tenant deployments.
 func (w *BatchWriter) SetTenantPrefix(f TenantPrefixFunc) {
 	w.tenantPrefix = f
+}
+
+// SetTenantBucket installs a per-tenant bucket resolver. Together
+// with SetTenantPool, this routes per-tenant flushes to per-tenant
+// S3 buckets. Empty return = use the writer's default bucket so a
+// single resolver can mix prefix-only and bucket-isolated tenants.
+func (w *BatchWriter) SetTenantBucket(f TenantBucketFunc) {
+	w.tenantBucket = f
+}
+
+// SetTenantPool installs a bucket-to-pool resolver. Required when
+// SetTenantBucket returns non-default buckets — the writer needs
+// a pool that talks to that bucket to upload the Parquet file.
+func (w *BatchWriter) SetTenantPool(f TenantPoolFunc) {
+	w.tenantPool = f
+}
+
+// bucketForTenant returns the (bucket, pool) pair to use for the
+// tenant's flush. Falls back to (w.pool.Bucket(), w.pool) when no
+// per-tenant bucket override is configured for this tenant.
+func (w *BatchWriter) bucketForTenant(accountID, projectID uint32) (string, PoolWriter) {
+	if w.tenantBucket == nil || w.tenantPool == nil {
+		return "", w.pool
+	}
+	bucket := w.tenantBucket(accountID, projectID)
+	if bucket == "" {
+		return "", w.pool
+	}
+	if p := w.tenantPool(bucket); p != nil {
+		return bucket, p
+	}
+	return "", w.pool
 }
 
 // prefixForTenant returns the configured tenant prefix, falling back to
@@ -369,8 +427,10 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 	batchID := randomBatchID()
 	key := fmt.Sprintf("%s%s/%s.parquet", w.prefixForTenant(accountID, projectID), partition, batchID)
 
+	bucket, uploader := w.bucketForTenant(accountID, projectID)
+
 	metrics.S3RequestsTotal.Inc("PUT")
-	if err := w.pool.Upload(ctx, key, result.Data); err != nil {
+	if err := uploader.Upload(ctx, key, result.Data); err != nil {
 		metrics.S3ErrorsTotal.Inc("PUT")
 		return err
 	}
@@ -378,6 +438,7 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 
 	fi := manifest.FileInfo{
 		Key:               key,
+		Bucket:            bucket,
 		Size:              int64(len(result.Data)),
 		RowCount:          int64(len(rows)),
 		MinTimeNs:         rows[0].TimestampUnixNano,
@@ -432,8 +493,10 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 	batchID := randomBatchID()
 	key := fmt.Sprintf("%s%s/%s.parquet", w.prefixForTenant(accountID, projectID), partition, batchID)
 
+	bucket, uploader := w.bucketForTenant(accountID, projectID)
+
 	metrics.S3RequestsTotal.Inc("PUT")
-	if err := w.pool.Upload(ctx, key, result.Data); err != nil {
+	if err := uploader.Upload(ctx, key, result.Data); err != nil {
 		metrics.S3ErrorsTotal.Inc("PUT")
 		return err
 	}
@@ -441,6 +504,7 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 
 	fi := manifest.FileInfo{
 		Key:               key,
+		Bucket:            bucket,
 		Size:              int64(len(result.Data)),
 		RowCount:          int64(len(rows)),
 		MinTimeNs:         rows[0].TimestampUnixNano,

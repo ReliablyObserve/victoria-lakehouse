@@ -384,6 +384,14 @@ type TenantOverride struct {
 	// Lifecycle replaces the global storage-class transition schedule
 	// for files owned by this tenant. Empty = inherit global.
 	Lifecycle []LifecycleRuleConfig `yaml:"lifecycle"`
+
+	// S3 selects an alternative bucket for this tenant. When non-empty,
+	// every Parquet object the tenant produces lands in that bucket
+	// (vs the global s3.bucket); reads route the same way via the
+	// pool's BucketRouter. Sidecars/manifests stay in the default
+	// bucket so a single fleet-wide manifest still resolves files
+	// across many tenant buckets.
+	S3 TenantS3Override `yaml:"s3"`
 }
 
 type TenantRetentionOverride struct {
@@ -398,6 +406,10 @@ type TenantCardinalityOverride struct {
 type TenantIngestOverride struct {
 	MaxBytesPerSec int64 `yaml:"max_bytes_per_sec"`
 	MaxRowsPerSec  int64 `yaml:"max_rows_per_sec"`
+}
+
+type TenantS3Override struct {
+	Bucket string `yaml:"bucket"`
 }
 
 type AliasTarget struct {

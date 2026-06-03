@@ -23,6 +23,11 @@ const maxLabelsPerField = 100
 
 type FileInfo struct {
 	Key               string                  `json:"key"`
+	// Bucket names the S3 bucket holding this object. Empty means the
+	// manifest's default bucket — preserves backward compatibility for
+	// every file written before bucket-isolation support landed and
+	// for tenants that share the default bucket via prefix isolation.
+	Bucket            string                  `json:"bucket,omitempty"`
 	Size              int64                   `json:"size"`
 	RowCount          int64                   `json:"row_count,omitempty"`
 	MinTimeNs         int64                   `json:"min_time_ns,omitempty"`
@@ -36,6 +41,17 @@ type FileInfo struct {
 	ClassCheckedAt    time.Time               `json:"class_checked_at,omitempty"`
 	ClassSource       string                  `json:"class_source,omitempty"`
 	CreatedAt         time.Time               `json:"created_at,omitempty"`
+}
+
+// BucketOr returns the file's bucket, falling back to defaultBucket
+// when empty (the common case — most files are in the default
+// bucket and don't carry a bucket field). Centralized here so every
+// reader call site uses the same resolution.
+func (fi FileInfo) BucketOr(defaultBucket string) string {
+	if fi.Bucket == "" {
+		return defaultBucket
+	}
+	return fi.Bucket
 }
 
 func (fi FileInfo) CompressionRatio() float64 {

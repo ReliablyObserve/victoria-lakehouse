@@ -433,6 +433,33 @@ func run(cfg *config.Config, addr string) {
 
 	internalvlstorage.SetCardinalityGate(tenant.NewCardinalityLimiter(policy))
 
+	if entries := policy.BucketEntries(); len(entries) > 0 {
+		poolRegistry := s3reader.NewPoolRegistry(store.Pool())
+		bucketByTenant := make(map[uint64]string, len(entries))
+		for _, e := range entries {
+			bucketByTenant[uint64(e.AccountID)<<32|uint64(e.ProjectID)] = e.Bucket
+			_ = poolRegistry.PoolFor(e.Bucket)
+		}
+		bucketFor := func(a, p uint32) string {
+			return bucketByTenant[uint64(a)<<32|uint64(p)]
+		}
+		store.Pool().SetBucketRouter(func(key string) string {
+			acc, proj, ok := parseTenantFromS3Key(key)
+			if !ok {
+				return ""
+			}
+			return bucketFor(acc, proj)
+		})
+		if w := store.Writer(); w != nil {
+			w.SetTenantBucket(bucketFor)
+			w.SetTenantPool(func(bucket string) parquets3.PoolWriter {
+				return poolRegistry.PoolFor(bucket)
+			})
+		}
+		logger.Infof("tenant bucket isolation installed: %d tenants across %d buckets",
+			len(entries), len(poolRegistry.Buckets()))
+	}
+
 	if entries := policy.LifecycleEntries(); len(entries) > 0 {
 		overrides := make([]delete.TenantLifecycleOverride, 0, len(entries))
 		for _, e := range entries {
@@ -1227,6 +1254,24 @@ func tenantStatsKey(accountID, projectID uint32, fallback string) string {
 		return fallback
 	}
 	return strconv.FormatUint(uint64(accountID), 10) + ":" + strconv.FormatUint(uint64(projectID), 10)
+}
+
+// parseTenantFromS3Key extracts (account, project) from a
+// tenant-isolated key. Mirror of the helper in cmd/lakehouse-logs.
+func parseTenantFromS3Key(key string) (uint32, uint32, bool) {
+	parts := strings.SplitN(key, "/", 4)
+	if len(parts) < 3 {
+		return 0, 0, false
+	}
+	acc, err := strconv.ParseUint(parts[0], 10, 32)
+	if err != nil {
+		return 0, 0, false
+	}
+	proj, err := strconv.ParseUint(parts[1], 10, 32)
+	if err != nil {
+		return 0, 0, false
+	}
+	return uint32(acc), uint32(proj), true
 }
 
 // buildRetentionManager wires retention against the running storage +
