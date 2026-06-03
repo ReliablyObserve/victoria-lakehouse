@@ -1,8 +1,14 @@
-FROM golang:1.26.3-alpine3.22 AS builder
+# Builder runs on the native host arch (BUILDPLATFORM). Go cross-compiles to
+# TARGETOS/TARGETARCH via env vars below. Running the builder natively avoids
+# the QEMU `git clone` "cannot pread pack file: Bad address" failure on large
+# repos (VictoriaLogs is ~70 MB packed) when buildx targets a foreign arch.
+FROM --platform=$BUILDPLATFORM golang:1.26.3-alpine3.22 AS builder
 RUN apk add --no-cache git
 WORKDIR /app
 ARG VERSION=dev
 ARG VL_VERSION=v1.50.0
+ARG TARGETOS
+ARG TARGETARCH
 # FIPS=1 enables Go 1.26+ native FIPS 140-3 mode. The image is then tagged
 # `-fips` by the release workflow. GOFIPS140=v1.0.0 selects the certified
 # crypto module at build time; runtime activation also requires
@@ -25,7 +31,8 @@ RUN cp -r deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmui/
 # into the main binary as `lakehouse-logs healthcheck`, saving ~10% of image
 # size. The FIPS environment is propagated via ENV above so this RUN step
 # inherits it when --build-arg FIPS=1 is set.
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}" -o /lakehouse-logs ./cmd/lakehouse-logs && \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+    go build -trimpath -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}" -o /lakehouse-logs ./cmd/lakehouse-logs && \
     mkdir -p /data/lakehouse/cache
 
 FROM gcr.io/distroless/static-debian12:nonroot

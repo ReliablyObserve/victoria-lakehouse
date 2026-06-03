@@ -1,0 +1,27 @@
+# VL/VT deps are cloned + patched fresh inside the Docker builder stage. If
+# the host happens to have stale `deps/VictoriaLogs/` or
+# `lakehouse-traces/deps/{VictoriaLogs,VictoriaTraces}/` from a previous local
+# build at a different commit, `COPY . .` would clobber the freshly-patched
+# container state and the build fails with cryptic "undefined symbol" errors.
+# CI checkouts don't have these dirs, so this only affects local docker builds.
+deps/
+lakehouse-traces/deps/
+
+# Build outputs and ephemeral state.
+dist/
+bin/
+/lakehouse-logs
+/lakehouse-traces-bin
+lakehouse-traces/lakehouse-traces
+coverage.out
+coverage.html
+*.test
+*.prof
+
+# Local tooling state.
+.git/
+.github/
+.idea/
+.vscode/
+*.swp
+*.swo

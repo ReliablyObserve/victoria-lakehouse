@@ -1,4 +1,8 @@
-FROM golang:1.26.3-alpine3.22 AS builder
+# Builder runs on the native host arch (BUILDPLATFORM). Go cross-compiles to
+# TARGETOS/TARGETARCH via env vars below. Running the builder natively avoids
+# the QEMU `git clone` "cannot pread pack file: Bad address" failure on large
+# repos (VictoriaLogs is ~70 MB packed) when buildx targets a foreign arch.
+FROM --platform=$BUILDPLATFORM golang:1.26.3-alpine3.22 AS builder
 RUN apk add --no-cache git
 WORKDIR /app
 ARG VERSION=dev
@@ -6,6 +10,8 @@ ARG VL_VERSION=v1.50.0
 # VictoriaLogs at commit 77df0c04d532 (VictoriaTraces v0.9.2 compatible)
 ARG VL_COMMIT=77df0c04d532
 ARG VT_VERSION=v0.9.2
+ARG TARGETOS
+ARG TARGETARCH
 # FIPS=1 enables Go 1.26+ native FIPS 140-3 mode. See Dockerfile.logs for the
 # full activation matrix.
 ARG FIPS=0
@@ -40,7 +46,8 @@ RUN cp -r lakehouse-traces/deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmu
 # The healthcheck binary (~3 MB) was folded into the main binary as
 # `lakehouse-traces healthcheck` in PR #96. Saves ~10% of image size.
 RUN cd lakehouse-traces && \
-    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}" -o /lakehouse-traces .
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+    go build -trimpath -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}" -o /lakehouse-traces .
 RUN mkdir -p /data/lakehouse/cache
 
 FROM gcr.io/distroless/static-debian12:nonroot
