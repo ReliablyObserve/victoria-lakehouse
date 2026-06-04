@@ -151,7 +151,7 @@ services:
       - "--lh-traces-endpoint=http://lakehouse-traces:10428"
 
   parity-tests:
-    image: golang:1.26
+    image: golang:1.26.4
     profiles: ["test"]
     depends_on:
       datagen-seed:

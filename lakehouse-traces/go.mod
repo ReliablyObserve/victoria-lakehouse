@@ -1,6 +1,6 @@
 module github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces
 
-go 1.26.3
+go 1.26.4
 
 // VictoriaLogs at commit a408207c2242 (compatible with VictoriaTraces v0.8.2)
 replace github.com/VictoriaMetrics/VictoriaLogs => ./deps/VictoriaLogs
