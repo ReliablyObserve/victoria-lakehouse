@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.4] - 2026-06-04
+
+### Security
+
+- Bump Go toolchain from `1.26.3` to `1.26.4` across `go.mod`, `lakehouse-traces/go.mod`, `Dockerfile.{logs,traces,datagen}`. Resolves the two stdlib advisories that were failing `govulncheck` / `security-logs` / `security-traces` jobs on every CI run: **GO-2026-5039** (`net/textproto.Reader.ReadMIMEHeader` reached via `internal/s3reader/reader.go`) and **GO-2026-5037** (`crypto/x509` inefficient candidate hostname parsing reached via `cmd/s3proxy/main.go` and `internal/manifest/metadata_sidecar.go`). Both fixed in Go 1.26.4.
+
+### CI
+
+- `Dockerfile.logs` and `Dockerfile.traces` now pin the builder stage to `--platform=$BUILDPLATFORM` and cross-compile via `GOOS=$TARGETOS GOARCH=$TARGETARCH`. The previous form ran the builder under QEMU on the target architecture, which intermittently failed `git clone` of VictoriaLogs (~70 MB packed) with `fatal: cannot pread pack file: Bad address` / `invalid index-pack output` on the linux/arm64 branch of the multi-arch release build (run 26814378149). This silently broke every subsequent non-docs release. Native-host git + Go cross-compile eliminates the QEMU pack-file bug and reduces multi-arch builder time from minutes to ~10–15 s per architecture.
+- New `.dockerignore` excludes `deps/` and `lakehouse-traces/deps/` from the build context. These directories are cloned + patched fresh inside the builder stage; including them via `COPY . .` would clobber the patched state with stale host clones from previous local builds at different VL/VT commits, producing cryptic "undefined symbol" errors that don't occur in CI (fresh checkouts have no `deps/`). Also excludes `dist/`, `bin/`, `.git/`, `.github/`, and ephemeral test/coverage outputs to shrink the build context.
+
 ## [0.37.3] - 2026-06-02
 
 ### Added
