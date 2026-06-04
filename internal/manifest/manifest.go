@@ -113,6 +113,27 @@ type Manifest struct {
 	// RefreshFromS3, rebuildIndex, snapshot Load.
 	byKey map[string]string
 
+	// tenantAggregates is the incremental per-tenant cache backing
+	// TenantSummaries(). Without this, /api/v1/tenants, /stats/overview,
+	// the Lakehouse Tenants UI tab, and the servicegraph background
+	// task's tenant-lister each iterate every file in the manifest on
+	// every call — O(50M) at PB-scale.
+	//
+	// Maintenance contract: every AddFile / RemoveFile / EnrichFileMetadata
+	// updates this map atomically under the same write lock that mutates
+	// m.files. RefreshFromS3 and snapshot Load rebuild it via
+	// rebuildTenantAggregates() after the wholesale m.files reassignment.
+	// TenantSummaries() then just snapshots the cache — O(tenants),
+	// typically O(10²) not O(10⁷).
+	//
+	// minTimeNs / maxTimeNs are tracked at nanosecond precision so we
+	// don't have to compare time.Time values on the hot path. The
+	// per-tenant set of partitions is reference-counted so we can detect
+	// when a tenant's earliest/latest partition disappears and trigger a
+	// minimal recompute (bounded by the tenant's partition count, not
+	// the manifest's file count).
+	tenantAggregates map[tenantAccumKey]*tenantAccum
+
 	minTime        time.Time
 	maxTime        time.Time
 	totalFiles     int
@@ -138,8 +159,158 @@ func New(bucket, prefix string) *Manifest {
 		partitionMeta:     make(map[string]*PartitionMeta),
 		partitionAttempts: make(map[string]time.Time),
 		byKey:             make(map[string]string),
+		tenantAggregates:  make(map[tenantAccumKey]*tenantAccum),
 		prefix:            prefix,
 		bucket:            bucket,
+	}
+}
+
+// tenantAccumKey + tenantAccum back the incremental TenantSummaries
+// cache. Lives next to m.files under m.mu's protection.
+type tenantAccumKey struct {
+	account string
+	project string
+}
+
+type tenantAccum struct {
+	files    int
+	bytes    int64
+	rows     int64
+	rawBytes int64
+	// partitions tracks the per-partition file count for this tenant.
+	// Used to recompute min/max time bounds when a tenant's earliest
+	// or latest partition has its last file removed, without scanning
+	// the entire manifest.
+	partitions map[string]int
+	minTimeNs  int64
+	maxTimeNs  int64
+}
+
+// tenantKeyFromFileKey parses the (account, project) tuple out of a
+// FileInfo.Key. Mirrors the parsing in TenantSummaries() so the cache
+// agrees with the legacy linear-scan path on every input. Returns
+// (key, true) on success or (zero, false) if the key doesn't conform
+// to the prefix template.
+func (m *Manifest) tenantKeyFromFileKey(fileKey string) (tenantAccumKey, bool) {
+	segments := 2
+	hasOrgID := strings.Contains(m.prefixTemplate, "{OrgID}")
+	if hasOrgID && !strings.Contains(m.prefixTemplate, "{ProjectID}") {
+		segments = 1
+	}
+	parts := strings.SplitN(fileKey, "/", segments+2)
+	if len(parts) < segments+1 {
+		return tenantAccumKey{}, false
+	}
+	if segments == 1 {
+		return tenantAccumKey{account: parts[0]}, true
+	}
+	return tenantAccumKey{account: parts[0], project: parts[1]}, true
+}
+
+// updateTenantAggregateOnAdd applies a +1 file delta for fi/partition
+// to the tenant aggregate cache. Must hold m.mu (write).
+func (m *Manifest) updateTenantAggregateOnAdd(partition string, fi FileInfo) {
+	tk, ok := m.tenantKeyFromFileKey(fi.Key)
+	if !ok {
+		return
+	}
+	a := m.tenantAggregates[tk]
+	if a == nil {
+		a = &tenantAccum{partitions: make(map[string]int)}
+		m.tenantAggregates[tk] = a
+	}
+	a.files++
+	a.bytes += fi.Size
+	a.rows += fi.RowCount
+	a.rawBytes += fi.RawBytes
+	a.partitions[partition]++
+
+	if t, err := parsePartitionTime(partition); err == nil {
+		startNs := t.UnixNano()
+		endNs := t.Add(time.Hour).UnixNano()
+		if a.minTimeNs == 0 || startNs < a.minTimeNs {
+			a.minTimeNs = startNs
+		}
+		if endNs > a.maxTimeNs {
+			a.maxTimeNs = endNs
+		}
+	}
+}
+
+// updateTenantAggregateOnRemove applies a -1 file delta. Recomputes
+// min/max time iff this was the last file in the tenant's earliest
+// or latest partition; the recompute is bounded by the tenant's
+// partition count (≈720 for a 30-day window) not the manifest's file
+// count. Must hold m.mu (write).
+func (m *Manifest) updateTenantAggregateOnRemove(partition string, fi FileInfo) {
+	tk, ok := m.tenantKeyFromFileKey(fi.Key)
+	if !ok {
+		return
+	}
+	a := m.tenantAggregates[tk]
+	if a == nil {
+		return
+	}
+	a.files--
+	a.bytes -= fi.Size
+	a.rows -= fi.RowCount
+	a.rawBytes -= fi.RawBytes
+
+	// Decrement the partition refcount; if we just removed the last
+	// file the tenant had in this partition, drop it from the set and
+	// check if min/max time bounds need recomputing.
+	a.partitions[partition]--
+	if a.partitions[partition] <= 0 {
+		delete(a.partitions, partition)
+
+		if t, err := parsePartitionTime(partition); err == nil {
+			startNs := t.UnixNano()
+			endNs := t.Add(time.Hour).UnixNano()
+			if startNs == a.minTimeNs || endNs == a.maxTimeNs {
+				m.recomputeTenantTimeBounds(a)
+			}
+		}
+	}
+
+	// Drop empty tenant aggregates so TenantSummaries() doesn't have to
+	// filter them out on every call.
+	if a.files == 0 {
+		delete(m.tenantAggregates, tk)
+	}
+}
+
+// recomputeTenantTimeBounds scans the tenant's partition set (NOT the
+// manifest's full file set) to find the new min/max. Bounded by the
+// number of partitions the tenant occupies — typically O(720) in a
+// 30-day-hot retention.
+func (m *Manifest) recomputeTenantTimeBounds(a *tenantAccum) {
+	a.minTimeNs = 0
+	a.maxTimeNs = 0
+	for partition := range a.partitions {
+		t, err := parsePartitionTime(partition)
+		if err != nil {
+			continue
+		}
+		startNs := t.UnixNano()
+		endNs := t.Add(time.Hour).UnixNano()
+		if a.minTimeNs == 0 || startNs < a.minTimeNs {
+			a.minTimeNs = startNs
+		}
+		if endNs > a.maxTimeNs {
+			a.maxTimeNs = endNs
+		}
+	}
+}
+
+// rebuildTenantAggregates reconstructs the per-tenant cache from
+// scratch by iterating m.files once. Called after wholesale m.files
+// reassignments (RefreshFromS3, snapshot Load). Must hold m.mu (write).
+func (m *Manifest) rebuildTenantAggregates() {
+	m.tenantAggregates = make(map[tenantAccumKey]*tenantAccum)
+	for partition, files := range m.files {
+		for i := range files {
+			m.updateTenantAggregateOnAdd(partition, files[i])
+		}
 	}
 }
 
@@ -276,6 +447,7 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 
 	m.files = files
 	m.rebuildByKey()
+	m.rebuildTenantAggregates()
 	m.rebuildIndex()
 	m.minTime = minT
 	m.maxTime = maxT
@@ -540,6 +712,7 @@ func (m *Manifest) RemoveFile(partition string, key string) {
 		if fi.Key == key {
 			m.totalFiles--
 			m.totalBytes -= fi.Size
+			m.updateTenantAggregateOnRemove(partition, fi)
 			m.files[partition] = append(files[:i], files[i+1:]...)
 			if len(m.files[partition]) == 0 {
 				delete(m.files, partition)
@@ -657,6 +830,10 @@ func (m *Manifest) UpdateFileColumnStats(key string, stats map[string]ColumnMinM
 // EnrichFileMetadata updates RowCount and time bounds for a file identified
 // by key. Called after first opening a file during a query, using metadata
 // from the Parquet footer. Only updates fields that are zero (not already set).
+//
+// Updates the tenant aggregate cache by the delta — a query may bump a
+// file's RowCount from 0 to (say) 1M, and TenantSummaries must reflect
+// that without scanning every file.
 func (m *Manifest) EnrichFileMetadata(key string, rowCount int64, minTimeNs, maxTimeNs int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -664,7 +841,10 @@ func (m *Manifest) EnrichFileMetadata(key string, rowCount int64, minTimeNs, max
 	if i < 0 {
 		return
 	}
+
+	var rowDelta int64
 	if files[i].RowCount == 0 && rowCount > 0 {
+		rowDelta = rowCount
 		files[i].RowCount = rowCount
 	}
 	if files[i].MinTimeNs == 0 && minTimeNs > 0 {
@@ -672,6 +852,14 @@ func (m *Manifest) EnrichFileMetadata(key string, rowCount int64, minTimeNs, max
 	}
 	if files[i].MaxTimeNs == 0 && maxTimeNs > 0 {
 		files[i].MaxTimeNs = maxTimeNs
+	}
+
+	if rowDelta != 0 {
+		if tk, ok := m.tenantKeyFromFileKey(key); ok {
+			if a := m.tenantAggregates[tk]; a != nil {
+				a.rows += rowDelta
+			}
+		}
 	}
 }
 
@@ -700,6 +888,7 @@ func (m *Manifest) AddFile(partition string, fi FileInfo) {
 	isNew := len(m.files[partition]) == 0
 	m.files[partition] = append(m.files[partition], fi)
 	m.byKey[fi.Key] = partition
+	m.updateTenantAggregateOnAdd(partition, fi)
 	m.totalFiles++
 	m.totalBytes += fi.Size
 
@@ -875,6 +1064,7 @@ func (m *Manifest) LoadFrom(path string) error {
 	m.mu.Lock()
 	m.files = snap.Files
 	m.rebuildByKey()
+	m.rebuildTenantAggregates()
 	m.rebuildIndex()
 	m.totalFiles = snap.TotalFiles_
 	m.totalBytes = snap.TotalBytes_
@@ -1033,67 +1223,28 @@ func (m *Manifest) TenantSummariesInWindow(startNs, endNs int64) []TenantSummary
 
 // TenantSummaries extracts per-tenant stats from S3 keys.
 // Supports both integer template ({AccountID}/{ProjectID}/) and OrgID template ({OrgID}/).
+//
+// Reads directly from the tenantAggregates incremental cache, which is
+// kept consistent with m.files by AddFile / RemoveFile / EnrichFileMetadata
+// and rebuilt wholesale by rebuildTenantAggregates() on RefreshFromS3 +
+// snapshot Load. The cache is the single source of truth — this function
+// only allocates the output slice and sorts it.
+//
+// Complexity: O(tenants log tenants) for the sort, O(tenants) for the
+// snapshot. Previously O(total files) which is O(50M) at PB-scale.
 func (m *Manifest) TenantSummaries() []TenantSummary {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	type key struct{ account, project string }
-	type accum struct {
-		files      int
-		bytes      int64
-		rows       int64
-		rawBytes   int64
-		partitions map[string]struct{}
-		minT, maxT time.Time
-	}
-
-	segments := 2
-	hasOrgID := strings.Contains(m.prefixTemplate, "{OrgID}")
-	if hasOrgID && !strings.Contains(m.prefixTemplate, "{ProjectID}") {
-		segments = 1
-	}
-
-	byTenant := make(map[key]*accum)
-
-	for partition, files := range m.files {
-		for _, fi := range files {
-			parts := strings.SplitN(fi.Key, "/", segments+2)
-			if len(parts) < segments+1 {
-				continue
-			}
-
-			var k key
-			if segments == 1 {
-				k = key{account: parts[0], project: ""}
-			} else {
-				k = key{account: parts[0], project: parts[1]}
-			}
-
-			a, ok := byTenant[k]
-			if !ok {
-				a = &accum{partitions: make(map[string]struct{})}
-				byTenant[k] = a
-			}
-			a.files++
-			a.bytes += fi.Size
-			a.rows += fi.RowCount
-			a.rawBytes += fi.RawBytes
-			a.partitions[partition] = struct{}{}
-
-			if t, err := parsePartitionTime(partition); err == nil {
-				if a.minT.IsZero() || t.Before(a.minT) {
-					a.minT = t
-				}
-				end := t.Add(time.Hour)
-				if a.maxT.IsZero() || end.After(a.maxT) {
-					a.maxT = end
-				}
-			}
+	result := make([]TenantSummary, 0, len(m.tenantAggregates))
+	for k, a := range m.tenantAggregates {
+		var minT, maxT time.Time
+		if a.minTimeNs > 0 {
+			minT = time.Unix(0, a.minTimeNs)
 		}
-	}
-
-	result := make([]TenantSummary, 0, len(byTenant))
-	for k, a := range byTenant {
+		if a.maxTimeNs > 0 {
+			maxT = time.Unix(0, a.maxTimeNs)
+		}
 		result = append(result, TenantSummary{
 			AccountID:  k.account,
 			ProjectID:  k.project,
@@ -1102,8 +1253,8 @@ func (m *Manifest) TenantSummaries() []TenantSummary {
 			TotalRows:  a.rows,
 			RawBytes:   a.rawBytes,
 			Partitions: len(a.partitions),
-			MinTime:    a.minT,
-			MaxTime:    a.maxT,
+			MinTime:    minT,
+			MaxTime:    maxT,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool {
