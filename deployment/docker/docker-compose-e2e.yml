@@ -95,6 +95,11 @@ services:
       - "-servicegraph.taskLookbehind=2m"
       - "-servicegraph.taskTimeout=30s"
     networks: [lakehouse-net]
+    # Expose hot VT for host-side parity tests that compare against
+    # the cold tier. Bound to localhost to avoid accidental external
+    # exposure of the unauthenticated /select endpoints.
+    ports:
+      - "127.0.0.1:10428:10428"
     volumes:
       - vt-data:/data
     healthcheck:
