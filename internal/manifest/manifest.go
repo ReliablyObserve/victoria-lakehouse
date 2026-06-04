@@ -339,42 +339,33 @@ func (m *Manifest) SetPrefixTemplate(tmpl string) {
 	m.prefixTemplate = tmpl
 }
 
-func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
+// refreshFullBucket enumerates every key under listPrefix (or the
+// entire bucket when listPrefix=="") and builds a fresh file map. Used
+// by the legacy single-prefix path and as a fallback when tenant
+// discovery fails.
+func (m *Manifest) refreshFullBucket(ctx context.Context, client *s3.Client, listPrefix string) (map[string][]FileInfo, int, int64, error) {
 	files := make(map[string][]FileInfo)
 	var totalFiles int
 	var totalBytes int64
 
-	// When per-tenant prefix isolation is configured, the writer
-	// writes under "{AccountID}/{ProjectID}/<mode>/" — many distinct
-	// prefixes, not the single m.prefix. List at the bucket root in
-	// that case and rely on the partition-extractor below to filter
-	// out non-data keys. Single-tenant deployments keep the
-	// narrow-prefix scan they had before for cheaper paging.
-	listPrefix := m.prefix
-	if strings.Contains(m.prefixTemplate, "{AccountID}") {
-		listPrefix = ""
-	}
 	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(m.bucket),
 		Prefix: aws.String(listPrefix),
 	})
-
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return fmt.Errorf("list objects: %w", err)
+			return nil, 0, 0, fmt.Errorf("list objects: %w", err)
 		}
 		for _, obj := range page.Contents {
 			key := aws.ToString(obj.Key)
 			if !strings.HasSuffix(key, ".parquet") {
 				continue
 			}
-
 			partition := extractPartition(key)
 			if partition == "" {
 				continue
 			}
-
 			files[partition] = append(files[partition], FileInfo{
 				Key:  key,
 				Size: aws.ToInt64(obj.Size),
@@ -382,6 +373,165 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 			totalFiles++
 			totalBytes += aws.ToInt64(obj.Size)
 		}
+	}
+	return files, totalFiles, totalBytes, nil
+}
+
+// refreshTenantScoped discovers tenant prefixes via two-level
+// delimited LIST, then enumerates each tenant's files in parallel.
+// Replaces the full-bucket walk that was hammering S3 at PB-scale.
+//
+// The discovery itself is O(tenant_count) LIST page calls (typically
+// 1–2 pages at <1K tenants); the actual file enumeration is per-tenant
+// with controlled parallelism, so total S3 API load is bounded by the
+// concurrency knob and tracks tenant count rather than file count.
+func (m *Manifest) refreshTenantScoped(ctx context.Context, client *s3.Client) (map[string][]FileInfo, int, int64, error) {
+	tenantPrefixes, err := m.discoverTenantPrefixes(ctx, client)
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("discover tenants: %w", err)
+	}
+	if len(tenantPrefixes) == 0 {
+		// Empty bucket OR no tenant directories yet — surface as
+		// success with no files, same as a full-bucket refresh of an
+		// empty bucket would.
+		return make(map[string][]FileInfo), 0, 0, nil
+	}
+
+	// Per-tenant enumeration in parallel. Bound concurrency so we
+	// don't open more in-flight S3 connections than the pool's
+	// MaxConcurrentRequests budget.
+	const maxParallel = 8
+	type tenantResult struct {
+		files      map[string][]FileInfo
+		fileCount  int
+		byteCount  int64
+		err        error
+	}
+	resCh := make(chan tenantResult, len(tenantPrefixes))
+	sem := make(chan struct{}, maxParallel)
+
+	for _, tp := range tenantPrefixes {
+		sem <- struct{}{}
+		go func(prefix string) {
+			defer func() { <-sem }()
+			f, tf, tb, err := m.refreshFullBucket(ctx, client, prefix)
+			resCh <- tenantResult{files: f, fileCount: tf, byteCount: tb, err: err}
+		}(tp)
+	}
+
+	files := make(map[string][]FileInfo)
+	var totalFiles int
+	var totalBytes int64
+	for i := 0; i < len(tenantPrefixes); i++ {
+		r := <-resCh
+		if r.err != nil {
+			// One tenant's LIST failed; report the error so the caller
+			// can fall back to full-bucket. Partial state isn't useful
+			// since the legacy path expects a complete view.
+			return nil, 0, 0, r.err
+		}
+		for partition, pFiles := range r.files {
+			files[partition] = append(files[partition], pFiles...)
+		}
+		totalFiles += r.fileCount
+		totalBytes += r.byteCount
+	}
+	return files, totalFiles, totalBytes, nil
+}
+
+// discoverTenantPrefixes returns the set of "{AccountID}/{ProjectID}/"
+// prefixes present in the bucket, using delimited LIST to walk the two
+// directory levels without ever touching individual file keys.
+//
+// For an "{OrgID}/" template (single segment), returns just the
+// top-level OrgID prefixes.
+func (m *Manifest) discoverTenantPrefixes(ctx context.Context, client *s3.Client) ([]string, error) {
+	accounts, err := m.listCommonPrefixes(ctx, client, "")
+	if err != nil {
+		return nil, fmt.Errorf("list accounts: %w", err)
+	}
+	// OrgID-only template: one segment is enough.
+	if strings.Contains(m.prefixTemplate, "{OrgID}") && !strings.Contains(m.prefixTemplate, "{ProjectID}") {
+		return accounts, nil
+	}
+
+	// Two-level template: walk into each account to find its projects.
+	var out []string
+	for _, acc := range accounts {
+		projects, err := m.listCommonPrefixes(ctx, client, acc)
+		if err != nil {
+			// Skip accounts that fail; log so the operator can correlate.
+			logger.Warnf("list projects under %q failed: %s", acc, err)
+			continue
+		}
+		out = append(out, projects...)
+	}
+	return out, nil
+}
+
+// listCommonPrefixes performs a single delimited LIST under prefix and
+// returns the CommonPrefixes entries (with the trailing "/"). Bounded
+// by the number of pages, which at typical tenant counts (<1K) is a
+// single page.
+func (m *Manifest) listCommonPrefixes(ctx context.Context, client *s3.Client, prefix string) ([]string, error) {
+	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
+		Bucket:    aws.String(m.bucket),
+		Prefix:    aws.String(prefix),
+		Delimiter: aws.String("/"),
+	})
+	var out []string
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, cp := range page.CommonPrefixes {
+			out = append(out, aws.ToString(cp.Prefix))
+		}
+	}
+	return out, nil
+}
+
+func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
+	files := make(map[string][]FileInfo)
+	var totalFiles int
+	var totalBytes int64
+
+	// When per-tenant prefix isolation is configured, the writer
+	// writes under "{AccountID}/{ProjectID}/<mode>/" — many distinct
+	// prefixes, not the single m.prefix. Two paths:
+	//
+	//   1. Tenant-scoped refresh (default at PB-scale): discover the
+	//      tenant prefixes via two-level delimited LIST, then enumerate
+	//      each tenant's keys in parallel. Avoids the full-bucket LIST
+	//      that would walk every key (including non-data sidecars and
+	//      operational files) every 30s — at 50M files this is the
+	//      difference between ~50 narrow LISTs and ~1 enormous LIST,
+	//      with the same total bytes but much better S3 cache locality
+	//      and tighter API budget.
+	//
+	//   2. Full-bucket fallback: kept for the single-prefix template
+	//      and as a safety net if tenant discovery fails.
+	if strings.Contains(m.prefixTemplate, "{AccountID}") {
+		f, tf, tb, err := m.refreshTenantScoped(ctx, client)
+		if err == nil {
+			files, totalFiles, totalBytes = f, tf, tb
+		} else {
+			// Tenant discovery failed; fall back to the legacy full-bucket
+			// LIST so a transient list failure doesn't drop the manifest.
+			logger.Warnf("tenant-scoped refresh failed (%s); falling back to full-bucket LIST", err)
+			f, tf, tb, ferr := m.refreshFullBucket(ctx, client, "")
+			if ferr != nil {
+				return ferr
+			}
+			files, totalFiles, totalBytes = f, tf, tb
+		}
+	} else {
+		f, tf, tb, err := m.refreshFullBucket(ctx, client, m.prefix)
+		if err != nil {
+			return err
+		}
+		files, totalFiles, totalBytes = f, tf, tb
 	}
 
 	var minT, maxT time.Time
