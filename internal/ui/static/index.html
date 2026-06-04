@@ -364,6 +364,84 @@
       `;
     }
 
+    function ParityCheck() {
+      const [data, setData] = useState(null);
+      const [err, setErr] = useState(null);
+      const [window, setWindow] = useState("24h");
+      const [auth, setAuth] = useState(() => localStorage.getItem("lh_admin_token") || "");
+
+      const run = () => {
+        setData(null); setErr(null);
+        const headers = {};
+        if (auth) headers["X-Lakehouse-Global-Read"] = auth;
+        fetch(`/lakehouse/api/v1/admin/parity?window=${encodeURIComponent(window)}`, { headers })
+          .then(r => { if (!r.ok) throw new Error("status " + r.status); return r.json(); })
+          .then(setData)
+          .catch(e => setErr(e.message));
+      };
+
+      useEffect(() => { if (auth) run(); }, []);
+
+      const saveAuth = (v) => { setAuth(v); localStorage.setItem("lh_admin_token", v); };
+
+      return html`
+        <div class="section-title">VL/VT ↔ Lakehouse Parity</div>
+        <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:16px">
+          Compares the embedded VL view (<code>* | stats count()</code>) against the manifest's
+          <code>LiveAggregate</code> for the same window. Both code paths answer "how many rows do we hold?"
+          from different angles — any drift is worth investigating.
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
+          <input type="password" placeholder="admin token (X-Lakehouse-Global-Read)" value=${auth}
+            onInput=${e => saveAuth(e.target.value)}
+            style="flex:1;padding:6px 10px;border:1px solid var(--color-border);border-radius:4px;font-size:13px" />
+          <select value=${window} onChange=${e => setWindow(e.target.value)}
+            style="padding:6px 10px;border:1px solid var(--color-border);border-radius:4px">
+            <option value="1h">1h</option>
+            <option value="6h">6h</option>
+            <option value="24h">24h</option>
+            <option value="7d">7d</option>
+          </select>
+          <button onClick=${run} class="tab" style="padding:6px 14px">Check</button>
+        </div>
+
+        ${err ? html`<div class="error">Error: ${err}</div>` : null}
+        ${!data && !err ? html`<div class="loading">Click Check to run the parity comparison.</div>` : null}
+
+        ${data ? html`
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+            <div class="card">
+              <div class="label">VL view (embedded)</div>
+              <div class="value">${fmtNum(data.vl_rows || 0)}</div>
+              <div style="font-size:11px;color:var(--color-text-secondary);margin-top:4px">rows from <code>stats count()</code></div>
+            </div>
+            <div class="card">
+              <div class="label">Manifest view (LiveAggregate)</div>
+              <div class="value">${fmtNum(data.manifest_rows || 0)}</div>
+              <div style="font-size:11px;color:var(--color-text-secondary);margin-top:4px">
+                ${fmtNum(data.manifest_files || 0)} files · ${fmtBytes(data.manifest_bytes || 0)}
+              </div>
+            </div>
+          </div>
+          <div class="card" style="border-left:4px solid ${Math.abs(data.rows_delta_pct || 0) < 1 ? "#3a3" : (Math.abs(data.rows_delta_pct || 0) < 10 ? "#fa3" : "#c33")}">
+            <div class="label">Drift (VL − Manifest)</div>
+            <div class="value">${data.rows_delta > 0 ? "+" : ""}${fmtNum(data.rows_delta || 0)}</div>
+            <div style="font-size:12px;color:var(--color-text-secondary);margin-top:4px">
+              ${(data.rows_delta_pct || 0).toFixed(2)}% — ${Math.abs(data.rows_delta_pct || 0) < 1 ? "in tolerance" : (Math.abs(data.rows_delta_pct || 0) < 10 ? "mild drift; usually post-compaction lag" : "significant drift — investigate")}
+            </div>
+          </div>
+          ${!data.per_tenant_supported ? html`
+            <div style="margin-top:16px;padding:12px;background:var(--color-hover-black,#0000000a);border-radius:4px;font-size:12px;color:var(--color-text-secondary)">
+              <strong>Per-tenant parity:</strong> not supported yet — ${data.per_tenant_note}
+            </div>
+          ` : null}
+          <div style="margin-top:16px;font-size:11px;color:var(--color-text-secondary)">
+            Window: ${new Date((data.start_unix_nano || 0) / 1e6).toISOString()} → ${new Date((data.end_unix_nano || 0) / 1e6).toISOString()}
+          </div>
+        ` : null}
+      `;
+    }
+
     function CardinalityExplorer() {
       const [data, setData] = useState(null);
       const [err, setErr] = useState(null);
@@ -437,6 +515,7 @@
         { id: "details", label: "Storage Details" },
         { id: "tenants", label: "Tenants" },
         { id: "cardinality", label: "Cardinality Explorer" },
+        { id: "parity", label: "VL/VT Parity" },
       ];
 
       return html`
@@ -464,6 +543,7 @@
           ${tab === "details" && html`<${StorageDetails} />`}
           ${tab === "tenants" && html`<${Tenants} />`}
           ${tab === "cardinality" && html`<${CardinalityExplorer} />`}
+          ${tab === "parity" && html`<${ParityCheck} />`}
         </div>
       `;
     }

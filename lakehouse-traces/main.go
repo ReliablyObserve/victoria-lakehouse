@@ -70,7 +70,7 @@ var (
 	role            = flag.String("lakehouse.role", "", "Role: all, insert, select (default: all)")
 	profileFlag     = flag.String("lakehouse.profile", "", "Configuration profile: balanced, max-performance, max-durability, max-cost-savings, dev")
 	flushInterval   = flag.Duration("lakehouse.insert.flush-interval", 0, "Insert flush interval (e.g., 10s)")
-	listenAddr      = flag.String("httpListenAddr", ":10428", "HTTP listen address")
+	listenAddrFlag  = flag.String("httpListenAddr", ":10428", "HTTP listen address")
 	manifestRefresh = flag.Duration("lakehouse.manifest.refresh-interval", 0, "Manifest refresh interval (e.g., 30s)")
 
 	cacheMemoryMB         = flag.Int("lakehouse.cache.memory-mb", 0, "L1 memory cache size in MB (default: 256)")
@@ -189,7 +189,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	addr := *listenAddr
+	addr := *listenAddrFlag
 	if addr == ":10428" && cfg.ListenAddr() != "" && cfg.ListenAddr() != ":10428" {
 		addr = cfg.ListenAddr()
 	}
@@ -869,6 +869,23 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			BearerToken: cfg.Tenant.GlobalReadToken,
 		})
 		admin.Register(mux)
+	}
+
+	if cfg.Stats.Enabled {
+		parityAPI := stats.NewAPI(stats.APIConfig{Manifest: store.Manifest(), Mode: "traces", Bucket: cfg.S3.Bucket})
+		listenAddrLocal := *listenAddrFlag
+		if cfg.ListenAddr() != "" {
+			listenAddrLocal = cfg.ListenAddr()
+		}
+		parityAPI.RegisterParity(mux, stats.NewLocalVLQuerierWithQuery(
+			fmt.Sprintf("http://127.0.0.1%s", listenAddrLocal),
+			stats.TracesParityQuery,
+		), func(r *http.Request) bool {
+			if cfg.Tenant.GlobalReadHeader != "" && cfg.Tenant.GlobalReadValue != "" {
+				return r.Header.Get(cfg.Tenant.GlobalReadHeader) == cfg.Tenant.GlobalReadValue
+			}
+			return cfg.Tenant.GlobalReadToken != "" && r.Header.Get("Authorization") == "Bearer "+cfg.Tenant.GlobalReadToken
+		})
 	}
 
 	// Stats API
