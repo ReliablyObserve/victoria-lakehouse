@@ -129,17 +129,22 @@ func (m *Migrator) MigrateTenant(ctx context.Context, accountID, projectID uint3
 	return result
 }
 
-// ParseTenantKeyFromString accepts "account:project" forms and
-// returns the integer pair. Used by the admin endpoint's request
-// parser.
+// ParseTenantKeyFromString accepts either "account:project" or a bare
+// "account" form. The bare form mirrors upstream VL/VT's
+// ParseTenantID, where a missing project segment is treated as 0.
+// Used by the admin endpoint's request parser.
 func ParseTenantKeyFromString(s string) (uint32, uint32, error) {
-	a, p, ok := strings.Cut(s, ":")
-	if !ok {
-		return 0, 0, fmt.Errorf("expected account:project, got %q", s)
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, 0, fmt.Errorf("empty tenant key")
 	}
+	a, p, hasProject := strings.Cut(s, ":")
 	acc, err := strconv.ParseUint(strings.TrimSpace(a), 10, 32)
 	if err != nil {
 		return 0, 0, fmt.Errorf("account %q: %w", a, err)
+	}
+	if !hasProject {
+		return uint32(acc), 0, nil
 	}
 	proj, err := strconv.ParseUint(strings.TrimSpace(p), 10, 32)
 	if err != nil {

@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
@@ -43,9 +45,14 @@ type CompactorConfig struct {
 
 // CompactResult summarises one compaction run.
 type CompactResult struct {
-	Partition    string
-	InputFiles   []string
+	Partition  string
+	InputFiles []string
+	// OutputFile holds the first output key for backward-compatible
+	// logging. When per-tenant prefix isolation produces multiple
+	// outputs (one per tenant whose files were in the input batch),
+	// the full list is in OutputFiles.
 	OutputFile   string
+	OutputFiles  []string
 	RowsMerged   int64
 	BytesRead    int64
 	BytesWritten int64
@@ -94,16 +101,124 @@ func (c *Compactor) Compact(ctx context.Context, partition string, files []manif
 		}
 	}
 
+	result := CompactResult{
+		Partition:   partition,
+		OutputLevel: sourceLevel + 1,
+	}
+
+	// Group inputs by their tenant prefix and bucket so files from
+	// different tenants are NOT merged into a single output that
+	// would land at one tenant's prefix (or bucket). When prefix
+	// isolation is on, the manifest's partition key (dt=…/hour=…)
+	// is shared across tenants, so without this split rows from
+	// tenant 1002:0 could end up in a file under 0/0/<mode>/…
+	// after compaction. Each tenant group becomes its own output.
+	groups := groupFilesByTenant(files)
+
+	for _, g := range groups {
+		groupResult, err := c.compactGroup(ctx, partition, g, fp, result.OutputLevel)
+		if err != nil {
+			return nil, err
+		}
+		result.InputFiles = append(result.InputFiles, groupResult.InputKeys...)
+		result.OutputFiles = append(result.OutputFiles, groupResult.OutputKey)
+		result.BytesRead += groupResult.BytesRead
+		result.BytesWritten += groupResult.BytesWritten
+		result.RowsMerged += groupResult.RowsMerged
+	}
+	if len(result.OutputFiles) > 0 {
+		result.OutputFile = result.OutputFiles[0]
+	}
+
+	if c.bloomRebuilder != nil {
+		currentFiles := c.manifest.FilesForPartition(partition)
+		if err := c.bloomRebuilder.RebuildPartition(ctx, partition, currentFiles); err != nil {
+			logger.Warnf("bloom rebuild after compaction failed for %s: %v", partition, err)
+		}
+	}
+
+	result.Duration = time.Since(start)
+
+	logger.Infof("compaction complete; partition=%s, tenant_groups=%d, input_files=%d, rows_merged=%d, bytes_read=%d, bytes_written=%d, output_level=%d, duration=%v",
+		partition, len(groups), len(files), result.RowsMerged, result.BytesRead, result.BytesWritten, result.OutputLevel, result.Duration)
+
+	return &result, nil
+}
+
+// tenantFileGroup is one tenant's slice of the input batch.
+type tenantFileGroup struct {
+	TenantPrefix string // e.g. "1002/0/<mode>/" — empty for legacy / non-tenant keys
+	Bucket       string // the bucket the source files were in (empty = default)
+	Files        []manifest.FileInfo
+}
+
+// groupFilesByTenant partitions the input by tenant prefix + bucket.
+// Same-tenant files in different buckets are kept separate so output
+// inherits the source bucket. Group order is deterministic.
+func groupFilesByTenant(files []manifest.FileInfo) []tenantFileGroup {
+	type groupKey struct {
+		Prefix string
+		Bucket string
+	}
+	byKey := make(map[groupKey]*tenantFileGroup, 1)
+	var order []groupKey
+	for _, f := range files {
+		prefix := tenantPrefixFromKey(f.Key)
+		k := groupKey{Prefix: prefix, Bucket: f.Bucket}
+		g, ok := byKey[k]
+		if !ok {
+			g = &tenantFileGroup{TenantPrefix: prefix, Bucket: f.Bucket}
+			byKey[k] = g
+			order = append(order, k)
+		}
+		g.Files = append(g.Files, f)
+	}
+	sort.Slice(order, func(i, j int) bool {
+		if order[i].Prefix != order[j].Prefix {
+			return order[i].Prefix < order[j].Prefix
+		}
+		return order[i].Bucket < order[j].Bucket
+	})
+	out := make([]tenantFileGroup, 0, len(order))
+	for _, k := range order {
+		out = append(out, *byKey[k])
+	}
+	return out
+}
+
+// tenantPrefixFromKey extracts "<acct>/<proj>/<mode>/" from an S3 key
+// produced by the writer's per-tenant flush path. Returns the empty
+// string for legacy keys (no leading numeric segments) so they share
+// a single "legacy" group instead of accidentally fanning out.
+func tenantPrefixFromKey(key string) string {
+	parts := strings.SplitN(key, "/", 4)
+	if len(parts) < 4 {
+		return ""
+	}
+	if _, err := strconv.ParseUint(parts[0], 10, 32); err != nil {
+		return ""
+	}
+	if _, err := strconv.ParseUint(parts[1], 10, 32); err != nil {
+		return ""
+	}
+	return parts[0] + "/" + parts[1] + "/" + parts[2] + "/"
+}
+
+type compactGroupResult struct {
+	InputKeys    []string
+	OutputKey    string
+	RowsMerged   int64
+	BytesRead    int64
+	BytesWritten int64
+}
+
+func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenantFileGroup, fp string, outputLevel int) (*compactGroupResult, error) {
 	var (
-		result    CompactResult
 		allData   [][]byte
 		inputKeys []string
+		bytesRead int64
 	)
-	result.Partition = partition
-	result.OutputLevel = sourceLevel + 1
-
-	// Download all source files.
-	for _, f := range files {
+	for _, f := range g.Files {
 		data, err := c.pool.Download(ctx, f.Key)
 		if err != nil {
 			return nil, fmt.Errorf("download %s: %w", f.Key, err)
@@ -112,12 +227,10 @@ func (c *Compactor) Compact(ctx context.Context, partition string, files []manif
 			return nil, fmt.Errorf("download %s: file not found", f.Key)
 		}
 		allData = append(allData, data)
-		result.BytesRead += int64(len(data))
+		bytesRead += int64(len(data))
 		inputKeys = append(inputKeys, f.Key)
 	}
-	result.InputFiles = inputKeys
 
-	// Merge, write, and upload based on mode.
 	var outputData []byte
 	var rowsMerged int64
 	var minTime, maxTime int64
@@ -133,11 +246,10 @@ func (c *Compactor) Compact(ctx context.Context, partition string, files []manif
 			minTime = merged[0].TimestampUnixNano
 			maxTime = merged[len(merged)-1].TimestampUnixNano
 		}
-		out, err := writeCompactedLogs(merged, c.rowGroupSize, c.compressionLevel)
+		outputData, err = writeCompactedLogs(merged, c.rowGroupSize, c.compressionLevel)
 		if err != nil {
 			return nil, fmt.Errorf("write compacted logs: %w", err)
 		}
-		outputData = out
 
 	case config.ModeTraces:
 		merged, err := c.mergeTraceFiles(allData)
@@ -149,60 +261,57 @@ func (c *Compactor) Compact(ctx context.Context, partition string, files []manif
 			minTime = merged[0].TimestampUnixNano
 			maxTime = merged[len(merged)-1].TimestampUnixNano
 		}
-		out, err := writeCompactedTraces(merged, c.rowGroupSize, c.compressionLevel)
+		outputData, err = writeCompactedTraces(merged, c.rowGroupSize, c.compressionLevel)
 		if err != nil {
 			return nil, fmt.Errorf("write compacted traces: %w", err)
 		}
-		outputData = out
 
 	default:
 		return nil, fmt.Errorf("unsupported mode: %s", c.mode)
 	}
 
-	result.RowsMerged = rowsMerged
-	result.BytesWritten = int64(len(outputData))
-
-	// Build output key.
+	// Build output key under the tenant's prefix (preserving the
+	// {acct}/{proj}/<mode>/ layout the writer produces) so the
+	// compacted file is discoverable to per-tenant readers and
+	// stats-attribution paths. Legacy files (no tenant prefix)
+	// fall back to the compactor's configured default prefix —
+	// preserves single-tenant behavior unchanged.
+	outputPrefix := g.TenantPrefix
+	if outputPrefix == "" {
+		outputPrefix = c.prefix
+	}
 	short := uuid.New().String()[:8]
-	outputKey := fmt.Sprintf("%s%s/compacted-L%d-%s.parquet", c.prefix, partition, result.OutputLevel, short)
-	result.OutputFile = outputKey
+	outputKey := fmt.Sprintf("%s%s/compacted-L%d-%s.parquet", outputPrefix, partition, outputLevel, short)
 
-	// Upload compacted file.
 	if err := c.pool.Upload(ctx, outputKey, outputData); err != nil {
 		return nil, fmt.Errorf("upload compacted file: %w", err)
 	}
 
-	// Add compacted file to manifest.
 	c.manifest.AddFile(partition, manifest.FileInfo{
 		Key:               outputKey,
+		Bucket:            g.Bucket,
 		Size:              int64(len(outputData)),
 		RowCount:          rowsMerged,
 		MinTimeNs:         minTime,
 		MaxTimeNs:         maxTime,
 		SchemaFingerprint: fp,
-		CompactionLevel:   result.OutputLevel,
+		CompactionLevel:   outputLevel,
 	})
 
-	// Remove source files from manifest and S3.
-	for _, f := range files {
+	for _, f := range g.Files {
 		c.manifest.RemoveFile(partition, f.Key)
 		if err := c.pool.Delete(ctx, f.Key); err != nil {
 			logger.Warnf("failed to delete source file; key=%s, error=%s", f.Key, err)
 		}
 	}
 
-	if c.bloomRebuilder != nil {
-		currentFiles := c.manifest.FilesForPartition(partition)
-		if err := c.bloomRebuilder.RebuildPartition(ctx, partition, currentFiles); err != nil {
-			logger.Warnf("bloom rebuild after compaction failed for %s: %v", partition, err)
-		}
-	}
-
-	result.Duration = time.Since(start)
-
-	logger.Infof("compaction complete; partition=%s, input_files=%d, rows_merged=%d, bytes_read=%d, bytes_written=%d, output_level=%d, duration=%v", partition, len(files), rowsMerged, result.BytesRead, result.BytesWritten, result.OutputLevel, result.Duration)
-
-	return &result, nil
+	return &compactGroupResult{
+		InputKeys:    inputKeys,
+		OutputKey:    outputKey,
+		RowsMerged:   rowsMerged,
+		BytesRead:    bytesRead,
+		BytesWritten: int64(len(outputData)),
+	}, nil
 }
 
 func (c *Compactor) mergeLogFiles(allData [][]byte) ([]schema.LogRow, error) {

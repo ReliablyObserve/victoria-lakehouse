@@ -173,10 +173,18 @@ func TestParseTenantKeyFromString(t *testing.T) {
 	if err != nil || a != 1002 || p != 0 {
 		t.Errorf("good input: got (%d,%d,%v), want (1002,0,nil)", a, p, err)
 	}
-	if _, _, err := ParseTenantKeyFromString("no-colon"); err == nil {
-		t.Error("missing colon must error")
+	// Bare account form mirrors upstream VL/VT (project defaults to 0).
+	a, p, err = ParseTenantKeyFromString("42")
+	if err != nil || a != 42 || p != 0 {
+		t.Errorf("bare account: got (%d,%d,%v), want (42,0,nil)", a, p, err)
 	}
 	if _, _, err := ParseTenantKeyFromString("abc:0"); err == nil {
 		t.Error("non-numeric account must error")
+	}
+	if _, _, err := ParseTenantKeyFromString("1:abc"); err == nil {
+		t.Error("non-numeric project must error")
+	}
+	if _, _, err := ParseTenantKeyFromString(""); err == nil {
+		t.Error("empty key must error")
 	}
 }

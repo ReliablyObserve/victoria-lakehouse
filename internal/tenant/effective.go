@@ -318,15 +318,23 @@ func (pr *PolicyRegistry) validate() error {
 
 // parseAccountProject decodes an "account:project" override key. Returns
 // false for any non-numeric form so callers can fall back to alias-map
-// resolution.
+// resolution. Accepts both "<account>:<project>" and bare
+// "<account>" forms — mirrors VL/VT's ParseTenantID semantics where
+// a missing project segment is treated as project=0.
 func parseAccountProject(key string) (TenantID, bool) {
-	a, p, ok := strings.Cut(key, ":")
-	if !ok {
+	key = strings.TrimSpace(key)
+	if key == "" {
 		return TenantID{}, false
 	}
+	a, p, hasProject := strings.Cut(key, ":")
 	acc, err := strconv.ParseUint(strings.TrimSpace(a), 10, 32)
 	if err != nil {
 		return TenantID{}, false
+	}
+	if !hasProject {
+		// Bare account form: project defaults to 0, matching upstream
+		// VL/VT.
+		return TenantID{AccountID: uint32(acc), ProjectID: 0}, true
 	}
 	proj, err := strconv.ParseUint(strings.TrimSpace(p), 10, 32)
 	if err != nil {

@@ -299,7 +299,7 @@
 
       var wrapper = el("div", { style: "overflow-x:auto" });
       var tbl = el("table", { className: "lh-table" });
-      tbl.innerHTML = "<thead><tr><th>Victoria ID</th><th>Org / Name</th><th>Source</th><th>S3 Prefix</th><th>Files</th><th>Compressed</th><th>Raw Bytes</th><th>Rows</th><th>Compression</th><th>Est. Cost</th><th>Last Write</th><th>Time Range</th></tr></thead>";
+      tbl.innerHTML = "<thead><tr><th>Victoria ID</th><th>Org / Name</th><th>Source</th><th>S3 Prefix</th><th>Files</th><th>Partitions</th><th>Compressed</th><th>Raw Bytes</th><th>Rows</th><th>Compression</th><th>Est. Cost</th><th>Last Write</th><th>Last Query</th><th>Time Range</th></tr></thead>";
       var tbody = el("tbody");
       tenants.forEach(function (t) {
         var row = el("tr", { style: "cursor:pointer" });
@@ -322,12 +322,14 @@
           "<td><span style='" + srcStyle + ";font-size:0.85em'>" + srcBadge + "</span></td>" +
           "<td><code style='font-size:0.85em'>" + s3Prefix + "</code></td>" +
           "<td>" + fmtNum(t.total_files) + "</td>" +
+          "<td>" + fmtNum(t.partitions || 0) + "</td>" +
           "<td>" + fmtBytes(t.total_bytes) + "</td>" +
           "<td>" + fmtBytes(t.raw_bytes) + "</td>" +
           "<td>" + fmtNum(t.total_rows) + "</td>" +
           "<td>" + fmtRatio(t.compression_ratio) + "</td>" +
           "<td>" + fmtUSD(t.monthly_cost_usd) + "</td>" +
           "<td>" + fmtTime(t.last_write_at) + "</td>" +
+          "<td>" + fmtTime(t.last_query_at) + "</td>" +
           "<td>" + timeRange + "</td>";
         row.addEventListener("click", function () { renderTenantDetail(container, t.account_id, t.project_id); });
         tbody.appendChild(row);

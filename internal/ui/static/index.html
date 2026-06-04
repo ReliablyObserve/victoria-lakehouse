@@ -245,12 +245,14 @@
                   <th>Source</th>
                   <th>S3 Prefix</th>
                   <th onClick=${() => setSort("files")}>Files ${sort === "files" ? "\u25bc" : ""}</th>
+                  <th>Partitions</th>
                   <th onClick=${() => setSort("bytes")}>Compressed ${sort === "bytes" ? "\u25bc" : ""}</th>
                   <th>Raw Bytes</th>
                   <th>Rows</th>
                   <th>Compression</th>
                   <th onClick=${() => setSort("cost")}>Est. Cost ${sort === "cost" ? "\u25bc" : ""}</th>
                   <th>Last Write</th>
+                  <th>Last Query</th>
                   <th>Time Range</th>
                 </tr>
               </thead>
@@ -267,12 +269,14 @@
                     <td><span class="badge ${aliasOnly ? 'badge-map' : 'badge-promoted'}">${t.source || "registry"}</span></td>
                     <td><code style="font-size:0.85em">${s3Prefix}</code></td>
                     <td>${fmtNum(t.total_files)}</td>
+                    <td>${fmtNum(t.partitions || 0)}</td>
                     <td>${fmtBytes(t.total_bytes)}</td>
                     <td>${fmtBytes(t.raw_bytes)}</td>
                     <td>${fmtNum(t.total_rows)}</td>
                     <td>${fmtRatio(t.compression_ratio)}</td>
                     <td>${fmtUSD(t.monthly_cost_usd)}</td>
                     <td>${fmtTime(t.last_write_at)}</td>
+                    <td>${fmtTime(t.last_query_at)}</td>
                     <td>${(t.min_time||"").slice(0,10)} \u2192 ${(t.max_time||"").slice(0,10)}</td>
                   </tr>
                   `;
@@ -289,51 +293,74 @@
       const [data, setData] = useState(null);
       const [err, setErr] = useState(null);
 
+      const [tenantBreakdown, setTenantBreakdown] = useState(null);
+
       useEffect(() => {
         fetch("/lakehouse/api/v1/stats/breakdown")
           .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
           .then(setData).catch(e => setErr(e.message));
+        // Fetch the exact-numbers tenant facet alongside the
+        // estimated-share label breakdowns, so the panel can lead
+        // with operationally-important per-tenant footprint.
+        fetch("/lakehouse/api/v1/stats/breakdown?group_by=tenant")
+          .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+          .then(j => setTenantBreakdown((j.labels && j.labels[0]) || null))
+          .catch(() => {});
       }, []);
 
       if (err) return html`<div class="error">Error: ${err}</div>`;
       if (!data) return html`<div class="loading">Loading breakdown\u2026</div>`;
 
       const labels = data.labels || [];
-      if (labels.length === 0) return html`<div class="loading">No breakdown labels configured.</div>`;
+
+      const renderRows = (values, isExact) => {
+        const maxBytes = Math.max(...values.map(x => x.estimated_bytes || 0), 1);
+        return values.map(v => {
+          const pct = (v.estimated_bytes || 0) / maxBytes * 100;
+          const label = v.org_id ? html`<span>${v.value} <span style="color:var(--color-text-secondary);font-size:11px">(${v.org_id})</span></span>` : v.value;
+          return html`
+            <div style="display:flex;align-items:center;gap:8px;font-size:13px">
+              <div style="width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0">${label}</div>
+              <div style="flex:1;height:18px;background:var(--color-hover-black,#0000000f);border-radius:3px;overflow:hidden">
+                <div style="height:100%;width:${Math.max(pct, 1)}%;background:var(--color-primary);border-radius:3px"></div>
+              </div>
+              <div style="width:80px;text-align:right;flex-shrink:0;font-size:12px;color:var(--color-text-secondary)">${fmtBytes(v.estimated_bytes)}</div>
+              <div style="width:60px;text-align:right;flex-shrink:0;font-size:12px;color:var(--color-text-secondary)">${(v.share_pct || 0).toFixed(1)}%</div>
+            </div>
+          `;
+        });
+      };
 
       return html`
-        <div class="section-title">Storage Breakdown by Label</div>
-        <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:16px">
-          Sizes are proportionally estimated from total storage. Configured via stats.breakdown_labels.
-        </div>
-        ${labels.map(label => html`
-          <div style="margin-bottom:24px">
+        <div class="section-title">Storage Breakdown</div>
+        ${tenantBreakdown && tenantBreakdown.values && tenantBreakdown.values.length > 0 ? html`
+          <div style="margin-bottom:28px">
             <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
-              <h3 style="font-size:1rem;margin:0">${label.name}</h3>
-              <span class="badge ${label.type === 'promoted' ? 'badge-promoted' : 'badge-map'}">${label.type}</span>
-              <span style="font-size:12px;color:var(--color-text-secondary)">${label.cardinality} values</span>
+              <h3 style="font-size:1rem;margin:0">by Tenant</h3>
+              <span class="badge badge-promoted">registry</span>
+              <span style="font-size:12px;color:var(--color-text-secondary)">${tenantBreakdown.cardinality} tenants \u00b7 exact bytes from per-tenant registry</span>
             </div>
-            ${!label.values || label.values.length === 0
-              ? html`<div style="padding:12px;color:var(--color-text-secondary);font-style:italic">No values discovered yet. Run a query to populate.</div>`
-              : html`<div style="display:flex;flex-direction:column;gap:4px">
-                  ${label.values.map(v => {
-                    const maxBytes = Math.max(...label.values.map(x => x.estimated_bytes || 0), 1);
-                    const pct = (v.estimated_bytes || 0) / maxBytes * 100;
-                    return html`
-                      <div style="display:flex;align-items:center;gap:8px;font-size:13px">
-                        <div style="width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0">${v.value}</div>
-                        <div style="flex:1;height:18px;background:var(--color-hover-black,#0000000f);border-radius:3px;overflow:hidden">
-                          <div style="height:100%;width:${Math.max(pct, 1)}%;background:var(--color-primary);border-radius:3px"></div>
-                        </div>
-                        <div style="width:70px;text-align:right;flex-shrink:0;font-size:12px;color:var(--color-text-secondary)">${fmtBytes(v.estimated_bytes)}</div>
-                        <div style="width:50px;text-align:right;flex-shrink:0;font-size:12px;color:var(--color-text-secondary)">${(v.share_pct || 0).toFixed(1)}%</div>
-                      </div>
-                    `;
-                  })}
-                </div>`
-            }
+            <div style="display:flex;flex-direction:column;gap:4px">${renderRows(tenantBreakdown.values, true)}</div>
           </div>
-        `)}
+        ` : null}
+        ${labels.length === 0 ? html`<div class="loading">No additional breakdown labels configured.</div>` : html`
+          <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:16px">
+            Sizes below are proportionally estimated from label counts. Configured via stats.breakdown_labels.
+          </div>
+          ${labels.map(label => html`
+            <div style="margin-bottom:24px">
+              <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
+                <h3 style="font-size:1rem;margin:0">${label.name}</h3>
+                <span class="badge ${label.type === 'promoted' ? 'badge-promoted' : 'badge-map'}">${label.type}</span>
+                <span style="font-size:12px;color:var(--color-text-secondary)">${label.cardinality} values</span>
+              </div>
+              ${!label.values || label.values.length === 0
+                ? html`<div style="padding:12px;color:var(--color-text-secondary);font-style:italic">No values discovered yet. Run a query to populate.</div>`
+                : html`<div style="display:flex;flex-direction:column;gap:4px">${renderRows(label.values, false)}</div>`
+              }
+            </div>
+          `)}
+        `}
       `;
     }
 

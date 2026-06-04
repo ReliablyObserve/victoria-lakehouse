@@ -154,9 +154,19 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	var totalFiles int
 	var totalBytes int64
 
+	// When per-tenant prefix isolation is configured, the writer
+	// writes under "{AccountID}/{ProjectID}/<mode>/" — many distinct
+	// prefixes, not the single m.prefix. List at the bucket root in
+	// that case and rely on the partition-extractor below to filter
+	// out non-data keys. Single-tenant deployments keep the
+	// narrow-prefix scan they had before for cheaper paging.
+	listPrefix := m.prefix
+	if strings.Contains(m.prefixTemplate, "{AccountID}") {
+		listPrefix = ""
+	}
 	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(m.bucket),
-		Prefix: aws.String(m.prefix),
+		Prefix: aws.String(listPrefix),
 	})
 
 	for paginator.HasMorePages() {
@@ -498,6 +508,46 @@ func (m *Manifest) RemoveFile(partition string, key string) {
 			return
 		}
 	}
+}
+
+// LiveAggregate is the single source of truth for global storage
+// totals — sums files / bytes / rows / raw bytes / min+max time by
+// iterating the m.files map directly. The same iteration also backs
+// TenantSummaries(), so /stats/overview and /tenants can't disagree
+// by construction. Prefer this over the cached m.totalFiles /
+// m.totalBytes counters, which can drift when RefreshFromS3 resets
+// them against an incomplete S3 scan.
+type LiveAggregate struct {
+	Files     int
+	Bytes     int64
+	Rows      int64
+	RawBytes  int64
+	MinTimeNs int64
+	MaxTimeNs int64
+}
+
+// LiveAggregate iterates the in-memory file map under the read lock
+// and returns aggregate counts. O(n) over file count — acceptable
+// for the API surfaces that call it once per request.
+func (m *Manifest) LiveAggregate() LiveAggregate {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var agg LiveAggregate
+	for _, files := range m.files {
+		for _, fi := range files {
+			agg.Files++
+			agg.Bytes += fi.Size
+			agg.Rows += fi.RowCount
+			agg.RawBytes += fi.RawBytes
+			if fi.MinTimeNs > 0 && (agg.MinTimeNs == 0 || fi.MinTimeNs < agg.MinTimeNs) {
+				agg.MinTimeNs = fi.MinTimeNs
+			}
+			if fi.MaxTimeNs > agg.MaxTimeNs {
+				agg.MaxTimeNs = fi.MaxTimeNs
+			}
+		}
+	}
+	return agg
 }
 
 // SetFileBucket updates the bucket field for the file identified by
