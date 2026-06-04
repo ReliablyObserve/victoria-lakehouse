@@ -54,13 +54,13 @@ What hot VT/VL gives users that the cold tier silently doesn't, with rough effor
 
 | Feature | Status | Severity | Notes / effort to close |
 |---|---|---|---|
-| **Service Graph** (`/api/v2/service-graph`) | Not implemented | UX-degradation | Grafana's Service Graph view returns empty on cold tier. Requires per-flush edge aggregation + sidecar Parquet OR on-demand cross-file scan. Estimated 800–1500 LOC + design pass — tracked as Phase B in PR follow-ups. |
+| **Service Graph** (`/api/v2/service-graph`) | **Closed** | UX-degradation | Reuses VT upstream's `servicegraph` background task — see Closed section below. |
 | **Per-tenant stats group-by** (`* \| stats by(account_id, project_id) count()`) | Not supported via VL stats path | Metric-only | `account_id`/`project_id` are plain Parquet columns, not VL stream tags, so VL stats can't group on them. Workaround: read `/api/v1/tenants`. Closing requires promoting these to stream-id components or extending stats path. |
 | **TraceQL non-trivial aggregations** | Partial | Functional-degradation | Simple traceQL works via vtselect → vlselect overlay. Complex `count_over_time()` / `histogram_over_time()` paths may not have been exercised end-to-end on cold tier. |
 | **Live tail** (`/api/v2/search/tail`) | Returns 501 | Expected | Cold storage is write-once-read-many; live tail makes no sense post-flush. Handled gracefully. |
 | **Span metrics auto-derive** | Not implemented | UX-degradation | Tempo emits derived RED metrics from spans; cold tier doesn't synthesize these. Workaround: use VT hot tier metrics over its retention period. |
 | **VT-internal `trace_id_idx_stream` index rows** | Dropped at insert | Expected | Replaced by our `_trace_idx` Parquet footer KV — see `internal/traceindex`. The parity check counts dropped rows so the discrepancy is visible, not invisible. |
-| **VT-internal `service_graph` stream rows** | Dropped at insert | UX-degradation | Same drop site as `trace_id_idx`. Currently no cold-tier equivalent → Service Graph gap above. |
+| **VT-internal `service_graph` stream rows** | **Kept** (changed from drop) | Resolved | Service-graph edges are LOW-cardinality aggregates VT's upstream `servicegraph` task emits; we persist them so the upstream `/select/jaeger/api/dependencies` reader works unchanged. See Closed section below. |
 
 ### Logs
 
@@ -83,4 +83,53 @@ This file is the source of truth for "what cold tier doesn't do yet". When closi
 
 ### Closed (history)
 
-(empty — populate as gaps close.)
+**Service Graph** — PR #121
+
+The Lakehouse cold tier now serves Grafana's Service Graph view via
+the exact same code path the upstream hot tier uses. No reimplementation,
+no new aggregation engine, no new storage format.
+
+How it works:
+
+1. VT's upstream `app/victoria-traces/servicegraph` package runs a
+   background task. We enable it via `-servicegraph.enableTask=true`
+   on `lakehouse-traces`.
+2. Per tick (default 1m, set to 2m in our e2e compose), the task:
+   - Calls `vtstorage.GetTenantIDs(start, end)` — we adapt this via
+     `Adapter.WithTenantLister` to return every tenant the manifest
+     holds, windowed to the tick's lookbehind.
+   - For each tenant, runs `vtselect.GetServiceGraphTimeRange` which
+     issues a JOIN+aggregation LogsQL query against spans —
+     `vtstorage.RunQuery` is our adapter, so the query reads from
+     cold-tier Parquet.
+   - Calls `vtinsert.PersistServiceGraph` which writes the resulting
+     edge rows tagged `{trace_service_graph_stream="-"}` back through
+     `vtinsertutil.SetLogRowsStorage` (our writer adapter) — they
+     land in cold-tier Parquet like any other row.
+3. Grafana → Tempo datasource → Jaeger Dependencies API
+   (`/select/jaeger/api/dependencies`) → `query.GetServiceGraphList`
+   runs `{trace_service_graph_stream="-"} | fields parent, child,
+   callCount | stats by (parent, child) sum(callCount)` and returns
+   edges from cold storage.
+
+The lakehouse-side delta to make this work was ~50 LOC:
+
+- `vtInternalRowKind` split returns `(kind, drop)`: drop trace_id_idx
+  (replaced by `_trace_idx` footer KV — too high-cardinality to
+  persist), KEEP service_graph (low-cardinality aggregates the reader
+  expects to find).
+- `Adapter.WithTenantLister` option threads a real tenant list into
+  upstream `GetTenantIDs`, replacing the legacy single-`{0,0}` answer.
+- `Manifest.TenantSummariesInWindow(start, end)` exposes the per-tenant
+  list filtered by file time overlap so the task only iterates
+  tenants with relevant data.
+- `servicegraph.Init() + defer servicegraph.Stop()` mounted at startup.
+
+Compose enables `-servicegraph.enableTask=true -servicegraph.taskInterval=2m -servicegraph.taskLookbehind=5m`
+to give the writer's 120s flush time to publish before the task scans.
+
+Verification: `tests/e2e/service_graph_test.go::TestServiceGraph_ColdTierGeneratesEdges`
+pushes a 3-span chain (service-a → service-b → service-c), waits up
+to 5min for one task tick + flush, then asserts
+`/select/jaeger/api/dependencies` returns the expected (parent, child)
+edge.

@@ -37,6 +37,8 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3"
 	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
 	vtstorageadapter "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vtstorage_adapter"
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	"github.com/VictoriaMetrics/VictoriaTraces/app/victoria-traces/servicegraph"
 	"github.com/VictoriaMetrics/VictoriaTraces/app/vtinsert"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/internalselect"
@@ -814,7 +816,41 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		} else {
 			internalvlstorage.SetStorage(store, tombstoneStore)
 		}
-		vtstorageadapter.Init(store)
+		// Wire a tenant lister so VT's per-tenant background tasks
+		// (notably servicegraph) iterate every tenant the LH process
+		// holds in cold storage, not just the legacy {0,0}.
+		vtstorageadapter.Init(store, vtstorageadapter.WithTenantLister(
+			func(startNs, endNs int64) []logstorage.TenantID {
+				summaries := store.Manifest().TenantSummariesInWindow(startNs, endNs)
+				out := make([]logstorage.TenantID, 0, len(summaries))
+				for _, s := range summaries {
+					acc, errA := strconv.ParseUint(s.AccountID, 10, 32)
+					proj, errP := strconv.ParseUint(s.ProjectID, 10, 32)
+					if errA != nil || errP != nil {
+						continue
+					}
+					out = append(out, logstorage.TenantID{
+						AccountID: uint32(acc),
+						ProjectID: uint32(proj),
+					})
+				}
+				return out
+			},
+		))
+
+		// VT's service-graph background task aggregates spans into
+		// (caller, callee, count) edges and persists them as regular
+		// log rows tagged with {trace_service_graph_stream="-"}. The
+		// /select/jaeger/api/dependencies reader queries those rows
+		// back. Both ends already route through our adapter, so
+		// enabling the upstream task gives the cold tier Service
+		// Graph parity with hot VT without any cold-tier-specific
+		// service-graph code on our side.
+		//
+		// Disabled-by-default upstream behind -servicegraph.enableTask
+		// = true; the LH operator opts in via the same flag.
+		servicegraph.Init()
+		defer servicegraph.Stop()
 	}
 
 	if cfg.SelectEnabled() {

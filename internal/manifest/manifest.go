@@ -946,6 +946,31 @@ type TenantSummary struct {
 	MaxTime    time.Time
 }
 
+// TenantSummariesInWindow returns TenantSummaries restricted to
+// tenants holding files whose time range overlaps [startNs, endNs].
+// Pass 0 for either bound to leave that side open. Used by VT's
+// servicegraph task to iterate only tenants with recent activity.
+func (m *Manifest) TenantSummariesInWindow(startNs, endNs int64) []TenantSummary {
+	all := m.TenantSummaries()
+	if startNs == 0 && endNs == 0 {
+		return all
+	}
+	startT := time.Unix(0, startNs)
+	endT := time.Unix(0, endNs)
+	out := make([]TenantSummary, 0, len(all))
+	for _, s := range all {
+		// Include tenant if its [MinTime, MaxTime] overlaps [start, end].
+		if endNs > 0 && !s.MinTime.IsZero() && s.MinTime.After(endT) {
+			continue
+		}
+		if startNs > 0 && !s.MaxTime.IsZero() && s.MaxTime.Before(startT) {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 // TenantSummaries extracts per-tenant stats from S3 keys.
 // Supports both integer template ({AccountID}/{ProjectID}/) and OrgID template ({OrgID}/).
 func (m *Manifest) TenantSummaries() []TenantSummary {

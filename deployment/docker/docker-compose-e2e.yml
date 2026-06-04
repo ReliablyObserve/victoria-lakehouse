@@ -299,6 +299,14 @@ services:
       # override beyond upstream defaults; it reflects a real
       # cold-tier write-lag, not an LH-specific trick.
       - "-search.latencyOffset=2m"
+      # Enable VT's service-graph background task on the cold tier.
+      # The task queries spans (via our adapter) and persists edge
+      # rows back to S3, which the Jaeger /api/dependencies reader
+      # picks up unchanged. taskLookbehind covers the flush lag
+      # so newly-flushed spans contribute to the next aggregation.
+      - "-servicegraph.enableTask=true"
+      - "-servicegraph.taskInterval=2m"
+      - "-servicegraph.taskLookbehind=5m"
       - "-lakehouse.config=/etc/lakehouse/policy.yml"
       - "-loggerLevel=INFO"
     volumes:
