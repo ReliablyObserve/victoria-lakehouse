@@ -95,14 +95,32 @@ type Manifest struct {
 	sortedPartitions []partitionEntry
 	partitionMeta    map[string]*PartitionMeta
 	labelIndex       map[string]map[string]map[string]bool // field -> value -> fileKey -> exists
-	minTime          time.Time
-	maxTime          time.Time
-	totalFiles       int
-	totalBytes       int64
-	lastRefresh      time.Time
-	prefix           string
-	bucket           string
-	prefixTemplate   string
+
+	// byKey indexes the partition that owns each FileInfo key, so per-key
+	// mutators (SetFileBucket, UpdateFileColumnStats, EnrichFileMetadata)
+	// can avoid the full O(n) two-level scan across every partition every
+	// time they touch a single file. At 50M files (the PB-scale target),
+	// a single full-manifest scan takes hundreds of milliseconds under
+	// the write lock and blocks queries; the byKey index reduces it to
+	// O(files-in-one-partition) ≈ O(100) on a balanced cluster.
+	//
+	// We store the partition (not a *FileInfo) deliberately: the file
+	// slice in m.files[partition] gets re-allocated on append/remove, so
+	// any *FileInfo we cached would dangle. Per-partition slice scans
+	// (~50–100 files) are cheap and stable across mutations.
+	//
+	// Kept consistent with m.files in: AddFile, RemoveFile,
+	// RefreshFromS3, rebuildIndex, snapshot Load.
+	byKey map[string]string
+
+	minTime        time.Time
+	maxTime        time.Time
+	totalFiles     int
+	totalBytes     int64
+	lastRefresh    time.Time
+	prefix         string
+	bucket         string
+	prefixTemplate string
 
 	// partitionAttempts maps "dt=YYYY-MM-DD/hour=HH" -> last MarkAttempt
 	// timestamp recorded by the compaction scheduler (see
@@ -119,6 +137,7 @@ func New(bucket, prefix string) *Manifest {
 		labelIndex:        make(map[string]map[string]map[string]bool),
 		partitionMeta:     make(map[string]*PartitionMeta),
 		partitionAttempts: make(map[string]time.Time),
+		byKey:             make(map[string]string),
 		prefix:            prefix,
 		bucket:            bucket,
 	}
@@ -256,6 +275,7 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	}
 
 	m.files = files
+	m.rebuildByKey()
 	m.rebuildIndex()
 	m.minTime = minT
 	m.maxTime = maxT
@@ -344,6 +364,26 @@ func (m *Manifest) GetFilesForRange(startNs, endNs int64) []FileInfo {
 	})
 
 	return result
+}
+
+// rebuildByKey rebuilds the per-key partition index from m.files. Called
+// after bulk reassignments of m.files (RefreshFromS3, snapshot Load) so
+// SetFileBucket / UpdateFileColumnStats / EnrichFileMetadata can look up
+// any key in O(1) instead of scanning every partition. Must be called
+// under m.mu (write lock).
+func (m *Manifest) rebuildByKey() {
+	// Re-allocate at the expected size to avoid map growth thrash on the
+	// first 50M-file rebuild. Map sizing is exact: every key appears once.
+	total := 0
+	for _, files := range m.files {
+		total += len(files)
+	}
+	m.byKey = make(map[string]string, total)
+	for partition, files := range m.files {
+		for i := range files {
+			m.byKey[files[i].Key] = partition
+		}
+	}
 }
 
 // rebuildIndex rebuilds the sorted partition index and inverted label index from m.files.
@@ -504,6 +544,7 @@ func (m *Manifest) RemoveFile(partition string, key string) {
 			if len(m.files[partition]) == 0 {
 				delete(m.files, partition)
 			}
+			delete(m.byKey, key)
 			m.rebuildIndex()
 			return
 		}
@@ -564,20 +605,41 @@ func (m *Manifest) LiveAggregateWindow(startNs, endNs int64) LiveAggregate {
 	return agg
 }
 
+// findFileLocked returns the slice + index for the file identified by
+// key, using the per-key partition index built alongside m.files. Returns
+// (nil, -1) when key is unknown.
+//
+// Caller must already hold m.mu (read or write). O(files-in-one-partition)
+// — the byKey lookup is O(1), then we scan within that partition's slice
+// (≈50–100 files on a balanced cluster) since slice indices shift on
+// append/remove and we can't cache them safely.
+func (m *Manifest) findFileLocked(key string) ([]FileInfo, int) {
+	partition, ok := m.byKey[key]
+	if !ok {
+		return nil, -1
+	}
+	files := m.files[partition]
+	for i := range files {
+		if files[i].Key == key {
+			return files, i
+		}
+	}
+	// byKey said this partition, but the file isn't there — index is
+	// stale. Safe to return not-found; the mutator just no-ops.
+	return nil, -1
+}
+
 // SetFileBucket updates the bucket field for the file identified by
 // key. Used by the bucket migration tool to flip ownership after a
 // successful S3 server-side copy. Safe for concurrent use.
 func (m *Manifest) SetFileBucket(key, bucket string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, files := range m.files {
-		for i := range files {
-			if files[i].Key == key {
-				files[i].Bucket = bucket
-				return
-			}
-		}
+	files, i := m.findFileLocked(key)
+	if i < 0 {
+		return
 	}
+	files[i].Bucket = bucket
 }
 
 // UpdateFileColumnStats stores min/max stats for the named columns in the FileInfo
@@ -585,14 +647,11 @@ func (m *Manifest) SetFileBucket(key, bucket string) {
 func (m *Manifest) UpdateFileColumnStats(key string, stats map[string]ColumnMinMax) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, files := range m.files {
-		for i := range files {
-			if files[i].Key == key {
-				files[i].ColumnStats = stats
-				return
-			}
-		}
+	files, i := m.findFileLocked(key)
+	if i < 0 {
+		return
 	}
+	files[i].ColumnStats = stats
 }
 
 // EnrichFileMetadata updates RowCount and time bounds for a file identified
@@ -601,21 +660,18 @@ func (m *Manifest) UpdateFileColumnStats(key string, stats map[string]ColumnMinM
 func (m *Manifest) EnrichFileMetadata(key string, rowCount int64, minTimeNs, maxTimeNs int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, files := range m.files {
-		for i := range files {
-			if files[i].Key == key {
-				if files[i].RowCount == 0 && rowCount > 0 {
-					files[i].RowCount = rowCount
-				}
-				if files[i].MinTimeNs == 0 && minTimeNs > 0 {
-					files[i].MinTimeNs = minTimeNs
-				}
-				if files[i].MaxTimeNs == 0 && maxTimeNs > 0 {
-					files[i].MaxTimeNs = maxTimeNs
-				}
-				return
-			}
-		}
+	files, i := m.findFileLocked(key)
+	if i < 0 {
+		return
+	}
+	if files[i].RowCount == 0 && rowCount > 0 {
+		files[i].RowCount = rowCount
+	}
+	if files[i].MinTimeNs == 0 && minTimeNs > 0 {
+		files[i].MinTimeNs = minTimeNs
+	}
+	if files[i].MaxTimeNs == 0 && maxTimeNs > 0 {
+		files[i].MaxTimeNs = maxTimeNs
 	}
 }
 
@@ -632,15 +688,18 @@ func (m *Manifest) AddFile(partition string, fi FileInfo) {
 	// TestManifest_AddFile_IdempotentOnKey to count 2 entries and the
 	// race test TestManifest_AddFile_ConcurrentSameKeyOnlyOneEntry to
 	// produce N duplicates under -race.
-	for _, existing := range m.files[partition] {
-		if existing.Key == fi.Key {
-			metrics.ManifestAddFileDuplicateKeyTotal.Inc()
-			return
-		}
+	//
+	// byKey is the O(1) authoritative source for "does this key already
+	// exist anywhere in the manifest" — same partition or otherwise. A
+	// duplicate AddFile is dropped before mutating any state.
+	if _, exists := m.byKey[fi.Key]; exists {
+		metrics.ManifestAddFileDuplicateKeyTotal.Inc()
+		return
 	}
 
 	isNew := len(m.files[partition]) == 0
 	m.files[partition] = append(m.files[partition], fi)
+	m.byKey[fi.Key] = partition
 	m.totalFiles++
 	m.totalBytes += fi.Size
 
@@ -815,6 +874,7 @@ func (m *Manifest) LoadFrom(path string) error {
 
 	m.mu.Lock()
 	m.files = snap.Files
+	m.rebuildByKey()
 	m.rebuildIndex()
 	m.totalFiles = snap.TotalFiles_
 	m.totalBytes = snap.TotalBytes_
