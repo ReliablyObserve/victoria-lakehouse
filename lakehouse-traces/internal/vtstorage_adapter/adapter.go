@@ -81,7 +81,7 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
 			return a.store.RunQuery(ctx, qctx.TenantIDs, qctx.Query, wb)
 		}
-		return logstorage.RunQueryExternal(qctx, searchFn, writeBlock)
+		return logstorage.RunQueryExternalWithSubqueries(qctx, searchFn, a.RunQuery, writeBlock)
 	}
 
 	// IMPORTANT: pass the FULL query (with pipes intact) to a.store.RunQuery.
@@ -101,7 +101,7 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
 			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, rewritten, wb)
 		}
-		return logstorage.RunQueryExternal(newQctx, searchFn, writeBlock)
+		return logstorage.RunQueryExternalWithSubqueries(newQctx, searchFn, a.RunQuery, writeBlock)
 	}
 
 	if rewritten, ok := stripTraceIndexStream(qctx.Query); ok {
@@ -110,7 +110,7 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 			searchFn := func(wb logstorage.WriteDataBlockFunc) error {
 				return a.store.RunQuery(qctx.Context, qctx.TenantIDs, rewritten, wb)
 			}
-			return logstorage.RunQueryExternal(newQctx, searchFn, writeBlock)
+			return logstorage.RunQueryExternalWithSubqueries(newQctx, searchFn, a.RunQuery, writeBlock)
 		}
 		return a.store.RunQuery(qctx.Context, qctx.TenantIDs, rewritten, writeBlock)
 	}
@@ -119,7 +119,7 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
 			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query, wb)
 		}
-		return logstorage.RunQueryExternal(qctx, searchFn, writeBlock)
+		return logstorage.RunQueryExternalWithSubqueries(qctx, searchFn, a.RunQuery, writeBlock)
 	}
 
 	return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query, writeBlock)
