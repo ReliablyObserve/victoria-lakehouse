@@ -652,6 +652,74 @@ func (m *Manifest) HasDataForRange(startNs, endNs int64) bool {
 	return !start.After(m.maxTime) && !end.Before(m.minTime)
 }
 
+// GetFilesForRangeTenant restricts GetFilesForRange to a single tenant's
+// data. At PB-scale a typical 7-day query touches ~168 partitions ×
+// ~50 tenants of files in each — that's ~8400 file structs to walk
+// per request even when the requesting tenant owns ~168 of them. This
+// method consults the per-tenant partition set tracked in
+// tenantAggregates to skip whole partitions where the tenant has zero
+// files, then filters by key prefix within the remaining partitions.
+//
+// Behavior is bit-for-bit identical to GetFilesForRange when called on
+// a single-tenant manifest (the per-tenant partition set equals the
+// full partition set in that case). The optimization only kicks in
+// when the tenant aggregates can prove a partition has no files for
+// this tenant — same correctness contract, just a smaller walk.
+//
+// account/project are the string forms used in tenant aggregate keys
+// (matches what's in the FileInfo S3 key path). Pass empty strings to
+// fall back to the legacy un-scoped path.
+func (m *Manifest) GetFilesForRangeTenant(startNs, endNs int64, account, project string) []FileInfo {
+	if account == "" {
+		return m.GetFilesForRange(startNs, endNs)
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	a := m.tenantAggregates[tenantAccumKey{account: account, project: project}]
+	if a == nil || len(a.partitions) == 0 {
+		// Tenant unknown to the manifest (no files yet, or wrong key
+		// shape). Return empty — the caller's later steps would have
+		// found nothing anyway, and we avoid scanning every partition.
+		return nil
+	}
+
+	start := time.Unix(0, startNs)
+	end := time.Unix(0, endNs)
+
+	keyPrefix := account + "/"
+	if project != "" {
+		keyPrefix += project + "/"
+	}
+
+	var result []FileInfo
+	for partition := range a.partitions {
+		t, err := parsePartitionTime(partition)
+		if err != nil {
+			continue
+		}
+		partEnd := t.Add(time.Hour)
+		if !partEnd.After(start) || !t.Before(end) {
+			continue
+		}
+		for _, fi := range m.files[partition] {
+			if !strings.HasPrefix(fi.Key, keyPrefix) {
+				continue
+			}
+			if fi.MinTimeNs != 0 && fi.MaxTimeNs != 0 {
+				if fi.MaxTimeNs < startNs || fi.MinTimeNs > endNs {
+					continue
+				}
+			}
+			result = append(result, fi)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].MinTimeNs < result[j].MinTimeNs
+	})
+	return result
+}
+
 func (m *Manifest) GetFilesForRange(startNs, endNs int64) []FileInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

@@ -229,7 +229,22 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		liveBytes.Add(-sz)
 	}
 
-	files := s.manifest.GetFilesForRange(startNs, endNs)
+	// Tenant-scoped file enumeration when exactly one tenant is in scope.
+	// The cross-tenant (admin) read path retains the legacy full-manifest
+	// walk because it legitimately needs every tenant's files. Most query
+	// paths are single-tenant by construction (per-request auth) so this
+	// branch wins for the common case.
+	var files []manifest.FileInfo
+	if len(tenantIDs) == 1 {
+		t := tenantIDs[0]
+		files = s.manifest.GetFilesForRangeTenant(
+			startNs, endNs,
+			fmt.Sprintf("%d", t.AccountID),
+			fmt.Sprintf("%d", t.ProjectID),
+		)
+	} else {
+		files = s.manifest.GetFilesForRange(startNs, endNs)
+	}
 	if len(files) == 0 {
 		// No cold-tier files cover the requested window, but the in-flight
 		// buffer-bridge may still have rows newer than the latest flushed
