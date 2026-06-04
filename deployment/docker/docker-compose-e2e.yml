@@ -37,6 +37,34 @@ services:
       "
 
   # =========================================================================
+  # S3 latency proxy — Shopify toxiproxy in front of MinIO.
+  #
+  # Default behavior: pass-through (0ms added). Run scripts/inject-s3-latency.sh
+  # with a millisecond value to dial in S3 latency that simulates a real
+  # cloud bucket (typical p50 25-100ms, p99 300-1000ms, occasional 2s+).
+  #
+  # The lakehouse-traces and lakehouse-logs services point at this proxy
+  # rather than minio directly, so any latency added here is felt by the
+  # LH read/write paths but not by the host-side test suite (which still
+  # talks to MinIO at localhost:29000 directly without any added delay).
+  # =========================================================================
+
+  s3-latency:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    command: ["-host=0.0.0.0", "-config=/etc/toxiproxy/proxies.json"]
+    volumes:
+      - ./toxiproxy-proxies.json:/etc/toxiproxy/proxies.json:ro
+    networks: [lakehouse-net]
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # =========================================================================
   # Hot Tier — Disk-based, 24h retention
   # =========================================================================
 
@@ -194,6 +222,8 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
+      s3-latency:
+        condition: service_healthy
     # Exposed for VMUI access at http://localhost:29428/select/vmui/
     ports:
       - "29428:9428"
@@ -202,7 +232,7 @@ services:
       LAKEHOUSE_AZ: "az-a"
     command:
       - "-lakehouse.s3.bucket=obs-archive"
-      - "-lakehouse.s3.endpoint=http://minio:9000"
+      - "-lakehouse.s3.endpoint=http://s3-latency:9000"
       - "-lakehouse.s3.access-key=minioadmin"
       - "-lakehouse.s3.secret-key=minioadmin"
       - "-lakehouse.s3.force-path-style=true"
@@ -261,6 +291,8 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
+      s3-latency:
+        condition: service_healthy
     # Exposed for VMUI access at http://localhost:20428/select/vmui/
     ports:
       - "20428:10428"
@@ -269,7 +301,7 @@ services:
       LAKEHOUSE_AZ: "az-a"
     command:
       - "-lakehouse.s3.bucket=obs-archive"
-      - "-lakehouse.s3.endpoint=http://minio:9000"
+      - "-lakehouse.s3.endpoint=http://s3-latency:9000"
       - "-lakehouse.s3.access-key=minioadmin"
       - "-lakehouse.s3.secret-key=minioadmin"
       - "-lakehouse.s3.force-path-style=true"
@@ -455,6 +487,8 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
+      s3-latency:
+        condition: service_healthy
     networks: [lakehouse-net]
     environment:
       CLICKHOUSE_DB: default
