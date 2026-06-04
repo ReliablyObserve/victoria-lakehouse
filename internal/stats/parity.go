@@ -190,7 +190,7 @@ func (a *vlStatsCountAdapter) StatsCountAll(ctx context.Context, startNs, endNs 
 	qs.Set("time", fmt.Sprintf("%d", endNs/1e9))
 	req.URL.RawQuery = qs.Encode()
 
-	// #nosec G107 -- request URL derives from operator-configured baseURL above.
+	// #nosec G107,G704 -- request URL derives from operator-configured baseURL above.
 	resp, err := a.client.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("vl stats_query: %w", err)
