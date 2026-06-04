@@ -519,6 +519,70 @@ services:
       loki-vl-proxy:
         condition: service_healthy
 
+  # =========================================================================
+  # Jaeger UI — upstream Jaeger query UI in front of VT (hot) and LH (cold).
+  #
+  # Architecture per side (hot/cold):
+  #   - jaeger-query-{hot,cold}: upstream jaegertracing/jaeger-query with
+  #     SPAN_STORAGE_TYPE=memory. We don't use its in-memory backend for
+  #     data — it just serves the UI's embedded static assets. Internal-only.
+  #   - jaeger-proxy-{hot,cold}: nginx in front that proxies /api/* to
+  #     VT or lakehouse-traces (path rewrite /api → /select/jaeger/api)
+  #     and falls through to jaeger-query for everything else.
+  #
+  # Browse: hot=http://localhost:16686  cold=http://localhost:16687
+  # System Architecture menu shows the Dependencies graph from the
+  # respective tier's /select/jaeger/api/dependencies endpoint.
+  # =========================================================================
+
+  jaeger-query-hot:
+    image: jaegertracing/jaeger-query:1.62.0
+    environment:
+      SPAN_STORAGE_TYPE: memory
+    networks: [lakehouse-net]
+
+  jaeger-proxy-hot:
+    image: nginx:alpine
+    ports:
+      - "16686:80"
+    environment:
+      BACKEND_HOST: victoriatraces
+      BACKEND_PORT: "10428"
+      UI_HOST: jaeger-query-hot
+      UI_PORT: "16686"
+    volumes:
+      - ./jaeger-ui-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
+    networks: [lakehouse-net]
+    depends_on:
+      victoriatraces:
+        condition: service_healthy
+      jaeger-query-hot:
+        condition: service_started
+
+  jaeger-query-cold:
+    image: jaegertracing/jaeger-query:1.62.0
+    environment:
+      SPAN_STORAGE_TYPE: memory
+    networks: [lakehouse-net]
+
+  jaeger-proxy-cold:
+    image: nginx:alpine
+    ports:
+      - "16687:80"
+    environment:
+      BACKEND_HOST: lakehouse-traces
+      BACKEND_PORT: "10428"
+      UI_HOST: jaeger-query-cold
+      UI_PORT: "16686"
+    volumes:
+      - ./jaeger-ui-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
+    networks: [lakehouse-net]
+    depends_on:
+      lakehouse-traces:
+        condition: service_healthy
+      jaeger-query-cold:
+        condition: service_started
+
 volumes:
   vl-data: {}
   vt-data: {}
