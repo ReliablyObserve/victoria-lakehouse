@@ -54,7 +54,8 @@ What hot VT/VL gives users that the cold tier silently doesn't, with rough effor
 
 | Feature | Status | Severity | Notes / effort to close |
 |---|---|---|---|
-| **Service Graph** (`/api/v2/service-graph`) | **Closed** | UX-degradation | Reuses VT upstream's `servicegraph` background task — see Closed section below. |
+| **Service Graph — Jaeger Dependencies view** | **Closed** | UX-degradation | Cold-tier `/select/jaeger/api/dependencies` serves edges. See Closed section below. |
+| **Service Graph — Tempo plugin view in Grafana** | Partial | UX-degradation | The Tempo plugin requires `serviceMap.datasourceUid` → Prometheus with `traces_service_graph_*` metrics; VT has no metrics_generator and our cold tier persists edges as LogsQL rows, not Prometheus metrics. Datasource UID wired so the plugin no longer errors, but the view renders empty. Closing fully needs a Prometheus-API shim on lakehouse-traces that converts `{trace_service_graph_stream="-"}` rows into `traces_service_graph_request_total{client=…, server=…}` series. ~200-400 LOC. |
 | **Per-tenant stats group-by** (`* \| stats by(account_id, project_id) count()`) | Not supported via VL stats path | Metric-only | `account_id`/`project_id` are plain Parquet columns, not VL stream tags, so VL stats can't group on them. Workaround: read `/api/v1/tenants`. Closing requires promoting these to stream-id components or extending stats path. |
 | **TraceQL non-trivial aggregations** | Partial | Functional-degradation | Simple traceQL works via vtselect → vlselect overlay. Complex `count_over_time()` / `histogram_over_time()` paths may not have been exercised end-to-end on cold tier. |
 | **Live tail** (`/api/v2/search/tail`) | Returns 501 | Expected | Cold storage is write-once-read-many; live tail makes no sense post-flush. Handled gracefully. |
