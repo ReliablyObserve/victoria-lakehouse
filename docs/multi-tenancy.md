@@ -478,6 +478,18 @@ Each bucket can have:
 - Independent lifecycle rules (different retention per tenant)
 - Separate S3 Access Logs for compliance audit
 
+## Verifying parity against VL/VT
+
+Operators worried "is our LH tenant view actually matching what VL/VT says?" can hit
+`GET /lakehouse/api/v1/admin/parity?window=24h` (auth-gated by the global-read
+header). The response compares the embedded VL stats path against the
+manifest's `LiveAggregateWindow` for the same window and accounts for
+VT-internal index rows that the writer intentionally drops.
+
+See [docs/parity-and-gaps.md](parity-and-gaps.md) for the full expected-drift
+behavior plus the running register of cold-tier feature gaps relative to
+upstream VL/VT.
+
 ## Tenant-Scoped Internals
 
 ### Manifest

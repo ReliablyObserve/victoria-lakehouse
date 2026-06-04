@@ -530,11 +530,25 @@ type LiveAggregate struct {
 // and returns aggregate counts. O(n) over file count — acceptable
 // for the API surfaces that call it once per request.
 func (m *Manifest) LiveAggregate() LiveAggregate {
+	return m.LiveAggregateWindow(0, 0)
+}
+
+// LiveAggregateWindow restricts the aggregate to files whose time
+// range overlaps [startNs, endNs]. Pass 0 for either bound to leave
+// that side open. Used by the parity endpoint to compare manifest
+// totals against a VL stats query bounded to the same window.
+func (m *Manifest) LiveAggregateWindow(startNs, endNs int64) LiveAggregate {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var agg LiveAggregate
 	for _, files := range m.files {
 		for _, fi := range files {
+			if startNs > 0 && fi.MaxTimeNs > 0 && fi.MaxTimeNs < startNs {
+				continue
+			}
+			if endNs > 0 && fi.MinTimeNs > 0 && fi.MinTimeNs > endNs {
+				continue
+			}
 			agg.Files++
 			agg.Bytes += fi.Size
 			agg.Rows += fi.RowCount

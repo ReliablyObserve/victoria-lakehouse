@@ -22,20 +22,40 @@ type ParityResponse struct {
 	// vlselect path. Counts rows as VL's index reports them.
 	VLRows int64 `json:"vl_rows"`
 
-	// LH view: manifest's LiveAggregate over the same window.
-	// Counts rows as the per-file FileInfo.RowCount sums.
+	// LH view: manifest's LiveAggregateWindow over the same window.
+	// Counts rows as the per-file FileInfo.RowCount sums, restricted
+	// to files whose time range overlaps the window.
 	ManifestRows  int64 `json:"manifest_rows"`
 	ManifestBytes int64 `json:"manifest_bytes"`
 	ManifestFiles int64 `json:"manifest_files"`
 
 	// Drift = VL - LH. Positive means VL sees more rows than the
-	// manifest tracks (typically a manifest-stale lag); negative
-	// means the manifest claims rows VL can't find (typically a
-	// post-compaction window where the new file isn't yet
-	// indexed). Anything more than a few percent is worth
-	// investigating.
-	RowsDelta  int64   `json:"rows_delta"`
-	RowsDelta_ float64 `json:"rows_delta_pct"`
+	// manifest tracks (typically VT-internal index rows the writer
+	// dropped); negative means the manifest claims rows VL can't
+	// find (post-compaction lag or stale index).
+	RowsDelta int64   `json:"rows_delta"`
+	// JSON field intentionally named `rows_delta_pct`.
+	RowsDeltaPct float64 `json:"rows_delta_pct"`
+
+	// VTInternalDropped is the cumulative count of VT-internal
+	// stream rows (trace_id_idx, service_graph) the writer dropped
+	// at insert time, keyed by "kind". Lifetime counter since
+	// process start — not window-bounded — but accounts for the
+	// expected VL/manifest gap on the traces side.
+	VTInternalDropped map[string]uint64 `json:"vt_internal_dropped,omitempty"`
+
+	// ExpectedDrift sums VTInternalDropped values — the predicted
+	// VL−Manifest gap if the writer is dropping internal rows as
+	// designed. Compare against RowsDelta:
+	//   |RowsDelta - ExpectedDrift| ≈ 0   → parity verified
+	//   significant residual                → real divergence to chase
+	ExpectedDrift int64 `json:"expected_drift,omitempty"`
+
+	// VerifiedDrift = RowsDelta - ExpectedDrift. The residual after
+	// accounting for known-dropped rows. Anything more than a few
+	// percent of VL's count is operationally interesting.
+	VerifiedDrift    int64   `json:"verified_drift"`
+	VerifiedDriftPct float64 `json:"verified_drift_pct"`
 
 	// Per-tenant parity is currently not supported — account_id /
 	// project_id are plain Parquet columns, not stream-tagged
@@ -45,11 +65,30 @@ type ParityResponse struct {
 	PerTenantNote      string `json:"per_tenant_note,omitempty"`
 }
 
+// VTInternalCounter is the read-only side of metrics.VTInternalRowsDropped.
+// Defined as an interface so the stats package can consume the
+// per-kind value without taking a dependency on the metrics package
+// (which would create an import cycle with how metrics.lakehouse.go
+// is wired). Production wires a concrete reader; tests sub fakes.
+type VTInternalCounter interface {
+	Get(kind string) uint64
+}
+
 // VLQuerier is the subset of the in-process VL stats endpoint the
 // parity check needs. Defined as an interface so tests can sub a
 // fake without spinning the whole select pipeline.
 type VLQuerier interface {
 	StatsCountAll(ctx context.Context, startNs, endNs int64) (int64, error)
+}
+
+// parityConfig is the per-handler config the parity endpoint
+// reads at request time. Kept tiny so the registration path stays
+// readable.
+type parityConfig struct {
+	vl       VLQuerier
+	auth     func(*http.Request) bool
+	internal VTInternalCounter
+	kinds    []string // kinds to read from internal counter
 }
 
 // handleParity wires GET /api/v1/admin/parity. Auth-gated like the
@@ -85,7 +124,11 @@ func (a *API) handleParity(w http.ResponseWriter, r *http.Request, vl VLQuerier,
 	}
 
 	if a.cfg.Manifest != nil {
-		live := a.cfg.Manifest.LiveAggregate()
+		// Window the manifest aggregate to match VL's query window —
+		// without this, manifest counts all-time cold data while VL
+		// counts only the windowed slice (bounded by retention) and
+		// the comparison is structurally apples-to-oranges.
+		live := a.cfg.Manifest.LiveAggregateWindow(startNs, endNs)
 		resp.ManifestRows = live.Rows
 		resp.ManifestBytes = live.Bytes
 		resp.ManifestFiles = int64(live.Files)
@@ -111,19 +154,54 @@ func (a *API) handleParity(w http.ResponseWriter, r *http.Request, vl VLQuerier,
 		resp.VLRows = vlRows
 		resp.RowsDelta = vlRows - resp.ManifestRows
 		if resp.ManifestRows > 0 {
-			resp.RowsDelta_ = float64(resp.RowsDelta) / float64(resp.ManifestRows) * 100.0
+			resp.RowsDeltaPct = float64(resp.RowsDelta) / float64(resp.ManifestRows) * 100.0
+		}
+
+		// Account for the expected drift from VT-internal rows the
+		// writer dropped at insert time. Without this the trace
+		// parity check reports ~90% drift forever even though the
+		// system is working as designed; with it, the residual
+		// (VerifiedDrift) is what an operator should chase.
+		if cfg, ok := r.Context().Value(parityCtxKey{}).(*parityConfig); ok && cfg.internal != nil {
+			resp.VTInternalDropped = make(map[string]uint64, len(cfg.kinds))
+			for _, k := range cfg.kinds {
+				v := cfg.internal.Get(k)
+				if v > 0 {
+					resp.VTInternalDropped[k] = v
+					resp.ExpectedDrift += int64(v)
+				}
+			}
+		}
+		resp.VerifiedDrift = resp.RowsDelta - resp.ExpectedDrift
+		if resp.ManifestRows > 0 {
+			resp.VerifiedDriftPct = float64(resp.VerifiedDrift) / float64(resp.ManifestRows) * 100.0
 		}
 	}
 
 	writeJSON(w, resp)
 }
 
+// parityCtxKey scopes the handler config to the request context so
+// the existing handleParity signature doesn't need a third parameter.
+type parityCtxKey struct{}
+
 // RegisterParity wires the parity endpoint into mux. Kept separate
 // from Register() so callers can opt out (e.g. tests) and so the
 // VLQuerier dependency is explicit at registration time.
 func (a *API) RegisterParity(mux *http.ServeMux, vl VLQuerier, auth func(*http.Request) bool) {
+	a.RegisterParityWithInternal(mux, vl, auth, nil, nil)
+}
+
+// RegisterParityWithInternal extends RegisterParity with an optional
+// VT-internal counter reader. When supplied, the response includes
+// vt_internal_dropped (per kind) + expected_drift + verified_drift,
+// so the trace-mode parity check can sanity-check itself against
+// the writer's drop counter instead of relying on a fat tolerance.
+func (a *API) RegisterParityWithInternal(mux *http.ServeMux, vl VLQuerier, auth func(*http.Request) bool, internal VTInternalCounter, kinds []string) {
+	cfg := &parityConfig{vl: vl, auth: auth, internal: internal, kinds: kinds}
 	mux.HandleFunc("/lakehouse/api/v1/admin/parity", func(w http.ResponseWriter, r *http.Request) {
-		a.handleParity(w, r, vl, auth)
+		ctx := context.WithValue(r.Context(), parityCtxKey{}, cfg)
+		a.handleParity(w, r.WithContext(ctx), vl, auth)
 	})
 }
 
@@ -182,6 +260,19 @@ func (a *vlStatsCountAdapter) StatsCountAll(ctx context.Context, startNs, endNs 
 	q := a.query
 	if q == "" {
 		q = "* | stats count() as n"
+	}
+	// Embed _time: into the query so VL counts the same scope as
+	// manifest.LiveAggregateWindow. stats_query is an INSTANT
+	// evaluator — without an explicit _time filter VL counts every
+	// row it knows about, which on the cold-tier-via-LH path means
+	// the entire Parquet history, not the window the caller asked
+	// for. The bracket-form `_time:[<rfc3339>, <rfc3339>]` is the
+	// shape VL's parser accepts; unix-suffix forms (s, ms, ns) were
+	// tested and return 0 rows or 422 in v1.50.0.
+	if startNs > 0 && endNs > startNs {
+		startStr := time.Unix(0, startNs).UTC().Format(time.RFC3339Nano)
+		endStr := time.Unix(0, endNs).UTC().Format(time.RFC3339Nano)
+		q = fmt.Sprintf("_time:[%s, %s] %s", startStr, endStr, q)
 	}
 	// #nosec G107,G704 -- baseURL is operator-configured (-stats.parity.vl-url flag); not user input.
 	req, _ := http.NewRequestWithContext(ctx, "GET", a.baseURL+"/select/logsql/stats_query", nil)
