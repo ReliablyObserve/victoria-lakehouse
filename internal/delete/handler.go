@@ -163,7 +163,7 @@ func (h *Handler) handleEstimate(w http.ResponseWriter, r *http.Request) {
 			class = cached
 		} else {
 			ageHours := time.Since(time.Unix(0, f.MinTimeNs)).Hours()
-			class = h.detector.Detect(ageHours)
+			class = h.detector.DetectForKey(ageHours, f.Key)
 		}
 		classMap[string(class)]++
 	}

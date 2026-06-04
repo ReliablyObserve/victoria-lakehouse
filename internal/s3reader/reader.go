@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -72,9 +73,54 @@ func isRetryable(err error) bool {
 		strings.Contains(err.Error(), "i/o timeout")
 }
 
+// BucketRouterFunc returns the S3 bucket that holds the object at
+// the given key. Empty string = use the pool's default bucket.
+// Installed on a single pool to route per-call reads (and the
+// occasional non-tenant-aware write) to a tenant's bucket when
+// bucket isolation is configured. The writer continues to choose
+// buckets explicitly via TenantBucketFunc on flush.
+type BucketRouterFunc func(key string) string
+
 type ClientPool struct {
 	client *s3.Client
 	bucket string
+	router BucketRouterFunc
+}
+
+// SetBucketRouter installs a router consulted by every method that
+// takes an S3 key. Safe to call at any time; reads are not
+// synchronized with writes (the field is set once at startup and
+// only read thereafter).
+func (p *ClientPool) SetBucketRouter(f BucketRouterFunc) {
+	p.router = f
+}
+
+// resolveBucket returns the bucket to use for an operation on key,
+// consulting the router when one is installed and falling back to
+// the pool's default bucket otherwise.
+func (p *ClientPool) resolveBucket(key string) string {
+	if p.router != nil {
+		if b := p.router(key); b != "" {
+			return b
+		}
+	}
+	return p.bucket
+}
+
+// WithBucket returns a shallow clone that talks to a different bucket
+// using the same underlying *s3.Client and HTTP transport. Used by
+// the per-tenant bucket router so each tenant's writes/reads land in
+// the bucket configured via TenantOverride.S3.Bucket (or a global
+// BucketTemplate expansion) without rebuilding the s3.Client.
+//
+// The original pool is unchanged. Cheap because s3.Client is
+// goroutine-safe and bucket-agnostic; only the per-call Bucket
+// parameter differs.
+func (p *ClientPool) WithBucket(bucket string) *ClientPool {
+	if bucket == "" || bucket == p.bucket {
+		return p
+	}
+	return &ClientPool{client: p.client, bucket: bucket}
 }
 
 func NewClientPool(ctx context.Context, cfg *config.S3Config) (*ClientPool, error) {
@@ -128,9 +174,11 @@ func NewClientPool(ctx context.Context, cfg *config.S3Config) (*ClientPool, erro
 }
 
 func (p *ClientPool) NewReaderAt(ctx context.Context, key string, size int64) *S3ReaderAt {
+	// Resolve the bucket up-front so any per-read router decision
+	// captures the same answer for the lifetime of this reader.
 	return &S3ReaderAt{
 		client: p.client,
-		bucket: p.bucket,
+		bucket: p.resolveBucket(key),
 		key:    key,
 		size:   size,
 		ctx:    ctx,
@@ -191,7 +239,7 @@ func (p *ClientPool) Upload(ctx context.Context, key string, data []byte) error 
 
 	err := retryS3(ctx, 3, func() error {
 		_, putErr := p.client.PutObject(ctx, &s3.PutObjectInput{
-			Bucket:      aws.String(p.bucket),
+			Bucket:      aws.String(p.resolveBucket(key)),
 			Key:         aws.String(key),
 			Body:        bytes.NewReader(data),
 			ContentType: aws.String("application/octet-stream"),
@@ -210,6 +258,38 @@ func (p *ClientPool) Bucket() string {
 	return p.bucket
 }
 
+// Copy issues an S3 server-side copy from (sourceBucket, sourceKey)
+// to (destBucket, destKey). Used by the tenant bucket migration tool
+// to retroactively move existing Parquet objects when a tenant's
+// S3.Bucket override is added after the first writes. Server-side
+// copy avoids the latency + bandwidth cost of a download/upload
+// round-trip through the LH process.
+func (p *ClientPool) Copy(ctx context.Context, sourceBucket, sourceKey, destBucket, destKey string) error {
+	if sourceBucket == "" {
+		sourceBucket = p.bucket
+	}
+	if destBucket == "" {
+		destBucket = p.bucket
+	}
+	start := time.Now()
+	metrics.S3RequestsTotal.Inc("CopyObject")
+	err := retryS3(ctx, 3, func() error {
+		_, copyErr := p.client.CopyObject(ctx, &s3.CopyObjectInput{
+			Bucket:     aws.String(destBucket),
+			Key:        aws.String(destKey),
+			CopySource: aws.String(url.PathEscape(sourceBucket + "/" + sourceKey)),
+		})
+		return copyErr
+	})
+	metrics.S3RequestDuration.Observe(time.Since(start).Seconds())
+	if err != nil {
+		metrics.S3ErrorsTotal.Inc("CopyObject")
+		return fmt.Errorf("s3 CopyObject %s/%s -> %s/%s: %w",
+			sourceBucket, sourceKey, destBucket, destKey, err)
+	}
+	return nil
+}
+
 func (p *ClientPool) Download(ctx context.Context, key string) ([]byte, error) {
 	start := time.Now()
 	metrics.S3RequestsTotal.Inc("GetObject")
@@ -218,7 +298,7 @@ func (p *ClientPool) Download(ctx context.Context, key string) ([]byte, error) {
 	err := retryS3(ctx, 3, func() error {
 		var getErr error
 		out, getErr = p.client.GetObject(ctx, &s3.GetObjectInput{
-			Bucket: aws.String(p.bucket),
+			Bucket: aws.String(p.resolveBucket(key)),
 			Key:    aws.String(key),
 		})
 		return getErr
@@ -249,7 +329,7 @@ func (p *ClientPool) DownloadRange(ctx context.Context, key string, offset, leng
 	err := retryS3(ctx, 3, func() error {
 		var getErr error
 		out, getErr = p.client.GetObject(ctx, &s3.GetObjectInput{
-			Bucket: aws.String(p.bucket),
+			Bucket: aws.String(p.resolveBucket(key)),
 			Key:    aws.String(key),
 			Range:  aws.String(rangeHeader),
 		})
@@ -277,7 +357,7 @@ func (p *ClientPool) Delete(ctx context.Context, key string) error {
 
 	err := retryS3(ctx, 3, func() error {
 		_, delErr := p.client.DeleteObject(ctx, &s3.DeleteObjectInput{
-			Bucket: aws.String(p.bucket),
+			Bucket: aws.String(p.resolveBucket(key)),
 			Key:    aws.String(key),
 		})
 		return delErr
@@ -296,7 +376,7 @@ func (p *ClientPool) Exists(ctx context.Context, key string) (bool, error) {
 
 	err := retryS3(ctx, 3, func() error {
 		_, headErr := p.client.HeadObject(ctx, &s3.HeadObjectInput{
-			Bucket: aws.String(p.bucket),
+			Bucket: aws.String(p.resolveBucket(key)),
 			Key:    aws.String(key),
 		})
 		return headErr

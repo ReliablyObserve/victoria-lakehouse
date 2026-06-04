@@ -13,7 +13,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
@@ -44,6 +43,25 @@ type StatsCallback func(accountID, projectID uint32, compressedBytes, rawBytes, 
 // flushed file data locally (write-through cache).
 type FlushCacheCallback func(fileKey string, data []byte)
 
+// TenantPrefixFunc returns the S3 key prefix where a row with the given
+// (AccountID, ProjectID) tenant identity should land. The returned
+// prefix must end in "/". When nil, the writer's default prefix is used
+// for every row (single-tenant deployment).
+type TenantPrefixFunc func(accountID, projectID uint32) string
+
+// TenantBucketFunc returns the S3 bucket where a tenant's files
+// should land. Empty string = default bucket (prefix isolation).
+type TenantBucketFunc func(accountID, projectID uint32) string
+
+// TenantPoolFunc returns a PoolWriter for the given bucket name.
+type TenantPoolFunc func(bucket string) PoolWriter
+
+// PoolWriter is the subset of s3reader.ClientPool the BatchWriter
+// needs for tenant-aware uploads.
+type PoolWriter interface {
+	Upload(ctx context.Context, key string, data []byte) error
+}
+
 type BatchWriter struct {
 	cfg      *config.InsertConfig
 	pool     *s3reader.ClientPool
@@ -62,6 +80,9 @@ type BatchWriter struct {
 	onFlush       FlushHook
 	statsCallback StatsCallback
 	flushCacheCb  FlushCacheCallback
+	tenantPrefix  TenantPrefixFunc
+	tenantBucket  TenantBucketFunc
+	tenantPool    TenantPoolFunc
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -109,6 +130,42 @@ func (w *BatchWriter) SetStatsCallback(cb StatsCallback) {
 
 func (w *BatchWriter) SetFlushCacheCallback(cb FlushCacheCallback) {
 	w.flushCacheCb = cb
+}
+
+func (w *BatchWriter) SetTenantPrefix(f TenantPrefixFunc) {
+	w.tenantPrefix = f
+}
+
+func (w *BatchWriter) SetTenantBucket(f TenantBucketFunc) {
+	w.tenantBucket = f
+}
+
+func (w *BatchWriter) SetTenantPool(f TenantPoolFunc) {
+	w.tenantPool = f
+}
+
+func (w *BatchWriter) bucketForTenant(accountID, projectID uint32) (string, PoolWriter) {
+	if w.tenantBucket == nil || w.tenantPool == nil {
+		return "", w.pool
+	}
+	bucket := w.tenantBucket(accountID, projectID)
+	if bucket == "" {
+		return "", w.pool
+	}
+	if p := w.tenantPool(bucket); p != nil {
+		return bucket, p
+	}
+	return "", w.pool
+}
+
+func (w *BatchWriter) prefixForTenant(accountID, projectID uint32) string {
+	if w.tenantPrefix == nil {
+		return w.prefix
+	}
+	if p := w.tenantPrefix(accountID, projectID); p != "" {
+		return p
+	}
+	return w.prefix
 }
 
 func (w *BatchWriter) Stop() {
@@ -309,16 +366,29 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 		return rows[i].TimestampUnixNano < rows[j].TimestampUnixNano
 	})
 
+	groups := groupLogRowsByTenant(rows)
+	for _, g := range groups {
+		if err := w.flushLogTenantGroup(ctx, partition, g.AccountID, g.ProjectID, g.Rows); err != nil {
+			return err
+		}
+	}
+	w.writeMetadataSidecarAsync(ctx, partition)
+	return nil
+}
+
+func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string, accountID, projectID uint32, rows []schema.LogRow) error {
 	result, err := writeLogsParquet(rows, w.cfg.RowGroupSize, w.cfg.CompressionLevel)
 	if err != nil {
 		return fmt.Errorf("write parquet: %w", err)
 	}
 
 	batchID := randomBatchID()
-	key := fmt.Sprintf("%s%s/%s.parquet", w.prefix, partition, batchID)
+	key := fmt.Sprintf("%s%s/%s.parquet", w.prefixForTenant(accountID, projectID), partition, batchID)
+
+	bucket, uploader := w.bucketForTenant(accountID, projectID)
 
 	metrics.S3RequestsTotal.Inc("PUT")
-	if err := w.pool.Upload(ctx, key, result.Data); err != nil {
+	if err := uploader.Upload(ctx, key, result.Data); err != nil {
 		metrics.S3ErrorsTotal.Inc("PUT")
 		return err
 	}
@@ -326,6 +396,7 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 
 	fi := manifest.FileInfo{
 		Key:               key,
+		Bucket:            bucket,
 		Size:              int64(len(result.Data)),
 		RowCount:          int64(len(rows)),
 		MinTimeNs:         rows[0].TimestampUnixNano,
@@ -336,10 +407,8 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 	}
 	w.manifest.AddFile(partition, fi)
 
-	w.writeMetadataSidecarAsync(ctx, partition)
-
 	if w.statsCallback != nil {
-		attributeLogStats(w.statsCallback, rows, int64(len(result.Data)), result.RawBytes)
+		w.statsCallback(accountID, projectID, int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
 	}
 
 	if w.flushCacheCb != nil {
@@ -348,8 +417,8 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 
 	w.totalBytes.Add(int64(len(result.Data)))
 
-	logger.Infof("flushed log partition; partition=%s, rows=%d, bytes=%d, ratio=%v, key=%s",
-		partition, len(rows), len(result.Data), fi.CompressionRatio(), key)
+	logger.Infof("flushed log partition; partition=%s, tenant=%d:%d, rows=%d, bytes=%d, ratio=%v, key=%s",
+		partition, accountID, projectID, len(rows), len(result.Data), fi.CompressionRatio(), key)
 
 	return nil
 }
@@ -359,16 +428,29 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 		return rows[i].TimestampUnixNano < rows[j].TimestampUnixNano
 	})
 
+	groups := groupTraceRowsByTenant(rows)
+	for _, g := range groups {
+		if err := w.flushTraceTenantGroup(ctx, partition, g.AccountID, g.ProjectID, g.Rows); err != nil {
+			return err
+		}
+	}
+	w.writeMetadataSidecarAsync(ctx, partition)
+	return nil
+}
+
+func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition string, accountID, projectID uint32, rows []schema.TraceRow) error {
 	result, err := writeTracesParquet(rows, w.cfg.RowGroupSize, w.cfg.CompressionLevel)
 	if err != nil {
 		return fmt.Errorf("write parquet: %w", err)
 	}
 
 	batchID := randomBatchID()
-	key := fmt.Sprintf("%s%s/%s.parquet", w.prefix, partition, batchID)
+	key := fmt.Sprintf("%s%s/%s.parquet", w.prefixForTenant(accountID, projectID), partition, batchID)
+
+	bucket, uploader := w.bucketForTenant(accountID, projectID)
 
 	metrics.S3RequestsTotal.Inc("PUT")
-	if err := w.pool.Upload(ctx, key, result.Data); err != nil {
+	if err := uploader.Upload(ctx, key, result.Data); err != nil {
 		metrics.S3ErrorsTotal.Inc("PUT")
 		return err
 	}
@@ -376,6 +458,7 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 
 	fi := manifest.FileInfo{
 		Key:               key,
+		Bucket:            bucket,
 		Size:              int64(len(result.Data)),
 		RowCount:          int64(len(rows)),
 		MinTimeNs:         rows[0].TimestampUnixNano,
@@ -386,8 +469,6 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 	}
 	w.manifest.AddFile(partition, fi)
 
-	w.writeMetadataSidecarAsync(ctx, partition)
-
 	w.totalBytes.Add(int64(len(result.Data)))
 
 	if w.onFlush != nil {
@@ -395,15 +476,15 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 	}
 
 	if w.statsCallback != nil {
-		attributeTraceStats(w.statsCallback, rows, int64(len(result.Data)), result.RawBytes)
+		w.statsCallback(accountID, projectID, int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
 	}
 
 	if w.flushCacheCb != nil {
 		w.flushCacheCb(key, result.Data)
 	}
 
-	logger.Infof("flushed trace partition; partition=%s, rows=%d, bytes=%d, ratio=%v, key=%s",
-		partition, len(rows), len(result.Data), fi.CompressionRatio(), key)
+	logger.Infof("flushed trace partition; partition=%s, tenant=%d:%d, rows=%d, bytes=%d, ratio=%v, key=%s",
+		partition, accountID, projectID, len(rows), len(result.Data), fi.CompressionRatio(), key)
 
 	return nil
 }
@@ -528,17 +609,40 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 	}, nil
 }
 
+const (
+	// Fixed scalar sizes per row — see internal/storage/parquets3/writer.go
+	// for the rationale.
+	fixedLogRowBytes   = 20
+	fixedTraceRowBytes = 40
+)
+
 func estimateRawBytesLogs(rows []schema.LogRow) int64 {
 	var total int64
 	for i := range rows {
-		total += int64(unsafe.Sizeof(rows[i]))
-		total += int64(len(rows[i].Body))
-		total += int64(len(rows[i].ServiceName))
-		total += int64(len(rows[i].TraceID))
-		for k, v := range rows[i].ResourceAttributes {
+		r := &rows[i]
+		total += fixedLogRowBytes
+		total += int64(len(r.Body))
+		total += int64(len(r.SeverityText))
+		total += int64(len(r.ServiceName))
+		total += int64(len(r.TraceID))
+		total += int64(len(r.SpanID))
+		total += int64(len(r.K8sNamespaceName))
+		total += int64(len(r.K8sPodName))
+		total += int64(len(r.K8sDeploymentName))
+		total += int64(len(r.K8sNodeName))
+		total += int64(len(r.DeployEnv))
+		total += int64(len(r.CloudRegion))
+		total += int64(len(r.HostName))
+		total += int64(len(r.Stream))
+		total += int64(len(r.StreamID))
+		total += int64(len(r.ScopeName))
+		for k, v := range r.ResourceAttributes {
 			total += int64(len(k) + len(v))
 		}
-		for k, v := range rows[i].LogAttributes {
+		for k, v := range r.LogAttributes {
+			total += int64(len(k) + len(v))
+		}
+		for k, v := range r.ScopeAttributes {
 			total += int64(len(k) + len(v))
 		}
 	}
@@ -548,17 +652,36 @@ func estimateRawBytesLogs(rows []schema.LogRow) int64 {
 func estimateRawBytesTraces(rows []schema.TraceRow) int64 {
 	var total int64
 	for i := range rows {
-		total += int64(unsafe.Sizeof(rows[i]))
-		total += int64(len(rows[i].TraceID))
-		total += int64(len(rows[i].SpanName))
-		total += int64(len(rows[i].ServiceName))
-		for k, v := range rows[i].ResourceAttributes {
+		r := &rows[i]
+		total += fixedTraceRowBytes
+		total += int64(len(r.TraceID))
+		total += int64(len(r.SpanID))
+		total += int64(len(r.ParentSpanID))
+		total += int64(len(r.SpanName))
+		total += int64(len(r.ServiceName))
+		total += int64(len(r.StatusMessage))
+		total += int64(len(r.HTTPMethod))
+		total += int64(len(r.HTTPStatusCode))
+		total += int64(len(r.HTTPUrl))
+		total += int64(len(r.DBSystem))
+		total += int64(len(r.DBStatement))
+		total += int64(len(r.K8sNamespaceName))
+		total += int64(len(r.K8sPodName))
+		total += int64(len(r.K8sDeploymentName))
+		total += int64(len(r.K8sNodeName))
+		total += int64(len(r.DeployEnv))
+		total += int64(len(r.CloudRegion))
+		total += int64(len(r.HostName))
+		total += int64(len(r.Stream))
+		total += int64(len(r.StreamID))
+		total += int64(len(r.ScopeName))
+		for k, v := range r.ResourceAttributes {
 			total += int64(len(k) + len(v))
 		}
-		for k, v := range rows[i].SpanAttributes {
+		for k, v := range r.SpanAttributes {
 			total += int64(len(k) + len(v))
 		}
-		for k, v := range rows[i].ScopeAttributes {
+		for k, v := range r.ScopeAttributes {
 			total += int64(len(k) + len(v))
 		}
 	}

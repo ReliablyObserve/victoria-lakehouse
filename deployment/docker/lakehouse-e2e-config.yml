@@ -1,0 +1,52 @@
+# Lakehouse e2e tenant policy configuration.
+#
+# Mounted into both lakehouse-logs and lakehouse-traces so the live
+# stack exercises every per-tenant override consumer (retention,
+# cardinality, ingest rate-limit, lifecycle, S3 bucket isolation)
+# end-to-end. Settings here override CLI flags; CLI flags override
+# the embedded profile defaults.
+#
+# Override keys accept both forms (resolved at startup, alias-keyed
+# entries re-resolve on AliasSyncInterval so late-registered
+# tenants pick up overrides without restart):
+#   "<account>:<project>"   — integer Victoria tenant ID
+#   "<orgid>"               — string alias from X-Scope-OrgID
+lakehouse:
+  retention:
+    enabled: true
+    default: "30d"
+    check_interval: "5m"
+
+  tenant:
+    overrides:
+      # acme-corp gets aggressive retention + 5MB/s ingest cap +
+      # cardinality limits + ONEZONE_IA after 7 days, GLACIER after
+      # 60. Alias-keyed so the registry resolves it once acme-corp
+      # auto-registers via the seed datagen.
+      "acme-corp":
+        retention:
+          keep: "90d"
+        cardinality:
+          max_streams: 5000
+          max_fields: 1000
+        ingest:
+          max_bytes_per_sec: 5242880    # 5 MiB/s
+          max_rows_per_sec: 10000
+        lifecycle:
+          - transition_days: 7
+            storage_class: "ONEZONE_IA"
+          - transition_days: 60
+            storage_class: "GLACIER"
+
+      # Tenant 1:1 (the numeric-header seed) demonstrates the
+      # int-keyed override path: short retention, no other knobs.
+      "1:1":
+        retention:
+          keep: "7d"
+
+      # staging-team gets a permissive cardinality cap + 30d retention.
+      "staging-team":
+        retention:
+          keep: "30d"
+        cardinality:
+          max_streams: 50000

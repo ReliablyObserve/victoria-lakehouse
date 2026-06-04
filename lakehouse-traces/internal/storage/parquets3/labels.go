@@ -1,6 +1,8 @@
 package parquets3
 
 import (
+	"strconv"
+
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -24,6 +26,9 @@ func extractLogLabels(rows []schema.LogRow) map[string][]string {
 		// trace_id omitted: high-cardinality (unique per row), always exceeds
 		// maxLabelsPerField cap — bloom filters handle it instead.
 	}
+	// Per Phase 1, every flushed file holds rows from exactly one tenant.
+	addLabel(sets, "account_id", strconv.FormatUint(uint64(rows[0].AccountID), 10))
+	addLabel(sets, "project_id", strconv.FormatUint(uint64(rows[0].ProjectID), 10))
 	return setsToLabels(sets)
 }
 
@@ -37,6 +42,8 @@ func extractTraceLabels(rows []schema.TraceRow) map[string][]string {
 		addLabel(sets, "span.name", rows[i].SpanName)
 		// trace_id omitted: high-cardinality, bloom filters handle it.
 	}
+	addLabel(sets, "account_id", strconv.FormatUint(uint64(rows[0].AccountID), 10))
+	addLabel(sets, "project_id", strconv.FormatUint(uint64(rows[0].ProjectID), 10))
 	return setsToLabels(sets)
 }
 

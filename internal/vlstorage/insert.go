@@ -17,6 +17,24 @@ type LogWriter interface {
 	CanWriteData() error
 }
 
+// TenantCardinalityGate decides whether a (tenant, stream) row may be
+// admitted. Implemented by *tenant.CardinalityLimiter; declared here as
+// an interface so this package stays import-light.
+type TenantCardinalityGate interface {
+	AllowStream(accountID, projectID uint32, stream string) bool
+}
+
+var globalCardinalityGate TenantCardinalityGate
+
+// SetCardinalityGate installs the per-tenant cardinality limiter the
+// insert path consults before admitting a row. nil disables the check.
+// Safe to call at any time; reads are mediated through a package
+// variable rather than a per-adapter field to keep the existing
+// SetInsertStorage signature stable.
+func SetCardinalityGate(g TenantCardinalityGate) {
+	globalCardinalityGate = g
+}
+
 type insertAdapter struct {
 	writer LogWriter
 }
@@ -75,6 +93,16 @@ func logRowsToSchemaRows(lr *logstorage.LogRows) []schema.LogRow {
 			// must produce the same value so /select/logsql/stream_ids
 			// returns identical results.
 			row.StreamID = computeStreamID(r.TenantID, r.StreamTagsCanonical)
+		}
+
+		// Per-tenant cardinality gate. Stream uniqueness is keyed by
+		// the canonical stream tags (what VL itself hashes for the
+		// stream ID). Rows beyond a tenant's MaxStreams cap drop here
+		// and the limiter increments its rejected counter.
+		if globalCardinalityGate != nil && r.StreamTagsCanonical != "" {
+			if !globalCardinalityGate.AllowStream(r.TenantID.AccountID, r.TenantID.ProjectID, r.StreamTagsCanonical) {
+				return
+			}
 		}
 
 		for _, f := range r.Fields {

@@ -179,7 +179,9 @@ Integer IDs are always available alongside names for correlation and debugging.
 
 ### Enterprise: Bucket-Per-Tenant Isolation
 
-For regulated environments requiring IAM-level hard isolation, the same single binary can resolve different S3 buckets per tenant:
+For regulated environments requiring IAM-level hard isolation, the same single binary can resolve different S3 buckets per tenant. Two modes are available:
+
+**Templated** (every tenant follows the same pattern):
 
 ```yaml
 lakehouse:
@@ -188,7 +190,134 @@ lakehouse:
     bucket_template: "obs-{AccountID}-{ProjectID}"
 ```
 
-Each tenant gets its own S3 bucket with independent IAM policies, encryption keys, and lifecycle rules. The binary resolves the bucket name from the template at runtime — still one binary, still one process.
+**Mixed** (most tenants share the default bucket; a few get dedicated buckets via overrides):
+
+```yaml
+lakehouse:
+  tenant:
+    overrides:
+      "1002:0":
+        s3:
+          bucket: obs-acme       # acme-corp gets a dedicated bucket
+      acme-archive:
+        s3:
+          bucket: obs-archive    # alias-keyed; resolved on alias-sync tick
+```
+
+In mixed mode the s3reader `PoolRegistry` caches a separate `ClientPool` per bucket. The writer's `SetTenantBucket(account, project) → bucket` resolver stamps `manifest.FileInfo.Bucket` on every flushed Parquet so reads route back to the right bucket. Sidecars and the fleet-wide manifest stay in the default bucket so a single manifest still resolves files across many tenant buckets — the only sharded thing is the data files themselves.
+
+### Retroactive Bucket Migration
+
+When a tenant gets a bucket override after writes have already started, existing Parquet objects need to move from the shared bucket to the tenant's new dedicated bucket. The admin endpoint handles this without ingest downtime:
+
+```bash
+$ curl -sX POST -H 'X-Lakehouse-Global-Read: <admin-key>' \
+       --data '{"tenant_key":"1002:0","target_bucket":"obs-archive"}' \
+       http://lakehouse-logs:9428/lakehouse/api/v1/admin/tenant/migrate | jq
+{
+  "account_id": 1002, "project_id": 0, "target_bucket": "obs-archive",
+  "files_scanned": 38, "files_moved": 38,
+  "bytes_moved": 412382912, "duration_ms": 8412
+}
+```
+
+The migrator works file-by-file in this exact order to keep crash recovery safe:
+
+1. **S3 server-side copy** to the new bucket (source still readable).
+2. **Manifest flip** — `manifest.SetFileBucket` points the existing file entry at the new bucket. Reads immediately resolve to the new location; the entry is rewritten atomically.
+3. **Delete source** in the old bucket.
+
+A crash between steps 2 and 3 leaves orphaned bytes in the old bucket (cleanable by S3 lifecycle or the orphan sweeper); a crash between 1 and 2 leaves the new copy unreferenced (cleanable the same way). The order never leaves a dangling manifest pointer.
+
+The endpoint is closed by default. Access is gated by the same global-read credential surface as cross-tenant reads — either:
+- `X-Lakehouse-Global-Read: <value>` matching `tenant.global_read_value`, or
+- `Authorization: Bearer <token>` matching `tenant.global_read_token`.
+
+A missing or wrong credential returns `403 admin auth required`.
+
+## Per-Tenant Policy Overrides
+
+Some tenants need different retention, cardinality caps, ingest rate limits, lifecycle transitions, or S3 buckets than the fleet defaults. The `tenant.overrides` map carries these without restarts or per-tenant binaries.
+
+### Schema
+
+```yaml
+lakehouse:
+  tenant:
+    overrides:
+      # Key is either "account:project" (integer-keyed, deterministic)
+      # or an OrgID alias (resolved at startup + on every alias-sync tick).
+      "1002:0":
+        retention: 2160h            # 90 days — overrides global retention
+        cardinality:
+          max_streams: 5000         # per-tenant distinct-stream cap
+          max_fields:  1000         # per-tenant distinct-field cap
+        ingest:
+          max_bytes_per_sec: 5242880  # 5 MiB/s token bucket
+          max_rows_per_sec:  10000
+        lifecycle:                  # per-tenant S3 transitions (shadows global rules)
+          - { transition_days: 7,  storage_class: ONEZONE_IA }
+          - { transition_days: 60, storage_class: GLACIER }
+        s3:
+          bucket: obs-acme          # per-tenant bucket override (see Bucket-Per-Tenant above)
+
+      acme-corp:                    # alias-keyed entry — resolves once acme-corp is registered
+        retention: 720h             # 30 days
+```
+
+Every field is optional. Zero or missing means "inherit the global setting" — there is no special inheritance keyword. This makes config diffs honest: `retention: 0` does not silently mean "use 30 days from elsewhere"; it means "follow whatever the global retention is right now."
+
+### Consumers
+
+Each override flows to exactly one subsystem:
+
+| Override | Consumer | Behavior |
+|---|---|---|
+| `retention` | `retention.Manager` | synthesizes a match rule on the file's `account_id`/`project_id` manifest labels; the existing rules engine handles eviction. No special-case code path. |
+| `cardinality.max_streams` / `max_fields` | `tenant.CardinalityLimiter` mounted as `TenantCardinalityGate` on the vlstorage insert paths (logs + traces) | per-tenant distinct counters with fast-path RLock for known entries; overflow drops at the boundary before the writer sees the row. |
+| `ingest.max_bytes_per_sec` / `max_rows_per_sec` | `tenant.IngestRateLimiter` + `tenant.RateLimitMiddleware` | independent byte/sec + row/sec token buckets per tenant; pre-flight Content-Length check returns `429 Too Many Requests` + `X-RateLimit-Limit-Bytes` / `X-RateLimit-Remaining-Bytes` / `X-RateLimit-Retry-After-Ms` headers. |
+| `lifecycle` | `delete.StorageClassDetector.SetTenantRules` consumed by both the manual `predict` handler and the background rewriter scheduler | tenant-keyed rule lookup parses `(account, project)` from the file's S3 key prefix, so manual predictions and the rewriter agree on what storage class a file should end up in. |
+| `s3.bucket` | s3reader `PoolRegistry` + writer `SetTenantBucket`/`SetTenantPool` | tenant's reads/writes route to the dedicated bucket; manifest stamps the bucket so post-migration reads still resolve correctly. |
+
+### Policy API
+
+```bash
+# List all configured overrides + their resolution state
+$ curl -s http://lakehouse-logs:9428/lakehouse/api/v1/tenants/policy | jq
+{
+  "entries": [
+    {
+      "account_id": 1002, "project_id": 0, "org_id": "acme-corp",
+      "retention": "2160h0m0s",
+      "max_streams": 5000, "max_fields": 1000,
+      "max_bytes_per_sec": 5242880, "max_rows_per_sec": 10000,
+      "lifecycle": [
+        {"transition_days": 7,  "storage_class": "ONEZONE_IA"},
+        {"transition_days": 60, "storage_class": "GLACIER"}
+      ],
+      "bucket": "obs-acme"
+    },
+    {"account_id": 1, "project_id": 1, "retention": "168h0m0s"}
+  ],
+  "pending_aliases": []     // empty = every alias-keyed entry resolved
+}
+
+# Per-tenant view — same payload as /tenants/{id} plus a `policy` block
+$ curl -s http://lakehouse-logs:9428/lakehouse/api/v1/tenants/1002:0 | jq .policy
+{
+  "retention": "2160h0m0s",
+  "max_streams": 5000,
+  "bucket": "obs-acme"
+}
+```
+
+The PolicyRegistry caches resolved entries in a `sync.Map` keyed by `(account, project)` and re-runs alias resolution on the configured `tenant.alias_sync_interval` tick. Late-registered tenants (via auto-register or runtime CRUD) pick up their alias-keyed overrides on the next tick without a process restart.
+
+### Forward-Compatibility Notes
+
+- **Default behavior unchanged.** Empty `tenant.overrides:` map preserves prefix-only isolation with no per-tenant limits and no bucket routing.
+- **Manifest schema.** `FileInfo.Bucket` is `omitempty` — old manifests load unchanged; new manifests stamp it only when bucket routing is active.
+- **Path mutability.** Forward changes (template change → new writes hit new prefix/bucket) are automatic. Moving existing files requires hitting the `/admin/tenant/migrate` endpoint described above.
 
 ## Configuration
 

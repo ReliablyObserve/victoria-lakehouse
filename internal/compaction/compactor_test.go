@@ -156,6 +156,101 @@ func TestCompactor_MergeLogRows(t *testing.T) {
 	}
 }
 
+// TestCompactor_PreservesRawBytes is a regression guard for the bug
+// where the compactor's output FileInfo did not carry RawBytes
+// forward from the input files. The omitempty default of 0 then
+// silently zeroed every compacted file's raw-byte accounting while
+// Size kept tracking the compressed bytes correctly — over time
+// /api/v1/tenants reported total_bytes > raw_bytes (impossible
+// compression ratio < 1.0) for any tenant whose files had been
+// compacted.
+func TestCompactor_PreservesRawBytes(t *testing.T) {
+	pool := newMockPool()
+	m := manifest.New("test-bucket", "logs/")
+
+	const partition = "dt=2026-05-04/hour=10"
+	const fp = "abc123"
+
+	file1Rows := []schema.LogRow{
+		{TimestampUnixNano: 3000, Body: "third", ServiceName: "svc-a"},
+		{TimestampUnixNano: 1000, Body: "first", ServiceName: "svc-a"},
+	}
+	file1Data := makeTestParquet(t, file1Rows)
+	file1Key := "logs/dt=2026-05-04/hour=10/batch-001.parquet"
+	if err := pool.Upload(context.Background(), file1Key, file1Data); err != nil {
+		t.Fatal(err)
+	}
+
+	file2Rows := []schema.LogRow{
+		{TimestampUnixNano: 2000, Body: "second", ServiceName: "svc-a"},
+	}
+	file2Data := makeTestParquet(t, file2Rows)
+	file2Key := "logs/dt=2026-05-04/hour=10/batch-002.parquet"
+	if err := pool.Upload(context.Background(), file2Key, file2Data); err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		raw1 = int64(420)
+		raw2 = int64(180)
+	)
+
+	fi1 := manifest.FileInfo{
+		Key:               file1Key,
+		Size:              int64(len(file1Data)),
+		RowCount:          2,
+		MinTimeNs:         1000,
+		MaxTimeNs:         3000,
+		RawBytes:          raw1,
+		SchemaFingerprint: fp,
+		CompactionLevel:   0,
+	}
+	fi2 := manifest.FileInfo{
+		Key:               file2Key,
+		Size:              int64(len(file2Data)),
+		RowCount:          1,
+		MinTimeNs:         2000,
+		MaxTimeNs:         2000,
+		RawBytes:          raw2,
+		SchemaFingerprint: fp,
+		CompactionLevel:   0,
+	}
+	m.AddFile(partition, fi1)
+	m.AddFile(partition, fi2)
+
+	compactor := NewCompactor(CompactorConfig{
+		Pool:             pool,
+		Manifest:         m,
+		Prefix:           "logs/",
+		Mode:             config.ModeLogs,
+		RowGroupSize:     1000,
+		CompressionLevel: 7,
+	})
+
+	result, err := compactor.Compact(context.Background(), partition, []manifest.FileInfo{fi1, fi2}, 0)
+	if err != nil {
+		t.Fatalf("Compact error: %v", err)
+	}
+
+	partFiles := m.FilesForPartition(partition)
+	if len(partFiles) != 1 {
+		t.Fatalf("expected 1 file in manifest partition, got %d", len(partFiles))
+	}
+	merged := partFiles[0]
+	if merged.Key != result.OutputFile {
+		t.Errorf("manifest entry key mismatch: %q vs %q", merged.Key, result.OutputFile)
+	}
+
+	wantRaw := raw1 + raw2
+	if merged.RawBytes != wantRaw {
+		t.Errorf("compacted RawBytes = %d, want %d (sum of inputs %d + %d) — regression of compactor RawBytes drop",
+			merged.RawBytes, wantRaw, raw1, raw2)
+	}
+	if merged.Size <= 0 {
+		t.Errorf("compacted Size = %d, want > 0", merged.Size)
+	}
+}
+
 // --- helpers for trace parquet ---
 
 func makeTestTraceParquet(t *testing.T, rows []schema.TraceRow) []byte {

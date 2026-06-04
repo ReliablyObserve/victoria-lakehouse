@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,6 +26,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/prefetch"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/retention"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/stats"
@@ -68,7 +70,7 @@ var (
 	role            = flag.String("lakehouse.role", "", "Role: all, insert, select (default: all)")
 	profileFlag     = flag.String("lakehouse.profile", "", "Configuration profile: balanced, max-performance, max-durability, max-cost-savings, dev")
 	flushInterval   = flag.Duration("lakehouse.insert.flush-interval", 0, "Insert flush interval (e.g., 10s)")
-	listenAddr      = flag.String("httpListenAddr", ":10428", "HTTP listen address")
+	listenAddrFlag  = flag.String("httpListenAddr", ":10428", "HTTP listen address")
 	manifestRefresh = flag.Duration("lakehouse.manifest.refresh-interval", 0, "Manifest refresh interval (e.g., 30s)")
 
 	cacheMemoryMB         = flag.Int("lakehouse.cache.memory-mb", 0, "L1 memory cache size in MB (default: 256)")
@@ -187,7 +189,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	addr := *listenAddr
+	addr := *listenAddrFlag
 	if addr == ":10428" && cfg.ListenAddr() != "" && cfg.ListenAddr() != ":10428" {
 		addr = cfg.ListenAddr()
 	}
@@ -306,6 +308,9 @@ func run(cfg *config.Config, addr string) {
 			key := tenantStatsKey(accountID, projectID, fallback)
 			registry.RecordWrite(key, compressedBytes, rawBytes, rows, storageClass)
 		})
+		if pf := tenantPrefixResolver(cfg); pf != nil {
+			w.SetTenantPrefix(pf)
+		}
 	}
 
 	// Load snapshot from S3 if configured.
@@ -377,24 +382,34 @@ func run(cfg *config.Config, addr string) {
 			cfg.SmartCache.MaxAge, cfg.SmartCache.SnapshotInterval)
 	}
 
-	// Tenant alias fleet sync
-	if resolver != nil && (resolver.HasAliases() || cfg.Tenant.AutoRegister) {
-		if disc := store.Discovery(); disc != nil {
-			aliasSyncCtx, aliasSyncCancel := context.WithCancel(context.Background())
-			aliasSyncPusher := tenant.NewSyncPusher(tenant.SyncPusherConfig{
-				Resolver: resolver,
-				GetPeers: func() []string { return disc.GetPeers() },
-				AuthKey:  cfg.Peer.AuthKey,
-				SelfAddr: addr,
-				Interval: cfg.Tenant.AliasSyncInterval,
-			})
-			aliasSyncPusher.Start(aliasSyncCtx)
-			defer aliasSyncCancel()
-			logger.Infof("tenant alias sync started; interval=%v", cfg.Tenant.AliasSyncInterval)
-		}
+	if cancel := startTenantAliasSync(cfg, store, resolver, addr); cancel != nil {
+		defer cancel()
 	}
 
-	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister)
+	policy, err := tenant.NewPolicyRegistry(cfg.Tenant.Overrides, resolver)
+	if err != nil {
+		logger.Fatalf("tenant overrides invalid: %s", err)
+	}
+	if pending := policy.PendingAliases(); len(pending) > 0 {
+		logger.Infof("tenant overrides pending alias resolution: %v", pending)
+	}
+	startTenantPolicyRefresh(cfg, policy, stopCh)
+
+	if cfg.Retention.Enabled {
+		retentionMgr, err := buildRetentionManager(cfg, store, policy, "traces")
+		if err != nil {
+			logger.Fatalf("retention manager init failed: %s", err)
+		}
+		retentionCtx, retentionCancel := context.WithCancel(context.Background())
+		go retentionMgr.Start(retentionCtx)
+		defer retentionCancel()
+	}
+
+	internalvlstorage.SetCardinalityGate(tenant.NewCardinalityLimiter(policy))
+
+	applyTenantStorageOverrides(store, policy, detector)
+
+	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister, policy)
 
 	// Wire the compaction drain endpoint (spec §11.1). Mirror of
 	// cmd/lakehouse-logs/main.go — line-parity with feedback_logs_traces_module_parity.
@@ -402,7 +417,7 @@ func run(cfg *config.Config, addr string) {
 
 	var handler http.Handler = mux
 	if resolver != nil && (resolver.HasAliases() || cfg.Tenant.AutoRegister) {
-		handler = resolver.Middleware(mux)
+		handler = tenant.RateLimitMiddleware(tenant.NewIngestRateLimiter(policy))(resolver.Middleware(mux))
 	}
 	if cfg.Telemetry.Enabled {
 		handler = otelhttp.NewHandler(handler, "lakehouse-traces")
@@ -569,6 +584,106 @@ func setupCompaction(
 	return sched, sweep, stop
 }
 
+// startTenantAliasSync starts the SyncPusher that propagates tenant
+// alias registrations across the peer ring. Returns the cancel func
+// (nil when no sync is needed) so the caller can defer it.
+// Mirror of cmd/lakehouse-logs/main.go per feedback_logs_traces_module_parity.
+func startTenantAliasSync(cfg *config.Config, store *parquets3.Storage, resolver *tenant.TenantResolver, addr string) context.CancelFunc {
+	if resolver == nil {
+		return nil
+	}
+	if !resolver.HasAliases() && !cfg.Tenant.AutoRegister {
+		return nil
+	}
+	disc := store.Discovery()
+	if disc == nil {
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	pusher := tenant.NewSyncPusher(tenant.SyncPusherConfig{
+		Resolver: resolver,
+		GetPeers: func() []string { return disc.GetPeers() },
+		AuthKey:  cfg.Peer.AuthKey,
+		SelfAddr: addr,
+		Interval: cfg.Tenant.AliasSyncInterval,
+	})
+	pusher.Start(ctx)
+	logger.Infof("tenant alias sync started; interval=%v", cfg.Tenant.AliasSyncInterval)
+	return cancel
+}
+
+// startTenantPolicyRefresh kicks off the periodic policy refresh that
+// re-resolves alias-keyed override entries as new aliases register.
+// Mirror of cmd/lakehouse-logs/main.go per feedback_logs_traces_module_parity.
+func startTenantPolicyRefresh(cfg *config.Config, policy *tenant.PolicyRegistry, stopCh <-chan struct{}) {
+	if cfg.Tenant.AliasSyncInterval <= 0 {
+		return
+	}
+	go func() {
+		t := time.NewTicker(cfg.Tenant.AliasSyncInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-t.C:
+				policy.Refresh()
+			}
+		}
+	}()
+}
+
+// applyTenantStorageOverrides installs per-tenant bucket isolation and
+// lifecycle transition overrides on the storage layer. Extracted from
+// run() to keep its cyclomatic complexity below the gocyclo:50 budget.
+// Mirror of cmd/lakehouse-logs/main.go per feedback_logs_traces_module_parity.
+func applyTenantStorageOverrides(store *parquets3.Storage, policy *tenant.PolicyRegistry, detector *delete.StorageClassDetector) {
+	if entries := policy.BucketEntries(); len(entries) > 0 {
+		poolRegistry := s3reader.NewPoolRegistry(store.Pool())
+		bucketByTenant := make(map[uint64]string, len(entries))
+		for _, e := range entries {
+			bucketByTenant[uint64(e.AccountID)<<32|uint64(e.ProjectID)] = e.Bucket
+			_ = poolRegistry.PoolFor(e.Bucket)
+		}
+		bucketFor := func(a, p uint32) string {
+			return bucketByTenant[uint64(a)<<32|uint64(p)]
+		}
+		store.Pool().SetBucketRouter(func(key string) string {
+			acc, proj, ok := parseTenantFromS3Key(key)
+			if !ok {
+				return ""
+			}
+			return bucketFor(acc, proj)
+		})
+		if w := store.Writer(); w != nil {
+			w.SetTenantBucket(bucketFor)
+			w.SetTenantPool(func(bucket string) parquets3.PoolWriter {
+				return poolRegistry.PoolFor(bucket)
+			})
+		}
+		logger.Infof("tenant bucket isolation installed: %d tenants across %d buckets",
+			len(entries), len(poolRegistry.Buckets()))
+	}
+
+	if entries := policy.LifecycleEntries(); len(entries) > 0 {
+		overrides := make([]delete.TenantLifecycleOverride, 0, len(entries))
+		for _, e := range entries {
+			classes := make([]delete.StorageClass, len(e.Classes))
+			for i, c := range e.Classes {
+				classes[i] = delete.ParseStorageClass(c)
+			}
+			overrides = append(overrides, delete.TenantLifecycleOverride{
+				AccountID:      e.AccountID,
+				ProjectID:      e.ProjectID,
+				TransitionDays: e.TransitionDays,
+				Classes:        classes,
+			})
+		}
+		detector.SetTenantRules(delete.BuildTenantRules(overrides))
+		logger.Infof("tenant lifecycle overrides installed: %d tenants", len(entries))
+	}
+}
+
 func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, resolver *tenant.TenantResolver, addr string, stopCh chan struct{}) {
 	var syncPusher *stats.SyncPusher
 	if disc := store.Discovery(); disc != nil {
@@ -655,7 +770,7 @@ func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *sta
 	}()
 }
 
-func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister) *http.ServeMux {
+func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister, policy *tenant.PolicyRegistry) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	metrics.NewInfoGauge("lakehouse_info", map[string]string{
@@ -775,6 +890,35 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		mux.Handle("/internal/stats/sync", syncHandler)
 	}
 
+	// Admin: tenant bucket migration. Same auth surface as
+	// cmd/lakehouse-logs — see that copy for the design note.
+	{
+		mig := tenant.NewMigrator(store.Manifest(), store.Pool(), cfg.S3.Bucket)
+		admin := tenant.NewAdminHandler(mig, tenant.AdminAuthConfig{
+			HeaderName:  cfg.Tenant.GlobalReadHeader,
+			HeaderValue: cfg.Tenant.GlobalReadValue,
+			BearerToken: cfg.Tenant.GlobalReadToken,
+		})
+		admin.Register(mux)
+	}
+
+	if cfg.Stats.Enabled {
+		parityAPI := stats.NewAPI(stats.APIConfig{Manifest: store.Manifest(), Mode: "traces", Bucket: cfg.S3.Bucket})
+		listenAddrLocal := *listenAddrFlag
+		if cfg.ListenAddr() != "" {
+			listenAddrLocal = cfg.ListenAddr()
+		}
+		parityAPI.RegisterParity(mux, stats.NewLocalVLQuerierWithQuery(
+			fmt.Sprintf("http://127.0.0.1%s", listenAddrLocal),
+			stats.TracesParityQuery,
+		), func(r *http.Request) bool {
+			if cfg.Tenant.GlobalReadHeader != "" && cfg.Tenant.GlobalReadValue != "" {
+				return r.Header.Get(cfg.Tenant.GlobalReadHeader) == cfg.Tenant.GlobalReadValue
+			}
+			return cfg.Tenant.GlobalReadToken != "" && r.Header.Get("Authorization") == "Bearer "+cfg.Tenant.GlobalReadToken
+		})
+	}
+
 	// Stats API
 	if cfg.Stats.Enabled {
 		statsAPI := stats.NewAPI(stats.APIConfig{
@@ -785,6 +929,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			LabelIndex:      store.LabelIndex(),
 			SchemaRegistry:  store.SchemaRegistry(),
 			Resolver:        resolver,
+			Policy:          policy,
 			Mode:            "traces",
 			Bucket:          cfg.S3.Bucket,
 			BloomColumns:    cfg.ActiveBloomColumns(),
@@ -1169,6 +1314,80 @@ func tenantStatsKey(accountID, projectID uint32, fallback string) string {
 		return fallback
 	}
 	return strconv.FormatUint(uint64(accountID), 10) + ":" + strconv.FormatUint(uint64(projectID), 10)
+}
+
+// parseTenantFromS3Key extracts (account, project) from a
+// tenant-isolated key. Mirror of the helper in cmd/lakehouse-logs.
+func parseTenantFromS3Key(key string) (uint32, uint32, bool) {
+	parts := strings.SplitN(key, "/", 4)
+	if len(parts) < 3 {
+		return 0, 0, false
+	}
+	acc, err := strconv.ParseUint(parts[0], 10, 32)
+	if err != nil {
+		return 0, 0, false
+	}
+	proj, err := strconv.ParseUint(parts[1], 10, 32)
+	if err != nil {
+		return 0, 0, false
+	}
+	return uint32(acc), uint32(proj), true
+}
+
+// buildRetentionManager wires retention against the running storage +
+// per-tenant policy. Mirror of the helper in cmd/lakehouse-logs/main.go;
+// see that copy for the design rationale.
+func buildRetentionManager(cfg *config.Config, store *parquets3.Storage, policy *tenant.PolicyRegistry, mode string) (*retention.Manager, error) {
+	rules := make([]retention.Rule, 0, len(cfg.Retention.Rules))
+	for _, r := range cfg.Retention.Rules {
+		rules = append(rules, retention.Rule{Match: r.Match, Keep: r.Keep})
+	}
+	tenantEntries := []retention.TenantRetentionEntry{}
+	for _, e := range policy.RetentionEntries() {
+		tenantEntries = append(tenantEntries, retention.TenantRetentionEntry{
+			AccountID: e.AccountID,
+			ProjectID: e.ProjectID,
+			Keep:      e.Retention,
+		})
+	}
+	rules = append(rules, retention.SynthesizeRules(tenantEntries)...)
+
+	retCfg := retention.Config{
+		Enabled:       cfg.Retention.Enabled,
+		Default:       cfg.Retention.Default,
+		CheckInterval: cfg.Retention.CheckInterval,
+		Rules:         rules,
+	}
+	deleter := &poolDeleter{pool: store.Pool()}
+	slogLogger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	return retention.New(retCfg, store.Manifest(), deleter, cfg.S3.Bucket, slogLogger.With("component", "retention", "mode", mode))
+}
+
+type poolDeleter struct {
+	pool *s3reader.ClientPool
+}
+
+func (d *poolDeleter) DeleteObject(ctx context.Context, _ string, key string) error {
+	return d.pool.Delete(ctx, key)
+}
+
+// tenantPrefixResolver returns a function that expands the configured
+// tenant prefix template into a per-tenant S3 key prefix. See the
+// equivalent comment in cmd/lakehouse-logs/main.go for the contract.
+func tenantPrefixResolver(cfg *config.Config) parquets3.TenantPrefixFunc {
+	tmpl := cfg.Tenant.PrefixTemplate
+	if tmpl == "" {
+		return nil
+	}
+	if !strings.Contains(tmpl, "{AccountID}") && !strings.Contains(tmpl, "{ProjectID}") {
+		return nil
+	}
+	signal := "traces/"
+	return func(accountID, projectID uint32) string {
+		a := strconv.FormatUint(uint64(accountID), 10)
+		p := strconv.FormatUint(uint64(projectID), 10)
+		return strings.NewReplacer("{AccountID}", a, "{ProjectID}", p).Replace(tmpl) + signal
+	}
 }
 
 func deriveTenantKey(prefix string) string {

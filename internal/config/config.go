@@ -352,6 +352,64 @@ type TenantConfig struct {
 	AutoRegister      bool                   `yaml:"auto_register"`
 	AliasSyncInterval time.Duration          `yaml:"alias_sync_interval"`
 	Aliases           map[string]AliasTarget `yaml:"aliases"`
+
+	// Overrides keys: either "<account>:<project>" (e.g. "1:1") or a
+	// string OrgID alias (e.g. "acme-corp"). String keys are resolved
+	// via the alias map at startup; unresolved aliases re-resolve on
+	// the alias-sync interval so late-registered tenants pick up
+	// their override without a process restart. See
+	// docs/multi-tenancy.md "Per-tenant overrides" for the merge rules.
+	Overrides map[string]TenantOverride `yaml:"overrides"`
+}
+
+// TenantOverride scopes per-tenant policy knobs. Each field is optional;
+// nil/zero values fall through to the global default. Designed as a
+// thin "what does this tenant get differently" record, not a full
+// shadow of the global config — the supported override surface is
+// deliberately small and explicit.
+type TenantOverride struct {
+	// Retention.Keep overrides the default retention duration for files
+	// owned by this tenant. Accepted forms: "7d", "30d", "720h", Go
+	// duration syntax. Empty string = inherit global default.
+	Retention TenantRetentionOverride `yaml:"retention"`
+
+	// Cardinality caps metric label cardinality for this tenant.
+	// Zero = inherit global stats.metrics_cardinality_limit.
+	Cardinality TenantCardinalityOverride `yaml:"cardinality"`
+
+	// Ingest applies per-tenant rate limits on the insert path.
+	// Zero = no per-tenant limit (still subject to global limits).
+	Ingest TenantIngestOverride `yaml:"ingest"`
+
+	// Lifecycle replaces the global storage-class transition schedule
+	// for files owned by this tenant. Empty = inherit global.
+	Lifecycle []LifecycleRuleConfig `yaml:"lifecycle"`
+
+	// S3 selects an alternative bucket for this tenant. When non-empty,
+	// every Parquet object the tenant produces lands in that bucket
+	// (vs the global s3.bucket); reads route the same way via the
+	// pool's BucketRouter. Sidecars/manifests stay in the default
+	// bucket so a single fleet-wide manifest still resolves files
+	// across many tenant buckets.
+	S3 TenantS3Override `yaml:"s3"`
+}
+
+type TenantRetentionOverride struct {
+	Keep string `yaml:"keep"`
+}
+
+type TenantCardinalityOverride struct {
+	MaxFields  int `yaml:"max_fields"`
+	MaxStreams int `yaml:"max_streams"`
+}
+
+type TenantIngestOverride struct {
+	MaxBytesPerSec int64 `yaml:"max_bytes_per_sec"`
+	MaxRowsPerSec  int64 `yaml:"max_rows_per_sec"`
+}
+
+type TenantS3Override struct {
+	Bucket string `yaml:"bucket"`
 }
 
 type AliasTarget struct {
@@ -428,8 +486,8 @@ type DeleteConfig struct {
 }
 
 type LifecycleRuleConfig struct {
-	TransitionDays int    `yaml:"transition_days"`
-	StorageClass   string `yaml:"storage_class"`
+	TransitionDays int    `yaml:"transition_days" json:"transition_days"`
+	StorageClass   string `yaml:"storage_class" json:"storage_class"`
 }
 
 type SmartCacheConfig struct {
@@ -1416,6 +1474,24 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if len(overlay.Tenant.KnownTenants) > 0 {
 		base.Tenant.KnownTenants = overlay.Tenant.KnownTenants
+	}
+	if overlay.Tenant.OrgIDHeader != "" {
+		base.Tenant.OrgIDHeader = overlay.Tenant.OrgIDHeader
+	}
+	if overlay.Tenant.MetricsFormat != "" {
+		base.Tenant.MetricsFormat = overlay.Tenant.MetricsFormat
+	}
+	if overlay.Tenant.AutoRegister {
+		base.Tenant.AutoRegister = true
+	}
+	if overlay.Tenant.AliasSyncInterval > 0 {
+		base.Tenant.AliasSyncInterval = overlay.Tenant.AliasSyncInterval
+	}
+	if len(overlay.Tenant.Aliases) > 0 {
+		base.Tenant.Aliases = overlay.Tenant.Aliases
+	}
+	if len(overlay.Tenant.Overrides) > 0 {
+		base.Tenant.Overrides = overlay.Tenant.Overrides
 	}
 
 	// Stats

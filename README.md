@@ -426,14 +426,19 @@ Each binary supports three roles for independent scaling:
 
 ### Multi-Tenancy
 - **Single binary, all tenants**: one lakehouse-logs/traces process serves all tenants simultaneously via header-based routing. Same pattern as Grafana Loki and Tempo.
-- **S3 prefix isolation**: each tenant gets `{AccountID}/{ProjectID}/` S3 prefix (default `0/0/`). Tenant data is never mixed in shared files.
-- **Enterprise bucket isolation**: optional `--lakehouse.tenant.isolation=bucket` with `--lakehouse.tenant.bucket-template` for IAM-level hard isolation.
-- **Global read mode**: configurable `X-Lakehouse-Global-Read` header allows admin/Grafana dashboards to query across all tenants (must be explicitly enabled).
+- **In-path S3 isolation**: `BatchWriter` groups rows by `(AccountID, ProjectID)` at flush and writes one Parquet file per tenant per partition under the resolved `{AccountID}/{ProjectID}/<mode>/` prefix. Single-tenant batches keep the fast path (one upload, one manifest entry, one stats callback).
+- **One process, many buckets**: optional per-tenant bucket overrides route a tenant's reads and writes to its own S3 bucket via the YAML policy file's `tenant.bucket` field (no template required). The s3reader pool registry caches a separate client per bucket so a single lakehouse process serves isolated buckets without restart. Manifest sidecars stay in the default bucket so a fleet-wide manifest still resolves files across many tenant buckets.
+- **Per-tenant config overrides** with global-default inheritance: `Retention`, `Cardinality`, `Ingest` rate limits, `Lifecycle` transitions, and `S3` bucket can be overridden per `(AccountID, ProjectID)` via a YAML policy file. Unspecified knobs fall back to the global defaults. Overrides keyed by OrgID alias re-resolve on the same cadence as alias sync, so late-registered tenants pick up their overrides without a restart.
+- **Retroactive bucket migration**: `POST /lakehouse/api/v1/admin/tenant/migrate` server-side-copies existing Parquet objects from the shared bucket to a tenant's new dedicated bucket, then flips `manifest.FileInfo.Bucket` and deletes the source — auth-gated via the existing global-read credential surface (header or Bearer token), closed by default.
+- **Enterprise bucket-template isolation**: legacy `--lakehouse.tenant.isolation=bucket` with `--lakehouse.tenant.bucket-template` for IAM-level hard isolation still works when every tenant follows a templated bucket layout.
+- **Global read mode**: configurable `X-Lakehouse-Global-Read` header (or Bearer token) allows admin/Grafana dashboards to query across all tenants (must be explicitly enabled).
 - **vmauth header extraction**: `X-Scope-AccountID` / `X-Scope-ProjectID` headers for tenant routing.
 - **Analytics compatible**: all Parquet tools (DuckDB, ClickHouse, Trino, Spark) query per-tenant prefix directly.
 - **Cost attribution**: per-prefix S3 Inventory or per-bucket billing for tenant cost allocation.
-- **Tenant stats & monitoring**: real-time per-tenant statistics (files, bytes, rows, cost) with CRDT fleet sync, JSON API, and Prometheus metrics.
-- **Cardinality cap**: configurable limit on per-tenant Prometheus label cardinality prevents metric explosion.
+- **Tenant stats & monitoring**: real-time per-tenant statistics (files, bytes, rows, cost) with CRDT fleet sync, JSON API, and Prometheus metrics. `/api/v1/stats/breakdown?group_by=tenant` returns exact per-tenant facets (not estimated shares) with `org_id` decoration; `/api/v1/tenants/policy` lists every resolved override + pending alias; `/api/v1/tenants/{id}` includes a `policy` block when configured.
+- **VL/manifest parity endpoint** surfaces drift between upstream VL counts and Lakehouse manifest counters with a matching UI panel — catches double-counting and silent missed writes.
+- **Per-tenant cardinality + ingest rate limits**: `tenant.CardinalityLimiter` gates streams at the insert path so a tenant over its `max_streams`/`max_fields` cap drops the offending rows rather than letting cardinality leak through to the writer; `tenant.IngestRateLimiter` adds independent byte/sec + row/sec token buckets with `X-RateLimit-*` headers + HTTP 429 on overflow.
+- **Per-tenant lifecycle overrides**: tenants with their own S3 transition schedule (e.g. `ONEZONE_IA @ 7d` → `GLACIER @ 60d`) shadow the global rules; the storage-class detector + rewriter scheduler both consult the per-tenant rules so manual predictions and the background rewriter agree.
 
 ### Tenant Stats & Storage Metrics
 - **TenantRegistry**: CRDT-based in-memory registry tracking per-tenant files, bytes, rows, time ranges, storage classes, and query activity.
@@ -530,15 +535,40 @@ lakehouse:
 lakehouse:
   tenant:
     prefix_template: "{AccountID}/{ProjectID}/"  # S3 prefix per tenant
-    isolation: prefix           # prefix (default) | bucket (enterprise)
-    bucket_template: ""         # e.g., "obs-{AccountID}-{ProjectID}" for bucket isolation
+    isolation: prefix           # prefix (default) | bucket (enterprise template)
+    bucket_template: ""         # e.g., "obs-{AccountID}-{ProjectID}" for bucket-template isolation
     default_account: "0"        # single-tenant default AccountID
     default_project: "0"        # single-tenant default ProjectID
     header_account: "X-Scope-AccountID"   # HTTP header for AccountID
     header_project: "X-Scope-ProjectID"   # HTTP header for ProjectID
+    orgid_header: "X-Scope-OrgID"         # Loki/Tempo-compatible string alias header
+    alias_sync_interval: "30s"            # fleet alias sync interval (also drives policy refresh)
+    auto_register: false                  # auto-register unknown X-Scope-OrgID values
     global_read_header: ""      # e.g., "X-Lakehouse-Global-Read" — cross-tenant reads via custom header
     global_read_value: ""       # required value for the custom header
     global_read_token: ""       # Bearer token for cross-tenant reads via Authorization header
+    aliases:                    # static OrgID → (AccountID, ProjectID) map (CRUD'd via API at runtime)
+      acme-corp:   { account_id: 1002, project_id: 0 }
+      staging-team: { account_id: 1003, project_id: 0 }
+    overrides:                  # per-tenant policy: key is "account:project" OR OrgID alias
+      "1002:0":                 # acme-corp: long retention + stream cap + ingest cap + 2-stage lifecycle
+        retention: 2160h        # 90 days
+        cardinality:
+          max_streams: 5000
+          max_fields:  1000
+        ingest:
+          max_bytes_per_sec: 5242880   # 5 MiB/s
+          max_rows_per_sec:  10000
+        lifecycle:
+          - { transition_days: 7,  storage_class: ONEZONE_IA }
+          - { transition_days: 60, storage_class: GLACIER }
+        s3:
+          bucket: obs-acme      # one-process-many-buckets: this tenant's reads/writes route here
+      "1:1":                    # tight retention only; everything else inherits global
+        retention: 168h         # 7 days
+      staging-team:             # keyed by OrgID alias — resolved at startup + on alias-sync tick
+        retention: 720h         # 30 days
+        cardinality: { max_streams: 50000 }
 ```
 
 Full reference: [Multi-Tenancy](docs/multi-tenancy.md)

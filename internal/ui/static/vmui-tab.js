@@ -299,14 +299,38 @@
 
       var wrapper = el("div", { style: "overflow-x:auto" });
       var tbl = el("table", { className: "lh-table" });
-      tbl.innerHTML = "<thead><tr><th>Victoria ID</th><th>Org / Name</th><th>Files</th><th>Compressed</th><th>Raw Bytes</th><th>Rows</th><th>Compression</th><th>Est. Cost</th><th>Last Write</th><th>Time Range</th></tr></thead>";
+      tbl.innerHTML = "<thead><tr><th>Victoria ID</th><th>Org / Name</th><th>Source</th><th>S3 Prefix</th><th>Files</th><th>Partitions</th><th>Compressed</th><th>Raw Bytes</th><th>Rows</th><th>Compression</th><th>Est. Cost</th><th>Last Write</th><th>Last Query</th><th>Time Range</th></tr></thead>";
       var tbody = el("tbody");
       tenants.forEach(function (t) {
         var row = el("tr", { style: "cursor:pointer" });
         var tenantID = t.account_id + ":" + t.project_id;
-        var orgName = t.org_id || t.name || "\u2014";
+        var isDefault = (t.account_id === "0" && t.project_id === "0");
+        var hasAlias = !!t.org_id;
+        var aliasOnly = (t.source === "alias");
+        var orgName = t.org_id || t.name || (isDefault ? "(default)" : "\u2014");
+        var s3Prefix = t.account_id + "/" + t.project_id + "/";
+        var srcBadge = "registry";
+        var srcStyle = "color:#3a3";
+        if (aliasOnly) { srcBadge = "alias-only"; srcStyle = "color:#a83;font-style:italic"; }
+        else if (t.source === "manifest") { srcBadge = "manifest"; srcStyle = "color:#39c"; }
+        var rowStyle = aliasOnly ? "cursor:pointer;opacity:0.7" : "cursor:pointer";
+        row.setAttribute("style", rowStyle);
         var timeRange = (t.min_time ? t.min_time.slice(0, 10) : "\u2014") + " \u2192 " + (t.max_time ? t.max_time.slice(0, 10) : "\u2014");
-        row.innerHTML = "<td><strong>" + tenantID + "</strong></td><td>" + orgName + "</td><td>" + fmtNum(t.total_files) + "</td><td>" + fmtBytes(t.total_bytes) + "</td><td>" + fmtBytes(t.raw_bytes) + "</td><td>" + fmtNum(t.total_rows) + "</td><td>" + fmtRatio(t.compression_ratio) + "</td><td>" + fmtUSD(t.monthly_cost_usd) + "</td><td>" + fmtTime(t.last_write_at) + "</td><td>" + timeRange + "</td>";
+        row.innerHTML =
+          "<td><strong>" + tenantID + "</strong>" + (isDefault ? " <span style='color:#888;font-size:0.85em'>(default)</span>" : "") + "</td>" +
+          "<td>" + orgName + (hasAlias ? " <span style='color:#888;font-size:0.85em'>alias</span>" : "") + "</td>" +
+          "<td><span style='" + srcStyle + ";font-size:0.85em'>" + srcBadge + "</span></td>" +
+          "<td><code style='font-size:0.85em'>" + s3Prefix + "</code></td>" +
+          "<td>" + fmtNum(t.total_files) + "</td>" +
+          "<td>" + fmtNum(t.partitions || 0) + "</td>" +
+          "<td>" + fmtBytes(t.total_bytes) + "</td>" +
+          "<td>" + fmtBytes(t.raw_bytes) + "</td>" +
+          "<td>" + fmtNum(t.total_rows) + "</td>" +
+          "<td>" + fmtRatio(t.compression_ratio) + "</td>" +
+          "<td>" + fmtUSD(t.monthly_cost_usd) + "</td>" +
+          "<td>" + fmtTime(t.last_write_at) + "</td>" +
+          "<td>" + fmtTime(t.last_query_at) + "</td>" +
+          "<td>" + timeRange + "</td>";
         row.addEventListener("click", function () { renderTenantDetail(container, t.account_id, t.project_id); });
         tbody.appendChild(row);
       });
@@ -367,6 +391,28 @@
         el("div", { className: "lh-card-value", textContent: fmtUSD(d.monthly_cost_usd) }),
       ]));
       container.appendChild(cards);
+
+      // Per-tenant policy override block (omitted when no override is configured).
+      if (d.policy) {
+        var pol = el("div", { style: "margin:16px 0;padding:12px;border:1px solid #ccc;border-radius:4px;background:#fafafa" });
+        pol.appendChild(el("div", { style: "font-weight:600;margin-bottom:6px", textContent: "Effective Policy Override" }));
+        var lines = [];
+        if (d.policy.retention) lines.push(["Retention", d.policy.retention]);
+        if (d.policy.max_fields) lines.push(["Max Fields", d.policy.max_fields.toLocaleString()]);
+        if (d.policy.max_streams) lines.push(["Max Streams", d.policy.max_streams.toLocaleString()]);
+        if (d.policy.max_bytes_per_sec) lines.push(["Ingest Limit", fmtBytes(d.policy.max_bytes_per_sec) + "/s"]);
+        if (d.policy.max_rows_per_sec) lines.push(["Row Rate Limit", fmtNum(d.policy.max_rows_per_sec) + "/s"]);
+        if (d.policy.lifecycle && d.policy.lifecycle.length) {
+          lines.push(["Lifecycle", d.policy.lifecycle.map(function (r) { return r.storage_class + "@" + r.transition_days + "d"; }).join(", ")]);
+        }
+        var dl = el("dl", { style: "display:grid;grid-template-columns:max-content 1fr;gap:4px 12px;margin:0" });
+        lines.forEach(function (pair) {
+          dl.appendChild(el("dt", { style: "color:#666", textContent: pair[0] }));
+          dl.appendChild(el("dd", { style: "margin:0;font-family:monospace", textContent: pair[1] }));
+        });
+        pol.appendChild(dl);
+        container.appendChild(pol);
+      }
 
       // Info row with timestamps
       var info = el("div", { className: "lh-info-row" });

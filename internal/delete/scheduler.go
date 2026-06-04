@@ -108,9 +108,10 @@ func (s *RewriteScheduler) RunOnce(ctx context.Context) []RewriteResult {
 				continue
 			}
 
-			// Detect storage class from file age.
+			// Detect storage class from file age, honoring per-tenant
+			// lifecycle overrides when the key carries a tenant prefix.
 			fileAgeHours := now.Sub(ts.CreatedAt).Hours()
-			class := s.detector.Detect(fileAgeHours)
+			class := s.detector.DetectForKey(fileAgeHours, key)
 
 			if !s.allowedClasses[string(class)] {
 				metrics.DeleteRewriteSkippedGlacier.Inc()

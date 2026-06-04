@@ -242,31 +242,45 @@
                 <tr>
                   <th onClick=${() => setSort("bytes")}>Victoria ID ${sort === "bytes" ? "\u25bc" : ""}</th>
                   <th>Org / Name</th>
+                  <th>Source</th>
+                  <th>S3 Prefix</th>
                   <th onClick=${() => setSort("files")}>Files ${sort === "files" ? "\u25bc" : ""}</th>
+                  <th>Partitions</th>
                   <th onClick=${() => setSort("bytes")}>Compressed ${sort === "bytes" ? "\u25bc" : ""}</th>
                   <th>Raw Bytes</th>
                   <th>Rows</th>
                   <th>Compression</th>
                   <th onClick=${() => setSort("cost")}>Est. Cost ${sort === "cost" ? "\u25bc" : ""}</th>
                   <th>Last Write</th>
+                  <th>Last Query</th>
                   <th>Time Range</th>
                 </tr>
               </thead>
               <tbody>
-                ${tenants.map(t => html`
-                  <tr>
-                    <td><strong>${t.account_id}:${t.project_id}</strong></td>
-                    <td>${t.org_id || t.name || "\u2014"}</td>
+                ${tenants.map(t => {
+                  const isDefault = (t.account_id === "0" && t.project_id === "0");
+                  const aliasOnly = (t.source === "alias");
+                  const orgName = t.org_id || t.name || (isDefault ? "(default)" : "\u2014");
+                  const s3Prefix = `${t.account_id}/${t.project_id}/`;
+                  return html`
+                  <tr style=${aliasOnly ? "opacity:0.7" : ""}>
+                    <td><strong>${t.account_id}:${t.project_id}</strong>${isDefault ? html` <span style="color:#888;font-size:0.85em">(default)</span>` : null}</td>
+                    <td>${orgName}${t.org_id ? html` <span style="color:#888;font-size:0.85em">alias</span>` : null}</td>
+                    <td><span class="badge ${aliasOnly ? 'badge-map' : 'badge-promoted'}">${t.source || "registry"}</span></td>
+                    <td><code style="font-size:0.85em">${s3Prefix}</code></td>
                     <td>${fmtNum(t.total_files)}</td>
+                    <td>${fmtNum(t.partitions || 0)}</td>
                     <td>${fmtBytes(t.total_bytes)}</td>
                     <td>${fmtBytes(t.raw_bytes)}</td>
                     <td>${fmtNum(t.total_rows)}</td>
                     <td>${fmtRatio(t.compression_ratio)}</td>
                     <td>${fmtUSD(t.monthly_cost_usd)}</td>
                     <td>${fmtTime(t.last_write_at)}</td>
+                    <td>${fmtTime(t.last_query_at)}</td>
                     <td>${(t.min_time||"").slice(0,10)} \u2192 ${(t.max_time||"").slice(0,10)}</td>
                   </tr>
-                `)}
+                  `;
+                })}
               </tbody>
             </table>
             </div>
@@ -279,51 +293,152 @@
       const [data, setData] = useState(null);
       const [err, setErr] = useState(null);
 
+      const [tenantBreakdown, setTenantBreakdown] = useState(null);
+
       useEffect(() => {
         fetch("/lakehouse/api/v1/stats/breakdown")
           .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
           .then(setData).catch(e => setErr(e.message));
+        // Fetch the exact-numbers tenant facet alongside the
+        // estimated-share label breakdowns, so the panel can lead
+        // with operationally-important per-tenant footprint.
+        fetch("/lakehouse/api/v1/stats/breakdown?group_by=tenant")
+          .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+          .then(j => setTenantBreakdown((j.labels && j.labels[0]) || null))
+          .catch(() => {});
       }, []);
 
       if (err) return html`<div class="error">Error: ${err}</div>`;
       if (!data) return html`<div class="loading">Loading breakdown\u2026</div>`;
 
       const labels = data.labels || [];
-      if (labels.length === 0) return html`<div class="loading">No breakdown labels configured.</div>`;
+
+      const renderRows = (values, isExact) => {
+        const maxBytes = Math.max(...values.map(x => x.estimated_bytes || 0), 1);
+        return values.map(v => {
+          const pct = (v.estimated_bytes || 0) / maxBytes * 100;
+          const label = v.org_id ? html`<span>${v.value} <span style="color:var(--color-text-secondary);font-size:11px">(${v.org_id})</span></span>` : v.value;
+          return html`
+            <div style="display:flex;align-items:center;gap:8px;font-size:13px">
+              <div style="width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0">${label}</div>
+              <div style="flex:1;height:18px;background:var(--color-hover-black,#0000000f);border-radius:3px;overflow:hidden">
+                <div style="height:100%;width:${Math.max(pct, 1)}%;background:var(--color-primary);border-radius:3px"></div>
+              </div>
+              <div style="width:80px;text-align:right;flex-shrink:0;font-size:12px;color:var(--color-text-secondary)">${fmtBytes(v.estimated_bytes)}</div>
+              <div style="width:60px;text-align:right;flex-shrink:0;font-size:12px;color:var(--color-text-secondary)">${(v.share_pct || 0).toFixed(1)}%</div>
+            </div>
+          `;
+        });
+      };
 
       return html`
-        <div class="section-title">Storage Breakdown by Label</div>
-        <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:16px">
-          Sizes are proportionally estimated from total storage. Configured via stats.breakdown_labels.
-        </div>
-        ${labels.map(label => html`
-          <div style="margin-bottom:24px">
+        <div class="section-title">Storage Breakdown</div>
+        ${tenantBreakdown && tenantBreakdown.values && tenantBreakdown.values.length > 0 ? html`
+          <div style="margin-bottom:28px">
             <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
-              <h3 style="font-size:1rem;margin:0">${label.name}</h3>
-              <span class="badge ${label.type === 'promoted' ? 'badge-promoted' : 'badge-map'}">${label.type}</span>
-              <span style="font-size:12px;color:var(--color-text-secondary)">${label.cardinality} values</span>
+              <h3 style="font-size:1rem;margin:0">by Tenant</h3>
+              <span class="badge badge-promoted">registry</span>
+              <span style="font-size:12px;color:var(--color-text-secondary)">${tenantBreakdown.cardinality} tenants \u00b7 exact bytes from per-tenant registry</span>
             </div>
-            ${!label.values || label.values.length === 0
-              ? html`<div style="padding:12px;color:var(--color-text-secondary);font-style:italic">No values discovered yet. Run a query to populate.</div>`
-              : html`<div style="display:flex;flex-direction:column;gap:4px">
-                  ${label.values.map(v => {
-                    const maxBytes = Math.max(...label.values.map(x => x.estimated_bytes || 0), 1);
-                    const pct = (v.estimated_bytes || 0) / maxBytes * 100;
-                    return html`
-                      <div style="display:flex;align-items:center;gap:8px;font-size:13px">
-                        <div style="width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0">${v.value}</div>
-                        <div style="flex:1;height:18px;background:var(--color-hover-black,#0000000f);border-radius:3px;overflow:hidden">
-                          <div style="height:100%;width:${Math.max(pct, 1)}%;background:var(--color-primary);border-radius:3px"></div>
-                        </div>
-                        <div style="width:70px;text-align:right;flex-shrink:0;font-size:12px;color:var(--color-text-secondary)">${fmtBytes(v.estimated_bytes)}</div>
-                        <div style="width:50px;text-align:right;flex-shrink:0;font-size:12px;color:var(--color-text-secondary)">${(v.share_pct || 0).toFixed(1)}%</div>
-                      </div>
-                    `;
-                  })}
-                </div>`
-            }
+            <div style="display:flex;flex-direction:column;gap:4px">${renderRows(tenantBreakdown.values, true)}</div>
           </div>
-        `)}
+        ` : null}
+        ${labels.length === 0 ? html`<div class="loading">No additional breakdown labels configured.</div>` : html`
+          <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:16px">
+            Sizes below are proportionally estimated from label counts. Configured via stats.breakdown_labels.
+          </div>
+          ${labels.map(label => html`
+            <div style="margin-bottom:24px">
+              <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
+                <h3 style="font-size:1rem;margin:0">${label.name}</h3>
+                <span class="badge ${label.type === 'promoted' ? 'badge-promoted' : 'badge-map'}">${label.type}</span>
+                <span style="font-size:12px;color:var(--color-text-secondary)">${label.cardinality} values</span>
+              </div>
+              ${!label.values || label.values.length === 0
+                ? html`<div style="padding:12px;color:var(--color-text-secondary);font-style:italic">No values discovered yet. Run a query to populate.</div>`
+                : html`<div style="display:flex;flex-direction:column;gap:4px">${renderRows(label.values, false)}</div>`
+              }
+            </div>
+          `)}
+        `}
+      `;
+    }
+
+    function ParityCheck() {
+      const [data, setData] = useState(null);
+      const [err, setErr] = useState(null);
+      const [window, setWindow] = useState("24h");
+      const [auth, setAuth] = useState(() => localStorage.getItem("lh_admin_token") || "");
+
+      const run = () => {
+        setData(null); setErr(null);
+        const headers = {};
+        if (auth) headers["X-Lakehouse-Global-Read"] = auth;
+        fetch(`/lakehouse/api/v1/admin/parity?window=${encodeURIComponent(window)}`, { headers })
+          .then(r => { if (!r.ok) throw new Error("status " + r.status); return r.json(); })
+          .then(setData)
+          .catch(e => setErr(e.message));
+      };
+
+      useEffect(() => { if (auth) run(); }, []);
+
+      const saveAuth = (v) => { setAuth(v); localStorage.setItem("lh_admin_token", v); };
+
+      return html`
+        <div class="section-title">VL/VT ↔ Lakehouse Parity</div>
+        <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:16px">
+          Compares the embedded VL view (<code>* | stats count()</code>) against the manifest's
+          <code>LiveAggregate</code> for the same window. Both code paths answer "how many rows do we hold?"
+          from different angles — any drift is worth investigating.
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
+          <input type="password" placeholder="admin token (X-Lakehouse-Global-Read)" value=${auth}
+            onInput=${e => saveAuth(e.target.value)}
+            style="flex:1;padding:6px 10px;border:1px solid var(--color-border);border-radius:4px;font-size:13px" />
+          <select value=${window} onChange=${e => setWindow(e.target.value)}
+            style="padding:6px 10px;border:1px solid var(--color-border);border-radius:4px">
+            <option value="1h">1h</option>
+            <option value="6h">6h</option>
+            <option value="24h">24h</option>
+            <option value="7d">7d</option>
+          </select>
+          <button onClick=${run} class="tab" style="padding:6px 14px">Check</button>
+        </div>
+
+        ${err ? html`<div class="error">Error: ${err}</div>` : null}
+        ${!data && !err ? html`<div class="loading">Click Check to run the parity comparison.</div>` : null}
+
+        ${data ? html`
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+            <div class="card">
+              <div class="label">VL view (embedded)</div>
+              <div class="value">${fmtNum(data.vl_rows || 0)}</div>
+              <div style="font-size:11px;color:var(--color-text-secondary);margin-top:4px">rows from <code>stats count()</code></div>
+            </div>
+            <div class="card">
+              <div class="label">Manifest view (LiveAggregate)</div>
+              <div class="value">${fmtNum(data.manifest_rows || 0)}</div>
+              <div style="font-size:11px;color:var(--color-text-secondary);margin-top:4px">
+                ${fmtNum(data.manifest_files || 0)} files · ${fmtBytes(data.manifest_bytes || 0)}
+              </div>
+            </div>
+          </div>
+          <div class="card" style="border-left:4px solid ${Math.abs(data.rows_delta_pct || 0) < 1 ? "#3a3" : (Math.abs(data.rows_delta_pct || 0) < 10 ? "#fa3" : "#c33")}">
+            <div class="label">Drift (VL − Manifest)</div>
+            <div class="value">${data.rows_delta > 0 ? "+" : ""}${fmtNum(data.rows_delta || 0)}</div>
+            <div style="font-size:12px;color:var(--color-text-secondary);margin-top:4px">
+              ${(data.rows_delta_pct || 0).toFixed(2)}% — ${Math.abs(data.rows_delta_pct || 0) < 1 ? "in tolerance" : (Math.abs(data.rows_delta_pct || 0) < 10 ? "mild drift; usually post-compaction lag" : "significant drift — investigate")}
+            </div>
+          </div>
+          ${!data.per_tenant_supported ? html`
+            <div style="margin-top:16px;padding:12px;background:var(--color-hover-black,#0000000a);border-radius:4px;font-size:12px;color:var(--color-text-secondary)">
+              <strong>Per-tenant parity:</strong> not supported yet — ${data.per_tenant_note}
+            </div>
+          ` : null}
+          <div style="margin-top:16px;font-size:11px;color:var(--color-text-secondary)">
+            Window: ${new Date((data.start_unix_nano || 0) / 1e6).toISOString()} → ${new Date((data.end_unix_nano || 0) / 1e6).toISOString()}
+          </div>
+        ` : null}
       `;
     }
 
@@ -400,6 +515,7 @@
         { id: "details", label: "Storage Details" },
         { id: "tenants", label: "Tenants" },
         { id: "cardinality", label: "Cardinality Explorer" },
+        { id: "parity", label: "VL/VT Parity" },
       ];
 
       return html`
@@ -427,6 +543,7 @@
           ${tab === "details" && html`<${StorageDetails} />`}
           ${tab === "tenants" && html`<${Tenants} />`}
           ${tab === "cardinality" && html`<${CardinalityExplorer} />`}
+          ${tab === "parity" && html`<${ParityCheck} />`}
         </div>
       `;
     }

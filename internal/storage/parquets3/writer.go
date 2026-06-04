@@ -13,7 +13,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
@@ -45,6 +44,40 @@ type StatsCallback func(accountID, projectID uint32, compressedBytes, rawBytes, 
 // S3 key and the raw Parquet bytes.
 type FlushCacheCallback func(fileKey string, data []byte)
 
+// TenantPrefixFunc returns the S3 key prefix where a row with the given
+// (AccountID, ProjectID) tenant identity should land. The returned
+// prefix must end in "/". When nil, the writer's default prefix is used
+// for every row (single-tenant deployment).
+//
+// Per docs/multi-tenancy.md "boundary principle", the resolved prefix
+// MUST be integer-keyed (e.g. "{AccountID}/{ProjectID}/<mode>/"); the
+// string OrgID is a presentation concern surfaced only at API/UI.
+type TenantPrefixFunc func(accountID, projectID uint32) string
+
+// TenantBucketFunc returns the S3 bucket where a tenant's files
+// should land. Empty string means "use the writer's default bucket"
+// (the common case: prefix isolation, single bucket). Non-empty
+// strings trigger bucket-isolation mode, where the writer routes
+// writes via the pool registry and stamps FileInfo.Bucket so reads
+// land on the same bucket later.
+type TenantBucketFunc func(accountID, projectID uint32) string
+
+// TenantPoolFunc returns the s3reader.ClientPool that owns the
+// given bucket. Wired together with TenantBucketFunc so the writer
+// can look up the right pool per tenant flush. nil means
+// single-bucket mode (use the writer's default pool unconditionally).
+//
+// Declared as a pluggable function rather than an interface on the
+// pool registry so this package stays leaf-level — main.go composes
+// the two.
+type TenantPoolFunc func(bucket string) PoolWriter
+
+// PoolWriter is the subset of s3reader.ClientPool the BatchWriter
+// needs. Keeps the dependency narrow and lets tests substitute fakes.
+type PoolWriter interface {
+	Upload(ctx context.Context, key string, data []byte) error
+}
+
 // BatchWriter buffers incoming rows per partition and flushes them as
 // Parquet files to S3 on a configurable interval or size threshold.
 type BatchWriter struct {
@@ -65,6 +98,9 @@ type BatchWriter struct {
 	bloomObserver BloomObserver
 	statsCallback StatsCallback
 	flushCacheCb  FlushCacheCallback
+	tenantPrefix  TenantPrefixFunc
+	tenantBucket  TenantBucketFunc
+	tenantPool    TenantPoolFunc
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -106,6 +142,59 @@ func (w *BatchWriter) SetStatsCallback(cb StatsCallback) {
 // column data locally for immediate query availability.
 func (w *BatchWriter) SetFlushCacheCallback(cb FlushCacheCallback) {
 	w.flushCacheCb = cb
+}
+
+// SetTenantPrefix installs a per-tenant prefix resolver. When set, the
+// flush path groups rows by (AccountID, ProjectID) and writes each
+// tenant's slice of a partition to its own Parquet file under the
+// resolved prefix. When nil, every row lands at the writer's default
+// prefix as before — preserving single-tenant deployments.
+func (w *BatchWriter) SetTenantPrefix(f TenantPrefixFunc) {
+	w.tenantPrefix = f
+}
+
+// SetTenantBucket installs a per-tenant bucket resolver. Together
+// with SetTenantPool, this routes per-tenant flushes to per-tenant
+// S3 buckets. Empty return = use the writer's default bucket so a
+// single resolver can mix prefix-only and bucket-isolated tenants.
+func (w *BatchWriter) SetTenantBucket(f TenantBucketFunc) {
+	w.tenantBucket = f
+}
+
+// SetTenantPool installs a bucket-to-pool resolver. Required when
+// SetTenantBucket returns non-default buckets — the writer needs
+// a pool that talks to that bucket to upload the Parquet file.
+func (w *BatchWriter) SetTenantPool(f TenantPoolFunc) {
+	w.tenantPool = f
+}
+
+// bucketForTenant returns the (bucket, pool) pair to use for the
+// tenant's flush. Falls back to (w.pool.Bucket(), w.pool) when no
+// per-tenant bucket override is configured for this tenant.
+func (w *BatchWriter) bucketForTenant(accountID, projectID uint32) (string, PoolWriter) {
+	if w.tenantBucket == nil || w.tenantPool == nil {
+		return "", w.pool
+	}
+	bucket := w.tenantBucket(accountID, projectID)
+	if bucket == "" {
+		return "", w.pool
+	}
+	if p := w.tenantPool(bucket); p != nil {
+		return bucket, p
+	}
+	return "", w.pool
+}
+
+// prefixForTenant returns the configured tenant prefix, falling back to
+// the writer's default prefix when no resolver is installed.
+func (w *BatchWriter) prefixForTenant(accountID, projectID uint32) string {
+	if w.tenantPrefix == nil {
+		return w.prefix
+	}
+	if p := w.tenantPrefix(accountID, projectID); p != "" {
+		return p
+	}
+	return w.prefix
 }
 
 func (w *BatchWriter) Start() {
@@ -315,16 +404,32 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 		return rows[i].TimestampUnixNano < rows[j].TimestampUnixNano
 	})
 
+	// Group rows by tenant so each tenant's slice lands at its own
+	// S3 prefix. Fast path: a single-tenant batch (the common case in
+	// single-tenant deployments) skips the grouping allocation.
+	groups := groupLogRowsByTenant(rows)
+	for _, g := range groups {
+		if err := w.flushLogTenantGroup(ctx, partition, g.AccountID, g.ProjectID, g.Rows); err != nil {
+			return err
+		}
+	}
+	w.writeMetadataSidecarAsync(ctx, partition)
+	return nil
+}
+
+func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string, accountID, projectID uint32, rows []schema.LogRow) error {
 	result, err := writeLogsParquet(rows, w.cfg.RowGroupSize, w.cfg.CompressionLevel)
 	if err != nil {
 		return fmt.Errorf("write parquet: %w", err)
 	}
 
 	batchID := randomBatchID()
-	key := fmt.Sprintf("%s%s/%s.parquet", w.prefix, partition, batchID)
+	key := fmt.Sprintf("%s%s/%s.parquet", w.prefixForTenant(accountID, projectID), partition, batchID)
+
+	bucket, uploader := w.bucketForTenant(accountID, projectID)
 
 	metrics.S3RequestsTotal.Inc("PUT")
-	if err := w.pool.Upload(ctx, key, result.Data); err != nil {
+	if err := uploader.Upload(ctx, key, result.Data); err != nil {
 		metrics.S3ErrorsTotal.Inc("PUT")
 		return err
 	}
@@ -332,6 +437,7 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 
 	fi := manifest.FileInfo{
 		Key:               key,
+		Bucket:            bucket,
 		Size:              int64(len(result.Data)),
 		RowCount:          int64(len(rows)),
 		MinTimeNs:         rows[0].TimestampUnixNano,
@@ -342,14 +448,12 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 	}
 	w.manifest.AddFile(partition, fi)
 
-	w.writeMetadataSidecarAsync(ctx, partition)
-
 	if w.bloomObserver != nil {
 		w.bloomObserver.OnFileFlush(partition, key, extractLogBloomValues(rows))
 	}
 
 	if w.statsCallback != nil {
-		attributeLogStats(w.statsCallback, rows, int64(len(result.Data)), result.RawBytes)
+		w.statsCallback(accountID, projectID, int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
 	}
 
 	if w.flushCacheCb != nil {
@@ -358,8 +462,8 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 
 	w.totalBytes.Add(int64(len(result.Data)))
 
-	logger.Infof("flushed log partition; partition=%s, rows=%d, bytes=%d, ratio=%v, key=%s",
-		partition, len(rows), len(result.Data), fi.CompressionRatio(), key)
+	logger.Infof("flushed log partition; partition=%s, tenant=%d:%d, rows=%d, bytes=%d, ratio=%v, key=%s",
+		partition, accountID, projectID, len(rows), len(result.Data), fi.CompressionRatio(), key)
 
 	return nil
 }
@@ -369,16 +473,29 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 		return rows[i].TimestampUnixNano < rows[j].TimestampUnixNano
 	})
 
+	groups := groupTraceRowsByTenant(rows)
+	for _, g := range groups {
+		if err := w.flushTraceTenantGroup(ctx, partition, g.AccountID, g.ProjectID, g.Rows); err != nil {
+			return err
+		}
+	}
+	w.writeMetadataSidecarAsync(ctx, partition)
+	return nil
+}
+
+func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition string, accountID, projectID uint32, rows []schema.TraceRow) error {
 	result, err := writeTracesParquet(rows, w.cfg.RowGroupSize, w.cfg.CompressionLevel)
 	if err != nil {
 		return fmt.Errorf("write parquet: %w", err)
 	}
 
 	batchID := randomBatchID()
-	key := fmt.Sprintf("%s%s/%s.parquet", w.prefix, partition, batchID)
+	key := fmt.Sprintf("%s%s/%s.parquet", w.prefixForTenant(accountID, projectID), partition, batchID)
+
+	bucket, uploader := w.bucketForTenant(accountID, projectID)
 
 	metrics.S3RequestsTotal.Inc("PUT")
-	if err := w.pool.Upload(ctx, key, result.Data); err != nil {
+	if err := uploader.Upload(ctx, key, result.Data); err != nil {
 		metrics.S3ErrorsTotal.Inc("PUT")
 		return err
 	}
@@ -386,6 +503,7 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 
 	fi := manifest.FileInfo{
 		Key:               key,
+		Bucket:            bucket,
 		Size:              int64(len(result.Data)),
 		RowCount:          int64(len(rows)),
 		MinTimeNs:         rows[0].TimestampUnixNano,
@@ -396,14 +514,12 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 	}
 	w.manifest.AddFile(partition, fi)
 
-	w.writeMetadataSidecarAsync(ctx, partition)
-
 	if w.bloomObserver != nil {
 		w.bloomObserver.OnFileFlush(partition, key, extractTraceBloomValues(rows))
 	}
 
 	if w.statsCallback != nil {
-		attributeTraceStats(w.statsCallback, rows, int64(len(result.Data)), result.RawBytes)
+		w.statsCallback(accountID, projectID, int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
 	}
 
 	if w.flushCacheCb != nil {
@@ -412,8 +528,8 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 
 	w.totalBytes.Add(int64(len(result.Data)))
 
-	logger.Infof("flushed trace partition; partition=%s, rows=%d, bytes=%d, ratio=%v, key=%s",
-		partition, len(rows), len(result.Data), fi.CompressionRatio(), key)
+	logger.Infof("flushed trace partition; partition=%s, tenant=%d:%d, rows=%d, bytes=%d, ratio=%v, key=%s",
+		partition, accountID, projectID, len(rows), len(result.Data), fi.CompressionRatio(), key)
 
 	return nil
 }
@@ -538,17 +654,51 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 	}, nil
 }
 
+// fixedLogRowBytes is the on-the-wire size of every fixed-width
+// scalar on schema.LogRow: two uint32 tenant ids (8), timestamp_ns
+// (8), severity_number int32 (4) = 20 bytes per row.
+const fixedLogRowBytes = 20
+
+// fixedTraceRowBytes covers schema.TraceRow's fixed scalars:
+// 2× uint32 tenant (8), timestamp_ns (8), start_time_ns (8),
+// duration_ns (8), status_code int32 (4), span_kind int32 (4) =
+// 40 bytes per row.
+const fixedTraceRowBytes = 40
+
+// estimateRawBytesLogs sums the byte count of every column the
+// writer actually persists, so the manifest's RawBytes is comparable
+// to len(parquet_file) and the compression ratio doesn't invert for
+// rows where the heavy fields are in K8s / host columns rather than
+// in body. Previously this only counted Body + ServiceName +
+// TraceID + two attribute maps, which under-counted real workloads
+// by ~70% and produced ratios < 1.0 on small files.
 func estimateRawBytesLogs(rows []schema.LogRow) int64 {
 	var total int64
 	for i := range rows {
-		total += int64(unsafe.Sizeof(rows[i]))
-		total += int64(len(rows[i].Body))
-		total += int64(len(rows[i].ServiceName))
-		total += int64(len(rows[i].TraceID))
-		for k, v := range rows[i].ResourceAttributes {
+		r := &rows[i]
+		total += fixedLogRowBytes
+		total += int64(len(r.Body))
+		total += int64(len(r.SeverityText))
+		total += int64(len(r.ServiceName))
+		total += int64(len(r.TraceID))
+		total += int64(len(r.SpanID))
+		total += int64(len(r.K8sNamespaceName))
+		total += int64(len(r.K8sPodName))
+		total += int64(len(r.K8sDeploymentName))
+		total += int64(len(r.K8sNodeName))
+		total += int64(len(r.DeployEnv))
+		total += int64(len(r.CloudRegion))
+		total += int64(len(r.HostName))
+		total += int64(len(r.Stream))
+		total += int64(len(r.StreamID))
+		total += int64(len(r.ScopeName))
+		for k, v := range r.ResourceAttributes {
 			total += int64(len(k) + len(v))
 		}
-		for k, v := range rows[i].LogAttributes {
+		for k, v := range r.LogAttributes {
+			total += int64(len(k) + len(v))
+		}
+		for k, v := range r.ScopeAttributes {
 			total += int64(len(k) + len(v))
 		}
 	}
@@ -558,17 +708,36 @@ func estimateRawBytesLogs(rows []schema.LogRow) int64 {
 func estimateRawBytesTraces(rows []schema.TraceRow) int64 {
 	var total int64
 	for i := range rows {
-		total += int64(unsafe.Sizeof(rows[i]))
-		total += int64(len(rows[i].TraceID))
-		total += int64(len(rows[i].SpanName))
-		total += int64(len(rows[i].ServiceName))
-		for k, v := range rows[i].ResourceAttributes {
+		r := &rows[i]
+		total += fixedTraceRowBytes
+		total += int64(len(r.TraceID))
+		total += int64(len(r.SpanID))
+		total += int64(len(r.ParentSpanID))
+		total += int64(len(r.SpanName))
+		total += int64(len(r.ServiceName))
+		total += int64(len(r.StatusMessage))
+		total += int64(len(r.HTTPMethod))
+		total += int64(len(r.HTTPStatusCode))
+		total += int64(len(r.HTTPUrl))
+		total += int64(len(r.DBSystem))
+		total += int64(len(r.DBStatement))
+		total += int64(len(r.K8sNamespaceName))
+		total += int64(len(r.K8sPodName))
+		total += int64(len(r.K8sDeploymentName))
+		total += int64(len(r.K8sNodeName))
+		total += int64(len(r.DeployEnv))
+		total += int64(len(r.CloudRegion))
+		total += int64(len(r.HostName))
+		total += int64(len(r.Stream))
+		total += int64(len(r.StreamID))
+		total += int64(len(r.ScopeName))
+		for k, v := range r.ResourceAttributes {
 			total += int64(len(k) + len(v))
 		}
-		for k, v := range rows[i].SpanAttributes {
+		for k, v := range r.SpanAttributes {
 			total += int64(len(k) + len(v))
 		}
-		for k, v := range rows[i].ScopeAttributes {
+		for k, v := range r.ScopeAttributes {
 			total += int64(len(k) + len(v))
 		}
 	}

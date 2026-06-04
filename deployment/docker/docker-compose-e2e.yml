@@ -9,6 +9,11 @@ services:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     networks: [lakehouse-net]
+    ports:
+      # Bound to localhost only so the host-side e2e test suite (see
+      # tests/e2e/multitenancy_test.go:23) can reach the S3 API for
+      # tenant-isolation assertions without exposing MinIO publicly.
+      - "127.0.0.1:29000:9000"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
@@ -225,10 +230,14 @@ services:
       - "-lakehouse.tenant.global-read-value=lakehouse-e2e-global-key"
       - "-lakehouse.tenant.orgid-header=X-Scope-OrgID"
       - "-lakehouse.tenant.auto-register=true"
+      - "-lakehouse.tenant.alias-sync-interval=5s"
       - "-lakehouse.tenant.metrics-format=name"
+      - "-lakehouse.tenant.prefix-template={AccountID}/{ProjectID}/"
+      - "-lakehouse.config=/etc/lakehouse/policy.yml"
       - "-loggerLevel=INFO"
     volumes:
       - lakehouse-cache-logs:/data/lakehouse
+      - ./lakehouse-e2e-config.yml:/etc/lakehouse/policy.yml:ro
     healthcheck:
       test: ["CMD", "/usr/local/bin/lakehouse-logs", "healthcheck", "http://localhost:9428/health"]
       interval: 5s
@@ -276,7 +285,9 @@ services:
       - "-lakehouse.tenant.global-read-value=lakehouse-e2e-global-key"
       - "-lakehouse.tenant.orgid-header=X-Scope-OrgID"
       - "-lakehouse.tenant.auto-register=true"
+      - "-lakehouse.tenant.alias-sync-interval=5s"
       - "-lakehouse.tenant.metrics-format=name"
+      - "-lakehouse.tenant.prefix-template={AccountID}/{ProjectID}/"
       # VT upstream defaults latencyOffset=30s. Our cold tier flushes
       # parquet files every -lakehouse.insert.flush-interval=120s, so
       # the freshest queryable span lags real time by up to ~2 min.
@@ -288,9 +299,11 @@ services:
       # override beyond upstream defaults; it reflects a real
       # cold-tier write-lag, not an LH-specific trick.
       - "-search.latencyOffset=2m"
+      - "-lakehouse.config=/etc/lakehouse/policy.yml"
       - "-loggerLevel=INFO"
     volumes:
       - lakehouse-cache-traces:/data/lakehouse
+      - ./lakehouse-e2e-config.yml:/etc/lakehouse/policy.yml:ro
     healthcheck:
       test: ["CMD", "/usr/local/bin/lakehouse-traces", "healthcheck", "http://localhost:10428/health"]
       interval: 5s

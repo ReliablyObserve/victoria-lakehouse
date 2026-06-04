@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
@@ -23,6 +24,7 @@ type APIConfig struct {
 	LabelIndex      *cache.LabelIndex
 	SchemaRegistry  *schema.Registry
 	Resolver        *tenant.TenantResolver
+	Policy          *tenant.PolicyRegistry
 	Mode            string // "logs" or "traces"
 	Bucket          string
 	BloomColumns    []string
@@ -42,6 +44,7 @@ func NewAPI(cfg APIConfig) *API {
 // Register wires all API routes to the given ServeMux.
 func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/lakehouse/api/v1/tenants", a.handleTenants)
+	mux.HandleFunc("/lakehouse/api/v1/tenants/policy", a.handleTenantPolicy)
 	mux.HandleFunc("/lakehouse/api/v1/tenants/", a.handleTenantDetail)
 	mux.HandleFunc("/lakehouse/api/v1/stats/overview", a.handleOverview)
 	mux.HandleFunc("/lakehouse/api/v1/stats/ingestion", a.handleIngestion)
@@ -144,6 +147,7 @@ type TenantCostEntry struct {
 	AccountID  string  `json:"account_id"`
 	ProjectID  string  `json:"project_id"`
 	Name       string  `json:"name,omitempty"`
+	OrgID      string  `json:"org_id,omitempty"`
 	CostUSD    float64 `json:"cost_usd"`
 	TotalBytes int64   `json:"total_bytes"`
 }
@@ -159,6 +163,7 @@ type TenantCompressionEntry struct {
 	AccountID        string  `json:"account_id"`
 	ProjectID        string  `json:"project_id"`
 	Name             string  `json:"name,omitempty"`
+	OrgID            string  `json:"org_id,omitempty"`
 	CompressionRatio float64 `json:"compression_ratio"`
 	TotalBytes       int64   `json:"total_bytes"`
 	RawBytes         int64   `json:"raw_bytes"`
@@ -195,9 +200,13 @@ type BreakdownLabel struct {
 	Values      []BreakdownValue `json:"values"`
 }
 
-// BreakdownValue is one distinct value of a breakdown label with estimated storage share.
+// BreakdownValue is one distinct value of a breakdown label with estimated
+// storage share. When the breakdown groups by tenant the OrgID field carries
+// the string alias if one is registered, so UIs can surface human-friendly
+// names alongside the integer account:project key.
 type BreakdownValue struct {
 	Value          string  `json:"value"`
+	OrgID          string  `json:"org_id,omitempty"`
 	EstimatedBytes int64   `json:"estimated_bytes"`
 	EstimatedFiles int64   `json:"estimated_files"`
 	SharePct       float64 `json:"share_pct"`
@@ -219,8 +228,42 @@ func (a *API) handleTenants(w http.ResponseWriter, r *http.Request) {
 		sortBy = "bytes"
 	}
 
+	// Build a manifest-derived snapshot keyed by tenant — this is the
+	// post-compaction truth for file/byte/row counts. The registry
+	// tracks cumulative writes but is never decremented when files
+	// are compacted away, so registry totals drift higher than the
+	// manifest. We use manifest numbers for storage facts (files,
+	// bytes, rows, partitions, time range) and the registry for
+	// fields the manifest doesn't track (last_query_at, last_write_at,
+	// node_contribs, per-storage-class breakdown).
+	//
+	// manifestTenantAware is true only when the manifest holds at
+	// least one entry whose path parses as <numeric>/<numeric>/...
+	// In tenant-aware mode we trust manifest absence as "no current
+	// files for this tenant" and zero out registry storage facts
+	// accordingly. In legacy single-tenant deployments (paths like
+	// "data/dt=…"), the manifest has no tenant-keyed entries, so we
+	// fall back to registry numbers unchanged.
+	var manifestByKey map[string]manifest.TenantSummary
+	var manifestTenantAware bool
+	if a.cfg.Manifest != nil {
+		summaries := a.cfg.Manifest.TenantSummaries()
+		manifestByKey = make(map[string]manifest.TenantSummary, len(summaries))
+		for _, s := range summaries {
+			if _, err := strconv.ParseUint(s.AccountID, 10, 32); err != nil {
+				continue
+			}
+			if _, err := strconv.ParseUint(s.ProjectID, 10, 32); err != nil {
+				continue
+			}
+			manifestByKey[s.AccountID+":"+s.ProjectID] = s
+			manifestTenantAware = true
+		}
+	}
+
 	all := a.cfg.Registry.All()
 	entries := make([]TenantEntry, 0, len(all))
+	seenRegistry := make(map[string]bool, len(all))
 
 	var totalBytes int64
 	var totalFiles int64
@@ -228,42 +271,50 @@ func (a *API) handleTenants(w http.ResponseWriter, r *http.Request) {
 	for _, ts := range all {
 		entry := tenantStatsToEntry(ts, a.cfg.CostCalc)
 		a.decorateName(&entry)
+		seenRegistry[ts.AccountID+":"+ts.ProjectID] = true
+		// The manifest is the post-compaction source of truth for
+		// storage facts. When it has an entry for this tenant we
+		// overlay; when it doesn't (data was compacted away, or
+		// historic registry writes never produced current files —
+		// e.g. when the writer dropped tenant headers in an older
+		// build) we zero out the storage fields so /stats/overview
+		// (manifest-derived) and the sum of /tenants entries agree.
+		if s, ok := manifestByKey[ts.AccountID+":"+ts.ProjectID]; ok {
+			overlayStorageFromManifest(&entry, s, a.cfg.CostCalc)
+		} else if manifestTenantAware {
+			zeroStorageFacts(&entry)
+		}
 		entries = append(entries, entry)
-		totalBytes += ts.TotalBytes
-		totalFiles += ts.TotalFiles
+		totalBytes += entry.TotalBytes
+		totalFiles += entry.TotalFiles
 	}
 
-	// Fall back to manifest-derived tenants when registry is empty.
-	if len(entries) == 0 && a.cfg.Manifest != nil {
-		summaries := a.cfg.Manifest.TenantSummaries()
-		for _, s := range summaries {
-			var ratio float64
-			if s.TotalBytes > 0 && s.RawBytes > 0 {
-				ratio = float64(s.RawBytes) / float64(s.TotalBytes)
-			}
-			entry := TenantEntry{
-				AccountID:        s.AccountID,
-				ProjectID:        s.ProjectID,
-				TotalFiles:       int64(s.TotalFiles),
-				TotalBytes:       s.TotalBytes,
-				RawBytes:         s.RawBytes,
-				TotalRows:        s.TotalRows,
-				CompressionRatio: ratio,
-				Partitions:       s.Partitions,
-			}
-			if !s.MinTime.IsZero() {
-				entry.MinTime = s.MinTime.UTC().Format(time.RFC3339)
-			}
-			if !s.MaxTime.IsZero() {
-				entry.MaxTime = s.MaxTime.UTC().Format(time.RFC3339)
-			}
-			if a.cfg.CostCalc != nil {
-				entry.MonthlyCostUSD = a.cfg.CostCalc.MonthlyStorageCost("STANDARD", s.TotalBytes)
-			}
-			entries = append(entries, entry)
-			totalBytes += s.TotalBytes
-			totalFiles += int64(s.TotalFiles)
+	// Surface manifest-only tenants (data on S3 but no live registry
+	// entry — e.g. after a stats-snapshot reset or a fresh process).
+	// Only emit entries whose account/project parse as numeric: the
+	// manifest's TenantSummaries() splits the S3 key path naively,
+	// so single-tenant deployments using a non-tenant-keyed prefix
+	// (e.g. "data/") would otherwise synthesize phantom tenants
+	// named "data:dt=2026-05-10".
+	for k, s := range manifestByKey {
+		if seenRegistry[k] {
+			continue
 		}
+		if _, err := strconv.ParseUint(s.AccountID, 10, 32); err != nil {
+			continue
+		}
+		if _, err := strconv.ParseUint(s.ProjectID, 10, 32); err != nil {
+			continue
+		}
+		entry := TenantEntry{
+			AccountID:  s.AccountID,
+			ProjectID:  s.ProjectID,
+			Partitions: s.Partitions,
+		}
+		overlayStorageFromManifest(&entry, s, a.cfg.CostCalc)
+		entries = append(entries, entry)
+		totalBytes += entry.TotalBytes
+		totalFiles += entry.TotalFiles
 	}
 
 	// Decorate entries with OrgID from resolver and add alias-only tenants.
@@ -309,6 +360,94 @@ type TenantDetailResponse struct {
 	PartitionList     []manifest.PartitionSummary `json:"partition_list,omitempty"`
 	FileSizeHistogram *FileSizeHistogram          `json:"file_size_histogram,omitempty"`
 	AvgRowsPerFile    int64                       `json:"avg_rows_per_file"`
+	Policy            *TenantPolicyEntry          `json:"policy,omitempty"`
+}
+
+// TenantPolicyEntry is the JSON shape of a resolved per-tenant override.
+// Fields with zero values mean "inheriting global default".
+type TenantPolicyEntry struct {
+	AccountID         uint32                       `json:"account_id"`
+	ProjectID         uint32                       `json:"project_id"`
+	OrgID             string                       `json:"org_id,omitempty"`
+	Retention         string                       `json:"retention,omitempty"`
+	MaxFields         int                          `json:"max_fields,omitempty"`
+	MaxStreams        int                          `json:"max_streams,omitempty"`
+	MaxBytesPerSec    int64                        `json:"max_bytes_per_sec,omitempty"`
+	MaxRowsPerSec     int64                        `json:"max_rows_per_sec,omitempty"`
+	LifecycleOverride []config.LifecycleRuleConfig `json:"lifecycle,omitempty"`
+}
+
+// TenantPolicyListResponse is the response for /api/v1/tenants/policy.
+type TenantPolicyListResponse struct {
+	Entries        []TenantPolicyEntry `json:"entries"`
+	PendingAliases []string            `json:"pending_aliases,omitempty"`
+}
+
+func (a *API) handleTenantPolicy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	resp := TenantPolicyListResponse{}
+	if a.cfg.Policy == nil {
+		writeJSON(w, resp)
+		return
+	}
+	resp.PendingAliases = a.cfg.Policy.PendingAliases()
+
+	// Iterate the registry's resolved entries by walking every tenant
+	// we know about (registry + alias-only). Anyone without an override
+	// is simply omitted, keeping the response small.
+	seen := make(map[string]bool)
+	emit := func(accountID, projectID uint32) {
+		key := strconv.FormatUint(uint64(accountID), 10) + ":" + strconv.FormatUint(uint64(projectID), 10)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		eff := a.cfg.Policy.For(accountID, projectID)
+		if eff == nil {
+			return
+		}
+		entry := effectiveToJSON(eff)
+		if a.cfg.Resolver != nil {
+			entry.OrgID = a.cfg.Resolver.DisplayName(accountID, projectID)
+			if entry.OrgID == key {
+				entry.OrgID = ""
+			}
+		}
+		resp.Entries = append(resp.Entries, entry)
+	}
+
+	if a.cfg.Registry != nil {
+		for _, ts := range a.cfg.Registry.All() {
+			acc, _ := strconv.ParseUint(ts.AccountID, 10, 32)
+			proj, _ := strconv.ParseUint(ts.ProjectID, 10, 32)
+			emit(uint32(acc), uint32(proj))
+		}
+	}
+	if a.cfg.Resolver != nil {
+		for _, alias := range a.cfg.Resolver.AllAliases() {
+			emit(alias.AccountID, alias.ProjectID)
+		}
+	}
+	writeJSON(w, resp)
+}
+
+func effectiveToJSON(eff *tenant.EffectiveConfig) TenantPolicyEntry {
+	entry := TenantPolicyEntry{
+		AccountID:         eff.AccountID,
+		ProjectID:         eff.ProjectID,
+		MaxFields:         eff.MaxFields,
+		MaxStreams:        eff.MaxStreams,
+		MaxBytesPerSec:    eff.MaxBytesPerSec,
+		MaxRowsPerSec:     eff.MaxRowsPerSec,
+		LifecycleOverride: eff.Lifecycle,
+	}
+	if eff.Retention > 0 {
+		entry.Retention = eff.Retention.String()
+	}
+	return entry
 }
 
 // FileSizeHistogram groups files into size buckets.
@@ -391,6 +530,17 @@ func (a *API) handleTenantDetail(w http.ResponseWriter, r *http.Request) {
 
 	a.decorateName(&entry)
 	resp := TenantDetailResponse{TenantEntry: entry}
+
+	// Attach effective per-tenant policy if an override is configured.
+	if a.cfg.Policy != nil {
+		acc, _ := strconv.ParseUint(accountID, 10, 32)
+		proj, _ := strconv.ParseUint(projectID, 10, 32)
+		if eff := a.cfg.Policy.For(uint32(acc), uint32(proj)); eff != nil {
+			p := effectiveToJSON(eff)
+			p.OrgID = entry.OrgID
+			resp.Policy = &p
+		}
+	}
 
 	// Add partition drill-down from manifest (only for tenants with data).
 	if a.cfg.Manifest != nil && entry.TotalFiles > 0 {
@@ -475,15 +625,21 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 
 	if a.cfg.Manifest != nil {
 		partitionCount = a.cfg.Manifest.PartitionCount()
-		totalFiles = int64(a.cfg.Manifest.TotalFiles())
-		totalBytes = a.cfg.Manifest.TotalBytes()
-		totalRows = a.cfg.Manifest.TotalRows()
-		totalRawBytes = a.cfg.Manifest.TotalRawBytes()
-		if !a.cfg.Manifest.MinTime().IsZero() {
-			oldestData = a.cfg.Manifest.MinTime().UTC().Format(time.RFC3339)
+		// LiveAggregate iterates m.files — same source as
+		// TenantSummaries() — so /stats/overview and the sum of
+		// /tenants entries can't disagree. The cached
+		// m.totalFiles/m.totalBytes can drift if a RefreshFromS3
+		// resets them against a partial S3 scan.
+		live := a.cfg.Manifest.LiveAggregate()
+		totalFiles = int64(live.Files)
+		totalBytes = live.Bytes
+		totalRows = live.Rows
+		totalRawBytes = live.RawBytes
+		if live.MinTimeNs > 0 {
+			oldestData = time.Unix(0, live.MinTimeNs).UTC().Format(time.RFC3339)
 		}
-		if !a.cfg.Manifest.MaxTime().IsZero() {
-			newestData = a.cfg.Manifest.MaxTime().UTC().Format(time.RFC3339)
+		if live.MaxTimeNs > 0 {
+			newestData = time.Unix(0, live.MaxTimeNs).UTC().Format(time.RFC3339)
 		}
 	}
 	if totalFiles == 0 {
@@ -887,8 +1043,22 @@ func (a *API) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Optional: request a single label only.
+	// Optional: request a single label only. Accept both ?label= and
+	// ?group_by= because UIs gravitate toward "group_by" wording for
+	// faceted breakdowns.
 	filterLabel := r.URL.Query().Get("label")
+	if filterLabel == "" {
+		filterLabel = r.URL.Query().Get("group_by")
+	}
+
+	// Special-case the "tenant" breakdown: bytes/files are sourced
+	// directly from the per-tenant registry (exact, not estimated),
+	// and each value is decorated with org_id so the UI can render
+	// the string alias next to the integer account:project key.
+	if filterLabel == "tenant" {
+		writeJSON(w, BreakdownResponse{Labels: []BreakdownLabel{a.tenantBreakdown()}})
+		return
+	}
 
 	labels := a.cfg.BreakdownLabels
 	if filterLabel != "" {
@@ -977,6 +1147,42 @@ func (a *API) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, BreakdownResponse{Labels: result})
 }
 
+// tenantBreakdown builds a "tenant" facet from the per-tenant registry
+// snapshot. Used by /api/v1/stats/breakdown?group_by=tenant. The values
+// include the registry's exact byte/file totals plus the resolver-decorated
+// OrgID so the UI can render the string alias next to the integer key.
+func (a *API) tenantBreakdown() BreakdownLabel {
+	bl := BreakdownLabel{Name: "tenant", Type: "registry"}
+	if a.cfg.Registry == nil {
+		return bl
+	}
+	all := a.cfg.Registry.All()
+	var totalBytes int64
+	for _, ts := range all {
+		totalBytes += ts.TotalBytes
+	}
+	values := make([]BreakdownValue, 0, len(all))
+	for _, ts := range all {
+		share := 0.0
+		if totalBytes > 0 {
+			share = float64(ts.TotalBytes) / float64(totalBytes) * 100.0
+		}
+		values = append(values, BreakdownValue{
+			Value:          ts.AccountID + ":" + ts.ProjectID,
+			OrgID:          a.resolveOrgID(ts.AccountID, ts.ProjectID),
+			EstimatedBytes: ts.TotalBytes,
+			EstimatedFiles: ts.TotalFiles,
+			SharePct:       share,
+		})
+	}
+	sort.Slice(values, func(i, j int) bool {
+		return values[i].EstimatedBytes > values[j].EstimatedBytes
+	})
+	bl.Cardinality = len(values)
+	bl.Values = values
+	return bl
+}
+
 func max64(a, b int64) int64 {
 	if a > b {
 		return a
@@ -1019,14 +1225,60 @@ func (a *API) resolveOrgID(accountID, projectID string) string {
 
 func (a *API) decorateName(entry *TenantEntry) {
 	entry.Name = a.resolveName(entry.AccountID, entry.ProjectID)
+	entry.OrgID = a.resolveOrgID(entry.AccountID, entry.ProjectID)
+}
+
+// zeroStorageFacts wipes the storage fields on a tenant entry whose
+// registry tracks historical writes but whose data isn't currently
+// in the manifest (compacted away, or historic mis-routing). Keeps
+// the entry visible (so operators see the tenant existed) but
+// reports honest current-state numbers.
+func zeroStorageFacts(entry *TenantEntry) {
+	entry.TotalFiles = 0
+	entry.TotalBytes = 0
+	entry.RawBytes = 0
+	entry.TotalRows = 0
+	entry.Partitions = 0
+	entry.CompressionRatio = 0
+	entry.MonthlyCostUSD = 0
+	entry.StorageByClass = nil
+}
+
+// overlayStorageFromManifest replaces an entry's storage facts (files,
+// bytes, rows, partition count, time range, cost) with values derived
+// from the manifest — the post-compaction truth. The registry's
+// cumulative counters are kept for fields the manifest doesn't track
+// (last_write_at, last_query_at, node_contribs, per-class breakdown).
+func overlayStorageFromManifest(entry *TenantEntry, s manifest.TenantSummary, cc *CostCalculator) {
+	entry.TotalFiles = int64(s.TotalFiles)
+	entry.TotalBytes = s.TotalBytes
+	entry.RawBytes = s.RawBytes
+	entry.TotalRows = s.TotalRows
+	entry.Partitions = s.Partitions
+	if s.TotalBytes > 0 && s.RawBytes > 0 {
+		entry.CompressionRatio = float64(s.RawBytes) / float64(s.TotalBytes)
+	}
+	if !s.MinTime.IsZero() {
+		entry.MinTime = s.MinTime.UTC().Format(time.RFC3339)
+	}
+	if !s.MaxTime.IsZero() {
+		entry.MaxTime = s.MaxTime.UTC().Format(time.RFC3339)
+	}
+	if cc != nil {
+		// Without a class breakdown we attribute everything to STANDARD,
+		// matching what the overview endpoint does for the same fallback.
+		entry.MonthlyCostUSD = cc.MonthlyStorageCost("STANDARD", s.TotalBytes)
+	}
 }
 
 func (a *API) decorateCostName(entry *TenantCostEntry) {
 	entry.Name = a.resolveName(entry.AccountID, entry.ProjectID)
+	entry.OrgID = a.resolveOrgID(entry.AccountID, entry.ProjectID)
 }
 
 func (a *API) decorateCompressionName(entry *TenantCompressionEntry) {
 	entry.Name = a.resolveName(entry.AccountID, entry.ProjectID)
+	entry.OrgID = a.resolveOrgID(entry.AccountID, entry.ProjectID)
 }
 
 func tenantStatsToEntry(ts *TenantStats, cc *CostCalculator) TenantEntry {

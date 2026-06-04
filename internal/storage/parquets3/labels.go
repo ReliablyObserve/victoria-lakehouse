@@ -1,6 +1,8 @@
 package parquets3
 
 import (
+	"strconv"
+
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -24,6 +26,12 @@ func extractLogLabels(rows []schema.LogRow) map[string][]string {
 		// trace_id omitted: high-cardinality (unique per row), always exceeds
 		// maxLabelsPerField cap — bloom filters handle it instead.
 	}
+	// Per Phase 1, every flushed file holds rows from exactly one tenant,
+	// so account_id / project_id are single-valued and safe to embed in
+	// the manifest labels. This unlocks per-tenant retention + lifecycle
+	// rules via the existing rules-match engine (internal/retention).
+	addLabel(sets, "account_id", strconv.FormatUint(uint64(rows[0].AccountID), 10))
+	addLabel(sets, "project_id", strconv.FormatUint(uint64(rows[0].ProjectID), 10))
 	return setsToLabels(sets)
 }
 
@@ -36,6 +44,8 @@ func extractTraceLabels(rows []schema.TraceRow) map[string][]string {
 		addLabel(sets, "service.name", rows[i].ServiceName)
 		addLabel(sets, "span.name", rows[i].SpanName)
 	}
+	addLabel(sets, "account_id", strconv.FormatUint(uint64(rows[0].AccountID), 10))
+	addLabel(sets, "project_id", strconv.FormatUint(uint64(rows[0].ProjectID), 10))
 	return setsToLabels(sets)
 }
 
