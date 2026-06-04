@@ -230,6 +230,7 @@ services:
       - "-lakehouse.tenant.global-read-value=lakehouse-e2e-global-key"
       - "-lakehouse.tenant.orgid-header=X-Scope-OrgID"
       - "-lakehouse.tenant.auto-register=true"
+      - "-lakehouse.tenant.alias-sync-interval=5s"
       - "-lakehouse.tenant.metrics-format=name"
       - "-lakehouse.tenant.prefix-template={AccountID}/{ProjectID}/"
       - "-lakehouse.config=/etc/lakehouse/policy.yml"
@@ -284,6 +285,7 @@ services:
       - "-lakehouse.tenant.global-read-value=lakehouse-e2e-global-key"
       - "-lakehouse.tenant.orgid-header=X-Scope-OrgID"
       - "-lakehouse.tenant.auto-register=true"
+      - "-lakehouse.tenant.alias-sync-interval=5s"
       - "-lakehouse.tenant.metrics-format=name"
       - "-lakehouse.tenant.prefix-template={AccountID}/{ProjectID}/"
       # VT upstream defaults latencyOffset=30s. Our cold tier flushes
