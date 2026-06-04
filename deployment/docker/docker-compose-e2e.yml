@@ -304,9 +304,16 @@ services:
       # rows back to S3, which the Jaeger /api/dependencies reader
       # picks up unchanged. taskLookbehind covers the flush lag
       # so newly-flushed spans contribute to the next aggregation.
+      #
+      # Timeout is bumped from the 30s upstream default to 5m: the
+      # task runs a join+aggregation over the entire lookbehind
+      # window's spans on cold storage. With 24h+ of accumulated
+      # data per partition this needs more time than the hot-tier
+      # default assumed.
       - "-servicegraph.enableTask=true"
-      - "-servicegraph.taskInterval=2m"
-      - "-servicegraph.taskLookbehind=5m"
+      - "-servicegraph.taskInterval=5m"
+      - "-servicegraph.taskLookbehind=10m"
+      - "-servicegraph.taskTimeout=4m"
       - "-lakehouse.config=/etc/lakehouse/policy.yml"
       - "-loggerLevel=INFO"
     volumes:
