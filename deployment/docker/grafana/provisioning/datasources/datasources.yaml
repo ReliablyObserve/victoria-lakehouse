@@ -135,6 +135,16 @@ datasources:
         query: false
       spanBar:
         type: "None"
+      # ServiceMap datasource UID dismisses the Tempo plugin's
+      # "No service graph datasource selected" error. The Tempo
+      # Service Graph view reads `traces_service_graph_*` Prometheus
+      # metrics from this datasource; cold-tier doesn't synthesize
+      # them yet (see docs/parity-and-gaps.md — the Service Graph
+      # gap is closed for the Jaeger Dependencies view but the
+      # Tempo plugin's Service Graph view still needs a metrics
+      # bridge). For now the graph renders empty rather than erroring.
+      serviceMap:
+        datasourceUid: victoriametrics-metrics
 
   - name: "Tempo VT Hot (Disk 24h)"
     type: tempo
@@ -159,6 +169,16 @@ datasources:
         query: false
       spanBar:
         type: "None"
+      # ServiceMap datasource UID dismisses the Tempo plugin's
+      # "No service graph datasource selected" error. The Tempo
+      # Service Graph view reads `traces_service_graph_*` Prometheus
+      # metrics from this datasource; cold-tier doesn't synthesize
+      # them yet (see docs/parity-and-gaps.md — the Service Graph
+      # gap is closed for the Jaeger Dependencies view but the
+      # Tempo plugin's Service Graph view still needs a metrics
+      # bridge). For now the graph renders empty rather than erroring.
+      serviceMap:
+        datasourceUid: victoriametrics-metrics
 
   - name: "Tempo LH Cold (S3 Parquet)"
     type: tempo
@@ -182,6 +202,16 @@ datasources:
         query: false
       spanBar:
         type: "None"
+      # ServiceMap datasource UID dismisses the Tempo plugin's
+      # "No service graph datasource selected" error. The Tempo
+      # Service Graph view reads `traces_service_graph_*` Prometheus
+      # metrics from this datasource; cold-tier doesn't synthesize
+      # them yet (see docs/parity-and-gaps.md — the Service Graph
+      # gap is closed for the Jaeger Dependencies view but the
+      # Tempo plugin's Service Graph view still needs a metrics
+      # bridge). For now the graph renders empty rather than erroring.
+      serviceMap:
+        datasourceUid: victoriametrics-metrics
 
   # =========================================================================
   # Loki API — hot+cold routing via loki-vl-proxy
