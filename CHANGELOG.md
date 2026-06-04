@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Compactor was zeroing `raw_bytes` on every merged file** — the compactor's output `manifest.FileInfo` did not carry `RawBytes` forward from the input files; it defaulted to 0 via `omitempty`. `Size` (compressed) kept tracking correctly, so per-tenant `TenantSummaries` derived from the manifest aggregated correct `total_bytes` against under-counted `raw_bytes`. Result: `/api/v1/tenants` (and the Lakehouse Explorer Tenants tab that consumes it) reported `compression_ratio < 1.0` — visibly impossible "compressed > raw" — for any tenant whose files had been compacted. Compaction is a pure row-union, so summing input `RawBytes` into the merged `FileInfo` is exact. Pre-fix files on disk still carry `raw_bytes=0` and heal as they get rolled up into higher compaction levels; new compactions from this build preserve raw bytes immediately. Guarded by:
+  - `internal/compaction/compactor_test.go::TestCompactor_PreservesRawBytes` — unit regression: two-file compaction with explicit raw1+raw2, asserts merged equals sum.
+  - `tests/e2e/tenant_stats_consistency_test.go::TestManifest_CompactedFilesPreserveRawBytes` — walks `/manifest/range` and asserts compacted files (level > 0) preserve `raw_bytes` (10% grace for pre-fix files).
+  - `tests/e2e/tenant_stats_consistency_test.go::TestTenantStats_CompressionRatioReasonable` — tighter than existing `NotInverted` check (16 KiB threshold → 64 KiB) and bounds ratio to `[1.0, 50.0]` so both inversion and double-counting trip.
+  - `tests/e2e/tenant_stats_consistency_test.go::TestTenantUI_RendersCompressionAndRawBytesFields` — UI bundle must reference `compression_ratio` / `raw_bytes` / `total_bytes` so a missing column can't hide future drift.
+
 ### Added
 
 - **Multi-tenant S3 isolation (PR #111)** — full implementation of the `docs/multi-tenancy.md` boundary principle: string aliases are presentation-only at external surfaces; everything internal stays integer-keyed.
