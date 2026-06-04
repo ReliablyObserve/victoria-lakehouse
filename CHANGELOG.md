@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.4] - 2026-06-04
+
 ### Security
 
 - Bump Go toolchain from `1.26.3` to `1.26.4` across `go.mod`, `lakehouse-traces/go.mod`, `Dockerfile.{logs,traces,datagen}`. Resolves the two stdlib advisories that were failing `govulncheck` / `security-logs` / `security-traces` jobs on every CI run: **GO-2026-5039** (`net/textproto.Reader.ReadMIMEHeader` reached via `internal/s3reader/reader.go`) and **GO-2026-5037** (`crypto/x509` inefficient candidate hostname parsing reached via `cmd/s3proxy/main.go` and `internal/manifest/metadata_sidecar.go`). Both fixed in Go 1.26.4.
