@@ -183,12 +183,14 @@ func (a *vlStatsCountAdapter) StatsCountAll(ctx context.Context, startNs, endNs 
 	if q == "" {
 		q = "* | stats count() as n"
 	}
+	// #nosec G107,G704 -- baseURL is operator-configured (-stats.parity.vl-url flag); not user input.
 	req, _ := http.NewRequestWithContext(ctx, "GET", a.baseURL+"/select/logsql/stats_query", nil)
 	qs := req.URL.Query()
 	qs.Set("query", q)
 	qs.Set("time", fmt.Sprintf("%d", endNs/1e9))
 	req.URL.RawQuery = qs.Encode()
 
+	// #nosec G107 -- request URL derives from operator-configured baseURL above.
 	resp, err := a.client.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("vl stats_query: %w", err)

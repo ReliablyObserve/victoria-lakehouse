@@ -27,25 +27,25 @@ type MigrationS3 interface {
 
 // MigrationResult is the per-call summary returned by MigrateTenant.
 type MigrationResult struct {
-	AccountID      uint32 `json:"account_id"`
-	ProjectID      uint32 `json:"project_id"`
-	TargetBucket   string `json:"target_bucket"`
-	FilesScanned   int    `json:"files_scanned"`
-	FilesMoved     int    `json:"files_moved"`
-	FilesSkipped   int    `json:"files_skipped"`
-	BytesMoved     int64  `json:"bytes_moved"`
-	FilesErrored   int    `json:"files_errored"`
-	Errors         []string `json:"errors,omitempty"`
+	AccountID    uint32   `json:"account_id"`
+	ProjectID    uint32   `json:"project_id"`
+	TargetBucket string   `json:"target_bucket"`
+	FilesScanned int      `json:"files_scanned"`
+	FilesMoved   int      `json:"files_moved"`
+	FilesSkipped int      `json:"files_skipped"`
+	BytesMoved   int64    `json:"bytes_moved"`
+	FilesErrored int      `json:"files_errored"`
+	Errors       []string `json:"errors,omitempty"`
 }
 
 // Migrator retroactively rebases a tenant's existing Parquet objects
 // onto a new bucket. The flow per file is:
 //
-//   1. S3 server-side copy old_bucket/key -> target_bucket/key (no
-//      bytes flow through the LH process)
-//   2. Flip manifest.FileInfo.Bucket so subsequent reads route
-//      correctly via the pool's BucketRouter
-//   3. Delete the old object
+//  1. S3 server-side copy old_bucket/key -> target_bucket/key (no
+//     bytes flow through the LH process)
+//  2. Flip manifest.FileInfo.Bucket so subsequent reads route
+//     correctly via the pool's BucketRouter
+//  3. Delete the old object
 //
 // Step (3) is best-effort: a failed delete leaves the bytes
 // orphaned in the old bucket but the manifest already points at the

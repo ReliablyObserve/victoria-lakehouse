@@ -49,12 +49,12 @@ type EffectiveConfig struct {
 // the TenantResolver; queries are cheap (sync.Map cache keyed by
 // account:project).
 type PolicyRegistry struct {
-	resolver  *TenantResolver
-	rawByID   map[TenantID]config.TenantOverride
-	rawByOrg  map[string]config.TenantOverride // unresolved alias-keyed entries
-	cache     sync.Map                         // TenantID -> *EffectiveConfig
-	cacheMu   sync.Mutex
-	mu        sync.RWMutex // guards rawByID rebuild on alias-sync refresh
+	resolver *TenantResolver
+	rawByID  map[TenantID]config.TenantOverride
+	rawByOrg map[string]config.TenantOverride // unresolved alias-keyed entries
+	cache    sync.Map                         // TenantID -> *EffectiveConfig
+	cacheMu  sync.Mutex
+	mu       sync.RWMutex // guards rawByID rebuild on alias-sync refresh
 }
 
 // NewPolicyRegistry wires overrides keyed by either "<account>:<project>"

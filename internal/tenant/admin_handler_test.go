@@ -59,7 +59,7 @@ func TestAdminHandler_Migrate_BearerAuthOpens(t *testing.T) {
 	h.Register(mux)
 
 	body, _ := json.Marshal(map[string]any{
-		"account_id":    1, "project_id": 1, "target_bucket": "any",
+		"account_id": 1, "project_id": 1, "target_bucket": "any",
 	})
 	req := httptest.NewRequest("POST", "/lakehouse/api/v1/admin/tenant/migrate", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer super-secret")

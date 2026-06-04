@@ -37,9 +37,9 @@ func TestPolicyRegistry_BareAccountKey_TreatedAsProjectZero(t *testing.T) {
 
 func TestPolicyRegistry_ParseAccountProject_BareForm(t *testing.T) {
 	cases := []struct {
-		in       string
-		want     TenantID
-		wantOK   bool
+		in     string
+		want   TenantID
+		wantOK bool
 	}{
 		{"42:3", TenantID{AccountID: 42, ProjectID: 3}, true},
 		{"42", TenantID{AccountID: 42, ProjectID: 0}, true},
