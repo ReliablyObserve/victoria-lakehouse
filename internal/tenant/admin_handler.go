@@ -11,7 +11,7 @@ import (
 // global-read token surface so operators don't have to mint a new
 // credential — admin = privileged = same key family.
 type AdminAuthConfig struct {
-	HeaderName string // e.g. "X-Lakehouse-Global-Read"
+	HeaderName  string // e.g. "X-Lakehouse-Global-Read"
 	HeaderValue string
 	BearerToken string
 }

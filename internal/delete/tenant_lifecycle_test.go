@@ -6,9 +6,9 @@ import (
 
 func TestParseTenantFromKey(t *testing.T) {
 	cases := []struct {
-		key        string
-		acc, proj  uint32
-		ok         bool
+		key       string
+		acc, proj uint32
+		ok        bool
 	}{
 		{"1002/0/logs/dt=2026-06-03/hour=10/abc.parquet", 1002, 0, true},
 		{"42/3/traces/dt=2026-06-03/foo.parquet", 42, 3, true},

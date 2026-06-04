@@ -372,21 +372,8 @@ func run(cfg *config.Config, addr string) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
-	// Tenant alias fleet sync
-	if resolver != nil && (resolver.HasAliases() || cfg.Tenant.AutoRegister) {
-		if disc := store.Discovery(); disc != nil {
-			aliasSyncCtx, aliasSyncCancel := context.WithCancel(context.Background())
-			aliasSyncPusher := tenant.NewSyncPusher(tenant.SyncPusherConfig{
-				Resolver: resolver,
-				GetPeers: func() []string { return disc.GetPeers() },
-				AuthKey:  cfg.Peer.AuthKey,
-				SelfAddr: addr,
-				Interval: cfg.Tenant.AliasSyncInterval,
-			})
-			aliasSyncPusher.Start(aliasSyncCtx)
-			defer aliasSyncCancel()
-			logger.Infof("tenant alias sync started; interval=%v", cfg.Tenant.AliasSyncInterval)
-		}
+	if cancel := startTenantAliasSync(cfg, store, resolver, addr); cancel != nil {
+		defer cancel()
 	}
 
 	// Per-tenant policy overrides. Pending alias-keyed entries get
@@ -399,20 +386,7 @@ func run(cfg *config.Config, addr string) {
 	if pending := policy.PendingAliases(); len(pending) > 0 {
 		logger.Infof("tenant overrides pending alias resolution: %v", pending)
 	}
-	if cfg.Tenant.AliasSyncInterval > 0 {
-		go func() {
-			t := time.NewTicker(cfg.Tenant.AliasSyncInterval)
-			defer t.Stop()
-			for {
-				select {
-				case <-stopCh:
-					return
-				case <-t.C:
-					policy.Refresh()
-				}
-			}
-		}()
-	}
+	startTenantPolicyRefresh(cfg, policy, stopCh)
 
 	// Retention manager: append synthesized rules from per-tenant
 	// overrides to the global rules list, then start the eviction loop.
@@ -432,57 +406,7 @@ func run(cfg *config.Config, addr string) {
 	// through to the writer.
 	internalvlstorage.SetCardinalityGate(tenant.NewCardinalityLimiter(policy))
 
-	// Bucket isolation: tenants with an S3 bucket override route
-	// writes (via TenantPool/TenantBucket on the writer) and reads
-	// (via the pool's BucketRouter) to their dedicated bucket.
-	// Manifest sidecars stay in the default bucket so a single
-	// fleet-wide manifest still resolves files across tenant buckets.
-	if entries := policy.BucketEntries(); len(entries) > 0 {
-		poolRegistry := s3reader.NewPoolRegistry(store.Pool())
-		bucketByTenant := make(map[uint64]string, len(entries))
-		for _, e := range entries {
-			bucketByTenant[uint64(e.AccountID)<<32|uint64(e.ProjectID)] = e.Bucket
-			_ = poolRegistry.PoolFor(e.Bucket) // warm up
-		}
-		bucketFor := func(a, p uint32) string {
-			return bucketByTenant[uint64(a)<<32|uint64(p)]
-		}
-		store.Pool().SetBucketRouter(func(key string) string {
-			acc, proj, ok := parseTenantFromS3Key(key)
-			if !ok {
-				return ""
-			}
-			return bucketFor(acc, proj)
-		})
-		if w := store.Writer(); w != nil {
-			w.SetTenantBucket(bucketFor)
-			w.SetTenantPool(func(bucket string) parquets3.PoolWriter {
-				return poolRegistry.PoolFor(bucket)
-			})
-		}
-		logger.Infof("tenant bucket isolation installed: %d tenants across %d buckets",
-			len(entries), len(poolRegistry.Buckets()))
-	}
-
-	// Per-tenant lifecycle overrides: tenants with their own transition
-	// schedule shadow the global rules; everyone else stays on global.
-	if entries := policy.LifecycleEntries(); len(entries) > 0 {
-		overrides := make([]delete.TenantLifecycleOverride, 0, len(entries))
-		for _, e := range entries {
-			classes := make([]delete.StorageClass, len(e.Classes))
-			for i, c := range e.Classes {
-				classes[i] = delete.ParseStorageClass(c)
-			}
-			overrides = append(overrides, delete.TenantLifecycleOverride{
-				AccountID:      e.AccountID,
-				ProjectID:      e.ProjectID,
-				TransitionDays: e.TransitionDays,
-				Classes:        classes,
-			})
-		}
-		detector.SetTenantRules(delete.BuildTenantRules(overrides))
-		logger.Infof("tenant lifecycle overrides installed: %d tenants", len(entries))
-	}
+	applyTenantStorageOverrides(store, policy, detector)
 
 	if cfg.Stats.Enabled {
 		startStatsLoops(cfg, store, registry, resolver, addr, stopCh)
@@ -687,6 +611,110 @@ func setupCompaction(
 		sweep.Stop()
 	}
 	return sched, sweep, stop
+}
+
+// startTenantAliasSync starts the SyncPusher that propagates tenant
+// alias registrations across the peer ring. Returns the cancel func
+// (nil when no sync is needed) so the caller can defer it.
+func startTenantAliasSync(cfg *config.Config, store *parquets3.Storage, resolver *tenant.TenantResolver, addr string) context.CancelFunc {
+	if resolver == nil {
+		return nil
+	}
+	if !resolver.HasAliases() && !cfg.Tenant.AutoRegister {
+		return nil
+	}
+	disc := store.Discovery()
+	if disc == nil {
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	pusher := tenant.NewSyncPusher(tenant.SyncPusherConfig{
+		Resolver: resolver,
+		GetPeers: func() []string { return disc.GetPeers() },
+		AuthKey:  cfg.Peer.AuthKey,
+		SelfAddr: addr,
+		Interval: cfg.Tenant.AliasSyncInterval,
+	})
+	pusher.Start(ctx)
+	logger.Infof("tenant alias sync started; interval=%v", cfg.Tenant.AliasSyncInterval)
+	return cancel
+}
+
+// startTenantPolicyRefresh kicks off the periodic policy refresh that
+// re-resolves alias-keyed override entries as new aliases register.
+func startTenantPolicyRefresh(cfg *config.Config, policy *tenant.PolicyRegistry, stopCh <-chan struct{}) {
+	if cfg.Tenant.AliasSyncInterval <= 0 {
+		return
+	}
+	go func() {
+		t := time.NewTicker(cfg.Tenant.AliasSyncInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-t.C:
+				policy.Refresh()
+			}
+		}
+	}()
+}
+
+// applyTenantStorageOverrides installs per-tenant bucket isolation and
+// lifecycle transition overrides on the storage layer. Extracted from
+// run() to keep its cyclomatic complexity below the gocyclo:50 budget.
+func applyTenantStorageOverrides(store *parquets3.Storage, policy *tenant.PolicyRegistry, detector *delete.StorageClassDetector) {
+	// Bucket isolation: tenants with an S3 bucket override route
+	// writes (via TenantPool/TenantBucket on the writer) and reads
+	// (via the pool's BucketRouter) to their dedicated bucket.
+	// Manifest sidecars stay in the default bucket so a single
+	// fleet-wide manifest still resolves files across tenant buckets.
+	if entries := policy.BucketEntries(); len(entries) > 0 {
+		poolRegistry := s3reader.NewPoolRegistry(store.Pool())
+		bucketByTenant := make(map[uint64]string, len(entries))
+		for _, e := range entries {
+			bucketByTenant[uint64(e.AccountID)<<32|uint64(e.ProjectID)] = e.Bucket
+			_ = poolRegistry.PoolFor(e.Bucket) // warm up
+		}
+		bucketFor := func(a, p uint32) string {
+			return bucketByTenant[uint64(a)<<32|uint64(p)]
+		}
+		store.Pool().SetBucketRouter(func(key string) string {
+			acc, proj, ok := parseTenantFromS3Key(key)
+			if !ok {
+				return ""
+			}
+			return bucketFor(acc, proj)
+		})
+		if w := store.Writer(); w != nil {
+			w.SetTenantBucket(bucketFor)
+			w.SetTenantPool(func(bucket string) parquets3.PoolWriter {
+				return poolRegistry.PoolFor(bucket)
+			})
+		}
+		logger.Infof("tenant bucket isolation installed: %d tenants across %d buckets",
+			len(entries), len(poolRegistry.Buckets()))
+	}
+
+	// Per-tenant lifecycle overrides: tenants with their own transition
+	// schedule shadow the global rules; everyone else stays on global.
+	if entries := policy.LifecycleEntries(); len(entries) > 0 {
+		overrides := make([]delete.TenantLifecycleOverride, 0, len(entries))
+		for _, e := range entries {
+			classes := make([]delete.StorageClass, len(e.Classes))
+			for i, c := range e.Classes {
+				classes[i] = delete.ParseStorageClass(c)
+			}
+			overrides = append(overrides, delete.TenantLifecycleOverride{
+				AccountID:      e.AccountID,
+				ProjectID:      e.ProjectID,
+				TransitionDays: e.TransitionDays,
+				Classes:        classes,
+			})
+		}
+		detector.SetTenantRules(delete.BuildTenantRules(overrides))
+		logger.Infof("tenant lifecycle overrides installed: %d tenants", len(entries))
+	}
 }
 
 func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, resolver *tenant.TenantResolver, addr string, stopCh chan struct{}) {

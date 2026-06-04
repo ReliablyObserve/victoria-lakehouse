@@ -52,9 +52,9 @@ func TestGroupFilesByTenant_SplitsByPrefixAndBucket(t *testing.T) {
 		nFiles int
 	}{
 		{"", "", 1},                            // legacy
-		{"1002/0/logs/", "", 2},                 // tenant 1002, default bucket
+		{"1002/0/logs/", "", 2},                // tenant 1002, default bucket
 		{"1002/0/logs/", "isolated-bucket", 1}, // tenant 1002, isolated bucket
-		{"888/2/logs/", "", 1},                  // tenant 888
+		{"888/2/logs/", "", 1},                 // tenant 888
 	}
 	for i, w := range want {
 		g := groups[i]

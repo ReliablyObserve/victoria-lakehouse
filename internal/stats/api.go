@@ -379,8 +379,8 @@ type TenantPolicyEntry struct {
 
 // TenantPolicyListResponse is the response for /api/v1/tenants/policy.
 type TenantPolicyListResponse struct {
-	Entries         []TenantPolicyEntry `json:"entries"`
-	PendingAliases  []string            `json:"pending_aliases,omitempty"`
+	Entries        []TenantPolicyEntry `json:"entries"`
+	PendingAliases []string            `json:"pending_aliases,omitempty"`
 }
 
 func (a *API) handleTenantPolicy(w http.ResponseWriter, r *http.Request) {

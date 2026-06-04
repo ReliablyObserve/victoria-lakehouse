@@ -22,7 +22,7 @@ import (
 const maxLabelsPerField = 100
 
 type FileInfo struct {
-	Key               string                  `json:"key"`
+	Key string `json:"key"`
 	// Bucket names the S3 bucket holding this object. Empty means the
 	// manifest's default bucket — preserves backward compatibility for
 	// every file written before bucket-isolation support landed and
