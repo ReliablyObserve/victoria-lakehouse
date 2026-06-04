@@ -258,6 +258,19 @@ var TracesProfile = Profile{
 		{ParquetColumn: "scope.name", InternalName: "scope_name", Type: TypeString, Origin: OriginPromoted},
 		{ParquetColumn: "_stream", InternalName: "_stream", Type: TypeString, Origin: OriginPromoted},
 		{ParquetColumn: "_stream_id", InternalName: "_stream_id", Type: TypeString, Origin: OriginPromoted},
+		// Service-graph edge columns. Surface as top-level LogsQL fields so
+		// the upstream Jaeger Dependencies reader's pipe-shaped query
+		//   {trace_service_graph_stream="-"} | fields parent, child,
+		//   callCount | stats by (parent, child) sum(callCount)
+		// gets the columns projected into its DataBlocks. Without this
+		// registration, projection.go's queryColumns sees `parent` and
+		// `child` as unknown names, skips them, and stats-by collapses
+		// every row into the empty (parent, child) group → NaN sum.
+		// Mirrors the upstream native path where the LogsQL row carries
+		// these fields as plain stream fields.
+		{ParquetColumn: "parent", InternalName: "parent", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "child", InternalName: "child", Type: TypeString, Origin: OriginPromoted},
+		{ParquetColumn: "callCount", InternalName: "callCount", Type: TypeString, Origin: OriginPromoted},
 	},
 	MapColumns:      []string{"resource.attributes", "span.attributes", "scope.attributes"},
 	StreamFields:    []string{"resource_attr:service.name", "name"},
