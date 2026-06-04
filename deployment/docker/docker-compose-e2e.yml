@@ -62,6 +62,10 @@ services:
       - "-storageDataPath=/data"
       - "-retentionPeriod=24h"
       - "-loggerLevel=INFO"
+      - "-servicegraph.enableTask=true"
+      - "-servicegraph.taskInterval=1m"
+      - "-servicegraph.taskLookbehind=2m"
+      - "-servicegraph.taskTimeout=30s"
     networks: [lakehouse-net]
     volumes:
       - vt-data:/data

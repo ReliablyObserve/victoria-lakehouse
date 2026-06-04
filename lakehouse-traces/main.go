@@ -849,8 +849,12 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		//
 		// Disabled-by-default upstream behind -servicegraph.enableTask
 		// = true; the LH operator opts in via the same flag.
+		//
+		// No defer Stop() here — newMux returns immediately after wiring,
+		// and a defer at this scope would tear the goroutine down before
+		// its first tick. The task lives for the program's lifetime; the
+		// OS reclaims the goroutine on process exit.
 		servicegraph.Init()
-		defer servicegraph.Stop()
 	}
 
 	if cfg.SelectEnabled() {
