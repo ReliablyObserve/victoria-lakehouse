@@ -199,6 +199,45 @@ func TestServiceGraphParity_JoinPipeWorksOnCold(t *testing.T) {
 	}
 }
 
+// TestServiceGraphParity_TraceQLSearch pins the related TraceQL gap that
+// was incidentally fixed by the SG cascade (specifically the registry
+// registration of cold-tier columns). The Tempo /api/search endpoint
+// issues a two-phase query: phase 1 finds trace IDs via the upstream
+// task's LogsQL shape (works through the join-aware adapter); phase 2
+// fetches spans with `trace_id:in(...)`. The handler's writeBlock
+// callback aborts on `db.GetTimestamps(nil)` returning false, so cold
+// previously returned 0 traces even though spans existed. Parity now
+// matches hot — this test catches a regression in either layer.
+func TestServiceGraphParity_TraceQLSearch(t *testing.T) {
+	now := time.Now().Unix()
+	start := now - 600
+	for _, q := range []string{`{}`, `{.service.name="api-gateway"}`} {
+		ref := fetch(t, vtBaseURL, "/select/tempo/api/search", url.Values{
+			"q":     {q},
+			"limit": {"5"},
+			"start": {fmt.Sprint(start)},
+			"end":   {fmt.Sprint(now)},
+		})
+		sut := fetch(t, lhtBaseURL, "/select/tempo/api/search", url.Values{
+			"q":     {q},
+			"limit": {"5"},
+			"start": {fmt.Sprint(start)},
+			"end":   {fmt.Sprint(now)},
+		})
+		var refResp, sutResp struct {
+			Traces []map[string]any `json:"traces"`
+		}
+		_ = json.Unmarshal(ref.Body, &refResp)
+		_ = json.Unmarshal(sut.Body, &sutResp)
+		if len(refResp.Traces) > 0 && len(sutResp.Traces) == 0 {
+			t.Errorf("TraceQL parity gap for q=%s: hot=%d cold=0. "+
+				"Cold-tier reader DataBlock missing _time as RFC3339Nano string column? "+
+				"Check storage_query.go traceRowToFields and registry _time formatting.",
+				q, len(refResp.Traces))
+		}
+	}
+}
+
 // TestServiceGraphParity_StatsByOnSGFields pins bug #6. Even after the
 // SG fields land in Parquet and the read path exposes them, the column
 // registry must list them so projection.go adds them to the DataBlock
