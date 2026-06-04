@@ -287,6 +287,18 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		return nil, fmt.Errorf("upload compacted file: %w", err)
 	}
 
+	// Sum input RawBytes into the merged file. Compaction is a pure
+	// row-union — no dedup, no projection — so the total raw content
+	// is conserved. Without this carry-forward, every compaction
+	// zeroed the merged file's RawBytes (omitempty default) while
+	// Size kept tracking the compressed bytes correctly, producing
+	// the impossible total_bytes > raw_bytes ratio on
+	// /api/v1/tenants for any tenant whose files have been compacted.
+	var inputRawBytes int64
+	for _, f := range g.Files {
+		inputRawBytes += f.RawBytes
+	}
+
 	c.manifest.AddFile(partition, manifest.FileInfo{
 		Key:               outputKey,
 		Bucket:            g.Bucket,
@@ -294,6 +306,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		RowCount:          rowsMerged,
 		MinTimeNs:         minTime,
 		MaxTimeNs:         maxTime,
+		RawBytes:          inputRawBytes,
 		SchemaFingerprint: fp,
 		CompactionLevel:   outputLevel,
 	})
