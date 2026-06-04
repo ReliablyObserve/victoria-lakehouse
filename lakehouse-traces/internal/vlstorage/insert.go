@@ -242,11 +242,31 @@ func mapFieldToTraceRow(row *schema.TraceRow, name, value string) {
 		storeSpanAttr(row, strings.Clone(name), strings.Clone(value))
 		return
 
-	// VT-internal index fields: not part of OTLP data, skip entirely.
+	// VT-internal trace-ID index fields: replaced by our `_trace_idx`
+	// footer KV (see internal/traceindex), so skip entirely here.
 	case otelpb.TraceIDIndexFieldName, otelpb.TraceIDIndexStreamName,
-		otelpb.TraceIDIndexStartTimeFieldName, otelpb.TraceIDIndexEndTimeFieldName,
-		otelpb.ServiceGraphStreamName, otelpb.ServiceGraphParentFieldName,
-		otelpb.ServiceGraphChildFieldName, otelpb.ServiceGraphCallCountFieldName:
+		otelpb.TraceIDIndexStartTimeFieldName, otelpb.TraceIDIndexEndTimeFieldName:
+		return
+
+	// Service-graph stream tag: marker only, the row carries no data here.
+	case otelpb.ServiceGraphStreamName:
+		return
+
+	// Service-graph edge payload: route to dedicated TraceRow columns so
+	// the upstream Jaeger Dependencies reader's
+	// `{trace_service_graph_stream="-"} | fields parent, child,
+	// callCount | stats by (parent, child) sum(callCount)` query can
+	// project them as top-level fields. Storing them only in
+	// SpanAttributes would not surface them as top-level fields and
+	// the reader would return zero edges.
+	case otelpb.ServiceGraphParentFieldName:
+		row.ServiceGraphParent = strings.Clone(value)
+		return
+	case otelpb.ServiceGraphChildFieldName:
+		row.ServiceGraphChild = strings.Clone(value)
+		return
+	case otelpb.ServiceGraphCallCountFieldName:
+		row.ServiceGraphCallCount = strings.Clone(value)
 		return
 	}
 

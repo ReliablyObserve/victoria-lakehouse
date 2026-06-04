@@ -355,6 +355,24 @@ func TestVTInsertAdapter_KeepsServiceGraphRow(t *testing.T) {
 	if len(w.rows) != 1 {
 		t.Fatalf("expected service_graph row to be persisted, got %d rows", len(w.rows))
 	}
+
+	// The edge fields must land in their dedicated TraceRow columns,
+	// not get dropped. The upstream Jaeger Dependencies reader queries
+	// `{trace_service_graph_stream="-"} | fields parent, child, callCount`
+	// — those names must surface as top-level Parquet columns so the
+	// projection picks them up. Storing them anywhere else (or dropping
+	// them) leaves the reader with empty edges despite the rows existing.
+	row := w.rows[0]
+	if row.ServiceGraphParent != "frontend" {
+		t.Errorf("ServiceGraphParent = %q, want %q", row.ServiceGraphParent, "frontend")
+	}
+	if row.ServiceGraphChild != "backend" {
+		t.Errorf("ServiceGraphChild = %q, want %q", row.ServiceGraphChild, "backend")
+	}
+	if row.ServiceGraphCallCount != "7" {
+		t.Errorf("ServiceGraphCallCount = %q, want %q", row.ServiceGraphCallCount, "7")
+	}
+
 	// Classification still returns the kind so metrics + parity can
 	// see service_graph activity, but drop=false so the writer keeps it.
 	if kind, drop := vtInternalRowKind(&logstorage.InsertRow{
