@@ -105,6 +105,45 @@ func (fc *FooterCache) Remove(key string) {
 	}
 }
 
+// Resize updates the cache's maximum capacity and evicts entries from
+// the LRU tail if the new max is smaller than the current size. Called
+// after RefreshFromS3 so the cache size tracks the manifest's file
+// count instead of being pinned at the startup value.
+//
+// Safe for concurrent use. Returns the number of evictions performed.
+func (fc *FooterCache) Resize(newMax int) int {
+	if newMax <= 0 {
+		return 0
+	}
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if newMax == fc.maxItems {
+		return 0
+	}
+	fc.maxItems = newMax
+	evicted := 0
+	for fc.lru.Len() > newMax {
+		back := fc.lru.Back()
+		if back == nil {
+			break
+		}
+		entry := back.Value.(*footerEntry)
+		fc.lru.Remove(back)
+		delete(fc.items, entry.key)
+		metrics.FooterCacheEvictions.Inc()
+		evicted++
+	}
+	return evicted
+}
+
+// MaxItems returns the current cap. Exposed for the /lakehouse stats
+// API so operators can verify auto-tuning is taking effect.
+func (fc *FooterCache) MaxItems() int {
+	fc.mu.RLock()
+	defer fc.mu.RUnlock()
+	return fc.maxItems
+}
+
 // ParseFooterFromData creates a CachedFooter by parsing only the parquet metadata
 // from the end of a full file's data. This avoids re-parsing on subsequent accesses.
 func ParseFooterFromData(key string, data []byte) (*CachedFooter, *parquet.File, error) {

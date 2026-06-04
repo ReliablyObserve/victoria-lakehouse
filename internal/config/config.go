@@ -231,6 +231,17 @@ type CacheConfig struct {
 	WarmupConcurrency int           `yaml:"warmup_concurrency"`
 	PartitionMode     string        `yaml:"partition_mode"` // "az-local" (default), "global", "distributed"
 
+	// FooterMaxItems is the upper bound on the parquet footer cache.
+	// Each entry is ~5 KB so the default 10K caps the working set at
+	// ~50 MB. At PB-scale (50M files, 5 PB at rest) the default leaves
+	// a 0.02% hit rate — too low to be useful. Set to a larger value
+	// (e.g. 50000–100000) for those deployments. When zero, the
+	// storage layer auto-tunes: max(configured, 0.05% of manifest file
+	// count) clamped to [10000, 100000]. The auto-tune re-fires after
+	// every successful RefreshFromS3 so a growing bucket gradually
+	// scales the cache up.
+	FooterMaxItems int `yaml:"footer_max_items"`
+
 	// K8s-style request/limit/scaling for the L1 in-memory cache
 	// budget. When non-zero, these take precedence over MemoryLimit
 	// which becomes a deprecated alias logged once at startup. Sizes

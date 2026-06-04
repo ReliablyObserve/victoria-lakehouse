@@ -216,7 +216,15 @@ func New(cfg *config.Config) (*Storage, error) {
 
 	var fc *FooterCache
 	if cfg.SelectEnabled() {
-		fc = NewFooterCache(10000)
+		// Initial cap: operator-configured value or the legacy 10K
+		// default. The cap is re-tuned after every RefreshFromS3 via
+		// retuneFooterCache() so a growing manifest scales it up
+		// without requiring a config reload.
+		initialCap := cfg.Cache.FooterMaxItems
+		if initialCap <= 0 {
+			initialCap = 10000
+		}
+		fc = NewFooterCache(initialCap)
 	}
 
 	var csClient *crosssignal.Client
@@ -996,6 +1004,7 @@ func (s *Storage) RefreshManifest(ctx context.Context) error {
 	if err := s.manifest.RefreshFromS3(ctx, s.pool.S3Client()); err != nil {
 		return err
 	}
+	s.retuneFooterCache()
 	s.loadBloomIndex(ctx)
 	s.loadLabelIndexFromS3(ctx)
 	if s.cfg.InsertEnabled() && s.bloomIdx.Len() > 0 {
@@ -1032,6 +1041,38 @@ func (s *Storage) loadBloomIndex(ctx context.Context) {
 	}
 	s.bloomIdx.MergeFrom(idx)
 	logger.Infof("bloom index loaded from S3; entries=%d", idx.Len())
+}
+
+// retuneFooterCache re-sizes the footer cache after a successful
+// manifest refresh. Sized at 0.05% of the manifest's file count to
+// give roughly 25K items per 50M file corpus (~125 MB working set),
+// clamped to [10000, 100000] so small deployments don't see noise
+// and huge ones don't blow memory.
+//
+// If an explicit cfg.Cache.FooterMaxItems is set, that takes precedence
+// over the auto-tune — operators always retain manual control.
+func (s *Storage) retuneFooterCache() {
+	if s.footerCache == nil {
+		return
+	}
+	target := s.cfg.Cache.FooterMaxItems
+	if target <= 0 {
+		// Auto-tune: 0.05% of file count, clamped.
+		files := s.manifest.LiveAggregate().Files
+		target = files / 2000
+		if target < 10000 {
+			target = 10000
+		}
+		if target > 100000 {
+			target = 100000
+		}
+	}
+	if target == s.footerCache.MaxItems() {
+		return
+	}
+	evicted := s.footerCache.Resize(target)
+	logger.Infof("footer cache retuned; max_items=%d, evicted=%d, files_in_manifest=%d",
+		target, evicted, s.manifest.LiveAggregate().Files)
 }
 
 // labelIndexKey is the S3 key where the label index is persisted so
