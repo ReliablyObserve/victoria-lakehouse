@@ -258,6 +258,127 @@ func (p *Persister) SaveLabelIndex(idx *LabelIndex) error {
 	return p.writeJSON("label-index.json", data)
 }
 
+// MarshalLabelIndex returns the JSON encoding of idx, suitable for
+// uploading to S3 so a new pod (or a pod that lost its local disk
+// volume) can recover the cluster's accumulated label index without
+// having to re-scan every parquet file. Mirrors the byte-for-byte
+// layout SaveLabelIndex writes to disk; UnmarshalLabelIndex applies the
+// same drift-reconciliation pass on the way back in.
+func MarshalLabelIndex(idx *LabelIndex) ([]byte, error) {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	data := struct {
+		Labels  map[string]*LabelInfo `json:"labels"`
+		SavedAt time.Time             `json:"saved_at"`
+	}{
+		Labels:  idx.labels,
+		SavedAt: time.Now(),
+	}
+	return json.Marshal(data)
+}
+
+// UnmarshalLabelIndex parses a JSON-encoded label index produced by
+// MarshalLabelIndex. Applies the same sanitation LoadLabelIndex does so
+// truncated BYTE_ARRAY prefix values from older pods don't leak into
+// the freshly loaded index.
+func UnmarshalLabelIndex(buf []byte) (*LabelIndex, error) {
+	var data struct {
+		Labels map[string]*LabelInfo `json:"labels"`
+	}
+	if err := json.Unmarshal(buf, &data); err != nil {
+		return nil, err
+	}
+	if data.Labels == nil {
+		data.Labels = make(map[string]*LabelInfo)
+	}
+	for _, li := range data.Labels {
+		if li == nil || len(li.ValueCounts) == 0 || len(li.Values) == 0 {
+			continue
+		}
+		kept := li.Values[:0]
+		for _, v := range li.Values {
+			if _, ok := li.ValueCounts[v]; ok {
+				kept = append(kept, v)
+			}
+		}
+		li.Values = kept
+		li.Cardinality = len(kept)
+	}
+	return &LabelIndex{labels: data.Labels}, nil
+}
+
+// MergeFrom adds all labels from src into idx. Used when recovering a
+// label index from S3 alongside whatever was already loaded from local
+// disk — we want the union, not just the most recent write.
+func (idx *LabelIndex) MergeFrom(src *LabelIndex) {
+	if src == nil {
+		return
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	src.mu.RLock()
+	defer src.mu.RUnlock()
+	for name, srcInfo := range src.labels {
+		if srcInfo == nil {
+			continue
+		}
+		existing, ok := idx.labels[name]
+		if !ok {
+			// Copy by value so a subsequent mutation on src doesn't
+			// alias into idx (and vice versa).
+			cp := *srcInfo
+			if srcInfo.Values != nil {
+				cp.Values = append([]string(nil), srcInfo.Values...)
+			}
+			if srcInfo.ValueCounts != nil {
+				cp.ValueCounts = make(map[string]int, len(srcInfo.ValueCounts))
+				for k, v := range srcInfo.ValueCounts {
+					cp.ValueCounts[k] = v
+				}
+			}
+			if srcInfo.PerTenant != nil {
+				cp.PerTenant = make(map[string]int, len(srcInfo.PerTenant))
+				for k, v := range srcInfo.PerTenant {
+					cp.PerTenant[k] = v
+				}
+			}
+			idx.labels[name] = &cp
+			continue
+		}
+		// Merge values: bounded by 10K per label (same cap as Add).
+		existingVals := make(map[string]bool, len(existing.Values))
+		for _, v := range existing.Values {
+			existingVals[v] = true
+		}
+		for _, v := range srcInfo.Values {
+			if !existingVals[v] && len(existing.Values) < 10000 {
+				existing.Values = append(existing.Values, v)
+				existingVals[v] = true
+			}
+		}
+		existing.Cardinality = len(existing.Values)
+		if srcInfo.ValueCounts != nil {
+			if existing.ValueCounts == nil {
+				existing.ValueCounts = make(map[string]int, len(srcInfo.ValueCounts))
+			}
+			for v, c := range srcInfo.ValueCounts {
+				existing.ValueCounts[v] += c
+			}
+		}
+		if srcInfo.SeenInFiles > existing.SeenInFiles {
+			existing.SeenInFiles = srcInfo.SeenInFiles
+		}
+		if srcInfo.PerTenant != nil {
+			if existing.PerTenant == nil {
+				existing.PerTenant = make(map[string]int, len(srcInfo.PerTenant))
+			}
+			for k, v := range srcInfo.PerTenant {
+				existing.PerTenant[k] += v
+			}
+		}
+	}
+}
+
 func (p *Persister) LoadLabelIndex() (*LabelIndex, error) {
 	var data struct {
 		Labels map[string]*LabelInfo `json:"labels"`

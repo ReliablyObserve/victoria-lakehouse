@@ -112,6 +112,10 @@ func New(cfg *config.Config) (*Storage, error) {
 			}
 		}
 	}
+	// S3 recovery happens later, in RefreshManifest, once the pool is
+	// constructed. Local disk first (no network round-trip), S3 second
+	// (cluster-wide recovery). The two are merged via MergeFrom so we
+	// don't lose either source's contribution.
 
 	disc := discovery.New(
 		cfg.Discovery.HeadlessService,
@@ -433,6 +437,18 @@ func (s *Storage) Close() error {
 			logger.Warnf("failed to persist label index: %s", err)
 		} else {
 			logger.Infof("persisted label index; labels=%d", s.labelIndex.Len())
+		}
+	}
+	// Final upload to S3 on graceful shutdown so the next pod start (on
+	// any node) can recover the index without rebuilding from parquet
+	// reads. Independent of the local-disk persister above.
+	if s.labelIndex != nil && s.labelIndex.Len() > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := s.PersistLabelIndexToS3(ctx); err != nil {
+			logger.Warnf("failed to persist label index to S3: %s", err)
+		} else {
+			logger.Infof("persisted label index to S3; labels=%d", s.labelIndex.Len())
 		}
 	}
 	if s.bloomIdx != nil && s.bloomIdx.Len() > 0 {
@@ -981,9 +997,19 @@ func (s *Storage) RefreshManifest(ctx context.Context) error {
 		return err
 	}
 	s.loadBloomIndex(ctx)
+	s.loadLabelIndexFromS3(ctx)
 	if s.cfg.InsertEnabled() && s.bloomIdx.Len() > 0 {
 		if err := s.PersistBloomIndex(ctx); err != nil {
 			logger.Warnf("bloom index persist failed: %s", err)
+		}
+	}
+	// Persist label index to S3 alongside the bloom index. The local-disk
+	// persister keeps doing its job on graceful shutdown; this gives us
+	// cluster-wide recovery for pods that come up on a different node
+	// (no local volume) and for crash scenarios where shutdown didn't run.
+	if s.cfg.InsertEnabled() && s.labelIndex.Len() > 0 {
+		if err := s.PersistLabelIndexToS3(ctx); err != nil {
+			logger.Warnf("label index S3 persist failed: %s", err)
 		}
 	}
 	return nil
@@ -1006,6 +1032,56 @@ func (s *Storage) loadBloomIndex(ctx context.Context) {
 	}
 	s.bloomIdx.MergeFrom(idx)
 	logger.Infof("bloom index loaded from S3; entries=%d", idx.Len())
+}
+
+// labelIndexKey is the S3 key where the label index is persisted so
+// pods that lose their local disk volume (or fresh pods coming up on a
+// different node) can recover the cluster's accumulated label
+// knowledge without re-scanning every parquet file in the bucket. At
+// PB-scale that's the difference between a sub-second startup and a
+// multi-hour label-index rebuild from full file reads.
+func (s *Storage) labelIndexKey() string {
+	return s.s3Prefix + "_label_index.json"
+}
+
+// loadLabelIndexFromS3 merges any S3-persisted label index into the
+// in-memory one. Called after local-disk recovery (storage.go:109) so
+// the union of both sources is available. Failure is logged but not
+// fatal — pods can still build the index lazily through
+// WarmLabelIndex + per-query updates.
+func (s *Storage) loadLabelIndexFromS3(ctx context.Context) {
+	key := s.labelIndexKey()
+	data, err := s.pool.Download(ctx, key)
+	if err != nil {
+		return
+	}
+	idx, err := cache.UnmarshalLabelIndex(data)
+	if err != nil {
+		logger.Warnf("label index unmarshal failed: %s", err)
+		return
+	}
+	s.labelIndex.MergeFrom(idx)
+	logger.Infof("label index loaded from S3; labels=%d", s.labelIndex.Len())
+}
+
+// PersistLabelIndexToS3 uploads the in-memory label index to S3. Called
+// periodically by the background ticker started in StartWriter, and on
+// graceful shutdown so the most recent state is captured.
+//
+// A failure here is non-fatal: the local disk persister keeps writing
+// the same data on shutdown, and the next periodic tick or restart
+// will retry. We log at Warn so an operator can spot persistent
+// failures without paging on transient ones.
+func (s *Storage) PersistLabelIndexToS3(ctx context.Context) error {
+	if s.labelIndex == nil || s.labelIndex.Len() == 0 || s.pool == nil {
+		return nil
+	}
+	data, err := cache.MarshalLabelIndex(s.labelIndex)
+	if err != nil {
+		return fmt.Errorf("marshal label index: %w", err)
+	}
+	key := s.labelIndexKey()
+	return s.pool.Upload(ctx, key, data)
 }
 
 // BackfillBloomIndex scans existing parquet files that aren't yet in the bloom
