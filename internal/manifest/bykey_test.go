@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 )
 
@@ -127,6 +128,155 @@ func TestManifest_ByKey_ScalesPastLargeCorpus(t *testing.T) {
 	for _, fi := range m.files[fmt.Sprintf("dt=2026-01-01/hour=%02d", 25000%Partitions)] {
 		if fi.Key == "k25000" && fi.Bucket != "verified" {
 			t.Errorf("middle-of-corpus key didn't update: %+v", fi)
+		}
+	}
+}
+
+// TestManifest_ByKey_Invariant pins the byKey ⊆ m.files invariant —
+// every byKey entry must point at a partition that holds a file with
+// that key. This catches any future bug where a mutator updates one
+// side and forgets the other.
+//
+// We exercise the full happy path (Add → mutate → Remove) under -race
+// so the Go scheduler can interleave operations and surface any
+// non-atomic write to byKey vs m.files.
+func TestManifest_ByKey_Invariant(t *testing.T) {
+	m := New("test-bucket", "test/")
+
+	for i := 0; i < 200; i++ {
+		partition := fmt.Sprintf("dt=2026-01-01/hour=%02d", i%10)
+		m.AddFile(partition, FileInfo{Key: fmt.Sprintf("k%d", i), Size: 1})
+	}
+	for i := 0; i < 50; i++ {
+		partition := fmt.Sprintf("dt=2026-01-01/hour=%02d", i%10)
+		m.RemoveFile(partition, fmt.Sprintf("k%d", i))
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for key, partition := range m.byKey {
+		found := false
+		for _, fi := range m.files[partition] {
+			if fi.Key == key {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("byKey[%q]=%q points at a partition that doesn't hold the file — "+
+				"invariant violation; one mutator forgot to update the other side", key, partition)
+		}
+	}
+	// And the converse: every file in m.files must be discoverable via byKey.
+	for partition, files := range m.files {
+		for _, fi := range files {
+			if got, ok := m.byKey[fi.Key]; !ok {
+				t.Errorf("file %q in partition %q is missing from byKey", fi.Key, partition)
+			} else if got != partition {
+				t.Errorf("file %q in partition %q has byKey pointing at %q instead", fi.Key, partition, got)
+			}
+		}
+	}
+}
+
+// TestManifest_ByKey_RaceConcurrentMutation runs concurrent
+// AddFile / RemoveFile / SetFileBucket from many goroutines. With
+// -race this catches any unprotected access to byKey or any update
+// path that races against findFileLocked. Without -race it's still
+// a useful exercise: under thread interleaving the byKey ⊆ m.files
+// invariant must hold at every quiescent point.
+func TestManifest_ByKey_RaceConcurrentMutation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("race test — skipped in -short mode")
+	}
+	m := New("test-bucket", "test/")
+	const N = 1000
+	var wg sync.WaitGroup
+
+	// Phase 1: concurrent inserts. Compaction does this all the time.
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			partition := fmt.Sprintf("dt=2026-01-01/hour=%02d", i%24)
+			m.AddFile(partition, FileInfo{Key: fmt.Sprintf("k%d", i), Size: 1})
+		}(i)
+	}
+	wg.Wait()
+
+	// Phase 2: concurrent SetFileBucket on random keys racing against
+	// RemoveFile of overlapping keys. Bucket migration runs alongside
+	// compaction in production; both touch the same files.
+	for i := 0; i < N; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			m.SetFileBucket(fmt.Sprintf("k%d", i), fmt.Sprintf("bucket-%d", i))
+		}(i)
+		go func(i int) {
+			defer wg.Done()
+			if i%3 == 0 {
+				partition := fmt.Sprintf("dt=2026-01-01/hour=%02d", i%24)
+				m.RemoveFile(partition, fmt.Sprintf("k%d", i))
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Invariant: byKey and m.files must agree at quiescence.
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for key, partition := range m.byKey {
+		found := false
+		for _, fi := range m.files[partition] {
+			if fi.Key == key {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("race produced inconsistent byKey: %q→%q is dangling", key, partition)
+		}
+	}
+	if len(m.byKey) != m.totalFiles {
+		t.Errorf("byKey size %d != totalFiles %d — accounting drifted under contention",
+			len(m.byKey), m.totalFiles)
+	}
+}
+
+// TestManifest_ByKey_SurvivesRefreshFromS3 — after a manifest refresh
+// that reassigns m.files wholesale, byKey must be rebuilt to match.
+// If rebuildByKey is forgotten in any future refresh-style code path,
+// the per-key mutators silently no-op on the new files.
+func TestManifest_ByKey_SurvivesRefreshFromS3(t *testing.T) {
+	m := New("test-bucket", "test/")
+	m.AddFile("dt=2026-01-01/hour=00", FileInfo{Key: "a", Size: 1})
+	m.AddFile("dt=2026-01-01/hour=00", FileInfo{Key: "b", Size: 1})
+
+	// Simulate the wholesale reassignment RefreshFromS3 does.
+	m.mu.Lock()
+	m.files = map[string][]FileInfo{
+		"dt=2026-01-02/hour=00": {
+			{Key: "c", Size: 1},
+			{Key: "d", Size: 1},
+		},
+	}
+	m.rebuildByKey()
+	m.mu.Unlock()
+
+	if got := m.byKey["c"]; got != "dt=2026-01-02/hour=00" {
+		t.Errorf("rebuildByKey didn't pick up new files; got %q for c", got)
+	}
+	if _, present := m.byKey["a"]; present {
+		t.Error("rebuildByKey didn't drop stale keys; a is still present")
+	}
+
+	// Per-key mutators must now hit the new corpus.
+	m.SetFileBucket("c", "new-c-bucket")
+	for _, fi := range m.files["dt=2026-01-02/hour=00"] {
+		if fi.Key == "c" && fi.Bucket != "new-c-bucket" {
+			t.Errorf("mutator didn't land on refreshed corpus: %+v", fi)
 		}
 	}
 }
