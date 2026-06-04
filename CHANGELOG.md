@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Multi-tenant S3 isolation (PR #111)** — full implementation of the `docs/multi-tenancy.md` boundary principle: string aliases are presentation-only at external surfaces; everything internal stays integer-keyed.
+  - **In-path S3 isolation**: `BatchWriter` groups rows by `(AccountID, ProjectID)` at flush and writes one Parquet file per tenant per partition under the resolved prefix. The compactor, retention manager, lifecycle scheduler, and pool registry all consume the per-tenant prefix path so a tenant's data can never be reached via another tenant's pool.
+  - **Per-tenant config overrides** with global-default inheritance: lifecycle, cardinality, rate-limit, retention, and tenant-aware bucket selection can all be overridden per `(AccountID, ProjectID)` via a YAML policy file. Unspecified knobs fall back to the global defaults.
+  - **Bucket isolation** — "one process, many buckets": the s3reader pool registry resolves a per-tenant bucket from the policy and maintains a separate client pool per tenant, so a single lakehouse process can serve isolated S3 buckets without restart.
+  - **Retroactive bucket migration tool + admin endpoint** for moving an existing tenant from the shared bucket to its own bucket without ingest downtime.
+  - **UI + stats API surface every tenant edge case**: `/api/stats` now reports per-tenant `raw_bytes`, `compactor_*`, and the new VL/manifest parity endpoint with a matching UI panel; `global` is the sum across all tenants rather than an opaque counter. Compactor tenancy fixed so cross-tenant compaction is rejected.
+  - **e2e**: tenant stats consistency + UI breakdown tests; e2e compose mounts a YAML policy file to demonstrate per-tenant overrides.
+
 ## [0.37.4] - 2026-06-04
 
 ### Security
