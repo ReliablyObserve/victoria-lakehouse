@@ -1,7 +1,9 @@
 package manifest
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -18,6 +20,15 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
+
+// manifestBinaryMagic prefixes every gob-encoded manifest snapshot
+// so LoadFrom can distinguish the new compact binary format from the
+// legacy JSON format (which always starts with '{'). At PB-scale the
+// binary format is ~3-5× smaller, faster to encode, and avoids the
+// JSON parser's allocation overhead on a 10 GB blob. Old JSON
+// snapshots remain loadable for as long as the magic check stays
+// in place.
+var manifestBinaryMagic = []byte("BMNF\x00\x01")
 
 const maxLabelsPerField = 100
 
@@ -1306,9 +1317,17 @@ func (m *Manifest) SaveTo(path string) error {
 	}
 	m.mu.RUnlock()
 
-	data, err := json.Marshal(snap)
-	if err != nil {
-		return fmt.Errorf("marshal manifest: %w", err)
+	// Binary gob format: magic prefix + gob-encoded snapshot. The
+	// magic lets LoadFrom auto-detect the new format vs the legacy
+	// JSON snapshot without a separate version field. At PB-scale
+	// (50M files) gob is ~3-5× smaller than JSON and dramatically
+	// faster on both ends — the JSON parser's per-string allocation
+	// cost dominated on the 10 GB blob the JSON format produced.
+	var buf bytes.Buffer
+	buf.Write(manifestBinaryMagic)
+	enc := gob.NewEncoder(&buf)
+	if err := enc.Encode(&snap); err != nil {
+		return fmt.Errorf("encode manifest: %w", err)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
@@ -1316,14 +1335,14 @@ func (m *Manifest) SaveTo(path string) error {
 	}
 
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	if err := os.WriteFile(tmp, buf.Bytes(), 0o600); err != nil {
 		return fmt.Errorf("write manifest: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("rename manifest: %w", err)
 	}
 
-	logger.Infof("manifest saved; path=%s, files=%d, bytes=%d", path, snap.TotalFiles_, len(data))
+	logger.Infof("manifest saved; path=%s, files=%d, bytes=%d, format=binary", path, snap.TotalFiles_, buf.Len())
 	return nil
 }
 
@@ -1337,8 +1356,21 @@ func (m *Manifest) LoadFrom(path string) error {
 	}
 
 	var snap persistedManifest
-	if err := json.Unmarshal(data, &snap); err != nil {
-		return fmt.Errorf("unmarshal manifest: %w", err)
+	var format string
+	if len(data) >= len(manifestBinaryMagic) && bytes.Equal(data[:len(manifestBinaryMagic)], manifestBinaryMagic) {
+		// Binary format: drop the magic, decode the rest.
+		dec := gob.NewDecoder(bytes.NewReader(data[len(manifestBinaryMagic):]))
+		if err := dec.Decode(&snap); err != nil {
+			return fmt.Errorf("decode binary manifest: %w", err)
+		}
+		format = "binary"
+	} else {
+		// Legacy JSON snapshot from a pre-binary build. Loads correctly
+		// once; the next SaveTo writes binary.
+		if err := json.Unmarshal(data, &snap); err != nil {
+			return fmt.Errorf("unmarshal json manifest: %w", err)
+		}
+		format = "json"
 	}
 
 	m.mu.Lock()
@@ -1356,7 +1388,8 @@ func (m *Manifest) LoadFrom(path string) error {
 	}
 	m.mu.Unlock()
 
-	logger.Infof("manifest loaded from disk; path=%s, files=%d, bytes=%d, saved_at=%v", path, snap.TotalFiles_, snap.TotalBytes_, snap.SavedAt)
+	logger.Infof("manifest loaded from disk; path=%s, files=%d, bytes=%d, format=%s, saved_at=%v",
+		path, snap.TotalFiles_, snap.TotalBytes_, format, snap.SavedAt)
 	return nil
 }
 
