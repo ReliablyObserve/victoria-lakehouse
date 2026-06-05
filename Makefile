@@ -39,6 +39,7 @@ $(VL_DIR_LOGS)/go.mod:
 	cp patches/vl-logs/external.go.src $(VL_DIR_LOGS)/app/vlstorage/external.go
 	cp patches/vl-logs/external_query.go.src $(VL_DIR_LOGS)/lib/logstorage/external_query.go
 	cd $(VL_DIR_LOGS) && git apply ../../patches/vl-logs/vlstorage-dispatch.patch
+	cd $(VL_DIR_LOGS) && git apply ../../patches/vl-logs/vl-export-severity.patch
 
 deps-traces: $(VL_DIR_TRACES)/go.mod
 
@@ -49,6 +50,7 @@ $(VL_DIR_TRACES)/go.mod:
 	cp patches/vl-traces/external.go.src $(VL_DIR_TRACES)/app/vlstorage/external.go
 	cp patches/vl-traces/external_query.go.src $(VL_DIR_TRACES)/lib/logstorage/external_query.go
 	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vlstorage-dispatch.patch
+	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-export-severity.patch
 
 deps-vt: $(VT_DIR)/go.mod
 

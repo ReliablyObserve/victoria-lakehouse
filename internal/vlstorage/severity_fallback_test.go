@@ -14,24 +14,29 @@ import (
 // level="" (the "unknown" bar). VL hot derives the text from the
 // number internally; this test guarantees LH cold does the same.
 func TestSeverityText_FallsBackFromSeverityNumber(t *testing.T) {
+	// The expected labels mirror VL upstream's logSeverities table
+	// exactly (see deps/VictoriaLogs/app/vlinsert/opentelemetry/pb.go).
+	// LH cold delegates to FormatSeverity through patches/vl-{logs,traces}/
+	// vl-export-severity.patch so a sev_number=9 row queries with the
+	// same "Info" label whether it lands in hot or cold storage.
 	cases := []struct {
 		name        string
 		sevNumber   string
 		wantLevel   string
 		wantNumeric int32
 	}{
-		{"trace 1", "1", "TRACE", 1},
-		{"trace 4", "4", "TRACE", 4},
-		{"debug 5", "5", "DEBUG", 5},
-		{"debug 8", "8", "DEBUG", 8},
-		{"info 9", "9", "INFO", 9},
-		{"info 12", "12", "INFO", 12},
-		{"warn 13", "13", "WARN", 13},
-		{"warn 16", "16", "WARN", 16},
-		{"error 17", "17", "ERROR", 17},
-		{"error 20", "20", "ERROR", 20},
-		{"fatal 21", "21", "FATAL", 21},
-		{"fatal 24", "24", "FATAL", 24},
+		{"trace 1", "1", "Trace", 1},
+		{"trace 4", "4", "Trace4", 4},
+		{"debug 5", "5", "Debug", 5},
+		{"debug 8", "8", "Debug4", 8},
+		{"info 9", "9", "Info", 9},
+		{"info 12", "12", "Info4", 12},
+		{"warn 13", "13", "Warn", 13},
+		{"warn 16", "16", "Warn4", 16},
+		{"error 17", "17", "Error", 17},
+		{"error 20", "20", "Error4", 20},
+		{"fatal 21", "21", "Fatal", 21},
+		{"fatal 24", "24", "Fatal4", 24},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

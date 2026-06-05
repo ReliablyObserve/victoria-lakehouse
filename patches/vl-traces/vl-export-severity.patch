@@ -1,0 +1,20 @@
+diff --git a/app/vlinsert/opentelemetry/pb.go b/app/vlinsert/opentelemetry/pb.go
+index e85ceb5..1bab6cd 100644
+--- a/app/vlinsert/opentelemetry/pb.go
++++ b/app/vlinsert/opentelemetry/pb.go
+@@ -503,6 +503,15 @@ func formatSeverity(severity int32) string {
+ 	return logSeverities[severity]
+ }
+ 
++// FormatSeverity is an exported wrapper around the package-local
++// formatSeverity, added so external consumers (the lakehouse cold
++// tier's insert path in github.com/ReliablyObserve/victoria-lakehouse)
++// can mirror VL hot's OTel severity_number → text mapping exactly.
++// Returns "Unspecified" for out-of-range severity (matches VL hot).
++func FormatSeverity(severity int32) string {
++	return formatSeverity(severity)
++}
++
+ // See https://github.com/open-telemetry/opentelemetry-collector/blob/a0cbea73c189551d751d09659e306f48f594fd62/pdata/plog/severity_number.go#L41
+ var logSeverities = []string{
+ 	"Unspecified",

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlinsert/insertutil"
+	otelpb "github.com/VictoriaMetrics/VictoriaLogs/app/vlinsert/opentelemetry"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
@@ -203,24 +204,17 @@ func mapFieldToRow(row *schema.LogRow, name, value string) {
 }
 
 // severityTextFromNumber maps an OTel severity_number to the canonical
-// text label (TRACE/DEBUG/INFO/WARN/ERROR/FATAL). Values outside the
-// OTel-defined 1-24 range return empty so callers can preserve the
-// row's original empty-text state. Mirrors VL hot's behavior so log
-// queries against LH cold show the same `level` series as hot.
+// text label by delegating to VL upstream's exported FormatSeverity
+// (added by patches/vl-logs/vl-export-severity.patch and
+// patches/vl-traces/vl-export-severity.patch). The wrapper exists
+// solely to filter the n=0 "Unspecified" case so a missing severity
+// stays empty rather than being labeled — VL hot emits "Unspecified"
+// at the proto layer because OTel requires a slot, but LH's row
+// schema treats empty SeverityText as the canonical "no severity"
+// signal that operators can grep for.
 func severityTextFromNumber(n int32) string {
-	switch {
-	case n >= 1 && n <= 4:
-		return "TRACE"
-	case n >= 5 && n <= 8:
-		return "DEBUG"
-	case n >= 9 && n <= 12:
-		return "INFO"
-	case n >= 13 && n <= 16:
-		return "WARN"
-	case n >= 17 && n <= 20:
-		return "ERROR"
-	case n >= 21 && n <= 24:
-		return "FATAL"
+	if n < 1 || n > 24 {
+		return ""
 	}
-	return ""
+	return otelpb.FormatSeverity(n)
 }
