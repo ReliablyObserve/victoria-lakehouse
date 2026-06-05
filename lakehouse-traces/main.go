@@ -453,6 +453,34 @@ func run(cfg *config.Config, addr string) {
 		logger.Errorf("HTTP server shutdown error: %s", err)
 	}
 
+	// CRITICAL ORDER: persist the manifest snapshot FIRST, before
+	// any of the long-running .Stop() calls that could hold the
+	// shutdown grace window. If k8s sends SIGKILL after the grace
+	// period, the snapshot is what determines /ready accuracy on
+	// the NEXT boot — losing it means the new pod starts with an
+	// older snapshot (or none) and lies about readiness during the
+	// background S3 LIST that follows. Bounded to PersistTimeout so
+	// a misbehaving local disk can't extend shutdown indefinitely.
+	persistTimeout := cfg.Shutdown.PersistTimeout
+	if persistTimeout <= 0 {
+		persistTimeout = 30 * time.Second
+	}
+	manifestSaveStart := time.Now()
+	manifestSaveDone := make(chan error, 1)
+	go func() {
+		manifestSaveDone <- store.Manifest().SaveTo(manifestSnapshotPath(cfg))
+	}()
+	select {
+	case err := <-manifestSaveDone:
+		if err != nil {
+			logger.Errorf("manifest snapshot on shutdown failed after %v: %s", time.Since(manifestSaveStart), err)
+		} else {
+			logger.Infof("manifest snapshot on shutdown persisted in %v", time.Since(manifestSaveStart))
+		}
+	case <-time.After(persistTimeout):
+		logger.Errorf("manifest snapshot on shutdown timed out after %v — next pod will boot with previous snapshot", persistTimeout)
+	}
+
 	vtinsert.Stop()
 	internalselect.Stop()
 
@@ -463,7 +491,8 @@ func run(cfg *config.Config, addr string) {
 		logger.Errorf("failed to persist tombstones to disk: %s", err)
 	}
 
-	// Final stats snapshot on shutdown
+	// Final stats snapshot on shutdown — bounded too so it can't
+	// extend shutdown past the grace window.
 	if cfg.Stats.Enabled && cfg.Stats.SnapshotPrefix != "" {
 		snapshotBucket := cfg.Stats.MetaBucket
 		if snapshotBucket == "" {
@@ -472,14 +501,12 @@ func run(cfg *config.Config, addr string) {
 		_ = snapshotBucket
 		snapshotKey := cfg.AutoPrefix() + cfg.Stats.SnapshotPrefix + "/snapshot.json"
 		if data, err := registry.MarshalSnapshot(); err == nil {
-			if err := store.Pool().Upload(context.Background(), snapshotKey, data); err != nil {
+			statsCtx, statsCancel := context.WithTimeout(context.Background(), persistTimeout)
+			if err := store.Pool().Upload(statsCtx, snapshotKey, data); err != nil {
 				logger.Errorf("failed to persist stats snapshot on shutdown: %s", err)
 			}
+			statsCancel()
 		}
-	}
-
-	if err := store.Manifest().SaveTo(manifestSnapshotPath(cfg)); err != nil {
-		logger.Errorf("manifest snapshot on shutdown failed: %s", err)
 	}
 
 	if err := store.Close(); err != nil {
@@ -1125,6 +1152,24 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 	defer refreshTicker.Stop()
 	persistTicker := time.NewTicker(cfg.Manifest.PersistInterval)
 	defer persistTicker.Stop()
+	// 5-second tick to update the snapshot-age gauge so monitoring
+	// dashboards see live age without depending on the slower
+	// refresh/persist cadence. Cheap — single time math + one
+	// gauge Set per tick.
+	ageTicker := time.NewTicker(5 * time.Second)
+	defer ageTicker.Stop()
+	updateSnapshotAge := func() {
+		savedAt := store.Manifest().SavedAt()
+		if savedAt.IsZero() {
+			// No successful persist + no loaded snapshot. Report a
+			// very large sentinel so alerts that fire on "snapshot
+			// older than X" still trigger.
+			metrics.ManifestSnapshotAgeSeconds.Set(float64(24 * 365 * 3600))
+			return
+		}
+		metrics.ManifestSnapshotAgeSeconds.Set(time.Since(savedAt).Seconds())
+	}
+	updateSnapshotAge()
 
 	for {
 		select {
@@ -1134,6 +1179,7 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 				logger.Errorf("periodic manifest refresh failed: %s", err)
 			} else {
 				m := store.Manifest()
+				sm.SetManifestFiles(int64(m.TotalFiles()))
 				logger.Infof("manifest refreshed; files=%d, bytes=%d", m.TotalFiles(), m.TotalBytes())
 				registry.ReconcileWithManifest(tenantKey,
 					int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
@@ -1144,6 +1190,9 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 			if err := store.Manifest().SaveTo(mpath); err != nil {
 				logger.Errorf("periodic manifest persist failed: %s", err)
 			}
+			updateSnapshotAge()
+		case <-ageTicker.C:
+			updateSnapshotAge()
 		}
 	}
 }

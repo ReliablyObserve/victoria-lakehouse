@@ -167,6 +167,14 @@ type Manifest struct {
 	totalFiles     int
 	totalBytes     int64
 	lastRefresh    time.Time
+	// savedAt is the timestamp the most recent successful snapshot
+	// write recorded. Loaded from `persistedManifest.SavedAt` on
+	// LoadFrom; updated on every SaveTo. Exposed via SavedAt() for
+	// the `lakehouse_manifest_snapshot_age_seconds` metric so
+	// operators can spot pods running on stale snapshots — relevant
+	// during long-downtime recovery where a 1-hour-old snapshot
+	// gates reads on data written by other peers in the meantime.
+	savedAt time.Time
 	prefix         string
 	bucket         string
 	prefixTemplate string
@@ -1024,6 +1032,19 @@ func (m *Manifest) MaxTime() time.Time {
 	return m.maxTime
 }
 
+// SavedAt returns the timestamp of the last successful SaveTo
+// (or the SavedAt persisted in the most recent LoadFrom, whichever
+// happened more recently). Zero time means no snapshot has been
+// persisted in this process's lifetime and none was loaded — the
+// `lakehouse_manifest_snapshot_age_seconds` metric reports +Inf in
+// that case so a stale-snapshot dashboard can't show "0 seconds"
+// for a pod that has no snapshot at all.
+func (m *Manifest) SavedAt() time.Time {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.savedAt
+}
+
 func (m *Manifest) PartitionCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1440,6 +1461,7 @@ type persistedManifest struct {
 }
 
 func (m *Manifest) SaveTo(path string) error {
+	now := time.Now()
 	m.mu.RLock()
 	snap := persistedManifest{
 		Files:       m.files,
@@ -1447,7 +1469,7 @@ func (m *Manifest) SaveTo(path string) error {
 		MaxTimeNs:   m.maxTime.UnixNano(),
 		TotalFiles_: m.totalFiles,
 		TotalBytes_: m.totalBytes,
-		SavedAt:     time.Now(),
+		SavedAt:     now,
 	}
 	m.mu.RUnlock()
 
@@ -1475,6 +1497,13 @@ func (m *Manifest) SaveTo(path string) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("rename manifest: %w", err)
 	}
+
+	// Record the timestamp for the snapshot-age metric. Done after
+	// the atomic rename so a failed write doesn't reset the age
+	// gauge to "fresh" without a successful persist.
+	m.mu.Lock()
+	m.savedAt = now
+	m.mu.Unlock()
 
 	logger.Infof("manifest saved; path=%s, files=%d, bytes=%d, format=binary", path, snap.TotalFiles_, buf.Len())
 	return nil
@@ -1530,6 +1559,7 @@ func (m *Manifest) LoadFrom(path string) error {
 	if snap.MaxTimeNs != 0 {
 		m.maxTime = time.Unix(0, snap.MaxTimeNs)
 	}
+	m.savedAt = snap.SavedAt
 	m.mu.Unlock()
 
 	logger.Infof("manifest loaded from disk; path=%s, files=%d, bytes=%d, format=%s, saved_at=%v",
