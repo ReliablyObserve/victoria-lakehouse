@@ -1,11 +1,10 @@
 package parquets3
 
 import (
-	"strings"
-
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 // dropTraceShapedRows removes rows from db whose _stream tag is the
@@ -58,7 +57,7 @@ func dropTraceShapedRows(db *logstorage.DataBlock) *logstorage.DataBlock {
 	keep := make([]int, 0, rowCount)
 	dropped := 0
 	for i, val := range streamCol.Values {
-		if isTraceShapedStream(val) {
+		if storage.IsTraceShapedStream(val) {
 			dropped++
 			continue
 		}
@@ -95,29 +94,10 @@ func dropTraceShapedRows(db *logstorage.DataBlock) *logstorage.DataBlock {
 	return out
 }
 
-// isTraceShapedStream returns true when the canonical stream tag
-// string was emitted by VT's span ingest path rather than VL's log
-// ingest path. The two markers:
-//
-//	- contains `resource_attr:` (VT's prefixed resource attribute)
-//	- begins with `{name="..."` (VT's per-operation stream partition)
-//
-// Both are absent from any legitimate log stream produced by VL —
-// VL's _stream_fields enforcement strips prefixed keys and never
-// uses `name` as a stream dimension.
+// isTraceShapedStream is the package-local alias for the shared
+// `storage.IsTraceShapedStream`. The forwarder keeps the existing
+// callers (and the test file's symbol list) intact while routing
+// the classification through the canonical implementation.
 func isTraceShapedStream(stream string) bool {
-	if stream == "" {
-		return false
-	}
-	if strings.Contains(stream, "resource_attr:") {
-		return true
-	}
-	// Bare `name=` tag at start: `{name="HTTP GET /api/v1/users"`.
-	// We don't match every occurrence of "name=" because legitimate
-	// k8s.node.name=... would false-positive — we only care about
-	// the bare key at the start of the stream brace.
-	if strings.HasPrefix(stream, `{name="`) {
-		return true
-	}
-	return false
+	return storage.IsTraceShapedStream(stream)
 }

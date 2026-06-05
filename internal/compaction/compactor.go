@@ -16,7 +16,9 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
 )
 
@@ -336,6 +338,34 @@ func (c *Compactor) mergeLogFiles(allData [][]byte) ([]schema.LogRow, error) {
 		}
 		merged = append(merged, rows...)
 	}
+
+	// Compaction-time trace-shape filter. Mirrors the ingest gate in
+	// internal/vlstorage/insert.go: rows whose _stream marks them as
+	// VT span / service-graph data get dropped on the way to the
+	// merged output. Without this, historical files that already
+	// hold trace-shape rows (written before the ingest gate landed)
+	// would keep round-tripping through compaction, keeping the
+	// manifest RowCount inflated forever. The drop here is the
+	// natural off-ramp — each compaction pass shrinks the bad data
+	// monotonically. Mass-rewrite tools (`/internal/compact`) can
+	// trigger this immediately if an operator wants the cleanup to
+	// finish on their schedule.
+	if len(merged) > 0 {
+		kept := merged[:0]
+		dropped := 0
+		for i := range merged {
+			if storage.IsTraceShapedStream(merged[i].Stream) {
+				dropped++
+				continue
+			}
+			kept = append(kept, merged[i])
+		}
+		if dropped > 0 {
+			metrics.LogsTraceShapedRowsDroppedAtCompaction.Add(dropped)
+		}
+		merged = kept
+	}
+
 	sort.Slice(merged, func(i, j int) bool {
 		if merged[i].TimestampUnixNano != merged[j].TimestampUnixNano {
 			return merged[i].TimestampUnixNano < merged[j].TimestampUnixNano

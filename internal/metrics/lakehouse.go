@@ -90,6 +90,28 @@ var (
 	// the cold tier (task #70 territory) — operators can correlate
 	// the rate with compaction/cleanup runs.
 	LogsTraceShapedRowsDropped = NewCounter("lakehouse_logs_trace_shaped_rows_dropped_total")
+
+	// LogsTraceShapedRowsDroppedAtIngest counts rows refused by the
+	// insert path because their stream tags marked them as VT data
+	// (spans or service-graph rows) reaching the logs ingest. The
+	// drop is irreversible — the row never lands in parquet, and the
+	// manifest RowCount (which manifestFastPath uses to answer
+	// `* | stats count()`) stops including them. The query-time
+	// counterpart `LogsTraceShapedRowsDropped` is still incremented
+	// for historical files written before this gate landed; once
+	// retention rolls those off, both counters should track in
+	// lockstep at zero.
+	LogsTraceShapedRowsDroppedAtIngest = NewCounter("lakehouse_logs_trace_shaped_rows_dropped_at_ingest_total")
+
+	// LogsTraceShapedRowsDroppedAtCompaction counts trace-shape
+	// rows the compactor stripped from a merge output. Together
+	// with the ingest-side counter this finishes the cleanup loop:
+	// the ingest gate stops new writes, compaction migrates
+	// historical bad rows out of the manifest's RowCount as files
+	// roll forward. Eventually all three trace-shape counters
+	// (read-side, ingest, compaction) sit at zero with no inflated
+	// counts left.
+	LogsTraceShapedRowsDroppedAtCompaction = NewCounter("lakehouse_logs_trace_shaped_rows_dropped_at_compaction_total")
 )
 
 // Insert / writer metrics

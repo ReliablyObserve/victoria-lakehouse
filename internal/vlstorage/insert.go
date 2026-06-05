@@ -8,7 +8,9 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlinsert/insertutil"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 // LogWriter is the subset of parquets3.Storage needed for the insert path.
@@ -93,6 +95,24 @@ func logRowsToSchemaRows(lr *logstorage.LogRows) []schema.LogRow {
 			// must produce the same value so /select/logsql/stream_ids
 			// returns identical results.
 			row.StreamID = computeStreamID(r.TenantID, r.StreamTagsCanonical)
+		}
+
+		// Ingest-side trace-shape filter: drop rows whose stream
+		// would mark them as VT span / service-graph data rather
+		// than logs. This is the write-side counterpart of the
+		// read-side preFilter in storage_query.go — without it,
+		// trace-shaped rows still land in parquet files, inflate
+		// the manifest RowCount (which the manifestFastPath uses
+		// to answer `* | stats count()` queries), and the
+		// resulting count is bloated by ~50% in clusters where
+		// some upstream pipeline misroutes span data to the logs
+		// ingest path. The read-side filter still runs on every
+		// query for historical files that were written before
+		// this gate was in place. New rows after this commit
+		// won't be persisted and the count drift stops growing.
+		if storage.IsTraceShapedStream(row.Stream) {
+			metrics.LogsTraceShapedRowsDroppedAtIngest.Inc()
+			return
 		}
 
 		// Per-tenant cardinality gate. Stream uniqueness is keyed by
