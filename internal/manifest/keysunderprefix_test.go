@@ -99,7 +99,9 @@ func TestExtractDateFromPrefix_HandlesMalformedInput(t *testing.T) {
 		{"0/0/dt=2026-06/", ""},    // too short
 		{"0/0/traces/", ""},        // no dt= segment
 		{"", ""},                   // empty
-		{"dt=abcd-ef-gh", "abcd-ef-gh"}, // weak: validates only hyphens, not digits. Documented limit.
+		{"dt=abcd-ef-gh", ""}, // non-digit positions → reject (tightened post-security review)
+		{"dt=2026-13-99", "2026-13-99"}, // digits-only — passes the cheap check; month/day range is the caller's problem
+		{"dt=2026/06/04", ""}, // wrong separator
 	}
 	for _, tc := range cases {
 		got := extractDateFromPrefix(tc.in)

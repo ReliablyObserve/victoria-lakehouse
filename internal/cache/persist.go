@@ -375,14 +375,26 @@ func (p *Persister) SaveLabelIndex(idx *LabelIndex) error {
 // having to re-scan every parquet file. Mirrors the byte-for-byte
 // layout SaveLabelIndex writes to disk; UnmarshalLabelIndex applies the
 // same drift-reconciliation pass on the way back in.
+//
+// Takes a snapshot of the labels map under RLock (cheap pointer copy
+// of the values + shallow map copy of the keys) and releases the lock
+// BEFORE json.Marshal runs. Concurrent GetFieldNames / GetLabelInfo
+// readers are unblocked for the duration of the encode — which is
+// hundreds of milliseconds on a large index, long enough to noticeably
+// degrade tag-enumeration latency if we held the lock the whole time.
 func MarshalLabelIndex(idx *LabelIndex) ([]byte, error) {
 	idx.mu.RLock()
-	defer idx.mu.RUnlock()
+	snap := make(map[string]*LabelInfo, len(idx.labels))
+	for k, v := range idx.labels {
+		snap[k] = v
+	}
+	idx.mu.RUnlock()
+
 	data := struct {
 		Labels  map[string]*LabelInfo `json:"labels"`
 		SavedAt time.Time             `json:"saved_at"`
 	}{
-		Labels:  idx.labels,
+		Labels:  snap,
 		SavedAt: time.Now(),
 	}
 	return json.Marshal(data)

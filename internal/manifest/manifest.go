@@ -6,6 +6,7 @@ import (
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -29,6 +30,22 @@ import (
 // snapshots remain loadable for as long as the magic check stays
 // in place.
 var manifestBinaryMagic = []byte("BMNF\x00\x01")
+
+// maxManifestSnapshotBytes bounds the gob decoder during LoadFrom so a
+// truncated, malicious, or accidentally-huge snapshot can't allocate
+// arbitrary memory at startup. 4 GiB is well above the largest legitimate
+// snapshot we'd see at PB-scale (binary gob of 50M files ≈ 1-2 GiB) and
+// far below what would OOM a small operator pod. Exceeding the cap
+// fails the load cleanly so the operator can investigate rather than
+// the process getting killed by the OOM killer mid-startup.
+const maxManifestSnapshotBytes = 4 * 1024 * 1024 * 1024
+
+// tenantRefreshMaxParallel bounds the per-tenant S3 LIST fan-out in
+// refreshTenantScoped. 8 leaves headroom under the typical S3 pool
+// MaxConcurrentRequests budget (32-64) so concurrent queries aren't
+// starved by the refresh fan-out. Operators with much larger tenant
+// counts can tune via cfg.Manifest.TenantRefreshConcurrency.
+const tenantRefreshMaxParallel = 8
 
 const maxLabelsPerField = 100
 
@@ -153,6 +170,13 @@ type Manifest struct {
 	prefix         string
 	bucket         string
 	prefixTemplate string
+	// templateSegments + templateHasOrgID are cached results of parsing
+	// prefixTemplate, refreshed every time SetPrefixTemplate is called.
+	// Without this cache, tenantKeyFromFileKey() reparses the template
+	// (two strings.Contains calls) on every file — at 50M files during
+	// a manifest rebuild that's 100M redundant string scans.
+	templateSegments  int
+	templateHasOrgID  bool
 
 	// partitionAttempts maps "dt=YYYY-MM-DD/hour=HH" -> last MarkAttempt
 	// timestamp recorded by the compaction scheduler (see
@@ -197,23 +221,68 @@ type tenantAccum struct {
 	maxTimeNs  int64
 }
 
+// isValidTenantSegment returns true when s is a safe value for an
+// account/project/orgID path segment. Allowed: letters, digits,
+// underscore, hyphen. Anything else (slash, dot, null, whitespace,
+// Unicode confusables) means a malformed or malicious key — reject so
+// it can't bypass the prefix check in GetFilesForRangeTenant or
+// confuse the tenant-aggregate accounting.
+func isValidTenantSegment(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			continue
+		}
+		if r >= 'a' && r <= 'z' {
+			continue
+		}
+		if r >= 'A' && r <= 'Z' {
+			continue
+		}
+		if r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // tenantKeyFromFileKey parses the (account, project) tuple out of a
 // FileInfo.Key. Mirrors the parsing in TenantSummaries() so the cache
 // agrees with the legacy linear-scan path on every input. Returns
 // (key, true) on success or (zero, false) if the key doesn't conform
 // to the prefix template.
+//
+// Segments are validated against isValidTenantSegment — a key like
+// "0/../1/x.parquet" or "0/0%2f1/y.parquet" is rejected outright
+// rather than spoofing tenant ownership through prefix tricks.
 func (m *Manifest) tenantKeyFromFileKey(fileKey string) (tenantAccumKey, bool) {
-	segments := 2
-	hasOrgID := strings.Contains(m.prefixTemplate, "{OrgID}")
-	if hasOrgID && !strings.Contains(m.prefixTemplate, "{ProjectID}") {
-		segments = 1
+	// Use the cached parse result populated by SetPrefixTemplate.
+	// If callers mutate m.prefixTemplate directly without going through
+	// SetPrefixTemplate (tests inside this package), the cache stays at
+	// 0 — fall back to one-time parsing. The fast-path (production)
+	// always hits the cached values.
+	segments := m.templateSegments
+	if segments == 0 {
+		segments = 2
+		if strings.Contains(m.prefixTemplate, "{OrgID}") && !strings.Contains(m.prefixTemplate, "{ProjectID}") {
+			segments = 1
+		}
 	}
 	parts := strings.SplitN(fileKey, "/", segments+2)
 	if len(parts) < segments+1 {
 		return tenantAccumKey{}, false
 	}
+	if !isValidTenantSegment(parts[0]) {
+		return tenantAccumKey{}, false
+	}
 	if segments == 1 {
 		return tenantAccumKey{account: parts[0]}, true
+	}
+	if !isValidTenantSegment(parts[1]) {
+		return tenantAccumKey{}, false
 	}
 	return tenantAccumKey{account: parts[0], project: parts[1]}, true
 }
@@ -348,12 +417,24 @@ func (m *Manifest) SetPrefixTemplate(tmpl string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.prefixTemplate = tmpl
+	// Cache the parse result. The default (segments=2, hasOrgID=false)
+	// matches the integer "{AccountID}/{ProjectID}/" template; OrgID-only
+	// deployments override via the SetPrefixTemplate call.
+	m.templateSegments = 2
+	m.templateHasOrgID = strings.Contains(tmpl, "{OrgID}")
+	if m.templateHasOrgID && !strings.Contains(tmpl, "{ProjectID}") {
+		m.templateSegments = 1
+	}
 }
 
 // refreshFullBucket enumerates every key under listPrefix (or the
 // entire bucket when listPrefix=="") and builds a fresh file map. Used
 // by the legacy single-prefix path and as a fallback when tenant
 // discovery fails.
+//
+// Checks ctx between pages so an impatient caller (timeout, shutdown)
+// can abort the LIST without waiting for the remaining pages of a huge
+// bucket — at PB-scale a single full-bucket walk can run for minutes.
 func (m *Manifest) refreshFullBucket(ctx context.Context, client *s3.Client, listPrefix string) (map[string][]FileInfo, int, int64, error) {
 	files := make(map[string][]FileInfo)
 	var totalFiles int
@@ -364,6 +445,11 @@ func (m *Manifest) refreshFullBucket(ctx context.Context, client *s3.Client, lis
 		Prefix: aws.String(listPrefix),
 	})
 	for paginator.HasMorePages() {
+		select {
+		case <-ctx.Done():
+			return nil, 0, 0, ctx.Err()
+		default:
+		}
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
 			return nil, 0, 0, fmt.Errorf("list objects: %w", err)
@@ -408,44 +494,68 @@ func (m *Manifest) refreshTenantScoped(ctx context.Context, client *s3.Client) (
 		return make(map[string][]FileInfo), 0, 0, nil
 	}
 
-	// Per-tenant enumeration in parallel. Bound concurrency so we
-	// don't open more in-flight S3 connections than the pool's
-	// MaxConcurrentRequests budget.
-	const maxParallel = 8
+	// Per-tenant enumeration in parallel. Bound concurrency so we don't
+	// open more in-flight S3 connections than the pool's
+	// MaxConcurrentRequests budget. innerCtx lets us cancel the whole
+	// fan-out on the first per-tenant error so other goroutines exit
+	// at the next refreshFullBucket ctx-check rather than running to
+	// completion and holding their semaphore slots.
+	innerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	type tenantResult struct {
-		files      map[string][]FileInfo
-		fileCount  int
-		byteCount  int64
-		err        error
+		files     map[string][]FileInfo
+		fileCount int
+		byteCount int64
+		err       error
 	}
 	resCh := make(chan tenantResult, len(tenantPrefixes))
-	sem := make(chan struct{}, maxParallel)
+	sem := make(chan struct{}, tenantRefreshMaxParallel)
 
+	scheduled := 0
 	for _, tp := range tenantPrefixes {
-		sem <- struct{}{}
+		select {
+		case sem <- struct{}{}:
+		case <-innerCtx.Done():
+			// Already cancelled (caller timeout or peer-error). Send a
+			// synthetic error for the remaining slots so the receive
+			// loop's counter terminates cleanly.
+			resCh <- tenantResult{err: innerCtx.Err()}
+			scheduled++
+			continue
+		}
 		go func(prefix string) {
 			defer func() { <-sem }()
-			f, tf, tb, err := m.refreshFullBucket(ctx, client, prefix)
+			f, tf, tb, err := m.refreshFullBucket(innerCtx, client, prefix)
 			resCh <- tenantResult{files: f, fileCount: tf, byteCount: tb, err: err}
 		}(tp)
+		scheduled++
 	}
 
 	files := make(map[string][]FileInfo)
 	var totalFiles int
 	var totalBytes int64
-	for i := 0; i < len(tenantPrefixes); i++ {
+	var firstErr error
+	for i := 0; i < scheduled; i++ {
 		r := <-resCh
 		if r.err != nil {
-			// One tenant's LIST failed; report the error so the caller
-			// can fall back to full-bucket. Partial state isn't useful
-			// since the legacy path expects a complete view.
-			return nil, 0, 0, r.err
+			if firstErr == nil {
+				firstErr = r.err
+				cancel() // signal still-running goroutines to bail out early
+			}
+			continue
+		}
+		if firstErr != nil {
+			continue // drain remaining results but discard their data
 		}
 		for partition, pFiles := range r.files {
 			files[partition] = append(files[partition], pFiles...)
 		}
 		totalFiles += r.fileCount
 		totalBytes += r.byteCount
+	}
+	if firstErr != nil {
+		return nil, 0, 0, firstErr
 	}
 	return files, totalFiles, totalBytes, nil
 }
@@ -461,8 +571,12 @@ func (m *Manifest) discoverTenantPrefixes(ctx context.Context, client *s3.Client
 	if err != nil {
 		return nil, fmt.Errorf("list accounts: %w", err)
 	}
-	// OrgID-only template: one segment is enough.
-	if strings.Contains(m.prefixTemplate, "{OrgID}") && !strings.Contains(m.prefixTemplate, "{ProjectID}") {
+	// OrgID-only template: one segment is enough. Falls back to direct
+	// prefixTemplate parse for callers that bypass SetPrefixTemplate.
+	if m.templateSegments == 1 ||
+		(m.templateSegments == 0 &&
+			strings.Contains(m.prefixTemplate, "{OrgID}") &&
+			!strings.Contains(m.prefixTemplate, "{ProjectID}")) {
 		return accounts, nil
 	}
 
@@ -492,6 +606,11 @@ func (m *Manifest) listCommonPrefixes(ctx context.Context, client *s3.Client, pr
 	})
 	var out []string
 	for paginator.HasMorePages() {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
 			return nil, err
@@ -1246,9 +1365,14 @@ func (m *Manifest) HasKey(key string) bool {
 
 // extractDateFromPrefix returns "YYYY-MM-DD" from any prefix that
 // contains "dt=YYYY-MM-DD" (with or without trailing characters).
-// Returns "" if no date segment is present. Mirrors the parsing in
-// datePrefixOf at internal/compaction/orphan_sweep.go so the
-// fast-path lookup agrees with the sweep's bucketing.
+// Returns "" if no date segment is present or the date is malformed.
+//
+// Validates that the year/month/day positions are digits (not just
+// that hyphens appear at the right offsets) so a malicious prefix
+// like "dt=abcd-ef-gh" doesn't sneak past as a "valid" date —
+// downstream callers use the extracted date in further LogsQL/Tempo
+// time filters where a non-numeric date would cause query failures or
+// (worse) silently match all partitions.
 func extractDateFromPrefix(prefix string) string {
 	i := strings.Index(prefix, "dt=")
 	if i < 0 {
@@ -1260,9 +1384,19 @@ func extractDateFromPrefix(prefix string) string {
 		return ""
 	}
 	date := rest[:dateLen]
-	// Validate: YYYY-MM-DD has hyphens at indices 4 and 7.
+	// Validate: YYYY-MM-DD with digits in the right positions and
+	// hyphens at indices 4 and 7.
 	if date[4] != '-' || date[7] != '-' {
 		return ""
+	}
+	for i := 0; i < dateLen; i++ {
+		if i == 4 || i == 7 {
+			continue
+		}
+		c := date[i]
+		if c < '0' || c > '9' {
+			return ""
+		}
 	}
 	return date
 }
@@ -1358,8 +1492,18 @@ func (m *Manifest) LoadFrom(path string) error {
 	var snap persistedManifest
 	var format string
 	if len(data) >= len(manifestBinaryMagic) && bytes.Equal(data[:len(manifestBinaryMagic)], manifestBinaryMagic) {
-		// Binary format: drop the magic, decode the rest.
-		dec := gob.NewDecoder(bytes.NewReader(data[len(manifestBinaryMagic):]))
+		// Binary format: drop the magic, decode the rest. Bound the
+		// decoder via io.LimitReader so a malicious/corrupted snapshot
+		// can't trick the gob decoder into pre-allocating a multi-TB
+		// slice during DoS. The cap is well above the largest
+		// legitimate snapshot — exceeding it surfaces as a decode error
+		// rather than an OOM-killer-induced crash.
+		body := data[len(manifestBinaryMagic):]
+		if int64(len(body)) > maxManifestSnapshotBytes {
+			return fmt.Errorf("manifest snapshot body %d bytes exceeds limit %d",
+				len(body), maxManifestSnapshotBytes)
+		}
+		dec := gob.NewDecoder(io.LimitReader(bytes.NewReader(body), maxManifestSnapshotBytes))
 		if err := dec.Decode(&snap); err != nil {
 			return fmt.Errorf("decode binary manifest: %w", err)
 		}

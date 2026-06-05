@@ -1052,6 +1052,23 @@ func (s *Storage) loadBloomIndex(ctx context.Context) {
 	logger.Infof("bloom index loaded from S3; entries=%d", idx.Len())
 }
 
+// Footer-cache auto-tune bounds. The auto-tune target is
+// (manifest files) / footerCacheFileCountDivisor, clamped to
+// [footerCacheMinItems, footerCacheMaxItems]. These constants live
+// here (not as cfg knobs) because they're internal sizing heuristics —
+// operators tune the cap via cfg.Cache.FooterMaxItems, which short-
+// circuits the auto-tune entirely when set.
+//
+// Defaults rationale:
+//   - 1/2000 ≈ 0.05% of corpus → ~25K entries at 50M files.
+//   - 10K min keeps small deployments (single-host dev) from churning.
+//   - 100K max bounds the working set at ~500 MB (5 KB/entry).
+const (
+	footerCacheFileCountDivisor = 2000
+	footerCacheMinItems         = 10000
+	footerCacheMaxItems         = 100000
+)
+
 // retuneFooterCache re-sizes the footer cache after a successful
 // manifest refresh. Sized at 0.05% of the manifest's file count to
 // give roughly 25K items per 50M file corpus (~125 MB working set),
@@ -1066,14 +1083,14 @@ func (s *Storage) retuneFooterCache() {
 	}
 	target := s.cfg.Cache.FooterMaxItems
 	if target <= 0 {
-		// Auto-tune: 0.05% of file count, clamped.
+		// Auto-tune: fraction of file count, clamped.
 		files := s.manifest.LiveAggregate().Files
-		target = files / 2000
-		if target < 10000 {
-			target = 10000
+		target = files / footerCacheFileCountDivisor
+		if target < footerCacheMinItems {
+			target = footerCacheMinItems
 		}
-		if target > 100000 {
-			target = 100000
+		if target > footerCacheMaxItems {
+			target = footerCacheMaxItems
 		}
 	}
 	if target == s.footerCache.MaxItems() {
