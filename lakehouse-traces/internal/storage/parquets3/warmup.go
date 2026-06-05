@@ -60,8 +60,16 @@ func (s *Storage) WarmupCache(ctx context.Context) {
 		return
 	}
 
-	// Sort by recency (newest first) so most recent data is warmed first
+	// Sort by ACTUAL time bounds (MaxTimeNs descending) so the
+	// most-recent file gets warmed first. Mirrors the root-module
+	// warmup priority — partial warmup window (ctx cancelled
+	// half-way) still covers the freshest partition completely.
+	// Files with zero MaxTimeNs sort last via secondary Key
+	// comparison so they don't starve newer files.
 	sort.Slice(files, func(i, j int) bool {
+		if files[i].MaxTimeNs != files[j].MaxTimeNs {
+			return files[i].MaxTimeNs > files[j].MaxTimeNs
+		}
 		return files[i].Key > files[j].Key
 	})
 

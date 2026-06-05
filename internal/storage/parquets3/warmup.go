@@ -60,8 +60,20 @@ func (s *Storage) WarmupCache(ctx context.Context) {
 		return
 	}
 
-	// Sort by recency (newest first) so most recent data is warmed first
+	// Sort by ACTUAL time bounds (MaxTimeNs descending) so the
+	// most-recent file gets warmed first. The previous Key>Key
+	// comparison was lexicographic — partition prefix sorted
+	// recent-first but the random hex filename suffix shuffled
+	// files within the same partition. With explicit MaxTimeNs
+	// ordering, a partial warmup window (ctx cancelled half-way)
+	// still yields complete coverage of the freshest partition.
+	// Files with zero MaxTimeNs (no per-row time bounds recorded,
+	// e.g. pre-bounded-write builds) sort last via the
+	// secondary Key comparison so they don't starve newer files.
 	sort.Slice(files, func(i, j int) bool {
+		if files[i].MaxTimeNs != files[j].MaxTimeNs {
+			return files[i].MaxTimeNs > files[j].MaxTimeNs
+		}
 		return files[i].Key > files[j].Key
 	})
 
