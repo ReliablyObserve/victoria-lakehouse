@@ -146,6 +146,12 @@ datasources:
       streamingEnabled:
         search: false
         query: false
+      # Default search result limit — Grafana's Tempo plugin caps
+      # at 20 unless overridden here. Operators reported ClickHouse
+      # views show many more rows; matching that for parity.
+      # Grafana >= 11 accepts up to 9999.
+      search:
+        defaultLimit: 100
       spanBar:
         type: "None"
       # ServiceMap datasource UID dismisses the Tempo plugin's
@@ -185,6 +191,12 @@ datasources:
       streamingEnabled:
         search: false
         query: false
+      # Default search result limit — Grafana's Tempo plugin caps
+      # at 20 unless overridden here. Operators reported ClickHouse
+      # views show many more rows; matching that for parity.
+      # Grafana >= 11 accepts up to 9999.
+      search:
+        defaultLimit: 100
       spanBar:
         type: "None"
       # ServiceMap datasource UID dismisses the Tempo plugin's
@@ -223,6 +235,12 @@ datasources:
       streamingEnabled:
         search: false
         query: false
+      # Default search result limit — Grafana's Tempo plugin caps
+      # at 20 unless overridden here. Operators reported ClickHouse
+      # views show many more rows; matching that for parity.
+      # Grafana >= 11 accepts up to 9999.
+      search:
+        defaultLimit: 100
       spanBar:
         type: "None"
       # ServiceMap datasource UID dismisses the Tempo plugin's
