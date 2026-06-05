@@ -314,6 +314,25 @@ type StartupConfig struct {
 	WALReconciliation   bool          `yaml:"wal_reconciliation"`
 	CacheRevalidation   bool          `yaml:"cache_revalidation"`
 	MaxResyncTime       time.Duration `yaml:"max_resync_time"`
+
+	// MinManifestFiles is the lower-bound the lifecycle manager
+	// requires before /ready can return 200. Counters the
+	// "first-ever boot, empty PVC" honesty gap: without this gate
+	// /ready flipped true ~1s after start while the manifest was
+	// still empty, lying about query availability for the 3-5 min
+	// it took the background S3 LIST to complete. Set above the
+	// smallest healthy partition count (100 for tiny dev clusters,
+	// 10000 for PB-scale prod). 0 disables (pre-change behaviour).
+	MinManifestFiles int64 `yaml:"min_manifest_files"`
+
+	// ServeWhileWarming, when true, lets /ready return 204 ("ready
+	// but warming") immediately after disk recovery — before the
+	// background S3 refresh completes. Strict load balancers that
+	// only route on 200 will still wait for full warmup; soft
+	// routers (vtselect peer fan-out, k8s readinessProbe with
+	// successThreshold=1) can route to a 204 pod. Default false
+	// keeps strict semantics.
+	ServeWhileWarming bool `yaml:"serve_while_warming"`
 }
 
 type ShutdownConfig struct {

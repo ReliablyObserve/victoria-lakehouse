@@ -203,7 +203,7 @@ func main() {
 }
 
 func run(cfg *config.Config, addr string) {
-	sm := startup.NewManager()
+	sm := startup.NewManager(cfg.Startup.MinManifestFiles)
 
 	store, err := parquets3.New(cfg)
 	if err != nil {
@@ -227,7 +227,18 @@ func run(cfg *config.Config, addr string) {
 		store.SetSelfAZ(selfAZ)
 	}
 
+	// StartWriter replays the on-disk WAL before serving inserts.
+	// We mark WAL-replay-needed before calling it so the lifecycle
+	// manager gates /ready=200 on completion, then mark done right
+	// after. select-only roles skip both calls (writer is nil) so
+	// they don't pay the gate.
+	if store.Writer() != nil {
+		sm.SetWALReplayNeeded()
+	}
 	store.StartWriter()
+	if store.Writer() != nil {
+		sm.SetWALReplayDone()
+	}
 
 	writerTenantKey := deriveTenantKey(cfg.AutoPrefix())
 
@@ -788,12 +799,34 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	})
 
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
-		if sm.IsReady() {
+		// Three-state readiness:
+		//   503 — not yet serving (disk recovery, WAL replay,
+		//         MinManifestFiles gate)
+		//   204 — serving but background warmup in progress
+		//         (S3 refresh, cache warmup, bloom backfill)
+		//   200 — fully ready (warmup complete)
+		//
+		// Strict readiness (k8s readinessProbe with
+		// successThreshold>1, helm chart default) gates routing on
+		// 200 only. Soft routing (vtselect peer fan-out, the
+		// upstream HTTP check helper) accepts 2xx. ServeWhileWarming
+		// in StartupConfig controls whether 204 is even possible
+		// for this pod — strict deployments leave it false and
+		// /ready returns 503 until 200.
+		switch {
+		case !sm.ServingReady():
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = fmt.Fprintf(w, "NOT READY (phase: %s, manifest_files: %d, min: %d)",
+				sm.Phase(), 0, sm.MinManifestFiles())
+		case !sm.WarmupComplete() && cfg.Startup.ServeWhileWarming:
+			w.WriteHeader(http.StatusNoContent)
+		case !sm.WarmupComplete():
+			// ServeWhileWarming disabled — wait for 200.
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = fmt.Fprintf(w, "WARMING (phase: %s)", sm.Phase())
+		default:
 			w.WriteHeader(http.StatusOK)
 			_, _ = fmt.Fprint(w, "READY")
-		} else {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = fmt.Fprintf(w, "NOT READY (phase: %s)", sm.Phase())
 		}
 	})
 
@@ -1018,6 +1051,12 @@ func manifestSnapshotPath(cfg *config.Config) string {
 }
 
 func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, tenantKey string) {
+	// Phase 1 (foreground): disk recovery + manifest-files gate.
+	// Disk recovery loads the most-recent snapshot; the lifecycle
+	// manager then checks MinManifestFiles before flipping
+	// ServingReady. If the threshold isn't met, /ready stays 503
+	// until the background S3 refresh fills the manifest. Avoids
+	// the first-ever-boot lying-empty window.
 	sm.SetPhase(startup.PhaseDiskRecovery)
 
 	mpath := manifestSnapshotPath(cfg)
@@ -1029,41 +1068,58 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 			logger.Infof("manifest loaded from disk; files=%d, bytes=%d", m.TotalFiles(), m.TotalBytes())
 		}
 	}
-	logger.Infof("disk recovery complete")
+	sm.SetManifestFiles(int64(store.Manifest().TotalFiles()))
+	logger.Infof("disk recovery complete; entering serve-while-warming mode (manifest_files=%d, min=%d)",
+		store.Manifest().TotalFiles(), cfg.Startup.MinManifestFiles)
 
-	sm.SetPhase(startup.PhaseS3Refresh)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
+	// Flip ServingReady. /ready returns 204 or 503 depending on
+	// ServeWhileWarming + MinManifestFiles. Background warmup
+	// below flips WarmupComplete when it finishes.
+	sm.SetServingReady()
 
-	if err := store.RefreshManifest(ctx); err != nil {
-		logger.Errorf("manifest S3 refresh failed: %s", err)
-	} else {
-		m := store.Manifest()
-		logger.Infof("manifest S3 refresh complete; files=%d, bytes=%d, min_time=%v, max_time=%v",
-			m.TotalFiles(), m.TotalBytes(), m.MinTime(), m.MaxTime())
-		registry.ReconcileWithManifest(tenantKey,
-			int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
-			m.MinTime().UnixNano(), m.MaxTime().UnixNano())
-		store.WarmLabelIndex(ctx)
-
-		if cfg.Cache.WarmupPartitions > 0 || cfg.Cache.WarmupMaxFiles > 0 {
-			warmCtx, warmCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			store.WarmupCache(warmCtx)
-			warmCancel()
-		}
-	}
-
-	if err := store.Manifest().SaveTo(mpath); err != nil {
-		logger.Errorf("manifest snapshot after S3 refresh failed: %s", err)
-	}
-
-	sm.SetPhase(startup.PhaseReady)
-
+	// Phase 2 (background): S3 manifest refresh, label-index +
+	// cache warmup, snapshot save, bloom backfill. The periodic
+	// refresh ticker waits for this goroutine to finish so the
+	// two can't race on the manifest mutex.
+	warmupDone := make(chan struct{})
 	go func() {
+		defer close(warmupDone)
+		sm.SetPhase(startup.PhaseS3Refresh)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
+		if err := store.RefreshManifest(ctx); err != nil {
+			logger.Errorf("manifest S3 refresh failed: %s", err)
+		} else {
+			m := store.Manifest()
+			sm.SetManifestFiles(int64(m.TotalFiles()))
+			logger.Infof("manifest S3 refresh complete; files=%d, bytes=%d, min_time=%v, max_time=%v",
+				m.TotalFiles(), m.TotalBytes(), m.MinTime(), m.MaxTime())
+			registry.ReconcileWithManifest(tenantKey,
+				int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
+				m.MinTime().UnixNano(), m.MaxTime().UnixNano())
+			store.WarmLabelIndex(ctx)
+
+			if cfg.Cache.WarmupPartitions > 0 || cfg.Cache.WarmupMaxFiles > 0 {
+				warmCtx, warmCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				store.WarmupCache(warmCtx)
+				warmCancel()
+			}
+		}
+
+		if err := store.Manifest().SaveTo(mpath); err != nil {
+			logger.Errorf("manifest snapshot after S3 refresh failed: %s", err)
+		}
+
 		bctx, bcancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer bcancel()
 		store.BackfillBloomIndex(bctx)
+
+		sm.SetWarmupComplete()
+		logger.Infof("background warmup complete; /ready will report 200")
 	}()
+
+	<-warmupDone
 
 	refreshTicker := time.NewTicker(cfg.Manifest.RefreshInterval)
 	defer refreshTicker.Stop()

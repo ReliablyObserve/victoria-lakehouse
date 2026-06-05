@@ -27,7 +27,7 @@ func TestPhaseString(t *testing.T) {
 }
 
 func TestManager_Lifecycle(t *testing.T) {
-	m := NewManager()
+	m := NewManager(0)
 
 	if m.Phase() != PhaseInit {
 		t.Errorf("initial phase = %v, want init", m.Phase())

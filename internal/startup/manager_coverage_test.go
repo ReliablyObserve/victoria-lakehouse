@@ -6,7 +6,7 @@ import (
 )
 
 func TestManager_RefreshSeconds(t *testing.T) {
-	m := NewManager()
+	m := NewManager(0)
 
 	// Before any phase transitions, RefreshSeconds should be 0.
 	if m.RefreshSeconds() != 0 {

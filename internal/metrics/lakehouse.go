@@ -206,6 +206,33 @@ var (
 	StartupPhase        = NewGauge("lakehouse_startup_phase")
 	StartupTotalSeconds = NewFloatGauge("lakehouse_startup_total_seconds")
 	Ready               = NewGauge("lakehouse_ready")
+
+	// ServingReady is 1 once the pod accepts queries — disk
+	// recovery complete + WAL replay done (if insert) + manifest
+	// holds at least cfg.Startup.MinManifestFiles. Distinct from
+	// `Ready` because Ready also requires background warmup.
+	// k8s readiness probes / vtselect fan-out can read this
+	// directly when scraping vs hitting /ready.
+	ServingReady = NewGauge("lakehouse_serving_ready")
+
+	// WarmupComplete is 1 once the background goroutine that
+	// runs S3 refresh + cache warmup + bloom backfill finishes.
+	// Strict load balancers can wait for this.
+	WarmupComplete = NewGauge("lakehouse_warmup_complete")
+
+	// ManifestSnapshotAgeSeconds is the wall-clock age of the
+	// most recent successful local snapshot write. Operators see
+	// when their pod is running on a stale snapshot — relevant
+	// during long downtime + first-after-resume restart, where
+	// the disk recovery loads a 1-hour-old snapshot and queries
+	// during background warmup miss whatever was written in that
+	// hour. Updated on every successful SaveTo.
+	ManifestSnapshotAgeSeconds = NewFloatGauge("lakehouse_manifest_snapshot_age_seconds")
+
+	// MinManifestFilesGate exposes the configured readiness
+	// threshold so operators can see what their pod is gating on.
+	// Reads cfg.Startup.MinManifestFiles at startup.
+	MinManifestFilesGate = NewGauge("lakehouse_min_manifest_files_gate")
 )
 
 // Query metrics
