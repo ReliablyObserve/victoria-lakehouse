@@ -141,6 +141,20 @@ func logRowsToSchemaRows(lr *logstorage.LogRows) []schema.LogRow {
 			row.SeverityText = severityTextFromNumber(row.SeverityNumber)
 		}
 
+		// Final fallback: if the row's level field is still empty but
+		// the stream tag carries `level=...`, lift the value to the
+		// row-level SeverityText. VL hot promotes stream-label level
+		// to a row field at query time; LH cold materializes rows
+		// from parquet columns, so we must persist the lifted value
+		// at write time instead. Catches the ingest paths (Loki API,
+		// jsonline with stream-only level) that put level in the
+		// stream tag but never as a row field.
+		if row.SeverityText == "" && row.Stream != "" {
+			if lvl := extractStreamTagLevel(row.Stream); lvl != "" {
+				row.SeverityText = lvl
+			}
+		}
+
 		rows = append(rows, row)
 	})
 
@@ -223,4 +237,37 @@ func severityTextFromNumber(n int32) string {
 		return ""
 	}
 	return otelpb.FormatSeverity(n)
+}
+
+// extractStreamTagLevel parses the canonical stream tag string for a
+// `level="X"` tag and returns the value. Empty when the stream tag
+// doesn't carry one. The canonical form is the VL StreamTags.String()
+// output — `{key1="val1",key2="val2",...}`. A simple substring scan
+// is enough because VL escapes embedded quotes on MarshalCanonical,
+// so the first `"` after `level="` is the value terminator.
+//
+// Mirrors the level-from-stream-tag promotion VL hot does at query
+// time. LH cold needs it at write time because the row's level
+// column is what queries read, and the Loki API / jsonline ingest
+// paths put `level` in the stream tag without also emitting it as
+// a row field. Without this, 28% of cold rows (per measured ingest
+// in the e2e stack) land with empty SeverityText and surface as
+// Grafana's "unknown" log-volume bucket.
+func extractStreamTagLevel(stream string) string {
+	// Search for either `{level="` (first key) or `,level="` (later
+	// key) to avoid false-positives on suffix-only matches like
+	// `{not_level="X"}` or `{my.level="Y"}`. The canonical stream
+	// tag format is fixed (VL StreamTags.MarshalCanonical) so the
+	// preceding char is always one of these two.
+	for _, prefix := range []string{`{level="`, `,level="`} {
+		if i := strings.Index(stream, prefix); i >= 0 {
+			rest := stream[i+len(prefix):]
+			end := strings.IndexByte(rest, '"')
+			if end < 0 {
+				return ""
+			}
+			return strings.Clone(rest[:end])
+		}
+	}
+	return ""
 }
