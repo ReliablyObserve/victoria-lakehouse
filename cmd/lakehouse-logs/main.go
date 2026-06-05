@@ -1100,6 +1100,8 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 	// Phase 2 (background): S3 refresh + cache warmup + snapshot.
 	// Periodic refresh ticker waits for completion so the manifest
 	// mutex isn't contended.
+	warmupStart := time.Now()
+	var warmupS3RefreshDuration time.Duration
 	warmupDone := make(chan struct{})
 	go func() {
 		defer close(warmupDone)
@@ -1107,8 +1109,11 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
-		if err := store.RefreshManifest(ctx); err != nil {
-			logger.Errorf("manifest S3 refresh failed: %s", err)
+		s3RefreshStart := time.Now()
+		refreshErr := store.RefreshManifest(ctx)
+		warmupS3RefreshDuration = time.Since(s3RefreshStart)
+		if refreshErr != nil {
+			logger.Errorf("manifest S3 refresh failed: %s", refreshErr)
 		} else {
 			m := store.Manifest()
 			sm.SetManifestFiles(int64(m.TotalFiles()))
@@ -1136,6 +1141,17 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 	}()
 
 	<-warmupDone
+
+	startup.EmitStartupHints(startup.HintInputs{
+		ManifestFiles:     int64(store.Manifest().TotalFiles()),
+		MinManifestFiles:  cfg.Startup.MinManifestFiles,
+		FooterCacheMax:    cfg.Cache.FooterMaxItems,
+		BufferBridgePeers: len(cfg.Discovery.StorageNodes),
+		SnapshotAge:       time.Since(store.Manifest().SavedAt()),
+		PersistInterval:   cfg.Manifest.PersistInterval,
+		S3RefreshDuration: warmupS3RefreshDuration,
+		WarmupDuration:    time.Since(warmupStart),
+	})
 
 	refreshTicker := time.NewTicker(cfg.Manifest.RefreshInterval)
 	defer refreshTicker.Stop()

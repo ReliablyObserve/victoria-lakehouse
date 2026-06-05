@@ -1108,6 +1108,8 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 	// cache warmup, snapshot save, bloom backfill. The periodic
 	// refresh ticker waits for this goroutine to finish so the
 	// two can't race on the manifest mutex.
+	warmupStart := time.Now()
+	var warmupS3RefreshDuration time.Duration
 	warmupDone := make(chan struct{})
 	go func() {
 		defer close(warmupDone)
@@ -1115,8 +1117,11 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
-		if err := store.RefreshManifest(ctx); err != nil {
-			logger.Errorf("manifest S3 refresh failed: %s", err)
+		s3RefreshStart := time.Now()
+		refreshErr := store.RefreshManifest(ctx)
+		warmupS3RefreshDuration = time.Since(s3RefreshStart)
+		if refreshErr != nil {
+			logger.Errorf("manifest S3 refresh failed: %s", refreshErr)
 		} else {
 			m := store.Manifest()
 			sm.SetManifestFiles(int64(m.TotalFiles()))
@@ -1147,6 +1152,27 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 	}()
 
 	<-warmupDone
+
+	// Emit operator-visible tuning hints based on observed state.
+	// Hints fire only when something is genuinely off — healthy
+	// clusters log nothing here. The values come from cfg +
+	// post-warmup manifest, so the hints can name specific knobs
+	// to tune rather than generic "consider X" advice.
+	startup.EmitStartupHints(startup.HintInputs{
+		ManifestFiles:    int64(store.Manifest().TotalFiles()),
+		MinManifestFiles: cfg.Startup.MinManifestFiles,
+		FooterCacheMax:   cfg.Cache.FooterMaxItems,
+		// BufferBridge peer count not exposed live — use the
+		// configured discovery peer count as a proxy. The check
+		// fires when peers ≤1, so misreading high doesn't suppress
+		// a real warning (it just adds false-positives when peers
+		// are configured but offline, which is also useful to know).
+		BufferBridgePeers: len(cfg.Discovery.StorageNodes),
+		SnapshotAge:       time.Since(store.Manifest().SavedAt()),
+		PersistInterval:   cfg.Manifest.PersistInterval,
+		S3RefreshDuration: warmupS3RefreshDuration,
+		WarmupDuration:    time.Since(warmupStart),
+	})
 
 	refreshTicker := time.NewTicker(cfg.Manifest.RefreshInterval)
 	defer refreshTicker.Stop()
