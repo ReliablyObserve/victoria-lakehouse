@@ -2,6 +2,7 @@ package selectapi
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -70,11 +71,25 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	if h.cfg.Mode == config.ModeTraces {
 		mux.HandleFunc("/select/jaeger/", func(w http.ResponseWriter, r *http.Request) {
-			jaeger.RequestHandler(r.Context(), w, r)
+			if !jaeger.RequestHandler(r.Context(), w, r) {
+				// Upstream VT's main HTTP dispatcher writes the same 400
+				// for paths Jaeger doesn't know about. Without this,
+				// Grafana sees HTTP 200 + 0 bytes (silent empty) and
+				// renders the cold tier as "no data".
+				http.Error(w, fmt.Sprintf("unsupported path requested: %q", r.URL.Path), http.StatusBadRequest)
+			}
 		})
 		mux.HandleFunc("/select/tempo/", func(w http.ResponseWriter, r *http.Request) {
 			normalizeTempoSearchParams(r)
-			tempo.RequestHandler(r.Context(), w, r)
+			if !tempo.RequestHandler(r.Context(), w, r) {
+				// Same parity fix as Jaeger above — tempo.RequestHandler
+				// returns false for unknown paths (e.g. /api/v2/search
+				// — TraceQL v2 — which upstream VT itself rejects with
+				// 400). Without the explicit error, Grafana's modern
+				// Tempo datasource (which probes /api/v2/search before
+				// falling back to /api/search) silently shows zero data.
+				http.Error(w, fmt.Sprintf("unsupported path requested: %q", r.URL.Path), http.StatusBadRequest)
+			}
 		})
 		mux.HandleFunc("/api/traces/", rewriteToJaeger)
 		mux.HandleFunc("/api/traces", rewriteToJaeger)
