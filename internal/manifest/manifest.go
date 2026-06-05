@@ -1510,36 +1510,69 @@ func (m *Manifest) SaveTo(path string) error {
 }
 
 func (m *Manifest) LoadFrom(path string) error {
-	data, err := os.ReadFile(path)
+	// Open as a stream rather than os.ReadFile — at PB scale the
+	// snapshot is 500 MB to multiple GB, and ReadFile would hold
+	// the entire file in memory IN ADDITION to the decoded
+	// persistedManifest. The gob decoder reads forward-only, so
+	// streaming from os.File cuts peak RSS roughly in half during
+	// the disk-recovery phase. The legacy-JSON branch below still
+	// does a full slurp because json.Unmarshal needs the whole
+	// payload — but JSON snapshots are dev/legacy artifacts and
+	// don't approach the PB-scale sizes that motivate this.
+	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("read manifest: %w", err)
+		return fmt.Errorf("open manifest: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat manifest: %w", err)
+	}
+	if fi.Size() > maxManifestSnapshotBytes {
+		// Refuse outsized snapshots up front so a corrupted file
+		// (or a too-big legitimate one) can't allocate a multi-GB
+		// decoder buffer before failing.
+		return fmt.Errorf("manifest snapshot %d bytes exceeds limit %d",
+			fi.Size(), maxManifestSnapshotBytes)
+	}
+
+	// Peek the magic without slurping the whole file.
+	magic := make([]byte, len(manifestBinaryMagic))
+	n, err := io.ReadFull(f, magic)
+	if err == io.EOF || (err == io.ErrUnexpectedEOF && n < len(manifestBinaryMagic)) {
+		// File too short to be either format. Treat as if it
+		// didn't exist — caller falls back to S3 refresh.
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("read magic: %w", err)
 	}
 
 	var snap persistedManifest
 	var format string
-	if len(data) >= len(manifestBinaryMagic) && bytes.Equal(data[:len(manifestBinaryMagic)], manifestBinaryMagic) {
-		// Binary format: drop the magic, decode the rest. Bound the
-		// decoder via io.LimitReader so a malicious/corrupted snapshot
-		// can't trick the gob decoder into pre-allocating a multi-TB
-		// slice during DoS. The cap is well above the largest
-		// legitimate snapshot — exceeding it surfaces as a decode error
-		// rather than an OOM-killer-induced crash.
-		body := data[len(manifestBinaryMagic):]
-		if int64(len(body)) > maxManifestSnapshotBytes {
-			return fmt.Errorf("manifest snapshot body %d bytes exceeds limit %d",
-				len(body), maxManifestSnapshotBytes)
-		}
-		dec := gob.NewDecoder(io.LimitReader(bytes.NewReader(body), maxManifestSnapshotBytes))
+	if bytes.Equal(magic, manifestBinaryMagic) {
+		// Binary format: gob-decode straight from the file, bounded
+		// by the size cap. No intermediate buffer.
+		dec := gob.NewDecoder(io.LimitReader(f, maxManifestSnapshotBytes))
 		if err := dec.Decode(&snap); err != nil {
 			return fmt.Errorf("decode binary manifest: %w", err)
 		}
 		format = "binary"
 	} else {
-		// Legacy JSON snapshot from a pre-binary build. Loads correctly
-		// once; the next SaveTo writes binary.
+		// Legacy JSON snapshot. Seek back to start and slurp —
+		// json.Unmarshal needs the whole payload. JSON snapshots
+		// are pre-binary-format artifacts and are not expected at
+		// PB scale; the next SaveTo writes binary anyway.
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("rewind for json: %w", err)
+		}
+		data, err := io.ReadAll(io.LimitReader(f, maxManifestSnapshotBytes))
+		if err != nil {
+			return fmt.Errorf("read json manifest: %w", err)
+		}
 		if err := json.Unmarshal(data, &snap); err != nil {
 			return fmt.Errorf("unmarshal json manifest: %w", err)
 		}
