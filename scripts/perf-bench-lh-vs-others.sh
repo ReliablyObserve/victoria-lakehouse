@@ -86,20 +86,34 @@ span_count() {
   ms=$(run_curl "$engine" "$url" data) && echo "$engine,span_count_1h,$i,$ms" >> "$OUT"
 }
 
-# ClickHouse equivalents over the same S3 parquet
+# ClickHouse equivalents over the same S3 parquet. The view names
+# come from deployment/docker/clickhouse/init-s3.sql which mirrors the
+# upstream OpenTelemetry ClickHouse exporter schema.
 ch_log_count() {
   local i=$1
-  ms=$(run_ch "SELECT count() FROM logs_all_tenants WHERE timestamp_unix_nano > toUnixTimestamp(now() - INTERVAL 1 HOUR) * 1000000000")
+  ms=$(run_ch "SELECT count() FROM lakehouse.otel_logs WHERE Timestamp > now() - INTERVAL 1 HOUR")
   echo "clickhouse,log_count_1h,$i,$ms" >> "$OUT"
 }
 ch_span_count() {
   local i=$1
-  ms=$(run_ch "SELECT count() FROM traces_all_tenants WHERE timestamp_unix_nano > toUnixTimestamp(now() - INTERVAL 1 HOUR) * 1000000000")
+  ms=$(run_ch "SELECT count() FROM lakehouse.otel_traces WHERE Timestamp > now() - INTERVAL 1 HOUR")
   echo "clickhouse,span_count_1h,$i,$ms" >> "$OUT"
+}
+ch_trace_search() {
+  local i=$1
+  ms=$(run_ch "SELECT count(DISTINCT TraceId) FROM lakehouse.otel_traces WHERE ServiceName = 'api-gateway' AND Timestamp > now() - INTERVAL 1 HOUR")
+  echo "clickhouse,trace_search,$i,$ms" >> "$OUT"
 }
 
 echo "=== ensuring no S3 latency injection ==="
 /Users/slawomirskowron/claude_projects/victoria-lakehouse/scripts/inject-s3-latency.sh clear >/dev/null 2>&1 || true
+
+# Wait for the recent-data settling window before measuring. VT's
+# Jaeger search excludes traces newer than 30s (LatencyOffset), so a
+# bench started immediately after pod restart sees empty results.
+# 60s gives a safe margin.
+echo "=== warm-wait 60s for data to settle past LatencyOffset cutoff ==="
+sleep 60
 
 echo "=== warmup ${WARMUP} iterations ==="
 for w in $(seq 1 $WARMUP); do
@@ -108,6 +122,26 @@ for w in $(seq 1 $WARMUP); do
   log_count lh_cold_logs 0 >/dev/null
   log_count vl_hot 0 >/dev/null
   ch_log_count 0
+done
+
+# Validate each engine returns real data before measuring (no fast
+# error responses pretending to be fast queries).
+echo "=== sanity check: each engine returns non-zero results ==="
+for engine_name in "LH cold-traces" "VT hot" "ClickHouse otel_traces"; do
+  case "$engine_name" in
+    "LH cold-traces")  url="${BASE[lh_cold_traces]}/select/jaeger/api/traces?service=api-gateway&limit=1"
+                       resp=$(${HOTREACH[lh_cold_traces]} "$url")
+                       count=$(echo "$resp" | python3 -c 'import sys,json; print(len(json.load(sys.stdin).get("data",[])))') ;;
+    "VT hot")          url="${BASE[vt_hot]}/select/jaeger/api/traces?service=api-gateway&limit=1"
+                       resp=$(${HOTREACH[vt_hot]} "$url")
+                       count=$(echo "$resp" | python3 -c 'import sys,json; print(len(json.load(sys.stdin).get("data",[])))') ;;
+    "ClickHouse otel_traces")
+                       count=$(${HOTREACH[clickhouse]} --query "SELECT count() FROM lakehouse.otel_traces WHERE Timestamp > now() - INTERVAL 1 HOUR" 2>&1) ;;
+  esac
+  echo "  $engine_name: $count"
+  if [[ -z "$count" || "$count" == "0" || "$count" == *"Exception"* ]]; then
+    echo "  WARNING: $engine_name returning no data — bench numbers will be misleading"
+  fi
 done
 
 echo "=== running $ITERATIONS measured iterations ==="
@@ -122,6 +156,7 @@ for i in $(seq 1 $ITERATIONS); do
   log_count vl_hot "$i"
   ch_log_count "$i"
   ch_span_count "$i"
+  ch_trace_search "$i"
   if (( i % 5 == 0 )); then
     echo "  [$i/$ITERATIONS]"
   fi
