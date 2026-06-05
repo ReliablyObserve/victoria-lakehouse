@@ -75,7 +75,7 @@ func retryS3(ctx context.Context, maxRetries int, fn func() error) error {
 			// shared mrand global — concurrent goroutines hitting
 			// the same source would serialize on the mutex,
 			// defeating the spread we want from jitter.
-			//nolint:gosec // jitter doesn't need crypto-grade randomness; G404 misfires
+			// #nosec G404 -- non-crypto jitter for retry backoff
 			jitter := time.Duration(rand.Int63n(int64(base) + 1))
 			select {
 			case <-time.After(jitter):
