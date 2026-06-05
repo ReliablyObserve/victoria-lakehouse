@@ -32,10 +32,12 @@ RUN mkdir -p deps lakehouse-traces/deps && \
 COPY patches/ /tmp/patches/
 RUN cp /tmp/patches/vl-logs/external.go.src deps/VictoriaLogs/app/vlstorage/external.go && \
     cp /tmp/patches/vl-logs/external_query.go.src deps/VictoriaLogs/lib/logstorage/external_query.go && \
-    cd deps/VictoriaLogs && git apply /tmp/patches/vl-logs/vlstorage-dispatch.patch
+    cd deps/VictoriaLogs && git apply /tmp/patches/vl-logs/vlstorage-dispatch.patch && \
+    git apply /tmp/patches/vl-logs/vl-export-severity.patch
 RUN cp /tmp/patches/vl-traces/external.go.src lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go && \
     cp /tmp/patches/vl-traces/external_query.go.src lakehouse-traces/deps/VictoriaLogs/lib/logstorage/external_query.go && \
-    cd lakehouse-traces/deps/VictoriaLogs && git apply /tmp/patches/vl-traces/vlstorage-dispatch.patch
+    cd lakehouse-traces/deps/VictoriaLogs && git apply /tmp/patches/vl-traces/vlstorage-dispatch.patch && \
+    git apply /tmp/patches/vl-traces/vl-export-severity.patch
 RUN cp /tmp/patches/vt-traces/external.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/external.go && \
     cp /tmp/patches/vt-traces/flag_dedup.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/flag_dedup.go && \
     cd lakehouse-traces/deps/VictoriaTraces && git apply /tmp/patches/vt-traces/vtstorage-dispatch.patch && \
