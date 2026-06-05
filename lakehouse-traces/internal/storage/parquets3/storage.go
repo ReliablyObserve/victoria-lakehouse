@@ -98,6 +98,9 @@ func New(cfg *config.Config) (*Storage, error) {
 	}
 
 	labelIdx := cache.NewLabelIndex()
+	if cap := cfg.Cache.LabelIndexMaxFields; cap > 0 {
+		labelIdx.SetMaxFields(cap)
+	}
 
 	var pers *cache.Persister
 	if cfg.Manifest.PersistPath != "" {
@@ -108,6 +111,12 @@ func New(cfg *config.Config) (*Storage, error) {
 			pers = p
 			if saved, err := p.LoadLabelIndex(); err == nil {
 				labelIdx = saved
+				if cap := cfg.Cache.LabelIndexMaxFields; cap > 0 {
+					// SetMaxFields applies the cap to the just-loaded
+					// index, evicting if the snapshot held more than
+					// the new cap allows.
+					labelIdx.SetMaxFields(cap)
+				}
 				logger.Infof("recovered label index from disk; labels=%d", saved.Len())
 			}
 		}

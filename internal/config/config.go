@@ -242,6 +242,19 @@ type CacheConfig struct {
 	// scales the cache up.
 	FooterMaxItems int `yaml:"footer_max_items"`
 
+	// LabelIndexMaxFields caps the number of distinct field names the
+	// in-memory label index will track. When the index reaches this
+	// limit, the least-recently-touched field is evicted on each new
+	// Add. Setting to 0 disables eviction (unbounded growth — the
+	// current default behaviour).
+	//
+	// At PB-scale with k8s-tagged data, distinct label key counts can
+	// climb into the hundreds of thousands (k8s.pod.name × every pod
+	// restart, container.id × every deploy). Capping prevents OOM in
+	// the long-running pod while leaving the most active fields
+	// available for tag-enumeration queries.
+	LabelIndexMaxFields int `yaml:"label_index_max_fields"`
+
 	// K8s-style request/limit/scaling for the L1 in-memory cache
 	// budget. When non-zero, these take precedence over MemoryLimit
 	// which becomes a deprecated alias logged once at startup. Sizes
