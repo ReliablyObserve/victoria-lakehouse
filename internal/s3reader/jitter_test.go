@@ -38,17 +38,17 @@ func TestRetryS3_JitterSpread(t *testing.T) {
 	// no single bucket should hold > 50% of the samples (with
 	// jitter the distribution is uniform across [0, max_total)).
 	const bucketWidth = 50 * time.Millisecond
-	buckets := make(map[time.Duration]int)
+	buckets := make(map[int]int)
 	totalSamples := 0
 	for d := range elapsedCh {
-		bucket := d / bucketWidth
-		buckets[bucket*bucketWidth]++
+		buckets[int(d/bucketWidth)]++
 		totalSamples++
 	}
 
-	for bucketStart, count := range buckets {
+	for bucket, count := range buckets {
 		fraction := float64(count) / float64(totalSamples)
 		if fraction > 0.5 {
+			bucketStart := time.Duration(int64(bucket) * int64(bucketWidth))
 			t.Errorf("jitter spread failed: bucket [%v, %v) holds %d/%d samples (%.0f%%) — backoff appears deterministic, not jittered",
 				bucketStart, bucketStart+bucketWidth, count, totalSamples, fraction*100)
 		}

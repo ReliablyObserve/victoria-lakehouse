@@ -148,15 +148,15 @@ func TestRefreshTenantScoped_DiscoversAllTenants(t *testing.T) {
 func TestRefreshTenantScoped_ParityWithFullBucket(t *testing.T) {
 	// Realistic mixed corpus: multiple tenants, partitions, file sizes.
 	keys := map[string]int64{
-		"0/0/traces/dt=2026-06-04/hour=00/a.parquet":   1000,
-		"0/0/traces/dt=2026-06-04/hour=12/b.parquet":   2000,
-		"0/0/traces/dt=2026-06-04/hour=12/c.parquet":   3000,
-		"1/1/traces/dt=2026-06-04/hour=00/d.parquet":   4000,
-		"1/1/traces/dt=2026-06-05/hour=00/e.parquet":   5000,
+		"0/0/traces/dt=2026-06-04/hour=00/a.parquet":    1000,
+		"0/0/traces/dt=2026-06-04/hour=12/b.parquet":    2000,
+		"0/0/traces/dt=2026-06-04/hour=12/c.parquet":    3000,
+		"1/1/traces/dt=2026-06-04/hour=00/d.parquet":    4000,
+		"1/1/traces/dt=2026-06-05/hour=00/e.parquet":    5000,
 		"1001/0/traces/dt=2026-06-04/hour=00/f.parquet": 6000,
 		// Non-parquet keys must be skipped on both paths.
 		"0/0/traces/dt=2026-06-04/hour=12/_metadata.json": 99,
-		"_bloom_index.bin":                                999,
+		"_bloom_index.bin": 999,
 	}
 
 	srv, _ := startMockBucket(t, keys)

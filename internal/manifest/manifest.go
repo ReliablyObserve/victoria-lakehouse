@@ -162,11 +162,11 @@ type Manifest struct {
 	// the manifest's file count).
 	tenantAggregates map[tenantAccumKey]*tenantAccum
 
-	minTime        time.Time
-	maxTime        time.Time
-	totalFiles     int
-	totalBytes     int64
-	lastRefresh    time.Time
+	minTime     time.Time
+	maxTime     time.Time
+	totalFiles  int
+	totalBytes  int64
+	lastRefresh time.Time
 	// savedAt is the timestamp the most recent successful snapshot
 	// write recorded. Loaded from `persistedManifest.SavedAt` on
 	// LoadFrom; updated on every SaveTo. Exposed via SavedAt() for
@@ -174,7 +174,7 @@ type Manifest struct {
 	// operators can spot pods running on stale snapshots — relevant
 	// during long-downtime recovery where a 1-hour-old snapshot
 	// gates reads on data written by other peers in the meantime.
-	savedAt time.Time
+	savedAt        time.Time
 	prefix         string
 	bucket         string
 	prefixTemplate string
@@ -183,8 +183,8 @@ type Manifest struct {
 	// Without this cache, tenantKeyFromFileKey() reparses the template
 	// (two strings.Contains calls) on every file — at 50M files during
 	// a manifest rebuild that's 100M redundant string scans.
-	templateSegments  int
-	templateHasOrgID  bool
+	templateSegments int
+	templateHasOrgID bool
 
 	// partitionAttempts maps "dt=YYYY-MM-DD/hour=HH" -> last MarkAttempt
 	// timestamp recorded by the compaction scheduler (see
@@ -631,9 +631,11 @@ func (m *Manifest) listCommonPrefixes(ctx context.Context, client *s3.Client, pr
 }
 
 func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
-	files := make(map[string][]FileInfo)
-	var totalFiles int
-	var totalBytes int64
+	var (
+		files      map[string][]FileInfo
+		totalFiles int
+		totalBytes int64
+	)
 
 	// When per-tenant prefix isolation is configured, the writer
 	// writes under "{AccountID}/{ProjectID}/<mode>/" — many distinct

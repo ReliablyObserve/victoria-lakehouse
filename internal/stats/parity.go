@@ -33,7 +33,7 @@ type ParityResponse struct {
 	// manifest tracks (typically VT-internal index rows the writer
 	// dropped); negative means the manifest claims rows VL can't
 	// find (post-compaction lag or stale index).
-	RowsDelta int64   `json:"rows_delta"`
+	RowsDelta int64 `json:"rows_delta"`
 	// JSON field intentionally named `rows_delta_pct`.
 	RowsDeltaPct float64 `json:"rows_delta_pct"`
 

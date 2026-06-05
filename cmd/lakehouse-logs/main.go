@@ -468,6 +468,22 @@ func run(cfg *config.Config, addr string) {
 	sig := procutil.WaitForSigterm()
 	logger.Infof("shutdown signal received; signal=%v", sig)
 
+	runShutdown(cfg, addr, store, rewriteSched, tombstoneStore, registry)
+}
+
+// runShutdown drains the lakehouse-logs pod in the order required for
+// honest /ready on the next boot. Mirror of lakehouse-traces/main.go's
+// runShutdown — per feedback_logs_traces_module_parity these two blocks
+// MUST stay line-aligned. Extracted from run() to keep its cyclomatic
+// complexity under the gocyclo budget.
+func runShutdown(
+	cfg *config.Config,
+	addr string,
+	store *parquets3.Storage,
+	rewriteSched *delete.RewriteScheduler,
+	tombstoneStore *delete.TombstoneStore,
+	registry *stats.TenantRegistry,
+) {
 	if err := httpserver.Stop([]string{addr}); err != nil {
 		logger.Errorf("HTTP server shutdown error: %s", err)
 	}

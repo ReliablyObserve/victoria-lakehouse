@@ -69,12 +69,12 @@ func TestTenantKeyFromFileKey_RejectsMaliciousKeys(t *testing.T) {
 	m.SetPrefixTemplate("{AccountID}/{ProjectID}/")
 
 	bad := []string{
-		"0/../1/traces/x.parquet",                // path traversal
-		"0/0\x00/traces/x.parquet",               // null byte
-		"0/0 with space/traces/x.parquet",        // whitespace
-		"0/0%2Fadmin/traces/x.parquet",           // URL-encoded slash
-		"0/tенант/traces/x.parquet",              // Unicode confusable
-		"0/team@evil/traces/x.parquet",           // shell metachar
+		"0/../1/traces/x.parquet",         // path traversal
+		"0/0\x00/traces/x.parquet",        // null byte
+		"0/0 with space/traces/x.parquet", // whitespace
+		"0/0%2Fadmin/traces/x.parquet",    // URL-encoded slash
+		"0/tенант/traces/x.parquet",       // Unicode confusable
+		"0/team@evil/traces/x.parquet",    // shell metachar
 	}
 	for _, k := range bad {
 		if _, ok := m.tenantKeyFromFileKey(k); ok {

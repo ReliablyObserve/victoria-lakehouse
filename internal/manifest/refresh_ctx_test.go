@@ -130,11 +130,11 @@ func TestExtractDateFromPrefix_RejectsMalformedDate(t *testing.T) {
 	}{
 		{"dt=2026-06-04", "2026-06-04"},
 		{"dt=2026-06-04/", "2026-06-04"},
-		{"dt=abcd-ef-gh", ""}, // non-digit positions rejected
-		{"dt=20a6-06-04", ""}, // letter at year[2]
-		{"dt=2026-0X-04", ""}, // letter at month[1]
-		{"dt=2026-06-0Z", ""}, // letter at day[1]
-		{"dt=2026/06/04", ""}, // wrong separators
+		{"dt=abcd-ef-gh", ""},              // non-digit positions rejected
+		{"dt=20a6-06-04", ""},              // letter at year[2]
+		{"dt=2026-0X-04", ""},              // letter at month[1]
+		{"dt=2026-06-0Z", ""},              // letter at day[1]
+		{"dt=2026/06/04", ""},              // wrong separators
 		{"dt=2026-06-04abc", "2026-06-04"}, // trailing junk ignored — by design
 		{"random/prefix/no/dt", ""},
 	}
