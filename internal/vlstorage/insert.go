@@ -129,6 +129,17 @@ func logRowsToSchemaRows(lr *logstorage.LogRows) []schema.LogRow {
 			mapFieldToRow(&row, f.Name, f.Value)
 		}
 
+		// Fall back to deriving SeverityText from severity_number when
+		// the source row has the OTel numeric severity but no text
+		// level (common with raw OTLP ingestion, stack traces, and the
+		// datagen mix). VL hot exposes a derived `level` in this case;
+		// without this fallback, LH cold queries return `level=""` for
+		// the same rows and Grafana's log-volume chart shows them as
+		// an "unknown" bucket.
+		if row.SeverityText == "" && row.SeverityNumber > 0 {
+			row.SeverityText = severityTextFromNumber(row.SeverityNumber)
+		}
+
 		rows = append(rows, row)
 	})
 
@@ -189,4 +200,27 @@ func mapFieldToRow(row *schema.LogRow, name, value string) {
 		}
 		row.LogAttributes[strings.Clone(name)] = strings.Clone(value)
 	}
+}
+
+// severityTextFromNumber maps an OTel severity_number to the canonical
+// text label (TRACE/DEBUG/INFO/WARN/ERROR/FATAL). Values outside the
+// OTel-defined 1-24 range return empty so callers can preserve the
+// row's original empty-text state. Mirrors VL hot's behavior so log
+// queries against LH cold show the same `level` series as hot.
+func severityTextFromNumber(n int32) string {
+	switch {
+	case n >= 1 && n <= 4:
+		return "TRACE"
+	case n >= 5 && n <= 8:
+		return "DEBUG"
+	case n >= 9 && n <= 12:
+		return "INFO"
+	case n >= 13 && n <= 16:
+		return "WARN"
+	case n >= 17 && n <= 20:
+		return "ERROR"
+	case n >= 21 && n <= 24:
+		return "FATAL"
+	}
+	return ""
 }
