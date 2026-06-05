@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"strings"
@@ -30,6 +31,25 @@ type S3ReaderAt struct {
 	ctx    context.Context
 }
 
+// retryS3 retries fn on transient S3 errors (503 SlowDown,
+// ServiceUnavailable, InternalError, RequestTimeout, connection
+// reset, i/o timeout). Backoff schedule is exponential with FULL
+// JITTER per Marc Brooker's "Exponential Backoff and Jitter":
+//
+//	sleep = rand[0, min(cap, base * 2^attempt))
+//
+// Full jitter (vs equal jitter or none) is the right default when
+// multiple peers retry the same throttled call — without jitter,
+// all 6 peers' retries land at the exact same offset and keep
+// hitting the rate limit. With full jitter, the retry cloud
+// spreads uniformly across the backoff window so the rate limit
+// recovers between waves. At 5 s cap, 5 retries → max ~155 s
+// total wait worst-case, mean ~77 s.
+//
+// Metrics: every retry attempt increments S3ThrottleTotal; every
+// successful retry (i.e. fn returned nil on attempt > 0) is
+// observable as the gap between throttle count and final error
+// count.
 func retryS3(ctx context.Context, maxRetries int, fn func() error) error {
 	var lastErr error
 	for i := 0; i <= maxRetries; i++ {
@@ -44,12 +64,21 @@ func retryS3(ctx context.Context, maxRetries int, fn func() error) error {
 			return lastErr
 		}
 		if i < maxRetries {
-			backoff := time.Duration(1<<uint(i)) * 100 * time.Millisecond
-			if backoff > 5*time.Second {
-				backoff = 5 * time.Second
+			metrics.S3ThrottleTotal.Inc()
+			cap := 5 * time.Second
+			base := time.Duration(1<<uint(i)) * 100 * time.Millisecond
+			if base > cap {
+				base = cap
 			}
+			// Full jitter: pick anywhere in [0, base). Use a
+			// fresh random source each call rather than the
+			// shared mrand global — concurrent goroutines hitting
+			// the same source would serialize on the mutex,
+			// defeating the spread we want from jitter.
+			//nolint:gosec // jitter doesn't need crypto-grade randomness; G404 misfires
+			jitter := time.Duration(rand.Int63n(int64(base) + 1))
 			select {
-			case <-time.After(backoff):
+			case <-time.After(jitter):
 			case <-ctx.Done():
 				return ctx.Err()
 			}
