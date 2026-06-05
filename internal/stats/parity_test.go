@@ -51,8 +51,8 @@ func TestParity_RowsAgree_ReportsZeroDelta(t *testing.T) {
 	if r.VLRows != 1000 || r.ManifestRows != 1000 {
 		t.Errorf("rows: vl=%d manifest=%d, want 1000/1000", r.VLRows, r.ManifestRows)
 	}
-	if r.RowsDelta != 0 || r.RowsDelta_ != 0 {
-		t.Errorf("delta: %d (%.2f%%), want 0", r.RowsDelta, r.RowsDelta_)
+	if r.RowsDelta != 0 || r.RowsDeltaPct != 0 {
+		t.Errorf("delta: %d (%.2f%%), want 0", r.RowsDelta, r.RowsDeltaPct)
 	}
 }
 
@@ -74,8 +74,8 @@ func TestParity_RowsDisagree_ReportsDelta(t *testing.T) {
 	if r.RowsDelta != 500 {
 		t.Errorf("delta=%d, want 500", r.RowsDelta)
 	}
-	if r.RowsDelta_ != 50 {
-		t.Errorf("delta_pct=%.2f, want 50.00", r.RowsDelta_)
+	if r.RowsDeltaPct != 50 {
+		t.Errorf("delta_pct=%.2f, want 50.00", r.RowsDeltaPct)
 	}
 }
 

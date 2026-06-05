@@ -158,7 +158,24 @@ func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint
 			baseTime = now.Add(-time.Duration(rng.Intn(3600)) * time.Second)
 		}
 		traceID := randomHex(32)
-		svc := services[rng.Intn(len(services))]
+		// Build an RPC call-chain across services so span pairs encode real
+		// cross-service edges: each hop is CLIENT(kind=3) in svc[i] linked to
+		// SERVER(kind=2) in svc[i+1] via parent_span_id == span_id. VT's
+		// servicegraph background task joins these to derive (parent, child).
+		numHops := 2 + rng.Intn(4) // 2..5 hops → 3..6 services on the path
+		chain := make([]string, numHops+1)
+		chain[0] = services[rng.Intn(len(services))]
+		for i := 1; i <= numHops; i++ {
+			// Pick a DIFFERENT service for the next hop to avoid same-service edges
+			// (real microservice topologies rarely call themselves over RPC).
+			for {
+				next := services[rng.Intn(len(services))]
+				if next != chain[i-1] {
+					chain[i] = next
+					break
+				}
+			}
+		}
 		ns := namespaces[rng.Intn(len(namespaces))]
 		env := deployEnvs[rng.Intn(len(deployEnvs))]
 		region := regions[rng.Intn(len(regions))]
@@ -166,13 +183,28 @@ func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint
 		host := hostNames[rng.Intn(len(hostNames))]
 
 		tc := traceCtx{
-			traceID: traceID, svc: svc, ns: ns, env: env,
+			traceID: traceID, svc: chain[0], ns: ns, env: env,
 			region: region, node: node, host: host, baseTime: baseTime,
 		}
 
-		spansPerTrace := 2 + rng.Intn(4)
+		spansPerTrace := numHops * 2 // CLIENT + SERVER per hop
 		parentSpanID := ""
 		for s := 0; s < spansPerTrace; s++ {
+			hopIdx := s / 2
+			isClient := s%2 == 0
+			var svc string
+			var spanKind int32
+			if isClient {
+				// CLIENT span in the caller service; its span_id becomes the
+				// SERVER's parent_span_id on the next iteration.
+				svc = chain[hopIdx]
+				spanKind = 3
+			} else {
+				// SERVER span in the callee service; its parent_span_id is the
+				// previous CLIENT's span_id (already in parentSpanID).
+				svc = chain[hopIdx+1]
+				spanKind = 2
+			}
 			spanID := randomHex(16)
 			tc.spanIDs = append(tc.spanIDs, spanID)
 			startTime := baseTime.Add(time.Duration(s*10) * time.Millisecond)
@@ -276,7 +308,7 @@ func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint
 				SpanID:            spanID,
 				ParentSpanID:      parentSpanID,
 				SpanName:          spanName,
-				SpanKind:          int32(1 + rng.Intn(3)),
+				SpanKind:          spanKind,
 				StatusCode:        statusCode,
 				StatusMessage:     statusMsg,
 				DurationNs:        dur.Nanoseconds(),

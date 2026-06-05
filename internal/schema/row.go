@@ -57,4 +57,21 @@ type TraceRow struct {
 	ResourceAttributes map[string]string `json:"resource.attributes,omitempty" parquet:"resource.attributes,optional"`
 	SpanAttributes     map[string]string `json:"span.attributes,omitempty" parquet:"span.attributes,optional"`
 	ScopeAttributes    map[string]string `json:"scope.attributes,omitempty" parquet:"scope.attributes,optional"`
+
+	// Service-graph edge fields. Populated only for rows tagged
+	// {trace_service_graph_stream="-"} emitted by VT's upstream
+	// servicegraph background task; NULL/empty on regular span rows
+	// (Parquet RLE keeps the storage cost negligible). These columns
+	// surface as top-level fields named `parent`, `child`, `callCount`
+	// so the upstream Jaeger Dependencies reader
+	// (/select/jaeger/api/dependencies) can serve them via the query
+	// `{trace_service_graph_stream="-"} | fields parent, child,
+	// callCount | stats by (parent, child) sum(callCount)` exactly as
+	// it does on hot VT. Without these columns, the writer's
+	// mapFieldToTraceRow would have nowhere to land the edge fields
+	// and the reader would return zero edges despite the rows being
+	// persisted.
+	ServiceGraphParent    string `json:"parent,omitempty" parquet:"parent,optional"`
+	ServiceGraphChild     string `json:"child,omitempty" parquet:"child,optional"`
+	ServiceGraphCallCount string `json:"callCount,omitempty" parquet:"callCount,optional"`
 }

@@ -14,13 +14,36 @@ import (
 
 var _ vtstorage.ExternalStorage = (*Adapter)(nil)
 
+// TenantLister returns the (account, project) pairs present in cold
+// storage for files whose time range overlaps [startNs, endNs].
+// Used to power vtstorage.GetTenantIDs so VT's per-tenant background
+// tasks (notably servicegraph) see every tenant the LH process owns.
+// nil = adapter falls back to the legacy "single zero tenant" shape.
+type TenantLister func(startNs, endNs int64) []logstorage.TenantID
+
 type Adapter struct {
-	store storage.Storage
+	store        storage.Storage
+	tenantLister TenantLister
 }
 
-func Init(store storage.Storage) {
+// Init installs the adapter as VT's external storage. The optional
+// tenantLister enables per-tenant iteration in upstream VT tasks
+// (servicegraph). When omitted the adapter reports a single
+// {0,0} tenant, preserving pre-multi-tenant behavior.
+func Init(store storage.Storage, opts ...InitOption) {
 	a := &Adapter{store: store}
+	for _, opt := range opts {
+		opt(a)
+	}
 	vtstorage.SetExternalStorage(a)
+}
+
+// InitOption tunes Init at construction time.
+type InitOption func(*Adapter)
+
+// WithTenantLister wires a callback for GetTenantIDs.
+func WithTenantLister(f TenantLister) InitOption {
+	return func(a *Adapter) { a.tenantLister = f }
 }
 
 func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error {
@@ -58,7 +81,7 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
 			return a.store.RunQuery(ctx, qctx.TenantIDs, qctx.Query, wb)
 		}
-		return logstorage.RunQueryExternal(qctx, searchFn, writeBlock)
+		return logstorage.RunQueryExternalWithSubqueries(qctx, searchFn, a.RunQuery, writeBlock)
 	}
 
 	// IMPORTANT: pass the FULL query (with pipes intact) to a.store.RunQuery.
@@ -78,7 +101,7 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
 			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, rewritten, wb)
 		}
-		return logstorage.RunQueryExternal(newQctx, searchFn, writeBlock)
+		return logstorage.RunQueryExternalWithSubqueries(newQctx, searchFn, a.RunQuery, writeBlock)
 	}
 
 	if rewritten, ok := stripTraceIndexStream(qctx.Query); ok {
@@ -87,7 +110,7 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 			searchFn := func(wb logstorage.WriteDataBlockFunc) error {
 				return a.store.RunQuery(qctx.Context, qctx.TenantIDs, rewritten, wb)
 			}
-			return logstorage.RunQueryExternal(newQctx, searchFn, writeBlock)
+			return logstorage.RunQueryExternalWithSubqueries(newQctx, searchFn, a.RunQuery, writeBlock)
 		}
 		return a.store.RunQuery(qctx.Context, qctx.TenantIDs, rewritten, writeBlock)
 	}
@@ -96,7 +119,7 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
 			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query, wb)
 		}
-		return logstorage.RunQueryExternal(qctx, searchFn, writeBlock)
+		return logstorage.RunQueryExternalWithSubqueries(qctx, searchFn, a.RunQuery, writeBlock)
 	}
 
 	return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query, writeBlock)
@@ -291,5 +314,14 @@ func (a *Adapter) GetTenantIDs(_ context.Context, start, end int64) ([]logstorag
 	if !a.store.HasDataForRange(start, end) {
 		return nil, nil
 	}
+	if a.tenantLister != nil {
+		tenants := a.tenantLister(start, end)
+		if len(tenants) > 0 {
+			return tenants, nil
+		}
+	}
+	// Single-tenant deployments (no lister wired) keep the legacy
+	// "report one zero-tenant" answer so VT tasks still see exactly
+	// one tenant to iterate.
 	return []logstorage.TenantID{{AccountID: 0, ProjectID: 0}}, nil
 }

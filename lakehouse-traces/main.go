@@ -37,6 +37,8 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3"
 	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
 	vtstorageadapter "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vtstorage_adapter"
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	"github.com/VictoriaMetrics/VictoriaTraces/app/victoria-traces/servicegraph"
 	"github.com/VictoriaMetrics/VictoriaTraces/app/vtinsert"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/internalselect"
@@ -814,7 +816,45 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		} else {
 			internalvlstorage.SetStorage(store, tombstoneStore)
 		}
-		vtstorageadapter.Init(store)
+		// Wire a tenant lister so VT's per-tenant background tasks
+		// (notably servicegraph) iterate every tenant the LH process
+		// holds in cold storage, not just the legacy {0,0}.
+		vtstorageadapter.Init(store, vtstorageadapter.WithTenantLister(
+			func(startNs, endNs int64) []logstorage.TenantID {
+				summaries := store.Manifest().TenantSummariesInWindow(startNs, endNs)
+				out := make([]logstorage.TenantID, 0, len(summaries))
+				for _, s := range summaries {
+					acc, errA := strconv.ParseUint(s.AccountID, 10, 32)
+					proj, errP := strconv.ParseUint(s.ProjectID, 10, 32)
+					if errA != nil || errP != nil {
+						continue
+					}
+					out = append(out, logstorage.TenantID{
+						AccountID: uint32(acc),
+						ProjectID: uint32(proj),
+					})
+				}
+				return out
+			},
+		))
+
+		// VT's service-graph background task aggregates spans into
+		// (caller, callee, count) edges and persists them as regular
+		// log rows tagged with {trace_service_graph_stream="-"}. The
+		// /select/jaeger/api/dependencies reader queries those rows
+		// back. Both ends already route through our adapter, so
+		// enabling the upstream task gives the cold tier Service
+		// Graph parity with hot VT without any cold-tier-specific
+		// service-graph code on our side.
+		//
+		// Disabled-by-default upstream behind -servicegraph.enableTask
+		// = true; the LH operator opts in via the same flag.
+		//
+		// No defer Stop() here — newMux returns immediately after wiring,
+		// and a defer at this scope would tear the goroutine down before
+		// its first tick. The task lives for the program's lifetime; the
+		// OS reclaims the goroutine on process exit.
+		servicegraph.Init()
 	}
 
 	if cfg.SelectEnabled() {
@@ -908,7 +948,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		if cfg.ListenAddr() != "" {
 			listenAddrLocal = cfg.ListenAddr()
 		}
-		parityAPI.RegisterParity(mux, stats.NewLocalVLQuerierWithQuery(
+		parityAPI.RegisterParityWithInternal(mux, stats.NewLocalVLQuerierWithQuery(
 			fmt.Sprintf("http://127.0.0.1%s", listenAddrLocal),
 			stats.TracesParityQuery,
 		), func(r *http.Request) bool {
@@ -916,7 +956,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 				return r.Header.Get(cfg.Tenant.GlobalReadHeader) == cfg.Tenant.GlobalReadValue
 			}
 			return cfg.Tenant.GlobalReadToken != "" && r.Header.Get("Authorization") == "Bearer "+cfg.Tenant.GlobalReadToken
-		})
+		}, vtInternalCounter{}, []string{"trace_id_idx", "service_graph"})
 	}
 
 	// Stats API
@@ -1314,6 +1354,15 @@ func tenantStatsKey(accountID, projectID uint32, fallback string) string {
 		return fallback
 	}
 	return strconv.FormatUint(uint64(accountID), 10) + ":" + strconv.FormatUint(uint64(projectID), 10)
+}
+
+// vtInternalCounter adapts metrics.VTInternalRowsDropped to the
+// stats.VTInternalCounter interface. Kept tiny so the parity wiring
+// in stats package doesn't take a direct dependency on internal/metrics.
+type vtInternalCounter struct{}
+
+func (vtInternalCounter) Get(kind string) uint64 {
+	return metrics.VTInternalRowsDropped.Get(kind)
 }
 
 // parseTenantFromS3Key extracts (account, project) from a

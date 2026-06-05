@@ -824,25 +824,72 @@ func (a *API) handleCost(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	} else if a.cfg.Manifest != nil {
-		// Fall back to manifest when registry is empty (e.g. read-only / datagen).
-		summaries := a.cfg.Manifest.TenantSummaries()
+		// Manifest fallback (registry empty — read-only nodes, datagen-only
+		// deployments). Previously hardcoded everything as STANDARD which
+		// over-estimated the bill for PB-scale deployments with lifecycle
+		// rules — IA/GLACIER bytes show as full STANDARD price. Now uses
+		// the ClassTracker's age-based prediction per file so the cost
+		// view matches what the lifecycle config would actually be billing.
+		now := time.Now()
+		globalByClass := make(map[string]int64)
+		perTenantByClass := make(map[string]map[string]int64)
+
+		for _, fi := range a.cfg.Manifest.GetFilesForRange(0, 1<<62) {
+			class := "STANDARD"
+			if a.cfg.ClassTracker != nil && !fi.CreatedAt.IsZero() {
+				tenantKey := ""
+				parts := strings.SplitN(fi.Key, "/", 3)
+				if len(parts) >= 2 {
+					tenantKey = parts[0] + ":" + parts[1]
+				}
+				if tenantKey != "" {
+					class = a.cfg.ClassTracker.PredictClassForTenant(fi.CreatedAt, now, tenantKey)
+				} else {
+					class = a.cfg.ClassTracker.PredictClass(fi.CreatedAt, now)
+				}
+			}
+			globalByClass[class] += fi.Size
+
+			parts := strings.SplitN(fi.Key, "/", 3)
+			if len(parts) >= 2 {
+				tk := parts[0] + ":" + parts[1]
+				if _, ok := perTenantByClass[tk]; !ok {
+					perTenantByClass[tk] = make(map[string]int64)
+				}
+				perTenantByClass[tk][class] += fi.Size
+			}
+		}
+
 		var allBytes int64
-		for _, s := range summaries {
-			allBytes += s.TotalBytes
-			cost := a.cfg.CostCalc.MonthlyStorageCost("STANDARD", s.TotalBytes)
+		for class, bytes := range globalByClass {
+			cost := a.cfg.CostCalc.MonthlyStorageCost(class, bytes)
+			byClass = append(byClass, ClassCost{
+				Class:   class,
+				Bytes:   bytes,
+				CostUSD: cost,
+			})
+			totalCost += cost
+			allBytes += bytes
+		}
+
+		for tk, byCls := range perTenantByClass {
+			parts := strings.SplitN(tk, ":", 2)
+			acc, proj := parts[0], ""
+			if len(parts) == 2 {
+				proj = parts[1]
+			}
+			cost := a.cfg.CostCalc.CostPerTenant(byCls)
+			var tenantBytes int64
+			for _, b := range byCls {
+				tenantBytes += b
+			}
 			perTenant = append(perTenant, TenantCostEntry{
-				AccountID:  s.AccountID,
-				ProjectID:  s.ProjectID,
+				AccountID:  acc,
+				ProjectID:  proj,
 				CostUSD:    cost,
-				TotalBytes: s.TotalBytes,
+				TotalBytes: tenantBytes,
 			})
 		}
-		totalCost = a.cfg.CostCalc.MonthlyStorageCost("STANDARD", allBytes)
-		byClass = append(byClass, ClassCost{
-			Class:   "STANDARD",
-			Bytes:   allBytes,
-			CostUSD: totalCost,
-		})
 	}
 
 	for i := range perTenant {

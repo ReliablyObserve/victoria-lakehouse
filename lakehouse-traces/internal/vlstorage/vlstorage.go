@@ -56,7 +56,7 @@ func (a *adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 			return a.store.RunQuery(ctx, qctx.TenantIDs, qctx.Query,
 				wrapHiddenFields(wb, hiddenFilters))
 		}
-		return logstorage.RunQueryExternal(qctx, searchFn, writeBlock)
+		return logstorage.RunQueryExternalWithSubqueries(qctx, searchFn, a.RunQuery, writeBlock)
 	}
 
 	return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query,

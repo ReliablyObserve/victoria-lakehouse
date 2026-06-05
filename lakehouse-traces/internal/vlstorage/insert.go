@@ -85,7 +85,14 @@ func logRowsToTraceRows(lr *logstorage.LogRows) []schema.TraceRow {
 	rows := make([]schema.TraceRow, 0, n)
 
 	lr.ForEachRow(func(_ uint64, r *logstorage.InsertRow) {
-		if kind := vtInternalRowKind(r); kind != "" {
+		// Detect VT-internal stream rows. trace_id_idx drops (we
+		// have a smaller cold-tier index in `_trace_idx` footer KV);
+		// service_graph rows pass through to the writer so the
+		// upstream `/select/jaeger/api/dependencies` reader works
+		// unchanged. The metric counter still ticks for both kinds
+		// so the parity check's expected_drift accounts for what
+		// the writer dropped.
+		if kind, drop := vtInternalRowKind(r); drop {
 			metrics.VTInternalRowsDropped.Inc(kind)
 			return
 		}
@@ -127,23 +134,40 @@ func logRowsToTraceRows(lr *logstorage.LogRows) []schema.TraceRow {
 }
 
 // vtInternalRowKind classifies VT-internal index entries (trace_id_idx,
-// service-graph) that must not be persisted as trace spans. Returns the
-// metric "kind" label for the detected stream, or "" for normal spans.
+// service-graph) that the writer treats specially. Returns the metric
+// "kind" label for the detected stream, or "" for normal spans.
 //
-// VT's vtinsert pushes these as ordinary log rows through the same insert
-// pipeline as spans; they belong to VT's own query path (`/select/tempo`)
-// and would otherwise turn into degenerate spans with empty trace_id when
-// mapped into TraceRow.
-func vtInternalRowKind(r *logstorage.InsertRow) string {
+// Drop policy (per kind):
+//
+//   - trace_id_idx: DROP. VT's hot-tier trace-by-ID index is high
+//     cardinality (one row per trace_id per partition bucket) and
+//     we replace it with our `_trace_idx` Parquet footer KV — much
+//     smaller, single-file lookup. Persisting the upstream index
+//     rows would 10–100× our cold-tier row count for no read win.
+//
+//   - service_graph: KEEP. These are LOW-cardinality aggregate rows
+//     emitted by VT's `servicegraph` background task (bounded by
+//     services² × time bucket, not per-trace), and the
+//     `/select/jaeger/api/dependencies` reader expects to find them
+//     in storage via {trace_service_graph_stream="-"} | stats by
+//     (parent,child) sum(callCount). Dropping them silently breaks
+//     Grafana's Service Graph view; persisting them lets the
+//     upstream task + reader work unchanged.
+//
+// Caller still receives a non-empty kind for service_graph rows so
+// metrics.VTInternalRowsDropped's "kind" label can record activity
+// without us actually dropping anything; the writer checks the
+// boolean returned to decide whether to skip the row.
+func vtInternalRowKind(r *logstorage.InsertRow) (kind string, drop bool) {
 	for _, f := range r.Fields {
 		switch f.Name {
 		case otelpb.TraceIDIndexFieldName, otelpb.TraceIDIndexStreamName:
-			return vtInternalKindTraceIDIdx
+			return vtInternalKindTraceIDIdx, true
 		case otelpb.ServiceGraphStreamName:
-			return vtInternalKindServiceGraph
+			return vtInternalKindServiceGraph, false
 		}
 	}
-	return ""
+	return "", false
 }
 
 // unmarshalStreamTags unmarshals canonical stream tags into dst.
@@ -218,11 +242,31 @@ func mapFieldToTraceRow(row *schema.TraceRow, name, value string) {
 		storeSpanAttr(row, strings.Clone(name), strings.Clone(value))
 		return
 
-	// VT-internal index fields: not part of OTLP data, skip entirely.
+	// VT-internal trace-ID index fields: replaced by our `_trace_idx`
+	// footer KV (see internal/traceindex), so skip entirely here.
 	case otelpb.TraceIDIndexFieldName, otelpb.TraceIDIndexStreamName,
-		otelpb.TraceIDIndexStartTimeFieldName, otelpb.TraceIDIndexEndTimeFieldName,
-		otelpb.ServiceGraphStreamName, otelpb.ServiceGraphParentFieldName,
-		otelpb.ServiceGraphChildFieldName, otelpb.ServiceGraphCallCountFieldName:
+		otelpb.TraceIDIndexStartTimeFieldName, otelpb.TraceIDIndexEndTimeFieldName:
+		return
+
+	// Service-graph stream tag: marker only, the row carries no data here.
+	case otelpb.ServiceGraphStreamName:
+		return
+
+	// Service-graph edge payload: route to dedicated TraceRow columns so
+	// the upstream Jaeger Dependencies reader's
+	// `{trace_service_graph_stream="-"} | fields parent, child,
+	// callCount | stats by (parent, child) sum(callCount)` query can
+	// project them as top-level fields. Storing them only in
+	// SpanAttributes would not surface them as top-level fields and
+	// the reader would return zero edges.
+	case otelpb.ServiceGraphParentFieldName:
+		row.ServiceGraphParent = strings.Clone(value)
+		return
+	case otelpb.ServiceGraphChildFieldName:
+		row.ServiceGraphChild = strings.Clone(value)
+		return
+	case otelpb.ServiceGraphCallCountFieldName:
+		row.ServiceGraphCallCount = strings.Clone(value)
 		return
 	}
 

@@ -325,14 +325,19 @@ func TestVTInsertAdapter_DropsTraceIDIndexRow(t *testing.T) {
 	if len(w.rows) != 0 {
 		t.Fatalf("expected VT trace_id_idx row to be dropped, got %d rows persisted", len(w.rows))
 	}
-	if kind := vtInternalRowKind(&logstorage.InsertRow{
+	if kind, drop := vtInternalRowKind(&logstorage.InsertRow{
 		Fields: []logstorage.Field{{Name: otelpb.TraceIDIndexFieldName, Value: "x"}},
-	}); kind != vtInternalKindTraceIDIdx {
-		t.Errorf("vtInternalRowKind on trace_id_idx field returned %q, want %q", kind, vtInternalKindTraceIDIdx)
+	}); kind != vtInternalKindTraceIDIdx || !drop {
+		t.Errorf("vtInternalRowKind on trace_id_idx: got (%q, drop=%v), want (%q, drop=true)",
+			kind, drop, vtInternalKindTraceIDIdx)
 	}
 }
 
-func TestVTInsertAdapter_DropsServiceGraphRow(t *testing.T) {
+// TestVTInsertAdapter_KeepsServiceGraphRow pins the post-Phase-B
+// drop policy: service_graph rows ARE persisted (so the upstream
+// /select/jaeger/api/dependencies reader can find them), but the
+// counter still ticks under their kind for parity-check accounting.
+func TestVTInsertAdapter_KeepsServiceGraphRow(t *testing.T) {
 	w := &mockTraceWriter{}
 	a := &vtInsertAdapter{writer: w}
 
@@ -347,13 +352,34 @@ func TestVTInsertAdapter_DropsServiceGraphRow(t *testing.T) {
 
 	a.MustAddRows(lr)
 
-	if len(w.rows) != 0 {
-		t.Fatalf("expected VT service_graph row to be dropped, got %d rows persisted", len(w.rows))
+	if len(w.rows) != 1 {
+		t.Fatalf("expected service_graph row to be persisted, got %d rows", len(w.rows))
 	}
-	if kind := vtInternalRowKind(&logstorage.InsertRow{
+
+	// The edge fields must land in their dedicated TraceRow columns,
+	// not get dropped. The upstream Jaeger Dependencies reader queries
+	// `{trace_service_graph_stream="-"} | fields parent, child, callCount`
+	// — those names must surface as top-level Parquet columns so the
+	// projection picks them up. Storing them anywhere else (or dropping
+	// them) leaves the reader with empty edges despite the rows existing.
+	row := w.rows[0]
+	if row.ServiceGraphParent != "frontend" {
+		t.Errorf("ServiceGraphParent = %q, want %q", row.ServiceGraphParent, "frontend")
+	}
+	if row.ServiceGraphChild != "backend" {
+		t.Errorf("ServiceGraphChild = %q, want %q", row.ServiceGraphChild, "backend")
+	}
+	if row.ServiceGraphCallCount != "7" {
+		t.Errorf("ServiceGraphCallCount = %q, want %q", row.ServiceGraphCallCount, "7")
+	}
+
+	// Classification still returns the kind so metrics + parity can
+	// see service_graph activity, but drop=false so the writer keeps it.
+	if kind, drop := vtInternalRowKind(&logstorage.InsertRow{
 		Fields: []logstorage.Field{{Name: otelpb.ServiceGraphStreamName, Value: "-"}},
-	}); kind != vtInternalKindServiceGraph {
-		t.Errorf("vtInternalRowKind on service_graph stream field returned %q, want %q", kind, vtInternalKindServiceGraph)
+	}); kind != vtInternalKindServiceGraph || drop {
+		t.Errorf("vtInternalRowKind on service_graph: got (%q, drop=%v), want (%q, drop=false)",
+			kind, drop, vtInternalKindServiceGraph)
 	}
 }
 
@@ -367,8 +393,9 @@ func TestVTInternalRowKind_SpanRowReturnsEmpty(t *testing.T) {
 			{Name: "span.name", Value: "GET /"},
 		},
 	}
-	if kind := vtInternalRowKind(r); kind != "" {
-		t.Errorf("vtInternalRowKind on span row returned %q, want empty", kind)
+	if kind, drop := vtInternalRowKind(r); kind != "" || drop {
+		t.Errorf("vtInternalRowKind on span row: got (%q, drop=%v), want (\"\", drop=false)",
+			kind, drop)
 	}
 }
 

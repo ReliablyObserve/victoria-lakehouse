@@ -37,6 +37,34 @@ services:
       "
 
   # =========================================================================
+  # S3 latency proxy — Shopify toxiproxy in front of MinIO.
+  #
+  # Default behavior: pass-through (0ms added). Run scripts/inject-s3-latency.sh
+  # with a millisecond value to dial in S3 latency that simulates a real
+  # cloud bucket (typical p50 25-100ms, p99 300-1000ms, occasional 2s+).
+  #
+  # The lakehouse-traces and lakehouse-logs services point at this proxy
+  # rather than minio directly, so any latency added here is felt by the
+  # LH read/write paths but not by the host-side test suite (which still
+  # talks to MinIO at localhost:29000 directly without any added delay).
+  # =========================================================================
+
+  s3-latency:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    command: ["-host=0.0.0.0", "-config=/etc/toxiproxy/proxies.json"]
+    volumes:
+      - ./toxiproxy-proxies.json:/etc/toxiproxy/proxies.json:ro
+    networks: [lakehouse-net]
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # =========================================================================
   # Hot Tier — Disk-based, 24h retention
   # =========================================================================
 
@@ -62,7 +90,16 @@ services:
       - "-storageDataPath=/data"
       - "-retentionPeriod=24h"
       - "-loggerLevel=INFO"
+      - "-servicegraph.enableTask=true"
+      - "-servicegraph.taskInterval=1m"
+      - "-servicegraph.taskLookbehind=2m"
+      - "-servicegraph.taskTimeout=30s"
     networks: [lakehouse-net]
+    # Expose hot VT for host-side parity tests that compare against
+    # the cold tier. Bound to localhost to avoid accidental external
+    # exposure of the unauthenticated /select endpoints.
+    ports:
+      - "127.0.0.1:10428:10428"
     volumes:
       - vt-data:/data
     healthcheck:
@@ -190,6 +227,8 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
+      s3-latency:
+        condition: service_healthy
     # Exposed for VMUI access at http://localhost:29428/select/vmui/
     ports:
       - "29428:9428"
@@ -198,7 +237,7 @@ services:
       LAKEHOUSE_AZ: "az-a"
     command:
       - "-lakehouse.s3.bucket=obs-archive"
-      - "-lakehouse.s3.endpoint=http://minio:9000"
+      - "-lakehouse.s3.endpoint=http://s3-latency:9000"
       - "-lakehouse.s3.access-key=minioadmin"
       - "-lakehouse.s3.secret-key=minioadmin"
       - "-lakehouse.s3.force-path-style=true"
@@ -257,6 +296,8 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
+      s3-latency:
+        condition: service_healthy
     # Exposed for VMUI access at http://localhost:20428/select/vmui/
     ports:
       - "20428:10428"
@@ -265,7 +306,7 @@ services:
       LAKEHOUSE_AZ: "az-a"
     command:
       - "-lakehouse.s3.bucket=obs-archive"
-      - "-lakehouse.s3.endpoint=http://minio:9000"
+      - "-lakehouse.s3.endpoint=http://s3-latency:9000"
       - "-lakehouse.s3.access-key=minioadmin"
       - "-lakehouse.s3.secret-key=minioadmin"
       - "-lakehouse.s3.force-path-style=true"
@@ -299,6 +340,21 @@ services:
       # override beyond upstream defaults; it reflects a real
       # cold-tier write-lag, not an LH-specific trick.
       - "-search.latencyOffset=2m"
+      # Enable VT's service-graph background task on the cold tier.
+      # The task queries spans (via our adapter) and persists edge
+      # rows back to S3, which the Jaeger /api/dependencies reader
+      # picks up unchanged. taskLookbehind covers the flush lag
+      # so newly-flushed spans contribute to the next aggregation.
+      #
+      # Timeout is bumped from the 30s upstream default to 5m: the
+      # task runs a join+aggregation over the entire lookbehind
+      # window's spans on cold storage. With 24h+ of accumulated
+      # data per partition this needs more time than the hot-tier
+      # default assumed.
+      - "-servicegraph.enableTask=true"
+      - "-servicegraph.taskInterval=5m"
+      - "-servicegraph.taskLookbehind=10m"
+      - "-servicegraph.taskTimeout=4m"
       - "-lakehouse.config=/etc/lakehouse/policy.yml"
       - "-loggerLevel=INFO"
     volumes:
@@ -436,6 +492,8 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
+      s3-latency:
+        condition: service_healthy
     networks: [lakehouse-net]
     environment:
       CLICKHOUSE_DB: default
@@ -499,6 +557,70 @@ services:
         condition: service_healthy
       loki-vl-proxy:
         condition: service_healthy
+
+  # =========================================================================
+  # Jaeger UI — upstream Jaeger query UI in front of VT (hot) and LH (cold).
+  #
+  # Architecture per side (hot/cold):
+  #   - jaeger-query-{hot,cold}: upstream jaegertracing/jaeger-query with
+  #     SPAN_STORAGE_TYPE=memory. We don't use its in-memory backend for
+  #     data — it just serves the UI's embedded static assets. Internal-only.
+  #   - jaeger-proxy-{hot,cold}: nginx in front that proxies /api/* to
+  #     VT or lakehouse-traces (path rewrite /api → /select/jaeger/api)
+  #     and falls through to jaeger-query for everything else.
+  #
+  # Browse: hot=http://localhost:16686  cold=http://localhost:16687
+  # System Architecture menu shows the Dependencies graph from the
+  # respective tier's /select/jaeger/api/dependencies endpoint.
+  # =========================================================================
+
+  jaeger-query-hot:
+    image: jaegertracing/jaeger-query:1.62.0
+    environment:
+      SPAN_STORAGE_TYPE: memory
+    networks: [lakehouse-net]
+
+  jaeger-proxy-hot:
+    image: nginx:alpine
+    ports:
+      - "16686:80"
+    environment:
+      BACKEND_HOST: victoriatraces
+      BACKEND_PORT: "10428"
+      UI_HOST: jaeger-query-hot
+      UI_PORT: "16686"
+    volumes:
+      - ./jaeger-ui-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
+    networks: [lakehouse-net]
+    depends_on:
+      victoriatraces:
+        condition: service_healthy
+      jaeger-query-hot:
+        condition: service_started
+
+  jaeger-query-cold:
+    image: jaegertracing/jaeger-query:1.62.0
+    environment:
+      SPAN_STORAGE_TYPE: memory
+    networks: [lakehouse-net]
+
+  jaeger-proxy-cold:
+    image: nginx:alpine
+    ports:
+      - "16687:80"
+    environment:
+      BACKEND_HOST: lakehouse-traces
+      BACKEND_PORT: "10428"
+      UI_HOST: jaeger-query-cold
+      UI_PORT: "16686"
+    volumes:
+      - ./jaeger-ui-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
+    networks: [lakehouse-net]
+    depends_on:
+      lakehouse-traces:
+        condition: service_healthy
+      jaeger-query-cold:
+        condition: service_started
 
 volumes:
   vl-data: {}

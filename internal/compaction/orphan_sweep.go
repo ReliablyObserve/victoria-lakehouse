@@ -392,15 +392,19 @@ func (o *OrphanSweep) RunTierB(ctx context.Context) (int, error) {
 }
 
 // keyInManifestAt re-reads the manifest snapshot and reports whether
-// `key` appears under the given prefix. Used only by Tier B's third
-// safety check.
-func (o *OrphanSweep) keyInManifestAt(prefix, key string) bool {
-	for _, k := range o.cfg.Manifest.KeysUnderPrefix(prefix) {
-		if k == key {
-			return true
-		}
-	}
-	return false
+// `key` appears in the manifest. Used only by Tier B's third safety
+// check, where we re-confirm a key is still absent right before issuing
+// the DELETE — guarding against the race where a peer just published
+// this key between our LIST and HEAD.
+//
+// Originally iterated every key under the date prefix (O(files under
+// prefix)). Now uses the byKey index for an O(1) point lookup; the
+// prefix argument is preserved for backward compatibility but only used
+// as a documentation hint (which prefix the caller thought it was
+// scanning). Manifest membership is a global property — if the key is
+// in m.byKey, it's in the manifest regardless of the prefix.
+func (o *OrphanSweep) keyInManifestAt(_ string, key string) bool {
+	return o.cfg.Manifest.HasKey(key)
 }
 
 // isProtected returns true when the key MUST NOT be deleted by Tier B,

@@ -1,9 +1,12 @@
 package manifest
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -18,6 +21,31 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
+
+// manifestBinaryMagic prefixes every gob-encoded manifest snapshot
+// so LoadFrom can distinguish the new compact binary format from the
+// legacy JSON format (which always starts with '{'). At PB-scale the
+// binary format is ~3-5× smaller, faster to encode, and avoids the
+// JSON parser's allocation overhead on a 10 GB blob. Old JSON
+// snapshots remain loadable for as long as the magic check stays
+// in place.
+var manifestBinaryMagic = []byte("BMNF\x00\x01")
+
+// maxManifestSnapshotBytes bounds the gob decoder during LoadFrom so a
+// truncated, malicious, or accidentally-huge snapshot can't allocate
+// arbitrary memory at startup. 4 GiB is well above the largest legitimate
+// snapshot we'd see at PB-scale (binary gob of 50M files ≈ 1-2 GiB) and
+// far below what would OOM a small operator pod. Exceeding the cap
+// fails the load cleanly so the operator can investigate rather than
+// the process getting killed by the OOM killer mid-startup.
+const maxManifestSnapshotBytes = 4 * 1024 * 1024 * 1024
+
+// tenantRefreshMaxParallel bounds the per-tenant S3 LIST fan-out in
+// refreshTenantScoped. 8 leaves headroom under the typical S3 pool
+// MaxConcurrentRequests budget (32-64) so concurrent queries aren't
+// starved by the refresh fan-out. Operators with much larger tenant
+// counts can tune via cfg.Manifest.TenantRefreshConcurrency.
+const tenantRefreshMaxParallel = 8
 
 const maxLabelsPerField = 100
 
@@ -95,14 +123,60 @@ type Manifest struct {
 	sortedPartitions []partitionEntry
 	partitionMeta    map[string]*PartitionMeta
 	labelIndex       map[string]map[string]map[string]bool // field -> value -> fileKey -> exists
-	minTime          time.Time
-	maxTime          time.Time
-	totalFiles       int
-	totalBytes       int64
-	lastRefresh      time.Time
-	prefix           string
-	bucket           string
-	prefixTemplate   string
+
+	// byKey indexes the partition that owns each FileInfo key, so per-key
+	// mutators (SetFileBucket, UpdateFileColumnStats, EnrichFileMetadata)
+	// can avoid the full O(n) two-level scan across every partition every
+	// time they touch a single file. At 50M files (the PB-scale target),
+	// a single full-manifest scan takes hundreds of milliseconds under
+	// the write lock and blocks queries; the byKey index reduces it to
+	// O(files-in-one-partition) ≈ O(100) on a balanced cluster.
+	//
+	// We store the partition (not a *FileInfo) deliberately: the file
+	// slice in m.files[partition] gets re-allocated on append/remove, so
+	// any *FileInfo we cached would dangle. Per-partition slice scans
+	// (~50–100 files) are cheap and stable across mutations.
+	//
+	// Kept consistent with m.files in: AddFile, RemoveFile,
+	// RefreshFromS3, rebuildIndex, snapshot Load.
+	byKey map[string]string
+
+	// tenantAggregates is the incremental per-tenant cache backing
+	// TenantSummaries(). Without this, /api/v1/tenants, /stats/overview,
+	// the Lakehouse Tenants UI tab, and the servicegraph background
+	// task's tenant-lister each iterate every file in the manifest on
+	// every call — O(50M) at PB-scale.
+	//
+	// Maintenance contract: every AddFile / RemoveFile / EnrichFileMetadata
+	// updates this map atomically under the same write lock that mutates
+	// m.files. RefreshFromS3 and snapshot Load rebuild it via
+	// rebuildTenantAggregates() after the wholesale m.files reassignment.
+	// TenantSummaries() then just snapshots the cache — O(tenants),
+	// typically O(10²) not O(10⁷).
+	//
+	// minTimeNs / maxTimeNs are tracked at nanosecond precision so we
+	// don't have to compare time.Time values on the hot path. The
+	// per-tenant set of partitions is reference-counted so we can detect
+	// when a tenant's earliest/latest partition disappears and trigger a
+	// minimal recompute (bounded by the tenant's partition count, not
+	// the manifest's file count).
+	tenantAggregates map[tenantAccumKey]*tenantAccum
+
+	minTime        time.Time
+	maxTime        time.Time
+	totalFiles     int
+	totalBytes     int64
+	lastRefresh    time.Time
+	prefix         string
+	bucket         string
+	prefixTemplate string
+	// templateSegments + templateHasOrgID are cached results of parsing
+	// prefixTemplate, refreshed every time SetPrefixTemplate is called.
+	// Without this cache, tenantKeyFromFileKey() reparses the template
+	// (two strings.Contains calls) on every file — at 50M files during
+	// a manifest rebuild that's 100M redundant string scans.
+	templateSegments  int
+	templateHasOrgID  bool
 
 	// partitionAttempts maps "dt=YYYY-MM-DD/hour=HH" -> last MarkAttempt
 	// timestamp recorded by the compaction scheduler (see
@@ -119,8 +193,204 @@ func New(bucket, prefix string) *Manifest {
 		labelIndex:        make(map[string]map[string]map[string]bool),
 		partitionMeta:     make(map[string]*PartitionMeta),
 		partitionAttempts: make(map[string]time.Time),
+		byKey:             make(map[string]string),
+		tenantAggregates:  make(map[tenantAccumKey]*tenantAccum),
 		prefix:            prefix,
 		bucket:            bucket,
+	}
+}
+
+// tenantAccumKey + tenantAccum back the incremental TenantSummaries
+// cache. Lives next to m.files under m.mu's protection.
+type tenantAccumKey struct {
+	account string
+	project string
+}
+
+type tenantAccum struct {
+	files    int
+	bytes    int64
+	rows     int64
+	rawBytes int64
+	// partitions tracks the per-partition file count for this tenant.
+	// Used to recompute min/max time bounds when a tenant's earliest
+	// or latest partition has its last file removed, without scanning
+	// the entire manifest.
+	partitions map[string]int
+	minTimeNs  int64
+	maxTimeNs  int64
+}
+
+// isValidTenantSegment returns true when s is a safe value for an
+// account/project/orgID path segment. Allowed: letters, digits,
+// underscore, hyphen. Anything else (slash, dot, null, whitespace,
+// Unicode confusables) means a malformed or malicious key — reject so
+// it can't bypass the prefix check in GetFilesForRangeTenant or
+// confuse the tenant-aggregate accounting.
+func isValidTenantSegment(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			continue
+		}
+		if r >= 'a' && r <= 'z' {
+			continue
+		}
+		if r >= 'A' && r <= 'Z' {
+			continue
+		}
+		if r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// tenantKeyFromFileKey parses the (account, project) tuple out of a
+// FileInfo.Key. Mirrors the parsing in TenantSummaries() so the cache
+// agrees with the legacy linear-scan path on every input. Returns
+// (key, true) on success or (zero, false) if the key doesn't conform
+// to the prefix template.
+//
+// Segments are validated against isValidTenantSegment — a key like
+// "0/../1/x.parquet" or "0/0%2f1/y.parquet" is rejected outright
+// rather than spoofing tenant ownership through prefix tricks.
+func (m *Manifest) tenantKeyFromFileKey(fileKey string) (tenantAccumKey, bool) {
+	// Use the cached parse result populated by SetPrefixTemplate.
+	// If callers mutate m.prefixTemplate directly without going through
+	// SetPrefixTemplate (tests inside this package), the cache stays at
+	// 0 — fall back to one-time parsing. The fast-path (production)
+	// always hits the cached values.
+	segments := m.templateSegments
+	if segments == 0 {
+		segments = 2
+		if strings.Contains(m.prefixTemplate, "{OrgID}") && !strings.Contains(m.prefixTemplate, "{ProjectID}") {
+			segments = 1
+		}
+	}
+	parts := strings.SplitN(fileKey, "/", segments+2)
+	if len(parts) < segments+1 {
+		return tenantAccumKey{}, false
+	}
+	if !isValidTenantSegment(parts[0]) {
+		return tenantAccumKey{}, false
+	}
+	if segments == 1 {
+		return tenantAccumKey{account: parts[0]}, true
+	}
+	if !isValidTenantSegment(parts[1]) {
+		return tenantAccumKey{}, false
+	}
+	return tenantAccumKey{account: parts[0], project: parts[1]}, true
+}
+
+// updateTenantAggregateOnAdd applies a +1 file delta for fi/partition
+// to the tenant aggregate cache. Must hold m.mu (write).
+func (m *Manifest) updateTenantAggregateOnAdd(partition string, fi FileInfo) {
+	tk, ok := m.tenantKeyFromFileKey(fi.Key)
+	if !ok {
+		return
+	}
+	a := m.tenantAggregates[tk]
+	if a == nil {
+		a = &tenantAccum{partitions: make(map[string]int)}
+		m.tenantAggregates[tk] = a
+	}
+	a.files++
+	a.bytes += fi.Size
+	a.rows += fi.RowCount
+	a.rawBytes += fi.RawBytes
+	a.partitions[partition]++
+
+	if t, err := parsePartitionTime(partition); err == nil {
+		startNs := t.UnixNano()
+		endNs := t.Add(time.Hour).UnixNano()
+		if a.minTimeNs == 0 || startNs < a.minTimeNs {
+			a.minTimeNs = startNs
+		}
+		if endNs > a.maxTimeNs {
+			a.maxTimeNs = endNs
+		}
+	}
+}
+
+// updateTenantAggregateOnRemove applies a -1 file delta. Recomputes
+// min/max time iff this was the last file in the tenant's earliest
+// or latest partition; the recompute is bounded by the tenant's
+// partition count (≈720 for a 30-day window) not the manifest's file
+// count. Must hold m.mu (write).
+func (m *Manifest) updateTenantAggregateOnRemove(partition string, fi FileInfo) {
+	tk, ok := m.tenantKeyFromFileKey(fi.Key)
+	if !ok {
+		return
+	}
+	a := m.tenantAggregates[tk]
+	if a == nil {
+		return
+	}
+	a.files--
+	a.bytes -= fi.Size
+	a.rows -= fi.RowCount
+	a.rawBytes -= fi.RawBytes
+
+	// Decrement the partition refcount; if we just removed the last
+	// file the tenant had in this partition, drop it from the set and
+	// check if min/max time bounds need recomputing.
+	a.partitions[partition]--
+	if a.partitions[partition] <= 0 {
+		delete(a.partitions, partition)
+
+		if t, err := parsePartitionTime(partition); err == nil {
+			startNs := t.UnixNano()
+			endNs := t.Add(time.Hour).UnixNano()
+			if startNs == a.minTimeNs || endNs == a.maxTimeNs {
+				m.recomputeTenantTimeBounds(a)
+			}
+		}
+	}
+
+	// Drop empty tenant aggregates so TenantSummaries() doesn't have to
+	// filter them out on every call.
+	if a.files == 0 {
+		delete(m.tenantAggregates, tk)
+	}
+}
+
+// recomputeTenantTimeBounds scans the tenant's partition set (NOT the
+// manifest's full file set) to find the new min/max. Bounded by the
+// number of partitions the tenant occupies — typically O(720) in a
+// 30-day-hot retention.
+func (m *Manifest) recomputeTenantTimeBounds(a *tenantAccum) {
+	a.minTimeNs = 0
+	a.maxTimeNs = 0
+	for partition := range a.partitions {
+		t, err := parsePartitionTime(partition)
+		if err != nil {
+			continue
+		}
+		startNs := t.UnixNano()
+		endNs := t.Add(time.Hour).UnixNano()
+		if a.minTimeNs == 0 || startNs < a.minTimeNs {
+			a.minTimeNs = startNs
+		}
+		if endNs > a.maxTimeNs {
+			a.maxTimeNs = endNs
+		}
+	}
+}
+
+// rebuildTenantAggregates reconstructs the per-tenant cache from
+// scratch by iterating m.files once. Called after wholesale m.files
+// reassignments (RefreshFromS3, snapshot Load). Must hold m.mu (write).
+func (m *Manifest) rebuildTenantAggregates() {
+	m.tenantAggregates = make(map[tenantAccumKey]*tenantAccum)
+	for partition, files := range m.files {
+		for i := range files {
+			m.updateTenantAggregateOnAdd(partition, files[i])
+		}
 	}
 }
 
@@ -147,6 +417,209 @@ func (m *Manifest) SetPrefixTemplate(tmpl string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.prefixTemplate = tmpl
+	// Cache the parse result. The default (segments=2, hasOrgID=false)
+	// matches the integer "{AccountID}/{ProjectID}/" template; OrgID-only
+	// deployments override via the SetPrefixTemplate call.
+	m.templateSegments = 2
+	m.templateHasOrgID = strings.Contains(tmpl, "{OrgID}")
+	if m.templateHasOrgID && !strings.Contains(tmpl, "{ProjectID}") {
+		m.templateSegments = 1
+	}
+}
+
+// refreshFullBucket enumerates every key under listPrefix (or the
+// entire bucket when listPrefix=="") and builds a fresh file map. Used
+// by the legacy single-prefix path and as a fallback when tenant
+// discovery fails.
+//
+// Checks ctx between pages so an impatient caller (timeout, shutdown)
+// can abort the LIST without waiting for the remaining pages of a huge
+// bucket — at PB-scale a single full-bucket walk can run for minutes.
+func (m *Manifest) refreshFullBucket(ctx context.Context, client *s3.Client, listPrefix string) (map[string][]FileInfo, int, int64, error) {
+	files := make(map[string][]FileInfo)
+	var totalFiles int
+	var totalBytes int64
+
+	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(m.bucket),
+		Prefix: aws.String(listPrefix),
+	})
+	for paginator.HasMorePages() {
+		select {
+		case <-ctx.Done():
+			return nil, 0, 0, ctx.Err()
+		default:
+		}
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, 0, 0, fmt.Errorf("list objects: %w", err)
+		}
+		for _, obj := range page.Contents {
+			key := aws.ToString(obj.Key)
+			if !strings.HasSuffix(key, ".parquet") {
+				continue
+			}
+			partition := extractPartition(key)
+			if partition == "" {
+				continue
+			}
+			files[partition] = append(files[partition], FileInfo{
+				Key:  key,
+				Size: aws.ToInt64(obj.Size),
+			})
+			totalFiles++
+			totalBytes += aws.ToInt64(obj.Size)
+		}
+	}
+	return files, totalFiles, totalBytes, nil
+}
+
+// refreshTenantScoped discovers tenant prefixes via two-level
+// delimited LIST, then enumerates each tenant's files in parallel.
+// Replaces the full-bucket walk that was hammering S3 at PB-scale.
+//
+// The discovery itself is O(tenant_count) LIST page calls (typically
+// 1–2 pages at <1K tenants); the actual file enumeration is per-tenant
+// with controlled parallelism, so total S3 API load is bounded by the
+// concurrency knob and tracks tenant count rather than file count.
+func (m *Manifest) refreshTenantScoped(ctx context.Context, client *s3.Client) (map[string][]FileInfo, int, int64, error) {
+	tenantPrefixes, err := m.discoverTenantPrefixes(ctx, client)
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("discover tenants: %w", err)
+	}
+	if len(tenantPrefixes) == 0 {
+		// Empty bucket OR no tenant directories yet — surface as
+		// success with no files, same as a full-bucket refresh of an
+		// empty bucket would.
+		return make(map[string][]FileInfo), 0, 0, nil
+	}
+
+	// Per-tenant enumeration in parallel. Bound concurrency so we don't
+	// open more in-flight S3 connections than the pool's
+	// MaxConcurrentRequests budget. innerCtx lets us cancel the whole
+	// fan-out on the first per-tenant error so other goroutines exit
+	// at the next refreshFullBucket ctx-check rather than running to
+	// completion and holding their semaphore slots.
+	innerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type tenantResult struct {
+		files     map[string][]FileInfo
+		fileCount int
+		byteCount int64
+		err       error
+	}
+	resCh := make(chan tenantResult, len(tenantPrefixes))
+	sem := make(chan struct{}, tenantRefreshMaxParallel)
+
+	scheduled := 0
+	for _, tp := range tenantPrefixes {
+		select {
+		case sem <- struct{}{}:
+		case <-innerCtx.Done():
+			// Already cancelled (caller timeout or peer-error). Send a
+			// synthetic error for the remaining slots so the receive
+			// loop's counter terminates cleanly.
+			resCh <- tenantResult{err: innerCtx.Err()}
+			scheduled++
+			continue
+		}
+		go func(prefix string) {
+			defer func() { <-sem }()
+			f, tf, tb, err := m.refreshFullBucket(innerCtx, client, prefix)
+			resCh <- tenantResult{files: f, fileCount: tf, byteCount: tb, err: err}
+		}(tp)
+		scheduled++
+	}
+
+	files := make(map[string][]FileInfo)
+	var totalFiles int
+	var totalBytes int64
+	var firstErr error
+	for i := 0; i < scheduled; i++ {
+		r := <-resCh
+		if r.err != nil {
+			if firstErr == nil {
+				firstErr = r.err
+				cancel() // signal still-running goroutines to bail out early
+			}
+			continue
+		}
+		if firstErr != nil {
+			continue // drain remaining results but discard their data
+		}
+		for partition, pFiles := range r.files {
+			files[partition] = append(files[partition], pFiles...)
+		}
+		totalFiles += r.fileCount
+		totalBytes += r.byteCount
+	}
+	if firstErr != nil {
+		return nil, 0, 0, firstErr
+	}
+	return files, totalFiles, totalBytes, nil
+}
+
+// discoverTenantPrefixes returns the set of "{AccountID}/{ProjectID}/"
+// prefixes present in the bucket, using delimited LIST to walk the two
+// directory levels without ever touching individual file keys.
+//
+// For an "{OrgID}/" template (single segment), returns just the
+// top-level OrgID prefixes.
+func (m *Manifest) discoverTenantPrefixes(ctx context.Context, client *s3.Client) ([]string, error) {
+	accounts, err := m.listCommonPrefixes(ctx, client, "")
+	if err != nil {
+		return nil, fmt.Errorf("list accounts: %w", err)
+	}
+	// OrgID-only template: one segment is enough. Falls back to direct
+	// prefixTemplate parse for callers that bypass SetPrefixTemplate.
+	if m.templateSegments == 1 ||
+		(m.templateSegments == 0 &&
+			strings.Contains(m.prefixTemplate, "{OrgID}") &&
+			!strings.Contains(m.prefixTemplate, "{ProjectID}")) {
+		return accounts, nil
+	}
+
+	// Two-level template: walk into each account to find its projects.
+	var out []string
+	for _, acc := range accounts {
+		projects, err := m.listCommonPrefixes(ctx, client, acc)
+		if err != nil {
+			// Skip accounts that fail; log so the operator can correlate.
+			logger.Warnf("list projects under %q failed: %s", acc, err)
+			continue
+		}
+		out = append(out, projects...)
+	}
+	return out, nil
+}
+
+// listCommonPrefixes performs a single delimited LIST under prefix and
+// returns the CommonPrefixes entries (with the trailing "/"). Bounded
+// by the number of pages, which at typical tenant counts (<1K) is a
+// single page.
+func (m *Manifest) listCommonPrefixes(ctx context.Context, client *s3.Client, prefix string) ([]string, error) {
+	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
+		Bucket:    aws.String(m.bucket),
+		Prefix:    aws.String(prefix),
+		Delimiter: aws.String("/"),
+	})
+	var out []string
+	for paginator.HasMorePages() {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, cp := range page.CommonPrefixes {
+			out = append(out, aws.ToString(cp.Prefix))
+		}
+	}
+	return out, nil
 }
 
 func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
@@ -156,42 +629,39 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 
 	// When per-tenant prefix isolation is configured, the writer
 	// writes under "{AccountID}/{ProjectID}/<mode>/" — many distinct
-	// prefixes, not the single m.prefix. List at the bucket root in
-	// that case and rely on the partition-extractor below to filter
-	// out non-data keys. Single-tenant deployments keep the
-	// narrow-prefix scan they had before for cheaper paging.
-	listPrefix := m.prefix
+	// prefixes, not the single m.prefix. Two paths:
+	//
+	//   1. Tenant-scoped refresh (default at PB-scale): discover the
+	//      tenant prefixes via two-level delimited LIST, then enumerate
+	//      each tenant's keys in parallel. Avoids the full-bucket LIST
+	//      that would walk every key (including non-data sidecars and
+	//      operational files) every 30s — at 50M files this is the
+	//      difference between ~50 narrow LISTs and ~1 enormous LIST,
+	//      with the same total bytes but much better S3 cache locality
+	//      and tighter API budget.
+	//
+	//   2. Full-bucket fallback: kept for the single-prefix template
+	//      and as a safety net if tenant discovery fails.
 	if strings.Contains(m.prefixTemplate, "{AccountID}") {
-		listPrefix = ""
-	}
-	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(m.bucket),
-		Prefix: aws.String(listPrefix),
-	})
-
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
+		f, tf, tb, err := m.refreshTenantScoped(ctx, client)
+		if err == nil {
+			files, totalFiles, totalBytes = f, tf, tb
+		} else {
+			// Tenant discovery failed; fall back to the legacy full-bucket
+			// LIST so a transient list failure doesn't drop the manifest.
+			logger.Warnf("tenant-scoped refresh failed (%s); falling back to full-bucket LIST", err)
+			f, tf, tb, ferr := m.refreshFullBucket(ctx, client, "")
+			if ferr != nil {
+				return ferr
+			}
+			files, totalFiles, totalBytes = f, tf, tb
+		}
+	} else {
+		f, tf, tb, err := m.refreshFullBucket(ctx, client, m.prefix)
 		if err != nil {
-			return fmt.Errorf("list objects: %w", err)
+			return err
 		}
-		for _, obj := range page.Contents {
-			key := aws.ToString(obj.Key)
-			if !strings.HasSuffix(key, ".parquet") {
-				continue
-			}
-
-			partition := extractPartition(key)
-			if partition == "" {
-				continue
-			}
-
-			files[partition] = append(files[partition], FileInfo{
-				Key:  key,
-				Size: aws.ToInt64(obj.Size),
-			})
-			totalFiles++
-			totalBytes += aws.ToInt64(obj.Size)
-		}
+		files, totalFiles, totalBytes = f, tf, tb
 	}
 
 	var minT, maxT time.Time
@@ -256,6 +726,8 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	}
 
 	m.files = files
+	m.rebuildByKey()
+	m.rebuildTenantAggregates()
 	m.rebuildIndex()
 	m.minTime = minT
 	m.maxTime = maxT
@@ -310,6 +782,74 @@ func (m *Manifest) HasDataForRange(startNs, endNs int64) bool {
 	return !start.After(m.maxTime) && !end.Before(m.minTime)
 }
 
+// GetFilesForRangeTenant restricts GetFilesForRange to a single tenant's
+// data. At PB-scale a typical 7-day query touches ~168 partitions ×
+// ~50 tenants of files in each — that's ~8400 file structs to walk
+// per request even when the requesting tenant owns ~168 of them. This
+// method consults the per-tenant partition set tracked in
+// tenantAggregates to skip whole partitions where the tenant has zero
+// files, then filters by key prefix within the remaining partitions.
+//
+// Behavior is bit-for-bit identical to GetFilesForRange when called on
+// a single-tenant manifest (the per-tenant partition set equals the
+// full partition set in that case). The optimization only kicks in
+// when the tenant aggregates can prove a partition has no files for
+// this tenant — same correctness contract, just a smaller walk.
+//
+// account/project are the string forms used in tenant aggregate keys
+// (matches what's in the FileInfo S3 key path). Pass empty strings to
+// fall back to the legacy un-scoped path.
+func (m *Manifest) GetFilesForRangeTenant(startNs, endNs int64, account, project string) []FileInfo {
+	if account == "" {
+		return m.GetFilesForRange(startNs, endNs)
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	a := m.tenantAggregates[tenantAccumKey{account: account, project: project}]
+	if a == nil || len(a.partitions) == 0 {
+		// Tenant unknown to the manifest (no files yet, or wrong key
+		// shape). Return empty — the caller's later steps would have
+		// found nothing anyway, and we avoid scanning every partition.
+		return nil
+	}
+
+	start := time.Unix(0, startNs)
+	end := time.Unix(0, endNs)
+
+	keyPrefix := account + "/"
+	if project != "" {
+		keyPrefix += project + "/"
+	}
+
+	var result []FileInfo
+	for partition := range a.partitions {
+		t, err := parsePartitionTime(partition)
+		if err != nil {
+			continue
+		}
+		partEnd := t.Add(time.Hour)
+		if !partEnd.After(start) || !t.Before(end) {
+			continue
+		}
+		for _, fi := range m.files[partition] {
+			if !strings.HasPrefix(fi.Key, keyPrefix) {
+				continue
+			}
+			if fi.MinTimeNs != 0 && fi.MaxTimeNs != 0 {
+				if fi.MaxTimeNs < startNs || fi.MinTimeNs > endNs {
+					continue
+				}
+			}
+			result = append(result, fi)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].MinTimeNs < result[j].MinTimeNs
+	})
+	return result
+}
+
 func (m *Manifest) GetFilesForRange(startNs, endNs int64) []FileInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -344,6 +884,26 @@ func (m *Manifest) GetFilesForRange(startNs, endNs int64) []FileInfo {
 	})
 
 	return result
+}
+
+// rebuildByKey rebuilds the per-key partition index from m.files. Called
+// after bulk reassignments of m.files (RefreshFromS3, snapshot Load) so
+// SetFileBucket / UpdateFileColumnStats / EnrichFileMetadata can look up
+// any key in O(1) instead of scanning every partition. Must be called
+// under m.mu (write lock).
+func (m *Manifest) rebuildByKey() {
+	// Re-allocate at the expected size to avoid map growth thrash on the
+	// first 50M-file rebuild. Map sizing is exact: every key appears once.
+	total := 0
+	for _, files := range m.files {
+		total += len(files)
+	}
+	m.byKey = make(map[string]string, total)
+	for partition, files := range m.files {
+		for i := range files {
+			m.byKey[files[i].Key] = partition
+		}
+	}
 }
 
 // rebuildIndex rebuilds the sorted partition index and inverted label index from m.files.
@@ -500,10 +1060,12 @@ func (m *Manifest) RemoveFile(partition string, key string) {
 		if fi.Key == key {
 			m.totalFiles--
 			m.totalBytes -= fi.Size
+			m.updateTenantAggregateOnRemove(partition, fi)
 			m.files[partition] = append(files[:i], files[i+1:]...)
 			if len(m.files[partition]) == 0 {
 				delete(m.files, partition)
 			}
+			delete(m.byKey, key)
 			m.rebuildIndex()
 			return
 		}
@@ -530,11 +1092,25 @@ type LiveAggregate struct {
 // and returns aggregate counts. O(n) over file count — acceptable
 // for the API surfaces that call it once per request.
 func (m *Manifest) LiveAggregate() LiveAggregate {
+	return m.LiveAggregateWindow(0, 0)
+}
+
+// LiveAggregateWindow restricts the aggregate to files whose time
+// range overlaps [startNs, endNs]. Pass 0 for either bound to leave
+// that side open. Used by the parity endpoint to compare manifest
+// totals against a VL stats query bounded to the same window.
+func (m *Manifest) LiveAggregateWindow(startNs, endNs int64) LiveAggregate {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var agg LiveAggregate
 	for _, files := range m.files {
 		for _, fi := range files {
+			if startNs > 0 && fi.MaxTimeNs > 0 && fi.MaxTimeNs < startNs {
+				continue
+			}
+			if endNs > 0 && fi.MinTimeNs > 0 && fi.MinTimeNs > endNs {
+				continue
+			}
 			agg.Files++
 			agg.Bytes += fi.Size
 			agg.Rows += fi.RowCount
@@ -550,20 +1126,41 @@ func (m *Manifest) LiveAggregate() LiveAggregate {
 	return agg
 }
 
+// findFileLocked returns the slice + index for the file identified by
+// key, using the per-key partition index built alongside m.files. Returns
+// (nil, -1) when key is unknown.
+//
+// Caller must already hold m.mu (read or write). O(files-in-one-partition)
+// — the byKey lookup is O(1), then we scan within that partition's slice
+// (≈50–100 files on a balanced cluster) since slice indices shift on
+// append/remove and we can't cache them safely.
+func (m *Manifest) findFileLocked(key string) ([]FileInfo, int) {
+	partition, ok := m.byKey[key]
+	if !ok {
+		return nil, -1
+	}
+	files := m.files[partition]
+	for i := range files {
+		if files[i].Key == key {
+			return files, i
+		}
+	}
+	// byKey said this partition, but the file isn't there — index is
+	// stale. Safe to return not-found; the mutator just no-ops.
+	return nil, -1
+}
+
 // SetFileBucket updates the bucket field for the file identified by
 // key. Used by the bucket migration tool to flip ownership after a
 // successful S3 server-side copy. Safe for concurrent use.
 func (m *Manifest) SetFileBucket(key, bucket string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, files := range m.files {
-		for i := range files {
-			if files[i].Key == key {
-				files[i].Bucket = bucket
-				return
-			}
-		}
+	files, i := m.findFileLocked(key)
+	if i < 0 {
+		return
 	}
+	files[i].Bucket = bucket
 }
 
 // UpdateFileColumnStats stores min/max stats for the named columns in the FileInfo
@@ -571,35 +1168,44 @@ func (m *Manifest) SetFileBucket(key, bucket string) {
 func (m *Manifest) UpdateFileColumnStats(key string, stats map[string]ColumnMinMax) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, files := range m.files {
-		for i := range files {
-			if files[i].Key == key {
-				files[i].ColumnStats = stats
-				return
-			}
-		}
+	files, i := m.findFileLocked(key)
+	if i < 0 {
+		return
 	}
+	files[i].ColumnStats = stats
 }
 
 // EnrichFileMetadata updates RowCount and time bounds for a file identified
 // by key. Called after first opening a file during a query, using metadata
 // from the Parquet footer. Only updates fields that are zero (not already set).
+//
+// Updates the tenant aggregate cache by the delta — a query may bump a
+// file's RowCount from 0 to (say) 1M, and TenantSummaries must reflect
+// that without scanning every file.
 func (m *Manifest) EnrichFileMetadata(key string, rowCount int64, minTimeNs, maxTimeNs int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, files := range m.files {
-		for i := range files {
-			if files[i].Key == key {
-				if files[i].RowCount == 0 && rowCount > 0 {
-					files[i].RowCount = rowCount
-				}
-				if files[i].MinTimeNs == 0 && minTimeNs > 0 {
-					files[i].MinTimeNs = minTimeNs
-				}
-				if files[i].MaxTimeNs == 0 && maxTimeNs > 0 {
-					files[i].MaxTimeNs = maxTimeNs
-				}
-				return
+	files, i := m.findFileLocked(key)
+	if i < 0 {
+		return
+	}
+
+	var rowDelta int64
+	if files[i].RowCount == 0 && rowCount > 0 {
+		rowDelta = rowCount
+		files[i].RowCount = rowCount
+	}
+	if files[i].MinTimeNs == 0 && minTimeNs > 0 {
+		files[i].MinTimeNs = minTimeNs
+	}
+	if files[i].MaxTimeNs == 0 && maxTimeNs > 0 {
+		files[i].MaxTimeNs = maxTimeNs
+	}
+
+	if rowDelta != 0 {
+		if tk, ok := m.tenantKeyFromFileKey(key); ok {
+			if a := m.tenantAggregates[tk]; a != nil {
+				a.rows += rowDelta
 			}
 		}
 	}
@@ -618,15 +1224,19 @@ func (m *Manifest) AddFile(partition string, fi FileInfo) {
 	// TestManifest_AddFile_IdempotentOnKey to count 2 entries and the
 	// race test TestManifest_AddFile_ConcurrentSameKeyOnlyOneEntry to
 	// produce N duplicates under -race.
-	for _, existing := range m.files[partition] {
-		if existing.Key == fi.Key {
-			metrics.ManifestAddFileDuplicateKeyTotal.Inc()
-			return
-		}
+	//
+	// byKey is the O(1) authoritative source for "does this key already
+	// exist anywhere in the manifest" — same partition or otherwise. A
+	// duplicate AddFile is dropped before mutating any state.
+	if _, exists := m.byKey[fi.Key]; exists {
+		metrics.ManifestAddFileDuplicateKeyTotal.Inc()
+		return
 	}
 
 	isNew := len(m.files[partition]) == 0
 	m.files[partition] = append(m.files[partition], fi)
+	m.byKey[fi.Key] = partition
+	m.updateTenantAggregateOnAdd(partition, fi)
 	m.totalFiles++
 	m.totalBytes += fi.Size
 
@@ -704,6 +1314,33 @@ func (m *Manifest) KeysUnderPrefix(prefix string) []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var out []string
+
+	// Fast path: the orphan-sweep caller passes a date-bucketed prefix
+	// like ".../dt=2026-06-04/". Each such prefix maps to at most 24
+	// hourly partitions, which are first-class in m.files. Iterating
+	// just those partitions converts a 50M-file scan into a ~2K-file
+	// one — a 25,000× speedup at PB-scale.
+	//
+	// For prefixes without a date component (the empty prefix or
+	// arbitrary partial keys), we still need the legacy full scan to
+	// preserve semantics.
+	if date := extractDateFromPrefix(prefix); date != "" {
+		partitionPrefix := "dt=" + date + "/"
+		for partition, files := range m.files {
+			if !strings.HasPrefix(partition, partitionPrefix) {
+				continue
+			}
+			for _, fi := range files {
+				if strings.HasPrefix(fi.Key, prefix) {
+					out = append(out, fi.Key)
+				}
+			}
+		}
+		return out
+	}
+
+	// Fallback: full scan for non-date prefixes. Kept for correctness on
+	// arbitrary inputs (admin tooling, future callers).
 	for _, files := range m.files {
 		for _, fi := range files {
 			if prefix == "" || strings.HasPrefix(fi.Key, prefix) {
@@ -712,6 +1349,56 @@ func (m *Manifest) KeysUnderPrefix(prefix string) []string {
 		}
 	}
 	return out
+}
+
+// HasKey returns true if the manifest knows about the given file key.
+// O(1) lookup via byKey — preferred over KeysUnderPrefix+contains for
+// single-key existence checks (the orphan sweep's third safety gate).
+//
+// Safe for concurrent use.
+func (m *Manifest) HasKey(key string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.byKey[key]
+	return ok
+}
+
+// extractDateFromPrefix returns "YYYY-MM-DD" from any prefix that
+// contains "dt=YYYY-MM-DD" (with or without trailing characters).
+// Returns "" if no date segment is present or the date is malformed.
+//
+// Validates that the year/month/day positions are digits (not just
+// that hyphens appear at the right offsets) so a malicious prefix
+// like "dt=abcd-ef-gh" doesn't sneak past as a "valid" date —
+// downstream callers use the extracted date in further LogsQL/Tempo
+// time filters where a non-numeric date would cause query failures or
+// (worse) silently match all partitions.
+func extractDateFromPrefix(prefix string) string {
+	i := strings.Index(prefix, "dt=")
+	if i < 0 {
+		return ""
+	}
+	rest := prefix[i+3:]
+	const dateLen = len("YYYY-MM-DD")
+	if len(rest) < dateLen {
+		return ""
+	}
+	date := rest[:dateLen]
+	// Validate: YYYY-MM-DD with digits in the right positions and
+	// hyphens at indices 4 and 7.
+	if date[4] != '-' || date[7] != '-' {
+		return ""
+	}
+	for i := 0; i < dateLen; i++ {
+		if i == 4 || i == 7 {
+			continue
+		}
+		c := date[i]
+		if c < '0' || c > '9' {
+			return ""
+		}
+	}
+	return date
 }
 
 // ExtractPartition is the exported wrapper for extractPartition.
@@ -764,9 +1451,17 @@ func (m *Manifest) SaveTo(path string) error {
 	}
 	m.mu.RUnlock()
 
-	data, err := json.Marshal(snap)
-	if err != nil {
-		return fmt.Errorf("marshal manifest: %w", err)
+	// Binary gob format: magic prefix + gob-encoded snapshot. The
+	// magic lets LoadFrom auto-detect the new format vs the legacy
+	// JSON snapshot without a separate version field. At PB-scale
+	// (50M files) gob is ~3-5× smaller than JSON and dramatically
+	// faster on both ends — the JSON parser's per-string allocation
+	// cost dominated on the 10 GB blob the JSON format produced.
+	var buf bytes.Buffer
+	buf.Write(manifestBinaryMagic)
+	enc := gob.NewEncoder(&buf)
+	if err := enc.Encode(&snap); err != nil {
+		return fmt.Errorf("encode manifest: %w", err)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
@@ -774,14 +1469,14 @@ func (m *Manifest) SaveTo(path string) error {
 	}
 
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	if err := os.WriteFile(tmp, buf.Bytes(), 0o600); err != nil {
 		return fmt.Errorf("write manifest: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("rename manifest: %w", err)
 	}
 
-	logger.Infof("manifest saved; path=%s, files=%d, bytes=%d", path, snap.TotalFiles_, len(data))
+	logger.Infof("manifest saved; path=%s, files=%d, bytes=%d, format=binary", path, snap.TotalFiles_, buf.Len())
 	return nil
 }
 
@@ -795,12 +1490,37 @@ func (m *Manifest) LoadFrom(path string) error {
 	}
 
 	var snap persistedManifest
-	if err := json.Unmarshal(data, &snap); err != nil {
-		return fmt.Errorf("unmarshal manifest: %w", err)
+	var format string
+	if len(data) >= len(manifestBinaryMagic) && bytes.Equal(data[:len(manifestBinaryMagic)], manifestBinaryMagic) {
+		// Binary format: drop the magic, decode the rest. Bound the
+		// decoder via io.LimitReader so a malicious/corrupted snapshot
+		// can't trick the gob decoder into pre-allocating a multi-TB
+		// slice during DoS. The cap is well above the largest
+		// legitimate snapshot — exceeding it surfaces as a decode error
+		// rather than an OOM-killer-induced crash.
+		body := data[len(manifestBinaryMagic):]
+		if int64(len(body)) > maxManifestSnapshotBytes {
+			return fmt.Errorf("manifest snapshot body %d bytes exceeds limit %d",
+				len(body), maxManifestSnapshotBytes)
+		}
+		dec := gob.NewDecoder(io.LimitReader(bytes.NewReader(body), maxManifestSnapshotBytes))
+		if err := dec.Decode(&snap); err != nil {
+			return fmt.Errorf("decode binary manifest: %w", err)
+		}
+		format = "binary"
+	} else {
+		// Legacy JSON snapshot from a pre-binary build. Loads correctly
+		// once; the next SaveTo writes binary.
+		if err := json.Unmarshal(data, &snap); err != nil {
+			return fmt.Errorf("unmarshal json manifest: %w", err)
+		}
+		format = "json"
 	}
 
 	m.mu.Lock()
 	m.files = snap.Files
+	m.rebuildByKey()
+	m.rebuildTenantAggregates()
 	m.rebuildIndex()
 	m.totalFiles = snap.TotalFiles_
 	m.totalBytes = snap.TotalBytes_
@@ -812,7 +1532,8 @@ func (m *Manifest) LoadFrom(path string) error {
 	}
 	m.mu.Unlock()
 
-	logger.Infof("manifest loaded from disk; path=%s, files=%d, bytes=%d, saved_at=%v", path, snap.TotalFiles_, snap.TotalBytes_, snap.SavedAt)
+	logger.Infof("manifest loaded from disk; path=%s, files=%d, bytes=%d, format=%s, saved_at=%v",
+		path, snap.TotalFiles_, snap.TotalBytes_, format, snap.SavedAt)
 	return nil
 }
 
@@ -932,69 +1653,55 @@ type TenantSummary struct {
 	MaxTime    time.Time
 }
 
+// TenantSummariesInWindow returns TenantSummaries restricted to
+// tenants holding files whose time range overlaps [startNs, endNs].
+// Pass 0 for either bound to leave that side open. Used by VT's
+// servicegraph task to iterate only tenants with recent activity.
+func (m *Manifest) TenantSummariesInWindow(startNs, endNs int64) []TenantSummary {
+	all := m.TenantSummaries()
+	if startNs == 0 && endNs == 0 {
+		return all
+	}
+	startT := time.Unix(0, startNs)
+	endT := time.Unix(0, endNs)
+	out := make([]TenantSummary, 0, len(all))
+	for _, s := range all {
+		// Include tenant if its [MinTime, MaxTime] overlaps [start, end].
+		if endNs > 0 && !s.MinTime.IsZero() && s.MinTime.After(endT) {
+			continue
+		}
+		if startNs > 0 && !s.MaxTime.IsZero() && s.MaxTime.Before(startT) {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 // TenantSummaries extracts per-tenant stats from S3 keys.
 // Supports both integer template ({AccountID}/{ProjectID}/) and OrgID template ({OrgID}/).
+//
+// Reads directly from the tenantAggregates incremental cache, which is
+// kept consistent with m.files by AddFile / RemoveFile / EnrichFileMetadata
+// and rebuilt wholesale by rebuildTenantAggregates() on RefreshFromS3 +
+// snapshot Load. The cache is the single source of truth — this function
+// only allocates the output slice and sorts it.
+//
+// Complexity: O(tenants log tenants) for the sort, O(tenants) for the
+// snapshot. Previously O(total files) which is O(50M) at PB-scale.
 func (m *Manifest) TenantSummaries() []TenantSummary {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	type key struct{ account, project string }
-	type accum struct {
-		files      int
-		bytes      int64
-		rows       int64
-		rawBytes   int64
-		partitions map[string]struct{}
-		minT, maxT time.Time
-	}
-
-	segments := 2
-	hasOrgID := strings.Contains(m.prefixTemplate, "{OrgID}")
-	if hasOrgID && !strings.Contains(m.prefixTemplate, "{ProjectID}") {
-		segments = 1
-	}
-
-	byTenant := make(map[key]*accum)
-
-	for partition, files := range m.files {
-		for _, fi := range files {
-			parts := strings.SplitN(fi.Key, "/", segments+2)
-			if len(parts) < segments+1 {
-				continue
-			}
-
-			var k key
-			if segments == 1 {
-				k = key{account: parts[0], project: ""}
-			} else {
-				k = key{account: parts[0], project: parts[1]}
-			}
-
-			a, ok := byTenant[k]
-			if !ok {
-				a = &accum{partitions: make(map[string]struct{})}
-				byTenant[k] = a
-			}
-			a.files++
-			a.bytes += fi.Size
-			a.rows += fi.RowCount
-			a.rawBytes += fi.RawBytes
-			a.partitions[partition] = struct{}{}
-
-			if t, err := parsePartitionTime(partition); err == nil {
-				if a.minT.IsZero() || t.Before(a.minT) {
-					a.minT = t
-				}
-				end := t.Add(time.Hour)
-				if a.maxT.IsZero() || end.After(a.maxT) {
-					a.maxT = end
-				}
-			}
+	result := make([]TenantSummary, 0, len(m.tenantAggregates))
+	for k, a := range m.tenantAggregates {
+		var minT, maxT time.Time
+		if a.minTimeNs > 0 {
+			minT = time.Unix(0, a.minTimeNs)
 		}
-	}
-
-	result := make([]TenantSummary, 0, len(byTenant))
-	for k, a := range byTenant {
+		if a.maxTimeNs > 0 {
+			maxT = time.Unix(0, a.maxTimeNs)
+		}
 		result = append(result, TenantSummary{
 			AccountID:  k.account,
 			ProjectID:  k.project,
@@ -1003,8 +1710,8 @@ func (m *Manifest) TenantSummaries() []TenantSummary {
 			TotalRows:  a.rows,
 			RawBytes:   a.rawBytes,
 			Partitions: len(a.partitions),
-			MinTime:    a.minT,
-			MaxTime:    a.maxT,
+			MinTime:    minT,
+			MaxTime:    maxT,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool {

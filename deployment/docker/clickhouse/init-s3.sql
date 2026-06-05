@@ -48,7 +48,7 @@ SELECT
     CAST([] AS Array(String)) AS `Links.TraceState`,
     CAST([] AS Array(Map(String, String))) AS `Links.Attributes`
 FROM s3(
-    'http://minio:9000/obs-archive/*/*/logs/dt=*/hour=*/*.parquet',
+    'http://s3-latency:9000/obs-archive/*/*/logs/dt=*/hour=*/*.parquet',
     'minioadmin', 'minioadmin', 'Parquet',
     'timestamp_unix_nano Int64, body String, severity_text String, severity_number Int32,
      `service.name` String, `k8s.namespace.name` String, `k8s.pod.name` String,
@@ -68,7 +68,7 @@ SELECT
     fromUnixTimestamp64Nano(min(timestamp_unix_nano)) AS Start,
     fromUnixTimestamp64Nano(max(timestamp_unix_nano)) AS End
 FROM s3(
-    'http://minio:9000/obs-archive/*/*/traces/dt=*/hour=*/*.parquet',
+    'http://s3-latency:9000/obs-archive/*/*/traces/dt=*/hour=*/*.parquet',
     'minioadmin', 'minioadmin', 'Parquet',
     'timestamp_unix_nano Int64, trace_id String'
 )
@@ -125,7 +125,7 @@ SELECT
     CAST([] AS Array(String)) AS `Links.TraceState`,
     CAST([] AS Array(Map(String, String))) AS `Links.Attributes`
 FROM s3(
-    'http://minio:9000/obs-archive/*/*/traces/dt=*/hour=*/*.parquet',
+    'http://s3-latency:9000/obs-archive/*/*/traces/dt=*/hour=*/*.parquet',
     'minioadmin', 'minioadmin', 'Parquet',
     'timestamp_unix_nano Int64, start_time_unix_nano Int64, trace_id String, span_id String,
      parent_span_id String, `span.name` String, `span.kind` Int32,
@@ -149,7 +149,7 @@ WHERE trace_id != '';
 CREATE OR REPLACE VIEW lakehouse.logs_raw AS
 SELECT *
 FROM s3(
-    'http://minio:9000/obs-archive/*/*/logs/dt=*/hour=*/*.parquet',
+    'http://s3-latency:9000/obs-archive/*/*/logs/dt=*/hour=*/*.parquet',
     'minioadmin', 'minioadmin', 'Parquet',
     'timestamp_unix_nano Int64, body String, severity_text String, severity_number Int32,
      `service.name` String, `k8s.namespace.name` String, `k8s.pod.name` String,
@@ -162,7 +162,7 @@ FROM s3(
 CREATE OR REPLACE VIEW lakehouse.traces_raw AS
 SELECT *
 FROM s3(
-    'http://minio:9000/obs-archive/*/*/traces/dt=*/hour=*/*.parquet',
+    'http://s3-latency:9000/obs-archive/*/*/traces/dt=*/hour=*/*.parquet',
     'minioadmin', 'minioadmin', 'Parquet',
     'timestamp_unix_nano Int64, start_time_unix_nano Int64, trace_id String, span_id String,
      parent_span_id String, `span.name` String, `span.kind` Int32,
@@ -186,7 +186,7 @@ FROM s3(
 CREATE OR REPLACE VIEW lakehouse.logs_tenant_default AS
 SELECT *
 FROM s3(
-    'http://minio:9000/obs-archive/0/0/logs/dt=*/hour=*/*.parquet',
+    'http://s3-latency:9000/obs-archive/0/0/logs/dt=*/hour=*/*.parquet',
     'minioadmin', 'minioadmin', 'Parquet',
     'timestamp_unix_nano Int64, body String, severity_text String, severity_number Int32,
      `service.name` String, `k8s.namespace.name` String, `k8s.pod.name` String,
@@ -199,7 +199,7 @@ FROM s3(
 CREATE OR REPLACE VIEW lakehouse.traces_tenant_default AS
 SELECT *
 FROM s3(
-    'http://minio:9000/obs-archive/0/0/traces/dt=*/hour=*/*.parquet',
+    'http://s3-latency:9000/obs-archive/0/0/traces/dt=*/hour=*/*.parquet',
     'minioadmin', 'minioadmin', 'Parquet',
     'timestamp_unix_nano Int64, start_time_unix_nano Int64, trace_id String, span_id String,
      parent_span_id String, `span.name` String, `span.kind` Int32,
@@ -218,7 +218,7 @@ FROM s3(
 CREATE OR REPLACE VIEW lakehouse.logs_tenant_test AS
 SELECT *
 FROM s3(
-    'http://minio:9000/obs-archive/1/1/logs/dt=*/hour=*/*.parquet',
+    'http://s3-latency:9000/obs-archive/1/1/logs/dt=*/hour=*/*.parquet',
     'minioadmin', 'minioadmin', 'Parquet',
     'timestamp_unix_nano Int64, body String, severity_text String, severity_number Int32,
      `service.name` String, `k8s.namespace.name` String, `k8s.pod.name` String,
@@ -231,7 +231,7 @@ FROM s3(
 CREATE OR REPLACE VIEW lakehouse.traces_tenant_test AS
 SELECT *
 FROM s3(
-    'http://minio:9000/obs-archive/1/1/traces/dt=*/hour=*/*.parquet',
+    'http://s3-latency:9000/obs-archive/1/1/traces/dt=*/hour=*/*.parquet',
     'minioadmin', 'minioadmin', 'Parquet',
     'timestamp_unix_nano Int64, start_time_unix_nano Int64, trace_id String, span_id String,
      parent_span_id String, `span.name` String, `span.kind` Int32,

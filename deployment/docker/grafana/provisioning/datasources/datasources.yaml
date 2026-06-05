@@ -31,6 +31,10 @@ datasources:
         spanEndTimeShift: "1h"
         filterByTraceID: true
         filterBySpanID: false
+      nodeGraph:
+        # Per-trace Node Graph derived from parent/child span links
+        # in the returned trace data — no extra endpoint required.
+        enabled: true
 
   # =========================================================================
   # Hot Tier — disk-based, 24h retention
@@ -61,6 +65,8 @@ datasources:
         spanEndTimeShift: "1h"
         filterByTraceID: true
         filterBySpanID: false
+      nodeGraph:
+        enabled: true
 
   # =========================================================================
   # Cold Tier — S3 Parquet via lakehouse
@@ -97,6 +103,8 @@ datasources:
         spanEndTimeShift: "1h"
         filterByTraceID: true
         filterBySpanID: false
+      nodeGraph:
+        enabled: true
 
   # =========================================================================
   # Tempo API — backed by VictoriaTraces for Loki→trace correlation
@@ -129,12 +137,27 @@ datasources:
         filterByTraceID: true
         filterBySpanID: false
       nodeGraph:
-        enabled: false
+        # Node Graph view (per-trace span graph) derives the graph
+        # from each trace's parent-child relationships in the
+        # returned span data — no separate VT/Tempo endpoint
+        # required. Safe to enable on both hot VT and LH cold
+        # because both return full span trees with parent_span_id.
+        enabled: true
       streamingEnabled:
         search: false
         query: false
       spanBar:
         type: "None"
+      # ServiceMap datasource UID dismisses the Tempo plugin's
+      # "No service graph datasource selected" error. The Tempo
+      # Service Graph view reads `traces_service_graph_*` Prometheus
+      # metrics from this datasource; cold-tier doesn't synthesize
+      # them yet (see docs/parity-and-gaps.md — the Service Graph
+      # gap is closed for the Jaeger Dependencies view but the
+      # Tempo plugin's Service Graph view still needs a metrics
+      # bridge). For now the graph renders empty rather than erroring.
+      serviceMap:
+        datasourceUid: victoriametrics-metrics
 
   - name: "Tempo VT Hot (Disk 24h)"
     type: tempo
@@ -153,12 +176,27 @@ datasources:
         filterByTraceID: true
         filterBySpanID: false
       nodeGraph:
-        enabled: false
+        # Node Graph view (per-trace span graph) derives the graph
+        # from each trace's parent-child relationships in the
+        # returned span data — no separate VT/Tempo endpoint
+        # required. Safe to enable on both hot VT and LH cold
+        # because both return full span trees with parent_span_id.
+        enabled: true
       streamingEnabled:
         search: false
         query: false
       spanBar:
         type: "None"
+      # ServiceMap datasource UID dismisses the Tempo plugin's
+      # "No service graph datasource selected" error. The Tempo
+      # Service Graph view reads `traces_service_graph_*` Prometheus
+      # metrics from this datasource; cold-tier doesn't synthesize
+      # them yet (see docs/parity-and-gaps.md — the Service Graph
+      # gap is closed for the Jaeger Dependencies view but the
+      # Tempo plugin's Service Graph view still needs a metrics
+      # bridge). For now the graph renders empty rather than erroring.
+      serviceMap:
+        datasourceUid: victoriametrics-metrics
 
   - name: "Tempo LH Cold (S3 Parquet)"
     type: tempo
@@ -176,12 +214,27 @@ datasources:
         filterByTraceID: true
         filterBySpanID: false
       nodeGraph:
-        enabled: false
+        # Node Graph view (per-trace span graph) derives the graph
+        # from each trace's parent-child relationships in the
+        # returned span data — no separate VT/Tempo endpoint
+        # required. Safe to enable on both hot VT and LH cold
+        # because both return full span trees with parent_span_id.
+        enabled: true
       streamingEnabled:
         search: false
         query: false
       spanBar:
         type: "None"
+      # ServiceMap datasource UID dismisses the Tempo plugin's
+      # "No service graph datasource selected" error. The Tempo
+      # Service Graph view reads `traces_service_graph_*` Prometheus
+      # metrics from this datasource; cold-tier doesn't synthesize
+      # them yet (see docs/parity-and-gaps.md — the Service Graph
+      # gap is closed for the Jaeger Dependencies view but the
+      # Tempo plugin's Service Graph view still needs a metrics
+      # bridge). For now the graph renders empty rather than erroring.
+      serviceMap:
+        datasourceUid: victoriametrics-metrics
 
   # =========================================================================
   # Loki API — hot+cold routing via loki-vl-proxy

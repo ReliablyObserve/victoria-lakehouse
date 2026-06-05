@@ -424,12 +424,30 @@
             </div>
           </div>
           <div class="card" style="border-left:4px solid ${Math.abs(data.rows_delta_pct || 0) < 1 ? "#3a3" : (Math.abs(data.rows_delta_pct || 0) < 10 ? "#fa3" : "#c33")}">
-            <div class="label">Drift (VL − Manifest)</div>
+            <div class="label">Raw Drift (VL − Manifest)</div>
             <div class="value">${data.rows_delta > 0 ? "+" : ""}${fmtNum(data.rows_delta || 0)}</div>
             <div style="font-size:12px;color:var(--color-text-secondary);margin-top:4px">
-              ${(data.rows_delta_pct || 0).toFixed(2)}% — ${Math.abs(data.rows_delta_pct || 0) < 1 ? "in tolerance" : (Math.abs(data.rows_delta_pct || 0) < 10 ? "mild drift; usually post-compaction lag" : "significant drift — investigate")}
+              ${(data.rows_delta_pct || 0).toFixed(2)}%
             </div>
           </div>
+          ${data.expected_drift ? html`
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+              <div class="card">
+                <div class="label">Expected Drift (writer-dropped)</div>
+                <div class="value">${fmtNum(data.expected_drift)}</div>
+                <div style="font-size:11px;color:var(--color-text-secondary);margin-top:4px">
+                  ${Object.entries(data.vt_internal_dropped || {}).map(([k, v]) => `${k}=${fmtNum(v)}`).join(" · ")}
+                </div>
+              </div>
+              <div class="card" style="border-left:4px solid ${Math.abs(data.verified_drift_pct || 0) < 1 ? "#3a3" : (Math.abs(data.verified_drift_pct || 0) < 5 ? "#fa3" : "#c33")}">
+                <div class="label">Verified Drift (after dropped)</div>
+                <div class="value">${data.verified_drift > 0 ? "+" : ""}${fmtNum(data.verified_drift || 0)}</div>
+                <div style="font-size:12px;color:var(--color-text-secondary);margin-top:4px">
+                  ${(data.verified_drift_pct || 0).toFixed(2)}% — ${Math.abs(data.verified_drift_pct || 0) < 1 ? "parity verified" : (Math.abs(data.verified_drift_pct || 0) < 5 ? "tiny residual" : "residual to chase")}
+                </div>
+              </div>
+            </div>
+          ` : null}
           ${!data.per_tenant_supported ? html`
             <div style="margin-top:16px;padding:12px;background:var(--color-hover-black,#0000000a);border-radius:4px;font-size:12px;color:var(--color-text-secondary)">
               <strong>Per-tenant parity:</strong> not supported yet — ${data.per_tenant_note}

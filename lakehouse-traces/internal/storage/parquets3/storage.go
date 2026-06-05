@@ -98,6 +98,9 @@ func New(cfg *config.Config) (*Storage, error) {
 	}
 
 	labelIdx := cache.NewLabelIndex()
+	if cap := cfg.Cache.LabelIndexMaxFields; cap > 0 {
+		labelIdx.SetMaxFields(cap)
+	}
 
 	var pers *cache.Persister
 	if cfg.Manifest.PersistPath != "" {
@@ -108,10 +111,20 @@ func New(cfg *config.Config) (*Storage, error) {
 			pers = p
 			if saved, err := p.LoadLabelIndex(); err == nil {
 				labelIdx = saved
+				if cap := cfg.Cache.LabelIndexMaxFields; cap > 0 {
+					// SetMaxFields applies the cap to the just-loaded
+					// index, evicting if the snapshot held more than
+					// the new cap allows.
+					labelIdx.SetMaxFields(cap)
+				}
 				logger.Infof("recovered label index from disk; labels=%d", saved.Len())
 			}
 		}
 	}
+	// S3 recovery happens later, in RefreshManifest, once the pool is
+	// constructed. Local disk first (no network round-trip), S3 second
+	// (cluster-wide recovery). The two are merged via MergeFrom so we
+	// don't lose either source's contribution.
 
 	disc := discovery.New(
 		cfg.Discovery.HeadlessService,
@@ -212,7 +225,15 @@ func New(cfg *config.Config) (*Storage, error) {
 
 	var fc *FooterCache
 	if cfg.SelectEnabled() {
-		fc = NewFooterCache(10000)
+		// Initial cap: operator-configured value or the legacy 10K
+		// default. The cap is re-tuned after every RefreshFromS3 via
+		// retuneFooterCache() so a growing manifest scales it up
+		// without requiring a config reload.
+		initialCap := cfg.Cache.FooterMaxItems
+		if initialCap <= 0 {
+			initialCap = 10000
+		}
+		fc = NewFooterCache(initialCap)
 	}
 
 	var csClient *crosssignal.Client
@@ -433,6 +454,18 @@ func (s *Storage) Close() error {
 			logger.Warnf("failed to persist label index: %s", err)
 		} else {
 			logger.Infof("persisted label index; labels=%d", s.labelIndex.Len())
+		}
+	}
+	// Final upload to S3 on graceful shutdown so the next pod start (on
+	// any node) can recover the index without rebuilding from parquet
+	// reads. Independent of the local-disk persister above.
+	if s.labelIndex != nil && s.labelIndex.Len() > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := s.PersistLabelIndexToS3(ctx); err != nil {
+			logger.Warnf("failed to persist label index to S3: %s", err)
+		} else {
+			logger.Infof("persisted label index to S3; labels=%d", s.labelIndex.Len())
 		}
 	}
 	if s.bloomIdx != nil && s.bloomIdx.Len() > 0 {
@@ -980,10 +1013,21 @@ func (s *Storage) RefreshManifest(ctx context.Context) error {
 	if err := s.manifest.RefreshFromS3(ctx, s.pool.S3Client()); err != nil {
 		return err
 	}
+	s.retuneFooterCache()
 	s.loadBloomIndex(ctx)
+	s.loadLabelIndexFromS3(ctx)
 	if s.cfg.InsertEnabled() && s.bloomIdx.Len() > 0 {
 		if err := s.PersistBloomIndex(ctx); err != nil {
 			logger.Warnf("bloom index persist failed: %s", err)
+		}
+	}
+	// Persist label index to S3 alongside the bloom index. The local-disk
+	// persister keeps doing its job on graceful shutdown; this gives us
+	// cluster-wide recovery for pods that come up on a different node
+	// (no local volume) and for crash scenarios where shutdown didn't run.
+	if s.cfg.InsertEnabled() && s.labelIndex.Len() > 0 {
+		if err := s.PersistLabelIndexToS3(ctx); err != nil {
+			logger.Warnf("label index S3 persist failed: %s", err)
 		}
 	}
 	return nil
@@ -1006,6 +1050,105 @@ func (s *Storage) loadBloomIndex(ctx context.Context) {
 	}
 	s.bloomIdx.MergeFrom(idx)
 	logger.Infof("bloom index loaded from S3; entries=%d", idx.Len())
+}
+
+// Footer-cache auto-tune bounds. The auto-tune target is
+// (manifest files) / footerCacheFileCountDivisor, clamped to
+// [footerCacheMinItems, footerCacheMaxItems]. These constants live
+// here (not as cfg knobs) because they're internal sizing heuristics —
+// operators tune the cap via cfg.Cache.FooterMaxItems, which short-
+// circuits the auto-tune entirely when set.
+//
+// Defaults rationale:
+//   - 1/2000 ≈ 0.05% of corpus → ~25K entries at 50M files.
+//   - 10K min keeps small deployments (single-host dev) from churning.
+//   - 100K max bounds the working set at ~500 MB (5 KB/entry).
+const (
+	footerCacheFileCountDivisor = 2000
+	footerCacheMinItems         = 10000
+	footerCacheMaxItems         = 100000
+)
+
+// retuneFooterCache re-sizes the footer cache after a successful
+// manifest refresh. Sized at 0.05% of the manifest's file count to
+// give roughly 25K items per 50M file corpus (~125 MB working set),
+// clamped to [10000, 100000] so small deployments don't see noise
+// and huge ones don't blow memory.
+//
+// If an explicit cfg.Cache.FooterMaxItems is set, that takes precedence
+// over the auto-tune — operators always retain manual control.
+func (s *Storage) retuneFooterCache() {
+	if s.footerCache == nil {
+		return
+	}
+	target := s.cfg.Cache.FooterMaxItems
+	if target <= 0 {
+		// Auto-tune: fraction of file count, clamped.
+		files := s.manifest.LiveAggregate().Files
+		target = files / footerCacheFileCountDivisor
+		if target < footerCacheMinItems {
+			target = footerCacheMinItems
+		}
+		if target > footerCacheMaxItems {
+			target = footerCacheMaxItems
+		}
+	}
+	if target == s.footerCache.MaxItems() {
+		return
+	}
+	evicted := s.footerCache.Resize(target)
+	logger.Infof("footer cache retuned; max_items=%d, evicted=%d, files_in_manifest=%d",
+		target, evicted, s.manifest.LiveAggregate().Files)
+}
+
+// labelIndexKey is the S3 key where the label index is persisted so
+// pods that lose their local disk volume (or fresh pods coming up on a
+// different node) can recover the cluster's accumulated label
+// knowledge without re-scanning every parquet file in the bucket. At
+// PB-scale that's the difference between a sub-second startup and a
+// multi-hour label-index rebuild from full file reads.
+func (s *Storage) labelIndexKey() string {
+	return s.s3Prefix + "_label_index.json"
+}
+
+// loadLabelIndexFromS3 merges any S3-persisted label index into the
+// in-memory one. Called after local-disk recovery (storage.go:109) so
+// the union of both sources is available. Failure is logged but not
+// fatal — pods can still build the index lazily through
+// WarmLabelIndex + per-query updates.
+func (s *Storage) loadLabelIndexFromS3(ctx context.Context) {
+	key := s.labelIndexKey()
+	data, err := s.pool.Download(ctx, key)
+	if err != nil {
+		return
+	}
+	idx, err := cache.UnmarshalLabelIndex(data)
+	if err != nil {
+		logger.Warnf("label index unmarshal failed: %s", err)
+		return
+	}
+	s.labelIndex.MergeFrom(idx)
+	logger.Infof("label index loaded from S3; labels=%d", s.labelIndex.Len())
+}
+
+// PersistLabelIndexToS3 uploads the in-memory label index to S3. Called
+// periodically by the background ticker started in StartWriter, and on
+// graceful shutdown so the most recent state is captured.
+//
+// A failure here is non-fatal: the local disk persister keeps writing
+// the same data on shutdown, and the next periodic tick or restart
+// will retry. We log at Warn so an operator can spot persistent
+// failures without paging on transient ones.
+func (s *Storage) PersistLabelIndexToS3(ctx context.Context) error {
+	if s.labelIndex == nil || s.labelIndex.Len() == 0 || s.pool == nil {
+		return nil
+	}
+	data, err := cache.MarshalLabelIndex(s.labelIndex)
+	if err != nil {
+		return fmt.Errorf("marshal label index: %w", err)
+	}
+	key := s.labelIndexKey()
+	return s.pool.Upload(ctx, key, data)
 }
 
 // BackfillBloomIndex scans existing parquet files that aren't yet in the bloom

@@ -1,0 +1,57 @@
+# Jaeger UI proxy.
+#
+# Path mismatch: VT/LH expose Jaeger HTTP API under /select/jaeger/api/*,
+# but the upstream Jaeger UI hardcodes /api/* in its XHRs. We don't want
+# to fork the UI just for a path prefix, so:
+#
+#   - /api/* requests get rewritten to /select/jaeger/api/* and proxied
+#     to the configured backend (hot VT or cold lakehouse-traces).
+#   - Everything else falls through to jaeger-query, which serves the
+#     static UI bundle from its embedded Go assets.
+#
+# jaeger-query itself uses SPAN_STORAGE_TYPE=memory in compose so it
+# doesn't need any real backend wired up — we only use it as a UI
+# file server.
+server {
+    listen 80;
+    server_name _;
+
+    # XHR API calls from the UI → real backend with path rewrite.
+    #
+    # Strip every client-controlled header (proxy_pass_request_headers
+    # off) and re-add only the ones the backend needs to see.
+    # Specifically we DON'T want a browser-side caller to spoof
+    # AccountID / ProjectID / X-Scope-OrgID headers, sneaking past
+    # the auth model — those must be assigned by a real auth layer
+    # in front of this proxy, not by curl-from-the-internet.
+    location /api/ {
+        rewrite ^/api/(.*)$ /select/jaeger/api/$1 break;
+        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
+
+        proxy_pass_request_headers off;
+        proxy_set_header Host $host;
+        proxy_set_header Accept $http_accept;
+        proxy_set_header Accept-Encoding $http_accept_encoding;
+        proxy_set_header User-Agent $http_user_agent;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_read_timeout 60s;
+        proxy_connect_timeout 5s;
+    }
+
+    # Health probe for compose healthcheck.
+    location = /healthz {
+        return 200 'ok';
+        add_header Content-Type text/plain;
+    }
+
+    # UI static assets + index → embedded Jaeger query UI sidecar.
+    location / {
+        proxy_pass http://${UI_HOST}:${UI_PORT};
+        proxy_set_header Host $host;
+        proxy_read_timeout 60s;
+        proxy_connect_timeout 5s;
+    }
+}

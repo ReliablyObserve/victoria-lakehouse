@@ -229,7 +229,22 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		liveBytes.Add(-sz)
 	}
 
-	files := s.manifest.GetFilesForRange(startNs, endNs)
+	// Tenant-scoped file enumeration when exactly one tenant is in scope.
+	// The cross-tenant (admin) read path retains the legacy full-manifest
+	// walk because it legitimately needs every tenant's files. Most query
+	// paths are single-tenant by construction (per-request auth) so this
+	// branch wins for the common case.
+	var files []manifest.FileInfo
+	if len(tenantIDs) == 1 {
+		t := tenantIDs[0]
+		files = s.manifest.GetFilesForRangeTenant(
+			startNs, endNs,
+			fmt.Sprintf("%d", t.AccountID),
+			fmt.Sprintf("%d", t.ProjectID),
+		)
+	} else {
+		files = s.manifest.GetFilesForRange(startNs, endNs)
+	}
 	if len(files) == 0 {
 		// No cold-tier files cover the requested window, but the in-flight
 		// buffer-bridge may still have rows newer than the latest flushed
@@ -986,6 +1001,16 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 		field{"span_attr:db.statement", r.DBStatement},
 		field{"_stream", r.Stream},
 		field{"_stream_id", r.StreamID},
+		// Service-graph edge fields. Populated only on rows tagged
+		// {trace_service_graph_stream="-"}; empty on normal span rows
+		// (the LogsQL engine omits empty values from its DataBlocks).
+		// Must surface here so the upstream Jaeger Dependencies
+		// reader's `| fields parent, child, callCount` projection
+		// picks them up — without this, the columns exist in
+		// Parquet but the query layer never sees them.
+		field{"parent", r.ServiceGraphParent},
+		field{"child", r.ServiceGraphChild},
+		field{"callCount", r.ServiceGraphCallCount},
 	)
 	for k, v := range r.ResourceAttributes {
 		if !tracePromotedResourceKeys[k] {

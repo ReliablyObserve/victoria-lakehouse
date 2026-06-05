@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"container/list"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -21,10 +22,116 @@ type LabelInfo struct {
 type LabelIndex struct {
 	mu     sync.RWMutex
 	labels map[string]*LabelInfo
+
+	// LRU bookkeeping for field-count eviction. When maxFields > 0,
+	// the index will evict the least-recently-touched field when a new
+	// field would push it over maxFields. lru and elems are kept in
+	// sync with labels under mu (writes only — reads don't touch the
+	// LRU position to avoid serializing the tag-enumeration hot path).
+	//
+	// At PB-scale with many label keys (k8s.pod.name, host.name,
+	// container.id, etc.) the label index can accumulate hundreds of
+	// thousands of distinct field names. Without an upper bound this
+	// grows as the manifest grows. With maxFields configured, the
+	// memory usage is bounded and the cache focuses on currently-
+	// active labels (the most recently touched on the ingest side).
+	maxFields int
+	lru       *list.List
+	elems     map[string]*list.Element
 }
 
 func NewLabelIndex() *LabelIndex {
-	return &LabelIndex{labels: make(map[string]*LabelInfo)}
+	return NewLabelIndexWithCap(0)
+}
+
+// NewLabelIndexWithCap creates a label index that evicts the least-
+// recently-touched field when a new field would push its size above
+// maxFields. Pass 0 to disable eviction (unbounded growth, current
+// default behaviour preserved for backwards compatibility).
+func NewLabelIndexWithCap(maxFields int) *LabelIndex {
+	idx := &LabelIndex{
+		labels: make(map[string]*LabelInfo),
+	}
+	if maxFields > 0 {
+		idx.maxFields = maxFields
+		idx.lru = list.New()
+		idx.elems = make(map[string]*list.Element)
+	}
+	return idx
+}
+
+// SetMaxFields enables LRU eviction with the given field-count cap.
+// Pass 0 to disable. Safe to call at any time after construction
+// (covers the LoadLabelIndex / UnmarshalLabelIndex paths that don't
+// take a cap at construction). When the existing label count exceeds
+// the new cap, fields are evicted to fit; the order is undefined for
+// fields that weren't touched before SetMaxFields was called.
+func (idx *LabelIndex) SetMaxFields(maxFields int) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	if maxFields == idx.maxFields {
+		return
+	}
+	idx.maxFields = maxFields
+	if maxFields == 0 {
+		idx.lru = nil
+		idx.elems = nil
+		return
+	}
+	if idx.lru == nil {
+		idx.lru = list.New()
+		idx.elems = make(map[string]*list.Element, len(idx.labels))
+		// Seed the LRU with existing labels. Order is the map iteration
+		// order — non-deterministic but harmless since these entries
+		// haven't been touched in any meaningful sense yet.
+		for name := range idx.labels {
+			idx.elems[name] = idx.lru.PushFront(name)
+		}
+	}
+	for idx.lru.Len() > idx.maxFields {
+		back := idx.lru.Back()
+		if back == nil {
+			break
+		}
+		victim := back.Value.(string)
+		idx.lru.Remove(back)
+		delete(idx.elems, victim)
+		delete(idx.labels, victim)
+	}
+}
+
+// MaxFields returns the current eviction cap (0 = no eviction).
+// Exposed for the /lakehouse stats API and assertion tests.
+func (idx *LabelIndex) MaxFields() int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.maxFields
+}
+
+// touchLRU moves the named field to the front of the LRU list when
+// the cap is enabled. Caller must hold idx.mu.
+func (idx *LabelIndex) touchLRU(name string) {
+	if idx.maxFields == 0 {
+		return
+	}
+	if elem, ok := idx.elems[name]; ok {
+		idx.lru.MoveToFront(elem)
+		return
+	}
+	idx.elems[name] = idx.lru.PushFront(name)
+	// Evict back-of-list until we fit. Loop because in pathological
+	// scenarios (capacity reduced at runtime via reconfiguration) we
+	// may need to drop multiple entries on a single Add.
+	for idx.lru.Len() > idx.maxFields {
+		back := idx.lru.Back()
+		if back == nil {
+			break
+		}
+		victim := back.Value.(string)
+		idx.lru.Remove(back)
+		delete(idx.elems, victim)
+		delete(idx.labels, victim)
+	}
 }
 
 func (idx *LabelIndex) Add(name string, values []string) {
@@ -44,6 +151,10 @@ func (idx *LabelIndex) AddWithValueCounts(name string, values []string, counts m
 }
 
 func (idx *LabelIndex) addLocked(name string, values []string, counts map[string]int) {
+	// Touch LRU first — for an existing label this just reorders;
+	// for a new label this may evict the cold tail, freeing space
+	// before the map insert below.
+	idx.touchLRU(name)
 	// When counts is provided it is authoritative: it comes from a real
 	// data-page scan (sampleValueFrequency), whereas values may include
 	// entries from a footer-only or column-index path that returns
@@ -256,6 +367,144 @@ func (p *Persister) SaveLabelIndex(idx *LabelIndex) error {
 		SavedAt: time.Now(),
 	}
 	return p.writeJSON("label-index.json", data)
+}
+
+// MarshalLabelIndex returns the JSON encoding of idx, suitable for
+// uploading to S3 so a new pod (or a pod that lost its local disk
+// volume) can recover the cluster's accumulated label index without
+// having to re-scan every parquet file. Mirrors the byte-for-byte
+// layout SaveLabelIndex writes to disk; UnmarshalLabelIndex applies the
+// same drift-reconciliation pass on the way back in.
+//
+// Takes a snapshot of the labels map under RLock (cheap pointer copy
+// of the values + shallow map copy of the keys) and releases the lock
+// BEFORE json.Marshal runs. Concurrent GetFieldNames / GetLabelInfo
+// readers are unblocked for the duration of the encode — which is
+// hundreds of milliseconds on a large index, long enough to noticeably
+// degrade tag-enumeration latency if we held the lock the whole time.
+func MarshalLabelIndex(idx *LabelIndex) ([]byte, error) {
+	idx.mu.RLock()
+	snap := make(map[string]*LabelInfo, len(idx.labels))
+	for k, v := range idx.labels {
+		snap[k] = v
+	}
+	idx.mu.RUnlock()
+
+	data := struct {
+		Labels  map[string]*LabelInfo `json:"labels"`
+		SavedAt time.Time             `json:"saved_at"`
+	}{
+		Labels:  snap,
+		SavedAt: time.Now(),
+	}
+	return json.Marshal(data)
+}
+
+// UnmarshalLabelIndex parses a JSON-encoded label index produced by
+// MarshalLabelIndex. Applies the same sanitation LoadLabelIndex does so
+// truncated BYTE_ARRAY prefix values from older pods don't leak into
+// the freshly loaded index.
+func UnmarshalLabelIndex(buf []byte) (*LabelIndex, error) {
+	var data struct {
+		Labels map[string]*LabelInfo `json:"labels"`
+	}
+	if err := json.Unmarshal(buf, &data); err != nil {
+		return nil, err
+	}
+	if data.Labels == nil {
+		data.Labels = make(map[string]*LabelInfo)
+	}
+	for _, li := range data.Labels {
+		if li == nil || len(li.ValueCounts) == 0 || len(li.Values) == 0 {
+			continue
+		}
+		kept := li.Values[:0]
+		for _, v := range li.Values {
+			if _, ok := li.ValueCounts[v]; ok {
+				kept = append(kept, v)
+			}
+		}
+		li.Values = kept
+		li.Cardinality = len(kept)
+	}
+	return &LabelIndex{labels: data.Labels}, nil
+}
+
+// MergeFrom adds all labels from src into idx. Used when recovering a
+// label index from S3 alongside whatever was already loaded from local
+// disk — we want the union, not just the most recent write.
+func (idx *LabelIndex) MergeFrom(src *LabelIndex) {
+	if src == nil {
+		return
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	src.mu.RLock()
+	defer src.mu.RUnlock()
+	for name, srcInfo := range src.labels {
+		if srcInfo == nil {
+			continue
+		}
+		existing, ok := idx.labels[name]
+		if !ok {
+			// Copy by value so a subsequent mutation on src doesn't
+			// alias into idx (and vice versa).
+			cp := *srcInfo
+			if srcInfo.Values != nil {
+				cp.Values = append([]string(nil), srcInfo.Values...)
+			}
+			if srcInfo.ValueCounts != nil {
+				cp.ValueCounts = make(map[string]int, len(srcInfo.ValueCounts))
+				for k, v := range srcInfo.ValueCounts {
+					cp.ValueCounts[k] = v
+				}
+			}
+			if srcInfo.PerTenant != nil {
+				cp.PerTenant = make(map[string]int, len(srcInfo.PerTenant))
+				for k, v := range srcInfo.PerTenant {
+					cp.PerTenant[k] = v
+				}
+			}
+			idx.labels[name] = &cp
+			// Update LRU so the cap evicts the right things. touchLRU
+			// is a no-op when the cap isn't configured.
+			idx.touchLRU(name)
+			continue
+		}
+		// Existing label — touch LRU to mark "recently merged".
+		idx.touchLRU(name)
+		// Merge values: bounded by 10K per label (same cap as Add).
+		existingVals := make(map[string]bool, len(existing.Values))
+		for _, v := range existing.Values {
+			existingVals[v] = true
+		}
+		for _, v := range srcInfo.Values {
+			if !existingVals[v] && len(existing.Values) < 10000 {
+				existing.Values = append(existing.Values, v)
+				existingVals[v] = true
+			}
+		}
+		existing.Cardinality = len(existing.Values)
+		if srcInfo.ValueCounts != nil {
+			if existing.ValueCounts == nil {
+				existing.ValueCounts = make(map[string]int, len(srcInfo.ValueCounts))
+			}
+			for v, c := range srcInfo.ValueCounts {
+				existing.ValueCounts[v] += c
+			}
+		}
+		if srcInfo.SeenInFiles > existing.SeenInFiles {
+			existing.SeenInFiles = srcInfo.SeenInFiles
+		}
+		if srcInfo.PerTenant != nil {
+			if existing.PerTenant == nil {
+				existing.PerTenant = make(map[string]int, len(srcInfo.PerTenant))
+			}
+			for k, v := range srcInfo.PerTenant {
+				existing.PerTenant[k] += v
+			}
+		}
+	}
 }
 
 func (p *Persister) LoadLabelIndex() (*LabelIndex, error) {

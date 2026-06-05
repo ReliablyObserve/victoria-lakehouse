@@ -231,6 +231,30 @@ type CacheConfig struct {
 	WarmupConcurrency int           `yaml:"warmup_concurrency"`
 	PartitionMode     string        `yaml:"partition_mode"` // "az-local" (default), "global", "distributed"
 
+	// FooterMaxItems is the upper bound on the parquet footer cache.
+	// Each entry is ~5 KB so the default 10K caps the working set at
+	// ~50 MB. At PB-scale (50M files, 5 PB at rest) the default leaves
+	// a 0.02% hit rate — too low to be useful. Set to a larger value
+	// (e.g. 50000–100000) for those deployments. When zero, the
+	// storage layer auto-tunes: max(configured, 0.05% of manifest file
+	// count) clamped to [10000, 100000]. The auto-tune re-fires after
+	// every successful RefreshFromS3 so a growing bucket gradually
+	// scales the cache up.
+	FooterMaxItems int `yaml:"footer_max_items"`
+
+	// LabelIndexMaxFields caps the number of distinct field names the
+	// in-memory label index will track. When the index reaches this
+	// limit, the least-recently-touched field is evicted on each new
+	// Add. Setting to 0 disables eviction (unbounded growth — the
+	// current default behaviour).
+	//
+	// At PB-scale with k8s-tagged data, distinct label key counts can
+	// climb into the hundreds of thousands (k8s.pod.name × every pod
+	// restart, container.id × every deploy). Capping prevents OOM in
+	// the long-running pod while leaving the most active fields
+	// available for tag-enumeration queries.
+	LabelIndexMaxFields int `yaml:"label_index_max_fields"`
+
 	// K8s-style request/limit/scaling for the L1 in-memory cache
 	// budget. When non-zero, these take precedence over MemoryLimit
 	// which becomes a deprecated alias logged once at startup. Sizes
