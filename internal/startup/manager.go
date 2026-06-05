@@ -149,9 +149,11 @@ func (m *Manager) SetWarmupComplete() {
 // SetManifestFiles updates the file-count gauge that the MinManifestFiles
 // gate consults. Called on every successful manifest load/refresh so
 // /ready can flip live without restarting the pod. Also drives the
-// ServingReady metric so operators can spot the gate flipping live.
+// ServingReady and ManifestFiles metrics so operators can spot the gate
+// flipping live and watch the manifest-size health gauge.
 func (m *Manager) SetManifestFiles(n int64) {
 	m.manifestFiles.Store(n)
+	metrics.ManifestFiles.Set(n)
 	if m.ServingReady() {
 		metrics.ServingReady.Set(1)
 	} else {
