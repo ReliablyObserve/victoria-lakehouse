@@ -59,6 +59,39 @@ func TestSeverityText_FallsBackFromSeverityNumber(t *testing.T) {
 	}
 }
 
+// TestSeverityText_AcceptsBothLevelAndSeverityTextFieldNames pins the
+// dual-alias contract. VL's OTLP handler emits the field as
+// `severity_text` (deps/VictoriaLogs/app/vlinsert/opentelemetry/pb.go:340
+// `fs.Add("severity_text", ...)`), while VL's non-OTLP path emits it as
+// `level`. Cold ingest now accepts both, so OTLP-sourced rows don't
+// silently drop their severity and land in the Grafana "unknown" bucket.
+func TestSeverityText_AcceptsBothLevelAndSeverityTextFieldNames(t *testing.T) {
+	cases := []struct {
+		name      string
+		fieldName string
+	}{
+		{"non-OTLP path: level=Info", "level"},
+		{"OTLP path: severity_text=Info", "severity_text"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lr := makeLogRows(t,
+				logstorage.Field{Name: "", Value: "body"},
+				logstorage.Field{Name: tc.fieldName, Value: "Info"},
+			)
+			rows := logRowsToSchemaRows(lr)
+			logstorage.PutLogRows(lr)
+			if len(rows) != 1 {
+				t.Fatalf("got %d rows, want 1", len(rows))
+			}
+			if rows[0].SeverityText != "Info" {
+				t.Errorf("field=%q: SeverityText = %q, want %q",
+					tc.fieldName, rows[0].SeverityText, "Info")
+			}
+		})
+	}
+}
+
 // TestSeverityText_ExplicitLevelWinsOverDerived pins the precedence
 // rule: when the source row carries BOTH level and severity_number,
 // the explicit level text is preserved verbatim — derived fallback

@@ -167,7 +167,13 @@ func mapFieldToRow(row *schema.LogRow, name, value string) {
 	switch name {
 	case "":
 		row.Body = strings.Clone(value)
-	case "level":
+	case "level", "severity_text":
+		// VL upstream's OTLP handler emits the field as
+		// `severity_text` (see deps/VictoriaLogs/app/vlinsert/
+		// opentelemetry/pb.go:340 `fs.Add("severity_text", ...)`).
+		// The non-OTLP path emits `level`. Both name the same
+		// concept; map to SeverityText so OTLP-ingested rows
+		// don't fall into the "unknown level" bucket in Grafana.
 		row.SeverityText = strings.Clone(value)
 	case "severity_number":
 		if v, err := strconv.ParseInt(value, 10, 32); err == nil {
