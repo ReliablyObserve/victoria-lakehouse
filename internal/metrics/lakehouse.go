@@ -79,6 +79,17 @@ var (
 	MetadataOnlyFiles       = NewCounter("lakehouse_metadata_only_files_total")
 	QueryFileNotFoundTotal  = NewCounter("lakehouse_query_file_not_found_total")
 	QueryFileErrorsTotal    = NewCounter("lakehouse_query_file_errors_total")
+
+	// LogsTraceShapedRowsDropped counts rows dropped from
+	// LogsProfile query results because their stream tags identify
+	// them as trace spans (VT-style `resource_attr:` prefix or
+	// `name="..."` partition key) rather than logs. The drop matches
+	// what VL upstream's stream-fields enforcement does at write
+	// time, so query results stay consistent across tiers. A
+	// non-zero rate indicates pre-existing data quality issue in
+	// the cold tier (task #70 territory) — operators can correlate
+	// the rate with compaction/cleanup runs.
+	LogsTraceShapedRowsDropped = NewCounter("lakehouse_logs_trace_shaped_rows_dropped_total")
 )
 
 // Insert / writer metrics

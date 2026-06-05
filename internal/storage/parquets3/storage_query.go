@@ -130,6 +130,23 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				return nil
 			}
 		}
+		// Wrong-schema row filter: drop rows whose stream tags identify
+		// them as trace spans rather than logs. Trace-style stream tags
+		// (using `resource_attr:` prefix from VT's protoparser, or
+		// `name="<operation>"` as the partition key) have no place in a
+		// LogsProfile query result — they have no _msg, no severity, and
+		// VL hot tier never emits them. Their presence in our cold-tier
+		// parquets is a pre-existing data quality issue tracked under
+		// task #69-class manifest hygiene; the read-side filter here
+		// matches what VL upstream's stream selector enforces at write
+		// time, so the user-facing query results stay consistent across
+		// tiers without us having to surgically clean S3.
+		if s.cfg != nil && s.cfg.Mode == config.ModeLogs {
+			db = dropTraceShapedRows(db)
+			if db == nil || db.RowsCount() == 0 {
+				return nil
+			}
+		}
 		return db
 	}
 
