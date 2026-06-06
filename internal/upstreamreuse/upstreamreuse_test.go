@@ -139,7 +139,9 @@ func TestVLVTSymbolsAreImported(t *testing.T) {
 		upstreamPath string
 	}{
 		{
-			callerRel:    "internal/vlstorage/insert.go",
+			// FormatSeverity now used via internal/schema/severity.go
+			// instead of imported directly in insert.go.
+			callerRel:    "internal/schema/severity.go",
 			upstreamPath: "github.com/VictoriaMetrics/VictoriaLogs/app/vlinsert/opentelemetry",
 		},
 		{

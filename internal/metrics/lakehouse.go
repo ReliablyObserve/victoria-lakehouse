@@ -112,6 +112,17 @@ var (
 	// (read-side, ingest, compaction) sit at zero with no inflated
 	// counts left.
 	LogsTraceShapedRowsDroppedAtCompaction = NewCounter("lakehouse_logs_trace_shaped_rows_dropped_at_compaction_total")
+
+	// LogsSeverityTextBackfilledAtCompaction counts rows whose
+	// SeverityText was empty in the source parquet but recoverable
+	// from severity_number (via VL upstream FormatSeverity) or the
+	// stream-tag `level` value (via VL upstream StreamTags.Get).
+	// Each compaction pass heals historical files that pre-date the
+	// insert-time fallback. The counter falls to zero once all
+	// affected files have been re-emitted by compaction, at which
+	// point query-time `level=""` buckets on cold mirror VL hot's
+	// own zero-empty-bucket behavior.
+	LogsSeverityTextBackfilledAtCompaction = NewCounter("lakehouse_logs_severity_text_backfilled_at_compaction_total")
 )
 
 // Insert / writer metrics

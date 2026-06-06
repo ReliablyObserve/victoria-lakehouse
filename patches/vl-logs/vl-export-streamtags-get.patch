@@ -1,5 +1,5 @@
 diff --git a/lib/logstorage/stream_tags.go b/lib/logstorage/stream_tags.go
-index 296d912..9173244 100644
+index 296d912..09f01d0 100644
 --- a/lib/logstorage/stream_tags.go
 +++ b/lib/logstorage/stream_tags.go
 @@ -35,6 +35,21 @@ type StreamTags struct {
@@ -24,3 +24,23 @@ index 296d912..9173244 100644
  // Reset resets st for reuse
  func (st *StreamTags) Reset() {
  	// Clear references to strings, which can belong to external buffers.
+@@ -115,6 +130,19 @@ func (st *StreamTags) unmarshalStringInplace(s string) error {
+ 	return err
+ }
+ 
++// UnmarshalString is an exported wrapper around the package-local
++// unmarshalStringInplace. Added by patches/vl-logs/vl-export-streamtags-unmarshal.patch
++// so the lakehouse cold tier's compactor can re-parse the
++// human-readable stream tag string stored in schema.LogRow.Stream
++// without resorting to a regex parser. Used to backfill row-level
++// SeverityText from the stream-label `level` tag on historical
++// parquet files written before the insert-time severity fallback
++// existed. As with unmarshalStringInplace, st points into s — the
++// caller must not mutate s while st is in use.
++func (st *StreamTags) UnmarshalString(s string) error {
++	return st.unmarshalStringInplace(s)
++}
++
+ // Add adds (name:value) tag to st.
+ //
+ // name and value mustn't be changed while st is in use.

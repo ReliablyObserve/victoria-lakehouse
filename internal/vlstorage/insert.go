@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlinsert/insertutil"
-	otelpb "github.com/VictoriaMetrics/VictoriaLogs/app/vlinsert/opentelemetry"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
@@ -83,26 +82,20 @@ func logRowsToSchemaRows(lr *logstorage.LogRows) []schema.LogRow {
 			TimestampUnixNano: r.Timestamp,
 		}
 
-		// streamLevel is captured during stream-tag parsing so the
-		// post-field-mapping fallback below can lift it onto the row
-		// without re-parsing the canonical string. Empty when the
-		// stream has no `level` tag (the non-OTel ingest paths that
-		// don't put level in the stream).
-		var streamLevel string
+		// stPooled is held across the field-mapping loop so the post-
+		// loop severity derivation can read the parsed stream tags
+		// without re-unmarshaling. Released to VL's pool right before
+		// the row is appended; nil for rows that have no stream tag.
+		var stPooled *logstorage.StreamTags
 
 		if r.StreamTagsCanonical != "" {
-			st := logstorage.GetStreamTags()
-			if err := unmarshalStreamTags(st, r.StreamTagsCanonical); err == nil {
-				row.Stream = strings.Clone(st.String())
-				// Reuse VL's StreamTags.Get accessor (exported via
-				// patches/vl-{logs,traces}/vl-export-streamtags-get.patch).
-				// Avoids re-implementing canonical-string parsing on top
-				// of the same data VL just unmarshaled.
-				if lvl, ok := st.Get("level"); ok {
-					streamLevel = strings.Clone(lvl)
-				}
+			stPooled = logstorage.GetStreamTags()
+			if err := unmarshalStreamTags(stPooled, r.StreamTagsCanonical); err == nil {
+				row.Stream = strings.Clone(stPooled.String())
+			} else {
+				logstorage.PutStreamTags(stPooled)
+				stPooled = nil
 			}
-			logstorage.PutStreamTags(st)
 
 			// Compute _stream_id deterministically from (TenantID,
 			// StreamTagsCanonical) using VL's own hash algorithm.
@@ -144,29 +137,17 @@ func logRowsToSchemaRows(lr *logstorage.LogRows) []schema.LogRow {
 			mapFieldToRow(&row, f.Name, f.Value)
 		}
 
-		// Fall back to deriving SeverityText from severity_number when
-		// the source row has the OTel numeric severity but no text
-		// level (common with raw OTLP ingestion, stack traces, and the
-		// datagen mix). VL hot exposes a derived `level` in this case;
-		// without this fallback, LH cold queries return `level=""` for
-		// the same rows and Grafana's log-volume chart shows them as
-		// an "unknown" bucket.
-		if row.SeverityText == "" && row.SeverityNumber > 0 {
-			row.SeverityText = severityTextFromNumber(row.SeverityNumber)
-		}
+		// Single derivation step shared with the compactor's
+		// backfill path. Walks the precedence chain (explicit
+		// SeverityText → derived from severity_number → lifted
+		// from stream-tag `level`) using VL upstream helpers. Empty
+		// when no source has a level — leaves SeverityText as the
+		// canonical "no severity" signal rather than substituting
+		// a fake "Unspecified".
+		row.SeverityText = schema.DeriveSeverityText(row.SeverityText, row.SeverityNumber, stPooled)
 
-		// Final fallback: if the row's level field is still empty but
-		// the stream tag carried `level=...`, lift the value to the
-		// row-level SeverityText. VL hot promotes stream-label level
-		// to a row field at query time; LH cold materializes rows
-		// from parquet columns, so we must persist the lifted value
-		// at write time instead. Catches the ingest paths (Loki API,
-		// jsonline with stream-only level) that put level in the
-		// stream tag but never as a row field. The value was captured
-		// during the stream-tag parse step above via VL's exported
-		// StreamTags.Get accessor — no re-parsing here.
-		if row.SeverityText == "" && streamLevel != "" {
-			row.SeverityText = streamLevel
+		if stPooled != nil {
+			logstorage.PutStreamTags(stPooled)
 		}
 
 		rows = append(rows, row)
@@ -237,19 +218,4 @@ func mapFieldToRow(row *schema.LogRow, name, value string) {
 	}
 }
 
-// severityTextFromNumber maps an OTel severity_number to the canonical
-// text label by delegating to VL upstream's exported FormatSeverity
-// (added by patches/vl-logs/vl-export-severity.patch and
-// patches/vl-traces/vl-export-severity.patch). The wrapper exists
-// solely to filter the n=0 "Unspecified" case so a missing severity
-// stays empty rather than being labeled — VL hot emits "Unspecified"
-// at the proto layer because OTel requires a slot, but LH's row
-// schema treats empty SeverityText as the canonical "no severity"
-// signal that operators can grep for.
-func severityTextFromNumber(n int32) string {
-	if n < 1 || n > 24 {
-		return ""
-	}
-	return otelpb.FormatSeverity(n)
-}
 

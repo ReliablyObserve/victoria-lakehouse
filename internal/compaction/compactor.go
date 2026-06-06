@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/google/uuid"
 	"github.com/parquet-go/parquet-go"
@@ -364,6 +365,45 @@ func (c *Compactor) mergeLogFiles(allData [][]byte) ([]schema.LogRow, error) {
 			metrics.LogsTraceShapedRowsDroppedAtCompaction.Add(dropped)
 		}
 		merged = kept
+	}
+
+	// Compaction-time SeverityText backfill. Rows written before the
+	// insert-time fallback existed have empty SeverityText even when
+	// the stream tag carries `level="X"` or severity_number is set.
+	// Each compaction pass rewrites the rows on disk, so it's the
+	// natural healing point — historical parquets get healed as they
+	// roll up through compaction levels, no separate rewrite tool
+	// needed.
+	//
+	// Reuses the same schema.DeriveSeverityText helper the insert
+	// path uses, so the precedence chain (explicit text → derived
+	// from severity_number → stream-tag `level`) is identical
+	// across the two write paths.
+	if len(merged) > 0 {
+		backfilled := 0
+		for i := range merged {
+			if merged[i].SeverityText != "" {
+				continue
+			}
+			var st *logstorage.StreamTags
+			if merged[i].Stream != "" {
+				st = logstorage.GetStreamTags()
+				if err := st.UnmarshalString(merged[i].Stream); err != nil {
+					logstorage.PutStreamTags(st)
+					st = nil
+				}
+			}
+			if derived := schema.DeriveSeverityText("", merged[i].SeverityNumber, st); derived != "" {
+				merged[i].SeverityText = derived
+				backfilled++
+			}
+			if st != nil {
+				logstorage.PutStreamTags(st)
+			}
+		}
+		if backfilled > 0 {
+			metrics.LogsSeverityTextBackfilledAtCompaction.Add(backfilled)
+		}
 	}
 
 	sort.Slice(merged, func(i, j int) bool {
