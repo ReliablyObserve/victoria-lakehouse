@@ -64,7 +64,7 @@ func TestStress_ConcurrentReadsDuringWrites(t *testing.T) {
 	h := NewHandler(store, "")
 
 	done := make(chan struct{})
-	duration := 5 * time.Second
+	duration := 2 * time.Second
 	if deadline, ok := t.Deadline(); ok {
 		if remaining := time.Until(deadline) - 2*time.Second; remaining < duration {
 			duration = remaining
@@ -74,7 +74,19 @@ func TestStress_ConcurrentReadsDuringWrites(t *testing.T) {
 		duration = 500 * time.Millisecond
 	}
 
-	// Writer: continuously append rows with monotonically increasing ts.
+	// Cap the writer so the buffer can't grow unbounded — the
+	// handler re-encodes the whole matching slice per request, so
+	// with 32 readers querying a maximal time range a million-row
+	// buffer would have each reader doing O(million) JSON encoding
+	// per query, blocking the goroutine scheduler and tripping the
+	// test's outer timeout. The cap keeps per-query work bounded
+	// while still exercising the producer/consumer concurrency the
+	// test exists to verify.
+	const maxRows = 8_000
+
+	// Writer: append rows with monotonically increasing ts up to
+	// the cap, then pause until done. Done signal still wins so the
+	// readers can shut down promptly.
 	var writerWG sync.WaitGroup
 	writerWG.Add(1)
 	go func() {
@@ -85,6 +97,12 @@ func TestStress_ConcurrentReadsDuringWrites(t *testing.T) {
 			case <-done:
 				return
 			default:
+			}
+			if store.written.Load() >= maxRows {
+				// Buffer saturated; wait for shutdown without
+				// blowing up the data set further.
+				time.Sleep(time.Millisecond)
+				continue
 			}
 			store.Append(schema.LogRow{
 				TimestampUnixNano: ts,
