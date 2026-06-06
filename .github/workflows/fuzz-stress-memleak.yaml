@@ -35,6 +35,16 @@ permissions:
 
 env:
   GOFLAGS: -mod=readonly
+  # ci.yaml uses GOWORK: "off" — without this, the default GOWORK=auto
+  # discovers go.work which pulls in lakehouse-traces as a module
+  # workspace, whose replace directive points at
+  # ./deps/VictoriaLogs and ./deps/VictoriaTraces relative to that
+  # module. Building the root logs module then asks for files inside
+  # `lakehouse-traces/deps/VictoriaLogs/`, which our deps-logs alone
+  # doesn't create. Mirror ci.yaml so logs jobs only consult
+  # ./deps/VictoriaLogs and traces jobs run in the lakehouse-traces
+  # working directory under its own go.mod.
+  GOWORK: "off"
   VL_VERSION_LOGS: v1.49.0
   VL_COMMIT_TRACES: 77df0c04d532
   VT_VERSION: v0.9.2
@@ -72,15 +82,23 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
-      - name: Build VL+VT deps (traces)
+          # lakehouse-traces is its own Go module; the go.mod there
+          # pins the toolchain the traces tests must compile against.
+          go-version-file: lakehouse-traces/go.mod
+      - name: Build VL deps (traces side)
+        run: make deps-traces
+      - name: Build VT deps (traces)
         run: make deps-vt
       - name: Run memleak gates (traces)
+        # Match the ci.yaml test-traces pattern: cd into the traces
+        # module so its own go.mod replace directive resolves to
+        # lakehouse-traces/deps/{VictoriaLogs,VictoriaTraces}.
+        working-directory: lakehouse-traces
         run: |
           go test \
             -run 'Memleak|MemLeak|HeapInUse|HeapInuse' \
             -count=1 -timeout=15m \
-            ./lakehouse-traces/internal/...
+            ./internal/...
 
   # -------------------------------------------------------------------
   # Stress gates — high-iteration concurrency tests. Runs WITH -race
@@ -111,15 +129,18 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
-      - name: Build VL+VT deps (traces)
+          go-version-file: lakehouse-traces/go.mod
+      - name: Build VL deps (traces side)
+        run: make deps-traces
+      - name: Build VT deps (traces)
         run: make deps-vt
       - name: Run stress gates (traces)
+        working-directory: lakehouse-traces
         run: |
           go test \
             -run 'Stress|Race|Concurrent' \
             -race -count=1 -timeout=25m \
-            ./lakehouse-traces/internal/...
+            ./internal/...
 
   # -------------------------------------------------------------------
   # Fuzz gates — explicitly creates new inputs via -fuzz.
@@ -218,26 +239,35 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Package paths here are RELATIVE TO the lakehouse-traces
+        # module root (e.g. `internal/storage/parquets3`), not the
+        # repo root. The fuzz step `cd`s into lakehouse-traces before
+        # invoking `go test` so the module's own go.mod replace
+        # resolves to deps/{VictoriaLogs,VictoriaTraces}. Mixing in
+        # `lakehouse-traces/...` prefix would break the package
+        # resolution under that working directory.
         target:
-          - lakehouse-traces/internal/storage/parquets3:FuzzExtractExactMatch
-          - lakehouse-traces/internal/storage/parquets3:FuzzIsPrintable
-          - lakehouse-traces/internal/storage/parquets3:FuzzTraceRowToDataBlock
-          - lakehouse-traces/internal/storage/parquets3:FuzzMultiRowDataBlock
-          - lakehouse-traces/internal/storage/parquets3:FuzzTraceRowWithMapAttributes
-          - lakehouse-traces/internal/storage/parquets3:FuzzContainsOrOperatorQuoted
-          - lakehouse-traces/internal/storage/parquets3:FuzzParseFilterFromQuery
-          - lakehouse-traces/internal/storage/parquets3:FuzzExtractFilterValuesAST
-          - lakehouse-traces/internal/vlstorage:FuzzMapFieldToTraceRow
-          - lakehouse-traces/internal/vlstorage:FuzzUnmarshalStreamTags
-          - lakehouse-traces/internal/vlstorage:FuzzLogRowsToTraceRows
-          - lakehouse-traces/internal/vtstorage_adapter:FuzzTraceIndexLookupTraceID
-          - lakehouse-traces/internal/vtstorage_adapter:FuzzRewriteTraceIndexQuery
+          - internal/storage/parquets3:FuzzExtractExactMatch
+          - internal/storage/parquets3:FuzzIsPrintable
+          - internal/storage/parquets3:FuzzTraceRowToDataBlock
+          - internal/storage/parquets3:FuzzMultiRowDataBlock
+          - internal/storage/parquets3:FuzzTraceRowWithMapAttributes
+          - internal/storage/parquets3:FuzzContainsOrOperatorQuoted
+          - internal/storage/parquets3:FuzzParseFilterFromQuery
+          - internal/storage/parquets3:FuzzExtractFilterValuesAST
+          - internal/vlstorage:FuzzMapFieldToTraceRow
+          - internal/vlstorage:FuzzUnmarshalStreamTags
+          - internal/vlstorage:FuzzLogRowsToTraceRows
+          - internal/vtstorage_adapter:FuzzTraceIndexLookupTraceID
+          - internal/vtstorage_adapter:FuzzRewriteTraceIndexQuery
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
-      - name: Build VL+VT deps (traces)
+          go-version-file: lakehouse-traces/go.mod
+      - name: Build VL deps (traces side)
+        run: make deps-traces
+      - name: Build VT deps (traces)
         run: make deps-vt
       - name: Pick fuzz budget
         id: budget
@@ -248,6 +278,7 @@ jobs:
             echo "seconds=${{ github.event.inputs.fuzz_seconds || 30 }}" >> $GITHUB_OUTPUT
           fi
       - name: Fuzz ${{ matrix.target }}
+        working-directory: lakehouse-traces
         env:
           TARGET: ${{ matrix.target }}
           SECONDS: ${{ steps.budget.outputs.seconds }}
