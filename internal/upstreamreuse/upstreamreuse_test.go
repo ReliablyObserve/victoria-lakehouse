@@ -77,6 +77,7 @@ func TestRequiredPatchesExist(t *testing.T) {
 		"patches/vt-traces/flag_dedup.go.src",
 		"patches/vt-traces/vtstorage-dispatch.patch",
 		"patches/vt-traces/vtstorage-flag-dedup.patch",
+		"patches/vt-traces/vtinsert-flag-dedup.patch",
 		"patches/vt-traces/go-mod-replace.patch",
 	}
 	root := repoRoot(t)

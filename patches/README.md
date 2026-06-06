@@ -46,7 +46,8 @@ other.
 | `external.go.src` | `app/vlstorage/external.go` | Drop-in replacement that wires VL's vlstorage to LH's storage backend. Full-file replacement (no diff). |
 | `external_query.go.src` | `lib/logstorage/external_query.go` | Drop-in replacement exposing `ExternalQuery` hooks LH calls from its own query path. Full-file replacement. |
 | `vlstorage-dispatch.patch` | `app/vlstorage/main.go` | Routes VL's `RunQuery` / `GetFieldNames` / `GetFieldValues` / `GetStreamFieldNames` / `GetStreamFieldValues` / `GetStreamIDs` / `GetStreams` / `GetStats` / `GetHits` to `externalStorage` when LH has registered itself. |
-| `vl-export-severity.patch` | `app/vlinsert/opentelemetry/pb.go` | Adds `FormatSeverity(int32) string` as the public wrapper around the package-local `formatSeverity`. Consumed by `internal/vlstorage/insert.go::severityTextFromNumber` so cold rows derive level from `severity_number` the same way VL hot does. |
+| `vl-export-severity.patch` | `app/vlinsert/opentelemetry/pb.go` | Adds `FormatSeverity(int32) string` as the public wrapper around the package-local `formatSeverity`. Consumed by `internal/schema/severity.go::DeriveSeverityText` so cold rows derive `level` from `severity_number` the same way VL hot does. |
+| `vl-export-streamtags-get.patch` | `lib/logstorage/stream_tags.go` | Adds `(*StreamTags).Get(name)` and `(*StreamTags).UnmarshalString(s)`. The cold insert path uses `Get` to lift the stream-label `level` onto `row.SeverityText` without re-parsing the canonical string; the compactor uses `UnmarshalString` to re-parse the human-readable Stream column when backfilling SeverityText on historical files. |
 
 ### `vt-traces/`
 
@@ -57,7 +58,8 @@ Applied to `lakehouse-traces/deps/VictoriaTraces/...`.
 | `external.go.src` | `app/vtstorage/external.go` | Drop-in replacement that wires VT's vtstorage to LH's trace storage backend. |
 | `flag_dedup.go.src` | `app/vtstorage/flag_dedup.go` | Adds the dedup-flag guard so VT's flags don't collide with LH's identical flags in the same binary. |
 | `vtstorage-dispatch.patch` | `app/vtstorage/main.go` | Routes VT's query handlers to `externalStorage` when LH has registered itself. |
-| `vtstorage-flag-dedup.patch` | `app/vtstorage/main.go` | Wires `flag_dedup.go.src` into VT's flag parsing path so duplicate `flag.Lookup` calls don't panic. |
+| `vtstorage-flag-dedup.patch` | `app/vtstorage/main.go` | Wires `flag_dedup.go.src` into VT's flag parsing path so duplicate `flag.Lookup` calls don't panic. (15 flag sites in one file — helper file is cheaper than inline closures.) |
+| `vtinsert-flag-dedup.patch` | `app/vtinsert/insertutil/{common_params,flags}.go` | Dedupes the VT vtinsert flags (`-defaultMsgValue`, `-insert.maxFieldsPerLine`) that collide with VL's same-named flags when both packages link into the lakehouse-traces binary. Uses inline `flag.Lookup` closures (2 sites, no helper file). |
 | `go-mod-replace.patch` | `go.mod` | Pins VT's VL dependency to the patched local checkout so VT's vlstorage path sees the same `external.go` replacement we apply on the logs side. |
 
 ## Imported VL/VT symbols — natural reuse
@@ -75,6 +77,85 @@ single-source-of-truth dependency on VL/VT.
 | `lakehouse-traces/internal/selectapi/handler.go` (`tempo.RequestHandler`, `jaeger.RequestHandler`) | `github.com/VictoriaMetrics/VictoriaTraces/app/vtselect/traces/{tempo,jaeger}` | VT's own Tempo + Jaeger HTTP handlers, dispatched via `vtstorage-dispatch.patch`. |
 
 If you add another import from `deps/` to LH code, append a row here.
+
+## Patch-style choice — inline closure vs helper file
+
+When a patch needs to dedupe a flag (or wrap any symbol) at multiple
+sites, two shapes are available:
+
+1. **Inline `flag.Lookup` closure**, one per site:
+
+   ```go
+   var MaxFieldsPerLine = func() *int {
+       if existing := flag.Lookup("insert.maxFieldsPerLine"); existing != nil {
+           v, _ := strconv.Atoi(existing.Value.String())
+           return &v
+       }
+       return flag.Int("insert.maxFieldsPerLine", 1000, "...")
+   }()
+   ```
+
+2. **Helper file** (e.g. `flag_dedup.go.src`) plus a small patch that
+   swaps `flag.Int(...)` → `safeInt(...)`.
+
+Use **inline closures** when there are 1–3 sites (the
+`vtinsert-flag-dedup.patch` shape — two flags, no extra file).
+
+Use the **helper-file shape** when there are 5+ sites in one file
+(the `vtstorage-flag-dedup.patch` shape — 15 flags in
+`vtstorage/main.go`). The 80-line helper file is recouped many times
+over by the much-smaller call-site diffs.
+
+Neither shape is "wrong" — pick by call-site count. Future patches
+that add a single dedup site should always use inline.
+
+## Patch hardening guarantees
+
+The `internal/upstreamreuse` package backs three guarantees against
+this directory:
+
+1. **`TestRequiredPatchesExist`** fails when any expected patch file
+   is missing or empty. Deleting a patch forces an update to the
+   policy doc + test in the same PR.
+2. **`TestVLLogsPatchesMirrorTraces`** fails when `vl-logs/` and
+   `vl-traces/` drift in file membership. Both VL clones in the
+   repo share the same patch set; an asymmetric edit gets caught
+   before the build breaks.
+3. **`TestForbiddenLocalCopiesOfUpstreamSymbols`** fails when grep
+   matches a known re-implementation pattern (e.g. a local
+   `logSeverities` table or a hand-rolled `extractStreamTagLevel`
+   function). Reverts that drop an export-patch dependency in
+   favor of a local copy fail the test loudly.
+
+These tests are pure repo-tree checks (no upstream build needed),
+so they run on every commit in CI without needing the
+`make deps-*` step.
+
+## Consolidation analysis (2026-06)
+
+Audited the patch set for redundancy and missing upstream reuse.
+Findings recorded here for future maintainers:
+
+- **vl-logs ↔ vl-traces mirror** — bytes-identical files in two
+  directories. Could be a single source + Makefile copy, but that
+  complicates Docker COPY semantics. Current shape preferred.
+- **`vlstorage-dispatch` and `external.go.src`** — split because
+  `external.go.src` is a *replacement* (`cp`) and the dispatch is
+  a *diff* (`git apply`). Cannot be combined cleanly.
+- **`vtstorage-flag-dedup` vs `vtinsert-flag-dedup`** — different
+  patch shapes (helper-file vs inline-closure) by design. See the
+  "Patch-style choice" section above.
+- **`computeStreamID` in `internal/vlstorage/stream_id.go`** —
+  reproduces VL's private `hash128 → streamID.marshalString`
+  pipeline. Could be exported via patch, but VL's internal
+  representation is volatile; the current isolated mirror has
+  lower upstream-coupling risk.
+- **`writeJSON` duplicated in `internal/delete/handler.go` and
+  `internal/stats/api.go`** — both LH-local, slightly different
+  signatures. Local consolidation opportunity; orthogonal to
+  upstream reuse.
+
+If a future audit changes a row here, update the date stamp above.
 
 ## Workflow
 

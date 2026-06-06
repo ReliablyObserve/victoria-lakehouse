@@ -63,6 +63,7 @@ $(VT_DIR)/go.mod:
 	cp patches/vt-traces/flag_dedup.go.src $(VT_DIR)/app/vtstorage/flag_dedup.go
 	cd $(VT_DIR) && git apply ../../../patches/vt-traces/vtstorage-dispatch.patch
 	cd $(VT_DIR) && git apply ../../../patches/vt-traces/vtstorage-flag-dedup.patch
+	cd $(VT_DIR) && git apply ../../../patches/vt-traces/vtinsert-flag-dedup.patch
 	cd $(VT_DIR) && git apply ../../../patches/vt-traces/go-mod-replace.patch
 
 build: build-logs build-traces
