@@ -26,17 +26,17 @@ func FuzzParseFilterFromQuery(f *testing.F) {
 	// Adversarial shapes — must not panic.
 	f.Add(`field:="unclosed`)
 	f.Add(`{{nested:braces}}`)
-	f.Add(`service.name:="foo OR bar"`)         // OR inside quoted literal
-	f.Add(`service.name:="foo\"bar"`)           // escaped quote in value
-	f.Add(``)                                   // empty
-	f.Add(strings.Repeat("*", 1000))            // long input
-	f.Add("svc:=\"a\x00b\"")                    // embedded NUL
-	f.Add("service.name:=\"héllo-世界\"")        // unicode
-	f.Add(`trace_id:in(`)                       // unclosed in()
-	f.Add(`field:="a" AND AND field:="b"`)      // doubled keyword
-	f.Add(`field:`)                             // dangling colon
-	f.Add(`:="value"`)                          // missing field name
-	f.Add(`service.name:="api" |`)              // trailing pipe
+	f.Add(`service.name:="foo OR bar"`)          // OR inside quoted literal
+	f.Add(`service.name:="foo\"bar"`)            // escaped quote in value
+	f.Add(``)                                    // empty
+	f.Add(strings.Repeat("*", 1000))             // long input
+	f.Add("svc:=\"a\x00b\"")                     // embedded NUL
+	f.Add("service.name:=\"héllo-世界\"")          // unicode
+	f.Add(`trace_id:in(`)                        // unclosed in()
+	f.Add(`field:="a" AND AND field:="b"`)       // doubled keyword
+	f.Add(`field:`)                              // dangling colon
+	f.Add(`:="value"`)                           // missing field name
+	f.Add(`service.name:="api" |`)               // trailing pipe
 	f.Add(`service.name:="api" | stats count()`) // pipe with stage
 
 	// Recent-bug shapes (intentionally INVALID; must be rejected, not panic).

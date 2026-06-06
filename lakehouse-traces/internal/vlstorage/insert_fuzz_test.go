@@ -10,7 +10,6 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
-
 // FuzzMapFieldToTraceRow drives mapFieldToTraceRow with arbitrary
 // (name, value) pairs. Goal: catch panics (nil-deref, index-out-of-
 // range, integer parse panics) on adversarial inputs. The state after
@@ -134,10 +133,10 @@ func FuzzUnmarshalStreamTags(f *testing.F) {
 	f.Add("")
 	f.Add("\x00")
 	f.Add("\x00\x01\x02invalid")
-	f.Add("\x01")                                            // claims 1 tag, no body
-	f.Add("\x01\x05hello")                                   // claims 1 tag, name len 5, no value
-	f.Add("\x01\x05hello\x05world")                          // claims 1 tag, both name+value len 5
-	f.Add("\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff")        // bogus huge varuint
+	f.Add("\x01")                                     // claims 1 tag, no body
+	f.Add("\x01\x05hello")                            // claims 1 tag, name len 5, no value
+	f.Add("\x01\x05hello\x05world")                   // claims 1 tag, both name+value len 5
+	f.Add("\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff") // bogus huge varuint
 	f.Add("日本語のごみ")
 	f.Add(strings.Repeat("\x00", 4096))
 	f.Add(strings.Repeat("A", 4096))
