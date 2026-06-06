@@ -222,6 +222,56 @@ Peers are discovered via Kubernetes headless service DNS. The `DiscoveryConfig.P
 | `discovery.peer_headless_service` | (none) | `--lakehouse.discovery.peer-headless-service` |
 | `discovery.peer_refresh_interval` | `30s` | `--lakehouse.discovery.peer-refresh-interval` |
 
+## Footer Cache (Parquet Metadata)
+
+**Files:** `internal/storage/parquets3/footer_cache.go`, `footer_cache_snapshot.go`
+
+In-memory LRU keyed by S3 object path that holds the parsed Parquet
+footer (`*parquet.File`) for hot files. Lets every subsequent query
+skip the 1-2 round-trip footer fetch + parse.
+
+| Config | Default | Flag |
+|--------|---------|------|
+| `cache.footer_max_items` | `10000` | `--lakehouse.cache.footer-max-items` |
+
+The cache auto-resizes after each manifest refresh so the cap
+tracks the active file count instead of being pinned at the
+startup value. Eviction is pure LRU; bumped on `Get`, evicted
+from the back when the cap is exceeded.
+
+### Two-phase Footer Fetch
+
+Range-reads the last 64 KiB of each cold file in one round-trip.
+If the footer's 4-byte trailer reports a footer length larger
+than the 64 KiB tail (typical for trace parquets whose embedded
+`_trace_idx` KV metadata can run multiple MB), a second targeted
+range-read pulls exactly `footerLen + 8` bytes from the right
+offset. No fall-through to a full-file scan, no fixed upper
+bound on supported footer size.
+
+### Snapshot persistence ("instant warm after restart")
+
+On graceful shutdown the cache persists its key list (LRU-ordered,
+newest first) to local disk. On the next start the manifest loads
+in milliseconds, then an asynchronous background goroutine
+re-prefetches every footer the previous pod had cached using the
+same `prefetchFooters` batch path the warmup uses.
+
+The first user query after restart hits a hot cache — no S3
+round-trip — instead of paying the cold-start cost on every
+previously-cached file. Async, so `/ready=200` isn't gated on the
+prefetch completing.
+
+| File | Default location |
+|------|------------------|
+| Manifest snapshot | `<cfg.Manifest.PersistPath>/manifest-snapshot.json` (binary gob since 2026-06) |
+| Footer-cache snapshot | `<cfg.Manifest.PersistPath>/footer-cache-snapshot.bin` |
+
+| Metric | Meaning |
+|--------|---------|
+| `lakehouse_footer_cache_entries` | Current cache size — should be ≈ previous shutdown count right after restart |
+| `lakehouse_manifest_snapshot_age_seconds` | Seconds since the last successful manifest persist |
+
 ## Entry Metadata & Hot Tracking
 
 **File:** `internal/cache/smartcache/metadata.go`

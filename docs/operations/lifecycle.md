@@ -108,6 +108,19 @@ shutdown:
 | `lakehouse_manifest_files` | current file count | < `min_manifest_files` for >5 min |
 | `lakehouse_startup_phase` | phase enum (0..6) | stuck at any non-Ready value >10 min |
 | `lakehouse_startup_total_seconds` | last cold start total | regression vs baseline by 2x+ |
+| `lakehouse_footer_cache_entries` | current footer-cache size | < ~80% of pre-shutdown count 5 min after restart (snapshot prefetch failing) |
+| `lakehouse_buffer_bridge_az_requests_total` | buffer-bridge fan-out by AZ type | self-loop label > 0 confirms single-node mode is serving its own buffer |
+
+## Restart snapshot pair
+
+Two artifacts persist at shutdown into `cfg.Manifest.PersistPath`:
+
+| File | Purpose | Cost on shutdown | Cost on load |
+| --- | --- | --- | --- |
+| `manifest-snapshot.json` (binary gob format) | Re-hydrates the in-memory file index without re-listing S3 | ~10-50 ms for 1 M files | ~50-200 ms streaming decode (capped at 50 GiB) |
+| `footer-cache-snapshot.bin` | LRU-ordered key list for async footer prefetch on the next start | < 1 ms even at 100k keys | < 1 ms parse; the actual S3 range-reads run in the background after `/ready=200` |
+
+Both writes are guarded by `cfg.Shutdown.PersistTimeout` (default 30 s) so a misbehaving local disk can't extend pod termination beyond the kube `terminationGracePeriodSeconds` budget. The footer-cache snapshot is intentionally key-only: a list is a few hundred KiB even at million-file scale, and the actual footer bytes get re-fetched from S3 by the asynchronous prefetch — keeping the snapshot itself cheap to write and impossible to bloat.
 
 ## Restart timeline expectations
 

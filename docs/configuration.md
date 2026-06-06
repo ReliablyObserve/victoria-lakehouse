@@ -133,7 +133,7 @@ When empty, Victoria Lakehouse auto-discovers the hot boundary by polling vlstor
 | `--lakehouse.insert.target-file-size` | `128MB` | Target Parquet file size (adaptive flush trigger) |
 | `--lakehouse.insert.row-group-size` | `10000` | Rows per Parquet row group |
 | `--lakehouse.insert.bloom-columns` | `service.name,trace_id` | Columns with bloom filters |
-| `--lakehouse.insert.compression-level` | `7` | ZSTD compression level (1=fast, 22=max) |
+| `--lakehouse.insert.compression-level` | `3` | ZSTD level for fresh writes (1=fast, 22=max). Paired with the progressive compaction schedule below — fresh L0 files use this level, deeper compactions escalate. |
 | `--lakehouse.insert.ack-mode` | `buffer` | Acknowledgement mode: `buffer` or `flush-sync` |
 | `--lakehouse.insert.peer-replicate` | `false` | Replicate inserts to peer nodes |
 | `--lakehouse.insert.peer-replicate-timeout` | `5ms` | Timeout for peer replication |
@@ -193,8 +193,41 @@ lakehouse:
 | `--lakehouse.manifest.sqs-queue-url` | `""` | Optional SQS queue for S3 event notifications |
 | `--lakehouse.manifest.sqs-region` | (from `s3.region`) | SQS queue region |
 | `--lakehouse.manifest.sqs-wait-time` | `20s` | SQS long-poll wait time |
-| `--lakehouse.manifest.persist-path` | `/data/lakehouse` | Directory for persisted manifest + index |
+| `--lakehouse.manifest.persist-path` | `/data/lakehouse` | Directory for persisted manifest + index + footer-cache snapshot |
 | `--lakehouse.manifest.persist-interval` | `5m` | How often to write manifest to disk |
+
+The manifest snapshot uses a binary gob format with a magic prefix
+so the streaming decoder can early-reject a corrupted or oversize
+file (>50 GiB) before allocating buffers. The same persist path
+also stores the footer-cache snapshot (`footer-cache-snapshot.bin`)
+used to seed the post-restart async footer prefetch.
+
+## Compaction Settings
+
+| Flag / config | Default | Description |
+|---|---|---|
+| `--lakehouse.compaction.enabled` | `true` | Whether the periodic compaction scheduler runs |
+| `--lakehouse.compaction.interval` | `5m` | Tick interval for the compaction scheduler |
+| `--lakehouse.compaction.max-concurrent` | `1` | Concurrent partition compactions |
+| `--lakehouse.compaction.min-files-l0` | `10` | L0→L1 compaction triggers when this many L0 files exist per partition |
+| `--lakehouse.compaction.min-files-l1` | `10` | L1→L2+ trigger threshold |
+| `--lakehouse.compaction.min-age` | `1h` | Files younger than this are not eligible for L0→L1 compaction |
+| `--lakehouse.compaction.daily-rollup-age` | `24h` | Above this age, files roll up into the daily-rollup partition |
+| `compaction.compression_level_by_output_level` (YAML) | `[3, 7, 11]` | Per-output-level zstd schedule. Slot N = level for output files at compaction-level N. L0 inherits this slot 0 so write + L0 stay consistent. Extends gracefully — operators who configure `[3, 7, 11, 15]` switch to the deeper level for L3+ when a finer codec lands. |
+
+The progressive schedule lets fresh writes optimize for ingest
+throughput while older cold rollups invest more CPU to shrink
+long-term storage. Per-tenant overrides (see Multi-tenancy doc)
+adjust the schedule for a specific tenant without changing the
+global default.
+
+## Startup Settings
+
+| Flag | Default | Description |
+|---|---|---|
+| `--lakehouse.startup.min-manifest-files` | `0` | `/ready` stays `503` until the loaded manifest crosses this floor. Default 0 disables the gate (suitable for dev/CI); set to ~10% of expected file count at PB scale to mask first-ever S3 LIST window. |
+| `--lakehouse.startup.serve-while-warming` | `true` | When true, `/ready=204 serving_warming` once disk recovery completes (queries answered, warmup ongoing). Flips to `200` after warmup completes. |
+| `--lakehouse.shutdown.persist-timeout` | `30s` | Bounded budget for the shutdown manifest + footer-cache snapshot persist. Beyond this the pod exits even if the writes haven't flushed — bounded so a misbehaving local disk can't extend shutdown indefinitely. |
 
 ## Prefetch Settings
 

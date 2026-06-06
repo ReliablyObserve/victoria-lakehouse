@@ -192,7 +192,8 @@ shutdown:
 | WAL replay time | wal_max_bytes / 10 MB/s | yes |
 | S3 LIST during refresh | partition_count | sub-linearly (paginated, parallelisable) |
 | Query latency (wide window) | file_count visited | sub-linearly with bloom + footer cache |
-| Restart `/ready` time | snapshot size + footer reload | sub-linearly (planned async load) |
+| Restart `/ready` time | snapshot size + footer reload | sub-linearly (async footer-cache snapshot reload runs after `/ready=200`) |
+| Cold storage size | bytes ingested × compression_ratio | sub-linearly — progressive compaction schedule reduces L1+ files ~25%, L2+ files another ~10% |
 
 ## What does NOT scale (gotchas)
 

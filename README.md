@@ -20,12 +20,15 @@
 
 - **Drop-in VL/VT storage node.** Register as a `-storageNode` on vlselect/vtselect. Queries spanning hot and cold data work transparently.
 - **Write path with crash recovery.** Full VL insert protocol support (jsonline, Loki JSON+protobuf, ES bulk, syslog, journald, Datadog, OTLP, Splunk) via upstream `vlinsert` handlers. Data buffers in memory, flushes to S3 Parquet, and survives process crashes via WAL.
-- **Zero-delay reads.** Select pods query ALL insert pods across ALL AZs for unflushed buffer data, merging with S3 results for immediate read-after-write visibility.
+- **Zero-delay reads.** Select pods query ALL insert pods across ALL AZs for unflushed buffer data, merging with S3 results for immediate read-after-write visibility. Single-node deployments self-loop so they serve their own unflushed buffer without a peer fan-out.
+- **Instant-warm restart.** Manifest + footer-cache persist to local disk on shutdown; the next start reloads the manifest in milliseconds and asynchronously re-prefetches every footer the previous pod had cached — first user query after restart hits a hot cache instead of paying an S3 round-trip.
+- **Three-state `/ready` lifecycle.** `503 not_ready` → `204 serving_warming` (queries answered, background warmup in progress) → `200 ready`. Load balancers see fully-warm pods only; queries never block on a half-loaded manifest.
 - **Open format + S3 durability.** 48-56% cheaper than Loki/Tempo at scale. At small scale (≤500 GB/mo), VL/VT EBS is cheapest; at PB/mo with >8mo retention, Lakehouse Hybrid wins. S3's 11-nines durability for compliance, Glacier tiering for 3yr+.
 - **Sub-millisecond fast path.** Queries within the hot tier's range get an immediate empty response via the partition manifest. Zero S3 I/O.
 - **Disaster recovery.** When the hot cluster is down (outage, upgrade, migration), lakehouse serves all data from S3 — slower but always available.
 - **Cost-aware deletion.** VL-compatible delete APIs with tombstone-based soft delete. Three modes: `hide` (instant, $0), `permanent` (physical removal), `auto` (smart). Glacier-safe — never triggers retrieval fees.
 - **Open Parquet files.** DuckDB, Trino, Spark, and ClickHouse read the same files directly for analytics, compliance, and ML.
+- **Progressive compression.** Fresh writes use zstd Default for ingest throughput; each compaction level escalates (Default → Better → Best) so older cold data trades CPU once for permanent storage savings. Configurable per output level globally and per tenant.
 
 ---
 

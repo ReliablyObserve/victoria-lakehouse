@@ -260,9 +260,13 @@ lakehouse:
           - { transition_days: 60, storage_class: GLACIER }
         s3:
           bucket: obs-acme          # per-tenant bucket override (see Bucket-Per-Tenant above)
+        compaction:                 # per-tenant compaction policy
+          compression_level_by_output_level: [3, 11, 11]  # invest more CPU at L1 than the global default
 
       acme-corp:                    # alias-keyed entry — resolves once acme-corp is registered
         retention: 720h             # 30 days
+        compaction:
+          compression_level_by_output_level: [1]          # ingest-fast tenant — uniform fast zstd, accept larger files
 ```
 
 Every field is optional. Zero or missing means "inherit the global setting" — there is no special inheritance keyword. This makes config diffs honest: `retention: 0` does not silently mean "use 30 days from elsewhere"; it means "follow whatever the global retention is right now."
@@ -277,6 +281,7 @@ Each override flows to exactly one subsystem:
 | `cardinality.max_streams` / `max_fields` | `tenant.CardinalityLimiter` mounted as `TenantCardinalityGate` on the vlstorage insert paths (logs + traces) | per-tenant distinct counters with fast-path RLock for known entries; overflow drops at the boundary before the writer sees the row. |
 | `ingest.max_bytes_per_sec` / `max_rows_per_sec` | `tenant.IngestRateLimiter` + `tenant.RateLimitMiddleware` | independent byte/sec + row/sec token buckets per tenant; pre-flight Content-Length check returns `429 Too Many Requests` + `X-RateLimit-Limit-Bytes` / `X-RateLimit-Remaining-Bytes` / `X-RateLimit-Retry-After-Ms` headers. |
 | `lifecycle` | `delete.StorageClassDetector.SetTenantRules` consumed by both the manual `predict` handler and the background rewriter scheduler | tenant-keyed rule lookup parses `(account, project)` from the file's S3 key prefix, so manual predictions and the rewriter agree on what storage class a file should end up in. |
+| `compaction.compression_level_by_output_level` | `compaction.SchedulerConfig.TenantCompressionLookup` closure → per-tenant slice resolved on every Compactor construction | when the slice is set, output files for that tenant's compactions use the per-tenant level instead of the global progressive schedule. Empty falls through to global; slot saturation matches the global rule (out-of-range output levels use the last slot). |
 | `s3.bucket` | s3reader `PoolRegistry` + writer `SetTenantBucket`/`SetTenantPool` | tenant's reads/writes route to the dedicated bucket; manifest stamps the bucket so post-migration reads still resolve correctly. |
 
 ### Policy API

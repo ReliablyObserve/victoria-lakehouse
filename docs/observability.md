@@ -131,6 +131,10 @@ graph LR
 | `lakehouse_compaction_errors_total` | Counter | | Failed compaction attempts |
 | `lakehouse_compaction_level_files` | Gauge | `level` | Current file count at each compaction level |
 | `lakehouse_compaction_skipped_total` | Counter | `reason` | Skipped partitions (`locked`, `not_leader`, `below_threshold`, `too_recent`, `schema_mismatch`) |
+| `lakehouse_logs_severity_text_backfilled_at_compaction_total` | Counter | | Rows whose empty `severity_text` was recovered from `severity_number` or the stream-tag `level` value during a compaction pass — historical-data heal counter (see Lifecycle doc) |
+| `lakehouse_logs_trace_shaped_rows_dropped_at_compaction_total` | Counter | | Trace-shape rows the compactor stripped from a merged output |
+| `lakehouse_logs_trace_shaped_rows_dropped_at_ingest_total` | Counter | | Trace-shape rows refused at insert time |
+| `lakehouse_logs_trace_shaped_rows_dropped_total` | Counter | | Read-side trace-shape filter drops (historical files) |
 
 ### Leader Election Metrics (M9)
 
@@ -211,6 +215,26 @@ Per-tenant metrics subject to cardinality cap (`stats.metrics_cardinality_limit`
 | `lakehouse_startup_total_seconds` | Gauge | Total startup time |
 | `lakehouse_ready` | Gauge | 1=ready, 0=warming |
 | `lakehouse_info` | Gauge | Build info (version, mode, topology) |
+
+### Lifecycle / restart honesty Metrics
+
+| Metric | Type | Description |
+|---|---|---|
+| `lakehouse_serving_ready` | Gauge | 1 once disk recovery + WAL replay + MinManifestFiles gate are all satisfied (the `204 serving_warming` boundary) |
+| `lakehouse_warmup_complete` | Gauge | 1 after background warmup finishes (the `200 ready` boundary) |
+| `lakehouse_manifest_files` | Gauge | Current manifest file count (auto-tunes the footer-cache cap; alerts on regression vs. shutdown count) |
+| `lakehouse_manifest_snapshot_age_seconds` | Gauge | Seconds since the last successful manifest persist — alert when > 6 × persist_interval (a silent disk-full will surface here first) |
+| `lakehouse_min_manifest_files_gate` | Gauge | Configured `cfg.Startup.MinManifestFiles` threshold (0 = gate disabled) |
+| `lakehouse_buffer_bridge_az_requests_total` | Counter (`az_type`) | Buffer-bridge fan-out calls labeled `same_az` / `cross_az` / `self`. The `self` label appears for single-node deployments that loop back to their own writer buffer |
+| `lakehouse_buffer_bridge_fallback_total` | Counter | Times the bridge fell back to a different AZ tier after the preferred one returned no peers |
+
+### Cache snapshot Metrics
+
+| Metric | Type | Description |
+|---|---|---|
+| `lakehouse_footer_cache_entries` | Gauge | Cache size — should equal previous shutdown's persisted count shortly after restart once the async prefetch completes |
+| `lakehouse_footer_cache_hits_total` | Counter | Should run > 90% of total cache lookups in steady state |
+| `lakehouse_footer_cache_evictions_total` | Counter | LRU evictions; spikes indicate the cap is undersized relative to the working set |
 
 ## Dashboards
 

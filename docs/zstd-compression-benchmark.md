@@ -22,9 +22,29 @@ Victoria Lakehouse maps `--lakehouse.insert.compression-level` (1-22) to
 | 6-10        | SpeedBetterCompression  | Better ratio, moderate CPU cost |
 | 11-22       | SpeedBestCompression    | Best ratio, high CPU + memory cost |
 
-Current default: **level 7** (`SpeedBetterCompression`). Changed from level 3
-based on real-data benchmarks showing 25% smaller logs and 16% smaller traces
-with only 15-20% slower writes and negligible read impact.
+Current defaults pair a fast write level with a progressive compaction
+schedule:
+
+- **Insert (L0 writes):** level 3 (`SpeedDefault`) — optimized for ingest throughput.
+- **Compaction (L0→L1):** level 7 (`SpeedBetterCompression`) — automatic on rollup.
+- **Compaction (L1→L2+):** level 11 (`SpeedBestCompression`) — automatic on rollup.
+
+The schedule lives in `cfg.Compaction.CompressionLevelByOutputLevel`
+(default `[3, 7, 11]`); slot `N` is the level for output files at
+compaction-level `N`. Empty slice means "use `insert.compression-level`
+for every output level" — backwards-compatible escape hatch. Any
+schedule value > 11 collapses to the same Best encoder until the
+codec swap planned in `docs/architecture/parquet-compression-roadmap.md`
+unlocks zstd 12-22 + long-range mode.
+
+Per-tenant overrides through `tenant.overrides.<tenant>.compaction.compression_level_by_output_level`
+replace the schedule for a specific tenant only.
+
+Real-data e2e measurements show ~25% smaller storage at the L0→L1
+escalation and ~5-10% additional shrink at L1→L2 on OTEL log
+payloads; trace data sees ~15-20% L0→L1 with smaller marginal gains
+at deeper levels because the embedded `_trace_idx` KV dominates the
+footer.
 
 ---
 
