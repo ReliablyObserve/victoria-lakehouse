@@ -874,6 +874,74 @@ func TestInteg_filterByLabelIndex_ExactMatch(t *testing.T) {
 	}
 }
 
+// TestInteg_filterByLabelIndex_KeepsUnindexedFiles pins the
+// defense-in-depth path: a file with no Labels at all (because its
+// metadata sidecar write failed, or it landed before the indexer
+// reached it, or the writer is on a pre-Labels build) MUST stay in
+// the candidate set. The previous behaviour was to silently exclude
+// it — that's the bug that made every cluster with active
+// compaction undercount field-equality filters by ~80%. Regressing
+// this back to "exclude unindexed" silently re-introduces it; the
+// total wildcard count would keep working (different code path),
+// the stream filter would keep working (also different path), but
+// `service.name:="X"` would drop the compacted half of the corpus
+// — exactly the asymmetric undercount pattern we saw in the field.
+func TestInteg_filterByLabelIndex_KeepsUnindexedFiles(t *testing.T) {
+	s := testStorage()
+
+	// One indexed file matching, one indexed file NOT matching, and
+	// two files with Labels=nil (the compacted-without-labels and
+	// the failed-sidecar shapes that exposed the bug).
+	s.manifest.AddFile("dt=2026-05-10/hour=14", manifest.FileInfo{
+		Key:    "logs/dt=2026-05-10/hour=14/indexed-match.parquet",
+		Size:   100,
+		Labels: map[string][]string{"service.name": {"api-gw"}},
+	})
+	s.manifest.AddFile("dt=2026-05-10/hour=14", manifest.FileInfo{
+		Key:    "logs/dt=2026-05-10/hour=14/indexed-no-match.parquet",
+		Size:   200,
+		Labels: map[string][]string{"service.name": {"worker"}},
+	})
+	s.manifest.AddFile("dt=2026-05-10/hour=14", manifest.FileInfo{
+		Key:    "logs/dt=2026-05-10/hour=14/compacted-unindexed.parquet",
+		Size:   300,
+		Labels: nil, // compactor pre-fix shape
+	})
+	s.manifest.AddFile("dt=2026-05-10/hour=14", manifest.FileInfo{
+		Key:    "logs/dt=2026-05-10/hour=14/sidecar-failed.parquet",
+		Size:   400,
+		Labels: nil, // metadata sidecar write failed
+	})
+
+	files := s.manifest.GetFilesForRange(
+		time.Date(2026, 5, 10, 14, 0, 0, 0, time.UTC).UnixNano(),
+		time.Date(2026, 5, 10, 15, 0, 0, 0, time.UTC).UnixNano(),
+	)
+	pdf := buildPushDownFilter(`service.name:="api-gw"`, s.registry)
+	if pdf == nil {
+		t.Fatal("expected non-nil pushdown filter")
+	}
+
+	result := s.filterByLabelIndex(files, pdf)
+
+	keptKeys := make(map[string]bool, len(result))
+	for _, fi := range result {
+		keptKeys[fi.Key] = true
+	}
+	if !keptKeys["logs/dt=2026-05-10/hour=14/indexed-match.parquet"] {
+		t.Error("indexed-matching file dropped — fast path is broken")
+	}
+	if keptKeys["logs/dt=2026-05-10/hour=14/indexed-no-match.parquet"] {
+		t.Error("indexed-NON-matching file kept — fast path is leaking")
+	}
+	if !keptKeys["logs/dt=2026-05-10/hour=14/compacted-unindexed.parquet"] {
+		t.Error("unindexed (compacted-pre-fix) file dropped — silent undercount regression")
+	}
+	if !keptKeys["logs/dt=2026-05-10/hour=14/sidecar-failed.parquet"] {
+		t.Error("unindexed (failed-sidecar) file dropped — silent undercount regression")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: projectedFieldsToDataBlock
 // ---------------------------------------------------------------------------

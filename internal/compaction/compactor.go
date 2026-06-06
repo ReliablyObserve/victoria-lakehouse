@@ -345,6 +345,18 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		inputRawBytes += f.RawBytes
 	}
 
+	// Union the per-field label sets across input files so the compacted
+	// output stays discoverable via the manifest's inverted label index
+	// (m.labelIndex). Without this, a field-equality filter like
+	// `service.name:="api-gateway"` consults the inverted index, finds
+	// only uncompacted files, and silently undercounts by ~80% in any
+	// cluster with active compaction. Total counts and stream-shaped
+	// filters keep working (they don't use the label-index fast path),
+	// which is exactly the asymmetric undercount pattern that exposed
+	// the bug. The union is bounded by maxLabelsPerField inside
+	// indexFileLabels so a misbehaving input can't blow up the index.
+	mergedLabels := mergeFileLabels(g.Files)
+
 	c.manifest.AddFile(partition, manifest.FileInfo{
 		Key:               outputKey,
 		Bucket:            g.Bucket,
@@ -355,6 +367,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		RawBytes:          inputRawBytes,
 		SchemaFingerprint: fp,
 		CompactionLevel:   outputLevel,
+		Labels:            mergedLabels,
 	})
 
 	for _, f := range g.Files {
@@ -570,4 +583,39 @@ func zstdLevel(level int) zstd.Level {
 	default:
 		return zstd.SpeedBestCompression
 	}
+}
+
+// mergeFileLabels unions the per-field label value sets from a slice of
+// input files. Used by the compactor so the merged output file stays
+// discoverable in the manifest's inverted label index — every value that
+// any input file had on a given field gets registered against the output
+// key. Returns nil when no input carries labels (the manifest's
+// rebuildIndex / indexFileLabels both treat nil identically to "this
+// file isn't indexed yet" — readers fall back to the per-row filter).
+func mergeFileLabels(files []manifest.FileInfo) map[string][]string {
+	merged := make(map[string]map[string]struct{})
+	for _, f := range files {
+		for field, values := range f.Labels {
+			set, ok := merged[field]
+			if !ok {
+				set = make(map[string]struct{})
+				merged[field] = set
+			}
+			for _, v := range values {
+				set[v] = struct{}{}
+			}
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(merged))
+	for field, set := range merged {
+		vals := make([]string, 0, len(set))
+		for v := range set {
+			vals = append(vals, v)
+		}
+		out[field] = vals
+	}
+	return out
 }

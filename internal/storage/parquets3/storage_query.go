@@ -1866,9 +1866,20 @@ func (s *Storage) filterByLabelIndex(files []manifest.FileInfo, pdf *PushDownFil
 		return nil
 	}
 
+	// Defense in depth: files that have no Labels at all (an
+	// unindexed file — e.g. one whose metadata sidecar write failed,
+	// or that landed before the indexer reached it) MUST stay in
+	// the candidate set. Without this branch, an unindexed file
+	// gets silently excluded by the inverted-index fast path and
+	// any row matching the filter inside that file gets undercounted.
+	// The row-level filter still runs downstream, so including these
+	// is the conservative correct answer: include and let the actual
+	// match decide. Sibling fileLabelsMatch loop above already uses
+	// the same "Labels==nil → include" convention, so this keeps the
+	// two file-narrowing paths consistent.
 	var result []manifest.FileInfo
 	for _, fi := range files {
-		if candidateKeys[fi.Key] {
+		if candidateKeys[fi.Key] || fi.Labels == nil {
 			result = append(result, fi)
 		}
 	}
@@ -1876,9 +1887,24 @@ func (s *Storage) filterByLabelIndex(files []manifest.FileInfo, pdf *PushDownFil
 	skipped := len(files) - len(result)
 	if skipped > 0 {
 		metrics.ParquetRowGroupsSkipped.Inc("label_index")
-		logger.Infof("label index fast-path: matched %d/%d files", len(result), len(files))
+		logger.Infof("label index fast-path: matched %d/%d files (kept %d unindexed)",
+			len(result), len(files), countUnindexedFiles(files))
 	}
 	return result
+}
+
+// countUnindexedFiles is purely diagnostic — surfaces in the
+// label-index log line so an operator can tell at a glance whether
+// the inverted index has full coverage (zero unindexed) or whether
+// a chunk of files are riding the conservative include-anyway path.
+func countUnindexedFiles(files []manifest.FileInfo) int {
+	n := 0
+	for _, fi := range files {
+		if fi.Labels == nil {
+			n++
+		}
+	}
+	return n
 }
 
 func fileLabelsMatch(values []string, check PushDownCheck) bool {
