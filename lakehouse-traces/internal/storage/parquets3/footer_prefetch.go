@@ -14,12 +14,19 @@ import (
 
 const (
 	// footerPrefetchSize is the number of bytes to range-read from the end of a file
-	// to extract the parquet footer metadata.
-	footerPrefetchSize = 16 * 1024 // 16KB
+	// to extract the parquet footer metadata. Sized to cover the typical L0/L1
+	// parquet footer including row-group metadata and embedded trace-index KV;
+	// the previous 16 KiB undersized for ~30% of recently-written files (observed
+	// footers up to 22 KiB in the e2e stack) which fell back to a second S3
+	// range-read just for trace-id lookup, blowing the trace-by-ID p95 from
+	// sub-second to 5-10 s when the user clicked a derived-field traceID in
+	// Grafana. 64 KiB is still a single round-trip on every modern S3 stack
+	// (Range reads have no per-byte cost penalty up to a few MiB).
+	footerPrefetchSize = 64 * 1024 // 64KB
 
 	// minFileSizeForPrefetch is the minimum file size to attempt footer pre-fetch.
 	// Files smaller than this are downloaded fully, which is faster than two round-trips.
-	minFileSizeForPrefetch = 32 * 1024 // 32KB
+	minFileSizeForPrefetch = 128 * 1024 // 128KB
 )
 
 // shouldSkipByFooter performs an S3 range read to fetch only the parquet footer,
@@ -133,6 +140,9 @@ func shouldSkipByFooter(
 	return false, nil
 }
 
+// prefetchFooters fetches parquet footers for all given files in parallel using
+// 16KB range reads and populates the footer cache. This ensures subsequent file
+// processing can use range reads instead of full file downloads.
 func prefetchFooters(ctx context.Context, pool *s3reader.ClientPool, files []manifest.FileInfo, footerCache *FooterCache, concurrency int) int {
 	if pool == nil || footerCache == nil || len(files) == 0 {
 		return 0
@@ -163,7 +173,8 @@ func prefetchFooters(ctx context.Context, pool *s3reader.ClientPool, files []man
 	}
 	close(taskCh)
 
-	var fetched, dlErrors, parseErrors, tooBig int
+	var fetched int
+	var dlErrors, parseErrors, tooBig int
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for i := 0; i < concurrency; i++ {
@@ -205,6 +216,9 @@ func prefetchFooters(ctx context.Context, pool *s3reader.ClientPool, files []man
 				if err != nil {
 					mu.Lock()
 					parseErrors++
+					if parseErrors == 1 {
+						logger.Warnf("footer prefetch: first parse error: key=%s size=%d footer_slice=%d err=%v", fi.Key, fi.Size, len(footerSlice), err)
+					}
 					mu.Unlock()
 					continue
 				}
@@ -220,8 +234,10 @@ func prefetchFooters(ctx context.Context, pool *s3reader.ClientPool, files []man
 	if dlErrors > 0 || parseErrors > 0 || tooBig > 0 {
 		logger.Infof("footer prefetch: errors: dl=%d parse=%d too_big=%d", dlErrors, parseErrors, tooBig)
 	}
+
 	if fetched > 0 {
 		metrics.PrefetchTasksTotal.Add("footer_prefetch", fetched)
+		logger.Infof("footer prefetch: cached %d/%d footers", fetched, len(uncached))
 	}
 	return fetched
 }
