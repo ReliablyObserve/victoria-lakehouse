@@ -771,6 +771,23 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 		}
 	}
 
+	// Cliff guard. A transient S3 LIST hiccup (toxiproxy spike, brief
+	// partial pagination, network blip mid-refresh) can return success
+	// with a sparse file map. Swapping that in clears the manifest
+	// for the ~30s until the next refresh — exactly the "Jaeger Cold
+	// suddenly returning 0 results" symptom the operator sees. If the
+	// new manifest lost more than half its files since the last
+	// refresh AND it wasn't a deliberate empty manifest (m.totalFiles
+	// > 0 before this run), we keep the OLD state and surface a
+	// warning. Genuinely-emptied buckets land on the next refresh
+	// when the count actually drops to zero.
+	if m.totalFiles > 0 && totalFiles < m.totalFiles/2 {
+		logger.Warnf("manifest refresh cliff-guard: rejecting refresh that lost %d/%d files; keeping previous state (likely transient S3 LIST hiccup)", m.totalFiles-totalFiles, m.totalFiles)
+		metrics.ManifestRefreshCliffGuardRejections.Inc()
+		m.mu.Unlock()
+		return nil
+	}
+
 	m.files = files
 	m.rebuildByKey()
 	m.rebuildTenantAggregates()

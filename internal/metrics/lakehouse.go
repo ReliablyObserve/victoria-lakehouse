@@ -56,6 +56,16 @@ var (
 	// duplicate compaction work (HRW ring flap, DNS lag dual ownership)
 	// or an upstream upload retry bug. See spec §8.1 R3 and §3.1 case 11.
 	ManifestAddFileDuplicateKeyTotal = NewCounter("lakehouse_manifest_addfile_duplicate_key_total")
+
+	// ManifestRefreshCliffGuardRejections counts times the
+	// cliff-guard in RefreshFromS3 rejected a refresh because the
+	// new file count was <50% of the previous. Operationally this
+	// is the user-visible "Jaeger Cold suddenly returning 0 results"
+	// alarm bell — a single tick means a transient S3 LIST hiccup
+	// was successfully masked; persistent ticks mean the bucket
+	// genuinely shrank and the guard is now lying to readers, so
+	// an operator should restart the pod to force a clean rebuild.
+	ManifestRefreshCliffGuardRejections = NewCounter("lakehouse_manifest_refresh_cliff_guard_rejections_total")
 	DiscoveryHotBoundaryDays         = NewFloatGauge("lakehouse_discovery_hot_boundary_days")
 	DiscoveryGapDays                 = NewFloatGauge("lakehouse_discovery_hot_boundary_gap_days")
 	ManifestPushTotal                = NewCounter("lakehouse_manifest_push_total")
