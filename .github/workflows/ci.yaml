@@ -21,44 +21,23 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Clone VL for logs
-        run: |
-          mkdir -p deps
-          git clone --depth 1 --branch ${{ env.VL_VERSION_LOGS }} \
-            https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs
+      # Single source of truth for which patches get applied: the
+      # Makefile. The inline git-apply blocks we used to have here
+      # silently drifted every time a new patch landed — Makefile
+      # got the patch, ci.yaml didn't, the next PR's test-traces job
+      # failed at `undefined: opentelemetry.FormatSeverity` even
+      # though everything passed locally. Delegating to make keeps
+      # the patch list in one place. cache key already includes
+      # `hashFiles('patches/**')` so the cache invalidates whenever
+      # a patch changes.
+      - name: Prepare VL deps (logs)
+        run: make deps-logs
 
-      - name: Apply ExternalStorage patch (logs)
-        run: |
-          cp patches/vl-logs/external.go.src deps/VictoriaLogs/app/vlstorage/external.go
-          cp patches/vl-logs/external_query.go.src deps/VictoriaLogs/lib/logstorage/external_query.go
-          cd deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-logs/vlstorage-dispatch.patch
+      - name: Prepare VL deps (traces)
+        run: make deps-traces
 
-      - name: Clone VL for traces
-        run: |
-          mkdir -p lakehouse-traces/deps
-          git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src
-          cd /tmp/vl-src && git checkout ${{ env.VL_COMMIT_TRACES }}
-          cp -r /tmp/vl-src ${{ github.workspace }}/lakehouse-traces/deps/VictoriaLogs
-
-      - name: Apply ExternalStorage patch (traces)
-        run: |
-          cp patches/vl-traces/external.go.src lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go
-          cp patches/vl-traces/external_query.go.src lakehouse-traces/deps/VictoriaLogs/lib/logstorage/external_query.go
-          cd lakehouse-traces/deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-traces/vlstorage-dispatch.patch
-
-      - name: Clone VT for traces
-        run: |
-          git clone --depth 1 --branch ${{ env.VT_VERSION }} \
-            https://github.com/VictoriaMetrics/VictoriaTraces.git lakehouse-traces/deps/VictoriaTraces
-
-      - name: Apply VT ExternalStorage patches (traces)
-        run: |
-          cp patches/vt-traces/external.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/external.go
-          cp patches/vt-traces/flag_dedup.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/flag_dedup.go
-          cd lakehouse-traces/deps/VictoriaTraces && \
-            git apply ${{ github.workspace }}/patches/vt-traces/vtstorage-dispatch.patch && \
-            git apply ${{ github.workspace }}/patches/vt-traces/vtstorage-flag-dedup.patch && \
-            git apply ${{ github.workspace }}/patches/vt-traces/go-mod-replace.patch
+      - name: Prepare VT deps (traces)
+        run: make deps-vt
 
       - uses: actions/cache/save@v5
         with:

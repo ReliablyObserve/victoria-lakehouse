@@ -102,42 +102,22 @@ jobs:
             echo "Skipping release: only docs/CI/metadata changes"
           fi
 
-      - name: Clone VL deps
+      # Delegate to the Makefile — single source of truth for the
+      # patch list. See ci.yaml deps job for the drift-prevention
+      # rationale. The hard-coded v1.50.0 / 77df0c04d532 above used
+      # to drift from the Makefile's VL_VERSION_LOGS / VL_COMMIT_TRACES
+      # too; make uses those env vars directly.
+      - name: Prepare VL deps (logs)
         if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
-        run: |
-          mkdir -p deps lakehouse-traces/deps
-          git clone --depth 1 --branch v1.50.0 \
-            https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs
-          git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src
-          cd /tmp/vl-src && git checkout 77df0c04d532
-          cp -r /tmp/vl-src ${{ github.workspace }}/lakehouse-traces/deps/VictoriaLogs
+        run: make deps-logs
 
-      - name: Apply ExternalStorage patches
+      - name: Prepare VL deps (traces)
         if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
-        run: |
-          cp patches/vl-logs/external.go.src deps/VictoriaLogs/app/vlstorage/external.go
-          cp patches/vl-logs/external_query.go.src deps/VictoriaLogs/lib/logstorage/external_query.go
-          cd deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-logs/vlstorage-dispatch.patch
-          cd ${{ github.workspace }}
-          cp patches/vl-traces/external.go.src lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go
-          cp patches/vl-traces/external_query.go.src lakehouse-traces/deps/VictoriaLogs/lib/logstorage/external_query.go
-          cd lakehouse-traces/deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-traces/vlstorage-dispatch.patch
+        run: make deps-traces
 
-      - name: Clone VT for traces
+      - name: Prepare VT deps (traces)
         if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
-        run: |
-          git clone --depth 1 --branch ${{ env.VT_VERSION }} \
-            https://github.com/VictoriaMetrics/VictoriaTraces.git lakehouse-traces/deps/VictoriaTraces
-
-      - name: Apply VT ExternalStorage patches (traces)
-        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
-        run: |
-          cp patches/vt-traces/external.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/external.go
-          cp patches/vt-traces/flag_dedup.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/flag_dedup.go
-          cd lakehouse-traces/deps/VictoriaTraces && \
-            git apply ${{ github.workspace }}/patches/vt-traces/vtstorage-dispatch.patch && \
-            git apply ${{ github.workspace }}/patches/vt-traces/vtstorage-flag-dedup.patch && \
-            git apply ${{ github.workspace }}/patches/vt-traces/go-mod-replace.patch
+        run: make deps-vt
 
       - name: Build binaries
         if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'

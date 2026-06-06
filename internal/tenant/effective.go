@@ -135,12 +135,12 @@ func (pr *PolicyRegistry) For(accountID, projectID uint32) *EffectiveConfig {
 	}
 
 	eff := &EffectiveConfig{
-		AccountID:      accountID,
-		ProjectID:      projectID,
-		MaxFields:      raw.Cardinality.MaxFields,
-		MaxStreams:     raw.Cardinality.MaxStreams,
-		MaxBytesPerSec: raw.Ingest.MaxBytesPerSec,
-		MaxRowsPerSec:  raw.Ingest.MaxRowsPerSec,
+		AccountID:                   accountID,
+		ProjectID:                   projectID,
+		MaxFields:                   raw.Cardinality.MaxFields,
+		MaxStreams:                  raw.Cardinality.MaxStreams,
+		MaxBytesPerSec:              raw.Ingest.MaxBytesPerSec,
+		MaxRowsPerSec:               raw.Ingest.MaxRowsPerSec,
 		Lifecycle:                   raw.Lifecycle,
 		S3Bucket:                    raw.S3.Bucket,
 		CompactionCompressionLevels: raw.Compaction.CompressionLevelByOutputLevel,

@@ -74,10 +74,10 @@ func TestDropTraceShapedRows_MixedBlock(t *testing.T) {
 		{
 			Name: "_stream",
 			Values: []string{
-				`{service.name="api-gateway",level="INFO"}`,            // keep
-				`{name="HTTP GET",resource_attr:service.name="svc"}`,    // drop
-				`{service.name="user-service",level="WARN"}`,           // keep
-				`{resource_attr:service.name="payment-service"}`,       // drop
+				`{service.name="api-gateway",level="INFO"}`,          // keep
+				`{name="HTTP GET",resource_attr:service.name="svc"}`, // drop
+				`{service.name="user-service",level="WARN"}`,         // keep
+				`{resource_attr:service.name="payment-service"}`,     // drop
 			},
 		},
 		{

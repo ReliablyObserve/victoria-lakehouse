@@ -66,12 +66,12 @@ var (
 	// genuinely shrank and the guard is now lying to readers, so
 	// an operator should restart the pod to force a clean rebuild.
 	ManifestRefreshCliffGuardRejections = NewCounter("lakehouse_manifest_refresh_cliff_guard_rejections_total")
-	DiscoveryHotBoundaryDays         = NewFloatGauge("lakehouse_discovery_hot_boundary_days")
-	DiscoveryGapDays                 = NewFloatGauge("lakehouse_discovery_hot_boundary_gap_days")
-	ManifestPushTotal                = NewCounter("lakehouse_manifest_push_total")
-	ManifestPushPeers                = NewGauge("lakehouse_manifest_push_peers")
-	ManifestPushErrorsTotal          = NewCounter("lakehouse_manifest_push_errors_total")
-	ManifestUpdateReceivedTotal      = NewCounter("lakehouse_manifest_update_received_total")
+	DiscoveryHotBoundaryDays            = NewFloatGauge("lakehouse_discovery_hot_boundary_days")
+	DiscoveryGapDays                    = NewFloatGauge("lakehouse_discovery_hot_boundary_gap_days")
+	ManifestPushTotal                   = NewCounter("lakehouse_manifest_push_total")
+	ManifestPushPeers                   = NewGauge("lakehouse_manifest_push_peers")
+	ManifestPushErrorsTotal             = NewCounter("lakehouse_manifest_push_errors_total")
+	ManifestUpdateReceivedTotal         = NewCounter("lakehouse_manifest_update_received_total")
 )
 
 // Parquet engine metrics

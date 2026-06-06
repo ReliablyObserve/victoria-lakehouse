@@ -51,7 +51,7 @@ type SchedulerConfig struct {
 	// to every Compactor constructed in the scheduler loop;
 	// optional (nil = use the global schedule for every tenant).
 	TenantCompressionLookup func(tenantPrefix string) []int
-	OnCompacted      func(added []manifest.FileInfo, removed []string)
+	OnCompacted             func(added []manifest.FileInfo, removed []string)
 
 	// OnRingChange is fired by the embedder (main.go) when peer-cache
 	// observes a ring change. Used to (a) increment the ring-change

@@ -38,16 +38,9 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Clone VL for logs
-        run: |
-          mkdir -p deps
-          git clone --depth 1 --branch ${{ env.VL_VERSION_LOGS }} \
-            https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs
-
-      - name: Apply ExternalStorage patch (logs)
-        run: |
-          cp patches/vl-logs/external.go.src deps/VictoriaLogs/app/vlstorage/external.go
-          cd deps/VictoriaLogs && git apply ${{ github.workspace }}/patches/vl-logs/vlstorage-dispatch.patch
+      # Delegate to the Makefile — see ci.yaml's deps job rationale.
+      - name: Prepare VL deps (logs)
+        run: make deps-logs
 
       - name: Create S3 bucket
         run: |
