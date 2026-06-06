@@ -19,8 +19,10 @@ func TestProfileRegression_InsertPath(t *testing.T) {
 	}
 
 	tests := map[Profile]insertExpect{
-		ProfileBalanced:       {60 * time.Second, true, "512MB", 7, 50000, "256MB", "128MB", 10000, "buffer"},
+		// Balanced inherits Default's CompressionLevel, which dropped from 7 → 3 with progressive compaction compression.
+		ProfileBalanced:       {60 * time.Second, true, "512MB", 3, 50000, "256MB", "128MB", 10000, "buffer"},
 		ProfileMaxPerformance: {5 * time.Second, false, "512MB", 3, 100000, "512MB", "64MB", 5000, "buffer"},
+		// MaxDurability explicitly pins CompressionLevel=7 in profile.go.
 		ProfileMaxDurability:  {60 * time.Second, true, "1GB", 7, 50000, "256MB", "128MB", 10000, "flush-sync"},
 		ProfileMaxCostSavings: {30 * time.Second, false, "512MB", 11, 25000, "128MB", "256MB", 50000, "buffer"},
 		ProfileDev:            {1 * time.Second, false, "32MB", 1, 1000, "32MB", "8MB", 1000, "buffer"},

@@ -260,7 +260,11 @@ func run(cfg *config.Config, addr string) {
 		})
 	}
 
-	sched, sweep, stopCompaction := setupCompaction(cfg, store, pusher, addr)
+	// Per-tenant compression schedule holder set further down after
+	// tenant policy registry construction. Mirror of the same pattern
+	// in cmd/lakehouse-logs/main.go.
+	var tenantPolicyHolder *tenant.PolicyRegistry
+	sched, sweep, stopCompaction := setupCompaction(cfg, store, pusher, addr, &tenantPolicyHolder)
 	if stopCompaction != nil {
 		defer stopCompaction()
 	}
@@ -415,6 +419,7 @@ func run(cfg *config.Config, addr string) {
 		logger.Infof("tenant overrides pending alias resolution: %v", pending)
 	}
 	startTenantPolicyRefresh(cfg, policy, stopCh)
+	tenantPolicyHolder = policy
 
 	if cfg.Retention.Enabled {
 		retentionMgr, err := buildRetentionManager(cfg, store, policy, "traces")
@@ -560,6 +565,7 @@ func setupCompaction(
 	store *parquets3.Storage,
 	pusher *manifest.Pusher,
 	addr string,
+	tenantPolicyHolder **tenant.PolicyRegistry,
 ) (*compaction.Scheduler, *compaction.OrphanSweep, func()) {
 	if !cfg.Compaction.Enabled {
 		return nil, nil, nil
@@ -622,6 +628,21 @@ func setupCompaction(
 		MaxConcurrent:    cfg.Compaction.MaxConcurrent,
 		RowGroupSize:     cfg.Insert.RowGroupSize,
 		CompressionLevel: cfg.Insert.CompressionLevel,
+		CompactionConfig: cfg.Compaction,
+		TenantCompressionLookup: func(prefix string) []int {
+			if tenantPolicyHolder == nil || *tenantPolicyHolder == nil || prefix == "" {
+				return nil
+			}
+			account, project, ok := parseTenantPrefix(prefix)
+			if !ok {
+				return nil
+			}
+			eff := (*tenantPolicyHolder).For(account, project)
+			if eff == nil {
+				return nil
+			}
+			return eff.CompactionCompressionLevels
+		},
 		OnRingChange: func(register func(eventType string)) {
 			if peerCache != nil {
 				peerCache.OnRingChange(func(ev peercache.RingChangeEvent) {
@@ -1110,6 +1131,25 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 
 func footerCacheSnapshotPath(cfg *config.Config) string {
 	return filepath.Join(cfg.Manifest.PersistPath, "footer-cache-snapshot.bin")
+}
+
+// parseTenantPrefix splits "<account>/<project>/<mode>/" into its
+// numeric account+project pair. Mirror of the same helper in
+// cmd/lakehouse-logs/main.go.
+func parseTenantPrefix(prefix string) (uint32, uint32, bool) {
+	parts := strings.SplitN(prefix, "/", 4)
+	if len(parts) < 3 {
+		return 0, 0, false
+	}
+	acct, err := strconv.ParseUint(parts[0], 10, 32)
+	if err != nil {
+		return 0, 0, false
+	}
+	proj, err := strconv.ParseUint(parts[1], 10, 32)
+	if err != nil {
+		return 0, 0, false
+	}
+	return uint32(acct), uint32(proj), true
 }
 
 func manifestSnapshotPath(cfg *config.Config) string {

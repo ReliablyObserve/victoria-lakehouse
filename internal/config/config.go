@@ -435,6 +435,25 @@ type TenantOverride struct {
 	// bucket so a single fleet-wide manifest still resolves files
 	// across many tenant buckets.
 	S3 TenantS3Override `yaml:"s3"`
+
+	// Compaction overrides the compaction policy for this tenant.
+	// Currently exposes the per-output-level compression schedule;
+	// extensible to other compaction knobs without changing the
+	// override-resolution flow.
+	Compaction TenantCompactionOverride `yaml:"compaction"`
+}
+
+// TenantCompactionOverride scopes compaction knobs per tenant. Each
+// field is optional; nil/empty falls through to the global
+// Compaction.* value. Lets a high-volume / cost-sensitive tenant
+// commit more CPU to compression than the global default, or a
+// throughput-sensitive tenant relax compression to keep the
+// compactor pool wide open.
+type TenantCompactionOverride struct {
+	// CompressionLevelByOutputLevel mirrors the global field's shape
+	// (slot N = compression level for output files at compaction
+	// level N). Empty = inherit global schedule.
+	CompressionLevelByOutputLevel []int `yaml:"compression_level_by_output_level"`
 }
 
 type TenantRetentionOverride struct {
@@ -512,6 +531,36 @@ type CompactionConfig struct {
 	MinFilesL1     int           `yaml:"min_files_l1"`
 	MinAge         time.Duration `yaml:"min_age"`
 	DailyRollupAge time.Duration `yaml:"daily_rollup_age"`
+
+	// CompressionLevelByOutputLevel sets the zstd level used when
+	// emitting a compacted file at output level i (index 0 = L0
+	// rewrite, 1 = L0→L1, 2 = L1→L2, ...). Default is a progressive
+	// schedule [7, 11, 15, 18, 22] — fresh writes optimize for
+	// CPU/ingest, while older cold rollups invest more CPU to shrink
+	// long-term storage. Out-of-range output levels fall back to the
+	// last configured slot, or to Insert.CompressionLevel if the slice
+	// is empty.
+	CompressionLevelByOutputLevel []int `yaml:"compression_level_by_output_level"`
+}
+
+// CompressionLevelForOutput returns the configured zstd level for the
+// given compaction output level. Falls back to the last slot if the
+// caller asks for a deeper rollup than configured (so an operator who
+// listed [7, 11, 15] gets 15 for level 3+ instead of an out-of-bounds
+// panic). Returns 0 when the slice is empty — the compactor treats
+// that as "use Insert.CompressionLevel" so existing deployments keep
+// their pre-progressive behaviour until they opt in.
+func (c *CompactionConfig) CompressionLevelForOutput(outputLevel int) int {
+	if len(c.CompressionLevelByOutputLevel) == 0 {
+		return 0
+	}
+	if outputLevel >= len(c.CompressionLevelByOutputLevel) {
+		outputLevel = len(c.CompressionLevelByOutputLevel) - 1
+	}
+	if outputLevel < 0 {
+		outputLevel = 0
+	}
+	return c.CompressionLevelByOutputLevel[outputLevel]
 }
 
 type DeleteConfig struct {
@@ -686,7 +735,7 @@ func Default() *Config {
 			TargetFileSize:   "128MB",
 			RowGroupSize:     10000,
 			BloomColumns:     []string{"service.name", "trace_id"},
-			CompressionLevel: 7,
+			CompressionLevel: 3,
 			WALEnabled:       true,
 			WALDir:           "/data/lakehouse/wal",
 			WALMaxBytes:      "512MB",
@@ -729,6 +778,27 @@ func Default() *Config {
 			MinFilesL1:     10,
 			MinAge:         1 * time.Hour,
 			DailyRollupAge: 24 * time.Hour,
+			// Progressive compression schedule, indexed by the output
+			// file's compaction level (slot N = level for files at
+			// compaction-level N). Default [3, 7, 11] maps to the
+			// three useful encoder levels the parquet-go zstd codec
+			// exposes (Default / Better / Best) — anything above 11
+			// collapses to the same Best encoder and is a wasted knob
+			// until we switch to klauspost/compress/zstd direct (out
+			// of scope for this PR; the schedule shape stays so a
+			// later codec swap doesn't need a config migration).
+			//
+			//   L0 (fresh write):      level 3 = zstd Default  (~100 MB/s, ratio ~2.8×)
+			//   L1 (1st compaction):   level 7 = zstd Better   (~30  MB/s, ratio ~3.1×)
+			//   L2+ (rollups):         level 11 = zstd Best    (~15  MB/s, ratio ~3.3×)
+			//
+			// CPU spent escalates fastest at the L2 step (~2× over L1)
+			// for the smallest marginal ratio gain (~0.2×). Operators
+			// who don't care about cold-tier storage cost can pin the
+			// schedule at [7] and run a uniform Better-compression
+			// everywhere; operators chasing every byte can override
+			// with their own array once we have a finer codec.
+			CompressionLevelByOutputLevel: []int{3, 7, 11},
 		},
 
 		Delete: DeleteConfig{

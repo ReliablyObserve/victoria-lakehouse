@@ -264,7 +264,14 @@ func run(cfg *config.Config, addr string) {
 		})
 	}
 
-	sched, sweep, stopCompaction := setupCompaction(cfg, store, pusher, addr)
+	// tenantPolicyHolder is set further down (line ~410) after the
+	// resolver wiring. setupCompaction's per-tenant compression
+	// lookup is a closure that reads this variable at call time —
+	// by the first compaction tick (Compaction.Interval default
+	// 5 min) the holder is always populated, so the closure
+	// returns real overrides instead of nil-no-op.
+	var tenantPolicyHolder *tenant.PolicyRegistry
+	sched, sweep, stopCompaction := setupCompaction(cfg, store, pusher, addr, &tenantPolicyHolder)
 	if stopCompaction != nil {
 		defer stopCompaction()
 	}
@@ -407,6 +414,10 @@ func run(cfg *config.Config, addr string) {
 		logger.Infof("tenant overrides pending alias resolution: %v", pending)
 	}
 	startTenantPolicyRefresh(cfg, policy, stopCh)
+	// Publish to the compaction lookup closure now that the registry
+	// is built; from the next compaction tick onward the closure
+	// returns per-tenant compression schedules instead of nil-no-op.
+	tenantPolicyHolder = policy
 
 	// Retention manager: append synthesized rules from per-tenant
 	// overrides to the global rules list, then start the eviction loop.
@@ -578,6 +589,7 @@ func setupCompaction(
 	store *parquets3.Storage,
 	pusher *manifest.Pusher,
 	addr string,
+	tenantPolicyHolder **tenant.PolicyRegistry,
 ) (*compaction.Scheduler, *compaction.OrphanSweep, func()) {
 	if !cfg.Compaction.Enabled {
 		return nil, nil, nil
@@ -647,6 +659,21 @@ func setupCompaction(
 		MaxConcurrent:    cfg.Compaction.MaxConcurrent,
 		RowGroupSize:     cfg.Insert.RowGroupSize,
 		CompressionLevel: cfg.Insert.CompressionLevel,
+		CompactionConfig: cfg.Compaction,
+		TenantCompressionLookup: func(prefix string) []int {
+			if tenantPolicyHolder == nil || *tenantPolicyHolder == nil || prefix == "" {
+				return nil
+			}
+			account, project, ok := parseTenantPrefix(prefix)
+			if !ok {
+				return nil
+			}
+			eff := (*tenantPolicyHolder).For(account, project)
+			if eff == nil {
+				return nil
+			}
+			return eff.CompactionCompressionLevels
+		},
 		OnRingChange: func(register func(eventType string)) {
 			if peerCache != nil {
 				peerCache.OnRingChange(func(ev peercache.RingChangeEvent) {
@@ -1111,6 +1138,27 @@ func manifestSnapshotPath(cfg *config.Config) string {
 
 func footerCacheSnapshotPath(cfg *config.Config) string {
 	return filepath.Join(cfg.Manifest.PersistPath, "footer-cache-snapshot.bin")
+}
+
+// parseTenantPrefix splits "<account>/<project>/<mode>/" into its
+// numeric account+project pair. Returns ok=false for any prefix shape
+// that isn't an integer-keyed tenant prefix (legacy keys, malformed
+// strings, the empty string). The tenant policy registry is keyed by
+// (account, project) ints, so this is the call-site adapter.
+func parseTenantPrefix(prefix string) (uint32, uint32, bool) {
+	parts := strings.SplitN(prefix, "/", 4)
+	if len(parts) < 3 {
+		return 0, 0, false
+	}
+	acct, err := strconv.ParseUint(parts[0], 10, 32)
+	if err != nil {
+		return 0, 0, false
+	}
+	proj, err := strconv.ParseUint(parts[1], 10, 32)
+	if err != nil {
+		return 0, 0, false
+	}
+	return uint32(acct), uint32(proj), true
 }
 
 func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, tenantKey string) {

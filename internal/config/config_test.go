@@ -1093,8 +1093,55 @@ func TestMergeConfig_EmptySchemaPreservesBase(t *testing.T) {
 
 func TestDefaultConfig_CompressionLevel(t *testing.T) {
 	cfg := Default()
-	if cfg.Insert.CompressionLevel != 7 {
-		t.Errorf("default CompressionLevel = %d, want 7", cfg.Insert.CompressionLevel)
+	// Insert default dropped from 7 → 3 when progressive compaction
+	// compression landed (the L0 slot in CompressionLevelByOutputLevel).
+	// At write time we now prefer fast Default-mode zstd, with later
+	// compaction passes investing more CPU as files age.
+	if cfg.Insert.CompressionLevel != 3 {
+		t.Errorf("default CompressionLevel = %d, want 3 (was 7 before progressive compaction)", cfg.Insert.CompressionLevel)
+	}
+}
+
+func TestDefaultConfig_CompactionCompressionSchedule(t *testing.T) {
+	cfg := Default()
+	want := []int{3, 7, 11}
+	got := cfg.Compaction.CompressionLevelByOutputLevel
+	if len(got) != len(want) {
+		t.Fatalf("default CompressionLevelByOutputLevel = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("default CompressionLevelByOutputLevel[%d] = %d, want %d", i, got[i], want[i])
+		}
+	}
+}
+
+func TestCompressionLevelForOutput_GlobalSchedule(t *testing.T) {
+	cfg := CompactionConfig{CompressionLevelByOutputLevel: []int{3, 7, 11}}
+	cases := []struct {
+		outputLevel int
+		want        int
+	}{
+		{0, 3},
+		{1, 7},
+		{2, 11},
+		{3, 11}, // saturates to last slot
+		{99, 11},
+	}
+	for _, tc := range cases {
+		if got := cfg.CompressionLevelForOutput(tc.outputLevel); got != tc.want {
+			t.Errorf("CompressionLevelForOutput(%d) = %d, want %d", tc.outputLevel, got, tc.want)
+		}
+	}
+}
+
+func TestCompressionLevelForOutput_EmptySliceFallsThrough(t *testing.T) {
+	// Empty schedule means "no progressive override"; caller must
+	// fall back to Insert.CompressionLevel. The helper signals that
+	// by returning 0 so the caller can branch.
+	cfg := CompactionConfig{}
+	if got := cfg.CompressionLevelForOutput(2); got != 0 {
+		t.Errorf("empty schedule = %d, want 0 (signal to caller to fall back)", got)
 	}
 }
 

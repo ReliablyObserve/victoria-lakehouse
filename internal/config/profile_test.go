@@ -71,8 +71,10 @@ func TestProfileConfig_BalancedSettings(t *testing.T) {
 	if !cfg.Insert.WALEnabled {
 		t.Error("balanced WAL should be enabled")
 	}
-	if cfg.Insert.CompressionLevel != 7 {
-		t.Errorf("balanced compression = %d, want 7", cfg.Insert.CompressionLevel)
+	// Balanced inherits Default's CompressionLevel, which dropped
+	// from 7 → 3 when progressive compaction compression landed.
+	if cfg.Insert.CompressionLevel != 3 {
+		t.Errorf("balanced compression = %d, want 3 (was 7 before progressive compaction)", cfg.Insert.CompressionLevel)
 	}
 	if cfg.Insert.AckMode != "buffer" {
 		t.Errorf("balanced ack_mode = %q, want buffer", cfg.Insert.AckMode)

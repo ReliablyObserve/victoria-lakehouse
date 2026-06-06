@@ -44,6 +44,22 @@ type CompactorConfig struct {
 	RowGroupSize     int
 	CompressionLevel int
 	BloomRebuilder   BloomRebuilder
+
+	// CompactionConfig is the full compaction-section config so the
+	// compactor can read progressive-compression schedule (and any
+	// future per-output-level knobs) without taking another constructor
+	// parameter per knob. Passed by value because the struct is small
+	// and the compactor doesn't mutate it.
+	CompactionConfig config.CompactionConfig
+
+	// TenantCompressionLookup resolves the per-output-level
+	// compression schedule for a given tenant prefix (e.g.
+	// "1002/0/logs/"). Returns nil to fall through to the global
+	// CompactionConfig.CompressionLevelByOutputLevel. Optional —
+	// when nil the compactor uses the global schedule for every
+	// tenant. Wired by the embedder (main.go) so the compactor
+	// stays independent of the tenant policy package.
+	TenantCompressionLookup func(tenantPrefix string) []int
 }
 
 // CompactResult summarises one compaction run.
@@ -72,6 +88,8 @@ type Compactor struct {
 	rowGroupSize     int
 	compressionLevel int
 	bloomRebuilder   BloomRebuilder
+	cfg              config.CompactionConfig
+	tenantLookup     func(tenantPrefix string) []int
 }
 
 // NewCompactor creates a Compactor from the given config.
@@ -84,6 +102,8 @@ func NewCompactor(cfg CompactorConfig) *Compactor {
 		rowGroupSize:     cfg.RowGroupSize,
 		compressionLevel: cfg.CompressionLevel,
 		bloomRebuilder:   cfg.BloomRebuilder,
+		cfg:              cfg.CompactionConfig,
+		tenantLookup:     cfg.TenantCompressionLookup,
 	}
 }
 
@@ -238,6 +258,29 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	var rowsMerged int64
 	var minTime, maxTime int64
 
+	// Pick the per-output-level compression. Tenant override beats
+	// the global progressive schedule, which in turn beats the
+	// static c.compressionLevel — that last fallback keeps
+	// pre-progressive deployments behaviour-compatible.
+	levelForOutput := c.compressionLevel
+	if scheduled := c.cfg.CompressionLevelForOutput(outputLevel); scheduled > 0 {
+		levelForOutput = scheduled
+	}
+	if c.tenantLookup != nil {
+		if perTenant := c.tenantLookup(g.TenantPrefix); len(perTenant) > 0 {
+			idx := outputLevel
+			if idx >= len(perTenant) {
+				idx = len(perTenant) - 1
+			}
+			if idx < 0 {
+				idx = 0
+			}
+			if perTenant[idx] > 0 {
+				levelForOutput = perTenant[idx]
+			}
+		}
+	}
+
 	switch c.mode {
 	case config.ModeLogs:
 		merged, err := c.mergeLogFiles(allData)
@@ -249,7 +292,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 			minTime = merged[0].TimestampUnixNano
 			maxTime = merged[len(merged)-1].TimestampUnixNano
 		}
-		outputData, err = writeCompactedLogs(merged, c.rowGroupSize, c.compressionLevel)
+		outputData, err = writeCompactedLogs(merged, c.rowGroupSize, levelForOutput)
 		if err != nil {
 			return nil, fmt.Errorf("write compacted logs: %w", err)
 		}
@@ -264,7 +307,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 			minTime = merged[0].TimestampUnixNano
 			maxTime = merged[len(merged)-1].TimestampUnixNano
 		}
-		outputData, err = writeCompactedTraces(merged, c.rowGroupSize, c.compressionLevel)
+		outputData, err = writeCompactedTraces(merged, c.rowGroupSize, levelForOutput)
 		if err != nil {
 			return nil, fmt.Errorf("write compacted traces: %w", err)
 		}
