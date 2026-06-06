@@ -12,6 +12,13 @@
 # jaeger-query itself uses SPAN_STORAGE_TYPE=memory in compose so it
 # doesn't need any real backend wired up — we only use it as a UI
 # file server.
+# Docker's embedded DNS lives at 127.0.0.11. The short TTL forces
+# nginx to re-resolve upstream names so a `docker compose up -d` that
+# recreates lakehouse-traces (new container IP) doesn't leave this
+# proxy pinned to the stale address and returning 502 forever — which
+# is exactly what bit us after the last full-stack rebuild.
+resolver 127.0.0.11 valid=10s ipv6=off;
+
 server {
     listen 80;
     server_name _;
@@ -26,7 +33,13 @@ server {
     # in front of this proxy, not by curl-from-the-internet.
     location /api/ {
         rewrite ^/api/(.*)$ /select/jaeger/api/$1 break;
-        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
+        # Variable-based upstream forces per-request DNS lookup
+        # through the resolver above, instead of pinning the IP at
+        # nginx config-load time. Combined with the 10s TTL this
+        # makes the proxy survive lakehouse-traces restarts within
+        # one DNS refresh window.
+        set $jaeger_backend "${BACKEND_HOST}:${BACKEND_PORT}";
+        proxy_pass http://$jaeger_backend;
 
         proxy_pass_request_headers off;
         proxy_set_header Host $host;
@@ -49,7 +62,10 @@ server {
 
     # UI static assets + index → embedded Jaeger query UI sidecar.
     location / {
-        proxy_pass http://${UI_HOST}:${UI_PORT};
+        # Same variable trick for the UI sidecar so a jaeger-query
+        # restart also stays self-healing.
+        set $jaeger_ui "${UI_HOST}:${UI_PORT}";
+        proxy_pass http://$jaeger_ui;
         proxy_set_header Host $host;
         proxy_read_timeout 60s;
         proxy_connect_timeout 5s;
