@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	vtstoragecommon "github.com/VictoriaMetrics/VictoriaTraces/app/vtstorage/common"
 	otelpb "github.com/VictoriaMetrics/VictoriaTraces/lib/protoparser/opentelemetry/pb"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
@@ -180,6 +181,107 @@ func TestAdapter_TraceIndexFastpath_ErrorIsNotFatal(t *testing.T) {
 	q := makeTraceIndexQuery(t, "x", 1)
 	if err := a.RunQuery(&logstorage.QueryContext{Context: context.Background(), Query: q}, wb); err != nil {
 		t.Errorf("RunQuery should swallow lookup errors, got %v", err)
+	}
+}
+
+// fastpathStoreDefinitive satisfies both the legacy traceIndexLookup
+// AND the new traceIndexLookupDefinitive contract so adapter tests
+// can exercise the short-circuit path.
+type fastpathStoreDefinitive struct {
+	fastpathStore
+	definitive bool
+}
+
+func (s *fastpathStoreDefinitive) LookupTraceIndexFull(_ context.Context, traceID string) (int64, int64, bool, bool, error) {
+	s.got = traceID
+	return s.startNs, s.endNs, s.found, s.definitive, s.err
+}
+
+// TestAdapter_TraceIndexFastpath_DefinitiveMiss_NoFallback pins the
+// load-bearing behaviour: when the store reports definitive=true on
+// a miss, the adapter must NOT run the legacy span-scan rewrite AND
+// must return ErrOutOfRetention so VT's findTraceIDTimeSplitTimeRange
+// loop breaks out of its per-TraceSearchStep walk on the first
+// iteration. Regressing this back to "fall through and return nil"
+// silently re-introduces the multi-second Jaeger /api/traces/<id>
+// timeout on stale Grafana links because VT would otherwise loop
+// through every retention window asking the same dead trace ID.
+func TestAdapter_TraceIndexFastpath_DefinitiveMiss_NoFallback(t *testing.T) {
+	fallbackCalled := false
+	store := &fastpathStoreDefinitive{
+		fastpathStore: fastpathStore{
+			found:    false,
+			runQuery: func(*logstorage.Query) { fallbackCalled = true },
+		},
+		definitive: true,
+	}
+	a := &Adapter{store: store}
+
+	wb := func(uint, *logstorage.DataBlock) {}
+
+	q := makeTraceIndexQuery(t, "definitely-not-here", 11)
+	err := a.RunQuery(&logstorage.QueryContext{Context: context.Background(), Query: q}, wb)
+	if !errors.Is(err, vtstoragecommon.ErrOutOfRetention) {
+		t.Fatalf("RunQuery returned %v, want vtstoragecommon.ErrOutOfRetention to break VT's per-step loop", err)
+	}
+	if fallbackCalled {
+		t.Fatal("adapter ran the span-scan fallback on a DEFINITIVE miss; this re-introduces the Jaeger timeout")
+	}
+	if store.got != "definitely-not-here" {
+		t.Errorf("LookupTraceIndexFull called with %q, want %q", store.got, "definitely-not-here")
+	}
+}
+
+// TestAdapter_TraceIndexFastpath_NonDefinitiveMiss_FallsThrough is
+// the symmetric guarantee: when the store says definitive=false the
+// adapter MUST still run the span-scan fallback so older parquet
+// generations (which lack `_trace_idx` KVs) stay queryable. Without
+// this case a cluster with mixed-vintage parquet files would silently
+// 404 on real traces just because one file pre-dated the index.
+func TestAdapter_TraceIndexFastpath_NonDefinitiveMiss_FallsThrough(t *testing.T) {
+	fallbackCalled := false
+	store := &fastpathStoreDefinitive{
+		fastpathStore: fastpathStore{
+			found:    false,
+			runQuery: func(*logstorage.Query) { fallbackCalled = true },
+		},
+		definitive: false,
+	}
+	a := &Adapter{store: store}
+
+	wb := func(uint, *logstorage.DataBlock) {}
+
+	q := makeTraceIndexQuery(t, "older-cold-trace", 5)
+	if err := a.RunQuery(&logstorage.QueryContext{Context: context.Background(), Query: q}, wb); err != nil {
+		t.Fatalf("RunQuery: %v", err)
+	}
+	if !fallbackCalled {
+		t.Fatal("adapter skipped fallback on a non-definitive miss; older parquets would 404 silently")
+	}
+}
+
+// TestAdapter_TraceIndexFastpath_DefinitiveHit_EmitsBlock confirms
+// the hit case still emits the synthetic trace-index DataBlock that
+// VT's tempo handler expects — definitive=true is informational on
+// hits and must not affect the emission.
+func TestAdapter_TraceIndexFastpath_DefinitiveHit_EmitsBlock(t *testing.T) {
+	var emitted *logstorage.DataBlock
+	store := &fastpathStoreDefinitive{
+		fastpathStore: fastpathStore{
+			startNs: 5_000_000_000, endNs: 9_000_000_000, found: true,
+		},
+		definitive: true,
+	}
+	a := &Adapter{store: store}
+
+	q := makeTraceIndexQuery(t, "abcd", 1)
+	if err := a.RunQuery(&logstorage.QueryContext{Context: context.Background(), Query: q}, func(_ uint, db *logstorage.DataBlock) {
+		emitted = db
+	}); err != nil {
+		t.Fatalf("RunQuery: %v", err)
+	}
+	if emitted == nil {
+		t.Fatal("expected synthetic DataBlock on definitive hit, got nil")
 	}
 }
 

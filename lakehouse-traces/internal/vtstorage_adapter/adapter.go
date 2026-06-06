@@ -8,6 +8,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaTraces/app/vtstorage"
+	vtstoragecommon "github.com/VictoriaMetrics/VictoriaTraces/app/vtstorage/common"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
@@ -61,10 +62,34 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 	// semantics are preserved bit-for-bit.
 	if lookup, ok := a.store.(traceIndexLookup); ok {
 		if traceID, isLookup := traceIndexLookupTraceID(qctx.Query); isLookup && traceID != "" {
-			startNs, endNs, found, _ := lookup.LookupTraceIndex(qctx.Context, traceID)
-			if found {
-				emitTraceIndexBlock(writeBlock, startNs, endNs)
-				return nil
+			// Prefer the definitive variant when the store exposes it.
+			// On a confirmed miss (every file in the manifest had an
+			// _trace_idx KV and none listed this trace ID) we skip
+			// the fall-through span scan entirely and return an empty
+			// trace-index block — the same shape the upstream Tempo
+			// handler builds from a "no hit" reply, so the caller
+			// sees a clean miss instead of a 30s timeout.
+			if def, okDef := a.store.(traceIndexLookupDefinitive); okDef {
+				startNs, endNs, found, definitive, _ := def.LookupTraceIndexFull(qctx.Context, traceID)
+				if found {
+					emitTraceIndexBlock(writeBlock, startNs, endNs)
+					return nil
+				}
+				if definitive {
+					// Authoritative miss. Return ErrOutOfRetention —
+					// VT's findTraceIDTimeSplitTimeRange loop checks
+					// for this sentinel to break out of its
+					// per-TraceSearchStep walk and stop hammering
+					// us with the same definitively-empty lookup
+					// over each retention window.
+					return vtstoragecommon.ErrOutOfRetention
+				}
+			} else {
+				startNs, endNs, found, _ := lookup.LookupTraceIndex(qctx.Context, traceID)
+				if found {
+					emitTraceIndexBlock(writeBlock, startNs, endNs)
+					return nil
+				}
 			}
 		}
 	}
