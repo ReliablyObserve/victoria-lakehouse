@@ -119,77 +119,103 @@ func TestSeverityText_ExplicitLevelWinsOverDerived(t *testing.T) {
 // when a row has neither severity_text nor severity_number but the
 // stream tag carries `level="WARN"` (Loki API / jsonline with stream-
 // only level is the common source), we lift the value from the tag
-// to row.SeverityText. Without this the row queries as level=""
-// even though the stream-label level is visible elsewhere — which
-// was the residual 28% "unknown" bucket measured in the e2e stack.
+// to row.SeverityText. The lift uses VL's exported StreamTags.Get
+// accessor (patches/vl-{logs,traces}/vl-export-streamtags-get.patch)
+// rather than re-parsing the canonical string — this test goes
+// through the full logRowsToSchemaRows path so it exercises both
+// VL's UnmarshalCanonicalInplace and our integration with .Get().
 func TestSeverityText_FallsBackFromStreamTag(t *testing.T) {
 	cases := []struct {
-		name      string
-		streamTag string
-		want      string
+		name        string
+		streamTags  []logstorage.Field
+		wantLevel   string
+		description string
 	}{
 		{
-			name:      "level after service.name in canonical form",
-			streamTag: `{cloud.region="us-east-1",level="WARN",service.name="api-gateway"}`,
-			want:      "WARN",
+			name: "level in stream tag, no row-level severity field",
+			streamTags: []logstorage.Field{
+				{Name: "cloud.region", Value: "us-east-1"},
+				{Name: "level", Value: "WARN"},
+				{Name: "service.name", Value: "api-gateway"},
+			},
+			wantLevel: "WARN",
 		},
 		{
-			name:      "level first in canonical form",
-			streamTag: `{level="ERROR",service.name="payment-service"}`,
-			want:      "ERROR",
+			name: "level first in stream tag",
+			streamTags: []logstorage.Field{
+				{Name: "level", Value: "ERROR"},
+				{Name: "service.name", Value: "payment-service"},
+			},
+			wantLevel: "ERROR",
 		},
 		{
-			name:      "no level in stream tag",
-			streamTag: `{service.name="foo",cloud.region="bar"}`,
-			want:      "",
+			name: "no level in stream tag — empty SeverityText",
+			streamTags: []logstorage.Field{
+				{Name: "service.name", Value: "foo"},
+				{Name: "cloud.region", Value: "bar"},
+			},
+			wantLevel: "",
 		},
 		{
-			name:      "empty stream tag",
-			streamTag: ``,
-			want:      "",
+			name:       "no stream tag at all — empty SeverityText",
+			streamTags: nil,
+			wantLevel:  "",
+		},
+		{
+			name: "lookalike tag name not_level must not match",
+			streamTags: []logstorage.Field{
+				{Name: "not_level", Value: "X"},
+				{Name: "service.name", Value: "foo"},
+			},
+			wantLevel: "",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := extractStreamTagLevel(tc.streamTag)
-			if got != tc.want {
-				t.Errorf("extractStreamTagLevel(%q) = %q, want %q",
-					tc.streamTag, got, tc.want)
+			lr := logstorage.GetLogRows(nil, nil, nil, nil, "")
+			defer logstorage.PutLogRows(lr)
+			// streamFieldsLen = len(streamTags) tells VL to treat
+			// the first N fields as stream-tag fields — same path
+			// the OTel and Loki handlers use in production.
+			fields := append([]logstorage.Field(nil), tc.streamTags...)
+			fields = append(fields, logstorage.Field{Name: "", Value: "body"})
+			lr.MustAdd(logstorage.TenantID{}, 1_000_000_000, fields, len(tc.streamTags))
+			rows := logRowsToSchemaRows(lr)
+			if len(rows) != 1 {
+				t.Fatalf("got %d rows, want 1", len(rows))
+			}
+			if rows[0].SeverityText != tc.wantLevel {
+				t.Errorf("SeverityText = %q, want %q", rows[0].SeverityText, tc.wantLevel)
 			}
 		})
 	}
 }
 
-// TestSeverityText_NoStreamLevelTagDoesNotMisparse guards the parser
-// against false-positives. Field values that contain `"level=` as
-// content — e.g. a k8s label like `app.label="level=prod"` — must
-// not be mistaken for the canonical stream `level="X"` tag. The
-// canonical form always has the key followed by `="`; values are
-// escaped so they can't carry an unescaped `"`. The parser hunts
-// for the exact six-char prefix `level="` which doesn't appear as
-// a literal sequence inside any other quoted value.
-func TestSeverityText_NoStreamLevelTagDoesNotMisparse(t *testing.T) {
-	// A legitimate VL canonical stream tag would never put `level="`
-	// inside a quoted value because VL escapes the `"`. But test the
-	// edge case anyway — confirm the parser only matches a top-level
-	// key=value pair.
-	streamTag := `{app="my-app",msg="contains level=prod text"}`
-	if got := extractStreamTagLevel(streamTag); got != "" {
-		t.Errorf("extractStreamTagLevel(%q) = %q, want empty (level= inside another value should not match)",
-			streamTag, got)
-	}
-
-	// Suffix-only matches must also not trigger: `not_level="X"` and
-	// `my.level="Y"` end with `level="...` but are distinct tag names.
-	// The parser anchors on `{level="` or `,level="` so neither matches.
-	for _, st := range []string{
-		`{not_level="X",service="foo"}`,
-		`{service="foo",not_level="X"}`,
-		`{my.level="X",service="foo"}`,
-	} {
-		t.Run(st, func(t *testing.T) {
-			if got := extractStreamTagLevel(st); got != "" {
-				t.Errorf("extractStreamTagLevel(%q) = %q, want empty (suffix tag should not match)", st, got)
+// TestSeverityText_LookalikeStreamTagNamesDontFalseMatch guards the
+// VL StreamTags.Get accessor against name-prefix false-positives. A
+// tag named `not_level` or `my.level` must NOT promote its value to
+// SeverityText — only the exact name "level" counts. VL's accessor
+// does a strict string compare per tag entry; this test pins the
+// strictness through the full lift path so a future refactor that
+// switches to prefix matching would fail.
+func TestSeverityText_LookalikeStreamTagNamesDontFalseMatch(t *testing.T) {
+	for _, name := range []string{"not_level", "my.level", "log_level"} {
+		t.Run("tag_"+name, func(t *testing.T) {
+			lr := logstorage.GetLogRows(nil, nil, nil, nil, "")
+			defer logstorage.PutLogRows(lr)
+			fields := []logstorage.Field{
+				{Name: name, Value: "X"},
+				{Name: "service.name", Value: "foo"},
+				{Name: "", Value: "body"},
+			}
+			lr.MustAdd(logstorage.TenantID{}, 1_000_000_000, fields, 2)
+			rows := logRowsToSchemaRows(lr)
+			if len(rows) != 1 {
+				t.Fatalf("got %d rows", len(rows))
+			}
+			if rows[0].SeverityText != "" {
+				t.Errorf("tag %q: SeverityText = %q, want empty (lookalike must not match)",
+					name, rows[0].SeverityText)
 			}
 		})
 	}
