@@ -1173,6 +1173,22 @@ func (m *Manifest) findFileLocked(key string) ([]FileInfo, int) {
 	return nil, -1
 }
 
+// GetFileByKey returns the FileInfo for the given S3 key and a
+// presence boolean. Read-only counterpart of findFileLocked; takes
+// the mutex internally so callers from another goroutine don't have
+// to. Used by lifecycle code (footer-cache snapshot prefetch) that
+// needs to translate a list of keys back into FileInfo before
+// scheduling S3 work.
+func (m *Manifest) GetFileByKey(key string) (FileInfo, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	files, idx := m.findFileLocked(key)
+	if idx < 0 {
+		return FileInfo{}, false
+	}
+	return files[idx], true
+}
+
 // SetFileBucket updates the bucket field for the file identified by
 // key. Used by the bucket migration tool to flip ownership after a
 // successful S3 server-side copy. Safe for concurrent use.

@@ -520,6 +520,20 @@ func runShutdown(
 		logger.Errorf("manifest snapshot on shutdown timed out after %v — next pod will boot with previous snapshot", persistTimeout)
 	}
 
+	// Footer-cache snapshot — small (a few bytes per key) and fast.
+	// Persist sequentially with manifest because both feed the next
+	// pod's warmup loop and missing either causes a measurably worse
+	// first-query latency. Capped by the same PersistTimeout budget;
+	// failure here doesn't fail the shutdown.
+	if fc := store.FooterCache(); fc != nil {
+		fcStart := time.Now()
+		if err := parquets3.SaveFooterCacheKeys(fc, footerCacheSnapshotPath(cfg)); err != nil {
+			logger.Errorf("footer-cache snapshot on shutdown failed after %v: %s", time.Since(fcStart), err)
+		} else {
+			logger.Infof("footer-cache snapshot on shutdown persisted in %v (keys=%d)", time.Since(fcStart), fc.Len())
+		}
+	}
+
 	vlinsert.Stop()
 	internalselect.Stop()
 
@@ -1095,6 +1109,10 @@ func manifestSnapshotPath(cfg *config.Config) string {
 	return filepath.Join(cfg.Manifest.PersistPath, "manifest-snapshot.json")
 }
 
+func footerCacheSnapshotPath(cfg *config.Config) string {
+	return filepath.Join(cfg.Manifest.PersistPath, "footer-cache-snapshot.bin")
+}
+
 func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, tenantKey string) {
 	// Phase 1 (foreground): disk recovery + manifest-files gate.
 	// See lakehouse-traces/main.go runStartup for full semantics.
@@ -1154,6 +1172,23 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 				warmCtx, warmCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				store.WarmupCache(warmCtx)
 				warmCancel()
+			}
+
+			// Async footer-cache prefetch from the previous shutdown's
+			// snapshot. Doesn't block /ready=200 — by the time the user
+			// runs their first trace-by-ID lookup, the footers for files
+			// the previous pod had cached are already populated. The
+			// snapshot is just a key list (small), so the load cost is
+			// dominated by S3 round-trips for the actual footer ranges.
+			if fc := store.FooterCache(); fc != nil {
+				snapshotPath := footerCacheSnapshotPath(cfg)
+				keys, err := parquets3.LoadFooterCacheKeys(snapshotPath)
+				if err != nil {
+					logger.Warnf("footer-cache snapshot load failed: %s", err)
+				} else if len(keys) > 0 {
+					logger.Infof("footer-cache snapshot loaded: %d keys; scheduling async prefetch", len(keys))
+					go store.PrefetchFootersByKeys(context.Background(), keys, 32)
+				}
 			}
 		}
 

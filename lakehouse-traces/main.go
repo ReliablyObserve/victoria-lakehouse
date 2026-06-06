@@ -506,6 +506,16 @@ func runShutdown(
 		logger.Errorf("manifest snapshot on shutdown timed out after %v — next pod will boot with previous snapshot", persistTimeout)
 	}
 
+	// Footer-cache snapshot — mirror of cmd/lakehouse-logs/main.go.
+	if fc := store.FooterCache(); fc != nil {
+		fcStart := time.Now()
+		if err := parquets3.SaveFooterCacheKeys(fc, footerCacheSnapshotPath(cfg)); err != nil {
+			logger.Errorf("footer-cache snapshot on shutdown failed after %v: %s", time.Since(fcStart), err)
+		} else {
+			logger.Infof("footer-cache snapshot on shutdown persisted in %v (keys=%d)", time.Since(fcStart), fc.Len())
+		}
+	}
+
 	vtinsert.Stop()
 	internalselect.Stop()
 
@@ -1098,6 +1108,10 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	return mux
 }
 
+func footerCacheSnapshotPath(cfg *config.Config) string {
+	return filepath.Join(cfg.Manifest.PersistPath, "footer-cache-snapshot.bin")
+}
+
 func manifestSnapshotPath(cfg *config.Config) string {
 	return filepath.Join(cfg.Manifest.PersistPath, "manifest-snapshot.json")
 }
@@ -1161,6 +1175,20 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 				warmCtx, warmCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				store.WarmupCache(warmCtx)
 				warmCancel()
+			}
+
+			// Async footer-cache prefetch from the previous shutdown's
+			// snapshot. Mirror of the same wire-up in
+			// cmd/lakehouse-logs/main.go — see there for the rationale.
+			if fc := store.FooterCache(); fc != nil {
+				snapshotPath := footerCacheSnapshotPath(cfg)
+				keys, err := parquets3.LoadFooterCacheKeys(snapshotPath)
+				if err != nil {
+					logger.Warnf("footer-cache snapshot load failed: %s", err)
+				} else if len(keys) > 0 {
+					logger.Infof("footer-cache snapshot loaded: %d keys; scheduling async prefetch", len(keys))
+					go store.PrefetchFootersByKeys(context.Background(), keys, 32)
+				}
 			}
 		}
 

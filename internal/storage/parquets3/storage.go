@@ -853,6 +853,39 @@ func (s *Storage) Pool() *s3reader.ClientPool {
 	return s.pool
 }
 
+// FooterCache returns the storage's footer cache (or nil if disabled).
+// Exposed so the lifecycle code in cmd/lakehouse-{logs,traces}/main.go
+// can persist its key list on shutdown and seed an async prefetch on
+// the next start.
+func (s *Storage) FooterCache() *FooterCache {
+	return s.footerCache
+}
+
+// PrefetchFootersByKeys looks up the given S3 keys in the current
+// manifest and runs the standard prefetchFooters batch for every match.
+// Keys that no longer exist in the manifest (compacted away, retired,
+// or written by a previous deployment shape) are silently skipped.
+// Called from the post-warmup async path with the list LoadFooterCacheKeys
+// returned, so the next first-hit query against a previously-cached file
+// is served from cache instead of paying an S3 round-trip.
+func (s *Storage) PrefetchFootersByKeys(ctx context.Context, keys []string, concurrency int) {
+	if s.pool == nil || s.footerCache == nil || len(keys) == 0 {
+		return
+	}
+	files := make([]manifest.FileInfo, 0, len(keys))
+	for _, k := range keys {
+		if fi, ok := s.manifest.GetFileByKey(k); ok {
+			files = append(files, fi)
+		}
+	}
+	if len(files) == 0 {
+		return
+	}
+	fetched := prefetchFooters(ctx, s.pool, files, s.footerCache, concurrency)
+	logger.Infof("footer-cache snapshot prefetch: hydrated %d of %d snapshot keys (manifest matched %d)",
+		fetched, len(keys), len(files))
+}
+
 // logRowsToDataBlock converts in-memory LogRow slices to a columnar DataBlock.
 func (s *Storage) logRowsToDataBlock(rows []schema.LogRow) *logstorage.DataBlock {
 	if len(rows) == 0 {
