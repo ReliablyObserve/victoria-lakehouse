@@ -23,6 +23,16 @@ type BufferBridge struct {
 	sameAZEndpoints  []string
 	crossAZEndpoints []string
 	selfAZ           string
+
+	// selfEndpoint is the local pod's own buffer-query URL, used as
+	// a fallback when peer discovery yields no other endpoints (the
+	// single-node / topology=all case). Set once at startup from
+	// lakehouse-{logs,traces}/main.go; non-empty means "query self
+	// when no peers are present, otherwise stay out of the way".
+	// Without this, a single-node deployment never serves its own
+	// unflushed buffer — queries against the last <flush-interval>
+	// window return zero data until the next flush.
+	selfEndpoint string
 }
 
 // NewBufferBridge creates a BufferBridge configured for the given mode.
@@ -64,11 +74,30 @@ func (b *BufferBridge) SetEndpointsWithZones(epZones map[string]string, selfAZ s
 	}
 }
 
+// SetSelfEndpoint records the local pod's own buffer-query URL.
+// When peer discovery yields zero endpoints — the single-node
+// topology=all case — getQueryEndpoints returns [selfEndpoint]
+// so queries still see this pod's unflushed buffer. Once real
+// peers appear in SetEndpoints, the self fallback is silently
+// suppressed (peer discovery is the source of truth in a cluster).
+func (b *BufferBridge) SetSelfEndpoint(endpoint string) {
+	b.mu.Lock()
+	b.selfEndpoint = endpoint
+	b.mu.Unlock()
+}
+
 // getQueryEndpoints always returns ALL insert pod endpoints regardless of AZ.
 // Buffer queries must reach every insert pod to avoid missing unflushed data —
 // with 3 AZs, same-AZ-only would miss 2/3 of buffered rows.
 // AZ-aware routing is only appropriate for peer cache (L3), not buffer queries.
+//
+// Falls back to [selfEndpoint] when endpoints is empty AND selfEndpoint is
+// set. Single-node deployments rely on this to serve their own buffer; a
+// configured cluster overrides it once SetEndpoints populates real peers.
 func (b *BufferBridge) getQueryEndpoints() []string {
+	if len(b.endpoints) == 0 && b.selfEndpoint != "" {
+		return []string{b.selfEndpoint}
+	}
 	return b.endpoints
 }
 

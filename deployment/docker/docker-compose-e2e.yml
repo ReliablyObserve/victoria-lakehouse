@@ -247,7 +247,7 @@ services:
       - "-lakehouse.s3.secret-key=minioadmin"
       - "-lakehouse.s3.force-path-style=true"
       - "-lakehouse.manifest.refresh-interval=30s"
-      - "-lakehouse.insert.flush-interval=15s"
+      - "-lakehouse.insert.flush-interval=120s"
       - "-lakehouse.compaction.interval=2m"
       - "-lakehouse.query.file-workers=16"
       # No artificial file cap — VL upstream has none. The
@@ -316,7 +316,7 @@ services:
       - "-lakehouse.s3.secret-key=minioadmin"
       - "-lakehouse.s3.force-path-style=true"
       - "-lakehouse.manifest.refresh-interval=30s"
-      - "-lakehouse.insert.flush-interval=15s"
+      - "-lakehouse.insert.flush-interval=120s"
       - "-lakehouse.query.file-workers=16"
       # No artificial file cap — VL upstream has none. The
       # query.max-live-bytes budget (default 512 MiB) plus the

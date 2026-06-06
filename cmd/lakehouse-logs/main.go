@@ -228,6 +228,15 @@ func run(cfg *config.Config, addr string) {
 		store.SetSelfAZ(selfAZ)
 	}
 
+	// Register self as the buffer-bridge fallback endpoint so single-
+	// node deployments (no peer discovery, no other insert pods) still
+	// see their own unflushed buffer on cold-tier queries. Once real
+	// peers appear via DNS discovery, BufferBridge.getQueryEndpoints
+	// silently switches over and the self entry stays out of the way.
+	if cfg.Role == config.RoleAll && store.BufferBridge() != nil {
+		store.BufferBridge().SetSelfEndpoint("http://localhost" + addr)
+	}
+
 	// StartWriter replays the on-disk WAL before serving inserts.
 	// Gate /ready=200 on WAL completion via the lifecycle manager
 	// so a partially-replayed insert pod doesn't accept reads that

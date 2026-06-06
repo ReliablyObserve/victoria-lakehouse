@@ -227,6 +227,14 @@ func run(cfg *config.Config, addr string) {
 		store.SetSelfAZ(selfAZ)
 	}
 
+	// Register self as the buffer-bridge fallback endpoint so single-
+	// node deployments still see their own unflushed buffer on cold-
+	// tier queries. Mirror of the same wire-up in
+	// cmd/lakehouse-logs/main.go.
+	if cfg.Role == config.RoleAll && store.BufferBridge() != nil {
+		store.BufferBridge().SetSelfEndpoint("http://localhost" + addr)
+	}
+
 	// StartWriter replays the on-disk WAL before serving inserts.
 	// We mark WAL-replay-needed before calling it so the lifecycle
 	// manager gates /ready=200 on completion, then mark done right
