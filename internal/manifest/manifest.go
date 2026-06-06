@@ -186,6 +186,19 @@ type Manifest struct {
 	templateSegments int
 	templateHasOrgID bool
 
+	// signalSuffix is the per-tier S3 prefix segment ("logs/" or
+	// "traces/") that follows the tenant template. When the prefix
+	// template uses {AccountID}/{ProjectID} (or {OrgID}),
+	// refreshTenantScoped discovers tenant directories without their
+	// signal suffix; without this field every lakehouse-logs pod
+	// would also LIST `0/0/traces/` and end up with mixed-schema
+	// parquet files in its manifest — visible in the wild as trace
+	// columns (parent, child, callCount, span.kind, ...) leaking
+	// into `/select/logsql/field_names` and Grafana drilldown
+	// detected_fields. Empty when no template is in use (legacy
+	// full-bucket path) — same behaviour as before.
+	signalSuffix string
+
 	// partitionAttempts maps "dt=YYYY-MM-DD/hour=HH" -> last MarkAttempt
 	// timestamp recorded by the compaction scheduler (see
 	// internal/compaction.OwnershipResolver + OrphanSweep). In-memory only
@@ -435,6 +448,18 @@ func (m *Manifest) SetPrefixTemplate(tmpl string) {
 	}
 }
 
+// SetSignalSuffix records the per-tier suffix ("logs/" or "traces/")
+// that follows the tenant template. The tenant-scoped refresh path
+// (refreshTenantScoped) appends this to every discovered tenant
+// prefix so a lakehouse-logs pod LISTs only `<tenant>/logs/` keys
+// and never sees a `<tenant>/traces/` parquet file. Safe to call
+// with "" to disable filtering (legacy behaviour).
+func (m *Manifest) SetSignalSuffix(suffix string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.signalSuffix = suffix
+}
+
 // refreshFullBucket enumerates every key under listPrefix (or the
 // entire bucket when listPrefix=="") and builds a fresh file map. Used
 // by the legacy single-prefix path and as a fallback when tenant
@@ -520,6 +545,16 @@ func (m *Manifest) refreshTenantScoped(ctx context.Context, client *s3.Client) (
 	resCh := make(chan tenantResult, len(tenantPrefixes))
 	sem := make(chan struct{}, tenantRefreshMaxParallel)
 
+	// Per-tier signal suffix is read once outside the loop so each
+	// goroutine sees the same value without re-locking the manifest.
+	// Empty string preserves legacy behaviour (full tenant prefix
+	// LIST). lakehouse-logs sets "logs/", lakehouse-traces sets
+	// "traces/" — this keeps a logs pod from LISTing trace parquets
+	// (and vice versa) at PB scale.
+	m.mu.RLock()
+	signalSuffix := m.signalSuffix
+	m.mu.RUnlock()
+
 	scheduled := 0
 	for _, tp := range tenantPrefixes {
 		select {
@@ -532,11 +567,12 @@ func (m *Manifest) refreshTenantScoped(ctx context.Context, client *s3.Client) (
 			scheduled++
 			continue
 		}
+		listPrefix := tp + signalSuffix
 		go func(prefix string) {
 			defer func() { <-sem }()
 			f, tf, tb, err := m.refreshFullBucket(innerCtx, client, prefix)
 			resCh <- tenantResult{files: f, fileCount: tf, byteCount: tb, err: err}
-		}(tp)
+		}(listPrefix)
 		scheduled++
 	}
 

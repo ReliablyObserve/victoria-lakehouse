@@ -100,6 +100,18 @@ func New(cfg *config.Config) (*Storage, error) {
 	}
 
 	m := manifest.New(cfg.S3.Bucket, prefix)
+	// Lock the manifest's tenant-scoped LIST to this tier's S3 prefix
+	// so a logs pod never enumerates `<tenant>/traces/` (and vice
+	// versa). The signal suffix is mandatory at construction-time —
+	// mains still call SetSignalSuffix() explicitly as an extra
+	// guard, but defaulting here means any future caller of Storage
+	// can't forget. Empty Mode falls back to "logs/" to match
+	// LogsProfile above.
+	signalSuffix := "logs/"
+	if cfg.Mode == config.ModeTraces {
+		signalSuffix = "traces/"
+	}
+	m.SetSignalSuffix(signalSuffix)
 
 	memCache := cache.NewLRU(cfg.CacheMemoryBytes())
 	metrics.SmartCacheBytesLimit.Set(cfg.CacheMemoryBytes())

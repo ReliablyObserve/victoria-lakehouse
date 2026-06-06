@@ -323,6 +323,11 @@ func run(cfg *config.Config, addr string) {
 	}
 
 	store.Manifest().SetPrefixTemplate(cfg.Tenant.PrefixTemplate)
+	// "traces/" keeps the tenant-scoped manifest refresh inside the
+	// per-tier S3 prefix; without it a traces pod also LISTs
+	// `<tenant>/logs/` and the log parquets' columns leak into
+	// the traces side's `field_names` and Grafana drilldown.
+	store.Manifest().SetSignalSuffix("traces/")
 
 	// --- Tenant stats ---
 	registry := stats.NewTenantRegistry(hostname())
