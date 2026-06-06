@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"context"
+	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go/format"
@@ -9,6 +10,14 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
+
+// traceIndexLookupParallelism caps the number of concurrent
+// fetchFooterFile calls during LookupTraceIndex. The serial loop
+// blew the Jaeger client's 30s budget on a non-existent trace ID at
+// 589 files × ~50ms cached footer fetch each. Bounding to the same
+// query.file-workers default keeps S3 pressure in line with the
+// rest of the read path.
+const traceIndexLookupParallelism = 16
 
 // LookupTraceIndex resolves a trace's start/end time bounds from the
 // `_trace_idx` key-value metadata embedded in each trace Parquet file's
@@ -43,17 +52,52 @@ func (s *Storage) LookupTraceIndex(ctx context.Context, traceID string) (startNs
 		return 0, 0, false, nil
 	}
 
-	// Track whether we hit a real error vs a clean miss so the metric
-	// label reports the operationally interesting case.
-	var anyErr error
+	// Flatten so the worker pool sees one job per file rather than a
+	// nested loop. Avoids the per-partition slice indirection inside
+	// hot goroutines.
+	var flatFiles []manifest.FileInfo
+	for _, partFiles := range files {
+		flatFiles = append(flatFiles, partFiles...)
+	}
 
+	// Parallel footer fetch with bounded concurrency. The serial
+	// version was a 30s hang on a 589-file manifest for any
+	// trace ID that didn't exist in any footer — Jaeger /api/traces
+	// timed out before we ever issued a 404. The cancelCtx lets
+	// the first goroutine that finds a hit (or the outer ctx
+	// deadline) abort the rest so we don't keep fetching footers
+	// after the answer is known.
+	cancelCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var mu sync.Mutex
+	var anyErr error
 	var hit bool
 	var aggStart, aggEnd int64
 
-	for _, partFiles := range files {
-		for i := range partFiles {
-			fi := partFiles[i]
-			if entry, ok, lookupErr := s.lookupTraceIDInFile(ctx, fi, traceID); ok {
+	sem := make(chan struct{}, traceIndexLookupParallelism)
+	var wg sync.WaitGroup
+	for i := range flatFiles {
+		fi := flatFiles[i]
+		select {
+		case sem <- struct{}{}:
+		case <-cancelCtx.Done():
+			// Outer ctx cancelled (or sibling already found a hit
+			// and cancelled — but we don't cancel on hit, so this
+			// is exclusively the deadline path); stop scheduling.
+			break
+		}
+		if cancelCtx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			entry, ok, lookupErr := s.lookupTraceIDInFile(cancelCtx, fi, traceID)
+			mu.Lock()
+			defer mu.Unlock()
+			if ok {
 				if !hit || entry.StartNs < aggStart {
 					aggStart = entry.StartNs
 				}
@@ -64,8 +108,9 @@ func (s *Storage) LookupTraceIndex(ctx context.Context, traceID string) (startNs
 			} else if lookupErr != nil {
 				anyErr = lookupErr
 			}
-		}
+		}()
 	}
+	wg.Wait()
 
 	if hit {
 		metrics.TraceIndexLookups.Inc("hit")
