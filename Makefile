@@ -64,7 +64,6 @@ $(VT_DIR)/go.mod:
 	cd $(VT_DIR) && git apply ../../../patches/vt-traces/vtstorage-dispatch.patch
 	cd $(VT_DIR) && git apply ../../../patches/vt-traces/vtstorage-flag-dedup.patch
 	cd $(VT_DIR) && git apply ../../../patches/vt-traces/vtinsert-flag-dedup.patch
-	cd $(VT_DIR) && git apply ../../../patches/vt-traces/jaeger-tolerant-tags.patch
 	cd $(VT_DIR) && git apply ../../../patches/vt-traces/go-mod-replace.patch
 
 build: build-logs build-traces

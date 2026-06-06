@@ -45,7 +45,6 @@ RUN cp /tmp/patches/vt-traces/external.go.src lakehouse-traces/deps/VictoriaTrac
     cd lakehouse-traces/deps/VictoriaTraces && git apply /tmp/patches/vt-traces/vtstorage-dispatch.patch && \
     git apply /tmp/patches/vt-traces/vtstorage-flag-dedup.patch && \
     git apply /tmp/patches/vt-traces/vtinsert-flag-dedup.patch && \
-    git apply /tmp/patches/vt-traces/jaeger-tolerant-tags.patch && \
     git apply /tmp/patches/vt-traces/go-mod-replace.patch
 COPY . .
 RUN cp -r lakehouse-traces/deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmui/
