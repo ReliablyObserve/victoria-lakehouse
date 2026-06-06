@@ -144,9 +144,15 @@ jobs:
           - internal/storage/parquets3:FuzzTraceRowWithMapAttributes
           - internal/storage/parquets3:FuzzMultiRowDataBlock
           - internal/storage/parquets3:FuzzParseFooterBytes
-          - internal/schema/registry:FuzzResolveToParquet
+          - internal/storage/parquets3:FuzzFooterLength
+          - internal/storage/parquets3:FuzzStorageFetchPeerAZ
+          - internal/schema:FuzzResolveToParquet
           - internal/schema:FuzzResolveToParquet_Traces
           - internal/schema:FuzzParseFieldType
+          - internal/schema:FuzzFormatValue_String
+          - internal/schema:FuzzFormatValue_Int64
+          - internal/schema:FuzzFormatValue_Float64
+          - internal/schema:FuzzFormatValue_TimestampNano
           - internal/cache:FuzzLRUPutGet
           - internal/cache:FuzzLabelIndexAddGet
           - internal/cache:FuzzPersisterRoundTrip
@@ -160,12 +166,21 @@ jobs:
           - internal/manifest:FuzzParsePartitionTime
           - internal/manifest:FuzzUnmarshalFileMetaSidecar
           - internal/peercache:FuzzRingLookup
+          - internal/peercache:FuzzRingLookupAZ
+          - internal/peercache:FuzzRingLookupAZ_NoSameAZ
           - internal/peercache:FuzzHandlerServeHTTP
+          - internal/peercache:FuzzHandlerStatsEndpoint
           - internal/config:FuzzParseSizeBytes
           - internal/config:FuzzValidate
+          - internal/config:FuzzValidateAZMode
+          - internal/discovery:FuzzSplitHostPort
+          - internal/azdetect:FuzzDetect_EnvVar
+          - internal/azdetect:FuzzDetectAWSIMDS_Response
+          - internal/azdetect:FuzzDetectGCPMetadata_Response
           - internal/wal:FuzzReplayCorruptedRecord
           - internal/buffer:FuzzHandlerParams
           - internal/traceindex:FuzzUnmarshalIndex
+          - internal/traceindex:FuzzRoundTripIndex
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -209,10 +224,12 @@ jobs:
           - lakehouse-traces/internal/storage/parquets3:FuzzTraceRowToDataBlock
           - lakehouse-traces/internal/storage/parquets3:FuzzMultiRowDataBlock
           - lakehouse-traces/internal/storage/parquets3:FuzzTraceRowWithMapAttributes
+          - lakehouse-traces/internal/storage/parquets3:FuzzContainsOrOperatorQuoted
           - lakehouse-traces/internal/storage/parquets3:FuzzParseFilterFromQuery
           - lakehouse-traces/internal/storage/parquets3:FuzzExtractFilterValuesAST
           - lakehouse-traces/internal/vlstorage:FuzzMapFieldToTraceRow
           - lakehouse-traces/internal/vlstorage:FuzzUnmarshalStreamTags
+          - lakehouse-traces/internal/vlstorage:FuzzLogRowsToTraceRows
           - lakehouse-traces/internal/vtstorage_adapter:FuzzTraceIndexLookupTraceID
           - lakehouse-traces/internal/vtstorage_adapter:FuzzRewriteTraceIndexQuery
     steps:
@@ -259,9 +276,12 @@ jobs:
           # Collect declared fuzz targets in source.
           declared=$(grep -rhEo '^func Fuzz[A-Za-z0-9_]+' --include='*_test.go' . \
                      | sed 's/^func //' | sort -u)
-          # Collect targets listed in the matrices in this workflow.
-          listed=$(grep -oE 'Fuzz[A-Za-z0-9_]+' .github/workflows/fuzz-stress-memleak.yaml \
-                   | sort -u)
+          # Collect targets listed in the matrices. Anchor on the matrix
+          # entry shape `- pkg:FuzzName` so prose mentions of "FuzzFn..."
+          # in this workflow's own comments don't satisfy the check.
+          listed=$(grep -oE '^[[:space:]]+- [a-zA-Z0-9/_-]+:Fuzz[A-Za-z0-9_]+' \
+                     .github/workflows/fuzz-stress-memleak.yaml \
+                   | sed 's/.*:\(Fuzz[A-Za-z0-9_]*\)/\1/' | sort -u)
           missing=$(comm -23 <(echo "$declared") <(echo "$listed"))
           if [ -n "$missing" ]; then
             echo "::error::Fuzz targets declared but not exercised in CI:"
