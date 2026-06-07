@@ -13,6 +13,7 @@ import (
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/smartcache"
 )
 
@@ -459,6 +460,58 @@ func TestColdHotParity_FieldEqByParquetName(t *testing.T) {
 	if total != 6 {
 		t.Errorf("service.name:=\"X\" returned %d rows, expected 6 (3 trace_ids × 2 spans) — "+
 			"undercount even after a5576bf", total)
+	}
+}
+
+// TestColdHotParity_BuildPushDownFilter_NoSubstringCollision pins
+// the higher-level integration of the extractQuotedOp boundary
+// fix: when querying `service.name:="X"`, buildPushDownFilter
+// loops through every promoted column and probes for the column's
+// internal alias / parquet name. Pre-fix, the internal alias of
+// `span.name` (which is `name`) substring-matched inside
+// `service.name:=` and the loop emitted a PushDownCheck for the
+// WRONG column (`span.name` with value `"X"`). At query time the
+// column-stats pre-filter then dropped every file because the
+// queried value never falls inside span.name's [min,max] range —
+// silent zero results.
+//
+// This test exercises buildPushDownFilter end-to-end (registry +
+// extractQuotedOp + check emission) and asserts the resulting
+// PushDownFilter contains a check for `service.name` (the right
+// column) and ONLY for service.name — no spurious cross-column
+// check from substring collision.
+func TestColdHotParity_BuildPushDownFilter_NoSubstringCollision(t *testing.T) {
+	reg := schema.NewRegistry(schema.TracesProfile)
+	pdf := buildPushDownFilter(`service.name:="api-gateway"`, reg)
+	if pdf == nil {
+		t.Fatal("expected pushdown filter, got nil")
+	}
+	if len(pdf.Checks) == 0 {
+		t.Fatal("expected at least one pushdown check")
+	}
+
+	sawServiceName := false
+	for _, check := range pdf.Checks {
+		if check.Column == "service.name" {
+			if check.Value != "api-gateway" {
+				t.Errorf("service.name check has wrong value: got %q, want api-gateway", check.Value)
+			}
+			sawServiceName = true
+			continue
+		}
+		// Any OTHER column appearing here is the silent-collision bug.
+		// Pre-fix, `span.name` would show up because `name:=` matched
+		// inside `service.name:=`. The boundary check in
+		// extractQuotedOp prevents that.
+		t.Errorf("pushdown check on unexpected column %q (value %q) — substring "+
+			"collision regression: extractQuotedOp matched a non-boundary "+
+			"occurrence of the column's internal alias inside the queried "+
+			"field name. This is exactly the class that silently zeroed "+
+			"`service.name:=\"X\"` filters on cold drilldown.",
+			check.Column, check.Value)
+	}
+	if !sawServiceName {
+		t.Error("expected a pushdown check for column service.name")
 	}
 }
 

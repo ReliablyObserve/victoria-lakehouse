@@ -294,6 +294,64 @@ func TestExtractQuotedOp(t *testing.T) {
 			op:        `:>"`,
 			want:      "error",
 		},
+		{
+			// Regression pin: when the user queries `service.name:="X"`,
+			// the pushdown loop ALSO probes for the internal alias of
+			// `span.name` (which is `name`). Pre-fix, extractQuotedOp
+			// matched the trailing `name:=` inside `service.name:=`
+			// via substring match and returned "X" — the pushdown then
+			// built a check for the wrong column (span.name with value
+			// "X") and the column-stats pre-filter dropped every file
+			// because "X" isn't in any span.name [min,max]. Live
+			// blast radius: cold drilldown comparison and
+			// `service.name:="api-gateway"` filters returned 0 rows
+			// silently. Post-fix MUST return "" because `name:=` is
+			// NOT at a token boundary inside `service.name:=`.
+			name:      "substring collision — name vs service.name",
+			query:     `service.name:="api-gateway"`,
+			fieldName: "name",
+			op:        `:="`,
+			want:      "",
+		},
+		{
+			// Same boundary-check class — `id:=` MUST NOT match
+			// inside `trace_id:=` or `span_id:=`. Without the boundary
+			// check, querying `trace_id:="abc"` would route a pushdown
+			// check to a column registered as `id` (if any).
+			name:      "substring collision — id vs trace_id",
+			query:     `trace_id:="abc123"`,
+			fieldName: "id",
+			op:        `:="`,
+			want:      "",
+		},
+		{
+			// Positive case for the boundary fix — `name:=` at the
+			// start of a query (no preceding identifier byte) MUST
+			// still match.
+			name:      "field name at query start",
+			query:     `name:="op"`,
+			fieldName: "name",
+			op:        `:="`,
+			want:      "op",
+		},
+		{
+			// Positive case — `name:=` after a space (AND boundary)
+			// MUST match.
+			name:      "field name after AND",
+			query:     `_time:[a,b] AND name:="op"`,
+			fieldName: "name",
+			op:        `:="`,
+			want:      "op",
+		},
+		{
+			// Positive case — `name:=` inside parentheses (boundary)
+			// MUST match.
+			name:      "field name after open paren",
+			query:     `(name:="op")`,
+			fieldName: "name",
+			op:        `:="`,
+			want:      "op",
+		},
 	}
 
 	for _, tt := range tests {

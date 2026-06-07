@@ -245,6 +245,46 @@ func TestExtractQuotedOp(t *testing.T) {
 			op:        `:>"`,
 			want:      "error",
 		},
+		{
+			// Regression pin: substring collision between `name:=` and
+			// `service.name:=` used to make the pushdown build a
+			// wrong-column check that the column-stats pre-filter then
+			// used to drop every file. Mirror of the same pin in
+			// lakehouse-traces.
+			name:      "substring collision — name vs service.name",
+			query:     `service.name:="api-gateway"`,
+			fieldName: "name",
+			op:        `:="`,
+			want:      "",
+		},
+		{
+			name:      "substring collision — id vs trace_id",
+			query:     `trace_id:="abc123"`,
+			fieldName: "id",
+			op:        `:="`,
+			want:      "",
+		},
+		{
+			name:      "field name at query start",
+			query:     `name:="op"`,
+			fieldName: "name",
+			op:        `:="`,
+			want:      "op",
+		},
+		{
+			name:      "field name after AND",
+			query:     `_time:[a,b] AND name:="op"`,
+			fieldName: "name",
+			op:        `:="`,
+			want:      "op",
+		},
+		{
+			name:      "field name after open paren",
+			query:     `(name:="op")`,
+			fieldName: "name",
+			op:        `:="`,
+			want:      "op",
+		},
 	}
 
 	for _, tt := range tests {
