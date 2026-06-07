@@ -420,15 +420,36 @@ func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, star
 
 func (s *Storage) preFilterFiles(files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
 	if s.smartCache != nil {
-		// Support both trace_id:="single" and trace_id:in(t1,t2,t3) (VT spans-lookup shape).
-		// Multiple values: union the matched file sets so the lookup covers all candidates.
+		// trace_id fast-path: sound ONLY for single-id lookups
+		// (Jaeger get-trace, `trace_id:="X"` shape) where one
+		// cached file is enough to answer the user's request.
+		//
+		// We deliberately do NOT take this path for the multi-id
+		// `trace_id:in(t1,t2,...)` shape (VT's GetTraceList step 2).
+		// Reason: the smartCache only knows about files it has
+		// previously fetched. A single trace can live in MULTIPLE
+		// files (different partitions / time windows for the same
+		// id), but the cache may have only seen one of them. The
+		// union of `FindFilesByTraceID(t_i)` across many ids is
+		// therefore a LOWER BOUND on the relevant file set — not
+		// a complete one. Narrowing to that lower bound silently
+		// drops every uncached-but-relevant file.
+		//
+		// Live blast radius (pre-fix): at the 12h window, cold
+		// Jaeger /api/traces returned 0 traces while hot returned
+		// 20. Step 1 produced 20 trace_ids; step 2 took the
+		// fast-path, narrowed to 1 file, and that file held spans
+		// for only a few of the 20 → empty result for the rest.
+		//
+		// For multi-id queries we fall through to the bloom /
+		// trace_idx narrowing path, which examines every file and
+		// is honest about coverage. It costs a bit more per query
+		// but never silently undercounts.
 		tids := extractFilterValuesAST(queryStr, "trace_id")
-		if len(tids) > 0 {
+		if len(tids) == 1 {
 			cacheSet := make(map[string]bool)
-			for _, tid := range tids {
-				for _, k := range s.smartCache.FindFilesByTraceID(tid) {
-					cacheSet[k] = true
-				}
+			for _, k := range s.smartCache.FindFilesByTraceID(tids[0]) {
+				cacheSet[k] = true
 			}
 			if len(cacheSet) > 0 {
 				var narrowed []manifest.FileInfo
@@ -438,7 +459,7 @@ func (s *Storage) preFilterFiles(files []manifest.FileInfo, queryStr string) []m
 					}
 				}
 				if len(narrowed) > 0 {
-					logger.Infof("trace_id fast-path: cache hit for %d trace_id(s), scanning %d files", len(tids), len(narrowed))
+					logger.Infof("trace_id fast-path: cache hit for 1 trace_id, scanning %d files", len(narrowed))
 					return narrowed
 				}
 			}

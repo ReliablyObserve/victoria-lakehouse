@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-06-07
+
+### Fixed
+
+- **Cold Jaeger search returned 0 traces at 12h while hot returned 20** — VT's `GetTraceList` step 2 issues `trace_id:in(t1,t2,...,t20)` for span fetch. Our `smartCache` fast-path in `lakehouse-traces/internal/storage/parquets3/storage_query.go::preFilterFiles` was unioning `FindFilesByTraceID(t_i)` across all queried trace IDs and narrowing to that union — but the union is only a *lower bound* on the relevant file set, because `smartCache` only records files it has previously fetched. A partial cache hit (one tid known, the rest never seen) collapsed candidates to one file that held spans for at most that one tid; spans for the other 19 vanished. Live blast radius: cold drilldown "Slow traces" tab returned empty at the 12h window even though step 1 found 20 trace IDs. Fix: take the smartCache fast-path **only for single-id queries** (the trace-by-id shape). Multi-id `trace_id:in(...)` falls through to bloom + `_trace_idx` narrowing, which examines every file and is honest about coverage. Guarded by:
+  - `lakehouse-traces/internal/storage/parquets3/cold_hot_parity_test.go::TestColdHotParity_SmartCachePartialHit_MustNotNarrowSilently` — unit pin that exercises `preFilterFiles` with a hand-seeded metadata map (one tid cached, one tid missing) and asserts both files survive.
+  - 8 sibling parity tests in the same file (`TraceIdxKeptFile`, `TraceIDInFilter`, `NegationFilter`, `UnindexedFileMustStillEmitRows`, `CombinedStreamAndTraceID`, `OutOfWindowReturnsZeroNoError`, `MultipleFilesNarrowingMustAgree`, `TraceIdxIntegrity_WriterSelfCheck`) that mirror the exact VT step-1 / step-2 query shapes from `vtselect/traces/query/query.go` so a regression in column resolution, time-window narrowing, or `_trace_idx` decoding fires at the storage layer instead of presenting as "0 traces in the UI".
+  - One known regression class is deliberately left as `t.Skip("known #99 tail")`: `TestColdHotParity_FieldEqByParquetName` pins `service.name:="X"` (operator-typed parquet column name) — the main scan path needs the same dual-emission a5576bf added to `parquetRowToFields`. Remove the Skip when fixed.
+
+### CI
+
+- **Hot/cold parity unit job** (`.github/workflows/ci.yaml::parity-unit`) — runs `TestColdHotParity*` + `TestFieldEqualityAndStreamFilter` (traces) and `TestFieldNames_VLParity` + `TestInsertAndQuery_FieldNameParity` (logs) under `-race`, emits a job summary with pass/fail/skip counts and expanded failure details, uploads test artifacts. The same tests already run as part of `test-traces` / `test-logs`, but a dedicated named job makes the parity check visible in PR pages and gives reviewers a single status icon to look at — when any of these fail it's almost always one of the cold/hot regression classes the drilldown has shipped before (cf. #99, a5576bf, be8c126).
+
+### Docs
+
+- **`docs/architecture/performance-machinery.md` §6.2** — corrected the zstd-level claim: parquet-go's writer maps integer levels to **only four buckets** (`Fastest`/`Default`/`Better`/`Best`) regardless of the integer value, so the previous text claiming `[3, 7, 11] → [3, 9, 15]` "doubles compaction CPU" was wrong — both schedules land in `[Default, Better, Best]` and produce the same encode profile. New table shows the integer ranges and bucket mapping so operators don't tune a knob that doesn't move.
+
 ### Added
 
 - **Honest lifecycle + cold-start protection at PB scale (PR #122)** — every cliff scenario the 3PB-on-S3 / 6-peer audit surfaced (stale snapshot, fragmented L0, simultaneous restart, first-ever boot, partial warmup) now has a guard and a test. The pod no longer lies about being ready while it is still discovering files, replaying WAL, or warming the footer cache; queries no longer return empty results because the local store happens to be 30 seconds behind S3.

@@ -424,13 +424,29 @@ sub-GiB total RAM + 1–2 cores is normal.
 | Severity / label / bloom extract (write) | 0.1 core | 0.5 core | full row scan per flush |
 
 The two **load-bearing CPU consumers** are zstd decode (on read)
-and zstd encode (on compaction). Both are CPU-bound, both
+and zstd encode (on compaction). Both are CPU-bound and both
 parallelise inside the file_workers / compaction.parallelism
-budgets, and both scale linearly with the compression level you
-pick in the progressive schedule. Bumping the schedule from
-`[3, 7, 11]` to `[3, 9, 15]` roughly doubles compaction CPU
-without changing the read-side decode (which always pays full
-zstd-decompress cost regardless of write-side level).
+budgets.
+
+**zstd levels in parquet-go map to only 4 buckets** (see
+`internal/compaction/compactor.go::zstdLevel`):
+
+| Integer range | Library constant | ≈ MB/s | ≈ ratio |
+|---|---|---:|---:|
+| `≤ 1` | `zstd.SpeedFastest` | ~400 | 2.4× |
+| `2–5` | `zstd.SpeedDefault` | ~100 | 2.8× |
+| `6–10` | `zstd.SpeedBetterCompression` | ~30 | 3.1× |
+| `11+` | `zstd.SpeedBestCompression` | ~15 | 3.3× |
+
+So the default progressive schedule `[3, 7, 11]` lands in
+`[Default, Better, Best]` — three of the four buckets, with L0
+files getting the fastest, L2 the densest. **`[3, 9, 15]` is the
+same schedule in practice**: 9 also maps to Better, 15 also maps to
+Best. To move between buckets, change which bucket each level
+targets — there is no continuous "more compression" knob.
+
+The read-side cost is fixed: zstd decompresses any output level at
+roughly the same speed regardless of which level was used to write.
 
 ### Re-derivation on restart
 
