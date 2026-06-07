@@ -1,0 +1,22 @@
+diff --git a/lib/logstorage/datadb.go b/lib/logstorage/datadb.go
+index bd45805a2..1edf32f3b 100644
+--- a/lib/logstorage/datadb.go
++++ b/lib/logstorage/datadb.go
+@@ -498,6 +498,17 @@ func (ddb *datadb) mustMergePartsInternal(pws []*partWrapper, isFinal bool, drop
+ 	startTime := time.Now()
+ 
+ 	dstPartType := ddb.getDstPartType(pws, isFinal)
++
++	// lakehouse cold tier (Option B): when a flush sink is registered, parts
++	// leaving the in-memory store are converted to lakehouse Parquet on S3
++	// instead of VL disk parts. See lib/logstorage/vl_flush_sink.go
++	// (patches/{vl-logs,vl-traces}/vl-flush-sink.go.src). Inert when FlushSink
++	// is nil (stock VL behavior).
++	if dstPartType != partInmemory && FlushSink != nil {
++		ddb.flushPartsViaSink(pws, startTime)
++		return true
++	}
++
+ 	if dstPartType != partInmemory {
+ 		// Make sure there is enough disk space for performing the merge
+ 		partsSize := getCompressedSize(pws)
