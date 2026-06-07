@@ -41,6 +41,25 @@ func TestBufferEngine_LogstoreFlag(t *testing.T) {
 	}
 }
 
+func TestBufferEngine_OverlayMerge(t *testing.T) {
+	base := Default()
+	overlay := &Config{}
+	overlay.Insert.BufferEngine = "logstore"
+	overlay.Insert.BufferDir = "/tmp/custom-buffer"
+	merged := mergeConfig(base, overlay)
+	if !merged.Insert.BufferEngineLogstore() {
+		t.Fatalf("overlay buffer_engine=logstore did not merge (got %q)", merged.Insert.BufferEngine)
+	}
+	if merged.Insert.BufferDir != "/tmp/custom-buffer" {
+		t.Fatalf("overlay buffer_dir did not merge (got %q)", merged.Insert.BufferDir)
+	}
+	// Empty overlay must NOT clobber the base default.
+	merged2 := mergeConfig(Default(), &Config{})
+	if merged2.Insert.BufferEngine != "buffer" {
+		t.Fatalf("empty overlay clobbered BufferEngine: %q", merged2.Insert.BufferEngine)
+	}
+}
+
 func TestBufferEngine_Defaults(t *testing.T) {
 	c := Default()
 	if c.Insert.BufferEngine != "buffer" {

@@ -12,6 +12,12 @@
 #   "<account>:<project>"   — integer Victoria tenant ID
 #   "<orgid>"               — string alias from X-Scope-OrgID
 lakehouse:
+  # Option B: logstorage-native queryable buffer (P1 dual-write + P3 read-merge).
+  # Buffer dir is on the persistent /data/lakehouse volume; durability is
+  # logstorage's own parts + S3 Parquet (no LH WAL needed for it).
+  insert:
+    buffer_engine: logstore
+
   retention:
     enabled: true
     default: "30d"

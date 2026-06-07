@@ -1747,6 +1747,15 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	if overlay.Insert.WALMaxBytes != "" {
 		base.Insert.WALMaxBytes = overlay.Insert.WALMaxBytes
 	}
+	if overlay.Insert.BufferEngine != "" {
+		base.Insert.BufferEngine = overlay.Insert.BufferEngine
+	}
+	if overlay.Insert.BufferDir != "" {
+		base.Insert.BufferDir = overlay.Insert.BufferDir
+	}
+	if overlay.Insert.BufferRetention > 0 {
+		base.Insert.BufferRetention = overlay.Insert.BufferRetention
+	}
 	if overlay.Insert.AckMode != "" {
 		base.Insert.AckMode = overlay.Insert.AckMode
 	}
