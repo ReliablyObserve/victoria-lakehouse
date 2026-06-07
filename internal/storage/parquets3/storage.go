@@ -936,8 +936,7 @@ func (s *Storage) logRowsToDataBlock(rows []schema.LogRow) *logstorage.DataBlock
 		hosts[i] = row.HostName
 	}
 
-	db := &logstorage.DataBlock{}
-	db.SetColumns([]logstorage.BlockColumn{
+	blockCols := []logstorage.BlockColumn{
 		{Name: "_time", Values: times},
 		{Name: "_msg", Values: bodies},
 		{Name: "level", Values: levels},
@@ -952,7 +951,43 @@ func (s *Storage) logRowsToDataBlock(rows []schema.LogRow) *logstorage.DataBlock
 		{Name: "deployment.environment", Values: envs},
 		{Name: "cloud.region", Values: regions},
 		{Name: "host.name", Values: hosts},
-	})
+	}
+
+	// Arbitrary resource/log attributes carried in the maps, surfaced under
+	// the same prefixed names the file-scan path uses (resource_attr:K,
+	// log_attr:K). Without these, a recent-log query filtering on a map
+	// attribute (e.g. `log_attr:http.status="500"`) matches flushed files
+	// but NOT still-buffered rows — the logs-side twin of the traces
+	// _stream/attribute buffer gap. Built lazily so a column is only
+	// materialised when at least one buffered row carries that key.
+	attrCols := make(map[string][]string)
+	attrOrder := make([]string, 0)
+	putAttr := func(name string, i int, val string) {
+		if val == "" {
+			return
+		}
+		col, ok := attrCols[name]
+		if !ok {
+			col = make([]string, len(rows))
+			attrCols[name] = col
+			attrOrder = append(attrOrder, name)
+		}
+		col[i] = val
+	}
+	for i, row := range rows {
+		for k, v := range row.ResourceAttributes {
+			putAttr("resource_attr:"+k, i, v)
+		}
+		for k, v := range row.LogAttributes {
+			putAttr("log_attr:"+k, i, v)
+		}
+	}
+	for _, name := range attrOrder {
+		blockCols = append(blockCols, logstorage.BlockColumn{Name: name, Values: attrCols[name]})
+	}
+
+	db := &logstorage.DataBlock{}
+	db.SetColumns(blockCols)
 	return db
 }
 
