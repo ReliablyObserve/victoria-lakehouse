@@ -450,6 +450,12 @@ func (s *Storage) Close() error {
 		s.writer.Stop()
 		logger.Infof("writer stopped and final flush completed")
 	}
+	// Option B: flush + close the logstorage-native buffer so the persistent
+	// data dir captures the last sub-FlushInterval window before exit.
+	if s.localBuffer != nil {
+		s.localBuffer.Close()
+		logger.Infof("Option B logstore buffer flushed and closed")
+	}
 	if s.persister != nil {
 		if err := s.persister.SaveLabelIndex(s.labelIndex); err != nil {
 			logger.Warnf("failed to persist label index: %s", err)
@@ -720,6 +726,10 @@ func (s *Storage) BufferBridge() *BufferBridge {
 // engine the S3-Parquet scan uses — no struct→DataBlock conversion.
 type LocalBuffer interface {
 	RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error
+	// Close flushes the in-memory window to the persistent data dir and
+	// releases the store — called on graceful shutdown so a clean restart
+	// loses nothing, not even the sub-FlushInterval window.
+	Close()
 }
 
 // SetLocalBuffer wires the co-located logstorage-native buffer into the query

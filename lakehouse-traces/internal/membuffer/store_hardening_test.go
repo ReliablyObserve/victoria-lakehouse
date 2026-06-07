@@ -36,6 +36,40 @@ func addRow(lr *logstorage.LogRows, tid logstorage.TenantID, ts int64, svc, trac
 	}, 1)
 }
 
+// TestStore_PersistsAndRestoresAcrossReopen proves the durability story: the
+// buffer reuses logstorage's OWN persistence — Close flushes the in-memory
+// parts to the data dir, and reopening the same dir restores them. This is why
+// no LH WAL is needed (it would duplicate this); the crash-loss window matches
+// VT/VL hot.
+func TestStore_PersistsAndRestoresAcrossReopen(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UnixNano()
+
+	st, err := Open(Config{Path: dir})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	lr := logstorage.GetLogRows([]string{"service.name"}, nil, nil, nil, "")
+	const n = 5
+	for i := 0; i < n; i++ {
+		addRow(lr, logstorage.TenantID{}, now, "api-gateway", fmt.Sprintf("t%d", i))
+	}
+	st.MustAddRows(lr)
+	logstorage.PutLogRows(lr)
+	st.DebugFlush()
+	st.Close() // flushes in-memory parts to the persistent dir
+
+	// Reopen the SAME dir — logstorage restores its parts (no LH WAL involved).
+	st2, err := Open(Config{Path: dir})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer st2.Close()
+	if got := countQuery(t, st2, []logstorage.TenantID{{}}, `_stream:{service.name="api-gateway"}`, now); got != n {
+		t.Fatalf("after Close+reopen: want %d restored rows, got %d", n, got)
+	}
+}
+
 func TestStore_EmptyBatchAndLifecycle(t *testing.T) {
 	st, err := Open(Config{Path: t.TempDir()})
 	if err != nil {
