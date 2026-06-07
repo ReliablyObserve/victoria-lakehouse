@@ -7,8 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.39.0] - 2026-06-07
-
 ### Fixed
 
 - **Cold Jaeger search returned 0 traces at 12h while hot returned 20** — VT's `GetTraceList` step 2 issues `trace_id:in(t1,t2,...,t20)` for span fetch. Our `smartCache` fast-path in `lakehouse-traces/internal/storage/parquets3/storage_query.go::preFilterFiles` was unioning `FindFilesByTraceID(t_i)` across all queried trace IDs and narrowing to that union — but the union is only a *lower bound* on the relevant file set, because `smartCache` only records files it has previously fetched. A partial cache hit (one tid known, the rest never seen) collapsed candidates to one file that held spans for at most that one tid; spans for the other 19 vanished. Live blast radius: cold drilldown "Slow traces" tab returned empty at the 12h window even though step 1 found 20 trace IDs. Fix: take the smartCache fast-path **only for single-id queries** (the trace-by-id shape). Multi-id `trace_id:in(...)` falls through to bloom + `_trace_idx` narrowing, which examines every file and is honest about coverage. Guarded by:
@@ -23,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Docs
 
 - **`docs/architecture/performance-machinery.md` §6.2** — corrected the zstd-level claim: parquet-go's writer maps integer levels to **only four buckets** (`Fastest`/`Default`/`Better`/`Best`) regardless of the integer value, so the previous text claiming `[3, 7, 11] → [3, 9, 15]` "doubles compaction CPU" was wrong — both schedules land in `[Default, Better, Best]` and produce the same encode profile. New table shows the integer ranges and bucket mapping so operators don't tune a knob that doesn't move.
+
+## [0.39.0] - 2026-06-07
 
 ### Added
 

@@ -1698,6 +1698,16 @@ func parsePartitionTime(partition string) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, fmt.Errorf("parse date %q: %w", dateStr, err)
 	}
+	// Go's zero time IS `0001-01-01T00:00:00Z` — a syntactically valid
+	// date that parses cleanly but cannot represent a real partition
+	// (the project predates year 0001 by a few millennia). Reject so
+	// the fuzz invariant "no error ⇒ non-zero result" holds and so
+	// downstream code that compares against zero time as the
+	// "unparseable" sentinel doesn't quietly mis-classify a valid
+	// parse as a failure.
+	if t.IsZero() {
+		return time.Time{}, fmt.Errorf("partition date %q parses to zero time", dateStr)
+	}
 
 	if hourStr != "" {
 		var hour int

@@ -171,7 +171,7 @@ func TestColdHotParity_TraceIdxKeptFile_MustReturnRows(t *testing.T) {
 			"the stream-shaped query sees nothing", len(rows))
 	}
 	if len(streamTids) == 0 {
-		t.Fatal("step 1 returned non-zero rows but no trace_id values in the projection — "+
+		t.Fatal("step 1 returned non-zero rows but no trace_id values in the projection — " +
 			"trace_id column is not surfacing, which breaks step 2's per-id lookup chain")
 	}
 
@@ -254,8 +254,8 @@ func TestColdHotParity_TraceIdxIntegrity_WriterSelfCheck(t *testing.T) {
 			return
 		}
 	}
-	t.Fatal("PHANTOM entry was silently dropped by decode round-trip; the safeguard cannot "+
-		"detect writer-side trace_idx corruption — fix marshalTraceIndex / traceIndexFromMetadata "+
+	t.Fatal("PHANTOM entry was silently dropped by decode round-trip; the safeguard cannot " +
+		"detect writer-side trace_idx corruption — fix marshalTraceIndex / traceIndexFromMetadata " +
 		"to preserve all entries (drop-vs-decode integrity guarantee)")
 }
 
@@ -406,9 +406,9 @@ func TestColdHotParity_NegationFilter(t *testing.T) {
 	q := `_stream:{resource_attr:service.name!=""}`
 	total, _ := runParityQuery(t, s, q, startNs, endNs)
 	if total == 0 {
-		t.Fatalf("_stream:{resource_attr:service.name!=\"\"} returned 0 rows — VT's outer "+
-			"step-1 wrap doesn't match canonical stream literals carrying that label. This "+
-			"is the regression class that surfaces as 'cold drilldown returns 0 traces' even "+
+		t.Fatalf("_stream:{resource_attr:service.name!=\"\"} returned 0 rows — VT's outer " +
+			"step-1 wrap doesn't match canonical stream literals carrying that label. This " +
+			"is the regression class that surfaces as 'cold drilldown returns 0 traces' even " +
 			"when the file clearly contains spans for the queried service")
 	}
 }
@@ -460,8 +460,8 @@ func TestColdHotParity_FieldEqByParquetName(t *testing.T) {
 	// stream-filter shape sees.
 	total, _ := runParityQuery(t, s, `service.name:="api-gateway"`, startNs, endNs)
 	if total == 0 {
-		t.Fatalf("service.name:=\"api-gateway\" returned 0 rows — regression of a5576bf, the "+
-			"parquet-column-name resolution fix. Operators typing the column name they see "+
+		t.Fatalf("service.name:=\"api-gateway\" returned 0 rows — regression of a5576bf, the " +
+			"parquet-column-name resolution fix. Operators typing the column name they see " +
 			"in /select/logsql/query JSON would once again get 0 results")
 	}
 	if total != 6 {
@@ -494,8 +494,8 @@ func TestColdHotParity_UnindexedFileMustStillEmitRows(t *testing.T) {
 	q := fmt.Sprintf(`trace_id:%q`, tids[0])
 	total, _ := runParityQuery(t, s, q, startNs, endNs)
 	if total == 0 {
-		t.Fatalf("trace_id query against an unindexed file returned 0 rows — the pre-filter "+
-			"is dropping files without `_trace_idx` KV. This breaks every cold parquet written "+
+		t.Fatalf("trace_id query against an unindexed file returned 0 rows — the pre-filter " +
+			"is dropping files without `_trace_idx` KV. This breaks every cold parquet written " +
 			"before the trace_idx feature landed (silent partial-history gap)")
 	}
 	if total != 3 {
@@ -522,8 +522,8 @@ func TestColdHotParity_CombinedStreamAndTraceID(t *testing.T) {
 	q := fmt.Sprintf(`_stream:{resource_attr:service.name="api-gateway"} AND trace_id:%q`, tids[0])
 	total, _ := runParityQuery(t, s, q, startNs, endNs)
 	if total == 0 {
-		t.Fatalf("combined _stream AND trace_id returned 0 rows — the two filters don't "+
-			"compose on the same parquet; this is the silent-undercount class for VT's "+
+		t.Fatalf("combined _stream AND trace_id returned 0 rows — the two filters don't " +
+			"compose on the same parquet; this is the silent-undercount class for VT's " +
 			"step-2 lookup chain")
 	}
 	if total != 2 {
