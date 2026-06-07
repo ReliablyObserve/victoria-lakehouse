@@ -394,6 +394,16 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 	}
 	metrics.InsertBytesUploaded.Add(len(result.Data))
 
+	labelStart := time.Now()
+	labels := extractLogLabels(rows)
+	metrics.WriterLabelExtractionsTotal.Inc("logs")
+	metrics.WriterLabelExtractionDuration.Observe(time.Since(labelStart).Seconds())
+	var labelValueCount int
+	for _, vals := range labels {
+		labelValueCount += len(vals)
+	}
+	metrics.WriterLabelValuesTotal.Add("logs", labelValueCount)
+
 	fi := manifest.FileInfo{
 		Key:               key,
 		Bucket:            bucket,
@@ -403,7 +413,7 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 		MaxTimeNs:         rows[len(rows)-1].TimestampUnixNano,
 		RawBytes:          result.RawBytes,
 		SchemaFingerprint: schemaFingerprint(w.mode),
-		Labels:            extractLogLabels(rows),
+		Labels:            labels,
 	}
 	w.manifest.AddFile(partition, fi)
 
@@ -456,6 +466,16 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 	}
 	metrics.InsertBytesUploaded.Add(len(result.Data))
 
+	labelStart2 := time.Now()
+	labels2 := extractTraceLabels(rows)
+	metrics.WriterLabelExtractionsTotal.Inc("traces")
+	metrics.WriterLabelExtractionDuration.Observe(time.Since(labelStart2).Seconds())
+	var labelValueCount2 int
+	for _, vals := range labels2 {
+		labelValueCount2 += len(vals)
+	}
+	metrics.WriterLabelValuesTotal.Add("traces", labelValueCount2)
+
 	fi := manifest.FileInfo{
 		Key:               key,
 		Bucket:            bucket,
@@ -465,7 +485,7 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 		MaxTimeNs:         rows[len(rows)-1].TimestampUnixNano,
 		RawBytes:          result.RawBytes,
 		SchemaFingerprint: schemaFingerprint(w.mode),
-		Labels:            extractTraceLabels(rows),
+		Labels:            labels2,
 	}
 	w.manifest.AddFile(partition, fi)
 
@@ -592,8 +612,13 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 		}
 	}
 
-	if idxData := marshalTraceIndex(computeTraceIndex(rows)); len(idxData) > 0 {
+	tidxStart := time.Now()
+	tidxEntries := computeTraceIndex(rows)
+	if idxData := marshalTraceIndex(tidxEntries); len(idxData) > 0 {
 		opts = append(opts, parquet.KeyValueMetadata(traceIndexMetadataKey, string(idxData)))
+		metrics.WriterTraceIdxBuildsTotal.Inc()
+		metrics.WriterTraceIdxEntriesTotal.Add(len(tidxEntries))
+		metrics.WriterTraceIdxBuildDuration.Observe(time.Since(tidxStart).Seconds())
 	}
 
 	writer := parquet.NewGenericWriter[schema.TraceRow](&buf, opts...)

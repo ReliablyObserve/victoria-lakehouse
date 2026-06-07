@@ -345,6 +345,20 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		inputRawBytes += f.RawBytes
 	}
 
+	// Per-output-level compression observability. The ratio is
+	// inputRawBytes / len(outputData) — same denominator as the
+	// /api/v1/tenants per-tenant ratio so a dashboard reading either
+	// can correlate. levelForOutput went through the same tenant >
+	// global > static fallback chain above, so the gauge reflects
+	// the level that was actually applied (not just the
+	// schedule's preferred level).
+	outputLevelLabel := strconv.Itoa(outputLevel)
+	if inputRawBytes > 0 && len(outputData) > 0 {
+		ratio := float64(inputRawBytes) / float64(len(outputData))
+		metrics.CompactionCompressionRatio.Observe(outputLevelLabel, ratio)
+	}
+	metrics.CompactionCompressionLevelUsed.Set(outputLevelLabel, int64(levelForOutput))
+
 	// Union the per-field label sets across input files so the compacted
 	// output stays discoverable via the manifest's inverted label index
 	// (m.labelIndex). Without this, a field-equality filter like

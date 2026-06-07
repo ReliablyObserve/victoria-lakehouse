@@ -377,7 +377,8 @@ know which artifact lands where. This table is the master reference.
 
 | Where | Per pod | Cluster (10 pods) |
 |---|---:|---:|
-| **RAM** | manifest (1 GiB) + footer cache (10 GiB) + smart L1 (1 GiB) + WAL mirror (200 MiB) + lifecycle (300 MiB) = **~13 GiB** | ~130 GiB |
+| **🧠 CPU** | steady-ingest 1–2 cores + query workload 2–4 cores burst + compaction 2–3 cores burst = **request 4 cores / limit 8 cores** | ~80 cores |
+| **🧮 RAM** | manifest (1 GiB) + footer cache (10 GiB) + smart L1 (1 GiB) + WAL mirror (200 MiB) + lifecycle (300 MiB) = **~13 GiB** | ~130 GiB |
 | **💾 PVC** | smart L2 (100 GiB) + manifest snapshot (500 MiB) + footer-cache snapshot (10 GiB) + bloom snapshot (8 GiB) + WAL (2 GiB) = **~120 GiB** | per-pod (not cluster total) |
 | **☁ S3** | — | parquet (PB) + `.bloom` (80 GiB) + sidecar JSON (~500 GiB) + tombstones (~100 MiB) + tenant + stats (~10 GiB) |
 
@@ -385,8 +386,51 @@ The biggest in-RAM consumer is the **footer cache** (10 GiB at PB
 scale). The biggest on-disk consumer is the **smart cache L2** (100
 GiB), and the entire data set itself lives on S3.
 
+CPU is **bursty, not steady**. The baseline 1–2 cores covers ingest
++ background tasks (manifest refresh, prefetch, snapshot). Query
+peaks come from concurrent row-group decode (zstd unpack +
+parquet column index walk) and compaction peaks from zstd encode
+at the higher progressive levels. The request/limit ratio of 1:2
+absorbs both peaks without throttling the steady-state.
+
+CPU throttling at scale is most visible as
+`lakehouse_compaction_partitions_in_flight` plateauing — the
+compactor's per-output-level zstd budget hits the cgroup limit
+and other partitions wait.
+
 For a small/dev tier the numbers drop linearly with file count —
-sub-GiB total RAM is normal.
+sub-GiB total RAM + 1–2 cores is normal.
+
+### Per-mechanism CPU profile
+
+| Mechanism | Steady CPU | Peak CPU | What drives the peak |
+|---|---:|---:|---|
+| Manifest in-memory index | < 0.05 core | 0.5 core | first-boot S3 LIST during `RefreshFromS3` |
+| Manifest refresh (tenant-scoped) | 0.1 core / 30s | 0.5 core | parallel LIST fan-out (`tenantRefreshMaxParallel = 8`) |
+| Inverted label index | 0 (lookup is map read) | < 0.1 core | rebuild on snapshot load |
+| File-level bloom check | < 0.05 core | 0.3 core | per-query bloom marshalled into RAM check (sub-µs each) |
+| Row-group bloom + column-stats skip | 0 (cached footer) | 0.1 core | first-time footer parse |
+| Token bloom KV check | < 0.05 core | 0.2 core | trigram hash per query token |
+| `_trace_idx` pre-filter | 0 | 0.3 core | parallel footer KV read (`traceIndexLookupParallelism = 16`) |
+| **zstd decode (read)** | 0.5–1 core | **2–3 cores** | row-group decode dominates query CPU |
+| **zstd encode (compaction)** | 0.5 core | **2–3 cores** | progressive schedule: L1=3 (light), L2=7 (medium), L3=11 (heavy) |
+| Smart cache L1 lookup | 0 | < 0.1 core | LRU promote |
+| Smart cache L2 (disk) read | 0 | 0.5 core | disk fault + memcpy |
+| PeerCache HTTP fetch | 0 | 0.2 core | TCP + decompress |
+| Footer prefetch fan-out | 0.05 core | 0.3 core | 16-way HTTP + parse (16 parallel goroutines) |
+| BufferBridge (peer fan-out) | 0.05 core | 0.3 core | HTTP marshal + decode |
+| WAL append + sync | 0.1 core | 0.3 core | fsync, scales with ingest rate |
+| Stream-shape + cardinality gate (write) | < 0.05 core | 0.2 core | string scan per row |
+| Severity / label / bloom extract (write) | 0.1 core | 0.5 core | full row scan per flush |
+
+The two **load-bearing CPU consumers** are zstd decode (on read)
+and zstd encode (on compaction). Both are CPU-bound, both
+parallelise inside the file_workers / compaction.parallelism
+budgets, and both scale linearly with the compression level you
+pick in the progressive schedule. Bumping the schedule from
+`[3, 7, 11]` to `[3, 9, 15]` roughly doubles compaction CPU
+without changing the read-side decode (which always pays full
+zstd-decompress cost regardless of write-side level).
 
 ### Re-derivation on restart
 
@@ -430,6 +474,23 @@ scales from a dev sandbox to a PB cluster:
 | Large | 1 M | 200 MiB | 10 MiB | 40 MiB | 5 GiB | 16 GiB | 1 GiB | 100 GiB |
 | PB-scale (per pod, 10 pods) | 5 M | 1 GiB | 50 MiB | 200 MiB | 10 GiB | 80 GiB total | 1 GiB | 100 GiB |
 | **Total** PB cluster (10 pods × 5 M) | 50 M | 10 GiB cluster | 500 MiB cluster | 2 GiB cluster | 100 GiB cluster | 80 GiB S3 | 10 GiB cluster | 1 TiB cluster |
+
+### CPU at each scale (per pod)
+
+| Scale | Files | Ingest baseline | Query peak | Compaction peak | k8s `requests` / `limits` |
+|---|---:|---:|---:|---:|---|
+| Dev / CI | 1 k | 0.1 core | 0.5 core | 0.5 core | 250m / 1 |
+| Small prod | 10 k | 0.5 core | 1 core | 1 core | 500m / 2 |
+| Medium | 100 k | 1 core | 2 cores | 2 cores | 1 / 4 |
+| Large | 1 M | 1–2 cores | 3 cores | 2–3 cores | 2 / 6 |
+| PB-scale | 5 M per pod | 1–2 cores | 2–4 cores burst | 2–3 cores burst | 4 / 8 |
+
+CPU caveats:
+
+- **Steady ingest** scales with rows/sec, not files. A 1 GB/s ingest tier sits at ~1.5 cores regardless of whether the manifest holds 10 k or 5 M files.
+- **Query peak** is dominated by zstd decode + parquet column index walks. Concurrent queries multiply by `cfg.Query.MaxConcurrent` (default 8) but each query respects `MaxLiveBytes` (default 512 MiB) which bounds the decode parallelism.
+- **Compaction peak** scales with the progressive zstd schedule. Default `[3, 7, 11]` puts ~80 % of CPU cost in the rare L3 outputs; if you flatten to `[7, 7, 7]` the compactor uses roughly 2× more CPU but produces denser L1 files. See PERF-1 in the roadmap for the resource-capped parallel compaction that's needed at PB scale.
+- **Throttling indicator**: `lakehouse_compaction_partitions_in_flight` plateauing at < the configured `cfg.Compaction.Parallelism` is the canary that the cgroup CPU limit is being hit during compaction. If the gauge sits below the configured target while compaction lag rises, give the pod more CPU.
 
 **Read this carefully**: every entry that says "MiB" is what's loaded
 into a Go process. The footer cache is the biggest in-process
@@ -588,18 +649,19 @@ Today's coverage:
 | 4A.4 file-level bloom | `lakehouse_parquet_files_skipped_bloom_total` | ✅ |
 | 4A.5 row-group bloom | `lakehouse_parquet_row_groups_skipped_total{reason="bloom"}` | ✅ |
 | 4A.6 token bloom | `lakehouse_parquet_row_groups_skipped_total{reason="token_bloom"}` | ✅ |
-| 4A.8 trace_idx pre-filter | logged but no metric — **gap** | ⚠️ |
+| 4A.8 trace_idx pre-filter | `lakehouse_trace_idx_prefilter_files_total{result="dropped\|kept_match\|kept_unindexed\|kept_error"}` | ✅ |
 | 4A.9 trace-id smart cache | `lakehouse_trace_id_cache_hits_total` | ✅ |
 | 4A.10 LookupTraceIndex | `lakehouse_trace_index_lookups_total{result}` | ✅ |
 | 4B caches | `lakehouse_cache_*_total / _bytes` (multiple) | ✅ |
 | 4C parallelism | `lakehouse_resourcebound_query_file_workers_*` | ✅ |
-| 4D writer artifacts | partial — bloom build, label extract, trace_idx have no metrics — **gap** | ⚠️ |
-| 4E progressive zstd | `lakehouse_compaction_partitions_in_flight` exists; no per-level compression-ratio histogram — **gap** | ⚠️ |
+| 4D writer artifacts | `lakehouse_writer_{bloom_builds,bloom_values,label_extractions,label_values,trace_idx_builds,trace_idx_entries}_total{mode}` + matching `_duration_seconds` histograms | ✅ |
+| 4E progressive zstd | `lakehouse_compaction_compression_ratio{output_level}` (histogram) + `lakehouse_compaction_compression_level_used{output_level}` (gauge) | ✅ |
 | 4F lifecycle | `lakehouse_startup_*`, `lakehouse_manifest_*` (rich) | ✅ |
 | 4G federation | none on the LH side; federation lives in vtselect/vlselect | — |
 
-The four ⚠️ gaps land as part of the auto-tune roadmap below — they
-become inputs to the control loop.
+The four gaps that were marked ⚠️ in earlier drafts of this doc are
+now ✅ — wired in the same change that added this section. They feed
+the auto-tune roadmap below as inputs to the control loop.
 
 ---
 

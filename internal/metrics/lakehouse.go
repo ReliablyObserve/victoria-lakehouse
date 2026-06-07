@@ -162,6 +162,21 @@ var (
 	// Compare hit/miss to know how cold the lookup path runs without the
 	// index — every miss is a full span-scan trace-by-ID.
 	TraceIndexLookups = NewCounterVec("lakehouse_trace_index_lookups_total", "result")
+
+	// TraceIdxPreFilterFiles records the file-narrowing efficiency of
+	// filterFilesByTraceIdx (the pre-filter that runs after the bloom
+	// narrowing on every trace_id:in(...) query). `result` is:
+	//   dropped     — footer's _trace_idx KV parsed and the trace IDs
+	//                 listed did NOT include any queried ID; file
+	//                 skipped without a row scan
+	//   kept_match  — footer's _trace_idx KV listed at least one
+	//                 queried ID; file scanned
+	//   kept_unindexed — file lacks _trace_idx KV entirely; conservatively
+	//                 scanned (older parquets pre-date the index)
+	//   kept_error  — footer fetch failed; conservatively scanned
+	// dropped / (dropped + kept_match) is the pre-filter's selectivity
+	// — at PB scale this should be > 0.9 for stale trace IDs.
+	TraceIdxPreFilterFiles = NewCounterVec("lakehouse_trace_idx_prefilter_files_total", "result")
 )
 
 // Prefetch metrics
@@ -310,6 +325,106 @@ var (
 		[]float64{0.1, 0.5, 1, 5, 10, 30, 60, 120})
 	CompactionErrorsTotal  = NewCounter("lakehouse_compaction_errors_total")
 	CompactionSkippedTotal = NewCounterVec("lakehouse_compaction_skipped_total", "reason")
+
+	// CompactionCompressionRatio is bytes_read / bytes_written for a
+	// single compactGroup call, observed per `output_level`. The
+	// progressive zstd schedule (default [3, 7, 11] in
+	// CompactionConfig.CompressionLevelByOutputLevel) means L1 outputs
+	// are cheap-and-bulky while L3 outputs are dense. Operators tuning
+	// the schedule should see the median at L0 around 1.0-1.2x
+	// (re-flushed input ≈ output), L1 around 1.3-1.6x, and L3 around
+	// 2.5x+ on real workloads. A regression here is the canary that
+	// progressive compression has stopped engaging (typical cause: a
+	// per-tenant override pinning level=0 everywhere). Buckets are
+	// chosen to span the L0→L3 envelope and the 5x+ ceiling for the
+	// rare hot-spot file with very repetitive data (e.g. health probe
+	// floods).
+	CompactionCompressionRatio = NewHistogramVec(
+		"lakehouse_compaction_compression_ratio",
+		[]float64{1.0, 1.2, 1.5, 2, 2.5, 3, 4, 5, 7, 10},
+		"output_level")
+
+	// CompactionCompressionLevelUsed records which zstd level the
+	// compactor actually picked per output_level. The chosen level
+	// can come from any of: per-tenant override > global schedule >
+	// pre-progressive default. Letting both labels float lets a
+	// dashboard answer "what level is tenant X getting at L2?" via
+	// a single line — useful when a tenant complains its compaction
+	// is too slow or too sparse and the operator suspects the
+	// override is misconfigured.
+	CompactionCompressionLevelUsed = NewGaugeVec(
+		"lakehouse_compaction_compression_level_used",
+		"output_level")
+)
+
+// Writer-artifact build metrics — what the flusher pays so the reader
+// can stay cheap. Every counter here pairs with a query-side speedup
+// in docs/architecture/performance-machinery.md §4A; e.g. a missing
+// .bloom sidecar would surface as ParquetFilesSkipped staying at zero
+// while WriterBloomBuildsTotal also stays at zero, instantly pointing
+// at the broken side.
+var (
+	// WriterBloomBuildsTotal counts calls to extractLogBloomValues +
+	// extractTraceBloomValues per flush partition+tenant. The
+	// rate should track InsertRowsTotal — a divergence means
+	// bloomObserver.OnFileFlush isn't running for some path.
+	WriterBloomBuildsTotal = NewCounterVec(
+		"lakehouse_writer_bloom_builds_total", "mode")
+
+	// WriterBloomValuesTotal sums the (field, distinct-value) count
+	// emitted per file. A spike means a tenant's cardinality blew up
+	// (think a bug spraying unique values into k8s.pod.name); it
+	// shows here long before the bloom sidecar exceeds
+	// bloomindex.maxBloomCardinality and silently turns the bloom
+	// into a coarser file-level pass-through.
+	WriterBloomValuesTotal = NewCounterVec(
+		"lakehouse_writer_bloom_values_total", "mode")
+
+	// WriterBloomBuildDuration is the wall-clock cost of building
+	// the bloom for one flush. Buckets cover sub-millisecond up to
+	// 5s; the median should be a few ms for typical batch sizes.
+	WriterBloomBuildDuration = NewHistogram(
+		"lakehouse_writer_bloom_build_duration_seconds",
+		[]float64{0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5})
+
+	// WriterLabelExtractionsTotal counts calls to
+	// extractLogLabels / extractTraceLabels per flush. Pairs with
+	// the inverted label index in §4A — every flush MUST run this
+	// or the new file lands with Labels=nil and silently relies
+	// on the conservative "include unindexed" branch added in
+	// be8c126.
+	WriterLabelExtractionsTotal = NewCounterVec(
+		"lakehouse_writer_label_extractions_total", "mode")
+
+	// WriterLabelValuesTotal sums distinct (field, value) tuples
+	// per file. Same blow-up canary as WriterBloomValuesTotal but
+	// for the inverted label index instead of the bloom.
+	WriterLabelValuesTotal = NewCounterVec(
+		"lakehouse_writer_label_values_total", "mode")
+
+	// WriterLabelExtractionDuration is the wall-clock cost of
+	// extractLogLabels / extractTraceLabels per flush.
+	WriterLabelExtractionDuration = NewHistogram(
+		"lakehouse_writer_label_extraction_duration_seconds",
+		[]float64{0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1})
+
+	// WriterTraceIdxBuildsTotal counts calls to computeTraceIndex.
+	// Traces-only. Should track the trace-side InsertRowsTotal.
+	WriterTraceIdxBuildsTotal = NewCounter(
+		"lakehouse_writer_trace_idx_builds_total")
+
+	// WriterTraceIdxEntriesTotal sums the per-flush trace-ID count
+	// going into the `_trace_idx` footer KV. Lets operators see
+	// the cardinality going into the KV without parsing it back
+	// out of S3.
+	WriterTraceIdxEntriesTotal = NewCounter(
+		"lakehouse_writer_trace_idx_entries_total")
+
+	// WriterTraceIdxBuildDuration is the wall-clock cost of one
+	// computeTraceIndex + marshalTraceIndex pass.
+	WriterTraceIdxBuildDuration = NewHistogram(
+		"lakehouse_writer_trace_idx_build_duration_seconds",
+		[]float64{0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1})
 )
 
 // Election-free compaction metrics (spec §6 + §11.5).

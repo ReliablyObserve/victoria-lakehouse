@@ -490,9 +490,13 @@ func (s *Storage) filterFilesByTraceIdx(ctx context.Context, files []manifest.Fi
 			f, err := s.fetchFooterFile(ctx, files[i])
 			if err != nil {
 				keep[i] = true // can't tell — preserve
+				metrics.TraceIdxPreFilterFiles.Inc("kept_error")
 				return
 			}
-			keep[i] = traceIdxKeepFile(f.Metadata(), tidSet)
+			meta := f.Metadata()
+			result := traceIdxClassifyFile(meta, tidSet)
+			keep[i] = result != "dropped"
+			metrics.TraceIdxPreFilterFiles.Inc(result)
 		}()
 	}
 	wg.Wait()
@@ -510,6 +514,33 @@ func (s *Storage) filterFilesByTraceIdx(ctx context.Context, files []manifest.Fi
 		logger.Infof("trace_idx pre-filter: dropped %d/%d files for %d trace_id(s)", dropped, len(files), len(tids))
 	}
 	return out
+}
+
+// traceIdxClassifyFile returns one of the metric labels for
+// metrics.TraceIdxPreFilterFiles: "dropped", "kept_match",
+// "kept_unindexed", or "kept_error". Kept separate from
+// traceIdxKeepFile (which returns a bool only) so the bool path
+// stays simple while the metric path records WHY a file was kept.
+func traceIdxClassifyFile(meta *format.FileMetaData, tidSet map[string]bool) string {
+	if meta == nil || len(meta.KeyValueMetadata) == 0 {
+		return "kept_unindexed"
+	}
+	for _, kv := range meta.KeyValueMetadata {
+		if kv.Key != traceIndexMetadataKey {
+			continue
+		}
+		entries, ok := traceIndexFromMetadata(map[string]string{traceIndexMetadataKey: kv.Value})
+		if !ok {
+			return "kept_error" // corrupted index — preserve, count as error
+		}
+		for _, e := range entries {
+			if tidSet[e.TraceID] {
+				return "kept_match"
+			}
+		}
+		return "dropped"
+	}
+	return "kept_unindexed"
 }
 
 // traceIdxKeepFile decides whether a file should be kept in the
