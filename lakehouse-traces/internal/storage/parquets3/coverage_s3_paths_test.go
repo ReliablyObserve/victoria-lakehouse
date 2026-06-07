@@ -514,7 +514,7 @@ func TestS3_queryBufferBridge_TracesMode(t *testing.T) {
 	startNs := time.Date(2026, 5, 10, 14, 0, 0, 0, time.UTC).UnixNano()
 	endNs := time.Date(2026, 5, 10, 15, 0, 0, 0, time.UTC).UnixNano()
 
-	s.queryBufferBridge(context.Background(), startNs, endNs,
+	s.queryBufferBridge(context.Background(), startNs, endNs, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			blocks = append(blocks, db)
 		})
@@ -539,7 +539,7 @@ func TestS3_queryBufferBridge_DisabledConfig(t *testing.T) {
 	bb.SetEndpoints([]string{"http://localhost:1234"})
 	s.bufferBridge = bb
 
-	s.queryBufferBridge(context.Background(), 0, int64(time.Hour),
+	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			t.Error("should not be called when buffer query is disabled")
 		})

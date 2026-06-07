@@ -115,12 +115,30 @@ already in the tree. The earlier `vl-flush-sink.*` patch was reverted.
   instead of the struct→DataBlock conversion. This is the step that fixes the
   cold-tier recently-flushed residual (the buffer serves fresh queries natively).
   e2e parity `buffer` vs `logstore`. **Next.**
-- **P4 — cross-pod handler streams from `store.RunQuery`; WAL replay feeds
-  `MustAddRows`; retire the row shadow.**
+- **P4 — cross-pod handler streams from `store.RunQuery`; graceful shutdown
+  `DebugFlush`+`Close`; retire the row shadow.**
 - **P5 — Parquet from the buffer via exported `RunQuery` export; flip default to
-  `logstore`; delete `logBufs/traceBufs`.** Keep the flag one release for
-  rollback. The legacy `[]schema.*Row` Parquet path stays authoritative until
-  this step, so there is never a double-write.
+  `logstore`; delete `logBufs/traceBufs` AND the LH WAL.** Keep the flag one
+  release for rollback. The legacy `[]schema.*Row` Parquet path stays
+  authoritative until this step, so there is never a double-write.
+
+## Durability — reuse VL/VT persistence, no LH WAL
+
+`logstorage.Storage` is already a durable store: in-memory parts are written to
+its data dir every `FlushInterval` and read back on `MustOpenStorage`
+(`mustReadPartNames`/`mustOpenFilePart`). Its crash-loss window is the last
+`FlushInterval` — **identical to VT/VL hot**, which also have no WAL. So the
+buffer's durability is 100% upstream:
+
+- The buffer dir lives on a **persistent volume**; restore is automatic.
+- **No LH WAL for the buffer** — that would make it *more* durable than VT/VL
+  (not parity) and is pure duplication.
+- Long-term durability is the S3 Parquet flush.
+
+LH's existing WAL only protects the *legacy* `[]schema.*Row` path (which has no
+persistence of its own) and is **removed in P5** when that path is retired. End
+state: one ingest+persistence path (`logstorage.Storage`) + S3 Parquet — the
+VL/VT model, zero duplication.
 
 ## Open decisions (need human)
 

@@ -1099,7 +1099,7 @@ func TestInteg_queryBufferBridge_NilBridge(t *testing.T) {
 	s.bufferBridge = nil
 
 	// Should not panic
-	s.queryBufferBridge(context.Background(), 0, int64(time.Hour),
+	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			t.Error("should not be called with nil bridge")
 		})

@@ -180,7 +180,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// parquet. Keep the buffer query in the flow so narrow recent-window
 		// queries don't silently miss data that hasn't been flushed yet.
 		// Mirror in lakehouse-traces/internal/storage/parquets3/storage_query.go.
-		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, filteredWriteBlock)
+		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, filteredWriteBlock)
 		return nil
 	}
 
@@ -206,7 +206,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
-			s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, filteredWriteBlock)
+			s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, filteredWriteBlock)
 			return nil
 		}
 		files = remaining
@@ -214,7 +214,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	files = s.preFilterFiles(ctx, files, queryStr)
 	if len(files) == 0 {
-		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, filteredWriteBlock)
+		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, filteredWriteBlock)
 		return nil
 	}
 
@@ -273,7 +273,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 	wg.Wait()
 
-	s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, filteredWriteBlock)
+	s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, filteredWriteBlock)
 
 	if v := firstErr.Load(); v != nil {
 		if err, ok := v.(error); ok && ctx.Err() != nil {
@@ -402,8 +402,23 @@ func (s *Storage) applyCacheAffinity(files []manifest.FileInfo) {
 	}
 }
 
-func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, writeBlock logstorage.WriteDataBlockFunc) {
-	if s.bufferBridge == nil || (maxRows > 0 && rowsEmitted.Load() >= maxRows) {
+func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) {
+	if maxRows > 0 && rowsEmitted.Load() >= maxRows {
+		return
+	}
+	// Option B (P3): co-located logstorage-native buffer serves the recent
+	// window via the same engine — no struct→DataBlock conversion. Pipe-stripped
+	// clone scoped to [startNs, endNs]; the outer RunQuery applies pipes once.
+	if s.localBuffer != nil {
+		qBuf := q.CloneWithTimeFilter(q.GetTimestamp(), startNs, endNs)
+		qBuf.DropAllPipes()
+		qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, tenantIDs, qBuf, false, nil)
+		if err := s.localBuffer.RunQuery(qctx, writeBlock); err != nil {
+			logger.Warnf("Option B local buffer query failed (cold-tier results may miss the recent window): %s", err)
+		}
+		return
+	}
+	if s.bufferBridge == nil {
 		return
 	}
 	switch s.cfg.Mode {

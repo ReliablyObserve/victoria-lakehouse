@@ -46,6 +46,7 @@ type Storage struct {
 	peerHandler       *peercache.Handler
 	writer            *BatchWriter
 	bufferBridge      *BufferBridge
+	localBuffer       LocalBuffer
 	tombstones        *delete.TombstoneStore
 	smartCache        *smartcache.Controller
 	bloomCache        *bloomindex.BloomCache
@@ -753,6 +754,21 @@ func (s *Storage) PeerHandler() *peercache.Handler {
 // BufferBridge returns the buffer bridge (nil if not configured).
 func (s *Storage) BufferBridge() *BufferBridge {
 	return s.bufferBridge
+}
+
+// LocalBuffer is the narrow query surface of the Option B logstorage-native
+// buffer (membuffer.Store). When set (BufferEngine=logstore, co-located
+// insert+select), the SELECT path serves the recent/unflushed window from it
+// via the same engine the S3-Parquet scan uses — no struct→DataBlock
+// conversion.
+type LocalBuffer interface {
+	RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error
+}
+
+// SetLocalBuffer wires the co-located logstorage-native buffer into the query
+// path (Option B P3). nil falls back to the BufferBridge HTTP path.
+func (s *Storage) SetLocalBuffer(lb LocalBuffer) {
+	s.localBuffer = lb
 }
 
 // SetTombstoneStore injects a TombstoneStore for query-time row filtering.

@@ -277,7 +277,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// parquet (Jaeger's GetTrace narrow-window lookup against trace_ids
 		// just observed in the previous search step is the canonical case).
 		// Falling through here keeps the buffer query in the flow.
-		s.queryBufferBridge(ctx, startNs, endNs, filteredWriteBlock)
+		s.queryBufferBridge(ctx, startNs, endNs, q, tenantIDs, filteredWriteBlock)
 		return nil
 	}
 
@@ -291,7 +291,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
-			s.queryBufferBridge(ctx, startNs, endNs, filteredWriteBlock)
+			s.queryBufferBridge(ctx, startNs, endNs, q, tenantIDs, filteredWriteBlock)
 			return nil
 		}
 		files = remaining
@@ -300,7 +300,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	files = s.preFilterFiles(files, queryStr)
 
 	if len(files) == 0 {
-		s.queryBufferBridge(ctx, startNs, endNs, filteredWriteBlock)
+		s.queryBufferBridge(ctx, startNs, endNs, q, tenantIDs, filteredWriteBlock)
 		return nil
 	}
 
@@ -318,7 +318,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	if tids := extractFilterValuesAST(queryStr, "trace_id"); len(tids) > 0 {
 		files = s.filterFilesByTraceIdx(ctx, files, tids)
 		if len(files) == 0 {
-			s.queryBufferBridge(ctx, startNs, endNs, filteredWriteBlock)
+			s.queryBufferBridge(ctx, startNs, endNs, q, tenantIDs, filteredWriteBlock)
 			return nil
 		}
 	}
@@ -414,7 +414,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}
 	}
 
-	s.queryBufferBridge(ctx, startNs, endNs, filteredWriteBlock)
+	s.queryBufferBridge(ctx, startNs, endNs, q, tenantIDs, filteredWriteBlock)
 
 	return nil
 }
@@ -611,7 +611,23 @@ func traceIdxKeepFile(meta *format.FileMetaData, tidSet map[string]bool) bool {
 	return true
 }
 
-func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, filteredWriteBlock logstorage.WriteDataBlockFunc) {
+func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, q *logstorage.Query, tenantIDs []logstorage.TenantID, filteredWriteBlock logstorage.WriteDataBlockFunc) {
+	// Option B (P3): when a co-located logstorage-native buffer is present,
+	// serve the recent/unflushed window from it via the SAME engine the
+	// S3-Parquet scan uses — no struct→DataBlock conversion (which is the bug
+	// class this whole effort removes). We run a pipe-stripped clone scoped to
+	// [startNs, endNs] so the store emits filtered raw blocks into
+	// filteredWriteBlock; the outer RunQuery applies pipes once over buffer +
+	// Parquet blocks.
+	if s.localBuffer != nil {
+		qBuf := q.CloneWithTimeFilter(q.GetTimestamp(), startNs, endNs)
+		qBuf.DropAllPipes()
+		qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, tenantIDs, qBuf, false, nil)
+		if err := s.localBuffer.RunQuery(qctx, filteredWriteBlock); err != nil {
+			logger.Warnf("Option B local buffer query failed (cold-tier results may miss the recent window): %s", err)
+		}
+		return
+	}
 	if s.bufferBridge == nil {
 		return
 	}

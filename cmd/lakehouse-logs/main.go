@@ -998,9 +998,14 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 				logger.Fatalf("open logstore buffer: %s", err)
 			}
 			internalvlstorage.SetBufferStore(bufStore)
-			// Process-lived (held via the package var); graceful close/flush is
-			// wired alongside the flush sink in P2.
-			logger.Infof("Option B: logstore buffer enabled at %s (retention=%s)", bufStore.Path(), cfg.Insert.BufferRetention)
+			// P3 read-merge: when this process also serves SELECT (role=all),
+			// the query path serves the recent window from the same store via
+			// RunQuery. SELECT-only nodes (no bufStore) keep the BufferBridge
+			// HTTP fan-out.
+			store.SetLocalBuffer(bufStore)
+			// Process-lived (held via the package vars); graceful DebugFlush+
+			// Close on shutdown comes with P4.
+			logger.Infof("Option B: logstore buffer enabled at %s (retention=%s); read-merge active", bufStore.Path(), cfg.Insert.BufferRetention)
 		}
 		vlinsert.Init()
 

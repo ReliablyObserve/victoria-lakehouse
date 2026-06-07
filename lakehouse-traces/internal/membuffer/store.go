@@ -23,12 +23,16 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
 
-// Config controls the ephemeral buffer store. Zero values fall back to
-// VT-compatible defaults so the store admits exactly the rows hot VT would.
+// Config controls the buffer store. Zero values fall back to VT-compatible
+// defaults so the store admits exactly the rows hot VT would.
 type Config struct {
-	// Path is a local/tmpfs directory for the store's parts. It is
-	// ephemeral — durability is provided by the lakehouse WAL + S3 Parquet,
-	// not by this directory.
+	// Path is the directory for the store's parts. It should live on a
+	// PERSISTENT volume: logstorage.Storage writes its in-memory parts here
+	// (every FlushInterval) and reads them back on MustOpenStorage, so this
+	// directory IS the buffer's durability + restore — exactly as VT/VL hot
+	// persist. No separate WAL is needed; the crash-loss window is the last
+	// FlushInterval, matching upstream. Long-term durability is the S3 Parquet
+	// flush.
 	Path string
 
 	// Retention bounds how long rows live in the buffer before VL drops the

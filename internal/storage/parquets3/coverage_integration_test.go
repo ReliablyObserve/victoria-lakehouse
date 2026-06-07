@@ -1611,7 +1611,7 @@ func TestInteg_queryBufferBridge_NilBridge(t *testing.T) {
 
 	var rowsEmitted atomic.Int64
 	// Should not panic
-	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 0, &rowsEmitted,
+	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 0, &rowsEmitted, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			t.Error("should not be called with nil bridge")
 		})
@@ -2070,7 +2070,7 @@ func TestInteg_queryBufferBridge_MaxRowsExceeded(t *testing.T) {
 	rowsEmitted.Store(100)
 
 	// Should not panic or call writeBlock when maxRows is exceeded
-	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 50, &rowsEmitted,
+	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 50, &rowsEmitted, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			t.Error("should not be called when maxRows exceeded")
 		})
