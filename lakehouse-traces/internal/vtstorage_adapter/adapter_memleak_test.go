@@ -2,25 +2,23 @@ package vtstorageadapter
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"runtime"
 	"testing"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
-	vtstoragecommon "github.com/VictoriaMetrics/VictoriaTraces/app/vtstorage/common"
 )
 
-// TestMemLeak_TraceByID_DefinitiveMissChurn walks the definitive-miss
+// TestMemLeak_TraceByID_MissChurn walks the definitive-miss
 // short-circuit 100_000 times with distinct trace IDs. A hidden cache
 // or per-call accumulator in the fast path would show up as a
 // monotonic heap growth past the 10 MB budget.
-func TestMemLeak_TraceByID_DefinitiveMissChurn(t *testing.T) {
+func TestMemLeak_TraceByID_MissChurn(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping memleak in -short mode")
 	}
-	store := &raceFastpathStore{found: false, definitive: true}
+	store := &raceFastpathStore{found: false}
 	a := &Adapter{store: store}
 
 	runtime.GC()
@@ -35,8 +33,8 @@ func TestMemLeak_TraceByID_DefinitiveMissChurn(t *testing.T) {
 		// Distinct trace IDs to defeat any naive query-string interning.
 		q := makeTraceIndexQuery(t, fmt.Sprintf("missing-%d", i), uint64(i&0xff))
 		err := a.RunQuery(&logstorage.QueryContext{Context: context.Background(), Query: q}, wb)
-		if !errors.Is(err, vtstoragecommon.ErrOutOfRetention) {
-			t.Fatalf("RunQuery iter=%d returned %v, want ErrOutOfRetention", i, err)
+		if err != nil {
+			t.Fatalf("RunQuery iter=%d returned %v, want nil", i, err)
 		}
 	}
 

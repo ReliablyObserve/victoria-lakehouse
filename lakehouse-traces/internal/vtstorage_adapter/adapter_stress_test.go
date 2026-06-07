@@ -2,14 +2,12 @@ package vtstorageadapter
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
-	vtstoragecommon "github.com/VictoriaMetrics/VictoriaTraces/app/vtstorage/common"
 )
 
 // TestStress_AdapterRunQuery_HighConcurrency fires 256 goroutines each
@@ -27,8 +25,8 @@ func TestStress_AdapterRunQuery_HighConcurrency(t *testing.T) {
 	// iteration), one for definitive misses. The plain-query path
 	// only touches the hit-store's RunQuery method, exercising the
 	// non-fast-path branch.
-	hitStore := &raceFastpathStore{startNs: 1_000, endNs: 2_000, found: true, definitive: true}
-	missStore := &raceFastpathStore{found: false, definitive: true}
+	hitStore := &raceFastpathStore{startNs: 1_000, endNs: 2_000, found: true}
+	missStore := &raceFastpathStore{found: false}
 	aHit := &Adapter{store: hitStore}
 	aMiss := &Adapter{store: missStore}
 
@@ -67,9 +65,9 @@ func TestStress_AdapterRunQuery_HighConcurrency(t *testing.T) {
 					}
 				case 1:
 					err := aMiss.RunQuery(&logstorage.QueryContext{Context: context.Background(), Query: missQ}, wb)
-					if !errors.Is(err, vtstoragecommon.ErrOutOfRetention) {
+					if err != nil {
 						atomic.AddInt64(&errCount, 1)
-						t.Errorf("miss RunQuery: %v, want ErrOutOfRetention", err)
+						t.Errorf("miss RunQuery: %v, want nil", err)
 					}
 				case 2:
 					if err := aHit.RunQuery(&logstorage.QueryContext{Context: context.Background(), Query: plainQ}, wb); err != nil {

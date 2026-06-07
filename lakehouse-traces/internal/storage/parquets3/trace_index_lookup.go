@@ -40,43 +40,28 @@ const traceIndexLookupParallelism = 16
 // so repeated lookups for the same trace ID share cached metadata. Errors
 // from individual files are logged and skipped (best-effort aggregation);
 // the lookup as a whole only fails if no usable index was ever read.
+// LookupTraceIndex walks the parquet `_trace_idx` footer KVs in
+// parallel for any file in the manifest. Returns (startNs, endNs,
+// true) when at least one file's index lists this trace ID; the
+// time range is the (min start, max end) across all hits.
+//
+// On a miss we return found=false without trying to qualify it any
+// further — the adapter falls through to VT's natural
+// rewriteTraceIndexQuery span-scan rewrite, which is the source of
+// truth (footer indexes can lag fresh ingest writes, so trusting
+// a footer-only miss as authoritative makes us silently skip real
+// data; see the commit history around this file for the regression
+// that brought that to light).
 func (s *Storage) LookupTraceIndex(ctx context.Context, traceID string) (startNs, endNs int64, found bool, err error) {
-	startNs, endNs, found, _, err = s.lookupTraceIndexFull(ctx, traceID)
-	return
-}
-
-// LookupTraceIndexFull is the extended lookup that also exposes the
-// `definitive` signal — see lookupTraceIndexFull's doc. Wired into
-// the vtstorage adapter so a confirmed-by-every-footer miss can
-// short-circuit the legacy span-scan fallback and the user gets
-// back a fast 404 instead of a 30s timeout on a stale Grafana link.
-func (s *Storage) LookupTraceIndexFull(ctx context.Context, traceID string) (startNs, endNs int64, found, definitive bool, err error) {
-	return s.lookupTraceIndexFull(ctx, traceID)
-}
-
-// lookupTraceIndexFull is LookupTraceIndex plus the `definitive`
-// signal — true iff every file in the manifest carried a parseable
-// `_trace_idx` KV and was therefore conclusively checked. When
-// definitive is true and found is false the caller can reject the
-// trace ID without running the legacy span-scan rewrite: there is
-// nothing left to look at. False positives on definitive (a single
-// unindexed or footer-fetch-erroring file) are kept conservatively
-// so older parquet generations stay queryable through the span
-// scan fallback.
-func (s *Storage) lookupTraceIndexFull(ctx context.Context, traceID string) (startNs, endNs int64, found, definitive bool, err error) {
 	if traceID == "" {
 		metrics.TraceIndexLookups.Inc("miss")
-		return 0, 0, false, false, nil
+		return 0, 0, false, nil
 	}
 
 	files := s.manifest.AllFiles()
 	if len(files) == 0 {
-		// Empty manifest: nothing to scan and nothing to fall back
-		// to either. Reporting definitive=true lets the adapter
-		// short-circuit instead of issuing a span scan that would
-		// also find nothing.
 		metrics.TraceIndexLookups.Inc("miss")
-		return 0, 0, false, true, nil
+		return 0, 0, false, nil
 	}
 
 	// Flatten so the worker pool sees one job per file rather than a
@@ -87,13 +72,8 @@ func (s *Storage) lookupTraceIndexFull(ctx context.Context, traceID string) (sta
 		flatFiles = append(flatFiles, partFiles...)
 	}
 
-	// Parallel footer fetch with bounded concurrency. The serial
-	// version was a 30s hang on a 589-file manifest for any
-	// trace ID that didn't exist in any footer — Jaeger /api/traces
-	// timed out before we ever issued a 404. The cancelCtx lets
-	// the first goroutine that finds a hit (or the outer ctx
-	// deadline) abort the rest so we don't keep fetching footers
-	// after the answer is known.
+	// Parallel footer fetch with bounded concurrency. cancelCtx lets
+	// the outer deadline abort the fan-out cleanly.
 	cancelCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -101,12 +81,6 @@ func (s *Storage) lookupTraceIndexFull(ctx context.Context, traceID string) (sta
 	var anyErr error
 	var hit bool
 	var aggStart, aggEnd int64
-	// definitive narrows as we scan: starts true, flips to false on
-	// any file we couldn't conclusively decide (no _trace_idx KV,
-	// parse failure, footer fetch error). Only fully conclusive
-	// negative scans of every file in the manifest preserve the
-	// "trust the miss" signal.
-	definitiveLocal := true
 
 	sem := make(chan struct{}, traceIndexLookupParallelism)
 	var wg sync.WaitGroup
@@ -115,10 +89,8 @@ func (s *Storage) lookupTraceIndexFull(ctx context.Context, traceID string) (sta
 		select {
 		case sem <- struct{}{}:
 		case <-cancelCtx.Done():
-			// Outer ctx cancelled — fall through to the
-			// cancelCtx.Err() check below to break out of the
-			// for-loop. A bare `break` here would only exit the
-			// select (caught by staticcheck SA4011).
+			// Fall through to the cancelCtx.Err() check below;
+			// a bare break here would only exit the select.
 		}
 		if cancelCtx.Err() != nil {
 			break
@@ -127,7 +99,7 @@ func (s *Storage) lookupTraceIndexFull(ctx context.Context, traceID string) (sta
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			entry, ok, def, lookupErr := s.lookupTraceIDInFileFull(cancelCtx, fi, traceID)
+			entry, ok, lookupErr := s.lookupTraceIDInFile(cancelCtx, fi, traceID)
 			mu.Lock()
 			defer mu.Unlock()
 			if ok {
@@ -140,10 +112,6 @@ func (s *Storage) lookupTraceIndexFull(ctx context.Context, traceID string) (sta
 				hit = true
 			} else if lookupErr != nil {
 				anyErr = lookupErr
-				definitiveLocal = false
-			}
-			if !def {
-				definitiveLocal = false
 			}
 		}()
 	}
@@ -151,49 +119,33 @@ func (s *Storage) lookupTraceIndexFull(ctx context.Context, traceID string) (sta
 
 	if hit {
 		metrics.TraceIndexLookups.Inc("hit")
-		return aggStart, aggEnd, true, definitiveLocal, nil
+		return aggStart, aggEnd, true, nil
 	}
 	if anyErr != nil {
 		metrics.TraceIndexLookups.Inc("error")
-		// Return nil error to the caller: an error from a single footer
-		// fetch shouldn't fail the whole trace-by-ID request. The metric
-		// preserves the signal for an operator. definitiveLocal will
-		// already be false because the error branch flipped it.
+		// Errors swallowed at this layer; the metric carries the
+		// signal. A footer-fetch error shouldn't fail the whole
+		// trace-by-ID request — VT's rewriteTraceIndexQuery
+		// fallback will handle the miss.
 		logger.Warnf("trace-index lookup encountered footer errors; falling back to scan; trace_id=%s; last_err=%v", traceID, anyErr)
-		return 0, 0, false, false, nil
+		return 0, 0, false, nil
 	}
 	metrics.TraceIndexLookups.Inc("miss")
-	return 0, 0, false, definitiveLocal, nil
+	return 0, 0, false, nil
 }
 
-// lookupTraceIDInFileFull returns the same (entry, hit) tuple as the
-// public lookup plus a definitive bit: true when the file's footer
-// metadata was successfully parsed AND carried a `_trace_idx` KV;
-// false when we either couldn't fetch the footer, the metadata was
-// nil/empty, OR no `_trace_idx` KV was present (older parquet files
-// pre-date the index feature). Only a definitive miss is safe to
-// propagate as "trust this — the trace is genuinely not in our
-// manifest"; otherwise the caller must keep the span-scan fallback.
-func (s *Storage) lookupTraceIDInFileFull(ctx context.Context, fi manifest.FileInfo, traceID string) (TraceIndexEntry, bool, bool, error) {
+// lookupTraceIDInFile pulls the parquet footer for one manifest entry
+// and searches its `_trace_idx` KV metadata for the given trace ID.
+func (s *Storage) lookupTraceIDInFile(ctx context.Context, fi manifest.FileInfo, traceID string) (TraceIndexEntry, bool, error) {
 	f, err := s.fetchFooterFile(ctx, fi)
 	if err != nil {
-		return TraceIndexEntry{}, false, false, err
+		return TraceIndexEntry{}, false, err
 	}
 	meta := f.Metadata()
-	if meta == nil || len(meta.KeyValueMetadata) == 0 {
-		return TraceIndexEntry{}, false, false, nil
+	if meta == nil {
+		return TraceIndexEntry{}, false, nil
 	}
-	// Walk KVs once. If we don't see the _trace_idx key at all,
-	// this file is not definitively scannable.
-	var sawIdxKey bool
-	for _, kv := range meta.KeyValueMetadata {
-		if kv.Key == traceIndexMetadataKey {
-			sawIdxKey = true
-			break
-		}
-	}
-	entry, ok, ferr := findTraceIDInFooterMeta(meta, traceID)
-	return entry, ok, sawIdxKey, ferr
+	return findTraceIDInFooterMeta(meta, traceID)
 }
 
 // findTraceIDInFooterMeta is split out so the lookup logic is testable

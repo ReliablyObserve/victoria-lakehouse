@@ -21,17 +21,6 @@ type traceIndexLookup interface {
 	LookupTraceIndex(ctx context.Context, traceID string) (startNs, endNs int64, found bool, err error)
 }
 
-// traceIndexLookupDefinitive is the extended capability that also
-// returns whether every file in the manifest carried a parseable
-// `_trace_idx` KV. When definitive=true and found=false the adapter
-// can safely short-circuit the span-scan fallback: there is nothing
-// in cold storage left to look at. Stays a separate interface so
-// the legacy traceIndexLookup contract above remains a faithful
-// VT-parity behaviour for stores that can't tell.
-type traceIndexLookupDefinitive interface {
-	LookupTraceIndexFull(ctx context.Context, traceID string) (startNs, endNs int64, found, definitive bool, err error)
-}
-
 // traceIndexLookupTraceID inspects q and returns the trace ID if and only
 // if the query has VT's index-lookup shape:
 //

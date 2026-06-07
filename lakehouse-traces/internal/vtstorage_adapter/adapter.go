@@ -8,7 +8,6 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaTraces/app/vtstorage"
-	vtstoragecommon "github.com/VictoriaMetrics/VictoriaTraces/app/vtstorage/common"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
@@ -53,43 +52,29 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 	}
 
 	// Trace-index fast path: VT's tempo handler issues a stats query
-	// against the trace_id_idx_stream to bound the subsequent span fetch
-	// (see vtselect/traces/tempo/query.go GetTrace). Every cold trace
-	// Parquet file embeds a `_trace_idx` footer index that already carries
-	// (start_time, end_time) per trace ID, so we can answer the bound
-	// without ever opening a row group. On a footer miss we fall through
-	// to the existing rewriteTraceIndexQuery span-scan rewrite so VT-side
-	// semantics are preserved bit-for-bit.
+	// against the trace_id_idx_stream to bound the subsequent span
+	// fetch (see vtselect/traces/tempo/query.go GetTrace). When the
+	// queried trace ID is present in a parquet file's `_trace_idx`
+	// footer KV, we can emit the (start, end) time bound straight
+	// from metadata, skipping any row-group scan.
+	//
+	// On a footer miss (the index doesn't list the trace) we DO NOT
+	// short-circuit. The footer index is best-effort — it can lag
+	// fresh ingest writes, or miss trace IDs introduced by partial
+	// flushes — so a miss is not authoritative. Falling through to
+	// rewriteTraceIndexQuery below preserves 100% VT semantics: the
+	// trace-index query gets rewritten into the equivalent
+	// trace_id span scan and runs against the actual row data,
+	// which is the source of truth. (We learned this when a
+	// definitive-miss short-circuit at this level made Jaeger
+	// trace-by-id return 0 for traces that demonstrably had spans
+	// in the cold parquet.)
 	if lookup, ok := a.store.(traceIndexLookup); ok {
 		if traceID, isLookup := traceIndexLookupTraceID(qctx.Query); isLookup && traceID != "" {
-			// Prefer the definitive variant when the store exposes it.
-			// On a confirmed miss (every file in the manifest had an
-			// _trace_idx KV and none listed this trace ID) we skip
-			// the fall-through span scan entirely and return an empty
-			// trace-index block — the same shape the upstream Tempo
-			// handler builds from a "no hit" reply, so the caller
-			// sees a clean miss instead of a 30s timeout.
-			if def, okDef := a.store.(traceIndexLookupDefinitive); okDef {
-				startNs, endNs, found, definitive, _ := def.LookupTraceIndexFull(qctx.Context, traceID)
-				if found {
-					emitTraceIndexBlock(writeBlock, startNs, endNs)
-					return nil
-				}
-				if definitive {
-					// Authoritative miss. Return ErrOutOfRetention —
-					// VT's findTraceIDTimeSplitTimeRange loop checks
-					// for this sentinel to break out of its
-					// per-TraceSearchStep walk and stop hammering
-					// us with the same definitively-empty lookup
-					// over each retention window.
-					return vtstoragecommon.ErrOutOfRetention
-				}
-			} else {
-				startNs, endNs, found, _ := lookup.LookupTraceIndex(qctx.Context, traceID)
-				if found {
-					emitTraceIndexBlock(writeBlock, startNs, endNs)
-					return nil
-				}
+			startNs, endNs, found, _ := lookup.LookupTraceIndex(qctx.Context, traceID)
+			if found {
+				emitTraceIndexBlock(writeBlock, startNs, endNs)
+				return nil
 			}
 		}
 	}
