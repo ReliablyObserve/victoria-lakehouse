@@ -906,46 +906,102 @@ func (s *Storage) logRowsToDataBlock(rows []schema.LogRow) *logstorage.DataBlock
 	return db
 }
 
-// traceRowsToDataBlock converts in-memory TraceRow slices to a columnar DataBlock.
+// traceRowsToDataBlock converts in-memory TraceRow slices (buffer-bridge
+// rows for not-yet-flushed data) to a columnar DataBlock.
+//
+// It MUST emit the same filterable columns the file-scan path produces —
+// in particular `_stream`. VT's Jaeger getTraceIDList and Tempo
+// GetTraceList step 1 filter with `_stream:{resource_attr:service.name="X"}`
+// (a stream selector). If the buffer DataBlock lacks the `_stream` column
+// those filters match ZERO buffer rows, so the freshest (still-buffered)
+// spans are invisible to every Jaeger/Tempo search even though wildcard
+// `*` and `trace_id:"X"` queries find them. That was the live symptom:
+// cold Jaeger/Tempo returned nothing for recent data while hot VT served
+// it from memory. Promoted attribute columns are emitted under BOTH their
+// parquet name (e.g. `service.name`) and internal alias
+// (`resource_attr:service.name`) so a filter spelling either dialect
+// matches — mirroring the dual-emission in the file-scan path.
 func (s *Storage) traceRowsToDataBlock(rows []schema.TraceRow) *logstorage.DataBlock {
 	if len(rows) == 0 {
 		return nil
 	}
 
-	times := make([]string, len(rows))
-	traceIDs := make([]string, len(rows))
-	spanIDs := make([]string, len(rows))
-	names := make([]string, len(rows))
-	services := make([]string, len(rows))
-	durations := make([]string, len(rows))
-	statusCodes := make([]string, len(rows))
-	parentSpanIDs := make([]string, len(rows))
-	statusMsgs := make([]string, len(rows))
-
-	for i, row := range rows {
-		times[i] = s.registry.FormatField("_time", row.TimestampUnixNano)
-		traceIDs[i] = row.TraceID
-		spanIDs[i] = row.SpanID
-		names[i] = row.SpanName
-		services[i] = row.ServiceName
-		durations[i] = s.registry.FormatField("duration", row.DurationNs)
-		statusCodes[i] = s.registry.FormatField("status_code", int64(row.StatusCode))
-		parentSpanIDs[i] = row.ParentSpanID
-		statusMsgs[i] = row.StatusMessage
+	n := len(rows)
+	// Column accumulator: name -> per-row values. Built once; emitted in
+	// a stable order at the end.
+	cols := make(map[string][]string)
+	colOrder := make([]string, 0, 32)
+	get := func(name string) []string {
+		v, ok := cols[name]
+		if !ok {
+			v = make([]string, n)
+			cols[name] = v
+			colOrder = append(colOrder, name)
+		}
+		return v
+	}
+	// set fills value at row i; for promoted attrs, dual-emits under the
+	// internal alias too.
+	set := func(name string, i int, val string) {
+		if val == "" {
+			return
+		}
+		get(name)[i] = val
+	}
+	setDual := func(parquetName, internalName string, i int, val string) {
+		if val == "" {
+			return
+		}
+		get(parquetName)[i] = val
+		get(internalName)[i] = val
 	}
 
+	for i, row := range rows {
+		set("_time", i, s.registry.FormatField("_time", row.TimestampUnixNano))
+		set("trace_id", i, row.TraceID)
+		set("span_id", i, row.SpanID)
+		set("parent_span_id", i, row.ParentSpanID)
+		set("name", i, row.SpanName)
+		set("duration", i, s.registry.FormatField("duration", row.DurationNs))
+		set("status_code", i, s.registry.FormatField("status_code", int64(row.StatusCode)))
+		set("status_message", i, row.StatusMessage)
+		set("kind", i, s.registry.FormatField("kind", int64(row.SpanKind)))
+		// Stream selector + id — the load-bearing columns for step-1
+		// `_stream:{...}` filters.
+		set("_stream", i, row.Stream)
+		set("_stream_id", i, row.StreamID)
+		set("scope_name", i, row.ScopeName)
+		// Promoted resource attributes (dual-emitted).
+		setDual("service.name", "resource_attr:service.name", i, row.ServiceName)
+		setDual("deployment.environment", "resource_attr:deployment.environment", i, row.DeployEnv)
+		setDual("cloud.region", "resource_attr:cloud.region", i, row.CloudRegion)
+		setDual("host.name", "resource_attr:host.name", i, row.HostName)
+		setDual("k8s.namespace.name", "resource_attr:k8s.namespace.name", i, row.K8sNamespaceName)
+		setDual("k8s.pod.name", "resource_attr:k8s.pod.name", i, row.K8sPodName)
+		setDual("k8s.deployment.name", "resource_attr:k8s.deployment.name", i, row.K8sDeploymentName)
+		setDual("k8s.node.name", "resource_attr:k8s.node.name", i, row.K8sNodeName)
+		// Promoted span attributes (dual-emitted) — used by Jaeger/Tempo
+		// tag filters (e.g. http.status_code=200).
+		setDual("http.method", "span_attr:http.method", i, row.HTTPMethod)
+		setDual("http.status_code", "span_attr:http.status_code", i, row.HTTPStatusCode)
+		setDual("http.url", "span_attr:http.url", i, row.HTTPUrl)
+		setDual("db.system", "span_attr:db.system", i, row.DBSystem)
+		setDual("db.statement", "span_attr:db.statement", i, row.DBStatement)
+		// Arbitrary resource/span attributes carried in the maps.
+		for k, v := range row.ResourceAttributes {
+			set("resource_attr:"+k, i, v)
+		}
+		for k, v := range row.SpanAttributes {
+			set("span_attr:"+k, i, v)
+		}
+	}
+
+	blockCols := make([]logstorage.BlockColumn, 0, len(colOrder))
+	for _, name := range colOrder {
+		blockCols = append(blockCols, logstorage.BlockColumn{Name: name, Values: cols[name]})
+	}
 	db := &logstorage.DataBlock{}
-	db.SetColumns([]logstorage.BlockColumn{
-		{Name: "_time", Values: times},
-		{Name: "trace_id", Values: traceIDs},
-		{Name: "span_id", Values: spanIDs},
-		{Name: "name", Values: names},
-		{Name: "service.name", Values: services},
-		{Name: "duration", Values: durations},
-		{Name: "status_code", Values: statusCodes},
-		{Name: "parent_span_id", Values: parentSpanIDs},
-		{Name: "status_message", Values: statusMsgs},
-	})
+	db.SetColumns(blockCols)
 	return db
 }
 

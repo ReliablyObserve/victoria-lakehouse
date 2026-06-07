@@ -795,3 +795,186 @@ func TestColdHotParity_MultipleFilesNarrowingMustAgree(t *testing.T) {
 		t.Errorf("inverse symmetry broken: trace_id %s expected 2 spans, got %d", tidsB[0], total)
 	}
 }
+
+// TestColdHotParity_PreFilterNeverDropsUncachedFile is the table-driven
+// generalization of TestColdHotParity_SmartCachePartialHit and
+// TestColdHotParity_SingleIDRecentFlush: it sweeps EVERY trace_id query
+// shape VT/Jaeger can emit and asserts the one invariant that both
+// per-shape pins share — preFilterFiles must NEVER drop a manifest file
+// just because the smartCache has no recorded TraceIDs for it.
+//
+// Why a sweep and not one case per shape: preFilterFiles is the single
+// choke point in front of the deterministic, footer-backed
+// filterFilesByTraceIdx (RunQuery calls them back-to-back). The
+// smartCache lower-bound class (bd838e9 multi-id, then the single-id
+// residue) is a property of the *file-set narrowing*, not of any one
+// query syntax. If a future change re-introduces a smartCache-based
+// narrowing shortcut for ANY of these shapes, that shape's row in this
+// table starts dropping keyRecent/keyUncached and fails loudly here —
+// before it ships as "cold Jaeger 0 vs hot VT N for minutes-old spans".
+//
+// Deterministic and fast: preFilterFiles operates purely on
+// []manifest.FileInfo + the smartCache (no S3, no parquet, no mock
+// server). testStorage() gives a LogsProfile registry with no bloom
+// index, so filterFilesByLabels / filterFilesByBloomIndex pass trace_id
+// queries through untouched — exactly the surface where a smartCache
+// shortcut would (re)appear.
+func TestColdHotParity_PreFilterNeverDropsUncachedFile(t *testing.T) {
+	// File keys shared across every case. keyCached is the file the
+	// smartCache "knows" (recorded TraceIDs); keyUncached is the
+	// recently-flushed file with an EMPTY smartCache entry — the file
+	// the lower-bound narrowing bug silently dropped.
+	const (
+		keyCached   = "traces/dt=2026-05-10/hour=12/cached.parquet"
+		keyUncached = "traces/dt=2026-05-10/hour=14/recent-flush.parquet"
+	)
+	// The queried/cached trace_id, plus two extra ids used only to
+	// fatten the in(...) batch shape. tidX is recorded against
+	// keyCached; tidY and tidZ are never recorded anywhere.
+	const (
+		tidX = "trace-X-cached-aaaaaaaaaaaa"
+		tidY = "trace-Y-uncached-bbbbbbbbbb"
+		tidZ = "trace-Z-uncached-cccccccccc"
+	)
+
+	cases := []struct {
+		name  string
+		query string
+		// wantUncachedKept asserts keyUncached survives narrowing.
+		// Always true here — the whole point — but kept explicit so a
+		// future shape that legitimately narrows can flip it with a
+		// documented reason rather than by silent omission.
+		wantUncachedKept bool
+	}{
+		{
+			// Jaeger get-trace single-id, quoted. The original
+			// single-id residue (SingleIDRecentFlush pin) lived here.
+			name:             "single_id_quoted",
+			query:            fmt.Sprintf(`trace_id:%q`, tidX),
+			wantUncachedKept: true,
+		},
+		{
+			// Field-equality dialect `trace_id:=X`. Same id, different
+			// surface syntax — must narrow identically to the quoted
+			// form (mirrors the FieldEqByParquetName equivalence).
+			name:             "single_id_field_eq",
+			query:            fmt.Sprintf(`trace_id:=%q`, tidX),
+			wantUncachedKept: true,
+		},
+		{
+			// Batched in(...) with a SINGLE id. VT GetTraceList step 2
+			// degenerates to this when only one trace survives step 1.
+			name:             "in_filter_single",
+			query:            fmt.Sprintf(`trace_id:in(%q)`, tidX),
+			wantUncachedKept: true,
+		},
+		{
+			// Batched in(...) with MANY ids — the exact shape bd838e9
+			// fixed. tidX is cached against keyCached; tidY and tidZ
+			// are nowhere in the cache. The smartCache union over
+			// {tidX,tidY,tidZ} is a lower bound = {keyCached}; taking
+			// it would drop keyUncached.
+			name:             "in_filter_multi",
+			query:            fmt.Sprintf(`trace_id:in(%q,%q,%q)`, tidX, tidY, tidZ),
+			wantUncachedKept: true,
+		},
+		{
+			// Mixed-cache in(...): some queried ids hit keyCached, the
+			// queried tidX itself hits keyCached, but keyUncached
+			// (recently flushed, no cache entry) is ALSO a candidate.
+			// This is the precise live 12h drilldown shape — the
+			// uncached file holds spans the cache can't account for and
+			// must reach the deterministic trace_idx pre-filter.
+			name:             "in_filter_mixed_cache",
+			query:            fmt.Sprintf(`trace_id:in(%q,%q)`, tidX, tidY),
+			wantUncachedKept: true,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			// Fresh storage + smartCache per case so cache state can't
+			// bleed between shapes. keyCached has tidX recorded;
+			// keyUncached is deliberately left unrecorded (the
+			// minutes-old "limbo" file).
+			s := testStorage()
+			sc := newSmartCacheWithLocalKeys(nil)
+			sc.RecordTraceIDs(keyCached, []string{tidX})
+			s.smartCache = sc
+
+			files := []manifest.FileInfo{
+				{Key: keyCached},
+				{Key: keyUncached},
+			}
+
+			got := s.preFilterFiles(files, tc.query)
+			keys := make(map[string]bool, len(got))
+			for _, fi := range got {
+				keys[fi.Key] = true
+			}
+
+			// The cached file should always survive (sanity: narrowing
+			// didn't drop everything / mangle the set).
+			if !keys[keyCached] {
+				t.Errorf("shape %q: cached file %s must survive narrowing; got keys %v",
+					tc.name, keyCached, keys)
+			}
+			// The load-bearing invariant for every shape: the uncached,
+			// recently-flushed file is NOT dropped by smartCache
+			// lower-bound narrowing. If it is, the deterministic
+			// footer-backed filterFilesByTraceIdx never sees it and its
+			// spans vanish — cold Jaeger 0 vs hot VT N.
+			if tc.wantUncachedKept && !keys[keyUncached] {
+				t.Errorf("shape %q (%s): recently-flushed uncached file %s was silently dropped "+
+					"by preFilterFiles. This is the smartCache lower-bound regression class "+
+					"(bd838e9 multi-id + the single-id residue): narrowing to the cache's "+
+					"recorded-file set hides any file not yet queried. preFilterFiles must keep "+
+					"every manifest file so the deterministic trace_idx pre-filter can decide. "+
+					"got keys: %v", tc.name, tc.query, keyUncached, keys)
+			}
+		})
+	}
+
+	// Control case: a query with NO trace_id filter (VT step-1
+	// `_stream:{...}` and the bare wildcard) must be completely
+	// unaffected — there is no trace_id set to union over, so the
+	// smartCache fast-path can never engage and BOTH files must pass
+	// through untouched. This proves the invariant isn't being
+	// satisfied by some blanket "keep everything" that would also mask
+	// a real narrowing regression on trace_id shapes.
+	noTraceIDQueries := []struct {
+		name  string
+		query string
+	}{
+		{"stream_filter_no_trace_id", `_stream:{resource_attr:service.name="api-gateway"}`},
+		{"wildcard_no_trace_id", `*`},
+	}
+	for _, tc := range noTraceIDQueries {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			s := testStorage()
+			sc := newSmartCacheWithLocalKeys(nil)
+			// Even with a populated cache entry, a no-trace_id query
+			// must not let smartCache narrow anything.
+			sc.RecordTraceIDs(keyCached, []string{tidX})
+			s.smartCache = sc
+
+			files := []manifest.FileInfo{
+				{Key: keyCached},
+				{Key: keyUncached},
+			}
+			got := s.preFilterFiles(files, tc.query)
+			keys := make(map[string]bool, len(got))
+			for _, fi := range got {
+				keys[fi.Key] = true
+			}
+			if !keys[keyCached] || !keys[keyUncached] {
+				t.Errorf("shape %q (%s): a query with no trace_id filter must leave the file "+
+					"set untouched (both files kept), but narrowing changed it. A trace_id-only "+
+					"narrowing path is leaking into non-trace_id queries. got keys: %v",
+					tc.name, tc.query, keys)
+			}
+		})
+	}
+}

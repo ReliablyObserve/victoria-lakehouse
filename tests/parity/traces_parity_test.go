@@ -95,6 +95,115 @@ func TestParity_Traces_Jaeger(t *testing.T) {
 	})
 }
 
+// TestParity_Traces_ColdHot_RecentTraceID pins the recently-flushed parity
+// invariant that had NO gate: cold tier must not return 0 traces when hot
+// VT returns N for the same recent-lookback query. This is the exact failure
+// shape of the cold-Jaeger-0-traces-at-12h / smartCache partial-hit bug
+// (commit bd838e9) — hot VT served the data, cold LH silently narrowed the
+// recently-flushed range to empty. compareNonEmpty alone is too weak here
+// (a `{"data":[]}` body is non-empty bytes), so we parse the array/traces
+// length explicitly and assert: hot>0 implies cold>0.
+//
+// Unlike TestParity_Traces_Jaeger (skipped, broad structural diff), this is
+// targeted at presence-parity only and runs against the same live VT/LHT
+// stack as the rest of this file.
+func TestParity_Traces_ColdHot_RecentTraceID(t *testing.T) {
+	// jaegerTraceCount returns the number of traces in a Jaeger search
+	// response (the `data` array, same shape getTraceID reads).
+	jaegerTraceCount := func(t *testing.T, body []byte) int {
+		t.Helper()
+		var resp map[string]any
+		if err := json.Unmarshal(body, &resp); err != nil {
+			t.Fatalf("parse jaeger response: %v", err)
+		}
+		dataArr, _ := resp["data"].([]any)
+		return len(dataArr)
+	}
+
+	// tempoTraceCount returns the number of traces in a Tempo /api/search
+	// response (the `traces` array, same shape servicegraph_parity_test reads).
+	tempoTraceCount := func(t *testing.T, body []byte) int {
+		t.Helper()
+		var resp struct {
+			Traces []map[string]any `json:"traces"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			t.Fatalf("parse tempo response: %v", err)
+		}
+		return len(resp.Traces)
+	}
+
+	// Recent lookback: matches the recently-flushed window the bug zeroed out.
+	t.Run("jaeger_recent_lookback", func(t *testing.T) {
+		params := url.Values{
+			"service":  {"api-gateway"},
+			"lookback": {"1h"},
+			"limit":    {"20"},
+		}
+		ref := fetch(t, vtBaseURL, "/select/jaeger/api/traces", params)
+		sut := fetch(t, lhtBaseURL, "/select/jaeger/api/traces", params)
+		// NonEmpty-style: both must be 200 and parseable.
+		compareParity(t, ParityCase{Compare: NonEmpty}, ref, sut)
+		nHot := jaegerTraceCount(t, ref.Body)
+		nCold := jaegerTraceCount(t, sut.Body)
+		t.Logf("jaeger_recent_lookback: hot=%d cold=%d", nHot, nCold)
+		// The recently-flushed parity invariant: if hot has data, cold must too.
+		if nHot > 0 && nCold == 0 {
+			t.Errorf("recently-flushed parity gap (Jaeger): hot=%d traces but cold=0 "+
+				"for service=api-gateway lookback=1h. Cold tier zeroed a recently-flushed "+
+				"window (smartCache partial-hit narrowing / cold-Jaeger-0-at-12h regression).", nHot)
+		}
+	})
+
+	// Tempo TraceQL by resource service name — same recently-flushed window.
+	t.Run("tempo_recent_resource_service_name", func(t *testing.T) {
+		now := time.Now().Unix()
+		start := now - 3600 // 1h, matches Jaeger lookback above
+		params := url.Values{
+			"q":     {`{resource.service.name="api-gateway"}`},
+			"limit": {"20"},
+			"start": {fmt.Sprint(start)},
+			"end":   {fmt.Sprint(now)},
+		}
+		ref := fetch(t, vtBaseURL, "/select/tempo/api/search", params)
+		sut := fetch(t, lhtBaseURL, "/select/tempo/api/search", params)
+		compareParity(t, ParityCase{Compare: NonEmpty}, ref, sut)
+		nHot := tempoTraceCount(t, ref.Body)
+		nCold := tempoTraceCount(t, sut.Body)
+		t.Logf("tempo_recent_resource_service_name: hot=%d cold=%d", nHot, nCold)
+		if nHot > 0 && nCold == 0 {
+			t.Errorf("recently-flushed parity gap (Tempo TraceQL): hot=%d traces but cold=0 "+
+				"for q={resource.service.name=\"api-gateway\"} over last 1h. "+
+				"Cold tier narrowed a recently-flushed window to empty.", nHot)
+		}
+	})
+
+	// Tempo root-span / comparison shape — q={nestedSetParent<0} selects root
+	// spans; this exercises the comparison-operator query path that the
+	// two-phase cold reader must keep non-empty when hot is non-empty.
+	t.Run("tempo_recent_root_span", func(t *testing.T) {
+		now := time.Now().Unix()
+		start := now - 3600
+		params := url.Values{
+			"q":     {`{nestedSetParent<0}`},
+			"limit": {"20"},
+			"start": {fmt.Sprint(start)},
+			"end":   {fmt.Sprint(now)},
+		}
+		ref := fetch(t, vtBaseURL, "/select/tempo/api/search", params)
+		sut := fetch(t, lhtBaseURL, "/select/tempo/api/search", params)
+		compareParity(t, ParityCase{Compare: NonEmpty}, ref, sut)
+		nHot := tempoTraceCount(t, ref.Body)
+		nCold := tempoTraceCount(t, sut.Body)
+		t.Logf("tempo_recent_root_span: hot=%d cold=%d", nHot, nCold)
+		if nHot > 0 && nCold == 0 {
+			t.Errorf("recently-flushed parity gap (Tempo root-span): hot=%d traces but cold=0 "+
+				"for q={nestedSetParent<0} over last 1h. Cold-tier comparison-operator "+
+				"query path zeroed a recently-flushed window.", nHot)
+		}
+	})
+}
+
 func TestParity_Traces_LogsQL(t *testing.T) {
 	tracesFullRange := func() url.Values {
 		now := time.Now()
