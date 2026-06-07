@@ -277,7 +277,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// parquet (Jaeger's GetTrace narrow-window lookup against trace_ids
 		// just observed in the previous search step is the canonical case).
 		// Falling through here keeps the buffer query in the flow.
-		s.queryBufferBridge(ctx, startNs, endNs, q, tenantIDs, filteredWriteBlock)
+		s.queryBufferBridge(ctx, startNs, endNs, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 		return nil
 	}
 
@@ -291,7 +291,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
-			s.queryBufferBridge(ctx, startNs, endNs, q, tenantIDs, filteredWriteBlock)
+			s.queryBufferBridge(ctx, startNs, endNs, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 			return nil
 		}
 		files = remaining
@@ -300,7 +300,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	files = s.preFilterFiles(files, queryStr)
 
 	if len(files) == 0 {
-		s.queryBufferBridge(ctx, startNs, endNs, q, tenantIDs, filteredWriteBlock)
+		s.queryBufferBridge(ctx, startNs, endNs, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 		return nil
 	}
 
@@ -318,7 +318,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	if tids := extractFilterValuesAST(queryStr, "trace_id"); len(tids) > 0 {
 		files = s.filterFilesByTraceIdx(ctx, files, tids)
 		if len(files) == 0 {
-			s.queryBufferBridge(ctx, startNs, endNs, q, tenantIDs, filteredWriteBlock)
+			s.queryBufferBridge(ctx, startNs, endNs, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 			return nil
 		}
 	}
@@ -414,7 +414,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}
 	}
 
-	s.queryBufferBridge(ctx, startNs, endNs, q, tenantIDs, filteredWriteBlock)
+	s.queryBufferBridge(ctx, startNs, endNs, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 
 	return nil
 }
@@ -611,16 +611,50 @@ func traceIdxKeepFile(meta *format.FileMetaData, tidSet map[string]bool) bool {
 	return true
 }
 
-func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, q *logstorage.Query, tenantIDs []logstorage.TenantID, filteredWriteBlock logstorage.WriteDataBlockFunc) {
+// bufferWatermark returns the timestamp up to which the just-scanned Parquet
+// files already cover the data, so the buffer is queried only for STRICTLY
+// newer rows — preventing the buffer and the S3-Parquet scan from both emitting
+// the same span (a 2× double-count on count()/stats queries over the overlap
+// window). It is the max MaxTimeNs of the emitted files. Returns 0 (serve the
+// full window) for multi-tenant admin reads, where a global watermark could
+// advance past a lagging tenant and lose rows; those reads accept the rare
+// double-count instead of risking loss.
+func bufferWatermark(files []manifest.FileInfo, tenantIDs []logstorage.TenantID) int64 {
+	if len(tenantIDs) != 1 {
+		return 0
+	}
+	var wm int64
+	for i := range files {
+		if files[i].MaxTimeNs > wm {
+			wm = files[i].MaxTimeNs
+		}
+	}
+	return wm
+}
+
+func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs, watermarkNs int64, q *logstorage.Query, tenantIDs []logstorage.TenantID, filteredWriteBlock logstorage.WriteDataBlockFunc) {
+	// Serve the buffer only for data STRICTLY newer than what the Parquet scan
+	// at this call site already emitted (watermarkNs). Call sites where no
+	// Parquet was emitted pass watermarkNs=0, so the buffer serves the whole
+	// window (e.g. trace-by-id where the index dropped every file — the trace's
+	// spans live only in the buffer).
+	bufStartNs := startNs
+	if watermarkNs > 0 && watermarkNs >= bufStartNs {
+		bufStartNs = watermarkNs + 1
+	}
+	if bufStartNs > endNs {
+		return // Parquet already covers this whole window; nothing newer to add.
+	}
+
 	// Option B (P3): when a co-located logstorage-native buffer is present,
 	// serve the recent/unflushed window from it via the SAME engine the
 	// S3-Parquet scan uses — no struct→DataBlock conversion (which is the bug
 	// class this whole effort removes). We run a pipe-stripped clone scoped to
-	// [startNs, endNs] so the store emits filtered raw blocks into
+	// (watermark, endNs] so the store emits filtered raw blocks into
 	// filteredWriteBlock; the outer RunQuery applies pipes once over buffer +
 	// Parquet blocks.
 	if s.localBuffer != nil {
-		qBuf := q.CloneWithTimeFilter(q.GetTimestamp(), startNs, endNs)
+		qBuf := q.CloneWithTimeFilter(q.GetTimestamp(), bufStartNs, endNs)
 		qBuf.DropAllPipes()
 		qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, tenantIDs, qBuf, false, nil)
 		if err := s.localBuffer.RunQuery(qctx, filteredWriteBlock); err != nil {
@@ -633,7 +667,7 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, q
 	}
 	switch s.cfg.Mode {
 	case config.ModeLogs:
-		bufRows, _ := s.bufferBridge.QueryLogs(ctx, startNs, endNs)
+		bufRows, _ := s.bufferBridge.QueryLogs(ctx, bufStartNs, endNs)
 		if len(bufRows) > 0 {
 			db := s.logRowsToDataBlock(bufRows)
 			if db != nil && db.RowsCount() > 0 {
@@ -641,7 +675,7 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, q
 			}
 		}
 	case config.ModeTraces:
-		bufRows, _ := s.bufferBridge.QueryTraces(ctx, startNs, endNs)
+		bufRows, _ := s.bufferBridge.QueryTraces(ctx, bufStartNs, endNs)
 		if len(bufRows) > 0 {
 			db := s.traceRowsToDataBlock(bufRows)
 			if db != nil && db.RowsCount() > 0 {

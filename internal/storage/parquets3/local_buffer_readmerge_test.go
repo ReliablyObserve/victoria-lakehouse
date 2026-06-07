@@ -45,7 +45,7 @@ func TestQueryBufferBridge_LocalBufferServesRecent(t *testing.T) {
 		var got, emitted atomic.Int64
 		wb := func(_ uint, db *logstorage.DataBlock) { got.Add(int64(db.RowsCount())) }
 		s.queryBufferBridge(context.Background(), now-int64(time.Hour), now+int64(time.Hour),
-			0, &emitted, q, []logstorage.TenantID{{}}, wb)
+			0, &emitted, 0, q, []logstorage.TenantID{{}}, wb)
 		return got.Load()
 	}
 

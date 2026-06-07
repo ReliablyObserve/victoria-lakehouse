@@ -180,7 +180,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// parquet. Keep the buffer query in the flow so narrow recent-window
 		// queries don't silently miss data that hasn't been flushed yet.
 		// Mirror in lakehouse-traces/internal/storage/parquets3/storage_query.go.
-		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, filteredWriteBlock)
+		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 		return nil
 	}
 
@@ -206,7 +206,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
-			s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, filteredWriteBlock)
+			s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 			return nil
 		}
 		files = remaining
@@ -214,7 +214,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	files = s.preFilterFiles(ctx, files, queryStr)
 	if len(files) == 0 {
-		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, filteredWriteBlock)
+		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 		return nil
 	}
 
@@ -273,7 +273,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 	wg.Wait()
 
-	s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, filteredWriteBlock)
+	s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 
 	if v := firstErr.Load(); v != nil {
 		if err, ok := v.(error); ok && ctx.Err() != nil {
@@ -402,15 +402,45 @@ func (s *Storage) applyCacheAffinity(files []manifest.FileInfo) {
 	}
 }
 
-func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) {
+// bufferWatermark returns the timestamp up to which the just-scanned Parquet
+// files already cover the data, so the buffer is queried only for STRICTLY
+// newer rows — preventing the buffer and the S3-Parquet scan from both emitting
+// the same row (a 2× double-count on count()/stats over the overlap window). It
+// is the max MaxTimeNs of the emitted files. Returns 0 (serve the full window)
+// for multi-tenant admin reads, where a global watermark could advance past a
+// lagging tenant and lose rows.
+func bufferWatermark(files []manifest.FileInfo, tenantIDs []logstorage.TenantID) int64 {
+	if len(tenantIDs) != 1 {
+		return 0
+	}
+	var wm int64
+	for i := range files {
+		if files[i].MaxTimeNs > wm {
+			wm = files[i].MaxTimeNs
+		}
+	}
+	return wm
+}
+
+func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, watermarkNs int64, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) {
 	if maxRows > 0 && rowsEmitted.Load() >= maxRows {
+		return
+	}
+	// Serve the buffer only for data STRICTLY newer than what the Parquet scan
+	// at this call site already emitted (watermarkNs). Sites with no Parquet
+	// emitted pass 0 → full window.
+	bufStartNs := startNs
+	if watermarkNs > 0 && watermarkNs >= bufStartNs {
+		bufStartNs = watermarkNs + 1
+	}
+	if bufStartNs > endNs {
 		return
 	}
 	// Option B (P3): co-located logstorage-native buffer serves the recent
 	// window via the same engine — no struct→DataBlock conversion. Pipe-stripped
-	// clone scoped to [startNs, endNs]; the outer RunQuery applies pipes once.
+	// clone scoped to (watermark, endNs]; the outer RunQuery applies pipes once.
 	if s.localBuffer != nil {
-		qBuf := q.CloneWithTimeFilter(q.GetTimestamp(), startNs, endNs)
+		qBuf := q.CloneWithTimeFilter(q.GetTimestamp(), bufStartNs, endNs)
 		qBuf.DropAllPipes()
 		qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, tenantIDs, qBuf, false, nil)
 		if err := s.localBuffer.RunQuery(qctx, writeBlock); err != nil {
@@ -423,7 +453,7 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, m
 	}
 	switch s.cfg.Mode {
 	case config.ModeLogs:
-		bufRows, _ := s.bufferBridge.QueryLogs(ctx, startNs, endNs)
+		bufRows, _ := s.bufferBridge.QueryLogs(ctx, bufStartNs, endNs)
 		if len(bufRows) > 0 {
 			db := s.logRowsToDataBlock(bufRows)
 			if db != nil && db.RowsCount() > 0 {
@@ -431,7 +461,7 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, m
 			}
 		}
 	case config.ModeTraces:
-		bufRows, _ := s.bufferBridge.QueryTraces(ctx, startNs, endNs)
+		bufRows, _ := s.bufferBridge.QueryTraces(ctx, bufStartNs, endNs)
 		if len(bufRows) > 0 {
 			db := s.traceRowsToDataBlock(bufRows)
 			if db != nil && db.RowsCount() > 0 {

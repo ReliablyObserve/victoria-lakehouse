@@ -124,7 +124,7 @@ func TestQueryBufferBridge_DisabledBridge(t *testing.T) {
 	bb := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: false}, config.ModeLogs)
 	s.bufferBridge = bb
 	called := false
-	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), nil, nil,
+	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 0, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			called = true
 		})
@@ -142,7 +142,7 @@ func TestQueryBufferBridge_NoEndpoints(t *testing.T) {
 	// No endpoints set
 	s.bufferBridge = bb
 	called := false
-	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), nil, nil,
+	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 0, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			called = true
 		})
@@ -176,7 +176,7 @@ func TestQueryBufferBridge_LogsMode(t *testing.T) {
 	s.cfg.Mode = config.ModeLogs
 
 	var blocks []*logstorage.DataBlock
-	s.queryBufferBridge(context.Background(), now-int64(time.Minute), now+int64(time.Minute), nil, nil,
+	s.queryBufferBridge(context.Background(), now-int64(time.Minute), now+int64(time.Minute), 0, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			blocks = append(blocks, db)
 		})
@@ -214,7 +214,7 @@ func TestQueryBufferBridge_TracesMode(t *testing.T) {
 	s.cfg.Mode = config.ModeTraces
 
 	var blocks []*logstorage.DataBlock
-	s.queryBufferBridge(context.Background(), now-int64(time.Minute), now+int64(time.Minute), nil, nil,
+	s.queryBufferBridge(context.Background(), now-int64(time.Minute), now+int64(time.Minute), 0, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			blocks = append(blocks, db)
 		})
@@ -243,7 +243,7 @@ func TestQueryBufferBridge_ServerError(t *testing.T) {
 	s.cfg.Mode = config.ModeLogs
 
 	called := false
-	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), nil, nil,
+	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 0, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			called = true
 		})
