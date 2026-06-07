@@ -30,29 +30,43 @@ type FlushRowsIterator func(yield func(streamTagsCanonical string, timestamp int
 
 // FlushSink, when non-nil, receives the rows of every part leaving the
 // in-memory store for persistence. Registered by the lakehouse cold tier.
-var FlushSink func(it FlushRowsIterator)
+//
+// It returns whether it took OWNERSHIP of the rows:
+//   - true  (authoritative): the rows now live only in lakehouse Parquet; the
+//            datadb drops the source parts (they must not also be written to a
+//            VL disk part, to avoid double counting).
+//   - false (shadow/validation): the sink only OBSERVED the rows (e.g. wrote a
+//            shadow-prefix Parquet for parity checking); the datadb lets the
+//            parts persist to VL disk normally so the in-memory store keeps
+//            serving them for queries. This is the safe rollout mode.
+var FlushSink func(it FlushRowsIterator) (handled bool)
 
-// flushPartsViaSink converts the source parts' rows through the registered
-// FlushSink (lakehouse Parquet writer) and then drops the source parts from
-// the datadb — their data now lives in lakehouse Parquet on S3, not in a VL
-// disk part. Invoked only from mustMergePartsInternal when FlushSink != nil
-// and the merge destination is a disk part.
-func (ddb *datadb) flushPartsViaSink(pws []*partWrapper, startTime time.Time) {
+// flushPartsViaSink runs the source parts' rows through the registered
+// FlushSink and, only if the sink took ownership (handled), drops the source
+// parts from the datadb. Returns handled so the caller can fall through to the
+// normal VL disk write when the sink ran in shadow mode. Invoked only from
+// mustMergePartsInternal when FlushSink != nil and the destination is a disk
+// part.
+func (ddb *datadb) flushPartsViaSink(pws []*partWrapper, startTime time.Time) bool {
 	var srcRowsCount uint64
 	for _, pw := range pws {
 		srcRowsCount += pw.p.ph.RowsCount
 	}
 
 	idb := ddb.pt.idb
-	FlushSink(func(yield func(streamTagsCanonical string, timestamp int64, fields []Field) bool) {
+	handled := FlushSink(func(yield func(streamTagsCanonical string, timestamp int64, fields []Field) bool) {
 		convertPartsForFlush(idb, pws, yield)
 	})
+	if !handled {
+		// Shadow mode: the sink only observed the rows. Leave the parts for the
+		// normal VL disk write so the in-memory store retains queryable data.
+		return false
+	}
 
-	// Drop source parts (nil dst part => removal only). Their rows are now
-	// in lakehouse Parquet, queried separately by the cold-tier scan, so they
-	// must leave the in-memory store to avoid double counting.
+	// Authoritative: drop source parts (nil dst part => removal only).
 	ddb.swapSrcWithDstParts(pws, nil, partSmall)
 	ddb.updateMergeMetrics(partSmall, srcRowsCount, startTime, 0)
+	return true
 }
 
 // convertPartsForFlush iterates every row of pws in stream order, resolving
@@ -77,8 +91,16 @@ func convertPartsForFlush(idb *indexdb, pws []*partWrapper, yield func(streamTag
 	for _, bsr := range bsrs {
 		for bsr.NextBlock() {
 			bd := &bsr.blockData
-			bb.B = idb.appendStreamTagsByStreamID(bb.B[:0], &bd.streamID)
-			canonical := string(bb.B)
+			// Resolve the block's canonical stream tags. idb is nil during the
+			// final flush at Close (partition.go nils pt.idb on shutdown); guard
+			// so graceful shutdown can't crash. Regular fields (trace_id, etc.)
+			// are still emitted; only the stream-tag prefix is empty in that
+			// shutdown edge — the steady-state periodic flusher has a live idb.
+			canonical := ""
+			if idb != nil {
+				bb.B = idb.appendStreamTagsByStreamID(bb.B[:0], &bd.streamID)
+				canonical = string(bb.B)
+			}
 
 			rs.reset()
 			if err := bd.unmarshalRows(&rs, sbu, vd); err != nil {
