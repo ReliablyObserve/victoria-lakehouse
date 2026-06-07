@@ -35,6 +35,7 @@ individual mechanisms. Read this first.
 ## 1. The shape of the system <a name="shape"></a>
 
 ```mermaid
+%%{init: {'theme':'base', 'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif','primaryColor':'#f3f4f6','primaryTextColor':'#1f2937','primaryBorderColor':'#9ca3af','lineColor':'#4b5563','secondaryColor':'#e5e7eb','tertiaryColor':'#f9fafb','background':'#ffffff','mainBkg':'#f3f4f6','clusterBkg':'#f9fafb','clusterBorder':'#9ca3af','edgeLabelBackground':'#ffffff','textColor':'#1f2937'}}}%%
 flowchart TB
     Clients["Grafana / Jaeger UI / Tempo Explore<br/>(clients)"]
 
@@ -70,9 +71,9 @@ flowchart TB
     LHLogs --> S3
     LHTraces --> S3
 
-    classDef cold fill:#e1f5ff,stroke:#0066cc
-    classDef hot fill:#fff4e1,stroke:#cc6600
-    classDef router fill:#f0f0f0,stroke:#666
+    classDef cold fill:#e1f5ff,stroke:#0066cc,color:#1a1a1a
+    classDef hot fill:#fff4e1,stroke:#cc6600,color:#1a1a1a
+    classDef router fill:#f0f0f0,stroke:#666,color:#1a1a1a
     class LHLogs,LHTraces cold
     class VL,VT hot
     class VLSel,VTSel,LokiProxy router
@@ -91,6 +92,7 @@ By the time we hit row-group decode (step 7) most files are already
 gone.
 
 ```mermaid
+%%{init: {'theme':'base', 'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif','primaryColor':'#f3f4f6','primaryTextColor':'#1f2937','primaryBorderColor':'#9ca3af','lineColor':'#4b5563','secondaryColor':'#e5e7eb','tertiaryColor':'#f9fafb','background':'#ffffff','mainBkg':'#f3f4f6','clusterBkg':'#f9fafb','clusterBorder':'#9ca3af','edgeLabelBackground':'#ffffff','textColor':'#1f2937'}}}%%
 flowchart TD
     Q["Query arrives at LH"] --> Parse["1. Parse + registry resolve<br/><i>no I/O</i>"]
     Parse --> FastPath{"2. Pure<br/>* | stats count() ?"}
@@ -129,9 +131,9 @@ flowchart TD
     Decode --> Filter["7. Row filter (VL/VT)"]
     Filter --> Emit["8. Emit DataBlock"]
 
-    classDef cheap fill:#d4edda,stroke:#155724
-    classDef expensive fill:#f8d7da,stroke:#721c24
-    classDef cache fill:#d1ecf1,stroke:#0c5460
+    classDef cheap fill:#d4edda,stroke:#155724,color:#1a1a1a
+    classDef expensive fill:#f8d7da,stroke:#721c24,color:#1a1a1a
+    classDef cache fill:#d1ecf1,stroke:#0c5460,color:#1a1a1a
     class Parse,FastPath,FromManifest,Label,Stats,Bloom,TraceIdx,Smart,LabelDrop,StatsDrop,BloomDrop,TraceIdxDrop,SmartHit cheap
     class Decode,Filter expensive
     class Prefetch,RGNarrow,TimeRange,StatsRG,BloomRG,TokenBloom cache
@@ -148,6 +150,7 @@ Every artifact the writer produces is what makes the query-side
 cascade above possible.
 
 ```mermaid
+%%{init: {'theme':'base', 'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif','primaryColor':'#f3f4f6','primaryTextColor':'#1f2937','primaryBorderColor':'#9ca3af','lineColor':'#4b5563','secondaryColor':'#e5e7eb','tertiaryColor':'#f9fafb','background':'#ffffff','mainBkg':'#f3f4f6','clusterBkg':'#f9fafb','clusterBorder':'#9ca3af','edgeLabelBackground':'#ffffff','textColor':'#1f2937'}}}%%
 flowchart LR
     Ingest["POST /insert/...<br/>(logfmt/JSON/OTLP)"] --> Parse["1. Parse<br/><i>VL/VT upstream via patches</i>"]
     Parse --> Filter["2. Stream-shape filter<br/><i>drop trace-shaped rows from logs</i>"]
@@ -175,9 +178,9 @@ flowchart LR
     Compact -->|merge L0 → L1 → L2| Re["progressive zstd<br/>(3 → 7 → 11)<br/>+ mergeFileLabels<br/>+ severity backfill"]
     Re --> S3
 
-    classDef ingest fill:#fff4e1,stroke:#cc6600
-    classDef build fill:#e1f5ff,stroke:#0066cc
-    classDef storage fill:#d4edda,stroke:#155724
+    classDef ingest fill:#fff4e1,stroke:#cc6600,color:#1a1a1a
+    classDef build fill:#e1f5ff,stroke:#0066cc,color:#1a1a1a
+    classDef storage fill:#d4edda,stroke:#155724,color:#1a1a1a
     class Ingest,Parse,Filter,Gate,WAL,Buffer,Flush ingest
     class Build,A1,A2,A3,A4,A5,Write build
     class S3,Add,Compact,Re storage
@@ -230,6 +233,7 @@ many bytes it reads from the layer below on miss, and the typical hit
 rates we see in datagen.
 
 ```mermaid
+%%{init: {'theme':'base', 'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif','primaryColor':'#f3f4f6','primaryTextColor':'#1f2937','primaryBorderColor':'#9ca3af','lineColor':'#4b5563','secondaryColor':'#e5e7eb','tertiaryColor':'#f9fafb','background':'#ffffff','mainBkg':'#f3f4f6','clusterBkg':'#f9fafb','clusterBorder':'#9ca3af','edgeLabelBackground':'#ffffff','textColor':'#1f2937'}}}%%
 flowchart TD
     Query["Query needs file F's row group RG"] --> SC{"Smart Cache L1<br/>(decoded row groups, RAM)<br/><i>hit: 60–90%</i>"}
     SC -->|hit| Return["return decoded rows<br/><b>~0 ms</b>"]
@@ -252,9 +256,9 @@ flowchart TD
     DecodeS --> PromoteAll["promote to L1+L2"]
     PromoteAll --> Return
 
-    classDef fast fill:#d4edda,stroke:#155724
-    classDef medium fill:#fff3cd,stroke:#856404
-    classDef slow fill:#f8d7da,stroke:#721c24
+    classDef fast fill:#d4edda,stroke:#155724,color:#1a1a1a
+    classDef medium fill:#fff3cd,stroke:#856404,color:#1a1a1a
+    classDef slow fill:#f8d7da,stroke:#721c24,color:#1a1a1a
     class SC,Return fast
     class Disk,Decode,Promote1,DecodeP,Promote2,Footer medium
     class Peer,Read,Tail,Parse,DecodeS,PromoteAll slow
@@ -550,6 +554,7 @@ Tasks #100–#105 (cross-link your tracker). Each new feature ships with:
 **Flow.**
 
 ```mermaid
+%%{init: {'theme':'base', 'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif','primaryColor':'#f3f4f6','primaryTextColor':'#1f2937','primaryBorderColor':'#9ca3af','lineColor':'#4b5563','secondaryColor':'#e5e7eb','tertiaryColor':'#f9fafb','background':'#ffffff','mainBkg':'#f3f4f6','clusterBkg':'#f9fafb','clusterBorder':'#9ca3af','edgeLabelBackground':'#ffffff','textColor':'#1f2937'}}}%%
 flowchart LR
     Sched["compaction.Scheduler<br/>(30s loop)"] --> Pick["Pick eligible partitions<br/>(HRW ownership + level rules)"]
     Pick --> Acquire["coordinator.Acquire(estimate)<br/><i>global memory semaphore</i>"]
@@ -606,6 +611,7 @@ ingest at large scale; bigger at PB scale.
 **Flow.**
 
 ```mermaid
+%%{init: {'theme':'base', 'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif','primaryColor':'#f3f4f6','primaryTextColor':'#1f2937','primaryBorderColor':'#9ca3af','lineColor':'#4b5563','secondaryColor':'#e5e7eb','tertiaryColor':'#f9fafb','background':'#ffffff','mainBkg':'#f3f4f6','clusterBkg':'#f9fafb','clusterBorder':'#9ca3af','edgeLabelBackground':'#ffffff','textColor':'#1f2937'}}}%%
 flowchart TD
     subgraph Write["Write path (cheap)"]
         FlushW["writer flush"] --> ExtractW["extractLogLabels(rows) returns<br/>(service.name=api-gw, k8s.ns=prod, …)"]
@@ -626,8 +632,8 @@ flowchart TD
         Check -->|no| Normal["normal query cascade<br/>(section 2)"]
     end
 
-    classDef store fill:#d1ecf1,stroke:#0c5460
-    classDef win fill:#d4edda,stroke:#155724
+    classDef store fill:#d1ecf1,stroke:#0c5460,color:#1a1a1a
+    classDef win fill:#d4edda,stroke:#155724,color:#1a1a1a
     class AggStore store
     class Emit win
 ```
@@ -695,6 +701,7 @@ disk in the manifest snapshot and load lazily.
 **Flow.**
 
 ```mermaid
+%%{init: {'theme':'base', 'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif','primaryColor':'#f3f4f6','primaryTextColor':'#1f2937','primaryBorderColor':'#9ca3af','lineColor':'#4b5563','secondaryColor':'#e5e7eb','tertiaryColor':'#f9fafb','background':'#ffffff','mainBkg':'#f3f4f6','clusterBkg':'#f9fafb','clusterBorder':'#9ca3af','edgeLabelBackground':'#ffffff','textColor':'#1f2937'}}}%%
 flowchart TD
     subgraph Build["Build sketches (cheap, write-side)"]
         Flush["writer flush"] --> Add["for v in distinct values:<br/>hll.Add(field, v)"]
@@ -714,8 +721,8 @@ flowchart TD
 
     Persist -.consult.-> Lookup
 
-    classDef cheap fill:#d4edda,stroke:#155724
-    classDef plan fill:#d1ecf1,stroke:#0c5460
+    classDef cheap fill:#d4edda,stroke:#155724,color:#1a1a1a
+    classDef plan fill:#d1ecf1,stroke:#0c5460,color:#1a1a1a
     class Build,Flush,Add,Persist,Compact,Merge cheap
     class Plan,Lookup,Decide,Bloom,Label,Scan plan
 ```
@@ -775,6 +782,7 @@ filter and degrading the whole cluster.
 **Flow.**
 
 ```mermaid
+%%{init: {'theme':'base', 'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif','primaryColor':'#f3f4f6','primaryTextColor':'#1f2937','primaryBorderColor':'#9ca3af','lineColor':'#4b5563','secondaryColor':'#e5e7eb','tertiaryColor':'#f9fafb','background':'#ffffff','mainBkg':'#f3f4f6','clusterBkg':'#f9fafb','clusterBorder':'#9ca3af','edgeLabelBackground':'#ffffff','textColor':'#1f2937'}}}%%
 flowchart LR
     subgraph Compact["Compaction-time aggregation"]
         Iter["iterate rows in input files"] --> Acc["edges[parent][child] += callCount"]
@@ -791,8 +799,8 @@ flowchart LR
         Edges --> JSON["emit Jaeger Dependencies JSON<br/><b>sub-second</b>"]
     end
 
-    classDef cheap fill:#d4edda,stroke:#155724
-    classDef cache fill:#d1ecf1,stroke:#0c5460
+    classDef cheap fill:#d4edda,stroke:#155724,color:#1a1a1a
+    classDef cache fill:#d1ecf1,stroke:#0c5460,color:#1a1a1a
     class Iter,Acc,TopN,KV cheap
     class S3K,Fan cache
     class JSON cheap
@@ -848,6 +856,7 @@ file count; before this, the call was O(files in range).
 **Flow.**
 
 ```mermaid
+%%{init: {'theme':'base', 'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif','primaryColor':'#f3f4f6','primaryTextColor':'#1f2937','primaryBorderColor':'#9ca3af','lineColor':'#4b5563','secondaryColor':'#e5e7eb','tertiaryColor':'#f9fafb','background':'#ffffff','mainBkg':'#f3f4f6','clusterBkg':'#f9fafb','clusterBorder':'#9ca3af','edgeLabelBackground':'#ffffff','textColor':'#1f2937'}}}%%
 flowchart TD
     subgraph Build["Build sidecar (write-side)"]
         Flush2["writer flush"] --> Tri["for v in _msg values:<br/>for trigram of v:<br/>  bloom.Add(trigram)"]
@@ -863,8 +872,8 @@ flowchart TD
         Check --> Kept["surviving files → footer narrowing<br/>(token bloom still runs at RG level)"]
     end
 
-    classDef cheap fill:#d4edda,stroke:#155724
-    classDef cache fill:#d1ecf1,stroke:#0c5460
+    classDef cheap fill:#d4edda,stroke:#155724,color:#1a1a1a
+    classDef cache fill:#d1ecf1,stroke:#0c5460,color:#1a1a1a
     class Flush2,Tri,Tokens,Trigrams,Check cheap
     class Sidecar cache
     class Skipped cheap
@@ -935,6 +944,7 @@ of `cfg.Cache.MemoryMB` directly.
 **Flow.**
 
 ```mermaid
+%%{init: {'theme':'base', 'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif','primaryColor':'#f3f4f6','primaryTextColor':'#1f2937','primaryBorderColor':'#9ca3af','lineColor':'#4b5563','secondaryColor':'#e5e7eb','tertiaryColor':'#f9fafb','background':'#ffffff','mainBkg':'#f3f4f6','clusterBkg':'#f9fafb','clusterBorder':'#9ca3af','edgeLabelBackground':'#ffffff','textColor':'#1f2937'}}}%%
 flowchart TD
     subgraph Observe["Every 30 s"]
         M1["ingest_rate"] --> Snap["build snapshot"]
@@ -957,10 +967,10 @@ flowchart TD
     Emergency --> Store
     Store -.consult.-> Storage["storage layer<br/>reads current values"]
 
-    classDef metric fill:#fff3cd,stroke:#856404
-    classDef decide fill:#d1ecf1,stroke:#0c5460
-    classDef action fill:#d4edda,stroke:#155724
-    classDef emergency fill:#f8d7da,stroke:#721c24
+    classDef metric fill:#fff3cd,stroke:#856404,color:#1a1a1a
+    classDef decide fill:#d1ecf1,stroke:#0c5460,color:#1a1a1a
+    classDef action fill:#d4edda,stroke:#155724,color:#1a1a1a
+    classDef emergency fill:#f8d7da,stroke:#721c24,color:#1a1a1a
     class M1,M2,M3,M4,M5,M6,M7 metric
     class Rules,ChangeRate,MemCeiling decide
     class Apply,Store action
