@@ -423,26 +423,14 @@ func TestColdHotParity_NegationFilter(t *testing.T) {
 // `resource_attr:service.name`. This test exercises that full chain
 // so a regression in any one component fires here.
 func TestColdHotParity_FieldEqByParquetName(t *testing.T) {
-	// KNOWN REGRESSION — tracked as the unresolved tail of issue #99
-	// (drilldown stability at 12h). The a5576bf commit fixed the
-	// registry's ResolveToParquet AND the helper parquetRowToFields
-	// (used by /select/logsql/values), but the MAIN scan path
-	// (typedRowsToDataBlock + readRowGroupWithProjection) still
-	// surfaces promoted columns under the internal alias only. A
-	// user filter spelling the parquet name (`service.name:="X"`)
-	// therefore matches zero rows even though the column exists.
-	//
-	// We keep this test wired into the run so it fires the moment
-	// someone lands the dual-emission fix and we can flip the Skip
-	// off. Until then, the test documents the failure mode in code
-	// rather than letting it lurk as an "unknown reason for 0 rows".
-	//
-	// Do NOT delete this test. Do NOT widen the skip. Fix the bug.
-	t.Skip("known regression — tracked in #99: main scan path " +
-		"(typedRowsToDataBlock / readRowGroupWithProjection) needs " +
-		"the same dual-emission a5576bf added to parquetRowToFields. " +
-		"Remove this Skip when the fix lands.")
-
+	// Pins the dual-emission fix in `readRowGroupColumnar`: promoted
+	// trace columns whose parquet name differs from the internal
+	// alias (e.g. parquet `service.name` ↔ internal
+	// `resource_attr:service.name`) MUST surface under BOTH names so
+	// a user filter spelling either dialect matches. a5576bf added
+	// this for `parquetRowToFields` (used by /select/logsql/values);
+	// the columnar reader needed the same pattern for the main scan
+	// path that handles /select/logsql/query.
 	mock := newMockS3Server()
 	defer mock.close()
 	s := testStorageWithS3(t, mock.url())
@@ -458,6 +446,10 @@ func TestColdHotParity_FieldEqByParquetName(t *testing.T) {
 	// a5576bf this resolved to the resource.attributes MAP and
 	// matched 0 rows. Post-fix it must reach the same 6 rows the
 	// stream-filter shape sees.
+	// First sanity: wildcard sees all 6 rows.
+	if all, _ := runParityQuery(t, s, `*`, startNs, endNs); all != 6 {
+		t.Fatalf("wildcard returned %d rows, expected 6 — fixture broken, not the parity case", all)
+	}
 	total, _ := runParityQuery(t, s, `service.name:="api-gateway"`, startNs, endNs)
 	if total == 0 {
 		t.Fatalf("service.name:=\"api-gateway\" returned 0 rows — regression of a5576bf, the " +

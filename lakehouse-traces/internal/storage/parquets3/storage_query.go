@@ -1044,18 +1044,36 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 			if formatted == "" {
 				continue
 			}
-			idx := getCol(internalName)
-			for idx >= len(seenBitmap) {
-				seenBitmap = append(seenBitmap, false)
+			emitCol := func(colName string) {
+				idx := getCol(colName)
+				for idx >= len(seenBitmap) {
+					seenBitmap = append(seenBitmap, false)
+				}
+				if seenBitmap[idx] {
+					return
+				}
+				seenBitmap[idx] = true
+				for len(cols[idx].values) < rowNum {
+					cols[idx].values = append(cols[idx].values, "")
+				}
+				cols[idx].values = append(cols[idx].values, formatted)
 			}
-			if seenBitmap[idx] {
-				continue
+			emitCol(internalName)
+			// Dual emission for promoted columns whose parquet name
+			// differs from the internal alias (e.g. parquet
+			// `service.name` ↔ internal `resource_attr:service.name`).
+			// A user-typed filter spelling either dialect must
+			// resolve to a column the DataBlock actually carries;
+			// without this, `service.name:="X"` resolves to a column
+			// that doesn't exist in the block and matches zero rows
+			// even though `_stream:{resource_attr:service.name="X"}`
+			// finds 78k rows in the same time window. Mirrors a5576bf
+			// (which fixed the same asymmetry in parquetRowToFields
+			// used by /select/logsql/values) for the slow scan path
+			// here, sibling of the same defense in readRowGroupColumnar.
+			if fld.name != "" && fld.name != internalName {
+				emitCol(fld.name)
 			}
-			seenBitmap[idx] = true
-			for len(cols[idx].values) < rowNum {
-				cols[idx].values = append(cols[idx].values, "")
-			}
-			cols[idx].values = append(cols[idx].values, formatted)
 		}
 
 		// Fill empty for columns not present in this row

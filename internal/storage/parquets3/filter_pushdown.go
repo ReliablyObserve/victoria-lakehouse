@@ -136,18 +136,42 @@ func isNegatedPredicate(query, fieldName string) bool {
 
 // extractQuotedOp finds `fieldName + op + value"` in the query string and returns the value.
 // op should end with a quote character (e.g., `:="`).
+//
+// The field name must match at a token boundary so a `fieldName`
+// like `name` doesn't match as a substring inside
+// `service.name:="X"`. Without this the pushdown builds a check
+// against the wrong column (`span.name`) and `ColumnStatsContains`
+// drops every file silently. Mirror of the same fix in
+// lakehouse-traces/internal/storage/parquets3/filter_pushdown.go.
 func extractQuotedOp(query, fieldName, op string) string {
 	pattern := fieldName + op
-	idx := strings.Index(query, pattern)
-	if idx < 0 {
-		return ""
+	from := 0
+	for {
+		idx := strings.Index(query[from:], pattern)
+		if idx < 0 {
+			return ""
+		}
+		abs := from + idx
+		ok := abs == 0
+		if !ok {
+			c := query[abs-1]
+			isIdent := c == '_' || c == '.' || c == ':' || c == '-' ||
+				(c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+			ok = !isIdent
+		}
+		if ok {
+			start := abs + len(pattern)
+			end := strings.Index(query[start:], `"`)
+			if end < 0 {
+				return ""
+			}
+			return query[start : start+end]
+		}
+		from = abs + 1
+		if from >= len(query) {
+			return ""
+		}
 	}
-	start := idx + len(pattern)
-	end := strings.Index(query[start:], `"`)
-	if end < 0 {
-		return ""
-	}
-	return query[start : start+end]
 }
 
 // resolvePushDownIndices pre-computes column indices for pushdown checks.

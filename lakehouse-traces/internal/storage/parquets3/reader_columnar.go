@@ -121,6 +121,25 @@ func readRowGroupColumnar(
 					Name:   internalName,
 					Values: values,
 				})
+				// Dual emission for promoted columns whose parquet name
+				// differs from the internal alias (e.g. parquet
+				// `service.name` ↔ internal `resource_attr:service.name`).
+				// A user-typed filter spelling either dialect must
+				// resolve to a column the DataBlock actually carries;
+				// without this, `service.name:="X"` resolves to a column
+				// that doesn't exist in the block and matches zero rows
+				// even though `_stream:{resource_attr:service.name="X"}`
+				// finds 78k rows in the same time window. Mirrors a5576bf
+				// (which fixed the same asymmetry in parquetRowToFields
+				// used by /select/logsql/values) and unblocks the
+				// previously-skipped parity test
+				// TestColdHotParity_FieldEqByParquetName.
+				if name != internalName {
+					blockCols = append(blockCols, logstorage.BlockColumn{
+						Name:   name,
+						Values: values,
+					})
+				}
 			}
 		} else if len(li.indices) >= 2 {
 			// MAP column: find key and value leaf indices.
