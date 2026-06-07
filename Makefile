@@ -38,11 +38,9 @@ $(VL_DIR_LOGS)/go.mod:
 	git clone --depth 1 --branch $(VL_VERSION_LOGS) $(VL_REPO) $(VL_DIR_LOGS)
 	cp patches/vl-logs/external.go.src $(VL_DIR_LOGS)/app/vlstorage/external.go
 	cp patches/vl-logs/external_query.go.src $(VL_DIR_LOGS)/lib/logstorage/external_query.go
-	cp patches/vl-logs/vl-flush-sink.go.src $(VL_DIR_LOGS)/lib/logstorage/vl_flush_sink.go
 	cd $(VL_DIR_LOGS) && git apply ../../patches/vl-logs/vlstorage-dispatch.patch
 	cd $(VL_DIR_LOGS) && git apply ../../patches/vl-logs/vl-export-severity.patch
 	cd $(VL_DIR_LOGS) && git apply ../../patches/vl-logs/vl-export-streamtags-get.patch
-	cd $(VL_DIR_LOGS) && git apply ../../patches/vl-logs/vl-flush-sink-hook.patch
 
 deps-traces: $(VL_DIR_TRACES)/go.mod
 
@@ -52,11 +50,9 @@ $(VL_DIR_TRACES)/go.mod:
 	cd $(VL_DIR_TRACES) && git checkout $(VL_COMMIT_TRACES)
 	cp patches/vl-traces/external.go.src $(VL_DIR_TRACES)/app/vlstorage/external.go
 	cp patches/vl-traces/external_query.go.src $(VL_DIR_TRACES)/lib/logstorage/external_query.go
-	cp patches/vl-traces/vl-flush-sink.go.src $(VL_DIR_TRACES)/lib/logstorage/vl_flush_sink.go
 	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vlstorage-dispatch.patch
 	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-export-severity.patch
 	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-export-streamtags-get.patch
-	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-flush-sink-hook.patch
 
 deps-vt: $(VT_DIR)/go.mod
 

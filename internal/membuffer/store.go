@@ -7,8 +7,8 @@
 // converter that kept drifting from the file-scan emission), the buffer is a
 // real per-pod logstorage.Storage: ingest feeds the native logstorage.LogRows
 // VT/VL already built, queries run via the same engine (RunQuery), and — in a
-// later phase — the Parquet→S3 flush is a conversion from this store's
-// in-memory parts via the dormant FlushSink hook installed in P0.
+// later phase — Parquet for the buffer's data is produced by exporting it
+// via the exported logstorage.Storage.RunQuery (no VL modification).
 //
 // Phase 1 uses it only as a write-side shadow behind the BufferEngine flag
 // (dual-write), with the legacy Parquet path still authoritative; RunQuery is
@@ -32,8 +32,8 @@ type Config struct {
 	Path string
 
 	// Retention bounds how long rows live in the buffer before VL drops the
-	// oldest per-day partition. Once the flush sink is active (P2) parts are
-	// dropped at flush, so this is just a safety ceiling. Default 1h.
+	// oldest per-day partition. Bounds buffer memory; data older than the
+	// retention is served from S3 Parquet, not the buffer. Default 1h.
 	Retention time.Duration
 
 	// FlushInterval is VL's in-memory rowsBuffer→inmemoryPart→disk interval

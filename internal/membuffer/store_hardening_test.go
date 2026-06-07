@@ -36,16 +36,6 @@ func addRow(lr *logstorage.LogRows, tid logstorage.TenantID, ts int64, svc, trac
 	}, 1)
 }
 
-// TestStore_FlushSinkSymbolDormant is the P0 guard: the exported flush-sink hook
-// must exist (patch applied) and stay nil by default so the seam is inert.
-// Referencing the symbols also fails compilation if the patch ever drifts.
-func TestStore_FlushSinkSymbolDormant(t *testing.T) {
-	var _ logstorage.FlushRowsIterator
-	if logstorage.FlushSink != nil {
-		t.Fatal("logstorage.FlushSink must be nil by default (P0 dormant); a sink is registered only in P2+")
-	}
-}
-
 func TestStore_EmptyBatchAndLifecycle(t *testing.T) {
 	st, err := Open(Config{Path: t.TempDir()})
 	if err != nil {

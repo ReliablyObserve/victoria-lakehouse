@@ -25,68 +25,67 @@ why VT "just works after restart."
 
 ## Decision
 
-Adopt the VT/VL model (**Option B**): the LH insert buffer becomes a real
-per-pod `logstorage.Storage` (in-memory parts), queried via its native
-`RunQuery`. The Parquet→S3 flush becomes a **conversion from that buffer**
-(**variant b2**): intercept the single seam where VL persists an in-memory part
-to disk, iterate that part's rows, and run LH's existing Parquet writer +
-index builders. All LH indexes/helpers, the BufferBridge peer fan-out, WAL, and
-compaction are preserved. Nothing under `deps/` is forked; the one required
-unexported-symbol access is added through the existing `patches/` mechanism
-(precedent: `vl-export-streamtags-get.patch`).
+Adopt the VT/VL model (**Option B**) using **only exported upstream APIs — no
+VL/VT modification.** The LH insert buffer becomes a real per-pod
+`logstorage.Storage` (in-memory parts) opened with `MustOpenStorage`, fed via
+the exported `MustAddRows`, and queried via the exported `RunQuery`. When the
+buffer eventually produces Parquet (final phase), it does so by **reading
+itself back through the exported `Storage.RunQuery`** over the just-flushed
+window and handing the resulting `DataBlock`s to LH's existing Parquet writer —
+again, zero VL changes. All LH indexes/helpers, the BufferBridge peer fan-out,
+WAL, and compaction are preserved.
+
+This supersedes an earlier "variant b2" sketch that intercepted VL's
+in-memory-part→disk merge via a `patches/` hook (`FlushSink`). That added new
+logic *inside* VL; per the project's "reuse upstream, don't modify it" rule it
+was removed. The buffer query path (`RunQuery`) and the future Parquet-export
+path are both pure exported-API reuse, so no `patches/` entry beyond the
+existing `vl-export-*` exports is needed.
 
 Applies to **both** logs (`internal/`) and traces (`lakehouse-traces/internal/`),
 which already carry separate patched `deps/VictoriaLogs` trees.
 
-## The seam (verified)
+## Reuse-only seam (no VL modification)
 
-`deps/VictoriaLogs/lib/logstorage/datadb.go :: mustMergePartsInternal`
-(line ~489) is where data leaves memory for "disk". Two write paths:
+Everything runs through exported `logstorage` symbols:
 
-- **fast path** (line 538): `isFinal && len(pws)==1 && pws[0].mp != nil` →
-  `mp.MustStoreToDisk(dstPartPath)`.
-- **merge path** (line 551+): N parts → `bsw.MustInitForFilePart(dstPartPath)`
-  via `mustMergeBlockStreams`.
+- **Ingest** → `MustOpenStorage(path, *StorageConfig)` once per pod; per batch
+  `Storage.MustAddRows(lr)` (the same `*LogRows` VT/VL's insert built).
+- **Query** → `Storage.RunQuery(qctx, writeBlock)` with the same `*QueryContext`
+  LH's `ExternalStorage.RunQuery` already receives — so the buffer merges into
+  the existing query flow with no new types.
+- **Parquet export** (final phase) → `Storage.RunQuery` over `[lastFlush, now]`
+  yields `DataBlock`s → LH's existing `writeTracesParquet`/`writeLogsParquet` +
+  index builders → S3. The buffer's own `FlushInterval`/`Retention` bound how
+  much it holds; VL owns block splitting internally.
 
-Both fire only when `dstPartType != partInmemory` (i.e. data is being
-persisted). That single predicate is the interception point.
-
-Row materialization for the conversion reuses, inside `package logstorage`:
-`mustOpenBlockStreamReaders(pws)` → `blockStreamReader.NextBlock()` →
-`blockData.unmarshalRows(&rows, …)` → `rows{timestamps []int64, rows [][]Field}`,
-plus the block's `streamID` → canonical stream tags via `ddb.pt.idb`.
-
-`maxUncompressedBlockSize = 2 MiB` (`consts.go`); LH never sets it — VL owns
-block splitting in `inmemoryPart.mustInitFromRows`.
+No interception of VL's merge, no new file in `package logstorage`, no
+`deps/` edits.
 
 ## Target architecture
 
 ```
 INSERT pod (or role=all)
-  vtinsert/vlinsert ── lr *logstorage.LogRows ── store.MustAddRows(lr)   [REUSE]
-        │
-        ▼  logstorage.Storage  (the in-mem queryable buffer; REUSED verbatim)
-        │   day-partition → indexdb(streams) → datadb.rowsBuffer → inmemoryPart
-        │   inmemoryPartsFlusher → mustMergePartsInternal
-        │        ╔═════ SEAM (one patch): dstPartType != partInmemory ═════╗
-        │        ║ if lhFlushSink != nil { lhFlushSink(pws); dropSrc; ret } ║
-        │        ╚═══════════════════════════════════════════════════════════╝
-        ▼  parquets3 sink (NEW, thin): iterate part rows →
-             extractLog/TraceBloomValues, computeTraceIndex, buildTokenBloom  [REUSE]
-             → writeLogs/TracesParquet → S3 → manifest.AddFile + sidecar      [REUSE]
-             → bloomObserver.OnFileFlush/PersistDirty, cacheOnFlush, WAL.Truncate [REUSE]
+  vtinsert/vlinsert ── lr *logstorage.LogRows
+        ├─ legacy: logRowsTo{Trace,Schema}Rows → BatchWriter → Parquet  [authoritative]
+        └─ Option B: store.MustAddRows(lr)                             [exported REUSE]
+        ▼  logstorage.Storage  (the in-mem queryable buffer; REUSED verbatim,
+        │   no VL edits) — day-partition → indexdb → rowsBuffer → inmemoryPart
+        ▼  Parquet export (P5): store.RunQuery([lastFlush,now]) → DataBlocks →
+             writeLogs/TracesParquet → S3 → manifest.AddFile + indexes   [REUSE]
 
 SELECT pod (or role=all): parquets3.Storage.RunQuery
   (A) S3 Parquet scan (manifest→prefilter→bloom→trace_idx→workers)            [REUSE]
-  (B) buffer rows:
-        co-located store → localBuf.RunQuery(q, writeBlock)                   [Option B]
+  (B) buffer rows (P3):
+        co-located store → store.RunQuery(qctx, writeBlock)            [exported REUSE]
         cross-pod        → BufferBridge HTTP fan-out                          [PRESERVED]
   merge via filteredWriteBlock                                                [REUSE]
 ```
 
-Once a part is flushed to Parquet it is **dropped** from the VL store, so the
-store holds only the unflushed window; flushed data lives in Parquet and is
-queried by the existing Parquet scan. No double-counting.
+Until P5, the legacy `[]schema.*Row` path remains the authoritative Parquet
+producer, so the buffer never double-writes. The buffer's own
+`Retention`/`FlushInterval` bound how much it holds; older data is served from
+S3 Parquet.
 
 ## Reuse surface (exported, no change)
 
@@ -97,39 +96,31 @@ queried by the existing Parquet scan. No double-counting.
 builders and `BufferBridge`/`buffer.Handler` are reused unchanged — their inputs
 are simply re-sourced from the part rows.
 
-## Patches (sanctioned `patches/` channel, both vl-logs and vl-traces)
+## Patches — none new
 
-1. `vl-flush-sink.go.src` — NEW file in `package logstorage`: exported
-   `var FlushSink func(emit FlushEmitter) (handled bool)` registration + the
-   internal `convertPartsForFlush(pws, emit)` that reuses block readers +
-   `unmarshalRows` and resolves stream tags. Emits plain
-   `(streamTagsCanonical string, timestamp int64, fields []logstorage.Field)` —
-   LH never touches unexported types.
-2. `vl-flush-sink-hook.patch` — git-apply: insert the `dstPartType !=
-   partInmemory && FlushSink != nil` branch at `mustMergePartsInternal` that
-   calls `convertPartsForFlush`, drops the source parts, and returns.
-
-Makefile: add the copy + `git apply` lines to `deps-logs` / `deps-traces`,
-mirror under `patches/vl-logs/` and `patches/vl-traces/`. Cache key already
-hashes `patches/**` + `Makefile`.
+This design adds **no** `patches/` entry. It composes the existing exported
+`logstorage` surface (`MustOpenStorage`, `MustAddRows`, `RunQuery`,
+`DebugFlush`, `QueryContext`, `DataBlock`) plus the `vl-export-*` exports
+already in the tree. The earlier `vl-flush-sink.*` patch was reverted.
 
 ## Phases (each shippable into PR #123, build+tests green at every commit)
 
-- **P0 — export patch + dormant hook.** `FlushSink` nil → behavior unchanged.
-  Guard test asserts the exported symbols exist; `logstorage` + LH build green.
+- ~~**P0 — flush-sink export hook.**~~ **Removed** — it modified VL. Superseded
+  by the exported-`RunQuery` export path.
 - **P1 — per-pod store behind `InsertConfig.BufferEngine` flag (`buffer`|`logstore`).**
   On `logstore`, dual-write: `AddLog/TraceRows` also `store.MustAddRows`. Parquet
   still produced by the legacy path. Parity test: `store.RunQuery` count/fields ==
-  `BufferedLog/TraceRows`.
-- **P2 — divert flush.** Register `FlushSink`; sink builds Parquet + indexes from
-  part rows. Test: ingest→`DebugFlush`→assert Parquet object + `_trace_idx`/bloom
-  KVs + `manifest.AddFile` + `cacheOnFlush`.
-- **P3 — read merge.** Co-located `queryBufferBridge` calls `localBuf.RunQuery`
-  instead of struct→DataBlock. e2e parity `buffer` vs `logstore`.
-- **P4 — cross-pod handler streams from store; WAL replay feeds `MustAddRows`;
-  retire the row shadow.**
-- **P5 — flip default to `logstore`, delete `logBufs/traceBufs`.** Keep the flag
-  one release for rollback.
+  legacy buffer. **Done.**
+- **P3 — read merge.** Co-located `queryBufferBridge` calls `store.RunQuery`
+  instead of the struct→DataBlock conversion. This is the step that fixes the
+  cold-tier recently-flushed residual (the buffer serves fresh queries natively).
+  e2e parity `buffer` vs `logstore`. **Next.**
+- **P4 — cross-pod handler streams from `store.RunQuery`; WAL replay feeds
+  `MustAddRows`; retire the row shadow.**
+- **P5 — Parquet from the buffer via exported `RunQuery` export; flip default to
+  `logstore`; delete `logBufs/traceBufs`.** Keep the flag one release for
+  rollback. The legacy `[]schema.*Row` Parquet path stays authoritative until
+  this step, so there is never a double-write.
 
 ## Open decisions (need human)
 
