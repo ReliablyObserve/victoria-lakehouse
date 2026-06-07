@@ -162,6 +162,16 @@ var (
 	// until the next healthy flush; alert on rate > 0.
 	BufferStoreDualWriteFailures = NewCounter("lakehouse_buffer_store_dualwrite_failures_total")
 
+	// Option B P5 shadow export: the buffer→Parquet path runs in parallel with
+	// the authoritative legacy flush, writing to a SHADOW S3 prefix (not the
+	// manifest), so an operator can confirm row/byte parity vs the legacy
+	// Parquet before the cutover. Compare BufferShadowExportRows against the
+	// legacy insert row rate; BufferShadowExportErrors must stay flat at 0.
+	BufferShadowExportRows   = NewCounter("lakehouse_buffer_shadow_export_rows_total")
+	BufferShadowExportFiles  = NewCounter("lakehouse_buffer_shadow_export_files_total")
+	BufferShadowExportBytes  = NewCounter("lakehouse_buffer_shadow_export_bytes_total")
+	BufferShadowExportErrors = NewCounter("lakehouse_buffer_shadow_export_errors_total")
+
 	// TraceIndexLookups counts VT-format trace-by-ID lookups served from the
 	// embedded `_trace_idx` Parquet footer index. `result` is one of:
 	//   hit   — index served the (start_time, end_time) bounds; no span scan
