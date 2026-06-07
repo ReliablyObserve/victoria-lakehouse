@@ -45,17 +45,56 @@ jobs:
         if: steps.skip_release.outputs.skip != 'true'
         id: version
         run: |
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          # `git describe` walks the commit graph from HEAD, so its
+          # "latest tag" is the closest reachable tag — not the
+          # highest version number in the global tag space. After
+          # release-history drift (e.g. somebody cuts a minor early,
+          # then patch releases on the older line) that can compute
+          # a NEXT we've already published. Use the global tag list
+          # sorted by version to avoid the v0.38.0-already-exists
+          # failure mode this workflow hit on PR #122.
+          git fetch --tags --force --quiet origin || true
+          LATEST_TAG=$(git tag -l 'v[0-9]*' \
+                        | sort -V \
+                        | tail -1)
+          LATEST_TAG=${LATEST_TAG:-v0.0.0}
           echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
 
-          # Parse PR labels from merge commit (first line only)
+          # Parse PR number from the merge commit subject.
           PR_NUM=$(echo "$COMMIT_MSG" | head -1 | grep -oP '#\K[0-9]+' | head -1 || true)
+
+          # Pull PR size signals so big PRs auto-promote to a
+          # bigger version bump even when the operator forgets the
+          # label. additions+deletions and file count cover both
+          # shapes — a few-file refactor and a many-files surface
+          # change both look "big" by one metric.
+          PR_TOTAL=0
+          PR_FILES=0
+          if [ -n "$PR_NUM" ]; then
+            STATS=$(gh pr view "$PR_NUM" --json additions,deletions,files \
+                      --jq '"\(.additions + .deletions) \(.files | length)"' \
+                      2>/dev/null || echo "0 0")
+            read -r PR_TOTAL PR_FILES <<< "$STATS"
+          fi
+
+          # Bump classes:
+          #   major:  X.0.0   — breaking, label-gated only
+          #   xl:     0.+10.0 — huge PR (size + label override).
+          #                     Bumping minor by 10 makes the
+          #                     "tens digit" denote eras of large
+          #                     surface work, leaving plenty of
+          #                     room for normal minor bumps in
+          #                     between.
+          #   minor:  0.+1.0  — normal feature
+          #   patch:  0.0.+1  — fix / perf / docs / small change
           BUMP="patch"
 
           if [ -n "$PR_NUM" ]; then
             LABELS=$(gh pr view "$PR_NUM" --json labels --jq '.labels[].name' 2>/dev/null || true)
             if echo "$LABELS" | grep -qE "release:major|breaking-change"; then
               BUMP="major"
+            elif echo "$LABELS" | grep -qE "release:xl|epic"; then
+              BUMP="xl"
             elif echo "$LABELS" | grep -qE "release:minor|feature"; then
               BUMP="minor"
             elif echo "$LABELS" | grep -qE "release:patch|bugfix|performance"; then
@@ -63,28 +102,56 @@ jobs:
             fi
           fi
 
-          # Fallback to conventional commits
+          # Conventional-commit + size-based fallback. Only kicks
+          # in when the label gate didn't already classify.
           if [ "$BUMP" = "patch" ]; then
             MSG_FIRST=$(echo "$COMMIT_MSG" | head -1)
             if echo "$MSG_FIRST" | grep -qiE "BREAKING CHANGE|^feat!:"; then
               BUMP="major"
+            elif [ "$PR_TOTAL" -gt 5000 ] || [ "$PR_FILES" -gt 50 ]; then
+              # XL by size: >5k LOC churn OR >50 files touched.
+              # That's the shape of feat/lifecycle-honesty-and-warmup
+              # (PR #122), which on the old policy bumped one minor
+              # and immediately clobbered v0.38.0.
+              BUMP="xl"
             elif echo "$MSG_FIRST" | grep -qiE "^feat(\(|:)"; then
               BUMP="minor"
             fi
           fi
 
-          # Calculate next version
+          apply_bump() {
+            case "$1" in
+              major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+              xl)    MINOR=$((MINOR + 10)); PATCH=0 ;;
+              minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+              patch) PATCH=$((PATCH + 1)) ;;
+            esac
+          }
+
           IFS='.' read -r MAJOR MINOR PATCH <<< "${LATEST_TAG#v}"
-          case "$BUMP" in
-            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-            patch) PATCH=$((PATCH + 1)) ;;
-          esac
+          apply_bump "$BUMP"
           NEXT="v${MAJOR}.${MINOR}.${PATCH}"
+
+          # Clobber guard. If the computed NEXT is already published
+          # (release-history drift, manual release in progress,
+          # someone retagged), keep applying the same bump kind until
+          # we land on a free tag. Patch-bumps walk forward one at a
+          # time; xl-bumps walk in steps of 10. Bounded by a 50-step
+          # safety cap so a misconfigured workflow can't loop forever.
+          for _ in $(seq 1 50); do
+            if ! git rev-parse -q --verify "refs/tags/$NEXT" >/dev/null 2>&1; then
+              break
+            fi
+            echo "Tag $NEXT already exists; bumping again"
+            apply_bump "$BUMP"
+            NEXT="v${MAJOR}.${MINOR}.${PATCH}"
+          done
 
           echo "bump=$BUMP" >> $GITHUB_OUTPUT
           echo "next=$NEXT" >> $GITHUB_OUTPUT
-          echo "Version: $LATEST_TAG → $NEXT ($BUMP)"
+          echo "pr_total=$PR_TOTAL" >> $GITHUB_OUTPUT
+          echo "pr_files=$PR_FILES" >> $GITHUB_OUTPUT
+          echo "Version: $LATEST_TAG → $NEXT  (bump=$BUMP, pr_total=$PR_TOTAL, pr_files=$PR_FILES)"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMIT_MSG: ${{ github.event.head_commit.message }}
