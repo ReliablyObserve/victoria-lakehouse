@@ -698,6 +698,56 @@ func TestColdHotParity_SmartCachePartialHit_MustNotNarrowSilently(t *testing.T) 
 	}
 }
 
+// TestColdHotParity_SingleIDRecentFlush_MustNotDropViaSmartCache pins
+// the recently-flushed-file parity bug at the preFilterFiles layer for
+// the SINGLE-id (Jaeger get-trace) shape — the residue of the same
+// lower-bound class that TestColdHotParity_SmartCachePartialHit pins
+// for the multi-id shape.
+//
+// Scenario: smartCache has recorded trace "X" against an OLD file
+// (keyOld) from an earlier query. A recently-flushed file (keyRecent)
+// is in the manifest and genuinely contains spans for the SAME query
+// (it just hasn't been queried yet, so its smartCache TraceIDs are
+// empty). A single-id `trace_id:="X"` query must NOT narrow to only
+// keyOld and drop keyRecent — the deterministic footer-based
+// filterFilesByTraceIdx (run later) is the authority, and it can only
+// run on files preFilterFiles keeps.
+//
+// Live symptom this guards: cold Jaeger /api/traces returned 0 traces
+// for any span flushed minutes-to-~1h ago (queryable by _stream but
+// invisible to trace_id:"X"), while hot VT returned them.
+func TestColdHotParity_SingleIDRecentFlush_MustNotDropViaSmartCache(t *testing.T) {
+	s := testStorage()
+	sc := newSmartCacheWithLocalKeys(nil)
+
+	keyOld := "traces/dt=2026-05-10/hour=12/old.parquet"
+	keyRecent := "traces/dt=2026-05-10/hour=14/recent.parquet"
+
+	// keyOld was queried before → its trace_ids are recorded.
+	// keyRecent is freshly flushed → NOT recorded (empty TraceIDs),
+	// the exact "limbo" state of a minutes-old file.
+	sc.RecordTraceIDs(keyOld, []string{"trace-X"})
+	s.smartCache = sc
+
+	files := []manifest.FileInfo{
+		{Key: keyOld},
+		{Key: keyRecent},
+	}
+
+	got := s.preFilterFiles(files, `trace_id:="trace-X"`)
+	keys := map[string]bool{}
+	for _, fi := range got {
+		keys[fi.Key] = true
+	}
+	if !keys[keyRecent] {
+		t.Fatalf("single-id preFilterFiles dropped the recently-flushed file keyRecent — "+
+			"the smartCache lower-bound narrowing must never remove a manifest file that "+
+			"the deterministic trace_idx pre-filter would keep. This is the cold-tier "+
+			"recently-flushed parity bug (cold Jaeger 0 vs hot VT N for minutes-old spans). "+
+			"got keys: %v", keys)
+	}
+}
+
 // TestColdHotParity_MultipleFilesNarrowingMustAgree pins the
 // multi-file narrowing path: write two files for the same partition,
 // one containing trace_id X, the other containing only Y. A

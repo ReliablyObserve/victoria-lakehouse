@@ -2914,9 +2914,15 @@ func TestInteg_preFilterFiles_TraceIDCache(t *testing.T) {
 	}
 
 	result := s.preFilterFiles(context.Background(), files, `trace_id:="trace-abc"`)
-	// Should narrow to only a.parquet via trace_id cache, or fall back to all
-	if len(result) == 0 {
-		t.Error("expected at least some files")
+	// c.parquet has NO recorded trace_ids (recently-flushed). It MUST
+	// survive preFilterFiles — the smartCache lower-bound must never
+	// drop a manifest file. Pins the recently-flushed parity bug.
+	keys := map[string]bool{}
+	for _, fi := range result {
+		keys[fi.Key] = true
+	}
+	if !keys["logs/dt=2026-05-10/hour=14/c.parquet"] {
+		t.Errorf("c.parquet (un-recorded, recently-flushed) silently dropped; result keys: %v", keys)
 	}
 }
 

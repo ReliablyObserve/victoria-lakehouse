@@ -2198,12 +2198,17 @@ func TestInteg_preFilterFiles_TraceIDCacheHit(t *testing.T) {
 	}
 
 	result := s.preFilterFiles(context.Background(), files, `trace_id:="trace-abc-123"`)
-	if len(result) == 1 && result[0].Key == keyA {
-		// Perfect: smart cache narrowed to just file A
-	} else if len(result) == 2 {
-		// Also acceptable: smart cache doesn't have complete coverage, fallback to all
-	} else if len(result) == 0 {
-		t.Error("expected at least some files")
+	// keyB (recently-flushed, trace_id not yet recorded in smartCache)
+	// MUST survive: the smartCache mapping is a LOWER BOUND and must
+	// never narrow away a manifest file the deterministic label/bloom
+	// pre-filter would keep. Pins the cold-tier recently-flushed parity
+	// bug (mirror of the traces-module fix).
+	keys := map[string]bool{}
+	for _, fi := range result {
+		keys[fi.Key] = true
+	}
+	if !keys[keyB] {
+		t.Errorf("keyB silently dropped by smartCache lower-bound narrowing; result keys: %v", keys)
 	}
 }
 

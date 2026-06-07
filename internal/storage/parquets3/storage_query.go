@@ -453,32 +453,18 @@ func (s *Storage) manifestFastPath(files []manifest.FileInfo, startNs, endNs int
 }
 
 func (s *Storage) preFilterFiles(ctx context.Context, files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
-	if s.smartCache != nil {
-		// Support both trace_id:="single" and trace_id:in(t1,t2,t3) (VT spans-lookup shape).
-		// Multiple values: union the matched file sets so the lookup covers all candidates.
-		tids := extractFilterValuesAST(queryStr, "trace_id")
-		if len(tids) > 0 {
-			keySet := make(map[string]bool)
-			for _, tid := range tids {
-				for _, k := range s.smartCache.FindFilesByTraceID(tid) {
-					keySet[k] = true
-				}
-			}
-			if len(keySet) > 0 {
-				var matched []manifest.FileInfo
-				for _, fi := range files {
-					if keySet[fi.Key] {
-						matched = append(matched, fi)
-					}
-				}
-				if len(matched) > 0 {
-					metrics.TraceIDCacheHits.Inc()
-					logger.Infof("trace_id fast-path: cache hit for %d trace_id(s), scanning %d/%d files", len(tids), len(matched), len(files))
-					return matched
-				}
-			}
-		}
-	}
+	// NOTE: we intentionally do NOT use smartCache.FindFilesByTraceID to
+	// NARROW the candidate set for trace_id queries. That mapping is a
+	// LOWER BOUND — it only contains files whose TraceIDs were RECORDED
+	// (which happens at the END of a scan, never for a just-flushed-not-
+	// yet-queried file). Narrowing to it silently drops recently-flushed
+	// files that are in the manifest and genuinely carry the trace_id,
+	// producing a "0 results for minutes-old data that _stream queries
+	// still find" parity gap (cf. the traces module fix and
+	// TestS3_preFilterFiles_TraceIDCacheHit). The sound narrowing is
+	// label + bloom below, which keeps unindexed/recent files. The
+	// smartCache remains a DATA cache (L1/L2 chunk bytes) and a
+	// parent-child prefetch HINT — never an authoritative file index.
 	files = s.filterFilesByLabels(files, queryStr)
 	if len(files) == 0 {
 		return nil

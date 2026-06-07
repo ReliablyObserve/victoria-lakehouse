@@ -419,53 +419,37 @@ func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, star
 }
 
 func (s *Storage) preFilterFiles(files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
-	if s.smartCache != nil {
-		// trace_id fast-path: sound ONLY for single-id lookups
-		// (Jaeger get-trace, `trace_id:="X"` shape) where one
-		// cached file is enough to answer the user's request.
-		//
-		// We deliberately do NOT take this path for the multi-id
-		// `trace_id:in(t1,t2,...)` shape (VT's GetTraceList step 2).
-		// Reason: the smartCache only knows about files it has
-		// previously fetched. A single trace can live in MULTIPLE
-		// files (different partitions / time windows for the same
-		// id), but the cache may have only seen one of them. The
-		// union of `FindFilesByTraceID(t_i)` across many ids is
-		// therefore a LOWER BOUND on the relevant file set — not
-		// a complete one. Narrowing to that lower bound silently
-		// drops every uncached-but-relevant file.
-		//
-		// Live blast radius (pre-fix): at the 12h window, cold
-		// Jaeger /api/traces returned 0 traces while hot returned
-		// 20. Step 1 produced 20 trace_ids; step 2 took the
-		// fast-path, narrowed to 1 file, and that file held spans
-		// for only a few of the 20 → empty result for the rest.
-		//
-		// For multi-id queries we fall through to the bloom /
-		// trace_idx narrowing path, which examines every file and
-		// is honest about coverage. It costs a bit more per query
-		// but never silently undercounts.
-		tids := extractFilterValuesAST(queryStr, "trace_id")
-		if len(tids) == 1 {
-			cacheSet := make(map[string]bool)
-			for _, k := range s.smartCache.FindFilesByTraceID(tids[0]) {
-				cacheSet[k] = true
-			}
-			if len(cacheSet) > 0 {
-				var narrowed []manifest.FileInfo
-				for _, fi := range files {
-					if cacheSet[fi.Key] {
-						narrowed = append(narrowed, fi)
-					}
-				}
-				if len(narrowed) > 0 {
-					logger.Infof("trace_id fast-path: cache hit for 1 trace_id, scanning %d files", len(narrowed))
-					return narrowed
-				}
-			}
-		}
-	}
-
+	// We deliberately do NOT use the smartCache `FindFilesByTraceID`
+	// result to NARROW the candidate file set for trace_id queries —
+	// neither for the single-id `trace_id:="X"` (Jaeger get-trace)
+	// shape nor the multi-id `trace_id:in(t1,t2,...)` (VT GetTraceList
+	// step 2) shape.
+	//
+	// Reason: smartCache.FindFilesByTraceID is a LOWER BOUND on the
+	// relevant file set. It only returns files whose TraceIDs were
+	// RECORDED (RecordTraceIDs runs at the END of queryFile, AFTER a
+	// file has been scanned at least once — see storage_query.go
+	// queryFile). A recently-flushed file is in the manifest and
+	// carries a correct `_trace_idx` footer, but its smartCache
+	// TraceIDs set is empty until something queries it. If we narrow
+	// to the cache's lower bound, that recently-flushed file is
+	// silently dropped BEFORE the deterministic, footer-backed
+	// `filterFilesByTraceIdx` (run in RunQuery right after this) ever
+	// sees it.
+	//
+	// Live blast radius (pre-fix): cold Jaeger /api/traces returned 0
+	// traces while hot VT returned 20, for any trace whose spans were
+	// flushed minutes-to-~1h ago (queryable by `_stream` which has no
+	// trace_id filter, but invisible to `trace_id:"X"` which took the
+	// fast-path). The band self-healed after the first query (which
+	// recorded the file's TraceIDs) — hence ">1h works, fresh fails".
+	//
+	// The single-id case was the un-fixed residue of the same
+	// lower-bound bug that killed the multi-id fast-path in bd838e9.
+	// The deterministic `filterFilesByTraceIdx` reads the actual
+	// `_trace_idx` footer KV (cached) and is the correct, complete
+	// narrowing for both shapes — so dropping this shortcut loses no
+	// correctness and ~no performance (footer reads are cached).
 	files = s.filterFilesByLabels(files, queryStr)
 	if len(files) == 0 {
 		return nil
