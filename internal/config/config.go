@@ -143,6 +143,30 @@ type InsertConfig struct {
 	PeerReplicateTTL     time.Duration `yaml:"peer_replicate_ttl"`
 	AsyncWALEnabled      bool          `yaml:"async_wal_enabled"`
 	AsyncWALBatchLinger  time.Duration `yaml:"async_wal_batch_linger"`
+
+	// BufferEngine selects how the insert buffer (recently-ingested,
+	// not-yet-flushed rows) is held and queried (Option B; see
+	// docs/architecture/buffer-queryable-store-design.md):
+	//   "buffer"   (default) — legacy []schema.{Log,Trace}Row staging +
+	//                           struct→DataBlock conversion at query time.
+	//   "logstore"           — a per-pod logstorage.Storage, queried via the
+	//                           same engine as the S3-Parquet scan (no
+	//                           conversion). Rolled out in phases behind this
+	//                           flag; during P1 it dual-writes alongside the
+	//                           legacy buffer, which stays authoritative.
+	BufferEngine string `yaml:"buffer_engine"`
+	// BufferDir is the local/tmpfs directory for the logstore buffer's
+	// ephemeral parts (durability is the WAL + S3 Parquet, not this dir).
+	BufferDir string `yaml:"buffer_dir"`
+	// BufferRetention bounds how long rows live in the logstore buffer before
+	// VL drops them; once the flush sink is active this is just a ceiling.
+	BufferRetention time.Duration `yaml:"buffer_retention"`
+}
+
+// BufferEngineLogstore reports whether the logstorage-native buffer (Option B)
+// is selected. Default ("" or "buffer") keeps the legacy staging buffer.
+func (c *InsertConfig) BufferEngineLogstore() bool {
+	return c.BufferEngine == "logstore"
 }
 
 func (c *InsertConfig) MaxBufferBytesN() int64 {
@@ -748,6 +772,10 @@ func Default() *Config {
 			PeerReplicateTTL:     30 * time.Second,
 			AsyncWALEnabled:      false,
 			AsyncWALBatchLinger:  50 * time.Millisecond,
+
+			BufferEngine:    "buffer", // legacy staging buffer; "logstore" opts into Option B
+			BufferDir:       "/data/lakehouse/buffer",
+			BufferRetention: time.Hour,
 		},
 
 		Select: SelectConfig{
@@ -1040,6 +1068,11 @@ func (c *Config) validateInsert() error {
 	}
 	if c.Insert.CompressionLevel < 1 || c.Insert.CompressionLevel > 22 {
 		return fmt.Errorf("--lakehouse.insert.compression-level must be 1-22, got %d", c.Insert.CompressionLevel)
+	}
+	switch c.Insert.BufferEngine {
+	case "", "buffer", "logstore":
+	default:
+		return fmt.Errorf("--lakehouse.insert.buffer-engine must be \"buffer\" or \"logstore\", got %q", c.Insert.BufferEngine)
 	}
 	if c.Insert.MaxBufferBytes != "" {
 		if _, err := ParseSizeBytes(c.Insert.MaxBufferBytes); err != nil {

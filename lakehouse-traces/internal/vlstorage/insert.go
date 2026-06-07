@@ -54,10 +54,34 @@ func SetInsertStorage(w TraceWriter) {
 	vtinsertutil.SetLogRowsStorage(&vtInsertAdapter{writer: w})
 }
 
+// BufferStore is the narrow write surface of the Option B logstorage-native
+// buffer (membuffer.Store). Declared here as an interface to keep this
+// package's imports narrow. nil unless BufferEngine=="logstore".
+type BufferStore interface {
+	MustAddRows(lr *logstorage.LogRows)
+}
+
+var bufferStore BufferStore
+
+// SetBufferStore enables Option B dual-write: every ingested LogRows batch is
+// ALSO added to the logstorage-native buffer, in parallel with the legacy
+// TraceRow staging path. Call once at startup before serving. nil disables.
+func SetBufferStore(bs BufferStore) {
+	bufferStore = bs
+}
+
 func (a *vtInsertAdapter) MustAddRows(lr *logstorage.LogRows) {
+	// Legacy path first so it stays byte-identical to today.
 	rows := logRowsToTraceRows(lr)
 	if len(rows) > 0 {
 		a.writer.MustAddTraceRows(rows)
+	}
+	// Option B (P1 dual-write): feed the same canonical LogRows to the
+	// logstorage-native buffer, while lr is still valid — vtinsert resets the
+	// arena-backed LogRows immediately after this returns; logstorage copies
+	// the rows into its own parts, so this is safe.
+	if bufferStore != nil {
+		bufferStore.MustAddRows(lr)
 	}
 }
 

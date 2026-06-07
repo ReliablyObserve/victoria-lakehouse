@@ -22,6 +22,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/lifecycle"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/membuffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/prefetch"
@@ -984,6 +985,22 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			internalvlstorage.SetInsertStorage(telemetry.NewTracedWriter(store))
 		} else {
 			internalvlstorage.SetInsertStorage(store)
+		}
+		// Option B (P1): when buffer-engine=logstore, stand up the
+		// logstorage-native buffer and dual-write to it alongside the legacy
+		// LogRow staging path. Off by default; legacy path stays authoritative.
+		if cfg.Insert.BufferEngineLogstore() {
+			bufStore, err := membuffer.Open(membuffer.Config{
+				Path:      cfg.Insert.BufferDir,
+				Retention: cfg.Insert.BufferRetention,
+			})
+			if err != nil {
+				logger.Fatalf("open logstore buffer: %s", err)
+			}
+			internalvlstorage.SetBufferStore(bufStore)
+			// Process-lived (held via the package var); graceful close/flush is
+			// wired alongside the flush sink in P2.
+			logger.Infof("Option B: logstore buffer enabled at %s (retention=%s)", bufStore.Path(), cfg.Insert.BufferRetention)
 		}
 		vlinsert.Init()
 

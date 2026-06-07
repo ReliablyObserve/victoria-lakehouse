@@ -48,10 +48,33 @@ func SetInsertStorage(w LogWriter) {
 	insertutil.SetLogRowsStorage(&insertAdapter{writer: w})
 }
 
+// BufferStore is the narrow write surface of the Option B logstorage-native
+// buffer (membuffer.Store). nil unless BufferEngine=="logstore".
+type BufferStore interface {
+	MustAddRows(lr *logstorage.LogRows)
+}
+
+var bufferStore BufferStore
+
+// SetBufferStore enables Option B dual-write: every ingested LogRows batch is
+// ALSO added to the logstorage-native buffer, alongside the legacy LogRow
+// staging path. Call once at startup before serving. nil disables.
+func SetBufferStore(bs BufferStore) {
+	bufferStore = bs
+}
+
 func (a *insertAdapter) MustAddRows(lr *logstorage.LogRows) {
+	// Legacy path first so it stays byte-identical to today.
 	rows := logRowsToSchemaRows(lr)
 	if len(rows) > 0 {
 		a.writer.MustAddLogRows(rows)
+	}
+	// Option B (P1 dual-write): feed the same canonical LogRows to the
+	// logstorage-native buffer, while lr is still valid — vlinsert resets the
+	// arena-backed LogRows immediately after this returns; logstorage copies
+	// the rows into its own parts, so this is safe.
+	if bufferStore != nil {
+		bufferStore.MustAddRows(lr)
 	}
 }
 
