@@ -115,10 +115,10 @@ func (s *Storage) lookupTraceIndexFull(ctx context.Context, traceID string) (sta
 		select {
 		case sem <- struct{}{}:
 		case <-cancelCtx.Done():
-			// Outer ctx cancelled (or sibling already found a hit
-			// and cancelled — but we don't cancel on hit, so this
-			// is exclusively the deadline path); stop scheduling.
-			break
+			// Outer ctx cancelled — fall through to the
+			// cancelCtx.Err() check below to break out of the
+			// for-loop. A bare `break` here would only exit the
+			// select (caught by staticcheck SA4011).
 		}
 		if cancelCtx.Err() != nil {
 			break
@@ -164,13 +164,6 @@ func (s *Storage) lookupTraceIndexFull(ctx context.Context, traceID string) (sta
 	}
 	metrics.TraceIndexLookups.Inc("miss")
 	return 0, 0, false, definitiveLocal, nil
-}
-
-// lookupTraceIDInFile pulls the Parquet footer for one manifest entry and
-// searches its `_trace_idx` KV metadata for the given trace ID.
-func (s *Storage) lookupTraceIDInFile(ctx context.Context, fi manifest.FileInfo, traceID string) (TraceIndexEntry, bool, error) {
-	entry, ok, _, err := s.lookupTraceIDInFileFull(ctx, fi, traceID)
-	return entry, ok, err
 }
 
 // lookupTraceIDInFileFull returns the same (entry, hit) tuple as the
