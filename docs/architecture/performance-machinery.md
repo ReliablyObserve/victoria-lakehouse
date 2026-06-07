@@ -340,6 +340,83 @@ The auto-tune loop (section 7) does exactly this.
 
 ---
 
+## Where each artifact lives <a name="storage-medium"></a>
+
+Every speedup mechanism stores **state** somewhere — RAM, the pod's
+local PVC, or S3. When operators size pods or buckets they need to
+know which artifact lands where. This table is the master reference.
+
+> "💾 PVC" is the per-pod persistent disk (helm chart default 50 GiB,
+> bumped to 500 GiB at PB scale — see [sizing.md](../operations/sizing.md)).
+> "☁ S3" means the lakehouse bucket.
+
+| # | Artifact | RAM | 💾 PVC | ☁ S3 | Lifecycle |
+|---|---|:-:|:-:|:-:|---|
+| 1 | **Manifest in-memory index** (`files`, `partitionMeta`, inverted label index, `sortedPartitions`, `byKey`, tenant aggregates) | ✅ primary | snapshot | — | rebuilt on `RefreshFromS3`; snapshotted on shutdown |
+| 2 | **Manifest snapshot** (`manifest-snapshot.json`, binary-gob format) | — | ✅ primary | — | written at shutdown via `manifest.SaveTo` (task 73); loaded async at startup (task 79) |
+| 3 | **Footer cache** (parsed parquet footers, includes embedded row-group bloom + `_trace_idx` + token bloom KVs) | ✅ primary | snapshot | — | LRU evicted under memory pressure |
+| 4 | **Footer-cache snapshot** (`footer-cache-snapshot.bin`, LRU key-list only) | — | ✅ primary | — | written at shutdown (task 78); the actual footer bytes refetched from S3 by async prefetch after `/ready=200` |
+| 5 | **Smart cache L1** (decoded parquet row groups) | ✅ primary | — | — | LRU; never persisted |
+| 6 | **Smart cache L2** (raw parquet bytes) | — | ✅ primary | — | LRU on disk; survives restart |
+| 7 | **PeerCache ring** (consistent-hash map of peer endpoints) | ✅ primary | — | — | derived from k8s headless service watch |
+| 8 | **WAL** (un-flushed ingest batches) | mirror | ✅ primary | — | replayed at startup; truncated on successful flush |
+| 9 | **In-memory buffer** (unflushed rows served by `BufferBridge`) | ✅ primary | — | — | freed on flush |
+| 10 | **`.parquet` data file** (row groups, column index, per-rowgroup blooms, footer KVs) | — | — | ✅ primary | written by flusher + compactor; deleted by retention |
+| 11 | **`.bloom` sidecar** (file-level bloom for the inverted bloom index) | mirror via `bloomindex.PartitionedIndex` | snapshot | ✅ primary | rebuilt by `bloomObserver.OnFileFlush`; loaded into RAM at startup |
+| 12 | **Manifest's `_meta/` sidecar JSON** (file metadata: Labels, ColumnStats, RowCount per file) | mirror on `FileInfo` | — | ✅ primary | written per-partition at flush; pulled by manifest refresh |
+| 13 | **Tombstones** (per-partition delete markers) | mirror | — | ✅ primary | loaded from S3 at startup; written by delete API |
+| 14 | **Tenant aliases / policy** (`_meta/tenant-aliases.json`) | mirror | — | ✅ primary | survives across pods |
+| 15 | **Tenant stats snapshot** (`stats/snapshot.json`) | mirror | — | ✅ primary | written by stats collector |
+| 16 | **`_trace_idx` footer KV** (per-trace `{startNs, endNs}` aggregate per file) | inside footer cache | inside footer-cache snapshot | inside parquet file | written by `computeTraceIndex` at flush; survives compaction via merge |
+| 17 | **Per-rowgroup bloom** (parquet `SplitBlockFilter` for promoted columns) | inside footer cache | — | inside parquet file | regenerated on compaction merge |
+| 18 | **Token bloom KV** (trigram bloom per row group for `_msg` search tokens) | inside footer cache | — | inside parquet file | regenerated on compaction merge |
+| 19 | **Lifecycle / ready state** (`lakehouse_serving_ready`, snapshot age, hint flags) | ✅ primary | — | — | pure process state |
+| 20 | **Discovery cache** (peer hot/cold boundaries) | ✅ primary | snapshot in stats | — | refreshed by `manifest_push` heartbeat |
+
+### Headline numbers at PB scale
+
+| Where | Per pod | Cluster (10 pods) |
+|---|---:|---:|
+| **RAM** | manifest (1 GiB) + footer cache (10 GiB) + smart L1 (1 GiB) + WAL mirror (200 MiB) + lifecycle (300 MiB) = **~13 GiB** | ~130 GiB |
+| **💾 PVC** | smart L2 (100 GiB) + manifest snapshot (500 MiB) + footer-cache snapshot (10 GiB) + bloom snapshot (8 GiB) + WAL (2 GiB) = **~120 GiB** | per-pod (not cluster total) |
+| **☁ S3** | — | parquet (PB) + `.bloom` (80 GiB) + sidecar JSON (~500 GiB) + tombstones (~100 MiB) + tenant + stats (~10 GiB) |
+
+The biggest in-RAM consumer is the **footer cache** (10 GiB at PB
+scale). The biggest on-disk consumer is the **smart cache L2** (100
+GiB), and the entire data set itself lives on S3.
+
+For a small/dev tier the numbers drop linearly with file count —
+sub-GiB total RAM is normal.
+
+### Re-derivation on restart
+
+If the PVC is lost (e.g. a fresh pod scheduled on a new node), every
+local-disk artifact is **rebuildable from S3**:
+
+```mermaid
+%%{init: {'theme':'base', 'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif','primaryColor':'#f3f4f6','primaryTextColor':'#1f2937','primaryBorderColor':'#9ca3af','lineColor':'#4b5563','secondaryColor':'#e5e7eb','tertiaryColor':'#f9fafb','background':'#ffffff','mainBkg':'#f3f4f6','clusterBkg':'#f9fafb','clusterBorder':'#9ca3af','edgeLabelBackground':'#ffffff','textColor':'#1f2937'}}}%%
+flowchart LR
+    PVCgone["💥 PVC lost"] --> S3List["S3 LIST<br/>(tenant-scoped<br/>refreshTenantScoped)"]
+    S3List --> Manifest["rebuild manifest in RAM"]
+    Manifest --> Sidecar["fetch _meta/ sidecars<br/>per partition"]
+    Sidecar --> Labels["FileInfo.Labels, ColumnStats"]
+    Labels --> Bloom["fetch .bloom sidecars"]
+    Bloom --> BloomMem["bloomindex.PartitionedIndex"]
+    BloomMem --> Footer["async footer prefetch<br/>(64KB tail per file)"]
+    Footer --> Ready["/ready=200<br/>(serve_while_warming=204 in between)"]
+
+    classDef rebuild fill:#fff3cd,stroke:#856404,color:#1a1a1a
+    classDef ready fill:#d4edda,stroke:#155724,color:#1a1a1a
+    class S3List,Manifest,Sidecar,Labels,Bloom,BloomMem,Footer rebuild
+    class Ready ready
+```
+
+The only piece that can't be rebuilt is the **WAL** — un-flushed
+ingest data on a lost PVC is lost. This is the durability tradeoff
+documented in [docs/operations/lifecycle.md](../operations/lifecycle.md).
+Operators who can't tolerate that risk run the insert role with a
+StatefulSet + PVC pinned to a node.
+
 ## 5. Scale projections <a name="scale"></a>
 
 The per-pod resource cost of each mechanism, as the global file count

@@ -1,5 +1,12 @@
 FROM alpine:3.21
-ARG VERSION=1.55.1
+# 1.55.1 had a `fatal error: concurrent map read and map write` race in
+# extractLogPatternsFromWindowEntriesWithStats that took
+# loki-vl-proxy-cold down under Grafana log-volume histogram load
+# (3+ concurrent windowed sub-queries). Fixed in 1.56.1 via
+# snapshotEntriesForPatterns — alias-free per-entry copy of the
+# Stream map. Pinning here so the next compose rebuild can't
+# accidentally drop back to a broken release.
+ARG VERSION=1.56.1
 ARG TARGETARCH=amd64
 RUN wget -qO /usr/local/bin/loki-vl-proxy \
       "https://github.com/ReliablyObserve/loki-vl-proxy/releases/download/v${VERSION}/loki-vl-proxy-linux-${TARGETARCH}" \
