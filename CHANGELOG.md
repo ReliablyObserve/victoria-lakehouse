@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-06-07
+
 ### Added
 
 - **Honest lifecycle + cold-start protection at PB scale (PR #122)** — every cliff scenario the 3PB-on-S3 / 6-peer audit surfaced (stale snapshot, fragmented L0, simultaneous restart, first-ever boot, partial warmup) now has a guard and a test. The pod no longer lies about being ready while it is still discovering files, replaying WAL, or warming the footer cache; queries no longer return empty results because the local store happens to be 30 seconds behind S3.
