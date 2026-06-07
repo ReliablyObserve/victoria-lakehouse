@@ -74,8 +74,21 @@ func (a *insertAdapter) MustAddRows(lr *logstorage.LogRows) {
 	// arena-backed LogRows immediately after this returns; logstorage copies
 	// the rows into its own parts, so this is safe.
 	if bufferStore != nil {
-		bufferStore.MustAddRows(lr)
+		addRowsToBufferSafely(lr)
 	}
+}
+
+// addRowsToBufferSafely isolates the Option B dual-write so a buffer failure
+// (panic in logstorage.MustAddRows) can NEVER break ingestion. The legacy
+// staging path above already accepted the rows and stays authoritative; on
+// failure we only count it and drop this batch from the buffer.
+func addRowsToBufferSafely(lr *logstorage.LogRows) {
+	defer func() {
+		if r := recover(); r != nil {
+			metrics.BufferStoreDualWriteFailures.Inc()
+		}
+	}()
+	bufferStore.MustAddRows(lr)
 }
 
 func (a *insertAdapter) CanWriteData() error {

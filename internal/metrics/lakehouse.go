@@ -154,6 +154,14 @@ var (
 	// how many we discard so a missing-trace-index regression is visible.
 	VTInternalRowsDropped = NewCounterVec("lakehouse_vt_internal_rows_dropped_total", "kind")
 
+	// BufferStoreDualWriteFailures counts batches the Option B logstorage-native
+	// buffer (BufferEngine=logstore) failed to accept. The dual-write is
+	// isolated with recover() so a buffer failure can NEVER break ingestion —
+	// the legacy staging path remains authoritative. A non-zero value means the
+	// buffer is missing recent rows and any buffer-served query may under-return
+	// until the next healthy flush; alert on rate > 0.
+	BufferStoreDualWriteFailures = NewCounter("lakehouse_buffer_store_dualwrite_failures_total")
+
 	// TraceIndexLookups counts VT-format trace-by-ID lookups served from the
 	// embedded `_trace_idx` Parquet footer index. `result` is one of:
 	//   hit   — index served the (start_time, end_time) bounds; no span scan
