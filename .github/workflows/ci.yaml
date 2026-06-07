@@ -28,7 +28,7 @@ jobs:
       # failed at `undefined: opentelemetry.FormatSeverity` even
       # though everything passed locally. Delegating to make keeps
       # the patch list in one place. cache key already includes
-      # `hashFiles('patches/**')` so the cache invalidates whenever
+      # `hashFiles('patches/**', 'Makefile')` so the cache invalidates whenever
       # a patch changes.
       - name: Prepare VL deps (logs)
         run: make deps-logs
@@ -45,7 +45,7 @@ jobs:
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaTraces
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**') }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
   test-logs:
     needs: deps
@@ -63,7 +63,7 @@ jobs:
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaTraces
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**') }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
       - name: Check gofmt -s (logs)
         run: |
@@ -113,7 +113,7 @@ jobs:
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaTraces
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**') }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
       - name: Check gofmt -s (traces)
         working-directory: lakehouse-traces
@@ -167,7 +167,7 @@ jobs:
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaTraces
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**') }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
       - uses: golangci/golangci-lint-action@v9
         with:
@@ -190,7 +190,7 @@ jobs:
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaTraces
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**') }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
       - uses: golangci/golangci-lint-action@v9
         with:
@@ -217,7 +217,7 @@ jobs:
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaTraces
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**') }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
       - name: Build lakehouse-logs
         env:
@@ -249,7 +249,7 @@ jobs:
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaTraces
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**') }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
       - name: Build lakehouse-traces
         working-directory: lakehouse-traces
@@ -304,7 +304,7 @@ jobs:
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaTraces
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**') }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
       - name: Run govulncheck (logs)
         run: |
@@ -327,7 +327,7 @@ jobs:
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaTraces
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**') }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
       - name: Run govulncheck (traces)
         working-directory: lakehouse-traces
@@ -361,7 +361,7 @@ jobs:
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaTraces
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**') }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
       - name: Run benchmarks (logs)
         run: go test -bench=. -benchtime=3s -count=2 ./internal/... | tee bench-logs.txt
@@ -388,7 +388,7 @@ jobs:
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaTraces
-          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**') }}
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
       - name: Run benchmarks (traces)
         working-directory: lakehouse-traces

@@ -127,6 +127,24 @@ func (w *WAL) Replay() ([]schema.LogRow, []schema.TraceRow, error) {
 		entryLen := binary.LittleEndian.Uint32(header[:4])
 		mode := header[4]
 
+		// Defensive cap. entryLen is attacker-controlled: a corrupt
+		// WAL or a bit-flipped length prefix can declare ~4.3 GB.
+		// make([]byte, entryLen) without a guard then asks the
+		// allocator for multi-GB and either panics in runtime or
+		// gets OOM-killed mid-replay — the FuzzReplayCorruptedRecord
+		// fuzz target lit this up on CI (exit 143 / SIGTERM after
+		// ~24 s). 64 MiB is well above any honest record (a single
+		// LogRow is a few KB; the largest realistic trace span at
+		// full attribute fan-out is ~100 KB), and bounds the
+		// worst-case allocation safely. Treat oversize lengths as
+		// "trailing garbage" — break out and return what was
+		// successfully decoded before the cliff, matching the same
+		// behaviour as a truncated final record.
+		const maxEntryLen = 64 << 20
+		if entryLen > maxEntryLen {
+			break
+		}
+
 		data := make([]byte, entryLen)
 		if _, err := io.ReadFull(w.file, data); err != nil {
 			break

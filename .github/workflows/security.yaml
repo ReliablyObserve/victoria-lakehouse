@@ -42,7 +42,7 @@ jobs:
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaTraces
-          key: vl-deps-security-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**') }}
+          key: vl-deps-security-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
   govulncheck:
     needs: deps
@@ -59,7 +59,7 @@ jobs:
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaTraces
-          key: vl-deps-security-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**') }}
+          key: vl-deps-security-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
       - name: Run govulncheck
         run: |
@@ -81,7 +81,7 @@ jobs:
             deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaLogs
             lakehouse-traces/deps/VictoriaTraces
-          key: vl-deps-security-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**') }}
+          key: vl-deps-security-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
       - name: Run gosec
         run: |
