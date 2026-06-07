@@ -43,34 +43,34 @@ func FuzzPreFilterFiles_TraceID(f *testing.F) {
 	)
 
 	// Diverse trace_id query shapes. Each is the `query` arg.
-	f.Add(`trace_id:"` + tidA + `"`)             // single quoted, cached id
-	f.Add(`trace_id:=` + tidA)                   // single field-eq, unquoted, cached
-	f.Add(`trace_id:"` + tidB + `"`)             // single quoted, UNcached id
-	f.Add(`trace_id:=` + tidB)                   // single field-eq, uncached
-	f.Add(`trace_id:in(` + tidA + `,` + tidB + `)`) // mixed cached+uncached in()
-	f.Add(`trace_id:in(` + tidA + `)`)           // single-element in(), cached
-	f.Add(`trace_id:in(` + tidB + `)`)           // single-element in(), uncached
-	f.Add(`trace_id:in(a,b,c)`)                  // small in(), none cached
-	f.Add(`trace_id:in()`)                       // empty in()
-	f.Add(`trace_id:in(`)                        // unclosed in()
-	f.Add(`trace_id:in(,,,)`)                    // only separators
-	f.Add(`trace_id:in(` + strings.Repeat("x,", 1000) + `x)`) // 1001 ids
-	f.Add(`trace_id:""`)                         // empty quoted id
-	f.Add(`trace_id:=`)                          // empty field-eq value
-	f.Add(`trace_id:"héllo-世界-trace-id-长长长"`)    // unicode id
-	f.Add(`trace_id:"` + strings.Repeat("z", 4096) + `"`) // very long id
-	f.Add(`trace_id:"unclosed`)                  // malformed quote
-	f.Add(`trace_id:"a\"b"`)                      // escaped quote inside value
-	f.Add("trace_id:\"a\x00b\"")                 // embedded NUL
-	f.Add(`trace_id:in("` + tidA + `","` + tidB + `")`) // quoted ids in in()
-	f.Add(`trace_id:"` + tidA + `" OR trace_id:"` + tidB + `"`) // OR of two
-	f.Add(`trace_id:"` + tidA + `" AND trace_id:"` + tidB + `"`) // AND of two
+	f.Add(`trace_id:"` + tidA + `"`)                                              // single quoted, cached id
+	f.Add(`trace_id:=` + tidA)                                                    // single field-eq, unquoted, cached
+	f.Add(`trace_id:"` + tidB + `"`)                                              // single quoted, UNcached id
+	f.Add(`trace_id:=` + tidB)                                                    // single field-eq, uncached
+	f.Add(`trace_id:in(` + tidA + `,` + tidB + `)`)                               // mixed cached+uncached in()
+	f.Add(`trace_id:in(` + tidA + `)`)                                            // single-element in(), cached
+	f.Add(`trace_id:in(` + tidB + `)`)                                            // single-element in(), uncached
+	f.Add(`trace_id:in(a,b,c)`)                                                   // small in(), none cached
+	f.Add(`trace_id:in()`)                                                        // empty in()
+	f.Add(`trace_id:in(`)                                                         // unclosed in()
+	f.Add(`trace_id:in(,,,)`)                                                     // only separators
+	f.Add(`trace_id:in(` + strings.Repeat("x,", 1000) + `x)`)                     // 1001 ids
+	f.Add(`trace_id:""`)                                                          // empty quoted id
+	f.Add(`trace_id:=`)                                                           // empty field-eq value
+	f.Add(`trace_id:"héllo-世界-trace-id-长长长"`)                                     // unicode id
+	f.Add(`trace_id:"` + strings.Repeat("z", 4096) + `"`)                         // very long id
+	f.Add(`trace_id:"unclosed`)                                                   // malformed quote
+	f.Add(`trace_id:"a\"b"`)                                                      // escaped quote inside value
+	f.Add("trace_id:\"a\x00b\"")                                                  // embedded NUL
+	f.Add(`trace_id:in("` + tidA + `","` + tidB + `")`)                           // quoted ids in in()
+	f.Add(`trace_id:"` + tidA + `" OR trace_id:"` + tidB + `"`)                   // OR of two
+	f.Add(`trace_id:"` + tidA + `" AND trace_id:"` + tidB + `"`)                  // AND of two
 	f.Add(`_stream:{resource_attr:service.name="x"} AND trace_id:"` + tidB + `"`) // combined
-	f.Add(`*`)                                   // wildcard (no trace_id)
-	f.Add(``)                                    // empty query
-	f.Add(`trace_id:`)                           // dangling colon
-	f.Add(`:in(a,b)`)                            // missing field name
-	f.Add(`trace_id:in(` + tidA + `,,` + tidB + `,)`) // empty elements mixed
+	f.Add(`*`)                                                                    // wildcard (no trace_id)
+	f.Add(``)                                                                     // empty query
+	f.Add(`trace_id:`)                                                            // dangling colon
+	f.Add(`:in(a,b)`)                                                             // missing field name
+	f.Add(`trace_id:in(` + tidA + `,,` + tidB + `,)`)                             // empty elements mixed
 
 	f.Fuzz(func(t *testing.T, query string) {
 		s := testStorage()

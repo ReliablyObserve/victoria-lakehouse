@@ -255,6 +255,8 @@ jobs:
           - internal/storage/parquets3:FuzzContainsOrOperatorQuoted
           - internal/storage/parquets3:FuzzParseFilterFromQuery
           - internal/storage/parquets3:FuzzExtractFilterValuesAST
+          - internal/storage/parquets3:FuzzPreFilterFiles_TraceID
+          - internal/storage/parquets3:FuzzExtractFilterValuesAST_TraceID
           - internal/vlstorage:FuzzMapFieldToTraceRow
           - internal/vlstorage:FuzzUnmarshalStreamTags
           - internal/vlstorage:FuzzLogRowsToTraceRows
