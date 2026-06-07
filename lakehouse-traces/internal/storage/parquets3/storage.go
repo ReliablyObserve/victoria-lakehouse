@@ -987,12 +987,33 @@ func (s *Storage) traceRowsToDataBlock(rows []schema.TraceRow) *logstorage.DataB
 		setDual("http.url", "span_attr:http.url", i, row.HTTPUrl)
 		setDual("db.system", "span_attr:db.system", i, row.DBSystem)
 		setDual("db.statement", "span_attr:db.statement", i, row.DBStatement)
-		// Arbitrary resource/span attributes carried in the maps.
+		// start_time_unix_nano is a promoted top-level column the Jaeger/Tempo
+		// GetTrace index lookup reads via
+		//   trace_id:=X | stats min(_time) _time,
+		//                       min(start_time_unix_nano) start_time,
+		//                       max(end_time_unix_nano) end_time
+		// (see vtstorage_adapter.rewriteTraceIndexQuery). Without it the
+		// stats query over still-buffered spans yields empty bounds, GetTrace
+		// can't locate the trace, and returns 404 "trace not found" — which
+		// makes Grafana's trace panel crash with
+		// "Cannot read properties of undefined (reading 'spanID')" on the
+		// log→trace drilldown for any recently-ingested trace.
+		set("start_time_unix_nano", i, s.registry.FormatField("start_time_unix_nano", row.StartTimeUnixNano))
 		for k, v := range row.ResourceAttributes {
 			set("resource_attr:"+k, i, v)
 		}
+		// Span attributes. OTLP metadata fields VT keeps top-level
+		// (end_time_unix_nano, flags, dropped_*_count, …) MUST surface
+		// WITHOUT the span_attr: prefix so the GetTrace stats lookup's
+		// max(end_time_unix_nano) resolves — exactly as the file-scan path
+		// does via schema.VTTopLevelSpanAttrKeys. Everything else keeps the
+		// span_attr: prefix.
 		for k, v := range row.SpanAttributes {
-			set("span_attr:"+k, i, v)
+			if schema.VTTopLevelSpanAttrKeys[k] {
+				set(k, i, v)
+			} else {
+				set("span_attr:"+k, i, v)
+			}
 		}
 	}
 
