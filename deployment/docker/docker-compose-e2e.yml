@@ -207,10 +207,15 @@ services:
     restart: unless-stopped
     networks: [lakehouse-net]
     command:
-      - "--logs=2000"
-      - "--traces=500"
+      # Smoothed delivery — same ~2000 logs/min + 500 traces/min
+      # throughput but spread over 10 smaller batches per minute so
+      # Grafana sees a continuous trickle instead of a sawtooth.
+      # Easier to spot real ingest issues vs. the natural between-
+      # batch zero buckets a 60s interval used to create.
+      - "--logs=200"
+      - "--traces=50"
       - "--hours-back=1"
-      - "--interval=60s"
+      - "--interval=6s"
       - "--vl-endpoint=http://victorialogs:9428"
       - "--vt-endpoint=http://victoriatraces:10428"
       - "--lh-logs-endpoint=http://lakehouse-logs:9428"
@@ -321,6 +326,8 @@ services:
       - "-lakehouse.cache.memory-mb=512"
       - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
       - "-lakehouse.cache.disk-max-mb=2048"
+      - "-lakehouse.cache.warmup-partitions=6"
+      - "-lakehouse.cache.warmup-max-files=500"
       - "-lakehouse.compaction.interval=2m"
       - "-lakehouse.tenant.global-read-header=X-Lakehouse-Global-Read"
       - "-lakehouse.tenant.global-read-value=lakehouse-e2e-global-key"

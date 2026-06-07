@@ -102,9 +102,23 @@ For exact-match queries on bloom-enabled columns, the engine checks partition-le
 
 ### Level 3: Footer Parse and Cache
 
-The Parquet footer (file metadata, schema, column indices) is parsed once per file access and stored in an LRU cache (`FooterCache`, default 10K entries). On subsequent accesses, the parsed `parquet.File` is reused without re-parsing.
+The Parquet footer (file metadata, schema, column indices) is parsed once per file access and stored in an LRU cache (`FooterCache`, default 10K entries; auto-resizes after each manifest refresh to track active file count). On subsequent accesses, the parsed `parquet.File` is reused without re-parsing.
 
-The footer cache is also populated during cache warmup on startup.
+Cold-file footers are fetched via a two-phase range read. The first
+range pulls the last 64 KiB of the file in one round-trip, which
+covers the typical footer size. If the 4-byte trailer reports a
+footer length larger than the tail we already have (multi-megabyte
+trace footers can hit this when the embedded `_trace_idx` KV
+metadata grows), a second targeted range read pulls exactly
+`footerLen + 8` bytes from the right offset. No fall-through to a
+full file download; no fixed upper bound on supported footer size.
+
+The footer cache is populated during cache warmup on startup AND
+seeded asynchronously from a persisted key-list snapshot — the
+previous pod's LRU is reloaded post-`/ready=200` so first-query
+latency on previously-cached files drops from S3-round-trip cold
+to in-memory warm. See `docs/cache-architecture.md` § Footer Cache
+for the full snapshot lifecycle.
 
 ### Level 4: Row Group Timestamp Pruning
 

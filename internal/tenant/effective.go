@@ -42,6 +42,11 @@ type EffectiveConfig struct {
 	// S3Bucket overrides the bucket where this tenant's Parquet
 	// objects land. Empty = default bucket (prefix isolation only).
 	S3Bucket string
+
+	// CompactionCompressionLevels overrides the global progressive
+	// compression schedule for this tenant's compaction outputs. Empty
+	// = inherit Compaction.CompressionLevelByOutputLevel.
+	CompactionCompressionLevels []int
 }
 
 // PolicyRegistry resolves per-tenant overrides against the alias map.
@@ -130,14 +135,15 @@ func (pr *PolicyRegistry) For(accountID, projectID uint32) *EffectiveConfig {
 	}
 
 	eff := &EffectiveConfig{
-		AccountID:      accountID,
-		ProjectID:      projectID,
-		MaxFields:      raw.Cardinality.MaxFields,
-		MaxStreams:     raw.Cardinality.MaxStreams,
-		MaxBytesPerSec: raw.Ingest.MaxBytesPerSec,
-		MaxRowsPerSec:  raw.Ingest.MaxRowsPerSec,
-		Lifecycle:      raw.Lifecycle,
-		S3Bucket:       raw.S3.Bucket,
+		AccountID:                   accountID,
+		ProjectID:                   projectID,
+		MaxFields:                   raw.Cardinality.MaxFields,
+		MaxStreams:                  raw.Cardinality.MaxStreams,
+		MaxBytesPerSec:              raw.Ingest.MaxBytesPerSec,
+		MaxRowsPerSec:               raw.Ingest.MaxRowsPerSec,
+		Lifecycle:                   raw.Lifecycle,
+		S3Bucket:                    raw.S3.Bucket,
+		CompactionCompressionLevels: raw.Compaction.CompressionLevelByOutputLevel,
 	}
 	if raw.Retention.Keep != "" {
 		if d, err := ParseDayDuration(raw.Retention.Keep); err == nil {

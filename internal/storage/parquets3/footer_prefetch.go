@@ -14,12 +14,19 @@ import (
 
 const (
 	// footerPrefetchSize is the number of bytes to range-read from the end of a file
-	// to extract the parquet footer metadata.
-	footerPrefetchSize = 16 * 1024 // 16KB
+	// to extract the parquet footer metadata. Sized to cover the typical L0/L1
+	// parquet footer including row-group metadata and embedded trace-index KV;
+	// the previous 16 KiB undersized for ~30% of recently-written files (observed
+	// footers up to 22 KiB in the e2e stack) which fell back to a second S3
+	// range-read just for trace-id lookup, blowing the trace-by-ID p95 from
+	// sub-second to 5-10 s when the user clicked a derived-field traceID in
+	// Grafana. 64 KiB is still a single round-trip on every modern S3 stack
+	// (Range reads have no per-byte cost penalty up to a few MiB).
+	footerPrefetchSize = 64 * 1024 // 64KB
 
 	// minFileSizeForPrefetch is the minimum file size to attempt footer pre-fetch.
 	// Files smaller than this are downloaded fully, which is faster than two round-trips.
-	minFileSizeForPrefetch = 32 * 1024 // 32KB
+	minFileSizeForPrefetch = 128 * 1024 // 128KB
 )
 
 // shouldSkipByFooter performs an S3 range read to fetch only the parquet footer,

@@ -52,13 +52,23 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 	}
 
 	// Trace-index fast path: VT's tempo handler issues a stats query
-	// against the trace_id_idx_stream to bound the subsequent span fetch
-	// (see vtselect/traces/tempo/query.go GetTrace). Every cold trace
-	// Parquet file embeds a `_trace_idx` footer index that already carries
-	// (start_time, end_time) per trace ID, so we can answer the bound
-	// without ever opening a row group. On a footer miss we fall through
-	// to the existing rewriteTraceIndexQuery span-scan rewrite so VT-side
-	// semantics are preserved bit-for-bit.
+	// against the trace_id_idx_stream to bound the subsequent span
+	// fetch (see vtselect/traces/tempo/query.go GetTrace). When the
+	// queried trace ID is present in a parquet file's `_trace_idx`
+	// footer KV, we can emit the (start, end) time bound straight
+	// from metadata, skipping any row-group scan.
+	//
+	// On a footer miss (the index doesn't list the trace) we DO NOT
+	// short-circuit. The footer index is best-effort — it can lag
+	// fresh ingest writes, or miss trace IDs introduced by partial
+	// flushes — so a miss is not authoritative. Falling through to
+	// rewriteTraceIndexQuery below preserves 100% VT semantics: the
+	// trace-index query gets rewritten into the equivalent
+	// trace_id span scan and runs against the actual row data,
+	// which is the source of truth. (We learned this when a
+	// definitive-miss short-circuit at this level made Jaeger
+	// trace-by-id return 0 for traces that demonstrably had spans
+	// in the cold parquet.)
 	if lookup, ok := a.store.(traceIndexLookup); ok {
 		if traceID, isLookup := traceIndexLookupTraceID(qctx.Query); isLookup && traceID != "" {
 			startNs, endNs, found, _ := lookup.LookupTraceIndex(qctx.Context, traceID)

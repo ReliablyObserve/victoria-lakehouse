@@ -39,7 +39,19 @@ type SchedulerConfig struct {
 	MaxConcurrent    int
 	RowGroupSize     int
 	CompressionLevel int
-	OnCompacted      func(added []manifest.FileInfo, removed []string)
+
+	// CompactionConfig carries the full compaction-section config so
+	// the per-tick Compactor constructor can read progressive-
+	// compression schedule + any future per-output knobs without
+	// new fields here. The embedder fills it from cfg.Compaction.
+	CompactionConfig config.CompactionConfig
+
+	// TenantCompressionLookup resolves the per-output-level
+	// compression override for a given tenant prefix. Forwarded
+	// to every Compactor constructed in the scheduler loop;
+	// optional (nil = use the global schedule for every tenant).
+	TenantCompressionLookup func(tenantPrefix string) []int
+	OnCompacted             func(added []manifest.FileInfo, removed []string)
 
 	// OnRingChange is fired by the embedder (main.go) when peer-cache
 	// observes a ring change. Used to (a) increment the ring-change
@@ -73,6 +85,8 @@ type Scheduler struct {
 	maxConcurrent    int
 	rowGroupSize     int
 	compressionLevel int
+	compactionCfg    config.CompactionConfig
+	tenantLookup     func(tenantPrefix string) []int
 	onCompacted      func(added []manifest.FileInfo, removed []string)
 
 	ringChangeRate int
@@ -134,6 +148,8 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 		maxConcurrent:    maxConc,
 		rowGroupSize:     cfg.RowGroupSize,
 		compressionLevel: cfg.CompressionLevel,
+		compactionCfg:    cfg.CompactionConfig,
+		tenantLookup:     cfg.TenantCompressionLookup,
 		onCompacted:      cfg.OnCompacted,
 		ringChangeRate:   rate,
 		drainTimeout:     drainTimeout,
@@ -318,13 +334,15 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 		compStart := time.Now()
 
 		compactor := NewCompactor(CompactorConfig{
-			Pool:             s.pool,
-			Manifest:         s.manifest,
-			Prefix:           s.prefix,
-			Mode:             s.mode,
-			RowGroupSize:     s.rowGroupSize,
-			CompressionLevel: s.compressionLevel,
-			BloomRebuilder:   s.bloomRebuilder,
+			Pool:                    s.pool,
+			Manifest:                s.manifest,
+			Prefix:                  s.prefix,
+			Mode:                    s.mode,
+			RowGroupSize:            s.rowGroupSize,
+			CompressionLevel:        s.compressionLevel,
+			BloomRebuilder:          s.bloomRebuilder,
+			CompactionConfig:        s.compactionCfg,
+			TenantCompressionLookup: s.tenantLookup,
 		})
 
 		result, err := compactor.Compact(ctx, c.partition, selected, c.level)

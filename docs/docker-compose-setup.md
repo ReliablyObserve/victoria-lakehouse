@@ -134,11 +134,21 @@ Two datagen services populate the environment with realistic test data:
 
 This writes Parquet files directly to S3 (MinIO) and dual-writes to both hot tiers: logs to VictoriaLogs via `/insert/jsonline` and traces to VictoriaTraces via Zipkin `/api/v2/spans`.
 
-**datagen-continuous** runs indefinitely after seeding completes, generating fresh data every 30 seconds:
+**datagen-continuous** runs indefinitely after seeding completes, generating a steady stream of fresh data:
 
 ```bash
---logs=500 --traces=200 --hours-back=1 --interval=30s --dual-write --vl-endpoint=http://victorialogs:9428 --vt-endpoint=http://victoriatraces:10428
+--logs=200 --traces=50 --hours-back=1 --interval=6s --dual-write --vl-endpoint=http://victorialogs:9428 --vt-endpoint=http://victoriatraces:10428
 ```
+
+The current defaults produce ~33 logs/sec and ~8 trace spans/sec
+spread evenly across each 6-second tick — same per-minute volume
+as the old 500/200 every 30 s but spread into 10 smaller batches.
+The `--interval` flag also doubles as the timestamp spread window
+when set under an hour: each batch's row timestamps fall within
+`[now-interval, now]` instead of being randomly scattered across
+`--hours-back`. That produces a continuous "real time" stream in
+Grafana panels rather than the historical-mountain pattern the
+older interval/spread combo created.
 
 The datagen tool produces five realistic log patterns (JSON access logs, logfmt, nginx combined, Java stack traces, OTEL-formatted) across five services (`api-gateway`, `user-service`, `order-service`, `payment-service`, `notification-service`) with full OTEL semantic convention attributes. All data is dual-written to both hot tiers (VL disk + VT disk) and cold tier (S3 Parquet) in parallel.
 

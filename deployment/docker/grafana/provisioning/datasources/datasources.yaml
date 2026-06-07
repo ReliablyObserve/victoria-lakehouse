@@ -95,7 +95,13 @@ datasources:
     type: jaeger
     uid: victoria-lakehouse-traces
     access: proxy
-    url: http://lakehouse-traces:10428
+    # /select/jaeger prefix matches VT/LH's actual Jaeger HTTP API
+    # mount point. Without it the Grafana plugin hits /api/services
+    # against the bare port and lakehouse-traces returns 404 — which
+    # is what the cold-trace datasource was doing in Grafana (the
+    # Jaeger UI nginx leg was fine, but the in-Grafana plugin hit
+    # the wrong path). Mirrors the hot/global Jaeger entries below.
+    url: http://lakehouse-traces:10428/select/jaeger
     jsonData:
       tracesToLogsV2:
         datasourceUid: victoria-lakehouse-cold
@@ -146,6 +152,12 @@ datasources:
       streamingEnabled:
         search: false
         query: false
+      # Default search result limit — Grafana's Tempo plugin caps
+      # at 20 unless overridden here. Operators reported ClickHouse
+      # views show many more rows; matching that for parity.
+      # Grafana >= 11 accepts up to 9999.
+      search:
+        defaultLimit: 100
       spanBar:
         type: "None"
       # ServiceMap datasource UID dismisses the Tempo plugin's
@@ -185,6 +197,12 @@ datasources:
       streamingEnabled:
         search: false
         query: false
+      # Default search result limit — Grafana's Tempo plugin caps
+      # at 20 unless overridden here. Operators reported ClickHouse
+      # views show many more rows; matching that for parity.
+      # Grafana >= 11 accepts up to 9999.
+      search:
+        defaultLimit: 100
       spanBar:
         type: "None"
       # ServiceMap datasource UID dismisses the Tempo plugin's
@@ -223,6 +241,12 @@ datasources:
       streamingEnabled:
         search: false
         query: false
+      # Default search result limit — Grafana's Tempo plugin caps
+      # at 20 unless overridden here. Operators reported ClickHouse
+      # views show many more rows; matching that for parity.
+      # Grafana >= 11 accepts up to 9999.
+      search:
+        defaultLimit: 100
       spanBar:
         type: "None"
       # ServiceMap datasource UID dismisses the Tempo plugin's

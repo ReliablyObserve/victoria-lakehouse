@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"context"
+	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go/format"
@@ -9,6 +10,14 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
+
+// traceIndexLookupParallelism caps the number of concurrent
+// fetchFooterFile calls during LookupTraceIndex. The serial loop
+// blew the Jaeger client's 30s budget on a non-existent trace ID at
+// 589 files × ~50ms cached footer fetch each. Bounding to the same
+// query.file-workers default keeps S3 pressure in line with the
+// rest of the read path.
+const traceIndexLookupParallelism = 16
 
 // LookupTraceIndex resolves a trace's start/end time bounds from the
 // `_trace_idx` key-value metadata embedded in each trace Parquet file's
@@ -31,6 +40,18 @@ import (
 // so repeated lookups for the same trace ID share cached metadata. Errors
 // from individual files are logged and skipped (best-effort aggregation);
 // the lookup as a whole only fails if no usable index was ever read.
+// LookupTraceIndex walks the parquet `_trace_idx` footer KVs in
+// parallel for any file in the manifest. Returns (startNs, endNs,
+// true) when at least one file's index lists this trace ID; the
+// time range is the (min start, max end) across all hits.
+//
+// On a miss we return found=false without trying to qualify it any
+// further — the adapter falls through to VT's natural
+// rewriteTraceIndexQuery span-scan rewrite, which is the source of
+// truth (footer indexes can lag fresh ingest writes, so trusting
+// a footer-only miss as authoritative makes us silently skip real
+// data; see the commit history around this file for the regression
+// that brought that to light).
 func (s *Storage) LookupTraceIndex(ctx context.Context, traceID string) (startNs, endNs int64, found bool, err error) {
 	if traceID == "" {
 		metrics.TraceIndexLookups.Inc("miss")
@@ -43,17 +64,45 @@ func (s *Storage) LookupTraceIndex(ctx context.Context, traceID string) (startNs
 		return 0, 0, false, nil
 	}
 
-	// Track whether we hit a real error vs a clean miss so the metric
-	// label reports the operationally interesting case.
-	var anyErr error
+	// Flatten so the worker pool sees one job per file rather than a
+	// nested loop. Avoids the per-partition slice indirection inside
+	// hot goroutines.
+	var flatFiles []manifest.FileInfo
+	for _, partFiles := range files {
+		flatFiles = append(flatFiles, partFiles...)
+	}
 
+	// Parallel footer fetch with bounded concurrency. cancelCtx lets
+	// the outer deadline abort the fan-out cleanly.
+	cancelCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var mu sync.Mutex
+	var anyErr error
 	var hit bool
 	var aggStart, aggEnd int64
 
-	for _, partFiles := range files {
-		for i := range partFiles {
-			fi := partFiles[i]
-			if entry, ok, lookupErr := s.lookupTraceIDInFile(ctx, fi, traceID); ok {
+	sem := make(chan struct{}, traceIndexLookupParallelism)
+	var wg sync.WaitGroup
+	for i := range flatFiles {
+		fi := flatFiles[i]
+		select {
+		case sem <- struct{}{}:
+		case <-cancelCtx.Done():
+			// Fall through to the cancelCtx.Err() check below;
+			// a bare break here would only exit the select.
+		}
+		if cancelCtx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			entry, ok, lookupErr := s.lookupTraceIDInFile(cancelCtx, fi, traceID)
+			mu.Lock()
+			defer mu.Unlock()
+			if ok {
 				if !hit || entry.StartNs < aggStart {
 					aggStart = entry.StartNs
 				}
@@ -64,8 +113,9 @@ func (s *Storage) LookupTraceIndex(ctx context.Context, traceID string) (startNs
 			} else if lookupErr != nil {
 				anyErr = lookupErr
 			}
-		}
+		}()
 	}
+	wg.Wait()
 
 	if hit {
 		metrics.TraceIndexLookups.Inc("hit")
@@ -73,9 +123,10 @@ func (s *Storage) LookupTraceIndex(ctx context.Context, traceID string) (startNs
 	}
 	if anyErr != nil {
 		metrics.TraceIndexLookups.Inc("error")
-		// Return nil error to the caller: an error from a single footer
-		// fetch shouldn't fail the whole trace-by-ID request. The metric
-		// preserves the signal for an operator.
+		// Errors swallowed at this layer; the metric carries the
+		// signal. A footer-fetch error shouldn't fail the whole
+		// trace-by-ID request — VT's rewriteTraceIndexQuery
+		// fallback will handle the miss.
 		logger.Warnf("trace-index lookup encountered footer errors; falling back to scan; trace_id=%s; last_err=%v", traceID, anyErr)
 		return 0, 0, false, nil
 	}
@@ -83,8 +134,8 @@ func (s *Storage) LookupTraceIndex(ctx context.Context, traceID string) (startNs
 	return 0, 0, false, nil
 }
 
-// lookupTraceIDInFile pulls the Parquet footer for one manifest entry and
-// searches its `_trace_idx` KV metadata for the given trace ID.
+// lookupTraceIDInFile pulls the parquet footer for one manifest entry
+// and searches its `_trace_idx` KV metadata for the given trace ID.
 func (s *Storage) lookupTraceIDInFile(ctx context.Context, fi manifest.FileInfo, traceID string) (TraceIndexEntry, bool, error) {
 	f, err := s.fetchFooterFile(ctx, fi)
 	if err != nil {

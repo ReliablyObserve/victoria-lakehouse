@@ -271,7 +271,8 @@ On startup:
 
 ## Persistence
 
-**File format:** JSON
+**File format:** binary gob with a magic prefix and an early
+stat-size cap.
 
 ```go
 type persistedManifest struct {
@@ -284,8 +285,17 @@ type persistedManifest struct {
 }
 ```
 
-- `SaveTo(path)` — atomic write (temp file + rename), permissions `0o600`
-- `LoadFrom(path)` — reads JSON, restores all fields under lock, no-op if file missing
+- `SaveTo(path)` — atomic write (temp file + rename), permissions `0o600`. Writes the binary-format magic so the loader auto-detects it; legacy JSON snapshots are still readable for forward upgrades.
+- `LoadFrom(path)` — streams the gob decoder directly off the file via `io.LimitReader`, so peak RSS during a multi-PB restart is bounded by the streaming buffer rather than a full slurp. Early-rejects any file > 50 GiB (size cap configured in `internal/manifest/manifest.go`).
+- `SavedAt()` exposes the persisted timestamp; the lifecycle code publishes it as `lakehouse_manifest_snapshot_age_seconds` so operators can alert when persist is silently failing.
+
+### Cross-process lookup helper
+
+`Manifest.GetFileByKey(key)` is a public O(1) lookup that returns the
+matching `FileInfo` and a presence boolean. Used by lifecycle code
+(footer-cache snapshot prefetch) that needs to translate a list of
+keys back into FileInfo entries before scheduling S3 work; safe for
+concurrent use, takes the manifest's read lock internally.
 
 ## API Endpoints
 

@@ -70,6 +70,24 @@ func (h *Histogram) Observe(v float64) { h.h.Update(v) }
 // DefBuckets kept for API compatibility (ignored by VM histograms).
 var DefBuckets = []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
 
+// HistogramVec is a set of histograms indexed by a single label
+// value, backed by VictoriaMetrics/metrics GetOrCreateHistogram.
+// Buckets parameter is accepted for API compatibility and ignored
+// (VM histograms use automatic bucket ranges) — kept as the second
+// argument so call sites read identically to Prometheus.
+type HistogramVec struct {
+	name  string
+	label string
+}
+
+func NewHistogramVec(name string, _ []float64, label string) *HistogramVec {
+	return &HistogramVec{name: name, label: label}
+}
+
+func (hv *HistogramVec) Observe(labelValue string, v float64) {
+	vmmetrics.GetOrCreateHistogram(fmt.Sprintf(`%s{%s=%q}`, hv.name, hv.label, labelValue)).Update(v)
+}
+
 // CounterVec is a set of counters indexed by a single label value,
 // backed by VictoriaMetrics/metrics GetOrCreateCounter.
 type CounterVec struct {

@@ -158,7 +158,23 @@ This provides zero-delay read-after-write visibility:
 - Select queries insert pods for buffered data
 - Results merged and returned to client
 
-In single-binary mode (`--lakehouse.role=all`), the buffer is checked locally — no network hop.
+In single-binary mode (`--lakehouse.role=all`), the buffer is checked locally — no network hop. The BufferBridge registers `http://localhost:<port>` as a fallback endpoint so even when peer discovery returns zero peers (single-node compose, static deployment), the bridge still fans out one request to itself. As soon as DNS discovery resolves real peers, the self-fallback steps aside so the cluster doesn't double-count the local buffer.
+
+## Severity Text Derivation (`level` field)
+
+VL's OTel and jsonline ingest paths emit row severity under two different field names (`severity_text` from OTLP, `level` from Loki/jsonline). The cold-tier insert path treats both as the same column. When neither is present, the writer falls back through a fixed chain:
+
+1. Explicit `level` / `severity_text` field — wins if non-empty.
+2. `severity_number` → text via VL upstream's `FormatSeverity` (re-exported through `patches/vl-logs/vl-export-severity.patch`), mapping the OTel 1–24 range to the canonical `Trace`/`Debug`/`Info`/`Warn`/`Error`/`Fatal` labels.
+3. `level="X"` tag in the row's stream label set — lifted via VL's `StreamTags.Get` (re-exported through `patches/vl-logs/vl-export-streamtags-get.patch`).
+
+If every step produces nothing the row stores `severity_text=""` rather than substituting `Unspecified`; that empty signal lets operators grep for "no severity at all" rather than confusing it with a real low-severity entry. Compaction's `mergeLogFiles` runs the same chain on the merged rows, so historical files written before the fallback existed heal as they roll up through compaction levels.
+
+## Progressive Compression
+
+The Parquet writer uses zstd Default (level 3) for fresh L0 flushes — optimized for ingest throughput. The compactor escalates the level on each compaction output level using a schedule keyed by output level: default `[3, 7, 11]`, mapping to zstd Default / Better / Best. Each step trades more CPU at compaction time for permanently smaller cold-tier files, so older data pays the compression cost once and saves storage forever.
+
+Per-tenant overrides (see the Multi-tenancy doc) replace the schedule for a specific tenant — a high-volume / cost-sensitive tenant can commit more CPU than the global default; an ingest-rate-sensitive tenant can pin a uniform fast level. The `parquet-go` zstd wrapper currently exposes only four distinct encoder levels (Fastest / Default / Better / Best), so any schedule entry > 11 collapses to the same Best encoder — see `docs/architecture/parquet-compression-roadmap.md` for the planned codec swap that unlocks zstd 12-22 + long-range mode.
 
 ## Write Path Metrics
 

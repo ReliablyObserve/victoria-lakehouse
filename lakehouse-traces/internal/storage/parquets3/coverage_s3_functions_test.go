@@ -1066,21 +1066,32 @@ func TestS3Func_ParquetRowToFields_WithStorage_RegistryMatch(t *testing.T) {
 	s := testStorage()
 	s.registry = schema.NewRegistry(schema.TracesProfile)
 
-	// "service.name" is a promoted column in TracesProfile → should resolve via registry
+	// "service.name" is a promoted column in TracesProfile that aliases
+	// to internal "resource_attr:service.name". To unblock user filters
+	// written in either dialect, parquetRowToFields now emits TWO field
+	// entries — one under each name — so a filter on `service.name`
+	// matches just as well as one on `resource_attr:service.name`.
+	// Regressing this back to a single entry silently breaks every
+	// Jaeger search / field_values call that filters on a resource attr.
 	row := parquet.Row{
 		parquet.ValueOf("my-service").Level(0, 0, 0),
 	}
 	colNames := []string{"service.name"}
 
 	fields := parquetRowToFields(row, colNames, -1, s)
-	if len(fields) != 1 {
-		t.Fatalf("expected 1 field, got %d", len(fields))
+	if len(fields) != 2 {
+		t.Fatalf("expected 2 fields (internal alias + parquet name), got %d", len(fields))
 	}
-	if fields[0].Name == "" {
-		t.Error("expected non-empty field name")
+
+	byName := map[string]string{}
+	for _, f := range fields {
+		byName[f.Name] = f.Value
 	}
-	if fields[0].Value != "my-service" {
-		t.Errorf("fields[0].Value = %q, want my-service", fields[0].Value)
+	if byName["resource_attr:service.name"] != "my-service" {
+		t.Errorf("internal alias missing/wrong: %q", byName["resource_attr:service.name"])
+	}
+	if byName["service.name"] != "my-service" {
+		t.Errorf("parquet column name missing/wrong (user filter `service.name:=\"X\"` would miss): %q", byName["service.name"])
 	}
 }
 

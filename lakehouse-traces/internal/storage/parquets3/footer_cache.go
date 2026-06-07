@@ -83,6 +83,8 @@ func (fc *FooterCache) Put(key string, footer *CachedFooter) {
 	fc.items[key] = entry
 }
 
+// Has returns true if the key is present in the cache without modifying LRU
+// order or incrementing hit metrics. Used for cache-affinity sorting.
 func (fc *FooterCache) Has(key string) bool {
 	fc.mu.RLock()
 	_, ok := fc.items[key]
@@ -96,17 +98,25 @@ func (fc *FooterCache) Len() int {
 	return len(fc.items)
 }
 
-func (fc *FooterCache) Remove(key string) {
-	fc.mu.Lock()
-	defer fc.mu.Unlock()
-	if entry, ok := fc.items[key]; ok {
-		fc.lru.Remove(entry.elem)
-		delete(fc.items, key)
+// Keys returns the keys currently in the cache in most-recently-used
+// order (front of the LRU first). Used at shutdown to persist a
+// snapshot of cached file keys so the next process can asynchronously
+// re-prefetch their footers from S3 — the cold-start version of the
+// "instant after restart" experience.
+//
+// The slice is a fresh copy; callers may modify it. No effect on LRU
+// order or hit metrics.
+func (fc *FooterCache) Keys() []string {
+	fc.mu.RLock()
+	defer fc.mu.RUnlock()
+	out := make([]string, 0, fc.lru.Len())
+	for e := fc.lru.Front(); e != nil; e = e.Next() {
+		out = append(out, e.Value.(*footerEntry).key)
 	}
+	return out
 }
 
-// Resize updates the cache's maximum capacity and evicts entries from
-// the LRU tail if the new max is smaller than the current size. Called
+// Resize updates the cache cap. Used by the auto-tune ticker called
 // after RefreshFromS3 so the cache size tracks the manifest's file
 // count instead of being pinned at the startup value.
 //
@@ -142,6 +152,15 @@ func (fc *FooterCache) MaxItems() int {
 	fc.mu.RLock()
 	defer fc.mu.RUnlock()
 	return fc.maxItems
+}
+
+func (fc *FooterCache) Remove(key string) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if entry, ok := fc.items[key]; ok {
+		fc.lru.Remove(entry.elem)
+		delete(fc.items, key)
+	}
 }
 
 // ParseFooterFromData creates a CachedFooter by parsing only the parquet metadata
@@ -182,6 +201,10 @@ func ParseFooterFromBytes(key string, footerBytes []byte, fileSize int64) (*Cach
 	}, f, nil
 }
 
+// footerReaderAt serves a minimal virtual parquet file: "PAR1" magic at
+// offset 0 and the real footer bytes at the file tail. Requests for bytes
+// in the gap (column data region) return zeros — those offsets are never
+// read during metadata-only parsing.
 type footerReaderAt struct {
 	footer   []byte
 	fileSize int64

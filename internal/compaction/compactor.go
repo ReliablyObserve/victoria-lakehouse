@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/google/uuid"
 	"github.com/parquet-go/parquet-go"
@@ -16,7 +17,9 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
 )
 
@@ -41,6 +44,22 @@ type CompactorConfig struct {
 	RowGroupSize     int
 	CompressionLevel int
 	BloomRebuilder   BloomRebuilder
+
+	// CompactionConfig is the full compaction-section config so the
+	// compactor can read progressive-compression schedule (and any
+	// future per-output-level knobs) without taking another constructor
+	// parameter per knob. Passed by value because the struct is small
+	// and the compactor doesn't mutate it.
+	CompactionConfig config.CompactionConfig
+
+	// TenantCompressionLookup resolves the per-output-level
+	// compression schedule for a given tenant prefix (e.g.
+	// "1002/0/logs/"). Returns nil to fall through to the global
+	// CompactionConfig.CompressionLevelByOutputLevel. Optional —
+	// when nil the compactor uses the global schedule for every
+	// tenant. Wired by the embedder (main.go) so the compactor
+	// stays independent of the tenant policy package.
+	TenantCompressionLookup func(tenantPrefix string) []int
 }
 
 // CompactResult summarises one compaction run.
@@ -69,6 +88,8 @@ type Compactor struct {
 	rowGroupSize     int
 	compressionLevel int
 	bloomRebuilder   BloomRebuilder
+	cfg              config.CompactionConfig
+	tenantLookup     func(tenantPrefix string) []int
 }
 
 // NewCompactor creates a Compactor from the given config.
@@ -81,6 +102,8 @@ func NewCompactor(cfg CompactorConfig) *Compactor {
 		rowGroupSize:     cfg.RowGroupSize,
 		compressionLevel: cfg.CompressionLevel,
 		bloomRebuilder:   cfg.BloomRebuilder,
+		cfg:              cfg.CompactionConfig,
+		tenantLookup:     cfg.TenantCompressionLookup,
 	}
 }
 
@@ -235,6 +258,29 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	var rowsMerged int64
 	var minTime, maxTime int64
 
+	// Pick the per-output-level compression. Tenant override beats
+	// the global progressive schedule, which in turn beats the
+	// static c.compressionLevel — that last fallback keeps
+	// pre-progressive deployments behaviour-compatible.
+	levelForOutput := c.compressionLevel
+	if scheduled := c.cfg.CompressionLevelForOutput(outputLevel); scheduled > 0 {
+		levelForOutput = scheduled
+	}
+	if c.tenantLookup != nil {
+		if perTenant := c.tenantLookup(g.TenantPrefix); len(perTenant) > 0 {
+			idx := outputLevel
+			if idx >= len(perTenant) {
+				idx = len(perTenant) - 1
+			}
+			if idx < 0 {
+				idx = 0
+			}
+			if perTenant[idx] > 0 {
+				levelForOutput = perTenant[idx]
+			}
+		}
+	}
+
 	switch c.mode {
 	case config.ModeLogs:
 		merged, err := c.mergeLogFiles(allData)
@@ -246,7 +292,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 			minTime = merged[0].TimestampUnixNano
 			maxTime = merged[len(merged)-1].TimestampUnixNano
 		}
-		outputData, err = writeCompactedLogs(merged, c.rowGroupSize, c.compressionLevel)
+		outputData, err = writeCompactedLogs(merged, c.rowGroupSize, levelForOutput)
 		if err != nil {
 			return nil, fmt.Errorf("write compacted logs: %w", err)
 		}
@@ -261,7 +307,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 			minTime = merged[0].TimestampUnixNano
 			maxTime = merged[len(merged)-1].TimestampUnixNano
 		}
-		outputData, err = writeCompactedTraces(merged, c.rowGroupSize, c.compressionLevel)
+		outputData, err = writeCompactedTraces(merged, c.rowGroupSize, levelForOutput)
 		if err != nil {
 			return nil, fmt.Errorf("write compacted traces: %w", err)
 		}
@@ -299,6 +345,32 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		inputRawBytes += f.RawBytes
 	}
 
+	// Per-output-level compression observability. The ratio is
+	// inputRawBytes / len(outputData) — same denominator as the
+	// /api/v1/tenants per-tenant ratio so a dashboard reading either
+	// can correlate. levelForOutput went through the same tenant >
+	// global > static fallback chain above, so the gauge reflects
+	// the level that was actually applied (not just the
+	// schedule's preferred level).
+	outputLevelLabel := strconv.Itoa(outputLevel)
+	if inputRawBytes > 0 && len(outputData) > 0 {
+		ratio := float64(inputRawBytes) / float64(len(outputData))
+		metrics.CompactionCompressionRatio.Observe(outputLevelLabel, ratio)
+	}
+	metrics.CompactionCompressionLevelUsed.Set(outputLevelLabel, int64(levelForOutput))
+
+	// Union the per-field label sets across input files so the compacted
+	// output stays discoverable via the manifest's inverted label index
+	// (m.labelIndex). Without this, a field-equality filter like
+	// `service.name:="api-gateway"` consults the inverted index, finds
+	// only uncompacted files, and silently undercounts by ~80% in any
+	// cluster with active compaction. Total counts and stream-shaped
+	// filters keep working (they don't use the label-index fast path),
+	// which is exactly the asymmetric undercount pattern that exposed
+	// the bug. The union is bounded by maxLabelsPerField inside
+	// indexFileLabels so a misbehaving input can't blow up the index.
+	mergedLabels := mergeFileLabels(g.Files)
+
 	c.manifest.AddFile(partition, manifest.FileInfo{
 		Key:               outputKey,
 		Bucket:            g.Bucket,
@@ -309,6 +381,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		RawBytes:          inputRawBytes,
 		SchemaFingerprint: fp,
 		CompactionLevel:   outputLevel,
+		Labels:            mergedLabels,
 	})
 
 	for _, f := range g.Files {
@@ -336,6 +409,73 @@ func (c *Compactor) mergeLogFiles(allData [][]byte) ([]schema.LogRow, error) {
 		}
 		merged = append(merged, rows...)
 	}
+
+	// Compaction-time trace-shape filter. Mirrors the ingest gate in
+	// internal/vlstorage/insert.go: rows whose _stream marks them as
+	// VT span / service-graph data get dropped on the way to the
+	// merged output. Without this, historical files that already
+	// hold trace-shape rows (written before the ingest gate landed)
+	// would keep round-tripping through compaction, keeping the
+	// manifest RowCount inflated forever. The drop here is the
+	// natural off-ramp — each compaction pass shrinks the bad data
+	// monotonically. Mass-rewrite tools (`/internal/compact`) can
+	// trigger this immediately if an operator wants the cleanup to
+	// finish on their schedule.
+	if len(merged) > 0 {
+		kept := merged[:0]
+		dropped := 0
+		for i := range merged {
+			if storage.IsTraceShapedStream(merged[i].Stream) {
+				dropped++
+				continue
+			}
+			kept = append(kept, merged[i])
+		}
+		if dropped > 0 {
+			metrics.LogsTraceShapedRowsDroppedAtCompaction.Add(dropped)
+		}
+		merged = kept
+	}
+
+	// Compaction-time SeverityText backfill. Rows written before the
+	// insert-time fallback existed have empty SeverityText even when
+	// the stream tag carries `level="X"` or severity_number is set.
+	// Each compaction pass rewrites the rows on disk, so it's the
+	// natural healing point — historical parquets get healed as they
+	// roll up through compaction levels, no separate rewrite tool
+	// needed.
+	//
+	// Reuses the same schema.DeriveSeverityText helper the insert
+	// path uses, so the precedence chain (explicit text → derived
+	// from severity_number → stream-tag `level`) is identical
+	// across the two write paths.
+	if len(merged) > 0 {
+		backfilled := 0
+		for i := range merged {
+			if merged[i].SeverityText != "" {
+				continue
+			}
+			var st *logstorage.StreamTags
+			if merged[i].Stream != "" {
+				st = logstorage.GetStreamTags()
+				if err := st.UnmarshalString(merged[i].Stream); err != nil {
+					logstorage.PutStreamTags(st)
+					st = nil
+				}
+			}
+			if derived := schema.DeriveSeverityText("", merged[i].SeverityNumber, st); derived != "" {
+				merged[i].SeverityText = derived
+				backfilled++
+			}
+			if st != nil {
+				logstorage.PutStreamTags(st)
+			}
+		}
+		if backfilled > 0 {
+			metrics.LogsSeverityTextBackfilledAtCompaction.Add(backfilled)
+		}
+	}
+
 	sort.Slice(merged, func(i, j int) bool {
 		if merged[i].TimestampUnixNano != merged[j].TimestampUnixNano {
 			return merged[i].TimestampUnixNano < merged[j].TimestampUnixNano
@@ -457,4 +597,39 @@ func zstdLevel(level int) zstd.Level {
 	default:
 		return zstd.SpeedBestCompression
 	}
+}
+
+// mergeFileLabels unions the per-field label value sets from a slice of
+// input files. Used by the compactor so the merged output file stays
+// discoverable in the manifest's inverted label index — every value that
+// any input file had on a given field gets registered against the output
+// key. Returns nil when no input carries labels (the manifest's
+// rebuildIndex / indexFileLabels both treat nil identically to "this
+// file isn't indexed yet" — readers fall back to the per-row filter).
+func mergeFileLabels(files []manifest.FileInfo) map[string][]string {
+	merged := make(map[string]map[string]struct{})
+	for _, f := range files {
+		for field, values := range f.Labels {
+			set, ok := merged[field]
+			if !ok {
+				set = make(map[string]struct{})
+				merged[field] = set
+			}
+			for _, v := range values {
+				set[v] = struct{}{}
+			}
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(merged))
+	for field, set := range merged {
+		vals := make([]string, 0, len(set))
+		for v := range set {
+			vals = append(vals, v)
+		}
+		out[field] = vals
+	}
+	return out
 }

@@ -19,9 +19,9 @@ func TestSnapshot_BinaryRoundtrip(t *testing.T) {
 		src.AddFile(
 			fmt.Sprintf("dt=2026-06-04/hour=%02d", i%24),
 			FileInfo{
-				Key:               fmt.Sprintf("0/0/traces/dt=2026-06-04/hour=%02d/f%d.parquet", i%24, i),
-				Size:              int64(1000 + i),
-				RowCount:          int64(100 + i),
+				Key:       fmt.Sprintf("0/0/traces/dt=2026-06-04/hour=%02d/f%d.parquet", i%24, i),
+				Size:      int64(1000 + i),
+				RowCount:  int64(100 + i),
 				MinTimeNs: int64(i) * 1e9,
 				MaxTimeNs: int64(i+1) * 1e9,
 			},
@@ -113,10 +113,10 @@ func TestSnapshot_BinarySizeReduction(t *testing.T) {
 		src.AddFile(
 			fmt.Sprintf("dt=2026-06-04/hour=%02d", i%24),
 			FileInfo{
-				Key:               fmt.Sprintf("0/0/traces/dt=2026-06-04/hour=%02d/file%07d.parquet", i%24, i),
-				Size:              int64(1000 + i),
-				RowCount:          int64(500 + i),
-				RawBytes:          int64(5000 + i*5),
+				Key:       fmt.Sprintf("0/0/traces/dt=2026-06-04/hour=%02d/file%07d.parquet", i%24, i),
+				Size:      int64(1000 + i),
+				RowCount:  int64(500 + i),
+				RawBytes:  int64(5000 + i*5),
 				MinTimeNs: int64(i) * 1e9,
 				MaxTimeNs: int64(i+1) * 1e9,
 			},

@@ -149,6 +149,20 @@ func Unmarshal(data []byte) ([]Entry, error) {
 		return nil, fmt.Errorf("unknown trace index version: %d", data[0])
 	}
 	count := int(binary.LittleEndian.Uint32(data[1:5]))
+	// Defensive cap on the preallocation. count is attacker-controlled
+	// (it comes from the footer KV which any parquet writer could
+	// produce, including a corrupted or hostile one). Without this
+	// guard, a flipped count MSB asks for ~2.1 B entries and
+	// `make([]Entry, 0, count)` triggers a multi-GB allocation —
+	// either a runtime panic or an OOM-kill on the daemon, neither
+	// acceptable on the hot query path. 1<<20 = ~1M entries is well
+	// above any realistic _trace_idx footer (a single parquet
+	// partition typically lists 10 k–100 k traces) while bounding
+	// the worst-case allocation to ~32 MB.
+	const maxEntries = 1 << 20
+	if count > maxEntries {
+		return nil, fmt.Errorf("trace index count too large: %d (max %d)", count, maxEntries)
+	}
 	entries := make([]Entry, 0, count)
 	off := 5
 	for i := 0; i < count; i++ {

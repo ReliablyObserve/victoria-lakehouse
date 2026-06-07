@@ -59,7 +59,21 @@ func (s *Storage) fetchFooterFile(ctx context.Context, fi manifest.FileInfo) (*p
 	}
 	totalFooterBytes := footerLen + 8
 	if totalFooterBytes > len(tail) {
-		return nil, fmt.Errorf("footer larger than prefetch tail: %d > %d", totalFooterBytes, len(tail))
+		// Two-phase fetch — see internal/storage/parquets3/
+		// storage_fields.go for the rationale. Mirrored byte-for-byte
+		// per the logs↔traces module parity rule.
+		footerOffset := fi.Size - int64(totalFooterBytes)
+		if footerOffset < 0 {
+			return nil, fmt.Errorf("footer length implies negative offset: footer=%d file=%d", totalFooterBytes, fi.Size)
+		}
+		bigTail, err := s.pool.DownloadRange(ctx, fi.Key, footerOffset, int64(totalFooterBytes))
+		if err != nil {
+			return nil, fmt.Errorf("download oversize footer range: %w", err)
+		}
+		if len(bigTail) < totalFooterBytes {
+			return nil, fmt.Errorf("oversize footer fetch short: got %d, want %d", len(bigTail), totalFooterBytes)
+		}
+		tail = bigTail
 	}
 	footerSlice := tail[len(tail)-totalFooterBytes:]
 	cached, f, err := ParseFooterFromBytes(fi.Key, footerSlice, fi.Size)
@@ -445,9 +459,21 @@ func collectFilteredValues(rows []parquet.Row, colNames []string, targetColIdx i
 	}
 }
 
-// parquetRowToFields converts a raw Parquet row to []logstorage.Field for VL filter matching.
+// parquetRowToFields converts a raw Parquet row to []logstorage.Field
+// for VL filter matching. For TracesProfile columns whose internal
+// alias differs from the parquet column name (e.g. parquet
+// `service.name` aliases to internal `resource_attr:service.name`),
+// we MUST emit the value under BOTH names — otherwise a user
+// filter like `service.name:="api-gateway"` looks up a field that
+// the filter sees as missing and matches no rows. That's the
+// silent-empty path behind every `field_values` / Jaeger search
+// query that filtered on service/resource attributes returning 0
+// on cold while hot VT (which doesn't alias) worked. Duplicating
+// the field is cheap (the slice already lives for the row's
+// lifetime) and the VL filter walks fields by name, so the extra
+// entry just gives both spellings a chance to match.
 func parquetRowToFields(row parquet.Row, colNames []string, tsColIdx int, s *Storage) []logstorage.Field {
-	fields := make([]logstorage.Field, 0, len(colNames))
+	fields := make([]logstorage.Field, 0, len(colNames)*2)
 	for i, name := range colNames {
 		if i >= len(row) {
 			break
@@ -466,6 +492,12 @@ func parquetRowToFields(row parquet.Row, colNames []string, tsColIdx int, s *Sto
 			val = valueToString(row[i])
 		}
 		fields = append(fields, logstorage.Field{Name: internalName, Value: val})
+		if internalName != name {
+			// Same value under the parquet column name so a filter
+			// written in either dialect matches. The duplicate is a
+			// no-op for the schema that doesn't alias (logs side).
+			fields = append(fields, logstorage.Field{Name: name, Value: val})
+		}
 	}
 	return fields
 }

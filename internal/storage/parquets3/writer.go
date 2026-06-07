@@ -435,6 +435,20 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 	}
 	metrics.InsertBytesUploaded.Add(len(result.Data))
 
+	// Wall-clock instrumentation of the two writer-artifact builds
+	// that gate query-side speedups (inverted label index + file
+	// bloom). Logged as metrics rather than per-line logs because
+	// each flush is a hot path.
+	labelStart := time.Now()
+	labels := extractLogLabels(rows)
+	metrics.WriterLabelExtractionsTotal.Inc("logs")
+	metrics.WriterLabelExtractionDuration.Observe(time.Since(labelStart).Seconds())
+	var labelValueCount int
+	for _, vals := range labels {
+		labelValueCount += len(vals)
+	}
+	metrics.WriterLabelValuesTotal.Add("logs", labelValueCount)
+
 	fi := manifest.FileInfo{
 		Key:               key,
 		Bucket:            bucket,
@@ -444,12 +458,21 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 		MaxTimeNs:         rows[len(rows)-1].TimestampUnixNano,
 		RawBytes:          result.RawBytes,
 		SchemaFingerprint: schemaFingerprint(w.mode),
-		Labels:            extractLogLabels(rows),
+		Labels:            labels,
 	}
 	w.manifest.AddFile(partition, fi)
 
 	if w.bloomObserver != nil {
-		w.bloomObserver.OnFileFlush(partition, key, extractLogBloomValues(rows))
+		bloomStart := time.Now()
+		bloomValues := extractLogBloomValues(rows)
+		metrics.WriterBloomBuildsTotal.Inc("logs")
+		metrics.WriterBloomBuildDuration.Observe(time.Since(bloomStart).Seconds())
+		var bloomValueCount int
+		for _, vals := range bloomValues {
+			bloomValueCount += len(vals)
+		}
+		metrics.WriterBloomValuesTotal.Add("logs", bloomValueCount)
+		w.bloomObserver.OnFileFlush(partition, key, bloomValues)
 	}
 
 	if w.statsCallback != nil {
@@ -501,6 +524,16 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 	}
 	metrics.InsertBytesUploaded.Add(len(result.Data))
 
+	labelStart := time.Now()
+	labels := extractTraceLabels(rows)
+	metrics.WriterLabelExtractionsTotal.Inc("traces")
+	metrics.WriterLabelExtractionDuration.Observe(time.Since(labelStart).Seconds())
+	var labelValueCount int
+	for _, vals := range labels {
+		labelValueCount += len(vals)
+	}
+	metrics.WriterLabelValuesTotal.Add("traces", labelValueCount)
+
 	fi := manifest.FileInfo{
 		Key:               key,
 		Bucket:            bucket,
@@ -510,12 +543,21 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 		MaxTimeNs:         rows[len(rows)-1].TimestampUnixNano,
 		RawBytes:          result.RawBytes,
 		SchemaFingerprint: schemaFingerprint(w.mode),
-		Labels:            extractTraceLabels(rows),
+		Labels:            labels,
 	}
 	w.manifest.AddFile(partition, fi)
 
 	if w.bloomObserver != nil {
-		w.bloomObserver.OnFileFlush(partition, key, extractTraceBloomValues(rows))
+		bloomStart := time.Now()
+		bloomValues := extractTraceBloomValues(rows)
+		metrics.WriterBloomBuildsTotal.Inc("traces")
+		metrics.WriterBloomBuildDuration.Observe(time.Since(bloomStart).Seconds())
+		var bloomValueCount int
+		for _, vals := range bloomValues {
+			bloomValueCount += len(vals)
+		}
+		metrics.WriterBloomValuesTotal.Add("traces", bloomValueCount)
+		w.bloomObserver.OnFileFlush(partition, key, bloomValues)
 	}
 
 	if w.statsCallback != nil {
@@ -637,8 +679,13 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 		}
 	}
 
-	if idxData := marshalTraceIndex(computeTraceIndex(rows)); len(idxData) > 0 {
+	tidxStart := time.Now()
+	tidxEntries := computeTraceIndex(rows)
+	if idxData := marshalTraceIndex(tidxEntries); len(idxData) > 0 {
 		opts = append(opts, parquet.KeyValueMetadata(traceIndexMetadataKey, string(idxData)))
+		metrics.WriterTraceIdxBuildsTotal.Inc()
+		metrics.WriterTraceIdxEntriesTotal.Add(len(tidxEntries))
+		metrics.WriterTraceIdxBuildDuration.Observe(time.Since(tidxStart).Seconds())
 	}
 
 	writer := parquet.NewGenericWriter[schema.TraceRow](&buf, opts...)

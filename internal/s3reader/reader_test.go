@@ -111,9 +111,14 @@ func TestRetryS3_ExhaustsRetries(t *testing.T) {
 	if calls != 3 { // initial + 2 retries
 		t.Fatalf("expected 3 calls, got %d", calls)
 	}
-	// With maxRetries=2, backoffs are 100ms and 200ms = 300ms minimum
-	if elapsed < 250*time.Millisecond {
-		t.Fatalf("expected backoff delays, but elapsed was only %v", elapsed)
+	// With maxRetries=2 and full jitter, backoffs are uniform random
+	// in [0, 100ms) + [0, 200ms) → total ∈ [0, 300ms). Upper-bound
+	// assertion catches a runaway sleep loop without flaking on the
+	// jittered short tail. Lower bound is 0ms (jitter can pick the
+	// zero edge twice). The retry COUNT assertion above is the
+	// load-bearing one.
+	if elapsed > 350*time.Millisecond {
+		t.Fatalf("retry elapsed exceeded the jittered upper bound: %v > 350ms — backoff cap broken?", elapsed)
 	}
 }
 

@@ -183,6 +183,34 @@ func TestAdapter_TraceIndexFastpath_ErrorIsNotFatal(t *testing.T) {
 	}
 }
 
+// TestAdapter_TraceIndexFastpath_Miss_FallsThrough pins the cold
+// path's load-bearing parity behaviour: when LookupTraceIndex
+// returns found=false, the adapter MUST fall through to VT's
+// natural rewriteTraceIndexQuery span-scan rewrite — it must NOT
+// short-circuit. Regressing this back to "trust the miss and abort"
+// re-introduces the Jaeger trace-by-id == 0 results bug from
+// before this commit, because the `_trace_idx` footer index lags
+// fresh ingest writes and can legitimately miss trace IDs that
+// have spans in the file's row data.
+func TestAdapter_TraceIndexFastpath_Miss_FallsThrough(t *testing.T) {
+	fallbackCalled := false
+	store := &fastpathStore{
+		found:    false,
+		runQuery: func(*logstorage.Query) { fallbackCalled = true },
+	}
+	a := &Adapter{store: store}
+
+	wb := func(uint, *logstorage.DataBlock) {}
+
+	q := makeTraceIndexQuery(t, "missing-from-footer", 11)
+	if err := a.RunQuery(&logstorage.QueryContext{Context: context.Background(), Query: q}, wb); err != nil {
+		t.Fatalf("RunQuery: %v", err)
+	}
+	if !fallbackCalled {
+		t.Fatal("adapter skipped the span-scan fallback on a footer miss; trace-by-id will silently 404 for traces present in row data but missing from the footer index")
+	}
+}
+
 func TestAdapter_TraceIndexFastpath_NonIndexQueryUntouched(t *testing.T) {
 	// A regular logs query must NOT touch LookupTraceIndex.
 	store := &fastpathStore{

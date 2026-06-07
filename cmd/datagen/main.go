@@ -35,6 +35,16 @@ var (
 	}
 )
 
+// continuousSpreadSec controls timestamp jitter in continuous-mode
+// batches. When > 0, every row's ts is `now - rand(0, spreadSec)`
+// — the rows in a 6-second batch land within the last 6 seconds of
+// real time rather than being shotgunned across the last hour, so
+// Grafana shows a steady ingest line instead of a sawtooth "mountain"
+// where the seed-batch dominates current-time queries. Set from the
+// --interval flag in continuous mode; zero outside continuous mode
+// (initial seed-batch keeps the historical spread for backfill).
+var continuousSpreadSec int
+
 func main() {
 	logsCount := flag.Int("logs", 5000, "number of log rows per batch")
 	tracesCount := flag.Int("traces", 1000, "number of trace spans per batch")
@@ -58,7 +68,17 @@ func main() {
 	generateBatch(*logsCount, *tracesCount, *hoursBack, *vlEndpoint, *vtEndpoint, *lhLogsEndpoint, *lhTracesEndpoint, *lokiEndpoint, *tempoEndpoint, *accountID, *projectID, *orgID)
 
 	if *interval > 0 {
-		log.Printf("Continuous mode: generating %d logs + %d traces every %s", *logsCount, *tracesCount, *interval)
+		// In continuous mode each batch's timestamps are clustered
+		// within the last `interval` seconds so successive batches
+		// look like real-time ingest (no historical mountain). The
+		// initial seed batch above keeps the original spread to
+		// backfill historical-window dashboards on startup.
+		continuousSpreadSec = int((*interval).Seconds())
+		if continuousSpreadSec < 1 {
+			continuousSpreadSec = 1
+		}
+		log.Printf("Continuous mode: generating %d logs + %d traces every %s (timestamps spread over last %ds)",
+			*logsCount, *tracesCount, *interval, continuousSpreadSec)
 		ticker := time.NewTicker(*interval)
 		defer ticker.Stop()
 		for range ticker.C {
@@ -156,6 +176,11 @@ func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint
 		baseTime := now.Add(-time.Duration(hoursAgo) * time.Hour).Add(time.Duration(rng.Intn(3600)) * time.Second)
 		if hoursBack <= 1 {
 			baseTime = now.Add(-time.Duration(rng.Intn(3600)) * time.Second)
+		}
+		if continuousSpreadSec > 0 {
+			// Continuous mode: tight clustering on real-time, not
+			// shotgunned across the full last hour.
+			baseTime = now.Add(-time.Duration(rng.Intn(continuousSpreadSec)) * time.Second)
 		}
 		traceID := randomHex(32)
 		// Build an RPC call-chain across services so span pairs encode real
@@ -390,6 +415,11 @@ func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint
 			ts = now.Add(-time.Duration(hoursAgo) * time.Hour).Add(time.Duration(rng.Intn(3600)) * time.Second)
 			if hoursBack <= 1 {
 				ts = now.Add(-time.Duration(rng.Intn(3600)) * time.Second)
+			}
+			if continuousSpreadSec > 0 {
+				// Continuous mode: cluster on real-time so successive
+				// batches form a steady stream.
+				ts = now.Add(-time.Duration(rng.Intn(continuousSpreadSec)) * time.Second)
 			}
 			svc = services[rng.Intn(len(services))]
 			ns = namespaces[rng.Intn(len(namespaces))]

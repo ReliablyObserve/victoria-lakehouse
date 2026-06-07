@@ -162,11 +162,19 @@ type Manifest struct {
 	// the manifest's file count).
 	tenantAggregates map[tenantAccumKey]*tenantAccum
 
-	minTime        time.Time
-	maxTime        time.Time
-	totalFiles     int
-	totalBytes     int64
-	lastRefresh    time.Time
+	minTime     time.Time
+	maxTime     time.Time
+	totalFiles  int
+	totalBytes  int64
+	lastRefresh time.Time
+	// savedAt is the timestamp the most recent successful snapshot
+	// write recorded. Loaded from `persistedManifest.SavedAt` on
+	// LoadFrom; updated on every SaveTo. Exposed via SavedAt() for
+	// the `lakehouse_manifest_snapshot_age_seconds` metric so
+	// operators can spot pods running on stale snapshots — relevant
+	// during long-downtime recovery where a 1-hour-old snapshot
+	// gates reads on data written by other peers in the meantime.
+	savedAt        time.Time
 	prefix         string
 	bucket         string
 	prefixTemplate string
@@ -175,8 +183,21 @@ type Manifest struct {
 	// Without this cache, tenantKeyFromFileKey() reparses the template
 	// (two strings.Contains calls) on every file — at 50M files during
 	// a manifest rebuild that's 100M redundant string scans.
-	templateSegments  int
-	templateHasOrgID  bool
+	templateSegments int
+	templateHasOrgID bool
+
+	// signalSuffix is the per-tier S3 prefix segment ("logs/" or
+	// "traces/") that follows the tenant template. When the prefix
+	// template uses {AccountID}/{ProjectID} (or {OrgID}),
+	// refreshTenantScoped discovers tenant directories without their
+	// signal suffix; without this field every lakehouse-logs pod
+	// would also LIST `0/0/traces/` and end up with mixed-schema
+	// parquet files in its manifest — visible in the wild as trace
+	// columns (parent, child, callCount, span.kind, ...) leaking
+	// into `/select/logsql/field_names` and Grafana drilldown
+	// detected_fields. Empty when no template is in use (legacy
+	// full-bucket path) — same behaviour as before.
+	signalSuffix string
 
 	// partitionAttempts maps "dt=YYYY-MM-DD/hour=HH" -> last MarkAttempt
 	// timestamp recorded by the compaction scheduler (see
@@ -427,6 +448,18 @@ func (m *Manifest) SetPrefixTemplate(tmpl string) {
 	}
 }
 
+// SetSignalSuffix records the per-tier suffix ("logs/" or "traces/")
+// that follows the tenant template. The tenant-scoped refresh path
+// (refreshTenantScoped) appends this to every discovered tenant
+// prefix so a lakehouse-logs pod LISTs only `<tenant>/logs/` keys
+// and never sees a `<tenant>/traces/` parquet file. Safe to call
+// with "" to disable filtering (legacy behaviour).
+func (m *Manifest) SetSignalSuffix(suffix string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.signalSuffix = suffix
+}
+
 // refreshFullBucket enumerates every key under listPrefix (or the
 // entire bucket when listPrefix=="") and builds a fresh file map. Used
 // by the legacy single-prefix path and as a fallback when tenant
@@ -512,6 +545,16 @@ func (m *Manifest) refreshTenantScoped(ctx context.Context, client *s3.Client) (
 	resCh := make(chan tenantResult, len(tenantPrefixes))
 	sem := make(chan struct{}, tenantRefreshMaxParallel)
 
+	// Per-tier signal suffix is read once outside the loop so each
+	// goroutine sees the same value without re-locking the manifest.
+	// Empty string preserves legacy behaviour (full tenant prefix
+	// LIST). lakehouse-logs sets "logs/", lakehouse-traces sets
+	// "traces/" — this keeps a logs pod from LISTing trace parquets
+	// (and vice versa) at PB scale.
+	m.mu.RLock()
+	signalSuffix := m.signalSuffix
+	m.mu.RUnlock()
+
 	scheduled := 0
 	for _, tp := range tenantPrefixes {
 		select {
@@ -524,11 +567,12 @@ func (m *Manifest) refreshTenantScoped(ctx context.Context, client *s3.Client) (
 			scheduled++
 			continue
 		}
+		listPrefix := tp + signalSuffix
 		go func(prefix string) {
 			defer func() { <-sem }()
 			f, tf, tb, err := m.refreshFullBucket(innerCtx, client, prefix)
 			resCh <- tenantResult{files: f, fileCount: tf, byteCount: tb, err: err}
-		}(tp)
+		}(listPrefix)
 		scheduled++
 	}
 
@@ -623,9 +667,11 @@ func (m *Manifest) listCommonPrefixes(ctx context.Context, client *s3.Client, pr
 }
 
 func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
-	files := make(map[string][]FileInfo)
-	var totalFiles int
-	var totalBytes int64
+	var (
+		files      map[string][]FileInfo
+		totalFiles int
+		totalBytes int64
+	)
 
 	// When per-tenant prefix isolation is configured, the writer
 	// writes under "{AccountID}/{ProjectID}/<mode>/" — many distinct
@@ -723,6 +769,23 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 				pFiles[i].MaxTimeNs = pMaxNs
 			}
 		}
+	}
+
+	// Cliff guard. A transient S3 LIST hiccup (toxiproxy spike, brief
+	// partial pagination, network blip mid-refresh) can return success
+	// with a sparse file map. Swapping that in clears the manifest
+	// for the ~30s until the next refresh — exactly the "Jaeger Cold
+	// suddenly returning 0 results" symptom the operator sees. If the
+	// new manifest lost more than half its files since the last
+	// refresh AND it wasn't a deliberate empty manifest (m.totalFiles
+	// > 0 before this run), we keep the OLD state and surface a
+	// warning. Genuinely-emptied buckets land on the next refresh
+	// when the count actually drops to zero.
+	if m.totalFiles > 0 && totalFiles < m.totalFiles/2 {
+		logger.Warnf("manifest refresh cliff-guard: rejecting refresh that lost %d/%d files; keeping previous state (likely transient S3 LIST hiccup)", m.totalFiles-totalFiles, m.totalFiles)
+		metrics.ManifestRefreshCliffGuardRejections.Inc()
+		m.mu.Unlock()
+		return nil
 	}
 
 	m.files = files
@@ -1024,6 +1087,19 @@ func (m *Manifest) MaxTime() time.Time {
 	return m.maxTime
 }
 
+// SavedAt returns the timestamp of the last successful SaveTo
+// (or the SavedAt persisted in the most recent LoadFrom, whichever
+// happened more recently). Zero time means no snapshot has been
+// persisted in this process's lifetime and none was loaded — the
+// `lakehouse_manifest_snapshot_age_seconds` metric reports +Inf in
+// that case so a stale-snapshot dashboard can't show "0 seconds"
+// for a pod that has no snapshot at all.
+func (m *Manifest) SavedAt() time.Time {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.savedAt
+}
+
 func (m *Manifest) PartitionCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1148,6 +1224,22 @@ func (m *Manifest) findFileLocked(key string) ([]FileInfo, int) {
 	// byKey said this partition, but the file isn't there — index is
 	// stale. Safe to return not-found; the mutator just no-ops.
 	return nil, -1
+}
+
+// GetFileByKey returns the FileInfo for the given S3 key and a
+// presence boolean. Read-only counterpart of findFileLocked; takes
+// the mutex internally so callers from another goroutine don't have
+// to. Used by lifecycle code (footer-cache snapshot prefetch) that
+// needs to translate a list of keys back into FileInfo before
+// scheduling S3 work.
+func (m *Manifest) GetFileByKey(key string) (FileInfo, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	files, idx := m.findFileLocked(key)
+	if idx < 0 {
+		return FileInfo{}, false
+	}
+	return files[idx], true
 }
 
 // SetFileBucket updates the bucket field for the file identified by
@@ -1440,6 +1532,7 @@ type persistedManifest struct {
 }
 
 func (m *Manifest) SaveTo(path string) error {
+	now := time.Now()
 	m.mu.RLock()
 	snap := persistedManifest{
 		Files:       m.files,
@@ -1447,7 +1540,7 @@ func (m *Manifest) SaveTo(path string) error {
 		MaxTimeNs:   m.maxTime.UnixNano(),
 		TotalFiles_: m.totalFiles,
 		TotalBytes_: m.totalBytes,
-		SavedAt:     time.Now(),
+		SavedAt:     now,
 	}
 	m.mu.RUnlock()
 
@@ -1476,41 +1569,81 @@ func (m *Manifest) SaveTo(path string) error {
 		return fmt.Errorf("rename manifest: %w", err)
 	}
 
+	// Record the timestamp for the snapshot-age metric. Done after
+	// the atomic rename so a failed write doesn't reset the age
+	// gauge to "fresh" without a successful persist.
+	m.mu.Lock()
+	m.savedAt = now
+	m.mu.Unlock()
+
 	logger.Infof("manifest saved; path=%s, files=%d, bytes=%d, format=binary", path, snap.TotalFiles_, buf.Len())
 	return nil
 }
 
 func (m *Manifest) LoadFrom(path string) error {
-	data, err := os.ReadFile(path)
+	// Open as a stream rather than os.ReadFile — at PB scale the
+	// snapshot is 500 MB to multiple GB, and ReadFile would hold
+	// the entire file in memory IN ADDITION to the decoded
+	// persistedManifest. The gob decoder reads forward-only, so
+	// streaming from os.File cuts peak RSS roughly in half during
+	// the disk-recovery phase. The legacy-JSON branch below still
+	// does a full slurp because json.Unmarshal needs the whole
+	// payload — but JSON snapshots are dev/legacy artifacts and
+	// don't approach the PB-scale sizes that motivate this.
+	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("read manifest: %w", err)
+		return fmt.Errorf("open manifest: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat manifest: %w", err)
+	}
+	if fi.Size() > maxManifestSnapshotBytes {
+		// Refuse outsized snapshots up front so a corrupted file
+		// (or a too-big legitimate one) can't allocate a multi-GB
+		// decoder buffer before failing.
+		return fmt.Errorf("manifest snapshot %d bytes exceeds limit %d",
+			fi.Size(), maxManifestSnapshotBytes)
+	}
+
+	// Peek the magic without slurping the whole file.
+	magic := make([]byte, len(manifestBinaryMagic))
+	n, err := io.ReadFull(f, magic)
+	if err == io.EOF || (err == io.ErrUnexpectedEOF && n < len(manifestBinaryMagic)) {
+		// File too short to be either format. Treat as if it
+		// didn't exist — caller falls back to S3 refresh.
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("read magic: %w", err)
 	}
 
 	var snap persistedManifest
 	var format string
-	if len(data) >= len(manifestBinaryMagic) && bytes.Equal(data[:len(manifestBinaryMagic)], manifestBinaryMagic) {
-		// Binary format: drop the magic, decode the rest. Bound the
-		// decoder via io.LimitReader so a malicious/corrupted snapshot
-		// can't trick the gob decoder into pre-allocating a multi-TB
-		// slice during DoS. The cap is well above the largest
-		// legitimate snapshot — exceeding it surfaces as a decode error
-		// rather than an OOM-killer-induced crash.
-		body := data[len(manifestBinaryMagic):]
-		if int64(len(body)) > maxManifestSnapshotBytes {
-			return fmt.Errorf("manifest snapshot body %d bytes exceeds limit %d",
-				len(body), maxManifestSnapshotBytes)
-		}
-		dec := gob.NewDecoder(io.LimitReader(bytes.NewReader(body), maxManifestSnapshotBytes))
+	if bytes.Equal(magic, manifestBinaryMagic) {
+		// Binary format: gob-decode straight from the file, bounded
+		// by the size cap. No intermediate buffer.
+		dec := gob.NewDecoder(io.LimitReader(f, maxManifestSnapshotBytes))
 		if err := dec.Decode(&snap); err != nil {
 			return fmt.Errorf("decode binary manifest: %w", err)
 		}
 		format = "binary"
 	} else {
-		// Legacy JSON snapshot from a pre-binary build. Loads correctly
-		// once; the next SaveTo writes binary.
+		// Legacy JSON snapshot. Seek back to start and slurp —
+		// json.Unmarshal needs the whole payload. JSON snapshots
+		// are pre-binary-format artifacts and are not expected at
+		// PB scale; the next SaveTo writes binary anyway.
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("rewind for json: %w", err)
+		}
+		data, err := io.ReadAll(io.LimitReader(f, maxManifestSnapshotBytes))
+		if err != nil {
+			return fmt.Errorf("read json manifest: %w", err)
+		}
 		if err := json.Unmarshal(data, &snap); err != nil {
 			return fmt.Errorf("unmarshal json manifest: %w", err)
 		}
@@ -1530,6 +1663,7 @@ func (m *Manifest) LoadFrom(path string) error {
 	if snap.MaxTimeNs != 0 {
 		m.maxTime = time.Unix(0, snap.MaxTimeNs)
 	}
+	m.savedAt = snap.SavedAt
 	m.mu.Unlock()
 
 	logger.Infof("manifest loaded from disk; path=%s, files=%d, bytes=%d, format=%s, saved_at=%v",

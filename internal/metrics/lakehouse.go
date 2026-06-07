@@ -56,12 +56,22 @@ var (
 	// duplicate compaction work (HRW ring flap, DNS lag dual ownership)
 	// or an upstream upload retry bug. See spec §8.1 R3 and §3.1 case 11.
 	ManifestAddFileDuplicateKeyTotal = NewCounter("lakehouse_manifest_addfile_duplicate_key_total")
-	DiscoveryHotBoundaryDays         = NewFloatGauge("lakehouse_discovery_hot_boundary_days")
-	DiscoveryGapDays                 = NewFloatGauge("lakehouse_discovery_hot_boundary_gap_days")
-	ManifestPushTotal                = NewCounter("lakehouse_manifest_push_total")
-	ManifestPushPeers                = NewGauge("lakehouse_manifest_push_peers")
-	ManifestPushErrorsTotal          = NewCounter("lakehouse_manifest_push_errors_total")
-	ManifestUpdateReceivedTotal      = NewCounter("lakehouse_manifest_update_received_total")
+
+	// ManifestRefreshCliffGuardRejections counts times the
+	// cliff-guard in RefreshFromS3 rejected a refresh because the
+	// new file count was <50% of the previous. Operationally this
+	// is the user-visible "Jaeger Cold suddenly returning 0 results"
+	// alarm bell — a single tick means a transient S3 LIST hiccup
+	// was successfully masked; persistent ticks mean the bucket
+	// genuinely shrank and the guard is now lying to readers, so
+	// an operator should restart the pod to force a clean rebuild.
+	ManifestRefreshCliffGuardRejections = NewCounter("lakehouse_manifest_refresh_cliff_guard_rejections_total")
+	DiscoveryHotBoundaryDays            = NewFloatGauge("lakehouse_discovery_hot_boundary_days")
+	DiscoveryGapDays                    = NewFloatGauge("lakehouse_discovery_hot_boundary_gap_days")
+	ManifestPushTotal                   = NewCounter("lakehouse_manifest_push_total")
+	ManifestPushPeers                   = NewGauge("lakehouse_manifest_push_peers")
+	ManifestPushErrorsTotal             = NewCounter("lakehouse_manifest_push_errors_total")
+	ManifestUpdateReceivedTotal         = NewCounter("lakehouse_manifest_update_received_total")
 )
 
 // Parquet engine metrics
@@ -79,6 +89,50 @@ var (
 	MetadataOnlyFiles       = NewCounter("lakehouse_metadata_only_files_total")
 	QueryFileNotFoundTotal  = NewCounter("lakehouse_query_file_not_found_total")
 	QueryFileErrorsTotal    = NewCounter("lakehouse_query_file_errors_total")
+
+	// LogsTraceShapedRowsDropped counts rows dropped from
+	// LogsProfile query results because their stream tags identify
+	// them as trace spans (VT-style `resource_attr:` prefix or
+	// `name="..."` partition key) rather than logs. The drop matches
+	// what VL upstream's stream-fields enforcement does at write
+	// time, so query results stay consistent across tiers. A
+	// non-zero rate indicates pre-existing data quality issue in
+	// the cold tier (task #70 territory) — operators can correlate
+	// the rate with compaction/cleanup runs.
+	LogsTraceShapedRowsDropped = NewCounter("lakehouse_logs_trace_shaped_rows_dropped_total")
+
+	// LogsTraceShapedRowsDroppedAtIngest counts rows refused by the
+	// insert path because their stream tags marked them as VT data
+	// (spans or service-graph rows) reaching the logs ingest. The
+	// drop is irreversible — the row never lands in parquet, and the
+	// manifest RowCount (which manifestFastPath uses to answer
+	// `* | stats count()`) stops including them. The query-time
+	// counterpart `LogsTraceShapedRowsDropped` is still incremented
+	// for historical files written before this gate landed; once
+	// retention rolls those off, both counters should track in
+	// lockstep at zero.
+	LogsTraceShapedRowsDroppedAtIngest = NewCounter("lakehouse_logs_trace_shaped_rows_dropped_at_ingest_total")
+
+	// LogsTraceShapedRowsDroppedAtCompaction counts trace-shape
+	// rows the compactor stripped from a merge output. Together
+	// with the ingest-side counter this finishes the cleanup loop:
+	// the ingest gate stops new writes, compaction migrates
+	// historical bad rows out of the manifest's RowCount as files
+	// roll forward. Eventually all three trace-shape counters
+	// (read-side, ingest, compaction) sit at zero with no inflated
+	// counts left.
+	LogsTraceShapedRowsDroppedAtCompaction = NewCounter("lakehouse_logs_trace_shaped_rows_dropped_at_compaction_total")
+
+	// LogsSeverityTextBackfilledAtCompaction counts rows whose
+	// SeverityText was empty in the source parquet but recoverable
+	// from severity_number (via VL upstream FormatSeverity) or the
+	// stream-tag `level` value (via VL upstream StreamTags.Get).
+	// Each compaction pass heals historical files that pre-date the
+	// insert-time fallback. The counter falls to zero once all
+	// affected files have been re-emitted by compaction, at which
+	// point query-time `level=""` buckets on cold mirror VL hot's
+	// own zero-empty-bucket behavior.
+	LogsSeverityTextBackfilledAtCompaction = NewCounter("lakehouse_logs_severity_text_backfilled_at_compaction_total")
 )
 
 // Insert / writer metrics
@@ -108,6 +162,21 @@ var (
 	// Compare hit/miss to know how cold the lookup path runs without the
 	// index — every miss is a full span-scan trace-by-ID.
 	TraceIndexLookups = NewCounterVec("lakehouse_trace_index_lookups_total", "result")
+
+	// TraceIdxPreFilterFiles records the file-narrowing efficiency of
+	// filterFilesByTraceIdx (the pre-filter that runs after the bloom
+	// narrowing on every trace_id:in(...) query). `result` is:
+	//   dropped     — footer's _trace_idx KV parsed and the trace IDs
+	//                 listed did NOT include any queried ID; file
+	//                 skipped without a row scan
+	//   kept_match  — footer's _trace_idx KV listed at least one
+	//                 queried ID; file scanned
+	//   kept_unindexed — file lacks _trace_idx KV entirely; conservatively
+	//                 scanned (older parquets pre-date the index)
+	//   kept_error  — footer fetch failed; conservatively scanned
+	// dropped / (dropped + kept_match) is the pre-filter's selectivity
+	// — at PB scale this should be > 0.9 for stale trace IDs.
+	TraceIdxPreFilterFiles = NewCounterVec("lakehouse_trace_idx_prefilter_files_total", "result")
 )
 
 // Prefetch metrics
@@ -206,6 +275,33 @@ var (
 	StartupPhase        = NewGauge("lakehouse_startup_phase")
 	StartupTotalSeconds = NewFloatGauge("lakehouse_startup_total_seconds")
 	Ready               = NewGauge("lakehouse_ready")
+
+	// ServingReady is 1 once the pod accepts queries — disk
+	// recovery complete + WAL replay done (if insert) + manifest
+	// holds at least cfg.Startup.MinManifestFiles. Distinct from
+	// `Ready` because Ready also requires background warmup.
+	// k8s readiness probes / vtselect fan-out can read this
+	// directly when scraping vs hitting /ready.
+	ServingReady = NewGauge("lakehouse_serving_ready")
+
+	// WarmupComplete is 1 once the background goroutine that
+	// runs S3 refresh + cache warmup + bloom backfill finishes.
+	// Strict load balancers can wait for this.
+	WarmupComplete = NewGauge("lakehouse_warmup_complete")
+
+	// ManifestSnapshotAgeSeconds is the wall-clock age of the
+	// most recent successful local snapshot write. Operators see
+	// when their pod is running on a stale snapshot — relevant
+	// during long downtime + first-after-resume restart, where
+	// the disk recovery loads a 1-hour-old snapshot and queries
+	// during background warmup miss whatever was written in that
+	// hour. Updated on every successful SaveTo.
+	ManifestSnapshotAgeSeconds = NewFloatGauge("lakehouse_manifest_snapshot_age_seconds")
+
+	// MinManifestFilesGate exposes the configured readiness
+	// threshold so operators can see what their pod is gating on.
+	// Reads cfg.Startup.MinManifestFiles at startup.
+	MinManifestFilesGate = NewGauge("lakehouse_min_manifest_files_gate")
 )
 
 // Query metrics
@@ -229,6 +325,106 @@ var (
 		[]float64{0.1, 0.5, 1, 5, 10, 30, 60, 120})
 	CompactionErrorsTotal  = NewCounter("lakehouse_compaction_errors_total")
 	CompactionSkippedTotal = NewCounterVec("lakehouse_compaction_skipped_total", "reason")
+
+	// CompactionCompressionRatio is bytes_read / bytes_written for a
+	// single compactGroup call, observed per `output_level`. The
+	// progressive zstd schedule (default [3, 7, 11] in
+	// CompactionConfig.CompressionLevelByOutputLevel) means L1 outputs
+	// are cheap-and-bulky while L3 outputs are dense. Operators tuning
+	// the schedule should see the median at L0 around 1.0-1.2x
+	// (re-flushed input ≈ output), L1 around 1.3-1.6x, and L3 around
+	// 2.5x+ on real workloads. A regression here is the canary that
+	// progressive compression has stopped engaging (typical cause: a
+	// per-tenant override pinning level=0 everywhere). Buckets are
+	// chosen to span the L0→L3 envelope and the 5x+ ceiling for the
+	// rare hot-spot file with very repetitive data (e.g. health probe
+	// floods).
+	CompactionCompressionRatio = NewHistogramVec(
+		"lakehouse_compaction_compression_ratio",
+		[]float64{1.0, 1.2, 1.5, 2, 2.5, 3, 4, 5, 7, 10},
+		"output_level")
+
+	// CompactionCompressionLevelUsed records which zstd level the
+	// compactor actually picked per output_level. The chosen level
+	// can come from any of: per-tenant override > global schedule >
+	// pre-progressive default. Letting both labels float lets a
+	// dashboard answer "what level is tenant X getting at L2?" via
+	// a single line — useful when a tenant complains its compaction
+	// is too slow or too sparse and the operator suspects the
+	// override is misconfigured.
+	CompactionCompressionLevelUsed = NewGaugeVec(
+		"lakehouse_compaction_compression_level_used",
+		"output_level")
+)
+
+// Writer-artifact build metrics — what the flusher pays so the reader
+// can stay cheap. Every counter here pairs with a query-side speedup
+// in docs/architecture/performance-machinery.md §4A; e.g. a missing
+// .bloom sidecar would surface as ParquetFilesSkipped staying at zero
+// while WriterBloomBuildsTotal also stays at zero, instantly pointing
+// at the broken side.
+var (
+	// WriterBloomBuildsTotal counts calls to extractLogBloomValues +
+	// extractTraceBloomValues per flush partition+tenant. The
+	// rate should track InsertRowsTotal — a divergence means
+	// bloomObserver.OnFileFlush isn't running for some path.
+	WriterBloomBuildsTotal = NewCounterVec(
+		"lakehouse_writer_bloom_builds_total", "mode")
+
+	// WriterBloomValuesTotal sums the (field, distinct-value) count
+	// emitted per file. A spike means a tenant's cardinality blew up
+	// (think a bug spraying unique values into k8s.pod.name); it
+	// shows here long before the bloom sidecar exceeds
+	// bloomindex.maxBloomCardinality and silently turns the bloom
+	// into a coarser file-level pass-through.
+	WriterBloomValuesTotal = NewCounterVec(
+		"lakehouse_writer_bloom_values_total", "mode")
+
+	// WriterBloomBuildDuration is the wall-clock cost of building
+	// the bloom for one flush. Buckets cover sub-millisecond up to
+	// 5s; the median should be a few ms for typical batch sizes.
+	WriterBloomBuildDuration = NewHistogram(
+		"lakehouse_writer_bloom_build_duration_seconds",
+		[]float64{0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5})
+
+	// WriterLabelExtractionsTotal counts calls to
+	// extractLogLabels / extractTraceLabels per flush. Pairs with
+	// the inverted label index in §4A — every flush MUST run this
+	// or the new file lands with Labels=nil and silently relies
+	// on the conservative "include unindexed" branch added in
+	// be8c126.
+	WriterLabelExtractionsTotal = NewCounterVec(
+		"lakehouse_writer_label_extractions_total", "mode")
+
+	// WriterLabelValuesTotal sums distinct (field, value) tuples
+	// per file. Same blow-up canary as WriterBloomValuesTotal but
+	// for the inverted label index instead of the bloom.
+	WriterLabelValuesTotal = NewCounterVec(
+		"lakehouse_writer_label_values_total", "mode")
+
+	// WriterLabelExtractionDuration is the wall-clock cost of
+	// extractLogLabels / extractTraceLabels per flush.
+	WriterLabelExtractionDuration = NewHistogram(
+		"lakehouse_writer_label_extraction_duration_seconds",
+		[]float64{0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1})
+
+	// WriterTraceIdxBuildsTotal counts calls to computeTraceIndex.
+	// Traces-only. Should track the trace-side InsertRowsTotal.
+	WriterTraceIdxBuildsTotal = NewCounter(
+		"lakehouse_writer_trace_idx_builds_total")
+
+	// WriterTraceIdxEntriesTotal sums the per-flush trace-ID count
+	// going into the `_trace_idx` footer KV. Lets operators see
+	// the cardinality going into the KV without parsing it back
+	// out of S3.
+	WriterTraceIdxEntriesTotal = NewCounter(
+		"lakehouse_writer_trace_idx_entries_total")
+
+	// WriterTraceIdxBuildDuration is the wall-clock cost of one
+	// computeTraceIndex + marshalTraceIndex pass.
+	WriterTraceIdxBuildDuration = NewHistogram(
+		"lakehouse_writer_trace_idx_build_duration_seconds",
+		[]float64{0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1})
 )
 
 // Election-free compaction metrics (spec §6 + §11.5).

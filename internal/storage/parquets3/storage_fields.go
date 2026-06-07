@@ -58,7 +58,26 @@ func (s *Storage) fetchFooterFile(ctx context.Context, fi manifest.FileInfo) (*p
 	}
 	totalFooterBytes := footerLen + 8
 	if totalFooterBytes > len(tail) {
-		return nil, fmt.Errorf("footer larger than prefetch tail: %d > %d", totalFooterBytes, len(tail))
+		// Two-phase fetch: the prefetch tail wasn't large enough to
+		// hold the whole footer (typical for trace parquet files whose
+		// embedded `_trace_idx` key-value metadata can run multiple
+		// megabytes). We now know the exact footer size from the
+		// trailer we already read, so issue a single targeted range
+		// download. Previously we returned an error here, which
+		// cascaded into trace-by-ID fallback-to-full-scan and the
+		// observed 5-10 s Grafana timeouts.
+		footerOffset := fi.Size - int64(totalFooterBytes)
+		if footerOffset < 0 {
+			return nil, fmt.Errorf("footer length implies negative offset: footer=%d file=%d", totalFooterBytes, fi.Size)
+		}
+		bigTail, err := s.pool.DownloadRange(ctx, fi.Key, footerOffset, int64(totalFooterBytes))
+		if err != nil {
+			return nil, fmt.Errorf("download oversize footer range: %w", err)
+		}
+		if len(bigTail) < totalFooterBytes {
+			return nil, fmt.Errorf("oversize footer fetch short: got %d, want %d", len(bigTail), totalFooterBytes)
+		}
+		tail = bigTail
 	}
 	footerSlice := tail[len(tail)-totalFooterBytes:]
 	cached, f, err := ParseFooterFromBytes(fi.Key, footerSlice, fi.Size)

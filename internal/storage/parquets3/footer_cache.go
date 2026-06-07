@@ -98,6 +98,24 @@ func (fc *FooterCache) Len() int {
 	return len(fc.items)
 }
 
+// Keys returns the keys currently in the cache in most-recently-used
+// order (front of the LRU first). Used at shutdown to persist a
+// snapshot of cached file keys so the next process can asynchronously
+// re-prefetch their footers from S3 — the cold-start version of the
+// "instant after restart" experience.
+//
+// The slice is a fresh copy; callers may modify it. No effect on LRU
+// order or hit metrics.
+func (fc *FooterCache) Keys() []string {
+	fc.mu.RLock()
+	defer fc.mu.RUnlock()
+	out := make([]string, 0, fc.lru.Len())
+	for e := fc.lru.Front(); e != nil; e = e.Next() {
+		out = append(out, e.Value.(*footerEntry).key)
+	}
+	return out
+}
+
 func (fc *FooterCache) Remove(key string) {
 	fc.mu.Lock()
 	defer fc.mu.Unlock()

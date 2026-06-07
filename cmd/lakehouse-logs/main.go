@@ -204,7 +204,7 @@ func main() {
 }
 
 func run(cfg *config.Config, addr string) {
-	sm := startup.NewManager()
+	sm := startup.NewManager(cfg.Startup.MinManifestFiles)
 
 	store, err := parquets3.New(cfg)
 	if err != nil {
@@ -228,7 +228,27 @@ func run(cfg *config.Config, addr string) {
 		store.SetSelfAZ(selfAZ)
 	}
 
+	// Register self as the buffer-bridge fallback endpoint so single-
+	// node deployments (no peer discovery, no other insert pods) still
+	// see their own unflushed buffer on cold-tier queries. Once real
+	// peers appear via DNS discovery, BufferBridge.getQueryEndpoints
+	// silently switches over and the self entry stays out of the way.
+	if cfg.Role == config.RoleAll && store.BufferBridge() != nil {
+		store.BufferBridge().SetSelfEndpoint("http://localhost" + addr)
+	}
+
+	// StartWriter replays the on-disk WAL before serving inserts.
+	// Gate /ready=200 on WAL completion via the lifecycle manager
+	// so a partially-replayed insert pod doesn't accept reads that
+	// would miss the un-replayed window. See lakehouse-traces
+	// main.go for the same pattern.
+	if store.Writer() != nil {
+		sm.SetWALReplayNeeded()
+	}
 	store.StartWriter()
+	if store.Writer() != nil {
+		sm.SetWALReplayDone()
+	}
 
 	// Wire stats callback after writer is initialized but before heavy use.
 	// We derive the tenant key from the configured prefix (e.g. "0/0/logs/" → "0:0").
@@ -244,7 +264,14 @@ func run(cfg *config.Config, addr string) {
 		})
 	}
 
-	sched, sweep, stopCompaction := setupCompaction(cfg, store, pusher, addr)
+	// tenantPolicyHolder is set further down (line ~410) after the
+	// resolver wiring. setupCompaction's per-tenant compression
+	// lookup is a closure that reads this variable at call time —
+	// by the first compaction tick (Compaction.Interval default
+	// 5 min) the holder is always populated, so the closure
+	// returns real overrides instead of nil-no-op.
+	var tenantPolicyHolder *tenant.PolicyRegistry
+	sched, sweep, stopCompaction := setupCompaction(cfg, store, pusher, addr, &tenantPolicyHolder)
 	if stopCompaction != nil {
 		defer stopCompaction()
 	}
@@ -303,6 +330,11 @@ func run(cfg *config.Config, addr string) {
 	}
 
 	store.Manifest().SetPrefixTemplate(cfg.Tenant.PrefixTemplate)
+	// "logs/" keeps the tenant-scoped manifest refresh inside the
+	// per-tier S3 prefix; without it a logs pod also LISTs
+	// `<tenant>/traces/` and the trace parquets' columns leak into
+	// `/select/logsql/field_names` and Grafana drilldown.
+	store.Manifest().SetSignalSuffix("logs/")
 
 	// --- Tenant stats ---
 	registry := stats.NewTenantRegistry(hostname())
@@ -387,6 +419,10 @@ func run(cfg *config.Config, addr string) {
 		logger.Infof("tenant overrides pending alias resolution: %v", pending)
 	}
 	startTenantPolicyRefresh(cfg, policy, stopCh)
+	// Publish to the compaction lookup closure now that the registry
+	// is built; from the next compaction tick onward the closure
+	// returns per-tenant compression schedules instead of nil-no-op.
+	tenantPolicyHolder = policy
 
 	// Retention manager: append synthesized rules from per-tenant
 	// overrides to the global rules list, then start the eviction loop.
@@ -457,8 +493,61 @@ func run(cfg *config.Config, addr string) {
 	sig := procutil.WaitForSigterm()
 	logger.Infof("shutdown signal received; signal=%v", sig)
 
+	runShutdown(cfg, addr, store, rewriteSched, tombstoneStore, registry)
+}
+
+// runShutdown drains the lakehouse-logs pod in the order required for
+// honest /ready on the next boot. Mirror of lakehouse-traces/main.go's
+// runShutdown — per feedback_logs_traces_module_parity these two blocks
+// MUST stay line-aligned. Extracted from run() to keep its cyclomatic
+// complexity under the gocyclo budget.
+func runShutdown(
+	cfg *config.Config,
+	addr string,
+	store *parquets3.Storage,
+	rewriteSched *delete.RewriteScheduler,
+	tombstoneStore *delete.TombstoneStore,
+	registry *stats.TenantRegistry,
+) {
 	if err := httpserver.Stop([]string{addr}); err != nil {
 		logger.Errorf("HTTP server shutdown error: %s", err)
+	}
+
+	// Persist the manifest snapshot FIRST, before the long-running
+	// .Stop() calls. See lakehouse-traces/main.go for the full
+	// rationale — same pattern, same timeout bound, same logging.
+	persistTimeout := cfg.Shutdown.PersistTimeout
+	if persistTimeout <= 0 {
+		persistTimeout = 30 * time.Second
+	}
+	manifestSaveStart := time.Now()
+	manifestSaveDone := make(chan error, 1)
+	go func() {
+		manifestSaveDone <- store.Manifest().SaveTo(manifestSnapshotPath(cfg))
+	}()
+	select {
+	case err := <-manifestSaveDone:
+		if err != nil {
+			logger.Errorf("manifest snapshot on shutdown failed after %v: %s", time.Since(manifestSaveStart), err)
+		} else {
+			logger.Infof("manifest snapshot on shutdown persisted in %v", time.Since(manifestSaveStart))
+		}
+	case <-time.After(persistTimeout):
+		logger.Errorf("manifest snapshot on shutdown timed out after %v — next pod will boot with previous snapshot", persistTimeout)
+	}
+
+	// Footer-cache snapshot — small (a few bytes per key) and fast.
+	// Persist sequentially with manifest because both feed the next
+	// pod's warmup loop and missing either causes a measurably worse
+	// first-query latency. Capped by the same PersistTimeout budget;
+	// failure here doesn't fail the shutdown.
+	if fc := store.FooterCache(); fc != nil {
+		fcStart := time.Now()
+		if err := parquets3.SaveFooterCacheKeys(fc, footerCacheSnapshotPath(cfg)); err != nil {
+			logger.Errorf("footer-cache snapshot on shutdown failed after %v: %s", time.Since(fcStart), err)
+		} else {
+			logger.Infof("footer-cache snapshot on shutdown persisted in %v (keys=%d)", time.Since(fcStart), fc.Len())
+		}
 	}
 
 	vlinsert.Stop()
@@ -471,7 +560,7 @@ func run(cfg *config.Config, addr string) {
 		logger.Errorf("failed to persist tombstones to disk: %s", err)
 	}
 
-	// Final stats snapshot on shutdown
+	// Final stats snapshot on shutdown — bounded too.
 	if cfg.Stats.Enabled && cfg.Stats.SnapshotPrefix != "" {
 		snapshotBucket := cfg.Stats.MetaBucket
 		if snapshotBucket == "" {
@@ -480,14 +569,12 @@ func run(cfg *config.Config, addr string) {
 		_ = snapshotBucket // bucket selection for future multi-bucket support
 		snapshotKey := cfg.AutoPrefix() + cfg.Stats.SnapshotPrefix + "/snapshot.json"
 		if data, err := registry.MarshalSnapshot(); err == nil {
-			if err := store.Pool().Upload(context.Background(), snapshotKey, data); err != nil {
+			statsCtx, statsCancel := context.WithTimeout(context.Background(), persistTimeout)
+			if err := store.Pool().Upload(statsCtx, snapshotKey, data); err != nil {
 				logger.Errorf("failed to persist stats snapshot on shutdown: %s", err)
 			}
+			statsCancel()
 		}
-	}
-
-	if err := store.Manifest().SaveTo(manifestSnapshotPath(cfg)); err != nil {
-		logger.Errorf("manifest snapshot on shutdown failed: %s", err)
 	}
 
 	if err := store.Close(); err != nil {
@@ -507,6 +594,7 @@ func setupCompaction(
 	store *parquets3.Storage,
 	pusher *manifest.Pusher,
 	addr string,
+	tenantPolicyHolder **tenant.PolicyRegistry,
 ) (*compaction.Scheduler, *compaction.OrphanSweep, func()) {
 	if !cfg.Compaction.Enabled {
 		return nil, nil, nil
@@ -576,6 +664,21 @@ func setupCompaction(
 		MaxConcurrent:    cfg.Compaction.MaxConcurrent,
 		RowGroupSize:     cfg.Insert.RowGroupSize,
 		CompressionLevel: cfg.Insert.CompressionLevel,
+		CompactionConfig: cfg.Compaction,
+		TenantCompressionLookup: func(prefix string) []int {
+			if tenantPolicyHolder == nil || *tenantPolicyHolder == nil || prefix == "" {
+				return nil
+			}
+			account, project, ok := parseTenantPrefix(prefix)
+			if !ok {
+				return nil
+			}
+			eff := (*tenantPolicyHolder).For(account, project)
+			if eff == nil {
+				return nil
+			}
+			return eff.CompactionCompressionLevels
+		},
 		OnRingChange: func(register func(eventType string)) {
 			if peerCache != nil {
 				peerCache.OnRingChange(func(ev peercache.RingChangeEvent) {
@@ -824,12 +927,21 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	})
 
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
-		if sm.IsReady() {
+		// See lakehouse-traces/main.go /ready handler for full
+		// three-state semantics. Same contract here.
+		switch {
+		case !sm.ServingReady():
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = fmt.Fprintf(w, "NOT READY (phase: %s, min_manifest_files: %d)",
+				sm.Phase(), sm.MinManifestFiles())
+		case !sm.WarmupComplete() && cfg.Startup.ServeWhileWarming:
+			w.WriteHeader(http.StatusNoContent)
+		case !sm.WarmupComplete():
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = fmt.Fprintf(w, "WARMING (phase: %s)", sm.Phase())
+		default:
 			w.WriteHeader(http.StatusOK)
 			_, _ = fmt.Fprint(w, "READY")
-		} else {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = fmt.Fprintf(w, "NOT READY (phase: %s)", sm.Phase())
 		}
 	})
 
@@ -1029,7 +1141,34 @@ func manifestSnapshotPath(cfg *config.Config) string {
 	return filepath.Join(cfg.Manifest.PersistPath, "manifest-snapshot.json")
 }
 
+func footerCacheSnapshotPath(cfg *config.Config) string {
+	return filepath.Join(cfg.Manifest.PersistPath, "footer-cache-snapshot.bin")
+}
+
+// parseTenantPrefix splits "<account>/<project>/<mode>/" into its
+// numeric account+project pair. Returns ok=false for any prefix shape
+// that isn't an integer-keyed tenant prefix (legacy keys, malformed
+// strings, the empty string). The tenant policy registry is keyed by
+// (account, project) ints, so this is the call-site adapter.
+func parseTenantPrefix(prefix string) (uint32, uint32, bool) {
+	parts := strings.SplitN(prefix, "/", 4)
+	if len(parts) < 3 {
+		return 0, 0, false
+	}
+	acct, err := strconv.ParseUint(parts[0], 10, 32)
+	if err != nil {
+		return 0, 0, false
+	}
+	proj, err := strconv.ParseUint(parts[1], 10, 32)
+	if err != nil {
+		return 0, 0, false
+	}
+	return uint32(acct), uint32(proj), true
+}
+
 func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, tenantKey string) {
+	// Phase 1 (foreground): disk recovery + manifest-files gate.
+	// See lakehouse-traces/main.go runStartup for full semantics.
 	sm.SetPhase(startup.PhaseDiskRecovery)
 
 	mpath := manifestSnapshotPath(cfg)
@@ -1041,41 +1180,109 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 			logger.Infof("manifest loaded from disk; files=%d, bytes=%d", m.TotalFiles(), m.TotalBytes())
 		}
 	}
-	logger.Infof("disk recovery complete")
+	sm.SetManifestFiles(int64(store.Manifest().TotalFiles()))
+	logger.Infof("disk recovery complete; entering serve-while-warming mode (manifest_files=%d, min=%d)",
+		store.Manifest().TotalFiles(), cfg.Startup.MinManifestFiles)
 
-	sm.SetPhase(startup.PhaseS3Refresh)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
+	// If insert role, gate ServingReady on WAL replay too. The
+	// writer marks WAL done at the end of its replay; until then
+	// ServingReady stays false (regardless of MinManifestFiles).
+	if cfg.InsertEnabled() {
+		sm.SetWALReplayNeeded()
+	}
 
-	if err := store.RefreshManifest(ctx); err != nil {
-		logger.Errorf("manifest S3 refresh failed: %s", err)
-	} else {
-		m := store.Manifest()
-		logger.Infof("manifest S3 refresh complete; files=%d, bytes=%d, min_time=%v, max_time=%v",
-			m.TotalFiles(), m.TotalBytes(), m.MinTime(), m.MaxTime())
-		registry.ReconcileWithManifest(tenantKey,
-			int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
-			m.MinTime().UnixNano(), m.MaxTime().UnixNano())
-		store.WarmLabelIndex(ctx)
-		store.WarmMetadata(ctx)
+	sm.SetServingReady()
 
-		if cfg.Cache.WarmupPartitions > 0 || cfg.Cache.WarmupMaxFiles > 0 {
-			warmCtx, warmCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			store.WarmupCache(warmCtx)
-			warmCancel()
+	// Phase 2 (background): S3 refresh + cache warmup + snapshot.
+	// Periodic refresh ticker waits for completion so the manifest
+	// mutex isn't contended.
+	warmupStart := time.Now()
+	var warmupS3RefreshDuration time.Duration
+	warmupDone := make(chan struct{})
+	go func() {
+		defer close(warmupDone)
+		sm.SetPhase(startup.PhaseS3Refresh)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
+		s3RefreshStart := time.Now()
+		refreshErr := store.RefreshManifest(ctx)
+		warmupS3RefreshDuration = time.Since(s3RefreshStart)
+		if refreshErr != nil {
+			logger.Errorf("manifest S3 refresh failed: %s", refreshErr)
+		} else {
+			m := store.Manifest()
+			sm.SetManifestFiles(int64(m.TotalFiles()))
+			logger.Infof("manifest S3 refresh complete; files=%d, bytes=%d, min_time=%v, max_time=%v",
+				m.TotalFiles(), m.TotalBytes(), m.MinTime(), m.MaxTime())
+			registry.ReconcileWithManifest(tenantKey,
+				int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
+				m.MinTime().UnixNano(), m.MaxTime().UnixNano())
+			store.WarmLabelIndex(ctx)
+			store.WarmMetadata(ctx)
+
+			if cfg.Cache.WarmupPartitions > 0 || cfg.Cache.WarmupMaxFiles > 0 {
+				warmCtx, warmCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				store.WarmupCache(warmCtx)
+				warmCancel()
+			}
+
+			// Async footer-cache prefetch from the previous shutdown's
+			// snapshot. Doesn't block /ready=200 — by the time the user
+			// runs their first trace-by-ID lookup, the footers for files
+			// the previous pod had cached are already populated. The
+			// snapshot is just a key list (small), so the load cost is
+			// dominated by S3 round-trips for the actual footer ranges.
+			if fc := store.FooterCache(); fc != nil {
+				snapshotPath := footerCacheSnapshotPath(cfg)
+				keys, err := parquets3.LoadFooterCacheKeys(snapshotPath)
+				if err != nil {
+					logger.Warnf("footer-cache snapshot load failed: %s", err)
+				} else if len(keys) > 0 {
+					logger.Infof("footer-cache snapshot loaded: %d keys; scheduling async prefetch", len(keys))
+					go store.PrefetchFootersByKeys(context.Background(), keys, 32)
+				}
+			}
 		}
-	}
 
-	if err := store.Manifest().SaveTo(mpath); err != nil {
-		logger.Errorf("manifest snapshot after S3 refresh failed: %s", err)
-	}
+		if err := store.Manifest().SaveTo(mpath); err != nil {
+			logger.Errorf("manifest snapshot after S3 refresh failed: %s", err)
+		}
 
-	sm.SetPhase(startup.PhaseReady)
+		sm.SetWarmupComplete()
+		logger.Infof("background warmup complete; /ready will report 200")
+	}()
+
+	<-warmupDone
+
+	startup.EmitStartupHints(startup.HintInputs{
+		ManifestFiles:     int64(store.Manifest().TotalFiles()),
+		MinManifestFiles:  cfg.Startup.MinManifestFiles,
+		FooterCacheMax:    cfg.Cache.FooterMaxItems,
+		BufferBridgePeers: len(cfg.Discovery.StorageNodes),
+		SnapshotAge:       time.Since(store.Manifest().SavedAt()),
+		PersistInterval:   cfg.Manifest.PersistInterval,
+		S3RefreshDuration: warmupS3RefreshDuration,
+		WarmupDuration:    time.Since(warmupStart),
+	})
 
 	refreshTicker := time.NewTicker(cfg.Manifest.RefreshInterval)
 	defer refreshTicker.Stop()
 	persistTicker := time.NewTicker(cfg.Manifest.PersistInterval)
 	defer persistTicker.Stop()
+	// Snapshot-age gauge tick. See lakehouse-traces/main.go for
+	// the same pattern.
+	ageTicker := time.NewTicker(5 * time.Second)
+	defer ageTicker.Stop()
+	updateSnapshotAge := func() {
+		savedAt := store.Manifest().SavedAt()
+		if savedAt.IsZero() {
+			metrics.ManifestSnapshotAgeSeconds.Set(float64(24 * 365 * 3600))
+			return
+		}
+		metrics.ManifestSnapshotAgeSeconds.Set(time.Since(savedAt).Seconds())
+	}
+	updateSnapshotAge()
 
 	for {
 		select {
@@ -1085,16 +1292,20 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 				logger.Errorf("periodic manifest refresh failed: %s", err)
 			} else {
 				m := store.Manifest()
+				sm.SetManifestFiles(int64(m.TotalFiles()))
 				logger.Infof("manifest refreshed; files=%d, bytes=%d", m.TotalFiles(), m.TotalBytes())
 				registry.ReconcileWithManifest(tenantKey,
 					int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
 					m.MinTime().UnixNano(), m.MaxTime().UnixNano())
 			}
 			rcancel()
+		case <-ageTicker.C:
+			updateSnapshotAge()
 		case <-persistTicker.C:
 			if err := store.Manifest().SaveTo(mpath); err != nil {
 				logger.Errorf("periodic manifest persist failed: %s", err)
 			}
+			updateSnapshotAge()
 		}
 	}
 }

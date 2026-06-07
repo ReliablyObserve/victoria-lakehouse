@@ -327,6 +327,20 @@ func (r *Registry) ResolveToParquet(internalName string) *FieldMapping {
 	if m, ok := r.byInternal[internalName]; ok {
 		return m
 	}
+	// A caller (typically a user-facing filter like
+	// `service.name:="api-gateway"`) may have passed the parquet
+	// column name directly — which is what most operators type
+	// because it matches the JSON they see in /select/logsql/query
+	// responses. Without this lookup the fallback at the bottom
+	// resolves `service.name` to the resource.attributes MAP column
+	// keyed by "service.name", which then matches zero rows because
+	// service.name is actually a top-level promoted column. That's
+	// the silent-empty path that made every Jaeger search and
+	// field_values call that filtered on a resource attribute
+	// return 0 on cold while hot VT (no alias) worked fine.
+	if m, ok := r.byParquet[internalName]; ok {
+		return m
+	}
 
 	// VT prefix convention: resource_attr:X -> resource.attributes MAP
 	if key, ok := strings.CutPrefix(internalName, "resource_attr:"); ok {

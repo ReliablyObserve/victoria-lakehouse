@@ -8,7 +8,9 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlinsert/insertutil"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 // LogWriter is the subset of parquets3.Storage needed for the insert path.
@@ -80,12 +82,20 @@ func logRowsToSchemaRows(lr *logstorage.LogRows) []schema.LogRow {
 			TimestampUnixNano: r.Timestamp,
 		}
 
+		// stPooled is held across the field-mapping loop so the post-
+		// loop severity derivation can read the parsed stream tags
+		// without re-unmarshaling. Released to VL's pool right before
+		// the row is appended; nil for rows that have no stream tag.
+		var stPooled *logstorage.StreamTags
+
 		if r.StreamTagsCanonical != "" {
-			st := logstorage.GetStreamTags()
-			if err := unmarshalStreamTags(st, r.StreamTagsCanonical); err == nil {
-				row.Stream = strings.Clone(st.String())
+			stPooled = logstorage.GetStreamTags()
+			if err := unmarshalStreamTags(stPooled, r.StreamTagsCanonical); err == nil {
+				row.Stream = strings.Clone(stPooled.String())
+			} else {
+				logstorage.PutStreamTags(stPooled)
+				stPooled = nil
 			}
-			logstorage.PutStreamTags(st)
 
 			// Compute _stream_id deterministically from (TenantID,
 			// StreamTagsCanonical) using VL's own hash algorithm.
@@ -93,6 +103,24 @@ func logRowsToSchemaRows(lr *logstorage.LogRows) []schema.LogRow {
 			// must produce the same value so /select/logsql/stream_ids
 			// returns identical results.
 			row.StreamID = computeStreamID(r.TenantID, r.StreamTagsCanonical)
+		}
+
+		// Ingest-side trace-shape filter: drop rows whose stream
+		// would mark them as VT span / service-graph data rather
+		// than logs. This is the write-side counterpart of the
+		// read-side preFilter in storage_query.go — without it,
+		// trace-shaped rows still land in parquet files, inflate
+		// the manifest RowCount (which the manifestFastPath uses
+		// to answer `* | stats count()` queries), and the
+		// resulting count is bloated by ~50% in clusters where
+		// some upstream pipeline misroutes span data to the logs
+		// ingest path. The read-side filter still runs on every
+		// query for historical files that were written before
+		// this gate was in place. New rows after this commit
+		// won't be persisted and the count drift stops growing.
+		if storage.IsTraceShapedStream(row.Stream) {
+			metrics.LogsTraceShapedRowsDroppedAtIngest.Inc()
+			return
 		}
 
 		// Per-tenant cardinality gate. Stream uniqueness is keyed by
@@ -107,6 +135,19 @@ func logRowsToSchemaRows(lr *logstorage.LogRows) []schema.LogRow {
 
 		for _, f := range r.Fields {
 			mapFieldToRow(&row, f.Name, f.Value)
+		}
+
+		// Single derivation step shared with the compactor's
+		// backfill path. Walks the precedence chain (explicit
+		// SeverityText → derived from severity_number → lifted
+		// from stream-tag `level`) using VL upstream helpers. Empty
+		// when no source has a level — leaves SeverityText as the
+		// canonical "no severity" signal rather than substituting
+		// a fake "Unspecified".
+		row.SeverityText = schema.DeriveSeverityText(row.SeverityText, row.SeverityNumber, stPooled)
+
+		if stPooled != nil {
+			logstorage.PutStreamTags(stPooled)
 		}
 
 		rows = append(rows, row)
@@ -135,7 +176,13 @@ func mapFieldToRow(row *schema.LogRow, name, value string) {
 	switch name {
 	case "":
 		row.Body = strings.Clone(value)
-	case "level":
+	case "level", "severity_text":
+		// VL upstream's OTLP handler emits the field as
+		// `severity_text` (see deps/VictoriaLogs/app/vlinsert/
+		// opentelemetry/pb.go:340 `fs.Add("severity_text", ...)`).
+		// The non-OTLP path emits `level`. Both name the same
+		// concept; map to SeverityText so OTLP-ingested rows
+		// don't fall into the "unknown level" bucket in Grafana.
 		row.SeverityText = strings.Clone(value)
 	case "severity_number":
 		if v, err := strconv.ParseInt(value, 10, 32); err == nil {

@@ -234,3 +234,43 @@ func TestLogsVsTraces_SameFieldDifferentNames(t *testing.T) {
 		}
 	}
 }
+
+// TestResolveToParquet_AcceptsParquetColumnName pins the load-bearing
+// fallback: a user filter that names a promoted column by its parquet
+// name (e.g. `service.name:="api-gateway"`) MUST resolve to the
+// top-level column, not to the fallback "unknown field -> map column"
+// branch at the bottom of ResolveToParquet. Regressing this back
+// causes every Jaeger search and field_values call that filters on a
+// resource attribute to silently return zero rows because the filter
+// gets retargeted to a non-existent key inside resource.attributes.
+func TestResolveToParquet_AcceptsParquetColumnName(t *testing.T) {
+	r := NewRegistry(TracesProfile)
+
+	// service.name's INTERNAL alias is `resource_attr:service.name`,
+	// but operators routinely type the parquet column name in
+	// queries. Both spellings must resolve to the same top-level
+	// column, not to the map-column fallback.
+	internalAlias := r.ResolveToParquet("resource_attr:service.name")
+	parquetName := r.ResolveToParquet("service.name")
+
+	if internalAlias == nil || parquetName == nil {
+		t.Fatalf("both resolutions must succeed; got internal=%v parquet=%v", internalAlias, parquetName)
+	}
+	if internalAlias.ParquetColumn != "service.name" {
+		t.Errorf("resource_attr:service.name -> ParquetColumn = %q, want service.name", internalAlias.ParquetColumn)
+	}
+	if parquetName.ParquetColumn != "service.name" {
+		t.Errorf("service.name (parquet form) -> ParquetColumn = %q, want service.name; the map fallback is back",
+			parquetName.ParquetColumn)
+	}
+	if parquetName.MapColumn != "" {
+		t.Errorf("service.name resolved into a MAP column (%q); this is the silent-empty regression",
+			parquetName.MapColumn)
+	}
+
+	// Symmetric pin for k8s.namespace.name — the other column whose
+	// alias surface area is wide enough to break Grafana drilldown.
+	if r.ResolveToParquet("k8s.namespace.name").MapColumn != "" {
+		t.Error("k8s.namespace.name resolved into a MAP column; user filter would match no rows")
+	}
+}

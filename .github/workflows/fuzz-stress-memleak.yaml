@@ -1,0 +1,325 @@
+# Fuzz, stress, and memleak gates.
+#
+# These run on every PR (short budgets) and nightly (long budgets) so a
+# regression that today would slip past the regular -race job — a
+# parser panic on a fuzzed input, a heap leak under sustained churn, a
+# deadlock under concurrent goroutines — gets caught at PR time rather
+# than from an oncall page.
+#
+# Why a separate workflow:
+#  * Fuzz needs explicit `-fuzz=<RE>` to actually CREATE inputs.
+#    The regular `go test` (in ci.yaml) only replays the corpus.
+#  * Stress tests use long timeouts that would balloon the main test job.
+#  * Memleak gates have heap-budget assertions that the race detector
+#    inflates by ~3x, producing false positives. They must run WITHOUT
+#    -race to be meaningful.
+
+name: Fuzz / Stress / Memleak
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Nightly long-budget run. UTC 03:30 = quiet window in EU+US.
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: 'Per-target fuzz budget in seconds (default 30 / 600 nightly)'
+        required: false
+        default: '30'
+
+permissions:
+  contents: read
+
+env:
+  GOFLAGS: -mod=readonly
+  # ci.yaml uses GOWORK: "off" — without this, the default GOWORK=auto
+  # discovers go.work which pulls in lakehouse-traces as a module
+  # workspace, whose replace directive points at
+  # ./deps/VictoriaLogs and ./deps/VictoriaTraces relative to that
+  # module. Building the root logs module then asks for files inside
+  # `lakehouse-traces/deps/VictoriaLogs/`, which our deps-logs alone
+  # doesn't create. Mirror ci.yaml so logs jobs only consult
+  # ./deps/VictoriaLogs and traces jobs run in the lakehouse-traces
+  # working directory under its own go.mod.
+  GOWORK: "off"
+  VL_VERSION_LOGS: v1.49.0
+  VL_COMMIT_TRACES: 77df0c04d532
+  VT_VERSION: v0.9.2
+
+jobs:
+  # -------------------------------------------------------------------
+  # Memleak gates — heap-budget assertions on each *_memleak_test.go.
+  # Runs WITHOUT -race so the heap inflation factor stays at 1x.
+  # -------------------------------------------------------------------
+  memleak-logs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Build VL deps (logs)
+        run: make deps-logs
+      - name: Run memleak gates (logs)
+        # -run filters to test functions whose names mention Memleak.
+        # -short tells longer tests to skip iteration loops; memleak
+        # tests opt out of -short so they keep their full churn.
+        # NOTE: NO -race — see header comment.
+        run: |
+          go test \
+            -run 'Memleak|MemLeak|HeapInUse|HeapInuse' \
+            -count=1 -timeout=15m \
+            ./internal/...
+
+  memleak-traces:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          # lakehouse-traces is its own Go module; the go.mod there
+          # pins the toolchain the traces tests must compile against.
+          go-version-file: lakehouse-traces/go.mod
+      - name: Build VL deps (traces side)
+        run: make deps-traces
+      - name: Build VT deps (traces)
+        run: make deps-vt
+      - name: Run memleak gates (traces)
+        # Match the ci.yaml test-traces pattern: cd into the traces
+        # module so its own go.mod replace directive resolves to
+        # lakehouse-traces/deps/{VictoriaLogs,VictoriaTraces}.
+        working-directory: lakehouse-traces
+        run: |
+          go test \
+            -run 'Memleak|MemLeak|HeapInUse|HeapInuse' \
+            -count=1 -timeout=15m \
+            ./internal/...
+
+  # -------------------------------------------------------------------
+  # Stress gates — high-iteration concurrency tests. Runs WITH -race
+  # so a data race revealed only under N-goroutine fan-out trips the
+  # detector.
+  # -------------------------------------------------------------------
+  stress-logs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Build VL deps (logs)
+        run: make deps-logs
+      - name: Run stress gates (logs)
+        run: |
+          go test \
+            -run 'Stress|Race|Concurrent' \
+            -race -count=1 -timeout=25m \
+            ./internal/...
+
+  stress-traces:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: lakehouse-traces/go.mod
+      - name: Build VL deps (traces side)
+        run: make deps-traces
+      - name: Build VT deps (traces)
+        run: make deps-vt
+      - name: Run stress gates (traces)
+        working-directory: lakehouse-traces
+        run: |
+          go test \
+            -run 'Stress|Race|Concurrent' \
+            -race -count=1 -timeout=25m \
+            ./internal/...
+
+  # -------------------------------------------------------------------
+  # Fuzz gates — explicitly creates new inputs via -fuzz.
+  # PR runs: 30s per target (catches obvious regressions, keeps CI fast).
+  # Nightly: 10 min per target (deeper exploration).
+  # Each fuzz target is its own matrix entry so a single panic doesn't
+  # hide the rest.
+  # -------------------------------------------------------------------
+  fuzz-logs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          # Format: <package>:<FuzzFnName>
+          # See discover-fuzz.sh for how to keep this list in sync.
+          - internal/storage/parquets3:FuzzExtractExactMatch
+          - internal/storage/parquets3:FuzzIsPrintable
+          - internal/storage/parquets3:FuzzTraceRowToDataBlock
+          - internal/storage/parquets3:FuzzLogRowToDataBlock
+          - internal/storage/parquets3:FuzzTraceRowWithMapAttributes
+          - internal/storage/parquets3:FuzzMultiRowDataBlock
+          - internal/storage/parquets3:FuzzParseFooterBytes
+          - internal/storage/parquets3:FuzzFooterLength
+          - internal/storage/parquets3:FuzzStorageFetchPeerAZ
+          - internal/schema:FuzzResolveToParquet
+          - internal/schema:FuzzResolveToParquet_Traces
+          - internal/schema:FuzzParseFieldType
+          - internal/schema:FuzzFormatValue_String
+          - internal/schema:FuzzFormatValue_Int64
+          - internal/schema:FuzzFormatValue_Float64
+          - internal/schema:FuzzFormatValue_TimestampNano
+          - internal/cache:FuzzLRUPutGet
+          - internal/cache:FuzzLabelIndexAddGet
+          - internal/cache:FuzzPersisterRoundTrip
+          - internal/cache:FuzzDiskCacheKeyToPath
+          - internal/cache:FuzzDiskCachePutFromPath_Traversal
+          - internal/bloomindex:FuzzBloomMarshalUnmarshal
+          - internal/bloomindex:FuzzIndexMarshalUnmarshal
+          - internal/bloomindex:FuzzBloomCorruptInput
+          - internal/bloomindex:FuzzChecksumTamper
+          - internal/manifest:FuzzExtractPartition
+          - internal/manifest:FuzzParsePartitionTime
+          - internal/manifest:FuzzUnmarshalFileMetaSidecar
+          - internal/peercache:FuzzRingLookup
+          - internal/peercache:FuzzRingLookupAZ
+          - internal/peercache:FuzzRingLookupAZ_NoSameAZ
+          - internal/peercache:FuzzHandlerServeHTTP
+          - internal/peercache:FuzzHandlerStatsEndpoint
+          - internal/config:FuzzParseSizeBytes
+          - internal/config:FuzzValidate
+          - internal/config:FuzzValidateAZMode
+          - internal/discovery:FuzzSplitHostPort
+          - internal/azdetect:FuzzDetect_EnvVar
+          - internal/azdetect:FuzzDetectAWSIMDS_Response
+          - internal/azdetect:FuzzDetectGCPMetadata_Response
+          - internal/wal:FuzzReplayCorruptedRecord
+          - internal/buffer:FuzzHandlerParams
+          - internal/traceindex:FuzzUnmarshalIndex
+          - internal/traceindex:FuzzRoundTripIndex
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Build VL deps (logs)
+        run: make deps-logs
+      - name: Pick fuzz budget
+        id: budget
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "seconds=600" >> $GITHUB_OUTPUT
+          else
+            echo "seconds=${{ github.event.inputs.fuzz_seconds || 30 }}" >> $GITHUB_OUTPUT
+          fi
+      - name: Fuzz ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+          SECONDS: ${{ steps.budget.outputs.seconds }}
+        run: |
+          PKG="${TARGET%%:*}"
+          FN="${TARGET##*:}"
+          # -fuzzminimizetime keeps the minimization step bounded so a
+          # single hard-to-shrink crash doesn't burn the budget.
+          go test \
+            -run='^$' \
+            -fuzz="^${FN}$" \
+            -fuzztime=${SECONDS}s \
+            -fuzzminimizetime=5s \
+            ./${PKG}/
+
+  fuzz-traces:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Package paths here are RELATIVE TO the lakehouse-traces
+        # module root (e.g. `internal/storage/parquets3`), not the
+        # repo root. The fuzz step `cd`s into lakehouse-traces before
+        # invoking `go test` so the module's own go.mod replace
+        # resolves to deps/{VictoriaLogs,VictoriaTraces}. Mixing in
+        # `lakehouse-traces/...` prefix would break the package
+        # resolution under that working directory.
+        target:
+          - internal/storage/parquets3:FuzzExtractExactMatch
+          - internal/storage/parquets3:FuzzIsPrintable
+          - internal/storage/parquets3:FuzzTraceRowToDataBlock
+          - internal/storage/parquets3:FuzzMultiRowDataBlock
+          - internal/storage/parquets3:FuzzTraceRowWithMapAttributes
+          - internal/storage/parquets3:FuzzContainsOrOperatorQuoted
+          - internal/storage/parquets3:FuzzParseFilterFromQuery
+          - internal/storage/parquets3:FuzzExtractFilterValuesAST
+          - internal/vlstorage:FuzzMapFieldToTraceRow
+          - internal/vlstorage:FuzzUnmarshalStreamTags
+          - internal/vlstorage:FuzzLogRowsToTraceRows
+          - internal/vtstorage_adapter:FuzzTraceIndexLookupTraceID
+          - internal/vtstorage_adapter:FuzzRewriteTraceIndexQuery
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: lakehouse-traces/go.mod
+      - name: Build VL deps (traces side)
+        run: make deps-traces
+      - name: Build VT deps (traces)
+        run: make deps-vt
+      - name: Pick fuzz budget
+        id: budget
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "seconds=600" >> $GITHUB_OUTPUT
+          else
+            echo "seconds=${{ github.event.inputs.fuzz_seconds || 30 }}" >> $GITHUB_OUTPUT
+          fi
+      - name: Fuzz ${{ matrix.target }}
+        working-directory: lakehouse-traces
+        env:
+          TARGET: ${{ matrix.target }}
+          SECONDS: ${{ steps.budget.outputs.seconds }}
+        run: |
+          PKG="${TARGET%%:*}"
+          FN="${TARGET##*:}"
+          go test \
+            -run='^$' \
+            -fuzz="^${FN}$" \
+            -fuzztime=${SECONDS}s \
+            -fuzzminimizetime=5s \
+            ./${PKG}/
+
+  # -------------------------------------------------------------------
+  # Drift guard — if a *_test.go file declares `func Fuzz*` and isn't
+  # listed in the matrices above, fail. Prevents a silent gap where a
+  # new fuzz target lands but never gets exercised in CI.
+  # -------------------------------------------------------------------
+  fuzz-matrix-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify every Fuzz* target is in CI matrix
+        run: |
+          # Collect declared fuzz targets in source.
+          declared=$(grep -rhEo '^func Fuzz[A-Za-z0-9_]+' --include='*_test.go' . \
+                     | sed 's/^func //' | sort -u)
+          # Collect targets listed in the matrices. Anchor on the matrix
+          # entry shape `- pkg:FuzzName` so prose mentions of "FuzzFn..."
+          # in this workflow's own comments don't satisfy the check.
+          listed=$(grep -oE '^[[:space:]]+- [a-zA-Z0-9/_-]+:Fuzz[A-Za-z0-9_]+' \
+                     .github/workflows/fuzz-stress-memleak.yaml \
+                   | sed 's/.*:\(Fuzz[A-Za-z0-9_]*\)/\1/' | sort -u)
+          missing=$(comm -23 <(echo "$declared") <(echo "$listed"))
+          if [ -n "$missing" ]; then
+            echo "::error::Fuzz targets declared but not exercised in CI:"
+            echo "$missing"
+            echo ""
+            echo "Add each above to either fuzz-logs.matrix.target or"
+            echo "fuzz-traces.matrix.target in this workflow file."
+            exit 1
+          fi
+          echo "All declared Fuzz* targets are wired into CI."

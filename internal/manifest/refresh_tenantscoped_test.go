@@ -148,15 +148,15 @@ func TestRefreshTenantScoped_DiscoversAllTenants(t *testing.T) {
 func TestRefreshTenantScoped_ParityWithFullBucket(t *testing.T) {
 	// Realistic mixed corpus: multiple tenants, partitions, file sizes.
 	keys := map[string]int64{
-		"0/0/traces/dt=2026-06-04/hour=00/a.parquet":   1000,
-		"0/0/traces/dt=2026-06-04/hour=12/b.parquet":   2000,
-		"0/0/traces/dt=2026-06-04/hour=12/c.parquet":   3000,
-		"1/1/traces/dt=2026-06-04/hour=00/d.parquet":   4000,
-		"1/1/traces/dt=2026-06-05/hour=00/e.parquet":   5000,
+		"0/0/traces/dt=2026-06-04/hour=00/a.parquet":    1000,
+		"0/0/traces/dt=2026-06-04/hour=12/b.parquet":    2000,
+		"0/0/traces/dt=2026-06-04/hour=12/c.parquet":    3000,
+		"1/1/traces/dt=2026-06-04/hour=00/d.parquet":    4000,
+		"1/1/traces/dt=2026-06-05/hour=00/e.parquet":    5000,
 		"1001/0/traces/dt=2026-06-04/hour=00/f.parquet": 6000,
 		// Non-parquet keys must be skipped on both paths.
 		"0/0/traces/dt=2026-06-04/hour=12/_metadata.json": 99,
-		"_bloom_index.bin":                                999,
+		"_bloom_index.bin": 999,
 	}
 
 	srv, _ := startMockBucket(t, keys)
@@ -194,6 +194,115 @@ func TestRefreshTenantScoped_ParityWithFullBucket(t *testing.T) {
 		if len(fullFiles) != len(scopedFiles) {
 			t.Errorf("partition %q: full=%d files, scoped=%d", partition, len(fullFiles), len(scopedFiles))
 		}
+	}
+}
+
+// TestRefreshTenantScoped_SignalSuffix_FiltersOutOtherTier pins the
+// per-tier isolation: when both logs/ and traces/ parquet files sit
+// under the same tenant prefix, refreshTenantScoped with
+// SetSignalSuffix("logs/") must return logs files only — trace
+// columns must never bleed into the logs manifest. Without this
+// filter, /select/logsql/field_names on a logs pod surfaces trace
+// columns (parent, child, callCount, span.kind, span.name, ...) and
+// Grafana's Loki Explore drilldown shows trace-shape fields next to
+// log fields, which is exactly what regressed in the field.
+func TestRefreshTenantScoped_SignalSuffix_FiltersOutOtherTier(t *testing.T) {
+	keys := map[string]int64{
+		// Same tenant, both tiers present.
+		"0/0/logs/dt=2026-06-04/hour=00/a.parquet":      100,
+		"0/0/logs/dt=2026-06-04/hour=12/b.parquet":      200,
+		"0/0/traces/dt=2026-06-04/hour=00/c.parquet":    300,
+		"0/0/traces/dt=2026-06-04/hour=12/d.parquet":    400,
+		"1/1/logs/dt=2026-06-04/hour=00/e.parquet":      500,
+		"1/1/traces/dt=2026-06-04/hour=00/f.parquet":    600,
+		"1001/0/logs/dt=2026-06-04/hour=00/g.parquet":   700,
+		"1001/0/traces/dt=2026-06-04/hour=00/h.parquet": 800,
+	}
+
+	srv, _ := startMockBucket(t, keys)
+	client := coverageS3Client(t, srv.URL)
+
+	m := New("test-bucket", "")
+	m.SetPrefixTemplate("{AccountID}/{ProjectID}/")
+	m.SetSignalSuffix("logs/")
+
+	got, totalFiles, totalBytes, err := m.refreshTenantScoped(t.Context(), client)
+	if err != nil {
+		t.Fatalf("refreshTenantScoped: %v", err)
+	}
+	// Expect 4 log files (a, b, e, g) totaling 1500 bytes.
+	if totalFiles != 4 {
+		t.Errorf("totalFiles=%d, want 4 (logs-only)", totalFiles)
+	}
+	if totalBytes != 1500 {
+		t.Errorf("totalBytes=%d, want 1500 (logs-only)", totalBytes)
+	}
+	for partition, files := range got {
+		for _, f := range files {
+			if !strings.Contains(f.Key, "/logs/") {
+				t.Errorf("partition %q: unexpected non-logs file %q in scoped refresh", partition, f.Key)
+			}
+			if strings.Contains(f.Key, "/traces/") {
+				t.Errorf("partition %q: trace file %q leaked into logs manifest", partition, f.Key)
+			}
+		}
+	}
+}
+
+// TestRefreshTenantScoped_SignalSuffix_TracesTier mirrors the logs
+// test for the traces side — confirms the suffix is symmetric and
+// not a one-off for logs.
+func TestRefreshTenantScoped_SignalSuffix_TracesTier(t *testing.T) {
+	keys := map[string]int64{
+		"0/0/logs/dt=2026-06-04/hour=00/a.parquet":   100,
+		"0/0/traces/dt=2026-06-04/hour=00/b.parquet": 200,
+		"1/1/logs/dt=2026-06-04/hour=00/c.parquet":   300,
+		"1/1/traces/dt=2026-06-04/hour=00/d.parquet": 400,
+	}
+
+	srv, _ := startMockBucket(t, keys)
+	client := coverageS3Client(t, srv.URL)
+
+	m := New("test-bucket", "")
+	m.SetPrefixTemplate("{AccountID}/{ProjectID}/")
+	m.SetSignalSuffix("traces/")
+
+	_, totalFiles, totalBytes, err := m.refreshTenantScoped(t.Context(), client)
+	if err != nil {
+		t.Fatalf("refreshTenantScoped: %v", err)
+	}
+	if totalFiles != 2 {
+		t.Errorf("totalFiles=%d, want 2 (traces-only)", totalFiles)
+	}
+	if totalBytes != 600 {
+		t.Errorf("totalBytes=%d, want 600 (traces-only)", totalBytes)
+	}
+}
+
+// TestRefreshTenantScoped_NoSignalSuffix_LegacyBehaviour pins that
+// callers who never call SetSignalSuffix (older deployments, tests
+// that pre-date the per-tier isolation) still get the unfiltered
+// tenant-scoped LIST. This is the backward-compatibility floor:
+// adding the field must never break operators who haven't opted in.
+func TestRefreshTenantScoped_NoSignalSuffix_LegacyBehaviour(t *testing.T) {
+	keys := map[string]int64{
+		"0/0/logs/dt=2026-06-04/hour=00/a.parquet":   100,
+		"0/0/traces/dt=2026-06-04/hour=00/b.parquet": 200,
+	}
+
+	srv, _ := startMockBucket(t, keys)
+	client := coverageS3Client(t, srv.URL)
+
+	m := New("test-bucket", "")
+	m.SetPrefixTemplate("{AccountID}/{ProjectID}/")
+	// No SetSignalSuffix call.
+
+	_, totalFiles, _, err := m.refreshTenantScoped(t.Context(), client)
+	if err != nil {
+		t.Fatalf("refreshTenantScoped: %v", err)
+	}
+	if totalFiles != 2 {
+		t.Errorf("totalFiles=%d, want 2 (both tiers, suffix not set)", totalFiles)
 	}
 }
 

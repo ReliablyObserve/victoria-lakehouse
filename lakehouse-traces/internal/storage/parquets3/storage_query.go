@@ -16,6 +16,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
+	"github.com/parquet-go/parquet-go/format"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
@@ -280,6 +281,23 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	prefetchFooters(ctx, s.pool, files, s.footerCache, 0)
 
+	// Deterministic trace_id narrowing — runs after bloom because the
+	// footer cache is now warm. For any file with a `_trace_idx`
+	// metadata block whose trace IDs don't include the queried one,
+	// we drop the file with zero ambiguity. Files that lack the index
+	// (older parquets, partial writes) stay in the candidate set so
+	// the bloom-positive path still wins by default. The cost is one
+	// (cached) footer read per remaining file; the payoff is that a
+	// non-existent trace ID stops sweeping 50+ files of bloom false
+	// positives — previously a 30s Jaeger client timeout per Get.
+	if tids := extractFilterValuesAST(queryStr, "trace_id"); len(tids) > 0 {
+		files = s.filterFilesByTraceIdx(ctx, files, tids)
+		if len(files) == 0 {
+			s.queryBufferBridge(ctx, startNs, endNs, filteredWriteBlock)
+			return nil
+		}
+	}
+
 	// Parallel file worker pool
 	fileWorkers := s.cfg.Query.FileWorkers
 	if fileWorkers <= 0 {
@@ -434,6 +452,133 @@ func (s *Storage) preFilterFiles(files []manifest.FileInfo, queryStr string) []m
 
 	files = s.filterFilesByBloomIndex(files, queryStr)
 	return files
+}
+
+// filterFilesByTraceIdx keeps only files whose `_trace_idx` footer
+// metadata mentions at least one of the queried trace IDs. Files
+// without the index are kept (conservative — older parquets pre-date
+// the index feature; dropping them would silently lose results).
+// Run in parallel because each footer fetch can still cost an S3
+// round-trip on a cache miss; the bound mirrors LookupTraceIndex
+// and keeps the read budget in line with query.file-workers.
+func (s *Storage) filterFilesByTraceIdx(ctx context.Context, files []manifest.FileInfo, tids []string) []manifest.FileInfo {
+	if len(files) == 0 || len(tids) == 0 {
+		return files
+	}
+	tidSet := make(map[string]bool, len(tids))
+	for _, t := range tids {
+		tidSet[t] = true
+	}
+
+	keep := make([]bool, len(files))
+	sem := make(chan struct{}, traceIndexLookupParallelism)
+	var wg sync.WaitGroup
+	for i := range files {
+		i := i
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+		}
+		if ctx.Err() != nil {
+			keep[i] = true // be safe on cancellation
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			f, err := s.fetchFooterFile(ctx, files[i])
+			if err != nil {
+				keep[i] = true // can't tell — preserve
+				metrics.TraceIdxPreFilterFiles.Inc("kept_error")
+				return
+			}
+			meta := f.Metadata()
+			result := traceIdxClassifyFile(meta, tidSet)
+			keep[i] = result != "dropped"
+			metrics.TraceIdxPreFilterFiles.Inc(result)
+		}()
+	}
+	wg.Wait()
+
+	dropped := 0
+	out := files[:0]
+	for i, fi := range files {
+		if keep[i] {
+			out = append(out, fi)
+		} else {
+			dropped++
+		}
+	}
+	if dropped > 0 {
+		logger.Infof("trace_idx pre-filter: dropped %d/%d files for %d trace_id(s)", dropped, len(files), len(tids))
+	}
+	return out
+}
+
+// traceIdxClassifyFile returns one of the metric labels for
+// metrics.TraceIdxPreFilterFiles: "dropped", "kept_match",
+// "kept_unindexed", or "kept_error". Kept separate from
+// traceIdxKeepFile (which returns a bool only) so the bool path
+// stays simple while the metric path records WHY a file was kept.
+func traceIdxClassifyFile(meta *format.FileMetaData, tidSet map[string]bool) string {
+	if meta == nil || len(meta.KeyValueMetadata) == 0 {
+		return "kept_unindexed"
+	}
+	for _, kv := range meta.KeyValueMetadata {
+		if kv.Key != traceIndexMetadataKey {
+			continue
+		}
+		entries, ok := traceIndexFromMetadata(map[string]string{traceIndexMetadataKey: kv.Value})
+		if !ok {
+			return "kept_error" // corrupted index — preserve, count as error
+		}
+		for _, e := range entries {
+			if tidSet[e.TraceID] {
+				return "kept_match"
+			}
+		}
+		return "dropped"
+	}
+	return "kept_unindexed"
+}
+
+// traceIdxKeepFile decides whether a file should be kept in the
+// candidate set based purely on its parsed footer metadata. Pulled
+// out of filterFilesByTraceIdx so the keep/drop policy is testable
+// without a parquet.File / S3 / footer cache. The contract:
+//
+//   - nil meta or no KeyValueMetadata at all  → keep (older parquets
+//     that pre-date the _trace_idx feature; dropping would silently
+//     hide results).
+//   - _trace_idx KV present but unparseable    → keep (defensive;
+//     a malformed index is the operator's bug, not a reason to
+//     pretend the file isn't there).
+//   - _trace_idx KV parses cleanly and contains at least one of the
+//     queried trace IDs                        → keep.
+//   - _trace_idx KV parses cleanly and contains none of them → DROP.
+//   - No _trace_idx KV at all (other KVs only) → keep (same reason
+//     as the first case — index just not written for this file).
+func traceIdxKeepFile(meta *format.FileMetaData, tidSet map[string]bool) bool {
+	if meta == nil || len(meta.KeyValueMetadata) == 0 {
+		return true
+	}
+	for _, kv := range meta.KeyValueMetadata {
+		if kv.Key != traceIndexMetadataKey {
+			continue
+		}
+		entries, ok := traceIndexFromMetadata(map[string]string{traceIndexMetadataKey: kv.Value})
+		if !ok {
+			return true
+		}
+		for _, e := range entries {
+			if tidSet[e.TraceID] {
+				return true
+			}
+		}
+		return false
+	}
+	return true
 }
 
 func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, filteredWriteBlock logstorage.WriteDataBlockFunc) {
