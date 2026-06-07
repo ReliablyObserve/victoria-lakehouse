@@ -34,33 +34,48 @@ individual mechanisms. Read this first.
 
 ## 1. The shape of the system <a name="shape"></a>
 
-```
-                       ┌───────────────────────────┐
-                       │  Grafana / Jaeger / Tempo │
-                       │  (clients)                │
-                       └────────────┬──────────────┘
-                                    │ LogsQL / Jaeger / Tempo
-                                    │
-                  ┌─────────────────┼──────────────────┐
-                  │                 │                  │
-            ┌─────▼─────┐     ┌─────▼────┐      ┌──────▼─────────┐
-            │ vlselect  │     │ vtselect │      │ loki-vl-proxy  │
-            │ (hot+cold)│     │ (hot+cold)│      │ (Loki → LogsQL)│
-            └─────┬─────┘     └────┬─────┘      └──────┬─────────┘
-                  │                │                   │
-        ┌─────────┼────────────────┼──────────────┐    │
-        │         │                │              │    │
-    ┌───▼───┐ ┌───▼──┐         ┌───▼──┐       ┌───▼────▼──────────┐
-    │  VL   │ │  LH  │         │  VT  │       │  LH (logs path)   │
-    │  hot  │ │ cold │         │  hot │       │  cold             │
-    └───────┘ └──┬───┘         └──────┘       └────┬──────────────┘
-                 │                                  │
-                 │                                  │
-              ┌──▼──────────────────────────────────▼──┐
-              │  S3 parquet                            │
-              │  manifest (in-memory + on-disk snap)   │
-              │  bloom files, _trace_idx footer KV     │
-              └────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    Clients["Grafana / Jaeger UI / Tempo Explore<br/>(clients)"]
+
+    subgraph Routers["Hot + Cold routers (federation)"]
+        VLSel["vlselect<br/>:9428"]
+        VTSel["vtselect<br/>:10428"]
+        LokiProxy["loki-vl-proxy<br/>:3100"]
+    end
+
+    subgraph Hot["Hot tier"]
+        VL["VictoriaLogs<br/>:9428"]
+        VT["VictoriaTraces<br/>:10428"]
+    end
+
+    subgraph Cold["Cold tier (this doc's subject)"]
+        LHLogs["lakehouse-logs<br/>:9428"]
+        LHTraces["lakehouse-traces<br/>:10428"]
+    end
+
+    S3[("S3 / object store<br/>parquet + .bloom sidecars<br/>+ manifest snapshots")]
+
+    Clients -->|LogsQL| VLSel
+    Clients -->|Jaeger / Tempo| VTSel
+    Clients -->|Loki API| LokiProxy
+    LokiProxy --> LHLogs
+    LokiProxy --> VL
+
+    VLSel --> VL
+    VLSel --> LHLogs
+    VTSel --> VT
+    VTSel --> LHTraces
+
+    LHLogs --> S3
+    LHTraces --> S3
+
+    classDef cold fill:#e1f5ff,stroke:#0066cc
+    classDef hot fill:#fff4e1,stroke:#cc6600
+    classDef router fill:#f0f0f0,stroke:#666
+    class LHLogs,LHTraces cold
+    class VL,VT hot
+    class VLSel,VTSel,LokiProxy router
 ```
 
 A query that arrives at a router (`vlselect` / `vtselect` / `loki-vl-proxy`)
@@ -71,57 +86,110 @@ the machinery in section 4.
 
 ## 2. Query lifecycle <a name="query-lifecycle"></a>
 
-```
-1. parse query                       │  no I/O
-2. resolve registry (parquet ↔ internal field names)
-3. manifest fast-path                │  no I/O — answer from manifest counts
-4. file narrowing                    │  zero S3 byte reads at any of:
-   4a. inverted label index          │   - O(1) per check
-   4b. column-stats min/max bracket  │   - cached in manifest
-   4c. file-level partition bloom    │   - 50 K cardinality cap
-   4d. _trace_idx (traces only)      │   - footer KV, 1 fetch per file
-   4e. smart-cache trace_id fast-path│   - in-process LRU
-5. footer prefetch                   │  ~64 K range per file, parallel
-6. row-group narrowing (per file)    │  uses footer only — no row reads
-   6a. time-range min/max
-   6b. column-stats bracket
-   6c. row-group bloom
-   6d. token bloom (free-text)
-7. row-group decode                  │  THIS is the first time we pay S3
-8. row filter                        │  VL/VT filter against decoded rows
-9. emit DataBlock                    │  VT/VL pipelines do the rest
+The cascade. Each layer kills work for the next-most-expensive layer.
+By the time we hit row-group decode (step 7) most files are already
+gone.
+
+```mermaid
+flowchart TD
+    Q["Query arrives at LH"] --> Parse["1. Parse + registry resolve<br/><i>no I/O</i>"]
+    Parse --> FastPath{"2. Pure<br/>* | stats count() ?"}
+    FastPath -->|yes| FromManifest["Answer from manifest<br/>RowCount aggregate<br/><b>0 S3 reads</b>"]
+    FastPath -->|no| Narrow["3. File narrowing"]
+
+    Narrow --> Label{"3a. Inverted label index<br/>field → value → files"}
+    Label -->|miss| LabelDrop["drop files NOT in set<br/><i>kills 60–90% at typical scale</i>"]
+    Label -->|miss path| Stats
+
+    LabelDrop --> Stats{"3b. ColumnStats<br/>min/max bracket"}
+    Stats -->|out-of-range| StatsDrop["drop files<br/><i>kills 30–70%</i>"]
+    StatsDrop --> Bloom
+
+    Stats --> Bloom{"3c. File-level partition bloom"}
+    Bloom -->|definitely-absent| BloomDrop["drop files<br/><i>kills 20–80% on selective queries</i>"]
+    BloomDrop --> TraceIdx
+
+    Bloom --> TraceIdx{"3d. _trace_idx pre-filter<br/>(traces only)"}
+    TraceIdx -->|trace_id not in KV| TraceIdxDrop["drop files<br/><i>kills 100% on trace-by-id miss</i>"]
+    TraceIdxDrop --> Smart
+
+    TraceIdx --> Smart{"3e. Smart-cache fast path<br/>trace_id → known files"}
+    Smart -->|cache hit| SmartHit["direct file set<br/><i>bypasses bloom + stats</i>"]
+    Smart -->|miss| Prefetch
+
+    Smart --> Prefetch["4. Footer prefetch<br/>16-way parallel, ~64KB tail<br/><i>still no row reads</i>"]
+    Prefetch --> RGNarrow["5. Per-file row-group narrowing"]
+
+    RGNarrow --> TimeRange{"5a. Time-range min/max"}
+    TimeRange --> StatsRG{"5b. Column-stats per RG"}
+    StatsRG --> BloomRG{"5c. Row-group bloom"}
+    BloomRG --> TokenBloom{"5d. Token bloom<br/>(_msg search)"}
+
+    TokenBloom -->|matched RGs| Decode["6. Decode row groups<br/><b>FIRST S3 byte reads</b>"]
+    Decode --> Filter["7. Row filter (VL/VT)"]
+    Filter --> Emit["8. Emit DataBlock"]
+
+    classDef cheap fill:#d4edda,stroke:#155724
+    classDef expensive fill:#f8d7da,stroke:#721c24
+    classDef cache fill:#d1ecf1,stroke:#0c5460
+    class Parse,FastPath,FromManifest,Label,Stats,Bloom,TraceIdx,Smart,LabelDrop,StatsDrop,BloomDrop,TraceIdxDrop,SmartHit cheap
+    class Decode,Filter expensive
+    class Prefetch,RGNarrow,TimeRange,StatsRG,BloomRG,TokenBloom cache
 ```
 
-Every cheap step above kills work for the next expensive step. The
-file narrowing block (4) is the single biggest determinant of query
-latency at scale — by the time we hit step 7, the optimum is "almost
-all files dropped, the few left return as much as possible". Section
-4A details the dropping; section 4D details what writers put in the
-file so dropping can be fast.
+**The contract:** every green box reads only manifest/cached state.
+Blue boxes read footers (small, cached). Red boxes read row data. The
+target invariant is "most queries answer green; very few queries reach
+red".
 
 ## 3. Write lifecycle <a name="write-lifecycle"></a>
 
-```
-1. POST /insert/...                  │  router accepts payload
-2. parse (logfmt/JSON/OTLP/...)      │  VL/VT upstream code via patches
-3. stream-shape filter               │  drop trace-shaped rows from logs (and vv)
-4. WAL append                        │  durability before flush
-5. in-memory buffer                  │  served via BufferBridge to peers
-6. flush trigger                     │  size OR time (flush_interval)
-7. compute per-file artifacts:       │  ALL written into footer KV or sidecar
-   7a. Labels (extractLogLabels/Trace)
-   7b. ColumnStats (parquet column index → manifest)
-   7c. Bloom values (extractLogBloomValues)
-   7d. Token bloom (search-token n-grams)
-   7e. _trace_idx (computeTraceIndex, traces only)
-8. write parquet to S3               │  zstd at compression-level[0]
-9. AddFile to manifest               │  in-memory + persisted to PVC
-10. compaction (background)          │  merges + rewrites with progressive zstd
+Every artifact the writer produces is what makes the query-side
+cascade above possible.
+
+```mermaid
+flowchart LR
+    Ingest["POST /insert/...<br/>(logfmt/JSON/OTLP)"] --> Parse["1. Parse<br/><i>VL/VT upstream via patches</i>"]
+    Parse --> Filter["2. Stream-shape filter<br/><i>drop trace-shaped rows from logs</i>"]
+    Filter --> Gate["3. Cardinality gate<br/><i>per-tenant MaxStreams</i>"]
+    Gate --> WAL["4. WAL append<br/><i>durability</i>"]
+    WAL --> Buffer["5. In-memory buffer<br/><i>served via BufferBridge</i>"]
+    Buffer --> Flush{"6. Flush trigger<br/>size OR time?"}
+    Flush -->|fire| Build["7. Build artifacts for the FUTURE reader"]
+
+    Build --> A1["7a. extractLogLabels →<br/>FileInfo.Labels"]
+    Build --> A2["7b. ColumnStats →<br/>manifest cache"]
+    Build --> A3["7c. extractLogBloomValues →<br/>.bloom sidecar"]
+    Build --> A4["7d. tokenBloom →<br/>footer KV"]
+    Build --> A5["7e. computeTraceIndex →<br/>_trace_idx KV (traces only)"]
+
+    A1 --> Write["8. parquet.NewGenericWriter<br/>+ zstd[level 0=3]"]
+    A2 --> Write
+    A3 --> Write
+    A4 --> Write
+    A5 --> Write
+    Write --> S3[("S3<br/>.parquet + .bloom")]
+    S3 --> Add["9. manifest.AddFile<br/><i>in-memory + PVC snapshot</i>"]
+
+    Add --> Compact{"Background<br/>compactor"}
+    Compact -->|merge L0 → L1 → L2| Re["progressive zstd<br/>(3 → 7 → 11)<br/>+ mergeFileLabels<br/>+ severity backfill"]
+    Re --> S3
+
+    classDef ingest fill:#fff4e1,stroke:#cc6600
+    classDef build fill:#e1f5ff,stroke:#0066cc
+    classDef storage fill:#d4edda,stroke:#155724
+    class Ingest,Parse,Filter,Gate,WAL,Buffer,Flush ingest
+    class Build,A1,A2,A3,A4,A5,Write build
+    class S3,Add,Compact,Re storage
 ```
 
+**Read-side cost: O(parquet rows scanned).**
+**Write-side cost: O(rows ingested).**
+
 Step 7 is where the writer pays its tax so the reader can be cheap.
-Section 4D inventories every artifact and what it costs to produce
-vs. what it saves at read time.
+Every artifact built in step 7 maps directly to a green box in the
+query-lifecycle cascade above. Drop one of these artifacts and the
+corresponding green box silently becomes a red box.
 
 ---
 
@@ -156,6 +224,48 @@ per pod (10 pods in the cluster, 50 M global), `footer_max_items
 | **`_trace_idx` footer KV positive lookup** | `lakehouse-traces/trace_index_lookup.go::LookupTraceIndex` | VT's trace-by-id Tempo handler asks for the (start, end) bound; we emit it straight from the footer KV. On miss we fall through to VT's natural `rewriteTraceIndexQuery` (per `f083c8e`). | in footer cache | (same _trace_idx as above) | sub-ms on hit |
 
 ### B. Read-side caches <a name="b-caches"></a>
+
+The cache hierarchy on every query path — what each layer holds, how
+many bytes it reads from the layer below on miss, and the typical hit
+rates we see in datagen.
+
+```mermaid
+flowchart TD
+    Query["Query needs file F's row group RG"] --> SC{"Smart Cache L1<br/>(decoded row groups, RAM)<br/><i>hit: 60–90%</i>"}
+    SC -->|hit| Return["return decoded rows<br/><b>~0 ms</b>"]
+    SC -->|miss| Disk{"Smart Cache L2<br/>(raw parquet bytes, disk)<br/><i>hit: 30–60%</i>"}
+    Disk -->|hit| Decode["decode RG<br/>~5 ms"]
+    Decode --> Promote1["promote to L1"]
+    Promote1 --> Return
+
+    Disk -->|miss| Peer{"Peer cache<br/>(ring lookup)<br/><i>hit: depends on AZ topology</i>"}
+    Peer -->|hit via HTTP| DecodeP["decode RG<br/>~15 ms + network"]
+    DecodeP --> Promote2["promote to L1+L2"]
+    Promote2 --> Return
+
+    Peer -->|miss| Footer{"Footer cache<br/>(parsed parquet footer)<br/><i>hit: 80–95%</i>"}
+    Footer -->|hit| Read["range-read RG bytes from S3<br/>(footer says where)<br/>~50 ms + S3 latency"]
+    Footer -->|miss| Tail["fetch ~64 KB tail<br/>~30 ms + S3 latency"]
+    Tail --> Parse["parse footer, cache it"]
+    Parse --> Read
+    Read --> DecodeS["decode RG<br/>~5 ms"]
+    DecodeS --> PromoteAll["promote to L1+L2"]
+    PromoteAll --> Return
+
+    classDef fast fill:#d4edda,stroke:#155724
+    classDef medium fill:#fff3cd,stroke:#856404
+    classDef slow fill:#f8d7da,stroke:#721c24
+    class SC,Return fast
+    class Disk,Decode,Promote1,DecodeP,Promote2,Footer medium
+    class Peer,Read,Tail,Parse,DecodeS,PromoteAll slow
+```
+
+**Headline cost.** A query that hits L1 returns in microseconds. A
+query that misses everything pays one S3 footer round-trip + one
+range-read + decode time. The optimisation surface is "make L1+L2
+hit rate as high as possible without blowing the memory budget".
+The auto-tune loop (section 7) does exactly this.
+
 
 | Cache | Code | Purpose | Default size | Knob |
 |---|---|---|---:|---|
@@ -414,15 +524,41 @@ become inputs to the control loop.
 
 ## 9. Roadmap — five new features + auto-tune <a name="roadmap"></a>
 
-Tasks #100–#106 (cross-link your tracker). Each new feature ships with:
+Tasks #100–#105 (cross-link your tracker). Each new feature ships with:
 
+- A flow diagram showing where in the query/write lifecycle it
+  intercepts.
 - A design sketch.
 - Memory + disk projections at small / medium / large / PB scale.
 - Default config + auto-tune integration.
 - New metrics.
 - An estimated impact (rough p95 improvement, observed in datagen).
 
+### Feature-impact summary at a glance
+
+| Feature | Where it intercepts | What it caches | What it improves | Expected impact |
+|---|---|---|---|---:|
+| **PERF-1** Parallel compaction | Background `compaction.Scheduler` | Resource budget semaphore | Time-to-L1 for fresh ingest | 4× faster compaction |
+| **PERF-2** Manifest aggregates | Query lifecycle step 2 (new fast-path) | `partition → field → value → {rows, bytes}` | `stats count() by (service.name)` opens 0 files | 10–100× p95 on those panels |
+| **PERF-3** HLL cardinality sketches | Query lifecycle step 3 (planner) | `(field, partition) → HLL sketch` | Right index pick on multi-field filters | 30–50% p95, prevents cluster meltdown |
+| **PERF-4** Servicegraph pre-agg | Compaction-time; `/api/dependencies` reads footer KV | `_servicegraph_idx` footer KV | Jaeger Dependencies tab | Sub-second regardless of file count |
+| **PERF-5** `_msg` n-gram bloom | Query lifecycle step 3c (file-level) | `.ngram_bloom` sidecar | `_msg:contains` filter shape | 50–95% file skip on selective tokens |
+| **PERF-6** Auto-tune loop | Background `internal/autotune` | Tunable map mirroring `cfg.*` | Right caches at right size; never OOM | Eliminates manual tuning at most scales |
+
 ### PERF-1 — Parallel compaction with resource cap
+
+**Flow.**
+
+```mermaid
+flowchart LR
+    Sched["compaction.Scheduler<br/>(30s loop)"] --> Pick["Pick eligible partitions<br/>(HRW ownership + level rules)"]
+    Pick --> Acquire["coordinator.Acquire(estimate)<br/><i>global memory semaphore</i>"]
+    Acquire -->|fits| Run["compactGroup goroutine"]
+    Acquire -->|blocked| Wait["wait, retry next tick"]
+    Run --> Done["release budget +<br/>AddFile / RemoveFile"]
+    Wait --> Sched
+    Done --> Sched
+```
 
 **Problem.** Today the scheduler runs partition compactions serially.
 At PB scale that's the bottleneck — a new file lands in 30 s, but the
@@ -466,6 +602,35 @@ ingest at large scale; bigger at PB scale.
 ---
 
 ### PERF-2 — Manifest-side rowcount/bytes by `service.name`
+
+**Flow.**
+
+```mermaid
+flowchart TD
+    subgraph Write["Write path (cheap)"]
+        FlushW["writer flush"] --> ExtractW["extractLogLabels(rows) returns<br/>(service.name=api-gw, k8s.ns=prod, …)"]
+        ExtractW --> AddAggW["manifest.AddLabelAggregate(<br/>  partition, field, value,<br/>  rowcount, bytes)"]
+        AddAggW --> AggStore[("Aggregate store<br/>partition → field → value →<br/>{rows, bytes}")]
+    end
+
+    subgraph Compact["Compaction"]
+        Merge["compactGroup merges N → 1"] --> MergeAgg["sum input aggregates →<br/>output aggregate"]
+        MergeAgg --> AggStore
+    end
+
+    subgraph Read["Read path (the win)"]
+        Q["* | stats count() by (service.name)"] --> Check{"Query fits<br/>fastPath shape?"}
+        Check -->|yes| Lookup["AggregateLookup(<br/>  partitions in [t0,t1],<br/>  field='service.name')"]
+        Lookup --> AggStore
+        Lookup --> Emit["emit synthetic DataBlock<br/><b>0 files opened</b>"]
+        Check -->|no| Normal["normal query cascade<br/>(section 2)"]
+    end
+
+    classDef store fill:#d1ecf1,stroke:#0c5460
+    classDef win fill:#d4edda,stroke:#155724
+    class AggStore store
+    class Emit win
+```
 
 **Problem.** `* | stats count() by (service.name)` opens every file in
 the time range. The manifest already has per-file row counts; it just
@@ -527,6 +692,34 @@ disk in the manifest snapshot and load lazily.
 
 ### PERF-3 — Per-field cardinality stats (HLL sketches)
 
+**Flow.**
+
+```mermaid
+flowchart TD
+    subgraph Build["Build sketches (cheap, write-side)"]
+        Flush["writer flush"] --> Add["for v in distinct values:<br/>hll.Add(field, v)"]
+        Add --> Persist["serialize → FileInfo.Sketches<br/>(16 KiB per (field, partition))"]
+        Compact["compaction"] --> Merge["sketchOut.Merge(input sketches)"]
+        Merge --> Persist
+    end
+
+    subgraph Read["Read path: planner consults sketch"]
+        Q2["service.name:='X' AND k8s.ns:='Y'"] --> Plan["planner.SelectStrategy(<br/>  field, value, partition_range)"]
+        Plan --> Lookup["card = hll.Estimate(field, partitions)"]
+        Lookup --> Decide{"card range?"}
+        Decide -->|"< 16"| Bloom["use file bloom<br/>(tiny dictionary)"]
+        Decide -->|"16 .. 999"| Label["use inverted label index<br/>(set intersect)"]
+        Decide -->|">= 1000"| Scan["bloom + row scan fallback"]
+    end
+
+    Persist -.consult.-> Lookup
+
+    classDef cheap fill:#d4edda,stroke:#155724
+    classDef plan fill:#d1ecf1,stroke:#0c5460
+    class Build,Flush,Add,Persist,Compact,Merge cheap
+    class Plan,Lookup,Decide,Bloom,Label,Scan plan
+```
+
 **Problem.** The query planner today picks label-index vs bloom vs
 scan with static heuristics. At PB scale a `host.name`-like field
 (100 k distinct values) and a `service.name`-like field (5 distinct
@@ -579,6 +772,32 @@ filter and degrading the whole cluster.
 
 ### PERF-4 — Trace dependencies pre-aggregation
 
+**Flow.**
+
+```mermaid
+flowchart LR
+    subgraph Compact["Compaction-time aggregation"]
+        Iter["iterate rows in input files"] --> Acc["edges[parent][child] += callCount"]
+        Acc --> TopN["pick top-N most-frequent<br/>(default N=1024)"]
+        TopN --> KV["serialize → _servicegraph_idx<br/>footer KV (~50 KiB per file)"]
+        KV --> S3K[("parquet footer KV")]
+    end
+
+    subgraph Read["/api/dependencies"]
+        Req["/api/dependencies?endTs=…&lookback=…"] --> List["list files in time range"]
+        List --> Fan["parallel footer fetch<br/>(footer cache makes this O(0) usually)"]
+        Fan --> S3K
+        Fan --> Edges["accumulate edges across files"]
+        Edges --> JSON["emit Jaeger Dependencies JSON<br/><b>sub-second</b>"]
+    end
+
+    classDef cheap fill:#d4edda,stroke:#155724
+    classDef cache fill:#d1ecf1,stroke:#0c5460
+    class Iter,Acc,TopN,KV cheap
+    class S3K,Fan cache
+    class JSON cheap
+```
+
 **Problem.** `/api/dependencies` aggregates `parent` / `child` /
 `callCount` columns at query time. At PB scale this opens every trace
 file in the range. The dependency graph itself is tiny (~5 k edges).
@@ -625,6 +844,31 @@ file count; before this, the call was O(files in range).
 ---
 
 ### PERF-5 — File-level n-gram bloom for `_msg`
+
+**Flow.**
+
+```mermaid
+flowchart TD
+    subgraph Build["Build sidecar (write-side)"]
+        Flush2["writer flush"] --> Tri["for v in _msg values:<br/>for trigram of v:<br/>  bloom.Add(trigram)"]
+        Tri --> Sidecar[".ngram_bloom sidecar (S3)<br/>~10 KiB / 5k unique trigrams"]
+    end
+
+    subgraph Read["Read path: file-level skip"]
+        Q5["_msg:contains('OOM')"] --> Tokens["extractSearchTokens →<br/>['OOM']"]
+        Tokens --> Trigrams["trigrams('OOM') = ['OOM']"]
+        Trigrams --> Check["for file in candidates:<br/>  fetch .ngram_bloom (cached)<br/>  for trigram of query:<br/>    if not bloom.Has → drop file"]
+        Check --> Sidecar
+        Check --> Skipped["dropped<br/><i>50–95% of files</i>"]
+        Check --> Kept["surviving files → footer narrowing<br/>(token bloom still runs at RG level)"]
+    end
+
+    classDef cheap fill:#d4edda,stroke:#155724
+    classDef cache fill:#d1ecf1,stroke:#0c5460
+    class Flush2,Tri,Tokens,Trigrams,Check cheap
+    class Sidecar cache
+    class Skipped cheap
+```
 
 **Problem.** Token bloom is per row group. `_msg:contains("OOM")`
 still opens every file to consult its row-group blooms. A file-level
@@ -687,6 +931,41 @@ Already designed in section 7. Implementation lives in a new
 pipeline (`internal/metrics`, `internal/lifecycle`); writes to a
 new in-process `tunable.Map` that the storage layer consults instead
 of `cfg.Cache.MemoryMB` directly.
+
+**Flow.**
+
+```mermaid
+flowchart TD
+    subgraph Observe["Every 30 s"]
+        M1["ingest_rate"] --> Snap["build snapshot"]
+        M2["query_rate"] --> Snap
+        M3["p95_latency"] --> Snap
+        M4["mem_pressure"] --> Snap
+        M5["L1 hit %"] --> Snap
+        M6["compaction lag"] --> Snap
+        M7["S3 throttle"] --> Snap
+    end
+
+    Snap --> Rules["per-knob rules<br/>(with hysteresis)"]
+    Rules --> ChangeRate{"change rate cap<br/>≤ 1 change /<br/>knob / 5 min?"}
+    ChangeRate -->|ok| MemCeiling{"would change<br/>break 0.85×cgroup?"}
+    ChangeRate -->|throttled| Skip["skip this tick"]
+    MemCeiling -->|safe| Apply["apply to tunable.Map<br/>+ log + metric"]
+    MemCeiling -->|unsafe| Emergency["EMERGENCY shrink:<br/>rgDecodeSem → file_workers<br/>→ footer_max → L1"]
+
+    Apply --> Store["tunable.Map"]
+    Emergency --> Store
+    Store -.consult.-> Storage["storage layer<br/>reads current values"]
+
+    classDef metric fill:#fff3cd,stroke:#856404
+    classDef decide fill:#d1ecf1,stroke:#0c5460
+    classDef action fill:#d4edda,stroke:#155724
+    classDef emergency fill:#f8d7da,stroke:#721c24
+    class M1,M2,M3,M4,M5,M6,M7 metric
+    class Rules,ChangeRate,MemCeiling decide
+    class Apply,Store action
+    class Emergency emergency
+```
 
 **Backward compatibility.** Operators who set hard values in their
 `config.yaml` retain control — the autotune loop logs that it's
