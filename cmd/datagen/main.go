@@ -45,6 +45,14 @@ var (
 // (initial seed-batch keeps the historical spread for backfill).
 var continuousSpreadSec int
 
+// httpClient bounds every push so a slow/hung endpoint (e.g. LH cold blocking on
+// injected S3 latency) can't stall the whole batch indefinitely. Without a
+// timeout, http.DefaultClient waits forever, the 6s ticker falls behind, and
+// continuous-mode ingest develops gaps (empty per-minute buckets) that look like
+// a cold-tier regression but are really the generator stuck on one endpoint. A
+// timed-out push drops that one batch/endpoint and the next tick recovers.
+var httpClient = &http.Client{Timeout: 10 * time.Second}
+
 func main() {
 	logsCount := flag.Int("logs", 5000, "number of log rows per batch")
 	tracesCount := flag.Int("traces", 1000, "number of trace spans per batch")
@@ -567,7 +575,7 @@ func pushNDJSON(endpoint string, rows []logRow, accountID, projectID, orgID stri
 	req.Header.Set("Content-Type", "application/x-ndjson")
 	setTenantHeaders(req, accountID, projectID, orgID)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("push to %s: %w", endpoint, err)
 	}
@@ -688,7 +696,7 @@ func pushOTLPTracesToURL(url string, rows []traceRow, accountID, projectID, orgI
 	req.Header.Set("Content-Type", "application/json")
 	setTenantHeaders(req, accountID, projectID, orgID)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("push to %s: %w", url, err)
 	}
@@ -797,7 +805,7 @@ func pushLoki(endpoint string, rows []logRow) error {
 		}
 		req.Header.Set("Content-Type", "application/json")
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := httpClient.Do(req)
 		if err != nil {
 			return fmt.Errorf("push to loki %s: %w", endpoint, err)
 		}
