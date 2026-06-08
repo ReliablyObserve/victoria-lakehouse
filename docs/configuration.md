@@ -21,7 +21,7 @@ graph TD
     CFG --> S3C[S3<br/>bucket, region, endpoint]
     CFG --> CACHE[Cache<br/>L1 memory, L2 disk]
     CFG --> DISC[Discovery<br/>headless svc, hot boundary]
-    CFG --> INS[Insert<br/>flush, WAL, buffer]
+    CFG --> INS[Insert<br/>flush, buffer engine]
     CFG --> COMP[Compaction<br/>levels, leader election]
     CFG --> TENANT[Tenant<br/>isolation, stats, UI]
 
@@ -55,7 +55,7 @@ See [Getting Started — Configuration Profiles](getting-started.md#configuratio
 | Setting Area | balanced | max-performance | max-durability | max-cost-savings | dev |
 |---|---|---|---|---|---|
 | **ack_mode** | buffer | buffer | flush-sync | buffer | buffer |
-| **WAL** | on | off | on (1GB) | off | off |
+| **Durability** | logstore buffer | logstore buffer | logstore + S3-sync ack | logstore buffer | logstore buffer |
 | **flush_linger** | 200ms | 100ms | 0 (immediate) | 1s | 0 |
 | **Compression** | ZSTD-7 | ZSTD-3 | ZSTD-7 | ZSTD-11 | ZSTD-1 |
 | **Cache (mem/disk)** | 512MB/50GB | 2GB/100GB | 512MB/50GB | 128MB/10GB | 64MB/1GB |
@@ -445,9 +445,9 @@ lakehouse:
     target_file_size: 128MB
     bloom_columns: "service.name,trace_id"
     compression_level: default
-    wal_enabled: true
-    wal_dir: /data/lakehouse/wal
-    wal_max_bytes: 512MB
+    buffer_engine: logstore         # durable buffer (on-disk parts, no WAL)
+    buffer_dir: /data/lakehouse/buffer
+    buffer_retention: 1h
 
   select:
     buffer_query_enabled: true

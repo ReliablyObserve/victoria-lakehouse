@@ -145,7 +145,7 @@ insertComponent:
   replicaCount: 2
   persistence:
     enabled: true
-    size: 50Gi                   # WAL + buffer storage
+    size: 50Gi                   # logstore buffer + cache storage
     storageClass: gp3
   resources:
     requests:
@@ -252,8 +252,8 @@ A production deployment for logs in a 3-AZ cluster:
 
 ```
 monitoring namespace:
-  lakehouse-logs-insert-0  (us-east-1a)  [WAL + buffers -> S3]
-  lakehouse-logs-insert-1  (us-east-1b)  [WAL + buffers -> S3]
+  lakehouse-logs-insert-0  (us-east-1a)  [logstore buffer -> S3]
+  lakehouse-logs-insert-1  (us-east-1b)  [logstore buffer -> S3]
   lakehouse-logs-select-0  (us-east-1a)  [L2 cache, peer cache]
   lakehouse-logs-select-1  (us-east-1b)  [L2 cache, peer cache]
   lakehouse-logs-select-2  (us-east-1c)  [L2 cache, peer cache]

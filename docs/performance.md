@@ -129,8 +129,8 @@ Smart cache TTL settings (in `smart_cache`):
 | `insert.target_file_size` | 128MB | Compressed size threshold that triggers an early flush. Tune with `insert.row_group_size` together. |
 | `insert.row_group_size` | 10000 | Rows per Parquet row group. Larger row groups improve column stats pruning; smaller groups reduce memory per flush. |
 | `insert.compression_level` | 7 | ZSTD compression level. Level 7 gives 6x+ compression at ~260 MB/s write speed. Level 3 is 5x faster writes with ~25% less compression. Level 11+ gives <2% gain at 5x slower writes — not recommended. |
-| `insert.wal_enabled` | false | Enable WAL for crash recovery. Required for `ack_mode: committed`. |
-| `insert.wal_max_bytes` | 512MB | WAL size cap. Writes block when full. |
+| `insert.buffer_engine` | buffer | `logstore` selects the durable logstorage-native buffer (crash recovery via on-disk parts, no WAL). |
+| `insert.buffer_retention` | 1h | How long the logstore buffer keeps a row; the crash-recovery ceiling (validated `>= 4x buffer_flush_interval`). |
 
 ### Bloom index
 

@@ -565,16 +565,14 @@ flowchart TB
     subgraph "Log Write Path"
         VA_W["vlagent"] -->|mirror 1| VLI_W["vlinsert → vlstorage<br/>(hot EBS, 1 month)"]
         VA_W -->|mirror 2| LHI_W["lakehouse-insert<br/>mode=logs"]
-        LHI_W --> WAL_L["WAL"]
-        WAL_L --> BUF_L["Partition Buffers"]
+        LHI_W --> BUF_L["logstore buffer<br/>(durable parts, no WAL)"]
         BUF_L -->|flush| S3_L[("S3<br/>logs/dt=YYYY-MM-DD/hour=HH/*.parquet")]
     end
 
     subgraph "Trace Write Path"
         OC_W["OTEL Collector"] -->|export 1| VTI_W["vtinsert → vtstorage<br/>(hot EBS, 1 month)"]
         OC_W -->|export 2| LHI_T2["lakehouse-insert<br/>mode=traces"]
-        LHI_T2 --> WAL_T["WAL"]
-        WAL_T --> BUF_T["Partition Buffers"]
+        LHI_T2 --> BUF_T["logstore buffer<br/>(durable parts, no WAL)"]
         BUF_T -->|flush| S3_T[("S3<br/>traces/dt=YYYY-MM-DD/hour=HH/*.parquet")]
     end
 
