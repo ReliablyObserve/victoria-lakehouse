@@ -19,7 +19,7 @@
 > **Two binaries, one architecture.** `lakehouse-logs` reimplements the VL storage layer. `lakehouse-traces` reimplements the VT storage layer. Both use Parquet on S3 and expose identical HTTP APIs, LogsQL query syntax, binary DataBlock protocol, and insert endpoints as their upstream counterparts. Each binary pins to its own VL/VT dependency version for maximum compatibility.
 
 - **Drop-in VL/VT storage node.** Register as a `-storageNode` on vlselect/vtselect. Queries spanning hot and cold data work transparently.
-- **Write path with crash recovery.** Full VL insert protocol support (jsonline, Loki JSON+protobuf, ES bulk, syslog, journald, Datadog, OTLP, Splunk) via upstream `vlinsert` handlers. Data buffers in memory, flushes to S3 Parquet, and survives process crashes via WAL.
+- **Write path with crash recovery.** Full VL insert protocol support (jsonline, Loki JSON+protobuf, ES bulk, syslog, journald, Datadog, OTLP, Splunk) via upstream `vlinsert` handlers. With the `logstore` engine, data buffers in a durable per-pod `logstorage.Storage` (on-disk parts, restored on open) and flushes to S3 Parquet — surviving process crashes **without a separate WAL**. See [Persistence & Durability](docs/durability.md).
 - **Zero-delay reads.** Select pods query ALL insert pods across ALL AZs for unflushed buffer data, merging with S3 results for immediate read-after-write visibility. Single-node deployments self-loop so they serve their own unflushed buffer without a peer fan-out.
 - **Instant-warm restart.** Manifest + footer-cache persist to local disk on shutdown; the next start reloads the manifest in milliseconds and asynchronously re-prefetches every footer the previous pod had cached — first user query after restart hits a hot cache instead of paying an S3 round-trip.
 - **Three-state `/ready` lifecycle.** `503 not_ready` → `204 serving_warming` (queries answered, background warmup in progress) → `200 ready`. Load balancers see fully-warm pods only; queries never block on a half-loaded manifest.
@@ -48,14 +48,14 @@ Cost leadership is **scale-dependent**. At small scale (≤500 GB/mo), VL/VT EBS
 | **Glacier tiering** | **Yes (cheapest at 3yr+)** | N/A | **Yes (cheapest at 3yr+)** | No (compaction breaks it) |
 | **Analytics access** | **DuckDB, Spark, Trino** | VL/VT API only | **DuckDB, Spark, Trino** | Loki API only |
 | **Disaster recovery** | **Independent** | N/A | **Independent cold tier** | N/A |
-| **Write path** | WAL + S3 + compaction (~2.1x) | EBS WAL + LSM (~3-10x) | EBS + WAL + S3 + compaction | WAL→chunk→S3→compact (3-5x) |
+| **Write path** | buffer + S3 + compaction (~1.1x, no WAL) | EBS WAL + LSM (~3-10x) | EBS + WAL + S3 + compaction | WAL→chunk→S3→compact (3-5x) |
 | **CPU (vCPU-months)** | 9 vCPU | 18 vCPU | 25 vCPU | 24 vCPU |
 | **Memory (GB)** | 24 GB | 48 GB | 72 GB | 56 GB |
 | **Network traffic (GB/mo)** | 180 PUT+GET | ~150 (EBS local) | 300 PUT+GET + cross-AZ | 370 PUT+GET + compaction |
 | **Storage breakdown** | S3: $688/mo | EBS: $796/mo | EBS: $65/mo + S3: $688/mo | S3: $1,484/mo |
 | **Cost composition** | 54% Storage, 32% Compute, 14% Network | 30% Storage, 64% Compute, 6% Network | 23% Storage, 64% Compute, 10% Network, 3% Other | 26% Storage, 66% Compute, 6% Network, 2% Other |
 
-> **Write amplification detail**: Lakehouse writes each byte ~2.1x: (1) local WAL (uncompressed gob, crash recovery), (2) S3 PutObject (ZSTD Parquet), (3) compaction reads N files and writes 1 merged file (~0.1x at 10:1 ratio). VL/VT LSM write amplification is 3-10x (WAL → L0 → L1 → L2 compaction levels). Loki/Tempo write 3-5x: WAL → in-memory chunk → flushed chunk → S3 + compacted S3.
+> **Write amplification detail**: Lakehouse writes each byte ~1.1x: (1) S3 PutObject (ZSTD Parquet), (2) compaction reads N files and writes 1 merged file (~0.1x at 10:1 ratio). There is **no separate WAL copy** — crash durability comes from the `logstore` buffer's own on-disk parts (the same parts hot VL/VT persist), not an extra write. VL/VT LSM write amplification is 3-10x (WAL → L0 → L1 → L2 compaction levels). Loki/Tempo write 3-5x: WAL → in-memory chunk → flushed chunk → S3 + compacted S3.
 >
 > **Hybrid = full Lakehouse S3 cost + additional VL/VT hot tier + doubled delivery network** (1 month EBS + compute + 2× cross-AZ ingest from mirroring to both VL/VT and LH inserts). All data always on S3; EBS is additional for sub-10ms queries on recent data. At 500 GB/day, VL/VT EBS is cheapest (compute + delivery dominates). At PB/mo with >8mo retention, Hybrid crosses below VL/VT EBS.
 
@@ -166,14 +166,14 @@ graph TB
     end
 
     subgraph "Cold Tier — Unlimited (S3) — Victoria Lakehouse"
-        LHL["lakehouse-logs<br/>(insert)"] --> WAL1["WAL → Buffers"]
-        LHT["lakehouse-traces<br/>(insert)"] --> WAL2["WAL → Buffers"]
-        WAL1 -->|flush| S3[("S3 Parquet<br/>(11 nines)")]
-        WAL2 -->|flush| S3
+        LHL["lakehouse-logs<br/>(insert)"] --> B1["Buffer<br/>(logstore, durable)"]
+        LHT["lakehouse-traces<br/>(insert)"] --> B2["Buffer<br/>(logstore, durable)"]
+        B1 -->|flush| S3[("S3 Parquet<br/>(11 nines)")]
+        B2 -->|flush| S3
         LHLS["lakehouse-logs<br/>(select)"] --> S3
         LHTS["lakehouse-traces<br/>(select)"] --> S3
-        LHLS -.->|buffer query| WAL1
-        LHTS -.->|buffer query| WAL2
+        LHLS -.->|buffer query| B1
+        LHTS -.->|buffer query| B2
     end
 
     LOG -->|"mirror (hot)"| VLI
@@ -381,7 +381,7 @@ Each binary supports three roles for independent scaling:
 
 ### Write Path
 - **Full VL insert protocol support**: jsonline, Loki (JSON + protobuf), ES bulk, syslog, journald, Datadog, OTLP, Splunk, native insert — all via VL's upstream `vlinsert` handlers.
-- **Write-ahead log (WAL)**: crash-safe durability with gob-encoded append-only log and automatic replay on restart. Configurable `ack_mode`: `buffer` (default, fast) or `flush-sync` (zero data loss, used by `max-durability` profile).
+- **Crash-safe durability (no WAL)**: the `logstore` insert buffer persists rows as on-disk parts (the same engine hot VL/VT use, restored on open); a persisted **flush watermark** re-flushes any uncommitted window on restart — idempotently — so the crash-loss window matches hot VL/VT. Configurable `ack_mode`: `buffer` (default, fast) or `flush-sync` (zero data loss, used by `max-durability` profile). See [Persistence & Durability](docs/durability.md).
 - **Adaptive file sizing**: per-partition byte estimates trigger flush when approaching `--lakehouse.insert.target-file-size` for optimal Parquet file sizes.
 - **Buffer query bridge**: select pods fan out to ALL insert pods across ALL AZs via `/internal/buffer/query` for zero-delay reads of unflushed data. AZ-aware routing is only used for peer cache (L3), never for buffer queries — same-AZ-only would miss 2/3 of buffered rows in a 3-AZ deployment.
 - **Atomic S3 writes**: each Parquet file is written via a single S3 PutObject (1x write amplification). No WAL replay deduplication, no compactor reconciliation — contrast with Loki/Tempo's 3-5x write amplification from WAL→chunk→S3 pipelines.
@@ -476,13 +476,13 @@ Five named presets tune 40+ settings with one flag. Any explicit setting overrid
 lakehouse-logs --lakehouse.profile=max-durability --lakehouse.s3.bucket=obs-archive
 ```
 
-| Profile | ack_mode | WAL | Cache | GC | Retention | Target |
+| Profile | ack_mode | Durability | Cache | GC | Retention | Target |
 |---|---|---|---|---|---|---|
-| `balanced` (default) | buffer | On | 512MB/50GB | 6h | Off | General production |
-| `max-performance` | buffer | Off | 2GB/100GB | 3h | Off | Lowest latency |
-| `max-durability` | flush-sync | On (1GB) | 512MB/50GB | 1h | On | Zero data loss |
-| `max-cost-savings` | buffer | Off | 128MB/10GB | Off | On | Minimize cost |
-| `dev` | buffer | Off | 64MB/1GB | Off | Off | Local MinIO dev |
+| `balanced` (default) | buffer | logstore buffer | 512MB/50GB | 6h | Off | General production |
+| `max-performance` | buffer | logstore buffer | 2GB/100GB | 3h | Off | Lowest latency |
+| `max-durability` | flush-sync | logstore + S3-sync ack | 512MB/50GB | 1h | On | Zero data loss |
+| `max-cost-savings` | buffer | logstore buffer | 128MB/10GB | Off | On | Minimize cost |
+| `dev` | buffer | logstore buffer | 64MB/1GB | Off | Off | Local MinIO dev |
 
 Profiles support three-level hierarchy in Helm: global → per-signal → per-role:
 
@@ -776,7 +776,8 @@ See [ZSTD Compression Benchmark](docs/zstd-compression-benchmark.md) for full re
 ### Architecture & Design
 - [Architecture](docs/architecture.md) — internal design, Parquet schema, query flow, cache tiers
 - [Deployment Architecture](docs/deployment-architecture.md) — collector configs (vlagent, Fluent Bit, Vector, OTEL Collector), hot/cold tiers, DR playbooks
-- [Write Path](docs/write-path.md) — insert APIs, WAL crash recovery, adaptive flush, buffer query bridge
+- [Write Path](docs/write-path.md) — insert APIs, adaptive flush, buffer query bridge
+- [Persistence & Durability](docs/durability.md) — no-WAL crash recovery, big-file sizing, serving unflushed data, e2e hardening
 - [Deletion Strategy](docs/deletion-strategy.md) — cost-aware tombstone + selective rewrite, Glacier-safe, three modes
 
 ### Analytics (Open Parquet)
@@ -816,7 +817,7 @@ All core milestones are **complete**. The project is in production-readiness and
 | **M5: Cluster Integration** | Complete | `/internal/select/*` binary protocol with ZSTD DataBlock streaming, `-storageNode` registration on vlselect/vtselect |
 | **M6: Filter AST + E2E** | Complete | Full LogsQL predicate engine (exact, substring, regex, NOT, AND, OR, ranges), Playwright E2E, schema validation |
 | **M7: Observability** | Complete | ~147 Prometheus metrics (including 12 bloom-specific), Grafana dashboards (single-instance + cluster), 10 alerting rules, circuit breaker, structured JSON logging |
-| **M8: Write Path** | Complete | Full VL insert protocol support via upstream `vlinsert` handlers (jsonline, Loki JSON+protobuf, ES bulk, syslog, journald, Datadog, OTLP, Splunk), WAL with crash recovery, adaptive flush, buffer query bridge for zero-delay reads |
+| **M8: Write Path** | Complete | Full VL insert protocol support via upstream `vlinsert` handlers (jsonline, Loki JSON+protobuf, ES bulk, syslog, journald, Datadog, OTLP, Splunk), logstore-buffer crash recovery (no WAL), adaptive flush, buffer query bridge for zero-delay reads |
 | **M9: Compaction** | Complete | Background merge of small Parquet files, size-tiered strategy, manifest atomic updates, tombstone integration |
 | **M10: Testing & Helm** | Complete | E2E test suite (VL + vlselect + loki-vl-proxy chain), benchmarks, Victoria-pattern Helm chart, upstream sync GHA |
 | **M11: Cost-Aware Deletion** | Complete | Three-tier deletion (tombstone → rewrite → lifecycle), `/delete/logsql/*` and `/delete/tracessql/*` APIs, storage-class detection, Glacier-safe, verify endpoint |

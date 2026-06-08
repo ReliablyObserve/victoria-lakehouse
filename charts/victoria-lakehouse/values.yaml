@@ -173,12 +173,16 @@ lakehouseConfig:
       - trace_id
     # -- ZSTD compression level (1=fast, 22=max compression).
     compression_level: 7
-    # -- Enable write-ahead log for crash recovery.
-    wal_enabled: true
-    # -- WAL directory path.
-    wal_dir: /data/lakehouse/wal
-    # -- Maximum WAL size before blocking writes.
-    wal_max_bytes: 512MB
+    # -- Insert buffer engine. "buffer" = legacy in-memory staging; "logstore" =
+    # durable logstorage-native buffer (on-disk parts, restored on open) — crash
+    # recovery WITHOUT a separate WAL. See docs/durability.md.
+    buffer_engine: logstore
+    # -- Buffer parts directory. MUST be a durable volume (not tmpfs) for crash
+    # recovery.
+    buffer_dir: /data/lakehouse/buffer
+    # -- How long the buffer retains a row before VL drops it. When flush is
+    # enabled this is the recovery ceiling (validated >= 4x buffer_flush_interval).
+    buffer_retention: 1h
 
   # ---------------------------------------------------------------------------
   # Select — Read path (buffer query bridge)

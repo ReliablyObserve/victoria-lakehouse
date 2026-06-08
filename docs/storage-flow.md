@@ -20,7 +20,7 @@ graph TD
     subgraph Victoria Lakehouse
         INS --> INSAD["insertAdapter<br/>logRowsToSchemaRows"]
         INSAD --> BW[BatchWriter]
-        BW --> WAL[WAL]
+        BW --> BUF["Buffer (logstore)<br/>durable on-disk parts"]
         BW -->|flush| PQ[Parquet Writer]
         PQ --> S3[(S3)]
         PQ --> MAN[Manifest]
@@ -50,7 +50,7 @@ sequenceDiagram
     participant VLH as VL vlinsert Handler
     participant A as insertAdapter
     participant BW as BatchWriter
-    participant W as WAL
+    participant W as Buffer (logstore)
     participant PW as Parquet Writer
     participant S3 as S3
     participant M as Manifest
@@ -61,7 +61,7 @@ sequenceDiagram
     VLH->>A: MustAddRows(*LogRows)
     A->>A: logRowsToSchemaRows()
     A->>BW: MustAddLogRows([]LogRow)
-    BW->>W: AppendLog(rows)
+    BW->>W: MustAddRows (durable on-disk parts)
     BW->>BW: Buffer by partition
     
     Note over BW: Flush trigger:<br/>interval (10s) or<br/>buffer size threshold
@@ -173,34 +173,34 @@ flowchart LR
 - 6-10: ZSTD better compression
 - 11+: ZSTD best compression
 
-### WAL (Write-Ahead Log)
+### Buffer durability (no WAL)
 
-**File:** `internal/wal/wal.go`
-
-Optional durability layer. When enabled, rows are appended to the WAL before buffering:
+There is **no separate lakehouse write-ahead log** (the old `internal/wal/` was
+removed). With `insert.buffer_engine: logstore`, durability comes from the insert
+buffer itself: a per-pod `logstorage.Storage` that writes rows to **on-disk parts
+every flush interval (~5s) and restores them on open** — the same mechanism hot
+VL/VT use. A persisted **flush watermark** lets the `BufferFlusher` re-flush any
+uncommitted window on restart, idempotently.
 
 ```mermaid
 flowchart TD
-    ADD[AddLogRows] --> WAL{WAL enabled?}
-    WAL -->|Yes| APPEND[WAL.AppendLog<br/>gob-encoded + length header]
-    WAL -->|No| BUF[Buffer directly]
-    APPEND --> BUF
-
-    FLUSH[Successful flush] --> TRUNC[WAL.Truncate<br/>Atomic file replacement]
-
-    CRASH[Crash recovery] --> REPLAY[WAL.Replay<br/>Read until EOF/corrupt]
-    REPLAY --> RESTORE[Restore rows to buffers]
+    ADD[MustAddRows] --> BUF[logstore buffer<br/>on-disk parts ~5s]
+    BUF -->|BufferFlusher<br/>settled window| S3[Parquet on S3]
+    S3 --> WM[Advance + persist<br/>flush watermark]
+    CRASH[Crash / restart] --> RESTORE[logstorage restores parts]
+    RESTORE --> REFLUSH[Re-flush from watermark<br/>idempotent: manifest dedups]
 ```
 
-**Wire format:** `[4-byte LE length][1-byte mode: 'L'|'T'][gob-encoded row]`
-
-**Recovery:** On startup, replay reads entries until first EOF or corrupt record (crash boundary). This restores any rows that were buffered but not yet flushed to S3.
+**Recovery:** on restart the buffer restores its parts and the flusher re-flushes
+`(watermark, now-offset]`. Crash-loss window ≈ the buffer flush interval (~5s),
+matching hot VL/VT. See [Persistence & Durability](durability.md).
 
 | Config | Default | Flag |
 |--------|---------|------|
-| `insert.wal_enabled` | `false` | `--lakehouse.insert.wal-enabled` |
-| `insert.wal_dir` | `/data/lakehouse/wal` | `--lakehouse.insert.wal-dir` |
-| `insert.wal_max_bytes` | `512MB` | `--lakehouse.insert.wal-max-bytes` |
+| `insert.buffer_engine` | `buffer` | `--lakehouse.insert.buffer-engine` (`logstore` for durable buffer) |
+| `insert.buffer_dir` | `/data/lakehouse/buffer` | `--lakehouse.insert.buffer-dir` (durable volume) |
+| `insert.buffer_retention` | `1h` | `--lakehouse.insert.buffer-retention` |
+| `insert.buffer_flush_enabled` | `false` | `--lakehouse.insert.buffer-flush-enabled` |
 
 ## Read Path
 
@@ -602,7 +602,7 @@ flowchart TD
     MAN --> CACHE[Create Cache Stack<br/>L1 + L2 + Peer + SmartCache]
     CACHE --> DISC[Start Discovery<br/>Peer + Hot Boundary]
 
-    DISC --> P1[Phase: DiskRecovery<br/>WAL replay]
+    DISC --> P1[Phase: DiskRecovery<br/>buffer restore]
     P1 --> P2[Phase: S3Refresh<br/>Manifest scan, 5min timeout]
     P2 --> P3[WarmLabelIndex<br/>Sample 10 files]
     P3 --> P4[Phase: Ready<br/>Start serving]

@@ -49,12 +49,15 @@ Set `--lakehouse.startup.serve-stale=true` to serve from persisted cache (Phase 
 
 ## Write Path Operations
 
-### WAL Management
+### Buffer durability (no WAL)
 
-The WAL is automatically managed but operators should monitor:
-- **WAL size**: `lakehouse_insert_wal_bytes` — if approaching `--lakehouse.insert.wal-max-bytes`, flush pipeline may be stalled
-- **WAL replay on startup**: check logs for `"WAL recovery complete"` with recovered log/trace counts
-- **WAL location**: `--lakehouse.insert.wal-dir` must be on durable storage (not tmpfs)
+There is no lakehouse WAL. With `--lakehouse.insert.buffer-engine=logstore` the
+insert buffer persists rows as on-disk parts and re-flushes any uncommitted
+window on restart (see [Persistence & Durability](durability.md)). Operators
+should monitor:
+- **Buffer dir**: `--lakehouse.insert.buffer-dir` must be on durable storage (not tmpfs) — it is the crash-recovery substrate.
+- **Retention vs flush cap**: `--lakehouse.insert.buffer-retention` must stay `>= 4x --lakehouse.insert.buffer-flush-interval` (enforced at startup) so un-flushed rows survive a linger window plus restart downtime.
+- **Restore on start**: check logs for buffer-restore + the `/ready` readiness gate clearing before the pod takes traffic.
 
 ### Buffer Query Bridge
 
@@ -81,7 +84,7 @@ sequenceDiagram
     Lakehouse->>Lakehouse: readiness → false
     Lakehouse->>S3: Flush all write buffers
     Lakehouse->>Lakehouse: Drain in-flight queries (30s)
-    Lakehouse->>Lakehouse: Truncate WAL
+    Lakehouse->>Lakehouse: Close buffer (flush parts to disk)
     Lakehouse->>Lakehouse: Persist manifest + index to disk
     Lakehouse->>K8s: Exit 0
 ```
@@ -90,7 +93,7 @@ On SIGTERM:
 1. Stop accepting new queries (readiness -> false)
 2. Flush all pending write buffers to S3
 3. Drain in-flight queries (30s timeout)
-4. Truncate WAL (all data flushed)
+4. Close the insert buffer (flush its parts to disk; any un-flushed window re-flushes on restart from the persisted watermark)
 5. Persist manifest, label index, peer ring to disk
 6. Close S3 and peer connections
 7. Exit
@@ -338,9 +341,9 @@ Normal mode (default): runs the query through the normal read path — if result
 
 ### Insert returns 503
 
-1. Check `CanWriteData()` — S3 connectivity issue or WAL full
-2. If WAL full: flush pipeline may be stalled (check S3 write errors)
-3. Increase `--lakehouse.insert.wal-max-bytes` or investigate S3 permissions
+1. Check `CanWriteData()` — S3 connectivity issue, or the buffer is at its disk/retention ceiling
+2. If the buffer is backpressured: the flush pipeline may be stalled (check S3 write errors)
+3. Investigate S3 permissions/latency, or raise `--lakehouse.insert.buffer-retention` (keeping `>= 4x buffer-flush-interval`)
 
 ### Recently ingested data not visible in queries
 
@@ -350,8 +353,8 @@ Normal mode (default): runs the query through the normal read path — if result
 4. Check `--lakehouse.select.insert-headless-service` resolves to insert pods
 5. Check buffer query timeout: `--lakehouse.select.buffer-query-timeout` (default 2s)
 
-### WAL replay on startup reports entries but data is missing
+### After a restart, recent data is briefly missing then reappears
 
-1. WAL replay re-adds entries to partition buffers — they will be flushed on next flush cycle
-2. If process crashes before first flush after replay, the WAL still has the entries (not truncated until successful flush)
-3. Check logs for `"WAL recovery complete"` with correct counts
+1. On restart the `logstore` buffer restores its on-disk parts and the flusher re-flushes `(watermark, now-offset]` — recent rows are served from the restored buffer via the read-merge while that completes.
+2. If a row is permanently missing after a crash, check that `--lakehouse.insert.buffer-dir` is a durable volume (not tmpfs) and that `buffer-retention >= 4x buffer-flush-interval`.
+3. See [Persistence & Durability](durability.md) for the crash-recovery model.

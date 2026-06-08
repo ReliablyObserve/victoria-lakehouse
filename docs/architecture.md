@@ -107,8 +107,7 @@ flowchart TD
     C --> D[vlstorage.insertAdapter.MustAddRows]
     D --> E["logRowsToSchemaRows\n(field mapping; strings.Clone for arena safety)"]
     E --> F[BatchWriter.AddLogRows / AddTraceRows]
-    F --> G["WAL.AppendLog\n(if WAL enabled; crash recovery)"]
-    F --> H["partition buffer\n(map[partition][]Row, per hour)"]
+    F --> H["logstore buffer\n(on-disk parts ~5s; durable, no WAL)"]
     H -->|"flush trigger:\ninterval or size threshold"| I[BatchWriter.flushPartition]
     I --> J["parquet-go write\n(ZSTD level 7 default)"]
     I --> K[s3reader.ClientPool.PutObject]
@@ -120,7 +119,7 @@ Key points:
 - `logRowsToSchemaRows` clones all strings because VL uses arena-allocated memory freed immediately after `MustAddRows` returns.
 - Partitions are by hour: `dt=YYYY-MM-DD/hour=HH/`.
 - Flush is triggered by `FlushInterval` (configurable) or when the buffer exceeds `TargetFileSize` (default 128 MB compressed).
-- WAL provides crash recovery: rows written to WAL before the S3 flush are replayed on restart.
+- Crash recovery (no WAL): with `buffer_engine: logstore` the buffer persists rows as on-disk parts (restored on open) and a flush watermark re-flushes any uncommitted window on restart. See [Persistence & Durability](durability.md).
 
 ---
 
@@ -169,9 +168,9 @@ All manifest lookups, cache keys, and bloom index entries are scoped by tenant p
 | `GetFieldValues(ctx, tenantIDs, query, field, limit)` | List values for a field |
 | `GetStreamFieldNames` / `GetStreamFieldValues` | Stream label introspection |
 | `GetStreams` / `GetStreamIDs` | Active stream enumeration |
-| `MustAddLogRows(rows)` | Buffer log rows → WAL → partition buffer → S3 |
-| `MustAddTraceRows(rows)` | Buffer trace rows → WAL → partition buffer → S3 |
-| `CanWriteData()` | S3 connectivity + WAL capacity check |
+| `MustAddLogRows(rows)` | Buffer log rows → logstore buffer (durable) → S3 |
+| `MustAddTraceRows(rows)` | Buffer trace rows → logstore buffer (durable) → S3 |
+| `CanWriteData()` | S3 connectivity check |
 | `BufferedLogRows/TraceRows(start, end)` | Return unflushed rows for buffer bridge |
 
 The `vlstorage.adapter` wraps `Storage` and registers it with VL's `vlstorage.SetExternalStorage`, so all VL HTTP handlers route through the lakehouse engine without modification.
