@@ -12,7 +12,7 @@ produces user-visible empty-data windows ranging from "invisible
 during normal rolling deploys" to "1-5 min cluster-wide blackout
 on simultaneous restart". The original `/ready=200` flipped the
 moment the HTTP listener bound, regardless of whether the pod had
-data or had finished WAL replay. This lies in five worst cases
+data or had finished buffer restore. This lies in five worst cases
 documented in `docs/architecture/scaling-restart-scenarios.md`.
 
 This design closes the lies AND makes the warmup window shorter
@@ -33,7 +33,7 @@ without paying for it with strictness in dev/CI.
    the knob name + recommended value + cost.
 
 3. **Background as much as possible.** The foreground critical
-   path is `disk recovery → WAL replay → ServingReady`. Everything
+   path is `disk recovery → buffer restore → ServingReady`. Everything
    else (S3 refresh, cache warmup, bloom backfill, snapshot save
    to S3) is background, with the `/ready=204` state communicating
    "ready, still optimising".
@@ -143,7 +143,7 @@ fixes whatever broke.
 | --- | --- |
 | Buffer warm (insert role, post-WAL) | Local rows + peer rows merged in BufferBridge fan-out |
 | Buffer cold (just restarted) | Peer rows only |
-| All buffers cold (simultaneous restart) | **EMPTY for ~2 min until WAL replay + first flush.** Returns 200 with partial data. Future: "data-cold" cluster flag returns 503 retry-after instead. |
+| All buffers cold (simultaneous restart) | **EMPTY for ~2 min until buffer restore + first flush.** Returns 200 with partial data. Future: "data-cold" cluster flag returns 503 retry-after instead. |
 
 Recent data freshness depends on how many peers have warm
 buffers. Cluster topology should ensure ≥1 peer is always warm
@@ -212,7 +212,7 @@ startup:
 
   max_warmup_time: 5m              # background goroutine budget
   serve_stale: false               # legacy; superseded by gate above
-  wal_reconciliation: true         # gates WAL replay on /ready
+  wal_reconciliation: true         # gates buffer restore on /ready
 
 manifest:
   refresh_interval: 30s            # periodic S3 LIST cadence
@@ -288,7 +288,7 @@ Each hint names the config knob to tune AND quantifies the cost
 
 ## Open questions
 
-1. **Cluster-wide WAL replay state.** During the all-peers-restart
+1. **Cluster-wide buffer restore state.** During the all-peers-restart
    scenario, every peer is replaying its WAL independently.
    Should they share a "WAL-replay coordination" so the first
    one to finish takes over while others catch up? Probably not

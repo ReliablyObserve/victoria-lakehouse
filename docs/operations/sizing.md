@@ -189,7 +189,7 @@ shutdown:
 | --- | --- | --- |
 | Manifest memory | file_count | yes |
 | Footer cache | footer_max_items | yes |
-| WAL replay time | wal_max_bytes / 10 MB/s | yes |
+| Buffer restore time | buffer parts on disk / restore rate | yes |
 | S3 LIST during refresh | partition_count | sub-linearly (paginated, parallelisable) |
 | Query latency (wide window) | file_count visited | sub-linearly with bloom + footer cache |
 | Restart `/ready` time | snapshot size + footer reload | sub-linearly (async footer-cache snapshot reload runs after `/ready=200`) |
