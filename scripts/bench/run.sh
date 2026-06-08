@@ -209,9 +209,53 @@ ingest() {
     [[ "$state" == exited* || "$state" == "exited" ]] && break
     sleep 5; tries=$((tries+1)); (( tries > 180 )) && { log "datagen-seed not finished after 15m; continuing"; break; }
   done
-  log "seed done; waiting 75s for LH flush to S3 (ClickHouse reads the Parquet)…"
-  sleep 75
-  [[ -x scripts/benchmark-preflight.sh ]] && { log "preflight data/parity check…"; scripts/benchmark-preflight.sh || log "(preflight reported issues — see above)"; }
+  log "seed done; waiting for LH flush to CONVERGE to the baseline (so we measure equivalent data)…"
+  local maxsecs; maxsecs=$(for r in $RANGES; do range_to_secs "$r"; done | sort -n | tail -1)
+  for signal in $([[ "$SIGNALS" == both ]] && echo "logs traces" || echo "$SIGNALS"); do
+    wait_for_flush "$signal" "$maxsecs"
+  done
+}
+
+# logsql_count: total row count over [now-secs, now] from a LogsQL endpoint.
+logsql_count() { # $1 base_url  $2 secs
+  curl -sf --max-time 30 --data-urlencode "query=* | stats count() n" \
+    --data-urlencode "start=$(start_ns "$2")" --data-urlencode "end=$(end_ns "$2")" \
+    "$1/select/logsql/query" 2>/dev/null | python3 -c "
+import sys,json
+for l in sys.stdin:
+  l=l.strip()
+  if l:
+    try: print(int(json.loads(l).get('n',0))); break
+    except: pass
+else: print(0)"
+}
+
+# wait_for_flush: wait until the LH cold tier's count over the widest measured
+# window has SETTLED — either it converges to the VL/VT baseline (≥98%, real flush
+# lag that resolves), or it stabilizes (3 unchanged polls) at a lower value, which
+# means flush is COMPLETE and the shortfall is a genuine gap (e.g. ingest drop
+# under a bursty seed, or the cardinality gate) — reported, and flagged per-cell by
+# the validity check. Either way we stop measuring over still-moving data. CH reads
+# LH's Parquet so it tracks LH.
+wait_for_flush() { # $1 signal  $2 secs
+  local signal="$1" secs="$2" base_url cold_url
+  if [[ "$signal" == logs ]]; then base_url="${EP[vl]}"; cold_url="${EP[lh_logs]}"
+  else base_url="${EP[vt]}"; cold_url="${EP[lh_traces]}"; fi
+  local tries=0 base cold prev=-1 stable=0 ratio
+  while (( tries < 90 )); do   # up to ~15min
+    base=$(logsql_count "$base_url" "$secs"); cold=$(logsql_count "$cold_url" "$secs")
+    if [[ "$base" =~ ^[0-9]+$ && "$cold" =~ ^[0-9]+$ && "$base" -gt 0 ]]; then
+      ratio=$(awk "BEGIN{printf \"%.3f\",$cold/$base}")
+      printf '    %-7s baseline=%-8s LH=%-8s ratio=%s\n' "$signal" "$base" "$cold" "$ratio" >&2
+      awk "BEGIN{exit !($cold/$base >= 0.98)}" && { log "flush converged ($signal): LH=$cold ≈ baseline=$base"; return 0; }
+      if [[ "$cold" == "$prev" ]]; then
+        stable=$((stable+1))
+        (( stable >= 3 )) && { log "flush SETTLED ($signal) but LH=$cold is only ratio=$ratio of baseline=$base — REAL gap, not lag (cells will be flagged ✗ where it matters)"; return 0; }
+      else stable=0; prev="$cold"; fi
+    fi
+    sleep 10; tries=$((tries+1))
+  done
+  log "WARN: $signal did not settle in 15m (LH=$cold vs baseline=$base); proceeding"
 }
 set_latency() { local ms="$1"; if [[ "$ms" == 0 ]]; then log "S3 latency: passthrough (0ms)"; scripts/inject-s3-latency.sh 0 0 >/dev/null 2>&1 || true; else log "S3 latency: ${ms}ms"; scripts/inject-s3-latency.sh "$ms" "$((ms/3))" >/dev/null 2>&1 || true; fi; }
 
