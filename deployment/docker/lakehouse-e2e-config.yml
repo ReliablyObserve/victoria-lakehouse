@@ -17,8 +17,12 @@ lakehouse:
   # logstorage's own parts + S3 Parquet (no LH WAL needed for it).
   insert:
     buffer_engine: logstore
-    buffer_flush_enabled: true     # cutover (re-enabled): flusher fixed — DebugFlush before read + latencyOffset + size-gate
-    buffer_flush_interval: 2m      # object-store flush cap (max linger); flushes on target_file_size OR this
+    # buffer_flush_enabled REVERTED again: DebugFlush fixed the catastrophic ~92%
+    # loss, but a residual PER-WINDOW under-count remains — the flusher's
+    # wall-clock time-windowing commits a window (and advances the watermark)
+    # before spans whose _time is in it but which arrive >latencyOffset late have
+    # landed. Needs a more robust flush boundary (track the buffer's actual
+    # min-unflushed _time, or a larger/adaptive offset) before re-enabling.
 
   retention:
     enabled: true
