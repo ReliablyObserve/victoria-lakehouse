@@ -1029,12 +1029,22 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 					logger.Fatalf("buffer_flush_enabled but the insert writer is nil")
 				}
 				internalvlstorage.SetBufferAuthoritative(true)
-				flusher := parquets3.NewBufferFlusher(w, bufStore, cfg.Insert.BufferDir, internalvlstorage.FlushRowKeeper())
+				// buffer_flush_interval is the object-store flush cap (max linger
+				// before a sub-target window is flushed). The flusher CHECKS more
+				// often than that (so recent rows become queryable / size is
+				// re-evaluated) but only FLUSHES on target_file_size OR the linger
+				// cap — so S3 gets ~target-sized objects, not one tiny file/tick.
+				maxLinger := cfg.Insert.BufferFlushInterval
+				checkInterval := maxLinger
+				if checkInterval > 30*time.Second {
+					checkInterval = 30 * time.Second
+				}
+				flusher := parquets3.NewBufferFlusher(w, bufStore, cfg.Insert.BufferDir, internalvlstorage.FlushRowKeeper(), cfg.Insert.TargetFileSizeN(), maxLinger)
 				// Process-lived goroutine. On shutdown the watermark simply
 				// doesn't advance, so the in-flight window re-flushes on restart
 				// (no loss). Graceful flusher-stop coordinated with buffer Close
 				// is a pre-flip hardening item.
-				go flusher.Run(context.Background(), cfg.Insert.BufferFlushInterval, time.Now().UnixNano())
+				go flusher.Run(context.Background(), checkInterval, time.Now().UnixNano())
 				logger.Warnf("Option B CUTOVER ACTIVE: buffer is the authoritative Parquet producer; BufferFlusher running (interval=%s); legacy staging + WAL bypassed", cfg.Insert.BufferFlushInterval)
 			}
 		}

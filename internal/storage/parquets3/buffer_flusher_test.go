@@ -87,7 +87,7 @@ func contains(s, sub string) bool {
 // missing/corrupt fallback, atomic write).
 func TestBufferFlusher_Watermark(t *testing.T) {
 	dir := t.TempDir()
-	f := NewBufferFlusher(nil, nil, dir, nil)
+	f := NewBufferFlusher(nil, nil, dir, nil, 0, 0)
 
 	if got := f.loadWatermark(12345); got != 12345 {
 		t.Fatalf("missing watermark: want fallback 12345, got %d", got)

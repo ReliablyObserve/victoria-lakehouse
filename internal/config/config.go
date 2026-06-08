@@ -161,10 +161,12 @@ type InsertConfig struct {
 	// legacy []row path stays authoritative and the buffer is read-only shadow.
 	// Requires BufferEngine == "logstore".
 	BufferFlushEnabled bool `yaml:"buffer_flush_enabled"`
-	// BufferFlushInterval is how often the BufferFlusher drains the buffer's
-	// just-elapsed window to S3 Parquet. Must be << BufferRetention so no row
-	// ages out before it is flushed (validated: retention >= 2*interval).
-	// Default 60s.
+	// BufferFlushInterval is the BufferFlusher's object-store flush CAP: the max
+	// time a sub-target window waits before being flushed to S3 Parquet anyway.
+	// The flusher checks more often than this but only flushes a window once it
+	// reaches target_file_size OR has lingered this long — so S3 gets
+	// ~target-sized objects, not one tiny file per tick. Must be << BufferRetention
+	// (validated: retention >= 2*interval). Default 5m.
 	BufferFlushInterval time.Duration `yaml:"buffer_flush_interval"`
 }
 
@@ -769,7 +771,7 @@ func Default() *Config {
 			BufferDir:           "/data/lakehouse/buffer",
 			BufferRetention:     time.Hour,
 			BufferFlushEnabled:  false, // cutover off by default; legacy path authoritative
-			BufferFlushInterval: 60 * time.Second,
+			BufferFlushInterval: 5 * time.Minute,
 		},
 
 		Select: SelectConfig{
