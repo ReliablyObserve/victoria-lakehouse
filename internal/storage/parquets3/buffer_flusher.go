@@ -127,11 +127,11 @@ func (f *BufferFlusher) saveWatermark(endNs int64) error {
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, f.watermarkPath); err != nil {
-		return err
+	err = os.Rename(tmp, f.watermarkPath)
+	if err == nil {
+		metrics.InsertFlushWatermarkNs.Set(endNs)
 	}
-	metrics.InsertFlushWatermarkNs.Set(endNs)
-	return nil
+	return err
 }
 
 // flushWindow flushes (startNs, endNs] from the buffer to authoritative Parquet,
