@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.59.0] - 2026-06-08
+
 ### Added
 
 - **Option B — logstorage-native queryable insert buffer (cold-tier recently-flushed parity with hot VT).** The insert buffer can now be a real per-pod `logstorage.Storage` (the VT/VL in-memory-parts model) instead of a `[]schema.{Log,Trace}Row` staging slice that was reconstructed into a `logstorage.DataBlock` at query time. That struct→DataBlock converter kept drifting from the file-scan emission (missing `_stream`, `start_time_unix_nano`/`end_time_unix_nano`, map attrs), which made cold Jaeger/Tempo search return 0 for fresh traces, 404 the log→trace drilldown, and zero the Tempo service-filter. Selected by `insert.buffer_engine` (`buffer` default | `logstore`), with `insert.buffer_dir` + `insert.buffer_retention`:
