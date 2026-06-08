@@ -48,6 +48,12 @@ type Config struct {
 	// FutureRetention bounds how far into the future an ingested timestamp
 	// may be before VL rejects it. Default 2d, matching VT.
 	FutureRetention time.Duration
+
+	// MinFreeDiskBytes is the free-space floor at Path below which logstorage
+	// stops accepting writes (read-only) instead of filling the volume. At
+	// PB-scale ingest a 1h buffer can grow to tens of GiB, so the floor must be
+	// sized to the volume, not a token value. Default 1 GiB.
+	MinFreeDiskBytes int64
 }
 
 func (c *Config) withDefaults() {
@@ -59,6 +65,9 @@ func (c *Config) withDefaults() {
 	}
 	if c.FutureRetention <= 0 {
 		c.FutureRetention = 2 * 24 * time.Hour
+	}
+	if c.MinFreeDiskBytes <= 0 {
+		c.MinFreeDiskBytes = 1 << 30 // 1 GiB — sized to the volume, not a token 10 MB
 	}
 }
 
@@ -87,7 +96,7 @@ func Open(cfg Config) (*Store, error) {
 		FlushInterval:         cfg.FlushInterval,
 		FutureRetention:       cfg.FutureRetention,
 		MaxBackfillAge:        0, // 0 == unlimited: accept any backfilled age, like VT
-		MinFreeDiskSpaceBytes: 10e6,
+		MinFreeDiskSpaceBytes: cfg.MinFreeDiskBytes,
 	}
 	s := logstorage.MustOpenStorage(cfg.Path, sc)
 	return &Store{s: s, path: cfg.Path}, nil
