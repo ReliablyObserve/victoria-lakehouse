@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Cold Jaeger/Tempo trace detail 404 for recent traces (Option B read-merge boundary).** When the logstorage-native buffer (`insert.buffer_engine: logstore`) serves the recent window, the read path needs a boundary so the buffer and the S3-Parquet scan don't both emit the same span. Two correctness fixes:
+  - **Aggregation double-count** — `count()`/`stats` over the buffer↔Parquet overlap returned 2× (measured cold 9052 vs hot 4526). `queryBufferBridge` now serves the buffer only for data strictly newer than the newest scanned Parquet file (`bufferWatermark` = max `MaxTimeNs` of the emitted files); Parquet covers `[.., wm]`, the buffer covers `(wm, now]`. Multi-tenant admin reads pass watermark 0 (a global watermark could lag a tenant and lose rows).
+  - **Trace-retrieval exclusion** — the watermark must NOT apply to `trace_id`-filtered queries: span retrieval is reader-deduped on `(trace_id, span_id)`, so double-emission is harmless, but the watermark wrongly excluded a recent trace's buffer spans whenever a scanned Parquet file (holding other, newer traces) had a higher `MaxTimeNs` → cold GetTrace returned "trace not found" for traces in the last ~`buffer_retention`. `queryFiltersTraceID` detects every trace_id filter form — `trace_id:=X`, `trace_id:in(...)`, and crucially the phrase form `trace_id:"X"` that VT's single-trace GetTrace span fetch emits (which the AST value-extractor misses) — and bypasses the watermark for those, serving the full buffer window.
+  - Pinned by `TestQueryBufferBridge_WatermarkPreventsDoubleCount` (watermark splits aggregation; trace_id query ignores it) and `TestQueryFiltersTraceID` (all filter forms + negatives `trace_id_idx:` / `| fields trace_id`). Verified live: GetTrace 30/30 across recencies, count parity 1.00, Jaeger `[24h]` 20/20.
+
+### Changed
+
+- **Bump loki-vl-proxy from v1.57.0 to v1.58.0** (`deployment/docker/Dockerfile.loki-vl-proxy`, applies to all four proxy services — e2e hot + cold, benchmark lh + vl-lh). Adds ring-wide cache purge: `POST /admin/cache/flush?peers=1` clears the local instance's L0/L1/L2 caches and fans the purge out to every L3 peer (`X-Peer-Token` auth, concurrent with a 5s/peer timeout; unreachable peers reported in the JSON response, not fatal) via the new peer-side `POST /_cache/purge`, so an operator clears the whole fleet from one admin-token-protected instance. Without `?peers` the endpoint is local-only (unchanged).
+
 ## [0.49.0] - 2026-06-07
 
 ### Added

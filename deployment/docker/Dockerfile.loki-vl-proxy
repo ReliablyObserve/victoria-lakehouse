@@ -14,7 +14,14 @@ FROM alpine:3.21
 # for full-timeline series, and the 24h+ querySplitting residual-chunk
 # spike is suppressed on every stats path. Also adds the L0 hot-key
 # cache tier to metrics (tier="l0").
-ARG VERSION=1.57.0
+# 1.58.0 adds ring-wide cache purge: POST /admin/cache/flush?peers=1
+# clears the local caches (L0+L1+L2) AND fans the purge out to every L3
+# peer (X-Peer-Token auth, concurrent, 5s/peer; unreachable peers are
+# reported, not fatal) via the new peer-side POST /_cache/purge — so an
+# operator clears the whole fleet from one admin instance. Without
+# ?peers the endpoint is local-only (unchanged). Used by all four
+# loki-vl-proxy services (e2e hot+cold, benchmark lh + vl-lh).
+ARG VERSION=1.58.0
 ARG TARGETARCH=amd64
 RUN wget -qO /usr/local/bin/loki-vl-proxy \
       "https://github.com/ReliablyObserve/loki-vl-proxy/releases/download/v${VERSION}/loki-vl-proxy-linux-${TARGETARCH}" \
