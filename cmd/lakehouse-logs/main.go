@@ -1006,6 +1006,24 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			// Process-lived (held via the package vars); graceful DebugFlush+
 			// Close on shutdown comes with P4.
 			logger.Infof("Option B: logstore buffer enabled at %s (retention=%s); read-merge active", bufStore.Path(), cfg.Insert.BufferRetention)
+
+			// Cutover flip (default off): make the buffer the AUTHORITATIVE
+			// Parquet producer. SetBufferAuthoritative stops the legacy staging
+			// feed (no double-write, no WAL); the BufferFlusher drains the buffer
+			// to S3 Parquet via the existing flush machinery with the
+			// gate-at-flush filter (cardinality). Reversible by flag.
+			if cfg.Insert.BufferFlushEnabled {
+				w := store.Writer()
+				if w == nil {
+					logger.Fatalf("buffer_flush_enabled but the insert writer is nil")
+				}
+				internalvlstorage.SetBufferAuthoritative(true)
+				flusher := parquets3.NewBufferFlusher(w, bufStore, cfg.Insert.BufferDir, internalvlstorage.FlushRowKeeper())
+				// Process-lived goroutine; on shutdown the watermark doesn't
+				// advance, so the in-flight window re-flushes on restart (no loss).
+				go flusher.Run(context.Background(), cfg.Insert.BufferFlushInterval, time.Now().UnixNano())
+				logger.Warnf("Option B CUTOVER ACTIVE: buffer is the authoritative Parquet producer; BufferFlusher running (interval=%s); legacy staging + WAL bypassed", cfg.Insert.BufferFlushInterval)
+			}
 		}
 		vlinsert.Init()
 

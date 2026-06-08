@@ -87,3 +87,99 @@ func TestDualWrite_LegacyAndBufferParity(t *testing.T) {
 		t.Fatalf("buffer store: want 1 row for trace-5, got %d", byID.Load())
 	}
 }
+
+// TestBufferAuthoritativeFlip pins the cutover flip: when SetBufferAuthoritative
+// is true, MustAddRows feeds ONLY the buffer and SKIPS the legacy TraceWriter
+// (no double Parquet, no WAL); reverting restores the legacy feed.
+func TestBufferAuthoritativeFlip(t *testing.T) {
+	store, err := membuffer.Open(membuffer.Config{Path: t.TempDir(), Retention: time.Hour})
+	if err != nil {
+		t.Fatalf("open buffer: %v", err)
+	}
+	defer store.Close()
+	cap := &captureWriter{}
+	a := &vtInsertAdapter{writer: cap}
+	SetBufferStore(store)
+	defer SetBufferStore(nil)
+
+	mk := func() *logstorage.LogRows {
+		lr := logstorage.GetLogRows([]string{"service.name"}, nil, nil, nil, "")
+		lr.MustAdd(logstorage.TenantID{}, time.Now().UnixNano(), []logstorage.Field{
+			{Name: "service.name", Value: "api-gateway"},
+			{Name: "trace_id", Value: "t"},
+			{Name: "span_id", Value: "s"},
+		}, -1)
+		return lr
+	}
+
+	// Flipped: legacy writer must NOT receive rows.
+	SetBufferAuthoritative(true)
+	defer SetBufferAuthoritative(false)
+	lr := mk()
+	a.MustAddRows(lr)
+	logstorage.PutLogRows(lr)
+	if len(cap.rows) != 0 {
+		t.Fatalf("authoritative buffer: legacy writer must be skipped, got %d rows", len(cap.rows))
+	}
+	store.DebugFlush()
+	if got := countTraceSpans(t, store, "api-gateway"); got == 0 {
+		t.Fatal("authoritative buffer: buffer should still receive the rows")
+	}
+
+	// Reverted: legacy writer receives rows again.
+	SetBufferAuthoritative(false)
+	lr2 := mk()
+	a.MustAddRows(lr2)
+	logstorage.PutLogRows(lr2)
+	if len(cap.rows) != 1 {
+		t.Fatalf("reverted: legacy writer should receive 1 row, got %d", len(cap.rows))
+	}
+}
+
+func countTraceSpans(t *testing.T, store *membuffer.Store, svc string) int64 {
+	t.Helper()
+	q, _ := logstorage.ParseQueryAtTimestamp(`_stream:{service.name="`+svc+`"}`, time.Now().UnixNano())
+	qctx := logstorage.NewQueryContext(context.Background(), &logstorage.QueryStats{}, []logstorage.TenantID{{}}, q, false, nil)
+	var n atomic.Int64
+	_ = store.RunQuery(qctx, func(_ uint, db *logstorage.DataBlock) { n.Add(int64(db.RowsCount())) })
+	return n.Load()
+}
+
+type denyGate struct{ blocked string }
+
+func (g denyGate) AllowStream(_, _ uint32, stream string) bool {
+	return g.blocked == "" || !contains2(stream, g.blocked)
+}
+func contains2(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
+// TestFlushRowKeeper pins the gate-at-flush predicate: it drops VT-internal
+// trace_id_idx streams and cardinality-rejected streams, keeps the rest.
+func TestFlushRowKeeper(t *testing.T) {
+	SetCardinalityGate(denyGate{blocked: "over-limit"})
+	defer SetCardinalityGate(nil)
+	keep := FlushRowKeeper()
+
+	// trace_id_idx stream → dropped regardless of gate.
+	if keep(0, 0, `{trace_id_idx_stream="abc"}`) {
+		t.Error("trace_id_idx stream must be dropped")
+	}
+	// cardinality-rejected stream → dropped.
+	if keep(1, 2, `{service.name="over-limit"}`) {
+		t.Error("cardinality-rejected stream must be dropped")
+	}
+	// normal stream → kept.
+	if !keep(1, 2, `{service.name="api-gateway"}`) {
+		t.Error("normal stream must be kept")
+	}
+	// service_graph is NOT trace_id_idx → kept (legacy keeps it too).
+	if !keep(1, 2, `{service_graph_stream="x"}`) {
+		t.Error("service_graph stream must be kept")
+	}
+}

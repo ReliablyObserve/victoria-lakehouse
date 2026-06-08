@@ -42,6 +42,27 @@ func SetCardinalityGate(g TenantCardinalityGate) {
 	globalCardinalityGate = g
 }
 
+// FlushRowKeeper returns the gate-at-flush predicate for the WAL cutover's
+// BufferFlusher: it keeps exactly the rows the legacy authoritative path would
+// have written to Parquet. The buffer (a raw query cache) holds rows the legacy
+// path drops, so when the buffer becomes authoritative those must be filtered
+// out — namely the VT-internal trace_id_idx rows (only the _trace_idx footer is
+// used in reads, never a Parquet row) and streams over the per-tenant
+// cardinality limit. The gate is read live so it tracks SetCardinalityGate.
+// service_graph rows are KEPT (the legacy path keeps them too).
+func FlushRowKeeper() func(accountID, projectID uint32, stream string) bool {
+	return func(accountID, projectID uint32, stream string) bool {
+		if strings.Contains(stream, otelpb.TraceIDIndexStreamName) {
+			return false
+		}
+		if globalCardinalityGate != nil && stream != "" &&
+			!globalCardinalityGate.AllowStream(accountID, projectID, stream) {
+			return false
+		}
+		return true
+	}
+}
+
 // vtInsertAdapter satisfies VT's insertutil.LogRowsStorage interface
 // (MustAddRows + CanWriteData + IsLocalStorage).
 type vtInsertAdapter struct {
@@ -63,6 +84,13 @@ type BufferStore interface {
 
 var bufferStore BufferStore
 
+// bufferAuthoritative is the WAL-cutover FLIP. When true the logstore buffer is
+// the authoritative Parquet producer (via the BufferFlusher), so MustAddRows
+// feeds ONLY the buffer and SKIPS the legacy TraceRow staging path — no double
+// Parquet, no LH WAL. When false (default) the legacy path is authoritative and
+// the buffer is a read-side shadow (dual-write). Reversible: flip the flag.
+var bufferAuthoritative bool
+
 // SetBufferStore enables Option B dual-write: every ingested LogRows batch is
 // ALSO added to the logstorage-native buffer, in parallel with the legacy
 // TraceRow staging path. Call once at startup before serving. nil disables.
@@ -70,16 +98,26 @@ func SetBufferStore(bs BufferStore) {
 	bufferStore = bs
 }
 
+// SetBufferAuthoritative performs the cutover flip (true) or reverts it (false).
+// Must be called before serving; when true, a BufferFlusher must be running to
+// produce Parquet from the buffer, else recent data never reaches S3.
+func SetBufferAuthoritative(v bool) {
+	bufferAuthoritative = v
+}
+
 func (a *vtInsertAdapter) MustAddRows(lr *logstorage.LogRows) {
-	// Legacy path first so it stays byte-identical to today.
-	rows := logRowsToTraceRows(lr)
-	if len(rows) > 0 {
-		a.writer.MustAddTraceRows(rows)
+	// Legacy staging path — SKIPPED once the buffer is authoritative (the flip),
+	// so the BufferFlusher is the sole Parquet producer (no double-write, no WAL).
+	if !bufferAuthoritative {
+		rows := logRowsToTraceRows(lr)
+		if len(rows) > 0 {
+			a.writer.MustAddTraceRows(rows)
+		}
 	}
-	// Option B (P1 dual-write): feed the same canonical LogRows to the
-	// logstorage-native buffer, while lr is still valid — vtinsert resets the
-	// arena-backed LogRows immediately after this returns; logstorage copies
-	// the rows into its own parts, so this is safe.
+	// Feed the logstorage-native buffer (dual-write shadow when legacy is
+	// authoritative; the sole sink once flipped), while lr is still valid —
+	// vtinsert resets the arena-backed LogRows immediately after this returns;
+	// logstorage copies the rows into its own parts, so this is safe.
 	if bufferStore != nil {
 		addRowsToBufferSafely(lr)
 	}
