@@ -4,10 +4,12 @@ from scripts.ci.check_changelog_pr import (
     extract_unreleased_section,
     has_genuinely_new_unreleased_entries,
     has_meaningful_changelog_content,
+    has_new_versioned_entries,
     is_dependency_only_pr,
     is_release_commit,
     is_release_metadata_sync,
     should_require_changelog,
+    versioned_bullets,
 )
 
 
@@ -151,6 +153,55 @@ class CheckChangelogPRTests(unittest.TestCase):
     def test_dependency_only_pr_rejects_empty(self):
         self.assertFalse(is_dependency_only_pr([], ["go.mod"]))
         self.assertFalse(is_dependency_only_pr(["build(deps): bump X"], []))
+
+    def test_versioned_bullets_excludes_unreleased(self):
+        text = (
+            "## [Unreleased]\n\n"
+            "- feat: only in unreleased\n\n"
+            "## [0.39.0] - 2026-06-07\n\n"
+            "### Fixed\n\n"
+            "- fix: backfilled entry\n"
+        )
+        self.assertEqual(versioned_bullets(text), {"- fix: backfilled entry"})
+
+    def test_has_new_versioned_entries_detects_backfill(self):
+        base_changelog = (
+            "## [Unreleased]\n\n"
+            "## [0.49.0] - 2026-06-07\n\n"
+            "- feat: lifecycle\n"
+        )
+        head_changelog = (
+            "## [Unreleased]\n\n"
+            "## [0.49.0] - 2026-06-07\n\n"
+            "- feat: lifecycle\n\n"
+            "## [0.39.0] - 2026-06-07\n\n"
+            "- fix: cold jaeger partial-hit narrowing\n"
+        )
+        self.assertTrue(has_new_versioned_entries(head_changelog, base_changelog))
+
+    def test_has_new_versioned_entries_rejects_no_new_bullets(self):
+        base_changelog = (
+            "## [0.49.0] - 2026-06-07\n\n"
+            "- feat: lifecycle\n"
+        )
+        # head only reshuffles the same bullet under a renamed heading
+        head_changelog = (
+            "## [0.48.0] - 2026-06-06\n\n"
+            "- feat: lifecycle\n"
+        )
+        self.assertFalse(has_new_versioned_entries(head_changelog, base_changelog))
+
+    def test_has_new_versioned_entries_ignores_unreleased_only_additions(self):
+        base_changelog = "## [Unreleased]\n\n## [0.49.0] - 2026-06-07\n\n- feat: lifecycle\n"
+        # the only new bullet lives under [Unreleased]; the versioned path must
+        # not claim it (that is the Unreleased path's job)
+        head_changelog = (
+            "## [Unreleased]\n\n"
+            "- fix: brand new\n\n"
+            "## [0.49.0] - 2026-06-07\n\n"
+            "- feat: lifecycle\n"
+        )
+        self.assertFalse(has_new_versioned_entries(head_changelog, base_changelog))
 
     def test_release_metadata_sync_detection(self):
         self.assertTrue(

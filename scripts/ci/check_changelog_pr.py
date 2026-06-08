@@ -106,6 +106,38 @@ def has_genuinely_new_unreleased_entries(head_unreleased: str, base_full_changel
     return bool(head_new_bullets)
 
 
+def versioned_bullets(text: str) -> set[str]:
+    """Bullet points that live under a released ``## [x.y.z]`` section.
+
+    Excludes the ``## [Unreleased]`` section so the two documentation paths
+    (Unreleased vs. a materialized/backfilled version section) stay distinct.
+    """
+    bullets: set[str] = set()
+    in_versioned = False
+    for line in text.splitlines():
+        if line.startswith("## ["):
+            in_versioned = not line.startswith("## [Unreleased]")
+            continue
+        if in_versioned and line.strip().startswith("- "):
+            bullets.add(line.strip())
+    return bullets
+
+
+def has_new_versioned_entries(head_full_changelog: str, base_full_changelog: str) -> bool:
+    """True when the PR adds a bullet under a version section that the base
+    changelog did not already contain anywhere.
+
+    This is the backfill/release path: a PR may document its change directly
+    under a newly added ``## [x.y.z]`` heading (e.g. materializing Unreleased
+    into a cut release, or backfilling a previously-undocumented tag) instead
+    of leaving it under ``## [Unreleased]``. Stale branches that only carry
+    forward bullets already present in the base are still rejected, because
+    those bullets are subtracted out.
+    """
+    base_all_bullets = extract_bullet_points(base_full_changelog)
+    return bool(versioned_bullets(head_full_changelog) - base_all_bullets)
+
+
 def has_meaningful_changelog_content(section: str) -> bool:
     if not section.strip():
         return False
@@ -249,16 +281,19 @@ def main() -> int:
         )
         return 1
 
-    if not has_meaningful_changelog_content(head_unreleased):
-        print(
-            "changelog gate: Unreleased section must contain at least one changelog entry",
-            file=sys.stderr,
-        )
-        return 1
+    # A PR documents its change either under [Unreleased] (the normal flow) or
+    # directly under a newly added/backfilled version section (the release flow).
+    # Both satisfy the "document your change" intent; either path is accepted.
+    unreleased_has_new = (
+        has_meaningful_changelog_content(head_unreleased)
+        and has_genuinely_new_unreleased_entries(head_unreleased, base_text)
+    )
+    versioned_has_new = has_new_versioned_entries(head_text, base_text)
 
-    if not has_genuinely_new_unreleased_entries(head_unreleased, base_text):
+    if not (unreleased_has_new or versioned_has_new):
         print(
-            "changelog gate: Unreleased section must contain entries not already present in a released version "
+            "changelog gate: PR must add at least one new changelog entry under [Unreleased] "
+            "or under a newly added version section "
             "(stale feature branch entries carried over from before a release do not count)",
             file=sys.stderr,
         )
