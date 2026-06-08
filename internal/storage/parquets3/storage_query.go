@@ -212,6 +212,23 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		files = remaining
 	}
 
+	// Count-pushdown fast path: an unfiltered single-field query (e.g.
+	// `* | stats by (service.name) count()`) is answered from the manifest's
+	// LabelAggregates for files fully within the range — zero S3 reads. Boundary
+	// / un-aggregated files fall through to the scan below; the buffer bridge
+	// still contributes unflushed rows after the watermark.
+	if aggField := countByPushdownField(pipeFields, filter); aggField != "" && !hasTombstones {
+		remaining := s.manifestCountFastPath(files, startNs, endNs, aggField, filteredWriteBlock)
+		if len(remaining) == 0 {
+			if n := rowsEmitted.Load(); n > 0 {
+				metrics.QueryRowsTotal.Add(int(n))
+			}
+			s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
+			return nil
+		}
+		files = remaining
+	}
+
 	files = s.preFilterFiles(ctx, files, queryStr)
 	if len(files) == 0 {
 		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
@@ -511,6 +528,134 @@ func (s *Storage) manifestFastPath(files []manifest.FileInfo, startNs, endNs int
 			len(files)-len(remaining), len(files), len(remaining))
 	}
 	return remaining
+}
+
+// countByPushdownField returns the single field a query groups/projects by when
+// it is eligible for the manifest count-pushdown fast-path, or "" otherwise. The
+// fast-path is SOUND only when the query references exactly one raw field and has
+// NO row filter: then synthetic rows that reproduce that field's value
+// distribution yield the same result as scanning (count() by, uniq, fields, top —
+// any single-field pipe), since the rows are indistinguishable w.r.t. the only
+// column read. A filter, multiple fields, or timestamp bucketing → "" (fall
+// through to scan). It self-guards further downstream: only files that actually
+// carry a LabelAggregate for the field are served from metadata.
+func countByPushdownField(pipeFields []string, filter *logstorage.Filter) string {
+	if filter != nil || len(pipeFields) != 1 {
+		return ""
+	}
+	return pipeFields[0]
+}
+
+// manifestCountFastPath serves files FULLY within [startNs,endNs] that carry a
+// LabelAggregate for aggField by emitting synthetic rows reproducing that field's
+// value distribution — zero S3 reads. Files that straddle the range boundary
+// (whole-file aggregate would over-count outside the window), lack the aggregate,
+// or exceed the synthetic-row cap are returned for normal scanning. Mirrors
+// manifestFastPath's boundary contract.
+func (s *Storage) manifestCountFastPath(files []manifest.FileInfo, startNs, endNs int64, aggField string, writeBlock logstorage.WriteDataBlockFunc) []manifest.FileInfo {
+	var remaining []manifest.FileInfo
+	served := 0
+	for _, fi := range files {
+		contained := fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
+			fi.MinTimeNs >= startNs && fi.MaxTimeNs <= endNs
+		if contained && s.streamSyntheticAggBlocks(fi, aggField, func(db *logstorage.DataBlock) {
+			if db != nil && db.RowsCount() > 0 {
+				writeBlock(0, db)
+			}
+		}) {
+			served++
+			metrics.MetadataOnlyFiles.Inc()
+			continue
+		}
+		remaining = append(remaining, fi)
+	}
+	if served > 0 {
+		logger.Infof("count pushdown: served %d/%d files from manifest aggregates (field=%s), %d remain for S3",
+			served, len(files), aggField, len(remaining))
+	}
+	return remaining
+}
+
+// streamSyntheticAggBlocks emits synthetic DataBlocks reproducing file fi's
+// distribution of aggField values: each value V repeated LabelAggregates[aggField][V]
+// times, plus the empty-value group (RowCount - sum) so rows with no value form the
+// "" group exactly as a real scan would. The field column is named and formatted
+// IDENTICALLY to the scan path (registry.ResolveFromParquet + FormatField) so the
+// downstream pipe groups the same way. Returns false (emitting nothing) when fi has
+// no aggregate for the field or its RowCount exceeds the synthetic cap (avoid the
+// undercount a cap would cause) — caller then scans it.
+func (s *Storage) streamSyntheticAggBlocks(fi manifest.FileInfo, aggField string, emit func(*logstorage.DataBlock)) bool {
+	agg := fi.LabelAggregates[aggField]
+	if len(agg) == 0 || fi.RowCount <= 0 || fi.RowCount > maxSyntheticRows || emit == nil {
+		return false
+	}
+
+	fieldCol := aggField
+	if m := s.registry.ResolveFromParquet(aggField); m != nil {
+		fieldCol = m.InternalName
+	}
+	tsCol := s.registry.TimestampColumn()
+	tsInternal := tsCol
+	if m := s.registry.ResolveFromParquet(tsCol); m != nil {
+		tsInternal = m.InternalName
+	}
+
+	// Deterministic value order, plus the empty group for the rows whose field
+	// value was absent (so sum of all groups == RowCount, matching a scan).
+	values := make([]string, 0, len(agg)+1)
+	for v := range agg {
+		values = append(values, v)
+	}
+	sort.Strings(values)
+	counts := make([]int64, len(values))
+	var sum int64
+	for i, v := range values {
+		counts[i] = agg[v]
+		sum += agg[v]
+	}
+	if empty := fi.RowCount - sum; empty > 0 {
+		values = append(values, "")
+		counts = append(counts, empty)
+	}
+
+	tsStep := int64(0)
+	if fi.RowCount > 1 && fi.MaxTimeNs > fi.MinTimeNs {
+		tsStep = (fi.MaxTimeNs - fi.MinTimeNs) / (fi.RowCount - 1)
+	}
+
+	fieldVals := make([]string, 0, syntheticChunkSize)
+	tsVals := make([]string, 0, syntheticChunkSize)
+	var rowIdx int64
+	flush := func() {
+		if len(fieldVals) == 0 {
+			return
+		}
+		db := &logstorage.DataBlock{}
+		db.SetColumns([]logstorage.BlockColumn{
+			{Name: tsInternal, Values: tsVals},
+			{Name: fieldCol, Values: fieldVals},
+		})
+		emit(db)
+		fieldVals = make([]string, 0, syntheticChunkSize)
+		tsVals = make([]string, 0, syntheticChunkSize)
+	}
+	for i, v := range values {
+		formatted := s.registry.FormatField(fieldCol, v)
+		for n := int64(0); n < counts[i]; n++ {
+			ts := fi.MinTimeNs + rowIdx*tsStep
+			if ts > fi.MaxTimeNs {
+				ts = fi.MaxTimeNs
+			}
+			tsVals = append(tsVals, s.registry.FormatField(tsInternal, ts))
+			fieldVals = append(fieldVals, formatted)
+			rowIdx++
+			if len(fieldVals) >= syntheticChunkSize {
+				flush()
+			}
+		}
+	}
+	flush()
+	return true
 }
 
 func (s *Storage) preFilterFiles(ctx context.Context, files []manifest.FileInfo, queryStr string) []manifest.FileInfo {

@@ -274,6 +274,23 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		files = remaining
 	}
 
+	// Count-pushdown fast path: an unfiltered single-field query (e.g.
+	// `* | stats by (service.name) count()`) is answered from the manifest's
+	// LabelAggregates for files fully within the range — zero S3 reads. Boundary
+	// / un-aggregated files fall through to the scan below; the buffer bridge
+	// still contributes unflushed rows after the watermark.
+	if aggField := countByPushdownField(pipeFields, filter); aggField != "" && !hasTombstones {
+		remaining := s.manifestCountFastPath(files, startNs, endNs, aggField, filteredWriteBlock)
+		if len(remaining) == 0 {
+			if n := rowsEmitted.Load(); n > 0 {
+				metrics.QueryRowsTotal.Add(int(n))
+			}
+			s.queryBufferBridge(ctx, startNs, endNs, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
+			return nil
+		}
+		files = remaining
+	}
+
 	files = s.preFilterFiles(files, queryStr)
 
 	if len(files) == 0 {
@@ -418,6 +435,133 @@ func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, star
 		metrics.QueryFileErrorsTotal.Inc()
 		logger.Warnf("query file error: %s; key=%s", err, fi.Key)
 	}
+}
+
+// maxSyntheticAggRows / syntheticAggChunkSize bound the count-pushdown synthetic
+// emission: files larger than the cap fall back to scanning (avoiding the
+// undercount a cap would cause), and rows are emitted in chunks so peak memory
+// stays bounded regardless of file size.
+const (
+	maxSyntheticAggRows   = 1_000_000
+	syntheticAggChunkSize = 10_000
+)
+
+// countByPushdownField returns the single field a query groups/projects by when
+// it is eligible for the manifest count-pushdown fast path, or "" otherwise. Sound
+// only when the query references exactly one raw field and has NO row filter: then
+// synthetic rows reproducing that field's value distribution yield the same result
+// as scanning. Self-guards downstream: only files carrying a LabelAggregate for the
+// field are served from metadata.
+func countByPushdownField(pipeFields []string, filter *logstorage.Filter) string {
+	if filter != nil || len(pipeFields) != 1 {
+		return ""
+	}
+	return pipeFields[0]
+}
+
+// manifestCountFastPath serves files FULLY within [startNs,endNs] that carry a
+// LabelAggregate for aggField by emitting synthetic rows reproducing that field's
+// value distribution — zero S3 reads. Boundary / un-aggregated / oversized files
+// are returned for normal scanning. Mirrors manifestFastPath's boundary contract.
+func (s *Storage) manifestCountFastPath(files []manifest.FileInfo, startNs, endNs int64, aggField string, writeBlock logstorage.WriteDataBlockFunc) []manifest.FileInfo {
+	var remaining []manifest.FileInfo
+	served := 0
+	for _, fi := range files {
+		contained := fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
+			fi.MinTimeNs >= startNs && fi.MaxTimeNs <= endNs
+		if contained && s.streamSyntheticAggBlocks(fi, aggField, func(db *logstorage.DataBlock) {
+			if db != nil && db.RowsCount() > 0 {
+				writeBlock(0, db)
+			}
+		}) {
+			served++
+			metrics.MetadataOnlyFiles.Inc()
+			continue
+		}
+		remaining = append(remaining, fi)
+	}
+	if served > 0 {
+		logger.Infof("count pushdown: served %d/%d files from manifest aggregates (field=%s), %d remain for S3",
+			served, len(files), aggField, len(remaining))
+	}
+	return remaining
+}
+
+// streamSyntheticAggBlocks emits synthetic DataBlocks reproducing file fi's
+// distribution of aggField values (each value repeated per LabelAggregates, plus
+// the empty-value group = RowCount - sum). The field column is named/formatted
+// IDENTICALLY to the scan path so the downstream pipe groups the same way. Returns
+// false (emitting nothing) when fi lacks the aggregate or exceeds the cap.
+func (s *Storage) streamSyntheticAggBlocks(fi manifest.FileInfo, aggField string, emit func(*logstorage.DataBlock)) bool {
+	agg := fi.LabelAggregates[aggField]
+	if len(agg) == 0 || fi.RowCount <= 0 || fi.RowCount > maxSyntheticAggRows || emit == nil {
+		return false
+	}
+
+	fieldCol := aggField
+	if m := s.registry.ResolveFromParquet(aggField); m != nil {
+		fieldCol = m.InternalName
+	}
+	tsCol := s.registry.TimestampColumn()
+	tsInternal := tsCol
+	if m := s.registry.ResolveFromParquet(tsCol); m != nil {
+		tsInternal = m.InternalName
+	}
+
+	values := make([]string, 0, len(agg)+1)
+	for v := range agg {
+		values = append(values, v)
+	}
+	sort.Strings(values)
+	counts := make([]int64, len(values))
+	var sum int64
+	for i, v := range values {
+		counts[i] = agg[v]
+		sum += agg[v]
+	}
+	if empty := fi.RowCount - sum; empty > 0 {
+		values = append(values, "")
+		counts = append(counts, empty)
+	}
+
+	tsStep := int64(0)
+	if fi.RowCount > 1 && fi.MaxTimeNs > fi.MinTimeNs {
+		tsStep = (fi.MaxTimeNs - fi.MinTimeNs) / (fi.RowCount - 1)
+	}
+
+	fieldVals := make([]string, 0, syntheticAggChunkSize)
+	tsVals := make([]string, 0, syntheticAggChunkSize)
+	var rowIdx int64
+	flush := func() {
+		if len(fieldVals) == 0 {
+			return
+		}
+		db := &logstorage.DataBlock{}
+		db.SetColumns([]logstorage.BlockColumn{
+			{Name: tsInternal, Values: tsVals},
+			{Name: fieldCol, Values: fieldVals},
+		})
+		emit(db)
+		fieldVals = make([]string, 0, syntheticAggChunkSize)
+		tsVals = make([]string, 0, syntheticAggChunkSize)
+	}
+	for i, v := range values {
+		formatted := s.registry.FormatField(fieldCol, v)
+		for n := int64(0); n < counts[i]; n++ {
+			ts := fi.MinTimeNs + rowIdx*tsStep
+			if ts > fi.MaxTimeNs {
+				ts = fi.MaxTimeNs
+			}
+			tsVals = append(tsVals, s.registry.FormatField(tsInternal, ts))
+			fieldVals = append(fieldVals, formatted)
+			rowIdx++
+			if len(fieldVals) >= syntheticAggChunkSize {
+				flush()
+			}
+		}
+	}
+	flush()
+	return true
 }
 
 func (s *Storage) preFilterFiles(files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
