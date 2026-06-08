@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -23,7 +22,6 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/wal"
 )
 
 // BloomObserver is called after each file flush to populate bloom entries.
@@ -93,8 +91,6 @@ type BatchWriter struct {
 	totalRows  atomic.Int64
 	totalBytes atomic.Int64
 
-	wal *wal.WAL // nil if WAL disabled
-
 	bloomObserver BloomObserver
 	statsCallback StatsCallback
 	flushCacheCb  FlushCacheCallback
@@ -118,16 +114,6 @@ func NewBatchWriter(cfg *config.InsertConfig, pool *s3reader.ClientPool,
 		logBufs:   make(map[string][]schema.LogRow),
 		traceBufs: make(map[string][]schema.TraceRow),
 		stopCh:    make(chan struct{}),
-	}
-
-	if cfg.WALEnabled && cfg.WALDir != "" {
-		walPath := filepath.Join(cfg.WALDir, "lakehouse.wal")
-		w, err := wal.Open(walPath, cfg.WALMaxBytesN())
-		if err != nil {
-			logger.Errorf("WAL open failed, continuing without WAL: %s", err)
-		} else {
-			bw.wal = w
-		}
 	}
 
 	return bw
@@ -239,15 +225,6 @@ func (w *BatchWriter) AddLogRows(rows []schema.LogRow) {
 	}
 	metrics.InsertRowsTotal.Add(len(rows))
 
-	if w.wal != nil {
-		for i := range rows {
-			if err := w.wal.AppendLog(&rows[i]); err != nil {
-				logger.Errorf("WAL append failed: %s", err)
-				break
-			}
-		}
-	}
-
 	byPartition := make(map[string][]schema.LogRow)
 	for i := range rows {
 		p := partitionFromNano(rows[i].TimestampUnixNano)
@@ -272,15 +249,6 @@ func (w *BatchWriter) AddTraceRows(rows []schema.TraceRow) {
 		return
 	}
 	metrics.InsertRowsTotal.Add(len(rows))
-
-	if w.wal != nil {
-		for i := range rows {
-			if err := w.wal.AppendTrace(&rows[i]); err != nil {
-				logger.Errorf("WAL append failed: %s", err)
-				break
-			}
-		}
-	}
 
 	byPartition := make(map[string][]schema.TraceRow)
 	for i := range rows {
@@ -381,16 +349,6 @@ func (w *BatchWriter) FlushAll(ctx context.Context) error {
 		if w.bloomObserver != nil {
 			w.bloomObserver.PersistDirty(ctx, w.prefix)
 		}
-	}
-
-	if len(errs) == 0 && w.wal != nil {
-		if err := w.wal.Truncate(); err != nil {
-			logger.Errorf("WAL truncate failed: %s", err)
-		}
-	}
-
-	if w.wal != nil {
-		metrics.InsertWALBytes.Set(w.wal.Size())
 	}
 
 	if len(errs) > 0 {
@@ -821,31 +779,8 @@ func (w *BatchWriter) TotalBytesUploaded() int64 {
 	return w.totalBytes.Load()
 }
 
-// ReplayWAL reads all entries from the WAL back into memory buffers.
-// Call this once at startup for crash recovery.
-func (w *BatchWriter) ReplayWAL() (int, int) {
-	if w.wal == nil {
-		return 0, 0
-	}
-	logs, traces, err := w.wal.Replay()
-	if err != nil {
-		logger.Errorf("WAL replay error: %s", err)
-	}
-	if len(logs) > 0 {
-		w.AddLogRows(logs)
-	}
-	if len(traces) > 0 {
-		w.AddTraceRows(traces)
-	}
-	logger.Infof("WAL replayed; logs=%d, traces=%d", len(logs), len(traces))
-	return len(logs), len(traces)
-}
-
 // CanWriteData checks if the S3 backend is reachable.
 func (w *BatchWriter) CanWriteData(ctx context.Context) error {
-	if w.wal != nil && w.wal.IsFull() {
-		return fmt.Errorf("WAL full")
-	}
 	testKey := w.prefix + "_write_check"
 	return w.pool.Upload(ctx, testKey, []byte("ok"))
 }

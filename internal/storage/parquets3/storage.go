@@ -319,14 +319,9 @@ func New(cfg *config.Config) (*Storage, error) {
 }
 
 // StartWriter begins the background flush loop. Call after New().
-// WAL is replayed before starting the flush loop for crash recovery.
 func (s *Storage) StartWriter() {
 	if s.writer == nil {
 		return
-	}
-	logCount, traceCount := s.writer.ReplayWAL()
-	if logCount > 0 || traceCount > 0 {
-		logger.Infof("WAL recovery complete; logs=%d, traces=%d", logCount, traceCount)
 	}
 	s.writer.Start()
 }

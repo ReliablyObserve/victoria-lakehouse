@@ -301,7 +301,6 @@ func TestCoverageBoost_MustAddLogRows(t *testing.T) {
 	cfg := config.Default()
 	cfg.Mode = config.ModeLogs
 	cfg.S3.Bucket = "test-bucket"
-	cfg.Insert.WALEnabled = false
 
 	s := testStorage()
 	s.writer = &BatchWriter{
@@ -330,7 +329,6 @@ func TestCoverageBoost_MustAddTraceRows(t *testing.T) {
 	cfg := config.Default()
 	cfg.Mode = config.ModeTraces
 	cfg.S3.Bucket = "test-bucket"
-	cfg.Insert.WALEnabled = false
 
 	s := testStorage()
 	s.writer = &BatchWriter{
@@ -421,7 +419,6 @@ func TestCoverageBoost_Writer_Nil(t *testing.T) {
 
 func TestCoverageBoost_Writer_NonNil(t *testing.T) {
 	cfg := config.Default()
-	cfg.Insert.WALEnabled = false
 
 	s := testStorage()
 	bw := &BatchWriter{

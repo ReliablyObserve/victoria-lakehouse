@@ -131,9 +131,6 @@ type InsertConfig struct {
 	RowGroupSize     int           `yaml:"row_group_size"`
 	BloomColumns     []string      `yaml:"bloom_columns"`
 	CompressionLevel int           `yaml:"compression_level"`
-	WALEnabled       bool          `yaml:"wal_enabled"`
-	WALDir           string        `yaml:"wal_dir"`
-	WALMaxBytes      string        `yaml:"wal_max_bytes"`
 
 	AckMode              string        `yaml:"ack_mode"`
 	FlushLinger          time.Duration `yaml:"flush_linger"`
@@ -154,7 +151,7 @@ type InsertConfig struct {
 	//                           legacy buffer, which stays authoritative.
 	BufferEngine string `yaml:"buffer_engine"`
 	// BufferDir is the local/tmpfs directory for the logstore buffer's
-	// ephemeral parts (durability is the WAL + S3 Parquet, not this dir).
+	// parts (durability is logstorage persistence here + the S3 Parquet flush).
 	BufferDir string `yaml:"buffer_dir"`
 	// BufferRetention bounds how long rows live in the logstore buffer before
 	// VL drops them; once the flush sink is active this is just a ceiling.
@@ -189,14 +186,6 @@ func (c *InsertConfig) TargetFileSizeN() int64 {
 	n, _ := ParseSizeBytes(c.TargetFileSize)
 	if n <= 0 {
 		return 128 * 1024 * 1024
-	}
-	return n
-}
-
-func (c *InsertConfig) WALMaxBytesN() int64 {
-	n, _ := ParseSizeBytes(c.WALMaxBytes)
-	if n <= 0 {
-		return 512 * 1024 * 1024
 	}
 	return n
 }
@@ -768,9 +757,6 @@ func Default() *Config {
 			RowGroupSize:     10000,
 			BloomColumns:     []string{"service.name", "trace_id"},
 			CompressionLevel: 3,
-			WALEnabled:       true,
-			WALDir:           "/data/lakehouse/wal",
-			WALMaxBytes:      "512MB",
 
 			AckMode:              "buffer",
 			FlushLinger:          200 * time.Millisecond,
@@ -1104,11 +1090,6 @@ func (c *Config) validateInsert() error {
 	}
 	if _, err := ParseSizeBytes(c.Insert.TargetFileSize); err != nil {
 		return fmt.Errorf("--lakehouse.insert.target-file-size: invalid size %q: %w", c.Insert.TargetFileSize, err)
-	}
-	if c.Insert.WALMaxBytes != "" {
-		if _, err := ParseSizeBytes(c.Insert.WALMaxBytes); err != nil {
-			return fmt.Errorf("--lakehouse.insert.wal-max-bytes: invalid size %q: %w", c.Insert.WALMaxBytes, err)
-		}
 	}
 	switch c.Insert.AckMode {
 	case "buffer", "wal", "flush-sync":
@@ -1760,15 +1741,6 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Insert.TargetFileSize != "" {
 		base.Insert.TargetFileSize = overlay.Insert.TargetFileSize
-	}
-	if overlay.Insert.WALEnabled {
-		base.Insert.WALEnabled = true
-	}
-	if overlay.Insert.WALDir != "" {
-		base.Insert.WALDir = overlay.Insert.WALDir
-	}
-	if overlay.Insert.WALMaxBytes != "" {
-		base.Insert.WALMaxBytes = overlay.Insert.WALMaxBytes
 	}
 	if overlay.Insert.BufferEngine != "" {
 		base.Insert.BufferEngine = overlay.Insert.BufferEngine

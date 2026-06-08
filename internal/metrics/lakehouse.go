@@ -146,7 +146,6 @@ var (
 		[]float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10})
 	InsertBytesUploaded    = NewCounter("lakehouse_insert_bytes_uploaded_total")
 	InsertPartitionsActive = NewGauge("lakehouse_insert_partitions_active")
-	InsertWALBytes         = NewGauge("lakehouse_insert_wal_bytes")
 
 	// VT emits internal "index" log rows alongside span data (trace-ID index
 	// stream and service-graph stream). Lakehouse drops them at insert time

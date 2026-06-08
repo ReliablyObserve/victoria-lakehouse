@@ -1473,35 +1473,6 @@ func TestCovFinal_StartWriter_WithSmartCacheCallback(t *testing.T) {
 	s.writer.Stop()
 }
 
-// TestCovFinal_StartWriter_WALReplayWithEntries exercises the WAL replay path
-// in StartWriter that logs recovery counts.
-func TestCovFinal_StartWriter_WALReplayWithEntries(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	pool := testPool(t, srv.URL)
-	m := manifest.New("test", "traces/")
-	cfg := config.Default()
-	cfg.Insert.FlushInterval = 10 * time.Minute
-	cfg.Insert.MaxBufferRows = 1000000
-
-	bw := NewBatchWriter(&cfg.Insert, pool, m, "traces/", config.ModeTraces)
-	s := &Storage{
-		cfg:        cfg,
-		writer:     bw,
-		bloomIdx:   bloomindex.New(),
-		labelIndex: cache.NewLabelIndex(),
-		discovery:  discovery.New("", nil, "", "", "9428", 5*time.Second),
-	}
-
-	// StartWriter should call ReplayWAL; with no WAL entries it logs nothing.
-	s.StartWriter()
-	time.Sleep(30 * time.Millisecond)
-	s.writer.Stop()
-}
-
 // ---------------------------------------------------------------------------
 // 13. openParquetFile — nil pool path (no range reads possible)
 // ---------------------------------------------------------------------------

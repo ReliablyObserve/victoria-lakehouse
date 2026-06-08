@@ -18,7 +18,6 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/wal"
 )
 
 type logRow struct {
@@ -1399,97 +1398,6 @@ func TestTraceRowsToDataBlock_Empty(t *testing.T) {
 	if db != nil {
 		t.Error("expected nil DataBlock for empty rows")
 	}
-}
-
-// --- Task 10: StartWriter WAL replay test ---
-
-func TestStartWriter_WALReplay(t *testing.T) {
-	// With nil writer, StartWriter is a no-op.
-	s := testStorage()
-	s.writer = nil
-	s.StartWriter() // should not panic
-
-	// With a writer that has no WAL, ReplayWAL returns (0,0).
-	cfg := config.Default()
-	cfg.Mode = config.ModeLogs
-	cfg.S3.Bucket = "test-bucket"
-	cfg.Insert.WALEnabled = false
-
-	s2 := testStorage()
-	s2.writer = &BatchWriter{
-		cfg:       &cfg.Insert,
-		mode:      cfg.Mode,
-		logBufs:   make(map[string][]schema.LogRow),
-		traceBufs: make(map[string][]schema.TraceRow),
-		stopCh:    make(chan struct{}),
-	}
-	logCount, traceCount := s2.writer.ReplayWAL()
-	if logCount != 0 || traceCount != 0 {
-		t.Errorf("ReplayWAL with no WAL = (%d, %d), want (0, 0)", logCount, traceCount)
-	}
-}
-
-func TestStartWriter_WALReplay_WithEntries(t *testing.T) {
-	// Test that ReplayWAL recovers entries from a populated WAL.
-	dir := t.TempDir()
-
-	cfg := config.Default()
-	cfg.Mode = config.ModeLogs
-	cfg.S3.Bucket = "test-bucket"
-	cfg.Insert.WALEnabled = true
-	cfg.Insert.WALDir = dir
-
-	bw := &BatchWriter{
-		cfg:       &cfg.Insert,
-		mode:      cfg.Mode,
-		logBufs:   make(map[string][]schema.LogRow),
-		traceBufs: make(map[string][]schema.TraceRow),
-		stopCh:    make(chan struct{}),
-	}
-
-	// Open a WAL and write entries to it
-	walPath := filepath.Join(dir, "lakehouse.wal")
-	w, err := wal.Open(walPath, 512*1024*1024)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UnixNano()
-	if err := w.AppendLog(&schema.LogRow{TimestampUnixNano: now, Body: "wal-entry-1"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.AppendLog(&schema.LogRow{TimestampUnixNano: now + 1, Body: "wal-entry-2"}); err != nil {
-		t.Fatal(err)
-	}
-	_ = w.Close()
-
-	// Re-open WAL so ReplayWAL can read it
-	w2, err := wal.Open(walPath, 512*1024*1024)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bw.wal = w2
-
-	// ReplayWAL should recover the entries
-	logCount, traceCount := bw.ReplayWAL()
-	if logCount != 2 {
-		t.Errorf("ReplayWAL logCount = %d, want 2", logCount)
-	}
-	if traceCount != 0 {
-		t.Errorf("ReplayWAL traceCount = %d, want 0", traceCount)
-	}
-
-	// Verify entries are in the buffer
-	buffered := bw.BufferedRows()
-	if buffered != 2 {
-		t.Errorf("BufferedRows after WAL replay = %d, want 2", buffered)
-	}
-
-	// Now verify StartWriter calls ReplayWAL before Start by checking
-	// that a storage with this writer would trigger the logging path.
-	s := testStorage()
-	s.writer = bw
-	// Don't call StartWriter since we need S3 for flush.
-	// Instead verify the contract: ReplayWAL was already called above.
 }
 
 // --- Task 10: BufferBridge accessor test ---

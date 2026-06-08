@@ -79,24 +79,6 @@ func TestTargetFileSizeN_Empty(t *testing.T) {
 	}
 }
 
-func TestWALMaxBytesN_Invalid(t *testing.T) {
-	ic := &InsertConfig{WALMaxBytes: "invalid"}
-	got := ic.WALMaxBytesN()
-	want := int64(512 * 1024 * 1024)
-	if got != want {
-		t.Errorf("WALMaxBytesN invalid = %d, want default %d", got, want)
-	}
-}
-
-func TestWALMaxBytesN_Empty(t *testing.T) {
-	ic := &InsertConfig{WALMaxBytes: ""}
-	got := ic.WALMaxBytesN()
-	want := int64(512 * 1024 * 1024)
-	if got != want {
-		t.Errorf("WALMaxBytesN empty = %d, want default %d", got, want)
-	}
-}
-
 func TestCacheDiskBytes_Invalid(t *testing.T) {
 	cfg := Default()
 	cfg.Cache.DiskLimit = "invalid"
@@ -162,17 +144,6 @@ func TestValidate_CompactionEnabled_Valid(t *testing.T) {
 	cfg.Compaction.MinFilesL1 = 5
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("unexpected error for valid compaction config: %v", err)
-	}
-}
-
-func TestMergeConfig_WALMaxBytes(t *testing.T) {
-	base := Default()
-	overlay := &Config{}
-	overlay.Insert.WALMaxBytes = "1GB"
-
-	result := mergeConfig(base, overlay)
-	if result.Insert.WALMaxBytes != "1GB" {
-		t.Errorf("WALMaxBytes = %q, want 1GB", result.Insert.WALMaxBytes)
 	}
 }
 

@@ -11,7 +11,7 @@ Victoria Lakehouse accepts data through VL-compatible insert APIs, buffers inges
 
 The insert buffer is selectable via `insert.buffer_engine`:
 
-- **`buffer`** (default) — rows stage in an in-memory `[]schema.{Log,Trace}Row` slice; a write-ahead log (WAL) on disk provides crash safety, and a buffer query bridge serves the unflushed window to readers.
+- **`buffer`** — rows stage in an in-memory `[]schema.{Log,Trace}Row` slice and flush to Parquet; a buffer query bridge serves the unflushed window to readers. There is no separate lakehouse WAL; for crash durability of the in-flight window use the `logstore` engine, or `ack_mode: flush-sync`.
 - **`logstore`** — rows feed a real per-pod `logstorage.Storage` (the VictoriaLogs/Traces in-memory-parts model) via the exported `MustAddRows`; the recent window is served from that buffer through the exported `Storage.RunQuery` (no struct→DataBlock reconstruction). Durability is logstorage's own on-disk parts (written every flush interval, restored on open) — so **no separate LH WAL is needed**; the crash-loss window matches hot VT/VL. This engine is what gives cold Jaeger/Tempo parity with hot VT for recently-ingested traces. See [buffer-queryable-store-design](architecture/buffer-queryable-store-design.md).
 
 The rest of this page describes the **`buffer`** engine (the default). Both engines share the same Parquet flush + manifest machinery downstream.
@@ -20,8 +20,7 @@ The rest of this page describes the **`buffer`** engine (the default). Both engi
 flowchart LR
     Client --> VLInsert["VL vlinsert\nHandlers"]
     VLInsert --> Adapter["insertAdapter\nlogRowsToSchemaRows"]
-    Adapter --> WAL["WAL\n(disk)"]
-    WAL --> Buffer["Buffer\n(memory)"]
+    Adapter --> Buffer["Buffer\n(memory)"]
     Buffer --> Flush
     Flush --> S3["S3 Parquet"]
     S3 --> Manifest["Manifest update"]
@@ -53,34 +52,14 @@ HTTP request
   → VL vlinsert handler (upstream, unchanged)
   → insertutil.logRowsStorage.MustAddRows(*logstorage.LogRows)
   → insertAdapter.MustAddRows → logRowsToSchemaRows → storage.MustAddLogRows
-  → WAL → S3 Parquet
+  → S3 Parquet
 ```
 
 The `logRowsToSchemaRows()` function converts VL's `*logstorage.LogRows` into `[]schema.LogRow` for Parquet storage.
 
 ## Pipeline Stages
 
-### 1. WAL (Write-Ahead Log)
-
-Before buffering, rows are appended to the WAL on local disk. This ensures crash safety: if the process dies between receiving data and flushing to S3, the WAL replays on restart.
-
-```yaml
-lakehouse:
-  insert:
-    wal:
-      enabled: true          # Default: true
-      dir: /data/lakehouse/wal
-      max_bytes: 1GB         # WAL rotation threshold
-      sync_mode: fdatasync   # Durability guarantee
-```
-
-**Recovery flow:**
-1. On startup, check WAL directory for uncommitted segments
-2. Replay rows into memory buffers (same as normal ingest)
-3. Resume flush pipeline — replayed data flushes to S3 normally
-4. Truncate WAL after successful flush confirmation
-
-### 2. Memory Buffer
+### 1. Memory Buffer
 
 Rows accumulate in per-partition memory buffers. Partition key: `dt=YYYY-MM-DD/hour=HH` (Hive layout).
 
@@ -110,7 +89,7 @@ The `flush_linger` setting controls how long to wait after receiving a row befor
 - Memory: total buffer memory hits `max_buffer_bytes`
 - Shutdown: graceful shutdown flushes all buffers (preStop hook)
 
-### 3. Parquet Writer
+### 2. Parquet Writer
 
 On flush, the buffer snapshot is written as a Parquet file:
 
@@ -125,7 +104,7 @@ On flush, the buffer snapshot is written as a Parquet file:
 - Remaining fields → MAP columns (resource.attributes, log.attributes)
 - All fields preserved — no data loss regardless of schema
 
-### 4. S3 Upload
+### 3. S3 Upload
 
 ```yaml
 lakehouse:
@@ -141,7 +120,7 @@ lakehouse:
 
 Multipart upload for files >5MB. Single PutObject for smaller files.
 
-### 5. Manifest Update
+### 4. Manifest Update
 
 After successful S3 upload, `manifest.AddFile()` registers the new file:
 - File path, time range (min/max timestamp), row count, byte size
@@ -194,8 +173,6 @@ Per-tenant overrides (see the Multi-tenancy doc) replace the schedule for a spec
 | `lakehouse_insert_flush_duration_seconds` | Histogram | Flush latency |
 | `lakehouse_insert_flush_bytes_total` | Counter | Bytes uploaded to S3 |
 | `lakehouse_insert_partitions_active` | Gauge | Active partition buffers |
-| `lakehouse_insert_wal_bytes_total` | Counter | WAL bytes written |
-| `lakehouse_insert_wal_replayed_rows_total` | Counter | Rows replayed on recovery |
 
 ## Compaction
 
@@ -225,14 +202,14 @@ Simplest deployment. Insert + select + compaction in one process. Buffer query i
 ### Separate Roles (insert + select)
 
 Scale write and read independently:
-- Insert pods: scale by ingest rate (more pods = more WAL parallelism)
+- Insert pods: scale by ingest rate (more pods = more ingest parallelism)
 - Select pods: scale by query load (stateless, add replicas freely)
 - Buffer query bridge connects them via headless service
 
 ### Write Amplification
 
 Lakehouse write amplification is **1x for most data**:
-- Data written once to WAL, once to S3 = 2 disk writes total
+- Data written once to S3 (no separate WAL)
 - Compaction adds ~0.2-0.5x for small files only (amortized across all data)
 - Compare: Loki 3-5x (WAL + chunk + index + compaction), Tempo 2-3x
 
@@ -240,7 +217,7 @@ Lakehouse write amplification is **1x for most data**:
 
 | Failure | Impact | Recovery |
 |---|---|---|
-| Insert pod crash | WAL intact on disk | Auto-replay on restart, zero data loss |
+| Insert pod crash (`logstore` engine) | logstorage parts on disk | Buffer restores its parts on restart; the flush watermark re-flushes any un-flushed window — crash-loss window matches hot VT/VL |
+| Insert pod crash (`buffer` engine) | In-flight buffer lost | Use `ack_mode: flush-sync` for zero loss, or the `logstore` engine |
 | S3 unreachable | Buffer grows in memory | Backpressure when max_buffer_bytes hit, retries with exponential backoff |
-| Disk full (WAL) | Ingest rejects new data | Alert on `lakehouse_insert_wal_bytes_total` approaching disk capacity |
 | Select pod crash | Stateless, no data | Restart, re-read manifest from disk/S3 |

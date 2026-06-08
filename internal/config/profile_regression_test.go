@@ -8,8 +8,6 @@ import (
 func TestProfileRegression_InsertPath(t *testing.T) {
 	type insertExpect struct {
 		flushInterval    time.Duration
-		walEnabled       bool
-		walMaxBytes      string
 		compressionLevel int
 		maxBufferRows    int
 		maxBufferBytes   string
@@ -20,12 +18,12 @@ func TestProfileRegression_InsertPath(t *testing.T) {
 
 	tests := map[Profile]insertExpect{
 		// Balanced inherits Default's CompressionLevel, which dropped from 7 → 3 with progressive compaction compression.
-		ProfileBalanced:       {60 * time.Second, true, "512MB", 3, 50000, "256MB", "128MB", 10000, "buffer"},
-		ProfileMaxPerformance: {5 * time.Second, false, "512MB", 3, 100000, "512MB", "64MB", 5000, "buffer"},
+		ProfileBalanced:       {60 * time.Second, 3, 50000, "256MB", "128MB", 10000, "buffer"},
+		ProfileMaxPerformance: {5 * time.Second, 3, 100000, "512MB", "64MB", 5000, "buffer"},
 		// MaxDurability explicitly pins CompressionLevel=7 in profile.go.
-		ProfileMaxDurability:  {60 * time.Second, true, "1GB", 7, 50000, "256MB", "128MB", 10000, "flush-sync"},
-		ProfileMaxCostSavings: {30 * time.Second, false, "512MB", 11, 25000, "128MB", "256MB", 50000, "buffer"},
-		ProfileDev:            {1 * time.Second, false, "32MB", 1, 1000, "32MB", "8MB", 1000, "buffer"},
+		ProfileMaxDurability:  {60 * time.Second, 7, 50000, "256MB", "128MB", 10000, "flush-sync"},
+		ProfileMaxCostSavings: {30 * time.Second, 11, 25000, "128MB", "256MB", 50000, "buffer"},
+		ProfileDev:            {1 * time.Second, 1, 1000, "32MB", "8MB", 1000, "buffer"},
 	}
 
 	for profile, expect := range tests {
@@ -34,12 +32,6 @@ func TestProfileRegression_InsertPath(t *testing.T) {
 
 			if cfg.Insert.FlushInterval != expect.flushInterval {
 				t.Errorf("flush_interval = %v, want %v", cfg.Insert.FlushInterval, expect.flushInterval)
-			}
-			if cfg.Insert.WALEnabled != expect.walEnabled {
-				t.Errorf("wal_enabled = %v, want %v", cfg.Insert.WALEnabled, expect.walEnabled)
-			}
-			if cfg.Insert.WALMaxBytes != expect.walMaxBytes {
-				t.Errorf("wal_max_bytes = %q, want %q", cfg.Insert.WALMaxBytes, expect.walMaxBytes)
 			}
 			if cfg.Insert.CompressionLevel != expect.compressionLevel {
 				t.Errorf("compression_level = %d, want %d", cfg.Insert.CompressionLevel, expect.compressionLevel)

@@ -195,8 +195,6 @@ func TestS3Func_RefreshManifest_WithBloomData(t *testing.T) {
 	s.s3Prefix = "traces/"
 	cfg := s.cfg
 	cfg.S3.Bucket = "test-bucket"
-	// Enable insert so PersistBloomIndex is called
-	cfg.Insert.WALEnabled = false
 
 	// Upload a bloom index so loadBloomIndex can find it
 	src := bloomindex.New()

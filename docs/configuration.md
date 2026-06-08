@@ -158,18 +158,15 @@ The `logstore` engine is what brings cold Jaeger/Tempo to parity with hot VT for
 | `buffer` (default) | HTTP 200 after data buffered in memory | ~0ms | Data at risk until next flush |
 | `flush-sync` | HTTP 200 after S3 confirms write | +200-400ms | Zero data loss |
 
-## WAL Settings
+## Durability
 
-The WAL backs the **`buffer` engine** (legacy `[]row` staging). With
-`insert.buffer_engine: logstore` the buffer reuses logstorage's own on-disk
-persistence (parts written every flush interval, restored on open) — its
-crash-loss window matches hot VT/VL, so no separate LH WAL is required.
-
-| Flag | Default | Description |
-|---|---|---|
-| `--lakehouse.insert.wal-enabled` | `true` | Enable write-ahead log for crash recovery (`buffer` engine) |
-| `--lakehouse.insert.wal-dir` | `/data/lakehouse/wal` | WAL file directory |
-| `--lakehouse.insert.wal-max-bytes` | `512MB` | Maximum WAL file size |
+There is no separate lakehouse WAL. Durability for recently-ingested data is
+provided by the `logstore` buffer engine, which reuses logstorage's own on-disk
+persistence — parts are written to `insert.buffer_dir` every flush interval and
+restored on open, so the crash-loss window matches hot VT/VL. The
+`BufferFlusher` (`insert.buffer_flush_enabled`) then drains the buffer to S3
+Parquet, which is the long-term durable store. For synchronous durability use
+`ack_mode: flush-sync` (200 only after S3 confirms).
 
 ## Select Settings
 
