@@ -232,18 +232,24 @@ The `SchemaRegistry` (`internal/schema/registry.go`) translates between Parquet 
 3. **Span/scope prefix** -- `span_attr:X` and `scope_attr:X` map to their respective MAP columns
 4. **VL dotted convention** -- unknown dotted names try `resource.attributes`, then `log.attributes`
 
-## Buffer Bridge Fan-Out
+## Serving the recent (unflushed) window
 
-When select pods are configured with `--lakehouse.select.insert-headless-service`, the read path fans out to insert pods after querying S3. Insert pods expose their unflushed partition buffers via `GET /internal/buffer/query?start=X&end=Y&mode=logs`.
+After querying S3, the read path adds the recent rows that haven't been flushed to Parquet yet. How depends on `insert.buffer_engine`:
+
+**`logstore` engine (co-located, no peers):** the recent window is served from the local `logstorage.Storage` buffer through the **same** exported `Storage.RunQuery` the S3-Parquet scan uses — no struct→DataBlock reconstruction. The buffer query is scoped to `(watermark, now]`, where the watermark is the newest timestamp the just-scanned Parquet files already cover, so the buffer and Parquet never both emit the same row (no aggregation double-count). `trace_id`-filtered queries (Jaeger/Tempo span fetch) bypass the watermark and serve the full buffer window — span retrieval is reader-deduped on `(trace_id, span_id)`, so completeness matters more than the (harmless) double-emission.
+
+**Buffer-bridge fan-out (multi-pod, or the legacy `buffer` engine):** when peers are present (multi-pod `role=all`, or when select pods are configured with `--lakehouse.select.insert-headless-service`), the read path fans out to every insert pod via `GET /internal/buffer/query?start=X&end=Y&mode=logs`. Each pod returns only its own unflushed rows, so the fan-out gathers all pods' recent data with no double-count (and no need to identify/exclude self from the peer list). With the `logstore` engine on a single node (no peers), the local-buffer path above is used directly; with peers, the read path falls through to this fan-out.
 
 ```
 RunQuery:
-  1. Query S3 Parquet files (via manifest + cache)
-  2. bufferBridge.QueryLogs(ctx, startNs, endNs) -> []LogRow
-  3. Convert buffer rows to DataBlock, emit via writeBlock
+  1. Query S3 Parquet files (via manifest + cache); track the Parquet watermark
+  2. recent window:
+       - logstore + no peers: localBuffer.RunQuery((watermark,now]) -> DataBlocks
+       - peers present:       bufferBridge.Query{Logs,Traces}(...) -> []Row -> DataBlock
+  3. emit via writeBlock (outer RunQuery applies pipes once over Parquet + recent blocks)
 ```
 
-Buffer bridge errors are silently ignored for graceful degradation -- S3 data is always available even if insert pods are temporarily unreachable.
+Buffer/peer errors are silently ignored for graceful degradation — S3 data is always available even if insert pods are temporarily unreachable.
 
 ## DataBlock Emission
 

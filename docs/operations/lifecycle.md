@@ -40,7 +40,7 @@ A pod is ServingReady (the 204/200 floor) only after ALL of these:
    `cfg.manifest.persist_path`. Almost always sub-second; the only
    slow case is a 1 GB+ snapshot on slow disk.
 
-2. **WAL replay complete** — for insert role only. The on-disk
+2. **Buffer restore complete** — for insert role only. The on-disk
    write-ahead log is replayed back into in-memory buffers before
    accepting reads. Skipped for select-only pods.
 

@@ -872,9 +872,6 @@ func TestMergeConfig_InsertFields(t *testing.T) {
 	overlay.Insert.MaxBufferBytes = "512MB"
 	overlay.Insert.RowGroupSize = 20000
 	overlay.Insert.BloomColumns = []string{"trace_id"}
-	overlay.Insert.WALEnabled = true
-	overlay.Insert.WALDir = "/data/wal"
-
 	result := mergeConfig(base, overlay)
 
 	if result.Insert.FlushInterval != 5*time.Second {
@@ -891,12 +888,6 @@ func TestMergeConfig_InsertFields(t *testing.T) {
 	}
 	if len(result.Insert.BloomColumns) != 1 || result.Insert.BloomColumns[0] != "trace_id" {
 		t.Errorf("BloomColumns = %v", result.Insert.BloomColumns)
-	}
-	if !result.Insert.WALEnabled {
-		t.Error("WALEnabled should be true")
-	}
-	if result.Insert.WALDir != "/data/wal" {
-		t.Errorf("WALDir = %q", result.Insert.WALDir)
 	}
 }
 
@@ -933,8 +924,6 @@ lakehouse:
     row_group_size: 20000
     bloom_columns:
       - trace_id
-    wal_enabled: true
-    wal_dir: /data/wal
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -964,12 +953,6 @@ lakehouse:
 	}
 	if len(cfg.Insert.BloomColumns) != 1 || cfg.Insert.BloomColumns[0] != "trace_id" {
 		t.Errorf("BloomColumns = %v", cfg.Insert.BloomColumns)
-	}
-	if !cfg.Insert.WALEnabled {
-		t.Error("WALEnabled should be true")
-	}
-	if cfg.Insert.WALDir != "/data/wal" {
-		t.Errorf("WALDir = %q", cfg.Insert.WALDir)
 	}
 }
 
@@ -1240,20 +1223,6 @@ func TestDefaultConfig_TargetFileSize(t *testing.T) {
 	}
 }
 
-func TestDefaultConfig_WALMaxBytes(t *testing.T) {
-	cfg := Default()
-	if cfg.Insert.WALMaxBytes != "512MB" {
-		t.Errorf("WALMaxBytes = %q, want 512MB", cfg.Insert.WALMaxBytes)
-	}
-}
-
-func TestDefaultConfig_WALEnabled(t *testing.T) {
-	cfg := Default()
-	if !cfg.Insert.WALEnabled {
-		t.Error("WALEnabled should default to true")
-	}
-}
-
 func TestDefaultConfig_SelectConfig(t *testing.T) {
 	cfg := Default()
 	if !cfg.Select.BufferQueryEnabled {
@@ -1270,15 +1239,6 @@ func TestInsertConfig_TargetFileSizeN(t *testing.T) {
 	want := int64(128 * 1024 * 1024)
 	if got != want {
 		t.Errorf("TargetFileSizeN = %d, want %d", got, want)
-	}
-}
-
-func TestInsertConfig_WALMaxBytesN(t *testing.T) {
-	ic := &InsertConfig{WALMaxBytes: "512MB"}
-	got := ic.WALMaxBytesN()
-	want := int64(512 * 1024 * 1024)
-	if got != want {
-		t.Errorf("WALMaxBytesN = %d, want %d", got, want)
 	}
 }
 
@@ -1510,10 +1470,6 @@ func TestValidate_MalformedSizeStrings(t *testing.T) {
 			func(c *Config) { c.Insert.TargetFileSize = "xyz" },
 		},
 		{
-			"invalid WALMaxBytes",
-			func(c *Config) { c.Insert.WALMaxBytes = "abc123def" },
-		},
-		{
 			"MaxBufferBytes with bad suffix",
 			func(c *Config) { c.Insert.MaxBufferBytes = "256ZZ" },
 		},
@@ -1542,7 +1498,6 @@ func TestValidate_ValidSizeStrings(t *testing.T) {
 	cfg.S3.Bucket = "test"
 	cfg.Insert.MaxBufferBytes = "512MB"
 	cfg.Insert.TargetFileSize = "128MB"
-	cfg.Insert.WALMaxBytes = "1GB"
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("expected no error for valid sizes, got: %v", err)
 	}
@@ -1618,12 +1573,6 @@ func TestDefaultConfig_DurabilityFields(t *testing.T) {
 	if cfg.Insert.PeerReplicateTTL != 30*time.Second {
 		t.Errorf("default peer_replicate_ttl = %v, want 30s", cfg.Insert.PeerReplicateTTL)
 	}
-	if cfg.Insert.AsyncWALEnabled {
-		t.Error("default async_wal_enabled should be false")
-	}
-	if cfg.Insert.AsyncWALBatchLinger != 50*time.Millisecond {
-		t.Errorf("default async_wal_batch_linger = %v, want 50ms", cfg.Insert.AsyncWALBatchLinger)
-	}
 }
 
 func TestDefaultConfig_GCFields(t *testing.T) {
@@ -1684,8 +1633,6 @@ lakehouse:
     peer_replicate: true
     peer_replicate_timeout: 10ms
     peer_replicate_ttl: 60s
-    async_wal_enabled: true
-    async_wal_batch_linger: 100ms
   gc:
     enabled: true
     interval: 12h
@@ -1719,12 +1666,6 @@ lakehouse:
 	}
 	if cfg.Insert.PeerReplicateTTL != 60*time.Second {
 		t.Errorf("peer_replicate_ttl = %v, want 60s", cfg.Insert.PeerReplicateTTL)
-	}
-	if !cfg.Insert.AsyncWALEnabled {
-		t.Error("async_wal_enabled should be true")
-	}
-	if cfg.Insert.AsyncWALBatchLinger != 100*time.Millisecond {
-		t.Errorf("async_wal_batch_linger = %v, want 100ms", cfg.Insert.AsyncWALBatchLinger)
 	}
 	if cfg.GC.Interval != 12*time.Hour {
 		t.Errorf("GC interval = %v, want 12h", cfg.GC.Interval)

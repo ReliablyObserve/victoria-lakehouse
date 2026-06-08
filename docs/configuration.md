@@ -21,7 +21,7 @@ graph TD
     CFG --> S3C[S3<br/>bucket, region, endpoint]
     CFG --> CACHE[Cache<br/>L1 memory, L2 disk]
     CFG --> DISC[Discovery<br/>headless svc, hot boundary]
-    CFG --> INS[Insert<br/>flush, WAL, buffer]
+    CFG --> INS[Insert<br/>flush, buffer engine]
     CFG --> COMP[Compaction<br/>levels, leader election]
     CFG --> TENANT[Tenant<br/>isolation, stats, UI]
 
@@ -55,7 +55,7 @@ See [Getting Started — Configuration Profiles](getting-started.md#configuratio
 | Setting Area | balanced | max-performance | max-durability | max-cost-savings | dev |
 |---|---|---|---|---|---|
 | **ack_mode** | buffer | buffer | flush-sync | buffer | buffer |
-| **WAL** | on | off | on (1GB) | off | off |
+| **Durability** | logstore buffer | logstore buffer | logstore + S3-sync ack | logstore buffer | logstore buffer |
 | **flush_linger** | 200ms | 100ms | 0 (immediate) | 1s | 0 |
 | **Compression** | ZSTD-7 | ZSTD-3 | ZSTD-7 | ZSTD-11 | ZSTD-1 |
 | **Cache (mem/disk)** | 512MB/50GB | 2GB/100GB | 512MB/50GB | 128MB/10GB | 64MB/1GB |
@@ -138,8 +138,18 @@ When empty, Victoria Lakehouse auto-discovers the hot boundary by polling vlstor
 | `--lakehouse.insert.peer-replicate` | `false` | Replicate inserts to peer nodes |
 | `--lakehouse.insert.peer-replicate-timeout` | `5ms` | Timeout for peer replication |
 | `--lakehouse.insert.peer-replicate-ttl` | `30s` | TTL for replicated data on peers |
-| `--lakehouse.insert.async-wal-enabled` | `false` | Use async WAL writes (less durable, faster) |
-| `--lakehouse.insert.async-wal-batch-linger` | `50ms` | Async WAL batch coalesce delay |
+| `--lakehouse.insert.buffer-engine` | `buffer` | Insert-buffer implementation: `buffer` (legacy `[]row` staging) or `logstore` (logstorage-native queryable buffer) |
+| `--lakehouse.insert.buffer-dir` | `/data/lakehouse/buffer` | Data dir for the `logstore` buffer's parts (persistent volume; durability + restore live here) |
+| `--lakehouse.insert.buffer-retention` | `1h` | How long rows stay in the `logstore` buffer before VL drops them (older data is served from S3 Parquet) |
+
+**Buffer engine (`insert.buffer_engine`):**
+
+| Engine | What it is | Recent-data reads | Durability |
+|---|---|---|---|
+| `buffer` (default) | Rows stage in an in-memory `[]schema.{Log,Trace}Row` slice, flushed to Parquet | Reconstructed into a `DataBlock` at query time (or served cross-pod via the BufferBridge HTTP fan-out) | In-flight staging is lost on crash (no WAL) — use `logstore` or `ack_mode: flush-sync` for crash durability |
+| `logstore` | Rows feed a real per-pod `logstorage.Storage` (the VictoriaLogs/Traces in-memory-parts model) via the exported `MustAddRows` | Served from the buffer through the **same** exported `Storage.RunQuery` the S3-Parquet scan uses — no struct→DataBlock conversion. On a multi-pod cluster, queries fall through to the BufferBridge fan-out so every pod's unflushed rows are gathered. | logstorage's own disk parts (written every flush interval, restored on open) — crash-loss window equals hot VT/VL; **no separate LH WAL needed** |
+
+The `logstore` engine is what brings cold Jaeger/Tempo to parity with hot VT for recently-ingested traces (the recent/unflushed window is served from the buffer natively). See `architecture/buffer-queryable-store-design.md`.
 
 **Acknowledgement modes:**
 
@@ -148,13 +158,15 @@ When empty, Victoria Lakehouse auto-discovers the hot boundary by polling vlstor
 | `buffer` (default) | HTTP 200 after data buffered in memory | ~0ms | Data at risk until next flush |
 | `flush-sync` | HTTP 200 after S3 confirms write | +200-400ms | Zero data loss |
 
-## WAL Settings
+## Durability
 
-| Flag | Default | Description |
-|---|---|---|
-| `--lakehouse.insert.wal-enabled` | `true` | Enable write-ahead log for crash recovery |
-| `--lakehouse.insert.wal-dir` | `/data/lakehouse/wal` | WAL file directory |
-| `--lakehouse.insert.wal-max-bytes` | `512MB` | Maximum WAL file size |
+There is no separate lakehouse WAL. Durability for recently-ingested data is
+provided by the `logstore` buffer engine, which reuses logstorage's own on-disk
+persistence — parts are written to `insert.buffer_dir` every flush interval and
+restored on open, so the crash-loss window matches hot VT/VL. The
+`BufferFlusher` (`insert.buffer_flush_enabled`) then drains the buffer to S3
+Parquet, which is the long-term durable store. For synchronous durability use
+`ack_mode: flush-sync` (200 only after S3 confirms).
 
 ## Select Settings
 
@@ -433,9 +445,9 @@ lakehouse:
     target_file_size: 128MB
     bloom_columns: "service.name,trace_id"
     compression_level: default
-    wal_enabled: true
-    wal_dir: /data/lakehouse/wal
-    wal_max_bytes: 512MB
+    buffer_engine: logstore         # durable buffer (on-disk parts, no WAL)
+    buffer_dir: /data/lakehouse/buffer
+    buffer_retention: 1h
 
   select:
     buffer_query_enabled: true

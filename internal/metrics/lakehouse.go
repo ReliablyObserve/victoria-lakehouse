@@ -142,17 +142,38 @@ var (
 	InsertBytesBuffered    = NewGauge("lakehouse_insert_bytes_buffered")
 	InsertFlushTotal       = NewCounter("lakehouse_insert_flush_total")
 	InsertFlushErrorsTotal = NewCounter("lakehouse_insert_flush_errors_total")
+	// InsertFlushWatermarkNs is the BufferFlusher's last committed flush
+	// watermark (ns). Everything at or below it is durably on S3; the buffer
+	// covers (watermark, now]. Crash-survival tests assert against this boundary.
+	InsertFlushWatermarkNs = NewGauge("lakehouse_insert_flush_watermark_timestamp")
 	InsertFlushDuration    = NewHistogram("lakehouse_insert_flush_duration_seconds",
 		[]float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10})
 	InsertBytesUploaded    = NewCounter("lakehouse_insert_bytes_uploaded_total")
 	InsertPartitionsActive = NewGauge("lakehouse_insert_partitions_active")
-	InsertWALBytes         = NewGauge("lakehouse_insert_wal_bytes")
 
 	// VT emits internal "index" log rows alongside span data (trace-ID index
 	// stream and service-graph stream). Lakehouse drops them at insert time
 	// since they aren't OTLP span data; this counter, keyed by kind, exposes
 	// how many we discard so a missing-trace-index regression is visible.
 	VTInternalRowsDropped = NewCounterVec("lakehouse_vt_internal_rows_dropped_total", "kind")
+
+	// BufferStoreDualWriteFailures counts batches the Option B logstorage-native
+	// buffer (BufferEngine=logstore) failed to accept. The dual-write is
+	// isolated with recover() so a buffer failure can NEVER break ingestion —
+	// the legacy staging path remains authoritative. A non-zero value means the
+	// buffer is missing recent rows and any buffer-served query may under-return
+	// until the next healthy flush; alert on rate > 0.
+	BufferStoreDualWriteFailures = NewCounter("lakehouse_buffer_store_dualwrite_failures_total")
+
+	// Option B P5 shadow export: the buffer→Parquet path runs in parallel with
+	// the authoritative legacy flush, writing to a SHADOW S3 prefix (not the
+	// manifest), so an operator can confirm row/byte parity vs the legacy
+	// Parquet before the cutover. Compare BufferShadowExportRows against the
+	// legacy insert row rate; BufferShadowExportErrors must stay flat at 0.
+	BufferShadowExportRows   = NewCounter("lakehouse_buffer_shadow_export_rows_total")
+	BufferShadowExportFiles  = NewCounter("lakehouse_buffer_shadow_export_files_total")
+	BufferShadowExportBytes  = NewCounter("lakehouse_buffer_shadow_export_bytes_total")
+	BufferShadowExportErrors = NewCounter("lakehouse_buffer_shadow_export_errors_total")
 
 	// TraceIndexLookups counts VT-format trace-by-ID lookups served from the
 	// embedded `_trace_idx` Parquet footer index. `result` is one of:

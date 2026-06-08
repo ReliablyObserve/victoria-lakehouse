@@ -514,7 +514,7 @@ func TestS3_queryBufferBridge_TracesMode(t *testing.T) {
 	startNs := time.Date(2026, 5, 10, 14, 0, 0, 0, time.UTC).UnixNano()
 	endNs := time.Date(2026, 5, 10, 15, 0, 0, 0, time.UTC).UnixNano()
 
-	s.queryBufferBridge(context.Background(), startNs, endNs,
+	s.queryBufferBridge(context.Background(), startNs, endNs, 0, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			blocks = append(blocks, db)
 		})
@@ -539,7 +539,7 @@ func TestS3_queryBufferBridge_DisabledConfig(t *testing.T) {
 	bb.SetEndpoints([]string{"http://localhost:1234"})
 	s.bufferBridge = bb
 
-	s.queryBufferBridge(context.Background(), 0, int64(time.Hour),
+	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 0, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			t.Error("should not be called when buffer query is disabled")
 		})
@@ -2087,6 +2087,25 @@ func TestS3_updateColumnStats(t *testing.T) {
 // Test: preFilterFiles with trace ID smart cache hit
 // ---------------------------------------------------------------------------
 
+// TestS3_preFilterFiles_TraceIDCacheHit pins the load-bearing
+// invariant from the recently-flushed-file parity bug: preFilterFiles
+// MUST NOT use the smartCache trace_id mapping to NARROW the candidate
+// file set, because that mapping is a LOWER BOUND (only files whose
+// TraceIDs have been RecordTraceIDs'd, which happens at the END of a
+// scan — never for a just-flushed-not-yet-queried file).
+//
+// Here keyA has "trace-abc-123" recorded but keyB does NOT (it
+// simulates a recently-flushed file that genuinely contains the
+// trace but hasn't been queried yet, so its smartCache TraceIDs set
+// is empty). The PRE-FIX code narrowed to {keyA} and silently dropped
+// keyB — the exact mechanism that made cold Jaeger return 0 traces
+// for minutes-to-1h-old spans while hot VT returned them. Post-fix,
+// preFilterFiles defers to the deterministic footer-based
+// filterFilesByTraceIdx (run later in RunQuery), so keyB MUST survive
+// here.
+//
+// Do NOT relax this back to "narrowing to keyA is also acceptable" —
+// that tolerance is what let the bug ship.
 func TestS3_preFilterFiles_TraceIDCacheHit(t *testing.T) {
 	s := testStorage()
 	s.smartCache = newSmartCacheWithLocalKeys(nil)
@@ -2101,15 +2120,26 @@ func TestS3_preFilterFiles_TraceIDCacheHit(t *testing.T) {
 	}
 
 	result := s.preFilterFiles(files, `trace_id:="trace-abc-123"`)
-	if len(result) == 1 && result[0].Key == keyA {
-		// Perfect: smart cache narrowed to just file A
-	} else if len(result) == 2 {
-		// Also acceptable: smart cache doesn't have complete coverage, fallback to all
-	} else if len(result) == 0 {
-		t.Error("expected at least some files")
+	keys := map[string]bool{}
+	for _, fi := range result {
+		keys[fi.Key] = true
+	}
+	if !keys[keyB] {
+		t.Errorf("keyB (recently-flushed, trace_id not yet recorded in smartCache) was "+
+			"silently dropped by preFilterFiles — this is the cold-tier recently-flushed "+
+			"parity bug: the smartCache lower-bound narrowing must NOT drop a manifest file "+
+			"the deterministic trace_idx pre-filter would keep. result keys: %v", keys)
+	}
+	if !keys[keyA] {
+		t.Errorf("keyA (the recorded file) must also survive; result keys: %v", keys)
 	}
 }
 
+// TestS3_preFilterFiles_TraceIDCacheFullHit — even when BOTH files
+// have recorded TraceIDs, preFilterFiles must not narrow by the cache
+// (the deterministic trace_idx pre-filter does the real narrowing).
+// Both files survive preFilterFiles; trace_idx later keeps only the
+// one whose footer lists the queried id.
 func TestS3_preFilterFiles_TraceIDCacheFullHit(t *testing.T) {
 	s := testStorage()
 
@@ -2132,13 +2162,9 @@ func TestS3_preFilterFiles_TraceIDCacheFullHit(t *testing.T) {
 	}
 
 	result := s.preFilterFiles(files, `trace_id:="trace-hit-abc"`)
-
-	if len(result) == 1 && result[0].Key == keyA {
-		// Perfect: trace_id cache narrowed successfully
-	} else if len(result) == 2 {
-		// Fallback: also acceptable
-	} else if len(result) == 0 {
-		t.Error("expected at least some files")
+	if len(result) != 2 {
+		t.Errorf("preFilterFiles must not narrow by smartCache trace_id mapping; "+
+			"expected both files to survive (trace_idx does the real narrowing later), got %d", len(result))
 	}
 }
 

@@ -131,9 +131,6 @@ type InsertConfig struct {
 	RowGroupSize     int           `yaml:"row_group_size"`
 	BloomColumns     []string      `yaml:"bloom_columns"`
 	CompressionLevel int           `yaml:"compression_level"`
-	WALEnabled       bool          `yaml:"wal_enabled"`
-	WALDir           string        `yaml:"wal_dir"`
-	WALMaxBytes      string        `yaml:"wal_max_bytes"`
 
 	AckMode              string        `yaml:"ack_mode"`
 	FlushLinger          time.Duration `yaml:"flush_linger"`
@@ -141,8 +138,42 @@ type InsertConfig struct {
 	PeerReplicate        bool          `yaml:"peer_replicate"`
 	PeerReplicateTimeout time.Duration `yaml:"peer_replicate_timeout"`
 	PeerReplicateTTL     time.Duration `yaml:"peer_replicate_ttl"`
-	AsyncWALEnabled      bool          `yaml:"async_wal_enabled"`
-	AsyncWALBatchLinger  time.Duration `yaml:"async_wal_batch_linger"`
+
+	// BufferEngine selects how the insert buffer (recently-ingested,
+	// not-yet-flushed rows) is held and queried (Option B; see
+	// docs/architecture/buffer-queryable-store-design.md):
+	//   "buffer"   (default) — legacy []schema.{Log,Trace}Row staging +
+	//                           struct→DataBlock conversion at query time.
+	//   "logstore"           — a per-pod logstorage.Storage, queried via the
+	//                           same engine as the S3-Parquet scan (no
+	//                           conversion). Rolled out in phases behind this
+	//                           flag; during P1 it dual-writes alongside the
+	//                           legacy buffer, which stays authoritative.
+	BufferEngine string `yaml:"buffer_engine"`
+	// BufferDir is the local/tmpfs directory for the logstore buffer's
+	// parts (durability is logstorage persistence here + the S3 Parquet flush).
+	BufferDir string `yaml:"buffer_dir"`
+	// BufferRetention bounds how long rows live in the logstore buffer before
+	// VL drops them; once the flush sink is active this is just a ceiling.
+	BufferRetention time.Duration `yaml:"buffer_retention"`
+	// BufferFlushEnabled makes the logstore buffer the AUTHORITATIVE Parquet
+	// producer via the BufferFlusher (the WAL cutover). Default false: the
+	// legacy []row path stays authoritative and the buffer is read-only shadow.
+	// Requires BufferEngine == "logstore".
+	BufferFlushEnabled bool `yaml:"buffer_flush_enabled"`
+	// BufferFlushInterval is the BufferFlusher's object-store flush CAP: the max
+	// time a sub-target window waits before being flushed to S3 Parquet anyway.
+	// The flusher checks more often than this but only flushes a window once it
+	// reaches target_file_size OR has lingered this long — so S3 gets
+	// ~target-sized objects, not one tiny file per tick. Must be << BufferRetention
+	// (validated: retention >= 2*interval). Default 5m.
+	BufferFlushInterval time.Duration `yaml:"buffer_flush_interval"`
+}
+
+// BufferEngineLogstore reports whether the logstorage-native buffer (Option B)
+// is selected. Default ("" or "buffer") keeps the legacy staging buffer.
+func (c *InsertConfig) BufferEngineLogstore() bool {
+	return c.BufferEngine == "logstore"
 }
 
 func (c *InsertConfig) MaxBufferBytesN() int64 {
@@ -157,14 +188,6 @@ func (c *InsertConfig) TargetFileSizeN() int64 {
 	n, _ := ParseSizeBytes(c.TargetFileSize)
 	if n <= 0 {
 		return 128 * 1024 * 1024
-	}
-	return n
-}
-
-func (c *InsertConfig) WALMaxBytesN() int64 {
-	n, _ := ParseSizeBytes(c.WALMaxBytes)
-	if n <= 0 {
-		return 512 * 1024 * 1024
 	}
 	return n
 }
@@ -736,9 +759,6 @@ func Default() *Config {
 			RowGroupSize:     10000,
 			BloomColumns:     []string{"service.name", "trace_id"},
 			CompressionLevel: 3,
-			WALEnabled:       true,
-			WALDir:           "/data/lakehouse/wal",
-			WALMaxBytes:      "512MB",
 
 			AckMode:              "buffer",
 			FlushLinger:          200 * time.Millisecond,
@@ -746,8 +766,12 @@ func Default() *Config {
 			PeerReplicate:        false,
 			PeerReplicateTimeout: 5 * time.Millisecond,
 			PeerReplicateTTL:     30 * time.Second,
-			AsyncWALEnabled:      false,
-			AsyncWALBatchLinger:  50 * time.Millisecond,
+
+			BufferEngine:        "buffer", // legacy staging buffer; "logstore" opts into Option B
+			BufferDir:           "/data/lakehouse/buffer",
+			BufferRetention:     time.Hour,
+			BufferFlushEnabled:  false, // cutover off by default; legacy path authoritative
+			BufferFlushInterval: 5 * time.Minute,
 		},
 
 		Select: SelectConfig{
@@ -1041,6 +1065,30 @@ func (c *Config) validateInsert() error {
 	if c.Insert.CompressionLevel < 1 || c.Insert.CompressionLevel > 22 {
 		return fmt.Errorf("--lakehouse.insert.compression-level must be 1-22, got %d", c.Insert.CompressionLevel)
 	}
+	switch c.Insert.BufferEngine {
+	case "", "buffer", "logstore":
+	default:
+		return fmt.Errorf("--lakehouse.insert.buffer-engine must be \"buffer\" or \"logstore\", got %q", c.Insert.BufferEngine)
+	}
+	if c.Insert.BufferFlushEnabled {
+		if !c.Insert.BufferEngineLogstore() {
+			return fmt.Errorf("--lakehouse.insert.buffer-flush-enabled requires buffer-engine=logstore, got %q", c.Insert.BufferEngine)
+		}
+		if c.Insert.BufferFlushInterval <= 0 {
+			return fmt.Errorf("--lakehouse.insert.buffer-flush-interval must be > 0 when flush is enabled")
+		}
+		// CRASH-SAFETY constraint: un-flushed rows live ONLY in the buffer until
+		// the flusher commits them, so the buffer must retain them across (a) a
+		// full linger window before they flush AND (b) any restart downtime before
+		// recovery re-flushes. Require retention >= 4x the flush cap so there is a
+		// generous recovery margin beyond the 2x linger floor — if retention is
+		// too tight, a row could age out of the buffer before a crashed flusher
+		// recovers, which IS data loss (there is no LH WAL backstop anymore).
+		if c.Insert.BufferRetention < 4*c.Insert.BufferFlushInterval {
+			return fmt.Errorf("--lakehouse.insert.buffer-retention (%s) must be >= 4x buffer-flush-interval (%s): un-flushed rows must survive a linger window PLUS restart downtime, since the buffer is their only store until flushed",
+				c.Insert.BufferRetention, c.Insert.BufferFlushInterval)
+		}
+	}
 	if c.Insert.MaxBufferBytes != "" {
 		if _, err := ParseSizeBytes(c.Insert.MaxBufferBytes); err != nil {
 			return fmt.Errorf("--lakehouse.insert.max-buffer-bytes: invalid size %q: %w", c.Insert.MaxBufferBytes, err)
@@ -1048,11 +1096,6 @@ func (c *Config) validateInsert() error {
 	}
 	if _, err := ParseSizeBytes(c.Insert.TargetFileSize); err != nil {
 		return fmt.Errorf("--lakehouse.insert.target-file-size: invalid size %q: %w", c.Insert.TargetFileSize, err)
-	}
-	if c.Insert.WALMaxBytes != "" {
-		if _, err := ParseSizeBytes(c.Insert.WALMaxBytes); err != nil {
-			return fmt.Errorf("--lakehouse.insert.wal-max-bytes: invalid size %q: %w", c.Insert.WALMaxBytes, err)
-		}
 	}
 	switch c.Insert.AckMode {
 	case "buffer", "wal", "flush-sync":
@@ -1705,14 +1748,20 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	if overlay.Insert.TargetFileSize != "" {
 		base.Insert.TargetFileSize = overlay.Insert.TargetFileSize
 	}
-	if overlay.Insert.WALEnabled {
-		base.Insert.WALEnabled = true
+	if overlay.Insert.BufferEngine != "" {
+		base.Insert.BufferEngine = overlay.Insert.BufferEngine
 	}
-	if overlay.Insert.WALDir != "" {
-		base.Insert.WALDir = overlay.Insert.WALDir
+	if overlay.Insert.BufferDir != "" {
+		base.Insert.BufferDir = overlay.Insert.BufferDir
 	}
-	if overlay.Insert.WALMaxBytes != "" {
-		base.Insert.WALMaxBytes = overlay.Insert.WALMaxBytes
+	if overlay.Insert.BufferRetention > 0 {
+		base.Insert.BufferRetention = overlay.Insert.BufferRetention
+	}
+	if overlay.Insert.BufferFlushEnabled {
+		base.Insert.BufferFlushEnabled = true
+	}
+	if overlay.Insert.BufferFlushInterval > 0 {
+		base.Insert.BufferFlushInterval = overlay.Insert.BufferFlushInterval
 	}
 	if overlay.Insert.AckMode != "" {
 		base.Insert.AckMode = overlay.Insert.AckMode
@@ -1731,12 +1780,6 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Insert.PeerReplicateTTL > 0 {
 		base.Insert.PeerReplicateTTL = overlay.Insert.PeerReplicateTTL
-	}
-	if overlay.Insert.AsyncWALEnabled {
-		base.Insert.AsyncWALEnabled = true
-	}
-	if overlay.Insert.AsyncWALBatchLinger > 0 {
-		base.Insert.AsyncWALBatchLinger = overlay.Insert.AsyncWALBatchLinger
 	}
 
 	// Select

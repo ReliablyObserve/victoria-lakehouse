@@ -345,6 +345,121 @@ func TestJaeger_TraceDetail_ParentRefs(t *testing.T) {
 	}
 }
 
+// TestJaeger_ColdRecentTrace_NotSilentlyEmpty pins the cold-Jaeger regression
+// where a recently-flushed/cold partition returned 0 traces through the Jaeger
+// API even though the underlying span rows existed in storage.
+//
+// The trap this test closes: existing Jaeger tests do t.Skip("no traces found")
+// when /api/traces returns an empty data array, so a cold-returns-0 bug passes
+// silently. Here we FIRST prove via LogsQL that api-gateway spans exist in the
+// recent window, and only THEN exercise the Jaeger search + trace-by-id path.
+// If the data demonstrably exists but Jaeger returns nothing, we t.Fatal.
+//
+// Invariant: if LogsQL shows >=1 api-gateway span row in the recent window,
+// then the Jaeger /api/traces search MUST return >=1 trace, and a Jaeger
+// /api/traces/<id> retrieval of the first result MUST return >=1 span.
+// t.Skip is permitted ONLY for the genuine "no data ingested at all" case.
+func TestJaeger_ColdRecentTrace_NotSilentlyEmpty(t *testing.T) {
+	// (1) Prove data EXISTS via LogsQL against the traces store. queryTraces
+	// queries tracesBaseURL /select/logsql/query over the recent (default
+	// ~30min) window, which is the same cold/recent slice the Jaeger path hit.
+	rows := queryTraces(t, `service.name:="api-gateway"`, 5)
+	if len(rows) == 0 {
+		// Genuine "nothing ingested at all" — the ONLY legitimate skip.
+		t.Skip("no api-gateway span rows in the recent window; nothing ingested to verify against")
+	}
+
+	// Sanity: confirm the rows really are api-gateway spans with a trace_id, so
+	// we don't pass off unrelated data as proof-of-existence.
+	dataExists := false
+	for _, row := range rows {
+		svc, _ := row["service.name"].(string)
+		traceID, _ := row["trace_id"].(string)
+		if svc == "api-gateway" && traceID != "" {
+			dataExists = true
+			break
+		}
+	}
+	if !dataExists {
+		t.Skip("no api-gateway rows with a trace_id in the recent window; nothing to verify against")
+	}
+	t.Logf("LogsQL confirms api-gateway data exists: %d recent span row(s)", len(rows))
+
+	// (2) Run the Jaeger search for api-gateway over a recent window. Use a 1h
+	// lookback to comfortably cover the ~30min LogsQL window plus clock skew,
+	// while still exercising the recent/cold path rather than the full 72h
+	// range used elsewhere — that recent window is where the bug surfaced.
+	params := url.Values{
+		"service":  {"api-gateway"},
+		"lookback": {"1h"},
+		"limit":    {"5"},
+	}
+	searchBody := httpGetBody(t, tracesBaseURL, "/api/traces", params)
+	searchResp := mustParseJSON(t, searchBody)
+
+	dataRaw, ok := searchResp["data"]
+	if !ok {
+		t.Fatalf("Jaeger search response missing 'data' field; raw: %s", string(searchBody))
+	}
+	dataArr, ok := dataRaw.([]any)
+	if !ok {
+		t.Fatalf("Jaeger search 'data' is not an array, got %T", dataRaw)
+	}
+
+	// (3) Data is PROVEN to exist (step 1) — so an empty Jaeger search is the
+	// cold-returns-0 regression, NOT a benign no-data case. Fatal, never skip.
+	if len(dataArr) == 0 {
+		t.Fatalf("cold Jaeger regression: LogsQL shows api-gateway spans exist in the recent window, "+
+			"but Jaeger /api/traces?service=api-gateway&lookback=1h returned 0 traces; raw: %s",
+			string(searchBody))
+	}
+	t.Logf("Jaeger search returned %d trace(s) over 1h lookback", len(dataArr))
+
+	// First result must carry a non-empty traceID.
+	firstTrace, ok := dataArr[0].(map[string]any)
+	if !ok {
+		t.Fatalf("Jaeger search data[0] is not an object, got %T", dataArr[0])
+	}
+	traceID, _ := firstTrace["traceID"].(string)
+	if traceID == "" {
+		t.Fatal("cold Jaeger regression: first search result has an empty traceID")
+	}
+
+	// Trace-by-id retrieval of that first result MUST return >=1 span. A cold
+	// partial-hit bug could let search list the trace but return no spans on
+	// detail fetch — that is still a regression, so fatal.
+	detailBody := httpGetBody(t, tracesBaseURL, "/api/traces/"+traceID, nil)
+	detailResp := mustParseJSON(t, detailBody)
+
+	detailRaw, ok := detailResp["data"]
+	if !ok {
+		t.Fatalf("Jaeger trace-by-id response missing 'data' field; raw: %s", string(detailBody))
+	}
+	detailData, ok := detailRaw.([]any)
+	if !ok {
+		t.Fatalf("Jaeger trace-by-id 'data' is not an array, got %T", detailRaw)
+	}
+	if len(detailData) == 0 {
+		t.Fatalf("cold Jaeger regression: trace-by-id retrieval of %s returned no trace data "+
+			"despite the trace appearing in search; raw: %s", traceID, string(detailBody))
+	}
+
+	trace, ok := detailData[0].(map[string]any)
+	if !ok {
+		t.Fatalf("Jaeger trace-by-id data[0] is not an object, got %T", detailData[0])
+	}
+	spans, ok := trace["spans"].([]any)
+	if !ok {
+		t.Fatalf("Jaeger trace-by-id data[0] missing or invalid 'spans'; raw: %s", string(detailBody))
+	}
+	if len(spans) == 0 {
+		t.Fatalf("cold Jaeger regression: trace-by-id retrieval of %s returned 0 spans "+
+			"despite api-gateway data existing; raw: %s", traceID, string(detailBody))
+	}
+
+	t.Logf("cold-recent invariant holds: trace %s retrieved with %d span(s)", traceID, len(spans))
+}
+
 // getAnyTraceID searches for a trace and returns its ID.
 func getAnyTraceID(t *testing.T) string {
 	t.Helper()

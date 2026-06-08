@@ -109,7 +109,6 @@ func TestVerifyMetrics_AllGaugesExist(t *testing.T) {
 		{"InsertRowsBuffered", InsertRowsBuffered},
 		{"InsertBytesBuffered", InsertBytesBuffered},
 		{"InsertPartitionsActive", InsertPartitionsActive},
-		{"InsertWALBytes", InsertWALBytes},
 		{"SmartCacheEntriesTotal", SmartCacheEntriesTotal},
 		{"SmartCacheBytesUsed", SmartCacheBytesUsed},
 		{"SmartCacheBytesLimit", SmartCacheBytesLimit},

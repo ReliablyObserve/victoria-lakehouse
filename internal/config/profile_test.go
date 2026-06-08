@@ -68,9 +68,6 @@ func TestProfileConfig_BalancedSettings(t *testing.T) {
 	if cfg.Insert.FlushInterval != 60*time.Second {
 		t.Errorf("balanced flush_interval = %v, want 60s", cfg.Insert.FlushInterval)
 	}
-	if !cfg.Insert.WALEnabled {
-		t.Error("balanced WAL should be enabled")
-	}
 	// Balanced inherits Default's CompressionLevel, which dropped
 	// from 7 → 3 when progressive compaction compression landed.
 	if cfg.Insert.CompressionLevel != 3 {
@@ -95,9 +92,6 @@ func TestProfileConfig_MaxPerformanceSettings(t *testing.T) {
 
 	if cfg.Insert.FlushInterval != 5*time.Second {
 		t.Errorf("max-perf flush_interval = %v, want 5s", cfg.Insert.FlushInterval)
-	}
-	if cfg.Insert.WALEnabled {
-		t.Error("max-perf WAL should be disabled")
 	}
 	if cfg.Insert.CompressionLevel != 3 {
 		t.Errorf("max-perf compression = %d, want 3", cfg.Insert.CompressionLevel)
@@ -128,12 +122,6 @@ func TestProfileConfig_MaxDurabilitySettings(t *testing.T) {
 	if cfg.Insert.AckMode != "flush-sync" {
 		t.Errorf("max-durability ack_mode = %q, want flush-sync", cfg.Insert.AckMode)
 	}
-	if !cfg.Insert.WALEnabled {
-		t.Error("max-durability WAL should be enabled")
-	}
-	if cfg.Insert.WALMaxBytes != "1GB" {
-		t.Errorf("max-durability wal_max_bytes = %q, want 1GB", cfg.Insert.WALMaxBytes)
-	}
 	if cfg.Insert.PeerReplicate {
 		t.Error("max-durability peer_replicate should be false (flush-sync covers AZ)")
 	}
@@ -157,9 +145,6 @@ func TestProfileConfig_MaxCostSavingsSettings(t *testing.T) {
 	if cfg.Insert.FlushInterval != 30*time.Second {
 		t.Errorf("max-cost flush_interval = %v, want 30s", cfg.Insert.FlushInterval)
 	}
-	if cfg.Insert.WALEnabled {
-		t.Error("max-cost WAL should be disabled")
-	}
 	if cfg.Insert.CompressionLevel != 11 {
 		t.Errorf("max-cost compression = %d, want 11", cfg.Insert.CompressionLevel)
 	}
@@ -182,9 +167,6 @@ func TestProfileConfig_DevSettings(t *testing.T) {
 
 	if cfg.Insert.FlushInterval != 1*time.Second {
 		t.Errorf("dev flush_interval = %v, want 1s", cfg.Insert.FlushInterval)
-	}
-	if cfg.Insert.WALEnabled {
-		t.Error("dev WAL should be disabled")
 	}
 	if cfg.Insert.CompressionLevel != 1 {
 		t.Errorf("dev compression = %d, want 1", cfg.Insert.CompressionLevel)

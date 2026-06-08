@@ -151,6 +151,76 @@ jobs:
         working-directory: lakehouse-traces
         run: go vet ./...
 
+  # Dedicated hot/cold parity safeguard. The same tests already run as
+  # part of `test-traces` and `test-logs`, but pulling them into a named
+  # job makes the parity check visible in PR pages and gives reviewers
+  # a single status icon to look at. When a parity test fires, it's
+  # almost always one of the regression classes the cold/hot drilldown
+  # has shipped before — cf. issue #99, commit a5576bf, commit be8c126.
+  parity-unit:
+    needs: deps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: lakehouse-traces/go.mod
+
+      - uses: actions/cache/restore@v5
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaTraces
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
+
+      - name: Run hot/cold parity tests (traces)
+        working-directory: lakehouse-traces
+        run: |
+          set -o pipefail
+          go test ./internal/storage/parquets3/ \
+            -run '^(TestColdHotParity|TestFieldEqualityAndStreamFilter)' \
+            -race -count=1 -timeout=5m -v 2>&1 | tee parity-traces.txt
+
+      - name: Run VL field-name parity tests (logs)
+        run: |
+          set -o pipefail
+          go test ./internal/storage/parquets3/ \
+            -run '^(TestFieldNames_VLParity|TestInsertAndQuery_FieldNameParity)' \
+            -race -count=1 -timeout=5m -v 2>&1 | tee parity-logs.txt
+
+      - name: Summarize parity results
+        if: always()
+        run: |
+          echo "## Hot/Cold Parity (Unit)" >> $GITHUB_STEP_SUMMARY
+          for f in parity-traces.txt lakehouse-traces/parity-traces.txt parity-logs.txt; do
+            [ -f "$f" ] || continue
+            label=$(basename "$f" .txt)
+            pass=$(grep -c '^--- PASS' "$f" || true)
+            fail=$(grep -c '^--- FAIL' "$f" || true)
+            skip=$(grep -c '^--- SKIP' "$f" || true)
+            echo "- **$label** — passed: $pass, failed: $fail, skipped: $skip" >> $GITHUB_STEP_SUMMARY
+            if [ "$fail" -gt 0 ]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "<details><summary>Failed (click to expand)</summary>" >> $GITHUB_STEP_SUMMARY
+              echo '' >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              grep -B1 -A6 '^--- FAIL' "$f" >> $GITHUB_STEP_SUMMARY || true
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              echo "</details>" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+      - name: Upload parity artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: parity-unit-results
+          path: |
+            lakehouse-traces/parity-traces.txt
+            parity-logs.txt
+
   lint-logs:
     needs: deps
     runs-on: ubuntu-latest

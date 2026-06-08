@@ -45,9 +45,6 @@ lakehouse:
 	if cfg.Insert.CompressionLevel != 1 {
 		t.Errorf("compression_level = %d, want 1", cfg.Insert.CompressionLevel)
 	}
-	if cfg.Insert.WALEnabled {
-		t.Error("dev WAL should be disabled")
-	}
 	if !cfg.S3.ForcePathStyle {
 		t.Error("dev force_path_style should be true for MinIO")
 	}
@@ -93,9 +90,6 @@ lakehouse:
 	if cfg.Insert.AckMode != "flush-sync" {
 		t.Errorf("ack_mode = %q, want flush-sync", cfg.Insert.AckMode)
 	}
-	if !cfg.Insert.WALEnabled {
-		t.Error("max-durability WAL should be enabled")
-	}
 	if !cfg.Compaction.Enabled {
 		t.Error("max-durability compaction should be enabled")
 	}
@@ -138,11 +132,6 @@ lakehouse:
 	}
 	if cfg.Insert.FlushInterval != 30*time.Second {
 		t.Errorf("flush_interval = %v, want 30s (file override)", cfg.Insert.FlushInterval)
-	}
-
-	// WAL stays from balanced profile (true by default)
-	if !cfg.Insert.WALEnabled {
-		t.Error("balanced WAL should remain enabled (not overridden)")
 	}
 
 	// Other balanced defaults should remain
@@ -334,9 +323,6 @@ lakehouse:
 	if insertCfg.Insert.CompressionLevel != 3 {
 		t.Errorf("insert compression_level = %d, want 3 (max-performance)", insertCfg.Insert.CompressionLevel)
 	}
-	if insertCfg.Insert.WALEnabled {
-		t.Error("insert WAL should be off (max-performance)")
-	}
 
 	// Select role uses max-cost-savings
 	if selectCfg.Insert.CompressionLevel != 11 {
@@ -360,7 +346,6 @@ lakehouse:
     insert:
       profile: max-performance
   insert:
-    wal_enabled: true
     compression_level: 7
 `
 	path := writeConfig(t, yaml)
@@ -371,9 +356,6 @@ lakehouse:
 	}
 
 	// Explicit config file overrides beat the profile
-	if !cfg.Insert.WALEnabled {
-		t.Error("wal_enabled=true in config file should override max-performance profile")
-	}
 	if cfg.Insert.CompressionLevel != 7 {
 		t.Errorf("compression_level = %d, want 7 (config file override)", cfg.Insert.CompressionLevel)
 	}

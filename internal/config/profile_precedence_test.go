@@ -78,9 +78,6 @@ lakehouse:
 	if cfg.Insert.FlushInterval != 60*time.Second {
 		t.Errorf("default (balanced) flush_interval = %v, want 60s", cfg.Insert.FlushInterval)
 	}
-	if !cfg.Insert.WALEnabled {
-		t.Error("default (balanced) WAL should be enabled")
-	}
 }
 
 func TestProfilePrecedence_MaxDurabilityFromFile(t *testing.T) {
@@ -115,8 +112,6 @@ lakehouse:
   profile: max-performance
   s3:
     bucket: test
-  insert:
-    wal_enabled: true
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -129,9 +124,6 @@ lakehouse:
 		t.Fatalf("LoadWithMode: %v", err)
 	}
 
-	if !cfg.Insert.WALEnabled {
-		t.Error("WAL should be on — explicit override beats profile")
-	}
 	if cfg.Insert.CompressionLevel != 3 {
 		t.Errorf("compression should be 3 (from profile): got %d", cfg.Insert.CompressionLevel)
 	}
@@ -200,9 +192,6 @@ lakehouse:
 	if insertCfg.Insert.FlushInterval != 5*time.Second {
 		t.Errorf("insert pod flush_interval = %v, want 5s (max-performance)", insertCfg.Insert.FlushInterval)
 	}
-	if insertCfg.Insert.WALEnabled {
-		t.Error("insert pod WAL should be off (max-performance)")
-	}
 
 	if selectCfg.Query.FileWorkers != 4 {
 		t.Errorf("select pod file_workers = %d, want 4 (max-cost-savings)", selectCfg.Query.FileWorkers)
@@ -221,8 +210,6 @@ lakehouse:
   logs:
     insert:
       profile: max-performance
-  insert:
-    wal_enabled: true
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -235,9 +222,6 @@ lakehouse:
 		t.Fatalf("LoadWithMode: %v", err)
 	}
 
-	if !cfg.Insert.WALEnabled {
-		t.Error("explicit wal_enabled=true should override max-performance profile")
-	}
 	if cfg.Insert.CompressionLevel != 3 {
 		t.Errorf("compression should be 3 (from max-performance profile): got %d", cfg.Insert.CompressionLevel)
 	}

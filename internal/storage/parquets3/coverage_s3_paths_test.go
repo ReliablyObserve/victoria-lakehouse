@@ -464,7 +464,7 @@ func TestInteg_queryBufferBridge_LogsMode(t *testing.T) {
 	startNs := time.Date(2026, 5, 10, 14, 0, 0, 0, time.UTC).UnixNano()
 	endNs := time.Date(2026, 5, 10, 15, 0, 0, 0, time.UTC).UnixNano()
 
-	s.queryBufferBridge(context.Background(), startNs, endNs, 0, &rowsEmitted,
+	s.queryBufferBridge(context.Background(), startNs, endNs, 0, &rowsEmitted, 0, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			blocks = append(blocks, db)
 		})
@@ -514,7 +514,7 @@ func TestInteg_queryBufferBridge_TracesMode(t *testing.T) {
 	startNs := time.Date(2026, 5, 10, 14, 0, 0, 0, time.UTC).UnixNano()
 	endNs := time.Date(2026, 5, 10, 15, 0, 0, 0, time.UTC).UnixNano()
 
-	s.queryBufferBridge(context.Background(), startNs, endNs, 0, &rowsEmitted,
+	s.queryBufferBridge(context.Background(), startNs, endNs, 0, &rowsEmitted, 0, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			blocks = append(blocks, db)
 		})
@@ -540,7 +540,7 @@ func TestInteg_queryBufferBridge_DisabledConfig(t *testing.T) {
 	s.bufferBridge = bb
 
 	var rowsEmitted atomic.Int64
-	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 0, &rowsEmitted,
+	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 0, &rowsEmitted, 0, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			t.Error("should not be called when buffer query is disabled")
 		})
@@ -2198,12 +2198,17 @@ func TestInteg_preFilterFiles_TraceIDCacheHit(t *testing.T) {
 	}
 
 	result := s.preFilterFiles(context.Background(), files, `trace_id:="trace-abc-123"`)
-	if len(result) == 1 && result[0].Key == keyA {
-		// Perfect: smart cache narrowed to just file A
-	} else if len(result) == 2 {
-		// Also acceptable: smart cache doesn't have complete coverage, fallback to all
-	} else if len(result) == 0 {
-		t.Error("expected at least some files")
+	// keyB (recently-flushed, trace_id not yet recorded in smartCache)
+	// MUST survive: the smartCache mapping is a LOWER BOUND and must
+	// never narrow away a manifest file the deterministic label/bloom
+	// pre-filter would keep. Pins the cold-tier recently-flushed parity
+	// bug (mirror of the traces-module fix).
+	keys := map[string]bool{}
+	for _, fi := range result {
+		keys[fi.Key] = true
+	}
+	if !keys[keyB] {
+		t.Errorf("keyB silently dropped by smartCache lower-bound narrowing; result keys: %v", keys)
 	}
 }
 

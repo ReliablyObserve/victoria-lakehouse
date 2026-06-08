@@ -113,18 +113,48 @@ func buildPushDownFilter(queryStr string, registry *schema.Registry) *PushDownFi
 
 // extractQuotedOp finds `fieldName + op + value"` in the query string and returns the value.
 // op should end with a quote character (e.g., `:="`).
+//
+// The field name must match at a token boundary. Without this, a
+// `fieldName` like `name` would match as a substring inside
+// `service.name:="X"`, building a pushdown check against the wrong
+// column (`span.name`, whose internal alias is `name`) and causing
+// `ColumnStatsContains("span.name", "X")` to drop every file when X
+// isn't in span.name's [min,max] range — the regression class that
+// silently zeroed `service.name:="api-gateway"` on cold drilldown.
 func extractQuotedOp(query, fieldName, op string) string {
 	pattern := fieldName + op
-	idx := strings.Index(query, pattern)
-	if idx < 0 {
-		return ""
+	from := 0
+	for {
+		idx := strings.Index(query[from:], pattern)
+		if idx < 0 {
+			return ""
+		}
+		abs := from + idx
+		// Field-name boundary check: pattern must start at the query
+		// beginning OR be preceded by a non-identifier character. LogsQL
+		// field-name characters are [A-Za-z0-9_.:-]; anything else marks
+		// a token boundary (whitespace, AND/OR keywords' surrounding
+		// space, parentheses, `{`, `"`, the comma in `in(...)`).
+		ok := abs == 0
+		if !ok {
+			c := query[abs-1]
+			isIdent := c == '_' || c == '.' || c == ':' || c == '-' ||
+				(c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+			ok = !isIdent
+		}
+		if ok {
+			start := abs + len(pattern)
+			end := strings.Index(query[start:], `"`)
+			if end < 0 {
+				return ""
+			}
+			return query[start : start+end]
+		}
+		from = abs + 1
+		if from >= len(query) {
+			return ""
+		}
 	}
-	start := idx + len(pattern)
-	end := strings.Index(query[start:], `"`)
-	if end < 0 {
-		return ""
-	}
-	return query[start : start+end]
 }
 
 // resolvePushDownIndices pre-computes column indices for pushdown checks.

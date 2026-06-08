@@ -1,0 +1,160 @@
+package parquets3
+
+import (
+	"context"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
+)
+
+// TestQueryBufferBridge_LocalBufferServesRecent is the P3 read-merge proof: with
+// a co-located logstorage-native buffer wired via SetLocalBuffer,
+// queryBufferBridge serves the recent window from it through the SAME engine
+// (RunQuery), with no struct→DataBlock conversion — the path that makes cold
+// queries see freshly-ingested spans.
+func TestQueryBufferBridge_LocalBufferServesRecent(t *testing.T) {
+	bs, err := membuffer.Open(membuffer.Config{Path: t.TempDir()})
+	if err != nil {
+		t.Fatalf("open buffer: %v", err)
+	}
+	defer bs.Close()
+
+	now := time.Now().UnixNano()
+	lr := logstorage.GetLogRows([]string{"service.name"}, nil, nil, nil, "")
+	const n = 6
+	for i := 0; i < n; i++ {
+		lr.MustAdd(logstorage.TenantID{}, now, []logstorage.Field{
+			{Name: "service.name", Value: "api-gateway"},
+			{Name: "trace_id", Value: "t"},
+		}, 1)
+	}
+	bs.MustAddRows(lr)
+	logstorage.PutLogRows(lr)
+	bs.DebugFlush()
+
+	s := &Storage{localBuffer: bs}
+
+	run := func(qStr string) int64 {
+		q, err := logstorage.ParseQueryAtTimestamp(qStr, now)
+		if err != nil {
+			t.Fatalf("parse %q: %v", qStr, err)
+		}
+		var got atomic.Int64
+		wb := func(_ uint, db *logstorage.DataBlock) { got.Add(int64(db.RowsCount())) }
+		s.queryBufferBridge(context.Background(), now-int64(time.Hour), now+int64(time.Hour), 0,
+			q, []logstorage.TenantID{{}}, wb)
+		return got.Load()
+	}
+
+	if got := run(`_stream:{service.name="api-gateway"}`); got != n {
+		t.Fatalf("stream filter via local buffer: want %d, got %d", n, got)
+	}
+	if got := run(`_stream:{service.name="other"}`); got != 0 {
+		t.Fatalf("non-matching stream: want 0, got %d", got)
+	}
+	if got := run(`trace_id:"t"`); got != n {
+		t.Fatalf("trace_id filter via local buffer: want %d, got %d", n, got)
+	}
+}
+
+type spyLocalBuffer struct{ calls int }
+
+func (s *spyLocalBuffer) RunQuery(_ *logstorage.QueryContext, _ logstorage.WriteDataBlockFunc) error {
+	s.calls++
+	return nil
+}
+func (s *spyLocalBuffer) Close() {}
+
+// TestQueryBufferBridge_MultiNodeSkipsLocalBuffer pins the B1 fix: when peers are
+// present (multi-pod role=all), the read path must NOT serve only the local
+// buffer (which holds just this pod's rows) — it must fall through to the
+// BufferBridge fan-out so other pods' unflushed rows are gathered. Without peers
+// (single-node), the local buffer is used directly.
+func TestQueryBufferBridge_MultiNodeSkipsLocalBuffer(t *testing.T) {
+	q, _ := logstorage.ParseQueryAtTimestamp("*", time.Now().UnixNano())
+	now := time.Now().UnixNano()
+	run := func(setPeers bool) int {
+		spy := &spyLocalBuffer{}
+		bb := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: false}, config.ModeTraces)
+		if setPeers {
+			bb.SetEndpoints([]string{"http://peer-a:20428", "http://peer-b:20428"})
+		}
+		s := &Storage{localBuffer: spy, bufferBridge: bb, cfg: &config.Config{Mode: config.ModeTraces}}
+		s.queryBufferBridge(context.Background(), now-int64(time.Hour), now+int64(time.Hour), 0,
+			q, []logstorage.TenantID{{}}, func(_ uint, _ *logstorage.DataBlock) {})
+		return spy.calls
+	}
+	if c := run(false); c != 1 {
+		t.Fatalf("no peers: local buffer should be used directly, calls=%d want 1", c)
+	}
+	if c := run(true); c != 0 {
+		t.Fatalf("with peers: local buffer must be SKIPPED (fall through to fan-out), calls=%d want 0", c)
+	}
+}
+
+// TestQueryBufferBridge_WatermarkPreventsDoubleCount pins the boundary fix: when
+// Parquet already covers [.., watermark], the buffer must serve ONLY strictly
+// newer rows, so the two sources never both emit the same span (the 2× count
+// double-count). Rows ingested at now..now+5; a watermark at now+2 must yield
+// only the rows at now+3, now+4 (2 rows).
+func TestQueryBufferBridge_WatermarkPreventsDoubleCount(t *testing.T) {
+	bs, err := membuffer.Open(membuffer.Config{Path: t.TempDir()})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer bs.Close()
+
+	now := time.Now().UnixNano()
+	lr := logstorage.GetLogRows([]string{"service.name"}, nil, nil, nil, "")
+	for i := 0; i < 5; i++ {
+		lr.MustAdd(logstorage.TenantID{}, now+int64(i), []logstorage.Field{
+			{Name: "service.name", Value: "api-gateway"},
+			{Name: "trace_id", Value: "t"},
+		}, 1)
+	}
+	bs.MustAddRows(lr)
+	logstorage.PutLogRows(lr)
+	bs.DebugFlush()
+
+	s := &Storage{localBuffer: bs}
+	q, _ := logstorage.ParseQueryAtTimestamp(`_stream:{service.name="api-gateway"}`, now)
+
+	count := func(watermarkNs int64) int64 {
+		var got atomic.Int64
+		wb := func(_ uint, db *logstorage.DataBlock) { got.Add(int64(db.RowsCount())) }
+		s.queryBufferBridge(context.Background(), now-int64(time.Hour), now+int64(time.Hour),
+			watermarkNs, q, []logstorage.TenantID{{}}, wb)
+		return got.Load()
+	}
+
+	if got := count(0); got != 5 {
+		t.Fatalf("watermark=0 (no Parquet): want all 5, got %d", got)
+	}
+	if got := count(now + 2); got != 2 {
+		t.Fatalf("watermark=now+2: want only the 2 strictly-newer rows, got %d", got)
+	}
+	if got := count(now + 4); got != 0 {
+		t.Fatalf("watermark=now+4 (Parquet covers all): want 0, got %d", got)
+	}
+
+	// A trace_id-filtered query MUST ignore the watermark — span retrieval is
+	// reader-deduped, and the watermark would wrongly drop a trace's buffer
+	// spans (the regression that returned 0 spans for recent traces). Even with
+	// a watermark covering the whole window, a trace_id query returns all rows.
+	qTID, _ := logstorage.ParseQueryAtTimestamp(`trace_id:"t"`, now) // phrase form (the GetTrace bug form)
+	countTID := func(watermarkNs int64) int64 {
+		var got atomic.Int64
+		wb := func(_ uint, db *logstorage.DataBlock) { got.Add(int64(db.RowsCount())) }
+		s.queryBufferBridge(context.Background(), now-int64(time.Hour), now+int64(time.Hour),
+			watermarkNs, qTID, []logstorage.TenantID{{}}, wb)
+		return got.Load()
+	}
+	if got := countTID(now + 4); got != 5 {
+		t.Fatalf("trace_id query must ignore watermark (got %d, want all 5)", got)
+	}
+}

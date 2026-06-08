@@ -190,7 +190,7 @@ cache:
   memory_scaling: "fixed" # Fixed vs proportional to pod count
 
 insert_buffer: "256MB"    # Write buffer for uncompressed data
-wal_max_size: "512MB"     # Write-ahead log segment size
+buffer_retention: "1h"    # logstore buffer retention (durability, no WAL)
 l2_cache_size: "50GB"     # L2 disk cache for bloom filters
 ```
 

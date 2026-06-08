@@ -37,7 +37,7 @@ graph LR
 ```mermaid
 graph TD
     subgraph "Data Flow (Logs + Traces)"
-    I1["JSON / Loki / ES Bulk<br/>OTLP / Syslog / Fluentd<br/>Logstash / Datadog / Journald"] -->|"11+ formats"| W[WAL + Buffer]
+    I1["JSON / Loki / ES Bulk<br/>OTLP / Syslog / Fluentd<br/>Logstash / Datadog / Journald"] -->|"11+ formats"| W["logstore buffer<br/>(durable, no WAL)"]
     W -->|periodic flush| P[Parquet + ZSTD]
     P -->|PutObject| S3[(S3 Standard)]
     S3 -->|lifecycle| IA[S3 Infrequent Access]
@@ -200,7 +200,7 @@ echo '<165>1 2026-05-04T10:00:00Z myhost myapp 1234 - - request completed' | \
   curl -X POST http://localhost:9428/insert/syslog --data-binary @-
 ```
 
-Data flows through the WAL (crash safety) into per-partition buffers, then flushes as Parquet files to S3. Queries see data immediately via the buffer query bridge.
+Data flows into the `logstore` insert buffer (durable on-disk parts — crash safety, no WAL), then flushes as Parquet files to S3. Queries see data immediately via the buffer query bridge. See [Persistence & Durability](durability.md).
 
 ## Deployment Patterns
 
@@ -383,18 +383,18 @@ any explicit flag or config file setting overrides the profile value.
 
 ### Quick Reference
 
-| Profile | Target Use Case | Insert Latency | WAL | Cache | Compaction | GC | Retention | Stats |
+| Profile | Target Use Case | Insert Latency | Durability | Cache | Compaction | GC | Retention | Stats |
 |---|---|---|---|---|---|---|---|---|
-| `balanced` (default) | Production general-purpose | ~0ms | On | 512MB/50GB | Off | On (6h) | Off | On |
-| `max-performance` | Lowest latency, higher resources | ~0ms | Off | 2GB/100GB | On (aggressive) | On (3h) | Off | On |
-| `max-durability` | Zero data loss priority | +200-400ms | On (1GB) | 512MB/50GB | On | On (1h) | On | On |
-| `max-cost-savings` | Minimize S3/compute/network | ~0ms | Off | 128MB/10GB | Off | Off | On | Off |
-| `dev` | Local development, MinIO-friendly | ~0ms | Off | 64MB/1GB | Off | Off | Off | Off |
+| `balanced` (default) | Production general-purpose | ~0ms | logstore buffer | 512MB/50GB | Off | On (6h) | Off | On |
+| `max-performance` | Lowest latency, higher resources | ~0ms | logstore buffer | 2GB/100GB | On (aggressive) | On (3h) | Off | On |
+| `max-durability` | Zero data loss priority | +200-400ms | logstore + S3-sync ack | 512MB/50GB | On | On (1h) | On | On |
+| `max-cost-savings` | Minimize S3/compute/network | ~0ms | logstore buffer | 128MB/10GB | Off | Off | On | Off |
+| `dev` | Local development, MinIO-friendly | ~0ms | logstore buffer | 64MB/1GB | Off | Off | Off | Off |
 
 ### When to Use Each Profile
 
 - **`balanced`**: Default for production. Good trade-offs everywhere. GC enabled (6h interval) for orphan cleanup. Accepts 10s data-at-risk window per pod crash. No AZ failure protection (rare event).
-- **`max-performance`**: When query latency and ingest speed are top priority. Larger caches, more workers, aggressive prefetch, cross-signal enabled. GC runs every 3h. WAL disabled to eliminate fsync overhead.
+- **`max-performance`**: When query latency and ingest speed are top priority. Larger caches, more workers, aggressive prefetch, cross-signal enabled. GC runs every 3h. Uses the `buffer` ack mode (no S3-sync wait) for lowest ingest latency.
 - **`max-durability`**: When zero data loss is required (compliance, regulated environments). Uses `flush-sync` ack_mode with zero flush linger — HTTP 200 only after S3 confirms write. Retention enabled, GC aggressive (1h), S3 retries hardened (5x with 500ms backoff). See [Write Path Durability](./cross-az-optimization.md#write-path-durability).
 - **`max-cost-savings`**: For archive/cold-only workloads where cost is paramount. GC and stats disabled to minimize S3 LIST/PUT operations. Retention enabled to auto-expire old data. Fewer S3 PUTs, smaller caches, no prefetch, no buffer queries. ZSTD-11 saves ~$50/mo per 2TB/day on compression.
 - **`dev`**: For local development with MinIO. Tiny footprint, instant flush (1s), `force_path_style=true` for MinIO. GC, stats, compaction, and retention all disabled. Not for production.
@@ -422,7 +422,7 @@ Any explicit setting overrides the profile default:
 lakehouseConfig:
   profile: max-performance
   insert:
-    wal_enabled: true           # override: enable WAL despite max-performance saying off
+    buffer_flush_enabled: true  # override: make the logstore buffer the authoritative Parquet producer
     compression_level: 7        # override: prefer space savings over speed
 ```
 
@@ -460,7 +460,7 @@ logs:
     profile: max-performance # query speed matters most for reads
 ```
 
-Logs insert uses `max-durability` (WAL on, flush-sync, conservative settings). Logs select uses
+Logs insert uses `max-durability` (flush-sync, conservative settings). Logs select uses
 `max-performance` (big caches, more workers, aggressive prefetch).
 
 ### Cost Impact Comparison (500 GB/day, 1 year retention)

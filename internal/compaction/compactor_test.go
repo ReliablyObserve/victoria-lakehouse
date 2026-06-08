@@ -850,6 +850,56 @@ func TestMergeLogFiles_SortByTimestampThenService(t *testing.T) {
 	}
 }
 
+// TestMergeTraceFiles_EmptyInputFileNotFatal pins the compaction-EOF
+// resilience fix. A valid 0-row parquet file (a flush can legitimately
+// produce one) reads back as total=0, err=io.EOF from parquet-go. The
+// pre-fix readTraceRows treated that as fatal, so a SINGLE empty input
+// file aborted the whole partition's compaction. Because the scheduler
+// re-picks the oldest partition first, one empty file in an old
+// partition starved compaction of every newer partition indefinitely —
+// the cold-tier L0 backlog (and the recently-flushed trace_id-query
+// reachability lag) grew without bound. mergeTraceFiles MUST treat an
+// empty input as zero rows and merge the rest.
+func TestMergeTraceFiles_EmptyInputFileNotFatal(t *testing.T) {
+	c := NewCompactor(CompactorConfig{Mode: config.ModeTraces})
+
+	empty := makeTestTraceParquet(t, nil) // 0-row parquet
+	full := makeTestTraceParquet(t, []schema.TraceRow{
+		{TimestampUnixNano: 100, ServiceName: "api", TraceID: "aaa"},
+		{TimestampUnixNano: 200, ServiceName: "api", TraceID: "bbb"},
+	})
+
+	// Empty file alone: must not error, must yield zero rows.
+	merged, err := c.mergeTraceFiles([][]byte{empty})
+	if err != nil {
+		t.Fatalf("merge of empty file errored (compaction would be starved): %v", err)
+	}
+	if len(merged) != 0 {
+		t.Fatalf("expected 0 rows from empty file, got %d", len(merged))
+	}
+
+	// Empty file mixed with a real file: must not error, must keep the
+	// real file's rows (empty input contributes nothing, blocks nothing).
+	merged, err = c.mergeTraceFiles([][]byte{empty, full, empty})
+	if err != nil {
+		t.Fatalf("merge with empty inputs errored: %v", err)
+	}
+	if len(merged) != 2 {
+		t.Fatalf("expected 2 rows (empty inputs ignored), got %d", len(merged))
+	}
+}
+
+// TestMergeLogFiles_EmptyInputFileNotFatal — same resilience for logs.
+func TestMergeLogFiles_EmptyInputFileNotFatal(t *testing.T) {
+	emptyRows, err := readLogRows(makeTestParquet(t, nil))
+	if err != nil {
+		t.Fatalf("readLogRows on 0-row file must not error: %v", err)
+	}
+	if len(emptyRows) != 0 {
+		t.Fatalf("expected 0 log rows, got %d", len(emptyRows))
+	}
+}
+
 func TestMergeTraceFiles_SortByTimestampThenServiceThenTraceID(t *testing.T) {
 	c := NewCompactor(CompactorConfig{Mode: config.ModeTraces})
 

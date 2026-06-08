@@ -62,7 +62,7 @@ Resolution order: per-role > per-signal > global. See [Getting Started — Confi
 ```mermaid
 graph TD
     subgraph "Kubernetes Cluster"
-    VM[vmauth<br/>ClusterIP :9428] -->|/insert/*| I[Insert StatefulSet<br/>WAL + Buffers]
+    VM[vmauth<br/>ClusterIP :9428] -->|/insert/*| I[Insert StatefulSet<br/>logstore buffer]
     VM -->|/select/*| S[Select StatefulSet<br/>Cache Volumes]
     I -->|headless DNS| IH[Insert Headless Svc]
     S -->|headless DNS| SH[Select Headless Svc]
@@ -87,7 +87,7 @@ The Helm chart deploys these Kubernetes resources:
 
 | Template | Resource | Purpose |
 |---|---|---|
-| `insert-statefulset.yaml` | StatefulSet | Insert pods with WAL + partition buffers |
+| `insert-statefulset.yaml` | StatefulSet | Insert pods with the logstore buffer (durable, no WAL) |
 | `select-statefulset.yaml` | StatefulSet | Select pods with cache volumes |
 | `insert-service.yaml` | Service (ClusterIP) | Insert endpoint for data ingestion |
 | `select-service.yaml` | Service (ClusterIP) | Select endpoint for queries |
@@ -145,7 +145,7 @@ insertComponent:
   replicaCount: 2
   persistence:
     enabled: true
-    size: 50Gi                   # WAL + buffer storage
+    size: 50Gi                   # logstore buffer + cache storage
     storageClass: gp3
   resources:
     requests:
@@ -252,8 +252,8 @@ A production deployment for logs in a 3-AZ cluster:
 
 ```
 monitoring namespace:
-  lakehouse-logs-insert-0  (us-east-1a)  [WAL + buffers -> S3]
-  lakehouse-logs-insert-1  (us-east-1b)  [WAL + buffers -> S3]
+  lakehouse-logs-insert-0  (us-east-1a)  [logstore buffer -> S3]
+  lakehouse-logs-insert-1  (us-east-1b)  [logstore buffer -> S3]
   lakehouse-logs-select-0  (us-east-1a)  [L2 cache, peer cache]
   lakehouse-logs-select-1  (us-east-1b)  [L2 cache, peer cache]
   lakehouse-logs-select-2  (us-east-1c)  [L2 cache, peer cache]

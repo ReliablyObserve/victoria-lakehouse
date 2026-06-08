@@ -233,7 +233,7 @@ path so query-time results stay consistent with what was written.
               ┌───────────────┐
               │   s3_refresh  │   →  ServingReady true   →  /ready=204
               └───────┬───────┘     (queries answered, warmup ongoing)
-                      │ Manifest refreshed from S3, WAL replayed
+                      │ Manifest refreshed from S3, buffer restored
                       ▼
               ┌───────────────┐
               │ cache_warmup  │   →  Footer prefetch + sample cache prep
@@ -306,7 +306,7 @@ rolling restart.
    under `cfg.Shutdown.PersistTimeout` (default 30 s).
 2. New pod starts. Manifest loads from disk in milliseconds via
    streaming gob decode. `/ready=503`.
-3. WAL replays buffered rows that didn't make it to S3 before
+3. buffer restores buffered rows that didn't make it to S3 before
    shutdown. `/ready=503` still.
 4. `MinManifestFiles` gate met → `ServingReady` flips. `/ready=204`.
 5. **BufferBridge self-endpoint** is registered. Queries against

@@ -46,6 +46,7 @@ type Storage struct {
 	peerHandler       *peercache.Handler
 	writer            *BatchWriter
 	bufferBridge      *BufferBridge
+	localBuffer       LocalBuffer
 	tombstones        *delete.TombstoneStore
 	smartCache        *smartcache.Controller
 	bloomCache        *bloomindex.BloomCache
@@ -318,14 +319,9 @@ func New(cfg *config.Config) (*Storage, error) {
 }
 
 // StartWriter begins the background flush loop. Call after New().
-// WAL is replayed before starting the flush loop for crash recovery.
 func (s *Storage) StartWriter() {
 	if s.writer == nil {
 		return
-	}
-	logCount, traceCount := s.writer.ReplayWAL()
-	if logCount > 0 || traceCount > 0 {
-		logger.Infof("WAL recovery complete; logs=%d, traces=%d", logCount, traceCount)
 	}
 	s.writer.Start()
 }
@@ -479,6 +475,12 @@ func (s *Storage) Close() error {
 	if s.writer != nil {
 		s.writer.Stop()
 		logger.Infof("writer stopped and final flush completed")
+	}
+	// Option B: flush + close the logstorage-native buffer so the persistent
+	// data dir captures the last sub-FlushInterval window before exit.
+	if s.localBuffer != nil {
+		s.localBuffer.Close()
+		logger.Infof("Option B logstore buffer flushed and closed")
 	}
 	if s.persister != nil {
 		if err := s.persister.SaveLabelIndex(s.labelIndex); err != nil {
@@ -755,6 +757,25 @@ func (s *Storage) BufferBridge() *BufferBridge {
 	return s.bufferBridge
 }
 
+// LocalBuffer is the narrow query surface of the Option B logstorage-native
+// buffer (membuffer.Store). When set (BufferEngine=logstore, co-located
+// insert+select), the SELECT path serves the recent/unflushed window from it
+// via the same engine the S3-Parquet scan uses — no struct→DataBlock
+// conversion.
+type LocalBuffer interface {
+	RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error
+	// Close flushes the in-memory window to the persistent data dir and
+	// releases the store — called on graceful shutdown so a clean restart
+	// loses nothing, not even the sub-FlushInterval window.
+	Close()
+}
+
+// SetLocalBuffer wires the co-located logstorage-native buffer into the query
+// path (Option B P3). nil falls back to the BufferBridge HTTP path.
+func (s *Storage) SetLocalBuffer(lb LocalBuffer) {
+	s.localBuffer = lb
+}
+
 // SetTombstoneStore injects a TombstoneStore for query-time row filtering.
 func (s *Storage) SetTombstoneStore(ts *delete.TombstoneStore) {
 	s.tombstones = ts
@@ -936,8 +957,7 @@ func (s *Storage) logRowsToDataBlock(rows []schema.LogRow) *logstorage.DataBlock
 		hosts[i] = row.HostName
 	}
 
-	db := &logstorage.DataBlock{}
-	db.SetColumns([]logstorage.BlockColumn{
+	blockCols := []logstorage.BlockColumn{
 		{Name: "_time", Values: times},
 		{Name: "_msg", Values: bodies},
 		{Name: "level", Values: levels},
@@ -952,7 +972,43 @@ func (s *Storage) logRowsToDataBlock(rows []schema.LogRow) *logstorage.DataBlock
 		{Name: "deployment.environment", Values: envs},
 		{Name: "cloud.region", Values: regions},
 		{Name: "host.name", Values: hosts},
-	})
+	}
+
+	// Arbitrary resource/log attributes carried in the maps, surfaced under
+	// the same prefixed names the file-scan path uses (resource_attr:K,
+	// log_attr:K). Without these, a recent-log query filtering on a map
+	// attribute (e.g. `log_attr:http.status="500"`) matches flushed files
+	// but NOT still-buffered rows — the logs-side twin of the traces
+	// _stream/attribute buffer gap. Built lazily so a column is only
+	// materialised when at least one buffered row carries that key.
+	attrCols := make(map[string][]string)
+	attrOrder := make([]string, 0)
+	putAttr := func(name string, i int, val string) {
+		if val == "" {
+			return
+		}
+		col, ok := attrCols[name]
+		if !ok {
+			col = make([]string, len(rows))
+			attrCols[name] = col
+			attrOrder = append(attrOrder, name)
+		}
+		col[i] = val
+	}
+	for i, row := range rows {
+		for k, v := range row.ResourceAttributes {
+			putAttr("resource_attr:"+k, i, v)
+		}
+		for k, v := range row.LogAttributes {
+			putAttr("log_attr:"+k, i, v)
+		}
+	}
+	for _, name := range attrOrder {
+		blockCols = append(blockCols, logstorage.BlockColumn{Name: name, Values: attrCols[name]})
+	}
+
+	db := &logstorage.DataBlock{}
+	db.SetColumns(blockCols)
 	return db
 }
 

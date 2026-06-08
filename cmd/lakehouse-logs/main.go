@@ -22,6 +22,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/lifecycle"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/membuffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/prefetch"
@@ -984,6 +985,54 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			internalvlstorage.SetInsertStorage(telemetry.NewTracedWriter(store))
 		} else {
 			internalvlstorage.SetInsertStorage(store)
+		}
+		// Option B (P1): when buffer-engine=logstore, stand up the
+		// logstorage-native buffer and dual-write to it alongside the legacy
+		// LogRow staging path. Off by default; legacy path stays authoritative.
+		if cfg.Insert.BufferEngineLogstore() {
+			bufStore, err := membuffer.Open(membuffer.Config{
+				Path:      cfg.Insert.BufferDir,
+				Retention: cfg.Insert.BufferRetention,
+			})
+			if err != nil {
+				logger.Fatalf("open logstore buffer: %s", err)
+			}
+			internalvlstorage.SetBufferStore(bufStore)
+			// P3 read-merge: when this process also serves SELECT (role=all),
+			// the query path serves the recent window from the same store via
+			// RunQuery. SELECT-only nodes (no bufStore) keep the BufferBridge
+			// HTTP fan-out.
+			store.SetLocalBuffer(bufStore)
+			// Process-lived (held via the package vars); graceful DebugFlush+
+			// Close on shutdown comes with P4.
+			logger.Infof("Option B: logstore buffer enabled at %s (retention=%s); read-merge active", bufStore.Path(), cfg.Insert.BufferRetention)
+
+			// Cutover flip (default off): make the buffer the AUTHORITATIVE
+			// Parquet producer. SetBufferAuthoritative stops the legacy staging
+			// feed (no double-write, no WAL); the BufferFlusher drains the buffer
+			// to S3 Parquet via the existing flush machinery with the
+			// gate-at-flush filter (cardinality). Reversible by flag.
+			if cfg.Insert.BufferFlushEnabled {
+				w := store.Writer()
+				if w == nil {
+					logger.Fatalf("buffer_flush_enabled but the insert writer is nil")
+				}
+				internalvlstorage.SetBufferAuthoritative(true)
+				// buffer_flush_interval is the object-store flush cap (max linger);
+				// the flusher checks more often but only flushes on
+				// target_file_size OR the linger cap, so S3 gets ~target-sized
+				// objects, not one tiny file per tick.
+				maxLinger := cfg.Insert.BufferFlushInterval
+				checkInterval := maxLinger
+				if checkInterval > 30*time.Second {
+					checkInterval = 30 * time.Second
+				}
+				flusher := parquets3.NewBufferFlusher(w, bufStore, cfg.Insert.BufferDir, internalvlstorage.FlushRowKeeper(), cfg.Insert.TargetFileSizeN(), maxLinger)
+				// Process-lived goroutine; on shutdown the watermark doesn't
+				// advance, so the in-flight window re-flushes on restart (no loss).
+				go flusher.Run(context.Background(), checkInterval, time.Now().UnixNano())
+				logger.Warnf("Option B CUTOVER ACTIVE: buffer is the authoritative Parquet producer; BufferFlusher running (interval=%s); legacy staging + WAL bypassed", cfg.Insert.BufferFlushInterval)
+			}
 		}
 		vlinsert.Init()
 

@@ -142,10 +142,12 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	startNs, endNs := q.GetFilterTimeRange()
 
-	if boundary := s.discovery.GetHotBoundary(); boundary != nil {
-		if time.Unix(0, startNs).After(boundary.MinTime) && time.Unix(0, endNs).Before(boundary.MaxTime) {
-			return nil
-		}
+	q, endNs = widenTraceIDQueryToNow(q, startNs, endNs)
+
+	// The window is wholly inside the hot tier's boundary — hot VT owns it, the
+	// cold tier has nothing to add. Skip the scan entirely.
+	if s.windowInsideHotBoundary(startNs, endNs) {
+		return nil
 	}
 
 	if !s.manifest.HasDataForRange(startNs, endNs) {
@@ -252,7 +254,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// parquet (Jaeger's GetTrace narrow-window lookup against trace_ids
 		// just observed in the previous search step is the canonical case).
 		// Falling through here keeps the buffer query in the flow.
-		s.queryBufferBridge(ctx, startNs, endNs, filteredWriteBlock)
+		s.queryBufferBridge(ctx, startNs, endNs, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 		return nil
 	}
 
@@ -266,7 +268,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
-			s.queryBufferBridge(ctx, startNs, endNs, filteredWriteBlock)
+			s.queryBufferBridge(ctx, startNs, endNs, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 			return nil
 		}
 		files = remaining
@@ -275,7 +277,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	files = s.preFilterFiles(files, queryStr)
 
 	if len(files) == 0 {
-		s.queryBufferBridge(ctx, startNs, endNs, filteredWriteBlock)
+		s.queryBufferBridge(ctx, startNs, endNs, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 		return nil
 	}
 
@@ -293,7 +295,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	if tids := extractFilterValuesAST(queryStr, "trace_id"); len(tids) > 0 {
 		files = s.filterFilesByTraceIdx(ctx, files, tids)
 		if len(files) == 0 {
-			s.queryBufferBridge(ctx, startNs, endNs, filteredWriteBlock)
+			s.queryBufferBridge(ctx, startNs, endNs, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 			return nil
 		}
 	}
@@ -389,7 +391,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}
 	}
 
-	s.queryBufferBridge(ctx, startNs, endNs, filteredWriteBlock)
+	s.queryBufferBridge(ctx, startNs, endNs, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 
 	return nil
 }
@@ -419,32 +421,37 @@ func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, star
 }
 
 func (s *Storage) preFilterFiles(files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
-	if s.smartCache != nil {
-		// Support both trace_id:="single" and trace_id:in(t1,t2,t3) (VT spans-lookup shape).
-		// Multiple values: union the matched file sets so the lookup covers all candidates.
-		tids := extractFilterValuesAST(queryStr, "trace_id")
-		if len(tids) > 0 {
-			cacheSet := make(map[string]bool)
-			for _, tid := range tids {
-				for _, k := range s.smartCache.FindFilesByTraceID(tid) {
-					cacheSet[k] = true
-				}
-			}
-			if len(cacheSet) > 0 {
-				var narrowed []manifest.FileInfo
-				for _, fi := range files {
-					if cacheSet[fi.Key] {
-						narrowed = append(narrowed, fi)
-					}
-				}
-				if len(narrowed) > 0 {
-					logger.Infof("trace_id fast-path: cache hit for %d trace_id(s), scanning %d files", len(tids), len(narrowed))
-					return narrowed
-				}
-			}
-		}
-	}
-
+	// We deliberately do NOT use the smartCache `FindFilesByTraceID`
+	// result to NARROW the candidate file set for trace_id queries —
+	// neither for the single-id `trace_id:="X"` (Jaeger get-trace)
+	// shape nor the multi-id `trace_id:in(t1,t2,...)` (VT GetTraceList
+	// step 2) shape.
+	//
+	// Reason: smartCache.FindFilesByTraceID is a LOWER BOUND on the
+	// relevant file set. It only returns files whose TraceIDs were
+	// RECORDED (RecordTraceIDs runs at the END of queryFile, AFTER a
+	// file has been scanned at least once — see storage_query.go
+	// queryFile). A recently-flushed file is in the manifest and
+	// carries a correct `_trace_idx` footer, but its smartCache
+	// TraceIDs set is empty until something queries it. If we narrow
+	// to the cache's lower bound, that recently-flushed file is
+	// silently dropped BEFORE the deterministic, footer-backed
+	// `filterFilesByTraceIdx` (run in RunQuery right after this) ever
+	// sees it.
+	//
+	// Live blast radius (pre-fix): cold Jaeger /api/traces returned 0
+	// traces while hot VT returned 20, for any trace whose spans were
+	// flushed minutes-to-~1h ago (queryable by `_stream` which has no
+	// trace_id filter, but invisible to `trace_id:"X"` which took the
+	// fast-path). The band self-healed after the first query (which
+	// recorded the file's TraceIDs) — hence ">1h works, fresh fails".
+	//
+	// The single-id case was the un-fixed residue of the same
+	// lower-bound bug that killed the multi-id fast-path in bd838e9.
+	// The deterministic `filterFilesByTraceIdx` reads the actual
+	// `_trace_idx` footer KV (cached) and is the correct, complete
+	// narrowing for both shapes — so dropping this shortcut loses no
+	// correctness and ~no performance (footer reads are cached).
 	files = s.filterFilesByLabels(files, queryStr)
 	if len(files) == 0 {
 		return nil
@@ -581,13 +588,115 @@ func traceIdxKeepFile(meta *format.FileMetaData, tidSet map[string]bool) bool {
 	return true
 }
 
-func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, filteredWriteBlock logstorage.WriteDataBlockFunc) {
+// bufferWatermark returns the timestamp up to which the just-scanned Parquet
+// files already cover the data, so the buffer is queried only for STRICTLY
+// newer rows — preventing the buffer and the S3-Parquet scan from both emitting
+// the same span (a 2× double-count on count()/stats queries over the overlap
+// window). It is the max MaxTimeNs of the emitted files. Returns 0 (serve the
+// full window) for multi-tenant admin reads, where a global watermark could
+// advance past a lagging tenant and lose rows; those reads accept the rare
+// double-count instead of risking loss.
+func bufferWatermark(files []manifest.FileInfo, tenantIDs []logstorage.TenantID) int64 {
+	if len(tenantIDs) != 1 {
+		return 0
+	}
+	var wm int64
+	for i := range files {
+		if files[i].MaxTimeNs > wm {
+			wm = files[i].MaxTimeNs
+		}
+	}
+	return wm
+}
+
+// widenTraceIDQueryToNow widens a trace_id-filtered query's upper time bound to
+// now. Trace_id queries (Jaeger/Tempo GetTraceList step-2 `trace_id:in(...)`,
+// Jaeger/Tempo get-trace `trace_id:"X"`) target specific traces and want ALL
+// their spans, exactly as hot VT serves the whole trace from memory. VT caps
+// step-2's upper bound at now-latencyOffset, excluding the last ~latencyOffset
+// of spans; on the cold tier those freshest spans live in the buffer, and the
+// `_time:[start,end]` predicate that filterDataBlock applies to buffer rows
+// would drop them. Widening the query's OWN upper bound to now makes the scan
+// window, the buffer fetch, and the filter's `_time` predicate agree. The
+// trace_id filter bounds the result set, so widening can never over-return —
+// it only stops the cold tier from hiding spans the caller asked for by id
+// (the 0/404-for-recent-traces symptom). Must be done on the Query (not just a
+// local endNs) because parseFilterFromQuery keeps the `_time` predicate, so a
+// local-only widen would be re-narrowed. No-op for non-trace_id queries.
+// windowInsideHotBoundary reports whether [startNs, endNs] is wholly within the
+// hot tier's time boundary (so the cold tier need not scan).
+func (s *Storage) windowInsideHotBoundary(startNs, endNs int64) bool {
+	boundary := s.discovery.GetHotBoundary()
+	if boundary == nil {
+		return false
+	}
+	return time.Unix(0, startNs).After(boundary.MinTime) && time.Unix(0, endNs).Before(boundary.MaxTime)
+}
+
+func widenTraceIDQueryToNow(q *logstorage.Query, startNs, endNs int64) (*logstorage.Query, int64) {
+	if q == nil || !queryFiltersTraceID(q.String()) {
+		return q, endNs
+	}
+	if nowNs := time.Now().UnixNano(); nowNs > endNs {
+		return q.CloneWithTimeFilter(q.GetTimestamp(), startNs, nowNs), nowNs
+	}
+	return q, endNs
+}
+
+func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs, watermarkNs int64, q *logstorage.Query, tenantIDs []logstorage.TenantID, filteredWriteBlock logstorage.WriteDataBlockFunc) {
+	// The watermark boundary exists ONLY to stop aggregation queries
+	// (count()/stats) from counting a span twice — once from the Parquet scan,
+	// once from the overlapping buffer. Trace-retrieval queries (Jaeger/Tempo
+	// span fetch, trace-by-id) are deduplicated by the reader on
+	// (trace_id, span_id), so for them double-emission is harmless — but the
+	// watermark would WRONGLY exclude a trace's buffer spans whenever a scanned
+	// Parquet file (holding other, newer traces) has a MaxTimeNs above this
+	// trace's time. So ignore the watermark for trace_id-filtered queries and
+	// serve the buffer's full window.
+	if q != nil && queryFiltersTraceID(q.String()) {
+		watermarkNs = 0
+	}
+	// Serve the buffer only for data STRICTLY newer than what the Parquet scan
+	// at this call site already emitted (watermarkNs). Call sites where no
+	// Parquet was emitted pass watermarkNs=0, so the buffer serves the whole
+	// window.
+	bufStartNs := startNs
+	if watermarkNs > 0 && watermarkNs >= bufStartNs {
+		bufStartNs = watermarkNs + 1
+	}
+	if bufStartNs > endNs {
+		return // Parquet already covers this whole window; nothing newer to add.
+	}
+
+	// Option B (P3): when a co-located logstorage-native buffer is present,
+	// serve the recent/unflushed window from it via the SAME engine the
+	// S3-Parquet scan uses — no struct→DataBlock conversion (which is the bug
+	// class this whole effort removes). We run a pipe-stripped clone scoped to
+	// (watermark, endNs] so the store emits filtered raw blocks into
+	// filteredWriteBlock; the outer RunQuery applies pipes once over buffer +
+	// Parquet blocks.
+	// Use the local logstorage buffer directly (zero-conversion) ONLY when this
+	// node has no peers — i.e. single-node role=all, where the local buffer holds
+	// ALL unflushed rows. In a multi-pod deployment the local buffer holds only
+	// THIS pod's ingested rows; other insert pods' unflushed rows live in their
+	// buffers, reachable only via the BufferBridge HTTP fan-out. So with peers we
+	// fall through to the fan-out (every pod's handler returns its own rows — no
+	// double-count, no need to exclude self from the unfiltered peer list).
+	if s.localBuffer != nil && (s.bufferBridge == nil || !s.bufferBridge.HasPeers()) {
+		qBuf := q.CloneWithTimeFilter(q.GetTimestamp(), bufStartNs, endNs)
+		qBuf.DropAllPipes()
+		qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, tenantIDs, qBuf, false, nil)
+		if err := s.localBuffer.RunQuery(qctx, filteredWriteBlock); err != nil {
+			logger.Warnf("Option B local buffer query failed (cold-tier results may miss the recent window): %s", err)
+		}
+		return
+	}
 	if s.bufferBridge == nil {
 		return
 	}
 	switch s.cfg.Mode {
 	case config.ModeLogs:
-		bufRows, _ := s.bufferBridge.QueryLogs(ctx, startNs, endNs)
+		bufRows, _ := s.bufferBridge.QueryLogs(ctx, bufStartNs, endNs)
 		if len(bufRows) > 0 {
 			db := s.logRowsToDataBlock(bufRows)
 			if db != nil && db.RowsCount() > 0 {
@@ -595,7 +704,7 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, f
 			}
 		}
 	case config.ModeTraces:
-		bufRows, _ := s.bufferBridge.QueryTraces(ctx, startNs, endNs)
+		bufRows, _ := s.bufferBridge.QueryTraces(ctx, bufStartNs, endNs)
 		if len(bufRows) > 0 {
 			db := s.traceRowsToDataBlock(bufRows)
 			if db != nil && db.RowsCount() > 0 {
@@ -1023,18 +1132,36 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 			if formatted == "" {
 				continue
 			}
-			idx := getCol(internalName)
-			for idx >= len(seenBitmap) {
-				seenBitmap = append(seenBitmap, false)
+			emitCol := func(colName string) {
+				idx := getCol(colName)
+				for idx >= len(seenBitmap) {
+					seenBitmap = append(seenBitmap, false)
+				}
+				if seenBitmap[idx] {
+					return
+				}
+				seenBitmap[idx] = true
+				for len(cols[idx].values) < rowNum {
+					cols[idx].values = append(cols[idx].values, "")
+				}
+				cols[idx].values = append(cols[idx].values, formatted)
 			}
-			if seenBitmap[idx] {
-				continue
+			emitCol(internalName)
+			// Dual emission for promoted columns whose parquet name
+			// differs from the internal alias (e.g. parquet
+			// `service.name` ↔ internal `resource_attr:service.name`).
+			// A user-typed filter spelling either dialect must
+			// resolve to a column the DataBlock actually carries;
+			// without this, `service.name:="X"` resolves to a column
+			// that doesn't exist in the block and matches zero rows
+			// even though `_stream:{resource_attr:service.name="X"}`
+			// finds 78k rows in the same time window. Mirrors a5576bf
+			// (which fixed the same asymmetry in parquetRowToFields
+			// used by /select/logsql/values) for the slow scan path
+			// here, sibling of the same defense in readRowGroupColumnar.
+			if fld.name != "" && fld.name != internalName {
+				emitCol(fld.name)
 			}
-			seenBitmap[idx] = true
-			for len(cols[idx].values) < rowNum {
-				cols[idx].values = append(cols[idx].values, "")
-			}
-			cols[idx].values = append(cols[idx].values, formatted)
 		}
 
 		// Fill empty for columns not present in this row

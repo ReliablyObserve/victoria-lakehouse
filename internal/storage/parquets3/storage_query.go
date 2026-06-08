@@ -180,7 +180,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// parquet. Keep the buffer query in the flow so narrow recent-window
 		// queries don't silently miss data that hasn't been flushed yet.
 		// Mirror in lakehouse-traces/internal/storage/parquets3/storage_query.go.
-		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, filteredWriteBlock)
+		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 		return nil
 	}
 
@@ -206,7 +206,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
-			s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, filteredWriteBlock)
+			s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 			return nil
 		}
 		files = remaining
@@ -214,7 +214,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	files = s.preFilterFiles(ctx, files, queryStr)
 	if len(files) == 0 {
-		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, filteredWriteBlock)
+		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 		return nil
 	}
 
@@ -273,7 +273,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 	wg.Wait()
 
-	s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, filteredWriteBlock)
+	s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 
 	if v := firstErr.Load(); v != nil {
 		if err, ok := v.(error); ok && ctx.Err() != nil {
@@ -402,13 +402,74 @@ func (s *Storage) applyCacheAffinity(files []manifest.FileInfo) {
 	}
 }
 
-func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, writeBlock logstorage.WriteDataBlockFunc) {
-	if s.bufferBridge == nil || (maxRows > 0 && rowsEmitted.Load() >= maxRows) {
+// bufferWatermark returns the timestamp up to which the just-scanned Parquet
+// files already cover the data, so the buffer is queried only for STRICTLY
+// newer rows — preventing the buffer and the S3-Parquet scan from both emitting
+// the same row (a 2× double-count on count()/stats over the overlap window). It
+// is the max MaxTimeNs of the emitted files. Returns 0 (serve the full window)
+// for multi-tenant admin reads, where a global watermark could advance past a
+// lagging tenant and lose rows.
+func bufferWatermark(files []manifest.FileInfo, tenantIDs []logstorage.TenantID) int64 {
+	if len(tenantIDs) != 1 {
+		return 0
+	}
+	var wm int64
+	for i := range files {
+		if files[i].MaxTimeNs > wm {
+			wm = files[i].MaxTimeNs
+		}
+	}
+	return wm
+}
+
+func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, watermarkNs int64, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) {
+	if maxRows > 0 && rowsEmitted.Load() >= maxRows {
+		return
+	}
+	// The watermark boundary exists ONLY to stop aggregation queries
+	// (count()/stats) from counting a row twice across the buffer↔Parquet
+	// overlap. trace_id-filtered queries are span/log RETRIEVAL (Jaeger/Tempo
+	// fetch, log→trace correlation): completeness matters and the watermark
+	// would wrongly exclude a trace's buffer rows whenever a scanned Parquet
+	// file (holding other, newer data) has a MaxTimeNs above this trace's time.
+	// So ignore the watermark for trace_id-filtered queries and serve the full
+	// window.
+	if q != nil && queryFiltersTraceID(q.String()) {
+		watermarkNs = 0
+	}
+	// Serve the buffer only for data STRICTLY newer than what the Parquet scan
+	// at this call site already emitted (watermarkNs). Sites with no Parquet
+	// emitted pass 0 → full window.
+	bufStartNs := startNs
+	if watermarkNs > 0 && watermarkNs >= bufStartNs {
+		bufStartNs = watermarkNs + 1
+	}
+	if bufStartNs > endNs {
+		return
+	}
+	// Option B (P3): use the co-located logstorage-native buffer directly
+	// (zero-conversion) ONLY when this node has no peers — single-node role=all,
+	// where the local buffer holds ALL unflushed rows. In a multi-pod deployment
+	// the local buffer holds only THIS pod's rows; other insert pods' unflushed
+	// rows live in their buffers, reachable only via the BufferBridge HTTP
+	// fan-out. So with peers we fall through to the fan-out (every pod's handler
+	// returns its own rows — no double-count, no need to exclude self from the
+	// unfiltered peer list).
+	if s.localBuffer != nil && (s.bufferBridge == nil || !s.bufferBridge.HasPeers()) {
+		qBuf := q.CloneWithTimeFilter(q.GetTimestamp(), bufStartNs, endNs)
+		qBuf.DropAllPipes()
+		qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, tenantIDs, qBuf, false, nil)
+		if err := s.localBuffer.RunQuery(qctx, writeBlock); err != nil {
+			logger.Warnf("Option B local buffer query failed (cold-tier results may miss the recent window): %s", err)
+		}
+		return
+	}
+	if s.bufferBridge == nil {
 		return
 	}
 	switch s.cfg.Mode {
 	case config.ModeLogs:
-		bufRows, _ := s.bufferBridge.QueryLogs(ctx, startNs, endNs)
+		bufRows, _ := s.bufferBridge.QueryLogs(ctx, bufStartNs, endNs)
 		if len(bufRows) > 0 {
 			db := s.logRowsToDataBlock(bufRows)
 			if db != nil && db.RowsCount() > 0 {
@@ -416,7 +477,7 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, m
 			}
 		}
 	case config.ModeTraces:
-		bufRows, _ := s.bufferBridge.QueryTraces(ctx, startNs, endNs)
+		bufRows, _ := s.bufferBridge.QueryTraces(ctx, bufStartNs, endNs)
 		if len(bufRows) > 0 {
 			db := s.traceRowsToDataBlock(bufRows)
 			if db != nil && db.RowsCount() > 0 {
@@ -453,32 +514,18 @@ func (s *Storage) manifestFastPath(files []manifest.FileInfo, startNs, endNs int
 }
 
 func (s *Storage) preFilterFiles(ctx context.Context, files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
-	if s.smartCache != nil {
-		// Support both trace_id:="single" and trace_id:in(t1,t2,t3) (VT spans-lookup shape).
-		// Multiple values: union the matched file sets so the lookup covers all candidates.
-		tids := extractFilterValuesAST(queryStr, "trace_id")
-		if len(tids) > 0 {
-			keySet := make(map[string]bool)
-			for _, tid := range tids {
-				for _, k := range s.smartCache.FindFilesByTraceID(tid) {
-					keySet[k] = true
-				}
-			}
-			if len(keySet) > 0 {
-				var matched []manifest.FileInfo
-				for _, fi := range files {
-					if keySet[fi.Key] {
-						matched = append(matched, fi)
-					}
-				}
-				if len(matched) > 0 {
-					metrics.TraceIDCacheHits.Inc()
-					logger.Infof("trace_id fast-path: cache hit for %d trace_id(s), scanning %d/%d files", len(tids), len(matched), len(files))
-					return matched
-				}
-			}
-		}
-	}
+	// NOTE: we intentionally do NOT use smartCache.FindFilesByTraceID to
+	// NARROW the candidate set for trace_id queries. That mapping is a
+	// LOWER BOUND — it only contains files whose TraceIDs were RECORDED
+	// (which happens at the END of a scan, never for a just-flushed-not-
+	// yet-queried file). Narrowing to it silently drops recently-flushed
+	// files that are in the manifest and genuinely carry the trace_id,
+	// producing a "0 results for minutes-old data that _stream queries
+	// still find" parity gap (cf. the traces module fix and
+	// TestS3_preFilterFiles_TraceIDCacheHit). The sound narrowing is
+	// label + bloom below, which keeps unindexed/recent files. The
+	// smartCache remains a DATA cache (L1/L2 chunk bytes) and a
+	// parent-child prefetch HINT — never an authoritative file index.
 	files = s.filterFilesByLabels(files, queryStr)
 	if len(files) == 0 {
 		return nil

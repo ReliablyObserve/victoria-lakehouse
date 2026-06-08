@@ -45,6 +45,7 @@ type Storage struct {
 	peerHandler       *peercache.Handler
 	writer            *BatchWriter
 	bufferBridge      *BufferBridge
+	localBuffer       LocalBuffer
 	tombstones        *delete.TombstoneStore
 	smartCache        *smartcache.Controller
 	bloomIdx          *bloomindex.Index
@@ -274,7 +275,6 @@ func New(cfg *config.Config) (*Storage, error) {
 }
 
 // StartWriter begins the background flush loop. Call after New().
-// WAL is replayed before starting the flush loop for crash recovery.
 func (s *Storage) StartWriter() {
 	if s.writer == nil {
 		return
@@ -309,10 +309,6 @@ func (s *Storage) StartWriter() {
 		s.writer.SetFlushCacheCallback(func(fileKey string, data []byte) {
 			cacheOnFlush(s.smartCache, fileKey, data)
 		})
-	}
-	logCount, traceCount := s.writer.ReplayWAL()
-	if logCount > 0 || traceCount > 0 {
-		logger.Infof("WAL recovery complete; logs=%d, traces=%d", logCount, traceCount)
 	}
 	s.writer.Start()
 }
@@ -448,6 +444,12 @@ func (s *Storage) Close() error {
 	if s.writer != nil {
 		s.writer.Stop()
 		logger.Infof("writer stopped and final flush completed")
+	}
+	// Option B: flush + close the logstorage-native buffer so the persistent
+	// data dir captures the last sub-FlushInterval window before exit.
+	if s.localBuffer != nil {
+		s.localBuffer.Close()
+		logger.Infof("Option B logstore buffer flushed and closed")
 	}
 	if s.persister != nil {
 		if err := s.persister.SaveLabelIndex(s.labelIndex); err != nil {
@@ -712,6 +714,25 @@ func (s *Storage) BufferBridge() *BufferBridge {
 	return s.bufferBridge
 }
 
+// LocalBuffer is the narrow query surface of the Option B logstorage-native
+// buffer (membuffer.Store). Declared as an interface to keep parquets3's
+// imports narrow. When set (BufferEngine=logstore, co-located insert+select),
+// the SELECT path serves the recent/unflushed window from it via the same
+// engine the S3-Parquet scan uses — no struct→DataBlock conversion.
+type LocalBuffer interface {
+	RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error
+	// Close flushes the in-memory window to the persistent data dir and
+	// releases the store — called on graceful shutdown so a clean restart
+	// loses nothing, not even the sub-FlushInterval window.
+	Close()
+}
+
+// SetLocalBuffer wires the co-located logstorage-native buffer into the query
+// path (Option B P3). nil falls back to the BufferBridge HTTP path.
+func (s *Storage) SetLocalBuffer(lb LocalBuffer) {
+	s.localBuffer = lb
+}
+
 // SetTombstoneStore injects a TombstoneStore for query-time row filtering.
 func (s *Storage) SetTombstoneStore(ts *delete.TombstoneStore) {
 	s.tombstones = ts
@@ -906,46 +927,123 @@ func (s *Storage) logRowsToDataBlock(rows []schema.LogRow) *logstorage.DataBlock
 	return db
 }
 
-// traceRowsToDataBlock converts in-memory TraceRow slices to a columnar DataBlock.
+// traceRowsToDataBlock converts in-memory TraceRow slices (buffer-bridge
+// rows for not-yet-flushed data) to a columnar DataBlock.
+//
+// It MUST emit the same filterable columns the file-scan path produces —
+// in particular `_stream`. VT's Jaeger getTraceIDList and Tempo
+// GetTraceList step 1 filter with `_stream:{resource_attr:service.name="X"}`
+// (a stream selector). If the buffer DataBlock lacks the `_stream` column
+// those filters match ZERO buffer rows, so the freshest (still-buffered)
+// spans are invisible to every Jaeger/Tempo search even though wildcard
+// `*` and `trace_id:"X"` queries find them. That was the live symptom:
+// cold Jaeger/Tempo returned nothing for recent data while hot VT served
+// it from memory. Promoted attribute columns are emitted under BOTH their
+// parquet name (e.g. `service.name`) and internal alias
+// (`resource_attr:service.name`) so a filter spelling either dialect
+// matches — mirroring the dual-emission in the file-scan path.
 func (s *Storage) traceRowsToDataBlock(rows []schema.TraceRow) *logstorage.DataBlock {
 	if len(rows) == 0 {
 		return nil
 	}
 
-	times := make([]string, len(rows))
-	traceIDs := make([]string, len(rows))
-	spanIDs := make([]string, len(rows))
-	names := make([]string, len(rows))
-	services := make([]string, len(rows))
-	durations := make([]string, len(rows))
-	statusCodes := make([]string, len(rows))
-	parentSpanIDs := make([]string, len(rows))
-	statusMsgs := make([]string, len(rows))
-
-	for i, row := range rows {
-		times[i] = s.registry.FormatField("_time", row.TimestampUnixNano)
-		traceIDs[i] = row.TraceID
-		spanIDs[i] = row.SpanID
-		names[i] = row.SpanName
-		services[i] = row.ServiceName
-		durations[i] = s.registry.FormatField("duration", row.DurationNs)
-		statusCodes[i] = s.registry.FormatField("status_code", int64(row.StatusCode))
-		parentSpanIDs[i] = row.ParentSpanID
-		statusMsgs[i] = row.StatusMessage
+	n := len(rows)
+	// Column accumulator: name -> per-row values. Built once; emitted in
+	// a stable order at the end.
+	cols := make(map[string][]string)
+	colOrder := make([]string, 0, 32)
+	get := func(name string) []string {
+		v, ok := cols[name]
+		if !ok {
+			v = make([]string, n)
+			cols[name] = v
+			colOrder = append(colOrder, name)
+		}
+		return v
+	}
+	// set fills value at row i; for promoted attrs, dual-emits under the
+	// internal alias too.
+	set := func(name string, i int, val string) {
+		if val == "" {
+			return
+		}
+		get(name)[i] = val
+	}
+	setDual := func(parquetName, internalName string, i int, val string) {
+		if val == "" {
+			return
+		}
+		get(parquetName)[i] = val
+		get(internalName)[i] = val
 	}
 
+	for i, row := range rows {
+		set("_time", i, s.registry.FormatField("_time", row.TimestampUnixNano))
+		set("trace_id", i, row.TraceID)
+		set("span_id", i, row.SpanID)
+		set("parent_span_id", i, row.ParentSpanID)
+		set("name", i, row.SpanName)
+		set("duration", i, s.registry.FormatField("duration", row.DurationNs))
+		set("status_code", i, s.registry.FormatField("status_code", int64(row.StatusCode)))
+		set("status_message", i, row.StatusMessage)
+		set("kind", i, s.registry.FormatField("kind", int64(row.SpanKind)))
+		// Stream selector + id — the load-bearing columns for step-1
+		// `_stream:{...}` filters.
+		set("_stream", i, row.Stream)
+		set("_stream_id", i, row.StreamID)
+		set("scope_name", i, row.ScopeName)
+		// Promoted resource attributes (dual-emitted).
+		setDual("service.name", "resource_attr:service.name", i, row.ServiceName)
+		setDual("deployment.environment", "resource_attr:deployment.environment", i, row.DeployEnv)
+		setDual("cloud.region", "resource_attr:cloud.region", i, row.CloudRegion)
+		setDual("host.name", "resource_attr:host.name", i, row.HostName)
+		setDual("k8s.namespace.name", "resource_attr:k8s.namespace.name", i, row.K8sNamespaceName)
+		setDual("k8s.pod.name", "resource_attr:k8s.pod.name", i, row.K8sPodName)
+		setDual("k8s.deployment.name", "resource_attr:k8s.deployment.name", i, row.K8sDeploymentName)
+		setDual("k8s.node.name", "resource_attr:k8s.node.name", i, row.K8sNodeName)
+		// Promoted span attributes (dual-emitted) — used by Jaeger/Tempo
+		// tag filters (e.g. http.status_code=200).
+		setDual("http.method", "span_attr:http.method", i, row.HTTPMethod)
+		setDual("http.status_code", "span_attr:http.status_code", i, row.HTTPStatusCode)
+		setDual("http.url", "span_attr:http.url", i, row.HTTPUrl)
+		setDual("db.system", "span_attr:db.system", i, row.DBSystem)
+		setDual("db.statement", "span_attr:db.statement", i, row.DBStatement)
+		// start_time_unix_nano is a promoted top-level column the Jaeger/Tempo
+		// GetTrace index lookup reads via
+		//   trace_id:=X | stats min(_time) _time,
+		//                       min(start_time_unix_nano) start_time,
+		//                       max(end_time_unix_nano) end_time
+		// (see vtstorage_adapter.rewriteTraceIndexQuery). Without it the
+		// stats query over still-buffered spans yields empty bounds, GetTrace
+		// can't locate the trace, and returns 404 "trace not found" — which
+		// makes Grafana's trace panel crash with
+		// "Cannot read properties of undefined (reading 'spanID')" on the
+		// log→trace drilldown for any recently-ingested trace.
+		set("start_time_unix_nano", i, s.registry.FormatField("start_time_unix_nano", row.StartTimeUnixNano))
+		for k, v := range row.ResourceAttributes {
+			set("resource_attr:"+k, i, v)
+		}
+		// Span attributes. OTLP metadata fields VT keeps top-level
+		// (end_time_unix_nano, flags, dropped_*_count, …) MUST surface
+		// WITHOUT the span_attr: prefix so the GetTrace stats lookup's
+		// max(end_time_unix_nano) resolves — exactly as the file-scan path
+		// does via schema.VTTopLevelSpanAttrKeys. Everything else keeps the
+		// span_attr: prefix.
+		for k, v := range row.SpanAttributes {
+			if schema.VTTopLevelSpanAttrKeys[k] {
+				set(k, i, v)
+			} else {
+				set("span_attr:"+k, i, v)
+			}
+		}
+	}
+
+	blockCols := make([]logstorage.BlockColumn, 0, len(colOrder))
+	for _, name := range colOrder {
+		blockCols = append(blockCols, logstorage.BlockColumn{Name: name, Values: cols[name]})
+	}
 	db := &logstorage.DataBlock{}
-	db.SetColumns([]logstorage.BlockColumn{
-		{Name: "_time", Values: times},
-		{Name: "trace_id", Values: traceIDs},
-		{Name: "span_id", Values: spanIDs},
-		{Name: "name", Values: names},
-		{Name: "service.name", Values: services},
-		{Name: "duration", Values: durations},
-		{Name: "status_code", Values: statusCodes},
-		{Name: "parent_span_id", Values: parentSpanIDs},
-		{Name: "status_message", Values: statusMsgs},
-	})
+	db.SetColumns(blockCols)
 	return db
 }
 

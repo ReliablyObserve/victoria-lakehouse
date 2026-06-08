@@ -3,7 +3,9 @@ package compaction
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -513,7 +515,17 @@ func readLogRows(data []byte) ([]schema.LogRow, error) {
 	n := int(reader.NumRows())
 	rows := make([]schema.LogRow, n)
 	total, err := reader.Read(rows)
-	if err != nil && total == 0 {
+	// parquet-go returns io.EOF when the reader is exhausted — including the
+	// read that consumes the final rows AND the immediate read of a valid
+	// 0-row file (NumRows()==0 → Read returns total=0, err=io.EOF). io.EOF
+	// is NOT an error here: an empty parquet file is valid (a flush can
+	// legitimately produce one). Treating it as fatal made compaction abort
+	// the whole partition on a single empty input file, and because the
+	// scheduler re-picks the oldest partition first, that one empty file
+	// starved compaction of every newer partition indefinitely — growing
+	// the cold-tier L0 backlog (and the recently-flushed trace_id-query
+	// reachability lag) without bound.
+	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("read parquet: %w", err)
 	}
 	return rows[:total], nil
@@ -526,7 +538,9 @@ func readTraceRows(data []byte) ([]schema.TraceRow, error) {
 	n := int(reader.NumRows())
 	rows := make([]schema.TraceRow, n)
 	total, err := reader.Read(rows)
-	if err != nil && total == 0 {
+	// See readLogRows: io.EOF (incl. the valid 0-row file case) is a clean
+	// end-of-data, not a failure. Only a genuine decode error aborts.
+	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("read parquet: %w", err)
 	}
 	return rows[:total], nil
