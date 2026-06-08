@@ -95,6 +95,48 @@ func TestStore_OpenErrors(t *testing.T) {
 	}
 }
 
+// TestStore_PathAndGetTenantIDs covers the thin accessors: Path returns the
+// configured dir, and GetTenantIDs enumerates the tenants with data in a window
+// (reused by the shadow exporter to know which tenants to export).
+func TestStore_PathAndGetTenantIDs(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(Config{Path: dir})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if st.Path() != dir {
+		t.Fatalf("Path() = %q, want %q", st.Path(), dir)
+	}
+
+	now := time.Now().UnixNano()
+	tA := logstorage.TenantID{AccountID: 1, ProjectID: 2}
+	tB := logstorage.TenantID{AccountID: 3, ProjectID: 4}
+	lr := logstorage.GetLogRows([]string{"service.name"}, nil, nil, nil, "")
+	addRow(lr, tA, now, "a", "ta")
+	addRow(lr, tB, now, "b", "tb")
+	st.MustAddRows(lr)
+	logstorage.PutLogRows(lr)
+	st.DebugFlush()
+
+	ids, err := st.GetTenantIDs(context.Background(), now-int64(time.Hour), now+int64(time.Hour))
+	if err != nil {
+		t.Fatalf("GetTenantIDs: %v", err)
+	}
+	seen := map[logstorage.TenantID]bool{}
+	for _, id := range ids {
+		seen[id] = true
+	}
+	if !seen[tA] || !seen[tB] {
+		t.Fatalf("GetTenantIDs missing tenants: got %v, want %v and %v", ids, tA, tB)
+	}
+
+	// Empty window → no tenants.
+	if got, _ := st.GetTenantIDs(context.Background(), now+int64(time.Hour), now+int64(2*time.Hour)); len(got) != 0 {
+		t.Fatalf("GetTenantIDs over empty window: want 0, got %d", len(got))
+	}
+}
+
 // TestStore_MultiTenantIsolation proves the buffer enforces tenant boundaries
 // exactly like the file path — a query for one tenant never sees another's rows.
 func TestStore_MultiTenantIsolation(t *testing.T) {
