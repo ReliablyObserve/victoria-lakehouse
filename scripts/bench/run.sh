@@ -41,7 +41,7 @@ ITERATIONS=20
 WARMUP=3
 STAMP="latest"
 OUTPUT=""
-DO_UP=1; DO_INGEST=1; KEEP=0
+DO_UP=1; DO_INGEST=1; KEEP=0; COLD=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -56,6 +56,8 @@ while [[ $# -gt 0 ]]; do
     --no-up)        DO_UP=0; shift ;;
     --no-ingest)    DO_INGEST=0; shift ;;
     --keep)         KEEP=1; shift ;;
+    --cold)         COLD=1; WARMUP=0; shift ;;   # clear LH cache before each request
+    --queries)      QUERY_OVERRIDE="$2"; shift 2 ;;
     -h|--help)      sed -n '2,40p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -90,6 +92,11 @@ measure_query() {
   local secs=() bytes=() errors=0 i out code tt sz
   for ((i=0; i<WARMUP; i++)); do _do_req "$method" "$url" "$body" >/dev/null 2>&1 || true; done
   for ((i=0; i<ITERATIONS; i++)); do
+    # Cold mode: evict LH's mem/disk/footer caches before each request so every
+    # sample is a true cold scan (re-fetch from S3 + re-decode Parquet). Only the
+    # system under test is cleared; VL/VT are hot-tier by design and CH re-scans
+    # S3 each query anyway.
+    [[ "$COLD" == 1 && "$system" == lakehouse ]] && clear_lh_cache "$url"
     out=$(_do_req "$method" "$url" "$body"); read -r code tt sz <<<"$out"
     if [[ "$code" == 2* ]]; then secs+=("$tt"); bytes+=("$sz"); else errors=$((errors+1)); fi
   done
@@ -112,6 +119,10 @@ print(json.dumps({"label": label, "system": system, "p50_ms": pct(50), "p95_ms":
                   "avg_bytes": avg_bytes, "result": result}))
 PY
 }
+clear_lh_cache() { # $1 = any LH url; POSTs /internal/cache/clear to its host
+  local base="${1%%/select/*}"; base="${base%%/api/*}"
+  curl -sf -o /dev/null -X POST --max-time 10 "${base}/internal/cache/clear" 2>/dev/null || true
+}
 _do_req() { # echoes "<http_code> <time_total_s> <size_download_bytes>"
   local method="$1" url="$2" body="$3"
   case "$method" in
@@ -127,22 +138,27 @@ fetch_scalar() {
   local method="$1" url="$2" body="$3" qkind="$4" raw
   if [[ "$method" == CH ]]; then
     raw=$(curl -sf --max-time 60 --user "$CH_USER:$CH_PASS" --data-binary "$body" "$url/" 2>/dev/null) || { echo ERR; return; }
-    # count_* -> single number; by_service -> sum the second TSV column
-    awk 'NF>=2{s+=$2} NF==1{s+=$1} END{print (s==""?0:s)}' <<<"$raw"
+    # count queries: sum the numeric last TSV column. scan queries (last column
+    # non-numeric, e.g. a row of data): return the ROW COUNT instead, so the
+    # validity gate compares rows-returned across systems.
+    awk -F'\t' '{n++; v=$NF; if(v+0==v && v!="") s+=v; else nn=1} END{print (nn?n:s+0)}' <<<"$raw"
   else
     raw=$(curl -sf --max-time 60 --data-urlencode "query=$body" "$url" 2>/dev/null) || { echo ERR; return; }
     python3 -c "
 import sys,json
-tot=0
+tot=0; rows=0; has_count=False
 for ln in sys.stdin:
     ln=ln.strip()
     if not ln: continue
+    rows+=1
     try: d=json.loads(ln)
     except: continue
-    v=d.get('n') or d.get('count(*)') or d.get('count(') or 0
-    try: tot+=int(v)
-    except: pass
-print(tot)" <<<"$raw"
+    v=d.get('n', d.get('count(*)', d.get('count(')))
+    if v is not None:
+        has_count=True
+        try: tot+=int(v)
+        except: pass
+print(tot if has_count else rows)" <<<"$raw"
   fi
 }
 
@@ -177,6 +193,7 @@ prep() { # $1 signal  $2 query  $3 system  $4 range_secs
       negation)         [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND SeverityText!='"'"'INFO'"'"'' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\t-level:INFO | stats count() n' "$logs_url" "$sns" "$ens" ;;
       trace_lookup)     [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND TraceId='"'"'%s'"'"'' "${EP[ch]}" "$ss" "$es" "$SAMPLE_TID" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:=%s | stats count() n' "$logs_url" "$sns" "$ens" "$SAMPLE_TID" ;;
       high_card)        [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT TraceId,count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) GROUP BY TraceId' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\t* | stats by (trace_id) count()' "$logs_url" "$sns" "$ens" ;;
+      scan)             [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT Body,ServiceName FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) LIMIT 1000' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\t* | fields _msg, service.name | limit 1000' "$logs_url" "$sns" "$ens" ;;
     esac
   else # traces. trace_id:* counts only REAL spans — VT's raw count() also
        # includes internal aggregate rows (service_graph etc.) that LH/CH (LH's
@@ -188,12 +205,16 @@ prep() { # $1 signal  $2 query  $3 system  $4 range_secs
       trace_by_id)      [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND TraceId='"'"'%s'"'"'' "${EP[ch]}" "$ss" "$es" "$SAMPLE_TID" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:=%s | stats count() n' "$traces_url" "$sns" "$ens" "$SAMPLE_TID" ;;
       span_name)        [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND SpanName='"'"'HTTP GET /api/v1/users'"'"'' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* span.name:="HTTP GET /api/v1/users" | stats count() n' "$traces_url" "$sns" "$ens" ;;
       slow_spans)       [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND Duration>1000000000' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* duration_ns:>1000000000 | stats count() n' "$traces_url" "$sns" "$ens" ;;
+      scan)             [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT SpanName,ServiceName,Duration FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) LIMIT 1000' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | fields span.name, service.name, duration_ns | limit 1000' "$traces_url" "$sns" "$ens" ;;
     esac
   fi
 }
 
-LOG_QUERIES="count_total count_by_service fulltext level_filter multi_filter negation trace_lookup high_card"
-TRACE_QUERIES="count_total count_by_service service_filter trace_by_id span_name slow_spans"
+LOG_QUERIES="count_total count_by_service fulltext level_filter multi_filter negation trace_lookup high_card scan"
+TRACE_QUERIES="count_total count_by_service service_filter trace_by_id span_name slow_spans scan"
+# --queries "a b c" overrides the per-signal list (intersected with what's valid
+# for each signal), so a focused cold run can target just scan/count.
+[[ -n "${QUERY_OVERRIDE:-}" ]] && { LOG_QUERIES="$QUERY_OVERRIDE"; TRACE_QUERIES="$QUERY_OVERRIDE"; }
 
 # SAMPLE_TID: a real trace_id pulled from the data at runtime, used by the
 # point-lookup edge cases (trace-by-id is the key trace-UX query — bloom/smartCache
