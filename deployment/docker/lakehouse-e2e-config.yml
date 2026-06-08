@@ -17,9 +17,11 @@ lakehouse:
   # logstorage's own parts + S3 Parquet (no LH WAL needed for it).
   insert:
     buffer_engine: logstore
-    buffer_flush_enabled: true       # DEBUG: instrumented flusher to localize the per-window loss
-    buffer_flush_interval: 2m
-    buffer_dir: /data/lakehouse/buffer-dbg2
+    # buffer_flush_enabled OFF: the flusher-rewrites-Parquet flip has an unresolved
+    # ~80% per-window under-count (3 root-cause fixes — DebugFlush(partial),
+    # latencyOffset, _time-vs-start_time — did not close it; live e2e too muddied
+    # to measure further). Legacy path authoritative. Needs a controlled
+    # integration test (write→read round-trip) to localize, not live debugging.
 
   retention:
     enabled: true
