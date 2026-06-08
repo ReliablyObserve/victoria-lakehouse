@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -29,11 +30,15 @@ type flusherBuffer interface {
 	DebugFlush()
 }
 
-// defaultFlushLatencyOffset is how far behind now() the flusher stops: rows in
-// (now-offset, now] stay in the buffer (served by the read-merge) rather than
-// being flushed, giving in-flight / late-arriving spans time to land before
-// their window is committed and the watermark advances past it.
-const defaultFlushLatencyOffset = 30 * time.Second
+// defaultFlushLatencyOffset is how far behind now() the flusher stops: a window
+// is only committed once it is this far in the past, so spans whose _time falls
+// in it but which arrive late (ingestion lag, trace completion) have landed
+// before the watermark advances past their _time. Rows in (now-offset, now] stay
+// in the buffer and are served by the read-merge until then. This is the lateness
+// tolerance — set it above the p99 (ingest_time - _time). 2m covers typical trace
+// completion + ingest lag; 30s was too small and dropped late spans (the residual
+// per-window under-count).
+const defaultFlushLatencyOffset = 2 * time.Minute
 
 // FlushRowFilter is the gate-at-flush predicate: it returns true to KEEP a
 // reconstructed row, false to drop it. It is injected from main so the buffer
@@ -187,26 +192,44 @@ func (f *BufferFlusher) collectTenantRows(ctx context.Context, tenant logstorage
 	q = q.CloneWithTimeFilter(q.GetTimestamp(), startNs, endNs)
 	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{tenant}, q, false, nil)
 
+	// logstorage invokes writeBlock from MULTIPLE goroutines concurrently, so the
+	// shared slice (and any filter side effects) must be synchronized.
+	var mu sync.Mutex
 	var rows []schema.TraceRow
 	err = f.buffer.RunQuery(qctx, func(_ uint, db *logstorage.DataBlock) {
+		local := make([]schema.TraceRow, 0, db.RowsCount())
 		for _, r := range vlstorage.DataBlockToTraceRows(db, tenant) {
 			if f.keep != nil && !f.keep(r.AccountID, r.ProjectID, r.Stream) {
 				continue
 			}
-			rows = append(rows, r)
+			local = append(local, r)
 		}
+		mu.Lock()
+		rows = append(rows, local...)
+		mu.Unlock()
 	})
 	return rows, err
 }
 
-// Run drives the flusher until ctx is cancelled. interval is the flush cadence;
-// the first window starts at the persisted watermark (or now-interval if none).
-func (f *BufferFlusher) Run(ctx context.Context, interval time.Duration, nowNs int64) {
-	if interval <= 0 {
-		interval = time.Minute
+// Run drives the flusher until ctx is cancelled. checkInterval is how often the
+// flusher wakes to (re-)evaluate the window for the size/linger gate — NOT the
+// flush cadence (a window flushes on targetBytes OR maxLinger).
+//
+// CRASH-SAFETY: the watermark advances (and is persisted, atomically) ONLY after
+// a window's Parquet is fully written. So a crash mid-window leaves the watermark
+// at the last committed boundary; the rows live in the persisted buffer
+// (logstorage parts on disk, restored on open), and on restart loadWatermark
+// resumes from that boundary and re-flushes (last, now-offset] — no loss, no LH
+// WAL. The only requirement is buffer_retention > maxLinger + downtime so the
+// un-flushed data hasn't aged out of the buffer before recovery. A FRESH flip
+// (no watermark file) starts at nowNs (the flip point) so pre-flip data — already
+// owned by the legacy path — is never double-flushed.
+func (f *BufferFlusher) Run(ctx context.Context, checkInterval time.Duration, nowNs int64) {
+	if checkInterval <= 0 {
+		checkInterval = 30 * time.Second
 	}
-	last := f.loadWatermark(nowNs - interval.Nanoseconds())
-	t := time.NewTicker(interval)
+	last := f.loadWatermark(nowNs)
+	t := time.NewTicker(checkInterval)
 	defer t.Stop()
 	for {
 		select {

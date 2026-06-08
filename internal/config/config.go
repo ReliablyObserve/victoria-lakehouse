@@ -1077,11 +1077,15 @@ func (c *Config) validateInsert() error {
 		if c.Insert.BufferFlushInterval <= 0 {
 			return fmt.Errorf("--lakehouse.insert.buffer-flush-interval must be > 0 when flush is enabled")
 		}
-		// The buffer must keep a row at least until it's flushed; require a 2x
-		// margin so a row never ages out of the buffer before the flusher drains
-		// its window.
-		if c.Insert.BufferRetention < 2*c.Insert.BufferFlushInterval {
-			return fmt.Errorf("--lakehouse.insert.buffer-retention (%s) must be >= 2x buffer-flush-interval (%s) so rows aren't dropped before flush",
+		// CRASH-SAFETY constraint: un-flushed rows live ONLY in the buffer until
+		// the flusher commits them, so the buffer must retain them across (a) a
+		// full linger window before they flush AND (b) any restart downtime before
+		// recovery re-flushes. Require retention >= 4x the flush cap so there is a
+		// generous recovery margin beyond the 2x linger floor — if retention is
+		// too tight, a row could age out of the buffer before a crashed flusher
+		// recovers, which IS data loss (there is no LH WAL backstop anymore).
+		if c.Insert.BufferRetention < 4*c.Insert.BufferFlushInterval {
+			return fmt.Errorf("--lakehouse.insert.buffer-retention (%s) must be >= 4x buffer-flush-interval (%s): un-flushed rows must survive a linger window PLUS restart downtime, since the buffer is their only store until flushed",
 				c.Insert.BufferRetention, c.Insert.BufferFlushInterval)
 		}
 	}

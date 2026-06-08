@@ -2,8 +2,10 @@ package parquets3
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,11 +42,11 @@ func TestBufferFlusher_CollectAppliesGateFilter(t *testing.T) {
 	ingestLog(t, st, tenant, now, "blocked-svc", "m3")
 	st.DebugFlush()
 
-	keepCalls := 0
+	var keepCalls atomic.Int64
 	f := &BufferFlusher{
 		buffer: st,
 		keep: func(_, _ uint32, stream string) bool {
-			keepCalls++
+			keepCalls.Add(1)
 			return !contains(stream, "blocked-svc")
 		},
 	}
@@ -52,8 +54,8 @@ func TestBufferFlusher_CollectAppliesGateFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collect: %v", err)
 	}
-	if keepCalls != 3 {
-		t.Fatalf("keep filter should see all 3 rows, got %d", keepCalls)
+	if keepCalls.Load() != 3 {
+		t.Fatalf("keep filter should see all 3 rows, got %d", keepCalls.Load())
 	}
 	if len(rows) != 2 {
 		t.Fatalf("want 2 kept rows (blocked-svc dropped), got %d", len(rows))
@@ -108,4 +110,61 @@ func TestBufferFlusher_Watermark(t *testing.T) {
 	if _, err := os.ReadFile(filepath.Join(dir, "buffer_flush_watermark.json.tmp")); err == nil {
 		t.Fatal("temp watermark file should not persist after rename")
 	}
+}
+
+// TestBufferFlusher_CrashRecovery proves the no-loss durability guarantee (logs):
+// rows ingested after the last committed watermark but before a crash survive in
+// the persisted buffer and are recovered after reopen + watermark reload.
+func TestBufferFlusher_CrashRecovery(t *testing.T) {
+	dir := t.TempDir()
+	wmDir := t.TempDir()
+	tenant := logstorage.TenantID{AccountID: 1, ProjectID: 2}
+	base := time.Now().Add(-time.Hour).UnixNano()
+
+	bs, err := membuffer.Open(membuffer.Config{Path: dir, Retention: time.Hour})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	ingestLogAt(t, bs, tenant, base, base+int64(time.Minute), 50)
+	bs.DebugFlush()
+	f := NewBufferFlusher(nil, bs, wmDir, nil, 0, 0)
+	if err := f.saveWatermark(base + int64(time.Minute)); err != nil {
+		t.Fatalf("save wm: %v", err)
+	}
+	ingestLogAt(t, bs, tenant, base+int64(time.Minute), base+int64(2*time.Minute), 70)
+	bs.DebugFlush()
+	bs.Close() // crash
+
+	bs2, err := membuffer.Open(membuffer.Config{Path: dir, Retention: time.Hour})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer bs2.Close()
+	f2 := NewBufferFlusher(nil, bs2, wmDir, nil, 0, 0)
+	last := f2.loadWatermark(time.Now().UnixNano())
+	if last != base+int64(time.Minute) {
+		t.Fatalf("recovered watermark = %d, want %d", last, base+int64(time.Minute))
+	}
+	_, n, err := f2.collectWindow(context.Background(), last, base+int64(2*time.Minute))
+	if err != nil {
+		t.Fatalf("collect after recovery: %v", err)
+	}
+	if n != 70 {
+		t.Fatalf("CRASH-RECOVERY LOSS: want 70 un-flushed rows recovered, got %d", n)
+	}
+}
+
+func ingestLogAt(t *testing.T, st *membuffer.Store, tenant logstorage.TenantID, startNs, endNs int64, n int) {
+	t.Helper()
+	lr := logstorage.GetLogRows([]string{"service.name"}, nil, nil, nil, "")
+	step := (endNs - startNs) / int64(n)
+	for i := 0; i < n; i++ {
+		ts := startNs + int64(i)*step
+		lr.MustAdd(tenant, ts, []logstorage.Field{
+			{Name: "service.name", Value: "api-gateway"},
+			{Name: "_msg", Value: fmt.Sprintf("m%d-%d", startNs, i)},
+		}, 1)
+	}
+	st.MustAddRows(lr)
+	logstorage.PutLogRows(lr)
 }
