@@ -1,6 +1,8 @@
 package vlstorage
 
 import (
+	"time"
+
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -47,22 +49,33 @@ func DataBlockToTraceRows(db *logstorage.DataBlock, tenant logstorage.TenantID) 
 			}
 			v := c.Values[i]
 			switch c.Name {
-			case "_msg", "_time":
-				// _msg is empty for traces; _time is microsecond-formatted and
-				// superseded by start_time_unix_nano below.
+			case "_msg":
+				// empty for traces.
+			case "_time":
+				// _time IS the row's event timestamp (VL stores the span END
+				// time here) and is what the legacy path (r.Timestamp) and hot VT
+				// use for partitioning + the Parquet _time column. It MUST drive
+				// TimestampUnixNano — NOT start_time_unix_nano, which is the span
+				// START and differs by the span duration (and is absent on some
+				// rows → 0 → dt=1970). Using start_time here scattered rows out of
+				// the window collectWindow selected them by (selected by _time),
+				// producing the per-window under-count.
+				if v != "" {
+					if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+						row.TimestampUnixNano = t.UnixNano()
+					}
+				}
 			case "_stream":
 				row.Stream = v
 			case "_stream_id":
 				row.StreamID = v
 			default:
 				// trace_id, span_id, name, service.name, k8s.*, duration_ns,
-				// start_time_unix_nano, resource_attr:*, span_attr:*, … all go
-				// through the SAME mapper the insert path uses.
+				// start_time_unix_nano (→ StartTimeUnixNano field, kept separate),
+				// resource_attr:*, span_attr:*, … all go through the SAME mapper
+				// the insert path uses.
 				mapFieldToTraceRow(&row, c.Name, v)
 			}
-		}
-		if row.StartTimeUnixNano != 0 {
-			row.TimestampUnixNano = row.StartTimeUnixNano
 		}
 		rows = append(rows, row)
 	}
