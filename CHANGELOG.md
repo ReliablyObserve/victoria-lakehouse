@@ -7,30 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **Cold Jaeger search returned 0 traces at 12h while hot returned 20** — VT's `GetTraceList` step 2 issues `trace_id:in(t1,t2,...,t20)` for span fetch. Our `smartCache` fast-path in `lakehouse-traces/internal/storage/parquets3/storage_query.go::preFilterFiles` was unioning `FindFilesByTraceID(t_i)` across all queried trace IDs and narrowing to that union — but the union is only a *lower bound* on the relevant file set, because `smartCache` only records files it has previously fetched. A partial cache hit (one tid known, the rest never seen) collapsed candidates to one file that held spans for at most that one tid; spans for the other 19 vanished. Live blast radius: cold drilldown "Slow traces" tab returned empty at the 12h window even though step 1 found 20 trace IDs. Fix: take the smartCache fast-path **only for single-id queries** (the trace-by-id shape). Multi-id `trace_id:in(...)` falls through to bloom + `_trace_idx` narrowing, which examines every file and is honest about coverage. Guarded by:
-  - `lakehouse-traces/internal/storage/parquets3/cold_hot_parity_test.go::TestColdHotParity_SmartCachePartialHit_MustNotNarrowSilently` — unit pin that exercises `preFilterFiles` with a hand-seeded metadata map (one tid cached, one tid missing) and asserts both files survive.
-  - 8 sibling parity tests in the same file (`TraceIdxKeptFile`, `TraceIDInFilter`, `NegationFilter`, `UnindexedFileMustStillEmitRows`, `CombinedStreamAndTraceID`, `OutOfWindowReturnsZeroNoError`, `MultipleFilesNarrowingMustAgree`, `TraceIdxIntegrity_WriterSelfCheck`) that mirror the exact VT step-1 / step-2 query shapes from `vtselect/traces/query/query.go` so a regression in column resolution, time-window narrowing, or `_trace_idx` decoding fires at the storage layer instead of presenting as "0 traces in the UI".
-  - One known regression class is deliberately left as `t.Skip("known #99 tail")`: `TestColdHotParity_FieldEqByParquetName` pins `service.name:="X"` (operator-typed parquet column name) — the main scan path needs the same dual-emission a5576bf added to `parquetRowToFields`. Remove the Skip when fixed.
-
-### Added
-
-- **Option B — logstorage-native queryable buffer (cold-tier recently-flushed parity).** The insert buffer can now be a real per-pod `logstorage.Storage` (the VT/VL model) instead of a `[]schema.{Log,Trace}Row` staging slice that was reconstructed into a `logstorage.DataBlock` at query time. That struct→DataBlock converter kept drifting from the file-scan emission (missing `_stream`, `start_time_unix_nano`/`end_time_unix_nano`, map attrs), which made cold Jaeger/Tempo search return 0 for fresh traces, 404 the log→trace drilldown (Grafana `Cannot read properties of undefined (reading 'spanID')`), and zero the Tempo service-filter. Behind `insert.buffer_engine` (`buffer` default | `logstore`): the buffer is fed via the exported `MustAddRows` (dual-write, legacy path stays authoritative) and **queries serve the recent/unflushed window from it via the exported `Storage.RunQuery`** — byte-identical to a file scan, no conversion. With `logstore` enabled end-to-end, cold `[24h]` Jaeger goes 0→20 (matches hot), recent trace-by-id resolves at all recencies incl. the freshest ~30s, and Tempo `{nestedSetParent<0}` + `{resource.service.name="X"}` both return data. Durability reuses logstorage's own disk parts + restore-on-open (crash-loss window == VT/VL hot; no LH WAL added). Pure exported-API reuse — **no VL/VT modification**. Phased (P1 dual-write + P3 read-merge shipped; P4/P5 retire the legacy path + LH WAL). A buffer failure can never break ingestion (recover-isolation + `lakehouse_buffer_store_dualwrite_failures_total`). See `docs/architecture/buffer-queryable-store-design.md`.
-
-### Changed
-
-- **Bump loki-vl-proxy from v1.56.1 to v1.57.0** (`deployment/docker/Dockerfile.loki-vl-proxy`). Headline fix: high-cardinality Drilldown label/field panels (pod, `*_id`, `trace_id`/`span_id`) now render correctly and fast at 24h+ — they previously returned ~142k uncapped single-point series at short ranges or an empty matrix at 24h+ (VictoriaLogs stats body exceeded the 16 MB cap), rendering as a single right-edge spike. Now `detected_level` filters evaluate against the column-indexed `level` field (~64× faster, no `unpack_logfmt` re-parse; 24h pod query 26s → ~0.6s), single-field `count() by(field)` over ≥2h routes to `/select/logsql/hits` for full-timeline series, and the 24h+ querySplitting residual-chunk spike is suppressed on every stats path. Also adds an L0 hot-key cache tier to metrics (`tier="l0"` on the `cache_tier_*` series).
-
-### CI
-
-- **Hot/cold parity unit job** (`.github/workflows/ci.yaml::parity-unit`) — runs `TestColdHotParity*` + `TestFieldEqualityAndStreamFilter` (traces) and `TestFieldNames_VLParity` + `TestInsertAndQuery_FieldNameParity` (logs) under `-race`, emits a job summary with pass/fail/skip counts and expanded failure details, uploads test artifacts. The same tests already run as part of `test-traces` / `test-logs`, but a dedicated named job makes the parity check visible in PR pages and gives reviewers a single status icon to look at — when any of these fail it's almost always one of the cold/hot regression classes the drilldown has shipped before (cf. #99, a5576bf, be8c126).
-
-### Docs
-
-- **`docs/architecture/performance-machinery.md` §6.2** — corrected the zstd-level claim: parquet-go's writer maps integer levels to **only four buckets** (`Fastest`/`Default`/`Better`/`Best`) regardless of the integer value, so the previous text claiming `[3, 7, 11] → [3, 9, 15]` "doubles compaction CPU" was wrong — both schedules land in `[Default, Better, Best]` and produce the same encode profile. New table shows the integer ranges and bucket mapping so operators don't tune a knob that doesn't move.
-
-## [0.39.0] - 2026-06-07
+## [0.49.0] - 2026-06-07
 
 ### Added
 
@@ -65,6 +42,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Retroactive bucket migration tool + admin endpoint** for moving an existing tenant from the shared bucket to its own bucket without ingest downtime.
   - **UI + stats API surface every tenant edge case**: `/api/stats` now reports per-tenant `raw_bytes`, `compactor_*`, and the new VL/manifest parity endpoint with a matching UI panel; `global` is the sum across all tenants rather than an opaque counter. Compactor tenancy fixed so cross-tenant compaction is rejected.
   - **e2e**: tenant stats consistency + UI breakdown tests; e2e compose mounts a YAML policy file to demonstrate per-tenant overrides.
+
+## [0.39.0] - 2026-06-07
+
+### Fixed
+
+- **Cold Jaeger search returned 0 traces at 12h while hot returned 20** — VT's `GetTraceList` step 2 issues `trace_id:in(t1,t2,...,t20)` for span fetch. Our `smartCache` fast-path in `lakehouse-traces/internal/storage/parquets3/storage_query.go::preFilterFiles` was unioning `FindFilesByTraceID(t_i)` across all queried trace IDs and narrowing to that union — but the union is only a *lower bound* on the relevant file set, because `smartCache` only records files it has previously fetched. A partial cache hit (one tid known, the rest never seen) collapsed candidates to one file that held spans for at most that one tid; spans for the other 19 vanished. Live blast radius: cold drilldown "Slow traces" tab returned empty at the 12h window even though step 1 found 20 trace IDs. Fix: take the smartCache fast-path **only for single-id queries** (the trace-by-id shape). Multi-id `trace_id:in(...)` falls through to bloom + `_trace_idx` narrowing, which examines every file and is honest about coverage. Guarded by:
+  - `lakehouse-traces/internal/storage/parquets3/cold_hot_parity_test.go::TestColdHotParity_SmartCachePartialHit_MustNotNarrowSilently` — unit pin that exercises `preFilterFiles` with a hand-seeded metadata map (one tid cached, one tid missing) and asserts both files survive.
+  - 8 sibling parity tests in the same file (`TraceIdxKeptFile`, `TraceIDInFilter`, `NegationFilter`, `UnindexedFileMustStillEmitRows`, `CombinedStreamAndTraceID`, `OutOfWindowReturnsZeroNoError`, `MultipleFilesNarrowingMustAgree`, `TraceIdxIntegrity_WriterSelfCheck`) that mirror the exact VT step-1 / step-2 query shapes from `vtselect/traces/query/query.go` so a regression in column resolution, time-window narrowing, or `_trace_idx` decoding fires at the storage layer instead of presenting as "0 traces in the UI".
+  - One known regression class is deliberately left as `t.Skip("known #99 tail")`: `TestColdHotParity_FieldEqByParquetName` pins `service.name:="X"` (operator-typed parquet column name) — the main scan path needs the same dual-emission a5576bf added to `parquetRowToFields`. Remove the Skip when fixed.
+
+### Added
+
+- **Option B — logstorage-native queryable buffer (cold-tier recently-flushed parity).** The insert buffer can now be a real per-pod `logstorage.Storage` (the VT/VL model) instead of a `[]schema.{Log,Trace}Row` staging slice that was reconstructed into a `logstorage.DataBlock` at query time. That struct→DataBlock converter kept drifting from the file-scan emission (missing `_stream`, `start_time_unix_nano`/`end_time_unix_nano`, map attrs), which made cold Jaeger/Tempo search return 0 for fresh traces, 404 the log→trace drilldown (Grafana `Cannot read properties of undefined (reading 'spanID')`), and zero the Tempo service-filter. Behind `insert.buffer_engine` (`buffer` default | `logstore`): the buffer is fed via the exported `MustAddRows` (dual-write, legacy path stays authoritative) and **queries serve the recent/unflushed window from it via the exported `Storage.RunQuery`** — byte-identical to a file scan, no conversion. With `logstore` enabled end-to-end, cold `[24h]` Jaeger goes 0→20 (matches hot), recent trace-by-id resolves at all recencies incl. the freshest ~30s, and Tempo `{nestedSetParent<0}` + `{resource.service.name="X"}` both return data. Durability reuses logstorage's own disk parts + restore-on-open (crash-loss window == VT/VL hot; no LH WAL added). Pure exported-API reuse — **no VL/VT modification**. Phased (P1 dual-write + P3 read-merge shipped; P4/P5 retire the legacy path + LH WAL). A buffer failure can never break ingestion (recover-isolation + `lakehouse_buffer_store_dualwrite_failures_total`). See `docs/architecture/buffer-queryable-store-design.md`.
+
+### Changed
+
+- **Bump loki-vl-proxy from v1.56.1 to v1.57.0** (`deployment/docker/Dockerfile.loki-vl-proxy`). Headline fix: high-cardinality Drilldown label/field panels (pod, `*_id`, `trace_id`/`span_id`) now render correctly and fast at 24h+ — they previously returned ~142k uncapped single-point series at short ranges or an empty matrix at 24h+ (VictoriaLogs stats body exceeded the 16 MB cap), rendering as a single right-edge spike. Now `detected_level` filters evaluate against the column-indexed `level` field (~64× faster, no `unpack_logfmt` re-parse; 24h pod query 26s → ~0.6s), single-field `count() by(field)` over ≥2h routes to `/select/logsql/hits` for full-timeline series, and the 24h+ querySplitting residual-chunk spike is suppressed on every stats path. Also adds an L0 hot-key cache tier to metrics (`tier="l0"` on the `cache_tier_*` series).
+
+### CI
+
+- **Hot/cold parity unit job** (`.github/workflows/ci.yaml::parity-unit`) — runs `TestColdHotParity*` + `TestFieldEqualityAndStreamFilter` (traces) and `TestFieldNames_VLParity` + `TestInsertAndQuery_FieldNameParity` (logs) under `-race`, emits a job summary with pass/fail/skip counts and expanded failure details, uploads test artifacts. The same tests already run as part of `test-traces` / `test-logs`, but a dedicated named job makes the parity check visible in PR pages and gives reviewers a single status icon to look at — when any of these fail it's almost always one of the cold/hot regression classes the drilldown has shipped before (cf. #99, a5576bf, be8c126).
+
+### Docs
+
+- **`docs/architecture/performance-machinery.md` §6.2** — corrected the zstd-level claim: parquet-go's writer maps integer levels to **only four buckets** (`Fastest`/`Default`/`Better`/`Best`) regardless of the integer value, so the previous text claiming `[3, 7, 11] → [3, 9, 15]` "doubles compaction CPU" was wrong — both schedules land in `[Default, Better, Best]` and produce the same encode profile. New table shows the integer ranges and bucket mapping so operators don't tune a knob that doesn't move.
 
 ## [0.37.4] - 2026-06-04
 
@@ -550,7 +552,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Settings profiles: 5 named presets (balanced, max-performance, max-durability, max-cost-savings, dev) with three-level hierarchy (global → per-signal → per-role), Helm chart integration via `coalesce` resolution, JSON schema validation, and comprehensive profile integration tests
 
 ## [0.26.0] - 2026-05-19
-
 
 ### Added
 - Bloom age-tiering: 4-tier model (hot/warm/cold/archive) with configurable boundaries, tier downgrade logic (per-RG → per-file → summary → none), Filter.MergeFrom bitwise OR merge, SHA256 integrity checks
