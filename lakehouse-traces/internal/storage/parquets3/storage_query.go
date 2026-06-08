@@ -142,35 +142,12 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	startNs, endNs := q.GetFilterTimeRange()
 
-	// Trace_id-filtered queries (Jaeger/Tempo GetTraceList step-2
-	// `trace_id:in(...)`, Jaeger get-trace, Tempo trace-by-id) target
-	// specific traces and want ALL of their spans — exactly as hot VT
-	// serves the whole trace from memory. VT caps step-2's upper bound at
-	// now-latencyOffset, which excludes the last ~latencyOffset of spans;
-	// on the cold tier those freshest spans live in the buffer (and in a
-	// just-flushed L0 file), and the `_time:[start,end]` predicate that
-	// filterDataBlock applies to buffer rows would drop them. Widen the
-	// query's OWN upper time bound to now for trace_id queries so the
-	// scan window, the buffer fetch, AND the filter's `_time` predicate
-	// all agree and surface the freshest spans. The trace_id filter
-	// bounds the result set, so widening time can never over-return — it
-	// only stops the cold tier from hiding spans the caller asked for by
-	// id (which is what made cold Jaeger/Tempo search and the log→trace
-	// drilldown return 0/404 for recently-ingested traces while hot VT
-	// returned them). We must do this on the Query itself (not just the
-	// local endNs) because parseFilterFromQuery keeps the `_time`
-	// predicate, so a local-only widen would still be re-narrowed.
-	if len(extractFilterValuesAST(q.String(), "trace_id")) > 0 {
-		if nowNs := time.Now().UnixNano(); nowNs > endNs {
-			q = q.CloneWithTimeFilter(q.GetTimestamp(), startNs, nowNs)
-			endNs = nowNs
-		}
-	}
+	q, endNs = widenTraceIDQueryToNow(q, startNs, endNs)
 
-	if boundary := s.discovery.GetHotBoundary(); boundary != nil {
-		if time.Unix(0, startNs).After(boundary.MinTime) && time.Unix(0, endNs).Before(boundary.MaxTime) {
-			return nil
-		}
+	// The window is wholly inside the hot tier's boundary — hot VT owns it, the
+	// cold tier has nothing to add. Skip the scan entirely.
+	if s.windowInsideHotBoundary(startNs, endNs) {
+		return nil
 	}
 
 	if !s.manifest.HasDataForRange(startNs, endNs) {
@@ -632,6 +609,40 @@ func bufferWatermark(files []manifest.FileInfo, tenantIDs []logstorage.TenantID)
 	return wm
 }
 
+// widenTraceIDQueryToNow widens a trace_id-filtered query's upper time bound to
+// now. Trace_id queries (Jaeger/Tempo GetTraceList step-2 `trace_id:in(...)`,
+// Jaeger/Tempo get-trace `trace_id:"X"`) target specific traces and want ALL
+// their spans, exactly as hot VT serves the whole trace from memory. VT caps
+// step-2's upper bound at now-latencyOffset, excluding the last ~latencyOffset
+// of spans; on the cold tier those freshest spans live in the buffer, and the
+// `_time:[start,end]` predicate that filterDataBlock applies to buffer rows
+// would drop them. Widening the query's OWN upper bound to now makes the scan
+// window, the buffer fetch, and the filter's `_time` predicate agree. The
+// trace_id filter bounds the result set, so widening can never over-return —
+// it only stops the cold tier from hiding spans the caller asked for by id
+// (the 0/404-for-recent-traces symptom). Must be done on the Query (not just a
+// local endNs) because parseFilterFromQuery keeps the `_time` predicate, so a
+// local-only widen would be re-narrowed. No-op for non-trace_id queries.
+// windowInsideHotBoundary reports whether [startNs, endNs] is wholly within the
+// hot tier's time boundary (so the cold tier need not scan).
+func (s *Storage) windowInsideHotBoundary(startNs, endNs int64) bool {
+	boundary := s.discovery.GetHotBoundary()
+	if boundary == nil {
+		return false
+	}
+	return time.Unix(0, startNs).After(boundary.MinTime) && time.Unix(0, endNs).Before(boundary.MaxTime)
+}
+
+func widenTraceIDQueryToNow(q *logstorage.Query, startNs, endNs int64) (*logstorage.Query, int64) {
+	if q == nil || !queryFiltersTraceID(q.String()) {
+		return q, endNs
+	}
+	if nowNs := time.Now().UnixNano(); nowNs > endNs {
+		return q.CloneWithTimeFilter(q.GetTimestamp(), startNs, nowNs), nowNs
+	}
+	return q, endNs
+}
+
 func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs, watermarkNs int64, q *logstorage.Query, tenantIDs []logstorage.TenantID, filteredWriteBlock logstorage.WriteDataBlockFunc) {
 	// The watermark boundary exists ONLY to stop aggregation queries
 	// (count()/stats) from counting a span twice — once from the Parquet scan,
@@ -642,7 +653,7 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs, waterma
 	// Parquet file (holding other, newer traces) has a MaxTimeNs above this
 	// trace's time. So ignore the watermark for trace_id-filtered queries and
 	// serve the buffer's full window.
-	if queryFiltersTraceID(q.String()) {
+	if q != nil && queryFiltersTraceID(q.String()) {
 		watermarkNs = 0
 	}
 	// Serve the buffer only for data STRICTLY newer than what the Parquet scan

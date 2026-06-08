@@ -78,7 +78,7 @@ func Open(cfg Config) (*Store, error) {
 	if cfg.Path == "" {
 		return nil, fmt.Errorf("membuffer: empty Path")
 	}
-	if err := os.MkdirAll(cfg.Path, 0o755); err != nil {
+	if err := os.MkdirAll(cfg.Path, 0o750); err != nil {
 		return nil, fmt.Errorf("membuffer: mkdir %q: %w", cfg.Path, err)
 	}
 	sc := &logstorage.StorageConfig{

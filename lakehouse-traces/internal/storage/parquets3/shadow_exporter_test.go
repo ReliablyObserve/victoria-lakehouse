@@ -79,7 +79,7 @@ func TestShadowExporter_ExportTenantOnce(t *testing.T) {
 	}
 	// The uploaded object is a valid Parquet with all n rows.
 	reader := parquet.NewGenericReader[schema.TraceRow](bytes.NewReader(up.data[0]))
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	if reader.NumRows() != n {
 		t.Fatalf("shadow parquet has %d rows, want %d", reader.NumRows(), n)
 	}

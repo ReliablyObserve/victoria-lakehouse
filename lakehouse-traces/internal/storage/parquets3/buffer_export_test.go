@@ -62,7 +62,7 @@ func TestExportBufferToParquet_RoundTrip(t *testing.T) {
 
 	// Read the Parquet back with the same schema the file-scan path uses.
 	reader := parquet.NewGenericReader[schema.TraceRow](bytes.NewReader(data))
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	got := make([]schema.TraceRow, reader.NumRows())
 	if _, err := reader.Read(got); err != nil && err.Error() != "EOF" {
 		t.Fatalf("read parquet back: %v", err)
