@@ -12,6 +12,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
 )
@@ -130,7 +131,11 @@ func (f *BufferFlusher) saveWatermark(endNs int64) error {
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, f.watermarkPath)
+	if err := os.Rename(tmp, f.watermarkPath); err != nil {
+		return err
+	}
+	metrics.InsertFlushWatermarkNs.Set(endNs)
+	return nil
 }
 
 // collectWindow gathers (startNs, endNs] from the buffer, per tenant, applying

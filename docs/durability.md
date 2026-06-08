@@ -199,12 +199,16 @@ scriptable scenario):
 | **Cache eviction under memory pressure** | Eviction must degrade to full-scan, not corrupt or OOM. | Saturate L1/L2 with a wide query under `mem_limit`, run a fresh query, assert correct counts and no OOM. |
 | **Retention age-out vs flush race** | If `buffer_retention` is mis-sized, rows age out before flush. | Set retention near `buffer_flush_interval`, ingest, assert the config validation rejects it (or, if forced, that the loss is observable and metered). |
 
-**What we'd improve:** add a `chaos` build tag for the kill/restart scenarios so
-they run on demand (not every CI run); export a
-`lakehouse_insert_flush_watermark_timestamp` gauge so survival tests can assert
-against the committed boundary; and run the crash-survival suite **with the flip
-enabled** once it is validated — it is the scenario that proves the no-WAL
-durability claim end-to-end.
+**Implemented so far:** a `chaos` build tag (`go test -tags 'e2e chaos' ./tests/e2e/
+-run Chaos`) carries `TestChaos_BufferRestoreOnRestart` — ingest → restart the
+cold-logs container → assert the pre-restart row survives (the buffer-restore row
+above). The `lakehouse_insert_flush_watermark_timestamp` gauge is exported from
+`saveWatermark`, so survival tests can assert against the committed boundary.
+
+**Still to do:** flesh out the remaining table rows as `chaos` tests (S3
+backpressure, manifest-stale fallback, multi-instance peering), and run the
+crash-survival suite **with the flip enabled** once the clean-slate validation
+lands — that is the scenario that proves the no-WAL durability claim end-to-end.
 
 ---
 

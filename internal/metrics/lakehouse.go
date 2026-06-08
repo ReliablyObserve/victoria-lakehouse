@@ -142,6 +142,10 @@ var (
 	InsertBytesBuffered    = NewGauge("lakehouse_insert_bytes_buffered")
 	InsertFlushTotal       = NewCounter("lakehouse_insert_flush_total")
 	InsertFlushErrorsTotal = NewCounter("lakehouse_insert_flush_errors_total")
+	// InsertFlushWatermarkNs is the BufferFlusher's last committed flush
+	// watermark (ns). Everything at or below it is durably on S3; the buffer
+	// covers (watermark, now]. Crash-survival tests assert against this boundary.
+	InsertFlushWatermarkNs = NewGauge("lakehouse_insert_flush_watermark_timestamp")
 	InsertFlushDuration    = NewHistogram("lakehouse_insert_flush_duration_seconds",
 		[]float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10})
 	InsertBytesUploaded    = NewCounter("lakehouse_insert_bytes_uploaded_total")
