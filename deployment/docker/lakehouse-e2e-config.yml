@@ -17,8 +17,9 @@ lakehouse:
   # logstorage's own parts + S3 Parquet (no LH WAL needed for it).
   insert:
     buffer_engine: logstore
-    buffer_flush_enabled: true     # cutover: buffer is the authoritative Parquet producer
-    buffer_flush_interval: 30s     # retention (1h default) >> 2x interval (60s) — safe margin
+    # buffer_flush_enabled REVERTED: the BufferFlusher under-produced Parquet for
+    # recent windows (loop caught ~90% loss at [-20m..0m]); legacy path is
+    # authoritative again pending the flusher root-cause/fix.
 
   retention:
     enabled: true
