@@ -76,6 +76,8 @@ declare -A EP=(
   [vt]=http://localhost:30401
   [ch]=http://localhost:38123
 )
+# ClickHouse HTTP auth (CLICKHOUSE_USER/PASSWORD in the benchmark compose).
+CH_USER="${CH_USER:-default}"; CH_PASS="${CH_PASS:-benchmark}"
 
 log() { printf '\033[1;36m[bench]\033[0m %s\n' "$*" >&2; }
 
@@ -85,29 +87,63 @@ log() { printf '\033[1;36m[bench]\033[0m %s\n' "$*" >&2; }
 # $1 label  $2 system  $3 method(GET|POST|CH)  $4 url  $5 body
 measure_query() {
   local label="$1" system="$2" method="$3" url="$4" body="${5:-}"
-  local secs=() errors=0 i out code tt
+  local secs=() bytes=() errors=0 i out code tt sz
   for ((i=0; i<WARMUP; i++)); do _do_req "$method" "$url" "$body" >/dev/null 2>&1 || true; done
   for ((i=0; i<ITERATIONS; i++)); do
-    out=$(_do_req "$method" "$url" "$body"); code=${out%% *}; tt=${out##* }
-    if [[ "$code" == 2* ]]; then secs+=("$tt"); else errors=$((errors+1)); fi
+    out=$(_do_req "$method" "$url" "$body"); read -r code tt sz <<<"$out"
+    if [[ "$code" == 2* ]]; then secs+=("$tt"); bytes+=("$sz"); else errors=$((errors+1)); fi
   done
-  python3 - "$label" "$system" "$errors" "${secs[@]}" <<'PY'
+  # result = a comparable scalar (row/group count) so the report can verify every
+  # system returned EQUIVALENT data — a fast p95 over an empty/divergent result is
+  # not a real win and gets flagged downstream.
+  local result; result=$(fetch_scalar "$method" "$url" "$body" "${label##*/}")
+  python3 - "$label" "$system" "$errors" "$result" "${#bytes[@]}" "${bytes[@]}" -- "${secs[@]}" <<'PY'
 import sys, json
-label, system, errors = sys.argv[1], sys.argv[2], int(sys.argv[3])
-vals = sorted(float(x) * 1000 for x in sys.argv[4:])
+a = sys.argv
+label, system, errors, result, nb = a[1], a[2], int(a[3]), a[4], int(a[5])
+b = list(map(float, a[6:6+nb]))
+secs = list(map(float, a[a.index('--')+1:]))
+vals = sorted(s * 1000 for s in secs)
 n = len(vals)
 pct = lambda p: round(vals[min(int(n * p / 100), n - 1)], 1) if n else None
-print(json.dumps({"label": label, "system": system, "p50_ms": pct(50),
-                  "p95_ms": pct(95), "p99_ms": pct(99), "iters": n, "errors": errors}))
+avg_bytes = round(sum(b)/len(b)) if b else 0
+print(json.dumps({"label": label, "system": system, "p50_ms": pct(50), "p95_ms": pct(95),
+                  "p99_ms": pct(99), "iters": n, "errors": errors,
+                  "avg_bytes": avg_bytes, "result": result}))
 PY
 }
-_do_req() { # echoes "<http_code> <time_total_s>"
+_do_req() { # echoes "<http_code> <time_total_s> <size_download_bytes>"
   local method="$1" url="$2" body="$3"
   case "$method" in
-    GET)  curl -sf -o /dev/null -w '%{http_code} %{time_total}' --max-time 60 "$url" 2>/dev/null || echo "000 0" ;;
-    POST) curl -sf -o /dev/null -w '%{http_code} %{time_total}' --max-time 60 --data-urlencode "query=$body" "$url" 2>/dev/null || echo "000 0" ;;
-    CH)   curl -sf -o /dev/null -w '%{http_code} %{time_total}' --max-time 60 --data-binary "$body" "$url/" 2>/dev/null || echo "000 0" ;;
+    GET)  curl -sf -o /dev/null -w '%{http_code} %{time_total} %{size_download}' --max-time 60 "$url" 2>/dev/null || echo "000 0 0" ;;
+    POST) curl -sf -o /dev/null -w '%{http_code} %{time_total} %{size_download}' --max-time 60 --data-urlencode "query=$body" "$url" 2>/dev/null || echo "000 0 0" ;;
+    CH)   curl -sf -o /dev/null -w '%{http_code} %{time_total} %{size_download}' --max-time 60 --user "$CH_USER:$CH_PASS" --data-binary "$body" "$url/" 2>/dev/null || echo "000 0 0" ;;
   esac
+}
+# fetch_scalar: one un-timed request; extracts a comparable count from each
+# system's native response (LogsQL JSON lines vs ClickHouse TSV) so results can be
+# checked for equivalence across systems. Echoes the number, or "ERR".
+fetch_scalar() {
+  local method="$1" url="$2" body="$3" qkind="$4" raw
+  if [[ "$method" == CH ]]; then
+    raw=$(curl -sf --max-time 60 --user "$CH_USER:$CH_PASS" --data-binary "$body" "$url/" 2>/dev/null) || { echo ERR; return; }
+    # count_* -> single number; by_service -> sum the second TSV column
+    awk 'NF>=2{s+=$2} NF==1{s+=$1} END{print (s==""?0:s)}' <<<"$raw"
+  else
+    raw=$(curl -sf --max-time 60 --data-urlencode "query=$body" "$url" 2>/dev/null) || { echo ERR; return; }
+    python3 -c "
+import sys,json
+tot=0
+for ln in sys.stdin:
+    ln=ln.strip()
+    if not ln: continue
+    try: d=json.loads(ln)
+    except: continue
+    v=d.get('n') or d.get('count(*)') or d.get('count(') or 0
+    try: tot+=int(v)
+    except: pass
+print(tot)" <<<"$raw"
+  fi
 }
 
 # --- time helpers (ns epoch for LogsQL, unix seconds for CH) -------------------
@@ -188,7 +224,7 @@ parity_gate() {
   local base="" s n IFS_=$'\t'
   for s in $sysset; do
     read -r m u b <<<"$(prep "$signal" count_total "$s" "$secs")"
-    if [[ "$m" == CH ]]; then n=$(curl -sf --max-time 60 --data-binary "$b" "$u/" 2>/dev/null | tr -d '[:space:]')
+    if [[ "$m" == CH ]]; then n=$(curl -sf --max-time 60 --user "$CH_USER:$CH_PASS" --data-binary "$b" "$u/" 2>/dev/null | tr -d '[:space:]')
     else n=$(curl -sf --max-time 60 --data-urlencode "query=$b" "$u" 2>/dev/null | python3 -c "import sys,json
 try:
   d=[json.loads(l) for l in sys.stdin if l.strip()]; print(d[0].get('n',0) if d else 0)
