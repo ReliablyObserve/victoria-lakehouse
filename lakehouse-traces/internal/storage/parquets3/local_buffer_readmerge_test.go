@@ -110,7 +110,7 @@ func TestQueryBufferBridge_WatermarkPreventsDoubleCount(t *testing.T) {
 	// reader-deduped, and the watermark would wrongly drop a trace's buffer
 	// spans (the regression that returned 0 spans for recent traces). Even with
 	// a watermark covering the whole window, a trace_id query returns all rows.
-	qTID, _ := logstorage.ParseQueryAtTimestamp(`trace_id:=t`, now)
+	qTID, _ := logstorage.ParseQueryAtTimestamp(`trace_id:"t"`, now) // phrase form (the GetTrace bug form)
 	countTID := func(watermarkNs int64) int64 {
 		var got atomic.Int64
 		wb := func(_ uint, db *logstorage.DataBlock) { got.Add(int64(db.RowsCount())) }

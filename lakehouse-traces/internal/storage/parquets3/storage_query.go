@@ -642,7 +642,7 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs, waterma
 	// Parquet file (holding other, newer traces) has a MaxTimeNs above this
 	// trace's time. So ignore the watermark for trace_id-filtered queries and
 	// serve the buffer's full window.
-	if len(extractFilterValuesAST(q.String(), "trace_id")) > 0 {
+	if queryFiltersTraceID(q.String()) {
 		watermarkNs = 0
 	}
 	// Serve the buffer only for data STRICTLY newer than what the Parquet scan

@@ -550,6 +550,67 @@ func extractFilterValuesAST(queryStr, fieldName string) []string {
 	return extractFilterValues(queryStr, fieldName)
 }
 
+// queryFiltersTraceID reports whether the query filters on the trace_id field in
+// ANY form: trace_id:=X, trace_id:in(...), trace_id:"X", trace_id: "X",
+// trace_id=X. extractFilterValuesAST only extracts =/in VALUES, but VT's
+// single-trace GetTrace span fetch uses the PHRASE form `trace_id:"X"`
+// (deps/VictoriaTraces .../query.go findSpansByTraceIDAndTime), which yields no
+// values. Missing that form made the Option B read-merge watermark wrongly
+// exclude a recent trace's buffer spans → cold GetTrace 404 for recent traces.
+// We therefore also string-detect a trace_id field-filter token in the
+// pipe-stripped filter section.
+func queryFiltersTraceID(queryStr string) bool {
+	if len(extractFilterValuesAST(queryStr, "trace_id")) > 0 {
+		return true
+	}
+	return containsFieldFilterToken(stripPipeOutsideQuotes(queryStr), "trace_id")
+}
+
+// containsFieldFilterToken reports whether s contains `field` used as a filter
+// field — i.e. the token `field` (at a word boundary, outside quotes) followed
+// by optional spaces and a `:` or `=` operator. So `trace_id:"X"` matches but
+// `trace_id_idx:X` (different field) and `| fields trace_id` (no operator) do
+// not.
+func containsFieldFilterToken(s, field string) bool {
+	inQuote := byte(0)
+	for i := 0; i+len(field) <= len(s); i++ {
+		c := s[i]
+		if inQuote != 0 {
+			if c == '\\' {
+				i++
+				continue
+			}
+			if c == inQuote {
+				inQuote = 0
+			}
+			continue
+		}
+		if c == '"' || c == '\'' {
+			inQuote = c
+			continue
+		}
+		if s[i:i+len(field)] != field {
+			continue
+		}
+		// Word boundary before the token.
+		if i > 0 {
+			p := s[i-1]
+			if p == '_' || p == '.' || (p >= 'a' && p <= 'z') || (p >= 'A' && p <= 'Z') || (p >= '0' && p <= '9') {
+				continue
+			}
+		}
+		// After the token: optional spaces, then a filter operator.
+		j := i + len(field)
+		for j < len(s) && s[j] == ' ' {
+			j++
+		}
+		if j < len(s) && (s[j] == ':' || s[j] == '=') {
+			return true
+		}
+	}
+	return false
+}
+
 // containsOrOperatorQuoted is a quote-aware fallback for
 // FilterContainsOr — it walks the string ignoring " or "/" OR "
 // occurrences inside quoted literals. This is the same idea as the

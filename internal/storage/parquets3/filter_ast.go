@@ -550,6 +550,61 @@ func extractFilterValuesAST(queryStr, fieldName string) []string {
 	return extractFilterValues(queryStr, fieldName)
 }
 
+// queryFiltersTraceID reports whether the query filters on the trace_id field in
+// ANY form (trace_id:=X, trace_id:in(...), trace_id:"X", trace_id:X). The AST
+// value-extraction only recognises =/in; VT's single-trace GetTrace span fetch
+// uses the phrase form `trace_id:"X"`, which yields no values, so the Option B
+// read-merge watermark would wrongly exclude a recent trace's buffer rows. We
+// also string-detect a trace_id field-filter token in the pipe-stripped filter
+// section.
+func queryFiltersTraceID(queryStr string) bool {
+	if len(extractFilterValuesAST(queryStr, "trace_id")) > 0 {
+		return true
+	}
+	return containsFieldFilterToken(stripPipeOutsideQuotes(queryStr), "trace_id")
+}
+
+// containsFieldFilterToken reports whether s contains `field` used as a filter
+// field — the token `field` (at a word boundary, outside quotes) followed by
+// optional spaces and a `:` or `=` operator.
+func containsFieldFilterToken(s, field string) bool {
+	inQuote := byte(0)
+	for i := 0; i+len(field) <= len(s); i++ {
+		c := s[i]
+		if inQuote != 0 {
+			if c == '\\' {
+				i++
+				continue
+			}
+			if c == inQuote {
+				inQuote = 0
+			}
+			continue
+		}
+		if c == '"' || c == '\'' {
+			inQuote = c
+			continue
+		}
+		if s[i:i+len(field)] != field {
+			continue
+		}
+		if i > 0 {
+			p := s[i-1]
+			if p == '_' || p == '.' || (p >= 'a' && p <= 'z') || (p >= 'A' && p <= 'Z') || (p >= '0' && p <= '9') {
+				continue
+			}
+		}
+		j := i + len(field)
+		for j < len(s) && s[j] == ' ' {
+			j++
+		}
+		if j < len(s) && (s[j] == ':' || s[j] == '=') {
+			return true
+		}
+	}
+	return false
+}
+
 // containsOrOperatorQuoted is a quote-aware fallback for
 // FilterContainsOr — it walks the string ignoring " or "/" OR "
 // occurrences inside quoted literals. This is the same idea as the
