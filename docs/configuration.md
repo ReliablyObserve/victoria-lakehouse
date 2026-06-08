@@ -138,8 +138,18 @@ When empty, Victoria Lakehouse auto-discovers the hot boundary by polling vlstor
 | `--lakehouse.insert.peer-replicate` | `false` | Replicate inserts to peer nodes |
 | `--lakehouse.insert.peer-replicate-timeout` | `5ms` | Timeout for peer replication |
 | `--lakehouse.insert.peer-replicate-ttl` | `30s` | TTL for replicated data on peers |
-| `--lakehouse.insert.async-wal-enabled` | `false` | Use async WAL writes (less durable, faster) |
-| `--lakehouse.insert.async-wal-batch-linger` | `50ms` | Async WAL batch coalesce delay |
+| `--lakehouse.insert.buffer-engine` | `buffer` | Insert-buffer implementation: `buffer` (legacy `[]row` staging) or `logstore` (logstorage-native queryable buffer) |
+| `--lakehouse.insert.buffer-dir` | `/data/lakehouse/buffer` | Data dir for the `logstore` buffer's parts (persistent volume; durability + restore live here) |
+| `--lakehouse.insert.buffer-retention` | `1h` | How long rows stay in the `logstore` buffer before VL drops them (older data is served from S3 Parquet) |
+
+**Buffer engine (`insert.buffer_engine`):**
+
+| Engine | What it is | Recent-data reads | Durability |
+|---|---|---|---|
+| `buffer` (default) | Rows stage in a `[]schema.{Log,Trace}Row` slice, flushed to Parquet | Reconstructed into a `DataBlock` at query time (or served cross-pod via the BufferBridge HTTP fan-out) | WAL (below) |
+| `logstore` | Rows feed a real per-pod `logstorage.Storage` (the VictoriaLogs/Traces in-memory-parts model) via the exported `MustAddRows` | Served from the buffer through the **same** exported `Storage.RunQuery` the S3-Parquet scan uses — no struct→DataBlock conversion. On a multi-pod cluster, queries fall through to the BufferBridge fan-out so every pod's unflushed rows are gathered. | logstorage's own disk parts (written every flush interval, restored on open) — crash-loss window equals hot VT/VL; **no separate LH WAL needed** |
+
+The `logstore` engine is what brings cold Jaeger/Tempo to parity with hot VT for recently-ingested traces (the recent/unflushed window is served from the buffer natively). See `architecture/buffer-queryable-store-design.md`.
 
 **Acknowledgement modes:**
 
@@ -150,9 +160,14 @@ When empty, Victoria Lakehouse auto-discovers the hot boundary by polling vlstor
 
 ## WAL Settings
 
+The WAL backs the **`buffer` engine** (legacy `[]row` staging). With
+`insert.buffer_engine: logstore` the buffer reuses logstorage's own on-disk
+persistence (parts written every flush interval, restored on open) — its
+crash-loss window matches hot VT/VL, so no separate LH WAL is required.
+
 | Flag | Default | Description |
 |---|---|---|
-| `--lakehouse.insert.wal-enabled` | `true` | Enable write-ahead log for crash recovery |
+| `--lakehouse.insert.wal-enabled` | `true` | Enable write-ahead log for crash recovery (`buffer` engine) |
 | `--lakehouse.insert.wal-dir` | `/data/lakehouse/wal` | WAL file directory |
 | `--lakehouse.insert.wal-max-bytes` | `512MB` | Maximum WAL file size |
 

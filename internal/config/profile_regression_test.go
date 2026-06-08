@@ -283,15 +283,14 @@ func TestProfileRegression_InsertDurability(t *testing.T) {
 	type durExpect struct {
 		flushLinger   time.Duration
 		peerReplicate bool
-		asyncWAL      bool
 	}
 
 	tests := map[Profile]durExpect{
-		ProfileBalanced:       {200 * time.Millisecond, false, false},
-		ProfileMaxPerformance: {100 * time.Millisecond, false, false},
-		ProfileMaxDurability:  {0, false, false},
-		ProfileMaxCostSavings: {1 * time.Second, false, false},
-		ProfileDev:            {0, false, false},
+		ProfileBalanced:       {200 * time.Millisecond, false},
+		ProfileMaxPerformance: {100 * time.Millisecond, false},
+		ProfileMaxDurability:  {0, false},
+		ProfileMaxCostSavings: {1 * time.Second, false},
+		ProfileDev:            {0, false},
 	}
 
 	for profile, expect := range tests {
@@ -303,9 +302,6 @@ func TestProfileRegression_InsertDurability(t *testing.T) {
 			}
 			if cfg.Insert.PeerReplicate != expect.peerReplicate {
 				t.Errorf("peer_replicate = %v, want %v", cfg.Insert.PeerReplicate, expect.peerReplicate)
-			}
-			if cfg.Insert.AsyncWALEnabled != expect.asyncWAL {
-				t.Errorf("async_wal_enabled = %v, want %v", cfg.Insert.AsyncWALEnabled, expect.asyncWAL)
 			}
 		})
 	}

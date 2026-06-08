@@ -105,7 +105,6 @@ func maxPerformanceConfig() *Config {
 	cfg.Insert.MaxBufferBytes = "512MB"
 	cfg.Insert.TargetFileSize = "64MB"
 	cfg.Insert.RowGroupSize = 5000
-	cfg.Insert.AsyncWALEnabled = false
 
 	cfg.Select.BufferQueryTimeout = 1 * time.Second
 	cfg.Query.FileWorkers = 16
@@ -172,7 +171,6 @@ func maxDurabilityConfig() *Config {
 	cfg.Insert.WALEnabled = true
 	cfg.Insert.WALMaxBytes = "1GB"
 	cfg.Insert.CompressionLevel = 7
-	cfg.Insert.AsyncWALEnabled = false
 
 	cfg.Compaction.Enabled = true
 
@@ -211,7 +209,6 @@ func maxCostSavingsConfig() *Config {
 	cfg.Insert.RowGroupSize = 50000
 	cfg.Insert.AckMode = "buffer"
 	cfg.Insert.PeerReplicate = false
-	cfg.Insert.AsyncWALEnabled = false
 
 	cfg.Select.BufferQueryEnabled = false
 	cfg.Query.FileWorkers = 4
@@ -289,7 +286,6 @@ func devConfig() *Config {
 	cfg.Insert.RowGroupSize = 1000
 	cfg.Insert.WALMaxBytes = "32MB"
 	cfg.Insert.PeerReplicate = false
-	cfg.Insert.AsyncWALEnabled = false
 
 	cfg.Select.BufferQueryTimeout = 2 * time.Second
 	cfg.Query.FileWorkers = 2

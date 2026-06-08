@@ -1618,12 +1618,6 @@ func TestDefaultConfig_DurabilityFields(t *testing.T) {
 	if cfg.Insert.PeerReplicateTTL != 30*time.Second {
 		t.Errorf("default peer_replicate_ttl = %v, want 30s", cfg.Insert.PeerReplicateTTL)
 	}
-	if cfg.Insert.AsyncWALEnabled {
-		t.Error("default async_wal_enabled should be false")
-	}
-	if cfg.Insert.AsyncWALBatchLinger != 50*time.Millisecond {
-		t.Errorf("default async_wal_batch_linger = %v, want 50ms", cfg.Insert.AsyncWALBatchLinger)
-	}
 }
 
 func TestDefaultConfig_GCFields(t *testing.T) {
@@ -1684,8 +1678,6 @@ lakehouse:
     peer_replicate: true
     peer_replicate_timeout: 10ms
     peer_replicate_ttl: 60s
-    async_wal_enabled: true
-    async_wal_batch_linger: 100ms
   gc:
     enabled: true
     interval: 12h
@@ -1719,12 +1711,6 @@ lakehouse:
 	}
 	if cfg.Insert.PeerReplicateTTL != 60*time.Second {
 		t.Errorf("peer_replicate_ttl = %v, want 60s", cfg.Insert.PeerReplicateTTL)
-	}
-	if !cfg.Insert.AsyncWALEnabled {
-		t.Error("async_wal_enabled should be true")
-	}
-	if cfg.Insert.AsyncWALBatchLinger != 100*time.Millisecond {
-		t.Errorf("async_wal_batch_linger = %v, want 100ms", cfg.Insert.AsyncWALBatchLinger)
 	}
 	if cfg.GC.Interval != 12*time.Hour {
 		t.Errorf("GC interval = %v, want 12h", cfg.GC.Interval)

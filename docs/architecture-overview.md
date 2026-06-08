@@ -18,8 +18,8 @@ graph TB
         end
 
         subgraph "Storage Layer (parquets3)"
-            BW[BatchWriter<br/>WAL + Parquet Flush]
-            RQ[RunQuery<br/>Parallel File Scan]
+            BW[BatchWriter<br/>insert.buffer_engine:<br/>buffer+WAL | logstore]
+            RQ[RunQuery<br/>Parallel File Scan<br/>+ recent window from buffer]
             FA[Field APIs<br/>field_names/values<br/>stream_fields/ids]
         end
 

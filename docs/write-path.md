@@ -7,7 +7,14 @@ sidebar_position: 3
 
 ## Overview
 
-Victoria Lakehouse accepts data through VL-compatible insert APIs, buffers rows in memory, and flushes them as optimally-sized Parquet files to S3. A write-ahead log (WAL) ensures crash safety, and a buffer query bridge provides zero-delay read-after-write visibility.
+Victoria Lakehouse accepts data through VL-compatible insert APIs, buffers ingested rows, and flushes them as optimally-sized Parquet files to S3, with zero-delay read-after-write visibility on the recent (not-yet-flushed) window.
+
+The insert buffer is selectable via `insert.buffer_engine`:
+
+- **`buffer`** (default) — rows stage in an in-memory `[]schema.{Log,Trace}Row` slice; a write-ahead log (WAL) on disk provides crash safety, and a buffer query bridge serves the unflushed window to readers.
+- **`logstore`** — rows feed a real per-pod `logstorage.Storage` (the VictoriaLogs/Traces in-memory-parts model) via the exported `MustAddRows`; the recent window is served from that buffer through the exported `Storage.RunQuery` (no struct→DataBlock reconstruction). Durability is logstorage's own on-disk parts (written every flush interval, restored on open) — so **no separate LH WAL is needed**; the crash-loss window matches hot VT/VL. This engine is what gives cold Jaeger/Tempo parity with hot VT for recently-ingested traces. See [buffer-queryable-store-design](architecture/buffer-queryable-store-design.md).
+
+The rest of this page describes the **`buffer`** engine (the default). Both engines share the same Parquet flush + manifest machinery downstream.
 
 ```mermaid
 flowchart LR

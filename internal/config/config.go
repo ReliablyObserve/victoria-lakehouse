@@ -141,8 +141,6 @@ type InsertConfig struct {
 	PeerReplicate        bool          `yaml:"peer_replicate"`
 	PeerReplicateTimeout time.Duration `yaml:"peer_replicate_timeout"`
 	PeerReplicateTTL     time.Duration `yaml:"peer_replicate_ttl"`
-	AsyncWALEnabled      bool          `yaml:"async_wal_enabled"`
-	AsyncWALBatchLinger  time.Duration `yaml:"async_wal_batch_linger"`
 
 	// BufferEngine selects how the insert buffer (recently-ingested,
 	// not-yet-flushed rows) is held and queried (Option B; see
@@ -770,8 +768,6 @@ func Default() *Config {
 			PeerReplicate:        false,
 			PeerReplicateTimeout: 5 * time.Millisecond,
 			PeerReplicateTTL:     30 * time.Second,
-			AsyncWALEnabled:      false,
-			AsyncWALBatchLinger:  50 * time.Millisecond,
 
 			BufferEngine:    "buffer", // legacy staging buffer; "logstore" opts into Option B
 			BufferDir:       "/data/lakehouse/buffer",
@@ -1773,12 +1769,6 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Insert.PeerReplicateTTL > 0 {
 		base.Insert.PeerReplicateTTL = overlay.Insert.PeerReplicateTTL
-	}
-	if overlay.Insert.AsyncWALEnabled {
-		base.Insert.AsyncWALEnabled = true
-	}
-	if overlay.Insert.AsyncWALBatchLinger > 0 {
-		base.Insert.AsyncWALBatchLinger = overlay.Insert.AsyncWALBatchLinger
 	}
 
 	// Select
