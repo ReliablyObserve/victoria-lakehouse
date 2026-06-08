@@ -1,6 +1,7 @@
 package vlstorage
 
 import (
+	"strings"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -47,7 +48,11 @@ func DataBlockToTraceRows(db *logstorage.DataBlock, tenant logstorage.TenantID) 
 			if i >= len(c.Values) {
 				continue
 			}
-			v := c.Values[i]
+			// strings.Clone: c.Values aliases the DataBlock's pooled column memory,
+			// which logstorage reuses across blocks. Without cloning, a row's string
+			// fields read another row's bytes once the block is recycled — silently
+			// corrupting flushed field values.
+			v := strings.Clone(c.Values[i])
 			switch c.Name {
 			case "_msg":
 				// empty for traces.

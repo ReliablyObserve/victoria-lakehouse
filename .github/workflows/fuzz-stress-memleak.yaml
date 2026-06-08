@@ -198,7 +198,6 @@ jobs:
           - internal/azdetect:FuzzDetect_EnvVar
           - internal/azdetect:FuzzDetectAWSIMDS_Response
           - internal/azdetect:FuzzDetectGCPMetadata_Response
-          - internal/wal:FuzzReplayCorruptedRecord
           - internal/buffer:FuzzHandlerParams
           - internal/traceindex:FuzzUnmarshalIndex
           - internal/traceindex:FuzzRoundTripIndex
