@@ -21,6 +21,11 @@ fi
 
 mkdir -p "$(dirname "$SHAPE_BACKING")" "$SHAPE_DATA_PATH"
 [ -f "$SHAPE_BACKING" ] || dd if=/dev/zero of="$SHAPE_BACKING" bs=1M count="$SHAPE_SIZE_MB" status=none
+# Containers ship only /dev/loop0-7; when several shaped services (VL + VT) each
+# grab a loop, the later one needs loop8+ whose device node doesn't exist yet
+# ("losetup: device node /dev/loopN is lost") and its entrypoint dies. Pre-create
+# the nodes so losetup -f always finds a usable free loop.
+for n in $(seq 0 63); do [ -e "/dev/loop$n" ] || mknod "/dev/loop$n" b 7 "$n" 2>/dev/null || true; done
 LOOP=$(losetup -f --show "$SHAPE_BACKING")
 MAJMIN=$(lsblk -no MAJ:MIN "$LOOP" | head -1 | tr -d ' ')
 mkfs.ext4 -q -F "$LOOP"
