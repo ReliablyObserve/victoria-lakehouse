@@ -33,22 +33,27 @@ func TestInteg_FreeTextFilter_TimestampOnly(t *testing.T) {
 
 	startNs := now.Add(-time.Minute).UnixNano()
 	endNs := now.Add(time.Minute).UnixNano()
-	q := mustParseQueryWithTime(t, "error", startNs, endNs)
 
-	// The timestamp-only hint is what the count()/hits endpoints set — the exact
-	// condition under which the bug dropped _msg.
-	ctx := storage.WithTimestampOnlyHint(context.Background())
-	var got int
-	var mu sync.Mutex
-	if err := s.RunQuery(ctx, nil, q, func(_ uint, db *logstorage.DataBlock) {
-		mu.Lock()
-		got += db.RowsCount()
-		mu.Unlock()
-	}); err != nil {
-		t.Fatalf("RunQuery: %v", err)
-	}
-	if got != 3 {
-		t.Fatalf("free-text `error` under timestamp-only matched %d rows, want 3 "+
-			"(cold full-text search returns 0 regression)", got)
+	// Both the filter-only form and the stats-pipe form (the actual count()
+	// endpoint shape) must match — the pipe form takes a different projection
+	// path in queryColumns, which is where the real bug lived.
+	for _, query := range []string{"error", "error | stats count() n"} {
+		q := mustParseQueryWithTime(t, query, startNs, endNs)
+		// The timestamp-only hint is what the count()/hits endpoints set — the
+		// exact condition under which the bug dropped _msg.
+		ctx := storage.WithTimestampOnlyHint(context.Background())
+		var got int
+		var mu sync.Mutex
+		if err := s.RunQuery(ctx, nil, q, func(_ uint, db *logstorage.DataBlock) {
+			mu.Lock()
+			got += db.RowsCount()
+			mu.Unlock()
+		}); err != nil {
+			t.Fatalf("RunQuery(%q): %v", query, err)
+		}
+		if got != 3 {
+			t.Fatalf("free-text %q under timestamp-only matched %d rows, want 3 "+
+				"(cold full-text search returns 0 regression)", query, got)
+		}
 	}
 }
