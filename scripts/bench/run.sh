@@ -172,17 +172,21 @@ prep() { # $1 signal  $2 query  $3 system  $4 range_secs
       count_total)      [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s)' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\t* | stats count() n' "$logs_url" "$sns" "$ens" ;;
       count_by_service) [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT ServiceName,count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) GROUP BY ServiceName' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\t* | stats by (service.name) count()' "$logs_url" "$sns" "$ens" ;;
       fulltext)         [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND position(Body,'"'"'error'"'"')>0' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\terror | stats count() n' "$logs_url" "$sns" "$ens" ;;
+      level_filter)     [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND SeverityText='"'"'ERROR'"'"'' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\tlevel:ERROR | stats count() n' "$logs_url" "$sns" "$ens" ;;
     esac
-  else # traces
+  else # traces. trace_id:* counts only REAL spans — VT's raw count() also
+       # includes internal aggregate rows (service_graph etc.) that LH/CH (LH's
+       # Parquet) correctly drop, so without this the VT baseline over-counts.
     case "$query" in
-      count_total)      [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s)' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\t* | stats count() n' "$traces_url" "$sns" "$ens" ;;
-      count_by_service) [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT ServiceName,count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) GROUP BY ServiceName' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\t* | stats by (service.name) count()' "$traces_url" "$sns" "$ens" ;;
+      count_total)      [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s)' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | stats count() n' "$traces_url" "$sns" "$ens" ;;
+      count_by_service) [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT ServiceName,count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) GROUP BY ServiceName' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | stats by (service.name) count()' "$traces_url" "$sns" "$ens" ;;
+      service_filter)   [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND ServiceName='"'"'api-gateway'"'"'' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* service.name:="api-gateway" | stats count() n' "$traces_url" "$sns" "$ens" ;;
     esac
   fi
 }
 
-LOG_QUERIES="count_total count_by_service fulltext"
-TRACE_QUERIES="count_total count_by_service"
+LOG_QUERIES="count_total count_by_service fulltext level_filter"
+TRACE_QUERIES="count_total count_by_service service_filter"
 LOG_SYSTEMS="victorialogs lakehouse clickhouse"      # VL = baseline
 TRACE_SYSTEMS="victoriatraces lakehouse clickhouse"  # VT = baseline
 
