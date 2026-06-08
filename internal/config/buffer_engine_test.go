@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestBufferEngine_Validation(t *testing.T) {
 	for _, tc := range []struct {
@@ -70,5 +73,42 @@ func TestBufferEngine_Defaults(t *testing.T) {
 	}
 	if c.Insert.BufferRetention <= 0 {
 		t.Error("default BufferRetention must be positive")
+	}
+}
+
+func TestBufferFlushValidation(t *testing.T) {
+	base := func() *Config { c := Default(); c.Insert.BufferEngine = "logstore"; return c }
+
+	// flush requires logstore engine
+	c := base()
+	c.Insert.BufferEngine = "buffer"
+	c.Insert.BufferFlushEnabled = true
+	if err := c.validateInsert(); err == nil {
+		t.Error("flush with buffer engine should fail validation")
+	}
+
+	// retention must be >= 2x interval
+	c = base()
+	c.Insert.BufferFlushEnabled = true
+	c.Insert.BufferFlushInterval = 60 * time.Second
+	c.Insert.BufferRetention = 90 * time.Second // < 2x
+	if err := c.validateInsert(); err == nil {
+		t.Error("retention < 2x interval should fail validation")
+	}
+
+	// valid: logstore + retention >= 2x interval
+	c = base()
+	c.Insert.BufferFlushEnabled = true
+	c.Insert.BufferFlushInterval = 60 * time.Second
+	c.Insert.BufferRetention = 30 * time.Minute
+	if err := c.validateInsert(); err != nil {
+		t.Errorf("valid flush config rejected: %v", err)
+	}
+
+	// default config (flush off) always valid
+	dc := Default()
+	dc.Mode = ModeLogs
+	if err := dc.validateInsert(); err != nil {
+		t.Errorf("default config invalid: %v", err)
 	}
 }

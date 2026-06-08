@@ -159,6 +159,16 @@ type InsertConfig struct {
 	// BufferRetention bounds how long rows live in the logstore buffer before
 	// VL drops them; once the flush sink is active this is just a ceiling.
 	BufferRetention time.Duration `yaml:"buffer_retention"`
+	// BufferFlushEnabled makes the logstore buffer the AUTHORITATIVE Parquet
+	// producer via the BufferFlusher (the WAL cutover). Default false: the
+	// legacy []row path stays authoritative and the buffer is read-only shadow.
+	// Requires BufferEngine == "logstore".
+	BufferFlushEnabled bool `yaml:"buffer_flush_enabled"`
+	// BufferFlushInterval is how often the BufferFlusher drains the buffer's
+	// just-elapsed window to S3 Parquet. Must be << BufferRetention so no row
+	// ages out before it is flushed (validated: retention >= 2*interval).
+	// Default 60s.
+	BufferFlushInterval time.Duration `yaml:"buffer_flush_interval"`
 }
 
 // BufferEngineLogstore reports whether the logstorage-native buffer (Option B)
@@ -769,9 +779,11 @@ func Default() *Config {
 			PeerReplicateTimeout: 5 * time.Millisecond,
 			PeerReplicateTTL:     30 * time.Second,
 
-			BufferEngine:    "buffer", // legacy staging buffer; "logstore" opts into Option B
-			BufferDir:       "/data/lakehouse/buffer",
-			BufferRetention: time.Hour,
+			BufferEngine:        "buffer", // legacy staging buffer; "logstore" opts into Option B
+			BufferDir:           "/data/lakehouse/buffer",
+			BufferRetention:     time.Hour,
+			BufferFlushEnabled:  false, // cutover off by default; legacy path authoritative
+			BufferFlushInterval: 60 * time.Second,
 		},
 
 		Select: SelectConfig{
@@ -1069,6 +1081,21 @@ func (c *Config) validateInsert() error {
 	case "", "buffer", "logstore":
 	default:
 		return fmt.Errorf("--lakehouse.insert.buffer-engine must be \"buffer\" or \"logstore\", got %q", c.Insert.BufferEngine)
+	}
+	if c.Insert.BufferFlushEnabled {
+		if !c.Insert.BufferEngineLogstore() {
+			return fmt.Errorf("--lakehouse.insert.buffer-flush-enabled requires buffer-engine=logstore, got %q", c.Insert.BufferEngine)
+		}
+		if c.Insert.BufferFlushInterval <= 0 {
+			return fmt.Errorf("--lakehouse.insert.buffer-flush-interval must be > 0 when flush is enabled")
+		}
+		// The buffer must keep a row at least until it's flushed; require a 2x
+		// margin so a row never ages out of the buffer before the flusher drains
+		// its window.
+		if c.Insert.BufferRetention < 2*c.Insert.BufferFlushInterval {
+			return fmt.Errorf("--lakehouse.insert.buffer-retention (%s) must be >= 2x buffer-flush-interval (%s) so rows aren't dropped before flush",
+				c.Insert.BufferRetention, c.Insert.BufferFlushInterval)
+		}
 	}
 	if c.Insert.MaxBufferBytes != "" {
 		if _, err := ParseSizeBytes(c.Insert.MaxBufferBytes); err != nil {
@@ -1751,6 +1778,12 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Insert.BufferRetention > 0 {
 		base.Insert.BufferRetention = overlay.Insert.BufferRetention
+	}
+	if overlay.Insert.BufferFlushEnabled {
+		base.Insert.BufferFlushEnabled = true
+	}
+	if overlay.Insert.BufferFlushInterval > 0 {
+		base.Insert.BufferFlushInterval = overlay.Insert.BufferFlushInterval
 	}
 	if overlay.Insert.AckMode != "" {
 		base.Insert.AckMode = overlay.Insert.AckMode
