@@ -161,7 +161,22 @@ up_stack() {
   done
 }
 teardown() { (( KEEP )) && { log "leaving stack up (--keep)"; return; }; log "tearing down stack…"; docker compose "${COMPOSE_ARGS[@]}" down -v >/dev/null 2>&1 || true; }
-ingest() { (( DO_INGEST )) || return 0; log "ingesting seeded dataset…"; [[ -x scripts/benchmark-preflight.sh ]] && scripts/benchmark-preflight.sh || log "(no preflight ingest script; assuming data already present)"; }
+# The datagen-seed service (in the compose) backfills ~7d of logs+traces into
+# VL/VT/LH at `up`. Wait for it to finish, then let LH flush to S3 so ClickHouse's
+# s3() views see the Parquet; finally run the preflight data/parity check.
+ingest() {
+  (( DO_INGEST )) || return 0
+  log "waiting for datagen-seed to backfill (~7d of data)…"
+  local tries=0 state
+  while :; do
+    state=$(docker compose "${COMPOSE_ARGS[@]}" ps -a --format '{{.Service}} {{.State}}' 2>/dev/null | awk '$1=="datagen-seed"{print $2}')
+    [[ "$state" == exited* || "$state" == "exited" ]] && break
+    sleep 5; tries=$((tries+1)); (( tries > 180 )) && { log "datagen-seed not finished after 15m; continuing"; break; }
+  done
+  log "seed done; waiting 75s for LH flush to S3 (ClickHouse reads the Parquet)…"
+  sleep 75
+  [[ -x scripts/benchmark-preflight.sh ]] && { log "preflight data/parity check…"; scripts/benchmark-preflight.sh || log "(preflight reported issues — see above)"; }
+}
 set_latency() { local ms="$1"; if [[ "$ms" == 0 ]]; then log "S3 latency: passthrough (0ms)"; scripts/inject-s3-latency.sh 0 0 >/dev/null 2>&1 || true; else log "S3 latency: ${ms}ms"; scripts/inject-s3-latency.sh "$ms" "$((ms/3))" >/dev/null 2>&1 || true; fi; }
 
 # Parity gate: count_total over 24h must agree across systems (within tolerance)
