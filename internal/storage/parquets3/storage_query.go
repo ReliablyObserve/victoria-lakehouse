@@ -652,7 +652,20 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	// context hint) and the query has no column-specific filters, project only
 	// the timestamp column to avoid deserializing all row data.
 	if projectedCols == nil && storage.IsTimestampOnly(ctx) {
-		projectedCols = map[string]bool{s.registry.TimestampColumn(): true}
+		// Timestamp-only is safe ONLY for an UNFILTERED count/hits. A row filter
+		// must be evaluated against its columns at scan time — a free-text _msg
+		// word filter (e.g. `error | stats count()`) has no bloom to push down,
+		// so reducing to timestamp-only drops _msg and the filter silently matches
+		// zero rows (cold full-text search returned 0). VL prepends `_time:[...]`
+		// to every query, so look past it: when any other filter term remains,
+		// keep reading all columns (file/row-group pushdown still prunes the work).
+		filterPart := queryStr
+		if idx := strings.Index(queryStr, " | "); idx >= 0 {
+			filterPart = strings.TrimSpace(queryStr[:idx])
+		}
+		if !hasContentFilter(filterPart) {
+			projectedCols = map[string]bool{s.registry.TimestampColumn(): true}
+		}
 	}
 	// Field-enumerating pipes (field_names / field_values / facets /
 	// block_stats) must see every column the row carries — projection

@@ -117,6 +117,20 @@ func referencesField(query, name string) bool {
 	return false
 }
 
+// hasContentFilter reports whether the query carries a row filter beyond the
+// implicit `_time:[...]` range VL prepends and a bare `*` — i.e. something that
+// must be evaluated against row columns at scan time, so the timestamp-only
+// projection reduction would be unsafe. Mirror of the logs-module helper.
+func hasContentFilter(filterPart string) bool {
+	s := strings.TrimSpace(filterPart)
+	if strings.HasPrefix(s, "_time:[") {
+		if i := strings.IndexByte(s, ']'); i >= 0 {
+			s = strings.TrimSpace(s[i+1:])
+		}
+	}
+	return s != "" && s != "*"
+}
+
 func isFreeTextSearch(query string) bool {
 	trimmed := strings.TrimSpace(query)
 	if trimmed == "" || trimmed == "*" {
