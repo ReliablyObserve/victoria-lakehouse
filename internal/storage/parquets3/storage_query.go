@@ -447,10 +447,15 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, m
 	if bufStartNs > endNs {
 		return
 	}
-	// Option B (P3): co-located logstorage-native buffer serves the recent
-	// window via the same engine — no struct→DataBlock conversion. Pipe-stripped
-	// clone scoped to (watermark, endNs]; the outer RunQuery applies pipes once.
-	if s.localBuffer != nil {
+	// Option B (P3): use the co-located logstorage-native buffer directly
+	// (zero-conversion) ONLY when this node has no peers — single-node role=all,
+	// where the local buffer holds ALL unflushed rows. In a multi-pod deployment
+	// the local buffer holds only THIS pod's rows; other insert pods' unflushed
+	// rows live in their buffers, reachable only via the BufferBridge HTTP
+	// fan-out. So with peers we fall through to the fan-out (every pod's handler
+	// returns its own rows — no double-count, no need to exclude self from the
+	// unfiltered peer list).
+	if s.localBuffer != nil && (s.bufferBridge == nil || !s.bufferBridge.HasPeers()) {
 		qBuf := q.CloneWithTimeFilter(q.GetTimestamp(), bufStartNs, endNs)
 		qBuf.DropAllPipes()
 		qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, tenantIDs, qBuf, false, nil)

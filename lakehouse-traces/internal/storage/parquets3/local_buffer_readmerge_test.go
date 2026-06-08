@@ -8,6 +8,7 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
 )
 
@@ -58,6 +59,41 @@ func TestQueryBufferBridge_LocalBufferServesRecent(t *testing.T) {
 	}
 	if got := run(`trace_id:"t"`); got != n {
 		t.Fatalf("trace_id filter via local buffer: want %d, got %d", n, got)
+	}
+}
+
+type spyLocalBuffer struct{ calls int }
+
+func (s *spyLocalBuffer) RunQuery(_ *logstorage.QueryContext, _ logstorage.WriteDataBlockFunc) error {
+	s.calls++
+	return nil
+}
+func (s *spyLocalBuffer) Close() {}
+
+// TestQueryBufferBridge_MultiNodeSkipsLocalBuffer pins the B1 fix: when peers are
+// present (multi-pod role=all), the read path must NOT serve only the local
+// buffer (which holds just this pod's rows) — it must fall through to the
+// BufferBridge fan-out so other pods' unflushed rows are gathered. Without peers
+// (single-node), the local buffer is used directly.
+func TestQueryBufferBridge_MultiNodeSkipsLocalBuffer(t *testing.T) {
+	q, _ := logstorage.ParseQueryAtTimestamp("*", time.Now().UnixNano())
+	now := time.Now().UnixNano()
+	run := func(setPeers bool) int {
+		spy := &spyLocalBuffer{}
+		bb := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: false}, config.ModeTraces)
+		if setPeers {
+			bb.SetEndpoints([]string{"http://peer-a:20428", "http://peer-b:20428"})
+		}
+		s := &Storage{localBuffer: spy, bufferBridge: bb, cfg: &config.Config{Mode: config.ModeTraces}}
+		s.queryBufferBridge(context.Background(), now-int64(time.Hour), now+int64(time.Hour), 0,
+			q, []logstorage.TenantID{{}}, func(_ uint, _ *logstorage.DataBlock) {})
+		return spy.calls
+	}
+	if c := run(false); c != 1 {
+		t.Fatalf("no peers: local buffer should be used directly, calls=%d want 1", c)
+	}
+	if c := run(true); c != 0 {
+		t.Fatalf("with peers: local buffer must be SKIPPED (fall through to fan-out), calls=%d want 0", c)
 	}
 }
 

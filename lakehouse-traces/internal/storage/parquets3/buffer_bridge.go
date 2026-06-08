@@ -74,6 +74,19 @@ func (b *BufferBridge) SetEndpointsWithZones(epZones map[string]string, selfAZ s
 	}
 }
 
+// HasPeers reports whether real peer insert pods have been discovered (i.e.
+// this is a multi-node deployment, not the single-node selfEndpoint fallback).
+// The Option B read path uses the local logstorage buffer directly ONLY when
+// there are no peers; with peers it falls through to the HTTP fan-out so every
+// pod's unflushed rows are gathered (each pod's /internal/buffer/query handler
+// returns its own buffer), avoiding the need to identify+exclude self from the
+// peer list (which DNS discovery returns unfiltered).
+func (b *BufferBridge) HasPeers() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.endpoints) > 0
+}
+
 // SetSelfEndpoint records the local pod's own buffer-query URL.
 // When peer discovery yields zero endpoints — the single-node
 // topology=all case — getQueryEndpoints returns [selfEndpoint]
