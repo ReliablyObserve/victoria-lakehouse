@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
-"""Render the unified benchmark JSON into a markdown report normalized to the
-VL/VT disk baseline — and, crucially, VALIDATE that each latency number is over an
-equivalent, non-empty result. A fast p95 over an empty or divergent result is not
-a win, so every cell is checked for: errors, zero bytes (empty response), and
-result-equivalence with the baseline. Cells that fail validation are flagged and
-excluded from the "where LH lags" ranking.
+"""Render the unified benchmark JSON into a markdown report — SPLIT by logs vs
+traces, each with its own summary, plus an overall roll-up. Every latency is
+validated against an equivalent, non-empty result; cells that errored, came back
+empty, or diverge >5% from the baseline are flagged ✗ and excluded from the stats.
 
 Usage: report.py <raw.json> <out.md>
 """
 import json
+import statistics
 import sys
 from collections import defaultdict
 
 BASELINE = {"logs": "victorialogs", "traces": "victoriatraces"}
 ENGINES = ["lakehouse", "clickhouse"]
-TOL = 0.05  # result within 5% of baseline counts as equivalent
+TOL = 0.05
 
 
 def num(v):
@@ -29,27 +28,35 @@ def as_int(v):
 
 
 def cell_status(row, base_result):
-    """Return (ok, note) for one system's cell."""
     if row is None:
         return False, "missing"
-    if row.get("errors", 0) > 0 and (row.get("iters", 0) == 0):
+    if row.get("iters", 0) == 0:
         return False, "errored"
     if (row.get("avg_bytes", 0) or 0) == 0:
         return False, "empty (0 bytes)"
-    r = as_int(row.get("result"))
-    b = as_int(base_result)
-    if r is not None and b not in (None, 0):
-        if abs(r - b) / b > TOL:
-            return False, f"result {r} vs base {b}"
+    r, b = as_int(row.get("result")), as_int(base_result)
+    if r is not None and b not in (None, 0) and abs(r - b) / b > TOL:
+        return False, f"result {r} vs base {b}"
     return True, ""
 
 
-def ratio(v, base):
+def ratio_str(v, base):
     if v is None or base in (None, 0):
         return "—"
     r = v / base
     flag = " 🔴" if r >= 10 else (" ⚠️" if r >= 3 else "")
     return f"{r:.1f}×{flag}"
+
+
+def med(xs):
+    return statistics.median(xs) if xs else None
+
+
+def pct(xs, p):
+    if not xs:
+        return None
+    s = sorted(xs)
+    return s[min(int(len(s) * p / 100), len(s) - 1)]
 
 
 def main():
@@ -59,51 +66,80 @@ def main():
     for r in rows:
         g[(r["signal"], r["query"], r["range"], r["latency_ms"])][r["system"]] = r
 
-    lines = [
-        "# Cold-tier benchmark — LH vs VL/VT (baseline) vs ClickHouse",
-        "",
-        "p95 latency (ms), with **result-validity checks**. Baseline = VL/VT on disk "
-        "(gp3-simulated under `--disk-profile gp3-loop`). LH and ClickHouse read the "
-        "**same Parquet** on S3 behind the latency proxy. Each cell shows `p95 (×base) "
-        "[result]`; **✗ = invalid** (errored / 0 bytes / result diverges >5% from "
-        "baseline — latency NOT comparable).",
-        "",
-        "| signal | query | range | S3 lat | baseline p95 [res] | LH | CH |",
-        "|---|---|---|---:|---:|---|---|",
-    ]
-    valid_worst = []
+    signals = sorted({k[0] for k in g})
     invalid = []
-    for key in sorted(g):
-        signal, query, rng, lat = key
-        systems = g[key]
-        base_sys = BASELINE.get(signal)
-        base_row = systems.get(base_sys, {})
-        base_p95 = num(base_row.get("p95_ms"))
-        base_res = base_row.get("result")
-        b_ok, b_note = cell_status(base_row, base_res)
-        base_cell = f"{base_p95} [{base_res}]" + ("" if b_ok else f" ✗{(' '+b_note) if b_note else ''}")
-        eng_cells = []
-        for eng in ENGINES:
-            row = systems.get(eng)
-            ok, note = cell_status(row, base_res)
-            p = num(row.get("p95_ms")) if row else None
-            if not ok:
-                eng_cells.append(f"✗ {note}")
-                invalid.append((signal, query, rng, lat, eng, note))
-            else:
-                eng_cells.append(f"{p} ({ratio(p, base_p95)}) [{row.get('result')}]")
-                if eng == "lakehouse" and p and base_p95:
-                    valid_worst.append((p / base_p95, key, p, base_p95))
-        lines.append(f"| {signal} | {query} | {rng} | {lat}ms | {base_cell} | {eng_cells[0]} | {eng_cells[1]} |")
+    lines = ["# Cold-tier benchmark — LH vs VL/VT (baseline) vs ClickHouse", ""]
 
-    if valid_worst:
-        valid_worst.sort(reverse=True)
-        lines += ["", "## Where LH lags the baseline most (valid cells only)", ""]
-        for r, key, lh, base in valid_worst[:8]:
-            lines.append(f"- **{r:.1f}×** — {'/'.join(map(str, key))}: LH {lh}ms vs baseline {base}ms")
+    # ---- gather per-signal stats + rendered tables -------------------------
+    overall = {}
+    sections = {}
+    for signal in signals:
+        base_sys = BASELINE.get(signal)
+        lh_ratios, ch_speedups, by_query = [], [], defaultdict(list)
+        n_valid = n_invalid = 0
+        table = [
+            "| query | range | S3 lat | baseline p95 [res] | LH | CH |",
+            "|---|---|---:|---:|---|---|",
+        ]
+        for key in sorted(k for k in g if k[0] == signal):
+            _, query, rng, lat = key
+            sysd = g[key]
+            brow = sysd.get(base_sys, {})
+            bp = num(brow.get("p95_ms"))
+            bres = brow.get("result")
+            cells = [f"{bp} [{bres}]"]
+            for eng in ENGINES:
+                row = sysd.get(eng)
+                ok, note = cell_status(row, bres)
+                p = num(row.get("p95_ms")) if row else None
+                if not ok:
+                    cells.append(f"✗ {note}")
+                    invalid.append((signal, query, rng, lat, eng, note))
+                    if eng == "lakehouse":
+                        n_invalid += 1
+                else:
+                    cells.append(f"{p} ({ratio_str(p, bp)}) [{row.get('result')}]")
+                    if eng == "lakehouse" and p and bp:
+                        n_valid += 1
+                        lh_ratios.append(p / bp)
+                        by_query[query].append(p / bp)
+                    if eng == "clickhouse" and p:
+                        lhp = num(sysd.get("lakehouse", {}).get("p95_ms"))
+                        if lhp:
+                            ch_speedups.append(p / lhp)
+            table.append(f"| {query} | {rng} | {lat}ms | {cells[0]} | {cells[1]} | {cells[2]} |")
+        sections[signal] = table
+        overall[signal] = dict(
+            n_valid=n_valid, n_invalid=n_invalid,
+            lh_med=med(lh_ratios), lh_p90=pct(lh_ratios, 90), lh_best=min(lh_ratios) if lh_ratios else None,
+            ch_speedup=med(ch_speedups),
+            by_query={q: med(v) for q, v in by_query.items()},
+        )
+
+    # ---- overall roll-up ---------------------------------------------------
+    lines += ["## Overall", ""]
+    tot_v = sum(o["n_valid"] for o in overall.values())
+    tot_i = sum(o["n_invalid"] for o in overall.values())
+    lines.append(f"- **{tot_v} valid LH cells, {tot_i} invalid** (excluded). "
+                 f"Baseline = VL/VT on disk (gp3-simulated); LH + ClickHouse read the same S3 Parquet.")
+    for signal in signals:
+        o = overall[signal]
+        lh = f"median **{o['lh_med']:.1f}×** baseline (p90 {o['lh_p90']:.1f}×, best {o['lh_best']:.1f}×)" if o["lh_med"] else "—"
+        ch = f"**{o['ch_speedup']:.0f}× faster than ClickHouse**" if o["ch_speedup"] else "—"
+        lines.append(f"- **{signal}**: LH {lh}; LH is {ch}. ({o['n_valid']} valid / {o['n_invalid']} invalid)")
+
+    # ---- per-signal sections ----------------------------------------------
+    for signal in signals:
+        o = overall[signal]
+        lines += ["", f"## {signal.capitalize()}", ""]
+        if o["by_query"]:
+            lines.append("**Per-query median LH vs baseline:** " +
+                         ", ".join(f"{q} {r:.1f}×" for q, r in sorted(o["by_query"].items())))
+            lines.append("")
+        lines += sections[signal]
 
     if invalid:
-        lines += ["", "## ⚠️ Invalid cells (NOT comparable — fix before trusting)", ""]
+        lines += ["", "## ⚠️ Invalid cells (excluded — not comparable)", ""]
         for signal, query, rng, lat, eng, note in invalid:
             lines.append(f"- {eng} — {signal}/{query}/{rng}/lat{lat}ms: **{note}**")
 

@@ -173,6 +173,10 @@ prep() { # $1 signal  $2 query  $3 system  $4 range_secs
       count_by_service) [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT ServiceName,count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) GROUP BY ServiceName' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\t* | stats by (service.name) count()' "$logs_url" "$sns" "$ens" ;;
       fulltext)         [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND position(Body,'"'"'error'"'"')>0' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\terror | stats count() n' "$logs_url" "$sns" "$ens" ;;
       level_filter)     [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND SeverityText='"'"'ERROR'"'"'' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\tlevel:ERROR | stats count() n' "$logs_url" "$sns" "$ens" ;;
+      multi_filter)     [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND SeverityText='"'"'ERROR'"'"' AND ServiceName='"'"'api-gateway'"'"'' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\tlevel:ERROR service.name:="api-gateway" | stats count() n' "$logs_url" "$sns" "$ens" ;;
+      negation)         [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND SeverityText!='"'"'INFO'"'"'' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\t-level:INFO | stats count() n' "$logs_url" "$sns" "$ens" ;;
+      trace_lookup)     [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND TraceId='"'"'%s'"'"'' "${EP[ch]}" "$ss" "$es" "$SAMPLE_TID" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:=%s | stats count() n' "$logs_url" "$sns" "$ens" "$SAMPLE_TID" ;;
+      high_card)        [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT TraceId,count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) GROUP BY TraceId' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\t* | stats by (trace_id) count()' "$logs_url" "$sns" "$ens" ;;
     esac
   else # traces. trace_id:* counts only REAL spans — VT's raw count() also
        # includes internal aggregate rows (service_graph etc.) that LH/CH (LH's
@@ -181,12 +185,36 @@ prep() { # $1 signal  $2 query  $3 system  $4 range_secs
       count_total)      [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s)' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | stats count() n' "$traces_url" "$sns" "$ens" ;;
       count_by_service) [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT ServiceName,count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) GROUP BY ServiceName' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | stats by (service.name) count()' "$traces_url" "$sns" "$ens" ;;
       service_filter)   [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND ServiceName='"'"'api-gateway'"'"'' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* service.name:="api-gateway" | stats count() n' "$traces_url" "$sns" "$ens" ;;
+      trace_by_id)      [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND TraceId='"'"'%s'"'"'' "${EP[ch]}" "$ss" "$es" "$SAMPLE_TID" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:=%s | stats count() n' "$traces_url" "$sns" "$ens" "$SAMPLE_TID" ;;
+      span_name)        [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND SpanName='"'"'HTTP GET /api/v1/users'"'"'' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* span.name:="HTTP GET /api/v1/users" | stats count() n' "$traces_url" "$sns" "$ens" ;;
+      slow_spans)       [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND Duration>1000000000' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* duration_ns:>1000000000 | stats count() n' "$traces_url" "$sns" "$ens" ;;
     esac
   fi
 }
 
-LOG_QUERIES="count_total count_by_service fulltext level_filter"
-TRACE_QUERIES="count_total count_by_service service_filter"
+LOG_QUERIES="count_total count_by_service fulltext level_filter multi_filter negation trace_lookup high_card"
+TRACE_QUERIES="count_total count_by_service service_filter trace_by_id span_name slow_spans"
+
+# SAMPLE_TID: a real trace_id pulled from the data at runtime, used by the
+# point-lookup edge cases (trace-by-id is the key trace-UX query — bloom/smartCache
+# path). Filled by fetch_sample_tid before the matrix.
+SAMPLE_TID="ffffffffffffffffffffffffffffffff"
+fetch_sample_tid() {
+  local tid
+  tid=$(curl -sf --max-time 20 --data-urlencode 'query=trace_id:* | fields trace_id | limit 1' \
+    --data-urlencode "start=$(start_ns 604800)" --data-urlencode "end=$(end_ns 604800)" \
+    "${EP[lh_traces]}/select/logsql/query" 2>/dev/null | python3 -c "
+import sys,json
+for l in sys.stdin:
+  l=l.strip()
+  if l:
+    try:
+      t=json.loads(l).get('trace_id','')
+      if t: print(t); break
+    except: pass")
+  [[ -n "$tid" ]] && SAMPLE_TID="$tid"
+  log "sample trace_id for point lookups: $SAMPLE_TID"
+}
 LOG_SYSTEMS="victorialogs lakehouse clickhouse"      # VL = baseline
 TRACE_SYSTEMS="victoriatraces lakehouse clickhouse"  # VT = baseline
 
@@ -286,6 +314,7 @@ except: print('ERR')"); fi
 trap teardown EXIT
 (( DO_UP )) && { up_stack || exit 1; }
 ingest
+fetch_sample_tid
 
 RESULTS="["; first=1
 for lat in $S3_LATENCIES; do
