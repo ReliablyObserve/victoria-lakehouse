@@ -65,10 +65,15 @@ type FileInfo struct {
 	CompactionLevel   int                     `json:"compaction_level,omitempty"`
 	Labels            map[string][]string     `json:"labels,omitempty"`
 	ColumnStats       map[string]ColumnMinMax `json:"column_stats,omitempty"`
-	StorageClass      string                  `json:"storage_class,omitempty"`
-	ClassCheckedAt    time.Time               `json:"class_checked_at,omitempty"`
-	ClassSource       string                  `json:"class_source,omitempty"`
-	CreatedAt         time.Time               `json:"created_at,omitempty"`
+	// LabelAggregates is field -> value -> row count for low-cardinality label
+	// fields. It lets `stats count() by (field)` answer from the manifest without
+	// opening Parquet (PERF-2). Populated at flush, summed across files at
+	// compaction, and persisted in the snapshot. Capped per field at write time.
+	LabelAggregates map[string]map[string]int64 `json:"label_aggregates,omitempty"`
+	StorageClass    string                      `json:"storage_class,omitempty"`
+	ClassCheckedAt  time.Time                   `json:"class_checked_at,omitempty"`
+	ClassSource     string                      `json:"class_source,omitempty"`
+	CreatedAt       time.Time                   `json:"created_at,omitempty"`
 }
 
 // BucketOr returns the file's bucket, falling back to defaultBucket
@@ -911,6 +916,38 @@ func (m *Manifest) GetFilesForRangeTenant(startNs, endNs int64, account, project
 		return result[i].MinTimeNs < result[j].MinTimeNs
 	})
 	return result
+}
+
+// CountByLabel answers `stats count() by (field)` from the manifest's
+// LabelAggregates, summing per-value row counts over the tenant's files in
+// [startNs, endNs] — without opening any Parquet (PERF-2).
+//
+// complete=true means the returned counts are EXACT and zero files need
+// scanning. complete=false means at least one file overlapping the range is not
+// fully answerable from metadata — either it straddles a range boundary (its
+// whole-file aggregate would over-count rows outside the window) or it predates
+// the aggregate / had the field capped. The returned counts then cover only the
+// fully-contained aggregated files; the caller MUST scan uncovered[] and merge.
+func (m *Manifest) CountByLabel(startNs, endNs int64, account, project, field string) (counts map[string]int64, uncovered []FileInfo, complete bool) {
+	files := m.GetFilesForRangeTenant(startNs, endNs, account, project)
+	counts = make(map[string]int64)
+	complete = true
+	for _, fi := range files {
+		contained := fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
+			fi.MinTimeNs >= startNs && fi.MaxTimeNs <= endNs
+		if contained {
+			if agg, ok := fi.LabelAggregates[field]; ok {
+				for v, c := range agg {
+					counts[v] += c
+				}
+				continue
+			}
+		}
+		// Boundary overlap, or no aggregate for this field on this file.
+		uncovered = append(uncovered, fi)
+		complete = false
+	}
+	return counts, uncovered, complete
 }
 
 func (m *Manifest) GetFilesForRange(startNs, endNs int64) []FileInfo {
