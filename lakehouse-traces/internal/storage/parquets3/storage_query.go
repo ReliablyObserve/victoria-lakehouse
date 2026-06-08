@@ -939,7 +939,18 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, writeBlock logstorage.WriteDataBlockFunc) error {
 	projectedCols := queryColumns(queryStr, s.registry, pipeFields)
 	if projectedCols == nil && storage.IsTimestampOnly(ctx) {
-		projectedCols = map[string]bool{s.registry.TimestampColumn(): true}
+		// Timestamp-only is safe ONLY for an UNFILTERED count/hits. A free-text
+		// _msg word filter (e.g. `error | stats count()`) has no bloom to push
+		// down, so reducing to timestamp-only drops _msg and the filter silently
+		// matches zero rows. VL prepends `_time:[...]`; when any other filter term
+		// remains, keep reading all columns. Mirror of the logs-module fix.
+		filterPart := queryStr
+		if idx := strings.Index(queryStr, " | "); idx >= 0 {
+			filterPart = strings.TrimSpace(queryStr[:idx])
+		}
+		if !hasContentFilter(filterPart) {
+			projectedCols = map[string]bool{s.registry.TimestampColumn(): true}
+		}
 	}
 	// Field-enumerating pipes (field_names, field_values, facets,
 	// block_stats) must see every column the row carries — projection

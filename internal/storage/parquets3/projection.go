@@ -118,6 +118,21 @@ func referencesField(query, name string) bool {
 	return false
 }
 
+// hasContentFilter reports whether the query carries a row filter that must be
+// evaluated against row columns at scan time — anything beyond the implicit
+// `_time:[...]` range VL prepends to every query and a bare `*` wildcard. Used to
+// keep the timestamp-only projection reduction from dropping columns a filter
+// needs (notably _msg for a free-text word filter, which has no bloom pushdown).
+func hasContentFilter(filterPart string) bool {
+	s := strings.TrimSpace(filterPart)
+	if strings.HasPrefix(s, "_time:[") {
+		if i := strings.IndexByte(s, ']'); i >= 0 {
+			s = strings.TrimSpace(s[i+1:])
+		}
+	}
+	return s != "" && s != "*"
+}
+
 func isFreeTextSearch(query string) bool {
 	trimmed := strings.TrimSpace(query)
 	if trimmed == "" || trimmed == "*" {
