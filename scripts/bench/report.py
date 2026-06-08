@@ -35,8 +35,14 @@ def cell_status(row, base_result):
     if (row.get("avg_bytes", 0) or 0) == 0:
         return False, "empty (0 bytes)"
     r, b = as_int(row.get("result")), as_int(base_result)
-    if r is not None and b not in (None, 0) and abs(r - b) / b > TOL:
-        return False, f"result {r} vs base {b}"
+    if r is not None and b is not None:
+        # Strict: a 0-vs-nonzero result is a divergence too (don't let base==0
+        # silently pass mismatched cells — that hid a broken traces-scan compare).
+        if b == 0:
+            if r != 0:
+                return False, f"result {r} vs base 0"
+        elif abs(r - b) / b > TOL:
+            return False, f"result {r} vs base {b}"
     return True, ""
 
 
