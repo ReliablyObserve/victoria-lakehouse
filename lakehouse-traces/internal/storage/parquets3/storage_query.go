@@ -633,11 +633,22 @@ func bufferWatermark(files []manifest.FileInfo, tenantIDs []logstorage.TenantID)
 }
 
 func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs, watermarkNs int64, q *logstorage.Query, tenantIDs []logstorage.TenantID, filteredWriteBlock logstorage.WriteDataBlockFunc) {
+	// The watermark boundary exists ONLY to stop aggregation queries
+	// (count()/stats) from counting a span twice — once from the Parquet scan,
+	// once from the overlapping buffer. Trace-retrieval queries (Jaeger/Tempo
+	// span fetch, trace-by-id) are deduplicated by the reader on
+	// (trace_id, span_id), so for them double-emission is harmless — but the
+	// watermark would WRONGLY exclude a trace's buffer spans whenever a scanned
+	// Parquet file (holding other, newer traces) has a MaxTimeNs above this
+	// trace's time. So ignore the watermark for trace_id-filtered queries and
+	// serve the buffer's full window.
+	if len(extractFilterValuesAST(q.String(), "trace_id")) > 0 {
+		watermarkNs = 0
+	}
 	// Serve the buffer only for data STRICTLY newer than what the Parquet scan
 	// at this call site already emitted (watermarkNs). Call sites where no
 	// Parquet was emitted pass watermarkNs=0, so the buffer serves the whole
-	// window (e.g. trace-by-id where the index dropped every file — the trace's
-	// spans live only in the buffer).
+	// window.
 	bufStartNs := startNs
 	if watermarkNs > 0 && watermarkNs >= bufStartNs {
 		bufStartNs = watermarkNs + 1

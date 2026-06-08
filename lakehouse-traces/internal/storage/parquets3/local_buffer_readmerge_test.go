@@ -105,4 +105,20 @@ func TestQueryBufferBridge_WatermarkPreventsDoubleCount(t *testing.T) {
 	if got := count(now + 4); got != 0 {
 		t.Fatalf("watermark=now+4 (Parquet covers all): want 0, got %d", got)
 	}
+
+	// A trace_id-filtered query MUST ignore the watermark — span retrieval is
+	// reader-deduped, and the watermark would wrongly drop a trace's buffer
+	// spans (the regression that returned 0 spans for recent traces). Even with
+	// a watermark covering the whole window, a trace_id query returns all rows.
+	qTID, _ := logstorage.ParseQueryAtTimestamp(`trace_id:=t`, now)
+	countTID := func(watermarkNs int64) int64 {
+		var got atomic.Int64
+		wb := func(_ uint, db *logstorage.DataBlock) { got.Add(int64(db.RowsCount())) }
+		s.queryBufferBridge(context.Background(), now-int64(time.Hour), now+int64(time.Hour),
+			watermarkNs, qTID, []logstorage.TenantID{{}}, wb)
+		return got.Load()
+	}
+	if got := countTID(now + 4); got != 5 {
+		t.Fatalf("trace_id query must ignore watermark (got %d, want all 5)", got)
+	}
 }

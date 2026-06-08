@@ -426,6 +426,17 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, m
 	if maxRows > 0 && rowsEmitted.Load() >= maxRows {
 		return
 	}
+	// The watermark boundary exists ONLY to stop aggregation queries
+	// (count()/stats) from counting a row twice across the buffer↔Parquet
+	// overlap. trace_id-filtered queries are span/log RETRIEVAL (Jaeger/Tempo
+	// fetch, log→trace correlation): completeness matters and the watermark
+	// would wrongly exclude a trace's buffer rows whenever a scanned Parquet
+	// file (holding other, newer data) has a MaxTimeNs above this trace's time.
+	// So ignore the watermark for trace_id-filtered queries and serve the full
+	// window.
+	if len(extractFilterValuesAST(q.String(), "trace_id")) > 0 {
+		watermarkNs = 0
+	}
 	// Serve the buffer only for data STRICTLY newer than what the Parquet scan
 	// at this call site already emitted (watermarkNs). Sites with no Parquet
 	// emitted pass 0 → full window.
