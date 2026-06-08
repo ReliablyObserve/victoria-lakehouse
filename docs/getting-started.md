@@ -37,7 +37,7 @@ graph LR
 ```mermaid
 graph TD
     subgraph "Data Flow (Logs + Traces)"
-    I1["JSON / Loki / ES Bulk<br/>OTLP / Syslog / Fluentd<br/>Logstash / Datadog / Journald"] -->|"11+ formats"| W[WAL + Buffer]
+    I1["JSON / Loki / ES Bulk<br/>OTLP / Syslog / Fluentd<br/>Logstash / Datadog / Journald"] -->|"11+ formats"| W["logstore buffer<br/>(durable, no WAL)"]
     W -->|periodic flush| P[Parquet + ZSTD]
     P -->|PutObject| S3[(S3 Standard)]
     S3 -->|lifecycle| IA[S3 Infrequent Access]
@@ -460,7 +460,7 @@ logs:
     profile: max-performance # query speed matters most for reads
 ```
 
-Logs insert uses `max-durability` (WAL on, flush-sync, conservative settings). Logs select uses
+Logs insert uses `max-durability` (flush-sync, conservative settings). Logs select uses
 `max-performance` (big caches, more workers, aggressive prefetch).
 
 ### Cost Impact Comparison (500 GB/day, 1 year retention)

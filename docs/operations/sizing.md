@@ -28,7 +28,7 @@ Per pod, steady state:
   + Manifest in-memory state       ≈ 200 bytes × file_count
   + Footer cache                   ≈ 50 KiB × footer_max_items
   + Smart cache (L1)               ≈ cfg.cache.memory_mb MiB
-  + WAL replay buffer              ≈ 100 MiB peak during startup
+  + Buffer restore (logstore parts)   ≈ 100 MiB peak during startup
   + Per-query memory (max_live_bytes)  default 512 MiB × max_concurrent
   + Background goroutine pools     ≈ 100-200 MiB
   + Go runtime overhead            ≈ 300 MiB
@@ -44,7 +44,7 @@ Per pod, steady state:
 manifest        : 200 B × 10k    = 2 MB
 footer cache    : 50 KB × 10k    = 500 MB
 smart cache L1  : 256 MB
-WAL buffer      : 100 MB (transient)
+logstore buffer : 100 MB (recent ingest)
 query memory    : 512 MB × max_concurrent=8 = 4 GB (worst-case)
 goroutines      : 200 MB
 Go runtime      : 300 MB
@@ -62,7 +62,7 @@ if running heavy concurrent wildcard scans.
 manifest        : 200 B × 5M     = 1 GB
 footer cache    : 50 KB × 200k   = 10 GB
 smart cache L1  : 1 GB (cfg.cache.memory_mb=1024)
-WAL buffer      : 200 MB
+logstore buffer : 200 MB (recent ingest)
 query memory    : 512 MB × max_concurrent=16 = 8 GB
 goroutines      : 500 MB
 Go runtime      : 500 MB
@@ -94,7 +94,7 @@ Per-pod PVC holds:
 ```
 + Manifest snapshot                  ≈ 100 B × file_count
 + Footer cache snapshot              ≈ 50 KiB × footer_max_items  (planned, P3)
-+ WAL                                ≈ cfg.insert.wal_max_bytes
++ logstore buffer                    ≈ recent ingest (bounded by cfg.insert.buffer_retention)
 + Smart cache L2 (disk)              ≈ cfg.cache.disk_max_mb MiB
 + Tombstones                         ≈ negligible unless heavy delete traffic
 + Lifecycle / readiness state        ≈ < 10 MiB
@@ -105,7 +105,7 @@ Per-pod PVC holds:
 ```
 manifest snapshot     : 100 B × 5M    = 500 MB
 footer cache snapshot : 50 KB × 200k  = 10 GB  (when P3 lands)
-WAL                   : 2 GB (cfg.insert.wal_max_bytes)
+logstore buffer       : 2 GB (recent ingest, cfg.insert.buffer_retention)
 smart cache L2        : 100 GB (cfg.cache.disk_max_mb)
 ────────────────────────────────────────
 PVC size              ≈ 120-150 GB
