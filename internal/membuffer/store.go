@@ -16,6 +16,7 @@
 package membuffer
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -111,6 +112,13 @@ func (st *Store) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.W
 // and graceful shutdown.
 func (st *Store) DebugFlush() {
 	st.s.DebugFlush()
+}
+
+// GetTenantIDs returns the tenant IDs with data in [start, end] nanoseconds.
+// Reused from the upstream engine so the P5 shadow exporter can enumerate which
+// tenants to export per window without LH tracking it separately.
+func (st *Store) GetTenantIDs(ctx context.Context, start, end int64) ([]logstorage.TenantID, error) {
+	return st.s.GetTenantIDs(ctx, start, end)
 }
 
 // Close releases the store. The on-disk path is left for the OS/tmpfs to

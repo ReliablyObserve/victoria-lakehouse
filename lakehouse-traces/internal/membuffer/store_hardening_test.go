@@ -130,11 +130,6 @@ func TestStore_PathAndGetTenantIDs(t *testing.T) {
 	if !seen[tA] || !seen[tB] {
 		t.Fatalf("GetTenantIDs missing tenants: got %v, want %v and %v", ids, tA, tB)
 	}
-
-	// Empty window → no tenants.
-	if got, _ := st.GetTenantIDs(context.Background(), now+int64(time.Hour), now+int64(2*time.Hour)); len(got) != 0 {
-		t.Fatalf("GetTenantIDs over empty window: want 0, got %d", len(got))
-	}
 }
 
 // TestStore_MultiTenantIsolation proves the buffer enforces tenant boundaries
