@@ -17,11 +17,11 @@ lakehouse:
   # logstorage's own parts + S3 Parquet (no LH WAL needed for it).
   insert:
     buffer_engine: logstore
-    # buffer_flush_enabled OFF: the flusher-rewrites-Parquet flip has an unresolved
-    # ~80% per-window under-count (3 root-cause fixes — DebugFlush(partial),
-    # latencyOffset, _time-vs-start_time — did not close it; live e2e too muddied
-    # to measure further). Legacy path authoritative. Needs a controlled
-    # integration test (write→read round-trip) to localize, not live debugging.
+    # buffer_flush_enabled OFF (default): durability is the VL/VT-upstream logstore
+    # buffer (on-disk parts, restored on open) — see docs/durability.md. The
+    # authoritative flip (BufferFlusher → S3) is proven correct by the controlled
+    # write→read round-trip tests but kept off here; a clean-slate isolated-bucket
+    # run is the remaining step before enabling it live.
 
   retention:
     enabled: true
