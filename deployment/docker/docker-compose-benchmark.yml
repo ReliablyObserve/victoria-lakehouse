@@ -40,6 +40,28 @@ services:
       "
 
   # =========================================================================
+  # S3 latency proxy (toxiproxy) — EVERY S3-backed engine (lakehouse-logs,
+  # lakehouse-traces, ClickHouse) reads MinIO through this proxy, so a single
+  # toggle injects identical object-store latency for an apples-to-apples
+  # comparison. VL/VT are disk-native (the baseline) and bypass it. Inject with
+  # scripts/inject-s3-latency.sh <mean_ms> <jitter_ms> (0 = passthrough).
+  # =========================================================================
+  s3-latency:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    command: ["-host=0.0.0.0", "-config=/etc/toxiproxy/proxies.json"]
+    volumes:
+      - ./toxiproxy-proxies.json:/etc/toxiproxy/proxies.json:ro
+    networks: [bench-net]
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # =========================================================================
   # System A: Victoria Lakehouse (S3 cold tier) — tuned for best performance
   # =========================================================================
 
@@ -50,12 +72,14 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
+      s3-latency:
+        condition: service_healthy
     ports:
       - "39428:9428"
     networks: [bench-net]
     command:
       - "-lakehouse.s3.bucket=obs-archive"
-      - "-lakehouse.s3.endpoint=http://minio:9000"
+      - "-lakehouse.s3.endpoint=http://s3-latency:9000"
       - "-lakehouse.s3.access-key=minioadmin"
       - "-lakehouse.s3.secret-key=minioadmin"
       - "-lakehouse.s3.force-path-style=true"
@@ -135,12 +159,14 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
+      s3-latency:
+        condition: service_healthy
     ports:
       - "30428:10428"
     networks: [bench-net]
     command:
       - "-lakehouse.s3.bucket=obs-archive"
-      - "-lakehouse.s3.endpoint=http://minio:9000"
+      - "-lakehouse.s3.endpoint=http://s3-latency:9000"
       - "-lakehouse.s3.access-key=minioadmin"
       - "-lakehouse.s3.secret-key=minioadmin"
       - "-lakehouse.s3.force-path-style=true"
