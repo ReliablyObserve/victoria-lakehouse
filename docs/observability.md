@@ -220,7 +220,7 @@ Per-tenant metrics subject to cardinality cap (`stats.metrics_cardinality_limit`
 
 | Metric | Type | Description |
 |---|---|---|
-| `lakehouse_serving_ready` | Gauge | 1 once disk recovery + WAL replay + MinManifestFiles gate are all satisfied (the `204 serving_warming` boundary) |
+| `lakehouse_serving_ready` | Gauge | 1 once disk recovery + buffer restore + MinManifestFiles gate are all satisfied (the `204 serving_warming` boundary) |
 | `lakehouse_warmup_complete` | Gauge | 1 after background warmup finishes (the `200 ready` boundary) |
 | `lakehouse_manifest_files` | Gauge | Current manifest file count (auto-tunes the footer-cache cap; alerts on regression vs. shutdown count) |
 | `lakehouse_manifest_snapshot_age_seconds` | Gauge | Seconds since the last successful manifest persist — alert when > 6 × persist_interval (a silent disk-full will surface here first) |

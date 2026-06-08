@@ -18,7 +18,7 @@ graph TB
         end
 
         subgraph "Storage Layer (parquets3)"
-            BW[BatchWriter<br/>insert.buffer_engine:<br/>buffer+WAL | logstore]
+            BW[BatchWriter<br/>insert.buffer_engine:<br/>buffer | logstore]
             RQ[RunQuery<br/>Parallel File Scan<br/>+ recent window from buffer]
             FA[Field APIs<br/>field_names/values<br/>stream_fields/ids]
         end
@@ -251,8 +251,8 @@ flowchart TB
 graph TB
     subgraph "Kubernetes Cluster"
         subgraph "Insert Tier (StatefulSet)"
-            I1[insert-0<br/>WAL + S3 Flush]
-            I2[insert-1<br/>WAL + S3 Flush]
+            I1[insert-0<br/>logstore buffer + S3 Flush]
+            I2[insert-1<br/>logstore buffer + S3 Flush]
         end
 
         subgraph "Select Tier (StatefulSet)"
