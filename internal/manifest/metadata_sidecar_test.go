@@ -246,8 +246,14 @@ func TestEnrichFromProvider(t *testing.T) {
 		"p|logs/p/b.parquet": {}, // present but empty (RowCount 0) → must NOT count
 	}}
 
-	if n := m.EnrichFromProvider(prov); n != 1 {
+	n, uncovered := m.EnrichFromProvider(prov)
+	if n != 1 {
 		t.Fatalf("enriched=%d, want 1 (only the file with real metadata)", n)
+	}
+	// b stays RowCount==0 (provider had it but empty) → partition p is uncovered,
+	// so the caller falls back to the sidecar for ONLY partition p.
+	if len(uncovered) != 1 || uncovered[0] != "p" {
+		t.Fatalf("uncovered=%v, want [p] (b still lacks metadata)", uncovered)
 	}
 	var a FileInfo
 	for _, fi := range m.FilesForPartition("p") {
@@ -259,7 +265,24 @@ func TestEnrichFromProvider(t *testing.T) {
 		t.Fatalf("a not enriched from provider: %+v", a)
 	}
 	// nil provider is a no-op.
-	if n := m.EnrichFromProvider(nil); n != 0 {
-		t.Fatalf("nil provider should enrich 0, got %d", n)
+	if n, unc := m.EnrichFromProvider(nil); n != 0 || unc != nil {
+		t.Fatalf("nil provider should enrich 0/nil, got %d/%v", n, unc)
+	}
+}
+
+// TestEnrichFromProvider_FullyCoveredNoUncovered: when the provider covers every
+// file with real metadata, uncovered is empty → the caller skips LoadSidecars
+// entirely (the S3-op win).
+func TestEnrichFromProvider_FullyCoveredNoUncovered(t *testing.T) {
+	m := New("bucket", "logs/")
+	m.AddFile("p", FileInfo{Key: "logs/p/a.parquet"})
+	m.AddFile("q", FileInfo{Key: "logs/q/c.parquet"})
+	prov := mockFileMetaProvider{m: map[string]FileMeta{
+		"p|logs/p/a.parquet": {RowCount: 1, MinTimeNs: 1},
+		"q|logs/q/c.parquet": {RowCount: 2, MinTimeNs: 2},
+	}}
+	n, uncovered := m.EnrichFromProvider(prov)
+	if n != 2 || len(uncovered) != 0 {
+		t.Fatalf("enriched=%d uncovered=%v, want 2 / [] (bundle covers all → no sidecar fallback)", n, uncovered)
 	}
 }

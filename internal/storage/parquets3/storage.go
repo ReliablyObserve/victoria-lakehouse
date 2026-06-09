@@ -1212,12 +1212,19 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 	// bundle / pre-pmeta files). When the facet covers everything the per-partition
 	// sidecar GETs are skipped entirely.
 	facetEnriched := 0
+	var uncovered []string
 	if s.catalog != nil {
-		facetEnriched = s.manifest.EnrichFromProvider(catalogFileMetaProvider{store: s.catalog})
+		facetEnriched, uncovered = s.manifest.EnrichFromProvider(catalogFileMetaProvider{store: s.catalog})
 	}
 	sidecarLoaded := 0
-	if facetEnriched < s.manifest.TotalFiles() {
+	switch {
+	case s.catalog == nil:
+		// pmeta off: load all sidecars (unchanged behavior).
 		sidecarLoaded = s.manifest.LoadSidecars(ctx, s.pool.S3Client(), 16)
+	case len(uncovered) > 0:
+		// pmeta on: only the partitions the bundle didn't fully cover (a fully
+		// covered bundle skips the per-partition sidecar GETs entirely).
+		sidecarLoaded = s.manifest.LoadSidecarsForPartitions(ctx, s.pool.S3Client(), 16, uncovered)
 	}
 
 	// Phase 3: Footer prefetch for anything still missing.

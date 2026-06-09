@@ -1456,14 +1456,18 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 	diskLoaded := s.loadFileMetadataFromDisk()
 
 	// pmeta read-flip: enrich from the in-RAM fileMetaFacet first (no S3), then the
-	// `_file_metadata.json` sidecars only for files the facet didn't cover.
+	// `_file_metadata.json` sidecars only for the partitions the facet didn't cover.
 	facetEnriched := 0
+	var uncovered []string
 	if s.catalog != nil {
-		facetEnriched = s.manifest.EnrichFromProvider(catalogFileMetaProvider{store: s.catalog})
+		facetEnriched, uncovered = s.manifest.EnrichFromProvider(catalogFileMetaProvider{store: s.catalog})
 	}
 	sidecarLoaded := 0
-	if facetEnriched < s.manifest.TotalFiles() {
+	switch {
+	case s.catalog == nil:
 		sidecarLoaded = s.manifest.LoadSidecars(ctx, s.pool.S3Client(), 16)
+	case len(uncovered) > 0:
+		sidecarLoaded = s.manifest.LoadSidecarsForPartitions(ctx, s.pool.S3Client(), 16, uncovered)
 	}
 
 	files := s.manifest.GetFilesForRange(0, 1<<62)
@@ -1509,8 +1513,8 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 		}
 	}
 
-	logger.Infof("metadata warmup: disk=%d sidecar=%d footer=%d small=%d need_enrich=%d total_files=%d",
-		diskLoaded, sidecarLoaded, footerEnriched, smallEnriched, len(needEnrich), len(files))
+	logger.Infof("metadata warmup: disk=%d facet=%d sidecar=%d footer=%d small=%d need_enrich=%d total_files=%d",
+		diskLoaded, facetEnriched, sidecarLoaded, footerEnriched, smallEnriched, len(needEnrich), len(files))
 
 	s.saveFileMetadataToDisk()
 }
