@@ -388,7 +388,12 @@ at any level reverts the flag (data is safe regardless via skip+rebuild).
     Parity gate `TestBloomFacet_ParityWithLegacyIndex` (facet `MayContain` == legacy) +
     codec round-trip. Logs module (traces has no bloom path). **Flip = read from facet,
     drop `_bloom.bin`, next step (needs bundle persist/warm for cold-start).**
-  - [ ] **labels** — `labelsFacet` + manifest inverted view derived (fixes Overlap-2).
+  - [x] **labels (dual-write + parity)** — the field/value catalog facet IS the fold of
+    `cache.LabelIndex` (no separate facet): it serves field-names + field-values with the
+    same `Hits: 1` the legacy labelIndex fast-path returns (storage_fields.go), so there is
+    no fidelity gap. Parity gate `TestInteg_PmetaCatalog_LabelsParityWithLabelIndex` feeds
+    both the same data and asserts identical names + values. **Flip = retire
+    `_label_index.json` + make `manifest.labelIndex` a derived view (Overlap-2), next.**
 - [x] **One comprehensive e2e** — `TestInteg_PmetaCatalog_AllFacetsE2E`: one real
   `BatchWriter` flush with `--pmeta` fully on, asserting **catalog + HLL + file-meta +
   bloom + cold-start warm** in one place.

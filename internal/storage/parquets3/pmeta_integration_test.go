@@ -11,9 +11,11 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -413,5 +415,50 @@ func TestInteg_PmetaCatalog_TraceRowTap(t *testing.T) {
 	}
 	if c := s.catalog.Cardinality("span_id"); math.Abs(float64(c)-float64(n))/float64(n) > 0.03 {
 		t.Fatalf("span_id cardinality = %d (true %d)", c, n)
+	}
+}
+
+// TestInteg_PmetaCatalog_LabelsParityWithLabelIndex is the labels-fold parity gate:
+// the catalog facet IS the fold of cache.LabelIndex, so fed the same label data
+// both must return the same field names and field values (the dual-write contract,
+// before _label_index.json is retired at the flip).
+func TestInteg_PmetaCatalog_LabelsParityWithLabelIndex(t *testing.T) {
+	data := map[string][]string{
+		"service.name":       {"api-gateway", "order-service", "user-service"},
+		"severity_text":      {"ERROR", "INFO", "WARN"},
+		"k8s.namespace.name": {"prod", "staging"},
+	}
+
+	li := cache.NewLabelIndex()
+	for field, vals := range data {
+		li.Add(field, vals)
+	}
+
+	store := newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
+	// Two files contributing overlapping values — the catalog unions, like the index.
+	store.OnFileFlush(pmeta.FileContribution{Partition: "p", FileKey: "f1", Labels: data})
+	store.OnFileFlush(pmeta.FileContribution{Partition: "p", FileKey: "f2", Labels: map[string][]string{
+		"service.name": {"api-gateway", "payments"},
+	}})
+	li.Add("service.name", []string{"api-gateway", "payments"})
+
+	// Field names parity.
+	gotNames := append([]string(nil), store.FieldNames("p")...)
+	wantNames := append([]string(nil), li.GetFieldNames()...)
+	sort.Strings(gotNames)
+	sort.Strings(wantNames)
+	if !reflect.DeepEqual(gotNames, wantNames) {
+		t.Fatalf("field names: catalog=%v labelIndex=%v", gotNames, wantNames)
+	}
+
+	// Field values parity, per field.
+	for field := range data {
+		gotVals := append([]string(nil), store.FieldValues("p", field, "", 100)...)
+		wantVals := append([]string(nil), li.GetFieldValues(field, 100)...)
+		sort.Strings(gotVals)
+		sort.Strings(wantVals)
+		if !reflect.DeepEqual(gotVals, wantVals) {
+			t.Fatalf("field %q values: catalog=%v labelIndex=%v", field, gotVals, wantVals)
+		}
 	}
 }
