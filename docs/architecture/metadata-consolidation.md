@@ -381,5 +381,15 @@ at any level reverts the flag (data is safe regardless via skip+rebuild).
     after a real flush, and `…_FileMetaWarmParity` asserts the same on the **cold-start
     path** (`WarmCatalog` now rebuilds the full per-file meta from the manifest, not just
     labels). **Flip/retire (read from facet, stop writing the sidecar) is the next step.**
-  - [ ] **bloom** — wrap `bloomindex.Index` as `bloomFacet` (dual-write → flip).
+  - [x] **bloom (dual-write + parity)** — `bloomFacet` wraps `bloomindex.Index`; blooms
+    built via the shared `bloomindex.BuildFileColumns` so they are identical to the legacy
+    path. Fed at flush from one bloom-value extraction (the writer hoists it; both the
+    legacy index and the facet consume it). `Store.BloomMayContain` read accessor.
+    Parity gate `TestBloomFacet_ParityWithLegacyIndex` (facet `MayContain` == legacy) +
+    codec round-trip. Logs module (traces has no bloom path). **Flip = read from facet,
+    drop `_bloom.bin`, next step (needs bundle persist/warm for cold-start).**
   - [ ] **labels** — `labelsFacet` + manifest inverted view derived (fixes Overlap-2).
+- [x] **One comprehensive e2e** — `TestInteg_PmetaCatalog_AllFacetsE2E`: one real
+  `BatchWriter` flush with `--pmeta` fully on, asserting **catalog + HLL + file-meta +
+  bloom + cold-start warm** in one place.
+- [x] **Coverage** — `internal/pmeta` 91.2 %, connected `pmeta_wire.go` 91.4 % (≥85 % gate).

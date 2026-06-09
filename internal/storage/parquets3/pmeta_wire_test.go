@@ -28,10 +28,10 @@ func TestPmetaWire_ObserverFeedsCatalog(t *testing.T) {
 	obs.OnFileFlush(part, manifest.FileInfo{Key: "f1"}, map[string][]string{
 		"service.name": {"api-gateway", "order-service"},
 		"level":        {"ERROR"},
-	})
+	}, nil)
 	obs.OnFileFlush(part, manifest.FileInfo{Key: "f2"}, map[string][]string{
 		"service.name": {"user-service"},
-	})
+	}, nil)
 
 	if got, want := store.FieldValues(part, "service.name", "", 0),
 		[]string{"api-gateway", "order-service", "user-service"}; !reflect.DeepEqual(got, want) {
@@ -52,5 +52,5 @@ func TestPmetaWire_ObserverFeedsCatalog(t *testing.T) {
 // TestPmetaWire_NilObserverSafe — a nil observer (pmeta off) must be a no-op.
 func TestPmetaWire_NilObserverSafe(t *testing.T) {
 	var obs *catalogObserver
-	obs.OnFileFlush("p", manifest.FileInfo{Key: "f"}, map[string][]string{"x": {"y"}}) // must not panic
+	obs.OnFileFlush("p", manifest.FileInfo{Key: "f"}, map[string][]string{"x": {"y"}}, nil) // must not panic
 }

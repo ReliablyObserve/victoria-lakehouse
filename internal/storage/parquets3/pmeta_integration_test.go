@@ -292,3 +292,126 @@ func TestInteg_PmetaCatalog_FileMetaWarmParity(t *testing.T) {
 		t.Fatalf("warm fileMeta != sidecar:\n facet=%+v\n sidecar=%+v", got, want)
 	}
 }
+
+// TestInteg_PmetaCatalog_AllFacetsE2E exercises EVERY pmeta facet through ONE real
+// BatchWriter flush with --pmeta fully on, then asserts each in one place:
+//
+//	catalog (low-card dropdown) · HLL (cardinality) · file-meta (dual-write) ·
+//	bloom (dual-write) · cold-start warm (catalog + file-meta rebuilt from manifest).
+func TestInteg_PmetaCatalog_AllFacetsE2E(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true, AlwaysSketchFields: []string{"trace_id", "span_id"}}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog, sketch: sketchSet(s.cfg.Pmeta.AlwaysSketchFields)}
+
+	const n = 2000
+	now := time.Now()
+	rows := make([]schema.LogRow, n)
+	for i := 0; i < n; i++ {
+		svc := "api-gateway"
+		if i%2 == 1 {
+			svc = "order-service"
+		}
+		rows[i] = schema.LogRow{
+			TimestampUnixNano: now.Add(time.Duration(i) * time.Millisecond).UnixNano(),
+			Body:              "msg",
+			ServiceName:       svc,
+			TraceID:           fmt.Sprintf("%032x", i),
+			SpanID:            fmt.Sprintf("%016x", i),
+		}
+	}
+	bw.AddLogRows(rows)
+	bw.triggerFlush()
+
+	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	if len(files) == 0 {
+		t.Fatal("no file registered after flush")
+	}
+	fi := files[0]
+	part := manifest.ExtractPartition(fi.Key)
+	q := mustParseQueryWithTime(t, "*", now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+
+	// 1. CATALOG — low-card dropdown returns exactly the distinct values.
+	cat, err := s.GetFieldValues(context.Background(), nil, q, "service.name", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := valueStrings(cat); !reflect.DeepEqual(got, []string{"api-gateway", "order-service"}) {
+		t.Fatalf("[catalog] service.name = %v", got)
+	}
+
+	// 2. HLL — trace_id AND span_id cardinality ≈ n (both tap branches).
+	if card := s.catalog.Cardinality("trace_id"); math.Abs(float64(card)-float64(n))/float64(n) > 0.03 {
+		t.Fatalf("[hll] trace_id cardinality = %d (true %d)", card, n)
+	}
+	if card := s.catalog.Cardinality("span_id"); math.Abs(float64(card)-float64(n))/float64(n) > 0.03 {
+		t.Fatalf("[hll] span_id cardinality = %d (true %d)", card, n)
+	}
+
+	// 3. FILE-META — dual-write parity with the sidecar content.
+	fm, ok := s.catalog.FileMeta(part, fi.Key)
+	if !ok || fm.RowCount != fi.RowCount || fm.SchemaFingerprint != fi.SchemaFingerprint {
+		t.Fatalf("[file-meta] facet=%+v vs fi(rc=%d sf=%s)", fm, fi.RowCount, fi.SchemaFingerprint)
+	}
+
+	// 4. BLOOM — a value present in the file is found.
+	bloomGot, ok := s.catalog.BloomMayContain(part, []string{fi.Key}, "service.name", "api-gateway")
+	found := false
+	for _, k := range bloomGot {
+		if k == fi.Key {
+			found = true
+		}
+	}
+	if !ok || !found {
+		t.Fatalf("[bloom] service.name=api-gateway not found for %s (ok=%v got=%v)", fi.Key, ok, bloomGot)
+	}
+
+	// 5. COLD-START WARM — a fresh catalog rebuilds catalog + file-meta from the
+	// manifest (bloom needs the bundle persist/warm, A3 — not asserted here).
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	s.WarmCatalog(context.Background())
+	warmCat, _ := s.GetFieldValues(context.Background(), nil, q, "service.name", 100)
+	if got := valueStrings(warmCat); !reflect.DeepEqual(got, []string{"api-gateway", "order-service"}) {
+		t.Fatalf("[warm catalog] service.name = %v", got)
+	}
+	if _, ok := s.catalog.FileMeta(part, fi.Key); !ok {
+		t.Fatal("[warm file-meta] facet missing after WarmCatalog")
+	}
+}
+
+// TestInteg_PmetaCatalog_TraceRowTap covers the trace-row flush path (tapTraceRows):
+// flushing trace rows feeds trace_id + span_id into their per-field HLLs.
+func TestInteg_PmetaCatalog_TraceRowTap(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true, AlwaysSketchFields: []string{"trace_id", "span_id"}}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
+	bw.catalogObserver = &catalogObserver{store: s.catalog, sketch: sketchSet(s.cfg.Pmeta.AlwaysSketchFields)}
+
+	const n = 1500
+	now := time.Now()
+	rows := make([]schema.TraceRow, n)
+	for i := 0; i < n; i++ {
+		rows[i] = schema.TraceRow{
+			TimestampUnixNano: now.Add(time.Duration(i) * time.Millisecond).UnixNano(),
+			ServiceName:       "api-gateway",
+			SpanName:          "GET /x",
+			TraceID:           fmt.Sprintf("%032x", i),
+			SpanID:            fmt.Sprintf("%016x", i),
+		}
+	}
+	bw.AddTraceRows(rows)
+	bw.triggerFlush()
+
+	if c := s.catalog.Cardinality("trace_id"); math.Abs(float64(c)-float64(n))/float64(n) > 0.03 {
+		t.Fatalf("trace_id cardinality = %d (true %d)", c, n)
+	}
+	if c := s.catalog.Cardinality("span_id"); math.Abs(float64(c)-float64(n))/float64(n) > 0.03 {
+		t.Fatalf("span_id cardinality = %d (true %d)", c, n)
+	}
+}

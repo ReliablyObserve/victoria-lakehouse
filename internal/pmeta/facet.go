@@ -49,6 +49,9 @@ type FileContribution struct {
 	// HighCardValues: field -> raw values for high-cardinality fields, fed into
 	// HLL sketches (FacetFieldCatalog). Never enumerated back to the user.
 	HighCardValues map[string][]string
+	// BloomValues: column -> distinct values for this file's bloom filters,
+	// consumed by FacetBloom (mirrors the _bloom.bin sidecar).
+	BloomValues map[string][]string
 }
 
 // Facet is the per-partition unit of metadata. One implementation per kind.

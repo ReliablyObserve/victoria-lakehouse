@@ -41,6 +41,7 @@ func newCatalogStore(cfg config.PmetaConfig, prefix string) *pmeta.Store {
 	s.Register(pmeta.FacetFieldCatalog,
 		pmeta.NewFieldCatalogFactoryCapped(pmeta.NewDict(), threshold, cfg.AlwaysSketchFields))
 	s.Register(pmeta.FacetFileMeta, pmeta.NewFileMetaFactory()) // dual-write of _file_metadata.json
+	s.Register(pmeta.FacetBloom, pmeta.NewBloomFactory(0.01))   // dual-write of _bloom.bin (same fpRate)
 	return s
 }
 
@@ -53,7 +54,7 @@ type catalogObserver struct {
 	sketch map[string]bool // always-sketch field names to tap for cardinality
 }
 
-func (o *catalogObserver) OnFileFlush(partition string, fi manifest.FileInfo, labels map[string][]string) {
+func (o *catalogObserver) OnFileFlush(partition string, fi manifest.FileInfo, labels, bloomValues map[string][]string) {
 	if o == nil || o.store == nil {
 		return
 	}
@@ -66,6 +67,7 @@ func (o *catalogObserver) OnFileFlush(partition string, fi manifest.FileInfo, la
 		RawBytes:          fi.RawBytes,
 		SchemaFingerprint: fi.SchemaFingerprint,
 		Labels:            labels,
+		BloomValues:       bloomValues,
 	})
 }
 
