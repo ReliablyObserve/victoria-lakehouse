@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"context"
+	"math"
 	"sort"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -175,13 +176,19 @@ func (s *Storage) catalogFieldValues(q *logstorage.Query, fieldName string, limi
 	startNs, endNs := q.GetFilterTimeRange()
 	seen := make(map[string]struct{}, 16)
 	valset := make(map[string]struct{})
+	// Bounded uint64→int conversion (the facet API takes int; limit can originate
+	// from a parsed query param). 0 = no cap; anything past int range is clamped.
+	catLimit := math.MaxInt
+	if limit < uint64(math.MaxInt) {
+		catLimit = int(limit)
+	}
 	for _, fi := range s.manifest.GetFilesForRange(startNs, endNs) {
 		p := manifest.ExtractPartition(fi.Key)
 		if _, ok := seen[p]; ok {
 			continue
 		}
 		seen[p] = struct{}{}
-		for _, v := range s.catalog.FieldValues(p, fieldName, "", int(limit)) {
+		for _, v := range s.catalog.FieldValues(p, fieldName, "", catLimit) {
 			valset[v] = struct{}{}
 		}
 	}
