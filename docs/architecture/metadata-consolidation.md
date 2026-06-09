@@ -204,3 +204,42 @@ Each step: one facet, dual-write, flip, delete-old. Rollback = flip flag back. N
 The duplication in §1 rows for **sidecar formats (5→1), GET loaders (4→1), snapshots (4→1), dirty-tracking (5→1)** is genuine and worth collapsing — these differ only in payload, not lifecycle. The **bloom-granularity "overlaps" (row-group/file/partition), WAL, L2 bytes, peercache, and control-plane state are justified separation** and should stay split. The single highest-leverage outcome is making the **in-flight field/value catalog a facet**, which both validates the abstraction and avoids minting a 4th parallel sidecar lifecycle.
 
 Key grounding files: `/Users/slawomirskowron/claude_projects/victoria-lakehouse/internal/manifest/metadata_sidecar.go` (sidecar to fold), `/Users/slawomirskowron/claude_projects/victoria-lakehouse/internal/bloomindex/partitioned.go` (dirty-map to delete), `/Users/slawomirskowron/claude_projects/victoria-lakehouse/internal/storage/parquets3/bloom_build.go` (`_bloom.bin` path + `PersistDirty` to adapter), `/Users/slawomirskowron/claude_projects/victoria-lakehouse/internal/cache/persist.go` (`LabelIndex` struct kept as facet type), `/Users/slawomirskowron/claude_projects/victoria-lakehouse/internal/traceindex/traceindex.go` + `/Users/slawomirskowron/claude_projects/victoria-lakehouse/internal/storage/parquets3/trace_index.go` (footer codec — stays, virtual facet), `/Users/slawomirskowron/claude_projects/victoria-lakehouse/internal/storage/parquets3/footer_cache.go` (adapter, not merge), `/Users/slawomirskowron/claude_projects/victoria-lakehouse/cmd/lakehouse-logs/main.go` + `/Users/slawomirskowron/claude_projects/victoria-lakehouse/lakehouse-traces/main.go` (`runStartup` wiring point; parity duplication is a separate track). New package to create: `internal/pmeta`.
+
+---
+
+## (6) Decision: skip+rebuild self-heal → single flagged PR (supersedes the 7-step migration)
+
+**Key property:** every facet is a *cache of data re-derivable from S3* (Parquet files
++ footers are the source of truth). So a corrupt / missing / unknown-version facet is
+**never data loss** — it self-heals:
+
+1. **skip** — a per-facet `len`+CRC mismatch (or unregistered `FacetKind`) is skipped,
+   not fatal; the rest of the bundle loads.
+2. **mark dirty** — the partition's failed facet is flagged (`DecodeResult.Skipped`).
+3. **rebuild** — re-derived from that partition's files via the same `OnFileFlush`
+   extraction, on next access or a background sweep.
+
+Worst case is one partition doing one slow rebuild; it self-heals. (If the *length*
+header itself is corrupt the stream desyncs and the whole bundle fails decode → the
+whole partition rebuilds — coarser, still self-healing.)
+
+**This changes the delivery decision.** Because corruption self-heals and the layer is
+re-derivable, the cautious dual-write/flip dance is **not** needed for *data* safety.
+The work lands as **one PR behind a master `--pmeta` flag**:
+
+- `--pmeta=off` (default) → today's behavior, untouched = the rollback path.
+- `--pmeta=on` → unified layer; missing/corrupt facets rebuild from S3 on access.
+
+What still gates flipping the flag on (the *correctness* risk, which does NOT self-heal):
+**per-facet byte-identical golden tests** (reuse `bloom_compaction_test.go`, sidecar
+fuzz), **`/ready` timing unchanged** (facet-priority warmup, tasks 71–83 gates pass),
+and **the field/value catalog is a facet from day one** (no standalone sidecar).
+
+So: **skip+rebuild = data-safety net · master flag = rollback · golden tests + `/ready`
+parity = correctness gate.** One PR, reversible by flag, self-healing on corruption.
+
+### New A1 (this is what's being built now)
+`internal/pmeta` scaffold (Facet/Bundle/Store + bundle codec with per-facet len+CRC
+framing + skip-on-corruption) **plus** the field/value catalog as the first real facet
+(`FacetFieldCatalog`: interned dict + per-partition roaring bitmaps + HLL), behind
+`--pmeta`. Subsequent commits on the same PR fold bloom/file-meta/labels facets.
