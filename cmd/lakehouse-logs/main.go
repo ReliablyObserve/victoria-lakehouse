@@ -142,6 +142,11 @@ var (
 	tenantMetricsFormat     = flag.String("lakehouse.tenant.metrics-format", "", "Prometheus tenant label format: id, name, both (default: id)")
 	tenantAutoRegister      = flag.Bool("lakehouse.tenant.auto-register", false, "Auto-register unknown X-Scope-OrgID tenants")
 	tenantAliasSyncInterval = flag.Duration("lakehouse.tenant.alias-sync-interval", 0, "Fleet sync interval for runtime aliases (default: 30s)")
+
+	pmetaEnabled       = flag.Bool("lakehouse.pmeta.enabled", false, "Enable the unified partition-metadata layer (field/value catalog + HLL cardinality)")
+	pmetaAlwaysSketch  = flag.String("lakehouse.pmeta.always-sketch-fields", "", "Comma-separated id columns to sketch instead of enumerate (e.g. trace_id,span_id)")
+	pmetaCardThreshold = flag.Int("lakehouse.pmeta.cardinality-threshold", 0, "Per-field distinct-value cap before a field is high-card (0 = default 50000)")
+	pmetaRefuseSketch  = flag.Bool("lakehouse.pmeta.refuse-sketch-enumeration", false, "Return empty for always-sketch field_values instead of scanning")
 )
 
 func main() {
@@ -1378,6 +1383,22 @@ func applyFlags(cfg *config.Config) {
 	applyQueryLegacyFlags(&cfg.Query)
 	applyLogsFlags(&cfg.Logs)
 	applyTenantFlags(&cfg.Tenant)
+	applyPmetaFlags(&cfg.Pmeta)
+}
+
+func applyPmetaFlags(c *config.PmetaConfig) {
+	if *pmetaEnabled {
+		c.Enabled = true
+	}
+	if *pmetaAlwaysSketch != "" {
+		c.AlwaysSketchFields = strings.Split(*pmetaAlwaysSketch, ",")
+	}
+	if *pmetaCardThreshold > 0 {
+		c.CardinalityThreshold = *pmetaCardThreshold
+	}
+	if *pmetaRefuseSketch {
+		c.RefuseSketchEnumeration = true
+	}
 }
 
 func applyTopLevelFlags(cfg *config.Config) {
