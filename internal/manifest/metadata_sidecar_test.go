@@ -224,3 +224,42 @@ func TestWritePartitionSidecar_NoEnrichedFiles(t *testing.T) {
 		t.Errorf("expected nil for no enriched files, got %v", err)
 	}
 }
+
+type mockFileMetaProvider struct{ m map[string]FileMeta }
+
+func (p mockFileMetaProvider) FileMeta(partition, key string) (FileMeta, bool) {
+	fm, ok := p.m[partition+"|"+key]
+	return fm, ok
+}
+
+// TestEnrichFromProvider is the file-meta read-flip's unit gate: the manifest
+// enriches FileInfo from the (in-RAM) provider exactly like LoadSidecars does from
+// the sidecar, and files with no/empty provider metadata are NOT counted (so the
+// caller can fall back to the sidecar for them).
+func TestEnrichFromProvider(t *testing.T) {
+	m := New("bucket", "logs/")
+	m.AddFile("p", FileInfo{Key: "logs/p/a.parquet"})
+	m.AddFile("p", FileInfo{Key: "logs/p/b.parquet"})
+
+	prov := mockFileMetaProvider{m: map[string]FileMeta{
+		"p|logs/p/a.parquet": {RowCount: 42, MinTimeNs: 10, MaxTimeNs: 20, RawBytes: 99, SchemaFingerprint: "sf"},
+		"p|logs/p/b.parquet": {}, // present but empty (RowCount 0) → must NOT count
+	}}
+
+	if n := m.EnrichFromProvider(prov); n != 1 {
+		t.Fatalf("enriched=%d, want 1 (only the file with real metadata)", n)
+	}
+	var a FileInfo
+	for _, fi := range m.FilesForPartition("p") {
+		if fi.Key == "logs/p/a.parquet" {
+			a = fi
+		}
+	}
+	if a.RowCount != 42 || a.MinTimeNs != 10 || a.MaxTimeNs != 20 || a.SchemaFingerprint != "sf" {
+		t.Fatalf("a not enriched from provider: %+v", a)
+	}
+	// nil provider is a no-op.
+	if n := m.EnrichFromProvider(nil); n != 0 {
+		t.Fatalf("nil provider should enrich 0, got %d", n)
+	}
+}

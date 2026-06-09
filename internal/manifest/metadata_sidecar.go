@@ -114,6 +114,40 @@ func (m *Manifest) WritePartitionSidecar(ctx context.Context, client *s3.Client,
 	return nil
 }
 
+// FileMetaProvider supplies per-file metadata from an in-RAM source (the pmeta
+// fileMetaFacet) so the manifest can enrich FileInfo without per-partition sidecar
+// GETs. Defined here, implemented in the storage layer, so manifest stays decoupled
+// from internal/pmeta.
+type FileMetaProvider interface {
+	FileMeta(partition, fileKey string) (FileMeta, bool)
+}
+
+// EnrichFromProvider fills missing FileInfo metadata from the provider and returns
+// the count of files enriched with REAL metadata (RowCount > 0). It is the pmeta
+// read-flip's substitute for LoadSidecars: same ApplyTo enrichment, but from RAM
+// (the loaded bundle) instead of S3 sidecar GETs. A file the provider lacks, or
+// has only empty metadata for, is NOT counted — so the caller can fall back to the
+// `_file_metadata.json` sidecars for the remainder (cold bundle / pre-pmeta files).
+func (m *Manifest) EnrichFromProvider(p FileMetaProvider) int {
+	if p == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	enriched := 0
+	for partition, pFiles := range m.files {
+		for i := range pFiles {
+			fm, ok := p.FileMeta(partition, pFiles[i].Key)
+			if !ok || fm.RowCount == 0 {
+				continue
+			}
+			fm.ApplyTo(&pFiles[i])
+			enriched++
+		}
+	}
+	return enriched
+}
+
 func (m *Manifest) LoadSidecars(ctx context.Context, client *s3.Client, concurrency int) int {
 	if concurrency <= 0 {
 		concurrency = 16

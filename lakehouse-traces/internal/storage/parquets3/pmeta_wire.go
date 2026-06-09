@@ -28,6 +28,26 @@ func (o poolObjectStore) GetObject(ctx context.Context, key string) ([]byte, err
 	return o.pool.Download(ctx, key)
 }
 
+// catalogFileMetaProvider adapts the pmeta fileMetaFacet to manifest.FileMetaProvider,
+// so the manifest enriches FileInfo from the in-RAM bundle instead of per-partition
+// `_file_metadata.json` S3 GETs (the file-meta read-flip).
+type catalogFileMetaProvider struct{ store *pmeta.Store }
+
+func (p catalogFileMetaProvider) FileMeta(partition, fileKey string) (manifest.FileMeta, bool) {
+	v, ok := p.store.FileMeta(partition, fileKey)
+	if !ok {
+		return manifest.FileMeta{}, false
+	}
+	return manifest.FileMeta{
+		RowCount:          v.RowCount,
+		MinTimeNs:         v.MinTimeNs,
+		MaxTimeNs:         v.MaxTimeNs,
+		RawBytes:          v.RawBytes,
+		SchemaFingerprint: v.SchemaFingerprint,
+		Labels:            v.Labels,
+	}, true
+}
+
 // defaultCardinalityThreshold keeps every human-meaningful facet exact while
 // bounding RAM for unbounded id-like fields.
 const defaultCardinalityThreshold = 50000

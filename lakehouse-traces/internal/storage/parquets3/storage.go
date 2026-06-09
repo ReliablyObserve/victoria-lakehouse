@@ -1455,7 +1455,16 @@ func (s *Storage) PersistState() error {
 func (s *Storage) WarmMetadata(ctx context.Context) {
 	diskLoaded := s.loadFileMetadataFromDisk()
 
-	sidecarLoaded := s.manifest.LoadSidecars(ctx, s.pool.S3Client(), 16)
+	// pmeta read-flip: enrich from the in-RAM fileMetaFacet first (no S3), then the
+	// `_file_metadata.json` sidecars only for files the facet didn't cover.
+	facetEnriched := 0
+	if s.catalog != nil {
+		facetEnriched = s.manifest.EnrichFromProvider(catalogFileMetaProvider{store: s.catalog})
+	}
+	sidecarLoaded := 0
+	if facetEnriched < s.manifest.TotalFiles() {
+		sidecarLoaded = s.manifest.LoadSidecars(ctx, s.pool.S3Client(), 16)
+	}
 
 	files := s.manifest.GetFilesForRange(0, 1<<62)
 	var needEnrich []manifest.FileInfo
