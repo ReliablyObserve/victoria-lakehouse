@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **pmeta — unified partition-metadata layer + field/value catalog (`-lakehouse.pmeta.enabled`, off by default).** One per-partition metadata layer (`internal/pmeta`) with pluggable facets replaces the scatter of per-subsystem sidecars/snapshots, behind a flag so the hot paths are byte-for-byte unchanged when off. Built as **dual-write + parity-gated** (the old `_file_metadata.json` / `_bloom.bin` / `_label_index.json` still write; each facet mirrors them and a test asserts they match), so it is safe to enable incrementally before the sidecars are retired.
+  - **Field/value catalog** — Grafana label/field dropdowns serve from an in-RAM catalog (interned dict + sorted value sets) instead of scanning Parquet: cold `field_values(service.name)` over 24h went **50 s → 24 ms** on the live e2e stack (11× faster than hot VL, ~220× faster than ClickHouse-over-S3). Cold-start-warmed from the manifest (zero extra S3 I/O).
+  - **In-house HyperLogLog cardinality** (LogLog-Beta, HLL++-grade accuracy, no dependency) for high-card id columns (`trace_id`/`span_id`) via a flush-time tap (9.7 ns/value, 0 alloc); `lakehouse_catalog_field_cardinality{field}` is the cardinality-bomb early-warning.
+  - **file-meta + bloom facets** fold `_file_metadata.json` and `_bloom.bin`; **S3 bundle persist/warm** (`poolObjectStore`, `persistDirty` on flush, `WarmCatalogFromS3` at startup) lets the bloom facet survive a cold restart.
+  - **A2 cardinality cap** (`-lakehouse.pmeta.cardinality-threshold`, default 50 000) bounds catalog RAM; **refuse-sketch-enumeration** (`-lakehouse.pmeta.refuse-sketch-enumeration`) returns empty for declared id columns instead of scanning. Metrics: `lakehouse_catalog_{value_lookups_total,resident_bytes,field_cardinality}`. Both logs + traces; `internal/pmeta` at 91 % coverage + fuzzers. See `docs/architecture/metadata-consolidation.md`, `docs/architecture/field-value-catalog.md`.
+- **Benchmark tooling** — `scripts/bench/with-s3-latency.sh` injects S3 latency only for the wrapped command and always clears it via a trap (so it never lingers on the normal compose); `scripts/bench/full-scope-s3-bench.sh` compares cold-LH vs hot-VL vs ClickHouse across every S3/scan query class. Plus `docs/architecture/s3-scan-optimization-plan.md` (ClickHouse-parity pure-S3 roadmap) + PB-scale resource/restore analyses.
+
+### Fixed
+
+- **`field_values` with no limit (`limit==0`) scanned 2.5M logs instead of using the in-RAM index.** The labelIndex/catalog fast-path was gated on `limit > 0`, so a no-limit request — what a Grafana dropdown sends — bypassed the index and did a full column scan (50 s with S3 latency). The index is self-bounded, so it now serves `limit==0` too; the catalog result cap no longer zeroes the result on `limit==0`. `TestInteg_PmetaCatalog_NoLimitUsesIndex`.
+
 ## [0.69.0] - 2026-06-09
 
 ## [0.59.0] - 2026-06-08

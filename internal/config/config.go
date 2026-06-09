@@ -65,9 +65,38 @@ type Config struct {
 	Stats       StatsConfig       `yaml:"stats"`
 	UI          UIConfig          `yaml:"ui"`
 	Telemetry   TelemetryConfig   `yaml:"telemetry"`
+	Pmeta       PmetaConfig       `yaml:"pmeta"`
 
 	Logs   LogsModeConfig   `yaml:"logs"`
 	Traces TracesModeConfig `yaml:"traces"`
+}
+
+// PmetaConfig gates the unified partition-metadata layer (internal/pmeta). It is
+// experimental and OFF by default: when disabled no catalog store is built and the
+// hot flush/query paths are unchanged. See docs/architecture/metadata-consolidation.md.
+type PmetaConfig struct {
+	// Enabled turns on the field/value catalog facet (dropdown speedups). The
+	// catalog is built at flush and self-heals from S3, so it is safe to toggle.
+	Enabled bool `yaml:"enabled"`
+
+	// CardinalityThreshold caps how many distinct values the catalog keeps per
+	// field. A field that exceeds it is treated as high-cardinality: the catalog
+	// stops storing its values (bounding RAM) and the read path falls through to
+	// the legacy scan, so the catalog never serves a truncated value list.
+	// 0 = unlimited (keep every field exact). Default 50000.
+	CardinalityThreshold int `yaml:"cardinality_threshold"`
+
+	// AlwaysSketchFields are forced high-cardinality regardless of the threshold
+	// (known unbounded id columns, e.g. trace_id, span_id, request_id).
+	AlwaysSketchFields []string `yaml:"always_sketch_fields"`
+
+	// RefuseSketchEnumeration, when true, makes field_values for an
+	// AlwaysSketchFields field return EMPTY instead of scanning to enumerate it
+	// (matches VL/VT, and avoids a pointless expensive scan on id columns nobody
+	// browses — you look them up by exact value, which is unaffected). Opt-in
+	// (default false) because it is a behavior change for those fields. Threshold
+	// crossers are NOT refused — they still fall through to the scan.
+	RefuseSketchEnumeration bool `yaml:"refuse_sketch_enumeration"`
 }
 
 type LogsModeConfig struct {

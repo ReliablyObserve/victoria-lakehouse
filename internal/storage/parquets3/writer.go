@@ -91,12 +91,13 @@ type BatchWriter struct {
 	totalRows  atomic.Int64
 	totalBytes atomic.Int64
 
-	bloomObserver BloomObserver
-	statsCallback StatsCallback
-	flushCacheCb  FlushCacheCallback
-	tenantPrefix  TenantPrefixFunc
-	tenantBucket  TenantBucketFunc
-	tenantPool    TenantPoolFunc
+	bloomObserver   BloomObserver
+	catalogObserver *catalogObserver
+	statsCallback   StatsCallback
+	flushCacheCb    FlushCacheCallback
+	tenantPrefix    TenantPrefixFunc
+	tenantBucket    TenantBucketFunc
+	tenantPool      TenantPoolFunc
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -349,6 +350,9 @@ func (w *BatchWriter) FlushAll(ctx context.Context) error {
 		if w.bloomObserver != nil {
 			w.bloomObserver.PersistDirty(ctx, w.prefix)
 		}
+		if w.catalogObserver != nil {
+			w.catalogObserver.persistDirty(ctx) // persist pmeta bundles (bloom survives restart)
+		}
 	}
 
 	if len(errs) > 0 {
@@ -421,17 +425,32 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 	}
 	w.manifest.AddFile(partition, fi)
 
-	if w.bloomObserver != nil {
+	// Extract the per-column bloom values once when either the legacy bloom index
+	// or the pmeta bloom facet needs them (dual-write feeds both from one extraction).
+	var bloomValues map[string][]string
+	if w.bloomObserver != nil || w.catalogObserver != nil {
 		bloomStart := time.Now()
-		bloomValues := extractLogBloomValues(rows)
+		bloomValues = extractLogBloomValues(rows)
+		if w.bloomObserver != nil {
+			metrics.WriterBloomBuildDuration.Observe(time.Since(bloomStart).Seconds())
+		}
+	}
+	if w.bloomObserver != nil {
 		metrics.WriterBloomBuildsTotal.Inc("logs")
-		metrics.WriterBloomBuildDuration.Observe(time.Since(bloomStart).Seconds())
 		var bloomValueCount int
 		for _, vals := range bloomValues {
 			bloomValueCount += len(vals)
 		}
 		metrics.WriterBloomValuesTotal.Add("logs", bloomValueCount)
 		w.bloomObserver.OnFileFlush(partition, key, bloomValues)
+	}
+
+	// pmeta field/value catalog + file-meta + bloom facets: fed the same
+	// already-extracted maps (no extra scan). Nil unless --pmeta is enabled, so
+	// this is a no-op on the hot path by default.
+	if w.catalogObserver != nil {
+		w.catalogObserver.OnFileFlush(partition, fi, labels, bloomValues)
+		w.catalogObserver.tapLogRows(rows)
 	}
 
 	if w.statsCallback != nil {
@@ -507,17 +526,30 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 	}
 	w.manifest.AddFile(partition, fi)
 
-	if w.bloomObserver != nil {
+	var bloomValues map[string][]string
+	if w.bloomObserver != nil || w.catalogObserver != nil {
 		bloomStart := time.Now()
-		bloomValues := extractTraceBloomValues(rows)
+		bloomValues = extractTraceBloomValues(rows)
+		if w.bloomObserver != nil {
+			metrics.WriterBloomBuildDuration.Observe(time.Since(bloomStart).Seconds())
+		}
+	}
+	if w.bloomObserver != nil {
 		metrics.WriterBloomBuildsTotal.Inc("traces")
-		metrics.WriterBloomBuildDuration.Observe(time.Since(bloomStart).Seconds())
 		var bloomValueCount int
 		for _, vals := range bloomValues {
 			bloomValueCount += len(vals)
 		}
 		metrics.WriterBloomValuesTotal.Add("traces", bloomValueCount)
 		w.bloomObserver.OnFileFlush(partition, key, bloomValues)
+	}
+
+	// pmeta field/value catalog + file-meta + bloom facets: fed the same
+	// already-extracted maps (no extra scan). Nil unless --pmeta is enabled, so
+	// this is a no-op on the hot path by default.
+	if w.catalogObserver != nil {
+		w.catalogObserver.OnFileFlush(partition, fi, labels, bloomValues)
+		w.catalogObserver.tapTraceRows(rows)
 	}
 
 	if w.statsCallback != nil {

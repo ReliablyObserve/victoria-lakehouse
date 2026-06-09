@@ -1094,15 +1094,16 @@ func TestGetFieldValues_ZeroLimit(t *testing.T) {
 		time.Now().UnixNano(),
 	)
 
-	// limit=0 should bypass label index fast path (limit > 0 check)
+	// limit=0 (no limit — what a Grafana dropdown sends) must serve from the in-RAM
+	// label index, NOT fall through to a Parquet scan. The index is self-bounded, so
+	// serving all its values is correct. (Previously the fast-path was gated on
+	// limit > 0, which sent no-limit requests to a full scan — the dropdown slowness.)
 	vals, err := s.GetFieldValues(context.Background(), nil, q, "service.name", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// With limit=0 and * query, the code path should go to parquet scan
-	// but empty manifest will return nil
-	if len(vals) != 0 {
-		t.Errorf("expected 0 values with limit=0 and empty manifest, got %d", len(vals))
+	if len(vals) != 3 {
+		t.Errorf("limit=0 should serve all 3 index values (a,b,c), got %d", len(vals))
 	}
 }
 

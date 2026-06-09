@@ -25,6 +25,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/resourcebounds"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -51,6 +52,7 @@ type Storage struct {
 	smartCache        *smartcache.Controller
 	bloomCache        *bloomindex.BloomCache
 	bloomObserver     *storageBloomObserver
+	catalog           *pmeta.Store // unified field/value catalog; nil unless --pmeta
 	footerCache       *FooterCache
 	fileBloomCache    *BloomFileCache
 	crossSignalClient *crosssignal.Client
@@ -304,6 +306,14 @@ func New(cfg *config.Config) (*Storage, error) {
 		}
 		bw.bloomObserver = obs
 		s.bloomObserver = obs
+
+		// pmeta field/value catalog (experimental, --pmeta). Built at flush via
+		// the catalogObserver, served by the GetFieldValues fast-path. nil when
+		// disabled, so the hot paths are unchanged by default.
+		if cfg.Pmeta.Enabled {
+			s.catalog = newCatalogStore(cfg.Pmeta, prefix)
+			bw.catalogObserver = &catalogObserver{store: s.catalog, sketch: sketchSet(cfg.Pmeta.AlwaysSketchFields), pool: s.pool}
+		}
 
 		// Write-through cache: when running in combined mode (role=all),
 		// cache flushed column data locally so queries avoid an S3 round-trip

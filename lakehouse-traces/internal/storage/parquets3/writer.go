@@ -73,12 +73,13 @@ type BatchWriter struct {
 	totalRows  atomic.Int64
 	totalBytes atomic.Int64
 
-	onFlush       FlushHook
-	statsCallback StatsCallback
-	flushCacheCb  FlushCacheCallback
-	tenantPrefix  TenantPrefixFunc
-	tenantBucket  TenantBucketFunc
-	tenantPool    TenantPoolFunc
+	onFlush         FlushHook
+	catalogObserver *catalogObserver
+	statsCallback   StatsCallback
+	flushCacheCb    FlushCacheCallback
+	tenantPrefix    TenantPrefixFunc
+	tenantBucket    TenantBucketFunc
+	tenantPool      TenantPoolFunc
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -311,6 +312,9 @@ func (w *BatchWriter) FlushAll(ctx context.Context) error {
 	if len(logSnap) > 0 || len(traceSnap) > 0 {
 		metrics.InsertFlushTotal.Inc()
 		metrics.InsertFlushDuration.Observe(time.Since(flushStart).Seconds())
+		if w.catalogObserver != nil {
+			w.catalogObserver.persistDirty(ctx) // persist pmeta bundles to S3
+		}
 	}
 
 	if len(errs) > 0 {
@@ -375,6 +379,10 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 		LabelAggregates:   extractLogLabelAggregates(rows),
 	}
 	w.manifest.AddFile(partition, fi)
+	if w.catalogObserver != nil {
+		w.catalogObserver.OnFileFlush(partition, fi, labels, nil)
+		w.catalogObserver.tapLogRows(rows)
+	}
 
 	if w.statsCallback != nil {
 		w.statsCallback(accountID, projectID, int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
@@ -448,6 +456,10 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 		LabelAggregates:   extractTraceLabelAggregates(rows),
 	}
 	w.manifest.AddFile(partition, fi)
+	if w.catalogObserver != nil {
+		w.catalogObserver.OnFileFlush(partition, fi, labels2, nil)
+		w.catalogObserver.tapTraceRows(rows)
+	}
 
 	w.totalBytes.Add(int64(len(result.Data)))
 

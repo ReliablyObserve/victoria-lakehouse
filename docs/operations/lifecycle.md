@@ -12,7 +12,7 @@ return empty data.
 
 | Code | Meaning | k8s probe behaviour |
 | ---: | --- | --- |
-| **503** | Not ready. ServingReady is false — disk recovery still running, WAL not replayed, or manifest below `MinManifestFiles` threshold | Pod NOT routed |
+| **503** | Not ready. ServingReady is false — disk recovery still running, buffer parts not yet recovered (the insert-role readiness gate, legacy-named "WAL replay"; there is no separate WAL), or manifest below `MinManifestFiles` threshold | Pod NOT routed |
 | **204** | Serving but background warmup in progress. ServingReady=true, WarmupComplete=false | Pod routed (any 2xx) |
 | **200** | Fully ready. ServingReady=true AND WarmupComplete=true | Pod routed always |
 

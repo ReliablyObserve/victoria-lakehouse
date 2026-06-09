@@ -42,21 +42,30 @@ func (pi *PartitionedIndex) AddFile(partition, key string, columnValues map[stri
 		pi.partitions[partition] = idx
 	}
 
+	cols := BuildFileColumns(columnValues, pi.fpRate)
+	if len(cols) > 0 {
+		idx.AddColumns(key, cols)
+		pi.dirty[partition] = true
+	}
+}
+
+// BuildFileColumns builds the per-column bloom filters for a single file's
+// distinct column values, skipping columns below the bloom threshold. Shared by
+// PartitionedIndex.AddFile and the pmeta bloomFacet so both paths produce
+// identical blooms — the dual-write parity gate depends on this.
+func BuildFileColumns(columnValues map[string][]string, fpRate float64) map[string]*Filter {
 	cols := make(map[string]*Filter, len(columnValues))
 	for col, vals := range columnValues {
 		if ShouldSkipBloom(len(vals)) {
 			continue
 		}
-		f := NewFilter(len(vals), pi.fpRate)
+		f := NewFilter(len(vals), fpRate)
 		for _, v := range vals {
 			f.Add(v)
 		}
 		cols[col] = f
 	}
-	if len(cols) > 0 {
-		idx.AddColumns(key, cols)
-		pi.dirty[partition] = true
-	}
+	return cols
 }
 
 func (pi *PartitionedIndex) GetPartition(partition string) *Index {
