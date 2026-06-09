@@ -83,7 +83,11 @@ func (f *bloomFacet) mayContain(keys []string, column, value string) []string {
 
 // BloomMayContain returns the subset of keys whose bloom filter for column may
 // contain value, read from the partition's FacetBloom. ok is false when pmeta has
-// no bloom facet for the partition (caller falls back to the legacy bloom path).
+// no bloom facet for the partition OR the facet is EMPTY (caller falls back to
+// the legacy bloom path). The empty check matters: the warm/replay path creates
+// facet objects for every partition it touches, and an empty facet keeps every
+// key (no false negatives) — reporting ok=true for it would permanently shadow a
+// populated legacy fallback with a useless keep-everything answer.
 func (s *Store) BloomMayContain(partition string, keys []string, column, value string) ([]string, bool) {
 	fc, ok := s.Get(partition, FacetBloom)
 	if !ok {
@@ -93,5 +97,33 @@ func (s *Store) BloomMayContain(partition string, keys []string, column, value s
 	if !ok {
 		return nil, false
 	}
+	bf.mu.RLock()
+	empty := bf.idx.Len() == 0
+	bf.mu.RUnlock()
+	if empty {
+		return nil, false
+	}
 	return bf.mayContain(keys, column, value), true
+}
+
+// absorbFacet merges a decoded bloom facet into this live one (warm-merge): the
+// union of file entries; same-key conflicts overwrite (same file => same bloom).
+func (f *bloomFacet) absorbFacet(other Facet) {
+	ob, ok := other.(*bloomFacet)
+	if !ok {
+		return
+	}
+	ob.mu.RLock()
+	oidx := ob.idx
+	ob.mu.RUnlock()
+	f.mu.Lock()
+	f.idx.MergeFrom(oidx)
+	f.mu.Unlock()
+}
+
+// removeFiles drops per-file bloom entries (compaction/retention hook).
+func (f *bloomFacet) removeFiles(keys []string) {
+	f.mu.Lock()
+	f.idx.RemoveKeys(keys)
+	f.mu.Unlock()
 }

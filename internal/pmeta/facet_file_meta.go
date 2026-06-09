@@ -93,6 +93,38 @@ func (f *fileMetaFacet) EstimateBytes() int64 {
 	return n
 }
 
+// absorbFacet merges a decoded file-meta facet into this live one (warm-merge):
+// keys absent from the live facet are copied; live entries win on conflict
+// (a live flush is at least as fresh as the persisted bundle).
+func (f *fileMetaFacet) absorbFacet(other Facet) {
+	of, ok := other.(*fileMetaFacet)
+	if !ok {
+		return
+	}
+	of.mu.RLock()
+	entries := make(map[string]fileMetaEntry, len(of.byKey))
+	for k, v := range of.byKey {
+		entries[k] = v
+	}
+	of.mu.RUnlock()
+	f.mu.Lock()
+	for k, v := range entries {
+		if _, exists := f.byKey[k]; !exists {
+			f.byKey[k] = v
+		}
+	}
+	f.mu.Unlock()
+}
+
+// removeFiles drops per-file entries (compaction/retention hook).
+func (f *fileMetaFacet) removeFiles(keys []string) {
+	f.mu.Lock()
+	for _, k := range keys {
+		delete(f.byKey, k)
+	}
+	f.mu.Unlock()
+}
+
 func (f *fileMetaFacet) fileMeta(key string) (fileMetaEntry, bool) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()

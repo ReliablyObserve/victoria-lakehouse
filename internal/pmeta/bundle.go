@@ -15,7 +15,10 @@ import (
 // bundleMagic prefixes every serialized bundle. The trailing byte is the format
 // version; bump it on an incompatible framing change (old readers then return a
 // structural error → whole-partition rebuild, never a misparse).
-var bundleMagic = [5]byte{'L', 'H', 'P', 'M', 0x02}
+// v3: header CRC added (covers magic..facetCount, incl. the partition string) and
+// the catalog facet payload gained the high-card section — a v2 bundle now fails
+// decode and routes to the (wired) rebuild-from-manifest self-heal.
+var bundleMagic = [5]byte{'L', 'H', 'P', 'M', 0x03}
 
 const (
 	maxPartitionLen = 0xFFFF     // uint16 partition-key length
@@ -41,12 +44,19 @@ const (
 //	payloads: facetCount × payload[len]   (TOC order)
 
 // Bundle holds all facets for one partition — the unit of GET/PUT/snapshot/dirty.
+//
+// Dirtiness is generation-based, not a boolean: every mutation bumps gen, and a
+// successful persist records the generation it ENCODED (cleanGen). A contribution
+// arriving between the persist's Encode snapshot and its completion keeps
+// gen > cleanGen, so it is never silently dropped from the next persist cycle
+// (the lost-update race a plain clear-flag scheme has).
 type Bundle struct {
 	Partition string
 
-	mu     sync.RWMutex
-	facets map[FacetKind]Facet
-	dirty  atomic.Bool
+	mu       sync.RWMutex
+	facets   map[FacetKind]Facet
+	gen      atomic.Uint64 // bumped on every mutation
+	cleanGen atomic.Uint64 // gen at the last successful persist (or decode)
 }
 
 // NewBundle returns an empty bundle for a partition.
@@ -59,7 +69,7 @@ func (b *Bundle) Set(f Facet) {
 	b.mu.Lock()
 	b.facets[f.Kind()] = f
 	b.mu.Unlock()
-	b.dirty.Store(true)
+	b.markDirty()
 }
 
 // Get returns the facet of a kind, if present.
@@ -70,10 +80,21 @@ func (b *Bundle) Get(k FacetKind) (Facet, bool) {
 	return f, ok
 }
 
-// Dirty reports whether the bundle has unpersisted changes.
-func (b *Bundle) Dirty() bool { return b.dirty.Load() }
+// Dirty reports whether the bundle has changes not yet persisted.
+func (b *Bundle) Dirty() bool { return b.gen.Load() != b.cleanGen.Load() }
 
-func (b *Bundle) clearDirty() { b.dirty.Store(false) }
+// markDirty records a mutation.
+func (b *Bundle) markDirty() { b.gen.Add(1) }
+
+// snapshotGen returns the generation a persist is about to encode.
+func (b *Bundle) snapshotGen() uint64 { return b.gen.Load() }
+
+// persisted records that everything up to snapshot gen g is durable. Later
+// mutations (gen > g) keep the bundle dirty.
+func (b *Bundle) persisted(g uint64) { b.cleanGen.Store(g) }
+
+// clearDirty marks the bundle fully clean (decode path: content == durable).
+func (b *Bundle) clearDirty() { b.cleanGen.Store(b.gen.Load()) }
 
 // EstimateBytes is the resident size across facets (drives eviction).
 func (b *Bundle) EstimateBytes() int64 {
@@ -142,22 +163,26 @@ func (b *Bundle) Encode(w io.Writer) error {
 		toc = append(toc, ent[:]...)
 	}
 
-	bw := bufio.NewWriter(w)
-	if _, err := bw.Write(bundleMagic[:]); err != nil {
-		return err
-	}
+	// Header bytes (magic..facetCount) are built first so the header CRC can
+	// cover them: without it a flipped facetCount byte (e.g. →0) would decode as
+	// a VALID empty bundle — silent total facet loss instead of a rebuild signal.
+	hdr := make([]byte, 0, len(bundleMagic)+2+len(b.Partition)+1)
+	hdr = append(hdr, bundleMagic[:]...)
 	var u16 [2]byte
 	binary.BigEndian.PutUint16(u16[:], uint16(len(b.Partition)))
-	if _, err := bw.Write(u16[:]); err != nil {
-		return err
-	}
-	if _, err := bw.WriteString(b.Partition); err != nil {
-		return err
-	}
-	if err := bw.WriteByte(byte(len(encs))); err != nil {
+	hdr = append(hdr, u16[:]...)
+	hdr = append(hdr, b.Partition...)
+	hdr = append(hdr, byte(len(encs)))
+
+	bw := bufio.NewWriter(w)
+	if _, err := bw.Write(hdr); err != nil {
 		return err
 	}
 	var crcb [4]byte
+	binary.BigEndian.PutUint32(crcb[:], crc32.ChecksumIEEE(hdr))
+	if _, err := bw.Write(crcb[:]); err != nil {
+		return err
+	}
 	binary.BigEndian.PutUint32(crcb[:], crc32.ChecksumIEEE(toc))
 	if _, err := bw.Write(crcb[:]); err != nil {
 		return err
@@ -210,6 +235,21 @@ func DecodeBundle(r io.Reader, reg map[FacetKind]FacetFactory) (*Bundle, DecodeR
 	cnt, err := br.ReadByte()
 	if err != nil {
 		return nil, res, fmt.Errorf("pmeta: read facetCount: %w", err)
+	}
+	// Header CRC covers magic..facetCount (incl. the partition string), so a
+	// corrupted facetCount/partition can never decode as a valid (e.g. empty)
+	// bundle — it becomes a structural error → whole-partition rebuild.
+	hdr := make([]byte, 0, len(magic)+2+len(part)+1)
+	hdr = append(hdr, magic[:]...)
+	hdr = append(hdr, u16[:]...)
+	hdr = append(hdr, part...)
+	hdr = append(hdr, cnt)
+	var hdrCRCb [4]byte
+	if _, err := io.ReadFull(br, hdrCRCb[:]); err != nil {
+		return nil, res, fmt.Errorf("pmeta: read headerCRC: %w", err)
+	}
+	if crc32.ChecksumIEEE(hdr) != binary.BigEndian.Uint32(hdrCRCb[:]) {
+		return nil, res, fmt.Errorf("pmeta: header CRC mismatch — rebuild partition")
 	}
 	if cnt == 0 {
 		b.clearDirty()

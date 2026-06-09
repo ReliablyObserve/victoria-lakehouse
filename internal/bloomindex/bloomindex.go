@@ -381,6 +381,16 @@ func unmarshalV2(data []byte) (*Index, error) {
 	return idx, nil
 }
 
+// RemoveKeys drops the given file keys from the index — the compaction/retention
+// hook (source files merged away or expired must not accumulate as dead entries).
+func (idx *Index) RemoveKeys(keys []string) {
+	idx.mu.Lock()
+	for _, k := range keys {
+		delete(idx.entries, k)
+	}
+	idx.mu.Unlock()
+}
+
 // MergeFrom adds all entries from other into this index, overwriting on conflict.
 func (idx *Index) MergeFrom(other *Index) {
 	if other == nil {

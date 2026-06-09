@@ -90,7 +90,9 @@ func twoFacets() (*Bundle, map[FacetKind]FacetFactory) {
 // payloadStart is the byte offset where facet payloads begin:
 // magic(5) + partLen(2) + partition + facetCount(1) + tocCRC(4) + TOC(count*10).
 func payloadStart(part string, facetCount int) int {
-	return 5 + 2 + len(part) + 1 + 4 + facetCount*tocEntrySize
+	// magic[5] partLen[2] partition headerCRC[4] facetCount[1]... layout v3:
+	// magic[5] + partLen[2] + partition + facetCount[1] + headerCRC[4] + tocCRC[4] + TOC
+	return 5 + 2 + len(part) + 1 + 4 + 4 + facetCount*tocEntrySize
 }
 
 // TestDecode_PayloadCorruptionIsolated is the core safeguard: corrupting one

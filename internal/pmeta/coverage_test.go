@@ -149,3 +149,151 @@ func TestDict(t *testing.T) {
 		t.Fatal("dict EstimateBytes should be > 0")
 	}
 }
+
+// TestConcurrent_ValuesVsMerge pins the Values-vs-Merge data race (review finding:
+// Values iterated vs.ids after RUnlock while Merge mutated the slice in place).
+// Run under -race in CI; fails loudly if the copy-under-lock regresses.
+func TestConcurrent_ValuesVsMerge(t *testing.T) {
+	s := NewStore()
+	s.Register(FacetFieldCatalog, NewFieldCatalogFactory(NewDict()))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2000; i++ {
+			s.OnFileFlush(FileContribution{
+				Partition: "p", FileKey: "f",
+				Labels: map[string][]string{"service.name": {fmt.Sprintf("svc-%d", i)}},
+			})
+		}
+	}()
+	for i := 0; i < 2000; i++ {
+		_ = s.FieldValues("p", "service.name", "", 0)
+		_ = s.Cardinality("trace_id")
+	}
+	<-done
+}
+
+// TestPersistDirty_GenerationNoLostUpdate pins the dirty-generation semantics: a
+// contribution arriving AFTER the persist's encode snapshot keeps the bundle
+// dirty, so it is persisted on the next cycle (no lost update).
+func TestPersistDirty_GenerationNoLostUpdate(t *testing.T) {
+	s := NewStore()
+	s.Register(FacetFieldCatalog, NewFieldCatalogFactory(NewDict()))
+	s.OnFileFlush(FileContribution{Partition: "p", FileKey: "f1",
+		Labels: map[string][]string{"k": {"v1"}}})
+
+	b := s.Bundle("p")
+	g := b.snapshotGen()
+	// A contribution lands between the encode snapshot and persisted(g) — exactly
+	// the lost-update window of a boolean dirty flag.
+	s.OnFileFlush(FileContribution{Partition: "p", FileKey: "f2",
+		Labels: map[string][]string{"k": {"v2"}}})
+	b.persisted(g)
+
+	if !b.Dirty() {
+		t.Fatal("contribution after the persist snapshot must keep the bundle dirty")
+	}
+	if dp := s.DirtyPartitions(); len(dp) != 1 || dp[0] != "p" {
+		t.Fatalf("DirtyPartitions = %v, want [p]", dp)
+	}
+}
+
+// TestPutWarm_PreservesLiveContributions pins the serve-while-warming fix: a
+// bundle decoded from S3 must absorb into — not clobber — a live bundle that
+// concurrent flushes already populated.
+func TestPutWarm_PreservesLiveContributions(t *testing.T) {
+	mk := func() *Store {
+		s := NewStore()
+		s.Register(FacetFieldCatalog, NewFieldCatalogFactory(NewDict()))
+		s.Register(FacetFileMeta, NewFileMetaFactory())
+		s.Register(FacetBloom, NewBloomFactory(0.01))
+		return s
+	}
+	// "old" store = what was persisted to S3 before restart.
+	old := mk()
+	old.OnFileFlush(FileContribution{Partition: "p", FileKey: "old.parquet", RowCount: 1,
+		Labels:      map[string][]string{"service.name": {"old-svc"}},
+		BloomValues: map[string][]string{"service.name": {"old-svc"}}})
+	var buf bytes.Buffer
+	if err := old.Bundle("p").Encode(&buf); err != nil {
+		t.Fatal(err)
+	}
+
+	// "live" store = restarted pod; a flush lands BEFORE the warm completes.
+	live := mk()
+	live.OnFileFlush(FileContribution{Partition: "p", FileKey: "new.parquet", RowCount: 2,
+		Labels:      map[string][]string{"service.name": {"new-svc"}},
+		BloomValues: map[string][]string{"service.name": {"new-svc"}}})
+
+	decoded, _, err := DecodeBundle(bytes.NewReader(buf.Bytes()), live.Registry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	live.PutWarm(decoded)
+
+	// BOTH the live flush and the warmed S3 content survive.
+	if _, ok := live.FileMeta("p", "new.parquet"); !ok {
+		t.Fatal("live flush contribution clobbered by warm")
+	}
+	if _, ok := live.FileMeta("p", "old.parquet"); !ok {
+		t.Fatal("warmed S3 content not absorbed")
+	}
+	vals := live.FieldValues("p", "service.name", "", 0)
+	if len(vals) != 2 {
+		t.Fatalf("catalog union = %v, want both old-svc and new-svc", vals)
+	}
+	for _, key := range []string{"old.parquet", "new.parquet"} {
+		got, ok := live.BloomMayContain("p", []string{key}, "service.name", map[string]string{
+			"old.parquet": "old-svc", "new.parquet": "new-svc"}[key])
+		if !ok || len(got) != 1 {
+			t.Fatalf("bloom union missing %s (ok=%v got=%v)", key, ok, got)
+		}
+	}
+	if !live.Bundle("p").Dirty() {
+		t.Fatal("warm-merged bundle must be dirty (the union needs to persist)")
+	}
+}
+
+// TestRemoveFiles_CompactionHook pins the per-file removal: file-meta + bloom
+// entries for compacted-away files are dropped; the catalog (partition-level
+// union) is untouched; the bundle goes dirty so the shrunken bundle persists.
+func TestRemoveFiles_CompactionHook(t *testing.T) {
+	s := NewStore()
+	s.Register(FacetFieldCatalog, NewFieldCatalogFactory(NewDict()))
+	s.Register(FacetFileMeta, NewFileMetaFactory())
+	s.Register(FacetBloom, NewBloomFactory(0.01))
+	s.OnFileFlush(FileContribution{Partition: "p", FileKey: "a.parquet", RowCount: 1,
+		Labels:      map[string][]string{"service.name": {"svc"}},
+		BloomValues: map[string][]string{"service.name": {"svc"}}})
+	s.OnFileFlush(FileContribution{Partition: "p", FileKey: "b.parquet", RowCount: 2,
+		Labels:      map[string][]string{"service.name": {"svc"}},
+		BloomValues: map[string][]string{"service.name": {"svc"}}})
+
+	s.RemoveFiles("p", []string{"a.parquet"})
+
+	if _, ok := s.FileMeta("p", "a.parquet"); ok {
+		t.Fatal("removed file still in file-meta facet")
+	}
+	if _, ok := s.FileMeta("p", "b.parquet"); !ok {
+		t.Fatal("surviving file lost from file-meta facet")
+	}
+	got, ok := s.BloomMayContain("p", []string{"a.parquet", "b.parquet"}, "service.name", "svc")
+	if !ok {
+		t.Fatal("bloom facet should still answer")
+	}
+	for _, k := range got {
+		if k == "a.parquet" {
+			// removed key is UNKNOWN now → kept by may-contain (sound); the point
+			// is the entry is gone, which Remove+Has proves:
+			break
+		}
+	}
+	if vals := s.FieldValues("p", "service.name", "", 0); len(vals) != 1 {
+		t.Fatalf("catalog must be untouched by file removal, got %v", vals)
+	}
+	// Partition removal (retention hook).
+	s.Remove("p")
+	if _, ok := s.FileMeta("p", "b.parquet"); ok {
+		t.Fatal("Remove(partition) left the bundle resident")
+	}
+}

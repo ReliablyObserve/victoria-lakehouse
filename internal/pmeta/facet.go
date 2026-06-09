@@ -52,6 +52,11 @@ type FileContribution struct {
 	// BloomValues: column -> distinct values for this file's bloom filters,
 	// consumed by FacetBloom (mirrors the _bloom.bin sidecar).
 	BloomValues map[string][]string
+	// TruncatedFields: fields whose Labels list hit the extractor's per-file cap,
+	// so the value set MAY be incomplete. The catalog marks them high-card (not
+	// enumerable → reads fall through to the scan) rather than ever serving a
+	// silently truncated list as authoritative.
+	TruncatedFields []string
 }
 
 // Facet is the per-partition unit of metadata. One implementation per kind.
