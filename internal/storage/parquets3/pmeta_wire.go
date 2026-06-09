@@ -177,9 +177,11 @@ func (s *Storage) catalogFieldValues(q *logstorage.Query, fieldName string, limi
 	seen := make(map[string]struct{}, 16)
 	valset := make(map[string]struct{})
 	// Bounded uint64→int conversion (the facet API takes int; limit can originate
-	// from a parsed query param). 0 = no cap; anything past int range is clamped.
-	catLimit := math.MaxInt
-	if limit < uint64(math.MaxInt) {
+	// from a parsed query param). Clamp to MaxInt32 — the platform-independent int
+	// bound — so the conversion is safe even where int is 32-bit (CodeQL
+	// go/incorrect-integer-conversion). 0 = no cap; a dropdown never needs 2^31 values.
+	catLimit := math.MaxInt32
+	if limit < math.MaxInt32 {
 		catLimit = int(limit)
 	}
 	for _, fi := range s.manifest.GetFilesForRange(startNs, endNs) {
