@@ -254,3 +254,41 @@ func TestInteg_PmetaCatalog_FileMetaFacetParity(t *testing.T) {
 		t.Fatalf("fileMeta labels mismatch: facet=%v sidecar=%v", got.Labels, want.Labels)
 	}
 }
+
+// TestInteg_PmetaCatalog_FileMetaWarmParity covers the cold-start path: a pod whose
+// manifest is loaded rebuilds the fileMetaFacet from the manifest's FileInfo (full
+// metadata, not just labels) via WarmCatalog, so Store.FileMeta matches the sidecar
+// even before any local flush.
+func TestInteg_PmetaCatalog_FileMetaWarmParity(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+
+	base := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC).UnixNano()
+	fi := manifest.FileInfo{
+		Key:               "logs/dt=2026-06-09/hour=10/a.parquet",
+		RowCount:          4242,
+		MinTimeNs:         base,
+		MaxTimeNs:         base + int64(time.Minute),
+		RawBytes:          987654,
+		SchemaFingerprint: "sf-abc123",
+		Labels:            map[string][]string{"service.name": {"api-gateway"}},
+	}
+	s.manifest.AddFile("dt=2026-06-09/hour=10", fi)
+
+	s.WarmCatalog(context.Background())
+
+	got, ok := s.catalog.FileMeta("dt=2026-06-09/hour=10", fi.Key)
+	if !ok {
+		t.Fatal("fileMetaFacet not populated by WarmCatalog")
+	}
+	want := manifest.FileInfoToMeta(fi)
+	if got.RowCount != want.RowCount || got.MinTimeNs != want.MinTimeNs ||
+		got.MaxTimeNs != want.MaxTimeNs || got.RawBytes != want.RawBytes ||
+		got.SchemaFingerprint != want.SchemaFingerprint ||
+		!reflect.DeepEqual(got.Labels, want.Labels) {
+		t.Fatalf("warm fileMeta != sidecar:\n facet=%+v\n sidecar=%+v", got, want)
+	}
+}

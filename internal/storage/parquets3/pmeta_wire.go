@@ -191,9 +191,14 @@ func (s *Storage) WarmCatalog(ctx context.Context) {
 		}
 		for _, fi := range files {
 			s.catalog.OnFileFlush(pmeta.FileContribution{
-				Partition: partition,
-				FileKey:   fi.Key,
-				Labels:    fi.Labels,
+				Partition:         partition,
+				FileKey:           fi.Key,
+				RowCount:          fi.RowCount,
+				MinTimeNs:         fi.MinTimeNs,
+				MaxTimeNs:         fi.MaxTimeNs,
+				RawBytes:          fi.RawBytes,
+				SchemaFingerprint: fi.SchemaFingerprint,
+				Labels:            fi.Labels,
 			})
 		}
 	}

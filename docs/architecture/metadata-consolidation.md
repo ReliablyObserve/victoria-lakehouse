@@ -378,7 +378,8 @@ at any level reverts the flag (data is safe regardless via skip+rebuild).
     carrying the full `FileInfo`. Registered in both modules; the existing
     `_file_metadata.json` sidecar still writes (dual-write). Parity gate
     `TestInteg_PmetaCatalog_FileMetaFacetParity` asserts facet == `FileInfoToMeta(fi)`
-    after a real flush. **Flip/retire (read from facet, stop writing the sidecar) is the
-    next step** — needs the manifest warmup to read `Store.FileMeta`.
+    after a real flush, and `…_FileMetaWarmParity` asserts the same on the **cold-start
+    path** (`WarmCatalog` now rebuilds the full per-file meta from the manifest, not just
+    labels). **Flip/retire (read from facet, stop writing the sidecar) is the next step.**
   - [ ] **bloom** — wrap `bloomindex.Index` as `bloomFacet` (dual-write → flip).
   - [ ] **labels** — `labelsFacet` + manifest inverted view derived (fixes Overlap-2).
