@@ -337,8 +337,14 @@ at any level reverts the flag (data is safe regardless via skip+rebuild).
   drives a real `BatchWriter` flush with `--pmeta` on and asserts catalog == ground
   truth == legacy scan result on real Parquet. The gate passes; safe to enable behind
   the flag.
-- [ ] **S3 persist/warm wiring** — `ObjectStore` adapter + `PersistDirty` on the
-  flush/snapshot cycle + `WarmPartitions` in `runStartup` (one GET/partition).
+- [x] **Cold-start warm (manifest-derived)** — `Storage.WarmCatalog` rebuilds the
+  catalog from the manifest's per-file `Labels` in `runStartup` (the manifest is
+  already resident → **no extra S3 I/O**, and it is the source of truth → trivially
+  self-healing). Dropdowns are fast on the FIRST query after a cold pod. Tested.
+- [ ] **S3 bundle persist/warm (A3, PB-scale)** — the `ObjectStore` adapter +
+  `PersistDirty` + `WarmPartitions` (one GET/partition) become worthwhile only when
+  re-deriving from the manifest is too costly at PB scale; the machinery is built
+  and tested in `internal/pmeta`, just not wired (manifest-warm supersedes it for now).
 - [ ] **A2** — HLL high-card layer + `IsHighCard` refusal.
 - [ ] **A3** — time-tiered residency + traces `span_attr:*`.
 - [ ] **Fold existing facets** — bloom / file-meta / labels (dual-write → flip).

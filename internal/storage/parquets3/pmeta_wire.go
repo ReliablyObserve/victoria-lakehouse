@@ -1,6 +1,7 @@
 package parquets3
 
 import (
+	"context"
 	"sort"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -82,4 +83,27 @@ func (s *Storage) catalogFieldValues(q *logstorage.Query, fieldName string, limi
 		out[i] = logstorage.ValueWithHits{Value: v, Hits: 1}
 	}
 	return out
+}
+
+// WarmCatalog builds the field/value catalog from the manifest's per-file label
+// maps at startup, so dropdowns are fast on the FIRST query after a cold start —
+// not just after a local flush. The manifest is already resident (no extra S3
+// I/O), and it is the source of truth, so this is also the self-heal path: the
+// catalog is fully re-derivable from it. No-op when --pmeta is disabled.
+func (s *Storage) WarmCatalog(ctx context.Context) {
+	if s.catalog == nil {
+		return
+	}
+	for partition, files := range s.manifest.AllFiles() {
+		if ctx.Err() != nil {
+			return
+		}
+		for _, fi := range files {
+			s.catalog.OnFileFlush(pmeta.FileContribution{
+				Partition: partition,
+				FileKey:   fi.Key,
+				Labels:    fi.Labels,
+			})
+		}
+	}
 }
