@@ -67,7 +67,8 @@ def pct(xs, p):
 
 def main():
     raw, out = sys.argv[1], sys.argv[2]
-    rows = json.load(open(raw))
+    with open(raw) as f:
+        rows = json.load(f)
     g = defaultdict(dict)
     for r in rows:
         g[(r["signal"], r["query"], r["range"], r["latency_ms"])][r["system"]] = r
@@ -149,7 +150,8 @@ def main():
         for signal, query, rng, lat, eng, note in invalid:
             lines.append(f"- {eng} — {signal}/{query}/{rng}/lat{lat}ms: **{note}**")
 
-    open(out, "w").write("\n".join(lines) + "\n")
+    with open(out, "w") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 if __name__ == "__main__":
