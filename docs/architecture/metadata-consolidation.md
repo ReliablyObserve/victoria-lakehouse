@@ -316,3 +316,21 @@ behavior must match `--pmeta=off`:
 
 The flag flips per facet only after Levels 1–3 pass for that facet; a regression
 at any level reverts the flag (data is safe regardless via skip+rebuild).
+
+## (8) Implementation progress (PR #127)
+
+- [x] **Scaffold** — `Facet`/`Bundle`/`Store`, hardened v2 TOC codec (per-facet
+  len+CRC, isolated corruption, bounded alloc), 12 tests + 2 fuzzers under `-race`.
+- [x] **Field/value catalog facet** — interned `Dict` + per-partition value sets,
+  exact typeahead, Level-1 parity tests (ground-truth / persisted==resident /
+  rebuild==original / deterministic golden).
+- [x] **Persistence + cold-load** — `ObjectStore` interface, `PersistDirty` (one
+  PUT/dirty-partition), `WarmPartitions` (one GET/partition, bounded concurrency);
+  missing/corrupt bundle → `NeedsRebuild`, per-facet failure → `SkippedFacets`
+  (self-heal routing). Round-trip parity + missing/corrupt/skip tests under `-race`.
+- [ ] **`--pmeta` flag + flush/read wiring** — `OnFileFlush` from the writer; the
+  S3 adapter for `ObjectStore`; `GetFieldValues`/`GetFieldNames` fast-path. **This
+  is where Level-2 cross-path parity (catalog vs live labelIndex scan) is asserted.**
+- [ ] **A2** — HLL high-card layer + `IsHighCard` refusal.
+- [ ] **A3** — time-tiered residency + traces `span_attr:*`.
+- [ ] **Fold existing facets** — bloom / file-meta / labels (dual-write → flip).

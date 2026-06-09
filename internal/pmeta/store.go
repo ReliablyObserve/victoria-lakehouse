@@ -13,6 +13,7 @@ type Store struct {
 	mu      sync.RWMutex
 	reg     map[FacetKind]FacetFactory
 	bundles map[string]*Bundle
+	prefix  string // S3 key prefix for partition bundles
 }
 
 // NewStore returns an empty store with no facets registered.
