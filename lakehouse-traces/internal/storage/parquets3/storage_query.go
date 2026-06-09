@@ -367,33 +367,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for fi := range taskCh {
-				if err := ctx.Err(); err != nil {
-					firstErr.CompareAndSwap(nil, err)
-					return
-				}
-				if maxRows > 0 && rowsEmitted.Load() >= maxRows {
-					return
-				}
-				// K8s-style process-wide file-worker admission. Mirror
-				// of the logs module wiring. Acquire 1 count slot per
-				// file before any I/O; blocking acquires unstick on
-				// ctx cancellation, surfacing rejected_total++ for
-				// operator dashboards.
-				if s.bounds != nil && s.bounds.FileWorkers != nil {
-					rel, boundErr := s.bounds.FileWorkers.Acquire(ctx, 1)
-					if boundErr != nil {
-						firstErr.CompareAndSwap(nil, fmt.Errorf("file workers limit exceeded: %w", boundErr))
-						return
-					}
-					func() {
-						defer rel()
-						s.processOneFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, filteredWriteBlock)
-					}()
-					continue
-				}
-				s.processOneFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, filteredWriteBlock)
-			}
+			s.fileWorkerLoop(ctx, taskCh, &firstErr, maxRows, &rowsEmitted, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, filteredWriteBlock)
 		}()
 	}
 	wg.Wait()
@@ -411,6 +385,41 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	s.queryBufferBridge(ctx, startNs, endNs, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 
 	return nil
+}
+
+// fileWorkerLoop is the per-goroutine worker body extracted from
+// RunQuery to keep RunQuery inside the gocyclo budget. Each iteration
+// drains one file from taskCh, traverses the K8s-style FileWorkers
+// bound (when configured), and invokes processOneFile to run the I/O.
+// Mirror of the logs module helper.
+func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.FileInfo, firstErr *atomic.Value, maxRows int64, rowsEmitted *atomic.Int64, startNs, endNs int64, queryStr string, pipeFields []string, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock logstorage.WriteDataBlockFunc) {
+	for fi := range taskCh {
+		if err := ctx.Err(); err != nil {
+			firstErr.CompareAndSwap(nil, err)
+			return
+		}
+		if maxRows > 0 && rowsEmitted.Load() >= maxRows {
+			return
+		}
+		// K8s-style process-wide file-worker admission. Mirror
+		// of the logs module wiring. Acquire 1 count slot per
+		// file before any I/O; blocking acquires unstick on
+		// ctx cancellation, surfacing rejected_total++ for
+		// operator dashboards.
+		if s.bounds != nil && s.bounds.FileWorkers != nil {
+			rel, boundErr := s.bounds.FileWorkers.Acquire(ctx, 1)
+			if boundErr != nil {
+				firstErr.CompareAndSwap(nil, fmt.Errorf("file workers limit exceeded: %w", boundErr))
+				return
+			}
+			func() {
+				defer rel()
+				s.processOneFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, filteredWriteBlock)
+			}()
+			continue
+		}
+		s.processOneFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, filteredWriteBlock)
+	}
 }
 
 // processOneFile is the per-file work unit extracted from the
