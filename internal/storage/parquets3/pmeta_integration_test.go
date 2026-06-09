@@ -12,6 +12,7 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -643,3 +644,35 @@ func TestInteg_PmetaRetire_SkipsFileMetaSidecar(t *testing.T) {
 }
 
 const metadataSidecarSuffix = "_file_metadata.json"
+
+// TestBloomObserver_RetireFileBloom verifies retire-sidecars skips the per-file
+// `.bloom` write while still building the in-RAM partition index (kept because the
+// OR-branch query path reads it / _bloom.bin — only the per-file sidecar, which the
+// pmeta facet replaces, is retired).
+func TestBloomObserver_RetireFileBloom(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	obs := &storageBloomObserver{
+		bloom:           bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01),
+		pool:            s.pool,
+		retireFileBloom: true,
+	}
+	part := "dt=2026-06-09/hour=12"
+	obs.OnFileFlush(part, "logs/"+part+"/f1.parquet", map[string][]string{"service.name": {"api-gateway"}})
+
+	// retire on → no per-file `.bloom` PUT (gate is synchronous: no goroutine spawned).
+	mock.mu.RLock()
+	for k := range mock.files {
+		if strings.HasSuffix(k, ".bloom") {
+			mock.mu.RUnlock()
+			t.Fatalf("retireFileBloom on but a .bloom sidecar was written: %s", k)
+		}
+	}
+	mock.mu.RUnlock()
+
+	// ...but the in-RAM partition index is still built (the OR-branch path needs it).
+	if obs.bloom.Len() == 0 {
+		t.Fatal("partition bloom index should still be built when retireFileBloom is on")
+	}
+}

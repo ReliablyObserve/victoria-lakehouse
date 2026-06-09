@@ -303,6 +303,12 @@ func New(cfg *config.Config) (*Storage, error) {
 			bloom:    bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01),
 			pool:     pool,
 			manifest: s.manifest,
+			// retire-sidecars skips ONLY the redundant per-file `.bloom` write (the
+			// pmeta bloom facet covers single-file checks via checkFileBloom). The
+			// partition `_bloom.bin` is KEPT: the OR-branch query path
+			// (bloomFilterFilesByOrBranches → bloomCache) still reads it and is not
+			// yet flipped to the facet.
+			retireFileBloom: cfg.Pmeta.Enabled && cfg.Pmeta.RetireSidecarWrites,
 		}
 		bw.bloomObserver = obs
 		s.bloomObserver = obs

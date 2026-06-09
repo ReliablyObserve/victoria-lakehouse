@@ -310,8 +310,11 @@ func (s *Storage) StartWriter() {
 			s.bloomIdx.AddColumns(key, cols)
 		}
 
-		// Also write per-file bloom sidecar for file-level query skipping.
-		if pool != nil {
+		// Also write per-file bloom sidecar for file-level query skipping — unless
+		// retire-sidecars is on, where the pmeta bloom facet covers checkFileBloom.
+		// (The in-RAM bloomIdx / _bloom.bin used by the OR-branch path is kept.)
+		retireBloom := s.cfg.Pmeta.Enabled && s.cfg.Pmeta.RetireSidecarWrites
+		if pool != nil && !retireBloom {
 			obs := &storageBloomObserver{pool: pool}
 			go obs.writeFileBloom(context.Background(), key, columnValues)
 		}

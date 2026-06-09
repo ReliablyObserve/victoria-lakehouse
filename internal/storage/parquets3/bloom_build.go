@@ -31,9 +31,10 @@ func (o *storageBloomObserver) writeFileBloom(ctx context.Context, fileKey strin
 }
 
 type storageBloomObserver struct {
-	bloom    *bloomindex.PartitionedIndex
-	pool     *s3reader.ClientPool
-	manifest *manifest.Manifest
+	bloom           *bloomindex.PartitionedIndex
+	pool            *s3reader.ClientPool
+	manifest        *manifest.Manifest
+	retireFileBloom bool // skip the per-file `.bloom` write (pmeta facet covers it)
 }
 
 func (o *storageBloomObserver) OnFileFlush(partition, fileKey string, columnValues map[string][]string) {
@@ -48,8 +49,11 @@ func (o *storageBloomObserver) OnFileFlush(partition, fileKey string, columnValu
 	}
 	metrics.BloomEntriesTotal.Add(totalEntries)
 
-	// Also write per-file bloom sidecar for file-level query skipping.
-	if o.pool != nil {
+	// Also write per-file bloom sidecar for file-level query skipping — unless
+	// retire-sidecars is on, where the pmeta bloom facet covers checkFileBloom and
+	// the per-file `.bloom` is redundant. (The partition `_bloom.bin` is still
+	// persisted; the OR-branch query path reads it.)
+	if o.pool != nil && !o.retireFileBloom {
 		go o.writeFileBloom(context.Background(), fileKey, columnValues)
 	}
 }
