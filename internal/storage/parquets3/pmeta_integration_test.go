@@ -554,3 +554,50 @@ func TestInteg_PmetaCatalog_LabelsParityWithLabelIndex(t *testing.T) {
 		}
 	}
 }
+
+// TestInteg_PmetaFlip_FieldNamesAndBloom covers the two read-flips added on top of
+// the file-meta flip: (1) labels field_names served from the catalog, and (2) the
+// bloom flip keeping a file whose bloom-indexed value is present (the
+// no-false-negative safety property — the facet path must never exclude a file that
+// actually holds the queried value).
+func TestInteg_PmetaFlip_FieldNamesAndBloom(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog}
+
+	now := time.Now()
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "msg", ServiceName: "api-gateway", TraceID: "t1", SpanID: "s1"},
+		{TimestampUnixNano: now.Add(time.Millisecond).UnixNano(), Body: "msg", ServiceName: "order-service", TraceID: "t2", SpanID: "s2"},
+	})
+	bw.triggerFlush()
+
+	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	if len(files) == 0 {
+		t.Fatal("no file after flush")
+	}
+	fi := files[0]
+	q := mustParseQueryWithTime(t, "*", now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+
+	// (1) labels field_names flip: the catalog serves field names, incl. service.name.
+	names := s.catalogFieldNames(q)
+	hasSvc := false
+	for _, n := range names {
+		if n == "service.name" {
+			hasSvc = true
+		}
+	}
+	if !hasSvc {
+		t.Fatalf("catalogFieldNames missing service.name: %v", names)
+	}
+
+	// (2) bloom flip: a file whose bloom-indexed value IS present must never be
+	// excluded by the facet path (blooms have no false negatives).
+	if s.checkFileBloom(context.Background(), fi, "service.name:api-gateway") {
+		t.Fatal("checkFileBloom wrongly excluded a file containing service.name=api-gateway")
+	}
+}

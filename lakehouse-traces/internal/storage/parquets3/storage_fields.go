@@ -89,6 +89,16 @@ func (s *Storage) fetchFooterFile(ctx context.Context, fi manifest.FileInfo) (*p
 func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
 	filter := parseFilterFromQuery(q)
 
+	// pmeta labels read-flip: catalog field names first (range-aware), labelIndex fallback.
+	if filter == nil && s.catalog != nil {
+		if names := s.catalogFieldNames(q); len(names) > 0 {
+			result := make([]logstorage.ValueWithHits, len(names))
+			for i, name := range names {
+				result[i] = logstorage.ValueWithHits{Value: name, Hits: 1}
+			}
+			return result, nil
+		}
+	}
 	if filter == nil && s.labelIndex.Len() > 0 {
 		names := s.labelIndex.GetFieldNames()
 		result := make([]logstorage.ValueWithHits, len(names))
@@ -120,6 +130,15 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 	// has the full file open.
 	s.updateLabelIndexNamesOnly(f)
 
+	if s.catalog != nil {
+		if names := s.catalogFieldNames(q); len(names) > 0 {
+			result := make([]logstorage.ValueWithHits, len(names))
+			for i, name := range names {
+				result[i] = logstorage.ValueWithHits{Value: name, Hits: 1}
+			}
+			return result, nil
+		}
+	}
 	if s.labelIndex.Len() > 0 {
 		names := s.labelIndex.GetFieldNames()
 		result := make([]logstorage.ValueWithHits, len(names))

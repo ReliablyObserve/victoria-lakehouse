@@ -2144,6 +2144,43 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 		return false
 	}
 
+	// pmeta bloom read-flip: consult the in-RAM bloom facet (partition `_bloom.bin`
+	// bundle) before a per-file `.bloom` S3 GET. Same AND-across-columns /
+	// OR-within-column semantics; blooms never false-negative, so this only changes
+	// pruning efficiency, never correctness. Falls back to the `.bloom` download for
+	// any partition the bundle doesn't carry.
+	if s.catalog != nil {
+		partition := manifest.ExtractPartition(fi.Key)
+		usable := true
+		excluded := false
+	colLoop:
+		for _, bc := range perColumn {
+			anyMatch := false
+			for _, v := range bc.Values {
+				matched, ok := s.catalog.BloomMayContain(partition, []string{fi.Key}, bc.Column, v)
+				if !ok {
+					usable = false
+					break colLoop
+				}
+				if len(matched) > 0 {
+					anyMatch = true
+					break
+				}
+			}
+			if !anyMatch {
+				excluded = true
+				break
+			}
+		}
+		if usable {
+			if excluded {
+				metrics.ParquetBloomChecks.Inc("file_bloom_skip")
+				return true
+			}
+			return false
+		}
+	}
+
 	bloomKey := fi.Key + ".bloom"
 	data, err := s.pool.Download(ctx, bloomKey)
 	if err != nil || len(data) == 0 {

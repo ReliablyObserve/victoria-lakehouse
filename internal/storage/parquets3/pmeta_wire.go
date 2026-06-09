@@ -234,6 +234,35 @@ func (s *Storage) catalogFieldValues(q *logstorage.Query, fieldName string, limi
 	return out
 }
 
+// catalogFieldNames unions the field names across the partitions overlapping the
+// query's time range, served from the pmeta catalog in RAM. Returns nil when the
+// catalog has nothing for the range so the caller falls through to the legacy
+// labelIndex. Caller guarantees s.catalog != nil.
+func (s *Storage) catalogFieldNames(q *logstorage.Query) []string {
+	startNs, endNs := q.GetFilterTimeRange()
+	seen := make(map[string]struct{}, 16)
+	nameset := make(map[string]struct{})
+	for _, fi := range s.manifest.GetFilesForRange(startNs, endNs) {
+		p := manifest.ExtractPartition(fi.Key)
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		for _, n := range s.catalog.FieldNames(p) {
+			nameset[n] = struct{}{}
+		}
+	}
+	if len(nameset) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(nameset))
+	for n := range nameset {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // WarmCatalog builds the field/value catalog from the manifest's per-file label
 // maps at startup, so dropdowns are fast on the FIRST query after a cold start —
 // not just after a local flush. The manifest is already resident (no extra S3
