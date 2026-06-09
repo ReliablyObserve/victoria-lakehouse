@@ -417,6 +417,7 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 		RawBytes:          result.RawBytes,
 		SchemaFingerprint: schemaFingerprint(w.mode),
 		Labels:            labels,
+		LabelAggregates:   extractLogLabelAggregates(rows),
 	}
 	w.manifest.AddFile(partition, fi)
 
@@ -502,6 +503,7 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 		RawBytes:          result.RawBytes,
 		SchemaFingerprint: schemaFingerprint(w.mode),
 		Labels:            labels,
+		LabelAggregates:   extractTraceLabelAggregates(rows),
 	}
 	w.manifest.AddFile(partition, fi)
 

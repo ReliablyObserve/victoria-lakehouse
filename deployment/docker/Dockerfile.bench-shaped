@@ -1,0 +1,22 @@
+# Dockerfile.bench-shaped — wrap a scratch/minimal upstream image (VictoriaLogs /
+# VictoriaTraces) in an alpine layer that carries the disk-shaping tools + the
+# gp3-shape.sh entrypoint. This lets the benchmark throttle the data dir to AWS
+# EBS gp3 characteristics (DISK_PROFILE=gp3-loop) before exec'ing the real binary.
+# A no-op under DISK_PROFILE=local-ssd. Build context is the repo root.
+#
+#   docker build -f deployment/docker/Dockerfile.bench-shaped \
+#     --build-arg UPSTREAM=victoriametrics/victoria-logs:v1.50.0 \
+#     --build-arg BINARY=/victoria-logs-prod -t bench-shaped-vl:v1.50.0 .
+ARG UPSTREAM
+FROM ${UPSTREAM} AS upstream
+
+FROM alpine:3.20
+# util-linux: losetup/lsblk · e2fsprogs: mkfs.ext4 (loop device filesystem)
+RUN apk add --no-cache util-linux e2fsprogs
+ARG BINARY
+COPY --from=upstream ${BINARY} /usr/local/bin/app
+COPY scripts/bench/gp3-shape.sh /usr/local/bin/gp3-shape.sh
+RUN chmod +x /usr/local/bin/gp3-shape.sh /usr/local/bin/app
+# The real flags come from the compose `command:` (inherited from the base
+# benchmark compose), so this runs: gp3-shape.sh app <flags>.
+ENTRYPOINT ["/usr/local/bin/gp3-shape.sh", "/usr/local/bin/app"]

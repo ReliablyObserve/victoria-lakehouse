@@ -1,0 +1,55 @@
+# gp3 disk-profile override — run the VL/VT disk baseline on a SIMULATED AWS EBS
+# gp3 volume so the laptop's ~57x-too-fast NVMe doesn't flatter the hot tier.
+# Each service is wrapped (Dockerfile.bench-shaped) so its data dir is backed by a
+# loop device throttled via cgroup v2 io.max to gp3 defaults (125 MB/s, 3000 IOPS
+# — both validated). VL/VT random point-lookups become IOPS-bound and sequential
+# scans bandwidth-bound, exactly like gp3. LH + ClickHouse stay on S3-via-toxiproxy
+# (the object-store side); this override only shapes the disk baseline.
+#
+# Apply:
+#   docker compose -f docker-compose-benchmark.yml -f docker-compose-benchmark.gp3.yml up -d
+# Knobs (env): GP3_BW_BYTES (default 131072000 = 125 MB/s), GP3_IOPS (default 3000),
+#              GP3_SIZE_MB (loop backing size; raise for larger datasets).
+
+services:
+  victorialogs:
+    build:
+      context: ../../
+      dockerfile: deployment/docker/Dockerfile.bench-shaped
+      args:
+        UPSTREAM: victoriametrics/victoria-logs:v1.50.0
+        BINARY: /victoria-logs-prod
+    image: bench-shaped-vl:v1.50.0
+    privileged: true            # losetup + mount + cgroup io.max
+    environment:
+      DISK_PROFILE: gp3-loop
+      SHAPE_DATA_PATH: /data    # matches -storageDataPath in the base compose
+      SHAPE_BACKING: /shape/gp3.img
+      SHAPE_SIZE_MB: ${GP3_SIZE_MB:-20480}
+      GP3_BW_BYTES: ${GP3_BW_BYTES:-131072000}
+      GP3_IOPS: ${GP3_IOPS:-3000}
+    volumes:
+      - vl-gp3-backing:/shape
+
+  victoriatraces:
+    build:
+      context: ../../
+      dockerfile: deployment/docker/Dockerfile.bench-shaped
+      args:
+        UPSTREAM: victoriametrics/victoria-traces:v0.9.2
+        BINARY: /victoria-traces-prod
+    image: bench-shaped-vt:v0.9.2
+    privileged: true
+    environment:
+      DISK_PROFILE: gp3-loop
+      SHAPE_DATA_PATH: /data
+      SHAPE_BACKING: /shape/gp3.img
+      SHAPE_SIZE_MB: ${GP3_SIZE_MB:-20480}
+      GP3_BW_BYTES: ${GP3_BW_BYTES:-131072000}
+      GP3_IOPS: ${GP3_IOPS:-3000}
+    volumes:
+      - vt-gp3-backing:/shape
+
+volumes:
+  vl-gp3-backing:
+  vt-gp3-backing:

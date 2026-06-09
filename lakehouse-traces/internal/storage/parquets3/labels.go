@@ -72,3 +72,60 @@ func setsToLabels(sets map[string]map[string]bool) map[string][]string {
 	}
 	return labels
 }
+
+// extractLogLabelAggregates counts rows per (field, value) for the same
+// low-cardinality fields the inverted label index covers, powering manifest-side
+// `stats count() by (field)` without opening Parquet (PERF-2). A field exceeding
+// maxLabelsPerField distinct values is dropped (high-cardinality, unbounded).
+func extractLogLabelAggregates(rows []schema.LogRow) map[string]map[string]int64 {
+	if len(rows) == 0 {
+		return nil
+	}
+	agg := map[string]map[string]int64{}
+	for i := range rows {
+		countLabel(agg, "service.name", rows[i].ServiceName)
+		countLabel(agg, "severity_text", rows[i].SeverityText)
+		countLabel(agg, "deployment.environment", rows[i].DeployEnv)
+		countLabel(agg, "k8s.namespace.name", rows[i].K8sNamespaceName)
+		countLabel(agg, "cloud.region", rows[i].CloudRegion)
+	}
+	return capAggregates(agg)
+}
+
+// extractTraceLabelAggregates is the traces counterpart (service.name + span.name).
+func extractTraceLabelAggregates(rows []schema.TraceRow) map[string]map[string]int64 {
+	if len(rows) == 0 {
+		return nil
+	}
+	agg := map[string]map[string]int64{}
+	for i := range rows {
+		countLabel(agg, "service.name", rows[i].ServiceName)
+		countLabel(agg, "span.name", rows[i].SpanName)
+	}
+	return capAggregates(agg)
+}
+
+func countLabel(agg map[string]map[string]int64, field, value string) {
+	if value == "" {
+		return
+	}
+	m, ok := agg[field]
+	if !ok {
+		m = make(map[string]int64)
+		agg[field] = m
+	}
+	m[value]++
+}
+
+// capAggregates drops fields exceeding maxLabelsPerField distinct values (or empty).
+func capAggregates(agg map[string]map[string]int64) map[string]map[string]int64 {
+	for field, vals := range agg {
+		if len(vals) == 0 || len(vals) > maxLabelsPerField {
+			delete(agg, field)
+		}
+	}
+	if len(agg) == 0 {
+		return nil
+	}
+	return agg
+}
