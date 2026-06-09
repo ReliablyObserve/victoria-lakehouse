@@ -189,6 +189,7 @@ jobs:
           - internal/pmeta:FuzzDecodeBundle
           - internal/pmeta:FuzzRoundTrip
           - internal/pmeta:FuzzHLLUnmarshal
+          - internal/pmeta:FuzzHLLAdd
           - internal/peercache:FuzzRingLookup
           - internal/peercache:FuzzRingLookupAZ
           - internal/peercache:FuzzRingLookupAZ_NoSameAZ

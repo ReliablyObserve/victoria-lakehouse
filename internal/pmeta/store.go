@@ -14,14 +14,33 @@ type Store struct {
 	reg     map[FacetKind]FacetFactory
 	bundles map[string]*Bundle
 	prefix  string // S3 key prefix for partition bundles
+	// hllByField holds one merged HyperLogLog per high-cardinality field
+	// (fed from FileContribution.HighCardValues), giving an approximate
+	// distinct-count for fields the catalog does not enumerate. One sketch per
+	// field globally (not per partition) keeps it bounded — ~16 KB/field at p=14.
+	hllByField map[string]*hll
 }
 
 // NewStore returns an empty store with no facets registered.
 func NewStore() *Store {
 	return &Store{
-		reg:     make(map[FacetKind]FacetFactory),
-		bundles: make(map[string]*Bundle),
+		reg:        make(map[FacetKind]FacetFactory),
+		bundles:    make(map[string]*Bundle),
+		hllByField: make(map[string]*hll),
 	}
+}
+
+// Cardinality returns the approximate distinct-count for a high-cardinality field
+// (from its merged HLL sketch), or 0 if the field has no sketch. Used to answer
+// "≈ N distinct" for fields the catalog does not enumerate.
+func (s *Store) Cardinality(field string) uint64 {
+	s.mu.RLock()
+	h := s.hllByField[field]
+	s.mu.RUnlock()
+	if h == nil {
+		return 0
+	}
+	return h.estimate()
 }
 
 // Register wires a facet factory for a kind. Call once per kind at startup,
@@ -97,6 +116,23 @@ func (s *Store) OnFileFlush(c FileContribution) {
 	}
 	b.mu.Unlock()
 	b.dirty.Store(true)
+
+	// Fold high-cardinality field values into their per-field HLL sketch (for
+	// the "≈ N distinct" readout on fields the catalog does not enumerate).
+	if len(c.HighCardValues) > 0 {
+		s.mu.Lock()
+		for field, vals := range c.HighCardValues {
+			h := s.hllByField[field]
+			if h == nil {
+				h = newHLL(defaultHLLPrecision)
+				s.hllByField[field] = h
+			}
+			for _, v := range vals {
+				h.add(v)
+			}
+		}
+		s.mu.Unlock()
+	}
 }
 
 // Rebuild replays a partition's file contributions through the registered

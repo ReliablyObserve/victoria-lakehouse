@@ -152,6 +152,28 @@ HLL-vs-LogLog-Beta comparison, lossless merge, marshal round-trip, and a decoder
 fuzzer (in CI). LogLog-Beta's polynomial is fitted for `p=14`; other precisions
 fall back to the classic estimator (+ linear counting).
 
+### Verification (does it work, accurately, with no errors / no false results)
+
+The sketch is held one-per-field on the `Store` (fed at flush via
+`FileContribution.HighCardValues`; `Store.Cardinality(field)` reads it). Coverage in
+`internal/pmeta/hll_test.go` + `hll_bench_test.go`:
+
+- **Accuracy** across `n = 100 … 1,000,000` and **five value distributions**
+  (sequential, hex, common-prefix, sparse, uuid-like) — all within **3 %**.
+- **No-false guard**: tiny `n` (0,1,5,25,100) near-exact (±3); full range never zero
+  for non-empty input and **never off by >10 %** (no order-of-magnitude misses).
+- **Merge = union** (overlap not double-counted); precision-mismatch refused;
+  **marshal round-trip** preserves the estimate.
+- **Integration ("our case")**: 50 flushed files × 1,000 `trace_id`s →
+  `Store.Cardinality("trace_id")` within 3 % of 50,000, unknown field → 0, and
+  re-flushing seen values does **not** inflate the count.
+- **Fuzzers** (in CI): `FuzzHLLUnmarshal` (decoder) + `FuzzHLLAdd` (arbitrary values).
+  `-race` clean.
+
+Performance (p=14): **`add` 9.7 ns/op, 0 allocs** (folding values at flush is
+effectively free), `estimate` ~10 µs (per query, scans 16,384 registers), `merge`
+~40 µs, `marshal` ~1.2 µs.
+
 ## 3. Data structure — extend, don't rebuild
 
 ### Extend
