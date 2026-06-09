@@ -853,6 +853,12 @@ disk in the manifest snapshot and load lazily.
 
 ### PERF-3 — Per-field cardinality stats (HLL sketches)
 
+> The HLL sketches here are the high-cardinality leg of the
+> [Field/Value Catalog](field-value-catalog.md), which also covers the
+> interactive-Grafana dropdown gap (exact low-card typeahead + HLL-only
+> high-card) and its PB-scale resident-RAM cost. See that doc for the measured
+> gaps, the exactness contract, and the sequenced A1→A3 build plan.
+
 **Flow.**
 
 ```mermaid
