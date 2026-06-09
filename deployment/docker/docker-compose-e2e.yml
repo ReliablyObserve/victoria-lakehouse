@@ -250,6 +250,9 @@ services:
       - "-lakehouse.insert.flush-interval=120s"
       - "-lakehouse.compaction.interval=2m"
       - "-lakehouse.query.file-workers=16"
+      # pmeta unified metadata layer (field/value catalog + HLL cardinality).
+      - "-lakehouse.pmeta.enabled=true"
+      - "-lakehouse.pmeta.always-sketch-fields=trace_id,span_id"
       # No artificial file cap — VL upstream has none. The
       # query.max-live-bytes budget (default 512 MiB), the rgDecodeSem
       # semaphore, AND the process-wide fileBudgetSem (default 256 MiB
