@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.79.0] - 2026-06-09
+
 ### Added
 
 - **pmeta — unified partition-metadata layer + field/value catalog (`-lakehouse.pmeta.enabled`, off by default).** One per-partition metadata layer (`internal/pmeta`) with pluggable facets replaces the scatter of per-subsystem sidecars/snapshots, behind a flag so the hot paths are byte-for-byte unchanged when off. Built as **dual-write + parity-gated** (the old `_file_metadata.json` / `_bloom.bin` / `_label_index.json` still write; each facet mirrors them and a test asserts they match), so it is safe to enable incrementally before the sidecars are retired.
