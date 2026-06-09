@@ -93,6 +93,7 @@ type BatchWriter struct {
 
 	bloomObserver   BloomObserver
 	catalogObserver *catalogObserver
+	retireSidecars  bool // pmeta retire-sidecars: skip legacy sidecar writes (facet is source of truth)
 	statsCallback   StatsCallback
 	flushCacheCb    FlushCacheCallback
 	tenantPrefix    TenantPrefixFunc
@@ -569,6 +570,13 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 }
 
 func (w *BatchWriter) writeMetadataSidecarAsync(ctx context.Context, partition string) {
+	if w.retireSidecars {
+		// pmeta retire-sidecars: the in-RAM fileMetaFacet (warmed from the bundle)
+		// is the metadata source, with the Parquet footer as the cold-restart
+		// fallback (WarmMetadata Phase 3) — so the _file_metadata.json sidecar is no
+		// longer written. Reversible: clear the flag and the sidecar resumes.
+		return
+	}
 	go func() {
 		if err := w.manifest.WritePartitionSidecar(ctx, w.pool.S3Client(), partition); err != nil {
 			logger.Warnf("metadata sidecar write failed; partition=%s err=%v", partition, err)

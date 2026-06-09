@@ -313,6 +313,9 @@ func New(cfg *config.Config) (*Storage, error) {
 		if cfg.Pmeta.Enabled {
 			s.catalog = newCatalogStore(cfg.Pmeta, prefix)
 			bw.catalogObserver = &catalogObserver{store: s.catalog, sketch: sketchSet(cfg.Pmeta.AlwaysSketchFields), pool: s.pool}
+			// retire-sidecars only takes effect with pmeta on (the facet must exist
+			// to replace the sidecar). Off → legacy sidecars still written.
+			bw.retireSidecars = cfg.Pmeta.RetireSidecarWrites
 		}
 
 		// Write-through cache: when running in combined mode (role=all),

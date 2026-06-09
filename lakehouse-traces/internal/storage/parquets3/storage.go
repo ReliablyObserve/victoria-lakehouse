@@ -255,6 +255,7 @@ func New(cfg *config.Config) (*Storage, error) {
 	catalog := newCatalogStore(cfg.Pmeta, prefix)
 	if catalog != nil && bw != nil {
 		bw.catalogObserver = &catalogObserver{store: catalog, sketch: sketchSet(cfg.Pmeta.AlwaysSketchFields), pool: pool}
+		bw.retireSidecars = cfg.Pmeta.RetireSidecarWrites // facet replaces the sidecar
 	}
 
 	return &Storage{

@@ -75,6 +75,7 @@ type BatchWriter struct {
 
 	onFlush         FlushHook
 	catalogObserver *catalogObserver
+	retireSidecars  bool // pmeta retire-sidecars: skip legacy sidecar writes
 	statsCallback   StatsCallback
 	flushCacheCb    FlushCacheCallback
 	tenantPrefix    TenantPrefixFunc
@@ -482,6 +483,11 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 }
 
 func (w *BatchWriter) writeMetadataSidecarAsync(ctx context.Context, partition string) {
+	if w.retireSidecars {
+		// pmeta retire-sidecars: facet (warmed from the bundle) + footer fallback
+		// replace the _file_metadata.json sidecar. Reversible via the flag.
+		return
+	}
 	go func() {
 		if err := w.manifest.WritePartitionSidecar(ctx, w.pool.S3Client(), partition); err != nil {
 			logger.Warnf("metadata sidecar write failed; partition=%s err=%v", partition, err)

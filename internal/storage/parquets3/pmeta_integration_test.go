@@ -6,6 +6,7 @@ import (
 	"math"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -601,3 +602,44 @@ func TestInteg_PmetaFlip_FieldNamesAndBloom(t *testing.T) {
 		t.Fatal("checkFileBloom wrongly excluded a file containing service.name=api-gateway")
 	}
 }
+
+// TestInteg_PmetaRetire_SkipsFileMetaSidecar verifies the retire-sidecar-writes flag:
+// with it on, no _file_metadata.json is written to S3, yet the file metadata is still
+// available from the in-RAM facet (the footer is the cold-restart fallback).
+func TestInteg_PmetaRetire_SkipsFileMetaSidecar(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true, RetireSidecarWrites: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog}
+	bw.retireSidecars = true
+
+	now := time.Now()
+	bw.AddLogRows([]schema.LogRow{{TimestampUnixNano: now.UnixNano(), Body: "m", ServiceName: "api-gateway"}})
+	bw.triggerFlush()
+
+	// retire on → the _file_metadata.json sidecar is NOT written (the gate is
+	// synchronous: no goroutine is spawned, so this is race-free).
+	mock.mu.RLock()
+	for k := range mock.files {
+		if strings.HasSuffix(k, metadataSidecarSuffix) {
+			mock.mu.RUnlock()
+			t.Fatalf("retire-sidecars on but _file_metadata.json was written: %s", k)
+		}
+	}
+	mock.mu.RUnlock()
+
+	// ...yet the file metadata is still available from the facet.
+	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	if len(files) == 0 {
+		t.Fatal("no file after flush")
+	}
+	fi := files[0]
+	if _, ok := s.catalog.FileMeta(manifest.ExtractPartition(fi.Key), fi.Key); !ok {
+		t.Fatal("facet missing file metadata after retire flush")
+	}
+}
+
+const metadataSidecarSuffix = "_file_metadata.json"
