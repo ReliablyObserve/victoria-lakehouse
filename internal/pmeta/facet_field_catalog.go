@@ -45,6 +45,36 @@ func NewFieldCatalogFactory(dict *Dict) FacetFactory {
 	}
 }
 
+// FieldValues is the Store's public read surface for field-value dropdowns: the
+// distinct values of a field present in a partition (substr typeahead filter,
+// limit cap), from the field/value catalog facet. Empty if the partition, the
+// catalog facet, or the field is absent — callers fall through to the legacy
+// scan in that case.
+func (s *Store) FieldValues(partition, field, substr string, limit int) []string {
+	if c, ok := s.catalog(partition); ok {
+		return c.Values(field, substr, limit)
+	}
+	return nil
+}
+
+// FieldNames returns the field names present in a partition (for field_names),
+// from the catalog facet; empty if absent.
+func (s *Store) FieldNames(partition string) []string {
+	if c, ok := s.catalog(partition); ok {
+		return c.Fields()
+	}
+	return nil
+}
+
+func (s *Store) catalog(partition string) (*fieldCatalogFacet, bool) {
+	f, ok := s.Get(partition, FacetFieldCatalog)
+	if !ok {
+		return nil, false
+	}
+	c, ok := f.(*fieldCatalogFacet)
+	return c, ok
+}
+
 func (f *fieldCatalogFacet) Kind() FacetKind { return FacetFieldCatalog }
 
 // Merge folds a file's low-card label values into the partition catalog. Also
