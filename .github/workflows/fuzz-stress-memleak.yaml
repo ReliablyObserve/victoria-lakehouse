@@ -186,6 +186,8 @@ jobs:
           - internal/manifest:FuzzExtractPartition
           - internal/manifest:FuzzParsePartitionTime
           - internal/manifest:FuzzUnmarshalFileMetaSidecar
+          - internal/pmeta:FuzzDecodeBundle
+          - internal/pmeta:FuzzRoundTrip
           - internal/peercache:FuzzRingLookup
           - internal/peercache:FuzzRingLookupAZ
           - internal/peercache:FuzzRingLookupAZ_NoSameAZ

@@ -243,3 +243,37 @@ parity = correctness gate.** One PR, reversible by flag, self-healing on corrupt
 framing + skip-on-corruption) **plus** the field/value catalog as the first real facet
 (`FacetFieldCatalog`: interned dict + per-partition roaring bitmaps + HLL), behind
 `--pmeta`. Subsequent commits on the same PR fold bloom/file-meta/labels facets.
+
+### Bundle codec safeguards (hardened — pmeta is load-bearing)
+
+The bundle wire format is **v2**: a CRC-protected **table of contents (TOC)**
+precedes the payloads.
+
+```
+magic[4] | version[1]
+partLen[2] | partition
+facetCount[1]
+tocCRC[4]                                  crc32 over the TOC bytes
+TOC: facetCount × { kind | flags | len[4] | payloadCRC[4] }  (sorted by kind)
+payloads: facetCount × payload[len]        (TOC order)
+```
+
+Why the TOC matters: payload lengths live in the **CRC-protected** TOC, not inline
+with the (untrusted) payload bytes. So:
+- **Payload corruption is isolated to one facet** — its `payloadCRC` fails, that
+  facet is skipped (→ rebuild), and the reader still finds the next payload by its
+  TOC length. **No desync**, the sibling facets load fine. (The v1 format could
+  desync the whole bundle on a corrupt length byte — fixed.)
+- **TOC corruption is caught by `tocCRC`** → structural error → rebuild the whole
+  partition (rare; the TOC is tiny).
+- **Bounded allocation** — `facetCount ≤ 255`, `len ≤ 256 MB/facet`, `≤ 1 GB/bundle`
+  validated *before* allocating, so a corrupt count/len can't OOM the process.
+- **`Encode` holds one read lock** across all facet serialization, mutually
+  exclusive with `OnFileFlush`'s write lock — no Merge-vs-Encode data race.
+
+Test coverage (all green, `-race`): round-trip + deterministic encoding (golden),
+**payload-corruption-isolated** (sibling survives), **corrupt-TOC → structural
+error**, **truncate-at-every-offset never panics**, garbage-input never panics,
+empty bundle, concurrent flush/encode/dirty under `-race`, and two CI fuzzers
+(`FuzzDecodeBundle` ~10M execs/0 panics, `FuzzRoundTrip`) wired into
+`fuzz-stress-memleak.yaml` alongside the other decoder fuzzers.

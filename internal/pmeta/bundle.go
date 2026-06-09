@@ -12,15 +12,33 @@ import (
 	"sync/atomic"
 )
 
-// bundleMagic prefixes every serialized bundle: 'L','H','P','M', version byte.
-// Bump the trailing version on an incompatible framing change.
-var bundleMagic = [5]byte{'L', 'H', 'P', 'M', 0x01}
+// bundleMagic prefixes every serialized bundle. The trailing byte is the format
+// version; bump it on an incompatible framing change (old readers then return a
+// structural error → whole-partition rebuild, never a misparse).
+var bundleMagic = [5]byte{'L', 'H', 'P', 'M', 0x02}
 
 const (
-	maxPartitionLen = 0xFFFF
-	maxFacets       = 0xFF
-	facetHdrLen     = 10 // kind(1) flags(1) len(4) crc(4)
+	maxPartitionLen = 0xFFFF     // uint16 partition-key length
+	maxFacets       = 0xFF       // uint8 facet count
+	tocEntrySize    = 10         // kind(1) flags(1) len(4) crc(4)
+	maxPayloadBytes = 256 << 20  // per-facet payload cap (DoS guard on corrupt len)
+	maxBundleBytes  = 1024 << 20 // total payload cap
 )
+
+// Wire format (v2). A CRC-protected table of contents (TOC) precedes the
+// payloads so that:
+//   - a corrupt PAYLOAD is caught by its per-facet CRC and SKIPPED, and the
+//     reader stays in sync (the next payload's length comes from the TOC, not
+//     from the corrupt bytes) — corruption is isolated to one facet;
+//   - a corrupt TOC is caught by the TOC CRC and fails the whole bundle, which
+//     the caller treats as "rebuild this partition from S3".
+//
+//	magic[4] | version[1]
+//	partLen[2] | partition[partLen]
+//	facetCount[1]
+//	tocCRC[4]                              crc32 over the TOC bytes
+//	TOC: facetCount × { kind[1] flags[1] len[4] payloadCRC[4] }   (sorted by kind)
+//	payloads: facetCount × payload[len]   (TOC order)
 
 // Bundle holds all facets for one partition — the unit of GET/PUT/snapshot/dirty.
 type Bundle struct {
@@ -55,7 +73,6 @@ func (b *Bundle) Get(k FacetKind) (Facet, bool) {
 // Dirty reports whether the bundle has unpersisted changes.
 func (b *Bundle) Dirty() bool { return b.dirty.Load() }
 
-// clearDirty is called after a successful persist (or a clean load).
 func (b *Bundle) clearDirty() { b.dirty.Store(false) }
 
 // EstimateBytes is the resident size across facets (drives eviction).
@@ -69,32 +86,60 @@ func (b *Bundle) EstimateBytes() int64 {
 	return n
 }
 
-// kinds returns the facet kinds in stable (sorted) order for deterministic encoding.
-func (b *Bundle) kinds() []FacetKind {
+// Encode serializes the bundle deterministically (facets sorted by kind) so
+// golden byte-identity tests hold.
+func (b *Bundle) Encode(w io.Writer) error {
+	if len(b.Partition) > maxPartitionLen {
+		return fmt.Errorf("pmeta: partition key too long: %d", len(b.Partition))
+	}
+	// Snapshot + encode all facet payloads under a SINGLE read lock so a
+	// concurrent OnFileFlush (write lock) cannot mutate a facet mid-Encode.
+	type enc struct {
+		kind    FacetKind
+		payload []byte
+		crc     uint32
+	}
 	b.mu.RLock()
-	defer b.mu.RUnlock()
 	ks := make([]FacetKind, 0, len(b.facets))
 	for k := range b.facets {
 		ks = append(ks, k)
 	}
 	sort.Slice(ks, func(i, j int) bool { return ks[i] < ks[j] })
-	return ks
-}
-
-// Encode serializes the bundle into one self-describing object:
-//
-//	magic[5] | partLen u16 | partition | facetCount u8
-//	per facet: kind u8 | flags u8 | len u32 | crc32 u32 | payload[len]
-//
-// Encoding is deterministic (facets sorted by kind) so golden tests can assert
-// byte-identity against the legacy sidecar payloads.
-func (b *Bundle) Encode(w io.Writer) error {
-	if len(b.Partition) > maxPartitionLen {
-		return fmt.Errorf("pmeta: partition key too long: %d", len(b.Partition))
-	}
-	ks := b.kinds()
 	if len(ks) > maxFacets {
+		b.mu.RUnlock()
 		return fmt.Errorf("pmeta: too many facets: %d", len(ks))
+	}
+	encs := make([]enc, 0, len(ks))
+	var total int64
+	for _, k := range ks {
+		var buf bytes.Buffer
+		if err := b.facets[k].Encode(&buf); err != nil {
+			b.mu.RUnlock()
+			return fmt.Errorf("pmeta: encode facet %d: %w", k, err)
+		}
+		p := buf.Bytes()
+		if len(p) > maxPayloadBytes {
+			b.mu.RUnlock()
+			return fmt.Errorf("pmeta: facet %d payload %d exceeds cap", k, len(p))
+		}
+		total += int64(len(p))
+		if total > maxBundleBytes {
+			b.mu.RUnlock()
+			return fmt.Errorf("pmeta: bundle payload exceeds cap")
+		}
+		encs = append(encs, enc{kind: k, payload: p, crc: crc32.ChecksumIEEE(p)})
+	}
+	b.mu.RUnlock()
+
+	// Build the TOC bytes, then its CRC.
+	toc := make([]byte, 0, len(encs)*tocEntrySize)
+	for _, e := range encs {
+		var ent [tocEntrySize]byte
+		ent[0] = byte(e.kind)
+		ent[1] = 0 // flags (reserved)
+		binary.BigEndian.PutUint32(ent[2:6], uint32(len(e.payload)))
+		binary.BigEndian.PutUint32(ent[6:10], e.crc)
+		toc = append(toc, ent[:]...)
 	}
 
 	bw := bufio.NewWriter(w)
@@ -109,50 +154,38 @@ func (b *Bundle) Encode(w io.Writer) error {
 	if _, err := bw.WriteString(b.Partition); err != nil {
 		return err
 	}
-	if err := bw.WriteByte(byte(len(ks))); err != nil {
+	if err := bw.WriteByte(byte(len(encs))); err != nil {
 		return err
 	}
-
-	for _, k := range ks {
-		b.mu.RLock()
-		f := b.facets[k]
-		b.mu.RUnlock()
-		var payload bytes.Buffer
-		if err := f.Encode(&payload); err != nil {
-			return fmt.Errorf("pmeta: encode facet %d: %w", k, err)
-		}
-		p := payload.Bytes()
-		if int64(len(p)) > int64(^uint32(0)) {
-			return fmt.Errorf("pmeta: facet %d too large: %d", k, len(p))
-		}
-		var hdr [facetHdrLen]byte
-		hdr[0] = byte(k)
-		hdr[1] = 0 // flags (reserved)
-		binary.BigEndian.PutUint32(hdr[2:6], uint32(len(p)))
-		binary.BigEndian.PutUint32(hdr[6:10], crc32.ChecksumIEEE(p))
-		if _, err := bw.Write(hdr[:]); err != nil {
-			return err
-		}
-		if _, err := bw.Write(p); err != nil {
+	var crcb [4]byte
+	binary.BigEndian.PutUint32(crcb[:], crc32.ChecksumIEEE(toc))
+	if _, err := bw.Write(crcb[:]); err != nil {
+		return err
+	}
+	if _, err := bw.Write(toc); err != nil {
+		return err
+	}
+	for _, e := range encs {
+		if _, err := bw.Write(e.payload); err != nil {
 			return err
 		}
 	}
 	return bw.Flush()
 }
 
-// DecodeResult reports facets that could not be loaded (unknown kind, CRC or
-// decode failure). The caller marks these partitions+kinds for rebuild from S3
-// — the self-heal path. A non-empty Skipped is NOT an error.
+// DecodeResult reports facets that loaded but were individually unusable
+// (per-payload CRC fail, unregistered kind, or facet Decode error). These are
+// rebuilt from S3 — the self-heal path. A non-empty Skipped is NOT an error.
 type DecodeResult struct {
 	Skipped []FacetKind
 }
 
-// DecodeBundle reads a bundle, building facets via the registry. A facet whose
-// CRC fails, whose kind is unregistered, or that fails to Decode is SKIPPED
-// (recorded in DecodeResult.Skipped) rather than failing the whole bundle —
-// corruption self-heals via rebuild. A structural error (bad magic, truncated
-// header/length) DOES return an error, which the caller treats as
-// "rebuild the whole partition".
+// DecodeBundle reads a bundle. It returns a structural error (bad magic/version,
+// truncation, TOC-CRC failure, or an over-cap size) when the framing itself is
+// untrustworthy — the caller rebuilds the WHOLE partition. Otherwise it returns
+// the bundle with any per-facet failures recorded in DecodeResult.Skipped for
+// targeted rebuild. It never panics and never allocates beyond the size caps,
+// regardless of input (fuzz-hardened).
 func DecodeBundle(r io.Reader, reg map[FacetKind]FacetFactory) (*Bundle, DecodeResult, error) {
 	var res DecodeResult
 	br := bufio.NewReader(r)
@@ -162,7 +195,7 @@ func DecodeBundle(r io.Reader, reg map[FacetKind]FacetFactory) (*Bundle, DecodeR
 		return nil, res, fmt.Errorf("pmeta: read magic: %w", err)
 	}
 	if magic != bundleMagic {
-		return nil, res, fmt.Errorf("pmeta: bad magic %v (want %v)", magic, bundleMagic)
+		return nil, res, fmt.Errorf("pmeta: bad magic/version %v (want %v)", magic, bundleMagic)
 	}
 	var u16 [2]byte
 	if _, err := io.ReadFull(br, u16[:]); err != nil {
@@ -178,33 +211,69 @@ func DecodeBundle(r io.Reader, reg map[FacetKind]FacetFactory) (*Bundle, DecodeR
 	if err != nil {
 		return nil, res, fmt.Errorf("pmeta: read facetCount: %w", err)
 	}
+	if cnt == 0 {
+		b.clearDirty()
+		return b, res, nil
+	}
+
+	var tocCRCb [4]byte
+	if _, err := io.ReadFull(br, tocCRCb[:]); err != nil {
+		return nil, res, fmt.Errorf("pmeta: read tocCRC: %w", err)
+	}
+	toc := make([]byte, int(cnt)*tocEntrySize) // bounded: cnt ≤ 255
+	if _, err := io.ReadFull(br, toc); err != nil {
+		return nil, res, fmt.Errorf("pmeta: read TOC: %w", err)
+	}
+	if crc32.ChecksumIEEE(toc) != binary.BigEndian.Uint32(tocCRCb[:]) {
+		return nil, res, fmt.Errorf("pmeta: TOC CRC mismatch — rebuild partition")
+	}
+
+	// TOC is trusted now. Validate sizes BEFORE allocating any payload.
+	type entry struct {
+		kind FacetKind
+		ln   uint32
+		crc  uint32
+	}
+	entries := make([]entry, cnt)
+	var total int64
 	for i := 0; i < int(cnt); i++ {
-		var hdr [facetHdrLen]byte
-		if _, err := io.ReadFull(br, hdr[:]); err != nil {
-			return nil, res, fmt.Errorf("pmeta: facet[%d] header: %w", i, err)
+		off := i * tocEntrySize
+		ln := binary.BigEndian.Uint32(toc[off+2 : off+6])
+		if ln > maxPayloadBytes {
+			return nil, res, fmt.Errorf("pmeta: facet[%d] len %d over cap", i, ln)
 		}
-		kind := FacetKind(hdr[0])
-		ln := binary.BigEndian.Uint32(hdr[2:6])
-		wantCRC := binary.BigEndian.Uint32(hdr[6:10])
-		payload := make([]byte, ln)
+		total += int64(ln)
+		if total > maxBundleBytes {
+			return nil, res, fmt.Errorf("pmeta: bundle payload over cap")
+		}
+		entries[i] = entry{
+			kind: FacetKind(toc[off]),
+			ln:   ln,
+			crc:  binary.BigEndian.Uint32(toc[off+6 : off+10]),
+		}
+	}
+
+	for i, e := range entries {
+		payload := make([]byte, e.ln)
 		if _, err := io.ReadFull(br, payload); err != nil {
-			return nil, res, fmt.Errorf("pmeta: facet[%d] kind=%d payload: %w", i, kind, err)
+			// Truncated payload stream: structural → whole-partition rebuild.
+			return nil, res, fmt.Errorf("pmeta: facet[%d] kind=%d payload: %w", i, e.kind, err)
 		}
-		if crc32.ChecksumIEEE(payload) != wantCRC {
-			res.Skipped = append(res.Skipped, kind) // corrupt -> rebuild
+		if crc32.ChecksumIEEE(payload) != e.crc {
+			res.Skipped = append(res.Skipped, e.kind) // isolated corruption → rebuild this facet
 			continue
 		}
-		factory, ok := reg[kind]
+		factory, ok := reg[e.kind]
 		if !ok {
-			res.Skipped = append(res.Skipped, kind) // unknown kind -> rebuild/ignore
+			res.Skipped = append(res.Skipped, e.kind) // unknown kind → ignore/rebuild
 			continue
 		}
 		f := factory(string(part))
 		if err := f.Decode(bytes.NewReader(payload)); err != nil {
-			res.Skipped = append(res.Skipped, kind) // decode error -> rebuild
+			res.Skipped = append(res.Skipped, e.kind) // facet decode error → rebuild
 			continue
 		}
-		b.facets[kind] = f
+		b.facets[e.kind] = f
 	}
 	b.clearDirty()
 	return b, res, nil
