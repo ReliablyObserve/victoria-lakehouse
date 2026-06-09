@@ -333,9 +333,10 @@ at any level reverts the flag (data is safe regardless via skip+rebuild).
   at both flush sites with the already-extracted label map; `GetFieldValues` has a
   catalog fast-path that unions values across the range's partitions (nil/empty →
   legacy path unchanged). All builds; existing storage tests green with the flag off.
-- [ ] **Level-2 cross-path parity test** — drive the real flush path with `--pmeta`
-  on, assert `GetFieldValues` (catalog) == the labelIndex/scan result AND that the
-  catalog actually served. The gate before enabling the flag anywhere.
+- [x] **Level-2 cross-path parity test** — `TestInteg_PmetaCatalog_CrossPathParity`
+  drives a real `BatchWriter` flush with `--pmeta` on and asserts catalog == ground
+  truth == legacy scan result on real Parquet. The gate passes; safe to enable behind
+  the flag.
 - [ ] **S3 persist/warm wiring** — `ObjectStore` adapter + `PersistDirty` on the
   flush/snapshot cycle + `WarmPartitions` in `runStartup` (one GET/partition).
 - [ ] **A2** — HLL high-card layer + `IsHighCard` refusal.
