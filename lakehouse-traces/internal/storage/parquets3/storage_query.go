@@ -2174,7 +2174,7 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 		}
 		if usable {
 			if excluded {
-				metrics.ParquetBloomChecks.Inc("file_bloom_skip")
+				metrics.ParquetBloomChecks.Inc("facet_bloom_skip")
 				return true
 			}
 			return false
