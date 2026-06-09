@@ -188,6 +188,7 @@ jobs:
           - internal/manifest:FuzzUnmarshalFileMetaSidecar
           - internal/pmeta:FuzzDecodeBundle
           - internal/pmeta:FuzzRoundTrip
+          - internal/pmeta:FuzzHLLUnmarshal
           - internal/peercache:FuzzRingLookup
           - internal/peercache:FuzzRingLookupAZ
           - internal/peercache:FuzzRingLookupAZ_NoSameAZ

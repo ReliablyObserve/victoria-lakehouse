@@ -125,6 +125,33 @@ RAM; drop to 12 to save it. (Precision is pinned globally and versioned in the
 sidecar — sketches of different `p` cannot be merged, so a mismatch is refused,
 not silently corrupted.)
 
+### Estimator: HLL++-grade accuracy via LogLog-Beta (in-house, no dep)
+
+The sketch (`internal/pmeta/hll.go`) is in-house — no dependency. It uses a 64-bit
+hash (so the `2^32` large-range correction of original **HLL** [Flajolet et al.,
+2007] is not needed) and the **LogLog-Beta** estimator [Qin/Kim/Tung, 2016], a
+table-free polynomial that delivers the accuracy of **HLL++** [Heule/Nunkesser/Hall,
+2013] *without* shipping HLL++'s ~6,000-constant empirical bias tables — which are
+error-prone to hand-embed and verify. Merge is lossless register-max, so unioning
+per-partition sketches does not compound error.
+
+Measured (p=14, `hll_test.go`), relative error vs true cardinality:
+
+| true N | classic HLL | LogLog-Beta |
+|---:|---:|---:|
+| 5,000 | 0.08 % | 0.28 % |
+| 20,000 | 0.59 % | 0.45 % |
+| **40,000** (≈ 2.5·m, the bias-prone cutover) | **3.25 %** | **0.67 %** |
+| 100,000 | 0.21 % | 0.20 % |
+| 300,000 | 0.41 % | 0.41 % |
+
+The mid-range (≈ m … few·m) is exactly where original HLL is biased and HLL++
+exists to fix it — here LogLog-Beta is **~5× more accurate** (3.25 % → 0.67 %),
+and within ~0.7 % across the whole range. Tests cover accuracy, the
+HLL-vs-LogLog-Beta comparison, lossless merge, marshal round-trip, and a decoder
+fuzzer (in CI). LogLog-Beta's polynomial is fitted for `p=14`; other precisions
+fall back to the classic estimator (+ linear counting).
+
 ## 3. Data structure — extend, don't rebuild
 
 ### Extend
