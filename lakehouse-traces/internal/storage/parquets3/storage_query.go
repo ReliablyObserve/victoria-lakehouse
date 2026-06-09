@@ -1729,7 +1729,7 @@ func (s *Storage) bloomFilterSkip(_ *parquet.File, rg parquet.RowGroup, checks [
 
 func extractInValues(query, fieldName string) []string {
 	prefix := fieldName + `:in(`
-	idx := strings.Index(query, prefix)
+	idx := fieldTokenIndex(query, prefix)
 	if idx < 0 {
 		return nil
 	}
@@ -1761,6 +1761,33 @@ func extractFilterValues(query, fieldName string) []string {
 	return nil
 }
 
+// fieldTokenIndex returns the index of the first occurrence of prefix in query
+// that starts at a field-token boundary — i.e. not immediately preceded by a
+// field-name character ([A-Za-z0-9_.]). Without this, a `name:=` pattern
+// substring-matches inside `service.name:="x"` and extracts ANOTHER field's
+// value — the bloom pre-filter then builds a bogus span.name=x check and wrongly
+// excludes files that do contain x (a bloom false-negative, i.e. missing
+// results). Returns -1 when no boundary occurrence exists.
+func fieldTokenIndex(query, prefix string) int {
+	for from := 0; ; {
+		idx := strings.Index(query[from:], prefix)
+		if idx < 0 {
+			return -1
+		}
+		idx += from
+		if idx == 0 {
+			return 0
+		}
+		p := query[idx-1]
+		isFieldChar := p == '_' || p == '.' ||
+			(p >= 'a' && p <= 'z') || (p >= 'A' && p <= 'Z') || (p >= '0' && p <= '9')
+		if !isFieldChar {
+			return idx
+		}
+		from = idx + 1
+	}
+}
+
 func extractExactMatch(query, fieldName string) string {
 	// Quoted patterns: trace_id:="abc" or trace_id:"abc"
 	quotedPatterns := []string{
@@ -1768,7 +1795,7 @@ func extractExactMatch(query, fieldName string) string {
 		fieldName + `:"`,
 	}
 	for _, prefix := range quotedPatterns {
-		idx := strings.Index(query, prefix)
+		idx := fieldTokenIndex(query, prefix)
 		if idx < 0 {
 			continue
 		}
@@ -1782,7 +1809,7 @@ func extractExactMatch(query, fieldName string) string {
 
 	// Unquoted pattern: trace_id:=abc123 (produced by q.String())
 	unquotedPrefix := fieldName + `:=`
-	if idx := strings.Index(query, unquotedPrefix); idx >= 0 {
+	if idx := fieldTokenIndex(query, unquotedPrefix); idx >= 0 {
 		start := idx + len(unquotedPrefix)
 		if start < len(query) && query[start] == '"' {
 			return ""
@@ -1933,8 +1960,57 @@ func fileLabelsMatch(values []string, check PushDownCheck) bool {
 	return false
 }
 
+// bloomMayContainAll is the pmeta bloom read-flip for the pre-filter paths: per
+// partition, the in-RAM bloom facet (bundle-warmed, survives restarts) is consulted
+// first, falling back to the legacy in-RAM s.bloomIdx for partitions the facet
+// doesn't carry. Both sides KEEP keys they have no bloom for (a bloom can only
+// exclude what it knows), so a file holding the values is never dropped. Callers
+// are order-insensitive (they build sets).
+func (s *Storage) bloomMayContainAll(keys []string, checks []bloomindex.ColumnCheck) []string {
+	if s.catalog == nil {
+		if s.bloomIdx == nil {
+			return keys
+		}
+		return s.bloomIdx.MayContainAll(keys, checks)
+	}
+	byPart := make(map[string][]string)
+	for _, k := range keys {
+		p := manifest.ExtractPartition(k)
+		byPart[p] = append(byPart[p], k)
+	}
+	out := make([]string, 0, len(keys))
+	for part, pKeys := range byPart {
+		matching := pKeys
+		usable := true
+		for _, c := range checks {
+			sub, ok := s.catalog.BloomMayContain(part, matching, c.Column, c.Value)
+			if !ok {
+				usable = false
+				break
+			}
+			matching = sub
+			if len(matching) == 0 {
+				break
+			}
+		}
+		if !usable {
+			if s.bloomIdx == nil {
+				matching = pKeys // no bloom at all for this partition — keep
+			} else {
+				matching = s.bloomIdx.MayContainAll(pKeys, checks)
+			}
+		}
+		out = append(out, matching...)
+	}
+	return out
+}
+
 func (s *Storage) filterFilesByBloomIndex(files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
-	if s.bloomIdx == nil || s.bloomIdx.Len() == 0 {
+	// Legacy guard, extended for the pmeta read-flip: with the facet available the
+	// pre-filter can run even when s.bloomIdx is empty (e.g. a cold restart under
+	// retire-sidecar-writes, where _bloom.bin is no longer persisted and the bloom
+	// state lives in the bundle-warmed facet instead).
+	if (s.bloomIdx == nil || s.bloomIdx.Len() == 0) && s.catalog == nil {
 		return files
 	}
 
@@ -1998,7 +2074,7 @@ func (s *Storage) filterFilesByBloomIndex(files []manifest.FileInfo, queryStr st
 	for _, bc := range perColumn {
 		colMatch := make(map[string]struct{})
 		for _, v := range bc.Values {
-			for _, k := range s.bloomIdx.MayContainAll(keys, []bloomindex.ColumnCheck{{Column: bc.Column, Value: v}}) {
+			for _, k := range s.bloomMayContainAll(keys, []bloomindex.ColumnCheck{{Column: bc.Column, Value: v}}) {
 				colMatch[k] = struct{}{}
 			}
 		}
@@ -2081,7 +2157,7 @@ func (s *Storage) filterFilesByBloomIndexOR(files []manifest.FileInfo, queryStr 
 
 	unionMatch := make(map[string]bool, len(keys))
 	for _, checks := range branchChecks {
-		matching := s.bloomIdx.MayContainAll(keys, checks)
+		matching := s.bloomMayContainAll(keys, checks)
 		for _, k := range matching {
 			unionMatch[k] = true
 		}

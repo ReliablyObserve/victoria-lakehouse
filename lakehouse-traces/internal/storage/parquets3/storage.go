@@ -1406,6 +1406,12 @@ func (s *Storage) BackfillBloomIndex(ctx context.Context) {
 }
 
 func (s *Storage) PersistBloomIndex(ctx context.Context) error {
+	if s.cfg.Pmeta.Enabled && s.cfg.Pmeta.RetireSidecarWrites {
+		// pmeta retire-sidecars: the bloom state is persisted in the partition
+		// bundles (persistDirty at flush) and bundle-warmed at startup; the query
+		// pre-filters consult the facet first. _bloom.bin is no longer written.
+		return nil
+	}
 	if s.bloomIdx == nil || s.bloomIdx.Len() == 0 || s.pool == nil {
 		return nil
 	}

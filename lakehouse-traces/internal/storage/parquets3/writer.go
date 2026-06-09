@@ -381,7 +381,10 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 	}
 	w.manifest.AddFile(partition, fi)
 	if w.catalogObserver != nil {
-		w.catalogObserver.OnFileFlush(partition, fi, labels, nil)
+		// bloomValues == labels: the legacy traces bloom (onFlush → bloomIdx.AddColumns
+		// + per-file .bloom) is built from exactly fi.Labels, so the facet gets the
+		// same content — parity with what the legacy pre-filter could prune on.
+		w.catalogObserver.OnFileFlush(partition, fi, labels, labels)
 		w.catalogObserver.tapLogRows(rows)
 	}
 
@@ -458,7 +461,8 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 	}
 	w.manifest.AddFile(partition, fi)
 	if w.catalogObserver != nil {
-		w.catalogObserver.OnFileFlush(partition, fi, labels2, nil)
+		// bloomValues == labels2 — same parity rationale as the logs flush above.
+		w.catalogObserver.OnFileFlush(partition, fi, labels2, labels2)
 		w.catalogObserver.tapTraceRows(rows)
 	}
 

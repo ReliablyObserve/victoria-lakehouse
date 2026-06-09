@@ -15,7 +15,10 @@ func TestExtractExactMatch_TableDriven(t *testing.T) {
 		{"exact with :", `service.name:"api-gw"`, "service.name", "api-gw"},
 		{"no match", "no match here", "service.name", ""},
 		{"empty query", "", "service.name", ""},
-		{"empty field matches prefix", `field:="val"`, "", "val"},
+		// An empty field name no longer substring-matches inside another field's
+		// token (fieldTokenIndex boundary check) — extracting a value for no field
+		// was the same bug class as `name:=` matching inside `service.name:=`.
+		{"empty field no longer matches mid-token", `field:="val"`, "", ""},
 		{"both empty", "", "", ""},
 		{"multiple fields", `a:="x" AND b:="y"`, "b", "y"},
 		{"unclosed quote :=", `field:="unclosed`, "field", ""},

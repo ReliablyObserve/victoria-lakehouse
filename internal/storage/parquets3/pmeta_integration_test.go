@@ -645,34 +645,45 @@ func TestInteg_PmetaRetire_SkipsFileMetaSidecar(t *testing.T) {
 
 const metadataSidecarSuffix = "_file_metadata.json"
 
-// TestBloomObserver_RetireFileBloom verifies retire-sidecars skips the per-file
-// `.bloom` write while still building the in-RAM partition index (kept because the
-// OR-branch query path reads it / _bloom.bin — only the per-file sidecar, which the
-// pmeta facet replaces, is retired).
-func TestBloomObserver_RetireFileBloom(t *testing.T) {
+// TestInteg_PmetaFlip_ORBranchFacet covers the OR-branch bloom read-flip: the
+// facet-based union match keeps a file whose bloom-indexed value is present (blooms
+// never false-negate, so the facet path must never drop a matching file), and
+// reports ok=false for a partition the facet doesn't carry (→ caller falls back).
+func TestInteg_PmetaFlip_ORBranchFacet(t *testing.T) {
 	mock := newMockS3Server()
 	defer mock.close()
 	s := testStorageWithS3(t, mock.url())
-	obs := &storageBloomObserver{
-		bloom:           bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01),
-		pool:            s.pool,
-		retireFileBloom: true,
-	}
-	part := "dt=2026-06-09/hour=12"
-	obs.OnFileFlush(part, "logs/"+part+"/f1.parquet", map[string][]string{"service.name": {"api-gateway"}})
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog}
 
-	// retire on → no per-file `.bloom` PUT (gate is synchronous: no goroutine spawned).
-	mock.mu.RLock()
-	for k := range mock.files {
-		if strings.HasSuffix(k, ".bloom") {
-			mock.mu.RUnlock()
-			t.Fatalf("retireFileBloom on but a .bloom sidecar was written: %s", k)
-		}
-	}
-	mock.mu.RUnlock()
+	now := time.Now()
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "m", ServiceName: "api-gateway"},
+		{TimestampUnixNano: now.Add(time.Millisecond).UnixNano(), Body: "m", ServiceName: "order-service"},
+	})
+	bw.triggerFlush()
 
-	// ...but the in-RAM partition index is still built (the OR-branch path needs it).
-	if obs.bloom.Len() == 0 {
-		t.Fatal("partition bloom index should still be built when retireFileBloom is on")
+	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	if len(files) == 0 {
+		t.Fatal("no file after flush")
+	}
+	fi := files[0]
+	part := manifest.ExtractPartition(fi.Key)
+	checks := [][]bloomindex.ColumnCheck{{{Column: "service.name", Value: "api-gateway"}}}
+
+	// present value → file is in the union (never dropped).
+	union, ok := s.facetBloomUnionMatch(part, []string{fi.Key}, checks)
+	if !ok {
+		t.Fatal("facetBloomUnionMatch ok=false for a partition the facet carries")
+	}
+	if !union[fi.Key] {
+		t.Fatalf("OR-branch facet dropped a file containing service.name=api-gateway: %v", union)
+	}
+
+	// a partition the facet does not carry → ok=false so the caller falls back.
+	if _, ok := s.facetBloomUnionMatch("dt=1999-01-01/hour=00", []string{"x"}, checks); ok {
+		t.Fatal("facetBloomUnionMatch should report ok=false for an unknown partition")
 	}
 }

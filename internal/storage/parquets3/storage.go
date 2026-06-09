@@ -299,19 +299,23 @@ func New(cfg *config.Config) (*Storage, error) {
 	}
 
 	if bw != nil {
-		obs := &storageBloomObserver{
-			bloom:    bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01),
-			pool:     pool,
-			manifest: s.manifest,
-			// retire-sidecars skips ONLY the redundant per-file `.bloom` write (the
-			// pmeta bloom facet covers single-file checks via checkFileBloom). The
-			// partition `_bloom.bin` is KEPT: the OR-branch query path
-			// (bloomFilterFilesByOrBranches → bloomCache) still reads it and is not
-			// yet flipped to the facet.
-			retireFileBloom: cfg.Pmeta.Enabled && cfg.Pmeta.RetireSidecarWrites,
+		// The legacy bloom sidecars (per-file `.bloom` + partition `_bloom.bin`) are
+		// retired when the pmeta bloom facet replaces BOTH query paths — the
+		// single-file checkFileBloom AND the OR-branch bloomUnionMatch. Skip the
+		// observer entirely in that mode: the catalogObserver below still receives the
+		// same bloomValues at flush (extraction is gated on `bloomObserver != nil ||
+		// catalogObserver != nil`), so the facet stays fed; the bloomCache fallback is
+		// simply empty for those partitions, which the facet covers.
+		retireBloom := cfg.Pmeta.Enabled && cfg.Pmeta.RetireSidecarWrites
+		if !retireBloom {
+			obs := &storageBloomObserver{
+				bloom:    bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01),
+				pool:     pool,
+				manifest: s.manifest,
+			}
+			bw.bloomObserver = obs
+			s.bloomObserver = obs
 		}
-		bw.bloomObserver = obs
-		s.bloomObserver = obs
 
 		// pmeta field/value catalog (experimental, --pmeta). Built at flush via
 		// the catalogObserver, served by the GetFieldValues fast-path. nil when

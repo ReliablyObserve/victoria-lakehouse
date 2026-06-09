@@ -1537,11 +1537,7 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 	// values via field:in(v1,v2,...) — VT's spans-lookup query uses this
 	// shape (trace_id:in(t1,t2,t3)). Per-column semantics is "any-of"
 	// (OR within a column's values), and AND across columns.
-	type bloomColumn struct {
-		Column string
-		Values []string
-	}
-	var perColumn []bloomColumn
+	var perColumn []bloomColumnValues
 	for _, col := range s.registry.PromotedColumns() {
 		if !col.HasBloom {
 			continue
@@ -1554,7 +1550,7 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 			vals = extractFilterValuesAST(queryStr, col.ParquetColumn)
 		}
 		if len(vals) > 0 {
-			perColumn = append(perColumn, bloomColumn{Column: col.ParquetColumn, Values: vals})
+			perColumn = append(perColumn, bloomColumnValues{Column: col.ParquetColumn, Values: vals})
 		}
 	}
 	if len(perColumn) == 0 {
@@ -1571,44 +1567,18 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 
 	var result []manifest.FileInfo
 	for partition, pFiles := range byPartition {
-		idx, err := s.bloomCache.Get(ctx, partition)
-		if err != nil || idx == nil {
-			result = append(result, pFiles...)
-			continue
-		}
-
 		keys := make([]string, len(pFiles))
 		for i, fi := range pFiles {
 			keys[i] = fi.Key
 		}
 
-		// For each column, union the per-value MayContainAll results
-		// (any-of). Then intersect across columns (AND-of-columns).
-		var intersection map[string]bool
-		for _, bc := range perColumn {
-			colMatch := make(map[string]bool)
-			for _, v := range bc.Values {
-				for _, k := range idx.MayContainAll(keys, []bloomindex.ColumnCheck{{Column: bc.Column, Value: v}}) {
-					colMatch[k] = true
-				}
-			}
-			if intersection == nil {
-				intersection = colMatch
-			} else {
-				for k := range intersection {
-					if !colMatch[k] {
-						delete(intersection, k)
-					}
-				}
-			}
-			if len(intersection) == 0 {
-				break
-			}
-		}
-
-		matchSet := intersection
-		if matchSet == nil {
-			matchSet = make(map[string]bool)
+		// pmeta bloom read-flip: the in-RAM bloom facet first, the legacy
+		// _bloom.bin partition index (bloomCache) as the fallback. ok=false →
+		// no bloom available for this partition, keep its files.
+		matchSet, ok := s.bloomColumnIntersect(ctx, partition, keys, perColumn)
+		if !ok {
+			result = append(result, pFiles...)
+			continue
 		}
 
 		before := len(pFiles)
@@ -1689,24 +1659,18 @@ func (s *Storage) bloomFilterFilesByOrBranches(ctx context.Context, files []mani
 
 	var result []manifest.FileInfo
 	for partition, pFiles := range byPartition {
-		idx, err := s.bloomCache.Get(ctx, partition)
-		if err != nil || idx == nil {
-			// No bloom index for this partition — keep its files.
-			result = append(result, pFiles...)
-			continue
-		}
-
 		keys := make([]string, len(pFiles))
 		for i, fi := range pFiles {
 			keys[i] = fi.Key
 		}
 
-		unionMatch := make(map[string]bool, len(keys))
-		for _, checks := range branchChecks {
-			matching := idx.MayContainAll(keys, checks)
-			for _, k := range matching {
-				unionMatch[k] = true
-			}
+		// pmeta bloom read-flip (OR-branch): the in-RAM bloom facet is consulted
+		// first; the legacy _bloom.bin partition index is the fallback. ok=false →
+		// no bloom for this partition, keep its files.
+		unionMatch, ok := s.bloomUnionMatch(ctx, partition, keys, branchChecks)
+		if !ok {
+			result = append(result, pFiles...)
+			continue
 		}
 
 		before := len(pFiles)
@@ -1730,6 +1694,142 @@ func (s *Storage) bloomFilterFilesByOrBranches(ctx context.Context, files []mani
 		}
 	}
 	return result, true
+}
+
+// bloomColumnValues is one bloom-indexed column with its candidate values from the
+// query (any-of within the column; AND across columns).
+type bloomColumnValues struct {
+	Column string
+	Values []string
+}
+
+// bloomColumnIntersect returns the file keys that MAY match every column (AND
+// across columns, any-of within a column's values). ok=false means no bloom is
+// available for the partition, so the caller keeps every file. pmeta bloom
+// read-flip: the in-RAM bloom facet is consulted first; the legacy _bloom.bin
+// partition index (bloomCache) is the fallback.
+func (s *Storage) bloomColumnIntersect(ctx context.Context, partition string, keys []string, perColumn []bloomColumnValues) (map[string]bool, bool) {
+	if s.catalog != nil {
+		if match, ok := s.facetBloomColumnIntersect(partition, keys, perColumn); ok {
+			return match, true
+		}
+	}
+	idx, err := s.bloomCache.Get(ctx, partition)
+	if err != nil || idx == nil {
+		return nil, false
+	}
+	var intersection map[string]bool
+	for _, bc := range perColumn {
+		colMatch := make(map[string]bool)
+		for _, v := range bc.Values {
+			for _, k := range idx.MayContainAll(keys, []bloomindex.ColumnCheck{{Column: bc.Column, Value: v}}) {
+				colMatch[k] = true
+			}
+		}
+		if intersection == nil {
+			intersection = colMatch
+		} else {
+			for k := range intersection {
+				if !colMatch[k] {
+					delete(intersection, k)
+				}
+			}
+		}
+		if len(intersection) == 0 {
+			break
+		}
+	}
+	if intersection == nil {
+		intersection = make(map[string]bool)
+	}
+	return intersection, true
+}
+
+// facetBloomColumnIntersect is bloomColumnIntersect over the pmeta bloom facet:
+// per column, union the per-value BloomMayContain matches (any-of), then intersect
+// across columns. ok=false if the facet lacks the partition's bloom (caller falls
+// back to the legacy index). Blooms never false-negative, so a file that holds the
+// values is never dropped.
+func (s *Storage) facetBloomColumnIntersect(partition string, keys []string, perColumn []bloomColumnValues) (map[string]bool, bool) {
+	var intersection map[string]bool
+	for _, bc := range perColumn {
+		colMatch := make(map[string]bool)
+		for _, v := range bc.Values {
+			sub, ok := s.catalog.BloomMayContain(partition, keys, bc.Column, v)
+			if !ok {
+				return nil, false
+			}
+			for _, k := range sub {
+				colMatch[k] = true
+			}
+		}
+		if intersection == nil {
+			intersection = colMatch
+		} else {
+			for k := range intersection {
+				if !colMatch[k] {
+					delete(intersection, k)
+				}
+			}
+		}
+		if len(intersection) == 0 {
+			break
+		}
+	}
+	if intersection == nil {
+		intersection = make(map[string]bool)
+	}
+	return intersection, true
+}
+
+// bloomUnionMatch returns the file keys that MAY satisfy at least one OR branch
+// (the union of per-branch AND-of-checks). ok=false means no bloom is available for
+// the partition, so the caller keeps every file. pmeta bloom read-flip: the in-RAM
+// bloom facet is consulted first; the legacy _bloom.bin partition index (bloomCache)
+// is the fallback for partitions the facet doesn't carry (cold bundle / pre-pmeta).
+func (s *Storage) bloomUnionMatch(ctx context.Context, partition string, keys []string, branchChecks [][]bloomindex.ColumnCheck) (map[string]bool, bool) {
+	if s.catalog != nil {
+		if union, ok := s.facetBloomUnionMatch(partition, keys, branchChecks); ok {
+			return union, true
+		}
+	}
+	idx, err := s.bloomCache.Get(ctx, partition)
+	if err != nil || idx == nil {
+		return nil, false
+	}
+	union := make(map[string]bool, len(keys))
+	for _, checks := range branchChecks {
+		for _, k := range idx.MayContainAll(keys, checks) {
+			union[k] = true
+		}
+	}
+	return union, true
+}
+
+// facetBloomUnionMatch is bloomUnionMatch over the pmeta bloom facet. For each OR
+// branch it narrows the key set through the branch's checks (AND) via per-check
+// BloomMayContain, then unions across branches. ok=false if the facet lacks the
+// partition's bloom (so the caller falls back to the legacy index). A bloom never
+// false-negatives, so a file that holds the values is never dropped.
+func (s *Storage) facetBloomUnionMatch(partition string, keys []string, branchChecks [][]bloomindex.ColumnCheck) (map[string]bool, bool) {
+	union := make(map[string]bool, len(keys))
+	for _, checks := range branchChecks {
+		matching := keys
+		for _, c := range checks {
+			sub, ok := s.catalog.BloomMayContain(partition, matching, c.Column, c.Value)
+			if !ok {
+				return nil, false
+			}
+			matching = sub
+			if len(matching) == 0 {
+				break
+			}
+		}
+		for _, k := range matching {
+			union[k] = true
+		}
+	}
+	return union, true
 }
 
 // resolveBloomColumn maps a query field name (internal or parquet
@@ -1932,7 +2032,7 @@ func (s *Storage) bloomFilterSkip(_ *parquet.File, rg parquet.RowGroup, checks [
 
 func extractInValues(query, fieldName string) []string {
 	prefix := fieldName + `:in(`
-	idx := strings.Index(query, prefix)
+	idx := fieldTokenIndex(query, prefix)
 	if idx < 0 {
 		return nil
 	}
@@ -1964,6 +2064,33 @@ func extractFilterValues(query, fieldName string) []string {
 	return nil
 }
 
+// fieldTokenIndex returns the index of the first occurrence of prefix in query
+// that starts at a field-token boundary — i.e. not immediately preceded by a
+// field-name character ([A-Za-z0-9_.]). Without this, a `name:=` pattern
+// substring-matches inside `service.name:="x"` and extracts ANOTHER field's
+// value — the bloom pre-filter then builds a bogus span.name=x check and wrongly
+// excludes files that do contain x (a bloom false-negative, i.e. missing
+// results). Returns -1 when no boundary occurrence exists.
+func fieldTokenIndex(query, prefix string) int {
+	for from := 0; ; {
+		idx := strings.Index(query[from:], prefix)
+		if idx < 0 {
+			return -1
+		}
+		idx += from
+		if idx == 0 {
+			return 0
+		}
+		p := query[idx-1]
+		isFieldChar := p == '_' || p == '.' ||
+			(p >= 'a' && p <= 'z') || (p >= 'A' && p <= 'Z') || (p >= '0' && p <= '9')
+		if !isFieldChar {
+			return idx
+		}
+		from = idx + 1
+	}
+}
+
 func extractExactMatch(query, fieldName string) string {
 	// Quoted patterns: trace_id:="abc" or trace_id:"abc"
 	quotedPatterns := []string{
@@ -1971,7 +2098,7 @@ func extractExactMatch(query, fieldName string) string {
 		fieldName + `:"`,
 	}
 	for _, prefix := range quotedPatterns {
-		idx := strings.Index(query, prefix)
+		idx := fieldTokenIndex(query, prefix)
 		if idx < 0 {
 			continue
 		}
@@ -1985,7 +2112,7 @@ func extractExactMatch(query, fieldName string) string {
 
 	// Unquoted pattern: trace_id:=abc123 (produced by q.String())
 	unquotedPrefix := fieldName + `:=`
-	if idx := strings.Index(query, unquotedPrefix); idx >= 0 {
+	if idx := fieldTokenIndex(query, unquotedPrefix); idx >= 0 {
 		start := idx + len(unquotedPrefix)
 		if start < len(query) && query[start] == '"' {
 			return ""
