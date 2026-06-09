@@ -101,6 +101,30 @@ exact typeahead. Lower it to shed RAM at the cost of more count-only fields.
 Changing classification is safe at runtime: it only flips whether a field's
 value list is served vs its HLL estimate; it never affects search results.
 
+### What `hll_precision` means (plain version)
+
+HyperLogLog answers "**how many distinct values**" without storing the values.
+It keeps `2^p` tiny counters ("registers"), where `p = hll_precision`. More
+registers → a more accurate estimate **and** more memory — that is the *only*
+thing this dial changes. It affects the **approximate distinct-count** shown for
+high-card fields (e.g. "≈ 5,200 distinct trace_ids"); it never affects search,
+value lists, or low-card facets.
+
+| `hll_precision` | registers | typical error | RAM per sketch (dense) |
+|---|---|---|---|
+| 10 | 1,024 | ~3.25 % | ~1 KB |
+| 12 | 4,096 | ~1.6 % | ~4 KB |
+| **14 (default)** | **16,384** | **~0.81 %** | **~12 KB** |
+| 16 | 65,536 | ~0.4 % | ~48 KB |
+
+Default `14`: a "≈ 1,000,000 distinct" readout lands within ~±8,000 — plenty for
+a UI hint, at 12 KB per high-card field's merged sketch. Only one dense sketch is
+held per field (merged across the hot window); per-partition sketches stay sparse
+(sub-KB) or paged. Raise to 16 only if you need tighter counts and can spend the
+RAM; drop to 12 to save it. (Precision is pinned globally and versioned in the
+sidecar — sketches of different `p` cannot be merged, so a mismatch is refused,
+not silently corrupted.)
+
 ## 3. Data structure — extend, don't rebuild
 
 ### Extend
@@ -167,6 +191,23 @@ Single integration point at `GetFieldValues`/`GetFieldNames`
   strings, fully RAM (the typeahead path);
 - **filtered** → catalog pre-prunes partitions lacking the filter value, then
   falls through to the existing projected scan on strictly fewer files.
+
+## 6a. Observability (a deliberately small metric set)
+
+Just enough to answer "is the catalog working, and is it within budget" — **not**
+a metric per field (that would explode at PB scale).
+
+| Metric | Type | Why it matters |
+|---|---|---|
+| `lakehouse_catalog_resident_bytes` | gauge | RAM the catalog holds — the budget guardrail; alert if it approaches the limit. |
+| `lakehouse_catalog_fields_total{class="exact\|sketch"}` | gauge | How many fields landed exact vs count-only — shows where the threshold sits. |
+| `lakehouse_catalog_value_lookups_total{source="catalog\|scan"}` | counter | Dropdown answers from the catalog vs fallback scan — the hit rate that *proves* the speedup. |
+| `lakehouse_catalog_partitions{state="resident\|paged"}` | gauge | Confirms time-tiering is actually shedding cold partitions. |
+| `lakehouse_catalog_cold_load_seconds` | histogram | Startup catalog-load time — the "fast even cold, not just cached" guarantee. |
+| `lakehouse_catalog_compaction_repartition_total` | counter | Safety invariant — **must stay 0**; if it climbs, bitmaps may be stale (alert + dirty-rebuild). |
+
+Six series total. Per-field cardinality is available on demand through the
+existing field API, not as per-field metrics.
 
 ## 7. PB-scale resident-RAM cost (honest)
 
