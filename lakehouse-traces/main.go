@@ -662,7 +662,10 @@ func setupCompaction(
 				})
 			}
 		},
-		OnCompacted: notifyPusher,
+		OnCompacted: func(added []manifest.FileInfo, removed []string) {
+			store.PmetaOnCompacted(added, removed) // facet feed + dead-key cleanup
+			notifyPusher(added, removed)
+		},
 	})
 	sched.Start()
 
@@ -677,7 +680,10 @@ func setupCompaction(
 		Interval:         cfg.Compaction.Interval,
 		RowGroupSize:     cfg.Insert.RowGroupSize,
 		CompressionLevel: cfg.Insert.CompressionLevel,
-		OnCompacted:      notifyPusher,
+		OnCompacted: func(added []manifest.FileInfo, removed []string) {
+			store.PmetaOnCompacted(added, removed)
+			notifyPusher(added, removed)
+		},
 	})
 	sweep.Start()
 
@@ -1276,8 +1282,9 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 				int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
 				m.MinTime().UnixNano(), m.MaxTime().UnixNano())
 			store.WarmLabelIndex(ctx)
-			store.WarmCatalogFromS3(ctx) // load persisted pmeta bundles before the manifest merge
-			store.WarmCatalog(ctx)       // pmeta field/value catalog (no-op unless --pmeta)
+			store.WarmCatalogFromS3(ctx) // load pmeta bundles (file-meta + bloom) BEFORE WarmMetadata enriches from them
+			store.WarmMetadata(ctx)      // file-meta read-flip: facet first, sidecar fallback, footer last
+			store.WarmCatalog(ctx)       // re-derive catalog from the enriched manifest (no-op unless --pmeta)
 
 			if cfg.Cache.WarmupPartitions > 0 || cfg.Cache.WarmupMaxFiles > 0 {
 				warmCtx, warmCancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -1720,7 +1727,14 @@ func buildRetentionManager(cfg *config.Config, store *parquets3.Storage, policy 
 	}
 	deleter := &poolDeleter{pool: store.Pool()}
 	slogLogger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	return retention.New(retCfg, store.Manifest(), deleter, cfg.S3.Bucket, slogLogger.With("component", "retention", "mode", mode))
+	mgr, err := retention.New(retCfg, store.Manifest(), deleter, cfg.S3.Bucket, slogLogger.With("component", "retention", "mode", mode))
+	if err != nil {
+		return nil, err
+	}
+	// pmeta facet cleanup: expired files leave the facets; a fully-expired
+	// partition's bundle is evicted from RAM and its S3 object deleted.
+	mgr.SetOnFileRemoved(store.PmetaOnFileExpired)
+	return mgr, nil
 }
 
 type poolDeleter struct {

@@ -351,9 +351,12 @@ func (w *BatchWriter) FlushAll(ctx context.Context) error {
 		if w.bloomObserver != nil {
 			w.bloomObserver.PersistDirty(ctx, w.prefix)
 		}
-		if w.catalogObserver != nil {
-			w.catalogObserver.persistDirty(ctx) // persist pmeta bundles (bloom survives restart)
-		}
+	}
+	// OUTSIDE the non-empty gate: bundles left dirty by a FAILED PUT on a prior
+	// cycle must retry even when this cycle flushed nothing (and the final
+	// shutdown flush is often empty — gating here lost the last bundle state).
+	if w.catalogObserver != nil {
+		w.catalogObserver.persistDirty(ctx)
 	}
 
 	if len(errs) > 0 {

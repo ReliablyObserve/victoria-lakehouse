@@ -298,6 +298,22 @@ func New(cfg *config.Config) (*Storage, error) {
 		bounds:            bounds,
 	}
 
+	// pmeta unified metadata layer (--pmeta). The catalog store is built for
+	// EVERY role — a select-only pod (bw == nil) has no flush feed but still
+	// serves dropdowns/file-meta/bloom from the bundle-warmed facets; gating it
+	// on the writer left read-only pods scanning while writer pods used the index.
+	if cfg.Pmeta.Enabled {
+		s.catalog = newCatalogStore(cfg.Pmeta, prefix)
+		// The HLL cardinality tap reads id columns straight off the row structs;
+		// only trace_id/span_id have struct fields. Other configured sketch
+		// fields are still capped/refused by the catalog but get no sketch.
+		for _, f := range cfg.Pmeta.AlwaysSketchFields {
+			if f != "trace_id" && f != "span_id" {
+				logger.Warnf("pmeta: always-sketch field %q has no HLL tap (only trace_id/span_id are tapped); it is excluded from the catalog but lakehouse_catalog_field_cardinality will not report it", f)
+			}
+		}
+	}
+
 	if bw != nil {
 		// The legacy bloom sidecars (per-file `.bloom` + partition `_bloom.bin`) are
 		// retired when the pmeta bloom facet replaces BOTH query paths — the
@@ -317,11 +333,7 @@ func New(cfg *config.Config) (*Storage, error) {
 			s.bloomObserver = obs
 		}
 
-		// pmeta field/value catalog (experimental, --pmeta). Built at flush via
-		// the catalogObserver, served by the GetFieldValues fast-path. nil when
-		// disabled, so the hot paths are unchanged by default.
-		if cfg.Pmeta.Enabled {
-			s.catalog = newCatalogStore(cfg.Pmeta, prefix)
+		if s.catalog != nil {
 			bw.catalogObserver = &catalogObserver{store: s.catalog, sketch: sketchSet(cfg.Pmeta.AlwaysSketchFields), pool: s.pool}
 			// retire-sidecars only takes effect with pmeta on (the facet must exist
 			// to replace the sidecar). Off → legacy sidecars still written.
@@ -1268,8 +1280,9 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 
 	// Phase 3b: Small files that footer prefetch skipped (< 32KB).
 	// Download fully — they're tiny and cheaper than range reads.
+	// Same nil guard as Phase 3: insert-only pods run without a footer cache.
 	smallEnriched := 0
-	if len(needEnrich) > 0 {
+	if len(needEnrich) > 0 && s.footerCache != nil {
 		var stillMissing []manifest.FileInfo
 		enrichedKeys := make(map[string]bool, footerEnriched)
 		for _, fi := range needEnrich {

@@ -1864,23 +1864,30 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 		return false
 	}
 
-	var checks []bloomindex.ColumnCheck
+	// Per-column candidate value sets, with the traces module's semantics: a
+	// query like trace_id:in(t1,t2) means the file may match if it contains ANY
+	// of the listed values (OR within a column), AND across columns. Flattening
+	// every value into one AND list — the old shape here — wrongly required a
+	// file to contain ALL in() values and skipped files holding just one (missing
+	// results). Negated predicates are excluded: a bloom proves presence-may,
+	// never absence, so `-field:x` cannot prune by bloom.
+	var perColumn []bloomColumnValues
 	for _, col := range s.registry.PromotedColumns() {
 		if !col.HasBloom {
+			continue
+		}
+		if isNegatedPredicateAST(queryStr, col.InternalName) || isNegatedPredicateAST(queryStr, col.ParquetColumn) {
 			continue
 		}
 		vals := extractFilterValuesAST(queryStr, col.InternalName)
 		if len(vals) == 0 {
 			vals = extractFilterValuesAST(queryStr, col.ParquetColumn)
 		}
-		for _, val := range vals {
-			checks = append(checks, bloomindex.ColumnCheck{
-				Column: col.ParquetColumn,
-				Value:  val,
-			})
+		if len(vals) > 0 {
+			perColumn = append(perColumn, bloomColumnValues{Column: col.ParquetColumn, Values: vals})
 		}
 	}
-	if len(checks) == 0 {
+	if len(perColumn) == 0 {
 		return false
 	}
 
@@ -1893,20 +1900,28 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 	// bundle doesn't carry (cold bundle / pre-pmeta files).
 	if s.catalog != nil {
 		partition := manifest.ExtractPartition(fi.Key)
-		usable, mayContainAll := true, true
-		for _, c := range checks {
-			matched, ok := s.catalog.BloomMayContain(partition, []string{fi.Key}, c.Column, c.Value)
-			if !ok {
-				usable = false
-				break
+		usable, excluded := true, false
+	facetLoop:
+		for _, bc := range perColumn {
+			anyMatch := false
+			for _, v := range bc.Values {
+				matched, ok := s.catalog.BloomMayContain(partition, []string{fi.Key}, bc.Column, v)
+				if !ok {
+					usable = false
+					break facetLoop
+				}
+				if len(matched) > 0 {
+					anyMatch = true
+					break
+				}
 			}
-			if len(matched) == 0 {
-				mayContainAll = false
+			if !anyMatch {
+				excluded = true
 				break
 			}
 		}
 		if usable {
-			if !mayContainAll {
+			if excluded {
 				metrics.ParquetBloomChecks.Inc("facet_bloom_skip")
 				return true
 			}
@@ -1946,9 +1961,19 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 		}
 	}
 
-	if !bloomindex.FileBloomMayContainAll(idx, checks) {
-		metrics.ParquetBloomChecks.Inc("file_bloom_skip")
-		return true
+	// Same AND-across-columns / OR-within-column semantics on the legacy path.
+	for _, bc := range perColumn {
+		anyMatch := false
+		for _, v := range bc.Values {
+			if bloomindex.FileBloomMayContainAll(idx, []bloomindex.ColumnCheck{{Column: bc.Column, Value: v}}) {
+				anyMatch = true
+				break
+			}
+		}
+		if !anyMatch {
+			metrics.ParquetBloomChecks.Inc("file_bloom_skip")
+			return true
+		}
 	}
 	return false
 }

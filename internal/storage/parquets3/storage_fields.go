@@ -104,12 +104,9 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 	hits := make(map[string]uint64)
 
 	if len(files) == 0 {
-		// pmeta labels read-flip: catalog field names first, labelIndex fallback.
-		if filter == nil && s.catalog != nil {
-			if names := s.catalogFieldNames(q); len(names) > 0 {
-				return labelIndexNamesWithHits(names, nil), nil
-			}
-		}
+		// No catalog consult here: catalogFieldNames unions over the SAME
+		// (empty) file range, so it can never return names in this branch —
+		// only the range-independent labelIndex can.
 		if filter == nil && s.labelIndex.Len() > 0 {
 			return labelIndexNamesWithHits(s.labelIndex.GetFieldNames(), nil), nil
 		}

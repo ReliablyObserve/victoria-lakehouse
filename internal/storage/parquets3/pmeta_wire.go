@@ -4,8 +4,10 @@ import (
 	"context"
 	"math"
 	"sort"
+	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -73,8 +75,10 @@ func newCatalogStore(cfg config.PmetaConfig, prefix string) *pmeta.Store {
 	}
 	s := pmeta.NewStore()
 	s.SetPrefix(prefix)
+	dict := pmeta.NewDict()
+	s.SetDict(dict) // include the interned strings in ResidentBytes
 	s.Register(pmeta.FacetFieldCatalog,
-		pmeta.NewFieldCatalogFactoryCapped(pmeta.NewDict(), threshold, cfg.AlwaysSketchFields))
+		pmeta.NewFieldCatalogFactoryCapped(dict, threshold, cfg.AlwaysSketchFields))
 	s.Register(pmeta.FacetFileMeta, pmeta.NewFileMetaFactory()) // dual-write of _file_metadata.json
 	s.Register(pmeta.FacetBloom, pmeta.NewBloomFactory(0.01))   // dual-write of _bloom.bin (same fpRate)
 	return s
@@ -106,6 +110,15 @@ func (o *catalogObserver) OnFileFlush(partition string, fi manifest.FileInfo, la
 	if o == nil || o.store == nil {
 		return
 	}
+	// A label list at the extractor cap may be incomplete: the catalog marks the
+	// field high-card (scan answers it exactly) instead of ever serving a
+	// silently truncated list as authoritative.
+	var truncated []string
+	for field, vals := range labels {
+		if len(vals) >= maxLabelsPerField {
+			truncated = append(truncated, field)
+		}
+	}
 	o.store.OnFileFlush(pmeta.FileContribution{
 		Partition:         partition,
 		FileKey:           fi.Key,
@@ -116,7 +129,9 @@ func (o *catalogObserver) OnFileFlush(partition string, fi manifest.FileInfo, la
 		SchemaFingerprint: fi.SchemaFingerprint,
 		Labels:            labels,
 		BloomValues:       bloomValues,
+		TruncatedFields:   truncated,
 	})
+	metrics.CatalogResidentBytes.Set(o.store.ResidentBytes())
 }
 
 // tapLogRows folds the configured always-sketch id columns (trace_id, span_id)
@@ -277,7 +292,10 @@ func (s *Storage) WarmCatalog(ctx context.Context) {
 			return
 		}
 		for _, fi := range files {
-			s.catalog.OnFileFlush(pmeta.FileContribution{
+			// Replay, not flush: manifest-derived content is already durable, so
+			// it must NOT mark bundles dirty (a dirty mark here re-PUT every
+			// partition bundle on the first flush after every restart).
+			s.catalog.OnFileReplay(pmeta.FileContribution{
 				Partition:         partition,
 				FileKey:           fi.Key,
 				RowCount:          fi.RowCount,
@@ -309,7 +327,96 @@ func (s *Storage) WarmCatalogFromS3(ctx context.Context) {
 	if len(parts) == 0 {
 		return
 	}
-	s.catalog.WarmPartitions(ctx, poolObjectStore{s.pool}, parts, 8)
+	res := s.catalog.WarmPartitions(ctx, poolObjectStore{s.pool}, parts, 8)
+
+	// Self-heal: a partition whose bundle was missing/corrupt (NeedsRebuild) or
+	// partially unusable (SkippedFacets) is rebuilt from the manifest's files —
+	// DIRTY, so the repaired bundle persists and replaces the broken S3 object.
+	// (Without this the next persistDirty would overwrite the S3 bundle with
+	// whatever partial state RAM happened to have.) Bloom content from a lost
+	// bundle is not manifest-derivable; new flushes repopulate it.
+	rebuild := res.NeedsRebuild
+	for p := range res.SkippedFacets {
+		rebuild = append(rebuild, p)
+	}
+	for _, p := range rebuild {
+		files := s.manifest.FilesForPartition(p)
+		cs := make([]pmeta.FileContribution, 0, len(files))
+		for _, fi := range files {
+			cs = append(cs, pmeta.FileContribution{
+				FileKey:           fi.Key,
+				RowCount:          fi.RowCount,
+				MinTimeNs:         fi.MinTimeNs,
+				MaxTimeNs:         fi.MaxTimeNs,
+				RawBytes:          fi.RawBytes,
+				SchemaFingerprint: fi.SchemaFingerprint,
+				Labels:            fi.Labels,
+			})
+		}
+		s.catalog.Rebuild(p, cs)
+	}
+	if len(rebuild) > 0 {
+		logger.Infof("pmeta warm: loaded=%d rebuilt=%d (missing/corrupt bundles re-derived from the manifest)", res.Loaded, len(rebuild))
+	}
+}
+
+// PmetaOnCompacted folds a compaction result into the pmeta facets: the output
+// file's catalog/file-meta contribution is added and the merged-away inputs are
+// removed (dead keys otherwise accumulate in RAM and in the persisted bundle
+// forever). The output gets NO bloom entry — blooms of differently-sized inputs
+// cannot be unioned without re-scanning, and an ABSENT bloom key is always kept
+// (sound: compacted files are never wrongly excluded, just not bloom-pruned).
+func (s *Storage) PmetaOnCompacted(added []manifest.FileInfo, removed []string) {
+	if s.catalog == nil {
+		return
+	}
+	for _, fi := range added {
+		var truncated []string
+		for field, vals := range fi.Labels {
+			if len(vals) >= maxLabelsPerField {
+				truncated = append(truncated, field)
+			}
+		}
+		s.catalog.OnFileFlush(pmeta.FileContribution{
+			Partition:         manifest.ExtractPartition(fi.Key),
+			FileKey:           fi.Key,
+			RowCount:          fi.RowCount,
+			MinTimeNs:         fi.MinTimeNs,
+			MaxTimeNs:         fi.MaxTimeNs,
+			RawBytes:          fi.RawBytes,
+			SchemaFingerprint: fi.SchemaFingerprint,
+			Labels:            fi.Labels,
+			TruncatedFields:   truncated,
+		})
+	}
+	byPart := make(map[string][]string)
+	for _, k := range removed {
+		p := manifest.ExtractPartition(k)
+		byPart[p] = append(byPart[p], k)
+	}
+	for p, keys := range byPart {
+		s.catalog.RemoveFiles(p, keys)
+	}
+}
+
+// PmetaOnFileExpired removes an expired file's facet entries; when the whole
+// partition has aged out of the manifest, the bundle is evicted from RAM and
+// its S3 object deleted (bundles otherwise accumulate forever past retention).
+func (s *Storage) PmetaOnFileExpired(partition, key string) {
+	if s.catalog == nil {
+		return
+	}
+	s.catalog.RemoveFiles(partition, []string{key})
+	if len(s.manifest.FilesForPartition(partition)) == 0 {
+		s.catalog.Remove(partition)
+		if s.pool != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := s.pool.Delete(ctx, s.catalog.BundleKey(partition)); err != nil {
+				logger.Warnf("pmeta: delete expired bundle %s: %v", partition, err)
+			}
+		}
+	}
 }
 
 // refuseEnumeration reports whether field_values for a field should return empty

@@ -291,8 +291,16 @@ func (s *Storage) StartWriter() {
 		return
 	}
 	pool := s.pool
+	retireBloom := s.cfg != nil && s.cfg.Pmeta.Enabled && s.cfg.Pmeta.RetireSidecarWrites
 	s.writer.SetFlushHook(func(key string, columnValues map[string][]string) {
 		if len(columnValues) == 0 {
+			return
+		}
+		if retireBloom {
+			// Under retire the pmeta bloom facet is fed by the catalogObserver with
+			// the SAME uncapped values, the pre-filters consult it first, and
+			// PersistBloomIndex is a no-op — feeding the legacy in-RAM bloomIdx and
+			// the per-file .bloom would be duplicate RAM/CPU for the same state.
 			return
 		}
 		cols := make(map[string]*bloomindex.Filter, len(columnValues))
@@ -310,11 +318,8 @@ func (s *Storage) StartWriter() {
 			s.bloomIdx.AddColumns(key, cols)
 		}
 
-		// Also write per-file bloom sidecar for file-level query skipping — unless
-		// retire-sidecars is on, where the pmeta bloom facet covers checkFileBloom.
-		// (The in-RAM bloomIdx / _bloom.bin used by the OR-branch path is kept.)
-		retireBloom := s.cfg.Pmeta.Enabled && s.cfg.Pmeta.RetireSidecarWrites
-		if pool != nil && !retireBloom {
+		// Also write per-file bloom sidecar for file-level query skipping.
+		if pool != nil {
 			obs := &storageBloomObserver{pool: pool}
 			go obs.writeFileBloom(context.Background(), key, columnValues)
 		}
@@ -1293,6 +1298,13 @@ func (s *Storage) PersistLabelIndexToS3(ctx context.Context) error {
 // index and builds bloom filters for them. Runs in background at startup.
 func (s *Storage) BackfillBloomIndex(ctx context.Context) {
 	if s.bloomIdx == nil || s.cfg.Mode != config.ModeTraces {
+		return
+	}
+	if s.cfg.Pmeta.Enabled && s.cfg.Pmeta.RetireSidecarWrites {
+		// Under retire the bloom state lives in the bundle-warmed facet and the
+		// query pre-filters consult it first; re-downloading + re-scanning every
+		// file on EVERY restart to rebuild the legacy in-RAM index (which can no
+		// longer persist — PersistBloomIndex is a no-op) is pure waste.
 		return
 	}
 

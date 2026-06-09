@@ -17,6 +17,9 @@ type Store struct {
 	reg     map[FacetKind]FacetFactory
 	bundles map[string]*Bundle
 	prefix  string // S3 key prefix for partition bundles
+	// dict, when set, is the shared interning dictionary — included in
+	// ResidentBytes so the guardrail metric reflects the true catalog footprint.
+	dict *Dict
 	// hllByField holds one merged HyperLogLog per high-cardinality field
 	// (fed from FileContribution.HighCardValues), giving an approximate
 	// distinct-count for fields the catalog does not enumerate. One sketch per
@@ -275,14 +278,29 @@ func (s *Store) Rebuild(partition string, files []FileContribution) {
 	}
 }
 
-// ResidentBytes is the approximate RAM held across all partition bundles. Drives
-// the lakehouse_catalog_resident_bytes guardrail.
+// SetDict registers the shared interning dictionary so ResidentBytes accounts
+// for it (the dict holds every interned string once, globally).
+func (s *Store) SetDict(d *Dict) {
+	s.mu.Lock()
+	s.dict = d
+	s.mu.Unlock()
+}
+
+// BundleKey is the S3 object key for a partition's bundle (exported for the
+// retention path, which deletes the bundle object alongside the partition).
+func (s *Store) BundleKey(partition string) string { return s.bundleKey(partition) }
+
+// ResidentBytes is the approximate RAM held across all partition bundles plus
+// the shared dict. Drives the lakehouse_catalog_resident_bytes guardrail.
 func (s *Store) ResidentBytes() int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var n int64
 	for _, b := range s.bundles {
 		n += b.EstimateBytes()
+	}
+	if s.dict != nil {
+		n += s.dict.EstimateBytes()
 	}
 	return n
 }

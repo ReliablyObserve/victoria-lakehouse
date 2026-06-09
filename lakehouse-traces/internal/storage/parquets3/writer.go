@@ -313,9 +313,11 @@ func (w *BatchWriter) FlushAll(ctx context.Context) error {
 	if len(logSnap) > 0 || len(traceSnap) > 0 {
 		metrics.InsertFlushTotal.Inc()
 		metrics.InsertFlushDuration.Observe(time.Since(flushStart).Seconds())
-		if w.catalogObserver != nil {
-			w.catalogObserver.persistDirty(ctx) // persist pmeta bundles to S3
-		}
+	}
+	// OUTSIDE the non-empty gate: dirty bundles from a failed prior PUT (or a
+	// shutdown-time empty flush) must still persist.
+	if w.catalogObserver != nil {
+		w.catalogObserver.persistDirty(ctx)
 	}
 
 	if len(errs) > 0 {
@@ -381,10 +383,10 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 	}
 	w.manifest.AddFile(partition, fi)
 	if w.catalogObserver != nil {
-		// bloomValues == labels: the legacy traces bloom (onFlush → bloomIdx.AddColumns
-		// + per-file .bloom) is built from exactly fi.Labels, so the facet gets the
-		// same content — parity with what the legacy pre-filter could prune on.
-		w.catalogObserver.OnFileFlush(partition, fi, labels, labels)
+		// UNCAPPED bloom feed (trace_id + service.name): the capped label map
+		// false-negatives on values past maxLabelsPerField — a bloom must see
+		// every value present or it wrongly excludes files.
+		w.catalogObserver.OnFileFlush(partition, fi, labels, extractLogBloomValues(rows))
 		w.catalogObserver.tapLogRows(rows)
 	}
 
@@ -460,16 +462,19 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 		LabelAggregates:   extractTraceLabelAggregates(rows),
 	}
 	w.manifest.AddFile(partition, fi)
+	traceBloomValues := extractTraceBloomValues(rows)
 	if w.catalogObserver != nil {
-		// bloomValues == labels2 — same parity rationale as the logs flush above.
-		w.catalogObserver.OnFileFlush(partition, fi, labels2, labels2)
+		// UNCAPPED bloom feed — same rationale as the logs flush above.
+		w.catalogObserver.OnFileFlush(partition, fi, labels2, traceBloomValues)
 		w.catalogObserver.tapTraceRows(rows)
 	}
 
 	w.totalBytes.Add(int64(len(result.Data)))
 
 	if w.onFlush != nil {
-		w.onFlush(key, fi.Labels)
+		// The legacy hook (bloomIdx.AddColumns + per-file .bloom) gets the same
+		// UNCAPPED values — its capped fi.Labels feed had the same false-negative.
+		w.onFlush(key, traceBloomValues)
 	}
 
 	if w.statsCallback != nil {
