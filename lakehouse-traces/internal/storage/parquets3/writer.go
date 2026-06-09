@@ -312,6 +312,9 @@ func (w *BatchWriter) FlushAll(ctx context.Context) error {
 	if len(logSnap) > 0 || len(traceSnap) > 0 {
 		metrics.InsertFlushTotal.Inc()
 		metrics.InsertFlushDuration.Observe(time.Since(flushStart).Seconds())
+		if w.catalogObserver != nil {
+			w.catalogObserver.persistDirty(ctx) // persist pmeta bundles to S3
+		}
 	}
 
 	if len(errs) > 0 {

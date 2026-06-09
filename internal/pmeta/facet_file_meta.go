@@ -124,12 +124,5 @@ func (s *Store) FileMeta(partition, fileKey string) (FileMetaView, bool) {
 	if !ok {
 		return FileMetaView{}, false
 	}
-	return FileMetaView{
-		RowCount:          e.RowCount,
-		MinTimeNs:         e.MinTimeNs,
-		MaxTimeNs:         e.MaxTimeNs,
-		RawBytes:          e.RawBytes,
-		SchemaFingerprint: e.SchemaFingerprint,
-		Labels:            e.Labels,
-	}, true
+	return FileMetaView(e), true
 }
