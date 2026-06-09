@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`field_values` with no limit (`limit==0`) scanned 2.5M logs instead of using the in-RAM index.** The labelIndex/catalog fast-path was gated on `limit > 0`, so a no-limit request — what a Grafana dropdown sends — bypassed the index and did a full column scan (50 s with S3 latency). The index is self-bounded, so it now serves `limit==0` too; the catalog result cap no longer zeroes the result on `limit==0`. `TestInteg_PmetaCatalog_NoLimitUsesIndex`.
 
+## [0.69.0] - 2026-06-09
+
 ## [0.59.0] - 2026-06-08
 
 ### Added
