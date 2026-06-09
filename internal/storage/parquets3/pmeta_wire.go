@@ -167,7 +167,7 @@ func (s *Storage) catalogFieldValues(q *logstorage.Query, fieldName string, limi
 		vals = append(vals, v)
 	}
 	sort.Strings(vals)
-	if uint64(len(vals)) > limit {
+	if limit > 0 && uint64(len(vals)) > limit {
 		vals = vals[:limit]
 	}
 	out := make([]logstorage.ValueWithHits, len(vals))

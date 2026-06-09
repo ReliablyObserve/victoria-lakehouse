@@ -387,7 +387,13 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 	// pmeta catalog fast-path (--pmeta): union the field's values across the
 	// partitions in the query's time range, served from RAM. nil (flag off) or
 	// empty (cold) falls through to the labelIndex/scan path unchanged.
-	if filter == nil && limit > 0 && s.catalog != nil {
+	//
+	// NOTE: a no-limit request (limit==0, what a Grafana dropdown sends) MUST still
+	// use the in-RAM index — both the catalog and the labelIndex are self-bounded,
+	// so serving from them is correct AND avoids a full column scan (which, with S3
+	// latency, takes tens of seconds). Gating this on `limit > 0` was the dropdown
+	// slowness: it sent every no-limit field_values straight to the scan path.
+	if filter == nil && s.catalog != nil {
 		if s.refuseEnumeration(fieldName) {
 			return nil, nil // declared id column: don't enumerate (matches VL), no scan
 		}
@@ -396,7 +402,7 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 		}
 	}
 
-	if filter == nil && limit > 0 && s.labelIndex.Len() > 0 {
+	if filter == nil && s.labelIndex.Len() > 0 {
 		vals := s.labelIndex.GetFieldValues(fieldName, limit)
 		if len(vals) > 0 {
 			result := make([]logstorage.ValueWithHits, len(vals))

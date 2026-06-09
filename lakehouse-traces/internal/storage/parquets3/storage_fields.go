@@ -217,7 +217,10 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 	// pmeta catalog fast-path (--pmeta): union the field's values across the
 	// partitions in the query's time range, served from RAM. nil (flag off) or
 	// empty (cold) falls through to the labelIndex/scan path unchanged.
-	if filter == nil && limit > 0 && s.catalog != nil {
+	// A no-limit request (limit==0) MUST still use the in-RAM index — it is
+	// self-bounded, so this is correct and avoids a full scan. See the logs-module
+	// comment: gating on `limit > 0` was the dropdown slowness.
+	if filter == nil && s.catalog != nil {
 		if s.refuseEnumeration(fieldName) {
 			return nil, nil // declared id column: don't enumerate (matches VT), no scan
 		}
@@ -226,7 +229,7 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 		}
 	}
 
-	if filter == nil && limit > 0 && s.labelIndex.Len() > 0 {
+	if filter == nil && s.labelIndex.Len() > 0 {
 		vals := s.labelIndex.GetFieldValues(fieldName, limit)
 		if len(vals) == 0 {
 			if m := s.registry.ResolveToParquet(fieldName); m != nil && m.InternalName != fieldName {

@@ -90,6 +90,39 @@ func TestInteg_PmetaCatalog_CrossPathParity(t *testing.T) {
 	}
 }
 
+// TestInteg_PmetaCatalog_NoLimitUsesIndex guards the dropdown-slowness fix: a
+// no-limit (limit==0) field_values request must serve from the catalog (in-RAM)
+// and return the values, NOT fall through to a full scan or get zeroed by the cap.
+func TestInteg_PmetaCatalog_NoLimitUsesIndex(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog, sketch: sketchSet(nil)}
+
+	now := time.Now()
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "a", ServiceName: "api-gateway"},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "b", ServiceName: "order-service"},
+	})
+	bw.triggerFlush()
+
+	q := mustParseQueryWithTime(t, "*", now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	before := metrics.CatalogValueLookups.Get("catalog")
+	got, err := s.GetFieldValues(context.Background(), nil, q, "service.name", 0) // limit==0
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := valueStrings(got); !reflect.DeepEqual(g, []string{"api-gateway", "order-service"}) {
+		t.Fatalf("limit==0 GetFieldValues = %v (want the catalog values, not empty/scan)", g)
+	}
+	if metrics.CatalogValueLookups.Get("catalog") <= before {
+		t.Fatal("limit==0 did not increment the catalog hit counter — it scanned instead of using the index")
+	}
+}
+
 // TestInteg_PmetaCatalog_WarmFromManifest verifies the cold-start path: a pod
 // whose manifest is loaded but whose catalog is empty rebuilds the catalog from
 // the manifest's per-file Labels (no S3), so the FIRST dropdown query is fast.
