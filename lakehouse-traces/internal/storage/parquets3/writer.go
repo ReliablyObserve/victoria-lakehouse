@@ -73,12 +73,13 @@ type BatchWriter struct {
 	totalRows  atomic.Int64
 	totalBytes atomic.Int64
 
-	onFlush       FlushHook
-	statsCallback StatsCallback
-	flushCacheCb  FlushCacheCallback
-	tenantPrefix  TenantPrefixFunc
-	tenantBucket  TenantBucketFunc
-	tenantPool    TenantPoolFunc
+	onFlush         FlushHook
+	catalogObserver *catalogObserver
+	statsCallback   StatsCallback
+	flushCacheCb    FlushCacheCallback
+	tenantPrefix    TenantPrefixFunc
+	tenantBucket    TenantBucketFunc
+	tenantPool      TenantPoolFunc
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -375,6 +376,9 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 		LabelAggregates:   extractLogLabelAggregates(rows),
 	}
 	w.manifest.AddFile(partition, fi)
+	if w.catalogObserver != nil {
+		w.catalogObserver.OnFileFlush(partition, key, labels)
+	}
 
 	if w.statsCallback != nil {
 		w.statsCallback(accountID, projectID, int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
@@ -448,6 +452,9 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 		LabelAggregates:   extractTraceLabelAggregates(rows),
 	}
 	w.manifest.AddFile(partition, fi)
+	if w.catalogObserver != nil {
+		w.catalogObserver.OnFileFlush(partition, key, labels2)
+	}
 
 	w.totalBytes.Add(int64(len(result.Data)))
 

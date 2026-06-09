@@ -345,6 +345,10 @@ at any level reverts the flag (data is safe regardless via skip+rebuild).
   `PersistDirty` + `WarmPartitions` (one GET/partition) become worthwhile only when
   re-deriving from the manifest is too costly at PB scale; the machinery is built
   and tested in `internal/pmeta`, just not wired (manifest-warm supersedes it for now).
+- [x] **Traces module mirror** — same wire (`pmeta_wire` + flush both sites +
+  `GetFieldValues` fast-path + `WarmCatalog` in the traces main) in `lakehouse-traces`;
+  `service.name` + `span.name` dropdowns. Traces Level-2 cross-path parity test passes;
+  full traces storage suite green. Behind `--pmeta` (off).
 - [ ] **A2** — HLL high-card layer + `IsHighCard` refusal.
 - [ ] **A3** — time-tiered residency + traces `span_attr:*`.
 - [ ] **Fold existing facets** — bloom / file-meta / labels (dual-write → flip).

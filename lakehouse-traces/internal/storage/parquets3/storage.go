@@ -25,6 +25,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/smartcache"
@@ -39,6 +40,7 @@ type Storage struct {
 	diskCache         *cache.DiskCache
 	sfGroup           *cache.Group
 	labelIndex        *cache.LabelIndex
+	catalog           *pmeta.Store // unified field/value catalog; nil unless --pmeta
 	persister         *cache.Persister
 	discovery         *discovery.Discovery
 	peerCache         *peercache.PeerCache
@@ -248,10 +250,18 @@ func New(cfg *config.Config) (*Storage, error) {
 		})
 	}
 
+	// pmeta field/value catalog (experimental, --pmeta). nil when disabled, so
+	// the hot flush/query paths are unchanged by default.
+	catalog := newCatalogStore(cfg.Pmeta.Enabled, prefix)
+	if catalog != nil && bw != nil {
+		bw.catalogObserver = &catalogObserver{store: catalog}
+	}
+
 	return &Storage{
 		cfg:               cfg,
 		pool:              pool,
 		manifest:          m,
+		catalog:           catalog,
 		registry:          schema.NewRegistry(profile),
 		memCache:          memCache,
 		diskCache:         diskCacheInst,

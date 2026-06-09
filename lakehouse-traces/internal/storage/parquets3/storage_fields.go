@@ -214,6 +214,15 @@ func (s *Storage) scanProjectedFieldValues(
 func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
 	filter := parseFilterFromQuery(q)
 
+	// pmeta catalog fast-path (--pmeta): union the field's values across the
+	// partitions in the query's time range, served from RAM. nil (flag off) or
+	// empty (cold) falls through to the labelIndex/scan path unchanged.
+	if filter == nil && limit > 0 && s.catalog != nil {
+		if result := s.catalogFieldValues(q, fieldName, limit); len(result) > 0 {
+			return result, nil
+		}
+	}
+
 	if filter == nil && limit > 0 && s.labelIndex.Len() > 0 {
 		vals := s.labelIndex.GetFieldValues(fieldName, limit)
 		if len(vals) == 0 {
