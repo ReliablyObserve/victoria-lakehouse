@@ -254,7 +254,7 @@ func New(cfg *config.Config) (*Storage, error) {
 	// the hot flush/query paths are unchanged by default.
 	catalog := newCatalogStore(cfg.Pmeta, prefix)
 	if catalog != nil && bw != nil {
-		bw.catalogObserver = &catalogObserver{store: catalog, sketch: sketchSet(cfg.Pmeta.AlwaysSketchFields)}
+		bw.catalogObserver = &catalogObserver{store: catalog, sketch: sketchSet(cfg.Pmeta.AlwaysSketchFields), pool: pool}
 	}
 
 	return &Storage{

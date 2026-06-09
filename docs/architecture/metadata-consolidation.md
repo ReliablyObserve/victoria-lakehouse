@@ -341,10 +341,14 @@ at any level reverts the flag (data is safe regardless via skip+rebuild).
   catalog from the manifest's per-file `Labels` in `runStartup` (the manifest is
   already resident → **no extra S3 I/O**, and it is the source of truth → trivially
   self-healing). Dropdowns are fast on the FIRST query after a cold pod. Tested.
-- [ ] **S3 bundle persist/warm (A3, PB-scale)** — the `ObjectStore` adapter +
-  `PersistDirty` + `WarmPartitions` (one GET/partition) become worthwhile only when
-  re-deriving from the manifest is too costly at PB scale; the machinery is built
-  and tested in `internal/pmeta`, just not wired (manifest-warm supersedes it for now).
+- [x] **S3 bundle persist/warm (flip prerequisite)** — `poolObjectStore` adapts
+  `s3reader.ClientPool` to `pmeta.ObjectStore`; `catalogObserver.persistDirty` writes
+  dirty bundles on the flush cycle (next to the legacy bloom persist), and
+  `Storage.WarmCatalogFromS3` loads them at startup before the manifest merge. This is
+  what lets the **bloom facet** (the one facet not re-derivable from the manifest)
+  survive a cold restart. Both modules; gated by `--pmeta`. Verified
+  `TestInteg_PmetaCatalog_BundlePersistWarmRoundTrip` (flush → persist → fresh store
+  warmed only from S3 → bloom + file-meta + catalog all survive).
 - [x] **Traces module mirror** — same wire (`pmeta_wire` + flush both sites +
   `GetFieldValues` fast-path + `WarmCatalog` in the traces main) in `lakehouse-traces`;
   `service.name` + `span.name` dropdowns. Traces Level-2 cross-path parity test passes;

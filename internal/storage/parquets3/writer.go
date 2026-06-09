@@ -350,6 +350,9 @@ func (w *BatchWriter) FlushAll(ctx context.Context) error {
 		if w.bloomObserver != nil {
 			w.bloomObserver.PersistDirty(ctx, w.prefix)
 		}
+		if w.catalogObserver != nil {
+			w.catalogObserver.persistDirty(ctx) // persist pmeta bundles (bloom survives restart)
+		}
 	}
 
 	if len(errs) > 0 {

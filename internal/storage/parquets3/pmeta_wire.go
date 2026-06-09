@@ -10,8 +10,22 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
+
+// poolObjectStore adapts s3reader.ClientPool to pmeta.ObjectStore so partition
+// bundles can be persisted to / loaded from S3. WarmPartitions treats any GET
+// error as "rebuild", so no ErrNotFound translation is needed here.
+type poolObjectStore struct{ pool *s3reader.ClientPool }
+
+func (o poolObjectStore) PutObject(ctx context.Context, key string, data []byte) error {
+	return o.pool.Upload(ctx, key, data)
+}
+
+func (o poolObjectStore) GetObject(ctx context.Context, key string) ([]byte, error) {
+	return o.pool.Download(ctx, key)
+}
 
 // defaultCardinalityThreshold keeps every human-meaningful facet exact while
 // bounding RAM for unbounded id-like fields.
@@ -51,7 +65,20 @@ func newCatalogStore(cfg config.PmetaConfig, prefix string) *pmeta.Store {
 // — no extra column scan. Nil (pmeta off) → no-op.
 type catalogObserver struct {
 	store  *pmeta.Store
-	sketch map[string]bool // always-sketch field names to tap for cardinality
+	sketch map[string]bool      // always-sketch field names to tap for cardinality
+	pool   *s3reader.ClientPool // for persisting dirty bundles to S3 (nil → no persist)
+}
+
+// persistDirty writes changed partition bundles to S3 (one PUT per dirty
+// partition), so facets that can't be re-derived from the manifest — bloom in
+// particular — survive a cold restart. Called on the flush cycle next to the
+// legacy bloom sidecar persist. Best-effort: a failure just defers to the next
+// flush (the bundle stays dirty).
+func (o *catalogObserver) persistDirty(ctx context.Context) {
+	if o == nil || o.store == nil || o.pool == nil {
+		return
+	}
+	_, _ = o.store.PersistDirty(ctx, poolObjectStore{o.pool})
 }
 
 func (o *catalogObserver) OnFileFlush(partition string, fi manifest.FileInfo, labels, bloomValues map[string][]string) {
@@ -205,6 +232,26 @@ func (s *Storage) WarmCatalog(ctx context.Context) {
 		}
 	}
 	metrics.CatalogResidentBytes.Set(s.catalog.ResidentBytes())
+}
+
+// WarmCatalogFromS3 loads any persisted partition bundles from S3 (one GET each),
+// restoring facets that WarmCatalog can't rebuild from the manifest — the bloom
+// facet in particular. Missing/corrupt bundles are ignored here: WarmCatalog
+// covers catalog + file-meta from the manifest, and the legacy bloom sidecar is
+// the fallback for bloom during dual-write. Call this BEFORE WarmCatalog so the
+// manifest merge re-adds any files newer than the persisted bundle.
+func (s *Storage) WarmCatalogFromS3(ctx context.Context) {
+	if s.catalog == nil || s.pool == nil {
+		return
+	}
+	parts := make([]string, 0, 64)
+	for p := range s.manifest.AllFiles() {
+		parts = append(parts, p)
+	}
+	if len(parts) == 0 {
+		return
+	}
+	s.catalog.WarmPartitions(ctx, poolObjectStore{s.pool}, parts, 8)
 }
 
 // refuseEnumeration reports whether field_values for a field should return empty

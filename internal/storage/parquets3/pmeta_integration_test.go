@@ -90,6 +90,65 @@ func TestInteg_PmetaCatalog_CrossPathParity(t *testing.T) {
 	}
 }
 
+// TestInteg_PmetaCatalog_BundlePersistWarmRoundTrip verifies the flip prerequisite:
+// after a flush, persisting bundles to S3 and warming a FRESH store from them (a
+// simulated cold restart) restores the bloom facet — which, unlike catalog/file-meta,
+// CANNOT be re-derived from the manifest. catalog + file-meta round-trip too.
+func TestInteg_PmetaCatalog_BundlePersistWarmRoundTrip(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog, pool: s.pool}
+
+	now := time.Now()
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "a", ServiceName: "api-gateway"},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "b", ServiceName: "order-service"},
+	})
+	bw.triggerFlush()
+
+	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	if len(files) == 0 {
+		t.Fatal("no file after flush")
+	}
+	fi := files[0]
+	part := manifest.ExtractPartition(fi.Key)
+
+	// Persist the dirty bundles to (mock) S3.
+	if _, err := s.catalog.PersistDirty(context.Background(), poolObjectStore{s.pool}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a cold restart: a fresh store warmed only from the S3 bundles.
+	fresh := newCatalogStore(s.cfg.Pmeta, "logs/")
+	res := fresh.WarmPartitions(context.Background(), poolObjectStore{s.pool}, []string{part}, 4)
+	if res.Loaded == 0 {
+		t.Fatalf("no bundle loaded from S3 (NeedsRebuild=%v)", res.NeedsRebuild)
+	}
+
+	// Bloom survived (the whole point — it can't be rebuilt from the manifest).
+	got, ok := fresh.BloomMayContain(part, []string{fi.Key}, "service.name", "api-gateway")
+	found := false
+	for _, k := range got {
+		if k == fi.Key {
+			found = true
+		}
+	}
+	if !ok || !found {
+		t.Fatalf("bloom did not survive persist→warm (ok=%v got=%v)", ok, got)
+	}
+	// catalog + file-meta round-tripped too.
+	if _, ok := fresh.FileMeta(part, fi.Key); !ok {
+		t.Fatal("file-meta did not survive persist→warm")
+	}
+	if v := fresh.FieldValues(part, "service.name", "", 0); len(v) == 0 {
+		t.Fatal("catalog values did not survive persist→warm")
+	}
+}
+
 // TestInteg_PmetaCatalog_NoLimitUsesIndex guards the dropdown-slowness fix: a
 // no-limit (limit==0) field_values request must serve from the catalog (in-RAM)
 // and return the values, NOT fall through to a full scan or get zeroed by the cap.
