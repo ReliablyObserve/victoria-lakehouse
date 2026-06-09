@@ -89,6 +89,14 @@ type PmetaConfig struct {
 	// AlwaysSketchFields are forced high-cardinality regardless of the threshold
 	// (known unbounded id columns, e.g. trace_id, span_id, request_id).
 	AlwaysSketchFields []string `yaml:"always_sketch_fields"`
+
+	// RefuseSketchEnumeration, when true, makes field_values for an
+	// AlwaysSketchFields field return EMPTY instead of scanning to enumerate it
+	// (matches VL/VT, and avoids a pointless expensive scan on id columns nobody
+	// browses — you look them up by exact value, which is unaffected). Opt-in
+	// (default false) because it is a behavior change for those fields. Threshold
+	// crossers are NOT refused — they still fall through to the scan.
+	RefuseSketchEnumeration bool `yaml:"refuse_sketch_enumeration"`
 }
 
 type LogsModeConfig struct {

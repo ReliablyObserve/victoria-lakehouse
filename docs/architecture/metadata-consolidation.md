@@ -354,9 +354,15 @@ at any level reverts the flag (data is safe regardless via skip+rebuild).
   storing values (RAM bound), `Values()` returns nil so the read path falls through to
   the legacy scan (no truncated lists, no behavior change), but `Fields()` still lists
   it. Tested both modules.
-- [ ] **A2 (HLL + refusal)** — precise distinct-COUNT via an HLL sketch (needs the
-  hyperloglog dep — a flagged decision) and, optionally, changing `GetFieldValues` to
-  *refuse* high-card enumeration (return the estimate instead of scanning, like VL) —
-  a product behavior decision, deferred.
+- [x] **A2 (refuse-sketch-enumeration, opt-in)** — `pmeta.refuse_sketch_enumeration`
+  (default false): `field_values` for an `always_sketch_fields` id column returns empty
+  instead of scanning to enumerate it (matches VL/VT; you look those up by exact value,
+  unaffected). Threshold-crossers are NOT refused. Confined to declared id columns, so
+  minimal surprise; kills the pointless high-card scan on exactly those fields. Both
+  modules. `TestInteg_PmetaCatalog_RefuseSketchEnumeration` asserts the intended
+  divergence (off → scan enumerates; on → empty).
+- [ ] **A2 (HLL count)** — precise distinct-COUNT via an HLL sketch (needs the
+  hyperloglog dep — a flagged decision); would upgrade refusal from "empty" to a
+  "≈ N distinct" hint.
 - [ ] **A3** — time-tiered residency + traces `span_attr:*`.
 - [ ] **Fold existing facets** — bloom / file-meta / labels (dual-write → flip).

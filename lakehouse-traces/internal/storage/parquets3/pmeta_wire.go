@@ -117,3 +117,19 @@ func (s *Storage) WarmCatalog(ctx context.Context) {
 		}
 	}
 }
+
+// refuseEnumeration reports whether field_values for a field should return empty
+// instead of scanning to enumerate it — true only when refuse_sketch_enumeration
+// is on AND the field is a declared always-sketch id column (trace_id, span_id…).
+// Threshold-crossers are NOT refused; they still fall through to the scan.
+func (s *Storage) refuseEnumeration(field string) bool {
+	if s.catalog == nil || !s.cfg.Pmeta.RefuseSketchEnumeration {
+		return false
+	}
+	for _, f := range s.cfg.Pmeta.AlwaysSketchFields {
+		if f == field {
+			return true
+		}
+	}
+	return false
+}

@@ -388,6 +388,9 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 	// partitions in the query's time range, served from RAM. nil (flag off) or
 	// empty (cold) falls through to the labelIndex/scan path unchanged.
 	if filter == nil && limit > 0 && s.catalog != nil {
+		if s.refuseEnumeration(fieldName) {
+			return nil, nil // declared id column: don't enumerate (matches VL), no scan
+		}
 		if result := s.catalogFieldValues(q, fieldName, limit); len(result) > 0 {
 			return result, nil
 		}

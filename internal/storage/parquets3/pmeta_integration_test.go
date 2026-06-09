@@ -119,3 +119,51 @@ func TestInteg_PmetaCatalog_WarmFromManifest(t *testing.T) {
 		t.Fatalf("hour=11 after warm = %v", got)
 	}
 }
+
+// TestInteg_PmetaCatalog_RefuseSketchEnumeration asserts the INTENDED divergence:
+// for an always-sketch field, refuse_sketch_enumeration=on returns empty (no scan)
+// while off enumerates via the legacy scan. Uses service.name as the forced-sketch
+// field (so it's actually present in the data) to make the divergence observable.
+func TestInteg_PmetaCatalog_RefuseSketchEnumeration(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true, AlwaysSketchFields: []string{"service.name"}}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog}
+
+	now := time.Now()
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "a", ServiceName: "api-gateway"},
+		{TimestampUnixNano: now.UnixNano(), Body: "b", ServiceName: "order-service"},
+	})
+	bw.triggerFlush()
+
+	q := mustParseQueryWithTime(t, "*", now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+
+	// refuse OFF → the forced-sketch field still enumerates via the legacy scan.
+	s.cfg.Pmeta.RefuseSketchEnumeration = false
+	off, err := s.GetFieldValues(context.Background(), nil, q, "service.name", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(off) == 0 {
+		t.Fatal("refuse off: forced-sketch field must still enumerate via scan")
+	}
+
+	// refuse ON → empty (no scan), the intended divergence.
+	s.cfg.Pmeta.RefuseSketchEnumeration = true
+	on, err := s.GetFieldValues(context.Background(), nil, q, "service.name", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(on) != 0 {
+		t.Fatalf("refuse on: must return empty for an always-sketch field, got %v", valueStrings(on))
+	}
+
+	// A non-sketch field is never refused.
+	if s.refuseEnumeration("level") {
+		t.Fatal("non-sketch field must not be refused")
+	}
+}
