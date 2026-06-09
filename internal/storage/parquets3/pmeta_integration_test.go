@@ -759,3 +759,89 @@ func TestInteg_PmetaFlip_LogsBloomColdRestart(t *testing.T) {
 		t.Fatal("[or-branch] unknown partition should report ok=false (keep files)")
 	}
 }
+
+// TestInteg_PmetaFlip_WarmMetadataViaRealAdapter exercises the PRODUCTION file-meta
+// flip path end-to-end: catalogFileMetaProvider (the real facet→manifest adapter,
+// not the unit-test mock) + Storage.WarmCatalogFromS3 (the production bundle warm).
+// Flush → persist bundles → fresh storage with empty catalog + zeroed manifest meta
+// → WarmCatalogFromS3 → EnrichFromProvider must fill FileInfo from the facet alone.
+func TestInteg_PmetaFlip_WarmMetadataViaRealAdapter(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true, RetireSidecarWrites: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog, pool: s.pool}
+
+	now := time.Now()
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "m", ServiceName: "api-gateway"},
+	})
+	bw.triggerFlush()
+	if _, err := s.catalog.PersistDirty(context.Background(), poolObjectStore{s.pool}); err != nil {
+		t.Fatal(err)
+	}
+
+	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	if len(files) == 0 {
+		t.Fatal("no file after flush")
+	}
+	fi := files[0]
+	wantRows := fi.RowCount
+
+	// Cold restart: same manifest keys but ZEROED metadata (what a bare S3 list
+	// reconstruction yields), an EMPTY catalog, then the production warm.
+	s.manifest = manifest.New("bucket", "logs/")
+	s.manifest.AddFile(manifest.ExtractPartition(fi.Key), manifest.FileInfo{Key: fi.Key, Bucket: fi.Bucket, Size: fi.Size})
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	s.WarmCatalogFromS3(context.Background()) // production wrapper (poolObjectStore inside)
+
+	// The real adapter serves the facet's metadata.
+	fm, ok := catalogFileMetaProvider{store: s.catalog}.FileMeta(manifest.ExtractPartition(fi.Key), fi.Key)
+	if !ok || fm.RowCount != wantRows {
+		t.Fatalf("real adapter FileMeta = (%+v, %v), want RowCount=%d", fm, ok, wantRows)
+	}
+
+	// And the manifest enrich-from-facet path fills the zeroed FileInfo.
+	enriched, uncovered := s.manifest.EnrichFromProvider(catalogFileMetaProvider{store: s.catalog})
+	if enriched != 1 || len(uncovered) != 0 {
+		t.Fatalf("EnrichFromProvider via real adapter = (%d, %v), want (1, [])", enriched, uncovered)
+	}
+	got := s.manifest.GetFilesForRange(0, 1<<62)
+	if len(got) != 1 || got[0].RowCount != wantRows {
+		t.Fatalf("manifest not enriched from facet: %+v", got)
+	}
+}
+
+// TestInteg_PmetaFlip_CheckFileBloomFacetExcludes covers checkFileBloom's facet
+// EXCLUDE branch (the prior tests only asserted the keep side): a value absent from
+// the file's bloom must skip the file via the facet, with NO legacy .bloom present
+// (retire mode), and the metric label must be the facet one.
+func TestInteg_PmetaFlip_CheckFileBloomFacetExcludes(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true, RetireSidecarWrites: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog}
+
+	now := time.Now()
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "m", ServiceName: "api-gateway"},
+	})
+	bw.triggerFlush()
+	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	if len(files) == 0 {
+		t.Fatal("no file after flush")
+	}
+	fi := files[0]
+
+	if !s.checkFileBloom(context.Background(), fi, `service.name:="no-such-service-xyz"`) {
+		t.Fatal("facet bloom should exclude a file lacking the value (facet empty or check bypassed?)")
+	}
+	if s.checkFileBloom(context.Background(), fi, `service.name:="api-gateway"`) {
+		t.Fatal("facet bloom wrongly excluded a file containing the value")
+	}
+}
