@@ -377,7 +377,7 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 	}
 	w.manifest.AddFile(partition, fi)
 	if w.catalogObserver != nil {
-		w.catalogObserver.OnFileFlush(partition, key, labels)
+		w.catalogObserver.OnFileFlush(partition, fi, labels)
 		w.catalogObserver.tapLogRows(rows)
 	}
 
@@ -454,7 +454,7 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 	}
 	w.manifest.AddFile(partition, fi)
 	if w.catalogObserver != nil {
-		w.catalogObserver.OnFileFlush(partition, key, labels2)
+		w.catalogObserver.OnFileFlush(partition, fi, labels2)
 		w.catalogObserver.tapTraceRows(rows)
 	}
 

@@ -372,4 +372,13 @@ at any level reverts the flag (data is safe regardless via skip+rebuild).
   input). Both modules; `add` 9.7 ns/0-alloc. Verified
   `TestInteg_PmetaCatalog_CardinalityTapE2E` (real flush → Cardinality within 3 %).
 - [ ] **A3** — time-tiered residency + traces `span_attr:*`.
-- [ ] **Fold existing facets** — bloom / file-meta / labels (dual-write → flip).
+- [~] **Fold existing facets** — bloom / file-meta / labels (dual-write → flip).
+  - [x] **file-meta (dual-write + parity)** — `fileMetaFacet` mirrors `manifest.FileMeta`
+    (same `rc/mn/mx/rb/sf/lb` keys) byte-for-byte; fed at flush via the observer now
+    carrying the full `FileInfo`. Registered in both modules; the existing
+    `_file_metadata.json` sidecar still writes (dual-write). Parity gate
+    `TestInteg_PmetaCatalog_FileMetaFacetParity` asserts facet == `FileInfoToMeta(fi)`
+    after a real flush. **Flip/retire (read from facet, stop writing the sidecar) is the
+    next step** — needs the manifest warmup to read `Store.FileMeta`.
+  - [ ] **bloom** — wrap `bloomindex.Index` as `bloomFacet` (dual-write → flip).
+  - [ ] **labels** — `labelsFacet` + manifest inverted view derived (fixes Overlap-2).

@@ -212,3 +212,45 @@ func TestInteg_PmetaCatalog_CardinalityTapE2E(t *testing.T) {
 		t.Fatalf("service.name should not be sketched, got cardinality %d", c)
 	}
 }
+
+// TestInteg_PmetaCatalog_FileMetaFacetParity is the dual-write parity gate for the
+// fileMetaFacet fold: after a real flush, the facet's per-file metadata must equal
+// manifest.FileInfoToMeta(fi) — i.e. the _file_metadata.json sidecar content —
+// byte-for-byte, so the sidecar can later be retired without losing data.
+func TestInteg_PmetaCatalog_FileMetaFacetParity(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog, sketch: sketchSet(nil)}
+
+	now := time.Now()
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "a", ServiceName: "api-gateway"},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "b", ServiceName: "order-service"},
+	})
+	bw.triggerFlush()
+
+	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	if len(files) == 0 {
+		t.Fatal("no file registered after flush")
+	}
+	fi := files[0]
+	part := manifest.ExtractPartition(fi.Key)
+
+	got, ok := s.catalog.FileMeta(part, fi.Key)
+	if !ok {
+		t.Fatal("fileMetaFacet has no entry for the flushed file")
+	}
+	want := manifest.FileInfoToMeta(fi) // == the _file_metadata.json sidecar entry
+	if got.RowCount != want.RowCount || got.MinTimeNs != want.MinTimeNs ||
+		got.MaxTimeNs != want.MaxTimeNs || got.RawBytes != want.RawBytes ||
+		got.SchemaFingerprint != want.SchemaFingerprint {
+		t.Fatalf("fileMeta facet != sidecar:\n facet=%+v\n sidecar=%+v", got, want)
+	}
+	if !reflect.DeepEqual(got.Labels, want.Labels) {
+		t.Fatalf("fileMeta labels mismatch: facet=%v sidecar=%v", got.Labels, want.Labels)
+	}
+}

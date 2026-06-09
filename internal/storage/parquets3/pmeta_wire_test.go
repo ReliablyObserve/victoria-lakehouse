@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 )
 
 // TestPmetaWire_DisabledIsNil verifies the feature is inert when off.
@@ -24,11 +25,11 @@ func TestPmetaWire_ObserverFeedsCatalog(t *testing.T) {
 	obs := &catalogObserver{store: store}
 
 	part := "logs/dt=2026-06-09/hour=10"
-	obs.OnFileFlush(part, "f1", map[string][]string{
+	obs.OnFileFlush(part, manifest.FileInfo{Key: "f1"}, map[string][]string{
 		"service.name": {"api-gateway", "order-service"},
 		"level":        {"ERROR"},
 	})
-	obs.OnFileFlush(part, "f2", map[string][]string{
+	obs.OnFileFlush(part, manifest.FileInfo{Key: "f2"}, map[string][]string{
 		"service.name": {"user-service"},
 	})
 
@@ -51,5 +52,5 @@ func TestPmetaWire_ObserverFeedsCatalog(t *testing.T) {
 // TestPmetaWire_NilObserverSafe — a nil observer (pmeta off) must be a no-op.
 func TestPmetaWire_NilObserverSafe(t *testing.T) {
 	var obs *catalogObserver
-	obs.OnFileFlush("p", "f", map[string][]string{"x": {"y"}}) // must not panic
+	obs.OnFileFlush("p", manifest.FileInfo{Key: "f"}, map[string][]string{"x": {"y"}}) // must not panic
 }

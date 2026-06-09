@@ -38,6 +38,11 @@ type FileContribution struct {
 	Partition string
 	FileKey   string
 	RowCount  int64
+	// Per-file metadata, consumed by FacetFileMeta (mirrors _file_metadata.json).
+	MinTimeNs         int64
+	MaxTimeNs         int64
+	RawBytes          int64
+	SchemaFingerprint string
 	// Labels: low-cardinality field -> values present in this file (already
 	// capped by the extractor). Consumed by FacetLabels / FacetFieldCatalog.
 	Labels map[string][]string

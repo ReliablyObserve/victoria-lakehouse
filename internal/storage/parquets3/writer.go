@@ -439,7 +439,7 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 	// map (no extra scan). Nil unless --pmeta is enabled, so this is a no-op on
 	// the hot path by default.
 	if w.catalogObserver != nil {
-		w.catalogObserver.OnFileFlush(partition, key, labels)
+		w.catalogObserver.OnFileFlush(partition, fi, labels)
 		w.catalogObserver.tapLogRows(rows)
 	}
 
@@ -533,7 +533,7 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 	// map (no extra scan). Nil unless --pmeta is enabled, so this is a no-op on
 	// the hot path by default.
 	if w.catalogObserver != nil {
-		w.catalogObserver.OnFileFlush(partition, key, labels)
+		w.catalogObserver.OnFileFlush(partition, fi, labels)
 		w.catalogObserver.tapTraceRows(rows)
 	}
 
