@@ -1561,7 +1561,11 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 
 	byPartition := make(map[string][]manifest.FileInfo)
 	for _, fi := range files {
-		partition := partitionFromKey(fi.Key)
+		// manifest.ExtractPartition (pure "dt=.../hour=HH", no prefix) — the pmeta
+		// facet AND the _bloom.bin persist path are keyed by it. partitionFromKey
+		// keeps the key prefix, which made the facet lookup always miss and the
+		// bloomS3Loader fallback build a double-prefixed S3 path.
+		partition := manifest.ExtractPartition(fi.Key)
 		byPartition[partition] = append(byPartition[partition], fi)
 	}
 
@@ -1653,7 +1657,11 @@ func (s *Storage) bloomFilterFilesByOrBranches(ctx context.Context, files []mani
 
 	byPartition := make(map[string][]manifest.FileInfo)
 	for _, fi := range files {
-		partition := partitionFromKey(fi.Key)
+		// manifest.ExtractPartition (pure "dt=.../hour=HH", no prefix) — the pmeta
+		// facet AND the _bloom.bin persist path are keyed by it. partitionFromKey
+		// keeps the key prefix, which made the facet lookup always miss and the
+		// bloomS3Loader fallback build a double-prefixed S3 path.
+		partition := manifest.ExtractPartition(fi.Key)
 		byPartition[partition] = append(byPartition[partition], fi)
 	}
 
@@ -1713,6 +1721,9 @@ func (s *Storage) bloomColumnIntersect(ctx context.Context, partition string, ke
 		if match, ok := s.facetBloomColumnIntersect(partition, keys, perColumn); ok {
 			return match, true
 		}
+	}
+	if s.bloomCache == nil {
+		return nil, false
 	}
 	idx, err := s.bloomCache.Get(ctx, partition)
 	if err != nil || idx == nil {
@@ -1792,6 +1803,9 @@ func (s *Storage) bloomUnionMatch(ctx context.Context, partition string, keys []
 		if union, ok := s.facetBloomUnionMatch(partition, keys, branchChecks); ok {
 			return union, true
 		}
+	}
+	if s.bloomCache == nil {
+		return nil, false
 	}
 	idx, err := s.bloomCache.Get(ctx, partition)
 	if err != nil || idx == nil {
@@ -2082,7 +2096,12 @@ func fieldTokenIndex(query, prefix string) int {
 			return 0
 		}
 		p := query[idx-1]
-		isFieldChar := p == '_' || p == '.' ||
+		// Field-name characters per LogsQL usage in this codebase, matching
+		// extractQuotedOp's set: schema fields include ':' (resource_attr:service.name)
+		// and '-' is legal in attr keys. Treating more characters as field chars is
+		// the safe direction — it only suppresses an extraction (less pruning),
+		// never fabricates one (which could false-exclude).
+		isFieldChar := p == '_' || p == '.' || p == ':' || p == '-' ||
 			(p >= 'a' && p <= 'z') || (p >= 'A' && p <= 'Z') || (p >= '0' && p <= '9')
 		if !isFieldChar {
 			return idx

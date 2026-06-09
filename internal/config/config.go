@@ -1185,6 +1185,12 @@ func (c *Config) validateEnums() error {
 }
 
 func (c *Config) validateSubsystems() error {
+	if c.Pmeta.RetireSidecarWrites && !c.Pmeta.Enabled {
+		// Without this check the flag is silently ignored (the retire wiring lives
+		// inside the Pmeta.Enabled block) — the operator believes sidecar writes
+		// stopped while they continue. Fail fast instead.
+		return fmt.Errorf("--lakehouse.pmeta.retire-sidecar-writes requires --lakehouse.pmeta.enabled (the facets must exist to replace the sidecars)")
+	}
 	if c.Cache.EvictionWatermark <= 0 || c.Cache.EvictionWatermark > 1 {
 		return fmt.Errorf("--lakehouse.cache.eviction-watermark must be in (0, 1], got %f", c.Cache.EvictionWatermark)
 	}

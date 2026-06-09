@@ -1779,7 +1779,12 @@ func fieldTokenIndex(query, prefix string) int {
 			return 0
 		}
 		p := query[idx-1]
-		isFieldChar := p == '_' || p == '.' ||
+		// Field-name characters per LogsQL usage in this codebase, matching
+		// extractQuotedOp's set: schema fields include ':' (resource_attr:service.name)
+		// and '-' is legal in attr keys. Treating more characters as field chars is
+		// the safe direction — it only suppresses an extraction (less pruning),
+		// never fabricates one (which could false-exclude).
+		isFieldChar := p == '_' || p == '.' || p == ':' || p == '-' ||
 			(p >= 'a' && p <= 'z') || (p >= 'A' && p <= 'Z') || (p >= '0' && p <= '9')
 		if !isFieldChar {
 			return idx

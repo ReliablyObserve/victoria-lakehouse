@@ -687,3 +687,75 @@ func TestInteg_PmetaFlip_ORBranchFacet(t *testing.T) {
 		t.Fatal("facetBloomUnionMatch should report ok=false for an unknown partition")
 	}
 }
+
+// TestInteg_PmetaFlip_LogsBloomColdRestart is the logs twin of the traces
+// cold-restart test (the absent-value assertions are the ones that catch a
+// silently-empty facet — a present-value-only check passes vacuously because
+// unknown keys are kept). Under retire-sidecar-writes after a cold restart the
+// bundle-warmed facet is the ONLY bloom source: both pre-filter helpers must
+// (a) prune an absent value, (b) never drop a file holding the value, and
+// (c) keep files of partitions no bloom knows.
+func TestInteg_PmetaFlip_LogsBloomColdRestart(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true, RetireSidecarWrites: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog, pool: s.pool}
+	// retire mode: NO legacy bloom observer wired — the facet is the only feed.
+
+	now := time.Now()
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "m", ServiceName: "api-gateway"},
+	})
+	bw.triggerFlush()
+
+	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	if len(files) == 0 {
+		t.Fatal("no file after flush")
+	}
+	fi := files[0]
+	part := manifest.ExtractPartition(fi.Key)
+
+	// Cold restart: bundles persisted, fresh catalog warmed ONLY from S3.
+	if _, err := s.catalog.PersistDirty(context.Background(), poolObjectStore{s.pool}); err != nil {
+		t.Fatal(err)
+	}
+	fresh := newCatalogStore(s.cfg.Pmeta, "logs/")
+	if res := fresh.WarmPartitions(context.Background(), poolObjectStore{s.pool}, []string{part}, 2); res.Loaded == 0 {
+		t.Fatalf("bundle not warmed (NeedsRebuild=%v)", res.NeedsRebuild)
+	}
+	s.catalog = fresh
+
+	ctx := context.Background()
+	keys := []string{fi.Key}
+	presentCol := []bloomColumnValues{{Column: "service.name", Values: []string{"api-gateway"}}}
+	absentCol := []bloomColumnValues{{Column: "service.name", Values: []string{"no-such-service-xyz"}}}
+	presentBranch := [][]bloomindex.ColumnCheck{{{Column: "service.name", Value: "api-gateway"}}}
+	absentBranch := [][]bloomindex.ColumnCheck{{{Column: "service.name", Value: "no-such-service-xyz"}}}
+
+	// single-set path (bloomColumnIntersect)
+	if m, ok := s.bloomColumnIntersect(ctx, part, keys, presentCol); !ok || !m[fi.Key] {
+		t.Fatalf("[single-set] dropped a file holding the value (ok=%v m=%v)", ok, m)
+	}
+	if m, ok := s.bloomColumnIntersect(ctx, part, keys, absentCol); !ok || m[fi.Key] {
+		t.Fatalf("[single-set] absent value not pruned (ok=%v m=%v) — facet empty?", ok, m)
+	}
+
+	// OR-branch path (bloomUnionMatch)
+	if m, ok := s.bloomUnionMatch(ctx, part, keys, presentBranch); !ok || !m[fi.Key] {
+		t.Fatalf("[or-branch] dropped a file holding the value (ok=%v m=%v)", ok, m)
+	}
+	if m, ok := s.bloomUnionMatch(ctx, part, keys, absentBranch); !ok || m[fi.Key] {
+		t.Fatalf("[or-branch] absent value not pruned (ok=%v m=%v) — facet empty?", ok, m)
+	}
+
+	// Unknown partition → no bloom anywhere → ok=false → caller keeps the files.
+	if _, ok := s.bloomColumnIntersect(ctx, "dt=1999-01-01/hour=00", []string{"x"}, presentCol); ok {
+		t.Fatal("[single-set] unknown partition should report ok=false (keep files)")
+	}
+	if _, ok := s.bloomUnionMatch(ctx, "dt=1999-01-01/hour=00", []string{"x"}, presentBranch); ok {
+		t.Fatal("[or-branch] unknown partition should report ok=false (keep files)")
+	}
+}

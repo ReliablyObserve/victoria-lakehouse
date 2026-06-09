@@ -1229,7 +1229,9 @@ func TestInteg_bloomFilterFiles_WithIndex(t *testing.T) {
 	})
 
 	loader := func(_ context.Context, partition string) (*bloomindex.Index, error) {
-		if partition == "logs/dt=2026-05-10/hour=14" {
+		// Pure partition (manifest.ExtractPartition format, no prefix) — matches how
+		// the pre-filter now groups files and how PersistDirty keys _bloom.bin.
+		if partition == "dt=2026-05-10/hour=14" {
 			return idx, nil
 		}
 		return nil, nil
@@ -2236,7 +2238,9 @@ func TestInteg_preFilterFiles_WithBloomCache(t *testing.T) {
 	})
 
 	loader := func(_ context.Context, partition string) (*bloomindex.Index, error) {
-		if partition == "logs/dt=2026-05-10/hour=14" {
+		// Pure partition (manifest.ExtractPartition format, no prefix) — matches how
+		// the pre-filter now groups files and how PersistDirty keys _bloom.bin.
+		if partition == "dt=2026-05-10/hour=14" {
 			return idx, nil
 		}
 		return nil, nil
