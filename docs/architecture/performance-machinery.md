@@ -155,10 +155,9 @@ flowchart LR
     Ingest["POST /insert/...<br/>(logfmt/JSON/OTLP)"] --> Parse["1. Parse<br/><i>VL/VT upstream via patches</i>"]
     Parse --> Filter["2. Stream-shape filter<br/><i>drop trace-shaped rows from logs</i>"]
     Filter --> Gate["3. Cardinality gate<br/><i>per-tenant MaxStreams</i>"]
-    Gate --> WAL["4. WAL append<br/><i>durability</i>"]
-    WAL --> Buffer["5. In-memory buffer<br/><i>served via BufferBridge</i>"]
-    Buffer --> Flush{"6. Flush trigger<br/>size OR time?"}
-    Flush -->|fire| Build["7. Build artifacts for the FUTURE reader"]
+    Gate --> Buffer["4. Membuffer — logstorage in-memory parts<br/><i>durability (parts → PVC every flush interval) AND served via BufferBridge; no separate WAL</i>"]
+    Buffer --> Flush{"5. Flush trigger<br/>size OR time?"}
+    Flush -->|fire| Build["6. Build artifacts for the FUTURE reader"]
 
     Build --> A1["7a. extractLogLabels →<br/>FileInfo.Labels"]
     Build --> A2["7b. ColumnStats →<br/>manifest cache"]
@@ -181,7 +180,7 @@ flowchart LR
     classDef ingest fill:#fff4e1,stroke:#cc6600,color:#1a1a1a
     classDef build fill:#e1f5ff,stroke:#0066cc,color:#1a1a1a
     classDef storage fill:#d4edda,stroke:#155724,color:#1a1a1a
-    class Ingest,Parse,Filter,Gate,WAL,Buffer,Flush ingest
+    class Ingest,Parse,Filter,Gate,Buffer,Flush ingest
     class Build,A1,A2,A3,A4,A5,Write build
     class S3,Add,Compact,Re storage
 ```
@@ -359,7 +358,7 @@ know which artifact lands where. This table is the master reference.
 | 5 | **Smart cache L1** (decoded parquet row groups) | ✅ primary | — | — | LRU; never persisted |
 | 6 | **Smart cache L2** (raw parquet bytes) | — | ✅ primary | — | LRU on disk; survives restart |
 | 7 | **PeerCache ring** (consistent-hash map of peer endpoints) | ✅ primary | — | — | derived from k8s headless service watch |
-| 8 | **WAL** (un-flushed ingest batches) | mirror | ✅ primary | — | replayed at startup; truncated on successful flush |
+| 8 | **~~WAL~~ — folded into the membuffer** | — | — | — | **No separate LH WAL** (the old `internal/wal/` was removed). Durability of unflushed rows is the membuffer (#9): VL/VT-native logstorage in-memory parts persisted to the PVC every flush interval and restored on open. Crash-loss window = the last flush interval; long-term durability = the S3 Parquet flush. |
 | 9 | **In-memory buffer** (unflushed rows served by `BufferBridge`) | ✅ primary | — | — | freed on flush |
 | 10 | **`.parquet` data file** (row groups, column index, per-rowgroup blooms, footer KVs) | — | — | ✅ primary | written by flusher + compactor; deleted by retention |
 | 11 | **`.bloom` sidecar** (file-level bloom for the inverted bloom index) | mirror via `bloomindex.PartitionedIndex` | snapshot | ✅ primary | rebuilt by `bloomObserver.OnFileFlush`; loaded into RAM at startup |
