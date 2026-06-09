@@ -33,7 +33,7 @@ func TestInteg_PmetaCatalog_TracesCrossPathParity(t *testing.T) {
 	defer mock.close()
 	s := testStorageWithS3(t, mock.url())
 
-	catalog := newCatalogStore(true, "logs/")
+	catalog := newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
 	s.catalog = catalog
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
 	bw.catalogObserver = &catalogObserver{store: catalog}

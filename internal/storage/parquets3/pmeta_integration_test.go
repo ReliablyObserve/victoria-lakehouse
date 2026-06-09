@@ -34,7 +34,7 @@ func TestInteg_PmetaCatalog_CrossPathParity(t *testing.T) {
 	s := testStorageWithS3(t, mock.url()) // base read storage (catalog nil, labelIndex empty)
 
 	// Enable pmeta on this storage and a writer that shares its manifest+pool.
-	catalog := newCatalogStore(true, "logs/")
+	catalog := newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
 	s.catalog = catalog
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
 	bw.catalogObserver = &catalogObserver{store: catalog}
@@ -92,7 +92,7 @@ func TestInteg_PmetaCatalog_WarmFromManifest(t *testing.T) {
 	mock := newMockS3Server()
 	defer mock.close()
 	s := testStorageWithS3(t, mock.url())
-	s.catalog = newCatalogStore(true, "logs/")
+	s.catalog = newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
 
 	base := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC).UnixNano()
 	s.manifest.AddFile("dt=2026-06-09/hour=10", manifest.FileInfo{

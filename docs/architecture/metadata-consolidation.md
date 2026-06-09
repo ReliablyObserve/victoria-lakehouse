@@ -349,6 +349,14 @@ at any level reverts the flag (data is safe regardless via skip+rebuild).
   `GetFieldValues` fast-path + `WarmCatalog` in the traces main) in `lakehouse-traces`;
   `service.name` + `span.name` dropdowns. Traces Level-2 cross-path parity test passes;
   full traces storage suite green. Behind `--pmeta` (off).
-- [ ] **A2** — HLL high-card layer + `IsHighCard` refusal.
+- [x] **A2 (cardinality cap, dep-free)** — `pmeta.cardinality_threshold` (default
+  50000) + `always_sketch_fields`. A field over the cap is marked high-card: it stops
+  storing values (RAM bound), `Values()` returns nil so the read path falls through to
+  the legacy scan (no truncated lists, no behavior change), but `Fields()` still lists
+  it. Tested both modules.
+- [ ] **A2 (HLL + refusal)** — precise distinct-COUNT via an HLL sketch (needs the
+  hyperloglog dep — a flagged decision) and, optionally, changing `GetFieldValues` to
+  *refuse* high-card enumeration (return the estimate instead of scanning, like VL) —
+  a product behavior decision, deferred.
 - [ ] **A3** — time-tiered residency + traces `span_attr:*`.
 - [ ] **Fold existing facets** — bloom / file-meta / labels (dual-write → flip).

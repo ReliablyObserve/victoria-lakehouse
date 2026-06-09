@@ -6,9 +6,14 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 )
+
+// defaultCardinalityThreshold keeps every human-meaningful facet exact while
+// bounding RAM for unbounded id-like fields.
+const defaultCardinalityThreshold = 50000
 
 // This file is the (additive) wiring surface between the storage layer and the
 // unified partition-metadata layer (internal/pmeta). Everything here is inert
@@ -21,13 +26,18 @@ import (
 // facet, keyed under the given S3 prefix. Returns nil when pmeta is disabled, so
 // callers can `if st := newCatalogStore(...); st != nil { … }` without a flag
 // check at every site.
-func newCatalogStore(enabled bool, prefix string) *pmeta.Store {
-	if !enabled {
+func newCatalogStore(cfg config.PmetaConfig, prefix string) *pmeta.Store {
+	if !cfg.Enabled {
 		return nil
+	}
+	threshold := cfg.CardinalityThreshold
+	if threshold == 0 {
+		threshold = defaultCardinalityThreshold
 	}
 	s := pmeta.NewStore()
 	s.SetPrefix(prefix)
-	s.Register(pmeta.FacetFieldCatalog, pmeta.NewFieldCatalogFactory(pmeta.NewDict()))
+	s.Register(pmeta.FacetFieldCatalog,
+		pmeta.NewFieldCatalogFactoryCapped(pmeta.NewDict(), threshold, cfg.AlwaysSketchFields))
 	return s
 }
 

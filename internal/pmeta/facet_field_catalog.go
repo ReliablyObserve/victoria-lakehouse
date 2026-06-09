@@ -32,16 +32,39 @@ func (s *valueSet) add(id uint32) {
 // match over the resolved strings — no sketch in the value path, so dropdowns
 // are exact (see the exactness contract in the catalog design doc).
 type fieldCatalogFacet struct {
-	partition string
-	dict      *Dict
-	mu        sync.RWMutex
-	byField   map[uint32]*valueSet // fieldID -> value ids present in this partition
+	partition    string
+	dict         *Dict
+	threshold    int             // max distinct values/field before high-card; 0 = unlimited
+	alwaysSketch map[string]bool // field names forced high-card
+	mu           sync.RWMutex
+	byField      map[uint32]*valueSet // fieldID -> value ids present (low-card only)
+	highCard     map[uint32]bool      // fieldID -> high-card (capped/forced); values not enumerable
 }
 
-// NewFieldCatalogFactory returns a FacetFactory bound to a shared Dict.
+// NewFieldCatalogFactory returns a FacetFactory bound to a shared Dict that keeps
+// every field exact (no cardinality cap). Used by tests and unlimited deployments.
 func NewFieldCatalogFactory(dict *Dict) FacetFactory {
+	return NewFieldCatalogFactoryCapped(dict, 0, nil)
+}
+
+// NewFieldCatalogFactoryCapped returns a factory that marks a field high-card once
+// it exceeds threshold distinct values (0 = unlimited) or is in alwaysSketch. A
+// high-card field stops storing values (bounding RAM) and is not enumerable —
+// the read path falls through to the legacy scan, never a truncated list.
+func NewFieldCatalogFactoryCapped(dict *Dict, threshold int, alwaysSketch []string) FacetFactory {
+	sketch := make(map[string]bool, len(alwaysSketch))
+	for _, f := range alwaysSketch {
+		sketch[f] = true
+	}
 	return func(partition string) Facet {
-		return &fieldCatalogFacet{partition: partition, dict: dict, byField: map[uint32]*valueSet{}}
+		return &fieldCatalogFacet{
+			partition:    partition,
+			dict:         dict,
+			threshold:    threshold,
+			alwaysSketch: sketch,
+			byField:      map[uint32]*valueSet{},
+			highCard:     map[uint32]bool{},
+		}
 	}
 }
 
@@ -85,6 +108,13 @@ func (f *fieldCatalogFacet) Merge(c FileContribution) {
 	defer f.mu.Unlock()
 	for field, vals := range c.Labels {
 		fid := f.dict.internField(field)
+		if f.highCard[fid] {
+			continue // already high-card: stop storing values (RAM bound)
+		}
+		if f.alwaysSketch[field] {
+			f.markHighCard(fid)
+			continue
+		}
 		vs := f.byField[fid]
 		if vs == nil {
 			vs = &valueSet{}
@@ -92,8 +122,32 @@ func (f *fieldCatalogFacet) Merge(c FileContribution) {
 		}
 		for _, v := range vals {
 			vs.add(f.dict.internValue(v))
+			if f.threshold > 0 && len(vs.ids) > f.threshold {
+				f.markHighCard(fid) // crossed the cap → high-card
+				break
+			}
 		}
 	}
+}
+
+// markHighCard flags a field high-card and drops its now-incomplete value set so
+// RAM stays bounded. The field remains known (Fields() still lists it) but its
+// values are not enumerable. Caller holds f.mu.
+func (f *fieldCatalogFacet) markHighCard(fid uint32) {
+	f.highCard[fid] = true
+	delete(f.byField, fid)
+}
+
+// IsHighCard reports whether a field crossed the cardinality cap (or was forced
+// to sketch). High-card fields are not enumerable from the catalog.
+func (f *fieldCatalogFacet) IsHighCard(field string) bool {
+	fid, ok := f.dict.fieldID(field)
+	if !ok {
+		return false
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.highCard[fid]
 }
 
 // Values returns the distinct values of a field present in this partition,
@@ -105,6 +159,10 @@ func (f *fieldCatalogFacet) Values(field, substr string, limit int) []string {
 		return nil
 	}
 	f.mu.RLock()
+	if f.highCard[fid] {
+		f.mu.RUnlock()
+		return nil // high-card: not enumerable → caller falls through to scan
+	}
 	vs := f.byField[fid]
 	f.mu.RUnlock()
 	if vs == nil {
@@ -128,8 +186,11 @@ func (f *fieldCatalogFacet) Values(field, substr string, limit int) []string {
 // sorted.
 func (f *fieldCatalogFacet) Fields() []string {
 	f.mu.RLock()
-	ids := make([]uint32, 0, len(f.byField))
+	ids := make([]uint32, 0, len(f.byField)+len(f.highCard))
 	for fid := range f.byField {
+		ids = append(ids, fid)
+	}
+	for fid := range f.highCard { // high-card fields are still valid field NAMES
 		ids = append(ids, fid)
 	}
 	f.mu.RUnlock()

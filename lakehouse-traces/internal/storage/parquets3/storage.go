@@ -252,7 +252,7 @@ func New(cfg *config.Config) (*Storage, error) {
 
 	// pmeta field/value catalog (experimental, --pmeta). nil when disabled, so
 	// the hot flush/query paths are unchanged by default.
-	catalog := newCatalogStore(cfg.Pmeta.Enabled, prefix)
+	catalog := newCatalogStore(cfg.Pmeta, prefix)
 	if catalog != nil && bw != nil {
 		bw.catalogObserver = &catalogObserver{store: catalog}
 	}

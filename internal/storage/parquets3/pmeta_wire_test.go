@@ -3,11 +3,13 @@ package parquets3
 import (
 	"reflect"
 	"testing"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 )
 
 // TestPmetaWire_DisabledIsNil verifies the feature is inert when off.
 func TestPmetaWire_DisabledIsNil(t *testing.T) {
-	if newCatalogStore(false, "logs/") != nil {
+	if newCatalogStore(config.PmetaConfig{}, "logs/") != nil {
 		t.Fatal("newCatalogStore(false) must return nil so the hot paths stay unchanged")
 	}
 }
@@ -15,7 +17,7 @@ func TestPmetaWire_DisabledIsNil(t *testing.T) {
 // TestPmetaWire_ObserverFeedsCatalog verifies the flush observer populates the
 // catalog and it is queryable through the Store's public read API.
 func TestPmetaWire_ObserverFeedsCatalog(t *testing.T) {
-	store := newCatalogStore(true, "logs/")
+	store := newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
 	if store == nil {
 		t.Fatal("newCatalogStore(true) returned nil")
 	}

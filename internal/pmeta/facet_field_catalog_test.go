@@ -64,6 +64,53 @@ func buildCatalog(cs []FileContribution) (*Dict, *fieldCatalogFacet) {
 // TestFieldCatalog_ParityWithGroundTruth: the catalog's values + field names
 // must EXACTLY match the distinct set present in the data — no missing values,
 // no extras. This is the core dropdown-parity guarantee.
+// TestFieldCatalog_CardinalityCap: a field over the threshold (or in alwaysSketch)
+// becomes high-card — values stop being stored (RAM bound) and aren't enumerable,
+// but the field name is still listed.
+func TestFieldCatalog_CardinalityCap(t *testing.T) {
+	d := NewDict()
+	f := NewFieldCatalogFactoryCapped(d, 3, []string{"trace_id"})("p").(*fieldCatalogFacet)
+
+	// Under the cap → exact, low-card.
+	f.Merge(FileContribution{Labels: map[string][]string{"service.name": {"a", "b"}}})
+	if f.IsHighCard("service.name") {
+		t.Fatal("service.name (2 values) must be low-card")
+	}
+	if got := f.Values("service.name", "", 0); !equal(got, []string{"a", "b"}) {
+		t.Fatalf("low-card values = %v", got)
+	}
+
+	// Over the cap (3) → high-card: not enumerable.
+	f.Merge(FileContribution{Labels: map[string][]string{"pod": {"p1", "p2", "p3", "p4"}}})
+	if !f.IsHighCard("pod") {
+		t.Fatal("pod (4 > 3) must be high-card")
+	}
+	if got := f.Values("pod", "", 0); got != nil {
+		t.Fatalf("high-card field must not enumerate, got %v", got)
+	}
+
+	// Forced sketch field → high-card immediately.
+	f.Merge(FileContribution{Labels: map[string][]string{"trace_id": {"x"}}})
+	if !f.IsHighCard("trace_id") {
+		t.Fatal("trace_id must be forced high-card (alwaysSketch)")
+	}
+	if got := f.Values("trace_id", "", 0); got != nil {
+		t.Fatalf("forced-sketch field must not enumerate, got %v", got)
+	}
+
+	// Fields() still lists high-card fields (they are valid field names).
+	flds := f.Fields()
+	want := map[string]bool{"service.name": true, "pod": true, "trace_id": true}
+	if len(flds) != len(want) {
+		t.Fatalf("Fields() = %v, want all of %v", flds, want)
+	}
+	for _, fn := range flds {
+		if !want[fn] {
+			t.Fatalf("unexpected field %q", fn)
+		}
+	}
+}
+
 func TestFieldCatalog_ParityWithGroundTruth(t *testing.T) {
 	cs := sampleContribs()
 	gt := groundTruth(cs)

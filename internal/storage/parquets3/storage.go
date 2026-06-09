@@ -311,7 +311,7 @@ func New(cfg *config.Config) (*Storage, error) {
 		// the catalogObserver, served by the GetFieldValues fast-path. nil when
 		// disabled, so the hot paths are unchanged by default.
 		if cfg.Pmeta.Enabled {
-			s.catalog = newCatalogStore(true, prefix)
+			s.catalog = newCatalogStore(cfg.Pmeta, prefix)
 			bw.catalogObserver = &catalogObserver{store: s.catalog}
 		}
 

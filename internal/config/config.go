@@ -78,6 +78,17 @@ type PmetaConfig struct {
 	// Enabled turns on the field/value catalog facet (dropdown speedups). The
 	// catalog is built at flush and self-heals from S3, so it is safe to toggle.
 	Enabled bool `yaml:"enabled"`
+
+	// CardinalityThreshold caps how many distinct values the catalog keeps per
+	// field. A field that exceeds it is treated as high-cardinality: the catalog
+	// stops storing its values (bounding RAM) and the read path falls through to
+	// the legacy scan, so the catalog never serves a truncated value list.
+	// 0 = unlimited (keep every field exact). Default 50000.
+	CardinalityThreshold int `yaml:"cardinality_threshold"`
+
+	// AlwaysSketchFields are forced high-cardinality regardless of the threshold
+	// (known unbounded id columns, e.g. trace_id, span_id, request_id).
+	AlwaysSketchFields []string `yaml:"always_sketch_fields"`
 }
 
 type LogsModeConfig struct {
