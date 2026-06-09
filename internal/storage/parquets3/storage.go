@@ -1267,8 +1267,8 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 		}
 	}
 
-	logger.Infof("metadata warmup: disk=%d sidecar=%d footer=%d small=%d need_enrich=%d total_files=%d",
-		diskLoaded, sidecarLoaded, footerEnriched, smallEnriched, len(needEnrich), len(files))
+	logger.Infof("metadata warmup: disk=%d facet=%d sidecar=%d footer=%d small=%d need_enrich=%d total_files=%d",
+		diskLoaded, facetEnriched, sidecarLoaded, footerEnriched, smallEnriched, len(needEnrich), len(files))
 
 	// Phase 4: Save enriched metadata to disk for next restart.
 	s.saveFileMetadataToDisk()
