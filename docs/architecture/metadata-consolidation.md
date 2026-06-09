@@ -277,3 +277,42 @@ error**, **truncate-at-every-offset never panics**, garbage-input never panics,
 empty bundle, concurrent flush/encode/dirty under `-race`, and two CI fuzzers
 (`FuzzDecodeBundle` ~10M execs/0 panics, `FuzzRoundTrip`) wired into
 `fuzz-stress-memleak.yaml` alongside the other decoder fuzzers.
+
+## (7) Parity gates — required at every phase
+
+pmeta replaces correctness-critical metadata, so **every phase ships parity
+verification at three levels**, and a phase does not flip its `--pmeta` read flag
+until all three are green. Parity is not a one-time check; it is a standing gate
+per facet.
+
+**Level 1 — unit parity (in `internal/pmeta`, per facet).** Already enforced for
+the field/value catalog (`facet_field_catalog_test.go`):
+- **facet == ground truth** — the facet's answer equals the exact distinct set
+  present in the source contributions (no missing values, no extras).
+- **persisted == resident** — encode through the bundle codec, decode into a
+  fresh dict, answers are identical.
+- **rebuild == original** — a corrupt facet is skipped and rebuilt from the
+  partition's files; the rebuilt facet answers identically (self-heal parity).
+- **deterministic golden encode** — same content, any merge order → byte-identical
+  payload.
+
+**Level 2 — cross-path parity (when a facet is wired, behind `--pmeta`).** Each
+facet must match the legacy artifact it replaces, asserted in an integration test
+over real Parquet:
+| Facet | Must equal |
+|---|---|
+| field-catalog | `field_values`/`field_names` from the legacy `labelIndex` scan |
+| bloom | `_bloom.bin` payload + every file-skip decision |
+| file-meta | `_file_metadata.json` Labels/ColumnStats/RowCount per file |
+| labels | `_label_index.json` value sets (logs gains parity with the traces-only path) |
+
+**Level 3 — integration / e2e parity (whole system).** With `--pmeta=on` the live
+behavior must match `--pmeta=off`:
+- `field_values`/`field_names`/Tempo `tag-values` dropdowns return identical sets;
+- **cold Jaeger/Tempo trace parity unchanged** (the existing `/loop` parity gate —
+  cold vs hot counts, `{nestedSetParent<0}` — must stay green with pmeta on);
+- `/ready` timing and the tasks 71–83 gates unchanged (facet-priority warmup);
+- **logs AND traces** modules both verified (no parity-marker drift).
+
+The flag flips per facet only after Levels 1–3 pass for that facet; a regression
+at any level reverts the flag (data is safe regardless via skip+rebuild).
