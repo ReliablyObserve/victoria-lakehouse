@@ -2,6 +2,8 @@ package parquets3
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"reflect"
 	"sort"
 	"testing"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -165,5 +168,47 @@ func TestInteg_PmetaCatalog_RefuseSketchEnumeration(t *testing.T) {
 	// A non-sketch field is never refused.
 	if s.refuseEnumeration("level") {
 		t.Fatal("non-sketch field must not be refused")
+	}
+}
+
+// TestInteg_PmetaCatalog_CardinalityTapE2E is the full e2e: a real BatchWriter
+// flush of rows carrying trace_id, with trace_id declared always-sketch, must feed
+// the per-field HLL via the flush tap so Store.Cardinality + the gauge report the
+// distinct count — closing ingest → sketch → readout.
+func TestInteg_PmetaCatalog_CardinalityTapE2E(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true, AlwaysSketchFields: []string{"trace_id"}}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog, sketch: sketchSet(s.cfg.Pmeta.AlwaysSketchFields)}
+
+	const n = 5000
+	now := time.Now()
+	rows := make([]schema.LogRow, n)
+	for i := 0; i < n; i++ {
+		rows[i] = schema.LogRow{
+			TimestampUnixNano: now.UnixNano(),
+			Body:              "msg",
+			ServiceName:       "api-gateway",
+			TraceID:           fmt.Sprintf("%032x", i),
+		}
+	}
+	bw.AddLogRows(rows)
+	bw.triggerFlush()
+
+	// The flush tap fed the trace_id HLL: cardinality ≈ n.
+	got := s.catalog.Cardinality("trace_id")
+	if e := math.Abs(float64(got)-float64(n)) / float64(n); e > 0.03 {
+		t.Fatalf("Cardinality(trace_id)=%d relErr=%.3f%% (true %d)", got, e*100, n)
+	}
+	// The per-field cardinality gauge was published.
+	if g := metrics.CatalogFieldCardinality.Get("trace_id"); g == 0 {
+		t.Fatal("lakehouse_catalog_field_cardinality{trace_id} not published")
+	}
+	// service.name (low-card, not always-sketch) is enumerable, not tapped.
+	if c := s.catalog.Cardinality("service.name"); c != 0 {
+		t.Fatalf("service.name should not be sketched, got cardinality %d", c)
 	}
 }

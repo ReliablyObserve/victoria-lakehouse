@@ -10,6 +10,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
 // defaultCardinalityThreshold keeps every human-meaningful facet exact while
@@ -46,7 +47,10 @@ func newCatalogStore(cfg config.PmetaConfig, prefix string) *pmeta.Store {
 // It mirrors storageBloomObserver: a nil-safe observer set on the BatchWriter and
 // invoked at flush with the SAME already-extracted label map the bloom path uses
 // — no extra column scan. Nil (pmeta off) → no-op.
-type catalogObserver struct{ store *pmeta.Store }
+type catalogObserver struct {
+	store  *pmeta.Store
+	sketch map[string]bool // always-sketch field names to tap for cardinality
+}
 
 func (o *catalogObserver) OnFileFlush(partition, fileKey string, labels map[string][]string) {
 	if o == nil || o.store == nil {
@@ -57,6 +61,74 @@ func (o *catalogObserver) OnFileFlush(partition, fileKey string, labels map[stri
 		FileKey:   fileKey,
 		Labels:    labels,
 	})
+}
+
+// tapLogRows folds the configured always-sketch id columns (trace_id, span_id)
+// from a flushed file's log rows into their per-field HLL, streaming straight off
+// the row structs (no slice materialized), then updates the cardinality gauge.
+func (o *catalogObserver) tapLogRows(rows []schema.LogRow) {
+	if o == nil || o.store == nil || len(o.sketch) == 0 {
+		return
+	}
+	if o.sketch["trace_id"] {
+		o.store.AddCardinality("trace_id", func(yield func(string) bool) {
+			for i := range rows {
+				if !yield(rows[i].TraceID) {
+					return
+				}
+			}
+		})
+		metrics.CatalogFieldCardinality.Set("trace_id", int64(o.store.Cardinality("trace_id")))
+	}
+	if o.sketch["span_id"] {
+		o.store.AddCardinality("span_id", func(yield func(string) bool) {
+			for i := range rows {
+				if !yield(rows[i].SpanID) {
+					return
+				}
+			}
+		})
+		metrics.CatalogFieldCardinality.Set("span_id", int64(o.store.Cardinality("span_id")))
+	}
+}
+
+// tapTraceRows is tapLogRows for trace rows.
+func (o *catalogObserver) tapTraceRows(rows []schema.TraceRow) {
+	if o == nil || o.store == nil || len(o.sketch) == 0 {
+		return
+	}
+	if o.sketch["trace_id"] {
+		o.store.AddCardinality("trace_id", func(yield func(string) bool) {
+			for i := range rows {
+				if !yield(rows[i].TraceID) {
+					return
+				}
+			}
+		})
+		metrics.CatalogFieldCardinality.Set("trace_id", int64(o.store.Cardinality("trace_id")))
+	}
+	if o.sketch["span_id"] {
+		o.store.AddCardinality("span_id", func(yield func(string) bool) {
+			for i := range rows {
+				if !yield(rows[i].SpanID) {
+					return
+				}
+			}
+		})
+		metrics.CatalogFieldCardinality.Set("span_id", int64(o.store.Cardinality("span_id")))
+	}
+}
+
+// sketchSet builds the always-sketch field lookup from config.
+func sketchSet(fields []string) map[string]bool {
+	if len(fields) == 0 {
+		return nil
+	}
+	m := make(map[string]bool, len(fields))
+	for _, f := range fields {
+		m[f] = true
+	}
+	return m
 }
 
 // catalogFieldValues unions a field's distinct values across the partitions

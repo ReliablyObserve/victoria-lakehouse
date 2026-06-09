@@ -365,8 +365,11 @@ at any level reverts the flag (data is safe regardless via skip+rebuild).
   (the hit-rate that proves the dropdown speedup) + `lakehouse_catalog_resident_bytes`
   (RAM guardrail), both modules. The remaining §6a metrics (`fields_total{class}`,
   `cold_load_seconds`, `partitions{state}`) are A3/tiering-era.
-- [ ] **A2 (HLL count)** — precise distinct-COUNT via an HLL sketch (needs the
-  hyperloglog dep — a flagged decision); would upgrade refusal from "empty" to a
-  "≈ N distinct" hint.
+- [x] **A2 (HLL count)** — in-house HLL (LogLog-Beta, HLL++-grade accuracy, no dep),
+  wired **e2e**: the flush tap streams `always_sketch_fields` id columns (trace_id,
+  span_id) off the row structs into a per-field sketch → `Store.Cardinality(field)` +
+  `lakehouse_catalog_field_cardinality{field}` (cardinality-bomb alert + query-planning
+  input). Both modules; `add` 9.7 ns/0-alloc. Verified
+  `TestInteg_PmetaCatalog_CardinalityTapE2E` (real flush → Cardinality within 3 %).
 - [ ] **A3** — time-tiered residency + traces `span_attr:*`.
 - [ ] **Fold existing facets** — bloom / file-meta / labels (dual-write → flip).

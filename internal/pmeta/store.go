@@ -1,6 +1,9 @@
 package pmeta
 
-import "sync"
+import (
+	"iter"
+	"sync"
+)
 
 // Store owns the in-RAM bundles and the facet registry. It is THE single
 // lifecycle owner: the one write-hook (OnFileFlush), the one dirty list
@@ -41,6 +44,25 @@ func (s *Store) Cardinality(field string) uint64 {
 		return 0
 	}
 	return h.estimate()
+}
+
+// AddCardinality folds a stream of values into a field's HLL sketch. The values
+// are an iterator (iter.Seq) so the caller — typically the flush path over a
+// file's rows — feeds them WITHOUT materializing a slice; empty strings are
+// skipped. Locks once for the whole stream.
+func (s *Store) AddCardinality(field string, values iter.Seq[string]) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h := s.hllByField[field]
+	if h == nil {
+		h = newHLL(defaultHLLPrecision)
+		s.hllByField[field] = h
+	}
+	for v := range values {
+		if v != "" {
+			h.add(v)
+		}
+	}
 }
 
 // Register wires a facet factory for a kind. Call once per kind at startup,

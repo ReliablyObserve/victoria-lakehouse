@@ -312,7 +312,7 @@ func New(cfg *config.Config) (*Storage, error) {
 		// disabled, so the hot paths are unchanged by default.
 		if cfg.Pmeta.Enabled {
 			s.catalog = newCatalogStore(cfg.Pmeta, prefix)
-			bw.catalogObserver = &catalogObserver{store: s.catalog}
+			bw.catalogObserver = &catalogObserver{store: s.catalog, sketch: sketchSet(cfg.Pmeta.AlwaysSketchFields)}
 		}
 
 		// Write-through cache: when running in combined mode (role=all),

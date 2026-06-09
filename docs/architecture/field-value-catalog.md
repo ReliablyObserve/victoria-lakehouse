@@ -174,6 +174,39 @@ Performance (p=14): **`add` 9.7 ns/op, 0 allocs** (folding values at flush is
 effectively free), `estimate` ~10 µs (per query, scans 16,384 registers), `merge`
 ~40 µs, `marshal` ~1.2 µs.
 
+### What the cardinality sketch actually buys us
+
+The sketch answers one question cheaply — *"how many distinct values does this
+field have?"* (16 KB/field, `add` 9.7 ns). In Victoria Lakehouse that buys:
+
+1. **Finishes the high-card dropdown.** The catalog gives exact value lists for
+   low-card fields (`service.name`, `env`); the sketch handles the high-card half:
+   instead of scanning cold Parquet to enumerate `trace_id`/`span_id`/`user_id`
+   (slow, and a useless truncated list of random IDs), it answers
+   **"≈ 4.7M distinct — search by exact value"** instantly. Exact-value lookup is
+   already fast and untouched.
+2. **Cardinality-bomb early warning.** A buggy service spraying unique values into a
+   field (a timestamp in `k8s.pod.name`) is the classic cardinality explosion.
+   `lakehouse_catalog_field_cardinality{field}` graphs it and **alerts** when a field
+   spikes — caught at ingest, per field, for ~16 KB.
+3. **Query pre-flight / planning.** `count by (field)` on card=12 → run it; on
+   card=4.7M → warn/refuse before it explodes. Also informs bloom-vs-dictionary
+   encoding choices.
+4. **Principled high-card classification.** A2's cap decision can use the true
+   aggregate cardinality (not just a per-partition count), so a field that's low-card
+   per file but high-card across the corpus is classified correctly.
+
+**Cost is asymmetric:** ~0.5 MB total for ~30 fields, `add` is free at flush
+(streamed off the row structs, 0 allocs). **Limits:** it's an estimate (±~1 %, a
+hint not a ledger), it gives distinct-COUNT not per-value frequencies, and it does
+not speed up *finding* a specific value (that's the trace index).
+
+**Wiring (both modules):** the flush tap (`catalogObserver.tapLogRows`/`tapTraceRows`)
+streams the configured `always_sketch_fields` id columns into `Store.AddCardinality`;
+`Store.Cardinality(field)` + the gauge read it. Verified e2e
+(`TestInteg_PmetaCatalog_CardinalityTapE2E`): a real `BatchWriter` flush of 5,000
+`trace_id`s → `Cardinality` within 3 % and the gauge published.
+
 ## 3. Data structure — extend, don't rebuild
 
 ### Extend
