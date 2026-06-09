@@ -1,0 +1,86 @@
+package parquets3
+
+import (
+	"context"
+	"reflect"
+	"sort"
+	"testing"
+	"time"
+
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+)
+
+func valueStrings(vs []logstorage.ValueWithHits) []string {
+	out := make([]string, len(vs))
+	for i, v := range vs {
+		out[i] = v.Value
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestInteg_PmetaCatalog_CrossPathParity is the Level-2 gate: drive a REAL writer
+// flush with --pmeta on (so the catalogObserver fires), then assert the catalog
+// field/value path returns exactly what the data contains AND what the legacy
+// scan path returns. This proves the live flush→catalog→GetFieldValues path is
+// correct before the flag is enabled anywhere.
+func TestInteg_PmetaCatalog_CrossPathParity(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url()) // base read storage (catalog nil, labelIndex empty)
+
+	// Enable pmeta on this storage and a writer that shares its manifest+pool.
+	catalog := newCatalogStore(true, "logs/")
+	s.catalog = catalog
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: catalog}
+
+	now := time.Now()
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "a", ServiceName: "api-gateway"},
+		{TimestampUnixNano: now.UnixNano(), Body: "b", ServiceName: "order-service"},
+		{TimestampUnixNano: now.UnixNano(), Body: "c", ServiceName: "api-gateway"},
+	})
+	bw.triggerFlush() // upload to mock S3 + manifest.AddFile + catalogObserver.OnFileFlush
+
+	startNs := now.Add(-time.Hour).UnixNano()
+	endNs := now.Add(time.Hour).UnixNano()
+	want := []string{"api-gateway", "order-service"}
+
+	files := s.manifest.GetFilesForRange(startNs, endNs)
+	if len(files) == 0 {
+		t.Fatal("no files registered after flush")
+	}
+	part := manifest.ExtractPartition(files[0].Key)
+
+	// (1) The catalog was fed correctly by the live writer flush.
+	if got := catalog.FieldValues(part, "service.name", "", 0); !reflect.DeepEqual(got, want) {
+		t.Fatalf("catalog (fed by flush) FieldValues = %v, want %v", got, want)
+	}
+
+	// (2) GetFieldValues catalog fast-path returns the ground truth.
+	q := mustParseQueryWithTime(t, "*", startNs, endNs)
+	on, err := s.GetFieldValues(context.Background(), nil, q, "service.name", 100)
+	if err != nil {
+		t.Fatalf("GetFieldValues(pmeta on): %v", err)
+	}
+	gotOn := valueStrings(on)
+	if !reflect.DeepEqual(gotOn, want) {
+		t.Fatalf("GetFieldValues(pmeta on) = %v, want %v (catalog must serve exact values)", gotOn, want)
+	}
+
+	// (3) Cross-path parity: with pmeta OFF the legacy labelIndex/scan path must
+	// return the SAME values.
+	s.catalog = nil
+	off, err := s.GetFieldValues(context.Background(), nil, q, "service.name", 100)
+	if err != nil {
+		t.Fatalf("GetFieldValues(pmeta off): %v", err)
+	}
+	if gotOff := valueStrings(off); !reflect.DeepEqual(gotOn, gotOff) {
+		t.Fatalf("cross-path mismatch: catalog=%v legacy=%v", gotOn, gotOff)
+	}
+}
