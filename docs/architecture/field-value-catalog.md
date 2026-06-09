@@ -40,18 +40,66 @@ matching values?").
    match over the exact string set → exactly `api-gateway`, `api-worker`, … with
    no false positives and nothing missing. Results are **time-scoped** to the
    dashboard range via the partition bitmaps.
-3. **High-card fields are count-only.** `trace_id`, `span_id`, `request_id`,
-   unbounded URLs (above the threshold) get an HLL cardinality estimate
-   (~0.81 % error at p=14) and **no value enumeration** — exactly as VL/VT,
-   which also don't facet these. You paste a full trace_id (exact search,
-   unaffected); you don't typeahead-browse them.
-4. **Exact-on-demand escape hatch.** A field can be whitelisted "always exact"
+3. **Lookup BY a value is always exact — even for high-card fields.** Searching
+   `trace_id:="abc123…"`, `span_id:="…"`, `request_id:="…"` is an exact
+   filter/lookup through the trace-id index + bloom + exact scan, **completely
+   independent of the catalog and HLL**. High-card classification never touches
+   this path — it is the same exact cold trace-id lookup verified by the parity
+   loop. **You never lose the ability to search for a specific trace/span id.**
+4. **High-card classification only disables *enumeration*, not lookup.** For a
+   field above the threshold (`trace_id`, `span_id`, `request_id`, unbounded
+   URLs) the catalog will not *list every value* in a facet dropdown — it
+   returns an HLL cardinality estimate (~0.81 % error at p=14) instead. This is
+   identical to VL/VT, which don't enumerate these either, and matches the real
+   workflow (you paste/type a specific id to look it up; you don't scroll a
+   dropdown of millions of ids).
+5. **Exact-on-demand escape hatch.** A field can be pinned "always exact"
    regardless of threshold; its value list is paged from S3 rather than held
    resident. Exact distinct *counts* for high-card fields fall back to a precise
    scan only when explicitly requested.
 
 Net: **fast/approximate only on the *count* of fields you'd never enumerate;
 exact on everything you search or typeahead.**
+
+## 2a. Configuration — the threshold knob (with good defaults)
+
+Classification is **automatic by observed cardinality**, with a configurable
+threshold and explicit per-field overrides. A field starts exact; if its
+observed distinct count crosses the threshold it is promoted to count-only and
+its resident value list is dropped (the catalog keeps the merged HLL). Overrides
+win over the threshold.
+
+```yaml
+catalog:
+  # Fields whose observed distinct values exceed this become count-only (HLL):
+  # no value ENUMERATION in dropdowns. Does NOT affect searching BY a value.
+  cardinality_threshold: 50000          # default — every human-meaningful facet stays exact
+
+  # Force EXACT regardless of threshold (pages its value list from S3 if huge):
+  always_exact_fields: []               # e.g. ["k8s.pod.name"] if you must typeahead it
+
+  # Force COUNT-ONLY regardless of threshold (save RAM on known-unbounded ids):
+  always_sketch_fields:                 # defaults — known unbounded id columns
+    - trace_id
+    - span_id
+    - request_id
+    - _stream_id
+
+  hll_precision: 14                     # ~0.81% error; pinned globally, versioned in the sidecar
+```
+
+**Default behavior:** threshold `50000` keeps every realistic facet (service,
+environment, namespace, pod, host, status, method, route…) exact-typeahead;
+only the pre-listed unbounded-id columns go count-only. Cost of the default: a
+field at the 50k ceiling costs ~1.5 MB of dictionary RAM; the ~30 typical
+low-card fields sit far below, so the global dict stays ~5–15 MB (§7).
+
+**Tuning:** raise `cardinality_threshold` (or add to `always_exact_fields`) to
+keep a huge-cardinality field type-searchable — it pages its value list from S3
+instead of staying fully resident, trading a little first-keystroke latency for
+exact typeahead. Lower it to shed RAM at the cost of more count-only fields.
+Changing classification is safe at runtime: it only flips whether a field's
+value list is served vs its HLL estimate; it never affects search results.
 
 ## 3. Data structure — extend, don't rebuild
 
