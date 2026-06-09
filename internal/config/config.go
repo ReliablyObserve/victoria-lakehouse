@@ -65,9 +65,19 @@ type Config struct {
 	Stats       StatsConfig       `yaml:"stats"`
 	UI          UIConfig          `yaml:"ui"`
 	Telemetry   TelemetryConfig   `yaml:"telemetry"`
+	Pmeta       PmetaConfig       `yaml:"pmeta"`
 
 	Logs   LogsModeConfig   `yaml:"logs"`
 	Traces TracesModeConfig `yaml:"traces"`
+}
+
+// PmetaConfig gates the unified partition-metadata layer (internal/pmeta). It is
+// experimental and OFF by default: when disabled no catalog store is built and the
+// hot flush/query paths are unchanged. See docs/architecture/metadata-consolidation.md.
+type PmetaConfig struct {
+	// Enabled turns on the field/value catalog facet (dropdown speedups). The
+	// catalog is built at flush and self-heals from S3, so it is safe to toggle.
+	Enabled bool `yaml:"enabled"`
 }
 
 type LogsModeConfig struct {

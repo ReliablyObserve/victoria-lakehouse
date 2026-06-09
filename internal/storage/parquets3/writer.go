@@ -91,12 +91,13 @@ type BatchWriter struct {
 	totalRows  atomic.Int64
 	totalBytes atomic.Int64
 
-	bloomObserver BloomObserver
-	statsCallback StatsCallback
-	flushCacheCb  FlushCacheCallback
-	tenantPrefix  TenantPrefixFunc
-	tenantBucket  TenantBucketFunc
-	tenantPool    TenantPoolFunc
+	bloomObserver   BloomObserver
+	catalogObserver *catalogObserver
+	statsCallback   StatsCallback
+	flushCacheCb    FlushCacheCallback
+	tenantPrefix    TenantPrefixFunc
+	tenantBucket    TenantBucketFunc
+	tenantPool      TenantPoolFunc
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -434,6 +435,13 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 		w.bloomObserver.OnFileFlush(partition, key, bloomValues)
 	}
 
+	// pmeta field/value catalog: fed the same already-extracted low-card label
+	// map (no extra scan). Nil unless --pmeta is enabled, so this is a no-op on
+	// the hot path by default.
+	if w.catalogObserver != nil {
+		w.catalogObserver.OnFileFlush(partition, key, labels)
+	}
+
 	if w.statsCallback != nil {
 		w.statsCallback(accountID, projectID, int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
 	}
@@ -518,6 +526,13 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 		}
 		metrics.WriterBloomValuesTotal.Add("traces", bloomValueCount)
 		w.bloomObserver.OnFileFlush(partition, key, bloomValues)
+	}
+
+	// pmeta field/value catalog: fed the same already-extracted low-card label
+	// map (no extra scan). Nil unless --pmeta is enabled, so this is a no-op on
+	// the hot path by default.
+	if w.catalogObserver != nil {
+		w.catalogObserver.OnFileFlush(partition, key, labels)
 	}
 
 	if w.statsCallback != nil {

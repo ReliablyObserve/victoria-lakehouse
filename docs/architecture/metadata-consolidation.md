@@ -328,9 +328,16 @@ at any level reverts the flag (data is safe regardless via skip+rebuild).
   PUT/dirty-partition), `WarmPartitions` (one GET/partition, bounded concurrency);
   missing/corrupt bundle → `NeedsRebuild`, per-facet failure → `SkippedFacets`
   (self-heal routing). Round-trip parity + missing/corrupt/skip tests under `-race`.
-- [ ] **`--pmeta` flag + flush/read wiring** — `OnFileFlush` from the writer; the
-  S3 adapter for `ObjectStore`; `GetFieldValues`/`GetFieldNames` fast-path. **This
-  is where Level-2 cross-path parity (catalog vs live labelIndex scan) is asserted.**
+- [x] **`--pmeta` flag + flush/read wiring** — `config.Pmeta.Enabled` (off by
+  default); constructor builds the catalog + `catalogObserver`; the writer feeds it
+  at both flush sites with the already-extracted label map; `GetFieldValues` has a
+  catalog fast-path that unions values across the range's partitions (nil/empty →
+  legacy path unchanged). All builds; existing storage tests green with the flag off.
+- [ ] **Level-2 cross-path parity test** — drive the real flush path with `--pmeta`
+  on, assert `GetFieldValues` (catalog) == the labelIndex/scan result AND that the
+  catalog actually served. The gate before enabling the flag anywhere.
+- [ ] **S3 persist/warm wiring** — `ObjectStore` adapter + `PersistDirty` on the
+  flush/snapshot cycle + `WarmPartitions` in `runStartup` (one GET/partition).
 - [ ] **A2** — HLL high-card layer + `IsHighCard` refusal.
 - [ ] **A3** — time-tiered residency + traces `span_attr:*`.
 - [ ] **Fold existing facets** — bloom / file-meta / labels (dual-write → flip).

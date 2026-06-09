@@ -1,6 +1,11 @@
 package parquets3
 
 import (
+	"sort"
+
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 )
 
@@ -40,4 +45,41 @@ func (o *catalogObserver) OnFileFlush(partition, fileKey string, labels map[stri
 		FileKey:   fileKey,
 		Labels:    labels,
 	})
+}
+
+// catalogFieldValues unions a field's distinct values across the partitions
+// overlapping the query's time range, served from the pmeta catalog in RAM.
+// Returns nil when the catalog has nothing for the range (cold or field not
+// catalogued) so the caller falls through to the legacy labelIndex/scan path.
+// Caller guarantees s.catalog != nil.
+func (s *Storage) catalogFieldValues(q *logstorage.Query, fieldName string, limit uint64) []logstorage.ValueWithHits {
+	startNs, endNs := q.GetFilterTimeRange()
+	seen := make(map[string]struct{}, 16)
+	valset := make(map[string]struct{})
+	for _, fi := range s.manifest.GetFilesForRange(startNs, endNs) {
+		p := manifest.ExtractPartition(fi.Key)
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		for _, v := range s.catalog.FieldValues(p, fieldName, "", int(limit)) {
+			valset[v] = struct{}{}
+		}
+	}
+	if len(valset) == 0 {
+		return nil
+	}
+	vals := make([]string, 0, len(valset))
+	for v := range valset {
+		vals = append(vals, v)
+	}
+	sort.Strings(vals)
+	if uint64(len(vals)) > limit {
+		vals = vals[:limit]
+	}
+	out := make([]logstorage.ValueWithHits, len(vals))
+	for i, v := range vals {
+		out[i] = logstorage.ValueWithHits{Value: v, Hits: 1}
+	}
+	return out
 }
