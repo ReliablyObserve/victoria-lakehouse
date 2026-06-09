@@ -114,18 +114,65 @@ func (m *Manifest) WritePartitionSidecar(ctx context.Context, client *s3.Client,
 	return nil
 }
 
-func (m *Manifest) LoadSidecars(ctx context.Context, client *s3.Client, concurrency int) int {
-	if concurrency <= 0 {
-		concurrency = 16
-	}
+// FileMetaProvider supplies per-file metadata from an in-RAM source (the pmeta
+// fileMetaFacet) so the manifest can enrich FileInfo without per-partition sidecar
+// GETs. Defined here, implemented in the storage layer, so manifest stays decoupled
+// from internal/pmeta.
+type FileMetaProvider interface {
+	FileMeta(partition, fileKey string) (FileMeta, bool)
+}
 
+// EnrichFromProvider fills missing FileInfo metadata from the provider. It returns
+// the count of files enriched with REAL metadata (RowCount > 0) and the list of
+// partitions that STILL contain a file with no metadata afterward (neither the
+// disk-cache nor the provider covered it). It is the pmeta read-flip's substitute
+// for LoadSidecars: same ApplyTo enrichment, but from RAM (the loaded bundle)
+// instead of S3 sidecar GETs. The caller falls back to LoadSidecarsForPartitions on
+// ONLY the uncovered partitions — so a fully-covered bundle skips the sidecar GETs
+// entirely, and one recent uncovered file no longer forces a full re-load.
+func (m *Manifest) EnrichFromProvider(p FileMetaProvider) (int, []string) {
+	if p == nil {
+		return 0, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	enriched := 0
+	var uncovered []string
+	for partition, pFiles := range m.files {
+		needsSidecar := false
+		for i := range pFiles {
+			if fm, ok := p.FileMeta(partition, pFiles[i].Key); ok && fm.RowCount > 0 {
+				fm.ApplyTo(&pFiles[i])
+				enriched++
+			}
+			if pFiles[i].RowCount == 0 { // still no metadata after disk + facet
+				needsSidecar = true
+			}
+		}
+		if needsSidecar {
+			uncovered = append(uncovered, partition)
+		}
+	}
+	return enriched, uncovered
+}
+
+func (m *Manifest) LoadSidecars(ctx context.Context, client *s3.Client, concurrency int) int {
 	m.mu.RLock()
 	partitions := make([]string, 0, len(m.files))
 	for p := range m.files {
 		partitions = append(partitions, p)
 	}
 	m.mu.RUnlock()
+	return m.LoadSidecarsForPartitions(ctx, client, concurrency, partitions)
+}
 
+// LoadSidecarsForPartitions loads the `_file_metadata.json` sidecars for ONLY the
+// given partitions — the pmeta read-flip's fallback for partitions the bundle did
+// not fully cover. LoadSidecars is the all-partitions wrapper.
+func (m *Manifest) LoadSidecarsForPartitions(ctx context.Context, client *s3.Client, concurrency int, partitions []string) int {
+	if concurrency <= 0 {
+		concurrency = 16
+	}
 	if len(partitions) == 0 {
 		return 0
 	}

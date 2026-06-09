@@ -1770,6 +1770,36 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 		return false
 	}
 
+	// pmeta bloom read-flip: consult the in-RAM bloom facet (loaded from the
+	// partition `_bloom.bin` bundle) before a per-file `.bloom` S3 GET. A bloom
+	// filter never false-negatives, so a file that actually holds the value is never
+	// excluded by either path — this can only change pruning efficiency, never
+	// correctness. The facet is built from the same columnValues + fpRate as the
+	// per-file bloom. Falls back to the `.bloom` download for any partition the
+	// bundle doesn't carry (cold bundle / pre-pmeta files).
+	if s.catalog != nil {
+		partition := manifest.ExtractPartition(fi.Key)
+		usable, mayContainAll := true, true
+		for _, c := range checks {
+			matched, ok := s.catalog.BloomMayContain(partition, []string{fi.Key}, c.Column, c.Value)
+			if !ok {
+				usable = false
+				break
+			}
+			if len(matched) == 0 {
+				mayContainAll = false
+				break
+			}
+		}
+		if usable {
+			if !mayContainAll {
+				metrics.ParquetBloomChecks.Inc("facet_bloom_skip")
+				return true
+			}
+			return false
+		}
+	}
+
 	bloomKey := fi.Key + ".bloom"
 
 	var idx *bloomindex.Index

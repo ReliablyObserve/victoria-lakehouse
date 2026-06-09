@@ -28,6 +28,26 @@ func (o poolObjectStore) GetObject(ctx context.Context, key string) ([]byte, err
 	return o.pool.Download(ctx, key)
 }
 
+// catalogFileMetaProvider adapts the pmeta fileMetaFacet to manifest.FileMetaProvider,
+// so the manifest enriches FileInfo from the in-RAM bundle instead of per-partition
+// `_file_metadata.json` S3 GETs (the file-meta read-flip).
+type catalogFileMetaProvider struct{ store *pmeta.Store }
+
+func (p catalogFileMetaProvider) FileMeta(partition, fileKey string) (manifest.FileMeta, bool) {
+	v, ok := p.store.FileMeta(partition, fileKey)
+	if !ok {
+		return manifest.FileMeta{}, false
+	}
+	return manifest.FileMeta{
+		RowCount:          v.RowCount,
+		MinTimeNs:         v.MinTimeNs,
+		MaxTimeNs:         v.MaxTimeNs,
+		RawBytes:          v.RawBytes,
+		SchemaFingerprint: v.SchemaFingerprint,
+		Labels:            v.Labels,
+	}, true
+}
+
 // defaultCardinalityThreshold keeps every human-meaningful facet exact while
 // bounding RAM for unbounded id-like fields.
 const defaultCardinalityThreshold = 50000
@@ -212,6 +232,35 @@ func (s *Storage) catalogFieldValues(q *logstorage.Query, fieldName string, limi
 	}
 	metrics.CatalogValueLookups.Add("catalog", 1) // served from RAM
 	return out
+}
+
+// catalogFieldNames unions the field names across the partitions overlapping the
+// query's time range, served from the pmeta catalog in RAM. Returns nil when the
+// catalog has nothing for the range so the caller falls through to the legacy
+// labelIndex. Caller guarantees s.catalog != nil.
+func (s *Storage) catalogFieldNames(q *logstorage.Query) []string {
+	startNs, endNs := q.GetFilterTimeRange()
+	seen := make(map[string]struct{}, 16)
+	nameset := make(map[string]struct{})
+	for _, fi := range s.manifest.GetFilesForRange(startNs, endNs) {
+		p := manifest.ExtractPartition(fi.Key)
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		for _, n := range s.catalog.FieldNames(p) {
+			nameset[n] = struct{}{}
+		}
+	}
+	if len(nameset) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(nameset))
+	for n := range nameset {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // WarmCatalog builds the field/value catalog from the manifest's per-file label

@@ -1273,9 +1273,9 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 				int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
 				m.MinTime().UnixNano(), m.MaxTime().UnixNano())
 			store.WarmLabelIndex(ctx)
+			store.WarmCatalogFromS3(ctx) // load pmeta bundles (file-meta + bloom) BEFORE WarmMetadata enriches from them
 			store.WarmMetadata(ctx)
-			store.WarmCatalogFromS3(ctx) // load persisted pmeta bundles (bloom) before the manifest merge
-			store.WarmCatalog(ctx)       // pmeta catalog + file-meta from the manifest (no-op unless --pmeta)
+			store.WarmCatalog(ctx) // re-derive catalog from the now-enriched manifest (no-op unless --pmeta)
 
 			if cfg.Cache.WarmupPartitions > 0 || cfg.Cache.WarmupMaxFiles > 0 {
 				warmCtx, warmCancel := context.WithTimeout(context.Background(), 2*time.Minute)

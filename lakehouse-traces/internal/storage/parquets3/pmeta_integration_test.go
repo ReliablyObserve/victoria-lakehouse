@@ -85,3 +85,47 @@ func TestInteg_PmetaCatalog_TracesCrossPathParity(t *testing.T) {
 		t.Fatalf("cross-path mismatch: catalog=%v legacy=%v", gotOn, gotOff)
 	}
 }
+
+// TestInteg_PmetaFlip_TracesBloomFacet exercises the traces bloom read-flip facet
+// path (the AND-across-columns / OR-within-column check via Store.BloomMayContain):
+// the facet is fed at flush, and a file that holds the queried value is never
+// excluded (blooms have no false negatives).
+func TestInteg_PmetaFlip_TracesBloomFacet(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.catalog = newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
+	bw.catalogObserver = &catalogObserver{store: s.catalog}
+
+	now := time.Now()
+	bw.AddTraceRows([]schema.TraceRow{
+		{TimestampUnixNano: now.UnixNano(), ServiceName: "api-gateway", SpanName: "GET /a"},
+		{TimestampUnixNano: now.UnixNano(), ServiceName: "order-service", SpanName: "POST /b"},
+	})
+	bw.triggerFlush()
+
+	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	if len(files) == 0 {
+		t.Fatal("no files after trace flush")
+	}
+	fi := files[0]
+	part := manifest.ExtractPartition(fi.Key)
+
+	// Facet was fed at flush: a present value is found.
+	got, ok := s.catalog.BloomMayContain(part, []string{fi.Key}, "service.name", "api-gateway")
+	found := false
+	for _, k := range got {
+		if k == fi.Key {
+			found = true
+		}
+	}
+	if !ok || !found {
+		t.Fatalf("traces bloom facet missing service.name=api-gateway (ok=%v got=%v)", ok, got)
+	}
+
+	// Facet bloom path must NOT exclude a file that contains the value.
+	if s.checkFileBloom(context.Background(), fi, `service.name:="api-gateway"`) {
+		t.Fatal("traces facet bloom wrongly excluded a file containing service.name=api-gateway")
+	}
+}

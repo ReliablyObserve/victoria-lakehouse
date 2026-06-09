@@ -1206,8 +1206,26 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 	// Phase 1: Load from disk cache (instant, no S3).
 	diskLoaded := s.loadFileMetadataFromDisk()
 
-	// Phase 2: Load from S3 sidecars (one GET per partition, much cheaper than footer reads).
-	sidecarLoaded := s.manifest.LoadSidecars(ctx, s.pool.S3Client(), 16)
+	// Phase 2: pmeta read-flip — enrich from the in-RAM fileMetaFacet (no S3; the
+	// catalog bundle is warmed before WarmMetadata in runStartup), then fall back to
+	// the `_file_metadata.json` sidecars ONLY for files the facet didn't cover (cold
+	// bundle / pre-pmeta files). When the facet covers everything the per-partition
+	// sidecar GETs are skipped entirely.
+	facetEnriched := 0
+	var uncovered []string
+	if s.catalog != nil {
+		facetEnriched, uncovered = s.manifest.EnrichFromProvider(catalogFileMetaProvider{store: s.catalog})
+	}
+	sidecarLoaded := 0
+	switch {
+	case s.catalog == nil:
+		// pmeta off: load all sidecars (unchanged behavior).
+		sidecarLoaded = s.manifest.LoadSidecars(ctx, s.pool.S3Client(), 16)
+	case len(uncovered) > 0:
+		// pmeta on: only the partitions the bundle didn't fully cover (a fully
+		// covered bundle skips the per-partition sidecar GETs entirely).
+		sidecarLoaded = s.manifest.LoadSidecarsForPartitions(ctx, s.pool.S3Client(), 16, uncovered)
+	}
 
 	// Phase 3: Footer prefetch for anything still missing.
 	files := s.manifest.GetFilesForRange(0, 1<<62)
@@ -1256,8 +1274,8 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 		}
 	}
 
-	logger.Infof("metadata warmup: disk=%d sidecar=%d footer=%d small=%d need_enrich=%d total_files=%d",
-		diskLoaded, sidecarLoaded, footerEnriched, smallEnriched, len(needEnrich), len(files))
+	logger.Infof("metadata warmup: disk=%d facet=%d sidecar=%d footer=%d small=%d need_enrich=%d total_files=%d",
+		diskLoaded, facetEnriched, sidecarLoaded, footerEnriched, smallEnriched, len(needEnrich), len(files))
 
 	// Phase 4: Save enriched metadata to disk for next restart.
 	s.saveFileMetadataToDisk()
