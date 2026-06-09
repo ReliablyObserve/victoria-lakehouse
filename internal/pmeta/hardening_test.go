@@ -155,6 +155,29 @@ func TestDecode_CorruptTOC_RebuildsWholePartition(t *testing.T) {
 	}
 }
 
+// TestDecode_HeaderCRCCatchesFacetCount: the v3 header CRC must catch a flipped
+// facetCount byte. Without it, facetCount→0 would decode as a VALID empty bundle
+// — silent total facet loss instead of a structural error → rebuild signal.
+func TestDecode_HeaderCRCCatchesFacetCount(t *testing.T) {
+	b, reg := twoFacets()
+	var buf bytes.Buffer
+	if err := b.Encode(&buf); err != nil {
+		t.Fatal(err)
+	}
+	raw := buf.Bytes()
+	// facetCount sits right after magic(5) + partLen(2) + partition.
+	off := 5 + 2 + len(b.Partition)
+	if raw[off] != 2 {
+		t.Fatalf("facetCount byte at %d = %d, want 2 (layout drifted?)", off, raw[off])
+	}
+	raw[off] = 0 // the nastiest flip: a "valid" empty bundle without the header CRC
+
+	got, _, err := DecodeBundle(bytes.NewReader(raw), reg)
+	if err == nil {
+		t.Fatalf("flipped facetCount must be a structural error, got valid bundle %+v", got)
+	}
+}
+
 // TestDecode_TruncatedNeverPanics: truncating at every offset must error
 // cleanly, never panic, never hang.
 func TestDecode_TruncatedNeverPanics(t *testing.T) {

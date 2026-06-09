@@ -814,6 +814,302 @@ func TestInteg_PmetaFlip_WarmMetadataViaRealAdapter(t *testing.T) {
 	}
 }
 
+// TestInteg_EnrichEquivalence_ProviderVsSidecar is the retire-sidecar-writes
+// equivalence gate for cold-start metadata: enriching a zeroed manifest from the
+// in-RAM facet (EnrichFromProvider via the real catalogFileMetaProvider) must
+// reconstruct EXACTLY the same FileInfo metadata as enriching it from the legacy
+// _file_metadata.json sidecars (LoadSidecars). If these ever diverge, retiring the
+// sidecar would silently change what a restarted pod believes about its files.
+func TestInteg_EnrichEquivalence_ProviderVsSidecar(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog}
+
+	// Two partitions (2h apart) → two files, so the equivalence is asserted
+	// across more than one sidecar/bundle.
+	base := time.Date(2026, 6, 9, 10, 15, 0, 0, time.UTC)
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: base.UnixNano(), Body: "a", ServiceName: "api-gateway"},
+		{TimestampUnixNano: base.Add(time.Second).UnixNano(), Body: "b", ServiceName: "order-service"},
+		{TimestampUnixNano: base.Add(2 * time.Hour).UnixNano(), Body: "c", ServiceName: "user-service"},
+	})
+	bw.triggerFlush()
+
+	files := s.manifest.GetFilesForRange(base.Add(-time.Hour).UnixNano(), base.Add(3*time.Hour).UnixNano())
+	if len(files) < 2 {
+		t.Fatalf("want >= 2 files across two partitions, got %d", len(files))
+	}
+
+	// Dual-write the _file_metadata.json sidecars SYNCHRONOUSLY (the flush-path
+	// write is a goroutine; this is deterministic and idempotent — same content).
+	parts := map[string]bool{}
+	for _, fi := range files {
+		parts[manifest.ExtractPartition(fi.Key)] = true
+	}
+	for p := range parts {
+		if err := s.manifest.WritePartitionSidecar(context.Background(), s.pool.S3Client(), p); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// TWO fresh manifests with the same keys but ZEROED metadata (what a bare S3
+	// list reconstruction yields): one enriched from the facet, one from sidecars.
+	mProv := manifest.New("test-bucket", "logs/")
+	mSide := manifest.New("test-bucket", "logs/")
+	for _, fi := range files {
+		p := manifest.ExtractPartition(fi.Key)
+		mProv.AddFile(p, manifest.FileInfo{Key: fi.Key, Bucket: fi.Bucket, Size: fi.Size})
+		mSide.AddFile(p, manifest.FileInfo{Key: fi.Key, Bucket: fi.Bucket, Size: fi.Size})
+	}
+
+	enriched, uncovered := mProv.EnrichFromProvider(catalogFileMetaProvider{store: s.catalog})
+	if enriched != len(files) || len(uncovered) != 0 {
+		t.Fatalf("EnrichFromProvider = (%d, %v), want (%d, [])", enriched, uncovered, len(files))
+	}
+	if n := mSide.LoadSidecars(context.Background(), s.pool.S3Client(), 4); n != len(files) {
+		t.Fatalf("LoadSidecars enriched %d files, want %d", n, len(files))
+	}
+
+	bySide := make(map[string]manifest.FileInfo, len(files))
+	for _, fi := range mSide.GetFilesForRange(0, 1<<62) {
+		bySide[fi.Key] = fi
+	}
+	byProv := mProv.GetFilesForRange(0, 1<<62)
+	if len(byProv) != len(files) || len(bySide) != len(files) {
+		t.Fatalf("enriched manifests lost files: provider=%d sidecar=%d want=%d", len(byProv), len(bySide), len(files))
+	}
+	for _, p := range byProv {
+		sc, ok := bySide[p.Key]
+		if !ok {
+			t.Fatalf("sidecar-enriched manifest missing %s", p.Key)
+		}
+		if p.RowCount == 0 {
+			t.Fatalf("file %s not actually enriched (RowCount=0)", p.Key)
+		}
+		if p.RowCount != sc.RowCount || p.MinTimeNs != sc.MinTimeNs || p.MaxTimeNs != sc.MaxTimeNs ||
+			p.RawBytes != sc.RawBytes || p.SchemaFingerprint != sc.SchemaFingerprint {
+			t.Fatalf("provider vs sidecar enrichment diverged for %s:\n provider=%+v\n sidecar=%+v", p.Key, p, sc)
+		}
+	}
+}
+
+// TestInteg_GetFieldNames_CatalogFlip drives the field_names read-flip END-TO-END
+// through s.GetFieldNames (not the catalogFieldNames helper): after a real flush
+// with --pmeta on the result must include service.name, and flipping the catalog
+// off (s.catalog=nil) must return the SAME name set via the legacy path (parity).
+// The degraded twin then deletes the parquet objects and clears every cache so the
+// footer-hits path yields nothing — proving the catalog fallback branch (pmeta on)
+// and the labelIndex branch (pmeta off) both still serve the names.
+func TestInteg_GetFieldNames_CatalogFlip(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog}
+
+	now := time.Now()
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "a", ServiceName: "api-gateway"},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "b", ServiceName: "order-service"},
+	})
+	bw.triggerFlush()
+
+	q := mustParseQueryWithTime(t, "*", now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	hasName := func(vs []logstorage.ValueWithHits, name string) bool {
+		for _, v := range vs {
+			if v.Value == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	on, err := s.GetFieldNames(context.Background(), nil, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasName(on, "service.name") {
+		t.Fatalf("GetFieldNames(pmeta on) missing service.name: %v", valueStrings(on))
+	}
+
+	catalog := s.catalog
+	s.catalog = nil
+	off, err := s.GetFieldNames(context.Background(), nil, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(valueStrings(on), valueStrings(off)) {
+		t.Fatalf("field-names cross-path mismatch:\n catalog on=%v\n legacy=%v", valueStrings(on), valueStrings(off))
+	}
+
+	// Degraded twin: parquet objects gone + footer/mem caches cleared → the
+	// footer-hits path yields nothing, so GetFieldNames must take the fallbacks.
+	s.catalog = catalog
+	mock.mu.Lock()
+	for k := range mock.files {
+		if strings.HasSuffix(k, ".parquet") {
+			delete(mock.files, k)
+		}
+	}
+	mock.mu.Unlock()
+	s.footerCache = NewFooterCache(16)
+	s.memCache = cache.NewLRU(1024 * 1024)
+
+	on2, err := s.GetFieldNames(context.Background(), nil, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasName(on2, "service.name") {
+		t.Fatalf("catalog fallback branch (footers gone) missing service.name: %v", valueStrings(on2))
+	}
+	s.catalog = nil
+	off2, err := s.GetFieldNames(context.Background(), nil, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasName(off2, "service.name") {
+		t.Fatalf("legacy labelIndex branch (footers gone) missing service.name: %v", valueStrings(off2))
+	}
+}
+
+// TestInteg_CatalogFieldValues_MultiPartitionUnion: a flush spanning TWO partitions
+// (2h apart → different hour=…) with different service.name values per partition
+// must answer a whole-range GetFieldValues with the deduped UNION, sorted — the
+// multi-partition union semantics of the catalog fast-path (catalogFieldValues
+// walks every partition in the query range, not just the first).
+func TestInteg_CatalogFieldValues_MultiPartitionUnion(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog}
+
+	t1 := time.Date(2026, 6, 9, 10, 15, 0, 0, time.UTC)
+	t2 := t1.Add(2 * time.Hour) // different hour ⇒ different partition
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: t1.UnixNano(), Body: "a", ServiceName: "checkout"},
+		{TimestampUnixNano: t1.Add(time.Second).UnixNano(), Body: "b", ServiceName: "shared-svc"},
+		{TimestampUnixNano: t2.UnixNano(), Body: "c", ServiceName: "billing"},
+		{TimestampUnixNano: t2.Add(time.Second).UnixNano(), Body: "d", ServiceName: "shared-svc"},
+	})
+	bw.triggerFlush()
+
+	p1 := partitionFromNano(t1.UnixNano())
+	p2 := partitionFromNano(t2.UnixNano())
+	if p1 == p2 {
+		t.Fatalf("test rows must land in two partitions, both got %s", p1)
+	}
+	// Each partition's catalog holds ONLY its own values (no cross-partition bleed).
+	if got := s.catalog.FieldValues(p1, "service.name", "", 0); !reflect.DeepEqual(got, []string{"checkout", "shared-svc"}) {
+		t.Fatalf("partition %s catalog = %v", p1, got)
+	}
+	if got := s.catalog.FieldValues(p2, "service.name", "", 0); !reflect.DeepEqual(got, []string{"billing", "shared-svc"}) {
+		t.Fatalf("partition %s catalog = %v", p2, got)
+	}
+
+	q := mustParseQueryWithTime(t, "*", t1.Add(-time.Hour).UnixNano(), t2.Add(time.Hour).UnixNano())
+	before := metrics.CatalogValueLookups.Get("catalog")
+	got, err := s.GetFieldValues(context.Background(), nil, q, "service.name", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Raw order, NOT re-sorted: asserts the union is deduped (shared-svc once)
+	// AND already sorted as returned.
+	raw := make([]string, len(got))
+	for i, v := range got {
+		raw[i] = v.Value
+	}
+	if want := []string{"billing", "checkout", "shared-svc"}; !reflect.DeepEqual(raw, want) {
+		t.Fatalf("whole-range GetFieldValues = %v, want deduped sorted union %v", raw, want)
+	}
+	if metrics.CatalogValueLookups.Get("catalog") <= before {
+		t.Fatal("union was not served from the catalog fast-path")
+	}
+}
+
+// TestInteg_CatalogTruncatedField_FallsToScan: a flushed file with more distinct
+// values for one label field than the extractor cap (maxLabelsPerField) arrives
+// with a CAPPED — i.e. possibly incomplete — value list, so the catalog must mark
+// the field high-card and serve NOTHING for it (never a silently truncated list),
+// and GetFieldValues must fall through to the scan, which returns the TRUE values.
+func TestInteg_CatalogTruncatedField_FallsToScan(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog}
+
+	const n = 120 // > maxLabelsPerField (100) distinct pod names → extractor caps the list
+	base := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
+	rows := make([]schema.LogRow, n)
+	for i := range rows {
+		rows[i] = schema.LogRow{
+			TimestampUnixNano: base.Add(time.Duration(i) * time.Millisecond).UnixNano(),
+			Body:              "msg",
+			ServiceName:       "api-gateway",
+			K8sPodName:        fmt.Sprintf("pod-%03d", i),
+		}
+	}
+	bw.AddLogRows(rows)
+	bw.triggerFlush()
+
+	files := s.manifest.GetFilesForRange(base.Add(-time.Hour).UnixNano(), base.Add(time.Hour).UnixNano())
+	if len(files) == 0 {
+		t.Fatal("no file after flush")
+	}
+	if got := len(files[0].Labels["k8s.pod.name"]); got != maxLabelsPerField {
+		t.Fatalf("extractor cap: manifest labels hold %d pod names, want exactly %d", got, maxLabelsPerField)
+	}
+
+	// (a) The catalog must NOT serve the truncated field (high-card behavior)…
+	part := partitionFromNano(base.UnixNano())
+	if got := s.catalog.FieldValues(part, "k8s.pod.name", "", 0); got != nil {
+		t.Fatalf("catalog served %d values for a truncated field — a capped list must never be authoritative", len(got))
+	}
+	// …but the field NAME stays known, and an untruncated sibling is still served.
+	names := s.catalog.FieldNames(part)
+	hasPod := false
+	for _, n := range names {
+		if n == "k8s.pod.name" {
+			hasPod = true
+		}
+	}
+	if !hasPod {
+		t.Fatalf("high-card field must remain a known field NAME, got %v", names)
+	}
+	if got := s.catalog.FieldValues(part, "service.name", "", 0); !reflect.DeepEqual(got, []string{"api-gateway"}) {
+		t.Fatalf("untruncated sibling field = %v, want [api-gateway]", got)
+	}
+
+	// (b) GetFieldValues falls through to the scan and returns the TRUE values.
+	q := mustParseQueryWithTime(t, "*", base.Add(-time.Hour).UnixNano(), base.Add(time.Hour).UnixNano())
+	beforeScan := metrics.CatalogValueLookups.Get("scan")
+	got, err := s.GetFieldValues(context.Background(), nil, q, "k8s.pod.name", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := make([]string, n)
+	for i := range want {
+		want[i] = fmt.Sprintf("pod-%03d", i)
+	}
+	if vals := valueStrings(got); !reflect.DeepEqual(vals, want) {
+		t.Fatalf("scan fallback returned %d values (want all %d true pod names): %v", len(vals), n, vals)
+	}
+	if metrics.CatalogValueLookups.Get("scan") <= beforeScan {
+		t.Fatal("catalog miss not recorded — was the truncated field served from the catalog?")
+	}
+}
+
 // TestInteg_PmetaFlip_CheckFileBloomFacetExcludes covers checkFileBloom's facet
 // EXCLUDE branch (the prior tests only asserted the keep side): a value absent from
 // the file's bloom must skip the file via the facet, with NO legacy .bloom present

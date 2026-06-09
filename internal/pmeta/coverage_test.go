@@ -41,6 +41,31 @@ func TestFileMetaFacet(t *testing.T) {
 	}
 }
 
+// FuzzFileMetaDecode: arbitrary bytes fed straight into the file-meta facet's
+// Decode (JSON underneath) must never panic — error returns are fine. The bundle
+// codec's CRC normally shields this path, but Decode must hold on its own.
+// Seeded with a valid Encode output.
+func FuzzFileMetaDecode(f *testing.F) {
+	seedFacet := NewFileMetaFactory()("p").(*fileMetaFacet)
+	seedFacet.Merge(FileContribution{
+		FileKey: "k1", RowCount: 10, MinTimeNs: 1, MaxTimeNs: 2, RawBytes: 99,
+		SchemaFingerprint: "sf", Labels: map[string][]string{"x": {"y"}},
+	})
+	var seed bytes.Buffer
+	if err := seedFacet.Encode(&seed); err != nil {
+		f.Fatal(err)
+	}
+	f.Add(seed.Bytes())
+	f.Add([]byte(nil))
+	f.Add([]byte("{"))                           // truncated JSON
+	f.Add([]byte(`{"k":{"rc":"not-a-number"}}`)) // type mismatch
+	f.Add([]byte(`{"k":{"rc":1},"k":{"rc":2}}`)) // duplicate key
+	f.Fuzz(func(t *testing.T, data []byte) {
+		fm := NewFileMetaFactory()("p").(*fileMetaFacet)
+		_ = fm.Decode(bytes.NewReader(data)) // must simply not panic
+	})
+}
+
 // TestStore_Accessors covers the Store read accessors + lifecycle helpers.
 func TestStore_Accessors(t *testing.T) {
 	s := NewStore()
