@@ -8,6 +8,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 )
 
@@ -78,6 +79,7 @@ func (s *Storage) catalogFieldValues(q *logstorage.Query, fieldName string, limi
 		}
 	}
 	if len(valset) == 0 {
+		metrics.CatalogValueLookups.Add("scan", 1) // catalog missed → legacy path
 		return nil
 	}
 	vals := make([]string, 0, len(valset))
@@ -92,6 +94,7 @@ func (s *Storage) catalogFieldValues(q *logstorage.Query, fieldName string, limi
 	for i, v := range vals {
 		out[i] = logstorage.ValueWithHits{Value: v, Hits: 1}
 	}
+	metrics.CatalogValueLookups.Add("catalog", 1) // served from RAM
 	return out
 }
 
@@ -116,6 +119,7 @@ func (s *Storage) WarmCatalog(ctx context.Context) {
 			})
 		}
 	}
+	metrics.CatalogResidentBytes.Set(s.catalog.ResidentBytes())
 }
 
 // refuseEnumeration reports whether field_values for a field should return empty

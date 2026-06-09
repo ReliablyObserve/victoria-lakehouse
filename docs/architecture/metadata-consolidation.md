@@ -361,6 +361,10 @@ at any level reverts the flag (data is safe regardless via skip+rebuild).
   minimal surprise; kills the pointless high-card scan on exactly those fields. Both
   modules. `TestInteg_PmetaCatalog_RefuseSketchEnumeration` asserts the intended
   divergence (off → scan enumerates; on → empty).
+- [x] **Observability** — wired `lakehouse_catalog_value_lookups_total{source=catalog|scan}`
+  (the hit-rate that proves the dropdown speedup) + `lakehouse_catalog_resident_bytes`
+  (RAM guardrail), both modules. The remaining §6a metrics (`fields_total{class}`,
+  `cold_load_seconds`, `partitions{state}`) are A3/tiering-era.
 - [ ] **A2 (HLL count)** — precise distinct-COUNT via an HLL sketch (needs the
   hyperloglog dep — a flagged decision); would upgrade refusal from "empty" to a
   "≈ N distinct" hint.

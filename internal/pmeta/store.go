@@ -110,6 +110,18 @@ func (s *Store) Rebuild(partition string, files []FileContribution) {
 	}
 }
 
+// ResidentBytes is the approximate RAM held across all partition bundles. Drives
+// the lakehouse_catalog_resident_bytes guardrail.
+func (s *Store) ResidentBytes() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var n int64
+	for _, b := range s.bundles {
+		n += b.EstimateBytes()
+	}
+	return n
+}
+
 // DirtyPartitions returns partitions with unpersisted changes — THE single
 // dirty list (replaces the five per-subsystem mechanisms).
 func (s *Store) DirtyPartitions() []string {

@@ -78,17 +78,23 @@ var (
 var (
 	ParquetRowGroupsScanned = NewCounter("lakehouse_parquet_row_groups_scanned_total")
 	ParquetRowGroupsSkipped = NewCounterVec("lakehouse_parquet_row_groups_skipped_total", "reason")
-	ParquetBloomChecks      = NewCounterVec("lakehouse_parquet_bloom_checks_total", "result")
-	ParquetColumnBytesRead  = NewCounter("lakehouse_parquet_column_bytes_read_total")
-	ParquetFilesOpened      = NewCounter("lakehouse_parquet_files_opened_total")
-	ParquetFilesSkipped     = NewCounter("lakehouse_parquet_files_skipped_bloom_total")
-	FooterCacheHits         = NewCounter("lakehouse_footer_cache_hits_total")
-	FooterCacheEvictions    = NewCounter("lakehouse_footer_cache_evictions_total")
-	FooterCacheEntries      = NewGauge("lakehouse_footer_cache_entries")
-	TraceIDCacheHits        = NewCounter("lakehouse_trace_id_cache_hits_total")
-	MetadataOnlyFiles       = NewCounter("lakehouse_metadata_only_files_total")
-	QueryFileNotFoundTotal  = NewCounter("lakehouse_query_file_not_found_total")
-	QueryFileErrorsTotal    = NewCounter("lakehouse_query_file_errors_total")
+
+	// pmeta field/value catalog (--pmeta). CatalogValueLookups{source} is the
+	// catalog-vs-scan hit rate that proves the dropdown speedup; ResidentBytes is
+	// the RAM guardrail.
+	CatalogValueLookups    = NewCounterVec("lakehouse_catalog_value_lookups_total", "source") // catalog|scan
+	CatalogResidentBytes   = NewGauge("lakehouse_catalog_resident_bytes")
+	ParquetBloomChecks     = NewCounterVec("lakehouse_parquet_bloom_checks_total", "result")
+	ParquetColumnBytesRead = NewCounter("lakehouse_parquet_column_bytes_read_total")
+	ParquetFilesOpened     = NewCounter("lakehouse_parquet_files_opened_total")
+	ParquetFilesSkipped    = NewCounter("lakehouse_parquet_files_skipped_bloom_total")
+	FooterCacheHits        = NewCounter("lakehouse_footer_cache_hits_total")
+	FooterCacheEvictions   = NewCounter("lakehouse_footer_cache_evictions_total")
+	FooterCacheEntries     = NewGauge("lakehouse_footer_cache_entries")
+	TraceIDCacheHits       = NewCounter("lakehouse_trace_id_cache_hits_total")
+	MetadataOnlyFiles      = NewCounter("lakehouse_metadata_only_files_total")
+	QueryFileNotFoundTotal = NewCounter("lakehouse_query_file_not_found_total")
+	QueryFileErrorsTotal   = NewCounter("lakehouse_query_file_errors_total")
 
 	// LogsTraceShapedRowsDropped counts rows dropped from
 	// LogsProfile query results because their stream tags identify
