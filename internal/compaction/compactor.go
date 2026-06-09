@@ -384,6 +384,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		SchemaFingerprint: fp,
 		CompactionLevel:   outputLevel,
 		Labels:            mergedLabels,
+		LabelAggregates:   mergeFileLabelAggregates(g.Files),
 	})
 
 	for _, f := range g.Files {
@@ -646,4 +647,40 @@ func mergeFileLabels(files []manifest.FileInfo) map[string][]string {
 		out[field] = vals
 	}
 	return out
+}
+
+// maxLabelAggregateValues mirrors the writer's per-field distinct-value cap.
+// A field that exceeds it after merge is dropped — it has become too
+// high-cardinality to be a useful manifest group-by (and would bloat the
+// snapshot). Keeping the merge cap in sync with the write cap means a compacted
+// file is never "more complete" than its inputs claimed.
+const maxLabelAggregateValues = 100
+
+// mergeFileLabelAggregates sums the input files' per-(field,value) row counts so
+// the compacted output answers `count() by (field)` exactly. Counts are additive
+// because each input file holds a disjoint set of rows. A field whose merged
+// distinct-value count exceeds the cap is dropped (high-cardinality).
+func mergeFileLabelAggregates(files []manifest.FileInfo) map[string]map[string]int64 {
+	merged := make(map[string]map[string]int64)
+	for _, f := range files {
+		for field, vals := range f.LabelAggregates {
+			m, ok := merged[field]
+			if !ok {
+				m = make(map[string]int64)
+				merged[field] = m
+			}
+			for v, c := range vals {
+				m[v] += c
+			}
+		}
+	}
+	for field, m := range merged {
+		if len(m) == 0 || len(m) > maxLabelAggregateValues {
+			delete(merged, field)
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
 }

@@ -31,7 +31,12 @@ func queryColumns(queryStr string, registry *schema.Registry, pipeFields []strin
 	cols := make(map[string]bool)
 	cols[registry.TimestampColumn()] = true
 
-	if isFreeTextSearch(filterPart) {
+	// isFreeTextSearch is fooled by the `_time:[...]` range VL prepends to every
+	// query (it contains ':'), so look past it: a bare word after the time range
+	// (e.g. `_time:[...] error`) is a full-text _msg filter that needs the body
+	// column projected, or the filter evaluates against an absent column and
+	// matches zero rows (cold full-text search returned 0).
+	if isFreeTextSearch(stripTimeRange(filterPart)) {
 		cols["body"] = true
 	}
 
@@ -116,6 +121,28 @@ func referencesField(query, name string) bool {
 		}
 	}
 	return false
+}
+
+// hasContentFilter reports whether the query carries a row filter that must be
+// evaluated against row columns at scan time — anything beyond the implicit
+// `_time:[...]` range VL prepends to every query and a bare `*` wildcard. Used to
+// keep the timestamp-only projection reduction from dropping columns a filter
+// needs (notably _msg for a free-text word filter, which has no bloom pushdown).
+func hasContentFilter(filterPart string) bool {
+	s := stripTimeRange(filterPart)
+	return s != "" && s != "*"
+}
+
+// stripTimeRange removes the leading `_time:[...]` range term VL prepends to
+// every query, returning the remaining filter expression.
+func stripTimeRange(filterPart string) string {
+	s := strings.TrimSpace(filterPart)
+	if strings.HasPrefix(s, "_time:[") {
+		if i := strings.IndexByte(s, ']'); i >= 0 {
+			s = strings.TrimSpace(s[i+1:])
+		}
+	}
+	return s
 }
 
 func isFreeTextSearch(query string) bool {

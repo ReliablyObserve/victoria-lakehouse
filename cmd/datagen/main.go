@@ -51,7 +51,7 @@ var continuousSpreadSec int
 // continuous-mode ingest develops gaps (empty per-minute buckets) that look like
 // a cold-tier regression but are really the generator stuck on one endpoint. A
 // timed-out push drops that one batch/endpoint and the next tick recovers.
-var httpClient = &http.Client{Timeout: 10 * time.Second}
+var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 func main() {
 	logsCount := flag.Int("logs", 5000, "number of log rows per batch")
@@ -532,7 +532,41 @@ func setTenantHeaders(req *http.Request, accountID, projectID, orgID string) {
 	}
 }
 
+// ndjsonBatchSize bounds each log push so a slower cold-tier ingest (flushing to
+// S3 mid-burst) absorbs it within the client timeout instead of the whole 100k
+// batch timing out — which silently lost ~45% of logs on the cold tier and made
+// the benchmark datasets unequal. Pushed with retry for the same reason.
+const ndjsonBatchSize = 5000
+
 func pushNDJSON(endpoint string, rows []logRow, accountID, projectID, orgID string) error {
+	for i := 0; i < len(rows); i += ndjsonBatchSize {
+		end := i + ndjsonBatchSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		batch := rows[i:end]
+		if err := withRetry(func() error { return pushNDJSONBatch(endpoint, batch, accountID, projectID, orgID) }); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// withRetry retries a push up to 3 times (the fn rebuilds the request body each
+// attempt). Timeouts under bursty cold-tier ingest are transient, so a retry lands
+// the batch rather than dropping it.
+func withRetry(fn func() error) error {
+	var err error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if err = fn(); err == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(attempt) * time.Second)
+	}
+	return err
+}
+
+func pushNDJSONBatch(endpoint string, rows []logRow, accountID, projectID, orgID string) error {
 	var buf bytes.Buffer
 	for _, r := range rows {
 		line := map[string]any{
@@ -591,7 +625,27 @@ func pushOTLPTraces(endpoint string, rows []traceRow, accountID, projectID, orgI
 	return pushOTLPTracesToURL(endpoint+"/insert/opentelemetry/v1/traces", rows, accountID, projectID, orgID)
 }
 
+// otlpBatchSize keeps each OTLP request well under the receiver's
+// -opentelemetry.traces.maxRequestSize (64 MiB default) — pushing all 50k spans
+// at once returned HTTP 400 "too big data size" and dropped the trace dataset on
+// VT and LH alike. ~5k spans ≈ a few MiB.
+const otlpBatchSize = 5000
+
 func pushOTLPTracesToURL(url string, rows []traceRow, accountID, projectID, orgID string) error {
+	for i := 0; i < len(rows); i += otlpBatchSize {
+		end := i + otlpBatchSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		batch := rows[i:end]
+		if err := withRetry(func() error { return pushOTLPTracesBatchToURL(url, batch, accountID, projectID, orgID) }); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func pushOTLPTracesBatchToURL(url string, rows []traceRow, accountID, projectID, orgID string) error {
 	type otlpKV struct {
 		Key   string      `json:"key"`
 		Value interface{} `json:"value"`
