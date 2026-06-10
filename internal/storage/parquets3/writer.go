@@ -24,12 +24,6 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
-// BloomObserver is called after each file flush to populate bloom entries.
-type BloomObserver interface {
-	OnFileFlush(partition, fileKey string, columnValues map[string][]string)
-	PersistDirty(ctx context.Context, prefix string)
-}
-
 // StatsCallback is called after each successful file flush with the
 // compressed size, raw size, row count, and storage class. The flush
 // invokes the callback once per distinct tenant in the flushed batch,
@@ -91,9 +85,7 @@ type BatchWriter struct {
 	totalRows  atomic.Int64
 	totalBytes atomic.Int64
 
-	bloomObserver   BloomObserver
 	catalogObserver *catalogObserver
-	retireSidecars  bool // pmeta retire-sidecars: skip legacy sidecar writes (facet is source of truth)
 	statsCallback   StatsCallback
 	flushCacheCb    FlushCacheCallback
 	tenantPrefix    TenantPrefixFunc
@@ -347,10 +339,6 @@ func (w *BatchWriter) FlushAll(ctx context.Context) error {
 	if len(logSnap) > 0 || len(traceSnap) > 0 {
 		metrics.InsertFlushTotal.Inc()
 		metrics.InsertFlushDuration.Observe(time.Since(flushStart).Seconds())
-
-		if w.bloomObserver != nil {
-			w.bloomObserver.PersistDirty(ctx, w.prefix)
-		}
 	}
 	// OUTSIDE the non-empty gate: bundles left dirty by a FAILED PUT on a prior
 	// cycle must retry even when this cycle flushed nothing (and the final
@@ -379,7 +367,6 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 			return err
 		}
 	}
-	w.writeMetadataSidecarAsync(ctx, partition)
 	return nil
 }
 
@@ -429,24 +416,11 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 	}
 	w.manifest.AddFile(partition, fi)
 
-	// Extract the per-column bloom values once when either the legacy bloom index
-	// or the pmeta bloom facet needs them (dual-write feeds both from one extraction).
+	// Per-column bloom values for the pmeta bloom facet (uncapped — a capped
+	// feed false-negatives). One extraction, no legacy dual-write anymore.
 	var bloomValues map[string][]string
-	if w.bloomObserver != nil || w.catalogObserver != nil {
-		bloomStart := time.Now()
+	if w.catalogObserver != nil {
 		bloomValues = extractLogBloomValues(rows)
-		if w.bloomObserver != nil {
-			metrics.WriterBloomBuildDuration.Observe(time.Since(bloomStart).Seconds())
-		}
-	}
-	if w.bloomObserver != nil {
-		metrics.WriterBloomBuildsTotal.Inc("logs")
-		var bloomValueCount int
-		for _, vals := range bloomValues {
-			bloomValueCount += len(vals)
-		}
-		metrics.WriterBloomValuesTotal.Add("logs", bloomValueCount)
-		w.bloomObserver.OnFileFlush(partition, key, bloomValues)
 	}
 
 	// pmeta field/value catalog + file-meta + bloom facets: fed the same
@@ -484,7 +458,6 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 			return err
 		}
 	}
-	w.writeMetadataSidecarAsync(ctx, partition)
 	return nil
 }
 
@@ -531,21 +504,8 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 	w.manifest.AddFile(partition, fi)
 
 	var bloomValues map[string][]string
-	if w.bloomObserver != nil || w.catalogObserver != nil {
-		bloomStart := time.Now()
+	if w.catalogObserver != nil {
 		bloomValues = extractTraceBloomValues(rows)
-		if w.bloomObserver != nil {
-			metrics.WriterBloomBuildDuration.Observe(time.Since(bloomStart).Seconds())
-		}
-	}
-	if w.bloomObserver != nil {
-		metrics.WriterBloomBuildsTotal.Inc("traces")
-		var bloomValueCount int
-		for _, vals := range bloomValues {
-			bloomValueCount += len(vals)
-		}
-		metrics.WriterBloomValuesTotal.Add("traces", bloomValueCount)
-		w.bloomObserver.OnFileFlush(partition, key, bloomValues)
 	}
 
 	// pmeta field/value catalog + file-meta + bloom facets: fed the same
@@ -570,21 +530,6 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 		partition, accountID, projectID, len(rows), len(result.Data), fi.CompressionRatio(), key)
 
 	return nil
-}
-
-func (w *BatchWriter) writeMetadataSidecarAsync(ctx context.Context, partition string) {
-	if w.retireSidecars {
-		// pmeta retire-sidecars: the in-RAM fileMetaFacet (warmed from the bundle)
-		// is the metadata source, with the Parquet footer as the cold-restart
-		// fallback (WarmMetadata Phase 3) — so the _file_metadata.json sidecar is no
-		// longer written. Reversible: clear the flag and the sidecar resumes.
-		return
-	}
-	go func() {
-		if err := w.manifest.WritePartitionSidecar(ctx, w.pool.S3Client(), partition); err != nil {
-			logger.Warnf("metadata sidecar write failed; partition=%s err=%v", partition, err)
-		}
-	}()
 }
 
 type flushResult struct {

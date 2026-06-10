@@ -1,7 +1,6 @@
 package manifest
 
 import (
-	"context"
 	"fmt"
 	"testing"
 )
@@ -202,26 +201,6 @@ func TestMetadataSidecarKey(t *testing.T) {
 	want := "0/0/logs/dt=2026-05-20/hour=11/_file_metadata.json"
 	if key != want {
 		t.Errorf("key = %q, want %q", key, want)
-	}
-}
-
-func TestWritePartitionSidecar_EmptyPartition(t *testing.T) {
-	m := New("test-bucket", "prefix/")
-	err := m.WritePartitionSidecar(context.TODO(), nil, "nonexistent")
-	if err != nil {
-		t.Errorf("expected nil for empty partition, got %v", err)
-	}
-}
-
-func TestWritePartitionSidecar_NoEnrichedFiles(t *testing.T) {
-	m := New("test-bucket", "prefix/")
-	m.AddFile("dt=2026-05-20/hour=11", FileInfo{
-		Key:  "prefix/dt=2026-05-20/hour=11/abc.parquet",
-		Size: 1000,
-	})
-	err := m.WritePartitionSidecar(context.TODO(), nil, "dt=2026-05-20/hour=11")
-	if err != nil {
-		t.Errorf("expected nil for no enriched files, got %v", err)
 	}
 }
 

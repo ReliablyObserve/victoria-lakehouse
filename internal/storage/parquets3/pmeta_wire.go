@@ -84,10 +84,10 @@ func newCatalogStore(cfg config.PmetaConfig, prefix string) *pmeta.Store {
 	return s
 }
 
-// catalogObserver feeds flushed file labels into the pmeta field/value catalog.
-// It mirrors storageBloomObserver: a nil-safe observer set on the BatchWriter and
-// invoked at flush with the SAME already-extracted label map the bloom path uses
-// — no extra column scan. Nil (pmeta off) → no-op.
+// catalogObserver feeds flushed file contributions into the pmeta facets: a
+// nil-safe observer set on the BatchWriter, invoked at flush with the
+// already-extracted label/bloom maps — no extra column scan. Nil (pmeta off,
+// the degraded mode) → no-op.
 type catalogObserver struct {
 	store  *pmeta.Store
 	sketch map[string]bool      // always-sketch field names to tap for cardinality

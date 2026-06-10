@@ -143,11 +143,10 @@ var (
 	tenantAutoRegister      = flag.Bool("lakehouse.tenant.auto-register", false, "Auto-register unknown X-Scope-OrgID tenants")
 	tenantAliasSyncInterval = flag.Duration("lakehouse.tenant.alias-sync-interval", 0, "Fleet sync interval for runtime aliases (default: 30s)")
 
-	pmetaEnabled       = flag.Bool("lakehouse.pmeta.enabled", false, "Enable the unified partition-metadata layer (field/value catalog + HLL cardinality)")
+	pmetaEnabled       = flag.Bool("lakehouse.pmeta.enabled", true, "Unified partition-metadata layer (catalog + file-meta + bloom facets). Disabling is a degraded mode: no metadata for new files")
 	pmetaAlwaysSketch  = flag.String("lakehouse.pmeta.always-sketch-fields", "", "Comma-separated id columns to sketch instead of enumerate (e.g. trace_id,span_id)")
 	pmetaCardThreshold = flag.Int("lakehouse.pmeta.cardinality-threshold", 0, "Per-field distinct-value cap before a field is high-card (0 = default 50000)")
 	pmetaRefuseSketch  = flag.Bool("lakehouse.pmeta.refuse-sketch-enumeration", false, "Return empty for always-sketch field_values instead of scanning")
-	pmetaRetireWrites  = flag.Bool("lakehouse.pmeta.retire-sidecar-writes", false, "Stop writing legacy sidecars the facets replace (footer is the cold-restart fallback; reversible)")
 )
 
 func main() {
@@ -1392,9 +1391,9 @@ func applyFlags(cfg *config.Config) {
 }
 
 func applyPmetaFlags(c *config.PmetaConfig) {
-	if *pmetaEnabled {
-		c.Enabled = true
-	}
+	// The flag is authoritative (default true): explicit
+	// -lakehouse.pmeta.enabled=false is the opt-out into degraded mode.
+	c.Enabled = *pmetaEnabled
 	if *pmetaAlwaysSketch != "" {
 		c.AlwaysSketchFields = strings.Split(*pmetaAlwaysSketch, ",")
 	}
@@ -1403,9 +1402,6 @@ func applyPmetaFlags(c *config.PmetaConfig) {
 	}
 	if *pmetaRefuseSketch {
 		c.RefuseSketchEnumeration = true
-	}
-	if *pmetaRetireWrites {
-		c.RetireSidecarWrites = true
 	}
 }
 

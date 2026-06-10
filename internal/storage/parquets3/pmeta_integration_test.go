@@ -604,25 +604,25 @@ func TestInteg_PmetaFlip_FieldNamesAndBloom(t *testing.T) {
 	}
 }
 
-// TestInteg_PmetaRetire_SkipsFileMetaSidecar verifies the retire-sidecar-writes flag:
-// with it on, no _file_metadata.json is written to S3, yet the file metadata is still
-// available from the in-RAM facet (the footer is the cold-restart fallback).
+// TestInteg_PmetaRetire_SkipsFileMetaSidecar verifies the sidecar-write retirement:
+// no _file_metadata.json is ever written to S3 (the writer is gone), yet the file
+// metadata is still available from the in-RAM facet (the footer is the cold-restart
+// fallback).
 func TestInteg_PmetaRetire_SkipsFileMetaSidecar(t *testing.T) {
 	mock := newMockS3Server()
 	defer mock.close()
 	s := testStorageWithS3(t, mock.url())
-	s.cfg.Pmeta = config.PmetaConfig{Enabled: true, RetireSidecarWrites: true}
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
 	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
 	bw.catalogObserver = &catalogObserver{store: s.catalog}
-	bw.retireSidecars = true
 
 	now := time.Now()
 	bw.AddLogRows([]schema.LogRow{{TimestampUnixNano: now.UnixNano(), Body: "m", ServiceName: "api-gateway"}})
 	bw.triggerFlush()
 
-	// retire on → the _file_metadata.json sidecar is NOT written (the gate is
-	// synchronous: no goroutine is spawned, so this is race-free).
+	// The _file_metadata.json sidecar is NOT written — unconditionally (no
+	// sidecar writer exists anymore, so no goroutine is spawned; race-free).
 	mock.mu.RLock()
 	for k := range mock.files {
 		if strings.HasSuffix(k, metadataSidecarSuffix) {
@@ -691,7 +691,7 @@ func TestInteg_PmetaFlip_ORBranchFacet(t *testing.T) {
 // TestInteg_PmetaFlip_LogsBloomColdRestart is the logs twin of the traces
 // cold-restart test (the absent-value assertions are the ones that catch a
 // silently-empty facet — a present-value-only check passes vacuously because
-// unknown keys are kept). Under retire-sidecar-writes after a cold restart the
+// unknown keys are kept). With sidecar writes retired, after a cold restart the
 // bundle-warmed facet is the ONLY bloom source: both pre-filter helpers must
 // (a) prune an absent value, (b) never drop a file holding the value, and
 // (c) keep files of partitions no bloom knows.
@@ -699,11 +699,11 @@ func TestInteg_PmetaFlip_LogsBloomColdRestart(t *testing.T) {
 	mock := newMockS3Server()
 	defer mock.close()
 	s := testStorageWithS3(t, mock.url())
-	s.cfg.Pmeta = config.PmetaConfig{Enabled: true, RetireSidecarWrites: true}
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
 	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
 	bw.catalogObserver = &catalogObserver{store: s.catalog, pool: s.pool}
-	// retire mode: NO legacy bloom observer wired — the facet is the only feed.
+	// The legacy bloom observer no longer exists — the facet is the only feed.
 
 	now := time.Now()
 	bw.AddLogRows([]schema.LogRow{
@@ -769,7 +769,7 @@ func TestInteg_PmetaFlip_WarmMetadataViaRealAdapter(t *testing.T) {
 	mock := newMockS3Server()
 	defer mock.close()
 	s := testStorageWithS3(t, mock.url())
-	s.cfg.Pmeta = config.PmetaConfig{Enabled: true, RetireSidecarWrites: true}
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
 	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
 	bw.catalogObserver = &catalogObserver{store: s.catalog, pool: s.pool}
@@ -814,7 +814,7 @@ func TestInteg_PmetaFlip_WarmMetadataViaRealAdapter(t *testing.T) {
 	}
 }
 
-// TestInteg_EnrichEquivalence_ProviderVsSidecar is the retire-sidecar-writes
+// TestInteg_EnrichEquivalence_ProviderVsSidecar is the sidecar-retirement
 // equivalence gate for cold-start metadata: enriching a zeroed manifest from the
 // in-RAM facet (EnrichFromProvider via the real catalogFileMetaProvider) must
 // reconstruct EXACTLY the same FileInfo metadata as enriching it from the legacy
@@ -844,16 +844,23 @@ func TestInteg_EnrichEquivalence_ProviderVsSidecar(t *testing.T) {
 		t.Fatalf("want >= 2 files across two partitions, got %d", len(files))
 	}
 
-	// Dual-write the _file_metadata.json sidecars SYNCHRONOUSLY (the flush-path
-	// write is a goroutine; this is deterministic and idempotent — same content).
-	parts := map[string]bool{}
+	// Build the _file_metadata.json sidecars directly from the flushed files and
+	// put them in the mock S3 (the production sidecar writer is retired; this is
+	// the same content it used to upload).
+	parts := map[string]map[string]manifest.FileMeta{}
 	for _, fi := range files {
-		parts[manifest.ExtractPartition(fi.Key)] = true
+		p := manifest.ExtractPartition(fi.Key)
+		if parts[p] == nil {
+			parts[p] = map[string]manifest.FileMeta{}
+		}
+		parts[p][fi.Key] = manifest.FileInfoToMeta(fi)
 	}
-	for p := range parts {
-		if err := s.manifest.WritePartitionSidecar(context.Background(), s.pool.S3Client(), p); err != nil {
+	for p, fm := range parts {
+		data, err := manifest.MarshalFileMetaSidecar(&manifest.FileMetaSidecar{Files: fm})
+		if err != nil {
 			t.Fatal(err)
 		}
+		mock.putFile(manifest.MetadataSidecarKey("logs/", p), data)
 	}
 
 	// TWO fresh manifests with the same keys but ZEROED metadata (what a bare S3
@@ -1113,12 +1120,12 @@ func TestInteg_CatalogTruncatedField_FallsToScan(t *testing.T) {
 // TestInteg_PmetaFlip_CheckFileBloomFacetExcludes covers checkFileBloom's facet
 // EXCLUDE branch (the prior tests only asserted the keep side): a value absent from
 // the file's bloom must skip the file via the facet, with NO legacy .bloom present
-// (retire mode), and the metric label must be the facet one.
+// (the per-file .bloom writer is retired), and the metric label must be the facet one.
 func TestInteg_PmetaFlip_CheckFileBloomFacetExcludes(t *testing.T) {
 	mock := newMockS3Server()
 	defer mock.close()
 	s := testStorageWithS3(t, mock.url())
-	s.cfg.Pmeta = config.PmetaConfig{Enabled: true, RetireSidecarWrites: true}
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
 	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
 	bw.catalogObserver = &catalogObserver{store: s.catalog}

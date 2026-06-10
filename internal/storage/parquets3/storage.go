@@ -51,7 +51,6 @@ type Storage struct {
 	tombstones        *delete.TombstoneStore
 	smartCache        *smartcache.Controller
 	bloomCache        *bloomindex.BloomCache
-	bloomObserver     *storageBloomObserver
 	catalog           *pmeta.Store // unified field/value catalog; nil unless --pmeta
 	footerCache       *FooterCache
 	fileBloomCache    *BloomFileCache
@@ -315,29 +314,8 @@ func New(cfg *config.Config) (*Storage, error) {
 	}
 
 	if bw != nil {
-		// The legacy bloom sidecars (per-file `.bloom` + partition `_bloom.bin`) are
-		// retired when the pmeta bloom facet replaces BOTH query paths — the
-		// single-file checkFileBloom AND the OR-branch bloomUnionMatch. Skip the
-		// observer entirely in that mode: the catalogObserver below still receives the
-		// same bloomValues at flush (extraction is gated on `bloomObserver != nil ||
-		// catalogObserver != nil`), so the facet stays fed; the bloomCache fallback is
-		// simply empty for those partitions, which the facet covers.
-		retireBloom := cfg.Pmeta.Enabled && cfg.Pmeta.RetireSidecarWrites
-		if !retireBloom {
-			obs := &storageBloomObserver{
-				bloom:    bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01),
-				pool:     pool,
-				manifest: s.manifest,
-			}
-			bw.bloomObserver = obs
-			s.bloomObserver = obs
-		}
-
 		if s.catalog != nil {
 			bw.catalogObserver = &catalogObserver{store: s.catalog, sketch: sketchSet(cfg.Pmeta.AlwaysSketchFields), pool: s.pool}
-			// retire-sidecars only takes effect with pmeta on (the facet must exist
-			// to replace the sidecar). Off → legacy sidecars still written.
-			bw.retireSidecars = cfg.Pmeta.RetireSidecarWrites
 		}
 
 		// Write-through cache: when running in combined mode (role=all),

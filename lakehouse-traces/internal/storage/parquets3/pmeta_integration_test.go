@@ -131,7 +131,7 @@ func TestInteg_PmetaFlip_TracesBloomFacet(t *testing.T) {
 	}
 }
 
-// TestInteg_PmetaFlip_BloomHybridColdRestart covers the retire-sidecar-writes cold
+// TestInteg_PmetaFlip_BloomHybridColdRestart covers the post-sidecar-retirement cold
 // restart: s.bloomIdx is EMPTY (no _bloom.bin persisted anymore) and the bloom state
 // lives only in the bundle-warmed facet. The pre-filter hybrid must (a) still prune
 // via the facet, (b) never drop a file holding the value, and (c) keep files of a
@@ -140,7 +140,7 @@ func TestInteg_PmetaFlip_BloomHybridColdRestart(t *testing.T) {
 	mock := newMockS3Server()
 	defer mock.close()
 	s := testStorageWithS3(t, mock.url())
-	s.cfg.Pmeta = config.PmetaConfig{Enabled: true, RetireSidecarWrites: true}
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
 	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
 	bw.catalogObserver = &catalogObserver{store: s.catalog, pool: s.pool}

@@ -712,7 +712,6 @@ func TestNew_SelectOnly(t *testing.T) {
 	if s.writer != nil {
 		t.Error("expected nil writer for select-only role")
 	}
-	// bloomObserver does not exist in traces module.
 	if s.smartCache == nil {
 		t.Error("expected non-nil smartCache for select role")
 	}
