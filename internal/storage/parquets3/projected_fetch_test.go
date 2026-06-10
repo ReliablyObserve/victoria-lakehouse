@@ -277,6 +277,9 @@ func TestGetFieldValues_PlannedFetch_OnlyPlannedRangesRequested(t *testing.T) {
 	mock := newRangeLoggingS3Server()
 	defer mock.close()
 	s := testStorageWithS3(t, mock.url())
+	// planned mode is opt-in since the live-bench verdict (default=window);
+	// this test exercises the planned path explicitly.
+	s.cfg.S3.ProjectedFetchMode = config.ProjectedFetchModePlanned
 
 	baseTime := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
 	data := makeMultiRGFullLogParquet(t, baseTime, 400*1024, 600)

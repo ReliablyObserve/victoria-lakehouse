@@ -401,3 +401,28 @@ and compare to the post-batch-2 tables. Expected:
   ranges parquet-go reads — investigate before trusting the bytes win);
 - fulltext/full-scan rows unchanged (window stack untouched) — and now trustworthy,
   reset-validated.
+
+## Measured: Tier-2 plan-then-fetch LIVE verdict (2026-06-10) — default demoted to opt-in
+
+The unit sims (−84% bytes at equal GETs on the sparse filtered pattern) did NOT survive
+contact with the full live workload. Two with-latency runs (one concurrent-load, one quiet
+machine — **identical structure**, so not load noise):
+
+| scenario | pre-#151 (window) | planned live | GETs/q window → planned |
+|---|--:|--:|--:|
+| count_24h | 2445 ms | **17,746 ms** | 175 → **1185** |
+| filtered_count | 1673 ms | 7,091 ms | ~80 → 77 (but slower) |
+| fulltext | 2250 ms | 5,592 ms | 118 → 156 |
+
+The bytes win is real (waste = 0, out-of-plan = 0, fallbacks = 0 — the machinery works
+exactly as designed) but the round-trip economics invert at 100 ms RTT: per-row-group plans
+fragment scans into hundreds of small exact GETs with ≤4-way per-file concurrency, where the
+window path amortized RTT over few large sequential reads. The sim asserted equal GET counts
+only for the sparse 1-RG-per-file pattern; dense multi-RG scans were out of its frame.
+
+**Action:** `s3.projected_fetch_mode` default flipped to `window` (planned stays as opt-in —
+all machinery, metrics, and tests remain). Re-entry condition for planned-by-default, in
+order: (1) a **plan-density gate** (arm planned only when plan bytes < ~15% of file AND span
+count small — its true sweet spot), (2) cross-RG span batching (one coalesced plan per FILE,
+not per row group), (3) wider span concurrency. Each step must beat the window path on the
+LIVE bench, both conditions, before the default moves again — per the benchmark protocol.
