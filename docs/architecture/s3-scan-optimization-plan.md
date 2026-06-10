@@ -81,3 +81,82 @@ prefetch additionally needs an **adaptive in-flight cap that backs off on
 No-upstream-modification holds throughout (page skipping must drive parquet-go via
 OffsetIndex ranges, not a fork); rollups live in the manifest/sidecar, never in custom
 Parquet framing (pure-Parquet-on-S3).
+
+## Implemented — Tier 1 batch 1 (PR 2a, branch feat/s3-tier1-batch1)
+
+The research review (`s3-optimization-research.md`, branch docs/research-reviews)
+superseded the priority order above; this batch lands research items **2, 3, 5, 6**
+(zero-GET opens and hedged GETs follow in a later batch). Everything below is
+measurable: the full-scope bench now snapshots the engine's `/metrics` before/after
+every scenario and emits per-scenario S3-op deltas (`full-scope-s3-bench-s3ops.csv` +
+a per-query ops table in the summary).
+
+### 1. Read-path observability first (CH pattern)
+
+New metrics (both modules, `internal/metrics/lakehouse.go`):
+
+| metric | meaning |
+|---|---|
+| `lakehouse_s3_gets_by_phase_total{phase}` | GETs by phase: `open` (parquet.OpenFile), `page` (column/page reads incl. lazy index/bloom), `footer` (footer-cache fills), `bloom` (per-file `.bloom` sidecar) |
+| `lakehouse_s3_gets_per_open` | histogram — GETs one ranged open needed (research baseline: 4–6 serial) |
+| `lakehouse_s3_buffer_wasted_bytes_total` | window bytes fetched but never served before eviction (high-water-mark accounting) |
+| `lakehouse_s3_coalesce_overfetch_bytes_total` | gap bytes fetched only because ranges were merged |
+| `lakehouse_s3_readahead_grow_total` / `_reset_total` | adaptive window growth (scan) / reset (needle) events |
+| `lakehouse_s3_head_bypass_reads_total` | tiny offset-0 magic reads served by exact-size GETs (each ≈ one window of head-waste avoided) |
+| `lakehouse_s3_singleflight_dedup_total{kind}` | metadata GETs shared across concurrent queries (`footer` \| `bloom` \| `pmeta_bundle`) |
+
+### 2. Parquet open hygiene (`openRangedParquet`, twin `parquet_open.go`)
+
+All ranged `parquet.OpenFile` sites now pass: `SkipPageIndex(true)`,
+`SkipBloomFilters(true)`, `OptimisticRead(true)`, `ReadBufferSize(1MB default)`,
+`FileReadMode(ReadModeAsync)` and `FileSchema(...)` when the footer cache holds the
+schema. Verified against parquet-go v0.29.0 source before relying on it:
+
+- the per-file `.bloom` fallback (`checkFileBloom`) reads a SIDECAR object, not the
+  parquet-internal bloom section — skipping internal blooms cannot affect it;
+- the one parquet-internal bloom consumer (`bloomFilterSkip` via
+  `ColumnChunk.BloomFilter()`) is **already lazy** in v0.29.0 (`readBloomFilter`
+  CAS-caches on first use), so `SkipBloomFilters(true)` only removes the eager
+  open-time header reads;
+- `ColumnIndex()/OffsetIndex()` likewise fall back to lazy per-chunk reads under
+  `SkipPageIndex(true)`, so row-group time pruning keeps working on demand;
+- `AsyncPages` spawns one goroutine per `Pages` instance with an **unbuffered**
+  channel — bounded at ~one page in flight per column reader; `Close()` drains it
+  (all our page readers close via `defer`), with a GC finalizer as backstop. Safe on
+  the wide-scan path, so async is NOT gated to projected reads; `s3.parquet_read_mode:
+  sync` is the rollback switch.
+
+### 3. BDP-priced coalescing + adaptive read-ahead (`internal/s3reader`)
+
+- coalesce gap default 64KB → **1MB**, safety cap lifted 1MB → 16MB (AnyBlob: at
+  ~100ms RTT the breakeven gap is megabytes; 8–16MiB ranges are cost-optimal);
+- read-ahead window: 2MB base, **doubles after 2+ consecutive forward-sequential
+  misses** up to `s3.read_ahead_max_bytes` (default 8MB), resets to base on a random
+  seek — scan-sized I/O units without needle-query over-fetch (allocation-free:
+  four scalar fields on the existing reader);
+- tiny reads at offset 0 (parquet 4-byte magic) bypass the window via an exact-size
+  GET — kills the ~2MB head-waste per cold open.
+
+### 4. Singleflight on metadata GETs (`golang.org/x/sync/singleflight`)
+
+`ClientPool.DownloadDedup/DownloadRangeDedup` (keyed by object key, + range for
+ranges) wrap: footer-cache fills (`prefetchFooters`, `fetchFooterFile`,
+`shouldSkipByFooter`, the inline open-path footer fetch), per-file `.bloom`
+downloads, and the lazy partition `_bloom.bin` bundle load. The in-flight GET runs
+on `context.WithoutCancel` so one cancelled query can't poison the shared result;
+each waiter still honors its own ctx. `WarmPartitions` (startup-only) intentionally
+not wrapped.
+
+### New config keys (per-signal: each binary/deployment sets its own)
+
+| key | flag | default |
+|---|---|---|
+| `s3.read_ahead_max_bytes` | `-lakehouse.s3.read-ahead-max-bytes` | 8MB |
+| `s3.read_buffer_size` | `-lakehouse.s3.read-buffer-size` | 1MB |
+| `s3.parquet_read_mode` | `-lakehouse.s3.parquet-read-mode` | `async` |
+| `s3.coalesce_gap_bytes` (default change) | `-lakehouse.s3.coalesce-gap-bytes` | 64KB → 1MB |
+
+HTTP/2 note (research discovery 2): ALPN against AWS S3 and MinIO negotiates
+http/1.1 only — `ForceAttemptHTTP2` is a no-op and `MaxIdleConnsPerHost` is the real
+parallelism ceiling. Keep that in mind when reading benchmark deltas; no code change
+needed in this batch.
