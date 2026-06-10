@@ -223,3 +223,38 @@ func acquireFileBudget(ctx context.Context, size int64) (func(), error) {
 func fileBudgetOutstanding() (int64, int) {
 	return fileBudgetSem.outstanding()
 }
+
+// addBytes records n bytes in the budget ledger WITHOUT blocking and
+// without consuming a count slot. Mirror of the logs module — see
+// ../../../../internal/storage/parquets3/query_memory_budget.go for the
+// deadlock-freedom rationale (the caller already holds an fi.Size
+// admission that subsumes the plan bytes).
+func (b *fileBudget) addBytes(n int64) func() {
+	if n <= 0 {
+		return func() {}
+	}
+	b.mu.Lock()
+	b.outBytes += n
+	b.mu.Unlock()
+	released := false
+	return func() {
+		b.mu.Lock()
+		if !released {
+			released = true
+			b.outBytes -= n
+			if b.outBytes < 0 {
+				b.outBytes = 0
+			}
+			b.cond.Broadcast()
+		}
+		b.mu.Unlock()
+	}
+}
+
+// chargePlannedFetchBytes is the memory-governor hook handed to
+// s3reader.NewPlannedFetchReaderAt: the planned spans' bytes count against
+// the process-wide file-resident budget for as long as they are held
+// (released by the view's Close, or immediately when a Fetch fails).
+func chargePlannedFetchBytes(n int64) func() {
+	return fileBudgetSem.addBytes(n)
+}

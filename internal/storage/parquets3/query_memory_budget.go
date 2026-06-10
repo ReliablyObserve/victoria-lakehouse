@@ -332,3 +332,44 @@ func acquireFileBudget(ctx context.Context, size int64) (func(), error) {
 func fileBudgetOutstanding() (int64, int) {
 	return fileBudgetSem.outstanding()
 }
+
+// addBytes records n bytes in the budget ledger WITHOUT blocking and
+// without consuming a count slot. Used by the plan-then-fetch path to
+// charge its fetched span bytes against the SAME ledger the decode path's
+// admission control reads (acquire's bytesOK check sees them), so
+// concurrent file admissions become strictly more conservative while the
+// spans are resident. Non-blocking is deliberate and deadlock-free: the
+// caller already holds an fi.Size admission from acquireFileBudget that
+// subsumes the plan (a plan is byte ranges WITHIN the file, capped at
+// s3.projected_fetch_max_bytes), so blocking here could deadlock the
+// worker pool against itself — every worker holding an admission while
+// waiting for budget no other worker can release.
+func (b *fileBudget) addBytes(n int64) func() {
+	if n <= 0 {
+		return func() {}
+	}
+	b.mu.Lock()
+	b.outBytes += n
+	b.mu.Unlock()
+	released := false
+	return func() {
+		b.mu.Lock()
+		if !released {
+			released = true
+			b.outBytes -= n
+			if b.outBytes < 0 {
+				b.outBytes = 0
+			}
+			b.cond.Broadcast()
+		}
+		b.mu.Unlock()
+	}
+}
+
+// chargePlannedFetchBytes is the memory-governor hook handed to
+// s3reader.NewPlannedFetchReaderAt: the planned spans' bytes count against
+// the process-wide file-resident budget for as long as they are held
+// (released by the view's Close, or immediately when a Fetch fails).
+func chargePlannedFetchBytes(n int64) func() {
+	return fileBudgetSem.addBytes(n)
+}

@@ -320,3 +320,84 @@ measured round.
 Run-to-run variance caveat: absolute numbers (and CH's especially) swing with data shape
 and proxy state between runs; within-run ratios and the ops counters are the stable
 signals. Full tables: /tmp/final-{plain,lat}.md preserved in the bench artifacts.
+
+## Batch 3 — Tier-2 plan-then-fetch for projected reads (items 8/9, implemented)
+
+**Root cause recap (from the post-batch-2 measurement above):** for column-projected
+reads the speculative window is the wrong tool — each file open starts a fresh 2 MB
+base window for ~300 KB of projected chunks and closes before any eviction-driven
+learning applies (`readahead_shrink_total = 0`; adaptive state is per-reader-instance).
+~46 MB/q of never-read bytes on filtered_count.
+
+### Design (CH Prefetcher / arrow-rs vectored per-RG)
+
+- **`s3reader.PlannedFetchReaderAt`** (shared by both modules): constructed over the
+  RAW phased reader for projected opens — the open phase (magic probe + optimistic
+  footer tail) passes through as exact-range GETs, with no window in front. After
+  row-group pruning, `armProjectedPlan` derives the exact byte ranges of every
+  matched row group × (projected ∪ push-down filter) column from the parsed footer:
+  the chunk's pages from `min(DictionaryPageOffset, DataPageOffset)` for
+  `TotalCompressedSize` bytes (**dictionary pages included**), plus the chunk's
+  ColumnIndex/OffsetIndex sections (lazy-read by `detectConstantColumns` under
+  `SkipPageIndex(true)` — planning them keeps those reads in-plan). Ranges are
+  coalesced with the file-size-clamped `coalesce_gap_bytes` (the same
+  `mergeRangesWithOverfetch` policy as the coalescing reader) and the spans are
+  fetched CONCURRENTLY — min(4, spans) in flight per file — through the pool's
+  ranged GETs. All decode reads are then served from the spans.
+- **Honesty rules:** out-of-plan reads fall through to the underlying reader (exact
+  GET) and tick `lakehouse_s3_planned_out_of_plan_reads_total` — the plan is a
+  performance contract, never a correctness one. Span bytes are charged to the SAME
+  `fileBudget` ledger the decode admission control reads (non-blocking add — the
+  worker already holds an fi.Size admission that subsumes the plan, so a blocking
+  acquire could deadlock the pool against itself), released on view close or fetch
+  error.
+- **Fallback ladder:** plan over `s3.projected_fetch_max_bytes` (default 16 MB) →
+  `fallback{reason="cap"}` + redirect to the adaptive-window stack over the same
+  raw reader (no second open); span download error → `reason="error"`, same
+  redirect; footer unobtainable → `reason="no-footer"`, full-download path.
+  `s3.projected_fetch_mode: window` is the total rollback (byte-identical to the
+  previous stack). Full scans (no projection) are untouched.
+- **Wired call sites (both modules):** `queryFile` (arms after row-group pruning, so
+  pruned groups cost nothing) and `scanProjectedFieldValues` (arms for all row
+  groups — that path reads everything it projects).
+
+### Unit-measured (deterministic sim, committed as the regression gate)
+
+`TestPlannedFetch_FilteredCountAccessPatternMeasurement` replays the filtered_count
+shape — 28 files × 24 MB, ~300 KB of projected chunks per file (3×100 KB in one
+matched row group), production 2 MB base / 8 MB max windows:
+
+| | bytes on wire | GETs | MB/file |
+|---|--:|--:|--:|
+| window mode (pre-batch-3) | 58.7 MB | 28 | 2.10 |
+| planned mode | **9.2 MB (−84.4%)** | 28 | **0.33** |
+
+Useful bytes are 8.6 MB — the planned path's overhead over useful is the coalescing
+gap only. The ≥75% reduction asserts in CI so the win can't silently regress. Note
+the GET count is EQUAL here (one coalesced span per file vs one window per file) —
+unlike the batch-2 waste-feedback trade-off, this is not buying bytes with round
+trips.
+
+### Bench-capture hardening (the negative-delta bug)
+
+The post-batch-2 round's fulltext S3-ops row was NEGATIVE — a counter snapshot race
+(engine restart between a scenario's before/after snapshots resets counters). The
+capture now validates each snapshot pair monotonic per counter and records `reset`
+cells instead of negative numbers; the summary renders `reset` so a poisoned
+scenario is visible. The S3-ops table also gains `planned B/q` and
+`plan-fallback/q` columns.
+
+### Post-merge measurement protocol (orchestrator, live stack)
+
+Run `scripts/bench/with-s3-latency.sh 100 30 scripts/bench/full-scope-s3-bench.sh`
+and compare to the post-batch-2 tables. Expected:
+
+- filtered_count_1h: waste B/q → ~0 (the window no longer exists on that path),
+  `planned B/q` ≈ a few hundred KB, bytes/q down accordingly; p50 should improve at
+  injected latency (fewer wasted-transfer ms, equal-or-fewer round trips);
+- `lakehouse_s3_projected_fetch_fallback_total` ≈ 0 in steady state (non-zero cap
+  fallbacks → raise `projected_fetch_max_bytes` for that signal);
+- `lakehouse_s3_planned_out_of_plan_reads_total` ≈ 0 (non-zero = the plan misses
+  ranges parquet-go reads — investigate before trusting the bytes win);
+- fulltext/full-scan rows unchanged (window stack untouched) — and now trustworthy,
+  reset-validated.

@@ -21,6 +21,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
@@ -721,17 +722,37 @@ func (s *Storage) preFilterFiles(ctx context.Context, files []manifest.FileInfo,
 // When a cached footer is available and the query projects few columns,
 // it uses S3ReaderAt so parquet-go fetches only the needed column chunks
 // via HTTP range requests. Falls back to full download on any error.
+//
+// Legacy entry point: always uses the adaptive-window stack for the
+// projected range-read path. Callers that can arm a plan-then-fetch view
+// (queryFile, scanProjectedFieldValues) use openParquetFileWithPlan.
 func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, projectedCols map[string]bool) (*parquet.File, error) {
+	f, _, err := s.openParquetFileInternal(ctx, fi, projectedCols, false)
+	return f, err
+}
+
+// openParquetFileWithPlan is openParquetFile for callers that arm a
+// plan-then-fetch view (S3 Tier-2 items 8/9). When the projected
+// range-read path engages and s3.projected_fetch_mode is "planned"
+// (default), the returned view is non-nil: the caller derives the exact
+// column-chunk ranges of its matched row groups, arms the view via
+// armProjectedPlan, and MUST Close it when the file's processing
+// completes. "window" mode (the rollback) always returns a nil view and
+// the adaptive-window stack — byte-identical to the previous behavior.
+func (s *Storage) openParquetFileWithPlan(ctx context.Context, fi manifest.FileInfo, projectedCols map[string]bool) (*parquet.File, *s3reader.PlannedFetchReaderAt, error) {
+	usePlanned := s.cfg.S3.ProjectedFetchMode != config.ProjectedFetchModeWindow
+	return s.openParquetFileInternal(ctx, fi, projectedCols, usePlanned)
+}
+
+func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileInfo, projectedCols map[string]bool, usePlanned bool) (*parquet.File, *s3reader.PlannedFetchReaderAt, error) {
 	// Range-read path: requires footer cache (to know total column count)
 	// and a non-empty projection that covers fewer than half the columns.
 	if s.footerCache != nil && projectedCols != nil && s.pool != nil {
 		if cached, ok := s.footerCache.Get(fi.Key); ok {
 			totalCols := len(cached.File.Root().Columns())
 			if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
-				f, err := s.openRangedParquet(ctx, fi, cached.File.Schema())
-				if err == nil {
-					metrics.S3RangeReadsTotal.Inc()
-					return f, nil
+				if f, view, err := s.openProjectedParquet(ctx, fi, cached.File.Schema(), usePlanned); err == nil {
+					return f, view, nil
 				}
 			}
 		} else if fi.Size >= minFileSizeForPrefetch && len(projectedCols) <= 3 {
@@ -744,6 +765,7 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 				offset = 0
 			}
 			metrics.S3GetsByPhase.Inc("footer")
+			footerOK := false
 			tail, err := s.pool.DownloadRangeDedup(ctx, "footer", fi.Key, offset, fi.Size-offset)
 			if err == nil && len(tail) >= 8 {
 				if footerLen, fErr := FooterLength(tail[len(tail)-8:]); fErr == nil {
@@ -751,18 +773,23 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 					if totalFooterBytes <= len(tail) {
 						footerSlice := tail[len(tail)-totalFooterBytes:]
 						if cachedF, _, pErr := ParseFooterFromBytes(fi.Key, footerSlice, fi.Size); pErr == nil {
+							footerOK = true
 							s.footerCache.Put(fi.Key, cachedF)
 							totalCols := len(cachedF.File.Root().Columns())
 							if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
-								f, rErr := s.openRangedParquet(ctx, fi, cachedF.File.Schema())
-								if rErr == nil {
-									metrics.S3RangeReadsTotal.Inc()
-									return f, nil
+								if f, view, rErr := s.openProjectedParquet(ctx, fi, cachedF.File.Schema(), usePlanned); rErr == nil {
+									return f, view, nil
 								}
 							}
 						}
 					}
 				}
+			}
+			if usePlanned && !footerOK {
+				// The planned path needs the footer for its range plan and
+				// could not get one — the file is read via the full-download
+				// path below instead.
+				metrics.S3ProjectedFetchFallback.Inc("no-footer")
 			}
 		}
 	}
@@ -796,7 +823,7 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 			if err == nil {
 				metrics.S3RangeReadsTotal.Inc()
 				metrics.ParquetFilesOpened.Inc()
-				return f, nil
+				return f, nil, nil
 			}
 			// On open failure fall through to the full download
 			// path — same defensive pattern as the projected
@@ -807,7 +834,7 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 	// Full download path (existing behaviour).
 	data, err := s.getFileData(ctx, fi.Key, fi.Size)
 	if err != nil {
-		return nil, fmt.Errorf("get file data %s: %w", fi.Key, err)
+		return nil, nil, fmt.Errorf("get file data %s: %w", fi.Key, err)
 	}
 
 	metrics.ParquetFilesOpened.Inc()
@@ -819,7 +846,7 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 	// size) in the range-read path above.
 	f, parseErr := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
 	if parseErr != nil {
-		return nil, fmt.Errorf("open parquet file %s: %w", fi.Key, parseErr)
+		return nil, nil, fmt.Errorf("open parquet file %s: %w", fi.Key, parseErr)
 	}
 	if s.footerCache != nil {
 		s.footerCache.Put(fi.Key, &CachedFooter{
@@ -827,7 +854,7 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 			FileSize: int64(len(data)),
 		})
 	}
-	return f, nil
+	return f, nil, nil
 }
 
 func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, writeBlock logstorage.WriteDataBlockFunc) error {
@@ -886,9 +913,16 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	}
 	defer relFB()
 
-	f, err := s.openParquetFile(ctx, fi, projectedCols)
+	// Plan-then-fetch (S3 Tier-2): on the projected range-read path the
+	// returned view is armed AFTER row-group pruning below with the exact
+	// coalesced column-chunk ranges, replacing the speculative window.
+	// Close releases the fetched spans and their memory-budget charge.
+	f, planned, err := s.openParquetFileWithPlan(ctx, fi, projectedCols)
 	if err != nil {
 		return err
+	}
+	if planned != nil {
+		defer func() { _ = planned.Close() }()
 	}
 
 	if s.labelIndex.Len() == 0 {
@@ -922,7 +956,10 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	}
 
 	// Pre-filter row groups using metadata (time range, bloom, pushdown, token bloom).
-	var matchedRGs []parquet.RowGroup
+	// The footer ORDINAL of each matched row group travels with it — the
+	// plan-then-fetch arming below derives the matched groups' column-chunk
+	// byte ranges from meta.RowGroups[idx].
+	var matchedRGs []indexedRowGroup
 	for rgIdx, rg := range rowGroups {
 		if tsIdx >= 0 && !rowGroupMatchesTimeRange(rg, tsIdx, startNs, endNs) {
 			metrics.ParquetRowGroupsSkipped.Inc("stats")
@@ -940,13 +977,13 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 			metrics.ParquetRowGroupsSkipped.Inc("token_bloom")
 			continue
 		}
-		matchedRGs = append(matchedRGs, rg)
+		matchedRGs = append(matchedRGs, indexedRowGroup{idx: rgIdx, rg: rg})
 	}
 
 	// Sort by estimated cost (smallest first) so workers finish small RGs
 	// quickly and pick up larger ones, improving load balance.
 	sort.Slice(matchedRGs, func(i, j int) bool {
-		return matchedRGs[i].NumRows() < matchedRGs[j].NumRows()
+		return matchedRGs[i].rg.NumRows() < matchedRGs[j].rg.NumRows()
 	})
 
 	// Metadata-only fast path: when projecting only the timestamp column
@@ -955,19 +992,31 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	// using row counts from Parquet metadata.
 	tsOnly := len(projectedCols) == 1 && projectedCols[s.registry.TimestampColumn()]
 	if tsOnly && tsIdx >= 0 {
-		var deferred []parquet.RowGroup
-		for _, rg := range matchedRGs {
-			if rowGroupFullyInRange(rg, tsIdx, startNs, endNs) {
+		var deferred []indexedRowGroup
+		for _, m := range matchedRGs {
+			if rowGroupFullyInRange(m.rg, tsIdx, startNs, endNs) {
 				metrics.ParquetRowGroupsScanned.Inc()
-				db := s.syntheticTimestampBlock(rg, tsIdx, startNs, endNs)
+				db := s.syntheticTimestampBlock(m.rg, tsIdx, startNs, endNs)
 				if db != nil && db.RowsCount() > 0 {
 					writeBlock(0, db)
 				}
 			} else {
-				deferred = append(deferred, rg)
+				deferred = append(deferred, m)
 			}
 		}
 		matchedRGs = deferred
+	}
+
+	// Plan-then-fetch: with the surviving row groups known, fetch the exact
+	// coalesced byte ranges of (projected + push-down filter) column chunks
+	// concurrently. Decode reads below are then served from the fetched
+	// spans — no speculative window, no per-window waste.
+	if planned != nil && len(matchedRGs) > 0 {
+		rgIdxs := make([]int, len(matchedRGs))
+		for i, m := range matchedRGs {
+			rgIdxs[i] = m.idx
+		}
+		s.armProjectedPlan(ctx, planned, f, rgIdxs, projectedCols, pdf)
 	}
 
 	// Process matched row groups SERIALLY within a single file. The outer
@@ -977,12 +1026,12 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	// — easily exceeding the 2 GiB container limit on wildcard queries.
 	// VL's searchParallel keeps fanout bounded by workersCount (matches
 	// cgroup.AvailableCPUs), and our adapter must do the same.
-	for _, rg := range matchedRGs {
+	for _, m := range matchedRGs {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		metrics.ParquetRowGroupsScanned.Inc()
-		if err := s.readOneRowGroup(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr); err != nil {
+		if err := s.readOneRowGroup(f, m.rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr); err != nil {
 			return err
 		}
 	}

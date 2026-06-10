@@ -341,9 +341,15 @@ func (s *Storage) scanProjectedFieldValues(
 		}
 	}
 
-	f, err := s.openParquetFile(ctx, fi, projectedCols)
+	// Plan-then-fetch (S3 Tier-2): this path reads EVERY row group's
+	// projected chunks, so the plan covers all row groups — armed right
+	// after open, before the chunk readers below issue any page reads.
+	f, planned, err := s.openParquetFileWithPlan(ctx, fi, projectedCols)
 	if err != nil {
 		return err
+	}
+	if planned != nil {
+		defer func() { _ = planned.Close() }()
 	}
 
 	fullColNames := columnNames(f.Root())
@@ -363,6 +369,14 @@ func (s *Storage) scanProjectedFieldValues(
 	if targetInProjection < 0 {
 		// Target column not present in this file — nothing to collect.
 		return nil
+	}
+
+	if planned != nil {
+		rgIdxs := make([]int, len(f.RowGroups()))
+		for i := range rgIdxs {
+			rgIdxs[i] = i
+		}
+		s.armProjectedPlan(ctx, planned, f, rgIdxs, projectedCols, nil)
 	}
 
 	buf := make([]parquet.Row, 256)
