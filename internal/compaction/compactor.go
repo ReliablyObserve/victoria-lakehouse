@@ -283,6 +283,17 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		}
 	}
 
+	// Pick the per-output-level row-group size the same way: the
+	// progressive schedule beats the static c.rowGroupSize, and an
+	// empty schedule (accessor returns 0) keeps pre-schedule
+	// deployments behaviour-compatible. Default schedule doubles the
+	// row-group size for L2+ rollups — cold scan-heavy files trade
+	// row-group pruning granularity for better compression.
+	rowGroupSizeForOutput := c.rowGroupSize
+	if scheduled := c.cfg.RowGroupSizeForOutput(outputLevel); scheduled > 0 {
+		rowGroupSizeForOutput = scheduled
+	}
+
 	switch c.mode {
 	case config.ModeLogs:
 		merged, err := c.mergeLogFiles(allData)
@@ -298,7 +309,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 			// schema.LogRowTimeBounds.
 			minTime, maxTime = schema.LogRowTimeBounds(merged)
 		}
-		outputData, err = writeCompactedLogs(merged, c.rowGroupSize, levelForOutput)
+		outputData, err = writeCompactedLogs(merged, rowGroupSizeForOutput, levelForOutput)
 		if err != nil {
 			return nil, fmt.Errorf("write compacted logs: %w", err)
 		}
@@ -313,7 +324,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 			// True min/max scan — same rationale as the logs branch above.
 			minTime, maxTime = schema.TraceRowTimeBounds(merged)
 		}
-		outputData, err = writeCompactedTraces(merged, c.rowGroupSize, levelForOutput)
+		outputData, err = writeCompactedTraces(merged, rowGroupSizeForOutput, levelForOutput)
 		if err != nil {
 			return nil, fmt.Errorf("write compacted traces: %w", err)
 		}

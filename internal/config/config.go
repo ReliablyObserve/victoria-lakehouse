@@ -615,6 +615,21 @@ type CompactionConfig struct {
 	// last configured slot, or to Insert.CompressionLevel if the slice
 	// is empty.
 	CompressionLevelByOutputLevel []int `yaml:"compression_level_by_output_level"`
+
+	// RowGroupSizeByOutputLevel sets the Parquet row-group size (max
+	// rows per row group) used when emitting a compacted file at
+	// output level i — same slot semantics as
+	// CompressionLevelByOutputLevel (index 0 = L0 rewrite, 1 = L0→L1,
+	// 2 = L1→L2, ...). Default [10000, 10000, 20000]: L0/L1 outputs
+	// keep the historical row-group size (the Insert.RowGroupSize
+	// default), L2+ rollups double it — cold rollups are scan-heavy
+	// and rarely pruned at row-group granularity, so fewer/larger row
+	// groups buy compression (dictionaries amortized over more rows,
+	// fewer page + row-group headers) at a modest pruning-granularity
+	// cost. Out-of-range output levels fall back to the last
+	// configured slot, or to Insert.RowGroupSize if the slice is
+	// empty.
+	RowGroupSizeByOutputLevel []int `yaml:"row_group_size_by_output_level"`
 }
 
 // CompressionLevelForOutput returns the configured zstd level for the
@@ -635,6 +650,27 @@ func (c *CompactionConfig) CompressionLevelForOutput(outputLevel int) int {
 		outputLevel = 0
 	}
 	return c.CompressionLevelByOutputLevel[outputLevel]
+}
+
+// RowGroupSizeForOutput returns the configured Parquet row-group size
+// for the given compaction output level. Same contract as
+// CompressionLevelForOutput: saturates to the last configured slot for
+// deeper rollups (so [10000, 20000] yields 20000 for level 5 instead
+// of an out-of-bounds panic), and returns 0 when the slice is empty —
+// the compactor treats that as "use the static Insert.RowGroupSize"
+// so deployments that clear the schedule keep the pre-schedule
+// behaviour.
+func (c *CompactionConfig) RowGroupSizeForOutput(outputLevel int) int {
+	if len(c.RowGroupSizeByOutputLevel) == 0 {
+		return 0
+	}
+	if outputLevel >= len(c.RowGroupSizeByOutputLevel) {
+		outputLevel = len(c.RowGroupSizeByOutputLevel) - 1
+	}
+	if outputLevel < 0 {
+		outputLevel = 0
+	}
+	return c.RowGroupSizeByOutputLevel[outputLevel]
 }
 
 type DeleteConfig struct {
@@ -883,6 +919,17 @@ func Default() *Config {
 			// everywhere; operators chasing every byte can override
 			// with their own array once we have a finer codec.
 			CompressionLevelByOutputLevel: []int{3, 7, 11},
+			// Row-group size schedule, same slot semantics. L0/L1
+			// outputs keep the historical 10k rows per row group
+			// (= the Insert.RowGroupSize default); L2+ rollups double
+			// to 20k. Cold rollups are scan-heavy and rarely benefit
+			// from row-group-granularity pruning, so fewer/larger
+			// groups trade a little pruning resolution for better
+			// compression (dictionaries amortized over 2× the rows,
+			// half the page/row-group header overhead). Measured on
+			// real L2 files — see
+			// docs/architecture/parquet-compression-research.md.
+			RowGroupSizeByOutputLevel: []int{10000, 10000, 20000},
 		},
 
 		Delete: DeleteConfig{
@@ -1243,6 +1290,11 @@ func (c *Config) validateSubsystems() error {
 		}
 		if c.Compaction.MinFilesL1 < 2 {
 			return fmt.Errorf("--lakehouse.compaction.min-files-l1 must be >= 2")
+		}
+		for i, n := range c.Compaction.RowGroupSizeByOutputLevel {
+			if n <= 0 {
+				return fmt.Errorf("--lakehouse.compaction.row-group-size-by-output-level slot %d must be positive, got %d", i, n)
+			}
 		}
 	}
 
@@ -1900,6 +1952,12 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Compaction.DailyRollupAge > 0 {
 		base.Compaction.DailyRollupAge = overlay.Compaction.DailyRollupAge
+	}
+	if len(overlay.Compaction.CompressionLevelByOutputLevel) > 0 {
+		base.Compaction.CompressionLevelByOutputLevel = overlay.Compaction.CompressionLevelByOutputLevel
+	}
+	if len(overlay.Compaction.RowGroupSizeByOutputLevel) > 0 {
+		base.Compaction.RowGroupSizeByOutputLevel = overlay.Compaction.RowGroupSizeByOutputLevel
 	}
 
 	// Delete

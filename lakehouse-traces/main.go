@@ -86,6 +86,7 @@ var (
 	compactionEnabled        = flag.Bool("lakehouse.compaction.enabled", false, "Enable compaction scheduler")
 	compactionInterval       = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
 	compactionDailyRollupAge = flag.Duration("lakehouse.compaction.daily-rollup-age", 0, "Minimum partition age for daily rollup compaction (default: 24h)")
+	compactionRowGroupSizes  = flag.String("lakehouse.compaction.row-group-size-by-output-level", "", "Comma-separated Parquet row-group sizes per compaction output level, slot N = output level N (default: 10000,10000,20000)")
 
 	queryFileWorkers      = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 8)")
 	queryMaxFilesPerQuery = flag.Int("lakehouse.query.max-files-per-query", 0, "Max S3 files per query before rejection (default: 500)")
@@ -1580,6 +1581,29 @@ func applyCompactionFlags(c *config.CompactionConfig) {
 	if *compactionDailyRollupAge > 0 {
 		c.DailyRollupAge = *compactionDailyRollupAge
 	}
+	if s := *compactionRowGroupSizes; s != "" {
+		sizes, err := parseIntList(s)
+		if err != nil {
+			logger.Fatalf("invalid -lakehouse.compaction.row-group-size-by-output-level %q: %s", s, err)
+		}
+		c.RowGroupSizeByOutputLevel = sizes
+	}
+}
+
+// parseIntList parses a comma-separated list of positive integers
+// (the flag form of the per-output-level schedules; config.Validate
+// re-checks positivity for the YAML path).
+func parseIntList(s string) ([]int, error) {
+	parts := strings.Split(s, ",")
+	out := make([]int, 0, len(parts))
+	for _, p := range parts {
+		n, err := strconv.Atoi(strings.TrimSpace(p))
+		if err != nil {
+			return nil, fmt.Errorf("not an integer: %q", p)
+		}
+		out = append(out, n)
+	}
+	return out, nil
 }
 
 // applyQueryLegacyFlags applies the pre-resourcebound query-related
