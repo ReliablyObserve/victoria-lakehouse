@@ -1,8 +1,8 @@
 apiVersion: v2
 name: victoria-lakehouse
 description: S3-backed cold storage for VictoriaLogs and VictoriaTraces with insert and select components
-version: 0.83.1
-appVersion: "0.83.1"
+version: 0.84.1
+appVersion: "0.84.1"
 type: application
 home: https://github.com/ReliablyObserve/victoria-lakehouse
 sources:
