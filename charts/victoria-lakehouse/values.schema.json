@@ -80,6 +80,57 @@
             }
           }
         },
+        "compaction": {
+          "type": "object",
+          "description": "Background Parquet compaction (election-free, HRW-owned).",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "interval": {
+              "type": "string",
+              "description": "Compaction scan interval (Go duration)"
+            },
+            "max_concurrent": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "min_files_l0": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "min_files_l1": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "min_age": {
+              "type": "string",
+              "description": "Minimum file age before compaction eligibility (Go duration)"
+            },
+            "daily_rollup_age": {
+              "type": "string",
+              "description": "Minimum partition age for daily rollup compaction (Go duration)"
+            },
+            "compression_level_by_output_level": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "description": "Progressive zstd schedule: slot N = compression level for output files at compaction level N (saturates at last slot; empty = insert.compression_level)"
+            },
+            "row_group_size_by_output_level": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "description": "Parquet row-group size schedule: slot N = max rows per row group for output files at compaction level N (saturates at last slot; empty = insert.row_group_size)"
+            }
+          },
+          "additionalProperties": false
+        },
         "pmeta": {
           "type": "object",
           "description": "pmeta unified partition-metadata layer (catalog + file-meta + bloom facets). Default on; disabling is a degraded mode.",

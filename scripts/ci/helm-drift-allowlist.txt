@@ -18,14 +18,6 @@ cache.partition_mode
 cache.warmup_concurrency
 cache.warmup_max_files
 cache.warmup_partitions
-compaction.compression_level_by_output_level
-compaction.daily_rollup_age
-compaction.enabled
-compaction.interval
-compaction.max_concurrent
-compaction.min_age
-compaction.min_files_l0
-compaction.min_files_l1
 cross_signal.auth_key
 cross_signal.batch_interval
 cross_signal.enabled
