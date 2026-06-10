@@ -644,3 +644,97 @@ func containsOrOperatorQuoted(query string) bool {
 	}
 	return strings.Contains(query, " or ") || strings.Contains(query, " OR ")
 }
+
+// countPushdownFilterFields returns the COMPLETE set of fields the filter
+// references, with ok=true only when every AST node is a type this function
+// explicitly knows. Unlike FilterReferencedFields (best-effort, silently
+// skips unknown composites), this is a SOUNDNESS gate: serving a filtered
+// count from LabelAggregates requires proving the filter references nothing
+// but the aggregated field — synthetic rows reproduce only that field's
+// distribution, so a filter touching ANY other column would evaluate against
+// fabricated values. Unknown node type ⇒ ok=false ⇒ caller falls back to the
+// scan path. Time/stream nodes report pseudo-fields so callers can reject
+// them explicitly. filterEqField/filterLeField reference TWO fields — both
+// are reported (and naturally disqualify the single-field gate).
+func countPushdownFilterFields(f *logstorage.Filter) (map[string]bool, bool) {
+	fields := map[string]bool{}
+	if f == nil {
+		return fields, true
+	}
+	inner := filterInner(f)
+	if astTypeName(derefValue(inner)) == "" {
+		return nil, false
+	}
+	ok := true
+	var walk func(v reflect.Value, inherited string)
+	walk = func(v reflect.Value, inherited string) {
+		if !ok {
+			return
+		}
+		v = derefValue(v)
+		name := astTypeName(v)
+		switch name {
+		case astTypeAnd, astTypeOr:
+			filters := v.FieldByName("filters")
+			if !filters.IsValid() || filters.Kind() != reflect.Slice {
+				ok = false
+				return
+			}
+			for i := 0; i < filters.Len(); i++ {
+				walk(filters.Index(i), inherited)
+			}
+		case astTypeNot:
+			walk(v.FieldByName("f"), inherited)
+		case astTypeGeneric:
+			// newer VL: the field scope lives on the generic WRAPPER; the
+			// wrapped leaf's own fieldName is empty. Inherit it downward.
+			fn := stringField(v, "fieldName")
+			if fn == "" {
+				ok = false
+				return
+			}
+			fields[fn] = true
+			walk(v.FieldByName("f"), fn)
+		case astTypeExact, astTypeIn, astTypePhrase, astTypePrefix,
+			"filterExactPrefix", "filterAnyCasePhrase", "filterAnyCasePrefix",
+			"filterContainsAll", "filterContainsAny", "filterContainsCommonCase",
+			"filterEqualsCommonCase", "filterJSONArrayContainsAny",
+			"filterIPv4Range", "filterIPv6Range", "filterLenRange",
+			"filterPatternMatch", "filterRange", "filterRegexp",
+			"filterSequence", "filterStringRange", "filterSubstring",
+			"filterValueType":
+			fn := stringField(v, "fieldName")
+			if fn == "" {
+				fn = inherited // older VL puts fieldName on the leaf; newer inherits from filterGeneric
+			}
+			if fn == "" {
+				// no field scope anywhere — upstream layout changed; refuse
+				ok = false
+				return
+			}
+			fields[fn] = true
+		case "filterEqField", "filterLeField":
+			fn, other := stringField(v, "fieldName"), stringField(v, "otherFieldName")
+			if fn == "" || other == "" {
+				ok = false
+				return
+			}
+			fields[fn] = true
+			fields[other] = true
+		case astTypeNoop:
+		case astTypeTime, astTypeDayRange, astTypeWeekRange:
+			fields["_time"] = true
+		case astTypeStream:
+			fields["_stream"] = true
+		case astTypeStreamID:
+			fields["_stream_id"] = true
+		default:
+			ok = false
+		}
+	}
+	walk(inner, "")
+	if !ok {
+		return nil, false
+	}
+	return fields, true
+}
