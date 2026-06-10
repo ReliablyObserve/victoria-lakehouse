@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.82.0] - 2026-06-10
+
 ### Changed
 
 - **pmeta is now the metadata layer, period: legacy sidecar WRITERS deleted, `pmeta.enabled` default ON.** The hard cleanup after the consolidation baked: `Manifest.WritePartitionSidecar` (the `_file_metadata.json` S3 writer), the logs `storageBloomObserver` write side (per-file `.bloom` + partition `_bloom.bin` writers) + the `BloomObserver` interface, and the traces `FlushHook` bloom feed, `PersistBloomIndex`, and `BackfillBloomIndex` are **removed** — there is no code path that writes the legacy sidecars anymore. The `-lakehouse.pmeta.retire-sidecar-writes` flag (and its config key + validation) is gone with them; `-lakehouse.pmeta.enabled` now defaults to **true** and is the explicit opt-out into a degraded mode (no catalog/bloom for new files; cold restarts warm from footers only). **Read-fallbacks for pre-pmeta data are kept one more release**: `LoadSidecars`/`LoadSidecarsForPartitions`, the `.bloom`/`bloomCache` readers, and the traces `bloomIdx` load. 58 tests of the deleted machinery were removed; tests that used it as setup now seed the read paths directly (`MarshalFileMetaSidecar` + mock S3 / `bloomS3Loader`). Post-switch benchmark recorded in `docs/benchmarks/full-scope-s3.md`: cold LH at parity with hot VL on every scan scenario and 2.7–10× faster on metadata queries; CH-over-S3 trails 30–40×.
