@@ -671,6 +671,52 @@ func (m *Manifest) listCommonPrefixes(ctx context.Context, client *s3.Client, pr
 	return out, nil
 }
 
+// mergeRefreshedFilesLocked folds a fresh S3-list file map into the tracked
+// state (caller holds m.mu). For keys we already track, the ENTIRE tracked
+// entry is preserved — S3 objects are immutable (same key ⇒ same content), so
+// the tracked entry is authoritative for everything the list can tell us. The
+// previous field-by-field preserve list silently dropped every enrichment
+// field someone forgot to add: LabelAggregates (added by PERF-2 after that
+// list was written) was wiped on every 30s refresh, killing the
+// count-pushdown fast path — groupby/count queries scanned ~100 files instead
+// of being answered from the manifest. TestRefresh_PreservesEveryEnrichmentField
+// (reflection over FileInfo) keeps this from regressing when fields are added.
+// Files without explicit time bounds get [hour, hour+1h) inferred from the
+// partition key (pre-process files / post-restart lists).
+func (m *Manifest) mergeRefreshedFilesLocked(files map[string][]FileInfo) {
+	for partition, newFiles := range files {
+		oldFiles := m.files[partition]
+		if len(oldFiles) == 0 {
+			continue
+		}
+		oldByKey := make(map[string]FileInfo, len(oldFiles))
+		for _, of := range oldFiles {
+			oldByKey[of.Key] = of
+		}
+		for i := range newFiles {
+			if old, ok := oldByKey[newFiles[i].Key]; ok {
+				newFiles[i] = old
+			}
+		}
+	}
+	for partition, pFiles := range files {
+		t, err := parsePartitionTime(partition)
+		if err != nil {
+			continue
+		}
+		pMinNs := t.UnixNano()
+		pMaxNs := t.Add(time.Hour).UnixNano() - 1
+		for i := range pFiles {
+			if pFiles[i].MinTimeNs == 0 {
+				pFiles[i].MinTimeNs = pMinNs
+			}
+			if pFiles[i].MaxTimeNs == 0 {
+				pFiles[i].MaxTimeNs = pMaxNs
+			}
+		}
+	}
+}
+
 func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	var (
 		files      map[string][]FileInfo
@@ -731,50 +777,7 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	}
 
 	m.mu.Lock()
-	// Preserve enrichment fields from previously tracked files (lost on S3 list).
-	for partition, newFiles := range files {
-		oldFiles := m.files[partition]
-		if len(oldFiles) == 0 {
-			continue
-		}
-		oldByKey := make(map[string]FileInfo, len(oldFiles))
-		for _, of := range oldFiles {
-			oldByKey[of.Key] = of
-		}
-		for i := range newFiles {
-			if old, ok := oldByKey[newFiles[i].Key]; ok {
-				newFiles[i].Labels = old.Labels
-				newFiles[i].ColumnStats = old.ColumnStats
-				newFiles[i].RowCount = old.RowCount
-				newFiles[i].RawBytes = old.RawBytes
-				newFiles[i].MinTimeNs = old.MinTimeNs
-				newFiles[i].MaxTimeNs = old.MaxTimeNs
-				newFiles[i].SchemaFingerprint = old.SchemaFingerprint
-				newFiles[i].StorageClass = old.StorageClass
-				newFiles[i].CompactionLevel = old.CompactionLevel
-				newFiles[i].CreatedAt = old.CreatedAt
-			}
-		}
-	}
-	// Infer MinTimeNs/MaxTimeNs from partition key for files that don't
-	// have explicit time bounds (e.g. files from before this process or
-	// after a restart). Hourly partitions give us [hour, hour+1h) bounds.
-	for partition, pFiles := range files {
-		t, err := parsePartitionTime(partition)
-		if err != nil {
-			continue
-		}
-		pMinNs := t.UnixNano()
-		pMaxNs := t.Add(time.Hour).UnixNano() - 1
-		for i := range pFiles {
-			if pFiles[i].MinTimeNs == 0 {
-				pFiles[i].MinTimeNs = pMinNs
-			}
-			if pFiles[i].MaxTimeNs == 0 {
-				pFiles[i].MaxTimeNs = pMaxNs
-			}
-		}
-	}
+	m.mergeRefreshedFilesLocked(files)
 
 	// Cliff guard. A transient S3 LIST hiccup (toxiproxy spike, brief
 	// partial pagination, network blip mid-refresh) can return success
