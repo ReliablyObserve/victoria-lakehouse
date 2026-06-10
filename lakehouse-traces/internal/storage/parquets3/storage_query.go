@@ -461,10 +461,50 @@ const (
 // as scanning. Self-guards downstream: only files carrying a LabelAggregate for the
 // field are served from metadata.
 func countByPushdownField(pipeFields []string, filter *logstorage.Filter) string {
-	if filter != nil || len(pipeFields) != 1 {
+	if len(pipeFields) > 1 {
 		return ""
 	}
-	return pipeFields[0]
+	if filter == nil {
+		if len(pipeFields) == 1 {
+			return pipeFields[0]
+		}
+		return ""
+	}
+	// FILTERED count pushdown: sound when the filter provably references
+	// exactly ONE plain field and the pipes reference no other field. The
+	// synthetic rows reproduce that field's full value distribution
+	// (including the empty-value group), and preFilter applies the REAL
+	// filter to every emitted block downstream — so any filter shape over
+	// that one field (word match, exact, prefix, negation, OR of values…)
+	// evaluates against the same values a scan would produce. A filter
+	// touching any other column (or _time/_stream pseudo-fields, which
+	// synthetic rows fabricate) disqualifies; unknown AST nodes disqualify
+	// (countPushdownFilterFields is the strict soundness gate).
+	fields, ok := countPushdownFilterFields(filter)
+	if !ok {
+		return ""
+	}
+	// "_time" is permitted alongside the one plain field: the containment
+	// check runs against q.GetFilterTimeRange() — the EFFECTIVE range after
+	// VL intersects params with any embedded _time filters — and synthetic
+	// timestamps interpolate within the file's [MinTimeNs,MaxTimeNs], which
+	// containment places inside that same range. So the time filter passes
+	// synthetic rows exactly as it passes a contained file's real rows.
+	delete(fields, "_time")
+	if len(fields) != 1 {
+		return ""
+	}
+	var f string
+	for k := range fields {
+		f = k
+	}
+	if f == "" || f == "_stream" || f == "_stream_id" || f == "_msg" {
+		return ""
+	}
+	if len(pipeFields) == 1 && pipeFields[0] != f {
+		return ""
+	}
+	return f
 }
 
 // manifestCountFastPath serves files FULLY within [startNs,endNs] that carry a

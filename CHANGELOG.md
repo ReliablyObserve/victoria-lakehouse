@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Filtered counts are now metadata-served: `service.name:api-gateway | stats count()` answers from manifest `LabelAggregates` with zero S3 reads (both modules).** The count-pushdown fast path previously required NO row filter. The new strict AST gate (`countPushdownFilterFields` — every node type explicitly recognized, unknown ⇒ refuse, `filterEqField`-style two-field nodes report both fields) proves when a filter references nothing but the one aggregated field (any shape over it: word match, exact, prefix, IN, negation, ORs — plus the `_time` filter, which is sound because containment runs against the EFFECTIVE `q.GetFilterTimeRange()` and synthetic timestamps interpolate within the contained file's bounds). The synthetic distribution rows then flow through `preFilter`, which applies the REAL filter downstream — exactness by construction, pinned by integration tests (filtered-equals-scan with the fast path FIRING, cross-field filters still skipping, the old skip-test inverted deliberately). This targets the last structural benchmark laggard: filtered_count at 100 ms S3 latency was 3.0× CH via a ~50 GETs/q scan; for aggregated+contained files it becomes a ~0-GET metadata answer like unfiltered counts (which run at 0.7× CH).
+
+
 ## [0.86.0] - 2026-06-10
 
 ## [0.85.0] - 2026-06-10
