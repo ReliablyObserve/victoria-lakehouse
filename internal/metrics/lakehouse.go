@@ -88,6 +88,35 @@ var (
 	// by singleflight (concurrent queries asking for the same object key
 	// shared one in-flight GET). kind: footer | bloom | pmeta_bundle.
 	S3MetaSingleflightDedup = NewCounterVec("lakehouse_s3_singleflight_dedup_total", "kind")
+
+	// Plan-then-fetch observability (S3 Tier-2 items 8/9). The planned path
+	// replaces the speculative read-ahead window on column-projected reads:
+	// exact coalesced column-chunk ranges are fetched up-front (CH
+	// Prefetcher / arrow-rs vectored per-RG pattern), eliminating the
+	// measured ~46 MB/query of never-read window bytes on filtered counts.
+	//
+	// S3PlannedFetchesTotal counts armed plans (one per projected file
+	// read); SpansTotal / BytesTotal divided by it give the per-fetch span
+	// count and bytes on the wire — the numbers that replace the window
+	// path's wasted-bytes accounting for projected reads.
+	S3PlannedFetchesTotal    = NewCounter("lakehouse_s3_planned_fetches_total")
+	S3PlannedFetchSpansTotal = NewCounter("lakehouse_s3_planned_fetch_spans_total")
+	S3PlannedFetchBytesTotal = NewCounter("lakehouse_s3_planned_fetch_bytes_total")
+
+	// S3PlannedOutOfPlanReads counts reads an ARMED planned view could not
+	// serve from its fetched spans and passed through to the underlying
+	// reader (exact-range GET). Steady-state this should be ~0; a non-zero
+	// rate means the plan misses ranges parquet-go actually reads (e.g. a
+	// lazily-loaded metadata section) — a tuning signal, never an error.
+	S3PlannedOutOfPlanReads = NewCounter("lakehouse_s3_planned_out_of_plan_reads_total")
+
+	// S3ProjectedFetchFallback counts projected reads that fell back from
+	// the planned path to the adaptive-window path, by reason:
+	//   cap       — the coalesced plan exceeded s3.projected_fetch_max_bytes
+	//   no-footer — footer metadata unavailable (cache miss + inline footer
+	//               fetch failed), so no plan could be derived
+	//   error     — the ranged open or the span download failed
+	S3ProjectedFetchFallback = NewCounterVec("lakehouse_s3_projected_fetch_fallback_total", "reason")
 )
 
 // Cache metrics
