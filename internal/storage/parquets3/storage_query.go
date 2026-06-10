@@ -2340,9 +2340,43 @@ func fileLabelsMatch(values []string, check PushDownCheck) bool {
 	return false
 }
 
+// columnIndexTimeBounds returns the row group's true timestamp bounds by
+// aggregating min/max across EVERY page of the timestamp column index.
+//
+// Parquet pages within a row group are NOT guaranteed to be sorted by the
+// timestamp column — even for logs the columnar writer can reorder rows to
+// improve compression (and the (stream_id, timestamp) row order makes
+// out-of-order pages the norm). Taking MinValue(0) and MaxValue(N-1) as
+// row-group bounds understates the range whenever the smallest/largest
+// timestamps live in a middle page: rowGroupMatchesTimeRange skipped matching
+// row groups, rowGroupFullyInRange wrongly declared FULL containment (emitting
+// out-of-range rows), and enrichManifestFromFooter / enrichFromCachedFooter
+// landed wrong bounds in the manifest. All those helpers now share this
+// aggregate scan — mirroring rowGroupMatchesFilter / detectConstantColumns.
+// Keep in sync with the traces module
+// (lakehouse-traces/internal/storage/parquets3/storage_query.go). Callers must
+// ensure idx.NumPages() > 0.
+func columnIndexTimeBounds(idx parquet.ColumnIndex) (minNs, maxNs int64) {
+	minNs = idx.MinValue(0).Int64()
+	maxNs = idx.MaxValue(0).Int64()
+	for p := 1; p < idx.NumPages(); p++ {
+		if v := idx.MinValue(p).Int64(); v < minNs {
+			minNs = v
+		}
+		if v := idx.MaxValue(p).Int64(); v > maxNs {
+			maxNs = v
+		}
+	}
+	return minNs, maxNs
+}
+
 // rowGroupFullyInRange returns true when the row group's timestamp range
 // is entirely contained within [startNs, endNs]. This means every row in
 // the group is within the query range and no per-row filtering is needed.
+// The bounds MUST be the aggregate across all pages (columnIndexTimeBounds):
+// the old MinValue(0)/MaxValue(N-1) form declared full containment for row
+// groups whose out-of-range extremes lived in middle pages, emitting rows
+// OUTSIDE the query window. Locked by TestPageAggregateBounds_OutOfOrderPages.
 func rowGroupFullyInRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs int64) bool {
 	cols := rg.ColumnChunks()
 	if tsColIdx >= len(cols) {
@@ -2352,12 +2386,10 @@ func rowGroupFullyInRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs int6
 	if err != nil || idx == nil {
 		return false
 	}
-	numPages := idx.NumPages()
-	if numPages == 0 {
+	if idx.NumPages() == 0 {
 		return false
 	}
-	rgMin := idx.MinValue(0).Int64()
-	rgMax := idx.MaxValue(numPages - 1).Int64()
+	rgMin, rgMax := columnIndexTimeBounds(idx)
 	return rgMin >= startNs && rgMax <= endNs
 }
 
@@ -2373,12 +2405,13 @@ func (s *Storage) syntheticTimestampBlock(rg parquet.RowGroup, tsColIdx int, sta
 
 	cols := rg.ColumnChunks()
 	idx, err := cols[tsColIdx].ColumnIndex()
-	if err != nil || idx == nil {
+	if err != nil || idx == nil || idx.NumPages() == 0 {
 		return nil
 	}
-	numPages := idx.NumPages()
-	rgMin := idx.MinValue(0).Int64()
-	rgMax := idx.MaxValue(numPages - 1).Int64()
+	// Aggregate across all pages — see columnIndexTimeBounds. Positional
+	// bounds would compress the synthetic timestamps into a subrange that
+	// misses the true extremes.
+	rgMin, rgMax := columnIndexTimeBounds(idx)
 
 	tsCol := s.registry.TimestampColumn()
 	internalName := tsCol
@@ -2431,8 +2464,10 @@ func (s *Storage) enrichManifestFromFooter(fi manifest.FileInfo, f *parquet.File
 		if err != nil || idx == nil || idx.NumPages() == 0 {
 			continue
 		}
-		rgMin := idx.MinValue(0).Int64()
-		rgMax := idx.MaxValue(idx.NumPages() - 1).Int64()
+		// Aggregate across all pages — see columnIndexTimeBounds. Positional
+		// bounds would land an understated time range in the manifest and
+		// break range pruning for every later query on this file.
+		rgMin, rgMax := columnIndexTimeBounds(idx)
 		if minTs == 0 || rgMin < minTs {
 			minTs = rgMin
 		}
@@ -2568,20 +2603,12 @@ func rowGroupMatchesTimeRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs 
 	// to improve compression. Taking MinValue(0) and MaxValue(N-1) as
 	// row-group bounds silently skipped row groups whose smallest/largest
 	// timestamps lived in a middle page, which produced empty results for
-	// narrow time windows. Aggregate across every page index instead,
-	// mirroring the per-page scan already done in rowGroupMatchesFilter /
-	// detectConstantColumns. Keep this in sync with the traces module
+	// narrow time windows. Aggregate across every page index instead (shared
+	// columnIndexTimeBounds — the same scan now also guards
+	// rowGroupFullyInRange, syntheticTimestampBlock and the footer-enrich
+	// paths). Keep this in sync with the traces module
 	// (lakehouse-traces/internal/storage/parquets3/storage_query.go).
-	rgMin := idx.MinValue(0).Int64()
-	rgMax := idx.MaxValue(0).Int64()
-	for p := 1; p < numPages; p++ {
-		if v := idx.MinValue(p).Int64(); v < rgMin {
-			rgMin = v
-		}
-		if v := idx.MaxValue(p).Int64(); v > rgMax {
-			rgMax = v
-		}
-	}
+	rgMin, rgMax := columnIndexTimeBounds(idx)
 
 	return rgMax >= startNs && rgMin < endNs
 }

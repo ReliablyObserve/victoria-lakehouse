@@ -235,8 +235,14 @@ func rowGroupMatchesFilter(f *parquet.File, rg parquet.RowGroup, pdf *PushDownFi
 				return false
 			}
 		} else {
+			// Seed BOTH bounds from page 0 and aggregate over the rest —
+			// mirroring the numeric branch. Seeding rgMax from the LAST page
+			// while the loop starts at page 1 dropped page 0's max from the
+			// aggregate: a string column whose largest value lives in page 0
+			// understated rgMax and let checkMatchesStats skip a matching
+			// row group (same trap class as columnIndexTimeBounds).
 			rgMin := valueToString(cidx.MinValue(0))
-			rgMax := valueToString(cidx.MaxValue(numPages - 1))
+			rgMax := valueToString(cidx.MaxValue(0))
 			for p := 1; p < numPages; p++ {
 				pageMin := valueToString(cidx.MinValue(p))
 				pageMax := valueToString(cidx.MaxValue(p))

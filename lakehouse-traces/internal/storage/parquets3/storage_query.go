@@ -2294,6 +2294,33 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 	return false
 }
 
+// columnIndexTimeBounds returns the row group's true timestamp bounds by
+// aggregating min/max across EVERY page of the timestamp column index.
+//
+// Parquet pages within a row group are NOT guaranteed to be sorted by the
+// timestamp column — traces especially can have spans arrive out of order
+// (e.g. a long-running root span emits AFTER its children, or rows are
+// shuffled by the columnar writer to improve compression; the
+// (stream_id, timestamp) row order makes out-of-order pages the norm).
+// Taking MinValue(0) and MaxValue(N-1) as row-group bounds understates the
+// range whenever the smallest/largest timestamps live in a middle page.
+// Twin of the root module's helper
+// (internal/storage/parquets3/storage_query.go) — keep in sync. Callers must
+// ensure idx.NumPages() > 0.
+func columnIndexTimeBounds(idx parquet.ColumnIndex) (minNs, maxNs int64) {
+	minNs = idx.MinValue(0).Int64()
+	maxNs = idx.MaxValue(0).Int64()
+	for p := 1; p < idx.NumPages(); p++ {
+		if v := idx.MinValue(p).Int64(); v < minNs {
+			minNs = v
+		}
+		if v := idx.MaxValue(p).Int64(); v > maxNs {
+			maxNs = v
+		}
+	}
+	return minNs, maxNs
+}
+
 func rowGroupMatchesTimeRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs int64) bool {
 	cols := rg.ColumnChunks()
 	if tsColIdx >= len(cols) {
@@ -2305,32 +2332,18 @@ func rowGroupMatchesTimeRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs 
 		return true
 	}
 
-	numPages := idx.NumPages()
-	if numPages == 0 {
+	if idx.NumPages() == 0 {
 		return true
 	}
 
-	// Parquet pages within a row group are NOT guaranteed to be sorted by the
-	// timestamp column — traces especially can have spans arrive out of order
-	// (e.g. a long-running root span emits AFTER its children, or rows are
-	// shuffled by the columnar writer to improve compression). Taking
-	// MinValue(0) and MaxValue(N-1) as row-group bounds silently skipped row
-	// groups whose smallest/largest timestamps lived in a middle page, which
-	// produced empty results for narrow time windows like Jaeger's expansion
-	// loop (1m → 6m → 31m queries against trace_id:in(...)). Aggregate across
-	// every page index instead, mirroring the per-page scan already done in
-	// rowGroupMatchesFilter / detectConstantColumns. Locked by
+	// Positional MinValue(0)/MaxValue(N-1) bounds silently skipped row groups
+	// whose smallest/largest timestamps lived in a middle page, which produced
+	// empty results for narrow time windows like Jaeger's expansion loop
+	// (1m → 6m → 31m queries against trace_id:in(...)). Aggregate across every
+	// page index instead (shared columnIndexTimeBounds — also guards the
+	// footer-enrich path). Locked by
 	// TestRowGroupMatchesTimeRange_OutOfOrderPages in this package.
-	rgMin := idx.MinValue(0).Int64()
-	rgMax := idx.MaxValue(0).Int64()
-	for p := 1; p < numPages; p++ {
-		if v := idx.MinValue(p).Int64(); v < rgMin {
-			rgMin = v
-		}
-		if v := idx.MaxValue(p).Int64(); v > rgMax {
-			rgMax = v
-		}
-	}
+	rgMin, rgMax := columnIndexTimeBounds(idx)
 
 	return rgMax >= startNs && rgMin < endNs
 }
