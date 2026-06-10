@@ -90,7 +90,9 @@ func twoFacets() (*Bundle, map[FacetKind]FacetFactory) {
 // payloadStart is the byte offset where facet payloads begin:
 // magic(5) + partLen(2) + partition + facetCount(1) + tocCRC(4) + TOC(count*10).
 func payloadStart(part string, facetCount int) int {
-	return 5 + 2 + len(part) + 1 + 4 + facetCount*tocEntrySize
+	// magic[5] partLen[2] partition headerCRC[4] facetCount[1]... layout v3:
+	// magic[5] + partLen[2] + partition + facetCount[1] + headerCRC[4] + tocCRC[4] + TOC
+	return 5 + 2 + len(part) + 1 + 4 + 4 + facetCount*tocEntrySize
 }
 
 // TestDecode_PayloadCorruptionIsolated is the core safeguard: corrupting one
@@ -150,6 +152,29 @@ func TestDecode_CorruptTOC_RebuildsWholePartition(t *testing.T) {
 	_, _, err := DecodeBundle(bytes.NewReader(raw), reg)
 	if err == nil {
 		t.Fatal("corrupt TOC must return a structural error (whole-partition rebuild)")
+	}
+}
+
+// TestDecode_HeaderCRCCatchesFacetCount: the v3 header CRC must catch a flipped
+// facetCount byte. Without it, facetCount→0 would decode as a VALID empty bundle
+// — silent total facet loss instead of a structural error → rebuild signal.
+func TestDecode_HeaderCRCCatchesFacetCount(t *testing.T) {
+	b, reg := twoFacets()
+	var buf bytes.Buffer
+	if err := b.Encode(&buf); err != nil {
+		t.Fatal(err)
+	}
+	raw := buf.Bytes()
+	// facetCount sits right after magic(5) + partLen(2) + partition.
+	off := 5 + 2 + len(b.Partition)
+	if raw[off] != 2 {
+		t.Fatalf("facetCount byte at %d = %d, want 2 (layout drifted?)", off, raw[off])
+	}
+	raw[off] = 0 // the nastiest flip: a "valid" empty bundle without the header CRC
+
+	got, _, err := DecodeBundle(bytes.NewReader(raw), reg)
+	if err == nil {
+		t.Fatalf("flipped facetCount must be a structural error, got valid bundle %+v", got)
 	}
 }
 

@@ -79,7 +79,10 @@ func (o *storageBloomObserver) PersistDirty(ctx context.Context, prefix string) 
 	}
 }
 
-func extractTraceBloomValues(rows []schema.TraceRow) map[string][]string { //nolint:unused // VL/VT parity port
+// extractLogBloomValues is the UNCAPPED bloom feed for log rows flushed by the
+// traces module (trace_id + service.name). A bloom fed from the capped label
+// extractor false-negatives on values past the cap — missing results.
+func extractLogBloomValues(rows []schema.LogRow) map[string][]string {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -98,7 +101,26 @@ func extractTraceBloomValues(rows []schema.TraceRow) map[string][]string { //nol
 	return bloomSetsToMap(sets)
 }
 
-func bloomSetsToMap(sets map[string]map[string]bool) map[string][]string { //nolint:unused // VL/VT parity port
+func extractTraceBloomValues(rows []schema.TraceRow) map[string][]string {
+	if len(rows) == 0 {
+		return nil
+	}
+	sets := map[string]map[string]bool{
+		"trace_id":     {},
+		"service.name": {},
+	}
+	for i := range rows {
+		if rows[i].TraceID != "" {
+			sets["trace_id"][rows[i].TraceID] = true
+		}
+		if rows[i].ServiceName != "" {
+			sets["service.name"][rows[i].ServiceName] = true
+		}
+	}
+	return bloomSetsToMap(sets)
+}
+
+func bloomSetsToMap(sets map[string]map[string]bool) map[string][]string {
 	result := make(map[string][]string, len(sets))
 	for col, vs := range sets {
 		if len(vs) == 0 {

@@ -255,6 +255,7 @@ func New(cfg *config.Config) (*Storage, error) {
 	catalog := newCatalogStore(cfg.Pmeta, prefix)
 	if catalog != nil && bw != nil {
 		bw.catalogObserver = &catalogObserver{store: catalog, sketch: sketchSet(cfg.Pmeta.AlwaysSketchFields), pool: pool}
+		bw.retireSidecars = cfg.Pmeta.RetireSidecarWrites // facet replaces the sidecar
 	}
 
 	return &Storage{
@@ -290,8 +291,16 @@ func (s *Storage) StartWriter() {
 		return
 	}
 	pool := s.pool
+	retireBloom := s.cfg != nil && s.cfg.Pmeta.Enabled && s.cfg.Pmeta.RetireSidecarWrites
 	s.writer.SetFlushHook(func(key string, columnValues map[string][]string) {
 		if len(columnValues) == 0 {
+			return
+		}
+		if retireBloom {
+			// Under retire the pmeta bloom facet is fed by the catalogObserver with
+			// the SAME uncapped values, the pre-filters consult it first, and
+			// PersistBloomIndex is a no-op — feeding the legacy in-RAM bloomIdx and
+			// the per-file .bloom would be duplicate RAM/CPU for the same state.
 			return
 		}
 		cols := make(map[string]*bloomindex.Filter, len(columnValues))
@@ -1291,6 +1300,13 @@ func (s *Storage) BackfillBloomIndex(ctx context.Context) {
 	if s.bloomIdx == nil || s.cfg.Mode != config.ModeTraces {
 		return
 	}
+	if s.cfg.Pmeta.Enabled && s.cfg.Pmeta.RetireSidecarWrites {
+		// Under retire the bloom state lives in the bundle-warmed facet and the
+		// query pre-filters consult it first; re-downloading + re-scanning every
+		// file on EVERY restart to rebuild the legacy in-RAM index (which can no
+		// longer persist — PersistBloomIndex is a no-op) is pure waste.
+		return
+	}
 
 	files := s.manifest.GetFilesForRange(0, 1<<62)
 	if len(files) == 0 {
@@ -1402,6 +1418,12 @@ func (s *Storage) BackfillBloomIndex(ctx context.Context) {
 }
 
 func (s *Storage) PersistBloomIndex(ctx context.Context) error {
+	if s.cfg.Pmeta.Enabled && s.cfg.Pmeta.RetireSidecarWrites {
+		// pmeta retire-sidecars: the bloom state is persisted in the partition
+		// bundles (persistDirty at flush) and bundle-warmed at startup; the query
+		// pre-filters consult the facet first. _bloom.bin is no longer written.
+		return nil
+	}
 	if s.bloomIdx == nil || s.bloomIdx.Len() == 0 || s.pool == nil {
 		return nil
 	}

@@ -3,6 +3,7 @@ package pmeta
 import (
 	"bufio"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"sort"
 	"strings"
@@ -106,6 +107,12 @@ func (f *fieldCatalogFacet) Kind() FacetKind { return FacetFieldCatalog }
 func (f *fieldCatalogFacet) Merge(c FileContribution) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// A field whose per-file value list hit the extractor cap may be incomplete —
+	// the catalog must never serve a truncated list as authoritative, so the field
+	// becomes high-card (reads fall through to the scan, which is exact).
+	for _, field := range c.TruncatedFields {
+		f.markHighCard(f.dict.internField(field))
+	}
 	for field, vals := range c.Labels {
 		fid := f.dict.internField(field)
 		if f.highCard[fid] {
@@ -164,12 +171,19 @@ func (f *fieldCatalogFacet) Values(field, substr string, limit int) []string {
 		return nil // high-card: not enumerable → caller falls through to scan
 	}
 	vs := f.byField[fid]
+	var ids []uint32
+	if vs != nil {
+		// Copy WHILE HOLDING the lock: Merge mutates vs.ids in place (append +
+		// element shift) under the write lock — iterating the live slice after
+		// RUnlock is a data race (torn/duplicated/missing values).
+		ids = append([]uint32(nil), vs.ids...)
+	}
 	f.mu.RUnlock()
-	if vs == nil {
+	if ids == nil {
 		return nil
 	}
-	out := make([]string, 0, len(vs.ids))
-	for _, id := range vs.ids {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
 		s, ok := f.dict.value(id)
 		if ok && (substr == "" || strings.Contains(s, substr)) {
 			out = append(out, s)
@@ -220,6 +234,12 @@ func (f *fieldCatalogFacet) EstimateBytes() int64 {
 //
 //	fieldCount[4]
 //	per field: nameLen[2] name valueCount[4] (valLen[4] val)…
+//	highCardCount[4]
+//	per high-card field: nameLen[2] name
+//
+// The high-card section round-trips the cardinality-cap / always-sketch state:
+// without it a decoded facet would re-accumulate values for an already-capped
+// field and could serve a truncated list as authoritative.
 func (f *fieldCatalogFacet) Encode(w io.Writer) error {
 	type fv struct {
 		name string
@@ -238,8 +258,15 @@ func (f *fieldCatalogFacet) Encode(w io.Writer) error {
 		sort.Strings(vals)
 		rows = append(rows, fv{name: name, vals: vals})
 	}
+	hc := make([]string, 0, len(f.highCard))
+	for fid := range f.highCard {
+		if name, ok := f.dict.field(fid); ok {
+			hc = append(hc, name)
+		}
+	}
 	f.mu.RUnlock()
 	sort.Slice(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
+	sort.Strings(hc)
 
 	bw := bufio.NewWriter(w)
 	var u32 [4]byte
@@ -270,12 +297,35 @@ func (f *fieldCatalogFacet) Encode(w io.Writer) error {
 			}
 		}
 	}
+	binary.BigEndian.PutUint32(u32[:], uint32(len(hc)))
+	if _, err := bw.Write(u32[:]); err != nil {
+		return err
+	}
+	for _, name := range hc {
+		var u16 [2]byte
+		binary.BigEndian.PutUint16(u16[:], uint16(len(name)))
+		if _, err := bw.Write(u16[:]); err != nil {
+			return err
+		}
+		if _, err := bw.WriteString(name); err != nil {
+			return err
+		}
+	}
 	return bw.Flush()
 }
 
+// decode caps: a CRC-valid but hostile/corrupt payload must not drive multi-GB
+// allocations. Lengths are validated BEFORE allocating; counts only bound the
+// prealloc hint (the loop itself is bounded by the payload bytes running out).
+const (
+	maxCatalogValueLen     = 1 << 20 // 1 MiB per value string
+	maxCatalogPreallocVals = 1 << 16 // prealloc hint cap; slice still grows as needed
+)
+
 // Decode reconstructs the facet via Merge, so a loaded facet is byte-for-byte
 // identical in behavior to one built live from the same files (decode==merge
-// parity). The bundle codec has already CRC-verified these bytes.
+// parity), then applies the high-card section. The bundle codec has already
+// CRC-verified these bytes.
 func (f *fieldCatalogFacet) Decode(r io.Reader) error {
 	br := bufio.NewReader(r)
 	var u32 [4]byte
@@ -296,12 +346,16 @@ func (f *fieldCatalogFacet) Decode(r io.Reader) error {
 			return err
 		}
 		nv := binary.BigEndian.Uint32(u32[:])
-		vals := make([]string, 0, nv)
+		vals := make([]string, 0, int(min(nv, maxCatalogPreallocVals)))
 		for j := uint32(0); j < nv; j++ {
 			if _, err := io.ReadFull(br, u32[:]); err != nil {
 				return err
 			}
-			vb := make([]byte, binary.BigEndian.Uint32(u32[:]))
+			vlen := binary.BigEndian.Uint32(u32[:])
+			if vlen > maxCatalogValueLen {
+				return fmt.Errorf("pmeta: catalog value len %d over cap", vlen)
+			}
+			vb := make([]byte, vlen)
 			if _, err := io.ReadFull(br, vb); err != nil {
 				return err
 			}
@@ -309,5 +363,50 @@ func (f *fieldCatalogFacet) Decode(r io.Reader) error {
 		}
 		f.Merge(FileContribution{Labels: map[string][]string{string(name): vals}})
 	}
+	// High-card section (always present in the current facet payload version).
+	if _, err := io.ReadFull(br, u32[:]); err != nil {
+		return err
+	}
+	nh := binary.BigEndian.Uint32(u32[:])
+	for i := uint32(0); i < nh; i++ {
+		var u16 [2]byte
+		if _, err := io.ReadFull(br, u16[:]); err != nil {
+			return err
+		}
+		name := make([]byte, binary.BigEndian.Uint16(u16[:]))
+		if _, err := io.ReadFull(br, name); err != nil {
+			return err
+		}
+		f.mu.Lock()
+		f.markHighCard(f.dict.internField(string(name)))
+		f.mu.Unlock()
+	}
 	return nil
+}
+
+// absorbFacet folds another catalog facet's content into this one (the
+// warm-merge path: an S3 bundle decoded while live flushes already populated the
+// bundle). High-card status is a union — once not-enumerable, always
+// not-enumerable.
+func (f *fieldCatalogFacet) absorbFacet(other Facet) {
+	oc, ok := other.(*fieldCatalogFacet)
+	if !ok {
+		return
+	}
+	f.absorb(oc)
+}
+
+func (f *fieldCatalogFacet) absorb(other *fieldCatalogFacet) {
+	for _, field := range other.Fields() {
+		if other.IsHighCard(field) {
+			f.mu.Lock()
+			f.markHighCard(f.dict.internField(field))
+			f.mu.Unlock()
+			continue
+		}
+		vals := other.Values(field, "", 0)
+		if len(vals) > 0 {
+			f.Merge(FileContribution{Labels: map[string][]string{field: vals}})
+		}
+	}
 }

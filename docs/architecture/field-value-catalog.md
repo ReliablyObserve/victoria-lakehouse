@@ -1,6 +1,13 @@
 # Cold-Tier Field/Value Catalog — Design
 
-> Status: design (implementation sequenced as Track A1→A3 below). Closes the
+> Status: **A1 + A2 shipped** (#127/#130/#131) as the `FacetFieldCatalog` facet of
+> the unified partition-metadata layer (`internal/pmeta` — see
+> [metadata-consolidation.md](metadata-consolidation.md) §8); A3 (time-tiered
+> residency) remains open. The shipped data structures are the pmeta `Dict` +
+> per-partition value sets and an in-house HLL — §§3–5 below sketch the original
+> design (`internal/catalog`, roaring, per-facet sidecars) and are kept as the
+> rationale record; persistence actually landed as the per-partition
+> `_pmeta.bundle`. Closes the
 > interactive-Grafana gap where cold LH feels slower than hot VL/VT for
 > label/field dropdowns. Companion to [buffer-queryable-store-design.md](buffer-queryable-store-design.md)
 > (#109) and the PERF roadmap in [performance-machinery.md](performance-machinery.md).
@@ -35,7 +42,7 @@ matching values?").
    all go through the real bloom + label index + Parquet scan → exact rows. A
    sketch can never drop or invent a row.
 2. **Low-card dropdowns are exact, including typeahead.** Fields up to a tunable
-   cardinality threshold (default ~50–100k distinct) keep their **exact value
+   cardinality threshold (default 50,000 distinct) keep their **exact value
    strings** in the catalog dictionary. Typing `api` does a substring/prefix
    match over the exact string set → exactly `api-gateway`, `api-worker`, … with
    no false positives and nothing missing. Results are **time-scoped** to the
@@ -46,84 +53,133 @@ matching values?").
    independent of the catalog and HLL**. High-card classification never touches
    this path — it is the same exact cold trace-id lookup verified by the parity
    loop. **You never lose the ability to search for a specific trace/span id.**
-4. **High-card classification only disables *enumeration*, not lookup.** For a
-   field above the threshold (`trace_id`, `span_id`, `request_id`, unbounded
-   URLs) the catalog will not *list every value* in a facet dropdown — it
-   returns an HLL cardinality estimate (~0.81 % error at p=14) instead. This is
-   identical to VL/VT, which don't enumerate these either, and matches the real
-   workflow (you paste/type a specific id to look it up; you don't scroll a
-   dropdown of millions of ids).
-5. **Exact-on-demand escape hatch.** A field can be pinned "always exact"
-   regardless of threshold; its value list is paged from S3 rather than held
-   resident. Exact distinct *counts* for high-card fields fall back to a precise
-   scan only when explicitly requested.
+4. **High-card classification only disables *catalog enumeration*, not lookup —
+   and never serves a truncated list.** For a field above the threshold (or in
+   `always_sketch_fields`) the catalog stops storing values (bounding RAM) and
+   its `Values()` returns nil, so `field_values` **falls through to the exact
+   legacy scan** — the answer is still exact, just slower. With
+   `refuse_sketch_enumeration` on, a declared `always_sketch_fields` id column
+   returns *empty* instead of scanning (identical to VL/VT, which don't
+   enumerate these either; threshold-crossers are NOT refused). The field's
+   distinct count is exposed as an HLL estimate (~0.81 % error at p=14) via
+   `lakehouse_catalog_field_cardinality{field}` / `Store.Cardinality`, not in
+   the `field_values` response.
+5. **A truncated extraction is never authoritative.** The flush-time label
+   extractor caps each field at `maxLabelsPerField` (100) distinct values per
+   file; a field at the cap *may* be incomplete, so the contribution marks it
+   in `TruncatedFields` and the catalog flags it high-card → the read path
+   answers from the exact scan. The catalog never serves a silently-truncated
+   value list. (There is no per-field "always exact" pin today; the knob is
+   raising `pmeta.cardinality_threshold`.)
 
 Net: **fast/approximate only on the *count* of fields you'd never enumerate;
 exact on everything you search or typeahead.**
 
-## 2a. Configuration — the threshold knob (with good defaults)
+## 2a. Configuration — the real surface (`pmeta`, both modules)
 
 Classification is **automatic by observed cardinality**, with a configurable
-threshold and explicit per-field overrides. A field starts exact; if its
-observed distinct count crosses the threshold it is promoted to count-only and
-its resident value list is dropped (the catalog keeps the merged HLL). Overrides
-win over the threshold.
+threshold and an explicit force-high-card override. A field starts exact; if its
+observed distinct count crosses the threshold it is marked high-card and its
+resident value list is dropped (reads fall through to the exact scan, §2.4).
+The whole catalog lives under the `pmeta` config key (it ships as a facet of
+the unified partition-metadata layer):
 
 ```yaml
-catalog:
-  # Fields whose observed distinct values exceed this become count-only (HLL):
-  # no value ENUMERATION in dropdowns. Does NOT affect searching BY a value.
-  cardinality_threshold: 50000          # default — every human-meaningful facet stays exact
+pmeta:
+  # Master switch for the whole layer (catalog + file-meta + bloom facets).
+  # Off (the default) → no Store is built; flush/query paths are unchanged.
+  enabled: false
 
-  # Force EXACT regardless of threshold (pages its value list from S3 if huge):
-  always_exact_fields: []               # e.g. ["k8s.pod.name"] if you must typeahead it
+  # Per-field distinct-value cap before a field is classified high-card: the
+  # catalog stops storing its values (RAM bound) and field_values falls through
+  # to the exact scan — never a truncated list. NOTE: 0 currently maps to the
+  # 50000 default (there is no "unlimited" setting today).
+  cardinality_threshold: 0
 
-  # Force COUNT-ONLY regardless of threshold (save RAM on known-unbounded ids):
-  always_sketch_fields:                 # defaults — known unbounded id columns
-    - trace_id
-    - span_id
-    - request_id
-    - _stream_id
+  # Forced high-card regardless of threshold (known unbounded id columns).
+  # DEFAULT IS EMPTY — [trace_id, span_id] is the recommended setting (it is
+  # what the e2e compose runs). The HLL cardinality tap covers trace_id/span_id
+  # ONLY (they are the only id columns with row-struct fields); other names here
+  # are still excluded from the catalog but get no sketch — startup logs a warning.
+  always_sketch_fields: [trace_id, span_id]
 
-  hll_precision: 14                     # ~0.81% error; pinned globally, versioned in the sidecar
+  # When true, field_values for an always_sketch_fields column returns EMPTY
+  # instead of scanning to enumerate it (matches VL/VT; lookup BY value is
+  # unaffected). Threshold-crossers are NOT refused. Default false (opt-in:
+  # it is a behavior change for those fields).
+  refuse_sketch_enumeration: false
+
+  # Stop writing the legacy sidecars the facets replace (_file_metadata.json,
+  # per-file .bloom, partition _bloom.bin). Requires enabled; reversible —
+  # clear it and the sidecars resume. Default false.
+  retire_sidecar_writes: false
 ```
 
-**Default behavior:** threshold `50000` keeps every realistic facet (service,
-environment, namespace, pod, host, status, method, route…) exact-typeahead;
-only the pre-listed unbounded-id columns go count-only. Cost of the default: a
-field at the 50k ceiling costs ~1.5 MB of dictionary RAM; the ~30 typical
-low-card fields sit far below, so the global dict stays ~5–15 MB (§7).
+CLI flags (both `lakehouse-logs` and `lakehouse-traces`) map 1:1:
 
-**Tuning:** raise `cardinality_threshold` (or add to `always_exact_fields`) to
-keep a huge-cardinality field type-searchable — it pages its value list from S3
-instead of staying fully resident, trading a little first-keystroke latency for
-exact typeahead. Lower it to shed RAM at the cost of more count-only fields.
-Changing classification is safe at runtime: it only flips whether a field's
-value list is served vs its HLL estimate; it never affects search results.
+| flag | yaml key |
+|---|---|
+| `-lakehouse.pmeta.enabled` | `pmeta.enabled` |
+| `-lakehouse.pmeta.cardinality-threshold` | `pmeta.cardinality_threshold` |
+| `-lakehouse.pmeta.always-sketch-fields` (comma-separated) | `pmeta.always_sketch_fields` |
+| `-lakehouse.pmeta.refuse-sketch-enumeration` | `pmeta.refuse_sketch_enumeration` |
+| `-lakehouse.pmeta.retire-sidecar-writes` | `pmeta.retire_sidecar_writes` |
 
-### What `hll_precision` means (plain version)
+Keys that appeared in earlier drafts of this doc but **do not exist**:
+`catalog:` (it is `pmeta:`), `always_exact_fields` (no per-field exact pin —
+raise the threshold instead) and `hll_precision` (pinned at p=14 in code, not
+configurable; see below).
+
+**Default behavior:** the effective threshold `50000` keeps every realistic
+facet (service, environment, namespace, pod, host, status, method, route…)
+exact-typeahead; only the configured unbounded-id columns are forced high-card.
+Cost of the default: a field at the 50k ceiling costs ~1.5 MB of dictionary RAM;
+the ~30 typical low-card fields sit far below, so the global dict stays
+~5–15 MB (§7).
+
+**Tuning:** raise `cardinality_threshold` to keep a bigger field
+exact-typeahead (it stays fully resident — there is no S3-paged value list
+today, that is A3 territory); lower it to shed RAM at the cost of more
+scan-backed fields. Changing classification only flips whether a field's value
+list is served from RAM vs the exact scan; it never affects search results.
+
+**Exactness/lifecycle notes (shipped behavior):**
+
+- *Per-file label cap → `TruncatedFields` → high-card → scan.* A field at the
+  flush extractor's `maxLabelsPerField` (100) cap is marked in the
+  contribution's `TruncatedFields` and classified high-card, so the catalog can
+  never serve a truncated list as authoritative (§2.5).
+- *HLL tap is trace_id/span_id only.* The flush tap streams id values straight
+  off the row structs; only `trace_id`/`span_id` exist as struct fields.
+- *HLL sketches are in-RAM only.* They are held on the `Store` (one merged
+  sketch per field), are NOT persisted in the `_pmeta.bundle`, and reset on
+  restart — `lakehouse_catalog_field_cardinality` re-accumulates from new
+  flushes.
+
+### What HLL precision means (plain version — pinned at p=14 in code)
 
 HyperLogLog answers "**how many distinct values**" without storing the values.
-It keeps `2^p` tiny counters ("registers"), where `p = hll_precision`. More
-registers → a more accurate estimate **and** more memory — that is the *only*
-thing this dial changes. It affects the **approximate distinct-count** shown for
+It keeps `2^p` tiny counters ("registers"), where `p` is the precision — pinned
+at **14** in code (`defaultHLLPrecision`, `internal/pmeta/hll.go`); it is *not*
+a config knob. More registers → a more accurate estimate **and** more memory —
+that is the *only* thing precision changes. It affects the **approximate
+distinct-count** reported for
 high-card fields (e.g. "≈ 5,200 distinct trace_ids"); it never affects search,
 value lists, or low-card facets.
 
-| `hll_precision` | registers | typical error | RAM per sketch (dense) |
+| precision `p` | registers | typical error | RAM per sketch (dense) |
 |---|---|---|---|
 | 10 | 1,024 | ~3.25 % | ~1 KB |
 | 12 | 4,096 | ~1.6 % | ~4 KB |
-| **14 (default)** | **16,384** | **~0.81 %** | **~12 KB** |
+| **14 (pinned)** | **16,384** | **~0.81 %** | **~12 KB** |
 | 16 | 65,536 | ~0.4 % | ~48 KB |
 
-Default `14`: a "≈ 1,000,000 distinct" readout lands within ~±8,000 — plenty for
-a UI hint, at 12 KB per high-card field's merged sketch. Only one dense sketch is
-held per field (merged across the hot window); per-partition sketches stay sparse
-(sub-KB) or paged. Raise to 16 only if you need tighter counts and can spend the
-RAM; drop to 12 to save it. (Precision is pinned globally and versioned in the
-sidecar — sketches of different `p` cannot be merged, so a mismatch is refused,
-not silently corrupted.)
+At `14`: a "≈ 1,000,000 distinct" readout lands within ~±8,000 — plenty for
+a UI hint, at 12 KB per high-card field's merged sketch. **One** sketch is held
+per field, on the `Store`, globally (not per partition), in RAM only — sketches
+are not persisted and reset on restart. Changing precision would be a code
+change; sketches of different `p` refuse to merge (a mismatch is refused, not
+silently corrupted).
 
 ### Estimator: HLL++-grade accuracy via LogLog-Beta (in-house, no dep)
 

@@ -17,6 +17,9 @@ type Store struct {
 	reg     map[FacetKind]FacetFactory
 	bundles map[string]*Bundle
 	prefix  string // S3 key prefix for partition bundles
+	// dict, when set, is the shared interning dictionary — included in
+	// ResidentBytes so the guardrail metric reflects the true catalog footprint.
+	dict *Dict
 	// hllByField holds one merged HyperLogLog per high-cardinality field
 	// (fed from FileContribution.HighCardValues), giving an approximate
 	// distinct-count for fields the catalog does not enumerate. One sketch per
@@ -37,9 +40,12 @@ func NewStore() *Store {
 // (from its merged HLL sketch), or 0 if the field has no sketch. Used to answer
 // "≈ N distinct" for fields the catalog does not enumerate.
 func (s *Store) Cardinality(field string) uint64 {
+	// estimate() reads the register array that AddCardinality/OnFileFlush mutate
+	// under the write lock — hold the read lock ACROSS the estimate, not just the
+	// map lookup, or the read races the writers.
 	s.mu.RLock()
+	defer s.mu.RUnlock()
 	h := s.hllByField[field]
-	s.mu.RUnlock()
 	if h == nil {
 		return 0
 	}
@@ -109,6 +115,96 @@ func (s *Store) Put(b *Bundle) {
 	s.mu.Unlock()
 }
 
+// PutWarm installs a bundle decoded from S3 WITHOUT clobbering live flush
+// contributions. With serve-while-warming, a flush can populate a partition's
+// bundle before the warm goroutine loads the S3 copy; an unconditional Put would
+// replace that bundle, silently dropping the flush's facet contributions and the
+// dirty state. PutWarm absorbs the DECODED content into the live bundle instead
+// (the union persists on the next flush cycle). When no live bundle exists, this
+// is a plain Put.
+func (s *Store) PutWarm(decoded *Bundle) {
+	s.mu.Lock()
+	live, ok := s.bundles[decoded.Partition]
+	if !ok {
+		s.bundles[decoded.Partition] = decoded
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+
+	decoded.mu.RLock()
+	facets := make([]Facet, 0, len(decoded.facets))
+	for _, f := range decoded.facets {
+		facets = append(facets, f)
+	}
+	decoded.mu.RUnlock()
+
+	for _, df := range facets {
+		live.mu.Lock()
+		lf, has := live.facets[df.Kind()]
+		if !has {
+			live.facets[df.Kind()] = df
+			live.mu.Unlock()
+			continue
+		}
+		live.mu.Unlock()
+		if a, ok := lf.(absorber); ok {
+			a.absorbFacet(df)
+		}
+	}
+	live.markDirty() // the union (S3 content + live flushes) must persist
+}
+
+// absorber is the optional facet capability PutWarm uses to merge a decoded
+// facet into a live one (union semantics, no entry lost from either side).
+type absorber interface{ absorbFacet(other Facet) }
+
+// RemoveFiles drops per-file entries (file-meta + bloom) for files that no
+// longer exist — the compaction/delete-rewrite hook. The catalog facet is
+// untouched: its value sets are a partition-level union that compaction does not
+// change. Marks the bundle dirty so the shrunken bundle persists.
+func (s *Store) RemoveFiles(partition string, keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+	s.mu.RLock()
+	b, ok := s.bundles[partition]
+	s.mu.RUnlock()
+	if !ok {
+		return
+	}
+	if fc, ok := b.Get(FacetFileMeta); ok {
+		if fm, ok := fc.(*fileMetaFacet); ok {
+			fm.removeFiles(keys)
+		}
+	}
+	if fc, ok := b.Get(FacetBloom); ok {
+		if bf, ok := fc.(*bloomFacet); ok {
+			bf.removeFiles(keys)
+		}
+	}
+	b.markDirty()
+}
+
+// Remove drops a partition's bundle from RAM — the retention/expiry hook. The
+// caller is responsible for deleting (or ignoring) the S3 bundle object.
+func (s *Store) Remove(partition string) {
+	s.mu.Lock()
+	delete(s.bundles, partition)
+	s.mu.Unlock()
+}
+
+// Partitions returns the partitions currently resident in the store.
+func (s *Store) Partitions() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, 0, len(s.bundles))
+	for p := range s.bundles {
+		out = append(out, p)
+	}
+	return out
+}
+
 // Get returns a facet from a partition's bundle, if present.
 func (s *Store) Get(partition string, k FacetKind) (Facet, bool) {
 	s.mu.RLock()
@@ -125,6 +221,18 @@ func (s *Store) Get(partition string, k FacetKind) (Facet, bool) {
 // Facets absent from the bundle are created on demand, so this also drives the
 // rebuild-from-files self-heal path.
 func (s *Store) OnFileFlush(c FileContribution) {
+	s.mergeContribution(c, true)
+}
+
+// OnFileReplay is OnFileFlush WITHOUT marking the bundle dirty — the warm path
+// (re-deriving catalog/file-meta from the already-durable manifest). Marking
+// replays dirty caused a full-manifest bundle PUT storm on the first flush after
+// every restart; replayed content is derivable, so it needs no re-persist.
+func (s *Store) OnFileReplay(c FileContribution) {
+	s.mergeContribution(c, false)
+}
+
+func (s *Store) mergeContribution(c FileContribution, markDirty bool) {
 	b := s.Bundle(c.Partition)
 	reg := s.Registry()
 	b.mu.Lock()
@@ -137,7 +245,9 @@ func (s *Store) OnFileFlush(c FileContribution) {
 		f.Merge(c)
 	}
 	b.mu.Unlock()
-	b.dirty.Store(true)
+	if markDirty {
+		b.markDirty()
+	}
 
 	// Fold high-cardinality field values into their per-field HLL sketch (for
 	// the "≈ N distinct" readout on fields the catalog does not enumerate).
@@ -168,14 +278,29 @@ func (s *Store) Rebuild(partition string, files []FileContribution) {
 	}
 }
 
-// ResidentBytes is the approximate RAM held across all partition bundles. Drives
-// the lakehouse_catalog_resident_bytes guardrail.
+// SetDict registers the shared interning dictionary so ResidentBytes accounts
+// for it (the dict holds every interned string once, globally).
+func (s *Store) SetDict(d *Dict) {
+	s.mu.Lock()
+	s.dict = d
+	s.mu.Unlock()
+}
+
+// BundleKey is the S3 object key for a partition's bundle (exported for the
+// retention path, which deletes the bundle object alongside the partition).
+func (s *Store) BundleKey(partition string) string { return s.bundleKey(partition) }
+
+// ResidentBytes is the approximate RAM held across all partition bundles plus
+// the shared dict. Drives the lakehouse_catalog_resident_bytes guardrail.
 func (s *Store) ResidentBytes() int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var n int64
 	for _, b := range s.bundles {
 		n += b.EstimateBytes()
+	}
+	if s.dict != nil {
+		n += s.dict.EstimateBytes()
 	}
 	return n
 }

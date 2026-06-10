@@ -97,6 +97,14 @@ type PmetaConfig struct {
 	// (default false) because it is a behavior change for those fields. Threshold
 	// crossers are NOT refused — they still fall through to the scan.
 	RefuseSketchEnumeration bool `yaml:"refuse_sketch_enumeration"`
+
+	// RetireSidecarWrites stops writing the legacy per-partition sidecars that the
+	// pmeta facets now replace (starting with _file_metadata.json), once the
+	// facet/bundle read path is trusted. The Parquet footer remains the cold-restart
+	// fallback, so this is safe and reversible (clear the flag → sidecars resume).
+	// Requires Enabled; default false. Opt-in because it is the irreversible-in-spirit
+	// back half of the consolidation.
+	RetireSidecarWrites bool `yaml:"retire_sidecar_writes"`
 }
 
 type LogsModeConfig struct {
@@ -1177,6 +1185,12 @@ func (c *Config) validateEnums() error {
 }
 
 func (c *Config) validateSubsystems() error {
+	if c.Pmeta.RetireSidecarWrites && !c.Pmeta.Enabled {
+		// Without this check the flag is silently ignored (the retire wiring lives
+		// inside the Pmeta.Enabled block) — the operator believes sidecar writes
+		// stopped while they continue. Fail fast instead.
+		return fmt.Errorf("--lakehouse.pmeta.retire-sidecar-writes requires --lakehouse.pmeta.enabled (the facets must exist to replace the sidecars)")
+	}
 	if c.Cache.EvictionWatermark <= 0 || c.Cache.EvictionWatermark > 1 {
 		return fmt.Errorf("--lakehouse.cache.eviction-watermark must be in (0, 1], got %f", c.Cache.EvictionWatermark)
 	}

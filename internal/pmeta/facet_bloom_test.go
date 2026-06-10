@@ -96,3 +96,25 @@ func TestStore_BloomMayContain(t *testing.T) {
 		t.Fatalf("present value not found via Store.BloomMayContain: %v", got)
 	}
 }
+
+// FuzzBloomFacetDecode: arbitrary bytes fed straight into the bloom facet's
+// Decode (bloomindex.Unmarshal underneath) must never panic, hang, or
+// over-allocate (the index's entry-count cap + length validation bound
+// allocation). The bundle codec's CRC normally shields this path, but Decode
+// must hold on its own. Seeded with a valid Encode output.
+func FuzzBloomFacetDecode(f *testing.F) {
+	seedFacet := NewBloomFactory(0.01)("p").(*bloomFacet)
+	seedFacet.Merge(FileContribution{FileKey: "k1", BloomValues: bloomCols})
+	var seed bytes.Buffer
+	if err := seedFacet.Encode(&seed); err != nil {
+		f.Fatal(err)
+	}
+	f.Add(seed.Bytes())
+	f.Add([]byte(nil))
+	f.Add([]byte{1, 0, 0, 0, 0})             // v1, 0 entries
+	f.Add([]byte{2, 0xff, 0xff, 0xff, 0xff}) // v2, huge entry count, no payload
+	f.Fuzz(func(t *testing.T, data []byte) {
+		bf := NewBloomFactory(0.01)("p").(*bloomFacet)
+		_ = bf.Decode(bytes.NewReader(data)) // must simply not panic
+	})
+}

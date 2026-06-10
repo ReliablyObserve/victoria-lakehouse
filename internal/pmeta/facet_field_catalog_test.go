@@ -252,3 +252,106 @@ func TestFieldCatalog_SelfHealRebuildParity(t *testing.T) {
 		}
 	}
 }
+
+// TestFieldCatalog_HighCardRoundTrip: the payload's high-card section must
+// round-trip the cardinality-cap state. A field that crossed the threshold stays
+// non-enumerable after Encode→Decode — even into an UNCAPPED facet, so the state
+// provably comes from the payload, not the receiving facet's threshold — and new
+// Merges must NOT re-accumulate its values (a decoded facet would otherwise serve
+// a truncated list as authoritative). The normal field round-trips exactly.
+func TestFieldCatalog_HighCardRoundTrip(t *testing.T) {
+	src := NewFieldCatalogFactoryCapped(NewDict(), 3, nil)("p").(*fieldCatalogFacet)
+	src.Merge(FileContribution{Labels: map[string][]string{
+		"service.name": {"a", "b"},               // normal: under the cap
+		"pod":          {"p1", "p2", "p3", "p4"}, // crosses the cap (4 > 3) → high-card
+	}})
+	if !src.IsHighCard("pod") || src.IsHighCard("service.name") {
+		t.Fatal("precondition: pod must be high-card, service.name low-card")
+	}
+
+	var buf bytes.Buffer
+	if err := src.Encode(&buf); err != nil {
+		t.Fatal(err)
+	}
+	got := NewFieldCatalogFactory(NewDict())("p").(*fieldCatalogFacet) // threshold 0 = unlimited
+	if err := got.Decode(bytes.NewReader(buf.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+
+	if !got.IsHighCard("pod") {
+		t.Fatal("high-card state lost in round-trip")
+	}
+	if vals := got.Values("pod", "", 0); vals != nil {
+		t.Fatalf("decoded high-card field must not enumerate, got %v", vals)
+	}
+	if vals := got.Values("service.name", "", 0); !equal(vals, []string{"a", "b"}) {
+		t.Fatalf("normal field values = %v, want [a b]", vals)
+	}
+
+	// New contributions must NOT resurrect the capped field's values.
+	got.Merge(FileContribution{Labels: map[string][]string{"pod": {"p9"}}})
+	if vals := got.Values("pod", "", 0); vals != nil {
+		t.Fatalf("merge after decode re-accumulated high-card values: %v", vals)
+	}
+	if !got.IsHighCard("pod") {
+		t.Fatal("pod must stay high-card after new merges")
+	}
+	// The high-card field is still a valid field NAME.
+	if flds := got.Fields(); !equal(flds, []string{"pod", "service.name"}) {
+		t.Fatalf("Fields() = %v, want [pod service.name]", flds)
+	}
+}
+
+// TestMerge_TruncatedFieldsMarksHighCard: a field whose per-file value list hit
+// the extractor cap (TruncatedFields) becomes non-enumerable from that
+// contribution on — even though Labels carries values for it in the SAME
+// contribution — and later, non-truncated contributions do not resurrect it. The
+// catalog never serves a possibly-incomplete list as authoritative.
+func TestMerge_TruncatedFieldsMarksHighCard(t *testing.T) {
+	f := NewFieldCatalogFactory(NewDict())("p").(*fieldCatalogFacet)
+	f.Merge(FileContribution{
+		Labels:          map[string][]string{"f": {"a", "b"}, "ok": {"x"}},
+		TruncatedFields: []string{"f"},
+	})
+	if !f.IsHighCard("f") {
+		t.Fatal("truncated field must be high-card")
+	}
+	if vals := f.Values("f", "", 0); vals != nil {
+		t.Fatalf("truncated field must not enumerate its (incomplete) values, got %v", vals)
+	}
+	// The sibling field in the same contribution is unaffected.
+	if vals := f.Values("ok", "", 0); !equal(vals, []string{"x"}) {
+		t.Fatalf("sibling field values = %v, want [x]", vals)
+	}
+
+	// A later contribution WITHOUT the truncation flag must not resurrect it.
+	f.Merge(FileContribution{Labels: map[string][]string{"f": {"c"}}})
+	if vals := f.Values("f", "", 0); vals != nil {
+		t.Fatalf("later contribution resurrected truncated field: %v", vals)
+	}
+	if !f.IsHighCard("f") {
+		t.Fatal("field must stay high-card after later contributions")
+	}
+}
+
+// FuzzFieldCatalogDecode: arbitrary bytes fed straight into the catalog facet's
+// Decode must never panic, hang, or over-allocate (the per-value length cap and
+// the prealloc-hint cap bound allocation; every count is otherwise bounded by
+// the payload bytes running out). The bundle codec's CRC normally shields this
+// path, but Decode must hold on its own. Seeded with a valid Encode output so
+// the corpus starts inside the format.
+func FuzzFieldCatalogDecode(f *testing.F) {
+	_, seedFacet := buildCatalog(sampleContribs())
+	var seed bytes.Buffer
+	if err := seedFacet.Encode(&seed); err != nil {
+		f.Fatal(err)
+	}
+	f.Add(seed.Bytes())
+	f.Add([]byte(nil))
+	f.Add([]byte{0, 0, 0, 0})             // 0 fields, missing high-card section
+	f.Add([]byte{0xff, 0xff, 0xff, 0xff}) // huge fieldCount, no payload
+	f.Fuzz(func(t *testing.T, data []byte) {
+		fc := NewFieldCatalogFactory(NewDict())("p").(*fieldCatalogFacet)
+		_ = fc.Decode(bytes.NewReader(data)) // must simply not panic
+	})
+}

@@ -250,9 +250,11 @@ services:
       - "-lakehouse.insert.flush-interval=120s"
       - "-lakehouse.compaction.interval=2m"
       - "-lakehouse.query.file-workers=16"
-      # pmeta unified metadata layer (field/value catalog + HLL cardinality).
+      # pmeta unified metadata layer — fully switched: facets serve reads, the
+      # legacy sidecars (_file_metadata.json / .bloom / _bloom.bin) are not written.
       - "-lakehouse.pmeta.enabled=true"
       - "-lakehouse.pmeta.always-sketch-fields=trace_id,span_id"
+      - "-lakehouse.pmeta.retire-sidecar-writes=true"
       # No artificial file cap — VL upstream has none. The
       # query.max-live-bytes budget (default 512 MiB), the rgDecodeSem
       # semaphore, AND the process-wide fileBudgetSem (default 256 MiB
@@ -321,6 +323,11 @@ services:
       - "-lakehouse.manifest.refresh-interval=30s"
       - "-lakehouse.insert.flush-interval=120s"
       - "-lakehouse.query.file-workers=16"
+      # pmeta unified metadata layer — fully switched: facets serve reads, the
+      # legacy sidecars (_file_metadata.json / .bloom / _bloom.bin) are not written.
+      - "-lakehouse.pmeta.enabled=true"
+      - "-lakehouse.pmeta.always-sketch-fields=trace_id,span_id"
+      - "-lakehouse.pmeta.retire-sidecar-writes=true"
       # No artificial file cap — VL upstream has none. The
       # query.max-live-bytes budget (default 512 MiB) plus the
       # rgDecodeSem semaphore bound memory regardless of file count.

@@ -54,6 +54,10 @@ type Manager struct {
 	checkInterval time.Duration
 	parsedRules   []parsedRule
 	nowFunc       func() time.Time // for testing
+
+	// onFileRemoved, when set, is invoked after an expired file is deleted and
+	// removed from the manifest — the pmeta facet-cleanup hook.
+	onFileRemoved func(partition, key string)
 }
 
 // New creates a new retention Manager, parsing and validating the config.
@@ -161,6 +165,9 @@ func (m *Manager) RunOnce(ctx context.Context) (int, error) {
 					continue
 				}
 				m.manifest.RemoveFile(partition, fi.Key)
+				if m.onFileRemoved != nil {
+					m.onFileRemoved(partition, fi.Key)
+				}
 				metrics.RetentionFilesDeleted.Inc()
 				deleted++
 				m.logger.Debug("deleted expired file",
@@ -174,6 +181,11 @@ func (m *Manager) RunOnce(ctx context.Context) (int, error) {
 	}
 
 	return deleted, nil
+}
+
+// SetOnFileRemoved installs the per-file removal hook (pmeta facet cleanup).
+func (m *Manager) SetOnFileRemoved(fn func(partition, key string)) {
+	m.onFileRemoved = fn
 }
 
 // ResolveTTL determines the TTL for a file based on matching rules.

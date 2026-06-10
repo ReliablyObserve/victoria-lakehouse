@@ -2,6 +2,7 @@ package pmeta
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 )
@@ -177,5 +178,49 @@ func TestPersistDirty_Idempotent(t *testing.T) {
 	n, err := src.PersistDirty(ctx, os)
 	if err != nil || n != 0 {
 		t.Fatalf("second PersistDirty: n=%d err=%v (want 0)", n, err)
+	}
+}
+
+// TestHLL_NotPersistedDocumented pins the CURRENT behavior as the documented
+// limitation: the per-field HLL sketches live on the Store (one merged sketch
+// per field, globally), NOT in any facet payload, so they do not survive
+// PersistDirty → restart → WarmPartitions. A fresh store reports Cardinality 0
+// until live flushes re-feed HighCardValues. If this test starts failing because
+// cardinality round-trips, the sketches became persisted — update this test and
+// docs/architecture/field-value-catalog.md together.
+func TestHLL_NotPersistedDocumented(t *testing.T) {
+	ctx := context.Background()
+	src := catalogStore()
+	traces := make([]string, 5000)
+	for i := range traces {
+		traces[i] = fmt.Sprintf("trace-%d", i)
+	}
+	src.OnFileFlush(FileContribution{
+		Partition:      "p",
+		FileKey:        "f1",
+		Labels:         map[string][]string{"service.name": {"api-gateway"}},
+		HighCardValues: map[string][]string{"trace_id": traces},
+	})
+	if src.Cardinality("trace_id") == 0 {
+		t.Fatal("precondition: live store must have a trace_id sketch")
+	}
+
+	os := newMemOS()
+	if _, err := src.PersistDirty(ctx, os); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fresh store + warm = restarted pod. The bundle (catalog facet) loads…
+	dst := catalogStore()
+	wr := dst.WarmPartitions(ctx, os, []string{"p"}, 1)
+	if wr.Loaded != 1 || len(wr.NeedsRebuild) != 0 || len(wr.SkippedFacets) != 0 {
+		t.Fatalf("warm: loaded=%d rebuild=%v skipped=%v", wr.Loaded, wr.NeedsRebuild, wr.SkippedFacets)
+	}
+	if vals := dst.FieldValues("p", "service.name", "", 0); !equal(vals, []string{"api-gateway"}) {
+		t.Fatalf("catalog must round-trip, got %v", vals)
+	}
+	// …but the sketch does not: it is in-RAM only (the documented limitation).
+	if c := dst.Cardinality("trace_id"); c != 0 {
+		t.Fatalf("Cardinality after warm = %d — the HLL sketch is documented as NOT persisted; if it now round-trips, update this test + the catalog docs", c)
 	}
 }

@@ -1,10 +1,14 @@
-# Cold-Tier Metadata Consolidation — Proposal
+# Cold-Tier Metadata Consolidation
 
-> Status: **proposal / design review** (not yet implemented). Driven by the
+> Status: **implemented** — #127 (unified layer + dual-write), #130 (read-flip
+> for all three facets, both modules) and #131 (sidecar write retirement +
+> audit hardening) have landed; §8 tracks exactly what shipped. §§1–5 are the
+> original design analysis, kept as the rationale record (read its "today" as
+> pre-#127). Driven by the
 > maintainer observation that LH has many overlapping moving parts (manifest,
 > several sidecars, several snapshots, several caches/indexes) that duplicate
 > *lifecycle* machinery and are hard to debug/control. Companion to
-> [field-value-catalog.md](field-value-catalog.md) (which should be born as a
+> [field-value-catalog.md](field-value-catalog.md) (born as a
 > facet of this layer) and [performance-machinery.md](performance-machinery.md).
 >
 > Note: §3 below says "WAL" stays separate — read that as the **membuffer**
@@ -238,7 +242,7 @@ and **the field/value catalog is a facet from day one** (no standalone sidecar).
 So: **skip+rebuild = data-safety net · master flag = rollback · golden tests + `/ready`
 parity = correctness gate.** One PR, reversible by flag, self-healing on corruption.
 
-### New A1 (this is what's being built now)
+### New A1 (this is what was built)
 `internal/pmeta` scaffold (Facet/Bundle/Store + bundle codec with per-facet len+CRC
 framing + skip-on-corruption) **plus** the field/value catalog as the first real facet
 (`FacetFieldCatalog`: interned dict + per-partition roaring bitmaps + HLL), behind
@@ -246,13 +250,14 @@ framing + skip-on-corruption) **plus** the field/value catalog as the first real
 
 ### Bundle codec safeguards (hardened — pmeta is load-bearing)
 
-The bundle wire format is **v2**: a CRC-protected **table of contents (TOC)**
-precedes the payloads.
+The bundle wire format is **v3**: a CRC-protected **header** and a CRC-protected
+**table of contents (TOC)** precede the payloads.
 
 ```
-magic[4] | version[1]
+magic[4] | version[1]                      v3 = 0x03
 partLen[2] | partition
 facetCount[1]
+headerCRC[4]                               crc32 over magic..facetCount (incl. the partition string)
 tocCRC[4]                                  crc32 over the TOC bytes
 TOC: facetCount × { kind | flags | len[4] | payloadCRC[4] }  (sorted by kind)
 payloads: facetCount × payload[len]        (TOC order)
@@ -266,6 +271,11 @@ with the (untrusted) payload bytes. So:
   desync the whole bundle on a corrupt length byte — fixed.)
 - **TOC corruption is caught by `tocCRC`** → structural error → rebuild the whole
   partition (rare; the TOC is tiny).
+- **Header corruption is caught by `headerCRC`** (the v3 addition) — without it a
+  flipped `facetCount` byte (e.g. → 0) decoded as a *valid empty bundle*: silent
+  total facet loss instead of a rebuild signal. Now it is a structural error →
+  whole-partition rebuild. A v2 bundle fails decode the same way and routes to the
+  rebuild-from-manifest self-heal (wired — see §8).
 - **Bounded allocation** — `facetCount ≤ 255`, `len ≤ 256 MB/facet`, `≤ 1 GB/bundle`
   validated *before* allocating, so a corrupt count/len can't OOM the process.
 - **`Encode` holds one read lock** across all facet serialization, mutually
@@ -317,7 +327,14 @@ behavior must match `--pmeta=off`:
 The flag flips per facet only after Levels 1–3 pass for that facet; a regression
 at any level reverts the flag (data is safe regardless via skip+rebuild).
 
-## (8) Implementation progress (PR #127)
+## (8) Implementation progress (PRs #127 → #130 → #131)
+
+> Shipped state: **#127** (merged) — the layer + all facets dual-writing;
+> **#130** (merged) — the read-flip for all three facets, both modules;
+> **#131** — sidecar **write retirement** (`_file_metadata.json`, per-file
+> `.bloom`, partition `_bloom.bin`; all bloom pre-filters facet-first) plus the
+> holistic-audit hardening (generation-based dirtiness, serve-while-warming
+> merge, wired self-heal, compaction/retention lifecycle hooks, codec v3).
 
 - [x] **Scaffold** — `Facet`/`Bundle`/`Store`, hardened v2 TOC codec (per-facet
   len+CRC, isolated corruption, bounded alloc), 12 tests + 2 fuzzers under `-race`.
@@ -376,28 +393,95 @@ at any level reverts the flag (data is safe regardless via skip+rebuild).
   input). Both modules; `add` 9.7 ns/0-alloc. Verified
   `TestInteg_PmetaCatalog_CardinalityTapE2E` (real flush → Cardinality within 3 %).
 - [ ] **A3** — time-tiered residency + traces `span_attr:*`.
-- [~] **Fold existing facets** — bloom / file-meta / labels (dual-write → flip).
+- [x] **Fold existing facets** — bloom / file-meta / labels (dual-write → flip → retire).
   - [x] **file-meta (dual-write + parity)** — `fileMetaFacet` mirrors `manifest.FileMeta`
     (same `rc/mn/mx/rb/sf/lb` keys) byte-for-byte; fed at flush via the observer now
-    carrying the full `FileInfo`. Registered in both modules; the existing
-    `_file_metadata.json` sidecar still writes (dual-write). Parity gate
+    carrying the full `FileInfo`. Registered in both modules. Parity gate
     `TestInteg_PmetaCatalog_FileMetaFacetParity` asserts facet == `FileInfoToMeta(fi)`
     after a real flush, and `…_FileMetaWarmParity` asserts the same on the **cold-start
-    path** (`WarmCatalog` now rebuilds the full per-file meta from the manifest, not just
-    labels). **Flip/retire (read from facet, stop writing the sidecar) is the next step.**
+    path** (`WarmCatalog` rebuilds the full per-file meta from the manifest, not just
+    labels). Read-flipped in #130; write retired in #131 (below).
   - [x] **bloom (dual-write + parity)** — `bloomFacet` wraps `bloomindex.Index`; blooms
     built via the shared `bloomindex.BuildFileColumns` so they are identical to the legacy
     path. Fed at flush from one bloom-value extraction (the writer hoists it; both the
     legacy index and the facet consume it). `Store.BloomMayContain` read accessor.
     Parity gate `TestBloomFacet_ParityWithLegacyIndex` (facet `MayContain` == legacy) +
-    codec round-trip. Logs module (traces has no bloom path). **Flip = read from facet,
-    drop `_bloom.bin`, next step (needs bundle persist/warm for cold-start).**
+    codec round-trip. Read-flipped in #130; ALL pre-filter paths facet-first + write
+    retired in #131 (below).
   - [x] **labels (dual-write + parity)** — the field/value catalog facet IS the fold of
     `cache.LabelIndex` (no separate facet): it serves field-names + field-values with the
     same `Hits: 1` the legacy labelIndex fast-path returns (storage_fields.go), so there is
     no fidelity gap. Parity gate `TestInteg_PmetaCatalog_LabelsParityWithLabelIndex` feeds
-    both the same data and asserts identical names + values. **Flip = retire
-    `_label_index.json` + make `manifest.labelIndex` a derived view (Overlap-2), next.**
+    both the same data and asserts identical names + values. Read-flipped in #130
+    (`GetFieldNames` catalog-first; `field_values` was already catalog-first since #127);
+    the legacy labelIndex stays as the fallback path. Remaining (deliberate): make
+    `manifest.labelIndex` a derived view (Overlap-2).
+- [x] **The read-flip (#130, both modules)** — reads come from the facets first:
+  - **file-meta**: `WarmMetadata` enriches `FileInfo` from the in-RAM `fileMetaFacet`
+    via `manifest.EnrichFromProvider` (the `catalogFileMetaProvider` adapter); the
+    per-partition `_file_metadata.json` GET fallback is **partition-scoped** — only the
+    partitions the facet didn't cover (`LoadSidecarsForPartitions`), so a fully-covered
+    bundle warm does zero sidecar GETs. The warmup log shows `disk=N facet=N sidecar=N`.
+  - **bloom**: `checkFileBloom` consults `Store.BloomMayContain` before any per-file
+    `.bloom` S3 GET (blooms never false-negative → pruning-efficiency change only,
+    never correctness).
+  - **labels**: `GetFieldNames` serves catalog-first with the labelIndex fallback.
+  - Startup order (both `main.go`s): `WarmCatalogFromS3` (one bundle GET/partition) →
+    `WarmMetadata` (facet-first enrichment, sidecar/footer fallback) → `WarmCatalog`
+    (quiet manifest replay via `OnFileReplay` — no dirty marks, no PUT storm).
+- [x] **Write retirement (#131)** — `pmeta.retire_sidecar_writes` /
+  `-lakehouse.pmeta.retire-sidecar-writes` (requires `pmeta.enabled`, validated at
+  startup; **reversible** — clear the flag and the sidecars resume, no migration):
+  - stops writing `_file_metadata.json` (footer KV stays the cold-restart fallback,
+    `WarmMetadata` Phase 3), the per-file `.bloom`, **and** the partition `_bloom.bin`;
+  - ALL bloom pre-filter paths are **facet-first** with the legacy path as fallback:
+    logs `checkFileBloom` + `bloomUnionMatch` (OR-branch) + `bloomColumnIntersect`,
+    traces `bloomMayContainAll` — every consult site keeps keys it has no bloom for
+    (a bloom can only exclude what it knows);
+  - under retire the legacy `storageBloomObserver` is not wired at all, and traces
+    `PersistBloomIndex`/`BackfillBloomIndex` are skipped (no rebuild of an index that
+    can no longer persist);
+  - the e2e compose (`deployment/docker/docker-compose-e2e.yml`) runs **fully
+    switched** — pmeta + retire on both cold containers (logs + traces);
+  - gates: `TestInteg_PmetaRetire_SkipsFileMetaSidecar`,
+    `TestInteg_PmetaFlip_ORBranchFacet`, `TestInteg_PmetaFlip_BloomHybridColdRestart`,
+    `TestInteg_PmetaFlip_LogsBloomColdRestart`,
+    `TestInteg_PmetaFlip_WarmMetadataViaRealAdapter` (real facet→manifest adapter +
+    `WarmCatalogFromS3` e2e), `TestInteg_PmetaFlip_CheckFileBloomFacetExcludes`.
+- [x] **Audit hardening (82-agent holistic review, waves W1+W2)** —
+  - **Generation-based dirtiness**: `Bundle.gen`/`cleanGen` replace the boolean — a
+    contribution arriving between `PersistDirty`'s encode snapshot and its completion
+    keeps the bundle dirty and persists next cycle (no lost update).
+    `TestPersistDirty_GenerationNoLostUpdate`.
+  - **Serve-while-warming merge**: `WarmPartitions` installs via `Store.PutWarm`,
+    which absorbs the decoded S3 bundle INTO a live bundle (union per facet: catalog
+    values+highCard, file-meta keys, bloom `MergeFrom`) instead of replacing it —
+    flush contributions and dirty state survive; the union persists.
+    `TestPutWarm_PreservesLiveContributions`.
+  - **Self-heal wired**: `WarmCatalogFromS3` consumes `WarmResult` — `NeedsRebuild` /
+    `SkippedFacets` partitions are rebuilt from the manifest via `Store.Rebuild`,
+    **dirty**, so the repaired bundle replaces the broken S3 object (the §6 contract
+    previously had zero production callers).
+  - **Lifecycle hooks** (the critical gap — facets/bundles grew forever): compaction
+    calls `PmetaOnCompacted` (output file's contribution added with cap-suspect fields
+    marked high-card; merged-away inputs' facet entries removed via `Store.RemoveFiles`;
+    the output gets NO bloom entry — blooms of differently-sized inputs cannot be
+    unioned without re-scanning, and an absent key is always kept, which is sound);
+    retention calls `PmetaOnFileExpired` (expired files leave the facets; a
+    fully-expired partition's bundle is evicted from RAM via `Store.Remove` and its
+    `_pmeta.bundle` S3 object deleted).
+  - **Codec v3 header CRC** (§6): a flipped `facetCount`/partition byte can no longer
+    decode as a valid empty bundle; v2 bundles fail decode → rebuild path.
+  - **Empty-bloom-facet → legacy fallback**: `BloomMayContain` reports `ok=false` for
+    an EMPTY facet, so warm/replay-created empty facets never shadow the populated
+    legacy fallback with a useless keep-everything answer.
+  - **Read-path correctness**: logs `checkFileBloom` per-column any-of semantics
+    (`trace_id:in(t1,t2)` wrongly required ALL values) + the negated-predicate guard;
+    bloom feeds UNCAPPED (the capped `fi.Labels` feed false-negatived past
+    `maxLabelsPerField`); `extractExactMatch`/`extractInValues` field-token boundary
+    fix (a bloom field that is a suffix of another no longer builds bogus checks).
+  - **Roles**: the catalog store is built for EVERY role — select-only pods serve
+    dropdowns/file-meta/bloom from bundle-warmed facets instead of scanning.
 - [x] **One comprehensive e2e** — `TestInteg_PmetaCatalog_AllFacetsE2E`: one real
   `BatchWriter` flush with `--pmeta` fully on, asserting **catalog + HLL + file-meta +
   bloom + cold-start warm** in one place.

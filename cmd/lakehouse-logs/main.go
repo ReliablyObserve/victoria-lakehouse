@@ -147,6 +147,7 @@ var (
 	pmetaAlwaysSketch  = flag.String("lakehouse.pmeta.always-sketch-fields", "", "Comma-separated id columns to sketch instead of enumerate (e.g. trace_id,span_id)")
 	pmetaCardThreshold = flag.Int("lakehouse.pmeta.cardinality-threshold", 0, "Per-field distinct-value cap before a field is high-card (0 = default 50000)")
 	pmetaRefuseSketch  = flag.Bool("lakehouse.pmeta.refuse-sketch-enumeration", false, "Return empty for always-sketch field_values instead of scanning")
+	pmetaRetireWrites  = flag.Bool("lakehouse.pmeta.retire-sidecar-writes", false, "Stop writing legacy sidecars the facets replace (footer is the cold-restart fallback; reversible)")
 )
 
 func main() {
@@ -692,7 +693,10 @@ func setupCompaction(
 				})
 			}
 		},
-		OnCompacted: notifyPusher,
+		OnCompacted: func(added []manifest.FileInfo, removed []string) {
+			store.PmetaOnCompacted(added, removed) // facet feed + dead-key cleanup
+			notifyPusher(added, removed)
+		},
 	})
 	sched.Start()
 
@@ -1400,6 +1404,9 @@ func applyPmetaFlags(c *config.PmetaConfig) {
 	if *pmetaRefuseSketch {
 		c.RefuseSketchEnumeration = true
 	}
+	if *pmetaRetireWrites {
+		c.RetireSidecarWrites = true
+	}
 }
 
 func applyTopLevelFlags(cfg *config.Config) {
@@ -1690,7 +1697,14 @@ func buildRetentionManager(cfg *config.Config, store *parquets3.Storage, policy 
 	}
 	deleter := &poolDeleter{pool: store.Pool()}
 	slogLogger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	return retention.New(retCfg, store.Manifest(), deleter, cfg.S3.Bucket, slogLogger.With("component", "retention", "mode", mode))
+	mgr, err := retention.New(retCfg, store.Manifest(), deleter, cfg.S3.Bucket, slogLogger.With("component", "retention", "mode", mode))
+	if err != nil {
+		return nil, err
+	}
+	// pmeta facet cleanup: expired files leave the facets; a fully-expired
+	// partition's bundle is evicted from RAM and its S3 object deleted.
+	mgr.SetOnFileRemoved(store.PmetaOnFileExpired)
+	return mgr, nil
 }
 
 // poolDeleter adapts an s3reader.ClientPool to retention.FileDeleter.

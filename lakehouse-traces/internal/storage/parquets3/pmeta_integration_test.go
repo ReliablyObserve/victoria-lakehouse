@@ -9,6 +9,7 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -127,5 +128,61 @@ func TestInteg_PmetaFlip_TracesBloomFacet(t *testing.T) {
 	// Facet bloom path must NOT exclude a file that contains the value.
 	if s.checkFileBloom(context.Background(), fi, `service.name:="api-gateway"`) {
 		t.Fatal("traces facet bloom wrongly excluded a file containing service.name=api-gateway")
+	}
+}
+
+// TestInteg_PmetaFlip_BloomHybridColdRestart covers the retire-sidecar-writes cold
+// restart: s.bloomIdx is EMPTY (no _bloom.bin persisted anymore) and the bloom state
+// lives only in the bundle-warmed facet. The pre-filter hybrid must (a) still prune
+// via the facet, (b) never drop a file holding the value, and (c) keep files of a
+// partition neither side knows (can't exclude the unknown).
+func TestInteg_PmetaFlip_BloomHybridColdRestart(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true, RetireSidecarWrites: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
+	bw.catalogObserver = &catalogObserver{store: s.catalog, pool: s.pool}
+
+	now := time.Now()
+	bw.AddTraceRows([]schema.TraceRow{
+		{TimestampUnixNano: now.UnixNano(), ServiceName: "api-gateway", SpanName: "GET /a"},
+	})
+	bw.triggerFlush()
+
+	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	if len(files) == 0 {
+		t.Fatal("no file after flush")
+	}
+	fi := files[0]
+
+	// Simulate the cold restart: persist bundles, then a FRESH catalog warmed only
+	// from S3 — and an empty legacy bloomIdx (nothing persisted it).
+	if _, err := s.catalog.PersistDirty(context.Background(), poolObjectStore{s.pool}); err != nil {
+		t.Fatal(err)
+	}
+	part := manifest.ExtractPartition(fi.Key)
+	fresh := newCatalogStore(s.cfg.Pmeta, "logs/")
+	if res := fresh.WarmPartitions(context.Background(), poolObjectStore{s.pool}, []string{part}, 2); res.Loaded == 0 {
+		t.Fatalf("bundle not warmed (NeedsRebuild=%v)", res.NeedsRebuild)
+	}
+	s.catalog = fresh
+
+	present := []bloomindex.ColumnCheck{{Column: "service.name", Value: "api-gateway"}}
+	absent := []bloomindex.ColumnCheck{{Column: "service.name", Value: "no-such-service-xyz"}}
+
+	// (a)+(b): present value kept, absent value pruned — via facet only.
+	if got := s.bloomMayContainAll([]string{fi.Key}, present); len(got) != 1 || got[0] != fi.Key {
+		t.Fatalf("hybrid dropped a file holding the value: %v", got)
+	}
+	if got := s.bloomMayContainAll([]string{fi.Key}, absent); len(got) != 0 {
+		t.Fatalf("hybrid kept a file the facet can prune: %v", got)
+	}
+
+	// (c): a key in a partition neither facet nor bloomIdx knows is KEPT.
+	unknown := "traces/dt=1999-01-01/hour=00/x.parquet"
+	if got := s.bloomMayContainAll([]string{unknown}, present); len(got) != 1 || got[0] != unknown {
+		t.Fatalf("hybrid dropped an unknown-partition file (must keep what it can't exclude): %v", got)
 	}
 }

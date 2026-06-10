@@ -46,6 +46,10 @@ func (s *Store) PersistDirty(ctx context.Context, os ObjectStore) (int, error) {
 			return n, err
 		}
 		b := s.Bundle(p)
+		// Snapshot the generation BEFORE encoding: contributions that arrive
+		// while the encode/PUT is in flight bump gen past this snapshot, so the
+		// bundle stays dirty and they persist next cycle (no lost update).
+		g := b.snapshotGen()
 		var buf bytes.Buffer
 		if err := b.Encode(&buf); err != nil {
 			return n, err
@@ -53,7 +57,7 @@ func (s *Store) PersistDirty(ctx context.Context, os ObjectStore) (int, error) {
 		if err := os.PutObject(ctx, s.bundleKey(p), buf.Bytes()); err != nil {
 			return n, err
 		}
-		b.clearDirty()
+		b.persisted(g)
 		n++
 	}
 	return n, nil
@@ -129,7 +133,10 @@ func (s *Store) WarmPartitions(ctx context.Context, os ObjectStore, partitions [
 			wr.NeedsRebuild = append(wr.NeedsRebuild, r.partition)
 			continue
 		}
-		s.Put(r.bundle)
+		// PutWarm, not Put: with serve-while-warming a flush may already have
+		// populated this partition's live bundle — absorb the decoded content
+		// instead of clobbering those contributions (and their dirty state).
+		s.PutWarm(r.bundle)
 		wr.Loaded++
 		if len(r.skipped) > 0 {
 			wr.SkippedFacets[r.partition] = r.skipped

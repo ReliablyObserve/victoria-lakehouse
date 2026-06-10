@@ -6,11 +6,13 @@ import (
 	"math"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -599,5 +601,543 @@ func TestInteg_PmetaFlip_FieldNamesAndBloom(t *testing.T) {
 	// excluded by the facet path (blooms have no false negatives).
 	if s.checkFileBloom(context.Background(), fi, "service.name:api-gateway") {
 		t.Fatal("checkFileBloom wrongly excluded a file containing service.name=api-gateway")
+	}
+}
+
+// TestInteg_PmetaRetire_SkipsFileMetaSidecar verifies the retire-sidecar-writes flag:
+// with it on, no _file_metadata.json is written to S3, yet the file metadata is still
+// available from the in-RAM facet (the footer is the cold-restart fallback).
+func TestInteg_PmetaRetire_SkipsFileMetaSidecar(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true, RetireSidecarWrites: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog}
+	bw.retireSidecars = true
+
+	now := time.Now()
+	bw.AddLogRows([]schema.LogRow{{TimestampUnixNano: now.UnixNano(), Body: "m", ServiceName: "api-gateway"}})
+	bw.triggerFlush()
+
+	// retire on → the _file_metadata.json sidecar is NOT written (the gate is
+	// synchronous: no goroutine is spawned, so this is race-free).
+	mock.mu.RLock()
+	for k := range mock.files {
+		if strings.HasSuffix(k, metadataSidecarSuffix) {
+			mock.mu.RUnlock()
+			t.Fatalf("retire-sidecars on but _file_metadata.json was written: %s", k)
+		}
+	}
+	mock.mu.RUnlock()
+
+	// ...yet the file metadata is still available from the facet.
+	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	if len(files) == 0 {
+		t.Fatal("no file after flush")
+	}
+	fi := files[0]
+	if _, ok := s.catalog.FileMeta(manifest.ExtractPartition(fi.Key), fi.Key); !ok {
+		t.Fatal("facet missing file metadata after retire flush")
+	}
+}
+
+const metadataSidecarSuffix = "_file_metadata.json"
+
+// TestInteg_PmetaFlip_ORBranchFacet covers the OR-branch bloom read-flip: the
+// facet-based union match keeps a file whose bloom-indexed value is present (blooms
+// never false-negate, so the facet path must never drop a matching file), and
+// reports ok=false for a partition the facet doesn't carry (→ caller falls back).
+func TestInteg_PmetaFlip_ORBranchFacet(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog}
+
+	now := time.Now()
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "m", ServiceName: "api-gateway"},
+		{TimestampUnixNano: now.Add(time.Millisecond).UnixNano(), Body: "m", ServiceName: "order-service"},
+	})
+	bw.triggerFlush()
+
+	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	if len(files) == 0 {
+		t.Fatal("no file after flush")
+	}
+	fi := files[0]
+	part := manifest.ExtractPartition(fi.Key)
+	checks := [][]bloomindex.ColumnCheck{{{Column: "service.name", Value: "api-gateway"}}}
+
+	// present value → file is in the union (never dropped).
+	union, ok := s.facetBloomUnionMatch(part, []string{fi.Key}, checks)
+	if !ok {
+		t.Fatal("facetBloomUnionMatch ok=false for a partition the facet carries")
+	}
+	if !union[fi.Key] {
+		t.Fatalf("OR-branch facet dropped a file containing service.name=api-gateway: %v", union)
+	}
+
+	// a partition the facet does not carry → ok=false so the caller falls back.
+	if _, ok := s.facetBloomUnionMatch("dt=1999-01-01/hour=00", []string{"x"}, checks); ok {
+		t.Fatal("facetBloomUnionMatch should report ok=false for an unknown partition")
+	}
+}
+
+// TestInteg_PmetaFlip_LogsBloomColdRestart is the logs twin of the traces
+// cold-restart test (the absent-value assertions are the ones that catch a
+// silently-empty facet — a present-value-only check passes vacuously because
+// unknown keys are kept). Under retire-sidecar-writes after a cold restart the
+// bundle-warmed facet is the ONLY bloom source: both pre-filter helpers must
+// (a) prune an absent value, (b) never drop a file holding the value, and
+// (c) keep files of partitions no bloom knows.
+func TestInteg_PmetaFlip_LogsBloomColdRestart(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true, RetireSidecarWrites: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog, pool: s.pool}
+	// retire mode: NO legacy bloom observer wired — the facet is the only feed.
+
+	now := time.Now()
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "m", ServiceName: "api-gateway"},
+	})
+	bw.triggerFlush()
+
+	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	if len(files) == 0 {
+		t.Fatal("no file after flush")
+	}
+	fi := files[0]
+	part := manifest.ExtractPartition(fi.Key)
+
+	// Cold restart: bundles persisted, fresh catalog warmed ONLY from S3.
+	if _, err := s.catalog.PersistDirty(context.Background(), poolObjectStore{s.pool}); err != nil {
+		t.Fatal(err)
+	}
+	fresh := newCatalogStore(s.cfg.Pmeta, "logs/")
+	if res := fresh.WarmPartitions(context.Background(), poolObjectStore{s.pool}, []string{part}, 2); res.Loaded == 0 {
+		t.Fatalf("bundle not warmed (NeedsRebuild=%v)", res.NeedsRebuild)
+	}
+	s.catalog = fresh
+
+	ctx := context.Background()
+	keys := []string{fi.Key}
+	presentCol := []bloomColumnValues{{Column: "service.name", Values: []string{"api-gateway"}}}
+	absentCol := []bloomColumnValues{{Column: "service.name", Values: []string{"no-such-service-xyz"}}}
+	presentBranch := [][]bloomindex.ColumnCheck{{{Column: "service.name", Value: "api-gateway"}}}
+	absentBranch := [][]bloomindex.ColumnCheck{{{Column: "service.name", Value: "no-such-service-xyz"}}}
+
+	// single-set path (bloomColumnIntersect)
+	if m, ok := s.bloomColumnIntersect(ctx, part, keys, presentCol); !ok || !m[fi.Key] {
+		t.Fatalf("[single-set] dropped a file holding the value (ok=%v m=%v)", ok, m)
+	}
+	if m, ok := s.bloomColumnIntersect(ctx, part, keys, absentCol); !ok || m[fi.Key] {
+		t.Fatalf("[single-set] absent value not pruned (ok=%v m=%v) — facet empty?", ok, m)
+	}
+
+	// OR-branch path (bloomUnionMatch)
+	if m, ok := s.bloomUnionMatch(ctx, part, keys, presentBranch); !ok || !m[fi.Key] {
+		t.Fatalf("[or-branch] dropped a file holding the value (ok=%v m=%v)", ok, m)
+	}
+	if m, ok := s.bloomUnionMatch(ctx, part, keys, absentBranch); !ok || m[fi.Key] {
+		t.Fatalf("[or-branch] absent value not pruned (ok=%v m=%v) — facet empty?", ok, m)
+	}
+
+	// Unknown partition → no bloom anywhere → ok=false → caller keeps the files.
+	if _, ok := s.bloomColumnIntersect(ctx, "dt=1999-01-01/hour=00", []string{"x"}, presentCol); ok {
+		t.Fatal("[single-set] unknown partition should report ok=false (keep files)")
+	}
+	if _, ok := s.bloomUnionMatch(ctx, "dt=1999-01-01/hour=00", []string{"x"}, presentBranch); ok {
+		t.Fatal("[or-branch] unknown partition should report ok=false (keep files)")
+	}
+}
+
+// TestInteg_PmetaFlip_WarmMetadataViaRealAdapter exercises the PRODUCTION file-meta
+// flip path end-to-end: catalogFileMetaProvider (the real facet→manifest adapter,
+// not the unit-test mock) + Storage.WarmCatalogFromS3 (the production bundle warm).
+// Flush → persist bundles → fresh storage with empty catalog + zeroed manifest meta
+// → WarmCatalogFromS3 → EnrichFromProvider must fill FileInfo from the facet alone.
+func TestInteg_PmetaFlip_WarmMetadataViaRealAdapter(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true, RetireSidecarWrites: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog, pool: s.pool}
+
+	now := time.Now()
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "m", ServiceName: "api-gateway"},
+	})
+	bw.triggerFlush()
+	if _, err := s.catalog.PersistDirty(context.Background(), poolObjectStore{s.pool}); err != nil {
+		t.Fatal(err)
+	}
+
+	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	if len(files) == 0 {
+		t.Fatal("no file after flush")
+	}
+	fi := files[0]
+	wantRows := fi.RowCount
+
+	// Cold restart: same manifest keys but ZEROED metadata (what a bare S3 list
+	// reconstruction yields), an EMPTY catalog, then the production warm.
+	s.manifest = manifest.New("bucket", "logs/")
+	s.manifest.AddFile(manifest.ExtractPartition(fi.Key), manifest.FileInfo{Key: fi.Key, Bucket: fi.Bucket, Size: fi.Size})
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	s.WarmCatalogFromS3(context.Background()) // production wrapper (poolObjectStore inside)
+
+	// The real adapter serves the facet's metadata.
+	fm, ok := catalogFileMetaProvider{store: s.catalog}.FileMeta(manifest.ExtractPartition(fi.Key), fi.Key)
+	if !ok || fm.RowCount != wantRows {
+		t.Fatalf("real adapter FileMeta = (%+v, %v), want RowCount=%d", fm, ok, wantRows)
+	}
+
+	// And the manifest enrich-from-facet path fills the zeroed FileInfo.
+	enriched, uncovered := s.manifest.EnrichFromProvider(catalogFileMetaProvider{store: s.catalog})
+	if enriched != 1 || len(uncovered) != 0 {
+		t.Fatalf("EnrichFromProvider via real adapter = (%d, %v), want (1, [])", enriched, uncovered)
+	}
+	got := s.manifest.GetFilesForRange(0, 1<<62)
+	if len(got) != 1 || got[0].RowCount != wantRows {
+		t.Fatalf("manifest not enriched from facet: %+v", got)
+	}
+}
+
+// TestInteg_EnrichEquivalence_ProviderVsSidecar is the retire-sidecar-writes
+// equivalence gate for cold-start metadata: enriching a zeroed manifest from the
+// in-RAM facet (EnrichFromProvider via the real catalogFileMetaProvider) must
+// reconstruct EXACTLY the same FileInfo metadata as enriching it from the legacy
+// _file_metadata.json sidecars (LoadSidecars). If these ever diverge, retiring the
+// sidecar would silently change what a restarted pod believes about its files.
+func TestInteg_EnrichEquivalence_ProviderVsSidecar(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog}
+
+	// Two partitions (2h apart) → two files, so the equivalence is asserted
+	// across more than one sidecar/bundle.
+	base := time.Date(2026, 6, 9, 10, 15, 0, 0, time.UTC)
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: base.UnixNano(), Body: "a", ServiceName: "api-gateway"},
+		{TimestampUnixNano: base.Add(time.Second).UnixNano(), Body: "b", ServiceName: "order-service"},
+		{TimestampUnixNano: base.Add(2 * time.Hour).UnixNano(), Body: "c", ServiceName: "user-service"},
+	})
+	bw.triggerFlush()
+
+	files := s.manifest.GetFilesForRange(base.Add(-time.Hour).UnixNano(), base.Add(3*time.Hour).UnixNano())
+	if len(files) < 2 {
+		t.Fatalf("want >= 2 files across two partitions, got %d", len(files))
+	}
+
+	// Dual-write the _file_metadata.json sidecars SYNCHRONOUSLY (the flush-path
+	// write is a goroutine; this is deterministic and idempotent — same content).
+	parts := map[string]bool{}
+	for _, fi := range files {
+		parts[manifest.ExtractPartition(fi.Key)] = true
+	}
+	for p := range parts {
+		if err := s.manifest.WritePartitionSidecar(context.Background(), s.pool.S3Client(), p); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// TWO fresh manifests with the same keys but ZEROED metadata (what a bare S3
+	// list reconstruction yields): one enriched from the facet, one from sidecars.
+	mProv := manifest.New("test-bucket", "logs/")
+	mSide := manifest.New("test-bucket", "logs/")
+	for _, fi := range files {
+		p := manifest.ExtractPartition(fi.Key)
+		mProv.AddFile(p, manifest.FileInfo{Key: fi.Key, Bucket: fi.Bucket, Size: fi.Size})
+		mSide.AddFile(p, manifest.FileInfo{Key: fi.Key, Bucket: fi.Bucket, Size: fi.Size})
+	}
+
+	enriched, uncovered := mProv.EnrichFromProvider(catalogFileMetaProvider{store: s.catalog})
+	if enriched != len(files) || len(uncovered) != 0 {
+		t.Fatalf("EnrichFromProvider = (%d, %v), want (%d, [])", enriched, uncovered, len(files))
+	}
+	if n := mSide.LoadSidecars(context.Background(), s.pool.S3Client(), 4); n != len(files) {
+		t.Fatalf("LoadSidecars enriched %d files, want %d", n, len(files))
+	}
+
+	bySide := make(map[string]manifest.FileInfo, len(files))
+	for _, fi := range mSide.GetFilesForRange(0, 1<<62) {
+		bySide[fi.Key] = fi
+	}
+	byProv := mProv.GetFilesForRange(0, 1<<62)
+	if len(byProv) != len(files) || len(bySide) != len(files) {
+		t.Fatalf("enriched manifests lost files: provider=%d sidecar=%d want=%d", len(byProv), len(bySide), len(files))
+	}
+	for _, p := range byProv {
+		sc, ok := bySide[p.Key]
+		if !ok {
+			t.Fatalf("sidecar-enriched manifest missing %s", p.Key)
+		}
+		if p.RowCount == 0 {
+			t.Fatalf("file %s not actually enriched (RowCount=0)", p.Key)
+		}
+		if p.RowCount != sc.RowCount || p.MinTimeNs != sc.MinTimeNs || p.MaxTimeNs != sc.MaxTimeNs ||
+			p.RawBytes != sc.RawBytes || p.SchemaFingerprint != sc.SchemaFingerprint {
+			t.Fatalf("provider vs sidecar enrichment diverged for %s:\n provider=%+v\n sidecar=%+v", p.Key, p, sc)
+		}
+	}
+}
+
+// TestInteg_GetFieldNames_CatalogFlip drives the field_names read-flip END-TO-END
+// through s.GetFieldNames (not the catalogFieldNames helper): after a real flush
+// with --pmeta on the result must include service.name, and flipping the catalog
+// off (s.catalog=nil) must return the SAME name set via the legacy path (parity).
+// The degraded twin then deletes the parquet objects and clears every cache so the
+// footer-hits path yields nothing — proving the catalog fallback branch (pmeta on)
+// and the labelIndex branch (pmeta off) both still serve the names.
+func TestInteg_GetFieldNames_CatalogFlip(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog}
+
+	now := time.Now()
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "a", ServiceName: "api-gateway"},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "b", ServiceName: "order-service"},
+	})
+	bw.triggerFlush()
+
+	q := mustParseQueryWithTime(t, "*", now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	hasName := func(vs []logstorage.ValueWithHits, name string) bool {
+		for _, v := range vs {
+			if v.Value == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	on, err := s.GetFieldNames(context.Background(), nil, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasName(on, "service.name") {
+		t.Fatalf("GetFieldNames(pmeta on) missing service.name: %v", valueStrings(on))
+	}
+
+	catalog := s.catalog
+	s.catalog = nil
+	off, err := s.GetFieldNames(context.Background(), nil, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(valueStrings(on), valueStrings(off)) {
+		t.Fatalf("field-names cross-path mismatch:\n catalog on=%v\n legacy=%v", valueStrings(on), valueStrings(off))
+	}
+
+	// Degraded twin: parquet objects gone + footer/mem caches cleared → the
+	// footer-hits path yields nothing, so GetFieldNames must take the fallbacks.
+	s.catalog = catalog
+	mock.mu.Lock()
+	for k := range mock.files {
+		if strings.HasSuffix(k, ".parquet") {
+			delete(mock.files, k)
+		}
+	}
+	mock.mu.Unlock()
+	s.footerCache = NewFooterCache(16)
+	s.memCache = cache.NewLRU(1024 * 1024)
+
+	on2, err := s.GetFieldNames(context.Background(), nil, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasName(on2, "service.name") {
+		t.Fatalf("catalog fallback branch (footers gone) missing service.name: %v", valueStrings(on2))
+	}
+	s.catalog = nil
+	off2, err := s.GetFieldNames(context.Background(), nil, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasName(off2, "service.name") {
+		t.Fatalf("legacy labelIndex branch (footers gone) missing service.name: %v", valueStrings(off2))
+	}
+}
+
+// TestInteg_CatalogFieldValues_MultiPartitionUnion: a flush spanning TWO partitions
+// (2h apart → different hour=…) with different service.name values per partition
+// must answer a whole-range GetFieldValues with the deduped UNION, sorted — the
+// multi-partition union semantics of the catalog fast-path (catalogFieldValues
+// walks every partition in the query range, not just the first).
+func TestInteg_CatalogFieldValues_MultiPartitionUnion(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog}
+
+	t1 := time.Date(2026, 6, 9, 10, 15, 0, 0, time.UTC)
+	t2 := t1.Add(2 * time.Hour) // different hour ⇒ different partition
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: t1.UnixNano(), Body: "a", ServiceName: "checkout"},
+		{TimestampUnixNano: t1.Add(time.Second).UnixNano(), Body: "b", ServiceName: "shared-svc"},
+		{TimestampUnixNano: t2.UnixNano(), Body: "c", ServiceName: "billing"},
+		{TimestampUnixNano: t2.Add(time.Second).UnixNano(), Body: "d", ServiceName: "shared-svc"},
+	})
+	bw.triggerFlush()
+
+	p1 := partitionFromNano(t1.UnixNano())
+	p2 := partitionFromNano(t2.UnixNano())
+	if p1 == p2 {
+		t.Fatalf("test rows must land in two partitions, both got %s", p1)
+	}
+	// Each partition's catalog holds ONLY its own values (no cross-partition bleed).
+	if got := s.catalog.FieldValues(p1, "service.name", "", 0); !reflect.DeepEqual(got, []string{"checkout", "shared-svc"}) {
+		t.Fatalf("partition %s catalog = %v", p1, got)
+	}
+	if got := s.catalog.FieldValues(p2, "service.name", "", 0); !reflect.DeepEqual(got, []string{"billing", "shared-svc"}) {
+		t.Fatalf("partition %s catalog = %v", p2, got)
+	}
+
+	q := mustParseQueryWithTime(t, "*", t1.Add(-time.Hour).UnixNano(), t2.Add(time.Hour).UnixNano())
+	before := metrics.CatalogValueLookups.Get("catalog")
+	got, err := s.GetFieldValues(context.Background(), nil, q, "service.name", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Raw order, NOT re-sorted: asserts the union is deduped (shared-svc once)
+	// AND already sorted as returned.
+	raw := make([]string, len(got))
+	for i, v := range got {
+		raw[i] = v.Value
+	}
+	if want := []string{"billing", "checkout", "shared-svc"}; !reflect.DeepEqual(raw, want) {
+		t.Fatalf("whole-range GetFieldValues = %v, want deduped sorted union %v", raw, want)
+	}
+	if metrics.CatalogValueLookups.Get("catalog") <= before {
+		t.Fatal("union was not served from the catalog fast-path")
+	}
+}
+
+// TestInteg_CatalogTruncatedField_FallsToScan: a flushed file with more distinct
+// values for one label field than the extractor cap (maxLabelsPerField) arrives
+// with a CAPPED — i.e. possibly incomplete — value list, so the catalog must mark
+// the field high-card and serve NOTHING for it (never a silently truncated list),
+// and GetFieldValues must fall through to the scan, which returns the TRUE values.
+func TestInteg_CatalogTruncatedField_FallsToScan(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog}
+
+	const n = 120 // > maxLabelsPerField (100) distinct pod names → extractor caps the list
+	base := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
+	rows := make([]schema.LogRow, n)
+	for i := range rows {
+		rows[i] = schema.LogRow{
+			TimestampUnixNano: base.Add(time.Duration(i) * time.Millisecond).UnixNano(),
+			Body:              "msg",
+			ServiceName:       "api-gateway",
+			K8sPodName:        fmt.Sprintf("pod-%03d", i),
+		}
+	}
+	bw.AddLogRows(rows)
+	bw.triggerFlush()
+
+	files := s.manifest.GetFilesForRange(base.Add(-time.Hour).UnixNano(), base.Add(time.Hour).UnixNano())
+	if len(files) == 0 {
+		t.Fatal("no file after flush")
+	}
+	if got := len(files[0].Labels["k8s.pod.name"]); got != maxLabelsPerField {
+		t.Fatalf("extractor cap: manifest labels hold %d pod names, want exactly %d", got, maxLabelsPerField)
+	}
+
+	// (a) The catalog must NOT serve the truncated field (high-card behavior)…
+	part := partitionFromNano(base.UnixNano())
+	if got := s.catalog.FieldValues(part, "k8s.pod.name", "", 0); got != nil {
+		t.Fatalf("catalog served %d values for a truncated field — a capped list must never be authoritative", len(got))
+	}
+	// …but the field NAME stays known, and an untruncated sibling is still served.
+	names := s.catalog.FieldNames(part)
+	hasPod := false
+	for _, n := range names {
+		if n == "k8s.pod.name" {
+			hasPod = true
+		}
+	}
+	if !hasPod {
+		t.Fatalf("high-card field must remain a known field NAME, got %v", names)
+	}
+	if got := s.catalog.FieldValues(part, "service.name", "", 0); !reflect.DeepEqual(got, []string{"api-gateway"}) {
+		t.Fatalf("untruncated sibling field = %v, want [api-gateway]", got)
+	}
+
+	// (b) GetFieldValues falls through to the scan and returns the TRUE values.
+	q := mustParseQueryWithTime(t, "*", base.Add(-time.Hour).UnixNano(), base.Add(time.Hour).UnixNano())
+	beforeScan := metrics.CatalogValueLookups.Get("scan")
+	got, err := s.GetFieldValues(context.Background(), nil, q, "k8s.pod.name", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := make([]string, n)
+	for i := range want {
+		want[i] = fmt.Sprintf("pod-%03d", i)
+	}
+	if vals := valueStrings(got); !reflect.DeepEqual(vals, want) {
+		t.Fatalf("scan fallback returned %d values (want all %d true pod names): %v", len(vals), n, vals)
+	}
+	if metrics.CatalogValueLookups.Get("scan") <= beforeScan {
+		t.Fatal("catalog miss not recorded — was the truncated field served from the catalog?")
+	}
+}
+
+// TestInteg_PmetaFlip_CheckFileBloomFacetExcludes covers checkFileBloom's facet
+// EXCLUDE branch (the prior tests only asserted the keep side): a value absent from
+// the file's bloom must skip the file via the facet, with NO legacy .bloom present
+// (retire mode), and the metric label must be the facet one.
+func TestInteg_PmetaFlip_CheckFileBloomFacetExcludes(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Pmeta = config.PmetaConfig{Enabled: true, RetireSidecarWrites: true}
+	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.catalogObserver = &catalogObserver{store: s.catalog}
+
+	now := time.Now()
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "m", ServiceName: "api-gateway"},
+	})
+	bw.triggerFlush()
+	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	if len(files) == 0 {
+		t.Fatal("no file after flush")
+	}
+	fi := files[0]
+
+	if !s.checkFileBloom(context.Background(), fi, `service.name:="no-such-service-xyz"`) {
+		t.Fatal("facet bloom should exclude a file lacking the value (facet empty or check bypassed?)")
+	}
+	if s.checkFileBloom(context.Background(), fi, `service.name:="api-gateway"`) {
+		t.Fatal("facet bloom wrongly excluded a file containing the value")
 	}
 }

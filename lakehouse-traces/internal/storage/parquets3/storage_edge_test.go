@@ -15,9 +15,19 @@ func TestExtractExactMatch_TableDriven(t *testing.T) {
 		{"exact with :", `service.name:"api-gw"`, "service.name", "api-gw"},
 		{"no match", "no match here", "service.name", ""},
 		{"empty query", "", "service.name", ""},
-		{"empty field matches prefix", `field:="val"`, "", "val"},
+		// An empty field name no longer substring-matches inside another field's
+		// token (fieldTokenIndex boundary check) — extracting a value for no field
+		// was the same bug class as `name:=` matching inside `service.name:=`.
+		{"empty field no longer matches mid-token", `field:="val"`, "", ""},
 		{"both empty", "", "", ""},
 		{"multiple fields", `a:="x" AND b:="y"`, "b", "y"},
+		// fieldTokenIndex cross-field guards: a field that is a SUFFIX of another
+		// must not extract that other field's value (the bloom false-exclude bug),
+		// and ':'/'-' are field chars (resource_attr:service.name style keys).
+		{"suffix field not matched mid-token", `service.name:="api-gateway"`, "name", ""},
+		{"prefixed attr key not matched as plain field", `resource_attr:service.name:="x"`, "service.name", ""},
+		{"full prefixed attr key matches", `resource_attr:service.name:="x"`, "resource_attr:service.name", "x"},
+		{"hyphenated neighbor not matched", `x-name:="v"`, "name", ""},
 		{"unclosed quote :=", `field:="unclosed`, "field", ""},
 		{"unclosed quote :", `field:"unclosed`, "field", ""},
 		{"empty value :=", `field:=""`, "field", ""},
