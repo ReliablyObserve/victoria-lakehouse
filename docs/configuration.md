@@ -226,12 +226,13 @@ used to seed the post-restart async footer prefetch.
 | `--lakehouse.compaction.min-age` | `1h` | Files younger than this are not eligible for L0→L1 compaction |
 | `--lakehouse.compaction.daily-rollup-age` | `24h` | Above this age, files roll up into the daily-rollup partition |
 | `compaction.compression_level_by_output_level` (YAML) | `[3, 7, 11]` | Per-output-level zstd schedule. Slot N = level for output files at compaction-level N. L0 inherits this slot 0 so write + L0 stay consistent. Extends gracefully — operators who configure `[3, 7, 11, 15]` switch to the deeper level for L3+ when a finer codec lands. |
+| `--lakehouse.compaction.row-group-size-by-output-level` / `compaction.row_group_size_by_output_level` | `[10000, 10000, 20000]` | Per-output-level Parquet row-group size (max rows per row group), same slot semantics as the compression schedule. Default keeps the write-path 10k for L0/L1 outputs and doubles to 20k for L2+ rollups — cold scan-heavy files trade row-group pruning granularity for fewer/larger groups (measured: −46% row groups, −18% pages, −0.15% bytes on real L2 files). Saturates at the last slot; an empty list falls back to `insert.row_group_size`. Flag form is comma-separated, e.g. `10000,10000,20000`. |
 
 The progressive schedule lets fresh writes optimize for ingest
 throughput while older cold rollups invest more CPU to shrink
 long-term storage. Per-tenant overrides (see Multi-tenancy doc)
-adjust the schedule for a specific tenant without changing the
-global default.
+adjust the compression schedule for a specific tenant without
+changing the global default.
 
 ## Startup Settings
 

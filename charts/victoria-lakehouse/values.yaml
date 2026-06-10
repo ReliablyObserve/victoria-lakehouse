@@ -528,6 +528,16 @@ lakehouseConfig:
     min_age: 1h
     # -- Minimum partition age for daily rollup compaction (merges ≥2 L1 files in old partitions).
     daily_rollup_age: 24h
+    # -- Progressive zstd compression schedule: slot N = level for output files
+    #    at compaction level N (saturates at the last slot; empty list falls back
+    #    to insert.compression_level). Default escalates CPU as files age.
+    compression_level_by_output_level: [3, 7, 11]
+    # -- Parquet row-group size schedule, same slot semantics: slot N = max rows
+    #    per row group for output files at compaction level N. Default keeps the
+    #    write-path 10k for L0/L1 outputs and doubles to 20k for L2+ rollups
+    #    (fewer/larger row groups compress better on cold scan-heavy files).
+    #    Empty list falls back to insert.row_group_size.
+    row_group_size_by_output_level: [10000, 10000, 20000]
     # NOTE (PR A — election-free compaction):
     #   Removed keys: leader_election, lease_duration, s3_lock_ttl,
     #   s3_heartbeat, shard_id, shard_count. Partition ownership is now
