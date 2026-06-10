@@ -402,13 +402,19 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 	}
 	metrics.WriterLabelValuesTotal.Add("logs", labelValueCount)
 
+	// True min/max scan — NOT rows[0]/rows[len-1]. The flush input is not
+	// guaranteed time-sorted (and the upcoming (stream_id, timestamp) row
+	// order makes positional bounds actively wrong); an understated
+	// MaxTimeNs breaks manifest range pruning AND the bufferWatermark
+	// double-count guard. See schema.LogRowTimeBounds.
+	minTimeNs, maxTimeNs := schema.LogRowTimeBounds(rows)
 	fi := manifest.FileInfo{
 		Key:               key,
 		Bucket:            bucket,
 		Size:              int64(len(result.Data)),
 		RowCount:          int64(len(rows)),
-		MinTimeNs:         rows[0].TimestampUnixNano,
-		MaxTimeNs:         rows[len(rows)-1].TimestampUnixNano,
+		MinTimeNs:         minTimeNs,
+		MaxTimeNs:         maxTimeNs,
 		RawBytes:          result.RawBytes,
 		SchemaFingerprint: schemaFingerprint(w.mode),
 		Labels:            labels,
@@ -489,13 +495,15 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 	}
 	metrics.WriterLabelValuesTotal.Add("traces", labelValueCount)
 
+	// True min/max scan — see the logs flush above and schema.TraceRowTimeBounds.
+	minTimeNs, maxTimeNs := schema.TraceRowTimeBounds(rows)
 	fi := manifest.FileInfo{
 		Key:               key,
 		Bucket:            bucket,
 		Size:              int64(len(result.Data)),
 		RowCount:          int64(len(rows)),
-		MinTimeNs:         rows[0].TimestampUnixNano,
-		MaxTimeNs:         rows[len(rows)-1].TimestampUnixNano,
+		MinTimeNs:         minTimeNs,
+		MaxTimeNs:         maxTimeNs,
 		RawBytes:          result.RawBytes,
 		SchemaFingerprint: schemaFingerprint(w.mode),
 		Labels:            labels,

@@ -91,3 +91,28 @@ PageIndex: present on 100% of column chunks in **all** files (no flag needed).
 **Every step ships with the multi-engine readability gate** (pyarrow + duckdb readback — the
 harness from this research becomes `scripts/ci/` + a CI job) and before/after size + query
 benchmarks on real e2e data.
+
+## Measured: step 1 (tags) on REAL stack data — 2026-06-10
+
+`scripts/bench/compression_ab` pulled the 10 largest REAL log parquet files from the live
+e2e MinIO (compacted L2, ~24.5 MB each, 245 MB total), decoded their rows, and re-encoded
+the SAME rows with the baseline (untagged) vs tagged schema at two zstd levels:
+
+| config | baseline | tagged | delta |
+|---|--:|--:|--:|
+| zstd-default | 256.7 MB | 251.1 MB | **−2.2%** |
+| zstd-best | 240.8 MB | 235.1 MB | **−2.4%** |
+
+Honest read: the tag win is real but small on this corpus — total bytes are dominated by the
+high-entropy `body` column, which tags deliberately don't touch. The dict/delta savings
+concentrate in the metadata-ish columns (they also shrink dictionaries/page headers and speed
+predicate decode). The big prize remains **item 1 (sorting)** — the same A/B harness will
+measure it next, on the same real files.
+
+## Measured: step 2 (trap fixes) — no-regression verification — 2026-06-10
+
+Step 2 is correctness-only (sort-gating traps + two bonus page-bounds bugs): **no
+compression delta expected**. Verified with the same A/B harness, same 10 real files, on
+the stacked branch (tags + trap fixes): **−2.2% / −2.4% — identical to step 1**, confirming
+zero encoding regression. The compression payoff of step 2 arrives indirectly: it unblocks
+step 3 (the (stream_id, timestamp) sort), which is the expected 30–50% item.
