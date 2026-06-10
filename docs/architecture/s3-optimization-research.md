@@ -85,13 +85,20 @@ should keep small windows → adaptive).
 - **Old quick wins kept**: count-only hint, skip preFilter/bloom on unfiltered, LabelAggregates
   fields config — still valid, fold into Tier 1's PR.
 
-### Cross-pollination with the compression track
-Tempo's **dedicated columns** (hot attribute keys → real columns) and Loki's **two-granularity
-aggregated bloom blocks** are write-side designs that pair with PR 3's schema work — parked as
-PR 3/PR 4 candidates, not PR 2.
+### Cross-pollination with the compression track — PROMOTED TO SCOPE per review
+The user explicitly approved both (as data-layout techniques, not architectural philosophy):
+- **Sharded bloom filters** (~100 KB shards; a trace-ID lookup GETs ONE shard instead of a
+  whole per-file/partition bloom) → **PR 2b item 12**: evolve the pmeta bloom facet / bundle
+  layout to shard by value-hash, shard size configurable per signal.
+- **Dedicated columns** (promote hot attribute keys into real Parquet columns with their own
+  stats/dictionaries — configurable per deployment) → **PR 3 addition** after the approved
+  compression sequence; composes with the dict-tag work and the field/value catalog (which
+  already knows which keys are hot).
 
 ## Proposed PR 2 shape (post-review)
-**PR 2a (Tier 1, ~days):** items 1–6 + the still-valid old quick wins + the HTTP/2 doc
-correction → re-run the full-scope benchmark plain + with-latency.
+**PR 2a (Tier 1, ~days):** items 1–6 (zero-GET opens + ReadModeAsync/1 MiB buffer +
+Skip* hygiene explicitly confirmed in review) + the still-valid old quick wins + the HTTP/2
+doc correction → re-run the full-scope benchmark plain + with-latency. All new knobs
+per-signal configurable.
 **PR 2b (Tier 2):** items 7–10 in that order, each benchmark-gated; item 11 separately as a
 deployment decision.

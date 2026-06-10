@@ -84,6 +84,9 @@ PageIndex: present on 100% of column chunks in **all** files (no flag needed).
    potential future improvement (measured −15% vs zstd-best; both target readers fine).
 5. Item 9-replacement (gozstd cgo for real 19): parked — same reasoning, zstd ceiling accepted.
 6. Items 4/6/7: no write-side work. Item 8: parked pending product decision.
+7. **NEW (promoted per review): dedicated columns** — configurable promotion of hot attribute
+   keys into real Parquet columns (own stats/dictionaries); pairs with the dict-tag work and
+   the field/value catalog's knowledge of hot keys. Lands after items 1–3 in this PR series.
 
 **Every step ships with the multi-engine readability gate** (pyarrow + duckdb readback — the
 harness from this research becomes `scripts/ci/` + a CI job) and before/after size + query
