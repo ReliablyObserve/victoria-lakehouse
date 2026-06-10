@@ -75,8 +75,17 @@ func TestBufferedReaderAt_AdaptiveWindowGrowth(t *testing.T) {
 	if got := br.Window(); got != 4096 {
 		t.Fatalf("window after 3 sequential misses = %d, want 4096 (max)", got)
 	}
-	// Further sequential misses must NOT exceed the max.
+	// Consume the rest of the [4096, 8192) window so the next misses are
+	// EFFICIENT evictions (waste feedback would shrink an abandoned window;
+	// that path is pinned in waste_feedback_test.go).
+	mustRead(t, br, buf, 5120)
+	mustRead(t, br, buf, 6144)
+	mustRead(t, br, buf, 7168)
+	// Further efficient sequential misses must NOT exceed the max.
 	mustRead(t, br, buf, 8192)
+	mustRead(t, br, buf, 9216)
+	mustRead(t, br, buf, 10240)
+	mustRead(t, br, buf, 11264)
 	mustRead(t, br, buf, 12288)
 	if got := br.Window(); got != 4096 {
 		t.Fatalf("window exceeded max: %d, want 4096", got)

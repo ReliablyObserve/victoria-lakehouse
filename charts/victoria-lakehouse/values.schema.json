@@ -37,6 +37,12 @@
               "default": 0,
               "description": "Adaptive read-ahead window ceiling in bytes; doubles from read_ahead_bytes on sequential scans, resets on random seeks (0 = default 8MB)"
             },
+            "read_ahead_waste_threshold": {
+              "type": "number",
+              "minimum": 0,
+              "default": 0,
+              "description": "Waste-feedback threshold for the adaptive read-ahead window: an evicted window with more than this fraction of its bytes never read halves the next window toward read_ahead_bytes; >= 1 disables (0 = default 0.5)"
+            },
             "read_buffer_size": {
               "type": "integer",
               "minimum": 0,

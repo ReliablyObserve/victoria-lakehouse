@@ -205,3 +205,87 @@ in-memory VL (115 vs 132 ms, 0.9×); all scan scenarios ≤1.4× VL.
 
 **Target set by review: LH ≥ CH-level under latency for every scenario** — batch 2
 (count-class fast-paths + groupby root-cause) and Tier-2 (vectored fetch) carry that.
+
+## Implemented — S3 batch 2 (branch feat/s3-batch2): waste-feedback read-ahead + compactor aggregate healing
+
+Two data-driven fixes from the combined benchmark's waste columns: **filtered_count
+fetched 46 MB/query that was never read (at a 56% buffer hit rate); fulltext 17 MB/q.**
+
+### 2a. Waste-feedback read-ahead (`internal/s3reader/buffered_reader.go`, shared by both modules)
+
+**Root cause.** The Tier-1 adaptive window had two signals — grow on 2+
+forward-sequential misses, reset on random seek — and **no feedback from waste**.
+The measured pattern (pruned filtered scans probing a few pages per file) hops
+forward by *less than one window* at a time, so every hop classifies as
+forward-sequential: each abandoned window was a **vote to grow** the next one. The
+machine ratcheted to `read_ahead_max_bytes` and tiled never-read megabytes.
+
+**Design (allocation-free — scalar math on the existing eviction path):**
+
+- On every window eviction, compute the evicted window's waste ratio:
+  `(bufEnd − servedEnd) / (bufEnd − bufStart)` — the same high-water-mark
+  accounting that already feeds `lakehouse_s3_buffer_wasted_bytes_total`.
+- ratio **> `s3.read_ahead_waste_threshold`** (default **0.5**) on a
+  forward-sequential miss → **halve** the next window, floored at the
+  `read_ahead_bytes` base, tick `lakehouse_s3_readahead_shrink_total`, and
+  **revoke the growth credit** (`seqMisses = 0`): growth resumes only after 2+
+  consecutive *efficient* windows.
+- ratio below the threshold → the pre-existing grow/stay logic, unchanged.
+- Random seeks keep the stronger reset-to-base behavior, unchanged.
+- `>= 1` disables feedback (a window's waste ratio is strictly < 1); `<= 0`
+  means "default", not "shrink on any waste". `openRangedParquet`'s file-size
+  clamps stay authoritative for the base/max the feedback floors/ceils against.
+
+Config: `s3.read_ahead_waste_threshold` / `-lakehouse.s3.read-ahead-waste-threshold`
+(both mains, chart values.yaml + values.schema.json).
+
+**Unit-measured** (deterministic sim in `waste_feedback_test.go`, page-probe shape:
+one 256 KB page per 3 MB stride over a 64 MB file, production 2 MB base / 8 MB max):
+
+| | bytes fetched | GETs |
+|---|--:|--:|
+| feedback OFF (pre-batch-2) | 57.7 MB | 9 |
+| feedback ON (default 0.5) | **45.1 MB (−21.8%)** | 22 |
+
+Steady-state never-read bytes per abandoned window drop from up-to-8 MB (grown max)
+to the 2 MB base — 4× at defaults. **Honest trade-off:** the smaller window costs
+more GETs on sparse patterns (9→22 above); under injected latency the per-GET RTT
+cost competes with the bandwidth saved. The live benchmark decides; Tier-2 vectored
+per-RG fetch is the real fix for GET counts.
+
+### 2b. Compactor aggregate healing (`internal/compaction/compactor.go:387` → row extraction)
+
+**Root cause.** The compacted output's `LabelAggregates` came from
+`mergeFileLabelAggregates(g.Files)` — merging the INPUT FILES' maps. Every file
+written before the #138 refresh-wipe fix carries an empty map, so merge-of-empties
+stayed empty: **compaction could never heal pre-fix data**, and count/groupby
+fast-paths missed compacted files forever (one driver of the count_24h gap — the
+24 h window is exactly where compacted files dominate).
+
+**Design.** The compactor already holds the merged ROWS. It now extracts aggregates
+from them with the **same code the flush writer runs**:
+`schema.ExtractLogLabelAggregates` / `schema.ExtractTraceLabelAggregates`, moved to
+`internal/schema/label_aggregates.go` (shared `MaxLabelAggregateValues = 100` cap).
+One implementation — both modules' flush writers and the compactor import it, so the
+field list and the per-field cap cannot drift. The old map-merge survives only as a
+test-only cross-check for the equivalence regression.
+
+Regression tests pin: healing (nil-aggregate inputs → correct counts on output, logs
++ traces), equivalence (aggregated inputs: row extraction == map merge), and the
+absent-value cap contract (an over-cap field is ABSENT from compacted output exactly
+like flush).
+
+### Post-merge measurement protocol (containers run the merged build)
+
+Run `scripts/bench/with-s3-latency.sh 100 30 scripts/bench/full-scope-s3-bench.sh`
+against the live stack and compare to the Tier-1 batch-1 table above. Expected:
+
+- per-scenario S3-op deltas: **waste B/q on filtered_count near 0 from 46 MB/q**,
+  fulltext near 0 from 17 MB/q (`lakehouse_s3_buffer_wasted_bytes_total`), shrink
+  counter active on those scenarios, grow still active on wide scans;
+- filtered_count_1h / fulltext_scan_1h p50: bytes-on-wire saving vs GET-count cost
+  nets out (sim says −22% bytes, +2.4× GETs — watch for p50 regression; the
+  rollback is `read_ahead_waste_threshold: 1`);
+- count_24h over successive compaction cycles: manifest-only answers stop degrading
+  as partitions compact (healed `LabelAggregates` on compacted files — verify
+  `count() by (field)` agreement before/after a forced `/internal/compact`).

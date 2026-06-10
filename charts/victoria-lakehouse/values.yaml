@@ -131,6 +131,14 @@ lakehouseConfig:
     # from 8-16MB; needle-heavy traces deployments can pin 4MB to bound
     # over-fetch.
     read_ahead_max_bytes: 0
+    # -- Waste-feedback threshold for the ADAPTIVE read-ahead window (0 = use
+    # default 0.5). When a window is evicted with MORE than this fraction of
+    # its bytes never read, the next window HALVES toward read_ahead_bytes
+    # instead of growing, and growth resumes only after consecutive efficient
+    # windows. Catches sparse forward hops the grow/reset state machine
+    # misclassifies as scans (measured 46 MB/query never-read fetch on
+    # filtered counts). Values >= 1 disable waste feedback.
+    read_ahead_waste_threshold: 0
     # -- Parquet page read buffer for ranged S3 opens in bytes (0 = use
     # default 1MB). parquet-go's own default is 4KB — sized for local disk,
     # far too small for network storage (hundreds of tiny reads per chunk).

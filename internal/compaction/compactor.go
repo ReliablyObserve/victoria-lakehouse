@@ -259,6 +259,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	var outputData []byte
 	var rowsMerged int64
 	var minTime, maxTime int64
+	var labelAggregates map[string]map[string]int64
 
 	// Pick the per-output-level compression. Tenant override beats
 	// the global progressive schedule, which in turn beats the
@@ -309,6 +310,14 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 			// schema.LogRowTimeBounds.
 			minTime, maxTime = schema.LogRowTimeBounds(merged)
 		}
+		// Extract the per-(field,value) row counts from the merged ROWS —
+		// the same shared implementation (field list + cap) the flush
+		// writer uses — NOT by merging the input files' aggregate maps.
+		// Input maps are empty for every file written before the #138 fix
+		// (the aggregate wipe), so a map merge propagates the emptiness
+		// forever; row extraction makes each compaction pass HEAL old
+		// files into fully-aggregated outputs.
+		labelAggregates = schema.ExtractLogLabelAggregates(merged)
 		outputData, err = writeCompactedLogs(merged, rowGroupSizeForOutput, levelForOutput)
 		if err != nil {
 			return nil, fmt.Errorf("write compacted logs: %w", err)
@@ -324,6 +333,9 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 			// True min/max scan — same rationale as the logs branch above.
 			minTime, maxTime = schema.TraceRowTimeBounds(merged)
 		}
+		// Row-extracted aggregates — same healing rationale as the logs
+		// branch above (shared schema.Extract* implementation).
+		labelAggregates = schema.ExtractTraceLabelAggregates(merged)
 		outputData, err = writeCompactedTraces(merged, rowGroupSizeForOutput, levelForOutput)
 		if err != nil {
 			return nil, fmt.Errorf("write compacted traces: %w", err)
@@ -399,7 +411,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		SchemaFingerprint: fp,
 		CompactionLevel:   outputLevel,
 		Labels:            mergedLabels,
-		LabelAggregates:   mergeFileLabelAggregates(g.Files),
+		LabelAggregates:   labelAggregates,
 	})
 
 	for _, f := range g.Files {
@@ -662,40 +674,4 @@ func mergeFileLabels(files []manifest.FileInfo) map[string][]string {
 		out[field] = vals
 	}
 	return out
-}
-
-// maxLabelAggregateValues mirrors the writer's per-field distinct-value cap.
-// A field that exceeds it after merge is dropped — it has become too
-// high-cardinality to be a useful manifest group-by (and would bloat the
-// snapshot). Keeping the merge cap in sync with the write cap means a compacted
-// file is never "more complete" than its inputs claimed.
-const maxLabelAggregateValues = 100
-
-// mergeFileLabelAggregates sums the input files' per-(field,value) row counts so
-// the compacted output answers `count() by (field)` exactly. Counts are additive
-// because each input file holds a disjoint set of rows. A field whose merged
-// distinct-value count exceeds the cap is dropped (high-cardinality).
-func mergeFileLabelAggregates(files []manifest.FileInfo) map[string]map[string]int64 {
-	merged := make(map[string]map[string]int64)
-	for _, f := range files {
-		for field, vals := range f.LabelAggregates {
-			m, ok := merged[field]
-			if !ok {
-				m = make(map[string]int64)
-				merged[field] = m
-			}
-			for v, c := range vals {
-				m[v] += c
-			}
-		}
-	}
-	for field, m := range merged {
-		if len(m) == 0 || len(m) > maxLabelAggregateValues {
-			delete(merged, field)
-		}
-	}
-	if len(merged) == 0 {
-		return nil
-	}
-	return merged
 }

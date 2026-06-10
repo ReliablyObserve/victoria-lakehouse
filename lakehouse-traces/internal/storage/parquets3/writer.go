@@ -375,7 +375,7 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 		RawBytes:          result.RawBytes,
 		SchemaFingerprint: schemaFingerprint(w.mode),
 		Labels:            labels,
-		LabelAggregates:   extractLogLabelAggregates(rows),
+		LabelAggregates:   schema.ExtractLogLabelAggregates(rows),
 	}
 	w.manifest.AddFile(partition, fi)
 	if w.catalogObserver != nil {
@@ -456,7 +456,7 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 		RawBytes:          result.RawBytes,
 		SchemaFingerprint: schemaFingerprint(w.mode),
 		Labels:            labels2,
-		LabelAggregates:   extractTraceLabelAggregates(rows),
+		LabelAggregates:   schema.ExtractTraceLabelAggregates(rows),
 	}
 	w.manifest.AddFile(partition, fi)
 	traceBloomValues := extractTraceBloomValues(rows)

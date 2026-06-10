@@ -6,7 +6,11 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
-const maxLabelsPerField = 100
+// maxLabelsPerField caps per-field distinct values in the label SETS, and is
+// deliberately the same constant as the label-AGGREGATE cap so the inverted
+// index and the aggregate fast-path never disagree on which fields are
+// "low-cardinality enough" to keep.
+const maxLabelsPerField = schema.MaxLabelAggregateValues
 
 func extractLogLabels(rows []schema.LogRow) map[string][]string {
 	if len(rows) == 0 {
@@ -75,64 +79,8 @@ func setsToLabels(sets map[string]map[string]bool) map[string][]string {
 	return labels
 }
 
-// extractLogLabelAggregates counts rows per (field, value) for the same
-// low-cardinality fields the inverted label index covers. The result powers
-// manifest-side `stats count() by (field)` so that query answers from metadata
-// without opening any Parquet file (PERF-2). A field whose distinct-value count
-// exceeds maxLabelsPerField is dropped — it's high-cardinality (e.g. trace_id),
-// not a useful group-by, and dropping it bounds manifest growth. Returns nil if
-// there's nothing to aggregate.
-func extractLogLabelAggregates(rows []schema.LogRow) map[string]map[string]int64 {
-	if len(rows) == 0 {
-		return nil
-	}
-	agg := map[string]map[string]int64{}
-	for i := range rows {
-		countLabel(agg, "service.name", rows[i].ServiceName)
-		countLabel(agg, "severity_text", rows[i].SeverityText)
-		countLabel(agg, "deployment.environment", rows[i].DeployEnv)
-		countLabel(agg, "k8s.namespace.name", rows[i].K8sNamespaceName)
-		countLabel(agg, "cloud.region", rows[i].CloudRegion)
-	}
-	return capAggregates(agg)
-}
-
-// extractTraceLabelAggregates is the traces counterpart (service.name + span.name).
-func extractTraceLabelAggregates(rows []schema.TraceRow) map[string]map[string]int64 {
-	if len(rows) == 0 {
-		return nil
-	}
-	agg := map[string]map[string]int64{}
-	for i := range rows {
-		countLabel(agg, "service.name", rows[i].ServiceName)
-		countLabel(agg, "span.name", rows[i].SpanName)
-	}
-	return capAggregates(agg)
-}
-
-func countLabel(agg map[string]map[string]int64, field, value string) {
-	if value == "" {
-		return
-	}
-	m, ok := agg[field]
-	if !ok {
-		m = make(map[string]int64)
-		agg[field] = m
-	}
-	m[value]++
-}
-
-// capAggregates drops any field with more than maxLabelsPerField distinct values
-// (high-cardinality → not a useful manifest group-by, unbounded growth) and drops
-// fields that ended up empty. Returns nil if nothing survives.
-func capAggregates(agg map[string]map[string]int64) map[string]map[string]int64 {
-	for field, vals := range agg {
-		if len(vals) == 0 || len(vals) > maxLabelsPerField {
-			delete(agg, field)
-		}
-	}
-	if len(agg) == 0 {
-		return nil
-	}
-	return agg
-}
+// Label AGGREGATES (per-(field,value) row counts) moved to
+// internal/schema/label_aggregates.go: schema.ExtractLogLabelAggregates /
+// schema.ExtractTraceLabelAggregates are the ONE shared implementation used by
+// the flush writers (both modules) AND the compactor, so compaction extracts
+// from merged rows with the exact field list and cap the flush path uses.

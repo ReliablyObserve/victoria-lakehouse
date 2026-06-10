@@ -92,6 +92,7 @@ var (
 	s3ReadAhead       = flag.Int("lakehouse.s3.read-ahead-bytes", 0, "S3 read-ahead base window in bytes (default: 2MB)")
 	s3CoalesceGap     = flag.Int("lakehouse.s3.coalesce-gap-bytes", 0, "Merge S3 range reads with gaps smaller than this (default: 1MB)")
 	s3ReadAheadMax    = flag.Int("lakehouse.s3.read-ahead-max-bytes", 0, "Adaptive read-ahead window ceiling in bytes; the window doubles from read-ahead-bytes on sequential scans (default: 8MB)")
+	s3ReadAheadWaste  = flag.Float64("lakehouse.s3.read-ahead-waste-threshold", 0, "Waste-feedback threshold for the adaptive read-ahead window: when an evicted window had more than this fraction of its bytes never read, the next window halves toward read-ahead-bytes instead of growing; >=1 disables (default: 0.5)")
 	s3ReadBufferSize  = flag.Int("lakehouse.s3.read-buffer-size", 0, "Parquet page read buffer for ranged S3 opens in bytes (default: 1MB)")
 	s3ParquetReadMode = flag.String("lakehouse.s3.parquet-read-mode", "", "Parquet page read mode on ranged S3 opens: async (read-ahead goroutine per column) or sync (default: async)")
 
@@ -1453,6 +1454,9 @@ func applyS3Flags(s3 *config.S3Config) {
 	}
 	if *s3ReadAheadMax > 0 {
 		s3.ReadAheadMaxBytes = *s3ReadAheadMax
+	}
+	if *s3ReadAheadWaste > 0 {
+		s3.ReadAheadWasteThreshold = *s3ReadAheadWaste
 	}
 	if *s3ReadBufferSize > 0 {
 		s3.ReadBufferSize = *s3ReadBufferSize

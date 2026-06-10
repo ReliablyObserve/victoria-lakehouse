@@ -46,12 +46,18 @@ var (
 	// coalescing gap: overfetch-bytes paid per round-trip saved.
 	S3CoalesceOverfetchBytes = NewCounter("lakehouse_s3_coalesce_overfetch_bytes_total")
 
-	// S3ReadAheadGrows / S3ReadAheadResets observe the adaptive read-ahead
-	// window: grows ticks when 2+ consecutive forward-sequential misses
-	// double the window (scan detected), resets ticks when a random seek
-	// drops it back to the base window (needle detected).
-	S3ReadAheadGrows  = NewCounter("lakehouse_s3_readahead_grow_total")
-	S3ReadAheadResets = NewCounter("lakehouse_s3_readahead_reset_total")
+	// S3ReadAheadGrows / S3ReadAheadResets / S3ReadAheadShrinks observe the
+	// adaptive read-ahead window: grows ticks when 2+ consecutive
+	// forward-sequential misses double the window (scan detected), resets
+	// ticks when a random seek drops it back to the base window (needle
+	// detected), shrinks ticks when waste feedback halves the window
+	// because the evicted window's never-read ratio exceeded
+	// s3.read_ahead_waste_threshold (sparse forward hops detected — the
+	// pattern behind the measured 46 MB/query never-read fetch on
+	// filtered scans).
+	S3ReadAheadGrows   = NewCounter("lakehouse_s3_readahead_grow_total")
+	S3ReadAheadResets  = NewCounter("lakehouse_s3_readahead_reset_total")
+	S3ReadAheadShrinks = NewCounter("lakehouse_s3_readahead_shrink_total")
 
 	// S3HeadBypassReads counts tiny reads at offset 0 (parquet's 4-byte
 	// magic-header check) served via an exact-size ranged GET instead of

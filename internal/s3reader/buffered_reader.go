@@ -25,14 +25,26 @@ type ReaderAtSizer interface {
 // forward jump farther than one window) resets the window to base so needle
 // queries never pay scan-sized over-fetch.
 //
+// Waste feedback (S3 batch 2): growth alone is blind to windows that are
+// fetched but never read — the combined benchmark measured 46 MB/query of
+// never-read window bytes on filtered scans at a 56% hit rate (the reader
+// hops forward less than one window at a time, so every hop classifies as
+// "forward-sequential" and GROWS the window it then abandons). On every
+// window eviction the waste ratio (never-served bytes / window length, via
+// the existing servedEnd high-water mark) is compared against
+// wasteThreshold: a wasteful window HALVES the next window (floored at
+// base) and revokes the growth credit, so the window only grows again after
+// consecutive efficient windows. Allocation-free: scalar math on eviction.
+//
 // Tiny reads at offset 0 (parquet's 4-byte magic-header probe) bypass the
 // window entirely and are served by an exact-size ranged GET — previously
 // each cold open pulled a full window (~2 MB) just to check 4 bytes.
 type BufferedS3ReaderAt struct {
-	inner     ReaderAtSizer
-	fileSize  int64
-	base      int64 // configured window size (read-ahead base)
-	maxWindow int64 // adaptive growth ceiling (>= base)
+	inner          ReaderAtSizer
+	fileSize       int64
+	base           int64   // configured window size (read-ahead base)
+	maxWindow      int64   // adaptive growth ceiling (>= base)
+	wasteThreshold float64 // waste ratio above which an evicted window shrinks the next one
 
 	mu        sync.Mutex
 	buf       []byte
@@ -47,6 +59,13 @@ type BufferedS3ReaderAt struct {
 // GET instead of a full window. 8 bytes covers parquet's "PAR1" magic probe
 // with headroom; anything larger is a real data read that wants the window.
 const headBypassMaxLen = 8
+
+// defaultWasteThreshold is the waste ratio above which an evicted window is
+// classified wasteful (config: s3.read_ahead_waste_threshold). 0.5 means a
+// window whose bytes were less than half read shrinks the next fetch — the
+// benchmark-measured wasteful patterns sit far above it (~90% never-read on
+// filtered scans) while genuinely sequential windows sit at ~0%.
+const defaultWasteThreshold = 0.5
 
 // NewBufferedReaderAt creates a BufferedS3ReaderAt wrapping inner.
 // prefetch is the base read-ahead window size in bytes (default 2MB if <= 0).
@@ -70,13 +89,26 @@ func NewBufferedReaderAt(inner ReaderAtSizer, fileSize, prefetch, maxPrefetch in
 		maxPrefetch = prefetch
 	}
 	return &BufferedS3ReaderAt{
-		inner:     inner,
-		fileSize:  fileSize,
-		base:      prefetch,
-		maxWindow: maxPrefetch,
-		window:    prefetch,
-		bufStart:  -1,
-		bufEnd:    -1,
+		inner:          inner,
+		fileSize:       fileSize,
+		base:           prefetch,
+		maxWindow:      maxPrefetch,
+		wasteThreshold: defaultWasteThreshold,
+		window:         prefetch,
+		bufStart:       -1,
+		bufEnd:         -1,
+	}
+}
+
+// SetWasteThreshold overrides the waste-feedback threshold (config:
+// s3.read_ahead_waste_threshold). Values <= 0 are ignored (keep the 0.5
+// default); values >= 1 effectively disable waste feedback, because a
+// window's waste ratio is always < 1 (every fetch serves at least the
+// requesting read). Call before handing the reader to parquet-go — it is
+// not synchronized against concurrent ReadAt.
+func (b *BufferedS3ReaderAt) SetWasteThreshold(t float64) {
+	if t > 0 {
+		b.wasteThreshold = t
 	}
 }
 
@@ -113,24 +145,47 @@ func (b *BufferedS3ReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	// Buffer miss: classify the access pattern before evicting the window.
 	metrics.S3BufferMisses.Inc()
 	if b.bufStart >= 0 {
-		// Account fetched-but-never-served bytes of the evicted window.
-		if wasted := b.bufEnd - max(b.servedEnd, b.bufStart); wasted > 0 {
+		// Account fetched-but-never-served bytes of the evicted window and
+		// derive its waste ratio (allocation-free: the servedEnd high-water
+		// mark already tracks the served bytes).
+		winLen := b.bufEnd - b.bufStart
+		wasted := b.bufEnd - max(b.servedEnd, b.bufStart)
+		if wasted > 0 {
 			metrics.S3BufferWastedBytes.Add(int(wasted))
 		}
+		wasteful := winLen > 0 && float64(wasted) > b.wasteThreshold*float64(winLen)
 		switch {
 		case off >= b.bufEnd && off-b.bufEnd <= b.window:
 			// Forward-sequential continuation: the reader ran off the end
 			// of the window (or skipped less than one window ahead).
-			b.seqMisses++
-			if b.seqMisses >= 2 && b.window < b.maxWindow {
-				b.window *= 2
-				if b.window > b.maxWindow {
-					b.window = b.maxWindow
+			if wasteful {
+				// Waste feedback: the evicted window mostly fetched bytes
+				// nobody read (sparse forward hops — the pattern that
+				// previously kept GROWING the window it abandoned). Halve
+				// the next window toward the base and revoke the growth
+				// credit: growth resumes only after consecutive efficient
+				// windows.
+				b.seqMisses = 0
+				if b.window > b.base {
+					b.window /= 2
+					if b.window < b.base {
+						b.window = b.base
+					}
+					metrics.S3ReadAheadShrinks.Inc()
 				}
-				metrics.S3ReadAheadGrows.Inc()
+			} else {
+				b.seqMisses++
+				if b.seqMisses >= 2 && b.window < b.maxWindow {
+					b.window *= 2
+					if b.window > b.maxWindow {
+						b.window = b.maxWindow
+					}
+					metrics.S3ReadAheadGrows.Inc()
+				}
 			}
 		default:
-			// Random seek: reset to the base window.
+			// Random seek: reset to the base window (stronger than the
+			// waste-feedback halving — needle queries drop straight back).
 			b.seqMisses = 0
 			if b.window != b.base {
 				b.window = b.base

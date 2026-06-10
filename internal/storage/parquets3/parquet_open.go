@@ -72,6 +72,11 @@ func (s *Storage) openRangedParquet(ctx context.Context, fi manifest.FileInfo, c
 	effMax := clamp(int64(s.cfg.S3.ReadAheadMaxBytes), effBase, fi.Size)
 
 	buffered := s3reader.NewBufferedReaderAt(phased, fi.Size, effBase, effMax)
+	// Waste feedback: shrink the adaptive window when evicted windows were
+	// mostly never read (sparse forward hops). <=0 keeps the 0.5 default;
+	// >=1 disables. The file-size clamps above stay authoritative for the
+	// base/max bounds the feedback floors/ceils against.
+	buffered.SetWasteThreshold(s.cfg.S3.ReadAheadWasteThreshold)
 	readerAt := s3reader.NewCoalescingReaderAt(buffered, fi.Size, effGap)
 
 	readBuf := s.cfg.S3.ReadBufferSize

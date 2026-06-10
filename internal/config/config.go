@@ -278,6 +278,21 @@ type S3Config struct {
 	// can pin it lower (4MB) to bound over-fetch.
 	ReadAheadMaxBytes int `yaml:"read_ahead_max_bytes"`
 
+	// ReadAheadWasteThreshold is the waste-feedback knob for the ADAPTIVE
+	// read-ahead window: when a window is evicted with MORE than this
+	// fraction of its bytes never read (fetched-but-never-served, the same
+	// high-water-mark accounting behind
+	// lakehouse_s3_buffer_wasted_bytes_total), the next window is HALVED
+	// (floored at read_ahead_bytes) instead of kept or grown, and the
+	// growth credit resets — the window only grows again after consecutive
+	// efficient windows. Catches the sparse-forward-hop pattern that the
+	// pure grow/reset state machine misclassifies as a scan (measured:
+	// 46 MB/query never-read on filtered counts at a 56% hit rate).
+	// Default 0.5. Values >= 1 disable waste feedback (a window's waste
+	// ratio is always < 1); 0 means "use the default", not "shrink on any
+	// waste".
+	ReadAheadWasteThreshold float64 `yaml:"read_ahead_waste_threshold"`
+
 	// ReadBufferSize is parquet-go's per-column page read buffer for ranged
 	// S3 opens (the library default of 4KB is sized for local disk; its own
 	// docs suggest ~4MiB for network storage). Default 1MB: one buffered
@@ -759,17 +774,18 @@ func Default() *Config {
 		Pmeta: PmetaConfig{Enabled: true},
 
 		S3: S3Config{
-			Region:                 "us-east-1",
-			MaxConnections:         128,
-			Timeout:                30 * time.Second,
-			RetryMax:               3,
-			RetryBaseDelay:         200 * time.Millisecond,
-			MaxConcurrentDownloads: 16,
-			ReadAheadBytes:         2 * 1024 * 1024, // 2MB base window
-			CoalesceGapBytes:       1024 * 1024,     // 1MB (BDP-priced; was 64KB)
-			ReadAheadMaxBytes:      8 * 1024 * 1024, // 8MB adaptive ceiling
-			ReadBufferSize:         1024 * 1024,     // 1MB parquet page read buffer
-			ParquetReadMode:        "async",
+			Region:                  "us-east-1",
+			MaxConnections:          128,
+			Timeout:                 30 * time.Second,
+			RetryMax:                3,
+			RetryBaseDelay:          200 * time.Millisecond,
+			MaxConcurrentDownloads:  16,
+			ReadAheadBytes:          2 * 1024 * 1024, // 2MB base window
+			CoalesceGapBytes:        1024 * 1024,     // 1MB (BDP-priced; was 64KB)
+			ReadAheadMaxBytes:       8 * 1024 * 1024, // 8MB adaptive ceiling
+			ReadAheadWasteThreshold: 0.5,             // shrink window when >50% of it was never read
+			ReadBufferSize:          1024 * 1024,     // 1MB parquet page read buffer
+			ParquetReadMode:         "async",
 		},
 
 		Cache: CacheConfig{
@@ -1505,6 +1521,9 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.S3.ReadAheadMaxBytes > 0 {
 		base.S3.ReadAheadMaxBytes = overlay.S3.ReadAheadMaxBytes
+	}
+	if overlay.S3.ReadAheadWasteThreshold > 0 {
+		base.S3.ReadAheadWasteThreshold = overlay.S3.ReadAheadWasteThreshold
 	}
 	if overlay.S3.ReadBufferSize > 0 {
 		base.S3.ReadBufferSize = overlay.S3.ReadBufferSize
