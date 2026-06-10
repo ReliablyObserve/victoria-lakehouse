@@ -135,12 +135,17 @@ FAMILIES = [
     "lakehouse_s3_singleflight_dedup_total",
     "lakehouse_s3_throttle_total",
     # plan-then-fetch (Tier-2 items 8/9): spans/bytes per fetch + the
-    # fallback/out-of-plan health counters
+    # fallback/out-of-plan health counters. The v2-research verdict asked
+    # for per-SCENARIO spans-per-plan attribution: the summary table
+    # derives plans/q and spans/plan from the first two families.
     "lakehouse_s3_planned_fetches_total",
     "lakehouse_s3_planned_fetch_spans_total",
     "lakehouse_s3_planned_fetch_bytes_total",
     "lakehouse_s3_planned_out_of_plan_reads_total",
     "lakehouse_s3_projected_fetch_fallback_total",
+    # planned-fetch v2 slice 1: gap-discipline choice + S* strategy ladder
+    "lakehouse_s3_planned_gap_choice_total",
+    "lakehouse_s3_planned_strategy_total",
     "lakehouse_parquet_files_opened_total",
     "lakehouse_parquet_column_bytes_read_total",
 ]
@@ -247,8 +252,8 @@ if s3rows:
     out += ["", "## LH cold S3 ops per query (delta over the scenario's "
             f"{queries} queries; `reset` = counter went backwards between "
             "snapshots — engine restarted mid-scenario, cell not trustworthy)", "",
-            "| scenario | GETs/q | bytes/q | gets/open | buf hit% | waste B/q | planned B/q | plan-fallback/q | coalesced/q | dedup/q |",
-            "|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|"]
+            "| scenario | GETs/q | bytes/q | gets/open | buf hit% | waste B/q | plans/q | spans/plan | planned B/q | plan-fallback/q | coalesced/q | dedup/q |",
+            "|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|"]
     for s in sorted(set(d) | set(resets)):
         m = d.get(s, {})
         rs = resets.get(s, set())
@@ -265,9 +270,19 @@ if s3rows:
         hits, miss = g('lakehouse_s3_buffer_hits_total'), g('lakehouse_s3_buffer_misses_total')
         hit_reset = 'lakehouse_s3_buffer_hits_total' in rs or 'lakehouse_s3_buffer_misses_total' in rs
         hitp = "reset" if hit_reset else (f"{100*hits/(hits+miss):.0f}%" if hits+miss else "0%")
+        # spans-per-plan: the per-SCENARIO attribution the planned-v1 live
+        # verdict demanded (the 1185 GETs/q never fully reconciled with the
+        # footer geometry). Ratio of two counters — same reset discipline
+        # as gets/open: either family invalidated ⇒ the cell is `reset`.
+        plans = g('lakehouse_s3_planned_fetches_total')
+        spp_reset = ('lakehouse_s3_planned_fetches_total' in rs
+                     or 'lakehouse_s3_planned_fetch_spans_total' in rs)
+        spp = "reset" if spp_reset else (f"{g('lakehouse_s3_planned_fetch_spans_total')/plans:.1f}" if plans else "0.0")
         out.append(f"| {s} | {cell('lakehouse_s3_requests_total', '.1f')} "
                    f"| {cell('lakehouse_s3_bytes_read_total')} | {gpo} "
                    f"| {hitp} | {cell('lakehouse_s3_buffer_wasted_bytes_total')} "
+                   f"| {cell('lakehouse_s3_planned_fetches_total', '.1f')} "
+                   f"| {spp} "
                    f"| {cell('lakehouse_s3_planned_fetch_bytes_total')} "
                    f"| {cell('lakehouse_s3_projected_fetch_fallback_total', '.1f')} "
                    f"| {cell('lakehouse_s3_coalesced_ranges_total', '.1f')} "
