@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.87.2] - 2026-06-10
+
 ### Fixed
 
 - **`s3.projected_fetch_mode` default flipped `planned` → `window`: the Tier-2 plan-then-fetch default did not survive the live benchmark.** The unit sims showed −84% bytes-on-wire at equal GET count for the sparse filtered pattern, and the machinery works exactly as designed live (zero out-of-plan reads, zero fallbacks, waste = 0) — but on dense multi-row-group scans the per-RG exact plans fragment I/O into hundreds of small GETs (count_24h: 175 → 1185 GETs/q) and at 100 ms S3 RTT that inverts the trade catastrophically (count_24h 2.4 s → 17.7 s; confirmed on a quiet machine, not load noise). Planned mode stays fully available as an opt-in; the documented re-entry conditions (plan-density gate, per-FILE cross-RG batching, wider span concurrency — each live-bench-gated) are in `docs/architecture/s3-scan-optimization-plan.md`.
