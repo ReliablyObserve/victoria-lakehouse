@@ -73,3 +73,129 @@ footer geometry — resolve before trusting the next verdict).
    (the sim says gap barely matters once k=16; estimator is the smallest win, most code)?
 3. Phase-3 ambition (retire window entirely once dense degeneration proves itself) — in
    scope as a goal, or keep window indefinitely as the rollback?
+
+---
+
+# Part II — Hybrid planner v2.5: the adaptive decision package (for review)
+
+Four research threads (component inventory + live distributions; hybrid architecture +
+bundle facet, real-data-sized; accuracy/feedback; query-shape classifier). Governing
+constraint throughout: the **pmeta economy rule** — one bundle read serves every consumer,
+every metadata byte justified, RAM/disk bounded at scale.
+
+## II.1 The data the planner was ignoring (inventory verdict)
+
+Eleven components already hold planner-relevant knowledge (full table in the research
+transcript). The load-bearing items:
+- **`manifest.FileInfo` is the zero-GET first decision**: Size, CompactionLevel (live fact:
+  **L0 is always 1 row group** — planning can never help there), RowCount, RawBytes ratio.
+- **Footer cache `Has()` gates strategy**: warm footer ⇒ plan is metadata-free and beats
+  whole-file at every measured size; only cold opens consult the size threshold.
+- **Buffer watermark subtracts TIME**: query windows above `LastFlushWindowEndNs` need zero
+  S3 work (trace-id completeness carve-out respected).
+- **Catalog as selectivity oracle**: value absent ⇒ prune the partition for free; HLL/
+  IsHighCard ⇒ sparse-vs-dense prior before any GET.
+- **Three ad-hoc size cutoffs already exist** (64 KB / 128 KB / 4 MB) — unified under S*.
+- **SmartCache span subtraction is NOT possible today**: chunk-cache entries store DECODED
+  page values, not raw byte ranges — representation mismatch. Prerequisite fix identified
+  (cacheOnFlush stores raw chunk bytes); deferred unless measurement justifies.
+
+**S\* (cold whole-file threshold)**: per-signal, from the cost model on live distributions —
+**5 MiB logs / 8 MiB traces**; below it, one whole-file GET with `ParseFooterFromData`
+feeding the footer cache (the download IS the warmup).
+
+## II.2 The bundle facet — sized on real data (the economy-rule decision)
+
+| representation | logs L2 /file | traces L2 /file | L0 /file | verdict |
+|---|--:|--:|--:|---|
+| R0 footer locator only (off+len, RGs) | 11 B | 11 B | 8 B | in |
+| **R0+R1 varint-delta chunk table + ONE pageIndexRegion range** | **4.3 KB** | **3.3–3.8 KB** | **0.56 KB** | **RECOMMENDED** |
+| R3 raw footer absorption | 46–50 KB | **467–519 KB** | 8–16 KB | **rejected — economy rule** |
+
+Structural luck: the page-index region is **100% contiguous in all 15 measured files** —
+one (start,len) per file replaces 2×nRG×nCols index entries. R0+R1 gives the planner exact
+spans for a whole partition from the bundle GET already loaded — zero per-file open RTTs —
+at single-digit KB/file.
+
+**Bug-class found while sizing (immediate, independent win):** every live traces
+compacted-L2 footer is **467–519 KB** (the trace index lives in footer KV) — over the
+64 KiB `footerPrefetchSize`, so footer prefetch hits `too_big`, the inline fetch fails, and
+**traces L2 projected reads always fall back to full download today**
+(`fallback{reason=no-footer}`). Logs footers fit with only ~25% headroom. Fixes, in order:
+bump `footerPrefetchSize` 64→128 KB per-signal (also covers the page-index stripe, which
+ends 91–97 KB from EOF — one GET then serves footer + all indexes); the facet's footer
+locator then eliminates the class entirely.
+
+**Rollback hazard to fix BEFORE shipping facet kind 7 (D3)**: old binaries must preserve
+unknown facet kinds as opaque CRC'd payloads on decode→encode — today they would churn or
+drop them. Small bundle-codec change, regression-tested, ships first.
+
+## II.3 The strategy matrix (shape × file profile)
+
+Shapes classified from state the query path ALREADY computes (two existing stages; no new
+parsing). Misclassification analysis: every wrong cell degrades to today's behavior — some
+routes are impossible by construction (wildcards cannot arm plans: nil projection no-ops).
+
+| shape \ profile | <4 MiB (L0/P1) | 4–16 MiB (L1) | ≥16 MiB (L2+) |
+|---|---|---|---|
+| S0 metadata-answerable | metadata-serve | metadata-serve | metadata-serve |
+| S1 needle (p99) | whole-file | planned-spans | planned-spans |
+| S2 sparse projection (GETs+bytes) | whole-file | **planned-spans** (the −84% cell) | planned, density-gated |
+| S3 dense scan (RTT-amortized) | whole-file | window → dense-degeneration (gated) | **window** (Phase-3 candidate) |
+| S4 wildcard-wide (memory first) | whole-file | window range-read | window range-read |
+
+Density gate: plan <15% of file AND spans ≤ 2k — gate fail IS the dense detector
+(demotion, not a second classifier). Hysteresis on every boundary (e.g. 0.95 enter / 0.85
+exit for whole-file degeneration).
+
+## II.4 Accuracy + feedback (with one negative result)
+
+- **OffsetIndex page-granular planning: NOT BUILT — measured 0.0%** on real footers
+  (ts/filter columns are single-page-per-RG; the 1 MB gap rejoins skipped runs). Recorded
+  per the protocol; revisit only if page counts per chunk grow.
+- **Gap discipline instead** (biggest accuracy win, smallest diff): price each plan at
+  candidate gaps {64 K, 256 K, 1 M} — pure in-memory math over already-parsed ranges — pick
+  the cheapest. No estimator needed in v2.5 (answers Part-I decision point 2: skip the EWMA
+  gap estimator).
+- **Boundary-RG interpolation** for dense plans (−9…−25% bytes), gated on ts-sortedness
+  via ColumnIndex monotonicity.
+- **Feedback controller**: two per-signal EWMAs (waste ratio W, out-of-plan O),
+  widen-fast (O>2/file, 8-plan dwell) / tighten-slow (W>0.5 ∧ O<0.1, 32-plan dwell),
+  kill-switch to static defaults. **One new atomic total** (served-from-span bytes) — no
+  new metric families. This is the PERF-6 substrate.
+- **Stability matrix as implementation checklist**: every new input (manifest size, cache
+  residency, facet geometry post-compaction, estimators) has an enumerated guard; the
+  hybrid degrades to today's behavior, never below.
+
+## II.5 Execution: global span scheduler
+
+Replace per-file k with a **process-wide span pool** (default K=64, ceiling
+`MaxIdleConnsPerHost=128`): all files' spans + exact footer ranges known at t=0 from the
+bundle; spans dispatched globally; per-span ready latches let decode start as spans land.
+Admission via the existing memory ledger (worker's fi.Size admission subsumes plans).
+
+## II.6 Implementation slices (each behind the live-bench gate)
+
+1. **Slice 0 (independent quick wins)**: footerPrefetchSize 64→128 KB per-signal; the
+   spans-per-plan/GETs-by-phase instrumentation the verdict asked for.
+2. **Slice 1**: v2 levers — k=min(16,spans) (until the global pool), per-SPAN 16 MiB cap,
+   gap discipline, S* + footer-cache-gated strategy choice (the ladder without the facet).
+3. **Slice 2**: bundle-codec opaque-unknown-facets fix (D3) → FacetPlanGeom kind 7 (R0+R1)
+   filled at the three lifecycle hooks (flush/compaction/expiry — zero extra S3 I/O) →
+   zero-RTT plans + global span scheduler.
+4. **Slice 3**: shape router formalization + feedback controller (hysteresis, kill-switch).
+5. **Phase 3 (own gate)**: dense-degeneration maturity → window retirement decision.
+
+Gate per slice: p50 ≤ window on ALL scenarios, both latency conditions, both modules;
+GETs/q ≤ 4× window; out-of-plan/fallback/waste ≈ 0; **plus the economy gate**: bundle
+growth + ResidentBytes measured on the live bucket in every metadata slice.
+
+## II.7 Decision points for review (Part II)
+
+1. **FacetPlanGeom = R0+R1** (4.3 KB/file ceiling, rejected R3 footer absorption) — approve?
+2. **S\*** = 5 MiB logs / 8 MiB traces, footer-cache-gated — approve?
+3. **Slice order above** (notably: D3 codec fix before the facet; gap discipline instead of
+   the EWMA estimator; OffsetIndex paging not built) — approve?
+4. **Global span scheduler K=64 process-wide** (vs per-query) — approve?
+5. SmartCache raw-chunk representation change (enables span subtraction): defer until a
+   measurement shows cached-span overlap matters, or include in Slice 2?
