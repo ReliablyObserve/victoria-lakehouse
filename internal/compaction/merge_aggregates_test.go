@@ -5,7 +5,39 @@ import (
 	"testing"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
+
+// mergeFileLabelAggregates is the RETIRED production path (the compactor now
+// extracts aggregates from the merged ROWS via schema.Extract*LabelAggregates —
+// see compactGroup). It is kept here as the test-only cross-check for the
+// equivalence regression in aggregate_healing_test.go: when every input file
+// carries correct aggregates, summing the input maps and re-extracting from the
+// merged rows must agree, because each input holds a disjoint set of rows.
+func mergeFileLabelAggregates(files []manifest.FileInfo) map[string]map[string]int64 {
+	merged := make(map[string]map[string]int64)
+	for _, f := range files {
+		for field, vals := range f.LabelAggregates {
+			m, ok := merged[field]
+			if !ok {
+				m = make(map[string]int64)
+				merged[field] = m
+			}
+			for v, c := range vals {
+				m[v] += c
+			}
+		}
+	}
+	for field, m := range merged {
+		if len(m) == 0 || len(m) > schema.MaxLabelAggregateValues {
+			delete(merged, field)
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
+}
 
 func TestMergeFileLabelAggregates_SumsAndCaps(t *testing.T) {
 	files := []manifest.FileInfo{
@@ -23,7 +55,7 @@ func TestMergeFileLabelAggregates_SumsAndCaps(t *testing.T) {
 	var big []manifest.FileInfo
 	for i := 0; i < 2; i++ {
 		m := map[string]int64{}
-		for j := 0; j < maxLabelAggregateValues; j++ {
+		for j := 0; j < schema.MaxLabelAggregateValues; j++ {
 			m[fmt.Sprintf("f%d-v%d", i, j)] = 1 // disjoint values across the two files
 		}
 		big = append(big, manifest.FileInfo{LabelAggregates: map[string]map[string]int64{"span.name": m}})
