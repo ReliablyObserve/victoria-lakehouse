@@ -1,5 +1,28 @@
 # Planned-fetch v2 research — fewer GETs, for review
 
+> **STATUS UPDATE — Slices 0+1 IMPLEMENTED (2026-06-11, branch `feat/s3-slice01`).**
+> Shipped per §II.6: **0a** `s3.footer_prefetch_bytes` per-signal (logs 128KB / traces
+> 640KB, clamped at max(64KB, size/8)) — the §II.2 footer bug-class is closed, with a
+> both-twins regression (oversize footer prefetches+caches; no-footer counter silent);
+> **0b** the bench S3-ops summary now derives per-scenario `plans/q` + `spans/plan`
+> (reset-validated) and captures the new gap-choice/strategy counters; **1a**
+> `s3.planned_fetch_max_inflight` default 16 → min(16, spans) per file; **1b** per-SPAN
+> cap `s3.planned_fetch_span_cap_bytes` 16MB (CH `bytes_per_read_task`; spans split,
+> plans never cap-rejected — admission via the memory ledger, ceiling fi.Size;
+> `projected_fetch_max_bytes` deprecated to a parsed no-op); **1c** gap discipline over
+> {64K, 256K, 1M} with cost = ceil(spans/k)·RTT + bytes/BW (RTT=100ms, BW=50MB/s — the
+> RTT term counts k-wide waves, otherwise the largest gap trivially always wins), each
+> candidate proven winnable in unit tests; **1d** the S* ladder (warm-footer ⇒ plan;
+> cold < S* [logs 5MB / traces 8MB] ⇒ whole-file warmup via smart cache +
+> `ParseFooterFromData`; cold ≥ S* ⇒ footer fetch ⇒ plan) — planned-path only, window
+> default untouched; the 3 legacy thresholds (64KB `minFileSizeForRangeRead`, 128KB
+> `minFileSizeForPrefetch`, 4MB wildcard cutoff) remain for Slice 3 unification.
+> **Committed-sim re-run with the levers** (`TestPlannedFetch_V2LeversSimMeasurement`,
+> count_24h geometry, RTT=100ms/BW=50MB/s): v1 (k=4) 3.08s → **v2 1.58s** → **0.58s
+> with 0a-warm footers** at 600→520 GETs — inside the table's predicted 0.8–1.6s band.
+> The live re-entry gate below still decides planned-by-default. Slice 2 (D3 codec fix
+> → FacetPlanGeom) is next.
+
 **Status: awaiting review.** Three research angles on why planned mode lost the live bench
 and how v2 wins it: (A) failure anatomy + an **offline planner simulator over real L2
 footers** (5 live files, 3 workload shapes, 5 planner variants), (B) source-level span
