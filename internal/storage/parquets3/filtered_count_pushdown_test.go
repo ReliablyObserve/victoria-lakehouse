@@ -117,7 +117,7 @@ func TestCountPushdownFilterFields_UpstreamInventoryDrift(t *testing.T) {
 	for _, p := range entries {
 		name := strings.TrimSuffix(filepath.Base(p), ".go")
 		name = strings.TrimPrefix(name, "filter_")
-		if strings.HasSuffix(name, "_test") || name == "filter" {
+		if strings.HasSuffix(name, "_test") || name == "test" || name == "filter" {
 			continue
 		}
 		if !recognized[name] {
