@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The 30-second manifest refresh silently wiped `LabelAggregates` — the count-pushdown fast path (PERF-2) was dead in production.** `RefreshFromS3`'s preserve-enrichment merge copied ten `FileInfo` fields one by one; `LabelAggregates` (added by PERF-2 after that list was written) was not among them, so every file's aggregates vanished within one refresh interval and `* | stats by (field) count()` queries scanned ~100 files (1.7 s at 100 ms S3 latency) instead of being answered from the manifest in milliseconds. Root-caused from the new per-scenario S3-op telemetry. Fix: the merge now preserves the **entire tracked entry** on key match (S3 objects are immutable — a LIST carries no newer information), via `mergeRefreshedFilesLocked`. Anti-recurrence: `TestRefresh_PreservesEveryEnrichmentField` walks `FileInfo` by **reflection**, fills every exported field, and asserts each survives the merge — adding a field without preserving it now fails CI instead of silently regressing.
+
+
 ## [0.82.0] - 2026-06-10
 
 ### Changed
