@@ -125,8 +125,8 @@ lakehouse:
 // defaults), and the enum/sign validation rejects bad values.
 func TestS3ProjectedFetchKnobs_DefaultsMergeValidate(t *testing.T) {
 	d := Default()
-	if d.S3.ProjectedFetchMode != ProjectedFetchModePlanned {
-		t.Fatalf("default ProjectedFetchMode = %q, want %q", d.S3.ProjectedFetchMode, ProjectedFetchModePlanned)
+	if d.S3.ProjectedFetchMode != ProjectedFetchModeWindow {
+		t.Fatalf("default ProjectedFetchMode = %q, want %q (planned demoted to opt-in: live bench showed GET-count explosion at 100ms RTT — see s3-scan-optimization-plan.md)", d.S3.ProjectedFetchMode, ProjectedFetchModeWindow)
 	}
 	if d.S3.ProjectedFetchMaxBytes != 16*1024*1024 {
 		t.Fatalf("default ProjectedFetchMaxBytes = %d, want 16MB", d.S3.ProjectedFetchMaxBytes)
@@ -177,7 +177,7 @@ lakehouse:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfgAbsent.S3.ProjectedFetchMode != ProjectedFetchModePlanned || cfgAbsent.S3.ProjectedFetchMaxBytes != 16*1024*1024 {
+	if cfgAbsent.S3.ProjectedFetchMode != ProjectedFetchModeWindow || cfgAbsent.S3.ProjectedFetchMaxBytes != 16*1024*1024 {
 		t.Fatalf("absent keys must keep defaults, got mode=%q max=%d",
 			cfgAbsent.S3.ProjectedFetchMode, cfgAbsent.S3.ProjectedFetchMaxBytes)
 	}
