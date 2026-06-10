@@ -38,7 +38,7 @@ func TestBufferedReaderAt_BufferHit(t *testing.T) {
 		data[i] = byte(i % 256)
 	}
 	inner := &mockReaderAt{data: data}
-	br := NewBufferedReaderAt(inner, inner.Size(), 256*1024)
+	br := NewBufferedReaderAt(inner, inner.Size(), 256*1024, 256*1024)
 
 	buf := make([]byte, 100)
 	n, err := br.ReadAt(buf, 0)
@@ -76,7 +76,7 @@ func TestBufferedReaderAt_BufferMiss(t *testing.T) {
 		data[i] = byte(i % 256)
 	}
 	inner := &mockReaderAt{data: data}
-	br := NewBufferedReaderAt(inner, inner.Size(), 256*1024)
+	br := NewBufferedReaderAt(inner, inner.Size(), 256*1024, 256*1024)
 
 	buf := make([]byte, 100)
 	_, _ = br.ReadAt(buf, 0)
@@ -100,7 +100,7 @@ func TestBufferedReaderAt_BufferMiss(t *testing.T) {
 func TestBufferedReaderAt_EOF(t *testing.T) {
 	data := []byte("hello world")
 	inner := &mockReaderAt{data: data}
-	br := NewBufferedReaderAt(inner, inner.Size(), 1024)
+	br := NewBufferedReaderAt(inner, inner.Size(), 1024, 1024)
 
 	buf := make([]byte, 100)
 	n, err := br.ReadAt(buf, 5)
@@ -127,7 +127,7 @@ func TestBufferedReaderAt_ReducesS3Calls(t *testing.T) {
 		data[i] = byte(i % 256)
 	}
 	inner := &mockReaderAt{data: data}
-	br := NewBufferedReaderAt(inner, inner.Size(), 2*1024*1024)
+	br := NewBufferedReaderAt(inner, inner.Size(), 2*1024*1024, 2*1024*1024)
 
 	buf := make([]byte, 8*1024)
 	for i := 0; i < 50; i++ {
@@ -155,7 +155,7 @@ func TestBufferedReaderAt_ConcurrentReads(t *testing.T) {
 		data[i] = byte(i % 256)
 	}
 	inner := &mockReaderAt{data: data}
-	br := NewBufferedReaderAt(inner, inner.Size(), 256*1024)
+	br := NewBufferedReaderAt(inner, inner.Size(), 256*1024, 256*1024)
 
 	const numGoroutines = 4
 	const readsPerGoroutine = 100
@@ -200,7 +200,7 @@ func TestBufferedReaderAt_ConcurrentReads(t *testing.T) {
 func TestBufferedReaderAt_ZeroLengthRead(t *testing.T) {
 	data := []byte("hello")
 	inner := &mockReaderAt{data: data}
-	br := NewBufferedReaderAt(inner, inner.Size(), 1024)
+	br := NewBufferedReaderAt(inner, inner.Size(), 1024, 1024)
 
 	n, err := br.ReadAt([]byte{}, 0)
 	if n != 0 || err != nil {
@@ -211,7 +211,7 @@ func TestBufferedReaderAt_ZeroLengthRead(t *testing.T) {
 func TestBufferedReaderAt_DefaultPrefetch(t *testing.T) {
 	data := make([]byte, 4*1024*1024) // 4MB
 	inner := &mockReaderAt{data: data}
-	br := NewBufferedReaderAt(inner, inner.Size(), 0) // 0 → should default to 2MB
+	br := NewBufferedReaderAt(inner, inner.Size(), 0, 0) // 0 → should default to 2MB
 
 	buf := make([]byte, 100)
 	_, _ = br.ReadAt(buf, 0)
@@ -236,7 +236,7 @@ func TestBufferedReaderAt_LargeReadBeyondPrefetch(t *testing.T) {
 	}
 	inner := &mockReaderAt{data: data}
 	// Small prefetch (4KB) with a large read request (64KB).
-	br := NewBufferedReaderAt(inner, inner.Size(), 4*1024)
+	br := NewBufferedReaderAt(inner, inner.Size(), 4*1024, 4*1024)
 
 	buf := make([]byte, 64*1024)
 	n, err := br.ReadAt(buf, 0)

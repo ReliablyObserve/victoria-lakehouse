@@ -21,7 +21,6 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
@@ -689,10 +688,7 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 		if cached, ok := s.footerCache.Get(fi.Key); ok {
 			totalCols := len(cached.File.Root().Columns())
 			if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
-				rawReader := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
-				buffered := s3reader.NewBufferedReaderAt(rawReader, fi.Size, int64(s.cfg.S3.ReadAheadBytes))
-				readerAt := s3reader.NewCoalescingReaderAt(buffered, fi.Size, int64(s.cfg.S3.CoalesceGapBytes))
-				f, err := parquet.OpenFile(readerAt, fi.Size)
+				f, err := s.openRangedParquet(ctx, fi, cached.File.Schema())
 				if err == nil {
 					metrics.S3RangeReadsTotal.Inc()
 					return f, nil
@@ -700,13 +696,15 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 			}
 		} else if fi.Size >= minFileSizeForPrefetch && len(projectedCols) <= 3 {
 			// Footer cache miss with narrow projection — fetch footer inline
-			// (16KB range read) then use range reads for only the needed columns
-			// instead of downloading the entire file.
+			// (64KB range read, singleflight-deduped across concurrent
+			// queries hitting the same cold file) then use range reads for
+			// only the needed columns instead of downloading the entire file.
 			offset := fi.Size - footerPrefetchSize
 			if offset < 0 {
 				offset = 0
 			}
-			tail, err := s.pool.DownloadRange(ctx, fi.Key, offset, fi.Size-offset)
+			metrics.S3GetsByPhase.Inc("footer")
+			tail, err := s.pool.DownloadRangeDedup(ctx, "footer", fi.Key, offset, fi.Size-offset)
 			if err == nil && len(tail) >= 8 {
 				if footerLen, fErr := FooterLength(tail[len(tail)-8:]); fErr == nil {
 					totalFooterBytes := footerLen + 8
@@ -716,10 +714,7 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 							s.footerCache.Put(fi.Key, cachedF)
 							totalCols := len(cachedF.File.Root().Columns())
 							if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
-								rawReader := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
-								buffered := s3reader.NewBufferedReaderAt(rawReader, fi.Size, int64(s.cfg.S3.ReadAheadBytes))
-								readerAt := s3reader.NewCoalescingReaderAt(buffered, fi.Size, int64(s.cfg.S3.CoalesceGapBytes))
-								f, rErr := parquet.OpenFile(readerAt, fi.Size)
+								f, rErr := s.openRangedParquet(ctx, fi, cachedF.File.Schema())
 								if rErr == nil {
 									metrics.S3RangeReadsTotal.Inc()
 									return f, nil
@@ -749,10 +744,15 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 	if s.pool != nil && projectedCols == nil && shouldUseWildcardRangeRead(fi.Size) {
 		_, cached := s.memCache.Get(fi.Key)
 		if !cached {
-			rawReader := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
-			buffered := s3reader.NewBufferedReaderAt(rawReader, fi.Size, int64(s.cfg.S3.ReadAheadBytes))
-			readerAt := s3reader.NewCoalescingReaderAt(buffered, fi.Size, int64(s.cfg.S3.CoalesceGapBytes))
-			f, err := parquet.OpenFile(readerAt, fi.Size)
+			// Reuse the cached footer's schema when available — wildcard
+			// opens still pay the footer parse otherwise.
+			var cachedSchema *parquet.Schema
+			if s.footerCache != nil {
+				if cf, ok := s.footerCache.Get(fi.Key); ok && cf.File != nil {
+					cachedSchema = cf.File.Schema()
+				}
+			}
+			f, err := s.openRangedParquet(ctx, fi, cachedSchema)
 			if err == nil {
 				metrics.S3RangeReadsTotal.Inc()
 				metrics.ParquetFilesOpened.Inc()
@@ -1941,7 +1941,8 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 		}
 	}
 	if idx == nil {
-		data, err := s.pool.Download(ctx, bloomKey)
+		metrics.S3GetsByPhase.Inc("bloom")
+		data, err := s.pool.DownloadDedup(ctx, "bloom", bloomKey)
 		if err != nil || len(data) == 0 {
 			if s.fileBloomCache != nil {
 				s.fileBloomCache.Put(bloomKey, nil)

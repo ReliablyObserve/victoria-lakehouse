@@ -30,6 +30,28 @@
             "region": {
               "type": "string",
               "minLength": 1
+            },
+            "read_ahead_max_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "description": "Adaptive read-ahead window ceiling in bytes; doubles from read_ahead_bytes on sequential scans, resets on random seeks (0 = default 8MB)"
+            },
+            "read_buffer_size": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "description": "Parquet page read buffer for ranged S3 opens in bytes (0 = default 1MB)"
+            },
+            "parquet_read_mode": {
+              "type": "string",
+              "enum": [
+                "",
+                "async",
+                "sync"
+              ],
+              "default": "async",
+              "description": "Parquet page read mode on ranged S3 opens: async (per-column read-ahead goroutine) or sync (rollback switch)"
             }
           }
         },

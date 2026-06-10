@@ -259,6 +259,7 @@ jobs:
         with:
           version: latest
           args: ./internal/... ./cmd/...
+          skip-cache: true
 
   lint-traces:
     needs: deps
@@ -282,6 +283,13 @@ jobs:
         with:
           version: latest
           working-directory: lakehouse-traces
+          # The action's restored analysis cache (keyed off the base branch)
+          # goes stale when a PR changes go.sum — staticcheck then loses
+          # termination facts for a RANDOM subset of packages and emits
+          # nondeterministic SA5011 false positives in guarded t.Fatal test
+          # code (different files flagged on each run of the same tree).
+          # A cold, deterministic run is worth the extra ~1min.
+          skip-cache: true
 
   build-logs:
     needs: deps

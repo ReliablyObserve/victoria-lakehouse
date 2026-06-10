@@ -870,6 +870,7 @@ func TestCovFinal_BuildPushDownFilter_PrefixWildcard(t *testing.T) {
 	pdf := buildPushDownFilter(`service.name:="prod-*"`, reg)
 	if pdf == nil {
 		t.Fatal("expected non-nil filter for prefix wildcard")
+		return
 	}
 	found := false
 	for _, c := range pdf.Checks {

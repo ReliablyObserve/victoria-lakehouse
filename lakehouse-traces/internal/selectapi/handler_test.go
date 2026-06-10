@@ -102,6 +102,7 @@ func TestNewHandler_ReturnsNonNil(t *testing.T) {
 	h := NewHandler(mockStore{}, cfg)
 	if h == nil {
 		t.Fatal("NewHandler returned nil")
+		return
 	}
 	if h.timeout != cfg.Query.Timeout {
 		t.Errorf("timeout = %v, want %v", h.timeout, cfg.Query.Timeout)
