@@ -118,3 +118,85 @@ lakehouse:
 		t.Fatalf(">=1 (disable) must validate: %v", err)
 	}
 }
+
+// TestS3ProjectedFetchKnobs_DefaultsMergeValidate pins the Tier-2
+// plan-then-fetch knobs: planned is the default mode, 16MB the default
+// per-file plan cap, the yaml overlay merges both (and absence keeps the
+// defaults), and the enum/sign validation rejects bad values.
+func TestS3ProjectedFetchKnobs_DefaultsMergeValidate(t *testing.T) {
+	d := Default()
+	if d.S3.ProjectedFetchMode != ProjectedFetchModePlanned {
+		t.Fatalf("default ProjectedFetchMode = %q, want %q", d.S3.ProjectedFetchMode, ProjectedFetchModePlanned)
+	}
+	if d.S3.ProjectedFetchMaxBytes != 16*1024*1024 {
+		t.Fatalf("default ProjectedFetchMaxBytes = %d, want 16MB", d.S3.ProjectedFetchMaxBytes)
+	}
+	d.Mode = ModeLogs
+	d.S3.Bucket = "b"
+	if err := d.Validate(); err != nil {
+		t.Fatalf("defaults must validate: %v", err)
+	}
+
+	// yaml overlay merges both knobs (window is the rollback switch).
+	yml := `
+lakehouse:
+  mode: logs
+  s3:
+    bucket: b
+    projected_fetch_mode: window
+    projected_fetch_max_bytes: 4194304
+`
+	path := filepath.Join(t.TempDir(), "cfg.yaml")
+	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.S3.ProjectedFetchMode != ProjectedFetchModeWindow || cfg.S3.ProjectedFetchMaxBytes != 4194304 {
+		t.Fatalf("overlay merge lost projected-fetch knobs: mode=%q max=%d",
+			cfg.S3.ProjectedFetchMode, cfg.S3.ProjectedFetchMaxBytes)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("window mode must validate: %v", err)
+	}
+
+	// Overlay WITHOUT the keys → defaults survive (absent != zero).
+	ymlAbsent := `
+lakehouse:
+  mode: logs
+  s3:
+    bucket: b
+`
+	pathAbsent := filepath.Join(t.TempDir(), "cfg.yaml")
+	if err := os.WriteFile(pathAbsent, []byte(ymlAbsent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgAbsent, err := Load(pathAbsent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfgAbsent.S3.ProjectedFetchMode != ProjectedFetchModePlanned || cfgAbsent.S3.ProjectedFetchMaxBytes != 16*1024*1024 {
+		t.Fatalf("absent keys must keep defaults, got mode=%q max=%d",
+			cfgAbsent.S3.ProjectedFetchMode, cfgAbsent.S3.ProjectedFetchMaxBytes)
+	}
+
+	// Enum validation: an unknown mode is rejected with a helpful error.
+	bad := Default()
+	bad.Mode = ModeLogs
+	bad.S3.Bucket = "b"
+	bad.S3.ProjectedFetchMode = "yolo"
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "projected-fetch-mode") {
+		t.Fatalf("invalid projected_fetch_mode must fail validation, got %v", err)
+	}
+
+	// Sign validation: a negative cap is rejected.
+	neg := Default()
+	neg.Mode = ModeLogs
+	neg.S3.Bucket = "b"
+	neg.S3.ProjectedFetchMaxBytes = -1
+	if err := neg.Validate(); err == nil || !strings.Contains(err.Error(), "projected-fetch-max-bytes") {
+		t.Fatalf("negative projected_fetch_max_bytes must fail validation, got %v", err)
+	}
+}

@@ -65,6 +65,15 @@ should keep small windows → adaptive).
 | 6 | **Prefetch observability first**: hit/waste/cancel counters (CH pattern) | CH | S | proves/tunes everything above |
 
 ### Tier 2 — structural (the surviving deep items, reshaped)
+
+> **Status (2026-06-10):** the projected-read half of items 8/9 SHIPPED as
+> plan-then-fetch (`s3reader.PlannedFetchReaderAt`, `s3.projected_fetch_mode`)
+> — exact coalesced column-chunk ranges per matched row group, fetched
+> concurrently, no speculative window; unit-measured −84.4% bytes-on-wire on
+> the filtered_count shape. See `s3-scan-optimization-plan.md` "Batch 3".
+> Late materialization / page-level skipping (the rest of item 9) and the
+> fetch/decode decoupling (item 10) remain open.
+
 | # | item | source | notes |
 |---|---|---|---|
 | 7 | **Footer absorption into `_pmeta.bundle`** (Quickwit hotcache): footer+page-index+bloom offsets ride the bundle → cold open = one exact-range GET | Quickwit | obsoletes old quick-win #3 + most of `prefetchFooters` |

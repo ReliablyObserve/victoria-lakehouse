@@ -10,6 +10,17 @@
 #
 # Output: CSV at $OUT and a markdown summary at $SUMMARY (p50/p95 per engine per
 # scenario + LH/VL and LH/CH ratios + optimisation flags).
+#
+# COUNTER-MONOTONICITY HARDENING (post-batch-2 bench bug): the S3-ops capture
+# diffs BEFORE/AFTER /metrics snapshots per scenario. A counter snapshot can go
+# BACKWARDS between the pair — engine restart (counters reset to 0) or a
+# scrape race against a process replacing its metrics set — and the old diff
+# emitted a NEGATIVE delta that silently poisoned the per-query table (the
+# measured fulltext row regression). Every snapshot pair is now validated
+# monotonic PER COUNTER: when after < before the cell is recorded as the
+# literal string `reset` instead of a negative number, and the analysis step
+# renders `reset` for any headline cell whose inputs were invalidated, so a
+# poisoned scenario is visible instead of plausible-but-wrong.
 set -uo pipefail
 
 ITERS=${1:-15}
@@ -119,9 +130,17 @@ FAMILIES = [
     "lakehouse_s3_coalesce_overfetch_bytes_total",
     "lakehouse_s3_readahead_grow_total",
     "lakehouse_s3_readahead_reset_total",
+    "lakehouse_s3_readahead_shrink_total",
     "lakehouse_s3_head_bypass_reads_total",
     "lakehouse_s3_singleflight_dedup_total",
     "lakehouse_s3_throttle_total",
+    # plan-then-fetch (Tier-2 items 8/9): spans/bytes per fetch + the
+    # fallback/out-of-plan health counters
+    "lakehouse_s3_planned_fetches_total",
+    "lakehouse_s3_planned_fetch_spans_total",
+    "lakehouse_s3_planned_fetch_bytes_total",
+    "lakehouse_s3_planned_out_of_plan_reads_total",
+    "lakehouse_s3_projected_fetch_fallback_total",
     "lakehouse_parquet_files_opened_total",
     "lakehouse_parquet_column_bytes_read_total",
 ]
@@ -153,14 +172,26 @@ with open(out, "w") as fh:
         before = parse(os.path.join(mdir, scen + ".before"))
         after = parse(os.path.join(mdir, scen + ".after"))
         sums = {}
+        reset_fams = set()
         for series in sorted(set(before) | set(after)):
-            d = after.get(series, 0) - before.get(series, 0)
             fam = series.split("{")[0]
+            b, a = before.get(series, 0), after.get(series, 0)
+            if a < b:
+                # Counter went BACKWARDS between the snapshot pair (engine
+                # restart / scrape race). A negative delta is a lie — mark
+                # the whole family `reset` for this scenario instead.
+                reset_fams.add(fam)
+                if "{" in series:
+                    fh.write(f"{scen},{series},reset,reset\n")
+                continue
+            d = a - b
             sums[fam] = sums.get(fam, 0) + d
             if "{" in series and d != 0:
                 fh.write(f"{scen},{series},{d:.0f},{d/queries:.2f}\n")
         for fam in FAMILIES:
-            if fam in sums:
+            if fam in reset_fams:
+                fh.write(f"{scen},{fam},reset,reset\n")
+            elif fam in sums:
                 fh.write(f"{scen},{fam},{sums[fam]:.0f},{sums[fam]/queries:.2f}\n")
 print(f"[full-scope] S3 op deltas: {out}")
 PY
@@ -204,25 +235,43 @@ except OSError:
 if s3rows:
     queries = int(sys.argv[4]) + int(sys.argv[5])
     d = {}
+    resets = {}
     for r in s3rows:
+        # Monotonicity hardening: a `reset` cell means the counter went
+        # backwards between the scenario's snapshots (engine restart /
+        # scrape race) — surface it instead of a fabricated number.
+        if r['delta'] == 'reset':
+            resets.setdefault(r['scenario'], set()).add(r['metric'])
+            continue
         d.setdefault(r['scenario'], {})[r['metric']] = float(r['delta'])
     out += ["", "## LH cold S3 ops per query (delta over the scenario's "
-            f"{queries} queries)", "",
-            "| scenario | GETs/q | bytes/q | gets/open | buf hit% | waste B/q | coalesced/q | dedup/q |",
-            "|---|--:|--:|--:|--:|--:|--:|--:|"]
-    for s in sorted(d):
-        m = d[s]
-        def g(k): return m.get(k, 0.0)
-        reqs = g('lakehouse_s3_requests_total')
-        byts = g('lakehouse_s3_bytes_read_total')
+            f"{queries} queries; `reset` = counter went backwards between "
+            "snapshots — engine restarted mid-scenario, cell not trustworthy)", "",
+            "| scenario | GETs/q | bytes/q | gets/open | buf hit% | waste B/q | planned B/q | plan-fallback/q | coalesced/q | dedup/q |",
+            "|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|"]
+    for s in sorted(set(d) | set(resets)):
+        m = d.get(s, {})
+        rs = resets.get(s, set())
+        def g(k):
+            return m.get(k, 0.0)
+        def cell(k, fmt_spec=",.0f", scale=True):
+            if k in rs:
+                return "reset"
+            v = g(k)/queries if scale else g(k)
+            return format(v, fmt_spec)
         oc = g('lakehouse_s3_gets_per_open_count')
-        gpo = (g('lakehouse_s3_gets_per_open_sum')/oc) if oc else 0.0
+        gpo_reset = 'lakehouse_s3_gets_per_open_sum' in rs or 'lakehouse_s3_gets_per_open_count' in rs
+        gpo = "reset" if gpo_reset else (f"{g('lakehouse_s3_gets_per_open_sum')/oc:.1f}" if oc else "0.0")
         hits, miss = g('lakehouse_s3_buffer_hits_total'), g('lakehouse_s3_buffer_misses_total')
-        hitp = 100*hits/(hits+miss) if hits+miss else 0.0
-        out.append(f"| {s} | {reqs/queries:.1f} | {byts/queries:,.0f} | {gpo:.1f} "
-                   f"| {hitp:.0f}% | {g('lakehouse_s3_buffer_wasted_bytes_total')/queries:,.0f} "
-                   f"| {g('lakehouse_s3_coalesced_ranges_total')/queries:.1f} "
-                   f"| {g('lakehouse_s3_singleflight_dedup_total')/queries:.1f} |")
+        hit_reset = 'lakehouse_s3_buffer_hits_total' in rs or 'lakehouse_s3_buffer_misses_total' in rs
+        hitp = "reset" if hit_reset else (f"{100*hits/(hits+miss):.0f}%" if hits+miss else "0%")
+        out.append(f"| {s} | {cell('lakehouse_s3_requests_total', '.1f')} "
+                   f"| {cell('lakehouse_s3_bytes_read_total')} | {gpo} "
+                   f"| {hitp} | {cell('lakehouse_s3_buffer_wasted_bytes_total')} "
+                   f"| {cell('lakehouse_s3_planned_fetch_bytes_total')} "
+                   f"| {cell('lakehouse_s3_projected_fetch_fallback_total', '.1f')} "
+                   f"| {cell('lakehouse_s3_coalesced_ranges_total', '.1f')} "
+                   f"| {cell('lakehouse_s3_singleflight_dedup_total', '.1f')} |")
 open(sys.argv[2],'w').write("\n".join(out)+"\n")
 print("\n".join(out))
 PY

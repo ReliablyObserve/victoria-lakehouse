@@ -148,6 +148,20 @@ lakehouseConfig:
     # decode; memory bounded at ~1 page in flight per column reader) or sync
     # (the rollback switch).
     parquet_read_mode: async
+    # -- Read strategy for COLUMN-PROJECTED parquet reads (queries touching
+    # fewer than half the columns): planned (default — CH-style
+    # plan-then-fetch: the exact coalesced byte ranges of the projected
+    # column chunks, dictionary pages and page-index sections included, are
+    # derived from the cached footer and fetched concurrently up-front; no
+    # speculative read-ahead window) or window (the previous adaptive-window
+    # behavior, kept as the full rollback switch). Fixes the measured
+    # ~46 MB/query of never-read window bytes on filtered counts. Full-scan
+    # (non-projected) reads always use the window stack.
+    projected_fetch_mode: planned
+    # -- Per-file byte cap for the plan-then-fetch projected read (0 = use
+    # default 16MB). Plans above the cap fall back to the window path for
+    # that file (lakehouse_s3_projected_fetch_fallback_total{reason="cap"}).
+    projected_fetch_max_bytes: 0
     # -- RECOMMENDED bucket lifecycle policy (apply OUT-OF-BAND via aws CLI,
     # Terraform, or your S3 provider's UI — Helm does not create bucket
     # lifecycle rules). Election-free spec §3.2 case 14 + Q5: the orphan

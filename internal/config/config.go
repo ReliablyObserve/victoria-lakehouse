@@ -305,7 +305,35 @@ type S3Config struct {
 	// flight per column reader) or "sync" (the library default mode, kept
 	// as the rollback switch).
 	ParquetReadMode string `yaml:"parquet_read_mode"`
+
+	// ProjectedFetchMode selects the read strategy for COLUMN-PROJECTED
+	// parquet reads (queries that touch fewer than half the columns):
+	//   "planned" (default) — CH-style plan-then-fetch: the exact coalesced
+	//     byte ranges of the projected column chunks (dictionary pages and
+	//     page-index sections included) are derived from the cached footer
+	//     and fetched concurrently up-front; NO speculative read-ahead
+	//     window. Fixes the measured ~46 MB/query of never-read window
+	//     bytes on filtered counts, where per-file 2MB base windows are
+	//     fetched and abandoned (the adaptive shrink never fires because
+	//     window state is per-reader-instance).
+	//   "window" — the previous behavior (adaptive read-ahead window),
+	//     kept as the full rollback switch.
+	// Full-scan (non-projected) reads always use the window stack.
+	ProjectedFetchMode string `yaml:"projected_fetch_mode"`
+
+	// ProjectedFetchMaxBytes caps the total coalesced bytes a single file's
+	// plan-then-fetch may pin in memory (default 16MB). Plans above the cap
+	// fall back to the adaptive-window path for that file (counted in
+	// lakehouse_s3_projected_fetch_fallback_total{reason="cap"}). Bounds
+	// the worst case of a wide projection over a huge row group.
+	ProjectedFetchMaxBytes int `yaml:"projected_fetch_max_bytes"`
 }
+
+// ProjectedFetchMode values for S3Config.ProjectedFetchMode.
+const (
+	ProjectedFetchModePlanned = "planned"
+	ProjectedFetchModeWindow  = "window"
+)
 
 type CacheConfig struct {
 	MemoryLimit       string        `yaml:"memory_limit"`
@@ -786,6 +814,8 @@ func Default() *Config {
 			ReadAheadWasteThreshold: 0.5,             // shrink window when >50% of it was never read
 			ReadBufferSize:          1024 * 1024,     // 1MB parquet page read buffer
 			ParquetReadMode:         "async",
+			ProjectedFetchMode:      ProjectedFetchModePlanned,
+			ProjectedFetchMaxBytes:  16 * 1024 * 1024, // 16MB per-file plan cap
 		},
 
 		Cache: CacheConfig{
@@ -1273,6 +1303,15 @@ func (c *Config) validateEnums() error {
 		return fmt.Errorf("--lakehouse.s3.parquet-read-mode must be async or sync, got %q", c.S3.ParquetReadMode)
 	}
 
+	switch c.S3.ProjectedFetchMode {
+	case ProjectedFetchModePlanned, ProjectedFetchModeWindow, "":
+	default:
+		return fmt.Errorf("--lakehouse.s3.projected-fetch-mode must be planned or window, got %q", c.S3.ProjectedFetchMode)
+	}
+	if c.S3.ProjectedFetchMaxBytes < 0 {
+		return fmt.Errorf("--lakehouse.s3.projected-fetch-max-bytes must be >= 0, got %d", c.S3.ProjectedFetchMaxBytes)
+	}
+
 	return nil
 }
 
@@ -1530,6 +1569,12 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.S3.ParquetReadMode != "" {
 		base.S3.ParquetReadMode = overlay.S3.ParquetReadMode
+	}
+	if overlay.S3.ProjectedFetchMode != "" {
+		base.S3.ProjectedFetchMode = overlay.S3.ProjectedFetchMode
+	}
+	if overlay.S3.ProjectedFetchMaxBytes > 0 {
+		base.S3.ProjectedFetchMaxBytes = overlay.S3.ProjectedFetchMaxBytes
 	}
 
 	// Cache
