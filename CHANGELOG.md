@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+<<<<<<< HEAD
 ### Fixed
 
 - **Parquet compression step 2: the three sort-order correctness traps fixed BEFORE the (stream_id, timestamp) row sort lands (both modules).** Per the approved research (`docs/architecture/parquet-compression-research.md`, "The three correctness traps under item 1") — every path that derived time bounds positionally is now order-agnostic, so the upcoming sort cannot corrupt metadata: **(1) manifest `MinTimeNs`/`MaxTimeNs` from `rows[0]`/`rows[len-1]`** replaced with a true O(n) min/max scan (`schema.LogRowTimeBounds`/`TraceRowTimeBounds`, shared by both modules) at all six flush/compaction sites (logs+traces writer `flush*TenantGroup` ×2 modules, compactor logs+traces merge) — positional bounds under a non-time sort understate the range and make manifest pruning silently skip files containing matches; **(2) the `bufferWatermark` double-count guard** (max `MaxTimeNs` of scanned files) is pinned by shuffled-flush regression tests in both modules — an understated `MaxTimeNs` would re-open the exact 2× buffer↔Parquet double-count; **(3) page-skip helpers assuming time-sorted pages** (`rowGroupFullyInRange` — which could wrongly declare FULL containment and emit rows OUTSIDE the query window — `syntheticTimestampBlock`, `enrichManifestFromFooter`, plus the footer-cache twin `enrichFromCachedFooter` in both modules) converted from `MinValue(0)`/`MaxValue(N-1)` to the aggregate-across-ALL-pages scan already used by the hardened `rowGroupMatchesTimeRange` (now shared as `columnIndexTimeBounds`). Bonus finding from the same grep: `rowGroupMatchesFilter`'s string branch seeded its max from the LAST page while looping from page 1 — page 0's max was dropped from the aggregate, so a string predicate matching a value present only in the first page wrongly skipped the row group (fixed + locked in both modules). All fixes pinned by regression tests proven to fail against the old code (shuffled-row flush, non-time-ordered-pages parquet fixtures).
+=======
+## [0.83.0] - 2026-06-10
+>>>>>>> origin/feat/compression-step1-tags
 
 ### Added
 
@@ -19,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **S3 read-path Tier 1 (batch 1) — parquet open hygiene, adaptive read-ahead, BDP coalescing, singleflight, S3-op observability (both modules).** From the approved ClickHouse-first research (`docs/architecture/s3-optimization-research.md`): every ranged `parquet.OpenFile` now passes `SkipPageIndex/SkipBloomFilters(true)` (we prune via manifest/pmeta; internal index/bloom reads stay lazily available), `OptimisticRead(true)` (footer suffix+body in one tail GET), `FileReadMode(ReadModeAsync)` (library-native page read-ahead, bounded ~1 page in flight per column reader; `-lakehouse.s3.parquet-read-mode=sync` is the rollback) and a 1 MB read buffer (library default was 4 KB). The coalescing gap default goes 64 KB→1 MB (breakeven at real S3 RTT is megabytes — AnyBlob, VLDB 2023), read-ahead adapts 2→8 MB on sequential patterns, and the parquet magic read no longer pulls a wasted ~2 MB head window — **all clamped by file size** so small files keep precise column-projected reads. Footer/`.bloom`/pmeta-bundle GETs are singleflight-deduped (`context.WithoutCancel` so a cancelled query can't poison waiters). 8 new metric families (GETs by phase, per-open GET histogram, window waste, over-fetch, grow/reset, head-bypass, dedup) and the full-scope benchmark now records **per-scenario S3-op deltas**. New per-signal config: `s3.read_ahead_max_bytes`, `s3.read_buffer_size`, `s3.parquet_read_mode` (+flags +chart values/schema). **Measured on the live stack at 100 ms injected S3 latency: count_1h 1478→878 ms (−41%), count_24h 4133→2475 ms (−40%), `gets/open` 4–6→2.0**; plain count_24h now beats hot VL (0.9×).
+
+### Fixed
+
+- **The 30-second manifest refresh silently wiped `LabelAggregates` — the count-pushdown fast path (PERF-2) was dead in production.** `RefreshFromS3`'s preserve-enrichment merge copied ten `FileInfo` fields one by one; `LabelAggregates` (added by PERF-2 after that list was written) was not among them, so every file's aggregates vanished within one refresh interval and `* | stats by (field) count()` queries scanned ~100 files (1.7 s at 100 ms S3 latency) instead of being answered from the manifest in milliseconds. Root-caused from the new per-scenario S3-op telemetry. Fix: the merge now preserves the **entire tracked entry** on key match (S3 objects are immutable — a LIST carries no newer information), via `mergeRefreshedFilesLocked`. Anti-recurrence: `TestRefresh_PreservesEveryEnrichmentField` walks `FileInfo` by **reflection**, fills every exported field, and asserts each survives the merge — adding a field without preserving it now fails CI instead of silently regressing.
+
 
 ## [0.82.0] - 2026-06-10
 
