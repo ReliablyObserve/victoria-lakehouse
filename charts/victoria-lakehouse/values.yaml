@@ -117,10 +117,29 @@ lakehouseConfig:
     # Linear and expbackoff are reserved for future signal-driven scaling
     # (queue depth, in-flight pressure); fixed behaves as flat ceiling at limit.
     concurrent_downloads_scaling: fixed
-    # -- S3 read-ahead buffer size in bytes (0 = use default 2MB).
+    # -- S3 read-ahead BASE window in bytes (0 = use default 2MB). The window
+    # adapts upward on sequential scans — see read_ahead_max_bytes.
     read_ahead_bytes: 0
-    # -- Merge S3 range reads with gaps smaller than this in bytes (0 = use default 64KB).
+    # -- Merge S3 range reads with gaps smaller than this in bytes (0 = use
+    # default 1MB). BDP-priced: at ~100ms S3 first-byte latency, over-fetching
+    # a 1MB gap costs ~10-20ms of transfer but saves a ~100ms round trip.
     coalesce_gap_bytes: 0
+    # -- Ceiling for the ADAPTIVE read-ahead window in bytes (0 = use default
+    # 8MB). The window doubles from read_ahead_bytes after 2+ consecutive
+    # forward-sequential misses (wide scan) and resets on a random seek
+    # (needle query). Per-signal tuning: scan-heavy logs deployments benefit
+    # from 8-16MB; needle-heavy traces deployments can pin 4MB to bound
+    # over-fetch.
+    read_ahead_max_bytes: 0
+    # -- Parquet page read buffer for ranged S3 opens in bytes (0 = use
+    # default 1MB). parquet-go's own default is 4KB — sized for local disk,
+    # far too small for network storage (hundreds of tiny reads per chunk).
+    read_buffer_size: 0
+    # -- Parquet page read mode on ranged S3 opens: async (default — pages
+    # are read ahead by a per-column goroutine, hiding S3 latency behind
+    # decode; memory bounded at ~1 page in flight per column reader) or sync
+    # (the rollback switch).
+    parquet_read_mode: async
     # -- RECOMMENDED bucket lifecycle policy (apply OUT-OF-BAND via aws CLI,
     # Terraform, or your S3 provider's UI — Helm does not create bucket
     # lifecycle rules). Election-free spec §3.2 case 14 + Q5: the orphan

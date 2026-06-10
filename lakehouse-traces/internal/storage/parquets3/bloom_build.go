@@ -76,7 +76,10 @@ func bloomS3Loader(pool *s3reader.ClientPool, prefix string) func(ctx context.Co
 			return nil, nil
 		}
 		key := fmt.Sprintf("%s%s/_bloom.bin", prefix, partition)
-		data, err := pool.Download(ctx, key)
+		// Singleflight: concurrent queries lazily loading the same cold
+		// partition's bloom bundle share one GET (BloomCache.Get has no
+		// in-flight dedup of its own).
+		data, err := pool.DownloadDedup(ctx, "pmeta_bundle", key)
 		if err != nil {
 			return nil, nil
 		}

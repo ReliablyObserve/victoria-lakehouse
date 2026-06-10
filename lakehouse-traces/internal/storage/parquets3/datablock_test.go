@@ -127,6 +127,7 @@ func TestTypedRowsToDataBlock_TimeColumnValid(t *testing.T) {
 	}
 	if timeCol == nil {
 		t.Fatal("_time column not found in DataBlock")
+		return
 	}
 	for i, v := range timeCol.values {
 		if v == "" {

@@ -10,6 +10,7 @@ import (
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -46,7 +47,8 @@ func (s *Storage) fetchFooterFile(ctx context.Context, fi manifest.FileInfo) (*p
 		offset = 0
 	}
 	length := fi.Size - offset
-	tail, err := s.pool.DownloadRange(ctx, fi.Key, offset, length)
+	metrics.S3GetsByPhase.Inc("footer")
+	tail, err := s.pool.DownloadRangeDedup(ctx, "footer", fi.Key, offset, length)
 	if err != nil {
 		return nil, fmt.Errorf("download footer range: %w", err)
 	}
@@ -66,7 +68,8 @@ func (s *Storage) fetchFooterFile(ctx context.Context, fi manifest.FileInfo) (*p
 		if footerOffset < 0 {
 			return nil, fmt.Errorf("footer length implies negative offset: footer=%d file=%d", totalFooterBytes, fi.Size)
 		}
-		bigTail, err := s.pool.DownloadRange(ctx, fi.Key, footerOffset, int64(totalFooterBytes))
+		metrics.S3GetsByPhase.Inc("footer")
+		bigTail, err := s.pool.DownloadRangeDedup(ctx, "footer", fi.Key, footerOffset, int64(totalFooterBytes))
 		if err != nil {
 			return nil, fmt.Errorf("download oversize footer range: %w", err)
 		}
