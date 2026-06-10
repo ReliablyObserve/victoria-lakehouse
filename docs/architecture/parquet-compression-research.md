@@ -116,3 +116,29 @@ compression delta expected**. Verified with the same A/B harness, same 10 real f
 the stacked branch (tags + trap fixes): **−2.2% / −2.4% — identical to step 1**, confirming
 zero encoding regression. The compression payoff of step 2 arrives indirectly: it unblocks
 step 3 (the (stream_id, timestamp) sort), which is the expected 30–50% item.
+
+## Measured: step 3 (the (stream_id, timestamp) sort) — REJECTED on evidence — 2026-06-10
+
+The roadmap's projected 30–50% win **failed empirical validation** on real stack data. Same
+A/B harness (now with a `tagged+sorted` variant), same 10 real L2 log files, identical rows:
+
+| config | baseline | tagged | tagged+sorted |
+|---|--:|--:|--:|
+| zstd-default | 256.7 MB | 251.1 MB (−2.2%) | **302.1 MB (+17.7%)** |
+| zstd-best | 240.8 MB | 235.1 MB (−2.4%) | **272.3 MB (+13.1%)** |
+
+Per-column attribution (`scripts/bench/compression_percol`, one 24 MB file, zstd-best,
+sorted − unsorted): `body` **+2.07 MB**, `trace_id` +0.86 MB, `timestamp` +0.38 MB,
+`_stream` +0.34 MB, `span_id` +0.20 MB.
+
+**Why the projection was wrong for this corpus:** its redundancy is TEMPORAL, not
+per-stream — similar log lines arrive in cross-stream bursts (zstd exploits adjacency
+within its window), spans of one trace are time-adjacent (shared trace_id prefixes), and
+the globally-monotonic timestamp column delta-encodes to almost nothing. Stream-first
+clustering destroys all three at once; per-stream body redundancy did not make up for it.
+
+**Verdict:** the sort is NOT shipped. The trap fixes (step 2) stand on their own as
+correctness wins. Revisit only with a corpus-dependent toggle if production-shaped data
+(heavy per-stream template redundancy) measurably differs — the harness decides, per the
+per-PR benchmark protocol. The full sort implementation existed and passed all suites
+(including parity) before being reverted on this measurement; see PR history.
