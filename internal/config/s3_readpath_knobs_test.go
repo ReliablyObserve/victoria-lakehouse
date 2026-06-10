@@ -60,3 +60,61 @@ lakehouse:
 		t.Fatalf("invalid parquet_read_mode must fail validation, got %v", err)
 	}
 }
+
+// TestS3ReadAheadWasteThreshold_DefaultAndMerge pins the S3-batch-2 waste
+// feedback knob: default 0.5, yaml overlay merge, and the absent-value
+// contract — a yaml that does NOT set the key keeps the default (the
+// overlay's zero value must not clobber it).
+func TestS3ReadAheadWasteThreshold_DefaultAndMerge(t *testing.T) {
+	if got := Default().S3.ReadAheadWasteThreshold; got != 0.5 {
+		t.Fatalf("default ReadAheadWasteThreshold = %v, want 0.5", got)
+	}
+
+	// Overlay sets the key → merged.
+	yml := `
+lakehouse:
+  mode: logs
+  s3:
+    bucket: b
+    read_ahead_waste_threshold: 0.8
+`
+	path := filepath.Join(t.TempDir(), "cfg.yaml")
+	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.S3.ReadAheadWasteThreshold != 0.8 {
+		t.Fatalf("overlay merge lost read_ahead_waste_threshold: %v", cfg.S3.ReadAheadWasteThreshold)
+	}
+
+	// Overlay WITHOUT the key → the 0.5 default survives (absent ≠ zero).
+	ymlAbsent := `
+lakehouse:
+  mode: logs
+  s3:
+    bucket: b
+`
+	pathAbsent := filepath.Join(t.TempDir(), "cfg.yaml")
+	if err := os.WriteFile(pathAbsent, []byte(ymlAbsent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgAbsent, err := Load(pathAbsent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfgAbsent.S3.ReadAheadWasteThreshold != 0.5 {
+		t.Fatalf("absent key must keep the 0.5 default, got %v", cfgAbsent.S3.ReadAheadWasteThreshold)
+	}
+
+	// >= 1 is a valid "disable" value, not a validation error.
+	d := Default()
+	d.Mode = ModeLogs
+	d.S3.Bucket = "b"
+	d.S3.ReadAheadWasteThreshold = 1.5
+	if err := d.Validate(); err != nil {
+		t.Fatalf(">=1 (disable) must validate: %v", err)
+	}
+}
