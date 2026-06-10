@@ -160,3 +160,36 @@ HTTP/2 note (research discovery 2): ALPN against AWS S3 and MinIO negotiates
 http/1.1 only — `ForceAttemptHTTP2` is a no-op and `MaxIdleConnsPerHost` is the real
 parallelism ceiling. Keep that in mind when reading benchmark deltas; no code change
 needed in this batch.
+
+## Measured: Tier-1 batch 1 (2026-06-10, before/after on the live e2e stack)
+
+Same harness, same data; before = main (post-#134), after = this branch. The new
+per-scenario S3-op capture ran on the after side.
+
+**With 100 ms ± 30 ms injected S3 latency (the regime this tier attacks):**
+
+| scenario | before p50 | after p50 | Δ | CH p50 | LH/CH after |
+|---|--:|--:|--:|--:|--:|
+| count_1h | 1478 | **878** | **−41%** | 562 | 1.6× |
+| count_24h | 4133 | **2475** | **−40%** | 557 | 4.4× |
+| filtered_count_1h | 2240 | **1694** | −24% | 859 | 2.0× |
+| fulltext_scan_1h | 1880 | 1829 | −3% | 612 | 3.0× |
+| groupby_service_1h | 1711 | 1726 | ~0 | 590 | 2.9× |
+
+**Plain (no injected latency):** improved across the board — count_24h now beats hot
+in-memory VL (115 vs 132 ms, 0.9×); all scan scenarios ≤1.4× VL.
+
+**What the new ops counters prove:**
+- `gets/open = 2.0` — the open tax collapsed from the 4–6 serial GETs the research
+  identified (head-bypass + OptimisticRead + Skip*); buffer hit rates 69–93%.
+- count_1h still issues ~50 GETs / 8 MB per query — file opens for an answer the
+  manifest already holds → the count-class endgame is the manifest fast-paths
+  (batch 2), which should land ~10× UNDER CH, not at parity.
+- groupby issues ~99 GETs/q despite the shipped PERF-2 aggregates — the fast-path is
+  not engaging for this query shape under the benchmark window; root-cause in batch 2.
+- Scans are now genuinely data-bound (~100 GETs/q serialized at RTT across 8 workers)
+  → Tier-2 vectored per-RG fetch + wider in-flight + footer-in-bundle.
+- `waste 7–12 MB/q` on scan paths: read-ahead over-fetch to tune via the new counters.
+
+**Target set by review: LH ≥ CH-level under latency for every scenario** — batch 2
+(count-class fast-paths + groupby root-cause) and Tier-2 (vectored fetch) carry that.
