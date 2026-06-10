@@ -14,8 +14,16 @@ type readRange struct {
 }
 
 func mergeRanges(ranges []readRange, gapThreshold int64) []readRange {
+	merged, _ := mergeRangesWithOverfetch(ranges, gapThreshold)
+	return merged
+}
+
+// mergeRangesWithOverfetch merges ranges within gapThreshold of each other and
+// returns the merged set plus the total gap bytes that will be fetched ONLY
+// because of merging (over-fetch — the price paid for the saved round trips).
+func mergeRangesWithOverfetch(ranges []readRange, gapThreshold int64) ([]readRange, int64) {
 	if len(ranges) <= 1 {
-		return ranges
+		return ranges, 0
 	}
 	// Copy to avoid mutating the caller's slice.
 	sorted := make([]readRange, len(ranges))
@@ -23,12 +31,16 @@ func mergeRanges(ranges []readRange, gapThreshold int64) []readRange {
 	sort.Slice(sorted, func(i, j int) bool {
 		return sorted[i].off < sorted[j].off
 	})
+	var overfetch int64
 	merged := []readRange{sorted[0]}
 	for _, r := range sorted[1:] {
 		last := &merged[len(merged)-1]
 		lastEnd := last.off + int64(last.length)
 		gap := r.off - lastEnd
 		if gap <= gapThreshold {
+			if gap > 0 {
+				overfetch += gap
+			}
 			newEnd := r.off + int64(r.length)
 			if newEnd > lastEnd {
 				last.length = int(newEnd - last.off)
@@ -37,7 +49,7 @@ func mergeRanges(ranges []readRange, gapThreshold int64) []readRange {
 			merged = append(merged, r)
 		}
 	}
-	return merged
+	return merged, overfetch
 }
 
 // CoalescingReaderAt wraps an io.ReaderAt and merges nearby range reads
@@ -52,12 +64,17 @@ type CoalescingReaderAt struct {
 
 // NewCoalescingReaderAt creates a CoalescingReaderAt wrapping inner.
 // Ranges within gapThreshold bytes of each other are merged into a single read.
-// Default gap threshold is 64KB if gapThreshold <= 0.
+//
+// Default gap threshold is 1MB if gapThreshold <= 0 — BDP-priced for real S3
+// latency (AnyBlob, VLDB 2023): at ~100ms first-byte latency, over-fetching
+// 1MB costs ~10-20ms of transfer but saves a ~100ms round trip, so the
+// breakeven gap is megabytes, not the previous 64KB. The safety cap is 16MB
+// (the upper end of AnyBlob's cost-throughput-optimal 8-16MiB range size).
 func NewCoalescingReaderAt(inner io.ReaderAt, fileSize int64, gapThreshold int64) *CoalescingReaderAt {
 	if gapThreshold <= 0 {
-		gapThreshold = 64 * 1024
+		gapThreshold = 1024 * 1024
 	}
-	const maxGapThreshold = 1024 * 1024 // 1MB safety cap
+	const maxGapThreshold = 16 * 1024 * 1024 // 16MB safety cap
 	if gapThreshold > maxGapThreshold {
 		gapThreshold = maxGapThreshold
 	}
@@ -75,8 +92,11 @@ func (c *CoalescingReaderAt) PreloadRanges(ranges []readRange) error {
 	if len(ranges) == 0 {
 		return nil
 	}
-	merged := mergeRanges(ranges, c.gapThreshold)
+	merged, overfetch := mergeRangesWithOverfetch(ranges, c.gapThreshold)
 	metrics.S3CoalescedRanges.Add(len(ranges) - len(merged))
+	if overfetch > 0 {
+		metrics.S3CoalesceOverfetchBytes.Add(int(overfetch))
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, mr := range merged {

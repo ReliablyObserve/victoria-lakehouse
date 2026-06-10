@@ -100,60 +100,63 @@ func TestDownloadRange_ReadBodyError(t *testing.T) {
 // when prefetch <= 0.
 func TestNewBufferedReaderAt_DefaultPrefetch(t *testing.T) {
 	inner := &covMockReaderAt{data: make([]byte, 100)}
-	b := NewBufferedReaderAt(inner, 100, 0) // should default to 2MB
+	b := NewBufferedReaderAt(inner, 100, 0, 0) // should default to 2MB
 	if b == nil {
 		t.Fatal("expected non-nil BufferedS3ReaderAt")
 	}
-	if b.prefetch != 2*1024*1024 {
-		t.Errorf("prefetch = %d, want %d", b.prefetch, 2*1024*1024)
+	if b.base != 2*1024*1024 {
+		t.Errorf("prefetch = %d, want %d", b.base, 2*1024*1024)
 	}
 }
 
 // TestNewBufferedReaderAt_NegativePrefetch exercises the negative prefetch branch.
 func TestNewBufferedReaderAt_NegativePrefetch(t *testing.T) {
 	inner := &covMockReaderAt{data: make([]byte, 100)}
-	b := NewBufferedReaderAt(inner, 100, -100) // should default to 2MB
-	if b.prefetch != 2*1024*1024 {
-		t.Errorf("prefetch = %d, want %d", b.prefetch, 2*1024*1024)
+	b := NewBufferedReaderAt(inner, 100, -100, 0) // should default to 2MB
+	if b.base != 2*1024*1024 {
+		t.Errorf("prefetch = %d, want %d", b.base, 2*1024*1024)
 	}
 }
 
 // TestNewBufferedReaderAt_MaxPrefetchCap exercises the 64MB safety cap.
 func TestNewBufferedReaderAt_MaxPrefetchCap(t *testing.T) {
 	inner := &covMockReaderAt{data: make([]byte, 100)}
-	b := NewBufferedReaderAt(inner, 100, 100*1024*1024) // 100MB, should be capped to 64MB
-	if b.prefetch != 64*1024*1024 {
-		t.Errorf("prefetch = %d, want %d (64MB cap)", b.prefetch, 64*1024*1024)
+	b := NewBufferedReaderAt(inner, 100, 100*1024*1024, 0) // 100MB, should be capped to 64MB
+	if b.base != 64*1024*1024 {
+		t.Errorf("prefetch = %d, want %d (64MB cap)", b.base, 64*1024*1024)
 	}
 }
 
 // TestNewCoalescingReaderAt_DefaultGap exercises the default gap threshold branch.
+// Default is 1MB — BDP-priced for real S3 latency (s3-optimization research).
 func TestNewCoalescingReaderAt_DefaultGap(t *testing.T) {
 	inner := &covMockReaderAt{data: make([]byte, 100)}
-	c := NewCoalescingReaderAt(inner, 100, 0) // should default to 64KB
+	c := NewCoalescingReaderAt(inner, 100, 0) // should default to 1MB
 	if c == nil {
 		t.Fatal("expected non-nil CoalescingReaderAt")
 	}
-	if c.gapThreshold != 64*1024 {
-		t.Errorf("gapThreshold = %d, want %d", c.gapThreshold, 64*1024)
+	if c.gapThreshold != 1024*1024 {
+		t.Errorf("gapThreshold = %d, want %d", c.gapThreshold, 1024*1024)
 	}
 }
 
 // TestNewCoalescingReaderAt_NegativeGap exercises the negative gap threshold.
 func TestNewCoalescingReaderAt_NegativeGap(t *testing.T) {
 	inner := &covMockReaderAt{data: make([]byte, 100)}
-	c := NewCoalescingReaderAt(inner, 100, -10) // should default to 64KB
-	if c.gapThreshold != 64*1024 {
-		t.Errorf("gapThreshold = %d, want %d", c.gapThreshold, 64*1024)
+	c := NewCoalescingReaderAt(inner, 100, -10) // should default to 1MB
+	if c.gapThreshold != 1024*1024 {
+		t.Errorf("gapThreshold = %d, want %d", c.gapThreshold, 1024*1024)
 	}
 }
 
-// TestNewCoalescingReaderAt_MaxGapCap exercises the 1MB safety cap.
+// TestNewCoalescingReaderAt_MaxGapCap exercises the 16MB safety cap
+// (lifted from 1MB when the default gap became 1MB; AnyBlob's optimal
+// range size tops out at 16MiB).
 func TestNewCoalescingReaderAt_MaxGapCap(t *testing.T) {
 	inner := &covMockReaderAt{data: make([]byte, 100)}
-	c := NewCoalescingReaderAt(inner, 100, 10*1024*1024) // 10MB, should be capped to 1MB
-	if c.gapThreshold != 1024*1024 {
-		t.Errorf("gapThreshold = %d, want %d (1MB cap)", c.gapThreshold, 1024*1024)
+	c := NewCoalescingReaderAt(inner, 100, 32*1024*1024) // 32MB, should be capped to 16MB
+	if c.gapThreshold != 16*1024*1024 {
+		t.Errorf("gapThreshold = %d, want %d (16MB cap)", c.gapThreshold, 16*1024*1024)
 	}
 }
 

@@ -58,7 +58,7 @@ func TestBufferedReaderAt_NoMemoryLeak_ReadCycles(t *testing.T) {
 
 	// Warm up: create, use, discard several times.
 	for i := 0; i < 50; i++ {
-		br := NewBufferedReaderAt(inner, inner.Size(), 64*1024)
+		br := NewBufferedReaderAt(inner, inner.Size(), 64*1024, 64*1024)
 		buf := make([]byte, 4*1024)
 		for off := int64(0); off < inner.Size(); off += int64(len(buf)) * 4 {
 			_, _ = br.ReadAt(buf, off)
@@ -69,7 +69,7 @@ func TestBufferedReaderAt_NoMemoryLeak_ReadCycles(t *testing.T) {
 	before := heapInUse()
 
 	for i := 0; i < 1000; i++ {
-		br := NewBufferedReaderAt(inner, inner.Size(), 64*1024)
+		br := NewBufferedReaderAt(inner, inner.Size(), 64*1024, 64*1024)
 		buf := make([]byte, 4*1024)
 		for off := int64(0); off < inner.Size(); off += int64(len(buf)) * 4 {
 			_, _ = br.ReadAt(buf, off)
@@ -91,7 +91,7 @@ func TestBufferedReaderAt_NoMemoryLeak_ConcurrentReads(t *testing.T) {
 		data[i] = byte(i % 256)
 	}
 	inner := &memReaderAt{data: data}
-	br := NewBufferedReaderAt(inner, inner.Size(), 256*1024)
+	br := NewBufferedReaderAt(inner, inner.Size(), 256*1024, 256*1024)
 
 	// Warm up with concurrent reads.
 	var wg sync.WaitGroup
@@ -258,7 +258,7 @@ func TestBufferedReaderAt_NoGoroutineLeak(t *testing.T) {
 	before := runtime.NumGoroutine()
 
 	for i := 0; i < 100; i++ {
-		br := NewBufferedReaderAt(inner, inner.Size(), 8*1024)
+		br := NewBufferedReaderAt(inner, inner.Size(), 8*1024, 8*1024)
 		buf := make([]byte, 1024)
 		_, _ = br.ReadAt(buf, 0)
 		_, _ = br.ReadAt(buf, 4096)

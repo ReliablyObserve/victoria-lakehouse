@@ -91,8 +91,11 @@ var (
 	queryMaxFilesPerQuery = flag.Int("lakehouse.query.max-files-per-query", 0, "Max S3 files per query before rejection (default: 500)")
 	queryMaxLiveBytes     = flag.Int64("lakehouse.query.max-live-bytes", 0, "Per-query ceiling on in-flight DataBlock bytes before cancellation (default: 512MiB)")
 
-	s3ReadAhead   = flag.Int("lakehouse.s3.read-ahead-bytes", 0, "S3 read-ahead buffer size in bytes (default: 2MB)")
-	s3CoalesceGap = flag.Int("lakehouse.s3.coalesce-gap-bytes", 0, "Merge S3 range reads with gaps smaller than this (default: 64KB)")
+	s3ReadAhead       = flag.Int("lakehouse.s3.read-ahead-bytes", 0, "S3 read-ahead base window in bytes (default: 2MB)")
+	s3CoalesceGap     = flag.Int("lakehouse.s3.coalesce-gap-bytes", 0, "Merge S3 range reads with gaps smaller than this (default: 1MB)")
+	s3ReadAheadMax    = flag.Int("lakehouse.s3.read-ahead-max-bytes", 0, "Adaptive read-ahead window ceiling in bytes; the window doubles from read-ahead-bytes on sequential scans (default: 8MB)")
+	s3ReadBufferSize  = flag.Int("lakehouse.s3.read-buffer-size", 0, "Parquet page read buffer for ranged S3 opens in bytes (default: 1MB)")
+	s3ParquetReadMode = flag.String("lakehouse.s3.parquet-read-mode", "", "Parquet page read mode on ranged S3 opens: async (read-ahead goroutine per column) or sync (default: async)")
 
 	// K8s-style request/limit/scaling for S3 download concurrency
 	// (see internal/resourcebounds). When any of these are non-zero
@@ -1463,6 +1466,15 @@ func applyS3Flags(s3 *config.S3Config) {
 	}
 	if *s3CoalesceGap > 0 {
 		s3.CoalesceGapBytes = *s3CoalesceGap
+	}
+	if *s3ReadAheadMax > 0 {
+		s3.ReadAheadMaxBytes = *s3ReadAheadMax
+	}
+	if *s3ReadBufferSize > 0 {
+		s3.ReadBufferSize = *s3ReadBufferSize
+	}
+	if *s3ParquetReadMode != "" {
+		s3.ParquetReadMode = *s3ParquetReadMode
 	}
 	if *s3MaxConcurrentDownloads > 0 {
 		s3.MaxConcurrentDownloads = *s3MaxConcurrentDownloads

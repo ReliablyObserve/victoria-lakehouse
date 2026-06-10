@@ -268,6 +268,28 @@ type S3Config struct {
 	ConcurrentDownloadsScaling string `yaml:"concurrent_downloads_scaling"`
 	ReadAheadBytes             int    `yaml:"read_ahead_bytes"`
 	CoalesceGapBytes           int    `yaml:"coalesce_gap_bytes"`
+
+	// ReadAheadMaxBytes is the ceiling for the ADAPTIVE read-ahead window.
+	// The window starts at ReadAheadBytes and doubles (up to this max) after
+	// 2+ consecutive forward-sequential buffer misses — wide scans get
+	// CH-sized I/O units while needle queries stay at the small base window
+	// (a random seek resets it). Default 8MB. Tune per signal: scan-heavy
+	// logs deployments benefit from 8-16MB; needle-heavy traces deployments
+	// can pin it lower (4MB) to bound over-fetch.
+	ReadAheadMaxBytes int `yaml:"read_ahead_max_bytes"`
+
+	// ReadBufferSize is parquet-go's per-column page read buffer for ranged
+	// S3 opens (the library default of 4KB is sized for local disk; its own
+	// docs suggest ~4MiB for network storage). Default 1MB: one buffered
+	// page read per underlying GET instead of hundreds.
+	ReadBufferSize int `yaml:"read_buffer_size"`
+
+	// ParquetReadMode selects parquet-go's page read mode on ranged S3
+	// opens: "async" (default — pages are read ahead by a per-column
+	// goroutine, hiding S3 latency behind decode; bounded at one page in
+	// flight per column reader) or "sync" (the library default mode, kept
+	// as the rollback switch).
+	ParquetReadMode string `yaml:"parquet_read_mode"`
 }
 
 type CacheConfig struct {
@@ -707,8 +729,11 @@ func Default() *Config {
 			RetryMax:               3,
 			RetryBaseDelay:         200 * time.Millisecond,
 			MaxConcurrentDownloads: 16,
-			ReadAheadBytes:         2 * 1024 * 1024, // 2MB
-			CoalesceGapBytes:       64 * 1024,       // 64KB
+			ReadAheadBytes:         2 * 1024 * 1024, // 2MB base window
+			CoalesceGapBytes:       1024 * 1024,     // 1MB (BDP-priced; was 64KB)
+			ReadAheadMaxBytes:      8 * 1024 * 1024, // 8MB adaptive ceiling
+			ReadBufferSize:         1024 * 1024,     // 1MB parquet page read buffer
+			ParquetReadMode:        "async",
 		},
 
 		Cache: CacheConfig{
@@ -1179,6 +1204,12 @@ func (c *Config) validateEnums() error {
 		return fmt.Errorf("--lakehouse.ui.theme must be auto, dark, or light; got %q", c.UI.Theme)
 	}
 
+	switch c.S3.ParquetReadMode {
+	case "async", "sync", "":
+	default:
+		return fmt.Errorf("--lakehouse.s3.parquet-read-mode must be async or sync, got %q", c.S3.ParquetReadMode)
+	}
+
 	return nil
 }
 
@@ -1419,6 +1450,15 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.S3.CoalesceGapBytes > 0 {
 		base.S3.CoalesceGapBytes = overlay.S3.CoalesceGapBytes
+	}
+	if overlay.S3.ReadAheadMaxBytes > 0 {
+		base.S3.ReadAheadMaxBytes = overlay.S3.ReadAheadMaxBytes
+	}
+	if overlay.S3.ReadBufferSize > 0 {
+		base.S3.ReadBufferSize = overlay.S3.ReadBufferSize
+	}
+	if overlay.S3.ParquetReadMode != "" {
+		base.S3.ParquetReadMode = overlay.S3.ParquetReadMode
 	}
 
 	// Cache

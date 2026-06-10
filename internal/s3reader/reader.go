@@ -114,6 +114,12 @@ type ClientPool struct {
 	client *s3.Client
 	bucket string
 	router BucketRouterFunc
+
+	// sf deduplicates concurrent metadata GETs (footers, .bloom sidecars,
+	// pmeta bundles) — see dedup.go. Keys are object keys; a pool clone
+	// (WithBucket) gets its own group so identical keys in different
+	// buckets never share a flight.
+	sf sfGroup
 }
 
 // SetBucketRouter installs a router consulted by every method that
