@@ -485,6 +485,7 @@ func TestColdHotParity_BuildPushDownFilter_NoSubstringCollision(t *testing.T) {
 	pdf := buildPushDownFilter(`service.name:="api-gateway"`, reg)
 	if pdf == nil {
 		t.Fatal("expected pushdown filter, got nil")
+		return
 	}
 	if len(pdf.Checks) == 0 {
 		t.Fatal("expected at least one pushdown check")
