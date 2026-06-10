@@ -1,6 +1,8 @@
 package parquets3
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -83,6 +85,45 @@ func TestCountByPushdownField_Filtered(t *testing.T) {
 		got := countByPushdownField(c.pipeFields, f)
 		if got != c.want {
 			t.Errorf("%q (pipeFields=%v): got %q want %q", c.q, c.pipeFields, got, c.want)
+		}
+	}
+}
+
+// TestCountPushdownFilterFields_UpstreamInventoryDrift pins the gate's node
+// inventory against the PINNED VL version: every filter type shipped in
+// deps/VictoriaLogs/lib/logstorage must be either recognized by
+// countPushdownFilterFields or consciously listed here as out-of-scope.
+// Unknown nodes degrade SAFELY (refuse → scan), but silently — this test makes
+// a VL upgrade that adds filter types fail loudly so the gate gets reviewed
+// instead of the fast path quietly disengaging for those shapes.
+func TestCountPushdownFilterFields_UpstreamInventoryDrift(t *testing.T) {
+	entries, err := filepath.Glob("../../../deps/VictoriaLogs/lib/logstorage/filter_*.go")
+	if err != nil || len(entries) == 0 {
+		t.Skipf("deps/VictoriaLogs not present (run make deps): %v", err)
+	}
+	recognized := map[string]bool{
+		"and": true, "or": true, "not": true, "generic": true,
+		"exact": true, "exact_prefix": true, "in": true, "phrase": true,
+		"prefix": true, "any_case_phrase": true, "any_case_prefix": true,
+		"contains_all": true, "contains_any": true, "contains_common_case": true,
+		"equals_common_case": true, "json_array_contains_any": true,
+		"ipv4_range": true, "ipv6_range": true, "len_range": true,
+		"pattern_match": true, "range": true, "regexp": true,
+		"sequence": true, "string_range": true, "substring": true,
+		"value_type": true, "eq_field": true, "le_field": true,
+		"noop": true, "time": true, "day_range": true, "week_range": true,
+		"stream": true, "stream_id": true,
+	}
+	for _, p := range entries {
+		name := strings.TrimSuffix(filepath.Base(p), ".go")
+		name = strings.TrimPrefix(name, "filter_")
+		if strings.HasSuffix(name, "_test") || name == "filter" {
+			continue
+		}
+		if !recognized[name] {
+			t.Errorf("upstream filter type %q is not in the count-pushdown gate inventory — "+
+				"review countPushdownFilterFields (recognize it or it will silently refuse, "+
+				"degrading filtered counts to scans for that shape) and add it to this list", name)
 		}
 	}
 }
