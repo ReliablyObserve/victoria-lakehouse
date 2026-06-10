@@ -1,5 +1,19 @@
 # Parquet compression + efficiency roadmap
 
+> **STATUS UPDATE (2026-06-10) — superseded by [`parquet-compression-research.md`](parquet-compression-research.md)**
+> (source-audited + empirically verified with pyarrow/duckdb readback). Per-item verdicts:
+> 1 sorting **APPROVED** (gated on 3 correctness trap-fixes) · 2 delta-timestamps **IMPLEMENTED**
+> (struct tags; the `parquet.Encoding()` API named below does not exist) · 3 L2+ row groups
+> **APPROVED** · 4 PageIndex **ALREADY SHIPPED** (parquet-go always writes it — read-side
+> exploitation moved to the S3 track) · 5 zstd dict training **REJECTED** (empirically breaks
+> external readers; replaced by `dict`-tag RLE_DICTIONARY — **IMPLEMENTED**) · 6 bloom-drop
+> **NO-OP** (only service.name/trace_id blooms exist) · 7 chunk merging **N/A** (misconception)
+> · 8 schema slimming **PARKED** (product decision) · 9 ZSTD-19 **IMPOSSIBLE via klauspost**
+> (4 tiers, ceiling ≈11; long-range moot at page granularity) · 10 BROTLI **SKIPPED per review**
+> (zstd judged sufficient; −15% measured, revisit if archive cost matters) / LZMA **REJECTED**
+> (not a parquet codec). NEW approved item: **dedicated columns** (hot-attribute promotion).
+
+
 Standards-compliant optimizations that increase compression ratios
 and read efficiency over the current setup. Every entry here stays
 within the published Parquet 2.x spec — no custom framing, no

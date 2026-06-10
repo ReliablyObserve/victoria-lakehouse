@@ -1,5 +1,17 @@
 # S3 / scan optimization plan — ClickHouse-parity on the pure-S3 fallback
 
+> **STATUS UPDATE (2026-06-10) — priorities superseded by [`s3-optimization-research.md`](s3-optimization-research.md)**
+> (ClickHouse-source deep-dive + live protocol experiments). Key revisions: the bare
+> `parquet.OpenFile` defaults are a serial 4–6-GET-per-open problem the original plan missed
+> (zero-GET opens + `ReadModeAsync` are now Tier-1); the coalescing gap (64 KB) is mispriced
+> ~16× at real S3 latency; hedged GETs added (AWS-endorsed); old deep items #3 (full
+> per-column decode) and #6 (cross-file scheduler) are DEPRIORITIZED; old quick-win #3 is
+> obsoleted by footer absorption into `_pmeta.bundle`; quick-win #4 had already shipped
+> (PERF-2). **Correction:** this doc's "HTTP/2 + pooling" wording was wrong — AWS S3 and MinIO
+> negotiate http/1.1 only (ALPN-verified); there is no multiplexing and
+> `MaxIdleConnsPerHost` is the true parallelism ceiling.
+
+
 Goal: (1) close the small LH-vs-hot-VL gaps on count/groupby/filtered, and (2) bring
 LH's **pure-S3 Parquet scan** — the path taken when no in-memory index hits — to
 ClickHouse-class performance. Grounded in a code map of `internal/s3reader/` and

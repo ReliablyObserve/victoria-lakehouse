@@ -1,5 +1,11 @@
 # Performance machinery
 
+> **STATUS (2026-06-10):** PERF-2 SHIPPED (manifest LabelAggregates + CountByLabel,
+> commit 3e46e70). PERF-3 partially shipped (pmeta HLL sketches + cardinality metric; query-time
+> index selection still open). PERF-1/4/5/6 open — scheduled as PR 4; PERF-6 (auto-tune)
+> requires its own research + adversarial design review before implementation per review.
+
+
 The complete inventory of speedup mechanisms in the LH cold tier, what each
 costs in memory and disk, how each scales from a dev tier to a 50 M-file
 PB cluster, the planned follow-up features that the same framework
