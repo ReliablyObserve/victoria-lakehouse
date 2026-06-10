@@ -77,7 +77,8 @@ func shouldSkipByFooter(
 	}
 	length := fi.Size - offset
 
-	tail, err := pool.DownloadRange(ctx, fi.Key, offset, length)
+	metrics.S3GetsByPhase.Inc("footer")
+	tail, err := pool.DownloadRangeDedup(ctx, "footer", fi.Key, offset, length)
 	if err != nil {
 		// Fall back to full download — don't fail the query.
 		return false, nil
@@ -190,7 +191,8 @@ func prefetchFooters(ctx context.Context, pool *s3reader.ClientPool, files []man
 					offset = 0
 				}
 				length := fi.Size - offset
-				tail, err := pool.DownloadRange(ctx, fi.Key, offset, length)
+				metrics.S3GetsByPhase.Inc("footer")
+				tail, err := pool.DownloadRangeDedup(ctx, "footer", fi.Key, offset, length)
 				if err != nil || len(tail) < 8 {
 					mu.Lock()
 					dlErrors++
