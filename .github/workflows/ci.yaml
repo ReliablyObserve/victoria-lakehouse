@@ -63,6 +63,47 @@ jobs:
       - name: Check Helm config drift
         run: go run ./scripts/ci/helmdrift
 
+  # Multi-engine parquet readback gate: writes synthetic files with the
+  # REAL production schemas + writer options (zstd best, row-group
+  # bounds, blooms, delta/dict tags, _trace_idx footer), then reads them
+  # back with BOTH pyarrow and duckdb — aggregate truth, row-level
+  # equality (EXCEPT ALL both directions), encoding assertions, and
+  # PageIndex presence. Every parquet encoding change ships behind this
+  # gate (docs/architecture/parquet-compression-research.md).
+  # needs: deps because internal/schema (the real row structs) imports
+  # VL upstream via severity.go.
+  parquet-readback:
+    needs: deps
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: actions/cache/restore@v5
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaTraces
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
+
+      - name: Install readers
+        run: pip install pyarrow duckdb
+
+      - name: Generate parquet files (production schemas + options)
+        run: go run ./scripts/ci/parquet-readback/gen -out /tmp/parquet-readback
+
+      - name: Verify with pyarrow + duckdb
+        run: python scripts/ci/parquet-readback/verify.py /tmp/parquet-readback
+
   test-logs:
     needs: deps
     runs-on: ubuntu-latest
