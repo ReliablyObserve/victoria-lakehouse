@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.81.0] - 2026-06-10
+
 ### Added
 
 - **pmeta `retire-sidecar-writes` — stop writing ALL legacy sidecars the facets replace: `_file_metadata.json`, per-file `.bloom`, and partition `_bloom.bin` (`-lakehouse.pmeta.retire-sidecar-writes`, off by default, both modules).** The back half of the consolidation. File-meta: `WarmMetadata` serves from the bundle-warmed fileMetaFacet with the Parquet **footer** as the cold-restart fallback (Phase 3) — so skipping the `_file_metadata.json` write loses nothing. Bloom: every bloom pre-filter path now consults the in-RAM bloom facet first — the single-file `checkFileBloom`, the logs OR-branch + single-set partition paths (`bloomUnionMatch`/`bloomColumnIntersect`, `_bloom.bin` via `bloomCache` as the fallback), and the traces pre-filters (`bloomMayContainAll` per-partition hybrid with the legacy in-RAM `bloomIdx` as fallback) — so under retire the logs bloom observer isn't wired and traces `PersistBloomIndex` is a no-op. Both sides of every hybrid **keep keys they have no bloom for** (a bloom can only exclude what it knows), so a file holding the queried value is never dropped. **Reversible** (clear the flag → all sidecars resume; no migration); requires `--pmeta`; default off → byte-identical. `TestInteg_PmetaRetire_SkipsFileMetaSidecar`, `TestInteg_PmetaFlip_ORBranchFacet`, `TestInteg_PmetaFlip_BloomHybridColdRestart` (cold restart with EMPTY legacy bloom: facet prunes, present values kept, unknown partitions kept).
