@@ -96,7 +96,14 @@ func TestInteg_CountPushdown_EqualsScan(t *testing.T) {
 // query WITH a row filter must NOT use the whole-file aggregate (which counts
 // every row), or it would ignore the filter and over-count. The fast path must
 // stay dormant and the scan must apply the filter.
-func TestInteg_CountPushdown_FilteredQuerySkipsFastPath(t *testing.T) {
+// TestInteg_CountPushdown_FilteredServedFromAggregates: a count filtered on
+// the AGGREGATED field is now served from manifest aggregates — the synthetic
+// rows reproduce the field's full distribution and preFilter applies the real
+// filter to them downstream, so the result is exact (worker:1, api-gw:0) while
+// the file never touches S3. This used to skip the fast path entirely (the old
+// TestInteg_CountPushdown_FilteredQuerySkipsFastPath codified that); the gate
+// extension (countPushdownFilterFields) made single-field filters sound.
+func TestInteg_CountPushdown_FilteredServedFromAggregates(t *testing.T) {
 	mock := newMockS3Server()
 	defer mock.close()
 	s := testStorageWithS3(t, mock.url())
@@ -143,10 +150,47 @@ func TestInteg_CountPushdown_FilteredQuerySkipsFastPath(t *testing.T) {
 		t.Fatalf("RunQuery: %v", err)
 	}
 
-	if getCounterValue(t, metrics.MetadataOnlyFiles) != before {
-		t.Fatal("fast path fired on a FILTERED query — would ignore the filter and over-count")
+	if getCounterValue(t, metrics.MetadataOnlyFiles) == before {
+		t.Fatal("fast path did NOT fire on a single-field filtered query — filtered counts should be metadata-served")
 	}
 	if got["worker"] != 1 || got["api-gw"] != 0 {
-		t.Fatalf("filtered count wrong: %v (want only worker:1)", got)
+		t.Fatalf("filtered count wrong: %v (want only worker:1) — the downstream filter must prune synthetic rows exactly", got)
+	}
+}
+
+// A filter referencing a DIFFERENT field than the pipe's group-by field must
+// still skip the fast path: synthetic rows fabricate every column except the
+// aggregated one, so evaluating severity_text against them would be wrong.
+func TestInteg_CountPushdown_CrossFieldFilterSkipsFastPath(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+
+	now := time.Date(2026, 5, 10, 14, 30, 0, 0, time.UTC)
+	rows := []logRow{
+		{TimestampUnixNano: now.UnixNano(), ServiceName: "api-gw", Body: "a"},
+		{TimestampUnixNano: now.Add(1).UnixNano(), ServiceName: "worker", Body: "b"},
+	}
+	data := writeParquetToBytes(t, rows)
+	key := "logs/dt=2026-05-10/hour=14/cpx.parquet"
+	mock.putFile(key, data)
+
+	fi := manifest.FileInfo{
+		Key: key, Size: int64(len(data)), RowCount: int64(len(rows)),
+		MinTimeNs: rows[0].TimestampUnixNano, MaxTimeNs: rows[1].TimestampUnixNano,
+		LabelAggregates: map[string]map[string]int64{"service.name": {"api-gw": 1, "worker": 1}},
+	}
+	s.manifest.AddFile("dt=2026-05-10/hour=14", fi)
+
+	startNs := now.Add(-time.Minute).UnixNano()
+	endNs := now.Add(time.Minute).UnixNano()
+	q := mustParseQueryWithTime(t, `severity_text:ERROR | stats by (service.name) count()`, startNs, endNs)
+
+	before := getCounterValue(t, metrics.MetadataOnlyFiles)
+	if err := s.RunQuery(context.Background(), nil, q, func(_ uint, db *logstorage.DataBlock) {}); err != nil {
+		t.Fatalf("RunQuery: %v", err)
+	}
+	if getCounterValue(t, metrics.MetadataOnlyFiles) != before {
+		t.Fatal("fast path fired with a cross-field filter — synthetic rows fabricate severity_text; results would be wrong")
 	}
 }
