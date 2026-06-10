@@ -308,7 +308,7 @@ type S3Config struct {
 
 	// ProjectedFetchMode selects the read strategy for COLUMN-PROJECTED
 	// parquet reads (queries that touch fewer than half the columns):
-	//   "planned" (default) — CH-style plan-then-fetch: the exact coalesced
+	//   "planned" — CH-style plan-then-fetch: the exact coalesced
 	//     byte ranges of the projected column chunks (dictionary pages and
 	//     page-index sections included) are derived from the cached footer
 	//     and fetched concurrently up-front; NO speculative read-ahead
@@ -814,7 +814,7 @@ func Default() *Config {
 			ReadAheadWasteThreshold: 0.5,             // shrink window when >50% of it was never read
 			ReadBufferSize:          1024 * 1024,     // 1MB parquet page read buffer
 			ParquetReadMode:         "async",
-			ProjectedFetchMode:      ProjectedFetchModePlanned,
+			ProjectedFetchMode:      ProjectedFetchModeWindow,
 			ProjectedFetchMaxBytes:  16 * 1024 * 1024, // 16MB per-file plan cap
 		},
 
