@@ -50,13 +50,36 @@ const defaultParquetReadBufferSize = 1024 * 1024
 func (s *Storage) openRangedParquet(ctx context.Context, fi manifest.FileInfo, cachedSchema *parquet.Schema) (*parquet.File, error) {
 	raw := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
 	phased := s3reader.NewPhaseReaderAt(raw)
-	buffered := s3reader.NewBufferedReaderAt(phased, fi.Size,
-		int64(s.cfg.S3.ReadAheadBytes), int64(s.cfg.S3.ReadAheadMaxBytes))
-	readerAt := s3reader.NewCoalescingReaderAt(buffered, fi.Size, int64(s.cfg.S3.CoalesceGapBytes))
+
+	// BDP-priced windows are sized for LARGE files at real S3 RTT; on a file
+	// smaller than the window they degenerate range-projection into a full
+	// download (a 412KB file with a 1MB gap/window reads everything — caught by
+	// TestGetFieldValues_UsesColumnProjectedRead). Clamp every knob by file
+	// size, the same way ClickHouse bounds remote reads by read_until_position:
+	// large files keep the round-trip-minimal windows, small files keep
+	// precise column reads.
+	clamp := func(v, lo, hi int64) int64 {
+		if v < lo {
+			return lo
+		}
+		if v > hi {
+			return hi
+		}
+		return v
+	}
+	effGap := clamp(int64(s.cfg.S3.CoalesceGapBytes), 0, max64(64<<10, fi.Size/8))
+	effBase := clamp(int64(s.cfg.S3.ReadAheadBytes), 0, max64(64<<10, fi.Size/4))
+	effMax := clamp(int64(s.cfg.S3.ReadAheadMaxBytes), effBase, fi.Size)
+
+	buffered := s3reader.NewBufferedReaderAt(phased, fi.Size, effBase, effMax)
+	readerAt := s3reader.NewCoalescingReaderAt(buffered, fi.Size, effGap)
 
 	readBuf := s.cfg.S3.ReadBufferSize
 	if readBuf <= 0 {
 		readBuf = defaultParquetReadBufferSize
+	}
+	if cap := max64(64<<10, fi.Size/4); int64(readBuf) > cap {
+		readBuf = int(cap)
 	}
 	opts := []parquet.FileOption{
 		parquet.SkipPageIndex(true),
@@ -78,4 +101,11 @@ func (s *Storage) openRangedParquet(ctx context.Context, fi manifest.FileInfo, c
 	metrics.S3GetsPerOpen.Observe(float64(phased.OpenGets()))
 	phased.SetPhase(s3reader.PhasePage)
 	return f, nil
+}
+
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
