@@ -1,6 +1,12 @@
 # Parquet compression research — PR 3 pre-implementation review
 
-**Status: awaiting review.** Research for the 10 items in `parquet-compression-roadmap.md`,
+**Status: REVIEWED & APPROVED (2026-06-10)** — with one adjustment: **BROTLI is skipped
+for now** (zstd `SpeedBestCompression` is judged sufficient); it stays in this doc as a
+potential future improvement (−15% measured on the test corpus) to revisit if cold-archive
+size becomes a cost driver. Approved order: tags (delta+dict) → trap fixes → sorting →
+L2+ row groups, every step behind the pyarrow+duckdb readback CI gate + size/query benchmarks.
+
+ Research for the 10 items in `parquet-compression-roadmap.md`,
 done three ways and cross-checked: (A) parquet-go **v0.29.0 module source audit** (file:line
 cites), (B) **empirical portability harness** — real files written via parquet-go on this
 machine, read back with **pyarrow 24.0.0 AND duckdb 1.5.3**, row-level equality proven both
@@ -74,10 +80,9 @@ PageIndex: present on 100% of column chunks in **all** files (no flag needed).
    page-aggregate helpers ×2 modules), then the sort + SortingColumns metadata, parity suite
    green, then measure.
 3. **Item 3 (L2+ row groups)** — config plumb, measure on compacted files.
-4. **Item 10a (BROTLI on L2+/archives)** — behind the existing per-level compression schedule;
-   gate on consumer-tool list approval.
-5. **Item 9-replacement (optional)**: real zstd-19 via a gozstd-backed `compress.Codec`
-   (standard frames, cgo) — only if BROTLI is rejected or the cgo dependency is acceptable.
+4. ~~Item 10a (BROTLI)~~ — **SKIPPED per review**: zstd is enough for now. Parked here as a
+   potential future improvement (measured −15% vs zstd-best; both target readers fine).
+5. Item 9-replacement (gozstd cgo for real 19): parked — same reasoning, zstd ceiling accepted.
 6. Items 4/6/7: no write-side work. Item 8: parked pending product decision.
 
 **Every step ships with the multi-engine readability gate** (pyarrow + duckdb readback — the

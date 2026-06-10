@@ -1,6 +1,21 @@
 # S3 read-path optimization research — PR 2 pre-implementation review
 
-**Status: awaiting review.** Deep research for the S3-scan track, three angles, all
+**Status: REVIEWED & APPROVED (2026-06-10)** — with three adjustments:
+1. **Design philosophy is ClickHouse-first.** Loki/Tempo findings are used ONLY where they are
+   neutral library facts (parquet-go options, cache-section hooks on a dependency we already
+   pin) — their architectural patterns are NOT design references; CH's proven S3 machinery
+   (memory-budgeted admission, plan-then-fetch, stage pipelines, adaptive timeouts) is.
+2. **Per-signal tunability**: logs LH and traces LH have different traffic patterns — every
+   knob introduced here (read buffer, read-ahead window, coalesce gap, hedge delay, prefetch
+   budget) must be configurable per signal (the chart already renders per-signal config
+   overrides), with defaults tuned per module from the benchmarks.
+3. **S3 Express One Zone for the metadata tier: approved as a CONFIGURABLE choice integrated
+   with the config profiles** — never hardcoded. max-durability → metadata on multi-AZ
+   standard S3 (default); max-performance → Express One Zone directory bucket via
+   BucketRouterFunc; balanced → standard S3. Documented trade-off (1-AZ durability acceptable
+   because bundles are footer-rebuildable) surfaces in the profile docs.
+
+ Deep research for the S3-scan track, three angles, all
 source-verified (file:line / URL cites in the agents' transcripts): (A) **ClickHouse**
 object-storage machinery from master source, (B) the **Go/observability neighbors** —
 Tempo vParquet4 (same domain, same parquet library!), Loki, Quickwit, DataFusion/arrow-rs,
