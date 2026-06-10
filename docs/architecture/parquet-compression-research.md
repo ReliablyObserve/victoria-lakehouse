@@ -90,7 +90,13 @@ PageIndex: present on 100% of column chunks in **all** files (no flag needed).
 
 **Every step ships with the multi-engine readability gate** (pyarrow + duckdb readback — the
 harness from this research becomes `scripts/ci/` + a CI job) and before/after size + query
-benchmarks on real e2e data.
+benchmarks on real e2e data. **SHIPPED (step 4 PR):** `scripts/ci/parquet-readback/`
+(`gen/main.go` writes 5k-row logs+traces files with the REAL `internal/schema` structs and
+the REAL writer options — zstd best, `MaxRowsPerRowGroup`, split-block blooms, `_trace_idx`
+footer — plus a writer-truth manifest; `verify.py` proves aggregates, `EXCEPT ALL`
+row-equality both directions, the delta/dict encodings, and 100% PageIndex coverage in BOTH
+engines) + the `parquet-readback` CI job. 86 checks; the encoding expectations are derived
+from the live struct tags via reflection so schema changes propagate automatically.
 
 ## Measured: step 1 (tags) on REAL stack data — 2026-06-10
 
@@ -116,3 +122,32 @@ compression delta expected**. Verified with the same A/B harness, same 10 real f
 the stacked branch (tags + trap fixes): **−2.2% / −2.4% — identical to step 1**, confirming
 zero encoding regression. The compression payoff of step 2 arrives indirectly: it unblocks
 step 3 (the (stream_id, timestamp) sort), which is the expected 30–50% item.
+
+## Measured: step 4 (L2+ row groups) on REAL L2 data — 2026-06-10
+
+`RowGroupSizeByOutputLevel` landed ahead of step 3 (sorting) — default `[10000, 10000,
+20000]`: L0/L1 outputs keep the historical 10k rows/group, L2+ rollups double to 20k.
+Methodology = the same `scripts/bench/compression_ab` protocol: the **4 largest real
+compacted-L2 log files** were pulled from the live e2e MinIO (`obs-archive`,
+`0/0/logs/dt=*/hour=*/compacted-L2-*.parquet`, 122–123k rows each, **490,187 rows total**),
+their rows decoded, and the **identical rows re-encoded at zstd-best** with only the
+row-group size varied (10000 vs 20000; production blooms + tags in both arms):
+
+| metric | RG=10000 (current) | RG=20000 (2×) | delta |
+|---|--:|--:|--:|
+| bytes (4 files) | 94,972,408 | 94,834,273 | **−0.15%** |
+| row groups | 52 | 28 | **−46%** |
+| total pages | 3,103 | 2,542 | **−18%** |
+| pages per column chunk | 2.4 | 3.6 | +1.2 |
+
+Honest read: the **byte** win is small (−0.15%) on this body-dominated corpus — same story
+as step 1; zstd-best already erases most of the inter-row-group redundancy at these sizes.
+The structural wins are metadata-side: half the row-group footer entries and per-group
+dictionaries, 18% fewer page headers, and half the offset-index/manifest entries per file.
+Read-path implications for PR 2's page skipping: pages get **fewer and larger** (total
+pages −18%, pages per chunk 2.4→3.6 since each chunk now spans 2× rows), so page-level
+pruning granularity coarsens modestly while row-group-level pruning granularity halves —
+acceptable on L2+ where queries are scan-heavy; L0/L1 (the pruning-sensitive hot tail)
+deliberately keep the 10k layout. The 2× layout also gives step 3's sorted runs twice the
+room per dictionary/RLE run, so this number should be re-measured (same harness) once
+sorting lands — measured here on steps-1+2 (unsorted) data.
