@@ -108,3 +108,11 @@ high-entropy `body` column, which tags deliberately don't touch. The dict/delta 
 concentrate in the metadata-ish columns (they also shrink dictionaries/page headers and speed
 predicate decode). The big prize remains **item 1 (sorting)** — the same A/B harness will
 measure it next, on the same real files.
+
+## Measured: step 2 (trap fixes) — no-regression verification — 2026-06-10
+
+Step 2 is correctness-only (sort-gating traps + two bonus page-bounds bugs): **no
+compression delta expected**. Verified with the same A/B harness, same 10 real files, on
+the stacked branch (tags + trap fixes): **−2.2% / −2.4% — identical to step 1**, confirming
+zero encoding regression. The compression payoff of step 2 arrives indirectly: it unblocks
+step 3 (the (stream_id, timestamp) sort), which is the expected 30–50% item.
