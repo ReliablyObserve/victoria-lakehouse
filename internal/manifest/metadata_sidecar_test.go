@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 )
 
@@ -263,5 +264,74 @@ func TestEnrichFromProvider_FullyCoveredNoUncovered(t *testing.T) {
 	n, uncovered := m.EnrichFromProvider(prov)
 	if n != 2 || len(uncovered) != 0 {
 		t.Fatalf("enriched=%d uncovered=%v, want 2 / [] (bundle covers all → no sidecar fallback)", n, uncovered)
+	}
+}
+
+// TestRefresh_PreservesEveryEnrichmentField is the reflection-based regression
+// guard for the refresh merge: a FULLY-populated FileInfo must survive an S3-list
+// refresh with EVERY field intact. The previous field-by-field preserve list
+// silently dropped any field someone forgot to add (LabelAggregates, added by
+// PERF-2 after the list was written, was wiped on every 30s refresh — killing the
+// count-pushdown fast path). Reflection means a NEW FileInfo field added without
+// thought fails this test instead of silently regressing.
+func TestRefresh_PreservesEveryEnrichmentField(t *testing.T) {
+	m := New("bucket", "logs/")
+	full := FileInfo{
+		Key:               "logs/dt=2026-06-10/hour=10/a.parquet",
+		Bucket:            "bucket",
+		Size:              1234,
+		RowCount:          42,
+		MinTimeNs:         100,
+		MaxTimeNs:         200,
+		RawBytes:          9999,
+		SchemaFingerprint: "sf-1",
+		CompactionLevel:   2,
+		StorageClass:      "STANDARD",
+		Labels:            map[string][]string{"service.name": {"a", "b"}},
+		LabelAggregates:   map[string]map[string]int64{"service.name": {"a": 30, "b": 12}},
+		ColumnStats:       map[string]ColumnMinMax{},
+	}
+	// Fill any remaining zero-valued exported fields with non-zero values via
+	// reflection where possible, so new fields are exercised automatically.
+	rv := reflect.ValueOf(&full).Elem()
+	for i := 0; i < rv.NumField(); i++ {
+		f := rv.Field(i)
+		if !f.CanSet() || !f.IsZero() {
+			continue
+		}
+		switch f.Kind() {
+		case reflect.String:
+			f.SetString("x")
+		case reflect.Int, reflect.Int32, reflect.Int64:
+			f.SetInt(7)
+		case reflect.Uint32, reflect.Uint64:
+			f.SetUint(7)
+		case reflect.Bool:
+			f.SetBool(true)
+		}
+	}
+	m.AddFile("dt=2026-06-10/hour=10", full)
+
+	// Simulate the refresh merge: a bare list-derived entry for the same key.
+	refreshed := map[string][]FileInfo{
+		"dt=2026-06-10/hour=10": {{Key: full.Key, Bucket: "bucket", Size: 1234}},
+	}
+	m.mu.Lock()
+	m.mergeRefreshedFilesLocked(refreshed)
+	m.files = refreshed
+	m.mu.Unlock()
+
+	got := m.FilesForPartition("dt=2026-06-10/hour=10")
+	if len(got) != 1 {
+		t.Fatalf("files = %d, want 1", len(got))
+	}
+	gv := reflect.ValueOf(got[0])
+	fv := reflect.ValueOf(full)
+	for i := 0; i < gv.NumField(); i++ {
+		name := gv.Type().Field(i).Name
+		if !reflect.DeepEqual(gv.Field(i).Interface(), fv.Field(i).Interface()) {
+			t.Errorf("refresh dropped/changed FileInfo.%s: got %v, want %v",
+				name, gv.Field(i).Interface(), fv.Field(i).Interface())
+		}
 	}
 }
