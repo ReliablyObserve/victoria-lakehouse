@@ -3,8 +3,6 @@ package manifest
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"strings"
 	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
@@ -73,45 +71,6 @@ func (fm FileMeta) ApplyTo(fi *FileInfo) {
 	if fi.Labels == nil && fm.Labels != nil {
 		fi.Labels = fm.Labels
 	}
-}
-
-func (m *Manifest) WritePartitionSidecar(ctx context.Context, client *s3.Client, partition string) error {
-	m.mu.RLock()
-	pFiles := m.files[partition]
-	m.mu.RUnlock()
-
-	if len(pFiles) == 0 {
-		return nil
-	}
-
-	sc := &FileMetaSidecar{Files: make(map[string]FileMeta, len(pFiles))}
-	for _, fi := range pFiles {
-		if fi.RowCount > 0 {
-			sc.Files[fi.Key] = FileInfoToMeta(fi)
-		}
-	}
-
-	if len(sc.Files) == 0 {
-		return nil
-	}
-
-	data, err := MarshalFileMetaSidecar(sc)
-	if err != nil {
-		return fmt.Errorf("marshal partition meta: %w", err)
-	}
-
-	key := MetadataSidecarKey(m.prefix, partition)
-	_, err = client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(m.bucket),
-		Key:         aws.String(key),
-		Body:        strings.NewReader(string(data)),
-		ContentType: aws.String("application/json"),
-	})
-	if err != nil {
-		return fmt.Errorf("put sidecar %s: %w", key, err)
-	}
-
-	return nil
 }
 
 // FileMetaProvider supplies per-file metadata from an in-RAM source (the pmeta

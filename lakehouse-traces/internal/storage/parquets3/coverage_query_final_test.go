@@ -1390,12 +1390,12 @@ func TestCovFinal_RunQuery_HotBoundarySuppression(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 12. StartWriter — flush hook and cache callback paths
+// 12. StartWriter — flush and cache callback paths
 // ---------------------------------------------------------------------------
 
-// TestCovFinal_StartWriter_FlushHook exercises the StartWriter flush hook
-// path that builds bloom index entries.
-func TestCovFinal_StartWriter_FlushHook(t *testing.T) {
+// TestCovFinal_StartWriter_FlushPath exercises the StartWriter background
+// flush loop end to end on the traces write path.
+func TestCovFinal_StartWriter_FlushPath(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))

@@ -255,7 +255,6 @@ func New(cfg *config.Config) (*Storage, error) {
 	catalog := newCatalogStore(cfg.Pmeta, prefix)
 	if catalog != nil && bw != nil {
 		bw.catalogObserver = &catalogObserver{store: catalog, sketch: sketchSet(cfg.Pmeta.AlwaysSketchFields), pool: pool}
-		bw.retireSidecars = cfg.Pmeta.RetireSidecarWrites // facet replaces the sidecar
 	}
 
 	return &Storage{
@@ -290,40 +289,6 @@ func (s *Storage) StartWriter() {
 	if s.writer == nil {
 		return
 	}
-	pool := s.pool
-	retireBloom := s.cfg != nil && s.cfg.Pmeta.Enabled && s.cfg.Pmeta.RetireSidecarWrites
-	s.writer.SetFlushHook(func(key string, columnValues map[string][]string) {
-		if len(columnValues) == 0 {
-			return
-		}
-		if retireBloom {
-			// Under retire the pmeta bloom facet is fed by the catalogObserver with
-			// the SAME uncapped values, the pre-filters consult it first, and
-			// PersistBloomIndex is a no-op — feeding the legacy in-RAM bloomIdx and
-			// the per-file .bloom would be duplicate RAM/CPU for the same state.
-			return
-		}
-		cols := make(map[string]*bloomindex.Filter, len(columnValues))
-		for col, vals := range columnValues {
-			if len(vals) == 0 {
-				continue
-			}
-			f := bloomindex.NewFilter(len(vals), 0.01)
-			for _, v := range vals {
-				f.Add(v)
-			}
-			cols[col] = f
-		}
-		if len(cols) > 0 {
-			s.bloomIdx.AddColumns(key, cols)
-		}
-
-		// Also write per-file bloom sidecar for file-level query skipping.
-		if pool != nil {
-			obs := &storageBloomObserver{pool: pool}
-			go obs.writeFileBloom(context.Background(), key, columnValues)
-		}
-	})
 	if s.smartCache != nil {
 		s.writer.SetFlushCacheCallback(func(fileKey string, data []byte) {
 			cacheOnFlush(s.smartCache, fileKey, data)
@@ -487,15 +452,6 @@ func (s *Storage) Close() error {
 			logger.Warnf("failed to persist label index to S3: %s", err)
 		} else {
 			logger.Infof("persisted label index to S3; labels=%d", s.labelIndex.Len())
-		}
-	}
-	if s.bloomIdx != nil && s.bloomIdx.Len() > 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := s.PersistBloomIndex(ctx); err != nil {
-			logger.Warnf("failed to persist bloom index: %s", err)
-		} else {
-			logger.Infof("persisted bloom index; entries=%d", s.bloomIdx.Len())
 		}
 	}
 	return nil
@@ -1159,11 +1115,6 @@ func (s *Storage) RefreshManifest(ctx context.Context) error {
 	s.retuneFooterCache()
 	s.loadBloomIndex(ctx)
 	s.loadLabelIndexFromS3(ctx)
-	if s.cfg.InsertEnabled() && s.bloomIdx.Len() > 0 {
-		if err := s.PersistBloomIndex(ctx); err != nil {
-			logger.Warnf("bloom index persist failed: %s", err)
-		}
-	}
 	// Persist label index to S3 alongside the bloom index. The local-disk
 	// persister keeps doing its job on graceful shutdown; this gives us
 	// cluster-wide recovery for pods that come up on a different node
@@ -1291,144 +1242,6 @@ func (s *Storage) PersistLabelIndexToS3(ctx context.Context) error {
 		return fmt.Errorf("marshal label index: %w", err)
 	}
 	key := s.labelIndexKey()
-	return s.pool.Upload(ctx, key, data)
-}
-
-// BackfillBloomIndex scans existing parquet files that aren't yet in the bloom
-// index and builds bloom filters for them. Runs in background at startup.
-func (s *Storage) BackfillBloomIndex(ctx context.Context) {
-	if s.bloomIdx == nil || s.cfg.Mode != config.ModeTraces {
-		return
-	}
-	if s.cfg.Pmeta.Enabled && s.cfg.Pmeta.RetireSidecarWrites {
-		// Under retire the bloom state lives in the bundle-warmed facet and the
-		// query pre-filters consult it first; re-downloading + re-scanning every
-		// file on EVERY restart to rebuild the legacy in-RAM index (which can no
-		// longer persist — PersistBloomIndex is a no-op) is pure waste.
-		return
-	}
-
-	files := s.manifest.GetFilesForRange(0, 1<<62)
-	if len(files) == 0 {
-		return
-	}
-
-	var bloomColumns []string
-	for _, col := range s.registry.PromotedColumns() {
-		if col.HasBloom {
-			bloomColumns = append(bloomColumns, col.ParquetColumn)
-		}
-	}
-
-	var added int
-	for _, fi := range files {
-		if ctx.Err() != nil {
-			break
-		}
-		if s.bloomIdx.Has(fi.Key) {
-			continue
-		}
-
-		data, err := s.getFileData(ctx, fi.Key, fi.Size)
-		if err != nil {
-			continue
-		}
-
-		f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
-		if err != nil {
-			continue
-		}
-
-		// Find column indices for all bloom-enabled columns
-		type colRef struct {
-			name string
-			idx  int
-		}
-		var cols []colRef
-		for _, bc := range bloomColumns {
-			idx := findColumnIndex(f.Root(), bc)
-			if idx >= 0 {
-				cols = append(cols, colRef{name: bc, idx: idx})
-			}
-		}
-
-		if len(cols) == 0 {
-			// No bloom columns found — mark as indexed with empty filters
-			empty := make(map[string]*bloomindex.Filter)
-			for _, bc := range bloomColumns {
-				empty[bc] = bloomindex.NewFilter(1, 0.01)
-			}
-			s.bloomIdx.AddColumns(fi.Key, empty)
-			added++
-			continue
-		}
-
-		// Extract distinct values per column
-		perCol := make(map[string]map[string]struct{}, len(cols))
-		for _, c := range cols {
-			perCol[c.name] = make(map[string]struct{})
-		}
-
-		for _, rg := range f.RowGroups() {
-			rows := rg.Rows()
-			buf := make([]parquet.Row, 256)
-			for {
-				n, err := rows.ReadRows(buf)
-				for i := 0; i < n; i++ {
-					for _, c := range cols {
-						if c.idx < len(buf[i]) {
-							v := valueToString(buf[i][c.idx])
-							if v != "" {
-								perCol[c.name][v] = struct{}{}
-							}
-						}
-					}
-				}
-				if err != nil {
-					break
-				}
-			}
-			_ = rows.Close()
-		}
-
-		// Build bloom filters per column
-		filters := make(map[string]*bloomindex.Filter, len(cols))
-		for _, c := range cols {
-			vals := perCol[c.name]
-			if len(vals) == 0 {
-				filters[c.name] = bloomindex.NewFilter(1, 0.01)
-				continue
-			}
-			bf := bloomindex.NewFilter(len(vals), 0.01)
-			for v := range vals {
-				bf.Add(v)
-			}
-			filters[c.name] = bf
-		}
-		s.bloomIdx.AddColumns(fi.Key, filters)
-		added++
-	}
-
-	if added > 0 {
-		logger.Infof("bloom index backfill complete; added=%d, total=%d", added, s.bloomIdx.Len())
-		if err := s.PersistBloomIndex(ctx); err != nil {
-			logger.Warnf("bloom index persist after backfill failed: %s", err)
-		}
-	}
-}
-
-func (s *Storage) PersistBloomIndex(ctx context.Context) error {
-	if s.cfg.Pmeta.Enabled && s.cfg.Pmeta.RetireSidecarWrites {
-		// pmeta retire-sidecars: the bloom state is persisted in the partition
-		// bundles (persistDirty at flush) and bundle-warmed at startup; the query
-		// pre-filters consult the facet first. _bloom.bin is no longer written.
-		return nil
-	}
-	if s.bloomIdx == nil || s.bloomIdx.Len() == 0 || s.pool == nil {
-		return nil
-	}
-	data := s.bloomIdx.Marshal()
-	key := s.bloomIndexKey()
 	return s.pool.Upload(ctx, key, data)
 }
 

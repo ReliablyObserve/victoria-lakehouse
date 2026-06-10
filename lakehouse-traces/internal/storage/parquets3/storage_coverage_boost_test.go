@@ -228,7 +228,7 @@ func TestCoverageBoost_Close_MinimalStorage(t *testing.T) {
 func TestCoverageBoost_Close_WithBloomIndex(t *testing.T) {
 	s := testStorage()
 	s.bloomIdx = bloomindex.New()
-	// bloomIdx is empty so PersistBloomIndex is a no-op
+	// bloomIdx is the read-only legacy fallback; Close must tolerate it being set.
 	if err := s.Close(); err != nil {
 		t.Errorf("Close() error: %v", err)
 	}
@@ -350,33 +350,6 @@ func TestCoverageBoost_MustAddTraceRows(t *testing.T) {
 
 	if s.writer.BufferedRows() != 2 {
 		t.Errorf("expected 2 buffered rows, got %d", s.writer.BufferedRows())
-	}
-}
-
-// ---------------------------------------------------------------------------
-// SetFlushHook() (writer.go, 0% coverage)
-// ---------------------------------------------------------------------------
-
-func TestCoverageBoost_SetFlushHook(t *testing.T) {
-	bw := &BatchWriter{}
-	if bw.onFlush != nil {
-		t.Fatal("expected nil onFlush initially")
-	}
-
-	var hookCalled bool
-	hook := FlushHook(func(key string, columnValues map[string][]string) {
-		hookCalled = true
-	})
-
-	bw.SetFlushHook(hook)
-	if bw.onFlush == nil {
-		t.Fatal("expected onFlush to be set")
-	}
-
-	// Invoke to verify it's the right hook
-	bw.onFlush("test-key", map[string][]string{"col": {"v1"}})
-	if !hookCalled {
-		t.Fatal("expected flush hook to be invoked")
 	}
 }
 

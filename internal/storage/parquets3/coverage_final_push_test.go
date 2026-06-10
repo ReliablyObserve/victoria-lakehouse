@@ -707,9 +707,6 @@ func TestNew_LogsMode(t *testing.T) {
 	if s.bloomCache == nil {
 		t.Error("expected non-nil bloomCache for RoleAll")
 	}
-	if s.bloomObserver == nil {
-		t.Error("expected non-nil bloomObserver when writer exists")
-	}
 }
 
 func TestNew_TracesMode(t *testing.T) {
@@ -766,9 +763,6 @@ func TestNew_SelectOnly(t *testing.T) {
 
 	if s.writer != nil {
 		t.Error("expected nil writer for select-only role")
-	}
-	if s.bloomObserver != nil {
-		t.Error("expected nil bloomObserver without writer")
 	}
 	if s.smartCache == nil {
 		t.Error("expected non-nil smartCache for select role")

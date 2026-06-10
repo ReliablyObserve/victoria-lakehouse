@@ -25,186 +25,6 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Test: writeFileBloom via storageBloomObserver
-// ---------------------------------------------------------------------------
-
-func TestInteg_writeFileBloom_S3Upload(t *testing.T) {
-	mock := newMockS3Server()
-	defer mock.close()
-
-	pool := testPool(t, mock.url())
-	m := manifest.New("test-bucket", "logs/")
-
-	observer := &storageBloomObserver{
-		bloom:    bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01),
-		pool:     pool,
-		manifest: m,
-	}
-
-	columnValues := map[string][]string{
-		"service.name": {"api-gw", "worker"},
-		"trace_id":     {"abc-123", "xyz-789"},
-	}
-
-	fileKey := "logs/dt=2026-05-10/hour=14/batch001.parquet"
-	observer.writeFileBloom(context.Background(), fileKey, columnValues)
-
-	// Verify the .bloom sidecar was uploaded
-	mock.mu.RLock()
-	_, exists := mock.files[fileKey+".bloom"]
-	mock.mu.RUnlock()
-
-	if !exists {
-		t.Error("bloom sidecar should be uploaded to S3")
-	}
-}
-
-func TestInteg_writeFileBloom_EmptyValues(t *testing.T) {
-	mock := newMockS3Server()
-	defer mock.close()
-
-	pool := testPool(t, mock.url())
-	observer := &storageBloomObserver{
-		bloom: bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01),
-		pool:  pool,
-	}
-
-	// Empty column values should not upload
-	observer.writeFileBloom(context.Background(), "test.parquet", map[string][]string{})
-
-	mock.mu.RLock()
-	_, exists := mock.files["test.parquet.bloom"]
-	mock.mu.RUnlock()
-
-	if exists {
-		t.Error("bloom sidecar should not be uploaded for empty values")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Test: OnFileFlush
-// ---------------------------------------------------------------------------
-
-func TestInteg_OnFileFlush(t *testing.T) {
-	mock := newMockS3Server()
-	defer mock.close()
-
-	pool := testPool(t, mock.url())
-	partIdx := bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01)
-	m := manifest.New("test-bucket", "logs/")
-
-	observer := &storageBloomObserver{
-		bloom:    partIdx,
-		pool:     pool,
-		manifest: m,
-	}
-
-	columnValues := map[string][]string{
-		"service.name": {"api-gw"},
-		"trace_id":     {"trace-001"},
-	}
-
-	observer.OnFileFlush("dt=2026-05-10/hour=14", "logs/dt=2026-05-10/hour=14/a.parquet", columnValues)
-
-	// Verify partition bloom was updated
-	dirty := partIdx.DirtyPartitions()
-	if len(dirty) == 0 {
-		t.Error("partition should be marked dirty after OnFileFlush")
-	}
-
-	// Wait a moment for the async writeFileBloom goroutine
-	time.Sleep(100 * time.Millisecond)
-
-	// Verify file bloom sidecar was uploaded
-	mock.mu.RLock()
-	_, exists := mock.files["logs/dt=2026-05-10/hour=14/a.parquet.bloom"]
-	mock.mu.RUnlock()
-	if !exists {
-		t.Error("file bloom sidecar should be uploaded via OnFileFlush")
-	}
-}
-
-func TestInteg_OnFileFlush_NilBloom(t *testing.T) {
-	observer := &storageBloomObserver{bloom: nil}
-	// Should not panic
-	observer.OnFileFlush("p", "k", map[string][]string{"a": {"b"}})
-}
-
-func TestInteg_OnFileFlush_EmptyValues(t *testing.T) {
-	observer := &storageBloomObserver{
-		bloom: bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01),
-	}
-	// Should not panic or add anything
-	observer.OnFileFlush("p", "k", nil)
-}
-
-// ---------------------------------------------------------------------------
-// Test: PersistDirty
-// ---------------------------------------------------------------------------
-
-func TestInteg_PersistDirty_FullPath(t *testing.T) {
-	mock := newMockS3Server()
-	defer mock.close()
-
-	pool := testPool(t, mock.url())
-	partIdx := bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01)
-	m := manifest.New("test-bucket", "logs/")
-
-	observer := &storageBloomObserver{
-		bloom:    partIdx,
-		pool:     pool,
-		manifest: m,
-	}
-
-	// Add files to make partition dirty
-	partIdx.AddFile("dt=2026-05-10/hour=14", "a.parquet", map[string][]string{
-		"service.name": {"api-gw"},
-	})
-
-	dirty := partIdx.DirtyPartitions()
-	if len(dirty) == 0 {
-		t.Fatal("partition should be dirty")
-	}
-
-	observer.PersistDirty(context.Background(), "logs/")
-
-	// Verify bloom was uploaded to S3
-	mock.mu.RLock()
-	_, exists := mock.files["logs/dt=2026-05-10/hour=14/_bloom.bin"]
-	mock.mu.RUnlock()
-	if !exists {
-		t.Error("bloom should be persisted to S3")
-	}
-
-	// Verify partition is no longer dirty
-	dirty = partIdx.DirtyPartitions()
-	if len(dirty) != 0 {
-		t.Errorf("partition should be cleared after PersistDirty, got %d dirty", len(dirty))
-	}
-
-	// Verify manifest bloom metadata was set
-	meta := m.GetBloomMeta("dt=2026-05-10/hour=14")
-	if !meta.BloomAvailable {
-		t.Error("manifest should show bloom as available")
-	}
-}
-
-func TestInteg_PersistDirty_NilBloom(t *testing.T) {
-	observer := &storageBloomObserver{bloom: nil}
-	// Should not panic
-	observer.PersistDirty(context.Background(), "logs/")
-}
-
-func TestInteg_PersistDirty_NilPool(t *testing.T) {
-	observer := &storageBloomObserver{
-		bloom: bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01),
-		pool:  nil,
-	}
-	// Should not panic
-	observer.PersistDirty(context.Background(), "logs/")
-}
-
-// ---------------------------------------------------------------------------
 // Test: bloomS3Loader
 // ---------------------------------------------------------------------------
 
@@ -2347,63 +2167,6 @@ func TestInteg_readRowGroup_TracesMode(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: PersistDirty with upload error (unreachable server)
-// ---------------------------------------------------------------------------
-
-func TestInteg_PersistDirty_UploadError(t *testing.T) {
-	// Create pool pointing to unreachable server
-	pool := testPool(t, "http://127.0.0.1:1")
-	partIdx := bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01)
-	m := manifest.New("test-bucket", "logs/")
-
-	observer := &storageBloomObserver{
-		bloom:    partIdx,
-		pool:     pool,
-		manifest: m,
-	}
-
-	partIdx.AddFile("dt=2026-05-10/hour=14", "a.parquet", map[string][]string{
-		"service.name": {"api-gw"},
-	})
-
-	// Should not panic; errors are logged
-	observer.PersistDirty(context.Background(), "logs/")
-
-	// Partition should still be dirty (upload failed)
-	dirty := partIdx.DirtyPartitions()
-	if len(dirty) == 0 {
-		t.Error("partition should remain dirty after failed upload")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Test: writeFileBloom with nil index (no values produce bloom)
-// ---------------------------------------------------------------------------
-
-func TestInteg_writeFileBloom_SingleValue(t *testing.T) {
-	mock := newMockS3Server()
-	defer mock.close()
-
-	pool := testPool(t, mock.url())
-	observer := &storageBloomObserver{
-		bloom: bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01),
-		pool:  pool,
-	}
-
-	// Single value
-	observer.writeFileBloom(context.Background(), "test.parquet", map[string][]string{
-		"service.name": {"api-gw"},
-	})
-
-	mock.mu.RLock()
-	_, exists := mock.files["test.parquet.bloom"]
-	mock.mu.RUnlock()
-	if !exists {
-		t.Error("bloom sidecar should be uploaded for single value")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Test: prefetchFooters with cancelled context
 // ---------------------------------------------------------------------------
 
@@ -4134,14 +3897,16 @@ func TestInteg_RunQuery_PreFilterFiltersAll(t *testing.T) {
 	key := "logs/dt=2026-05-10/hour=14/prefilter-all.parquet"
 	registerFileInMockS3(t, s, mock, key, data, now)
 
-	// Add bloom index that will filter out the file
-	s.bloomObserver = &storageBloomObserver{
-		bloom: bloomindex.NewPartitionedIndex(bloomindex.GranularityHour, 0.01),
-		pool:  nil,
-	}
-	s.bloomObserver.bloom.AddFile("dt=2026-05-10/hour=14", key, map[string][]string{
-		"service.name": {"api-gw"},
-	})
+	// Seed a partition bloom that will filter out the file: persist a
+	// _bloom.bin to the mock S3 and wire the bloomCache read path (the
+	// legacy in-process observer is gone; _bloom.bin is the OR-path
+	// fallback the query pre-filter still consults).
+	idx := bloomindex.New()
+	bf := bloomindex.NewFilter(100, 0.01)
+	bf.Add("api-gw")
+	idx.AddColumns(key, map[string]*bloomindex.Filter{"service.name": bf})
+	mock.putFile("logs/dt=2026-05-10/hour=14/_bloom.bin", idx.Marshal())
+	s.bloomCache = bloomindex.NewBloomCache(1<<20, bloomS3Loader(s.pool, "logs/"))
 
 	startNs := now.Add(-time.Minute).UnixNano()
 	endNs := now.Add(time.Minute).UnixNano()

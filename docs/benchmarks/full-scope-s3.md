@@ -52,3 +52,28 @@ makes it ~26ms (like limit100). Re-run after rebuilding the LH image with the fi
 
 The script writes a CSV (`/tmp/full-scope-s3-bench.csv`) and a markdown summary with
 p50 + LH/VL + LH/CH ratios, flagging `LH≫VL` (>3×) and `CH-wins` (>2×) cells.
+
+## Post-pmeta full switch (2026-06-10, no injected latency, 15 iters)
+
+Run after the consolidation completed (#127 + #130 + #131: facets serve all reads,
+legacy sidecars retired, audit hardening in). Same harness, same stack.
+
+| scenario | LH p50 | VL p50 | CH p50 | LH/VL | LH/CH |
+|---|--:|--:|--:|--:|--:|
+| count_1h | 32 | 27 | 932 | 1.2x | 0.03x |
+| count_24h | 137 | 143 | 931 | **1.0x** | 0.15x |
+| field_names | 96 | 260 | — | **0.4x** | — |
+| field_values_limit100 | 24 | 248 | — | **0.1x** | — |
+| field_values_nolimit | 23 | 241 | 921 | **0.1x** | 0.03x |
+| filtered_count_1h | 30 | 29 | 944 | **1.0x** | 0.03x |
+| fulltext_scan_1h | 34 | 32 | 942 | **1.0x** | 0.04x |
+| groupby_service_1h | 30 | 31 | 935 | **1.0x** | 0.03x |
+
+Takeaways vs the pre-pmeta matrix above:
+- **Every "LH≫VL" flag is gone.** Cold LH is at parity with HOT in-memory VL on every
+  count/scan/groupby scenario, and **2.7–10× faster on the metadata queries**
+  (field_names 0.4x, field_values 0.1x — the catalog serving from RAM).
+- **ClickHouse-over-S3 is 30–40× slower than cold LH across the board** on this stack.
+- The remaining S3-scan optimization plan (count-only hint, deep machinery) is now
+  purely about wider windows / higher latency environments, not about closing VL gaps
+  at this scale.

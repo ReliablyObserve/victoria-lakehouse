@@ -26,10 +26,6 @@ import (
 
 // BatchWriter buffers incoming rows per partition and flushes them as
 // Parquet files to S3 on a configurable interval or size threshold.
-// FlushHook is called after a successful parquet file flush with the
-// file key and per-column distinct values for bloom indexing.
-type FlushHook func(key string, columnValues map[string][]string)
-
 // StatsCallback is called after each successful file flush with the
 // compressed size, raw size, row count, and storage class. The flush
 // invokes the callback once per distinct tenant in the flushed batch,
@@ -73,9 +69,7 @@ type BatchWriter struct {
 	totalRows  atomic.Int64
 	totalBytes atomic.Int64
 
-	onFlush         FlushHook
 	catalogObserver *catalogObserver
-	retireSidecars  bool // pmeta retire-sidecars: skip legacy sidecar writes
 	statsCallback   StatsCallback
 	flushCacheCb    FlushCacheCallback
 	tenantPrefix    TenantPrefixFunc
@@ -106,10 +100,6 @@ func NewBatchWriter(cfg *config.InsertConfig, pool *s3reader.ClientPool,
 func (w *BatchWriter) Start() {
 	w.wg.Add(1)
 	go w.flushLoop()
-}
-
-func (w *BatchWriter) SetFlushHook(hook FlushHook) {
-	w.onFlush = hook
 }
 
 func (w *BatchWriter) SetStatsCallback(cb StatsCallback) {
@@ -337,7 +327,6 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 			return err
 		}
 	}
-	w.writeMetadataSidecarAsync(ctx, partition)
 	return nil
 }
 
@@ -417,7 +406,6 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 			return err
 		}
 	}
-	w.writeMetadataSidecarAsync(ctx, partition)
 	return nil
 }
 
@@ -471,12 +459,6 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 
 	w.totalBytes.Add(int64(len(result.Data)))
 
-	if w.onFlush != nil {
-		// The legacy hook (bloomIdx.AddColumns + per-file .bloom) gets the same
-		// UNCAPPED values — its capped fi.Labels feed had the same false-negative.
-		w.onFlush(key, traceBloomValues)
-	}
-
 	if w.statsCallback != nil {
 		w.statsCallback(accountID, projectID, int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
 	}
@@ -489,19 +471,6 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 		partition, accountID, projectID, len(rows), len(result.Data), fi.CompressionRatio(), key)
 
 	return nil
-}
-
-func (w *BatchWriter) writeMetadataSidecarAsync(ctx context.Context, partition string) {
-	if w.retireSidecars {
-		// pmeta retire-sidecars: facet (warmed from the bundle) + footer fallback
-		// replace the _file_metadata.json sidecar. Reversible via the flag.
-		return
-	}
-	go func() {
-		if err := w.manifest.WritePartitionSidecar(ctx, w.pool.S3Client(), partition); err != nil {
-			logger.Warnf("metadata sidecar write failed; partition=%s err=%v", partition, err)
-		}
-	}()
 }
 
 type flushResult struct {

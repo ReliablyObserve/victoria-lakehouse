@@ -47,6 +47,22 @@ jobs:
             lakehouse-traces/deps/VictoriaTraces
           key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
+  # Guards the binaries-vs-Helm config surface: every yaml-tagged key in
+  # internal/config (shared by the logs AND traces binaries) must be documented
+  # in charts/.../values.yaml AND enumerated in values.schema.json, or
+  # consciously grandfathered in scripts/ci/helm-drift-allowlist.txt.
+  # A new config key without chart coverage FAILS here with instructions.
+  helm-config-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Check Helm config drift
+        run: go run ./scripts/ci/helmdrift
+
   test-logs:
     needs: deps
     runs-on: ubuntu-latest
