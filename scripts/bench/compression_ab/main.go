@@ -112,7 +112,7 @@ func main() {
 		"zstd-default": {Level: zstd.SpeedDefault},
 		"zstd-best":    {Level: zstd.SpeedBestCompression},
 	}
-	var totOrig, totBase, totNew = int64(0), map[string]int64{}, map[string]int64{}
+	var totOrig, totBase, totNew, totSorted = int64(0), map[string]int64{}, map[string]int64{}, map[string]int64{}
 
 	fmt.Printf("%-58s %9s | %22s | %22s\n", "file", "orig", "baseline(def/best)", "tagged(def/best)")
 	for _, k := range keys {
@@ -129,6 +129,14 @@ func main() {
 		if err != nil {
 			die(fmt.Errorf("decode %s: %w", k, err))
 		}
+		sorted := make([]schema.LogRow, len(rows))
+		copy(sorted, rows)
+		sort.Slice(sorted, func(i, j int) bool {
+			if sorted[i].StreamID != sorted[j].StreamID {
+				return sorted[i].StreamID < sorted[j].StreamID
+			}
+			return sorted[i].TimestampUnixNano < sorted[j].TimestampUnixNano
+		})
 		base := make([]baselineLogRow, len(rows))
 		for i, r := range rows {
 			base[i] = toBaseline(r)
@@ -152,6 +160,15 @@ func main() {
 			w2.Close()
 			out["new-"+lname] = int64(b2.Len())
 			totNew[lname] += int64(b2.Len())
+
+			var b3 bytes.Buffer
+			w3 := parquet.NewGenericWriter[schema.LogRow](&b3, parquet.Compression(codec))
+			if _, err := w3.Write(sorted); err != nil {
+				die(err)
+			}
+			w3.Close()
+			out["sorted-"+lname] = int64(b3.Len())
+			totSorted[lname] += int64(b3.Len())
 		}
 		totOrig += sizes[k]
 		short := k
@@ -164,7 +181,9 @@ func main() {
 	fmt.Printf("\nTOTAL across %d real files (orig on-disk: %d bytes)\n", len(keys), totOrig)
 	for _, l := range []string{"zstd-default", "zstd-best"} {
 		d := 100 * float64(totNew[l]-totBase[l]) / float64(totBase[l])
-		fmt.Printf("  %-13s baseline=%9d  tagged=%9d  delta=%+.1f%%\n", l, totBase[l], totNew[l], d)
+		ds := 100 * float64(totSorted[l]-totBase[l]) / float64(totBase[l])
+		fmt.Printf("  %-13s baseline=%9d  tagged=%9d (%+.1f%%)  tagged+sorted=%9d (%+.1f%%)\n",
+			l, totBase[l], totNew[l], d, totSorted[l], ds)
 	}
 }
 

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Compression roadmap: the (stream_id, timestamp) sort is REJECTED on real-data evidence; the A/B harness gains the tooling that proved it.** The roadmap's projected-biggest item (30–50% smaller files from stream-clustered rows) was implemented, passed both modules' full suites including flush↔export parity — and then failed the mandatory real-data measurement: **+17.7% (zstd-default) / +13.1% (zstd-best) LARGER files** across 10 real compacted-L2 files (identical rows, only the order changed). Per-column attribution shows why this corpus punishes stream-clustering: `body` +2.07 MB per 24 MB file (similar log lines arrive in cross-stream time bursts that zstd exploits via adjacency), `trace_id` +0.86 MB (spans of one trace are time-adjacent → shared prefixes), `timestamp` +0.38 MB (globally monotonic deltas compress to almost nothing; stream-sawtooth doesn't). The sort code is reverted (preserved in branch history); the step-2 trap fixes stand on their own as correctness wins. Shipped instead: `scripts/bench/compression_ab` gains a `tagged+sorted` third variant, and the new `scripts/bench/compression_percol` attributes any size delta to individual columns — every future layout experiment gets judged by the same evidence, per the per-PR benchmark protocol. Re-entry condition documented in `docs/architecture/parquet-compression-research.md`: a corpus-dependent sort toggle, only if production-shaped data (heavy per-stream template redundancy) measurably differs.
+
+
 ## [0.83.1] - 2026-06-10
 
 ### Fixed
