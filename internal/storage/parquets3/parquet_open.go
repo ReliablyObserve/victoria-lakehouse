@@ -150,6 +150,13 @@ func (s *Storage) openPlannedParquet(ctx context.Context, fi manifest.FileInfo, 
 	phased := s3reader.NewPhaseReaderAt(raw)
 	effGap, _, _ := s.clampWindowKnobs(fi.Size)
 	view := s3reader.NewPlannedFetchReaderAt(phased, fi.Size, effGap, chargePlannedFetchBytes)
+	// v2 slice-1 levers (opt-in planned path only): span concurrency
+	// min(k, spans) and the per-SPAN cap (spans above it split — CH
+	// bytes_per_read_task scope; the per-plan cap is retired). The gap is
+	// re-priced per plan by armProjectedPlan's gap discipline; effGap only
+	// covers a Fetch that skips pricing (tests).
+	view.SetMaxInFlight(s.cfg.S3.PlannedFetchMaxInflight)
+	view.SetSpanCap(int64(s.cfg.S3.PlannedFetchSpanCapBytes))
 
 	f, err := parquet.OpenFile(view, fi.Size, s.rangedOpenOptions(fi, cachedSchema)...)
 	if err != nil {

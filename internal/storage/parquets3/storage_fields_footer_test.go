@@ -179,7 +179,7 @@ func TestGetFieldNames_ServesOnlyFooterBytes(t *testing.T) {
 	served := mock.bytesServed.Load()
 	rangeReqs := mock.rangeReqs.Load()
 	fullReqs := mock.fullReqs.Load()
-	maxAllowed := int64(numFiles*footerPrefetchSize) + 8192 // slack for HTTP
+	maxAllowed := int64(numFiles)*s.footerPrefetchBytes() + 8192 // slack for HTTP
 
 	t.Logf("served=%d bytes (range=%d, full=%d), %d files x %d bytes = %d full-download total",
 		served, rangeReqs, fullReqs, numFiles, len(data), numFiles*len(data))

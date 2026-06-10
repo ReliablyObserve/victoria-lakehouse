@@ -12,22 +12,34 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
+// The footer prefetch SIZE is per-signal config now — s3.footer_prefetch_bytes,
+// resolved by (*Storage).footerPrefetchBytes() in signal_defaults.go (logs
+// 128KB / traces 640KB defaults; the shared 64KB constant it replaces could
+// never hold a traces L2 footer, whose embedded trace index runs 467-519KB,
+// so those reads always fell back to full downloads). Free functions in this
+// file take the resolved size as a parameter; <= 0 means the per-signal
+// default.
 const (
-	// footerPrefetchSize is the number of bytes to range-read from the end of a file
-	// to extract the parquet footer metadata. Sized to cover the typical L0/L1
-	// parquet footer including row-group metadata and embedded trace-index KV;
-	// the previous 16 KiB undersized for ~30% of recently-written files (observed
-	// footers up to 22 KiB in the e2e stack) which fell back to a second S3
-	// range-read just for trace-id lookup, blowing the trace-by-ID p95 from
-	// sub-second to 5-10 s when the user clicked a derived-field traceID in
-	// Grafana. 64 KiB is still a single round-trip on every modern S3 stack
-	// (Range reads have no per-byte cost penalty up to a few MiB).
-	footerPrefetchSize = 64 * 1024 // 64KB
-
 	// minFileSizeForPrefetch is the minimum file size to attempt footer pre-fetch.
 	// Files smaller than this are downloaded fully, which is faster than two round-trips.
 	minFileSizeForPrefetch = 128 * 1024 // 128KB
 )
+
+// footerPrefetchTail bounds the footer tail read by file size: small files
+// keep the 64KB floor (a 400KB file must not spend a third of its body on
+// a footer probe — pinned by TestGetFieldValues_UsesColumnProjectedRead),
+// while the large compacted files that actually carry oversized footers
+// (traces L2: 467-519KB of trace-index KV on ~24MB objects → clamp 3MB)
+// get the full per-signal prefetch size. Same max(64KB, size/8) clamp
+// family as the coalescing-gap clamps. An under-fetch self-heals:
+// fetchFooterFile issues an exact second range read once the trailer
+// reveals the true footer length.
+func footerPrefetchTail(prefetchBytes, fileSize int64) int64 {
+	if sizeCap := max64(64<<10, fileSize/8); prefetchBytes > sizeCap {
+		return sizeCap
+	}
+	return prefetchBytes
+}
 
 // shouldSkipByFooter performs an S3 range read to fetch only the parquet footer,
 // parses row group metadata, and checks the pushdown filter against each row group.
@@ -46,10 +58,14 @@ func shouldSkipByFooter(
 	queryStr string,
 	registry *schema.Registry,
 	footerCache *FooterCache,
+	prefetchBytes int64,
 ) (bool, error) {
 	// Skip when pool is nil — no S3 access possible.
 	if pool == nil {
 		return false, nil
+	}
+	if prefetchBytes <= 0 {
+		prefetchBytes = defaultFooterPrefetchBytes
 	}
 
 	// Skip when there's no pushdown filter — wildcard queries must scan everything.
@@ -70,8 +86,8 @@ func shouldSkipByFooter(
 		}
 	}
 
-	// Range-read the last 16KB to get the parquet footer.
-	offset := fi.Size - footerPrefetchSize
+	// Range-read the configured tail to get the parquet footer.
+	offset := fi.Size - footerPrefetchTail(prefetchBytes, fi.Size)
 	if offset < 0 {
 		offset = 0
 	}
@@ -141,12 +157,16 @@ func shouldSkipByFooter(
 	return false, nil
 }
 
-// prefetchFooters fetches parquet footers for all given files in parallel using
-// 16KB range reads and populates the footer cache. This ensures subsequent file
-// processing can use range reads instead of full file downloads.
-func prefetchFooters(ctx context.Context, pool *s3reader.ClientPool, files []manifest.FileInfo, footerCache *FooterCache, concurrency int) int {
+// prefetchFooters fetches parquet footers for all given files in parallel
+// using prefetchBytes-sized tail range reads (<= 0 = the per-signal default)
+// and populates the footer cache. This ensures subsequent file processing
+// can use range reads instead of full file downloads.
+func prefetchFooters(ctx context.Context, pool *s3reader.ClientPool, files []manifest.FileInfo, footerCache *FooterCache, concurrency int, prefetchBytes int64) int {
 	if pool == nil || footerCache == nil || len(files) == 0 {
 		return 0
+	}
+	if prefetchBytes <= 0 {
+		prefetchBytes = defaultFooterPrefetchBytes
 	}
 	if concurrency <= 0 {
 		concurrency = 16
@@ -186,7 +206,7 @@ func prefetchFooters(ctx context.Context, pool *s3reader.ClientPool, files []man
 				if ctx.Err() != nil {
 					return
 				}
-				offset := fi.Size - footerPrefetchSize
+				offset := fi.Size - footerPrefetchTail(prefetchBytes, fi.Size)
 				if offset < 0 {
 					offset = 0
 				}

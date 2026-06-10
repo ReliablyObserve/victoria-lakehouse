@@ -13,7 +13,7 @@ func TestShouldSkipByFooter_NoFilter(t *testing.T) {
 	// No pushdown filter (empty query) -- should never skip
 	skip, err := shouldSkipByFooter(context.Background(), nil, manifest.FileInfo{
 		Key: "test.parquet", Size: 10000,
-	}, "", schema.NewRegistry(schema.TracesProfile), nil)
+	}, "", schema.NewRegistry(schema.TracesProfile), nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func TestShouldSkipByFooter_NoFilter(t *testing.T) {
 func TestShouldSkipByFooter_NilPool(t *testing.T) {
 	skip, err := shouldSkipByFooter(context.Background(), nil, manifest.FileInfo{
 		Key: "test.parquet", Size: 100000,
-	}, "service.name:=\"api-gateway\"", schema.NewRegistry(schema.TracesProfile), nil)
+	}, "service.name:=\"api-gateway\"", schema.NewRegistry(schema.TracesProfile), nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestShouldSkipByFooter_NilPool(t *testing.T) {
 func TestShouldSkipByFooter_SmallFile(t *testing.T) {
 	skip, err := shouldSkipByFooter(context.Background(), &s3reader.ClientPool{}, manifest.FileInfo{
 		Key: "test.parquet", Size: 1000, // < 32KB
-	}, "service.name:=\"api-gateway\"", schema.NewRegistry(schema.TracesProfile), nil)
+	}, "service.name:=\"api-gateway\"", schema.NewRegistry(schema.TracesProfile), nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestShouldSkipByFooter_CachedFooter(t *testing.T) {
 
 	skip, err := shouldSkipByFooter(context.Background(), &s3reader.ClientPool{}, manifest.FileInfo{
 		Key: "test.parquet", Size: 100000,
-	}, "service.name:=\"api-gateway\"", schema.NewRegistry(schema.TracesProfile), fc)
+	}, "service.name:=\"api-gateway\"", schema.NewRegistry(schema.TracesProfile), fc, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

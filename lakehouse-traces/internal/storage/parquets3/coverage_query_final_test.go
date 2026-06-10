@@ -948,7 +948,7 @@ func TestCovFinal_PrefetchFooters_AllCached(t *testing.T) {
 		files[i] = manifest.FileInfo{Key: key, Size: int64(len(data))}
 	}
 
-	n := prefetchFooters(context.Background(), pool, files, footerCache, 4)
+	n := prefetchFooters(context.Background(), pool, files, footerCache, 4, 0)
 	if n != 0 {
 		// All were cached, so fetched should be 0.
 		t.Logf("prefetchFooters with all cached returned %d (may vary by size threshold)", n)
@@ -970,7 +970,7 @@ func TestCovFinal_PrefetchFooters_SmallFiles(t *testing.T) {
 		{Key: "logs/small2.parquet", Size: 200},
 	}
 
-	n := prefetchFooters(context.Background(), pool, files, footerCache, 2)
+	n := prefetchFooters(context.Background(), pool, files, footerCache, 2, 0)
 	if n != 0 {
 		t.Errorf("expected 0 prefetched for small files, got %d", n)
 	}
@@ -1011,7 +1011,7 @@ func TestCovFinal_PrefetchFooters_ContextCancelled(t *testing.T) {
 	cancel() // Cancel immediately.
 
 	// Should not hang or panic.
-	_ = prefetchFooters(ctx, pool, files, footerCache, 4)
+	_ = prefetchFooters(ctx, pool, files, footerCache, 4, 0)
 }
 
 // ---------------------------------------------------------------------------
