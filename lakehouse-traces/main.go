@@ -99,6 +99,9 @@ var (
 	s3ReadBufferSize  = flag.Int("lakehouse.s3.read-buffer-size", 0, "Parquet page read buffer for ranged S3 opens in bytes (default: 1MB)")
 	s3ParquetReadMode = flag.String("lakehouse.s3.parquet-read-mode", "", "Parquet page read mode on ranged S3 opens: async (read-ahead goroutine per column) or sync (default: async)")
 
+	s3ProjectedFetchMode     = flag.String("lakehouse.s3.projected-fetch-mode", "", "Read strategy for column-projected parquet reads: planned (plan-then-fetch exact coalesced column-chunk ranges, no speculative window) or window (adaptive read-ahead window — rollback switch) (default: planned)")
+	s3ProjectedFetchMaxBytes = flag.Int("lakehouse.s3.projected-fetch-max-bytes", 0, "Per-file byte cap for the plan-then-fetch projected read; plans above the cap fall back to the window path (default: 16MB)")
+
 	// K8s-style request/limit/scaling for S3 download concurrency
 	// (see internal/resourcebounds). When any of these are non-zero
 	// they take precedence over the deprecated lakehouse.s3.max-concurrent-downloads
@@ -1480,6 +1483,12 @@ func applyS3Flags(s3 *config.S3Config) {
 	}
 	if *s3ParquetReadMode != "" {
 		s3.ParquetReadMode = *s3ParquetReadMode
+	}
+	if *s3ProjectedFetchMode != "" {
+		s3.ProjectedFetchMode = *s3ProjectedFetchMode
+	}
+	if *s3ProjectedFetchMaxBytes > 0 {
+		s3.ProjectedFetchMaxBytes = *s3ProjectedFetchMaxBytes
 	}
 	if *s3MaxConcurrentDownloads > 0 {
 		s3.MaxConcurrentDownloads = *s3MaxConcurrentDownloads

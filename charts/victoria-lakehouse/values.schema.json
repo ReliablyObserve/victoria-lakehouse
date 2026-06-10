@@ -58,6 +58,22 @@
               ],
               "default": "async",
               "description": "Parquet page read mode on ranged S3 opens: async (per-column read-ahead goroutine) or sync (rollback switch)"
+            },
+            "projected_fetch_mode": {
+              "type": "string",
+              "enum": [
+                "",
+                "planned",
+                "window"
+              ],
+              "default": "planned",
+              "description": "Read strategy for column-projected parquet reads: planned (plan-then-fetch exact coalesced column-chunk ranges, no speculative window) or window (adaptive read-ahead window — full rollback switch)"
+            },
+            "projected_fetch_max_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "description": "Per-file byte cap for the plan-then-fetch projected read; plans above the cap fall back to the window path (0 = default 16MB)"
             }
           }
         },
