@@ -289,3 +289,34 @@ against the live stack and compare to the Tier-1 batch-1 table above. Expected:
 - count_24h over successive compaction cycles: manifest-only answers stop degrading
   as partitions compact (healed `LabelAggregates` on compacted files — verify
   `count() by (field)` agreement before/after a forced `/internal/compact`).
+
+## Measured: post-batch-2 live state (2026-06-10, main @ 88af62a — Tier-1 + #138 + batch 2 + L2+ RGs)
+
+**Healing confirmed live**: after one settle+compaction cycle, the count fast-path served
+**29/31 files from manifest aggregates** (was 0/N before #138+healing). `gets/open` stable
+at **2.0** everywhere.
+
+**Plain (no injected latency): LH ≈ hot VL across the board** — count_24h 0.9×, filtered
+1.0×, groupby 1.0×, fulltext 1.2× of an in-memory hot engine, while CH-over-S3 trails
+LH by 10–40× on every scenario in-run.
+
+**At 100 ms ± 30 ms injected: count_1h 0.7× CH, groupby 0.7× CH, fulltext 1.6× CH
+(improved from 2.0×), count_24h 1.7×, filtered_count 3.0× — the one structural laggard.**
+
+**The remaining structural finding (next implementation target):** filtered_count still
+wastes ~46 MB/q. The waste-feedback shrink never fired (`readahead_shrink_total = 0`)
+because the adaptive state is **per-reader-instance**: each file open starts a fresh
+window, wastes ~the 2 MB base on a sparse projected read, and closes before any
+eviction-driven learning can apply — the lesson from file A never reaches file B.
+Conclusion: for column-projected reads the speculative window is the wrong tool entirely;
+the fix is CH-style **plan-then-fetch** (fetch exact coalesced column ranges, no window —
+Tier-2 item 8/9 territory), plus cross-open adaptive state per signal. The within-file
+shrink logic stays (it covers long multi-window scans).
+
+**Bench-harness bug noted**: the fulltext row of the S3-ops capture produced negative
+deltas (counter snapshot race) — the capture diffing needs hardening before the next
+measured round.
+
+Run-to-run variance caveat: absolute numbers (and CH's especially) swing with data shape
+and proxy state between runs; within-run ratios and the ops counters are the stable
+signals. Full tables: /tmp/final-{plain,lat}.md preserved in the bench artifacts.
