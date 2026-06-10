@@ -4,14 +4,23 @@
   "$defs": {
     "profileEnum": {
       "type": "string",
-      "enum": ["", "balanced", "max-performance", "max-durability", "max-cost-savings", "dev"]
+      "enum": [
+        "",
+        "balanced",
+        "max-performance",
+        "max-durability",
+        "max-cost-savings",
+        "dev"
+      ]
     }
   },
   "properties": {
     "lakehouseConfig": {
       "type": "object",
       "properties": {
-        "profile": { "$ref": "#/$defs/profileEnum" },
+        "profile": {
+          "$ref": "#/$defs/profileEnum"
+        },
         "s3": {
           "type": "object",
           "properties": {
@@ -27,35 +36,98 @@
         "tenant": {
           "type": "object",
           "properties": {
-            "orgid_header": { "type": "string" },
-            "metrics_format": { "type": "string", "enum": ["id", "name", "both"] },
-            "auto_register": { "type": "boolean" },
-            "alias_sync_interval": { "type": "string" },
-            "aliases": { "type": "object" }
+            "orgid_header": {
+              "type": "string"
+            },
+            "metrics_format": {
+              "type": "string",
+              "enum": [
+                "id",
+                "name",
+                "both"
+              ]
+            },
+            "auto_register": {
+              "type": "boolean"
+            },
+            "alias_sync_interval": {
+              "type": "string"
+            },
+            "aliases": {
+              "type": "object"
+            }
           }
+        },
+        "pmeta": {
+          "type": "object",
+          "description": "pmeta unified partition-metadata layer (catalog + file-meta + bloom facets). Default on; disabling is a degraded mode.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "cardinality_threshold": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "description": "Distinct-values cap per field before high-card (0 = default 50000)"
+            },
+            "always_sketch_fields": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Id columns to HLL-sketch instead of enumerate (trace_id/span_id supported)"
+            },
+            "refuse_sketch_enumeration": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false
         }
       }
     },
     "logs": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "profile": { "$ref": "#/$defs/profileEnum" },
-        "config": { "type": "object" },
+        "enabled": {
+          "type": "boolean"
+        },
+        "profile": {
+          "$ref": "#/$defs/profileEnum"
+        },
+        "config": {
+          "type": "object"
+        },
         "select": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "profile": { "$ref": "#/$defs/profileEnum" },
-            "replicaCount": { "type": "integer", "minimum": 0 }
+            "enabled": {
+              "type": "boolean"
+            },
+            "profile": {
+              "$ref": "#/$defs/profileEnum"
+            },
+            "replicaCount": {
+              "type": "integer",
+              "minimum": 0
+            }
           }
         },
         "insert": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "profile": { "$ref": "#/$defs/profileEnum" },
-            "replicaCount": { "type": "integer", "minimum": 0 }
+            "enabled": {
+              "type": "boolean"
+            },
+            "profile": {
+              "$ref": "#/$defs/profileEnum"
+            },
+            "replicaCount": {
+              "type": "integer",
+              "minimum": 0
+            }
           }
         }
       }
@@ -63,23 +135,43 @@
     "traces": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "profile": { "$ref": "#/$defs/profileEnum" },
-        "config": { "type": "object" },
+        "enabled": {
+          "type": "boolean"
+        },
+        "profile": {
+          "$ref": "#/$defs/profileEnum"
+        },
+        "config": {
+          "type": "object"
+        },
         "select": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "profile": { "$ref": "#/$defs/profileEnum" },
-            "replicaCount": { "type": "integer", "minimum": 0 }
+            "enabled": {
+              "type": "boolean"
+            },
+            "profile": {
+              "$ref": "#/$defs/profileEnum"
+            },
+            "replicaCount": {
+              "type": "integer",
+              "minimum": 0
+            }
           }
         },
         "insert": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "profile": { "$ref": "#/$defs/profileEnum" },
-            "replicaCount": { "type": "integer", "minimum": 0 }
+            "enabled": {
+              "type": "boolean"
+            },
+            "profile": {
+              "$ref": "#/$defs/profileEnum"
+            },
+            "replicaCount": {
+              "type": "integer",
+              "minimum": 0
+            }
           }
         }
       }
@@ -87,13 +179,17 @@
     "vmauth": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" }
+        "enabled": {
+          "type": "boolean"
+        }
       }
     },
     "networkPolicy": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" }
+        "enabled": {
+          "type": "boolean"
+        }
       }
     }
   }

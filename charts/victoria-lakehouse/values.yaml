@@ -57,6 +57,27 @@ lakehouseConfig:
   # --lakehouse.hot-boundary
   hot_boundary: ""
 
+  # -- pmeta unified partition-metadata layer (field/value catalog + file-meta +
+  # bloom facets, persisted as one _pmeta.bundle per partition). Default ON — this
+  # is the metadata layer post-consolidation; the legacy per-partition sidecars
+  # are no longer written. Disabling is a degraded mode: no catalog/bloom for new
+  # files, cold restarts warm from Parquet footers only.
+  pmeta:
+    # --lakehouse.pmeta.enabled
+    enabled: true
+    # -- Distinct-values cap per field before it turns high-cardinality
+    # (not enumerable; reads fall through to the exact scan). 0 = default 50000.
+    # --lakehouse.pmeta.cardinality-threshold
+    cardinality_threshold: 0
+    # -- Id-like columns to sketch (HLL cardinality) instead of enumerate.
+    # trace_id/span_id are the supported taps.
+    # --lakehouse.pmeta.always-sketch-fields
+    always_sketch_fields: ["trace_id", "span_id"]
+    # -- Return empty for always-sketch field_values instead of scanning
+    # (matches VL/VT behavior for id columns).
+    # --lakehouse.pmeta.refuse-sketch-enumeration
+    refuse_sketch_enumeration: false
+
   # ---------------------------------------------------------------------------
   # S3 — Object storage backend
   # ---------------------------------------------------------------------------
