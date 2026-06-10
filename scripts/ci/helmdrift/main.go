@@ -87,26 +87,30 @@ func main() {
 // binary needed, and it works for both modules (they share this package).
 func configPaths() ([]string, error) {
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, configDir, func(fi os.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, 0)
+	entries, err := os.ReadDir(configDir)
 	if err != nil {
 		return nil, err
 	}
 	structs := map[string]*ast.StructType{}
-	for _, pkg := range pkgs {
-		for _, file := range pkg.Files {
-			ast.Inspect(file, func(n ast.Node) bool {
-				ts, ok := n.(*ast.TypeSpec)
-				if !ok {
-					return true
-				}
-				if st, ok := ts.Type.(*ast.StructType); ok {
-					structs[ts.Name.Name] = st
-				}
-				return true
-			})
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
 		}
+		file, err := parser.ParseFile(fset, configDir+"/"+name, nil, 0)
+		if err != nil {
+			return nil, err
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			ts, ok := n.(*ast.TypeSpec)
+			if !ok {
+				return true
+			}
+			if st, ok := ts.Type.(*ast.StructType); ok {
+				structs[ts.Name.Name] = st
+			}
+			return true
+		})
 	}
 	root, ok := structs["Config"]
 	if !ok {
