@@ -112,11 +112,35 @@ var (
 
 	// S3ProjectedFetchFallback counts projected reads that fell back from
 	// the planned path to the adaptive-window path, by reason:
-	//   cap       — the coalesced plan exceeded s3.projected_fetch_max_bytes
-	//   no-footer — footer metadata unavailable (cache miss + inline footer
+	//   cap       — the coalesced plan exceeded the absolute plan ceiling
+	//               (fi.Size; defensive — the v2 slice-1 cap re-scope
+	//               retired the old per-plan 16MB cap, so steady-state
+	//               this is 0: spans are bounded per-SPAN by
+	//               s3.planned_fetch_span_cap_bytes via splitting, and
+	//               plan admission rides the memory ledger)
+	//   no-footer — footer metadata unavailable (cache miss + footer
 	//               fetch failed), so no plan could be derived
 	//   error     — the ranged open or the span download failed
 	S3ProjectedFetchFallback = NewCounterVec("lakehouse_s3_projected_fetch_fallback_total", "reason")
+
+	// S3PlannedGapChoice counts the gap-discipline outcome per armed plan:
+	// armProjectedPlan prices the plan at candidate gaps (64k | 256k | 1m)
+	// with cost = RTT-waves + bytes/BW and fetches with the cheapest. The
+	// distribution is the live check on the offline simulator's claim that
+	// the gap barely matters once span concurrency is fixed.
+	S3PlannedGapChoice = NewCounterVec("lakehouse_s3_planned_gap_choice_total", "gap")
+
+	// S3PlannedStrategy counts the S* strategy decision per PLANNED-mode
+	// projected open (slice 1d — the footer-cache-gated ladder):
+	//   plan-warm-footer  — footer cached ⇒ plan immediately (zero
+	//                       metadata RTTs)
+	//   whole-file-warmup — cold footer + file under
+	//                       s3.whole_file_threshold_bytes ⇒ ONE whole-file
+	//                       GET through the smart-cache path; the download
+	//                       IS the footer-cache warmup
+	//   plan-cold-footer  — cold footer + large file ⇒ footer range-fetch
+	//                       then plan exact spans
+	S3PlannedStrategy = NewCounterVec("lakehouse_s3_planned_strategy_total", "strategy")
 )
 
 // Cache metrics
