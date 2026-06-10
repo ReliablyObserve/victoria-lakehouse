@@ -46,7 +46,7 @@ func TestMemLeak_BufferedReaderAt_ReadCycles(t *testing.T) {
 
 	// Warm up
 	for i := 0; i < 20; i++ {
-		br := NewBufferedReaderAt(inner, inner.Size(), 64*1024)
+		br := NewBufferedReaderAt(inner, inner.Size(), 64*1024, 64*1024)
 		buf := make([]byte, 512)
 		_, _ = br.ReadAt(buf, 0)
 	}
@@ -57,7 +57,7 @@ func TestMemLeak_BufferedReaderAt_ReadCycles(t *testing.T) {
 	const iterations = 5000
 	buf := make([]byte, 512)
 	for i := 0; i < iterations; i++ {
-		br := NewBufferedReaderAt(inner, inner.Size(), 64*1024)
+		br := NewBufferedReaderAt(inner, inner.Size(), 64*1024, 64*1024)
 		off := int64((i * 1024) % (len(data) - 512))
 		_, _ = br.ReadAt(buf, off)
 		// br goes out of scope here — GC should reclaim it

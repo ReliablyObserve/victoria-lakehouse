@@ -217,6 +217,7 @@ func TestWriteLogsParquet_EmptyRows(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatal("expected non-nil result")
+		return
 	}
 	if len(result.Data) == 0 {
 		t.Error("expected non-empty parquet data")

@@ -22,7 +22,6 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
@@ -878,10 +877,7 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 		if cached, ok := s.footerCache.Get(fi.Key); ok {
 			totalCols := len(cached.File.Root().Columns())
 			if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
-				rawReader := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
-				buffered := s3reader.NewBufferedReaderAt(rawReader, fi.Size, int64(s.cfg.S3.ReadAheadBytes))
-				readerAt := s3reader.NewCoalescingReaderAt(buffered, fi.Size, int64(s.cfg.S3.CoalesceGapBytes))
-				f, err := parquet.OpenFile(readerAt, fi.Size)
+				f, err := s.openRangedParquet(ctx, fi, cached.File.Schema())
 				if err == nil {
 					metrics.S3RangeReadsTotal.Inc()
 					return f, nil
@@ -902,10 +898,15 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 	if s.pool != nil && projectedCols == nil && shouldUseWildcardRangeRead(fi.Size) {
 		_, cached := s.memCache.Get(fi.Key)
 		if !cached {
-			rawReader := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
-			buffered := s3reader.NewBufferedReaderAt(rawReader, fi.Size, int64(s.cfg.S3.ReadAheadBytes))
-			readerAt := s3reader.NewCoalescingReaderAt(buffered, fi.Size, int64(s.cfg.S3.CoalesceGapBytes))
-			f, err := parquet.OpenFile(readerAt, fi.Size)
+			// Reuse the cached footer's schema when available — wildcard
+			// opens still pay the footer parse otherwise.
+			var cachedSchema *parquet.Schema
+			if s.footerCache != nil {
+				if cf, ok := s.footerCache.Get(fi.Key); ok && cf.File != nil {
+					cachedSchema = cf.File.Schema()
+				}
+			}
+			f, err := s.openRangedParquet(ctx, fi, cachedSchema)
 			if err == nil {
 				metrics.S3RangeReadsTotal.Inc()
 				metrics.ParquetFilesOpened.Inc()
@@ -2263,7 +2264,8 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 	}
 
 	bloomKey := fi.Key + ".bloom"
-	data, err := s.pool.Download(ctx, bloomKey)
+	metrics.S3GetsByPhase.Inc("bloom")
+	data, err := s.pool.DownloadDedup(ctx, "bloom", bloomKey)
 	if err != nil || len(data) == 0 {
 		return false // no sidecar, can't skip
 	}

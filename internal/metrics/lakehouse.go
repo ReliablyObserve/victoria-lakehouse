@@ -25,6 +25,65 @@ var (
 	S3CoalescedRanges = NewCounter("lakehouse_s3_coalesced_ranges_total")
 )
 
+// S3 read-path observability (PR 2a, CH-pattern: prove/tune every read-path
+// change before and after). These counters make the GET economics of the
+// parquet scan path measurable per scenario — the full-scope bench snapshots
+// them before/after each query class and reports the deltas.
+var (
+	// S3BufferWastedBytes counts bytes fetched into a BufferedS3ReaderAt
+	// read-ahead window but never served to a caller before the window was
+	// evicted (replaced by the next fetch). Waste is computed from the
+	// high-water mark of bytes served out of the window, which matches the
+	// forward-sequential access pattern the window exists for. A high
+	// waste/fetch ratio means the read-ahead window is oversized for the
+	// access pattern (e.g. needle queries on a scan-tuned window).
+	S3BufferWastedBytes = NewCounter("lakehouse_s3_buffer_wasted_bytes_total")
+
+	// S3CoalesceOverfetchBytes counts gap bytes fetched ONLY because two
+	// requested ranges were merged by the coalescing reader (the bytes
+	// between the ranges that nobody asked for). Together with
+	// S3CoalescedRanges (merges that saved a round trip) this prices the
+	// coalescing gap: overfetch-bytes paid per round-trip saved.
+	S3CoalesceOverfetchBytes = NewCounter("lakehouse_s3_coalesce_overfetch_bytes_total")
+
+	// S3ReadAheadGrows / S3ReadAheadResets observe the adaptive read-ahead
+	// window: grows ticks when 2+ consecutive forward-sequential misses
+	// double the window (scan detected), resets ticks when a random seek
+	// drops it back to the base window (needle detected).
+	S3ReadAheadGrows  = NewCounter("lakehouse_s3_readahead_grow_total")
+	S3ReadAheadResets = NewCounter("lakehouse_s3_readahead_reset_total")
+
+	// S3HeadBypassReads counts tiny reads at offset 0 (parquet's 4-byte
+	// magic-header check) served via an exact-size ranged GET instead of
+	// pulling a full read-ahead window. Each tick is ~one window of
+	// head-waste avoided (previously a ~2 MB GET per cold open).
+	S3HeadBypassReads = NewCounter("lakehouse_s3_head_bypass_reads_total")
+
+	// S3GetsByPhase counts S3 GETs by read-path phase:
+	//   open   — GETs issued while parquet.OpenFile parses magic+footer
+	//            on a ranged open (the "serial open catastrophe" being
+	//            eliminated; target is 0 once footers ride the cache)
+	//   page   — GETs issued by page/column-chunk reads after the open
+	//            (includes lazy parquet-internal page-index/bloom reads,
+	//            which go through the same reader)
+	//   footer — footer-cache fill GETs (prefetchFooters, fetchFooterFile,
+	//            shouldSkipByFooter, inline footer fetch on open)
+	//   bloom  — per-file `.bloom` sidecar GETs (checkFileBloom fallback)
+	S3GetsByPhase = NewCounterVec("lakehouse_s3_gets_by_phase_total", "phase")
+
+	// S3GetsPerOpen is the number of S3 GETs parquet.OpenFile needed for a
+	// single ranged open (magic + footer-length + footer + any metadata
+	// sections). The research-doc baseline is 4-6 serial GETs per open;
+	// Skip*/FileSchema/head-bypass should drive the median toward 1-2 and
+	// the zero-GET-open batch toward 0.
+	S3GetsPerOpen = NewHistogram("lakehouse_s3_gets_per_open", nil)
+
+	// S3MetaSingleflightDedup counts metadata GETs that were deduplicated
+	// by singleflight (concurrent queries asking for the same object key
+	// shared one in-flight GET). kind: footer | bloom | pmeta_bundle.
+	S3MetaSingleflightDedup = NewCounterVec("lakehouse_s3_singleflight_dedup_total", "kind")
+)
+
 // Cache metrics
 var (
 	CacheHitsTotal         = NewCounterVec("lakehouse_cache_hits_total", "tier")
