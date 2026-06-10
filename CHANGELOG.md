@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.83.1] - 2026-06-10
+
 ### Added
 
 - **S3 read-path Tier 1 (batch 1) — parquet open hygiene, adaptive read-ahead, BDP coalescing, singleflight, S3-op observability (both modules).** From the approved ClickHouse-first research (`docs/architecture/s3-optimization-research.md`): every ranged `parquet.OpenFile` now passes `SkipPageIndex/SkipBloomFilters(true)` (we prune via manifest/pmeta; internal index/bloom reads stay lazily available), `OptimisticRead(true)` (footer suffix+body in one tail GET), `FileReadMode(ReadModeAsync)` (library-native page read-ahead, bounded ~1 page in flight per column reader; `-lakehouse.s3.parquet-read-mode=sync` is the rollback) and a 1 MB read buffer (library default was 4 KB). The coalescing gap default goes 64 KB→1 MB (breakeven at real S3 RTT is megabytes — AnyBlob, VLDB 2023), read-ahead adapts 2→8 MB on sequential patterns, and the parquet magic read no longer pulls a wasted ~2 MB head window — **all clamped by file size** so small files keep precise column-projected reads. Footer/`.bloom`/pmeta-bundle GETs are singleflight-deduped (`context.WithoutCancel` so a cancelled query can't poison waiters). 8 new metric families (GETs by phase, per-open GET histogram, window waste, over-fetch, grow/reset, head-bypass, dedup) and the full-scope benchmark now records **per-scenario S3-op deltas**. New per-signal config: `s3.read_ahead_max_bytes`, `s3.read_buffer_size`, `s3.parquet_read_mode` (+flags +chart values/schema). **Measured on the live stack at 100 ms injected S3 latency: count_1h 1478→878 ms (−41%), count_24h 4133→2475 ms (−40%), `gets/open` 4–6→2.0**; plain count_24h now beats hot VL (0.9×).
