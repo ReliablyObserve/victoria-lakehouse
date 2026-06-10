@@ -1371,8 +1371,10 @@ func (s *Storage) enrichFromCachedFooter(fi manifest.FileInfo, cached *CachedFoo
 		if err != nil || idx == nil || idx.NumPages() == 0 {
 			continue
 		}
-		rgMin := idx.MinValue(0).Int64()
-		rgMax := idx.MaxValue(idx.NumPages() - 1).Int64()
+		// Aggregate across all pages — see columnIndexTimeBounds
+		// (storage_query.go). Positional MinValue(0)/MaxValue(N-1) bounds
+		// understate the manifest time range when pages are not time-sorted.
+		rgMin, rgMax := columnIndexTimeBounds(idx)
 		if minTs == 0 || rgMin < minTs {
 			minTs = rgMin
 		}

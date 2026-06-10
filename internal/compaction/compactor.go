@@ -291,8 +291,12 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		}
 		rowsMerged = int64(len(merged))
 		if rowsMerged > 0 {
-			minTime = merged[0].TimestampUnixNano
-			maxTime = merged[len(merged)-1].TimestampUnixNano
+			// True min/max scan — NOT merged[0]/merged[len-1]. The merge
+			// order is a compression detail (today timestamp, soon
+			// (stream_id, timestamp)); positional bounds understate the
+			// manifest time range and break range pruning. See
+			// schema.LogRowTimeBounds.
+			minTime, maxTime = schema.LogRowTimeBounds(merged)
 		}
 		outputData, err = writeCompactedLogs(merged, c.rowGroupSize, levelForOutput)
 		if err != nil {
@@ -306,8 +310,8 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		}
 		rowsMerged = int64(len(merged))
 		if rowsMerged > 0 {
-			minTime = merged[0].TimestampUnixNano
-			maxTime = merged[len(merged)-1].TimestampUnixNano
+			// True min/max scan — same rationale as the logs branch above.
+			minTime, maxTime = schema.TraceRowTimeBounds(merged)
 		}
 		outputData, err = writeCompactedTraces(merged, c.rowGroupSize, levelForOutput)
 		if err != nil {
