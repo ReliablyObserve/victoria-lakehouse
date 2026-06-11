@@ -6,6 +6,7 @@
 
   var TAB_ID = "lakehouse-tab";
   var TAB_TEXT = "Lakehouse";
+  var ACTIVE_KEY = "lh_vmui_active"; // localStorage flag: Lakehouse tab was last active
   var CONTAINER_ID = "lakehouse-root";
 
   // ---- Helpers ----
@@ -640,25 +641,41 @@
     if (tab.tagName === "A") tab.href = "#lakehouse";
     else tab.setAttribute("data-href", "#lakehouse");
 
-    tab.addEventListener("click", function (e) {
-      e.preventDefault();
+    function activateLakehouse() {
       Array.prototype.forEach.call(nav.children, function (child) {
         child.classList.remove("active");
       });
       tab.classList.add("active");
       showLakehouse();
+    }
+
+    tab.addEventListener("click", function (e) {
+      e.preventDefault();
+      // Remember the Lakehouse tab so a reload returns here instead of snapping
+      // back to vmui's Query page (vmui's hash router has no notion of our tab).
+      try { localStorage.setItem(ACTIVE_KEY, "1"); } catch (x) { /* ignore */ }
+      activateLakehouse();
     });
 
-    // Restore VMUI content when other tabs are clicked.
+    // Restore VMUI content (and forget our tab) when other tabs are clicked.
     Array.prototype.forEach.call(nav.children, function (child) {
       if (child.id === TAB_ID) return;
       child.addEventListener("click", function () {
+        try { localStorage.removeItem(ACTIVE_KEY); } catch (x) { /* ignore */ }
         tab.classList.remove("active");
         hideLakehouse();
       });
     });
 
     nav.appendChild(tab);
+
+    // On (re)load, if Lakehouse was the last-active tab, restore it. Defer so
+    // vmui has finished rendering its content area (showLakehouse hides those).
+    var wasActive = false;
+    try { wasActive = localStorage.getItem(ACTIVE_KEY) === "1"; } catch (x) { /* ignore */ }
+    if (wasActive) {
+      setTimeout(activateLakehouse, 0);
+    }
   }
 
   // Inject stylesheet
