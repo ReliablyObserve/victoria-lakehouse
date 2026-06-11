@@ -443,6 +443,14 @@ lakehouse:
     row_group_size: 10000
     target_file_size: 128MB
     bloom_columns: "service.name,trace_id"
+    # Promote custom (non-OTel) attributes into dedicated Parquet columns
+    # (Tier 2). Per-signal, under logs.config / traces.config. Each {name,
+    # bloom} lifts the attribute out of the map into a spare slot column (up to
+    # 8/signal); set bloom:true only for high-cardinality keys queried by
+    # equality. See architecture/dedicated-columns.md.
+    #   promoted_attributes:
+    #     - { name: "tenant_id", bloom: true }
+    #     - { name: "feature_flag", bloom: false }
     compression_level: default
     buffer_engine: logstore         # durable buffer (on-disk parts, no WAL)
     buffer_dir: /data/lakehouse/buffer

@@ -27,6 +27,7 @@ const sidebars: SidebarsConfig = {
         'architecture/metadata-consolidation',
         'architecture/field-value-catalog',
         'architecture/metadata-and-s3-optimization',
+        'architecture/dedicated-columns',
         'architecture/restart-and-warmup-design',
         'architecture/pb-scale-resources-pmeta',
         'architecture/restore-and-elasticity-pmeta',
