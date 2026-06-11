@@ -567,10 +567,7 @@ func writeLogsParquet(rows []schema.LogRow, rowGroupSize int, compressionLevel i
 	opts := []parquet.WriterOption{
 		parquet.Compression(codec),
 		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
-		parquet.BloomFilters(
-			parquet.SplitBlockFilter(10, "service.name"),
-			parquet.SplitBlockFilter(10, "trace_id"),
-		),
+		parquet.BloomFilters(bloomFilters(schema.LogBloomColumns())...),
 	}
 	for rgIdx := 0; rgIdx*rowGroupSize < len(rows); rgIdx++ {
 		start := rgIdx * rowGroupSize
@@ -612,10 +609,7 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 	opts := []parquet.WriterOption{
 		parquet.Compression(codec),
 		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
-		parquet.BloomFilters(
-			parquet.SplitBlockFilter(10, "service.name"),
-			parquet.SplitBlockFilter(10, "trace_id"),
-		),
+		parquet.BloomFilters(bloomFilters(schema.TraceBloomColumns())...),
 	}
 	for rgIdx := 0; rgIdx*rowGroupSize < len(rows); rgIdx++ {
 		start := rgIdx * rowGroupSize
@@ -821,4 +815,15 @@ func PartitionKey(prefix, partition, batchID string) string {
 		prefix += "/"
 	}
 	return fmt.Sprintf("%s%s/%s.parquet", prefix, partition, batchID)
+}
+
+// bloomFilters builds SplitBlockFilter columns (10 bits/value ≈ 1% FPP) from the
+// strict per-signal bloom set in internal/schema (cardinality-aligned: high-card
+// equality-queried columns only).
+func bloomFilters(cols []string) []parquet.BloomFilterColumn {
+	bf := make([]parquet.BloomFilterColumn, 0, len(cols))
+	for _, c := range cols {
+		bf = append(bf, parquet.SplitBlockFilter(10, c))
+	}
+	return bf
 }
