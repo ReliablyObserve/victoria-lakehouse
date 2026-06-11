@@ -249,6 +249,18 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		files = s.manifest.GetFilesForRange(startNs, endNs)
 	}
 	if len(files) == 0 {
+		// Pure-buffer window: no cold-tier file covers it, so the WHOLE answer
+		// is the co-located logstorage buffer. Push the FULL query (aggregation
+		// pipes intact) into the buffer's own VL engine — it computes the
+		// count/stats natively and returns the small result, instead of the
+		// bridge's DropAllPipes path that ships every raw row upstream to be
+		// re-aggregated (profiled as the dominant recent-window cost). Safe
+		// because there is no Parquet data to double-count or merge with. Uses
+		// the buffer's public RunQuery (VL engine) — no upstream modification.
+		// Twin of internal/storage/parquets3/storage_query.go.
+		if s.servePureBufferQuery(ctx, q, tenantIDs, filteredWriteBlock) {
+			return nil
+		}
 		// No cold-tier files cover the requested window, but the in-flight
 		// buffer-bridge may still have rows newer than the latest flushed
 		// parquet (Jaeger's GetTrace narrow-window lookup against trace_ids
@@ -834,6 +846,26 @@ func widenTraceIDQueryToNow(q *logstorage.Query, startNs, endNs int64) (*logstor
 		return q.CloneWithTimeFilter(q.GetTimestamp(), startNs, nowNs), nowNs
 	}
 	return q, endNs
+}
+
+// servePureBufferQuery answers a query whose window is entirely unflushed (no
+// cold-tier files) by running the FULL query — aggregation pipes intact — on the
+// co-located logstorage buffer's own VL engine, so it aggregates natively
+// instead of the bridge's DropAllPipes path that ships every raw row upstream.
+// Returns true when it served the query. Declines (false, caller falls through
+// to the bridge) when there is no local buffer, when peers exist (this node's
+// buffer then holds only its own rows — multi-pod must fan out), or on error.
+// Twin of internal/storage/parquets3/storage_query.go.
+func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) bool {
+	if s.localBuffer == nil || (s.bufferBridge != nil && s.bufferBridge.HasPeers()) {
+		return false
+	}
+	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, tenantIDs, q, false, nil)
+	if err := s.localBuffer.RunQuery(qctx, writeBlock); err != nil {
+		logger.Warnf("pure-buffer fast path failed, falling back to bridge: %s", err)
+		return false
+	}
+	return true
 }
 
 func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs, watermarkNs int64, q *logstorage.Query, tenantIDs []logstorage.TenantID, filteredWriteBlock logstorage.WriteDataBlockFunc) {

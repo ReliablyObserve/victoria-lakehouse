@@ -174,11 +174,18 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	files := s.manifest.GetFilesForRange(startNs, endNs)
 	if len(files) == 0 {
-		// No cold-tier files cover the requested window, but the in-flight
-		// buffer-bridge may still have rows newer than the latest flushed
-		// parquet. Keep the buffer query in the flow so narrow recent-window
-		// queries don't silently miss data that hasn't been flushed yet.
+		// Pure-buffer window: no cold-tier file covers it, so the WHOLE answer
+		// is the co-located logstorage buffer. Push the FULL query (aggregation
+		// pipes intact) into the buffer's own VL engine — it computes the
+		// count/stats natively and returns the small result, instead of the
+		// bridge's DropAllPipes path that ships every raw row upstream to be
+		// re-aggregated (profiled as the dominant recent-window cost). Safe
+		// because there is no Parquet data to double-count or merge with. Uses
+		// the buffer's public RunQuery (VL engine) — no upstream modification.
 		// Mirror in lakehouse-traces/internal/storage/parquets3/storage_query.go.
+		if s.servePureBufferQuery(ctx, q, tenantIDs, filteredWriteBlock) {
+			return nil
+		}
 		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 		return nil
 	}
@@ -436,6 +443,27 @@ func bufferWatermark(files []manifest.FileInfo, tenantIDs []logstorage.TenantID)
 		}
 	}
 	return wm
+}
+
+// servePureBufferQuery answers a query whose window is entirely unflushed (no
+// cold-tier files) directly from the co-located logstorage buffer, running the
+// FULL query — aggregation pipes intact — through the buffer's VL engine. The
+// engine computes count/stats/group-by natively and emits the small result,
+// instead of the bridge's DropAllPipes path that ships every raw row upstream
+// for re-aggregation. Returns false (caller falls back to the bridge) when the
+// node isn't a single-node logstore buffer: with peers, other pods hold
+// unflushed rows reachable only via the bridge fan-out. No upstream
+// modification — this calls the buffer's public RunQuery.
+func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) bool {
+	if s.localBuffer == nil || (s.bufferBridge != nil && s.bufferBridge.HasPeers()) {
+		return false
+	}
+	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, tenantIDs, q, false, nil)
+	if err := s.localBuffer.RunQuery(qctx, writeBlock); err != nil {
+		logger.Warnf("pure-buffer fast path failed, falling back to bridge: %s", err)
+		return false
+	}
+	return true
 }
 
 func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, watermarkNs int64, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) {
