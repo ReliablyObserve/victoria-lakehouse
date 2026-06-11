@@ -563,7 +563,23 @@
     }
 
     function App() {
-      const [tab, setTab] = useState("overview");
+      // Persist the active tab in the URL hash so a refresh keeps you where you
+      // were (and the view is bookmarkable / back-forward navigable).
+      const tabIds = ["overview", "details", "tenants", "cardinality", "parity"];
+      const tabFromHash = () => {
+        const h = (window.location.hash || "").replace(/^#/, "");
+        return tabIds.indexOf(h) >= 0 ? h : "overview";
+      };
+      const [tab, setTabState] = useState(tabFromHash);
+      const setTab = (id) => {
+        setTabState(id);
+        try { window.location.hash = id; } catch (e) { /* ignore */ }
+      };
+      useEffect(() => {
+        const onHash = () => setTabState(tabFromHash());
+        window.addEventListener("hashchange", onHash);
+        return () => window.removeEventListener("hashchange", onHash);
+      }, []);
       const [refreshInterval, setRefreshInterval] = useState(0);
       const timerRef = useRef(null);
 
