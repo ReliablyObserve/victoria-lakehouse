@@ -294,6 +294,12 @@
       const [err, setErr] = useState(null);
 
       const [tenantBreakdown, setTenantBreakdown] = useState(null);
+      // Searchable, extensible breakdown: catalog of all labels for the picker,
+      // plus the ad-hoc labels the user has added via "+ Add".
+      const [allFields, setAllFields] = useState([]);
+      const [extra, setExtra] = useState([]);
+      const [pick, setPick] = useState("");
+      const [adding, setAdding] = useState(false);
 
       useEffect(() => {
         fetch("/lakehouse/api/v1/stats/breakdown")
@@ -306,14 +312,36 @@
           .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
           .then(j => setTenantBreakdown((j.labels && j.labels[0]) || null))
           .catch(() => {});
+        // Populate the label search dropdown from the full field catalog, so any
+        // indexed label can be added to the breakdown on demand.
+        fetch("/lakehouse/api/v1/cardinality/fields")
+          .then(r => r.ok ? r.json() : null)
+          .then(j => { if (j && j.fields) setAllFields(j.fields.map(f => f.name)); })
+          .catch(() => {});
       }, []);
 
       if (err) return html`<div class="error">Error: ${err}</div>`;
       if (!data) return html`<div class="loading">Loading breakdown\u2026</div>`;
 
       const labels = data.labels || [];
+      const shown = new Set([...labels.map(l => l.name), ...extra.map(l => l.name)]);
 
-      const renderRows = (values, isExact) => {
+      const addLabel = (name) => {
+        name = (name || "").trim();
+        if (!name || shown.has(name)) { setPick(""); return; }
+        setAdding(true);
+        fetch("/lakehouse/api/v1/stats/breakdown?group_by=" + encodeURIComponent(name))
+          .then(r => r.ok ? r.json() : null)
+          .then(j => {
+            const lb = j && j.labels && j.labels[0];
+            if (lb) setExtra(prev => prev.concat([lb]));
+            setPick("");
+          })
+          .catch(() => {})
+          .finally(() => setAdding(false));
+      };
+
+      const renderRows = (values) => {
         const maxBytes = Math.max(...values.map(x => x.estimated_bytes || 0), 1);
         return values.map(v => {
           const pct = (v.estimated_bytes || 0) / maxBytes * 100;
@@ -331,8 +359,40 @@
         });
       };
 
+      const renderBlock = (label, onRemove) => html`
+        <div style="margin-bottom:24px">
+          <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
+            <h3 style="font-size:1rem;margin:0">${label.name}</h3>
+            <span class="badge ${label.type === 'promoted' ? 'badge-promoted' : 'badge-map'}">${label.type}</span>
+            <span style="font-size:12px;color:var(--color-text-secondary)">${label.cardinality} values</span>
+            ${onRemove ? html`<button onClick=${onRemove} title="Remove" style="margin-left:auto;border:none;background:none;cursor:pointer;color:var(--color-text-secondary);font-size:16px;line-height:1">\u00d7</button>` : null}
+          </div>
+          ${!label.values || label.values.length === 0
+            ? html`<div style="padding:12px;color:var(--color-text-secondary);font-style:italic">No values discovered yet. Run a query to populate.</div>`
+            : html`<div style="display:flex;flex-direction:column;gap:4px">${renderRows(label.values)}</div>`
+          }
+        </div>
+      `;
+
+      const candidates = allFields.filter(n => !shown.has(n));
+
       return html`
         <div class="section-title">Storage Breakdown</div>
+
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:22px">
+          <input list="lh-label-options" value=${pick}
+            onInput=${e => setPick(e.target.value)}
+            onKeyDown=${e => { if (e.key === 'Enter') addLabel(pick); }}
+            placeholder="Search a label to break down by\u2026"
+            style="flex:1;max-width:360px;padding:6px 10px;border:1px solid var(--color-border,#ccc);border-radius:6px;font-size:13px" />
+          <datalist id="lh-label-options">
+            ${candidates.map(n => html`<option value=${n}></option>`)}
+          </datalist>
+          <button onClick=${() => addLabel(pick)} disabled=${adding || !pick}
+            class="tab" style="padding:6px 14px">${adding ? "\u2026" : "+ Add"}</button>
+          <span style="font-size:12px;color:var(--color-text-secondary)">${candidates.length} labels available</span>
+        </div>
+
         ${tenantBreakdown && tenantBreakdown.values && tenantBreakdown.values.length > 0 ? html`
           <div style="margin-bottom:28px">
             <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
@@ -340,26 +400,17 @@
               <span class="badge badge-promoted">registry</span>
               <span style="font-size:12px;color:var(--color-text-secondary)">${tenantBreakdown.cardinality} tenants \u00b7 exact bytes from per-tenant registry</span>
             </div>
-            <div style="display:flex;flex-direction:column;gap:4px">${renderRows(tenantBreakdown.values, true)}</div>
+            <div style="display:flex;flex-direction:column;gap:4px">${renderRows(tenantBreakdown.values)}</div>
           </div>
         ` : null}
-        ${labels.length === 0 ? html`<div class="loading">No additional breakdown labels configured.</div>` : html`
+
+        ${extra.length > 0 ? html`<div>${extra.map(l => renderBlock(l, () => setExtra(prev => prev.filter(x => x.name !== l.name))))}</div>` : null}
+
+        ${labels.length === 0 && extra.length === 0 ? html`<div class="loading">No breakdown labels yet \u2014 use the search above to add one.</div>` : html`
           <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:16px">
-            Sizes below are proportionally estimated from label counts. Configured via stats.breakdown_labels.
+            Sizes are proportionally estimated from label counts. Defaults via stats.breakdown_labels; add any indexed label above.
           </div>
-          ${labels.map(label => html`
-            <div style="margin-bottom:24px">
-              <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
-                <h3 style="font-size:1rem;margin:0">${label.name}</h3>
-                <span class="badge ${label.type === 'promoted' ? 'badge-promoted' : 'badge-map'}">${label.type}</span>
-                <span style="font-size:12px;color:var(--color-text-secondary)">${label.cardinality} values</span>
-              </div>
-              ${!label.values || label.values.length === 0
-                ? html`<div style="padding:12px;color:var(--color-text-secondary);font-style:italic">No values discovered yet. Run a query to populate.</div>`
-                : html`<div style="display:flex;flex-direction:column;gap:4px">${renderRows(label.values, false)}</div>`
-              }
-            </div>
-          `)}
+          ${labels.map(label => renderBlock(label, null))}
         `}
       `;
     }

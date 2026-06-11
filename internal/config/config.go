@@ -1139,7 +1139,7 @@ func Default() *Config {
 			MaxDeltaCount:               1000,
 			MetricsCardinalityLimit:     100,
 			CardinalityWarningThreshold: 10000,
-			BreakdownLabels:             []string{"service.name", "deployment.environment", "k8s.namespace.name", "k8s.cluster.name"},
+			BreakdownLabels:             []string{"service.name", "deployment.environment", "k8s.namespace.name", "k8s.cluster.name", "k8s.deployment.name", "severity_text", "cloud.region"},
 			S3PricePerGB: map[string]float64{
 				"STANDARD":     0.023,
 				"STANDARD_IA":  0.0125,
