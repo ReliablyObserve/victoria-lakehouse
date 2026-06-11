@@ -10,6 +10,8 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
 	"gopkg.in/yaml.v3"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
 type Mode string
@@ -150,6 +152,47 @@ func (c *Config) ActiveBloomColumns() []string {
 		return c.Logs.BloomColumns
 	}
 	return c.Insert.BloomColumns
+}
+
+// WrittenBloomColumns returns the bloom-filtered column set the Parquet writer
+// ACTUALLY emits for the active signal: the strict schema bloom set (Tier-1
+// dedicated columns flagged HasBloom + the legacy service.name/trace_id) plus
+// the operator's bloom-enabled custom slots, unioned with any extra columns
+// named via -lakehouse.<signal>.bloom-columns.
+//
+// This is the source of truth the stats / cardinality API must report
+// `has_bloom` from. ActiveBloomColumns() alone is just the legacy operator list
+// ({service.name, trace_id}) and omits every dedicated column — so the
+// Cardinality Explorer would show "no bloom" for columns that are in fact
+// bloom-indexed on disk (writer.go + compactor.go both bloom this exact set).
+func (c *Config) WrittenBloomColumns() []string {
+	var slotBlooms []string
+	if pa := c.ActivePromotedAttributes(); len(pa) > 0 {
+		sa := make([]schema.SlotAttr, len(pa))
+		for i, a := range pa {
+			sa[i] = schema.SlotAttr{Name: a.Name, Bloom: a.Bloom}
+		}
+		slotBlooms = schema.NewSlotResolver(sa).BloomSlots()
+	}
+	var cols []string
+	if c.Mode == ModeTraces {
+		cols = schema.TraceBloomColumns(slotBlooms...)
+	} else {
+		cols = schema.LogBloomColumns(slotBlooms...)
+	}
+	// Union with operator-named extras so a custom -bloom-columns entry is still
+	// reported as bloomed.
+	seen := make(map[string]bool, len(cols))
+	for _, col := range cols {
+		seen[col] = true
+	}
+	for _, col := range c.ActiveBloomColumns() {
+		if col != "" && !seen[col] {
+			seen[col] = true
+			cols = append(cols, col)
+		}
+	}
+	return cols
 }
 
 func (c *Config) ActiveDeletePrefix() string {

@@ -1176,17 +1176,20 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	// Stats API
 	if cfg.Stats.Enabled {
 		statsAPI := stats.NewAPI(stats.APIConfig{
-			Registry:        registry,
-			Manifest:        store.Manifest(),
-			CostCalc:        costCalc,
-			ClassTracker:    classTracker,
-			LabelIndex:      store.LabelIndex(),
-			SchemaRegistry:  store.SchemaRegistry(),
-			Resolver:        resolver,
-			Policy:          policy,
-			Mode:            "traces",
-			Bucket:          cfg.S3.Bucket,
-			BloomColumns:    cfg.ActiveBloomColumns(),
+			Registry:       registry,
+			Manifest:       store.Manifest(),
+			CostCalc:       costCalc,
+			ClassTracker:   classTracker,
+			LabelIndex:     store.LabelIndex(),
+			SchemaRegistry: store.SchemaRegistry(),
+			Resolver:       resolver,
+			Policy:         policy,
+			Mode:           "traces",
+			Bucket:         cfg.S3.Bucket,
+			// The schema bloom set the writer/compactor actually emit (Tier-1
+			// dedicated columns + slots + legacy), NOT the bare operator list —
+			// so the Cardinality Explorer's has_bloom reflects what's on disk.
+			BloomColumns:    cfg.WrittenBloomColumns(),
 			BreakdownLabels: cfg.Stats.BreakdownLabels,
 		})
 		statsAPI.Register(mux)
