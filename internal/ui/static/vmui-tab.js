@@ -586,6 +586,8 @@
 
   var lhWrapper = null;
   var hiddenEls = [];
+  var lhActive = false;    // currently showing the Lakehouse view?
+  var appObserved = null;  // app container the re-assert observer is attached to
 
   function isHeaderOrNav(node) {
     if (node.tagName === "HEADER") return true;
@@ -595,12 +597,17 @@
     return false;
   }
 
-  function showLakehouse() {
+  // showLakehouse hides vmui's own views and shows our wrapper. forceRender
+  // re-renders the dashboard content (used on an explicit tab click); on a
+  // passive re-assert (React re-rendered under us) we only re-render when our
+  // wrapper was detached, to avoid a refetch storm.
+  function showLakehouse(forceRender) {
     var root = document.getElementById("root");
     if (!root || !root.firstElementChild) return;
     var app = root.firstElementChild;
 
-    // Restore any previously hidden elements first.
+    // Restore any previously hidden elements first (refs may be stale after a
+    // React re-render).
     hiddenEls.forEach(function (e) { e.style.display = e._lhOldDisplay || ""; });
     hiddenEls = [];
 
@@ -613,20 +620,52 @@
       hiddenEls.push(child);
     });
 
-    if (!lhWrapper) {
+    // (Re)create the wrapper if absent or if React detached it.
+    var fresh = false;
+    if (!lhWrapper || !lhWrapper.isConnected) {
       lhWrapper = el("div", { id: "lh-wrapper", style: "flex:1;overflow:auto;min-height:0" });
       app.appendChild(lhWrapper);
+      fresh = true;
     }
     lhWrapper.style.display = "";
-    renderLakehouse(lhWrapper);
+    lhActive = true;
+    if (fresh || forceRender) renderLakehouse(lhWrapper);
+
+    startAppObserver(app); // keep the view asserted across React re-renders
   }
 
   function hideLakehouse() {
+    lhActive = false;
     if (lhWrapper) lhWrapper.style.display = "none";
     hiddenEls.forEach(function (e) {
       e.style.display = e._lhOldDisplay || "";
     });
     hiddenEls = [];
+  }
+
+  // ---- Re-assert across React re-renders ----
+  // After a reload vmui renders its Query view into the app container
+  // asynchronously — often AFTER we've restored Lakehouse — which un-hides
+  // vmui's content and can detach our wrapper. While the Lakehouse view is
+  // active we watch the app container's direct children and re-hide vmui's
+  // content. Gated on lhActive so it never fights the user once they navigate
+  // to a real vmui tab. showLakehouse(false) makes no childList change when the
+  // wrapper is already attached, so this cannot loop.
+  var reassertScheduled = false;
+  function scheduleReassert() {
+    if (reassertScheduled) return;
+    reassertScheduled = true;
+    setTimeout(function () {
+      reassertScheduled = false;
+      if (lhActive) showLakehouse(false);
+    }, 40);
+  }
+  function startAppObserver(app) {
+    if (appObserved === app) return; // already watching this container
+    appObserved = app;
+    new MutationObserver(function () {
+      if (lhActive) scheduleReassert();
+    }).observe(app, { childList: true });
   }
 
   // ---- Tab injection + click handling ----
@@ -654,7 +693,7 @@
         child.classList.remove("active");
       });
       tab.classList.add("active");
-      showLakehouse();
+      showLakehouse(true);
     }
 
     tab.addEventListener("click", function (e) {
@@ -677,12 +716,19 @@
 
     nav.appendChild(tab);
 
-    // On (re)load, if Lakehouse was the last-active tab, restore it. Defer so
-    // vmui has finished rendering its content area (showLakehouse hides those).
+    // On (re)load, if Lakehouse was the last-active tab, restore it. vmui mounts
+    // its React view asynchronously, so retry until the app container exists and
+    // the view sticks (lhActive); once shown, startAppObserver keeps re-asserting
+    // as React settles. Self-terminates on first success, so a later navigation
+    // away is never overridden.
     var wasActive = false;
     try { wasActive = localStorage.getItem(ACTIVE_KEY) === "1"; } catch (x) { /* ignore */ }
     if (wasActive) {
-      setTimeout(activateLakehouse, 0);
+      var rtries = 0;
+      (function tryRestore() {
+        activateLakehouse();
+        if (!lhActive && ++rtries < 40) setTimeout(tryRestore, 75);
+      })();
     }
   }
 
