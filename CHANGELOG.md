@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.0] - 2026-06-11
+
 ### Added
 
 - **Planned-fetch v2 slices 0+1: per-signal footer prefetch, span concurrency k=16, per-SPAN cap, gap discipline, and the S\* whole-file ladder (both modules; every slice-1 lever is opt-in-planned-path only — the `window` default is untouched).** From the approved v2 research (`docs/architecture/planned-fetch-v2-research.md`), attacking the live verdict's root causes (13–15 spans/file drained 4-at-a-time; the per-plan cap punishing exactly the coalescing that cuts GETs; 2 serial open RTTs per cold file):
