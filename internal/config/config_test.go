@@ -956,69 +956,6 @@ lakehouse:
 	}
 }
 
-func TestValidate_ExtraPromotedValid(t *testing.T) {
-	cfg := Default()
-	cfg.Mode = ModeLogs
-	cfg.S3.Bucket = "test"
-	cfg.Schema.ExtraPromoted = []ExtraPromotedColumn{
-		{Name: "http.status_code", Type: "string", Bloom: true},
-		{Name: "customer_id", Type: "int64", Bloom: false},
-		{Name: "latency", Type: "float64"},
-		{Name: "count", Type: "int32"},
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("expected valid: %v", err)
-	}
-}
-
-func TestValidate_ExtraPromotedEmptyName(t *testing.T) {
-	cfg := Default()
-	cfg.Mode = ModeLogs
-	cfg.S3.Bucket = "test"
-	cfg.Schema.ExtraPromoted = []ExtraPromotedColumn{
-		{Name: "", Type: "string"},
-	}
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for empty extra promoted name")
-	}
-}
-
-func TestValidate_ExtraPromotedInvalidType(t *testing.T) {
-	cfg := Default()
-	cfg.Mode = ModeLogs
-	cfg.S3.Bucket = "test"
-	cfg.Schema.ExtraPromoted = []ExtraPromotedColumn{
-		{Name: "field", Type: "boolean"},
-	}
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for invalid extra promoted type")
-	}
-}
-
-func TestMergeConfig_SchemaFields(t *testing.T) {
-	base := Default()
-	overlay := &Config{}
-	overlay.Schema.ExtraPromoted = []ExtraPromotedColumn{
-		{Name: "http.status_code", Type: "string", Bloom: true},
-		{Name: "customer_id", Type: "string", Bloom: false},
-	}
-
-	result := mergeConfig(base, overlay)
-
-	if len(result.Schema.ExtraPromoted) != 2 {
-		t.Fatalf("ExtraPromoted len = %d, want 2", len(result.Schema.ExtraPromoted))
-	}
-	if result.Schema.ExtraPromoted[0].Name != "http.status_code" {
-		t.Errorf("ExtraPromoted[0].Name = %q", result.Schema.ExtraPromoted[0].Name)
-	}
-	if !result.Schema.ExtraPromoted[0].Bloom {
-		t.Error("ExtraPromoted[0].Bloom should be true")
-	}
-	if result.Schema.ExtraPromoted[1].Name != "customer_id" {
-		t.Errorf("ExtraPromoted[1].Name = %q", result.Schema.ExtraPromoted[1].Name)
-	}
-}
-
 func TestDefaultConfig_DeleteConfig(t *testing.T) {
 	cfg := Default()
 
@@ -1054,23 +991,6 @@ func TestDefaultConfig_DeleteConfig(t *testing.T) {
 	}
 	if cfg.Delete.LifecycleRules != nil {
 		t.Errorf("default Delete.LifecycleRules should be nil, got %v", cfg.Delete.LifecycleRules)
-	}
-}
-
-func TestMergeConfig_EmptySchemaPreservesBase(t *testing.T) {
-	base := Default()
-	base.Schema.ExtraPromoted = []ExtraPromotedColumn{
-		{Name: "existing", Type: "string"},
-	}
-	overlay := &Config{}
-
-	result := mergeConfig(base, overlay)
-
-	if len(result.Schema.ExtraPromoted) != 1 {
-		t.Fatalf("ExtraPromoted should be preserved, got %d", len(result.Schema.ExtraPromoted))
-	}
-	if result.Schema.ExtraPromoted[0].Name != "existing" {
-		t.Errorf("Name = %q, want existing", result.Schema.ExtraPromoted[0].Name)
 	}
 }
 
@@ -1170,49 +1090,6 @@ func TestMergeConfig_CompressionLevel(t *testing.T) {
 	result := mergeConfig(base, overlay)
 	if result.Insert.CompressionLevel != 11 {
 		t.Errorf("CompressionLevel = %d, want 11", result.Insert.CompressionLevel)
-	}
-}
-
-func TestLoad_YAMLWithSchemaConfig(t *testing.T) {
-	content := `
-lakehouse:
-  mode: logs
-  s3:
-    bucket: test-bucket
-  schema:
-    extra_promoted:
-      - name: http.status_code
-        type: string
-        bloom: true
-      - name: customer_id
-        type: string
-        bloom: false
-`
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	if len(cfg.Schema.ExtraPromoted) != 2 {
-		t.Fatalf("ExtraPromoted len = %d, want 2", len(cfg.Schema.ExtraPromoted))
-	}
-	if cfg.Schema.ExtraPromoted[0].Name != "http.status_code" {
-		t.Errorf("Name = %q", cfg.Schema.ExtraPromoted[0].Name)
-	}
-	if cfg.Schema.ExtraPromoted[0].Type != "string" {
-		t.Errorf("Type = %q", cfg.Schema.ExtraPromoted[0].Type)
-	}
-	if !cfg.Schema.ExtraPromoted[0].Bloom {
-		t.Error("Bloom should be true")
-	}
-	if cfg.Schema.ExtraPromoted[1].Name != "customer_id" {
-		t.Errorf("Name = %q", cfg.Schema.ExtraPromoted[1].Name)
 	}
 }
 

@@ -54,7 +54,6 @@ type Config struct {
 	Query       QueryConfig       `yaml:"query"`
 	Insert      InsertConfig      `yaml:"insert"`
 	Select      SelectConfig      `yaml:"select"`
-	Schema      SchemaConfig      `yaml:"schema"`
 	Tenant      TenantConfig      `yaml:"tenant"`
 	Compaction  CompactionConfig  `yaml:"compaction"`
 	Delete      DeleteConfig      `yaml:"delete"`
@@ -826,16 +825,6 @@ type RetentionRule struct {
 	Keep  string            `yaml:"keep"`
 }
 
-type ExtraPromotedColumn struct {
-	Name  string `yaml:"name"`
-	Type  string `yaml:"type"`
-	Bloom bool   `yaml:"bloom"`
-}
-
-type SchemaConfig struct {
-	ExtraPromoted []ExtraPromotedColumn `yaml:"extra_promoted"`
-}
-
 type RoleProfileRef struct {
 	Profile Profile `yaml:"profile"`
 }
@@ -1326,17 +1315,6 @@ func (c *Config) validateEnums() error {
 	case "preferred", "strict", "":
 	default:
 		return fmt.Errorf("--lakehouse.peer.az-mode must be preferred or strict, got %q", c.Peer.AZMode)
-	}
-
-	for _, ep := range c.Schema.ExtraPromoted {
-		if ep.Name == "" {
-			return fmt.Errorf("--lakehouse.schema.extra-promoted: name is required")
-		}
-		switch ep.Type {
-		case "string", "int32", "int64", "float64":
-		default:
-			return fmt.Errorf("--lakehouse.schema.extra-promoted %q: type must be string, int32, int64, or float64; got %q", ep.Name, ep.Type)
-		}
 	}
 
 	switch c.Topology {
@@ -2066,11 +2044,6 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Select.CrossAZFallback {
 		base.Select.CrossAZFallback = true
-	}
-
-	// Schema
-	if len(overlay.Schema.ExtraPromoted) > 0 {
-		base.Schema.ExtraPromoted = overlay.Schema.ExtraPromoted
 	}
 
 	// Compaction

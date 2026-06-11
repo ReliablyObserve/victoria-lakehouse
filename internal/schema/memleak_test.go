@@ -141,41 +141,6 @@ func TestMemLeak_Registry_FormatField(t *testing.T) {
 	}
 }
 
-func TestMemLeak_Registry_WithExtraPromoted(t *testing.T) {
-	extra := []ExtraPromoted{
-		{Name: "custom.field1", Type: "string", Bloom: true},
-		{Name: "custom.field2", Type: "int64", Bloom: false},
-		{Name: "custom.field3", Type: "bool", Bloom: false},
-	}
-
-	// Warm up
-	for i := 0; i < 20; i++ {
-		r := NewRegistry(LogsProfile, extra...)
-		_ = r.IsPromoted("custom.field1")
-	}
-	schemaForceGC()
-
-	before := schemaHeapInUse()
-
-	const iterations = 10000
-	for i := 0; i < iterations; i++ {
-		r := NewRegistry(LogsProfile, extra...)
-		_ = r.ResolveToParquet("custom.field1")
-		_ = r.IsPromoted("custom.field2")
-		ep := r.ExtraPromoted()
-		_ = len(ep)
-	}
-
-	schemaForceGC()
-	after := schemaHeapInUse()
-
-	growth := int64(after) - int64(before)
-	maxAllowed := int64(10 * 1024 * 1024)
-	if growth > maxAllowed {
-		t.Errorf("heap grew %d bytes over %d NewRegistry+ExtraPromoted cycles (max %d)", growth, iterations, maxAllowed)
-	}
-}
-
 func TestMemLeak_FieldType_FormatValue(t *testing.T) {
 	types := []struct {
 		ft  FieldType
