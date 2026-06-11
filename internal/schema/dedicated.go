@@ -254,3 +254,95 @@ func (r *SlotResolver) Mapping() SlotMapping {
 	}
 	return m
 }
+
+// SetLogSlot writes value into the LogRow spare slot column named slot
+// (ded_s01..ded_sNN). Unknown slot names are ignored. Used by ingest after the
+// SlotResolver maps a configured custom attribute to its slot.
+func SetLogSlot(row *LogRow, slot, value string) {
+	switch slot {
+	case "ded_s01":
+		row.DedS01 = value
+	case "ded_s02":
+		row.DedS02 = value
+	case "ded_s03":
+		row.DedS03 = value
+	case "ded_s04":
+		row.DedS04 = value
+	case "ded_s05":
+		row.DedS05 = value
+	case "ded_s06":
+		row.DedS06 = value
+	case "ded_s07":
+		row.DedS07 = value
+	case "ded_s08":
+		row.DedS08 = value
+	}
+}
+
+// LogSlotValue reads the value of a LogRow spare slot column (for read-path
+// remap). Returns "" for unknown/empty slots.
+func LogSlotValue(row *LogRow, slot string) string {
+	switch slot {
+	case "ded_s01":
+		return row.DedS01
+	case "ded_s02":
+		return row.DedS02
+	case "ded_s03":
+		return row.DedS03
+	case "ded_s04":
+		return row.DedS04
+	case "ded_s05":
+		return row.DedS05
+	case "ded_s06":
+		return row.DedS06
+	case "ded_s07":
+		return row.DedS07
+	case "ded_s08":
+		return row.DedS08
+	}
+	return ""
+}
+
+// SetTraceSlot / TraceSlotValue mirror the LogRow helpers for TraceRow.
+func SetTraceSlot(row *TraceRow, slot, value string) {
+	switch slot {
+	case "ded_s01":
+		row.DedS01 = value
+	case "ded_s02":
+		row.DedS02 = value
+	case "ded_s03":
+		row.DedS03 = value
+	case "ded_s04":
+		row.DedS04 = value
+	case "ded_s05":
+		row.DedS05 = value
+	case "ded_s06":
+		row.DedS06 = value
+	case "ded_s07":
+		row.DedS07 = value
+	case "ded_s08":
+		row.DedS08 = value
+	}
+}
+
+func TraceSlotValue(row *TraceRow, slot string) string {
+	switch slot {
+	case "ded_s01":
+		return row.DedS01
+	case "ded_s02":
+		return row.DedS02
+	case "ded_s03":
+		return row.DedS03
+	case "ded_s04":
+		return row.DedS04
+	case "ded_s05":
+		return row.DedS05
+	case "ded_s06":
+		return row.DedS06
+	case "ded_s07":
+		return row.DedS07
+	case "ded_s08":
+		return row.DedS08
+	}
+	return ""
+}

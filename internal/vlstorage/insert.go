@@ -312,9 +312,25 @@ func mapFieldToRow(row *schema.LogRow, name, value string) {
 	case "process.runtime.version":
 		row.ProcessRuntimeVer = strings.Clone(value)
 	default:
+		// Tier-2: an operator-configured custom attribute routes to a spare
+		// slot column (and out of the map). Falls through to the map when no
+		// resolver is set or the key isn't configured.
+		if slot, ok := activeSlotResolver.SlotForName(name); ok {
+			schema.SetLogSlot(row, slot, strings.Clone(value))
+			return
+		}
 		if row.LogAttributes == nil {
 			row.LogAttributes = make(map[string]string)
 		}
 		row.LogAttributes[strings.Clone(name)] = strings.Clone(value)
 	}
 }
+
+// activeSlotResolver holds the process-wide Tier-2 custom-attribute slot
+// binding, set once at startup from config via SetSlotResolver. nil = no custom
+// promotions (all SlotResolver methods are nil-safe).
+var activeSlotResolver *schema.SlotResolver
+
+// SetSlotResolver installs the Tier-2 slot resolver (built from
+// config.ActivePromotedAttributes at startup). Safe to call with nil.
+func SetSlotResolver(r *schema.SlotResolver) { activeSlotResolver = r }
