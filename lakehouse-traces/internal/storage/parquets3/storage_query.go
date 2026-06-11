@@ -1589,6 +1589,11 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 	buf = appendTraceDedicated(buf, "resource_attr:k8s.cluster.name", r.K8sClusterName)
 	buf = appendTraceDedicated(buf, "resource_attr:telemetry.sdk.name", r.TelemetrySDKName)
 	buf = appendTraceDedicated(buf, "resource_attr:cloud.account.id", r.CloudAccountID)
+	for _, slot := range schema.DedicatedSlotColumns {
+		if name, ok := activeSlotResolver.NameForSlot(slot); ok {
+			buf = appendTraceDedicated(buf, name, schema.TraceSlotValue(r, slot))
+		}
+	}
 	for k, v := range r.ResourceAttributes {
 		if !tracePromotedResourceKeys[k] {
 			buf = append(buf, field{k, v})

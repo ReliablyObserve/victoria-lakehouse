@@ -1402,6 +1402,15 @@ func logRowToFields(r *schema.LogRow, buf []field) []field {
 	buf = appendIfSet(buf, "host.arch", r.HostArch)
 	buf = appendIfSet(buf, "process.runtime.name", r.ProcessRuntimeName)
 	buf = appendIfSet(buf, "process.runtime.version", r.ProcessRuntimeVer)
+	// Tier-2 custom slots → emit under the operator-configured name (active
+	// resolver; correct for buffer rows and current-config files). File reads
+	// with a different historical config remap via the per-file footer KV in
+	// the columnar path.
+	for _, slot := range schema.DedicatedSlotColumns {
+		if name, ok := activeSlotResolver.NameForSlot(slot); ok {
+			buf = appendIfSet(buf, name, schema.LogSlotValue(r, slot))
+		}
+	}
 	for k, v := range r.ResourceAttributes {
 		buf = append(buf, field{k, v})
 	}
@@ -1466,6 +1475,11 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 	buf = appendIfSet(buf, "k8s.cluster.name", r.K8sClusterName)
 	buf = appendIfSet(buf, "telemetry.sdk.name", r.TelemetrySDKName)
 	buf = appendIfSet(buf, "cloud.account.id", r.CloudAccountID)
+	for _, slot := range schema.DedicatedSlotColumns {
+		if name, ok := activeSlotResolver.NameForSlot(slot); ok {
+			buf = appendIfSet(buf, name, schema.TraceSlotValue(r, slot))
+		}
+	}
 	for k, v := range r.ResourceAttributes {
 		if !tracePromotedResourceKeys[k] {
 			buf = append(buf, field{k, v})

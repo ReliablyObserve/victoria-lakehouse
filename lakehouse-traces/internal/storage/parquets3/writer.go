@@ -509,7 +509,7 @@ func writeLogsParquet(rows []schema.LogRow, rowGroupSize int, compressionLevel i
 	opts := []parquet.WriterOption{
 		parquet.Compression(codec),
 		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
-		parquet.BloomFilters(bloomFilters(schema.LogBloomColumns())...),
+		parquet.BloomFilters(bloomFilters(schema.LogBloomColumns(activeSlotResolver.BloomSlots()...))...),
 	}
 	for rgIdx := 0; rgIdx*rowGroupSize < len(rows); rgIdx++ {
 		start := rgIdx * rowGroupSize
@@ -551,7 +551,7 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 	opts := []parquet.WriterOption{
 		parquet.Compression(codec),
 		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
-		parquet.BloomFilters(bloomFilters(schema.TraceBloomColumns())...),
+		parquet.BloomFilters(bloomFilters(schema.TraceBloomColumns(activeSlotResolver.BloomSlots()...))...),
 	}
 	for rgIdx := 0; rgIdx*rowGroupSize < len(rows); rgIdx++ {
 		start := rgIdx * rowGroupSize
@@ -751,6 +751,11 @@ func PartitionKey(prefix, partition, batchID string) string {
 // bloomFilters builds SplitBlockFilter columns (10 bits/value ≈ 1% FPP) from the
 // strict per-signal bloom set in internal/schema (cardinality-aligned: high-card
 // equality-queried columns only).
+var activeSlotResolver *schema.SlotResolver
+
+// SetSlotResolver installs the Tier-2 slot resolver for the traces writer.
+func SetSlotResolver(r *schema.SlotResolver) { activeSlotResolver = r }
+
 func bloomFilters(cols []string) []parquet.BloomFilterColumn {
 	bf := make([]parquet.BloomFilterColumn, 0, len(cols))
 	for _, c := range cols {
