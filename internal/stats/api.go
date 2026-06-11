@@ -572,8 +572,10 @@ func (a *API) handleTenantDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.FileSizeHistogram = &FileSizeHistogram{Buckets: bucketLabels, Counts: counts}
 
-		// Partitions for this tenant.
-		resp.PartitionList = a.cfg.Manifest.GetPartitions("", "")
+		// Partitions for THIS tenant (GetPartitions("","") is global — it
+		// returns the same list for every tenant; GetPartitionsForTenant scopes
+		// the file/byte counts to accountID/projectID).
+		resp.PartitionList = a.cfg.Manifest.GetPartitionsForTenant(accountID, projectID)
 
 		if entry.TotalRows > 0 {
 			resp.AvgRowsPerFile = entry.TotalRows / entry.TotalFiles

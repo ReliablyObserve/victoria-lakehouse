@@ -1824,6 +1824,69 @@ func (m *Manifest) GetPartitions(startDate, endDate string) []PartitionSummary {
 	return result
 }
 
+// GetPartitionsForTenant is the tenant-scoped GetPartitions: it counts only files
+// whose S3 key belongs to accountID/projectID, so a tenant's detail view shows
+// ITS partitions with per-tenant file/byte counts. The global GetPartitions("","")
+// returned the SAME list for every tenant (it has no tenant filter) — this is the
+// method the tenant-detail drill-down must use instead.
+func (m *Manifest) GetPartitionsForTenant(accountID, projectID string) []PartitionSummary {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	prefix := accountID + "/" + projectID + "/"
+	byDate := make(map[string]*PartitionSummary)
+
+	for partition, files := range m.files {
+		var dateStr, hourStr string
+		for _, p := range strings.Split(partition, "/") {
+			if v, ok := strings.CutPrefix(p, "dt="); ok {
+				dateStr = v
+			}
+			if v, ok := strings.CutPrefix(p, "hour="); ok {
+				hourStr = v
+			}
+		}
+		if dateStr == "" {
+			continue
+		}
+		var fileCount int
+		var totalBytes int64
+		for _, f := range files {
+			if !strings.HasPrefix(f.Key, prefix) {
+				continue
+			}
+			fileCount++
+			totalBytes += f.Size
+		}
+		if fileCount == 0 {
+			continue
+		}
+		ps, ok := byDate[dateStr]
+		if !ok {
+			ps = &PartitionSummary{Date: dateStr}
+			byDate[dateStr] = ps
+		}
+		ps.Files += fileCount
+		ps.Bytes += totalBytes
+		if hourStr != "" {
+			var hour int
+			if _, err := fmt.Sscanf(hourStr, "%d", &hour); err == nil {
+				ps.Hours = append(ps.Hours, hour)
+			}
+		}
+	}
+
+	result := make([]PartitionSummary, 0, len(byDate))
+	for _, ps := range byDate {
+		sort.Ints(ps.Hours)
+		result = append(result, *ps)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Date < result[j].Date
+	})
+	return result
+}
+
 // TenantSummary holds per-tenant aggregate stats derived from manifest S3 keys.
 type TenantSummary struct {
 	AccountID  string

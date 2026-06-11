@@ -18,17 +18,13 @@ func extractLogLabels(rows []schema.LogRow) map[string][]string {
 	}
 	sets := map[string]map[string]bool{}
 	for i := range rows {
-		addLabel(sets, "service.name", rows[i].ServiceName)
-		addLabel(sets, "severity_text", rows[i].SeverityText)
-		addLabel(sets, "k8s.namespace.name", rows[i].K8sNamespaceName)
-		addLabel(sets, "k8s.pod.name", rows[i].K8sPodName)
-		addLabel(sets, "k8s.deployment.name", rows[i].K8sDeploymentName)
-		addLabel(sets, "k8s.node.name", rows[i].K8sNodeName)
-		addLabel(sets, "deployment.environment", rows[i].DeployEnv)
-		addLabel(sets, "cloud.region", rows[i].CloudRegion)
-		addLabel(sets, "host.name", rows[i].HostName)
-		// trace_id omitted: high-cardinality (unique per row), always exceeds
-		// maxLabelsPerField cap — bloom filters handle it instead.
+		// Shared dimensional set (schema.LogLabelColumns) — same columns the
+		// per-value aggregates use; includes the Tier-1 dedicated dict columns
+		// the pre-#167 hardcoded list missed. High-card id-like columns
+		// (trace_id, container.id) are absent by design — blooms handle them.
+		for _, c := range schema.LogLabelColumns {
+			addLabel(sets, c.Name, c.Get(&rows[i]))
+		}
 	}
 	// Per Phase 1, every flushed file holds rows from exactly one tenant.
 	addLabel(sets, "account_id", strconv.FormatUint(uint64(rows[0].AccountID), 10))
@@ -42,9 +38,9 @@ func extractTraceLabels(rows []schema.TraceRow) map[string][]string {
 	}
 	sets := map[string]map[string]bool{}
 	for i := range rows {
-		addLabel(sets, "service.name", rows[i].ServiceName)
-		addLabel(sets, "span.name", rows[i].SpanName)
-		// trace_id omitted: high-cardinality, bloom filters handle it.
+		for _, c := range schema.TraceLabelColumns {
+			addLabel(sets, c.Name, c.Get(&rows[i]))
+		}
 	}
 	addLabel(sets, "account_id", strconv.FormatUint(uint64(rows[0].AccountID), 10))
 	addLabel(sets, "project_id", strconv.FormatUint(uint64(rows[0].ProjectID), 10))
