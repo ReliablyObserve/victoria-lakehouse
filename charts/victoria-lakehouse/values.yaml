@@ -158,10 +158,38 @@ lakehouseConfig:
     # ~46 MB/query of never-read window bytes on filtered counts. Full-scan
     # (non-projected) reads always use the window stack.
     projected_fetch_mode: window
-    # -- Per-file byte cap for the plan-then-fetch projected read (0 = use
-    # default 16MB). Plans above the cap fall back to the window path for
-    # that file (lakehouse_s3_projected_fetch_fallback_total{reason="cap"}).
+    # -- DEPRECATED: the per-PLAN cap is retired (planned-fetch v2 slice 1
+    # cap re-scope). Kept parsed for compatibility; plans are admitted via
+    # the memory ledger (absolute ceiling = the file size) and bounded
+    # per-SPAN by planned_fetch_span_cap_bytes below.
     projected_fetch_max_bytes: 0
+    # -- Concurrent span GETs per file on the PLANNED projected-read path:
+    # min(k, spans) in flight (0 = default 16). The planned-v1 live verdict
+    # measured 13-15 spans/file drained 4-at-a-time into ~4 serial RTT
+    # waves; k=16 fetches a typical per-file plan in one wave while
+    # 8 file workers x 16 stays at the HTTP/1.1 connection-pool ceiling.
+    # Only the opt-in planned mode reads this; window mode is untouched.
+    planned_fetch_max_inflight: 0
+    # -- Per-SPAN byte cap on the PLANNED projected-read path (0 = default
+    # 16MB) — ClickHouse's bytes_per_read_task scope: a coalesced span
+    # above the cap is SPLIT into cap-sized concurrent GETs instead of the
+    # plan falling back to the window path. Only planned mode reads this.
+    planned_fetch_span_cap_bytes: 0
+    # -- S* whole-file threshold for the PLANNED projected-read path (0 =
+    # per-signal default: logs 5MB, traces 8MB). A cold-footer file below
+    # the threshold is downloaded whole through the smart-cache path — the
+    # download doubles as the footer-cache warmup — instead of paying
+    # footer-fetch + span round trips; files at/above it fetch the footer
+    # and plan exact spans. Only planned mode reads this.
+    whole_file_threshold_bytes: 0
+    # -- Tail range-read size for parquet footer prefetch/fetch (0 =
+    # per-signal default: logs 128KB, traces 640KB). The defaults differ
+    # because the footer geometry does: every traces compacted-L2 footer
+    # measures 467-519KB (trace index in footer key-value metadata) and
+    # could never fit the old shared 64KB constant, so traces L2 projected
+    # reads always fell back to full downloads. Logs footers are ~50KB;
+    # 128KB also covers the page-index stripe in the same tail GET.
+    footer_prefetch_bytes: 0
     # -- RECOMMENDED bucket lifecycle policy (apply OUT-OF-BAND via aws CLI,
     # Terraform, or your S3 provider's UI — Helm does not create bucket
     # lifecycle rules). Election-free spec §3.2 case 14 + Q5: the orphan

@@ -73,7 +73,31 @@
               "type": "integer",
               "minimum": 0,
               "default": 0,
-              "description": "Per-file byte cap for the plan-then-fetch projected read; plans above the cap fall back to the window path (0 = default 16MB)"
+              "description": "DEPRECATED: the per-plan cap is retired (kept parsed for compatibility; plans are admitted via the memory ledger and capped per-SPAN by planned_fetch_span_cap_bytes)"
+            },
+            "planned_fetch_max_inflight": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "description": "Concurrent span GETs per file on the planned projected-read path: min(k, spans) in flight (0 = default 16)"
+            },
+            "planned_fetch_span_cap_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "description": "Per-SPAN byte cap on the planned projected-read path; coalesced spans above it are split into cap-sized concurrent GETs (0 = default 16MB)"
+            },
+            "whole_file_threshold_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "description": "S*: on the planned projected-read path, a cold-footer file below this size is downloaded whole (the download warms the footer cache) instead of footer-fetch + spans (0 = per-signal default: logs 5MB, traces 8MB)"
+            },
+            "footer_prefetch_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "description": "Tail range-read size for parquet footer prefetch/fetch (0 = per-signal default: logs 128KB, traces 640KB; traces L2 footers carry a 467-519KB trace index)"
             }
           }
         },

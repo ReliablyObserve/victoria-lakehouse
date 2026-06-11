@@ -444,7 +444,7 @@ func TestS3_prefetchFooters_AlreadyCached(t *testing.T) {
 	footerCache.Put(key, &CachedFooter{FileSize: fi.Size})
 
 	// Should skip already-cached files
-	fetched := prefetchFooters(context.Background(), pool, []manifest.FileInfo{fi}, footerCache, 4)
+	fetched := prefetchFooters(context.Background(), pool, []manifest.FileInfo{fi}, footerCache, 4, 0)
 	if fetched != 0 {
 		t.Errorf("expected 0 fetched (already cached), got %d", fetched)
 	}
@@ -468,7 +468,7 @@ func TestS3_prefetchFooters_SmallFiles(t *testing.T) {
 		t.Skip("file too large for this test")
 	}
 
-	fetched := prefetchFooters(context.Background(), pool, []manifest.FileInfo{fi}, footerCache, 4)
+	fetched := prefetchFooters(context.Background(), pool, []manifest.FileInfo{fi}, footerCache, 4, 0)
 	if fetched != 0 {
 		t.Errorf("expected 0 fetched (small file), got %d", fetched)
 	}
@@ -493,7 +493,7 @@ func TestS3_prefetchFooters_CancelledContext(t *testing.T) {
 	cancel() // Cancel immediately
 
 	fi := manifest.FileInfo{Key: key, Size: int64(len(data))}
-	fetched := prefetchFooters(ctx, pool, []manifest.FileInfo{fi}, footerCache, 4)
+	fetched := prefetchFooters(ctx, pool, []manifest.FileInfo{fi}, footerCache, 4, 0)
 	_ = fetched
 }
 

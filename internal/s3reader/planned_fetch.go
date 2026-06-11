@@ -24,11 +24,25 @@ type fetchedSpan struct {
 	data []byte
 }
 
-// plannedFetchMaxInFlight bounds concurrent span GETs per file. Spans are
-// few after coalescing (typically 1-4 for a projected read), so a small
-// constant keeps per-file fanout bounded while still overlapping the
-// round trips; the cross-file bound stays with the file-worker pool.
-const plannedFetchMaxInFlight = 4
+// plannedFetchDefaultMaxInFlight bounds concurrent span GETs per file when
+// the caller does not configure one (s3.planned_fetch_max_inflight). The
+// live planned-v1 verdict measured 13-15 spans/file on real L2 geometry
+// being drained 4-at-a-time into ~4 serial RTT waves per file; the offline
+// simulator named span concurrency the single biggest v2 lever. k =
+// min(16, spans): every span of a typical per-file plan is in flight in
+// ONE wave, while the cross-file bound stays with the file-worker pool
+// (8 workers x 16 spans = 128 = MaxIdleConnsPerHost, the true HTTP/1.1
+// parallelism ceiling against S3/MinIO).
+const plannedFetchDefaultMaxInFlight = 16
+
+// plannedFetchDefaultSpanCap is the per-SPAN byte cap when the caller does
+// not configure one (s3.planned_fetch_span_cap_bytes). This is ClickHouse's
+// bytes_per_read_task scope (16 MiB PER read task, NOT per plan): a merged
+// span larger than the cap is SPLIT into cap-sized spans fetched
+// concurrently, instead of the whole plan being rejected. Plan-level
+// admission is the memory ledger's job (the worker already holds an
+// fi.Size admission that subsumes any plan).
+const plannedFetchDefaultSpanCap = 16 * 1024 * 1024
 
 // PlannedFetchReaderAt is the CH-style plan-then-fetch reader for
 // column-projected parquet reads (s3-optimization research, Tier-2
@@ -63,6 +77,8 @@ type PlannedFetchReaderAt struct {
 	inner    ReaderAtSizer
 	fileSize int64
 	gap      int64
+	spanCap  int64 // per-SPAN byte cap; merged spans above it are SPLIT
+	maxInFl  int   // concurrent span GETs: min(maxInFl, spans) in flight
 	charge   func(n int64) (release func())
 
 	mu       sync.RWMutex
@@ -83,22 +99,64 @@ type PlannedFetchReaderAt struct {
 // coalesced span bytes BEFORE downloading; its return is invoked when the
 // spans are released (Close, or Fetch failure). nil means no accounting.
 func NewPlannedFetchReaderAt(inner ReaderAtSizer, fileSize, gapBytes int64, charge func(n int64) func()) *PlannedFetchReaderAt {
+	return &PlannedFetchReaderAt{
+		inner:    inner,
+		fileSize: fileSize,
+		gap:      clampPlannedGap(gapBytes, fileSize),
+		spanCap:  plannedFetchDefaultSpanCap,
+		maxInFl:  plannedFetchDefaultMaxInFlight,
+		charge:   charge,
+	}
+}
+
+// clampPlannedGap bounds a coalescing gap by file size — max(64KB, size/8),
+// the same clamp as the window path's gap — and by the 16MB AnyBlob
+// cost-throughput-optimal upper bound, so small files keep precise reads.
+func clampPlannedGap(gapBytes, fileSize int64) int64 {
 	if gapBytes < 0 {
 		gapBytes = 0
 	}
 	if sizeCap := max64pf(64<<10, fileSize/8); gapBytes > sizeCap {
 		gapBytes = sizeCap
 	}
-	const maxGap = 16 * 1024 * 1024 // AnyBlob cost-throughput-optimal upper bound
+	const maxGap = 16 * 1024 * 1024
 	if gapBytes > maxGap {
 		gapBytes = maxGap
 	}
-	return &PlannedFetchReaderAt{
-		inner:    inner,
-		fileSize: fileSize,
-		gap:      gapBytes,
-		charge:   charge,
+	return gapBytes
+}
+
+// SetGap replaces the view's coalescing gap (file-size-clamped like the
+// constructor). Called by the gap-discipline pricing in armProjectedPlan
+// BEFORE Fetch with the cheapest candidate gap.
+func (r *PlannedFetchReaderAt) SetGap(gapBytes int64) {
+	r.mu.Lock()
+	r.gap = clampPlannedGap(gapBytes, r.fileSize)
+	r.mu.Unlock()
+}
+
+// SetSpanCap sets the per-SPAN byte cap (s3.planned_fetch_span_cap_bytes).
+// Merged spans above the cap are split into cap-sized spans — the CH
+// bytes_per_read_task scope. n <= 0 keeps the 16MB default.
+func (r *PlannedFetchReaderAt) SetSpanCap(n int64) {
+	if n <= 0 {
+		n = plannedFetchDefaultSpanCap
 	}
+	r.mu.Lock()
+	r.spanCap = n
+	r.mu.Unlock()
+}
+
+// SetMaxInFlight sets the concurrent span GET bound for Fetch
+// (s3.planned_fetch_max_inflight); the effective fanout is
+// min(k, spans). k <= 0 keeps the default 16.
+func (r *PlannedFetchReaderAt) SetMaxInFlight(k int) {
+	if k <= 0 {
+		k = plannedFetchDefaultMaxInFlight
+	}
+	r.mu.Lock()
+	r.maxInFl = k
+	r.mu.Unlock()
 }
 
 // Inner returns the raw reader the view was constructed over. The caller
@@ -113,13 +171,27 @@ func (r *PlannedFetchReaderAt) Size() int64 {
 	return r.fileSize
 }
 
-// PlanRanges coalesces ranges with the view's gap and clamps them to the
-// file, returning the spans a Fetch would download and their total bytes.
-// Exposed so the caller can price the plan against its byte cap BEFORE
-// fetching (cap fallback decision) and so tests can assert coalescing.
+// PlanRanges coalesces ranges with the view's gap (splitting spans above
+// the per-span cap) and clamps them to the file, returning the spans a
+// Fetch would download and their total bytes. Exposed so the caller can
+// price the plan BEFORE fetching and so tests can assert coalescing.
 // Metric-free — Fetch ticks the coalescing counters exactly once.
 func (r *PlannedFetchReaderAt) PlanRanges(ranges []Range) ([]Range, int64) {
-	merged, _, _ := coalesceRanges(ranges, r.gap, r.fileSize)
+	r.mu.RLock()
+	gap := r.gap
+	r.mu.RUnlock()
+	return r.PlanRangesAt(ranges, gap)
+}
+
+// PlanRangesAt is PlanRanges at an arbitrary CANDIDATE gap (file-size-
+// clamped like the constructor) — the pure in-memory pricing primitive
+// behind the gap discipline: armProjectedPlan prices the plan at several
+// candidate gaps and Fetches with the cheapest.
+func (r *PlannedFetchReaderAt) PlanRangesAt(ranges []Range, gapBytes int64) ([]Range, int64) {
+	r.mu.RLock()
+	spanCap := r.spanCap
+	r.mu.RUnlock()
+	merged, _, _ := coalesceRanges(ranges, clampPlannedGap(gapBytes, r.fileSize), r.fileSize, spanCap)
 	var total int64
 	for _, m := range merged {
 		total += m.Len
@@ -127,13 +199,16 @@ func (r *PlannedFetchReaderAt) PlanRanges(ranges []Range) ([]Range, int64) {
 	return merged, total
 }
 
-// coalesceRanges clamps ranges to [0, fileSize), drops empty ones, and
-// merges ranges within gap bytes of each other — the same policy as
+// coalesceRanges clamps ranges to [0, fileSize), drops empty ones, merges
+// ranges within gap bytes of each other — the same policy as
 // CoalescingReaderAt.PreloadRanges (mergeRangesWithOverfetch), reused via
-// the readRange representation. Returns the merged spans, the number of
-// round trips saved by merging, and the gap bytes over-fetched only
-// because of merging.
-func coalesceRanges(ranges []Range, gap, fileSize int64) (out []Range, saved int, overfetch int64) {
+// the readRange representation — and then SPLITS any merged span larger
+// than spanCap into cap-sized spans (CH bytes_per_read_task: the cap
+// bounds one GET, never the plan). Returns the spans, the number of round
+// trips saved by merging (counted BEFORE splitting — split spans are
+// adjacent ranges, not extra waste), and the gap bytes over-fetched only
+// because of merging. spanCap <= 0 means no splitting.
+func coalesceRanges(ranges []Range, gap, fileSize, spanCap int64) (out []Range, saved int, overfetch int64) {
 	rrs := make([]readRange, 0, len(ranges))
 	for _, rg := range ranges {
 		off, ln := rg.Off, rg.Len
@@ -150,11 +225,18 @@ func coalesceRanges(ranges []Range, gap, fileSize int64) (out []Range, saved int
 		rrs = append(rrs, readRange{off: off, length: int(ln)})
 	}
 	merged, overfetch := mergeRangesWithOverfetch(rrs, gap)
-	out = make([]Range, len(merged))
-	for i, m := range merged {
-		out[i] = Range{Off: m.off, Len: int64(m.length)}
+	saved = len(rrs) - len(merged)
+	out = make([]Range, 0, len(merged))
+	for _, m := range merged {
+		off, ln := m.off, int64(m.length)
+		for spanCap > 0 && ln > spanCap {
+			out = append(out, Range{Off: off, Len: spanCap})
+			off += spanCap
+			ln -= spanCap
+		}
+		out = append(out, Range{Off: off, Len: ln})
 	}
-	return out, len(rrs) - len(merged), overfetch
+	return out, saved, overfetch
 }
 
 // Fetch downloads the coalesced spans for ranges concurrently and arms the
@@ -163,7 +245,10 @@ func coalesceRanges(ranges []Range, gap, fileSize int64) (out []Range, saved int
 // the underlying reader) and the memory charge is released — the caller
 // decides whether to fall back to the window stack.
 func (r *PlannedFetchReaderAt) Fetch(ctx context.Context, ranges []Range) error {
-	merged, coalesced, overfetch := coalesceRanges(ranges, r.gap, r.fileSize)
+	r.mu.RLock()
+	gap, spanCap, maxInFl := r.gap, r.spanCap, r.maxInFl
+	r.mu.RUnlock()
+	merged, coalesced, overfetch := coalesceRanges(ranges, gap, r.fileSize, spanCap)
 	if len(merged) == 0 {
 		return nil // nothing to plan; stay a passthrough
 	}
@@ -186,7 +271,7 @@ func (r *PlannedFetchReaderAt) Fetch(ctx context.Context, ranges []Range) error 
 
 	spans := make([]fetchedSpan, len(merged))
 	errs := make([]error, len(merged))
-	sem := make(chan struct{}, minInt(plannedFetchMaxInFlight, len(merged)))
+	sem := make(chan struct{}, minInt(maxInFl, len(merged)))
 	var wg sync.WaitGroup
 	for i, m := range merged {
 		if ctx.Err() != nil {

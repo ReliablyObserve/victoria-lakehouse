@@ -187,7 +187,7 @@ func TestGetFieldNames_ServesOnlyFooterBytes_Traces(t *testing.T) {
 	served := mock.bytesServed.Load()
 	rangeReqs := mock.rangeReqs.Load()
 	fullReqs := mock.fullReqs.Load()
-	maxAllowed := int64(footerPrefetchSize) + 4096 // single file footer + slack
+	maxAllowed := s.footerPrefetchBytes() + 4096 // single file footer + slack
 
 	t.Logf("served=%d bytes (range=%d, full=%d), file_size=%d",
 		served, rangeReqs, fullReqs, len(data))

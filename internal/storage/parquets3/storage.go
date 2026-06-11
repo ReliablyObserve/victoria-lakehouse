@@ -927,7 +927,7 @@ func (s *Storage) PrefetchFootersByKeys(ctx context.Context, keys []string, conc
 	if len(files) == 0 {
 		return
 	}
-	fetched := prefetchFooters(ctx, s.pool, files, s.footerCache, concurrency)
+	fetched := prefetchFooters(ctx, s.pool, files, s.footerCache, concurrency, s.footerPrefetchBytes())
 	logger.Infof("footer-cache snapshot prefetch: hydrated %d of %d snapshot keys (manifest matched %d)",
 		fetched, len(keys), len(files))
 }
@@ -1241,7 +1241,7 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 
 	footerEnriched := 0
 	if len(needEnrich) > 0 && s.footerCache != nil {
-		fetched := prefetchFooters(ctx, s.pool, needEnrich, s.footerCache, 0)
+		fetched := prefetchFooters(ctx, s.pool, needEnrich, s.footerCache, 0, s.footerPrefetchBytes())
 		logger.Infof("metadata warmup: prefetched %d footers for %d files", fetched, len(needEnrich))
 
 		for _, fi := range needEnrich {

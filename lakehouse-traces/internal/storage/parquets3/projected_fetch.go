@@ -9,12 +9,43 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 )
 
-// defaultProjectedFetchMaxBytes is the per-file plan cap when
-// S3Config.ProjectedFetchMaxBytes is unset: a plan-then-fetch projected
-// read may pin at most this many coalesced span bytes in memory. Plans
-// above the cap fall back to the adaptive-window path
-// (lakehouse_s3_projected_fetch_fallback_total{reason="cap"}).
-const defaultProjectedFetchMaxBytes = 16 * 1024 * 1024
+// Gap-discipline constants (planned-fetch v2 slice 1c). armProjectedPlan
+// prices the plan at each candidate gap — pure in-memory math over the
+// already-parsed ranges — and fetches with the cheapest:
+//
+//	cost(gap) = ceil(spans/k) * RTT_assumed + bytes / BW_assumed
+//
+// RTT_assumed = 100 ms and BW_assumed = 50 MB/s per connection are the
+// offline planner simulator's constants (worst-credible S3 round trip;
+// single-connection S3 throughput). The spans*RTT term is amortized over
+// the k = s3.planned_fetch_max_inflight concurrent span GETs the fetch
+// actually issues — ceil(spans/k) serial RTT WAVES — because pricing
+// serial RTTs the fetch doesn't pay would make the largest gap win always
+// and the discipline a no-op. The candidates deliberately exclude the
+// simulator's proven trap (>= the ~1.9MB cross-RG stride merges to
+// whole-file, wasting 74-98% of bytes); the operative levers are span
+// concurrency and the cap scope, the gap only needs to not be pathological.
+const (
+	plannedGapRTTAssumedSec  = 0.100            // 100 ms per serial RTT wave
+	plannedGapBWAssumedBytes = 50 * 1024 * 1024 // 50 MB/s per connection
+)
+
+// plannedGapCandidates are the priced gaps, smallest first — ties go to
+// the smaller gap (fewer bytes on the wire for the same wave count).
+var plannedGapCandidates = []int64{64 << 10, 256 << 10, 1 << 20}
+
+// plannedGapLabel maps a candidate gap to its metric label
+// (lakehouse_s3_planned_gap_choice_total{gap=...}).
+func plannedGapLabel(gap int64) string {
+	switch gap {
+	case 64 << 10:
+		return "64k"
+	case 256 << 10:
+		return "256k"
+	default:
+		return "1m"
+	}
+}
 
 // indexedRowGroup pairs a parquet.RowGroup with its FOOTER ORDINAL so the
 // row-group pre-filter can prune/sort freely while armProjectedPlan can
@@ -82,12 +113,20 @@ func planProjectedRanges(f *parquet.File, rgIdxs []int, planCols map[string]bool
 // planned columns are the PROJECTED columns plus any push-down filter
 // columns (prewhereFilter reads the pdf columns' pages to build its row
 // bitmap — leaving them out of the plan would turn every prewhere read
-// into an out-of-plan GET).
+// into an out-of-plan GET). The plan is priced at each gap-discipline
+// candidate (cost model documented at plannedGapCandidates) and fetched
+// with the cheapest gap; spans above s3.planned_fetch_span_cap_bytes are
+// split, never rejected (the per-PLAN cap is retired — plan admission is
+// the memory ledger's: view bytes are charged to the same fileBudget the
+// decode admission reads, and the file worker already holds an fi.Size
+// admission that subsumes any plan).
 //
 // Fallback ladder (all rollbacks keep the query correct):
-//   - plan over s3.projected_fetch_max_bytes → reason="cap", the view is
-//     redirected to the adaptive-window stack (the exact reader stack the
-//     "window" mode / openRangedParquet builds);
+//   - plan over the absolute ceiling fi.Size (defensive — spans are
+//     file-clamped and disjoint, so this cannot fire on a well-formed
+//     footer) → reason="cap", the view is redirected to the
+//     adaptive-window stack (the exact reader stack the "window" mode /
+//     openRangedParquet builds);
 //   - span download error → reason="error", same redirect;
 //   - empty plan (no matched RGs / no overlapping columns) → the view
 //     stays a passthrough (exact-range GETs, no window).
@@ -115,11 +154,20 @@ func (s *Storage) armProjectedPlan(ctx context.Context, view *s3reader.PlannedFe
 		return
 	}
 
-	maxBytes := int64(s.cfg.S3.ProjectedFetchMaxBytes)
-	if maxBytes <= 0 {
-		maxBytes = defaultProjectedFetchMaxBytes
+	// Gap discipline (slice 1c): price the plan at each candidate gap and
+	// fetch with the cheapest.
+	k := s.cfg.S3.PlannedFetchMaxInflight
+	if k <= 0 {
+		k = 16
 	}
-	if _, total := view.PlanRanges(ranges); total > maxBytes {
+	bestGap, bestTotal := choosePlannedGap(view, ranges, k)
+	view.SetGap(bestGap)
+	metrics.S3PlannedGapChoice.Inc(plannedGapLabel(bestGap))
+
+	// Absolute plan ceiling = fi.Size (defensive). The old per-plan 16MB
+	// cap is retired: it punished exactly the cross-RG coalescing that
+	// cuts GETs (merged gap bytes counted into the plan total).
+	if bestTotal > view.Size() {
 		metrics.S3ProjectedFetchFallback.Inc("cap")
 		s.fallbackPlannedToWindow(view)
 		return
@@ -129,6 +177,28 @@ func (s *Storage) armProjectedPlan(ctx context.Context, view *s3reader.PlannedFe
 		metrics.S3ProjectedFetchFallback.Inc("error")
 		s.fallbackPlannedToWindow(view)
 	}
+}
+
+// choosePlannedGap prices the plan at each gap-discipline candidate and
+// returns the cheapest gap and that plan's total bytes (model documented
+// at plannedGapCandidates: ceil(spans/k) RTT waves + bytes/BW). Ties go to
+// the smaller gap — fewer bytes on the wire for the same wave count
+// (candidates iterate smallest-first; strict < keeps the earlier winner).
+// Pure in-memory math over the already-parsed ranges; no I/O.
+func choosePlannedGap(view *s3reader.PlannedFetchReaderAt, ranges []s3reader.Range, k int) (bestGap, bestTotal int64) {
+	if k <= 0 {
+		k = 16
+	}
+	bestCost := 0.0
+	for _, gap := range plannedGapCandidates {
+		spans, total := view.PlanRangesAt(ranges, gap)
+		waves := (len(spans) + k - 1) / k
+		cost := float64(waves)*plannedGapRTTAssumedSec + float64(total)/plannedGapBWAssumedBytes
+		if bestGap == 0 || cost < bestCost {
+			bestGap, bestTotal, bestCost = gap, total, cost
+		}
+	}
+	return bestGap, bestTotal
 }
 
 // fallbackPlannedToWindow redirects every subsequent read of the planned

@@ -426,3 +426,37 @@ order: (1) a **plan-density gate** (arm planned only when plan bytes < ~15% of f
 count small — its true sweet spot), (2) cross-RG span batching (one coalesced plan per FILE,
 not per row group), (3) wider span concurrency. Each step must beat the window path on the
 LIVE bench, both conditions, before the default moves again — per the benchmark protocol.
+
+## Batch 4 — planned-fetch v2 slices 0+1 (implemented, branch feat/s3-slice01)
+
+The v2 research (`planned-fetch-v2-research.md`, §II.6) supersedes the re-entry list
+above with a sliced plan; slices 0 and 1 are in. All slice-1 levers live ONLY on the
+opt-in planned path — the `window` default's behavior is byte-identical.
+
+| lever | what shipped | config (per-signal; flags both mains + chart) |
+|---|---|---|
+| 0a footer prefetch | 64KB shared const → per-signal size, clamped max(64KB, size/8); closes the traces-L2 "footer never fits → always full download" class (footers 467–519KB); logs' 128KB also covers the page-index stripe in one tail GET | `s3.footer_prefetch_bytes` (0 = logs 128KB / traces 640KB) |
+| 0b attribution | bench S3-ops summary: `plans/q` + `spans/plan` headline columns (reset-validated like gets/open) + gap-choice/strategy counter families | — |
+| 1a span concurrency | hard-coded 4 → min(k, spans) per file; one RTT wave for a typical 13–15-span plan | `s3.planned_fetch_max_inflight` (default 16) |
+| 1b cap re-scope | per-plan 16MB cap RETIRED (knob deprecated/parsed); per-SPAN cap with splitting (CH `bytes_per_read_task`); plan admission = the existing fileBudget ledger, absolute ceiling fi.Size; `fallback{reason=cap}` retired in steady state | `s3.planned_fetch_span_cap_bytes` (default 16MB) |
+| 1c gap discipline | plans priced at {64K, 256K, 1M}, cost = ceil(spans/k)·RTT + bytes/BW (RTT=100ms, BW=50MB/s; waves, not raw spans — else the largest gap always wins); cheapest fetched; choice visible per scenario via `lakehouse_s3_planned_gap_choice_total` | — (constants documented in code) |
+| 1d S* ladder | warm footer ⇒ plan; cold + size < S* ⇒ whole-file GET via smart cache, `ParseFooterFromData` warms the footer cache (the download IS the warmup); cold + size ≥ S* ⇒ footer fetch (two-phase capable; the traces module gains this rung) ⇒ plan. Routing visible via `lakehouse_s3_planned_strategy_total` | `s3.whole_file_threshold_bytes` (0 = logs 5MB / traces 8MB) |
+
+Not unified yet (Slice 3): the 3 legacy size cutoffs — `minFileSizeForRangeRead` 64KB,
+`minFileSizeForPrefetch` 128KB, the 4MB wildcard range-read cutoff.
+
+**Unit-measured** (committed sims in `internal/s3reader/planned_fetch_test.go`): the
+count_24h-geometry cost-model sim (40 files / 8 workers, 13×64KB spans/file, RTT=100ms,
+BW=50MB/s/conn) goes v1 (k=4) **3.08s → v2 1.58s → 0.58s** with 0a-warm footers
+(600→520 GETs) — inside the simulator's 0.8–1.6s prediction band (live references:
+window 2.45s, planned-v1 17.7s). The filtered_count sparse sim is unchanged: 58.7→9.2MB
+(−84.4%) at equal GETs, the standing ≥75% CI gate.
+
+**Post-merge live protocol:** run
+`scripts/bench/with-s3-latency.sh 100 30 scripts/bench/full-scope-s3-bench.sh` twice —
+once stock (window default; expect NO regression anywhere, since the levers are
+planned-gated) and once with `projected_fetch_mode: planned` on the engine. Judge
+planned against the §re-entry gate using the new columns: count_24h `spans/plan`
+should collapse vs the 1185-GET verdict run, `plan-fallback/q` ≈ 0 with reason=cap
+absent entirely, `lakehouse_s3_planned_strategy_total` attributing cold opens to the
+warmup-vs-plan rungs, and p50 ≤ window on ALL scenarios before any default talk.

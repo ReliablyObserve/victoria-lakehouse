@@ -42,7 +42,7 @@ func (s *Storage) fetchFooterFile(ctx context.Context, fi manifest.FileInfo) (*p
 		}
 		return f, nil
 	}
-	offset := fi.Size - footerPrefetchSize
+	offset := fi.Size - footerPrefetchTail(s.footerPrefetchBytes(), fi.Size)
 	if offset < 0 {
 		offset = 0
 	}
