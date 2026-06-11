@@ -3,8 +3,7 @@
 // OwnershipResolver, and OrphanSweep + the manifest's AddFile
 // idempotency cover the rare dual-ownership cases (ring flap, DNS lag).
 //
-// See docs/superpowers/specs/2026-05-31-election-free-compaction.md
-// §2.3 for the scheduler design and §11.1 / §11.2 / §11.4 for the
+// for the scheduler design and §11.1 / §11.2 / §11.4 for the
 // drain + ring-thrash gates.
 package compaction
 

@@ -7,8 +7,7 @@ package schema
 // hold the extremes — an understated MaxTimeNs (or overstated MinTimeNs) in
 // manifest.FileInfo lets time-range pruning silently skip files containing
 // matches, and re-opens the buffer↔Parquet double-count the bufferWatermark
-// closed (see docs/architecture/parquet-compression-research.md, "The three
-// correctness traps under item 1"). Returns (0, 0) for an empty slice.
+// closed. Returns (0, 0) for an empty slice.
 //
 // Used by both Go modules (lakehouse-traces imports this package) — keep the
 // flush/compaction call sites in sync across the twins.

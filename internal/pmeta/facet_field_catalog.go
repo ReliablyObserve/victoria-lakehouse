@@ -13,7 +13,7 @@ import (
 // valueSet is a sorted, de-duplicated set of value ids. Dep-free and compact for
 // the small per-partition sets low-cardinality fields produce. For a kept-exact
 // high-cardinality field it can be swapped for a roaring bitmap without changing
-// the facet's wire format or API (see docs/architecture/field-value-catalog.md).
+// the facet's wire format or API.
 type valueSet struct{ ids []uint32 }
 
 func (s *valueSet) add(id uint32) {

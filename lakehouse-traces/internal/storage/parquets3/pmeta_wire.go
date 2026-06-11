@@ -59,7 +59,7 @@ const defaultCardinalityThreshold = 50000
 // unless the --pmeta feature is enabled: with it off, no catalogObserver is set
 // and no pmeta.Store is constructed, so the hot flush/query paths are unchanged.
 // The S3 ObjectStore adapter + persist/warm wiring lands with the cold-load
-// commit. See docs/architecture/metadata-consolidation.md.
+// commit.
 
 // newCatalogStore builds a pmeta.Store registered with the field/value catalog
 // facet, keyed under the given S3 prefix. Returns nil when pmeta is disabled, so

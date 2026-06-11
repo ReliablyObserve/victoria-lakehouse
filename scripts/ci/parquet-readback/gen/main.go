@@ -8,8 +8,7 @@
 // counts of low-cardinality strings) for verify.py to check against BOTH
 // pyarrow and duckdb.
 //
-// This is the multi-engine readback CI gate from
-// docs/architecture/parquet-compression-research.md: every parquet
+// This is the multi-engine readback CI gate: every parquet
 // encoding change must keep our files readable — bit-identically — by
 // the standard ecosystem readers. The generator deliberately imports
 // ONLY parquet-go + dependency-light internal packages (schema,

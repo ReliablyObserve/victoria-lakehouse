@@ -69,7 +69,7 @@ jobs:
   # back with BOTH pyarrow and duckdb — aggregate truth, row-level
   # equality (EXCEPT ALL both directions), encoding assertions, and
   # PageIndex presence. Every parquet encoding change ships behind this
-  # gate (docs/architecture/parquet-compression-research.md).
+  # gate.
   # needs: deps because internal/schema (the real row structs) imports
   # VL upstream via severity.go.
   parquet-readback:

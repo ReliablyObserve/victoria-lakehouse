@@ -33,9 +33,7 @@ The schedule lives in `cfg.Compaction.CompressionLevelByOutputLevel`
 (default `[3, 7, 11]`); slot `N` is the level for output files at
 compaction-level `N`. Empty slice means "use `insert.compression-level`
 for every output level" — backwards-compatible escape hatch. Any
-schedule value > 11 collapses to the same Best encoder until the
-codec swap planned in `docs/architecture/parquet-compression-roadmap.md`
-unlocks zstd 12-22 + long-range mode.
+schedule value > 11 collapses to the same Best encoder.
 
 Per-tenant overrides through `tenant.overrides.<tenant>.compaction.compression_level_by_output_level`
 replace the schedule for a specific tenant only.

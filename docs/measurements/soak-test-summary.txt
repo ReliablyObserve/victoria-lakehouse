@@ -1,9 +1,0 @@
-endpoint                total     ok  empty  parse_err    p50    p99    max
-jaeger_dependencies       145    145      0          0   1476   2389   2667
-jaeger_services           145    145      0          0   5943   7620   7849
-jaeger_traces             145    145      0          0   1016   4708   4873
-logsql_count_1h           145    145      0          0    246   3108   3360
-logsql_overview           145    145      0          0     11    119    185
-logsql_tenants            145    145      0          0     11     40     41
-tempo_search_tags         145    145      0          0     26   1881   3054
-tempo_traceql             145    145      0          0    760   3096   3529

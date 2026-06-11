@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`s3.projected_fetch_mode` default flipped `planned` → `window`: the Tier-2 plan-then-fetch default did not survive the live benchmark.** The unit sims showed −84% bytes-on-wire at equal GET count for the sparse filtered pattern, and the machinery works exactly as designed live (zero out-of-plan reads, zero fallbacks, waste = 0) — but on dense multi-row-group scans the per-RG exact plans fragment I/O into hundreds of small GETs (count_24h: 175 → 1185 GETs/q) and at 100 ms S3 RTT that inverts the trade catastrophically (count_24h 2.4 s → 17.7 s; confirmed on a quiet machine, not load noise). Planned mode stays fully available as an opt-in; the documented re-entry conditions (plan-density gate, per-FILE cross-RG batching, wider span concurrency — each live-bench-gated) are in `docs/architecture/s3-scan-optimization-plan.md`.
+- **`s3.projected_fetch_mode` default flipped `planned` → `window`: the Tier-2 plan-then-fetch default did not survive the live benchmark.** The unit sims showed −84% bytes-on-wire at equal GET count for the sparse filtered pattern, and the machinery works exactly as designed live (zero out-of-plan reads, zero fallbacks, waste = 0) — but on dense multi-row-group scans the per-RG exact plans fragment I/O into hundreds of small GETs (count_24h: 175 → 1185 GETs/q) and at 100 ms S3 RTT that inverts the trade catastrophically (count_24h 2.4 s → 17.7 s; confirmed on a quiet machine, not load noise). Planned mode stays fully available as an opt-in; the documented re-entry conditions (plan-density gate, per-FILE cross-RG batching, wider span concurrency — each live-bench-gated) are in .
 
 ## [0.87.1] - 2026-06-10
 
@@ -33,8 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Compression step 4 — 2× row groups on L2+ rollups: `compaction.row_group_size_by_output_level` (both modules).** New per-output-level Parquet row-group size schedule mirroring the progressive compression schedule exactly: slot N = max rows per row group for compacted output files at level N, saturating at the last slot for deeper rollups; an empty list falls back to the static `insert.row_group_size` (pre-schedule behaviour, pinned by regression test). Default `[10000, 10000, 20000]` — L0/L1 outputs keep the historical 10k rows/group, L2+ rollups double to 20k (cold rollups are scan-heavy and rarely pruned at row-group granularity). Threaded through the compactor per output level; flag `-lakehouse.compaction.row-group-size-by-output-level` in BOTH binaries; chart `values.yaml` + `values.schema.json` now document and validate the **entire `compaction.*` section** (8 grandfathered keys burned out of the helm-drift allowlist). Bug fixed en route: the YAML `compaction.compression_level_by_output_level` (and the new key) was **silently dropped by the config merge** — file values never reached the compactor; both schedules now merge and carry a round-trip regression test. **Measured** (the `scripts/bench/compression_ab` methodology: 4 largest real compacted-L2 log files from the live e2e MinIO, 490,187 rows, identical rows re-encoded at zstd-best, only the row-group size varied): **size −0.15%** (94,972,408 → 94,834,273 bytes), **row groups −46%** (52 → 28), **total pages −18%** (3,103 → 2,542; pages per column chunk 2.4 → 3.6). Honest read: the byte win is small on this body-dominated corpus — the structural win is metadata-side (half the row-group footers/dictionaries, 18% fewer page headers, half the manifest/footer entries per file) and it compounds with the upcoming (stream_id, timestamp) sort, where bigger groups give dictionaries and RLE runs 2× the room. Numbers + methodology in `docs/architecture/parquet-compression-research.md` (step-4 measured section).
-- **Multi-engine parquet readback CI gate (`parquet-readback` job): every parquet encoding change now ships behind a pyarrow + duckdb readback proof.** `scripts/ci/parquet-readback/gen` writes synthetic logs + traces files (5k rows, every column populated incl. the three attribute maps, deterministic seed) using the **REAL production schemas** (`internal/schema.LogRow`/`TraceRow` — the delta/dict tags ride along) and the **REAL writer options** (zstd `SpeedBestCompression`, `MaxRowsPerRowGroup`, split-block blooms on `service.name`+`trace_id`, the `_trace_idx` KV footer), and emits a writer-truth manifest (row count, exact big-int sums of integer columns — 5k nanosecond timestamps overflow int64, so truth is exact arithmetic — distinct counts of low-card strings). `verify.py` then proves, for BOTH engines independently: aggregates == writer truth; pyarrow↔duckdb row-level equality via `EXCEPT ALL` in both directions (0 rows); `DELTA_BINARY_PACKED` on every delta-tagged column and `RLE_DICTIONARY` on every dict-tagged column (expectations derived from the live struct tags via reflection, so schema changes auto-propagate); and PageIndex (ColumnIndex + OffsetIndex) present on 100% of column chunks. 86 checks, all green locally and wired as a CI job. This is the standing gate promised in `docs/architecture/parquet-compression-research.md`.
+- **Compression step 4 — 2× row groups on L2+ rollups: `compaction.row_group_size_by_output_level` (both modules).** New per-output-level Parquet row-group size schedule mirroring the progressive compression schedule exactly: slot N = max rows per row group for compacted output files at level N, saturating at the last slot for deeper rollups; an empty list falls back to the static `insert.row_group_size` (pre-schedule behaviour, pinned by regression test). Default `[10000, 10000, 20000]` — L0/L1 outputs keep the historical 10k rows/group, L2+ rollups double to 20k (cold rollups are scan-heavy and rarely pruned at row-group granularity). Threaded through the compactor per output level; flag `-lakehouse.compaction.row-group-size-by-output-level` in BOTH binaries; chart `values.yaml` + `values.schema.json` now document and validate the **entire `compaction.*` section** (8 grandfathered keys burned out of the helm-drift allowlist). Bug fixed en route: the YAML `compaction.compression_level_by_output_level` (and the new key) was **silently dropped by the config merge** — file values never reached the compactor; both schedules now merge and carry a round-trip regression test. **Measured** (the `scripts/bench/compression_ab` methodology: 4 largest real compacted-L2 log files from the live e2e MinIO, 490,187 rows, identical rows re-encoded at zstd-best, only the row-group size varied): **size −0.15%** (94,972,408 → 94,834,273 bytes), **row groups −46%** (52 → 28), **total pages −18%** (3,103 → 2,542; pages per column chunk 2.4 → 3.6). Honest read: the byte win is small on this body-dominated corpus — the structural win is metadata-side (half the row-group footers/dictionaries, 18% fewer page headers, half the manifest/footer entries per file) and it compounds with the upcoming (stream_id, timestamp) sort, where bigger groups give dictionaries and RLE runs 2× the room. Numbers + methodology in (step-4 measured section).
+- **Multi-engine parquet readback CI gate (`parquet-readback` job): every parquet encoding change now ships behind a pyarrow + duckdb readback proof.** `scripts/ci/parquet-readback/gen` writes synthetic logs + traces files (5k rows, every column populated incl. the three attribute maps, deterministic seed) using the **REAL production schemas** (`internal/schema.LogRow`/`TraceRow` — the delta/dict tags ride along) and the **REAL writer options** (zstd `SpeedBestCompression`, `MaxRowsPerRowGroup`, split-block blooms on `service.name`+`trace_id`, the `_trace_idx` KV footer), and emits a writer-truth manifest (row count, exact big-int sums of integer columns — 5k nanosecond timestamps overflow int64, so truth is exact arithmetic — distinct counts of low-card strings). `verify.py` then proves, for BOTH engines independently: aggregates == writer truth; pyarrow↔duckdb row-level equality via `EXCEPT ALL` in both directions (0 rows); `DELTA_BINARY_PACKED` on every delta-tagged column and `RLE_DICTIONARY` on every dict-tagged column (expectations derived from the live struct tags via reflection, so schema changes auto-propagate); and PageIndex (ColumnIndex + OffsetIndex) present on 100% of column chunks. 86 checks, all green locally and wired as a CI job. This is the standing gate promised in .
 
 - **S3 batch 2a — waste-feedback read-ahead: the adaptive window now SHRINKS when it fetches bytes nobody reads (both modules).** The Tier-1 grow/reset state machine was blind to waste: the combined benchmark measured **46 MB/query fetched-but-never-read on filtered counts (56% buffer hit rate) and 17 MB/query on fulltext** — sparse forward hops classify as "forward-sequential", so every abandoned window VOTED GROW for the next one. Now each window eviction computes the evicted window's never-read ratio (same high-water accounting as `lakehouse_s3_buffer_wasted_bytes_total`, allocation-free); above the threshold the next window is **halved (floored at `read_ahead_bytes`)** and the growth credit resets — growth resumes only after 2+ consecutive efficient windows. Fully-consumed sequential scans still grow to `read_ahead_max_bytes` and stay there (pinned by regression tests). New per-signal config: `s3.read_ahead_waste_threshold` (`-lakehouse.s3.read-ahead-waste-threshold`, default 0.5, `>=1` disables; + chart values/schema) and a `lakehouse_s3_readahead_shrink_total` counter. The `openRangedParquet` file-size clamps are untouched. **Unit-measured** (deterministic page-probe sim: 256 KB page per 3 MB stride over a 64 MB file at production 2 MB base / 8 MB max windows): bytes-on-wire **57.7 MB → 45.1 MB (−21.8%)**; steady-state never-read bytes per abandoned window drop from up-to-8 MB (grown max) to the 2 MB base (4× at defaults). Trade-off stated: the smaller window costs more GETs on sparse patterns (9 → 22 in the sim) — the live before/after (waste B/q on filtered/fulltext, p50s) runs post-merge via `scripts/bench/with-s3-latency.sh 100 30 scripts/bench/full-scope-s3-bench.sh`.
 
@@ -46,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Compression roadmap: the (stream_id, timestamp) sort is REJECTED on real-data evidence; the A/B harness gains the tooling that proved it.** The roadmap's projected-biggest item (30–50% smaller files from stream-clustered rows) was implemented, passed both modules' full suites including flush↔export parity — and then failed the mandatory real-data measurement: **+17.7% (zstd-default) / +13.1% (zstd-best) LARGER files** across 10 real compacted-L2 files (identical rows, only the order changed). Per-column attribution shows why this corpus punishes stream-clustering: `body` +2.07 MB per 24 MB file (similar log lines arrive in cross-stream time bursts that zstd exploits via adjacency), `trace_id` +0.86 MB (spans of one trace are time-adjacent → shared prefixes), `timestamp` +0.38 MB (globally monotonic deltas compress to almost nothing; stream-sawtooth doesn't). The sort code is reverted (preserved in branch history); the step-2 trap fixes stand on their own as correctness wins. Shipped instead: `scripts/bench/compression_ab` gains a `tagged+sorted` third variant, and the new `scripts/bench/compression_percol` attributes any size delta to individual columns — every future layout experiment gets judged by the same evidence, per the per-PR benchmark protocol. Re-entry condition documented in `docs/architecture/parquet-compression-research.md`: a corpus-dependent sort toggle, only if production-shaped data (heavy per-stream template redundancy) measurably differs.
+- **Compression roadmap: the (stream_id, timestamp) sort is REJECTED on real-data evidence; the A/B harness gains the tooling that proved it.** The roadmap's projected-biggest item (30–50% smaller files from stream-clustered rows) was implemented, passed both modules' full suites including flush↔export parity — and then failed the mandatory real-data measurement: **+17.7% (zstd-default) / +13.1% (zstd-best) LARGER files** across 10 real compacted-L2 files (identical rows, only the order changed). Per-column attribution shows why this corpus punishes stream-clustering: `body` +2.07 MB per 24 MB file (similar log lines arrive in cross-stream time bursts that zstd exploits via adjacency), `trace_id` +0.86 MB (spans of one trace are time-adjacent → shared prefixes), `timestamp` +0.38 MB (globally monotonic deltas compress to almost nothing; stream-sawtooth doesn't). The sort code is reverted (preserved in branch history); the step-2 trap fixes stand on their own as correctness wins. Shipped instead: `scripts/bench/compression_ab` gains a `tagged+sorted` third variant, and the new `scripts/bench/compression_percol` attributes any size delta to individual columns — every future layout experiment gets judged by the same evidence, per the per-PR benchmark protocol. Re-entry condition documented in : a corpus-dependent sort toggle, only if production-shaped data (heavy per-stream template redundancy) measurably differs.
 
 ## [0.83.1] - 2026-06-10
 
@@ -58,13 +58,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **S3 read-path Tier 1 (batch 1) — parquet open hygiene, adaptive read-ahead, BDP coalescing, singleflight, S3-op observability (both modules).** From the approved ClickHouse-first research (`docs/architecture/s3-optimization-research.md`): every ranged `parquet.OpenFile` now passes `SkipPageIndex/SkipBloomFilters(true)` (we prune via manifest/pmeta; internal index/bloom reads stay lazily available), `OptimisticRead(true)` (footer suffix+body in one tail GET), `FileReadMode(ReadModeAsync)` (library-native page read-ahead, bounded ~1 page in flight per column reader; `-lakehouse.s3.parquet-read-mode=sync` is the rollback) and a 1 MB read buffer (library default was 4 KB). The coalescing gap default goes 64 KB→1 MB (breakeven at real S3 RTT is megabytes — AnyBlob, VLDB 2023), read-ahead adapts 2→8 MB on sequential patterns, and the parquet magic read no longer pulls a wasted ~2 MB head window — **all clamped by file size** so small files keep precise column-projected reads. Footer/`.bloom`/pmeta-bundle GETs are singleflight-deduped (`context.WithoutCancel` so a cancelled query can't poison waiters). 8 new metric families (GETs by phase, per-open GET histogram, window waste, over-fetch, grow/reset, head-bypass, dedup) and the full-scope benchmark now records **per-scenario S3-op deltas**. New per-signal config: `s3.read_ahead_max_bytes`, `s3.read_buffer_size`, `s3.parquet_read_mode` (+flags +chart values/schema). **Measured on the live stack at 100 ms injected S3 latency: count_1h 1478→878 ms (−41%), count_24h 4133→2475 ms (−40%), `gets/open` 4–6→2.0**; plain count_24h now beats hot VL (0.9×).
+- **S3 read-path Tier 1 (batch 1) — parquet open hygiene, adaptive read-ahead, BDP coalescing, singleflight, S3-op observability (both modules).** From the approved ClickHouse-first research : every ranged `parquet.OpenFile` now passes `SkipPageIndex/SkipBloomFilters(true)` (we prune via manifest/pmeta; internal index/bloom reads stay lazily available), `OptimisticRead(true)` (footer suffix+body in one tail GET), `FileReadMode(ReadModeAsync)` (library-native page read-ahead, bounded ~1 page in flight per column reader; `-lakehouse.s3.parquet-read-mode=sync` is the rollback) and a 1 MB read buffer (library default was 4 KB). The coalescing gap default goes 64 KB→1 MB (breakeven at real S3 RTT is megabytes — AnyBlob, VLDB 2023), read-ahead adapts 2→8 MB on sequential patterns, and the parquet magic read no longer pulls a wasted ~2 MB head window — **all clamped by file size** so small files keep precise column-projected reads. Footer/`.bloom`/pmeta-bundle GETs are singleflight-deduped (`context.WithoutCancel` so a cancelled query can't poison waiters). 8 new metric families (GETs by phase, per-open GET histogram, window waste, over-fetch, grow/reset, head-bypass, dedup) and the full-scope benchmark now records **per-scenario S3-op deltas**. New per-signal config: `s3.read_ahead_max_bytes`, `s3.read_buffer_size`, `s3.parquet_read_mode` (+flags +chart values/schema). **Measured on the live stack at 100 ms injected S3 latency: count_1h 1478→878 ms (−41%), count_24h 4133→2475 ms (−40%), `gets/open` 4–6→2.0**; plain count_24h now beats hot VL (0.9×).
 
 ## [0.82.0] - 2026-06-10
 
 ### Changed
 
-- **pmeta is now the metadata layer, period: legacy sidecar WRITERS deleted, `pmeta.enabled` default ON.** The hard cleanup after the consolidation baked: `Manifest.WritePartitionSidecar` (the `_file_metadata.json` S3 writer), the logs `storageBloomObserver` write side (per-file `.bloom` + partition `_bloom.bin` writers) + the `BloomObserver` interface, and the traces `FlushHook` bloom feed, `PersistBloomIndex`, and `BackfillBloomIndex` are **removed** — there is no code path that writes the legacy sidecars anymore. The `-lakehouse.pmeta.retire-sidecar-writes` flag (and its config key + validation) is gone with them; `-lakehouse.pmeta.enabled` now defaults to **true** and is the explicit opt-out into a degraded mode (no catalog/bloom for new files; cold restarts warm from footers only). **Read-fallbacks for pre-pmeta data are kept one more release**: `LoadSidecars`/`LoadSidecarsForPartitions`, the `.bloom`/`bloomCache` readers, and the traces `bloomIdx` load. 58 tests of the deleted machinery were removed; tests that used it as setup now seed the read paths directly (`MarshalFileMetaSidecar` + mock S3 / `bloomS3Loader`). Post-switch benchmark recorded in `docs/benchmarks/full-scope-s3.md`: cold LH at parity with hot VL on every scan scenario and 2.7–10× faster on metadata queries; CH-over-S3 trails 30–40×.
+- **pmeta is now the metadata layer, period: legacy sidecar WRITERS deleted, `pmeta.enabled` default ON.** The hard cleanup after the consolidation baked: `Manifest.WritePartitionSidecar` (the `_file_metadata.json` S3 writer), the logs `storageBloomObserver` write side (per-file `.bloom` + partition `_bloom.bin` writers) + the `BloomObserver` interface, and the traces `FlushHook` bloom feed, `PersistBloomIndex`, and `BackfillBloomIndex` are **removed** — there is no code path that writes the legacy sidecars anymore. The `-lakehouse.pmeta.retire-sidecar-writes` flag (and its config key + validation) is gone with them; `-lakehouse.pmeta.enabled` now defaults to **true** and is the explicit opt-out into a degraded mode (no catalog/bloom for new files; cold restarts warm from footers only). **Read-fallbacks for pre-pmeta data are kept one more release**: `LoadSidecars`/`LoadSidecarsForPartitions`, the `.bloom`/`bloomCache` readers, and the traces `bloomIdx` load. 58 tests of the deleted machinery were removed; tests that used it as setup now seed the read paths directly (`MarshalFileMetaSidecar` + mock S3 / `bloomS3Loader`). Post-switch benchmark recorded in : cold LH at parity with hot VL on every scan scenario and 2.7–10× faster on metadata queries; CH-over-S3 trails 30–40×.
 
 
 ## [0.81.0] - 2026-06-10
@@ -76,15 +76,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **pmeta hardening — 70-finding holistic audit of the whole layer (82-agent adversarial review), all confirmed issues fixed.** Highlights:
-  - **Data races** (race-detector verified): catalog `Values` iterated the live id slice after unlocking while flush-time `Merge` mutated it in place (torn/duplicated dropdown values); `Cardinality` ran the HLL estimate outside the lock. Both fixed + pinned under `-race`.
-  - **Lifecycle was structurally missing** — facets/bundles grew forever: compaction now feeds the output file's facets and removes the merged-away inputs (`PmetaOnCompacted`); retention removes expired files' entries and, when a partition fully expires, **evicts its bundle from RAM and deletes the `_pmeta.bundle` S3 object** (`PmetaOnFileExpired`).
-  - **Self-heal wired**: `WarmCatalogFromS3` now consumes `WarmPartitions`' result — a missing/corrupt bundle is rebuilt from the manifest and re-persisted (the contract existed; `Store.Rebuild` had zero production callers, and the next `persistDirty` would have overwritten the S3 bundle with partial state).
-  - **Serve-while-warming**: the S3-decoded bundle is now ABSORBED into a live bundle that concurrent flushes already populated (union per facet) instead of clobbering it; dirtiness is **generation-based** so a contribution landing mid-persist is never dropped from the next cycle.
-  - **Bloom correctness**: an EMPTY bloom facet reports `ok=false` (warm-created empty facets had permanently shadowed the populated legacy fallback with keep-everything — bloom pruning was effectively dead after any restart); logs `checkFileBloom` got per-column any-of semantics (`trace_id:in(t1,t2)` wrongly required BOTH values — missing results) + the negated-predicate guard; the **traces bloom feeds are uncapped** (the capped label feed false-negatived past 100 values/field).
-  - **Traces module**: `WarmMetadata` is now actually called (the file-meta read-flip was dead code there); `BackfillBloomIndex` + the duplicate in-RAM bloomIdx feed are skipped under retire.
-  - **Catalog exactness**: a field whose per-file label list hits the extractor cap is marked high-card via `TruncatedFields` — the catalog never serves a silently truncated list as authoritative (falls to the exact scan).
-  - **Codec v3**: header CRC covers magic..facetCount incl. the partition string (a flipped facetCount byte previously decoded as a VALID empty bundle); the catalog payload round-trips the high-card state and caps untrusted allocations. v2 bundles fail decode → self-heal rebuild.
-  - **Roles**: select-only pods now build the catalog (was writer-gated → read-only pods scanned); insert-only pods no longer nil-panic in `WarmMetadata` Phase 3b; `retire-sidecar-writes` without `pmeta.enabled` fails fast at startup; `lakehouse_catalog_resident_bytes` updates every flush and includes the interning dict.
+ - **Data races** (race-detector verified): catalog `Values` iterated the live id slice after unlocking while flush-time `Merge` mutated it in place (torn/duplicated dropdown values); `Cardinality` ran the HLL estimate outside the lock. Both fixed + pinned under `-race`.
+ - **Lifecycle was structurally missing** — facets/bundles grew forever: compaction now feeds the output file's facets and removes the merged-away inputs (`PmetaOnCompacted`); retention removes expired files' entries and, when a partition fully expires, **evicts its bundle from RAM and deletes the `_pmeta.bundle` S3 object** (`PmetaOnFileExpired`).
+ - **Self-heal wired**: `WarmCatalogFromS3` now consumes `WarmPartitions`' result — a missing/corrupt bundle is rebuilt from the manifest and re-persisted (the contract existed; `Store.Rebuild` had zero production callers, and the next `persistDirty` would have overwritten the S3 bundle with partial state).
+ - **Serve-while-warming**: the S3-decoded bundle is now ABSORBED into a live bundle that concurrent flushes already populated (union per facet) instead of clobbering it; dirtiness is **generation-based** so a contribution landing mid-persist is never dropped from the next cycle.
+ - **Bloom correctness**: an EMPTY bloom facet reports `ok=false` (warm-created empty facets had permanently shadowed the populated legacy fallback with keep-everything — bloom pruning was effectively dead after any restart); logs `checkFileBloom` got per-column any-of semantics (`trace_id:in(t1,t2)` wrongly required BOTH values — missing results) + the negated-predicate guard; the **traces bloom feeds are uncapped** (the capped label feed false-negatived past 100 values/field).
+ - **Traces module**: `WarmMetadata` is now actually called (the file-meta read-flip was dead code there); `BackfillBloomIndex` + the duplicate in-RAM bloomIdx feed are skipped under retire.
+ - **Catalog exactness**: a field whose per-file label list hits the extractor cap is marked high-card via `TruncatedFields` — the catalog never serves a silently truncated list as authoritative (falls to the exact scan).
+ - **Codec v3**: header CRC covers magic..facetCount incl. the partition string (a flipped facetCount byte previously decoded as a VALID empty bundle); the catalog payload round-trips the high-card state and caps untrusted allocations. v2 bundles fail decode → self-heal rebuild.
+ - **Roles**: select-only pods now build the catalog (was writer-gated → read-only pods scanned); insert-only pods no longer nil-panic in `WarmMetadata` Phase 3b; `retire-sidecar-writes` without `pmeta.enabled` fails fast at startup; `lakehouse_catalog_resident_bytes` updates every flush and includes the interning dict.
 - **Bloom pre-filter could wrongly exclude files when one bloom field name is a suffix of another (`name` ⊂ `service.name`) — missing results (both modules).** `extractExactMatch`/`extractInValues` used bare `strings.Index`, so for the query `service.name:="api-gateway"` the promoted span-name column (`name`) substring-matched `name:="` and extracted `api-gateway` as a **span-name** candidate — the bloom check `span.name=api-gateway` then excluded every file (whose span-name blooms legitimately lack that value). A bloom false-negative = silently missing query results on the cold tier. Fixed with `fieldTokenIndex` (field-token boundary check — `:`/`-` count as field chars, matching `extractQuotedOp` and the `resource_attr:service.name`-style schema keys); pinned by the cross-field cases in `TestExtractExactMatch_TableDriven` (suffix-field, prefixed-attr-key, hyphenated-neighbor) in both modules.
 - **Traces bloom facet was never fed — the #130 traces bloom read-flip was silently a no-op.** The traces writer passed `nil` bloomValues to `catalogObserver.OnFileFlush` (logs passed the real map), so the traces bloom facet stayed empty: `BloomMayContain` kept everything (safe, but zero pruning) and under retire-sidecar-writes traces would have lost bloom pruning entirely after a restart. The writer now passes the same labels map the legacy traces bloom (`onFlush` → `bloomIdx.AddColumns` + per-file `.bloom`) is built from — facet content identical to legacy. Caught by `TestInteg_PmetaFlip_BloomHybridColdRestart`'s absent-value assertion (the earlier present-value-only test passed vacuously: unknown keys are kept).
 
@@ -98,11 +98,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **pmeta bloom read-flip — `checkFileBloom` consults the in-RAM bloom facet before a per-file `.bloom` S3 GET (`--pmeta`, logs + traces).** Query-time file pruning now checks `Store.BloomMayContain` (the partition `_bloom.bin` bundle, in RAM) before downloading the per-file `.bloom` sidecar, falling back to the download only for partitions the bundle doesn't carry. A bloom filter never false-negatives, so a file that actually holds the queried value is never excluded by either path — this can only change pruning *efficiency*, never correctness. The traces module preserves its AND-across-columns / OR-within-column semantics. `metrics … {facet_bloom_skip,file_bloom_skip}` distinguish the two paths.
 - **pmeta labels `field_names` read-flip — `GetFieldNames` serves from the catalog before the legacy labelIndex (`--pmeta`, logs + traces).** Field-name dropdowns are served from the in-RAM catalog (range-aware: only the partitions overlapping the query window) ahead of the `_label_index.json` fallback. (`field_values` was already catalog-first.) `catalogFieldNames` unions names across the range. `TestInteg_PmetaFlip_FieldNamesAndBloom`.
 - **pmeta — unified partition-metadata layer + field/value catalog (`-lakehouse.pmeta.enabled`, off by default).** One per-partition metadata layer (`internal/pmeta`) with pluggable facets replaces the scatter of per-subsystem sidecars/snapshots, behind a flag so the hot paths are byte-for-byte unchanged when off. Built as **dual-write + parity-gated** (the old `_file_metadata.json` / `_bloom.bin` / `_label_index.json` still write; each facet mirrors them and a test asserts they match), so it is safe to enable incrementally before the sidecars are retired.
-  - **Field/value catalog** — Grafana label/field dropdowns serve from an in-RAM catalog (interned dict + sorted value sets) instead of scanning Parquet: cold `field_values(service.name)` over 24h went **50 s → 24 ms** on the live e2e stack (11× faster than hot VL, ~220× faster than ClickHouse-over-S3). Cold-start-warmed from the manifest (zero extra S3 I/O).
-  - **In-house HyperLogLog cardinality** (LogLog-Beta, HLL++-grade accuracy, no dependency) for high-card id columns (`trace_id`/`span_id`) via a flush-time tap (9.7 ns/value, 0 alloc); `lakehouse_catalog_field_cardinality{field}` is the cardinality-bomb early-warning.
-  - **file-meta + bloom facets** fold `_file_metadata.json` and `_bloom.bin`; **S3 bundle persist/warm** (`poolObjectStore`, `persistDirty` on flush, `WarmCatalogFromS3` at startup) lets the bloom facet survive a cold restart.
-  - **A2 cardinality cap** (`-lakehouse.pmeta.cardinality-threshold`, default 50 000) bounds catalog RAM; **refuse-sketch-enumeration** (`-lakehouse.pmeta.refuse-sketch-enumeration`) returns empty for declared id columns instead of scanning. Metrics: `lakehouse_catalog_{value_lookups_total,resident_bytes,field_cardinality}`. Both logs + traces; `internal/pmeta` at 91 % coverage + fuzzers. See `docs/architecture/metadata-consolidation.md`, `docs/architecture/field-value-catalog.md`.
-- **Benchmark tooling** — `scripts/bench/with-s3-latency.sh` injects S3 latency only for the wrapped command and always clears it via a trap (so it never lingers on the normal compose); `scripts/bench/full-scope-s3-bench.sh` compares cold-LH vs hot-VL vs ClickHouse across every S3/scan query class. Plus `docs/architecture/s3-scan-optimization-plan.md` (ClickHouse-parity pure-S3 roadmap) + PB-scale resource/restore analyses.
+ - **Field/value catalog** — Grafana label/field dropdowns serve from an in-RAM catalog (interned dict + sorted value sets) instead of scanning Parquet: cold `field_values(service.name)` over 24h went **50 s → 24 ms** on the live e2e stack (11× faster than hot VL, ~220× faster than ClickHouse-over-S3). Cold-start-warmed from the manifest (zero extra S3 I/O).
+ - **In-house HyperLogLog cardinality** (LogLog-Beta, HLL++-grade accuracy, no dependency) for high-card id columns (`trace_id`/`span_id`) via a flush-time tap (9.7 ns/value, 0 alloc); `lakehouse_catalog_field_cardinality{field}` is the cardinality-bomb early-warning.
+ - **file-meta + bloom facets** fold `_file_metadata.json` and `_bloom.bin`; **S3 bundle persist/warm** (`poolObjectStore`, `persistDirty` on flush, `WarmCatalogFromS3` at startup) lets the bloom facet survive a cold restart.
+ - **A2 cardinality cap** (`-lakehouse.pmeta.cardinality-threshold`, default 50 000) bounds catalog RAM; **refuse-sketch-enumeration** (`-lakehouse.pmeta.refuse-sketch-enumeration`) returns empty for declared id columns instead of scanning. Metrics: `lakehouse_catalog_{value_lookups_total,resident_bytes,field_cardinality}`. Both logs + traces; `internal/pmeta` at 91 % coverage + fuzzers. See , .
+- **Benchmark tooling** — `scripts/bench/with-s3-latency.sh` injects S3 latency only for the wrapped command and always clears it via a trap (so it never lingers on the normal compose); `scripts/bench/full-scope-s3-bench.sh` compares cold-LH vs hot-VL vs ClickHouse across every S3/scan query class. Plus (ClickHouse-parity pure-S3 roadmap) + PB-scale resource/restore analyses.
 
 ### Fixed
 
@@ -116,12 +116,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **PERF-2 — manifest count-pushdown for `stats by (field) count()` (logs + traces).** The common Grafana panel `* | stats by (service.name) count()` is now answered from manifest metadata instead of opening Parquet — the standard data-lake count-pushdown (Iceberg/Delta manifest stats), transparent to the existing LogsQL API and dashboards. `FileInfo.LabelAggregates` (field→value→rowcount) is populated at flush (capped per field → bounded growth), summed across the disjoint inputs at compaction, and persisted in the manifest snapshot; `manifest.CountByLabel` sums only files fully within the window (boundary files would over-count and fall through to scan). The read path (`countByPushdownField` + `manifestCountFastPath`) serves an **unfiltered single-field** query from those aggregates with **zero S3 reads**, emitting synthetic rows that reproduce the field's distribution (incl. the empty-value group) so the existing stats pipe aggregates them unchanged; a filtered query, a boundary/over-cap file, or a field without an aggregate falls through to scan (never wrong). The synthetic column is named/formatted identically to the scan path; `service.name` is wired + equivalence-proven (fast path emits the exact same distribution as a real scan). See `internal/storage/parquets3/count_pushdown_test.go`.
 - **Option B — logstorage-native queryable insert buffer (cold-tier recently-flushed parity with hot VT).** The insert buffer can now be a real per-pod `logstorage.Storage` (the VT/VL in-memory-parts model) instead of a `[]schema.{Log,Trace}Row` staging slice that was reconstructed into a `logstorage.DataBlock` at query time. That struct→DataBlock converter kept drifting from the file-scan emission (missing `_stream`, `start_time_unix_nano`/`end_time_unix_nano`, map attrs), which made cold Jaeger/Tempo search return 0 for fresh traces, 404 the log→trace drilldown, and zero the Tempo service-filter. Selected by `insert.buffer_engine` (`buffer` default | `logstore`), with `insert.buffer_dir` + `insert.buffer_retention`:
-  - **Write path** — ingest feeds the native `logstorage.LogRows` the VL/VT insert path already built straight into the store via the exported `MustAddRows` (dual-write; the legacy path stays the authoritative Parquet producer). A buffer failure can never break ingestion (recover-isolation + `lakehouse_buffer_store_dualwrite_failures_total`).
-  - **Read path** — cold queries serve the recent/unflushed window from the buffer via the exported `Storage.RunQuery` (no struct→DataBlock conversion), byte-identical to a file scan.
-  - **Durability** — reuses logstorage's own persistence (in-memory parts written to the buffer dir every flush interval, restored on `MustOpenStorage`); crash-loss window equals hot VT/VL, so no separate lakehouse WAL is added for the buffer.
-  - **VL/VT compatibility** — **zero upstream modification**: pure exported-API reuse (`MustOpenStorage`/`MustAddRows`/`RunQuery`/`DebugFlush`/`QueryContext`); no new `deps/` patch.
-  - **Parquet-from-buffer (shadow)** — the converter `DataBlockToTraceRows` (parity-proven vs the legacy insert mapping) + `ExportBufferToParquet` + a shadow exporter write buffer-sourced Parquet to a shadow S3 prefix for pre-cutover validation; the legacy `[]row` path stays authoritative.
-  - With `logstore` enabled end-to-end: cold `[24h]` Jaeger 0→20 (matches hot), GetTrace resolves across recencies incl. the freshest band, Tempo `{nestedSetParent<0}` + `{resource.service.name="X"}` return data, and `count()`/`stats` are at 1.00 parity (no double-count). See `docs/architecture/buffer-queryable-store-design.md`.
+ - **Write path** — ingest feeds the native `logstorage.LogRows` the VL/VT insert path already built straight into the store via the exported `MustAddRows` (dual-write; the legacy path stays the authoritative Parquet producer). A buffer failure can never break ingestion (recover-isolation + `lakehouse_buffer_store_dualwrite_failures_total`).
+ - **Read path** — cold queries serve the recent/unflushed window from the buffer via the exported `Storage.RunQuery` (no struct→DataBlock conversion), byte-identical to a file scan.
+ - **Durability** — reuses logstorage's own persistence (in-memory parts written to the buffer dir every flush interval, restored on `MustOpenStorage`); crash-loss window equals hot VT/VL, so no separate lakehouse WAL is added for the buffer.
+ - **VL/VT compatibility** — **zero upstream modification**: pure exported-API reuse (`MustOpenStorage`/`MustAddRows`/`RunQuery`/`DebugFlush`/`QueryContext`); no new `deps/` patch.
+ - **Parquet-from-buffer (shadow)** — the converter `DataBlockToTraceRows` (parity-proven vs the legacy insert mapping) + `ExportBufferToParquet` + a shadow exporter write buffer-sourced Parquet to a shadow S3 prefix for pre-cutover validation; the legacy `[]row` path stays authoritative.
+ - With `logstore` enabled end-to-end: cold `[24h]` Jaeger 0→20 (matches hot), GetTrace resolves across recencies incl. the freshest band, Tempo `{nestedSetParent<0}` + `{resource.service.name="X"}` return data, and `count()`/`stats` are at 1.00 parity (no double-count). See .
 
 ### Fixed
 
@@ -142,57 +142,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Docs
 
-- **`docs/architecture/buffer-queryable-store-design.md`** — the Option B design (logstorage-native buffer, read-merge, durability via reused VL/VT persistence, the exported-API-only reuse boundary).
-- **`docs/architecture/performance-machinery.md` §6.2** — corrected the zstd-level claim: parquet-go maps integer levels to four buckets (`Fastest`/`Default`/`Better`/`Best`), so the prior "doubles compaction CPU" text was wrong.
+- **** — the Option B design (logstorage-native buffer, read-merge, durability via reused VL/VT persistence, the exported-API-only reuse boundary).
+- ** §6.2** — corrected the zstd-level claim: parquet-go maps integer levels to four buckets (`Fastest`/`Default`/`Better`/`Best`), so the prior "doubles compaction CPU" text was wrong.
 
 ## [0.49.0] - 2026-06-07
 
 ### Added
 
 - **Honest lifecycle + cold-start protection at PB scale (PR #122)** — every cliff scenario the 3PB-on-S3 / 6-peer audit surfaced (stale snapshot, fragmented L0, simultaneous restart, first-ever boot, partial warmup) now has a guard and a test. The pod no longer lies about being ready while it is still discovering files, replaying WAL, or warming the footer cache; queries no longer return empty results because the local store happens to be 30 seconds behind S3.
-  - **Three-state `/ready` contract** (`internal/startup/manager.go`, both `cmd/lakehouse-logs/main.go` and `lakehouse-traces/main.go`): the readiness handler now returns `503 not_ready` (still discovering or below the manifest gate), `204 serving_warming` (queries answered, background warmup in progress), or `200 ready` (warmup complete). The lifecycle manager splits the old single `ready` flag into `ServingReady` and `WarmupComplete`; serving-ready requires manifest gate ∧ WAL replay done. Guarded by `internal/startup/honesty_test.go` (16 sub-tests pinning every precondition combination).
-  - **`MinManifestFiles` gate** (`internal/config/config.go::StartupConfig.MinManifestFiles`): operator-tunable floor — the pod stays out of rotation until the loaded manifest crosses this threshold. Defaults to 0 (off) for dev/CI; at PB scale set to ~10% of expected file count to mask the first-ever S3 LIST window. Without the gate, the first pod up returns empty results to peer fan-out for the full LIST duration.
-  - **WAL replay gating** (`internal/startup/manager.go::SetWALReplayNeeded/Done`): `SetWALReplayNeeded()` is set before `store.StartWriter()`; `SetWALReplayDone()` is set after. `ServingReady()` returns false until both fire — buffered rows that hadn't been flushed when the pod crashed aren't silently dropped from query results during replay.
-  - **Snapshot age metric + bounded shutdown persist** (`internal/manifest/manifest.go::SavedAt()`, `internal/metrics/lakehouse.go::ManifestSnapshotAgeSeconds`, `lakehouse_min_manifest_files_gate`): a 5-second ticker exports `lakehouse_manifest_snapshot_age_seconds` so operators can alert when persist is silently failing (e.g. PVC out of space, see `docs/operations/lifecycle.md`). Shutdown persists the manifest FIRST under a `cfg.Shutdown.PersistTimeout` bound (default 30 s) so restart picks up a fresh snapshot instead of cold-listing S3.
-  - **Operator-facing tuning hints on startup** (`internal/startup/hints.go`): after warmup completes the pod logs structured advisory lines covering footer-cache headroom, snapshot staleness, buffer-peers, warmup duration vs ready-gate sizing. Silent when the cluster is healthy. 6 hint-categories pinned by `internal/startup/hints_test.go`.
-  - **Full-jitter exponential backoff for S3 retries** (`internal/s3reader/reader.go`): replaces deterministic `100ms × 2^attempt` with `jitter = rand(0, min(cap, 100ms × 2^attempt))` per Marc Brooker's full-jitter formula. On simultaneous restart of 6+ peers all hitting S3 at once, the previous backoff phase-locked retries — the jitter version spreads them across the retry window. Guarded by `internal/s3reader/jitter_test.go` (50 concurrent retries asserting bucket spread + cap enforcement).
-  - **Streaming gob decode with 50 GiB stat-cap** (`internal/manifest/manifest.go::LoadFrom`): the binary snapshot format now decodes via a streaming gob reader fed by an `os.Open` + `io.LimitReader`, and the file size is stat-rejected before any decode work. Peak RSS during restart at PB scale (1M+ files, ~150 MB snapshot) drops from a slurp-then-decode 2× spike to a steady streaming footprint. Guarded by `internal/manifest/streaming_decode_test.go` (round-trip, oversized rejection, legacy JSON fallback, missing-file no-op, truncated file).
-  - **Warmup priority sort by `MaxTimeNs` descending** (`internal/storage/parquets3/warmup.go` and `lakehouse-traces/internal/storage/parquets3/warmup.go`): partial warmup (ctx cancelled, hit `WarmupMaxFiles`) now yields complete coverage of the freshest partition before moving to older ones. Previous lexicographic key sort meant a half-finished warmup left "last hour" dashboards with random partial coverage. Guarded by `internal/storage/parquets3/warmup_priority_test.go` (sort contract + stable tiebreaker for equal `MaxTimeNs`).
-  - **Restart + warmup design spec** (`docs/architecture/restart-and-warmup-design.md`): the canonical reference for lifecycle phase machine, `/ready` truth table, BufferBridge state matrix, snapshot lifecycle, cluster-coldstart protection plan, sizing matrix by scale, decisions table (and what was rejected), open questions, and PR roadmap. New PRs that touch lifecycle code must update this doc in the same change.
-  - **Lifecycle operations doc** (`docs/operations/lifecycle.md`): three-state `/ready` contract, ServingReady/WarmupComplete preconditions, full configuration reference, metrics to monitor, restart timeline table, "when `/ready` lies" troubleshooting.
-  - **Scaling restart scenarios** (`docs/architecture/scaling-restart-scenarios.md`): honest worst-case analysis for 3PB+6-peer cluster across rolling restart, simultaneous restart, first-ever boot, stale snapshot, fragmented L0 hot zone. Tuning recommendations cross-referenced from `sizing.md`.
-  - **Sizing guide** (`docs/operations/sizing.md`): memory/CPU/PVC matrix from dev → PB-scale with worked examples derived from the per-component cost drivers (manifest, footer cache, smart cache, WAL replay, per-query budget). Capacity-planning metrics + alert thresholds.
+ - **Three-state `/ready` contract** (`internal/startup/manager.go`, both `cmd/lakehouse-logs/main.go` and `lakehouse-traces/main.go`): the readiness handler now returns `503 not_ready` (still discovering or below the manifest gate), `204 serving_warming` (queries answered, background warmup in progress), or `200 ready` (warmup complete). The lifecycle manager splits the old single `ready` flag into `ServingReady` and `WarmupComplete`; serving-ready requires manifest gate ∧ WAL replay done. Guarded by `internal/startup/honesty_test.go` (16 sub-tests pinning every precondition combination).
+ - **`MinManifestFiles` gate** (`internal/config/config.go::StartupConfig.MinManifestFiles`): operator-tunable floor — the pod stays out of rotation until the loaded manifest crosses this threshold. Defaults to 0 (off) for dev/CI; at PB scale set to ~10% of expected file count to mask the first-ever S3 LIST window. Without the gate, the first pod up returns empty results to peer fan-out for the full LIST duration.
+ - **WAL replay gating** (`internal/startup/manager.go::SetWALReplayNeeded/Done`): `SetWALReplayNeeded()` is set before `store.StartWriter()`; `SetWALReplayDone()` is set after. `ServingReady()` returns false until both fire — buffered rows that hadn't been flushed when the pod crashed aren't silently dropped from query results during replay.
+ - **Snapshot age metric + bounded shutdown persist** (`internal/manifest/manifest.go::SavedAt()`, `internal/metrics/lakehouse.go::ManifestSnapshotAgeSeconds`, `lakehouse_min_manifest_files_gate`): a 5-second ticker exports `lakehouse_manifest_snapshot_age_seconds` so operators can alert when persist is silently failing (e.g. PVC out of space, see `docs/operations/lifecycle.md`). Shutdown persists the manifest FIRST under a `cfg.Shutdown.PersistTimeout` bound (default 30 s) so restart picks up a fresh snapshot instead of cold-listing S3.
+ - **Operator-facing tuning hints on startup** (`internal/startup/hints.go`): after warmup completes the pod logs structured advisory lines covering footer-cache headroom, snapshot staleness, buffer-peers, warmup duration vs ready-gate sizing. Silent when the cluster is healthy. 6 hint-categories pinned by `internal/startup/hints_test.go`.
+ - **Full-jitter exponential backoff for S3 retries** (`internal/s3reader/reader.go`): replaces deterministic `100ms × 2^attempt` with `jitter = rand(0, min(cap, 100ms × 2^attempt))` per Marc Brooker's full-jitter formula. On simultaneous restart of 6+ peers all hitting S3 at once, the previous backoff phase-locked retries — the jitter version spreads them across the retry window. Guarded by `internal/s3reader/jitter_test.go` (50 concurrent retries asserting bucket spread + cap enforcement).
+ - **Streaming gob decode with 50 GiB stat-cap** (`internal/manifest/manifest.go::LoadFrom`): the binary snapshot format now decodes via a streaming gob reader fed by an `os.Open` + `io.LimitReader`, and the file size is stat-rejected before any decode work. Peak RSS during restart at PB scale (1M+ files, ~150 MB snapshot) drops from a slurp-then-decode 2× spike to a steady streaming footprint. Guarded by `internal/manifest/streaming_decode_test.go` (round-trip, oversized rejection, legacy JSON fallback, missing-file no-op, truncated file).
+ - **Warmup priority sort by `MaxTimeNs` descending** (`internal/storage/parquets3/warmup.go` and `lakehouse-traces/internal/storage/parquets3/warmup.go`): partial warmup (ctx cancelled, hit `WarmupMaxFiles`) now yields complete coverage of the freshest partition before moving to older ones. Previous lexicographic key sort meant a half-finished warmup left "last hour" dashboards with random partial coverage. Guarded by `internal/storage/parquets3/warmup_priority_test.go` (sort contract + stable tiebreaker for equal `MaxTimeNs`).
+ - **Restart + warmup design spec** : the canonical reference for lifecycle phase machine, `/ready` truth table, BufferBridge state matrix, snapshot lifecycle, cluster-coldstart protection plan, sizing matrix by scale, decisions table (and what was rejected), open questions, and PR roadmap. New PRs that touch lifecycle code must update this doc in the same change.
+ - **Lifecycle operations doc** (`docs/operations/lifecycle.md`): three-state `/ready` contract, ServingReady/WarmupComplete preconditions, full configuration reference, metrics to monitor, restart timeline table, "when `/ready` lies" troubleshooting.
+ - **Scaling restart scenarios** : honest worst-case analysis for 3PB+6-peer cluster across rolling restart, simultaneous restart, first-ever boot, stale snapshot, fragmented L0 hot zone. Tuning recommendations cross-referenced from `sizing.md`.
+ - **Sizing guide** (`docs/operations/sizing.md`): memory/CPU/PVC matrix from dev → PB-scale with worked examples derived from the per-component cost drivers (manifest, footer cache, smart cache, WAL replay, per-query budget). Capacity-planning metrics + alert thresholds.
 
 ### Fixed
 
 - **Compactor was zeroing `raw_bytes` on every merged file** — the compactor's output `manifest.FileInfo` did not carry `RawBytes` forward from the input files; it defaulted to 0 via `omitempty`. `Size` (compressed) kept tracking correctly, so per-tenant `TenantSummaries` derived from the manifest aggregated correct `total_bytes` against under-counted `raw_bytes`. Result: `/api/v1/tenants` (and the Lakehouse Explorer Tenants tab that consumes it) reported `compression_ratio < 1.0` — visibly impossible "compressed > raw" — for any tenant whose files had been compacted. Compaction is a pure row-union, so summing input `RawBytes` into the merged `FileInfo` is exact. Pre-fix files on disk still carry `raw_bytes=0` and heal as they get rolled up into higher compaction levels; new compactions from this build preserve raw bytes immediately. Guarded by:
-  - `internal/compaction/compactor_test.go::TestCompactor_PreservesRawBytes` — unit regression: two-file compaction with explicit raw1+raw2, asserts merged equals sum.
-  - `tests/e2e/tenant_stats_consistency_test.go::TestManifest_CompactedFilesPreserveRawBytes` — walks `/manifest/range` and asserts compacted files (level > 0) preserve `raw_bytes` (10% grace for pre-fix files).
-  - `tests/e2e/tenant_stats_consistency_test.go::TestTenantStats_CompressionRatioReasonable` — tighter than existing `NotInverted` check (16 KiB threshold → 64 KiB) and bounds ratio to `[1.0, 50.0]` so both inversion and double-counting trip.
-  - `tests/e2e/tenant_stats_consistency_test.go::TestTenantUI_RendersCompressionAndRawBytesFields` — UI bundle must reference `compression_ratio` / `raw_bytes` / `total_bytes` so a missing column can't hide future drift.
+ - `internal/compaction/compactor_test.go::TestCompactor_PreservesRawBytes` — unit regression: two-file compaction with explicit raw1+raw2, asserts merged equals sum.
+ - `tests/e2e/tenant_stats_consistency_test.go::TestManifest_CompactedFilesPreserveRawBytes` — walks `/manifest/range` and asserts compacted files (level > 0) preserve `raw_bytes` (10% grace for pre-fix files).
+ - `tests/e2e/tenant_stats_consistency_test.go::TestTenantStats_CompressionRatioReasonable` — tighter than existing `NotInverted` check (16 KiB threshold → 64 KiB) and bounds ratio to `[1.0, 50.0]` so both inversion and double-counting trip.
+ - `tests/e2e/tenant_stats_consistency_test.go::TestTenantUI_RendersCompressionAndRawBytesFields` — UI bundle must reference `compression_ratio` / `raw_bytes` / `total_bytes` so a missing column can't hide future drift.
 
 ### Added
 
 - **Multi-tenant S3 isolation (PR #111)** — full implementation of the `docs/multi-tenancy.md` boundary principle: string aliases are presentation-only at external surfaces; everything internal stays integer-keyed.
-  - **In-path S3 isolation**: `BatchWriter` groups rows by `(AccountID, ProjectID)` at flush and writes one Parquet file per tenant per partition under the resolved prefix. The compactor, retention manager, lifecycle scheduler, and pool registry all consume the per-tenant prefix path so a tenant's data can never be reached via another tenant's pool.
-  - **Per-tenant config overrides** with global-default inheritance: lifecycle, cardinality, rate-limit, retention, and tenant-aware bucket selection can all be overridden per `(AccountID, ProjectID)` via a YAML policy file. Unspecified knobs fall back to the global defaults.
-  - **Bucket isolation** — "one process, many buckets": the s3reader pool registry resolves a per-tenant bucket from the policy and maintains a separate client pool per tenant, so a single lakehouse process can serve isolated S3 buckets without restart.
-  - **Retroactive bucket migration tool + admin endpoint** for moving an existing tenant from the shared bucket to its own bucket without ingest downtime.
-  - **UI + stats API surface every tenant edge case**: `/api/stats` now reports per-tenant `raw_bytes`, `compactor_*`, and the new VL/manifest parity endpoint with a matching UI panel; `global` is the sum across all tenants rather than an opaque counter. Compactor tenancy fixed so cross-tenant compaction is rejected.
-  - **e2e**: tenant stats consistency + UI breakdown tests; e2e compose mounts a YAML policy file to demonstrate per-tenant overrides.
+ - **In-path S3 isolation**: `BatchWriter` groups rows by `(AccountID, ProjectID)` at flush and writes one Parquet file per tenant per partition under the resolved prefix. The compactor, retention manager, lifecycle scheduler, and pool registry all consume the per-tenant prefix path so a tenant's data can never be reached via another tenant's pool.
+ - **Per-tenant config overrides** with global-default inheritance: lifecycle, cardinality, rate-limit, retention, and tenant-aware bucket selection can all be overridden per `(AccountID, ProjectID)` via a YAML policy file. Unspecified knobs fall back to the global defaults.
+ - **Bucket isolation** — "one process, many buckets": the s3reader pool registry resolves a per-tenant bucket from the policy and maintains a separate client pool per tenant, so a single lakehouse process can serve isolated S3 buckets without restart.
+ - **Retroactive bucket migration tool + admin endpoint** for moving an existing tenant from the shared bucket to its own bucket without ingest downtime.
+ - **UI + stats API surface every tenant edge case**: `/api/stats` now reports per-tenant `raw_bytes`, `compactor_*`, and the new VL/manifest parity endpoint with a matching UI panel; `global` is the sum across all tenants rather than an opaque counter. Compactor tenancy fixed so cross-tenant compaction is rejected.
+ - **e2e**: tenant stats consistency + UI breakdown tests; e2e compose mounts a YAML policy file to demonstrate per-tenant overrides.
 
 ## [0.39.0] - 2026-06-07
 
 ### Fixed
 
 - **Cold Jaeger search returned 0 traces at 12h while hot returned 20** — VT's `GetTraceList` step 2 issues `trace_id:in(t1,t2,...,t20)` for span fetch. Our `smartCache` fast-path in `lakehouse-traces/internal/storage/parquets3/storage_query.go::preFilterFiles` was unioning `FindFilesByTraceID(t_i)` across all queried trace IDs and narrowing to that union — but the union is only a *lower bound* on the relevant file set, because `smartCache` only records files it has previously fetched. A partial cache hit (one tid known, the rest never seen) collapsed candidates to one file that held spans for at most that one tid; spans for the other 19 vanished. Live blast radius: cold drilldown "Slow traces" tab returned empty at the 12h window even though step 1 found 20 trace IDs. Fix: take the smartCache fast-path **only for single-id queries** (the trace-by-id shape). Multi-id `trace_id:in(...)` falls through to bloom + `_trace_idx` narrowing, which examines every file and is honest about coverage. Guarded by:
-  - `lakehouse-traces/internal/storage/parquets3/cold_hot_parity_test.go::TestColdHotParity_SmartCachePartialHit_MustNotNarrowSilently` — unit pin that exercises `preFilterFiles` with a hand-seeded metadata map (one tid cached, one tid missing) and asserts both files survive.
-  - 8 sibling parity tests in the same file (`TraceIdxKeptFile`, `TraceIDInFilter`, `NegationFilter`, `UnindexedFileMustStillEmitRows`, `CombinedStreamAndTraceID`, `OutOfWindowReturnsZeroNoError`, `MultipleFilesNarrowingMustAgree`, `TraceIdxIntegrity_WriterSelfCheck`) that mirror the exact VT step-1 / step-2 query shapes from `vtselect/traces/query/query.go` so a regression in column resolution, time-window narrowing, or `_trace_idx` decoding fires at the storage layer instead of presenting as "0 traces in the UI".
-  - One known regression class is deliberately left as `t.Skip("known #99 tail")`: `TestColdHotParity_FieldEqByParquetName` pins `service.name:="X"` (operator-typed parquet column name) — the main scan path needs the same dual-emission a5576bf added to `parquetRowToFields`. Remove the Skip when fixed.
+ - `lakehouse-traces/internal/storage/parquets3/cold_hot_parity_test.go::TestColdHotParity_SmartCachePartialHit_MustNotNarrowSilently` — unit pin that exercises `preFilterFiles` with a hand-seeded metadata map (one tid cached, one tid missing) and asserts both files survive.
+ - 8 sibling parity tests in the same file (`TraceIdxKeptFile`, `TraceIDInFilter`, `NegationFilter`, `UnindexedFileMustStillEmitRows`, `CombinedStreamAndTraceID`, `OutOfWindowReturnsZeroNoError`, `MultipleFilesNarrowingMustAgree`, `TraceIdxIntegrity_WriterSelfCheck`) that mirror the exact VT step-1 / step-2 query shapes from `vtselect/traces/query/query.go` so a regression in column resolution, time-window narrowing, or `_trace_idx` decoding fires at the storage layer instead of presenting as "0 traces in the UI".
+ - One known regression class is deliberately left as `t.Skip("known #99 tail")`: `TestColdHotParity_FieldEqByParquetName` pins `service.name:="X"` (operator-typed parquet column name) — the main scan path needs the same dual-emission a5576bf added to `parquetRowToFields`. Remove the Skip when fixed.
 
 ### Added
 
-- **Option B — logstorage-native queryable buffer (cold-tier recently-flushed parity).** The insert buffer can now be a real per-pod `logstorage.Storage` (the VT/VL model) instead of a `[]schema.{Log,Trace}Row` staging slice that was reconstructed into a `logstorage.DataBlock` at query time. That struct→DataBlock converter kept drifting from the file-scan emission (missing `_stream`, `start_time_unix_nano`/`end_time_unix_nano`, map attrs), which made cold Jaeger/Tempo search return 0 for fresh traces, 404 the log→trace drilldown (Grafana `Cannot read properties of undefined (reading 'spanID')`), and zero the Tempo service-filter. Behind `insert.buffer_engine` (`buffer` default | `logstore`): the buffer is fed via the exported `MustAddRows` (dual-write, legacy path stays authoritative) and **queries serve the recent/unflushed window from it via the exported `Storage.RunQuery`** — byte-identical to a file scan, no conversion. With `logstore` enabled end-to-end, cold `[24h]` Jaeger goes 0→20 (matches hot), recent trace-by-id resolves at all recencies incl. the freshest ~30s, and Tempo `{nestedSetParent<0}` + `{resource.service.name="X"}` both return data. Durability reuses logstorage's own disk parts + restore-on-open (crash-loss window == VT/VL hot; no LH WAL added). Pure exported-API reuse — **no VL/VT modification**. Phased (P1 dual-write + P3 read-merge shipped; P4/P5 retire the legacy path + LH WAL). A buffer failure can never break ingestion (recover-isolation + `lakehouse_buffer_store_dualwrite_failures_total`). See `docs/architecture/buffer-queryable-store-design.md`.
+- **Option B — logstorage-native queryable buffer (cold-tier recently-flushed parity).** The insert buffer can now be a real per-pod `logstorage.Storage` (the VT/VL model) instead of a `[]schema.{Log,Trace}Row` staging slice that was reconstructed into a `logstorage.DataBlock` at query time. That struct→DataBlock converter kept drifting from the file-scan emission (missing `_stream`, `start_time_unix_nano`/`end_time_unix_nano`, map attrs), which made cold Jaeger/Tempo search return 0 for fresh traces, 404 the log→trace drilldown (Grafana `Cannot read properties of undefined (reading 'spanID')`), and zero the Tempo service-filter. Behind `insert.buffer_engine` (`buffer` default | `logstore`): the buffer is fed via the exported `MustAddRows` (dual-write, legacy path stays authoritative) and **queries serve the recent/unflushed window from it via the exported `Storage.RunQuery`** — byte-identical to a file scan, no conversion. With `logstore` enabled end-to-end, cold `[24h]` Jaeger goes 0→20 (matches hot), recent trace-by-id resolves at all recencies incl. the freshest ~30s, and Tempo `{nestedSetParent<0}` + `{resource.service.name="X"}` both return data. Durability reuses logstorage's own disk parts + restore-on-open (crash-loss window == VT/VL hot; no LH WAL added). Pure exported-API reuse — **no VL/VT modification**. Phased (P1 dual-write + P3 read-merge shipped; P4/P5 retire the legacy path + LH WAL). A buffer failure can never break ingestion (recover-isolation + `lakehouse_buffer_store_dualwrite_failures_total`). See .
 
 ### Changed
 
@@ -204,7 +204,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Docs
 
-- **`docs/architecture/performance-machinery.md` §6.2** — corrected the zstd-level claim: parquet-go's writer maps integer levels to **only four buckets** (`Fastest`/`Default`/`Better`/`Best`) regardless of the integer value, so the previous text claiming `[3, 7, 11] → [3, 9, 15]` "doubles compaction CPU" was wrong — both schedules land in `[Default, Better, Best]` and produce the same encode profile. New table shows the integer ranges and bucket mapping so operators don't tune a knob that doesn't move.
+- ** §6.2** — corrected the zstd-level claim: parquet-go's writer maps integer levels to **only four buckets** (`Fastest`/`Default`/`Better`/`Best`) regardless of the integer value, so the previous text claiming `[3, 7, 11] → [3, 9, 15]` "doubles compaction CPU" was wrong — both schedules land in `[Default, Better, Best]` and produce the same encode profile. New table shows the integer ranges and bucket mapping so operators don't tune a knob that doesn't move.
 
 ## [0.37.4] - 2026-06-04
 
@@ -222,159 +222,159 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **VictoriaTraces parity milestone — cold-tier Tempo `/api/v2/traces/<id>`
-  fast path + Loki → Tempo drilldown (PR #105)** — closes the
-  trace-by-ID feature gap between upstream VictoriaTraces and the
-  lakehouse cold tier. Three cooperating layers:
+ fast path + Loki → Tempo drilldown (PR #105)** — closes the
+ trace-by-ID feature gap between upstream VictoriaTraces and the
+ lakehouse cold tier. Three cooperating layers:
 
-  1. **Write-side hygiene + observability**
-     (`lakehouse-traces/internal/vlstorage/insert.go`,
-     `internal/metrics/lakehouse.go`). VT's vtinsert pipeline emits
-     internal index rows alongside spans — `trace_id_idx_stream` rows
-     carrying per-trace (start, end) bounds, and `trace_service_graph_stream`
-     rows carrying service-graph edges. Both are part of VT's own query
-     path and must not become degenerate spans with empty `trace_id`
-     in cold Parquet. The existing detector (`vtInternalRowKind`) now
-     returns the metric `kind` label, and a new
-     `lakehouse_vt_internal_rows_dropped_total{kind=trace_id_idx|service_graph}`
-     counter exposes how many we discard so a future regression — VT
-     renaming a field or a new ingest path bypassing the filter —
-     becomes visible from `/metrics` immediately.
+ 1. **Write-side hygiene + observability**
+ (`lakehouse-traces/internal/vlstorage/insert.go`,
+ `internal/metrics/lakehouse.go`). VT's vtinsert pipeline emits
+ internal index rows alongside spans — `trace_id_idx_stream` rows
+ carrying per-trace (start, end) bounds, and `trace_service_graph_stream`
+ rows carrying service-graph edges. Both are part of VT's own query
+ path and must not become degenerate spans with empty `trace_id`
+ in cold Parquet. The existing detector (`vtInternalRowKind`) now
+ returns the metric `kind` label, and a new
+ `lakehouse_vt_internal_rows_dropped_total{kind=trace_id_idx|service_graph}`
+ counter exposes how many we discard so a future regression — VT
+ renaming a field or a new ingest path bypassing the filter —
+ becomes visible from `/metrics` immediately.
 
-  2. **`_trace_idx` Parquet footer fast path**
-     (`lakehouse-traces/internal/storage/parquets3/trace_index_lookup.go`,
-     `lakehouse-traces/internal/vtstorage_adapter/trace_index_fastpath.go`,
-     `internal/traceindex/` — a new shared package). Every trace Parquet
-     file written by the cold-tier batch writer already carries a
-     compact per-trace `(trace_id, partition, start_ns, end_ns)` summary
-     in the standard Parquet `FileMetaData.key_value_metadata` slot —
-     same documented field Apache Iceberg / Delta / Hudi use for their
-     own table metadata, so duckdb, pyarrow `pq.read_metadata`, and
-     `parquet-tools meta` all read it cleanly. The vtstorage adapter
-     now intercepts VT's `{trace_id_idx_stream=<bucket>} AND trace_id_idx:=<id>`
-     stats query *before* the previous scan-rewrite path, calls
-     `Storage.LookupTraceIndex(ctx, traceID)`, and emits a synthetic
-     `DataBlock` with the three columns VT's `findTraceIDTimeSplitTimeRange`
-     reads (`_time`, `start_time`, `end_time`). No row group is ever
-     opened. Span scan remains as the fall-through for files whose
-     footer is unreachable. The new
-     `lakehouse_trace_index_lookups_total{result=hit|miss|error}` metric
-     makes the hit ratio observable.
+ 2. **`_trace_idx` Parquet footer fast path**
+ (`lakehouse-traces/internal/storage/parquets3/trace_index_lookup.go`,
+ `lakehouse-traces/internal/vtstorage_adapter/trace_index_fastpath.go`,
+ `internal/traceindex/` — a new shared package). Every trace Parquet
+ file written by the cold-tier batch writer already carries a
+ compact per-trace `(trace_id, partition, start_ns, end_ns)` summary
+ in the standard Parquet `FileMetaData.key_value_metadata` slot —
+ same documented field Apache Iceberg / Delta / Hudi use for their
+ own table metadata, so duckdb, pyarrow `pq.read_metadata`, and
+ `parquet-tools meta` all read it cleanly. The vtstorage adapter
+ now intercepts VT's `{trace_id_idx_stream=<bucket>} AND trace_id_idx:=<id>`
+ stats query *before* the previous scan-rewrite path, calls
+ `Storage.LookupTraceIndex(ctx, traceID)`, and emits a synthetic
+ `DataBlock` with the three columns VT's `findTraceIDTimeSplitTimeRange`
+ reads (`_time`, `start_time`, `end_time`). No row group is ever
+ opened. Span scan remains as the fall-through for files whose
+ footer is unreachable. The new
+ `lakehouse_trace_index_lookups_total{result=hit|miss|error}` metric
+ makes the hit ratio observable.
 
-  3. **Compaction parity for the footer index**
-     (`internal/compaction/compactor.go`,
-     `internal/traceindex/traceindex.go`). Before this milestone,
-     `writeCompactedTraces` dropped `_trace_idx` on every merge,
-     collapsing cold-tier trace-by-ID back to a full span scan as soon
-     as compaction ran. The index codec is now hoisted to the shared
-     `internal/traceindex/` package so the compactor and the writer
-     share one source of truth, and the compactor passes the recomputed
-     index through `parquet.KeyValueMetadata(traceindex.MetadataKey, …)`.
-     A regression test (`TestCompactor_PreservesTraceIndexFooter`) opens
-     the merged Parquet via plain `parquet.OpenFile` — proving the file
-     is still 100% spec-compliant — and asserts both per-trace bounds
-     plus the VT-compatible `xxhash64(traceID) % 1024` partition value
-     survive the round-trip.
+ 3. **Compaction parity for the footer index**
+ (`internal/compaction/compactor.go`,
+ `internal/traceindex/traceindex.go`). Before this milestone,
+ `writeCompactedTraces` dropped `_trace_idx` on every merge,
+ collapsing cold-tier trace-by-ID back to a full span scan as soon
+ as compaction ran. The index codec is now hoisted to the shared
+ `internal/traceindex/` package so the compactor and the writer
+ share one source of truth, and the compactor passes the recomputed
+ index through `parquet.KeyValueMetadata(traceindex.MetadataKey, …)`.
+ A regression test (`TestCompactor_PreservesTraceIndexFooter`) opens
+ the merged Parquet via plain `parquet.OpenFile` — proving the file
+ is still 100% spec-compliant — and asserts both per-trace bounds
+ plus the VT-compatible `xxhash64(traceID) % 1024` partition value
+ survive the round-trip.
 
-  4. **Upstream bump: VictoriaTraces v0.9.2 + VictoriaLogs v1.50.0**
-     (`Makefile`, `lakehouse-traces/go.mod`, `patches/{vt-traces,vl-traces}/`,
-     `deployment/docker/docker-compose-{e2e,benchmark}.yml`,
-     `tests/parity/docker-compose.yml`). v0.9.2's release note —
-     "exclude unnecessary streams during trace search" — fixes the
-     parallel hot-tier leak we'd been compensating for on cold, so the
-     two-stage cleanup composes correctly across both tiers. The
-     `filter string` parameter VT added to
-     `GetFieldNames` / `GetFieldValues` / `GetStreamFieldNames` /
-     `GetStreamFieldValues` is now forwarded through the `ExternalStorage`
-     overlay; the LH adapter applies the substring narrow client-side
-     (`filterValuesBySubstring`), mirroring the logs adapter pattern.
-     All three patches (dispatch, flag-dedup, go-mod-replace) apply
-     cleanly against the new release.
+ 4. **Upstream bump: VictoriaTraces v0.9.2 + VictoriaLogs v1.50.0**
+ (`Makefile`, `lakehouse-traces/go.mod`, `patches/{vt-traces,vl-traces}/`,
+ `deployment/docker/docker-compose-{e2e,benchmark}.yml`,
+ `tests/parity/docker-compose.yml`). v0.9.2's release note —
+ "exclude unnecessary streams during trace search" — fixes the
+ parallel hot-tier leak we'd been compensating for on cold, so the
+ two-stage cleanup composes correctly across both tiers. The
+ `filter string` parameter VT added to
+ `GetFieldNames` / `GetFieldValues` / `GetStreamFieldNames` /
+ `GetStreamFieldValues` is now forwarded through the `ExternalStorage`
+ overlay; the LH adapter applies the substring narrow client-side
+ (`filterValuesBySubstring`), mirroring the logs adapter pattern.
+ All three patches (dispatch, flag-dedup, go-mod-replace) apply
+ cleanly against the new release.
 
-  5. **Grafana drilldown completion**
-     (`deployment/docker/grafana/provisioning/datasources/datasources.yaml`).
-     Tempo datasources are hardened with `nodeGraph.enabled=false`
-     (VT has no service-graph endpoint), the empty `serviceMap` block
-     omitted (an empty `datasourceUid` triggers phantom `/api/metrics`
-     calls), `streamingEnabled.{search,query}=false` (VT exposes no
-     Tempo gRPC stream-over-http surface), and `spanBar.type=None` for
-     parity with the Jaeger sibling datasources. The Loki proxy derived
-     fields now route trace_id clicks straight to Tempo —
-     `loki-vl-proxy-cold` → `tempo-lh-cold` and `loki-vl-proxy` →
-     `tempo-vt-hot` — verified live in the e2e stack by drilling a
-     real cold trace ID from a Loki cold log into the LH cold Tempo
-     view and rendering the spans through Grafana's Tempo plugin.
+ 5. **Grafana drilldown completion**
+ (`deployment/docker/grafana/provisioning/datasources/datasources.yaml`).
+ Tempo datasources are hardened with `nodeGraph.enabled=false`
+ (VT has no service-graph endpoint), the empty `serviceMap` block
+ omitted (an empty `datasourceUid` triggers phantom `/api/metrics`
+ calls), `streamingEnabled.{search,query}=false` (VT exposes no
+ Tempo gRPC stream-over-http surface), and `spanBar.type=None` for
+ parity with the Jaeger sibling datasources. The Loki proxy derived
+ fields now route trace_id clicks straight to Tempo —
+ `loki-vl-proxy-cold` → `tempo-lh-cold` and `loki-vl-proxy` →
+ `tempo-vt-hot` — verified live in the e2e stack by drilling a
+ real cold trace ID from a Loki cold log into the LH cold Tempo
+ view and rendering the spans through Grafana's Tempo plugin.
 
-  Constraints honoured throughout: zero VT/VL upstream modification
-  (everything is either an adapter behind the `ExternalStorage` overlay
-  in `patches/{vl-traces,vt-traces}/` or LH-side code); zero
-  non-standard Parquet encoding (every byte LH writes to S3 is readable
-  by any spec-compliant tool); zero Jaeger regression (the three Jaeger
-  datasources remain provisioned and unchanged — explicit "open in
-  Jaeger" usage and Grafana Jaeger plugin drilldown still work).
+ Constraints honoured throughout: zero VT/VL upstream modification
+ (everything is either an adapter behind the `ExternalStorage` overlay
+ in `patches/{vl-traces,vt-traces}/` or LH-side code); zero
+ non-standard Parquet encoding (every byte LH writes to S3 is readable
+ by any spec-compliant tool); zero Jaeger regression (the three Jaeger
+ datasources remain provisioned and unchanged — explicit "open in
+ Jaeger" usage and Grafana Jaeger plugin drilldown still work).
 
-  Verified in `deployment/docker/docker-compose-e2e.yml` after rebuild:
-  all six trace drilldown paths (3 Jaeger v1 + 3 Tempo v2 across hot
-  / cold / multilevel `vtselect` fan-out) return HTTP 200 with real
-  trace bodies; `lakehouse_trace_index_lookups_total{result="hit"}`
-  climbs on every cold trace-by-ID; the cold-tier Grafana Explore
-  panel for `tempo-lh-cold` renders trace spans from a Loki cold log
-  link end-to-end.
+ Verified in `deployment/docker/docker-compose-e2e.yml` after rebuild:
+ all six trace drilldown paths (3 Jaeger v1 + 3 Tempo v2 across hot
+ / cold / multilevel `vtselect` fan-out) return HTTP 200 with real
+ trace bodies; `lakehouse_trace_index_lookups_total{result="hit"}`
+ climbs on every cold trace-by-ID; the cold-tier Grafana Explore
+ panel for `tempo-lh-cold` renders trace spans from a Loki cold log
+ link end-to-end.
 
 - **Election-free compaction (spec 2026-05-31)** — replaces the K8s Lease /
-  S3-sentinel single-leader scheme with HRW (Highest Random Weight) partition
-  ownership computed in-process on every pod. Each pod independently decides
-  which partitions it owns by ranking peers (from the existing peer-cache)
-  with xxh64 — the highest-weight peer per partition wins, with deterministic
-  tie-break by peer name. The result: zero K8s coordination dependencies and
-  ~5 MB binary-size reduction per module (the entire `k8s.io/client-go` REST
-  closure + 13 transitive deps drop out).
-  - `internal/compaction/ownership.go` — `OwnershipResolver` with AZ
-    stratification (same-AZ peers preferred, fall back to all-AZ when same-AZ
-    is drained), `IsDraining` filter, ring-stabilization gate (defer ownership
-    decisions during ring change), and `RankedOwners` / `SecondaryOwner` /
-    `TertiaryOwner` ladders for Tier A failover.
-  - `internal/compaction/orphan_sweep.go` — two-tier orphan reclamation.
-    Tier A: detects stale `LastCompactionAttempt` per partition (≥3 × Interval)
-    and lets the secondary HRW owner steal compaction. Tier B: walks S3 prefix
-    layout, hash-buckets dates across pods, and deletes parquet keys that
-    survive a three-step safety gate (not-in-manifest + age-gate + post-LIST
-    manifest re-snapshot).
-  - `internal/compaction/fair_share.go` — per-tenant round-robin scheduler.
-    Cursor advances across tenants every tick so no noisy tenant can starve
-    others. Configurable `CompactionsPerTenant` budget.
-  - `internal/compaction/drain_handler.go` + `Scheduler.Drain()` —
-    HTTP `POST /lakehouse/drain` endpoint marks the pod as draining,
-    waits for in-flight compactions to finish (bounded by `DrainTimeout`,
-    default 90 s), and emits the `X-Lakehouse-Draining: true` header so peer
-    pods exclude us from the HRW ring within one tick.
-  - `manifest.AddFile` idempotency + per-partition `LastCompactionAttempt`
-    tracking — the manifest now silently no-ops on duplicate (key, partition)
-    inserts, surfacing a `lakehouse_manifest_addfile_duplicate_key_total`
-    canary for hidden upload bugs.
-  - **12 new compaction observability metrics** including
-    `compaction_partitions_owned`, `compaction_ownership_self_in_peers`,
-    `compaction_dual_ownership_total` (load-bearing — alerts on >0),
-    `compaction_orphan_files_deleted_total`, `compaction_orphans_skipped`
-    (per-reason vector), `compaction_deferred_stabilizing`,
-    `compaction_deferred_ring_thrash`, `compaction_draining`,
-    `compaction_aborted_during_drain_total`, `compaction_stolen_total`,
-    `compaction_sweep_deferred_stabilizing` (Tier A / Tier B).
-  - **41 new tests** (33 edge cases from spec §3 + 8 HPA recovery tests from
-    spec §11.6). Every load-bearing assertion documents a negative-control
-    revert in its leading comment — removing the corresponding production
-    guard must cause the test to fail. Coverage gates met:
-    `ownership.go` 96.25 % (>= 95 %), `orphan_sweep.go` 91.96 % (>= 90 %),
-    `fair_share.go` 94.78 % (>= 90 %).
-  - **HPA-safe scaling chart defaults** — PDB template (`pdb.yaml`),
-    `preStop` hook calling `POST /lakehouse/drain`, generous
-    `terminationGracePeriodSeconds`, and per-component PDB toggles
-    `select.podDisruptionBudget.enabled` / `insert.podDisruptionBudget.enabled`.
+ S3-sentinel single-leader scheme with HRW (Highest Random Weight) partition
+ ownership computed in-process on every pod. Each pod independently decides
+ which partitions it owns by ranking peers (from the existing peer-cache)
+ with xxh64 — the highest-weight peer per partition wins, with deterministic
+ tie-break by peer name. The result: zero K8s coordination dependencies and
+ ~5 MB binary-size reduction per module (the entire `k8s.io/client-go` REST
+ closure + 13 transitive deps drop out).
+ - `internal/compaction/ownership.go` — `OwnershipResolver` with AZ
+ stratification (same-AZ peers preferred, fall back to all-AZ when same-AZ
+ is drained), `IsDraining` filter, ring-stabilization gate (defer ownership
+ decisions during ring change), and `RankedOwners` / `SecondaryOwner` /
+ `TertiaryOwner` ladders for Tier A failover.
+ - `internal/compaction/orphan_sweep.go` — two-tier orphan reclamation.
+ Tier A: detects stale `LastCompactionAttempt` per partition (≥3 × Interval)
+ and lets the secondary HRW owner steal compaction. Tier B: walks S3 prefix
+ layout, hash-buckets dates across pods, and deletes parquet keys that
+ survive a three-step safety gate (not-in-manifest + age-gate + post-LIST
+ manifest re-snapshot).
+ - `internal/compaction/fair_share.go` — per-tenant round-robin scheduler.
+ Cursor advances across tenants every tick so no noisy tenant can starve
+ others. Configurable `CompactionsPerTenant` budget.
+ - `internal/compaction/drain_handler.go` + `Scheduler.Drain()` —
+ HTTP `POST /lakehouse/drain` endpoint marks the pod as draining,
+ waits for in-flight compactions to finish (bounded by `DrainTimeout`,
+ default 90 s), and emits the `X-Lakehouse-Draining: true` header so peer
+ pods exclude us from the HRW ring within one tick.
+ - `manifest.AddFile` idempotency + per-partition `LastCompactionAttempt`
+ tracking — the manifest now silently no-ops on duplicate (key, partition)
+ inserts, surfacing a `lakehouse_manifest_addfile_duplicate_key_total`
+ canary for hidden upload bugs.
+ - **12 new compaction observability metrics** including
+ `compaction_partitions_owned`, `compaction_ownership_self_in_peers`,
+ `compaction_dual_ownership_total` (load-bearing — alerts on >0),
+ `compaction_orphan_files_deleted_total`, `compaction_orphans_skipped`
+ (per-reason vector), `compaction_deferred_stabilizing`,
+ `compaction_deferred_ring_thrash`, `compaction_draining`,
+ `compaction_aborted_during_drain_total`, `compaction_stolen_total`,
+ `compaction_sweep_deferred_stabilizing` (Tier A / Tier B).
+ - **41 new tests** (33 edge cases from spec §3 + 8 HPA recovery tests from
+ spec §11.6). Every load-bearing assertion documents a negative-control
+ revert in its leading comment — removing the corresponding production
+ guard must cause the test to fail. Coverage gates met:
+ `ownership.go` 96.25 % (>= 95 %), `orphan_sweep.go` 91.96 % (>= 90 %),
+ `fair_share.go` 94.78 % (>= 90 %).
+ - **HPA-safe scaling chart defaults** — PDB template (`pdb.yaml`),
+ `preStop` hook calling `POST /lakehouse/drain`, generous
+ `terminationGracePeriodSeconds`, and per-component PDB toggles
+ `select.podDisruptionBudget.enabled` / `insert.podDisruptionBudget.enabled`.
 
 - **Runtime `Acquire` wiring for 4 resource-bound surfaces** — turns the K8s-style resource bounds added in v0.37.1 from metric-exposure-only into real backpressure with admit/reject semantics. Surfaces wired in both modules (logs + traces):
-  - Query file workers — admit at `fileWorkerLoop`; ctx-cancel during blocked Acquire surfaces as "file workers limit exceeded" error (was: queued indefinitely on channel).
-  - Cache memory — `LRU.SetBound`; `Put` returns silently when bound rejects, cache becomes best-effort (was: silent LRU eviction only).
-  - Smart cache disk — `DiskCache.SetBound`; `Put` / `PutFromPath` return `ErrBoundFull` on rejection (was: always succeeded, watermark eviction only).
-  - Query max rows — admit at `acquireQueryMaxRowsBudget`; "query max-rows budget exhausted" error when N concurrent queries × maxRows exceed the bound's Limit (was: per-query soft check only).
+ - Query file workers — admit at `fileWorkerLoop`; ctx-cancel during blocked Acquire surfaces as "file workers limit exceeded" error (was: queued indefinitely on channel).
+ - Cache memory — `LRU.SetBound`; `Put` returns silently when bound rejects, cache becomes best-effort (was: silent LRU eviction only).
+ - Smart cache disk — `DiskCache.SetBound`; `Put` / `PutFromPath` return `ErrBoundFull` on rejection (was: always succeeded, watermark eviction only).
+ - Query max rows — admit at `acquireQueryMaxRowsBudget`; "query max-rows budget exhausted" error when N concurrent queries × maxRows exceed the bound's Limit (was: per-query soft check only).
 - New `resourcebounds.Bound.TryAcquire(n)` non-blocking API + exported `ErrBoundFull` sentinel for cache hot paths that cannot tolerate blocking on bound exhaustion.
 - 34 new unit tests across both modules covering admit/reject paths, release on every code path (eviction / Delete / Clear), nil-bound passthrough, outlier admission (oversized single holder admitted alone), ctx-cancel during blocked Acquire, and rejection-metric increments. Each load-bearing assertion documents a negative-control proof ("comment out X → this test must fail") per the harden-and-lock rule.
 - Live e2e metrics confirm load-bearing in production: `lakehouse_resourcebound_cache_memory_acquired_total 1162`, `…query_file_workers_acquired_total 2489`, `…query_max_rows_acquired_total 5` measured against the rebuilt e2e compose stack.
@@ -388,49 +388,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed (election-free compaction)
 
 - **`internal/election/` package** — entire directory deleted (~5 kLOC across
-  `auto.go`, `k8s.go`, `s3.go`, `noop.go`, `leader.go`, plus coverage, fuzz,
-  integration, leak, regression, and soak test suites). HRW ownership
-  (above) makes this code unnecessary.
+ `auto.go`, `k8s.go`, `s3.go`, `noop.go`, `leader.go`, plus coverage, fuzz,
+ integration, leak, regression, and soak test suites). HRW ownership
+ (above) makes this code unnecessary.
 - **`internal/compaction/sentinel.go` + `sentinel_test.go`** — the S3
-  sentinel lock that prevented two pods from compacting the same partition.
-  Replaced by HRW: each partition has exactly one HRW-elected owner per tick.
+ sentinel lock that prevented two pods from compacting the same partition.
+ Replaced by HRW: each partition has exactly one HRW-elected owner per tick.
 - **`internal/compaction/sharding.go` + `sharding_test.go`** — the
-  modulo-shard partition assignment scheme. Replaced by HRW (better
-  rebalancing properties on N→N+1 transitions: only ~1/N partitions move).
+ modulo-shard partition assignment scheme. Replaced by HRW (better
+ rebalancing properties on N→N+1 transitions: only ~1/N partitions move).
 - **`BloomController.SetLeader` / `IsLeader`** — bloom tuning state is
-  per-pod (cfg / overrides / adjustments live on the controller instance
-  only), so the previous leader gate was decorative. Every pod now auto-tunes
-  its own bloom params.
+ per-pod (cfg / overrides / adjustments live on the controller instance
+ only), so the previous leader gate was decorative. Every pod now auto-tunes
+ its own bloom params.
 - **`config.CompactionConfig` fields**: `LeaderElection`, `LeaseDuration`,
-  `S3LockTTL`, `S3Heartbeat`, `ShardID`, `ShardCount`.
+ `S3LockTTL`, `S3Heartbeat`, `ShardID`, `ShardCount`.
 - **CLI flags**: `-lakehouse.compaction.leader-election`,
-  `-lakehouse.compaction.lease-duration`, `-lakehouse.compaction.s3-heartbeat`,
-  `-lakehouse.compaction.s3-lock-ttl`, `-lakehouse.compaction.shard-id`,
-  `-lakehouse.compaction.shard-count`.
+ `-lakehouse.compaction.lease-duration`, `-lakehouse.compaction.s3-heartbeat`,
+ `-lakehouse.compaction.s3-lock-ttl`, `-lakehouse.compaction.shard-id`,
+ `-lakehouse.compaction.shard-count`.
 - **Election metrics**: `lakehouse_election_leader`,
-  `lakehouse_election_transitions_total`, `lakehouse_election_health_checks_total`.
+ `lakehouse_election_transitions_total`, `lakehouse_election_health_checks_total`.
 - **Chart artifacts**:
-  - `charts/.../templates/compaction-rbac.yaml` (Role + RoleBinding for
-    `coordination.k8s.io/leases`).
-  - `charts/.../templates/tenant-rbac.yaml` (same surface for the
-    tenant-alias sync leader — see spec §10 Q6; the actual alias-sync
-    migration to HRW ownership is tracked separately).
-  - `lakehouseConfig.compaction.leader_election` / `lease_duration` /
-    `s3_lock_ttl` / `s3_heartbeat` / `shard_id` / `shard_count` keys from
-    `values.yaml`.
-  - `POD_NAMESPACE` downward-API env-var injection in `statefulsets.yaml`
-    (consumed exclusively by the now-deleted elector).
+ - `charts/.../templates/compaction-rbac.yaml` (Role + RoleBinding for
+ `coordination.k8s.io/leases`).
+ - `charts/.../templates/tenant-rbac.yaml` (same surface for the
+ tenant-alias sync leader — see spec §10 Q6; the actual alias-sync
+ migration to HRW ownership is tracked separately).
+ - `lakehouseConfig.compaction.leader_election` / `lease_duration` /
+ `s3_lock_ttl` / `s3_heartbeat` / `shard_id` / `shard_count` keys from
+ `values.yaml`.
+ - `POD_NAMESPACE` downward-API env-var injection in `statefulsets.yaml`
+ (consumed exclusively by the now-deleted elector).
 - **E2E**: `.github/workflows/e2e-k8s.yaml`,
-  `tests/e2e-k8s/{kind-config.yaml,test_leader_election.sh}`,
-  `tests/verification/probe_k8s_election_failover.sh`.
+ `tests/e2e-k8s/{kind-config.yaml,test_leader_election.sh}`,
+ `tests/verification/probe_k8s_election_failover.sh`.
 - **Go dependencies tidied by `go mod tidy`** on both modules:
-  `k8s.io/apimachinery v0.36.0`, `k8s.io/client-go v0.36.0`,
-  `k8s.io/klog/v2 v2.140.0`, `k8s.io/kube-openapi`, `k8s.io/utils`,
-  `sigs.k8s.io/json`, `sigs.k8s.io/randfill`, plus 13 transitive deps
-  (`fxamacker/cbor/v2`, `modern-go/reflect2`, `json-iterator/go`,
-  `munnerz/goautoneg`, `golang.org/x/term`, `golang.org/x/time`,
-  `gopkg.in/inf.v0`, `go.yaml.in/yaml/v2`, `davecgh/go-spew`,
-  `x448/float16`).
+ `k8s.io/apimachinery v0.36.0`, `k8s.io/client-go v0.36.0`,
+ `k8s.io/klog/v2 v2.140.0`, `k8s.io/kube-openapi`, `k8s.io/utils`,
+ `sigs.k8s.io/json`, `sigs.k8s.io/randfill`, plus 13 transitive deps
+ (`fxamacker/cbor/v2`, `modern-go/reflect2`, `json-iterator/go`,
+ `munnerz/goautoneg`, `golang.org/x/term`, `golang.org/x/time`,
+ `gopkg.in/inf.v0`, `go.yaml.in/yaml/v2`, `davecgh/go-spew`,
+ `x448/float16`).
 
 ### Deferred
 
@@ -455,11 +455,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `internal/resourcebounds` package — generalises the in-tree `fileBudget` semantics into a reusable `ResourceBound` primitive with K8s-style `Request` (always-reserved baseline), `Limit` (hard ceiling, enforced via blocking `Acquire`), `LimitCount` (per-holder count cap), and `ScalingPolicy` enum (`Fixed`, `LinearGrowth`, `ExponentialBackoff`). Preserves the legacy outlier-admit semantics (single oversized holder admitted alone when pool empty) so individual large parquet files remain processable. Includes `PrometheusSink` adapter and `Resolve` helper that handles the operator-facing flag triple resolution (new triple takes precedence, deprecated alias falls back with one-time warning).
 - 30 new per-surface metrics in `internal/metrics/lakehouse.go` — `lakehouse_resourcebound_<surface>_{acquired,rejected,outstanding_bytes,outstanding_count}_total` + `_request` / `_limit` info gauges, for all 5 surfaces (s3_concurrent_downloads, query_file_workers, cache_memory, smart_cache_disk, query_max_rows).
 - Five operator-facing K8s-style flag triples:
-  - `-lakehouse.s3.concurrent-downloads.{request,limit,scaling}`
-  - `-lakehouse.query.file-workers.{request,limit,scaling}`
-  - `-lakehouse.cache.memory.{request,limit,scaling}`
-  - `-lakehouse.smart-cache.disk.{request,limit,scaling}`
-  - `-lakehouse.query.max-rows.{request,limit,scaling}`
+ - `-lakehouse.s3.concurrent-downloads.{request,limit,scaling}`
+ - `-lakehouse.query.file-workers.{request,limit,scaling}`
+ - `-lakehouse.cache.memory.{request,limit,scaling}`
+ - `-lakehouse.smart-cache.disk.{request,limit,scaling}`
+ - `-lakehouse.query.max-rows.{request,limit,scaling}`
 - `shouldUseWildcardRangeRead` in both `internal/storage/parquets3/range_reader.go` and `lakehouse-traces/internal/storage/parquets3/range_reader.go` — switch that opens parquet files via lazy S3 ReaderAt instead of buffered full download for wildcard queries on files >=4MiB. Bounds wildcard heap to working-set-row-group bytes (<10MiB/file) instead of cumulative-file-bytes (16 workers × ~30MiB ≈ 480MiB).
 - Unit tests: 22 in `internal/resourcebounds` (Bound, Resolve, PrometheusSink, ScalingPolicy, fileBudget-legacy-semantics) + 8 in `internal/storage/parquets3/resourcebound_wiring_test.go` (5-surface defaults populated, S3 deprecated alias honored, new triple takes precedence) + 5 across both modules' `range_reader_test.go` covering the wildcard cutoff.
 
@@ -555,7 +555,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### CI
 
 - `auto-release.yaml` workflow now clones + patches VictoriaTraces v0.9.0 into `lakehouse-traces/deps/VictoriaTraces/` before the build step. Prior releases failed with `replacement directory ./deps/VictoriaTraces does not exist` because the VT clone/patch was only wired into `ci.yaml`, not the release workflow.
-- Release skip-regex extended to include `tests/verification/` (matrix.md + probe scripts) and `docs/superpowers/` (specs + plans) so verification-only and design-only PRs no longer trigger a no-op release.
+- Release skip-regex extended to include `tests/verification/` (matrix.md + probe scripts) and design-document paths so verification-only and design-only PRs no longer trigger a no-op release.
 
 ## [0.36.0] - 2026-05-25
 
