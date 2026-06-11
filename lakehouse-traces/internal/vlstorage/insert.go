@@ -461,6 +461,18 @@ func mapResourceAttr(row *schema.TraceRow, key, value string) {
 		row.CloudRegion = strings.Clone(value)
 	case "host.name":
 		row.HostName = strings.Clone(value)
+	// Dedicated columns — Tier 1 (resource-scope OTel). Routed to typed
+	// columns; emitted on read under the same bare name (VL/VT-compatible).
+	case "container.id":
+		row.ContainerID = strings.Clone(value)
+	case "service.instance.id":
+		row.ServiceInstanceID = strings.Clone(value)
+	case "k8s.cluster.name":
+		row.K8sClusterName = strings.Clone(value)
+	case "telemetry.sdk.name":
+		row.TelemetrySDKName = strings.Clone(value)
+	case "cloud.account.id":
+		row.CloudAccountID = strings.Clone(value)
 	default:
 		if row.ResourceAttributes == nil {
 			row.ResourceAttributes = make(map[string]string)
@@ -481,6 +493,30 @@ func mapSpanAttr(row *schema.TraceRow, key, value string) {
 		row.DBSystem = strings.Clone(value)
 	case "db.statement":
 		row.DBStatement = strings.Clone(value)
+	// Dedicated columns — Tier 1 (span-scope OTel). Routed to typed columns;
+	// emitted on read under the same bare name (VL/VT-compatible).
+	case "url.full":
+		row.URLFull = strings.Clone(value)
+	case "client.address":
+		row.ClientAddress = strings.Clone(value)
+	case "server.address":
+		row.ServerAddress = strings.Clone(value)
+	case "network.peer.address":
+		row.NetworkPeerAddress = strings.Clone(value)
+	case "db.collection.name":
+		row.DBCollectionName = strings.Clone(value)
+	case "db.operation.name":
+		row.DBOperationName = strings.Clone(value)
+	case "db.query.text":
+		row.DBQueryText = strings.Clone(value)
+	case "rpc.method":
+		row.RPCMethod = strings.Clone(value)
+	case "messaging.destination.name":
+		row.MessagingDestination = strings.Clone(value)
+	case "code.function.name":
+		row.CodeFunctionName = strings.Clone(value)
+	case "exception.type":
+		row.ExceptionType = strings.Clone(value)
 	default:
 		if row.SpanAttributes == nil {
 			row.SpanAttributes = make(map[string]string)

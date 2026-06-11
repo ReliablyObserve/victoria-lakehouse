@@ -1446,6 +1446,26 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 		field{"db.system", r.DBSystem},
 		field{"db.statement", r.DBStatement},
 	)
+	// Dedicated columns (Tier 1) — conditional emission for dual-read safety
+	// (see logRowToFields). NOT added to the tracePromoted* suppression maps:
+	// those drop the map form unconditionally, which would lose values from
+	// OLD files that still carry the key in the map with an empty column.
+	buf = appendIfSet(buf, "url.full", r.URLFull)
+	buf = appendIfSet(buf, "client.address", r.ClientAddress)
+	buf = appendIfSet(buf, "server.address", r.ServerAddress)
+	buf = appendIfSet(buf, "network.peer.address", r.NetworkPeerAddress)
+	buf = appendIfSet(buf, "db.collection.name", r.DBCollectionName)
+	buf = appendIfSet(buf, "db.operation.name", r.DBOperationName)
+	buf = appendIfSet(buf, "db.query.text", r.DBQueryText)
+	buf = appendIfSet(buf, "rpc.method", r.RPCMethod)
+	buf = appendIfSet(buf, "messaging.destination.name", r.MessagingDestination)
+	buf = appendIfSet(buf, "code.function.name", r.CodeFunctionName)
+	buf = appendIfSet(buf, "exception.type", r.ExceptionType)
+	buf = appendIfSet(buf, "container.id", r.ContainerID)
+	buf = appendIfSet(buf, "service.instance.id", r.ServiceInstanceID)
+	buf = appendIfSet(buf, "k8s.cluster.name", r.K8sClusterName)
+	buf = appendIfSet(buf, "telemetry.sdk.name", r.TelemetrySDKName)
+	buf = appendIfSet(buf, "cloud.account.id", r.CloudAccountID)
 	for k, v := range r.ResourceAttributes {
 		if !tracePromotedResourceKeys[k] {
 			buf = append(buf, field{k, v})
