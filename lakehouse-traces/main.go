@@ -467,6 +467,7 @@ func run(cfg *config.Config, addr string) {
 		sr := schema.NewSlotResolver(sa)
 		internalvlstorage.SetSlotResolver(sr)
 		parquets3.SetSlotResolver(sr)
+		compaction.SetSlotResolver(sr)
 		logger.Infof("dedicated columns: %d custom attribute(s) promoted to slots", len(pa))
 	}
 

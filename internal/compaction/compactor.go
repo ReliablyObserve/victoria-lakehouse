@@ -574,14 +574,26 @@ func readTraceRows(data []byte) ([]schema.TraceRow, error) {
 	return rows[:total], nil
 }
 
+// activeSlotResolver carries the Tier-2 custom-attribute slot binding into
+// compaction so merged files keep their slot blooms + self-describing footer-KV
+// mapping. Set at startup via SetSlotResolver; nil = no custom slots.
+var activeSlotResolver *schema.SlotResolver
+
+// SetSlotResolver installs the Tier-2 slot resolver for the compactor.
+func SetSlotResolver(r *schema.SlotResolver) { activeSlotResolver = r }
+
 func writeCompactedLogs(rows []schema.LogRow, rowGroupSize int, compressionLevel int) ([]byte, error) {
 	var buf bytes.Buffer
 	codec := &zstd.Codec{Level: zstdLevel(compressionLevel)}
-	writer := parquet.NewGenericWriter[schema.LogRow](&buf,
+	opts := []parquet.WriterOption{
 		parquet.Compression(codec),
 		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
-		parquet.BloomFilters(bloomFilters(schema.LogBloomColumns())...),
-	)
+		parquet.BloomFilters(bloomFilters(schema.LogBloomColumns(activeSlotResolver.BloomSlots()...))...),
+	}
+	if kv := schema.MarshalSlotMapping(activeSlotResolver.Mapping()); kv != nil {
+		opts = append(opts, parquet.KeyValueMetadata(schema.DedicatedSlotsMetaKey, string(kv)))
+	}
+	writer := parquet.NewGenericWriter[schema.LogRow](&buf, opts...)
 	if _, err := writer.Write(rows); err != nil {
 		return nil, err
 	}
@@ -597,7 +609,13 @@ func writeCompactedTraces(rows []schema.TraceRow, rowGroupSize int, compressionL
 	opts := []parquet.WriterOption{
 		parquet.Compression(codec),
 		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
-		parquet.BloomFilters(bloomFilters(schema.TraceBloomColumns())...),
+		parquet.BloomFilters(bloomFilters(schema.TraceBloomColumns(activeSlotResolver.BloomSlots()...))...),
+	}
+
+	// Tier-2: re-stamp the slot→name mapping so the compacted file stays
+	// self-describing (queries read its slots by their configured name).
+	if kv := schema.MarshalSlotMapping(activeSlotResolver.Mapping()); kv != nil {
+		opts = append(opts, parquet.KeyValueMetadata(schema.DedicatedSlotsMetaKey, string(kv)))
 	}
 
 	// Preserve the per-file `_trace_idx` footer index across compaction.
