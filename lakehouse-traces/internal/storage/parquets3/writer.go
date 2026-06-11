@@ -511,6 +511,9 @@ func writeLogsParquet(rows []schema.LogRow, rowGroupSize int, compressionLevel i
 		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
 		parquet.BloomFilters(bloomFilters(schema.LogBloomColumns(activeSlotResolver.BloomSlots()...))...),
 	}
+	if kv := schema.MarshalSlotMapping(activeSlotResolver.Mapping()); kv != nil {
+		opts = append(opts, parquet.KeyValueMetadata(schema.DedicatedSlotsMetaKey, string(kv)))
+	}
 	for rgIdx := 0; rgIdx*rowGroupSize < len(rows); rgIdx++ {
 		start := rgIdx * rowGroupSize
 		end := start + rowGroupSize
@@ -552,6 +555,9 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 		parquet.Compression(codec),
 		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
 		parquet.BloomFilters(bloomFilters(schema.TraceBloomColumns(activeSlotResolver.BloomSlots()...))...),
+	}
+	if kv := schema.MarshalSlotMapping(activeSlotResolver.Mapping()); kv != nil {
+		opts = append(opts, parquet.KeyValueMetadata(schema.DedicatedSlotsMetaKey, string(kv)))
 	}
 	for rgIdx := 0; rgIdx*rowGroupSize < len(rows); rgIdx++ {
 		start := rgIdx * rowGroupSize
