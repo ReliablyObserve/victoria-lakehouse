@@ -207,3 +207,57 @@ func FuzzSlotMapping(f *testing.F) {
 		}
 	})
 }
+
+// TestSlotResolver verifies deterministic slot assignment, dedup, overflow,
+// bloom-slot tracking, footer-KV mapping, and full nil-safety.
+func TestSlotResolver(t *testing.T) {
+	// nil resolver is inert and nil-safe
+	var nilR *SlotResolver
+	if _, ok := nilR.SlotForName("x"); ok {
+		t.Error("nil resolver returned a slot")
+	}
+	if nilR.BloomSlots() != nil || nilR.Mapping() != nil {
+		t.Error("nil resolver returned non-nil slices/maps")
+	}
+	if NewSlotResolver(nil) != nil || NewSlotResolver([]SlotAttr{}) != nil {
+		t.Error("empty input must yield a nil resolver")
+	}
+
+	r := NewSlotResolver([]SlotAttr{
+		{Name: "tenant_id", Bloom: true},
+		{Name: "feature_flag", Bloom: false},
+		{Name: "tenant_id", Bloom: true}, // dup — skipped
+		{Name: "", Bloom: true},          // empty — skipped
+	})
+	if got, _ := r.SlotForName("tenant_id"); got != "ded_s01" {
+		t.Errorf("tenant_id -> %q, want ded_s01", got)
+	}
+	if got, _ := r.SlotForName("feature_flag"); got != "ded_s02" {
+		t.Errorf("feature_flag -> %q, want ded_s02", got)
+	}
+	if n, _ := r.NameForSlot("ded_s01"); n != "tenant_id" {
+		t.Errorf("ded_s01 -> %q, want tenant_id", n)
+	}
+	if bs := r.BloomSlots(); len(bs) != 1 || bs[0] != "ded_s01" {
+		t.Errorf("BloomSlots = %v, want [ded_s01]", bs)
+	}
+	if m := r.Mapping(); len(m) != 2 || m["ded_s01"] != "tenant_id" {
+		t.Errorf("Mapping = %v", m)
+	}
+
+	// overflow: more than DedicatedSlotCount attrs → excess dropped
+	many := make([]SlotAttr, DedicatedSlotCount+5)
+	for i := range many {
+		many[i] = SlotAttr{Name: string(rune('a' + i))}
+	}
+	ro := NewSlotResolver(many)
+	assigned := 0
+	for _, a := range many {
+		if _, ok := ro.SlotForName(a.Name); ok {
+			assigned++
+		}
+	}
+	if assigned != DedicatedSlotCount {
+		t.Errorf("assigned %d slots, want %d (overflow dropped)", assigned, DedicatedSlotCount)
+	}
+}

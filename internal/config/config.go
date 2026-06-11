@@ -98,24 +98,48 @@ type PmetaConfig struct {
 	RefuseSketchEnumeration bool `yaml:"refuse_sketch_enumeration"`
 }
 
+// PromotedAttribute declares a custom (non-OTel-standard) attribute that the
+// operator wants promoted out of the attribute map into a dedicated spare
+// column (Tier 2). Name is the attribute key as it appears in ingested data;
+// Bloom requests a SplitBlockFilter on the slot column (set it only for
+// high-cardinality keys queried by equality — a bloom on a low-card key is
+// wasted space). Up to schema.DedicatedSlotCount per signal; excess is ignored
+// with a startup warning. The name→slot binding is written to each file's
+// Parquet footer so the file stays self-describing and portable.
+type PromotedAttribute struct {
+	Name  string `yaml:"name"`
+	Bloom bool   `yaml:"bloom"`
+}
+
 type LogsModeConfig struct {
-	BloomColumns  []string       `yaml:"bloom_columns"`
-	DeletePrefix  string         `yaml:"delete_prefix"`
-	CompatVersion string         `yaml:"compat_version"`
-	Profile       Profile        `yaml:"profile"`
-	Insert        RoleProfileRef `yaml:"insert"`
-	Select        RoleProfileRef `yaml:"select"`
+	BloomColumns       []string            `yaml:"bloom_columns"`
+	PromotedAttributes []PromotedAttribute `yaml:"promoted_attributes"`
+	DeletePrefix       string              `yaml:"delete_prefix"`
+	CompatVersion      string              `yaml:"compat_version"`
+	Profile            Profile             `yaml:"profile"`
+	Insert             RoleProfileRef      `yaml:"insert"`
+	Select             RoleProfileRef      `yaml:"select"`
 }
 
 type TracesModeConfig struct {
-	BloomColumns   []string       `yaml:"bloom_columns"`
-	DeletePrefix   string         `yaml:"delete_prefix"`
-	CompatVersion  string         `yaml:"compat_version"`
-	JaegerEnabled  bool           `yaml:"jaeger_enabled"`
-	JaegerGRPCAddr string         `yaml:"jaeger_grpc_addr"`
-	Profile        Profile        `yaml:"profile"`
-	Insert         RoleProfileRef `yaml:"insert"`
-	Select         RoleProfileRef `yaml:"select"`
+	BloomColumns       []string            `yaml:"bloom_columns"`
+	PromotedAttributes []PromotedAttribute `yaml:"promoted_attributes"`
+	DeletePrefix       string              `yaml:"delete_prefix"`
+	CompatVersion      string              `yaml:"compat_version"`
+	JaegerEnabled      bool                `yaml:"jaeger_enabled"`
+	JaegerGRPCAddr     string              `yaml:"jaeger_grpc_addr"`
+	Profile            Profile             `yaml:"profile"`
+	Insert             RoleProfileRef      `yaml:"insert"`
+	Select             RoleProfileRef      `yaml:"select"`
+}
+
+// ActivePromotedAttributes returns the operator-configured Tier-2 custom
+// attribute promotions for the active signal.
+func (c *Config) ActivePromotedAttributes() []PromotedAttribute {
+	if c.Mode == ModeTraces {
+		return c.Traces.PromotedAttributes
+	}
+	return c.Logs.PromotedAttributes
 }
 
 func (c *Config) ActiveBloomColumns() []string {

@@ -165,3 +165,92 @@ func UnmarshalSlotMapping(data []byte) SlotMapping {
 	}
 	return m
 }
+
+// SlotAttr is one operator-configured custom attribute promotion (Tier 2),
+// decoupled from the config package to avoid an import cycle.
+type SlotAttr struct {
+	Name  string
+	Bloom bool
+}
+
+// SlotResolver binds operator-configured custom attribute names to the fixed
+// spare slot columns (ded_s01..ded_sNN) deterministically, in config order, up
+// to DedicatedSlotCount. It is the runtime half of Tier 2: ingest routes a
+// configured key to its slot; the writer records the binding in the footer KV;
+// the read path remaps the slot column back to the configured name. A nil
+// *SlotResolver is valid and inert (no custom promotions) — all methods are
+// nil-safe so callers need no guards.
+type SlotResolver struct {
+	nameToSlot map[string]string // attr name  -> ded_sNN
+	slotToName map[string]string // ded_sNN    -> attr name
+	bloomSlots []string          // ded_sNN columns that requested a bloom
+}
+
+// NewSlotResolver assigns up to DedicatedSlotCount attributes to slots in the
+// given order. Empty names and duplicates are skipped; excess beyond the slot
+// count is dropped (callers should warn). Returns nil for an empty input so the
+// common no-custom-attributes case allocates nothing.
+func NewSlotResolver(attrs []SlotAttr) *SlotResolver {
+	r := &SlotResolver{
+		nameToSlot: make(map[string]string),
+		slotToName: make(map[string]string),
+	}
+	next := 0
+	for _, a := range attrs {
+		if a.Name == "" || r.nameToSlot[a.Name] != "" {
+			continue
+		}
+		if next >= len(DedicatedSlotColumns) {
+			break
+		}
+		slot := DedicatedSlotColumns[next]
+		next++
+		r.nameToSlot[a.Name] = slot
+		r.slotToName[slot] = a.Name
+		if a.Bloom {
+			r.bloomSlots = append(r.bloomSlots, slot)
+		}
+	}
+	if next == 0 {
+		return nil
+	}
+	return r
+}
+
+// SlotForName returns the slot column a configured attribute routes to.
+func (r *SlotResolver) SlotForName(name string) (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	s, ok := r.nameToSlot[name]
+	return s, ok
+}
+
+// NameForSlot returns the configured attribute name bound to a slot column.
+func (r *SlotResolver) NameForSlot(slot string) (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	n, ok := r.slotToName[slot]
+	return n, ok
+}
+
+// BloomSlots returns the slot columns the operator marked bloom:true.
+func (r *SlotResolver) BloomSlots() []string {
+	if r == nil {
+		return nil
+	}
+	return append([]string(nil), r.bloomSlots...)
+}
+
+// Mapping returns the slot→name binding for the Parquet footer KV.
+func (r *SlotResolver) Mapping() SlotMapping {
+	if r == nil || len(r.slotToName) == 0 {
+		return nil
+	}
+	m := make(SlotMapping, len(r.slotToName))
+	for slot, name := range r.slotToName {
+		m[slot] = name
+	}
+	return m
+}
