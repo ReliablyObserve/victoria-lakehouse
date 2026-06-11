@@ -1186,13 +1186,17 @@ func (a *API) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 			Type: fieldType,
 		}
 
-		// Per-value row counts. Prefer the label index; fall back to the
-		// manifest's LabelAggregates — which include the dedicated dimensional
-		// columns (k8s.cluster.name, service.version, …) the lazily-populated
-		// label index misses, so those break down correctly instead of blank.
-		counts := map[string]int64{}
-		if li != nil && len(li.Values) > 0 {
-			bl.Cardinality = li.Cardinality
+		// Per-value row counts from the manifest's LabelAggregates — the REAL,
+		// durable distribution (survives restart; covers all dimensional fields
+		// incl. dedicated columns). The lazily-populated label index is only a
+		// last resort: after a restart it keeps the value list but loses per-value
+		// counts, which would render every value at a flat 1/N share.
+		var counts map[string]int64
+		if a.cfg.Manifest != nil {
+			counts = a.cfg.Manifest.LabelValueCounts(name)
+		}
+		if len(counts) == 0 && li != nil && len(li.Values) > 0 {
+			counts = make(map[string]int64, len(li.Values))
 			for _, v := range li.Values {
 				c := int64(li.ValueCounts[v])
 				if c < 1 {
@@ -1200,11 +1204,17 @@ func (a *API) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 				}
 				counts[v] = c
 			}
-		} else if a.cfg.Manifest != nil {
-			counts = a.cfg.Manifest.LabelValueCounts(name)
-			if len(counts) > 0 {
-				bl.Cardinality = len(counts)
+		}
+
+		// Cardinality: the accurate pmeta count (same source as the cardinality
+		// endpoint), else the number of enumerated values.
+		if a.cfg.PmetaCardinality != nil {
+			if pc := pmetaCardinalityOf(a.cfg.PmetaCardinality, name); pc > 0 {
+				bl.Cardinality = int(pc)
 			}
+		}
+		if bl.Cardinality == 0 {
+			bl.Cardinality = len(counts)
 		}
 
 		if len(counts) > 0 {
