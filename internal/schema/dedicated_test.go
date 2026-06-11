@@ -261,3 +261,31 @@ func TestSlotResolver(t *testing.T) {
 		t.Errorf("assigned %d slots, want %d (overflow dropped)", assigned, DedicatedSlotCount)
 	}
 }
+
+// TestSlotSetters_AllSlots exercises every slot case of the Set/Get helpers
+// (both row types) — the switches cover ded_s01..08 plus the unknown-slot path.
+func TestSlotSetters_AllSlots(t *testing.T) {
+	for _, slot := range DedicatedSlotColumns {
+		var lr LogRow
+		SetLogSlot(&lr, slot, "L-"+slot)
+		if got := LogSlotValue(&lr, slot); got != "L-"+slot {
+			t.Errorf("LogRow slot %s round-trip = %q", slot, got)
+		}
+		var tr TraceRow
+		SetTraceSlot(&tr, slot, "T-"+slot)
+		if got := TraceSlotValue(&tr, slot); got != "T-"+slot {
+			t.Errorf("TraceRow slot %s round-trip = %q", slot, got)
+		}
+	}
+	// unknown slot: setter is a no-op, getter returns ""
+	var lr LogRow
+	SetLogSlot(&lr, "ded_s99", "x")
+	if LogSlotValue(&lr, "ded_s99") != "" {
+		t.Error("unknown LogRow slot must be a no-op")
+	}
+	var tr TraceRow
+	SetTraceSlot(&tr, "ded_s99", "x")
+	if TraceSlotValue(&tr, "ded_s99") != "" {
+		t.Error("unknown TraceRow slot must be a no-op")
+	}
+}
