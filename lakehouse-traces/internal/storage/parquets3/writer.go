@@ -682,7 +682,13 @@ func schemaFingerprint(mode config.Mode) string {
 	h := sha256.New()
 	h.Write([]byte(string(mode)))
 	b := make([]byte, 8)
-	binary.LittleEndian.PutUint64(b, 1)
+	// Schema version. Bumped 1→2 for the dedicated-columns layout (Tier-1 OTel
+	// columns + Tier-2 spare slots): old-schema files (v1, attributes in the
+	// maps) and new-schema files (v2, promoted columns) get distinct
+	// fingerprints so the compactor fences them apart instead of merging
+	// incompatible column layouts. Queries still read both (dual-read); only
+	// compaction grouping is fenced. Old files migrate forward as they age.
+	binary.LittleEndian.PutUint64(b, 2)
 	h.Write(b)
 	return fmt.Sprintf("%x", h.Sum(nil)[:8])
 }
