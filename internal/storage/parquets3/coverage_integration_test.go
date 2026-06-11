@@ -461,7 +461,7 @@ func TestInteg_shouldSkipByFooter_NoMatch(t *testing.T) {
 	queryStr := `service.name:="nonexistent-service-xyz"`
 	footerCache := NewFooterCache(100)
 
-	skip, err := shouldSkipByFooter(context.Background(), pool, fi, queryStr, registry, footerCache)
+	skip, err := shouldSkipByFooter(context.Background(), pool, fi, queryStr, registry, footerCache, 0)
 	if err != nil {
 		t.Fatalf("shouldSkipByFooter: %v", err)
 	}
@@ -502,7 +502,7 @@ func TestInteg_shouldSkipByFooter_Match(t *testing.T) {
 	queryStr := `service.name:="api-gw"`
 	footerCache := NewFooterCache(100)
 
-	skip, err := shouldSkipByFooter(context.Background(), pool, fi, queryStr, registry, footerCache)
+	skip, err := shouldSkipByFooter(context.Background(), pool, fi, queryStr, registry, footerCache, 0)
 	if err != nil {
 		t.Fatalf("shouldSkipByFooter: %v", err)
 	}
@@ -520,7 +520,7 @@ func TestInteg_shouldSkipByFooter_SmallFile(t *testing.T) {
 	registry := schema.NewRegistry(schema.LogsProfile)
 	fi := manifest.FileInfo{Key: "small.parquet", Size: 1024}
 
-	skip, _ := shouldSkipByFooter(context.Background(), pool, fi, `service.name:="x"`, registry, nil)
+	skip, _ := shouldSkipByFooter(context.Background(), pool, fi, `service.name:="x"`, registry, nil, 0)
 	if skip {
 		t.Error("should not skip small files")
 	}
@@ -530,7 +530,7 @@ func TestInteg_shouldSkipByFooter_NilPool(t *testing.T) {
 	registry := schema.NewRegistry(schema.LogsProfile)
 	fi := manifest.FileInfo{Key: "test.parquet", Size: 100000}
 
-	skip, _ := shouldSkipByFooter(context.Background(), nil, fi, `service.name:="x"`, registry, nil)
+	skip, _ := shouldSkipByFooter(context.Background(), nil, fi, `service.name:="x"`, registry, nil, 0)
 	if skip {
 		t.Error("should not skip when pool is nil")
 	}
@@ -541,7 +541,7 @@ func TestInteg_shouldSkipByFooter_WildcardQuery(t *testing.T) {
 	registry := schema.NewRegistry(schema.LogsProfile)
 	fi := manifest.FileInfo{Key: "test.parquet", Size: 100000}
 
-	skip, _ := shouldSkipByFooter(context.Background(), pool, fi, "*", registry, nil)
+	skip, _ := shouldSkipByFooter(context.Background(), pool, fi, "*", registry, nil, 0)
 	if skip {
 		t.Error("should not skip on wildcard query")
 	}
@@ -556,7 +556,7 @@ func TestInteg_shouldSkipByFooter_CachedFooter(t *testing.T) {
 	// Pre-populate footer cache
 	footerCache.Put(fi.Key, &CachedFooter{FileSize: fi.Size})
 
-	skip, _ := shouldSkipByFooter(context.Background(), pool, fi, `service.name:="x"`, registry, footerCache)
+	skip, _ := shouldSkipByFooter(context.Background(), pool, fi, `service.name:="x"`, registry, footerCache, 0)
 	if skip {
 		t.Error("should not skip when footer is already cached")
 	}
@@ -596,7 +596,7 @@ func TestInteg_prefetchFooters(t *testing.T) {
 		files = append(files, manifest.FileInfo{Key: key, Size: int64(len(data))})
 	}
 
-	fetched := prefetchFooters(context.Background(), pool, files, footerCache, 4)
+	fetched := prefetchFooters(context.Background(), pool, files, footerCache, 4, 0)
 	if fetched == 0 {
 		t.Error("expected at least some footers to be prefetched")
 	}
@@ -614,16 +614,16 @@ func TestInteg_prefetchFooters_NilInputs(t *testing.T) {
 	footerCache := NewFooterCache(100)
 
 	// nil pool
-	if n := prefetchFooters(context.Background(), nil, nil, footerCache, 0); n != 0 {
+	if n := prefetchFooters(context.Background(), nil, nil, footerCache, 0, 0); n != 0 {
 		t.Errorf("expected 0, got %d", n)
 	}
 	// nil footer cache
 	pool := testPool(t, "http://localhost:1")
-	if n := prefetchFooters(context.Background(), pool, nil, nil, 0); n != 0 {
+	if n := prefetchFooters(context.Background(), pool, nil, nil, 0, 0); n != 0 {
 		t.Errorf("expected 0, got %d", n)
 	}
 	// empty files
-	if n := prefetchFooters(context.Background(), pool, []manifest.FileInfo{}, footerCache, 0); n != 0 {
+	if n := prefetchFooters(context.Background(), pool, []manifest.FileInfo{}, footerCache, 0, 0); n != 0 {
 		t.Errorf("expected 0, got %d", n)
 	}
 }
@@ -2659,7 +2659,7 @@ func TestInteg_shouldSkipByFooter_FullPath_NoMatch(t *testing.T) {
 	// full code path is exercised.
 	queryStr := `service.name:="zzz-missing"`
 
-	skip, err := shouldSkipByFooter(context.Background(), pool, fi, queryStr, registry, footerCache)
+	skip, err := shouldSkipByFooter(context.Background(), pool, fi, queryStr, registry, footerCache, 0)
 	if err != nil {
 		t.Fatalf("shouldSkipByFooter: %v", err)
 	}
@@ -2692,7 +2692,7 @@ func TestInteg_shouldSkipByFooter_FullPath_Match(t *testing.T) {
 	footerCache := NewFooterCache(100)
 
 	// This service exists in the file
-	skip, err := shouldSkipByFooter(context.Background(), pool, fi, `service.name:="api-gw"`, registry, footerCache)
+	skip, err := shouldSkipByFooter(context.Background(), pool, fi, `service.name:="api-gw"`, registry, footerCache, 0)
 	if err != nil {
 		t.Fatalf("shouldSkipByFooter: %v", err)
 	}
@@ -2727,7 +2727,7 @@ func TestInteg_prefetchFooters_LargeFiles(t *testing.T) {
 		files = append(files, manifest.FileInfo{Key: key, Size: int64(len(data))})
 	}
 
-	fetched := prefetchFooters(context.Background(), pool, files, footerCache, 4)
+	fetched := prefetchFooters(context.Background(), pool, files, footerCache, 4, 0)
 	if fetched != 3 {
 		t.Errorf("expected 3 fetched footers, got %d", fetched)
 	}

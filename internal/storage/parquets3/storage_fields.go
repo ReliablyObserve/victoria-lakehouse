@@ -41,7 +41,7 @@ func (s *Storage) fetchFooterFile(ctx context.Context, fi manifest.FileInfo) (*p
 		}
 		return f, nil
 	}
-	offset := fi.Size - footerPrefetchSize
+	offset := fi.Size - footerPrefetchTail(s.footerPrefetchBytes(), fi.Size)
 	if offset < 0 {
 		offset = 0
 	}
@@ -120,7 +120,7 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 	// Pre-warm the footer cache in parallel using small range reads
 	// (~16 KB per file) so the sequential loop below hits the cache.
 	if s.pool != nil && s.footerCache != nil {
-		prefetchFooters(ctx, s.pool, files, s.footerCache, 16)
+		prefetchFooters(ctx, s.pool, files, s.footerCache, 16, s.footerPrefetchBytes())
 	}
 
 	// Walk all files; for each, accumulate hits per (internal) field name.

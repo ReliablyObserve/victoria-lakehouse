@@ -341,14 +341,20 @@ func TestGetFieldValues_PlannedFetch_OnlyPlannedRangesRequested_Traces(t *testin
 		allRGs[i] = i
 	}
 	planCols := fieldValuesPlanCols(s, "service.name", q)
-	effGap, _, _ := s.clampWindowKnobs(size)
-	pricer := s3reader.NewPlannedFetchReaderAt(&staticReaderAt{size: size}, size, effGap, nil)
-	allowedSpans, planTotal := pricer.PlanRanges(planProjectedRanges(fLocal, allRGs, planCols))
+	pricer := s3reader.NewPlannedFetchReaderAt(&staticReaderAt{size: size}, size, 0, nil)
+	planRanges := planProjectedRanges(fLocal, allRGs, planCols)
+	bestGap, _ := choosePlannedGap(pricer, planRanges, s.cfg.S3.PlannedFetchMaxInflight)
+	allowedSpans, planTotal := pricer.PlanRangesAt(planRanges, bestGap)
 	if len(allowedSpans) == 0 {
 		t.Fatal("expected a non-empty expected plan")
 	}
 
-	tailAllowance := max64(footerPrefetchSize, max64(64<<10, size/4)) + 16
+	// Footer cache is pre-primed above, so no footer-prefetch GET happens —
+	// the only legitimate tail read is the open's optimistic footer-tail
+	// (ReadBufferSize clamped to size/4). Using the traces per-signal
+	// footer_prefetch_bytes default (640KB) here would swallow the whole
+	// 400KB fixture and blind the planned-span classification.
+	tailAllowance := max64(64<<10, size/4) + 16
 	inSpans := func(off, ln int64) bool {
 		for _, sp := range allowedSpans {
 			if off >= sp.Off && off+ln <= sp.Off+sp.Len {
@@ -382,7 +388,7 @@ func TestGetFieldValues_PlannedFetch_OnlyPlannedRangesRequested_Traces(t *testin
 	}
 
 	readBufCap := max64(64<<10, size/4)
-	maxAllowed := numFiles * (planTotal + footerPrefetchSize + readBufCap + 8192)
+	maxAllowed := numFiles * (planTotal + s.footerPrefetchBytes() + readBufCap + 8192)
 	if served := mock.bytesServed(); served > maxAllowed {
 		t.Errorf("served %d bytes, want <= %d (plan + footer reads per file)", served, maxAllowed)
 	} else {
@@ -498,16 +504,21 @@ func TestRunQuery_PlannedVsWindow_Equivalence_Traces(t *testing.T) {
 	}
 }
 
-// TestPlannedFetch_CapFallbackToWindow_Traces: a 1-byte plan cap forces
-// the window fallback — results identical, reason="cap" ticks, no plan
-// armed.
-func TestPlannedFetch_CapFallbackToWindow_Traces(t *testing.T) {
+// TestPlannedFetch_PlanCapRetired_NoCapFallback_Traces pins the slice-1b
+// cap re-scope BEHAVIOR CHANGE (traces twin): the old per-PLAN knob set to
+// 1 byte — which used to force reason="cap" fallback on every plan — is
+// deprecated and ignored. Plans still arm, results match window mode, and
+// the cap counter does NOT move (absent-value).
+func TestPlannedFetch_PlanCapRetired_NoCapFallback_Traces(t *testing.T) {
 	baseTime := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
 	data := makeMultiRGSpanParquet(t, baseTime, 400*1024, 600)
 	const numFiles = 2
 
-	sCapped, _ := newPlannedEquivStorage(t, data, numFiles, baseTime, config.ProjectedFetchModePlanned)
-	sCapped.cfg.S3.ProjectedFetchMaxBytes = 1
+	sPlanned, _ := newPlannedEquivStorage(t, data, numFiles, baseTime, config.ProjectedFetchModePlanned)
+	sPlanned.cfg.S3.ProjectedFetchMaxBytes = 1 // the OLD per-plan cap: now a no-op
+	// S* = 1: route the cold-footer fixtures through plan-cold-footer so
+	// plans arm on the FIRST query (the warmup strategy has its own test).
+	sPlanned.cfg.S3.WholeFileThresholdBytes = 1
 	sWindow, _ := newPlannedEquivStorage(t, data, numFiles, baseTime, config.ProjectedFetchModeWindow)
 
 	capBefore := metrics.S3ProjectedFetchFallback.Get("cap")
@@ -517,25 +528,289 @@ func TestPlannedFetch_CapFallbackToWindow_Traces(t *testing.T) {
 	endNs := baseTime.Add(10 * time.Hour).UnixNano()
 	queryStr := `name:="op-2" | stats by (service.name) count()`
 
-	gotCapped := runFilteredQuery(t, sCapped, mustParseQueryWithTime(t, queryStr, startNs, endNs))
+	gotPlanned := runFilteredQuery(t, sPlanned, mustParseQueryWithTime(t, queryStr, startNs, endNs))
 	gotWindow := runFilteredQuery(t, sWindow, mustParseQueryWithTime(t, queryStr, startNs, endNs))
 
-	if len(gotCapped) == 0 {
-		t.Fatal("cap-fallback query returned no rows")
+	if len(gotPlanned) == 0 {
+		t.Fatal("planned query returned no rows")
 	}
-	if len(gotCapped) != len(gotWindow) {
-		t.Fatalf("cap fallback content mismatch: %d vs %d pairs", len(gotCapped), len(gotWindow))
+	if len(gotPlanned) != len(gotWindow) {
+		t.Fatalf("content mismatch: %d vs %d pairs", len(gotPlanned), len(gotWindow))
 	}
 	for k, v := range gotWindow {
-		if gotCapped[k] != v {
-			t.Fatalf("cap fallback mismatch at %q: capped=%d window=%d", k, gotCapped[k], v)
+		if gotPlanned[k] != v {
+			t.Fatalf("content mismatch at %q: planned=%d window=%d", k, gotPlanned[k], v)
 		}
 	}
 
-	if got := metrics.S3ProjectedFetchFallback.Get("cap"); got <= capBefore {
-		t.Errorf("cap fallback counter did not move (before=%d after=%d)", capBefore, got)
+	if got := metrics.S3ProjectedFetchFallback.Get("cap"); got != capBefore {
+		t.Errorf("cap fallback ticked (%d -> %d) — the per-plan cap must be retired", capBefore, got)
 	}
-	if got := metrics.S3PlannedFetchesTotal.Get(); got != fetchesBefore {
-		t.Errorf("a plan was armed despite the 1-byte cap (fetches %d -> %d)", fetchesBefore, got)
+	if got := metrics.S3PlannedFetchesTotal.Get(); got <= fetchesBefore {
+		t.Errorf("no plan was armed (fetches %d -> %d) — plans whose total exceeds the old cap must still arm", fetchesBefore, got)
+	}
+}
+
+// TestChoosePlannedGap_EachCandidateCanWin_Traces is the slice-1c
+// gap-discipline regression (traces twin): synthetic range sets where
+// EACH candidate gap is the strict-cost winner under the documented model
+// (cost = ceil(spans/k)*100ms + bytes/50MBps, k=16).
+func TestChoosePlannedGap_EachCandidateCanWin_Traces(t *testing.T) {
+	const fileSize = 256 << 20
+	view := s3reader.NewPlannedFetchReaderAt(&staticReaderAt{size: fileSize}, fileSize, 1<<20, nil)
+
+	mk := func(n int, stride, length int64) []s3reader.Range {
+		var rs []s3reader.Range
+		for i := 0; i < n; i++ {
+			rs = append(rs, s3reader.Range{Off: int64(i) * stride, Len: length})
+		}
+		return rs
+	}
+
+	// 64KB wins: one RTT wave at every candidate — smallest bytes win.
+	if gap, _ := choosePlannedGap(view, mk(10, 200<<10, 64<<10), 16); gap != 64<<10 {
+		t.Errorf("sparse one-wave set: chose gap %d, want 64KB", gap)
+	}
+	// 256KB wins: 17 x 128KB gaps merge to one span (1 wave) for 2MB of
+	// gap bytes — cheaper than the second wave; 1MB ties, smaller gap wins.
+	if gap, _ := choosePlannedGap(view, mk(17, 192<<10, 64<<10), 16); gap != 256<<10 {
+		t.Errorf("two-wave 192KB-stride set: chose gap %d, want 256KB", gap)
+	}
+	// 1MB wins: 280KB gaps merge only at 1MB; the saved wave (0.1s)
+	// outprices 4.48MB of gap bytes (0.0896s).
+	if gap, _ := choosePlannedGap(view, mk(17, 344<<10, 64<<10), 16); gap != 1<<20 {
+		t.Errorf("two-wave 344KB-stride set: chose gap %d, want 1MB", gap)
+	}
+	// Absent-value: k <= 0 resolves to the default 16.
+	if gap, _ := choosePlannedGap(view, mk(10, 200<<10, 64<<10), 0); gap != 64<<10 {
+		t.Errorf("k=0 must price with the default k, got gap %d", gap)
+	}
+}
+
+// TestPlannedOpen_SStarRouting_Traces pins the slice-1d footer-cache-gated
+// strategy ladder (traces twin) — including the rung that retires the
+// "traces module has no inline footer fetch ⇒ always full download"
+// behavior — with absent-value asserts on the fallback counters.
+func TestPlannedOpen_SStarRouting_Traces(t *testing.T) {
+	baseTime := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	data := makeMultiRGSpanParquet(t, baseTime, 400*1024, 600)
+	size := int64(len(data))
+	projected := map[string]bool{"service.name": true}
+
+	snap := func() map[string]uint64 {
+		return map[string]uint64{
+			"cap":       metrics.S3ProjectedFetchFallback.Get("cap"),
+			"no-footer": metrics.S3ProjectedFetchFallback.Get("no-footer"),
+			"error":     metrics.S3ProjectedFetchFallback.Get("error"),
+		}
+	}
+	assertNoFallbackTicks := func(t *testing.T, before map[string]uint64, rung string) {
+		t.Helper()
+		after := snap()
+		for reason, v := range before {
+			if after[reason] != v {
+				t.Errorf("%s: fallback{reason=%q} ticked (%d -> %d)", rung, reason, v, after[reason])
+			}
+		}
+	}
+
+	// Rung 1: cold footer, file BELOW S* → whole-file warmup.
+	{
+		mock := newRangeLoggingS3Server()
+		defer mock.close()
+		s := testStorageWithS3(t, mock.url())
+		s.cfg.S3.ProjectedFetchMode = config.ProjectedFetchModePlanned
+		s.cfg.S3.WholeFileThresholdBytes = int(size + 1)
+		key := "traces/dt=2026-06-01/hour=10/warmup.parquet"
+		mock.putFile(key, data)
+		fi := manifest.FileInfo{Key: key, Size: size}
+
+		before := snap()
+		warmupsBefore := metrics.S3PlannedStrategy.Get("whole-file-warmup")
+		f, view, err := s.openParquetFileWithPlan(context.Background(), fi, projected)
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		if view != nil {
+			t.Error("whole-file warmup must not return a planned view")
+			_ = view.Close()
+		}
+		if f == nil {
+			t.Fatal("nil parquet file")
+		}
+		if got := metrics.S3PlannedStrategy.Get("whole-file-warmup"); got != warmupsBefore+1 {
+			t.Errorf("whole-file-warmup strategy counter = %d, want %d", got, warmupsBefore+1)
+		}
+		var full int
+		for _, r := range mock.requests() {
+			if r.full {
+				full++
+			}
+		}
+		if full != 1 {
+			t.Errorf("whole-file warmup issued %d full-object GETs, want exactly 1", full)
+		}
+		if !s.footerCache.Has(key) {
+			t.Error("the whole-file download must warm the footer cache (the download IS the warmup)")
+		}
+		assertNoFallbackTicks(t, before, "whole-file-warmup")
+
+		// The NEXT open of the same file takes the warm-footer plan route.
+		warmBefore := metrics.S3PlannedStrategy.Get("plan-warm-footer")
+		_, view2, err := s.openParquetFileWithPlan(context.Background(), fi, projected)
+		if err != nil {
+			t.Fatalf("second open: %v", err)
+		}
+		if view2 == nil {
+			t.Error("warm-footer open must return a planned view")
+		} else {
+			_ = view2.Close()
+		}
+		if got := metrics.S3PlannedStrategy.Get("plan-warm-footer"); got != warmBefore+1 {
+			t.Errorf("plan-warm-footer strategy counter = %d, want %d", got, warmBefore+1)
+		}
+	}
+
+	// Rung 2: cold footer, file AT/ABOVE S* → footer fetch + plan — the
+	// rung the traces module previously did not have at all.
+	{
+		mock := newRangeLoggingS3Server()
+		defer mock.close()
+		s := testStorageWithS3(t, mock.url())
+		s.cfg.S3.ProjectedFetchMode = config.ProjectedFetchModePlanned
+		s.cfg.S3.WholeFileThresholdBytes = int(size)
+		key := "traces/dt=2026-06-01/hour=11/coldplan.parquet"
+		mock.putFile(key, data)
+		fi := manifest.FileInfo{Key: key, Size: size}
+
+		before := snap()
+		coldBefore := metrics.S3PlannedStrategy.Get("plan-cold-footer")
+		_, view, err := s.openParquetFileWithPlan(context.Background(), fi, projected)
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		if view == nil {
+			t.Error("cold-footer plan route must return a planned view")
+		} else {
+			_ = view.Close()
+		}
+		if got := metrics.S3PlannedStrategy.Get("plan-cold-footer"); got != coldBefore+1 {
+			t.Errorf("plan-cold-footer strategy counter = %d, want %d", got, coldBefore+1)
+		}
+		for _, r := range mock.requests() {
+			if r.full {
+				t.Errorf("cold-footer plan route must not download the body (full GET of %s)", r.key)
+			}
+		}
+		if !s.footerCache.Has(key) {
+			t.Error("the footer fetch must populate the footer cache")
+		}
+		assertNoFallbackTicks(t, before, "plan-cold-footer")
+	}
+}
+
+// TestFooterPrefetch_OversizeFooterFitsPerSignalDefault_Traces is the
+// slice-0a regression on the signal it was found on: a ~500KB footer (the
+// REAL measured traces-L2 shape — the trace index lives in footer KV,
+// 467-519KB live) is over the old shared 64KB constant but fits the
+// traces per-signal default (640KB). It must be prefetched and cached in
+// one pass, and the planned open must take the warm plan route WITHOUT
+// the no-footer fallback ticking (absent-value).
+func TestFooterPrefetch_OversizeFooterFitsPerSignalDefault_Traces(t *testing.T) {
+	baseTime := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	// The live geometry scaled down ~3x to keep the fixture fast: a 150KB
+	// trace-index KV pad on a ~1.5MB file preserves the load-bearing
+	// ratios — footer > the old 64KB constant, footer <= the traces
+	// per-signal default (640KB), AND footer <= size/8 (the
+	// footerPrefetchTail clamp), exactly like 467-519KB footers on ~24MB
+	// live L2 objects (clamp 3MB).
+	data := makeMultiRGSpanParquetWithKV(t, baseTime, 1700*1024, 2000, strings.Repeat("x", 150<<10))
+	size := int64(len(data))
+
+	footerLen, err := FooterLength(data[len(data)-8:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if footerLen <= 64<<10 {
+		t.Fatalf("fixture footer = %d bytes, want > 64KB to exercise the bug-class", footerLen)
+	}
+	if int64(footerLen+8) > defaultFooterPrefetchBytes {
+		t.Fatalf("fixture footer = %d bytes, must fit the per-signal default %d", footerLen, defaultFooterPrefetchBytes)
+	}
+
+	mock := newRangeLoggingS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.S3.ProjectedFetchMode = config.ProjectedFetchModePlanned
+	key := "traces/dt=2026-06-01/hour=10/bigfooter.parquet"
+	mock.putFile(key, data)
+	fi := manifest.FileInfo{Key: key, Size: size}
+
+	if got := prefetchFooters(context.Background(), s.pool, []manifest.FileInfo{fi}, s.footerCache, 1, s.footerPrefetchBytes()); got != 1 {
+		t.Fatalf("prefetchFooters cached %d footers, want 1 (footer no longer over the prefetch size)", got)
+	}
+	if !s.footerCache.Has(key) {
+		t.Fatal("footer not in cache after prefetch")
+	}
+
+	noFooterBefore := metrics.S3ProjectedFetchFallback.Get("no-footer")
+	_, view, err := s.openParquetFileWithPlan(context.Background(), fi, map[string]bool{"service.name": true})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if view == nil {
+		t.Error("expected a planned view over the prefetched footer")
+	} else {
+		_ = view.Close()
+	}
+	if got := metrics.S3ProjectedFetchFallback.Get("no-footer"); got != noFooterBefore {
+		t.Errorf("fallback{reason=no-footer} ticked (%d -> %d) — the prefetched footer must serve the plan", noFooterBefore, got)
+	}
+	for _, r := range mock.requests() {
+		if r.full {
+			t.Errorf("full-object GET of %s — the oversize-footer bug-class regressed", r.key)
+		}
+	}
+}
+
+// makeMultiRGSpanParquetWithKV is makeMultiRGSpanParquet plus a file-level
+// key-value metadata pad — the mechanism that inflates real traces footers
+// (the trace index lives in footer KV).
+func makeMultiRGSpanParquetWithKV(t *testing.T, baseTime time.Time, minBytes, maxRowsPerRG int, kvPad string) []byte {
+	t.Helper()
+	var rows []plannedSpanRow
+	i := 0
+	for {
+		rows = append(rows, plannedSpanRow{
+			TimestampUnixNano: baseTime.Add(time.Duration(i) * time.Microsecond).UnixNano(),
+			TraceID:           fmt.Sprintf("trace-%032x", i),
+			SpanID:            fmt.Sprintf("span-%016x", i),
+			Name:              fmt.Sprintf("op-%d", i%4),
+			ServiceName:       fmt.Sprintf("service-%d", i%16),
+			DurationNs:        int64(i%1000) * 1_000_000,
+			Stream:            fmt.Sprintf(`{svc="service-%d"}`, i%16),
+			StatusMessage:     fmt.Sprintf("status-%d-detail-%x-%x", i, i*2654435761, i*1442695040),
+		})
+		i++
+		if i%500 == 0 {
+			var buf bytes.Buffer
+			w := parquet.NewGenericWriter[plannedSpanRow](&buf,
+				parquet.Compression(&parquet.Zstd),
+				parquet.MaxRowsPerRowGroup(int64(maxRowsPerRG)),
+				parquet.KeyValueMetadata("test_footer_pad", kvPad),
+			)
+			if _, err := w.Write(rows); err != nil {
+				t.Fatal(err)
+			}
+			if err := w.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if buf.Len() >= minBytes {
+				return buf.Bytes()
+			}
+		}
+		if i > 100000 {
+			t.Fatal("could not grow test parquet to minBytes")
+		}
 	}
 }

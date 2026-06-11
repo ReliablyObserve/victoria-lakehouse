@@ -200,3 +200,97 @@ lakehouse:
 		t.Fatalf("negative projected_fetch_max_bytes must fail validation, got %v", err)
 	}
 }
+
+// TestS3PlannedFetchV2Knobs_DefaultsMergeValidate pins the planned-fetch
+// v2 slice 0+1 knobs: span concurrency (default 16) and the per-SPAN cap
+// (default 16MB) carry shared defaults; the whole-file S* threshold and
+// the footer prefetch size default to 0 = "per-signal default resolved in
+// the storage layer" (logs 5MB/128KB, traces 8MB/640KB). The yaml overlay
+// merges all four, absence keeps the defaults (absent != zero), and
+// negative values are rejected.
+func TestS3PlannedFetchV2Knobs_DefaultsMergeValidate(t *testing.T) {
+	d := Default()
+	if d.S3.PlannedFetchMaxInflight != 16 {
+		t.Fatalf("default PlannedFetchMaxInflight = %d, want 16", d.S3.PlannedFetchMaxInflight)
+	}
+	if d.S3.PlannedFetchSpanCapBytes != 16*1024*1024 {
+		t.Fatalf("default PlannedFetchSpanCapBytes = %d, want 16MB", d.S3.PlannedFetchSpanCapBytes)
+	}
+	if d.S3.WholeFileThresholdBytes != 0 {
+		t.Fatalf("default WholeFileThresholdBytes = %d, want 0 (per-signal default in the storage layer)", d.S3.WholeFileThresholdBytes)
+	}
+	if d.S3.FooterPrefetchBytes != 0 {
+		t.Fatalf("default FooterPrefetchBytes = %d, want 0 (per-signal default in the storage layer)", d.S3.FooterPrefetchBytes)
+	}
+	d.Mode = ModeLogs
+	d.S3.Bucket = "b"
+	if err := d.Validate(); err != nil {
+		t.Fatalf("defaults must validate: %v", err)
+	}
+
+	// yaml overlay merges all four knobs.
+	yml := `
+lakehouse:
+  mode: logs
+  s3:
+    bucket: b
+    planned_fetch_max_inflight: 8
+    planned_fetch_span_cap_bytes: 8388608
+    whole_file_threshold_bytes: 2097152
+    footer_prefetch_bytes: 262144
+`
+	path := filepath.Join(t.TempDir(), "cfg.yaml")
+	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.S3.PlannedFetchMaxInflight != 8 || cfg.S3.PlannedFetchSpanCapBytes != 8388608 ||
+		cfg.S3.WholeFileThresholdBytes != 2097152 || cfg.S3.FooterPrefetchBytes != 262144 {
+		t.Fatalf("overlay merge lost planned-fetch v2 knobs: %+v", cfg.S3)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("merged knobs must validate: %v", err)
+	}
+
+	// Overlay WITHOUT the keys → defaults survive (absent != zero).
+	ymlAbsent := `
+lakehouse:
+  mode: logs
+  s3:
+    bucket: b
+`
+	pathAbsent := filepath.Join(t.TempDir(), "cfg.yaml")
+	if err := os.WriteFile(pathAbsent, []byte(ymlAbsent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgAbsent, err := Load(pathAbsent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfgAbsent.S3.PlannedFetchMaxInflight != 16 || cfgAbsent.S3.PlannedFetchSpanCapBytes != 16*1024*1024 ||
+		cfgAbsent.S3.WholeFileThresholdBytes != 0 || cfgAbsent.S3.FooterPrefetchBytes != 0 {
+		t.Fatalf("absent keys must keep defaults, got %+v", cfgAbsent.S3)
+	}
+
+	// Sign validation: each negative knob is rejected with its flag name.
+	for _, tc := range []struct {
+		set  func(c *Config)
+		flag string
+	}{
+		{func(c *Config) { c.S3.PlannedFetchMaxInflight = -1 }, "planned-fetch-max-inflight"},
+		{func(c *Config) { c.S3.PlannedFetchSpanCapBytes = -1 }, "planned-fetch-span-cap-bytes"},
+		{func(c *Config) { c.S3.WholeFileThresholdBytes = -1 }, "whole-file-threshold-bytes"},
+		{func(c *Config) { c.S3.FooterPrefetchBytes = -1 }, "footer-prefetch-bytes"},
+	} {
+		bad := Default()
+		bad.Mode = ModeLogs
+		bad.S3.Bucket = "b"
+		tc.set(bad)
+		if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), tc.flag) {
+			t.Fatalf("negative %s must fail validation, got %v", tc.flag, err)
+		}
+	}
+}

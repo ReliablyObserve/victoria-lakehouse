@@ -298,7 +298,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		return nil
 	}
 
-	prefetchFooters(ctx, s.pool, files, s.footerCache, 0)
+	prefetchFooters(ctx, s.pool, files, s.footerCache, 0, s.footerPrefetchBytes())
 
 	// Deterministic trace_id narrowing — runs after bloom because the
 	// footer cache is now warm. For any file with a `_trace_idx`
@@ -430,7 +430,7 @@ func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.Fil
 // (TestQueryFileWorkers_BoundEnforced) load-bearing: stripping the
 // Acquire makes the bound's Limit unenforced.
 func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock logstorage.WriteDataBlockFunc) {
-	if skip, _ := shouldSkipByFooter(ctx, s.pool, fi, queryStr, s.registry, s.footerCache); skip {
+	if skip, _ := shouldSkipByFooter(ctx, s.pool, fi, queryStr, s.registry, s.footerCache, s.footerPrefetchBytes()); skip {
 		return
 	}
 	if s.checkFileBloom(ctx, fi, queryStr) {
@@ -941,16 +941,44 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 		if cached, ok := s.footerCache.Get(fi.Key); ok {
 			totalCols := len(cached.File.Root().Columns())
 			if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
+				if usePlanned {
+					// S* ladder (v2 slice 1d): warm footer ⇒ plan is
+					// metadata-free and beats whole-file at every size.
+					metrics.S3PlannedStrategy.Inc("plan-warm-footer")
+				}
 				if f, view, err := s.openProjectedParquet(ctx, fi, cached.File.Schema(), usePlanned); err == nil {
 					return f, view, nil
 				}
 				// Fall through to full download on error.
 			}
 		} else if usePlanned && fi.Size > minFileSizeForRangeRead {
-			// The planned path needs the footer for its range plan and the
-			// cache has none (the traces module has no inline footer fetch)
-			// — the file is read via the full-download path below instead.
-			metrics.S3ProjectedFetchFallback.Inc("no-footer")
+			// S* + footer-cache-gated strategy (v2 slice 1d) — PLANNED mode
+			// only; the window default stays byte-identical. Cold footer:
+			// under the per-signal whole-file threshold one whole-file GET
+			// (which doubles as the footer-cache warmup — the full-download
+			// path below feeds ParseFooterFromData) beats footer-fetch +
+			// span RTTs; at or above it, fetch the footer (single tail
+			// range read sized for the traces trace-index footer, two-phase
+			// for oversize) and plan exact spans. This retires the "traces
+			// module has no inline footer fetch ⇒ always full download"
+			// behavior on the planned path.
+			if fi.Size < s.wholeFileThresholdBytes() {
+				metrics.S3PlannedStrategy.Inc("whole-file-warmup")
+				// fall through to the full-download path below.
+			} else if f, err := s.fetchFooterFile(ctx, fi); err == nil {
+				metrics.S3PlannedStrategy.Inc("plan-cold-footer")
+				totalCols := len(f.Root().Columns())
+				if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
+					if pf, view, rErr := s.openProjectedParquet(ctx, fi, f.Schema(), usePlanned); rErr == nil {
+						return pf, view, nil
+					}
+				}
+			} else {
+				// The planned path needs the footer for its range plan and
+				// could not get one — the file is read via the full-download
+				// path below instead.
+				metrics.S3ProjectedFetchFallback.Inc("no-footer")
+			}
 		}
 	}
 

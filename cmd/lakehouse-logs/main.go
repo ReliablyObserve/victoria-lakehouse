@@ -96,8 +96,12 @@ var (
 	s3ReadBufferSize  = flag.Int("lakehouse.s3.read-buffer-size", 0, "Parquet page read buffer for ranged S3 opens in bytes (default: 1MB)")
 	s3ParquetReadMode = flag.String("lakehouse.s3.parquet-read-mode", "", "Parquet page read mode on ranged S3 opens: async (read-ahead goroutine per column) or sync (default: async)")
 
-	s3ProjectedFetchMode     = flag.String("lakehouse.s3.projected-fetch-mode", "", "Read strategy for column-projected parquet reads: planned (plan-then-fetch exact coalesced column-chunk ranges, no speculative window) or window (adaptive read-ahead window — rollback switch) (default: planned)")
-	s3ProjectedFetchMaxBytes = flag.Int("lakehouse.s3.projected-fetch-max-bytes", 0, "Per-file byte cap for the plan-then-fetch projected read; plans above the cap fall back to the window path (default: 16MB)")
+	s3ProjectedFetchMode      = flag.String("lakehouse.s3.projected-fetch-mode", "", "Read strategy for column-projected parquet reads: planned (plan-then-fetch exact coalesced column-chunk ranges, no speculative window) or window (adaptive read-ahead window — rollback switch) (default: window)")
+	s3ProjectedFetchMaxBytes  = flag.Int("lakehouse.s3.projected-fetch-max-bytes", 0, "DEPRECATED: the per-plan cap is retired (kept parsed for compatibility; plans are admitted via the memory ledger and capped per-SPAN by lakehouse.s3.planned-fetch-span-cap-bytes)")
+	s3PlannedFetchMaxInflight = flag.Int("lakehouse.s3.planned-fetch-max-inflight", 0, "Concurrent span GETs per file on the planned projected-read path: min(k, spans) in flight (default: 16)")
+	s3PlannedFetchSpanCap     = flag.Int("lakehouse.s3.planned-fetch-span-cap-bytes", 0, "Per-SPAN byte cap on the planned projected-read path; coalesced spans above it are split into cap-sized concurrent GETs (CH bytes_per_read_task scope; default: 16MB)")
+	s3WholeFileThreshold      = flag.Int("lakehouse.s3.whole-file-threshold-bytes", 0, "S*: on the planned projected-read path, a cold-footer file below this size is downloaded whole (the download warms the footer cache) instead of footer-fetch + spans (default: 5MB logs / 8MB traces)")
+	s3FooterPrefetchBytes     = flag.Int("lakehouse.s3.footer-prefetch-bytes", 0, "Tail range-read size for parquet footer prefetch/fetch (default: 128KB logs / 640KB traces — traces L2 footers carry a 467-519KB trace index)")
 
 	// K8s-style request/limit/scaling for S3 download concurrency
 	// (see internal/resourcebounds). When any of these are non-zero
@@ -1472,6 +1476,18 @@ func applyS3Flags(s3 *config.S3Config) {
 	}
 	if *s3ProjectedFetchMaxBytes > 0 {
 		s3.ProjectedFetchMaxBytes = *s3ProjectedFetchMaxBytes
+	}
+	if *s3PlannedFetchMaxInflight > 0 {
+		s3.PlannedFetchMaxInflight = *s3PlannedFetchMaxInflight
+	}
+	if *s3PlannedFetchSpanCap > 0 {
+		s3.PlannedFetchSpanCapBytes = *s3PlannedFetchSpanCap
+	}
+	if *s3WholeFileThreshold > 0 {
+		s3.WholeFileThresholdBytes = *s3WholeFileThreshold
+	}
+	if *s3FooterPrefetchBytes > 0 {
+		s3.FooterPrefetchBytes = *s3FooterPrefetchBytes
 	}
 	if *s3MaxConcurrentDownloads > 0 {
 		s3.MaxConcurrentDownloads = *s3MaxConcurrentDownloads

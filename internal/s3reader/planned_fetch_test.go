@@ -138,7 +138,8 @@ func TestPlannedFetch_GapClamps(t *testing.T) {
 
 // TestPlannedFetch_ConcurrentSpanFetch verifies the spans of one plan are
 // fetched concurrently (overlapping in time on a slow reader) while never
-// exceeding the per-file in-flight bound of 4.
+// exceeding min(k, spans) — with the v2 slice-1a default k=16, all 6
+// spans of this plan ride ONE RTT wave.
 func TestPlannedFetch_ConcurrentSpanFetch(t *testing.T) {
 	inner := &slowTrackingReaderAt{data: patternedData(8 << 20), delay: 30 * time.Millisecond}
 	v := NewPlannedFetchReaderAt(inner, inner.Size(), 0, nil)
@@ -156,10 +157,10 @@ func TestPlannedFetch_ConcurrentSpanFetch(t *testing.T) {
 
 	if got := atomic.LoadInt64(&inner.maxIn); got < 2 {
 		t.Errorf("max in-flight = %d, want >= 2 (spans must fetch concurrently)", got)
-	} else if got > 4 {
-		t.Errorf("max in-flight = %d, want <= 4 (bounded per-file fanout)", got)
+	} else if got > 6 {
+		t.Errorf("max in-flight = %d, want <= min(16, 6 spans) (bounded per-file fanout)", got)
 	}
-	// 6 spans at 30ms each: serial = 180ms, 4-way concurrent = ~60ms.
+	// 6 spans at 30ms each: serial = 180ms; one 16-wide wave = ~30ms.
 	if elapsed > 150*time.Millisecond {
 		t.Errorf("Fetch took %v; spans appear to have been fetched serially", elapsed)
 	}
@@ -478,6 +479,204 @@ func TestPlannedFetch_FilteredCountAccessPatternMeasurement(t *testing.T) {
 	}
 	if plannedGets > windowGets*2 {
 		t.Errorf("planned mode GETs (%d) exploded vs window mode (%d)", plannedGets, windowGets)
+	}
+}
+
+// TestPlannedFetch_MaxInflightRespected is the slice-1a "k respected"
+// regression: the default bound is min(16, spans) — 20 spans never exceed
+// 16 in flight — and SetMaxInFlight overrides it both down (2) and back to
+// the default (<= 0).
+func TestPlannedFetch_MaxInflightRespected(t *testing.T) {
+	mkRanges := func(n int) []Range {
+		var ranges []Range
+		for i := 0; i < n; i++ {
+			ranges = append(ranges, Range{Off: int64(i) * (1 << 20), Len: 4 << 10})
+		}
+		return ranges
+	}
+
+	// Default k=16 with 20 spans: concurrency must exceed the old k=4
+	// (the lever actually engaged) and never exceed 16.
+	inner := &slowTrackingReaderAt{data: patternedData(24 << 20), delay: 20 * time.Millisecond}
+	v := NewPlannedFetchReaderAt(inner, inner.Size(), 0, nil)
+	if err := v.Fetch(context.Background(), mkRanges(20)); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	got := atomic.LoadInt64(&inner.maxIn)
+	if got > 16 {
+		t.Errorf("default max in-flight = %d, want <= 16", got)
+	}
+	if got <= 4 {
+		t.Errorf("default max in-flight = %d, want > 4 (k=16 lever must beat the old constant)", got)
+	}
+
+	// Configured k=2 is respected.
+	inner2 := &slowTrackingReaderAt{data: patternedData(24 << 20), delay: 20 * time.Millisecond}
+	v2 := NewPlannedFetchReaderAt(inner2, inner2.Size(), 0, nil)
+	v2.SetMaxInFlight(2)
+	if err := v2.Fetch(context.Background(), mkRanges(8)); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if got := atomic.LoadInt64(&inner2.maxIn); got > 2 {
+		t.Errorf("configured max in-flight = %d, want <= 2", got)
+	}
+
+	// <= 0 restores the default (absent-value contract).
+	v3 := NewPlannedFetchReaderAt(&slowTrackingReaderAt{data: patternedData(1 << 20)}, 1<<20, 0, nil)
+	v3.SetMaxInFlight(0)
+	v3.mu.RLock()
+	k := v3.maxInFl
+	v3.mu.RUnlock()
+	if k != plannedFetchDefaultMaxInFlight {
+		t.Fatalf("SetMaxInFlight(0) → k=%d, want default %d", k, plannedFetchDefaultMaxInFlight)
+	}
+}
+
+// TestPlannedFetch_SpanCapSplits is the slice-1b cap re-scope regression:
+// a merged span larger than the per-SPAN cap is SPLIT into cap-sized
+// spans (CH bytes_per_read_task) — fetched, with correct data — instead
+// of anything being rejected; the split adds no overfetch and the total
+// bytes equal the un-split plan.
+func TestPlannedFetch_SpanCapSplits(t *testing.T) {
+	inner := &slowTrackingReaderAt{data: patternedData(4 << 20)}
+	v := NewPlannedFetchReaderAt(inner, inner.Size(), 4096, nil)
+	v.SetSpanCap(1 << 20) // 1MB spans for the test
+
+	// Two ranges that merge into one 3MB span -> must split into 3 spans.
+	ranges := []Range{
+		{Off: 0, Len: 2 << 20},
+		{Off: (2 << 20) + 1024, Len: (1 << 20) - 1024}, // 1KB gap → merges
+	}
+	spans, total := v.PlanRanges(ranges)
+	if len(spans) != 3 {
+		t.Fatalf("expected 3 cap-split spans, got %v", spans)
+	}
+	wantTotal := int64(3 << 20)
+	if total != wantTotal {
+		t.Fatalf("split plan total = %d, want %d (splitting must not change bytes)", total, wantTotal)
+	}
+	for i, sp := range spans {
+		if sp.Len > 1<<20 {
+			t.Fatalf("span[%d] = %+v exceeds the 1MB cap", i, sp)
+		}
+		if i > 0 && sp.Off != spans[i-1].Off+spans[i-1].Len {
+			t.Fatalf("split spans not adjacent: %v", spans)
+		}
+	}
+
+	if err := v.Fetch(context.Background(), ranges); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if v.SpanCount() != 3 {
+		t.Fatalf("SpanCount = %d, want 3", v.SpanCount())
+	}
+	// Data correctness across the split boundaries.
+	buf := make([]byte, 4096)
+	for _, off := range []int64{0, (1 << 20) - 2048, (2 << 20) - 100, 3<<20 - 4096} {
+		n, err := v.ReadAt(buf, off)
+		if err != nil || n != len(buf) {
+			t.Fatalf("ReadAt(%d): n=%d err=%v", off, n, err)
+		}
+		if !bytes.Equal(buf, inner.data[off:off+int64(n)]) {
+			t.Fatalf("data mismatch at %d (split-span read)", off)
+		}
+	}
+
+	// SetSpanCap(0) restores the 16MB default (absent-value contract).
+	v2 := NewPlannedFetchReaderAt(inner, inner.Size(), 0, nil)
+	v2.SetSpanCap(0)
+	v2.mu.RLock()
+	cap := v2.spanCap
+	v2.mu.RUnlock()
+	if cap != plannedFetchDefaultSpanCap {
+		t.Fatalf("SetSpanCap(0) → %d, want default %d", cap, plannedFetchDefaultSpanCap)
+	}
+}
+
+// TestPlannedFetch_PlanRangesAt pins the pricing primitive behind the gap
+// discipline: candidate gaps are clamped exactly like the constructor's,
+// and a larger candidate merges what a smaller one keeps separate.
+func TestPlannedFetch_PlanRangesAt(t *testing.T) {
+	inner := &slowTrackingReaderAt{data: patternedData(32 << 20)}
+	v := NewPlannedFetchReaderAt(inner, inner.Size(), 0, nil)
+
+	ranges := []Range{
+		{Off: 0, Len: 64 << 10},
+		{Off: 200 << 10, Len: 64 << 10}, // 136KB gap
+	}
+	if spans, _ := v.PlanRangesAt(ranges, 64<<10); len(spans) != 2 {
+		t.Fatalf("64KB gap must keep 2 spans, got %v", spans)
+	}
+	if spans, total := v.PlanRangesAt(ranges, 256<<10); len(spans) != 1 {
+		t.Fatalf("256KB gap must merge to 1 span, got %v", spans)
+	} else if total != (200<<10)+(64<<10) {
+		t.Fatalf("merged total = %d, want %d", total, (200<<10)+(64<<10))
+	}
+
+	// Small file: every candidate clamps to max(64KB, size/8).
+	small := NewPlannedFetchReaderAt(&slowTrackingReaderAt{data: patternedData(256 << 10)}, 256<<10, 0, nil)
+	sr := []Range{{Off: 0, Len: 1 << 10}, {Off: 100 << 10, Len: 1 << 10}} // 99KB gap > 64KB clamp
+	if spans, _ := small.PlanRangesAt(sr, 1<<20); len(spans) != 2 {
+		t.Fatalf("clamped 1MB candidate must keep 2 spans on a 256KB file, got %v", spans)
+	}
+}
+
+// TestPlannedFetch_V2LeversSimMeasurement is the COMMITTED re-run of the
+// offline planner simulator's count_24h cell with the slice-1 levers
+// applied — the unit-level measurement for the CHANGELOG (live bench
+// follows post-merge). It models the real L2 geometry the live verdict
+// measured (40 files / 8 workers; 13 projected spans/file of ~64KB
+// strided ~1.9MB apart — cross-RG same-column runs that no candidate gap
+// merges; 2 serial open RTTs per cold file) under the simulator's
+// constants RTT=100ms, BW=50MB/s/conn, and compares:
+//
+//	v1: k=4 span concurrency  → ceil(13/4)=4 RTT waves per file
+//	v2: k=min(16,spans)=13    → 1 RTT wave per file
+//	v2+slice-0a warm footers  → the 2 open RTTs collapse to 0
+//	    (footer prefetched+cached: traces footers now FIT the per-signal
+//	    prefetch size; logs footers always did)
+//
+// The model is the same cost function the gap discipline prices with —
+// pure math, no sleeps — so the asserted speedup is deterministic.
+func TestPlannedFetch_V2LeversSimMeasurement(t *testing.T) {
+	const (
+		files      = 40
+		workers    = 8
+		spansPerF  = 13
+		spanBytes  = 64 << 10
+		rttSec     = 0.100
+		bwBytesSec = 50 << 20
+		openRTTs   = 2 // magic probe + footer tail on a cold open
+	)
+	perFile := func(k int, openRTT int) float64 {
+		waves := (spansPerF + k - 1) / k
+		return float64(openRTT+waves)*rttSec + float64(spansPerF*spanBytes)/bwBytesSec
+	}
+	wall := func(k int, openRTT int) float64 {
+		filesPerWorker := (files + workers - 1) / workers
+		return float64(filesPerWorker) * perFile(k, openRTT)
+	}
+
+	v1 := wall(4, openRTTs)
+	v2 := wall(16, openRTTs)
+	v2warm := wall(16, 0)
+	gets := func(openRTT int) int { return files * (spansPerF + openRTT) }
+
+	t.Logf("planned-fetch v2 sim (count_24h cell: %d files / %d workers, %d spans x %dKB / file, RTT=100ms BW=50MB/s):",
+		files, workers, spansPerF, spanBytes>>10)
+	t.Logf("  v1  (k=4, per-plan cap):            %.2f s  (%d GETs)", v1, gets(openRTTs))
+	t.Logf("  v2  (k=16 + span cap + gap disc.):  %.2f s  (%d GETs)", v2, gets(openRTTs))
+	t.Logf("  v2 + slice-0a warm footers:         %.2f s  (%d GETs)", v2warm, gets(0))
+	t.Logf("  live reference: window 2.45 s / planned-v1 17.7 s (the verdict's table)")
+
+	// Regression gates: the k lever must at least halve the modeled wall
+	// vs k=4 on this geometry, and the warm-footer ladder must land the
+	// modeled time at or under the simulator's predicted ~0.8-1.6s band.
+	if v2 >= v1/1.8 {
+		t.Errorf("v2 modeled wall %.2fs not < v1 %.2fs / 1.8 — the k lever regressed", v2, v1)
+	}
+	if v2warm > 1.6 {
+		t.Errorf("v2+warm modeled wall %.2fs > 1.6s — outside the simulator's predicted band", v2warm)
 	}
 }
 

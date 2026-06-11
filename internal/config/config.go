@@ -320,12 +320,63 @@ type S3Config struct {
 	// Full-scan (non-projected) reads always use the window stack.
 	ProjectedFetchMode string `yaml:"projected_fetch_mode"`
 
-	// ProjectedFetchMaxBytes caps the total coalesced bytes a single file's
-	// plan-then-fetch may pin in memory (default 16MB). Plans above the cap
-	// fall back to the adaptive-window path for that file (counted in
-	// lakehouse_s3_projected_fetch_fallback_total{reason="cap"}). Bounds
-	// the worst case of a wide projection over a huge row group.
+	// ProjectedFetchMaxBytes — DEPRECATED since the planned-fetch v2
+	// slice 1 cap re-scope (kept parsed for config compatibility; no
+	// longer consulted). The per-PLAN cap punished exactly the cross-RG
+	// coalescing that cuts GETs (merged gap bytes counted into the plan
+	// total and tripped fallback{reason="cap"}). The cap is now per-SPAN
+	// (PlannedFetchSpanCapBytes — CH bytes_per_read_task scope) and plan
+	// admission is the memory ledger's job: span bytes are charged to the
+	// same fileBudget ledger as decode admission, and the file worker
+	// already holds an fi.Size admission that subsumes any plan (a plan
+	// can never exceed fi.Size — spans are file-clamped and disjoint).
 	ProjectedFetchMaxBytes int `yaml:"projected_fetch_max_bytes"`
+
+	// PlannedFetchMaxInflight bounds concurrent span GETs per file on the
+	// plan-then-fetch projected read path: min(k, spans) in flight.
+	// Default 16 (both signals): the live planned-v1 verdict measured
+	// 13-15 spans/file on real L2 footer geometry being drained 4-at-a-
+	// time into ~4 serial RTT waves per file; k=16 puts a typical
+	// per-file plan in flight in ONE wave while 8 file workers x 16 stays
+	// at MaxIdleConnsPerHost=128, the true HTTP/1.1 parallelism ceiling.
+	// Only the opt-in planned path reads this; window mode is untouched.
+	PlannedFetchMaxInflight int `yaml:"planned_fetch_max_inflight"`
+
+	// PlannedFetchSpanCapBytes caps ONE coalesced span of a plan-then-
+	// fetch projected read (default 16MB) — ClickHouse's
+	// bytes_per_read_task scope (16 MiB PER read task, NOT per plan).
+	// Spans above the cap are SPLIT into cap-sized concurrent GETs; the
+	// plan as a whole is admitted via the memory ledger (its absolute
+	// ceiling is fi.Size), so plans whose TOTAL exceeds the retired
+	// per-plan cap no longer fall back to the window path. Only the
+	// opt-in planned path reads this.
+	PlannedFetchSpanCapBytes int `yaml:"planned_fetch_span_cap_bytes"`
+
+	// WholeFileThresholdBytes is S*: on the opt-in PLANNED projected-read
+	// path, a file whose footer is NOT yet cached and whose size is below
+	// this threshold is downloaded WHOLE through the smart-cache path
+	// (one GET; the download doubles as the footer-cache warmup via
+	// ParseFooterFromData) instead of paying footer-fetch + span RTTs.
+	// 0 = per-signal default: logs 5MB, traces 8MB — from the cost model
+	// over the live file-size distributions (traces files carry the
+	// multi-hundred-KB trace-index footer, shifting the whole-file
+	// breakeven higher). Files at or above the threshold fetch the footer
+	// (single range read) and plan exact spans. Window mode is untouched.
+	WholeFileThresholdBytes int `yaml:"whole_file_threshold_bytes"`
+
+	// FooterPrefetchBytes is the tail range-read size used to prefetch
+	// parquet footers (footer cache fills: prefetchFooters,
+	// shouldSkipByFooter, fetchFooterFile, the inline open-path fetch).
+	// 0 = per-signal default: logs 128KB, traces 640KB. The defaults
+	// DIFFER because the footer geometry does: every live traces
+	// compacted-L2 footer measures 467-519KB (the trace index lives in
+	// footer key-value metadata), so the previous shared 64KB constant
+	// could never hold one — traces L2 projected reads always fell back
+	// to full downloads (fallback{reason="no-footer"}). 640KB fits them
+	// with headroom. Logs footers are ~50KB; 128KB covers footer AND the
+	// page-index stripe (ends 91-97KB from EOF on measured files), so one
+	// tail GET serves footer + all indexes.
+	FooterPrefetchBytes int `yaml:"footer_prefetch_bytes"`
 }
 
 // ProjectedFetchMode values for S3Config.ProjectedFetchMode.
@@ -801,20 +852,25 @@ func Default() *Config {
 		Pmeta: PmetaConfig{Enabled: true},
 
 		S3: S3Config{
-			Region:                  "us-east-1",
-			MaxConnections:          128,
-			Timeout:                 30 * time.Second,
-			RetryMax:                3,
-			RetryBaseDelay:          200 * time.Millisecond,
-			MaxConcurrentDownloads:  16,
-			ReadAheadBytes:          2 * 1024 * 1024, // 2MB base window
-			CoalesceGapBytes:        1024 * 1024,     // 1MB (BDP-priced; was 64KB)
-			ReadAheadMaxBytes:       8 * 1024 * 1024, // 8MB adaptive ceiling
-			ReadAheadWasteThreshold: 0.5,             // shrink window when >50% of it was never read
-			ReadBufferSize:          1024 * 1024,     // 1MB parquet page read buffer
-			ParquetReadMode:         "async",
-			ProjectedFetchMode:      ProjectedFetchModeWindow,
-			ProjectedFetchMaxBytes:  16 * 1024 * 1024, // 16MB per-file plan cap
+			Region:                   "us-east-1",
+			MaxConnections:           128,
+			Timeout:                  30 * time.Second,
+			RetryMax:                 3,
+			RetryBaseDelay:           200 * time.Millisecond,
+			MaxConcurrentDownloads:   16,
+			ReadAheadBytes:           2 * 1024 * 1024, // 2MB base window
+			CoalesceGapBytes:         1024 * 1024,     // 1MB (BDP-priced; was 64KB)
+			ReadAheadMaxBytes:        8 * 1024 * 1024, // 8MB adaptive ceiling
+			ReadAheadWasteThreshold:  0.5,             // shrink window when >50% of it was never read
+			ReadBufferSize:           1024 * 1024,     // 1MB parquet page read buffer
+			ParquetReadMode:          "async",
+			ProjectedFetchMode:       ProjectedFetchModeWindow,
+			ProjectedFetchMaxBytes:   16 * 1024 * 1024, // DEPRECATED (per-plan cap retired; kept parsed)
+			PlannedFetchMaxInflight:  16,               // min(16, spans) concurrent span GETs per file
+			PlannedFetchSpanCapBytes: 16 * 1024 * 1024, // 16MB per-SPAN cap (CH bytes_per_read_task)
+			// WholeFileThresholdBytes / FooterPrefetchBytes: 0 = per-signal
+			// defaults resolved in the storage layer (logs 5MB/128KB,
+			// traces 8MB/640KB — see the field comments above).
 		},
 
 		Cache: CacheConfig{
@@ -1309,6 +1365,18 @@ func (c *Config) validateEnums() error {
 	if c.S3.ProjectedFetchMaxBytes < 0 {
 		return fmt.Errorf("--lakehouse.s3.projected-fetch-max-bytes must be >= 0, got %d", c.S3.ProjectedFetchMaxBytes)
 	}
+	if c.S3.PlannedFetchMaxInflight < 0 {
+		return fmt.Errorf("--lakehouse.s3.planned-fetch-max-inflight must be >= 0, got %d", c.S3.PlannedFetchMaxInflight)
+	}
+	if c.S3.PlannedFetchSpanCapBytes < 0 {
+		return fmt.Errorf("--lakehouse.s3.planned-fetch-span-cap-bytes must be >= 0, got %d", c.S3.PlannedFetchSpanCapBytes)
+	}
+	if c.S3.WholeFileThresholdBytes < 0 {
+		return fmt.Errorf("--lakehouse.s3.whole-file-threshold-bytes must be >= 0, got %d", c.S3.WholeFileThresholdBytes)
+	}
+	if c.S3.FooterPrefetchBytes < 0 {
+		return fmt.Errorf("--lakehouse.s3.footer-prefetch-bytes must be >= 0, got %d", c.S3.FooterPrefetchBytes)
+	}
 
 	return nil
 }
@@ -1573,6 +1641,18 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.S3.ProjectedFetchMaxBytes > 0 {
 		base.S3.ProjectedFetchMaxBytes = overlay.S3.ProjectedFetchMaxBytes
+	}
+	if overlay.S3.PlannedFetchMaxInflight > 0 {
+		base.S3.PlannedFetchMaxInflight = overlay.S3.PlannedFetchMaxInflight
+	}
+	if overlay.S3.PlannedFetchSpanCapBytes > 0 {
+		base.S3.PlannedFetchSpanCapBytes = overlay.S3.PlannedFetchSpanCapBytes
+	}
+	if overlay.S3.WholeFileThresholdBytes > 0 {
+		base.S3.WholeFileThresholdBytes = overlay.S3.WholeFileThresholdBytes
+	}
+	if overlay.S3.FooterPrefetchBytes > 0 {
+		base.S3.FooterPrefetchBytes = overlay.S3.FooterPrefetchBytes
 	}
 
 	// Cache
