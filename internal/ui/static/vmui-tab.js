@@ -7,6 +7,7 @@
   var TAB_ID = "lakehouse-tab";
   var TAB_TEXT = "Lakehouse";
   var ACTIVE_KEY = "lh_vmui_active"; // localStorage flag: Lakehouse tab was last active
+  var SUBTAB_KEY = "lh_vmui_subtab"; // localStorage: which Lakehouse sub-view was active
   var CONTAINER_ID = "lakehouse-root";
 
   // ---- Helpers ----
@@ -139,6 +140,12 @@
 
   // ---- State ----
   var activeTab = "overview";
+  // Restore the last-active sub-view so a reload returns to it (e.g. Cardinality
+  // Explorer), not always Storage Overview.
+  try {
+    var _sv = localStorage.getItem(SUBTAB_KEY);
+    if (["overview", "details", "tenants", "cardinality"].indexOf(_sv) >= 0) activeTab = _sv;
+  } catch (x) { /* ignore */ }
 
   // ---- Render functions ----
 
@@ -544,6 +551,7 @@
 
     function switchTab(id) {
       activeTab = id;
+      try { localStorage.setItem(SUBTAB_KEY, id); } catch (x) { /* ignore */ }
       Array.prototype.forEach.call(tabs.children, function (t) {
         t.classList.toggle("active", t.getAttribute("data-tab") === id);
       });
