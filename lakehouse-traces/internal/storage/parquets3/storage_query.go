@@ -1567,6 +1567,28 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 		field{"child", r.ServiceGraphChild},
 		field{"callCount", r.ServiceGraphCallCount},
 	)
+	// Dedicated columns (Tier 1) — emitted under VT's stream-tag prefix
+	// (span_attr:/resource_attr:) to match this module's existing promoted
+	// columns (e.g. span_attr:db.statement), NOT bare. Conditional for
+	// dual-read safety (old files carry the key in the map with an empty
+	// column → the map loop below emits it; new files emit here). NOT added to
+	// the tracePromoted* suppression maps for the same reason.
+	buf = appendTraceDedicated(buf, "span_attr:url.full", r.URLFull)
+	buf = appendTraceDedicated(buf, "span_attr:client.address", r.ClientAddress)
+	buf = appendTraceDedicated(buf, "span_attr:server.address", r.ServerAddress)
+	buf = appendTraceDedicated(buf, "span_attr:network.peer.address", r.NetworkPeerAddress)
+	buf = appendTraceDedicated(buf, "span_attr:db.collection.name", r.DBCollectionName)
+	buf = appendTraceDedicated(buf, "span_attr:db.operation.name", r.DBOperationName)
+	buf = appendTraceDedicated(buf, "span_attr:db.query.text", r.DBQueryText)
+	buf = appendTraceDedicated(buf, "span_attr:rpc.method", r.RPCMethod)
+	buf = appendTraceDedicated(buf, "span_attr:messaging.destination.name", r.MessagingDestination)
+	buf = appendTraceDedicated(buf, "span_attr:code.function.name", r.CodeFunctionName)
+	buf = appendTraceDedicated(buf, "span_attr:exception.type", r.ExceptionType)
+	buf = appendTraceDedicated(buf, "resource_attr:container.id", r.ContainerID)
+	buf = appendTraceDedicated(buf, "resource_attr:service.instance.id", r.ServiceInstanceID)
+	buf = appendTraceDedicated(buf, "resource_attr:k8s.cluster.name", r.K8sClusterName)
+	buf = appendTraceDedicated(buf, "resource_attr:telemetry.sdk.name", r.TelemetrySDKName)
+	buf = appendTraceDedicated(buf, "resource_attr:cloud.account.id", r.CloudAccountID)
 	for k, v := range r.ResourceAttributes {
 		if !tracePromotedResourceKeys[k] {
 			buf = append(buf, field{k, v})
@@ -1582,6 +1604,16 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 		buf = append(buf, field{k, v})
 	}
 	return buf
+}
+
+// appendTraceDedicated appends a promoted dedicated-column field only when set —
+// the dual-read helper for Tier-1 trace columns (empty column on an old file
+// means the value still lives in the map, emitted by the map loop instead).
+func appendTraceDedicated(buf []field, name, value string) []field {
+	if value == "" {
+		return buf
+	}
+	return append(buf, field{name, value})
 }
 
 var tracePromotedResourceKeys = map[string]bool{

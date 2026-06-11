@@ -69,15 +69,15 @@ func TestTraceMapResourceAttr_PromotedFieldsNotInMAP(t *testing.T) {
 // TestTraceMapResourceAttr_NonPromotedGoToMAP verifies that resource attributes
 // NOT in the promoted set are correctly placed in the ResourceAttributes MAP.
 func TestTraceMapResourceAttr_NonPromotedGoToMAP(t *testing.T) {
+	// container.id and telemetry.sdk.name are now Tier-1 dedicated columns
+	// (asserted separately); these remain map-bound.
 	nonPromotedKeys := []struct {
 		key   string
 		value string
 	}{
 		{"cloud.provider", "aws"},
-		{"container.id", "abc123def"},
 		{"os.type", "linux"},
 		{"process.runtime.name", "go"},
-		{"telemetry.sdk.name", "opentelemetry"},
 		{"custom.resource.tag", "custom-value"},
 	}
 
@@ -106,9 +106,11 @@ func TestTraceMapResourceAttr_MixedPromotedAndNonPromoted(t *testing.T) {
 	mapResourceAttr(&row, "service.name", "my-svc")
 	mapResourceAttr(&row, "k8s.namespace.name", "prod")
 
-	// Non-promoted
-	mapResourceAttr(&row, "cloud.provider", "aws")
+	// Promoted Tier-1 dedicated column (container.id → ContainerID, not map)
 	mapResourceAttr(&row, "container.id", "ctr-123")
+
+	// Non-promoted (stays in map)
+	mapResourceAttr(&row, "cloud.provider", "aws")
 
 	if row.ServiceName != "my-svc" {
 		t.Errorf("ServiceName = %q, want %q", row.ServiceName, "my-svc")
@@ -116,21 +118,20 @@ func TestTraceMapResourceAttr_MixedPromotedAndNonPromoted(t *testing.T) {
 	if row.K8sNamespaceName != "prod" {
 		t.Errorf("K8sNamespaceName = %q, want %q", row.K8sNamespaceName, "prod")
 	}
+	if row.ContainerID != "ctr-123" {
+		t.Errorf("ContainerID = %q, want %q (promoted column)", row.ContainerID, "ctr-123")
+	}
 
 	if row.ResourceAttributes == nil {
 		t.Fatal("ResourceAttributes MAP should not be nil")
 	}
-	if len(row.ResourceAttributes) != 2 {
-		t.Errorf("ResourceAttributes MAP should have exactly 2 entries, got %d: %v",
+	if len(row.ResourceAttributes) != 1 {
+		t.Errorf("ResourceAttributes MAP should have exactly 1 entry, got %d: %v",
 			len(row.ResourceAttributes), row.ResourceAttributes)
 	}
 	if row.ResourceAttributes["cloud.provider"] != "aws" {
 		t.Errorf("ResourceAttributes[cloud.provider] = %q, want %q",
 			row.ResourceAttributes["cloud.provider"], "aws")
-	}
-	if row.ResourceAttributes["container.id"] != "ctr-123" {
-		t.Errorf("ResourceAttributes[container.id] = %q, want %q",
-			row.ResourceAttributes["container.id"], "ctr-123")
 	}
 
 	// Promoted keys MUST NOT appear in MAP.
@@ -193,12 +194,12 @@ func TestTraceMapSpanAttr_PromotedFieldsNotInMAP(t *testing.T) {
 // TestTraceMapSpanAttr_NonPromotedGoToMAP verifies that span attributes
 // NOT in the promoted set are correctly placed in the SpanAttributes MAP.
 func TestTraceMapSpanAttr_NonPromotedGoToMAP(t *testing.T) {
+	// rpc.method is now a Tier-1 dedicated column; these remain map-bound.
 	nonPromotedKeys := []struct {
 		key   string
 		value string
 	}{
 		{"rpc.system", "grpc"},
-		{"rpc.method", "Process"},
 		{"messaging.system", "kafka"},
 		{"net.peer.name", "db-host-1"},
 		{"custom.span.tag", "custom-value"},

@@ -60,22 +60,22 @@ var logDedicatedColumns = []FieldMapping{
 // -> dict + bloom; low-card resource descriptors -> dict, no bloom.
 // db.query.text -> dict, NEVER bloom (huge unique SQL).
 var traceDedicatedColumns = []FieldMapping{
-	{ParquetColumn: "url.full", InternalName: "url.full", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
-	{ParquetColumn: "client.address", InternalName: "client.address", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
-	{ParquetColumn: "server.address", InternalName: "server.address", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
-	{ParquetColumn: "network.peer.address", InternalName: "network.peer.address", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
-	{ParquetColumn: "db.collection.name", InternalName: "db.collection.name", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
-	{ParquetColumn: "db.operation.name", InternalName: "db.operation.name", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
-	{ParquetColumn: "rpc.method", InternalName: "rpc.method", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
-	{ParquetColumn: "messaging.destination.name", InternalName: "messaging.destination.name", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
-	{ParquetColumn: "code.function.name", InternalName: "code.function.name", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
-	{ParquetColumn: "exception.type", InternalName: "exception.type", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
-	{ParquetColumn: "container.id", InternalName: "container.id", Type: TypeString, Origin: OriginPromoted, MapColumn: "resource.attributes", HasBloom: true},
-	{ParquetColumn: "service.instance.id", InternalName: "service.instance.id", Type: TypeString, Origin: OriginPromoted, MapColumn: "resource.attributes", HasBloom: true},
-	{ParquetColumn: "k8s.cluster.name", InternalName: "k8s.cluster.name", Type: TypeString, Origin: OriginPromoted, MapColumn: "resource.attributes"},
-	{ParquetColumn: "telemetry.sdk.name", InternalName: "telemetry.sdk.name", Type: TypeString, Origin: OriginPromoted, MapColumn: "resource.attributes"},
-	{ParquetColumn: "cloud.account.id", InternalName: "cloud.account.id", Type: TypeString, Origin: OriginPromoted, MapColumn: "resource.attributes"},
-	{ParquetColumn: "db.query.text", InternalName: "db.query.text", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes"},
+	{ParquetColumn: "url.full", InternalName: "span_attr:url.full", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
+	{ParquetColumn: "client.address", InternalName: "span_attr:client.address", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
+	{ParquetColumn: "server.address", InternalName: "span_attr:server.address", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
+	{ParquetColumn: "network.peer.address", InternalName: "span_attr:network.peer.address", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
+	{ParquetColumn: "db.collection.name", InternalName: "span_attr:db.collection.name", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
+	{ParquetColumn: "db.operation.name", InternalName: "span_attr:db.operation.name", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
+	{ParquetColumn: "rpc.method", InternalName: "span_attr:rpc.method", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
+	{ParquetColumn: "messaging.destination.name", InternalName: "span_attr:messaging.destination.name", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
+	{ParquetColumn: "code.function.name", InternalName: "span_attr:code.function.name", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
+	{ParquetColumn: "exception.type", InternalName: "span_attr:exception.type", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes", HasBloom: true},
+	{ParquetColumn: "container.id", InternalName: "resource_attr:container.id", Type: TypeString, Origin: OriginPromoted, MapColumn: "resource.attributes", HasBloom: true},
+	{ParquetColumn: "service.instance.id", InternalName: "resource_attr:service.instance.id", Type: TypeString, Origin: OriginPromoted, MapColumn: "resource.attributes", HasBloom: true},
+	{ParquetColumn: "k8s.cluster.name", InternalName: "resource_attr:k8s.cluster.name", Type: TypeString, Origin: OriginPromoted, MapColumn: "resource.attributes"},
+	{ParquetColumn: "telemetry.sdk.name", InternalName: "resource_attr:telemetry.sdk.name", Type: TypeString, Origin: OriginPromoted, MapColumn: "resource.attributes"},
+	{ParquetColumn: "cloud.account.id", InternalName: "resource_attr:cloud.account.id", Type: TypeString, Origin: OriginPromoted, MapColumn: "resource.attributes"},
+	{ParquetColumn: "db.query.text", InternalName: "span_attr:db.query.text", Type: TypeString, Origin: OriginPromoted, MapColumn: "span.attributes"},
 }
 
 // LogDedicatedColumns returns the Tier-1 strict OTel log columns (a copy, so

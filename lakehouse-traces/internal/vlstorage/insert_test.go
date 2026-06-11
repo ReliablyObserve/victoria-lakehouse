@@ -834,8 +834,12 @@ func TestVTInsertAdapter_MustAddRows_FullOTLPSpan(t *testing.T) {
 	if row.SpanAttributes["rpc.system"] != "grpc" {
 		t.Errorf("SpanAttributes[rpc.system] = %q", row.SpanAttributes["rpc.system"])
 	}
-	if row.SpanAttributes["rpc.method"] != "Process" {
-		t.Errorf("SpanAttributes[rpc.method] = %q", row.SpanAttributes["rpc.method"])
+	// rpc.method is now a Tier-1 dedicated column (RPCMethod), not a map entry.
+	if row.RPCMethod != "Process" {
+		t.Errorf("RPCMethod = %q, want %q (promoted column)", row.RPCMethod, "Process")
+	}
+	if _, inMap := row.SpanAttributes["rpc.method"]; inMap {
+		t.Error("rpc.method must route to the RPCMethod column, not SpanAttributes")
 	}
 }
 

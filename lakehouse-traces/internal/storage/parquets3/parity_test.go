@@ -895,8 +895,15 @@ func TestLogRowToFields_UsesFlatNames(t *testing.T) {
 // in TracesProfile. If a new promoted resource attr is added to the profile
 // but not to the map, MAP queries will emit duplicate values.
 func TestTracePromotedResourceKeys_Completeness(t *testing.T) {
+	// Tier-1 dedicated columns use the dual-read strategy (conditional column
+	// emission + map fallback for old files), NOT suppression — so they are
+	// intentionally absent from tracePromotedResourceKeys. Exclude them.
+	dedicated := make(map[string]bool)
+	for _, m := range schema.TraceDedicatedColumns() {
+		dedicated[m.ParquetColumn] = true
+	}
 	for _, m := range schema.TracesProfile.Promoted {
-		if m.InternalName == "" {
+		if m.InternalName == "" || dedicated[m.ParquetColumn] {
 			continue
 		}
 		// Check if this is a resource_attr: prefixed field
@@ -916,8 +923,12 @@ func TestTracePromotedResourceKeys_Completeness(t *testing.T) {
 // tracePromotedSpanKeys map matches the promoted span attributes
 // in TracesProfile.
 func TestTracePromotedSpanKeys_Completeness(t *testing.T) {
+	dedicated := make(map[string]bool)
+	for _, m := range schema.TraceDedicatedColumns() {
+		dedicated[m.ParquetColumn] = true
+	}
 	for _, m := range schema.TracesProfile.Promoted {
-		if m.InternalName == "" {
+		if m.InternalName == "" || dedicated[m.ParquetColumn] {
 			continue
 		}
 		const prefix = "span_attr:"

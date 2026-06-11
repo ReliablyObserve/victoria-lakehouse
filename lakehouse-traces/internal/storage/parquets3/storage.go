@@ -506,9 +506,11 @@ func (s *Storage) updateLabelIndexImpl(f *parquet.File, extractValues bool) {
 					s.labelIndex.Add(k, nil)
 					continue
 				}
-				if promotedParquetNames[k] {
-					continue
-				}
+				// Dual-read: a promoted key found in the MAP = an OLD
+				// (pre-promotion) file. Index it under the prefixed name to
+				// match the column form (InternalName carries the prefix).
+				// labelIndex.Add is idempotent, so new files (key in the
+				// column) never double-count.
 				s.labelIndex.Add(prefix+k, nil)
 			}
 			continue
