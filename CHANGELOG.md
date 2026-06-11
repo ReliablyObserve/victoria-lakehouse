@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.89.0] - 2026-06-11
+
 ### Removed
 
 - **The dead `schema.extra_promoted` dynamic-promotion feature (BREAKING for that config key only).** Strict-schema direction: which Parquet columns are promoted is owned by the compiled static profile (`registry.PromotedColumns()` = `profile.Promoted`), giving deliberate control over every column for write/read optimization — not a per-deployment dynamic config. The `extra_promoted` path was non-functional anyway (the registry was built without it and the struct-typed writers could not emit such columns; the docs promised behavior the code never delivered). Removed the config struct + `schema:` section, registry plumbing, chart block, schema/allowlist entries, docs, and tests. The live `PromotedColumns()` mechanism (the static profile) is unchanged and is what the upcoming strict dedicated columns extend.
