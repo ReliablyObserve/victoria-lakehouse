@@ -1382,6 +1382,26 @@ func logRowToFields(r *schema.LogRow, buf []field) []field {
 		field{"_stream_id", r.StreamID},
 		field{"scope.name", r.ScopeName},
 	)
+	// Dedicated columns (Tier 1) — emit each ONLY when non-empty. Dual-read
+	// invariant: new files carry the value in the column (map cleared at
+	// ingest) → emitted here; OLD files (pre-promotion) carry it in the map
+	// with an empty column → skipped here, emitted by the map loop below.
+	// Exactly one emission either way — no dup, no lost old-file values.
+	buf = appendIfSet(buf, "container.id", r.ContainerID)
+	buf = appendIfSet(buf, "service.instance.id", r.ServiceInstanceID)
+	buf = appendIfSet(buf, "service.version", r.ServiceVersion)
+	buf = appendIfSet(buf, "exception.type", r.ExceptionType)
+	buf = appendIfSet(buf, "exception.message", r.ExceptionMessage)
+	buf = appendIfSet(buf, "k8s.cluster.name", r.K8sClusterName)
+	buf = appendIfSet(buf, "telemetry.sdk.name", r.TelemetrySDKName)
+	buf = appendIfSet(buf, "telemetry.sdk.language", r.TelemetrySDKLang)
+	buf = appendIfSet(buf, "telemetry.sdk.version", r.TelemetrySDKVer)
+	buf = appendIfSet(buf, "cloud.account.id", r.CloudAccountID)
+	buf = appendIfSet(buf, "cloud.provider", r.CloudProvider)
+	buf = appendIfSet(buf, "os.type", r.OSType)
+	buf = appendIfSet(buf, "host.arch", r.HostArch)
+	buf = appendIfSet(buf, "process.runtime.name", r.ProcessRuntimeName)
+	buf = appendIfSet(buf, "process.runtime.version", r.ProcessRuntimeVer)
 	for k, v := range r.ResourceAttributes {
 		buf = append(buf, field{k, v})
 	}
@@ -1389,6 +1409,15 @@ func logRowToFields(r *schema.LogRow, buf []field) []field {
 		buf = append(buf, field{k, v})
 	}
 	return buf
+}
+
+// appendIfSet appends a {name,value} field only when value is non-empty — the
+// dual-read helper for promoted dedicated columns (see logRowToFields).
+func appendIfSet(buf []field, name, value string) []field {
+	if value == "" {
+		return buf
+	}
+	return append(buf, field{name, value})
 }
 
 func traceRowToFields(r *schema.TraceRow, buf []field) []field {

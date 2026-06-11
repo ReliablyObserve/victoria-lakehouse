@@ -1009,6 +1009,24 @@ func (s *Storage) logRowsToDataBlock(rows []schema.LogRow) *logstorage.DataBlock
 		col[i] = val
 	}
 	for i, row := range rows {
+		// Dedicated columns (Tier 1) surface under their bare OTel name — same
+		// as logRowToFields, so buffer reads and file reads agree. Lazy: only
+		// materialised when non-empty (most rows lack most attributes).
+		putAttr("container.id", i, row.ContainerID)
+		putAttr("service.instance.id", i, row.ServiceInstanceID)
+		putAttr("service.version", i, row.ServiceVersion)
+		putAttr("exception.type", i, row.ExceptionType)
+		putAttr("exception.message", i, row.ExceptionMessage)
+		putAttr("k8s.cluster.name", i, row.K8sClusterName)
+		putAttr("telemetry.sdk.name", i, row.TelemetrySDKName)
+		putAttr("telemetry.sdk.language", i, row.TelemetrySDKLang)
+		putAttr("telemetry.sdk.version", i, row.TelemetrySDKVer)
+		putAttr("cloud.account.id", i, row.CloudAccountID)
+		putAttr("cloud.provider", i, row.CloudProvider)
+		putAttr("os.type", i, row.OSType)
+		putAttr("host.arch", i, row.HostArch)
+		putAttr("process.runtime.name", i, row.ProcessRuntimeName)
+		putAttr("process.runtime.version", i, row.ProcessRuntimeVer)
 		for k, v := range row.ResourceAttributes {
 			putAttr("resource_attr:"+k, i, v)
 		}
