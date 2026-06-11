@@ -189,17 +189,10 @@ type Profile struct {
 	TopLevelMapKeys map[string]bool // MAP keys emitted without prefix (VT top-level span attrs)
 }
 
-type ExtraPromoted struct {
-	Name  string
-	Type  string
-	Bloom bool
-}
-
 type Registry struct {
-	profile       Profile
-	extraPromoted []ExtraPromoted
-	byInternal    map[string]*FieldMapping
-	byParquet     map[string]*FieldMapping
+	profile    Profile
+	byInternal map[string]*FieldMapping
+	byParquet  map[string]*FieldMapping
 }
 
 var LogsProfile = Profile{
@@ -277,28 +270,16 @@ var TracesProfile = Profile{
 	TopLevelMapKeys: VTTopLevelSpanAttrKeys,
 }
 
-func NewRegistry(profile Profile, extra ...ExtraPromoted) *Registry {
+func NewRegistry(profile Profile) *Registry {
 	r := &Registry{
-		profile:       profile,
-		extraPromoted: extra,
-		byInternal:    make(map[string]*FieldMapping, len(profile.Promoted)+len(extra)),
-		byParquet:     make(map[string]*FieldMapping, len(profile.Promoted)+len(extra)),
+		profile:    profile,
+		byInternal: make(map[string]*FieldMapping, len(profile.Promoted)),
+		byParquet:  make(map[string]*FieldMapping, len(profile.Promoted)),
 	}
 	for i := range profile.Promoted {
 		m := &profile.Promoted[i]
 		r.byInternal[m.InternalName] = m
 		r.byParquet[m.ParquetColumn] = m
-	}
-	for _, ep := range extra {
-		m := &FieldMapping{
-			ParquetColumn: ep.Name,
-			InternalName:  ep.Name,
-			Type:          ParseFieldType(ep.Type),
-			Origin:        OriginPromoted,
-			HasBloom:      ep.Bloom,
-		}
-		r.byInternal[ep.Name] = m
-		r.byParquet[ep.Name] = m
 	}
 	return r
 }
@@ -308,10 +289,6 @@ func (r *Registry) FormatField(internalName string, v any) string {
 		return m.Type.FormatValue(v)
 	}
 	return TypeString.FormatValue(v)
-}
-
-func (r *Registry) ExtraPromoted() []ExtraPromoted {
-	return r.extraPromoted
 }
 
 func (r *Registry) IsPromoted(fieldName string) bool {

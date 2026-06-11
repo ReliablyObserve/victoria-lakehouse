@@ -182,13 +182,11 @@ Parquet, which is the long-term durable store. For synchronous durability use
 
 | Flag | Default | Description |
 |---|---|---|
-| `--lakehouse.schema.extra-promoted` | `""` | YAML list of user-defined promoted Parquet columns |
 
 Example YAML:
 ```yaml
 lakehouse:
   schema:
-    extra_promoted:
       - name: "http.status_code"
         type: "int32"
         bloom: true

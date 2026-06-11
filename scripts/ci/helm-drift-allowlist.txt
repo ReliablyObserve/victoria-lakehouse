@@ -125,7 +125,6 @@ s3.retry_base_delay
 s3.retry_max
 s3.secret_key
 s3.timeout
-schema.extra_promoted
 select.az_aware
 select.buffer_query_enabled
 select.buffer_query_timeout

@@ -215,67 +215,6 @@ func TestRegistry_ScopeAttrPrefix(t *testing.T) {
 	}
 }
 
-func TestRegistry_ExtraPromoted(t *testing.T) {
-	extra := []ExtraPromoted{
-		{Name: "http.status_code", Type: "string", Bloom: true},
-		{Name: "customer_id", Type: "string", Bloom: true},
-	}
-	r := NewRegistry(LogsProfile, extra...)
-
-	m := r.ResolveToParquet("http.status_code")
-	if m == nil {
-		t.Fatal("extra promoted http.status_code should resolve")
-	}
-	if m.Origin != OriginPromoted {
-		t.Errorf("Origin = %d, want OriginPromoted", m.Origin)
-	}
-	if !m.HasBloom {
-		t.Error("HasBloom should be true")
-	}
-	if m.ParquetColumn != "http.status_code" {
-		t.Errorf("ParquetColumn = %q", m.ParquetColumn)
-	}
-
-	m2 := r.ResolveToParquet("customer_id")
-	if m2 == nil {
-		t.Fatal("extra promoted customer_id should resolve")
-	}
-	if !m2.HasBloom {
-		t.Error("customer_id HasBloom should be true")
-	}
-}
-
-func TestRegistry_ExtraPromotedReverseResolve(t *testing.T) {
-	extra := []ExtraPromoted{
-		{Name: "http.status_code", Type: "string", Bloom: false},
-	}
-	r := NewRegistry(LogsProfile, extra...)
-
-	m := r.ResolveFromParquet("http.status_code")
-	if m == nil {
-		t.Fatal("reverse resolve should find extra promoted")
-	}
-	if m.InternalName != "http.status_code" {
-		t.Errorf("InternalName = %q", m.InternalName)
-	}
-}
-
-func TestRegistry_ExtraPromotedList(t *testing.T) {
-	extra := []ExtraPromoted{
-		{Name: "http.status_code", Type: "string", Bloom: true},
-		{Name: "customer_id", Type: "string", Bloom: false},
-	}
-	r := NewRegistry(LogsProfile, extra...)
-
-	got := r.ExtraPromoted()
-	if len(got) != 2 {
-		t.Fatalf("ExtraPromoted() len = %d, want 2", len(got))
-	}
-	if got[0].Name != "http.status_code" {
-		t.Errorf("got[0].Name = %q", got[0].Name)
-	}
-}
-
 func TestRegistry_IsPromoted(t *testing.T) {
 	r := NewRegistry(LogsProfile)
 
@@ -287,46 +226,6 @@ func TestRegistry_IsPromoted(t *testing.T) {
 	}
 	if r.IsPromoted("random.field") {
 		t.Error("random.field should not be promoted")
-	}
-}
-
-func TestRegistry_IsPromoted_WithExtra(t *testing.T) {
-	extra := []ExtraPromoted{
-		{Name: "customer_id", Type: "string", Bloom: true},
-	}
-	r := NewRegistry(LogsProfile, extra...)
-
-	if !r.IsPromoted("customer_id") {
-		t.Error("extra promoted customer_id should be promoted")
-	}
-	if !r.IsPromoted("_time") {
-		t.Error("default promoted _time should still be promoted")
-	}
-	if r.IsPromoted("unknown") {
-		t.Error("unknown should not be promoted")
-	}
-}
-
-func TestRegistry_ExtraPromotedOverridesDefault(t *testing.T) {
-	extra := []ExtraPromoted{
-		{Name: "service.name", Type: "string", Bloom: false},
-	}
-	r := NewRegistry(LogsProfile, extra...)
-
-	m := r.ResolveToParquet("service.name")
-	if m == nil {
-		t.Fatal("service.name should resolve")
-	}
-	if m.HasBloom {
-		t.Error("extra promoted should override default bloom setting")
-	}
-}
-
-func TestRegistry_NoExtraPromoted(t *testing.T) {
-	r := NewRegistry(LogsProfile)
-	got := r.ExtraPromoted()
-	if len(got) != 0 {
-		t.Errorf("ExtraPromoted() should be empty, got %d", len(got))
 	}
 }
 
@@ -559,30 +458,6 @@ func TestRegistry_FormatField_Traces(t *testing.T) {
 	got = r.FormatField("kind", int32(3))
 	if got != "3" {
 		t.Errorf("FormatField(kind) = %q", got)
-	}
-}
-
-func TestRegistry_ExtraPromotedType(t *testing.T) {
-	extra := []ExtraPromoted{
-		{Name: "http.status_code", Type: "int32", Bloom: false},
-		{Name: "request.duration_ms", Type: "float64", Bloom: false},
-		{Name: "is_error", Type: "bool", Bloom: false},
-	}
-	r := NewRegistry(LogsProfile, extra...)
-
-	got := r.FormatField("http.status_code", int32(200))
-	if got != "200" {
-		t.Errorf("FormatField(http.status_code) = %q, want 200", got)
-	}
-
-	got = r.FormatField("request.duration_ms", 42.5)
-	if got != "42.5" {
-		t.Errorf("FormatField(request.duration_ms) = %q", got)
-	}
-
-	got = r.FormatField("is_error", true)
-	if got != "true" {
-		t.Errorf("FormatField(is_error) = %q", got)
 	}
 }
 
