@@ -15,7 +15,32 @@ files (each key drops its per-row key-string and dict-compresses); the expanded
 selective blooms are absorbed by that win. Needle filter on a promoted column
 prunes **83% of row groups** (bloom) vs whole-map decode.
 
-## Query latency — logs, LH cold vs VL hot (100/30 ms injected, p50 of 8)
+## Query latency — three-way LH cold vs VL hot vs CH-over-S3
+LH carries a 100/30 ms injected S3-latency handicap; CH queried its object store
+directly (no injection), so LH's win below is conservative.
+
+| scenario | LH p50 | VL hot | CH-over-S3 | LH/VL | LH/CH |
+|---|--:|--:|--:|--:|--:|
+| count_1h | 577 ms | 38 | 3649 | 15.1× | **0.16×** |
+| count_24h | 1921 ms | 157 | 4787 | 12.2× | **0.40×** |
+| filtered_count_1h | 3194 ms | 44 | 3600 | 73.3× | **0.89×** |
+| groupby_service_1h | 953 ms | 45 | 3807 | 21.3× | **0.25×** |
+| fulltext_scan_1h | 2082 ms | 50 | 4110 | 41.3× | **0.51×** |
+| field_values | 22 ms | 292 | 3869 | **0.1×** | **0.006×** |
+
+**LH beats CH-over-S3 on every scenario** (North-Star bar met) and beats hot VL on
+the metadata class. No regression from dedicated columns.
+
+## Where the dedicated-column blooms help (the bench above does NOT show this)
+The scenarios above filter `service.name`/`_msg`, not promoted high-cardinality
+columns — so they don't exercise the new blooms. The benefit lands on
+needle/filtered queries against a PROMOTED column. Measured live:
+`k8s.pod.name:="..." | count` → **30 ms, 0 S3 GETs** — promotion gives the column
+first-class metadata (label aggregates + bloom), answering from RAM instead of
+scanning files (a non-promoted map attribute would scan). A `needle_promoted_col`
+scenario should be added to full-scope-s3-bench.sh to track this.
+
+## (legacy) Query latency — logs, LH cold vs VL hot (100/30 ms injected, p50 of 8)
 | scenario | LH p50 | VL p50 | LH/VL | note |
 |---|--:|--:|--:|---|
 | count_1h | 577 ms | 38 | 15.1× | no regression vs pre-change (695) |
