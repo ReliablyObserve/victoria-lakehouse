@@ -547,6 +547,16 @@ func (s *Storage) updateLabelIndexImpl(f *parquet.File, extractValues bool) {
 		promotedParquetNames[m.ParquetColumn] = true
 	}
 
+	// Tier-2 slot columns (ded_sNN) carry an operator-configured attribute whose
+	// name lives in THIS file's footer KV — read it so the field surfaces under
+	// the configured name (e.g. "tenant_id"), not the raw slot name, and stays
+	// correct even if the live config changed after the file was written.
+	slotNames := fileSlotMapping(f)
+	isSlotCol := make(map[string]bool, len(schema.DedicatedSlotColumns))
+	for _, c := range schema.DedicatedSlotColumns {
+		isSlotCol[c] = true
+	}
+
 	for _, name := range columnNames(f.Root()) {
 		if mapColumns[name] {
 			for _, k := range extractMapDistinctKeys(f, name) {
@@ -557,6 +567,16 @@ func (s *Storage) updateLabelIndexImpl(f *parquet.File, extractValues bool) {
 				// double-count. Skipping here would silently drop the field
 				// from the index for every pre-promotion file.
 				s.labelIndex.Add(k, nil)
+			}
+			continue
+		}
+
+		// Tier-2 slot column → surface under the operator-configured name from
+		// this file's footer KV. An unmapped slot (no footer entry) is skipped
+		// so the raw ded_sNN never leaks into the field list.
+		if isSlotCol[name] {
+			if cfgName, ok := slotNames[name]; ok && cfgName != "" {
+				s.labelIndex.Add(cfgName, nil)
 			}
 			continue
 		}
@@ -586,6 +606,24 @@ func (s *Storage) updateLabelIndexImpl(f *parquet.File, extractValues bool) {
 // extractMapDistinctKeys reads the key leaf column of a MAP column and returns
 // all distinct key names. This expands MAP columns like resource.attributes
 // into individual field names matching VL's flat field model.
+// fileSlotMapping reads the Tier-2 dedicated-slot name binding from a file's
+// Parquet footer KV (DedicatedSlotsMetaKey). Returns nil if absent/garbage —
+// callers then skip the raw slot column. This is what makes Tier-2 files
+// self-describing: a file's slots remap by ITS OWN footer, correct even after
+// the live config changes.
+func fileSlotMapping(f *parquet.File) schema.SlotMapping {
+	meta := f.Metadata()
+	if meta == nil {
+		return nil
+	}
+	for _, kv := range meta.KeyValueMetadata {
+		if kv.Key == schema.DedicatedSlotsMetaKey {
+			return schema.UnmarshalSlotMapping([]byte(kv.Value))
+		}
+	}
+	return nil
+}
+
 func extractMapDistinctKeys(f *parquet.File, mapColName string) []string {
 	allCols := f.Schema().Columns()
 	keyIdx := -1
