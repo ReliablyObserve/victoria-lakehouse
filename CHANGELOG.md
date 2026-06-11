@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **parquet-go upgraded v0.29.0 → v0.30.1 (both modules).** Verified API-compatible for our usage (zero breaking changes in any API we call), full write/read/compaction suites green, and the multi-engine readback gate still PASSES (files remain bit-identically readable by pyarrow + DuckDB). Hygiene bump that keeps us current and unlocks v0.30.1 writer options for future use. Measured and deliberately NOT enabled: `BloomFilterCompression` (GZip bloom storage, #502) — re-encoding 5 real L2 files with it showed **−0.033% to +0.002% size change (noise)**, because split-block bloom filters are near-incompressible random bit patterns; revisit only if a future schema carries many bloom columns. Also surveyed and skipped with reasons: `PrefetchBloomFilters` (conflicts with the zero-GET-open design; we prune via pmeta), `MergeRowGroups` (no zero-copy benefit — writing a merged view still re-encodes; row-group sizing is already controlled by `RowGroupSizeByOutputLevel`), parallel column writes (not write-bound), low-level page reads (OffsetIndex page-granular measured 0% on our footers).
+
+
 ## [0.88.0] - 2026-06-11
 
 ### Added
