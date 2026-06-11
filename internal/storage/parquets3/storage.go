@@ -851,7 +851,7 @@ func (s *Storage) PmetaCardinality(field string) uint64 {
 	if s.catalog == nil {
 		return 0
 	}
-	return s.catalog.Cardinality(field)
+	return s.catalog.FieldCardinality(field)
 }
 
 // filterTombstonedRows removes rows from a DataBlock that match any active tombstone

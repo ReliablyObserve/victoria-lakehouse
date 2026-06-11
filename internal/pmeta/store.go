@@ -52,6 +52,38 @@ func (s *Store) Cardinality(field string) uint64 {
 	return h.estimate()
 }
 
+// FieldCardinality returns the distinct-value count for a field across the WHOLE
+// store — the accurate Cardinality Explorer source, read entirely from pmeta. A
+// high-card field (sketched, not enumerable) returns its globally-merged HLL
+// estimate; a low/medium-card field returns the size of the UNION of the
+// per-partition fieldCatalogFacet's ENUMERATED values (exact). No side map: the
+// catalog facets are the persisted, merged, restorable source of truth.
+func (s *Store) FieldCardinality(field string) uint64 {
+	s.mu.RLock()
+	if h := s.hllByField[field]; h != nil {
+		e := h.estimate()
+		s.mu.RUnlock()
+		return e
+	}
+	parts := make([]string, 0, len(s.bundles))
+	for p := range s.bundles {
+		parts = append(parts, p)
+	}
+	s.mu.RUnlock()
+
+	seen := make(map[string]struct{})
+	for _, p := range parts {
+		cf, ok := s.catalog(p)
+		if !ok {
+			continue
+		}
+		for _, v := range cf.Values(field, "", 0) {
+			seen[v] = struct{}{}
+		}
+	}
+	return uint64(len(seen))
+}
+
 // AddCardinality folds a stream of values into a field's HLL sketch. The values
 // are an iterator (iter.Seq) so the caller — typically the flush path over a
 // file's rows — feeds them WITHOUT materializing a slice; empty strings are
