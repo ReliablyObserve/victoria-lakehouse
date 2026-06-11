@@ -551,11 +551,13 @@ func (a *API) handleTenantDetail(w http.ResponseWriter, r *http.Request) {
 		bucketLabels := []string{"<1MB", "1-10MB", "10-50MB", "50-128MB", ">128MB"}
 		counts := make([]int, 5)
 
-		for _, files := range allFiles {
+		seenParts := make(map[string]bool)
+		for partition, files := range allFiles {
 			for _, fi := range files {
 				if !strings.HasPrefix(fi.Key, tenantPrefix) {
 					continue
 				}
+				seenParts[partition] = true
 				switch {
 				case fi.Size < 1<<20:
 					counts[0]++
@@ -571,6 +573,11 @@ func (a *API) handleTenantDetail(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		resp.FileSizeHistogram = &FileSizeHistogram{Buckets: bucketLabels, Counts: counts}
+
+		// Partition COUNT scoped to this tenant. The registry-sourced entry
+		// reports 0 (the per-tenant stats registry doesn't track partitions), so
+		// derive it from the tenant's actual manifest partition keys.
+		resp.Partitions = len(seenParts)
 
 		// Partitions for THIS tenant (GetPartitions("","") is global — it
 		// returns the same list for every tenant; GetPartitionsForTenant scopes

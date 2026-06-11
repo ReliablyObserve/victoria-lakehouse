@@ -472,17 +472,17 @@ func (s *Storage) updateLabelIndexNamesOnly(f *parquet.File) {
 }
 
 func (s *Storage) updateLabelIndexImpl(f *parquet.File, extractValues bool) {
-	// Columns that should have values extracted (use Parquet column names).
+	// Derived from the shared dimensional label set so the Cardinality Explorer
+	// surfaces real cardinality for every dedicated dimension and can't drift
+	// from the manifest label index (same source). High-card id-like columns are
+	// absent by design → name-only (bloom-indexed). Twin of the root module.
 	// Only consulted when extractValues=true.
-	promotedWithValues := map[string]bool{
-		"service.name":           true,
-		"severity_text":          true,
-		"k8s.namespace.name":     true,
-		"k8s.deployment.name":    true,
-		"k8s.node.name":          true,
-		"deployment.environment": true,
-		"cloud.region":           true,
-		"span.name":              true,
+	promotedWithValues := make(map[string]bool, len(schema.LogLabelColumns)+len(schema.TraceLabelColumns))
+	for _, c := range schema.LogLabelColumns {
+		promotedWithValues[c.Name] = true
+	}
+	for _, c := range schema.TraceLabelColumns {
+		promotedWithValues[c.Name] = true
 	}
 
 	// MAP columns whose keys should be expanded into individual field names
