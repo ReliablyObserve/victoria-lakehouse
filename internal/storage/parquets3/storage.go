@@ -550,9 +550,12 @@ func (s *Storage) updateLabelIndexImpl(f *parquet.File, extractValues bool) {
 	for _, name := range columnNames(f.Root()) {
 		if mapColumns[name] {
 			for _, k := range extractMapDistinctKeys(f, name) {
-				if promotedParquetNames[k] {
-					continue
-				}
+				// Dual-read: a promoted key found in the MAP means this is an
+				// OLD file (written before the key was promoted to a column).
+				// Index it — labelIndex.Add is idempotent, so NEW files (key in
+				// the column, handled by the non-map branch below) never
+				// double-count. Skipping here would silently drop the field
+				// from the index for every pre-promotion file.
 				s.labelIndex.Add(k, nil)
 			}
 			continue
