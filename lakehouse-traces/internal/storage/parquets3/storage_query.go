@@ -1203,10 +1203,52 @@ func allLeafColumns(f *parquet.File) map[string]bool {
 }
 
 func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
-	if s.cfg.Mode == config.ModeTraces {
-		return readRowGroupTyped[schema.TraceRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, traceRowToFields)
+	slotMap := fileSlotMapping(f)
+	if slotMap == nil {
+		slotMap = activeSlotResolver.Mapping()
 	}
-	return readRowGroupTyped[schema.LogRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, logRowToFields)
+	if s.cfg.Mode == config.ModeTraces {
+		return readRowGroupTyped[schema.TraceRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, withFileSlots(traceRowToFields, slotMap))
+	}
+	return readRowGroupTyped[schema.LogRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, withFileSlots(logRowToFields, slotMap))
+}
+
+// withFileSlots / remapSlotFields / fileSlotMapping — Tier-2 per-file slot
+// remap (see the root module's storage.go/storage_query.go for the rationale).
+func withFileSlots[T any](base func(*T, []field) []field, slotMap schema.SlotMapping) func(*T, []field) []field {
+	if len(slotMap) == 0 {
+		return base
+	}
+	return func(r *T, buf []field) []field {
+		return remapSlotFields(base(r, buf), slotMap)
+	}
+}
+
+func remapSlotFields(fields []field, slotMap schema.SlotMapping) []field {
+	out := fields[:0]
+	for _, fld := range fields {
+		if len(fld.name) == 7 && fld.name[:5] == "ded_s" {
+			if name, ok := slotMap[fld.name]; ok && name != "" {
+				out = append(out, field{name, fld.value})
+			}
+			continue
+		}
+		out = append(out, fld)
+	}
+	return out
+}
+
+func fileSlotMapping(f *parquet.File) schema.SlotMapping {
+	meta := f.Metadata()
+	if meta == nil {
+		return nil
+	}
+	for _, kv := range meta.KeyValueMetadata {
+		if kv.Key == schema.DedicatedSlotsMetaKey {
+			return schema.UnmarshalSlotMapping([]byte(kv.Value))
+		}
+	}
+	return nil
 }
 
 func readRowGroupTyped[T any](s *Storage, f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, toFields func(*T, []field) []field) error {
@@ -1589,10 +1631,10 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 	buf = appendTraceDedicated(buf, "k8s.cluster.name", r.K8sClusterName)
 	buf = appendTraceDedicated(buf, "telemetry.sdk.name", r.TelemetrySDKName)
 	buf = appendTraceDedicated(buf, "cloud.account.id", r.CloudAccountID)
+	// Emit slots raw (ded_sNN); readRowGroup's withFileSlots wrapper renames
+	// each per-file from its footer KV (config-change-robust).
 	for _, slot := range schema.DedicatedSlotColumns {
-		if name, ok := activeSlotResolver.NameForSlot(slot); ok {
-			buf = appendTraceDedicated(buf, name, schema.TraceSlotValue(r, slot))
-		}
+		buf = appendTraceDedicated(buf, slot, schema.TraceSlotValue(r, slot))
 	}
 	for k, v := range r.ResourceAttributes {
 		if !tracePromotedResourceKeys[k] {

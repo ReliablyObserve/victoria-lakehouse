@@ -1085,10 +1085,48 @@ func allLeafColumns(f *parquet.File) map[string]bool {
 }
 
 func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
-	if s.cfg.Mode == config.ModeTraces {
-		return readRowGroupTyped[schema.TraceRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, traceRowToFields)
+	// Tier-2: resolve this file's spare-slot → configured-name binding from its
+	// own footer KV (falling back to the live config for files written before
+	// the footer KV existed). The emission functions emit slots raw (ded_sNN);
+	// the wrapper renames them per-file, so values stay correct even if the live
+	// promoted_attributes config changed after the file was written.
+	slotMap := fileSlotMapping(f)
+	if slotMap == nil {
+		slotMap = activeSlotResolver.Mapping()
 	}
-	return readRowGroupTyped[schema.LogRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, logRowToFields)
+	if s.cfg.Mode == config.ModeTraces {
+		return readRowGroupTyped[schema.TraceRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, withFileSlots(traceRowToFields, slotMap))
+	}
+	return readRowGroupTyped[schema.LogRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, withFileSlots(logRowToFields, slotMap))
+}
+
+// withFileSlots wraps a row→fields emitter so that raw slot columns (ded_sNN)
+// emitted by the base function are renamed to the file's configured attribute
+// names; unmapped slots are dropped. A nil mapping passes fields through (no
+// custom slots configured for any file in range).
+func withFileSlots[T any](base func(*T, []field) []field, slotMap schema.SlotMapping) func(*T, []field) []field {
+	if len(slotMap) == 0 {
+		return base
+	}
+	return func(r *T, buf []field) []field {
+		return remapSlotFields(base(r, buf), slotMap)
+	}
+}
+
+// remapSlotFields renames ded_sNN fields to their configured attribute name and
+// drops slot fields with no mapping. Non-slot fields pass through unchanged.
+func remapSlotFields(fields []field, slotMap schema.SlotMapping) []field {
+	out := fields[:0]
+	for _, fld := range fields {
+		if len(fld.name) == 7 && fld.name[:5] == "ded_s" {
+			if name, ok := slotMap[fld.name]; ok && name != "" {
+				out = append(out, field{name, fld.value})
+			}
+			continue
+		}
+		out = append(out, fld)
+	}
+	return out
 }
 
 func readRowGroupTyped[T any](s *Storage, f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, toFields func(*T, []field) []field) error {
@@ -1406,10 +1444,12 @@ func logRowToFields(r *schema.LogRow, buf []field) []field {
 	// resolver; correct for buffer rows and current-config files). File reads
 	// with a different historical config remap via the per-file footer KV in
 	// the columnar path.
+	// Emit slots under their RAW ded_sNN name; the file-scan layer
+	// (readRowGroupTyped → remapSlotFields) renames each to the configured
+	// attribute name using THAT file's footer KV, correct even under config
+	// change. Unmapped slots are dropped there.
 	for _, slot := range schema.DedicatedSlotColumns {
-		if name, ok := activeSlotResolver.NameForSlot(slot); ok {
-			buf = appendIfSet(buf, name, schema.LogSlotValue(r, slot))
-		}
+		buf = appendIfSet(buf, slot, schema.LogSlotValue(r, slot))
 	}
 	for k, v := range r.ResourceAttributes {
 		buf = append(buf, field{k, v})
@@ -1476,9 +1516,7 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 	buf = appendIfSet(buf, "telemetry.sdk.name", r.TelemetrySDKName)
 	buf = appendIfSet(buf, "cloud.account.id", r.CloudAccountID)
 	for _, slot := range schema.DedicatedSlotColumns {
-		if name, ok := activeSlotResolver.NameForSlot(slot); ok {
-			buf = appendIfSet(buf, name, schema.TraceSlotValue(r, slot))
-		}
+		buf = appendIfSet(buf, slot, schema.TraceSlotValue(r, slot))
 	}
 	for k, v := range r.ResourceAttributes {
 		if !tracePromotedResourceKeys[k] {
