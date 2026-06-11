@@ -633,7 +633,10 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 	var oldestData, newestData string
 
 	if a.cfg.Manifest != nil {
-		partitionCount = a.cfg.Manifest.PartitionCount()
+		// Tenant-scoped partition count so the overview reconciles with the sum
+		// of the per-tenant detail views (partitions are physically tenant-scoped
+		// S3 prefixes; PartitionCount() collapses them across tenants).
+		partitionCount = a.cfg.Manifest.TenantPartitionCount()
 		// LiveAggregate iterates m.files — same source as
 		// TenantSummaries() — so /stats/overview and the sum of
 		// /tenants entries can't disagree. The cached

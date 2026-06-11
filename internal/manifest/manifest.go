@@ -1824,6 +1824,43 @@ func (m *Manifest) GetPartitions(startDate, endDate string) []PartitionSummary {
 	return result
 }
 
+// TenantPartitionCount counts distinct (tenant, dt/hour) partitions across all
+// files — i.e. the physical tenant-scoped S3 partition prefixes. Unlike
+// PartitionCount() (distinct dt/hour buckets, collapsed across tenants), this
+// equals the SUM of every tenant's partition count, so the Storage Overview
+// reconciles with the per-tenant detail views. Single-tenant deployments get the
+// same number from both.
+func (m *Manifest) TenantPartitionCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	seen := make(map[string]struct{})
+	for partition, files := range m.files {
+		for _, f := range files {
+			tp := tenantPrefixFromKey(f.Key)
+			if tp == "" {
+				continue
+			}
+			seen[tp+"|"+partition] = struct{}{}
+		}
+	}
+	return len(seen)
+}
+
+// tenantPrefixFromKey returns the "account/project" prefix of an S3 object key
+// (the first two path segments), or "" if the key isn't tenant-scoped.
+func tenantPrefixFromKey(key string) string {
+	first := strings.IndexByte(key, '/')
+	if first < 0 {
+		return ""
+	}
+	second := strings.IndexByte(key[first+1:], '/')
+	if second < 0 {
+		return ""
+	}
+	return key[:first+1+second]
+}
+
 // GetPartitionsForTenant is the tenant-scoped GetPartitions: it counts only files
 // whose S3 key belongs to accountID/projectID, so a tenant's detail view shows
 // ITS partitions with per-tenant file/byte counts. The global GetPartitions("","")

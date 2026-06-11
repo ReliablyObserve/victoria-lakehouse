@@ -39,4 +39,15 @@ func TestGetPartitionsForTenant_ScopesToTenant(t *testing.T) {
 	if g := m.GetPartitions("", ""); len(g) != 3 {
 		t.Errorf("global GetPartitions = %d dates, want 3", len(g))
 	}
+
+	// PartitionCount collapses tenants (3 distinct dt/hour buckets), but
+	// TenantPartitionCount must equal the SUM of per-tenant partitions so the
+	// overview reconciles with the tenant detail views.
+	if pc := m.PartitionCount(); pc != 3 {
+		t.Errorf("PartitionCount (collapsed) = %d, want 3", pc)
+	}
+	sumPerTenant := len(m.GetPartitionsForTenant("1", "1")) + len(m.GetPartitionsForTenant("2", "2"))
+	if tpc := m.TenantPartitionCount(); tpc != 4 || tpc != sumPerTenant {
+		t.Errorf("TenantPartitionCount = %d, want 4 == sum-per-tenant %d (06-01 shared by both)", tpc, sumPerTenant)
+	}
 }
