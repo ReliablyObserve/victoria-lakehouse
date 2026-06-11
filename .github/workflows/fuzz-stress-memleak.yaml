@@ -169,6 +169,7 @@ jobs:
           - internal/storage/parquets3:FuzzStorageFetchPeerAZ
           - internal/schema:FuzzResolveToParquet
           - internal/schema:FuzzResolveToParquet_Traces
+          - internal/schema:FuzzSlotMapping
           - internal/schema:FuzzParseFieldType
           - internal/schema:FuzzFormatValue_String
           - internal/schema:FuzzFormatValue_Int64
