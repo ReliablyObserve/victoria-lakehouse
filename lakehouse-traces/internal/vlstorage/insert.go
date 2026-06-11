@@ -443,6 +443,11 @@ func storeSpanAttr(row *schema.TraceRow, key, value string) {
 	row.SpanAttributes[key] = value
 }
 
+var activeSlotResolver *schema.SlotResolver
+
+// SetSlotResolver installs the Tier-2 custom-attribute slot resolver.
+func SetSlotResolver(r *schema.SlotResolver) { activeSlotResolver = r }
+
 func mapResourceAttr(row *schema.TraceRow, key, value string) {
 	switch key {
 	case "service.name":
@@ -474,6 +479,10 @@ func mapResourceAttr(row *schema.TraceRow, key, value string) {
 	case "cloud.account.id":
 		row.CloudAccountID = strings.Clone(value)
 	default:
+		if slot, ok := activeSlotResolver.SlotForName(key); ok {
+			schema.SetTraceSlot(row, slot, strings.Clone(value))
+			return
+		}
 		if row.ResourceAttributes == nil {
 			row.ResourceAttributes = make(map[string]string)
 		}
@@ -518,6 +527,10 @@ func mapSpanAttr(row *schema.TraceRow, key, value string) {
 	case "exception.type":
 		row.ExceptionType = strings.Clone(value)
 	default:
+		if slot, ok := activeSlotResolver.SlotForName(key); ok {
+			schema.SetTraceSlot(row, slot, strings.Clone(value))
+			return
+		}
 		if row.SpanAttributes == nil {
 			row.SpanAttributes = make(map[string]string)
 		}
