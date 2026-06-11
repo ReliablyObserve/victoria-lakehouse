@@ -9,7 +9,7 @@
 // Every facet is a cache of data that is re-derivable from S3 (the .parquet
 // files + footers are the source of truth), so a corrupt or unknown facet is
 // never fatal: it is skipped on load and rebuilt from the partition's files
-// (self-heal).
+// (self-heal). See docs/architecture/metadata-consolidation.md.
 //
 // This package adds NO new on-disk framing inside .parquet files — bundles are
 // ordinary sidecar objects, preserving Pure-Parquet-on-S3 portability.

@@ -72,8 +72,8 @@ type Config struct {
 }
 
 // PmetaConfig gates the unified partition-metadata layer (internal/pmeta). It is
-// experimental and OFF by default: when disabled no catalog store is built and the
-// hot flush/query paths are unchanged.
+// ON by default; when disabled no catalog store is built and the
+// hot flush/query paths are unchanged. See docs/architecture/metadata-consolidation.md.
 type PmetaConfig struct {
 	// Enabled turns on the field/value catalog facet (dropdown speedups). The
 	// catalog is built at flush and self-heals from S3, so it is safe to toggle.

@@ -149,7 +149,7 @@ When empty, Victoria Lakehouse auto-discovers the hot boundary by polling vlstor
 | `buffer` (default) | Rows stage in an in-memory `[]schema.{Log,Trace}Row` slice, flushed to Parquet | Reconstructed into a `DataBlock` at query time (or served cross-pod via the BufferBridge HTTP fan-out) | In-flight staging is lost on crash (no WAL) — use `logstore` or `ack_mode: flush-sync` for crash durability |
 | `logstore` | Rows feed a real per-pod `logstorage.Storage` (the VictoriaLogs/Traces in-memory-parts model) via the exported `MustAddRows` | Served from the buffer through the **same** exported `Storage.RunQuery` the S3-Parquet scan uses — no struct→DataBlock conversion. On a multi-pod cluster, queries fall through to the BufferBridge fan-out so every pod's unflushed rows are gathered. | logstorage's own disk parts (written every flush interval, restored on open) — crash-loss window equals hot VT/VL; **no separate LH WAL needed** |
 
-The `logstore` engine is what brings cold Jaeger/Tempo to parity with hot VT for recently-ingested traces (the recent/unflushed window is served from the buffer natively). See `architecture/buffer-queryable-store-design.md`.
+The `logstore` engine is what brings cold Jaeger/Tempo to parity with hot VT for recently-ingested traces (the recent/unflushed window is served from the buffer natively). See [Persistence & Durability](durability.md).
 
 **Acknowledgement modes:**
 

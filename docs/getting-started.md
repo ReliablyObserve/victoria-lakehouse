@@ -395,7 +395,7 @@ any explicit flag or config file setting overrides the profile value.
 
 - **`balanced`**: Default for production. Good trade-offs everywhere. GC enabled (6h interval) for orphan cleanup. Accepts 10s data-at-risk window per pod crash. No AZ failure protection (rare event).
 - **`max-performance`**: When query latency and ingest speed are top priority. Larger caches, more workers, aggressive prefetch, cross-signal enabled. GC runs every 3h. Uses the `buffer` ack mode (no S3-sync wait) for lowest ingest latency.
-- **`max-durability`**: When zero data loss is required (compliance, regulated environments). Uses `flush-sync` ack_mode with zero flush linger — HTTP 200 only after S3 confirms write. Retention enabled, GC aggressive (1h), S3 retries hardened (5x with 500ms backoff). See [Write Path Durability](./cross-az-optimization.md#write-path-durability).
+- **`max-durability`**: When zero data loss is required (compliance, regulated environments). Uses `flush-sync` ack_mode with zero flush linger — HTTP 200 only after S3 confirms write. Retention enabled, GC aggressive (1h), S3 retries hardened (5x with 500ms backoff). See [Write Path Durability](./cross-az-optimization.md#write-path-durability--az-failure-protection).
 - **`max-cost-savings`**: For archive/cold-only workloads where cost is paramount. GC and stats disabled to minimize S3 LIST/PUT operations. Retention enabled to auto-expire old data. Fewer S3 PUTs, smaller caches, no prefetch, no buffer queries. ZSTD-11 saves ~$50/mo per 2TB/day on compression.
 - **`dev`**: For local development with MinIO. Tiny footprint, instant flush (1s), `force_path_style=true` for MinIO. GC, stats, compaction, and retention all disabled. Not for production.
 
@@ -515,7 +515,7 @@ See [Operations — Compaction](operations.md#compaction) for thresholds, monito
 
 - [Deployment Architecture](deployment-architecture.md) — vlagent, OTEL Collector, hot/cold tiers, DR
 - [Configuration Reference](configuration.md) — all 65+ flags with defaults
-- [Architecture](architecture.md) — internal design, Parquet schema, query flow
+- [Architecture](architecture.md) — system design, Parquet schema, query flow
 - [Operations](operations.md) — day-2 operations, scaling, troubleshooting
 - [Use Cases](use-cases.md) — DR, compliance, capacity planning, cost allocation
 - [Analytics](analytics.md) — DuckDB, Trino, Spark, ClickHouse, Pandas examples

@@ -186,8 +186,8 @@ func TestPersistDirty_Idempotent(t *testing.T) {
 // per field, globally), NOT in any facet payload, so they do not survive
 // PersistDirty → restart → WarmPartitions. A fresh store reports Cardinality 0
 // until live flushes re-feed HighCardValues. If this test starts failing because
-// cardinality round-trips, the sketches became persisted — update this test
-// accordingly.
+// cardinality round-trips, the sketches became persisted — update this test and
+// docs/architecture/field-value-catalog.md together.
 func TestHLL_NotPersistedDocumented(t *testing.T) {
 	ctx := context.Background()
 	src := catalogStore()
