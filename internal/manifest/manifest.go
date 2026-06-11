@@ -953,6 +953,27 @@ func (m *Manifest) CountByLabel(startNs, endNs int64, account, project, field st
 	return counts, uncovered, complete
 }
 
+// LabelValueCounts sums the per-value row counts for a field across ALL files'
+// LabelAggregates — the global `count() by (field)` answered from metadata (no
+// Parquet reads), for the Storage Breakdown. It covers the dedicated dimensional
+// columns because the aggregate extractor draws from schema.{Log,Trace}LabelColumns,
+// so k8s.cluster.name et al. break down correctly instead of showing blank.
+func (m *Manifest) LabelValueCounts(field string) map[string]int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]int64)
+	for _, files := range m.files {
+		for _, fi := range files {
+			if agg, ok := fi.LabelAggregates[field]; ok {
+				for v, c := range agg {
+					out[v] += c
+				}
+			}
+		}
+	}
+	return out
+}
+
 func (m *Manifest) GetFilesForRange(startNs, endNs int64) []FileInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

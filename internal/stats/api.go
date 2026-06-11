@@ -1186,40 +1186,51 @@ func (a *API) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 			Type: fieldType,
 		}
 
+		// Per-value row counts. Prefer the label index; fall back to the
+		// manifest's LabelAggregates — which include the dedicated dimensional
+		// columns (k8s.cluster.name, service.version, …) the lazily-populated
+		// label index misses, so those break down correctly instead of blank.
+		counts := map[string]int64{}
 		if li != nil && len(li.Values) > 0 {
 			bl.Cardinality = li.Cardinality
-			values := li.Values
-
-			// Compute total occurrence weight across all values for proportional split.
-			var totalWeight int64
-			for _, v := range values {
-				c := li.ValueCounts[v]
-				if c < 1 {
-					c = 1
-				}
-				totalWeight += int64(c)
-			}
-
-			// Cap displayed values after weight calculation.
-			if len(values) > 50 {
-				values = values[:50]
-			}
-
-			bv := make([]BreakdownValue, 0, len(values))
-			for _, v := range values {
+			for _, v := range li.Values {
 				c := int64(li.ValueCounts[v])
 				if c < 1 {
 					c = 1
 				}
-				share := float64(c) / float64(max64(totalWeight, 1))
-				estBytes := int64(share * float64(totalBytes))
-				estFiles := int64(share * float64(totalFiles))
-				sharePct := share * 100.0
+				counts[v] = c
+			}
+		} else if a.cfg.Manifest != nil {
+			counts = a.cfg.Manifest.LabelValueCounts(name)
+			if len(counts) > 0 {
+				bl.Cardinality = len(counts)
+			}
+		}
+
+		if len(counts) > 0 {
+			type kv struct {
+				v string
+				c int64
+			}
+			kvs := make([]kv, 0, len(counts))
+			var totalWeight int64
+			for v, c := range counts {
+				kvs = append(kvs, kv{v, c})
+				totalWeight += c
+			}
+			// Largest share first; cap displayed values.
+			sort.Slice(kvs, func(i, j int) bool { return kvs[i].c > kvs[j].c })
+			if len(kvs) > 50 {
+				kvs = kvs[:50]
+			}
+			bv := make([]BreakdownValue, 0, len(kvs))
+			for _, e := range kvs {
+				share := float64(e.c) / float64(max64(totalWeight, 1))
 				bv = append(bv, BreakdownValue{
-					Value:          v,
-					EstimatedBytes: estBytes,
-					EstimatedFiles: estFiles,
-					SharePct:       sharePct,
+					Value:          e.v,
+					EstimatedBytes: int64(share * float64(totalBytes)),
+					EstimatedFiles: int64(share * float64(totalFiles)),
+					SharePct:       share * 100.0,
 				})
 			}
 			bl.Values = bv
