@@ -60,26 +60,46 @@ func (s *Store) Cardinality(field string) uint64 {
 // catalog facets are the persisted, merged, restorable source of truth.
 func (s *Store) FieldCardinality(field string) uint64 {
 	s.mu.RLock()
-	if h := s.hllByField[field]; h != nil {
-		e := h.estimate()
-		s.mu.RUnlock()
-		return e
-	}
 	parts := make([]string, 0, len(s.bundles))
 	for p := range s.bundles {
 		parts = append(parts, p)
 	}
+	gh := s.hllByField[field] // in-memory feed (e.g. always-sketch ids this run)
 	s.mu.RUnlock()
 
+	// Union the PERSISTED per-partition sketches for high-card fields, and
+	// enumerate the low-card values — both from the catalog facets, so the count
+	// survives restart with the bundle. The in-memory hllByField is folded in too
+	// (covers values fed this run not yet flushed to a facet).
+	var merged *hll
 	seen := make(map[string]struct{})
 	for _, p := range parts {
 		cf, ok := s.catalog(p)
 		if !ok {
 			continue
 		}
-		for _, v := range cf.Values(field, "", 0) {
-			seen[v] = struct{}{}
+		if h := cf.fieldHLL(field); h != nil {
+			if merged == nil {
+				merged = newHLL(h.p)
+			}
+			_ = merged.merge(h)
+		} else {
+			for _, v := range cf.Values(field, "", 0) {
+				seen[v] = struct{}{}
+			}
 		}
+	}
+	if merged != nil {
+		for v := range seen { // fold any partition that was still low-card
+			merged.add(v)
+		}
+		if gh != nil {
+			_ = merged.merge(gh)
+		}
+		return merged.estimate()
+	}
+	if gh != nil {
+		return gh.estimate()
 	}
 	return uint64(len(seen))
 }
