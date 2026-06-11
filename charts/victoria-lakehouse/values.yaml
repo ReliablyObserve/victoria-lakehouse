@@ -681,6 +681,10 @@ logs:
     # -- Bloom filter columns for logs mode.
     bloom_columns:
       - service.name
+    # -- Tier-2 custom attribute promotions (operator-declared). Each {name,
+    # -- bloom} lifts a custom attribute out of the map into a dedicated slot
+    # -- column (up to 8/signal); set bloom:true only for high-cardinality keys.
+    promoted_attributes: []
     # -- Delete API endpoint prefix for logs mode.
     delete_prefix: /delete/logsql
     # -- VL compatibility version override (empty = latest).
@@ -900,6 +904,8 @@ traces:
   # -- Traces-specific lakehouse configuration (merged with shared lakehouseConfig).
   config:
     # -- Bloom filter columns for traces mode.
+    # -- Tier-2 custom attribute promotions (see logs.promoted_attributes).
+    promoted_attributes: []
     bloom_columns:
       - trace_id
       - service.name
