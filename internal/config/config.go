@@ -72,7 +72,7 @@ type Config struct {
 }
 
 // PmetaConfig gates the unified partition-metadata layer (internal/pmeta). It is
-// experimental and OFF by default: when disabled no catalog store is built and the
+// ON by default; when disabled no catalog store is built and the
 // hot flush/query paths are unchanged. See docs/architecture/metadata-consolidation.md.
 type PmetaConfig struct {
 	// Enabled turns on the field/value catalog facet (dropdown speedups). The
@@ -169,8 +169,7 @@ type InsertConfig struct {
 	PeerReplicateTTL     time.Duration `yaml:"peer_replicate_ttl"`
 
 	// BufferEngine selects how the insert buffer (recently-ingested,
-	// not-yet-flushed rows) is held and queried (Option B; see
-	// docs/architecture/buffer-queryable-store-design.md):
+	// not-yet-flushed rows) is held and queried (Option B):
 	//   "buffer"   (default) — legacy []schema.{Log,Trace}Row staging +
 	//                           struct→DataBlock conversion at query time.
 	//   "logstore"           — a per-pod logstorage.Storage, queried via the
@@ -1029,8 +1028,7 @@ func Default() *Config {
 			// groups trade a little pruning resolution for better
 			// compression (dictionaries amortized over 2× the rows,
 			// half the page/row-group header overhead). Measured on
-			// real L2 files — see
-			// docs/architecture/parquet-compression-research.md.
+			// real L2 files.
 			RowGroupSizeByOutputLevel: []int{10000, 10000, 20000},
 		},
 

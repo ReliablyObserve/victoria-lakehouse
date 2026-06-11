@@ -94,6 +94,17 @@ All PRs must pass:
 - CodeQL security analysis
 - Build verification
 
+## Documentation Policy
+
+`docs/` documents final decisions, full explanations of shipped behavior, operational
+guidance, and reliability proofs (benchmarks + the code to rerun them, costs, audits,
+measurements). Pre-development material — research, plans, specs, design explorations —
+is not part of this repository.
+
+When contributing, ship documentation updates together with the code change they
+describe: new flags land in `docs/configuration.md`, behavior changes in the matching
+architecture/operations doc, and measured results in the benchmark docs.
+
 ## Architecture
 
 Victoria Lakehouse follows a modular architecture:

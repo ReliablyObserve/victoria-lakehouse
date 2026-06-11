@@ -174,47 +174,9 @@ engine that owns the flushed data.
 
 ---
 
-## 8. E2E durability coverage & hardening roadmap
-
-The compose e2e (`deployment/docker/docker-compose-e2e.yml`) runs hot VL/VT, cold
-LH logs+traces, MinIO behind a `s3-latency` toxiproxy, and continuous + seed
-datagen. **Covered today:** round-trip insert→flush→query fidelity, cold-vs-hot
-parity within the flush window, S3-latency soak, cold-start warmup SLAs,
-multi-tenant isolation, dual-write panic isolation, and the
-buffer→logstorage→S3 chain.
-
-**Not yet covered — the data-survival edge cases to harden** (each is a concrete,
-scriptable scenario):
-
-| Scenario | Why it matters | How to test |
-|---|---|---|
-| **Crash mid-window + restart** | Distinguishes recoverable in-flight loss (≤ flush interval) from silent loss/corruption. | Tail for a flush marker, `docker kill -9` the cold pod immediately after, restart, query rows inserted before the kill, assert loss ≤ one flush interval. |
-| **Buffer-restore-on-restart (logstore)** | The whole no-WAL claim rests on parts restoring on open. | Ingest, `docker stop` (not flush-synced), restart, assert the recent window is queryable from the restored buffer. |
-| **Watermark crash-recovery (mid-S3-write)** | Partial multipart uploads must not duplicate or lose rows. | Toxiproxy byte-level PUT failure at offset N, `kill` the pod, restart, assert `count_pre == count_post`. |
-| **S3 write failure → backpressure** | Unbounded buffering on S3 error risks OOM or silent discard. | Inject 100% PUT errors, ingest, assert `rows_buffered` plateaus and ingestion rejects with a backpressure error (not OOM), then restore and verify flush. |
-| **S3 read timeout → query backpressure** | Hung queries must time out, not leak goroutines. | Inject 60s GET latency, run a query, assert it errors within the query timeout and goroutine count stays bounded. |
-| **Manifest refresh failure → stale fallback** | An S3 blip during refresh should keep queries serving the cached manifest. | Block `GET` on the manifest prefix past the refresh interval, query, assert success on the stale-but-available manifest. |
-| **Graceful SIGTERM → final flush** | SIGTERM should drain before exit (or rely on watermark re-flush). | Ingest a unique batch, `docker stop` within a flush interval, assert the rows appear in S3 (flip-on) or are re-flushed on restart. |
-| **Multi-instance peering (HA)** | Two insert pods sharing a bucket must not lose one pod's unflushed buffer for a tenant served by the other. | Two `lakehouse-*` instances, round-robin ingest, query via LB, kill one, assert results stay complete via the survivor + read-merge fan-out. |
-| **Cache eviction under memory pressure** | Eviction must degrade to full-scan, not corrupt or OOM. | Saturate L1/L2 with a wide query under `mem_limit`, run a fresh query, assert correct counts and no OOM. |
-| **Retention age-out vs flush race** | If `buffer_retention` is mis-sized, rows age out before flush. | Set retention near `buffer_flush_interval`, ingest, assert the config validation rejects it (or, if forced, that the loss is observable and metered). |
-
-**Implemented so far:** a `chaos` build tag (`go test -tags 'e2e chaos' ./tests/e2e/
--run Chaos`) carries `TestChaos_BufferRestoreOnRestart` — ingest → restart the
-cold-logs container → assert the pre-restart row survives (the buffer-restore row
-above). The `lakehouse_insert_flush_watermark_timestamp` gauge is exported from
-`saveWatermark`, so survival tests can assert against the committed boundary.
-
-**Still to do:** flesh out the remaining table rows as `chaos` tests (S3
-backpressure, manifest-stale fallback, multi-instance peering), and run the
-crash-survival suite **with the flip enabled** once the clean-slate validation
-lands — that is the scenario that proves the no-WAL durability claim end-to-end.
-
----
-
 ## See also
 
 - [Write Path](write-path.md) — the ingest→Parquet pipeline.
 - [Read Path](read-path.md) — the manifest scan + buffer read-merge.
-- [Architecture: buffer-queryable-store design](architecture/buffer-queryable-store-design.md) — the logstore buffer internals.
+- [Lifecycle & readiness](operations/lifecycle.md) — restart behavior, `/ready` semantics, warmup.
 - [Configuration](configuration.md) — all insert/buffer flags.

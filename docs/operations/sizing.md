@@ -2,7 +2,8 @@
 
 How to size memory, CPU, disk (PVC), and peer count for a
 Lakehouse deployment. The numbers below are derived from the
-restart-and-warmup design and the per-component cost drivers,
+[restart-and-warmup design](../architecture/restart-and-warmup-design.md)
+and the per-component cost drivers,
 not picked from a marketing slide — calibrate against your
 actual `lakehouse_*` metrics in steady state.
 

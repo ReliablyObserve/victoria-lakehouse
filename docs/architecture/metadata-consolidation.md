@@ -9,7 +9,7 @@
 > several sidecars, several snapshots, several caches/indexes) that duplicate
 > *lifecycle* machinery and are hard to debug/control. Companion to
 > [field-value-catalog.md](field-value-catalog.md) (born as a
-> facet of this layer) and [performance-machinery.md](performance-machinery.md).
+> facet of this layer) and [performance-machinery.md](../performance-machinery.md).
 >
 > Note: §3 below says "WAL" stays separate — read that as the **membuffer**
 > (logstorage parts on PVC). There is no separate LH WAL; see the corrected

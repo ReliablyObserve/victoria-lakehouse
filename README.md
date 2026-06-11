@@ -771,13 +771,26 @@ See [ZSTD Compression Benchmark](docs/zstd-compression-benchmark.md) for full re
 ### Getting Started
 - [Getting Started](docs/getting-started.md) — quick start, first query in 5 minutes
 - [Docker Compose Setup](docs/docker-compose-setup.md) — full local environment with MinIO, hot/cold tiers, Grafana (11 datasources)
+- [Kubernetes Deployment](docs/kubernetes-deployment.md) — Helm install, values, topology, probes
 - [Configuration](docs/configuration.md) — all 110+ config options with production-ready defaults
 
 ### Architecture & Design
-- [Architecture](docs/architecture.md) — internal design, Parquet schema, query flow, cache tiers
+- [Roadmap](docs/roadmap.md) — shipped & proven, in progress, committed next
+- [Architecture](docs/architecture.md) — system design, Parquet schema, query flow, cache tiers
+- [Architecture Overview](docs/architecture-overview.md) — full-system diagrams: components, data flow, caches, bloom, deployment topology
 - [Deployment Architecture](docs/deployment-architecture.md) — collector configs (vlagent, Fluent Bit, Vector, OTEL Collector), hot/cold tiers, DR playbooks
 - [Write Path](docs/write-path.md) — insert APIs, adaptive flush, buffer query bridge
-- [Persistence & Durability](docs/durability.md) — no-WAL crash recovery, big-file sizing, serving unflushed data, e2e hardening
+- [Read Path](docs/read-path.md) — the ten-level pruning cascade, cache hierarchy, recent-window serving
+- [Storage Flow](docs/storage-flow.md) — code-level walkthrough of the ingest→Parquet→query pipeline
+- [Manifest System](docs/manifest-system.md) — the file registry, zero-S3 fast paths, persistence, APIs
+- [Cache Architecture](docs/cache-architecture.md) — L1/L2/peer tiers, footer cache, eviction, snapshots
+- [Bloom Index](docs/bloom-index.md) — multi-tier bloom acceleration for high-cardinality lookups
+- [Performance Machinery](docs/performance-machinery.md) — the complete inventory of speedup mechanisms, costs, and scale projections
+- [Metadata Consolidation](docs/architecture/metadata-consolidation.md) — the unified partition-metadata (pmeta) layer: facets, bundles, the sidecar retirement
+- [Field/Value Catalog](docs/architecture/field-value-catalog.md) — the pmeta facet behind fast label/field dropdowns
+- [Metadata & S3 Optimization](docs/architecture/metadata-and-s3-optimization.md) — how restarts stay fast and S3 traffic stays low at PB scale
+- [Restart & Warmup](docs/architecture/restart-and-warmup-design.md) — lifecycle phases, readiness semantics, warmup ordering
+- [Persistence & Durability](docs/durability.md) — no-WAL crash recovery, big-file sizing, serving unflushed data
 - [Deletion Strategy](docs/deletion-strategy.md) — cost-aware tombstone + selective rewrite, Glacier-safe, three modes
 
 ### Analytics (Open Parquet)
@@ -791,41 +804,34 @@ See [ZSTD Compression Benchmark](docs/zstd-compression-benchmark.md) for full re
 
 ### Operations
 - [Operations](docs/operations.md) — day-2 operations, scaling, troubleshooting
+- [Lifecycle & Readiness](docs/operations/lifecycle.md) — `/ready` semantics, warmup phases, restart timelines
+- [Sizing Guide](docs/operations/sizing.md) — memory/CPU/PVC/peer sizing from dev to PB scale
 - [Security](docs/security.md) — container hardening, auth, network policies, credentials
 - [Observability](docs/observability.md) — ~110 metrics, Grafana dashboards, 10 alerting rules
+- [Telemetry](docs/telemetry.md) — OTel tracing configuration and span reference
 - [Performance](docs/performance.md) — benchmarks, tuning guides, p95 targets
-- [ZSTD Compression Benchmark](docs/zstd-compression-benchmark.md) — real-data compression levels, write/read performance, S3 cost impact
 - [Scaling](docs/scaling.md) — horizontal (insert/select separation) and vertical scaling
+- [Scaling-Restart Scenarios](docs/architecture/scaling-restart-scenarios.md) — six restart scenarios at PB scale with mitigations
+- [Restore & Elasticity](docs/architecture/restore-and-elasticity-pmeta.md) — measured restore times and the three restore scenarios
+- [PB-Scale Resources](docs/architecture/pb-scale-resources-pmeta.md) — measured resident-memory baseline and PB extrapolation
+- [Petabyte-Scale Audit](docs/petabyte-scale-audit.md) — the PB-survival audit of every subsystem
+- [Parity & Cold-Tier Gaps](docs/parity-and-gaps.md) — what the cold tier does, doesn't, and only-approximately does vs upstream VL/VT
 
-### Cost & Comparison
+### Benchmarks, Cost & Comparison
+- [Benchmarks](docs/benchmarks.md) — how to run `cmd/loadtest` + `cmd/datagen` and interpret results
+- [Full-Scope S3 Benchmark](docs/benchmarks/full-scope-s3.md) — cold LH vs hot VL vs ClickHouse-over-S3, every query class
+- [ZSTD Compression Benchmark](docs/zstd-compression-benchmark.md) — real-data compression levels, write/read performance, S3 cost impact
+- [VL Comparison](docs/vl-comparison.md) — measured head-to-head vs VictoriaLogs with correctness validation
+- [Measurements](docs/measurements/soak-and-bench-2026-06-05.md) — raw soak + perf-bench records ([corrected rerun](docs/measurements/perf-bench-corrected-2026-06-05.md), [pprof negative control](docs/measurements/pprof-goalb-negcontrol.md), CSVs alongside)
 - [Cost Estimates](docs/cost-estimates.md) — EBS vs S3 vs Glacier cost breakdown, scale-dependent recommendations
 - [Cost Comparison vs Loki/Tempo](docs/cost-comparison.md) — comprehensive competitive analysis at 500 GB/day, S3 write path durability comparison
 - [Cross-AZ Optimization](docs/cross-az-optimization.md) — AZ-aware routing strategy, buffer bridge design, cross-AZ cost analysis
 
 ---
 
-## Current Status
+## Roadmap & status
 
-All core milestones are **complete**. The project is in production-readiness and feature expansion phase.
-
-| Milestone | Status | Description |
-|---|---|---|
-| **M1: Foundation** | Complete | Go module, CI/CD pipeline (test, lint, build, security), Dockerfile (distroless), Helm chart, config namespace with 110+ flags |
-| **M2: ParquetS3Storage** | Complete | Schema registry (OTLP → VL/VT), partition manifest, Parquet query engine with row group stats skip, bloom filters, column projection, all 11 VL storage interface methods |
-| **M3: Cache + Persistence** | Complete | L1 memory LRU, L2 disk LRU, singleflight S3 dedup, label/attribute index, metadata persistence to disk for fast restart |
-| **M4: Discovery + Peer Cache** | Complete | Hot boundary auto-discovery via `/internal/partition/list`, consistent hash peer cache (L3) via headless DNS, `/manifest/range` API |
-| **M5: Cluster Integration** | Complete | `/internal/select/*` binary protocol with ZSTD DataBlock streaming, `-storageNode` registration on vlselect/vtselect |
-| **M6: Filter AST + E2E** | Complete | Full LogsQL predicate engine (exact, substring, regex, NOT, AND, OR, ranges), Playwright E2E, schema validation |
-| **M7: Observability** | Complete | ~147 Prometheus metrics (including 12 bloom-specific), Grafana dashboards (single-instance + cluster), 10 alerting rules, circuit breaker, structured JSON logging |
-| **M8: Write Path** | Complete | Full VL insert protocol support via upstream `vlinsert` handlers (jsonline, Loki JSON+protobuf, ES bulk, syslog, journald, Datadog, OTLP, Splunk), logstore-buffer crash recovery (no WAL), adaptive flush, buffer query bridge for zero-delay reads |
-| **M9: Compaction** | Complete | Background merge of small Parquet files, size-tiered strategy, manifest atomic updates, tombstone integration |
-| **M10: Testing & Helm** | Complete | E2E test suite (VL + vlselect + loki-vl-proxy chain), benchmarks, Victoria-pattern Helm chart, upstream sync GHA |
-| **M11: Cost-Aware Deletion** | Complete | Three-tier deletion (tombstone → rewrite → lifecycle), `/delete/logsql/*` and `/delete/tracessql/*` APIs, storage-class detection, Glacier-safe, verify endpoint |
-| **Binary Split** | Complete | Separate `lakehouse-logs` + `lakehouse-traces` binaries with independent Go modules, mode-specific config/flags/schemas |
-| **Smart Cache** | Complete | Unified cache controller (L1-L4), active query pinning, cache sizing calculator, snapshot persistence, cross-signal prefetch between logs↔traces |
-| **E2E Compose** | Complete | Full Docker Compose with MinIO, VL/VT hot tiers, vlselect/vtselect multi-level select, loki-vl-proxy, DuckDB + ClickHouse analytics, 11 Grafana datasources |
-| **Bloom Index** | Complete | Multi-tier bloom index (Hot/Warm/Cold/Archive), per-column bloom filters, LRU cache, auto-tuning controller, config sync, metadata compactor, `/api/v1/bloom/status` API, 12 Prometheus metrics, 44 unit tests + E2E verification |
-| **Settings Profiles** | Complete | 5 named presets (balanced, max-performance, max-durability, max-cost-savings, dev) with three-level hierarchy (global → per-signal → per-role), Helm `coalesce` resolution, JSON schema validation, 24 regression tests |
+See the official [Roadmap](docs/roadmap.md) — everything shipped & proven (with reproducible benchmarks), in progress, and committed next.
 
 ---
 

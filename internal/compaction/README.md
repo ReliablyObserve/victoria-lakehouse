@@ -263,5 +263,5 @@ on the next Tier B sweep that owns the date prefix.
 | `manifest.AddFile` idempotency | §3.6 edge case 6 |
 | `manifest.MarkAttempt` + AttemptsView | §2.4.1 |
 
-See `docs/superpowers/specs/2026-05-31-election-free-compaction.md` for
+The election-free-compaction design carries the full rationale and decision log.md` for
 the full design rationale, decision log, and edge-case enumeration.

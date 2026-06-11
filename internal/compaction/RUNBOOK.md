@@ -175,8 +175,7 @@ brief window.
 ### Fixes
 
 - **Sustained > 24 h with Tier B keeping up:** roll back to previous
-  release. See `docs/superpowers/specs/2026-05-31-election-free-compaction.md`
-  §9 rollback plan.
+  release per the election-free-compaction rollback plan.
 
 ---
 

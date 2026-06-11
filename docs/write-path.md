@@ -12,7 +12,7 @@ Victoria Lakehouse accepts data through VL-compatible insert APIs, buffers inges
 The insert buffer is selectable via `insert.buffer_engine`:
 
 - **`buffer`** — rows stage in an in-memory `[]schema.{Log,Trace}Row` slice and flush to Parquet; a buffer query bridge serves the unflushed window to readers. There is no separate lakehouse WAL; for crash durability of the in-flight window use the `logstore` engine, or `ack_mode: flush-sync`.
-- **`logstore`** — rows feed a real per-pod `logstorage.Storage` (the VictoriaLogs/Traces in-memory-parts model) via the exported `MustAddRows`; the recent window is served from that buffer through the exported `Storage.RunQuery` (no struct→DataBlock reconstruction). Durability is logstorage's own on-disk parts (written every flush interval, restored on open) — so **no separate LH WAL is needed**; the crash-loss window matches hot VT/VL. This engine is what gives cold Jaeger/Tempo parity with hot VT for recently-ingested traces. See [buffer-queryable-store-design](architecture/buffer-queryable-store-design.md).
+- **`logstore`** — rows feed a real per-pod `logstorage.Storage` (the VictoriaLogs/Traces in-memory-parts model) via the exported `MustAddRows`; the recent window is served from that buffer through the exported `Storage.RunQuery` (no struct→DataBlock reconstruction). Durability is logstorage's own on-disk parts (written every flush interval, restored on open) — so **no separate LH WAL is needed**; the crash-loss window matches hot VT/VL. This engine is what gives cold Jaeger/Tempo parity with hot VT for recently-ingested traces. See [Persistence & Durability](durability.md).
 
 The rest of this page describes the **`buffer`** engine (the default). Both engines share the same Parquet flush + manifest machinery downstream.
 
@@ -160,7 +160,7 @@ If every step produces nothing the row stores `severity_text=""` rather than sub
 
 The Parquet writer uses zstd Default (level 3) for fresh L0 flushes — optimized for ingest throughput. The compactor escalates the level on each compaction output level using a schedule keyed by output level: default `[3, 7, 11]`, mapping to zstd Default / Better / Best. Each step trades more CPU at compaction time for permanently smaller cold-tier files, so older data pays the compression cost once and saves storage forever.
 
-Per-tenant overrides (see the Multi-tenancy doc) replace the schedule for a specific tenant — a high-volume / cost-sensitive tenant can commit more CPU than the global default; an ingest-rate-sensitive tenant can pin a uniform fast level. The `parquet-go` zstd wrapper currently exposes only four distinct encoder levels (Fastest / Default / Better / Best), so any schedule entry > 11 collapses to the same Best encoder — see `docs/architecture/parquet-compression-roadmap.md` for the planned codec swap that unlocks zstd 12-22 + long-range mode.
+Per-tenant overrides (see the Multi-tenancy doc) replace the schedule for a specific tenant — a high-volume / cost-sensitive tenant can commit more CPU than the global default; an ingest-rate-sensitive tenant can pin a uniform fast level. The `parquet-go` zstd wrapper currently exposes only four distinct encoder levels (Fastest / Default / Better / Best), so any schedule entry > 11 collapses to the same Best encoder.
 
 ## Write Path Metrics
 

@@ -9,8 +9,8 @@
 > rationale record; persistence actually landed as the per-partition
 > `_pmeta.bundle`. Closes the
 > interactive-Grafana gap where cold LH feels slower than hot VL/VT for
-> label/field dropdowns. Companion to [buffer-queryable-store-design.md](buffer-queryable-store-design.md)
-> (#109) and the PERF roadmap in [performance-machinery.md](performance-machinery.md).
+> label/field dropdowns. Companion to the performance machinery
+> reference in [performance-machinery.md](../performance-machinery.md).
 
 ## 1. Motivation — what is actually slow (measured)
 

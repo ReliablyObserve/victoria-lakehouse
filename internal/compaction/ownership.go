@@ -4,8 +4,7 @@
 // Highest-Random-Weight (HRW / rendezvous) hashing primitive over the
 // live peer set advertised by internal/peercache.
 //
-// See docs/superpowers/specs/2026-05-31-election-free-compaction.md
-// §2.1 for the architectural rationale (why HRW over consistent
+// for the architectural rationale (why HRW over consistent
 // hashing, why xxhash over CRC32) and §12.1 for the AZ-stratification
 // design.
 package compaction

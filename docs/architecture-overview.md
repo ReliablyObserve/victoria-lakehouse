@@ -25,7 +25,7 @@ graph TB
 
         subgraph "Query Optimization Stack"
             FPD[Filter Pushdown]
-            BI[Bloom Index<br/>Per-partition + Per-file]
+            BI[Bloom Index<br/>pmeta bloom facet<br/>+ partition index]
             MFP[Manifest Fast Path<br/>Zero-S3 Stats]
             RGS[RG Column Stats<br/>Min/Max Skip]
             PRJ[Projection<br/>Column Pruning]
@@ -144,10 +144,8 @@ flowchart LR
         C -->|Buffer| D{Flush Trigger}
         D -->|Size/Time| E[Parquet Writer]
         E --> F[S3 Upload]
-        E --> G[Bloom Observer]
-        G --> H[Per-file .bloom Sidecar]
-        G --> I[Partition _bloom.bin]
-        E --> J[Metadata Sidecar]
+        E --> G[pmeta Catalog Observer]
+        G --> I[Partition _pmeta.bundle<br/>file-meta + bloom + catalog facets]
         E --> K[Cache-on-Flush L2]
         F --> L[(S3 Bucket)]
     end
@@ -214,28 +212,23 @@ flowchart TB
 ```mermaid
 flowchart TB
     subgraph "Write Path"
-        FLUSH[File Flush] --> OBS[BloomObserver.OnFileFlush]
-        OBS --> PFB[Per-file .bloom Sidecar<br/>S3 Upload]
-        OBS --> PI[PartitionedIndex.AddFile]
-        PI --> DIRTY[Mark Partition Dirty]
-        DIRTY --> PERSIST[PersistDirty<br/>S3: partition/_bloom.bin]
-        PERSIST --> MMETA[Manifest SetBloomMeta]
+        FLUSH[File Flush] --> OBS[pmeta catalogObserver]
+        OBS --> BFA[Bloom Facet<br/>per-file filters]
+        BFA --> DIRTY[Mark Partition Dirty]
+        DIRTY --> PERSIST[PersistDirty<br/>S3: partition/_pmeta.bundle]
     end
 
     subgraph "Read Path"
         QUERY[Query with Filters] --> BF[bloomFilterFiles]
-        BF --> BC{BloomCache<br/>Per-Partition}
-        BC -->|Hit| CHECK[Check Columns]
-        BC -->|Miss| S3LOAD[Lazy S3 Load<br/>partition/_bloom.bin]
+        BF --> FAC{pmeta Bloom Facet<br/>in-RAM, per partition}
+        FAC -->|Hit| CHECK[Check Columns]
+        FAC -->|Miss| BC{Legacy BloomCache<br/>OR-path fallback}
+        BC -->|Hit| CHECK
+        BC -->|Miss| S3LOAD[Lazy S3 Load<br/>partition/_bloom.bin<br/>pre-pmeta data]
         S3LOAD --> CHECK
         CHECK --> SKIP{Contains Match?}
         SKIP -->|No| PRUNE[Prune File]
         SKIP -->|Yes| KEEP[Keep File]
-
-        QUERY --> FBL[Per-file .bloom Check]
-        FBL --> FSKIP{File Bloom Hit?}
-        FSKIP -->|No| PRUNE2[Prune File]
-        FSKIP -->|Yes| KEEP2[Keep File]
     end
 
     subgraph "Tiering"
@@ -285,147 +278,3 @@ graph TB
     PDB1 -.->|Protect| S1 & S2 & S3S
 ```
 
-## Spec Compliance Status
-
-```mermaid
-pie title Feature Implementation Status (213 Requirements)
-    "Implemented (132)" : 132
-    "Smart Cache Gaps (11)" : 11
-    "Tenant Stats Gaps (12)" : 12
-    "Tenant Mapping Gaps (6)" : 6
-    "Bloom Index Gaps (10)" : 10
-    "S3 I/O Gaps (16)" : 16
-    "K8s Safety Gaps (26)" : 26
-```
-
-| Spec | Requirements | Implemented | Gap | Status |
-|------|-------------|-------------|-----|--------|
-| Smart Cache & Cross-Signal | 42 | 31 | **11** | ~74% |
-| Tenant Stats & Explorer | 45 | 33 | **12** | ~73% |
-| Tenant Name Mapping | 28 | 22 | **6** | ~79% |
-| Partitioned Bloom Index | 30 | 20 | **10** | ~67% |
-| S3 I/O Optimization | 28 | 12 | **16** | ~43% |
-| K8s Scaling Safety | 40 | 14 | **26** | ~35% |
-| **TOTAL** | **213** | **132** | **81** | **62%** |
-
-## Logs-Traces Parity Status
-
-```mermaid
-graph LR
-    subgraph "Shared (Both Modules)"
-        SC2[SmartCache<br/>Controller]
-        MAN2[Manifest<br/>Core]
-        TR2[Tenant Resolver]
-        AZ2[AZ Detection]
-        PR2[Peer Ring]
-        BB2[Buffer Bridge]
-        PFE2[Prefetch Engine]
-        CS2[Cross-Signal<br/>Client/Handler]
-        ST2[Stats Registry]
-        CMP2[Compaction]
-    end
-
-    subgraph "Logs Only (25 features)"
-        COF[Cache-on-Flush]
-        RGK[RG Skip by Stats]
-        TBL[Token Bloom]
-        BCC[BloomCache<br/>Partition-level]
-        BOB[BloomObserver<br/>+ PartitionedIndex]
-        MSC[Metadata Sidecar<br/>Writes]
-        SEM[S3 Download<br/>Semaphore]
-        WMD[WarmMetadata<br/>4-Phase Startup]
-        PFF[prefetchFooters]
-        FMP[File Metadata<br/>Disk Persist]
-        MFP2[manifestFastPath]
-        QSF[QuerySpecificFiles]
-        SFL[Self-Filter]
-        CAS[Cache Affinity Sort]
-        NPG[Negated Predicate<br/>Guard]
-        MRE[Max-Rows<br/>Enforcement]
-        TSO[TimestampOnly<br/>Hint]
-        OTL[OTel Spans]
-        TRS[Tenant in<br/>SelectAPI]
-        TSY[/tenant/sync<br/>Endpoint]
-        SVF[Value Frequency<br/>Sampling]
-        FCH[FooterCache.Has]
-        FRA[footerReaderAt]
-        PMG[Prometheus<br/>Gauge Init]
-        SSF[SetSelfFilter<br/>Enabled]
-    end
-
-    subgraph "Traces Only (3 features)"
-        BFI[BackfillBloomIndex]
-        CTC[Context Cancel<br/>at RunQuery Top]
-        S3P[s3Prefix Field]
-    end
-
-    style COF fill:#ff6b6b
-    style RGK fill:#ff6b6b
-    style TBL fill:#ff6b6b
-    style BCC fill:#ff6b6b
-    style BOB fill:#ff6b6b
-    style MSC fill:#ff6b6b
-    style SEM fill:#ff6b6b
-    style WMD fill:#ff6b6b
-    style PFF fill:#ff6b6b
-    style FMP fill:#ff6b6b
-    style MFP2 fill:#ff6b6b
-    style QSF fill:#ff6b6b
-    style SFL fill:#ff6b6b
-    style CAS fill:#ff6b6b
-    style NPG fill:#ff6b6b
-    style MRE fill:#ff6b6b
-    style TSO fill:#ff6b6b
-    style OTL fill:#ff6b6b
-    style TRS fill:#ff6b6b
-    style TSY fill:#ff6b6b
-    style SVF fill:#ff6b6b
-    style FCH fill:#ff6b6b
-    style FRA fill:#ff6b6b
-    style PMG fill:#ff6b6b
-    style SSF fill:#ff6b6b
-
-    style BFI fill:#4ecdc4
-    style CTC fill:#4ecdc4
-    style S3P fill:#4ecdc4
-```
-
-## Test Coverage Matrix
-
-| Package | Coverage | Status |
-|---------|----------|--------|
-| prefetch | 100.0% | Excellent |
-| startup | 100.0% | Excellent |
-| metrics | 100.0% | Excellent |
-| schema | 100.0% | Excellent |
-| retention | 99.0% | Excellent |
-| manifest | 98.0% | Excellent |
-| discovery | 97.8% | Excellent |
-| s3reader | 97.4% | Excellent |
-| bloomindex | 96.0% | Excellent |
-| peercache | 96.1% | Excellent |
-| smartcache | 95.9% | Excellent |
-| tenant | 95.8% | Excellent |
-| vlstorage | 95.0% | Excellent |
-| wal | 94.7% | Good |
-| config | 94.3% | Good |
-| stats | 93.9% | Good |
-| buffer | 93.9% | Good |
-| ui | 93.9% | Good |
-| cache | 95.3% | Excellent |
-| selectapi | 93.7% | Good |
-| delete | 93.7% | Good |
-| crosssignal | 93.3% | Good |
-| telemetry | 92.6% | Good |
-| election | 91.1% | Good |
-| compaction | 90.2% | Good |
-| azdetect | 90.0% | Good |
-| parquets3 | 90.3% | Good |
-
-**27 of 29 packages at 90%+ coverage.** Remaining 2 are testutil (test utilities) and storage (interfaces only).
-
-### Missing Benchmarks
-
-- `BenchmarkRunQuery` - hottest query path
-- `BenchmarkCompact` - compaction throughput
-- `BenchmarkSmartCacheGet` - cache tier latency

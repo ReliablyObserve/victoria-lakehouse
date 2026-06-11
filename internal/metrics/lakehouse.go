@@ -507,8 +507,8 @@ var (
 )
 
 // Writer-artifact build metrics — what the flusher pays so the reader
-// can stay cheap. Every counter here pairs with a query-side speedup
-// in docs/architecture/performance-machinery.md §4A; e.g. a missing
+// can stay cheap. Every counter here pairs with a query-side speedup;
+// e.g. a missing
 // .bloom sidecar would surface as ParquetFilesSkipped staying at zero
 // while WriterBloomBuildsTotal also stays at zero, instantly pointing
 // at the broken side.

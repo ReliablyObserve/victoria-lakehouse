@@ -1,6 +1,5 @@
 // Package membuffer wraps a logstorage.Storage as the lakehouse cold tier's
-// queryable in-memory insert buffer (Option B; see
-// docs/architecture/buffer-queryable-store-design.md).
+// queryable in-memory insert buffer (Option B).
 //
 // Instead of staging ingested rows as []schema.{Log,Trace}Row and
 // reconstructing a logstorage.DataBlock at query time (the struct→DataBlock

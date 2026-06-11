@@ -3,6 +3,7 @@ import type {SidebarsConfig} from '@docusaurus/types';
 const sidebars: SidebarsConfig = {
   docsSidebar: [
     'getting-started',
+        'roadmap',
     {
       type: 'category',
       label: 'Core Concepts',
@@ -10,10 +11,26 @@ const sidebars: SidebarsConfig = {
         'architecture',
         'write-path',
         'read-path',
+        'durability',
         'storage-flow',
         'manifest-system',
         'cache-architecture',
+        'bloom-index',
         'deletion-strategy',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Architecture Deep Dives',
+      items: [
+        'architecture-overview',
+        'architecture/metadata-consolidation',
+        'architecture/field-value-catalog',
+        'architecture/metadata-and-s3-optimization',
+        'architecture/restart-and-warmup-design',
+        'architecture/pb-scale-resources-pmeta',
+        'architecture/restore-and-elasticity-pmeta',
+        'architecture/scaling-restart-scenarios',
       ],
     },
     {
@@ -31,7 +48,10 @@ const sidebars: SidebarsConfig = {
       items: [
         'configuration',
         'operations',
+        'operations/lifecycle',
+        'operations/sizing',
         'observability',
+        'telemetry',
         'multi-tenancy',
         'tenant-stats',
         'lakehouse-explorer',
@@ -44,11 +64,16 @@ const sidebars: SidebarsConfig = {
       label: 'Performance & Cost',
       items: [
         'performance',
+        'performance-machinery',
         'cost-estimates',
         'cost-comparison',
+        'cross-az-optimization',
         'vl-comparison',
         'benchmarks',
+        'benchmarks/full-scope-s3',
         'zstd-compression-benchmark',
+        'petabyte-scale-audit',
+        'parity-and-gaps',
       ],
     },
     {
