@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Dedicated columns (Tier 1): promote hot OTel attributes out of the maps into typed Parquet columns.** 15 log + 17 trace OpenTelemetry semantic-convention attributes (container.id, service.instance.id, k8s.cluster.name, telemetry.sdk.*, cloud.*, url.full, client.address, server.address, db.*, rpc.method, exception.type, …) are lifted from the resource/log/span attribute maps into first-class columns — dict-encoded for low-cardinality descriptors (the compression win) and plain+bloom for high-cardinality id-like keys (selective row-group skipping). **Measured net size −9.5% (logs) / −8.0% (traces)** on real L2 data — the promotion compression win absorbs the expanded blooms and then some. VL/VT-compatible by construction: read paths emit each column under its exact field name (logs bare, traces VT-prefixed), identical to the existing promoted-column mechanism; dual-read safe across schema versions (old files keep map storage, new files use columns, queries see the same fields). Pure-Parquet portability verified (pyarrow + DuckDB readback gate).
+
+### Changed
+
+- **Bloom set re-aligned to measured cardinality.** Stopped blooming low-cardinality columns where a bloom never skips (k8s.namespace.name, k8s.deployment.name, deployment.environment), added high-cardinality ones (span_id, k8s.node.name) — plus the Tier-1 high/medium-card promotions. Logs 10 / traces 16 bloom columns, all equality-queried high/medium-cardinality. Writer + compactor now derive the bloom set from the strict per-signal sets in internal/schema (no more hardcoded service.name+trace_id).
+
+
 ### Removed
 
 - **The dead `schema.extra_promoted` dynamic-promotion feature (BREAKING for that config key only).** Strict-schema direction: which Parquet columns are promoted is owned by the compiled static profile (`registry.PromotedColumns()` = `profile.Promoted`), giving deliberate control over every column for write/read optimization — not a per-deployment dynamic config. The `extra_promoted` path was non-functional anyway (the registry was built without it and the struct-typed writers could not emit such columns; the docs promised behavior the code never delivered). Removed the config struct + `schema:` section, registry plumbing, chart block, schema/allowlist entries, docs, and tests. The live `PromotedColumns()` mechanism (the static profile) is unchanged and is what the upcoming strict dedicated columns extend.
