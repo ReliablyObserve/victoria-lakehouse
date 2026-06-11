@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Bloom set re-aligned to measured cardinality.** Stopped blooming low-cardinality columns where a bloom never skips (k8s.namespace.name, k8s.deployment.name, deployment.environment), added high-cardinality ones (span_id, k8s.node.name) — plus the Tier-1 high/medium-card promotions. Logs 10 / traces 16 bloom columns, all equality-queried high/medium-cardinality. Writer + compactor now derive the bloom set from the strict per-signal sets in internal/schema (no more hardcoded service.name+trace_id).
 
+## [0.89.0] - 2026-06-11
 
 ### Removed
 
