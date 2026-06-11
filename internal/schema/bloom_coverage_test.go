@@ -7,11 +7,12 @@ func TestBloomCoverage_Logs(t *testing.T) {
 	expectedBloom := []string{
 		"trace_id",
 		"service.name",
+		"span_id",
 		"host.name",
-		"k8s.namespace.name",
 		"k8s.pod.name",
-		"k8s.deployment.name",
-		"deployment.environment",
+		"k8s.node.name",
+		"container.id",
+		"service.instance.id",
 	}
 	for _, name := range expectedBloom {
 		m := reg.ResolveFromParquet(name)

@@ -68,6 +68,8 @@ insert.peer_replicate_ttl
 insert.row_group_size
 insert.target_file_size
 logs.bloom_columns
+# Tier-2 dedicated columns: free-form operator list of {name,bloom}; documented in values.yaml, same treatment as the sibling bloom_columns.
+logs.promoted_attributes
 logs.compat_version
 logs.delete_prefix
 logs.insert.profile
@@ -194,6 +196,7 @@ tenant.overrides
 tenant.prefix_template
 topology
 traces.bloom_columns
+traces.promoted_attributes
 traces.compat_version
 traces.delete_prefix
 traces.insert.profile

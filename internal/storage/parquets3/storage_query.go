@@ -1085,10 +1085,48 @@ func allLeafColumns(f *parquet.File) map[string]bool {
 }
 
 func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
-	if s.cfg.Mode == config.ModeTraces {
-		return readRowGroupTyped[schema.TraceRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, traceRowToFields)
+	// Tier-2: resolve this file's spare-slot → configured-name binding from its
+	// own footer KV (falling back to the live config for files written before
+	// the footer KV existed). The emission functions emit slots raw (ded_sNN);
+	// the wrapper renames them per-file, so values stay correct even if the live
+	// promoted_attributes config changed after the file was written.
+	slotMap := fileSlotMapping(f)
+	if slotMap == nil {
+		slotMap = activeSlotResolver.Mapping()
 	}
-	return readRowGroupTyped[schema.LogRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, logRowToFields)
+	if s.cfg.Mode == config.ModeTraces {
+		return readRowGroupTyped[schema.TraceRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, withFileSlots(traceRowToFields, slotMap))
+	}
+	return readRowGroupTyped[schema.LogRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, withFileSlots(logRowToFields, slotMap))
+}
+
+// withFileSlots wraps a row→fields emitter so that raw slot columns (ded_sNN)
+// emitted by the base function are renamed to the file's configured attribute
+// names; unmapped slots are dropped. A nil mapping passes fields through (no
+// custom slots configured for any file in range).
+func withFileSlots[T any](base func(*T, []field) []field, slotMap schema.SlotMapping) func(*T, []field) []field {
+	if len(slotMap) == 0 {
+		return base
+	}
+	return func(r *T, buf []field) []field {
+		return remapSlotFields(base(r, buf), slotMap)
+	}
+}
+
+// remapSlotFields renames ded_sNN fields to their configured attribute name and
+// drops slot fields with no mapping. Non-slot fields pass through unchanged.
+func remapSlotFields(fields []field, slotMap schema.SlotMapping) []field {
+	out := fields[:0]
+	for _, fld := range fields {
+		if len(fld.name) == 7 && fld.name[:5] == "ded_s" {
+			if name, ok := slotMap[fld.name]; ok && name != "" {
+				out = append(out, field{name, fld.value})
+			}
+			continue
+		}
+		out = append(out, fld)
+	}
+	return out
 }
 
 func readRowGroupTyped[T any](s *Storage, f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, toFields func(*T, []field) []field) error {
@@ -1382,6 +1420,37 @@ func logRowToFields(r *schema.LogRow, buf []field) []field {
 		field{"_stream_id", r.StreamID},
 		field{"scope.name", r.ScopeName},
 	)
+	// Dedicated columns (Tier 1) — emit each ONLY when non-empty. Dual-read
+	// invariant: new files carry the value in the column (map cleared at
+	// ingest) → emitted here; OLD files (pre-promotion) carry it in the map
+	// with an empty column → skipped here, emitted by the map loop below.
+	// Exactly one emission either way — no dup, no lost old-file values.
+	buf = appendIfSet(buf, "container.id", r.ContainerID)
+	buf = appendIfSet(buf, "service.instance.id", r.ServiceInstanceID)
+	buf = appendIfSet(buf, "service.version", r.ServiceVersion)
+	buf = appendIfSet(buf, "exception.type", r.ExceptionType)
+	buf = appendIfSet(buf, "exception.message", r.ExceptionMessage)
+	buf = appendIfSet(buf, "k8s.cluster.name", r.K8sClusterName)
+	buf = appendIfSet(buf, "telemetry.sdk.name", r.TelemetrySDKName)
+	buf = appendIfSet(buf, "telemetry.sdk.language", r.TelemetrySDKLang)
+	buf = appendIfSet(buf, "telemetry.sdk.version", r.TelemetrySDKVer)
+	buf = appendIfSet(buf, "cloud.account.id", r.CloudAccountID)
+	buf = appendIfSet(buf, "cloud.provider", r.CloudProvider)
+	buf = appendIfSet(buf, "os.type", r.OSType)
+	buf = appendIfSet(buf, "host.arch", r.HostArch)
+	buf = appendIfSet(buf, "process.runtime.name", r.ProcessRuntimeName)
+	buf = appendIfSet(buf, "process.runtime.version", r.ProcessRuntimeVer)
+	// Tier-2 custom slots → emit under the operator-configured name (active
+	// resolver; correct for buffer rows and current-config files). File reads
+	// with a different historical config remap via the per-file footer KV in
+	// the columnar path.
+	// Emit slots under their RAW ded_sNN name; the file-scan layer
+	// (readRowGroupTyped → remapSlotFields) renames each to the configured
+	// attribute name using THAT file's footer KV, correct even under config
+	// change. Unmapped slots are dropped there.
+	for _, slot := range schema.DedicatedSlotColumns {
+		buf = appendIfSet(buf, slot, schema.LogSlotValue(r, slot))
+	}
 	for k, v := range r.ResourceAttributes {
 		buf = append(buf, field{k, v})
 	}
@@ -1389,6 +1458,15 @@ func logRowToFields(r *schema.LogRow, buf []field) []field {
 		buf = append(buf, field{k, v})
 	}
 	return buf
+}
+
+// appendIfSet appends a {name,value} field only when value is non-empty — the
+// dual-read helper for promoted dedicated columns (see logRowToFields).
+func appendIfSet(buf []field, name, value string) []field {
+	if value == "" {
+		return buf
+	}
+	return append(buf, field{name, value})
 }
 
 func traceRowToFields(r *schema.TraceRow, buf []field) []field {
@@ -1417,6 +1495,29 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 		field{"db.system", r.DBSystem},
 		field{"db.statement", r.DBStatement},
 	)
+	// Dedicated columns (Tier 1) — conditional emission for dual-read safety
+	// (see logRowToFields). NOT added to the tracePromoted* suppression maps:
+	// those drop the map form unconditionally, which would lose values from
+	// OLD files that still carry the key in the map with an empty column.
+	buf = appendIfSet(buf, "url.full", r.URLFull)
+	buf = appendIfSet(buf, "client.address", r.ClientAddress)
+	buf = appendIfSet(buf, "server.address", r.ServerAddress)
+	buf = appendIfSet(buf, "network.peer.address", r.NetworkPeerAddress)
+	buf = appendIfSet(buf, "db.collection.name", r.DBCollectionName)
+	buf = appendIfSet(buf, "db.operation.name", r.DBOperationName)
+	buf = appendIfSet(buf, "db.query.text", r.DBQueryText)
+	buf = appendIfSet(buf, "rpc.method", r.RPCMethod)
+	buf = appendIfSet(buf, "messaging.destination.name", r.MessagingDestination)
+	buf = appendIfSet(buf, "code.function.name", r.CodeFunctionName)
+	buf = appendIfSet(buf, "exception.type", r.ExceptionType)
+	buf = appendIfSet(buf, "container.id", r.ContainerID)
+	buf = appendIfSet(buf, "service.instance.id", r.ServiceInstanceID)
+	buf = appendIfSet(buf, "k8s.cluster.name", r.K8sClusterName)
+	buf = appendIfSet(buf, "telemetry.sdk.name", r.TelemetrySDKName)
+	buf = appendIfSet(buf, "cloud.account.id", r.CloudAccountID)
+	for _, slot := range schema.DedicatedSlotColumns {
+		buf = appendIfSet(buf, slot, schema.TraceSlotValue(r, slot))
+	}
 	for k, v := range r.ResourceAttributes {
 		if !tracePromotedResourceKeys[k] {
 			buf = append(buf, field{k, v})

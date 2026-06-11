@@ -104,10 +104,15 @@ func TestVerifySchema_TracesProfile_AllPromotedFields(t *testing.T) {
 func TestVerifySchema_BloomEnabled_Logs(t *testing.T) {
 	r := NewRegistry(LogsProfile)
 
+	// Cardinality-aligned bloom set (blooms accelerate only high-card equality
+	// filters): the high-card id/name columns. Low-card columns
+	// (k8s.namespace.name, k8s.deployment.name, deployment.environment) are
+	// deliberately NOT bloomed — every row group holds every value so a bloom
+	// never skips. span_id and the promoted id-like OTel columns ARE bloomed.
 	bloomFields := []string{
-		"service.name", "trace_id",
-		"host.name", "k8s.namespace.name", "k8s.pod.name",
-		"k8s.deployment.name", "deployment.environment",
+		"service.name", "trace_id", "span_id",
+		"host.name", "k8s.pod.name", "k8s.node.name",
+		"container.id", "service.instance.id", "service.version", "exception.type",
 	}
 	for _, name := range bloomFields {
 		t.Run(name, func(t *testing.T) {
@@ -121,8 +126,10 @@ func TestVerifySchema_BloomEnabled_Logs(t *testing.T) {
 		})
 	}
 
-	// Verify non-bloom fields do NOT have bloom enabled.
-	nonBloomFields := []string{"_msg", "level", "severity_number", "span_id"}
+	// Low-cardinality fields must NOT bloom (wasted space — bloom never skips).
+	nonBloomFields := []string{"_msg", "level", "severity_number",
+		"k8s.namespace.name", "k8s.deployment.name", "deployment.environment",
+		"cloud.region", "telemetry.sdk.name", "cloud.account.id"}
 	for _, name := range nonBloomFields {
 		t.Run("no_bloom_"+name, func(t *testing.T) {
 			m := r.ResolveToParquet(name)
@@ -135,15 +142,14 @@ func TestVerifySchema_BloomEnabled_Logs(t *testing.T) {
 		})
 	}
 
-	// Verify exact bloom count.
 	bloomCount := 0
 	for _, m := range r.PromotedColumns() {
 		if m.HasBloom {
 			bloomCount++
 		}
 	}
-	if bloomCount != 7 {
-		t.Errorf("logs profile: bloom column count = %d, want 7", bloomCount)
+	if bloomCount != 10 {
+		t.Errorf("logs profile: bloom column count = %d, want 10", bloomCount)
 	}
 }
 
@@ -186,8 +192,8 @@ func TestVerifySchema_BloomEnabled_Traces(t *testing.T) {
 			bloomCount++
 		}
 	}
-	if bloomCount != 3 {
-		t.Errorf("traces profile: bloom column count = %d, want 3 (trace_id, service.name, span.name)", bloomCount)
+	if bloomCount != 16 {
+		t.Errorf("traces profile: bloom column count = %d, want 16 (legacy trace_id/service.name/span.name + span_id + Tier-1 OTel: url.full, client.address, server.address, network.peer.address, db.collection.name, db.operation.name, rpc.method, messaging.destination.name, code.function.name, exception.type, container.id, service.instance.id)", bloomCount)
 	}
 }
 

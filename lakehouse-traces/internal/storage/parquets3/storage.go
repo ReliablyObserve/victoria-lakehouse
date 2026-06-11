@@ -498,7 +498,21 @@ func (s *Storage) updateLabelIndexImpl(f *parquet.File, extractValues bool) {
 		promotedParquetNames[m.ParquetColumn] = true
 	}
 
+	// Tier-2 slot columns surface under the configured name from THIS file's
+	// footer KV (config-change-robust); unmapped slots are omitted.
+	slotNames := fileSlotMapping(f)
+	isSlotCol := make(map[string]bool, len(schema.DedicatedSlotColumns))
+	for _, c := range schema.DedicatedSlotColumns {
+		isSlotCol[c] = true
+	}
+
 	for _, name := range columnNames(f.Root()) {
+		if isSlotCol[name] {
+			if cfgName, ok := slotNames[name]; ok && cfgName != "" {
+				s.labelIndex.Add(cfgName, nil)
+			}
+			continue
+		}
 		if mapColumns[name] {
 			prefix := mapColumnToAttrPrefix(name)
 			for _, k := range extractMapDistinctKeys(f, name) {
@@ -506,9 +520,11 @@ func (s *Storage) updateLabelIndexImpl(f *parquet.File, extractValues bool) {
 					s.labelIndex.Add(k, nil)
 					continue
 				}
-				if promotedParquetNames[k] {
-					continue
-				}
+				// Dual-read: a promoted key found in the MAP = an OLD
+				// (pre-promotion) file. Index it under the prefixed name to
+				// match the column form (InternalName carries the prefix).
+				// labelIndex.Add is idempotent, so new files (key in the
+				// column) never double-count.
 				s.labelIndex.Add(prefix+k, nil)
 			}
 			continue

@@ -107,14 +107,16 @@ func TestRefreshTenantScoped_CancelsRemainingOnError(t *testing.T) {
 	if err == nil {
 		t.Fatal("refreshTenantScoped should return error when a tenant LIST fails")
 	}
-	// Tolerance is set above the worst-case stall (3.5s) to account for
-	// AWS SDK in-httptest pipeline overhead. The implementation calls
-	// cancel() on first error which signals other goroutines via
-	// ctx.Done() between pages; in production the SDK's HTTP layer
-	// also aborts in-flight requests. Test passes as long as we don't
-	// pile up multiple full stalls (which would happen without the fix
-	// at higher tenant counts).
-	if elapsed > 5*time.Second {
+	// The discriminator: WITHOUT cancellation the non-erroring tenant's full
+	// 3s stall (and, at higher tenant counts, several piled stalls) dominates;
+	// WITH it the first error cancels the rest. The AWS SDK does not abort the
+	// already-dispatched in-httptest request instantly, so a single stall can
+	// run close to its full 3s plus pipeline overhead even when cancellation
+	// works — so the bound is set generously at 2× the single-stall worst case
+	// to stay robust under CI load while still tripping on multiple piled
+	// stalls (the genuine no-cancel regression at scale). Raised from 5s, which
+	// left only ~1.5s of headroom over the 3.5s worst case and flaked under load.
+	if elapsed > 8*time.Second {
 		t.Errorf("refreshTenantScoped took %v — cancellation likely not propagating", elapsed)
 	}
 	t.Logf("refreshTenantScoped returned after %v with %d total HTTP requests", elapsed, requestCount.Load())

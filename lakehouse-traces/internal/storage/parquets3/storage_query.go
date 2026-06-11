@@ -1203,10 +1203,52 @@ func allLeafColumns(f *parquet.File) map[string]bool {
 }
 
 func (s *Storage) readRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
-	if s.cfg.Mode == config.ModeTraces {
-		return readRowGroupTyped[schema.TraceRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, traceRowToFields)
+	slotMap := fileSlotMapping(f)
+	if slotMap == nil {
+		slotMap = activeSlotResolver.Mapping()
 	}
-	return readRowGroupTyped[schema.LogRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, logRowToFields)
+	if s.cfg.Mode == config.ModeTraces {
+		return readRowGroupTyped[schema.TraceRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, withFileSlots(traceRowToFields, slotMap))
+	}
+	return readRowGroupTyped[schema.LogRow](s, f, rg, startNs, endNs, writeBlock, traceIDs, withFileSlots(logRowToFields, slotMap))
+}
+
+// withFileSlots / remapSlotFields / fileSlotMapping — Tier-2 per-file slot
+// remap (see the root module's storage.go/storage_query.go for the rationale).
+func withFileSlots[T any](base func(*T, []field) []field, slotMap schema.SlotMapping) func(*T, []field) []field {
+	if len(slotMap) == 0 {
+		return base
+	}
+	return func(r *T, buf []field) []field {
+		return remapSlotFields(base(r, buf), slotMap)
+	}
+}
+
+func remapSlotFields(fields []field, slotMap schema.SlotMapping) []field {
+	out := fields[:0]
+	for _, fld := range fields {
+		if len(fld.name) == 7 && fld.name[:5] == "ded_s" {
+			if name, ok := slotMap[fld.name]; ok && name != "" {
+				out = append(out, field{name, fld.value})
+			}
+			continue
+		}
+		out = append(out, fld)
+	}
+	return out
+}
+
+func fileSlotMapping(f *parquet.File) schema.SlotMapping {
+	meta := f.Metadata()
+	if meta == nil {
+		return nil
+	}
+	for _, kv := range meta.KeyValueMetadata {
+		if kv.Key == schema.DedicatedSlotsMetaKey {
+			return schema.UnmarshalSlotMapping([]byte(kv.Value))
+		}
+	}
+	return nil
 }
 
 func readRowGroupTyped[T any](s *Storage, f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, toFields func(*T, []field) []field) error {
@@ -1567,6 +1609,33 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 		field{"child", r.ServiceGraphChild},
 		field{"callCount", r.ServiceGraphCallCount},
 	)
+	// Dedicated columns (Tier 1) — emitted under VT's stream-tag prefix
+	// (span_attr:/resource_attr:) to match this module's existing promoted
+	// columns (e.g. span_attr:db.statement), NOT bare. Conditional for
+	// dual-read safety (old files carry the key in the map with an empty
+	// column → the map loop below emits it; new files emit here). NOT added to
+	// the tracePromoted* suppression maps for the same reason.
+	buf = appendTraceDedicated(buf, "url.full", r.URLFull)
+	buf = appendTraceDedicated(buf, "client.address", r.ClientAddress)
+	buf = appendTraceDedicated(buf, "server.address", r.ServerAddress)
+	buf = appendTraceDedicated(buf, "network.peer.address", r.NetworkPeerAddress)
+	buf = appendTraceDedicated(buf, "db.collection.name", r.DBCollectionName)
+	buf = appendTraceDedicated(buf, "db.operation.name", r.DBOperationName)
+	buf = appendTraceDedicated(buf, "db.query.text", r.DBQueryText)
+	buf = appendTraceDedicated(buf, "rpc.method", r.RPCMethod)
+	buf = appendTraceDedicated(buf, "messaging.destination.name", r.MessagingDestination)
+	buf = appendTraceDedicated(buf, "code.function.name", r.CodeFunctionName)
+	buf = appendTraceDedicated(buf, "exception.type", r.ExceptionType)
+	buf = appendTraceDedicated(buf, "container.id", r.ContainerID)
+	buf = appendTraceDedicated(buf, "service.instance.id", r.ServiceInstanceID)
+	buf = appendTraceDedicated(buf, "k8s.cluster.name", r.K8sClusterName)
+	buf = appendTraceDedicated(buf, "telemetry.sdk.name", r.TelemetrySDKName)
+	buf = appendTraceDedicated(buf, "cloud.account.id", r.CloudAccountID)
+	// Emit slots raw (ded_sNN); readRowGroup's withFileSlots wrapper renames
+	// each per-file from its footer KV (config-change-robust).
+	for _, slot := range schema.DedicatedSlotColumns {
+		buf = appendTraceDedicated(buf, slot, schema.TraceSlotValue(r, slot))
+	}
 	for k, v := range r.ResourceAttributes {
 		if !tracePromotedResourceKeys[k] {
 			buf = append(buf, field{k, v})
@@ -1582,6 +1651,16 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 		buf = append(buf, field{k, v})
 	}
 	return buf
+}
+
+// appendTraceDedicated appends a promoted dedicated-column field only when set —
+// the dual-read helper for Tier-1 trace columns (empty column on an old file
+// means the value still lives in the map, emitted by the map loop instead).
+func appendTraceDedicated(buf []field, name, value string) []field {
+	if value == "" {
+		return buf
+	}
+	return append(buf, field{name, value})
 }
 
 var tracePromotedResourceKeys = map[string]bool{

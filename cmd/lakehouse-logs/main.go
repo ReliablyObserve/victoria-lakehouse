@@ -27,6 +27,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/prefetch"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/retention"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/selectapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/stats"
@@ -459,6 +460,21 @@ func run(cfg *config.Config, addr string) {
 	// rows rather than letting unbounded stream cardinality leak
 	// through to the writer.
 	internalvlstorage.SetCardinalityGate(tenant.NewCardinalityLimiter(policy))
+
+	// Tier-2 dedicated columns: build the custom-attribute slot resolver from
+	// config and install it on the ingest + writer/read paths. nil-safe when no
+	// promoted_attributes are configured.
+	if pa := cfg.ActivePromotedAttributes(); len(pa) > 0 {
+		sa := make([]schema.SlotAttr, len(pa))
+		for i, a := range pa {
+			sa[i] = schema.SlotAttr{Name: a.Name, Bloom: a.Bloom}
+		}
+		sr := schema.NewSlotResolver(sa)
+		internalvlstorage.SetSlotResolver(sr)
+		parquets3.SetSlotResolver(sr)
+		compaction.SetSlotResolver(sr)
+		logger.Infof("dedicated columns: %d custom attribute(s) promoted to slots", len(pa))
+	}
 
 	applyTenantStorageOverrides(store, policy, detector)
 

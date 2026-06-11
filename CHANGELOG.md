@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Dedicated columns (Tier 1): promote hot OTel attributes out of the maps into typed Parquet columns.** 15 log + 17 trace OpenTelemetry semantic-convention attributes (container.id, service.instance.id, k8s.cluster.name, telemetry.sdk.*, cloud.*, url.full, client.address, server.address, db.*, rpc.method, exception.type, …) are lifted from the resource/log/span attribute maps into first-class columns — dict-encoded for low-cardinality descriptors (the compression win) and plain+bloom for high-cardinality id-like keys (selective row-group skipping). **Measured net size −9.5% (logs) / −8.0% (traces)** on real L2 data — the promotion compression win absorbs the expanded blooms and then some. VL/VT-compatible by construction: read paths emit each column under its exact field name (logs bare, traces VT-prefixed), identical to the existing promoted-column mechanism; dual-read safe across schema versions (old files keep map storage, new files use columns, queries see the same fields). Pure-Parquet portability verified (pyarrow + DuckDB readback gate).
+
+- **Dedicated columns (Tier 2): operator-configurable custom-attribute promotion.** Deployments declare non-OTel attributes via `logs.config.promoted_attributes` / `traces.config.promoted_attributes` (`{name, bloom}`, up to 8/signal); each is lifted into a spare slot column with an optional bloom. The name→slot binding is written to every file's Parquet footer (flush AND compaction), so files stay self-describing and read-back remaps slots by each file's own footer — correct even if the config later changes. Full-stack e2e (both signals) + dual-read equivalence proofs included.
+
+### Changed
+
+- **Bloom set re-aligned to measured cardinality.** Stopped blooming low-cardinality columns where a bloom never skips (k8s.namespace.name, k8s.deployment.name, deployment.environment), added high-cardinality ones (span_id, k8s.node.name) — plus the Tier-1 high/medium-card promotions. Logs 10 / traces 16 bloom columns, all equality-queried high/medium-cardinality. Writer + compactor now derive the bloom set from the strict per-signal sets in internal/schema (no more hardcoded service.name+trace_id).
+
 ## [0.89.0] - 2026-06-11
 
 ### Removed

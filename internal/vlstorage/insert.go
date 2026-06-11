@@ -278,10 +278,59 @@ func mapFieldToRow(row *schema.LogRow, name, value string) {
 		row.HostName = strings.Clone(value)
 	case "scope.name":
 		row.ScopeName = strings.Clone(value)
+	// Dedicated columns — Tier 1 (strict OTel). Routing a key here lifts it
+	// out of the attribute map into its typed column; the read path emits it
+	// under the same bare field name, so VL/VT query semantics are unchanged.
+	case "container.id":
+		row.ContainerID = strings.Clone(value)
+	case "service.instance.id":
+		row.ServiceInstanceID = strings.Clone(value)
+	case "service.version":
+		row.ServiceVersion = strings.Clone(value)
+	case "exception.type":
+		row.ExceptionType = strings.Clone(value)
+	case "exception.message":
+		row.ExceptionMessage = strings.Clone(value)
+	case "k8s.cluster.name":
+		row.K8sClusterName = strings.Clone(value)
+	case "telemetry.sdk.name":
+		row.TelemetrySDKName = strings.Clone(value)
+	case "telemetry.sdk.language":
+		row.TelemetrySDKLang = strings.Clone(value)
+	case "telemetry.sdk.version":
+		row.TelemetrySDKVer = strings.Clone(value)
+	case "cloud.account.id":
+		row.CloudAccountID = strings.Clone(value)
+	case "cloud.provider":
+		row.CloudProvider = strings.Clone(value)
+	case "os.type":
+		row.OSType = strings.Clone(value)
+	case "host.arch":
+		row.HostArch = strings.Clone(value)
+	case "process.runtime.name":
+		row.ProcessRuntimeName = strings.Clone(value)
+	case "process.runtime.version":
+		row.ProcessRuntimeVer = strings.Clone(value)
 	default:
+		// Tier-2: an operator-configured custom attribute routes to a spare
+		// slot column (and out of the map). Falls through to the map when no
+		// resolver is set or the key isn't configured.
+		if slot, ok := activeSlotResolver.SlotForName(name); ok {
+			schema.SetLogSlot(row, slot, strings.Clone(value))
+			return
+		}
 		if row.LogAttributes == nil {
 			row.LogAttributes = make(map[string]string)
 		}
 		row.LogAttributes[strings.Clone(name)] = strings.Clone(value)
 	}
 }
+
+// activeSlotResolver holds the process-wide Tier-2 custom-attribute slot
+// binding, set once at startup from config via SetSlotResolver. nil = no custom
+// promotions (all SlotResolver methods are nil-safe).
+var activeSlotResolver *schema.SlotResolver
+
+// SetSlotResolver installs the Tier-2 slot resolver (built from
+// config.ActivePromotedAttributes at startup). Safe to call with nil.
+func SetSlotResolver(r *schema.SlotResolver) { activeSlotResolver = r }

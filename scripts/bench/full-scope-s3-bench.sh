@@ -84,6 +84,11 @@ declare -a SCN=(
   "fulltext_scan_1h|/select/logsql/query?query=$(enc 'error | stats count() c')"
   "filtered_count_1h|/select/logsql/query?query=$(enc 'service.name:api-gateway | stats count() c')"
   "groupby_service_1h|/select/logsql/query?query=$(enc '* | stats by (service.name) count() c')"
+  # Filter on a PROMOTED high-cardinality dedicated column. In LH this is a typed
+  # column with a bloom + label aggregates (served from metadata / pruned row
+  # groups); in CH the same key lives in the ResourceAttributes MAP (a map scan).
+  # This is the scenario that exercises the dedicated-columns query win.
+  "needle_promoted_col|/select/logsql/query?query=$(enc 'k8s.pod.name:api-gateway* | stats count() c')"
 )
 
 mkdir -p "$MDIR"
@@ -104,6 +109,9 @@ time_ch field_values_nolimit "SELECT DISTINCT ServiceName FROM lakehouse.otel_lo
 time_ch fulltext_scan_1h   "SELECT count() FROM lakehouse.otel_logs WHERE Timestamp > now() - INTERVAL 1 HOUR AND position(Body,'error')>0"
 time_ch filtered_count_1h  "SELECT count() FROM lakehouse.otel_logs WHERE Timestamp > now() - INTERVAL 1 HOUR AND ServiceName='api-gateway'"
 time_ch groupby_service_1h "SELECT ServiceName,count() FROM lakehouse.otel_logs WHERE Timestamp > now() - INTERVAL 1 HOUR GROUP BY ServiceName"
+# CH stores k8s.pod.name in the ResourceAttributes MAP — a map scan, vs LH's
+# promoted column + bloom. Falls back to a no-op-safe LIKE on the map value.
+time_ch needle_promoted_col "SELECT count() FROM lakehouse.otel_logs WHERE Timestamp > now() - INTERVAL 1 HOUR AND ResourceAttributes['k8s.pod.name'] LIKE 'api-gateway%'"
 
 # ---- S3 op-count deltas per scenario (LH cold) -------------------------------
 # Diffs the /metrics snapshots taken around each lh_cold timing loop. Counters

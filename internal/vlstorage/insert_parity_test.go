@@ -67,19 +67,18 @@ func TestMapFieldToRow_PromotedFieldsNotDuplicated(t *testing.T) {
 func TestMapFieldToRow_UnknownFieldsGoToLogAttributes(t *testing.T) {
 	t.Parallel()
 
+	// Genuinely-unknown fields (NOT promoted to dedicated columns) fall through
+	// to the LogAttributes map. Note: cloud.provider/container.id/telemetry.sdk.*/
+	// os.type are now Tier-1 dedicated columns and are asserted separately below.
 	unknownFields := []struct {
 		name  string
 		value string
 	}{
-		{"cloud.provider", "aws"},
-		{"container.id", "abc123def456"},
-		{"telemetry.sdk.name", "opentelemetry"},
-		{"telemetry.sdk.language", "go"},
-		{"os.type", "linux"},
 		{"process.pid", "12345"},
 		{"http.method", "POST"},
 		{"user.id", "u-42"},
 		{"custom.business.metric", "revenue"},
+		{"http.route", "/api/v1/orders"},
 	}
 
 	row := schema.LogRow{}
@@ -105,6 +104,24 @@ func TestMapFieldToRow_UnknownFieldsGoToLogAttributes(t *testing.T) {
 	// Verify ResourceAttributes was not populated.
 	if len(row.ResourceAttributes) > 0 {
 		t.Errorf("ResourceAttributes should be nil/empty for unknown fields, got %v", row.ResourceAttributes)
+	}
+
+	// Promoted Tier-1 OTel keys must route to their typed columns, NOT the map.
+	promoted := schema.LogRow{}
+	mapFieldToRow(&promoted, "container.id", "abc123def456")
+	mapFieldToRow(&promoted, "service.instance.id", "inst-7")
+	mapFieldToRow(&promoted, "telemetry.sdk.name", "opentelemetry")
+	mapFieldToRow(&promoted, "cloud.provider", "aws")
+	mapFieldToRow(&promoted, "os.type", "linux")
+	if promoted.ContainerID != "abc123def456" {
+		t.Errorf("container.id routed to %q, want the ContainerID column", promoted.ContainerID)
+	}
+	if promoted.ServiceInstanceID != "inst-7" || promoted.TelemetrySDKName != "opentelemetry" ||
+		promoted.CloudProvider != "aws" || promoted.OSType != "linux" {
+		t.Error("a promoted Tier-1 key did not route to its typed column")
+	}
+	if len(promoted.LogAttributes) != 0 {
+		t.Errorf("promoted keys must not land in LogAttributes, got %v", promoted.LogAttributes)
 	}
 }
 
@@ -132,24 +149,26 @@ func TestMapFieldToRow_OTELResourceAttributes(t *testing.T) {
 		{"k8s.deployment.name", "payment-svc", true, func(r schema.LogRow) string { return r.K8sDeploymentName }},
 		{"k8s.node.name", "ip-10-0-1-42", true, func(r schema.LogRow) string { return r.K8sNodeName }},
 
+		// Promoted Tier-1 OTEL resource attributes (dedicated columns)
+		{"service.version", "1.2.3", true, func(r schema.LogRow) string { return r.ServiceVersion }},
+		{"telemetry.sdk.name", "opentelemetry", true, func(r schema.LogRow) string { return r.TelemetrySDKName }},
+		{"telemetry.sdk.language", "go", true, func(r schema.LogRow) string { return r.TelemetrySDKLang }},
+		{"telemetry.sdk.version", "1.30.0", true, func(r schema.LogRow) string { return r.TelemetrySDKVer }},
+		{"cloud.provider", "aws", true, func(r schema.LogRow) string { return r.CloudProvider }},
+		{"cloud.account.id", "123456789012", true, func(r schema.LogRow) string { return r.CloudAccountID }},
+		{"container.id", "abc123", true, func(r schema.LogRow) string { return r.ContainerID }},
+		{"os.type", "linux", true, func(r schema.LogRow) string { return r.OSType }},
+		{"host.arch", "amd64", true, func(r schema.LogRow) string { return r.HostArch }},
+		{"k8s.cluster.name", "prod-east", true, func(r schema.LogRow) string { return r.K8sClusterName }},
+
 		// Non-promoted OTEL resource attributes (must go to LogAttributes)
-		{"service.version", "1.2.3", false, nil},
 		{"service.namespace", "payments", false, nil},
-		{"telemetry.sdk.name", "opentelemetry", false, nil},
-		{"telemetry.sdk.language", "go", false, nil},
-		{"telemetry.sdk.version", "1.30.0", false, nil},
-		{"cloud.provider", "aws", false, nil},
-		{"cloud.account.id", "123456789012", false, nil},
 		{"cloud.availability_zone", "us-east-1a", false, nil},
-		{"container.id", "abc123", false, nil},
 		{"container.name", "payment-container", false, nil},
 		{"container.image.name", "payment:latest", false, nil},
-		{"os.type", "linux", false, nil},
 		{"os.description", "Ubuntu 22.04", false, nil},
 		{"process.pid", "12345", false, nil},
 		{"process.command", "/app/server", false, nil},
-		{"host.arch", "amd64", false, nil},
-		{"k8s.cluster.name", "prod-east", false, nil},
 		{"k8s.container.name", "payment", false, nil},
 	}
 
