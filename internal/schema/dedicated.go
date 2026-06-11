@@ -93,36 +93,6 @@ func TraceDedicatedColumns() []FieldMapping {
 	return out
 }
 
-// LogDedicatedResourceKeys / LogDedicatedLogKeys partition the Tier-1 log
-// columns by their source map so the emission paths can skip the promoted key
-// in exactly the right map (resource.attributes vs log.attributes) and avoid
-// double-emitting it from the catch-all map.
-func LogDedicatedResourceKeys() map[string]bool {
-	return dedicatedKeysFor(logDedicatedColumns, "resource.attributes")
-}
-func LogDedicatedLogKeys() map[string]bool {
-	return dedicatedKeysFor(logDedicatedColumns, "log.attributes")
-}
-
-// TraceDedicatedResourceKeys / TraceDedicatedSpanKeys partition the Tier-1 trace
-// columns by source map (resource.attributes vs span.attributes).
-func TraceDedicatedResourceKeys() map[string]bool {
-	return dedicatedKeysFor(traceDedicatedColumns, "resource.attributes")
-}
-func TraceDedicatedSpanKeys() map[string]bool {
-	return dedicatedKeysFor(traceDedicatedColumns, "span.attributes")
-}
-
-func dedicatedKeysFor(cols []FieldMapping, mapCol string) map[string]bool {
-	out := make(map[string]bool)
-	for _, m := range cols {
-		if m.MapColumn == mapCol {
-			out[m.ParquetColumn] = true
-		}
-	}
-	return out
-}
-
 // LogBloomColumns is the strict set of log columns that get a Parquet bloom
 // filter, derived from the Tier-1 HasBloom flags plus the always-on legacy
 // blooms (service.name, trace_id). extraSlotBlooms carries the Tier-2 slot
