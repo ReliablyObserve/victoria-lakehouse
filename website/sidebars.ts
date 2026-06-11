@@ -3,6 +3,7 @@ import type {SidebarsConfig} from '@docusaurus/types';
 const sidebars: SidebarsConfig = {
   docsSidebar: [
     'getting-started',
+        'roadmap',
     {
       type: 'category',
       label: 'Core Concepts',

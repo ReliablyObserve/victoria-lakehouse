@@ -775,6 +775,7 @@ See [ZSTD Compression Benchmark](docs/zstd-compression-benchmark.md) for full re
 - [Configuration](docs/configuration.md) — all 110+ config options with production-ready defaults
 
 ### Architecture & Design
+- [Roadmap](docs/roadmap.md) — shipped & proven, in progress, committed next
 - [Architecture](docs/architecture.md) — system design, Parquet schema, query flow, cache tiers
 - [Architecture Overview](docs/architecture-overview.md) — full-system diagrams: components, data flow, caches, bloom, deployment topology
 - [Deployment Architecture](docs/deployment-architecture.md) — collector configs (vlagent, Fluent Bit, Vector, OTEL Collector), hot/cold tiers, DR playbooks
