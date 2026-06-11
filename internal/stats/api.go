@@ -1299,6 +1299,11 @@ func max64(a, b int64) int64 {
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	// Stats are recomputed every request and change as data flushes/compacts.
+	// Without this, a 200 with no Cache-Control gets heuristically cached by the
+	// browser, so the UI shows stale numbers (e.g. a pre-fix flat breakdown) even
+	// after a reload until a hard refresh. Force revalidation.
+	w.Header().Set("Cache-Control", "no-store, must-revalidate")
 	_ = json.NewEncoder(w).Encode(v)
 }
 
