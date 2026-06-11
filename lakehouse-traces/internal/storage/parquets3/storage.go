@@ -734,6 +734,17 @@ func (s *Storage) TombstoneStore() *delete.TombstoneStore {
 	return s.tombstones
 }
 
+// PmetaCardinality returns the global HLL distinct-value estimate for a field
+// from the pmeta catalog, or 0 if pmeta is off or the field has no sketch — the
+// accurate cardinality source the stats API prefers over the lazy, 100-capped
+// LabelIndex count. Twin of the root module.
+func (s *Storage) PmetaCardinality(field string) uint64 {
+	if s.catalog == nil {
+		return 0
+	}
+	return s.catalog.Cardinality(field)
+}
+
 // filterTombstonedRows removes rows from a DataBlock that match any active tombstone
 // in the given time range. Returns nil if all rows are suppressed.
 func (s *Storage) filterTombstonedRows(db *logstorage.DataBlock, startNs, endNs int64) *logstorage.DataBlock {

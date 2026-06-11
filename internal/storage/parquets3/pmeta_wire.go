@@ -138,8 +138,23 @@ func (o *catalogObserver) OnFileFlush(partition string, fi manifest.FileInfo, la
 // from a flushed file's log rows into their per-field HLL, streaming straight off
 // the row structs (no slice materialized), then updates the cardinality gauge.
 func (o *catalogObserver) tapLogRows(rows []schema.LogRow) {
-	if o == nil || o.store == nil || len(o.sketch) == 0 {
+	if o == nil || o.store == nil || len(rows) == 0 {
 		return
+	}
+	// Dimensional explorer fields: maintain an accurate, global per-field HLL so
+	// the Cardinality Explorer reports REAL distinct counts. This replaces the
+	// lazy, query-populated LabelIndex (which only sees fields a scan happened to
+	// open and caps at 100). Fed on every flush; the store merges across files +
+	// compaction, so Store.Cardinality(field) is the deterministic global answer.
+	for _, c := range schema.LogLabelColumns {
+		col := c
+		o.store.AddCardinality(col.Name, func(yield func(string) bool) {
+			for i := range rows {
+				if !yield(col.Get(&rows[i])) {
+					return
+				}
+			}
+		})
 	}
 	if o.sketch["trace_id"] {
 		o.store.AddCardinality("trace_id", func(yield func(string) bool) {
@@ -165,8 +180,19 @@ func (o *catalogObserver) tapLogRows(rows []schema.LogRow) {
 
 // tapTraceRows is tapLogRows for trace rows.
 func (o *catalogObserver) tapTraceRows(rows []schema.TraceRow) {
-	if o == nil || o.store == nil || len(o.sketch) == 0 {
+	if o == nil || o.store == nil || len(rows) == 0 {
 		return
+	}
+	// Dimensional explorer fields — see tapLogRows.
+	for _, c := range schema.TraceLabelColumns {
+		col := c
+		o.store.AddCardinality(col.Name, func(yield func(string) bool) {
+			for i := range rows {
+				if !yield(col.Get(&rows[i])) {
+					return
+				}
+			}
+		})
 	}
 	if o.sketch["trace_id"] {
 		o.store.AddCardinality("trace_id", func(yield func(string) bool) {

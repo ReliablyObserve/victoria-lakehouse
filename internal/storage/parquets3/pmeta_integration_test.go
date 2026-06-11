@@ -303,9 +303,11 @@ func TestInteg_PmetaCatalog_CardinalityTapE2E(t *testing.T) {
 	if g := metrics.CatalogFieldCardinality.Get("trace_id"); g == 0 {
 		t.Fatal("lakehouse_catalog_field_cardinality{trace_id} not published")
 	}
-	// service.name (low-card, not always-sketch) is enumerable, not tapped.
-	if c := s.catalog.Cardinality("service.name"); c != 0 {
-		t.Fatalf("service.name should not be sketched, got cardinality %d", c)
+	// service.name is a dimensional explorer field — now sketched on every flush
+	// (schema.LogLabelColumns) so the Cardinality Explorer reports real distinct
+	// counts. All n rows share one value → cardinality ≈ 1 (HLL is exact this small).
+	if c := s.catalog.Cardinality("service.name"); c < 1 || c > 2 {
+		t.Fatalf("service.name cardinality = %d, want 1 (dimensional field now sketched)", c)
 	}
 }
 

@@ -29,6 +29,10 @@ type APIConfig struct {
 	Bucket          string
 	BloomColumns    []string
 	BreakdownLabels []string
+	// PmetaCardinality returns the accurate global HLL distinct-value estimate for
+	// a field (0 if unavailable). Preferred over the lazily-populated, 100-capped
+	// LabelIndex count for the Cardinality Explorer. Nil when pmeta is off.
+	PmetaCardinality func(field string) uint64
 }
 
 // API serves JSON endpoints for tenant statistics, cost, cardinality, etc.
@@ -984,6 +988,20 @@ func (a *API) handleCompression(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
+// pmetaCardinalityOf looks up a field's accurate cardinality, trying the field
+// name as-is and then the suffix after ":" so a traces label index entry like
+// "resource_attr:k8s.cluster.name" matches the bare "k8s.cluster.name" the pmeta
+// catalog is keyed by (the same shape hasBloomFilter handles).
+func pmetaCardinalityOf(fn func(string) uint64, name string) uint64 {
+	if c := fn(name); c > 0 {
+		return c
+	}
+	if idx := strings.LastIndex(name, ":"); idx >= 0 {
+		return fn(name[idx+1:])
+	}
+	return 0
+}
+
 func (a *API) handleCardinality(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -1036,6 +1054,13 @@ func (a *API) handleCardinality(w http.ResponseWriter, r *http.Request) {
 
 	for _, li := range allLabels {
 		card := li.Cardinality
+		// Prefer the accurate pmeta HLL estimate (fed on flush, merged in
+		// compaction) over the lazily-populated, 100-capped LabelIndex count.
+		if a.cfg.PmetaCardinality != nil {
+			if pc := pmetaCardinalityOf(a.cfg.PmetaCardinality, li.Name); pc > 0 {
+				card = int(pc)
+			}
+		}
 
 		if tenantFilter != "" && li.PerTenant != nil {
 			if tc, ok := li.PerTenant[tenantFilter]; ok {
