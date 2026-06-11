@@ -126,8 +126,8 @@ func TestRegistry_BloomColumns(t *testing.T) {
 			blooms++
 		}
 	}
-	if blooms != 7 {
-		t.Errorf("expected 7 bloom columns (service.name, trace_id, host.name, k8s.namespace.name, k8s.pod.name, k8s.deployment.name, deployment.environment), got %d", blooms)
+	if blooms != 10 {
+		t.Errorf("expected 10 cardinality-aligned bloom columns (service.name, trace_id, span_id, host.name, k8s.pod.name, k8s.node.name + Tier-1 OTel container.id, service.instance.id, service.version, exception.type), got %d", blooms)
 	}
 }
 
