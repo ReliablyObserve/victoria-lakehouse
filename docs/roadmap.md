@@ -4,6 +4,19 @@ What is shipped and proven, what is in progress, and what is committed next.
 Every "proven" claim links to results reproducible with the in-repo benchmark
 suite (`scripts/bench/`, methodology in [benchmarks](benchmarks/full-scope-s3.md)).
 
+## Foundation (complete)
+
+The platform core is finished and in production-readiness phase: storage engine
+(Parquet-on-S3 with schema registry, partition manifest, row-group pruning, bloom
+filters, column projection), the full VL/VT storage interfaces and cluster select
+protocols, the complete insert protocol surface (jsonline, Loki, ES bulk, syslog,
+journald, Datadog, OTLP, Splunk), four-tier smart cache with snapshot persistence and
+cross-signal prefetch, multi-tier bloom indexing, background compaction with tombstones,
+cost-aware three-tier deletion (Glacier-safe), peer discovery + distributed cache,
+observability (~150 metrics, dashboards, alerting), settings profiles (5 presets,
+three-level hierarchy), separate logs/traces binaries, Helm chart, and the full
+E2E/benchmark/fuzz/parity CI machinery.
+
 ## Shipped & proven
 
 - **Unified partition metadata layer** — one metadata object per partition serving

@@ -829,28 +829,9 @@ See [ZSTD Compression Benchmark](docs/zstd-compression-benchmark.md) for full re
 
 ---
 
-## Current Status
+## Roadmap & status
 
-All core milestones are **complete**. The project is in production-readiness and feature expansion phase.
-
-| Milestone | Status | Description |
-|---|---|---|
-| **M1: Foundation** | Complete | Go module, CI/CD pipeline (test, lint, build, security), Dockerfile (distroless), Helm chart, config namespace with 110+ flags |
-| **M2: ParquetS3Storage** | Complete | Schema registry (OTLP → VL/VT), partition manifest, Parquet query engine with row group stats skip, bloom filters, column projection, all 11 VL storage interface methods |
-| **M3: Cache + Persistence** | Complete | L1 memory LRU, L2 disk LRU, singleflight S3 dedup, label/attribute index, metadata persistence to disk for fast restart |
-| **M4: Discovery + Peer Cache** | Complete | Hot boundary auto-discovery via `/internal/partition/list`, consistent hash peer cache (L3) via headless DNS, `/manifest/range` API |
-| **M5: Cluster Integration** | Complete | `/internal/select/*` binary protocol with ZSTD DataBlock streaming, `-storageNode` registration on vlselect/vtselect |
-| **M6: Filter AST + E2E** | Complete | Full LogsQL predicate engine (exact, substring, regex, NOT, AND, OR, ranges), Playwright E2E, schema validation |
-| **M7: Observability** | Complete | ~147 Prometheus metrics (including 12 bloom-specific), Grafana dashboards (single-instance + cluster), 10 alerting rules, circuit breaker, structured JSON logging |
-| **M8: Write Path** | Complete | Full VL insert protocol support via upstream `vlinsert` handlers (jsonline, Loki JSON+protobuf, ES bulk, syslog, journald, Datadog, OTLP, Splunk), logstore-buffer crash recovery (no WAL), adaptive flush, buffer query bridge for zero-delay reads |
-| **M9: Compaction** | Complete | Background merge of small Parquet files, size-tiered strategy, manifest atomic updates, tombstone integration |
-| **M10: Testing & Helm** | Complete | E2E test suite (VL + vlselect + loki-vl-proxy chain), benchmarks, Victoria-pattern Helm chart, upstream sync GHA |
-| **M11: Cost-Aware Deletion** | Complete | Three-tier deletion (tombstone → rewrite → lifecycle), `/delete/logsql/*` and `/delete/tracessql/*` APIs, storage-class detection, Glacier-safe, verify endpoint |
-| **Binary Split** | Complete | Separate `lakehouse-logs` + `lakehouse-traces` binaries with independent Go modules, mode-specific config/flags/schemas |
-| **Smart Cache** | Complete | Unified cache controller (L1-L4), active query pinning, cache sizing calculator, snapshot persistence, cross-signal prefetch between logs↔traces |
-| **E2E Compose** | Complete | Full Docker Compose with MinIO, VL/VT hot tiers, vlselect/vtselect multi-level select, loki-vl-proxy, DuckDB + ClickHouse analytics, 11 Grafana datasources |
-| **Bloom Index** | Complete | Multi-tier bloom index (Hot/Warm/Cold/Archive), per-column bloom filters, LRU cache, auto-tuning controller, config sync, metadata compactor, `/api/v1/bloom/status` API, 12 Prometheus metrics, 44 unit tests + E2E verification |
-| **Settings Profiles** | Complete | 5 named presets (balanced, max-performance, max-durability, max-cost-savings, dev) with three-level hierarchy (global → per-signal → per-role), Helm `coalesce` resolution, JSON schema validation, 24 regression tests |
+See the official [Roadmap](docs/roadmap.md) — everything shipped & proven (with reproducible benchmarks), in progress, and committed next.
 
 ---
 
