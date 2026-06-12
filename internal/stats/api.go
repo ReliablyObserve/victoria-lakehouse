@@ -1150,7 +1150,14 @@ func (a *API) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 	for _, name := range labels {
 		// Try the exact name first; fall back to prefix-stripped name
 		// (e.g. "service.name" matches label index entry "resource_attr:service.name").
-		li := a.cfg.LabelIndex.GetLabelInfo(name)
+		// Guard the nil index up front: a deployment can configure
+		// BreakdownLabels before the label index is wired/populated, and
+		// GetLabelInfo dereferences the receiver — calling it on a nil
+		// *LabelIndex would panic the whole request.
+		var li *cache.LabelInfo
+		if a.cfg.LabelIndex != nil {
+			li = a.cfg.LabelIndex.GetLabelInfo(name)
+		}
 		if li == nil && a.cfg.LabelIndex != nil {
 			for _, candidate := range a.cfg.LabelIndex.GetAllLabelInfo() {
 				if idx := strings.LastIndex(candidate.Name, ":"); idx >= 0 {
