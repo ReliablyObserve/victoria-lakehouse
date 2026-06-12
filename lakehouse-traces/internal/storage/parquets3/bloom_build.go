@@ -18,35 +18,34 @@ func extractLogBloomValues(rows []schema.LogRow) map[string][]string {
 	if len(rows) == 0 {
 		return nil
 	}
-	sets := map[string]map[string]bool{
-		"trace_id":     {},
-		"service.name": {},
+	sets := make(map[string]map[string]bool, len(schema.LogBloomValueColumns))
+	for _, c := range schema.LogBloomValueColumns {
+		sets[c.Name] = make(map[string]bool)
 	}
 	for i := range rows {
-		if rows[i].TraceID != "" {
-			sets["trace_id"][rows[i].TraceID] = true
-		}
-		if rows[i].ServiceName != "" {
-			sets["service.name"][rows[i].ServiceName] = true
+		for _, c := range schema.LogBloomValueColumns {
+			if v := c.Get(&rows[i]); v != "" {
+				sets[c.Name][v] = true
+			}
 		}
 	}
 	return bloomSetsToMap(sets)
 }
 
+// extractTraceBloomValues is extractLogBloomValues for trace rows (schema.TraceBloomValueColumns).
 func extractTraceBloomValues(rows []schema.TraceRow) map[string][]string {
 	if len(rows) == 0 {
 		return nil
 	}
-	sets := map[string]map[string]bool{
-		"trace_id":     {},
-		"service.name": {},
+	sets := make(map[string]map[string]bool, len(schema.TraceBloomValueColumns))
+	for _, c := range schema.TraceBloomValueColumns {
+		sets[c.Name] = make(map[string]bool)
 	}
 	for i := range rows {
-		if rows[i].TraceID != "" {
-			sets["trace_id"][rows[i].TraceID] = true
-		}
-		if rows[i].ServiceName != "" {
-			sets["service.name"][rows[i].ServiceName] = true
+		for _, c := range schema.TraceBloomValueColumns {
+			if v := c.Get(&rows[i]); v != "" {
+				sets[c.Name][v] = true
+			}
 		}
 	}
 	return bloomSetsToMap(sets)
