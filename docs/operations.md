@@ -227,6 +227,63 @@ Key metrics to watch:
 | `lakehouse_compaction_duration_seconds` (p95) | >60s may indicate S3 saturation |
 | `lakehouse_election_leader` | Should be 1 on exactly one instance in the fleet |
 
+### Compaction Hints & Stats
+
+`GET /lakehouse/api/v1/stats/compaction` returns a manifest-derived (no file reads) view of how well-compacted the data is, plus a **prioritized work-list** of partitions worth recompacting first for the best storage win. It is the data behind the UI's compaction panel and the source the manual trigger and the scheduler both act on.
+
+```jsonc
+{
+  "total_files": 1280, "total_bytes": 53687091200, "total_raw_bytes": 268435456000,
+  "compression_ratio": 5.0,
+  "by_level": [
+    { "level": 0, "files": 40,  "bytes": 2147483648,  "avg_file_bytes": 53687091, "compression_ratio": 3.1, "configured_zstd": 3 },
+    { "level": 2, "files": 900, "bytes": 48318382080, "avg_file_bytes": 53687091, "compression_ratio": 5.4, "configured_zstd": 11 }
+  ],
+  "compacted_bytes": 48318382080,   // >= L2, well rolled-up
+  "pending_bytes":   5368709120,    // L0/L1, awaiting rollup
+  "stale_schema_files": 12, "stale_schema_bytes": 644245094,
+  "fragmented_partitions": 3,
+  "estimated_reclaimable_bytes": 1234567890,
+  "candidates": [
+    {
+      "partition": "dt=2026-06-01/hour=00", "files": 4, "max_level": 2,
+      "stale_files": 3, "max_level_files": 4,
+      "bytes": 214748364, "estimated_savings_bytes": 19327352,
+      "estimated_bytes_after": 195421012,        // bytes - estimated_savings
+      "next_level": 3, "next_level_zstd": 11,     // what a recompaction would write
+      "reasons": ["stale_schema", "fragmented"]
+    }
+  ]
+}
+```
+
+A partition becomes a **candidate** when it is `stale_schema` (files written under an older schema fingerprint — they predate the current dedicated-column layout) and/or `fragmented` (two or more files stuck at the top level, which the level policy never re-picks). Candidates are sorted by `estimated_savings_bytes` descending. `configured_zstd` / `next_level_zstd` reflect `compaction.compression_level_by_output_level`, so the panel shows the zstd level already applied and the harder level a recompaction would apply.
+
+The scheduler consumes these hints automatically: on each scan it recompacts stale/fragmented partitions it owns even when the normal L0/L1 level policy would not pick them.
+
+### Manual Recompaction Trigger
+
+`POST /lakehouse/compaction/recompact` forces recompaction of a single partition now, bypassing the level-policy eligibility gate — for acting on a specific candidate from the stats above.
+
+```bash
+curl -XPOST http://<instance>:<port>/lakehouse/compaction/recompact \
+  -d '{"partition": "dt=2026-06-01/hour=00"}'        # level optional; 0/omitted derives from the hint
+```
+
+```jsonc
+{ "partition": "dt=2026-06-01/hour=00", "output_level": 3,
+  "input_files": 4, "output_files": 1, "rows_merged": 1048576, "bytes_written": 195421012 }
+```
+
+It runs the **same merge path** as a scheduled compaction (synchronously) and honors **HRW partition ownership**: an instance that does not own the partition returns `403` naming the owner, so in a fleet two pods never both rewrite the same partition — POST to any instance and it forwards/rejects based on ownership. Responses:
+
+| Status | Cause |
+|---|---|
+| `200` | Recompacted; body carries the result |
+| `400` | Missing/invalid `partition`, or fewer than two compactable files (nothing to merge) |
+| `403` | This instance is not the HRW owner of the partition (body names the owner) |
+| `503` | Compaction is disabled on this instance |
+
 ### Leader Election Troubleshooting
 
 **K8s mode — "not becoming leader"**

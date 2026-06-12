@@ -501,6 +501,11 @@ func run(cfg *config.Config, addr string) {
 	// returns 200 with X-Lakehouse-Draining=true; returns 503 when
 	// compaction is disabled (sched is nil).
 	mux.HandleFunc("/lakehouse/drain", compaction.DrainHandler(sched))
+	// Manual compaction trigger (spec: compaction hints). POST {partition, level?}
+	// forces (re)compaction of one partition past the level policy — picking up the
+	// stale-schema / fragmented candidates surfaced by /stats/compaction. HRW ownership
+	// gated (403 if not owner) so two pods never both rewrite the same partition.
+	mux.HandleFunc("/lakehouse/compaction/recompact", compaction.RecompactHandler(sched))
 
 	var handler http.Handler = mux
 	if resolver != nil && (resolver.HasAliases() || cfg.Tenant.AutoRegister) {

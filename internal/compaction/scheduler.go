@@ -9,6 +9,7 @@ package compaction
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -436,6 +437,103 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 	}
 
 	return compacted, nil
+}
+
+// ForceCompactPartition compacts a partition NOW, bypassing the level-policy
+// eligibility gate — the manual-trigger path behind POST /lakehouse/compaction/recompact
+// for the compaction hints. The CALLER must verify ownership (RecompactHandler does).
+// level <= 0 derives it from the hints (recompactionLevel) or the partition's max
+// level. Runs synchronously through the SAME SelectFiles + compactor (+ re-promote)
+// path as a scheduled compaction, with identical metrics/onCompacted bookkeeping.
+// Returns the result, or an error (draining / not found / fewer than 2 compactable files).
+func (s *Scheduler) ForceCompactPartition(ctx context.Context, partition string, level int) (*CompactResult, error) {
+	if s.draining.Load() {
+		return nil, fmt.Errorf("scheduler is draining; no new compaction accepted")
+	}
+	files := s.manifest.FilesForPartition(partition)
+	if len(files) == 0 {
+		return nil, fmt.Errorf("partition not found or empty: %s", partition)
+	}
+	if level <= 0 {
+		if lvl, ok := recompactionLevel(files, s.currentFP); ok {
+			level = lvl
+		} else {
+			for _, f := range files {
+				if f.CompactionLevel > level {
+					level = f.CompactionLevel
+				}
+			}
+		}
+	}
+	fp := MajoritySchemaFingerprint(files, level)
+	selected := s.policy.SelectFiles(files, level, fp)
+	if len(selected) < 2 {
+		return nil, fmt.Errorf("partition %s has fewer than 2 compactable files at level %d", partition, level)
+	}
+
+	s.manifest.MarkAttempt(partition, time.Now())
+	s.inFlight.Add(1)
+	metrics.CompactionPartitionsInFlight.Inc()
+	compStart := time.Now()
+
+	compactor := NewCompactor(CompactorConfig{
+		Pool:                    s.pool,
+		Manifest:                s.manifest,
+		Prefix:                  s.prefix,
+		Mode:                    s.mode,
+		RowGroupSize:            s.rowGroupSize,
+		CompressionLevel:        s.compressionLevel,
+		BloomRebuilder:          s.bloomRebuilder,
+		CompactionConfig:        s.compactionCfg,
+		TenantCompressionLookup: s.tenantLookup,
+	})
+	result, err := compactor.Compact(ctx, partition, selected, level)
+
+	metrics.CompactionPartitionsInFlight.Dec()
+	metrics.CompactionInFlightDuration.Observe(time.Since(compStart).Seconds())
+	s.inFlight.Done()
+
+	if err != nil {
+		metrics.CompactionErrorsTotal.Inc()
+		return nil, fmt.Errorf("forced compaction of %s: %w", partition, err)
+	}
+
+	metrics.CompactionRunsTotal.Inc()
+	metrics.CompactionFilesInputTotal.Add(len(selected))
+	metrics.CompactionFilesOutputTotal.Inc()
+	metrics.CompactionBytesReadTotal.Add(int(result.BytesRead))
+	metrics.CompactionBytesWrittenTotal.Add(int(result.BytesWritten))
+	metrics.CompactionRowsMergedTotal.Add(int(result.RowsMerged))
+	metrics.CompactionDuration.Observe(time.Since(compStart).Seconds())
+
+	if s.onCompacted != nil {
+		added := s.manifest.FilesForPartition(partition)
+		removed := make([]string, 0, len(selected))
+		for _, sel := range selected {
+			removed = append(removed, sel.Key)
+		}
+		s.onCompacted(added, removed)
+	}
+	logger.Infof("forced compaction; partition=%s, level=%d, input_files=%d, output=%s, rows=%d",
+		partition, level, len(selected), result.OutputFile, result.RowsMerged)
+	return result, nil
+}
+
+// OwnsPartition reports whether this pod is the HRW owner of the partition (true
+// when ownership is unset — single-node). Exposed for the recompact trigger's gate.
+func (s *Scheduler) OwnsPartition(partition string) bool {
+	if s.ownership == nil {
+		return true
+	}
+	return s.ownership.OwnsPartition(partition)
+}
+
+// OwnerOf returns the HRW owner peer of the partition ("" when ownership is unset).
+func (s *Scheduler) OwnerOf(partition string) string {
+	if s.ownership == nil {
+		return ""
+	}
+	return s.ownership.OwnerOf(partition)
 }
 
 // recordRingChange ticks the per-type counter and adds the event to

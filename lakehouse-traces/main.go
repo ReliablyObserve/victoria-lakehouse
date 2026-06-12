@@ -478,6 +478,11 @@ func run(cfg *config.Config, addr string) {
 	// Wire the compaction drain endpoint (spec §11.1). Mirror of
 	// cmd/lakehouse-logs/main.go — line-parity with feedback_logs_traces_module_parity.
 	mux.HandleFunc("/lakehouse/drain", compaction.DrainHandler(sched))
+	// Manual compaction trigger (spec: compaction hints). POST {partition, level?}
+	// forces (re)compaction of one partition past the level policy — picking up the
+	// stale-schema / fragmented candidates surfaced by /stats/compaction. HRW ownership
+	// gated (403 if not owner) so two pods never both rewrite the same partition.
+	mux.HandleFunc("/lakehouse/compaction/recompact", compaction.RecompactHandler(sched))
 
 	var handler http.Handler = mux
 	if resolver != nil && (resolver.HasAliases() || cfg.Tenant.AutoRegister) {
