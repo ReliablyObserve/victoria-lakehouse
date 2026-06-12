@@ -66,10 +66,10 @@ type CompactionCandidate struct {
 // storage win — the work-list a forced trigger / future auto-compaction job picks
 // up. Manifest-derived; no file reads.
 type CompactionStats struct {
-	TotalFiles       int          `json:"total_files"`
-	TotalBytes       int64        `json:"total_bytes"`
-	TotalRawBytes    int64        `json:"total_raw_bytes"`
-	CompressionRatio float64      `json:"compression_ratio"`
+	TotalFiles       int     `json:"total_files"`
+	TotalBytes       int64   `json:"total_bytes"`
+	TotalRawBytes    int64   `json:"total_raw_bytes"`
+	CompressionRatio float64 `json:"compression_ratio"`
 	// TotalBloomBytes is the footer-bloom footprint across all files (the storage
 	// cost of the file/row-group skip blooms). BloomColumns names the bloomed
 	// columns and BloomFPRate the configured false-positive rate — both are set by

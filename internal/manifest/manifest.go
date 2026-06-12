@@ -55,12 +55,12 @@ type FileInfo struct {
 	// manifest's default bucket — preserves backward compatibility for
 	// every file written before bucket-isolation support landed and
 	// for tenants that share the default bucket via prefix isolation.
-	Bucket            string                  `json:"bucket,omitempty"`
-	Size              int64                   `json:"size"`
-	RowCount          int64                   `json:"row_count,omitempty"`
-	MinTimeNs         int64                   `json:"min_time_ns,omitempty"`
-	MaxTimeNs         int64                   `json:"max_time_ns,omitempty"`
-	RawBytes          int64                   `json:"raw_bytes,omitempty"`
+	Bucket    string `json:"bucket,omitempty"`
+	Size      int64  `json:"size"`
+	RowCount  int64  `json:"row_count,omitempty"`
+	MinTimeNs int64  `json:"min_time_ns,omitempty"`
+	MaxTimeNs int64  `json:"max_time_ns,omitempty"`
+	RawBytes  int64  `json:"raw_bytes,omitempty"`
 	// BloomBytes is the on-disk footprint of this file's FOOTER blooms (sum of the
 	// per-row-group column-chunk bloom filter sizes), captured at write time so the
 	// compaction stats can report bloom storage cost without reading any file.
