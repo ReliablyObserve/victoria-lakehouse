@@ -23,6 +23,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/vlstorage"
 )
 
 // CompactorPool abstracts S3 operations needed by the compactor.
@@ -530,6 +531,15 @@ func (c *Compactor) mergeLogFiles(allData [][]byte) ([]schema.LogRow, error) {
 		}
 	}
 
+	// Re-derive dedicated columns (Tier-1 OTel + Tier-2 custom slots) from the
+	// attribute map for files written before a key was promoted (v1). Promotion runs
+	// only at ingest, so old files keep promoted attrs in the map; this heals them
+	// forward on every compaction pass — they gain dedicated-column compression and
+	// their dedicated-column cardinality stops reading 0. Idempotent for v2 rows.
+	for i := range merged {
+		vlstorage.RepromoteLogRow(&merged[i])
+	}
+
 	sort.Slice(merged, func(i, j int) bool {
 		if merged[i].TimestampUnixNano != merged[j].TimestampUnixNano {
 			return merged[i].TimestampUnixNano < merged[j].TimestampUnixNano
@@ -538,6 +548,16 @@ func (c *Compactor) mergeLogFiles(allData [][]byte) ([]schema.LogRow, error) {
 	})
 	return merged, nil
 }
+
+// traceRepromote re-derives dedicated columns + slots for a trace row during
+// compaction. Injected (SetTraceRepromote) by the traces binary at startup because
+// trace promotion lives in the traces module, out of this package's import reach —
+// the trace twin of the inline vlstorage.RepromoteLogRow call in mergeLogFiles.
+var traceRepromote func(*schema.TraceRow)
+
+// SetTraceRepromote installs the trace re-promote function (traces binary only; the
+// logs binary leaves it nil → the mergeTraceFiles re-promote pass is a no-op there).
+func SetTraceRepromote(fn func(*schema.TraceRow)) { traceRepromote = fn }
 
 func (c *Compactor) mergeTraceFiles(allData [][]byte) ([]schema.TraceRow, error) {
 	var merged []schema.TraceRow
@@ -548,6 +568,16 @@ func (c *Compactor) mergeTraceFiles(allData [][]byte) ([]schema.TraceRow, error)
 		}
 		merged = append(merged, rows...)
 	}
+
+	// Heal v1 trace files forward — re-derive dedicated columns + Tier-2 slots from the
+	// resource/span attribute maps (vlstorage.RepromoteTraceRow). No-op in the logs
+	// binary (injector unset) and for v2 rows.
+	if traceRepromote != nil {
+		for i := range merged {
+			traceRepromote(&merged[i])
+		}
+	}
+
 	sort.Slice(merged, func(i, j int) bool {
 		if merged[i].TimestampUnixNano != merged[j].TimestampUnixNano {
 			return merged[i].TimestampUnixNano < merged[j].TimestampUnixNano

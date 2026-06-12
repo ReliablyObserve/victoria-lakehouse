@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Compaction re-promotes map-stored attributes into dedicated columns (heals old files forward).** Files written before a key was promoted kept that attribute in the `attributes` map — promotion ran only at ingest (`mapFieldToRow`), and neither the writer nor the compactor re-applied it, so pre-promotion data never gained the dedicated-column compression (the −9.5% / −8.0% win missed the backlog) and its dedicated-column cardinality read `0`. `mergeLogFiles` / `mergeTraceFiles` now re-derive dedicated columns on every compaction pass via `vlstorage.Repromote{Log,Trace}Row`, re-routing each map entry through the **same ingest mappers** (Tier-1 OTel + Tier-2 custom slots, with and without bloom) — so old files heal forward as they roll up to higher levels. Traces promotion lives in the traces module (out of the root compactor's import reach) and is injected via `compaction.SetTraceRepromote`; a no-op in the logs binary and for already-promoted v2 rows. Guarded by unit + Tier-2-slot + empty-key + idempotency tests and `FuzzRepromote{Log,Trace}Row` (no panic, output keys ⊆ input, second pass is a no-op — 1M+ execs clean).
+
 ## [0.101.0] - 2026-06-12
 
 ### Added

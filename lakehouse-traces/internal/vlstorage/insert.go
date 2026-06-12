@@ -537,3 +537,41 @@ func mapSpanAttr(row *schema.TraceRow, key, value string) {
 		row.SpanAttributes[strings.Clone(key)] = strings.Clone(value)
 	}
 }
+
+// RepromoteTraceRow is RepromoteLogRow for trace rows — the compaction-time healing
+// of v1 files written before a key was promoted. Re-derives dedicated columns
+// (Tier-1 OTel) and Tier-2 custom slots from BOTH attribute maps (resource + span)
+// by re-routing each entry through the SAME ingest mappers used at write time, so
+// semantics are identical. Promoted/slotted keys land in their typed column and leave
+// the map; non-promoted keys rebuild the map. Idempotent for v2 rows; the empty key
+// is preserved in its map rather than routed.
+func RepromoteTraceRow(r *schema.TraceRow) {
+	if len(r.ResourceAttributes) > 0 {
+		attrs := r.ResourceAttributes
+		r.ResourceAttributes = nil
+		for k, v := range attrs {
+			if k == "" {
+				if r.ResourceAttributes == nil {
+					r.ResourceAttributes = make(map[string]string)
+				}
+				r.ResourceAttributes[k] = v
+				continue
+			}
+			mapResourceAttr(r, k, v)
+		}
+	}
+	if len(r.SpanAttributes) > 0 {
+		attrs := r.SpanAttributes
+		r.SpanAttributes = nil
+		for k, v := range attrs {
+			if k == "" {
+				if r.SpanAttributes == nil {
+					r.SpanAttributes = make(map[string]string)
+				}
+				r.SpanAttributes[k] = v
+				continue
+			}
+			mapSpanAttr(r, k, v)
+		}
+	}
+}
