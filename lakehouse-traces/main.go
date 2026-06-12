@@ -1239,10 +1239,13 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			// The schema bloom set the writer/compactor actually emit (Tier-1
 			// dedicated columns + slots + legacy), NOT the bare operator list —
 			// so the Cardinality Explorer's has_bloom reflects what's on disk.
-			BloomColumns:     cfg.WrittenBloomColumns(),
-			BreakdownLabels:  cfg.Stats.BreakdownLabels,
-			PmetaCardinality: store.PmetaCardinality,
-			StatsAggregate:   statsAgg,
+			BloomColumns:      cfg.WrittenBloomColumns(),
+			BreakdownLabels:   cfg.Stats.BreakdownLabels,
+			PmetaCardinality:  store.PmetaCardinality,
+			StatsAggregate:    statsAgg,
+			MetaResidentBytes: store.PmetaResidentBytes,
+			MetaDiskBytes:     store.DiskCacheBytes,
+			MetaS3Bytes:       statsAgg.MetaS3,
 		})
 		statsAPI.Register(mux)
 	}
@@ -1375,6 +1378,9 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 				if err := statsAgg.SaveToS3(ctx, store.Pool(), cfg.AutoPrefix()+stats.AggregateSidecarKeySuffix); err != nil {
 					logger.Warnf("failed to persist stats-aggregate sidecar: %s", err)
 				}
+				if n, err := store.Pool().PrefixBytes(ctx, cfg.S3.Bucket, cfg.AutoPrefix()+"_meta/"); err == nil {
+					statsAgg.SetMetaS3(n)
+				}
 			}
 
 			if cfg.Cache.WarmupPartitions > 0 || cfg.Cache.WarmupMaxFiles > 0 {
@@ -1471,6 +1477,9 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 				if statsAgg != nil {
 					statsAgg.Recompute(m.AllFiles())
 					_ = statsAgg.SaveToS3(rctx, store.Pool(), cfg.AutoPrefix()+stats.AggregateSidecarKeySuffix)
+					if n, err := store.Pool().PrefixBytes(rctx, cfg.S3.Bucket, cfg.AutoPrefix()+"_meta/"); err == nil {
+						statsAgg.SetMetaS3(n)
+					}
 				}
 			}
 			rcancel()

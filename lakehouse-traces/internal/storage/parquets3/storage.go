@@ -680,6 +680,25 @@ func (s *Storage) DiskCacheStats() *cache.Stats {
 	return &st
 }
 
+// DiskCacheBytes is this node's on-disk cache footprint in bytes (0 if no disk
+// cache). Local to this instance — see the Storage Overview metadata tiles.
+func (s *Storage) DiskCacheBytes() int64 {
+	if s.diskCache == nil {
+		return 0
+	}
+	return s.diskCache.Size()
+}
+
+// PmetaResidentBytes is this node's in-RAM metadata footprint — the pmeta
+// catalog/bloom/file-meta bundles + interning dict (0 unless --pmeta). Local to
+// this instance.
+func (s *Storage) PmetaResidentBytes() int64 {
+	if s.catalog == nil {
+		return 0
+	}
+	return s.catalog.ResidentBytes()
+}
+
 func (s *Storage) LabelIndex() *cache.LabelIndex {
 	return s.labelIndex
 }

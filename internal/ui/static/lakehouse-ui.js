@@ -184,6 +184,23 @@
       });
       container.appendChild(cards);
 
+      // Metadata footprint \u2014 pmeta RAM + disk cache are THIS node; S3 is cluster-wide.
+      if (ov.meta_resident_bytes || ov.meta_disk_bytes || ov.meta_s3_bytes) {
+        container.appendChild(el("div", { className: "lh-section-title", textContent: "Metadata footprint" }));
+        var metaCards = el("div", { className: "lh-cards" });
+        [
+          ["Metadata RAM (node)", fmtBytes(ov.meta_resident_bytes || 0)],
+          ["Disk cache (node)", fmtBytes(ov.meta_disk_bytes || 0)],
+          ["Metadata on S3 (cluster)", fmtBytes(ov.meta_s3_bytes || 0)],
+        ].forEach(function (d) {
+          metaCards.appendChild(el("div", { className: "lh-card" }, [
+            el("div", { className: "lh-card-label", textContent: d[0] }),
+            el("div", { className: "lh-card-value", textContent: d[1] }),
+          ]));
+        });
+        container.appendChild(metaCards);
+      }
+
       // Info row \u2014 data version + compression (Bucket / Fleet are now tiles above).
       var info = el("div", { className: "lh-info-row" });
       info.appendChild(el("span", { className: "lh-info-item", innerHTML: "Data range: <strong>" + (ov.oldest_data ? ov.oldest_data.slice(0, 10) : "—") + " → " + (ov.newest_data ? ov.newest_data.slice(0, 10) : "—") + "</strong>" }));

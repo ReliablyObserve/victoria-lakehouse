@@ -45,6 +45,7 @@ type StatsAggregate struct {
 	totRows    int64
 	totFiles   int64
 	generation uint64
+	metaS3     int64 // cluster on-S3 _meta/ bytes; swept periodically, not persisted
 }
 
 // NewStatsAggregate returns an empty aggregate.
@@ -175,6 +176,25 @@ func (a *StatsAggregate) TotalStorage() int64 {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.totStorage
+}
+
+// SetMetaS3 records the cluster-wide on-S3 metadata footprint (the _meta/ prefix
+// byte sum), swept periodically by the caller. Not part of the persisted snapshot.
+func (a *StatsAggregate) SetMetaS3(n int64) {
+	a.mu.Lock()
+	a.metaS3 = n
+	a.mu.Unlock()
+}
+
+// MetaS3 returns the last-swept cluster on-S3 metadata footprint. Nil-safe, so it
+// can serve as an APIConfig func value even when the aggregate is absent.
+func (a *StatsAggregate) MetaS3() int64 {
+	if a == nil {
+		return 0
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.metaS3
 }
 
 // FieldSizes returns a copy of the per-field aggregate (for /stats/storage).

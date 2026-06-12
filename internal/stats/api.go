@@ -46,6 +46,13 @@ type APIConfig struct {
 	// a field (0 if unavailable). Preferred over the lazily-populated, 100-capped
 	// LabelIndex count for the Cardinality Explorer. Nil when pmeta is off.
 	PmetaCardinality func(field string) uint64
+	// Metadata-size sources for the Storage Overview tiles. Nil-safe (a nil func
+	// contributes nothing). ResidentBytes + DiskBytes are THIS node's local
+	// footprint; S3Bytes is the cluster-wide on-S3 _meta/ total (the wiring caches
+	// it — it needs an S3 LIST).
+	MetaResidentBytes func() int64
+	MetaDiskBytes     func() int64
+	MetaS3Bytes       func() int64
 }
 
 // API serves JSON endpoints for tenant statistics, cost, cardinality, etc.
@@ -127,6 +134,11 @@ type OverviewResponse struct {
 	RetentionEnabled bool   `json:"retention_enabled"`
 	RetentionDefault string `json:"retention_default,omitempty"`
 	RetentionRules   int    `json:"retention_rules,omitempty"`
+	// Metadata footprint. ResidentBytes (pmeta RAM) + DiskBytes (disk cache) are
+	// THIS node's local usage; S3Bytes is the cluster-wide on-S3 _meta/ footprint.
+	MetaResidentBytes int64 `json:"meta_resident_bytes,omitempty"`
+	MetaDiskBytes     int64 `json:"meta_disk_bytes,omitempty"`
+	MetaS3Bytes       int64 `json:"meta_s3_bytes,omitempty"`
 }
 
 // ClassBreakdown is a per-storage-class breakdown of bytes and files.
@@ -740,6 +752,15 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 		RetentionEnabled:    a.cfg.RetentionEnabled,
 		RetentionDefault:    a.cfg.RetentionDefault,
 		RetentionRules:      a.cfg.RetentionRules,
+	}
+	if a.cfg.MetaResidentBytes != nil {
+		resp.MetaResidentBytes = a.cfg.MetaResidentBytes()
+	}
+	if a.cfg.MetaDiskBytes != nil {
+		resp.MetaDiskBytes = a.cfg.MetaDiskBytes()
+	}
+	if a.cfg.MetaS3Bytes != nil {
+		resp.MetaS3Bytes = a.cfg.MetaS3Bytes()
 	}
 
 	writeJSON(w, resp)
