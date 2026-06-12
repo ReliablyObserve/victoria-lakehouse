@@ -94,6 +94,56 @@ func TestConfigBreakdownLabelsAffectsOutput(t *testing.T) {
 	}
 }
 
+// TestHandleOverview_MetadataFields guards Phase B: the three metadata-size
+// APIConfig funcs populate the overview response, and nil funcs (feature
+// unavailable) leave the fields zero without panicking.
+func TestHandleOverview_MetadataFields(t *testing.T) {
+	api := NewAPI(APIConfig{
+		Registry:          NewTenantRegistry("node-1"),
+		Manifest:          manifest.New("b", "d/"),
+		CostCalc:          NewCostCalculator(nil, nil),
+		LabelIndex:        cache.NewLabelIndex(),
+		Mode:              "logs",
+		Bucket:            "test-bucket",
+		MetaResidentBytes: func() int64 { return 24_000_000 },
+		MetaDiskBytes:     func() int64 { return 140_000_000 },
+		MetaS3Bytes:       func() int64 { return 5_000_000 },
+	})
+	mux := http.NewServeMux()
+	api.Register(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/lakehouse/api/v1/stats/overview", nil))
+	var resp OverviewResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.MetaResidentBytes != 24_000_000 || resp.MetaDiskBytes != 140_000_000 || resp.MetaS3Bytes != 5_000_000 {
+		t.Errorf("metadata fields = resident %d disk %d s3 %d; want 24000000 / 140000000 / 5000000",
+			resp.MetaResidentBytes, resp.MetaDiskBytes, resp.MetaS3Bytes)
+	}
+
+	// Nil funcs (feature unavailable) must not panic and leave the fields zero.
+	api2 := NewAPI(APIConfig{
+		Registry:   NewTenantRegistry("node-1"),
+		Manifest:   manifest.New("b", "d/"),
+		CostCalc:   NewCostCalculator(nil, nil),
+		LabelIndex: cache.NewLabelIndex(),
+		Mode:       "logs",
+	})
+	mux2 := http.NewServeMux()
+	api2.Register(mux2)
+	rec2 := httptest.NewRecorder()
+	mux2.ServeHTTP(rec2, httptest.NewRequest("GET", "/lakehouse/api/v1/stats/overview", nil))
+	var resp2 OverviewResponse
+	if err := json.Unmarshal(rec2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("decode (nil funcs): %v", err)
+	}
+	if resp2.MetaResidentBytes != 0 || resp2.MetaDiskBytes != 0 || resp2.MetaS3Bytes != 0 {
+		t.Errorf("nil-func metadata fields should be 0, got %d/%d/%d",
+			resp2.MetaResidentBytes, resp2.MetaDiskBytes, resp2.MetaS3Bytes)
+	}
+}
+
 func TestConfigEmptyBreakdownLabelsReturnsEmpty(t *testing.T) {
 	api := NewAPI(APIConfig{
 		Registry:        NewTenantRegistry("node-1"),

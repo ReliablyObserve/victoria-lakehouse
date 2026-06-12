@@ -1,6 +1,8 @@
 package stats
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -91,5 +93,71 @@ func TestStatsAggregate_SuffixMatch(t *testing.T) {
 	a.OnAdd("p", aggFile("1/1/a.parquet", 100, 1, map[string]int64{"service.name": 100}))
 	if got := a.StorageBytesOf("resource_attr:service.name"); got != 100 {
 		t.Errorf("suffix match = %d, want 100", got)
+	}
+}
+
+// TestStatsAggregate_ScaledStorage is the regression guard for the Cardinality
+// Explorer "Storage column read in KB" bug: older files carry no ColumnBytes, so
+// covered < total and the API scales covered per-field bytes up to the real
+// on-S3 total. Asserts the covered/total inputs the scale is derived from.
+func TestStatsAggregate_ScaledStorage(t *testing.T) {
+	a := NewStatsAggregate()
+	a.OnAdd("p", aggFile("1/1/new.parquet", 1000, 10, map[string]int64{"f": 1000}))   // carries ColumnBytes
+	a.OnAdd("p", manifest.FileInfo{Key: "1/1/old.parquet", Size: 3000, RowCount: 30}) // pre-feature, no ColumnBytes
+	if cov := a.CoveredStorage(); cov != 1000 {
+		t.Errorf("CoveredStorage = %d, want 1000 (only the file with ColumnBytes)", cov)
+	}
+	if tot := a.TotalStorage(); tot != 4000 {
+		t.Errorf("TotalStorage = %d, want 4000 (all files' Size)", tot)
+	}
+	// scale = total/covered = 4 → the API renders f as 1000*4 = 4000 (real magnitude).
+}
+
+func TestStatsAggregate_MetaS3NilSafe(t *testing.T) {
+	a := NewStatsAggregate()
+	a.SetMetaS3(123)
+	if got := a.MetaS3(); got != 123 {
+		t.Errorf("MetaS3 = %d, want 123", got)
+	}
+	var nilAgg *StatsAggregate
+	if got := nilAgg.MetaS3(); got != 0 {
+		t.Errorf("nil-receiver MetaS3 = %d, want 0 (must be nil-safe for the APIConfig func value)", got)
+	}
+}
+
+// fakePool is an in-memory stats.S3Pool for the sidecar round-trip test.
+type fakePool struct{ objs map[string][]byte }
+
+func (p *fakePool) Upload(_ context.Context, key string, data []byte) error {
+	if p.objs == nil {
+		p.objs = map[string][]byte{}
+	}
+	p.objs[key] = append([]byte(nil), data...)
+	return nil
+}
+func (p *fakePool) Download(_ context.Context, key string) ([]byte, error) {
+	if d, ok := p.objs[key]; ok {
+		return d, nil
+	}
+	return nil, errors.New("not found")
+}
+
+func TestStatsAggregate_SaveLoadS3(t *testing.T) {
+	a := NewStatsAggregate()
+	a.OnAdd("p", aggFile("1/1/a.parquet", 1000, 10, map[string]int64{"f": 1000}))
+	pool := &fakePool{}
+	if err := a.SaveToS3(context.Background(), pool, "k"); err != nil {
+		t.Fatal(err)
+	}
+	b := NewStatsAggregate()
+	if err := b.LoadFromS3(context.Background(), pool, "k"); err != nil {
+		t.Fatal(err)
+	}
+	if b.StorageBytesOf("f") != 1000 || b.TenantSizes()["1:1"].StorageBytes != 1000 {
+		t.Errorf("sidecar round-trip mismatch: f=%d tenant=%+v", b.StorageBytesOf("f"), b.TenantSizes()["1:1"])
+	}
+	// A missing object is a non-fatal cold-start miss (caller log-and-continues).
+	if err := b.LoadFromS3(context.Background(), pool, "missing"); err == nil {
+		t.Error("LoadFromS3 of a missing key should return an error so the caller skips it")
 	}
 }

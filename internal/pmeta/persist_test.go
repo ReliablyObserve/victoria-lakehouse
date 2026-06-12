@@ -88,6 +88,66 @@ func partitionParity(t *testing.T, label string, src, dst *Store, parts map[stri
 	}
 }
 
+// TestStore_PersistedBytes is the regression guard for the incremental on-S3
+// metadata footprint (Storage Overview "Metadata on S3" tile). It must equal the
+// sum of the bundle objects' sizes WITHOUT ever listing S3: bundles record their
+// encoded size on persist + on warm-load, and a re-persist (the compaction path)
+// updates it.
+func TestStore_PersistedBytes(t *testing.T) {
+	ctx := context.Background()
+	parts := samplePartitions()
+
+	src := catalogStore()
+	loadPartitions(src, parts)
+	if got := src.PersistedBytes(); got != 0 {
+		t.Errorf("PersistedBytes before any persist = %d, want 0", got)
+	}
+
+	os := newMemOS()
+	if _, err := src.PersistDirty(ctx, os); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sum the bytes actually written to the object store — PersistedBytes must
+	// match it exactly, derived incrementally rather than by a LIST.
+	os.mu.Lock()
+	var want int64
+	for _, v := range os.m {
+		want += int64(len(v))
+	}
+	os.mu.Unlock()
+	if want == 0 {
+		t.Fatal("no bundle objects written")
+	}
+	if got := src.PersistedBytes(); got != want {
+		t.Errorf("PersistedBytes after persist = %d, want %d (sum of on-S3 bundle bytes)", got, want)
+	}
+
+	// Cold-load into a FRESH store: the warm path records the loaded sizes, so a
+	// restarted pod reports the footprint without re-persisting.
+	dst := catalogStore()
+	keys := make([]string, 0, len(parts))
+	for p := range parts {
+		keys = append(keys, p)
+	}
+	dst.WarmPartitions(ctx, os, keys, 4)
+	if got := dst.PersistedBytes(); got != want {
+		t.Errorf("PersistedBytes after warm-load = %d, want %d", got, want)
+	}
+
+	// Re-persist after a mutation (compaction path) updates the recorded size.
+	before := src.PersistedBytes()
+	loadPartitions(src, map[string][]FileContribution{
+		"logs/dt=2026-06-09/hour=10": {{Labels: map[string][]string{"service.name": {"svc-x", "svc-y", "svc-z", "svc-w"}}}},
+	})
+	if _, err := src.PersistDirty(ctx, os); err != nil {
+		t.Fatal(err)
+	}
+	if after := src.PersistedBytes(); after <= before {
+		t.Errorf("PersistedBytes after adding values = %d, want > %d (re-persist must update the size)", after, before)
+	}
+}
+
 func TestPersistWarm_RoundTripParity(t *testing.T) {
 	ctx := context.Background()
 	parts := samplePartitions()

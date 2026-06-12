@@ -268,30 +268,6 @@ func (p *ClientPool) S3Client() *s3.Client {
 	return p.client
 }
 
-// PrefixBytes returns the total size of all objects under prefix in bucket. Used
-// for the on-S3 metadata footprint (the sum of the deployment's _meta/ objects:
-// pmeta bundles, snapshots, sidecars). Requires an S3 LIST, so callers must cache
-// the result rather than call it per request.
-func (p *ClientPool) PrefixBytes(ctx context.Context, bucket, prefix string) (int64, error) {
-	var total int64
-	paginator := s3.NewListObjectsV2Paginator(p.client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(bucket),
-		Prefix: aws.String(prefix),
-	})
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
-		if err != nil {
-			return total, err
-		}
-		for i := range page.Contents {
-			if page.Contents[i].Size != nil {
-				total += *page.Contents[i].Size
-			}
-		}
-	}
-	return total, nil
-}
-
 func (p *ClientPool) Upload(ctx context.Context, key string, data []byte) error {
 	start := time.Now()
 	metrics.S3RequestsTotal.Inc("PutObject")

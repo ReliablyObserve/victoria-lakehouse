@@ -373,6 +373,20 @@ func (s *Store) ResidentBytes() int64 {
 	return n
 }
 
+// PersistedBytes is the cluster's on-S3 metadata footprint — the sum of every
+// resident bundle's last-persisted encoded size, tracked incrementally on
+// persist / warm-load / compaction (NO S3 LIST). Bundles evicted or removed from
+// the store drop out of the sum automatically. Excludes the tiny _meta/ sidecars.
+func (s *Store) PersistedBytes() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var n int64
+	for _, b := range s.bundles {
+		n += b.PersistedSize()
+	}
+	return n
+}
+
 // DirtyPartitions returns partitions with unpersisted changes — THE single
 // dirty list (replaces the five per-subsystem mechanisms).
 func (s *Store) DirtyPartitions() []string {

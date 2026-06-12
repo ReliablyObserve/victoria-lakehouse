@@ -53,10 +53,11 @@ const (
 type Bundle struct {
 	Partition string
 
-	mu       sync.RWMutex
-	facets   map[FacetKind]Facet
-	gen      atomic.Uint64 // bumped on every mutation
-	cleanGen atomic.Uint64 // gen at the last successful persist (or decode)
+	mu            sync.RWMutex
+	facets        map[FacetKind]Facet
+	gen           atomic.Uint64 // bumped on every mutation
+	cleanGen      atomic.Uint64 // gen at the last successful persist (or decode)
+	persistedSize atomic.Int64  // encoded byte size last written to / loaded from S3
 }
 
 // NewBundle returns an empty bundle for a partition.
@@ -95,6 +96,13 @@ func (b *Bundle) persisted(g uint64) { b.cleanGen.Store(g) }
 
 // clearDirty marks the bundle fully clean (decode path: content == durable).
 func (b *Bundle) clearDirty() { b.cleanGen.Store(b.gen.Load()) }
+
+// setPersistedSize records the encoded byte size last written to / loaded from S3.
+func (b *Bundle) setPersistedSize(n int64) { b.persistedSize.Store(n) }
+
+// PersistedSize is this bundle's on-S3 encoded byte size (0 until first
+// persist/decode). The Store sums it for the metadata footprint without a LIST.
+func (b *Bundle) PersistedSize() int64 { return b.persistedSize.Load() }
 
 // EstimateBytes is the resident size across facets (drives eviction).
 func (b *Bundle) EstimateBytes() int64 {

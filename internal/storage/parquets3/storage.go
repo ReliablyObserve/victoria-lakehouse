@@ -807,6 +807,16 @@ func (s *Storage) PmetaResidentBytes() int64 {
 	return s.catalog.ResidentBytes()
 }
 
+// PmetaPersistedBytes is the cluster's on-S3 metadata footprint — the sum of
+// every resident bundle's encoded size, tracked incrementally on persist/warm/
+// compaction (no S3 LIST). 0 unless --pmeta.
+func (s *Storage) PmetaPersistedBytes() int64 {
+	if s.catalog == nil {
+		return 0
+	}
+	return s.catalog.PersistedBytes()
+}
+
 func (s *Storage) LabelIndex() *cache.LabelIndex {
 	return s.labelIndex
 }
