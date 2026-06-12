@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.101.0] - 2026-06-12
+
 ### Added
 
 - **Compaction hints + manual recompaction trigger.** `GET /lakehouse/api/v1/stats/compaction` returns a manifest-derived efficiency picture — per-level file/byte counts with each level's compression ratio and the configured zstd, compacted-vs-pending bytes, stale-schema footprint, fragmented-partition count, and a **prioritized work-list of recompaction candidates** (each with estimated savings, before/after bytes, and the next output level + its zstd). A partition is flagged when it is `stale_schema` (older fingerprint, predates the current dedicated-column layout) and/or `fragmented` (≥2 files stuck at the top level the level policy never re-picks). The scheduler now **consumes these hints automatically** — recompacting stale/fragmented partitions it owns even when the L0/L1 level policy would not. `POST /lakehouse/compaction/recompact {partition, level?}` forces recompaction of one partition on demand through the same merge path, **HRW-ownership gated** (403 if the instance isn't the owner) so two pods never both rewrite a partition. Manifest-only (no file reads); full unit + e2e (real Parquet through the real compactor) + regression coverage. See `docs/operations.md` → Compaction.
