@@ -223,7 +223,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// LabelAggregates for files fully within the range — zero S3 reads. Boundary
 	// / un-aggregated files fall through to the scan below; the buffer bridge
 	// still contributes unflushed rows after the watermark.
-	if aggField := countByPushdownField(pipeFields, filter); aggField != "" && !hasTombstones {
+	if aggField := countByPushdownField(queryStr, pipeFields, filter); aggField != "" && !hasTombstones {
 		remaining := s.manifestCountFastPath(files, startNs, endNs, aggField, filteredWriteBlock)
 		if len(remaining) == 0 {
 			if n := rowsEmitted.Load(); n > 0 {
@@ -566,7 +566,21 @@ func (s *Storage) manifestFastPath(files []manifest.FileInfo, startNs, endNs int
 // column read. A filter, multiple fields, or timestamp bucketing → "" (fall
 // through to scan). It self-guards further downstream: only files that actually
 // carry a LabelAggregate for the field are served from metadata.
-func countByPushdownField(pipeFields []string, filter *logstorage.Filter) string {
+func countByPushdownField(queryStr string, pipeFields []string, filter *logstorage.Filter) string {
+	// The synthetic-agg fast path is SOUND ONLY when the query reduces its output
+	// to the single agg field — a stats/uniq/top/fields pipe makes every other
+	// column irrelevant, so synthetic rows reproducing just that field + _time
+	// give the same answer as a scan. A full-row RETRIEVAL — a bare filter,
+	// `field:X`, `field:X | limit N`, `| sort` — needs every column, so serving it
+	// synthetic {field,_time} rows blanks out _msg and all other fields (drilldown
+	// /explore showed empty bodies with only the filtered dedicated column, e.g.
+	// `{"_msg":"","deployment.environment":"production"}`). Without a column-
+	// selecting pipe the query is a retrieval: fall through to the real scan.
+	// (The unfiltered single-field case always carries such a pipe — pipeFields is
+	// populated from it — so this never disables the legitimate aggregation path.)
+	if !hasColumnSelectingPipe(queryStr) {
+		return ""
+	}
 	if len(pipeFields) > 1 {
 		return ""
 	}
