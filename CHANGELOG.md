@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Accurate Cardinality Explorer backed by durable pmeta state.** The Stats Cardinality Explorer now reads distinct counts from the pmeta catalog facet / persisted high-card HLL (write-fed, compaction-safe) instead of transient in-memory taps, so reported cardinality is accurate and survives restart and compaction. `has_bloom` is reported from the written schema bloom set.
+- **vmui Lakehouse tab and sub-tab persistence.** The active Lakehouse Explorer tab is persisted in the URL hash (survives refresh, bookmarkable) and the selected sub-tab (Cardinality, etc.) is remembered across reload.
+- **Searchable, extensible Storage Breakdown** with richer defaults.
+
+### Changed
+
+- **Bloom-value extraction is now schema-driven.** Value extraction covers every `HasBloom` column from the per-signal schema set (logs and traces) rather than a hardcoded subset, and dedicated columns are indexed for stats.
+- **Stats Storage Breakdown is served from manifest `LabelAggregates`** (real and durable), with a fallback to manifest aggregates for dedicated columns, so breakdown shares no longer depend on in-memory state.
+- **The Lakehouse UI and stats JSON responses are sent `no-store`**, so deploys and browsers never surface stale cached stats.
+
+### Fixed
+
+- **High-card id cardinality (trace_id / span_id) persists across restart.** The always-sketch id path (ids deliberately not bloomed) is persisted via the pmeta catalog facet, so distinct counts survive restart instead of resetting to zero.
+- **Overview partition count is tenant-scoped** and reconciles with the tenant view; tenant partitions are scoped to the tenant.
+- **vmui Lakehouse tab restore survives the React re-render race.**
+
+### Performance
+
+- **Pure-buffer query fast path:** unflushed in-memory windows are aggregated natively, avoiding unnecessary work for stats/count queries over not-yet-flushed data.
+
 ## [0.90.0] - 2026-06-11
 
 ### Added
