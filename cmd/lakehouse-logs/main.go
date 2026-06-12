@@ -744,10 +744,13 @@ func setupCompaction(
 		Interval:         cfg.Compaction.Interval,
 		RowGroupSize:     cfg.Insert.RowGroupSize,
 		CompressionLevel: cfg.Insert.CompressionLevel,
-		// Orphan-sweep (Tier-A steal) mirrors the manifest push only — it does not
-		// feed pmeta here (the scheduler path above owns the facet/bloom feed), so
-		// the combined bloom is ignored on this rare path.
-		OnCompacted: func(added []manifest.FileInfo, removed []string, _ map[string]map[string][]string) {
+		// Orphan-sweep (Tier-A steal) feeds pmeta the same as the scheduler path —
+		// the stolen partition's catalog + combined bloom go to the facets and the
+		// merged-away inputs are purged — then pushes the manifest. (Symmetric with
+		// the traces module; previously logs only pushed the manifest, leaving
+		// orphan-swept files without facet/bloom entries until the next compaction.)
+		OnCompacted: func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string) {
+			store.PmetaOnCompacted(added, removed, blooms) // facet feed (incl. combined bloom) + dead-key cleanup
 			notifyPusher(added, removed)
 		},
 	})
