@@ -64,15 +64,33 @@ func TestCatalogFileMetaProvider_HitAndMiss(t *testing.T) {
 }
 
 func TestSketchSet(t *testing.T) {
-	if got := sketchSet(nil); got != nil {
-		t.Errorf("sketchSet(nil) = %v, want nil", got)
+	// The built-in id columns (schema.DefaultSketchIDColumns) are always present,
+	// even with no operator config, so the promoted id columns are sketched +
+	// persisted out of the box regardless of always_sketch_fields.
+	for _, in := range [][]string{nil, {}} {
+		got := sketchSet(in)
+		for _, f := range schema.DefaultSketchIDColumns {
+			if !got[f] {
+				t.Errorf("sketchSet(%v) = %v, missing default %q", in, got, f)
+			}
+		}
+		if len(got) != len(schema.DefaultSketchIDColumns) {
+			t.Errorf("sketchSet(%v) = %v, want only the %d defaults", in, got, len(schema.DefaultSketchIDColumns))
+		}
 	}
-	if got := sketchSet([]string{}); got != nil {
-		t.Errorf("sketchSet(empty) = %v, want nil", got)
+	// Operator-configured fields are unioned in alongside the defaults, deduped
+	// (trace_id is already a default, so it must not double-count).
+	got := sketchSet([]string{"trace_id", "request_id"})
+	if !got["request_id"] {
+		t.Errorf("sketchSet missing configured request_id: %v", got)
 	}
-	got := sketchSet([]string{"trace_id", "span_id"})
-	if !got["trace_id"] || !got["span_id"] || len(got) != 2 {
-		t.Errorf("sketchSet = %v, want {trace_id, span_id}", got)
+	for _, f := range schema.DefaultSketchIDColumns {
+		if !got[f] {
+			t.Errorf("sketchSet missing default %q: %v", f, got)
+		}
+	}
+	if len(got) != len(schema.DefaultSketchIDColumns)+1 {
+		t.Errorf("sketchSet = %v, want defaults + request_id (trace_id deduped)", got)
 	}
 }
 
@@ -105,6 +123,36 @@ func TestCatalogObserver_TapRows(t *testing.T) {
 		})
 		if c := st.Cardinality("trace_id"); c < 1 || c > 3 {
 			t.Errorf("trace_id cardinality = %d, want ~2", c)
+		}
+	})
+
+	t.Run("promoted id columns sketched by default (container.id, service.instance.id)", func(t *testing.T) {
+		st := newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
+		// sketchSet(nil) includes the built-in DefaultSketchIDColumns, so the
+		// promoted id columns are sketched without any operator config.
+		o := &catalogObserver{store: st, sketch: sketchSet(nil)}
+		o.tapLogRows("p", []schema.LogRow{
+			{ContainerID: "c1", ServiceInstanceID: "i1"},
+			{ContainerID: "c2", ServiceInstanceID: "i2"},
+			{ContainerID: "c3", ServiceInstanceID: "i3"},
+		})
+		if c := st.Cardinality("container.id"); c < 2 || c > 4 {
+			t.Errorf("container.id cardinality = %d, want ~3", c)
+		}
+		if c := st.Cardinality("service.instance.id"); c < 2 || c > 4 {
+			t.Errorf("service.instance.id cardinality = %d, want ~3", c)
+		}
+	})
+
+	t.Run("trace rows feed promoted id columns too", func(t *testing.T) {
+		st := newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
+		o := &catalogObserver{store: st, sketch: sketchSet(nil)}
+		o.tapTraceRows("p", []schema.TraceRow{
+			{ContainerID: "c1", ServiceInstanceID: "i1"},
+			{ContainerID: "c2", ServiceInstanceID: "i2"},
+		})
+		if c := st.Cardinality("container.id"); c < 1 || c > 3 {
+			t.Errorf("container.id cardinality = %d, want ~2", c)
 		}
 	})
 

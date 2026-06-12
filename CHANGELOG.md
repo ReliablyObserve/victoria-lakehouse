@@ -12,18 +12,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Accurate Cardinality Explorer backed by durable pmeta state.** The Stats Cardinality Explorer now reads distinct counts from the pmeta catalog facet / persisted high-card HLL (write-fed, compaction-safe) instead of transient in-memory taps, so reported cardinality is accurate and survives restart and compaction. `has_bloom` is reported from the written schema bloom set.
 - **vmui Lakehouse tab and sub-tab persistence.** The active Lakehouse Explorer tab is persisted in the URL hash (survives refresh, bookmarkable) and the selected sub-tab (Cardinality, etc.) is remembered across reload.
 - **Searchable, extensible Storage Breakdown** with richer defaults.
+- **Promoted id columns get real, durable cardinality (`container.id`, `service.instance.id`).** They're sketched by default (HLL) through the persisted per-partition catalog — the same durable path as `trace_id`/`span_id` — so the Cardinality Explorer reports an accurate distinct count that survives restart instead of `0`. Unioned into the effective sketch set in code (`schema.DefaultSketchIDColumns`) so an operator's `always_sketch_fields` YAML can't accidentally drop them; wired for both logs and traces.
+- **Cardinality Explorer distinguishes "not indexed" from zero.** A field outside the tracked set (a map-only attribute that's never sketched) renders `—` instead of a misleading `0`, so "not counted" is no longer conflated with "zero distinct values". The `/cardinality/fields` API exposes an `indexed` flag per field.
+- **Storage Breakdown selection is remembered and fully editable.** The chosen label set persists in `localStorage`, seeds from the server defaults on first visit, and every block — default or added — is removable; the `+` picker offers any field and flags non-indexed ones.
 
 ### Changed
 
 - **Bloom-value extraction is now schema-driven.** Value extraction covers every `HasBloom` column from the per-signal schema set (logs and traces) rather than a hardcoded subset, and dedicated columns are indexed for stats.
 - **Stats Storage Breakdown is served from manifest `LabelAggregates`** (real and durable), with a fallback to manifest aggregates for dedicated columns, so breakdown shares no longer depend on in-memory state.
 - **The Lakehouse UI and stats JSON responses are sent `no-store`**, so deploys and browsers never surface stale cached stats.
+- **Default Storage Breakdown labels** are now `deployment.environment, service.name, k8s.namespace.name, k8s.cluster.name, k8s.deployment.name` (dropped `cloud.region`).
 
 ### Fixed
 
 - **High-card id cardinality (trace_id / span_id) persists across restart.** The always-sketch id path (ids deliberately not bloomed) is persisted via the pmeta catalog facet, so distinct counts survive restart instead of resetting to zero.
 - **Overview partition count is tenant-scoped** and reconciles with the tenant view; tenant partitions are scoped to the tenant.
 - **vmui Lakehouse tab restore survives the React re-render race.**
+- **Storage Classes panel reconciles with the headline totals.** Per-class files/bytes are derived from the live manifest file set (class age-predicted per file, as the Cost view already does) instead of the registry's cumulative class counters — which are never decremented on compaction and so over-reported (e.g. 1,815 files vs the live 1,425). The class split now sums exactly to Files / Compressed.
+- **Storage Breakdown estimates scale to the live total.** The proportional `estimated_bytes` base uses `LiveAggregate()` — the same total the overview headline shows — instead of the drift-prone cached counters.
 
 ### Performance
 

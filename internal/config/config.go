@@ -1142,7 +1142,7 @@ func Default() *Config {
 			// Mode-neutral dimensions present in both logs and traces (severity_text
 			// is logs-only and would render an empty block on traces — add it via the
 			// breakdown search box when on logs).
-			BreakdownLabels: []string{"service.name", "deployment.environment", "k8s.namespace.name", "k8s.cluster.name", "k8s.deployment.name", "cloud.region"},
+			BreakdownLabels: []string{"deployment.environment", "service.name", "k8s.namespace.name", "k8s.cluster.name", "k8s.deployment.name"},
 			S3PricePerGB: map[string]float64{
 				"STANDARD":     0.023,
 				"STANDARD_IA":  0.0125,

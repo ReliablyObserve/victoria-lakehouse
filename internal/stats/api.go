@@ -29,6 +29,11 @@ type APIConfig struct {
 	Bucket          string
 	BloomColumns    []string
 	BreakdownLabels []string
+	// AlwaysSketchFields are the high-card id columns sketched (HLL) rather than
+	// enumerated — trace_id/span_id and the promoted id columns. Combined with the
+	// mode's dimensional label set, they define which fields the Cardinality
+	// Explorer actually tracks (so a field outside the set reads "—", not 0).
+	AlwaysSketchFields []string
 	// PmetaCardinality returns the accurate global HLL distinct-value estimate for
 	// a field (0 if unavailable). Preferred over the lazily-populated, 100-capped
 	// LabelIndex count for the Cardinality Explorer. Nil when pmeta is off.
@@ -189,6 +194,12 @@ type FieldEntry struct {
 	Cardinality int    `json:"cardinality"`
 	Type        string `json:"type"`
 	HasBloom    bool   `json:"has_bloom"`
+	// Indexed is true when the explorer actually tracks this field's distinct
+	// count (a dimensional label column fed to the per-field HLL, or an
+	// always-sketch id). When false AND cardinality is 0, the value is "not
+	// counted" rather than "zero distinct" — the UI renders it as "—" so a 0
+	// isn't mistaken for "no data".
+	Indexed bool `json:"indexed"`
 }
 
 // BreakdownResponse is the response for the storage breakdown endpoint.
@@ -604,23 +615,26 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 
 	gs := a.cfg.Registry.GlobalAggregates()
 
-	classBD := make([]ClassBreakdown, 0, len(gs.BytesByClass))
-	for class, bytes := range gs.BytesByClass {
-		classBD = append(classBD, ClassBreakdown{
-			Class: class,
-			Bytes: bytes,
-			Files: gs.FilesByClass[class],
-		})
-	}
-	sort.Slice(classBD, func(i, j int) bool {
-		return classBD[i].Bytes > classBD[j].Bytes
-	})
-	// Fall back: assume STANDARD when registry has no class data but manifest has files.
-	if len(classBD) == 0 && a.cfg.Manifest != nil && a.cfg.Manifest.TotalFiles() > 0 {
-		classBD = append(classBD, ClassBreakdown{
-			Class: "STANDARD",
-			Bytes: a.cfg.Manifest.TotalBytes(),
-			Files: int64(a.cfg.Manifest.TotalFiles()),
+	// Per-class breakdown derived from the LIVE manifest file set so the Storage
+	// Classes panel reconciles with the manifest-backed headline totals below.
+	// The registry's GlobalAggregates class counters are cumulative — never
+	// decremented when files compact away — so they drift higher than the live
+	// set (e.g. 1,815 cumulative vs 1,425 live files), which made "Storage
+	// Classes" report more files/bytes than the "Files"/"Compressed" headline.
+	classBD := a.manifestClassBreakdown()
+	if len(classBD) == 0 {
+		// No manifest or no live files: fall back to the registry's cumulative
+		// class counters so a registry-only / read-path deployment still shows a
+		// class split.
+		for class, bytes := range gs.BytesByClass {
+			classBD = append(classBD, ClassBreakdown{
+				Class: class,
+				Bytes: bytes,
+				Files: gs.FilesByClass[class],
+			})
+		}
+		sort.Slice(classBD, func(i, j int) bool {
+			return classBD[i].Bytes > classBD[j].Bytes
 		})
 	}
 
@@ -707,6 +721,53 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, resp)
+}
+
+// manifestClassBreakdown attributes every LIVE manifest file to a storage class
+// — age-predicted via the ClassTracker, or STANDARD when no tracker is
+// configured — so the per-class bytes AND files sum to the manifest-derived
+// headline totals (Files / Compressed). It iterates the same file set as
+// LiveAggregate(), guaranteeing the Storage Classes panel reconciles with the
+// overview headline. Returns nil when there's no manifest / no live files so the
+// caller can fall back to the registry's cumulative counters.
+func (a *API) manifestClassBreakdown() []ClassBreakdown {
+	if a.cfg.Manifest == nil {
+		return nil
+	}
+	now := time.Now()
+	type acc struct {
+		bytes int64
+		files int64
+	}
+	byClass := make(map[string]*acc)
+	for _, files := range a.cfg.Manifest.AllFiles() {
+		for _, fi := range files {
+			class := "STANDARD"
+			if a.cfg.ClassTracker != nil && !fi.CreatedAt.IsZero() {
+				if parts := strings.SplitN(fi.Key, "/", 3); len(parts) >= 2 {
+					class = a.cfg.ClassTracker.PredictClassForTenant(fi.CreatedAt, now, parts[0]+":"+parts[1])
+				} else {
+					class = a.cfg.ClassTracker.PredictClass(fi.CreatedAt, now)
+				}
+			}
+			e := byClass[class]
+			if e == nil {
+				e = &acc{}
+				byClass[class] = e
+			}
+			e.bytes += fi.Size
+			e.files++
+		}
+	}
+	if len(byClass) == 0 {
+		return nil
+	}
+	out := make([]ClassBreakdown, 0, len(byClass))
+	for class, e := range byClass {
+		out = append(out, ClassBreakdown{Class: class, Bytes: e.bytes, Files: e.files})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Bytes > out[j].Bytes })
+	return out
 }
 
 func (a *API) handleIngestion(w http.ResponseWriter, r *http.Request) {
@@ -1002,6 +1063,31 @@ func pmetaCardinalityOf(fn func(string) uint64, name string) uint64 {
 	return 0
 }
 
+// indexedFieldSet returns the field names whose cardinality the explorer actually
+// tracks for the current mode: the dimensional label columns fed to the per-field
+// HLL on every flush, plus the always-sketch id columns (trace_id/span_id and the
+// promoted id columns). A field outside this set has no sketch, so its 0 means
+// "not counted", not "no data" — the UI renders it "—".
+func (a *API) indexedFieldSet() map[string]struct{} {
+	set := make(map[string]struct{})
+	if a.cfg.Mode == "traces" {
+		for _, c := range schema.TraceLabelColumns {
+			set[c.Name] = struct{}{}
+		}
+	} else {
+		for _, c := range schema.LogLabelColumns {
+			set[c.Name] = struct{}{}
+		}
+	}
+	for _, f := range schema.DefaultSketchIDColumns {
+		set[f] = struct{}{}
+	}
+	for _, f := range a.cfg.AlwaysSketchFields {
+		set[f] = struct{}{}
+	}
+	return set
+}
+
 func (a *API) handleCardinality(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -1052,6 +1138,19 @@ func (a *API) handleCardinality(w http.ResponseWriter, r *http.Request) {
 	var totalPromoted, totalMap int
 	var warnings []string
 
+	indexedSet := a.indexedFieldSet()
+	isIndexed := func(name string) bool {
+		if _, ok := indexedSet[name]; ok {
+			return true
+		}
+		if idx := strings.LastIndex(name, ":"); idx >= 0 {
+			if _, ok := indexedSet[name[idx+1:]]; ok {
+				return true
+			}
+		}
+		return false
+	}
+
 	for _, li := range allLabels {
 		card := li.Cardinality
 		// Prefer the accurate pmeta HLL estimate (fed on flush, merged in
@@ -1089,6 +1188,7 @@ func (a *API) handleCardinality(w http.ResponseWriter, r *http.Request) {
 			Cardinality: card,
 			Type:        fieldType,
 			HasBloom:    hasBloom,
+			Indexed:     isIndexed(li.Name),
 		})
 	}
 
@@ -1149,12 +1249,16 @@ func (a *API) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 		labels = []string{filterLabel}
 	}
 
-	// Total bytes/files from manifest for proportional estimation.
+	// Total bytes/files from manifest for proportional estimation. Use the LIVE
+	// aggregate (same source as /stats/overview's headline) so a value's
+	// estimated_bytes scales against the same total shown up top, instead of the
+	// cached counters which can drift after a partial S3 refresh.
 	var totalBytes int64
 	var totalFiles int64
 	if a.cfg.Manifest != nil {
-		totalBytes = a.cfg.Manifest.TotalBytes()
-		totalFiles = int64(a.cfg.Manifest.TotalFiles())
+		live := a.cfg.Manifest.LiveAggregate()
+		totalBytes = live.Bytes
+		totalFiles = int64(live.Files)
 	}
 
 	result := make([]BreakdownLabel, 0, len(labels))

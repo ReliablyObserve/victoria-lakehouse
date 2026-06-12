@@ -78,7 +78,7 @@ func newCatalogStore(cfg config.PmetaConfig, prefix string) *pmeta.Store {
 	dict := pmeta.NewDict()
 	s.SetDict(dict) // include the interned strings in ResidentBytes
 	s.Register(pmeta.FacetFieldCatalog,
-		pmeta.NewFieldCatalogFactoryCapped(dict, threshold, cfg.AlwaysSketchFields))
+		pmeta.NewFieldCatalogFactoryCapped(dict, threshold, effectiveSketchFields(cfg.AlwaysSketchFields)))
 	s.Register(pmeta.FacetFileMeta, pmeta.NewFileMetaFactory()) // dual-write of _file_metadata.json
 	s.Register(pmeta.FacetBloom, pmeta.NewBloomFactory(0.01))   // dual-write of _bloom.bin (same fpRate)
 	return s
@@ -156,19 +156,14 @@ func (o *catalogObserver) tapLogRows(partition string, rows []schema.LogRow) {
 			}
 		})
 	}
-	if o.sketch["trace_id"] {
-		o.sketchID(partition, "trace_id", func(yield func(string) bool) {
+	for _, c := range schema.LogSketchIDColumns {
+		col := c
+		if !o.sketch[col.Name] {
+			continue
+		}
+		o.sketchID(partition, col.Name, func(yield func(string) bool) {
 			for i := range rows {
-				if !yield(rows[i].TraceID) {
-					return
-				}
-			}
-		})
-	}
-	if o.sketch["span_id"] {
-		o.sketchID(partition, "span_id", func(yield func(string) bool) {
-			for i := range rows {
-				if !yield(rows[i].SpanID) {
+				if !yield(col.Get(&rows[i])) {
 					return
 				}
 			}
@@ -192,19 +187,14 @@ func (o *catalogObserver) tapTraceRows(partition string, rows []schema.TraceRow)
 			}
 		})
 	}
-	if o.sketch["trace_id"] {
-		o.sketchID(partition, "trace_id", func(yield func(string) bool) {
+	for _, c := range schema.TraceSketchIDColumns {
+		col := c
+		if !o.sketch[col.Name] {
+			continue
+		}
+		o.sketchID(partition, col.Name, func(yield func(string) bool) {
 			for i := range rows {
-				if !yield(rows[i].TraceID) {
-					return
-				}
-			}
-		})
-	}
-	if o.sketch["span_id"] {
-		o.sketchID(partition, "span_id", func(yield func(string) bool) {
-			for i := range rows {
-				if !yield(rows[i].SpanID) {
+				if !yield(col.Get(&rows[i])) {
 					return
 				}
 			}
@@ -224,13 +214,38 @@ func (o *catalogObserver) sketchID(partition, field string, vals func(func(strin
 	metrics.CatalogFieldCardinality.Set(field, int64(o.store.Cardinality(field)))
 }
 
-// sketchSet builds the always-sketch field lookup from config.
+// effectiveSketchFields unions the operator-configured always-sketch fields with
+// the built-in schema.DefaultSketchIDColumns (container.id, service.instance.id,
+// the trace ids), so the promoted id columns are sketched + persisted out of the
+// box even when an operator's YAML replaces always_sketch_fields with its own
+// list. Configured fields first, then any defaults not already present.
+func effectiveSketchFields(cfgFields []string) []string {
+	out := make([]string, 0, len(cfgFields)+len(schema.DefaultSketchIDColumns))
+	seen := make(map[string]bool, len(cfgFields)+len(schema.DefaultSketchIDColumns))
+	for _, f := range cfgFields {
+		if f != "" && !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	for _, f := range schema.DefaultSketchIDColumns {
+		if !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// sketchSet builds the always-sketch field lookup from config, with the built-in
+// id columns unioned in (see effectiveSketchFields).
 func sketchSet(fields []string) map[string]bool {
-	if len(fields) == 0 {
+	eff := effectiveSketchFields(fields)
+	if len(eff) == 0 {
 		return nil
 	}
-	m := make(map[string]bool, len(fields))
-	for _, f := range fields {
+	m := make(map[string]bool, len(eff))
+	for _, f := range eff {
 		m[f] = true
 	}
 	return m
@@ -461,7 +476,7 @@ func (s *Storage) refuseEnumeration(field string) bool {
 	if s.catalog == nil || !s.cfg.Pmeta.RefuseSketchEnumeration {
 		return false
 	}
-	for _, f := range s.cfg.Pmeta.AlwaysSketchFields {
+	for _, f := range effectiveSketchFields(s.cfg.Pmeta.AlwaysSketchFields) {
 		if f == field {
 			return true
 		}

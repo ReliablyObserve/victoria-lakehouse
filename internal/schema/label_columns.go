@@ -87,3 +87,41 @@ var TraceLabelColumns = []TraceLabelColumn{
 	{"telemetry.sdk.name", func(r *TraceRow) string { return r.TelemetrySDKName }},
 	{"cloud.account.id", func(r *TraceRow) string { return r.CloudAccountID }},
 }
+
+// LogSketchIDColumns / TraceSketchIDColumns pair each always-sketch id column
+// with its row accessor, so the flush tap (pmeta_wire.go) sketches any of them in
+// one loop instead of a hardcoded per-field block. These are the high-card,
+// id-like columns the Cardinality Explorer sketches (an HLL distinct estimate)
+// rather than enumerates, so each reports a real distinct count instead of a
+// misleading 0. The id set is identical for logs and traces; DefaultSketchIDColumns
+// derives its names from the log list so the three can never drift.
+var LogSketchIDColumns = []LogLabelColumn{
+	{"trace_id", func(r *LogRow) string { return r.TraceID }},
+	{"span_id", func(r *LogRow) string { return r.SpanID }},
+	{"container.id", func(r *LogRow) string { return r.ContainerID }},
+	{"service.instance.id", func(r *LogRow) string { return r.ServiceInstanceID }},
+}
+
+var TraceSketchIDColumns = []TraceLabelColumn{
+	{"trace_id", func(r *TraceRow) string { return r.TraceID }},
+	{"span_id", func(r *TraceRow) string { return r.SpanID }},
+	{"container.id", func(r *TraceRow) string { return r.ContainerID }},
+	{"service.instance.id", func(r *TraceRow) string { return r.ServiceInstanceID }},
+}
+
+// DefaultSketchIDColumns are the id columns sketched by default — unioned into the
+// effective always-sketch set regardless of pmeta.always_sketch_fields (which an
+// operator's YAML would otherwise REPLACE) — because they're known unbounded ids
+// the dedicated-column work promotes + blooms (container.id, service.instance.id)
+// plus the trace-correlation ids. The flush tap feeds each into the durable
+// per-partition catalog HLL so the count survives restart; the stats API counts
+// them as "indexed" so they never render as "—".
+var DefaultSketchIDColumns = sketchIDColumnNames()
+
+func sketchIDColumnNames() []string {
+	out := make([]string, len(LogSketchIDColumns))
+	for i, c := range LogSketchIDColumns {
+		out[i] = c.Name
+	}
+	return out
+}
