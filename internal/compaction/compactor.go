@@ -429,6 +429,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		MinTimeNs:         minTime,
 		MaxTimeNs:         maxTime,
 		RawBytes:          inputRawBytes,
+		BloomBytes:        footerBloomBytes(outputData),
 		SchemaFingerprint: fp,
 		CompactionLevel:   outputLevel,
 		Labels:            mergedLabels,

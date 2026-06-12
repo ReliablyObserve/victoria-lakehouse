@@ -75,8 +75,17 @@ func (a *API) handleCompaction(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(manifest.CompactionStats{})
 		return
 	}
-	_ = json.NewEncoder(w).Encode(a.cfg.Manifest.ComputeCompactionStats(
-		a.cfg.CurrentSchemaFingerprint, a.cfg.CompactionConfig.CompressionLevelForOutput))
+	st := a.cfg.Manifest.ComputeCompactionStats(
+		a.cfg.CurrentSchemaFingerprint, a.cfg.CompactionConfig.CompressionLevelForOutput)
+	// The footer bloom set is mode-dependent; surface which columns are bloomed and
+	// the configured false-positive rate alongside the measured bloom-byte footprint.
+	if a.cfg.Mode == "traces" {
+		st.BloomColumns = schema.TraceBloomColumns()
+	} else {
+		st.BloomColumns = schema.LogBloomColumns()
+	}
+	st.BloomFPRate = 0.01 // matches the pmeta bloom factory + footer 10-bits/value
+	_ = json.NewEncoder(w).Encode(st)
 }
 
 // ---- Response types ----

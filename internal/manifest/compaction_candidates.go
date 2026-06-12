@@ -23,6 +23,10 @@ type LevelStats struct {
 	RawBytes         int64   `json:"raw_bytes"`
 	AvgFileBytes     int64   `json:"avg_file_bytes"`
 	CompressionRatio float64 `json:"compression_ratio"` // raw/compressed
+	// BloomBytes is the on-disk footer-bloom footprint at this level (sum of the
+	// files' captured bloom-filter sizes). 0 for files written before the capture
+	// landed; it heals as they recompact.
+	BloomBytes int64 `json:"bloom_bytes"`
 	// ConfiguredZstd is the zstd level the compactor applies when WRITING this output
 	// level (CompactionConfig.CompressionLevelByOutputLevel) — higher levels compress
 	// harder. 0 when the schedule is unknown.
@@ -66,7 +70,14 @@ type CompactionStats struct {
 	TotalBytes       int64        `json:"total_bytes"`
 	TotalRawBytes    int64        `json:"total_raw_bytes"`
 	CompressionRatio float64      `json:"compression_ratio"`
-	ByLevel          []LevelStats `json:"by_level"`
+	// TotalBloomBytes is the footer-bloom footprint across all files (the storage
+	// cost of the file/row-group skip blooms). BloomColumns names the bloomed
+	// columns and BloomFPRate the configured false-positive rate — both are set by
+	// the stats handler (mode-dependent), not derived from the manifest.
+	TotalBloomBytes int64        `json:"total_bloom_bytes"`
+	BloomColumns    []string     `json:"bloom_columns,omitempty"`
+	BloomFPRate     float64      `json:"bloom_fp_rate,omitempty"`
+	ByLevel         []LevelStats `json:"by_level"`
 	// CompactedBytes are at >= L2 (well rolled-up); PendingBytes at L0/L1 await rollup.
 	CompactedBytes       int64 `json:"compacted_bytes"`
 	PendingBytes         int64 `json:"pending_bytes"`
@@ -99,6 +110,7 @@ func (m *Manifest) ComputeCompactionStats(currentFP string, zstdForLevel func(le
 			st.TotalFiles++
 			st.TotalBytes += f.Size
 			st.TotalRawBytes += f.RawBytes
+			st.TotalBloomBytes += f.BloomBytes
 			if f.CompactionLevel >= 2 {
 				st.CompactedBytes += f.Size
 			} else {
@@ -112,6 +124,7 @@ func (m *Manifest) ComputeCompactionStats(currentFP string, zstdForLevel func(le
 			ls.Files++
 			ls.Bytes += f.Size
 			ls.RawBytes += f.RawBytes
+			ls.BloomBytes += f.BloomBytes
 
 			if f.CompactionLevel > maxLevel {
 				maxLevel = f.CompactionLevel

@@ -61,6 +61,10 @@ type FileInfo struct {
 	MinTimeNs         int64                   `json:"min_time_ns,omitempty"`
 	MaxTimeNs         int64                   `json:"max_time_ns,omitempty"`
 	RawBytes          int64                   `json:"raw_bytes,omitempty"`
+	// BloomBytes is the on-disk footprint of this file's FOOTER blooms (sum of the
+	// per-row-group column-chunk bloom filter sizes), captured at write time so the
+	// compaction stats can report bloom storage cost without reading any file.
+	BloomBytes        int64                   `json:"bloom_bytes,omitempty"`
 	SchemaFingerprint string                  `json:"schema_fp,omitempty"`
 	CompactionLevel   int                     `json:"compaction_level,omitempty"`
 	Labels            map[string][]string     `json:"labels,omitempty"`

@@ -24,12 +24,13 @@ func TestHandleCompaction(t *testing.T) {
 			Key:               fmt.Sprintf("logs/dt=2026-06-01/hour=00/f%d.parquet", i),
 			Size:              1_000_000,
 			RawBytes:          9_000_000,
+			BloomBytes:        50_000,
 			CompactionLevel:   2,
 			SchemaFingerprint: "v1",
 		})
 	}
 	cc := config.CompactionConfig{CompressionLevelByOutputLevel: []int{3, 7, 11}}
-	a := NewAPI(APIConfig{Manifest: m, CurrentSchemaFingerprint: "v2", CompactionConfig: cc})
+	a := NewAPI(APIConfig{Manifest: m, Mode: "logs", CurrentSchemaFingerprint: "v2", CompactionConfig: cc})
 
 	rr := httptest.NewRecorder()
 	a.handleCompaction(rr, httptest.NewRequest(http.MethodGet, "/lakehouse/api/v1/stats/compaction", nil))
@@ -69,6 +70,36 @@ func TestHandleCompaction(t *testing.T) {
 	}
 	if !sawL2zstd {
 		t.Error("by_level L2 configured_zstd != 11")
+	}
+
+	// Bloom observability: 3 files × 50_000 footer-bloom bytes at L2.
+	if got.TotalBloomBytes != 150_000 {
+		t.Errorf("total_bloom_bytes = %d, want 150000", got.TotalBloomBytes)
+	}
+	var sawL2Bloom bool
+	for _, ls := range got.ByLevel {
+		if ls.Level == 2 {
+			sawL2Bloom = ls.BloomBytes == 150_000
+		}
+	}
+	if !sawL2Bloom {
+		t.Error("by_level L2 bloom_bytes != 150000")
+	}
+	if got.BloomFPRate != 0.01 {
+		t.Errorf("bloom_fp_rate = %v, want 0.01", got.BloomFPRate)
+	}
+	// The handler surfaces the mode's footer bloom set (logs → includes trace_id + service.name).
+	var hasTrace, hasSvc bool
+	for _, c := range got.BloomColumns {
+		switch c {
+		case "trace_id":
+			hasTrace = true
+		case "service.name":
+			hasSvc = true
+		}
+	}
+	if !hasTrace || !hasSvc {
+		t.Errorf("bloom_columns = %v, want to include trace_id + service.name", got.BloomColumns)
 	}
 
 	// nil manifest → empty (no panic).

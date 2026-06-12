@@ -84,6 +84,13 @@ func TestCombinedBloomOnCompaction_E2E(t *testing.T) {
 		t.Fatalf("onCompacted did not receive the combined bloom; got %v", gotBlooms)
 	}
 	assertBloomSet(t, "trace_id (onCompacted)", gotBlooms[outKey]["trace_id"], []string{"trace-A1", "trace-A2", "trace-B1"})
+
+	// The compacted output's footer-bloom footprint was captured into the manifest
+	// (this is the /stats/compaction bloom_bytes source).
+	out := m.FilesForPartition(partition)
+	if len(out) != 1 || out[0].BloomBytes <= 0 {
+		t.Errorf("compacted output BloomBytes = %v, want > 0 (footer blooms captured)", out)
+	}
 }
 
 func keysOf(m map[string]map[string][]string) []string {
