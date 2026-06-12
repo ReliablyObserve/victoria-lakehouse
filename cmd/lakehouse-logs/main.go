@@ -1239,18 +1239,19 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			// The schema bloom set the writer/compactor actually emit (Tier-1
 			// dedicated columns + slots + legacy), NOT the bare operator list —
 			// so the Cardinality Explorer's has_bloom reflects what's on disk.
-			BloomColumns:       cfg.WrittenBloomColumns(),
-			BreakdownLabels:    cfg.Stats.BreakdownLabels,
-			AlwaysSketchFields: cfg.Pmeta.AlwaysSketchFields,
-			PmetaCardinality:   store.PmetaCardinality,
-			StatsAggregate:     statsAgg,
-			MetaResidentBytes:  store.PmetaResidentBytes,
-			MetaDiskBytes:      store.DiskCacheBytes,
-			MetaS3Bytes:        statsAgg.MetaS3,
-			MetaBytesByTenant:  store.PmetaPersistedBytesByTenant,
-			RetentionEnabled:   cfg.Retention.Enabled,
-			RetentionDefault:   cfg.Retention.Default,
-			RetentionRules:     len(cfg.Retention.Rules),
+			BloomColumns:         cfg.WrittenBloomColumns(),
+			BreakdownLabels:      cfg.Stats.BreakdownLabels,
+			AlwaysSketchFields:   cfg.Pmeta.AlwaysSketchFields,
+			PmetaCardinality:     store.PmetaCardinality,
+			StatsAggregate:       statsAgg,
+			MetaResidentBytes:    store.PmetaResidentBytes,
+			MetaDiskBytes:        store.DiskCacheBytes,
+			MetaS3Bytes:          statsAgg.MetaS3,
+			MetaBytesByTenant:    store.PmetaPersistedBytesByTenant,
+			MetadataBytesByField: store.PmetaMetadataBytesByField,
+			RetentionEnabled:     cfg.Retention.Enabled,
+			RetentionDefault:     cfg.Retention.Default,
+			RetentionRules:       len(cfg.Retention.Rules),
 		})
 		statsAPI.Register(mux)
 	}

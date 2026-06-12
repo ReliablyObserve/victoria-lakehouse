@@ -245,12 +245,24 @@
     });
   }
 
+  // Storage Details tab. PRIMARY view: a sortable per-field table of EXACT
+  // storage + metadata bytes (from /stats/fields), with cardinality and bloom
+  // status \u2014 the same sources as the Cardinality Explorer, so magnitudes
+  // match. The per-label storage breakdown picker is kept below as a secondary
+  // tool. Tenants have their own tab, so no tenant facet here.
   function renderBreakdown(container) {
+    var SORTKEY = "lh_fields_sort";
+    var fieldRows = null;  // [{name, storage_bytes, metadata_bytes, cardinality, has_bloom, indexed}] | null until loaded
+    var fieldsError = null;
+    var sortBy = "storage";  // storage | metadata | cardinality | name
+    var sortDir = -1;        // -1 desc, 1 asc
+    try { var s = JSON.parse(localStorage.getItem(SORTKEY)); if (s && s.by) { sortBy = s.by; sortDir = s.dir === 1 ? 1 : -1; } } catch (e) {}
+
+    // ---- secondary: per-label breakdown picker (unchanged behaviour) ----
     var LSKEY = "lh_breakdown_labels";
     var selected = null;   // persisted array of label names; null until seeded
     var byName = {};       // name -> "loading" | null (no values) | label object
-    var allFields = [];    // [{name, indexed, cardinality}]
-    var tenantLabel = null;
+    var allFields = [];    // [{name, indexed, cardinality}] for the picker datalist
 
     function persist() { try { localStorage.setItem(LSKEY, JSON.stringify(selected)); } catch (e) {} }
     function fetchLabel(name) {
@@ -269,7 +281,6 @@
       var i = selected.indexOf(name);
       if (i !== -1) { selected.splice(i, 1); persist(); render(); }
     }
-    // How much data backs a key \u2014 so you can tell which are usable to break down by.
     function usability(f) {
       if (!f.indexed) return "not indexed \u2014 no breakdown";
       if (!f.cardinality) return "indexed \u00b7 no values yet";
@@ -316,9 +327,92 @@
       return section;
     }
 
+    // ---- primary: per-field storage + metadata table ----
+    function sortFields(rows) {
+      var keyed = rows.slice();
+      keyed.sort(function (a, b) {
+        var av, bv;
+        if (sortBy === "name") { return sortDir * (a.name < b.name ? -1 : a.name > b.name ? 1 : 0); }
+        if (sortBy === "metadata") { av = a.metadata_bytes || 0; bv = b.metadata_bytes || 0; }
+        else if (sortBy === "cardinality") { av = a.cardinality || 0; bv = b.cardinality || 0; }
+        else { av = a.storage_bytes || 0; bv = b.storage_bytes || 0; }
+        if (av !== bv) return sortDir * (av - bv);
+        return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;  // stable tiebreak
+      });
+      return keyed;
+    }
+
+    function setSort(by) {
+      if (sortBy === by) { sortDir = -sortDir; }
+      else { sortBy = by; sortDir = by === "name" ? 1 : -1; }
+      try { localStorage.setItem(SORTKEY, JSON.stringify({ by: sortBy, dir: sortDir })); } catch (e) {}
+      render();
+    }
+
+    function arrow(by) { return sortBy === by ? (sortDir === 1 ? " \u25b2" : " \u25bc") : ""; }
+
+    function renderFieldsTable() {
+      var wrap = el("div", { style: "margin-bottom:28px" });
+      wrap.appendChild(el("div", { className: "lh-section-title", textContent: "Per-Field Storage & Metadata" }));
+      wrap.appendChild(el("div", { style: "font-size:12px;color:var(--color-text-secondary,#706f6f);margin-bottom:12px", textContent: "Exact on-S3 column storage and pmeta metadata (bloom + catalog) per field. Click a column to sort. \u2014 means no metadata, or a field whose cardinality isn't tracked." }));
+
+      if (fieldsError) { wrap.appendChild(el("div", { className: "lh-error", textContent: "Error: " + fieldsError })); return wrap; }
+      if (fieldRows === null) { wrap.appendChild(el("div", { className: "lh-loading", textContent: "Loading per-field storage\u2026" })); return wrap; }
+      if (fieldRows.length === 0) { wrap.appendChild(el("div", { className: "lh-empty", textContent: "No field data available yet." })); return wrap; }
+
+      var tbl = el("table", { className: "lh-table" });
+      var thead = el("thead");
+      var htr = el("tr");
+      var cols = [
+        { key: "name", label: "Field", align: "left" },
+        { key: "storage", label: "Storage", align: "right" },
+        { key: "metadata", label: "Metadata", align: "right" },
+        { key: "cardinality", label: "Cardinality", align: "right" },
+        { key: "bloom", label: "Bloom", align: "center" },
+      ];
+      cols.forEach(function (c) {
+        var sortable = c.key !== "bloom";
+        var th = el("th", {
+          textContent: c.label + (sortable ? arrow(c.key) : ""),
+          style: "text-align:" + c.align + (sortable ? ";cursor:pointer;user-select:none" : ""),
+        });
+        if (sortable) th.addEventListener("click", function () { setSort(c.key); });
+        htr.appendChild(th);
+      });
+      thead.appendChild(htr);
+      tbl.appendChild(thead);
+
+      var tbody = el("tbody");
+      sortFields(fieldRows).forEach(function (f) {
+        var row = el("tr");
+        var storeCell = f.storage_bytes ? fmtBytes(f.storage_bytes) : '<span style="color:var(--color-text-secondary)">\u2014</span>';
+        var metaCell = f.metadata_bytes ? fmtBytes(f.metadata_bytes) : '<span style="color:var(--color-text-secondary)">\u2014</span>';
+        var cardCell = (f.indexed || f.cardinality > 0)
+          ? fmtNum(f.cardinality)
+          : '<span style="color:var(--color-text-secondary)" title="Not indexed \u2014 this field is not sketched, so distinct values are not counted (not the same as zero)">\u2014</span>';
+        row.innerHTML =
+          "<td>" + f.name + "</td>" +
+          "<td style='text-align:right'>" + storeCell + "</td>" +
+          "<td style='text-align:right'>" + metaCell + "</td>" +
+          "<td style='text-align:right'>" + cardCell + "</td>" +
+          "<td style='text-align:center'>" + (f.has_bloom ? "\u2705" : "\u2014") + "</td>";
+        tbody.appendChild(row);
+      });
+      tbl.appendChild(tbody);
+      var scroll = el("div", { style: "overflow-x:auto" });
+      scroll.appendChild(tbl);
+      wrap.appendChild(scroll);
+      return wrap;
+    }
+
     function render() {
-      if (selected === null) return;
       container.innerHTML = "";
+
+      // Primary: the per-field exact storage + metadata table.
+      container.appendChild(renderFieldsTable());
+
+      // Secondary: per-label storage breakdown picker (kept; tenants moved to their own tab).
+      if (selected === null) return;
       container.appendChild(el("div", { className: "lh-section-title", textContent: "Storage Breakdown by Label" }));
 
       var avail = allFields.filter(function (f) { return selected.indexOf(f.name) === -1; });
@@ -336,17 +430,6 @@
 
       container.appendChild(el("div", { style: "font-size:12px;color:var(--color-text-secondary,#706f6f);margin-bottom:16px", textContent: "Pick from the dropdown \u2014 each shows its value count so you know which are usable. Defaults via stats.breakdown_labels; add or remove any label \u2014 your selection is remembered." }));
 
-      if (tenantLabel && tenantLabel.values && tenantLabel.values.length > 0) {
-        var ts = el("div", { style: "margin-bottom:24px" });
-        var th = el("div", { style: "display:flex;align-items:baseline;gap:8px;margin-bottom:8px" });
-        th.appendChild(el("h3", { textContent: "by Tenant", style: "font-size:1rem;margin:0" }));
-        th.appendChild(el("span", { innerHTML: '<span class="lh-badge lh-badge-promoted">registry</span>' }));
-        th.appendChild(el("span", { textContent: tenantLabel.cardinality + " tenants \u00b7 exact bytes", style: "font-size:12px;color:var(--color-text-secondary)" }));
-        ts.appendChild(th);
-        ts.appendChild(renderRows(tenantLabel.values));
-        container.appendChild(ts);
-      }
-
       if (selected.length === 0) {
         container.appendChild(el("div", { className: "lh-empty", textContent: "No breakdown labels \u2014 use the search above to add one." }));
       } else {
@@ -354,10 +437,15 @@
       }
     }
 
-    container.innerHTML = '<div class="lh-loading">Loading storage breakdown\u2026</div>';
+    container.innerHTML = '<div class="lh-loading">Loading storage details\u2026</div>';
     try { var sv = JSON.parse(localStorage.getItem(LSKEY)); if (Array.isArray(sv)) selected = sv; } catch (e) {}
 
-    fetchJSON("/lakehouse/api/v1/stats/breakdown?group_by=tenant").then(function (j) { tenantLabel = (j && j.labels && j.labels[0]) || null; render(); }).catch(function () {});
+    // Primary table source.
+    fetchJSON("/lakehouse/api/v1/stats/fields")
+      .then(function (j) { fieldRows = (j && j.fields) || []; render(); })
+      .catch(function (e) { fieldsError = e.message; render(); });
+
+    // Picker datalist source (cardinality fields).
     fetchJSON("/lakehouse/api/v1/cardinality/fields").then(function (j) { if (j && j.fields) allFields = j.fields.map(function (f) { return { name: f.name, indexed: f.indexed, cardinality: f.cardinality }; }); render(); }).catch(function () {});
 
     if (selected === null) {
@@ -367,7 +455,7 @@
         lbls.forEach(function (l) { byName[l.name] = l; });
         persist();
         render();
-      }).catch(function (e) { container.innerHTML = '<div class="lh-error">Error: ' + e.message + "</div>"; });
+      }).catch(function () { selected = []; render(); });
     } else {
       selected.forEach(function (name) {
         if (byName[name] === undefined) {

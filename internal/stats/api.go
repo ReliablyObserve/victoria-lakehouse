@@ -58,6 +58,12 @@ type APIConfig struct {
 	// (no S3 scan). Nil-safe (a nil func contributes nothing). Surfaced as each
 	// tenant's metadata_bytes in /tenants.
 	MetaBytesByTenant func() map[string]int64
+	// MetadataBytesByField is the exact per-field metadata footprint, keyed by
+	// field name — each field's bloom bitset bytes plus its catalog-entry / HLL
+	// bytes, summed across all resident pmeta bundles (no S3 scan). Nil-safe (a nil
+	// func contributes nothing). Surfaced as each field's metadata_bytes in the
+	// per-field /stats/fields table.
+	MetadataBytesByField func() map[string]int64
 }
 
 // API serves JSON endpoints for tenant statistics, cost, cardinality, etc.
@@ -81,6 +87,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/lakehouse/api/v1/stats/compression", a.handleCompression)
 	mux.HandleFunc("/lakehouse/api/v1/cardinality/fields", a.handleCardinality)
 	mux.HandleFunc("/lakehouse/api/v1/stats/breakdown", a.handleBreakdown)
+	mux.HandleFunc("/lakehouse/api/v1/stats/fields", a.handleFields)
 }
 
 // ---- Response types ----
@@ -262,6 +269,26 @@ type BreakdownValue struct {
 	EstimatedBytes int64   `json:"estimated_bytes"`
 	EstimatedFiles int64   `json:"estimated_files"`
 	SharePct       float64 `json:"share_pct"`
+}
+
+// FieldsResponse is the response for the per-field storage+metadata endpoint
+// (/stats/fields) backing the Storage Details tab.
+type FieldsResponse struct {
+	Fields []FieldStorageEntry `json:"fields"`
+}
+
+// FieldStorageEntry is one field's exact storage + metadata decomposition: the
+// on-S3 compressed column footprint (scaled the same way the Cardinality Explorer
+// scales its storage_bytes so magnitudes match), the exact pmeta metadata bytes
+// (bloom + catalog/HLL), the accurate distinct-value count, and the bloom/indexed
+// flags — all from the same sources the Cardinality Explorer reads.
+type FieldStorageEntry struct {
+	Name          string `json:"name"`
+	StorageBytes  int64  `json:"storage_bytes"`
+	MetadataBytes int64  `json:"metadata_bytes"`
+	Cardinality   int    `json:"cardinality"`
+	HasBloom      bool   `json:"has_bloom"`
+	Indexed       bool   `json:"indexed"`
 }
 
 // ---- Handlers ----
@@ -1299,6 +1326,137 @@ func (a *API) handleCardinality(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, resp)
+}
+
+// handleFields backs the Storage Details tab: a per-field EXACT storage +
+// metadata table. Storage comes from the size-stats aggregate's FieldSizes (with
+// the SAME covered→total scaling handleCardinality applies, so the magnitudes
+// match the Cardinality Explorer); metadata from MetadataBytesByField (exact pmeta
+// bloom + catalog/HLL bytes, nil-safe); cardinality/has_bloom/indexed from the
+// same sources handleCardinality reads. Sorted by storage descending.
+func (a *API) handleFields(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Bloom membership: same matcher as the Cardinality Explorer (exact name, then
+	// the suffix after ':' so "resource_attr:service.name" matches "service.name").
+	bloomSet := make(map[string]struct{}, len(a.cfg.BloomColumns))
+	for _, col := range a.cfg.BloomColumns {
+		bloomSet[col] = struct{}{}
+	}
+	hasBloomFilter := func(name string) bool {
+		if _, ok := bloomSet[name]; ok {
+			return true
+		}
+		if idx := strings.LastIndex(name, ":"); idx >= 0 {
+			if _, ok := bloomSet[name[idx+1:]]; ok {
+				return true
+			}
+		}
+		return false
+	}
+
+	indexedSet := a.indexedFieldSet()
+	isIndexed := func(name string) bool {
+		if _, ok := indexedSet[name]; ok {
+			return true
+		}
+		if idx := strings.LastIndex(name, ":"); idx >= 0 {
+			if _, ok := indexedSet[name[idx+1:]]; ok {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Per-field storage is exact for files that carry ColumnBytes; older files
+	// don't yet, so scale the covered per-field bytes up to the full on-S3 total —
+	// IDENTICAL to handleCardinality so the two views report the same magnitudes
+	// (scale → 1 at full coverage).
+	storageScale := 1.0
+	if a.cfg.StatsAggregate != nil {
+		if covered := a.cfg.StatsAggregate.CoveredStorage(); covered > 0 {
+			if total := a.cfg.StatsAggregate.TotalStorage(); total > covered {
+				storageScale = float64(total) / float64(covered)
+			}
+		}
+	}
+
+	// Field universe: every Parquet column with storage, unioned with the label
+	// index's tracked fields (cardinality source) and the fields with metadata
+	// bytes — so a field that has storage or metadata but no label-index entry
+	// still appears in the table.
+	metaByField := map[string]int64(nil)
+	if a.cfg.MetadataBytesByField != nil {
+		metaByField = a.cfg.MetadataBytesByField()
+	}
+	var fieldSizes map[string]FieldSize
+	if a.cfg.StatsAggregate != nil {
+		fieldSizes = a.cfg.StatsAggregate.FieldSizes()
+	}
+	cardOf := func(name string) int {
+		if a.cfg.PmetaCardinality != nil {
+			if pc := pmetaCardinalityOf(a.cfg.PmetaCardinality, name); pc > 0 {
+				return int(pc)
+			}
+		}
+		return 0
+	}
+
+	seen := make(map[string]struct{})
+	add := func(name string) {
+		if name == "" {
+			return
+		}
+		seen[name] = struct{}{}
+	}
+	if a.cfg.LabelIndex != nil {
+		for _, li := range a.cfg.LabelIndex.GetAllLabelInfo() {
+			add(li.Name)
+		}
+	}
+	for name := range fieldSizes {
+		add(name)
+	}
+	for name := range metaByField {
+		add(name)
+	}
+
+	fields := make([]FieldStorageEntry, 0, len(seen))
+	for name := range seen {
+		var storage int64
+		if a.cfg.StatsAggregate != nil {
+			storage = int64(float64(a.cfg.StatsAggregate.StorageBytesOf(name)) * storageScale)
+		}
+		card := cardOf(name)
+		// Cardinality lookup tolerates the "resource_attr:service.name" → "service.name"
+		// shape; the metadata map is keyed by the bare Parquet column, so try both.
+		meta := metaByField[name]
+		if meta == 0 {
+			if idx := strings.LastIndex(name, ":"); idx >= 0 {
+				meta = metaByField[name[idx+1:]]
+			}
+		}
+		fields = append(fields, FieldStorageEntry{
+			Name:          name,
+			StorageBytes:  storage,
+			MetadataBytes: meta,
+			Cardinality:   card,
+			HasBloom:      hasBloomFilter(name),
+			Indexed:       isIndexed(name),
+		})
+	}
+
+	sort.Slice(fields, func(i, j int) bool {
+		if fields[i].StorageBytes != fields[j].StorageBytes {
+			return fields[i].StorageBytes > fields[j].StorageBytes
+		}
+		return fields[i].Name < fields[j].Name
+	})
+
+	writeJSON(w, FieldsResponse{Fields: fields})
 }
 
 func (a *API) handleBreakdown(w http.ResponseWriter, r *http.Request) {

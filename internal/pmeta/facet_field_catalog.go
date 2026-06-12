@@ -296,6 +296,30 @@ func (f *fieldCatalogFacet) EstimateBytes() int64 {
 	return n // dict strings are accounted once by Dict.EstimateBytes
 }
 
+// BytesByField returns each field's catalog footprint (bytes), keyed by field
+// name. A low-card field's bytes mirror EstimateBytes' per-field term exactly
+// (len(ids)*4 + 32 for the value-set + map overhead); a high-card field's bytes
+// are its persisted distinct-count HLL register array (len(reg)) — the catalog
+// entry the facet keeps for a field it does not enumerate. Summing the values is
+// the per-field decomposition of this facet's metadata contribution. Dict strings
+// are intentionally excluded (accounted once globally by Dict.EstimateBytes).
+func (f *fieldCatalogFacet) BytesByField() map[string]int64 {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	out := make(map[string]int64, len(f.byField)+len(f.hll))
+	for fid, vs := range f.byField {
+		if name, ok := f.dict.field(fid); ok {
+			out[name] += int64(len(vs.ids))*4 + 32
+		}
+	}
+	for fid, h := range f.hll {
+		if name, ok := f.dict.field(fid); ok {
+			out[name] += int64(len(h.reg)) // persisted per-field distinct-count sketch
+		}
+	}
+	return out
+}
+
 // Encode writes a SELF-CONTAINED payload (value strings, not global ids) so a
 // partition is rebuildable independently of the in-RAM dict. Deterministic
 // (fields + values sorted) for golden byte-identity.

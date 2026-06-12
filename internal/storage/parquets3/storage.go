@@ -826,6 +826,16 @@ func (s *Storage) PmetaPersistedBytesByTenant() map[string]int64 {
 	return s.catalog.PersistedBytesByTenant()
 }
 
+// PmetaMetadataBytesByField is the exact per-field metadata footprint
+// (field name -> bloom bitset bytes + catalog/HLL bytes), summed across all
+// resident pmeta bundles. Incremental (no S3 scan). nil unless --pmeta.
+func (s *Storage) PmetaMetadataBytesByField() map[string]int64 {
+	if s.catalog == nil {
+		return nil
+	}
+	return s.catalog.MetadataBytesByField()
+}
+
 func (s *Storage) LabelIndex() *cache.LabelIndex {
 	return s.labelIndex
 }

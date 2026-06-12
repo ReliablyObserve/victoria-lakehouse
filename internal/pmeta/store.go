@@ -411,6 +411,36 @@ func tenantKeyFromPartition(partition string) string {
 	return ""
 }
 
+// MetadataBytesByField returns the exact per-field on-RAM metadata footprint,
+// keyed by field name: for every resident partition bundle, each field's bloom
+// bitset bytes (FacetBloom.BytesByField) plus its catalog-entry / distinct-count
+// HLL bytes (FacetFieldCatalog.BytesByField), accumulated across all partitions.
+// Incremental — reads the live facets under RLock, no S3 scan. The template is
+// PersistedBytesByTenant; this decomposes the same bundles per field instead of
+// per tenant. Empty when no bloom/catalog facets are resident.
+func (s *Store) MetadataBytesByField() map[string]int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]int64)
+	for _, b := range s.bundles {
+		if fc, ok := b.Get(FacetBloom); ok {
+			if bf, ok := fc.(*bloomFacet); ok {
+				for field, n := range bf.BytesByField() {
+					out[field] += n
+				}
+			}
+		}
+		if fc, ok := b.Get(FacetFieldCatalog); ok {
+			if cf, ok := fc.(*fieldCatalogFacet); ok {
+				for field, n := range cf.BytesByField() {
+					out[field] += n
+				}
+			}
+		}
+	}
+	return out
+}
+
 // DirtyPartitions returns partitions with unpersisted changes — THE single
 // dirty list (replaces the five per-subsystem mechanisms).
 func (s *Store) DirtyPartitions() []string {
