@@ -38,6 +38,10 @@ type APIConfig struct {
 	// bytes now; metadata bytes in later phases), read in O(1) instead of scanning
 	// the manifest per request. Nil when the size-stats feature is unavailable.
 	StatsAggregate *StatsAggregate
+	// Retention summary from the global RetentionConfig, surfaced in the overview.
+	RetentionEnabled bool
+	RetentionDefault string
+	RetentionRules   int
 	// PmetaCardinality returns the accurate global HLL distinct-value estimate for
 	// a field (0 if unavailable). Preferred over the lazily-populated, 100-capped
 	// LabelIndex count for the Cardinality Explorer. Nil when pmeta is off.
@@ -116,6 +120,13 @@ type OverviewResponse struct {
 	StorageByClass      []ClassBreakdown `json:"storage_by_class"`
 	FleetNodes          int              `json:"fleet_nodes"`
 	RegistryGeneration  uint64           `json:"registry_generation"`
+	// Retention summary (global config) so the UI can show what's configured +
+	// applied. RetentionEnabled is whether the retention/deletion loop runs;
+	// RetentionDefault is the default keep-duration (e.g. "90d"); RetentionRules
+	// is the count of match-based override rules.
+	RetentionEnabled bool   `json:"retention_enabled"`
+	RetentionDefault string `json:"retention_default,omitempty"`
+	RetentionRules   int    `json:"retention_rules,omitempty"`
 }
 
 // ClassBreakdown is a per-storage-class breakdown of bytes and files.
@@ -726,6 +737,9 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 		StorageByClass:      classBD,
 		FleetNodes:          fleetNodes,
 		RegistryGeneration:  a.cfg.Registry.Generation(),
+		RetentionEnabled:    a.cfg.RetentionEnabled,
+		RetentionDefault:    a.cfg.RetentionDefault,
+		RetentionRules:      a.cfg.RetentionRules,
 	}
 
 	writeJSON(w, resp)

@@ -1204,6 +1204,9 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			AlwaysSketchFields: cfg.Pmeta.AlwaysSketchFields,
 			PmetaCardinality:   store.PmetaCardinality,
 			StatsAggregate:     statsAgg,
+			RetentionEnabled:   cfg.Retention.Enabled,
+			RetentionDefault:   cfg.Retention.Default,
+			RetentionRules:     len(cfg.Retention.Rules),
 		})
 		statsAPI.Register(mux)
 	}

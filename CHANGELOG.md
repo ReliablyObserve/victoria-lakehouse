@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Enriched Storage Overview tiles** — Avg File Size, Avg Rows/File, Saved (raw−comp), Storage Classes count, Fleet Nodes, Bucket, Registry generation — and a per-key value-count hint in the Storage Breakdown picker so usable break-down keys are obvious.
 - **Per-field on-S3 storage size in the Cardinality Explorer (Phase A).** A new `StatsAggregate` cache materialises per-field/per-tenant storage bytes from `FileInfo.ColumnBytes`, maintained by manifest add/remove diffs (flush + compaction), seeded from the manifest on warm-load and reconciled on each refresh — so the stats API reads sizes in O(1) instead of rescanning the manifest. `/cardinality/fields` now returns `storage_bytes` per field, shown as a human-readable **Storage** column (dedicated columns show real bytes; map attributes show `—`).
 
+- **Storage Overview surfaces retention.** The overview shows the configured/applied retention — default keep-duration + override-rule count, or `off` — next to the data range (which moved from a tile into the info row). `/stats/overview` now exposes `retention_enabled` / `retention_default` / `retention_rules` from the global `RetentionConfig`.
+
 ### Changed (UI internals)
 
 - **The Lakehouse UI is one shared module.** `internal/ui/static/lakehouse-ui.js` (`LakehouseUI.mount`) is the single render core, used by BOTH the standalone `/lakehouse/ui/` page and the VMUI-embedded Lakehouse tab (`vmui-tab.js` is now only the VMUI integration; `index.html` is a thin host that defines VMUI's theme variables). This eliminates the two duplicate UI implementations that had drifted, so a UI change is made once.

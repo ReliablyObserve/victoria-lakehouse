@@ -173,7 +173,6 @@
         ["Storage Classes", fmtNum((ov.storage_by_class || []).length)],
         ["Fleet Nodes", fmtNum(ov.fleet_nodes || 0)],
         ["Bucket", ov.bucket || "\u2014"],
-        ["Data Range", (ov.oldest_data ? ov.oldest_data.slice(0, 10) : "\u2014") + " \u2192 " + (ov.newest_data ? ov.newest_data.slice(0, 10) : "\u2014")],
       ];
       if (ov.avg_compression_ratio > 0) cardData.push(["Compression", fmtRatio(ov.avg_compression_ratio)]);
       cardData.push(["Mode", ov.mode || "\u2014"]);
@@ -187,6 +186,8 @@
 
       // Info row \u2014 data version + compression (Bucket / Fleet are now tiles above).
       var info = el("div", { className: "lh-info-row" });
+      info.appendChild(el("span", { className: "lh-info-item", innerHTML: "Data range: <strong>" + (ov.oldest_data ? ov.oldest_data.slice(0, 10) : "—") + " → " + (ov.newest_data ? ov.newest_data.slice(0, 10) : "—") + "</strong>" }));
+      info.appendChild(el("span", { className: "lh-info-item", innerHTML: "Retention: <strong>" + (ov.retention_enabled ? ((ov.retention_default || "—") + (ov.retention_rules ? " · " + ov.retention_rules + " rule" + (ov.retention_rules === 1 ? "" : "s") : "")) : "off") + "</strong>" }));
       info.appendChild(el("span", { className: "lh-info-item", innerHTML: "Registry gen: <strong>" + fmtNum(ov.registry_generation || 0) + "</strong>" }));
       if (ov.avg_compression_ratio > 0) info.appendChild(el("span", { className: "lh-info-item", innerHTML: "Compression: <strong>" + ov.avg_compression_ratio.toFixed(1) + "x</strong>" }));
       container.appendChild(info);
