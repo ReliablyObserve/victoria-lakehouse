@@ -1176,18 +1176,19 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	// Stats API
 	if cfg.Stats.Enabled {
 		statsAPI := stats.NewAPI(stats.APIConfig{
-			Registry:        registry,
-			Manifest:        store.Manifest(),
-			CostCalc:        costCalc,
-			ClassTracker:    classTracker,
-			LabelIndex:      store.LabelIndex(),
-			SchemaRegistry:  store.SchemaRegistry(),
-			Resolver:        resolver,
-			Policy:          policy,
-			Mode:            "logs",
-			Bucket:          cfg.S3.Bucket,
-			BloomColumns:    cfg.ActiveBloomColumns(),
-			BreakdownLabels: cfg.Stats.BreakdownLabels,
+			Registry:                 registry,
+			Manifest:                 store.Manifest(),
+			CostCalc:                 costCalc,
+			ClassTracker:             classTracker,
+			LabelIndex:               store.LabelIndex(),
+			SchemaRegistry:           store.SchemaRegistry(),
+			Resolver:                 resolver,
+			Policy:                   policy,
+			Mode:                     "logs",
+			Bucket:                   cfg.S3.Bucket,
+			BloomColumns:             cfg.ActiveBloomColumns(),
+			BreakdownLabels:          cfg.Stats.BreakdownLabels,
+			CurrentSchemaFingerprint: parquets3.CurrentSchemaFingerprint(cfg.Mode),
 		})
 		statsAPI.Register(mux)
 	}

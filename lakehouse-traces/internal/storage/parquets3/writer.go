@@ -693,6 +693,11 @@ func schemaFingerprint(mode config.Mode) string {
 	return fmt.Sprintf("%x", h.Sum(nil)[:8])
 }
 
+// CurrentSchemaFingerprint is the fingerprint files are written with in the given
+// mode — exported so the stats / compaction-detection layer can flag stale
+// (older-schema) files that still need a re-promotion pass.
+func CurrentSchemaFingerprint(mode config.Mode) string { return schemaFingerprint(mode) }
+
 func partitionFromNano(ns int64) string {
 	t := time.Unix(0, ns).UTC()
 	return fmt.Sprintf("dt=%s/hour=%02d", t.Format("2006-01-02"), t.Hour())

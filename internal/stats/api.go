@@ -29,6 +29,11 @@ type APIConfig struct {
 	Bucket          string
 	BloomColumns    []string
 	BreakdownLabels []string
+	// CurrentSchemaFingerprint is the fingerprint files are written with now
+	// (parquets3.CurrentSchemaFingerprint(mode)); the compaction-hints endpoint flags
+	// files carrying any other fingerprint as stale (re-promotion targets). Empty
+	// disables the stale-schema check.
+	CurrentSchemaFingerprint string
 }
 
 // API serves JSON endpoints for tenant statistics, cost, cardinality, etc.
@@ -52,6 +57,22 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/lakehouse/api/v1/stats/compression", a.handleCompression)
 	mux.HandleFunc("/lakehouse/api/v1/cardinality/fields", a.handleCardinality)
 	mux.HandleFunc("/lakehouse/api/v1/stats/breakdown", a.handleBreakdown)
+	mux.HandleFunc("/lakehouse/api/v1/stats/compaction", a.handleCompaction)
+}
+
+// handleCompaction surfaces partitions that need (re)compaction beyond the normal
+// level policy — stale-schema files (still carrying promoted attrs in the map, a
+// re-promotion target) and fragmented top-level partitions the policy never re-picks.
+// Read-only hint for the UI and the forced-recompaction trigger. Derived from the
+// manifest only (no file reads).
+func (a *API) handleCompaction(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store, must-revalidate")
+	if a.cfg.Manifest == nil {
+		_ = json.NewEncoder(w).Encode(manifest.CompactionStats{})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(a.cfg.Manifest.ComputeCompactionStats(a.cfg.CurrentSchemaFingerprint))
 }
 
 // ---- Response types ----
