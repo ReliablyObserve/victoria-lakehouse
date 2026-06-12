@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.100.1] - 2026-06-12
+
 ### Fixed
 
 - **Exact-match queries on bloom columns no longer return 0 under a reduced projection (silent cold-tier data loss).** A query that pairs an equality filter on a bloomed column (`trace_id`, `span_id`, `service.name`, and the high-cardinality dedicated columns) with a column-selecting pipe — `trace_id:=X | stats count()`, `… | fields trace_id`, or any aggregation — reduces the column projection, which routes the file open through the projected **range-read** path (only the projected column-chunk byte ranges are fetched). The per-row-group footer-bloom skip (`bloomFilterSkip`) then called `ColumnChunk.BloomFilter()`, whose read is **lazy**: it pulled the bloom from byte offsets that were never fetched and got back a non-empty but all-zero filter whose `Check()` false-negatives every value — so **every in-range row group was wrongly skipped and the query returned 0**, while the full-projection retrieval of the same trace (the Jaeger/Tempo span-fetch path, which full-downloads the file) returned the rows correctly. The footer-bloom row-group skip is now gated on bloom residency (it runs only when the whole file body is resident); the file-level pmeta bloom already prunes files, so the per-row-group skip is a pure optimization and disabling it on the range-read path costs only extra in-range row-group reads, never correctness. The latency-critical full-projection trace-retrieval path is unaffected. Fixed in both the logs and traces modules; guarded by a planned-range-read regression test that reproduced the 0-vs-N gap end-to-end.
