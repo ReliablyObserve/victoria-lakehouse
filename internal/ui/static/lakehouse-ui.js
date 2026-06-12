@@ -594,7 +594,7 @@
       }
 
       var tbl = el("table", { className: "lh-table" });
-      tbl.innerHTML = "<thead><tr><th>Field Name</th><th>Cardinality</th><th>Type</th><th>Bloom Filter</th></tr></thead>";
+      tbl.innerHTML = "<thead><tr><th>Field Name</th><th>Cardinality</th><th>Storage</th><th>Type</th><th>Bloom Filter</th></tr></thead>";
       var tbody = el("tbody");
       fields.forEach(function (f) {
         var row = el("tr");
@@ -608,7 +608,8 @@
         var cardCell = (f.indexed || f.cardinality > 0)
           ? fmtNum(f.cardinality)
           : '<span style="color:var(--color-text-secondary)" title="Not indexed \u2014 this field is not sketched, so distinct values are not counted (not the same as zero)">\u2014</span>';
-        row.innerHTML = "<td>" + f.name + badge + "</td><td>" + cardCell + "</td><td>" + typeBadge + "</td><td>" + (f.has_bloom ? "\u2705" : "\u2014") + "</td>";
+        var storeCell = f.storage_bytes ? fmtBytes(f.storage_bytes) : '<span style="color:var(--color-text-secondary)">\u2014</span>';
+        row.innerHTML = "<td>" + f.name + badge + "</td><td>" + cardCell + "</td><td>" + storeCell + "</td><td>" + typeBadge + "</td><td>" + (f.has_bloom ? "\u2705" : "\u2014") + "</td>";
         tbody.appendChild(row);
       });
       tbl.appendChild(tbody);

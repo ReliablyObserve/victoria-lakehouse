@@ -34,6 +34,10 @@ type APIConfig struct {
 	// mode's dimensional label set, they define which fields the Cardinality
 	// Explorer actually tracks (so a field outside the set reads "—", not 0).
 	AlwaysSketchFields []string
+	// StatsAggregate is the materialized per-field/per-tenant size cache (storage
+	// bytes now; metadata bytes in later phases), read in O(1) instead of scanning
+	// the manifest per request. Nil when the size-stats feature is unavailable.
+	StatsAggregate *StatsAggregate
 	// PmetaCardinality returns the accurate global HLL distinct-value estimate for
 	// a field (0 if unavailable). Preferred over the lazily-populated, 100-capped
 	// LabelIndex count for the Cardinality Explorer. Nil when pmeta is off.
@@ -200,6 +204,10 @@ type FieldEntry struct {
 	// counted" rather than "zero distinct" — the UI renders it as "—" so a 0
 	// isn't mistaken for "no data".
 	Indexed bool `json:"indexed"`
+	// StorageBytes is the on-S3 compressed footprint of this field's Parquet
+	// column(s), summed across all live files (from the size-stats aggregate). 0
+	// when the aggregate is unavailable or the field has no dedicated column.
+	StorageBytes int64 `json:"storage_bytes,omitempty"`
 }
 
 // BreakdownResponse is the response for the storage breakdown endpoint.
@@ -1150,6 +1158,12 @@ func (a *API) handleCardinality(w http.ResponseWriter, r *http.Request) {
 		}
 		return false
 	}
+	storageOf := func(name string) int64 {
+		if a.cfg.StatsAggregate == nil {
+			return 0
+		}
+		return a.cfg.StatsAggregate.StorageBytesOf(name)
+	}
 
 	for _, li := range allLabels {
 		card := li.Cardinality
@@ -1184,11 +1198,12 @@ func (a *API) handleCardinality(w http.ResponseWriter, r *http.Request) {
 		}
 
 		fields = append(fields, FieldEntry{
-			Name:        li.Name,
-			Cardinality: card,
-			Type:        fieldType,
-			HasBloom:    hasBloom,
-			Indexed:     isIndexed(li.Name),
+			Name:         li.Name,
+			Cardinality:  card,
+			Type:         fieldType,
+			HasBloom:     hasBloom,
+			Indexed:      isIndexed(li.Name),
+			StorageBytes: storageOf(li.Name),
 		})
 	}
 

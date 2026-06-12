@@ -493,7 +493,16 @@ func run(cfg *config.Config, addr string) {
 			cfg.SmartCache.MaxAge, cfg.SmartCache.SnapshotInterval)
 	}
 
-	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister, policy)
+	// Size-stats aggregate: maintained by manifest add/remove diffs (flush +
+	// compaction), seeded by a Recompute after warm-load and reconciled on each
+	// manifest refresh (see runStartup). Read in O(1) by the stats API.
+	var statsAgg *stats.StatsAggregate
+	if cfg.Stats.Enabled {
+		statsAgg = stats.NewStatsAggregate()
+		store.Manifest().SetChangeObserver(statsAgg.OnAdd, statsAgg.OnRemove)
+	}
+
+	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister, policy, statsAgg)
 
 	// Wire the compaction drain endpoint (spec §11.1). The preStop
 	// hook in the chart POSTs here to initiate a graceful drain
@@ -519,7 +528,7 @@ func run(cfg *config.Config, addr string) {
 		return true
 	}
 
-	go runStartup(sm, cfg, store, registry, writerTenantKey)
+	go runStartup(sm, cfg, store, registry, writerTenantKey, statsAgg)
 
 	httpserver.Serve([]string{addr}, requestHandler, httpserver.ServeOptions{})
 	logger.Infof("lakehouse-logs listening; addr=%s", addr)
@@ -948,7 +957,7 @@ func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *sta
 	}()
 }
 
-func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister, policy *tenant.PolicyRegistry) *http.ServeMux {
+func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister, policy *tenant.PolicyRegistry, statsAgg *stats.StatsAggregate) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	metrics.NewInfoGauge("lakehouse_info", map[string]string{
@@ -1173,7 +1182,8 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		})
 	}
 
-	// Stats API
+	// Stats API. statsAgg (the materialized size-stats aggregate) is created and
+	// observer-wired by the caller and passed in; the API reads it in O(1).
 	if cfg.Stats.Enabled {
 		statsAPI := stats.NewAPI(stats.APIConfig{
 			Registry:       registry,
@@ -1193,6 +1203,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			BreakdownLabels:    cfg.Stats.BreakdownLabels,
 			AlwaysSketchFields: cfg.Pmeta.AlwaysSketchFields,
 			PmetaCardinality:   store.PmetaCardinality,
+			StatsAggregate:     statsAgg,
 		})
 		statsAPI.Register(mux)
 	}
@@ -1256,7 +1267,7 @@ func parseTenantPrefix(prefix string) (uint32, uint32, bool) {
 	return uint32(acct), uint32(proj), true
 }
 
-func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, tenantKey string) {
+func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, tenantKey string, statsAgg *stats.StatsAggregate) {
 	// Phase 1 (foreground): disk recovery + manifest-files gate.
 	// See lakehouse-traces/main.go runStartup for full semantics.
 	sm.SetPhase(startup.PhaseDiskRecovery)
@@ -1312,6 +1323,13 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 			store.WarmCatalogFromS3(ctx) // load pmeta bundles (file-meta + bloom) BEFORE WarmMetadata enriches from them
 			store.WarmMetadata(ctx)
 			store.WarmCatalog(ctx) // re-derive catalog from the now-enriched manifest (no-op unless --pmeta)
+
+			// Seed the size-stats aggregate from the warm-loaded manifest (its
+			// source of truth). Steady-state diffs flow through the manifest
+			// change-observer; this one sweep populates it on startup.
+			if statsAgg != nil {
+				statsAgg.Recompute(store.Manifest().AllFiles())
+			}
 
 			if cfg.Cache.WarmupPartitions > 0 || cfg.Cache.WarmupMaxFiles > 0 {
 				warmCtx, warmCancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -1389,6 +1407,12 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 				registry.ReconcileWithManifest(tenantKey,
 					int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
 					m.MinTime().UnixNano(), m.MaxTime().UnixNano())
+				// Reconcile the size-stats aggregate against the refreshed manifest
+				// (the source of truth) — corrects any drift from a bulk refresh
+				// that bypassed the per-file change observer.
+				if statsAgg != nil {
+					statsAgg.Recompute(m.AllFiles())
+				}
 			}
 			rcancel()
 		case <-ageTicker.C:

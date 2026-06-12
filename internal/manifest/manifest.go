@@ -76,11 +76,11 @@ type FileInfo struct {
 	// manifest it is cluster-wide, snapshot-persisted, and re-derived by the
 	// compactor (so it tracks the post-compaction truth, never drifting like the
 	// cumulative registry). Captured at flush + recomputed on compaction.
-	ColumnBytes  map[string]int64 `json:"column_bytes,omitempty"`
-	StorageClass string           `json:"storage_class,omitempty"`
-	ClassCheckedAt  time.Time                   `json:"class_checked_at,omitempty"`
-	ClassSource     string                      `json:"class_source,omitempty"`
-	CreatedAt       time.Time                   `json:"created_at,omitempty"`
+	ColumnBytes    map[string]int64 `json:"column_bytes,omitempty"`
+	StorageClass   string           `json:"storage_class,omitempty"`
+	ClassCheckedAt time.Time        `json:"class_checked_at,omitempty"`
+	ClassSource    string           `json:"class_source,omitempty"`
+	CreatedAt      time.Time        `json:"created_at,omitempty"`
 }
 
 // BucketOr returns the file's bucket, falling back to defaultBucket
