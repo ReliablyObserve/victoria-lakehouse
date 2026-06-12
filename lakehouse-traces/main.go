@@ -471,6 +471,11 @@ func run(cfg *config.Config, addr string) {
 		logger.Infof("dedicated columns: %d custom attribute(s) promoted to slots", len(pa))
 	}
 
+	// Heal old v1 trace files forward on compaction: re-derive dedicated columns +
+	// any configured Tier-2 slots from the resource/span attribute maps. Wired
+	// unconditionally — Tier-1 OTel columns re-promote even without custom slots.
+	compaction.SetTraceRepromote(internalvlstorage.RepromoteTraceRow)
+
 	applyTenantStorageOverrides(store, policy, detector)
 
 	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister, policy)
