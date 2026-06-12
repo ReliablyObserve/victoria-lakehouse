@@ -440,6 +440,7 @@ func run(cfg *config.Config, addr string) {
 	}
 	startTenantPolicyRefresh(cfg, policy, stopCh)
 	startTenantAliasPersist(cfg, resolver, persister, stopCh)
+	startPeerDiscovery(cfg, store, stopCh)
 	// Publish to the compaction lookup closure now that the registry
 	// is built; from the next compaction tick onward the closure
 	// returns per-tenant compression schedules instead of nil-no-op.
@@ -773,6 +774,41 @@ func setupCompaction(
 // startTenantAliasSync starts the SyncPusher that propagates tenant
 // alias registrations across the peer ring. Returns the cancel func
 // (nil when no sync is needed) so the caller can defer it.
+// startPeerDiscovery resolves the gossip peer ring on the configured interval so
+// the stats + tenant-alias SyncPushers (and Phase D fleet metadata) actually have
+// peers to push to. Without this RefreshDiscovery is never called and GetPeers()
+// is always empty — single-instance works, but multi-instance silently never
+// gossips. No-op unless a peer headless service is configured.
+func startPeerDiscovery(cfg *config.Config, store *parquets3.Storage, stopCh <-chan struct{}) {
+	if cfg.Discovery.PeerHeadlessService == "" {
+		return
+	}
+	interval := cfg.Discovery.PeerRefreshInterval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	refresh := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := store.RefreshDiscovery(ctx); err != nil {
+			logger.Warnf("peer discovery refresh: %s", err)
+		}
+	}
+	go func() {
+		refresh() // resolve once promptly so gossip starts without a full interval wait
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-t.C:
+				refresh()
+			}
+		}
+	}()
+}
+
 func startTenantAliasSync(cfg *config.Config, store *parquets3.Storage, resolver *tenant.TenantResolver, addr string) context.CancelFunc {
 	if resolver == nil {
 		return nil

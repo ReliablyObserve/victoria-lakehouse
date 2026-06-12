@@ -1208,11 +1208,15 @@ func (s *Storage) SetSelfAZ(az string) {
 func (s *Storage) SelfAZ() string { return s.selfAZ }
 
 func (s *Storage) RefreshDiscovery(ctx context.Context) error {
+	// Non-fatal: a storage-node / partition-list discovery hiccup (or those
+	// services simply not being configured) must NOT short-circuit before peer
+	// discovery — the gossip ring below is the critical path for the fleet
+	// (stats CRDT, tenant aliases, Phase D node metadata). Log and continue.
 	if _, err := s.discovery.DiscoverStorageNodes(ctx); err != nil {
-		return fmt.Errorf("discover storage nodes: %w", err)
+		logger.Warnf("discover storage nodes: %s", err)
 	}
 	if _, err := s.discovery.PollPartitionList(ctx); err != nil {
-		return fmt.Errorf("poll partition list: %w", err)
+		logger.Warnf("poll partition list: %s", err)
 	}
 	if s.peerCache != nil || s.bufferBridge != nil {
 		peers, err := s.discovery.DiscoverPeers(ctx)
