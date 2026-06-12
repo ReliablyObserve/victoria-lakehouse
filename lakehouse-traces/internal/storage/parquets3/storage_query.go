@@ -1131,6 +1131,21 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	bloomChecks := resolveBloomCheckIndices(f, s.buildBloomChecks(queryStr))
 	pdf := resolvePushDownIndices(f, buildPushDownFilter(queryStr, s.registry))
 
+	// Footer-bloom row-group skip is SOUND ONLY when the file body is fully
+	// resident. On the projected range-read path (projectedCols != nil →
+	// openParquetFileWithPlan fetches only the projected column-chunk byte
+	// ranges, NOT the bloom-filter bytes), ColumnChunk.BloomFilter() lazily
+	// reads the bloom from offsets that were never fetched and returns a
+	// non-empty but all-zero bloom whose Check() FALSE-NEGATIVES every value —
+	// silently skipping the very row groups that hold the match. Symptom (logs
+	// twin): `trace_id:=X | stats count()` returned 0 while the `trace_id:=X`
+	// retrieval (projectedCols==nil → full download) returned the rows. The
+	// file-level pmeta bloom has already pruned files; the per-row-group
+	// footer-bloom skip is a pure optimization, so gating it off on the
+	// range-read path costs only extra in-range row-group reads, never
+	// correctness. Mirror of the logs module.
+	bloomResident := projectedCols == nil
+
 	var collectedTraceIDs []string
 	var traceIDsPtr *[]string
 	if s.smartCache != nil {
@@ -1161,7 +1176,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 			metrics.ParquetRowGroupsSkipped.Inc("stats")
 			continue
 		}
-		if s.bloomFilterSkip(f, rg, bloomChecks) {
+		if bloomResident && s.bloomFilterSkip(f, rg, bloomChecks) {
 			metrics.ParquetRowGroupsSkipped.Inc("bloom")
 			continue
 		}
