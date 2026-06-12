@@ -7,13 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.100.0] - 2026-06-12
-
 ### Added
 
 - **Compaction hints + manual recompaction trigger.** `GET /lakehouse/api/v1/stats/compaction` returns a manifest-derived efficiency picture — per-level file/byte counts with each level's compression ratio and the configured zstd, compacted-vs-pending bytes, stale-schema footprint, fragmented-partition count, and a **prioritized work-list of recompaction candidates** (each with estimated savings, before/after bytes, and the next output level + its zstd). A partition is flagged when it is `stale_schema` (older fingerprint, predates the current dedicated-column layout) and/or `fragmented` (≥2 files stuck at the top level the level policy never re-picks). The scheduler now **consumes these hints automatically** — recompacting stale/fragmented partitions it owns even when the L0/L1 level policy would not. `POST /lakehouse/compaction/recompact {partition, level?}` forces recompaction of one partition on demand through the same merge path, **HRW-ownership gated** (403 if the instance isn't the owner) so two pods never both rewrite a partition. Manifest-only (no file reads); full unit + e2e (real Parquet through the real compactor) + regression coverage. See `docs/operations.md` → Compaction.
 
 - **Compaction retains the combined bloom of all merged parquets + exposes bloom footprint in stats.** Previously a compacted file got no pmeta partition-bloom entry, so a `trace_id` lookup could no longer file-skip it. The compactor now extracts the bloom-column values (trace_id + service.name) from the merged rows — the **union across every input** — and feeds that combined bloom into the pmeta bloom facet keyed by the output, so compacted files stay file-level bloom-prunable across everything they absorbed (no extra S3 read; the rows are already in hand). `/stats/compaction` also surfaces the **footer-bloom footprint** — `total_bloom_bytes` + per-level `bloom_bytes` (captured at write time, file-read-free) — plus `bloom_columns` and `bloom_fp_rate`. The shared `schema.Extract{Log,Trace}BloomValues` keeps the flush and compaction bloom sets identical.
+
+## [0.100.0] - 2026-06-12
+
+### Added
+
 - **Accurate Cardinality Explorer backed by durable pmeta state.** The Stats Cardinality Explorer now reads distinct counts from the pmeta catalog facet / persisted high-card HLL (write-fed, compaction-safe) instead of transient in-memory taps, so reported cardinality is accurate and survives restart and compaction. `has_bloom` is reported from the written schema bloom set.
 - **vmui Lakehouse tab and sub-tab persistence.** The active Lakehouse Explorer tab is persisted in the URL hash (survives refresh, bookmarkable) and the selected sub-tab (Cardinality, etc.) is remembered across reload.
 - **Searchable, extensible Storage Breakdown** with richer defaults.
