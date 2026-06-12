@@ -726,8 +726,8 @@ func setupCompaction(
 				})
 			}
 		},
-		OnCompacted: func(added []manifest.FileInfo, removed []string) {
-			store.PmetaOnCompacted(added, removed) // facet feed + dead-key cleanup
+		OnCompacted: func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string) {
+			store.PmetaOnCompacted(added, removed, blooms) // facet feed (incl. combined bloom) + dead-key cleanup
 			notifyPusher(added, removed)
 		},
 	})
@@ -744,7 +744,12 @@ func setupCompaction(
 		Interval:         cfg.Compaction.Interval,
 		RowGroupSize:     cfg.Insert.RowGroupSize,
 		CompressionLevel: cfg.Insert.CompressionLevel,
-		OnCompacted:      notifyPusher,
+		// Orphan-sweep (Tier-A steal) mirrors the manifest push only — it does not
+		// feed pmeta here (the scheduler path above owns the facet/bloom feed), so
+		// the combined bloom is ignored on this rare path.
+		OnCompacted: func(added []manifest.FileInfo, removed []string, _ map[string]map[string][]string) {
+			notifyPusher(added, removed)
+		},
 	})
 	sweep.Start()
 

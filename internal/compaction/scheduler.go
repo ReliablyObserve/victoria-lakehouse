@@ -58,7 +58,10 @@ type SchedulerConfig struct {
 	// to every Compactor constructed in the scheduler loop;
 	// optional (nil = use the global schedule for every tenant).
 	TenantCompressionLookup func(tenantPrefix string) []int
-	OnCompacted             func(added []manifest.FileInfo, removed []string)
+	// OnCompacted is fired after a successful compaction. blooms carries the
+	// combined pmeta bloom of each output (outputKey -> column -> values) so the
+	// embedder can feed the bloom facet (compacted files stay bloom-prunable).
+	OnCompacted func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string)
 
 	// OnRingChange is fired by the embedder (main.go) when peer-cache
 	// observes a ring change. Used to (a) increment the ring-change
@@ -131,7 +134,7 @@ type Scheduler struct {
 	currentFP        string
 	compactionCfg    config.CompactionConfig
 	tenantLookup     func(tenantPrefix string) []int
-	onCompacted      func(added []manifest.FileInfo, removed []string)
+	onCompacted      func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string)
 
 	ringChangeRate int
 	drainTimeout   time.Duration
@@ -428,7 +431,7 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 			for _, sel := range selected {
 				removedKeys = append(removedKeys, sel.Key)
 			}
-			s.onCompacted(addedFiles, removedKeys)
+			s.onCompacted(addedFiles, removedKeys, result.OutputBlooms)
 		}
 
 		logger.Infof("compacted partition; partition=%s, level=%d, input_files=%d, output=%s, rows=%d",
@@ -512,7 +515,7 @@ func (s *Scheduler) ForceCompactPartition(ctx context.Context, partition string,
 		for _, sel := range selected {
 			removed = append(removed, sel.Key)
 		}
-		s.onCompacted(added, removed)
+		s.onCompacted(added, removed, result.OutputBlooms)
 	}
 	logger.Infof("forced compaction; partition=%s, level=%d, input_files=%d, output=%s, rows=%d",
 		partition, level, len(selected), result.OutputFile, result.RowsMerged)

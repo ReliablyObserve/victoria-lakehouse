@@ -694,8 +694,8 @@ func setupCompaction(
 				})
 			}
 		},
-		OnCompacted: func(added []manifest.FileInfo, removed []string) {
-			store.PmetaOnCompacted(added, removed) // facet feed + dead-key cleanup
+		OnCompacted: func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string) {
+			store.PmetaOnCompacted(added, removed, blooms) // facet feed + dead-key cleanup
 			notifyPusher(added, removed)
 		},
 	})
@@ -712,8 +712,8 @@ func setupCompaction(
 		Interval:         cfg.Compaction.Interval,
 		RowGroupSize:     cfg.Insert.RowGroupSize,
 		CompressionLevel: cfg.Insert.CompressionLevel,
-		OnCompacted: func(added []manifest.FileInfo, removed []string) {
-			store.PmetaOnCompacted(added, removed)
+		OnCompacted: func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string) {
+			store.PmetaOnCompacted(added, removed, blooms)
 			notifyPusher(added, removed)
 		},
 	})

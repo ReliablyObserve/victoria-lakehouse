@@ -101,7 +101,7 @@ func TestS3_bloomS3Loader_CorruptData(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: extractTraceBloomValues and bloomSetsToMap
+// Test: extractTraceBloomValues (delegates to schema.ExtractTraceBloomValues)
 // ---------------------------------------------------------------------------
 
 func TestS3_extractTraceBloomValues(t *testing.T) {
@@ -123,17 +123,6 @@ func TestS3_extractTraceBloomValues_Empty(t *testing.T) {
 	result := extractTraceBloomValues(nil)
 	if result != nil {
 		t.Error("expected nil for empty rows")
-	}
-}
-
-func TestS3_bloomSetsToMap_AllEmpty(t *testing.T) {
-	sets := map[string]map[string]bool{
-		"col1": {},
-		"col2": {},
-	}
-	result := bloomSetsToMap(sets)
-	if result != nil {
-		t.Error("expected nil for all-empty sets")
 	}
 }
 

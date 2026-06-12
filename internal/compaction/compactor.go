@@ -79,6 +79,11 @@ type CompactResult struct {
 	BytesWritten int64
 	OutputLevel  int
 	Duration     time.Duration
+	// OutputBlooms carries the COMBINED pmeta bloom of each merged output:
+	// outputKey -> column -> distinct values, extracted from the merged rows (the
+	// union across all inputs). Fed into the pmeta bloom facet via PmetaOnCompacted
+	// so the compacted file stays file-level bloom-prunable. nil when pmeta is off.
+	OutputBlooms map[string]map[string][]string
 }
 
 // Compactor merges small Parquet files into larger ones.
@@ -150,6 +155,12 @@ func (c *Compactor) Compact(ctx context.Context, partition string, files []manif
 		result.BytesRead += groupResult.BytesRead
 		result.BytesWritten += groupResult.BytesWritten
 		result.RowsMerged += groupResult.RowsMerged
+		if len(groupResult.BloomValues) > 0 {
+			if result.OutputBlooms == nil {
+				result.OutputBlooms = make(map[string]map[string][]string, len(groups))
+			}
+			result.OutputBlooms[groupResult.OutputKey] = groupResult.BloomValues
+		}
 	}
 	if len(result.OutputFiles) > 0 {
 		result.OutputFile = result.OutputFiles[0]
@@ -235,6 +246,9 @@ type compactGroupResult struct {
 	RowsMerged   int64
 	BytesRead    int64
 	BytesWritten int64
+	// BloomValues: the combined pmeta bloom (column -> distinct values) extracted
+	// from this group's merged rows — the union of all inputs' bloomed values.
+	BloomValues map[string][]string
 }
 
 func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenantFileGroup, fp string, outputLevel int) (*compactGroupResult, error) {
@@ -260,6 +274,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	var rowsMerged int64
 	var minTime, maxTime int64
 	var labelAggregates map[string]map[string]int64
+	var bloomValues map[string][]string
 
 	// Pick the per-output-level compression. Tenant override beats
 	// the global progressive schedule, which in turn beats the
@@ -318,6 +333,10 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		// forever; row extraction makes each compaction pass HEAL old
 		// files into fully-aggregated outputs.
 		labelAggregates = schema.ExtractLogLabelAggregates(merged)
+		// Combined pmeta bloom: the union of bloom-column values across the merged
+		// rows (= across all inputs), so the compacted file retains file-level bloom
+		// pruning. Same shared extractor the flush writer uses → identical bloom set.
+		bloomValues = schema.ExtractLogBloomValues(merged)
 		outputData, err = writeCompactedLogs(merged, rowGroupSizeForOutput, levelForOutput)
 		if err != nil {
 			return nil, fmt.Errorf("write compacted logs: %w", err)
@@ -336,6 +355,8 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		// Row-extracted aggregates — same healing rationale as the logs
 		// branch above (shared schema.Extract* implementation).
 		labelAggregates = schema.ExtractTraceLabelAggregates(merged)
+		// Combined pmeta bloom — same rationale as the logs branch above.
+		bloomValues = schema.ExtractTraceBloomValues(merged)
 		outputData, err = writeCompactedTraces(merged, rowGroupSizeForOutput, levelForOutput)
 		if err != nil {
 			return nil, fmt.Errorf("write compacted traces: %w", err)
@@ -427,6 +448,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		RowsMerged:   rowsMerged,
 		BytesRead:    bytesRead,
 		BytesWritten: int64(len(outputData)),
+		BloomValues:  bloomValues,
 	}, nil
 }
 

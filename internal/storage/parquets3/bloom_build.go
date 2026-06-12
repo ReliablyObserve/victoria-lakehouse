@@ -11,60 +11,15 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
+// extractLogBloomValues / extractTraceBloomValues delegate to the shared schema
+// extractor so the pmeta bloom set (trace_id + service.name) is byte-identical on the
+// flush path here and the compaction path in internal/compaction (combined bloom).
 func extractLogBloomValues(rows []schema.LogRow) map[string][]string {
-	if len(rows) == 0 {
-		return nil
-	}
-	sets := map[string]map[string]bool{
-		"trace_id":     {},
-		"service.name": {},
-	}
-	for i := range rows {
-		if rows[i].TraceID != "" {
-			sets["trace_id"][rows[i].TraceID] = true
-		}
-		if rows[i].ServiceName != "" {
-			sets["service.name"][rows[i].ServiceName] = true
-		}
-	}
-	return bloomSetsToMap(sets)
+	return schema.ExtractLogBloomValues(rows)
 }
 
 func extractTraceBloomValues(rows []schema.TraceRow) map[string][]string {
-	if len(rows) == 0 {
-		return nil
-	}
-	sets := map[string]map[string]bool{
-		"trace_id":     {},
-		"service.name": {},
-	}
-	for i := range rows {
-		if rows[i].TraceID != "" {
-			sets["trace_id"][rows[i].TraceID] = true
-		}
-		if rows[i].ServiceName != "" {
-			sets["service.name"][rows[i].ServiceName] = true
-		}
-	}
-	return bloomSetsToMap(sets)
-}
-
-func bloomSetsToMap(sets map[string]map[string]bool) map[string][]string {
-	result := make(map[string][]string, len(sets))
-	for col, vs := range sets {
-		if len(vs) == 0 {
-			continue
-		}
-		vals := make([]string, 0, len(vs))
-		for v := range vs {
-			vals = append(vals, v)
-		}
-		result[col] = vals
-	}
-	if len(result) == 0 {
-		return nil
-	}
-	return result
+	return schema.ExtractTraceBloomValues(rows)
 }
 
 func bloomS3Loader(pool *s3reader.ClientPool, prefix string) func(ctx context.Context, partition string) (*bloomindex.Index, error) {
