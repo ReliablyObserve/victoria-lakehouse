@@ -1,6 +1,6 @@
 # Stats Aggregate Cache — per-field storage + metadata sizes, cluster-wide
 
-Status: **design verified; foundation + Phase A landed (logs)** — per-field on-S3 storage size in the Cardinality Explorer. Remaining: the S3 sidecar persist/load (a cold-start optimisation), traces-module parity, and Phases B–E.
+Status: **design verified; foundation + Phase A landed (logs + traces)** — per-field on-S3 storage size in the Cardinality Explorer, on both `:29428` and `:20428`. The Storage column scales covered per-field bytes up to the manifest's full on-S3 total so it shows real magnitude immediately and converges to exact as compaction/new flushes backfill `ColumnBytes`. Remaining: the S3 sidecar persist/load (a cold-start optimisation) and Phases B–E.
 
 ## Motivation
 
@@ -55,7 +55,7 @@ The manifest is already shared + refreshed across instances, so the per-field/pe
 ## Phases
 
 - **0 — foundation (landed):** `FileInfo.ColumnBytes` captured from the Parquet footer at flush; `manifest.SetChangeObserver` add/remove hook.
-- **A — landed (logs):** compactor re-derives `ColumnBytes`; the `StatsAggregate` component (subscribe to the manifest hook + recompute-on-warm + reconcile-on-refresh; the S3 sidecar persist/load is the one remaining cold-start optimisation); `/cardinality/fields` `+storage_bytes`; the UI **Storage** column. Traces-module parity (mirror the writer `ColumnBytes` capture + the main.go wiring) is pending.
+- **A — landed (logs + traces):** compactor re-derives `ColumnBytes`; the `StatsAggregate` component (subscribe to the manifest hook + recompute-on-warm + reconcile-on-refresh; the S3 sidecar persist/load is the one remaining cold-start optimisation); `/cardinality/fields` `+storage_bytes`; the UI **Storage** column, scaled to the live on-S3 total during the `ColumnBytes` backfill window. Traces-module parity landed: the traces writer captures per-column footer bytes and the traces binary wires its own `StatsAggregate` (observer + recompute-on-warm + reconcile-on-refresh + APIConfig), so `:20428` populates the Storage column identically.
 - **B:** overview `+metadata` (mem `ResidentBytes` + disk `DiskCache.Size` + S3 sweep); overview metadata tiles (mem/disk/S3).
 - **C:** `/stats/storage` per-field `{storage, metadata}`; Storage Details → per-field table (drop the tenant facet).
 - **D:** per-instance mem/disk gossiped via the registry node-maps; per-instance breakdown in the UI.
