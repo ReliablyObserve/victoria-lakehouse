@@ -1,6 +1,6 @@
 # Stats Aggregate Cache — per-field storage + metadata sizes, cluster-wide
 
-Status: **design verified; foundation + Phase A landed (logs + traces)** — per-field on-S3 storage size in the Cardinality Explorer, on both `:29428` and `:20428`. The Storage column scales covered per-field bytes up to the manifest's full on-S3 total so it shows real magnitude immediately and converges to exact as compaction/new flushes backfill `ColumnBytes`. Remaining: Phases C–E.
+Status: **design verified; foundation + Phase A landed (logs + traces)** — per-field on-S3 storage size in the Cardinality Explorer, on both `:29428` and `:20428`. The Storage column scales covered per-field bytes up to the manifest's full on-S3 total so it shows real magnitude immediately and converges to exact as compaction/new flushes backfill `ColumnBytes`. Remaining: Phases C–D.
 
 ## Motivation
 
@@ -59,6 +59,6 @@ The manifest is already shared + refreshed across instances, so the per-field/pe
 - **B — landed (logs + traces):** Storage Overview **Metadata footprint** tiles — pmeta RAM (`PmetaResidentBytes`) + disk cache (`DiskCacheBytes`), both this-node, plus the cluster on-S3 metadata total. The on-S3 figure is tracked **incrementally** — each pmeta bundle records its encoded byte size on persist / warm-load / compaction (`Bundle.PersistedSize` → `Store.PersistedBytes`), so it's a live sum that **never lists S3**. `/stats/overview` `+meta_resident_bytes`/`+meta_disk_bytes`/`+meta_s3_bytes`. e2e: `TestStatsOverviewMetadata`, `TestCardinalityStorageBytes`.
 - **C:** `/stats/storage` per-field `{storage, metadata}`; Storage Details → per-field table (drop the tenant facet).
 - **D:** per-instance mem/disk gossiped via the registry node-maps; per-instance breakdown in the UI.
-- **E:** `/tenants` `+metadata_bytes`; Tenants metadata column.
+- **E — landed (logs + traces):** pmeta bundles are now keyed by a **tenant-scoped partition** (`<account>/<project>/<signal>/dt=/hour=` via `manifest.ExtractTenantPartition`) instead of a global `dt=/hour=`, so each tenant's metadata is physically isolated under its own S3 prefix (mirroring the data path). `/tenants` `+metadata_bytes` — exact per-tenant size from `Store.PersistedBytesByTenant` (incremental, no scan) — surfaced as the Tenants **Metadata** column. Every pmeta path (flush, compaction, warm-from-manifest, warm-from-S3, cold-start enrich, bloom reads, retention) derives the partition from the file key; the manifest's partition count + retention keep the pure `dt=/hour=` key. A one-time, marker-gated, manifest-driven migration (`CleanupLegacyGlobalBundles`) deletes the orphaned global bundles. **Migration note:** the 4 high-card sketched ids (trace_id/span_id/container.id/service.instance.id) re-derive from data — the old *global* HLLs can't be split per-tenant — so they re-accumulate from new flushes; dimensional fields rebuild full from the manifest.
 
 Each phase ships backend + UI (in the single shared `internal/ui/static/lakehouse-ui.js`) + a rebuild + live verify, and updates docs (internal + public) at its boundary.
