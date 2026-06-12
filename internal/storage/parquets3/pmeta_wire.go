@@ -432,13 +432,13 @@ func (s *Storage) WarmCatalogFromS3(ctx context.Context) {
 	}
 }
 
-// PmetaOnCompacted folds a compaction result into the pmeta facets: the output
-// file's catalog/file-meta contribution is added and the merged-away inputs are
-// removed (dead keys otherwise accumulate in RAM and in the persisted bundle
-// forever). The output gets NO bloom entry — blooms of differently-sized inputs
-// cannot be unioned without re-scanning, and an ABSENT bloom key is always kept
-// (sound: compacted files are never wrongly excluded, just not bloom-pruned).
-func (s *Storage) PmetaOnCompacted(added []manifest.FileInfo, removed []string) {
+// PmetaOnCompacted folds a compaction result into the pmeta facets: each output
+// file's catalog/file-meta contribution is added — INCLUDING its combined bloom, the
+// union of all merged inputs' bloom values, which the compactor extracts from the
+// merged rows (no re-scan) and passes in as blooms[outputKey] — and the merged-away
+// inputs are removed (dead keys otherwise accumulate in RAM and in the persisted
+// bundle forever). The combined bloom keeps compacted files file-level bloom-prunable.
+func (s *Storage) PmetaOnCompacted(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string) {
 	if s.catalog == nil {
 		return
 	}
@@ -459,6 +459,7 @@ func (s *Storage) PmetaOnCompacted(added []manifest.FileInfo, removed []string) 
 			SchemaFingerprint: fi.SchemaFingerprint,
 			Labels:            fi.Labels,
 			TruncatedFields:   truncated,
+			BloomValues:       blooms[fi.Key],
 		})
 	}
 	byPart := make(map[string][]string)

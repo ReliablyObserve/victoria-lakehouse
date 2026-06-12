@@ -9,6 +9,7 @@ package compaction
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -39,6 +40,13 @@ type SchedulerConfig struct {
 	RowGroupSize     int
 	CompressionLevel int
 
+	// CurrentSchemaFingerprint is the fingerprint new files are written with. The
+	// scheduler flags files carrying any OTHER fingerprint as stale and recompacts
+	// them (re-promotion to dedicated columns) even when the level policy would skip
+	// the partition — so old / poorly-compacted areas heal without waiting for new
+	// input files. Empty disables hint-driven recompaction (only the level policy runs).
+	CurrentSchemaFingerprint string
+
 	// CompactionConfig carries the full compaction-section config so
 	// the per-tick Compactor constructor can read progressive-
 	// compression schedule + any future per-output knobs without
@@ -50,7 +58,10 @@ type SchedulerConfig struct {
 	// to every Compactor constructed in the scheduler loop;
 	// optional (nil = use the global schedule for every tenant).
 	TenantCompressionLookup func(tenantPrefix string) []int
-	OnCompacted             func(added []manifest.FileInfo, removed []string)
+	// OnCompacted is fired after a successful compaction. blooms carries the
+	// combined pmeta bloom of each output (outputKey -> column -> values) so the
+	// embedder can feed the bloom facet (compacted files stay bloom-prunable).
+	OnCompacted func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string)
 
 	// OnRingChange is fired by the embedder (main.go) when peer-cache
 	// observes a ring change. Used to (a) increment the ring-change
@@ -70,6 +81,42 @@ type SchedulerConfig struct {
 	DrainTimeout time.Duration
 }
 
+// recompactionLevel decides whether a partition the level policy skipped still needs
+// (re)compaction from the compaction hints, and at which level. Two triggers the
+// level policy ignores: stale-schema files (a fingerprint other than currentFP →
+// re-promotion to dedicated columns) and top-level fragmentation (>= L2 with 2+ files
+// the policy never re-merges). Returns (level, true) to compact; the Scan loop's
+// existing SelectFiles(level, majority-fingerprint) picks the group and the compactor
+// re-promotes during the merge. The selection needs 2+ files (a merge), so a lone
+// stale file is left until it has a peer at the same level/fingerprint.
+func recompactionLevel(files []manifest.FileInfo, currentFP string) (int, bool) {
+	maxLevel := 0
+	stale := false
+	for _, f := range files {
+		if f.CompactionLevel > maxLevel {
+			maxLevel = f.CompactionLevel
+		}
+		if currentFP != "" && f.SchemaFingerprint != currentFP {
+			stale = true
+		}
+	}
+	if stale {
+		return maxLevel, true
+	}
+	if maxLevel >= 2 {
+		cnt := 0
+		for _, f := range files {
+			if f.CompactionLevel == maxLevel {
+				cnt++
+			}
+		}
+		if cnt >= 2 {
+			return maxLevel, true
+		}
+	}
+	return 0, false
+}
+
 // Scheduler runs periodic compaction scans.
 type Scheduler struct {
 	manifest         *manifest.Manifest
@@ -84,9 +131,10 @@ type Scheduler struct {
 	maxConcurrent    int
 	rowGroupSize     int
 	compressionLevel int
+	currentFP        string
 	compactionCfg    config.CompactionConfig
 	tenantLookup     func(tenantPrefix string) []int
-	onCompacted      func(added []manifest.FileInfo, removed []string)
+	onCompacted      func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string)
 
 	ringChangeRate int
 	drainTimeout   time.Duration
@@ -147,6 +195,7 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 		maxConcurrent:    maxConc,
 		rowGroupSize:     cfg.RowGroupSize,
 		compressionLevel: cfg.CompressionLevel,
+		currentFP:        cfg.CurrentSchemaFingerprint,
 		compactionCfg:    cfg.CompactionConfig,
 		tenantLookup:     cfg.TenantCompressionLookup,
 		onCompacted:      cfg.OnCompacted,
@@ -283,6 +332,18 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 		}
 		level, eligible := s.policy.Eligible(files, pt)
 		if !eligible {
+			// Hint-driven recompaction: the level policy only merges L0/L1, so
+			// stale-schema files (re-promotion targets) and top-level fragmentation
+			// are never re-picked. Consume the compaction hints so old /
+			// poorly-compacted areas heal without waiting for new input files — the
+			// existing SelectFiles + compactor path below does the merge + re-promote,
+			// and a partition self-resolves in one pass (becomes non-stale /
+			// non-fragmented, so it isn't re-picked).
+			if lvl, needs := recompactionLevel(files, s.currentFP); needs {
+				level, eligible = lvl, true
+			}
+		}
+		if !eligible {
 			continue
 		}
 		candidates = append(candidates, partitionCandidate{
@@ -370,7 +431,7 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 			for _, sel := range selected {
 				removedKeys = append(removedKeys, sel.Key)
 			}
-			s.onCompacted(addedFiles, removedKeys)
+			s.onCompacted(addedFiles, removedKeys, result.OutputBlooms)
 		}
 
 		logger.Infof("compacted partition; partition=%s, level=%d, input_files=%d, output=%s, rows=%d",
@@ -379,6 +440,103 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 	}
 
 	return compacted, nil
+}
+
+// ForceCompactPartition compacts a partition NOW, bypassing the level-policy
+// eligibility gate — the manual-trigger path behind POST /lakehouse/compaction/recompact
+// for the compaction hints. The CALLER must verify ownership (RecompactHandler does).
+// level <= 0 derives it from the hints (recompactionLevel) or the partition's max
+// level. Runs synchronously through the SAME SelectFiles + compactor (+ re-promote)
+// path as a scheduled compaction, with identical metrics/onCompacted bookkeeping.
+// Returns the result, or an error (draining / not found / fewer than 2 compactable files).
+func (s *Scheduler) ForceCompactPartition(ctx context.Context, partition string, level int) (*CompactResult, error) {
+	if s.draining.Load() {
+		return nil, fmt.Errorf("scheduler is draining; no new compaction accepted")
+	}
+	files := s.manifest.FilesForPartition(partition)
+	if len(files) == 0 {
+		return nil, fmt.Errorf("partition not found or empty: %s", partition)
+	}
+	if level <= 0 {
+		if lvl, ok := recompactionLevel(files, s.currentFP); ok {
+			level = lvl
+		} else {
+			for _, f := range files {
+				if f.CompactionLevel > level {
+					level = f.CompactionLevel
+				}
+			}
+		}
+	}
+	fp := MajoritySchemaFingerprint(files, level)
+	selected := s.policy.SelectFiles(files, level, fp)
+	if len(selected) < 2 {
+		return nil, fmt.Errorf("partition %s has fewer than 2 compactable files at level %d", partition, level)
+	}
+
+	s.manifest.MarkAttempt(partition, time.Now())
+	s.inFlight.Add(1)
+	metrics.CompactionPartitionsInFlight.Inc()
+	compStart := time.Now()
+
+	compactor := NewCompactor(CompactorConfig{
+		Pool:                    s.pool,
+		Manifest:                s.manifest,
+		Prefix:                  s.prefix,
+		Mode:                    s.mode,
+		RowGroupSize:            s.rowGroupSize,
+		CompressionLevel:        s.compressionLevel,
+		BloomRebuilder:          s.bloomRebuilder,
+		CompactionConfig:        s.compactionCfg,
+		TenantCompressionLookup: s.tenantLookup,
+	})
+	result, err := compactor.Compact(ctx, partition, selected, level)
+
+	metrics.CompactionPartitionsInFlight.Dec()
+	metrics.CompactionInFlightDuration.Observe(time.Since(compStart).Seconds())
+	s.inFlight.Done()
+
+	if err != nil {
+		metrics.CompactionErrorsTotal.Inc()
+		return nil, fmt.Errorf("forced compaction of %s: %w", partition, err)
+	}
+
+	metrics.CompactionRunsTotal.Inc()
+	metrics.CompactionFilesInputTotal.Add(len(selected))
+	metrics.CompactionFilesOutputTotal.Inc()
+	metrics.CompactionBytesReadTotal.Add(int(result.BytesRead))
+	metrics.CompactionBytesWrittenTotal.Add(int(result.BytesWritten))
+	metrics.CompactionRowsMergedTotal.Add(int(result.RowsMerged))
+	metrics.CompactionDuration.Observe(time.Since(compStart).Seconds())
+
+	if s.onCompacted != nil {
+		added := s.manifest.FilesForPartition(partition)
+		removed := make([]string, 0, len(selected))
+		for _, sel := range selected {
+			removed = append(removed, sel.Key)
+		}
+		s.onCompacted(added, removed, result.OutputBlooms)
+	}
+	logger.Infof("forced compaction; partition=%s, level=%d, input_files=%d, output=%s, rows=%d",
+		partition, level, len(selected), result.OutputFile, result.RowsMerged)
+	return result, nil
+}
+
+// OwnsPartition reports whether this pod is the HRW owner of the partition (true
+// when ownership is unset — single-node). Exposed for the recompact trigger's gate.
+func (s *Scheduler) OwnsPartition(partition string) bool {
+	if s.ownership == nil {
+		return true
+	}
+	return s.ownership.OwnsPartition(partition)
+}
+
+// OwnerOf returns the HRW owner peer of the partition ("" when ownership is unset).
+func (s *Scheduler) OwnerOf(partition string) string {
+	if s.ownership == nil {
+		return ""
+	}
+	return s.ownership.OwnerOf(partition)
 }
 
 // recordRingChange ticks the per-type counter and adds the event to

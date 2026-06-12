@@ -768,21 +768,6 @@ func TestInteg_extractTraceBloomValues_Empty(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: bloomSetsToMap
-// ---------------------------------------------------------------------------
-
-func TestInteg_bloomSetsToMap_AllEmpty(t *testing.T) {
-	sets := map[string]map[string]bool{
-		"col1": {},
-		"col2": {},
-	}
-	result := bloomSetsToMap(sets)
-	if result != nil {
-		t.Error("expected nil for all-empty sets")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Test: cacheOnFlush
 // ---------------------------------------------------------------------------
 

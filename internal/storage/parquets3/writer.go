@@ -416,6 +416,7 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 		MinTimeNs:         minTimeNs,
 		MaxTimeNs:         maxTimeNs,
 		RawBytes:          result.RawBytes,
+		BloomBytes:        footerBloomBytes(result.Data),
 		SchemaFingerprint: schemaFingerprint(w.mode),
 		Labels:            labels,
 		LabelAggregates:   schema.ExtractLogLabelAggregates(rows),
@@ -507,6 +508,7 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 		MinTimeNs:         minTimeNs,
 		MaxTimeNs:         maxTimeNs,
 		RawBytes:          result.RawBytes,
+		BloomBytes:        footerBloomBytes(result.Data),
 		SchemaFingerprint: schemaFingerprint(w.mode),
 		Labels:            labels,
 		LabelAggregates:   schema.ExtractTraceLabelAggregates(rows),
@@ -807,6 +809,11 @@ func schemaFingerprint(mode config.Mode) string {
 	h.Write(b)
 	return fmt.Sprintf("%x", h.Sum(nil)[:8])
 }
+
+// CurrentSchemaFingerprint is the fingerprint files are written with in the given
+// mode — exported so the stats / compaction-detection layer can flag stale
+// (older-schema) files that still need a re-promotion pass.
+func CurrentSchemaFingerprint(mode config.Mode) string { return schemaFingerprint(mode) }
 
 func partitionFromNano(ns int64) string {
 	t := time.Unix(0, ns).UTC()
