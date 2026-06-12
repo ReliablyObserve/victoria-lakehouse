@@ -153,6 +153,13 @@ type Manifest struct {
 	// RefreshFromS3, rebuildIndex, snapshot Load.
 	byKey map[string]string
 
+	// onAdd / onRemove fire (under the write lock) on every file add/remove.
+	// Flush AND compaction both route through AddFile/RemoveFile, so one observer
+	// captures every storage diff — used by the StatsAggregate sidecar cache to
+	// keep per-field/per-tenant size totals current without rescanning.
+	onAdd    func(partition string, fi FileInfo)
+	onRemove func(partition string, fi FileInfo)
+
 	// tenantAggregates is the incremental per-tenant cache backing
 	// TenantSummaries(). Without this, /api/v1/tenants, /stats/overview,
 	// the Lakehouse Tenants UI tab, and the servicegraph background
@@ -1205,6 +1212,9 @@ func (m *Manifest) RemoveFile(partition string, key string) {
 			m.totalFiles--
 			m.totalBytes -= fi.Size
 			m.updateTenantAggregateOnRemove(partition, fi)
+			if m.onRemove != nil {
+				m.onRemove(partition, fi)
+			}
 			m.files[partition] = append(files[:i], files[i+1:]...)
 			if len(m.files[partition]) == 0 {
 				delete(m.files, partition)
@@ -1371,6 +1381,19 @@ func (m *Manifest) EnrichFileMetadata(key string, rowCount int64, minTimeNs, max
 	}
 }
 
+// SetChangeObserver registers callbacks fired (under the write lock) on every
+// file add/remove. Flush AND compaction both route through AddFile/RemoveFile,
+// so one observer captures every storage diff. Pass nil to clear. Callbacks must
+// be cheap and MUST NOT call back into the manifest (re-entrant lock) — they run
+// on the flush/compaction hot path. Used by the StatsAggregate sidecar cache to
+// maintain per-field/per-tenant size totals incrementally.
+func (m *Manifest) SetChangeObserver(onAdd, onRemove func(partition string, fi FileInfo)) {
+	m.mu.Lock()
+	m.onAdd = onAdd
+	m.onRemove = onRemove
+	m.mu.Unlock()
+}
+
 func (m *Manifest) AddFile(partition string, fi FileInfo) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1397,6 +1420,9 @@ func (m *Manifest) AddFile(partition string, fi FileInfo) {
 	m.files[partition] = append(m.files[partition], fi)
 	m.byKey[fi.Key] = partition
 	m.updateTenantAggregateOnAdd(partition, fi)
+	if m.onAdd != nil {
+		m.onAdd(partition, fi)
+	}
 	m.totalFiles++
 	m.totalBytes += fi.Size
 

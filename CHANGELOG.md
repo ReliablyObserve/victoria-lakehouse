@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Promoted id columns get real, durable cardinality (`container.id`, `service.instance.id`).** They're sketched by default (HLL) through the persisted per-partition catalog — the same durable path as `trace_id`/`span_id` — so the Cardinality Explorer reports an accurate distinct count that survives restart instead of `0`. Unioned into the effective sketch set in code (`schema.DefaultSketchIDColumns`) so an operator's `always_sketch_fields` YAML can't accidentally drop them; wired for both logs and traces.
 - **Cardinality Explorer distinguishes "not indexed" from zero.** A field outside the tracked set (a map-only attribute that's never sketched) renders `—` instead of a misleading `0`, so "not counted" is no longer conflated with "zero distinct values". The `/cardinality/fields` API exposes an `indexed` flag per field.
 - **Storage Breakdown selection is remembered and fully editable.** The chosen label set persists in `localStorage`, seeds from the server defaults on first visit, and every block — default or added — is removable; the `+` picker offers any field and flags non-indexed ones.
+- **Per-field storage/metadata size stats — foundation.** The Parquet writer records per-column compressed bytes into `FileInfo.ColumnBytes` (both modules) and the manifest gains a `SetChangeObserver` add/remove hook. These back a cluster-wide, S3-cached, compaction-aware stats aggregate (per-field storage + metadata sizes; memory/disk/S3 tiers) under construction — design in [`docs/architecture/stats-aggregate-cache.md`](docs/architecture/stats-aggregate-cache.md).
+- **Enriched Storage Overview tiles** — Avg File Size, Avg Rows/File, Saved (raw−comp), Storage Classes count, Fleet Nodes, Bucket, Registry generation — and a per-key value-count hint in the Storage Breakdown picker so usable break-down keys are obvious.
+
+### Changed (UI internals)
+
+- **The Lakehouse UI is one shared module.** `internal/ui/static/lakehouse-ui.js` (`LakehouseUI.mount`) is the single render core, used by BOTH the standalone `/lakehouse/ui/` page and the VMUI-embedded Lakehouse tab (`vmui-tab.js` is now only the VMUI integration; `index.html` is a thin host that defines VMUI's theme variables). This eliminates the two duplicate UI implementations that had drifted, so a UI change is made once.
 
 ### Changed
 
