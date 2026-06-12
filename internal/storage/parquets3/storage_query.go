@@ -1801,11 +1801,13 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 
 	byPartition := make(map[string][]manifest.FileInfo)
 	for _, fi := range files {
-		// manifest.ExtractPartition (pure "dt=.../hour=HH", no prefix) — the pmeta
-		// facet AND the _bloom.bin persist path are keyed by it. partitionFromKey
-		// keeps the key prefix, which made the facet lookup always miss and the
-		// bloomS3Loader fallback build a double-prefixed S3 path.
-		partition := manifest.ExtractPartition(fi.Key)
+		// manifest.ExtractTenantPartition (tenant-isolated: full key dir incl the
+		// account/project prefix) — the pmeta facet AND the _bloom.bin persist path
+		// are keyed by it, so the bloom lookup, facet store and bloomS3Loader path
+		// all derive the SAME partition. (A past mismatch — this lookup deriving a
+		// different partition than the facet was stored under — made the facet
+		// lookup always miss and the bloomS3Loader build a double-prefixed S3 path.)
+		partition := manifest.ExtractTenantPartition(fi.Key)
 		byPartition[partition] = append(byPartition[partition], fi)
 	}
 
@@ -1897,11 +1899,13 @@ func (s *Storage) bloomFilterFilesByOrBranches(ctx context.Context, files []mani
 
 	byPartition := make(map[string][]manifest.FileInfo)
 	for _, fi := range files {
-		// manifest.ExtractPartition (pure "dt=.../hour=HH", no prefix) — the pmeta
-		// facet AND the _bloom.bin persist path are keyed by it. partitionFromKey
-		// keeps the key prefix, which made the facet lookup always miss and the
-		// bloomS3Loader fallback build a double-prefixed S3 path.
-		partition := manifest.ExtractPartition(fi.Key)
+		// manifest.ExtractTenantPartition (tenant-isolated: full key dir incl the
+		// account/project prefix) — the pmeta facet AND the _bloom.bin persist path
+		// are keyed by it, so the bloom lookup, facet store and bloomS3Loader path
+		// all derive the SAME partition. (A past mismatch — this lookup deriving a
+		// different partition than the facet was stored under — made the facet
+		// lookup always miss and the bloomS3Loader build a double-prefixed S3 path.)
+		partition := manifest.ExtractTenantPartition(fi.Key)
 		byPartition[partition] = append(byPartition[partition], fi)
 	}
 
@@ -2139,7 +2143,7 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 	// per-file bloom. Falls back to the `.bloom` download for any partition the
 	// bundle doesn't carry (cold bundle / pre-pmeta files).
 	if s.catalog != nil {
-		partition := manifest.ExtractPartition(fi.Key)
+		partition := manifest.ExtractTenantPartition(fi.Key)
 		usable, excluded := true, false
 	facetLoop:
 		for _, bc := range perColumn {

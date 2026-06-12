@@ -62,7 +62,7 @@ func TestInteg_PmetaCatalog_CrossPathParity(t *testing.T) {
 	if len(files) == 0 {
 		t.Fatal("no files registered after flush")
 	}
-	part := manifest.ExtractPartition(files[0].Key)
+	part := manifest.ExtractTenantPartition(files[0].Key)
 
 	// (1) The catalog was fed correctly by the live writer flush.
 	if got := catalog.FieldValues(part, "service.name", "", 0); !reflect.DeepEqual(got, want) {
@@ -117,7 +117,7 @@ func TestInteg_PmetaCatalog_BundlePersistWarmRoundTrip(t *testing.T) {
 		t.Fatal("no file after flush")
 	}
 	fi := files[0]
-	part := manifest.ExtractPartition(fi.Key)
+	part := manifest.ExtractTenantPartition(fi.Key)
 
 	// Persist the dirty bundles to (mock) S3.
 	if _, err := s.catalog.PersistDirty(context.Background(), poolObjectStore{s.pool}); err != nil {
@@ -205,16 +205,18 @@ func TestInteg_PmetaCatalog_WarmFromManifest(t *testing.T) {
 		Labels: map[string][]string{"service.name": {"user-service"}},
 	})
 
-	if v := s.catalog.FieldValues("dt=2026-06-09/hour=10", "service.name", "", 0); len(v) != 0 {
+	// Facets are keyed by the tenant-isolated partition (the full key dir), so the
+	// warmed catalog co-locates with the data — mirroring the live writer flush.
+	if v := s.catalog.FieldValues("logs/dt=2026-06-09/hour=10", "service.name", "", 0); len(v) != 0 {
 		t.Fatalf("catalog should be empty before warm, got %v", v)
 	}
 
 	s.WarmCatalog(context.Background())
 
-	if got := s.catalog.FieldValues("dt=2026-06-09/hour=10", "service.name", "", 0); !reflect.DeepEqual(got, []string{"api-gateway", "order-service"}) {
+	if got := s.catalog.FieldValues("logs/dt=2026-06-09/hour=10", "service.name", "", 0); !reflect.DeepEqual(got, []string{"api-gateway", "order-service"}) {
 		t.Fatalf("hour=10 after warm = %v", got)
 	}
-	if got := s.catalog.FieldValues("dt=2026-06-09/hour=11", "service.name", "", 0); !reflect.DeepEqual(got, []string{"user-service"}) {
+	if got := s.catalog.FieldValues("logs/dt=2026-06-09/hour=11", "service.name", "", 0); !reflect.DeepEqual(got, []string{"user-service"}) {
 		t.Fatalf("hour=11 after warm = %v", got)
 	}
 }
@@ -336,7 +338,7 @@ func TestInteg_PmetaCatalog_FileMetaFacetParity(t *testing.T) {
 		t.Fatal("no file registered after flush")
 	}
 	fi := files[0]
-	part := manifest.ExtractPartition(fi.Key)
+	part := manifest.ExtractTenantPartition(fi.Key)
 
 	got, ok := s.catalog.FileMeta(part, fi.Key)
 	if !ok {
@@ -378,7 +380,7 @@ func TestInteg_PmetaCatalog_FileMetaWarmParity(t *testing.T) {
 
 	s.WarmCatalog(context.Background())
 
-	got, ok := s.catalog.FileMeta("dt=2026-06-09/hour=10", fi.Key)
+	got, ok := s.catalog.FileMeta("logs/dt=2026-06-09/hour=10", fi.Key)
 	if !ok {
 		t.Fatal("fileMetaFacet not populated by WarmCatalog")
 	}
@@ -429,7 +431,7 @@ func TestInteg_PmetaCatalog_AllFacetsE2E(t *testing.T) {
 		t.Fatal("no file registered after flush")
 	}
 	fi := files[0]
-	part := manifest.ExtractPartition(fi.Key)
+	part := manifest.ExtractTenantPartition(fi.Key)
 	q := mustParseQueryWithTime(t, "*", now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 
 	// 1. CATALOG — low-card dropdown returns exactly the distinct values.
@@ -640,7 +642,7 @@ func TestInteg_PmetaRetire_SkipsFileMetaSidecar(t *testing.T) {
 		t.Fatal("no file after flush")
 	}
 	fi := files[0]
-	if _, ok := s.catalog.FileMeta(manifest.ExtractPartition(fi.Key), fi.Key); !ok {
+	if _, ok := s.catalog.FileMeta(manifest.ExtractTenantPartition(fi.Key), fi.Key); !ok {
 		t.Fatal("facet missing file metadata after retire flush")
 	}
 }
@@ -672,7 +674,7 @@ func TestInteg_PmetaFlip_ORBranchFacet(t *testing.T) {
 		t.Fatal("no file after flush")
 	}
 	fi := files[0]
-	part := manifest.ExtractPartition(fi.Key)
+	part := manifest.ExtractTenantPartition(fi.Key)
 	checks := [][]bloomindex.ColumnCheck{{{Column: "service.name", Value: "api-gateway"}}}
 
 	// present value → file is in the union (never dropped).
@@ -718,7 +720,7 @@ func TestInteg_PmetaFlip_LogsBloomColdRestart(t *testing.T) {
 		t.Fatal("no file after flush")
 	}
 	fi := files[0]
-	part := manifest.ExtractPartition(fi.Key)
+	part := manifest.ExtractTenantPartition(fi.Key)
 
 	// Cold restart: bundles persisted, fresh catalog warmed ONLY from S3.
 	if _, err := s.catalog.PersistDirty(context.Background(), poolObjectStore{s.pool}); err != nil {
@@ -1011,10 +1013,21 @@ func TestInteg_CatalogFieldValues_MultiPartitionUnion(t *testing.T) {
 	})
 	bw.triggerFlush()
 
-	p1 := partitionFromNano(t1.UnixNano())
-	p2 := partitionFromNano(t2.UnixNano())
-	if p1 == p2 {
-		t.Fatalf("test rows must land in two partitions, both got %s", p1)
+	// Catalog facets are keyed by the tenant-isolated partition (the full key dir),
+	// so derive each partition from the flushed file's key (NOT partitionFromNano,
+	// which yields the manifest's pure dt=/hour=).
+	var p1, p2 string
+	for _, fi := range s.manifest.GetFilesForRange(t1.Add(-time.Hour).UnixNano(), t2.Add(time.Hour).UnixNano()) {
+		tp := manifest.ExtractTenantPartition(fi.Key)
+		if strings.Contains(tp, partitionFromNano(t1.UnixNano())) {
+			p1 = tp
+		}
+		if strings.Contains(tp, partitionFromNano(t2.UnixNano())) {
+			p2 = tp
+		}
+	}
+	if p1 == "" || p2 == "" || p1 == p2 {
+		t.Fatalf("test rows must land in two tenant partitions, got p1=%q p2=%q", p1, p2)
 	}
 	// Each partition's catalog holds ONLY its own values (no cross-partition bleed).
 	if got := s.catalog.FieldValues(p1, "service.name", "", 0); !reflect.DeepEqual(got, []string{"checkout", "shared-svc"}) {
@@ -1081,7 +1094,8 @@ func TestInteg_CatalogTruncatedField_FallsToScan(t *testing.T) {
 	}
 
 	// (a) The catalog must NOT serve the truncated field (high-card behavior)…
-	part := partitionFromNano(base.UnixNano())
+	// Facets are keyed by the tenant-isolated partition (full key dir from the flush).
+	part := manifest.ExtractTenantPartition(files[0].Key)
 	if got := s.catalog.FieldValues(part, "k8s.pod.name", "", 0); got != nil {
 		t.Fatalf("catalog served %d values for a truncated field — a capped list must never be authoritative", len(got))
 	}

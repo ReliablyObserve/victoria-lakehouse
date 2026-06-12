@@ -36,7 +36,11 @@ func (o poolObjectStore) GetObject(ctx context.Context, key string) ([]byte, err
 type catalogFileMetaProvider struct{ store *pmeta.Store }
 
 func (p catalogFileMetaProvider) FileMeta(partition, fileKey string) (manifest.FileMeta, bool) {
-	v, ok := p.store.FileMeta(partition, fileKey)
+	// The pmeta facet is keyed by the tenant-isolated partition (full key dir),
+	// while the manifest keys files by the pure dt=/hour= partition — so derive
+	// the facet partition from the file key, not the manifest-supplied one, or
+	// EnrichFromProvider's lookup would always miss.
+	v, ok := p.store.FileMeta(manifest.ExtractTenantPartition(fileKey), fileKey)
 	if !ok {
 		return manifest.FileMeta{}, false
 	}
@@ -267,7 +271,7 @@ func (s *Storage) catalogFieldValues(q *logstorage.Query, fieldName string, limi
 		catLimit = int(limit)
 	}
 	for _, fi := range s.manifest.GetFilesForRange(startNs, endNs) {
-		p := manifest.ExtractPartition(fi.Key)
+		p := manifest.ExtractTenantPartition(fi.Key)
 		if _, ok := seen[p]; ok {
 			continue
 		}
@@ -305,7 +309,7 @@ func (s *Storage) catalogFieldNames(q *logstorage.Query) []string {
 	seen := make(map[string]struct{}, 16)
 	nameset := make(map[string]struct{})
 	for _, fi := range s.manifest.GetFilesForRange(startNs, endNs) {
-		p := manifest.ExtractPartition(fi.Key)
+		p := manifest.ExtractTenantPartition(fi.Key)
 		if _, ok := seen[p]; ok {
 			continue
 		}
@@ -334,16 +338,19 @@ func (s *Storage) WarmCatalog(ctx context.Context) {
 	if s.catalog == nil {
 		return
 	}
-	for partition, files := range s.manifest.AllFiles() {
+	for _, files := range s.manifest.AllFiles() {
 		if ctx.Err() != nil {
 			return
 		}
 		for _, fi := range files {
 			// Replay, not flush: manifest-derived content is already durable, so
 			// it must NOT mark bundles dirty (a dirty mark here re-PUT every
-			// partition bundle on the first flush after every restart).
+			// partition bundle on the first flush after every restart). Key the
+			// facet by the tenant-isolated partition (derived from the file key),
+			// matching the live writer flush — NOT the manifest's pure dt=/hour=
+			// key, or the warmed facet wouldn't be found by the tenant-scoped reads.
 			s.catalog.OnFileReplay(pmeta.FileContribution{
-				Partition:         partition,
+				Partition:         manifest.ExtractTenantPartition(fi.Key),
 				FileKey:           fi.Key,
 				RowCount:          fi.RowCount,
 				MinTimeNs:         fi.MinTimeNs,
@@ -367,12 +374,28 @@ func (s *Storage) WarmCatalogFromS3(ctx context.Context) {
 	if s.catalog == nil || s.pool == nil {
 		return
 	}
-	parts := make([]string, 0, 64)
-	for p := range s.manifest.AllFiles() {
-		parts = append(parts, p)
+	// Warm by the TENANT-isolated partition (the full key dir) — bundles are
+	// persisted under it (matching the live flush), NOT under the manifest's pure
+	// dt=/hour= partition. Group the manifest's files by their tenant partition so
+	// both the bundle GETs and the self-heal rebuild key the same way the bundle
+	// was written; a mismatch would miss every bundle and silently drop the bloom
+	// facet (which is NOT rebuildable from the manifest) on every cold restart.
+	filesByTP := make(map[string][]manifest.FileInfo, 64)
+	for _, files := range s.manifest.AllFiles() {
+		for _, fi := range files {
+			tp := manifest.ExtractTenantPartition(fi.Key)
+			if tp == "" {
+				continue
+			}
+			filesByTP[tp] = append(filesByTP[tp], fi)
+		}
 	}
-	if len(parts) == 0 {
+	if len(filesByTP) == 0 {
 		return
+	}
+	parts := make([]string, 0, len(filesByTP))
+	for tp := range filesByTP {
+		parts = append(parts, tp)
 	}
 	res := s.catalog.WarmPartitions(ctx, poolObjectStore{s.pool}, parts, 8)
 
@@ -387,7 +410,7 @@ func (s *Storage) WarmCatalogFromS3(ctx context.Context) {
 		rebuild = append(rebuild, p)
 	}
 	for _, p := range rebuild {
-		files := s.manifest.FilesForPartition(p)
+		files := filesByTP[p]
 		cs := make([]pmeta.FileContribution, 0, len(files))
 		for _, fi := range files {
 			cs = append(cs, pmeta.FileContribution{
@@ -425,7 +448,7 @@ func (s *Storage) PmetaOnCompacted(added []manifest.FileInfo, removed []string) 
 			}
 		}
 		s.catalog.OnFileFlush(pmeta.FileContribution{
-			Partition:         manifest.ExtractPartition(fi.Key),
+			Partition:         manifest.ExtractTenantPartition(fi.Key),
 			FileKey:           fi.Key,
 			RowCount:          fi.RowCount,
 			MinTimeNs:         fi.MinTimeNs,
@@ -438,7 +461,7 @@ func (s *Storage) PmetaOnCompacted(added []manifest.FileInfo, removed []string) 
 	}
 	byPart := make(map[string][]string)
 	for _, k := range removed {
-		p := manifest.ExtractPartition(k)
+		p := manifest.ExtractTenantPartition(k)
 		byPart[p] = append(byPart[p], k)
 	}
 	for p, keys := range byPart {
@@ -453,14 +476,19 @@ func (s *Storage) PmetaOnFileExpired(partition, key string) {
 	if s.catalog == nil {
 		return
 	}
-	s.catalog.RemoveFiles(partition, []string{key})
+	// The retention loop hands us the manifest's pure dt=/hour= partition, but the
+	// pmeta facet/bundle is keyed by the tenant-isolated partition (full key dir).
+	// Derive that from the file key so the facet removal + bundle eviction hit the
+	// right bundle; the manifest emptiness check stays on the manifest partition.
+	tp := manifest.ExtractTenantPartition(key)
+	s.catalog.RemoveFiles(tp, []string{key})
 	if len(s.manifest.FilesForPartition(partition)) == 0 {
-		s.catalog.Remove(partition)
+		s.catalog.Remove(tp)
 		if s.pool != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if err := s.pool.Delete(ctx, s.catalog.BundleKey(partition)); err != nil {
-				logger.Warnf("pmeta: delete expired bundle %s: %v", partition, err)
+			if err := s.pool.Delete(ctx, s.catalog.BundleKey(tp)); err != nil {
+				logger.Warnf("pmeta: delete expired bundle %s: %v", tp, err)
 			}
 		}
 	}

@@ -383,8 +383,9 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 		// UNCAPPED bloom feed (trace_id + service.name): the capped label map
 		// false-negatives on values past maxLabelsPerField — a bloom must see
 		// every value present or it wrongly excludes files.
-		w.catalogObserver.OnFileFlush(partition, fi, labels, extractLogBloomValues(rows))
-		w.catalogObserver.tapLogRows(partition, rows)
+		tp := manifest.ExtractTenantPartition(fi.Key)
+		w.catalogObserver.OnFileFlush(tp, fi, labels, extractLogBloomValues(rows))
+		w.catalogObserver.tapLogRows(tp, rows)
 	}
 
 	if w.statsCallback != nil {
@@ -464,8 +465,9 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 	traceBloomValues := extractTraceBloomValues(rows)
 	if w.catalogObserver != nil {
 		// UNCAPPED bloom feed — same rationale as the logs flush above.
-		w.catalogObserver.OnFileFlush(partition, fi, labels2, traceBloomValues)
-		w.catalogObserver.tapTraceRows(partition, rows)
+		tp := manifest.ExtractTenantPartition(fi.Key)
+		w.catalogObserver.OnFileFlush(tp, fi, labels2, traceBloomValues)
+		w.catalogObserver.tapTraceRows(tp, rows)
 	}
 
 	w.totalBytes.Add(int64(len(result.Data)))

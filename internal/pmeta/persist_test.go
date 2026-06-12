@@ -3,6 +3,7 @@ package pmeta
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -145,6 +146,78 @@ func TestStore_PersistedBytes(t *testing.T) {
 	}
 	if after := src.PersistedBytes(); after <= before {
 		t.Errorf("PersistedBytes after adding values = %d, want > %d (re-persist must update the size)", after, before)
+	}
+}
+
+// TestStore_PersistedBytesByTenant is the regression guard for the per-tenant
+// on-S3 metadata footprint (/tenants metadata_bytes). pmeta partitions are
+// tenant-isolated (mirror the data path: "<account>/<project>/<signal>/dt=…"),
+// so each tenant's metadata is just its own bundles' summed encoded size, keyed
+// "account:project" — derived incrementally, never by an S3 LIST.
+func TestStore_PersistedBytesByTenant(t *testing.T) {
+	ctx := context.Background()
+
+	// Two tenants, tenant-isolated partitions (full key dir incl the numeric
+	// account/project prefix — what ExtractTenantPartition yields in production).
+	parts := map[string][]FileContribution{
+		"1/1/logs/dt=2026-06-09/hour=10": {
+			{Labels: map[string][]string{"service.name": {"api-gateway", "order-service"}, "level": {"ERROR", "INFO"}}},
+		},
+		"1/1/logs/dt=2026-06-09/hour=11": {
+			{Labels: map[string][]string{"service.name": {"user-service"}, "level": {"WARN"}}},
+		},
+		"2/5/logs/dt=2026-06-09/hour=10": {
+			{Labels: map[string][]string{"service.name": {"payment-service", "billing"}, "level": {"INFO"}}},
+		},
+	}
+
+	src := catalogStore()
+	loadPartitions(src, parts)
+	// Nothing persisted yet → every tenant's footprint is 0 (bundles exist in RAM
+	// but none has an on-S3 encoded size until the first persist).
+	for tk, n := range src.PersistedBytesByTenant() {
+		if n != 0 {
+			t.Errorf("PersistedBytesByTenant before any persist: tenant %s = %d, want 0", tk, n)
+		}
+	}
+
+	os := newMemOS()
+	if _, err := src.PersistDirty(ctx, os); err != nil {
+		t.Fatal(err)
+	}
+
+	// Independently derive the expected per-tenant sums from the bytes actually
+	// written to the object store, grouping bundle objects by their first two
+	// path segments (the account/project) — exactly the physical isolation the
+	// feature relies on. PersistedBytesByTenant must match this WITHOUT a LIST.
+	want := map[string]int64{}
+	os.mu.Lock()
+	for k, v := range os.m {
+		seg := strings.SplitN(k, "/", 3)
+		if len(seg) < 2 {
+			continue
+		}
+		want[seg[0]+":"+seg[1]] += int64(len(v))
+	}
+	os.mu.Unlock()
+	if want["1:1"] == 0 || want["2:5"] == 0 {
+		t.Fatalf("precondition: both tenants must have on-S3 bundle bytes, got %v", want)
+	}
+
+	got := src.PersistedBytesByTenant()
+	if len(got) != 2 {
+		t.Errorf("PersistedBytesByTenant tracked %d tenants, want 2: %v", len(got), got)
+	}
+	if got["1:1"] != want["1:1"] {
+		t.Errorf("tenant 1:1 metadata = %d, want %d (sum of that tenant's bundle bytes)", got["1:1"], want["1:1"])
+	}
+	if got["2:5"] != want["2:5"] {
+		t.Errorf("tenant 2:5 metadata = %d, want %d", got["2:5"], want["2:5"])
+	}
+	// The two tenants are tracked SEPARATELY — tenant 1:1 (two partitions) must
+	// not leak into tenant 2:5 and vice versa.
+	if got["1:1"] == got["2:5"] {
+		t.Errorf("tenants 1:1 and 2:5 report identical bytes (%d) — expected physically distinct footprints", got["1:1"])
 	}
 }
 

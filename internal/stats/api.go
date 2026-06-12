@@ -53,6 +53,11 @@ type APIConfig struct {
 	MetaResidentBytes func() int64
 	MetaDiskBytes     func() int64
 	MetaS3Bytes       func() int64
+	// MetaBytesByTenant is the exact per-tenant on-S3 metadata footprint, keyed
+	// "account:project" — the tenant-isolated pmeta bundles summed incrementally
+	// (no S3 scan). Nil-safe (a nil func contributes nothing). Surfaced as each
+	// tenant's metadata_bytes in /tenants.
+	MetaBytesByTenant func() map[string]int64
 }
 
 // API serves JSON endpoints for tenant statistics, cost, cardinality, etc.
@@ -98,6 +103,7 @@ type TenantEntry struct {
 	TotalFiles       int64            `json:"total_files"`
 	TotalBytes       int64            `json:"total_bytes"`
 	RawBytes         int64            `json:"raw_bytes"`
+	MetadataBytes    int64            `json:"metadata_bytes,omitempty"`
 	CompressionRatio float64          `json:"compression_ratio"`
 	TotalRows        int64            `json:"total_rows"`
 	Partitions       int              `json:"partitions"`
@@ -385,6 +391,17 @@ func (a *API) handleTenants(w http.ResponseWriter, r *http.Request) {
 				})
 				seen[key] = true
 			}
+		}
+	}
+
+	// Per-tenant metadata footprint: exact, from the tenant-scoped pmeta bundles
+	// (a.cfg.MetaBytesByTenant — keyed "account:project"). pmeta partitions are
+	// tenant-isolated (mirroring the data path), so each tenant's metadata is its
+	// own bundles' summed encoded size, tracked incrementally (no S3 scan).
+	if a.cfg.MetaBytesByTenant != nil {
+		byTenant := a.cfg.MetaBytesByTenant()
+		for i := range entries {
+			entries[i].MetadataBytes = byTenant[entries[i].AccountID+":"+entries[i].ProjectID]
 		}
 	}
 

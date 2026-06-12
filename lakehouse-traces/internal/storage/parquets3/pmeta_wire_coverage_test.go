@@ -14,10 +14,18 @@ import (
 
 const pmwPartition = "dt=2026-06-01/hour=10"
 
-// pmwContribution returns a FileContribution for the test partition.
+// pmwTenantPartition is the tenant-isolated partition the production code keys
+// facets/bundles by (the full key dir) — the test keys are "logs/"+pmwPartition+
+// "/…", so the facet lives under "logs/"+pmwPartition while the manifest keys
+// files by the pure pmwPartition.
+const pmwTenantPartition = "logs/" + pmwPartition
+
+// pmwContribution returns a FileContribution for the test partition. The facet is
+// keyed by the tenant-isolated partition (derived from the file key), matching the
+// live writer flush, NOT the manifest's pure dt=/hour= partition.
 func pmwContribution(key string, labels map[string][]string) pmeta.FileContribution {
 	return pmeta.FileContribution{
-		Partition:         pmwPartition,
+		Partition:         manifest.ExtractTenantPartition(key),
 		FileKey:           key,
 		RowCount:          42,
 		MinTimeNs:         1_000,
@@ -192,7 +200,7 @@ func TestCatalogFieldNames_RangeUnion(t *testing.T) {
 		MaxTimeNs: now.Add(time.Minute).UnixNano(),
 	})
 	s.catalog.OnFileFlush(pmeta.FileContribution{
-		Partition: "dt=2026-06-01/hour=10",
+		Partition: manifest.ExtractTenantPartition(key),
 		FileKey:   key,
 		Labels:    map[string][]string{"service.name": {"api"}, "env": {"prod"}},
 	})
@@ -231,7 +239,7 @@ func TestWarmCatalog_RebuildsFromManifest(t *testing.T) {
 
 	s.WarmCatalog(context.Background())
 
-	got := s.catalog.FieldValues("dt=2026-06-01/hour=10", "service.name", "", 0)
+	got := s.catalog.FieldValues(pmwTenantPartition, "service.name", "", 0)
 	if !reflect.DeepEqual(got, []string{"api", "worker"}) {
 		t.Fatalf("warm catalog service.name = %v, want [api worker]", got)
 	}
@@ -278,7 +286,7 @@ func TestWarmCatalogFromS3_RebuildMissingBundle(t *testing.T) {
 
 	s.WarmCatalogFromS3(context.Background())
 
-	got := s.catalog.FieldValues("dt=2026-06-01/hour=10", "env", "", 0)
+	got := s.catalog.FieldValues(pmwTenantPartition, "env", "", 0)
 	if !reflect.DeepEqual(got, []string{"prod"}) {
 		t.Fatalf("rebuilt catalog env = %v, want [prod]", got)
 	}
@@ -310,7 +318,7 @@ func TestWarmCatalogFromS3_LoadsPersistedBundle(t *testing.T) {
 	s.catalog = newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
 	s.WarmCatalogFromS3(context.Background())
 
-	got := s.catalog.FieldValues(pmwPartition, "service.name", "", 0)
+	got := s.catalog.FieldValues(pmwTenantPartition, "service.name", "", 0)
 	if !reflect.DeepEqual(got, []string{"api"}) {
 		t.Errorf("warmed catalog = %v, want [api]", got)
 	}
@@ -354,13 +362,13 @@ func TestPmetaOnCompacted(t *testing.T) {
 	}
 	s.PmetaOnCompacted([]manifest.FileInfo{out}, []string{in1, in2})
 
-	if _, ok := s.catalog.FileMeta(pmwPartition, in1); ok {
+	if _, ok := s.catalog.FileMeta(pmwTenantPartition, in1); ok {
 		t.Error("compaction input in1 must be removed from the facet")
 	}
-	if _, ok := s.catalog.FileMeta(pmwPartition, in2); ok {
+	if _, ok := s.catalog.FileMeta(pmwTenantPartition, in2); ok {
 		t.Error("compaction input in2 must be removed from the facet")
 	}
-	got, ok := s.catalog.FileMeta(pmwPartition, out.Key)
+	got, ok := s.catalog.FileMeta(pmwTenantPartition, out.Key)
 	if !ok {
 		t.Fatal("compaction output must be present in the facet")
 	}
@@ -389,21 +397,21 @@ func TestPmetaOnFileExpired(t *testing.T) {
 	s.manifest.AddFile(pmwPartition, manifest.FileInfo{Key: k2})
 
 	s.PmetaOnFileExpired(pmwPartition, k1)
-	if _, ok := s.catalog.FileMeta(pmwPartition, k1); ok {
+	if _, ok := s.catalog.FileMeta(pmwTenantPartition, k1); ok {
 		t.Error("expired file must be removed from the facet")
 	}
-	if _, ok := s.catalog.FileMeta(pmwPartition, k2); !ok {
+	if _, ok := s.catalog.FileMeta(pmwTenantPartition, k2); !ok {
 		t.Error("remaining file must survive a sibling's expiry")
 	}
 
 	// Expire the last file: manifest partition empties → bundle evicted.
 	s.manifest.RemoveFile(pmwPartition, k2)
 	s.PmetaOnFileExpired(pmwPartition, k2)
-	if _, ok := s.catalog.FileMeta(pmwPartition, k2); ok {
+	if _, ok := s.catalog.FileMeta(pmwTenantPartition, k2); ok {
 		t.Error("last expired file must be removed")
 	}
 	for _, p := range s.catalog.Partitions() {
-		if p == pmwPartition {
+		if p == pmwTenantPartition {
 			t.Error("empty partition's bundle must be evicted from RAM")
 		}
 	}

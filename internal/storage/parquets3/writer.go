@@ -434,8 +434,9 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 	// already-extracted maps (no extra scan). Nil unless --pmeta is enabled, so
 	// this is a no-op on the hot path by default.
 	if w.catalogObserver != nil {
-		w.catalogObserver.OnFileFlush(partition, fi, labels, bloomValues)
-		w.catalogObserver.tapLogRows(partition, rows)
+		tp := manifest.ExtractTenantPartition(fi.Key)
+		w.catalogObserver.OnFileFlush(tp, fi, labels, bloomValues)
+		w.catalogObserver.tapLogRows(tp, rows)
 	}
 
 	if w.statsCallback != nil {
@@ -522,8 +523,9 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 	// already-extracted maps (no extra scan). Nil unless --pmeta is enabled, so
 	// this is a no-op on the hot path by default.
 	if w.catalogObserver != nil {
-		w.catalogObserver.OnFileFlush(partition, fi, labels, bloomValues)
-		w.catalogObserver.tapTraceRows(partition, rows)
+		tp := manifest.ExtractTenantPartition(fi.Key)
+		w.catalogObserver.OnFileFlush(tp, fi, labels, bloomValues)
+		w.catalogObserver.tapTraceRows(tp, rows)
 	}
 
 	if w.statsCallback != nil {

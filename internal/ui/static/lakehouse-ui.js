@@ -408,7 +408,7 @@
 
       var wrapper = el("div", { style: "overflow-x:auto" });
       var tbl = el("table", { className: "lh-table" });
-      tbl.innerHTML = "<thead><tr><th>Victoria ID</th><th>Org / Name</th><th>Source</th><th>S3 Prefix</th><th>Files</th><th>Partitions</th><th>Compressed</th><th>Raw Bytes</th><th>Rows</th><th>Compression</th><th>Est. Cost</th><th>Last Write</th><th>Last Query</th><th>Time Range</th></tr></thead>";
+      tbl.innerHTML = "<thead><tr><th>Victoria ID</th><th>Org / Name</th><th>Source</th><th>S3 Prefix</th><th>Files</th><th>Partitions</th><th>Compressed</th><th>Raw Bytes</th><th>Metadata</th><th>Rows</th><th>Compression</th><th>Est. Cost</th><th>Last Write</th><th>Last Query</th><th>Time Range</th></tr></thead>";
       var tbody = el("tbody");
       tenants.forEach(function (t) {
         var row = el("tr", { style: "cursor:pointer" });
@@ -434,6 +434,7 @@
           "<td>" + fmtNum(t.partitions || 0) + "</td>" +
           "<td>" + fmtBytes(t.total_bytes) + "</td>" +
           "<td>" + fmtBytes(t.raw_bytes) + "</td>" +
+          "<td>" + (t.metadata_bytes ? fmtBytes(t.metadata_bytes) : "—") + "</td>" +
           "<td>" + fmtNum(t.total_rows) + "</td>" +
           "<td>" + fmtRatio(t.compression_ratio) + "</td>" +
           "<td>" + fmtUSD(t.monthly_cost_usd) + "</td>" +

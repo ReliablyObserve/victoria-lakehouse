@@ -817,6 +817,15 @@ func (s *Storage) PmetaPersistedBytes() int64 {
 	return s.catalog.PersistedBytes()
 }
 
+// PmetaPersistedBytesByTenant is the per-tenant on-S3 metadata footprint
+// ("account:project" -> bytes), tracked incrementally. nil unless --pmeta.
+func (s *Storage) PmetaPersistedBytesByTenant() map[string]int64 {
+	if s.catalog == nil {
+		return nil
+	}
+	return s.catalog.PersistedBytesByTenant()
+}
+
 func (s *Storage) LabelIndex() *cache.LabelIndex {
 	return s.labelIndex
 }

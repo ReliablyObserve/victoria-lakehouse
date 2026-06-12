@@ -1592,6 +1592,18 @@ func ExtractPartition(key string) string {
 	return extractPartition(key)
 }
 
+// ExtractTenantPartition returns the tenant-isolated partition for a file key —
+// the full key directory (e.g. "0/0/logs/dt=2026-06-09/hour=10"), so pmeta
+// bundles co-locate with the data they describe and each tenant's metadata is
+// physically separate (mirrors data-path isolation). "" when no dt= segment.
+func ExtractTenantPartition(key string) string {
+	dir := path.Dir(key)
+	if !strings.Contains(dir, "dt=") {
+		return ""
+	}
+	return dir
+}
+
 // extractPartition extracts "dt=YYYY-MM-DD/hour=HH" from an S3 key.
 func extractPartition(key string) string {
 	dir := path.Dir(key)

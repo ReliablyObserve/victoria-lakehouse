@@ -2210,7 +2210,7 @@ func (s *Storage) bloomMayContainAll(keys []string, checks []bloomindex.ColumnCh
 	}
 	byPart := make(map[string][]string)
 	for _, k := range keys {
-		p := manifest.ExtractPartition(k)
+		p := manifest.ExtractTenantPartition(k)
 		byPart[p] = append(byPart[p], k)
 	}
 	out := make([]string, 0, len(keys))
@@ -2461,7 +2461,7 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 	// pruning efficiency, never correctness. Falls back to the `.bloom` download for
 	// any partition the bundle doesn't carry.
 	if s.catalog != nil {
-		partition := manifest.ExtractPartition(fi.Key)
+		partition := manifest.ExtractTenantPartition(fi.Key)
 		usable := true
 		excluded := false
 	colLoop:

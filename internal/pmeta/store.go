@@ -2,6 +2,7 @@ package pmeta
 
 import (
 	"iter"
+	"strings"
 	"sync"
 )
 
@@ -385,6 +386,29 @@ func (s *Store) PersistedBytes() int64 {
 		n += b.PersistedSize()
 	}
 	return n
+}
+
+// PersistedBytesByTenant sums each tenant's bundles' on-S3 encoded size, keyed
+// "account:project" parsed from the tenant-isolated partition. Incremental — no
+// S3 LIST. Bundles without a numeric tenant prefix are skipped.
+func (s *Store) PersistedBytesByTenant() map[string]int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]int64)
+	for partition, b := range s.bundles {
+		if tk := tenantKeyFromPartition(partition); tk != "" {
+			out[tk] += b.PersistedSize()
+		}
+	}
+	return out
+}
+
+func tenantKeyFromPartition(partition string) string {
+	parts := strings.SplitN(partition, "/", 3)
+	if len(parts) >= 2 {
+		return parts[0] + ":" + parts[1]
+	}
+	return ""
 }
 
 // DirtyPartitions returns partitions with unpersisted changes — THE single

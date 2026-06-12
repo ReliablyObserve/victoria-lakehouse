@@ -1246,6 +1246,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			MetaResidentBytes: store.PmetaResidentBytes,
 			MetaDiskBytes:     store.DiskCacheBytes,
 			MetaS3Bytes:       statsAgg.MetaS3,
+			MetaBytesByTenant: store.PmetaPersistedBytesByTenant,
 		})
 		statsAPI.Register(mux)
 	}
