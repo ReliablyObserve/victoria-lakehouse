@@ -57,7 +57,7 @@ func TestIntegration_FullCompactionCycle(t *testing.T) {
 		RowGroupSize:     1000,
 		CompressionLevel: 1,
 		MaxConcurrent:    1,
-		OnCompacted: func(added []manifest.FileInfo, removed []string) {
+		OnCompacted: func(added []manifest.FileInfo, removed []string, _ map[string]map[string][]string) {
 			notifiedAdded = added
 			notifiedRemoved = removed
 		},

@@ -502,6 +502,11 @@ func run(cfg *config.Config, addr string) {
 	// Wire the compaction drain endpoint (spec §11.1). Mirror of
 	// cmd/lakehouse-logs/main.go — line-parity with feedback_logs_traces_module_parity.
 	mux.HandleFunc("/lakehouse/drain", compaction.DrainHandler(sched))
+	// Manual compaction trigger (spec: compaction hints). POST {partition, level?}
+	// forces (re)compaction of one partition past the level policy — picking up the
+	// stale-schema / fragmented candidates surfaced by /stats/compaction. HRW ownership
+	// gated (403 if not owner) so two pods never both rewrite the same partition.
+	mux.HandleFunc("/lakehouse/compaction/recompact", compaction.RecompactHandler(sched))
 
 	var handler http.Handler = mux
 	if resolver != nil && (resolver.HasAliases() || cfg.Tenant.AutoRegister) {
@@ -679,18 +684,19 @@ func setupCompaction(
 	}
 
 	sched := compaction.NewScheduler(compaction.SchedulerConfig{
-		Manifest:         store.Manifest(),
-		Pool:             store.Pool(),
-		Ownership:        ownership,
-		FairShare:        compaction.NewFairShareScheduler(1),
-		Policy:           policy,
-		Prefix:           cfg.AutoPrefix(),
-		Mode:             cfg.Mode,
-		Interval:         cfg.Compaction.Interval,
-		MaxConcurrent:    cfg.Compaction.MaxConcurrent,
-		RowGroupSize:     cfg.Insert.RowGroupSize,
-		CompressionLevel: cfg.Insert.CompressionLevel,
-		CompactionConfig: cfg.Compaction,
+		Manifest:                 store.Manifest(),
+		Pool:                     store.Pool(),
+		Ownership:                ownership,
+		FairShare:                compaction.NewFairShareScheduler(1),
+		Policy:                   policy,
+		Prefix:                   cfg.AutoPrefix(),
+		Mode:                     cfg.Mode,
+		Interval:                 cfg.Compaction.Interval,
+		MaxConcurrent:            cfg.Compaction.MaxConcurrent,
+		RowGroupSize:             cfg.Insert.RowGroupSize,
+		CompressionLevel:         cfg.Insert.CompressionLevel,
+		CurrentSchemaFingerprint: parquets3.CurrentSchemaFingerprint(cfg.Mode),
+		CompactionConfig:         cfg.Compaction,
 		TenantCompressionLookup: func(prefix string) []int {
 			if tenantPolicyHolder == nil || *tenantPolicyHolder == nil || prefix == "" {
 				return nil
@@ -712,8 +718,8 @@ func setupCompaction(
 				})
 			}
 		},
-		OnCompacted: func(added []manifest.FileInfo, removed []string) {
-			store.PmetaOnCompacted(added, removed) // facet feed + dead-key cleanup
+		OnCompacted: func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string) {
+			store.PmetaOnCompacted(added, removed, blooms) // facet feed + dead-key cleanup
 			notifyPusher(added, removed)
 		},
 	})
@@ -730,8 +736,8 @@ func setupCompaction(
 		Interval:         cfg.Compaction.Interval,
 		RowGroupSize:     cfg.Insert.RowGroupSize,
 		CompressionLevel: cfg.Insert.CompressionLevel,
-		OnCompacted: func(added []manifest.FileInfo, removed []string) {
-			store.PmetaOnCompacted(added, removed)
+		OnCompacted: func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string) {
+			store.PmetaOnCompacted(added, removed, blooms)
 			notifyPusher(added, removed)
 		},
 	})
@@ -1289,6 +1295,9 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			MetaS3Bytes:          statsAgg.MetaS3,
 			MetaBytesByTenant:    store.PmetaPersistedBytesByTenant,
 			MetadataBytesByField: store.PmetaMetadataBytesByField,
+			// #171: compaction-hints endpoint inputs (stale-schema + zstd schedule).
+			CurrentSchemaFingerprint: parquets3.CurrentSchemaFingerprint(cfg.Mode),
+			CompactionConfig:         cfg.Compaction,
 		})
 		statsAPI.Register(mux)
 	}

@@ -1,0 +1,112 @@
+package stats
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+)
+
+// TestHandleCompaction is the "compaction hints + stats stay visible" regression:
+// the endpoint must return the full CompactionStats JSON — per-level zstd, stale
+// footprint, prioritized candidates, and the per-candidate before/after + next-level
+// — so a future change can't silently break what the UI reads.
+func TestHandleCompaction(t *testing.T) {
+	m := manifest.New("bucket", "logs/")
+	// 3 stale (v1) L2 files → one stale+fragmented candidate.
+	for i := 0; i < 3; i++ {
+		m.AddFile("dt=2026-06-01/hour=00", manifest.FileInfo{
+			Key:               fmt.Sprintf("logs/dt=2026-06-01/hour=00/f%d.parquet", i),
+			Size:              1_000_000,
+			RawBytes:          9_000_000,
+			BloomBytes:        50_000,
+			CompactionLevel:   2,
+			SchemaFingerprint: "v1",
+		})
+	}
+	cc := config.CompactionConfig{CompressionLevelByOutputLevel: []int{3, 7, 11}}
+	a := NewAPI(APIConfig{Manifest: m, Mode: "logs", CurrentSchemaFingerprint: "v2", CompactionConfig: cc})
+
+	rr := httptest.NewRecorder()
+	a.handleCompaction(rr, httptest.NewRequest(http.MethodGet, "/lakehouse/api/v1/stats/compaction", nil))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if cch := rr.Header().Get("Cache-Control"); !strings.Contains(cch, "no-store") {
+		t.Errorf("Cache-Control = %q, want no-store", cch)
+	}
+
+	var got manifest.CompactionStats
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.StaleSchemaFiles != 3 {
+		t.Errorf("stale_schema_files = %d, want 3", got.StaleSchemaFiles)
+	}
+	if got.CompactedBytes != 3_000_000 {
+		t.Errorf("compacted_bytes = %d, want 3000000", got.CompactedBytes)
+	}
+	if len(got.Candidates) != 1 {
+		t.Fatalf("candidates = %d, want 1", len(got.Candidates))
+	}
+	c := got.Candidates[0]
+	if c.NextLevel != 3 || c.NextLevelZstd != 11 {
+		t.Errorf("candidate next_level=%d next_level_zstd=%d, want 3/11 (level 3 clamps to last)", c.NextLevel, c.NextLevelZstd)
+	}
+	if c.EstimatedBytesAfter != c.Bytes-c.EstimatedSavingsBytes {
+		t.Errorf("estimated_bytes_after=%d, want %d", c.EstimatedBytesAfter, c.Bytes-c.EstimatedSavingsBytes)
+	}
+	var sawL2zstd bool
+	for _, ls := range got.ByLevel {
+		if ls.Level == 2 {
+			sawL2zstd = ls.ConfiguredZstd == 11
+		}
+	}
+	if !sawL2zstd {
+		t.Error("by_level L2 configured_zstd != 11")
+	}
+
+	// Bloom observability: 3 files × 50_000 footer-bloom bytes at L2.
+	if got.TotalBloomBytes != 150_000 {
+		t.Errorf("total_bloom_bytes = %d, want 150000", got.TotalBloomBytes)
+	}
+	var sawL2Bloom bool
+	for _, ls := range got.ByLevel {
+		if ls.Level == 2 {
+			sawL2Bloom = ls.BloomBytes == 150_000
+		}
+	}
+	if !sawL2Bloom {
+		t.Error("by_level L2 bloom_bytes != 150000")
+	}
+	if got.BloomFPRate != 0.01 {
+		t.Errorf("bloom_fp_rate = %v, want 0.01", got.BloomFPRate)
+	}
+	// The handler surfaces the mode's footer bloom set (logs → includes trace_id + service.name).
+	var hasTrace, hasSvc bool
+	for _, c := range got.BloomColumns {
+		switch c {
+		case "trace_id":
+			hasTrace = true
+		case "service.name":
+			hasSvc = true
+		}
+	}
+	if !hasTrace || !hasSvc {
+		t.Errorf("bloom_columns = %v, want to include trace_id + service.name", got.BloomColumns)
+	}
+
+	// nil manifest → empty (no panic).
+	a2 := NewAPI(APIConfig{})
+	rr2 := httptest.NewRecorder()
+	a2.handleCompaction(rr2, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if rr2.Code != http.StatusOK {
+		t.Errorf("nil-manifest status = %d, want 200", rr2.Code)
+	}
+}

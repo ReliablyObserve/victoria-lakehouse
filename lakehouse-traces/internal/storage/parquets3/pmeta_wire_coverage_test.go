@@ -360,7 +360,12 @@ func TestPmetaOnCompacted(t *testing.T) {
 		MaxTimeNs: 2_000,
 		Labels:    map[string][]string{"service.name": {"api", "worker"}},
 	}
-	s.PmetaOnCompacted([]manifest.FileInfo{out}, []string{in1, in2})
+	// The compactor extracts the COMBINED bloom (union of the merged inputs) from
+	// the merged rows and passes it in keyed by the output file.
+	combined := map[string]map[string][]string{
+		out.Key: {"trace_id": {"tA", "tB"}, "service.name": {"api", "worker"}},
+	}
+	s.PmetaOnCompacted([]manifest.FileInfo{out}, []string{in1, in2}, combined)
 
 	if _, ok := s.catalog.FileMeta(pmwTenantPartition, in1); ok {
 		t.Error("compaction input in1 must be removed from the facet")
@@ -376,9 +381,17 @@ func TestPmetaOnCompacted(t *testing.T) {
 		t.Errorf("output RowCount = %d, want 84", got.RowCount)
 	}
 
+	// The combined bloom must be retained on the compacted output (file-level
+	// pruning kept): a value from the union is found on the output key. The bloom
+	// facet lives in the tenant-isolated bundle (pmwTenantPartition), same as the
+	// FileMeta facet asserted above.
+	if keys, ok := s.catalog.BloomMayContain(pmwTenantPartition, []string{out.Key}, "trace_id", "tA"); !ok || len(keys) != 1 || keys[0] != out.Key {
+		t.Errorf("combined bloom must contain trace_id tA on the compacted output; ok=%v keys=%v", ok, keys)
+	}
+
 	// nil catalog → no-op, no panic.
 	s2 := testStorage()
-	s2.PmetaOnCompacted([]manifest.FileInfo{out}, []string{in1})
+	s2.PmetaOnCompacted([]manifest.FileInfo{out}, []string{in1}, nil)
 }
 
 // TestPmetaOnFileExpired: removing the last file of a partition must

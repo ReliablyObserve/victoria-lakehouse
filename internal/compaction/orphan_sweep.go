@@ -87,7 +87,7 @@ type OrphanSweepConfig struct {
 	// OnCompacted, when set, is invoked after a Tier A steal succeeds.
 	// Mirrors Scheduler.OnCompacted so manifest pushers learn about
 	// the new file just like during a normal scan.
-	OnCompacted func(added []manifest.FileInfo, removed []string)
+	OnCompacted func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string)
 }
 
 // OrphanSweep is the runtime that schedules Tier A on every Interval
@@ -249,7 +249,8 @@ func (o *OrphanSweep) RunTierA(ctx context.Context) (int, error) {
 			CompressionLevel: o.cfg.CompressionLevel,
 			BloomRebuilder:   o.cfg.BloomRebuilder,
 		})
-		if _, err := compactor.Compact(ctx, partition, selected, level); err != nil {
+		result, err := compactor.Compact(ctx, partition, selected, level)
+		if err != nil {
 			logger.Warnf("tier_a steal failed; partition=%s primary=%s: %s",
 				partition, primary, err)
 			metrics.CompactionErrorsTotal.Inc()
@@ -266,7 +267,7 @@ func (o *OrphanSweep) RunTierA(ctx context.Context) (int, error) {
 			for _, s := range selected {
 				removed = append(removed, s.Key)
 			}
-			o.cfg.OnCompacted(added, removed)
+			o.cfg.OnCompacted(added, removed, result.OutputBlooms)
 		}
 		logger.Infof("tier_a: stolen partition; partition=%s primary_owner=%s last_attempt=%v",
 			partition, primary, lastAttempt)

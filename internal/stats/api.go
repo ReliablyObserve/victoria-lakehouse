@@ -29,6 +29,14 @@ type APIConfig struct {
 	Bucket          string
 	BloomColumns    []string
 	BreakdownLabels []string
+	// CurrentSchemaFingerprint is the fingerprint files are written with now
+	// (parquets3.CurrentSchemaFingerprint(mode)); the compaction-hints endpoint flags
+	// files carrying any other fingerprint as stale (re-promotion targets). Empty
+	// disables the stale-schema check.
+	CurrentSchemaFingerprint string
+	// CompactionConfig supplies the per-output-level zstd schedule the compaction-hints
+	// endpoint reports (which zstd each level is written with, and the next level's).
+	CompactionConfig config.CompactionConfig
 	// AlwaysSketchFields are the high-card id columns sketched (HLL) rather than
 	// enumerated — trace_id/span_id and the promoted id columns. Combined with the
 	// mode's dimensional label set, they define which fields the Cardinality
@@ -87,8 +95,34 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/lakehouse/api/v1/stats/compression", a.handleCompression)
 	mux.HandleFunc("/lakehouse/api/v1/cardinality/fields", a.handleCardinality)
 	mux.HandleFunc("/lakehouse/api/v1/stats/breakdown", a.handleBreakdown)
+	mux.HandleFunc("/lakehouse/api/v1/stats/compaction", a.handleCompaction)
 	mux.HandleFunc("/lakehouse/api/v1/stats/fields", a.handleFields)
 	mux.HandleFunc("/lakehouse/api/v1/stats/instances", a.handleInstances)
+}
+
+// handleCompaction surfaces partitions that need (re)compaction beyond the normal
+// level policy — stale-schema files (still carrying promoted attrs in the map, a
+// re-promotion target) and fragmented top-level partitions the policy never re-picks.
+// Read-only hint for the UI and the forced-recompaction trigger. Derived from the
+// manifest only (no file reads).
+func (a *API) handleCompaction(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store, must-revalidate")
+	if a.cfg.Manifest == nil {
+		_ = json.NewEncoder(w).Encode(manifest.CompactionStats{})
+		return
+	}
+	st := a.cfg.Manifest.ComputeCompactionStats(
+		a.cfg.CurrentSchemaFingerprint, a.cfg.CompactionConfig.CompressionLevelForOutput)
+	// The footer bloom set is mode-dependent; surface which columns are bloomed and
+	// the configured false-positive rate alongside the measured bloom-byte footprint.
+	if a.cfg.Mode == "traces" {
+		st.BloomColumns = schema.TraceBloomColumns()
+	} else {
+		st.BloomColumns = schema.LogBloomColumns()
+	}
+	st.BloomFPRate = 0.01 // matches the pmeta bloom factory + footer 10-bits/value
+	_ = json.NewEncoder(w).Encode(st)
 }
 
 // ---- Response types ----
@@ -792,6 +826,12 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 	var avgRowBytes int64
 	if totalRows > 0 {
 		avgRowBytes = totalRawBytes / totalRows
+	}
+
+	// storage_by_class has no omitempty and the UI iterates it — emit [] not
+	// null when there are no classes (registry-only / empty-data deployments).
+	if classBD == nil {
+		classBD = []ClassBreakdown{}
 	}
 
 	resp := OverviewResponse{
@@ -1601,7 +1641,14 @@ func (a *API) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 	for _, name := range labels {
 		// Try the exact name first; fall back to prefix-stripped name
 		// (e.g. "service.name" matches label index entry "resource_attr:service.name").
-		li := a.cfg.LabelIndex.GetLabelInfo(name)
+		// Guard the nil index up front: a deployment can configure
+		// BreakdownLabels before the label index is wired/populated, and
+		// GetLabelInfo dereferences the receiver — calling it on a nil
+		// *LabelIndex would panic the whole request.
+		var li *cache.LabelInfo
+		if a.cfg.LabelIndex != nil {
+			li = a.cfg.LabelIndex.GetLabelInfo(name)
+		}
 		if li == nil && a.cfg.LabelIndex != nil {
 			for _, candidate := range a.cfg.LabelIndex.GetAllLabelInfo() {
 				if idx := strings.LastIndex(candidate.Name, ":"); idx >= 0 {

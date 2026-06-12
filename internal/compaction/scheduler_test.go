@@ -116,7 +116,7 @@ func TestScheduler_CompactsEligiblePartition(t *testing.T) {
 		MaxConcurrent:    2,
 		RowGroupSize:     1000,
 		CompressionLevel: 7,
-		OnCompacted: func(added []manifest.FileInfo, removed []string) {
+		OnCompacted: func(added []manifest.FileInfo, removed []string, _ map[string]map[string][]string) {
 			callbackCalled = true
 		},
 	})
@@ -529,7 +529,7 @@ func TestScheduler_FairShare_PicksAcrossTenants(t *testing.T) {
 		FairShare: NewFairShareScheduler(1),
 		Prefix:    "logs/", Mode: config.ModeLogs, Interval: time.Minute,
 		MaxConcurrent: 1, RowGroupSize: 1000, CompressionLevel: 1,
-		OnCompacted: func(added []manifest.FileInfo, removed []string) {
+		OnCompacted: func(added []manifest.FileInfo, removed []string, _ map[string]map[string][]string) {
 			mu.Lock()
 			defer mu.Unlock()
 			// `removed` carries the original L0 input keys whose
