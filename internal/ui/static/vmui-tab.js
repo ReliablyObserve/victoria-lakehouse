@@ -165,8 +165,14 @@
         ["Raw Bytes", fmtBytes(ov.total_raw_bytes)],
         ["Total Rows", fmtNum(ov.total_rows)],
         ["Avg Row Size", fmtBytes(ov.avg_row_bytes)],
+        ["Avg File Size", fmtBytes(ov.total_files > 0 ? Math.round(ov.total_bytes / ov.total_files) : 0)],
+        ["Avg Rows/File", fmtNum(ov.total_files > 0 ? Math.round(ov.total_rows / ov.total_files) : 0)],
+        ["Saved (raw\u2212comp)", fmtBytes(Math.max((ov.total_raw_bytes || 0) - (ov.total_bytes || 0), 0))],
         ["Partitions", fmtNum(ov.partition_count)],
         ["Tenants", fmtNum(ov.tenant_count || 0)],
+        ["Storage Classes", fmtNum((ov.storage_by_class || []).length)],
+        ["Fleet Nodes", fmtNum(ov.fleet_nodes || 0)],
+        ["Bucket", ov.bucket || "\u2014"],
         ["Data Range", (ov.oldest_data ? ov.oldest_data.slice(0, 10) : "\u2014") + " \u2192 " + (ov.newest_data ? ov.newest_data.slice(0, 10) : "\u2014")],
       ];
       if (ov.avg_compression_ratio > 0) cardData.push(["Compression", fmtRatio(ov.avg_compression_ratio)]);
@@ -179,10 +185,9 @@
       });
       container.appendChild(cards);
 
-      // Info row
+      // Info row \u2014 data version + compression (Bucket / Fleet are now tiles above).
       var info = el("div", { className: "lh-info-row" });
-      info.appendChild(el("span", { className: "lh-info-item", innerHTML: "Bucket: <strong>" + (ov.bucket || "\u2014") + "</strong>" }));
-      if (ov.fleet_nodes > 0) info.appendChild(el("span", { className: "lh-info-item", innerHTML: "Fleet Nodes: <strong>" + ov.fleet_nodes + "</strong>" }));
+      info.appendChild(el("span", { className: "lh-info-item", innerHTML: "Registry gen: <strong>" + fmtNum(ov.registry_generation || 0) + "</strong>" }));
       if (ov.avg_compression_ratio > 0) info.appendChild(el("span", { className: "lh-info-item", innerHTML: "Compression: <strong>" + ov.avg_compression_ratio.toFixed(1) + "x</strong>" }));
       container.appendChild(info);
 
@@ -223,59 +228,137 @@
   }
 
   function renderBreakdown(container) {
-    container.innerHTML = '<div class="lh-loading">Loading storage breakdown\u2026</div>';
-    fetchJSON("/lakehouse/api/v1/stats/breakdown").then(function (data) {
-      container.innerHTML = "";
-      var labels = data.labels || [];
+    var LSKEY = "lh_breakdown_labels";
+    var selected = null;   // persisted array of label names; null until seeded
+    var byName = {};       // name -> "loading" | null (no values) | label object
+    var allFields = [];    // [{name, indexed, cardinality}]
+    var tenantLabel = null;
 
-      if (labels.length === 0) {
-        container.appendChild(el("div", { className: "lh-empty", textContent: "No breakdown labels configured." }));
-        return;
+    function persist() { try { localStorage.setItem(LSKEY, JSON.stringify(selected)); } catch (e) {} }
+    function fetchLabel(name) {
+      return fetchJSON("/lakehouse/api/v1/stats/breakdown?group_by=" + encodeURIComponent(name))
+        .then(function (j) { return (j && j.labels && j.labels[0]) || null; })
+        .catch(function () { return null; });
+    }
+    function addLabel(name) {
+      name = (name || "").trim();
+      if (!name || (selected && selected.indexOf(name) !== -1)) return;
+      selected.push(name); persist();
+      byName[name] = "loading"; render();
+      fetchLabel(name).then(function (lb) { byName[name] = lb; render(); });
+    }
+    function removeLabel(name) {
+      var i = selected.indexOf(name);
+      if (i !== -1) { selected.splice(i, 1); persist(); render(); }
+    }
+    // How much data backs a key \u2014 so you can tell which are usable to break down by.
+    function usability(f) {
+      if (!f.indexed) return "not indexed \u2014 no breakdown";
+      if (!f.cardinality) return "indexed \u00b7 no values yet";
+      return fmtNum(f.cardinality) + " values";
+    }
+    function usabilityRank(f) { if (!f.indexed) return 3; if (!f.cardinality) return 2; return 1; }
+
+    function renderRows(values) {
+      var maxBytes = 0;
+      values.forEach(function (v) { if (v.estimated_bytes > maxBytes) maxBytes = v.estimated_bytes; });
+      var chartDiv = el("div", { style: "display:flex;flex-direction:column;gap:4px" });
+      values.forEach(function (v) {
+        var pct = maxBytes > 0 ? (v.estimated_bytes / maxBytes * 100) : 0;
+        var row = el("div", { style: "display:flex;align-items:center;gap:8px;font-size:13px" });
+        row.appendChild(el("div", { textContent: v.value + (v.org_id ? " (" + v.org_id + ")" : ""), style: "width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0" }));
+        var barOuter = el("div", { style: "flex:1;height:18px;background:var(--color-hover-black,#0000000f);border-radius:3px;overflow:hidden" });
+        barOuter.appendChild(el("div", { style: "height:100%;width:" + Math.max(pct, 1) + "%;background:var(--color-primary,#3f51b5);border-radius:3px;transition:width 0.3s" }));
+        row.appendChild(barOuter);
+        row.appendChild(el("div", { textContent: fmtBytes(v.estimated_bytes), style: "width:70px;text-align:right;flex-shrink:0;font-size:12px;color:var(--color-text-secondary)" }));
+        row.appendChild(el("div", { textContent: (v.share_pct || 0).toFixed(1) + "%", style: "width:50px;text-align:right;flex-shrink:0;font-size:12px;color:var(--color-text-secondary)" }));
+        chartDiv.appendChild(row);
+      });
+      return chartDiv;
+    }
+
+    function renderBlock(name) {
+      var label = byName[name];
+      var section = el("div", { style: "margin-bottom:24px" });
+      var header = el("div", { style: "display:flex;align-items:baseline;gap:8px;margin-bottom:8px" });
+      header.appendChild(el("h3", { textContent: name, style: "font-size:1rem;margin:0" }));
+      if (label && label !== "loading") {
+        header.appendChild(el("span", { innerHTML: label.type === "promoted" ? '<span class="lh-badge lh-badge-promoted">promoted</span>' : '<span class="lh-badge lh-badge-map">map</span>' }));
+        header.appendChild(el("span", { textContent: label.cardinality + " values", style: "font-size:12px;color:var(--color-text-secondary)" }));
+      }
+      header.appendChild(el("button", { textContent: "\u00d7", title: "Remove", style: "margin-left:auto;border:none;background:none;cursor:pointer;color:var(--color-text-secondary);font-size:16px;line-height:1", onclick: function () { removeLabel(name); } }));
+      section.appendChild(header);
+      if (label === "loading" || label === undefined) {
+        section.appendChild(el("div", { className: "lh-loading", textContent: "Loading\u2026" }));
+      } else if (!label || !label.values || label.values.length === 0) {
+        section.appendChild(el("div", { className: "lh-empty", textContent: "No values to break down \u2014 this field is not indexed for breakdown (or has no data yet)." }));
+      } else {
+        section.appendChild(renderRows(label.values));
+      }
+      return section;
+    }
+
+    function render() {
+      if (selected === null) return;
+      container.innerHTML = "";
+      container.appendChild(el("div", { className: "lh-section-title", textContent: "Storage Breakdown by Label" }));
+
+      var avail = allFields.filter(function (f) { return selected.indexOf(f.name) === -1; });
+      avail.sort(function (a, b) { var ra = usabilityRank(a), rb = usabilityRank(b); if (ra !== rb) return ra - rb; return (a.cardinality || 0) - (b.cardinality || 0); });
+
+      var pickWrap = el("div", { style: "display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap" });
+      var input = el("input", { type: "text", list: "lh-vmui-bd-options", placeholder: "Search a label to break down by\u2026", style: "flex:1;max-width:340px;padding:6px 10px;border:1px solid var(--color-border,#ccc);border-radius:6px;font-size:13px", onkeydown: function (e) { if (e.key === "Enter") { addLabel(input.value); } } });
+      var dl = el("datalist", { id: "lh-vmui-bd-options" });
+      avail.forEach(function (f) { dl.appendChild(el("option", { value: f.name, label: usability(f) })); });
+      pickWrap.appendChild(input);
+      pickWrap.appendChild(dl);
+      pickWrap.appendChild(el("button", { textContent: "+ Add", style: "padding:6px 14px;cursor:pointer;border:1px solid var(--color-primary,#3f51b5);border-radius:6px;background:var(--color-primary,#3f51b5);color:#fff;font-size:13px", onclick: function () { addLabel(input.value); } }));
+      pickWrap.appendChild(el("span", { textContent: avail.length + " labels available", style: "font-size:12px;color:var(--color-text-secondary)" }));
+      container.appendChild(pickWrap);
+
+      container.appendChild(el("div", { style: "font-size:12px;color:var(--color-text-secondary,#706f6f);margin-bottom:16px", textContent: "Pick from the dropdown \u2014 each shows its value count so you know which are usable. Defaults via stats.breakdown_labels; add or remove any label \u2014 your selection is remembered." }));
+
+      if (tenantLabel && tenantLabel.values && tenantLabel.values.length > 0) {
+        var ts = el("div", { style: "margin-bottom:24px" });
+        var th = el("div", { style: "display:flex;align-items:baseline;gap:8px;margin-bottom:8px" });
+        th.appendChild(el("h3", { textContent: "by Tenant", style: "font-size:1rem;margin:0" }));
+        th.appendChild(el("span", { innerHTML: '<span class="lh-badge lh-badge-promoted">registry</span>' }));
+        th.appendChild(el("span", { textContent: tenantLabel.cardinality + " tenants \u00b7 exact bytes", style: "font-size:12px;color:var(--color-text-secondary)" }));
+        ts.appendChild(th);
+        ts.appendChild(renderRows(tenantLabel.values));
+        container.appendChild(ts);
       }
 
-      container.appendChild(el("div", { className: "lh-section-title", textContent: "Storage Breakdown by Label" }));
-      container.appendChild(el("div", { style: "font-size:12px;color:var(--color-text-secondary,#706f6f);margin-bottom:16px", textContent: "Sizes are proportionally estimated from total storage. Configured via stats.breakdown_labels." }));
+      if (selected.length === 0) {
+        container.appendChild(el("div", { className: "lh-empty", textContent: "No breakdown labels \u2014 use the search above to add one." }));
+      } else {
+        selected.forEach(function (name) { container.appendChild(renderBlock(name)); });
+      }
+    }
 
-      labels.forEach(function (label) {
-        var section = el("div", { style: "margin-bottom:24px" });
+    container.innerHTML = '<div class="lh-loading">Loading storage breakdown\u2026</div>';
+    try { var sv = JSON.parse(localStorage.getItem(LSKEY)); if (Array.isArray(sv)) selected = sv; } catch (e) {}
 
-        var header = el("div", { style: "display:flex;align-items:baseline;gap:8px;margin-bottom:8px" });
-        header.appendChild(el("h3", { textContent: label.name, style: "font-size:1rem;margin:0" }));
-        var typeBadge = label.type === "promoted"
-          ? '<span class="lh-badge lh-badge-promoted">promoted</span>'
-          : '<span class="lh-badge lh-badge-map">map</span>';
-        header.appendChild(el("span", { innerHTML: typeBadge }));
-        header.appendChild(el("span", { textContent: label.cardinality + " values", style: "font-size:12px;color:var(--color-text-secondary)" }));
-        section.appendChild(header);
+    fetchJSON("/lakehouse/api/v1/stats/breakdown?group_by=tenant").then(function (j) { tenantLabel = (j && j.labels && j.labels[0]) || null; render(); }).catch(function () {});
+    fetchJSON("/lakehouse/api/v1/cardinality/fields").then(function (j) { if (j && j.fields) allFields = j.fields.map(function (f) { return { name: f.name, indexed: f.indexed, cardinality: f.cardinality }; }); render(); }).catch(function () {});
 
-        if (!label.values || label.values.length === 0) {
-          section.appendChild(el("div", { className: "lh-empty", textContent: "No values discovered yet. Run a query to populate." }));
-          container.appendChild(section);
-          return;
+    if (selected === null) {
+      fetchJSON("/lakehouse/api/v1/stats/breakdown").then(function (data) {
+        var lbls = (data && data.labels) || [];
+        selected = lbls.map(function (l) { return l.name; });
+        lbls.forEach(function (l) { byName[l.name] = l; });
+        persist();
+        render();
+      }).catch(function (e) { container.innerHTML = '<div class="lh-error">Error: ' + e.message + "</div>"; });
+    } else {
+      selected.forEach(function (name) {
+        if (byName[name] === undefined) {
+          byName[name] = "loading";
+          fetchLabel(name).then(function (lb) { byName[name] = lb; render(); });
         }
-
-        // Horizontal bar chart
-        var maxBytes = 0;
-        label.values.forEach(function (v) { if (v.estimated_bytes > maxBytes) maxBytes = v.estimated_bytes; });
-
-        var chartDiv = el("div", { style: "display:flex;flex-direction:column;gap:4px" });
-        label.values.forEach(function (v) {
-          var pct = maxBytes > 0 ? (v.estimated_bytes / maxBytes * 100) : 0;
-          var row = el("div", { style: "display:flex;align-items:center;gap:8px;font-size:13px" });
-          row.appendChild(el("div", { textContent: v.value, style: "width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0" }));
-          var barOuter = el("div", { style: "flex:1;height:18px;background:var(--color-hover-black,#0000000f);border-radius:3px;overflow:hidden" });
-          barOuter.appendChild(el("div", { style: "height:100%;width:" + Math.max(pct, 1) + "%;background:var(--color-primary,#3f51b5);border-radius:3px;transition:width 0.3s" }));
-          row.appendChild(barOuter);
-          row.appendChild(el("div", { textContent: fmtBytes(v.estimated_bytes), style: "width:70px;text-align:right;flex-shrink:0;font-size:12px;color:var(--color-text-secondary)" }));
-          row.appendChild(el("div", { textContent: v.share_pct.toFixed(1) + "%", style: "width:50px;text-align:right;flex-shrink:0;font-size:12px;color:var(--color-text-secondary)" }));
-          chartDiv.appendChild(row);
-        });
-        section.appendChild(chartDiv);
-        container.appendChild(section);
       });
-    }).catch(function (e) {
-      container.innerHTML = '<div class="lh-error">Error: ' + e.message + "</div>";
-    });
+      render();
+    }
   }
 
   function renderTenants(container) {
@@ -522,7 +605,10 @@
         var typeBadge = f.type === "promoted"
           ? '<span class="lh-badge lh-badge-promoted">promoted</span>'
           : '<span class="lh-badge lh-badge-map">map</span>';
-        row.innerHTML = "<td>" + f.name + badge + "</td><td>" + fmtNum(f.cardinality) + "</td><td>" + typeBadge + "</td><td>" + (f.has_bloom ? "\u2705" : "\u2014") + "</td>";
+        var cardCell = (f.indexed || f.cardinality > 0)
+          ? fmtNum(f.cardinality)
+          : '<span style="color:var(--color-text-secondary)" title="Not indexed \u2014 this field is not sketched, so distinct values are not counted (not the same as zero)">\u2014</span>';
+        row.innerHTML = "<td>" + f.name + badge + "</td><td>" + cardCell + "</td><td>" + typeBadge + "</td><td>" + (f.has_bloom ? "\u2705" : "\u2014") + "</td>";
         tbody.appendChild(row);
       });
       tbl.appendChild(tbody);
