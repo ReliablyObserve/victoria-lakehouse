@@ -1,6 +1,6 @@
 # Stats Aggregate Cache — per-field storage + metadata sizes, cluster-wide
 
-Status: **design verified; foundation + Phase A landed (logs + traces)** — per-field on-S3 storage size in the Cardinality Explorer, on both `:29428` and `:20428`. The Storage column scales covered per-field bytes up to the manifest's full on-S3 total so it shows real magnitude immediately and converges to exact as compaction/new flushes backfill `ColumnBytes`. Remaining: the S3 sidecar persist/load (a cold-start optimisation) and Phases B–E.
+Status: **design verified; foundation + Phase A landed (logs + traces)** — per-field on-S3 storage size in the Cardinality Explorer, on both `:29428` and `:20428`. The Storage column scales covered per-field bytes up to the manifest's full on-S3 total so it shows real magnitude immediately and converges to exact as compaction/new flushes backfill `ColumnBytes`. Remaining: Phases C–E.
 
 ## Motivation
 
@@ -55,8 +55,8 @@ The manifest is already shared + refreshed across instances, so the per-field/pe
 ## Phases
 
 - **0 — foundation (landed):** `FileInfo.ColumnBytes` captured from the Parquet footer at flush; `manifest.SetChangeObserver` add/remove hook.
-- **A — landed (logs + traces):** compactor re-derives `ColumnBytes`; the `StatsAggregate` component (subscribe to the manifest hook + recompute-on-warm + reconcile-on-refresh; the S3 sidecar persist/load is the one remaining cold-start optimisation); `/cardinality/fields` `+storage_bytes`; the UI **Storage** column, scaled to the live on-S3 total during the `ColumnBytes` backfill window. Traces-module parity landed: the traces writer captures per-column footer bytes and the traces binary wires its own `StatsAggregate` (observer + recompute-on-warm + reconcile-on-refresh + APIConfig), so `:20428` populates the Storage column identically.
-- **B:** overview `+metadata` (mem `ResidentBytes` + disk `DiskCache.Size` + S3 sweep); overview metadata tiles (mem/disk/S3).
+- **A — landed (logs + traces):** compactor re-derives `ColumnBytes`; the `StatsAggregate` component (subscribe to the manifest hook + recompute-on-warm + reconcile-on-refresh; the S3 sidecar `SaveToS3`/`LoadFromS3` cold-start cache, persisted after each reconcile + loaded on startup); `/cardinality/fields` `+storage_bytes`; the UI **Storage** column, scaled to the live on-S3 total during the `ColumnBytes` backfill window. Traces-module parity landed: the traces writer captures per-column footer bytes and the traces binary wires its own `StatsAggregate` (observer + recompute-on-warm + reconcile-on-refresh + APIConfig), so `:20428` populates the Storage column identically.
+- **B — landed (logs + traces):** Storage Overview **Metadata footprint** tiles — pmeta RAM (`PmetaResidentBytes`) + disk cache (`DiskCacheBytes`), both this-node, plus the cluster on-S3 metadata total. The on-S3 figure is tracked **incrementally** — each pmeta bundle records its encoded byte size on persist / warm-load / compaction (`Bundle.PersistedSize` → `Store.PersistedBytes`), so it's a live sum that **never lists S3**. `/stats/overview` `+meta_resident_bytes`/`+meta_disk_bytes`/`+meta_s3_bytes`. e2e: `TestStatsOverviewMetadata`, `TestCardinalityStorageBytes`.
 - **C:** `/stats/storage` per-field `{storage, metadata}`; Storage Details → per-field table (drop the tenant facet).
 - **D:** per-instance mem/disk gossiped via the registry node-maps; per-instance breakdown in the UI.
 - **E:** `/tenants` `+metadata_bytes`; Tenants metadata column.
