@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.90.0] - 2026-06-11
+
 ### Added
 
 - **Dedicated columns (Tier 1): promote hot OTel attributes out of the maps into typed Parquet columns.** 15 log + 17 trace OpenTelemetry semantic-convention attributes (container.id, service.instance.id, k8s.cluster.name, telemetry.sdk.*, cloud.*, url.full, client.address, server.address, db.*, rpc.method, exception.type, …) are lifted from the resource/log/span attribute maps into first-class columns — dict-encoded for low-cardinality descriptors (the compression win) and plain+bloom for high-cardinality id-like keys (selective row-group skipping). **Measured net size −9.5% (logs) / −8.0% (traces)** on real L2 data — the promotion compression win absorbs the expanded blooms and then some. VL/VT-compatible by construction: read paths emit each column under its exact field name (logs bare, traces VT-prefixed), identical to the existing promoted-column mechanism; dual-read safe across schema versions (old files keep map storage, new files use columns, queries see the same fields). Pure-Parquet portability verified (pyarrow + DuckDB readback gate).
