@@ -23,6 +23,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/vlstorage"
 )
 
 // CompactorPool abstracts S3 operations needed by the compactor.
@@ -504,6 +505,15 @@ func (c *Compactor) mergeLogFiles(allData [][]byte) ([]schema.LogRow, error) {
 		if backfilled > 0 {
 			metrics.LogsSeverityTextBackfilledAtCompaction.Add(backfilled)
 		}
+	}
+
+	// Re-derive dedicated columns (Tier-1 OTel + Tier-2 custom slots) from the
+	// attribute map for files written before a key was promoted (v1). Promotion runs
+	// only at ingest, so old files keep promoted attrs in the map; this heals them
+	// forward on every compaction pass — they gain dedicated-column compression and
+	// their dedicated-column cardinality stops reading 0. Idempotent for v2 rows.
+	for i := range merged {
+		vlstorage.RepromoteLogRow(&merged[i])
 	}
 
 	sort.Slice(merged, func(i, j int) bool {

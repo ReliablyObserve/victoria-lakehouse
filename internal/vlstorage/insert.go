@@ -334,3 +334,31 @@ var activeSlotResolver *schema.SlotResolver
 // SetSlotResolver installs the Tier-2 slot resolver (built from
 // config.ActivePromotedAttributes at startup). Safe to call with nil.
 func SetSlotResolver(r *schema.SlotResolver) { activeSlotResolver = r }
+
+// RepromoteLogRow re-derives dedicated columns (Tier-1 OTel) and Tier-2 custom
+// slots from a row's attribute MAP — the compaction-time healing path for v1 files
+// written before a key was promoted (promotion runs only at ingest; the writer and
+// compactor never re-applied it, so old files keep promoted attrs in the map →
+// they miss the dedicated-column compression AND their dedicated-column cardinality
+// reads 0). Re-routes every map entry through the SAME ingest mapper used at write
+// time, so semantics are identical: a promoted/slotted key lands in its typed column
+// and leaves the map; a non-promoted key rebuilds the map. Idempotent — a v2 row
+// whose map holds no promotable key is unchanged. The empty key (VL's _msg form) is
+// preserved in the map rather than routed to Body (it isn't an attribute here).
+func RepromoteLogRow(r *schema.LogRow) {
+	if len(r.LogAttributes) == 0 {
+		return
+	}
+	attrs := r.LogAttributes
+	r.LogAttributes = nil
+	for k, v := range attrs {
+		if k == "" {
+			if r.LogAttributes == nil {
+				r.LogAttributes = make(map[string]string)
+			}
+			r.LogAttributes[k] = v
+			continue
+		}
+		mapFieldToRow(r, k, v)
+	}
+}
