@@ -201,6 +201,34 @@
         container.appendChild(metaCards);
       }
 
+      // Fleet instances \u2014 per-node metadata footprint gossiped across the
+      // cluster. pmeta RAM + Disk cache are each node's local usage; S3 metadata
+      // is the cluster-wide on-S3 total. The self row is marked with a badge.
+      // Anchor a placeholder synchronously so the section keeps its position
+      // (right after Metadata footprint) even though the fetch resolves later.
+      var instAnchor = el("div");
+      container.appendChild(instAnchor);
+      fetchJSON("/lakehouse/api/v1/stats/instances").then(function (inst) {
+        var rows = (inst && inst.instances) || [];
+        if (rows.length === 0) return;
+        instAnchor.appendChild(el("div", { className: "lh-section-title", textContent: "Fleet instances" }));
+        var itbl = el("table", { className: "lh-table" });
+        itbl.innerHTML = "<thead><tr><th>Node</th><th>pmeta RAM</th><th>Disk cache</th><th>S3 metadata</th></tr></thead>";
+        var itbody = el("tbody");
+        rows.forEach(function (r) {
+          var badge = r.is_self ? " <span style='color:var(--color-text-secondary);font-size:0.85em'>self</span>" : "";
+          var row = el("tr");
+          row.innerHTML =
+            "<td><code style='font-size:0.85em'>" + (r.node_id || "\u2014") + "</code>" + badge + "</td>" +
+            "<td>" + fmtBytes(r.meta_resident_bytes || 0) + "</td>" +
+            "<td>" + fmtBytes(r.meta_disk_bytes || 0) + "</td>" +
+            "<td>" + fmtBytes(r.meta_s3_bytes || 0) + "</td>";
+          itbody.appendChild(row);
+        });
+        itbl.appendChild(itbody);
+        instAnchor.appendChild(itbl);
+      }).catch(function () { /* instances endpoint optional; ignore */ });
+
       // Info row \u2014 data version + compression (Bucket / Fleet are now tiles above).
       var info = el("div", { className: "lh-info-row" });
       info.appendChild(el("span", { className: "lh-info-item", innerHTML: "Data range: <strong>" + (ov.oldest_data ? ov.oldest_data.slice(0, 10) : "—") + " → " + (ov.newest_data ? ov.newest_data.slice(0, 10) : "—") + "</strong>" }));

@@ -209,6 +209,7 @@ func tenantDeltaToJSON(d *TenantDelta) tenantDeltaJSON {
 		Generation: d.Generation,
 		Tenants:    make(map[string]tenantStatsJSON, len(d.Tenants)),
 		Timestamp:  d.Timestamp,
+		NodeMeta:   d.NodeMeta,
 	}
 	for k, ts := range d.Tenants {
 		tj.Tenants[k] = ts.toJSON()
@@ -223,6 +224,7 @@ func tenantDeltaFromJSON(dj tenantDeltaJSON) *TenantDelta {
 		Generation: dj.Generation,
 		Tenants:    make(map[string]*TenantStats, len(dj.Tenants)),
 		Timestamp:  dj.Timestamp,
+		NodeMeta:   dj.NodeMeta,
 	}
 	for k, j := range dj.Tenants {
 		d.Tenants[k] = tenantStatsFromJSON(j)

@@ -1383,6 +1383,12 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 				statsAgg.SetMetaS3(store.PmetaPersistedBytes())
 			}
 
+			// Record this node's metadata footprint once warm so the gossiped
+			// per-instance breakdown has a value before the first refresh tick.
+			if registry != nil && store != nil {
+				registry.SetNodeMeta(store.PmetaResidentBytes(), store.DiskCacheBytes())
+			}
+
 			// One-time cleanup of orphaned OLD-format (global dt=/hour=) pmeta
 			// bundles left by the move to tenant-scoped partitions. The new
 			// tenant bundles are rebuilt above by the warm self-heal, so the
@@ -1474,6 +1480,11 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 					statsAgg.Recompute(m.AllFiles())
 					_ = statsAgg.SaveToS3(rctx, store.Pool(), cfg.AutoPrefix()+stats.AggregateSidecarKeySuffix)
 					statsAgg.SetMetaS3(store.PmetaPersistedBytes())
+				}
+				// Refresh this node's gossiped metadata footprint each tick
+				// (independent of the size-stats aggregate).
+				if registry != nil && store != nil {
+					registry.SetNodeMeta(store.PmetaResidentBytes(), store.DiskCacheBytes())
 				}
 			}
 			rcancel()

@@ -88,6 +88,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/lakehouse/api/v1/cardinality/fields", a.handleCardinality)
 	mux.HandleFunc("/lakehouse/api/v1/stats/breakdown", a.handleBreakdown)
 	mux.HandleFunc("/lakehouse/api/v1/stats/fields", a.handleFields)
+	mux.HandleFunc("/lakehouse/api/v1/stats/instances", a.handleInstances)
 }
 
 // ---- Response types ----
@@ -159,6 +160,22 @@ type ClassBreakdown struct {
 	Class string `json:"class"`
 	Bytes int64  `json:"bytes"`
 	Files int64  `json:"files"`
+}
+
+// InstancesResponse is the response for the per-instance metadata breakdown.
+type InstancesResponse struct {
+	Instances []InstanceEntry `json:"instances"`
+}
+
+// InstanceEntry is one fleet node's metadata footprint. ResidentBytes (pmeta
+// RAM) + DiskBytes (disk cache) are that node's local usage, gossiped via the
+// registry; S3Bytes is the cluster-wide on-S3 _meta/ total (same on every row).
+type InstanceEntry struct {
+	NodeID            string `json:"node_id"`
+	IsSelf            bool   `json:"is_self"`
+	MetaResidentBytes int64  `json:"meta_resident_bytes"`
+	MetaDiskBytes     int64  `json:"meta_disk_bytes"`
+	MetaS3Bytes       int64  `json:"meta_s3_bytes"`
 }
 
 // IngestionResponse is the response for the ingestion stats endpoint.
@@ -808,6 +825,60 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, resp)
+}
+
+// handleInstances returns the per-instance metadata breakdown: one row per
+// fleet node with its gossiped pmeta-RAM + disk-cache footprint, plus the
+// cluster-wide on-S3 metadata total (repeated on every row). The self row is
+// always present and sorted first — even if the registry hasn't seen a
+// SetNodeMeta tick yet, it's synthesised from the local metadata funcs.
+func (a *API) handleInstances(w http.ResponseWriter, r *http.Request) {
+	var selfID string
+	nodeMeta := map[string]NodeMeta{}
+	if a.cfg.Registry != nil {
+		selfID = a.cfg.Registry.NodeID()
+		nodeMeta = a.cfg.Registry.NodeMetaAll()
+	}
+
+	var s3Bytes int64
+	if a.cfg.MetaS3Bytes != nil {
+		s3Bytes = a.cfg.MetaS3Bytes()
+	}
+
+	instances := make([]InstanceEntry, 0, len(nodeMeta)+1)
+	for nodeID, nm := range nodeMeta {
+		instances = append(instances, InstanceEntry{
+			NodeID:            nodeID,
+			IsSelf:            nodeID == selfID,
+			MetaResidentBytes: nm.ResidentBytes,
+			MetaDiskBytes:     nm.DiskBytes,
+			MetaS3Bytes:       s3Bytes,
+		})
+	}
+
+	// Synthesise the self row from the local funcs if no SetNodeMeta tick has
+	// landed yet (single-node startup, e2e). Source resident/disk directly so
+	// the row is never blank.
+	if _, ok := nodeMeta[selfID]; !ok && selfID != "" {
+		self := InstanceEntry{NodeID: selfID, IsSelf: true, MetaS3Bytes: s3Bytes}
+		if a.cfg.MetaResidentBytes != nil {
+			self.MetaResidentBytes = a.cfg.MetaResidentBytes()
+		}
+		if a.cfg.MetaDiskBytes != nil {
+			self.MetaDiskBytes = a.cfg.MetaDiskBytes()
+		}
+		instances = append(instances, self)
+	}
+
+	// Self first, then by node id.
+	sort.Slice(instances, func(i, j int) bool {
+		if instances[i].IsSelf != instances[j].IsSelf {
+			return instances[i].IsSelf
+		}
+		return instances[i].NodeID < instances[j].NodeID
+	})
+
+	writeJSON(w, InstancesResponse{Instances: instances})
 }
 
 // manifestClassBreakdown attributes every LIVE manifest file to a storage class

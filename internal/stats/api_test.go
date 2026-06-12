@@ -537,3 +537,79 @@ func TestAPIOverviewCompressionRatio(t *testing.T) {
 		t.Error("AvgCompressionRatio should not be 0")
 	}
 }
+
+// TestAPIInstancesEndpoint verifies /stats/instances emits a self row sourced
+// from the registry's gossiped NodeMeta, marks is_self, and carries the
+// cluster-wide MetaS3Bytes on the row.
+func TestAPIInstancesEndpoint(t *testing.T) {
+	reg := NewTenantRegistry("node-self")
+	reg.SetNodeMeta(4096, 8192)
+
+	api := NewAPI(APIConfig{
+		Registry:    reg,
+		Mode:        "logs",
+		Bucket:      "test-bucket",
+		MetaS3Bytes: func() int64 { return 123456 },
+	})
+
+	rec := doGet(t, api, "/lakehouse/api/v1/stats/instances")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var resp InstancesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Instances) != 1 {
+		t.Fatalf("instances = %d, want 1", len(resp.Instances))
+	}
+	self := resp.Instances[0]
+	if self.NodeID != "node-self" {
+		t.Errorf("node_id = %q, want node-self", self.NodeID)
+	}
+	if !self.IsSelf {
+		t.Error("is_self = false, want true for the local node")
+	}
+	if self.MetaResidentBytes != 4096 || self.MetaDiskBytes != 8192 {
+		t.Errorf("resident=%d disk=%d, want 4096/8192", self.MetaResidentBytes, self.MetaDiskBytes)
+	}
+	if self.MetaS3Bytes != 123456 {
+		t.Errorf("meta_s3_bytes = %d, want 123456 (cluster-wide)", self.MetaS3Bytes)
+	}
+}
+
+// TestAPIInstancesEndpointSyntheticSelf verifies that when no SetNodeMeta tick
+// has landed, the self row is still emitted, sourced from the local
+// MetaResidentBytes/MetaDiskBytes funcs.
+func TestAPIInstancesEndpointSyntheticSelf(t *testing.T) {
+	reg := NewTenantRegistry("node-solo")
+
+	api := NewAPI(APIConfig{
+		Registry:          reg,
+		Mode:              "logs",
+		Bucket:            "test-bucket",
+		MetaResidentBytes: func() int64 { return 555 },
+		MetaDiskBytes:     func() int64 { return 666 },
+		MetaS3Bytes:       func() int64 { return 777 },
+	})
+
+	rec := doGet(t, api, "/lakehouse/api/v1/stats/instances")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var resp InstancesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Instances) != 1 {
+		t.Fatalf("instances = %d, want 1 (synthesised self)", len(resp.Instances))
+	}
+	self := resp.Instances[0]
+	if self.NodeID != "node-solo" || !self.IsSelf {
+		t.Errorf("self row = %+v, want node-solo is_self=true", self)
+	}
+	if self.MetaResidentBytes != 555 || self.MetaDiskBytes != 666 || self.MetaS3Bytes != 777 {
+		t.Errorf("synthesised self = %+v, want resident=555 disk=666 s3=777", self)
+	}
+}

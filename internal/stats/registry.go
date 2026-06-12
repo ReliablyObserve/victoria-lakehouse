@@ -101,12 +101,26 @@ func tenantStatsFromJSON(j tenantStatsJSON) *TenantStats {
 	}
 }
 
+// NodeMeta is one node's metadata footprint — its in-RAM pmeta bundles
+// (ResidentBytes) and on-disk cache (DiskBytes). Gen is a per-node counter
+// bumped on every SetNodeMeta so gossip merges last-writer-wins by Gen and a
+// stale delta can't clobber a newer reading.
+type NodeMeta struct {
+	ResidentBytes int64  `json:"resident_bytes"`
+	DiskBytes     int64  `json:"disk_bytes"`
+	Gen           uint64 `json:"gen"`
+}
+
 // TenantDelta is the unit of gossip exchanged between peers.
 type TenantDelta struct {
 	NodeID     string                  `json:"node_id"`
 	Generation uint64                  `json:"generation"`
 	Tenants    map[string]*TenantStats `json:"tenants"`
 	Timestamp  time.Time               `json:"timestamp"`
+	// NodeMeta is the sender's own metadata footprint, piggy-backed on every
+	// delta. Nil when the node hasn't recorded one yet. Merged LWW by Gen,
+	// keyed by the delta's NodeID — orthogonal to the tenant CRDT.
+	NodeMeta *NodeMeta `json:"node_meta,omitempty"`
 }
 
 // tenantDeltaJSON is the JSON-serialisable mirror of TenantDelta.
@@ -115,6 +129,7 @@ type tenantDeltaJSON struct {
 	Generation uint64                     `json:"generation"`
 	Tenants    map[string]tenantStatsJSON `json:"tenants"`
 	Timestamp  time.Time                  `json:"timestamp"`
+	NodeMeta   *NodeMeta                  `json:"node_meta,omitempty"`
 }
 
 // GlobalStats aggregates stats across all tenants.
@@ -137,6 +152,11 @@ type TenantRegistry struct {
 	generation       uint64
 	lastPushGen      uint64
 	tenantGeneration map[string]uint64 // tenant key -> generation when last changed
+	// nodeMeta is the per-node metadata footprint, keyed by node id. The local
+	// node writes its own entry via SetNodeMeta; peers' entries arrive through
+	// gossip (Merge) and are kept LWW by NodeMeta.Gen. Orthogonal to the tenant
+	// CRDT — it never participates in tenant generation/delta bookkeeping.
+	nodeMeta map[string]NodeMeta
 }
 
 // NewTenantRegistry creates a new registry for the given node.
@@ -147,7 +167,41 @@ func NewTenantRegistry(nodeID string) *TenantRegistry {
 		tenants:          make(map[string]*TenantStats),
 		nodeID:           nodeID,
 		tenantGeneration: make(map[string]uint64),
+		nodeMeta:         make(map[string]NodeMeta),
 	}
+}
+
+// NodeID returns this registry's own node id (the gossip sender id). Used by
+// the stats API to mark the is_self row in the per-instance breakdown.
+func (r *TenantRegistry) NodeID() string {
+	return r.nodeID
+}
+
+// SetNodeMeta records THIS node's metadata footprint (pmeta RAM + disk cache),
+// bumping the per-node Gen so a subsequent gossip carries a strictly newer
+// reading. Cheap to call on the stats refresh tick. Does not touch the tenant
+// CRDT (no tenant generation bump).
+func (r *TenantRegistry) SetNodeMeta(resident, disk int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	prev := r.nodeMeta[r.nodeID]
+	r.nodeMeta[r.nodeID] = NodeMeta{
+		ResidentBytes: resident,
+		DiskBytes:     disk,
+		Gen:           prev.Gen + 1,
+	}
+}
+
+// NodeMetaAll returns a copy of the per-node metadata-footprint map (self plus
+// every peer seen via gossip).
+func (r *TenantRegistry) NodeMetaAll() map[string]NodeMeta {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]NodeMeta, len(r.nodeMeta))
+	for k, v := range r.nodeMeta {
+		out[k] = v
+	}
+	return out
 }
 
 // RecordWrite records a write for the given tenant.
@@ -271,12 +325,18 @@ func (r *TenantRegistry) BuildDelta(sinceGeneration uint64) *TenantDelta {
 			}
 		}
 	}
+	// Piggy-back our own metadata footprint (if recorded) so peers learn it
+	// every push, independent of the tenant generation cursor.
+	if nm, ok := r.nodeMeta[r.nodeID]; ok {
+		nmCopy := nm
+		d.NodeMeta = &nmCopy
+	}
 	return d
 }
 
 // Merge applies a remote delta using CRDT merge rules.
 func (r *TenantRegistry) Merge(delta *TenantDelta) {
-	if delta == nil || len(delta.Tenants) == 0 {
+	if delta == nil || (len(delta.Tenants) == 0 && delta.NodeMeta == nil) {
 		return
 	}
 
@@ -288,6 +348,15 @@ func (r *TenantRegistry) Merge(delta *TenantDelta) {
 		r.mergeTenant(local, remote, delta.NodeID)
 		r.generation++
 		r.tenantGeneration[key] = r.generation
+	}
+
+	// Per-node metadata footprint: LWW by Gen, keyed by the sender. Independent
+	// of the tenant CRDT — a stale gossip (lower/equal Gen) never clobbers a
+	// newer reading we already hold.
+	if delta.NodeMeta != nil && delta.NodeID != "" {
+		if cur, ok := r.nodeMeta[delta.NodeID]; !ok || delta.NodeMeta.Gen >= cur.Gen {
+			r.nodeMeta[delta.NodeID] = *delta.NodeMeta
+		}
 	}
 }
 
@@ -320,12 +389,15 @@ func (r *TenantRegistry) LastPushGen() uint64 {
 }
 
 // registrySnapshot is the top-level structure for MarshalSnapshot / LoadSnapshot.
+// NodeMeta is optional (omitempty) — an older snapshot without the field loads
+// fine (nil map → the constructor-initialised empty map is preserved).
 type registrySnapshot struct {
 	NodeID           string                     `json:"node_id"`
 	Generation       uint64                     `json:"generation"`
 	LastPushGen      uint64                     `json:"last_push_gen"`
 	Tenants          map[string]tenantStatsJSON `json:"tenants"`
 	TenantGeneration map[string]uint64          `json:"tenant_generation"`
+	NodeMeta         map[string]NodeMeta        `json:"node_meta,omitempty"`
 }
 
 // MarshalSnapshot serialises the entire registry to JSON.
@@ -339,12 +411,16 @@ func (r *TenantRegistry) MarshalSnapshot() ([]byte, error) {
 		LastPushGen:      r.lastPushGen,
 		Tenants:          make(map[string]tenantStatsJSON, len(r.tenants)),
 		TenantGeneration: make(map[string]uint64, len(r.tenantGeneration)),
+		NodeMeta:         make(map[string]NodeMeta, len(r.nodeMeta)),
 	}
 	for k, ts := range r.tenants {
 		snap.Tenants[k] = ts.toJSON()
 	}
 	for k, v := range r.tenantGeneration {
 		snap.TenantGeneration[k] = v
+	}
+	for k, v := range r.nodeMeta {
+		snap.NodeMeta[k] = v
 	}
 	return json.Marshal(snap)
 }
@@ -365,6 +441,19 @@ func (r *TenantRegistry) LoadSnapshot(sourceNodeID string, data []byte) error {
 		delta.Tenants[k] = tenantStatsFromJSON(j)
 	}
 	r.Merge(delta)
+
+	// Restore the per-node metadata footprint. A snapshot can hold many nodes'
+	// entries (unlike a single-sender delta), so merge the whole map directly
+	// under the lock, LWW by Gen. Absent in older snapshots (nil map) → no-op.
+	if len(snap.NodeMeta) > 0 {
+		r.mu.Lock()
+		for nodeID, nm := range snap.NodeMeta {
+			if cur, ok := r.nodeMeta[nodeID]; !ok || nm.Gen >= cur.Gen {
+				r.nodeMeta[nodeID] = nm
+			}
+		}
+		r.mu.Unlock()
+	}
 	return nil
 }
 
