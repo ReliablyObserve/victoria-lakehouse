@@ -1,12 +1,10 @@
-// vmui-tab.js — Injects a "Lakehouse" tab into the VMUI navigation bar.
-// When clicked, replaces the VMUI content area with an inline Lakehouse dashboard
-// that uses VMUI CSS variables for consistent styling.
+// lakehouse-ui.js — Shared Lakehouse dashboard render core (single source of truth).
+// Exposes window.LakehouseUI.mount(el) to render the dashboard into a container —
+// used by both the VMUI "Lakehouse" tab (vmui-tab.js) and the standalone
+// /lakehouse/ui/ page. Uses VMUI CSS variables for consistent styling.
 (function () {
   "use strict";
 
-  var TAB_ID = "lakehouse-tab";
-  var TAB_TEXT = "Lakehouse";
-  var ACTIVE_KEY = "lh_vmui_active"; // localStorage flag: Lakehouse tab was last active
   var SUBTAB_KEY = "lh_vmui_subtab"; // localStorage: which Lakehouse sub-view was active
   var CONTAINER_ID = "lakehouse-root";
 

@@ -7,8 +7,6 @@
   var TAB_ID = "lakehouse-tab";
   var TAB_TEXT = "Lakehouse";
   var ACTIVE_KEY = "lh_vmui_active"; // localStorage flag: Lakehouse tab was last active
-  var SUBTAB_KEY = "lh_vmui_subtab"; // localStorage: which Lakehouse sub-view was active
-  var CONTAINER_ID = "lakehouse-root";
 
   // The render core lives in the shared module lakehouse-ui.js (single source of
   // truth, also used by the standalone /lakehouse/ui/ page). This file is ONLY

@@ -167,6 +167,9 @@ stats.headobject_sample_interval
 stats.max_delta_count
 stats.meta_bucket
 stats.metrics_cardinality_limit
+# stats.* is grandfathered (runtime-validated, not schema-enumerated). node_meta_ttl
+# is the Phase-D fleet NodeMeta freshness TTL, documented under stats in values.yaml.
+stats.node_meta_ttl
 stats.push_compression
 stats.push_interval
 stats.s3_inventory_bucket
