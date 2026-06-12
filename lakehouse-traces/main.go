@@ -1382,6 +1382,14 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 				statsAgg.SetMetaS3(store.PmetaPersistedBytes())
 			}
 
+			// One-time cleanup of orphaned OLD-format (global dt=/hour=) pmeta
+			// bundles left by the move to tenant-scoped partitions. The new
+			// tenant bundles are rebuilt above by the warm self-heal, so the
+			// old globals are safe to delete. Idempotent via a marker object.
+			if cfg.Pmeta.Enabled {
+				store.CleanupLegacyGlobalBundles(ctx, cfg.AutoPrefix())
+			}
+
 			if cfg.Cache.WarmupPartitions > 0 || cfg.Cache.WarmupMaxFiles > 0 {
 				warmCtx, warmCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				store.WarmupCache(warmCtx)
