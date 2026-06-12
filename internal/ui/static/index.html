@@ -5,16 +5,40 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Lakehouse Explorer</title>
   <style>
-    :root { color-scheme: light dark; }
+    /* Standalone theme: define the same CSS variables VMUI provides, so the
+       shared module (lakehouse-ui.js) — which is styled against these vars —
+       renders identically here and inside the VMUI tab. */
+    :root {
+      color-scheme: light dark;
+      --color-background-body: #fefeff;
+      --color-background-block: #ffffff;
+      --color-text: #110f0f;
+      --color-text-secondary: #706f6f;
+      --color-text-disabled: #cccccc;
+      --color-primary: #3f51b5;
+      --color-hover-black: #0000000f;
+      --color-error: #fd080e;
+      --color-success: #4caf50;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --color-background-body: #1a1a1f;
+        --color-background-block: #24242b;
+        --color-text: #e8e8ea;
+        --color-text-secondary: #9b9b9f;
+        --color-text-disabled: #3a3a42;
+        --color-hover-black: #ffffff14;
+      }
+    }
     body {
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background: var(--color-background-body, #fefeff);
-      color: var(--color-text, #110f0f);
+      background: var(--color-background-body);
+      color: var(--color-text);
     }
     .lh-page-header {
       padding: 14px 20px;
-      border-bottom: 2px solid var(--color-text-disabled, #ccc);
+      border-bottom: 2px solid var(--color-text-disabled);
       font-size: 1.15rem; font-weight: 700;
     }
   </style>
