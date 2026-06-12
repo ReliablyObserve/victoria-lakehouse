@@ -158,13 +158,33 @@ func TestRegressionVMUITabJSServedFromLakehouseUI(t *testing.T) {
 
 	body := rec.Body.String()
 
+	// vmui-tab.js is now ONLY the VMUI integration: it injects the tab, manages
+	// the content area, and mounts the shared render core (lakehouse-ui.js) via
+	// ensureUI + LakehouseUI.mount. The render functions themselves moved to the
+	// shared module so the standalone page and the VMUI tab can never drift.
 	required := []string{
-		"showLakehouse", "hideLakehouse", "renderLakehouse",
-		"lh-wrapper", "isHeaderOrNav",
+		"showLakehouse", "hideLakehouse", "lh-wrapper", "isHeaderOrNav",
+		"LakehouseUI", "ensureUI",
 	}
 	for _, s := range required {
 		if !strings.Contains(body, s) {
-			t.Errorf("REGRESSION: vmui-tab.js missing function/identifier %q", s)
+			t.Errorf("REGRESSION: vmui-tab.js missing integration identifier %q", s)
+		}
+	}
+
+	// The shared render core must be served alongside and own the dashboard.
+	recUI := httptest.NewRecorder()
+	mux.ServeHTTP(recUI, httptest.NewRequest("GET", "/lakehouse/ui/lakehouse-ui.js", nil))
+	if recUI.Code != http.StatusOK {
+		t.Fatalf("lakehouse-ui.js returned %d, want 200", recUI.Code)
+	}
+	uiBody := recUI.Body.String()
+	for _, s := range []string{
+		"renderLakehouse", "renderOverview", "renderBreakdown",
+		"renderCardinality", "renderTenants", "window.LakehouseUI",
+	} {
+		if !strings.Contains(uiBody, s) {
+			t.Errorf("REGRESSION: lakehouse-ui.js (shared render core) missing %q", s)
 		}
 	}
 }
