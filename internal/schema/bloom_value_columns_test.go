@@ -1,6 +1,9 @@
 package schema
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 // bloomValueExclusions are HasBloom columns deliberately NOT value-extracted to
 // the partition _bloom.bin. See bloom_value_columns.go: span_id is unique per span
@@ -49,6 +52,39 @@ func assertBloomValueParity(t *testing.T, schemaBloom []string, sot map[string]b
 	for c := range sot {
 		if !want[c] {
 			t.Errorf("value accessor for %q which is not HasBloom in the schema — stale, remove it", c)
+		}
+	}
+}
+
+// TestBloomValueColumns_AccessorsReadNamedField is the correctness half the parity
+// guards above cannot see: those check only that the right NAMES exist, not that
+// each Get accessor reads the right FIELD. A copy-paste slip like
+// {"host.name", func(r) { return r.K8sPodName }} passes parity yet would feed the
+// WRONG column's values into _bloom.bin — the exact silent-pruning bug this file
+// exists to prevent. Each bloom column name equals its field's json tag, so seeding
+// only that field by name and asserting the accessor echoes it pins accessor↔field.
+func TestBloomValueColumns_AccessorsReadNamedField_Logs(t *testing.T) {
+	for _, c := range LogBloomValueColumns {
+		var r LogRow
+		seed := c.Name + "-v"
+		if err := json.Unmarshal([]byte(`{"`+c.Name+`":"`+seed+`"}`), &r); err != nil {
+			t.Fatalf("seed %q: %v", c.Name, err)
+		}
+		if got := c.Get(&r); got != seed {
+			t.Errorf("LogBloomValueColumns[%q].Get read %q, want %q — accessor reads a field not tagged %q", c.Name, got, seed, c.Name)
+		}
+	}
+}
+
+func TestBloomValueColumns_AccessorsReadNamedField_Traces(t *testing.T) {
+	for _, c := range TraceBloomValueColumns {
+		var r TraceRow
+		seed := c.Name + "-v"
+		if err := json.Unmarshal([]byte(`{"`+c.Name+`":"`+seed+`"}`), &r); err != nil {
+			t.Fatalf("seed %q: %v", c.Name, err)
+		}
+		if got := c.Get(&r); got != seed {
+			t.Errorf("TraceBloomValueColumns[%q].Get read %q, want %q — accessor reads a field not tagged %q", c.Name, got, seed, c.Name)
 		}
 	}
 }
