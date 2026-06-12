@@ -112,6 +112,14 @@ func (d *Discovery) DiscoverStorageNodes(ctx context.Context) ([]string, error) 
 	return nodes, nil
 }
 
+// HasPeerService reports whether a gossip peer headless service is configured.
+// RefreshDiscovery uses this to run DiscoverPeers (and so populate GetPeers, the
+// source the stats SyncPusher + Phase D fleet gossip read) whenever peering is
+// configured — independent of whether the peer cache happens to be built.
+func (d *Discovery) HasPeerService() bool {
+	return d.peerHeadlessService != ""
+}
+
 func (d *Discovery) DiscoverPeers(ctx context.Context) ([]string, error) {
 	if d.peerHeadlessService == "" {
 		return nil, nil

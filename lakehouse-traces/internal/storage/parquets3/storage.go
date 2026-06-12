@@ -472,17 +472,17 @@ func (s *Storage) updateLabelIndexNamesOnly(f *parquet.File) {
 }
 
 func (s *Storage) updateLabelIndexImpl(f *parquet.File, extractValues bool) {
-	// Columns that should have values extracted (use Parquet column names).
+	// Derived from the shared dimensional label set so the Cardinality Explorer
+	// surfaces real cardinality for every dedicated dimension and can't drift
+	// from the manifest label index (same source). High-card id-like columns are
+	// absent by design → name-only (bloom-indexed). Twin of the root module.
 	// Only consulted when extractValues=true.
-	promotedWithValues := map[string]bool{
-		"service.name":           true,
-		"severity_text":          true,
-		"k8s.namespace.name":     true,
-		"k8s.deployment.name":    true,
-		"k8s.node.name":          true,
-		"deployment.environment": true,
-		"cloud.region":           true,
-		"span.name":              true,
+	promotedWithValues := make(map[string]bool, len(schema.LogLabelColumns)+len(schema.TraceLabelColumns))
+	for _, c := range schema.LogLabelColumns {
+		promotedWithValues[c.Name] = true
+	}
+	for _, c := range schema.TraceLabelColumns {
+		promotedWithValues[c.Name] = true
 	}
 
 	// MAP columns whose keys should be expanded into individual field names
@@ -680,6 +680,54 @@ func (s *Storage) DiskCacheStats() *cache.Stats {
 	return &st
 }
 
+// DiskCacheBytes is this node's on-disk cache footprint in bytes (0 if no disk
+// cache). Local to this instance — see the Storage Overview metadata tiles.
+func (s *Storage) DiskCacheBytes() int64 {
+	if s.diskCache == nil {
+		return 0
+	}
+	return s.diskCache.Size()
+}
+
+// PmetaResidentBytes is this node's in-RAM metadata footprint — the pmeta
+// catalog/bloom/file-meta bundles + interning dict (0 unless --pmeta). Local to
+// this instance.
+func (s *Storage) PmetaResidentBytes() int64 {
+	if s.catalog == nil {
+		return 0
+	}
+	return s.catalog.ResidentBytes()
+}
+
+// PmetaPersistedBytes is the cluster's on-S3 metadata footprint — the sum of
+// every resident bundle's encoded size, tracked incrementally on persist/warm/
+// compaction (no S3 LIST). 0 unless --pmeta.
+func (s *Storage) PmetaPersistedBytes() int64 {
+	if s.catalog == nil {
+		return 0
+	}
+	return s.catalog.PersistedBytes()
+}
+
+// PmetaPersistedBytesByTenant is the per-tenant on-S3 metadata footprint
+// ("account:project" -> bytes), tracked incrementally. nil unless --pmeta.
+func (s *Storage) PmetaPersistedBytesByTenant() map[string]int64 {
+	if s.catalog == nil {
+		return nil
+	}
+	return s.catalog.PersistedBytesByTenant()
+}
+
+// PmetaMetadataBytesByField is the exact per-field metadata footprint
+// (field name -> bloom bitset bytes + catalog/HLL bytes), summed across all
+// resident pmeta bundles. Incremental (no S3 scan). nil unless --pmeta.
+func (s *Storage) PmetaMetadataBytesByField() map[string]int64 {
+	if s.catalog == nil {
+		return nil
+	}
+	return s.catalog.MetadataBytesByField()
+}
+
 func (s *Storage) LabelIndex() *cache.LabelIndex {
 	return s.labelIndex
 }
@@ -732,6 +780,17 @@ func (s *Storage) SetTombstoneStore(ts *delete.TombstoneStore) {
 // TombstoneStore returns the configured TombstoneStore (nil if not set).
 func (s *Storage) TombstoneStore() *delete.TombstoneStore {
 	return s.tombstones
+}
+
+// PmetaCardinality returns the global HLL distinct-value estimate for a field
+// from the pmeta catalog, or 0 if pmeta is off or the field has no sketch — the
+// accurate cardinality source the stats API prefers over the lazy, 100-capped
+// LabelIndex count. Twin of the root module.
+func (s *Storage) PmetaCardinality(field string) uint64 {
+	if s.catalog == nil {
+		return 0
+	}
+	return s.catalog.FieldCardinality(field)
 }
 
 // filterTombstonedRows removes rows from a DataBlock that match any active tombstone
@@ -1048,13 +1107,23 @@ func (s *Storage) SetSelfAZ(az string) {
 func (s *Storage) SelfAZ() string { return s.selfAZ }
 
 func (s *Storage) RefreshDiscovery(ctx context.Context) error {
+	// Non-fatal: a storage-node / partition-list discovery hiccup (or those
+	// services simply not being configured) must NOT short-circuit before peer
+	// discovery — the gossip ring below is the critical path for the fleet
+	// (stats CRDT, tenant aliases, Phase D node metadata). Log and continue.
 	if _, err := s.discovery.DiscoverStorageNodes(ctx); err != nil {
-		return fmt.Errorf("discover storage nodes: %w", err)
+		logger.Warnf("discover storage nodes: %s", err)
 	}
 	if _, err := s.discovery.PollPartitionList(ctx); err != nil {
-		return fmt.Errorf("poll partition list: %w", err)
+		logger.Warnf("poll partition list: %s", err)
 	}
-	if s.peerCache != nil || s.bufferBridge != nil {
+	// Resolve the peer ring whenever a peer headless service is configured —
+	// NOT only when peerCache/bufferBridge happen to be built. DiscoverPeers
+	// populates discovery.GetPeers(), which the stats SyncPusher and Phase D
+	// fleet-metadata gossip read directly (they don't go through peerCache); if
+	// this were gated on the cache, a config with peering set but no cache built
+	// would silently never gossip. The cache/bridge updates below stay nil-guarded.
+	if s.discovery.HasPeerService() {
 		peers, err := s.discovery.DiscoverPeers(ctx)
 		if err != nil {
 			return fmt.Errorf("discover peers: %w", err)

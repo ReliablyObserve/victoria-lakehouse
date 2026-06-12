@@ -26,24 +26,25 @@ func ExtractLogLabelAggregates(rows []LogRow) map[string]map[string]int64 {
 	}
 	agg := map[string]map[string]int64{}
 	for i := range rows {
-		countLabelAggregate(agg, "service.name", rows[i].ServiceName)
-		countLabelAggregate(agg, "severity_text", rows[i].SeverityText)
-		countLabelAggregate(agg, "deployment.environment", rows[i].DeployEnv)
-		countLabelAggregate(agg, "k8s.namespace.name", rows[i].K8sNamespaceName)
-		countLabelAggregate(agg, "cloud.region", rows[i].CloudRegion)
+		for _, c := range LogLabelColumns {
+			countLabelAggregate(agg, c.Name, c.Get(&rows[i]))
+		}
 	}
 	return capLabelAggregates(agg)
 }
 
-// ExtractTraceLabelAggregates is the traces counterpart (service.name + span.name).
+// ExtractTraceLabelAggregates is the traces counterpart. Both extractors and the
+// inverted cardinality index draw from the SAME column set (LogLabelColumns /
+// TraceLabelColumns in label_columns.go) so they can never disagree.
 func ExtractTraceLabelAggregates(rows []TraceRow) map[string]map[string]int64 {
 	if len(rows) == 0 {
 		return nil
 	}
 	agg := map[string]map[string]int64{}
 	for i := range rows {
-		countLabelAggregate(agg, "service.name", rows[i].ServiceName)
-		countLabelAggregate(agg, "span.name", rows[i].SpanName)
+		for _, c := range TraceLabelColumns {
+			countLabelAggregate(agg, c.Name, c.Get(&rows[i]))
+		}
 	}
 	return capLabelAggregates(agg)
 }

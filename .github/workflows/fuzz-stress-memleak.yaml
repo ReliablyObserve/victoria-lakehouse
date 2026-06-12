@@ -167,6 +167,7 @@ jobs:
           - internal/storage/parquets3:FuzzParseFooterBytes
           - internal/storage/parquets3:FuzzFooterLength
           - internal/storage/parquets3:FuzzStorageFetchPeerAZ
+          - internal/storage/parquets3:FuzzExtractTraceBloomValues
           - internal/schema:FuzzResolveToParquet
           - internal/schema:FuzzResolveToParquet_Traces
           - internal/schema:FuzzSlotMapping
@@ -194,6 +195,7 @@ jobs:
           - internal/pmeta:FuzzFieldCatalogDecode
           - internal/pmeta:FuzzFileMetaDecode
           - internal/pmeta:FuzzBloomFacetDecode
+          - internal/pmeta:FuzzAddHighCardValues_RoundTrip
           - internal/peercache:FuzzRingLookup
           - internal/peercache:FuzzRingLookupAZ
           - internal/peercache:FuzzRingLookupAZ_NoSameAZ
@@ -264,6 +266,7 @@ jobs:
           - internal/storage/parquets3:FuzzExtractFilterValuesAST
           - internal/storage/parquets3:FuzzPreFilterFiles_TraceID
           - internal/storage/parquets3:FuzzExtractFilterValuesAST_TraceID
+          - internal/storage/parquets3:FuzzExtractTraceBloomValues
           - internal/vlstorage:FuzzMapFieldToTraceRow
           - internal/vlstorage:FuzzUnmarshalStreamTags
           - internal/vlstorage:FuzzLogRowsToTraceRows

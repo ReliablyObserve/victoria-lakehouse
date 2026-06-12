@@ -1174,7 +1174,12 @@ func TestRefreshDiscovery_EmptyConfig(t *testing.T) {
 
 func TestRefreshDiscovery_DiscoverError(t *testing.T) {
 	s := testStorage()
-	// Create a discovery with a headless service that always fails DNS
+	// A storage-node headless service whose DNS always fails. Storage-node
+	// discovery is intentionally NON-FATAL (it logs a warning and continues) so a
+	// transient storage-node DNS hiccup can't starve the critical peer-gossip
+	// path below it. With no peer service configured, RefreshDiscovery therefore
+	// succeeds. (Peer-discovery DNS failure IS still fatal — see
+	// TestRefreshDiscovery_DiscoverPeersError.)
 	s.discovery = discovery.New("failing.svc.cluster.local", nil, "", "", "9428", 5*time.Second,
 		discovery.WithLookupSRV(func(_ context.Context, _, _, _ string) (string, []*net.SRV, error) {
 			return "", nil, &net.DNSError{Err: "no such host"}
@@ -1184,9 +1189,8 @@ func TestRefreshDiscovery_DiscoverError(t *testing.T) {
 		}),
 	)
 
-	err := s.RefreshDiscovery(context.Background())
-	if err == nil {
-		t.Error("expected error from RefreshDiscovery with failing DNS")
+	if err := s.RefreshDiscovery(context.Background()); err != nil {
+		t.Errorf("storage-node DNS failure must be non-fatal, got: %v", err)
 	}
 }
 

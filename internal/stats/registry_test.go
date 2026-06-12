@@ -636,3 +636,157 @@ func TestReconcileWithManifest_PrunesDeadNodes(t *testing.T) {
 		t.Error("expected node-C in NodeContribs")
 	}
 }
+
+// TestRegistryNodeMetaSetAndAll verifies SetNodeMeta records the self entry and
+// bumps Gen monotonically, and NodeMetaAll returns an isolated copy.
+func TestRegistryNodeMetaSetAndAll(t *testing.T) {
+	reg := NewTenantRegistry("node-A")
+
+	// Empty before any SetNodeMeta.
+	if got := reg.NodeMetaAll(); len(got) != 0 {
+		t.Fatalf("NodeMetaAll on fresh registry = %d entries, want 0", len(got))
+	}
+	if reg.NodeID() != "node-A" {
+		t.Errorf("NodeID() = %q, want node-A", reg.NodeID())
+	}
+
+	reg.SetNodeMeta(1000, 2000)
+	all := reg.NodeMetaAll()
+	nm, ok := all["node-A"]
+	if !ok {
+		t.Fatal("self node-A missing from NodeMetaAll after SetNodeMeta")
+	}
+	if nm.ResidentBytes != 1000 || nm.DiskBytes != 2000 {
+		t.Errorf("NodeMeta = %+v, want resident=1000 disk=2000", nm)
+	}
+	if nm.Gen != 1 {
+		t.Errorf("first SetNodeMeta Gen = %d, want 1", nm.Gen)
+	}
+
+	// Second call bumps Gen and overwrites the footprint.
+	reg.SetNodeMeta(1500, 2500)
+	nm = reg.NodeMetaAll()["node-A"]
+	if nm.ResidentBytes != 1500 || nm.DiskBytes != 2500 || nm.Gen != 2 {
+		t.Errorf("after 2nd SetNodeMeta = %+v, want resident=1500 disk=2500 gen=2", nm)
+	}
+
+	// Returned map is a copy — mutating it must not affect the registry.
+	all = reg.NodeMetaAll()
+	all["node-A"] = NodeMeta{ResidentBytes: 9, DiskBytes: 9, Gen: 99}
+	if got := reg.NodeMetaAll()["node-A"]; got.ResidentBytes != 1500 {
+		t.Error("NodeMetaAll did not return an isolated copy")
+	}
+}
+
+// TestRegistryNodeMetaGossip verifies SetNodeMeta then BuildDelta -> Merge into
+// a SECOND registry carries the node metadata, and that an existing tenant-stats
+// gossip in the SAME delta still merges correctly (the tenant CRDT is intact).
+func TestRegistryNodeMetaGossip(t *testing.T) {
+	regA := NewTenantRegistry("node-A")
+	regA.RecordWrite("acme:proj1", 1000, 2000, 10, "STANDARD")
+	regA.SetNodeMeta(4096, 8192)
+
+	regB := NewTenantRegistry("node-B")
+	regB.RecordWrite("acme:proj1", 500, 800, 5, "STANDARD")
+
+	// One delta carries BOTH the tenant change and the NodeMeta.
+	delta := regA.BuildDelta(0)
+	if delta.NodeMeta == nil {
+		t.Fatal("BuildDelta did not piggy-back NodeMeta")
+	}
+	if delta.NodeMeta.ResidentBytes != 4096 || delta.NodeMeta.DiskBytes != 8192 {
+		t.Errorf("delta NodeMeta = %+v, want resident=4096 disk=8192", *delta.NodeMeta)
+	}
+
+	regB.Merge(delta)
+
+	// NodeMeta for node-A landed in regB.
+	nm, ok := regB.NodeMetaAll()["node-A"]
+	if !ok {
+		t.Fatal("node-A metadata not carried into regB via gossip")
+	}
+	if nm.ResidentBytes != 4096 || nm.DiskBytes != 8192 || nm.Gen != 1 {
+		t.Errorf("merged NodeMeta = %+v, want resident=4096 disk=8192 gen=1", nm)
+	}
+
+	// Tenant CRDT still converges: node-A(1000) + node-B(500) = 1500.
+	ts := regB.Get("acme:proj1")
+	if ts == nil {
+		t.Fatal("expected merged tenant stats")
+	}
+	if ts.TotalBytes != 1500 {
+		t.Errorf("TotalBytes = %d, want 1500 (tenant CRDT disturbed)", ts.TotalBytes)
+	}
+	if ts.TotalRows != 15 || ts.TotalFiles != 2 {
+		t.Errorf("rows=%d files=%d, want rows=15 files=2", ts.TotalRows, ts.TotalFiles)
+	}
+}
+
+// TestRegistryNodeMetaLWW verifies the LWW-by-Gen rule: a stale delta (lower
+// Gen) must not clobber a newer reading already held; a newer delta updates it.
+func TestRegistryNodeMetaLWW(t *testing.T) {
+	reg := NewTenantRegistry("self")
+
+	newer := &TenantDelta{NodeID: "peer", NodeMeta: &NodeMeta{ResidentBytes: 200, DiskBytes: 20, Gen: 5}}
+	older := &TenantDelta{NodeID: "peer", NodeMeta: &NodeMeta{ResidentBytes: 100, DiskBytes: 10, Gen: 3}}
+
+	// Apply the newer reading first.
+	reg.Merge(newer)
+	if got := reg.NodeMetaAll()["peer"]; got.Gen != 5 || got.ResidentBytes != 200 {
+		t.Fatalf("after newer merge = %+v, want gen=5 resident=200", got)
+	}
+
+	// A stale (older Gen) delta must NOT overwrite.
+	reg.Merge(older)
+	if got := reg.NodeMetaAll()["peer"]; got.Gen != 5 || got.ResidentBytes != 200 {
+		t.Errorf("stale delta clobbered newer reading: %+v, want gen=5 resident=200", got)
+	}
+
+	// A strictly newer delta DOES update.
+	newest := &TenantDelta{NodeID: "peer", NodeMeta: &NodeMeta{ResidentBytes: 300, DiskBytes: 30, Gen: 9}}
+	reg.Merge(newest)
+	if got := reg.NodeMetaAll()["peer"]; got.Gen != 9 || got.ResidentBytes != 300 {
+		t.Errorf("newer delta did not update: %+v, want gen=9 resident=300", got)
+	}
+}
+
+// TestRegistryNodeMetaSnapshotRoundTrip verifies a snapshot Marshal -> Load
+// preserves nodeMeta, and that an OLD snapshot lacking the field loads cleanly
+// (backward compatibility) leaving an empty (non-nil) nodeMeta map.
+func TestRegistryNodeMetaSnapshotRoundTrip(t *testing.T) {
+	reg := NewTenantRegistry("node-1")
+	reg.RecordWrite("a:1", 1000, 2000, 10, "STANDARD")
+	reg.SetNodeMeta(7777, 8888)
+
+	data, err := reg.MarshalSnapshot()
+	if err != nil {
+		t.Fatalf("MarshalSnapshot: %v", err)
+	}
+
+	reg2 := NewTenantRegistry("node-2")
+	if err := reg2.LoadSnapshot("node-1", data); err != nil {
+		t.Fatalf("LoadSnapshot: %v", err)
+	}
+	nm, ok := reg2.NodeMetaAll()["node-1"]
+	if !ok {
+		t.Fatal("nodeMeta not preserved across snapshot round-trip")
+	}
+	if nm.ResidentBytes != 7777 || nm.DiskBytes != 8888 {
+		t.Errorf("loaded NodeMeta = %+v, want resident=7777 disk=8888", nm)
+	}
+	// Tenant survived too.
+	if reg2.Get("a:1") == nil {
+		t.Error("tenant a:1 lost in snapshot round-trip")
+	}
+
+	// Backward compatibility: an old snapshot JSON without node_meta loads fine.
+	legacy := `{"node_id":"old","generation":3,"last_push_gen":0,` +
+		`"tenants":{},"tenant_generation":{}}`
+	reg3 := NewTenantRegistry("node-3")
+	if err := reg3.LoadSnapshot("old", []byte(legacy)); err != nil {
+		t.Fatalf("LoadSnapshot of legacy (no node_meta) failed: %v", err)
+	}
+	if got := reg3.NodeMetaAll(); got == nil || len(got) != 0 {
+		t.Errorf("legacy load NodeMetaAll = %v, want empty non-nil map", got)
+	}
+}

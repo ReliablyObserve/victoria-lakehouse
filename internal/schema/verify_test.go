@@ -192,8 +192,8 @@ func TestVerifySchema_BloomEnabled_Traces(t *testing.T) {
 			bloomCount++
 		}
 	}
-	if bloomCount != 16 {
-		t.Errorf("traces profile: bloom column count = %d, want 16 (legacy trace_id/service.name/span.name + span_id + Tier-1 OTel: url.full, client.address, server.address, network.peer.address, db.collection.name, db.operation.name, rpc.method, messaging.destination.name, code.function.name, exception.type, container.id, service.instance.id)", bloomCount)
+	if bloomCount != 19 {
+		t.Errorf("traces profile: bloom column count = %d, want 19 (legacy trace_id/service.name/span.name + span_id + infra-identity dims k8s.pod.name/k8s.node.name/host.name (parity with logs) + Tier-1 OTel: url.full, client.address, server.address, network.peer.address, db.collection.name, db.operation.name, rpc.method, messaging.destination.name, code.function.name, exception.type, container.id, service.instance.id)", bloomCount)
 	}
 }
 

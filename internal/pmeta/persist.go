@@ -57,6 +57,7 @@ func (s *Store) PersistDirty(ctx context.Context, os ObjectStore) (int, error) {
 		if err := os.PutObject(ctx, s.bundleKey(p), buf.Bytes()); err != nil {
 			return n, err
 		}
+		b.setPersistedSize(int64(buf.Len()))
 		b.persisted(g)
 		n++
 	}
@@ -112,6 +113,7 @@ func (s *Store) WarmPartitions(ctx context.Context, os ObjectStore, partitions [
 					results <- out{partition: p, rebuild: true} // structural → whole-partition rebuild
 					continue
 				}
+				b.setPersistedSize(int64(len(data)))
 				results <- out{partition: p, bundle: b, skipped: res.Skipped}
 			}
 		}()

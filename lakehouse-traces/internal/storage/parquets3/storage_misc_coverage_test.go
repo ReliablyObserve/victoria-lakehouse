@@ -23,10 +23,28 @@ import (
 type fakeLocalBuffer struct {
 	closed   bool
 	queryErr error
+	// records below let the pure-buffer fast-path tests assert what reached the
+	// buffer (see pure_buffer_test.go); the original SetLocalBuffer tests ignore
+	// them.
+	ran      bool
+	gotQuery string
+	emit     bool
+	emitted  bool
 }
 
-func (f *fakeLocalBuffer) RunQuery(_ *logstorage.QueryContext, _ logstorage.WriteDataBlockFunc) error {
-	return f.queryErr
+func (f *fakeLocalBuffer) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error {
+	f.ran = true
+	if qctx != nil && qctx.Query != nil {
+		f.gotQuery = qctx.Query.String()
+	}
+	if f.queryErr != nil {
+		return f.queryErr
+	}
+	if f.emit && writeBlock != nil {
+		writeBlock(0, nil)
+		f.emitted = true
+	}
+	return nil
 }
 func (f *fakeLocalBuffer) Close() { f.closed = true }
 
