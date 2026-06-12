@@ -174,11 +174,18 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	files := s.manifest.GetFilesForRange(startNs, endNs)
 	if len(files) == 0 {
-		// No cold-tier files cover the requested window, but the in-flight
-		// buffer-bridge may still have rows newer than the latest flushed
-		// parquet. Keep the buffer query in the flow so narrow recent-window
-		// queries don't silently miss data that hasn't been flushed yet.
+		// Pure-buffer window: no cold-tier file covers it, so the WHOLE answer
+		// is the co-located logstorage buffer. Push the FULL query (aggregation
+		// pipes intact) into the buffer's own VL engine — it computes the
+		// count/stats natively and returns the small result, instead of the
+		// bridge's DropAllPipes path that ships every raw row upstream to be
+		// re-aggregated (profiled as the dominant recent-window cost). Safe
+		// because there is no Parquet data to double-count or merge with. Uses
+		// the buffer's public RunQuery (VL engine) — no upstream modification.
 		// Mirror in lakehouse-traces/internal/storage/parquets3/storage_query.go.
+		if s.servePureBufferQuery(ctx, q, tenantIDs, filteredWriteBlock) {
+			return nil
+		}
 		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 		return nil
 	}
@@ -436,6 +443,27 @@ func bufferWatermark(files []manifest.FileInfo, tenantIDs []logstorage.TenantID)
 		}
 	}
 	return wm
+}
+
+// servePureBufferQuery answers a query whose window is entirely unflushed (no
+// cold-tier files) directly from the co-located logstorage buffer, running the
+// FULL query — aggregation pipes intact — through the buffer's VL engine. The
+// engine computes count/stats/group-by natively and emits the small result,
+// instead of the bridge's DropAllPipes path that ships every raw row upstream
+// for re-aggregation. Returns false (caller falls back to the bridge) when the
+// node isn't a single-node logstore buffer: with peers, other pods hold
+// unflushed rows reachable only via the bridge fan-out. No upstream
+// modification — this calls the buffer's public RunQuery.
+func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) bool {
+	if s.localBuffer == nil || (s.bufferBridge != nil && s.bufferBridge.HasPeers()) {
+		return false
+	}
+	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, tenantIDs, q, false, nil)
+	if err := s.localBuffer.RunQuery(qctx, writeBlock); err != nil {
+		logger.Warnf("pure-buffer fast path failed, falling back to bridge: %s", err)
+		return false
+	}
+	return true
 }
 
 func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, watermarkNs int64, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) {
@@ -1773,11 +1801,13 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 
 	byPartition := make(map[string][]manifest.FileInfo)
 	for _, fi := range files {
-		// manifest.ExtractPartition (pure "dt=.../hour=HH", no prefix) — the pmeta
-		// facet AND the _bloom.bin persist path are keyed by it. partitionFromKey
-		// keeps the key prefix, which made the facet lookup always miss and the
-		// bloomS3Loader fallback build a double-prefixed S3 path.
-		partition := manifest.ExtractPartition(fi.Key)
+		// manifest.ExtractTenantPartition (tenant-isolated: full key dir incl the
+		// account/project prefix) — the pmeta facet AND the _bloom.bin persist path
+		// are keyed by it, so the bloom lookup, facet store and bloomS3Loader path
+		// all derive the SAME partition. (A past mismatch — this lookup deriving a
+		// different partition than the facet was stored under — made the facet
+		// lookup always miss and the bloomS3Loader build a double-prefixed S3 path.)
+		partition := manifest.ExtractTenantPartition(fi.Key)
 		byPartition[partition] = append(byPartition[partition], fi)
 	}
 
@@ -1869,11 +1899,13 @@ func (s *Storage) bloomFilterFilesByOrBranches(ctx context.Context, files []mani
 
 	byPartition := make(map[string][]manifest.FileInfo)
 	for _, fi := range files {
-		// manifest.ExtractPartition (pure "dt=.../hour=HH", no prefix) — the pmeta
-		// facet AND the _bloom.bin persist path are keyed by it. partitionFromKey
-		// keeps the key prefix, which made the facet lookup always miss and the
-		// bloomS3Loader fallback build a double-prefixed S3 path.
-		partition := manifest.ExtractPartition(fi.Key)
+		// manifest.ExtractTenantPartition (tenant-isolated: full key dir incl the
+		// account/project prefix) — the pmeta facet AND the _bloom.bin persist path
+		// are keyed by it, so the bloom lookup, facet store and bloomS3Loader path
+		// all derive the SAME partition. (A past mismatch — this lookup deriving a
+		// different partition than the facet was stored under — made the facet
+		// lookup always miss and the bloomS3Loader build a double-prefixed S3 path.)
+		partition := manifest.ExtractTenantPartition(fi.Key)
 		byPartition[partition] = append(byPartition[partition], fi)
 	}
 
@@ -2111,7 +2143,7 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 	// per-file bloom. Falls back to the `.bloom` download for any partition the
 	// bundle doesn't carry (cold bundle / pre-pmeta files).
 	if s.catalog != nil {
-		partition := manifest.ExtractPartition(fi.Key)
+		partition := manifest.ExtractTenantPartition(fi.Key)
 		usable, excluded := true, false
 	facetLoop:
 		for _, bc := range perColumn {

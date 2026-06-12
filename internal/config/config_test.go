@@ -1213,6 +1213,74 @@ func TestActiveBloomColumns_OverrideFromModeSection(t *testing.T) {
 	}
 }
 
+// TestWrittenBloomColumns_LogsIncludesDedicated locks the Cardinality Explorer
+// bloom-reporting fix: the stats API must report has_bloom from the set the
+// writer ACTUALLY emits (schema.LogBloomColumns), not the bare operator list.
+// Before the fix, every Tier-1 dedicated column showed "no bloom" in the UI
+// despite being bloom-indexed on disk.
+func TestWrittenBloomColumns_LogsIncludesDedicated(t *testing.T) {
+	cfg := Default()
+	cfg.Mode = ModeLogs
+
+	got := cfg.WrittenBloomColumns()
+	set := map[string]bool{}
+	for _, c := range got {
+		set[c] = true
+	}
+	for _, want := range []string{"service.name", "trace_id"} {
+		if !set[want] {
+			t.Errorf("WrittenBloomColumns(logs) dropped legacy bloom column %q: %v", want, got)
+		}
+	}
+	// Tier-1 dedicated columns flagged HasBloom must now be reported.
+	for _, want := range []string{"container.id", "service.instance.id", "exception.type"} {
+		if !set[want] {
+			t.Errorf("WrittenBloomColumns(logs) missing dedicated bloom column %q — Cardinality Explorer would under-report: %v", want, got)
+		}
+	}
+	// The bug was equality with the bare operator list; the written set must be
+	// strictly richer.
+	if len(got) <= len(cfg.ActiveBloomColumns()) {
+		t.Errorf("WrittenBloomColumns(logs) (%d) not richer than ActiveBloomColumns (%d) — dedicated blooms not surfaced", len(got), len(cfg.ActiveBloomColumns()))
+	}
+}
+
+// TestWrittenBloomColumns_TracesIncludesDedicated mirrors the logs guard for the
+// traces signal (trace dedicated columns are reported under their bare
+// ParquetColumn name; the API's ":"-suffix fallback matches the prefixed field).
+func TestWrittenBloomColumns_TracesIncludesDedicated(t *testing.T) {
+	cfg := Default()
+	cfg.Mode = ModeTraces
+
+	got := cfg.WrittenBloomColumns()
+	set := map[string]bool{}
+	for _, c := range got {
+		set[c] = true
+	}
+	for _, want := range []string{"service.name", "trace_id", "url.full", "client.address"} {
+		if !set[want] {
+			t.Errorf("WrittenBloomColumns(traces) missing %q: %v", want, got)
+		}
+	}
+}
+
+// TestWrittenBloomColumns_IncludesBloomEnabledSlot verifies a bloom-enabled
+// operator custom attribute (Tier-2) surfaces its slot column in the reported
+// set, so a configured custom bloom shows as bloomed in the explorer too.
+func TestWrittenBloomColumns_IncludesBloomEnabledSlot(t *testing.T) {
+	cfg := Default()
+	cfg.Mode = ModeLogs
+	cfg.Logs.PromotedAttributes = []PromotedAttribute{{Name: "request_id", Bloom: true}}
+
+	set := map[string]bool{}
+	for _, c := range cfg.WrittenBloomColumns() {
+		set[c] = true
+	}
+	if !set["ded_s01"] {
+		t.Errorf("WrittenBloomColumns missing the bloom-enabled custom slot ded_s01: %v", cfg.WrittenBloomColumns())
+	}
+}
+
 func TestActiveBloomColumns_FallbackToInsert(t *testing.T) {
 	cfg := Default()
 	cfg.Mode = ModeLogs

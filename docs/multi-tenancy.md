@@ -92,11 +92,11 @@ curl -H "X-Scope-AccountID: 42" -H "X-Scope-ProjectID: 3" \
 
 | Source | Priority | Persistence | Use Case |
 |--------|----------|-------------|----------|
-| **Static config** | Highest | Config file / Helm | Known tenants at deploy time |
+| **Static config** | Highest | Config file / flag (re-applied every startup) | Known tenants at deploy time |
 | **Runtime API** | Medium | S3 `_meta/tenant-aliases.json` | Dynamic tenant onboarding without restarts |
-| **Auto-discovery** | Lowest | S3 (immediate) | Dynamic environments, first-seen auto-registration |
+| **Auto-discovery** | Lowest | S3 (periodic persist + startup reload) | Dynamic environments, first-seen auto-registration |
 
-Static config aliases cannot be overridden by runtime aliases. Runtime aliases are synced across the fleet via the existing stats delta mechanism (default 30s).
+Static config aliases cannot be overridden by runtime aliases. Runtime aliases are synced across the fleet via the existing stats delta mechanism (default 30s) **and** persisted to S3 by a periodic loop (`startTenantAliasPersist`, on the alias-sync interval) so first-seen auto-registered tenants survive restarts — see [Durability & reconstruction](#durability--reconstruction).
 
 #### Configuration
 
@@ -124,7 +124,11 @@ lakehouse:
 --lakehouse.tenant.auto-register=false
 --lakehouse.tenant.alias-sync-interval=30s
 --lakehouse.tenant.metrics-format=id
+# Static aliases without a config file (orgid:account:project, comma-separated):
+--lakehouse.tenant.alias=prod-team-eu_staging:42:3,dev_default:1:1
 ```
+
+The `--lakehouse.tenant.alias` flag is the flag-only equivalent of the `aliases:` YAML map — handy for flag-driven deployments (Docker Compose, bare `docker run`). It is re-applied on **every** startup, so it is the deterministic reconstruction baseline even if the S3 snapshot is lost.
 
 #### Aliases CRUD API
 
@@ -143,6 +147,16 @@ curl -X DELETE http://lakehouse-logs:9428/lakehouse/api/v1/tenants/aliases/stagi
 ```
 
 Runtime aliases are persisted to `s3://{bucket}/_meta/tenant-aliases.json` and broadcast to all fleet nodes.
+
+#### Durability & reconstruction
+
+Tenant names must never silently disappear. Three layers keep the alias map durable and self-healing:
+
+1. **Config baseline (reconstruction).** Static aliases — from the `aliases:` YAML map or the `--lakehouse.tenant.alias` flag — are re-applied on **every** startup. Even if the S3 snapshot is deleted or corrupt, the configured tenants reconstruct deterministically.
+2. **Periodic S3 persistence.** A background loop (`startTenantAliasPersist`, runs on `alias_sync_interval`) writes the resolver's full alias set — config **plus** runtime-API **plus** auto-registered (`X-Scope-OrgID`) entries — to `_meta/tenant-aliases.json` whenever it changes. This is what makes first-seen auto-registered tenants survive a restart (previously they lived only in memory and their names vanished on redeploy).
+3. **Startup reload + fleet sync.** On boot the resolver loads the S3 snapshot (after applying the config baseline, so config always wins), and the `SyncPusher` continuously gossips registrations across peers. A node that missed a registration re-learns it from a peer or the next reload.
+
+Net effect: a name registered once — by config, by API, or by first ingest — is reconstructed on every subsequent start. Loss of the S3 object degrades only to the config baseline, never to bare integer IDs for configured tenants.
 
 #### S3 Prefix Templates
 

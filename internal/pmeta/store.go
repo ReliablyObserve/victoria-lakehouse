@@ -2,6 +2,7 @@ package pmeta
 
 import (
 	"iter"
+	"strings"
 	"sync"
 )
 
@@ -52,6 +53,58 @@ func (s *Store) Cardinality(field string) uint64 {
 	return h.estimate()
 }
 
+// FieldCardinality returns the distinct-value count for a field across the WHOLE
+// store — the accurate Cardinality Explorer source, read entirely from pmeta. A
+// high-card field (sketched, not enumerable) returns its globally-merged HLL
+// estimate; a low/medium-card field returns the size of the UNION of the
+// per-partition fieldCatalogFacet's ENUMERATED values (exact). No side map: the
+// catalog facets are the persisted, merged, restorable source of truth.
+func (s *Store) FieldCardinality(field string) uint64 {
+	s.mu.RLock()
+	parts := make([]string, 0, len(s.bundles))
+	for p := range s.bundles {
+		parts = append(parts, p)
+	}
+	gh := s.hllByField[field] // in-memory feed (e.g. always-sketch ids this run)
+	s.mu.RUnlock()
+
+	// Union the PERSISTED per-partition sketches for high-card fields, and
+	// enumerate the low-card values — both from the catalog facets, so the count
+	// survives restart with the bundle. The in-memory hllByField is folded in too
+	// (covers values fed this run not yet flushed to a facet).
+	var merged *hll
+	seen := make(map[string]struct{})
+	for _, p := range parts {
+		cf, ok := s.catalog(p)
+		if !ok {
+			continue
+		}
+		if h := cf.fieldHLL(field); h != nil {
+			if merged == nil {
+				merged = newHLL(h.p)
+			}
+			_ = merged.merge(h)
+		} else {
+			for _, v := range cf.Values(field, "", 0) {
+				seen[v] = struct{}{}
+			}
+		}
+	}
+	if merged != nil {
+		for v := range seen { // fold any partition that was still low-card
+			merged.add(v)
+		}
+		if gh != nil {
+			_ = merged.merge(gh)
+		}
+		return merged.estimate()
+	}
+	if gh != nil {
+		return gh.estimate()
+	}
+	return uint64(len(seen))
+}
+
 // AddCardinality folds a stream of values into a field's HLL sketch. The values
 // are an iterator (iter.Seq) so the caller — typically the flush path over a
 // file's rows — feeds them WITHOUT materializing a slice; empty strings are
@@ -69,6 +122,22 @@ func (s *Store) AddCardinality(field string, values iter.Seq[string]) {
 			h.add(v)
 		}
 	}
+}
+
+// AddPartitionCardinality folds a value stream into a field's PERSISTED per-partition
+// catalog HLL (marking it high-card) so the distinct count survives restart via the
+// bundle — for always-sketch id columns (trace_id, span_id) fed from the row tap and
+// never enumerated in Labels. Complements AddCardinality, which keeps a global RAM
+// sketch for the live metric; THIS is the durable source FieldCardinality unions on
+// restart. No-op until the partition's catalog facet exists (the flush that creates
+// it runs immediately before the tap), and marks the bundle dirty so it re-persists.
+func (s *Store) AddPartitionCardinality(partition, field string, values iter.Seq[string]) {
+	cf, ok := s.catalog(partition)
+	if !ok {
+		return
+	}
+	cf.addHighCardValues(field, values)
+	s.Bundle(partition).markDirty()
 }
 
 // Register wires a facet factory for a kind. Call once per kind at startup,
@@ -303,6 +372,73 @@ func (s *Store) ResidentBytes() int64 {
 		n += s.dict.EstimateBytes()
 	}
 	return n
+}
+
+// PersistedBytes is the cluster's on-S3 metadata footprint — the sum of every
+// resident bundle's last-persisted encoded size, tracked incrementally on
+// persist / warm-load / compaction (NO S3 LIST). Bundles evicted or removed from
+// the store drop out of the sum automatically. Excludes the tiny _meta/ sidecars.
+func (s *Store) PersistedBytes() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var n int64
+	for _, b := range s.bundles {
+		n += b.PersistedSize()
+	}
+	return n
+}
+
+// PersistedBytesByTenant sums each tenant's bundles' on-S3 encoded size, keyed
+// "account:project" parsed from the tenant-isolated partition. Incremental — no
+// S3 LIST. Bundles without a numeric tenant prefix are skipped.
+func (s *Store) PersistedBytesByTenant() map[string]int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]int64)
+	for partition, b := range s.bundles {
+		if tk := tenantKeyFromPartition(partition); tk != "" {
+			out[tk] += b.PersistedSize()
+		}
+	}
+	return out
+}
+
+func tenantKeyFromPartition(partition string) string {
+	parts := strings.SplitN(partition, "/", 3)
+	if len(parts) >= 2 {
+		return parts[0] + ":" + parts[1]
+	}
+	return ""
+}
+
+// MetadataBytesByField returns the exact per-field on-RAM metadata footprint,
+// keyed by field name: for every resident partition bundle, each field's bloom
+// bitset bytes (FacetBloom.BytesByField) plus its catalog-entry / distinct-count
+// HLL bytes (FacetFieldCatalog.BytesByField), accumulated across all partitions.
+// Incremental — reads the live facets under RLock, no S3 scan. The template is
+// PersistedBytesByTenant; this decomposes the same bundles per field instead of
+// per tenant. Empty when no bloom/catalog facets are resident.
+func (s *Store) MetadataBytesByField() map[string]int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]int64)
+	for _, b := range s.bundles {
+		if fc, ok := b.Get(FacetBloom); ok {
+			if bf, ok := fc.(*bloomFacet); ok {
+				for field, n := range bf.BytesByField() {
+					out[field] += n
+				}
+			}
+		}
+		if fc, ok := b.Get(FacetFieldCatalog); ok {
+			if cf, ok := fc.(*fieldCatalogFacet); ok {
+				for field, n := range cf.BytesByField() {
+					out[field] += n
+				}
+			}
+		}
+	}
+	return out
 }
 
 // DirtyPartitions returns partitions with unpersisted changes — THE single

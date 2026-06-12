@@ -620,6 +620,8 @@ lakehouseConfig:
     push_interval: 30s
     # -- ZSTD-compress delta broadcasts.
     push_compression: true
+    # -- TTL after which a peer node's gossiped metadata footprint (pmeta RAM + disk cache) is dropped from the fleet view — /stats/instances and the cluster-wide metadata sums on the Overview. 0 disables expiry.
+    node_meta_ttl: 90s
     # -- Interval for persisting full registry snapshot to S3.
     snapshot_interval: 5m
     # -- S3 key prefix for stat snapshots.

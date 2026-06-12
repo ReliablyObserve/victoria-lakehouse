@@ -10,6 +10,8 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
 	"gopkg.in/yaml.v3"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
 type Mode string
@@ -150,6 +152,47 @@ func (c *Config) ActiveBloomColumns() []string {
 		return c.Logs.BloomColumns
 	}
 	return c.Insert.BloomColumns
+}
+
+// WrittenBloomColumns returns the bloom-filtered column set the Parquet writer
+// ACTUALLY emits for the active signal: the strict schema bloom set (Tier-1
+// dedicated columns flagged HasBloom + the legacy service.name/trace_id) plus
+// the operator's bloom-enabled custom slots, unioned with any extra columns
+// named via -lakehouse.<signal>.bloom-columns.
+//
+// This is the source of truth the stats / cardinality API must report
+// `has_bloom` from. ActiveBloomColumns() alone is just the legacy operator list
+// ({service.name, trace_id}) and omits every dedicated column — so the
+// Cardinality Explorer would show "no bloom" for columns that are in fact
+// bloom-indexed on disk (writer.go + compactor.go both bloom this exact set).
+func (c *Config) WrittenBloomColumns() []string {
+	var slotBlooms []string
+	if pa := c.ActivePromotedAttributes(); len(pa) > 0 {
+		sa := make([]schema.SlotAttr, len(pa))
+		for i, a := range pa {
+			sa[i] = schema.SlotAttr{Name: a.Name, Bloom: a.Bloom}
+		}
+		slotBlooms = schema.NewSlotResolver(sa).BloomSlots()
+	}
+	var cols []string
+	if c.Mode == ModeTraces {
+		cols = schema.TraceBloomColumns(slotBlooms...)
+	} else {
+		cols = schema.LogBloomColumns(slotBlooms...)
+	}
+	// Union with operator-named extras so a custom -bloom-columns entry is still
+	// reported as bloomed.
+	seen := make(map[string]bool, len(cols))
+	for _, col := range cols {
+		seen[col] = true
+	}
+	for _, col := range c.ActiveBloomColumns() {
+		if col != "" && !seen[col] {
+			seen[col] = true
+			cols = append(cols, col)
+		}
+	}
+	return cols
 }
 
 func (c *Config) ActiveDeletePrefix() string {
@@ -693,6 +736,13 @@ type StatsConfig struct {
 	S3InventoryBucket           string                `yaml:"s3_inventory_bucket"`
 	HeadObjectSampleInterval    time.Duration         `yaml:"headobject_sample_interval"`
 	HeadObjectMaxPerRefresh     int                   `yaml:"headobject_max_per_refresh"`
+	// NodeMetaTTL bounds how long a peer's gossiped metadata footprint stays in
+	// the fleet view (/stats/instances + the cluster-wide Overview sum) without a
+	// refresh. The node id is the (ephemeral) container hostname, so without this
+	// dead nodes loaded from the shared S3 snapshot would accumulate forever.
+	// Defaults to 3× PushInterval (so a single missed gossip never evicts a live
+	// peer); set explicitly to override. 0 disables the staleness filter.
+	NodeMetaTTL time.Duration `yaml:"node_meta_ttl"`
 }
 
 type UIConfig struct {
@@ -1088,15 +1138,23 @@ func Default() *Config {
 		},
 
 		Stats: StatsConfig{
-			Enabled:                     true,
-			PushInterval:                30 * time.Second,
-			PushCompression:             true,
-			SnapshotInterval:            5 * time.Minute,
-			SnapshotPrefix:              "_meta/tenant-stats",
+			Enabled:          true,
+			PushInterval:     30 * time.Second,
+			PushCompression:  true,
+			SnapshotInterval: 5 * time.Minute,
+			SnapshotPrefix:   "_meta/tenant-stats",
+			// 3× PushInterval: a live peer re-gossips every PushInterval, so a
+			// node is only aged out after ~3 consecutive missed pushes — long
+			// enough to ride out a transient hiccup, short enough that a recreated
+			// container's old hostname disappears within a couple of minutes.
+			NodeMetaTTL:                 90 * time.Second,
 			MaxDeltaCount:               1000,
 			MetricsCardinalityLimit:     100,
 			CardinalityWarningThreshold: 10000,
-			BreakdownLabels:             []string{"service.name", "deployment.environment", "k8s.namespace.name", "k8s.cluster.name"},
+			// Mode-neutral dimensions present in both logs and traces (severity_text
+			// is logs-only and would render an empty block on traces — add it via the
+			// breakdown search box when on logs).
+			BreakdownLabels: []string{"deployment.environment", "service.name", "k8s.namespace.name", "k8s.cluster.name", "k8s.deployment.name"},
 			S3PricePerGB: map[string]float64{
 				"STANDARD":     0.023,
 				"STANDARD_IA":  0.0125,
@@ -1936,6 +1994,9 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Stats.SnapshotPrefix != "" {
 		base.Stats.SnapshotPrefix = overlay.Stats.SnapshotPrefix
+	}
+	if overlay.Stats.NodeMetaTTL > 0 {
+		base.Stats.NodeMetaTTL = overlay.Stats.NodeMetaTTL
 	}
 	if overlay.Stats.MetaBucket != "" {
 		base.Stats.MetaBucket = overlay.Stats.MetaBucket

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"iter"
 	"sort"
 	"strings"
 	"sync"
@@ -40,6 +41,7 @@ type fieldCatalogFacet struct {
 	mu           sync.RWMutex
 	byField      map[uint32]*valueSet // fieldID -> value ids present (low-card only)
 	highCard     map[uint32]bool      // fieldID -> high-card (capped/forced); values not enumerable
+	hll          map[uint32]*hll      // fieldID -> distinct-count sketch (high-card only); persisted
 }
 
 // NewFieldCatalogFactory returns a FacetFactory bound to a shared Dict that keeps
@@ -65,8 +67,32 @@ func NewFieldCatalogFactoryCapped(dict *Dict, threshold int, alwaysSketch []stri
 			alwaysSketch: sketch,
 			byField:      map[uint32]*valueSet{},
 			highCard:     map[uint32]bool{},
+			hll:          map[uint32]*hll{},
 		}
 	}
+}
+
+// fieldHLL returns the per-field distinct-count sketch for a high-card field, or
+// nil if the field is absent / still low-card. Used by Store.FieldCardinality to
+// union per-partition sketches into the global estimate.
+func (f *fieldCatalogFacet) fieldHLL(field string) *hll {
+	fid, ok := f.dict.fieldID(field)
+	if !ok {
+		return nil
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.hll[fid]
+}
+
+// hllFor returns (creating if needed) the sketch for a field id. Caller holds f.mu.
+func (f *fieldCatalogFacet) hllFor(fid uint32) *hll {
+	h := f.hll[fid]
+	if h == nil {
+		h = newHLL(defaultHLLPrecision)
+		f.hll[fid] = h
+	}
+	return h
 }
 
 // FieldValues is the Store's public read surface for field-value dropdowns: the
@@ -135,6 +161,18 @@ func (f *fieldCatalogFacet) Merge(c FileContribution) {
 			}
 		}
 	}
+	// High-card fields: fold the raw values into the per-field sketch so the
+	// distinct-count survives restart via the bundle (these are exactly the
+	// fields the catalog does not enumerate). Persisted in Encode/Decode.
+	for field, vals := range c.HighCardValues {
+		fid := f.dict.internField(field)
+		f.highCard[fid] = true
+		delete(f.byField, fid)
+		h := f.hllFor(fid)
+		for _, v := range vals {
+			h.add(v)
+		}
+	}
 }
 
 // markHighCard flags a field high-card and drops its now-incomplete value set so
@@ -142,7 +180,37 @@ func (f *fieldCatalogFacet) Merge(c FileContribution) {
 // values are not enumerable. Caller holds f.mu.
 func (f *fieldCatalogFacet) markHighCard(fid uint32) {
 	f.highCard[fid] = true
+	// Fold the soon-dropped enumerated values into the sketch first, so the
+	// cap-crossing distinct count isn't lost when byField is cleared.
+	if vs := f.byField[fid]; vs != nil {
+		h := f.hllFor(fid)
+		for _, id := range vs.ids {
+			if s, ok := f.dict.value(id); ok {
+				h.add(s)
+			}
+		}
+	}
 	delete(f.byField, fid)
+}
+
+// addHighCardValues folds a value stream into a field's HLL and marks the field
+// high-card (values not enumerated). For always-sketch id columns (trace_id,
+// span_id) whose values arrive from the row tap rather than Labels: this feeds the
+// PERSISTED per-partition sketch (in the bundle) instead of only the RAM side-map,
+// so the distinct count survives restart. Empty strings are skipped. Streamed as an
+// iter.Seq so the caller feeds straight off the row structs (no slice).
+func (f *fieldCatalogFacet) addHighCardValues(field string, values iter.Seq[string]) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fid := f.dict.internField(field)
+	f.highCard[fid] = true
+	delete(f.byField, fid)
+	h := f.hllFor(fid)
+	for v := range values {
+		if v != "" {
+			h.add(v)
+		}
+	}
 }
 
 // IsHighCard reports whether a field crossed the cardinality cap (or was forced
@@ -228,6 +296,30 @@ func (f *fieldCatalogFacet) EstimateBytes() int64 {
 	return n // dict strings are accounted once by Dict.EstimateBytes
 }
 
+// BytesByField returns each field's catalog footprint (bytes), keyed by field
+// name. A low-card field's bytes mirror EstimateBytes' per-field term exactly
+// (len(ids)*4 + 32 for the value-set + map overhead); a high-card field's bytes
+// are its persisted distinct-count HLL register array (len(reg)) — the catalog
+// entry the facet keeps for a field it does not enumerate. Summing the values is
+// the per-field decomposition of this facet's metadata contribution. Dict strings
+// are intentionally excluded (accounted once globally by Dict.EstimateBytes).
+func (f *fieldCatalogFacet) BytesByField() map[string]int64 {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	out := make(map[string]int64, len(f.byField)+len(f.hll))
+	for fid, vs := range f.byField {
+		if name, ok := f.dict.field(fid); ok {
+			out[name] += int64(len(vs.ids))*4 + 32
+		}
+	}
+	for fid, h := range f.hll {
+		if name, ok := f.dict.field(fid); ok {
+			out[name] += int64(len(h.reg)) // persisted per-field distinct-count sketch
+		}
+	}
+	return out
+}
+
 // Encode writes a SELF-CONTAINED payload (value strings, not global ids) so a
 // partition is rebuildable independently of the in-RAM dict. Deterministic
 // (fields + values sorted) for golden byte-identity.
@@ -264,9 +356,21 @@ func (f *fieldCatalogFacet) Encode(w io.Writer) error {
 			hc = append(hc, name)
 		}
 	}
+	type hllEnc struct {
+		name string
+		p    uint8
+		reg  []byte
+	}
+	hlls := make([]hllEnc, 0, len(f.hll))
+	for fid, h := range f.hll {
+		if name, ok := f.dict.field(fid); ok {
+			hlls = append(hlls, hllEnc{name: name, p: h.p, reg: append([]byte(nil), h.reg...)})
+		}
+	}
 	f.mu.RUnlock()
 	sort.Slice(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
 	sort.Strings(hc)
+	sort.Slice(hlls, func(i, j int) bool { return hlls[i].name < hlls[j].name })
 
 	bw := bufio.NewWriter(w)
 	var u32 [4]byte
@@ -308,6 +412,33 @@ func (f *fieldCatalogFacet) Encode(w io.Writer) error {
 			return err
 		}
 		if _, err := bw.WriteString(name); err != nil {
+			return err
+		}
+	}
+	// HLL section: appended AFTER the high-card names so a pre-HLL bundle simply
+	// ends here and Decode treats the absent section as "no sketches" (EOF-
+	// tolerant). per field: nameLen[2] name p[1] regLen[4] reg.
+	binary.BigEndian.PutUint32(u32[:], uint32(len(hlls)))
+	if _, err := bw.Write(u32[:]); err != nil {
+		return err
+	}
+	for _, h := range hlls {
+		var u16 [2]byte
+		binary.BigEndian.PutUint16(u16[:], uint16(len(h.name)))
+		if _, err := bw.Write(u16[:]); err != nil {
+			return err
+		}
+		if _, err := bw.WriteString(h.name); err != nil {
+			return err
+		}
+		if err := bw.WriteByte(h.p); err != nil {
+			return err
+		}
+		binary.BigEndian.PutUint32(u32[:], uint32(len(h.reg)))
+		if _, err := bw.Write(u32[:]); err != nil {
+			return err
+		}
+		if _, err := bw.Write(h.reg); err != nil {
 			return err
 		}
 	}
@@ -381,6 +512,48 @@ func (f *fieldCatalogFacet) Decode(r io.Reader) error {
 		f.markHighCard(f.dict.internField(string(name)))
 		f.mu.Unlock()
 	}
+	// HLL section (appended after the high-card names). A pre-HLL bundle ends at
+	// the previous section, so EOF here means "no sketches" — not an error.
+	if _, err := io.ReadFull(br, u32[:]); err != nil {
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			return nil
+		}
+		return err
+	}
+	nhll := binary.BigEndian.Uint32(u32[:])
+	for i := uint32(0); i < nhll; i++ {
+		var u16 [2]byte
+		if _, err := io.ReadFull(br, u16[:]); err != nil {
+			return err
+		}
+		name := make([]byte, binary.BigEndian.Uint16(u16[:]))
+		if _, err := io.ReadFull(br, name); err != nil {
+			return err
+		}
+		var pb [1]byte
+		if _, err := io.ReadFull(br, pb[:]); err != nil {
+			return err
+		}
+		if _, err := io.ReadFull(br, u32[:]); err != nil {
+			return err
+		}
+		rl := binary.BigEndian.Uint32(u32[:])
+		// Guard against corruption: the register array is exactly 2^p bytes, and
+		// p is clamped to [4,18] (≤256 KiB). Reject anything else rather than
+		// allocate on a hostile length.
+		if pb[0] < 4 || pb[0] > 18 || rl != uint32(1)<<pb[0] {
+			return fmt.Errorf("pmeta: invalid hll p=%d regLen=%d", pb[0], rl)
+		}
+		reg := make([]byte, rl)
+		if _, err := io.ReadFull(br, reg); err != nil {
+			return err
+		}
+		f.mu.Lock()
+		fid := f.dict.internField(string(name))
+		f.highCard[fid] = true
+		f.hll[fid] = &hll{p: pb[0], reg: reg}
+		f.mu.Unlock()
+	}
 	return nil
 }
 
@@ -399,8 +572,15 @@ func (f *fieldCatalogFacet) absorbFacet(other Facet) {
 func (f *fieldCatalogFacet) absorb(other *fieldCatalogFacet) {
 	for _, field := range other.Fields() {
 		if other.IsHighCard(field) {
+			oh := other.fieldHLL(field)
 			f.mu.Lock()
-			f.markHighCard(f.dict.internField(field))
+			fid := f.dict.internField(field)
+			f.markHighCard(fid)
+			// Union the persisted sketches so the merged facet's distinct-count is
+			// the UNION across both, not a reset to one side.
+			if oh != nil {
+				_ = f.hllFor(fid).merge(oh)
+			}
 			f.mu.Unlock()
 			continue
 		}

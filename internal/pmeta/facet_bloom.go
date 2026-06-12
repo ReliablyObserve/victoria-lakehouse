@@ -75,6 +75,17 @@ func (f *bloomFacet) EstimateBytes() int64 {
 	return int64(len(f.idx.Marshal())) // exact; eviction is not on the hot path
 }
 
+// BytesByField returns each indexed column's bloom-bitset footprint (bytes),
+// summed across every file entry in this partition's index — the per-field
+// decomposition of EstimateBytes' bloom contribution (Index.BytesByColumn sums
+// Filter.Size() per column, excluding only the index framing overhead). Keys are
+// the bloom column names (bare Parquet column names, e.g. "service.name").
+func (f *bloomFacet) BytesByField() map[string]int64 {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.idx.BytesByColumn()
+}
+
 func (f *bloomFacet) mayContain(keys []string, column, value string) []string {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
