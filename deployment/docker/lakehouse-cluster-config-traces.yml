@@ -1,0 +1,83 @@
+# Lakehouse e2e tenant policy configuration — TRACES cluster variant.
+#
+# Identical to lakehouse-cluster-config.yml (the logs cluster config) except
+# discovery.peer_headless_service points at the TRACES network alias
+# (lakehouse-traces-cluster) instead of the logs alias. Mounted into all three
+# lakehouse-traces instances so they discover each other and gossip fleet meta
+# + the tenant CRDT — exactly like the logs cluster.
+#
+# Override keys accept both forms (resolved at startup, alias-keyed
+# entries re-resolve on AliasSyncInterval so late-registered
+# tenants pick up overrides without restart):
+#   "<account>:<project>"   — integer Victoria tenant ID
+#   "<orgid>"               — string alias from X-Scope-OrgID
+lakehouse:
+  # Option B: logstorage-native queryable buffer (P1 dual-write + P3 read-merge).
+  # Buffer dir is on the persistent /data/lakehouse volume; durability is
+  # logstorage's own parts + S3 Parquet (no LH WAL needed for it).
+  insert:
+    buffer_engine: logstore
+    # buffer_flush_enabled OFF (default): durability is the VL/VT-upstream logstore
+    # buffer (on-disk parts, restored on open) — see docs/durability.md. The
+    # authoritative flip (BufferFlusher → S3) is proven correct by the controlled
+    # write→read round-trip tests but kept off here; a clean-slate isolated-bucket
+    # run is the remaining step before enabling it live.
+
+  retention:
+    enabled: true
+    default: "30d"
+    check_interval: "5m"
+
+  tenant:
+    overrides:
+      # acme-corp gets aggressive retention + 5MB/s ingest cap +
+      # cardinality limits + ONEZONE_IA after 7 days, GLACIER after
+      # 60. Alias-keyed so the registry resolves it once acme-corp
+      # auto-registers via the seed datagen.
+      "acme-corp":
+        retention:
+          keep: "90d"
+        cardinality:
+          max_streams: 5000
+          max_fields: 1000
+        ingest:
+          max_bytes_per_sec: 5242880    # 5 MiB/s
+          max_rows_per_sec: 10000
+        lifecycle:
+          - transition_days: 7
+            storage_class: "ONEZONE_IA"
+          - transition_days: 60
+            storage_class: "GLACIER"
+
+      # Tenant 1:1 (the numeric-header seed) demonstrates the
+      # int-keyed override path: short retention, no other knobs.
+      "1:1":
+        retention:
+          keep: "7d"
+
+      # staging-team gets a permissive cardinality cap + 30d retention.
+      "staging-team":
+        retention:
+          keep: "30d"
+        cardinality:
+          max_streams: 50000
+
+  # =======================================================================
+  # Cluster gossip (3-instance multi-node verification) — TRACES.
+  # Added on top of the e2e config (every key above is preserved verbatim).
+  # These have NO CLI flags — they MUST live in the config YAML, and MUST be
+  # nested under the `lakehouse:` root: LoadWithMode unmarshals the file into
+  # `struct { Lakehouse Config }`, so any top-level (un-nested) key is silently
+  # dropped — which is exactly why the first cut never gossiped.
+  #   - discovery.peer_headless_service: a DNS name that, in Docker, is a
+  #     shared network ALIAS resolving (embedded DNS) to ALL containers
+  #     carrying it. Each traces instance resolves it to the other two (+
+  #     self; self-gossip is idempotent/harmless) and gossips fleet meta
+  #     + the tenant CRDT to them.
+  #   - peer.auth_key: the shared gossip secret. MUST be identical on every
+  #     instance or peer auth rejects the push.
+  # =======================================================================
+  discovery:
+    peer_headless_service: lakehouse-traces-cluster
+  peer:
+    auth_key: cluster-gossip-secret

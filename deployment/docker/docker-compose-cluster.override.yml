@@ -113,6 +113,113 @@ services:
       - lakehouse-cache-logs-3:/data/lakehouse
       - ./lakehouse-cluster-config.yml:/etc/lakehouse/policy.yml:ro
 
+  # ===========================================================================
+  # TRACES cluster — mirrors the logs cluster above for the lakehouse-traces
+  # service. The traces binary carries the same shared internal/ discovery+
+  # registry+sync+api gossip code plus startPeerDiscovery/SetNodeMeta in its
+  # main.go, so a 3-instance traces cluster converges identically to logs.
+  #
+  # Container port is 10428 (not 9428). Each instance carries the shared network
+  # ALIAS `lakehouse-traces-cluster`, which Docker embedded DNS resolves to all
+  # three traces container IPs, and mounts ./lakehouse-cluster-config-traces.yml
+  # (discovery.peer_headless_service: lakehouse-traces-cluster + the shared
+  # peer.auth_key). All three share the EXISTING minio/s3-latency + datagen.
+  # ===========================================================================
+
+  # Traces instance 1 — re-declared so it joins the cluster (alias + cluster
+  # config). &traces-cluster-base captures the fields instances 2/3 reuse
+  # verbatim (image, command, alias, traces config volume, healthcheck, limits).
+  # Per-instance bits (ports, AZ, cache volume) are set outside the anchor.
+  lakehouse-traces: &traces-cluster-base
+    image: victoria-lakehouse-lakehouse-traces:latest
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      s3-latency:
+        condition: service_healthy
+    networks:
+      lakehouse-net:
+        aliases:
+          - lakehouse-traces-cluster
+    environment:
+      LAKEHOUSE_AZ: "az-a"
+    command:
+      - "-lakehouse.s3.bucket=obs-archive"
+      - "-lakehouse.s3.endpoint=http://s3-latency:9000"
+      - "-lakehouse.s3.access-key=minioadmin"
+      - "-lakehouse.s3.secret-key=minioadmin"
+      - "-lakehouse.s3.force-path-style=true"
+      - "-lakehouse.manifest.refresh-interval=30s"
+      - "-lakehouse.insert.flush-interval=120s"
+      - "-lakehouse.query.file-workers=16"
+      - "-lakehouse.pmeta.enabled=true"
+      - "-lakehouse.pmeta.always-sketch-fields=trace_id,span_id"
+      - "-lakehouse.cache.memory-mb=512"
+      - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
+      - "-lakehouse.cache.disk-max-mb=2048"
+      - "-lakehouse.cache.warmup-partitions=6"
+      - "-lakehouse.cache.warmup-max-files=500"
+      - "-lakehouse.compaction.interval=2m"
+      - "-lakehouse.tenant.global-read-header=X-Lakehouse-Global-Read"
+      - "-lakehouse.tenant.global-read-value=lakehouse-e2e-global-key"
+      - "-lakehouse.tenant.orgid-header=X-Scope-OrgID"
+      - "-lakehouse.tenant.auto-register=true"
+      - "-lakehouse.tenant.alias-sync-interval=5s"
+      - "-lakehouse.tenant.alias=acme-corp:1001:0,staging-team:1002:0"
+      - "-lakehouse.tenant.metrics-format=name"
+      - "-lakehouse.tenant.prefix-template={AccountID}/{ProjectID}/"
+      - "-search.latencyOffset=2m"
+      - "-servicegraph.enableTask=true"
+      - "-servicegraph.taskInterval=5m"
+      - "-servicegraph.taskLookbehind=10m"
+      - "-servicegraph.taskTimeout=4m"
+      - "-lakehouse.config=/etc/lakehouse/policy.yml"
+      - "-loggerLevel=INFO"
+    volumes:
+      - lakehouse-cache-traces:/data/lakehouse
+      - ./lakehouse-cluster-config-traces.yml:/etc/lakehouse/policy.yml:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/lakehouse-traces", "healthcheck", "http://localhost:10428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    restart: on-failure
+    # Instance-1 specifics: keep its e2e build context + its 20428 host port.
+    build:
+      context: ../../
+      dockerfile: Dockerfile.traces
+    ports:
+      - "20428:10428"
+
+  # Traces instance 2 — reuses the cluster base; distinct port + AZ + cache.
+  lakehouse-traces-2:
+    <<: *traces-cluster-base
+    environment:
+      LAKEHOUSE_AZ: "az-b"
+    ports:
+      - "20429:10428"
+    volumes:
+      - lakehouse-cache-traces-2:/data/lakehouse
+      - ./lakehouse-cluster-config-traces.yml:/etc/lakehouse/policy.yml:ro
+
+  # Traces instance 3 — reuses the cluster base; distinct port + AZ + cache.
+  lakehouse-traces-3:
+    <<: *traces-cluster-base
+    environment:
+      LAKEHOUSE_AZ: "az-c"
+    ports:
+      - "20430:10428"
+    volumes:
+      - lakehouse-cache-traces-3:/data/lakehouse
+      - ./lakehouse-cluster-config-traces.yml:/etc/lakehouse/policy.yml:ro
+
 volumes:
   lakehouse-cache-logs-2: {}
   lakehouse-cache-logs-3: {}
+  lakehouse-cache-traces-2: {}
+  lakehouse-cache-traces-3: {}
