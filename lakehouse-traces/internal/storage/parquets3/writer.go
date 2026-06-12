@@ -373,6 +373,7 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 		MinTimeNs:         minTimeNs,
 		MaxTimeNs:         maxTimeNs,
 		RawBytes:          result.RawBytes,
+		ColumnBytes:       result.ColumnBytes,
 		SchemaFingerprint: schemaFingerprint(w.mode),
 		Labels:            labels,
 		LabelAggregates:   schema.ExtractLogLabelAggregates(rows),
@@ -454,6 +455,7 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 		MinTimeNs:         minTimeNs,
 		MaxTimeNs:         maxTimeNs,
 		RawBytes:          result.RawBytes,
+		ColumnBytes:       result.ColumnBytes,
 		SchemaFingerprint: schemaFingerprint(w.mode),
 		Labels:            labels2,
 		LabelAggregates:   schema.ExtractTraceLabelAggregates(rows),
@@ -485,6 +487,40 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 type flushResult struct {
 	Data     []byte
 	RawBytes int64
+	// ColumnBytes is per-column compressed bytes from the file footer (column
+	// name -> bytes, summed across row groups). Aggregated over the manifest's
+	// files it yields the per-field on-S3 storage footprint.
+	ColumnBytes map[string]int64
+}
+
+// columnBytesFromFooter reads the just-written Parquet footer and returns the
+// total compressed bytes each top-level column occupies (summed across row
+// groups). Cheap: OpenFile parses only the footer already in memory; no column
+// data is read. Returns nil on any error so the flush degrades to "no per-column
+// sizes" rather than failing.
+func columnBytesFromFooter(data []byte) map[string]int64 {
+	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil
+	}
+	md := f.Metadata()
+	if md == nil || len(md.RowGroups) == 0 {
+		return nil
+	}
+	out := make(map[string]int64)
+	for i := range md.RowGroups {
+		for j := range md.RowGroups[i].Columns {
+			cm := md.RowGroups[i].Columns[j].MetaData
+			if len(cm.PathInSchema) == 0 {
+				continue
+			}
+			out[cm.PathInSchema[0]] += cm.TotalCompressedSize
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func zstdLevel(level int) zstd.Level {
@@ -539,9 +575,11 @@ func writeLogsParquet(rows []schema.LogRow, rowGroupSize int, compressionLevel i
 	if err := writer.Close(); err != nil {
 		return nil, err
 	}
+	logData := buf.Bytes()
 	return &flushResult{
-		Data:     buf.Bytes(),
-		RawBytes: estimateRawBytesLogs(rows),
+		Data:        logData,
+		RawBytes:    estimateRawBytesLogs(rows),
+		ColumnBytes: columnBytesFromFooter(logData),
 	}, nil
 }
 
@@ -593,9 +631,11 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 	if err := writer.Close(); err != nil {
 		return nil, err
 	}
+	traceData := buf.Bytes()
 	return &flushResult{
-		Data:     buf.Bytes(),
-		RawBytes: estimateRawBytesTraces(rows),
+		Data:        traceData,
+		RawBytes:    estimateRawBytesTraces(rows),
+		ColumnBytes: columnBytesFromFooter(traceData),
 	}, nil
 }
 
