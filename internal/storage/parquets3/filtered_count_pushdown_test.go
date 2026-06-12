@@ -79,10 +79,21 @@ func TestCountByPushdownField_Filtered(t *testing.T) {
 		{`error | stats count()`, nil, ""},
 		// unfiltered single-field — the original gate, unchanged
 		{`* | stats by (service.name) count()`, []string{"service.name"}, "service.name"},
+		// RETRIEVAL queries must NOT engage the synthetic-agg path — they need
+		// every column, so synthetic {field,_time} rows would blank out _msg and
+		// all other fields. A bare filter, `| limit`, `| sort` lack a reducing
+		// pipe → "" (fall through to the real scan).
+		{`service.name:api-gateway`, nil, ""},                  // bare filter (drilldown/explore retrieval)
+		{`service.name:api-gateway | limit 5`, nil, ""},        // limited retrieval
+		{`deployment.environment:production | limit 100`, nil, ""},
+		{`service.name:api-gateway | sort by (_time)`, nil, ""}, // sorted retrieval
+		// a column-selecting pipe IS sound (output reduces to the field)
+		{`service.name:api-gateway | fields service.name`, []string{"service.name"}, "service.name"},
+		{`service.name:api-gateway | uniq by (service.name)`, []string{"service.name"}, "service.name"},
 	}
 	for _, c := range cases {
 		f := parseF(t, c.q)
-		got := countByPushdownField(c.pipeFields, f)
+		got := countByPushdownField(c.q, c.pipeFields, f)
 		if got != c.want {
 			t.Errorf("%q (pipeFields=%v): got %q want %q", c.q, c.pipeFields, got, c.want)
 		}

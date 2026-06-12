@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Retrieval queries that filter on a dedicated column no longer return blank rows (empty `_msg`, missing fields).** The manifest count-pushdown fast path (`countByPushdownField`) fired for ANY single-field-filtered query and served synthetic `{field,_time}` rows from the per-partition label aggregate — sound for an aggregation that reduces to that field (`| stats count()`, `| uniq`, `| top`, `| fields`), but WRONG for a full-row retrieval (`service.name:X`, `deployment.environment:Y`, `… | limit N`), which needs every column. The result was rows with only the filtered dedicated column populated and an empty body — e.g. `{"_msg":"","deployment.environment":"production"}` in Drilldown/Explore and via the loki-vl-proxy. The path was latent until the dedicated-columns work gave promoted columns their own label aggregates (which the synthetic path serves from). The fast path now engages only when the query carries a column-selecting pipe; retrievals fall through to the real scan and return full rows. Both logs and traces modules; regression cases added.
+
 ## [0.101.1] - 2026-06-12
 
 ### Added
