@@ -36,7 +36,17 @@ func TestComputeCompactionStats(t *testing.T) {
 		SchemaFingerprint: "v2",
 	})
 
-	st := m.ComputeCompactionStats("v2")
+	zstd := func(level int) int {
+		switch {
+		case level <= 0:
+			return 3
+		case level == 1:
+			return 7
+		default:
+			return 11
+		}
+	}
+	st := m.ComputeCompactionStats("v2", zstd)
 
 	if st.TotalFiles != 6 {
 		t.Errorf("TotalFiles=%d, want 6", st.TotalFiles)
@@ -85,6 +95,24 @@ func TestComputeCompactionStats(t *testing.T) {
 	}
 	if byLevel[0].Files != 1 {
 		t.Errorf("L0 file count = %d, want 1", byLevel[0].Files)
+	}
+
+	// Enrichments: zstd per level + per-candidate before/after + next-level.
+	if byLevel[2].ConfiguredZstd != 11 {
+		t.Errorf("L2 configured_zstd = %d, want 11", byLevel[2].ConfiguredZstd)
+	}
+	if byLevel[0].ConfiguredZstd != 3 {
+		t.Errorf("L0 configured_zstd = %d, want 3", byLevel[0].ConfiguredZstd)
+	}
+	top := st.Candidates[0]
+	if top.NextLevel != top.MaxLevel+1 {
+		t.Errorf("next_level = %d, want %d", top.NextLevel, top.MaxLevel+1)
+	}
+	if top.NextLevelZstd != 11 {
+		t.Errorf("next_level_zstd = %d, want 11 (output level 3 → default 11)", top.NextLevelZstd)
+	}
+	if top.EstimatedBytesAfter != top.Bytes-top.EstimatedSavingsBytes {
+		t.Errorf("estimated_bytes_after = %d, want %d", top.EstimatedBytesAfter, top.Bytes-top.EstimatedSavingsBytes)
 	}
 
 	// CompactionCandidates() returns the same prioritized work-list.

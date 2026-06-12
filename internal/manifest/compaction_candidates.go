@@ -23,6 +23,10 @@ type LevelStats struct {
 	RawBytes         int64   `json:"raw_bytes"`
 	AvgFileBytes     int64   `json:"avg_file_bytes"`
 	CompressionRatio float64 `json:"compression_ratio"` // raw/compressed
+	// ConfiguredZstd is the zstd level the compactor applies when WRITING this output
+	// level (CompactionConfig.CompressionLevelByOutputLevel) — higher levels compress
+	// harder. 0 when the schedule is unknown.
+	ConfiguredZstd int `json:"configured_zstd"`
 }
 
 // CompactionCandidate flags a partition worth (re)compacting beyond the normal level
@@ -38,10 +42,17 @@ type CompactionCandidate struct {
 	StaleFiles int `json:"stale_files"`
 	// MaxLevelFiles: file count at the top level. The level policy only merges L0/L1,
 	// so 2+ files stuck at >= L2 sit fragmented until a forced recompaction.
-	MaxLevelFiles         int      `json:"max_level_files"`
-	Bytes                 int64    `json:"bytes"`
-	EstimatedSavingsBytes int64    `json:"estimated_savings_bytes"`
-	Reasons               []string `json:"reasons"`
+	MaxLevelFiles         int   `json:"max_level_files"`
+	Bytes                 int64 `json:"bytes"`
+	EstimatedSavingsBytes int64 `json:"estimated_savings_bytes"`
+	// EstimatedBytesAfter is the partition's approximate size AFTER the next
+	// recompaction (Bytes − EstimatedSavingsBytes) — the before/after for the UI.
+	EstimatedBytesAfter int64 `json:"estimated_bytes_after"`
+	// NextLevel is the output level a recompaction would write (MaxLevel+1) and
+	// NextLevelZstd the zstd it would apply there — shows WHY recompaction helps.
+	NextLevel     int      `json:"next_level"`
+	NextLevelZstd int      `json:"next_level_zstd"`
+	Reasons       []string `json:"reasons"`
 }
 
 // CompactionStats is the overall compaction-efficiency picture for the stats UI:
@@ -71,8 +82,9 @@ type CompactionStats struct {
 // ComputeCompactionStats scans the manifest once and returns the full efficiency
 // picture plus the prioritized candidate work-list. currentFP is the fingerprint new
 // files use (parquets3.CurrentSchemaFingerprint); empty disables the stale check.
-// Read-only; safe from an HTTP handler.
-func (m *Manifest) ComputeCompactionStats(currentFP string) CompactionStats {
+// zstdForLevel resolves the configured zstd level per output level (nil → 0 in the
+// zstd fields). Read-only; safe from an HTTP handler.
+func (m *Manifest) ComputeCompactionStats(currentFP string, zstdForLevel func(level int) int) CompactionStats {
 	var st CompactionStats
 	levelAgg := map[int]*LevelStats{}
 
@@ -134,6 +146,11 @@ func (m *Manifest) ComputeCompactionStats(currentFP string) CompactionStats {
 		st.StaleSchemaBytes += staleBytes
 
 		if len(reasons) > 0 {
+			next := maxLevel + 1
+			nz := 0
+			if zstdForLevel != nil {
+				nz = zstdForLevel(next)
+			}
 			st.Candidates = append(st.Candidates, CompactionCandidate{
 				Partition:             partition,
 				Files:                 len(files),
@@ -142,6 +159,9 @@ func (m *Manifest) ComputeCompactionStats(currentFP string) CompactionStats {
 				MaxLevelFiles:         levelCounts[maxLevel],
 				Bytes:                 partBytes,
 				EstimatedSavingsBytes: savings,
+				EstimatedBytesAfter:   partBytes - savings,
+				NextLevel:             next,
+				NextLevelZstd:         nz,
 				Reasons:               reasons,
 			})
 		}
@@ -153,6 +173,9 @@ func (m *Manifest) ComputeCompactionStats(currentFP string) CompactionStats {
 		}
 		if ls.Bytes > 0 {
 			ls.CompressionRatio = float64(ls.RawBytes) / float64(ls.Bytes)
+		}
+		if zstdForLevel != nil {
+			ls.ConfiguredZstd = zstdForLevel(ls.Level)
 		}
 		st.ByLevel = append(st.ByLevel, *ls)
 	}
@@ -178,5 +201,5 @@ func (m *Manifest) ComputeCompactionStats(currentFP string) CompactionStats {
 // CompactionCandidates returns just the prioritized candidate work-list — the subset
 // of ComputeCompactionStats the forced-recompaction trigger consumes.
 func (m *Manifest) CompactionCandidates(currentFP string) []CompactionCandidate {
-	return m.ComputeCompactionStats(currentFP).Candidates
+	return m.ComputeCompactionStats(currentFP, nil).Candidates
 }

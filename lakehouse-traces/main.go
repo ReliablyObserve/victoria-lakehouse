@@ -1190,6 +1190,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			BloomColumns:             cfg.ActiveBloomColumns(),
 			BreakdownLabels:          cfg.Stats.BreakdownLabels,
 			CurrentSchemaFingerprint: parquets3.CurrentSchemaFingerprint(cfg.Mode),
+			CompactionConfig:         cfg.Compaction,
 		})
 		statsAPI.Register(mux)
 	}

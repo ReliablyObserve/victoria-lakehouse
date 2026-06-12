@@ -34,6 +34,9 @@ type APIConfig struct {
 	// files carrying any other fingerprint as stale (re-promotion targets). Empty
 	// disables the stale-schema check.
 	CurrentSchemaFingerprint string
+	// CompactionConfig supplies the per-output-level zstd schedule the compaction-hints
+	// endpoint reports (which zstd each level is written with, and the next level's).
+	CompactionConfig config.CompactionConfig
 }
 
 // API serves JSON endpoints for tenant statistics, cost, cardinality, etc.
@@ -72,7 +75,8 @@ func (a *API) handleCompaction(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(manifest.CompactionStats{})
 		return
 	}
-	_ = json.NewEncoder(w).Encode(a.cfg.Manifest.ComputeCompactionStats(a.cfg.CurrentSchemaFingerprint))
+	_ = json.NewEncoder(w).Encode(a.cfg.Manifest.ComputeCompactionStats(
+		a.cfg.CurrentSchemaFingerprint, a.cfg.CompactionConfig.CompressionLevelForOutput))
 }
 
 // ---- Response types ----
