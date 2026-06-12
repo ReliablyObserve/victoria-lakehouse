@@ -483,6 +483,12 @@ func run(cfg *config.Config, addr string) {
 	if cfg.Stats.Enabled {
 		statsAgg = stats.NewStatsAggregate()
 		store.Manifest().SetChangeObserver(statsAgg.OnAdd, statsAgg.OnRemove)
+		// Cold-start accelerator: seed from the S3 sidecar so the stats API can
+		// serve sizes before the warm-load Recompute finishes (which then corrects
+		// any staleness). Missing object on a brand-new bucket is expected.
+		if err := statsAgg.LoadFromS3(context.Background(), store.Pool(), cfg.AutoPrefix()+stats.AggregateSidecarKeySuffix); err == nil {
+			logger.Infof("loaded stats-aggregate sidecar from S3 (cold-start cache)")
+		}
 	}
 
 	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister, policy, statsAgg)
@@ -1366,6 +1372,9 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 			// change-observer; this one sweep populates it on startup.
 			if statsAgg != nil {
 				statsAgg.Recompute(store.Manifest().AllFiles())
+				if err := statsAgg.SaveToS3(ctx, store.Pool(), cfg.AutoPrefix()+stats.AggregateSidecarKeySuffix); err != nil {
+					logger.Warnf("failed to persist stats-aggregate sidecar: %s", err)
+				}
 			}
 
 			if cfg.Cache.WarmupPartitions > 0 || cfg.Cache.WarmupMaxFiles > 0 {
@@ -1461,6 +1470,7 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 				// that bypassed the per-file change observer.
 				if statsAgg != nil {
 					statsAgg.Recompute(m.AllFiles())
+					_ = statsAgg.SaveToS3(rctx, store.Pool(), cfg.AutoPrefix()+stats.AggregateSidecarKeySuffix)
 				}
 			}
 			rcancel()

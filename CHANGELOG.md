@@ -46,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Performance
 
 - **Pure-buffer query fast path:** unflushed in-memory windows are aggregated natively, avoiding unnecessary work for stats/count queries over not-yet-flushed data.
+- **StatsAggregate S3 sidecar cache.** The per-field/per-tenant size aggregate is persisted to an S3 sidecar (`_meta/stats-aggregate.json`) after each reconcile (warm + refresh) and loaded on startup, so a fresh/restarted instance serves size stats from the cache immediately instead of waiting on the warm-load manifest rescan (a subsequent `Recompute` corrects any staleness). Wired for both logs and traces.
 
 ## [0.90.0] - 2026-06-11
 

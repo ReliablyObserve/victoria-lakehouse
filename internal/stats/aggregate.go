@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"sync"
@@ -245,4 +246,38 @@ func (a *StatsAggregate) Load(data []byte) error {
 	a.totFiles = s.TotFiles
 	a.generation = s.Generation
 	return nil
+}
+
+// AggregateSidecarKeySuffix is the S3 key suffix (appended to the deployment
+// auto-prefix) for the StatsAggregate cold-start sidecar object.
+const AggregateSidecarKeySuffix = "_meta/stats-aggregate.json"
+
+// S3Pool is the minimal S3 surface the aggregate sidecar cache needs (satisfied
+// by parquets3 store.Pool()).
+type S3Pool interface {
+	Upload(ctx context.Context, key string, data []byte) error
+	Download(ctx context.Context, key string) ([]byte, error)
+}
+
+// SaveToS3 persists the aggregate snapshot to its sidecar object so a fresh
+// instance can warm its size stats without rescanning the whole manifest. Called
+// after each Recompute (warm + refresh) — the snapshot is small (per-field +
+// per-tenant sums, not per-file).
+func (a *StatsAggregate) SaveToS3(ctx context.Context, pool S3Pool, key string) error {
+	data, err := a.Marshal()
+	if err != nil {
+		return err
+	}
+	return pool.Upload(ctx, key, data)
+}
+
+// LoadFromS3 installs the sidecar snapshot if present (cold-start accelerator).
+// A subsequent Recompute against the warm-loaded manifest corrects any staleness,
+// so a missing/old object is harmless — callers log-and-continue on error.
+func (a *StatsAggregate) LoadFromS3(ctx context.Context, pool S3Pool, key string) error {
+	data, err := pool.Download(ctx, key)
+	if err != nil {
+		return err
+	}
+	return a.Load(data)
 }
