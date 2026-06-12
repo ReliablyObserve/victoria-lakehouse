@@ -70,7 +70,14 @@ type FileInfo struct {
 	// opening Parquet (PERF-2). Populated at flush, summed across files at
 	// compaction, and persisted in the snapshot. Capped per field at write time.
 	LabelAggregates map[string]map[string]int64 `json:"label_aggregates,omitempty"`
-	StorageClass    string                      `json:"storage_class,omitempty"`
+	// ColumnBytes is column-name -> total compressed bytes that column occupies in
+	// this Parquet file (summed across row groups, from the footer). Summed across
+	// files it gives the per-field on-S3 storage footprint; because it rides the
+	// manifest it is cluster-wide, snapshot-persisted, and re-derived by the
+	// compactor (so it tracks the post-compaction truth, never drifting like the
+	// cumulative registry). Captured at flush + recomputed on compaction.
+	ColumnBytes  map[string]int64 `json:"column_bytes,omitempty"`
+	StorageClass string           `json:"storage_class,omitempty"`
 	ClassCheckedAt  time.Time                   `json:"class_checked_at,omitempty"`
 	ClassSource     string                      `json:"class_source,omitempty"`
 	CreatedAt       time.Time                   `json:"created_at,omitempty"`
