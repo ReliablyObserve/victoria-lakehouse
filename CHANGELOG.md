@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.100.0] - 2026-06-12
+
 ### Added
 
 - **Accurate Cardinality Explorer backed by durable pmeta state.** The Stats Cardinality Explorer now reads distinct counts from the pmeta catalog facet / persisted high-card HLL (write-fed, compaction-safe) instead of transient in-memory taps, so reported cardinality is accurate and survives restart and compaction. `has_bloom` is reported from the written schema bloom set.
