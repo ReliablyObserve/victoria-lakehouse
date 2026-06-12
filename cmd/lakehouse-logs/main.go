@@ -358,6 +358,11 @@ func run(cfg *config.Config, addr string) {
 
 	// --- Tenant stats ---
 	registry := stats.NewTenantRegistry(hostname())
+	// Age out dead nodes: the node id is the ephemeral container hostname, so
+	// stale entries loaded from the shared S3 snapshot must expire from the fleet
+	// view (/stats/instances + the cluster-wide Overview sum) once they stop
+	// gossiping. Self is always kept fresh by the per-tick SetNodeMeta.
+	registry.SetNodeMetaTTL(cfg.Stats.NodeMetaTTL)
 
 	if w := store.Writer(); w != nil {
 		fallback := writerTenantKey

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -611,5 +612,104 @@ func TestAPIInstancesEndpointSyntheticSelf(t *testing.T) {
 	}
 	if self.MetaResidentBytes != 555 || self.MetaDiskBytes != 666 || self.MetaS3Bytes != 777 {
 		t.Errorf("synthesised self = %+v, want resident=555 disk=666 s3=777", self)
+	}
+}
+
+// TestNodeMetaTTLAgesOutStaleNodes (BUG 2) verifies that once a TTL is set,
+// NodeMetaAll drops a peer whose last gossip is older than the window — the
+// dead-node-from-snapshot case — while keeping a freshly-gossiped peer and
+// always keeping self (even if self's own stamp is artificially old).
+func TestNodeMetaTTLAgesOutStaleNodes(t *testing.T) {
+	reg := NewTenantRegistry("self")
+	reg.SetNodeMetaTTL(90 * time.Second)
+
+	now := time.Now()
+
+	// A fresh peer (gossiped just now) and a dead peer (last seen 10m ago, e.g.
+	// loaded from a stale shared S3 snapshot). Inject directly with explicit
+	// LastUpdated so the test is deterministic.
+	reg.mu.Lock()
+	reg.nodeMeta["live-peer"] = NodeMeta{ResidentBytes: 100, DiskBytes: 200, Gen: 1, LastUpdated: now}
+	reg.nodeMeta["dead-peer"] = NodeMeta{ResidentBytes: 999, DiskBytes: 999, Gen: 1, LastUpdated: now.Add(-10 * time.Minute)}
+	// Self with an OLD stamp — must still be returned (self is authoritative).
+	reg.nodeMeta["self"] = NodeMeta{ResidentBytes: 50, DiskBytes: 60, Gen: 1, LastUpdated: now.Add(-10 * time.Minute)}
+	reg.mu.Unlock()
+
+	all := reg.NodeMetaAll()
+	if _, ok := all["dead-peer"]; ok {
+		t.Error("dead-peer should have aged out of NodeMetaAll past the TTL")
+	}
+	if _, ok := all["live-peer"]; !ok {
+		t.Error("live-peer (fresh gossip) must remain in NodeMetaAll")
+	}
+	if _, ok := all["self"]; !ok {
+		t.Error("self must ALWAYS be returned regardless of TTL")
+	}
+	if len(all) != 2 {
+		t.Errorf("NodeMetaAll = %d entries, want 2 (self + live-peer)", len(all))
+	}
+
+	// With the TTL disabled (0), the dead peer is visible again — proving the
+	// filter is what excludes it (and preserving the legacy no-TTL behaviour).
+	reg.SetNodeMetaTTL(0)
+	if len(reg.NodeMetaAll()) != 3 {
+		t.Errorf("TTL=0 NodeMetaAll = %d, want 3 (no filtering)", len(reg.NodeMetaAll()))
+	}
+}
+
+// TestAPIOverviewClusterWideMetaFootprint (REQUEST 3) verifies /stats/overview
+// reports meta_resident_bytes / meta_disk_bytes as the SUM across all live
+// instances' gossiped NodeMeta, and falls back to the local funcs when the
+// registry has no gossiped entries.
+func TestAPIOverviewClusterWideMetaFootprint(t *testing.T) {
+	reg := NewTenantRegistry("node-A")
+	// Self + two gossiped peers.
+	reg.SetNodeMeta(1000, 2000) // self (node-A)
+	reg.Merge(&TenantDelta{NodeID: "node-B", NodeMeta: &NodeMeta{ResidentBytes: 3000, DiskBytes: 4000, Gen: 1}})
+	reg.Merge(&TenantDelta{NodeID: "node-C", NodeMeta: &NodeMeta{ResidentBytes: 500, DiskBytes: 700, Gen: 1}})
+
+	api := NewAPI(APIConfig{
+		Registry: reg,
+		Mode:     "logs",
+		Bucket:   "test-bucket",
+		// Local funcs return THIS node's values; the cluster sum must NOT equal
+		// these — it must be the fleet total.
+		MetaResidentBytes: func() int64 { return 1000 },
+		MetaDiskBytes:     func() int64 { return 2000 },
+		MetaS3Bytes:       func() int64 { return 9 },
+	})
+
+	var resp OverviewResponse
+	rec := doGet(t, api, "/lakehouse/api/v1/stats/overview")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// 1000 + 3000 + 500 = 4500 ; 2000 + 4000 + 700 = 6700.
+	if resp.MetaResidentBytes != 4500 {
+		t.Errorf("meta_resident_bytes = %d, want 4500 (cluster sum, not single node 1000)", resp.MetaResidentBytes)
+	}
+	if resp.MetaDiskBytes != 6700 {
+		t.Errorf("meta_disk_bytes = %d, want 6700 (cluster sum)", resp.MetaDiskBytes)
+	}
+
+	// Fallback: a registry with NO node-meta recorded falls back to local funcs.
+	regEmpty := NewTenantRegistry("node-solo")
+	apiFallback := NewAPI(APIConfig{
+		Registry:          regEmpty,
+		Mode:              "logs",
+		Bucket:            "test-bucket",
+		MetaResidentBytes: func() int64 { return 111 },
+		MetaDiskBytes:     func() int64 { return 222 },
+	})
+	var resp2 OverviewResponse
+	rec2 := doGet(t, apiFallback, "/lakehouse/api/v1/stats/overview")
+	if err := json.Unmarshal(rec2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("decode fallback: %v", err)
+	}
+	if resp2.MetaResidentBytes != 111 || resp2.MetaDiskBytes != 222 {
+		t.Errorf("fallback footprint = resident:%d disk:%d, want 111/222 (local funcs)", resp2.MetaResidentBytes, resp2.MetaDiskBytes)
 	}
 }

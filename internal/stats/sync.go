@@ -114,8 +114,13 @@ func NewSyncPusher(cfg SyncPusherConfig) *SyncPusher {
 func (sp *SyncPusher) PushDelta(ctx context.Context) error {
 	delta := sp.cfg.Registry.BuildDelta(sp.cfg.Registry.LastPushGen())
 
-	// No changes — nothing to send.
-	if len(delta.Tenants) == 0 {
+	// Nothing to send only when there are NO tenant changes AND no node-meta to
+	// gossip. Once tenant stats converge (a steady multi-node cluster serving the
+	// same data) delta.Tenants is empty every tick — but BuildDelta still
+	// piggy-backs this node's fresh NodeMeta. Skipping on empty tenants would
+	// stall the fleet-metadata gossip (Phase D / staleness heartbeat), so push
+	// whenever NodeMeta is present.
+	if len(delta.Tenants) == 0 && delta.NodeMeta == nil {
 		return nil
 	}
 

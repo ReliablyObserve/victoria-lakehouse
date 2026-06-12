@@ -62,19 +62,22 @@ lakehouse:
         cardinality:
           max_streams: 50000
 
-# =========================================================================
-# Cluster gossip (3-instance multi-node verification).
-# Added on top of the e2e config (every key above is preserved verbatim).
-# These have NO CLI flags — they MUST live in the config YAML:
-#   - discovery.peer_headless_service: a DNS name that, in Docker, is a
-#     shared network ALIAS resolving (embedded DNS) to ALL containers
-#     carrying it. Each logs instance resolves it to the other two (+
-#     self; self-gossip is idempotent/harmless) and gossips fleet meta
-#     + the tenant CRDT to them.
-#   - peer.auth_key: the shared gossip secret. MUST be identical on every
-#     instance or peer auth rejects the push.
-# =========================================================================
-discovery:
-  peer_headless_service: lakehouse-logs-cluster
-peer:
-  auth_key: cluster-gossip-secret
+  # =======================================================================
+  # Cluster gossip (3-instance multi-node verification).
+  # Added on top of the e2e config (every key above is preserved verbatim).
+  # These have NO CLI flags — they MUST live in the config YAML, and MUST be
+  # nested under the `lakehouse:` root: LoadWithMode unmarshals the file into
+  # `struct { Lakehouse Config }`, so any top-level (un-nested) key is silently
+  # dropped — which is exactly why the first cut never gossiped.
+  #   - discovery.peer_headless_service: a DNS name that, in Docker, is a
+  #     shared network ALIAS resolving (embedded DNS) to ALL containers
+  #     carrying it. Each logs instance resolves it to the other two (+
+  #     self; self-gossip is idempotent/harmless) and gossips fleet meta
+  #     + the tenant CRDT to them.
+  #   - peer.auth_key: the shared gossip secret. MUST be identical on every
+  #     instance or peer auth rejects the push.
+  # =======================================================================
+  discovery:
+    peer_headless_service: lakehouse-logs-cluster
+  peer:
+    auth_key: cluster-gossip-secret

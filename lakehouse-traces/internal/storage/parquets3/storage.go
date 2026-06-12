@@ -1117,7 +1117,13 @@ func (s *Storage) RefreshDiscovery(ctx context.Context) error {
 	if _, err := s.discovery.PollPartitionList(ctx); err != nil {
 		logger.Warnf("poll partition list: %s", err)
 	}
-	if s.peerCache != nil || s.bufferBridge != nil {
+	// Resolve the peer ring whenever a peer headless service is configured —
+	// NOT only when peerCache/bufferBridge happen to be built. DiscoverPeers
+	// populates discovery.GetPeers(), which the stats SyncPusher and Phase D
+	// fleet-metadata gossip read directly (they don't go through peerCache); if
+	// this were gated on the cache, a config with peering set but no cache built
+	// would silently never gossip. The cache/bridge updates below stay nil-guarded.
+	if s.discovery.HasPeerService() {
 		peers, err := s.discovery.DiscoverPeers(ctx)
 		if err != nil {
 			return fmt.Errorf("discover peers: %w", err)

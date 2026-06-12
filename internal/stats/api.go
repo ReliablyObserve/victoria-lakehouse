@@ -814,17 +814,43 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 		RetentionDefault:    a.cfg.RetentionDefault,
 		RetentionRules:      a.cfg.RetentionRules,
 	}
-	if a.cfg.MetaResidentBytes != nil {
-		resp.MetaResidentBytes = a.cfg.MetaResidentBytes()
-	}
-	if a.cfg.MetaDiskBytes != nil {
-		resp.MetaDiskBytes = a.cfg.MetaDiskBytes()
-	}
+	// Metadata footprint (RAM + disk) is CLUSTER-WIDE: sum the gossiped per-node
+	// footprints across all LIVE instances (NodeMetaAll already drops stale dead
+	// nodes via the TTL), so the Overview tiles reflect the whole fleet — the same
+	// scope S3 metadata already has. The per-node breakdown stays in the Fleet
+	// instances table (/stats/instances). Fall back to the local funcs when there
+	// is no registry or no gossiped entries yet (single-node / pre-first-tick).
+	resp.MetaResidentBytes, resp.MetaDiskBytes = a.clusterMetaFootprint()
 	if a.cfg.MetaS3Bytes != nil {
 		resp.MetaS3Bytes = a.cfg.MetaS3Bytes()
 	}
 
 	writeJSON(w, resp)
+}
+
+// clusterMetaFootprint returns the fleet-wide metadata RAM + disk footprint as
+// the sum over every live node's gossiped NodeMeta (stale nodes already excluded
+// by NodeMetaAll's TTL). When no registry is wired or no node-meta has been
+// recorded yet, it falls back to this node's local funcs so a single-node or
+// just-started deployment still reports a non-zero value.
+func (a *API) clusterMetaFootprint() (resident, disk int64) {
+	if a.cfg.Registry != nil {
+		nodeMeta := a.cfg.Registry.NodeMetaAll()
+		if len(nodeMeta) > 0 {
+			for _, nm := range nodeMeta {
+				resident += nm.ResidentBytes
+				disk += nm.DiskBytes
+			}
+			return resident, disk
+		}
+	}
+	if a.cfg.MetaResidentBytes != nil {
+		resident = a.cfg.MetaResidentBytes()
+	}
+	if a.cfg.MetaDiskBytes != nil {
+		disk = a.cfg.MetaDiskBytes()
+	}
+	return resident, disk
 }
 
 // handleInstances returns the per-instance metadata breakdown: one row per

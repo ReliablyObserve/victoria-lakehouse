@@ -736,6 +736,13 @@ type StatsConfig struct {
 	S3InventoryBucket           string                `yaml:"s3_inventory_bucket"`
 	HeadObjectSampleInterval    time.Duration         `yaml:"headobject_sample_interval"`
 	HeadObjectMaxPerRefresh     int                   `yaml:"headobject_max_per_refresh"`
+	// NodeMetaTTL bounds how long a peer's gossiped metadata footprint stays in
+	// the fleet view (/stats/instances + the cluster-wide Overview sum) without a
+	// refresh. The node id is the (ephemeral) container hostname, so without this
+	// dead nodes loaded from the shared S3 snapshot would accumulate forever.
+	// Defaults to 3× PushInterval (so a single missed gossip never evicts a live
+	// peer); set explicitly to override. 0 disables the staleness filter.
+	NodeMetaTTL time.Duration `yaml:"node_meta_ttl"`
 }
 
 type UIConfig struct {
@@ -1131,11 +1138,16 @@ func Default() *Config {
 		},
 
 		Stats: StatsConfig{
-			Enabled:                     true,
-			PushInterval:                30 * time.Second,
-			PushCompression:             true,
-			SnapshotInterval:            5 * time.Minute,
-			SnapshotPrefix:              "_meta/tenant-stats",
+			Enabled:          true,
+			PushInterval:     30 * time.Second,
+			PushCompression:  true,
+			SnapshotInterval: 5 * time.Minute,
+			SnapshotPrefix:   "_meta/tenant-stats",
+			// 3× PushInterval: a live peer re-gossips every PushInterval, so a
+			// node is only aged out after ~3 consecutive missed pushes — long
+			// enough to ride out a transient hiccup, short enough that a recreated
+			// container's old hostname disappears within a couple of minutes.
+			NodeMetaTTL:                 90 * time.Second,
 			MaxDeltaCount:               1000,
 			MetricsCardinalityLimit:     100,
 			CardinalityWarningThreshold: 10000,
@@ -1982,6 +1994,9 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Stats.SnapshotPrefix != "" {
 		base.Stats.SnapshotPrefix = overlay.Stats.SnapshotPrefix
+	}
+	if overlay.Stats.NodeMetaTTL > 0 {
+		base.Stats.NodeMetaTTL = overlay.Stats.NodeMetaTTL
 	}
 	if overlay.Stats.MetaBucket != "" {
 		base.Stats.MetaBucket = overlay.Stats.MetaBucket

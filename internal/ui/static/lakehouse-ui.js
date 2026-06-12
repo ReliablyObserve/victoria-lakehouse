@@ -184,13 +184,15 @@
       });
       container.appendChild(cards);
 
-      // Metadata footprint \u2014 pmeta RAM + disk cache are THIS node; S3 is cluster-wide.
+      // Metadata footprint \u2014 RAM + disk cache are now summed across all LIVE
+      // instances (cluster-wide), matching S3 which was already cluster-wide. The
+      // per-node breakdown lives in the Fleet instances table below.
       if (ov.meta_resident_bytes || ov.meta_disk_bytes || ov.meta_s3_bytes) {
         container.appendChild(el("div", { className: "lh-section-title", textContent: "Metadata footprint" }));
         var metaCards = el("div", { className: "lh-cards" });
         [
-          ["Metadata RAM (node)", fmtBytes(ov.meta_resident_bytes || 0)],
-          ["Disk cache (node)", fmtBytes(ov.meta_disk_bytes || 0)],
+          ["Metadata RAM (cluster)", fmtBytes(ov.meta_resident_bytes || 0)],
+          ["Disk cache (cluster)", fmtBytes(ov.meta_disk_bytes || 0)],
           ["Metadata on S3 (cluster)", fmtBytes(ov.meta_s3_bytes || 0)],
         ].forEach(function (d) {
           metaCards.appendChild(el("div", { className: "lh-card" }, [
