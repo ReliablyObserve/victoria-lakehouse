@@ -160,6 +160,7 @@ var (
 	tenantMetricsFormat     = flag.String("lakehouse.tenant.metrics-format", "", "Tenant metrics label format: id, name, both (default: id)")
 	tenantAutoRegister      = flag.Bool("lakehouse.tenant.auto-register", false, "Auto-register unknown X-Scope-OrgID tenants")
 	tenantAliasSyncInterval = flag.Duration("lakehouse.tenant.alias-sync-interval", 0, "Fleet sync interval for runtime aliases (default: 30s)")
+	tenantAliases           = flag.String("lakehouse.tenant.alias", "", "Static tenant aliases: comma-separated orgid:account:project (e.g. acme-corp:1001:0,staging-team:1002:0). Re-applied every startup as the reconstruction baseline; merged with S3-persisted runtime aliases.")
 
 	pmetaEnabled       = flag.Bool("lakehouse.pmeta.enabled", true, "Unified partition-metadata layer (catalog + file-meta + bloom facets). Disabling is a degraded mode: no metadata for new files")
 	pmetaAlwaysSketch  = flag.String("lakehouse.pmeta.always-sketch-fields", "", "Comma-separated id columns to sketch instead of enumerate (e.g. trace_id,span_id)")
@@ -443,6 +444,7 @@ func run(cfg *config.Config, addr string) {
 		logger.Infof("tenant overrides pending alias resolution: %v", pending)
 	}
 	startTenantPolicyRefresh(cfg, policy, stopCh)
+	startTenantAliasPersist(cfg, resolver, persister, stopCh)
 	tenantPolicyHolder = policy
 
 	if cfg.Retention.Enabled {
@@ -768,6 +770,38 @@ func startTenantPolicyRefresh(cfg *config.Config, policy *tenant.PolicyRegistry,
 				return
 			case <-t.C:
 				policy.Refresh()
+			}
+		}
+	}()
+}
+
+// startTenantAliasPersist periodically writes the resolver's full alias set to
+// S3 so runtime-registered (auto-register / fleet-synced) tenants survive a
+// restart. Config aliases reconstruct the baseline every startup; this persists
+// everything else and keeps the S3 snapshot fresh. Saves only on change.
+func startTenantAliasPersist(cfg *config.Config, resolver *tenant.TenantResolver, persister *tenant.S3Persister, stopCh <-chan struct{}) {
+	if resolver == nil || persister == nil || cfg.Tenant.AliasSyncInterval <= 0 {
+		return
+	}
+	go func() {
+		t := time.NewTicker(cfg.Tenant.AliasSyncInterval)
+		defer t.Stop()
+		lastN := -1
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-t.C:
+				aliases := resolver.AllAliases()
+				if len(aliases) == lastN {
+					continue
+				}
+				if err := persister.SaveAliases(aliases); err != nil {
+					logger.Warnf("failed to persist tenant aliases to S3: %s", err)
+					continue
+				}
+				lastN = len(aliases)
+				logger.Infof("persisted %d tenant aliases to S3", len(aliases))
 			}
 		}
 	}()
@@ -1729,6 +1763,29 @@ func applyTenantFlags(t *config.TenantConfig) {
 	}
 	if *tenantAliasSyncInterval > 0 {
 		t.AliasSyncInterval = *tenantAliasSyncInterval
+	}
+	if s := *tenantAliases; s != "" {
+		if t.Aliases == nil {
+			t.Aliases = make(map[string]config.AliasTarget)
+		}
+		for _, entry := range strings.Split(s, ",") {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			parts := strings.Split(entry, ":")
+			if len(parts) != 3 {
+				logger.Warnf("ignoring invalid tenant alias %q (want orgid:account:project)", entry)
+				continue
+			}
+			acct, err1 := strconv.ParseUint(parts[1], 10, 32)
+			proj, err2 := strconv.ParseUint(parts[2], 10, 32)
+			if err1 != nil || err2 != nil {
+				logger.Warnf("ignoring invalid tenant alias %q (account/project must be numeric)", entry)
+				continue
+			}
+			t.Aliases[parts[0]] = config.AliasTarget{AccountID: uint32(acct), ProjectID: uint32(proj)}
+		}
 	}
 }
 

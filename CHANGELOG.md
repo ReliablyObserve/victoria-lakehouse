@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Storage Overview surfaces retention.** The overview shows the configured/applied retention — default keep-duration + override-rule count, or `off` — next to the data range (which moved from a tile into the info row). `/stats/overview` now exposes `retention_enabled` / `retention_default` / `retention_rules` from the global `RetentionConfig`.
 
+- **Tenant aliases are config-mapped, reconstructed, and persisted.** Tenant `org-id ↔ account:project` aliases can be declared statically via `-lakehouse.tenant.alias=orgid:account:project[,...]` — a config baseline re-applied on every startup, so friendly tenant names reconstruct deterministically even if the S3 snapshot is lost. Runtime auto-registered (`X-Scope-OrgID`) aliases are now persisted by a periodic loop (`startTenantAliasPersist`, on the alias-sync interval) that writes the full resolver alias set to the S3 sidecar (`_meta/tenant-aliases.json`) and reloads it on startup — so auto-registered tenant names survive restarts/redeploys instead of vanishing. Wired for both logs and traces.
+
 ### Changed (UI internals)
 
 - **The Lakehouse UI is one shared module.** `internal/ui/static/lakehouse-ui.js` (`LakehouseUI.mount`) is the single render core, used by BOTH the standalone `/lakehouse/ui/` page and the VMUI-embedded Lakehouse tab (`vmui-tab.js` is now only the VMUI integration; `index.html` is a thin host that defines VMUI's theme variables). This eliminates the two duplicate UI implementations that had drifted, so a UI change is made once.
@@ -39,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **vmui Lakehouse tab restore survives the React re-render race.**
 - **Storage Classes panel reconciles with the headline totals.** Per-class files/bytes are derived from the live manifest file set (class age-predicted per file, as the Cost view already does) instead of the registry's cumulative class counters — which are never decremented on compaction and so over-reported (e.g. 1,815 files vs the live 1,425). The class split now sums exactly to Files / Compressed.
 - **Storage Breakdown estimates scale to the live total.** The proportional `estimated_bytes` base uses `LiveAggregate()` — the same total the overview headline shows — instead of the drift-prone cached counters.
+- **Cardinality Explorer Storage column shows real-magnitude bytes.** Per-field storage was badly undercounting (KB vs the GB on-S3 total) because files written before per-column accounting carry no `ColumnBytes` and only newly-flushed files were summed. The column now scales the covered per-field bytes up to the manifest's full on-S3 total (`StatsAggregate.TotalStorage`/`CoveredStorage`), so it reflects real storage immediately and converges to exact as compaction + new flushes backfill `ColumnBytes`.
 
 ### Performance
 
