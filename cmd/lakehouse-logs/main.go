@@ -687,18 +687,19 @@ func setupCompaction(
 	}
 
 	sched := compaction.NewScheduler(compaction.SchedulerConfig{
-		Manifest:         store.Manifest(),
-		Pool:             store.Pool(),
-		Ownership:        ownership,
-		FairShare:        compaction.NewFairShareScheduler(1),
-		Policy:           policy,
-		Prefix:           cfg.AutoPrefix(),
-		Mode:             cfg.Mode,
-		Interval:         cfg.Compaction.Interval,
-		MaxConcurrent:    cfg.Compaction.MaxConcurrent,
-		RowGroupSize:     cfg.Insert.RowGroupSize,
-		CompressionLevel: cfg.Insert.CompressionLevel,
-		CompactionConfig: cfg.Compaction,
+		Manifest:                 store.Manifest(),
+		Pool:                     store.Pool(),
+		Ownership:                ownership,
+		FairShare:                compaction.NewFairShareScheduler(1),
+		Policy:                   policy,
+		Prefix:                   cfg.AutoPrefix(),
+		Mode:                     cfg.Mode,
+		Interval:                 cfg.Compaction.Interval,
+		MaxConcurrent:            cfg.Compaction.MaxConcurrent,
+		RowGroupSize:             cfg.Insert.RowGroupSize,
+		CompressionLevel:         cfg.Insert.CompressionLevel,
+		CurrentSchemaFingerprint: parquets3.CurrentSchemaFingerprint(cfg.Mode),
+		CompactionConfig:         cfg.Compaction,
 		TenantCompressionLookup: func(prefix string) []int {
 			if tenantPolicyHolder == nil || *tenantPolicyHolder == nil || prefix == "" {
 				return nil

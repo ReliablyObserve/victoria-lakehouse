@@ -39,6 +39,13 @@ type SchedulerConfig struct {
 	RowGroupSize     int
 	CompressionLevel int
 
+	// CurrentSchemaFingerprint is the fingerprint new files are written with. The
+	// scheduler flags files carrying any OTHER fingerprint as stale and recompacts
+	// them (re-promotion to dedicated columns) even when the level policy would skip
+	// the partition — so old / poorly-compacted areas heal without waiting for new
+	// input files. Empty disables hint-driven recompaction (only the level policy runs).
+	CurrentSchemaFingerprint string
+
 	// CompactionConfig carries the full compaction-section config so
 	// the per-tick Compactor constructor can read progressive-
 	// compression schedule + any future per-output knobs without
@@ -70,6 +77,42 @@ type SchedulerConfig struct {
 	DrainTimeout time.Duration
 }
 
+// recompactionLevel decides whether a partition the level policy skipped still needs
+// (re)compaction from the compaction hints, and at which level. Two triggers the
+// level policy ignores: stale-schema files (a fingerprint other than currentFP →
+// re-promotion to dedicated columns) and top-level fragmentation (>= L2 with 2+ files
+// the policy never re-merges). Returns (level, true) to compact; the Scan loop's
+// existing SelectFiles(level, majority-fingerprint) picks the group and the compactor
+// re-promotes during the merge. The selection needs 2+ files (a merge), so a lone
+// stale file is left until it has a peer at the same level/fingerprint.
+func recompactionLevel(files []manifest.FileInfo, currentFP string) (int, bool) {
+	maxLevel := 0
+	stale := false
+	for _, f := range files {
+		if f.CompactionLevel > maxLevel {
+			maxLevel = f.CompactionLevel
+		}
+		if currentFP != "" && f.SchemaFingerprint != currentFP {
+			stale = true
+		}
+	}
+	if stale {
+		return maxLevel, true
+	}
+	if maxLevel >= 2 {
+		cnt := 0
+		for _, f := range files {
+			if f.CompactionLevel == maxLevel {
+				cnt++
+			}
+		}
+		if cnt >= 2 {
+			return maxLevel, true
+		}
+	}
+	return 0, false
+}
+
 // Scheduler runs periodic compaction scans.
 type Scheduler struct {
 	manifest         *manifest.Manifest
@@ -84,6 +127,7 @@ type Scheduler struct {
 	maxConcurrent    int
 	rowGroupSize     int
 	compressionLevel int
+	currentFP        string
 	compactionCfg    config.CompactionConfig
 	tenantLookup     func(tenantPrefix string) []int
 	onCompacted      func(added []manifest.FileInfo, removed []string)
@@ -147,6 +191,7 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 		maxConcurrent:    maxConc,
 		rowGroupSize:     cfg.RowGroupSize,
 		compressionLevel: cfg.CompressionLevel,
+		currentFP:        cfg.CurrentSchemaFingerprint,
 		compactionCfg:    cfg.CompactionConfig,
 		tenantLookup:     cfg.TenantCompressionLookup,
 		onCompacted:      cfg.OnCompacted,
@@ -282,6 +327,18 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 			continue
 		}
 		level, eligible := s.policy.Eligible(files, pt)
+		if !eligible {
+			// Hint-driven recompaction: the level policy only merges L0/L1, so
+			// stale-schema files (re-promotion targets) and top-level fragmentation
+			// are never re-picked. Consume the compaction hints so old /
+			// poorly-compacted areas heal without waiting for new input files — the
+			// existing SelectFiles + compactor path below does the merge + re-promote,
+			// and a partition self-resolves in one pass (becomes non-stale /
+			// non-fragmented, so it isn't re-picked).
+			if lvl, needs := recompactionLevel(files, s.currentFP); needs {
+				level, eligible = lvl, true
+			}
+		}
 		if !eligible {
 			continue
 		}
