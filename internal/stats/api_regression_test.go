@@ -94,6 +94,122 @@ func TestConfigBreakdownLabelsAffectsOutput(t *testing.T) {
 	}
 }
 
+// TestHandleOverview_MetadataFields guards Phase B: the three metadata-size
+// APIConfig funcs populate the overview response, and nil funcs (feature
+// unavailable) leave the fields zero without panicking.
+func TestHandleOverview_MetadataFields(t *testing.T) {
+	api := NewAPI(APIConfig{
+		Registry:          NewTenantRegistry("node-1"),
+		Manifest:          manifest.New("b", "d/"),
+		CostCalc:          NewCostCalculator(nil, nil),
+		LabelIndex:        cache.NewLabelIndex(),
+		Mode:              "logs",
+		Bucket:            "test-bucket",
+		MetaResidentBytes: func() int64 { return 24_000_000 },
+		MetaDiskBytes:     func() int64 { return 140_000_000 },
+		MetaS3Bytes:       func() int64 { return 5_000_000 },
+	})
+	mux := http.NewServeMux()
+	api.Register(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/lakehouse/api/v1/stats/overview", nil))
+	var resp OverviewResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.MetaResidentBytes != 24_000_000 || resp.MetaDiskBytes != 140_000_000 || resp.MetaS3Bytes != 5_000_000 {
+		t.Errorf("metadata fields = resident %d disk %d s3 %d; want 24000000 / 140000000 / 5000000",
+			resp.MetaResidentBytes, resp.MetaDiskBytes, resp.MetaS3Bytes)
+	}
+
+	// Nil funcs (feature unavailable) must not panic and leave the fields zero.
+	api2 := NewAPI(APIConfig{
+		Registry:   NewTenantRegistry("node-1"),
+		Manifest:   manifest.New("b", "d/"),
+		CostCalc:   NewCostCalculator(nil, nil),
+		LabelIndex: cache.NewLabelIndex(),
+		Mode:       "logs",
+	})
+	mux2 := http.NewServeMux()
+	api2.Register(mux2)
+	rec2 := httptest.NewRecorder()
+	mux2.ServeHTTP(rec2, httptest.NewRequest("GET", "/lakehouse/api/v1/stats/overview", nil))
+	var resp2 OverviewResponse
+	if err := json.Unmarshal(rec2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("decode (nil funcs): %v", err)
+	}
+	if resp2.MetaResidentBytes != 0 || resp2.MetaDiskBytes != 0 || resp2.MetaS3Bytes != 0 {
+		t.Errorf("nil-func metadata fields should be 0, got %d/%d/%d",
+			resp2.MetaResidentBytes, resp2.MetaDiskBytes, resp2.MetaS3Bytes)
+	}
+}
+
+// TestHandleTenants_MetadataBytesByTenant guards the tenant-isolated metadata
+// footprint wiring: MetaBytesByTenant (keyed "account:project", sourced from the
+// tenant-scoped pmeta bundles) populates each tenant entry's metadata_bytes, and
+// a nil func (pmeta off) leaves it 0 without panicking.
+func TestHandleTenants_MetadataBytesByTenant(t *testing.T) {
+	m := manifest.New("test-bucket", "data/")
+	// A live file under tenant 1/1 so handleTenants surfaces a 1:1 entry.
+	m.AddFile("dt=2026-06-09/hour=10", manifest.FileInfo{
+		Key:  "1/1/logs/dt=2026-06-09/hour=10/part.parquet",
+		Size: 1 << 20,
+	})
+
+	api := NewAPI(APIConfig{
+		Registry:          NewTenantRegistry("node-1"),
+		Manifest:          m,
+		CostCalc:          NewCostCalculator(nil, nil),
+		LabelIndex:        cache.NewLabelIndex(),
+		Mode:              "logs",
+		Bucket:            "test-bucket",
+		MetaBytesByTenant: func() map[string]int64 { return map[string]int64{"1:1": 4242} },
+	})
+	mux := http.NewServeMux()
+	api.Register(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/lakehouse/api/v1/tenants", nil))
+
+	var resp TenantsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var found bool
+	for _, te := range resp.Tenants {
+		if te.AccountID == "1" && te.ProjectID == "1" {
+			found = true
+			if te.MetadataBytes != 4242 {
+				t.Errorf("tenant 1:1 metadata_bytes = %d, want 4242", te.MetadataBytes)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("tenant 1:1 not present in response: %+v", resp.Tenants)
+	}
+
+	// Nil func (pmeta off): metadata_bytes must be 0, no panic.
+	api2 := NewAPI(APIConfig{
+		Registry:   NewTenantRegistry("node-1"),
+		Manifest:   m,
+		CostCalc:   NewCostCalculator(nil, nil),
+		LabelIndex: cache.NewLabelIndex(),
+		Mode:       "logs",
+	})
+	mux2 := http.NewServeMux()
+	api2.Register(mux2)
+	rec2 := httptest.NewRecorder()
+	mux2.ServeHTTP(rec2, httptest.NewRequest("GET", "/lakehouse/api/v1/tenants", nil))
+	var resp2 TenantsResponse
+	if err := json.Unmarshal(rec2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("decode (nil func): %v", err)
+	}
+	for _, te := range resp2.Tenants {
+		if te.MetadataBytes != 0 {
+			t.Errorf("nil-func tenant %s:%s metadata_bytes = %d, want 0", te.AccountID, te.ProjectID, te.MetadataBytes)
+		}
+	}
+}
+
 func TestConfigEmptyBreakdownLabelsReturnsEmpty(t *testing.T) {
 	api := NewAPI(APIConfig{
 		Registry:        NewTenantRegistry("node-1"),

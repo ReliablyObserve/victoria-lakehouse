@@ -74,10 +74,17 @@ type FileInfo struct {
 	// opening Parquet (PERF-2). Populated at flush, summed across files at
 	// compaction, and persisted in the snapshot. Capped per field at write time.
 	LabelAggregates map[string]map[string]int64 `json:"label_aggregates,omitempty"`
-	StorageClass    string                      `json:"storage_class,omitempty"`
-	ClassCheckedAt  time.Time                   `json:"class_checked_at,omitempty"`
-	ClassSource     string                      `json:"class_source,omitempty"`
-	CreatedAt       time.Time                   `json:"created_at,omitempty"`
+	// ColumnBytes is column-name -> total compressed bytes that column occupies in
+	// this Parquet file (summed across row groups, from the footer). Summed across
+	// files it gives the per-field on-S3 storage footprint; because it rides the
+	// manifest it is cluster-wide, snapshot-persisted, and re-derived by the
+	// compactor (so it tracks the post-compaction truth, never drifting like the
+	// cumulative registry). Captured at flush + recomputed on compaction.
+	ColumnBytes    map[string]int64 `json:"column_bytes,omitempty"`
+	StorageClass   string           `json:"storage_class,omitempty"`
+	ClassCheckedAt time.Time        `json:"class_checked_at,omitempty"`
+	ClassSource    string           `json:"class_source,omitempty"`
+	CreatedAt      time.Time        `json:"created_at,omitempty"`
 }
 
 // BucketOr returns the file's bucket, falling back to defaultBucket
@@ -149,6 +156,13 @@ type Manifest struct {
 	// Kept consistent with m.files in: AddFile, RemoveFile,
 	// RefreshFromS3, rebuildIndex, snapshot Load.
 	byKey map[string]string
+
+	// onAdd / onRemove fire (under the write lock) on every file add/remove.
+	// Flush AND compaction both route through AddFile/RemoveFile, so one observer
+	// captures every storage diff — used by the StatsAggregate sidecar cache to
+	// keep per-field/per-tenant size totals current without rescanning.
+	onAdd    func(partition string, fi FileInfo)
+	onRemove func(partition string, fi FileInfo)
 
 	// tenantAggregates is the incremental per-tenant cache backing
 	// TenantSummaries(). Without this, /api/v1/tenants, /stats/overview,
@@ -957,6 +971,27 @@ func (m *Manifest) CountByLabel(startNs, endNs int64, account, project, field st
 	return counts, uncovered, complete
 }
 
+// LabelValueCounts sums the per-value row counts for a field across ALL files'
+// LabelAggregates — the global `count() by (field)` answered from metadata (no
+// Parquet reads), for the Storage Breakdown. It covers the dedicated dimensional
+// columns because the aggregate extractor draws from schema.{Log,Trace}LabelColumns,
+// so k8s.cluster.name et al. break down correctly instead of showing blank.
+func (m *Manifest) LabelValueCounts(field string) map[string]int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]int64)
+	for _, files := range m.files {
+		for _, fi := range files {
+			if agg, ok := fi.LabelAggregates[field]; ok {
+				for v, c := range agg {
+					out[v] += c
+				}
+			}
+		}
+	}
+	return out
+}
+
 func (m *Manifest) GetFilesForRange(startNs, endNs int64) []FileInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1181,6 +1216,9 @@ func (m *Manifest) RemoveFile(partition string, key string) {
 			m.totalFiles--
 			m.totalBytes -= fi.Size
 			m.updateTenantAggregateOnRemove(partition, fi)
+			if m.onRemove != nil {
+				m.onRemove(partition, fi)
+			}
 			m.files[partition] = append(files[:i], files[i+1:]...)
 			if len(m.files[partition]) == 0 {
 				delete(m.files, partition)
@@ -1347,6 +1385,19 @@ func (m *Manifest) EnrichFileMetadata(key string, rowCount int64, minTimeNs, max
 	}
 }
 
+// SetChangeObserver registers callbacks fired (under the write lock) on every
+// file add/remove. Flush AND compaction both route through AddFile/RemoveFile,
+// so one observer captures every storage diff. Pass nil to clear. Callbacks must
+// be cheap and MUST NOT call back into the manifest (re-entrant lock) — they run
+// on the flush/compaction hot path. Used by the StatsAggregate sidecar cache to
+// maintain per-field/per-tenant size totals incrementally.
+func (m *Manifest) SetChangeObserver(onAdd, onRemove func(partition string, fi FileInfo)) {
+	m.mu.Lock()
+	m.onAdd = onAdd
+	m.onRemove = onRemove
+	m.mu.Unlock()
+}
+
 func (m *Manifest) AddFile(partition string, fi FileInfo) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1373,6 +1424,9 @@ func (m *Manifest) AddFile(partition string, fi FileInfo) {
 	m.files[partition] = append(m.files[partition], fi)
 	m.byKey[fi.Key] = partition
 	m.updateTenantAggregateOnAdd(partition, fi)
+	if m.onAdd != nil {
+		m.onAdd(partition, fi)
+	}
 	m.totalFiles++
 	m.totalBytes += fi.Size
 
@@ -1540,6 +1594,18 @@ func extractDateFromPrefix(prefix string) string {
 // ExtractPartition is the exported wrapper for extractPartition.
 func ExtractPartition(key string) string {
 	return extractPartition(key)
+}
+
+// ExtractTenantPartition returns the tenant-isolated partition for a file key —
+// the full key directory (e.g. "0/0/logs/dt=2026-06-09/hour=10"), so pmeta
+// bundles co-locate with the data they describe and each tenant's metadata is
+// physically separate (mirrors data-path isolation). "" when no dt= segment.
+func ExtractTenantPartition(key string) string {
+	dir := path.Dir(key)
+	if !strings.Contains(dir, "dt=") {
+		return ""
+	}
+	return dir
 }
 
 // extractPartition extracts "dt=YYYY-MM-DD/hour=HH" from an S3 key.
@@ -1808,6 +1874,106 @@ func (m *Manifest) GetPartitions(startDate, endDate string) []PartitionSummary {
 			totalBytes += f.Size
 		}
 		ps.Files += len(files)
+		ps.Bytes += totalBytes
+		if hourStr != "" {
+			var hour int
+			if _, err := fmt.Sscanf(hourStr, "%d", &hour); err == nil {
+				ps.Hours = append(ps.Hours, hour)
+			}
+		}
+	}
+
+	result := make([]PartitionSummary, 0, len(byDate))
+	for _, ps := range byDate {
+		sort.Ints(ps.Hours)
+		result = append(result, *ps)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Date < result[j].Date
+	})
+	return result
+}
+
+// TenantPartitionCount counts distinct (tenant, dt/hour) partitions across all
+// files — i.e. the physical tenant-scoped S3 partition prefixes. Unlike
+// PartitionCount() (distinct dt/hour buckets, collapsed across tenants), this
+// equals the SUM of every tenant's partition count, so the Storage Overview
+// reconciles with the per-tenant detail views. Single-tenant deployments get the
+// same number from both.
+func (m *Manifest) TenantPartitionCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	seen := make(map[string]struct{})
+	for partition, files := range m.files {
+		for _, f := range files {
+			tp := tenantPrefixFromKey(f.Key)
+			if tp == "" {
+				continue
+			}
+			seen[tp+"|"+partition] = struct{}{}
+		}
+	}
+	return len(seen)
+}
+
+// tenantPrefixFromKey returns the "account/project" prefix of an S3 object key
+// (the first two path segments), or "" if the key isn't tenant-scoped.
+func tenantPrefixFromKey(key string) string {
+	first := strings.IndexByte(key, '/')
+	if first < 0 {
+		return ""
+	}
+	second := strings.IndexByte(key[first+1:], '/')
+	if second < 0 {
+		return ""
+	}
+	return key[:first+1+second]
+}
+
+// GetPartitionsForTenant is the tenant-scoped GetPartitions: it counts only files
+// whose S3 key belongs to accountID/projectID, so a tenant's detail view shows
+// ITS partitions with per-tenant file/byte counts. The global GetPartitions("","")
+// returned the SAME list for every tenant (it has no tenant filter) — this is the
+// method the tenant-detail drill-down must use instead.
+func (m *Manifest) GetPartitionsForTenant(accountID, projectID string) []PartitionSummary {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	prefix := accountID + "/" + projectID + "/"
+	byDate := make(map[string]*PartitionSummary)
+
+	for partition, files := range m.files {
+		var dateStr, hourStr string
+		for _, p := range strings.Split(partition, "/") {
+			if v, ok := strings.CutPrefix(p, "dt="); ok {
+				dateStr = v
+			}
+			if v, ok := strings.CutPrefix(p, "hour="); ok {
+				hourStr = v
+			}
+		}
+		if dateStr == "" {
+			continue
+		}
+		var fileCount int
+		var totalBytes int64
+		for _, f := range files {
+			if !strings.HasPrefix(f.Key, prefix) {
+				continue
+			}
+			fileCount++
+			totalBytes += f.Size
+		}
+		if fileCount == 0 {
+			continue
+		}
+		ps, ok := byDate[dateStr]
+		if !ok {
+			ps = &PartitionSummary{Date: dateStr}
+			byDate[dateStr] = ps
+		}
+		ps.Files += fileCount
 		ps.Bytes += totalBytes
 		if hourStr != "" {
 			var hour int

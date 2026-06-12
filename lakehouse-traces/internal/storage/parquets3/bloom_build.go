@@ -11,17 +11,62 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
-// extractLogBloomValues / extractTraceBloomValues are the UNCAPPED bloom feed for
-// rows flushed by the traces module (trace_id + service.name). A bloom fed from the
-// capped label extractor false-negatives on values past the cap — missing results.
-// Both delegate to the shared schema extractor so the pmeta bloom set is identical on
-// this flush path and the compaction path in internal/compaction (combined bloom).
+// extractLogBloomValues is the UNCAPPED bloom feed for log rows flushed by the
+// traces module (trace_id + service.name). A bloom fed from the capped label
+// extractor false-negatives on values past the cap — missing results.
 func extractLogBloomValues(rows []schema.LogRow) map[string][]string {
-	return schema.ExtractLogBloomValues(rows)
+	if len(rows) == 0 {
+		return nil
+	}
+	sets := make(map[string]map[string]bool, len(schema.LogBloomValueColumns))
+	for _, c := range schema.LogBloomValueColumns {
+		sets[c.Name] = make(map[string]bool)
+	}
+	for i := range rows {
+		for _, c := range schema.LogBloomValueColumns {
+			if v := c.Get(&rows[i]); v != "" {
+				sets[c.Name][v] = true
+			}
+		}
+	}
+	return bloomSetsToMap(sets)
 }
 
+// extractTraceBloomValues is extractLogBloomValues for trace rows (schema.TraceBloomValueColumns).
 func extractTraceBloomValues(rows []schema.TraceRow) map[string][]string {
-	return schema.ExtractTraceBloomValues(rows)
+	if len(rows) == 0 {
+		return nil
+	}
+	sets := make(map[string]map[string]bool, len(schema.TraceBloomValueColumns))
+	for _, c := range schema.TraceBloomValueColumns {
+		sets[c.Name] = make(map[string]bool)
+	}
+	for i := range rows {
+		for _, c := range schema.TraceBloomValueColumns {
+			if v := c.Get(&rows[i]); v != "" {
+				sets[c.Name][v] = true
+			}
+		}
+	}
+	return bloomSetsToMap(sets)
+}
+
+func bloomSetsToMap(sets map[string]map[string]bool) map[string][]string {
+	result := make(map[string][]string, len(sets))
+	for col, vs := range sets {
+		if len(vs) == 0 {
+			continue
+		}
+		vals := make([]string, 0, len(vs))
+		for v := range vs {
+			vals = append(vals, v)
+		}
+		result[col] = vals
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 func bloomS3Loader(pool *s3reader.ClientPool, prefix string) func(ctx context.Context, partition string) (*bloomindex.Index, error) {

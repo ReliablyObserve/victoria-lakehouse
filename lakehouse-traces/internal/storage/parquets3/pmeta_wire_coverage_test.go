@@ -14,10 +14,18 @@ import (
 
 const pmwPartition = "dt=2026-06-01/hour=10"
 
-// pmwContribution returns a FileContribution for the test partition.
+// pmwTenantPartition is the tenant-isolated partition the production code keys
+// facets/bundles by (the full key dir) — the test keys are "logs/"+pmwPartition+
+// "/…", so the facet lives under "logs/"+pmwPartition while the manifest keys
+// files by the pure pmwPartition.
+const pmwTenantPartition = "logs/" + pmwPartition
+
+// pmwContribution returns a FileContribution for the test partition. The facet is
+// keyed by the tenant-isolated partition (derived from the file key), matching the
+// live writer flush, NOT the manifest's pure dt=/hour= partition.
 func pmwContribution(key string, labels map[string][]string) pmeta.FileContribution {
 	return pmeta.FileContribution{
-		Partition:         pmwPartition,
+		Partition:         manifest.ExtractTenantPartition(key),
 		FileKey:           key,
 		RowCount:          42,
 		MinTimeNs:         1_000,
@@ -64,15 +72,33 @@ func TestCatalogFileMetaProvider_HitAndMiss(t *testing.T) {
 }
 
 func TestSketchSet(t *testing.T) {
-	if got := sketchSet(nil); got != nil {
-		t.Errorf("sketchSet(nil) = %v, want nil", got)
+	// The built-in id columns (schema.DefaultSketchIDColumns) are always present,
+	// even with no operator config, so the promoted id columns are sketched +
+	// persisted out of the box regardless of always_sketch_fields.
+	for _, in := range [][]string{nil, {}} {
+		got := sketchSet(in)
+		for _, f := range schema.DefaultSketchIDColumns {
+			if !got[f] {
+				t.Errorf("sketchSet(%v) = %v, missing default %q", in, got, f)
+			}
+		}
+		if len(got) != len(schema.DefaultSketchIDColumns) {
+			t.Errorf("sketchSet(%v) = %v, want only the %d defaults", in, got, len(schema.DefaultSketchIDColumns))
+		}
 	}
-	if got := sketchSet([]string{}); got != nil {
-		t.Errorf("sketchSet(empty) = %v, want nil", got)
+	// Operator-configured fields are unioned in alongside the defaults, deduped
+	// (trace_id is already a default, so it must not double-count).
+	got := sketchSet([]string{"trace_id", "request_id"})
+	if !got["request_id"] {
+		t.Errorf("sketchSet missing configured request_id: %v", got)
 	}
-	got := sketchSet([]string{"trace_id", "span_id"})
-	if !got["trace_id"] || !got["span_id"] || len(got) != 2 {
-		t.Errorf("sketchSet = %v, want {trace_id, span_id}", got)
+	for _, f := range schema.DefaultSketchIDColumns {
+		if !got[f] {
+			t.Errorf("sketchSet missing default %q: %v", f, got)
+		}
+	}
+	if len(got) != len(schema.DefaultSketchIDColumns)+1 {
+		t.Errorf("sketchSet = %v, want defaults + request_id (trace_id deduped)", got)
 	}
 }
 
@@ -83,7 +109,7 @@ func TestCatalogObserver_TapRows(t *testing.T) {
 	t.Run("log rows feed trace_id and span_id sketches", func(t *testing.T) {
 		st := newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
 		o := &catalogObserver{store: st, sketch: sketchSet([]string{"trace_id", "span_id"})}
-		o.tapLogRows([]schema.LogRow{
+		o.tapLogRows("p", []schema.LogRow{
 			{TraceID: "t1", SpanID: "s1"},
 			{TraceID: "t2", SpanID: "s2"},
 			{TraceID: "t3", SpanID: "s3"},
@@ -99,7 +125,7 @@ func TestCatalogObserver_TapRows(t *testing.T) {
 	t.Run("trace rows feed sketches", func(t *testing.T) {
 		st := newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
 		o := &catalogObserver{store: st, sketch: sketchSet([]string{"trace_id", "span_id"})}
-		o.tapTraceRows([]schema.TraceRow{
+		o.tapTraceRows("p", []schema.TraceRow{
 			{TraceID: "t1", SpanID: "s1"},
 			{TraceID: "t2", SpanID: "s2"},
 		})
@@ -108,11 +134,41 @@ func TestCatalogObserver_TapRows(t *testing.T) {
 		}
 	})
 
+	t.Run("promoted id columns sketched by default (container.id, service.instance.id)", func(t *testing.T) {
+		st := newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
+		// sketchSet(nil) includes the built-in DefaultSketchIDColumns, so the
+		// promoted id columns are sketched without any operator config.
+		o := &catalogObserver{store: st, sketch: sketchSet(nil)}
+		o.tapLogRows("p", []schema.LogRow{
+			{ContainerID: "c1", ServiceInstanceID: "i1"},
+			{ContainerID: "c2", ServiceInstanceID: "i2"},
+			{ContainerID: "c3", ServiceInstanceID: "i3"},
+		})
+		if c := st.Cardinality("container.id"); c < 2 || c > 4 {
+			t.Errorf("container.id cardinality = %d, want ~3", c)
+		}
+		if c := st.Cardinality("service.instance.id"); c < 2 || c > 4 {
+			t.Errorf("service.instance.id cardinality = %d, want ~3", c)
+		}
+	})
+
+	t.Run("trace rows feed promoted id columns too", func(t *testing.T) {
+		st := newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
+		o := &catalogObserver{store: st, sketch: sketchSet(nil)}
+		o.tapTraceRows("p", []schema.TraceRow{
+			{ContainerID: "c1", ServiceInstanceID: "i1"},
+			{ContainerID: "c2", ServiceInstanceID: "i2"},
+		})
+		if c := st.Cardinality("container.id"); c < 1 || c > 3 {
+			t.Errorf("container.id cardinality = %d, want ~2", c)
+		}
+	})
+
 	t.Run("no sketch set is a no-op", func(t *testing.T) {
 		st := newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
 		o := &catalogObserver{store: st} // sketch nil
-		o.tapLogRows([]schema.LogRow{{TraceID: "t1"}})
-		o.tapTraceRows([]schema.TraceRow{{TraceID: "t1"}})
+		o.tapLogRows("p", []schema.LogRow{{TraceID: "t1"}})
+		o.tapTraceRows("p", []schema.TraceRow{{TraceID: "t1"}})
 		if c := st.Cardinality("trace_id"); c != 0 {
 			t.Errorf("cardinality must stay 0 without a sketch set, got %d", c)
 		}
@@ -120,11 +176,11 @@ func TestCatalogObserver_TapRows(t *testing.T) {
 
 	t.Run("nil observer and nil store are safe", func(t *testing.T) {
 		var o *catalogObserver
-		o.tapLogRows([]schema.LogRow{{TraceID: "t"}})
-		o.tapTraceRows([]schema.TraceRow{{TraceID: "t"}})
+		o.tapLogRows("p", []schema.LogRow{{TraceID: "t"}})
+		o.tapTraceRows("p", []schema.TraceRow{{TraceID: "t"}})
 		o2 := &catalogObserver{sketch: sketchSet([]string{"trace_id"})}
-		o2.tapLogRows([]schema.LogRow{{TraceID: "t"}})
-		o2.tapTraceRows([]schema.TraceRow{{TraceID: "t"}})
+		o2.tapLogRows("p", []schema.LogRow{{TraceID: "t"}})
+		o2.tapTraceRows("p", []schema.TraceRow{{TraceID: "t"}})
 	})
 }
 
@@ -144,7 +200,7 @@ func TestCatalogFieldNames_RangeUnion(t *testing.T) {
 		MaxTimeNs: now.Add(time.Minute).UnixNano(),
 	})
 	s.catalog.OnFileFlush(pmeta.FileContribution{
-		Partition: "dt=2026-06-01/hour=10",
+		Partition: manifest.ExtractTenantPartition(key),
 		FileKey:   key,
 		Labels:    map[string][]string{"service.name": {"api"}, "env": {"prod"}},
 	})
@@ -183,7 +239,7 @@ func TestWarmCatalog_RebuildsFromManifest(t *testing.T) {
 
 	s.WarmCatalog(context.Background())
 
-	got := s.catalog.FieldValues("dt=2026-06-01/hour=10", "service.name", "", 0)
+	got := s.catalog.FieldValues(pmwTenantPartition, "service.name", "", 0)
 	if !reflect.DeepEqual(got, []string{"api", "worker"}) {
 		t.Fatalf("warm catalog service.name = %v, want [api worker]", got)
 	}
@@ -230,7 +286,7 @@ func TestWarmCatalogFromS3_RebuildMissingBundle(t *testing.T) {
 
 	s.WarmCatalogFromS3(context.Background())
 
-	got := s.catalog.FieldValues("dt=2026-06-01/hour=10", "env", "", 0)
+	got := s.catalog.FieldValues(pmwTenantPartition, "env", "", 0)
 	if !reflect.DeepEqual(got, []string{"prod"}) {
 		t.Fatalf("rebuilt catalog env = %v, want [prod]", got)
 	}
@@ -262,7 +318,7 @@ func TestWarmCatalogFromS3_LoadsPersistedBundle(t *testing.T) {
 	s.catalog = newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
 	s.WarmCatalogFromS3(context.Background())
 
-	got := s.catalog.FieldValues(pmwPartition, "service.name", "", 0)
+	got := s.catalog.FieldValues(pmwTenantPartition, "service.name", "", 0)
 	if !reflect.DeepEqual(got, []string{"api"}) {
 		t.Errorf("warmed catalog = %v, want [api]", got)
 	}
@@ -311,13 +367,13 @@ func TestPmetaOnCompacted(t *testing.T) {
 	}
 	s.PmetaOnCompacted([]manifest.FileInfo{out}, []string{in1, in2}, combined)
 
-	if _, ok := s.catalog.FileMeta(pmwPartition, in1); ok {
+	if _, ok := s.catalog.FileMeta(pmwTenantPartition, in1); ok {
 		t.Error("compaction input in1 must be removed from the facet")
 	}
-	if _, ok := s.catalog.FileMeta(pmwPartition, in2); ok {
+	if _, ok := s.catalog.FileMeta(pmwTenantPartition, in2); ok {
 		t.Error("compaction input in2 must be removed from the facet")
 	}
-	got, ok := s.catalog.FileMeta(pmwPartition, out.Key)
+	got, ok := s.catalog.FileMeta(pmwTenantPartition, out.Key)
 	if !ok {
 		t.Fatal("compaction output must be present in the facet")
 	}
@@ -326,8 +382,10 @@ func TestPmetaOnCompacted(t *testing.T) {
 	}
 
 	// The combined bloom must be retained on the compacted output (file-level
-	// pruning kept): a value from the union is found on the output key.
-	if keys, ok := s.catalog.BloomMayContain(pmwPartition, []string{out.Key}, "trace_id", "tA"); !ok || len(keys) != 1 || keys[0] != out.Key {
+	// pruning kept): a value from the union is found on the output key. The bloom
+	// facet lives in the tenant-isolated bundle (pmwTenantPartition), same as the
+	// FileMeta facet asserted above.
+	if keys, ok := s.catalog.BloomMayContain(pmwTenantPartition, []string{out.Key}, "trace_id", "tA"); !ok || len(keys) != 1 || keys[0] != out.Key {
 		t.Errorf("combined bloom must contain trace_id tA on the compacted output; ok=%v keys=%v", ok, keys)
 	}
 
@@ -352,21 +410,21 @@ func TestPmetaOnFileExpired(t *testing.T) {
 	s.manifest.AddFile(pmwPartition, manifest.FileInfo{Key: k2})
 
 	s.PmetaOnFileExpired(pmwPartition, k1)
-	if _, ok := s.catalog.FileMeta(pmwPartition, k1); ok {
+	if _, ok := s.catalog.FileMeta(pmwTenantPartition, k1); ok {
 		t.Error("expired file must be removed from the facet")
 	}
-	if _, ok := s.catalog.FileMeta(pmwPartition, k2); !ok {
+	if _, ok := s.catalog.FileMeta(pmwTenantPartition, k2); !ok {
 		t.Error("remaining file must survive a sibling's expiry")
 	}
 
 	// Expire the last file: manifest partition empties → bundle evicted.
 	s.manifest.RemoveFile(pmwPartition, k2)
 	s.PmetaOnFileExpired(pmwPartition, k2)
-	if _, ok := s.catalog.FileMeta(pmwPartition, k2); ok {
+	if _, ok := s.catalog.FileMeta(pmwTenantPartition, k2); ok {
 		t.Error("last expired file must be removed")
 	}
 	for _, p := range s.catalog.Partitions() {
-		if p == pmwPartition {
+		if p == pmwTenantPartition {
 			t.Error("empty partition's bundle must be evicted from RAM")
 		}
 	}

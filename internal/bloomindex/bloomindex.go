@@ -134,6 +134,24 @@ func (idx *Index) Len() int {
 	return len(idx.entries)
 }
 
+// BytesByColumn returns the in-RAM bloom-filter footprint of each indexed column,
+// summed across every file entry (Filter.Size() per column = bitset bytes + the
+// numHash byte). This is the per-field decomposition of the index's total size —
+// summing the returned values equals the bytes the marshalled filters occupy
+// (the index framing overhead is excluded, so it is attributable strictly per
+// column). Used by the per-field metadata-bytes accounting.
+func (idx *Index) BytesByColumn() map[string]int64 {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	out := make(map[string]int64)
+	for _, cols := range idx.entries {
+		for col, f := range cols {
+			out[col] += int64(f.Size())
+		}
+	}
+	return out
+}
+
 // Filter is a space-efficient bloom filter.
 type Filter struct {
 	bits    []byte

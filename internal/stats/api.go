@@ -37,6 +37,41 @@ type APIConfig struct {
 	// CompactionConfig supplies the per-output-level zstd schedule the compaction-hints
 	// endpoint reports (which zstd each level is written with, and the next level's).
 	CompactionConfig config.CompactionConfig
+	// AlwaysSketchFields are the high-card id columns sketched (HLL) rather than
+	// enumerated — trace_id/span_id and the promoted id columns. Combined with the
+	// mode's dimensional label set, they define which fields the Cardinality
+	// Explorer actually tracks (so a field outside the set reads "—", not 0).
+	AlwaysSketchFields []string
+	// StatsAggregate is the materialized per-field/per-tenant size cache (storage
+	// bytes now; metadata bytes in later phases), read in O(1) instead of scanning
+	// the manifest per request. Nil when the size-stats feature is unavailable.
+	StatsAggregate *StatsAggregate
+	// Retention summary from the global RetentionConfig, surfaced in the overview.
+	RetentionEnabled bool
+	RetentionDefault string
+	RetentionRules   int
+	// PmetaCardinality returns the accurate global HLL distinct-value estimate for
+	// a field (0 if unavailable). Preferred over the lazily-populated, 100-capped
+	// LabelIndex count for the Cardinality Explorer. Nil when pmeta is off.
+	PmetaCardinality func(field string) uint64
+	// Metadata-size sources for the Storage Overview tiles. Nil-safe (a nil func
+	// contributes nothing). ResidentBytes + DiskBytes are THIS node's local
+	// footprint; S3Bytes is the cluster-wide on-S3 _meta/ total (the wiring caches
+	// it — it needs an S3 LIST).
+	MetaResidentBytes func() int64
+	MetaDiskBytes     func() int64
+	MetaS3Bytes       func() int64
+	// MetaBytesByTenant is the exact per-tenant on-S3 metadata footprint, keyed
+	// "account:project" — the tenant-isolated pmeta bundles summed incrementally
+	// (no S3 scan). Nil-safe (a nil func contributes nothing). Surfaced as each
+	// tenant's metadata_bytes in /tenants.
+	MetaBytesByTenant func() map[string]int64
+	// MetadataBytesByField is the exact per-field metadata footprint, keyed by
+	// field name — each field's bloom bitset bytes plus its catalog-entry / HLL
+	// bytes, summed across all resident pmeta bundles (no S3 scan). Nil-safe (a nil
+	// func contributes nothing). Surfaced as each field's metadata_bytes in the
+	// per-field /stats/fields table.
+	MetadataBytesByField func() map[string]int64
 }
 
 // API serves JSON endpoints for tenant statistics, cost, cardinality, etc.
@@ -61,6 +96,8 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/lakehouse/api/v1/cardinality/fields", a.handleCardinality)
 	mux.HandleFunc("/lakehouse/api/v1/stats/breakdown", a.handleBreakdown)
 	mux.HandleFunc("/lakehouse/api/v1/stats/compaction", a.handleCompaction)
+	mux.HandleFunc("/lakehouse/api/v1/stats/fields", a.handleFields)
+	mux.HandleFunc("/lakehouse/api/v1/stats/instances", a.handleInstances)
 }
 
 // handleCompaction surfaces partitions that need (re)compaction beyond the normal
@@ -108,6 +145,7 @@ type TenantEntry struct {
 	TotalFiles       int64            `json:"total_files"`
 	TotalBytes       int64            `json:"total_bytes"`
 	RawBytes         int64            `json:"raw_bytes"`
+	MetadataBytes    int64            `json:"metadata_bytes,omitempty"`
 	CompressionRatio float64          `json:"compression_ratio"`
 	TotalRows        int64            `json:"total_rows"`
 	Partitions       int              `json:"partitions"`
@@ -137,6 +175,18 @@ type OverviewResponse struct {
 	StorageByClass      []ClassBreakdown `json:"storage_by_class"`
 	FleetNodes          int              `json:"fleet_nodes"`
 	RegistryGeneration  uint64           `json:"registry_generation"`
+	// Retention summary (global config) so the UI can show what's configured +
+	// applied. RetentionEnabled is whether the retention/deletion loop runs;
+	// RetentionDefault is the default keep-duration (e.g. "90d"); RetentionRules
+	// is the count of match-based override rules.
+	RetentionEnabled bool   `json:"retention_enabled"`
+	RetentionDefault string `json:"retention_default,omitempty"`
+	RetentionRules   int    `json:"retention_rules,omitempty"`
+	// Metadata footprint. ResidentBytes (pmeta RAM) + DiskBytes (disk cache) are
+	// THIS node's local usage; S3Bytes is the cluster-wide on-S3 _meta/ footprint.
+	MetaResidentBytes int64 `json:"meta_resident_bytes,omitempty"`
+	MetaDiskBytes     int64 `json:"meta_disk_bytes,omitempty"`
+	MetaS3Bytes       int64 `json:"meta_s3_bytes,omitempty"`
 }
 
 // ClassBreakdown is a per-storage-class breakdown of bytes and files.
@@ -144,6 +194,22 @@ type ClassBreakdown struct {
 	Class string `json:"class"`
 	Bytes int64  `json:"bytes"`
 	Files int64  `json:"files"`
+}
+
+// InstancesResponse is the response for the per-instance metadata breakdown.
+type InstancesResponse struct {
+	Instances []InstanceEntry `json:"instances"`
+}
+
+// InstanceEntry is one fleet node's metadata footprint. ResidentBytes (pmeta
+// RAM) + DiskBytes (disk cache) are that node's local usage, gossiped via the
+// registry; S3Bytes is the cluster-wide on-S3 _meta/ total (same on every row).
+type InstanceEntry struct {
+	NodeID            string `json:"node_id"`
+	IsSelf            bool   `json:"is_self"`
+	MetaResidentBytes int64  `json:"meta_resident_bytes"`
+	MetaDiskBytes     int64  `json:"meta_disk_bytes"`
+	MetaS3Bytes       int64  `json:"meta_s3_bytes"`
 }
 
 // IngestionResponse is the response for the ingestion stats endpoint.
@@ -219,6 +285,16 @@ type FieldEntry struct {
 	Cardinality int    `json:"cardinality"`
 	Type        string `json:"type"`
 	HasBloom    bool   `json:"has_bloom"`
+	// Indexed is true when the explorer actually tracks this field's distinct
+	// count (a dimensional label column fed to the per-field HLL, or an
+	// always-sketch id). When false AND cardinality is 0, the value is "not
+	// counted" rather than "zero distinct" — the UI renders it as "—" so a 0
+	// isn't mistaken for "no data".
+	Indexed bool `json:"indexed"`
+	// StorageBytes is the on-S3 compressed footprint of this field's Parquet
+	// column(s), summed across all live files (from the size-stats aggregate). 0
+	// when the aggregate is unavailable or the field has no dedicated column.
+	StorageBytes int64 `json:"storage_bytes,omitempty"`
 }
 
 // BreakdownResponse is the response for the storage breakdown endpoint.
@@ -244,6 +320,26 @@ type BreakdownValue struct {
 	EstimatedBytes int64   `json:"estimated_bytes"`
 	EstimatedFiles int64   `json:"estimated_files"`
 	SharePct       float64 `json:"share_pct"`
+}
+
+// FieldsResponse is the response for the per-field storage+metadata endpoint
+// (/stats/fields) backing the Storage Details tab.
+type FieldsResponse struct {
+	Fields []FieldStorageEntry `json:"fields"`
+}
+
+// FieldStorageEntry is one field's exact storage + metadata decomposition: the
+// on-S3 compressed column footprint (scaled the same way the Cardinality Explorer
+// scales its storage_bytes so magnitudes match), the exact pmeta metadata bytes
+// (bloom + catalog/HLL), the accurate distinct-value count, and the bloom/indexed
+// flags — all from the same sources the Cardinality Explorer reads.
+type FieldStorageEntry struct {
+	Name          string `json:"name"`
+	StorageBytes  int64  `json:"storage_bytes"`
+	MetadataBytes int64  `json:"metadata_bytes"`
+	Cardinality   int    `json:"cardinality"`
+	HasBloom      bool   `json:"has_bloom"`
+	Indexed       bool   `json:"indexed"`
 }
 
 // ---- Handlers ----
@@ -373,6 +469,17 @@ func (a *API) handleTenants(w http.ResponseWriter, r *http.Request) {
 				})
 				seen[key] = true
 			}
+		}
+	}
+
+	// Per-tenant metadata footprint: exact, from the tenant-scoped pmeta bundles
+	// (a.cfg.MetaBytesByTenant — keyed "account:project"). pmeta partitions are
+	// tenant-isolated (mirroring the data path), so each tenant's metadata is its
+	// own bundles' summed encoded size, tracked incrementally (no S3 scan).
+	if a.cfg.MetaBytesByTenant != nil {
+		byTenant := a.cfg.MetaBytesByTenant()
+		for i := range entries {
+			entries[i].MetadataBytes = byTenant[entries[i].AccountID+":"+entries[i].ProjectID]
 		}
 	}
 
@@ -585,11 +692,13 @@ func (a *API) handleTenantDetail(w http.ResponseWriter, r *http.Request) {
 		bucketLabels := []string{"<1MB", "1-10MB", "10-50MB", "50-128MB", ">128MB"}
 		counts := make([]int, 5)
 
-		for _, files := range allFiles {
+		seenParts := make(map[string]bool)
+		for partition, files := range allFiles {
 			for _, fi := range files {
 				if !strings.HasPrefix(fi.Key, tenantPrefix) {
 					continue
 				}
+				seenParts[partition] = true
 				switch {
 				case fi.Size < 1<<20:
 					counts[0]++
@@ -606,8 +715,15 @@ func (a *API) handleTenantDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.FileSizeHistogram = &FileSizeHistogram{Buckets: bucketLabels, Counts: counts}
 
-		// Partitions for this tenant.
-		resp.PartitionList = a.cfg.Manifest.GetPartitions("", "")
+		// Partition COUNT scoped to this tenant. The registry-sourced entry
+		// reports 0 (the per-tenant stats registry doesn't track partitions), so
+		// derive it from the tenant's actual manifest partition keys.
+		resp.Partitions = len(seenParts)
+
+		// Partitions for THIS tenant (GetPartitions("","") is global — it
+		// returns the same list for every tenant; GetPartitionsForTenant scopes
+		// the file/byte counts to accountID/projectID).
+		resp.PartitionList = a.cfg.Manifest.GetPartitionsForTenant(accountID, projectID)
 
 		if entry.TotalRows > 0 {
 			resp.AvgRowsPerFile = entry.TotalRows / entry.TotalFiles
@@ -625,23 +741,26 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 
 	gs := a.cfg.Registry.GlobalAggregates()
 
-	classBD := make([]ClassBreakdown, 0, len(gs.BytesByClass))
-	for class, bytes := range gs.BytesByClass {
-		classBD = append(classBD, ClassBreakdown{
-			Class: class,
-			Bytes: bytes,
-			Files: gs.FilesByClass[class],
-		})
-	}
-	sort.Slice(classBD, func(i, j int) bool {
-		return classBD[i].Bytes > classBD[j].Bytes
-	})
-	// Fall back: assume STANDARD when registry has no class data but manifest has files.
-	if len(classBD) == 0 && a.cfg.Manifest != nil && a.cfg.Manifest.TotalFiles() > 0 {
-		classBD = append(classBD, ClassBreakdown{
-			Class: "STANDARD",
-			Bytes: a.cfg.Manifest.TotalBytes(),
-			Files: int64(a.cfg.Manifest.TotalFiles()),
+	// Per-class breakdown derived from the LIVE manifest file set so the Storage
+	// Classes panel reconciles with the manifest-backed headline totals below.
+	// The registry's GlobalAggregates class counters are cumulative — never
+	// decremented when files compact away — so they drift higher than the live
+	// set (e.g. 1,815 cumulative vs 1,425 live files), which made "Storage
+	// Classes" report more files/bytes than the "Files"/"Compressed" headline.
+	classBD := a.manifestClassBreakdown()
+	if len(classBD) == 0 {
+		// No manifest or no live files: fall back to the registry's cumulative
+		// class counters so a registry-only / read-path deployment still shows a
+		// class split.
+		for class, bytes := range gs.BytesByClass {
+			classBD = append(classBD, ClassBreakdown{
+				Class: class,
+				Bytes: bytes,
+				Files: gs.FilesByClass[class],
+			})
+		}
+		sort.Slice(classBD, func(i, j int) bool {
+			return classBD[i].Bytes > classBD[j].Bytes
 		})
 	}
 
@@ -658,7 +777,10 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 	var oldestData, newestData string
 
 	if a.cfg.Manifest != nil {
-		partitionCount = a.cfg.Manifest.PartitionCount()
+		// Tenant-scoped partition count so the overview reconciles with the sum
+		// of the per-tenant detail views (partitions are physically tenant-scoped
+		// S3 prefixes; PartitionCount() collapses them across tenants).
+		partitionCount = a.cfg.Manifest.TenantPartitionCount()
 		// LiveAggregate iterates m.files — same source as
 		// TenantSummaries() — so /stats/overview and the sum of
 		// /tenants entries can't disagree. The cached
@@ -706,6 +828,12 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 		avgRowBytes = totalRawBytes / totalRows
 	}
 
+	// storage_by_class has no omitempty and the UI iterates it — emit [] not
+	// null when there are no classes (registry-only / empty-data deployments).
+	if classBD == nil {
+		classBD = []ClassBreakdown{}
+	}
+
 	resp := OverviewResponse{
 		Bucket:              a.cfg.Bucket,
 		Mode:                a.cfg.Mode,
@@ -722,9 +850,148 @@ func (a *API) handleOverview(w http.ResponseWriter, r *http.Request) {
 		StorageByClass:      classBD,
 		FleetNodes:          fleetNodes,
 		RegistryGeneration:  a.cfg.Registry.Generation(),
+		RetentionEnabled:    a.cfg.RetentionEnabled,
+		RetentionDefault:    a.cfg.RetentionDefault,
+		RetentionRules:      a.cfg.RetentionRules,
+	}
+	// Metadata footprint (RAM + disk) is CLUSTER-WIDE: sum the gossiped per-node
+	// footprints across all LIVE instances (NodeMetaAll already drops stale dead
+	// nodes via the TTL), so the Overview tiles reflect the whole fleet — the same
+	// scope S3 metadata already has. The per-node breakdown stays in the Fleet
+	// instances table (/stats/instances). Fall back to the local funcs when there
+	// is no registry or no gossiped entries yet (single-node / pre-first-tick).
+	resp.MetaResidentBytes, resp.MetaDiskBytes = a.clusterMetaFootprint()
+	if a.cfg.MetaS3Bytes != nil {
+		resp.MetaS3Bytes = a.cfg.MetaS3Bytes()
 	}
 
 	writeJSON(w, resp)
+}
+
+// clusterMetaFootprint returns the fleet-wide metadata RAM + disk footprint as
+// the sum over every live node's gossiped NodeMeta (stale nodes already excluded
+// by NodeMetaAll's TTL). When no registry is wired or no node-meta has been
+// recorded yet, it falls back to this node's local funcs so a single-node or
+// just-started deployment still reports a non-zero value.
+func (a *API) clusterMetaFootprint() (resident, disk int64) {
+	if a.cfg.Registry != nil {
+		nodeMeta := a.cfg.Registry.NodeMetaAll()
+		if len(nodeMeta) > 0 {
+			for _, nm := range nodeMeta {
+				resident += nm.ResidentBytes
+				disk += nm.DiskBytes
+			}
+			return resident, disk
+		}
+	}
+	if a.cfg.MetaResidentBytes != nil {
+		resident = a.cfg.MetaResidentBytes()
+	}
+	if a.cfg.MetaDiskBytes != nil {
+		disk = a.cfg.MetaDiskBytes()
+	}
+	return resident, disk
+}
+
+// handleInstances returns the per-instance metadata breakdown: one row per
+// fleet node with its gossiped pmeta-RAM + disk-cache footprint, plus the
+// cluster-wide on-S3 metadata total (repeated on every row). The self row is
+// always present and sorted first — even if the registry hasn't seen a
+// SetNodeMeta tick yet, it's synthesised from the local metadata funcs.
+func (a *API) handleInstances(w http.ResponseWriter, r *http.Request) {
+	var selfID string
+	nodeMeta := map[string]NodeMeta{}
+	if a.cfg.Registry != nil {
+		selfID = a.cfg.Registry.NodeID()
+		nodeMeta = a.cfg.Registry.NodeMetaAll()
+	}
+
+	var s3Bytes int64
+	if a.cfg.MetaS3Bytes != nil {
+		s3Bytes = a.cfg.MetaS3Bytes()
+	}
+
+	instances := make([]InstanceEntry, 0, len(nodeMeta)+1)
+	for nodeID, nm := range nodeMeta {
+		instances = append(instances, InstanceEntry{
+			NodeID:            nodeID,
+			IsSelf:            nodeID == selfID,
+			MetaResidentBytes: nm.ResidentBytes,
+			MetaDiskBytes:     nm.DiskBytes,
+			MetaS3Bytes:       s3Bytes,
+		})
+	}
+
+	// Synthesise the self row from the local funcs if no SetNodeMeta tick has
+	// landed yet (single-node startup, e2e). Source resident/disk directly so
+	// the row is never blank.
+	if _, ok := nodeMeta[selfID]; !ok && selfID != "" {
+		self := InstanceEntry{NodeID: selfID, IsSelf: true, MetaS3Bytes: s3Bytes}
+		if a.cfg.MetaResidentBytes != nil {
+			self.MetaResidentBytes = a.cfg.MetaResidentBytes()
+		}
+		if a.cfg.MetaDiskBytes != nil {
+			self.MetaDiskBytes = a.cfg.MetaDiskBytes()
+		}
+		instances = append(instances, self)
+	}
+
+	// Self first, then by node id.
+	sort.Slice(instances, func(i, j int) bool {
+		if instances[i].IsSelf != instances[j].IsSelf {
+			return instances[i].IsSelf
+		}
+		return instances[i].NodeID < instances[j].NodeID
+	})
+
+	writeJSON(w, InstancesResponse{Instances: instances})
+}
+
+// manifestClassBreakdown attributes every LIVE manifest file to a storage class
+// — age-predicted via the ClassTracker, or STANDARD when no tracker is
+// configured — so the per-class bytes AND files sum to the manifest-derived
+// headline totals (Files / Compressed). It iterates the same file set as
+// LiveAggregate(), guaranteeing the Storage Classes panel reconciles with the
+// overview headline. Returns nil when there's no manifest / no live files so the
+// caller can fall back to the registry's cumulative counters.
+func (a *API) manifestClassBreakdown() []ClassBreakdown {
+	if a.cfg.Manifest == nil {
+		return nil
+	}
+	now := time.Now()
+	type acc struct {
+		bytes int64
+		files int64
+	}
+	byClass := make(map[string]*acc)
+	for _, files := range a.cfg.Manifest.AllFiles() {
+		for _, fi := range files {
+			class := "STANDARD"
+			if a.cfg.ClassTracker != nil && !fi.CreatedAt.IsZero() {
+				if parts := strings.SplitN(fi.Key, "/", 3); len(parts) >= 2 {
+					class = a.cfg.ClassTracker.PredictClassForTenant(fi.CreatedAt, now, parts[0]+":"+parts[1])
+				} else {
+					class = a.cfg.ClassTracker.PredictClass(fi.CreatedAt, now)
+				}
+			}
+			e := byClass[class]
+			if e == nil {
+				e = &acc{}
+				byClass[class] = e
+			}
+			e.bytes += fi.Size
+			e.files++
+		}
+	}
+	if len(byClass) == 0 {
+		return nil
+	}
+	out := make([]ClassBreakdown, 0, len(byClass))
+	for class, e := range byClass {
+		out = append(out, ClassBreakdown{Class: class, Bytes: e.bytes, Files: e.files})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Bytes > out[j].Bytes })
+	return out
 }
 
 func (a *API) handleIngestion(w http.ResponseWriter, r *http.Request) {
@@ -1006,6 +1273,45 @@ func (a *API) handleCompression(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
+// pmetaCardinalityOf looks up a field's accurate cardinality, trying the field
+// name as-is and then the suffix after ":" so a traces label index entry like
+// "resource_attr:k8s.cluster.name" matches the bare "k8s.cluster.name" the pmeta
+// catalog is keyed by (the same shape hasBloomFilter handles).
+func pmetaCardinalityOf(fn func(string) uint64, name string) uint64 {
+	if c := fn(name); c > 0 {
+		return c
+	}
+	if idx := strings.LastIndex(name, ":"); idx >= 0 {
+		return fn(name[idx+1:])
+	}
+	return 0
+}
+
+// indexedFieldSet returns the field names whose cardinality the explorer actually
+// tracks for the current mode: the dimensional label columns fed to the per-field
+// HLL on every flush, plus the always-sketch id columns (trace_id/span_id and the
+// promoted id columns). A field outside this set has no sketch, so its 0 means
+// "not counted", not "no data" — the UI renders it "—".
+func (a *API) indexedFieldSet() map[string]struct{} {
+	set := make(map[string]struct{})
+	if a.cfg.Mode == "traces" {
+		for _, c := range schema.TraceLabelColumns {
+			set[c.Name] = struct{}{}
+		}
+	} else {
+		for _, c := range schema.LogLabelColumns {
+			set[c.Name] = struct{}{}
+		}
+	}
+	for _, f := range schema.DefaultSketchIDColumns {
+		set[f] = struct{}{}
+	}
+	for _, f := range a.cfg.AlwaysSketchFields {
+		set[f] = struct{}{}
+	}
+	return set
+}
+
 func (a *API) handleCardinality(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -1056,8 +1362,47 @@ func (a *API) handleCardinality(w http.ResponseWriter, r *http.Request) {
 	var totalPromoted, totalMap int
 	var warnings []string
 
+	indexedSet := a.indexedFieldSet()
+	isIndexed := func(name string) bool {
+		if _, ok := indexedSet[name]; ok {
+			return true
+		}
+		if idx := strings.LastIndex(name, ":"); idx >= 0 {
+			if _, ok := indexedSet[name[idx+1:]]; ok {
+				return true
+			}
+		}
+		return false
+	}
+	// Per-field storage is exact for files that carry ColumnBytes; older files
+	// (written before the feature) don't yet, so scale the covered per-field bytes
+	// up to the full on-S3 total. The column shows real-magnitude storage
+	// immediately and converges to exact as compaction/new flushes backfill
+	// ColumnBytes (scale → 1 at full coverage).
+	storageScale := 1.0
+	if a.cfg.StatsAggregate != nil {
+		if covered := a.cfg.StatsAggregate.CoveredStorage(); covered > 0 {
+			if total := a.cfg.StatsAggregate.TotalStorage(); total > covered {
+				storageScale = float64(total) / float64(covered)
+			}
+		}
+	}
+	storageOf := func(name string) int64 {
+		if a.cfg.StatsAggregate == nil {
+			return 0
+		}
+		return int64(float64(a.cfg.StatsAggregate.StorageBytesOf(name)) * storageScale)
+	}
+
 	for _, li := range allLabels {
 		card := li.Cardinality
+		// Prefer the accurate pmeta HLL estimate (fed on flush, merged in
+		// compaction) over the lazily-populated, 100-capped LabelIndex count.
+		if a.cfg.PmetaCardinality != nil {
+			if pc := pmetaCardinalityOf(a.cfg.PmetaCardinality, li.Name); pc > 0 {
+				card = int(pc)
+			}
+		}
 
 		if tenantFilter != "" && li.PerTenant != nil {
 			if tc, ok := li.PerTenant[tenantFilter]; ok {
@@ -1082,10 +1427,12 @@ func (a *API) handleCardinality(w http.ResponseWriter, r *http.Request) {
 		}
 
 		fields = append(fields, FieldEntry{
-			Name:        li.Name,
-			Cardinality: card,
-			Type:        fieldType,
-			HasBloom:    hasBloom,
+			Name:         li.Name,
+			Cardinality:  card,
+			Type:         fieldType,
+			HasBloom:     hasBloom,
+			Indexed:      isIndexed(li.Name),
+			StorageBytes: storageOf(li.Name),
 		})
 	}
 
@@ -1118,6 +1465,137 @@ func (a *API) handleCardinality(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
+// handleFields backs the Storage Details tab: a per-field EXACT storage +
+// metadata table. Storage comes from the size-stats aggregate's FieldSizes (with
+// the SAME covered→total scaling handleCardinality applies, so the magnitudes
+// match the Cardinality Explorer); metadata from MetadataBytesByField (exact pmeta
+// bloom + catalog/HLL bytes, nil-safe); cardinality/has_bloom/indexed from the
+// same sources handleCardinality reads. Sorted by storage descending.
+func (a *API) handleFields(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Bloom membership: same matcher as the Cardinality Explorer (exact name, then
+	// the suffix after ':' so "resource_attr:service.name" matches "service.name").
+	bloomSet := make(map[string]struct{}, len(a.cfg.BloomColumns))
+	for _, col := range a.cfg.BloomColumns {
+		bloomSet[col] = struct{}{}
+	}
+	hasBloomFilter := func(name string) bool {
+		if _, ok := bloomSet[name]; ok {
+			return true
+		}
+		if idx := strings.LastIndex(name, ":"); idx >= 0 {
+			if _, ok := bloomSet[name[idx+1:]]; ok {
+				return true
+			}
+		}
+		return false
+	}
+
+	indexedSet := a.indexedFieldSet()
+	isIndexed := func(name string) bool {
+		if _, ok := indexedSet[name]; ok {
+			return true
+		}
+		if idx := strings.LastIndex(name, ":"); idx >= 0 {
+			if _, ok := indexedSet[name[idx+1:]]; ok {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Per-field storage is exact for files that carry ColumnBytes; older files
+	// don't yet, so scale the covered per-field bytes up to the full on-S3 total —
+	// IDENTICAL to handleCardinality so the two views report the same magnitudes
+	// (scale → 1 at full coverage).
+	storageScale := 1.0
+	if a.cfg.StatsAggregate != nil {
+		if covered := a.cfg.StatsAggregate.CoveredStorage(); covered > 0 {
+			if total := a.cfg.StatsAggregate.TotalStorage(); total > covered {
+				storageScale = float64(total) / float64(covered)
+			}
+		}
+	}
+
+	// Field universe: every Parquet column with storage, unioned with the label
+	// index's tracked fields (cardinality source) and the fields with metadata
+	// bytes — so a field that has storage or metadata but no label-index entry
+	// still appears in the table.
+	metaByField := map[string]int64(nil)
+	if a.cfg.MetadataBytesByField != nil {
+		metaByField = a.cfg.MetadataBytesByField()
+	}
+	var fieldSizes map[string]FieldSize
+	if a.cfg.StatsAggregate != nil {
+		fieldSizes = a.cfg.StatsAggregate.FieldSizes()
+	}
+	cardOf := func(name string) int {
+		if a.cfg.PmetaCardinality != nil {
+			if pc := pmetaCardinalityOf(a.cfg.PmetaCardinality, name); pc > 0 {
+				return int(pc)
+			}
+		}
+		return 0
+	}
+
+	seen := make(map[string]struct{})
+	add := func(name string) {
+		if name == "" {
+			return
+		}
+		seen[name] = struct{}{}
+	}
+	if a.cfg.LabelIndex != nil {
+		for _, li := range a.cfg.LabelIndex.GetAllLabelInfo() {
+			add(li.Name)
+		}
+	}
+	for name := range fieldSizes {
+		add(name)
+	}
+	for name := range metaByField {
+		add(name)
+	}
+
+	fields := make([]FieldStorageEntry, 0, len(seen))
+	for name := range seen {
+		var storage int64
+		if a.cfg.StatsAggregate != nil {
+			storage = int64(float64(a.cfg.StatsAggregate.StorageBytesOf(name)) * storageScale)
+		}
+		card := cardOf(name)
+		// Cardinality lookup tolerates the "resource_attr:service.name" → "service.name"
+		// shape; the metadata map is keyed by the bare Parquet column, so try both.
+		meta := metaByField[name]
+		if meta == 0 {
+			if idx := strings.LastIndex(name, ":"); idx >= 0 {
+				meta = metaByField[name[idx+1:]]
+			}
+		}
+		fields = append(fields, FieldStorageEntry{
+			Name:          name,
+			StorageBytes:  storage,
+			MetadataBytes: meta,
+			Cardinality:   card,
+			HasBloom:      hasBloomFilter(name),
+			Indexed:       isIndexed(name),
+		})
+	}
+
+	sort.Slice(fields, func(i, j int) bool {
+		if fields[i].StorageBytes != fields[j].StorageBytes {
+			return fields[i].StorageBytes > fields[j].StorageBytes
+		}
+		return fields[i].Name < fields[j].Name
+	})
+
+	writeJSON(w, FieldsResponse{Fields: fields})
+}
+
 func (a *API) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -1146,12 +1624,16 @@ func (a *API) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 		labels = []string{filterLabel}
 	}
 
-	// Total bytes/files from manifest for proportional estimation.
+	// Total bytes/files from manifest for proportional estimation. Use the LIVE
+	// aggregate (same source as /stats/overview's headline) so a value's
+	// estimated_bytes scales against the same total shown up top, instead of the
+	// cached counters which can drift after a partial S3 refresh.
 	var totalBytes int64
 	var totalFiles int64
 	if a.cfg.Manifest != nil {
-		totalBytes = a.cfg.Manifest.TotalBytes()
-		totalFiles = int64(a.cfg.Manifest.TotalFiles())
+		live := a.cfg.Manifest.LiveAggregate()
+		totalBytes = live.Bytes
+		totalFiles = int64(live.Files)
 	}
 
 	result := make([]BreakdownLabel, 0, len(labels))
@@ -1190,40 +1672,61 @@ func (a *API) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 			Type: fieldType,
 		}
 
-		if li != nil && len(li.Values) > 0 {
-			bl.Cardinality = li.Cardinality
-			values := li.Values
-
-			// Compute total occurrence weight across all values for proportional split.
-			var totalWeight int64
-			for _, v := range values {
-				c := li.ValueCounts[v]
-				if c < 1 {
-					c = 1
-				}
-				totalWeight += int64(c)
-			}
-
-			// Cap displayed values after weight calculation.
-			if len(values) > 50 {
-				values = values[:50]
-			}
-
-			bv := make([]BreakdownValue, 0, len(values))
-			for _, v := range values {
+		// Per-value row counts from the manifest's LabelAggregates — the REAL,
+		// durable distribution (survives restart; covers all dimensional fields
+		// incl. dedicated columns). The lazily-populated label index is only a
+		// last resort: after a restart it keeps the value list but loses per-value
+		// counts, which would render every value at a flat 1/N share.
+		var counts map[string]int64
+		if a.cfg.Manifest != nil {
+			counts = a.cfg.Manifest.LabelValueCounts(name)
+		}
+		if len(counts) == 0 && li != nil && len(li.Values) > 0 {
+			counts = make(map[string]int64, len(li.Values))
+			for _, v := range li.Values {
 				c := int64(li.ValueCounts[v])
 				if c < 1 {
 					c = 1
 				}
-				share := float64(c) / float64(max64(totalWeight, 1))
-				estBytes := int64(share * float64(totalBytes))
-				estFiles := int64(share * float64(totalFiles))
-				sharePct := share * 100.0
+				counts[v] = c
+			}
+		}
+
+		// Cardinality: the accurate pmeta count (same source as the cardinality
+		// endpoint), else the number of enumerated values.
+		if a.cfg.PmetaCardinality != nil {
+			if pc := pmetaCardinalityOf(a.cfg.PmetaCardinality, name); pc > 0 {
+				bl.Cardinality = int(pc)
+			}
+		}
+		if bl.Cardinality == 0 {
+			bl.Cardinality = len(counts)
+		}
+
+		if len(counts) > 0 {
+			type kv struct {
+				v string
+				c int64
+			}
+			kvs := make([]kv, 0, len(counts))
+			var totalWeight int64
+			for v, c := range counts {
+				kvs = append(kvs, kv{v, c})
+				totalWeight += c
+			}
+			// Largest share first; cap displayed values.
+			sort.Slice(kvs, func(i, j int) bool { return kvs[i].c > kvs[j].c })
+			if len(kvs) > 50 {
+				kvs = kvs[:50]
+			}
+			bv := make([]BreakdownValue, 0, len(kvs))
+			for _, e := range kvs {
+				share := float64(e.c) / float64(max64(totalWeight, 1))
 				bv = append(bv, BreakdownValue{
-					Value:          v,
-					EstimatedBytes: estBytes,
-					EstimatedFiles: estFiles,
-					SharePct:       sharePct,
+					Value:          e.v,
+					EstimatedBytes: int64(share * float64(totalBytes)),
+					EstimatedFiles: int64(share * float64(totalFiles)),
+					SharePct:       share * 100.0,
 				})
 			}
 			bl.Values = bv
@@ -1282,6 +1785,11 @@ func max64(a, b int64) int64 {
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	// Stats are recomputed every request and change as data flushes/compacts.
+	// Without this, a 200 with no Cache-Control gets heuristically cached by the
+	// browser, so the UI shows stale numbers (e.g. a pre-fix flat breakdown) even
+	// after a reload until a hard refresh. Force revalidation.
+	w.Header().Set("Cache-Control", "no-store, must-revalidate")
 	_ = json.NewEncoder(w).Encode(v)
 }
 

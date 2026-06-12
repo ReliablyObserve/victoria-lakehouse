@@ -36,7 +36,11 @@ func (o poolObjectStore) GetObject(ctx context.Context, key string) ([]byte, err
 type catalogFileMetaProvider struct{ store *pmeta.Store }
 
 func (p catalogFileMetaProvider) FileMeta(partition, fileKey string) (manifest.FileMeta, bool) {
-	v, ok := p.store.FileMeta(partition, fileKey)
+	// The pmeta facet is keyed by the tenant-isolated partition (full key dir),
+	// while the manifest keys files by the pure dt=/hour= partition — so derive
+	// the facet partition from the file key, not the manifest-supplied one, or
+	// EnrichFromProvider's lookup would always miss.
+	v, ok := p.store.FileMeta(manifest.ExtractTenantPartition(fileKey), fileKey)
 	if !ok {
 		return manifest.FileMeta{}, false
 	}
@@ -78,7 +82,7 @@ func newCatalogStore(cfg config.PmetaConfig, prefix string) *pmeta.Store {
 	dict := pmeta.NewDict()
 	s.SetDict(dict) // include the interned strings in ResidentBytes
 	s.Register(pmeta.FacetFieldCatalog,
-		pmeta.NewFieldCatalogFactoryCapped(dict, threshold, cfg.AlwaysSketchFields))
+		pmeta.NewFieldCatalogFactoryCapped(dict, threshold, effectiveSketchFields(cfg.AlwaysSketchFields)))
 	s.Register(pmeta.FacetFileMeta, pmeta.NewFileMetaFactory()) // dual-write of _file_metadata.json
 	s.Register(pmeta.FacetBloom, pmeta.NewBloomFactory(0.01))   // dual-write of _bloom.bin (same fpRate)
 	return s
@@ -137,66 +141,115 @@ func (o *catalogObserver) OnFileFlush(partition string, fi manifest.FileInfo, la
 // tapLogRows folds the configured always-sketch id columns (trace_id, span_id)
 // from a flushed file's log rows into their per-field HLL, streaming straight off
 // the row structs (no slice materialized), then updates the cardinality gauge.
-func (o *catalogObserver) tapLogRows(rows []schema.LogRow) {
-	if o == nil || o.store == nil || len(o.sketch) == 0 {
+func (o *catalogObserver) tapLogRows(partition string, rows []schema.LogRow) {
+	if o == nil || o.store == nil || len(rows) == 0 {
 		return
 	}
-	if o.sketch["trace_id"] {
-		o.store.AddCardinality("trace_id", func(yield func(string) bool) {
+	// Dimensional explorer fields: maintain an accurate, global per-field HLL so
+	// the Cardinality Explorer reports REAL distinct counts. This replaces the
+	// lazy, query-populated LabelIndex (which only sees fields a scan happened to
+	// open and caps at 100). Fed on every flush; the store merges across files +
+	// compaction, so Store.Cardinality(field) is the deterministic global answer.
+	for _, c := range schema.LogLabelColumns {
+		col := c
+		o.store.AddCardinality(col.Name, func(yield func(string) bool) {
 			for i := range rows {
-				if !yield(rows[i].TraceID) {
+				if !yield(col.Get(&rows[i])) {
 					return
 				}
 			}
 		})
-		metrics.CatalogFieldCardinality.Set("trace_id", int64(o.store.Cardinality("trace_id")))
 	}
-	if o.sketch["span_id"] {
-		o.store.AddCardinality("span_id", func(yield func(string) bool) {
+	for _, c := range schema.LogSketchIDColumns {
+		col := c
+		if !o.sketch[col.Name] {
+			continue
+		}
+		o.sketchID(partition, col.Name, func(yield func(string) bool) {
 			for i := range rows {
-				if !yield(rows[i].SpanID) {
+				if !yield(col.Get(&rows[i])) {
 					return
 				}
 			}
 		})
-		metrics.CatalogFieldCardinality.Set("span_id", int64(o.store.Cardinality("span_id")))
 	}
 }
 
 // tapTraceRows is tapLogRows for trace rows.
-func (o *catalogObserver) tapTraceRows(rows []schema.TraceRow) {
-	if o == nil || o.store == nil || len(o.sketch) == 0 {
+func (o *catalogObserver) tapTraceRows(partition string, rows []schema.TraceRow) {
+	if o == nil || o.store == nil || len(rows) == 0 {
 		return
 	}
-	if o.sketch["trace_id"] {
-		o.store.AddCardinality("trace_id", func(yield func(string) bool) {
+	// Dimensional explorer fields — see tapLogRows.
+	for _, c := range schema.TraceLabelColumns {
+		col := c
+		o.store.AddCardinality(col.Name, func(yield func(string) bool) {
 			for i := range rows {
-				if !yield(rows[i].TraceID) {
+				if !yield(col.Get(&rows[i])) {
 					return
 				}
 			}
 		})
-		metrics.CatalogFieldCardinality.Set("trace_id", int64(o.store.Cardinality("trace_id")))
 	}
-	if o.sketch["span_id"] {
-		o.store.AddCardinality("span_id", func(yield func(string) bool) {
+	for _, c := range schema.TraceSketchIDColumns {
+		col := c
+		if !o.sketch[col.Name] {
+			continue
+		}
+		o.sketchID(partition, col.Name, func(yield func(string) bool) {
 			for i := range rows {
-				if !yield(rows[i].SpanID) {
+				if !yield(col.Get(&rows[i])) {
 					return
 				}
 			}
 		})
-		metrics.CatalogFieldCardinality.Set("span_id", int64(o.store.Cardinality("span_id")))
 	}
 }
 
-// sketchSet builds the always-sketch field lookup from config.
+// sketchID feeds an always-sketch id column's per-file values into BOTH the global
+// RAM sketch (the live Cardinality Explorer metric, Store.Cardinality) and the
+// partition's PERSISTED catalog HLL (Store.AddPartitionCardinality) so the distinct
+// count survives restart via the bundle — the durability gap where trace_id/span_id
+// reset on restart (their sketch was RAM-only). vals is replayed once per sink,
+// straight off the row structs (no slice materialized).
+func (o *catalogObserver) sketchID(partition, field string, vals func(func(string) bool)) {
+	o.store.AddCardinality(field, vals)
+	o.store.AddPartitionCardinality(partition, field, vals)
+	metrics.CatalogFieldCardinality.Set(field, int64(o.store.Cardinality(field)))
+}
+
+// effectiveSketchFields unions the operator-configured always-sketch fields with
+// the built-in schema.DefaultSketchIDColumns (container.id, service.instance.id,
+// the trace ids), so the promoted id columns are sketched + persisted out of the
+// box even when an operator's YAML replaces always_sketch_fields with its own
+// list. Configured fields first, then any defaults not already present.
+func effectiveSketchFields(cfgFields []string) []string {
+	out := make([]string, 0, len(cfgFields)+len(schema.DefaultSketchIDColumns))
+	seen := make(map[string]bool, len(cfgFields)+len(schema.DefaultSketchIDColumns))
+	for _, f := range cfgFields {
+		if f != "" && !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	for _, f := range schema.DefaultSketchIDColumns {
+		if !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// sketchSet builds the always-sketch field lookup from config, with the built-in
+// id columns unioned in (see effectiveSketchFields).
 func sketchSet(fields []string) map[string]bool {
-	if len(fields) == 0 {
+	eff := effectiveSketchFields(fields)
+	if len(eff) == 0 {
 		return nil
 	}
-	m := make(map[string]bool, len(fields))
-	for _, f := range fields {
+	m := make(map[string]bool, len(eff))
+	for _, f := range eff {
 		m[f] = true
 	}
 	return m
@@ -220,7 +273,7 @@ func (s *Storage) catalogFieldValues(q *logstorage.Query, fieldName string, limi
 		catLimit = int(limit)
 	}
 	for _, fi := range s.manifest.GetFilesForRange(startNs, endNs) {
-		p := manifest.ExtractPartition(fi.Key)
+		p := manifest.ExtractTenantPartition(fi.Key)
 		if _, ok := seen[p]; ok {
 			continue
 		}
@@ -258,7 +311,7 @@ func (s *Storage) catalogFieldNames(q *logstorage.Query) []string {
 	seen := make(map[string]struct{}, 16)
 	nameset := make(map[string]struct{})
 	for _, fi := range s.manifest.GetFilesForRange(startNs, endNs) {
-		p := manifest.ExtractPartition(fi.Key)
+		p := manifest.ExtractTenantPartition(fi.Key)
 		if _, ok := seen[p]; ok {
 			continue
 		}
@@ -287,16 +340,19 @@ func (s *Storage) WarmCatalog(ctx context.Context) {
 	if s.catalog == nil {
 		return
 	}
-	for partition, files := range s.manifest.AllFiles() {
+	for _, files := range s.manifest.AllFiles() {
 		if ctx.Err() != nil {
 			return
 		}
 		for _, fi := range files {
 			// Replay, not flush: manifest-derived content is already durable, so
 			// it must NOT mark bundles dirty (a dirty mark here re-PUT every
-			// partition bundle on the first flush after every restart).
+			// partition bundle on the first flush after every restart). Key the
+			// facet by the tenant-isolated partition (derived from the file key),
+			// matching the live writer flush — NOT the manifest's pure dt=/hour=
+			// key, or the warmed facet wouldn't be found by the tenant-scoped reads.
 			s.catalog.OnFileReplay(pmeta.FileContribution{
-				Partition:         partition,
+				Partition:         manifest.ExtractTenantPartition(fi.Key),
 				FileKey:           fi.Key,
 				RowCount:          fi.RowCount,
 				MinTimeNs:         fi.MinTimeNs,
@@ -320,12 +376,28 @@ func (s *Storage) WarmCatalogFromS3(ctx context.Context) {
 	if s.catalog == nil || s.pool == nil {
 		return
 	}
-	parts := make([]string, 0, 64)
-	for p := range s.manifest.AllFiles() {
-		parts = append(parts, p)
+	// Warm by the TENANT-isolated partition (the full key dir) — bundles are
+	// persisted under it (matching the live flush), NOT under the manifest's pure
+	// dt=/hour= partition. Group the manifest's files by their tenant partition so
+	// both the bundle GETs and the self-heal rebuild key the same way the bundle
+	// was written; a mismatch would miss every bundle and silently drop the bloom
+	// facet (which is NOT rebuildable from the manifest) on every cold restart.
+	filesByTP := make(map[string][]manifest.FileInfo, 64)
+	for _, files := range s.manifest.AllFiles() {
+		for _, fi := range files {
+			tp := manifest.ExtractTenantPartition(fi.Key)
+			if tp == "" {
+				continue
+			}
+			filesByTP[tp] = append(filesByTP[tp], fi)
+		}
 	}
-	if len(parts) == 0 {
+	if len(filesByTP) == 0 {
 		return
+	}
+	parts := make([]string, 0, len(filesByTP))
+	for tp := range filesByTP {
+		parts = append(parts, tp)
 	}
 	res := s.catalog.WarmPartitions(ctx, poolObjectStore{s.pool}, parts, 8)
 
@@ -340,7 +412,7 @@ func (s *Storage) WarmCatalogFromS3(ctx context.Context) {
 		rebuild = append(rebuild, p)
 	}
 	for _, p := range rebuild {
-		files := s.manifest.FilesForPartition(p)
+		files := filesByTP[p]
 		cs := make([]pmeta.FileContribution, 0, len(files))
 		for _, fi := range files {
 			cs = append(cs, pmeta.FileContribution{
@@ -378,7 +450,7 @@ func (s *Storage) PmetaOnCompacted(added []manifest.FileInfo, removed []string, 
 			}
 		}
 		s.catalog.OnFileFlush(pmeta.FileContribution{
-			Partition:         manifest.ExtractPartition(fi.Key),
+			Partition:         manifest.ExtractTenantPartition(fi.Key),
 			FileKey:           fi.Key,
 			RowCount:          fi.RowCount,
 			MinTimeNs:         fi.MinTimeNs,
@@ -392,7 +464,7 @@ func (s *Storage) PmetaOnCompacted(added []manifest.FileInfo, removed []string, 
 	}
 	byPart := make(map[string][]string)
 	for _, k := range removed {
-		p := manifest.ExtractPartition(k)
+		p := manifest.ExtractTenantPartition(k)
 		byPart[p] = append(byPart[p], k)
 	}
 	for p, keys := range byPart {
@@ -407,14 +479,19 @@ func (s *Storage) PmetaOnFileExpired(partition, key string) {
 	if s.catalog == nil {
 		return
 	}
-	s.catalog.RemoveFiles(partition, []string{key})
+	// The retention loop hands us the manifest's pure dt=/hour= partition, but the
+	// pmeta facet/bundle is keyed by the tenant-isolated partition (full key dir).
+	// Derive that from the file key so the facet removal + bundle eviction hit the
+	// right bundle; the manifest emptiness check stays on the manifest partition.
+	tp := manifest.ExtractTenantPartition(key)
+	s.catalog.RemoveFiles(tp, []string{key})
 	if len(s.manifest.FilesForPartition(partition)) == 0 {
-		s.catalog.Remove(partition)
+		s.catalog.Remove(tp)
 		if s.pool != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if err := s.pool.Delete(ctx, s.catalog.BundleKey(partition)); err != nil {
-				logger.Warnf("pmeta: delete expired bundle %s: %v", partition, err)
+			if err := s.pool.Delete(ctx, s.catalog.BundleKey(tp)); err != nil {
+				logger.Warnf("pmeta: delete expired bundle %s: %v", tp, err)
 			}
 		}
 	}
@@ -428,7 +505,7 @@ func (s *Storage) refuseEnumeration(field string) bool {
 	if s.catalog == nil || !s.cfg.Pmeta.RefuseSketchEnumeration {
 		return false
 	}
-	for _, f := range s.cfg.Pmeta.AlwaysSketchFields {
+	for _, f := range effectiveSketchFields(s.cfg.Pmeta.AlwaysSketchFields) {
 		if f == field {
 			return true
 		}

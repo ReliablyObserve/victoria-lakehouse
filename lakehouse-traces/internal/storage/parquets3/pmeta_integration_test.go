@@ -53,7 +53,7 @@ func TestInteg_PmetaCatalog_TracesCrossPathParity(t *testing.T) {
 	if len(files) == 0 {
 		t.Fatal("no files registered after trace flush")
 	}
-	part := manifest.ExtractPartition(files[0].Key)
+	part := manifest.ExtractTenantPartition(files[0].Key)
 
 	// Catalog fed correctly for both trace facet fields.
 	if got, want := catalog.FieldValues(part, "service.name", "", 0),
@@ -111,7 +111,7 @@ func TestInteg_PmetaFlip_TracesBloomFacet(t *testing.T) {
 		t.Fatal("no files after trace flush")
 	}
 	fi := files[0]
-	part := manifest.ExtractPartition(fi.Key)
+	part := manifest.ExtractTenantPartition(fi.Key)
 
 	// Facet was fed at flush: a present value is found.
 	got, ok := s.catalog.BloomMayContain(part, []string{fi.Key}, "service.name", "api-gateway")
@@ -162,7 +162,7 @@ func TestInteg_PmetaFlip_BloomHybridColdRestart(t *testing.T) {
 	if _, err := s.catalog.PersistDirty(context.Background(), poolObjectStore{s.pool}); err != nil {
 		t.Fatal(err)
 	}
-	part := manifest.ExtractPartition(fi.Key)
+	part := manifest.ExtractTenantPartition(fi.Key)
 	fresh := newCatalogStore(s.cfg.Pmeta, "logs/")
 	if res := fresh.WarmPartitions(context.Background(), poolObjectStore{s.pool}, []string{part}, 2); res.Loaded == 0 {
 		t.Fatalf("bundle not warmed (NeedsRebuild=%v)", res.NeedsRebuild)

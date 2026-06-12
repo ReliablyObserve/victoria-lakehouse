@@ -155,6 +155,7 @@ var (
 	tenantMetricsFormat     = flag.String("lakehouse.tenant.metrics-format", "", "Prometheus tenant label format: id, name, both (default: id)")
 	tenantAutoRegister      = flag.Bool("lakehouse.tenant.auto-register", false, "Auto-register unknown X-Scope-OrgID tenants")
 	tenantAliasSyncInterval = flag.Duration("lakehouse.tenant.alias-sync-interval", 0, "Fleet sync interval for runtime aliases (default: 30s)")
+	tenantAliases           = flag.String("lakehouse.tenant.alias", "", "Static tenant aliases: comma-separated orgid:account:project (e.g. acme-corp:1001:0,staging-team:1002:0). Re-applied every startup as the reconstruction baseline; merged with S3-persisted runtime aliases.")
 
 	pmetaEnabled       = flag.Bool("lakehouse.pmeta.enabled", true, "Unified partition-metadata layer (catalog + file-meta + bloom facets). Disabling is a degraded mode: no metadata for new files")
 	pmetaAlwaysSketch  = flag.String("lakehouse.pmeta.always-sketch-fields", "", "Comma-separated id columns to sketch instead of enumerate (e.g. trace_id,span_id)")
@@ -357,6 +358,11 @@ func run(cfg *config.Config, addr string) {
 
 	// --- Tenant stats ---
 	registry := stats.NewTenantRegistry(hostname())
+	// Age out dead nodes: the node id is the ephemeral container hostname, so
+	// stale entries loaded from the shared S3 snapshot must expire from the fleet
+	// view (/stats/instances + the cluster-wide Overview sum) once they stop
+	// gossiping. Self is always kept fresh by the per-tick SetNodeMeta.
+	registry.SetNodeMetaTTL(cfg.Stats.NodeMetaTTL)
 
 	if w := store.Writer(); w != nil {
 		fallback := writerTenantKey
@@ -438,6 +444,8 @@ func run(cfg *config.Config, addr string) {
 		logger.Infof("tenant overrides pending alias resolution: %v", pending)
 	}
 	startTenantPolicyRefresh(cfg, policy, stopCh)
+	startTenantAliasPersist(cfg, resolver, persister, stopCh)
+	startPeerDiscovery(cfg, store, stopCh)
 	// Publish to the compaction lookup closure now that the registry
 	// is built; from the next compaction tick onward the closure
 	// returns per-tenant compression schedules instead of nil-no-op.
@@ -493,7 +501,22 @@ func run(cfg *config.Config, addr string) {
 			cfg.SmartCache.MaxAge, cfg.SmartCache.SnapshotInterval)
 	}
 
-	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister, policy)
+	// Size-stats aggregate: maintained by manifest add/remove diffs (flush +
+	// compaction), seeded by a Recompute after warm-load and reconciled on each
+	// manifest refresh (see runStartup). Read in O(1) by the stats API.
+	var statsAgg *stats.StatsAggregate
+	if cfg.Stats.Enabled {
+		statsAgg = stats.NewStatsAggregate()
+		store.Manifest().SetChangeObserver(statsAgg.OnAdd, statsAgg.OnRemove)
+		// Cold-start accelerator: seed from the S3 sidecar so the stats API can
+		// serve sizes before the warm-load Recompute finishes (which then corrects
+		// any staleness). Missing object on a brand-new bucket is expected.
+		if err := statsAgg.LoadFromS3(context.Background(), store.Pool(), cfg.AutoPrefix()+stats.AggregateSidecarKeySuffix); err == nil {
+			logger.Infof("loaded stats-aggregate sidecar from S3 (cold-start cache)")
+		}
+	}
+
+	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister, policy, statsAgg)
 
 	// Wire the compaction drain endpoint (spec §11.1). The preStop
 	// hook in the chart POSTs here to initiate a graceful drain
@@ -524,7 +547,7 @@ func run(cfg *config.Config, addr string) {
 		return true
 	}
 
-	go runStartup(sm, cfg, store, registry, writerTenantKey)
+	go runStartup(sm, cfg, store, registry, writerTenantKey, statsAgg)
 
 	httpserver.Serve([]string{addr}, requestHandler, httpserver.ServeOptions{})
 	logger.Infof("lakehouse-logs listening; addr=%s", addr)
@@ -770,6 +793,41 @@ func setupCompaction(
 // startTenantAliasSync starts the SyncPusher that propagates tenant
 // alias registrations across the peer ring. Returns the cancel func
 // (nil when no sync is needed) so the caller can defer it.
+// startPeerDiscovery resolves the gossip peer ring on the configured interval so
+// the stats + tenant-alias SyncPushers (and Phase D fleet metadata) actually have
+// peers to push to. Without this RefreshDiscovery is never called and GetPeers()
+// is always empty — single-instance works, but multi-instance silently never
+// gossips. No-op unless a peer headless service is configured.
+func startPeerDiscovery(cfg *config.Config, store *parquets3.Storage, stopCh <-chan struct{}) {
+	if cfg.Discovery.PeerHeadlessService == "" {
+		return
+	}
+	interval := cfg.Discovery.PeerRefreshInterval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	refresh := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := store.RefreshDiscovery(ctx); err != nil {
+			logger.Warnf("peer discovery refresh: %s", err)
+		}
+	}
+	go func() {
+		refresh() // resolve once promptly so gossip starts without a full interval wait
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-t.C:
+				refresh()
+			}
+		}
+	}()
+}
+
 func startTenantAliasSync(cfg *config.Config, store *parquets3.Storage, resolver *tenant.TenantResolver, addr string) context.CancelFunc {
 	if resolver == nil {
 		return nil
@@ -809,6 +867,38 @@ func startTenantPolicyRefresh(cfg *config.Config, policy *tenant.PolicyRegistry,
 				return
 			case <-t.C:
 				policy.Refresh()
+			}
+		}
+	}()
+}
+
+// startTenantAliasPersist periodically writes the resolver's full alias set to
+// S3 so runtime-registered (auto-register / fleet-synced) tenants survive a
+// restart. Config aliases reconstruct the baseline every startup; this persists
+// everything else and keeps the S3 snapshot fresh. Saves only on change.
+func startTenantAliasPersist(cfg *config.Config, resolver *tenant.TenantResolver, persister *tenant.S3Persister, stopCh <-chan struct{}) {
+	if resolver == nil || persister == nil || cfg.Tenant.AliasSyncInterval <= 0 {
+		return
+	}
+	go func() {
+		t := time.NewTicker(cfg.Tenant.AliasSyncInterval)
+		defer t.Stop()
+		lastN := -1
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-t.C:
+				aliases := resolver.AllAliases()
+				if len(aliases) == lastN {
+					continue
+				}
+				if err := persister.SaveAliases(aliases); err != nil {
+					logger.Warnf("failed to persist tenant aliases to S3: %s", err)
+					continue
+				}
+				lastN = len(aliases)
+				logger.Infof("persisted %d tenant aliases to S3", len(aliases))
 			}
 		}
 	}()
@@ -962,7 +1052,7 @@ func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *sta
 	}()
 }
 
-func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister, policy *tenant.PolicyRegistry) *http.ServeMux {
+func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister, policy *tenant.PolicyRegistry, statsAgg *stats.StatsAggregate) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	metrics.NewInfoGauge("lakehouse_info", map[string]string{
@@ -1187,21 +1277,37 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		})
 	}
 
-	// Stats API
+	// Stats API. statsAgg (the materialized size-stats aggregate) is created and
+	// observer-wired by the caller and passed in; the API reads it in O(1).
 	if cfg.Stats.Enabled {
 		statsAPI := stats.NewAPI(stats.APIConfig{
-			Registry:                 registry,
-			Manifest:                 store.Manifest(),
-			CostCalc:                 costCalc,
-			ClassTracker:             classTracker,
-			LabelIndex:               store.LabelIndex(),
-			SchemaRegistry:           store.SchemaRegistry(),
-			Resolver:                 resolver,
-			Policy:                   policy,
-			Mode:                     "logs",
-			Bucket:                   cfg.S3.Bucket,
-			BloomColumns:             cfg.ActiveBloomColumns(),
-			BreakdownLabels:          cfg.Stats.BreakdownLabels,
+			Registry:       registry,
+			Manifest:       store.Manifest(),
+			CostCalc:       costCalc,
+			ClassTracker:   classTracker,
+			LabelIndex:     store.LabelIndex(),
+			SchemaRegistry: store.SchemaRegistry(),
+			Resolver:       resolver,
+			Policy:         policy,
+			Mode:           "logs",
+			Bucket:         cfg.S3.Bucket,
+			// The schema bloom set the writer/compactor actually emit (Tier-1
+			// dedicated columns + slots + legacy), NOT the bare operator list —
+			// so the Cardinality Explorer's has_bloom reflects what's on disk.
+			BloomColumns:         cfg.WrittenBloomColumns(),
+			BreakdownLabels:      cfg.Stats.BreakdownLabels,
+			AlwaysSketchFields:   cfg.Pmeta.AlwaysSketchFields,
+			PmetaCardinality:     store.PmetaCardinality,
+			StatsAggregate:       statsAgg,
+			MetaResidentBytes:    store.PmetaResidentBytes,
+			MetaDiskBytes:        store.DiskCacheBytes,
+			MetaS3Bytes:          statsAgg.MetaS3,
+			MetaBytesByTenant:    store.PmetaPersistedBytesByTenant,
+			MetadataBytesByField: store.PmetaMetadataBytesByField,
+			RetentionEnabled:     cfg.Retention.Enabled,
+			RetentionDefault:     cfg.Retention.Default,
+			RetentionRules:       len(cfg.Retention.Rules),
+			// #171: compaction-hints endpoint inputs (stale-schema + zstd schedule).
 			CurrentSchemaFingerprint: parquets3.CurrentSchemaFingerprint(cfg.Mode),
 			CompactionConfig:         cfg.Compaction,
 		})
@@ -1267,7 +1373,7 @@ func parseTenantPrefix(prefix string) (uint32, uint32, bool) {
 	return uint32(acct), uint32(proj), true
 }
 
-func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, tenantKey string) {
+func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, tenantKey string, statsAgg *stats.StatsAggregate) {
 	// Phase 1 (foreground): disk recovery + manifest-files gate.
 	// See lakehouse-traces/main.go runStartup for full semantics.
 	sm.SetPhase(startup.PhaseDiskRecovery)
@@ -1323,6 +1429,31 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 			store.WarmCatalogFromS3(ctx) // load pmeta bundles (file-meta + bloom) BEFORE WarmMetadata enriches from them
 			store.WarmMetadata(ctx)
 			store.WarmCatalog(ctx) // re-derive catalog from the now-enriched manifest (no-op unless --pmeta)
+
+			// Seed the size-stats aggregate from the warm-loaded manifest (its
+			// source of truth). Steady-state diffs flow through the manifest
+			// change-observer; this one sweep populates it on startup.
+			if statsAgg != nil {
+				statsAgg.Recompute(store.Manifest().AllFiles())
+				if err := statsAgg.SaveToS3(ctx, store.Pool(), cfg.AutoPrefix()+stats.AggregateSidecarKeySuffix); err != nil {
+					logger.Warnf("failed to persist stats-aggregate sidecar: %s", err)
+				}
+				statsAgg.SetMetaS3(store.PmetaPersistedBytes())
+			}
+
+			// Record this node's metadata footprint once warm so the gossiped
+			// per-instance breakdown has a value before the first refresh tick.
+			if registry != nil && store != nil {
+				registry.SetNodeMeta(store.PmetaResidentBytes(), store.DiskCacheBytes())
+			}
+
+			// One-time cleanup of orphaned OLD-format (global dt=/hour=) pmeta
+			// bundles left by the move to tenant-scoped partitions. The new
+			// tenant bundles are rebuilt above by the warm self-heal, so the
+			// old globals are safe to delete. Idempotent via a marker object.
+			if cfg.Pmeta.Enabled {
+				store.CleanupLegacyGlobalBundles(ctx, cfg.AutoPrefix())
+			}
 
 			if cfg.Cache.WarmupPartitions > 0 || cfg.Cache.WarmupMaxFiles > 0 {
 				warmCtx, warmCancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -1400,6 +1531,19 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 				registry.ReconcileWithManifest(tenantKey,
 					int64(m.TotalFiles()), m.TotalBytes(), m.TotalRawBytes(), m.TotalRows(),
 					m.MinTime().UnixNano(), m.MaxTime().UnixNano())
+				// Reconcile the size-stats aggregate against the refreshed manifest
+				// (the source of truth) — corrects any drift from a bulk refresh
+				// that bypassed the per-file change observer.
+				if statsAgg != nil {
+					statsAgg.Recompute(m.AllFiles())
+					_ = statsAgg.SaveToS3(rctx, store.Pool(), cfg.AutoPrefix()+stats.AggregateSidecarKeySuffix)
+					statsAgg.SetMetaS3(store.PmetaPersistedBytes())
+				}
+				// Refresh this node's gossiped metadata footprint each tick
+				// (independent of the size-stats aggregate).
+				if registry != nil && store != nil {
+					registry.SetNodeMeta(store.PmetaResidentBytes(), store.DiskCacheBytes())
+				}
 			}
 			rcancel()
 		case <-ageTicker.C:
@@ -1719,6 +1863,29 @@ func applyTenantFlags(t *config.TenantConfig) {
 	}
 	if *tenantAliasSyncInterval > 0 {
 		t.AliasSyncInterval = *tenantAliasSyncInterval
+	}
+	if s := *tenantAliases; s != "" {
+		if t.Aliases == nil {
+			t.Aliases = make(map[string]config.AliasTarget)
+		}
+		for _, entry := range strings.Split(s, ",") {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			parts := strings.Split(entry, ":")
+			if len(parts) != 3 {
+				logger.Warnf("ignoring invalid tenant alias %q (want orgid:account:project)", entry)
+				continue
+			}
+			acct, err1 := strconv.ParseUint(parts[1], 10, 32)
+			proj, err2 := strconv.ParseUint(parts[2], 10, 32)
+			if err1 != nil || err2 != nil {
+				logger.Warnf("ignoring invalid tenant alias %q (account/project must be numeric)", entry)
+				continue
+			}
+			t.Aliases[parts[0]] = config.AliasTarget{AccountID: uint32(acct), ProjectID: uint32(proj)}
+		}
 	}
 }
 

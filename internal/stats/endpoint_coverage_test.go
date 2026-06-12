@@ -37,24 +37,24 @@ type statsEndpoint struct {
 
 func allEndpoints() []statsEndpoint {
 	return []statsEndpoint{
-		{"tenants", "/lakehouse/api/v1/tenants", false, true},
-		{"tenants_policy", "/lakehouse/api/v1/tenants/policy", false, true},
-		{"tenant_detail", "/lakehouse/api/v1/tenants/100/1", false, true},
-		{"overview", "/lakehouse/api/v1/stats/overview", false, true},
-		{"ingestion", "/lakehouse/api/v1/stats/ingestion", false, true},
-		{"cost", "/lakehouse/api/v1/stats/cost", false, true},
-		{"compression", "/lakehouse/api/v1/stats/compression", false, true},
-		{"cardinality", "/lakehouse/api/v1/cardinality/fields", false, true},
-		{"breakdown", "/lakehouse/api/v1/stats/breakdown", false, true},
+		{"tenants", "/lakehouse/api/v1/tenants", true, true},
+		{"tenants_policy", "/lakehouse/api/v1/tenants/policy", true, true},
+		{"tenant_detail", "/lakehouse/api/v1/tenants/100/1", true, true},
+		{"overview", "/lakehouse/api/v1/stats/overview", true, true},
+		{"ingestion", "/lakehouse/api/v1/stats/ingestion", true, true},
+		{"cost", "/lakehouse/api/v1/stats/cost", true, true},
+		{"compression", "/lakehouse/api/v1/stats/compression", true, true},
+		{"cardinality", "/lakehouse/api/v1/cardinality/fields", true, true},
+		{"breakdown", "/lakehouse/api/v1/stats/breakdown", true, true},
 		{"compaction", "/lakehouse/api/v1/stats/compaction", true, false},
 	}
 }
 
 // TestEndpoints_CacheControlContract locks which handlers emit a no-store
-// Cache-Control. Only /stats/compaction does today (it's a live hint the UI
-// must never cache); everything else goes through writeJSON, which sets only
-// Content-Type. Pinning this both ways means: (a) compaction can't silently
-// drop no-store, and (b) a handler can't silently start/stop caching.
+// Cache-Control. Every stats/tenant response is no-store now: writeJSON sets it
+// (so deploys/browsers never surface stale cached stats) and /stats/compaction
+// sets it directly. Pinning this means a handler can't silently start caching a
+// live stat.
 func TestEndpoints_CacheControlContract(t *testing.T) {
 	api, _, _ := setupTestAPI(t)
 	for _, ep := range allEndpoints() {

@@ -26,6 +26,29 @@ func TestExtractPartition(t *testing.T) {
 	}
 }
 
+// TestExtractTenantPartition pins the tenant-isolated partition: the FULL key
+// directory (incl. the account/project prefix) so each tenant's pmeta bundles
+// are physically separate, mirroring the data path. "" when there's no dt=.
+func TestExtractTenantPartition(t *testing.T) {
+	tests := []struct {
+		key  string
+		want string
+	}{
+		{"0/0/logs/dt=2026-06-09/hour=10/00000-abc.parquet", "0/0/logs/dt=2026-06-09/hour=10"},
+		{"1/2/traces/dt=2026-04-01/hour=00/file.parquet", "1/2/traces/dt=2026-04-01/hour=00"},
+		{"7/3/logs/dt=2026-01-15/hour=23/data.parquet", "7/3/logs/dt=2026-01-15/hour=23"},
+		{"0/0/logs/dt=2026-05-02/file.parquet", "0/0/logs/dt=2026-05-02"},
+		{"0/0/logs/no-partition/file.parquet", ""},
+		{"no-partition/file.parquet", ""},
+	}
+	for _, tt := range tests {
+		got := ExtractTenantPartition(tt.key)
+		if got != tt.want {
+			t.Errorf("ExtractTenantPartition(%q) = %q, want %q", tt.key, got, tt.want)
+		}
+	}
+}
+
 func TestParsePartitionTime(t *testing.T) {
 	tests := []struct {
 		partition string

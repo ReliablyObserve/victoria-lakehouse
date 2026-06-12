@@ -434,6 +434,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		CompactionLevel:   outputLevel,
 		Labels:            mergedLabels,
 		LabelAggregates:   labelAggregates,
+		ColumnBytes:       columnBytesFromFooter(outputData),
 	})
 
 	for _, f := range g.Files {
@@ -604,6 +605,36 @@ var activeSlotResolver *schema.SlotResolver
 
 // SetSlotResolver installs the Tier-2 slot resolver for the compactor.
 func SetSlotResolver(r *schema.SlotResolver) { activeSlotResolver = r }
+
+// columnBytesFromFooter returns total compressed bytes per top-level column from
+// a written Parquet file's footer (summed across row groups). Fills the compacted
+// output's FileInfo.ColumnBytes so per-field storage size stays correct through
+// compaction. Mirrors the flush writer's helper (this package intentionally keeps
+// its own writer copy). Returns nil on any error.
+func columnBytesFromFooter(data []byte) map[string]int64 {
+	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil
+	}
+	md := f.Metadata()
+	if md == nil || len(md.RowGroups) == 0 {
+		return nil
+	}
+	out := make(map[string]int64)
+	for i := range md.RowGroups {
+		for j := range md.RowGroups[i].Columns {
+			cm := md.RowGroups[i].Columns[j].MetaData
+			if len(cm.PathInSchema) == 0 {
+				continue
+			}
+			out[cm.PathInSchema[0]] += cm.TotalCompressedSize
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
 
 func writeCompactedLogs(rows []schema.LogRow, rowGroupSize int, compressionLevel int) ([]byte, error) {
 	var buf bytes.Buffer
