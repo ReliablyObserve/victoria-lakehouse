@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"iter"
 	"sort"
 	"strings"
 	"sync"
@@ -190,6 +191,26 @@ func (f *fieldCatalogFacet) markHighCard(fid uint32) {
 		}
 	}
 	delete(f.byField, fid)
+}
+
+// addHighCardValues folds a value stream into a field's HLL and marks the field
+// high-card (values not enumerated). For always-sketch id columns (trace_id,
+// span_id) whose values arrive from the row tap rather than Labels: this feeds the
+// PERSISTED per-partition sketch (in the bundle) instead of only the RAM side-map,
+// so the distinct count survives restart. Empty strings are skipped. Streamed as an
+// iter.Seq so the caller feeds straight off the row structs (no slice).
+func (f *fieldCatalogFacet) addHighCardValues(field string, values iter.Seq[string]) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fid := f.dict.internField(field)
+	f.highCard[fid] = true
+	delete(f.byField, fid)
+	h := f.hllFor(fid)
+	for v := range values {
+		if v != "" {
+			h.add(v)
+		}
+	}
 }
 
 // IsHighCard reports whether a field crossed the cardinality cap (or was forced

@@ -123,6 +123,22 @@ func (s *Store) AddCardinality(field string, values iter.Seq[string]) {
 	}
 }
 
+// AddPartitionCardinality folds a value stream into a field's PERSISTED per-partition
+// catalog HLL (marking it high-card) so the distinct count survives restart via the
+// bundle — for always-sketch id columns (trace_id, span_id) fed from the row tap and
+// never enumerated in Labels. Complements AddCardinality, which keeps a global RAM
+// sketch for the live metric; THIS is the durable source FieldCardinality unions on
+// restart. No-op until the partition's catalog facet exists (the flush that creates
+// it runs immediately before the tap), and marks the bundle dirty so it re-persists.
+func (s *Store) AddPartitionCardinality(partition, field string, values iter.Seq[string]) {
+	cf, ok := s.catalog(partition)
+	if !ok {
+		return
+	}
+	cf.addHighCardValues(field, values)
+	s.Bundle(partition).markDirty()
+}
+
 // Register wires a facet factory for a kind. Call once per kind at startup,
 // before OnFileFlush/Decode are used.
 func (s *Store) Register(k FacetKind, f FacetFactory) {

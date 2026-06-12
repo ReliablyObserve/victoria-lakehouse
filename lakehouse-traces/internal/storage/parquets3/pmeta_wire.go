@@ -137,7 +137,7 @@ func (o *catalogObserver) OnFileFlush(partition string, fi manifest.FileInfo, la
 // tapLogRows folds the configured always-sketch id columns (trace_id, span_id)
 // from a flushed file's log rows into their per-field HLL, streaming straight off
 // the row structs (no slice materialized), then updates the cardinality gauge.
-func (o *catalogObserver) tapLogRows(rows []schema.LogRow) {
+func (o *catalogObserver) tapLogRows(partition string, rows []schema.LogRow) {
 	if o == nil || o.store == nil || len(rows) == 0 {
 		return
 	}
@@ -155,29 +155,27 @@ func (o *catalogObserver) tapLogRows(rows []schema.LogRow) {
 		})
 	}
 	if o.sketch["trace_id"] {
-		o.store.AddCardinality("trace_id", func(yield func(string) bool) {
+		o.sketchID(partition, "trace_id", func(yield func(string) bool) {
 			for i := range rows {
 				if !yield(rows[i].TraceID) {
 					return
 				}
 			}
 		})
-		metrics.CatalogFieldCardinality.Set("trace_id", int64(o.store.Cardinality("trace_id")))
 	}
 	if o.sketch["span_id"] {
-		o.store.AddCardinality("span_id", func(yield func(string) bool) {
+		o.sketchID(partition, "span_id", func(yield func(string) bool) {
 			for i := range rows {
 				if !yield(rows[i].SpanID) {
 					return
 				}
 			}
 		})
-		metrics.CatalogFieldCardinality.Set("span_id", int64(o.store.Cardinality("span_id")))
 	}
 }
 
 // tapTraceRows is tapLogRows for trace rows.
-func (o *catalogObserver) tapTraceRows(rows []schema.TraceRow) {
+func (o *catalogObserver) tapTraceRows(partition string, rows []schema.TraceRow) {
 	if o == nil || o.store == nil || len(rows) == 0 {
 		return
 	}
@@ -193,25 +191,35 @@ func (o *catalogObserver) tapTraceRows(rows []schema.TraceRow) {
 		})
 	}
 	if o.sketch["trace_id"] {
-		o.store.AddCardinality("trace_id", func(yield func(string) bool) {
+		o.sketchID(partition, "trace_id", func(yield func(string) bool) {
 			for i := range rows {
 				if !yield(rows[i].TraceID) {
 					return
 				}
 			}
 		})
-		metrics.CatalogFieldCardinality.Set("trace_id", int64(o.store.Cardinality("trace_id")))
 	}
 	if o.sketch["span_id"] {
-		o.store.AddCardinality("span_id", func(yield func(string) bool) {
+		o.sketchID(partition, "span_id", func(yield func(string) bool) {
 			for i := range rows {
 				if !yield(rows[i].SpanID) {
 					return
 				}
 			}
 		})
-		metrics.CatalogFieldCardinality.Set("span_id", int64(o.store.Cardinality("span_id")))
 	}
+}
+
+// sketchID feeds an always-sketch id column's per-file values into BOTH the global
+// RAM sketch (the live Cardinality Explorer metric, Store.Cardinality) and the
+// partition's PERSISTED catalog HLL (Store.AddPartitionCardinality) so the distinct
+// count survives restart via the bundle — the durability gap where trace_id/span_id
+// reset on restart (their sketch was RAM-only). vals is replayed once per sink,
+// straight off the row structs (no slice materialized).
+func (o *catalogObserver) sketchID(partition, field string, vals func(func(string) bool)) {
+	o.store.AddCardinality(field, vals)
+	o.store.AddPartitionCardinality(partition, field, vals)
+	metrics.CatalogFieldCardinality.Set(field, int64(o.store.Cardinality(field)))
 }
 
 // sketchSet builds the always-sketch field lookup from config.

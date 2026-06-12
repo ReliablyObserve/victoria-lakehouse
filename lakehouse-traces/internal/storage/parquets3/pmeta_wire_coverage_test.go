@@ -83,7 +83,7 @@ func TestCatalogObserver_TapRows(t *testing.T) {
 	t.Run("log rows feed trace_id and span_id sketches", func(t *testing.T) {
 		st := newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
 		o := &catalogObserver{store: st, sketch: sketchSet([]string{"trace_id", "span_id"})}
-		o.tapLogRows([]schema.LogRow{
+		o.tapLogRows("p", []schema.LogRow{
 			{TraceID: "t1", SpanID: "s1"},
 			{TraceID: "t2", SpanID: "s2"},
 			{TraceID: "t3", SpanID: "s3"},
@@ -99,7 +99,7 @@ func TestCatalogObserver_TapRows(t *testing.T) {
 	t.Run("trace rows feed sketches", func(t *testing.T) {
 		st := newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
 		o := &catalogObserver{store: st, sketch: sketchSet([]string{"trace_id", "span_id"})}
-		o.tapTraceRows([]schema.TraceRow{
+		o.tapTraceRows("p", []schema.TraceRow{
 			{TraceID: "t1", SpanID: "s1"},
 			{TraceID: "t2", SpanID: "s2"},
 		})
@@ -111,8 +111,8 @@ func TestCatalogObserver_TapRows(t *testing.T) {
 	t.Run("no sketch set is a no-op", func(t *testing.T) {
 		st := newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
 		o := &catalogObserver{store: st} // sketch nil
-		o.tapLogRows([]schema.LogRow{{TraceID: "t1"}})
-		o.tapTraceRows([]schema.TraceRow{{TraceID: "t1"}})
+		o.tapLogRows("p", []schema.LogRow{{TraceID: "t1"}})
+		o.tapTraceRows("p", []schema.TraceRow{{TraceID: "t1"}})
 		if c := st.Cardinality("trace_id"); c != 0 {
 			t.Errorf("cardinality must stay 0 without a sketch set, got %d", c)
 		}
@@ -120,11 +120,11 @@ func TestCatalogObserver_TapRows(t *testing.T) {
 
 	t.Run("nil observer and nil store are safe", func(t *testing.T) {
 		var o *catalogObserver
-		o.tapLogRows([]schema.LogRow{{TraceID: "t"}})
-		o.tapTraceRows([]schema.TraceRow{{TraceID: "t"}})
+		o.tapLogRows("p", []schema.LogRow{{TraceID: "t"}})
+		o.tapTraceRows("p", []schema.TraceRow{{TraceID: "t"}})
 		o2 := &catalogObserver{sketch: sketchSet([]string{"trace_id"})}
-		o2.tapLogRows([]schema.LogRow{{TraceID: "t"}})
-		o2.tapTraceRows([]schema.TraceRow{{TraceID: "t"}})
+		o2.tapLogRows("p", []schema.LogRow{{TraceID: "t"}})
+		o2.tapTraceRows("p", []schema.TraceRow{{TraceID: "t"}})
 	})
 }
 
