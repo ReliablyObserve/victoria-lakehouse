@@ -1172,11 +1172,24 @@ func (a *API) handleCardinality(w http.ResponseWriter, r *http.Request) {
 		}
 		return false
 	}
+	// Per-field storage is exact for files that carry ColumnBytes; older files
+	// (written before the feature) don't yet, so scale the covered per-field bytes
+	// up to the full on-S3 total. The column shows real-magnitude storage
+	// immediately and converges to exact as compaction/new flushes backfill
+	// ColumnBytes (scale → 1 at full coverage).
+	storageScale := 1.0
+	if a.cfg.StatsAggregate != nil {
+		if covered := a.cfg.StatsAggregate.CoveredStorage(); covered > 0 {
+			if total := a.cfg.StatsAggregate.TotalStorage(); total > covered {
+				storageScale = float64(total) / float64(covered)
+			}
+		}
+	}
 	storageOf := func(name string) int64 {
 		if a.cfg.StatsAggregate == nil {
 			return 0
 		}
-		return a.cfg.StatsAggregate.StorageBytesOf(name)
+		return int64(float64(a.cfg.StatsAggregate.StorageBytesOf(name)) * storageScale)
 	}
 
 	for _, li := range allLabels {

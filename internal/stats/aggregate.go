@@ -155,6 +155,27 @@ func (a *StatsAggregate) StorageBytesOf(field string) int64 {
 	return 0
 }
 
+// CoveredStorage is the sum of per-field storage bytes — the on-S3 footprint of
+// files that already carry ColumnBytes (flushed/compacted since the feature
+// landed). Less than TotalStorage while older files are still being backfilled.
+func (a *StatsAggregate) CoveredStorage() int64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	var s int64
+	for _, fs := range a.perField {
+		s += fs.StorageBytes
+	}
+	return s
+}
+
+// TotalStorage is the on-S3 compressed total across ALL live files (the manifest
+// Size sum), including older files that don't yet carry per-column bytes.
+func (a *StatsAggregate) TotalStorage() int64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.totStorage
+}
+
 // FieldSizes returns a copy of the per-field aggregate (for /stats/storage).
 func (a *StatsAggregate) FieldSizes() map[string]FieldSize {
 	a.mu.RLock()
