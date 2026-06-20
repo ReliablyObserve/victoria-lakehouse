@@ -30,7 +30,7 @@ jobs:
         env:
           COMMIT_MSG: ${{ github.event.head_commit.message }}
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         if: steps.skip_release.outputs.skip != 'true'
         with:
           fetch-depth: 0
