@@ -69,7 +69,7 @@ services:
   # =========================================================================
 
   victorialogs:
-    image: victoriametrics/victoria-logs:v1.50.0
+    image: victoriametrics/victoria-logs:v1.51.0
     command:
       - "-storageDataPath=/data"
       - "-retentionPeriod=24h"
@@ -392,7 +392,7 @@ services:
   # =========================================================================
 
   vlselect:
-    image: victoriametrics/victoria-logs:v1.50.0
+    image: victoriametrics/victoria-logs:v1.51.0
     command:
       - "-storageNode=victorialogs:9428,lakehouse-logs:9428"
       - "-httpListenAddr=:9428"
