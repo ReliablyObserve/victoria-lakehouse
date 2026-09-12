@@ -226,7 +226,6 @@
   origin: native
   expect: differ
   differ_note: "Deprecated in favor of fieldsLookbehind/streamFieldsLookbehind in VT 0.10.0; hot post-bump ignores it while LH cold (pre-bump) still honors it as the effective lookbehind. See docs/parity-and-gaps.md."
-  since: { vt: "0.10.0" }
   targets: [cold]
   upstream: { flag: search.traceServiceAndSpanNameLookbehind }
   compare: { type: status }
