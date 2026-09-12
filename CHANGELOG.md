@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.101.3] - 2026-09-12
+
 ### Fixed
 
 - **CI: E2E, parity and nightly load-test stacks pull MinIO from quay.io with pinned releases.** Docker Hub now denies anonymous pulls of `minio/minio` and `minio/mc` (`pull access denied`), which failed every `E2E Tests` and `Parity Tests` run on `main` at stack start. All compose files, the nightly load-test service container and the docs now use `quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z` / `quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z`.
