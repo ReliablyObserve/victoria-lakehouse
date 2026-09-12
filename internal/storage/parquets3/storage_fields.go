@@ -93,6 +93,34 @@ func (s *Storage) fetchFooterFile(ctx context.Context, fi manifest.FileInfo) (*p
 	return f, nil
 }
 
+// remapSlotFieldHits drops UNMAPPED Tier-2 spare-slot columns (ded_sNN) from a
+// field-name hit map and renames MAPPED ones to their configured attribute name,
+// mirroring remapSlotFields on the row read path. Spare-slot column names are
+// exactly 7 chars with the "ded_s" prefix (ded_s01..ded_s99); no real field
+// collides with that shape.
+func remapSlotFieldHits(hits map[string]uint64) {
+	if len(hits) == 0 {
+		return
+	}
+	slotMap := activeSlotResolver.Mapping()
+	var drop []string
+	add := map[string]uint64{}
+	for name, n := range hits {
+		if len(name) == 7 && name[:5] == "ded_s" {
+			drop = append(drop, name)
+			if mapped, ok := slotMap[name]; ok && mapped != "" {
+				add[mapped] = n
+			}
+		}
+	}
+	for _, k := range drop {
+		delete(hits, k)
+	}
+	for k, n := range add {
+		hits[k] = n
+	}
+}
+
 func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
 	filter := parseFilterFromQuery(q)
 
@@ -142,6 +170,15 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 		s.updateLabelIndexNamesOnly(f)
 		s.accumulateFieldHits(f, hits)
 	}
+
+	// The Tier-2 spare-slot columns (ded_s01..ded_sNN) are internal: an UNMAPPED
+	// slot is an empty placeholder column (no operator promoted_attributes config)
+	// and must never surface in the field list — it shows up as `ded_sNN` noise in
+	// Drilldown/Explore field pickers with no values on any row. A MAPPED slot is
+	// reported under its configured attribute name, matching what the row read path
+	// emits via remapSlotFields. The raw Parquet column index (accumulateFieldHits)
+	// has no way to know this, so apply the same remap/drop here.
+	remapSlotFieldHits(hits)
 
 	if len(hits) > 0 {
 		result := make([]logstorage.ValueWithHits, 0, len(hits))
