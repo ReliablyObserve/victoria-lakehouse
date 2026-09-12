@@ -379,3 +379,46 @@ func TestRenderCoverage_LHRowGatedOnNeitherSurface(t *testing.T) {
 		t.Fatalf("expected the lh row to render as covered/verified in the main table:\n%s", md)
 	}
 }
+
+// TestRenderCoverage_SameNameSortsBySurface proves that when VL and VT
+// independently register an item with the same Name (e.g. a shared route
+// or flag name), the per-kind table orders them deterministically by
+// Surface as a tie-break — not by whatever order sort.Slice's unstable
+// comparator happens to leave equal-Name items in, which could otherwise
+// change confgen's output between runs.
+func TestRenderCoverage_SameNameSortsBySurface(t *testing.T) {
+	inv := &inventory.Inventory{Items: []inventory.Item{
+		{Kind: "route", Surface: "vt", Name: "/insert/native", Source: "app/vtinsert/main.go"},
+		{Kind: "route", Surface: "vl", Name: "/insert/native", Source: "app/vlinsert/main.go"},
+	}}
+	reg := &registry.Registry{ByID: map[string]*registry.Row{}}
+	md := RenderCoverage(inv, reg)
+	vlIdx := strings.Index(md, "app/vlinsert/main.go")
+	vtIdx := strings.Index(md, "app/vtinsert/main.go")
+	if vlIdx < 0 || vtIdx < 0 {
+		t.Fatalf("expected both vl and vt /insert/native rows in the table:\n%s", md)
+	}
+	if vlIdx > vtIdx {
+		t.Fatalf("expected the vl row (Surface tie-break) before the vt row for the same Name:\n%s", md)
+	}
+
+	// Reversed input order must produce the same output order (proves the
+	// tie-break, not accidental input-order preservation).
+	inv.Items[0], inv.Items[1] = inv.Items[1], inv.Items[0]
+	md2 := RenderCoverage(inv, reg)
+	if md2 != md {
+		t.Fatalf("same-name sort must be order-independent:\nfirst:  %s\nsecond: %s", md, md2)
+	}
+}
+
+// TestRenderCoverage_PerSurfacePreamble proves the doc states that items
+// are counted per surface, so a route/flag registered by both VL and VT
+// isn't misread as a unique-name count.
+func TestRenderCoverage_PerSurfacePreamble(t *testing.T) {
+	inv := &inventory.Inventory{VLVersion: "v1.50.0", VTVersion: "v0.9.2"}
+	reg := &registry.Registry{ByID: map[string]*registry.Row{}}
+	md := RenderCoverage(inv, reg)
+	if !strings.Contains(md, "PER SURFACE") {
+		t.Fatalf("expected the per-surface counting note in the preamble:\n%s", md)
+	}
+}

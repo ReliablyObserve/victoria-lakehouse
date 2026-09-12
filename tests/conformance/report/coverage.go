@@ -208,6 +208,7 @@ func RenderCoverage(inv *inventory.Inventory, reg *registry.Registry) string {
 		fmt.Fprintf(&b, "Upstream: VictoriaLogs %s · VictoriaTraces %s. Source of truth: `tests/conformance/registry/rows/` + `tests/conformance/inventory.generated.yaml`.\n\n", inv.VLVersion, inv.VTVersion)
 	}
 	fmt.Fprintf(&b, "Lakehouse mounts the upstream VictoriaLogs/VictoriaTraces handlers and engines; it never re-implements an API that exists upstream. Extensions go through `patches/` and are guarded by `internal/upstreamreuse` — see `patches/README.md`.\n\n")
+	fmt.Fprintf(&b, "Items below are counted PER SURFACE: a route, flag, pipe, filter, stats function or TraceQL function that VictoriaLogs and VictoriaTraces each register independently appears once for `vl` and once for `vt` — the totals are not counts of unique names.\n\n")
 	fmt.Fprintf(&b, "Legend: ✅ verified · 🟡 declared, not yet executed · 🔁 differs from upstream (documented) · ⛔ absent or unsupported (documented) · ⚪ no registry row · 🧩 Lakehouse addition (no upstream equivalent)\n\n")
 
 	keys := CoveredKeys(inv, reg)
@@ -220,7 +221,18 @@ func RenderCoverage(inv *inventory.Inventory, reg *registry.Registry) string {
 		if len(items) == 0 {
 			continue
 		}
-		sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
+		// Sort by Name, then Surface as a tie-break: the same name can be
+		// registered independently by both vl and vt (e.g. route
+		// /insert/native, or a shared flag name), and without the
+		// tie-break sort.Slice's order between two equal-Name items is
+		// unspecified — not just cosmetically nondeterministic, but able
+		// to change confgen's byte-stable output run to run.
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].Name != items[j].Name {
+				return items[i].Name < items[j].Name
+			}
+			return items[i].Surface < items[j].Surface
+		})
 		covered := 0
 		for _, it := range items {
 			if len(keys[inv.Key(it)]) > 0 {
