@@ -84,94 +84,145 @@ Reference for the September-2026 upstream upgrade and the fix series. Raw artifa
 `bench-results/baseline-2026-09/`. Perf gate rule: any LH/CH ≥ 1.0 cell, or an LH/VL
 regression > 10 % on any scenario versus this table, blocks a PR.
 
-### Consolidated run (`scripts/bench/run.sh --signals both --s3-latency "0 100"`)
+### Response validation
+
+`scripts/bench/run.sh` validates **every timed response**, not just its
+latency — a benchmark cell is only meaningful when every iteration returned a
+correct, valid answer; a fast wrong/empty/error response is a broken
+response and is never counted. Per iteration (including warmup, which is
+validated the same way but never timed):
+
+- HTTP status must be 2xx.
+- The body must parse into a comparable result: a plain count for
+  count/filter/group-by queries, `rows=<N>;hash=<sha256>` for `scan` (the
+  hash covers the sorted set of stable row keys — `_msg` for logs,
+  `trace_id:span_id` for traces — so a same-count-but-different-rows answer
+  still diverges), `spans=<N>` for `trace_by_id`/`trace_lookup`. ClickHouse's
+  `scan` is a different projection with no comparable key and is compared by
+  row count only.
+- The result must be non-empty, unless the query is a documented miss
+  scenario (`trace_lookup` — a cross-signal id lookup that can legitimately
+  find nothing).
+- The result must be identical to the cell's first valid result — a flapping
+  answer across iterations is excluded, not averaged in.
+
+Invalid iterations are dropped from p50/p95/p99 and the cell records how many
+were invalid and why (`iters_valid`/`iters_invalid`/`invalid_reasons` in the
+JSON; `k/N invalid: <reason>` in the table). `report.py` additionally
+cross-checks each engine's result against its signal's baseline (VL/VT)
+beyond a 5% count tolerance and flags "same count, different rows" when a
+scan's content hash disagrees while its row count matches. Every system's
+cell in the tables below carries a `k/N valid` column.
+
+Unit/self tests for the validators: `python3 -m unittest discover -s
+scripts/bench/tests` (`report.py`'s cross-system rules) and
+`scripts/bench/tests/extract_result_test.sh` (`run.sh`'s per-response
+extractor, against fixture bodies for every query kind/system combination,
+including a malformed body). Both are self-contained (no live stack needed)
+and are the ones to run before touching either file.
+
+### Consolidated run — v3 (`scripts/bench/run.sh --signals both --s3-latency "0 100" --ranges "1h 24h" --iterations 20 --warmup 3`)
+
+**THE current perf-gate reference** (`bench-results/baseline-2026-09/run-baseline-v3.{json,md,log}`).
+Supersedes the v1 (`run-baseline.md`) and v2 (`run-baseline-traces-v2.md`)
+tables below this section, which predate per-iteration validation and are
+kept only for historical provenance — do not judge new PRs against them.
+
+**60/64 cells valid (34/36 logs, 26/28 traces).** The 4 invalid cells are all
+`scan`/24h (both signals, both S3-latency levels) and all for the same
+reason: the baseline (VL/VT) itself flaps. `scan`'s `limit 1000` truncates a
+24h result set that has far more than 1000 matching rows, with no explicit
+`sort` — VictoriaLogs/VictoriaTraces return a different (same-sized) subset
+of rows on repeated, otherwise-identical queries (15–19 of 20 iterations
+disagreed with the first). This is a genuine, reproducible property of an
+unordered top-N query over a truncated result set, not a harness defect —
+the 1h `scan` cells (well under the 1000-row cap, so nothing is truncated)
+are fully stable and valid. See `bench-results/baseline-2026-09/README.md`
+for the full writeup; fixing it would mean adding an explicit `sort` to the
+`scan` query, which changes what's measured (a sort has its own cost) and is
+tracked as a follow-up, not done here.
 
 #### Logs
 
-The table below (from `run-baseline.md`) is valid except its `trace_lookup` rows,
-which measure a miss on every system (the sample trace id fetch bug, fixed for the
-traces rerun below; not rerun for logs since `trace_lookup` is the only affected
-query).
+**Per-query median LH vs baseline:** count_by_service 1.5×, count_total 2.5×, fulltext 3.3×, high_card 2.0×, level_filter 3.3×, multi_filter 3.8×, negation 2.4×, scan 1.1×, trace_lookup 0.7×
 
-**Per-query median LH vs baseline:** count_by_service 2.2×, count_total 2.3×, fulltext 2.8×, high_card 2.4×, level_filter 2.9×, multi_filter 3.7×, negation 2.5×, scan 3.2×, trace_lookup 1.1×
-
-| query | range | S3 lat | baseline p95 [res] | LH | CH |
-|---|---|---:|---:|---|---|
-| count_by_service | 1h | 0ms | 2.4 [605] | 7.0 (2.9×) [604] | 82.6 (34.4× 🔴) [605] |
-| count_by_service | 1h | 100ms | 2.9 [581] | 5.3 (1.8×) [581] | 94.3 (32.5× 🔴) [581] |
-| count_by_service | 24h | 0ms | 6.3 [13710] | 9.9 (1.6×) [13710] | 70.5 (11.2× 🔴) [13710] |
-| count_by_service | 24h | 100ms | 5.1 [13687] | 13.2 (2.6×) [13687] | 89.7 (17.6× 🔴) [13687] |
-| count_total | 1h | 0ms | 2.4 [606] | 3.9 (1.6×) [606] | 71.9 (30.0× 🔴) [606] |
-| count_total | 1h | 100ms | 4.0 [581] | 5.0 (1.2×) [581] | 76.6 (19.1× 🔴) [581] |
-| count_total | 24h | 0ms | 4.5 [13711] | 15.2 (3.4× ⚠️) [13711] | 99.4 (22.1× 🔴) [13711] |
-| count_total | 24h | 100ms | 4.8 [13687] | 14.2 (3.0×) [13687] | 86.0 (17.9× 🔴) [13687] |
-| fulltext | 1h | 0ms | 3.6 [58] | 5.2 (1.4×) [58] | 72.0 (20.0× 🔴) [58] |
-| fulltext | 1h | 100ms | 4.1 [54] | 7.0 (1.7×) [54] | 85.5 (20.9× 🔴) [54] |
-| fulltext | 24h | 0ms | 5.1 [1116] | 20.1 (3.9× ⚠️) [1116] | 78.9 (15.5× 🔴) [1116] |
-| fulltext | 24h | 100ms | 6.0 [1115] | 23.0 (3.8× ⚠️) [1115] | 92.3 (15.4× 🔴) [1115] |
-| high_card | 1h | 0ms | 4.0 [603] | 4.8 (1.2×) [603] | 88.2 (22.1× 🔴) [603] |
-| high_card | 1h | 100ms | 3.8 [579] | 7.2 (1.9×) [579] | 82.1 (21.6× 🔴) [579] |
-| high_card | 24h | 0ms | 7.4 [13705] | 22.0 (3.0×) [13705] | 78.5 (10.6× 🔴) [13705] |
-| high_card | 24h | 100ms | 8.3 [13687] | 25.3 (3.0× ⚠️) [13687] | 97.6 (11.8× 🔴) [13687] |
-| level_filter | 1h | 0ms | 3.2 [152] | 5.0 (1.6×) [152] | 96.2 (30.1× 🔴) [152] |
-| level_filter | 1h | 100ms | 3.5 [145] | 6.4 (1.8×) [145] | 76.3 (21.8× 🔴) [145] |
-| level_filter | 24h | 0ms | 5.2 [3399] | 20.5 (3.9× ⚠️) [3399] | 87.6 (16.8× 🔴) [3399] |
-| level_filter | 24h | 100ms | 6.0 [3395] | 26.8 (4.5× ⚠️) [3395] | 92.7 (15.5× 🔴) [3395] |
-| multi_filter | 1h | 0ms | 3.3 [23] | 6.0 (1.8×) [23] | 106.5 (32.3× 🔴) [23] |
-| multi_filter | 1h | 100ms | 2.6 [23] | 6.3 (2.4×) [23] | 80.3 (30.9× 🔴) [23] |
-| multi_filter | 24h | 0ms | 4.4 [590] | 22.1 (5.0× ⚠️) [590] | 90.2 (20.5× 🔴) [590] |
-| multi_filter | 24h | 100ms | 6.9 [590] | 35.3 (5.1× ⚠️) [590] | 92.2 (13.4× 🔴) [590] |
-| negation | 1h | 0ms | 2.8 [439] | 5.2 (1.9×) [439] | 81.1 (29.0× 🔴) [439] |
-| negation | 1h | 100ms | 2.5 [427] | 5.3 (2.1×) [427] | 83.9 (33.6× 🔴) [427] |
-| negation | 24h | 0ms | 5.3 [10329] | 20.9 (3.9× ⚠️) [10329] | 92.6 (17.5× 🔴) [10329] |
-| negation | 24h | 100ms | 10.1 [10315] | 29.8 (3.0×) [10315] | 71.3 (7.1× ⚠️) [10315] |
-| scan | 1h | 0ms | 4.2 [603] | 5.3 (1.3×) [603] | 93.0 (22.1× 🔴) [603] |
-| scan | 1h | 100ms | 3.2 [578] | 5.9 (1.8×) [578] | 86.7 (27.1× 🔴) [578] |
-| scan | 24h | 0ms | 3.9 [1000] | 25.2 (6.5× ⚠️) [1000] | 74.2 (19.0× 🔴) [1000] |
-| scan | 24h | 100ms | 4.7 [1000] | 21.4 (4.6× ⚠️) [1000] | 121.0 (25.7× 🔴) [1000] |
-| trace_lookup | 1h | 0ms | 2.3 [0] | 1.7 (0.7×) [0] | 81.6 (35.5× 🔴) [0] |
-| trace_lookup | 1h | 100ms | 2.9 [0] | 2.3 (0.8×) [0] | 87.1 (30.0× 🔴) [0] |
-| trace_lookup | 24h | 0ms | 3.9 [0] | 5.5 (1.4×) [0] | 78.7 (20.2× 🔴) [0] |
-| trace_lookup | 24h | 100ms | 3.2 [0] | 5.5 (1.7×) [0] | 103.5 (32.3× 🔴) [0] |
+| query | range | S3 lat | baseline p95 [res] | valid | LH | valid | CH | valid |
+|---|---|---:|---:|---:|---|---:|---|---:|
+| count_by_service | 1h | 0ms | 4.9 [609] | 20/20 | 5.6 (1.1×) [609] | 20/20 | 77.1 (15.7× 🔴) [609] | 20/20 |
+| count_by_service | 1h | 100ms | 3.6 [597] | 20/20 | 6.6 (1.8×) [597] | 20/20 | 89.4 (24.8× 🔴) [597] | 20/20 |
+| count_by_service | 24h | 0ms | 7.0 [14285] | 20/20 | 10.0 (1.4×) [14285] | 20/20 | 76.5 (10.9× 🔴) [14285] | 20/20 |
+| count_by_service | 24h | 100ms | 6.1 [14255] | 20/20 | 9.1 (1.5×) [14255] | 20/20 | 87.6 (14.4× 🔴) [14255] | 20/20 |
+| count_total | 1h | 0ms | 4.9 [611] | 20/20 | 5.9 (1.2×) [609] | 20/20 | 77.1 (15.7× 🔴) [609] | 20/20 |
+| count_total | 1h | 100ms | 3.8 [598] | 20/20 | 5.9 (1.6×) [598] | 20/20 | 97.5 (25.7× 🔴) [598] | 20/20 |
+| count_total | 24h | 0ms | 5.1 [14285] | 20/20 | 17.2 (3.4× ⚠️) [14285] | 20/20 | 78.7 (15.4× 🔴) [14285] | 20/20 |
+| count_total | 24h | 100ms | 5.0 [14255] | 20/20 | 18.6 (3.7× ⚠️) [14255] | 20/20 | 86.1 (17.2× 🔴) [14255] | 20/20 |
+| fulltext | 1h | 0ms | 5.1 [49] | 20/20 | 7.4 (1.5×) [49] | 20/20 | 88.5 (17.4× 🔴) [49] | 20/20 |
+| fulltext | 1h | 100ms | 3.8 [48] | 20/20 | 11.6 (3.1× ⚠️) [48] | 20/20 | 95.0 (25.0× 🔴) [48] | 20/20 |
+| fulltext | 24h | 0ms | 7.1 [1217] | 20/20 | 25.4 (3.6× ⚠️) [1217] | 20/20 | 91.0 (12.8× 🔴) [1217] | 20/20 |
+| fulltext | 24h | 100ms | 5.7 [1215] | 20/20 | 28.7 (5.0× ⚠️) [1215] | 20/20 | 103.7 (18.2× 🔴) [1215] | 20/20 |
+| high_card | 1h | 0ms | 4.5 [606] | 20/20 | 6.2 (1.4×) [606] | 20/20 | 87.0 (19.3× 🔴) [606] | 20/20 |
+| high_card | 1h | 100ms | 3.8 [596] | 20/20 | 6.3 (1.7×) [594] | 20/20 | 82.3 (21.7× 🔴) [594] | 20/20 |
+| high_card | 24h | 0ms | 8.9 [14284] | 20/20 | 29.7 (3.3× ⚠️) [14284] | 20/20 | 81.5 (9.2× ⚠️) [14284] | 20/20 |
+| high_card | 24h | 100ms | 11.4 [14248] | 20/20 | 27.1 (2.4×) [14248] | 20/20 | 112.9 (9.9× ⚠️) [14248] | 20/20 |
+| level_filter | 1h | 0ms | 2.6 [161] | 20/20 | 7.1 (2.7×) [161] | 20/20 | 92.0 (35.4× 🔴) [161] | 20/20 |
+| level_filter | 1h | 100ms | 4.6 [159] | 20/20 | 5.6 (1.2×) [159] | 20/20 | 89.5 (19.5× 🔴) [159] | 20/20 |
+| level_filter | 24h | 0ms | 6.3 [3603] | 20/20 | 33.3 (5.3× ⚠️) [3603] | 20/20 | 74.5 (11.8× 🔴) [3602] | 20/20 |
+| level_filter | 24h | 100ms | 6.2 [3596] | 20/20 | 23.6 (3.8× ⚠️) [3596] | 20/20 | 100.7 (16.2× 🔴) [3596] | 20/20 |
+| multi_filter | 1h | 0ms | 2.2 [27] | 20/20 | 9.4 (4.3× ⚠️) [27] | 20/20 | 81.7 (37.1× 🔴) [27] | 20/20 |
+| multi_filter | 1h | 100ms | 4.8 [27] | 20/20 | 6.6 (1.4×) [27] | 20/20 | 100.1 (20.9× 🔴) [27] | 20/20 |
+| multi_filter | 24h | 0ms | 7.4 [710] | 20/20 | 24.6 (3.3× ⚠️) [710] | 20/20 | 104.9 (14.2× 🔴) [710] | 20/20 |
+| multi_filter | 24h | 100ms | 5.5 [708] | 20/20 | 40.5 (7.4× ⚠️) [708] | 20/20 | 88.1 (16.0× 🔴) [708] | 20/20 |
+| negation | 1h | 0ms | 4.1 [463] | 20/20 | 8.0 (2.0×) [463] | 20/20 | 88.1 (21.5× 🔴) [463] | 20/20 |
+| negation | 1h | 100ms | 3.4 [457] | 20/20 | 6.0 (1.8×) [457] | 20/20 | 105.3 (31.0× 🔴) [457] | 20/20 |
+| negation | 24h | 0ms | 7.5 [10707] | 20/20 | 21.1 (2.8×) [10707] | 20/20 | 88.2 (11.8× 🔴) [10707] | 20/20 |
+| negation | 24h | 100ms | 7.3 [10682] | 20/20 | 27.4 (3.8× ⚠️) [10682] | 20/20 | 86.8 (11.9× 🔴) [10682] | 20/20 |
+| scan | 1h | 0ms | 9.8 [rows=606;hash=2c52d4…] | 20/20 | 5.9 (0.6×) [rows=606;hash=2c52d4…] | 20/20 | 83.4 (8.5× ⚠️) [rows=606] | 20/20 |
+| scan | 1h | 100ms | 3.9 [rows=594;hash=389453…] | 20/20 | 6.4 (1.6×) [rows=594;hash=389453…] | 20/20 | 83.7 (21.5× 🔴) [rows=594] | 20/20 |
+| scan | 24h | 0ms | 3.0 [rows=1000;hash=bbdeea…] | 1/20 | ✗ baseline-19/20 invalid: flapping | 1/20 | ✗ baseline-19/20 invalid: flapping | 20/20 |
+| scan | 24h | 100ms | 3.0 [rows=1000;hash=b6bbbc…] | 1/20 | ✗ baseline-19/20 invalid: flapping | 1/20 | ✗ baseline-19/20 invalid: flapping | 20/20 |
+| trace_lookup | 1h | 0ms | 8.3 [spans=5] | 20/20 | 4.5 (0.5×) [spans=5] | 20/20 | 80.1 (9.7× ⚠️) [5] | 20/20 |
+| trace_lookup | 1h | 100ms | 3.4 [spans=5] | 20/20 | 2.7 (0.8×) [spans=5] | 20/20 | 101.7 (29.9× 🔴) [5] | 20/20 |
+| trace_lookup | 24h | 0ms | 5.7 [spans=5] | 20/20 | 5.2 (0.9×) [spans=5] | 20/20 | 76.9 (13.5× 🔴) [5] | 20/20 |
+| trace_lookup | 24h | 100ms | 5.1 [spans=5] | 20/20 | 3.2 (0.6×) [spans=5] | 20/20 | 95.3 (18.7× 🔴) [5] | 20/20 |
 
 #### Traces
 
-The traces table in `run-baseline.md` is superseded by `run-baseline-traces-v2.md`
-(VT-native query dialect + enforcing parity gate); the table below is the v2
-rerun, pasted verbatim.
+**Per-query median LH vs baseline:** count_by_service 1.7×, count_total 3.2×, scan 1.2×, service_filter 2.0×, slow_spans 1.7×, span_name 2.4×, trace_by_id 2.2×
 
-**Per-query median LH vs baseline:** count_by_service 2.0×, count_total 2.6×, scan 3.1×, service_filter 3.4×, slow_spans 2.9×, span_name 3.1×, trace_by_id 1.8×
+| query | range | S3 lat | baseline p95 [res] | valid | LH | valid | CH | valid |
+|---|---|---:|---:|---:|---|---:|---|---:|
+| count_by_service | 1h | 0ms | 4.7 [736] | 20/20 | 5.3 (1.1×) [736] | 20/20 | 93.2 (19.8× 🔴) [736] | 20/20 |
+| count_by_service | 1h | 100ms | 3.2 [718] | 20/20 | 4.4 (1.4×) [718] | 20/20 | 124.8 (39.0× 🔴) [718] | 20/20 |
+| count_by_service | 24h | 0ms | 4.4 [16596] | 20/20 | 8.7 (2.0×) [16596] | 20/20 | 92.9 (21.1× 🔴) [16596] | 20/20 |
+| count_by_service | 24h | 100ms | 12.3 [16578] | 20/20 | 36.7 (3.0×) [16578] | 20/20 | 698.7 (56.8× 🔴) [16578] | 20/20 |
+| count_total | 1h | 0ms | 2.4 [736] | 20/20 | 4.8 (2.0×) [736] | 20/20 | 91.2 (38.0× 🔴) [736] | 20/20 |
+| count_total | 1h | 100ms | 4.2 [718] | 20/20 | 4.6 (1.1×) [718] | 20/20 | 114.9 (27.4× 🔴) [718] | 20/20 |
+| count_total | 24h | 0ms | 2.6 [16596] | 20/20 | 11.7 (4.5× ⚠️) [16596] | 20/20 | 98.2 (37.8× 🔴) [16596] | 20/20 |
+| count_total | 24h | 100ms | 4.7 [16578] | 20/20 | 21.7 (4.6× ⚠️) [16578] | 20/20 | 389.9 (83.0× 🔴) [16578] | 20/20 |
+| scan | 1h | 0ms | 5.8 [rows=736;hash=2257ee…] | 20/20 | 3.9 (0.7×) [rows=736;hash=2257ee…] | 20/20 | 107.9 (18.6× 🔴) [rows=736] | 20/20 |
+| scan | 1h | 100ms | 7.0 [rows=718;hash=10bb3a…] | 20/20 | 12.0 (1.7×) [rows=718;hash=10bb3a…] | 20/20 | 1270.6 (181.5× 🔴) [rows=718] | 20/20 |
+| scan | 24h | 0ms | 2.4 [rows=1000;hash=700539…] | 4/20 | ✗ baseline-16/20 invalid: flapping | 1/20 | ✗ baseline-16/20 invalid: flapping | 20/20 |
+| scan | 24h | 100ms | 2.9 [rows=1000;hash=17a064…] | 5/20 | ✗ baseline-15/20 invalid: flapping | 1/20 | ✗ baseline-15/20 invalid: flapping | 20/20 |
+| service_filter | 1h | 0ms | 2.4 [138] | 20/20 | 4.4 (1.8×) [138] | 20/20 | 101.5 (42.3× 🔴) [138] | 20/20 |
+| service_filter | 1h | 100ms | 2.2 [135] | 20/20 | 5.3 (2.4×) [135] | 20/20 | 98.2 (44.6× 🔴) [135] | 20/20 |
+| service_filter | 24h | 0ms | 3.5 [3296] | 20/20 | 7.7 (2.2×) [3296] | 20/20 | 108.6 (31.0× 🔴) [3296] | 20/20 |
+| service_filter | 24h | 100ms | 14.1 [3292] | 20/20 | 22.6 (1.6×) [3292] | 20/20 | 786.2 (55.8× 🔴) [3292] | 20/20 |
+| slow_spans | 1h | 0ms | 3.8 [52] | 20/20 | 6.0 (1.6×) [52] | 20/20 | 98.3 (25.9× 🔴) [52] | 20/20 |
+| slow_spans | 1h | 100ms | 5.0 [52] | 20/20 | 8.6 (1.7×) [52] | 20/20 | 404.3 (80.9× 🔴) [52] | 20/20 |
+| slow_spans | 24h | 0ms | 2.8 [1370] | 20/20 | 9.3 (3.3× ⚠️) [1370] | 20/20 | 101.6 (36.3× 🔴) [1370] | 20/20 |
+| slow_spans | 24h | 100ms | 5.7 [1365] | 20/20 | 9.8 (1.7×) [1365] | 20/20 | 122.1 (21.4× 🔴) [1365] | 20/20 |
+| span_name | 1h | 0ms | 2.8 [67] | 20/20 | 4.9 (1.8×) [67] | 20/20 | 92.2 (32.9× 🔴) [67] | 20/20 |
+| span_name | 1h | 100ms | 1.8 [66] | 20/20 | 5.3 (2.9×) [66] | 20/20 | 212.6 (118.1× 🔴) [66] | 20/20 |
+| span_name | 24h | 0ms | 3.8 [1676] | 20/20 | 7.2 (1.9×) [1676] | 20/20 | 115.2 (30.3× 🔴) [1676] | 20/20 |
+| span_name | 24h | 100ms | 1.8 [1670] | 20/20 | 8.4 (4.7× ⚠️) [1670] | 20/20 | 138.4 (76.9× 🔴) [1670] | 20/20 |
+| trace_by_id | 1h | 0ms | 1.5 [spans=4] | 20/20 | 3.6 (2.4×) [spans=4] | 20/20 | 108.6 (72.4× 🔴) [spans=4] | 20/20 |
+| trace_by_id | 1h | 100ms | 2.5 [spans=4] | 20/20 | 5.0 (2.0×) [spans=4] | 20/20 | 109.9 (44.0× 🔴) [spans=4] | 20/20 |
+| trace_by_id | 24h | 0ms | 1.8 [spans=4] | 20/20 | 5.0 (2.8×) [spans=4] | 20/20 | 128.1 (71.2× 🔴) [spans=4] | 20/20 |
+| trace_by_id | 24h | 100ms | 2.5 [spans=4] | 20/20 | 3.8 (1.5×) [spans=4] | 20/20 | 121.2 (48.5× 🔴) [spans=4] | 20/20 |
 
-| query | range | S3 lat | baseline p95 [res] | LH | CH |
-|---|---|---:|---:|---|---|
-| count_by_service | 1h | 0ms | 2.7 [594] | 3.8 (1.4×) [594] | 89.4 (33.1× 🔴) [594] |
-| count_by_service | 1h | 100ms | 3.1 [594] | 2.8 (0.9×) [594] | 114.3 (36.9× 🔴) [594] |
-| count_by_service | 24h | 0ms | 3.8 [16668] | 9.9 (2.6×) [16668] | 114.9 (30.2× 🔴) [16668] |
-| count_by_service | 24h | 100ms | 2.4 [16668] | 9.0 (3.8× ⚠️) [16668] | 116.7 (48.6× 🔴) [16668] |
-| count_total | 1h | 0ms | 2.2 [594] | 5.6 (2.5×) [594] | 97.5 (44.3× 🔴) [594] |
-| count_total | 1h | 100ms | 2.5 [594] | 3.8 (1.5×) [594] | 96.3 (38.5× 🔴) [594] |
-| count_total | 24h | 0ms | 1.9 [16678] | 8.3 (4.4× ⚠️) [16678] | 102.2 (53.8× 🔴) [16678] |
-| count_total | 24h | 100ms | 3.7 [16668] | 10.0 (2.7×) [16668] | 134.9 (36.5× 🔴) [16668] |
-| scan | 1h | 0ms | 2.1 [594] | 3.4 (1.6×) [594] | 103.3 (49.2× 🔴) [594] |
-| scan | 1h | 100ms | 2.1 [594] | 5.5 (2.6×) [594] | 104.3 (49.7× 🔴) [594] |
-| scan | 24h | 0ms | 2.4 [1000] | 8.8 (3.7× ⚠️) [1000] | 99.8 (41.6× 🔴) [1000] |
-| scan | 24h | 100ms | 1.7 [1000] | 14.3 (8.4× ⚠️) [1000] | 104.7 (61.6× 🔴) [1000] |
-| service_filter | 1h | 0ms | 1.8 [120] | 2.4 (1.3×) [120] | 98.1 (54.5× 🔴) [120] |
-| service_filter | 1h | 100ms | 1.8 [120] | 4.9 (2.7×) [120] | 141.7 (78.7× 🔴) [120] |
-| service_filter | 24h | 0ms | 1.6 [3220] | 7.5 (4.7× ⚠️) [3220] | 116.3 (72.7× 🔴) [3220] |
-| service_filter | 24h | 100ms | 1.7 [3220] | 7.1 (4.2× ⚠️) [3220] | 129.3 (76.1× 🔴) [3220] |
-| slow_spans | 1h | 0ms | 2.0 [52] | 3.7 (1.9×) [52] | 104.4 (52.2× 🔴) [52] |
-| slow_spans | 1h | 100ms | 2.3 [52] | 3.0 (1.3×) [52] | 118.9 (51.7× 🔴) [52] |
-| slow_spans | 24h | 0ms | 2.4 [1299] | 9.8 (4.1× ⚠️) [1299] | 178.4 (74.3× 🔴) [1299] |
-| slow_spans | 24h | 100ms | 2.4 [1299] | 9.3 (3.9× ⚠️) [1299] | 96.8 (40.3× 🔴) [1299] |
-| span_name | 1h | 0ms | 1.2 [57] | 3.9 (3.2× ⚠️) [57] | 94.1 (78.4× 🔴) [57] |
-| span_name | 1h | 100ms | 1.8 [57] | 5.2 (2.9×) [57] | 126.8 (70.4× 🔴) [57] |
-| span_name | 24h | 0ms | 1.5 [1563] | 7.9 (5.3× ⚠️) [1563] | 119.1 (79.4× 🔴) [1563] |
-| span_name | 24h | 100ms | 2.3 [1563] | 6.8 (3.0×) [1563] | 127.6 (55.5× 🔴) [1563] |
-| trace_by_id | 1h | 0ms | 2.0 [8] | 2.5 (1.2×) [8] | 103.3 (51.6× 🔴) [8] |
-| trace_by_id | 1h | 100ms | 1.6 [8] | 3.0 (1.9×) [8] | 140.3 (87.7× 🔴) [8] |
-| trace_by_id | 24h | 0ms | 1.3 [8] | 5.5 (4.2× ⚠️) [8] | 123.8 (95.2× 🔴) [8] |
-| trace_by_id | 24h | 100ms | 1.8 [8] | 3.0 (1.7×) [8] | 113.2 (62.9× 🔴) [8] |
+Full row-set hashes and per-iteration invalid reasons are in
+`bench-results/baseline-2026-09/run-baseline-v3.md` (verbatim harness output);
+truncated above for readability.
 
 ### Full-scope S3-ops (logs, e2e compose)
 

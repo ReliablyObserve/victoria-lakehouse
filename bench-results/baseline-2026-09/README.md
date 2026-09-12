@@ -1,11 +1,52 @@
 # Baseline 2026-09 (pre-upgrade: VL v1.50.0 / VT v0.9.2 / parquet-go v0.30.1)
 
 Files:
-- `run-baseline.json` / `run-baseline.md` — `scripts/bench/run.sh --signals both --s3-latency "0 100"` (benchmark compose, parity gate first)
+- `run-baseline-v3.json` / `.md` / `.log` — **THE current perf-gate reference.**
+  `scripts/bench/run.sh --signals both --s3-latency "0 100" --ranges "1h 24h"
+  --iterations 20 --warmup 3` with every timed response validated (see
+  "Response validation (v3)" below). Supersedes `run-baseline.md` and
+  `run-baseline-traces-v2.md`, kept below for provenance only — do not judge
+  new PRs against v1/v2 numbers.
+- `run-baseline.json` / `run-baseline.md` — v1, superseded (see caveats below).
+- `run-baseline-traces-v2.{json,md,log}` — v2 traces rerun, superseded by v3.
 - `full-scope-lat0.csv|md`, `full-scope-lat100.csv|md`, `metrics-lat*/` — `scripts/bench/full-scope-s3-bench.sh` (e2e compose) with the per-scenario S3-ops table
 - `env.txt` — image tags, git sha, host, docker version
 
-Judge every later PR against these numbers (perf gate: any LH/CH >= 1.0 cell or an LH/VL regression > 10 % on any scenario blocks).
+Judge every later PR against `run-baseline-v3.md` (perf gate: any LH/CH >= 1.0 cell or an LH/VL regression > 10 % on any scenario blocks).
+
+## Response validation (v3, 2026-09-12 — Task 6)
+
+`run.sh` now validates **every timed response**, not just its latency: a fast
+wrong/empty/error answer is a broken response and is never counted as
+latency. Per iteration (warmup iterations too, though warmup never counts
+for latency): HTTP must be 2xx; the body must parse; the extracted result
+must be non-empty *unless* the query is a documented miss scenario
+(`trace_lookup`); and the result must be identical to the cell's first valid
+result (a flapping answer is excluded, not averaged in). Invalid iterations
+are dropped from p50/p95/p99 and the cell records `iters_valid`/
+`iters_invalid`/`invalid_reasons`. `report.py` additionally cross-checks each
+engine's result against the baseline (VL/VT) beyond a 5% count tolerance,
+and — for `scan`, whose result carries a sha256 hash of the sorted row-key
+set (`_msg` for logs, `trace_id:span_id` for traces) — flags "same count,
+different rows" when the hash disagrees while the count matches; ClickHouse's
+`scan` has a different projection and is compared by row count only. Every
+system's cell in the v3 table carries a `k/N valid` column alongside its
+latency.
+
+**`run-baseline-v3.md` result: 60/64 valid cells (34/36 logs, 26/28 traces),
+4 invalid — all `scan`/24h (both signals, both S3-latency levels), all
+"baseline flapping".** This is a genuine, reproducible finding, not a harness
+bug: `scan`'s `limit 1000` truncates a much larger 24h result set with no
+explicit `sort`, and VictoriaLogs/VictoriaTraces return a different (but
+same-sized) subset of rows on repeated, otherwise-identical queries — 15–19
+of 20 iterations disagreed with the first. The 1h `scan` cells (well under
+the 1000-row cap) are stable and fully valid. Fixing this would mean adding
+an explicit `sort` to the `scan` query, which changes what's being measured
+(a sort has its own cost) — left as a follow-up, not done as part of this
+harness-validation task. No other cell is invalid; the parity gate passed at
+both latency levels on both signals; no cross-system `✗` anywhere.
+
+## Caveats (2026-09-12 harness recheck)
 
 ## Caveats (2026-09-12 harness recheck)
 
@@ -104,3 +145,29 @@ scripts/bench/run.sh --signals traces --s3-latency "0 100" --ranges "1h 24h" \
 - **`run-baseline-traces-v2.md` result:** 28/28 traces cells valid, 0 invalid,
   no `✗` cells, non-zero `[res]` on every scenario. LH is a median 2.7× VT/CH
   baseline (p90 4.7×) and 21× faster than ClickHouse on the same S3 Parquet.
+
+**Exact command for `run-baseline-v3.{json,md,log}`** (fresh stack, disk
+profile `local-ssd`):
+
+```
+scripts/bench/run.sh --signals both --s3-latency "0 100" --ranges "1h 24h" \
+  --iterations 20 --warmup 3 \
+  --output bench-results/baseline-2026-09/run-baseline-v3.json 2>&1 \
+  | tee -a bench-results/baseline-2026-09/run-baseline-v3.log
+python3 scripts/bench/report.py bench-results/baseline-2026-09/run-baseline-v3.json \
+  bench-results/baseline-2026-09/run-baseline-v3.md
+```
+- **Enforced parity gate (from `run-baseline-v3.log`):** logs count_total —
+  baseline (victorialogs) = 14294 at 0ms, 14270 at 100ms; traces count_total —
+  baseline (victoriatraces) = 16610 at 0ms, 16578 at 100ms. No `parity gate
+  MISMATCH` or `parity gate FAILED` line anywhere in the log — every system
+  agreed with its signal's baseline within ±5% at both latency levels.
+- **`run-baseline-v3.md` result:** 60/64 cells valid (see "Response
+  validation (v3)" above for the 4 `scan`/24h exceptions and why). LH is a
+  logs median 1.8× baseline (p90 4.3×) and 11× faster than ClickHouse; a
+  traces median 1.9× baseline (p90 4.5×) and 19× faster than ClickHouse.
+- **Unit/self tests:** `python3 -m unittest discover -s scripts/bench/tests`
+  (19 tests, `report.py`'s validity rules) and
+  `scripts/bench/tests/extract_result_test.sh` (18 checks, `run.sh`'s
+  per-response extractor/validator against fixture bodies) — both pass; see
+  `docs/benchmarks/full-scope-s3.md` for how to run them.

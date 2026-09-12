@@ -65,6 +65,13 @@ done
 [[ -z "$OUTPUT" ]] && OUTPUT="bench-results/run-${STAMP}.json"
 mkdir -p "$(dirname "$OUTPUT")"
 
+# BENCH_TMP: every timed/warmup request's response body is captured here (one
+# file per request) so it can be validated (HTTP-2xx AND parseable AND
+# non-empty AND stable) before its latency counts for anything. Cleaned up
+# per-request (measure_query removes each tmpfile right after validating it)
+# and as a safety net in teardown().
+BENCH_TMP="$(mktemp -d)"
+
 COMPOSE_BASE="deployment/docker/docker-compose-benchmark.yml"
 COMPOSE_GP3="deployment/docker/docker-compose-benchmark.gp3.yml"
 COMPOSE_ARGS=(-f "$COMPOSE_BASE")
@@ -83,32 +90,232 @@ CH_USER="${CH_USER:-default}"; CH_PASS="${CH_PASS:-benchmark}"
 
 log() { printf '\033[1;36m[bench]\033[0m %s\n' "$*" >&2; }
 
+# --- correctness validation ---------------------------------------------------
+# A benchmark cell is only meaningful when every timed request returned a
+# correct, valid response — a fast wrong/empty/error answer is a BROKEN
+# response and must never be counted as latency (this is exactly the
+# VT-empty-cells failure mode from Task 5).
+#
+# MISS_QUERIES lists query kinds whose *correct* answer can legitimately be
+# empty (a cross-signal lookup that doesn't correlate); every other query's
+# empty result is treated as invalid, not a real answer.
+MISS_QUERIES=" trace_lookup "
+is_miss_query() { [[ "$MISS_QUERIES" == *" $1 "* ]]; }
+
+result_is_empty() {
+  case "$1" in
+    0|rows=0|spans=0) return 0 ;;
+    "rows=0;hash="*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# extract_result <qkind> <system> <file> -> a comparable value string, or
+# "invalid:<reason>" on any parse failure. Formats:
+#   - scalar (count/filter/group-by kinds): the count as a plain integer
+#     string — VL/VT/LH sum the LogsQL JSON-line `n` (or fall back to row
+#     count when there's no count column); ClickHouse sums the numeric last
+#     TSV column (or falls back to row count) — same heuristic, applied per
+#     response instead of once after the loop.
+#   - scan: "rows=<N>;hash=<sha256 of the sorted set of stable row keys>" —
+#     key is `_msg` for logs, `trace_id:span_id` for traces (so a degenerate
+#     but same-count answer still diverges). ClickHouse's scan is a DIFFERENT
+#     projection with no comparable key, so CH scan is "rows=<N>" only —
+#     compared by row count alone.
+#   - trace_by_id / trace_lookup: "spans=<N>", the matched-span/log count.
+extract_result() {
+  local qkind="$1" system="$2" file="$3"
+  if [[ "$system" == clickhouse ]]; then
+    case "$qkind" in
+      scan)
+        awk 'END{print "rows="NR}' "$file" ;;
+      trace_by_id)
+        awk -F'\t' '{n++; v=$NF} END{if(n==0){print "invalid:empty-body"} else {print "spans="(v+0)}}' "$file" ;;
+      *)
+        awk -F'\t' '{n++; v=$NF; if(v+0==v && v!="") s+=v; else nn=1} END{if(n==0){print "invalid:empty-body"} else {print (nn?n:s+0)}}' "$file" ;;
+    esac
+  else
+    case "$qkind" in
+      scan)
+        python3 - "$file" <<'PY'
+import sys, json, hashlib
+path = sys.argv[1]
+keys = []
+n = parsed = 0
+with open(path) as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        n += 1
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        parsed += 1
+        if "trace_id" in d or "span_id" in d:
+            keys.append("{}:{}".format(d.get("trace_id", ""), d.get("span_id", "")))
+        else:
+            keys.append(d.get("_msg", ""))
+if n and not parsed:
+    print("invalid:parse-error")
+else:
+    h = hashlib.sha256("\n".join(sorted(set(keys))).encode()).hexdigest()
+    print("rows={};hash={}".format(n, h))
+PY
+        ;;
+      trace_by_id|trace_lookup)
+        python3 - "$file" <<'PY'
+import sys, json
+n = parsed = tot = 0
+with open(sys.argv[1]) as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        n += 1
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        parsed += 1
+        v = d.get("n")
+        if v is not None:
+            try:
+                tot += int(v)
+            except Exception:
+                pass
+# An empty body (n==0) is LogsQL's real, legitimate answer for a zero-match
+# `stats count()` — VictoriaLogs emits no output line at all when the filtered
+# stream is empty, confirmed empirically (Task 5: trace_lookup's miss cells are
+# `[0]`, not missing/errored, on every system). Only "got bytes but none of
+# them parsed as JSON" is an actual parse failure.
+if n and not parsed:
+    print("invalid:parse-error")
+else:
+    print("spans={}".format(tot))
+PY
+        ;;
+      *)
+        python3 - "$file" <<'PY'
+import sys, json
+n = parsed = tot = 0
+has_count = False
+with open(sys.argv[1]) as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        n += 1
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        parsed += 1
+        v = d.get("n", d.get("count(*)", d.get("count(")))
+        if v is not None:
+            has_count = True
+            try:
+                tot += int(v)
+            except Exception:
+                pass
+# Same reasoning as the trace_by_id/trace_lookup branch above: an empty body
+# is LogsQL's legitimate zero-match answer, not a parse failure.
+if n and not parsed:
+    print("invalid:parse-error")
+else:
+    print(tot if has_count else n)
+PY
+        ;;
+    esac
+  fi
+}
+
+# _validate_iter: validates one iteration's HTTP response against the correctness
+# rules above. Sets globals VALID (0/1), REASON, RESULT.
+# $1 qkind  $2 system  $3 http_code  $4 tmpfile  $5 first_result (""=none yet)
+_validate_iter() {
+  local qkind="$1" system="$2" code="$3" tmpfile="$4" first_result="$5"
+  if [[ "$code" != 2* ]]; then
+    VALID=0; REASON="http $code"; RESULT=""
+    return
+  fi
+  RESULT=$(extract_result "$qkind" "$system" "$tmpfile")
+  if [[ "$RESULT" == invalid:* ]]; then
+    VALID=0; REASON="${RESULT#invalid:}"
+    return
+  fi
+  if ! is_miss_query "$qkind" && result_is_empty "$RESULT"; then
+    VALID=0; REASON="empty result"
+    return
+  fi
+  if [[ -n "$first_result" && "$RESULT" != "$first_result" ]]; then
+    # Generic (not "$RESULT vs $first_result") on purpose: a scan's result
+    # embeds a full sha256 row-set hash, which would make every flapping
+    # iteration's reason a distinct string and defeat de-duplication —
+    # reasons_seen is keyed on this exact text in measure_query.
+    VALID=0; REASON="flapping (differs from cell's first valid result)"
+    return
+  fi
+  VALID=1; REASON=""
+}
+
 # --- measure_query: time a prepared request N times, emit p50/p95/p99 JSON -----
 # Uses curl's own %{time_total} (no shell-timing overhead, so fast queries aren't
-# inflated by subprocess startup); percentiles computed once at the end.
+# inflated by subprocess startup); percentiles computed once at the end, over
+# VALID iterations only. Every iteration's body is captured and validated
+# (HTTP 2xx, parseable, non-empty for non-miss scenarios, identical to the
+# cell's first valid result) BEFORE its latency counts for anything — an
+# invalid iteration is excluded from p50/p95/p99 and recorded in
+# iters_invalid/invalid_reasons instead.
 # $1 label  $2 system  $3 method(GET|POST|CH)  $4 url  $5 body  $6 qkind (query name, e.g. "scan")
 measure_query() {
   local label="$1" system="$2" method="$3" url="$4" body="${5:-}" qkind="${6:-}"
-  local secs=() bytes=() errors=0 i out code tt sz
-  for ((i=0; i<WARMUP; i++)); do _do_req "$method" "$url" "$body" >/dev/null 2>&1 || true; done
+  local secs=() bytes=() errors=0 i out code tt sz tmpfile
+  local first_result="" iters_valid=0 iters_invalid=0
+  local -A reasons_seen=()
+  local reasons_list=()
+
+  for ((i=0; i<WARMUP; i++)); do
+    out=$(_do_req "$method" "$url" "$body"); read -r code tt sz tmpfile <<<"$out"
+    _validate_iter "$qkind" "$system" "$code" "$tmpfile" ""   # warms caches; never counted
+    rm -f "$tmpfile"
+  done
+
   for ((i=0; i<ITERATIONS; i++)); do
     # Cold mode: evict LH's mem/disk/footer caches before each request so every
     # sample is a true cold scan (re-fetch from S3 + re-decode Parquet). Only the
     # system under test is cleared; VL/VT are hot-tier by design and CH re-scans
     # S3 each query anyway.
     [[ "$COLD" == 1 && "$system" == lakehouse ]] && clear_lh_cache "$url"
-    out=$(_do_req "$method" "$url" "$body"); read -r code tt sz <<<"$out"
-    if [[ "$code" == 2* ]]; then secs+=("$tt"); bytes+=("$sz"); else errors=$((errors+1)); fi
+    out=$(_do_req "$method" "$url" "$body"); read -r code tt sz tmpfile <<<"$out"
+    _validate_iter "$qkind" "$system" "$code" "$tmpfile" "$first_result"
+    [[ "$code" != 2* ]] && errors=$((errors+1))
+    if [[ "$VALID" == 1 ]]; then
+      [[ -z "$first_result" ]] && first_result="$RESULT"
+      secs+=("$tt"); bytes+=("$sz")
+      iters_valid=$((iters_valid+1))
+    else
+      iters_invalid=$((iters_invalid+1))
+      if [[ -z "${reasons_seen[$REASON]:-}" ]]; then reasons_seen[$REASON]=1; reasons_list+=("$REASON"); fi
+    fi
+    rm -f "$tmpfile"
   done
-  # result = a comparable scalar (row/group count) so the report can verify every
-  # system returned EQUIVALENT data — a fast p95 over an empty/divergent result is
-  # not a real win and gets flagged downstream.
-  local result; result=$(fetch_scalar "$method" "$url" "$body" "$qkind")
-  python3 - "$label" "$system" "$errors" "$result" "${#bytes[@]}" "${bytes[@]}" -- "${secs[@]}" <<'PY'
+
+  local invalid_reasons="" r
+  for r in "${reasons_list[@]:-}"; do
+    [[ -z "$r" ]] && continue
+    if [[ -z "$invalid_reasons" ]]; then invalid_reasons="$r"; else invalid_reasons="${invalid_reasons}; ${r}"; fi
+  done
+  local content_hash=""
+  [[ "$first_result" == *";hash="* ]] && content_hash="${first_result#*;hash=}"
+
+  python3 - "$label" "$system" "$errors" "$first_result" "$iters_valid" "$iters_invalid" "$invalid_reasons" "$content_hash" "${#bytes[@]}" "${bytes[@]}" -- "${secs[@]}" <<'PY'
 import sys, json
 a = sys.argv
-label, system, errors, result, nb = a[1], a[2], int(a[3]), a[4], int(a[5])
-b = list(map(float, a[6:6+nb]))
+label, system, errors, result, iters_valid, iters_invalid, invalid_reasons, content_hash, nb = (
+    a[1], a[2], int(a[3]), a[4], int(a[5]), int(a[6]), a[7], a[8], int(a[9]))
+b = list(map(float, a[10:10+nb]))
 secs = list(map(float, a[a.index('--')+1:]))
 vals = sorted(s * 1000 for s in secs)
 n = len(vals)
@@ -116,58 +323,38 @@ pct = lambda p: round(vals[min(int(n * p / 100), n - 1)], 1) if n else None
 avg_bytes = round(sum(b)/len(b)) if b else 0
 print(json.dumps({"label": label, "system": system, "p50_ms": pct(50), "p95_ms": pct(95),
                   "p99_ms": pct(99), "iters": n, "errors": errors,
-                  "avg_bytes": avg_bytes, "result": result}))
+                  "avg_bytes": avg_bytes, "result": result if result else None,
+                  "iters_valid": iters_valid, "iters_invalid": iters_invalid,
+                  "invalid_reasons": invalid_reasons if invalid_reasons else None,
+                  "content_hash": content_hash if content_hash else None}))
 PY
 }
 clear_lh_cache() { # $1 = any LH url; POSTs /internal/cache/clear to its host
   local base="${1%%/select/*}"; base="${base%%/api/*}"
   curl -sf -o /dev/null -X POST --max-time 10 "${base}/internal/cache/clear" 2>/dev/null || true
 }
-_do_req() { # echoes "<http_code> <time_total_s> <size_download_bytes>"
-  local method="$1" url="$2" body="$3"
+_do_req() { # echoes "<http_code> <time_total_s> <size_download_bytes> <tmpfile>"
+  local method="$1" url="$2" body="$3" tmp result
+  tmp=$(mktemp "$BENCH_TMP/req.XXXXXX")
   case "$method" in
-    GET)  curl -sf -o /dev/null -w '%{http_code} %{time_total} %{size_download}' --max-time 60 "$url" 2>/dev/null || echo "000 0 0" ;;
-    POST) curl -sf -o /dev/null -w '%{http_code} %{time_total} %{size_download}' --max-time 60 --data-urlencode "query=$body" "$url" 2>/dev/null || echo "000 0 0" ;;
-    CH)   curl -sf -o /dev/null -w '%{http_code} %{time_total} %{size_download}' --max-time 60 --user "$CH_USER:$CH_PASS" --data-binary "$body" "$url/" 2>/dev/null || echo "000 0 0" ;;
+    GET)  result=$(curl -sf -o "$tmp" -w '%{http_code} %{time_total} %{size_download}' --max-time 60 "$url" 2>/dev/null) || result="000 0 0" ;;
+    POST) result=$(curl -sf -o "$tmp" -w '%{http_code} %{time_total} %{size_download}' --max-time 60 --data-urlencode "query=$body" "$url" 2>/dev/null) || result="000 0 0" ;;
+    CH)   result=$(curl -sf -o "$tmp" -w '%{http_code} %{time_total} %{size_download}' --max-time 60 --user "$CH_USER:$CH_PASS" --data-binary "$body" "$url/" 2>/dev/null) || result="000 0 0" ;;
   esac
+  printf '%s %s\n' "$result" "$tmp"
 }
-# fetch_scalar: one un-timed request; extracts a comparable count from each
-# system's native response (LogsQL JSON lines vs ClickHouse TSV) so results can be
-# checked for equivalence across systems. Echoes the number, or "ERR".
+# fetch_scalar: one un-timed request via _do_req + extract_result — used by
+# parity_gate for a quick baseline-agreement count. (The per-iteration result
+# used by the report's validity/equality checks comes from extract_result
+# directly, inside measure_query.) Echoes the value, or "ERR".
 fetch_scalar() {
-  local method="$1" url="$2" body="$3" qkind="$4" raw
-  if [[ "$method" == CH ]]; then
-    raw=$(curl -sf --max-time 60 --user "$CH_USER:$CH_PASS" --data-binary "$body" "$url/" 2>/dev/null) || { echo ERR; return; }
-    if [[ "$qkind" == scan ]]; then
-      # scan queries return raw rows; always compare by ROW COUNT, even when a
-      # column happens to look numeric (e.g. traces' Duration column) — the
-      # numeric-last-column heuristic below would otherwise sum durations
-      # instead of counting rows, and wrongly flag CH as diverging from LH/VT.
-      awk 'END{print NR}' <<<"$raw"
-    else
-      # count queries: sum the numeric last TSV column. Non-scan queries whose
-      # last column is non-numeric (rare) fall back to the ROW COUNT, so the
-      # validity gate always has a comparable rows-or-total scalar.
-      awk -F'\t' '{n++; v=$NF; if(v+0==v && v!="") s+=v; else nn=1} END{print (nn?n:s+0)}' <<<"$raw"
-    fi
-  else
-    raw=$(curl -sf --max-time 60 --data-urlencode "query=$body" "$url" 2>/dev/null) || { echo ERR; return; }
-    python3 -c "
-import sys,json
-tot=0; rows=0; has_count=False
-for ln in sys.stdin:
-    ln=ln.strip()
-    if not ln: continue
-    rows+=1
-    try: d=json.loads(ln)
-    except: continue
-    v=d.get('n', d.get('count(*)', d.get('count(')))
-    if v is not None:
-        has_count=True
-        try: tot+=int(v)
-        except: pass
-print(tot if has_count else rows)" <<<"$raw"
-  fi
+  local method="$1" url="$2" body="$3" qkind="$4" system="$5" out code tt sz tmpfile result
+  out=$(_do_req "$method" "$url" "$body"); read -r code tt sz tmpfile <<<"$out"
+  if [[ "$code" != 2* ]]; then rm -f "$tmpfile"; echo ERR; return; fi
+  result=$(extract_result "$qkind" "$system" "$tmpfile")
+  rm -f "$tmpfile"
+  [[ "$result" == invalid:* ]] && { echo ERR; return; }
+  echo "$result"
 }
 
 # --- time helpers (ns epoch for LogsQL, unix seconds for CH) -------------------
@@ -238,7 +425,15 @@ _prep_body() { # $1 signal  $2 query  $3 system  $4 range_secs
       # some of those exceed 100ms, so a bare `duration:>N` filter
       # over-counts on VT only (1075 vs LH's real 0) — confirmed empirically.
       slow_spans)       [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND Duration>50000000' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* duration:>50000000 | stats count() as n' "$traces_url" "$sns" "$ens" ;;
-      scan)             [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT SpanName,ServiceName,Duration FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) LIMIT 1000' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | fields name, `resource_attr:service.name`, duration | limit 1000' "$traces_url" "$sns" "$ens" ;;
+      # trace_id, span_id are included in the projection (in addition to the
+      # brief's name/service.name/duration) so extract_result's scan-key
+      # hash (Task 6: trace_id:span_id for traces) is actually meaningful —
+      # without them every row's key degenerates to the same empty string,
+      # so the hash is constant regardless of content (a false-negative that
+      # can never catch a real divergence). Same filter/limit, so the count
+      # and row selection are unaffected; only two extra small fields ride
+      # along in the response.
+      scan)             [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT SpanName,ServiceName,Duration FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) LIMIT 1000' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | fields trace_id, span_id, name, `resource_attr:service.name`, duration | limit 1000' "$traces_url" "$sns" "$ens" ;;
     esac
   fi
 }
@@ -286,7 +481,7 @@ up_stack() {
     sleep 3; tries=$((tries+1)); (( tries > 60 )) && { log "stack did not become healthy"; return 1; }
   done
 }
-teardown() { (( KEEP )) && { log "leaving stack up (--keep)"; return; }; log "tearing down stack…"; docker compose "${COMPOSE_ARGS[@]}" down -v >/dev/null 2>&1 || true; }
+teardown() { rm -rf "$BENCH_TMP" 2>/dev/null || true; (( KEEP )) && { log "leaving stack up (--keep)"; return; }; log "tearing down stack…"; docker compose "${COMPOSE_ARGS[@]}" down -v >/dev/null 2>&1 || true; }
 # The datagen-seed service (in the compose) backfills ~7d of logs+traces into
 # VL/VT/LH at `up`. Wait for it to finish, then let LH flush to S3 so ClickHouse's
 # s3() views see the Parquet; finally run the preflight data/parity check.
@@ -358,12 +553,9 @@ parity_gate() {
   local sysset; [[ "$signal" == logs ]] && sysset="$LOG_SYSTEMS" || sysset="$TRACE_SYSTEMS"
   local base="" s n mismatch=0
   for s in $sysset; do
+    local m u b
     read -r m u b <<<"$(prep "$signal" count_total "$s" "$secs")"
-    if [[ "$m" == CH ]]; then n=$(curl -sf --max-time 60 --user "$CH_USER:$CH_PASS" --data-binary "$b" "$u/" 2>/dev/null | tr -d '[:space:]')
-    else n=$(curl -sf --max-time 60 --data-urlencode "query=$b" "$u" 2>/dev/null | python3 -c "import sys,json
-try:
-  d=[json.loads(l) for l in sys.stdin if l.strip()]; print(d[0].get('n',0) if d else 0)
-except: print('ERR')"); fi
+    n=$(fetch_scalar "$m" "$u" "$b" count_total "$s")
     printf '    %-16s count=%s\n' "$s" "${n:-ERR}" >&2
     if [[ -z "$base" ]]; then
       base="$n"
