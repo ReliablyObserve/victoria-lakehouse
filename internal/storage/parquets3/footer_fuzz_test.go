@@ -120,6 +120,34 @@ func FuzzParseFooterBytes(f *testing.F) {
 	f.Add(encodeFuzzInput([]byte("PAR1"), 4))
 	f.Add(encodeFuzzInput([]byte("PAR1PAR1"), 8))
 
+	// Regression: declared footer length (little-endian, trailing 4 bytes
+	// before the length/magic suffix) claims far more than the buffer
+	// holds. Combined with a huge fileSize, this used to make
+	// footerReaderAt's byte-by-byte gap zero-fill loop run over most of
+	// the (fictional) file — a multi-second, multi-GiB-touching call,
+	// collapsing exec/sec under fuzzing. See
+	// TestParseFooterFromBytes_RejectsAbsurdFooterLength.
+	// fileSize must be large (not len(absurdLen)) for this seed to exercise
+	// the actual amplifier: footerReaderAt's byte-by-byte gap zero-fill,
+	// which only runs long when the gap (fileSize - len(footerBytes)) is
+	// large enough to absorb the declared length. At a small fileSize the
+	// unpatched code errors fast on EOF instead (see
+	// TestParseFooterFromBytes_RejectsAbsurdFooterLength).
+	absurdLen := make([]byte, 64)
+	absurdLen[len(absurdLen)-8] = 0xF0
+	absurdLen[len(absurdLen)-7] = 0xFF
+	absurdLen[len(absurdLen)-6] = 0xFF
+	absurdLen[len(absurdLen)-5] = 0xFF
+	copy(absurdLen[len(absurdLen)-4:], []byte("PAR1"))
+	f.Add(encodeFuzzInput(absurdLen, int64(1)<<40))
+
+	// Regression: minimized crasher for a negative SchemaElement.NumChildren
+	// that panicked in parquet-go's columnLoader.open (make([]*Column, n)
+	// with n < 0) instead of erroring. See
+	// TestParseFooterFromBytes_RecoversFromDecoderPanic and
+	// testdata/fuzz/FuzzParseFooterBytes/2a42c33e12fefdfc.
+	f.Add([]byte("00000000\x150\x19<H\v00000000000\x1510\x150\x15\x800\x150\x18\x020011,,801000\x150%0\x18\x03000x0,8000\x160\x19\x1c\x19,&0\x1c\x150\x19\x150\x19\x18\x0200\x150\x160\x16\x940\x16\x940&0<60(\b00000000\x18\b0000000001,1180080011111180800&0\x1c\x150\x19\x150\x19\x18\x03000\x150\x160\x16\xe80\x16\xe80&\x9c0<60(\x0500000\x18\x0500000001\x1501\f080,1080011111111110\x16\xfc0\x160X07000000001700000000C0m0000000000000000C07000000008\x0000\b\x01\x00\x00PAR1"))
+
 	f.Fuzz(func(t *testing.T, data []byte) {
 		footerBytes, fileSize := decodeFuzzInput(data)
 

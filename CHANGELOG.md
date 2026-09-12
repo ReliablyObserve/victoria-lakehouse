@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `github.com/klauspost/compress` bumped `v1.18.6` → `v1.18.7` in both modules, closing the import-only `GO-2026-5841` (OOB read in `compress/s2`).
 - `govulncheck ./...` reports **0 findings** in both modules after these three bumps.
 
+### Fixed
+
+- **`FuzzParseFooterBytes` nightly hang (`internal/storage/parquets3`).** The nightly fuzz job for `ParseFooterFromBytes` hung/died on every `main` run since at least 2026-09-08: a footer whose declared length outran the actual buffer made `parquet-go`'s `OpenFile` issue one read for the whole (attacker-controlled, up to ~4 GiB) declared length, and our `footerReaderAt.ReadAt` zero-filled the resulting gap byte-by-byte — a multi-second, multi-GiB-touching loop once `fileSize` is large, not a bare allocation. `ParseFooterFromBytes` now rejects a declared length that exceeds the buffer it actually holds (the real guard) or a 64 MiB policy cap (sized for the largest legitimate trace-index footers, logged/counted on hit via `lakehouse_footer_parse_rejected_total`) before ever calling into `parquet-go`, and recovers a separate `parquet-go` panic (negative `SchemaElement.NumChildren`) the same fuzz run surfaced. Fixed in both the logs and traces modules; regression seeds and unit tests pin both bugs, and `FuzzParseFooterBytes` runs clean for 120s post-fix (~6.4M execs, exec/sec never below ~10K/s).
+
 ## [0.101.0] - 2026-06-12
 
 ### Added
