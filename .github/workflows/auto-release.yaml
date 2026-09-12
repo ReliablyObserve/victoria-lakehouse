@@ -36,7 +36,7 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.TOKEN_GITHUB || secrets.GITHUB_TOKEN }}
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         if: steps.skip_release.outputs.skip != 'true'
         with:
           go-version-file: go.mod
