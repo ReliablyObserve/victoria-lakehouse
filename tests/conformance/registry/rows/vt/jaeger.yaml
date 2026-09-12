@@ -1,0 +1,130 @@
+# VT Jaeger-compat surface: 5 native routes + bare-path (non /select/jaeger
+# prefixed) shims. Queries use VT-native field names throughout:
+# resource_attr:service.name, name, duration (ns), span_attr:<key>, trace_id,
+# span_id, kind, status_code.
+
+- id: vt.jaeger.services.basic
+  title: "/select/jaeger/api/services — service list"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold, global]
+  seed: [traces.base]
+  upstream: { route: /select/jaeger/api/services }
+  request: { method: GET, path: /select/jaeger/api/services, headers: { AccountID: "{{tenant.account}}", ProjectID: "{{tenant.project}}" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+
+- id: vt.jaeger.operations.basic
+  title: "/select/jaeger/api/services/{service}/operations — operation list"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/jaeger/api/services/ }
+  request: { method: GET, path: /select/jaeger/api/services/checkout/operations }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+
+- id: vt.jaeger.traces_search.by_service
+  title: "/select/jaeger/api/traces — search by service"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/jaeger/api/traces }
+  request: { method: GET, path: /select/jaeger/api/traces, params: { service: "checkout", start: "{{seed.start_us}}", end: "{{seed.cold_end_us}}", limit: "100" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+
+- id: vt.jaeger.traces_search.by_service_and_tag
+  title: "/select/jaeger/api/traces — search by service + span tag"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/jaeger/api/traces }
+  request: { method: GET, path: /select/jaeger/api/traces, params: { service: "checkout", tags: '{"error":"true"}', start: "{{seed.start_us}}", end: "{{seed.cold_end_us}}" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+
+- id: vt.jaeger.traces_search.min_duration
+  title: "/select/jaeger/api/traces — search by minDuration"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/jaeger/api/traces }
+  request: { method: GET, path: /select/jaeger/api/traces, params: { service: "checkout", minDuration: "100ms", start: "{{seed.start_us}}", end: "{{seed.cold_end_us}}" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+
+- id: vt.jaeger.traces_by_id.basic
+  title: "/select/jaeger/api/traces/{traceID} — trace by id"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold, global]
+  seed: [traces.base]
+  upstream: { route: /select/jaeger/api/traces/ }
+  request: { method: GET, path: "/select/jaeger/api/traces/{{seed.trace_id}}" }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+
+- id: vt.jaeger.dependencies.basic
+  title: "/select/jaeger/api/dependencies — service graph edges (sorted)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.sg]
+  upstream: { route: /select/jaeger/api/dependencies }
+  request: { method: GET, path: /select/jaeger/api/dependencies, params: { endTs: "{{seed.cold_end_ms}}", lookback: "86400000" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+
+- id: vt.jaeger.services.bare_shim
+  title: "/api/services — bare-path Jaeger shim (cold only)"
+  surface: vt
+  kind: select
+  origin: lh-shim
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  upstream: { route: /select/jaeger/api/services }
+  request: { method: GET, path: /api/services }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+
+- id: vt.jaeger.traces_search.bare_shim
+  title: "/api/traces — bare-path Jaeger search shim (cold only)"
+  surface: vt
+  kind: select
+  origin: lh-shim
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  upstream: { route: /select/jaeger/api/traces }
+  request: { method: GET, path: /api/traces, params: { service: "checkout", start: "{{seed.start_us}}", end: "{{seed.cold_end_us}}" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true

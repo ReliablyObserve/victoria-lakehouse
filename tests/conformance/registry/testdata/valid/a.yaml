@@ -1,0 +1,23 @@
+- id: vl.select.query.wildcard
+  title: "/select/logsql/query wildcard"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold, global]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", limit: "100" } }
+  compare: { type: ndjson-multiset, project: [_time, _msg, _stream] }
+  layers: [api]
+- id: lh.stats.overview.schema
+  title: "/lakehouse/api/v1/stats/overview shape"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /lakehouse/api/v1/stats/overview }
+  compare: { type: schema }
+  layers: [api]

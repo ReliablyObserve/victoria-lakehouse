@@ -1,0 +1,43 @@
+name: Conformance
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOWORK: "off"
+  VL_VERSION_LOGS: v1.50.0
+  VL_COMMIT_TRACES: 77df0c04d532
+  VT_VERSION: v0.9.2
+
+jobs:
+  conformance-inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/cache/restore@v5
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaTraces
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
+      - name: Prepare deps (no-op when cache hit)
+        run: make deps-logs deps-traces deps-vt
+      - name: Conformance drift and generated files check
+        run: make conformance-check
+      - name: Route/handler changes carry registry changes
+        if: github.event_name == 'pull_request'
+        run: scripts/ci/check_registry_touch.sh origin/${{ github.base_ref }}

@@ -1,0 +1,13 @@
+- id: vl.select.typo.one
+  title: "test row with typo key"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "1=1" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]
+  pendng: true

@@ -1,0 +1,23 @@
+- id: vl.select.multi.one
+  title: "multi test row 1"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "1=1" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]
+- id: vl.select.multi.two
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "1=1" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]

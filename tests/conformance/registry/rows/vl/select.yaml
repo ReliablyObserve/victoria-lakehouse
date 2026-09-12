@@ -1,0 +1,386 @@
+# VL /select/* endpoints (surface vl), pinned VL v1.50.0.
+# Canonical requests use the seed vocabulary: services api-gateway, checkout,
+# payments, inventory, notifications; tenant {{tenant.account}}/{{tenant.project}};
+# window {{seed.start}}..{{seed.cold_end}}. See docs/parity-and-gaps.md for divergences.
+#
+# Placeholder vocabulary (all rows, not just this file):
+#   {{seed.start}} / {{seed.cold_end}}       — RFC3339 timestamps, the default
+#                                               time-window form most endpoints accept.
+#   {{seed.start_ms}} / {{seed.cold_end_ms}} — the same window as raw millisecond-epoch
+#                                               integers, for endpoints/params that parse
+#                                               that form (e.g. the LH shim's start/end
+#                                               in lh.shim.time_params_ms; VT's
+#                                               dependencies endTs param, which
+#                                               strconv.ParseInt + time.UnixMilli's).
+#   {{seed.start_us}} / {{seed.cold_end_us}} — the same window as raw microsecond-epoch
+#                                               integers, for VT's Jaeger traces search
+#                                               start/end params, which
+#                                               strconv.ParseInt + time.UnixMicro's them
+#                                               (see app/vtselect/traces/jaeger/jaeger.go).
+#   {{seed.trace_id}} / {{seed.stream_id}}   — fixed-length hex ids from the seeded dataset.
+#   {{seed.task_id}}                          — a delete-task id from the seeded dataset,
+#                                               used by the /internal/delete/* and
+#                                               /delete/run_task-style rows.
+#   {{tenant.account}} / {{tenant.project}}  — the seeded tenant pair.
+#   {{tombstone_id}}                          — not part of the seed: the id returned by a
+#                                               prior delete request in the same run (see
+#                                               lh.delete.tombstone_by_id.status).
+#   {{proto.internal_select}} / {{proto.internal_delete}} — not part of the seed: the
+#                                               protocol version constant the runner reads
+#                                               from the vendored VL (internalselect's
+#                                               ProtocolVersion consts in
+#                                               app/vlstorage/netselect/netselect.go, e.g.
+#                                               QueryProtocolVersion, FieldNamesProtocolVersion,
+#                                               DeleteRunTaskProtocolVersion, ...). Every
+#                                               /internal/select/* and /internal/delete/*
+#                                               request (except /internal/select/tenant_ids,
+#                                               which does not check it) is rejected with
+#                                               a version mismatch error unless it sends
+#                                               version=<the exact expected constant> — see
+#                                               checkProtocolVersion in
+#                                               app/vlselect/internalselect/internalselect.go.
+
+- id: vl.select.query.wildcard
+  title: "/select/logsql/query — wildcard retrieval"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold, global]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}", limit: "1000" }, headers: { AccountID: "{{tenant.account}}", ProjectID: "{{tenant.project}}" } }
+  compare: { type: ndjson-multiset, project: [_time, _msg, _stream, level, service.name] }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md }
+
+- id: vl.select.query_time_range.basic
+  title: "/select/logsql/query_time_range — min/max time bounds"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/query_time_range }
+  request: { method: GET, path: /select/logsql/query_time_range, params: { query: "service.name:checkout", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+
+- id: vl.select.facets.basic
+  title: "/select/logsql/facets — top field values"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/facets }
+  request: { method: GET, path: /select/logsql/facets, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}", limit: "5" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+
+- id: vl.select.field_names.basic
+  title: "/select/logsql/field_names — indexed field list"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/field_names }
+  request: { method: GET, path: /select/logsql/field_names, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+
+- id: vl.select.field_values.limit
+  title: "/select/logsql/field_values — limit keeps top hits"
+  surface: vl
+  kind: select
+  origin: native
+  expect: differ
+  differ_note: "LH truncates in map order; hot returns top-hits sorted (docs/parity-and-gaps.md #A6). Flips to pass in the MergeValuesWithHits fix."
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/field_values }
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "*", field: service.name, limit: "3", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+
+- id: vl.select.field_values.nolimit
+  title: "/select/logsql/field_values — no limit returns full set"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/field_values }
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "*", field: level, start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+
+- id: vl.select.hits.basic
+  title: "/select/logsql/hits — histogram buckets"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/hits }
+  request: { method: GET, path: /select/logsql/hits, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}", step: "1h" } }
+  compare: { type: series, options: { rel_tolerance: "0" } }
+  layers: [api]
+  pending: true
+
+- id: vl.select.stats_query.basic
+  title: "/select/logsql/stats_query — instant stats"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/stats_query }
+  request: { method: GET, path: /select/logsql/stats_query, params: { query: "* | stats count() as total", time: "{{seed.cold_end}}", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+
+- id: vl.select.stats_query_range.basic
+  title: "/select/logsql/stats_query_range — ranged stats series"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/stats_query_range }
+  request: { method: GET, path: /select/logsql/stats_query_range, params: { query: "* | stats count() as total", start: "{{seed.start}}", end: "{{seed.cold_end}}", step: "1h" } }
+  compare: { type: series, options: { rel_tolerance: "0" } }
+  layers: [api]
+  pending: true
+
+- id: vl.select.stream_field_names.basic
+  title: "/select/logsql/stream_field_names — stream-indexed fields"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.streams]
+  upstream: { route: /select/logsql/stream_field_names }
+  request: { method: GET, path: /select/logsql/stream_field_names, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+
+- id: vl.select.stream_field_values.basic
+  title: "/select/logsql/stream_field_values — stream field top values"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.streams]
+  upstream: { route: /select/logsql/stream_field_values }
+  request: { method: GET, path: /select/logsql/stream_field_values, params: { query: "*", field: service.name, start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+
+- id: vl.select.stream_ids.basic
+  title: "/select/logsql/stream_ids — stream id enumeration"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.streams]
+  upstream: { route: /select/logsql/stream_ids }
+  request: { method: GET, path: /select/logsql/stream_ids, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+
+- id: vl.select.streams.basic
+  title: "/select/logsql/streams — full stream enumeration"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.streams]
+  upstream: { route: /select/logsql/streams }
+  request: { method: GET, path: /select/logsql/streams, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+
+- id: vl.select.tenant_ids.basic
+  title: "/select/tenant_ids — tenant enumeration (multi-tenant iso)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [global]
+  seed: [tenants.iso]
+  upstream: { route: /select/tenant_ids }
+  request: { method: GET, path: /select/tenant_ids, params: { start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+
+- id: vl.select.tail.unsupported
+  title: "/select/logsql/tail — cold tier returns the documented no-op"
+  surface: vl
+  kind: select
+  origin: lh-shim
+  expect: unsupported
+  targets: [cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/tail }
+  request: { method: GET, path: /select/logsql/tail, params: { query: "*" } }
+  compare: { type: status, options: { cold_status: "501" } }
+  layers: [api]
+  pending: true
+  notes: "501, not 404: internal/selectapi/handler.go routes tail and returns StatusNotImplemented; 404 would mean the path itself was unrouted."
+
+- id: vl.select.tail.native
+  title: "/select/logsql/tail — hot streaming tail works unchanged"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/tail }
+  request: { method: GET, path: /select/logsql/tail, params: { query: "*" } }
+  compare: { type: status, options: { hot_status: "200" } }
+  layers: [api]
+  pending: true
+
+- id: vl.select.buildinfo.basic
+  title: "/select/buildinfo — dispatcher endpoint"
+  surface: vl
+  kind: select
+  origin: native
+  expect: differ
+  differ_note: "Neither binary mounts the upstream select dispatcher yet; hot returns JSON, cold 404 until the dispatcher PR. See docs/parity-and-gaps.md."
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/buildinfo }
+  request: { method: GET, path: /select/buildinfo }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+
+- id: vl.select.vmui.basic
+  title: "/select/vmui — no-slash redirects to the trailing-slash bundle"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/vmui }
+  request: { method: GET, path: /select/vmui }
+  compare: { type: status, options: { hot_status: "302", cold_status: "302" } }
+  layers: [api]
+  pending: true
+
+- id: vl.select.vmui_slash.basic
+  title: "/select/vmui/ — trailing-slash prefix variant"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/vmui/ }
+  request: { method: GET, path: /select/vmui/ }
+  compare: { type: status, options: { hot_status: "200", cold_status: "200" } }
+  layers: [api]
+  pending: true
+
+- id: vl.select.vmalert.differ
+  title: "/select/vmalert/ — not in the pinned VL; verify after the bump"
+  surface: vl
+  kind: select
+  origin: native
+  expect: differ
+  differ_note: "Route arrives in VL 1.51.0 (pinned is 1.50.0); LH dispatcher also has no vmalert proxy wired yet. Re-check both after the version bump (docs/parity-and-gaps.md)."
+  since: { vl: "1.51.0" }
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/vmalert/ }
+  request: { method: GET, path: /select/vmalert/ }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vl.delete.run_task.differ
+  title: "/delete/run_task — delete dispatcher not mounted on LH"
+  surface: vl
+  kind: admin
+  origin: native
+  expect: differ
+  differ_note: "Delete-task lifecycle isn't wired into the LH dispatcher (docs/parity-and-gaps.md); hot accepts, cold 404 until the dispatcher PR."
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /delete/run_task }
+  request: { method: POST, path: /delete/run_task, params: { query: "service.name:checkout" } }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vl.delete.stop_task.differ
+  title: "/delete/stop_task — delete dispatcher not mounted on LH"
+  surface: vl
+  kind: admin
+  origin: native
+  expect: differ
+  differ_note: "Same dispatcher gap as run_task (docs/parity-and-gaps.md); hot accepts, cold 404 until the dispatcher PR."
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /delete/stop_task }
+  request: { method: POST, path: /delete/stop_task, params: { taskID: "1" } }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vl.delete.active_tasks.differ
+  title: "/delete/active_tasks — delete dispatcher not mounted on LH"
+  surface: vl
+  kind: admin
+  origin: native
+  expect: differ
+  differ_note: "Same dispatcher gap as run_task/stop_task (docs/parity-and-gaps.md); hot returns the task list, cold 404 until the dispatcher PR."
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /delete/active_tasks }
+  request: { method: GET, path: /delete/active_tasks }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vl.select.query.bad_query
+  title: "/select/logsql/query — invalid LogsQL rejected the same way on both tiers"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "level:=\"ERROR\" | no_such_pipe_exists", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: error, options: { hot_status: "400", cold_status: "400" } }
+  layers: [api]
+  pending: true

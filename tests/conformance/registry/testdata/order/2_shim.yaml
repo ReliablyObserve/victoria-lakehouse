@@ -1,0 +1,12 @@
+- id: lh.shim.b_second.x
+  title: "lh-shim: b_second"
+  surface: lh
+  kind: select
+  origin: lh-shim
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/hits }
+  request: { method: GET, path: /select/logsql/hits, params: { query: "1=1" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]

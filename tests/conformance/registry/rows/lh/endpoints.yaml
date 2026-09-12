@@ -1,0 +1,265 @@
+# LH-addition endpoints: capabilities that exist only on the Lakehouse and
+# have no upstream VL/VT counterpart. origin=lh-addition rows carry no
+# `upstream` key (nothing to join against in the drift check). Paths verified
+# against the registered routes in cmd/lakehouse-logs/main.go and
+# internal/{stats,tenant,delete,lifecycle,ui,bloomindex,manifest}/*.go.
+
+- id: lh.stats.overview.schema
+  title: "LH stats overview — tier sizes, object counts, compaction backlog"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /lakehouse/api/v1/stats/overview }
+  compare: { type: schema }
+  layers: [api]
+  pending: true
+
+- id: lh.stats.compaction.schema
+  title: "LH stats compaction — recent compaction runs and efficiency hints"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /lakehouse/api/v1/stats/compaction }
+  compare: { type: schema }
+  layers: [api]
+  pending: true
+
+- id: lh.tenants.list.schema
+  title: "LH tenant listing — accounts/projects known to the cold tier"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold, global]
+  seed: [tenants.iso]
+  request: { method: GET, path: /lakehouse/api/v1/tenants }
+  compare: { type: schema }
+  layers: [api]
+  pending: true
+
+- id: lh.delete.logsql.estimate.status
+  title: "LH delete estimate — dry-run row count before a LogsQL delete"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: POST, path: /delete/logsql/estimate, params: { query: "service.name:checkout", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: lh.lifecycle.ring.schema
+  title: "LH lifecycle ring — hash-ring membership and shard ownership"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold, global]
+  seed: [logs.base]
+  request: { method: GET, path: /internal/lifecycle/ring }
+  compare: { type: schema }
+  layers: [api]
+  pending: true
+
+- id: lh.bloom.status.schema
+  title: "LH bloom status — combined-bloom retention and per-partition stats"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /api/v1/bloom/status }
+  compare: { type: schema }
+  layers: [api]
+  pending: true
+
+- id: lh.manifest.range.schema
+  title: "LH manifest range — partition manifest lookup over a time window"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /manifest/range, params: { start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: schema }
+  layers: [api]
+  pending: true
+
+- id: lh.admin.parity.schema
+  title: "LH parity admin — self-reported parity/drift status vs. pinned upstream"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /lakehouse/api/v1/admin/parity }
+  compare: { type: schema }
+  layers: [api]
+  pending: true
+
+- id: lh.ui.lakehouse.status
+  title: "LH UI panel — lakehouse tier/compaction status page"
+  surface: lh
+  kind: ui
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  compare: { type: ui }
+  layers: [ui]
+  pending: true
+
+- id: lh.internal.cache_stats.schema
+  title: "LH internal cache stats — hot-cache hit rate and eviction counters"
+  surface: lh
+  kind: internal
+  origin: lh-addition
+  expect: pass
+  targets: [cold, global]
+  seed: [logs.base]
+  request: { method: GET, path: /internal/cache/stats }
+  compare: { type: schema }
+  layers: [api]
+  pending: true
+
+- id: lh.delete.tombstones.status
+  title: "LH delete tombstones — list active LogsQL delete tombstones"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /delete/logsql/tombstones }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: lh.delete.tombstone_by_id.status
+  title: "LH delete tombstone by id — lookup one tombstone's status"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: "/delete/logsql/tombstone/{{tombstone_id}}" }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  notes: "Depends on a prior delete step in the same run: {{tombstone_id}} is the id that step's response returned, not a seeded value."
+
+- id: lh.delete.verify.status
+  title: "LH delete verify — confirm a query's matching rows are gone"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: POST, path: /delete/logsql/verify, params: { query: "service.name:checkout" } }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: lh.stats.fields.schema
+  title: "LH stats fields — per-field size/cardinality breakdown"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /lakehouse/api/v1/stats/fields }
+  compare: { type: schema }
+  layers: [api]
+  pending: true
+
+- id: lh.cardinality.fields.schema
+  title: "LH cardinality fields — field cardinality estimates (HLL-backed)"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /lakehouse/api/v1/cardinality/fields }
+  compare: { type: schema }
+  layers: [api]
+  pending: true
+
+- id: lh.ui.page.status
+  title: "LH UI — /lakehouse/ui page loads"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /lakehouse/ui }
+  compare: { type: status }
+  layers: [ui]
+  pending: true
+
+- id: lh.health.status
+  title: "LH health — liveness probe"
+  surface: lh
+  kind: internal
+  origin: lh-addition
+  expect: pass
+  targets: [cold, global]
+  seed: [logs.base]
+  request: { method: GET, path: /health }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: lh.ready.status
+  title: "LH ready — readiness probe"
+  surface: lh
+  kind: internal
+  origin: lh-addition
+  expect: pass
+  targets: [cold, global]
+  seed: [logs.base]
+  request: { method: GET, path: /ready }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: lh.info.schema
+  title: "LH info — build/version/config summary"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /lakehouse/info }
+  compare: { type: schema }
+  layers: [api]
+  pending: true
+
+- id: lh.manifest.partitions.schema
+  title: "LH manifest partitions — partition listing"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /manifest/partitions }
+  compare: { type: schema }
+  layers: [api]
+  pending: true
