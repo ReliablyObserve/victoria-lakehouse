@@ -1,6 +1,8 @@
 package parquets3
 
 import (
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -12,14 +14,18 @@ import (
 // internal/storage/parquets3/footer_cache.go and
 // footer_regression_test.go for the full root-cause writeup.
 //
-// Root cause: parquet-go's OpenFile independently re-parses the trailing
-// 8 bytes of the footer buffer for a footer length and, when that length
-// exceeds what it already has in hand, allocates a buffer sized directly
-// from it (make([]byte, footerSize) in parquet-go@v0.30.1's file.go) —
-// footerSize is a raw little-endian uint32 fully controlled by whoever
-// produced the bytes, up to ~4 GiB. ParseFooterFromBytes now validates
-// that length against the actual buffer size (and a sane maximum) before
-// ever calling into parquet-go.
+// Root cause: when the declared footer length (the little-endian uint32
+// in the trailing 8-byte suffix, independently re-parsed by parquet-go's
+// own OpenFile) exceeds what the caller's footerBytes buffer actually
+// holds, parquet-go issues a single read for the whole declared length —
+// and footerReaderAt.ReadAt zero-fills whatever part of that falls in the
+// synthetic "gap" region byte-by-byte. With a large fileSize the gap can
+// span most of the file, so this is a multi-second, multi-GiB-touching
+// loop, not (only) a bare allocation. This test uses fileSize = 1<<40
+// deliberately: at a small fileSize (e.g. len(footer)) the unpatched code
+// already errors fast because parquet-go's subsequent read falls straight
+// off the end of the buffer (EOF), without ever exercising the gap-fill
+// loop that actually hangs.
 func TestParseFooterFromBytes_RejectsAbsurdFooterLength(t *testing.T) {
 	footer := make([]byte, 64)
 	// Declare a footer length of 0xFFFFFFF0 (~4 GiB) in the little-endian
@@ -30,18 +36,36 @@ func TestParseFooterFromBytes_RejectsAbsurdFooterLength(t *testing.T) {
 	footer[len(footer)-5] = 0xFF
 	copy(footer[len(footer)-4:], []byte("PAR1"))
 
+	const hugeFileSize = int64(1) << 40 // 1 TiB: large enough that the gap
+	// region can absorb the whole declared length, which is what makes
+	// the pre-fix gap-fill loop actually slow.
+
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+
 	start := time.Now()
-	cached, file, err := ParseFooterFromBytes("absurd.parquet", footer, int64(len(footer)))
+	cached, file, err := ParseFooterFromBytes("absurd.parquet", footer, hugeFileSize)
 	elapsed := time.Since(start)
+
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	allocDelta := after.TotalAlloc - before.TotalAlloc
 
 	if err == nil {
 		t.Fatalf("expected error for absurd footer length, got success")
+	}
+	if !strings.Contains(err.Error(), "declared footer length") {
+		t.Fatalf("expected error to mention declared footer length, got: %v", err)
 	}
 	if cached != nil || file != nil {
 		t.Fatalf("expected nil results on error, got cached=%v file=%v", cached, file)
 	}
 	if elapsed > 50*time.Millisecond {
-		t.Fatalf("rejecting an absurd footer length took %s, want microseconds (no allocation)", elapsed)
+		t.Fatalf("rejecting an absurd footer length took %s, want microseconds (no gap-fill loop)", elapsed)
+	}
+	if allocDelta > 1<<20 {
+		t.Fatalf("rejecting an absurd footer length allocated %d bytes, want < 1 MiB (no gap-fill buffer)", allocDelta)
 	}
 }
 

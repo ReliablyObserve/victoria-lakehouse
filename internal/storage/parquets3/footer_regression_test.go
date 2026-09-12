@@ -1,6 +1,8 @@
 package parquets3
 
 import (
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -8,15 +10,32 @@ import (
 // TestParseFooterFromBytes_RejectsAbsurdFooterLength pins the fix for the
 // FuzzParseFooterBytes hang reported nightly on main since 2026-09-08.
 //
-// Root cause: parquet-go's OpenFile independently re-parses the trailing
-// 8 bytes of the footer buffer for a footer length and, when that length
-// exceeds what it already has in hand, allocates a buffer sized directly
-// from it (make([]byte, footerSize) in parquet-go@v0.30.1's file.go) —
-// footerSize is a raw little-endian uint32 fully controlled by whoever
-// produced the bytes, up to ~4 GiB. ParseFooterFromBytes now validates
-// that length against the actual buffer size (and a sane maximum) before
-// ever calling into parquet-go, so a malformed length is rejected
-// immediately instead of driving a multi-GiB allocation per call.
+// Root cause: when the declared footer length (the little-endian uint32
+// in the trailing 8-byte suffix, independently re-parsed by parquet-go's
+// own OpenFile) exceeds what the caller's footerBytes buffer actually
+// holds, parquet-go issues a single read for the whole declared length —
+// and footerReaderAt.ReadAt zero-fills whatever part of that falls in the
+// synthetic "gap" region byte-by-byte. With a large fileSize the gap can
+// span most of the file, so this is a multi-second, multi-GiB-touching
+// loop, not (only) a bare allocation — make([]byte, hugeLen) alone is
+// typically a cheap virtual-memory reservation and returns almost
+// instantly, which is why this test must use a large fileSize: at a
+// small fileSize (e.g. len(footer)) the unpatched code already errors
+// fast because parquet-go's subsequent read falls straight off the end
+// of the buffer (EOF), without ever exercising the gap-fill loop that
+// actually hangs. fileSize = 1<<40 is large enough to reproduce the real
+// amplifier.
+//
+// ParseFooterFromBytes now validates the declared length against the
+// actual buffer size (see footer_cache.go's ParseFooterFromBytes doc
+// comment) before ever calling into parquet-go, so a malformed length is
+// rejected immediately instead of reaching that loop. Verified against
+// the pre-fix code path: temporarily disabling the
+// declared-length-vs-buffer check (commenting out the `declaredLen+8 >
+// len(footerBytes)` branch alone, everything else unchanged) makes this
+// exact test fail both assertions — ~3.5s wall clock and ~4 GiB of
+// TotalAlloc for this input, then restored; see the PR description for
+// the local measurement.
 func TestParseFooterFromBytes_RejectsAbsurdFooterLength(t *testing.T) {
 	footer := make([]byte, 64)
 	// Declare a footer length of 0xFFFFFFF0 (~4 GiB) in the little-endian
@@ -27,21 +46,40 @@ func TestParseFooterFromBytes_RejectsAbsurdFooterLength(t *testing.T) {
 	footer[len(footer)-5] = 0xFF
 	copy(footer[len(footer)-4:], []byte("PAR1"))
 
+	const hugeFileSize = int64(1) << 40 // 1 TiB: large enough that the gap
+	// region (fileSize - len(footer)) can absorb the whole declared
+	// length, which is what makes the pre-fix gap-fill loop actually slow.
+
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+
 	start := time.Now()
-	cached, file, err := ParseFooterFromBytes("absurd.parquet", footer, int64(len(footer)))
+	cached, file, err := ParseFooterFromBytes("absurd.parquet", footer, hugeFileSize)
 	elapsed := time.Since(start)
+
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	allocDelta := after.TotalAlloc - before.TotalAlloc
 
 	if err == nil {
 		t.Fatalf("expected error for absurd footer length, got success")
 	}
+	if !strings.Contains(err.Error(), "declared footer length") {
+		t.Fatalf("expected error to mention declared footer length, got: %v", err)
+	}
 	if cached != nil || file != nil {
 		t.Fatalf("expected nil results on error, got cached=%v file=%v", cached, file)
 	}
-	// A real ~4 GiB allocation+zero would dominate runtime by orders of
-	// magnitude; 50ms is generous headroom for a CI-loaded machine while
-	// still catching a regression back to unchecked allocation.
+	// A real gap-fill loop for this input burns ~3.5s; 50ms is generous
+	// headroom for a CI-loaded machine while still catching a regression.
 	if elapsed > 50*time.Millisecond {
-		t.Fatalf("rejecting an absurd footer length took %s, want microseconds (no allocation)", elapsed)
+		t.Fatalf("rejecting an absurd footer length took %s, want microseconds (no gap-fill loop)", elapsed)
+	}
+	// A real gap-fill loop for this input touches ~4 GiB; 1 MiB is
+	// generous headroom for normal test-harness allocation noise.
+	if allocDelta > 1<<20 {
+		t.Fatalf("rejecting an absurd footer length allocated %d bytes, want < 1 MiB (no gap-fill buffer)", allocDelta)
 	}
 }
 

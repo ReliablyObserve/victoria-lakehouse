@@ -122,16 +122,24 @@ func FuzzParseFooterBytes(f *testing.F) {
 
 	// Regression: declared footer length (little-endian, trailing 4 bytes
 	// before the length/magic suffix) claims far more than the buffer
-	// holds — used to reach parquet-go's make([]byte, footerSize) with an
-	// attacker-controlled size up to ~4 GiB, collapsing exec/sec under
-	// fuzzing. See TestParseFooterFromBytes_RejectsAbsurdFooterLength.
+	// holds. Combined with a huge fileSize, this used to make
+	// footerReaderAt's byte-by-byte gap zero-fill loop run over most of
+	// the (fictional) file — a multi-second, multi-GiB-touching call,
+	// collapsing exec/sec under fuzzing. See
+	// TestParseFooterFromBytes_RejectsAbsurdFooterLength.
+	// fileSize must be large (not len(absurdLen)) for this seed to exercise
+	// the actual amplifier: footerReaderAt's byte-by-byte gap zero-fill,
+	// which only runs long when the gap (fileSize - len(footerBytes)) is
+	// large enough to absorb the declared length. At a small fileSize the
+	// unpatched code errors fast on EOF instead (see
+	// TestParseFooterFromBytes_RejectsAbsurdFooterLength).
 	absurdLen := make([]byte, 64)
 	absurdLen[len(absurdLen)-8] = 0xF0
 	absurdLen[len(absurdLen)-7] = 0xFF
 	absurdLen[len(absurdLen)-6] = 0xFF
 	absurdLen[len(absurdLen)-5] = 0xFF
 	copy(absurdLen[len(absurdLen)-4:], []byte("PAR1"))
-	f.Add(encodeFuzzInput(absurdLen, int64(len(absurdLen))))
+	f.Add(encodeFuzzInput(absurdLen, int64(1)<<40))
 
 	// Regression: minimized crasher for a negative SchemaElement.NumChildren
 	// that panicked in parquet-go's columnLoader.open (make([]*Column, n)
