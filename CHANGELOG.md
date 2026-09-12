@@ -30,9 +30,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `github.com/klauspost/compress` bumped `v1.18.6` → `v1.18.7` in both modules, closing the import-only `GO-2026-5841` (OOB read in `compress/s2`).
 - `govulncheck ./...` reports **0 findings** in both modules after these three bumps.
 
+### Changed
+
+- **Performance baseline recorded before the upstream upgrade.** `bench-results/baseline-2026-09/` holds the consolidated LH vs VL/VT vs ClickHouse run (both signals, S3 latency 0 and 100 ms); `docs/benchmarks/full-scope-s3.md` carries the tables. Every later performance-affecting PR is compared against it. The full-scope S3-ops benchmark (e2e compose) has not run yet — its host port is held by another project's stack — and is tracked as pending in the docs, not fabricated. No code changes; no perf delta.
+
 ### Fixed
 
 - **`FuzzParseFooterBytes` nightly hang (`internal/storage/parquets3`).** The nightly fuzz job for `ParseFooterFromBytes` hung/died on every `main` run since at least 2026-09-08: a footer whose declared length outran the actual buffer made `parquet-go`'s `OpenFile` issue one read for the whole (attacker-controlled, up to ~4 GiB) declared length, and our `footerReaderAt.ReadAt` zero-filled the resulting gap byte-by-byte — a multi-second, multi-GiB-touching loop once `fileSize` is large, not a bare allocation. `ParseFooterFromBytes` now rejects a declared length that exceeds the buffer it actually holds (the real guard) or a 64 MiB policy cap (sized for the largest legitimate trace-index footers, logged/counted on hit via `lakehouse_footer_parse_rejected_total`) before ever calling into `parquet-go`, and recovers a separate `parquet-go` panic (negative `SchemaElement.NumChildren`) the same fuzz run surfaced. Fixed in both the logs and traces modules; regression seeds and unit tests pin both bugs, and `FuzzParseFooterBytes` runs clean for 120s post-fix (~6.4M execs, exec/sec never below ~10K/s).
+- **Benchmark harness fixes found while recording the 2026-09 baseline.** The harness queried VictoriaTraces with Lakehouse-only field names (`service.name`, `span.name`, `duration_ns`; VT stores `resource_attr:service.name`, `name`, `duration`), so 12 of 28 traces cells were silently empty; the parity gate only printed and never failed; the sample trace id for point lookups was outside the measured windows; the ClickHouse `scan` result parser read a duration instead of a row count; MinIO images were unpinned `latest` tags no longer pullable from Docker Hub (now pinned to quay.io).
+
+### Known issues
+
+- Several parity tests and `scripts/comparative-benchmark-traces.sh` still use the unquoted `resource_attr:service.name` form, which VictoriaTraces' parser rejects or mismatches, so those checks silently skip; tracked for the conformance registry work.
 
 ## [0.101.0] - 2026-06-12
 
