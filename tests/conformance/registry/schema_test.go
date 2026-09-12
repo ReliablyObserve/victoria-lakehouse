@@ -51,7 +51,8 @@ func TestRow_Validate_Rejects(t *testing.T) {
 		{"differ note whitespace only", func(r *Row) { r.Expect = ExpectDiffer; r.DifferNote = "   " }, "differ_note"},
 		{"shim needs upstream", func(r *Row) { r.Origin = OriginLHShim; r.Upstream = nil }, "upstream"},
 		{"shim with empty upstream", func(r *Row) { r.Origin = OriginLHShim; r.Upstream = &Upstream{} }, "upstream"},
-		{"lh-addition must not cite upstream", func(r *Row) { r.Origin = OriginLHAddition; r.Upstream = &Upstream{Route: "/x"} }, "upstream"},
+		{"lh-addition with upstream field set", func(r *Row) { r.Origin = OriginLHAddition; r.Upstream = &Upstream{Route: "/x"} }, "upstream"},
+		{"upstream multiple fields set", func(r *Row) { r.Upstream = &Upstream{Route: "/x", Flag: "y"} }, "exactly one"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

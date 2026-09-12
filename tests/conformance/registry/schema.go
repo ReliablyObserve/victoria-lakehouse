@@ -190,6 +190,30 @@ func (r *Row) Validate() error {
 	case OriginNative, OriginLHShim:
 		if r.Upstream == nil || r.Upstream.Key() == ":" {
 			add("upstream required for origin=%s", r.Origin)
+		} else {
+			// Count non-empty fields in Upstream
+			count := 0
+			if r.Upstream.Route != "" {
+				count++
+			}
+			if r.Upstream.Pipe != "" {
+				count++
+			}
+			if r.Upstream.Filter != "" {
+				count++
+			}
+			if r.Upstream.Stats != "" {
+				count++
+			}
+			if r.Upstream.TraceQL != "" {
+				count++
+			}
+			if r.Upstream.Flag != "" {
+				count++
+			}
+			if count > 1 {
+				add("upstream: exactly one of route/pipe/filter/stats/traceql/flag must be set, got %d", count)
+			}
 		}
 	case OriginLHAddition:
 		if r.Upstream != nil {
