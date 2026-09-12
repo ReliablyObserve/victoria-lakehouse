@@ -149,6 +149,37 @@ func TestCheckDrift_PrefixCoverage(t *testing.T) {
 	}
 }
 
+// TestCheckDrift_AgreesWithCoverageDocOnInsertPrefixes proves the drift
+// check and the generated coverage doc can never disagree about coverage:
+// buildCovered delegates to report.CoveredKeys, the same function
+// RenderCoverage uses, so /insert/{datadog,journald,loki,splunk}/ — which a
+// higher-tier review found the coverage doc rendering as "no row" while the
+// drift check already treated them as prefix-covered — are covered by
+// construction on both sides.
+func TestCheckDrift_AgreesWithCoverageDocOnInsertPrefixes(t *testing.T) {
+	inv := &inventory.Inventory{
+		VLVersion: "v1.50.0",
+		VTVersion: "v0.9.0",
+		Items: []inventory.Item{
+			{Kind: "route", Name: "/insert/datadog/", Source: "app/vlinsert/main.go"},
+			{Kind: "route", Name: "/insert/journald/", Source: "app/vlinsert/main.go"},
+			{Kind: "route", Name: "/insert/loki/", Source: "app/vlinsert/main.go"},
+			{Kind: "route", Name: "/insert/splunk/", Source: "app/vlinsert/main.go"},
+		},
+	}
+	reg := &registry.Registry{ByID: map[string]*registry.Row{}}
+	reg.Rows = []registry.Row{
+		{ID: "vl.insert.datadog_logs.count", Upstream: &registry.Upstream{Route: "/insert/datadog/api/v2/logs"}},
+		{ID: "vl.insert.journald.count", Upstream: &registry.Upstream{Route: "/insert/journald/upload"}},
+		{ID: "vl.insert.loki_push_json.count", Upstream: &registry.Upstream{Route: "/insert/loki/api/v1/push"}},
+		{ID: "vl.insert.splunk_event.count", Upstream: &registry.Upstream{Route: "/insert/splunk/services/collector/event"}},
+	}
+	rep := CheckDrift(inv, reg)
+	if len(rep.Unmapped) != 0 {
+		t.Fatalf("all four insert-format prefix routes should be covered, got unmapped: %+v", rep.Unmapped)
+	}
+}
+
 // TestDrift_RealRegistry checks against the generated inventory.
 // It skips gracefully if the file is missing unless CONFORMANCE_REQUIRE_DEPS=1.
 func TestDrift_RealRegistry(t *testing.T) {

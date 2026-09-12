@@ -8,6 +8,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/tests/conformance/inventory"
 	"github.com/ReliablyObserve/victoria-lakehouse/tests/conformance/registry"
+	"github.com/ReliablyObserve/victoria-lakehouse/tests/conformance/report"
 )
 
 type DriftReport struct {
@@ -100,36 +101,17 @@ func CheckDrift(inv *inventory.Inventory, reg *registry.Registry) DriftReport {
 	return rep
 }
 
-// buildCovered builds a map of covered upstream keys from the registry.
-// It includes exact matches from UpstreamKeys and adds route-prefix coverage:
-// inventory routes with trailing "/" are covered by any registry route with that prefix.
+// buildCovered builds a map of covered upstream keys from the registry, via
+// the same report.CoveredKeys the generated coverage doc uses (exact
+// UpstreamKeys matches plus route-prefix expansion), so the drift check and
+// the coverage doc can never disagree about what counts as covered.
 func buildCovered(reg *registry.Registry, inv *inventory.Inventory) map[string]bool {
 	covered := map[string]bool{}
-
-	// Add exact upstream keys from registry.
-	upstreamKeys := reg.UpstreamKeys()
-	for key := range upstreamKeys {
-		covered[key] = true
-	}
-
-	// Add route-prefix coverage: mark inventory routes with trailing "/" as covered
-	// if any upstream route has that route as a prefix.
-	for key := range upstreamKeys {
-		// Parse the key to extract the route if it's a route key.
-		if !strings.HasPrefix(key, "route:") {
-			continue
-		}
-		route := strings.TrimPrefix(key, "route:")
-		for _, it := range inv.Items {
-			if it.Kind == "route" && strings.HasSuffix(it.Name, "/") {
-				if strings.HasPrefix(route, it.Name) {
-					k := inv.Key(it)
-					covered[k] = true
-				}
-			}
+	for key, ids := range report.CoveredKeys(inv, reg) {
+		if len(ids) > 0 {
+			covered[key] = true
 		}
 	}
-
 	return covered
 }
 

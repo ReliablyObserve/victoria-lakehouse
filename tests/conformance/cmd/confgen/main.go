@@ -3,6 +3,9 @@
 //
 //	confgen -write   # regenerate both files
 //	confgen -check   # exit 1 when a regeneration would change either file
+//
+// Passing both flags writes first, then checks the freshly written files
+// (exit 0 when that second pass is clean).
 package main
 
 import (
@@ -17,11 +20,23 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/tests/conformance/report"
 )
 
+type genFile struct {
+	path string
+	want []byte
+}
+
 func main() {
 	write := flag.Bool("write", false, "regenerate files")
 	check := flag.Bool("check", false, "fail when files are stale")
 	root := flag.String("root", "", "repo root (default: auto-detect)")
 	flag.Parse()
+
+	if !*write && !*check {
+		fmt.Fprintln(os.Stderr, "usage: confgen -write | -check [-root <repo>]")
+		flag.PrintDefaults()
+		os.Exit(2)
+	}
+
 	if *root == "" {
 		r, err := inventory.RepoRoot()
 		if err != nil {
@@ -30,8 +45,8 @@ func main() {
 		*root = r
 	}
 	dirs := inventory.DefaultDirs(*root)
-	if *write && (dirs.VLVersion == "" || dirs.VTVersion == "") {
-		fatal(fmt.Errorf("VLVersion/VTVersion not read from Makefile (VL_VERSION_LOGS=%q VT_VERSION=%q) — refusing to write an inventory with an empty version", dirs.VLVersion, dirs.VTVersion))
+	if dirs.VLVersion == "" || dirs.VTVersion == "" {
+		fatal(fmt.Errorf("VLVersion/VTVersion not read from Makefile (VL_VERSION_LOGS=%q VT_VERSION=%q) — an empty pin is never a valid basis to write or check the generated inventory", dirs.VLVersion, dirs.VTVersion))
 	}
 	inv, err := inventory.Extract(dirs)
 	if err != nil {
@@ -41,38 +56,48 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	invPath := filepath.Join(*root, "tests", "conformance", "inventory.generated.yaml")
-	covPath := filepath.Join(*root, "UPSTREAM_COVERAGE.md")
-	tmp := filepath.Join(os.TempDir(), "inventory.generated.yaml")
-	if err := inv.Write(tmp); err != nil {
+
+	wantInv, err := inv.Bytes()
+	if err != nil {
 		fatal(err)
 	}
-	wantInv, _ := os.ReadFile(tmp)
 	wantCov := []byte(report.RenderCoverage(inv, reg))
-	stale := false
-	for _, f := range []struct {
-		path string
-		want []byte
-	}{{invPath, wantInv}, {covPath, wantCov}} {
-		have, _ := os.ReadFile(f.path)
-		if !bytes.Equal(have, f.want) {
-			stale = true
-			if *write {
-				if err := os.WriteFile(f.path, f.want, 0o644); err != nil {
-					fatal(err)
-				}
-				fmt.Println("wrote", f.path)
-			} else {
+	files := []genFile{
+		{filepath.Join(*root, "tests", "conformance", "inventory.generated.yaml"), wantInv},
+		{filepath.Join(*root, "UPSTREAM_COVERAGE.md"), wantCov},
+	}
+
+	if *write {
+		wroteAny := false
+		for _, f := range files {
+			have, _ := os.ReadFile(f.path)
+			if bytes.Equal(have, f.want) {
+				continue
+			}
+			if err := os.WriteFile(f.path, f.want, 0o644); err != nil {
+				fatal(err)
+			}
+			fmt.Println("wrote", f.path)
+			wroteAny = true
+		}
+		if !wroteAny {
+			fmt.Println("up to date")
+		}
+	}
+
+	if *check {
+		stale := false
+		for _, f := range files {
+			have, _ := os.ReadFile(f.path)
+			if !bytes.Equal(have, f.want) {
+				stale = true
 				fmt.Println("stale:", f.path)
 			}
 		}
-	}
-	if *check && stale {
-		fmt.Println("generated files are stale — run: make conformance-gen")
-		os.Exit(1)
-	}
-	if !*write && !*check {
-		fmt.Println("nothing to do: pass -write or -check")
+		if stale {
+			fmt.Println("generated files are stale — run: make conformance-gen")
+			os.Exit(1)
+		}
 	}
 }
 
