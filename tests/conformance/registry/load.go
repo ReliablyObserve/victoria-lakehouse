@@ -1,7 +1,9 @@
 package registry
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -11,9 +13,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// LoadDir reads every *.yaml file under dir (recursively), validates each row,
-// and rejects duplicate ids. Rows are returned sorted: native first, then
-// lh-shim, then lh-addition, then by id — the report order.
+// flatten converts multi-line error messages to single-line format for aggregation.
+func flatten(err error) string {
+	return strings.ReplaceAll(err.Error(), "\n", " ")
+}
+
+// LoadDir reads every *.yaml file under dir (recursively); each file holds one
+// or more YAML documents, each a list of rows. It validates each row, rejects
+// duplicate ids and unknown YAML keys, and returns rows sorted: native first,
+// then lh-shim, then lh-addition, then by id — the report order. .yml files are
+// ignored on purpose (CI globs **/*.yaml).
 func LoadDir(dir string) (*Registry, error) {
 	st, err := os.Stat(dir)
 	if err != nil {
@@ -27,7 +36,7 @@ func LoadDir(dir string) (*Registry, error) {
 	seenIDs := make(map[string]bool) // Track duplicates during loading
 	walk := func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
-			return werr
+			return fmt.Errorf("registry dir %q: %w", dir, werr)
 		}
 		if d.IsDir() || !strings.HasSuffix(path, ".yaml") {
 			return nil
@@ -37,27 +46,36 @@ func LoadDir(dir string) (*Registry, error) {
 			errs = append(errs, fmt.Sprintf("%s: %v", path, err))
 			return nil
 		}
-		var rows []Row
-		if err := yaml.Unmarshal(data, &rows); err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", path, err))
-			return nil
-		}
-		for _, r := range rows {
-			if err := r.Validate(); err != nil {
-				errs = append(errs, fmt.Sprintf("%s: %v", path, err))
-				continue
+		// Use strict decoder to reject unknown keys and handle multiple YAML documents
+		dec := yaml.NewDecoder(bytes.NewReader(data))
+		dec.KnownFields(true)
+		for {
+			var doc []Row
+			err := dec.Decode(&doc)
+			if err == io.EOF {
+				break
 			}
-			if seenIDs[r.ID] {
-				errs = append(errs, fmt.Sprintf("%s: duplicate id %s", path, r.ID))
-				continue
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", path, flatten(err)))
+				break
 			}
-			seenIDs[r.ID] = true
-			reg.Rows = append(reg.Rows, r)
+			for _, r := range doc {
+				if err := r.Validate(); err != nil {
+					errs = append(errs, fmt.Sprintf("%s: %v", path, err))
+					continue
+				}
+				if seenIDs[r.ID] {
+					errs = append(errs, fmt.Sprintf("%s: duplicate id %s", path, r.ID))
+					continue
+				}
+				seenIDs[r.ID] = true
+				reg.Rows = append(reg.Rows, r)
+			}
 		}
 		return nil
 	}
 	if err := filepath.WalkDir(dir, walk); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("registry dir %q: %w", dir, err)
 	}
 	if len(errs) > 0 {
 		sort.Strings(errs)

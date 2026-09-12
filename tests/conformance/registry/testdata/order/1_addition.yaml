@@ -1,0 +1,11 @@
+- id: lh.stats.a_first.schema
+  title: "lh-addition: a_first"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /lakehouse/api/v1/stats }
+  compare: { type: schema }
+  layers: [api]
