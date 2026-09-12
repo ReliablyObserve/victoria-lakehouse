@@ -86,9 +86,9 @@ log() { printf '\033[1;36m[bench]\033[0m %s\n' "$*" >&2; }
 # --- measure_query: time a prepared request N times, emit p50/p95/p99 JSON -----
 # Uses curl's own %{time_total} (no shell-timing overhead, so fast queries aren't
 # inflated by subprocess startup); percentiles computed once at the end.
-# $1 label  $2 system  $3 method(GET|POST|CH)  $4 url  $5 body
+# $1 label  $2 system  $3 method(GET|POST|CH)  $4 url  $5 body  $6 qkind (query name, e.g. "scan")
 measure_query() {
-  local label="$1" system="$2" method="$3" url="$4" body="${5:-}"
+  local label="$1" system="$2" method="$3" url="$4" body="${5:-}" qkind="${6:-}"
   local secs=() bytes=() errors=0 i out code tt sz
   for ((i=0; i<WARMUP; i++)); do _do_req "$method" "$url" "$body" >/dev/null 2>&1 || true; done
   for ((i=0; i<ITERATIONS; i++)); do
@@ -103,7 +103,7 @@ measure_query() {
   # result = a comparable scalar (row/group count) so the report can verify every
   # system returned EQUIVALENT data — a fast p95 over an empty/divergent result is
   # not a real win and gets flagged downstream.
-  local result; result=$(fetch_scalar "$method" "$url" "$body" "${label##*/}")
+  local result; result=$(fetch_scalar "$method" "$url" "$body" "$qkind")
   python3 - "$label" "$system" "$errors" "$result" "${#bytes[@]}" "${bytes[@]}" -- "${secs[@]}" <<'PY'
 import sys, json
 a = sys.argv
@@ -138,10 +138,18 @@ fetch_scalar() {
   local method="$1" url="$2" body="$3" qkind="$4" raw
   if [[ "$method" == CH ]]; then
     raw=$(curl -sf --max-time 60 --user "$CH_USER:$CH_PASS" --data-binary "$body" "$url/" 2>/dev/null) || { echo ERR; return; }
-    # count queries: sum the numeric last TSV column. scan queries (last column
-    # non-numeric, e.g. a row of data): return the ROW COUNT instead, so the
-    # validity gate compares rows-returned across systems.
-    awk -F'\t' '{n++; v=$NF; if(v+0==v && v!="") s+=v; else nn=1} END{print (nn?n:s+0)}' <<<"$raw"
+    if [[ "$qkind" == scan ]]; then
+      # scan queries return raw rows; always compare by ROW COUNT, even when a
+      # column happens to look numeric (e.g. traces' Duration column) — the
+      # numeric-last-column heuristic below would otherwise sum durations
+      # instead of counting rows, and wrongly flag CH as diverging from LH/VT.
+      awk 'END{print NR}' <<<"$raw"
+    else
+      # count queries: sum the numeric last TSV column. Non-scan queries whose
+      # last column is non-numeric (rare) fall back to the ROW COUNT, so the
+      # validity gate always has a comparable rows-or-total scalar.
+      awk -F'\t' '{n++; v=$NF; if(v+0==v && v!="") s+=v; else nn=1} END{print (nn?n:s+0)}' <<<"$raw"
+    fi
   else
     raw=$(curl -sf --max-time 60 --data-urlencode "query=$body" "$url" 2>/dev/null) || { echo ERR; return; }
     python3 -c "
@@ -174,6 +182,19 @@ end_s()    { python3 -c "import time;print(int(time.time()))"; }
 # LogsQL systems (lh/vl/vt) hit /select/logsql/query; ClickHouse hits its HTTP
 # SQL endpoint over the otel_logs/otel_traces views (same Parquet on S3).
 prep() { # $1 signal  $2 query  $3 system  $4 range_secs
+  # Logs the exact prepared request (method/url/body) via the shared log() helper
+  # (stderr, so it never pollutes the "<method>\t<url>\t<body>" stdout contract
+  # that callers capture with $(...)), then re-emits _prep_body's stdout verbatim.
+  local signal="$1" query="$2" sys="$3" secs="$4" row
+  row="$(_prep_body "$signal" "$query" "$sys" "$secs")"
+  if [[ -n "$row" ]]; then
+    local m u b
+    IFS=$'\t' read -r m u b <<<"$row"
+    log "req ${signal}/${query} ${sys} ${m} ${u} body=${b}"
+  fi
+  printf '%s' "$row"
+}
+_prep_body() { # $1 signal  $2 query  $3 system  $4 range_secs
   local signal="$1" query="$2" sys="$3" secs="$4"
   local sns ens ss es
   sns=$(start_ns "$secs"); ens=$(end_ns "$secs"); ss=$(start_s "$secs"); es=$(end_s "$secs")
@@ -200,12 +221,20 @@ prep() { # $1 signal  $2 query  $3 system  $4 range_secs
        # Parquet) correctly drop, so without this the VT baseline over-counts.
     case "$query" in
       count_total)      [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s)' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | stats count() n' "$traces_url" "$sns" "$ens" ;;
-      count_by_service) [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT ServiceName,count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) GROUP BY ServiceName' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | stats by (service.name) count()' "$traces_url" "$sns" "$ens" ;;
-      service_filter)   [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND ServiceName='"'"'api-gateway'"'"'' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* service.name:="api-gateway" | stats count() n' "$traces_url" "$sns" "$ens" ;;
+      count_by_service) [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT ServiceName,count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) GROUP BY ServiceName' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | stats by (`resource_attr:service.name`) count() as n' "$traces_url" "$sns" "$ens" ;;
+      service_filter)   [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND ServiceName='"'"'api-gateway'"'"'' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\t`resource_attr:service.name`:="api-gateway" | stats count() as n' "$traces_url" "$sns" "$ens" ;;
       trace_by_id)      [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND TraceId='"'"'%s'"'"'' "${EP[ch]}" "$ss" "$es" "$SAMPLE_TID" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:=%s | stats count() n' "$traces_url" "$sns" "$ens" "$SAMPLE_TID" ;;
-      span_name)        [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND SpanName='"'"'HTTP GET /api/v1/users'"'"'' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* span.name:="HTTP GET /api/v1/users" | stats count() n' "$traces_url" "$sns" "$ens" ;;
-      slow_spans)       [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND Duration>1000000000' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* duration_ns:>1000000000 | stats count() n' "$traces_url" "$sns" "$ens" ;;
-      scan)             [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT SpanName,ServiceName,Duration FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) LIMIT 1000' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | fields span.name, service.name, duration_ns | limit 1000' "$traces_url" "$sns" "$ens" ;;
+      span_name)        [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND SpanName='"'"'HTTP GET /api/v1/users'"'"'' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\tname:="HTTP GET /api/v1/users" | stats count() as n' "$traces_url" "$sns" "$ens" ;;
+      # duration threshold is 50ms, not the brief's 100ms: the seed's real spans
+      # top out at 54ms (verified against both tiers before the rerun — Step 6),
+      # so 100ms is zero on both and no threshold above ~53ms is; 50ms is the
+      # largest round number giving a non-zero, equal count on VT and LH.
+      # trace_id:* is REQUIRED here (unlike the brief's literal text): VT rows
+      # with no trace_id (internal aggregate rows, e.g. service_graph) also carry
+      # a `duration` field and some exceed 100ms, so a bare `duration:>N` filter
+      # over-counts on VT only (1075 vs LH's real 0) — confirmed empirically.
+      slow_spans)       [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND Duration>50000000' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* duration:>50000000 | stats count() as n' "$traces_url" "$sns" "$ens" ;;
+      scan)             [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT SpanName,ServiceName,Duration FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) LIMIT 1000' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | fields name, `resource_attr:service.name`, duration | limit 1000' "$traces_url" "$sns" "$ens" ;;
     esac
   fi
 }
@@ -222,8 +251,8 @@ TRACE_QUERIES="count_total count_by_service service_filter trace_by_id span_name
 SAMPLE_TID="ffffffffffffffffffffffffffffffff"
 fetch_sample_tid() {
   local tid
-  tid=$(curl -sf --max-time 20 --data-urlencode 'query=trace_id:* | fields trace_id | limit 1' \
-    --data-urlencode "start=$(start_ns 604800)" --data-urlencode "end=$(end_ns 604800)" \
+  tid=$(curl -sf --max-time 20 --data-urlencode 'query=trace_id:* | sort by (_time) desc | fields trace_id | limit 1' \
+    --data-urlencode "start=$(start_ns 3600)" --data-urlencode "end=$(end_ns 3600)" \
     "${EP[lh_traces]}/select/logsql/query" 2>/dev/null | python3 -c "
 import sys,json
 for l in sys.stdin:
@@ -233,7 +262,11 @@ for l in sys.stdin:
       t=json.loads(l).get('trace_id','')
       if t: print(t); break
     except: pass")
-  [[ -n "$tid" ]] && SAMPLE_TID="$tid"
+  if [[ -z "$tid" ]]; then
+    log "FATAL: fetch_sample_tid found no trace_id in the last hour window (${EP[lh_traces]})"
+    exit 1
+  fi
+  SAMPLE_TID="$tid"
   log "sample trace_id for point lookups: $SAMPLE_TID"
 }
 LOG_SYSTEMS="victorialogs lakehouse clickhouse"      # VL = baseline
@@ -313,12 +346,13 @@ wait_for_flush() { # $1 signal  $2 secs
 set_latency() { local ms="$1"; if [[ "$ms" == 0 ]]; then log "S3 latency: passthrough (0ms)"; scripts/inject-s3-latency.sh 0 0 >/dev/null 2>&1 || true; else log "S3 latency: ${ms}ms"; scripts/inject-s3-latency.sh "$ms" "$((ms/3))" >/dev/null 2>&1 || true; fi; }
 
 # Parity gate: count_total over 24h must agree across systems (within tolerance)
-# so the benchmark compares EQUAL answers (incl. ClickHouse).
+# so the benchmark compares EQUAL answers (incl. ClickHouse). ENFORCING: returns 1
+# (and the caller aborts the run) on any mismatch beyond ±5% of the baseline.
 parity_gate() {
   local signal="$1" secs; secs=$(range_to_secs 24h)
   log "parity gate ($signal, 24h): count_total across systems…"
   local sysset; [[ "$signal" == logs ]] && sysset="$LOG_SYSTEMS" || sysset="$TRACE_SYSTEMS"
-  local base="" s n IFS_=$'\t'
+  local base="" s n mismatch=0
   for s in $sysset; do
     read -r m u b <<<"$(prep "$signal" count_total "$s" "$secs")"
     if [[ "$m" == CH ]]; then n=$(curl -sf --max-time 60 --user "$CH_USER:$CH_PASS" --data-binary "$b" "$u/" 2>/dev/null | tr -d '[:space:]')
@@ -327,8 +361,31 @@ try:
   d=[json.loads(l) for l in sys.stdin if l.strip()]; print(d[0].get('n',0) if d else 0)
 except: print('ERR')"); fi
     printf '    %-16s count=%s\n' "$s" "${n:-ERR}" >&2
-    [[ -z "$base" ]] && base="$n"
+    if [[ -z "$base" ]]; then
+      base="$n"
+      log "parity gate ($signal): baseline ($s) = $base"
+      continue
+    fi
+    if [[ ! "$n" =~ ^[0-9]+$ ]]; then
+      log "parity gate ($signal) MISMATCH: $s returned non-numeric/ERR ('${n:-}') vs baseline=$base"
+      mismatch=1
+    elif [[ "$base" =~ ^[0-9]+$ ]]; then
+      if [[ "$base" == 0 ]]; then
+        [[ "$n" != 0 ]] && { log "parity gate ($signal) MISMATCH: $s=$n vs baseline=0"; mismatch=1; }
+      else
+        local diff_pct
+        diff_pct=$(awk -v n="$n" -v b="$base" 'BEGIN{d=n-b; if(d<0) d=-d; printf "%.4f", d/b}')
+        if awk -v d="$diff_pct" 'BEGIN{exit !(d > 0.05)}'; then
+          log "parity gate ($signal) MISMATCH: $s=$n vs baseline=$base (Δ=${diff_pct}, > 5%)"
+          mismatch=1
+        fi
+      fi
+    else
+      log "parity gate ($signal) MISMATCH: baseline '$base' non-numeric"
+      mismatch=1
+    fi
   done
+  return "$mismatch"
 }
 
 # --- run --------------------------------------------------------------------
@@ -341,7 +398,10 @@ RESULTS="["; first=1
 for lat in $S3_LATENCIES; do
   set_latency "$lat"
   for signal in $([[ "$SIGNALS" == both ]] && echo "logs traces" || echo "$SIGNALS"); do
-    parity_gate "$signal" || true
+    if ! parity_gate "$signal"; then
+      log "parity gate FAILED for $signal — aborting (no sweep on unequal data)"
+      exit 1
+    fi
     queries=$([[ "$signal" == logs ]] && echo "$LOG_QUERIES" || echo "$TRACE_QUERIES")
     systems=$([[ "$signal" == logs ]] && echo "$LOG_SYSTEMS" || echo "$TRACE_SYSTEMS")
     for range in $RANGES; do
@@ -350,7 +410,7 @@ for lat in $S3_LATENCIES; do
         for sys in $systems; do
           IFS=$'\t' read -r method url body <<<"$(prep "$signal" "$q" "$sys" "$secs")"; unset IFS
           [[ -z "${method:-}" ]] && continue
-          row=$(measure_query "${signal}/${q}/${range}/lat${lat}" "$sys" "$method" "$url" "$body")
+          row=$(measure_query "${signal}/${q}/${range}/lat${lat}" "$sys" "$method" "$url" "$body" "$q")
           row=$(python3 -c "import sys,json;d=json.loads(sys.argv[1]);d.update(signal='$signal',query='$q',range='$range',latency_ms=$lat);print(json.dumps(d))" "$row")
           (( first )) && first=0 || RESULTS+=","
           RESULTS+="$row"

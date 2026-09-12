@@ -46,6 +46,31 @@ def cell_status(row, base_result):
     return True, ""
 
 
+def base_status(brow):
+    """The baseline (VL/VT) cell itself must be a real, non-empty result — a
+    baseline that returned 0/empty makes every ratio in the row meaningless, so
+    every engine cell in that row is invalid (reason "baseline-empty"), not just
+    checked against a bogus baseline."""
+    if not brow:
+        return False, "baseline-empty (missing)"
+    bres = as_int(brow.get("result"))
+    if bres is None or bres == 0:
+        return False, "baseline-empty (result=0/empty)"
+    if (brow.get("avg_bytes", 0) or 0) == 0:
+        return False, "baseline-empty (avg_bytes=0)"
+    return True, ""
+
+
+def shape_flag(row, brow):
+    """⚠ shape: an engine's avg_bytes differs from the baseline's by more than
+    10x either way — same row count, wildly different payload shape."""
+    eb = (row.get("avg_bytes", 0) or 0) if row else 0
+    bb = (brow.get("avg_bytes", 0) or 0) if brow else 0
+    if eb and bb and (eb / bb >= 10 or bb / eb >= 10):
+        return " ⚠ shape"
+    return ""
+
+
 def ratio_str(v, base):
     if v is None or base in (None, 0):
         return "—"
@@ -95,9 +120,13 @@ def main():
             bp = num(brow.get("p95_ms"))
             bres = brow.get("result")
             cells = [f"{bp} [{bres}]"]
+            b_ok, b_note = base_status(brow)
             for eng in ENGINES:
                 row = sysd.get(eng)
-                ok, note = cell_status(row, bres)
+                if not b_ok:
+                    ok, note = False, b_note
+                else:
+                    ok, note = cell_status(row, bres)
                 p = num(row.get("p95_ms")) if row else None
                 if not ok:
                     cells.append(f"✗ {note}")
@@ -105,7 +134,7 @@ def main():
                     if eng == "lakehouse":
                         n_invalid += 1
                 else:
-                    cells.append(f"{p} ({ratio_str(p, bp)}) [{row.get('result')}]")
+                    cells.append(f"{p} ({ratio_str(p, bp)}) [{row.get('result')}]{shape_flag(row, brow)}")
                     if eng == "lakehouse" and p and bp:
                         n_valid += 1
                         lh_ratios.append(p / bp)
