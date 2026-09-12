@@ -50,17 +50,20 @@ func CheckDrift(inv *inventory.Inventory, reg *registry.Registry) DriftReport {
 	// Track missing versions (hard failure when a row cites since for empty-version surface).
 	missingVersions := make(map[string]bool)
 
-	// Check for stale rows and absent-but-present rows.
+	// Check for stale rows and absent-but-present rows. Presence is checked
+	// per surface (report.PresentOnAnySurface): a vl or vt row only against
+	// its own surface, an lh row against either, since an lh row's Upstream
+	// reference does not itself say which upstream binary it belongs to.
 	for _, r := range reg.Rows {
 		if r.Upstream == nil || r.Upstream.IsZero() {
 			continue
 		}
 
-		upstreamKey := r.Upstream.Key()
+		presentOnAnySurface := report.PresentOnAnySurface(present, &r)
 
 		if r.Expect == registry.ExpectAbsent {
 			// Track rows marked absent but whose upstream is in the inventory.
-			if present[upstreamKey] {
+			if presentOnAnySurface {
 				rep.AbsentButPresent = append(rep.AbsentButPresent, r.ID)
 			}
 			continue
@@ -75,7 +78,7 @@ func CheckDrift(inv *inventory.Inventory, reg *registry.Registry) DriftReport {
 			continue
 		}
 
-		if !present[upstreamKey] {
+		if !presentOnAnySurface {
 			// Check if this is a pending-bump row.
 			if isPendingBump(&r, inv) {
 				rep.PendingBump = append(rep.PendingBump, r.ID)
@@ -115,85 +118,63 @@ func buildCovered(reg *registry.Registry, inv *inventory.Inventory) map[string]b
 	return covered
 }
 
-// hasMissingVersion checks if a row cites a since for a surface with empty inventory version.
-func hasMissingVersion(r *registry.Row, inv *inventory.Inventory) bool {
-	if len(r.Since) == 0 {
-		return false
+// inventoryVersion returns the inventory's version string for a "vl"/"vt"
+// since-surface name (empty for anything else).
+func inventoryVersion(surface string, inv *inventory.Inventory) string {
+	switch surface {
+	case "vl":
+		return inv.VLVersion
+	case "vt":
+		return inv.VTVersion
+	default:
+		return ""
 	}
-
-	for surface := range r.Since {
-		var invVersion string
-		switch surface {
-		case "vl":
-			invVersion = inv.VLVersion
-		case "vt":
-			invVersion = inv.VTVersion
-		default:
-			continue
-		}
-
-		if invVersion == "" {
-			return true
-		}
-	}
-
-	return false
 }
 
-// getSurfaceForSince returns a surface name from the row's Since that has empty inventory version.
+// sinceSurfaces returns the since-surface names ("vl", "vt") relevant to a
+// row: its own surface for a vl or vt row, or both for an lh row — the
+// same rule report.RowSurfaces uses for Upstream-key presence, applied here
+// to the row's `since` map instead. A row's `since` naming a surface other
+// than its own (or, for an lh row, neither vl nor vt) is never consulted.
+func sinceSurfaces(r *registry.Row) []string { return report.RowSurfaces(r) }
+
+// hasMissingVersion checks if a row cites a since for one of its own
+// surfaces (sinceSurfaces) whose inventory version is empty.
+func hasMissingVersion(r *registry.Row, inv *inventory.Inventory) bool {
+	return getSurfaceForSince(r, inv) != ""
+}
+
+// getSurfaceForSince returns a since-surface of the row (sinceSurfaces)
+// that the row cites and whose inventory version is empty, or "" if none.
 func getSurfaceForSince(r *registry.Row, inv *inventory.Inventory) string {
-	for surface := range r.Since {
-		var invVersion string
-		switch surface {
-		case "vl":
-			invVersion = inv.VLVersion
-		case "vt":
-			invVersion = inv.VTVersion
-		default:
+	for _, surface := range sinceSurfaces(r) {
+		if _, hasSince := r.Since[surface]; !hasSince {
 			continue
 		}
-
-		if invVersion == "" {
+		if inventoryVersion(surface, inv) == "" {
 			return surface
 		}
 	}
 	return ""
 }
 
-// isPendingBump checks if a row's Since version is newer than the inventory's
-// version for that surface. The since must match the row's surface (or lh rows can use either).
-// Returns false if the inventory version is empty for the required surface.
+// isPendingBump checks if a row's Since version, for one of its own
+// surfaces (sinceSurfaces), is newer than the inventory's version for that
+// surface. Returns false if the inventory version is empty for every
+// surface the row cites (that case is a MissingVersion hard failure
+// instead, handled separately in CheckDrift).
 func isPendingBump(r *registry.Row, inv *inventory.Inventory) bool {
 	if len(r.Since) == 0 {
 		return false
 	}
 
-	// Determine which surfaces to check based on the row's surface.
-	var surfacesToCheck []string
-	switch r.Surface {
-	case registry.SurfaceVL:
-		surfacesToCheck = []string{"vl"}
-	case registry.SurfaceVT:
-		surfacesToCheck = []string{"vt"}
-	case registry.SurfaceLH:
-		// LH rows can use either vl or vt
-		surfacesToCheck = []string{"vl", "vt"}
-	}
-
-	for _, surface := range surfacesToCheck {
+	for _, surface := range sinceSurfaces(r) {
 		sinceVersion, hasSince := r.Since[surface]
 		if !hasSince {
 			continue
 		}
 
-		var invVersion string
-		switch surface {
-		case "vl":
-			invVersion = inv.VLVersion
-		case "vt":
-			invVersion = inv.VTVersion
-		}
-
+		invVersion := inventoryVersion(surface, inv)
 		// Empty inventory version means we can't determine if pending; must be treated as missing.
 		if invVersion == "" {
 			continue

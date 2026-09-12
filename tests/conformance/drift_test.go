@@ -14,9 +14,9 @@ func TestCheckDrift_UnmappedAndStale(t *testing.T) {
 		VLVersion: "v1.50.0",
 		VTVersion: "v0.9.0",
 		Items: []inventory.Item{
-			{Kind: "route", Name: "/select/logsql/query", Source: "app/vlselect/main.go"},
-			{Kind: "route", Name: "/select/logsql/new_thing", Source: "app/vlselect/main.go"},
-			{Kind: "flag", Name: "search.brandNew", Source: "app/vlselect/main.go"},
+			{Kind: "route", Surface: "vl", Name: "/select/logsql/query", Source: "app/vlselect/main.go"},
+			{Kind: "route", Surface: "vl", Name: "/select/logsql/new_thing", Source: "app/vlselect/main.go"},
+			{Kind: "flag", Surface: "vl", Name: "search.brandNew", Source: "app/vlselect/main.go"},
 		},
 	}
 	reg, err := registry.LoadDir("registry/testdata/valid")
@@ -124,7 +124,7 @@ func TestCheckDrift_PrefixCoverage(t *testing.T) {
 		VLVersion: "v1.50.0",
 		VTVersion: "v0.9.0",
 		Items: []inventory.Item{
-			{Kind: "route", Name: "/select/jaeger/", Source: "app/vlselect/jaeger.go"},
+			{Kind: "route", Surface: "vl", Name: "/select/jaeger/", Source: "app/vlselect/jaeger.go"},
 		},
 	}
 	reg := &registry.Registry{ByID: map[string]*registry.Row{}}
@@ -161,22 +161,111 @@ func TestCheckDrift_AgreesWithCoverageDocOnInsertPrefixes(t *testing.T) {
 		VLVersion: "v1.50.0",
 		VTVersion: "v0.9.0",
 		Items: []inventory.Item{
-			{Kind: "route", Name: "/insert/datadog/", Source: "app/vlinsert/main.go"},
-			{Kind: "route", Name: "/insert/journald/", Source: "app/vlinsert/main.go"},
-			{Kind: "route", Name: "/insert/loki/", Source: "app/vlinsert/main.go"},
-			{Kind: "route", Name: "/insert/splunk/", Source: "app/vlinsert/main.go"},
+			{Kind: "route", Surface: "vl", Name: "/insert/datadog/", Source: "app/vlinsert/main.go"},
+			{Kind: "route", Surface: "vl", Name: "/insert/journald/", Source: "app/vlinsert/main.go"},
+			{Kind: "route", Surface: "vl", Name: "/insert/loki/", Source: "app/vlinsert/main.go"},
+			{Kind: "route", Surface: "vl", Name: "/insert/splunk/", Source: "app/vlinsert/main.go"},
 		},
 	}
 	reg := &registry.Registry{ByID: map[string]*registry.Row{}}
 	reg.Rows = []registry.Row{
-		{ID: "vl.insert.datadog_logs.count", Upstream: &registry.Upstream{Route: "/insert/datadog/api/v2/logs"}},
-		{ID: "vl.insert.journald.count", Upstream: &registry.Upstream{Route: "/insert/journald/upload"}},
-		{ID: "vl.insert.loki_push_json.count", Upstream: &registry.Upstream{Route: "/insert/loki/api/v1/push"}},
-		{ID: "vl.insert.splunk_event.count", Upstream: &registry.Upstream{Route: "/insert/splunk/services/collector/event"}},
+		{ID: "vl.insert.datadog_logs.count", Surface: registry.SurfaceVL, Upstream: &registry.Upstream{Route: "/insert/datadog/api/v2/logs"}},
+		{ID: "vl.insert.journald.count", Surface: registry.SurfaceVL, Upstream: &registry.Upstream{Route: "/insert/journald/upload"}},
+		{ID: "vl.insert.loki_push_json.count", Surface: registry.SurfaceVL, Upstream: &registry.Upstream{Route: "/insert/loki/api/v1/push"}},
+		{ID: "vl.insert.splunk_event.count", Surface: registry.SurfaceVL, Upstream: &registry.Upstream{Route: "/insert/splunk/services/collector/event"}},
 	}
 	rep := CheckDrift(inv, reg)
 	if len(rep.Unmapped) != 0 {
 		t.Fatalf("all four insert-format prefix routes should be covered, got unmapped: %+v", rep.Unmapped)
+	}
+}
+
+// TestCheckDrift_MissingVersionSurfaceAligned proves hasMissingVersion only
+// consults the since-surfaces a row actually applies to (like isPendingBump
+// already did): a vt row whose Since map also happens to carry a "vl" key
+// must not trigger a missing-version hard failure from the vl side when the
+// inventory has no VL version — that vl entry is irrelevant to a vt row.
+// Only an empty inventory version for the row's own surface(s) counts.
+func TestCheckDrift_MissingVersionSurfaceAligned(t *testing.T) {
+	inv := &inventory.Inventory{
+		VLVersion: "", // empty — would wrongly trigger missing-version if a vt row's "vl" since key were consulted
+		VTVersion: "v0.9.2",
+	}
+	reg := &registry.Registry{ByID: map[string]*registry.Row{}}
+	reg.Rows = []registry.Row{{
+		ID:       "vt.new.feature.aligned",
+		Title:    "new feature",
+		Surface:  registry.SurfaceVT,
+		Kind:     registry.KindSelect,
+		Origin:   registry.OriginNative,
+		Expect:   registry.ExpectPass,
+		Targets:  []registry.Target{registry.TargetHot},
+		Seed:     []string{"traces.base"},
+		Upstream: &registry.Upstream{Route: "/select/new"},
+		Request:  &registry.Request{Method: "GET", Path: "/select/new"},
+		Compare:  &registry.Compare{Type: "status"},
+		Layers:   []string{"api"},
+		// A vt row's own surface is "vt"; the stray "vl" key here must be
+		// ignored by hasMissingVersion even though inv.VLVersion is empty.
+		Since: map[string]string{"vl": "1.51.0", "vt": "0.9.2"},
+	}}
+	rep := CheckDrift(inv, reg)
+	if len(rep.MissingVersion) != 0 {
+		t.Fatalf("a vt row's stray since.vl must not trigger missing-version when inv.VLVersion is empty, got: %v", rep.MissingVersion)
+	}
+	// since.vt (0.9.2) equals the inventory's vt version (0.9.2): not a
+	// pending bump, and — since the row's upstream key is not otherwise in
+	// the inventory — stale.
+	if len(rep.Stale) != 1 || rep.Stale[0] != "vt.new.feature.aligned" {
+		t.Fatalf("expected the row to be stale (since.vt == inv.VTVersion, no bump pending), got stale=%v pending=%v", rep.Stale, rep.PendingBump)
+	}
+}
+
+// TestCheckDrift_SurfaceScopedKeys_NoCrossDedup proves the fix for the
+// surface-blind inventory key: VL and VT can each register a route under
+// the same kind+name independently (e.g. /insert/native), and a vt row
+// citing that route must never be silently satisfied by VL's own inventory
+// item of the same name. Only the vl item is present here (representing
+// VL's /insert/native); the vt row's Since names a VT version newer than
+// the pinned inventory VT version, so it must land in PendingBump, not be
+// swallowed as already-covered and not fall through to Stale either.
+func TestCheckDrift_SurfaceScopedKeys_NoCrossDedup(t *testing.T) {
+	inv := &inventory.Inventory{
+		VLVersion: "v1.50.0",
+		VTVersion: "v0.9.2",
+		Items: []inventory.Item{
+			{Kind: "route", Surface: "vl", Name: "/insert/native", Source: "app/vlinsert/main.go"},
+		},
+	}
+	reg := &registry.Registry{ByID: map[string]*registry.Row{}}
+	reg.Rows = []registry.Row{
+		{
+			ID: "vl.insert.native.count", Surface: registry.SurfaceVL,
+			Kind: registry.KindInsert, Origin: registry.OriginNative, Expect: registry.ExpectPass,
+			Targets: []registry.Target{registry.TargetHot}, Seed: []string{"logs.base"},
+			Upstream: &registry.Upstream{Route: "/insert/native"},
+			Request:  &registry.Request{Method: "POST", Path: "/insert/native"},
+			Compare:  &registry.Compare{Type: "count"}, Layers: []string{"api"},
+		},
+		{
+			ID: "vt.insert.native.differ", Surface: registry.SurfaceVT,
+			Kind: registry.KindInsert, Origin: registry.OriginNative, Expect: registry.ExpectDiffer,
+			DifferNote: "arrives with a later VT bump", Since: map[string]string{"vt": "0.11.0"},
+			Targets:  []registry.Target{registry.TargetHot},
+			Upstream: &registry.Upstream{Route: "/insert/native"},
+			Request:  &registry.Request{Method: "POST", Path: "/insert/native"},
+			Compare:  &registry.Compare{Type: "status"}, Layers: []string{"api"},
+		},
+	}
+	rep := CheckDrift(inv, reg)
+	if len(rep.Unmapped) != 0 {
+		t.Fatalf("vl's own /insert/native item should be covered by the vl row: unmapped=%+v", rep.Unmapped)
+	}
+	if len(rep.Stale) != 0 {
+		t.Fatalf("the vt row must not be stale (it is pending on a version bump): stale=%v", rep.Stale)
+	}
+	if len(rep.PendingBump) != 1 || rep.PendingBump[0] != "vt.insert.native.differ" {
+		t.Fatalf("expected vt.insert.native.differ as the sole pending-bump row (must not be hidden by vl's item), got: %v", rep.PendingBump)
 	}
 }
 
@@ -229,10 +318,10 @@ func TestCheckDrift_NonRouteCoverage(t *testing.T) {
 		VLVersion: "v1.50.0",
 		VTVersion: "v0.9.0",
 		Items: []inventory.Item{
-			{Kind: "pipe", Name: "coalesce", Source: "lib/logstorage/pipe_coalesce.go"},
-			{Kind: "filter", Name: "range", Source: "lib/logstorage/filter_range.go"},
-			{Kind: "stats", Name: "quantile", Source: "lib/logstorage/stats_quantile.go"},
-			{Kind: "traceql", Name: "histogram_over_time", Source: "lib/traceql/func.go"},
+			{Kind: "pipe", Surface: "vl", Name: "coalesce", Source: "lib/logstorage/pipe_coalesce.go"},
+			{Kind: "filter", Surface: "vl", Name: "range", Source: "lib/logstorage/filter_range.go"},
+			{Kind: "stats", Surface: "vl", Name: "quantile", Source: "lib/logstorage/stats_quantile.go"},
+			{Kind: "traceql", Surface: "vt", Name: "histogram_over_time", Source: "lib/traceql/func.go"},
 		},
 	}
 	reg := &registry.Registry{ByID: map[string]*registry.Row{}}
@@ -419,8 +508,8 @@ func TestCheckDrift_NegativePrefixCoverage(t *testing.T) {
 		VLVersion: "v1.50.0",
 		VTVersion: "v0.9.0",
 		Items: []inventory.Item{
-			{Kind: "route", Name: "/select/logsql/query", Source: "app/vlselect/main.go"},
-			{Kind: "route", Name: "/select/logsql/query_time_range", Source: "app/vlselect/main.go"},
+			{Kind: "route", Surface: "vl", Name: "/select/logsql/query", Source: "app/vlselect/main.go"},
+			{Kind: "route", Surface: "vl", Name: "/select/logsql/query_time_range", Source: "app/vlselect/main.go"},
 		},
 	}
 	reg := &registry.Registry{ByID: map[string]*registry.Row{}}
@@ -452,7 +541,7 @@ func TestCheckDrift_AbsentButPresentRows(t *testing.T) {
 		VLVersion: "v1.50.0",
 		VTVersion: "v0.9.0",
 		Items: []inventory.Item{
-			{Kind: "route", Name: "/select/logsql/old_endpoint", Source: "app/vlselect/main.go"},
+			{Kind: "route", Surface: "vl", Name: "/select/logsql/old_endpoint", Source: "app/vlselect/main.go"},
 		},
 	}
 	reg := &registry.Registry{ByID: map[string]*registry.Row{}}
@@ -571,7 +660,7 @@ func TestCheckDrift_TrailingSlashPrefixLiteral(t *testing.T) {
 		VLVersion: "v1.50.0",
 		VTVersion: "v0.9.0",
 		Items: []inventory.Item{
-			{Kind: "route", Name: "/select/jaeger/", Source: "app/vlselect/jaeger.go"},
+			{Kind: "route", Surface: "vl", Name: "/select/jaeger/", Source: "app/vlselect/jaeger.go"},
 		},
 	}
 	reg := &registry.Registry{ByID: map[string]*registry.Row{}}

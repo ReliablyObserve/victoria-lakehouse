@@ -76,14 +76,33 @@ func ExtractEngine(vlDir string) ([]Item, error) {
 			}
 		}
 
-		out = append(out, Item{Kind: kind, Name: name, Source: filepath.ToSlash(filepath.Join("lib", "logstorage", e.Name()))})
+		out = append(out, Item{Kind: kind, Surface: "vl", Name: name, Source: filepath.ToSlash(filepath.Join("lib", "logstorage", e.Name()))})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Kind+out[i].Name < out[j].Kind+out[j].Name })
 	return out, nil
 }
 
-// TraceQL metric functions appear as quoted keywords in lib/traceql/pipe_metrics.go.
-var traceqlFuncRe = regexp.MustCompile(`"(rate|count_over_time|min_over_time|max_over_time|avg_over_time|sum_over_time|quantile_over_time|histogram_over_time|compare)"`)
+// TraceQL metric-pipe functions are recognized in lib/traceql/pipe_metrics.go
+// by the lexer testing the next token against a keyword literal:
+// lex.isKeyword("rate"), lex.isKeyword("count_over_time", "min_over_time",
+// ...), etc. Rather than hard-coding the function-name list here (which
+// silently stops seeing a 10th upstream function if VT ever adds one),
+// isKeywordCallRe extracts every such call's argument list so the function
+// names can be derived straight from the source.
+var isKeywordCallRe = regexp.MustCompile(`lex\.isKeyword\(([^)]*)\)`)
+var quotedArgRe = regexp.MustCompile(`"([^"]*)"`)
+
+// traceqlIdentRe matches an isKeyword() argument that looks like a function
+// name (lower-snake-case identifier) rather than punctuation ("(", ")",
+// ",", "{", "}") or the empty-string sentinel used for EOF checks.
+var traceqlIdentRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// traceqlNonFunctionKeywords lists identifier-shaped isKeyword() literals
+// that are structural syntax, not metric-pipe function names in their own
+// right: "with" introduces the `compare(...) with (...)` clause modifier
+// that follows the compare() function call, so it is a keyword the parser
+// checks for but never a pipe-stage function name on its own.
+var traceqlNonFunctionKeywords = map[string]bool{"with": true}
 
 func ExtractTraceQL(vtDir string) ([]Item, error) {
 	src := filepath.Join("lib", "traceql", "pipe_metrics.go")
@@ -93,10 +112,16 @@ func ExtractTraceQL(vtDir string) ([]Item, error) {
 	}
 	seen := map[string]bool{}
 	var out []Item
-	for _, m := range traceqlFuncRe.FindAllStringSubmatch(string(data), -1) {
-		if !seen[m[1]] {
-			seen[m[1]] = true
-			out = append(out, Item{Kind: "traceql", Name: m[1], Source: filepath.ToSlash(src)})
+	for _, call := range isKeywordCallRe.FindAllStringSubmatch(string(data), -1) {
+		for _, arg := range quotedArgRe.FindAllStringSubmatch(call[1], -1) {
+			name := arg[1]
+			if !traceqlIdentRe.MatchString(name) || traceqlNonFunctionKeywords[name] {
+				continue
+			}
+			if !seen[name] {
+				seen[name] = true
+				out = append(out, Item{Kind: "traceql", Surface: "vt", Name: name, Source: filepath.ToSlash(src)})
+			}
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

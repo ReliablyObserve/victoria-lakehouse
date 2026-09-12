@@ -139,15 +139,77 @@ func TestVLSurface_TracesPinEqualsLogsPin(t *testing.T) {
 		t.Fatalf("VL engine tables differ between logs pin and traces pin:\nlogs:   %+v\ntraces: %+v", logsEngine, tracesEngine)
 	}
 
-	logsFlags, err := ExtractFlags(d.VL, VLFlagPackages, LinkedIntoLH)
+	logsFlags, err := ExtractFlags(d.VL, VLFlagPackages, LinkedIntoLH, "vl")
 	if err != nil {
 		t.Fatal(err)
 	}
-	tracesFlags, err := ExtractFlags(tracesVL, VLFlagPackages, LinkedIntoLH)
+	tracesFlags, err := ExtractFlags(tracesVL, VLFlagPackages, LinkedIntoLH, "vl")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(logsFlags, tracesFlags) {
 		t.Fatalf("VL flags differ between logs pin and traces pin:\nlogs:   %+v\ntraces: %+v", logsFlags, tracesFlags)
+	}
+}
+
+// TestInventory_FullRoundTripEquality proves Write→Read reproduces the
+// exact same Inventory struct, field for field (not just item count and one
+// version field, which TestExtract_FixtureRoundTrip already checked) —
+// including per-item Surface, Linked, and the VLCommitTraces pin.
+func TestInventory_FullRoundTripEquality(t *testing.T) {
+	inv, err := Extract(Dirs{VL: "testdata/mini-vl", VT: "testdata/mini-vt", VLVersion: "x", VTVersion: "y", VLCommitTraces: "deadbeef"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Items) == 0 {
+		t.Fatal("fixture extraction produced no items — test would pass vacuously")
+	}
+	p := filepath.Join(t.TempDir(), "inv.yaml")
+	if err := inv.Write(p); err != nil {
+		t.Fatal(err)
+	}
+	back, err := Read(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(inv, back) {
+		t.Fatalf("round trip is not field-for-field equal:\nwant: %+v\ngot:  %+v", inv, back)
+	}
+}
+
+// TestInventory_Write_ErrorOnBadPath proves Write surfaces the underlying
+// os.WriteFile error (e.g. a parent directory that does not exist) instead
+// of silently discarding it.
+func TestInventory_Write_ErrorOnBadPath(t *testing.T) {
+	inv := &Inventory{VLVersion: "x", VTVersion: "y"}
+	err := inv.Write(filepath.Join(t.TempDir(), "no-such-dir", "inv.yaml"))
+	if err == nil {
+		t.Fatal("expected an error writing into a nonexistent directory")
+	}
+}
+
+// TestInventory_Read_MissingFile proves Read surfaces the os.ReadFile error
+// for a missing file rather than returning a zero-value Inventory silently.
+func TestInventory_Read_MissingFile(t *testing.T) {
+	_, err := Read(filepath.Join(t.TempDir(), "does-not-exist.yaml"))
+	if err == nil {
+		t.Fatal("expected an error reading a missing file")
+	}
+}
+
+// TestInventory_Read_MalformedYAML proves Read wraps a YAML decode error
+// with the file path (fmt.Errorf("%s: %w", path, err)), so the error
+// message tells you which file failed to parse.
+func TestInventory_Read_MalformedYAML(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "bad.yaml")
+	if err := os.WriteFile(p, []byte("items: [this is not, valid: yaml: at all"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Read(p)
+	if err == nil {
+		t.Fatal("expected a YAML decode error")
+	}
+	if !strings.Contains(err.Error(), p) {
+		t.Fatalf("expected the error to mention the file path %q, got: %v", p, err)
 	}
 }

@@ -10,16 +10,57 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/tests/conformance/registry"
 )
 
-// CoveredKeys maps every inventory key ("<kind>:<name>", see Inventory.Key)
-// covered by at least one registry row to the ids of the covering rows, in
-// registry report order (native, then lh-shim, then lh-addition, then by
-// id — see registry.LoadDir). Two sources of coverage:
+// RowSurfaces returns the inventory surfaces ("vl", "vt") a row's Upstream
+// reference applies to. A vl or vt row only ever documents its own binary's
+// surface. An lh row (shim or addition) documents Lakehouse-side behavior
+// for an upstream route/pipe/etc that can belong to either upstream binary
+// (or, for a shared route like /select/logsql/query, both) — since an lh
+// row's Upstream field does not itself say which, it is treated as
+// covering the item on both surfaces rather than guessing.
+func RowSurfaces(r *registry.Row) []string {
+	switch r.Surface {
+	case registry.SurfaceVL:
+		return []string{"vl"}
+	case registry.SurfaceVT:
+		return []string{"vt"}
+	case registry.SurfaceLH:
+		return []string{"vl", "vt"}
+	default:
+		return nil
+	}
+}
+
+// PresentOnAnySurface reports whether a row's upstream reference is present
+// in the inventory (present maps surface-scoped keys, see Inventory.Key) on
+// any of the surfaces the row applies to (RowSurfaces). For a vl or vt row
+// that is just presence on its own surface; for an lh row, covering both
+// surfaces, it is presence on either — an lh row is only "not present" (and
+// so a drift candidate: stale, pending-bump, or a spurious absent
+// declaration) when the referenced item exists on neither upstream binary.
+func PresentOnAnySurface(present map[string]bool, r *registry.Row) bool {
+	if r.Upstream == nil || r.Upstream.IsZero() {
+		return false
+	}
+	uk := r.Upstream.Key()
+	for _, surface := range RowSurfaces(r) {
+		if present[surface+":"+uk] {
+			return true
+		}
+	}
+	return false
+}
+
+// CoveredKeys maps every inventory key ("<surface>:<kind>:<name>", see
+// Inventory.Key) covered by at least one registry row to the ids of the
+// covering rows, in registry report order (native, then lh-shim, then
+// lh-addition, then by id — see registry.LoadDir). Two sources of coverage:
 //
-//   - Exact matches: reg.UpstreamKeys(), keyed by Upstream.Key().
+//   - Exact matches: a row's Upstream.Key() ("<kind>:<name>") joined with
+//     the surface(s) the row applies to (RowSurfaces).
 //   - Route-prefix expansion: an inventory route item whose Name ends in
-//     "/" is covered by any row whose upstream route lies under that
-//     prefix (e.g. the inventory item "/insert/loki/" is covered by a row
-//     citing "/insert/loki/api/v1/push").
+//     "/" is covered by any row, on the same surface, whose upstream route
+//     lies under that prefix (e.g. the inventory item "vl:route:/insert/
+//     loki/" is covered by a vl row citing "/insert/loki/api/v1/push").
 //
 // This is the single source of truth for "is this upstream item covered":
 // both the drift check (tests/conformance/drift.go) and the generated
@@ -28,27 +69,33 @@ import (
 func CoveredKeys(inv *inventory.Inventory, reg *registry.Registry) map[string][]string {
 	covered := map[string][]string{}
 
-	var prefixRoutes []string
+	prefixRoutes := map[string][]string{} // surface -> prefix route names
 	for _, it := range inv.Items {
 		if it.Kind == "route" && strings.HasSuffix(it.Name, "/") {
-			prefixRoutes = append(prefixRoutes, it.Name)
+			prefixRoutes[it.Surface] = append(prefixRoutes[it.Surface], it.Name)
 		}
 	}
 
-	for _, r := range reg.Rows {
+	for i := range reg.Rows {
+		r := &reg.Rows[i]
 		if r.Upstream == nil || r.Upstream.IsZero() {
 			continue
 		}
-		k := r.Upstream.Key()
-		covered[k] = append(covered[k], r.ID)
+		uk := r.Upstream.Key() // "<kind>:<name>"
+		for _, surface := range RowSurfaces(r) {
+			k := surface + ":" + uk
+			covered[k] = append(covered[k], r.ID)
 
-		if route, ok := strings.CutPrefix(k, "route:"); ok {
-			for _, prefix := range prefixRoutes {
-				// Skip the self-match: when the row's own route IS the
-				// prefix route, it was already added above under the same
-				// key, and adding it again here would duplicate the id.
-				if prefix != route && strings.HasPrefix(route, prefix) {
-					covered["route:"+prefix] = append(covered["route:"+prefix], r.ID)
+			if route, ok := strings.CutPrefix(uk, "route:"); ok {
+				for _, prefix := range prefixRoutes[surface] {
+					// Skip the self-match: when the row's own route IS the
+					// prefix route, it was already added above under the
+					// same key, and adding it again here would duplicate
+					// the id.
+					if prefix != route && strings.HasPrefix(route, prefix) {
+						pk := surface + ":route:" + prefix
+						covered[pk] = append(covered[pk], r.ID)
+					}
 				}
 			}
 		}
@@ -94,9 +141,13 @@ func expectIcon(r *registry.Row) string {
 // every registry row that covers it: the worst Expect among them (differ <
 // unsupported < absent, all worse than pass), so a passing row can never
 // hide an unsupported or differing sibling. If every covering row is still
-// Pending, " (declared, not yet executed)" is appended to whatever status
-// that worst-of comparison produced — pending is an execution-state note,
-// never something that overrides or hides a correctness verdict.
+// Pending, the status becomes an execution-state note rather than a
+// correctness verdict: when the worst expectation is pass, that note is
+// exactly "🟡 declared, not yet executed" (a pending pass has nothing to
+// report yet, so there is no verified/differ/unsupported/absent claim to
+// make); for a worse worst expectation, the note is appended to that
+// expectation's icon/label instead, since a documented differ/unsupported/
+// absent declaration is still informative even before it runs.
 func aggregateStatus(rows []*registry.Row) string {
 	if len(rows) == 0 {
 		return "⚪ no row"
@@ -110,6 +161,9 @@ func aggregateStatus(rows []*registry.Row) string {
 		if !r.Pending {
 			allPending = false
 		}
+	}
+	if allPending && worst.Expect == registry.ExpectPass {
+		return "🟡 declared, not yet executed"
 	}
 	status := expectIcon(worst)
 	if allPending {
@@ -212,7 +266,11 @@ func RenderCoverage(inv *inventory.Inventory, reg *registry.Registry) string {
 		if r.Upstream == nil || r.Upstream.IsZero() {
 			continue
 		}
-		if present[r.Upstream.Key()] {
+		// A row is already shown in the main coverage tables (and so
+		// skipped here) if its upstream key is present on any surface it
+		// applies to — an lh row covering both surfaces only belongs in
+		// this gated section if it is present on neither.
+		if PresentOnAnySurface(present, &r) {
 			continue
 		}
 		since := "—"

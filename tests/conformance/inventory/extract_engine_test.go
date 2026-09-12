@@ -1,6 +1,11 @@
 package inventory
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func has(items []Item, kind, name string) bool {
 	for _, it := range items {
@@ -67,7 +72,7 @@ func TestExtractTraceQL_Fixture(t *testing.T) {
 }
 
 func TestExtractFlags_Fixture(t *testing.T) {
-	items, err := ExtractFlags("testdata/mini-vl", []string{"app/vlselect"}, map[string]bool{"app/vlselect": false})
+	items, err := ExtractFlags("testdata/mini-vl", []string{"app/vlselect"}, map[string]bool{"app/vlselect": false}, "vl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,14 +101,14 @@ func TestExtractTraceQL_Missing(t *testing.T) {
 }
 
 func TestExtractFlags_Missing(t *testing.T) {
-	_, err := ExtractFlags("testdata/nonexistent", []string{"app/vlselect"}, map[string]bool{"app/vlselect": false})
+	_, err := ExtractFlags("testdata/nonexistent", []string{"app/vlselect"}, map[string]bool{"app/vlselect": false}, "vl")
 	if err == nil {
 		t.Fatal("expected error for missing directory")
 	}
 }
 
 func TestExtractFlags_Linked(t *testing.T) {
-	items, err := ExtractFlags("testdata/mini-vl", []string{"app/vlselect"}, map[string]bool{"app/vlselect": true})
+	items, err := ExtractFlags("testdata/mini-vl", []string{"app/vlselect"}, map[string]bool{"app/vlselect": true}, "vl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +123,7 @@ func TestExtractFlags_Linked(t *testing.T) {
 }
 
 func TestExtractFlags_VLInsert(t *testing.T) {
-	items, err := ExtractFlags("testdata/mini-vl", []string{"app/vlinsert"}, map[string]bool{"app/vlinsert": false})
+	items, err := ExtractFlags("testdata/mini-vl", []string{"app/vlinsert"}, map[string]bool{"app/vlinsert": false}, "vl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,17 +133,31 @@ func TestExtractFlags_VLInsert(t *testing.T) {
 }
 
 func TestExtractFlags_SafeWrappers(t *testing.T) {
-	items, err := ExtractFlags("testdata/mini-vt", []string{"app/vtstorage"}, map[string]bool{"app/vtstorage": true})
+	items, err := ExtractFlags("testdata/mini-vt", []string{"app/vtstorage"}, map[string]bool{"app/vtstorage": true}, "vt")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !has(items, "flag", "retentionPeriod") {
 		t.Fatalf("retentionPeriod flag from safe wrapper missing: %v", items)
 	}
+	// The fixture mentions "retentionPeriod" twice — once via the
+	// safeRetentionDuration(...) definition (which flagRe matches) and once
+	// via a flag.Lookup(...) call (which flagRe does not match at all,
+	// since Lookup isn't one of its alternatives) — so it must be extracted
+	// exactly once, not zero and not duplicated.
+	count := 0
+	for _, it := range items {
+		if it.Kind == "flag" && it.Name == "retentionPeriod" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected retentionPeriod extracted exactly once, got %d: %v", count, items)
+	}
 }
 
 func TestExtractFlags_VTInsert(t *testing.T) {
-	items, err := ExtractFlags("testdata/mini-vt", []string{"app/vtinsert"}, map[string]bool{"app/vtinsert": true})
+	items, err := ExtractFlags("testdata/mini-vt", []string{"app/vtinsert"}, map[string]bool{"app/vtinsert": true}, "vt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +167,7 @@ func TestExtractFlags_VTInsert(t *testing.T) {
 }
 
 func TestExtractFlags_VTSelect(t *testing.T) {
-	items, err := ExtractFlags("testdata/mini-vt", []string{"app/vtselect/logsql", "app/vtselect/internalselect"}, map[string]bool{"app/vtselect/logsql": false, "app/vtselect/internalselect": false})
+	items, err := ExtractFlags("testdata/mini-vt", []string{"app/vtselect/logsql", "app/vtselect/internalselect"}, map[string]bool{"app/vtselect/logsql": false, "app/vtselect/internalselect": false}, "vt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,5 +176,26 @@ func TestExtractFlags_VTSelect(t *testing.T) {
 	}
 	if !has(items, "flag", "internalselect.maxConcurrentRequests") {
 		t.Fatalf("internalselect.maxConcurrentRequests flag missing from vtselect/internalselect: %v", items)
+	}
+}
+
+// TestExtractEngine_MissingParserTable proves ExtractEngine surfaces the
+// error from parserTableNames when lib/logstorage/pipe.go (used to
+// validate which pipe names are real) is missing, instead of silently
+// treating it as "no pipes" — a missing/misplaced parser table should
+// never be indistinguishable from a legitimately empty pipe list.
+func TestExtractEngine_MissingParserTable(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "lib", "logstorage"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// lib/logstorage exists (so ExtractEngine's initial ReadDir succeeds)
+	// but pipe.go does not, so parserTableNames' os.ReadFile must fail.
+	_, err := ExtractEngine(dir)
+	if err == nil {
+		t.Fatal("expected an error when lib/logstorage/pipe.go is missing")
+	}
+	if !strings.Contains(err.Error(), "pipe.go") {
+		t.Fatalf("expected the error to mention pipe.go, got: %v", err)
 	}
 }

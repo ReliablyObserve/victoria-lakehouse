@@ -26,7 +26,9 @@ var LinkedIntoLH = map[string]bool{
 
 // ExtractFlags scans the non-test .go files directly inside each pkgDir (and, for
 // packages ending in "insert", its per-format subdirectories) for flag definitions.
-func ExtractFlags(root string, pkgDirs []string, linked map[string]bool) ([]Item, error) {
+// surface ("vl" or "vt") identifies which binary root belongs to, since VL and
+// VT can each define a flag of the same name independently.
+func ExtractFlags(root string, pkgDirs []string, linked map[string]bool, surface string) ([]Item, error) {
 	// keyed by flag name: a Go binary cannot register the same flag name twice,
 	// so within one upstream root a name is unique; first occurrence wins.
 	seen := map[string]Item{}
@@ -59,7 +61,7 @@ func ExtractFlags(root string, pkgDirs []string, linked map[string]bool) ([]Item
 				rel, _ := filepath.Rel(root, filepath.Join(d, e.Name()))
 				for _, m := range flagRe.FindAllStringSubmatch(string(data), -1) {
 					if _, ok := seen[m[1]]; !ok {
-						seen[m[1]] = Item{Kind: "flag", Name: m[1], Source: filepath.ToSlash(rel), Linked: linked[pkg]}
+						seen[m[1]] = Item{Kind: "flag", Surface: surface, Name: m[1], Source: filepath.ToSlash(rel), Linked: linked[pkg]}
 					}
 				}
 			}

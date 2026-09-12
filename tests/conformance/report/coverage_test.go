@@ -10,15 +10,15 @@ import (
 
 func TestRenderCoverage(t *testing.T) {
 	inv := &inventory.Inventory{VLVersion: "v1.50.0", VTVersion: "v0.9.2", Items: []inventory.Item{
-		{Kind: "route", Name: "/select/logsql/query", Source: "app/vlselect/main.go"},
-		{Kind: "flag", Name: "search.maxQueueDuration", Source: "app/vlselect/main.go", Linked: false},
+		{Kind: "route", Surface: "vl", Name: "/select/logsql/query", Source: "app/vlselect/main.go"},
+		{Kind: "flag", Surface: "vl", Name: "search.maxQueueDuration", Source: "app/vlselect/main.go", Linked: false},
 	}}
 	reg, err := registry.LoadDir("../registry/testdata/valid")
 	if err != nil {
 		t.Fatal(err)
 	}
 	md := RenderCoverage(inv, reg)
-	for _, w := range []string{"GENERATED", "v1.50.0", "/select/logsql/query", "vl.select.query.wildcard", "✅", "search.maxQueueDuration", "not linked", "lh.stats.overview.schema", "🧩"} {
+	for _, w := range []string{"GENERATED", "v1.50.0", "/select/logsql/query", "vl.select.query.wildcard", "✅", "search.maxQueueDuration", "not linked", "lh.stats.overview.schema", "🧩", "route: 1/1 covered"} {
 		if !strings.Contains(md, w) {
 			t.Fatalf("coverage doc missing %q:\n%s", w, md)
 		}
@@ -67,7 +67,7 @@ func TestIcon(t *testing.T) {
 // "not linked" suffix) and the multi-row Rows column (comma-joined ids).
 func TestRenderCoverage_LinkedFlagNoRow(t *testing.T) {
 	inv := &inventory.Inventory{VLVersion: "v1.50.0", VTVersion: "v0.9.2", Items: []inventory.Item{
-		{Kind: "flag", Name: "search.maxConcurrentRequests", Source: "app/vlselect/main.go", Linked: true},
+		{Kind: "flag", Surface: "vl", Name: "search.maxConcurrentRequests", Source: "app/vlselect/main.go", Linked: true},
 	}}
 	reg := &registry.Registry{ByID: map[string]*registry.Row{}}
 	md := RenderCoverage(inv, reg)
@@ -99,8 +99,11 @@ func TestAggregateStatus_WorstOfPassAndUnsupported(t *testing.T) {
 }
 
 // TestAggregateStatus_PendingOnlyAnnotatesWithoutHiding proves that when
-// every covering row is still Pending, the note is appended to the
-// worst-of status rather than replacing it — so a differ/unsupported
+// every covering row is still Pending and the worst expectation is pass,
+// the status is exactly the plain "declared, not yet executed" note (there
+// is no verified/differ/unsupported/absent claim to make yet); when the
+// worst expectation is worse than pass, the note is appended to that
+// expectation's status instead of replacing it, so a differ/unsupported
 // status is not disguised as "declared, not yet executed" with no
 // indication of what it actually declares.
 func TestAggregateStatus_PendingOnlyAnnotatesWithoutHiding(t *testing.T) {
@@ -109,8 +112,8 @@ func TestAggregateStatus_PendingOnlyAnnotatesWithoutHiding(t *testing.T) {
 		{ID: "vl.select.tail.hot2", Expect: registry.ExpectPass, Pending: true},
 	}
 	got := aggregateStatus(rows)
-	if !strings.Contains(got, "✅") || !strings.Contains(got, "(declared, not yet executed)") {
-		t.Fatalf("aggregateStatus(all pending) = %q, want the verified icon annotated with the pending note", got)
+	if got != "🟡 declared, not yet executed" {
+		t.Fatalf("aggregateStatus(all pending, pass) = %q, want the plain pending note", got)
 	}
 
 	// One executed row among the covering rows must suppress the note.
@@ -121,6 +124,16 @@ func TestAggregateStatus_PendingOnlyAnnotatesWithoutHiding(t *testing.T) {
 	got = aggregateStatus(mixed)
 	if strings.Contains(got, "declared, not yet executed") {
 		t.Fatalf("aggregateStatus(mixed pending) = %q, must not append the note when one row already ran", got)
+	}
+
+	// All pending with a worse-than-pass worst expectation still appends
+	// the note rather than replacing the status.
+	pendingUnsupported := []*registry.Row{
+		{ID: "vl.select.tail.unsupported", Expect: registry.ExpectUnsupported, Pending: true},
+	}
+	got = aggregateStatus(pendingUnsupported)
+	if !strings.Contains(got, "⛔ unsupported on cold (documented)") || !strings.Contains(got, "(declared, not yet executed)") {
+		t.Fatalf("aggregateStatus(pending unsupported) = %q, want the unsupported icon annotated with the pending note", got)
 	}
 }
 
@@ -147,16 +160,16 @@ func TestAggregateStatus_AllExpectRanks(t *testing.T) {
 // /insert/{datadog,journald,loki,splunk}/.
 func TestCoveredKeys_RoutePrefixExpansion(t *testing.T) {
 	inv := &inventory.Inventory{Items: []inventory.Item{
-		{Kind: "route", Name: "/insert/datadog/"},
-		{Kind: "route", Name: "/insert/journald/"},
-		{Kind: "route", Name: "/insert/loki/"},
-		{Kind: "route", Name: "/insert/splunk/"},
+		{Kind: "route", Surface: "vl", Name: "/insert/datadog/"},
+		{Kind: "route", Surface: "vl", Name: "/insert/journald/"},
+		{Kind: "route", Surface: "vl", Name: "/insert/loki/"},
+		{Kind: "route", Surface: "vl", Name: "/insert/splunk/"},
 	}}
 	reg := &registry.Registry{Rows: []registry.Row{
-		{ID: "vl.insert.datadog_logs.count", Upstream: &registry.Upstream{Route: "/insert/datadog/api/v2/logs"}},
-		{ID: "vl.insert.journald.count", Upstream: &registry.Upstream{Route: "/insert/journald/upload"}},
-		{ID: "vl.insert.loki_push_json.count", Upstream: &registry.Upstream{Route: "/insert/loki/api/v1/push"}},
-		{ID: "vl.insert.splunk_event.count", Upstream: &registry.Upstream{Route: "/insert/splunk/services/collector/event"}},
+		{ID: "vl.insert.datadog_logs.count", Surface: registry.SurfaceVL, Upstream: &registry.Upstream{Route: "/insert/datadog/api/v2/logs"}},
+		{ID: "vl.insert.journald.count", Surface: registry.SurfaceVL, Upstream: &registry.Upstream{Route: "/insert/journald/upload"}},
+		{ID: "vl.insert.loki_push_json.count", Surface: registry.SurfaceVL, Upstream: &registry.Upstream{Route: "/insert/loki/api/v1/push"}},
+		{ID: "vl.insert.splunk_event.count", Surface: registry.SurfaceVL, Upstream: &registry.Upstream{Route: "/insert/splunk/services/collector/event"}},
 	}}
 	reg.ByID = map[string]*registry.Row{}
 	for i := range reg.Rows {
@@ -164,8 +177,8 @@ func TestCoveredKeys_RoutePrefixExpansion(t *testing.T) {
 	}
 	covered := CoveredKeys(inv, reg)
 	for _, prefix := range []string{"/insert/datadog/", "/insert/journald/", "/insert/loki/", "/insert/splunk/"} {
-		if len(covered["route:"+prefix]) == 0 {
-			t.Fatalf("route:%s should be covered by prefix expansion, got: %v", prefix, covered)
+		if len(covered["vl:route:"+prefix]) == 0 {
+			t.Fatalf("vl:route:%s should be covered by prefix expansion, got: %v", prefix, covered)
 		}
 	}
 
@@ -185,12 +198,12 @@ func TestCoveredKeys_RoutePrefixExpansion(t *testing.T) {
 // (once as an exact match, once again via prefix self-expansion).
 func TestCoveredKeys_NoSelfMatchDuplicate(t *testing.T) {
 	inv := &inventory.Inventory{Items: []inventory.Item{
-		{Kind: "route", Name: "/select/tempo/api/v2/search/tag/"},
+		{Kind: "route", Surface: "vt", Name: "/select/tempo/api/v2/search/tag/"},
 	}}
 	reg := &registry.Registry{Rows: []registry.Row{
-		{ID: "vt.tempo.v2_search_tag_values.basic", Upstream: &registry.Upstream{Route: "/select/tempo/api/v2/search/tag/"}},
+		{ID: "vt.tempo.v2_search_tag_values.basic", Surface: registry.SurfaceVT, Upstream: &registry.Upstream{Route: "/select/tempo/api/v2/search/tag/"}},
 	}}
-	ids := CoveredKeys(inv, reg)["route:/select/tempo/api/v2/search/tag/"]
+	ids := CoveredKeys(inv, reg)["vt:route:/select/tempo/api/v2/search/tag/"]
 	if len(ids) != 1 {
 		t.Fatalf("expected exactly one covering id, got %v", ids)
 	}
@@ -241,11 +254,11 @@ func TestRenderCoverage_PreambleAndLegend(t *testing.T) {
 // line printed under each table heading.
 func TestRenderCoverage_PerKindTotals(t *testing.T) {
 	inv := &inventory.Inventory{Items: []inventory.Item{
-		{Kind: "route", Name: "/select/logsql/query"},
-		{Kind: "route", Name: "/select/logsql/new_thing"},
+		{Kind: "route", Surface: "vl", Name: "/select/logsql/query"},
+		{Kind: "route", Surface: "vl", Name: "/select/logsql/new_thing"},
 	}}
 	reg := &registry.Registry{ByID: map[string]*registry.Row{}}
-	reg.Rows = []registry.Row{{ID: "vl.select.query.basic", Upstream: &registry.Upstream{Route: "/select/logsql/query"}}}
+	reg.Rows = []registry.Row{{ID: "vl.select.query.basic", Surface: registry.SurfaceVL, Upstream: &registry.Upstream{Route: "/select/logsql/query"}}}
 	md := RenderCoverage(inv, reg)
 	if !strings.Contains(md, "route: 1/2 covered") {
 		t.Fatalf("expected a '1/2 covered' totals line:\n%s", md)
@@ -265,5 +278,104 @@ func TestRenderCoverage_EmptyInventory(t *testing.T) {
 		if strings.Contains(md, kind) {
 			t.Fatalf("empty inventory should not render a %q section:\n%s", kind, md)
 		}
+	}
+}
+
+// TestRowSurfaces covers every branch: vl and vt rows map to their own
+// single surface, an lh row maps to both, and an unrecognized/zero-value
+// Surface maps to none (nil) rather than guessing.
+func TestRowSurfaces(t *testing.T) {
+	cases := []struct {
+		name    string
+		surface registry.Surface
+		want    []string
+	}{
+		{"vl", registry.SurfaceVL, []string{"vl"}},
+		{"vt", registry.SurfaceVT, []string{"vt"}},
+		{"lh", registry.SurfaceLH, []string{"vl", "vt"}},
+		{"unrecognized", registry.Surface("bogus"), nil},
+		{"zero value", registry.Surface(""), nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := &registry.Row{Surface: c.surface}
+			got := RowSurfaces(r)
+			if len(got) != len(c.want) {
+				t.Fatalf("RowSurfaces(surface=%q) = %v, want %v", c.surface, got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Fatalf("RowSurfaces(surface=%q) = %v, want %v", c.surface, got, c.want)
+				}
+			}
+		})
+	}
+}
+
+// TestPresentOnAnySurface_NoUpstream proves a row with no Upstream
+// reference (nil, or a non-nil zero value) is never "present" — there is
+// nothing to look up.
+func TestPresentOnAnySurface_NoUpstream(t *testing.T) {
+	present := map[string]bool{"vl:route:/select/logsql/query": true}
+	if PresentOnAnySurface(present, &registry.Row{Surface: registry.SurfaceVL, Upstream: nil}) {
+		t.Fatal("a row with a nil Upstream must never be present")
+	}
+	if PresentOnAnySurface(present, &registry.Row{Surface: registry.SurfaceVL, Upstream: &registry.Upstream{}}) {
+		t.Fatal("a row with a zero-value Upstream must never be present")
+	}
+}
+
+// TestPresentOnAnySurface_LHChecksEitherSurface proves an lh row is
+// "present" when its upstream key is present on either surface it covers
+// (not only the first one checked), and "not present" only when it is on
+// neither.
+func TestPresentOnAnySurface_LHChecksEitherSurface(t *testing.T) {
+	row := &registry.Row{Surface: registry.SurfaceLH, Upstream: &registry.Upstream{Route: "/select/logsql/query"}}
+
+	presentOnVT := map[string]bool{"vt:route:/select/logsql/query": true}
+	if !PresentOnAnySurface(presentOnVT, row) {
+		t.Fatal("lh row should be present via the vt surface even though vl is absent")
+	}
+
+	presentOnVL := map[string]bool{"vl:route:/select/logsql/query": true}
+	if !PresentOnAnySurface(presentOnVL, row) {
+		t.Fatal("lh row should be present via the vl surface even though vt is absent")
+	}
+
+	neither := map[string]bool{"vl:route:/select/tempo/api/search": true}
+	if PresentOnAnySurface(neither, row) {
+		t.Fatal("lh row should not be present when neither surface has its upstream key")
+	}
+}
+
+// TestRenderCoverage_LHRowGatedOnNeitherSurface proves an lh row is only
+// listed in the "gated" section when its upstream key is present on
+// neither vl nor vt — here it is present on vt, so it must be covered
+// normally (not gated) even though the row's own Surface is lh.
+func TestRenderCoverage_LHRowGatedOnNeitherSurface(t *testing.T) {
+	inv := &inventory.Inventory{VLVersion: "v1.50.0", VTVersion: "v0.9.2", Items: []inventory.Item{
+		{Kind: "route", Surface: "vt", Name: "/select/tempo/api/search"},
+	}}
+	reg := &registry.Registry{ByID: map[string]*registry.Row{}}
+	reg.Rows = []registry.Row{{
+		ID: "lh.shim.tempo_search_empty_q", Surface: registry.SurfaceLH, Expect: registry.ExpectPass,
+		Upstream: &registry.Upstream{Route: "/select/tempo/api/search"},
+	}}
+	for i := range reg.Rows {
+		reg.ByID[reg.Rows[i].ID] = &reg.Rows[i]
+	}
+	md := RenderCoverage(inv, reg)
+	gatedIdx := strings.Index(md, "Rows gated on a later upstream version")
+	if gatedIdx < 0 {
+		t.Fatalf("expected the gated/absent section header:\n%s", md)
+	}
+	if strings.Contains(md[gatedIdx:], "lh.shim.tempo_search_empty_q") {
+		t.Fatalf("lh row present on the vt surface must not appear in the gated section:\n%s", md)
+	}
+	if !strings.Contains(md, "route: 1/1 covered") {
+		t.Fatalf("expected the vt route to be covered by the lh row:\n%s", md)
+	}
+	if !strings.Contains(md, "✅ native, verified") {
+		t.Fatalf("expected the lh row to render as covered/verified in the main table:\n%s", md)
 	}
 }

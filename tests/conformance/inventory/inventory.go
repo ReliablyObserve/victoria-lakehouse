@@ -79,8 +79,8 @@ func Extract(d Dirs) (*Inventory, error) {
 		func() ([]Item, error) { return ExtractVTRoutes(d.VT) },
 		func() ([]Item, error) { return ExtractEngine(d.VL) },
 		func() ([]Item, error) { return ExtractTraceQL(d.VT) },
-		func() ([]Item, error) { return ExtractFlags(d.VL, VLFlagPackages, LinkedIntoLH) },
-		func() ([]Item, error) { return ExtractFlags(d.VT, VTFlagPackages, LinkedIntoLH) },
+		func() ([]Item, error) { return ExtractFlags(d.VL, VLFlagPackages, LinkedIntoLH, "vl") },
+		func() ([]Item, error) { return ExtractFlags(d.VT, VTFlagPackages, LinkedIntoLH, "vt") },
 	}
 	seen := map[string]bool{}
 	for _, s := range steps {

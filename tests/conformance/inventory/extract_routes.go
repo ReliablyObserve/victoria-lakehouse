@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	caseRe    = regexp.MustCompile(`case\s+((?:"[^"]+"(?:\s*,\s*"[^"]+")*)+)\s*:`)
+	caseRe    = regexp.MustCompile(`case\s+("[^"]+"(?:\s*,\s*"[^"]+")*)\s*:`)
 	caseValRe = regexp.MustCompile(`"/[^"]+"`)
 	mapKeyRe  = regexp.MustCompile(`(?m)^\s*"(/[^"]+)"\s*:\s*[A-Za-z_]`)
 	prefixRe  = regexp.MustCompile(`strings\.HasPrefix\(\s*path\s*,\s*"(/[^"]+)"`)
@@ -47,10 +47,10 @@ var vtRouteFiles = []string{
 	"app/vtstorage/main.go",
 }
 
-func ExtractVLRoutes(vlDir string) ([]Item, error) { return extractRoutes(vlDir, vlRouteFiles) }
-func ExtractVTRoutes(vtDir string) ([]Item, error) { return extractRoutes(vtDir, vtRouteFiles) }
+func ExtractVLRoutes(vlDir string) ([]Item, error) { return extractRoutes(vlDir, vlRouteFiles, "vl") }
+func ExtractVTRoutes(vtDir string) ([]Item, error) { return extractRoutes(vtDir, vtRouteFiles, "vt") }
 
-func extractRoutes(root string, entries []string) ([]Item, error) {
+func extractRoutes(root string, entries []string, surface string) ([]Item, error) {
 	if st, err := os.Stat(root); err != nil || !st.IsDir() {
 		return nil, fmt.Errorf("upstream dir %q: not a directory", root)
 	}
@@ -92,9 +92,13 @@ func extractRoutes(root string, entries []string) ([]Item, error) {
 				for _, valMatch := range caseValRe.FindAllString(caseBlock, -1) {
 					// Extract route from quoted string
 					name := valMatch[1 : len(valMatch)-1]
-					if !gatePrefixes[name] && !strings.HasPrefix(name, "/select/vmui/static/") {
+					// gatePrefixes alone is enough here: /select/vmui/static/
+					// is only ever matched via strings.HasPrefix (below), never
+					// as a literal case value, and gatePrefixes already
+					// excludes that exact literal too.
+					if !gatePrefixes[name] {
 						if _, ok := seen[name]; !ok {
-							seen[name] = Item{Kind: "route", Name: name, Source: rel}
+							seen[name] = Item{Kind: "route", Surface: surface, Name: name, Source: rel}
 						}
 					}
 				}
@@ -105,7 +109,7 @@ func extractRoutes(root string, entries []string) ([]Item, error) {
 				name := m[1]
 				if !gatePrefixes[name] {
 					if _, ok := seen[name]; !ok {
-						seen[name] = Item{Kind: "route", Name: name, Source: rel}
+						seen[name] = Item{Kind: "route", Surface: surface, Name: name, Source: rel}
 					}
 				}
 			}
@@ -115,7 +119,7 @@ func extractRoutes(root string, entries []string) ([]Item, error) {
 				name := m[1]
 				if !gatePrefixes[name] {
 					if _, ok := seen[name]; !ok {
-						seen[name] = Item{Kind: "route", Name: name, Source: rel}
+						seen[name] = Item{Kind: "route", Surface: surface, Name: name, Source: rel}
 					}
 				}
 			}
@@ -125,7 +129,7 @@ func extractRoutes(root string, entries []string) ([]Item, error) {
 				name := m[1]
 				if !gatePrefixes[name] {
 					if _, ok := seen[name]; !ok {
-						seen[name] = Item{Kind: "route", Name: name, Source: rel}
+						seen[name] = Item{Kind: "route", Surface: surface, Name: name, Source: rel}
 					}
 				}
 			}
