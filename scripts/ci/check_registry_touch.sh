@@ -15,12 +15,14 @@ changed=$(git diff --name-only "$BASE"...HEAD)
 # in files that don't have "handler" in their name).
 touches_direct=$(echo "$changed" | grep -E '^(internal/selectapi/|lakehouse-traces/internal/selectapi/|cmd/lakehouse-logs/main\.go|lakehouse-traces/main\.go|patches/|\.upstream-versions\.json)' || true)
 
-# Any changed .go file whose diff adds or removes an HTTP route-registration
-# call — HandleFunc(, mux.Handle(, or a plain .Handle( — counts as
-# route-touching. This is content-based rather than filename-based so a
-# route registration in a file without "handler" in its name (e.g.
+# Any changed non-test .go file whose diff adds or removes an HTTP
+# route-registration call — HandleFunc(, mux.Handle(, or a plain .Handle( —
+# counts as route-touching. This is content-based rather than filename-based
+# so a route registration in a file without "handler" in its name (e.g.
 # internal/stats/api.go, parity.go, internal/ui/ui.go, internal/ui/vmui.go)
-# is still caught.
+# is still caught. _test.go files are excluded: a test double registering a
+# handler on a throwaway mux (table tests, httptest servers) is not a real
+# route change and must never require a registry touch.
 touches_handle_calls=""
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
@@ -28,14 +30,16 @@ while IFS= read -r f; do
     touches_handle_calls="$touches_handle_calls
 $f"
   fi
-done <<< "$(echo "$changed" | grep -E '\.go$' || true)"
+done <<< "$(echo "$changed" | grep -E '\.go$' | grep -v '_test\.go$' || true)"
 
 # Makefile counts only when the diff actually adds or removes one of the
 # upstream pin variable assignments — an unrelated Makefile edit (a comment,
-# a new target, reformatting) must not require a registry touch.
+# a new target, reformatting) must not require a registry touch. The regex
+# tolerates both "VAR := value" and "VAR = value" (with or without space
+# before the (:)= ) so a reformatted assignment is still recognized.
 touches_pin_makefile=""
 if echo "$changed" | grep -qE '^Makefile$'; then
-  if git diff "$BASE"...HEAD -- Makefile | grep -qE '^[+-](VL_VERSION_LOGS|VL_COMMIT_TRACES|VT_VERSION) '; then
+  if git diff "$BASE"...HEAD -- Makefile | grep -qE '^[+-](VL_VERSION_LOGS|VL_COMMIT_TRACES|VT_VERSION)[[:space:]]*:?='; then
     touches_pin_makefile="Makefile"
   fi
 fi
