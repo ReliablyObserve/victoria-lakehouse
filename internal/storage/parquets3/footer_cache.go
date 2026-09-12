@@ -138,12 +138,64 @@ func ParseFooterFromData(key string, data []byte) (*CachedFooter, *parquet.File,
 	}, f, nil
 }
 
+// maxParquetFooterBytes bounds the trusted parquet footer size. Measured
+// footers in this project top out at 467-519KB (traces L2 files with an
+// embedded trace index — see footer_prefetch.go); 16 MiB leaves >30x
+// headroom for legitimately wide schemas while staying far below the
+// ~4 GiB an attacker/corruption-controlled uint32 length field could
+// otherwise claim.
+const maxParquetFooterBytes = 16 * 1024 * 1024
+
 // ParseFooterFromBytes parses just the parquet footer from raw footer bytes.
 // footerBytes should contain the last N bytes of the file including the
 // 4-byte footer length and 4-byte magic number. Uses a synthetic ReaderAt
 // that serves "PAR1" at offset 0 and the footer at the file tail, so
 // parquet-go's magic validation succeeds without downloading the full file.
-func ParseFooterFromBytes(key string, footerBytes []byte, fileSize int64) (*CachedFooter, *parquet.File, error) {
+//
+// The trailing 8 bytes of footerBytes declare a footer length that
+// parquet-go's own OpenFile independently re-parses from those same bytes
+// and uses to size an allocation (make([]byte, footerSize) in
+// parquet-go's file.go) — that length is a raw little-endian uint32
+// (0..~4 GiB) fully controlled by whoever produced footerBytes. Validate
+// it here — bounded against the buffer we actually hold and a sane
+// maximum — before ever calling into parquet-go, so a malformed or
+// malicious length can never drive a multi-GiB allocation. Without this,
+// footer bytes whose embedded length vastly exceeds the buffer make
+// parquet-go allocate up to ~4 GiB per call; repeated across fuzz/query
+// executions that is exactly the resource blow-up that hung
+// FuzzParseFooterBytes.
+func ParseFooterFromBytes(key string, footerBytes []byte, fileSize int64) (cachedFooter *CachedFooter, file *parquet.File, err error) {
+	if fileSize <= 0 {
+		return nil, nil, fmt.Errorf("parse parquet footer %s: invalid file size %d", key, fileSize)
+	}
+	if int64(len(footerBytes)) > fileSize {
+		return nil, nil, fmt.Errorf("parse parquet footer %s: footer bytes (%d) exceed file size (%d)", key, len(footerBytes), fileSize)
+	}
+	if len(footerBytes) < 8 {
+		return nil, nil, fmt.Errorf("parse parquet footer %s: need at least 8 bytes, got %d", key, len(footerBytes))
+	}
+	declaredLen := int64(binary.LittleEndian.Uint32(footerBytes[len(footerBytes)-8 : len(footerBytes)-4]))
+	if declaredLen+8 > int64(len(footerBytes)) {
+		return nil, nil, fmt.Errorf("parse parquet footer %s: declared footer length %d exceeds available buffer (%d bytes)", key, declaredLen, len(footerBytes)-8)
+	}
+	if declaredLen > maxParquetFooterBytes {
+		return nil, nil, fmt.Errorf("parse parquet footer %s: declared footer length %d exceeds max %d", key, declaredLen, maxParquetFooterBytes)
+	}
+
+	// parquet-go's thrift-decoded metadata carries other untrusted integer
+	// fields we don't independently validate (e.g. SchemaElement.NumChildren
+	// feeding a raw `make([]*Column, numChildren)` in column.go) — a crafted
+	// negative or absurd value there panics inside parquet-go rather than
+	// returning an error. Recover so a malformed/adversarial footer can
+	// never crash the caller; the fuzz harness's contract ("must never
+	// panic, error is fine") holds even for bugs in the vendored decoder.
+	defer func() {
+		if rec := recover(); rec != nil {
+			cachedFooter, file = nil, nil
+			err = fmt.Errorf("parse parquet footer %s: panic in parquet-go decoder: %v", key, rec)
+		}
+	}()
+
 	r := &footerReaderAt{
 		footer:   footerBytes,
 		fileSize: fileSize,
