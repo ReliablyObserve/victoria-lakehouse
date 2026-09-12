@@ -1,5 +1,5 @@
 # VL /insert/* ingest families. Comparator is `count` (rows ingested vs. rows
-# retrievable) — the actual ingest step is a later milestone (the runner), so
+# retrievable) — the actual ingest step comes later (the runner), so
 # every row here stays pending: true. Seed is nominal (post-ingest baseline).
 
 - { id: vl.insert.jsonline.count, title: "/insert/jsonline — newline-delimited JSON ingest", surface: vl, kind: insert, origin: native, expect: pass, targets: [hot], seed: [logs.base], upstream: { route: /insert/jsonline }, request: { method: POST, path: /insert/jsonline, headers: { AccountID: "{{tenant.account}}", ProjectID: "{{tenant.project}}" }, body: '{"_msg":"request handled","service.name":"checkout","level":"INFO"}' }, compare: { type: count }, layers: [api], pending: true }

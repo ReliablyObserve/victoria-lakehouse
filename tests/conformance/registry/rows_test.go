@@ -8,13 +8,13 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
 
-// TestRows_LoadAndCounts is the controller ruling: coverage is measured by
+// TestRows_LoadAndCounts enforces the coverage rule: coverage is measured by
 // DISTINCT upstream keys per kind (one real inventory item can be exercised
 // by more than one row — e.g. an edge case or a differ variant — without
 // inflating the count), not by raw row counts. Thresholds match the real
 // upstream inventory (pipes 48, filters 33, stats 24, traceql 9), and no row
-// may cite one of the 7 phantom names that were removed from the brief's
-// original lists because they are not real upstream inventory items.
+// may cite one of the 7 phantom names that were removed from the original
+// candidate lists because they are not real upstream inventory items.
 func TestRows_LoadAndCounts(t *testing.T) {
 	reg, err := LoadDir("rows")
 	if err != nil {
@@ -83,8 +83,8 @@ var templateReplacer = strings.NewReplacer(
 	"{{tenant.project}}", "0",
 )
 
-// TestRows_QueriesParseWithUpstream is the controller's reuse-upstream-code
-// rule: every row that sends a LogsQL query to a /select/logsql/* endpoint
+// TestRows_QueriesParseWithUpstream enforces the reuse-upstream-code rule:
+// every row that sends a LogsQL query to a /select/logsql/* endpoint
 // must parse with the real VL 1.50.0 parser (github.com/VictoriaMetrics/
 // VictoriaLogs/lib/logstorage, vendored under deps/ and reachable from the
 // root module via the go.mod replace directive) — not just look plausible.
@@ -106,7 +106,7 @@ func TestRows_QueriesParseWithUpstream(t *testing.T) {
 		}
 		// Rows deliberately exercising invalid-query error handling (expect
 		// both tiers to 400 the same way) are validated at runtime (a later
-		// milestone), not by the real parser here.
+		// phase), not by the real parser here.
 		if r.Compare != nil && r.Compare.Type == "error" {
 			continue
 		}
@@ -154,7 +154,7 @@ var tempoKnownStageFuncs = map[string]bool{
 // to /select/tempo/*. The exact TraceQL grammar lives in VictoriaTraces,
 // which the root module (LogsQL/VL only) cannot import; real TraceQL
 // parsing of these queries runs as part of the traces module's own test
-// suite in a later milestone.
+// suite later.
 func TestRows_TempoQueriesStructural(t *testing.T) {
 	reg, err := LoadDir("rows")
 	if err != nil {
@@ -174,7 +174,7 @@ func TestRows_TempoQueriesStructural(t *testing.T) {
 		if err := checkBalancedBrackets(q); err != nil {
 			t.Errorf("row %s: TraceQL query %q: %v", r.ID, q, err)
 		}
-		for _, stage := range strings.Split(q, "| ")[1:] {
+		for _, stage := range splitPipeStages(q)[1:] {
 			fn := leadingIdentifier(strings.TrimSpace(stage))
 			if fn == "" || !tempoKnownStageFuncs[fn] {
 				t.Errorf("row %s: TraceQL query %q: pipe stage %q does not start with a known function", r.ID, q, stage)
@@ -184,6 +184,34 @@ func TestRows_TempoQueriesStructural(t *testing.T) {
 	if checked == 0 {
 		t.Fatal("no /select/tempo/* rows with a q param were checked — the test is not exercising anything")
 	}
+}
+
+// splitPipeStages splits a TraceQL query on "| " pipe-stage boundaries,
+// like strings.Split(q, "| "), except it ignores any "| " that falls inside
+// a quoted string literal ("..." or `...`) — a naive strings.Split would
+// mistake a literal pipe character inside an attribute value (e.g.
+// span.name="a| b") for a stage boundary and misreport the row that
+// contains it as having an unknown/malformed pipe stage.
+func splitPipeStages(q string) []string {
+	var out []string
+	var quote byte
+	start := 0
+	for i := 0; i < len(q); i++ {
+		c := q[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '`':
+			quote = c
+		case c == '|' && i+1 < len(q) && q[i+1] == ' ':
+			out = append(out, q[start:i])
+			i++ // also skip the space consumed by the "| " delimiter
+			start = i + 1
+		}
+	}
+	return append(out, q[start:])
 }
 
 // checkBalancedBrackets verifies every '(' / '{' has a matching close, in order.
@@ -218,4 +246,49 @@ func leadingIdentifier(s string) string {
 		end++
 	}
 	return s[:end]
+}
+
+// TestSplitPipeStages_QuoteAware proves splitPipeStages does not mistake a
+// literal "| " inside a quoted string (double-quoted or backtick) for a
+// pipe-stage boundary, and still splits normally outside of quotes.
+func TestSplitPipeStages_QuoteAware(t *testing.T) {
+	cases := []struct {
+		name string
+		q    string
+		want []string
+	}{
+		{
+			name: "no quotes, matches strings.Split",
+			q:    `{resource_attr:service.name="checkout"} | count() > 1`,
+			want: []string{`{resource_attr:service.name="checkout"} `, `count() > 1`},
+		},
+		{
+			name: "double-quoted literal pipe is not a boundary",
+			q:    `{span_attr:message="a| b"} | count() > 1`,
+			want: []string{`{span_attr:message="a| b"} `, `count() > 1`},
+		},
+		{
+			name: "backtick-quoted literal pipe is not a boundary",
+			q:    "{span_attr:message=`a| b`} | count() > 1",
+			want: []string{"{span_attr:message=`a| b`} ", "count() > 1"},
+		},
+		{
+			name: "multiple real stages after a quoted pipe",
+			q:    `{span_attr:message="a| b"} | by(resource_attr:service.name) | count() > 1`,
+			want: []string{`{span_attr:message="a| b"} `, `by(resource_attr:service.name) `, `count() > 1`},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := splitPipeStages(c.q)
+			if len(got) != len(c.want) {
+				t.Fatalf("splitPipeStages(%q) = %v, want %v", c.q, got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Fatalf("splitPipeStages(%q)[%d] = %q, want %q", c.q, i, got[i], c.want[i])
+				}
+			}
+		})
+	}
 }

@@ -1,5 +1,5 @@
 # VT /insert/* ingest families. Comparator is `count` (spans ingested vs.
-# spans retrievable) — the actual ingest step is a later milestone (the
+# spans retrievable) — the actual ingest step comes later (the
 # runner), so every row here stays pending: true.
 
 - { id: vt.insert.otel_traces_json.count, title: "/insert/opentelemetry/v1/traces — OTLP/HTTP traces, JSON body", surface: vt, kind: insert, origin: native, expect: pass, targets: [hot], seed: [traces.base], upstream: { route: /insert/opentelemetry/v1/traces }, request: { method: POST, path: /insert/opentelemetry/v1/traces, headers: { Content-Type: "application/json", AccountID: "{{tenant.account}}", ProjectID: "{{tenant.project}}" } }, compare: { type: count }, layers: [api], pending: true }
