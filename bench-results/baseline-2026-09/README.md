@@ -155,7 +155,7 @@ at both latency levels on both signals.** The single invalid cell is
 (ClickHouse): `result 6558 vs base 6557` — a genuine, ClickHouse-specific
 1-group discrepancy at extreme cardinality (~6,557 distinct `trace_id`
 groups) that the OLD sum-only group-by comparison could not see (the
-row-count total, 14107, agrees exactly across all three systems — only the
+row-count total, 14107, agrees exactly across all three systems (unverified at the time — the v3.2 group-by result carried no `total=`; v3.3 emits it for this reason) — only the
 NUMBER OF GROUPS differs by one). VL and LH agree with each other exactly
 (same count, same hash); only ClickHouse's `GROUP BY TraceId` produces one
 extra group somewhere in that window, on the SAME S3 Parquet LH reads byte
