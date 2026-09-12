@@ -55,7 +55,7 @@
   expect: pass
   targets: [hot, cold]
   seed: [traces.base]
-  upstream: { route: /select/tempo/api/v2/search/tag }
+  upstream: { route: /select/tempo/api/v2/search/tag/ }
   request: { method: GET, path: "/select/tempo/api/v2/search/tag/resource.service.name/values", params: { start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
   compare: { type: exact-json }
   layers: [api]
@@ -71,7 +71,7 @@
   since: { vt: "0.10.0" }
   targets: [hot, cold]
   seed: [traces.base]
-  upstream: { route: /select/tempo/api/v2/search/tag }
+  upstream: { route: /select/tempo/api/v2/search/tag/ }
   request: { method: GET, path: "/select/tempo/api/v2/search/tag/kind/values", params: { start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
   compare: { type: exact-json }
   layers: [api]
@@ -204,5 +204,19 @@
   upstream: { route: /select/tempo/api/v2/search }
   request: { method: GET, path: /select/tempo/api/v2/search, params: { q: "{ }" } }
   compare: { type: absent }
+  layers: [api]
+  pending: true
+
+- id: vt.tempo.metrics_query_range.route
+  title: "/select/tempo/api/metrics/query_range — route reaches VT (present at VT 0.9.2)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold, global]
+  seed: [traces.base]
+  upstream: { route: /select/tempo/api/metrics/query_range }
+  request: { method: GET, path: /select/tempo/api/metrics/query_range, params: { q: "{ resource.service.name = \"checkout\" } | rate() by (resource.service.name)", start: "{{seed.start}}", end: "{{seed.cold_end}}", step: "15s" } }
+  compare: { type: series, options: { rel_tolerance: "0.02" } }
   layers: [api]
   pending: true

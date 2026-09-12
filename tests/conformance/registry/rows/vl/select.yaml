@@ -188,15 +188,15 @@
   pending: true
 
 - id: vl.select.tenant_ids.basic
-  title: "/select/logsql/tenant_ids — tenant enumeration (multi-tenant iso)"
+  title: "/select/tenant_ids — tenant enumeration (multi-tenant iso)"
   surface: vl
   kind: select
   origin: native
   expect: pass
   targets: [global]
   seed: [tenants.iso]
-  upstream: { route: /select/logsql/tenant_ids }
-  request: { method: GET, path: /select/logsql/tenant_ids, params: { start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  upstream: { route: /select/tenant_ids }
+  request: { method: GET, path: /select/tenant_ids, params: { start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
   compare: { type: exact-json }
   layers: [api]
   pending: true

@@ -9,10 +9,10 @@
 - { id: vl.internal.select_stream_field_values.status, title: "/internal/select/stream_field_values — peer fanout", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.streams], upstream: { route: /internal/select/stream_field_values }, request: { method: GET, path: /internal/select/stream_field_values, params: { query: "*", field: service.name } }, compare: { type: status }, layers: [api], pending: true }
 - { id: vl.internal.select_streams.status, title: "/internal/select/streams — peer fanout", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.streams], upstream: { route: /internal/select/streams }, request: { method: GET, path: /internal/select/streams, params: { query: "*" } }, compare: { type: status }, layers: [api], pending: true }
 - { id: vl.internal.select_stream_ids.status, title: "/internal/select/stream_ids — peer fanout", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.streams], upstream: { route: /internal/select/stream_ids }, request: { method: GET, path: /internal/select/stream_ids, params: { query: "*" } }, compare: { type: status }, layers: [api], pending: true }
-- { id: vl.internal.select_hits.status, title: "/internal/select/hits — peer fanout", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.base], upstream: { route: /internal/select/hits }, request: { method: GET, path: /internal/select/hits, params: { query: "*", step: "1h" } }, compare: { type: status }, layers: [api], pending: true }
-- { id: vl.internal.select_facets.status, title: "/internal/select/facets — peer fanout", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.base], upstream: { route: /internal/select/facets }, request: { method: GET, path: /internal/select/facets, params: { query: "*", limit: "5" } }, compare: { type: status }, layers: [api], pending: true }
-- { id: vl.internal.select_query_time_range.status, title: "/internal/select/query_time_range — peer fanout", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.base], upstream: { route: /internal/select/query_time_range }, request: { method: GET, path: /internal/select/query_time_range, params: { query: "*" } }, compare: { type: status }, layers: [api], pending: true }
 - { id: vl.internal.select_tenant_ids.status, title: "/internal/select/tenant_ids — peer fanout", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [tenants.iso], upstream: { route: /internal/select/tenant_ids }, request: { method: GET, path: /internal/select/tenant_ids }, compare: { type: status }, layers: [api], pending: true }
+- { id: vl.internal.delete_active_tasks.status, title: "/internal/delete/active_tasks — peer fanout, list running delete tasks", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.base], upstream: { route: /internal/delete/active_tasks }, request: { method: GET, path: /internal/delete/active_tasks }, compare: { type: status }, layers: [api], pending: true }
+- { id: vl.internal.delete_run_task.status, title: "/internal/delete/run_task — peer fanout, run a delete task", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.base], upstream: { route: /internal/delete/run_task }, request: { method: GET, path: /internal/delete/run_task, params: { task_id: "{{seed.task_id}}", timestamp: "{{seed.cold_end}}", tenant_ids: "[]", filter: "*" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vl.internal.delete_stop_task.status, title: "/internal/delete/stop_task — peer fanout, stop a delete task", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.base], upstream: { route: /internal/delete/stop_task }, request: { method: GET, path: /internal/delete/stop_task, params: { task_id: "{{seed.task_id}}" } }, compare: { type: status }, layers: [api], pending: true }
 
 - id: vl.internal.force_flush.unsupported
   title: "/internal/force_flush — cold has no local storage to flush"
@@ -39,5 +39,117 @@
   upstream: { route: /internal/force_merge }
   request: { method: GET, path: /internal/force_merge, params: { partitionPrefix: "*" } }
   compare: { type: status, options: { cold_status: "501" } }
+  layers: [api]
+  pending: true
+
+- id: vl.internal.log_new_streams.unsupported
+  title: "/internal/log_new_streams — cold has no local storage to track new streams"
+  surface: vl
+  kind: admin
+  origin: native
+  expect: unsupported
+  targets: [cold]
+  seed: [logs.base]
+  upstream: { route: /internal/log_new_streams }
+  request: { method: GET, path: /internal/log_new_streams }
+  compare: { type: status, options: { cold_status: "404" } }
+  layers: [api]
+  pending: true
+
+- id: vl.internal.partition_attach.unsupported
+  title: "/internal/partition/attach — cold has no local partitions to attach"
+  surface: vl
+  kind: admin
+  origin: native
+  expect: unsupported
+  targets: [cold]
+  seed: [logs.base]
+  upstream: { route: /internal/partition/attach }
+  request: { method: GET, path: /internal/partition/attach }
+  compare: { type: status, options: { cold_status: "404" } }
+  layers: [api]
+  pending: true
+
+- id: vl.internal.partition_detach.unsupported
+  title: "/internal/partition/detach — cold has no local partitions to detach"
+  surface: vl
+  kind: admin
+  origin: native
+  expect: unsupported
+  targets: [cold]
+  seed: [logs.base]
+  upstream: { route: /internal/partition/detach }
+  request: { method: GET, path: /internal/partition/detach }
+  compare: { type: status, options: { cold_status: "404" } }
+  layers: [api]
+  pending: true
+
+- id: vl.internal.partition_list.unsupported
+  title: "/internal/partition/list — cold has no local partitions to list"
+  surface: vl
+  kind: admin
+  origin: native
+  expect: unsupported
+  targets: [cold]
+  seed: [logs.base]
+  upstream: { route: /internal/partition/list }
+  request: { method: GET, path: /internal/partition/list }
+  compare: { type: status, options: { cold_status: "404" } }
+  layers: [api]
+  pending: true
+
+- id: vl.internal.partition_snapshot_create.unsupported
+  title: "/internal/partition/snapshot/create — cold has no local partitions to snapshot"
+  surface: vl
+  kind: admin
+  origin: native
+  expect: unsupported
+  targets: [cold]
+  seed: [logs.base]
+  upstream: { route: /internal/partition/snapshot/create }
+  request: { method: GET, path: /internal/partition/snapshot/create }
+  compare: { type: status, options: { cold_status: "404" } }
+  layers: [api]
+  pending: true
+
+- id: vl.internal.partition_snapshot_delete.unsupported
+  title: "/internal/partition/snapshot/delete — cold has no local snapshots to delete"
+  surface: vl
+  kind: admin
+  origin: native
+  expect: unsupported
+  targets: [cold]
+  seed: [logs.base]
+  upstream: { route: /internal/partition/snapshot/delete }
+  request: { method: GET, path: /internal/partition/snapshot/delete }
+  compare: { type: status, options: { cold_status: "404" } }
+  layers: [api]
+  pending: true
+
+- id: vl.internal.partition_snapshot_delete_stale.unsupported
+  title: "/internal/partition/snapshot/delete_stale — cold has no local snapshots to prune"
+  surface: vl
+  kind: admin
+  origin: native
+  expect: unsupported
+  targets: [cold]
+  seed: [logs.base]
+  upstream: { route: /internal/partition/snapshot/delete_stale }
+  request: { method: GET, path: /internal/partition/snapshot/delete_stale }
+  compare: { type: status, options: { cold_status: "404" } }
+  layers: [api]
+  pending: true
+
+- id: vl.internal.partition_snapshot_list.unsupported
+  title: "/internal/partition/snapshot/list — cold has no local snapshots to list"
+  surface: vl
+  kind: admin
+  origin: native
+  expect: unsupported
+  targets: [cold]
+  seed: [logs.base]
+  upstream: { route: /internal/partition/snapshot/list }
+  request: { method: GET, path: /internal/partition/snapshot/list }
+  compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
