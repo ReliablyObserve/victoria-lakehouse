@@ -57,7 +57,7 @@ All benchmarks run locally against MinIO (Docker). MinIO eliminates S3 network v
 docker run -d -p 9000:9000 \
   -e MINIO_ROOT_USER=minioadmin \
   -e MINIO_ROOT_PASSWORD=minioadmin \
-  minio/minio server /data
+  quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
 
 # Generate test data (medium tier example)
 go run ./cmd/datagen \
