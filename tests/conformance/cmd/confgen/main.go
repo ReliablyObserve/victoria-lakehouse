@@ -70,7 +70,10 @@ func main() {
 	if *write {
 		wroteAny := false
 		for _, f := range files {
-			have, _ := os.ReadFile(f.path)
+			have, err := readExisting(f.path)
+			if err != nil {
+				fatal(fmt.Errorf("read %s: %w", f.path, err))
+			}
 			if bytes.Equal(have, f.want) {
 				continue
 			}
@@ -88,7 +91,10 @@ func main() {
 	if *check {
 		stale := false
 		for _, f := range files {
-			have, _ := os.ReadFile(f.path)
+			have, err := readExisting(f.path)
+			if err != nil {
+				fatal(fmt.Errorf("read %s: %w", f.path, err))
+			}
 			if !bytes.Equal(have, f.want) {
 				stale = true
 				fmt.Println("stale:", f.path)
@@ -99,6 +105,25 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+// readExisting reads path, treating a missing file as legitimately empty (so
+// it still compares unequal to any non-empty want, and so is reported as
+// stale — the existing, correct behavior for a file that has never been
+// generated) while surfacing every other error (permission denied, EISDIR,
+// ...) to the caller instead of silently discarding it: a permission error
+// must never be misreported as "stale", since -write would then try to
+// overwrite a file it could not even read, and -check would print a
+// misleading diagnosis.
+func readExisting(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return data, nil
 }
 
 func fatal(err error) {
