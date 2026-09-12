@@ -37,21 +37,29 @@ check() { # $1 description  $2 actual  $3 expected(exact) OR expected-prefix end
 # --- fixtures ------------------------------------------------------------
 printf '{"n":"17132"}\n' > "$TMP/scalar.jsonl"
 printf '{"service.name":"api-gateway","n":"3499"}\n{"service.name":"web","n":"100"}\n' > "$TMP/groupby.jsonl"
+printf '{"service.name":"api-gateway","n":"3000"}\n{"service.name":"web","n":"599"}\n' > "$TMP/groupby_same_total_diff_groups.jsonl"
 printf '{"_msg":"hello","service.name":"a"}\n{"_msg":"world","service.name":"b"}\n' > "$TMP/scan_logs.jsonl"
 printf '{"trace_id":"t1","span_id":"s1"}\n{"trace_id":"t2","span_id":"s2"}\n' > "$TMP/scan_traces.jsonl"
 printf '{"trace_id":"t2","span_id":"s2"}\n{"trace_id":"t1","span_id":"s1"}\n' > "$TMP/scan_traces_reordered.jsonl"
 printf '{"n":"8"}\n' > "$TMP/trace_by_id.jsonl"
 : > "$TMP/miss_empty.jsonl"                    # legitimate 0-match LogsQL body
 printf 'not json at all, definitely not\n' > "$TMP/malformed.txt"
+printf '{"n":"1"}\nnot json\n{"n":"2"}\n' > "$TMP/partial_parse.jsonl"   # M-1: some lines parse, some don't
 printf '17132\n' > "$TMP/ch_scalar.tsv"
 printf 'api-gateway\t3499\nweb\t100\n' > "$TMP/ch_groupby.tsv"
-printf 'a\tb\tc\nd\te\tf\n' > "$TMP/ch_scan.tsv"
+printf 'api-gateway\t3000\nweb\t599\n' > "$TMP/ch_groupby_same_total_diff_groups.tsv"
+printf '{"_msg":"hello","ServiceName":"a"}\n{"_msg":"world","ServiceName":"b"}\n' > "$TMP/ch_scan.jsonl"  # CH scan: FORMAT JSONEachRow, Body AS _msg
+printf '{"trace_id":"t1","span_id":"s1"}\n{"trace_id":"t2","span_id":"s2"}\n' > "$TMP/ch_scan_traces.jsonl"  # TraceId AS trace_id, SpanId AS span_id
 printf '8\n' > "$TMP/ch_trace_by_id.tsv"
 : > "$TMP/ch_empty.tsv"                        # CH count() always emits a row -> empty is broken
+: > "$TMP/ch_scan_empty.jsonl"                 # CH scan with 0 matching rows -> legitimate
 
 # --- VL/VT/LH (JSON lines) -------------------------------------------------
 check "scalar count"            "$(extract_result count_total   victorialogs   "$TMP/scalar.jsonl")"          "17132"
-check "group-by sums to total"  "$(extract_result count_by_service victorialogs "$TMP/groupby.jsonl")"        "3599"
+check "group-by hashes pairs (not just the total)" "$(extract_result count_by_service victorialogs "$TMP/groupby.jsonl")" "rows=2;hash=*"
+g1=$(extract_result count_by_service victorialogs "$TMP/groupby.jsonl")
+g2=$(extract_result count_by_service victorialogs "$TMP/groupby_same_total_diff_groups.jsonl")
+check "group-by: same total (3599), different groups -> different hash" "$([[ "$g1" != "$g2" ]] && echo differ || echo same)" "differ"
 check "scan (logs, _msg key)"   "$(extract_result scan          victorialogs   "$TMP/scan_logs.jsonl")"       "rows=2;hash=*"
 check "scan (traces, trace:span key)" "$(extract_result scan    victoriatraces "$TMP/scan_traces.jsonl")"    "rows=2;hash=*"
 h1=$(extract_result scan victoriatraces "$TMP/scan_traces.jsonl")
@@ -60,20 +68,32 @@ check "scan hash is order-independent (sorted key set)" "$h1" "$h2"
 check "trace_by_id"              "$(extract_result trace_by_id   victoriatraces "$TMP/trace_by_id.jsonl")"    "spans=8"
 check "trace_lookup miss (empty body = 0, not invalid)" "$(extract_result trace_lookup victorialogs "$TMP/miss_empty.jsonl")" "spans=0"
 check "malformed body -> invalid" "$(extract_result count_total victorialogs "$TMP/malformed.txt")"           "invalid:parse-error"
+check "partial parse (some lines bad) -> invalid" "$(extract_result count_total victorialogs "$TMP/partial_parse.jsonl")" "invalid:parse-error"
 
-# --- ClickHouse (TSV) -------------------------------------------------------
+# --- ClickHouse -------------------------------------------------------------
 check "CH scalar"                "$(extract_result count_total   clickhouse "$TMP/ch_scalar.tsv")"            "17132"
-check "CH group-by sums to total" "$(extract_result count_by_service clickhouse "$TMP/ch_groupby.tsv")"       "3599"
-check "CH scan is rows-only (no hash)" "$(extract_result scan    clickhouse "$TMP/ch_scan.tsv")"              "rows=2"
+check "CH group-by hashes pairs" "$(extract_result count_by_service clickhouse "$TMP/ch_groupby.tsv")"        "rows=2;hash=*"
+cg1=$(extract_result count_by_service clickhouse "$TMP/ch_groupby.tsv")
+cg2=$(extract_result count_by_service clickhouse "$TMP/ch_groupby_same_total_diff_groups.tsv")
+check "CH group-by: same total, different groups -> different hash" "$([[ "$cg1" != "$cg2" ]] && echo differ || echo same)" "differ"
+check "CH scan goes through the JSON extractor now (real key, real hash)" "$(extract_result scan clickhouse "$TMP/ch_scan.jsonl")" "rows=2;hash=*"
+check "CH scan (traces) uses trace_id:span_id like VT/LH" "$(extract_result scan clickhouse "$TMP/ch_scan_traces.jsonl")" "rows=2;hash=*"
+check "CH scan and VT scan agree on the SAME traces (equal hash)" \
+  "$(extract_result scan clickhouse "$TMP/ch_scan_traces.jsonl")" \
+  "$(extract_result scan victoriatraces "$TMP/scan_traces.jsonl")"
+check "CH scan with 0 matching rows -> legitimate rows=0" "$(extract_result scan clickhouse "$TMP/ch_scan_empty.jsonl")" "rows=0;hash=*"
 check "CH trace_by_id"           "$(extract_result trace_by_id   clickhouse "$TMP/ch_trace_by_id.tsv")"       "spans=8"
-check "CH empty body -> invalid (count() always emits a row)" "$(extract_result count_total clickhouse "$TMP/ch_empty.tsv")" "invalid:empty-body"
+check "CH empty body (non-scan) -> invalid (count() always emits a row)" "$(extract_result count_total clickhouse "$TMP/ch_empty.tsv")" "invalid:empty-body"
 
-# --- result_is_empty / is_miss_query ---------------------------------------
+# --- result_is_empty / is_miss_query / is_groupby_query --------------------
 result_is_empty "spans=0" && check "result_is_empty(spans=0)" "empty" "empty" || check "result_is_empty(spans=0)" "not-empty" "empty"
 result_is_empty "rows=0;hash=abc" && check "result_is_empty(rows=0;hash=..)" "empty" "empty" || check "result_is_empty(rows=0;hash=..)" "not-empty" "empty"
 result_is_empty "17132" && check "result_is_empty(17132)" "empty" "not-empty" || check "result_is_empty(17132)" "not-empty" "not-empty"
 is_miss_query trace_lookup && check "is_miss_query(trace_lookup)" "miss" "miss" || check "is_miss_query(trace_lookup)" "not-miss" "miss"
 is_miss_query count_total && check "is_miss_query(count_total)" "miss" "not-miss" || check "is_miss_query(count_total)" "not-miss" "not-miss"
+is_groupby_query count_by_service && check "is_groupby_query(count_by_service)" "groupby" "groupby" || check "is_groupby_query(count_by_service)" "not-groupby" "groupby"
+is_groupby_query high_card && check "is_groupby_query(high_card)" "groupby" "groupby" || check "is_groupby_query(high_card)" "not-groupby" "groupby"
+is_groupby_query count_total && check "is_groupby_query(count_total)" "groupby" "not-groupby" || check "is_groupby_query(count_total)" "not-groupby" "not-groupby"
 
 echo "extract_result_test.sh: $pass passed, $fail failed" >&2
 [[ "$fail" == 0 ]]

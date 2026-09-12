@@ -95,20 +95,77 @@ _validate_iter scan victorialogs 200 "$TMP/iter_short.jsonl" "" "$WINDOW_ROWS" "
 check "count != limit -> VALID=0" "$VALID" "0"
 contains "count != limit -> reason mentions expected count" "$REASON" "998 rows, expected 1000"
 
-# --- 4: ClickHouse truncated scan — rows-only, no membership possible. ------
-python3 -c "
-for _ in range(1000):
-    print('a\tb\tc')
-" > "$TMP/ch_iter_1000.tsv"
-_validate_iter scan clickhouse 200 "$TMP/ch_iter_1000.tsv" "" "$WINDOW_ROWS" ""
-check "CH truncated, 1000 rows -> VALID=1" "$VALID" "1"
+# --- 4: ClickHouse truncated scan — now goes through the SAME JSON extractor
+# and membership check as VL/VT/LH (Body/TraceId/SpanId aliased to
+# _msg/trace_id/span_id, FORMAT JSONEachRow — see _prep_body), so it gets a
+# real reference window + real membership/cardinality validation too.
+gen_ch_iter() { # $1 outfile  $2... _msg values (CH's aliased column name)
+  local out="$1"; shift
+  python3 -c "
+import json, sys
+with open(sys.argv[1], 'w') as f:
+    for m in sys.argv[2:]:
+        f.write(json.dumps({'_msg': m, 'ServiceName': 'a'}) + '\n')
+" "$out" "$@"
+}
+gen_ch_iter "$TMP/ch_window_src.jsonl" msgA msgB
+CH_WINDOW_KEYS="$TMP/ch_window.keys"
+extract_result scan clickhouse "$TMP/ch_window_src.jsonl" "$CH_WINDOW_KEYS" >/dev/null
 
-python3 -c "
-for _ in range(998):
-    print('a\tb\tc')
-" > "$TMP/ch_iter_998.tsv"
-_validate_iter scan clickhouse 200 "$TMP/ch_iter_998.tsv" "" "$WINDOW_ROWS" ""
+{ for i in $(seq 1 500); do printf '%s\n' msgA; done
+  for i in $(seq 1 500); do printf '%s\n' msgB; done; } > "$TMP/ch_vals_ok.txt"
+mapfile -t ch_vals_ok < "$TMP/ch_vals_ok.txt"
+gen_ch_iter "$TMP/ch_iter_ok.jsonl" "${ch_vals_ok[@]}"
+_validate_iter scan clickhouse 200 "$TMP/ch_iter_ok.jsonl" "" "$WINDOW_ROWS" "$CH_WINDOW_KEYS"
+check "CH member ok, 1000 rows -> VALID=1" "$VALID" "1"
+
+{ for i in $(seq 1 499); do printf '%s\n' msgA; done
+  for i in $(seq 1 500); do printf '%s\n' msgB; done
+  printf '%s\n' msgZZZ_not_in_window; } > "$TMP/ch_vals_foreign.txt"
+mapfile -t ch_vals_foreign < "$TMP/ch_vals_foreign.txt"
+gen_ch_iter "$TMP/ch_iter_foreign.jsonl" "${ch_vals_foreign[@]}"
+_validate_iter scan clickhouse 200 "$TMP/ch_iter_foreign.jsonl" "" "$WINDOW_ROWS" "$CH_WINDOW_KEYS"
+check "CH foreign key -> VALID=0" "$VALID" "0"
+contains "CH foreign key -> reason mentions membership" "$REASON" "membership"
+
+{ for i in $(seq 1 498); do printf '%s\n' msgA; done
+  for i in $(seq 1 500); do printf '%s\n' msgB; done; } > "$TMP/ch_vals_short.txt"
+mapfile -t ch_vals_short < "$TMP/ch_vals_short.txt"
+gen_ch_iter "$TMP/ch_iter_short.jsonl" "${ch_vals_short[@]}"
+_validate_iter scan clickhouse 200 "$TMP/ch_iter_short.jsonl" "" "$WINDOW_ROWS" "$CH_WINDOW_KEYS"
 check "CH truncated, 998 rows -> VALID=0" "$VALID" "0"
+contains "CH count != limit -> reason mentions expected count" "$REASON" "998 rows, expected 1000"
+
+# --- 6: traces-keyed membership (trace_id:span_id), not the logs _msg key. --
+gen_trace_iter() { # $1 outfile  $2... "trace_id:span_id" pairs
+  local out="$1"; shift
+  python3 -c "
+import json, sys
+with open(sys.argv[1], 'w') as f:
+    for pair in sys.argv[2:]:
+        tid, sid = pair.split(':', 1)
+        f.write(json.dumps({'trace_id': tid, 'span_id': sid, 'name': 'x'}) + '\n')
+" "$out" "$@"
+}
+gen_trace_iter "$TMP/trace_window_src.jsonl" t1:s1 t2:s2 t3:s3
+TRACE_WINDOW_KEYS="$TMP/trace_window.keys"
+extract_result scan victoriatraces "$TMP/trace_window_src.jsonl" "$TRACE_WINDOW_KEYS" >/dev/null
+
+{ for i in $(seq 1 500); do printf 't1:s1\n'; done
+  for i in $(seq 1 500); do printf 't2:s2\n'; done; } > "$TMP/trace_vals_ok.txt"
+mapfile -t trace_vals_ok < "$TMP/trace_vals_ok.txt"
+gen_trace_iter "$TMP/trace_iter_ok.jsonl" "${trace_vals_ok[@]}"
+_validate_iter scan victoriatraces 200 "$TMP/trace_iter_ok.jsonl" "" "$WINDOW_ROWS" "$TRACE_WINDOW_KEYS"
+check "traces member ok (trace_id:span_id key) -> VALID=1" "$VALID" "1"
+
+{ for i in $(seq 1 499); do printf 't1:s1\n'; done
+  for i in $(seq 1 500); do printf 't2:s2\n'; done
+  printf 't99:s99_not_in_window\n'; } > "$TMP/trace_vals_foreign.txt"
+mapfile -t trace_vals_foreign < "$TMP/trace_vals_foreign.txt"
+gen_trace_iter "$TMP/trace_iter_foreign.jsonl" "${trace_vals_foreign[@]}"
+_validate_iter scan victoriatraces 200 "$TMP/trace_iter_foreign.jsonl" "" "$WINDOW_ROWS" "$TRACE_WINDOW_KEYS"
+check "traces foreign trace_id:span_id -> VALID=0" "$VALID" "0"
+contains "traces foreign -> reason mentions membership" "$REASON" "membership"
 
 # --- 5: untruncated scan (window_rows <= SCAN_LIMIT) still uses identity. ---
 gen_iter "$TMP/iter_small.jsonl" msgA msgB

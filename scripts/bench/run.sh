@@ -102,6 +102,14 @@ log() { printf '\033[1;36m[bench]\033[0m %s\n' "$*" >&2; }
 MISS_QUERIES=" trace_lookup "
 is_miss_query() { [[ "$MISS_QUERIES" == *" $1 "* ]]; }
 
+# GROUPBY_QUERIES lists query kinds whose result is a set of (group, count)
+# pairs, not one scalar. Reducing that to sum(n) (the plain-scalar path)
+# would validate the TOTAL only — two systems could split the same total
+# across different groups and still "match". extract_result instead hashes
+# the sorted (group, count) pairs for these.
+GROUPBY_QUERIES=" count_by_service high_card "
+is_groupby_query() { [[ "$GROUPBY_QUERIES" == *" $1 "* ]]; }
+
 # SCAN_LIMIT: the `limit` every scan query uses (see _prep_body). VictoriaLogs
 # documents that `limit N` without an explicit `sort` returns rows "selected
 # in arbitrary order because of performance reasons … can return different
@@ -113,16 +121,18 @@ is_miss_query() { [[ "$MISS_QUERIES" == *" $1 "* ]]; }
 # identity — see build_scan_window()/_validate_iter() below.
 SCAN_LIMIT=1000
 
-# strip_scan_limit <method> <body> -> the scan query body with its trailing
-# limit clause removed, so the SAME filter/window can be re-run unbounded to
-# get the reference "how many rows actually match, and what are they" — used
+# strip_scan_limit <method> <body> -> the scan query body with its limit
+# clause removed, so the SAME filter/window can be re-run unbounded to get
+# the reference "how many rows actually match, and what are they" — used
 # once per (system, cell) to build the membership/cardinality reference.
+# Substring removal, not a trailing-suffix trim: the CH form is
+# "... LIMIT N FORMAT JSONEachRow" — LIMIT isn't at the end of the string.
 strip_scan_limit() {
   local method="$1" body="$2"
   if [[ "$method" == CH ]]; then
-    printf '%s' "${body% LIMIT $SCAN_LIMIT}"
+    printf '%s' "${body/ LIMIT $SCAN_LIMIT/}"
   else
-    printf '%s' "${body% | limit $SCAN_LIMIT}"
+    printf '%s' "${body/ | limit $SCAN_LIMIT/}"
   fi
 }
 
@@ -136,28 +146,54 @@ result_is_empty() {
 
 # extract_result <qkind> <system> <file> [keysout] -> a comparable value
 # string, or "invalid:<reason>" on any parse failure. Formats:
-#   - scalar (count/filter/group-by kinds): the count as a plain integer
-#     string — VL/VT/LH sum the LogsQL JSON-line `n` (or fall back to row
-#     count when there's no count column); ClickHouse sums the numeric last
-#     TSV column (or falls back to row count) — same heuristic, applied per
-#     response instead of once after the loop.
+#   - scalar (count/filter kinds — count_total, fulltext, level_filter,
+#     multi_filter, negation, service_filter, slow_spans, span_name): the
+#     count as a plain integer string.
+#   - group-by (count_by_service, high_card): "rows=<groups>;hash=<sha256 of
+#     the sorted "group\x00count" pairs>" — a plain sum(n) would validate the
+#     TOTAL only, so two systems could split the same total across different
+#     groups and still "match"; hashing the pairs catches that.
 #   - scan: "rows=<N>;hash=<sha256 of the sorted set of stable row keys>" —
 #     key is `_msg` for logs, `trace_id:span_id` for traces (so a degenerate
-#     but same-count answer still diverges). ClickHouse's scan is a DIFFERENT
-#     projection with no comparable key, so CH scan is "rows=<N>" only —
-#     compared by row count alone. When `keysout` is given (non-CH only),
-#     the sorted+deduped key set is also written there, one per line — used
-#     both to build the per-cell reference window and, per iteration, to
-#     check a truncated scan's rows are members of that window.
+#     but same-count answer still diverges).
 #   - trace_by_id / trace_lookup: "spans=<N>", the matched-span/log count.
+# ClickHouse's `scan` is requested as JSONEachRow with Body/TraceId/SpanId
+# aliased to `_msg`/`trace_id`/`span_id` (see _prep_body) so it goes through
+# the SAME JSON-lines extractor as VL/VT/LH below and carries a real
+# comparable key, not just a row count. Its group-by and plain-scalar kinds
+# stay TSV (ClickHouse's native format for those).
+# `keysout` (scan only, any system) also writes the sorted+deduped key set
+# there — used both to build the per-cell reference window and, per
+# iteration, to check a truncated scan's rows are members of that window.
 extract_result() {
   local qkind="$1" system="$2" file="$3" keysout="${4:-}"
-  if [[ "$system" == clickhouse ]]; then
+  if [[ "$system" == clickhouse && "$qkind" != scan ]]; then
     case "$qkind" in
-      scan)
-        awk 'END{print "rows="NR}' "$file" ;;
       trace_by_id)
         awk -F'\t' '{n++; v=$NF} END{if(n==0){print "invalid:empty-body"} else {print "spans="(v+0)}}' "$file" ;;
+      count_by_service|high_card)
+        python3 - "$file" <<'PY'
+import sys, hashlib
+n = 0
+pairs = []
+with open(sys.argv[1]) as f:
+    for line in f:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        n += 1
+        parts = line.split("\t")
+        key = parts[0] if parts else ""
+        val = parts[-1] if len(parts) > 1 else ""
+        pairs.append((key, val))
+if n == 0:
+    print("invalid:empty-body")
+else:
+    pairs.sort()
+    h = hashlib.sha256("\n".join("{}\x00{}".format(k, v) for k, v in pairs).encode()).hexdigest()
+    print("rows={};hash={}".format(n, h))
+PY
+        ;;
       *)
         awk -F'\t' '{n++; v=$NF; if(v+0==v && v!="") s+=v; else nn=1} END{if(n==0){print "invalid:empty-body"} else {print (nn?n:s+0)}}' "$file" ;;
     esac
@@ -185,7 +221,12 @@ with open(path) as f:
             keys.append("{}:{}".format(d.get("trace_id", ""), d.get("span_id", "")))
         else:
             keys.append(d.get("_msg", ""))
-if n and not parsed:
+# A real body with SOME unparseable lines is a parse failure, not "use
+# whatever did parse" — silently dropping bad lines could hide a partial
+# schema mismatch (e.g. half the rows missing `_msg`) as a clean membership
+# pass. n==0 (nothing came back) is LogsQL's own legitimate "no rows in this
+# window" answer, not a parse error — handled by the empty-result check.
+if n and parsed != n:
     print("invalid:parse-error")
 else:
     uniq = sorted(set(keys))
@@ -199,6 +240,39 @@ else:
         # appears in JSON-decoded text.
         with open(keysout, "wb") as kf:
             kf.write(b"\x00".join(u.encode("utf-8", "surrogatepass") for u in uniq))
+    print("rows={};hash={}".format(n, h))
+PY
+        ;;
+      count_by_service|high_card)
+        python3 - "$file" <<'PY'
+import sys, json, hashlib
+n = parsed = 0
+pairs = []
+with open(sys.argv[1]) as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        n += 1
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        parsed += 1
+        cnt = d.get("n", d.get("count(*)", d.get("count(")))
+        key = None
+        for k, v in d.items():
+            if k not in ("n", "count(*)", "count("):
+                key = v
+                break
+        pairs.append((str(key), str(cnt)))
+if n == 0:
+    print("invalid:empty-body")
+elif parsed != n:
+    print("invalid:parse-error")
+else:
+    pairs.sort()
+    h = hashlib.sha256("\n".join("{}\x00{}".format(k, v) for k, v in pairs).encode()).hexdigest()
     print("rows={};hash={}".format(n, h))
 PY
         ;;
@@ -227,8 +301,8 @@ with open(sys.argv[1]) as f:
 # `stats count()` — VictoriaLogs emits no output line at all when the filtered
 # stream is empty, confirmed empirically (the pre-validation baseline's
 # trace_lookup miss cells are `[0]`, not missing/errored, on every system).
-# Only "got bytes but none of them parsed as JSON" is an actual parse failure.
-if n and not parsed:
+# A body that came back with SOME unparseable lines is a real parse failure.
+if n and parsed != n:
     print("invalid:parse-error")
 else:
     print("spans={}".format(tot))
@@ -258,8 +332,9 @@ with open(sys.argv[1]) as f:
             except Exception:
                 pass
 # Same reasoning as the trace_by_id/trace_lookup branch above: an empty body
-# is LogsQL's legitimate zero-match answer, not a parse failure.
-if n and not parsed:
+# is LogsQL's legitimate zero-match answer, not a parse failure; a body with
+# SOME unparseable lines is.
+if n and parsed != n:
     print("invalid:parse-error")
 else:
     print(tot if has_count else n)
@@ -293,7 +368,7 @@ print('1' if (iterset - winset) else '0')
 # _validate_iter: validates one iteration's HTTP response against the correctness
 # rules above. Sets globals VALID (0/1), REASON, RESULT.
 # $1 qkind  $2 system  $3 http_code  $4 tmpfile  $5 first_result (""=none yet)
-# $6 window_rows (""=no reference / not a scan)  $7 window_keys (path, non-CH only)
+# $6 window_rows (""=no reference / not a scan)  $7 window_keys (path)
 _validate_iter() {
   local qkind="$1" system="$2" code="$3" tmpfile="$4" first_result="$5"
   local window_rows="${6:-}" window_keys="${7:-}"
@@ -304,18 +379,9 @@ _validate_iter() {
   if [[ "$qkind" == scan && -n "$window_rows" && "$window_rows" -gt "$SCAN_LIMIT" ]]; then
     # Truncated scan (more than SCAN_LIMIT rows match the window): identity
     # can never hold (see SCAN_LIMIT's comment above), so validity is
-    # membership + cardinality against the per-cell reference window instead.
-    if [[ "$system" == clickhouse ]]; then
-      RESULT=$(extract_result "$qkind" "$system" "$tmpfile")
-      if [[ "$RESULT" == invalid:* ]]; then
-        VALID=0; REASON="${RESULT#invalid:}"; return
-      fi
-      local rows="${RESULT#rows=}"
-      if [[ "$rows" != "$SCAN_LIMIT" ]]; then
-        VALID=0; REASON="truncated scan returned $rows rows, expected $SCAN_LIMIT"; return
-      fi
-      VALID=1; REASON=""; return
-    fi
+    # membership + cardinality against the per-cell reference window instead —
+    # every system (ClickHouse included, now that its scan carries a real
+    # comparable key) goes through the same membership check.
     local iterkeys; iterkeys=$(mktemp "$BENCH_TMP/iterkeys.XXXXXX")
     RESULT=$(extract_result "$qkind" "$system" "$tmpfile" "$iterkeys")
     if [[ "$RESULT" == invalid:* ]]; then
@@ -366,11 +432,13 @@ _validate_iter() {
 # iters_invalid/invalid_reasons instead.
 # build_scan_window <system> <method> <url> <body> -> sets globals WINDOW_ROWS
 # (row count of the FULL, unlimited match — "" on failure), WINDOW_HASH (sha256
-# of its sorted key set; "" for ClickHouse or on failure), WINDOW_KEYS_FILE
-# (path to that key set, one per line; "" for ClickHouse). ONE untimed request
-# per (system, cell), issued before the warmup loop, with the same filter/
-# window as the timed query but its `limit` clause stripped — this is the
-# reference a truncated scan's per-iteration rows are checked against.
+# of its sorted key set — "" only on failure; ClickHouse's scan now carries a
+# real key too, see extract_result), WINDOW_KEYS_FILE (path to that key set,
+# NUL-delimited — "" only on failure). ONE untimed request per (system, cell),
+# issued before the warmup loop, with the same filter/window as the timed
+# query but its `limit` clause stripped — this is the reference a truncated
+# scan's per-iteration rows are checked against. Every system (ClickHouse
+# included) is handled identically: same extractor, same key/hash format.
 build_scan_window() {
   local system="$1" method="$2" url="$3" body="$4" wbody wcode wtt wsz wtmp wres
   WINDOW_ROWS=""; WINDOW_HASH=""; WINDOW_KEYS_FILE=""
@@ -380,22 +448,15 @@ build_scan_window() {
     log "WARN: scan window reference request failed (system=$system http=$wcode) — falling back to identity validation for this cell"
     rm -f "$wtmp"; return
   fi
-  if [[ "$system" == clickhouse ]]; then
-    wres=$(extract_result scan clickhouse "$wtmp")
-    rm -f "$wtmp"
-    [[ "$wres" == invalid:* ]] && { log "WARN: scan window reference unparseable (system=$system: ${wres#invalid:})"; return; }
-    WINDOW_ROWS="${wres#rows=}"
-  else
-    WINDOW_KEYS_FILE=$(mktemp "$BENCH_TMP/window.XXXXXX")
-    wres=$(extract_result scan "$system" "$wtmp" "$WINDOW_KEYS_FILE")
-    rm -f "$wtmp"
-    if [[ "$wres" == invalid:* ]]; then
-      log "WARN: scan window reference unparseable (system=$system: ${wres#invalid:})"
-      rm -f "$WINDOW_KEYS_FILE"; WINDOW_KEYS_FILE=""; return
-    fi
-    WINDOW_ROWS="${wres%%;*}"; WINDOW_ROWS="${WINDOW_ROWS#rows=}"
-    WINDOW_HASH="${wres#*hash=}"
+  WINDOW_KEYS_FILE=$(mktemp "$BENCH_TMP/window.XXXXXX")
+  wres=$(extract_result scan "$system" "$wtmp" "$WINDOW_KEYS_FILE")
+  rm -f "$wtmp"
+  if [[ "$wres" == invalid:* ]]; then
+    log "WARN: scan window reference unparseable (system=$system: ${wres#invalid:})"
+    rm -f "$WINDOW_KEYS_FILE"; WINDOW_KEYS_FILE=""; return
   fi
+  WINDOW_ROWS="${wres%%;*}"; WINDOW_ROWS="${WINDOW_ROWS#rows=}"
+  WINDOW_HASH="${wres#*hash=}"
 }
 
 # --- measure_query: time a prepared request N times, emit p50/p95/p99 JSON -----
@@ -519,17 +580,33 @@ start_ns() { python3 -c "import time;print(int((time.time()-$1)*1e9))"; }
 end_ns()   { python3 -c "import time;print(int(time.time()*1e9))"; }
 start_s()  { python3 -c "import time;print(int(time.time()-$1))"; }
 end_s()    { python3 -c "import time;print(int(time.time()))"; }
+# window_bounds <secs> -> echoes "sns ens ss es" (LogsQL ns bounds, ClickHouse
+# s bounds) all derived from ONE time.time() call. start_ns/end_ns/start_s/
+# end_s above each spawn their OWN python3 process with its OWN time.time()
+# call — even called back-to-back, those are still 4 separate instants a few
+# ms apart, which can straddle a whole-second boundary and give ClickHouse's
+# second-granularity `es` a different "now" than LogsQL's nanosecond `ens` by
+# up to ~1s — exactly the kind of skew I-1's shared-bounds fix is supposed to
+# eliminate. One call, one `now`, both granularities derived from it.
+window_bounds() {
+  python3 -c "
+import time
+secs = $1
+now = time.time()
+print(int((now - secs) * 1e9), int(now * 1e9), int(now - secs), int(now))
+"
+}
 
 # --- the matrix: (signal, query) -> per-system prepared request ---------------
 # Each query function echoes "<method>\t<url>\t<body>" for the given system+range.
 # LogsQL systems (lh/vl/vt) hit /select/logsql/query; ClickHouse hits its HTTP
 # SQL endpoint over the otel_logs/otel_traces views (same Parquet on S3).
-prep() { # $1 signal  $2 query  $3 system  $4 range_secs
+prep() { # $1 signal  $2 query  $3 system  $4 sns  $5 ens  $6 ss  $7 es
   # Logs the exact prepared request (method/url/body) via the shared log() helper
   # (stderr, so it never pollutes the "<method>\t<url>\t<body>" stdout contract
   # that callers capture with $(...)), then re-emits _prep_body's stdout verbatim.
-  local signal="$1" query="$2" sys="$3" secs="$4" row
-  row="$(_prep_body "$signal" "$query" "$sys" "$secs")"
+  local signal="$1" query="$2" sys="$3" sns="$4" ens="$5" ss="$6" es="$7" row
+  row="$(_prep_body "$signal" "$query" "$sys" "$sns" "$ens" "$ss" "$es")"
   if [[ -n "$row" ]]; then
     local m u b
     IFS=$'\t' read -r m u b <<<"$row"
@@ -537,10 +614,16 @@ prep() { # $1 signal  $2 query  $3 system  $4 range_secs
   fi
   printf '%s' "$row"
 }
-_prep_body() { # $1 signal  $2 query  $3 system  $4 range_secs
-  local signal="$1" query="$2" sys="$3" secs="$4"
-  local sns ens ss es
-  sns=$(start_ns "$secs"); ens=$(end_ns "$secs"); ss=$(start_s "$secs"); es=$(end_s "$secs")
+# $1 signal  $2 query  $3 system  $4 sns  $5 ens  $6 ss  $7 es — the window
+# bounds are passed in, computed ONCE per (signal, query, range, latency) by
+# the caller and shared across every system, so a truncated scan's reference
+# window (built from this same body, limit stripped) is over the EXACT SAME
+# window for every system — the seed is a static one-time backfill with no
+# live ingest, so with identical bounds every system must return exactly the
+# same window_rows/window_hash; any difference is a real divergence, not a
+# few seconds of relative-window drift between sequential per-system calls.
+_prep_body() {
+  local signal="$1" query="$2" sys="$3" sns="$4" ens="$5" ss="$6" es="$7"
   local logs_url traces_url
   case "$sys" in
     lakehouse) logs_url="${EP[lh_logs]}/select/logsql/query"; traces_url="${EP[lh_traces]}/select/logsql/query" ;;
@@ -557,7 +640,13 @@ _prep_body() { # $1 signal  $2 query  $3 system  $4 range_secs
       negation)         [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND SeverityText!='"'"'INFO'"'"'' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\t-level:INFO | stats count() n' "$logs_url" "$sns" "$ens" ;;
       trace_lookup)     [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND TraceId='"'"'%s'"'"'' "${EP[ch]}" "$ss" "$es" "$SAMPLE_TID" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:=%s | stats count() n' "$logs_url" "$sns" "$ens" "$SAMPLE_TID" ;;
       high_card)        [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT TraceId,count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) GROUP BY TraceId' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\t* | stats by (trace_id) count()' "$logs_url" "$sns" "$ens" ;;
-      scan)             [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT Body,ServiceName FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) LIMIT 1000' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\t* | fields _msg, service.name | limit 1000' "$logs_url" "$sns" "$ens" ;;
+      # CH: Body/TraceId/SpanId aliased to LogsQL's own field names and the
+      # response requested as JSONEachRow so CH's scan goes through the SAME
+      # JSON-lines extractor as VL/VT/LH — it can then participate in the
+      # membership + window_hash check instead of being validated by row
+      # count alone (its projection is no longer "different", it's the same
+      # comparable key).
+      scan)             [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT Body AS _msg, ServiceName FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) LIMIT %s FORMAT JSONEachRow' "${EP[ch]}" "$ss" "$es" "$SCAN_LIMIT" || printf 'POST\t%s?start=%s&end=%s\t* | fields _msg, service.name | limit %s' "$logs_url" "$sns" "$ens" "$SCAN_LIMIT" ;;
     esac
   else # traces. trace_id:* counts only REAL spans — VictoriaTraces also
        # returns internal `trace_id_idx_stream` index rows (fields
@@ -589,7 +678,7 @@ _prep_body() { # $1 signal  $2 query  $3 system  $4 range_secs
       # can never catch a real divergence). Same filter/limit, so the count
       # and row selection are unaffected; only two extra small fields ride
       # along in the response.
-      scan)             [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT SpanName,ServiceName,Duration FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) LIMIT 1000' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | fields trace_id, span_id, name, `resource_attr:service.name`, duration | limit 1000' "$traces_url" "$sns" "$ens" ;;
+      scan)             [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT TraceId AS trace_id, SpanId AS span_id, SpanName, ServiceName, Duration FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) LIMIT %s FORMAT JSONEachRow' "${EP[ch]}" "$ss" "$es" "$SCAN_LIMIT" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | fields trace_id, span_id, name, `resource_attr:service.name`, duration | limit %s' "$traces_url" "$sns" "$ens" "$SCAN_LIMIT" ;;
     esac
   fi
 }
@@ -705,12 +794,14 @@ set_latency() { local ms="$1"; if [[ "$ms" == 0 ]]; then log "S3 latency: passth
 # (and the caller aborts the run) on any mismatch beyond ±5% of the baseline.
 parity_gate() {
   local signal="$1" secs; secs=$(range_to_secs 24h)
+  local sns ens ss es
+  read -r sns ens ss es <<<"$(window_bounds "$secs")"
   log "parity gate ($signal, 24h): count_total across systems…"
   local sysset; [[ "$signal" == logs ]] && sysset="$LOG_SYSTEMS" || sysset="$TRACE_SYSTEMS"
   local base="" s n mismatch=0
   for s in $sysset; do
     local m u b
-    read -r m u b <<<"$(prep "$signal" count_total "$s" "$secs")"
+    read -r m u b <<<"$(prep "$signal" count_total "$s" "$sns" "$ens" "$ss" "$es")"
     n=$(fetch_scalar "$m" "$u" "$b" count_total "$s")
     printf '    %-16s count=%s\n' "$s" "${n:-ERR}" >&2
     if [[ -z "$base" ]]; then
@@ -759,8 +850,13 @@ for lat in $S3_LATENCIES; do
     for range in $RANGES; do
       secs=$(range_to_secs "$range")
       for q in $queries; do
+        # Computed ONCE per (signal, query, range, latency) — shared across
+        # every system's request for this cell (see _prep_body's comment) —
+        # from a single time.time() call (window_bounds), so LogsQL's ns
+        # bounds and ClickHouse's s bounds describe the EXACT SAME instant.
+        read -r sns ens ss es <<<"$(window_bounds "$secs")"
         for sys in $systems; do
-          IFS=$'\t' read -r method url body <<<"$(prep "$signal" "$q" "$sys" "$secs")"; unset IFS
+          IFS=$'\t' read -r method url body <<<"$(prep "$signal" "$q" "$sys" "$sns" "$ens" "$ss" "$es")"; unset IFS
           [[ -z "${method:-}" ]] && continue
           row=$(measure_query "${signal}/${q}/${range}/lat${lat}" "$sys" "$method" "$url" "$body" "$q")
           row=$(python3 -c "import sys,json;d=json.loads(sys.argv[1]);d.update(signal='$signal',query='$q',range='$range',latency_ms=$lat,disk_profile='$DISK_PROFILE');print(json.dumps(d))" "$row")

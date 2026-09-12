@@ -1,82 +1,132 @@
 # Baseline 2026-09 (pre-upgrade: VL v1.50.0 / VT v0.9.2 / parquet-go v0.30.1)
 
 Files:
-- `run-baseline-v3.1.json` / `.md` / `.log` — **THE current perf-gate
+- `run-baseline-v3.2.json` / `.md` / `.log` — **THE current perf-gate
   reference.** `scripts/bench/run.sh --signals both --s3-latency "0 100"
   --ranges "1h 24h" --iterations 20 --warmup 3` with every timed response
-  validated, including a truncated `scan`'s membership/cardinality rule (see
-  "Response validation (v3.1)" below). Supersedes v3, v2, and v1 — kept
-  below for provenance only — do not judge new PRs against their numbers.
-- `run-baseline-v3.{json,md,log}` — v3, superseded by v3.1 (see below).
+  validated — a truncated `scan`'s membership/cardinality rule, group-by
+  results hashed by (group, count) pairs, and every cross-system comparison
+  at EXACT equality (see "Response validation (v3.2)" below). Supersedes
+  v3.1, v3, v2, and v1 — kept below for provenance only — do not judge new
+  PRs against their numbers.
+- `run-baseline-v3.1.{json,md,log}` — v3.1, superseded by v3.2 (see below).
+- `run-baseline-v3.{json,md,log}` — v3, superseded by v3.1.
 - `run-baseline.json` / `run-baseline.md` — v1, superseded (see caveats below).
-- `run-baseline-traces-v2.{json,md,log}` — v2 traces rerun, superseded by v3.1.
+- `run-baseline-traces-v2.{json,md,log}` — v2 traces rerun, superseded by v3.2.
 - `full-scope-lat0.csv|md`, `full-scope-lat100.csv|md`, `metrics-lat*/` — `scripts/bench/full-scope-s3-bench.sh` (e2e compose) with the per-scenario S3-ops table
 - `env.txt` — image tags, git sha, host, docker version
 
-Judge every later PR against `run-baseline-v3.1.md` (perf gate: any LH/CH >=
-1.0 cell blocks; a regression is judged on **LH's own absolute p95 against
-this run**, same hardware — see the trust caveat below, not the LH/VL ratio).
+Judge every later PR against `run-baseline-v3.2.md`. Perf gate: any LH/CH >=
+1.0 cell blocks. A regression is judged on **LH's own absolute p90 and p50
+against this run**, same hardware, not raw p95 and not the LH/VL ratio — see
+"Why p90+p50, not p95" and the trust caveat below.
 
-## Response validation (v3.1, 2026-09-13)
+## Response validation (v3.2, 2026-09-13)
 
 `run.sh` validates **every timed response**, not just its latency: a fast
 wrong/empty/error answer is a broken response and is never counted as
 latency. Per iteration (warmup iterations too, though warmup never counts
-for latency): HTTP must be 2xx; the body must parse; the extracted result
-must be non-empty *unless* the query is a documented miss scenario
-(`trace_lookup`); and — for non-`scan` results — the result must be
+for latency): HTTP must be 2xx (curl no longer passes `-f`, so a real 4xx/5xx
+is recorded as its actual code instead of collapsing into "000" — the same
+bucket a dead server would use); the body must parse (a body with even ONE
+unparseable line is rejected, not just a body where every line failed); the
+extracted result must be non-empty *unless* the query is a documented miss
+scenario (`trace_lookup`); and — for non-`scan` results — the result must be
 identical to the cell's first valid result (a flapping answer is excluded,
-not averaged in).
+not averaged in). Every request in one (signal, query, range, latency) cell
+now shares ONE set of window bounds, computed once from a single
+`time.time()` call and passed to every system — previously each system
+computed its own bounds a few seconds (or, worse, a few *milliseconds*
+across a whole-second boundary between the ns-precision and s-precision
+helpers) after the last, so a comparison could differ by construction, not
+by a real divergence. With bounds shared and the seed a static one-time
+backfill (no live ingest), every system's result for a cell now MUST be
+byte-identical — so `report.py` requires EXACT equality between baseline and
+each engine, not a 5% tolerance (the ±5% tolerance still lives in the
+pre-flight `parity_gate`, which is a sanity check on the sweep starting
+conditions, not a per-cell validity rule).
 
-**`scan` validation semantics — a ruling, not a workaround.** VictoriaLogs
-documents that `limit N` without an explicit `sort` returns rows "selected
-in arbitrary order because of performance reasons … can return different
-sets of logs every time" once more than N rows match. Per-iteration identity
-can therefore never hold for a truncated scan, and adding `sort` to force it
-would change what the query measures (a sort has its own, different cost).
-So `run.sh` validates a truncated scan by **membership + cardinality**
-against a reference instead: before the warmup loop, ONE untimed request per
-system re-runs the same filter/window with the `limit` clause stripped, and
-records `window_rows` (the TRUE match count) and, for VL/VT/LH,
-`window_hash` (sha256 of the sorted set of stable row keys — `_msg` for
-logs, `trace_id:span_id` for traces). When `window_rows > 1000` (the scan's
-`limit`), a timed iteration is valid iff it returns exactly 1000 rows and
-every one of them is a member of the reference window's key set (checked as
-a python set-difference, not `comm` — a real `_msg` can contain embedded
-newlines, e.g. a Java stack trace, which corrupts a newline-delimited/`comm`
-comparison by silently fragmenting one key into several bogus "lines"). When
-`window_rows <= 1000`, nothing was truncated, so identity is meaningful
-again and applies as before. ClickHouse's `scan` has no comparable row key
-and is validated/compared by `window_rows` alone.
+**Group-by (`count_by_service`, `high_card`) is hashed by (group, count)
+pairs, not summed to a total.** Reducing a group-by result to `sum(n)`
+validates the TOTAL only — two systems could split the same total across a
+different SET of groups and still "match". `extract_result` now returns
+`rows=<groups>;hash=<sha256 of the sorted "group\x00count" pairs>` for both
+ClickHouse (TSV `key\tcount`) and VL/VT/LH (JSON lines), so a
+same-total-different-groups divergence is caught.
+
+**`scan` validation is membership + cardinality, by design, not identity.**
+VictoriaLogs documents that `limit N` without an explicit `sort` returns
+rows "selected in arbitrary order because of performance reasons … can
+return different sets of logs every time" once more than N rows match.
+Per-iteration identity can therefore never hold for a truncated scan, and
+adding `sort` to force it would change what the query measures (a sort has
+its own, different cost). So `run.sh` validates a truncated scan by
+**membership + cardinality** against a reference instead: before the warmup
+loop, ONE untimed request per system re-runs the same filter/window (same
+shared bounds) with the `limit` clause stripped, and records `window_rows`
+(the TRUE match count) and `window_hash` (sha256 of the sorted set of stable
+row keys — `_msg` for logs, `trace_id:span_id` for traces). When
+`window_rows > 1000` (the scan's `limit`), a timed iteration is valid iff it
+returns exactly 1000 rows and every one of them is a member of the reference
+window's key set (checked as a python set-difference, not `comm` — a real
+`_msg` can contain embedded newlines, e.g. a Java stack trace, which
+corrupts a newline-delimited/`comm` comparison by silently fragmenting one
+key into several bogus "lines"). When `window_rows <= 1000`, nothing was
+truncated, so identity is meaningful again and applies as before. ClickHouse's
+`scan` is now requested as `FORMAT JSONEachRow` with `Body`/`TraceId`/`SpanId`
+aliased to `_msg`/`trace_id`/`span_id`, so it goes through the SAME extractor
+as VL/VT/LH and gets a real `window_hash` too — it used to be validated by
+row count alone.
 
 Invalid iterations are dropped from p50/p95/p99 and the cell records
 `iters_valid`/`iters_invalid`/`invalid_reasons`, and the per-cell stderr log
-line now always shows `valid=<k>/<N>` next to `p95=` so a partially-invalid
-cell can never read as a clean latency. `report.py` cross-checks each
-engine's result against the baseline (VL/VT): beyond a 5% count tolerance
-for non-`scan` results (flagging "same count, different rows" when a content
-hash disagrees while the count matches), and the same tolerance against
-`window_rows` for `scan` — plus, only when both `window_rows` are EXACTLY
-equal, a `window_hash` match (a `scan` cell renders as
-`rows=<returned>/<window_rows>[;window=<hash8>]`). Every system's cell
-carries a `k/N valid` column, and a ClickHouse speedup figure only counts a
-row when LH's own cell in that row is valid.
+line always shows `valid=<k>/<N>` next to `p95=` so a partially-invalid cell
+can never read as a clean latency. `report.py` requires `window_rows`/`result`
+counts to match EXACTLY (see above) and, when both sides carry one, a
+`window_hash`/content hash match too. A `scan` cell renders as
+`rows=<returned>/<window_rows>[;window=<hash8>]`; a group-by cell renders as
+`rows=<groups>;hash=<hash8>`. Every system's cell carries a `k/N valid`
+column, and a ClickHouse speedup figure only counts a row when LH's own cell
+in that row is valid.
 
-**`run-baseline-v3.1.md` result: 64/64 valid cells, 0 invalid, no `✗`
-anywhere; the parity gate passed at both latency levels on both signals.**
-The four `scan`/24h cells that v3 flagged (baseline "flapping", per the
-membership ruling above — VictoriaLogs' own documented arbitrary-order
-truncation, not a real divergence) now pass: each system's iterations are
-internally consistent (every row a genuine window member, exactly 1000 of
-them), and VL/LH's window hashes agree with each other.
+**`run-baseline-v3.2.md` result: LH 64/64 rows valid (0 invalid — the
+report's own "valid LH cells" summary line, LH-scoped by definition);
+ClickHouse 63/64, 1 invalid; baseline (VL/VT) 64/64. The parity gate passed
+at both latency levels on both signals.** The single invalid cell is
+`logs/high_card/24h/lat100ms`
+(ClickHouse): `result 6558 vs base 6557` — a genuine, ClickHouse-specific
+1-group discrepancy at extreme cardinality (~6,557 distinct `trace_id`
+groups) that the OLD sum-only group-by comparison could not see (the
+row-count total, 14107, agrees exactly across all three systems — only the
+NUMBER OF GROUPS differs by one). VL and LH agree with each other exactly
+(same count, same hash); only ClickHouse's `GROUP BY TraceId` produces one
+extra group somewhere in that window, on the SAME S3 Parquet LH reads byte
+for byte. This is a real, if extremely minor (0.015%), engine-specific
+finding surfaced by the new group-by hashing (previously invisible), not a
+harness defect and not something to paper over by loosening the check — see
+"Cells that are not fully valid" for the full writeup. Every `scan` cell
+(the primary target of this round's fix) passes with exact `window_rows` and
+`window_hash` equality across all three systems, including ClickHouse.
 
-**Trust caveat:** several v3.1 baseline p95s are under 3 ms — at that scale,
+**Why p90+p50, not p95, for the perf gate:** with `--iterations 20`, p95 is
+literally `sorted(samples)[19]` — the single MAXIMUM sample. One slow
+outlier (GC pause, a scheduler hiccup, a cold page fault) becomes "the p95"
+and can swing a whole cell by 5-10× with nothing structurally different
+happening (see `multi_filter`/24h/100ms below: one outlier iteration alone
+would read as a "regression" on p95 but the p50/p90 tell the true story).
+The perf gate therefore compares **p90 and p50**, not p95, against this run
+(p95 stays in the table for visibility). The alternative — raising
+`--iterations` to ≥100 so p95 stops being the max — was considered and
+rejected here only because it would roughly 5× the sweep's already
+45-75-minute runtime; either fix is valid, this repo picked the cheaper one.
+
+**Trust caveat:** several v3.2 baseline p95s are under 3 ms — at that scale,
 laptop run-to-run noise (scheduler jitter, page cache, Docker overhead) is on
 the order of the measurement itself, so an LH/baseline ratio computed from
 two ~2 ms numbers can swing by ±2× on a different run with nothing having
 changed. Treat the ratios in the tables as directional. The perf gate this
-run backs compares LH's own absolute p95 against this run, same hardware —
-far less sensitive to this noise than the ratio is.
+run backs compares LH's own absolute p90/p50 against this run, same
+hardware — far less sensitive to this noise than the ratio is.
 
 ## Caveats (2026-09-12 harness recheck)
 
@@ -152,15 +202,16 @@ far less sensitive to this noise than the ratio is.
      predate it, so their re-rendered headers read "unspecified" — the actual
      profile for both runs was `local-ssd`, the default, recorded below).
 
-**Exact rerun command for `run-baseline-traces-v2.{json,md,log}`** (Step-6
-stack already up, disk profile `local-ssd` — the default, not overridden):
+**Exact rerun command for `run-baseline-traces-v2.{json,md,log}`** (stack
+already up from the pre-rerun verification below, disk profile `local-ssd`
+— the default, not overridden):
 
 ```
 scripts/bench/run.sh --signals traces --s3-latency "0 100" --ranges "1h 24h" \
   --iterations 20 --warmup 3 --no-up --no-ingest \
   --output bench-results/baseline-2026-09/run-baseline-traces-v2.json
 ```
-- **Pre-rerun verification (Step 6, 24h window, one moment in time — see
+- **Pre-rerun verification (24h window, one moment in time — see
   `run-baseline-traces-v2.log` for the actual per-run counts, which drift
   slightly between runs because the seed is a one-time 7-day backfill and the
   window keeps sliding forward):** `count_by_service` VT=17132/LH=17132,
@@ -231,3 +282,54 @@ python3 scripts/bench/report.py bench-results/baseline-2026-09/run-baseline-v3.1
   member-ok, foreign-key, count≠limit, and a multi-line `_msg` regression
   case) — all pass; see `docs/benchmarks/full-scope-s3.md` for how to run
   them.
+
+**Exact command for `run-baseline-v3.2.{json,md,log}`** (fresh stack, disk
+profile `local-ssd`):
+
+```
+scripts/bench/run.sh --signals both --s3-latency "0 100" --ranges "1h 24h" \
+  --iterations 20 --warmup 3 \
+  --output bench-results/baseline-2026-09/run-baseline-v3.2.json 2>&1 \
+  | tee -a bench-results/baseline-2026-09/run-baseline-v3.2.log
+python3 scripts/bench/report.py bench-results/baseline-2026-09/run-baseline-v3.2.json \
+  bench-results/baseline-2026-09/run-baseline-v3.2.md
+```
+- **Enforced parity gate (from `run-baseline-v3.2.log`):** logs count_total —
+  baseline (victorialogs) = 14129 at 0ms, 14108 at 100ms; traces count_total
+  — baseline (victoriatraces) = 16658 at 0ms, 16646 at 100ms. No `parity
+  gate MISMATCH` or `parity gate FAILED` line anywhere in the log.
+- **`run-baseline-v3.2.md` result:** LH 64/64 rows valid, 0 invalid;
+  ClickHouse 63/64 (1 invalid — see "Cells that are not fully valid" below);
+  baseline 64/64. LH is a logs median 2.0× baseline (p90 3.8×) and 9× faster
+  than ClickHouse; a traces median 2.5× baseline (p90 3.8×) and 14× faster than
+  ClickHouse. See the trust caveat above before reading too much into the
+  ratios at sub-3ms baselines.
+- **Unit/self tests (v3.2):** `python3 -m unittest discover -s
+  scripts/bench/tests` (46 tests), `scripts/bench/tests/extract_result_test.sh`
+  (27 checks), `scripts/bench/tests/scan_membership_test.sh` (17 checks),
+  `scripts/bench/tests/measure_query_test.sh` (26 checks — `measure_query`
+  end to end with a stubbed `_do_req`, `_validate_iter`'s non-scan branches,
+  `build_scan_window`/`strip_scan_limit`) — 116 checks total (55 before this
+  round), all pass; see `docs/benchmarks/full-scope-s3.md` for how to run
+  them.
+
+### Cells that are not fully valid
+
+`logs/high_card/24h/lat100ms`, ClickHouse only: `result 6558 vs base 6557`.
+`high_card` groups by `trace_id` — at 24h this is ~6,557 distinct groups, the
+highest cardinality in the whole matrix. VL and LH agree with each other
+exactly (same group count, same sorted-pairs hash); ClickHouse's `GROUP BY
+TraceId` over the SAME S3 Parquet LH reads byte for byte produces one extra
+group. The row-count total (14107) is identical across all three systems —
+only the number of distinct groups differs, by one, and only at this specific
+range/latency combination (the matching 0ms cell agrees exactly across all
+three, same hash: `rows=6567;hash=a653d2b4…`). This is exactly the class of
+bug the group-by hashing fix (this round) exists to catch: the OLD
+sum-to-total comparison could never have seen it, since the total was
+(and remains) correct. It's a genuine, if extremely minor (0.015% of the
+group count), ClickHouse-specific finding — not a harness defect, and not
+something to fix by loosening the check. Left as a follow-up if anyone wants
+to root-cause ClickHouse's `GROUP BY` behavior at this cardinality; every
+other cross-system comparison in the matrix — including all 8 `scan` cells,
+now checked by `window_rows`/`window_hash` exact equality across VL/VT, LH,
+AND ClickHouse — passes clean.

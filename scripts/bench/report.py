@@ -8,25 +8,32 @@ answer is a broken response, never a latency sample. `run.sh` now validates
 each iteration itself (HTTP 2xx, parseable, non-empty unless the query is a
 documented miss scenario, stable/non-flapping) and excludes invalid
 iterations from p50/p95/p99, recording `iters_valid`/`iters_invalid`/
-`invalid_reasons` per cell. This report adds the CROSS-SYSTEM check on top:
-a cell is `✗` when `iters_invalid > 0` (own iterations were bad), when its
-`result` differs from the baseline system's result beyond the count
-tolerance, or — for a non-`scan` result carrying a content hash — when that
-hash differs from the baseline's while the row COUNT is equal ("same count,
-different rows").
+`invalid_reasons` per cell.
+
+This report adds the CROSS-SYSTEM check on top: a cell is `✗` when
+`iters_invalid > 0` (own iterations were bad), or when its result diverges
+from the baseline system's. `run.sh` computes every system's window bounds
+for a given (signal, query, range, latency) cell ONCE and shares them across
+systems, and the seed is a static one-time backfill with no live ingest — so
+with byte-identical bounds, every system querying the same cell MUST return
+an EXACTLY EQUAL result; any difference is a real divergence, not window
+drift, and this report requires exact equality (no tolerance). A group-by
+result (`count_by_service`, `high_card`) is `rows=<groups>;hash=<H>` (the
+sorted (group, count) pairs hashed) so a same-total-but-different-groups
+answer is still caught, not just the total.
 
 `scan` specifically: VictoriaLogs documents that `limit N` without an
 explicit `sort` returns an arbitrary subset of matching rows once more than N
 rows match, so per-iteration identity is never meaningful for a truncated
 scan — `run.sh` instead validates each iteration by membership against a
-per-cell reference window (one unlimited request per system) and records
-`window_rows`/`window_hash` (the FULL population's row count / sha256 of its
-sorted key set) alongside the timed `result`. This report compares `scan`
-cells via `window_hash` (VL/VT vs LH) rather than the per-iteration result,
-since a valid truncated scan's own hash legitimately varies run to run;
-`window_rows` (count-tolerance) covers ClickHouse's `scan`, which is a
-different projection with no comparable row key and is compared by row count
-only.
+per-cell reference window (one unlimited request per system, same shared
+bounds) and records `window_rows`/`window_hash` (the FULL population's row
+count / sha256 of its sorted key set) alongside the timed `result`. This
+report compares `scan` cells via `window_rows`+`window_hash` (exact
+equality, all three systems — ClickHouse's `scan` now carries a real,
+comparable key too, see run.sh's `_prep_body`) rather than the per-iteration
+result, since a valid truncated scan's own result legitimately varies run to
+run.
 
 Usage: report.py <raw.json> <out.md>
 """
@@ -38,7 +45,6 @@ from collections import defaultdict
 
 BASELINE = {"logs": "victorialogs", "traces": "victoriatraces"}
 ENGINES = ["lakehouse", "clickhouse"]
-TOL = 0.05
 # Query kinds whose CORRECT answer can legitimately be empty/zero (a
 # cross-signal lookup that doesn't correlate) — must match run.sh's
 # MISS_QUERIES so a documented miss isn't flagged as a broken/empty baseline.
@@ -107,37 +113,43 @@ def render_result(row):
     """The `[res]` bracket text for a cell. A `scan` row (has `window_rows`)
     shows `rows=<returned>/<window_rows>[;window=<hash8>]` — the returned
     (possibly truncated) row count over the reference window's TRUE row
-    count, plus a short window-hash when one is carried (not ClickHouse).
-    Any other row just shows its raw `result` string."""
+    count, plus a short window-hash when one is carried. Any other row with
+    a `rows=N;hash=H` result (e.g. group-by) shows the same shortened hash
+    for table readability; everything else shows its raw `result` string."""
     if not row:
         return None
     wrows = row.get("window_rows")
-    if wrows is None:
-        return row.get("result")
-    rp = parse_result(row.get("result"))
-    rcount = rp["count"] if rp else "?"
-    whash = row.get("window_hash")
-    if whash:
-        return f"rows={rcount}/{wrows};window={whash[:8]}"
-    return f"rows={rcount}/{wrows}"
+    result = row.get("result")
+    rp = parse_result(result)
+    if wrows is not None:
+        rcount = rp["count"] if rp else "?"
+        whash = row.get("window_hash")
+        if whash:
+            return f"rows={rcount}/{wrows};window={whash[:8]}"
+        return f"rows={rcount}/{wrows}"
+    if rp and rp["hash"]:
+        return f"rows={rp['count']};hash={rp['hash'][:8]}"
+    return result
 
 
 def cell_status(row, brow):
     """A system's cell is invalid when: it's missing; its OWN iterations
     weren't all valid (`iters_invalid > 0`); or its result diverges from the
-    baseline's.
+    baseline's. Every system in a cell now queries the SAME shared window
+    bounds (run.sh computes them once per cell, not once per system), and
+    the seed is a static backfill with no live ingest — so divergence is
+    checked by EXACT equality, not a tolerance; any difference is real.
 
     For a `scan` row (carries `window_rows`), divergence is checked against
-    the reference WINDOW, not the per-iteration `result` — a truncated scan's
-    own result legitimately varies run to run (see the module docstring), but
-    the window is the full, untruncated population and IS directly
-    comparable: `window_rows` within the count tolerance, and — when both
-    sides carry a `window_hash` (i.e. neither is ClickHouse) — the hashes
-    must also match once the counts are equal ("same population, different
-    rows"). ClickHouse's `scan` has no comparable row key and is compared by
-    `window_rows` alone.
+    the reference WINDOW, not the per-iteration `result` — a truncated
+    scan's own result legitimately varies run to run (see the module
+    docstring), but the window is the full, untruncated population and IS
+    directly comparable: `window_rows` must be exactly equal, and — when
+    both sides carry a `window_hash` — so must the hash (every system's
+    scan carries one now, ClickHouse included).
 
-    For any other row, the same rules apply to `result`'s count/hash."""
+    For any other row (including group-by's `rows=<groups>;hash=<H>`), the
+    same rule applies to `result`'s count/hash."""
     if row is None:
         return False, "missing"
     iv = row.get("iters_invalid")
@@ -155,36 +167,20 @@ def cell_status(row, brow):
     if wrows is not None or bwrows is not None:
         if wrows is None or bwrows is None:
             return False, "window_rows missing"
-        if bwrows == 0:
-            if wrows != 0:
-                return False, f"window_rows {wrows} vs base 0"
-        elif abs(wrows - bwrows) / bwrows > TOL:
+        if wrows != bwrows:
             return False, f"window_rows {wrows} vs base {bwrows}"
-        elif wrows == bwrows:
-            # Hash comparison only when the windows are EXACTLY the same
-            # size — like the non-scan count/hash rule below, a same-COUNT
-            # requirement before hashing. Two systems' window queries run at
-            # slightly different wall-clock moments (sequential per-system
-            # measurement), so a relative window (e.g. "last 1h") can shift
-            # by a few rows between them with no real divergence — that's
-            # already covered by the tolerance check above and must not also
-            # trip a hash mismatch (a 1-row difference changes the whole
-            # hash) when the counts aren't even claiming to be identical.
-            whash, bwhash = row.get("window_hash"), (brow or {}).get("window_hash")
-            if whash is not None and bwhash is not None and whash != bwhash:
-                return False, f"same window ({wrows} rows), different rows (hash mismatch)"
+        whash, bwhash = row.get("window_hash"), (brow or {}).get("window_hash")
+        if whash is not None and bwhash is not None and whash != bwhash:
+            return False, f"same window ({wrows} rows), different rows (hash mismatch)"
         return True, ""
 
     rp = parse_result(row.get("result"))
     bp = parse_result((brow or {}).get("result"))
     if rp is not None and bp is not None:
         r, b = rp["count"], bp["count"]
-        if b == 0:
-            if r != 0:
-                return False, f"result {r} vs base 0"
-        elif abs(r - b) / b > TOL:
+        if r != b:
             return False, f"result {r} vs base {b}"
-        elif r == b and rp["hash"] is not None and bp["hash"] is not None and rp["hash"] != bp["hash"]:
+        if rp["hash"] is not None and bp["hash"] is not None and rp["hash"] != bp["hash"]:
             return False, f"same count ({r}), different rows (hash mismatch)"
     return True, ""
 
