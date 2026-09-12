@@ -3,6 +3,9 @@ package vlselect
 import "strings"
 
 func RequestHandler(path string) bool {
+	if strings.HasPrefix(path, "/select/") {
+		return true
+	}
 	if strings.HasPrefix(path, "/select/vmalert/") {
 		return true
 	}

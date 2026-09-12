@@ -11,25 +11,40 @@ import (
 )
 
 var (
-	caseRe   = regexp.MustCompile(`case\s+"(/[^"]+)"`)
-	prefixRe = regexp.MustCompile(`strings\.HasPrefix\(\s*path\s*,\s*"(/[^"]+)"`)
-	eqRe     = regexp.MustCompile(`path\s*==\s*"(/[^"]+)"`)
+	caseRe    = regexp.MustCompile(`case\s+((?:"[^"]+"(?:\s*,\s*"[^"]+")*)+)\s*:`)
+	caseValRe = regexp.MustCompile(`"/[^"]+"`)
+	mapKeyRe  = regexp.MustCompile(`(?m)^\s*"(/[^"]+)"\s*:\s*[A-Za-z_]`)
+	prefixRe  = regexp.MustCompile(`strings\.HasPrefix\(\s*path\s*,\s*"(/[^"]+)"`)
+	eqRe      = regexp.MustCompile(`path\s*==\s*"(/[^"]+)"`)
 )
+
+// gatePrefixes are outer dispatch gates, not endpoints; they are filtered from routes.
+var gatePrefixes = map[string]bool{
+	"/insert/":             true,
+	"/select/":             true,
+	"/delete/":             true,
+	"/internal/select/":    true,
+	"/internal/delete/":    true,
+	"/select/vmui/static/": true,
+}
 
 // vlRouteFiles lists where VictoriaLogs registers HTTP paths (relative to the VL dir).
 var vlRouteFiles = []string{
 	"app/vlselect/main.go",
-	"app/vlinsert/main.go",
+	"app/vlselect/internalselect/internalselect.go",
 	"app/vlinsert", // per-format sub-packages (loki/loki.go, elasticsearch/elasticsearch.go, ...)
+	"app/vlstorage/main.go",
 }
 
 // vtRouteFiles lists where VictoriaTraces registers HTTP paths (relative to the VT dir).
 var vtRouteFiles = []string{
 	"app/vtselect/main.go",
+	"app/vtselect/logsql.go",
+	"app/vtselect/internalselect/internalselect.go",
 	"app/vtselect/traces/jaeger/jaeger.go",
 	"app/vtselect/traces/tempo/tempo.go",
-	"app/vtinsert/main.go",
 	"app/vtinsert", // opentelemetry/otlphttp.go
+	"app/vtstorage/main.go",
 }
 
 func ExtractVLRoutes(vlDir string) ([]Item, error) { return extractRoutes(vlDir, vlRouteFiles) }
@@ -68,9 +83,47 @@ func extractRoutes(root string, entries []string) ([]Item, error) {
 				return nil, err
 			}
 			rel, _ := filepath.Rel(root, f)
-			for _, re := range []*regexp.Regexp{caseRe, prefixRe, eqRe} {
-				for _, m := range re.FindAllStringSubmatch(string(data), -1) {
-					name := m[1]
+			rel = filepath.ToSlash(rel)
+			dataStr := string(data)
+
+			// Handle multi-value case statements: case "/a", "/b":
+			for _, m := range caseRe.FindAllStringSubmatch(dataStr, -1) {
+				caseBlock := m[1] // the full ("...", "...") block
+				for _, valMatch := range caseValRe.FindAllString(caseBlock, -1) {
+					// Extract route from quoted string
+					name := valMatch[1 : len(valMatch)-1]
+					if !gatePrefixes[name] && !strings.HasPrefix(name, "/select/vmui/static/") {
+						if _, ok := seen[name]; !ok {
+							seen[name] = Item{Kind: "route", Name: name, Source: rel}
+						}
+					}
+				}
+			}
+
+			// Handle map-literal keys: "/path": handler,
+			for _, m := range mapKeyRe.FindAllStringSubmatch(dataStr, -1) {
+				name := m[1]
+				if !gatePrefixes[name] {
+					if _, ok := seen[name]; !ok {
+						seen[name] = Item{Kind: "route", Name: name, Source: rel}
+					}
+				}
+			}
+
+			// Handle strings.HasPrefix calls
+			for _, m := range prefixRe.FindAllStringSubmatch(dataStr, -1) {
+				name := m[1]
+				if !gatePrefixes[name] {
+					if _, ok := seen[name]; !ok {
+						seen[name] = Item{Kind: "route", Name: name, Source: rel}
+					}
+				}
+			}
+
+			// Handle path == "..." comparisons
+			for _, m := range eqRe.FindAllStringSubmatch(dataStr, -1) {
+				name := m[1]
+				if !gatePrefixes[name] {
 					if _, ok := seen[name]; !ok {
 						seen[name] = Item{Kind: "route", Name: name, Source: rel}
 					}

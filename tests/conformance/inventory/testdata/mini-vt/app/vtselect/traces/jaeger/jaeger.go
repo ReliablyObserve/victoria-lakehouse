@@ -9,6 +9,8 @@ func RequestHandler(path string) bool {
 	}
 	if strings.HasPrefix(path, "/select/jaeger/api/traces/") {
 		return true
+	} else if strings.HasPrefix(path, "/select/jaeger/api/services/") && strings.HasSuffix(path, "/operations") {
+		return true
 	}
 	return false
 }

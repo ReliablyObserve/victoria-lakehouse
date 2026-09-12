@@ -26,7 +26,9 @@ func TestExtractVLRoutes_Fixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := names(items, "route")
-	want := []string{"/delete/run_task", "/insert/jsonline", "/insert/loki/", "/insert/loki/api/v1/push",
+	want := []string{"/delete/run_task", "/insert/datadog/api/v1/validate", "/insert/datadog/api/v2/logs",
+		"/insert/jsonline", "/insert/loki/", "/insert/loki/api/v1/push",
+		"/internal/force_flush", "/internal/select/hits", "/internal/select/query",
 		"/select/buildinfo", "/select/logsql/hits", "/select/logsql/query", "/select/tenant_ids", "/select/vmalert/"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v want %v", got, want)
@@ -35,6 +37,26 @@ func TestExtractVLRoutes_Fixture(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("got %v want %v", got, want)
 		}
+	}
+	// Verify dispatch gate /select/ is not in results
+	for _, it := range items {
+		if it.Name == "/select/" {
+			t.Fatalf("dispatch gate /select/ should be filtered, got: %v", it)
+		}
+	}
+	// Verify multi-value case: both datadog routes extracted
+	foundDatadogV1 := false
+	foundDatadogV2 := false
+	for _, it := range items {
+		if it.Name == "/insert/datadog/api/v1/validate" {
+			foundDatadogV1 = true
+		}
+		if it.Name == "/insert/datadog/api/v2/logs" {
+			foundDatadogV2 = true
+		}
+	}
+	if !foundDatadogV1 || !foundDatadogV2 {
+		t.Fatalf("multi-value case routes not found: v1=%v, v2=%v", foundDatadogV1, foundDatadogV2)
 	}
 	for _, it := range items {
 		if it.Source == "" {
@@ -49,12 +71,47 @@ func TestExtractVTRoutes_Fixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := names(items, "route")
-	for _, w := range []string{"/select/jaeger/api/services", "/select/jaeger/api/traces/", "/select/tempo/api/search",
-		"/select/tempo/api/v2/search/tags", "/select/tempo/api/traces/", "/insert/native", "/insert/opentelemetry/"} {
-		if sort.SearchStrings(got, w) >= len(got) || got[sort.SearchStrings(got, w)] != w {
-			t.Fatalf("missing %s in %v", w, got)
+	want := []string{"/insert/native", "/insert/opentelemetry/",
+		"/internal/force_merge", "/internal/select/trace",
+		"/select/buildinfo", "/select/jaeger/", "/select/jaeger/api/services", "/select/jaeger/api/services/",
+		"/select/jaeger/api/traces/", "/select/logsql/hits", "/select/logsql/query", "/select/logsql/tail",
+		"/select/tempo/", "/select/tempo/api/search", "/select/tempo/api/traces/", "/select/tempo/api/v2/search/tags",
+		"/select/vmui", "/select/vmui/"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d routes, want %d: got %v want %v", len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v want %v", got, want)
 		}
 	}
+
+	// Verify compound condition: /select/jaeger/api/services/ (prefix+suffix combination)
+	foundCompound := false
+	for _, it := range items {
+		if it.Name == "/select/jaeger/api/services/" {
+			foundCompound = true
+			break
+		}
+	}
+	if !foundCompound {
+		t.Fatalf("compound condition route /select/jaeger/api/services/ not found in %v", got)
+	}
+
+	// Verify dispatcher routes are present
+	for _, dispatcher := range []string{"/select/jaeger/", "/select/tempo/"} {
+		found := false
+		for _, it := range items {
+			if it.Name == dispatcher {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("dispatcher route %s not found in %v", dispatcher, got)
+		}
+	}
+
 	// Verify /select/tempo/api/traces/ is present with correct source
 	for _, it := range items {
 		if it.Name == "/select/tempo/api/traces/" && it.Kind == "route" {
@@ -93,7 +150,10 @@ func TestExtractVLRoutes_UnreadableSubdir(t *testing.T) {
 		if info.IsDir() {
 			return os.MkdirAll(dst, 0755)
 		}
-		data, _ := os.ReadFile(path)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
 		return os.WriteFile(dst, data, 0644)
 	})
 	if err != nil {
