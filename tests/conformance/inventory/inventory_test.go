@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -81,6 +82,26 @@ func TestExtract_RealDeps(t *testing.T) {
 	}
 	if d.VLVersion == "" || d.VTVersion == "" {
 		t.Fatalf("versions not read from Makefile: %+v", d)
+	}
+
+	// TraceQL metric-pipe functions: assert the exact expected set (not
+	// just a few sampled names) against the real vendored pipe_metrics.go,
+	// so a regression in the isKeyword-derivation (extract_engine.go) that
+	// drops or spuriously adds a function is caught here even if the
+	// hand-written mini-vt fixture test still passes.
+	var traceqlNames []string
+	for _, it := range inv.Items {
+		if it.Kind == "traceql" {
+			traceqlNames = append(traceqlNames, it.Name)
+		}
+	}
+	sort.Strings(traceqlNames)
+	wantTraceQL := []string{
+		"avg_over_time", "compare", "count_over_time", "histogram_over_time",
+		"max_over_time", "min_over_time", "quantile_over_time", "rate", "sum_over_time",
+	}
+	if !reflect.DeepEqual(traceqlNames, wantTraceQL) {
+		t.Fatalf("real deps: TraceQL function set = %v, want exactly %v", traceqlNames, wantTraceQL)
 	}
 
 	// Log counts per kind for transparency

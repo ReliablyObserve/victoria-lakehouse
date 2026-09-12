@@ -3,6 +3,8 @@ package inventory
 import (
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -59,15 +61,28 @@ func TestExtractEngine_Fixture(t *testing.T) {
 	}
 }
 
+// TestExtractTraceQL_Fixture asserts the EXACT set of names ExtractTraceQL
+// derives from the mini-vt fixture (see testdata/mini-vt/lib/traceql/
+// pipe_metrics.go): rate, count_over_time and histogram_over_time — no
+// more, no fewer — and explicitly proves "with" (a structural keyword the
+// fixture also exercises via lex.isKeyword("with")) is excluded, since that
+// is exactly the regression this derivation could reintroduce.
 func TestExtractTraceQL_Fixture(t *testing.T) {
 	items, err := ExtractTraceQL("testdata/mini-vt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, w := range []string{"rate", "count_over_time", "histogram_over_time"} {
-		if !has(items, "traceql", w) {
-			t.Fatalf("missing traceql %s in %v", w, items)
-		}
+	got := make([]string, 0, len(items))
+	for _, it := range items {
+		got = append(got, it.Name)
+	}
+	sort.Strings(got)
+	want := []string{"count_over_time", "histogram_over_time", "rate"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ExtractTraceQL(mini-vt) names = %v, want exactly %v", got, want)
+	}
+	if has(items, "traceql", "with") {
+		t.Fatalf(`"with" is a structural keyword, not a metric function, and must not be extracted: %v`, items)
 	}
 }
 
