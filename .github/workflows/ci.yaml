@@ -39,7 +39,7 @@ jobs:
       - name: Prepare VT deps (traces)
         run: make deps-vt
 
-      - uses: actions/cache/save@v5
+      - uses: actions/cache/save@v6
         with:
           path: |
             deps/VictoriaLogs
@@ -87,7 +87,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - uses: actions/cache/restore@v5
+      - uses: actions/cache/restore@v6
         with:
           path: |
             deps/VictoriaLogs
@@ -114,7 +114,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - uses: actions/cache/restore@v5
+      - uses: actions/cache/restore@v6
         with:
           path: |
             deps/VictoriaLogs
@@ -164,7 +164,7 @@ jobs:
         with:
           go-version-file: lakehouse-traces/go.mod
 
-      - uses: actions/cache/restore@v5
+      - uses: actions/cache/restore@v6
         with:
           path: |
             deps/VictoriaLogs
@@ -224,7 +224,7 @@ jobs:
         with:
           go-version-file: lakehouse-traces/go.mod
 
-      - uses: actions/cache/restore@v5
+      - uses: actions/cache/restore@v6
         with:
           path: |
             deps/VictoriaLogs
@@ -288,7 +288,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - uses: actions/cache/restore@v5
+      - uses: actions/cache/restore@v6
         with:
           path: |
             deps/VictoriaLogs
@@ -312,7 +312,7 @@ jobs:
         with:
           go-version-file: lakehouse-traces/go.mod
 
-      - uses: actions/cache/restore@v5
+      - uses: actions/cache/restore@v6
         with:
           path: |
             deps/VictoriaLogs
@@ -346,7 +346,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - uses: actions/cache/restore@v5
+      - uses: actions/cache/restore@v6
         with:
           path: |
             deps/VictoriaLogs
@@ -378,7 +378,7 @@ jobs:
         with:
           go-version-file: lakehouse-traces/go.mod
 
-      - uses: actions/cache/restore@v5
+      - uses: actions/cache/restore@v6
         with:
           path: |
             deps/VictoriaLogs
@@ -451,7 +451,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - uses: actions/cache/restore@v5
+      - uses: actions/cache/restore@v6
         with:
           path: |
             deps/VictoriaLogs
@@ -474,7 +474,7 @@ jobs:
         with:
           go-version-file: lakehouse-traces/go.mod
 
-      - uses: actions/cache/restore@v5
+      - uses: actions/cache/restore@v6
         with:
           path: |
             deps/VictoriaLogs
@@ -508,7 +508,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - uses: actions/cache/restore@v5
+      - uses: actions/cache/restore@v6
         with:
           path: |
             deps/VictoriaLogs
@@ -535,7 +535,7 @@ jobs:
         with:
           go-version-file: lakehouse-traces/go.mod
 
-      - uses: actions/cache/restore@v5
+      - uses: actions/cache/restore@v6
         with:
           path: |
             deps/VictoriaLogs
