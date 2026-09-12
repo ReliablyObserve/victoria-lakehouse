@@ -148,17 +148,17 @@
   layers: [api]
   pending: true
 
-- { id: vt.internal.select_query.status, title: "/internal/select/query — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/query }, request: { method: GET, path: /internal/select/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }, compare: { type: status }, layers: [api], pending: true }
-- { id: vt.internal.select_field_names.status, title: "/internal/select/field_names — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/field_names }, request: { method: GET, path: /internal/select/field_names, params: { query: "*" } }, compare: { type: status }, layers: [api], pending: true }
-- { id: vt.internal.select_field_values.status, title: "/internal/select/field_values — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/field_values }, request: { method: GET, path: /internal/select/field_values, params: { query: "*", field: "resource_attr:service.name" } }, compare: { type: status }, layers: [api], pending: true }
-- { id: vt.internal.select_stream_field_names.status, title: "/internal/select/stream_field_names — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/stream_field_names }, request: { method: GET, path: /internal/select/stream_field_names, params: { query: "*" } }, compare: { type: status }, layers: [api], pending: true }
-- { id: vt.internal.select_stream_field_values.status, title: "/internal/select/stream_field_values — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/stream_field_values }, request: { method: GET, path: /internal/select/stream_field_values, params: { query: "*", field: "resource_attr:service.name" } }, compare: { type: status }, layers: [api], pending: true }
-- { id: vt.internal.select_streams.status, title: "/internal/select/streams — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/streams }, request: { method: GET, path: /internal/select/streams, params: { query: "*" } }, compare: { type: status }, layers: [api], pending: true }
-- { id: vt.internal.select_stream_ids.status, title: "/internal/select/stream_ids — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/stream_ids }, request: { method: GET, path: /internal/select/stream_ids, params: { query: "*" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.internal.select_query.status, title: "/internal/select/query — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/query }, request: { method: GET, path: /internal/select/query, params: { version: "{{proto.internal_select}}", query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.internal.select_field_names.status, title: "/internal/select/field_names — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/field_names }, request: { method: GET, path: /internal/select/field_names, params: { version: "{{proto.internal_select}}", query: "*" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.internal.select_field_values.status, title: "/internal/select/field_values — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/field_values }, request: { method: GET, path: /internal/select/field_values, params: { version: "{{proto.internal_select}}", query: "*", field: "resource_attr:service.name" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.internal.select_stream_field_names.status, title: "/internal/select/stream_field_names — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/stream_field_names }, request: { method: GET, path: /internal/select/stream_field_names, params: { version: "{{proto.internal_select}}", query: "*" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.internal.select_stream_field_values.status, title: "/internal/select/stream_field_values — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/stream_field_values }, request: { method: GET, path: /internal/select/stream_field_values, params: { version: "{{proto.internal_select}}", query: "*", field: "resource_attr:service.name" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.internal.select_streams.status, title: "/internal/select/streams — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/streams }, request: { method: GET, path: /internal/select/streams, params: { version: "{{proto.internal_select}}", query: "*" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.internal.select_stream_ids.status, title: "/internal/select/stream_ids — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/stream_ids }, request: { method: GET, path: /internal/select/stream_ids, params: { version: "{{proto.internal_select}}", query: "*" } }, compare: { type: status }, layers: [api], pending: true }
 - { id: vt.internal.select_tenant_ids.status, title: "/internal/select/tenant_ids — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [tenants.iso], upstream: { route: /internal/select/tenant_ids }, request: { method: GET, path: /internal/select/tenant_ids }, compare: { type: status }, layers: [api], pending: true }
-- { id: vt.internal.delete_active_tasks.status, title: "/internal/delete/active_tasks — peer fanout, list running delete tasks", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/delete/active_tasks }, request: { method: GET, path: /internal/delete/active_tasks }, compare: { type: status }, layers: [api], pending: true }
-- { id: vt.internal.delete_run_task.status, title: "/internal/delete/run_task — peer fanout, run a delete task", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/delete/run_task }, request: { method: GET, path: /internal/delete/run_task, params: { task_id: "{{seed.task_id}}", timestamp: "{{seed.cold_end}}", tenant_ids: "[]", filter: "*" } }, compare: { type: status }, layers: [api], pending: true }
-- { id: vt.internal.delete_stop_task.status, title: "/internal/delete/stop_task — peer fanout, stop a delete task", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/delete/stop_task }, request: { method: GET, path: /internal/delete/stop_task, params: { task_id: "{{seed.task_id}}" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.internal.delete_active_tasks.status, title: "/internal/delete/active_tasks — peer fanout, list running delete tasks", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/delete/active_tasks }, request: { method: GET, path: /internal/delete/active_tasks, params: { version: "{{proto.internal_delete}}" } }, compare: { type: status }, layers: [api], pending: true, notes: "LH traces mounts VL's internalselect package for /internal/select/* and /internal/delete/* (lakehouse-traces/main.go:1128-1129), not a VT-specific implementation, so this endpoint is gated by VL's checkProtocolVersion." }
+- { id: vt.internal.delete_run_task.status, title: "/internal/delete/run_task — peer fanout, run a delete task", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/delete/run_task }, request: { method: GET, path: /internal/delete/run_task, params: { version: "{{proto.internal_delete}}", task_id: "{{seed.task_id}}", timestamp: "{{seed.cold_end}}", tenant_ids: "[]", filter: "*" } }, compare: { type: status }, layers: [api], pending: true, notes: "LH traces mounts VL's internalselect package for /internal/select/* and /internal/delete/* (lakehouse-traces/main.go:1128-1129), not a VT-specific implementation, so this endpoint is gated by VL's checkProtocolVersion." }
+- { id: vt.internal.delete_stop_task.status, title: "/internal/delete/stop_task — peer fanout, stop a delete task", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/delete/stop_task }, request: { method: GET, path: /internal/delete/stop_task, params: { version: "{{proto.internal_delete}}", task_id: "{{seed.task_id}}" } }, compare: { type: status }, layers: [api], pending: true, notes: "LH traces mounts VL's internalselect package for /internal/select/* and /internal/delete/* (lakehouse-traces/main.go:1128-1129), not a VT-specific implementation, so this endpoint is gated by VL's checkProtocolVersion." }
 
 - id: vt.internal.force_flush.unsupported
   title: "/internal/force_flush — cold has no local storage to flush"
@@ -189,7 +189,7 @@
   pending: true
 
 - id: vt.internal.log_new_streams.unsupported
-  title: "/internal/log_new_streams — cold has no local storage to track new streams"
+  title: "/internal/log_new_streams — LH traces never registers this path"
   surface: vt
   kind: admin
   origin: native
@@ -201,9 +201,10 @@
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
+  notes: "LH traces only mounts /internal/select/ and /internal/delete/ (lakehouse-traces/main.go:1128-1129); this storage-internal admin path has no handler registered at all on LH traces, so a request falls through to net/http's default \"404 page not found\" -- not a documented, deliberate unsupported response."
 
 - id: vt.internal.partition_attach.unsupported
-  title: "/internal/partition/attach — cold has no local partitions to attach"
+  title: "/internal/partition/attach — LH traces never registers this path"
   surface: vt
   kind: admin
   origin: native
@@ -215,9 +216,10 @@
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
+  notes: "LH traces only mounts /internal/select/ and /internal/delete/ (lakehouse-traces/main.go:1128-1129); this storage-internal admin path has no handler registered at all on LH traces, so a request falls through to net/http's default \"404 page not found\" -- not a documented, deliberate unsupported response."
 
 - id: vt.internal.partition_detach.unsupported
-  title: "/internal/partition/detach — cold has no local partitions to detach"
+  title: "/internal/partition/detach — LH traces never registers this path"
   surface: vt
   kind: admin
   origin: native
@@ -229,9 +231,10 @@
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
+  notes: "LH traces only mounts /internal/select/ and /internal/delete/ (lakehouse-traces/main.go:1128-1129); this storage-internal admin path has no handler registered at all on LH traces, so a request falls through to net/http's default \"404 page not found\" -- not a documented, deliberate unsupported response."
 
 - id: vt.internal.partition_list.unsupported
-  title: "/internal/partition/list — cold has no local partitions to list"
+  title: "/internal/partition/list — LH traces never registers this path"
   surface: vt
   kind: admin
   origin: native
@@ -243,9 +246,10 @@
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
+  notes: "LH traces only mounts /internal/select/ and /internal/delete/ (lakehouse-traces/main.go:1128-1129); this storage-internal admin path has no handler registered at all on LH traces, so a request falls through to net/http's default \"404 page not found\" -- not a documented, deliberate unsupported response."
 
 - id: vt.internal.partition_snapshot_create.unsupported
-  title: "/internal/partition/snapshot/create — cold has no local partitions to snapshot"
+  title: "/internal/partition/snapshot/create — LH traces never registers this path"
   surface: vt
   kind: admin
   origin: native
@@ -257,9 +261,10 @@
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
+  notes: "LH traces only mounts /internal/select/ and /internal/delete/ (lakehouse-traces/main.go:1128-1129); this storage-internal admin path has no handler registered at all on LH traces, so a request falls through to net/http's default \"404 page not found\" -- not a documented, deliberate unsupported response."
 
 - id: vt.internal.partition_snapshot_delete.unsupported
-  title: "/internal/partition/snapshot/delete — cold has no local snapshots to delete"
+  title: "/internal/partition/snapshot/delete — LH traces never registers this path"
   surface: vt
   kind: admin
   origin: native
@@ -271,9 +276,10 @@
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
+  notes: "LH traces only mounts /internal/select/ and /internal/delete/ (lakehouse-traces/main.go:1128-1129); this storage-internal admin path has no handler registered at all on LH traces, so a request falls through to net/http's default \"404 page not found\" -- not a documented, deliberate unsupported response."
 
 - id: vt.internal.partition_snapshot_delete_stale.unsupported
-  title: "/internal/partition/snapshot/delete_stale — cold has no local snapshots to prune"
+  title: "/internal/partition/snapshot/delete_stale — LH traces never registers this path"
   surface: vt
   kind: admin
   origin: native
@@ -285,9 +291,10 @@
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
+  notes: "LH traces only mounts /internal/select/ and /internal/delete/ (lakehouse-traces/main.go:1128-1129); this storage-internal admin path has no handler registered at all on LH traces, so a request falls through to net/http's default \"404 page not found\" -- not a documented, deliberate unsupported response."
 
 - id: vt.internal.partition_snapshot_list.unsupported
-  title: "/internal/partition/snapshot/list — cold has no local snapshots to list"
+  title: "/internal/partition/snapshot/list — LH traces never registers this path"
   surface: vt
   kind: admin
   origin: native
@@ -299,3 +306,4 @@
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
+  notes: "LH traces only mounts /internal/select/ and /internal/delete/ (lakehouse-traces/main.go:1128-1129); this storage-internal admin path has no handler registered at all on LH traces, so a request falls through to net/http's default \"404 page not found\" -- not a documented, deliberate unsupported response."

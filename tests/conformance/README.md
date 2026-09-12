@@ -26,9 +26,14 @@ on top.
   `{{seed.cold_end_ms}}` (millisecond-epoch integers, e.g. VT's dependencies `endTs`),
   `{{seed.start_us}}` / `{{seed.cold_end_us}}` (microsecond-epoch integers, e.g. VT's
   Jaeger traces-search `start`/`end`), `{{seed.trace_id}}` / `{{seed.stream_id}}`,
-  `{{tenant.account}}` / `{{tenant.project}}`, and `{{tombstone_id}}` (the id returned
-  by a prior delete request in the same run, not part of the seed). Full list and
-  rationale: the header comment in `registry/rows/vl/select.yaml`.
+  `{{seed.task_id}}` (a delete-task id), `{{tenant.account}}` / `{{tenant.project}}`,
+  `{{tombstone_id}}` (the id returned by a prior delete request in the same run, not
+  part of the seed), and `{{proto.internal_select}}` / `{{proto.internal_delete}}` (not
+  part of the seed either: the protocol version constant the runner reads from the
+  vendored VL — `internalselect`'s `ProtocolVersion` consts — that
+  `/internal/select/*`/`/internal/delete/*` requests must send as `version=...` or be
+  rejected before ever reaching the query logic). Full list and rationale: the header
+  comment in `registry/rows/vl/select.yaml`.
 - Flag rows (`kind: flag`) declare `compare: { type: status }` with no `request`: they
   document that a flag exists and matters, not a specific HTTP call. They stay
   declarative only until the runner exercises actual flag-variant stacks.

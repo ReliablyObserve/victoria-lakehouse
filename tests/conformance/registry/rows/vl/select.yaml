@@ -18,10 +18,27 @@
 #                                               strconv.ParseInt + time.UnixMicro's them
 #                                               (see app/vtselect/traces/jaeger/jaeger.go).
 #   {{seed.trace_id}} / {{seed.stream_id}}   — fixed-length hex ids from the seeded dataset.
+#   {{seed.task_id}}                          — a delete-task id from the seeded dataset,
+#                                               used by the /internal/delete/* and
+#                                               /delete/run_task-style rows.
 #   {{tenant.account}} / {{tenant.project}}  — the seeded tenant pair.
 #   {{tombstone_id}}                          — not part of the seed: the id returned by a
 #                                               prior delete request in the same run (see
 #                                               lh.delete.tombstone_by_id.status).
+#   {{proto.internal_select}} / {{proto.internal_delete}} — not part of the seed: the
+#                                               protocol version constant the runner reads
+#                                               from the vendored VL (internalselect's
+#                                               ProtocolVersion consts in
+#                                               app/vlstorage/netselect/netselect.go, e.g.
+#                                               QueryProtocolVersion, FieldNamesProtocolVersion,
+#                                               DeleteRunTaskProtocolVersion, ...). Every
+#                                               /internal/select/* and /internal/delete/*
+#                                               request (except /internal/select/tenant_ids,
+#                                               which does not check it) is rejected with
+#                                               a version mismatch error unless it sends
+#                                               version=<the exact expected constant> — see
+#                                               checkProtocolVersion in
+#                                               app/vlselect/internalselect/internalselect.go.
 
 - id: vl.select.query.wildcard
   title: "/select/logsql/query — wildcard retrieval"
