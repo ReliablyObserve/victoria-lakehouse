@@ -83,8 +83,8 @@ func TestCountByPushdownField_Filtered(t *testing.T) {
 		// every column, so synthetic {field,_time} rows would blank out _msg and
 		// all other fields. A bare filter, `| limit`, `| sort` lack a reducing
 		// pipe → "" (fall through to the real scan).
-		{`service.name:api-gateway`, nil, ""},                  // bare filter (drilldown/explore retrieval)
-		{`service.name:api-gateway | limit 5`, nil, ""},        // limited retrieval
+		{`service.name:api-gateway`, nil, ""},           // bare filter (drilldown/explore retrieval)
+		{`service.name:api-gateway | limit 5`, nil, ""}, // limited retrieval
 		{`deployment.environment:production | limit 100`, nil, ""},
 		{`service.name:api-gateway | sort by (_time)`, nil, ""}, // sorted retrieval
 		// a column-selecting pipe IS sound (output reduces to the field)
