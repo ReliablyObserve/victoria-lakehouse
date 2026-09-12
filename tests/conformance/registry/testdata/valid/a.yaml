@@ -10,7 +10,6 @@
   request: { method: GET, path: /select/logsql/query, params: { query: "*", limit: "100" } }
   compare: { type: ndjson-multiset, project: [_time, _msg, _stream] }
   layers: [api]
-  pending: true
 - id: lh.stats.overview.schema
   title: "/lakehouse/api/v1/stats/overview shape"
   surface: lh
@@ -22,4 +21,3 @@
   request: { method: GET, path: /lakehouse/api/v1/stats/overview }
   compare: { type: schema }
   layers: [api]
-  pending: true

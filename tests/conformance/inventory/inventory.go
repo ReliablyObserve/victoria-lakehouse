@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -13,13 +12,29 @@ import (
 type Dirs struct {
 	VL, VT               string
 	VLVersion, VTVersion string
+	// VLCommitTraces is the VL_COMMIT_TRACES pin read from the Makefile: the
+	// commit of the VictoriaLogs tree the traces module vendors its own copy
+	// of (lakehouse-traces/deps/VictoriaLogs), independent of VLVersion.
+	VLCommitTraces string
 }
 
 var mkVLRe = regexp.MustCompile(`(?m)^VL_VERSION_LOGS\s*:=\s*(\S+)`)
 var mkVTRe = regexp.MustCompile(`(?m)^VT_VERSION\s*:=\s*(\S+)`)
+var mkVLCommitTracesRe = regexp.MustCompile(`(?m)^VL_COMMIT_TRACES\s*:=\s*(\S+)`)
+
+// moduleLineRe matches the lakehouse module's own module declaration line
+// exactly, so it never matches the traces module's go.mod (which declares a
+// different module in the same repo tree).
+var moduleLineRe = regexp.MustCompile(`(?m)^module github\.com/ReliablyObserve/victoria-lakehouse$`)
 
 // DefaultDirs points at the vendored trees the Makefile clones and reads the
 // pinned versions from it (single source of truth for the pins).
+//
+// deps/VictoriaLogs (VL_VERSION_LOGS) is the VL basis for the logs surface.
+// The traces module vendors its own separate copy of VictoriaLogs at
+// lakehouse-traces/deps/VictoriaLogs, pinned to VL_COMMIT_TRACES; a guard
+// test (TestVLSurface_TracesPinEqualsLogsPin) verifies that copy's extracted
+// surface is identical to the logs-pin copy, so only one is used here.
 func DefaultDirs(repoRoot string) Dirs {
 	d := Dirs{VL: filepath.Join(repoRoot, "deps", "VictoriaLogs"), VT: filepath.Join(repoRoot, "lakehouse-traces", "deps", "VictoriaTraces")}
 	if mk, err := os.ReadFile(filepath.Join(repoRoot, "Makefile")); err == nil {
@@ -29,18 +44,23 @@ func DefaultDirs(repoRoot string) Dirs {
 		if m := mkVTRe.FindSubmatch(mk); m != nil {
 			d.VTVersion = string(m[1])
 		}
+		if m := mkVLCommitTracesRe.FindSubmatch(mk); m != nil {
+			d.VLCommitTraces = string(m[1])
+		}
 	}
 	return d
 }
 
-// RepoRoot walks up from the working directory to the lakehouse go.mod.
+// RepoRoot walks up from the working directory to the lakehouse go.mod. It
+// matches the module declaration line exactly so it never matches the
+// traces module's own go.mod (a different module further down the tree).
 func RepoRoot() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
 	for {
-		if data, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil && strings.Contains(string(data), "module github.com/ReliablyObserve/victoria-lakehouse") {
+		if data, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil && moduleLineRe.Match(data) {
 			return dir, nil
 		}
 		parent := filepath.Dir(dir)
@@ -53,7 +73,7 @@ func RepoRoot() (string, error) {
 
 // Extract runs all six extractors in order, dedups by Key, sets versions from Dirs.
 func Extract(d Dirs) (*Inventory, error) {
-	inv := &Inventory{VLVersion: d.VLVersion, VTVersion: d.VTVersion}
+	inv := &Inventory{VLVersion: d.VLVersion, VTVersion: d.VTVersion, VLCommitTraces: d.VLCommitTraces}
 	steps := []func() ([]Item, error){
 		func() ([]Item, error) { return ExtractVLRoutes(d.VL) },
 		func() ([]Item, error) { return ExtractVTRoutes(d.VT) },

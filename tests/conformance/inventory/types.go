@@ -13,7 +13,10 @@ type Item struct {
 type Inventory struct {
 	VLVersion string `yaml:"vl_version"`
 	VTVersion string `yaml:"vt_version"`
-	Items     []Item `yaml:"items"`
+	// VLCommitTraces is the VL_COMMIT_TRACES pin (the traces module's own,
+	// separate VictoriaLogs vendor commit); see Dirs.VLCommitTraces.
+	VLCommitTraces string `yaml:"vl_commit_traces,omitempty"`
+	Items          []Item `yaml:"items"`
 }
 
 func (inv *Inventory) Key(i Item) string { return i.Kind + ":" + i.Name }

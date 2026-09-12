@@ -29,7 +29,7 @@ VT_VERSION := v0.9.2
 VT_REPO := https://github.com/VictoriaMetrics/VictoriaTraces.git
 VT_DIR := lakehouse-traces/deps/VictoriaTraces
 
-.PHONY: build build-logs build-traces bench test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces deps-vt
+.PHONY: build build-logs build-traces bench test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces deps-vt conformance-gen conformance-check
 
 deps-logs: $(VL_DIR_LOGS)/go.mod
 
@@ -92,6 +92,13 @@ test-full-traces: deps-traces deps-vt
 	cd lakehouse-traces && go test ./internal/... -race -count=1 -timeout=10m
 
 test-full: test-full-logs test-full-traces
+
+conformance-gen: deps-logs deps-traces deps-vt
+	go run ./tests/conformance/cmd/confgen -write
+
+conformance-check: deps-logs deps-traces deps-vt
+	go run ./tests/conformance/cmd/confgen -check
+	CONFORMANCE_REQUIRE_DEPS=1 go test ./tests/conformance/... -count=1 -timeout=5m
 
 test-integration-logs: deps-logs
 	go test -tags=integration ./internal/... -race -count=1 -timeout=15m
