@@ -1,6 +1,6 @@
 // Package registry defines the conformance registry: one Row per endpoint or
 // feature that the verification machine must check, native VL/VT rows first,
-// Lakehouse additions second. Rows are declarative; the runner (M2) executes them.
+// Lakehouse additions second. Rows are declarative; the runner (a later milestone) executes them.
 package registry
 
 import (
@@ -46,14 +46,46 @@ const (
 	TargetGlobal Target = "global"
 )
 
-// Comparators the runner (M2) implements. Kept here so lint rejects typos early.
+// Comparators the runner (a later milestone) implements. Kept here so lint rejects typos early.
 var Comparators = map[string]bool{
 	"exact-json": true, "ndjson-multiset": true, "values-with-hits": true, "count": true,
 	"series": true, "trace": true, "status": true, "error": true, "schema": true,
 	"golden": true, "absent": true, "ui": true,
 }
 
+// Layers defines valid layer names for categorizing tests by infrastructure level.
+var Layers = map[string]bool{
+	"api": true, "ui": true, "perf": true, "chaos": true,
+}
+
+// Seeds defines valid dataset names for seeding conformance tests.
+// Interim until the seed manifest exists; keep the list in sync with the datasets documented for the runner.
+var Seeds = map[string]bool{
+	"logs.base":    true,
+	"logs.edge":    true,
+	"logs.streams": true,
+	"traces.base":  true,
+	"traces.sg":    true,
+	"tenants.iso":  true,
+}
+
 var idRe = regexp.MustCompile(`^(vl|vt|lh|ui|fuzz)\.[a-z0-9_]+(\.[a-z0-9_]+)+$`)
+
+// upstreamField represents one field in the Upstream struct.
+type upstreamField struct {
+	name string
+	get  func(*Upstream) string
+}
+
+// upstreamFields lists all possible upstream field names and accessors in order.
+var upstreamFields = []upstreamField{
+	{"route", func(u *Upstream) string { return u.Route }},
+	{"pipe", func(u *Upstream) string { return u.Pipe }},
+	{"filter", func(u *Upstream) string { return u.Filter }},
+	{"stats", func(u *Upstream) string { return u.Stats }},
+	{"traceql", func(u *Upstream) string { return u.TraceQL }},
+	{"flag", func(u *Upstream) string { return u.Flag }},
+}
 
 // Upstream links a native/shim row to the inventory item it covers.
 // Exactly one field is set.
@@ -67,27 +99,35 @@ type Upstream struct {
 }
 
 func (u *Upstream) key() (kind, name string) {
-	switch {
-	case u.Route != "":
-		return "route", u.Route
-	case u.Pipe != "":
-		return "pipe", u.Pipe
-	case u.Filter != "":
-		return "filter", u.Filter
-	case u.Stats != "":
-		return "stats", u.Stats
-	case u.TraceQL != "":
-		return "traceql", u.TraceQL
-	case u.Flag != "":
-		return "flag", u.Flag
+	if u == nil {
+		return "", ""
+	}
+	for _, field := range upstreamFields {
+		if val := field.get(u); val != "" {
+			return field.name, val
+		}
 	}
 	return "", ""
 }
 
 // Key returns "<kind>:<name>" used to join with inventory items.
+// Returns ":" if the receiver is nil or has no fields set.
 func (u *Upstream) Key() string {
 	k, n := u.key()
 	return k + ":" + n
+}
+
+// IsZero reports whether the receiver is nil or has no fields set.
+func (u *Upstream) IsZero() bool {
+	if u == nil {
+		return true
+	}
+	for _, field := range upstreamFields {
+		if field.get(u) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 type Request struct {
@@ -131,85 +171,124 @@ type Row struct {
 
 type Registry struct {
 	Rows []Row
+	// ByID is built after Rows is final; never append to Rows afterwards (pointers into the slice).
 	ByID map[string]*Row
 }
 
 func (r *Row) Validate() error {
 	var errs []string
 	add := func(f string, a ...any) { errs = append(errs, fmt.Sprintf(f, a...)) }
+
+	// ID validation
 	if !idRe.MatchString(r.ID) {
 		add("id %q must match %s", r.ID, idRe)
+	} else {
+		// Cross-check id prefix with surface
+		if strings.HasPrefix(r.ID, "vl.") && r.Surface != SurfaceVL {
+			add("id prefix %q does not match surface %q", "vl", r.Surface)
+		} else if strings.HasPrefix(r.ID, "vt.") && r.Surface != SurfaceVT {
+			add("id prefix %q does not match surface %q", "vt", r.Surface)
+		} else if strings.HasPrefix(r.ID, "lh.") && r.Surface != SurfaceLH {
+			add("id prefix %q does not match surface %q", "lh", r.Surface)
+		}
 	}
-	if r.Title == "" {
+
+	// Title validation
+	if strings.TrimSpace(r.Title) == "" {
 		add("title required")
 	}
+
+	// Surface validation
 	switch r.Surface {
 	case SurfaceVL, SurfaceVT, SurfaceLH:
 	default:
 		add("surface %q invalid", r.Surface)
 	}
+
+	// Kind validation
 	switch r.Kind {
 	case KindSelect, KindInsert, KindPipe, KindFilter, KindStats, KindTraceQL, KindFlag, KindUI, KindAdmin, KindInternal:
 	default:
 		add("kind %q invalid", r.Kind)
 	}
+
+	// Origin validation
 	switch r.Origin {
 	case OriginNative, OriginLHShim, OriginLHAddition:
 	default:
 		add("origin %q invalid", r.Origin)
 	}
+
+	// Expect validation
 	switch r.Expect {
 	case ExpectPass, ExpectDiffer, ExpectAbsent, ExpectUnsupported:
 	default:
 		add("expect %q invalid", r.Expect)
 	}
+
+	// DifferNote validation
 	if r.Expect == ExpectDiffer && strings.TrimSpace(r.DifferNote) == "" {
 		add("differ_note required when expect=differ")
 	}
+
+	// Targets validation
 	if len(r.Targets) == 0 {
 		add("targets required")
 	}
+	seenTargets := make(map[Target]bool)
 	for _, t := range r.Targets {
 		switch t {
 		case TargetHot, TargetCold, TargetGlobal:
+			if seenTargets[t] {
+				add("targets: duplicate %q", t)
+			}
+			seenTargets[t] = true
 		default:
 			add("targets: %q invalid", t)
 		}
 	}
+
+	// Seed validation
 	switch r.Expect {
 	case ExpectPass, ExpectDiffer:
 		if len(r.Seed) == 0 && r.Kind != KindFlag {
 			add("seed required when expect=%s", r.Expect)
+		}
+		for _, s := range r.Seed {
+			if !Seeds[s] {
+				add("seed %q unknown", s)
+			}
 		}
 	case ExpectAbsent:
 		if len(r.Seed) != 0 {
 			add("seed must be empty when expect=absent")
 		}
 	}
+
+	// Since validation
+	for key, val := range r.Since {
+		switch key {
+		case "vl", "vt":
+			if val == "" {
+				add("since: %q empty", key)
+			}
+		default:
+			add("since: key %q invalid", key)
+		}
+	}
+
+	// Upstream validation
 	switch r.Origin {
 	case OriginNative, OriginLHShim:
-		if r.Upstream == nil || r.Upstream.Key() == ":" {
+		if r.Upstream.IsZero() {
 			add("upstream required for origin=%s", r.Origin)
 		} else {
 			// Count non-empty fields in Upstream
 			count := 0
-			if r.Upstream.Route != "" {
-				count++
-			}
-			if r.Upstream.Pipe != "" {
-				count++
-			}
-			if r.Upstream.Filter != "" {
-				count++
-			}
-			if r.Upstream.Stats != "" {
-				count++
-			}
-			if r.Upstream.TraceQL != "" {
-				count++
-			}
-			if r.Upstream.Flag != "" {
-				count++
+			for _, field := range upstreamFields {
+				if field.get(r.Upstream) != "" {
+					count++
+				}
 			}
 			if count > 1 {
 				add("upstream: exactly one of route/pipe/filter/stats/traceql/flag must be set, got %d", count)
@@ -220,17 +299,53 @@ func (r *Row) Validate() error {
 			add("upstream must be empty for origin=lh-addition")
 		}
 	}
+
+	// Request validation
 	if r.Kind != KindUI && r.Kind != KindFlag && r.Request == nil {
 		add("request required for kind=%s", r.Kind)
 	}
+	if r.Request != nil {
+		switch r.Request.Method {
+		case "GET", "POST", "PUT", "DELETE", "HEAD", "PATCH":
+		default:
+			add("request.method %q invalid", r.Request.Method)
+		}
+		if r.Request.Path == "" || !strings.HasPrefix(r.Request.Path, "/") {
+			add("request.path %q must start with /", r.Request.Path)
+		}
+	}
+
+	// Compare validation
 	if r.Compare == nil {
 		add("compare required")
-	} else if !Comparators[r.Compare.Type] {
-		add("compare.type %q unknown", r.Compare.Type)
+	} else {
+		if !Comparators[r.Compare.Type] {
+			add("compare.type %q unknown", r.Compare.Type)
+		}
+		// Comparator coherence: ui kind requires ui comparator
+		if r.Kind == KindUI && r.Compare.Type != "ui" {
+			add("compare.type %q incompatible with kind %q", r.Compare.Type, r.Kind)
+		}
+		// Non-ui kinds must not use ui comparator
+		if r.Kind != KindUI && r.Compare.Type == "ui" {
+			add("compare.type %q incompatible with kind %q", r.Compare.Type, r.Kind)
+		}
+		// absent expect requires specific comparators
+		if r.Expect == ExpectAbsent && r.Compare.Type != "absent" && r.Compare.Type != "status" {
+			add("compare.type %q incompatible with expect=absent", r.Compare.Type)
+		}
 	}
+
+	// Layers validation
 	if len(r.Layers) == 0 {
 		add("layers required")
 	}
+	for _, layer := range r.Layers {
+		if !Layers[layer] {
+			add("layers: %q invalid", layer)
+		}
+	}
+
 	if len(errs) == 0 {
 		return nil
 	}

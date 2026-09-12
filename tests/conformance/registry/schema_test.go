@@ -31,28 +31,71 @@ func TestRow_Validate_Rejects(t *testing.T) {
 		mut  func(*Row)
 		want string
 	}{
-		{"bad id", func(r *Row) { r.ID = "Query Exact" }, "id"},
-		{"bad surface", func(r *Row) { r.Surface = "vx" }, "surface"},
-		{"differ needs note", func(r *Row) { r.Expect = ExpectDiffer; r.DifferNote = "" }, "differ_note"},
-		{"pass needs seed", func(r *Row) { r.Seed = nil }, "seed"},
-		{"no targets", func(r *Row) { r.Targets = nil }, "targets"},
-		{"native needs upstream", func(r *Row) { r.Upstream = nil }, "upstream"},
-		{"lh-addition must not cite upstream", func(r *Row) { r.Origin = OriginLHAddition }, "upstream"},
-		{"non-ui needs request", func(r *Row) { r.Request = nil }, "request"},
-		{"unknown comparator", func(r *Row) { r.Compare.Type = "magic" }, "compare"},
-		{"absent must not have seed", func(r *Row) { r.Expect = ExpectAbsent }, "seed"},
+		// ID validation
+		{"bad id", func(r *Row) { r.ID = "Query Exact" }, "must match"},
+		{"id only 2 segments", func(r *Row) { r.ID = "vl.select" }, "must match"},
+		{"id with slash", func(r *Row) { r.ID = "vl.select/query.x" }, "must match"},
+		{"id prefix vl mismatch surface", func(r *Row) { r.ID = "vl.test.x"; r.Surface = SurfaceVT }, "does not match surface"},
+		{"id prefix vt mismatch surface", func(r *Row) { r.ID = "vt.test.x"; r.Surface = SurfaceVL }, "does not match surface"},
+		{"id prefix lh mismatch surface", func(r *Row) { r.ID = "lh.test.x"; r.Surface = SurfaceVT }, "does not match surface"},
+
+		// Title validation
 		{"empty title", func(r *Row) { r.Title = "" }, "title"},
+		{"whitespace title", func(r *Row) { r.Title = "   " }, "title"},
+
+		// Surface validation
+		{"bad surface", func(r *Row) { r.Surface = "vx" }, "surface"},
+
+		// Kind validation
 		{"bad kind", func(r *Row) { r.Kind = "bad" }, "kind"},
+
+		// Origin validation
 		{"bad origin", func(r *Row) { r.Origin = "bad" }, "origin"},
+
+		// Expect validation
 		{"bad expect", func(r *Row) { r.Expect = "bad" }, "expect"},
-		{"invalid target", func(r *Row) { r.Targets = []Target{"bad"} }, "targets"},
-		{"no compare", func(r *Row) { r.Compare = nil }, "compare"},
-		{"no layers", func(r *Row) { r.Layers = nil }, "layers"},
+
+		// DifferNote validation
+		{"differ needs note", func(r *Row) { r.Expect = ExpectDiffer; r.DifferNote = "" }, "differ_note"},
 		{"differ note whitespace only", func(r *Row) { r.Expect = ExpectDiffer; r.DifferNote = "   " }, "differ_note"},
+
+		// Targets validation
+		{"no targets", func(r *Row) { r.Targets = nil }, "targets"},
+		{"invalid target", func(r *Row) { r.Targets = []Target{"bad"} }, "targets:"},
+		{"duplicate targets", func(r *Row) { r.Targets = []Target{TargetHot, TargetHot} }, "targets: duplicate"},
+
+		// Seed validation
+		{"pass needs seed", func(r *Row) { r.Seed = nil }, "seed"},
+		{"unknown seed", func(r *Row) { r.Seed = []string{"nope"} }, `seed "nope" unknown`},
+		{"absent must not have seed", func(r *Row) { r.Expect = ExpectAbsent }, "seed"},
+
+		// Since validation
+		{"since invalid key", func(r *Row) { r.Since = map[string]string{"xx": "1.0"} }, "since: key"},
+		{"since empty value", func(r *Row) { r.Since = map[string]string{"vl": ""} }, "since:"},
+
+		// Upstream validation
+		{"native needs upstream", func(r *Row) { r.Upstream = nil }, "upstream"},
 		{"shim needs upstream", func(r *Row) { r.Origin = OriginLHShim; r.Upstream = nil }, "upstream"},
 		{"shim with empty upstream", func(r *Row) { r.Origin = OriginLHShim; r.Upstream = &Upstream{} }, "upstream"},
-		{"lh-addition with upstream field set", func(r *Row) { r.Origin = OriginLHAddition; r.Upstream = &Upstream{Route: "/x"} }, "upstream"},
 		{"upstream multiple fields set", func(r *Row) { r.Upstream = &Upstream{Route: "/x", Flag: "y"} }, "exactly one"},
+		{"lh-addition with upstream field set", func(r *Row) { r.Origin = OriginLHAddition; r.Upstream = &Upstream{Route: "/x"} }, "upstream"},
+
+		// Request validation
+		{"non-ui needs request", func(r *Row) { r.Request = nil }, "request"},
+		{"request invalid method", func(r *Row) { r.Request.Method = "INVALID" }, "request.method"},
+		{"request empty path", func(r *Row) { r.Request.Path = "" }, "request.path"},
+		{"request path no slash", func(r *Row) { r.Request.Path = "query" }, "request.path"},
+
+		// Compare validation
+		{"no compare", func(r *Row) { r.Compare = nil }, "compare"},
+		{"unknown comparator", func(r *Row) { r.Compare.Type = "magic" }, "compare"},
+		{"ui kind requires ui comparator", func(r *Row) { r.Kind = KindUI; r.Request = nil; r.Compare.Type = "ndjson-multiset" }, "incompatible with kind"},
+		{"non-ui kind cannot use ui comparator", func(r *Row) { r.Compare.Type = "ui" }, "incompatible with kind"},
+		{"absent expect requires absent or status", func(r *Row) { r.Expect = ExpectAbsent; r.Seed = nil; r.Compare.Type = "ndjson-multiset" }, "incompatible with expect=absent"},
+
+		// Layers validation
+		{"no layers", func(r *Row) { r.Layers = nil }, "layers"},
+		{"invalid layer", func(r *Row) { r.Layers = []string{"apis"} }, "layers:"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -63,6 +106,34 @@ func TestRow_Validate_Rejects(t *testing.T) {
 				t.Fatalf("want error mentioning %q, got %v", c.want, err)
 			}
 		})
+	}
+}
+
+func TestRow_Validate_MultipleViolations(t *testing.T) {
+	// Test two simultaneous violations with proper error format
+	r := validRow()
+	r.Title = ""             // missing title
+	r.Layers = []string{"x"} // invalid layer
+	err := r.Validate()
+	if err == nil {
+		t.Fatalf("expected validation error, got nil")
+	}
+	errMsg := err.Error()
+	// Should have row id prefix
+	if !strings.HasPrefix(errMsg, "row vl.select.query.exact_filter:") {
+		t.Fatalf("error should start with row id prefix, got: %v", errMsg)
+	}
+	// Should have both violations in sorted order separated by "; "
+	if !strings.Contains(errMsg, "layers:") || !strings.Contains(errMsg, "title") {
+		t.Fatalf("error should contain both violations, got: %v", errMsg)
+	}
+	parts := strings.Split(errMsg[34:], "; ") // skip "row vl.select.query.exact_filter: "
+	if len(parts) < 2 {
+		t.Fatalf("error should have at least 2 violations separated by '; ', got: %v", errMsg)
+	}
+	// Verify sorted order (layers: < title)
+	if parts[0] > parts[1] {
+		t.Fatalf("violations should be in sorted order, got: %v, %v", parts[0], parts[1])
 	}
 }
 
@@ -79,8 +150,33 @@ func TestRow_Validate_UIKind_NoRequest(t *testing.T) {
 	r := validRow()
 	r.Kind = KindUI
 	r.Request = nil
+	r.Compare.Type = "ui"
 	if err := r.Validate(); err != nil {
 		t.Fatalf("ui kind should not require request, but got: %v", err)
+	}
+}
+
+func TestRow_Validate_UIKindRequiresUIComparator(t *testing.T) {
+	r := validRow()
+	r.Kind = KindUI
+	r.Request = nil
+	r.Compare.Type = "ui"
+	if err := r.Validate(); err != nil {
+		t.Fatalf("ui kind with ui comparator should be valid, but got: %v", err)
+	}
+}
+
+func TestRow_Validate_ExpectAbsentRequiresAbsentOrStatusComparator(t *testing.T) {
+	for _, ct := range []string{"absent", "status"} {
+		t.Run(ct, func(t *testing.T) {
+			r := validRow()
+			r.Expect = ExpectAbsent
+			r.Seed = nil
+			r.Compare.Type = ct
+			if err := r.Validate(); err != nil {
+				t.Fatalf("absent expect with %s comparator should be valid, but got: %v", ct, err)
+			}
+		})
 	}
 }
 
@@ -106,6 +202,9 @@ func TestRow_Validate_AllSurfaces(t *testing.T) {
 		t.Run(string(surface), func(t *testing.T) {
 			r := validRow()
 			r.Surface = surface
+			// Adjust id to match surface
+			prefix := string(surface)
+			r.ID = prefix + ".select.query.exact_filter"
 			if err := r.Validate(); err != nil {
 				t.Fatalf("valid row with surface %s rejected: %v", surface, err)
 			}
@@ -119,11 +218,12 @@ func TestRow_Validate_AllKinds(t *testing.T) {
 		t.Run(string(kind), func(t *testing.T) {
 			r := validRow()
 			r.Kind = kind
-			if kind == KindUI || kind == KindFlag {
+			if kind == KindUI {
 				r.Request = nil
-				if kind == KindFlag {
-					r.Seed = nil
-				}
+				r.Compare.Type = "ui"
+			} else if kind == KindFlag {
+				r.Request = nil
+				r.Seed = nil
 			}
 			if err := r.Validate(); err != nil {
 				t.Fatalf("valid row with kind %s rejected: %v", kind, err)
@@ -140,7 +240,10 @@ func TestRow_Validate_AllExpectValues(t *testing.T) {
 			if expect == ExpectDiffer {
 				r.DifferNote = "some note"
 			}
-			if expect == ExpectAbsent || expect == ExpectUnsupported {
+			if expect == ExpectAbsent {
+				r.Seed = nil
+				r.Compare.Type = "absent"
+			} else if expect == ExpectUnsupported {
 				r.Seed = nil
 			}
 			if err := r.Validate(); err != nil {
@@ -165,6 +268,58 @@ func TestRow_Validate_AllOrigins(t *testing.T) {
 	}
 }
 
+func TestRow_Validate_RequestMethods(t *testing.T) {
+	validMethods := []string{"GET", "POST", "PUT", "DELETE", "HEAD", "PATCH"}
+	for _, method := range validMethods {
+		t.Run(method, func(t *testing.T) {
+			r := validRow()
+			r.Request.Method = method
+			if err := r.Validate(); err != nil {
+				t.Fatalf("valid request method %s rejected: %v", method, err)
+			}
+		})
+	}
+}
+
+func TestRow_Validate_ValidLayers(t *testing.T) {
+	validLayers := []string{"api", "ui", "perf", "chaos"}
+	for _, layer := range validLayers {
+		t.Run(layer, func(t *testing.T) {
+			r := validRow()
+			r.Layers = []string{layer}
+			if err := r.Validate(); err != nil {
+				t.Fatalf("valid layer %s rejected: %v", layer, err)
+			}
+		})
+	}
+}
+
+func TestRow_Validate_ValidSeeds(t *testing.T) {
+	validSeeds := []string{"logs.base", "logs.edge", "logs.streams", "traces.base", "traces.sg", "tenants.iso"}
+	for _, seed := range validSeeds {
+		t.Run(seed, func(t *testing.T) {
+			r := validRow()
+			r.Seed = []string{seed}
+			if err := r.Validate(); err != nil {
+				t.Fatalf("valid seed %s rejected: %v", seed, err)
+			}
+		})
+	}
+}
+
+func TestRow_Validate_ValidSinceKeys(t *testing.T) {
+	validKeys := []string{"vl", "vt"}
+	for _, key := range validKeys {
+		t.Run(key, func(t *testing.T) {
+			r := validRow()
+			r.Since = map[string]string{key: "1.51.0"}
+			if err := r.Validate(); err != nil {
+				t.Fatalf("valid since key %s rejected: %v", key, err)
+			}
+		})
+	}
+}
+
 func TestUpstream_Key(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -178,12 +333,38 @@ func TestUpstream_Key(t *testing.T) {
 		{"traceql", &Upstream{TraceQL: "histogram_over_time"}, "traceql:histogram_over_time"},
 		{"flag", &Upstream{Flag: "search.maxTraces"}, "flag:search.maxTraces"},
 		{"empty", &Upstream{}, ":"},
+		{"nil", nil, ":"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			key := c.upstream.Key()
 			if key != c.expected {
 				t.Fatalf("want %q, got %q", c.expected, key)
+			}
+		})
+	}
+}
+
+func TestUpstream_IsZero(t *testing.T) {
+	cases := []struct {
+		name     string
+		upstream *Upstream
+		expected bool
+	}{
+		{"nil", nil, true},
+		{"empty", &Upstream{}, true},
+		{"route", &Upstream{Route: "/x"}, false},
+		{"pipe", &Upstream{Pipe: "x"}, false},
+		{"filter", &Upstream{Filter: "x"}, false},
+		{"stats", &Upstream{Stats: "x"}, false},
+		{"traceql", &Upstream{TraceQL: "x"}, false},
+		{"flag", &Upstream{Flag: "x"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			result := c.upstream.IsZero()
+			if result != c.expected {
+				t.Fatalf("want %v, got %v", c.expected, result)
 			}
 		})
 	}
