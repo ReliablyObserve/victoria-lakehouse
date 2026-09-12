@@ -34,3 +34,17 @@ func TestLoadDir_Missing(t *testing.T) {
 		t.Fatal("want error for missing dir")
 	}
 }
+
+func TestLoadDir_NotADirectory(t *testing.T) {
+	_, err := LoadDir("testdata/valid/a.yaml")
+	if err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("want 'not a directory' error, got %v", err)
+	}
+}
+
+func TestLoadDir_BadYAML(t *testing.T) {
+	_, err := LoadDir("testdata/badyaml")
+	if err == nil || !strings.Contains(err.Error(), "registry invalid:") || !strings.Contains(err.Error(), "mapping.yaml") {
+		t.Fatalf("want registry invalid with mapping.yaml, got %v", err)
+	}
+}

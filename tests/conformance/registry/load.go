@@ -16,8 +16,11 @@ import (
 // lh-shim, then lh-addition, then by id — the report order.
 func LoadDir(dir string) (*Registry, error) {
 	st, err := os.Stat(dir)
-	if err != nil || !st.IsDir() {
+	if err != nil {
 		return nil, fmt.Errorf("registry dir %q: %w", dir, err)
+	}
+	if !st.IsDir() {
+		return nil, fmt.Errorf("registry dir %q: not a directory", dir)
 	}
 	reg := &Registry{ByID: map[string]*Row{}}
 	var errs []string
@@ -31,11 +34,13 @@ func LoadDir(dir string) (*Registry, error) {
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return err
+			errs = append(errs, fmt.Sprintf("%s: %v", path, err))
+			return nil
 		}
 		var rows []Row
 		if err := yaml.Unmarshal(data, &rows); err != nil {
-			return fmt.Errorf("%s: %w", path, err)
+			errs = append(errs, fmt.Sprintf("%s: %v", path, err))
+			return nil
 		}
 		for _, r := range rows {
 			if err := r.Validate(); err != nil {
