@@ -11,14 +11,15 @@ import (
 )
 
 type DriftReport struct {
-	Unmapped     []inventory.Item // hard: upstream item with no row (routes, pipes, filters, stats, traceql)
-	Stale        []string         // hard: row ids citing an upstream item the inventory lacks (except expect=absent)
-	FlagWarnings []inventory.Item // soft: upstream flags without a row
-	PendingBump  []string         // informational: rows whose Since version is newer than inventory
+	Unmapped         []inventory.Item // hard: upstream item with no row (routes, pipes, filters, stats, traceql)
+	Stale            []string         // hard: row ids citing an upstream item the inventory lacks (except expect=absent)
+	FlagWarnings     []inventory.Item // soft: upstream flags without a row
+	PendingBump      []string         // informational: rows whose Since version is newer than inventory
+	AbsentButPresent []string         // soft: row ids with expect=absent whose upstream key IS in inventory
 }
 
 // CheckDrift compares the upstream inventory against the registry to identify
-// unmapped features, stale rows, and pending upstream bumps.
+// unmapped features, stale rows, pending upstream bumps, and absent-but-present rows.
 func CheckDrift(inv *inventory.Inventory, reg *registry.Registry) DriftReport {
 	var rep DriftReport
 
@@ -32,7 +33,7 @@ func CheckDrift(inv *inventory.Inventory, reg *registry.Registry) DriftReport {
 		present[k] = true
 
 		// Check if this item is covered by a registry row.
-		if isCovered(it, covered) {
+		if covered[k] {
 			continue
 		}
 
@@ -44,13 +45,22 @@ func CheckDrift(inv *inventory.Inventory, reg *registry.Registry) DriftReport {
 		}
 	}
 
-	// Check for stale rows.
+	// Check for stale rows and absent-but-present rows.
 	for _, r := range reg.Rows {
-		if r.Upstream == nil || r.Upstream.IsZero() || r.Expect == registry.ExpectAbsent {
+		if r.Upstream == nil || r.Upstream.IsZero() {
 			continue
 		}
 
 		upstreamKey := r.Upstream.Key()
+
+		if r.Expect == registry.ExpectAbsent {
+			// Track rows marked absent but whose upstream is in the inventory.
+			if present[upstreamKey] {
+				rep.AbsentButPresent = append(rep.AbsentButPresent, r.ID)
+			}
+			continue
+		}
+
 		if !present[upstreamKey] {
 			// Check if this is a pending-bump row.
 			if isPendingBump(&r, inv) {
@@ -63,58 +73,45 @@ func CheckDrift(inv *inventory.Inventory, reg *registry.Registry) DriftReport {
 
 	// Sort output for determinism.
 	sort.Slice(rep.Unmapped, func(i, j int) bool { return rep.Unmapped[i].Name < rep.Unmapped[j].Name })
+	sort.Slice(rep.FlagWarnings, func(i, j int) bool { return rep.FlagWarnings[i].Name < rep.FlagWarnings[j].Name })
 	sort.Strings(rep.Stale)
 	sort.Strings(rep.PendingBump)
+	sort.Strings(rep.AbsentButPresent)
 
 	return rep
 }
 
-// buildCovered builds a map of covered upstream keys by collecting all upstream
-// keys from registry rows. For route items, also tracks which routes are covered
-// via prefix matching.
+// buildCovered builds a map of covered upstream keys from the registry.
+// It includes exact matches from UpstreamKeys and adds route-prefix coverage:
+// inventory routes with trailing "/" are covered by any registry route with that prefix.
 func buildCovered(reg *registry.Registry, inv *inventory.Inventory) map[string]bool {
 	covered := map[string]bool{}
 
-	for _, r := range reg.Rows {
-		if r.Upstream == nil || r.Upstream.IsZero() {
+	// Add exact upstream keys from registry.
+	upstreamKeys := reg.UpstreamKeys()
+	for key := range upstreamKeys {
+		covered[key] = true
+	}
+
+	// Add route-prefix coverage: mark inventory routes with trailing "/" as covered
+	// if any upstream route has that route as a prefix.
+	for key := range upstreamKeys {
+		// Parse the key to extract the route if it's a route key.
+		if !strings.HasPrefix(key, "route:") {
 			continue
 		}
-		upstreamKey := r.Upstream.Key()
-		covered[upstreamKey] = true
-
-		// For routes, also mark any inventory routes with this route as a prefix as covered.
-		if r.Upstream.Route != "" {
-			for _, it := range inv.Items {
-				if it.Kind == "route" && strings.HasSuffix(it.Name, "/") {
-					if strings.HasPrefix(r.Upstream.Route, it.Name) {
-						k := inv.Key(it)
-						covered[k] = true
-					}
+		route := strings.TrimPrefix(key, "route:")
+		for _, it := range inv.Items {
+			if it.Kind == "route" && strings.HasSuffix(it.Name, "/") {
+				if strings.HasPrefix(route, it.Name) {
+					k := inv.Key(it)
+					covered[k] = true
 				}
 			}
 		}
 	}
 
 	return covered
-}
-
-// isCovered checks if an inventory item is covered by the registry.
-func isCovered(it inventory.Item, covered map[string]bool) bool {
-	invKey := ""
-	if it.Kind == "route" {
-		invKey = "route:" + it.Name
-	} else if it.Kind == "pipe" {
-		invKey = "pipe:" + it.Name
-	} else if it.Kind == "filter" {
-		invKey = "filter:" + it.Name
-	} else if it.Kind == "stats" {
-		invKey = "stats:" + it.Name
-	} else if it.Kind == "traceql" {
-		invKey = "traceql:" + it.Name
-	} else if it.Kind == "flag" {
-		invKey = "flag:" + it.Name
-	}
-	return covered[invKey]
 }
 
 // isPendingBump checks if a row's Since version is newer than the inventory's
@@ -148,6 +145,7 @@ func isPendingBump(r *registry.Row, inv *inventory.Inventory) bool {
 }
 
 // compareVersions compares two dotted-integer version strings.
+// Pre-release suffixes (e.g., "-rc1") are ignored; only the dotted integers are compared.
 // Returns: < 0 if a < b, 0 if a == b, > 0 if a > b.
 func compareVersions(a, b string) int {
 	aParts := strings.Split(a, ".")
@@ -187,14 +185,9 @@ func (d DriftReport) HardFailures() []string {
 
 	for _, it := range d.Unmapped {
 		kind := it.Kind
-		fieldName := kind
-		if kind == "pipe" || kind == "filter" || kind == "stats" || kind == "traceql" {
-			fieldName = kind
-		}
-
 		out = append(out, fmt.Sprintf("upstream %s %q (%s) has no registry row — add to tests/conformance/registry/rows/ e.g.\n"+
 			"  - id: <surface>.%s.<name>.basic\n    origin: native\n    expect: pass\n    upstream: { %s: %s }\n    pending: true",
-			kind, it.Name, it.Source, kind, fieldName, it.Name))
+			kind, it.Name, it.Source, kind, kind, it.Name))
 	}
 
 	for _, id := range d.Stale {
@@ -218,6 +211,15 @@ func (d DriftReport) Summary() string {
 		flagWord = "warnings"
 	}
 	parts = append(parts, fmt.Sprintf("%d flag %s", flagCount, flagWord))
+
+	absentCount := len(d.AbsentButPresent)
+	if absentCount > 0 {
+		absentWord := "absent-but-present"
+		if absentCount != 1 {
+			absentWord = "absent-but-present"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", absentCount, absentWord))
+	}
 
 	return strings.Join(parts, ", ")
 }

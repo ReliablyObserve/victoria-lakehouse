@@ -54,7 +54,7 @@ func TestCheckDrift_UnmappedAndStale(t *testing.T) {
 		t.Fatalf("expected 2 hard failures, got %d: %v", len(hard), hard)
 	}
 	hardStr := strings.Join(hard, "\n")
-	if !strings.Contains(hardStr, "route: /select/logsql/new_thing") {
+	if !strings.Contains(hardStr, "upstream: { route: /select/logsql/new_thing }") {
 		t.Fatalf("hard failures should list the unmapped route with a row stub: %v", hard)
 	}
 }
@@ -154,7 +154,8 @@ func TestCheckDrift_PrefixCoverage(t *testing.T) {
 func TestDrift_RealRegistry(t *testing.T) {
 	inv, err := inventory.Read("inventory.generated.yaml")
 	if err != nil {
-		if _, isNotExist := err.(*os.PathError); isNotExist && os.Getenv("CONFORMANCE_REQUIRE_DEPS") != "1" {
+		// Only skip if the file does not exist; other errors (permission, EISDIR) must fail.
+		if os.IsNotExist(err) && os.Getenv("CONFORMANCE_REQUIRE_DEPS") != "1" {
 			t.Skip("inventory.generated.yaml missing — run make conformance-gen (or set CONFORMANCE_REQUIRE_DEPS=1 to fail)")
 		}
 		t.Fatalf("inventory.generated.yaml missing — run make conformance-gen: %v", err)
@@ -372,5 +373,89 @@ func TestCheckDrift_SummaryMultipleFlagWarnings(t *testing.T) {
 	summary := rep.Summary()
 	if !strings.Contains(summary, "2 flag warnings") {
 		t.Fatalf("expected '2 flag warnings', got: %s", summary)
+	}
+}
+
+// TestCheckDrift_NegativePrefixCoverage ensures non-trailing-slash routes
+// are not covered by prefix matching. /select/logsql/query_time_range must
+// be unmapped when only /select/logsql/query (without /) is cited.
+func TestCheckDrift_NegativePrefixCoverage(t *testing.T) {
+	inv := &inventory.Inventory{
+		VLVersion: "v1.50.0",
+		VTVersion: "v0.9.0",
+		Items: []inventory.Item{
+			{Kind: "route", Name: "/select/logsql/query", Source: "app/vlselect/main.go"},
+			{Kind: "route", Name: "/select/logsql/query_time_range", Source: "app/vlselect/main.go"},
+		},
+	}
+	reg := &registry.Registry{ByID: map[string]*registry.Row{}}
+	// Only cite /select/logsql/query (no prefix semantics since no trailing /)
+	reg.Rows = []registry.Row{{
+		ID:       "vl.select.logsql.query",
+		Title:    "query",
+		Surface:  registry.SurfaceVL,
+		Kind:     registry.KindSelect,
+		Origin:   registry.OriginNative,
+		Expect:   registry.ExpectPass,
+		Targets:  []registry.Target{registry.TargetHot},
+		Seed:     []string{"logs.base"},
+		Upstream: &registry.Upstream{Route: "/select/logsql/query"},
+		Request:  &registry.Request{Method: "GET", Path: "/select/logsql/query"},
+		Compare:  &registry.Compare{Type: "status"},
+		Layers:   []string{"api"},
+	}}
+	rep := CheckDrift(inv, reg)
+	if len(rep.Unmapped) != 1 || rep.Unmapped[0].Name != "/select/logsql/query_time_range" {
+		t.Fatalf("query_time_range should be unmapped (no prefix match without trailing /): %v", rep.Unmapped)
+	}
+}
+
+// TestCheckDrift_AbsentButPresentRows ensures rows with expect=absent whose
+// upstream key IS in the inventory are tracked separately and not marked stale.
+func TestCheckDrift_AbsentButPresentRows(t *testing.T) {
+	inv := &inventory.Inventory{
+		VLVersion: "v1.50.0",
+		VTVersion: "v0.9.0",
+		Items: []inventory.Item{
+			{Kind: "route", Name: "/select/logsql/old_endpoint", Source: "app/vlselect/main.go"},
+		},
+	}
+	reg := &registry.Registry{ByID: map[string]*registry.Row{}}
+	reg.Rows = []registry.Row{{
+		ID:       "vl.select.logsql.old_endpoint.absent",
+		Title:    "old endpoint absent",
+		Surface:  registry.SurfaceVL,
+		Kind:     registry.KindSelect,
+		Origin:   registry.OriginNative,
+		Expect:   registry.ExpectAbsent,
+		Targets:  []registry.Target{registry.TargetHot},
+		Upstream: &registry.Upstream{Route: "/select/logsql/old_endpoint"},
+		Request:  &registry.Request{Method: "GET", Path: "/select/logsql/old_endpoint"},
+		Compare:  &registry.Compare{Type: "absent"},
+		Layers:   []string{"api"},
+	}}
+	rep := CheckDrift(inv, reg)
+	if len(rep.Stale) != 0 {
+		t.Fatalf("absent-but-present rows should not be marked stale: %v", rep.Stale)
+	}
+	if len(rep.AbsentButPresent) != 1 || rep.AbsentButPresent[0] != "vl.select.logsql.old_endpoint.absent" {
+		t.Fatalf("expected 1 absent-but-present, got: %v", rep.AbsentButPresent)
+	}
+}
+
+// TestCheckDrift_SummaryWithAbsentButPresent tests summary includes absent-but-present count.
+func TestCheckDrift_SummaryWithAbsentButPresent(t *testing.T) {
+	rep := DriftReport{
+		Unmapped:         []inventory.Item{{Kind: "route", Name: "/foo"}},
+		Stale:            []string{"vl.foo.bar"},
+		FlagWarnings:     []inventory.Item{{Kind: "flag", Name: "search.x"}},
+		PendingBump:      []string{"vt.foo.bar.pending"},
+		AbsentButPresent: []string{"vl.foo.absent.present"},
+	}
+	summary := rep.Summary()
+	if !strings.Contains(summary, "1 unmapped") || !strings.Contains(summary, "1 stale") ||
+		!strings.Contains(summary, "1 pending-bump") || !strings.Contains(summary, "1 flag warning") ||
+		!strings.Contains(summary, "1 absent-but-present") {
+		t.Fatalf("unexpected summary: %s", summary)
 	}
 }
