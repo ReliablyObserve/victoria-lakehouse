@@ -98,10 +98,12 @@ var quotedArgRe = regexp.MustCompile(`"([^"]*)"`)
 var traceqlIdentRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 // traceqlNonFunctionKeywords lists identifier-shaped isKeyword() literals
-// that are structural syntax, not metric-pipe function names in their own
-// right: "with" introduces the `compare(...) with (...)` clause modifier
-// that follows the compare() function call, so it is a keyword the parser
-// checks for but never a pipe-stage function name on its own.
+// that are not metric functions: "with" is its own standalone query-hint
+// pipe stage (`| with(sampling=0.1, ...)`, parsed by parsePipeWith in
+// lib/traceql/pipe.go's "with": parsePipeWith dispatch entry — pipe.go:69 —
+// registered in the very same pipe-function table as compare/rate/etc, not
+// a clause modifier attached to compare()). It is excluded here purely
+// because it isn't a metric function, the thing this extractor collects.
 var traceqlNonFunctionKeywords = map[string]bool{"with": true}
 
 func ExtractTraceQL(vtDir string) ([]Item, error) {

@@ -19,7 +19,11 @@ func parseAggOverTime(lex *lexer) {
 	}
 }
 
-func parseCompareWith(lex *lexer) {
+// parseWithHint mirrors real VT's parsePipeWith: "with" is its own
+// standalone query-hint pipe stage (`| with(...)`), not a clause attached
+// to another function — see lib/traceql/pipe.go's "with": parsePipeWith
+// dispatch entry.
+func parseWithHint(lex *lexer) {
 	if !lex.isKeyword("with") {
 		return
 	}
