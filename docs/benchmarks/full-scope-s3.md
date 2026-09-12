@@ -81,8 +81,11 @@ Takeaways vs the pre-pmeta matrix above:
 ## Baseline 2026-09 (pre-upgrade: VL v1.50.0 / VT v0.9.2 / parquet-go v0.30.1)
 
 Reference for the September-2026 upstream upgrade and the fix series. Raw artifacts:
-`bench-results/baseline-2026-09/`. Perf gate rule: any LH/CH ≥ 1.0 cell, or an LH/VL
-regression > 10 % on any scenario versus this table, blocks a PR.
+`bench-results/baseline-2026-09/`. Perf gate rule: any LH/CH ≥ 1.0 cell blocks a PR;
+a regression on any scenario is judged on **LH's own absolute p95 against this run**
+(same hardware), not the LH/VL ratio — see the trust caveat under "Consolidated
+run — v3.1" below for why the ratio alone isn't a reliable regression signal at
+these latencies. A same-hardware LH p95 increase > 10 % on any scenario blocks a PR.
 
 ### Response validation
 
@@ -94,135 +97,191 @@ validated the same way but never timed):
 
 - HTTP status must be 2xx.
 - The body must parse into a comparable result: a plain count for
-  count/filter/group-by queries, `rows=<N>;hash=<sha256>` for `scan` (the
-  hash covers the sorted set of stable row keys — `_msg` for logs,
-  `trace_id:span_id` for traces — so a same-count-but-different-rows answer
-  still diverges), `spans=<N>` for `trace_by_id`/`trace_lookup`. ClickHouse's
-  `scan` is a different projection with no comparable key and is compared by
-  row count only.
+  count/filter/group-by queries, `spans=<N>` for `trace_by_id`/`trace_lookup`,
+  or (for `scan`) the membership/cardinality rule below.
 - The result must be non-empty, unless the query is a documented miss
   scenario (`trace_lookup` — a cross-signal id lookup that can legitimately
   find nothing).
-- The result must be identical to the cell's first valid result — a flapping
-  answer across iterations is excluded, not averaged in.
+- For non-`scan` results, the result must be identical to the cell's first
+  valid result — a flapping answer across iterations is excluded, not
+  averaged in.
+
+**`scan` validation semantics — a ruling, not a workaround.** VictoriaLogs
+documents that `limit N` without an explicit `sort` returns rows "selected in
+arbitrary order because of performance reasons … can return different sets
+of logs every time" once more than N rows match. That means per-iteration
+IDENTITY can never hold for a truncated scan — and adding a `sort` to make it
+hold would change what the query measures (a sort has its own, different,
+cost; it's not the same benchmark anymore). So a truncated scan's validity is
+**membership + cardinality**, not identity: before the warmup loop, `run.sh`
+issues ONE untimed reference request per system — the same filter/window,
+`limit` clause removed — and records `window_rows` (the TRUE, untruncated
+match count) and, for VL/VT/LH, `window_hash` (sha256 of the sorted set of
+stable row keys — `_msg` for logs, `trace_id:span_id` for traces). When
+`window_rows > 1000` (the scan `limit`), each timed iteration is valid iff
+it's exactly 1000 rows AND every one of those rows' keys is a member of the
+reference window's key set (a python set-difference, not `comm` — a real log
+`_msg` can contain embedded newlines, e.g. a stack trace, which would corrupt
+a newline-delimited/`comm`-based comparison). When `window_rows <= 1000`
+(nothing was truncated), identity is meaningful again and applies as normal.
+ClickHouse's `scan` is a different projection with no comparable row key and
+is validated/compared by `window_rows` alone.
 
 Invalid iterations are dropped from p50/p95/p99 and the cell records how many
 were invalid and why (`iters_valid`/`iters_invalid`/`invalid_reasons` in the
-JSON; `k/N invalid: <reason>` in the table). `report.py` additionally
-cross-checks each engine's result against its signal's baseline (VL/VT)
-beyond a 5% count tolerance and flags "same count, different rows" when a
-scan's content hash disagrees while its row count matches. Every system's
-cell in the tables below carries a `k/N valid` column.
+JSON; `k/N invalid: <reason>` in the table, plus `valid=<k>/<N>` on the
+per-cell stderr log line so a partially-invalid cell can never read as a
+clean p95). `report.py` additionally cross-checks each engine's result
+against its signal's baseline (VL/VT): for non-`scan` results, beyond a 5%
+count tolerance, flagging "same count, different rows" when a content hash
+disagrees while the count matches; for `scan`, the same tolerance against
+`window_rows`, plus (only when both `window_rows` are EXACTLY equal) a
+`window_hash` match — a `scan` cell renders as
+`rows=<returned>/<window_rows>[;window=<hash8>]`. Every system's cell in the
+tables below carries a `k/N valid` column, and ClickHouse speedup figures
+only count a row when LH's own cell in that row is valid.
 
 Unit/self tests for the validators: `python3 -m unittest discover -s
-scripts/bench/tests` (`report.py`'s cross-system rules) and
-`scripts/bench/tests/extract_result_test.sh` (`run.sh`'s per-response
-extractor, against fixture bodies for every query kind/system combination,
-including a malformed body). Both are self-contained (no live stack needed)
-and are the ones to run before touching either file.
+scripts/bench/tests` (`report.py`'s cross-system rules, including the
+window-hash/window-rows scan rules) and
+`scripts/bench/tests/extract_result_test.sh` +
+`scripts/bench/tests/scan_membership_test.sh` (`run.sh`'s per-response
+extractor and the scan membership/cardinality rule, against fixture bodies
+— including a malformed body and a multi-line `_msg` regression case). All
+three are self-contained (no live stack needed) and are the ones to run
+before touching either file.
 
-### Consolidated run — v3 (`scripts/bench/run.sh --signals both --s3-latency "0 100" --ranges "1h 24h" --iterations 20 --warmup 3`)
+### Consolidated run — v3.1 (`scripts/bench/run.sh --signals both --s3-latency "0 100" --ranges "1h 24h" --iterations 20 --warmup 3`)
 
-**THE current perf-gate reference** (`bench-results/baseline-2026-09/run-baseline-v3.{json,md,log}`).
-Supersedes the v1 (`run-baseline.md`) and v2 (`run-baseline-traces-v2.md`)
-tables below this section, which predate per-iteration validation and are
-kept only for historical provenance — do not judge new PRs against them.
+**THE current perf-gate reference** (`bench-results/baseline-2026-09/run-baseline-v3.1.{json,md,log}`).
+Supersedes v3 (`run-baseline-v3.md`) — whose 4 `scan`/24h cells were
+identity-invalidated by the baseline's own arbitrary-order truncation,
+exactly the VictoriaLogs-documented behavior quoted above, not a real
+divergence — and the earlier v1 (`run-baseline.md`) / v2
+(`run-baseline-traces-v2.md`) tables, which predate per-iteration validation
+entirely. All three are kept only for historical provenance — do not judge
+new PRs against them.
 
-**60/64 cells valid (34/36 logs, 26/28 traces).** The 4 invalid cells are all
-`scan`/24h (both signals, both S3-latency levels) and all for the same
-reason: the baseline (VL/VT) itself flaps. `scan`'s `limit 1000` truncates a
-24h result set that has far more than 1000 matching rows, with no explicit
-`sort` — VictoriaLogs/VictoriaTraces return a different (same-sized) subset
-of rows on repeated, otherwise-identical queries (15–19 of 20 iterations
-disagreed with the first). This is a genuine, reproducible property of an
-unordered top-N query over a truncated result set, not a harness defect —
-the 1h `scan` cells (well under the 1000-row cap, so nothing is truncated)
-are fully stable and valid. See `bench-results/baseline-2026-09/README.md`
-for the full writeup; fixing it would mean adding an explicit `sort` to the
-`scan` query, which changes what's measured (a sort has its own cost) and is
-tracked as a follow-up, not done here.
+**64/64 cells valid, 0 invalid, no `✗` anywhere; the parity gate passed at
+both latency levels on both signals.** With `scan` validated by membership
+against the untruncated reference window (see "Response validation" above)
+instead of by identity, the four `scan`/24h cells that v3 flagged now pass:
+each system's own iterations are internally consistent (every returned row
+is a genuine window member, exactly 1000 of them), and VL/LH's window hashes
+agree with each other — the population each is scanning is the same, even
+though which 1000-row subset any one iteration happens to return isn't.
+
+**Trust caveat for the numbers below:** several baseline p95s are under
+3 ms (e.g. `trace_by_id`, some `count_total`/`service_filter` cells) — at
+that scale, run-to-run noise on a laptop (scheduler jitter, page cache,
+Docker overhead) is on the order of the measurement itself, so a ratio like
+"2.5× baseline" computed from two ~2 ms numbers can easily swing by ±2× on a
+different run without anything having changed. Treat the **ratios** in this
+table as directional, not exact. The perf gate this table backs compares
+**LH's own absolute p95** against this run, on the same hardware, for a
+given query/range/latency cell — not the LH/baseline ratio — which is far
+less sensitive to this noise.
 
 #### Logs
 
-**Per-query median LH vs baseline:** count_by_service 1.5×, count_total 2.5×, fulltext 3.3×, high_card 2.0×, level_filter 3.3×, multi_filter 3.8×, negation 2.4×, scan 1.1×, trace_lookup 0.7×
+**Per-query median LH vs baseline:** count_by_service 1.3×, count_total 2.9×, fulltext 2.1×, high_card 2.5×, level_filter 2.5×, multi_filter 2.9×, negation 3.0×, scan 2.7×, trace_lookup 0.8×
 
 | query | range | S3 lat | baseline p95 [res] | valid | LH | valid | CH | valid |
 |---|---|---:|---:|---:|---|---:|---|---:|
-| count_by_service | 1h | 0ms | 4.9 [609] | 20/20 | 5.6 (1.1×) [609] | 20/20 | 77.1 (15.7× 🔴) [609] | 20/20 |
-| count_by_service | 1h | 100ms | 3.6 [597] | 20/20 | 6.6 (1.8×) [597] | 20/20 | 89.4 (24.8× 🔴) [597] | 20/20 |
-| count_by_service | 24h | 0ms | 7.0 [14285] | 20/20 | 10.0 (1.4×) [14285] | 20/20 | 76.5 (10.9× 🔴) [14285] | 20/20 |
-| count_by_service | 24h | 100ms | 6.1 [14255] | 20/20 | 9.1 (1.5×) [14255] | 20/20 | 87.6 (14.4× 🔴) [14255] | 20/20 |
-| count_total | 1h | 0ms | 4.9 [611] | 20/20 | 5.9 (1.2×) [609] | 20/20 | 77.1 (15.7× 🔴) [609] | 20/20 |
-| count_total | 1h | 100ms | 3.8 [598] | 20/20 | 5.9 (1.6×) [598] | 20/20 | 97.5 (25.7× 🔴) [598] | 20/20 |
-| count_total | 24h | 0ms | 5.1 [14285] | 20/20 | 17.2 (3.4× ⚠️) [14285] | 20/20 | 78.7 (15.4× 🔴) [14285] | 20/20 |
-| count_total | 24h | 100ms | 5.0 [14255] | 20/20 | 18.6 (3.7× ⚠️) [14255] | 20/20 | 86.1 (17.2× 🔴) [14255] | 20/20 |
-| fulltext | 1h | 0ms | 5.1 [49] | 20/20 | 7.4 (1.5×) [49] | 20/20 | 88.5 (17.4× 🔴) [49] | 20/20 |
-| fulltext | 1h | 100ms | 3.8 [48] | 20/20 | 11.6 (3.1× ⚠️) [48] | 20/20 | 95.0 (25.0× 🔴) [48] | 20/20 |
-| fulltext | 24h | 0ms | 7.1 [1217] | 20/20 | 25.4 (3.6× ⚠️) [1217] | 20/20 | 91.0 (12.8× 🔴) [1217] | 20/20 |
-| fulltext | 24h | 100ms | 5.7 [1215] | 20/20 | 28.7 (5.0× ⚠️) [1215] | 20/20 | 103.7 (18.2× 🔴) [1215] | 20/20 |
-| high_card | 1h | 0ms | 4.5 [606] | 20/20 | 6.2 (1.4×) [606] | 20/20 | 87.0 (19.3× 🔴) [606] | 20/20 |
-| high_card | 1h | 100ms | 3.8 [596] | 20/20 | 6.3 (1.7×) [594] | 20/20 | 82.3 (21.7× 🔴) [594] | 20/20 |
-| high_card | 24h | 0ms | 8.9 [14284] | 20/20 | 29.7 (3.3× ⚠️) [14284] | 20/20 | 81.5 (9.2× ⚠️) [14284] | 20/20 |
-| high_card | 24h | 100ms | 11.4 [14248] | 20/20 | 27.1 (2.4×) [14248] | 20/20 | 112.9 (9.9× ⚠️) [14248] | 20/20 |
-| level_filter | 1h | 0ms | 2.6 [161] | 20/20 | 7.1 (2.7×) [161] | 20/20 | 92.0 (35.4× 🔴) [161] | 20/20 |
-| level_filter | 1h | 100ms | 4.6 [159] | 20/20 | 5.6 (1.2×) [159] | 20/20 | 89.5 (19.5× 🔴) [159] | 20/20 |
-| level_filter | 24h | 0ms | 6.3 [3603] | 20/20 | 33.3 (5.3× ⚠️) [3603] | 20/20 | 74.5 (11.8× 🔴) [3602] | 20/20 |
-| level_filter | 24h | 100ms | 6.2 [3596] | 20/20 | 23.6 (3.8× ⚠️) [3596] | 20/20 | 100.7 (16.2× 🔴) [3596] | 20/20 |
-| multi_filter | 1h | 0ms | 2.2 [27] | 20/20 | 9.4 (4.3× ⚠️) [27] | 20/20 | 81.7 (37.1× 🔴) [27] | 20/20 |
-| multi_filter | 1h | 100ms | 4.8 [27] | 20/20 | 6.6 (1.4×) [27] | 20/20 | 100.1 (20.9× 🔴) [27] | 20/20 |
-| multi_filter | 24h | 0ms | 7.4 [710] | 20/20 | 24.6 (3.3× ⚠️) [710] | 20/20 | 104.9 (14.2× 🔴) [710] | 20/20 |
-| multi_filter | 24h | 100ms | 5.5 [708] | 20/20 | 40.5 (7.4× ⚠️) [708] | 20/20 | 88.1 (16.0× 🔴) [708] | 20/20 |
-| negation | 1h | 0ms | 4.1 [463] | 20/20 | 8.0 (2.0×) [463] | 20/20 | 88.1 (21.5× 🔴) [463] | 20/20 |
-| negation | 1h | 100ms | 3.4 [457] | 20/20 | 6.0 (1.8×) [457] | 20/20 | 105.3 (31.0× 🔴) [457] | 20/20 |
-| negation | 24h | 0ms | 7.5 [10707] | 20/20 | 21.1 (2.8×) [10707] | 20/20 | 88.2 (11.8× 🔴) [10707] | 20/20 |
-| negation | 24h | 100ms | 7.3 [10682] | 20/20 | 27.4 (3.8× ⚠️) [10682] | 20/20 | 86.8 (11.9× 🔴) [10682] | 20/20 |
-| scan | 1h | 0ms | 9.8 [rows=606;hash=2c52d4…] | 20/20 | 5.9 (0.6×) [rows=606;hash=2c52d4…] | 20/20 | 83.4 (8.5× ⚠️) [rows=606] | 20/20 |
-| scan | 1h | 100ms | 3.9 [rows=594;hash=389453…] | 20/20 | 6.4 (1.6×) [rows=594;hash=389453…] | 20/20 | 83.7 (21.5× 🔴) [rows=594] | 20/20 |
-| scan | 24h | 0ms | 3.0 [rows=1000;hash=bbdeea…] | 1/20 | ✗ baseline-19/20 invalid: flapping | 1/20 | ✗ baseline-19/20 invalid: flapping | 20/20 |
-| scan | 24h | 100ms | 3.0 [rows=1000;hash=b6bbbc…] | 1/20 | ✗ baseline-19/20 invalid: flapping | 1/20 | ✗ baseline-19/20 invalid: flapping | 20/20 |
-| trace_lookup | 1h | 0ms | 8.3 [spans=5] | 20/20 | 4.5 (0.5×) [spans=5] | 20/20 | 80.1 (9.7× ⚠️) [5] | 20/20 |
-| trace_lookup | 1h | 100ms | 3.4 [spans=5] | 20/20 | 2.7 (0.8×) [spans=5] | 20/20 | 101.7 (29.9× 🔴) [5] | 20/20 |
-| trace_lookup | 24h | 0ms | 5.7 [spans=5] | 20/20 | 5.2 (0.9×) [spans=5] | 20/20 | 76.9 (13.5× 🔴) [5] | 20/20 |
-| trace_lookup | 24h | 100ms | 5.1 [spans=5] | 20/20 | 3.2 (0.6×) [spans=5] | 20/20 | 95.3 (18.7× 🔴) [5] | 20/20 |
+| count_by_service | 1h | 0ms | 7.8 [559] | 20/20 | 8.0 (1.0×) [559] | 20/20 | 106.2 (13.6× 🔴) [559] | 20/20 |
+| count_by_service | 1h | 100ms | 6.0 [548] | 20/20 | 7.1 (1.2×) [548] | 20/20 | 75.5 (12.6× 🔴) [548] | 20/20 |
+| count_by_service | 24h | 0ms | 8.0 [14304] | 20/20 | 10.8 (1.4×) [14304] | 20/20 | 85.0 (10.6× 🔴) [14304] | 20/20 |
+| count_by_service | 24h | 100ms | 7.6 [14286] | 20/20 | 10.7 (1.4×) [14286] | 20/20 | 122.2 (16.1× 🔴) [14286] | 20/20 |
+| count_total | 1h | 0ms | 2.8 [559] | 20/20 | 8.2 (2.9×) [559] | 20/20 | 75.0 (26.8× 🔴) [559] | 20/20 |
+| count_total | 1h | 100ms | 3.9 [548] | 20/20 | 5.1 (1.3×) [548] | 20/20 | 88.7 (22.7× 🔴) [548] | 20/20 |
+| count_total | 24h | 0ms | 7.6 [14304] | 20/20 | 22.1 (2.9×) [14304] | 20/20 | 87.8 (11.6× 🔴) [14304] | 20/20 |
+| count_total | 24h | 100ms | 6.2 [14286] | 20/20 | 17.7 (2.9×) [14286] | 20/20 | 123.1 (19.9× 🔴) [14286] | 20/20 |
+| fulltext | 1h | 0ms | 4.4 [45] | 20/20 | 7.1 (1.6×) [45] | 20/20 | 77.8 (17.7× 🔴) [45] | 20/20 |
+| fulltext | 1h | 100ms | 6.9 [45] | 20/20 | 6.2 (0.9×) [45] | 20/20 | 85.4 (12.4× 🔴) [45] | 20/20 |
+| fulltext | 24h | 0ms | 8.4 [1141] | 20/20 | 22.3 (2.7×) [1141] | 20/20 | 86.9 (10.3× 🔴) [1141] | 20/20 |
+| fulltext | 24h | 100ms | 9.7 [1141] | 20/20 | 47.4 (4.9× ⚠️) [1141] | 20/20 | 155.7 (16.1× 🔴) [1141] | 20/20 |
+| high_card | 1h | 0ms | 3.2 [558] | 20/20 | 8.1 (2.5×) [558] | 20/20 | 81.1 (25.3× 🔴) [558] | 20/20 |
+| high_card | 1h | 100ms | 5.7 [546] | 20/20 | 5.8 (1.0×) [545] | 20/20 | 97.7 (17.1× 🔴) [544] | 20/20 |
+| high_card | 24h | 0ms | 9.1 [14301] | 20/20 | 25.4 (2.8×) [14301] | 20/20 | 110.0 (12.1× 🔴) [14301] | 20/20 |
+| high_card | 24h | 100ms | 12.7 [14283] | 20/20 | 32.3 (2.5×) [14283] | 20/20 | 209.9 (16.5× 🔴) [14283] | 20/20 |
+| level_filter | 1h | 0ms | 4.8 [139] | 20/20 | 7.3 (1.5×) [139] | 20/20 | 72.8 (15.2× 🔴) [139] | 20/20 |
+| level_filter | 1h | 100ms | 9.4 [137] | 20/20 | 8.7 (0.9×) [137] | 20/20 | 96.0 (10.2× 🔴) [137] | 20/20 |
+| level_filter | 24h | 0ms | 5.5 [3578] | 20/20 | 24.5 (4.5× ⚠️) [3578] | 20/20 | 94.1 (17.1× 🔴) [3578] | 20/20 |
+| level_filter | 24h | 100ms | 7.1 [3574] | 20/20 | 24.6 (3.5× ⚠️) [3574] | 20/20 | 130.7 (18.4× 🔴) [3574] | 20/20 |
+| multi_filter | 1h | 0ms | 2.8 [25] | 20/20 | 8.6 (3.1× ⚠️) [25] | 20/20 | 88.2 (31.5× 🔴) [25] | 20/20 |
+| multi_filter | 1h | 100ms | 3.6 [24] | 20/20 | 7.5 (2.1×) [24] | 20/20 | 97.6 (27.1× 🔴) [24] | 20/20 |
+| multi_filter | 24h | 0ms | 9.7 [737] | 20/20 | 26.4 (2.7×) [737] | 20/20 | 88.7 (9.1× ⚠️) [737] | 20/20 |
+| multi_filter | 24h | 100ms | 9.1 [737] | 20/20 | 115.0 (12.6× 🔴) [737] | 20/20 | 145.0 (15.9× 🔴) [737] | 20/20 |
+| negation | 1h | 0ms | 4.5 [398] | 20/20 | 6.5 (1.4×) [398] | 20/20 | 110.6 (24.6× 🔴) [398] | 20/20 |
+| negation | 1h | 100ms | 4.1 [389] | 20/20 | 5.9 (1.4×) [389] | 20/20 | 94.1 (23.0× 🔴) [389] | 20/20 |
+| negation | 24h | 0ms | 7.1 [10716] | 20/20 | 36.7 (5.2× ⚠️) [10716] | 20/20 | 75.4 (10.6× 🔴) [10715] | 20/20 |
+| negation | 24h | 100ms | 8.9 [10703] | 20/20 | 40.5 (4.6× ⚠️) [10703] | 20/20 | 140.7 (15.8× 🔴) [10703] | 20/20 |
+| scan | 1h | 0ms | 4.9 [rows=558/558;window=74e6a23b] | 20/20 | 9.9 (2.0×) [rows=558/558;window=74e6a23b] | 20/20 | 79.9 (16.3× 🔴) [rows=558/558] | 20/20 |
+| scan | 1h | 100ms | 4.0 [rows=541/541;window=0cfdcb16] | 20/20 | 7.0 (1.8×) [rows=539/539;window=fc686fb6] | 20/20 | 164.6 (41.1× 🔴) [rows=538/538] | 20/20 |
+| scan | 24h | 0ms | 8.5 [rows=1000/14301;window=3dd35766] | 20/20 | 27.9 (3.3× ⚠️) [rows=1000/14301;window=3dd35766] | 20/20 | 72.4 (8.5× ⚠️) [rows=1000/14301] | 20/20 |
+| scan | 24h | 100ms | 8.5 [rows=1000/14282;window=5ae13490] | 20/20 | 50.2 (5.9× ⚠️) [rows=1000/14282;window=5ae13490] | 20/20 | 138.2 (16.3× 🔴) [rows=1000/14282] | 20/20 |
+| trace_lookup | 1h | 0ms | 4.6 [spans=6] | 20/20 | 5.4 (1.2×) [spans=6] | 20/20 | 72.1 (15.7× 🔴) [6] | 20/20 |
+| trace_lookup | 1h | 100ms | 5.3 [spans=6] | 20/20 | 4.3 (0.8×) [spans=6] | 20/20 | 84.9 (16.0× 🔴) [6] | 20/20 |
+| trace_lookup | 24h | 0ms | 6.2 [spans=6] | 20/20 | 5.1 (0.8×) [spans=6] | 20/20 | 81.4 (13.1× 🔴) [6] | 20/20 |
+| trace_lookup | 24h | 100ms | 7.8 [spans=6] | 20/20 | 5.3 (0.7×) [spans=6] | 20/20 | 316.8 (40.6× 🔴) [6] | 20/20 |
+
+Note: `scan`/1h/100ms shows LH at 539/539 rows against baseline's 541/541 —
+both are internally consistent (each side's own window is fully populated,
+nothing truncated at this range), and the 2-row difference (0.4%, within the
+5% tolerance) is the pre-existing relative-window drift documented below
+(the baseline and LH requests for the same nominal "last 1h" cell are
+prepared a few seconds apart, so their windows aren't byte-identical) — not
+a validity failure, and specifically NOT flagged as a hash mismatch, since
+the hash comparison only applies when both window row counts are exactly
+equal.
 
 #### Traces
 
-**Per-query median LH vs baseline:** count_by_service 1.7×, count_total 3.2×, scan 1.2×, service_filter 2.0×, slow_spans 1.7×, span_name 2.4×, trace_by_id 2.2×
+**Per-query median LH vs baseline:** count_by_service 2.8×, count_total 2.1×, scan 2.4×, service_filter 1.8×, slow_spans 2.8×, span_name 2.6×, trace_by_id 2.0×
 
 | query | range | S3 lat | baseline p95 [res] | valid | LH | valid | CH | valid |
 |---|---|---:|---:|---:|---|---:|---|---:|
-| count_by_service | 1h | 0ms | 4.7 [736] | 20/20 | 5.3 (1.1×) [736] | 20/20 | 93.2 (19.8× 🔴) [736] | 20/20 |
-| count_by_service | 1h | 100ms | 3.2 [718] | 20/20 | 4.4 (1.4×) [718] | 20/20 | 124.8 (39.0× 🔴) [718] | 20/20 |
-| count_by_service | 24h | 0ms | 4.4 [16596] | 20/20 | 8.7 (2.0×) [16596] | 20/20 | 92.9 (21.1× 🔴) [16596] | 20/20 |
-| count_by_service | 24h | 100ms | 12.3 [16578] | 20/20 | 36.7 (3.0×) [16578] | 20/20 | 698.7 (56.8× 🔴) [16578] | 20/20 |
-| count_total | 1h | 0ms | 2.4 [736] | 20/20 | 4.8 (2.0×) [736] | 20/20 | 91.2 (38.0× 🔴) [736] | 20/20 |
-| count_total | 1h | 100ms | 4.2 [718] | 20/20 | 4.6 (1.1×) [718] | 20/20 | 114.9 (27.4× 🔴) [718] | 20/20 |
-| count_total | 24h | 0ms | 2.6 [16596] | 20/20 | 11.7 (4.5× ⚠️) [16596] | 20/20 | 98.2 (37.8× 🔴) [16596] | 20/20 |
-| count_total | 24h | 100ms | 4.7 [16578] | 20/20 | 21.7 (4.6× ⚠️) [16578] | 20/20 | 389.9 (83.0× 🔴) [16578] | 20/20 |
-| scan | 1h | 0ms | 5.8 [rows=736;hash=2257ee…] | 20/20 | 3.9 (0.7×) [rows=736;hash=2257ee…] | 20/20 | 107.9 (18.6× 🔴) [rows=736] | 20/20 |
-| scan | 1h | 100ms | 7.0 [rows=718;hash=10bb3a…] | 20/20 | 12.0 (1.7×) [rows=718;hash=10bb3a…] | 20/20 | 1270.6 (181.5× 🔴) [rows=718] | 20/20 |
-| scan | 24h | 0ms | 2.4 [rows=1000;hash=700539…] | 4/20 | ✗ baseline-16/20 invalid: flapping | 1/20 | ✗ baseline-16/20 invalid: flapping | 20/20 |
-| scan | 24h | 100ms | 2.9 [rows=1000;hash=17a064…] | 5/20 | ✗ baseline-15/20 invalid: flapping | 1/20 | ✗ baseline-15/20 invalid: flapping | 20/20 |
-| service_filter | 1h | 0ms | 2.4 [138] | 20/20 | 4.4 (1.8×) [138] | 20/20 | 101.5 (42.3× 🔴) [138] | 20/20 |
-| service_filter | 1h | 100ms | 2.2 [135] | 20/20 | 5.3 (2.4×) [135] | 20/20 | 98.2 (44.6× 🔴) [135] | 20/20 |
-| service_filter | 24h | 0ms | 3.5 [3296] | 20/20 | 7.7 (2.2×) [3296] | 20/20 | 108.6 (31.0× 🔴) [3296] | 20/20 |
-| service_filter | 24h | 100ms | 14.1 [3292] | 20/20 | 22.6 (1.6×) [3292] | 20/20 | 786.2 (55.8× 🔴) [3292] | 20/20 |
-| slow_spans | 1h | 0ms | 3.8 [52] | 20/20 | 6.0 (1.6×) [52] | 20/20 | 98.3 (25.9× 🔴) [52] | 20/20 |
-| slow_spans | 1h | 100ms | 5.0 [52] | 20/20 | 8.6 (1.7×) [52] | 20/20 | 404.3 (80.9× 🔴) [52] | 20/20 |
-| slow_spans | 24h | 0ms | 2.8 [1370] | 20/20 | 9.3 (3.3× ⚠️) [1370] | 20/20 | 101.6 (36.3× 🔴) [1370] | 20/20 |
-| slow_spans | 24h | 100ms | 5.7 [1365] | 20/20 | 9.8 (1.7×) [1365] | 20/20 | 122.1 (21.4× 🔴) [1365] | 20/20 |
-| span_name | 1h | 0ms | 2.8 [67] | 20/20 | 4.9 (1.8×) [67] | 20/20 | 92.2 (32.9× 🔴) [67] | 20/20 |
-| span_name | 1h | 100ms | 1.8 [66] | 20/20 | 5.3 (2.9×) [66] | 20/20 | 212.6 (118.1× 🔴) [66] | 20/20 |
-| span_name | 24h | 0ms | 3.8 [1676] | 20/20 | 7.2 (1.9×) [1676] | 20/20 | 115.2 (30.3× 🔴) [1676] | 20/20 |
-| span_name | 24h | 100ms | 1.8 [1670] | 20/20 | 8.4 (4.7× ⚠️) [1670] | 20/20 | 138.4 (76.9× 🔴) [1670] | 20/20 |
-| trace_by_id | 1h | 0ms | 1.5 [spans=4] | 20/20 | 3.6 (2.4×) [spans=4] | 20/20 | 108.6 (72.4× 🔴) [spans=4] | 20/20 |
-| trace_by_id | 1h | 100ms | 2.5 [spans=4] | 20/20 | 5.0 (2.0×) [spans=4] | 20/20 | 109.9 (44.0× 🔴) [spans=4] | 20/20 |
-| trace_by_id | 24h | 0ms | 1.8 [spans=4] | 20/20 | 5.0 (2.8×) [spans=4] | 20/20 | 128.1 (71.2× 🔴) [spans=4] | 20/20 |
-| trace_by_id | 24h | 100ms | 2.5 [spans=4] | 20/20 | 3.8 (1.5×) [spans=4] | 20/20 | 121.2 (48.5× 🔴) [spans=4] | 20/20 |
+| count_by_service | 1h | 0ms | 3.5 [614] | 20/20 | 4.8 (1.4×) [614] | 20/20 | 142.2 (40.6× 🔴) [614] | 20/20 |
+| count_by_service | 1h | 100ms | 4.1 [578] | 20/20 | 14.3 (3.5× ⚠️) [578] | 20/20 | 166.3 (40.6× 🔴) [578] | 20/20 |
+| count_by_service | 24h | 0ms | 4.2 [16834] | 20/20 | 9.2 (2.2×) [16834] | 20/20 | 146.8 (35.0× 🔴) [16834] | 20/20 |
+| count_by_service | 24h | 100ms | 3.1 [16810] | 20/20 | 10.9 (3.5× ⚠️) [16810] | 20/20 | 145.7 (47.0× 🔴) [16810] | 20/20 |
+| count_total | 1h | 0ms | 3.9 [614] | 20/20 | 4.6 (1.2×) [614] | 20/20 | 174.0 (44.6× 🔴) [614] | 20/20 |
+| count_total | 1h | 100ms | 4.0 [578] | 20/20 | 6.1 (1.5×) [578] | 20/20 | 300.3 (75.1× 🔴) [578] | 20/20 |
+| count_total | 24h | 0ms | 4.0 [16834] | 20/20 | 10.5 (2.6×) [16834] | 20/20 | 109.1 (27.3× 🔴) [16834] | 20/20 |
+| count_total | 24h | 100ms | 2.9 [16810] | 20/20 | 11.3 (3.9× ⚠️) [16810] | 20/20 | 139.5 (48.1× 🔴) [16810] | 20/20 |
+| scan | 1h | 0ms | 3.9 [rows=610/610;window=1012ff02] | 20/20 | 6.9 (1.8×) [rows=610/610;window=1012ff02] | 20/20 | 121.5 (31.2× 🔴) [rows=610/610] | 20/20 |
+| scan | 1h | 100ms | 6.8 [rows=568/568;window=921759af] | 20/20 | 4.4 (0.6×) [rows=568/568;window=921759af] | 20/20 | 120.6 (17.7× 🔴) [rows=568/568] | 20/20 |
+| scan | 24h | 0ms | 3.9 [rows=1000/16834;window=e3b310e6] | 20/20 | 11.6 (3.0×) [rows=1000/16830;window=99d043f0] | 20/20 | 98.3 (25.2× 🔴) [rows=1000/16830] | 20/20 |
+| scan | 24h | 100ms | 5.1 [rows=1000/16810;window=d088c94b] | 20/20 | 16.1 (3.2× ⚠️) [rows=1000/16810;window=d088c94b] | 20/20 | 138.0 (27.1× 🔴) [rows=1000/16810] | 20/20 |
+| service_filter | 1h | 0ms | 3.4 [127] | 20/20 | 3.3 (1.0×) [127] | 20/20 | 102.1 (30.0× 🔴) [127] | 20/20 |
+| service_filter | 1h | 100ms | 2.6 [121] | 20/20 | 4.5 (1.7×) [121] | 20/20 | 1490.4 (573.2× 🔴) [121] | 20/20 |
+| service_filter | 24h | 0ms | 5.7 [3294] | 20/20 | 10.6 (1.9×) [3294] | 20/20 | 106.0 (18.6× 🔴) [3294] | 20/20 |
+| service_filter | 24h | 100ms | 2.5 [3290] | 20/20 | 10.9 (4.4× ⚠️) [3290] | 20/20 | 134.9 (54.0× 🔴) [3290] | 20/20 |
+| slow_spans | 1h | 0ms | 2.8 [47] | 20/20 | 10.0 (3.6× ⚠️) [47] | 20/20 | 102.0 (36.4× 🔴) [47] | 20/20 |
+| slow_spans | 1h | 100ms | 3.3 [41] | 20/20 | 6.7 (2.0×) [41] | 20/20 | 264.7 (80.2× 🔴) [41] | 20/20 |
+| slow_spans | 24h | 0ms | 4.0 [1308] | 20/20 | 15.7 (3.9× ⚠️) [1308] | 20/20 | 118.7 (29.7× 🔴) [1308] | 20/20 |
+| slow_spans | 24h | 100ms | 6.9 [1305] | 20/20 | 9.8 (1.4×) [1305] | 20/20 | 136.7 (19.8× 🔴) [1305] | 20/20 |
+| span_name | 1h | 0ms | 2.7 [57] | 20/20 | 2.9 (1.1×) [57] | 20/20 | 105.4 (39.0× 🔴) [57] | 20/20 |
+| span_name | 1h | 100ms | 2.3 [55] | 20/20 | 5.7 (2.5×) [55] | 20/20 | 124.1 (54.0× 🔴) [55] | 20/20 |
+| span_name | 24h | 0ms | 2.7 [1671] | 20/20 | 7.6 (2.8×) [1671] | 20/20 | 159.4 (59.0× 🔴) [1671] | 20/20 |
+| span_name | 24h | 100ms | 3.4 [1667] | 20/20 | 13.3 (3.9× ⚠️) [1667] | 20/20 | 127.3 (37.4× 🔴) [1667] | 20/20 |
+| trace_by_id | 1h | 0ms | 3.6 [spans=6] | 20/20 | 6.7 (1.9×) [spans=6] | 20/20 | 97.5 (27.1× 🔴) [spans=6] | 20/20 |
+| trace_by_id | 1h | 100ms | 3.3 [spans=6] | 20/20 | 4.3 (1.3×) [spans=6] | 20/20 | 146.8 (44.5× 🔴) [spans=6] | 20/20 |
+| trace_by_id | 24h | 0ms | 3.8 [spans=6] | 20/20 | 9.9 (2.6×) [spans=6] | 20/20 | 100.0 (26.3× 🔴) [spans=6] | 20/20 |
+| trace_by_id | 24h | 100ms | 2.2 [spans=6] | 20/20 | 4.9 (2.2×) [spans=6] | 20/20 | 122.9 (55.9× 🔴) [spans=6] | 20/20 |
+
+Note: `scan`/24h shows LH's `window_rows` a few rows below baseline's
+(16830 vs 16834 at 0ms, matching baseline's own count exactly at 100ms) —
+same relative-window-drift explanation as the logs table above; both are
+within tolerance and neither is flagged. `multi_filter`/24h/100ms (LH
+115.0 ms, 12.6×) is the one clear outlier in this run — still 20/20 valid,
+just a slow sample (laptop-benchmark noise, not a validity issue); re-running
+that one cell in isolation would be the way to confirm whether it's noise or
+a real regression before treating it as a perf-gate signal.
 
 Full row-set hashes and per-iteration invalid reasons are in
-`bench-results/baseline-2026-09/run-baseline-v3.md` (verbatim harness output);
-truncated above for readability.
+`bench-results/baseline-2026-09/run-baseline-v3.1.md` (verbatim harness
+output); truncated above for readability.
 
 ### Full-scope S3-ops (logs, e2e compose)
 

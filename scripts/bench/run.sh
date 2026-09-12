@@ -94,13 +94,37 @@ log() { printf '\033[1;36m[bench]\033[0m %s\n' "$*" >&2; }
 # A benchmark cell is only meaningful when every timed request returned a
 # correct, valid response — a fast wrong/empty/error answer is a BROKEN
 # response and must never be counted as latency (this is exactly the
-# VT-empty-cells failure mode from Task 5).
+# VT-empty-cells failure mode found while recording the pre-validation baseline).
 #
 # MISS_QUERIES lists query kinds whose *correct* answer can legitimately be
 # empty (a cross-signal lookup that doesn't correlate); every other query's
 # empty result is treated as invalid, not a real answer.
 MISS_QUERIES=" trace_lookup "
 is_miss_query() { [[ "$MISS_QUERIES" == *" $1 "* ]]; }
+
+# SCAN_LIMIT: the `limit` every scan query uses (see _prep_body). VictoriaLogs
+# documents that `limit N` without an explicit `sort` returns rows "selected
+# in arbitrary order because of performance reasons … can return different
+# sets of logs every time" once more than N rows match — so per-iteration
+# IDENTITY can never hold for a truncated scan, and adding a `sort` would
+# change what the query measures (a sort has its own cost). Validity for a
+# truncated scan is therefore MEMBERSHIP (every returned row is a real row of
+# the reference window) + CARDINALITY (exactly SCAN_LIMIT rows), not
+# identity — see build_scan_window()/_validate_iter() below.
+SCAN_LIMIT=1000
+
+# strip_scan_limit <method> <body> -> the scan query body with its trailing
+# limit clause removed, so the SAME filter/window can be re-run unbounded to
+# get the reference "how many rows actually match, and what are they" — used
+# once per (system, cell) to build the membership/cardinality reference.
+strip_scan_limit() {
+  local method="$1" body="$2"
+  if [[ "$method" == CH ]]; then
+    printf '%s' "${body% LIMIT $SCAN_LIMIT}"
+  else
+    printf '%s' "${body% | limit $SCAN_LIMIT}"
+  fi
+}
 
 result_is_empty() {
   case "$1" in
@@ -110,8 +134,8 @@ result_is_empty() {
   esac
 }
 
-# extract_result <qkind> <system> <file> -> a comparable value string, or
-# "invalid:<reason>" on any parse failure. Formats:
+# extract_result <qkind> <system> <file> [keysout] -> a comparable value
+# string, or "invalid:<reason>" on any parse failure. Formats:
 #   - scalar (count/filter/group-by kinds): the count as a plain integer
 #     string — VL/VT/LH sum the LogsQL JSON-line `n` (or fall back to row
 #     count when there's no count column); ClickHouse sums the numeric last
@@ -121,10 +145,13 @@ result_is_empty() {
 #     key is `_msg` for logs, `trace_id:span_id` for traces (so a degenerate
 #     but same-count answer still diverges). ClickHouse's scan is a DIFFERENT
 #     projection with no comparable key, so CH scan is "rows=<N>" only —
-#     compared by row count alone.
+#     compared by row count alone. When `keysout` is given (non-CH only),
+#     the sorted+deduped key set is also written there, one per line — used
+#     both to build the per-cell reference window and, per iteration, to
+#     check a truncated scan's rows are members of that window.
 #   - trace_by_id / trace_lookup: "spans=<N>", the matched-span/log count.
 extract_result() {
-  local qkind="$1" system="$2" file="$3"
+  local qkind="$1" system="$2" file="$3" keysout="${4:-}"
   if [[ "$system" == clickhouse ]]; then
     case "$qkind" in
       scan)
@@ -137,9 +164,10 @@ extract_result() {
   else
     case "$qkind" in
       scan)
-        python3 - "$file" <<'PY'
+        python3 - "$file" "$keysout" <<'PY'
 import sys, json, hashlib
 path = sys.argv[1]
+keysout = sys.argv[2] if len(sys.argv) > 2 else ""
 keys = []
 n = parsed = 0
 with open(path) as f:
@@ -160,7 +188,17 @@ with open(path) as f:
 if n and not parsed:
     print("invalid:parse-error")
 else:
-    h = hashlib.sha256("\n".join(sorted(set(keys))).encode()).hexdigest()
+    uniq = sorted(set(keys))
+    h = hashlib.sha256("\n".join(uniq).encode()).hexdigest()
+    if keysout:
+        # NUL-delimited, NOT newline-delimited: a real log `_msg` (e.g. a
+        # multi-line stack trace) can contain embedded newlines, which would
+        # silently split one key into several bogus "lines" in a
+        # newline-delimited file and corrupt the membership check that reads
+        # it back (comm/set-difference assumes one key per record). NUL never
+        # appears in JSON-decoded text.
+        with open(keysout, "wb") as kf:
+            kf.write(b"\x00".join(u.encode("utf-8", "surrogatepass") for u in uniq))
     print("rows={};hash={}".format(n, h))
 PY
         ;;
@@ -187,9 +225,9 @@ with open(sys.argv[1]) as f:
                 pass
 # An empty body (n==0) is LogsQL's real, legitimate answer for a zero-match
 # `stats count()` — VictoriaLogs emits no output line at all when the filtered
-# stream is empty, confirmed empirically (Task 5: trace_lookup's miss cells are
-# `[0]`, not missing/errored, on every system). Only "got bytes but none of
-# them parsed as JSON" is an actual parse failure.
+# stream is empty, confirmed empirically (the pre-validation baseline's
+# trace_lookup miss cells are `[0]`, not missing/errored, on every system).
+# Only "got bytes but none of them parsed as JSON" is an actual parse failure.
 if n and not parsed:
     print("invalid:parse-error")
 else:
@@ -231,15 +269,73 @@ PY
   fi
 }
 
+# scan_key_has_foreign <iterkeys_file> <window_keys_file> -> echoes "1" if any
+# key in iterkeys_file is absent from window_keys_file, else "0". Both files
+# are NUL-delimited key sets (extract_result's scan `keysout`). A python
+# set-difference, not `comm`: `comm` needs newline-sorted input, and a real
+# log `_msg` can contain embedded newlines (e.g. a Java stack trace), which
+# would silently fragment one key into several bogus lines and corrupt a
+# line-based comparison.
+scan_key_has_foreign() {
+  local iterkeys="$1" windowkeys="$2"
+  python3 -c "
+import sys
+def load(path):
+    with open(path, 'rb') as f:
+        data = f.read()
+    return set(data.split(b'\x00')) if data else set()
+iterset = load(sys.argv[1])
+winset = load(sys.argv[2])
+print('1' if (iterset - winset) else '0')
+" "$iterkeys" "$windowkeys"
+}
+
 # _validate_iter: validates one iteration's HTTP response against the correctness
 # rules above. Sets globals VALID (0/1), REASON, RESULT.
 # $1 qkind  $2 system  $3 http_code  $4 tmpfile  $5 first_result (""=none yet)
+# $6 window_rows (""=no reference / not a scan)  $7 window_keys (path, non-CH only)
 _validate_iter() {
   local qkind="$1" system="$2" code="$3" tmpfile="$4" first_result="$5"
+  local window_rows="${6:-}" window_keys="${7:-}"
   if [[ "$code" != 2* ]]; then
     VALID=0; REASON="http $code"; RESULT=""
     return
   fi
+  if [[ "$qkind" == scan && -n "$window_rows" && "$window_rows" -gt "$SCAN_LIMIT" ]]; then
+    # Truncated scan (more than SCAN_LIMIT rows match the window): identity
+    # can never hold (see SCAN_LIMIT's comment above), so validity is
+    # membership + cardinality against the per-cell reference window instead.
+    if [[ "$system" == clickhouse ]]; then
+      RESULT=$(extract_result "$qkind" "$system" "$tmpfile")
+      if [[ "$RESULT" == invalid:* ]]; then
+        VALID=0; REASON="${RESULT#invalid:}"; return
+      fi
+      local rows="${RESULT#rows=}"
+      if [[ "$rows" != "$SCAN_LIMIT" ]]; then
+        VALID=0; REASON="truncated scan returned $rows rows, expected $SCAN_LIMIT"; return
+      fi
+      VALID=1; REASON=""; return
+    fi
+    local iterkeys; iterkeys=$(mktemp "$BENCH_TMP/iterkeys.XXXXXX")
+    RESULT=$(extract_result "$qkind" "$system" "$tmpfile" "$iterkeys")
+    if [[ "$RESULT" == invalid:* ]]; then
+      rm -f "$iterkeys"; VALID=0; REASON="${RESULT#invalid:}"; return
+    fi
+    local rows="${RESULT%%;*}"; rows="${rows#rows=}"
+    if [[ "$rows" != "$SCAN_LIMIT" ]]; then
+      rm -f "$iterkeys"; VALID=0; REASON="truncated scan returned $rows rows, expected $SCAN_LIMIT"; return
+    fi
+    local has_foreign=""
+    has_foreign=$(scan_key_has_foreign "$iterkeys" "$window_keys")
+    rm -f "$iterkeys"
+    if [[ "$has_foreign" == 1 ]]; then
+      VALID=0; REASON="row not in reference window (membership check failed)"; return
+    fi
+    VALID=1; REASON=""; return
+  fi
+  # Untruncated scan (window_rows <= SCAN_LIMIT, i.e. the query returned every
+  # matching row — nothing to truncate, so identity IS meaningful), or any
+  # non-scan qkind: identity-based validation as before.
   RESULT=$(extract_result "$qkind" "$system" "$tmpfile")
   if [[ "$RESULT" == invalid:* ]]; then
     VALID=0; REASON="${RESULT#invalid:}"
@@ -268,6 +364,49 @@ _validate_iter() {
 # cell's first valid result) BEFORE its latency counts for anything — an
 # invalid iteration is excluded from p50/p95/p99 and recorded in
 # iters_invalid/invalid_reasons instead.
+# build_scan_window <system> <method> <url> <body> -> sets globals WINDOW_ROWS
+# (row count of the FULL, unlimited match — "" on failure), WINDOW_HASH (sha256
+# of its sorted key set; "" for ClickHouse or on failure), WINDOW_KEYS_FILE
+# (path to that key set, one per line; "" for ClickHouse). ONE untimed request
+# per (system, cell), issued before the warmup loop, with the same filter/
+# window as the timed query but its `limit` clause stripped — this is the
+# reference a truncated scan's per-iteration rows are checked against.
+build_scan_window() {
+  local system="$1" method="$2" url="$3" body="$4" wbody wcode wtt wsz wtmp wres
+  WINDOW_ROWS=""; WINDOW_HASH=""; WINDOW_KEYS_FILE=""
+  wbody=$(strip_scan_limit "$method" "$body")
+  local out; out=$(_do_req "$method" "$url" "$wbody"); read -r wcode wtt wsz wtmp <<<"$out"
+  if [[ "$wcode" != 2* ]]; then
+    log "WARN: scan window reference request failed (system=$system http=$wcode) — falling back to identity validation for this cell"
+    rm -f "$wtmp"; return
+  fi
+  if [[ "$system" == clickhouse ]]; then
+    wres=$(extract_result scan clickhouse "$wtmp")
+    rm -f "$wtmp"
+    [[ "$wres" == invalid:* ]] && { log "WARN: scan window reference unparseable (system=$system: ${wres#invalid:})"; return; }
+    WINDOW_ROWS="${wres#rows=}"
+  else
+    WINDOW_KEYS_FILE=$(mktemp "$BENCH_TMP/window.XXXXXX")
+    wres=$(extract_result scan "$system" "$wtmp" "$WINDOW_KEYS_FILE")
+    rm -f "$wtmp"
+    if [[ "$wres" == invalid:* ]]; then
+      log "WARN: scan window reference unparseable (system=$system: ${wres#invalid:})"
+      rm -f "$WINDOW_KEYS_FILE"; WINDOW_KEYS_FILE=""; return
+    fi
+    WINDOW_ROWS="${wres%%;*}"; WINDOW_ROWS="${WINDOW_ROWS#rows=}"
+    WINDOW_HASH="${wres#*hash=}"
+  fi
+}
+
+# --- measure_query: time a prepared request N times, emit p50/p95/p99 JSON -----
+# Uses curl's own %{time_total} (no shell-timing overhead, so fast queries aren't
+# inflated by subprocess startup); percentiles computed once at the end, over
+# VALID iterations only. Every iteration's body is captured and validated
+# (HTTP 2xx, parseable, non-empty for non-miss scenarios, identical to the
+# cell's first valid result — or, for a truncated scan, a member of the
+# reference window in exactly SCAN_LIMIT rows) BEFORE its latency counts for
+# anything — an invalid iteration is excluded from p50/p95/p99 and recorded in
+# iters_invalid/invalid_reasons instead.
 # $1 label  $2 system  $3 method(GET|POST|CH)  $4 url  $5 body  $6 qkind (query name, e.g. "scan")
 measure_query() {
   local label="$1" system="$2" method="$3" url="$4" body="${5:-}" qkind="${6:-}"
@@ -275,10 +414,16 @@ measure_query() {
   local first_result="" iters_valid=0 iters_invalid=0
   local -A reasons_seen=()
   local reasons_list=()
+  local window_rows="" window_hash="" window_keys=""
+
+  if [[ "$qkind" == scan ]]; then
+    build_scan_window "$system" "$method" "$url" "$body"
+    window_rows="$WINDOW_ROWS"; window_hash="$WINDOW_HASH"; window_keys="$WINDOW_KEYS_FILE"
+  fi
 
   for ((i=0; i<WARMUP; i++)); do
     out=$(_do_req "$method" "$url" "$body"); read -r code tt sz tmpfile <<<"$out"
-    _validate_iter "$qkind" "$system" "$code" "$tmpfile" ""   # warms caches; never counted
+    _validate_iter "$qkind" "$system" "$code" "$tmpfile" "" "$window_rows" "$window_keys"   # warms caches; never counted
     rm -f "$tmpfile"
   done
 
@@ -289,7 +434,7 @@ measure_query() {
     # S3 each query anyway.
     [[ "$COLD" == 1 && "$system" == lakehouse ]] && clear_lh_cache "$url"
     out=$(_do_req "$method" "$url" "$body"); read -r code tt sz tmpfile <<<"$out"
-    _validate_iter "$qkind" "$system" "$code" "$tmpfile" "$first_result"
+    _validate_iter "$qkind" "$system" "$code" "$tmpfile" "$first_result" "$window_rows" "$window_keys"
     [[ "$code" != 2* ]] && errors=$((errors+1))
     if [[ "$VALID" == 1 ]]; then
       [[ -z "$first_result" ]] && first_result="$RESULT"
@@ -301,6 +446,7 @@ measure_query() {
     fi
     rm -f "$tmpfile"
   done
+  rm -f "$window_keys"
 
   local invalid_reasons="" r
   for r in "${reasons_list[@]:-}"; do
@@ -310,23 +456,26 @@ measure_query() {
   local content_hash=""
   [[ "$first_result" == *";hash="* ]] && content_hash="${first_result#*;hash=}"
 
-  python3 - "$label" "$system" "$errors" "$first_result" "$iters_valid" "$iters_invalid" "$invalid_reasons" "$content_hash" "${#bytes[@]}" "${bytes[@]}" -- "${secs[@]}" <<'PY'
+  python3 - "$label" "$system" "$errors" "$first_result" "$iters_valid" "$iters_invalid" "$invalid_reasons" "$content_hash" "$window_rows" "$window_hash" "${#bytes[@]}" "${bytes[@]}" -- "${secs[@]}" <<'PY'
 import sys, json
 a = sys.argv
-label, system, errors, result, iters_valid, iters_invalid, invalid_reasons, content_hash, nb = (
-    a[1], a[2], int(a[3]), a[4], int(a[5]), int(a[6]), a[7], a[8], int(a[9]))
-b = list(map(float, a[10:10+nb]))
+label, system, errors, result, iters_valid, iters_invalid, invalid_reasons, content_hash, window_rows, window_hash, nb = (
+    a[1], a[2], int(a[3]), a[4], int(a[5]), int(a[6]), a[7], a[8], a[9], a[10], int(a[11]))
+b = list(map(float, a[12:12+nb]))
 secs = list(map(float, a[a.index('--')+1:]))
 vals = sorted(s * 1000 for s in secs)
 n = len(vals)
 pct = lambda p: round(vals[min(int(n * p / 100), n - 1)], 1) if n else None
 avg_bytes = round(sum(b)/len(b)) if b else 0
-print(json.dumps({"label": label, "system": system, "p50_ms": pct(50), "p95_ms": pct(95),
-                  "p99_ms": pct(99), "iters": n, "errors": errors,
-                  "avg_bytes": avg_bytes, "result": result if result else None,
-                  "iters_valid": iters_valid, "iters_invalid": iters_invalid,
-                  "invalid_reasons": invalid_reasons if invalid_reasons else None,
-                  "content_hash": content_hash if content_hash else None}))
+out = {"label": label, "system": system, "p50_ms": pct(50), "p95_ms": pct(95),
+       "p99_ms": pct(99), "iters": n, "errors": errors,
+       "avg_bytes": avg_bytes, "result": result if result else None,
+       "iters_valid": iters_valid, "iters_invalid": iters_invalid,
+       "invalid_reasons": invalid_reasons if invalid_reasons else None,
+       "content_hash": content_hash if content_hash else None,
+       "window_rows": int(window_rows) if window_rows else None,
+       "window_hash": window_hash if window_hash else None}
+print(json.dumps(out))
 PY
 }
 clear_lh_cache() { # $1 = any LH url; POSTs /internal/cache/clear to its host
@@ -334,12 +483,19 @@ clear_lh_cache() { # $1 = any LH url; POSTs /internal/cache/clear to its host
   curl -sf -o /dev/null -X POST --max-time 10 "${base}/internal/cache/clear" 2>/dev/null || true
 }
 _do_req() { # echoes "<http_code> <time_total_s> <size_download_bytes> <tmpfile>"
+  # No `-f`: with it, curl treats a 4xx/5xx as a curl-level failure and skips
+  # the `-w` output entirely, so a real server error came back indistinguishable
+  # from "000" (a genuine connection failure) — the validity gate then saw
+  # "http 000" for both a dead server AND a real 500, hiding which one
+  # happened. Without `-f`, curl exits 0 on any HTTP response (only a true
+  # transport failure — refused connection, DNS, timeout — hits the `||`
+  # fallback), so `%{http_code}` always records the real status.
   local method="$1" url="$2" body="$3" tmp result
   tmp=$(mktemp "$BENCH_TMP/req.XXXXXX")
   case "$method" in
-    GET)  result=$(curl -sf -o "$tmp" -w '%{http_code} %{time_total} %{size_download}' --max-time 60 "$url" 2>/dev/null) || result="000 0 0" ;;
-    POST) result=$(curl -sf -o "$tmp" -w '%{http_code} %{time_total} %{size_download}' --max-time 60 --data-urlencode "query=$body" "$url" 2>/dev/null) || result="000 0 0" ;;
-    CH)   result=$(curl -sf -o "$tmp" -w '%{http_code} %{time_total} %{size_download}' --max-time 60 --user "$CH_USER:$CH_PASS" --data-binary "$body" "$url/" 2>/dev/null) || result="000 0 0" ;;
+    GET)  result=$(curl -s -o "$tmp" -w '%{http_code} %{time_total} %{size_download}' --max-time 60 "$url" 2>/dev/null) || result="000 0 0" ;;
+    POST) result=$(curl -s -o "$tmp" -w '%{http_code} %{time_total} %{size_download}' --max-time 60 --data-urlencode "query=$body" "$url" 2>/dev/null) || result="000 0 0" ;;
+    CH)   result=$(curl -s -o "$tmp" -w '%{http_code} %{time_total} %{size_download}' --max-time 60 --user "$CH_USER:$CH_PASS" --data-binary "$body" "$url/" 2>/dev/null) || result="000 0 0" ;;
   esac
   printf '%s %s\n' "$result" "$tmp"
 }
@@ -425,9 +581,9 @@ _prep_body() { # $1 signal  $2 query  $3 system  $4 range_secs
       # some of those exceed 100ms, so a bare `duration:>N` filter
       # over-counts on VT only (1075 vs LH's real 0) — confirmed empirically.
       slow_spans)       [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND Duration>50000000' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* duration:>50000000 | stats count() as n' "$traces_url" "$sns" "$ens" ;;
-      # trace_id, span_id are included in the projection (in addition to the
-      # brief's name/service.name/duration) so extract_result's scan-key
-      # hash (Task 6: trace_id:span_id for traces) is actually meaningful —
+      # trace_id, span_id are included in the projection (in addition to
+      # name/service.name/duration) so extract_result's scan-key hash
+      # (trace_id:span_id for traces) is actually meaningful —
       # without them every row's key degenerates to the same empty string,
       # so the hash is constant regardless of content (a false-negative that
       # can never catch a real divergence). Same filter/limit, so the count
@@ -610,8 +766,21 @@ for lat in $S3_LATENCIES; do
           row=$(python3 -c "import sys,json;d=json.loads(sys.argv[1]);d.update(signal='$signal',query='$q',range='$range',latency_ms=$lat,disk_profile='$DISK_PROFILE');print(json.dumps(d))" "$row")
           (( first )) && first=0 || RESULTS+=","
           RESULTS+="$row"
-          p95=$(python3 -c "import sys,json;print(json.loads(sys.argv[1]).get('p95_ms'))" "$row")
-          printf '    %-34s %-16s p95=%s ms\n' "${signal}/${q}/${range}/lat${lat}" "$sys" "$p95" >&2
+          # valid=<k>/<N> always follows p95 so a 1/20 cell can never read as
+          # a clean latency; invalid_reasons is only appended when non-empty.
+          IFS=$'\x1f' read -r p95 ivalid itotal ireasons <<<"$(python3 -c "
+import sys, json
+d = json.loads(sys.argv[1])
+v, iv = d.get('iters_valid'), d.get('iters_invalid')
+tot = (v or 0) + (iv or 0)
+print('\x1f'.join([str(d.get('p95_ms')), str(v if v is not None else ''), str(tot), d.get('invalid_reasons') or '']))
+" "$row")"
+          unset IFS
+          if [[ -n "$ireasons" ]]; then
+            printf '    %-34s %-16s p95=%s ms valid=%s/%s invalid_reasons=%s\n' "${signal}/${q}/${range}/lat${lat}" "$sys" "$p95" "$ivalid" "$itotal" "$ireasons" >&2
+          else
+            printf '    %-34s %-16s p95=%s ms valid=%s/%s\n' "${signal}/${q}/${range}/lat${lat}" "$sys" "$p95" "$ivalid" "$itotal" >&2
+          fi
         done
       done
     done

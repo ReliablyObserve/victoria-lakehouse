@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Unit tests for scripts/bench/report.py's response-validation rules (Task 6):
-a cell is only meaningful when every timed iteration returned a correct,
+"""Unit tests for scripts/bench/report.py's response-validation rules (v3
+validation): a cell is only meaningful when every timed iteration returned a correct,
 valid response. Run with:
 
     python3 -m unittest discover -s scripts/bench/tests
@@ -106,6 +106,77 @@ class TestCellStatus(unittest.TestCase):
         row = make_row("spans=0")
         ok, note = report.cell_status(row, brow)
         self.assertTrue(ok, note)
+
+
+class TestScanWindowValidation(unittest.TestCase):
+    """A truncated scan's per-iteration `result` legitimately varies run to
+    run (VictoriaLogs returns an arbitrary subset once more than `limit` rows
+    match) — cross-system validity for a `scan` row is checked against the
+    reference `window_rows`/`window_hash` instead, per the ruling that
+    identity can never hold for a truncated scan."""
+
+    def test_window_hash_match_passes_despite_differing_iteration_hash(self):
+        brow = make_row("rows=1000;hash=zzzz")
+        brow["window_rows"], brow["window_hash"] = 1500, "aaaa"
+        row = make_row("rows=1000;hash=yyyy")  # different truncated subset, same window
+        row["window_rows"], row["window_hash"] = 1500, "aaaa"
+        ok, note = report.cell_status(row, brow)
+        self.assertTrue(ok, note)
+
+    def test_window_hash_mismatch_fails(self):
+        brow = make_row("rows=1000;hash=zzzz")
+        brow["window_rows"], brow["window_hash"] = 1500, "aaaa"
+        row = make_row("rows=1000;hash=yyyy")
+        row["window_rows"], row["window_hash"] = 1500, "bbbb"
+        ok, note = report.cell_status(row, brow)
+        self.assertFalse(ok)
+        self.assertIn("hash mismatch", note)
+
+    def test_ch_scan_window_rows_only(self):
+        # ClickHouse's scan carries window_rows but no window_hash.
+        brow = make_row("rows=1000;hash=zzzz")
+        brow["window_rows"], brow["window_hash"] = 1500, "aaaa"
+        ch_row = make_row("rows=1000")
+        ch_row["window_rows"], ch_row["window_hash"] = 1500, None
+        ok, note = report.cell_status(ch_row, brow)
+        self.assertTrue(ok, note)
+
+    def test_ch_scan_window_rows_mismatch_caught(self):
+        brow = make_row("rows=1000;hash=zzzz")
+        brow["window_rows"], brow["window_hash"] = 1500, "aaaa"
+        ch_row = make_row("rows=1000")
+        ch_row["window_rows"], ch_row["window_hash"] = 500, None
+        ok, note = report.cell_status(ch_row, brow)
+        self.assertFalse(ok)
+        self.assertIn("window_rows", note)
+
+    def test_window_rows_missing_on_one_side_invalid(self):
+        brow = make_row("rows=1000;hash=zzzz")
+        brow["window_rows"], brow["window_hash"] = 1500, "aaaa"
+        row = make_row("rows=1000;hash=yyyy")  # no window_rows at all
+        ok, note = report.cell_status(row, brow)
+        self.assertFalse(ok)
+        self.assertIn("window_rows", note)
+
+    def test_window_rows_close_but_unequal_within_tolerance_skips_hash_check(self):
+        # Two systems' window queries run at slightly different wall-clock
+        # moments, so a relative window ("last 1h") can shift by a few rows
+        # with no real divergence — within the 5% count tolerance, the hash
+        # is NOT compared (it would legitimately differ: different row set
+        # size), matching the non-scan count/hash rule's `r == b` gate.
+        brow = make_row("rows=541;hash=zzzz")
+        brow["window_rows"], brow["window_hash"] = 541, "aaaa"
+        row = make_row("rows=539;hash=yyyy")
+        row["window_rows"], row["window_hash"] = 539, "bbbb"  # different hash, close count
+        ok, note = report.cell_status(row, brow)
+        self.assertTrue(ok, note)
+
+    def test_base_status_window_rows_zero_is_baseline_empty(self):
+        brow = make_row("rows=0;hash=" + "e" * 64)
+        brow["window_rows"], brow["window_hash"] = 0, "e" * 64
+        ok, note = report.base_status(brow, "scan")
+        self.assertFalse(ok)
+        self.assertIn("baseline-empty", note)
 
 
 class TestBaseStatus(unittest.TestCase):

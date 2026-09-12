@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Self-test for run.sh's extract_result() — the per-iteration response
-# validator (Task 6). Sources run.sh's function definitions (without running
+# validator (v3 validation). Sources run.sh's function definitions (without running
 # its top-level orchestration, which needs a live stack) against fixture
 # response bodies covering every qkind/system combination, plus a malformed
 # body, and asserts the expected comparable-value string or "invalid:*".
