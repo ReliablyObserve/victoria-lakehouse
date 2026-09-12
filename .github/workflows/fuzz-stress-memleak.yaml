@@ -59,7 +59,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Build VL deps (logs)
@@ -80,7 +80,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           # lakehouse-traces is its own Go module; the go.mod there
           # pins the toolchain the traces tests must compile against.
@@ -110,7 +110,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Build VL deps (logs)
@@ -127,7 +127,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: lakehouse-traces/go.mod
       - name: Build VL deps (traces side)
@@ -214,7 +214,7 @@ jobs:
           - internal/vlstorage:FuzzRepromoteLogRow
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Build VL deps (logs)
@@ -276,7 +276,7 @@ jobs:
           - internal/vtstorage_adapter:FuzzRewriteTraceIndexQuery
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: lakehouse-traces/go.mod
       - name: Build VL deps (traces side)
