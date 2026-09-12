@@ -7,7 +7,40 @@ set -euo pipefail
 BASE=${1:-origin/main}
 changed=$(git diff --name-only "$BASE"...HEAD)
 
-touches_routes=$(echo "$changed" | grep -E '^(internal/selectapi/|lakehouse-traces/internal/selectapi/|cmd/lakehouse-logs/main.go|lakehouse-traces/main.go|internal/(stats|delete|tenant|lifecycle|crosssignal|peercache|ui)/.*handler.*\.go|patches/|Makefile|\.upstream-versions\.json)' || true)
+# Path patterns that always count as route-touching, regardless of content:
+# whole route-dispatch directories, the binary entrypoints, patches, and the
+# upstream-versions manifest. Makefile and individual .go files are handled
+# separately below (content-based), since a filename match alone is either
+# too broad (any Makefile edit) or too narrow (misses handler registrations
+# in files that don't have "handler" in their name).
+touches_direct=$(echo "$changed" | grep -E '^(internal/selectapi/|lakehouse-traces/internal/selectapi/|cmd/lakehouse-logs/main\.go|lakehouse-traces/main\.go|patches/|\.upstream-versions\.json)' || true)
+
+# Any changed .go file whose diff adds or removes an HTTP route-registration
+# call — HandleFunc(, mux.Handle(, or a plain .Handle( — counts as
+# route-touching. This is content-based rather than filename-based so a
+# route registration in a file without "handler" in its name (e.g.
+# internal/stats/api.go, parity.go, internal/ui/ui.go, internal/ui/vmui.go)
+# is still caught.
+touches_handle_calls=""
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  if git diff "$BASE"...HEAD -- "$f" | grep -qE '^[+-].*(HandleFunc\(|mux\.Handle\(|\.Handle\()'; then
+    touches_handle_calls="$touches_handle_calls
+$f"
+  fi
+done <<< "$(echo "$changed" | grep -E '\.go$' || true)"
+
+# Makefile counts only when the diff actually adds or removes one of the
+# upstream pin variable assignments — an unrelated Makefile edit (a comment,
+# a new target, reformatting) must not require a registry touch.
+touches_pin_makefile=""
+if echo "$changed" | grep -qE '^Makefile$'; then
+  if git diff "$BASE"...HEAD -- Makefile | grep -qE '^[+-](VL_VERSION_LOGS|VL_COMMIT_TRACES|VT_VERSION) '; then
+    touches_pin_makefile="Makefile"
+  fi
+fi
+
+touches_routes=$(printf '%s\n%s\n%s\n' "$touches_direct" "$touches_handle_calls" "$touches_pin_makefile" | sed '/^$/d')
 touches_registry=$(echo "$changed" | grep -E '^tests/conformance/(registry/rows/|inventory\.generated\.yaml)' || true)
 if [[ -n "$touches_routes" && -z "$touches_registry" ]]; then
   echo "::error::this PR changes route/handler/upstream files but not tests/conformance/registry/rows/ — add or update the rows (see tests/conformance/README.md)"

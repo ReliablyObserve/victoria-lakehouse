@@ -36,7 +36,7 @@ jobs:
           key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
       - name: Prepare deps (no-op when cache hit)
         run: make deps-logs deps-traces deps-vt
-      - name: Generated files are current
+      - name: Conformance drift and generated files check
         run: make conformance-check
       - name: Route/handler changes carry registry changes
         if: github.event_name == 'pull_request'
