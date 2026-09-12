@@ -199,6 +199,7 @@ func TestVerifyMetrics_CounterVecsExist(t *testing.T) {
 		{"TenantIngestionBytesTotal", TenantIngestionBytesTotal},
 		{"TenantQueriesTotal", TenantQueriesTotal},
 		{"CompactionSkippedTotal", CompactionSkippedTotal},
+		{"FooterParseRejected", FooterParseRejected},
 	}
 
 	for _, tc := range vecs {

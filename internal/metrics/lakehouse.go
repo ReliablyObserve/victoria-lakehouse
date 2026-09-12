@@ -213,10 +213,17 @@ var (
 	FooterCacheHits         = NewCounter("lakehouse_footer_cache_hits_total")
 	FooterCacheEvictions    = NewCounter("lakehouse_footer_cache_evictions_total")
 	FooterCacheEntries      = NewGauge("lakehouse_footer_cache_entries")
-	TraceIDCacheHits        = NewCounter("lakehouse_trace_id_cache_hits_total")
-	MetadataOnlyFiles       = NewCounter("lakehouse_metadata_only_files_total")
-	QueryFileNotFoundTotal  = NewCounter("lakehouse_query_file_not_found_total")
-	QueryFileErrorsTotal    = NewCounter("lakehouse_query_file_errors_total")
+	// FooterParseRejected counts ParseFooterFromBytes inputs rejected by
+	// its pre-parse validation (invalid/oversized footer length, bad
+	// magic, decoder panic recovered), broken out by reason so a
+	// malformed/corrupted file — or a legitimate file that outgrew the
+	// footer-length policy cap — is visible instead of silently falling
+	// back to a full download.
+	FooterParseRejected    = NewCounterVec("lakehouse_footer_parse_rejected_total", "reason")
+	TraceIDCacheHits       = NewCounter("lakehouse_trace_id_cache_hits_total")
+	MetadataOnlyFiles      = NewCounter("lakehouse_metadata_only_files_total")
+	QueryFileNotFoundTotal = NewCounter("lakehouse_query_file_not_found_total")
+	QueryFileErrorsTotal   = NewCounter("lakehouse_query_file_errors_total")
 
 	// LogsTraceShapedRowsDropped counts rows dropped from
 	// LogsProfile query results because their stream tags identify

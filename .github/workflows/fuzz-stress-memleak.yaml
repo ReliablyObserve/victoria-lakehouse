@@ -58,8 +58,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Build VL deps (logs)
@@ -79,8 +79,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           # lakehouse-traces is its own Go module; the go.mod there
           # pins the toolchain the traces tests must compile against.
@@ -109,8 +109,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Build VL deps (logs)
@@ -126,8 +126,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: lakehouse-traces/go.mod
       - name: Build VL deps (traces side)
@@ -151,7 +151,7 @@ jobs:
   # -------------------------------------------------------------------
   fuzz-logs:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -213,8 +213,8 @@ jobs:
           - internal/traceindex:FuzzRoundTripIndex
           - internal/vlstorage:FuzzRepromoteLogRow
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Build VL deps (logs)
@@ -236,16 +236,58 @@ jobs:
           FN="${TARGET##*:}"
           # -fuzzminimizetime keeps the minimization step bounded so a
           # single hard-to-shrink crash doesn't burn the budget.
-          go test \
-            -run='^$' \
-            -fuzz="^${FN}$" \
-            -fuzztime=${SECONDS}s \
-            -fuzzminimizetime=5s \
-            ./${PKG}/
+          #
+          # -timeout / -parallel / retry: the stock Go fuzz coordinator has
+          # a narrow teardown race at the exact -fuzztime deadline — an
+          # in-flight worker RPC read can return "context deadline
+          # exceeded" instead of a clean stop, failing the target with NO
+          # crasher written (reproduced locally: ~1-in-4 runs at default
+          # worker fan-out, gone at -parallel=4 in >10 runs). -timeout is
+          # set well clear of fuzztime+minimizetime so `go test`'s own
+          # watchdog is never the thing that fires (it was equal to the
+          # nightly 600s budget before, which made the nightly runs
+          # deterministically racy). The retry loop is the actual safety
+          # net: it only swallows this specific, crasher-less failure —
+          # any real crasher (new file under testdata/fuzz/<FN>) fails
+          # immediately without retrying.
+          TIMEOUT=$(( SECONDS * 3 + 60 ))
+          PARALLEL=4
+          before=$(find "${PKG}/testdata/fuzz/${FN}" -type f 2>/dev/null | sort)
+          attempt=0
+          max_attempts=2
+          while :; do
+            attempt=$((attempt + 1))
+            if go test \
+                 -run='^$' \
+                 -fuzz="^${FN}$" \
+                 -fuzztime=${SECONDS}s \
+                 -fuzzminimizetime=5s \
+                 -timeout=${TIMEOUT}s \
+                 -parallel=${PARALLEL} \
+                 ./${PKG}/ > fuzz-out.log 2>&1; then
+              cat fuzz-out.log
+              break
+            fi
+            cat fuzz-out.log
+            after=$(find "${PKG}/testdata/fuzz/${FN}" -type f 2>/dev/null | sort)
+            if [ "$before" != "$after" ]; then
+              echo "::error::${FN}: new crasher written — not retrying"
+              exit 1
+            fi
+            if ! grep -q "context deadline exceeded" fuzz-out.log; then
+              echo "::error::${FN}: failed for a reason other than the known fuzz-engine deadline race — not retrying"
+              exit 1
+            fi
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "::error::${FN}: hit the fuzz-engine deadline race ${max_attempts} times in a row"
+              exit 1
+            fi
+            echo "::warning::${FN}: hit the known fuzz-engine deadline race (attempt ${attempt}/${max_attempts}); retrying"
+          done
 
   fuzz-traces:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -275,8 +317,8 @@ jobs:
           - internal/vtstorage_adapter:FuzzTraceIndexLookupTraceID
           - internal/vtstorage_adapter:FuzzRewriteTraceIndexQuery
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: lakehouse-traces/go.mod
       - name: Build VL deps (traces side)
@@ -299,12 +341,45 @@ jobs:
         run: |
           PKG="${TARGET%%:*}"
           FN="${TARGET##*:}"
-          go test \
-            -run='^$' \
-            -fuzz="^${FN}$" \
-            -fuzztime=${SECONDS}s \
-            -fuzzminimizetime=5s \
-            ./${PKG}/
+          # See fuzz-logs' equivalent step for why -timeout/-parallel/retry
+          # are here: a known Go fuzz-coordinator teardown race at the
+          # exact -fuzztime deadline can fail a target with "context
+          # deadline exceeded" and no crasher. Only that specific,
+          # crasher-less failure is retried.
+          TIMEOUT=$(( SECONDS * 3 + 60 ))
+          PARALLEL=4
+          before=$(find "${PKG}/testdata/fuzz/${FN}" -type f 2>/dev/null | sort)
+          attempt=0
+          max_attempts=2
+          while :; do
+            attempt=$((attempt + 1))
+            if go test \
+                 -run='^$' \
+                 -fuzz="^${FN}$" \
+                 -fuzztime=${SECONDS}s \
+                 -fuzzminimizetime=5s \
+                 -timeout=${TIMEOUT}s \
+                 -parallel=${PARALLEL} \
+                 ./${PKG}/ > fuzz-out.log 2>&1; then
+              cat fuzz-out.log
+              break
+            fi
+            cat fuzz-out.log
+            after=$(find "${PKG}/testdata/fuzz/${FN}" -type f 2>/dev/null | sort)
+            if [ "$before" != "$after" ]; then
+              echo "::error::${FN}: new crasher written — not retrying"
+              exit 1
+            fi
+            if ! grep -q "context deadline exceeded" fuzz-out.log; then
+              echo "::error::${FN}: failed for a reason other than the known fuzz-engine deadline race — not retrying"
+              exit 1
+            fi
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "::error::${FN}: hit the fuzz-engine deadline race ${max_attempts} times in a row"
+              exit 1
+            fi
+            echo "::warning::${FN}: hit the known fuzz-engine deadline race (attempt ${attempt}/${max_attempts}); retrying"
+          done
 
   # -------------------------------------------------------------------
   # Drift guard — if a *_test.go file declares `func Fuzz*` and isn't
@@ -315,7 +390,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Verify every Fuzz* target is in CI matrix
         run: |
           # Collect declared fuzz targets in source.

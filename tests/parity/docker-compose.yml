@@ -15,7 +15,7 @@ networks:
 
 services:
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
     command: server /data --console-address ":9001"
     networks: [parity-net]
     environment:
@@ -28,7 +28,7 @@ services:
       retries: 5
 
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z
     depends_on:
       minio:
         condition: service_healthy
@@ -151,7 +151,7 @@ services:
       - "--lh-traces-endpoint=http://lakehouse-traces:10428"
 
   parity-tests:
-    image: golang:1.26.4
+    image: golang:1.26.8
     profiles: ["test"]
     depends_on:
       datagen-seed:

@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       minio:
-        image: minio/minio:latest
+        image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
         ports:
           - 9000:9000
         env:
@@ -32,9 +32,9 @@ jobs:
         options: --health-cmd "mc ready local" --health-interval 5s --health-timeout 5s --health-retries 5
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 

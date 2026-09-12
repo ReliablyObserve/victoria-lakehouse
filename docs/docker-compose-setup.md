@@ -110,7 +110,7 @@ The compose file defines the following services on a shared `lakehouse-net` brid
 
 ```yaml
 minio:
-  image: minio/minio:latest
+  image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
   command: server /data --console-address ":9001"
   environment:
     MINIO_ROOT_USER: minioadmin
