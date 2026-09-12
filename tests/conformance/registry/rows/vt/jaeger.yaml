@@ -40,7 +40,7 @@
   targets: [hot, cold]
   seed: [traces.base]
   upstream: { route: /select/jaeger/api/traces }
-  request: { method: GET, path: /select/jaeger/api/traces, params: { service: "checkout", start: "{{seed.start}}", end: "{{seed.cold_end}}", limit: "100" } }
+  request: { method: GET, path: /select/jaeger/api/traces, params: { service: "checkout", start: "{{seed.start_us}}", end: "{{seed.cold_end_us}}", limit: "100" } }
   compare: { type: trace }
   layers: [api]
   pending: true
@@ -54,7 +54,7 @@
   targets: [hot, cold]
   seed: [traces.base]
   upstream: { route: /select/jaeger/api/traces }
-  request: { method: GET, path: /select/jaeger/api/traces, params: { service: "checkout", tags: '{"error":"true"}', start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  request: { method: GET, path: /select/jaeger/api/traces, params: { service: "checkout", tags: '{"error":"true"}', start: "{{seed.start_us}}", end: "{{seed.cold_end_us}}" } }
   compare: { type: trace }
   layers: [api]
   pending: true
@@ -68,7 +68,7 @@
   targets: [hot, cold]
   seed: [traces.base]
   upstream: { route: /select/jaeger/api/traces }
-  request: { method: GET, path: /select/jaeger/api/traces, params: { service: "checkout", minDuration: "100ms", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  request: { method: GET, path: /select/jaeger/api/traces, params: { service: "checkout", minDuration: "100ms", start: "{{seed.start_us}}", end: "{{seed.cold_end_us}}" } }
   compare: { type: trace }
   layers: [api]
   pending: true
@@ -96,7 +96,7 @@
   targets: [hot, cold]
   seed: [traces.sg]
   upstream: { route: /select/jaeger/api/dependencies }
-  request: { method: GET, path: /select/jaeger/api/dependencies, params: { endTs: "{{seed.cold_end}}", lookback: "86400000" } }
+  request: { method: GET, path: /select/jaeger/api/dependencies, params: { endTs: "{{seed.cold_end_ms}}", lookback: "86400000" } }
   compare: { type: exact-json }
   layers: [api]
   pending: true
@@ -124,7 +124,7 @@
   targets: [cold]
   seed: [traces.base]
   upstream: { route: /select/jaeger/api/traces }
-  request: { method: GET, path: /api/traces, params: { service: "checkout", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  request: { method: GET, path: /api/traces, params: { service: "checkout", start: "{{seed.start_us}}", end: "{{seed.cold_end_us}}" } }
   compare: { type: trace }
   layers: [api]
   pending: true

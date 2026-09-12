@@ -158,6 +158,7 @@
   compare: { type: status }
   layers: [api]
   pending: true
+  notes: "Depends on a prior delete step in the same run: {{tombstone_id}} is the id that step's response returned, not a seeded value."
 
 - id: lh.delete.verify.status
   title: "LH delete verify — confirm a query's matching rows are gone"

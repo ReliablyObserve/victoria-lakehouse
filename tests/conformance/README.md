@@ -20,4 +20,15 @@ on top.
 - Adding an endpoint or changing a handler? Add or update its row in the same PR
   (`scripts/ci/check_registry_touch.sh` enforces it).
 - `UPSTREAM_COVERAGE.md` is generated from the inventory + registry — never edit it by hand.
-- All rows are declared expectations until the runner executes them (a later milestone).
+- All rows are declared expectations until the runner executes them (future work).
+- Request params/paths use a small placeholder vocabulary instead of literal values:
+  `{{seed.start}}` / `{{seed.cold_end}}` (RFC3339), `{{seed.start_ms}}` /
+  `{{seed.cold_end_ms}}` (millisecond-epoch integers, e.g. VT's dependencies `endTs`),
+  `{{seed.start_us}}` / `{{seed.cold_end_us}}` (microsecond-epoch integers, e.g. VT's
+  Jaeger traces-search `start`/`end`), `{{seed.trace_id}}` / `{{seed.stream_id}}`,
+  `{{tenant.account}}` / `{{tenant.project}}`, and `{{tombstone_id}}` (the id returned
+  by a prior delete request in the same run, not part of the seed). Full list and
+  rationale: the header comment in `registry/rows/vl/select.yaml`.
+- Flag rows (`kind: flag`) declare `compare: { type: status }` with no `request`: they
+  document that a flag exists and matters, not a specific HTTP call. They stay
+  declarative only until the runner exercises actual flag-variant stacks.

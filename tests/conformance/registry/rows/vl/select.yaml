@@ -2,6 +2,26 @@
 # Canonical requests use the seed vocabulary: services api-gateway, checkout,
 # payments, inventory, notifications; tenant {{tenant.account}}/{{tenant.project}};
 # window {{seed.start}}..{{seed.cold_end}}. See docs/parity-and-gaps.md for divergences.
+#
+# Placeholder vocabulary (all rows, not just this file):
+#   {{seed.start}} / {{seed.cold_end}}       — RFC3339 timestamps, the default
+#                                               time-window form most endpoints accept.
+#   {{seed.start_ms}} / {{seed.cold_end_ms}} — the same window as raw millisecond-epoch
+#                                               integers, for endpoints/params that parse
+#                                               that form (e.g. the LH shim's start/end
+#                                               in lh.shim.time_params_ms; VT's
+#                                               dependencies endTs param, which
+#                                               strconv.ParseInt + time.UnixMilli's).
+#   {{seed.start_us}} / {{seed.cold_end_us}} — the same window as raw microsecond-epoch
+#                                               integers, for VT's Jaeger traces search
+#                                               start/end params, which
+#                                               strconv.ParseInt + time.UnixMicro's them
+#                                               (see app/vtselect/traces/jaeger/jaeger.go).
+#   {{seed.trace_id}} / {{seed.stream_id}}   — fixed-length hex ids from the seeded dataset.
+#   {{tenant.account}} / {{tenant.project}}  — the seeded tenant pair.
+#   {{tombstone_id}}                          — not part of the seed: the id returned by a
+#                                               prior delete request in the same run (see
+#                                               lh.delete.tombstone_by_id.status).
 
 - id: vl.select.query.wildcard
   title: "/select/logsql/query — wildcard retrieval"
@@ -214,6 +234,7 @@
   compare: { type: status, options: { cold_status: "501" } }
   layers: [api]
   pending: true
+  notes: "501, not 404: internal/selectapi/handler.go routes tail and returns StatusNotImplemented; 404 would mean the path itself was unrouted."
 
 - id: vl.select.tail.native
   title: "/select/logsql/tail — hot streaming tail works unchanged"
