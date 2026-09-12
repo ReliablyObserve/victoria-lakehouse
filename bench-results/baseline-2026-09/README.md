@@ -1,27 +1,85 @@
 # Baseline 2026-09 (pre-upgrade: VL v1.50.0 / VT v0.9.2 / parquet-go v0.30.1)
 
 Files:
-- `run-baseline-v3.2.json` / `.md` / `.log` — **THE current perf-gate
+- `run-baseline-v3.3.json` / `.md` / `.log` — **THE current perf-gate
   reference.** `scripts/bench/run.sh --signals both --s3-latency "0 100"
   --ranges "1h 24h" --iterations 20 --warmup 3` with every timed response
   validated — a truncated `scan`'s membership/cardinality rule, group-by
-  results hashed by (group, count) pairs, and every cross-system comparison
-  at EXACT equality (see "Response validation (v3.2)" below). Supersedes
-  v3.1, v3, v2, and v1 — kept below for provenance only — do not judge new
-  PRs against their numbers.
-- `run-baseline-v3.1.{json,md,log}` — v3.1, superseded by v3.2 (see below).
+  results hashed by (group, count) pairs plus a verifiable `total=`, ns-precision
+  shared window bounds used by EVERY system including ClickHouse, and every
+  cross-system comparison at EXACT equality (see "Response validation (v3.3)"
+  below). Supersedes v3.2, v3.1, v3, v2, and v1 — kept below for provenance
+  only — do not judge new PRs against their numbers.
+- `run-baseline-v3.2.{json,md,log}` — v3.2, superseded by v3.3 (see below);
+  its one "invalid" cell (`logs/high_card/24h/lat100ms`) turned out to be a
+  harness bug (ClickHouse's SQL compared a coarser, exclusive-end,
+  second-granularity window against LogsQL's nanosecond, inclusive-end one),
+  not a ClickHouse engine difference — see "Response validation (v3.3)".
+- `run-baseline-v3.1.{json,md,log}` — v3.1, superseded by v3.2.
 - `run-baseline-v3.{json,md,log}` — v3, superseded by v3.1.
 - `run-baseline.json` / `run-baseline.md` — v1, superseded (see caveats below).
-- `run-baseline-traces-v2.{json,md,log}` — v2 traces rerun, superseded by v3.2.
+- `run-baseline-traces-v2.{json,md,log}` — v2 traces rerun, superseded by v3.3.
 - `full-scope-lat0.csv|md`, `full-scope-lat100.csv|md`, `metrics-lat*/` — `scripts/bench/full-scope-s3-bench.sh` (e2e compose) with the per-scenario S3-ops table
 - `env.txt` — image tags, git sha, host, docker version
 
-Judge every later PR against `run-baseline-v3.2.md`. Perf gate: any LH/CH >=
+Judge every later PR against `run-baseline-v3.3.md`. Perf gate: any LH/CH >=
 1.0 cell blocks. A regression is judged on **LH's own absolute p90 and p50
 against this run**, same hardware, not raw p95 and not the LH/VL ratio — see
 "Why p90+p50, not p95" and the trust caveat below.
 
+## Response validation (v3.3, 2026-09-13)
+
+**v3.2's one invalid cell was a harness bug, not a ClickHouse finding — now fixed.**
+v3.2 reported `logs/high_card/24h/lat100ms` as a genuine, ClickHouse-specific
+1-group cardinality discrepancy. It wasn't: `window_bounds` floored ClickHouse's
+window to whole seconds (`fromUnixTimestamp(ss)`/`fromUnixTimestamp(es)`,
+exclusive end) while LogsQL got nanosecond bounds with an inclusive-both-ends
+window — a real, measured 0.04-0.95s per-cell offset, enough to let one row
+cross the boundary and land in a different group count. ClickHouse's `Timestamp`
+column is `fromUnixTimestamp64Nano(timestamp_unix_nano)` (`DateTime64(9)`, see
+`init-s3.sql`), so it can and now does use the exact same nanosecond bounds as
+LogsQL, with `>= AND <=` (not `<`) to match LogsQL's inclusive-both-ends window.
+`window_bounds` now emits only `sns`/`ens` (nanosecond bounds from one
+`time.time()` call) — there is no second-granularity pair left to drift.
+**Result: the cell fully converges under v3.3** — see "Consolidated run — v3.3"
+below.
+
+**The group-by result string now carries a verifiable `total=`.** v3.2's writeup
+claimed "the row-count total agrees" without a way to check it from the result
+string itself; `extract_result` now returns
+`rows=<groups>;total=<sum of counts>;hash=<sha256 of the sorted pairs>` for
+every system (ClickHouse included — see M-3 below), so that claim is checkable,
+not asserted.
+
+**ClickHouse's group-by is now `FORMAT JSONEachRow` with `count() AS n`, the
+same shape as `scan`.** There is no more CH-specific TSV branch for group-by:
+a group key containing `\t`/`\n`/`\\` could previously parse differently
+between the TSV and JSON paths and diverge for a reason that had nothing to do
+with the actual data. One extractor, one behavior, for every system and every
+`qkind` except ClickHouse's plain scalars (still its native TSV, no key to
+extract).
+
+**The perf-gate table now shows p90 too, not just p95.** `measure_query` emits
+`p90_ms` and the raw `samples_ms` per cell; the table's "baseline"/system
+columns render `p95/p90 [res]` instead of `p95 [res]` alone, so the number the
+perf gate actually gates on (p90+p50, see below) is visible next to p95
+without cross-referencing the JSON.
+
+**Trust caveat, continued:** LH's `lat100` cells measure warm cache hits, not
+S3-bound reads — LH's `24h/lat100` numbers are consistently close to its own
+`24h/lat0` numbers in the tables below (e.g. logs `count_total`/24h: LH 23.4/18.6
+at 0ms vs 19.5/15.9 at 100ms), because the same LH process serves both latency
+levels back to back without its cache being cleared in between; only
+ClickHouse (no cache to warm, reads S3 fresh every query) actually shows the
+injected latency. `scripts/bench/run.sh --cold` exists to clear LH's cache
+before each request when a true S3-bound LH number is needed.
+
 ## Response validation (v3.2, 2026-09-13)
+
+*Historical — superseded by "Response validation (v3.3)" above. v3.2's claim
+below of a "genuine, ClickHouse-specific finding" in `high_card`/24h/lat100 is
+retracted; it was a harness window-bounds bug, fixed in v3.3 (see above and
+"Cells that are not fully valid" below).*
 
 `run.sh` validates **every timed response**, not just its latency: a fast
 wrong/empty/error answer is a broken response and is never counted as
@@ -313,23 +371,66 @@ python3 scripts/bench/report.py bench-results/baseline-2026-09/run-baseline-v3.2
   round), all pass; see `docs/benchmarks/full-scope-s3.md` for how to run
   them.
 
-### Cells that are not fully valid
+**Exact command for `run-baseline-v3.3.{json,md,log}`** (fresh stack, disk
+profile `local-ssd`):
 
-`logs/high_card/24h/lat100ms`, ClickHouse only: `result 6558 vs base 6557`.
-`high_card` groups by `trace_id` — at 24h this is ~6,557 distinct groups, the
-highest cardinality in the whole matrix. VL and LH agree with each other
-exactly (same group count, same sorted-pairs hash); ClickHouse's `GROUP BY
-TraceId` over the SAME S3 Parquet LH reads byte for byte produces one extra
-group. The row-count total (14107) is identical across all three systems —
-only the number of distinct groups differs, by one, and only at this specific
-range/latency combination (the matching 0ms cell agrees exactly across all
-three, same hash: `rows=6567;hash=a653d2b4…`). This is exactly the class of
-bug the group-by hashing fix (this round) exists to catch: the OLD
-sum-to-total comparison could never have seen it, since the total was
-(and remains) correct. It's a genuine, if extremely minor (0.015% of the
-group count), ClickHouse-specific finding — not a harness defect, and not
-something to fix by loosening the check. Left as a follow-up if anyone wants
-to root-cause ClickHouse's `GROUP BY` behavior at this cardinality; every
-other cross-system comparison in the matrix — including all 8 `scan` cells,
-now checked by `window_rows`/`window_hash` exact equality across VL/VT, LH,
-AND ClickHouse — passes clean.
+```
+scripts/bench/run.sh --signals both --s3-latency "0 100" --ranges "1h 24h" \
+  --iterations 20 --warmup 3 \
+  --output bench-results/baseline-2026-09/run-baseline-v3.3.json 2>&1 \
+  | tee -a bench-results/baseline-2026-09/run-baseline-v3.3.log
+python3 scripts/bench/report.py bench-results/baseline-2026-09/run-baseline-v3.3.json \
+  bench-results/baseline-2026-09/run-baseline-v3.3.md
+```
+- **Enforced parity gate (from `run-baseline-v3.3.log`):** logs count_total —
+  baseline (victorialogs) = 13915 at 0ms, 13891 at 100ms, and (unlike the
+  ±5% tolerance the gate itself allows) ClickHouse and Lakehouse matched
+  the baseline **exactly** at both latencies (13915/13915/13915,
+  13891/13891/13891); traces count_total — baseline (victoriatraces) =
+  16260 at 0ms, 16216 at 100ms, again exact three-way agreement
+  (16260/16260/16260, 16216/16216/16216). No `parity gate MISMATCH` or
+  `parity gate FAILED` line anywhere in the log.
+- **`run-baseline-v3.3.md` result: LH 64/64 rows valid, 0 invalid;
+  ClickHouse 64/64, 0 invalid; baseline 64/64.** `logs/high_card/24h/lat100`
+  — the one cell v3.2 reported as invalid — now shows identical
+  `rows=6571;total=13880;hash=813bb7ea…` across baseline, LH, AND
+  ClickHouse: it fully converges once ClickHouse uses the same nanosecond,
+  inclusive-both-ends window as LogsQL (see "Response validation (v3.3)"
+  above). Every cell in the matrix — all 64, including all 8 `scan` cells
+  and all 8 group-by cells — passes at exact cross-system equality. LH is
+  a logs median 2.1× baseline (p90 5.1×) and 10× faster than ClickHouse; a
+  traces median 2.2× baseline (p90 4.6×) and 13× faster than ClickHouse.
+  See the trust caveat above before reading too much into the ratios at
+  sub-3ms baselines, and the cache-hit caveat before reading too much into
+  a `lat100` cell that looks similar to its `lat0` twin.
+- **Unit/self tests (v3.3):** `python3 -m unittest discover -s
+  scripts/bench/tests` (48 tests), `scripts/bench/tests/extract_result_test.sh`
+  (28 checks), `scripts/bench/tests/scan_membership_test.sh` (17 checks),
+  `scripts/bench/tests/measure_query_test.sh` (31 checks — including new
+  `window_bounds` coverage and a de-vacuated percentile assertion using
+  distinct 1-18ms samples) — **124 checks total** (116 before this round),
+  all pass; see `docs/benchmarks/full-scope-s3.md` for how to run them.
+
+### Cells that are not fully valid (v3.3: none)
+
+**None.** Every one of the 64 cells (both signals, both latencies) is fully
+valid and agrees exactly across baseline, Lakehouse, and ClickHouse in
+`run-baseline-v3.3.md`.
+
+**v3.2 reported one invalid cell here — that report is retracted.**
+`logs/high_card/24h/lat100ms` showed ClickHouse at `result 6558 vs base 6557`
+and was written up as "a genuine, ClickHouse-specific finding". It was not:
+ClickHouse's window bounds in `window_bounds`/`_prep_body` were
+second-granularity and exclusive-end (`fromUnixTimestamp(ss)` .. `<
+fromUnixTimestamp(es)`) while LogsQL's were nanosecond and inclusive-both-ends
+— a real, measured 0.04-0.95s per-cell offset, not "the exact same instant"
+the v3.2 comments claimed. That offset was large enough, at `high_card`'s
+~6,557-group cardinality, to let one row cross the window boundary and shift
+the group count by one. Fixing `window_bounds` to emit only nanosecond bounds
+and using `>= AND <=` in every ClickHouse query (see "Response validation
+(v3.3)" above) makes the cell converge exactly — see the v3.3 result above.
+The lesson: "shared bounds" has to mean literally the same bytes reaching
+every system's query, not merely "computed close together" — this round's
+group-by pair-hashing fix (which surfaced the divergence at all) worked
+exactly as intended; the bug it caught was in the harness's own window
+computation, not in ClickHouse.

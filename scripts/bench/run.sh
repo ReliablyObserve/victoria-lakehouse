@@ -136,6 +136,26 @@ strip_scan_limit() {
   fi
 }
 
+# window_bounds <secs> -> echoes "sns ens" (nanosecond epoch bounds), from ONE
+# time.time() call, used for EVERY system including ClickHouse. There is no
+# separate second-granularity pair here on purpose: ClickHouse's view exposes
+# `Timestamp` as `fromUnixTimestamp64Nano(timestamp_unix_nano)` (DateTime64(9)
+# — see init-s3.sql), so its query can and must use the SAME nanosecond bounds
+# as LogsQL's `start`/`end` — a second-granularity `fromUnixTimestamp(ss)`
+# would floor away up to ~1s and shift ClickHouse's window relative to every
+# other system's for the same nominal cell (a real, measured 0.04-0.95s
+# offset per cell, previously masked as "exact same instant"). LogsQL's
+# `start`/`end` window is inclusive at both ends, so the ClickHouse SQL uses
+# `>= AND <=` (not `<`) to match — see every CH branch in _prep_body.
+window_bounds() {
+  python3 -c "
+import time
+secs = $1
+now = time.time()
+print(int((now - secs) * 1e9), int(now * 1e9))
+"
+}
+
 result_is_empty() {
   case "$1" in
     0|rows=0|spans=0) return 0 ;;
@@ -149,51 +169,36 @@ result_is_empty() {
 #   - scalar (count/filter kinds — count_total, fulltext, level_filter,
 #     multi_filter, negation, service_filter, slow_spans, span_name): the
 #     count as a plain integer string.
-#   - group-by (count_by_service, high_card): "rows=<groups>;hash=<sha256 of
-#     the sorted "group\x00count" pairs>" — a plain sum(n) would validate the
-#     TOTAL only, so two systems could split the same total across different
-#     groups and still "match"; hashing the pairs catches that.
+#   - group-by (count_by_service, high_card): "rows=<groups>;total=<sum of
+#     counts>;hash=<sha256 of the sorted "group\x00count" pairs>" — a plain
+#     sum(n) would validate the TOTAL only, so two systems could split the
+#     same total across different groups and still "match"; hashing the
+#     pairs catches that. `total` rides along so a "same total, different
+#     groups" claim is independently checkable from the result string itself
+#     (the hash alone doesn't show a human the number that agreed).
 #   - scan: "rows=<N>;hash=<sha256 of the sorted set of stable row keys>" —
 #     key is `_msg` for logs, `trace_id:span_id` for traces (so a degenerate
 #     but same-count answer still diverges).
 #   - trace_by_id / trace_lookup: "spans=<N>", the matched-span/log count.
-# ClickHouse's `scan` is requested as JSONEachRow with Body/TraceId/SpanId
-# aliased to `_msg`/`trace_id`/`span_id` (see _prep_body) so it goes through
-# the SAME JSON-lines extractor as VL/VT/LH below and carries a real
-# comparable key, not just a row count. Its group-by and plain-scalar kinds
-# stay TSV (ClickHouse's native format for those).
+# ClickHouse's `scan` AND group-by kinds are requested as JSONEachRow —
+# scan with Body/TraceId/SpanId aliased to `_msg`/`trace_id`/`span_id`,
+# group-by with `count() AS n` (see _prep_body) — so both go through the
+# SAME JSON-lines extractor as VL/VT/LH below and carry a real comparable
+# key, not just a row/group count. A separate CH-specific TSV branch for
+# these would let a group key containing \t/\n/\\ parse differently between
+# TSV and JSON and diverge for a reason that has nothing to do with the
+# actual data — one extractor, one behavior, for every system. Only
+# ClickHouse's plain-scalar kinds stay TSV (its native format, no key to
+# extract).
 # `keysout` (scan only, any system) also writes the sorted+deduped key set
 # there — used both to build the per-cell reference window and, per
 # iteration, to check a truncated scan's rows are members of that window.
 extract_result() {
   local qkind="$1" system="$2" file="$3" keysout="${4:-}"
-  if [[ "$system" == clickhouse && "$qkind" != scan ]]; then
+  if [[ "$system" == clickhouse && "$qkind" != scan && "$qkind" != count_by_service && "$qkind" != high_card ]]; then
     case "$qkind" in
       trace_by_id)
         awk -F'\t' '{n++; v=$NF} END{if(n==0){print "invalid:empty-body"} else {print "spans="(v+0)}}' "$file" ;;
-      count_by_service|high_card)
-        python3 - "$file" <<'PY'
-import sys, hashlib
-n = 0
-pairs = []
-with open(sys.argv[1]) as f:
-    for line in f:
-        line = line.rstrip("\n")
-        if not line:
-            continue
-        n += 1
-        parts = line.split("\t")
-        key = parts[0] if parts else ""
-        val = parts[-1] if len(parts) > 1 else ""
-        pairs.append((key, val))
-if n == 0:
-    print("invalid:empty-body")
-else:
-    pairs.sort()
-    h = hashlib.sha256("\n".join("{}\x00{}".format(k, v) for k, v in pairs).encode()).hexdigest()
-    print("rows={};hash={}".format(n, h))
-PY
-        ;;
       *)
         awk -F'\t' '{n++; v=$NF; if(v+0==v && v!="") s+=v; else nn=1} END{if(n==0){print "invalid:empty-body"} else {print (nn?n:s+0)}}' "$file" ;;
     esac
@@ -244,9 +249,13 @@ else:
 PY
         ;;
       count_by_service|high_card)
+        # Shared by every system, ClickHouse included (see the module
+        # comment above): CH's group-by is requested as JSONEachRow with
+        # `count() AS n`, same shape as VL/VT/LH's `stats by(...) count()`.
         python3 - "$file" <<'PY'
 import sys, json, hashlib
 n = parsed = 0
+total = 0
 pairs = []
 with open(sys.argv[1]) as f:
     for line in f:
@@ -265,6 +274,10 @@ with open(sys.argv[1]) as f:
             if k not in ("n", "count(*)", "count("):
                 key = v
                 break
+        try:
+            total += int(cnt)
+        except Exception:
+            pass
         pairs.append((str(key), str(cnt)))
 if n == 0:
     print("invalid:empty-body")
@@ -273,7 +286,7 @@ elif parsed != n:
 else:
     pairs.sort()
     h = hashlib.sha256("\n".join("{}\x00{}".format(k, v) for k, v in pairs).encode()).hexdigest()
-    print("rows={};hash={}".format(n, h))
+    print("rows={};total={};hash={}".format(n, total, h))
 PY
         ;;
       trace_by_id|trace_lookup)
@@ -528,14 +541,15 @@ vals = sorted(s * 1000 for s in secs)
 n = len(vals)
 pct = lambda p: round(vals[min(int(n * p / 100), n - 1)], 1) if n else None
 avg_bytes = round(sum(b)/len(b)) if b else 0
-out = {"label": label, "system": system, "p50_ms": pct(50), "p95_ms": pct(95),
-       "p99_ms": pct(99), "iters": n, "errors": errors,
+out = {"label": label, "system": system, "p50_ms": pct(50), "p90_ms": pct(90),
+       "p95_ms": pct(95), "p99_ms": pct(99), "iters": n, "errors": errors,
        "avg_bytes": avg_bytes, "result": result if result else None,
        "iters_valid": iters_valid, "iters_invalid": iters_invalid,
        "invalid_reasons": invalid_reasons if invalid_reasons else None,
        "content_hash": content_hash if content_hash else None,
        "window_rows": int(window_rows) if window_rows else None,
-       "window_hash": window_hash if window_hash else None}
+       "window_hash": window_hash if window_hash else None,
+       "samples_ms": vals}
 print(json.dumps(out))
 PY
 }
@@ -578,35 +592,17 @@ fetch_scalar() {
 range_to_secs() { case "$1" in 15m) echo 900;; 1h) echo 3600;; 6h) echo 21600;; 24h) echo 86400;; 7d) echo 604800;; *) echo 3600;; esac; }
 start_ns() { python3 -c "import time;print(int((time.time()-$1)*1e9))"; }
 end_ns()   { python3 -c "import time;print(int(time.time()*1e9))"; }
-start_s()  { python3 -c "import time;print(int(time.time()-$1))"; }
-end_s()    { python3 -c "import time;print(int(time.time()))"; }
-# window_bounds <secs> -> echoes "sns ens ss es" (LogsQL ns bounds, ClickHouse
-# s bounds) all derived from ONE time.time() call. start_ns/end_ns/start_s/
-# end_s above each spawn their OWN python3 process with its OWN time.time()
-# call — even called back-to-back, those are still 4 separate instants a few
-# ms apart, which can straddle a whole-second boundary and give ClickHouse's
-# second-granularity `es` a different "now" than LogsQL's nanosecond `ens` by
-# up to ~1s — exactly the kind of skew I-1's shared-bounds fix is supposed to
-# eliminate. One call, one `now`, both granularities derived from it.
-window_bounds() {
-  python3 -c "
-import time
-secs = $1
-now = time.time()
-print(int((now - secs) * 1e9), int(now * 1e9), int(now - secs), int(now))
-"
-}
 
 # --- the matrix: (signal, query) -> per-system prepared request ---------------
 # Each query function echoes "<method>\t<url>\t<body>" for the given system+range.
 # LogsQL systems (lh/vl/vt) hit /select/logsql/query; ClickHouse hits its HTTP
 # SQL endpoint over the otel_logs/otel_traces views (same Parquet on S3).
-prep() { # $1 signal  $2 query  $3 system  $4 sns  $5 ens  $6 ss  $7 es
+prep() { # $1 signal  $2 query  $3 system  $4 sns  $5 ens
   # Logs the exact prepared request (method/url/body) via the shared log() helper
   # (stderr, so it never pollutes the "<method>\t<url>\t<body>" stdout contract
   # that callers capture with $(...)), then re-emits _prep_body's stdout verbatim.
-  local signal="$1" query="$2" sys="$3" sns="$4" ens="$5" ss="$6" es="$7" row
-  row="$(_prep_body "$signal" "$query" "$sys" "$sns" "$ens" "$ss" "$es")"
+  local signal="$1" query="$2" sys="$3" sns="$4" ens="$5" row
+  row="$(_prep_body "$signal" "$query" "$sys" "$sns" "$ens")"
   if [[ -n "$row" ]]; then
     local m u b
     IFS=$'\t' read -r m u b <<<"$row"
@@ -614,16 +610,17 @@ prep() { # $1 signal  $2 query  $3 system  $4 sns  $5 ens  $6 ss  $7 es
   fi
   printf '%s' "$row"
 }
-# $1 signal  $2 query  $3 system  $4 sns  $5 ens  $6 ss  $7 es — the window
+# $1 signal  $2 query  $3 system  $4 sns  $5 ens — the nanosecond window
 # bounds are passed in, computed ONCE per (signal, query, range, latency) by
-# the caller and shared across every system, so a truncated scan's reference
-# window (built from this same body, limit stripped) is over the EXACT SAME
-# window for every system — the seed is a static one-time backfill with no
-# live ingest, so with identical bounds every system must return exactly the
-# same window_rows/window_hash; any difference is a real divergence, not a
-# few seconds of relative-window drift between sequential per-system calls.
+# the caller and shared across every system, INCLUDING ClickHouse (whose SQL
+# uses the same ns bounds via fromUnixTimestamp64Nano — see window_bounds'
+# comment) — so a truncated scan's reference window (built from this same
+# body, limit stripped) is over the same window for every system, and the
+# seed being a static one-time backfill with no live ingest means a
+# same-bounds divergence is real, not a few seconds of relative-window drift
+# between sequential per-system calls.
 _prep_body() {
-  local signal="$1" query="$2" sys="$3" sns="$4" ens="$5" ss="$6" es="$7"
+  local signal="$1" query="$2" sys="$3" sns="$4" ens="$5"
   local logs_url traces_url
   case "$sys" in
     lakehouse) logs_url="${EP[lh_logs]}/select/logsql/query"; traces_url="${EP[lh_traces]}/select/logsql/query" ;;
@@ -632,21 +629,21 @@ _prep_body() {
   esac
   if [[ "$signal" == logs ]]; then
     case "$query" in
-      count_total)      [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s)' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\t* | stats count() n' "$logs_url" "$sns" "$ens" ;;
-      count_by_service) [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT ServiceName,count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) GROUP BY ServiceName' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\t* | stats by (service.name) count()' "$logs_url" "$sns" "$ens" ;;
-      fulltext)         [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND position(Body,'"'"'error'"'"')>0' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\terror | stats count() n' "$logs_url" "$sns" "$ens" ;;
-      level_filter)     [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND SeverityText='"'"'ERROR'"'"'' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\tlevel:ERROR | stats count() n' "$logs_url" "$sns" "$ens" ;;
-      multi_filter)     [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND SeverityText='"'"'ERROR'"'"' AND ServiceName='"'"'api-gateway'"'"'' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\tlevel:ERROR service.name:="api-gateway" | stats count() n' "$logs_url" "$sns" "$ens" ;;
-      negation)         [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND SeverityText!='"'"'INFO'"'"'' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\t-level:INFO | stats count() n' "$logs_url" "$sns" "$ens" ;;
-      trace_lookup)     [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND TraceId='"'"'%s'"'"'' "${EP[ch]}" "$ss" "$es" "$SAMPLE_TID" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:=%s | stats count() n' "$logs_url" "$sns" "$ens" "$SAMPLE_TID" ;;
-      high_card)        [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT TraceId,count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) GROUP BY TraceId' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\t* | stats by (trace_id) count()' "$logs_url" "$sns" "$ens" ;;
+      count_total)      [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s)' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\t* | stats count() n' "$logs_url" "$sns" "$ens" ;;
+      count_by_service) [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT ServiceName,count() AS n FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY ServiceName FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\t* | stats by (service.name) count()' "$logs_url" "$sns" "$ens" ;;
+      fulltext)         [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND position(Body,'"'"'error'"'"')>0' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\terror | stats count() n' "$logs_url" "$sns" "$ens" ;;
+      level_filter)     [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND SeverityText='"'"'ERROR'"'"'' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\tlevel:ERROR | stats count() n' "$logs_url" "$sns" "$ens" ;;
+      multi_filter)     [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND SeverityText='"'"'ERROR'"'"' AND ServiceName='"'"'api-gateway'"'"'' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\tlevel:ERROR service.name:="api-gateway" | stats count() n' "$logs_url" "$sns" "$ens" ;;
+      negation)         [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND SeverityText!='"'"'INFO'"'"'' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\t-level:INFO | stats count() n' "$logs_url" "$sns" "$ens" ;;
+      trace_lookup)     [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND TraceId='"'"'%s'"'"'' "${EP[ch]}" "$sns" "$ens" "$SAMPLE_TID" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:=%s | stats count() n' "$logs_url" "$sns" "$ens" "$SAMPLE_TID" ;;
+      high_card)        [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT TraceId,count() AS n FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY TraceId FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\t* | stats by (trace_id) count()' "$logs_url" "$sns" "$ens" ;;
       # CH: Body/TraceId/SpanId aliased to LogsQL's own field names and the
       # response requested as JSONEachRow so CH's scan goes through the SAME
       # JSON-lines extractor as VL/VT/LH — it can then participate in the
       # membership + window_hash check instead of being validated by row
       # count alone (its projection is no longer "different", it's the same
       # comparable key).
-      scan)             [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT Body AS _msg, ServiceName FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) LIMIT %s FORMAT JSONEachRow' "${EP[ch]}" "$ss" "$es" "$SCAN_LIMIT" || printf 'POST\t%s?start=%s&end=%s\t* | fields _msg, service.name | limit %s' "$logs_url" "$sns" "$ens" "$SCAN_LIMIT" ;;
+      scan)             [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT Body AS _msg, ServiceName FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) LIMIT %s FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" "$SCAN_LIMIT" || printf 'POST\t%s?start=%s&end=%s\t* | fields _msg, service.name | limit %s' "$logs_url" "$sns" "$ens" "$SCAN_LIMIT" ;;
     esac
   else # traces. trace_id:* counts only REAL spans — VictoriaTraces also
        # returns internal `trace_id_idx_stream` index rows (fields
@@ -655,11 +652,11 @@ _prep_body() {
        # Parquet) correctly drop those, so without this filter the VT
        # baseline over-counts.
     case "$query" in
-      count_total)      [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s)' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | stats count() n' "$traces_url" "$sns" "$ens" ;;
-      count_by_service) [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT ServiceName,count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) GROUP BY ServiceName' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | stats by (`resource_attr:service.name`) count() as n' "$traces_url" "$sns" "$ens" ;;
-      service_filter)   [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND ServiceName='"'"'api-gateway'"'"'' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\t`resource_attr:service.name`:="api-gateway" | stats count() as n' "$traces_url" "$sns" "$ens" ;;
-      trace_by_id)      [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND TraceId='"'"'%s'"'"'' "${EP[ch]}" "$ss" "$es" "$SAMPLE_TID" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:=%s | stats count() n' "$traces_url" "$sns" "$ens" "$SAMPLE_TID" ;;
-      span_name)        [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND SpanName='"'"'HTTP GET /api/v1/users'"'"'' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\tname:="HTTP GET /api/v1/users" | stats count() as n' "$traces_url" "$sns" "$ens" ;;
+      count_total)      [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s)' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | stats count() n' "$traces_url" "$sns" "$ens" ;;
+      count_by_service) [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT ServiceName,count() AS n FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY ServiceName FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | stats by (`resource_attr:service.name`) count() as n' "$traces_url" "$sns" "$ens" ;;
+      service_filter)   [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND ServiceName='"'"'api-gateway'"'"'' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\t`resource_attr:service.name`:="api-gateway" | stats count() as n' "$traces_url" "$sns" "$ens" ;;
+      trace_by_id)      [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND TraceId='"'"'%s'"'"'' "${EP[ch]}" "$sns" "$ens" "$SAMPLE_TID" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:=%s | stats count() n' "$traces_url" "$sns" "$ens" "$SAMPLE_TID" ;;
+      span_name)        [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND SpanName='"'"'HTTP GET /api/v1/users'"'"'' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\tname:="HTTP GET /api/v1/users" | stats count() as n' "$traces_url" "$sns" "$ens" ;;
       # 100ms was the original threshold; the seed's spans are 5-54ms
       # (cmd/datagen), so >50ms selects the slowest ~8% and is the largest
       # round number giving a non-zero, exactly-equal count on VT/LH/CH
@@ -669,7 +666,7 @@ _prep_body() {
       # end_time, duration) carry a trace-level duration and no trace_id;
       # some of those exceed 100ms, so a bare `duration:>N` filter
       # over-counts on VT only (1075 vs LH's real 0) — confirmed empirically.
-      slow_spans)       [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) AND Duration>50000000' "${EP[ch]}" "$ss" "$es" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* duration:>50000000 | stats count() as n' "$traces_url" "$sns" "$ens" ;;
+      slow_spans)       [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND Duration>50000000' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* duration:>50000000 | stats count() as n' "$traces_url" "$sns" "$ens" ;;
       # trace_id, span_id are included in the projection (in addition to
       # name/service.name/duration) so extract_result's scan-key hash
       # (trace_id:span_id for traces) is actually meaningful —
@@ -678,7 +675,7 @@ _prep_body() {
       # can never catch a real divergence). Same filter/limit, so the count
       # and row selection are unaffected; only two extra small fields ride
       # along in the response.
-      scan)             [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT TraceId AS trace_id, SpanId AS span_id, SpanName, ServiceName, Duration FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp(%s) AND Timestamp<fromUnixTimestamp(%s) LIMIT %s FORMAT JSONEachRow' "${EP[ch]}" "$ss" "$es" "$SCAN_LIMIT" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | fields trace_id, span_id, name, `resource_attr:service.name`, duration | limit %s' "$traces_url" "$sns" "$ens" "$SCAN_LIMIT" ;;
+      scan)             [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT TraceId AS trace_id, SpanId AS span_id, SpanName, ServiceName, Duration FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) LIMIT %s FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" "$SCAN_LIMIT" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | fields trace_id, span_id, name, `resource_attr:service.name`, duration | limit %s' "$traces_url" "$sns" "$ens" "$SCAN_LIMIT" ;;
     esac
   fi
 }
@@ -794,14 +791,14 @@ set_latency() { local ms="$1"; if [[ "$ms" == 0 ]]; then log "S3 latency: passth
 # (and the caller aborts the run) on any mismatch beyond ±5% of the baseline.
 parity_gate() {
   local signal="$1" secs; secs=$(range_to_secs 24h)
-  local sns ens ss es
-  read -r sns ens ss es <<<"$(window_bounds "$secs")"
+  local sns ens
+  read -r sns ens <<<"$(window_bounds "$secs")"
   log "parity gate ($signal, 24h): count_total across systems…"
   local sysset; [[ "$signal" == logs ]] && sysset="$LOG_SYSTEMS" || sysset="$TRACE_SYSTEMS"
   local base="" s n mismatch=0
   for s in $sysset; do
     local m u b
-    read -r m u b <<<"$(prep "$signal" count_total "$s" "$sns" "$ens" "$ss" "$es")"
+    read -r m u b <<<"$(prep "$signal" count_total "$s" "$sns" "$ens")"
     n=$(fetch_scalar "$m" "$u" "$b" count_total "$s")
     printf '    %-16s count=%s\n' "$s" "${n:-ERR}" >&2
     if [[ -z "$base" ]]; then
@@ -851,12 +848,12 @@ for lat in $S3_LATENCIES; do
       secs=$(range_to_secs "$range")
       for q in $queries; do
         # Computed ONCE per (signal, query, range, latency) — shared across
-        # every system's request for this cell (see _prep_body's comment) —
-        # from a single time.time() call (window_bounds), so LogsQL's ns
-        # bounds and ClickHouse's s bounds describe the EXACT SAME instant.
-        read -r sns ens ss es <<<"$(window_bounds "$secs")"
+        # every system's request for this cell, INCLUDING ClickHouse (see
+        # _prep_body's comment) — from a single time.time() call
+        # (window_bounds), so every system queries the same ns window.
+        read -r sns ens <<<"$(window_bounds "$secs")"
         for sys in $systems; do
-          IFS=$'\t' read -r method url body <<<"$(prep "$signal" "$q" "$sys" "$sns" "$ens" "$ss" "$es")"; unset IFS
+          IFS=$'\t' read -r method url body <<<"$(prep "$signal" "$q" "$sys" "$sns" "$ens")"; unset IFS
           [[ -z "${method:-}" ]] && continue
           row=$(measure_query "${signal}/${q}/${range}/lat${lat}" "$sys" "$method" "$url" "$body" "$q")
           row=$(python3 -c "import sys,json;d=json.loads(sys.argv[1]);d.update(signal='$signal',query='$q',range='$range',latency_ms=$lat,disk_profile='$DISK_PROFILE');print(json.dumps(d))" "$row")

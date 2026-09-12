@@ -46,8 +46,10 @@ printf '{"n":"8"}\n' > "$TMP/trace_by_id.jsonl"
 printf 'not json at all, definitely not\n' > "$TMP/malformed.txt"
 printf '{"n":"1"}\nnot json\n{"n":"2"}\n' > "$TMP/partial_parse.jsonl"   # M-1: some lines parse, some don't
 printf '17132\n' > "$TMP/ch_scalar.tsv"
-printf 'api-gateway\t3499\nweb\t100\n' > "$TMP/ch_groupby.tsv"
-printf 'api-gateway\t3000\nweb\t599\n' > "$TMP/ch_groupby_same_total_diff_groups.tsv"
+# CH group-by is FORMAT JSONEachRow with count() AS n, same shape as VL/VT/LH
+# (M-3: no CH-specific TSV branch — one extractor for every system).
+printf '{"ServiceName":"api-gateway","n":"3499"}\n{"ServiceName":"web","n":"100"}\n' > "$TMP/ch_groupby.jsonl"
+printf '{"ServiceName":"api-gateway","n":"3000"}\n{"ServiceName":"web","n":"599"}\n' > "$TMP/ch_groupby_same_total_diff_groups.jsonl"
 printf '{"_msg":"hello","ServiceName":"a"}\n{"_msg":"world","ServiceName":"b"}\n' > "$TMP/ch_scan.jsonl"  # CH scan: FORMAT JSONEachRow, Body AS _msg
 printf '{"trace_id":"t1","span_id":"s1"}\n{"trace_id":"t2","span_id":"s2"}\n' > "$TMP/ch_scan_traces.jsonl"  # TraceId AS trace_id, SpanId AS span_id
 printf '8\n' > "$TMP/ch_trace_by_id.tsv"
@@ -56,7 +58,7 @@ printf '8\n' > "$TMP/ch_trace_by_id.tsv"
 
 # --- VL/VT/LH (JSON lines) -------------------------------------------------
 check "scalar count"            "$(extract_result count_total   victorialogs   "$TMP/scalar.jsonl")"          "17132"
-check "group-by hashes pairs (not just the total)" "$(extract_result count_by_service victorialogs "$TMP/groupby.jsonl")" "rows=2;hash=*"
+check "group-by hashes pairs (not just the total)" "$(extract_result count_by_service victorialogs "$TMP/groupby.jsonl")" "rows=2;total=3599;hash=*"
 g1=$(extract_result count_by_service victorialogs "$TMP/groupby.jsonl")
 g2=$(extract_result count_by_service victorialogs "$TMP/groupby_same_total_diff_groups.jsonl")
 check "group-by: same total (3599), different groups -> different hash" "$([[ "$g1" != "$g2" ]] && echo differ || echo same)" "differ"
@@ -72,10 +74,13 @@ check "partial parse (some lines bad) -> invalid" "$(extract_result count_total 
 
 # --- ClickHouse -------------------------------------------------------------
 check "CH scalar"                "$(extract_result count_total   clickhouse "$TMP/ch_scalar.tsv")"            "17132"
-check "CH group-by hashes pairs" "$(extract_result count_by_service clickhouse "$TMP/ch_groupby.tsv")"        "rows=2;hash=*"
-cg1=$(extract_result count_by_service clickhouse "$TMP/ch_groupby.tsv")
-cg2=$(extract_result count_by_service clickhouse "$TMP/ch_groupby_same_total_diff_groups.tsv")
+check "CH group-by hashes pairs (JSONEachRow, same extractor as VL/VT/LH)" "$(extract_result count_by_service clickhouse "$TMP/ch_groupby.jsonl")" "rows=2;total=3599;hash=*"
+cg1=$(extract_result count_by_service clickhouse "$TMP/ch_groupby.jsonl")
+cg2=$(extract_result count_by_service clickhouse "$TMP/ch_groupby_same_total_diff_groups.jsonl")
 check "CH group-by: same total, different groups -> different hash" "$([[ "$cg1" != "$cg2" ]] && echo differ || echo same)" "differ"
+check "CH group-by and VL group-by agree on the SAME data (equal hash)" \
+  "$(extract_result count_by_service clickhouse "$TMP/ch_groupby.jsonl")" \
+  "$(extract_result count_by_service victorialogs "$TMP/groupby.jsonl")"
 check "CH scan goes through the JSON extractor now (real key, real hash)" "$(extract_result scan clickhouse "$TMP/ch_scan.jsonl")" "rows=2;hash=*"
 check "CH scan (traces) uses trace_id:span_id like VT/LH" "$(extract_result scan clickhouse "$TMP/ch_scan_traces.jsonl")" "rows=2;hash=*"
 check "CH scan and VT scan agree on the SAME traces (equal hash)" \

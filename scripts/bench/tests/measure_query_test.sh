@@ -56,30 +56,43 @@ EMPTY_BODY="$TMP/empty.json"
 : > "$EMPTY_BODY"
 
 # =============================================================================
-# I-7(1): measure_query — 18x200@5ms, 1x500@0.1ms, 1x200 empty (in that
-# order: the 500 first so invalid_reasons preserves first-seen order).
+# I-7(1)/R-5: measure_query — 18 valid iterations at DISTINCT 1..18ms samples
+# (not all-identical, so a leaked invalid sample is actually detectable in
+# the percentiles), 1x http-500 at a tiny 0.1ms (would drag percentiles WAY
+# down if it leaked into the valid set), 1x200-empty-body at a huge 500ms
+# (would drag them WAY up if it leaked) — in that order, so invalid_reasons
+# preserves first-seen order ("http 500" before "empty result").
 # =============================================================================
 WARMUP=0 ITERATIONS=20
 queue=("500|0.0001|50|")
-for i in $(seq 1 18); do queue+=("200|0.005|20|$VALID_BODY"); done
-queue+=("200|0.005|0|$EMPTY_BODY")
+for i in $(seq 1 18); do
+  t=$(python3 -c "print($i/1000)")
+  queue+=("200|$t|20|$VALID_BODY")
+done
+queue+=("200|0.5|0|$EMPTY_BODY")
 set_stub_queue "${queue[@]}"
 
 row=$(measure_query "logs/count_total/1h/lat0" victorialogs POST "http://x" "* | stats count() n" count_total)
-iv=$(python3 -c "import json,sys;print(json.loads(sys.argv[1])['iters_valid'])" "$row")
-ii=$(python3 -c "import json,sys;print(json.loads(sys.argv[1])['iters_invalid'])" "$row")
-err=$(python3 -c "import json,sys;print(json.loads(sys.argv[1])['errors'])" "$row")
-reasons=$(python3 -c "import json,sys;print(json.loads(sys.argv[1])['invalid_reasons'])" "$row")
-p50=$(python3 -c "import json,sys;print(json.loads(sys.argv[1])['p50_ms'])" "$row")
-p95=$(python3 -c "import json,sys;print(json.loads(sys.argv[1])['p95_ms'])" "$row")
-p99=$(python3 -c "import json,sys;print(json.loads(sys.argv[1])['p99_ms'])" "$row")
+gv() { python3 -c "import json,sys;print(json.loads(sys.argv[1])['$2'])" "$1"; }
+iters=$(gv "$row" iters)
+iv=$(gv "$row" iters_valid)
+ii=$(gv "$row" iters_invalid)
+err=$(gv "$row" errors)
+reasons=$(gv "$row" invalid_reasons)
+p50=$(gv "$row" p50_ms)
+p90=$(gv "$row" p90_ms)
+p99=$(gv "$row" p99_ms)
+check "measure_query: iters=18 (only the valid, timed samples)" "$iters" "18"
 check "measure_query: iters_valid=18" "$iv" "18"
 check "measure_query: iters_invalid=2" "$ii" "2"
 check "measure_query: errors=1 (only the http 500)" "$err" "1"
 check "measure_query: invalid_reasons order (500 seen before empty)" "$reasons" "http 500; empty result"
-check "measure_query: p50 from the 18 valid 5ms samples only" "$p50" "5.0"
-check "measure_query: p95 from the 18 valid 5ms samples only" "$p95" "5.0"
-check "measure_query: p99 from the 18 valid 5ms samples only" "$p99" "5.0"
+# sorted [1..18]ms, 0-indexed: p50=vals[9]=10, p90=vals[16]=17, p99=vals[17]=18.
+# If either invalid sample (0.1ms or 500ms) had leaked in, these would be
+# wrong in an obvious, easy-to-notice way (e.g. p99 would jump to 500.0).
+check "measure_query: p50 == 10.0 (median of 1..18, invalid samples excluded)" "$p50" "10.0"
+check "measure_query: p90 == 17.0" "$p90" "17.0"
+check "measure_query: p99 == 18.0 (the true max, NOT the 500ms invalid sample)" "$p99" "18.0"
 
 # =============================================================================
 # I-7(2): _validate_iter non-scan branches
@@ -139,6 +152,18 @@ set_stub_queue "200|0.01|10|$BADSRC"
 build_scan_window victorialogs POST "http://x" "* | fields _msg, service.name | limit $SCAN_LIMIT"
 check "build_scan_window: unparseable -> WINDOW_ROWS empty" "$WINDOW_ROWS" ""
 check "build_scan_window: unparseable -> WINDOW_KEYS_FILE removed (empty)" "$WINDOW_KEYS_FILE" ""
+
+# =============================================================================
+# R-4: window_bounds — must emit ONLY ns bounds (no second-granularity pair,
+# the source of the CH/LogsQL skew this round fixed), from one time.time()
+# call so ens-sns is exactly secs*1e9 (not off by whatever a second call to
+# time.time() would drift).
+# =============================================================================
+read -r wb_sns wb_ens <<<"$(window_bounds 3600)"
+check "window_bounds: exactly 2 fields emitted (no ss/es)" "$(window_bounds 3600 | wc -w | tr -d ' ')" "2"
+check "window_bounds: sns is an integer" "$([[ "$wb_sns" =~ ^[0-9]+$ ]] && echo yes || echo no)" "yes"
+check "window_bounds: ens is an integer" "$([[ "$wb_ens" =~ ^[0-9]+$ ]] && echo yes || echo no)" "yes"
+check "window_bounds: ens - sns == secs * 1e9 (one time.time() call)" "$((wb_ens - wb_sns))" "3600000000000"
 
 echo "measure_query_test.sh: $pass passed, $fail failed" >&2
 [[ "$fail" == 0 ]]

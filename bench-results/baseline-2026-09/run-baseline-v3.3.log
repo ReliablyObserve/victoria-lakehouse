@@ -1,0 +1,794 @@
+[1;36m[bench][0m bringing up benchmark stack (disk-profile=local-ssd)…
+ Image victoria-lakehouse-benchmark-loki-vl-proxy-lh Building 
+ Image victoria-lakehouse-benchmark-lakehouse-traces Building 
+ Image victoria-lakehouse-benchmark-datagen-seed Building 
+ Image victoria-lakehouse-benchmark-loki-vl-proxy-vl-lh Building 
+ Image victoria-lakehouse-benchmark-lakehouse-logs Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 3.47kB done
+#1 DONE 0.0s
+
+#2 [datagen-seed internal] load build definition from Dockerfile.datagen
+#2 transferring dockerfile: 562B done
+#2 DONE 0.0s
+
+#3 [lakehouse-logs internal] load build definition from Dockerfile.logs
+#3 transferring dockerfile: 2.42kB done
+#3 DONE 0.0s
+
+#4 [loki-vl-proxy-lh internal] load build definition from Dockerfile.loki-vl-proxy
+#4 transferring dockerfile: 1.83kB done
+#4 DONE 0.0s
+
+#5 [lakehouse-traces internal] load build definition from Dockerfile.traces
+#5 transferring dockerfile: 3.78kB done
+#5 DONE 0.0s
+
+#6 [lakehouse-traces internal] load metadata for docker.io/library/golang:1.26.8-alpine3.23
+#6 ...
+
+#7 [lakehouse-logs internal] load metadata for gcr.io/distroless/static-debian12:nonroot
+#7 DONE 0.9s
+
+#6 [datagen-seed internal] load metadata for docker.io/library/golang:1.26.8-alpine3.23
+#6 DONE 1.0s
+
+#8 [datagen-seed internal] load .dockerignore
+#8 transferring context: 746B done
+#8 DONE 0.0s
+
+#9 [loki-vl-proxy-vl-lh internal] load metadata for docker.io/library/alpine:3.21
+#9 DONE 1.0s
+
+#10 [lakehouse-traces stage-1 1/2] FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+#10 resolve gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab done
+#10 DONE 0.0s
+
+#11 [datagen-seed builder 1/7] FROM docker.io/library/golang:1.26.8-alpine3.23@sha256:33ce311e5eecedee48ec1b84419c1306e9fbd71009f0d5c3f2a6904b579c1ecc
+#11 resolve docker.io/library/golang:1.26.8-alpine3.23@sha256:33ce311e5eecedee48ec1b84419c1306e9fbd71009f0d5c3f2a6904b579c1ecc 0.0s done
+#11 DONE 0.0s
+
+#12 [loki-vl-proxy-vl-lh internal] load .dockerignore
+#12 transferring context: 2B done
+#12 DONE 0.0s
+
+#13 [loki-vl-proxy-vl-lh 1/2] FROM docker.io/library/alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+#13 resolve docker.io/library/alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d 0.0s done
+#13 DONE 0.0s
+
+#14 [loki-vl-proxy-vl-lh 2/2] RUN wget -qO /usr/local/bin/loki-vl-proxy       "https://github.com/ReliablyObserve/loki-vl-proxy/releases/download/v1.58.0/loki-vl-proxy-linux-amd64"     && chmod +x /usr/local/bin/loki-vl-proxy
+#14 CACHED
+
+#15 [datagen-seed internal] load build context
+#15 transferring context: 1.70MB 0.0s done
+#15 DONE 0.1s
+
+#16 [datagen-seed builder 5/7] RUN mkdir -p deps &&     git clone --depth 1 --branch v1.50.0 https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs &&     go mod download
+#16 CACHED
+
+#17 [lakehouse-logs builder  6/10] COPY patches/vl-logs/ /tmp/patches/
+#17 CACHED
+
+#18 [lakehouse-logs builder  5/10] RUN mkdir -p deps &&     git clone --depth 1 --branch v1.50.0 https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs &&     go mod download
+#18 CACHED
+
+#19 [lakehouse-logs builder  7/10] RUN cp /tmp/patches/external.go.src deps/VictoriaLogs/app/vlstorage/external.go &&     cp /tmp/patches/external_query.go.src deps/VictoriaLogs/lib/logstorage/external_query.go &&     cd deps/VictoriaLogs && git apply /tmp/patches/vlstorage-dispatch.patch &&     git apply /tmp/patches/vl-export-severity.patch &&     git apply /tmp/patches/vl-export-streamtags-get.patch
+#19 CACHED
+
+#20 [lakehouse-traces builder  8/14] RUN cp /tmp/patches/vl-logs/external.go.src deps/VictoriaLogs/app/vlstorage/external.go &&     cp /tmp/patches/vl-logs/external_query.go.src deps/VictoriaLogs/lib/logstorage/external_query.go &&     cd deps/VictoriaLogs && git apply /tmp/patches/vl-logs/vlstorage-dispatch.patch &&     git apply /tmp/patches/vl-logs/vl-export-severity.patch &&     git apply /tmp/patches/vl-logs/vl-export-streamtags-get.patch
+#20 CACHED
+
+#21 [lakehouse-traces builder  5/14] COPY lakehouse-traces/go.mod lakehouse-traces/go.sum ./lakehouse-traces/
+#21 CACHED
+
+#22 [lakehouse-traces builder  6/14] RUN mkdir -p deps lakehouse-traces/deps &&     git clone --depth 1 --branch v1.50.0 https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs &&     git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src &&     cd /tmp/vl-src && git checkout 77df0c04d532 &&     cp -r /tmp/vl-src /app/lakehouse-traces/deps/VictoriaLogs &&     rm -rf /tmp/vl-src &&     cd /app &&     git clone --depth 1 --branch v0.9.2 https://github.com/VictoriaMetrics/VictoriaTraces.git lakehouse-traces/deps/VictoriaTraces &&     cd /app && go mod download &&     cd /app/lakehouse-traces && go mod download
+#22 CACHED
+
+#23 [lakehouse-traces builder 4/7] COPY go.mod go.sum ./
+#23 CACHED
+
+#24 [lakehouse-traces builder 3/7] WORKDIR /app
+#24 CACHED
+
+#25 [lakehouse-traces builder  9/14] RUN cp /tmp/patches/vl-traces/external.go.src lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go &&     cp /tmp/patches/vl-traces/external_query.go.src lakehouse-traces/deps/VictoriaLogs/lib/logstorage/external_query.go &&     cd lakehouse-traces/deps/VictoriaLogs && git apply /tmp/patches/vl-traces/vlstorage-dispatch.patch &&     git apply /tmp/patches/vl-traces/vl-export-severity.patch &&     git apply /tmp/patches/vl-traces/vl-export-streamtags-get.patch
+#25 CACHED
+
+#26 [lakehouse-traces builder  7/14] COPY patches/ /tmp/patches/
+#26 CACHED
+
+#27 [lakehouse-traces builder 2/7] RUN apk add --no-cache git
+#27 CACHED
+
+#28 [lakehouse-traces builder 10/14] RUN cp /tmp/patches/vt-traces/external.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/external.go &&     cp /tmp/patches/vt-traces/flag_dedup.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/flag_dedup.go &&     cd lakehouse-traces/deps/VictoriaTraces && git apply /tmp/patches/vt-traces/vtstorage-dispatch.patch &&     git apply /tmp/patches/vt-traces/vtstorage-flag-dedup.patch &&     git apply /tmp/patches/vt-traces/vtinsert-flag-dedup.patch &&     git apply /tmp/patches/vt-traces/go-mod-replace.patch
+#28 CACHED
+
+#29 [loki-vl-proxy-lh] exporting to image
+#29 exporting layers done
+#29 exporting manifest sha256:2733d2962a1026ee55c247a65329720d813acfac5968c9c16fecadb5a94f49f1 done
+#29 exporting config sha256:1872f717dcca61c763e2c8188c226cd050a99961e89ef3561819c12f112711f9 done
+#29 exporting attestation manifest sha256:686f6aca42e2949c93ca000bca6f7becfb7facfc94bf0f1b3004f64cc51901f8 0.0s done
+#29 exporting manifest list sha256:bce2ac1f238b76667ac731306c939fc10dfcb690904f52f213632346a9aad15f done
+#29 naming to docker.io/library/victoria-lakehouse-benchmark-loki-vl-proxy-lh:latest done
+#29 unpacking to docker.io/library/victoria-lakehouse-benchmark-loki-vl-proxy-lh:latest done
+#29 DONE 0.1s
+
+#30 [loki-vl-proxy-vl-lh] exporting to image
+#30 exporting layers done
+#30 exporting manifest sha256:3ce55dd9a63131ed0a02398a53d914f679848c049f536dd2847d1a189258457b done
+#30 exporting config sha256:a75a264c4be9933a3ad64bc02d1e51fc6b3ca5a671dd8a39bf4beb294ca86b2c done
+#30 exporting attestation manifest sha256:de3aceea325c340b442423285d45032dc0e3a69a98cda21bcd96e79c3f3ee7cf 0.0s done
+#30 exporting manifest list sha256:e35a4fe4c6ead7ed7a241cd5b592edcf219a2e381fe824d21f86d9bd4a087da7 done
+#30 naming to docker.io/library/victoria-lakehouse-benchmark-loki-vl-proxy-vl-lh:latest done
+#30 unpacking to docker.io/library/victoria-lakehouse-benchmark-loki-vl-proxy-vl-lh:latest done
+#30 DONE 0.1s
+
+#31 [loki-vl-proxy-lh] resolving provenance for metadata file
+#31 DONE 0.0s
+
+#32 [loki-vl-proxy-vl-lh] resolving provenance for metadata file
+#32 DONE 0.0s
+
+#33 [lakehouse-traces builder 11/14] COPY . .
+#33 ...
+
+#34 [lakehouse-logs builder  8/10] COPY . .
+#34 DONE 0.4s
+
+#33 [lakehouse-traces builder 11/14] COPY . .
+#33 DONE 0.4s
+
+#35 [datagen-seed builder 6/7] COPY . .
+#35 DONE 0.4s
+
+#36 [lakehouse-traces builder 12/14] RUN cp -r lakehouse-traces/deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmui/
+#36 DONE 0.1s
+
+#37 [datagen-seed builder 7/7] RUN CGO_ENABLED=0 GOWORK=off go build -o /datagen ./cmd/datagen
+#37 ...
+
+#38 [lakehouse-logs builder  9/10] RUN cp -r deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmui/
+#38 DONE 0.2s
+
+#39 [lakehouse-logs builder 10/10] RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64     go build -trimpath -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=dev" -o /lakehouse-logs ./cmd/lakehouse-logs &&     mkdir -p /data/lakehouse/cache
+#39 ...
+
+#37 [datagen-seed builder 7/7] RUN CGO_ENABLED=0 GOWORK=off go build -o /datagen ./cmd/datagen
+#37 DONE 5.4s
+
+#40 [lakehouse-traces builder 13/14] RUN cd lakehouse-traces &&     CGO_ENABLED=0 GOOS=linux GOARCH=arm64     go build -trimpath -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=dev" -o /lakehouse-traces .
+#40 ...
+
+#41 [datagen-seed stage-1 2/2] COPY --from=builder /datagen /usr/local/bin/datagen
+#41 CACHED
+
+#42 [datagen-seed] exporting to image
+#42 exporting layers done
+#42 exporting manifest sha256:4a258adcd4f5028a898c0ef81384c2781c31c2af7167ae895586e4bd559124d0 done
+#42 exporting config sha256:f57ab95d43f224eb45fd6b32530532b19d25cf023ded89217675037513669151 done
+#42 exporting attestation manifest sha256:96718632d2cece9d6c7fb823418ca729da79191206e9c5d6ec1811f1103357a1 0.0s done
+#42 exporting manifest list sha256:97eaeffeb6d387e21b50048527352ee7cca4836120fb9e2a9171473355b3c1e8 0.0s done
+#42 naming to docker.io/library/victoria-lakehouse-benchmark-datagen-seed:latest done
+#42 unpacking to docker.io/library/victoria-lakehouse-benchmark-datagen-seed:latest done
+#42 DONE 0.1s
+
+#39 [lakehouse-logs builder 10/10] RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64     go build -trimpath -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=dev" -o /lakehouse-logs ./cmd/lakehouse-logs &&     mkdir -p /data/lakehouse/cache
+#39 ...
+
+#43 [datagen-seed] resolving provenance for metadata file
+#43 DONE 0.0s
+
+#40 [lakehouse-traces builder 13/14] RUN cd lakehouse-traces &&     CGO_ENABLED=0 GOOS=linux GOARCH=arm64     go build -trimpath -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=dev" -o /lakehouse-traces .
+#40 ...
+
+#39 [lakehouse-logs builder 10/10] RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64     go build -trimpath -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=dev" -o /lakehouse-logs ./cmd/lakehouse-logs &&     mkdir -p /data/lakehouse/cache
+#39 DONE 11.3s
+
+#40 [lakehouse-traces builder 13/14] RUN cd lakehouse-traces &&     CGO_ENABLED=0 GOOS=linux GOARCH=arm64     go build -trimpath -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=dev" -o /lakehouse-traces .
+#40 DONE 11.4s
+
+#44 [lakehouse-traces builder 14/14] RUN mkdir -p /data/lakehouse/cache
+#44 DONE 0.1s
+
+#45 [lakehouse-logs stage-1 2/3] COPY --from=builder /lakehouse-logs /usr/local/bin/lakehouse-logs
+#45 CACHED
+
+#46 [lakehouse-logs stage-1 3/3] COPY --from=builder --chown=65532:65532 /data/lakehouse /data/lakehouse
+#46 CACHED
+
+#47 [lakehouse-logs] exporting to image
+#47 exporting layers done
+#47 exporting manifest sha256:4b0994564819c4686ffec08adb7623a6990f93c167dbbfd53fcc19100a31eddc done
+#47 exporting config sha256:0f22c3da30cbd9b73899afefe79f332ebd3abc90dffb7a316c67a0ecdec65fc7 done
+#47 exporting attestation manifest sha256:f8270050b2947fecf334de691b72d8792db5430dc383057f2f06dbfd06f5bc60 done
+#47 exporting manifest list sha256:ecfe8e223434fd2efced0a7e6c3f31b721a10edc043bd7c67f99dced8bab10ed done
+#47 naming to docker.io/library/victoria-lakehouse-benchmark-lakehouse-logs:latest done
+#47 unpacking to docker.io/library/victoria-lakehouse-benchmark-lakehouse-logs:latest done
+#47 DONE 0.0s
+
+#48 [lakehouse-logs] resolving provenance for metadata file
+#48 DONE 0.0s
+
+#49 [lakehouse-traces stage-1 2/3] COPY --from=builder /lakehouse-traces /usr/local/bin/lakehouse-traces
+#49 CACHED
+
+#50 [lakehouse-traces stage-1 3/3] COPY --from=builder --chown=65532:65532 /data/lakehouse /data/lakehouse
+#50 CACHED
+
+#51 [lakehouse-traces] exporting to image
+#51 exporting layers done
+#51 exporting manifest sha256:7096663713c5879ea74a72b7e889c28fccd50f8e1fe6c9341cc1cdbc85faae9b done
+#51 exporting config sha256:3b1dc275d3e0b4d11ca2b370bf2be4bb259b131f6d24c6eb647b1313be5f7887 done
+#51 exporting attestation manifest sha256:fa88c570e1469185ac438a909d200a6c7d1c992e75896f055c84077dfdb99ec6 done
+#51 exporting manifest list sha256:5da5f9f45c577c5c23756450e0c4ff99c612ce88c64e71550db61f72a8bc17eb done
+#51 naming to docker.io/library/victoria-lakehouse-benchmark-lakehouse-traces:latest done
+#51 unpacking to docker.io/library/victoria-lakehouse-benchmark-lakehouse-traces:latest done
+#51 DONE 0.0s
+
+#52 [lakehouse-traces] resolving provenance for metadata file
+#52 DONE 0.0s
+ Image victoria-lakehouse-benchmark-loki-vl-proxy-vl-lh Built 
+ Image victoria-lakehouse-benchmark-lakehouse-traces Built 
+ Image victoria-lakehouse-benchmark-lakehouse-logs Built 
+ Image victoria-lakehouse-benchmark-datagen-seed Built 
+ Image victoria-lakehouse-benchmark-loki-vl-proxy-lh Built 
+ Volume victoria-lakehouse-benchmark_lakehouse-cache-traces Creating 
+ Volume victoria-lakehouse-benchmark_lakehouse-cache-traces Creating 
+ Volume victoria-lakehouse-benchmark_loki-data Creating 
+ Volume victoria-lakehouse-benchmark_loki-data Creating 
+ Volume victoria-lakehouse-benchmark_vl-data Creating 
+ Volume victoria-lakehouse-benchmark_vl-data Creating 
+ Volume victoria-lakehouse-benchmark_vm-data Creating 
+ Volume victoria-lakehouse-benchmark_vm-data Creating 
+ Network victoria-lakehouse-benchmark_bench-net Creating 
+ Network victoria-lakehouse-benchmark_bench-net Creating 
+ Volume victoria-lakehouse-benchmark_tempo-data Creating 
+ Volume victoria-lakehouse-benchmark_tempo-data Creating 
+ Volume victoria-lakehouse-benchmark_vt-data Creating 
+ Volume victoria-lakehouse-benchmark_vt-data Creating 
+ Volume victoria-lakehouse-benchmark_lakehouse-cache-logs Creating 
+ Volume victoria-lakehouse-benchmark_lakehouse-cache-logs Creating 
+ Volume victoria-lakehouse-benchmark_lakehouse-cache-traces Created 
+ Volume victoria-lakehouse-benchmark_lakehouse-cache-traces Created 
+ Volume victoria-lakehouse-benchmark_loki-data Created 
+ Volume victoria-lakehouse-benchmark_loki-data Created 
+ Volume victoria-lakehouse-benchmark_vl-data Created 
+ Volume victoria-lakehouse-benchmark_vl-data Created 
+ Volume victoria-lakehouse-benchmark_vm-data Created 
+ Volume victoria-lakehouse-benchmark_vm-data Created 
+ Volume victoria-lakehouse-benchmark_tempo-data Created 
+ Volume victoria-lakehouse-benchmark_tempo-data Created 
+ Volume victoria-lakehouse-benchmark_vt-data Created 
+ Volume victoria-lakehouse-benchmark_vt-data Created 
+ Volume victoria-lakehouse-benchmark_lakehouse-cache-logs Created 
+ Volume victoria-lakehouse-benchmark_lakehouse-cache-logs Created 
+ Network victoria-lakehouse-benchmark_bench-net Created 
+ Network victoria-lakehouse-benchmark_bench-net Created 
+ Container victoria-lakehouse-benchmark-minio-1 Creating 
+ Container victoria-lakehouse-benchmark-victorialogs-1 Creating 
+ Container victoria-lakehouse-benchmark-victoriatraces-1 Creating 
+ Container victoria-lakehouse-benchmark-victoriatraces-1 Created 
+ Container victoria-lakehouse-benchmark-victorialogs-1 Created 
+ Container victoria-lakehouse-benchmark-minio-1 Created 
+ Container victoria-lakehouse-benchmark-minio-init-1 Creating 
+ Container victoria-lakehouse-benchmark-s3-latency-1 Creating 
+ Container victoria-lakehouse-benchmark-s3-latency-1 Created 
+ Container victoria-lakehouse-benchmark-minio-init-1 Created 
+ Container victoria-lakehouse-benchmark-tempo-1 Creating 
+ Container victoria-lakehouse-benchmark-clickhouse-1 Creating 
+ Container victoria-lakehouse-benchmark-lakehouse-traces-1 Creating 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Creating 
+ Container victoria-lakehouse-benchmark-loki-1 Creating 
+ Container victoria-lakehouse-benchmark-tempo-1 Created 
+ Container victoria-lakehouse-benchmark-clickhouse-1 Created 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Created 
+ Container victoria-lakehouse-benchmark-victoriametrics-1 Creating 
+ Container victoria-lakehouse-benchmark-loki-vl-proxy-lh-1 Creating 
+ Container victoria-lakehouse-benchmark-loki-vl-proxy-vl-lh-1 Creating 
+ Container victoria-lakehouse-benchmark-lakehouse-traces-1 Created 
+ Container victoria-lakehouse-benchmark-loki-1 Created 
+ Container victoria-lakehouse-benchmark-datagen-seed-1 Creating 
+ Container victoria-lakehouse-benchmark-loki-vl-proxy-vl-lh-1 Created 
+ Container victoria-lakehouse-benchmark-loki-vl-proxy-lh-1 Created 
+ Container victoria-lakehouse-benchmark-victoriametrics-1 Created 
+ Container victoria-lakehouse-benchmark-datagen-seed-1 Created 
+ Container victoria-lakehouse-benchmark-victoriatraces-1 Starting 
+ Container victoria-lakehouse-benchmark-victorialogs-1 Starting 
+ Container victoria-lakehouse-benchmark-minio-1 Starting 
+ Container victoria-lakehouse-benchmark-minio-1 Started 
+ Container victoria-lakehouse-benchmark-minio-1 Waiting 
+ Container victoria-lakehouse-benchmark-minio-1 Waiting 
+ Container victoria-lakehouse-benchmark-victorialogs-1 Started 
+ Container victoria-lakehouse-benchmark-victoriatraces-1 Started 
+ Container victoria-lakehouse-benchmark-minio-1 Healthy 
+ Container victoria-lakehouse-benchmark-minio-1 Healthy 
+ Container victoria-lakehouse-benchmark-minio-init-1 Starting 
+ Container victoria-lakehouse-benchmark-s3-latency-1 Starting 
+ Container victoria-lakehouse-benchmark-minio-init-1 Started 
+ Container victoria-lakehouse-benchmark-minio-init-1 Waiting 
+ Container victoria-lakehouse-benchmark-minio-init-1 Waiting 
+ Container victoria-lakehouse-benchmark-minio-init-1 Waiting 
+ Container victoria-lakehouse-benchmark-s3-latency-1 Started 
+ Container victoria-lakehouse-benchmark-s3-latency-1 Waiting 
+ Container victoria-lakehouse-benchmark-minio-init-1 Waiting 
+ Container victoria-lakehouse-benchmark-s3-latency-1 Waiting 
+ Container victoria-lakehouse-benchmark-minio-init-1 Waiting 
+ Container victoria-lakehouse-benchmark-minio-init-1 Exited 
+ Container victoria-lakehouse-benchmark-tempo-1 Starting 
+ Container victoria-lakehouse-benchmark-minio-init-1 Exited 
+ Container victoria-lakehouse-benchmark-loki-1 Starting 
+ Container victoria-lakehouse-benchmark-minio-init-1 Exited 
+ Container victoria-lakehouse-benchmark-clickhouse-1 Starting 
+ Container victoria-lakehouse-benchmark-minio-init-1 Exited 
+ Container victoria-lakehouse-benchmark-minio-init-1 Exited 
+ Container victoria-lakehouse-benchmark-clickhouse-1 Started 
+ Container victoria-lakehouse-benchmark-tempo-1 Started 
+ Container victoria-lakehouse-benchmark-loki-1 Started 
+ Container victoria-lakehouse-benchmark-s3-latency-1 Healthy 
+ Container victoria-lakehouse-benchmark-s3-latency-1 Healthy 
+ Container victoria-lakehouse-benchmark-lakehouse-traces-1 Starting 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Starting 
+ Container victoria-lakehouse-benchmark-lakehouse-traces-1 Started 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Started 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Waiting 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Waiting 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Waiting 
+ Container victoria-lakehouse-benchmark-victorialogs-1 Waiting 
+ Container victoria-lakehouse-benchmark-victoriatraces-1 Waiting 
+ Container victoria-lakehouse-benchmark-lakehouse-traces-1 Waiting 
+ Container victoria-lakehouse-benchmark-victorialogs-1 Waiting 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Waiting 
+ Container victoria-lakehouse-benchmark-victorialogs-1 Healthy 
+ Container victoria-lakehouse-benchmark-victorialogs-1 Healthy 
+ Container victoria-lakehouse-benchmark-victoriatraces-1 Healthy 
+ Container victoria-lakehouse-benchmark-lakehouse-traces-1 Healthy 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Healthy 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Healthy 
+ Container victoria-lakehouse-benchmark-loki-vl-proxy-vl-lh-1 Starting 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Healthy 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Healthy 
+ Container victoria-lakehouse-benchmark-victoriametrics-1 Starting 
+ Container victoria-lakehouse-benchmark-datagen-seed-1 Starting 
+ Container victoria-lakehouse-benchmark-loki-vl-proxy-lh-1 Starting 
+ Container victoria-lakehouse-benchmark-datagen-seed-1 Started 
+ Container victoria-lakehouse-benchmark-loki-vl-proxy-lh-1 Started 
+ Container victoria-lakehouse-benchmark-loki-vl-proxy-vl-lh-1 Started 
+ Container victoria-lakehouse-benchmark-victoriametrics-1 Started 
+[1;36m[bench][0m waiting for systems to report healthy…
+[1;36m[bench][0m waiting for datagen-seed to backfill (~7d of data)…
+[1;36m[bench][0m seed done; waiting for LH flush to CONVERGE to the baseline (so we measure equivalent data)…
+    logs    baseline=13931    LH=13931    ratio=1.000
+[1;36m[bench][0m flush converged (logs): LH=13931 ≈ baseline=13931
+    traces  baseline=18620    LH=16294    ratio=0.875
+    traces  baseline=18620    LH=16294    ratio=0.875
+    traces  baseline=18613    LH=16288    ratio=0.875
+    traces  baseline=18613    LH=16288    ratio=0.875
+    traces  baseline=18613    LH=16288    ratio=0.875
+    traces  baseline=18608    LH=16284    ratio=0.875
+    traces  baseline=18608    LH=16284    ratio=0.875
+    traces  baseline=18597    LH=16274    ratio=0.875
+    traces  baseline=18597    LH=16274    ratio=0.875
+    traces  baseline=18597    LH=16274    ratio=0.875
+    traces  baseline=18597    LH=16274    ratio=0.875
+[1;36m[bench][0m flush SETTLED (traces) but LH=16274 is only ratio=0.875 of baseline=18597 — REAL gap, not lag (cells will be flagged ✗ where it matters)
+[1;36m[bench][0m sample trace_id for point lookups: 823a90720d1c7874cedeaaa0ab0e4076
+[1;36m[bench][0m S3 latency: passthrough (0ms)
+[1;36m[bench][0m parity gate (logs, 24h): count_total across systems…
+[1;36m[bench][0m req logs/count_total victorialogs POST http://localhost:39401/select/logsql/query?start=1789170036272365056&end=1789256436272365056 body=* | stats count() n
+    victorialogs     count=13915
+[1;36m[bench][0m parity gate (logs): baseline (victorialogs) = 13915
+[1;36m[bench][0m req logs/count_total lakehouse POST http://localhost:39428/select/logsql/query?start=1789170036272365056&end=1789256436272365056 body=* | stats count() n
+    lakehouse        count=13915
+[1;36m[bench][0m req logs/count_total clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170036272365056) AND Timestamp<=fromUnixTimestamp64Nano(1789256436272365056)
+    clickhouse       count=13915
+[1;36m[bench][0m req logs/count_total victorialogs POST http://localhost:39401/select/logsql/query?start=1789252836513541888&end=1789256436513541888 body=* | stats count() n
+    logs/count_total/1h/lat0           victorialogs     p95=3.1 ms valid=20/20
+[1;36m[bench][0m req logs/count_total lakehouse POST http://localhost:39428/select/logsql/query?start=1789252836513541888&end=1789256436513541888 body=* | stats count() n
+    logs/count_total/1h/lat0           lakehouse        p95=8.5 ms valid=20/20
+[1;36m[bench][0m req logs/count_total clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789252836513541888) AND Timestamp<=fromUnixTimestamp64Nano(1789256436513541888)
+    logs/count_total/1h/lat0           clickhouse       p95=80.7 ms valid=20/20
+[1;36m[bench][0m req logs/count_by_service victorialogs POST http://localhost:39401/select/logsql/query?start=1789252840013723904&end=1789256440013723904 body=* | stats by (service.name) count()
+    logs/count_by_service/1h/lat0      victorialogs     p95=7.5 ms valid=20/20
+[1;36m[bench][0m req logs/count_by_service lakehouse POST http://localhost:39428/select/logsql/query?start=1789252840013723904&end=1789256440013723904 body=* | stats by (service.name) count()
+    logs/count_by_service/1h/lat0      lakehouse        p95=6.8 ms valid=20/20
+[1;36m[bench][0m req logs/count_by_service clickhouse CH http://localhost:38123 body=SELECT ServiceName,count() AS n FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789252840013723904) AND Timestamp<=fromUnixTimestamp64Nano(1789256440013723904) GROUP BY ServiceName FORMAT JSONEachRow
+    logs/count_by_service/1h/lat0      clickhouse       p95=104.3 ms valid=20/20
+[1;36m[bench][0m req logs/fulltext victorialogs POST http://localhost:39401/select/logsql/query?start=1789252844130976000&end=1789256444130976000 body=error | stats count() n
+    logs/fulltext/1h/lat0              victorialogs     p95=2.5 ms valid=20/20
+[1;36m[bench][0m req logs/fulltext lakehouse POST http://localhost:39428/select/logsql/query?start=1789252844130976000&end=1789256444130976000 body=error | stats count() n
+    logs/fulltext/1h/lat0              lakehouse        p95=7.5 ms valid=20/20
+[1;36m[bench][0m req logs/fulltext clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789252844130976000) AND Timestamp<=fromUnixTimestamp64Nano(1789256444130976000) AND position(Body,'error')>0
+    logs/fulltext/1h/lat0              clickhouse       p95=100.4 ms valid=20/20
+[1;36m[bench][0m req logs/level_filter victorialogs POST http://localhost:39401/select/logsql/query?start=1789252847720517120&end=1789256447720517120 body=level:ERROR | stats count() n
+    logs/level_filter/1h/lat0          victorialogs     p95=3.1 ms valid=20/20
+[1;36m[bench][0m req logs/level_filter lakehouse POST http://localhost:39428/select/logsql/query?start=1789252847720517120&end=1789256447720517120 body=level:ERROR | stats count() n
+    logs/level_filter/1h/lat0          lakehouse        p95=5.7 ms valid=20/20
+[1;36m[bench][0m req logs/level_filter clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789252847720517120) AND Timestamp<=fromUnixTimestamp64Nano(1789256447720517120) AND SeverityText='ERROR'
+    logs/level_filter/1h/lat0          clickhouse       p95=92.1 ms valid=20/20
+[1;36m[bench][0m req logs/multi_filter victorialogs POST http://localhost:39401/select/logsql/query?start=1789252851281262080&end=1789256451281262080 body=level:ERROR service.name:="api-gateway" | stats count() n
+    logs/multi_filter/1h/lat0          victorialogs     p95=3.9 ms valid=20/20
+[1;36m[bench][0m req logs/multi_filter lakehouse POST http://localhost:39428/select/logsql/query?start=1789252851281262080&end=1789256451281262080 body=level:ERROR service.name:="api-gateway" | stats count() n
+    logs/multi_filter/1h/lat0          lakehouse        p95=8.3 ms valid=20/20
+[1;36m[bench][0m req logs/multi_filter clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789252851281262080) AND Timestamp<=fromUnixTimestamp64Nano(1789256451281262080) AND SeverityText='ERROR' AND ServiceName='api-gateway'
+    logs/multi_filter/1h/lat0          clickhouse       p95=87.4 ms valid=20/20
+[1;36m[bench][0m req logs/negation victorialogs POST http://localhost:39401/select/logsql/query?start=1789252854967337984&end=1789256454967337984 body=-level:INFO | stats count() n
+    logs/negation/1h/lat0              victorialogs     p95=6.5 ms valid=20/20
+[1;36m[bench][0m req logs/negation lakehouse POST http://localhost:39428/select/logsql/query?start=1789252854967337984&end=1789256454967337984 body=-level:INFO | stats count() n
+    logs/negation/1h/lat0              lakehouse        p95=6.1 ms valid=20/20
+[1;36m[bench][0m req logs/negation clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789252854967337984) AND Timestamp<=fromUnixTimestamp64Nano(1789256454967337984) AND SeverityText!='INFO'
+    logs/negation/1h/lat0              clickhouse       p95=93.2 ms valid=20/20
+[1;36m[bench][0m req logs/trace_lookup victorialogs POST http://localhost:39401/select/logsql/query?start=1789252858673553920&end=1789256458673553920 body=trace_id:=823a90720d1c7874cedeaaa0ab0e4076 | stats count() n
+    logs/trace_lookup/1h/lat0          victorialogs     p95=3.8 ms valid=20/20
+[1;36m[bench][0m req logs/trace_lookup lakehouse POST http://localhost:39428/select/logsql/query?start=1789252858673553920&end=1789256458673553920 body=trace_id:=823a90720d1c7874cedeaaa0ab0e4076 | stats count() n
+    logs/trace_lookup/1h/lat0          lakehouse        p95=4.5 ms valid=20/20
+[1;36m[bench][0m req logs/trace_lookup clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789252858673553920) AND Timestamp<=fromUnixTimestamp64Nano(1789256458673553920) AND TraceId='823a90720d1c7874cedeaaa0ab0e4076'
+    logs/trace_lookup/1h/lat0          clickhouse       p95=74.8 ms valid=20/20
+[1;36m[bench][0m req logs/high_card victorialogs POST http://localhost:39401/select/logsql/query?start=1789252862191791104&end=1789256462191791104 body=* | stats by (trace_id) count()
+    logs/high_card/1h/lat0             victorialogs     p95=4.9 ms valid=20/20
+[1;36m[bench][0m req logs/high_card lakehouse POST http://localhost:39428/select/logsql/query?start=1789252862191791104&end=1789256462191791104 body=* | stats by (trace_id) count()
+    logs/high_card/1h/lat0             lakehouse        p95=7.0 ms valid=20/20
+[1;36m[bench][0m req logs/high_card clickhouse CH http://localhost:38123 body=SELECT TraceId,count() AS n FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789252862191791104) AND Timestamp<=fromUnixTimestamp64Nano(1789256462191791104) GROUP BY TraceId FORMAT JSONEachRow
+    logs/high_card/1h/lat0             clickhouse       p95=84.0 ms valid=20/20
+[1;36m[bench][0m req logs/scan victorialogs POST http://localhost:39401/select/logsql/query?start=1789252866242081024&end=1789256466242081024 body=* | fields _msg, service.name | limit 1000
+    logs/scan/1h/lat0                  victorialogs     p95=4.1 ms valid=20/20
+[1;36m[bench][0m req logs/scan lakehouse POST http://localhost:39428/select/logsql/query?start=1789252866242081024&end=1789256466242081024 body=* | fields _msg, service.name | limit 1000
+    logs/scan/1h/lat0                  lakehouse        p95=8.2 ms valid=20/20
+[1;36m[bench][0m req logs/scan clickhouse CH http://localhost:38123 body=SELECT Body AS _msg, ServiceName FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789252866242081024) AND Timestamp<=fromUnixTimestamp64Nano(1789256466242081024) LIMIT 1000 FORMAT JSONEachRow
+    logs/scan/1h/lat0                  clickhouse       p95=97.4 ms valid=20/20
+[1;36m[bench][0m req logs/count_total victorialogs POST http://localhost:39401/select/logsql/query?start=1789170070516843008&end=1789256470516843008 body=* | stats count() n
+    logs/count_total/24h/lat0          victorialogs     p95=5.0 ms valid=20/20
+[1;36m[bench][0m req logs/count_total lakehouse POST http://localhost:39428/select/logsql/query?start=1789170070516843008&end=1789256470516843008 body=* | stats count() n
+    logs/count_total/24h/lat0          lakehouse        p95=23.4 ms valid=20/20
+[1;36m[bench][0m req logs/count_total clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170070516843008) AND Timestamp<=fromUnixTimestamp64Nano(1789256470516843008)
+    logs/count_total/24h/lat0          clickhouse       p95=91.0 ms valid=20/20
+[1;36m[bench][0m req logs/count_by_service victorialogs POST http://localhost:39401/select/logsql/query?start=1789170074434867968&end=1789256474434867968 body=* | stats by (service.name) count()
+    logs/count_by_service/24h/lat0     victorialogs     p95=8.1 ms valid=20/20
+[1;36m[bench][0m req logs/count_by_service lakehouse POST http://localhost:39428/select/logsql/query?start=1789170074434867968&end=1789256474434867968 body=* | stats by (service.name) count()
+    logs/count_by_service/24h/lat0     lakehouse        p95=12.9 ms valid=20/20
+[1;36m[bench][0m req logs/count_by_service clickhouse CH http://localhost:38123 body=SELECT ServiceName,count() AS n FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170074434867968) AND Timestamp<=fromUnixTimestamp64Nano(1789256474434867968) GROUP BY ServiceName FORMAT JSONEachRow
+    logs/count_by_service/24h/lat0     clickhouse       p95=80.3 ms valid=20/20
+[1;36m[bench][0m req logs/fulltext victorialogs POST http://localhost:39401/select/logsql/query?start=1789170078619418880&end=1789256478619418880 body=error | stats count() n
+    logs/fulltext/24h/lat0             victorialogs     p95=5.6 ms valid=20/20
+[1;36m[bench][0m req logs/fulltext lakehouse POST http://localhost:39428/select/logsql/query?start=1789170078619418880&end=1789256478619418880 body=error | stats count() n
+    logs/fulltext/24h/lat0             lakehouse        p95=21.5 ms valid=20/20
+[1;36m[bench][0m req logs/fulltext clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170078619418880) AND Timestamp<=fromUnixTimestamp64Nano(1789256478619418880) AND position(Body,'error')>0
+    logs/fulltext/24h/lat0             clickhouse       p95=73.8 ms valid=20/20
+[1;36m[bench][0m req logs/level_filter victorialogs POST http://localhost:39401/select/logsql/query?start=1789170082643439104&end=1789256482643439104 body=level:ERROR | stats count() n
+    logs/level_filter/24h/lat0         victorialogs     p95=5.6 ms valid=20/20
+[1;36m[bench][0m req logs/level_filter lakehouse POST http://localhost:39428/select/logsql/query?start=1789170082643439104&end=1789256482643439104 body=level:ERROR | stats count() n
+    logs/level_filter/24h/lat0         lakehouse        p95=28.4 ms valid=20/20
+[1;36m[bench][0m req logs/level_filter clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170082643439104) AND Timestamp<=fromUnixTimestamp64Nano(1789256482643439104) AND SeverityText='ERROR'
+    logs/level_filter/24h/lat0         clickhouse       p95=80.2 ms valid=20/20
+[1;36m[bench][0m req logs/multi_filter victorialogs POST http://localhost:39401/select/logsql/query?start=1789170086643826944&end=1789256486643826944 body=level:ERROR service.name:="api-gateway" | stats count() n
+    logs/multi_filter/24h/lat0         victorialogs     p95=5.4 ms valid=20/20
+[1;36m[bench][0m req logs/multi_filter lakehouse POST http://localhost:39428/select/logsql/query?start=1789170086643826944&end=1789256486643826944 body=level:ERROR service.name:="api-gateway" | stats count() n
+    logs/multi_filter/24h/lat0         lakehouse        p95=28.9 ms valid=20/20
+[1;36m[bench][0m req logs/multi_filter clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170086643826944) AND Timestamp<=fromUnixTimestamp64Nano(1789256486643826944) AND SeverityText='ERROR' AND ServiceName='api-gateway'
+    logs/multi_filter/24h/lat0         clickhouse       p95=86.1 ms valid=20/20
+[1;36m[bench][0m req logs/negation victorialogs POST http://localhost:39401/select/logsql/query?start=1789170090847772928&end=1789256490847772928 body=-level:INFO | stats count() n
+    logs/negation/24h/lat0             victorialogs     p95=6.7 ms valid=20/20
+[1;36m[bench][0m req logs/negation lakehouse POST http://localhost:39428/select/logsql/query?start=1789170090847772928&end=1789256490847772928 body=-level:INFO | stats count() n
+    logs/negation/24h/lat0             lakehouse        p95=28.4 ms valid=20/20
+[1;36m[bench][0m req logs/negation clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170090847772928) AND Timestamp<=fromUnixTimestamp64Nano(1789256490847772928) AND SeverityText!='INFO'
+    logs/negation/24h/lat0             clickhouse       p95=81.5 ms valid=20/20
+[1;36m[bench][0m req logs/trace_lookup victorialogs POST http://localhost:39401/select/logsql/query?start=1789170094708825088&end=1789256494708825088 body=trace_id:=823a90720d1c7874cedeaaa0ab0e4076 | stats count() n
+    logs/trace_lookup/24h/lat0         victorialogs     p95=6.5 ms valid=20/20
+[1;36m[bench][0m req logs/trace_lookup lakehouse POST http://localhost:39428/select/logsql/query?start=1789170094708825088&end=1789256494708825088 body=trace_id:=823a90720d1c7874cedeaaa0ab0e4076 | stats count() n
+    logs/trace_lookup/24h/lat0         lakehouse        p95=5.6 ms valid=20/20
+[1;36m[bench][0m req logs/trace_lookup clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170094708825088) AND Timestamp<=fromUnixTimestamp64Nano(1789256494708825088) AND TraceId='823a90720d1c7874cedeaaa0ab0e4076'
+    logs/trace_lookup/24h/lat0         clickhouse       p95=78.8 ms valid=20/20
+[1;36m[bench][0m req logs/high_card victorialogs POST http://localhost:39401/select/logsql/query?start=1789170098266639104&end=1789256498266639104 body=* | stats by (trace_id) count()
+    logs/high_card/24h/lat0            victorialogs     p95=10.5 ms valid=20/20
+[1;36m[bench][0m req logs/high_card lakehouse POST http://localhost:39428/select/logsql/query?start=1789170098266639104&end=1789256498266639104 body=* | stats by (trace_id) count()
+    logs/high_card/24h/lat0            lakehouse        p95=22.7 ms valid=20/20
+[1;36m[bench][0m req logs/high_card clickhouse CH http://localhost:38123 body=SELECT TraceId,count() AS n FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170098266639104) AND Timestamp<=fromUnixTimestamp64Nano(1789256498266639104) GROUP BY TraceId FORMAT JSONEachRow
+    logs/high_card/24h/lat0            clickhouse       p95=95.8 ms valid=20/20
+[1;36m[bench][0m req logs/scan victorialogs POST http://localhost:39401/select/logsql/query?start=1789170103533189120&end=1789256503533189120 body=* | fields _msg, service.name | limit 1000
+    logs/scan/24h/lat0                 victorialogs     p95=4.5 ms valid=20/20
+[1;36m[bench][0m req logs/scan lakehouse POST http://localhost:39428/select/logsql/query?start=1789170103533189120&end=1789256503533189120 body=* | fields _msg, service.name | limit 1000
+    logs/scan/24h/lat0                 lakehouse        p95=27.2 ms valid=20/20
+[1;36m[bench][0m req logs/scan clickhouse CH http://localhost:38123 body=SELECT Body AS _msg, ServiceName FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170103533189120) AND Timestamp<=fromUnixTimestamp64Nano(1789256503533189120) LIMIT 1000 FORMAT JSONEachRow
+    logs/scan/24h/lat0                 clickhouse       p95=78.7 ms valid=20/20
+[1;36m[bench][0m parity gate (traces, 24h): count_total across systems…
+[1;36m[bench][0m req traces/count_total victoriatraces POST http://localhost:30401/select/logsql/query?start=1789170110058953984&end=1789256510058953984 body=trace_id:* | stats count() n
+    victoriatraces   count=16260
+[1;36m[bench][0m parity gate (traces): baseline (victoriatraces) = 16260
+[1;36m[bench][0m req traces/count_total lakehouse POST http://localhost:30428/select/logsql/query?start=1789170110058953984&end=1789256510058953984 body=trace_id:* | stats count() n
+    lakehouse        count=16260
+[1;36m[bench][0m req traces/count_total clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789170110058953984) AND Timestamp<=fromUnixTimestamp64Nano(1789256510058953984)
+    clickhouse       count=16260
+[1;36m[bench][0m req traces/count_total victoriatraces POST http://localhost:30401/select/logsql/query?start=1789252910289969920&end=1789256510289969920 body=trace_id:* | stats count() n
+    traces/count_total/1h/lat0         victoriatraces   p95=3.0 ms valid=20/20
+[1;36m[bench][0m req traces/count_total lakehouse POST http://localhost:30428/select/logsql/query?start=1789252910289969920&end=1789256510289969920 body=trace_id:* | stats count() n
+    traces/count_total/1h/lat0         lakehouse        p95=6.3 ms valid=20/20
+[1;36m[bench][0m req traces/count_total clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789252910289969920) AND Timestamp<=fromUnixTimestamp64Nano(1789256510289969920)
+    traces/count_total/1h/lat0         clickhouse       p95=102.7 ms valid=20/20
+[1;36m[bench][0m req traces/count_by_service victoriatraces POST http://localhost:30401/select/logsql/query?start=1789252914157245952&end=1789256514157245952 body=trace_id:* | stats by (`resource_attr:service.name`) count() as n
+    traces/count_by_service/1h/lat0    victoriatraces   p95=4.8 ms valid=20/20
+[1;36m[bench][0m req traces/count_by_service lakehouse POST http://localhost:30428/select/logsql/query?start=1789252914157245952&end=1789256514157245952 body=trace_id:* | stats by (`resource_attr:service.name`) count() as n
+    traces/count_by_service/1h/lat0    lakehouse        p95=6.3 ms valid=20/20
+[1;36m[bench][0m req traces/count_by_service clickhouse CH http://localhost:38123 body=SELECT ServiceName,count() AS n FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789252914157245952) AND Timestamp<=fromUnixTimestamp64Nano(1789256514157245952) GROUP BY ServiceName FORMAT JSONEachRow
+    traces/count_by_service/1h/lat0    clickhouse       p95=105.4 ms valid=20/20
+[1;36m[bench][0m req traces/service_filter victoriatraces POST http://localhost:30401/select/logsql/query?start=1789252918554108928&end=1789256518554108928 body=`resource_attr:service.name`:="api-gateway" | stats count() as n
+    traces/service_filter/1h/lat0      victoriatraces   p95=2.6 ms valid=20/20
+[1;36m[bench][0m req traces/service_filter lakehouse POST http://localhost:30428/select/logsql/query?start=1789252918554108928&end=1789256518554108928 body=`resource_attr:service.name`:="api-gateway" | stats count() as n
+    traces/service_filter/1h/lat0      lakehouse        p95=12.1 ms valid=20/20
+[1;36m[bench][0m req traces/service_filter clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789252918554108928) AND Timestamp<=fromUnixTimestamp64Nano(1789256518554108928) AND ServiceName='api-gateway'
+    traces/service_filter/1h/lat0      clickhouse       p95=85.5 ms valid=20/20
+[1;36m[bench][0m req traces/trace_by_id victoriatraces POST http://localhost:30401/select/logsql/query?start=1789252922376674048&end=1789256522376674048 body=trace_id:=823a90720d1c7874cedeaaa0ab0e4076 | stats count() n
+    traces/trace_by_id/1h/lat0         victoriatraces   p95=2.6 ms valid=20/20
+[1;36m[bench][0m req traces/trace_by_id lakehouse POST http://localhost:30428/select/logsql/query?start=1789252922376674048&end=1789256522376674048 body=trace_id:=823a90720d1c7874cedeaaa0ab0e4076 | stats count() n
+    traces/trace_by_id/1h/lat0         lakehouse        p95=4.9 ms valid=20/20
+[1;36m[bench][0m req traces/trace_by_id clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789252922376674048) AND Timestamp<=fromUnixTimestamp64Nano(1789256522376674048) AND TraceId='823a90720d1c7874cedeaaa0ab0e4076'
+    traces/trace_by_id/1h/lat0         clickhouse       p95=99.2 ms valid=20/20
+[1;36m[bench][0m req traces/span_name victoriatraces POST http://localhost:30401/select/logsql/query?start=1789252926150322944&end=1789256526150322944 body=name:="HTTP GET /api/v1/users" | stats count() as n
+    traces/span_name/1h/lat0           victoriatraces   p95=3.3 ms valid=20/20
+[1;36m[bench][0m req traces/span_name lakehouse POST http://localhost:30428/select/logsql/query?start=1789252926150322944&end=1789256526150322944 body=name:="HTTP GET /api/v1/users" | stats count() as n
+    traces/span_name/1h/lat0           lakehouse        p95=5.3 ms valid=20/20
+[1;36m[bench][0m req traces/span_name clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789252926150322944) AND Timestamp<=fromUnixTimestamp64Nano(1789256526150322944) AND SpanName='HTTP GET /api/v1/users'
+    traces/span_name/1h/lat0           clickhouse       p95=89.5 ms valid=20/20
+[1;36m[bench][0m req traces/slow_spans victoriatraces POST http://localhost:30401/select/logsql/query?start=1789252929942266880&end=1789256529942266880 body=trace_id:* duration:>50000000 | stats count() as n
+    traces/slow_spans/1h/lat0          victoriatraces   p95=5.0 ms valid=20/20
+[1;36m[bench][0m req traces/slow_spans lakehouse POST http://localhost:30428/select/logsql/query?start=1789252929942266880&end=1789256529942266880 body=trace_id:* duration:>50000000 | stats count() as n
+    traces/slow_spans/1h/lat0          lakehouse        p95=7.5 ms valid=20/20
+[1;36m[bench][0m req traces/slow_spans clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789252929942266880) AND Timestamp<=fromUnixTimestamp64Nano(1789256529942266880) AND Duration>50000000
+    traces/slow_spans/1h/lat0          clickhouse       p95=108.4 ms valid=20/20
+[1;36m[bench][0m req traces/scan victoriatraces POST http://localhost:30401/select/logsql/query?start=1789252933972236032&end=1789256533972236032 body=trace_id:* | fields trace_id, span_id, name, `resource_attr:service.name`, duration | limit 1000
+    traces/scan/1h/lat0                victoriatraces   p95=2.9 ms valid=20/20
+[1;36m[bench][0m req traces/scan lakehouse POST http://localhost:30428/select/logsql/query?start=1789252933972236032&end=1789256533972236032 body=trace_id:* | fields trace_id, span_id, name, `resource_attr:service.name`, duration | limit 1000
+    traces/scan/1h/lat0                lakehouse        p95=3.4 ms valid=20/20
+[1;36m[bench][0m req traces/scan clickhouse CH http://localhost:38123 body=SELECT TraceId AS trace_id, SpanId AS span_id, SpanName, ServiceName, Duration FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789252933972236032) AND Timestamp<=fromUnixTimestamp64Nano(1789256533972236032) LIMIT 1000 FORMAT JSONEachRow
+    traces/scan/1h/lat0                clickhouse       p95=104.2 ms valid=20/20
+[1;36m[bench][0m req traces/count_total victoriatraces POST http://localhost:30401/select/logsql/query?start=1789170138578562048&end=1789256538578562048 body=trace_id:* | stats count() n
+    traces/count_total/24h/lat0        victoriatraces   p95=2.3 ms valid=20/20
+[1;36m[bench][0m req traces/count_total lakehouse POST http://localhost:30428/select/logsql/query?start=1789170138578562048&end=1789256538578562048 body=trace_id:* | stats count() n
+    traces/count_total/24h/lat0        lakehouse        p95=10.2 ms valid=20/20
+[1;36m[bench][0m req traces/count_total clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789170138578562048) AND Timestamp<=fromUnixTimestamp64Nano(1789256538578562048)
+    traces/count_total/24h/lat0        clickhouse       p95=93.2 ms valid=20/20
+[1;36m[bench][0m req traces/count_by_service victoriatraces POST http://localhost:30401/select/logsql/query?start=1789170142536743936&end=1789256542536743936 body=trace_id:* | stats by (`resource_attr:service.name`) count() as n
+    traces/count_by_service/24h/lat0   victoriatraces   p95=3.5 ms valid=20/20
+[1;36m[bench][0m req traces/count_by_service lakehouse POST http://localhost:30428/select/logsql/query?start=1789170142536743936&end=1789256542536743936 body=trace_id:* | stats by (`resource_attr:service.name`) count() as n
+    traces/count_by_service/24h/lat0   lakehouse        p95=14.1 ms valid=20/20
+[1;36m[bench][0m req traces/count_by_service clickhouse CH http://localhost:38123 body=SELECT ServiceName,count() AS n FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789170142536743936) AND Timestamp<=fromUnixTimestamp64Nano(1789256542536743936) GROUP BY ServiceName FORMAT JSONEachRow
+    traces/count_by_service/24h/lat0   clickhouse       p95=92.1 ms valid=20/20
+[1;36m[bench][0m req traces/service_filter victoriatraces POST http://localhost:30401/select/logsql/query?start=1789170146993847040&end=1789256546993847040 body=`resource_attr:service.name`:="api-gateway" | stats count() as n
+    traces/service_filter/24h/lat0     victoriatraces   p95=1.9 ms valid=20/20
+[1;36m[bench][0m req traces/service_filter lakehouse POST http://localhost:30428/select/logsql/query?start=1789170146993847040&end=1789256546993847040 body=`resource_attr:service.name`:="api-gateway" | stats count() as n
+    traces/service_filter/24h/lat0     lakehouse        p95=8.7 ms valid=20/20
+[1;36m[bench][0m req traces/service_filter clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789170146993847040) AND Timestamp<=fromUnixTimestamp64Nano(1789256546993847040) AND ServiceName='api-gateway'
+    traces/service_filter/24h/lat0     clickhouse       p95=99.5 ms valid=20/20
+[1;36m[bench][0m req traces/trace_by_id victoriatraces POST http://localhost:30401/select/logsql/query?start=1789170151009062912&end=1789256551009062912 body=trace_id:=823a90720d1c7874cedeaaa0ab0e4076 | stats count() n
+    traces/trace_by_id/24h/lat0        victoriatraces   p95=4.8 ms valid=20/20
+[1;36m[bench][0m req traces/trace_by_id lakehouse POST http://localhost:30428/select/logsql/query?start=1789170151009062912&end=1789256551009062912 body=trace_id:=823a90720d1c7874cedeaaa0ab0e4076 | stats count() n
+    traces/trace_by_id/24h/lat0        lakehouse        p95=6.5 ms valid=20/20
+[1;36m[bench][0m req traces/trace_by_id clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789170151009062912) AND Timestamp<=fromUnixTimestamp64Nano(1789256551009062912) AND TraceId='823a90720d1c7874cedeaaa0ab0e4076'
+    traces/trace_by_id/24h/lat0        clickhouse       p95=98.1 ms valid=20/20
+[1;36m[bench][0m req traces/span_name victoriatraces POST http://localhost:30401/select/logsql/query?start=1789170154781643008&end=1789256554781643008 body=name:="HTTP GET /api/v1/users" | stats count() as n
+    traces/span_name/24h/lat0          victoriatraces   p95=1.4 ms valid=20/20
+[1;36m[bench][0m req traces/span_name lakehouse POST http://localhost:30428/select/logsql/query?start=1789170154781643008&end=1789256554781643008 body=name:="HTTP GET /api/v1/users" | stats count() as n
+    traces/span_name/24h/lat0          lakehouse        p95=9.5 ms valid=20/20
+[1;36m[bench][0m req traces/span_name clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789170154781643008) AND Timestamp<=fromUnixTimestamp64Nano(1789256554781643008) AND SpanName='HTTP GET /api/v1/users'
+    traces/span_name/24h/lat0          clickhouse       p95=85.7 ms valid=20/20
+[1;36m[bench][0m req traces/slow_spans victoriatraces POST http://localhost:30401/select/logsql/query?start=1789170158702671104&end=1789256558702671104 body=trace_id:* duration:>50000000 | stats count() as n
+    traces/slow_spans/24h/lat0         victoriatraces   p95=4.4 ms valid=20/20
+[1;36m[bench][0m req traces/slow_spans lakehouse POST http://localhost:30428/select/logsql/query?start=1789170158702671104&end=1789256558702671104 body=trace_id:* duration:>50000000 | stats count() as n
+    traces/slow_spans/24h/lat0         lakehouse        p95=9.2 ms valid=20/20
+[1;36m[bench][0m req traces/slow_spans clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789170158702671104) AND Timestamp<=fromUnixTimestamp64Nano(1789256558702671104) AND Duration>50000000
+    traces/slow_spans/24h/lat0         clickhouse       p95=97.7 ms valid=20/20
+[1;36m[bench][0m req traces/scan victoriatraces POST http://localhost:30401/select/logsql/query?start=1789170162651464960&end=1789256562651464960 body=trace_id:* | fields trace_id, span_id, name, `resource_attr:service.name`, duration | limit 1000
+    traces/scan/24h/lat0               victoriatraces   p95=4.2 ms valid=20/20
+[1;36m[bench][0m req traces/scan lakehouse POST http://localhost:30428/select/logsql/query?start=1789170162651464960&end=1789256562651464960 body=trace_id:* | fields trace_id, span_id, name, `resource_attr:service.name`, duration | limit 1000
+    traces/scan/24h/lat0               lakehouse        p95=14.3 ms valid=20/20
+[1;36m[bench][0m req traces/scan clickhouse CH http://localhost:38123 body=SELECT TraceId AS trace_id, SpanId AS span_id, SpanName, ServiceName, Duration FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789170162651464960) AND Timestamp<=fromUnixTimestamp64Nano(1789256562651464960) LIMIT 1000 FORMAT JSONEachRow
+    traces/scan/24h/lat0               clickhouse       p95=94.1 ms valid=20/20
+[1;36m[bench][0m S3 latency: 100ms
+[1;36m[bench][0m parity gate (logs, 24h): count_total across systems…
+[1;36m[bench][0m req logs/count_total victorialogs POST http://localhost:39401/select/logsql/query?start=1789170168969163008&end=1789256568969163008 body=* | stats count() n
+    victorialogs     count=13891
+[1;36m[bench][0m parity gate (logs): baseline (victorialogs) = 13891
+[1;36m[bench][0m req logs/count_total lakehouse POST http://localhost:39428/select/logsql/query?start=1789170168969163008&end=1789256568969163008 body=* | stats count() n
+    lakehouse        count=13891
+[1;36m[bench][0m req logs/count_total clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170168969163008) AND Timestamp<=fromUnixTimestamp64Nano(1789256568969163008)
+    clickhouse       count=13891
+[1;36m[bench][0m req logs/count_total victorialogs POST http://localhost:39401/select/logsql/query?start=1789252969165207040&end=1789256569165207040 body=* | stats count() n
+    logs/count_total/1h/lat100         victorialogs     p95=3.0 ms valid=20/20
+[1;36m[bench][0m req logs/count_total lakehouse POST http://localhost:39428/select/logsql/query?start=1789252969165207040&end=1789256569165207040 body=* | stats count() n
+    logs/count_total/1h/lat100         lakehouse        p95=7.7 ms valid=20/20
+[1;36m[bench][0m req logs/count_total clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789252969165207040) AND Timestamp<=fromUnixTimestamp64Nano(1789256569165207040)
+    logs/count_total/1h/lat100         clickhouse       p95=83.6 ms valid=20/20
+[1;36m[bench][0m req logs/count_by_service victorialogs POST http://localhost:39401/select/logsql/query?start=1789252972729847040&end=1789256572729847040 body=* | stats by (service.name) count()
+    logs/count_by_service/1h/lat100    victorialogs     p95=4.2 ms valid=20/20
+[1;36m[bench][0m req logs/count_by_service lakehouse POST http://localhost:39428/select/logsql/query?start=1789252972729847040&end=1789256572729847040 body=* | stats by (service.name) count()
+    logs/count_by_service/1h/lat100    lakehouse        p95=8.5 ms valid=20/20
+[1;36m[bench][0m req logs/count_by_service clickhouse CH http://localhost:38123 body=SELECT ServiceName,count() AS n FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789252972729847040) AND Timestamp<=fromUnixTimestamp64Nano(1789256572729847040) GROUP BY ServiceName FORMAT JSONEachRow
+    logs/count_by_service/1h/lat100    clickhouse       p95=81.4 ms valid=20/20
+[1;36m[bench][0m req logs/fulltext victorialogs POST http://localhost:39401/select/logsql/query?start=1789252976756328960&end=1789256576756328960 body=error | stats count() n
+    logs/fulltext/1h/lat100            victorialogs     p95=3.3 ms valid=20/20
+[1;36m[bench][0m req logs/fulltext lakehouse POST http://localhost:39428/select/logsql/query?start=1789252976756328960&end=1789256576756328960 body=error | stats count() n
+    logs/fulltext/1h/lat100            lakehouse        p95=8.0 ms valid=20/20
+[1;36m[bench][0m req logs/fulltext clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789252976756328960) AND Timestamp<=fromUnixTimestamp64Nano(1789256576756328960) AND position(Body,'error')>0
+    logs/fulltext/1h/lat100            clickhouse       p95=77.2 ms valid=20/20
+[1;36m[bench][0m req logs/level_filter victorialogs POST http://localhost:39401/select/logsql/query?start=1789252980473189888&end=1789256580473189888 body=level:ERROR | stats count() n
+    logs/level_filter/1h/lat100        victorialogs     p95=7.6 ms valid=20/20
+[1;36m[bench][0m req logs/level_filter lakehouse POST http://localhost:39428/select/logsql/query?start=1789252980473189888&end=1789256580473189888 body=level:ERROR | stats count() n
+    logs/level_filter/1h/lat100        lakehouse        p95=6.0 ms valid=20/20
+[1;36m[bench][0m req logs/level_filter clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789252980473189888) AND Timestamp<=fromUnixTimestamp64Nano(1789256580473189888) AND SeverityText='ERROR'
+    logs/level_filter/1h/lat100        clickhouse       p95=79.7 ms valid=20/20
+[1;36m[bench][0m req logs/multi_filter victorialogs POST http://localhost:39401/select/logsql/query?start=1789252984095843072&end=1789256584095843072 body=level:ERROR service.name:="api-gateway" | stats count() n
+    logs/multi_filter/1h/lat100        victorialogs     p95=6.2 ms valid=20/20
+[1;36m[bench][0m req logs/multi_filter lakehouse POST http://localhost:39428/select/logsql/query?start=1789252984095843072&end=1789256584095843072 body=level:ERROR service.name:="api-gateway" | stats count() n
+    logs/multi_filter/1h/lat100        lakehouse        p95=7.0 ms valid=20/20
+[1;36m[bench][0m req logs/multi_filter clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789252984095843072) AND Timestamp<=fromUnixTimestamp64Nano(1789256584095843072) AND SeverityText='ERROR' AND ServiceName='api-gateway'
+    logs/multi_filter/1h/lat100        clickhouse       p95=97.6 ms valid=20/20
+[1;36m[bench][0m req logs/negation victorialogs POST http://localhost:39401/select/logsql/query?start=1789252987759179008&end=1789256587759179008 body=-level:INFO | stats count() n
+    logs/negation/1h/lat100            victorialogs     p95=4.0 ms valid=20/20
+[1;36m[bench][0m req logs/negation lakehouse POST http://localhost:39428/select/logsql/query?start=1789252987759179008&end=1789256587759179008 body=-level:INFO | stats count() n
+    logs/negation/1h/lat100            lakehouse        p95=6.6 ms valid=20/20
+[1;36m[bench][0m req logs/negation clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789252987759179008) AND Timestamp<=fromUnixTimestamp64Nano(1789256587759179008) AND SeverityText!='INFO'
+    logs/negation/1h/lat100            clickhouse       p95=89.0 ms valid=20/20
+[1;36m[bench][0m req logs/trace_lookup victorialogs POST http://localhost:39401/select/logsql/query?start=1789252991343835904&end=1789256591343835904 body=trace_id:=823a90720d1c7874cedeaaa0ab0e4076 | stats count() n
+    logs/trace_lookup/1h/lat100        victorialogs     p95=4.2 ms valid=20/20
+[1;36m[bench][0m req logs/trace_lookup lakehouse POST http://localhost:39428/select/logsql/query?start=1789252991343835904&end=1789256591343835904 body=trace_id:=823a90720d1c7874cedeaaa0ab0e4076 | stats count() n
+    logs/trace_lookup/1h/lat100        lakehouse        p95=2.5 ms valid=20/20
+[1;36m[bench][0m req logs/trace_lookup clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789252991343835904) AND Timestamp<=fromUnixTimestamp64Nano(1789256591343835904) AND TraceId='823a90720d1c7874cedeaaa0ab0e4076'
+    logs/trace_lookup/1h/lat100        clickhouse       p95=106.6 ms valid=20/20
+[1;36m[bench][0m req logs/high_card victorialogs POST http://localhost:39401/select/logsql/query?start=1789252995069287936&end=1789256595069287936 body=* | stats by (trace_id) count()
+    logs/high_card/1h/lat100           victorialogs     p95=5.7 ms valid=20/20
+[1;36m[bench][0m req logs/high_card lakehouse POST http://localhost:39428/select/logsql/query?start=1789252995069287936&end=1789256595069287936 body=* | stats by (trace_id) count()
+    logs/high_card/1h/lat100           lakehouse        p95=9.7 ms valid=20/20
+[1;36m[bench][0m req logs/high_card clickhouse CH http://localhost:38123 body=SELECT TraceId,count() AS n FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789252995069287936) AND Timestamp<=fromUnixTimestamp64Nano(1789256595069287936) GROUP BY TraceId FORMAT JSONEachRow
+    logs/high_card/1h/lat100           clickhouse       p95=77.4 ms valid=20/20
+[1;36m[bench][0m req logs/scan victorialogs POST http://localhost:39401/select/logsql/query?start=1789252999129520896&end=1789256599129520896 body=* | fields _msg, service.name | limit 1000
+    logs/scan/1h/lat100                victorialogs     p95=4.3 ms valid=20/20
+[1;36m[bench][0m req logs/scan lakehouse POST http://localhost:39428/select/logsql/query?start=1789252999129520896&end=1789256599129520896 body=* | fields _msg, service.name | limit 1000
+    logs/scan/1h/lat100                lakehouse        p95=7.4 ms valid=20/20
+[1;36m[bench][0m req logs/scan clickhouse CH http://localhost:38123 body=SELECT Body AS _msg, ServiceName FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789252999129520896) AND Timestamp<=fromUnixTimestamp64Nano(1789256599129520896) LIMIT 1000 FORMAT JSONEachRow
+    logs/scan/1h/lat100                clickhouse       p95=73.1 ms valid=20/20
+[1;36m[bench][0m req logs/count_total victorialogs POST http://localhost:39401/select/logsql/query?start=1789170203390952960&end=1789256603390952960 body=* | stats count() n
+    logs/count_total/24h/lat100        victorialogs     p95=4.0 ms valid=20/20
+[1;36m[bench][0m req logs/count_total lakehouse POST http://localhost:39428/select/logsql/query?start=1789170203390952960&end=1789256603390952960 body=* | stats count() n
+    logs/count_total/24h/lat100        lakehouse        p95=19.5 ms valid=20/20
+[1;36m[bench][0m req logs/count_total clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170203390952960) AND Timestamp<=fromUnixTimestamp64Nano(1789256603390952960)
+    logs/count_total/24h/lat100        clickhouse       p95=76.0 ms valid=20/20
+[1;36m[bench][0m req logs/count_by_service victorialogs POST http://localhost:39401/select/logsql/query?start=1789170207187744000&end=1789256607187744000 body=* | stats by (service.name) count()
+    logs/count_by_service/24h/lat100   victorialogs     p95=12.7 ms valid=20/20
+[1;36m[bench][0m req logs/count_by_service lakehouse POST http://localhost:39428/select/logsql/query?start=1789170207187744000&end=1789256607187744000 body=* | stats by (service.name) count()
+    logs/count_by_service/24h/lat100   lakehouse        p95=11.6 ms valid=20/20
+[1;36m[bench][0m req logs/count_by_service clickhouse CH http://localhost:38123 body=SELECT ServiceName,count() AS n FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170207187744000) AND Timestamp<=fromUnixTimestamp64Nano(1789256607187744000) GROUP BY ServiceName FORMAT JSONEachRow
+    logs/count_by_service/24h/lat100   clickhouse       p95=77.8 ms valid=20/20
+[1;36m[bench][0m req logs/fulltext victorialogs POST http://localhost:39401/select/logsql/query?start=1789170211485664000&end=1789256611485664000 body=error | stats count() n
+    logs/fulltext/24h/lat100           victorialogs     p95=7.6 ms valid=20/20
+[1;36m[bench][0m req logs/fulltext lakehouse POST http://localhost:39428/select/logsql/query?start=1789170211485664000&end=1789256611485664000 body=error | stats count() n
+    logs/fulltext/24h/lat100           lakehouse        p95=28.9 ms valid=20/20
+[1;36m[bench][0m req logs/fulltext clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170211485664000) AND Timestamp<=fromUnixTimestamp64Nano(1789256611485664000) AND position(Body,'error')>0
+    logs/fulltext/24h/lat100           clickhouse       p95=90.0 ms valid=20/20
+[1;36m[bench][0m req logs/level_filter victorialogs POST http://localhost:39401/select/logsql/query?start=1789170215559488000&end=1789256615559488000 body=level:ERROR | stats count() n
+    logs/level_filter/24h/lat100       victorialogs     p95=5.9 ms valid=20/20
+[1;36m[bench][0m req logs/level_filter lakehouse POST http://localhost:39428/select/logsql/query?start=1789170215559488000&end=1789256615559488000 body=level:ERROR | stats count() n
+    logs/level_filter/24h/lat100       lakehouse        p95=24.1 ms valid=20/20
+[1;36m[bench][0m req logs/level_filter clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170215559488000) AND Timestamp<=fromUnixTimestamp64Nano(1789256615559488000) AND SeverityText='ERROR'
+    logs/level_filter/24h/lat100       clickhouse       p95=88.0 ms valid=20/20
+[1;36m[bench][0m req logs/multi_filter victorialogs POST http://localhost:39401/select/logsql/query?start=1789170219579187968&end=1789256619579187968 body=level:ERROR service.name:="api-gateway" | stats count() n
+    logs/multi_filter/24h/lat100       victorialogs     p95=6.2 ms valid=20/20
+[1;36m[bench][0m req logs/multi_filter lakehouse POST http://localhost:39428/select/logsql/query?start=1789170219579187968&end=1789256619579187968 body=level:ERROR service.name:="api-gateway" | stats count() n
+    logs/multi_filter/24h/lat100       lakehouse        p95=25.2 ms valid=20/20
+[1;36m[bench][0m req logs/multi_filter clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170219579187968) AND Timestamp<=fromUnixTimestamp64Nano(1789256619579187968) AND SeverityText='ERROR' AND ServiceName='api-gateway'
+    logs/multi_filter/24h/lat100       clickhouse       p95=97.0 ms valid=20/20
+[1;36m[bench][0m req logs/negation victorialogs POST http://localhost:39401/select/logsql/query?start=1789170223814905088&end=1789256623814905088 body=-level:INFO | stats count() n
+    logs/negation/24h/lat100           victorialogs     p95=5.8 ms valid=20/20
+[1;36m[bench][0m req logs/negation lakehouse POST http://localhost:39428/select/logsql/query?start=1789170223814905088&end=1789256623814905088 body=-level:INFO | stats count() n
+    logs/negation/24h/lat100           lakehouse        p95=21.1 ms valid=20/20
+[1;36m[bench][0m req logs/negation clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170223814905088) AND Timestamp<=fromUnixTimestamp64Nano(1789256623814905088) AND SeverityText!='INFO'
+    logs/negation/24h/lat100           clickhouse       p95=73.3 ms valid=20/20
+[1;36m[bench][0m req logs/trace_lookup victorialogs POST http://localhost:39401/select/logsql/query?start=1789170227828084992&end=1789256627828084992 body=trace_id:=823a90720d1c7874cedeaaa0ab0e4076 | stats count() n
+    logs/trace_lookup/24h/lat100       victorialogs     p95=5.4 ms valid=20/20
+[1;36m[bench][0m req logs/trace_lookup lakehouse POST http://localhost:39428/select/logsql/query?start=1789170227828084992&end=1789256627828084992 body=trace_id:=823a90720d1c7874cedeaaa0ab0e4076 | stats count() n
+    logs/trace_lookup/24h/lat100       lakehouse        p95=4.5 ms valid=20/20
+[1;36m[bench][0m req logs/trace_lookup clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170227828084992) AND Timestamp<=fromUnixTimestamp64Nano(1789256627828084992) AND TraceId='823a90720d1c7874cedeaaa0ab0e4076'
+    logs/trace_lookup/24h/lat100       clickhouse       p95=76.6 ms valid=20/20
+[1;36m[bench][0m req logs/high_card victorialogs POST http://localhost:39401/select/logsql/query?start=1789170231371406080&end=1789256631371406080 body=* | stats by (trace_id) count()
+    logs/high_card/24h/lat100          victorialogs     p95=9.9 ms valid=20/20
+[1;36m[bench][0m req logs/high_card lakehouse POST http://localhost:39428/select/logsql/query?start=1789170231371406080&end=1789256631371406080 body=* | stats by (trace_id) count()
+    logs/high_card/24h/lat100          lakehouse        p95=24.3 ms valid=20/20
+[1;36m[bench][0m req logs/high_card clickhouse CH http://localhost:38123 body=SELECT TraceId,count() AS n FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170231371406080) AND Timestamp<=fromUnixTimestamp64Nano(1789256631371406080) GROUP BY TraceId FORMAT JSONEachRow
+    logs/high_card/24h/lat100          clickhouse       p95=84.7 ms valid=20/20
+[1;36m[bench][0m req logs/scan victorialogs POST http://localhost:39401/select/logsql/query?start=1789170236612497920&end=1789256636612497920 body=* | fields _msg, service.name | limit 1000
+    logs/scan/24h/lat100               victorialogs     p95=5.0 ms valid=20/20
+[1;36m[bench][0m req logs/scan lakehouse POST http://localhost:39428/select/logsql/query?start=1789170236612497920&end=1789256636612497920 body=* | fields _msg, service.name | limit 1000
+    logs/scan/24h/lat100               lakehouse        p95=25.8 ms valid=20/20
+[1;36m[bench][0m req logs/scan clickhouse CH http://localhost:38123 body=SELECT Body AS _msg, ServiceName FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(1789170236612497920) AND Timestamp<=fromUnixTimestamp64Nano(1789256636612497920) LIMIT 1000 FORMAT JSONEachRow
+    logs/scan/24h/lat100               clickhouse       p95=77.3 ms valid=20/20
+[1;36m[bench][0m parity gate (traces, 24h): count_total across systems…
+[1;36m[bench][0m req traces/count_total victoriatraces POST http://localhost:30401/select/logsql/query?start=1789170243240820992&end=1789256643240820992 body=trace_id:* | stats count() n
+    victoriatraces   count=16216
+[1;36m[bench][0m parity gate (traces): baseline (victoriatraces) = 16216
+[1;36m[bench][0m req traces/count_total lakehouse POST http://localhost:30428/select/logsql/query?start=1789170243240820992&end=1789256643240820992 body=trace_id:* | stats count() n
+    lakehouse        count=16216
+[1;36m[bench][0m req traces/count_total clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789170243240820992) AND Timestamp<=fromUnixTimestamp64Nano(1789256643240820992)
+    clickhouse       count=16216
+[1;36m[bench][0m req traces/count_total victoriatraces POST http://localhost:30401/select/logsql/query?start=1789253043441239040&end=1789256643441239040 body=trace_id:* | stats count() n
+    traces/count_total/1h/lat100       victoriatraces   p95=2.4 ms valid=20/20
+[1;36m[bench][0m req traces/count_total lakehouse POST http://localhost:30428/select/logsql/query?start=1789253043441239040&end=1789256643441239040 body=trace_id:* | stats count() n
+    traces/count_total/1h/lat100       lakehouse        p95=5.7 ms valid=20/20
+[1;36m[bench][0m req traces/count_total clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789253043441239040) AND Timestamp<=fromUnixTimestamp64Nano(1789256643441239040)
+    traces/count_total/1h/lat100       clickhouse       p95=98.2 ms valid=20/20
+[1;36m[bench][0m req traces/count_by_service victoriatraces POST http://localhost:30401/select/logsql/query?start=1789253047295782912&end=1789256647295782912 body=trace_id:* | stats by (`resource_attr:service.name`) count() as n
+    traces/count_by_service/1h/lat100  victoriatraces   p95=3.5 ms valid=20/20
+[1;36m[bench][0m req traces/count_by_service lakehouse POST http://localhost:30428/select/logsql/query?start=1789253047295782912&end=1789256647295782912 body=trace_id:* | stats by (`resource_attr:service.name`) count() as n
+    traces/count_by_service/1h/lat100  lakehouse        p95=10.8 ms valid=20/20
+[1;36m[bench][0m req traces/count_by_service clickhouse CH http://localhost:38123 body=SELECT ServiceName,count() AS n FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789253047295782912) AND Timestamp<=fromUnixTimestamp64Nano(1789256647295782912) GROUP BY ServiceName FORMAT JSONEachRow
+    traces/count_by_service/1h/lat100  clickhouse       p95=115.4 ms valid=20/20
+[1;36m[bench][0m req traces/service_filter victoriatraces POST http://localhost:30401/select/logsql/query?start=1789253051636396032&end=1789256651636396032 body=`resource_attr:service.name`:="api-gateway" | stats count() as n
+    traces/service_filter/1h/lat100    victoriatraces   p95=2.8 ms valid=20/20
+[1;36m[bench][0m req traces/service_filter lakehouse POST http://localhost:30428/select/logsql/query?start=1789253051636396032&end=1789256651636396032 body=`resource_attr:service.name`:="api-gateway" | stats count() as n
+    traces/service_filter/1h/lat100    lakehouse        p95=4.9 ms valid=20/20
+[1;36m[bench][0m req traces/service_filter clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789253051636396032) AND Timestamp<=fromUnixTimestamp64Nano(1789256651636396032) AND ServiceName='api-gateway'
+    traces/service_filter/1h/lat100    clickhouse       p95=120.3 ms valid=20/20
+[1;36m[bench][0m req traces/trace_by_id victoriatraces POST http://localhost:30401/select/logsql/query?start=1789253055658053888&end=1789256655658053888 body=trace_id:=823a90720d1c7874cedeaaa0ab0e4076 | stats count() n
+    traces/trace_by_id/1h/lat100       victoriatraces   p95=3.3 ms valid=20/20
+[1;36m[bench][0m req traces/trace_by_id lakehouse POST http://localhost:30428/select/logsql/query?start=1789253055658053888&end=1789256655658053888 body=trace_id:=823a90720d1c7874cedeaaa0ab0e4076 | stats count() n
+    traces/trace_by_id/1h/lat100       lakehouse        p95=5.9 ms valid=20/20
+[1;36m[bench][0m req traces/trace_by_id clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789253055658053888) AND Timestamp<=fromUnixTimestamp64Nano(1789256655658053888) AND TraceId='823a90720d1c7874cedeaaa0ab0e4076'
+    traces/trace_by_id/1h/lat100       clickhouse       p95=100.9 ms valid=20/20
+[1;36m[bench][0m req traces/span_name victoriatraces POST http://localhost:30401/select/logsql/query?start=1789253059479348992&end=1789256659479348992 body=name:="HTTP GET /api/v1/users" | stats count() as n
+    traces/span_name/1h/lat100         victoriatraces   p95=3.2 ms valid=20/20
+[1;36m[bench][0m req traces/span_name lakehouse POST http://localhost:30428/select/logsql/query?start=1789253059479348992&end=1789256659479348992 body=name:="HTTP GET /api/v1/users" | stats count() as n
+    traces/span_name/1h/lat100         lakehouse        p95=5.0 ms valid=20/20
+[1;36m[bench][0m req traces/span_name clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789253059479348992) AND Timestamp<=fromUnixTimestamp64Nano(1789256659479348992) AND SpanName='HTTP GET /api/v1/users'
+    traces/span_name/1h/lat100         clickhouse       p95=97.2 ms valid=20/20
+[1;36m[bench][0m req traces/slow_spans victoriatraces POST http://localhost:30401/select/logsql/query?start=1789253063328464896&end=1789256663328464896 body=trace_id:* duration:>50000000 | stats count() as n
+    traces/slow_spans/1h/lat100        victoriatraces   p95=4.1 ms valid=20/20
+[1;36m[bench][0m req traces/slow_spans lakehouse POST http://localhost:30428/select/logsql/query?start=1789253063328464896&end=1789256663328464896 body=trace_id:* duration:>50000000 | stats count() as n
+    traces/slow_spans/1h/lat100        lakehouse        p95=5.6 ms valid=20/20
+[1;36m[bench][0m req traces/slow_spans clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789253063328464896) AND Timestamp<=fromUnixTimestamp64Nano(1789256663328464896) AND Duration>50000000
+    traces/slow_spans/1h/lat100        clickhouse       p95=96.7 ms valid=20/20
+[1;36m[bench][0m req traces/scan victoriatraces POST http://localhost:30401/select/logsql/query?start=1789253067251952128&end=1789256667251952128 body=trace_id:* | fields trace_id, span_id, name, `resource_attr:service.name`, duration | limit 1000
+    traces/scan/1h/lat100              victoriatraces   p95=4.2 ms valid=20/20
+[1;36m[bench][0m req traces/scan lakehouse POST http://localhost:30428/select/logsql/query?start=1789253067251952128&end=1789256667251952128 body=trace_id:* | fields trace_id, span_id, name, `resource_attr:service.name`, duration | limit 1000
+    traces/scan/1h/lat100              lakehouse        p95=3.9 ms valid=20/20
+[1;36m[bench][0m req traces/scan clickhouse CH http://localhost:38123 body=SELECT TraceId AS trace_id, SpanId AS span_id, SpanName, ServiceName, Duration FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789253067251952128) AND Timestamp<=fromUnixTimestamp64Nano(1789256667251952128) LIMIT 1000 FORMAT JSONEachRow
+    traces/scan/1h/lat100              clickhouse       p95=90.6 ms valid=20/20
+[1;36m[bench][0m req traces/count_total victoriatraces POST http://localhost:30401/select/logsql/query?start=1789170272007461120&end=1789256672007461120 body=trace_id:* | stats count() n
+    traces/count_total/24h/lat100      victoriatraces   p95=4.5 ms valid=20/20
+[1;36m[bench][0m req traces/count_total lakehouse POST http://localhost:30428/select/logsql/query?start=1789170272007461120&end=1789256672007461120 body=trace_id:* | stats count() n
+    traces/count_total/24h/lat100      lakehouse        p95=10.0 ms valid=20/20
+[1;36m[bench][0m req traces/count_total clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789170272007461120) AND Timestamp<=fromUnixTimestamp64Nano(1789256672007461120)
+    traces/count_total/24h/lat100      clickhouse       p95=94.0 ms valid=20/20
+[1;36m[bench][0m req traces/count_by_service victoriatraces POST http://localhost:30401/select/logsql/query?start=1789170275962276096&end=1789256675962276096 body=trace_id:* | stats by (`resource_attr:service.name`) count() as n
+    traces/count_by_service/24h/lat100 victoriatraces   p95=4.3 ms valid=20/20
+[1;36m[bench][0m req traces/count_by_service lakehouse POST http://localhost:30428/select/logsql/query?start=1789170275962276096&end=1789256675962276096 body=trace_id:* | stats by (`resource_attr:service.name`) count() as n
+    traces/count_by_service/24h/lat100 lakehouse        p95=10.4 ms valid=20/20
+[1;36m[bench][0m req traces/count_by_service clickhouse CH http://localhost:38123 body=SELECT ServiceName,count() AS n FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789170275962276096) AND Timestamp<=fromUnixTimestamp64Nano(1789256675962276096) GROUP BY ServiceName FORMAT JSONEachRow
+    traces/count_by_service/24h/lat100 clickhouse       p95=107.1 ms valid=20/20
+[1;36m[bench][0m req traces/service_filter victoriatraces POST http://localhost:30401/select/logsql/query?start=1789170280561490944&end=1789256680561490944 body=`resource_attr:service.name`:="api-gateway" | stats count() as n
+    traces/service_filter/24h/lat100   victoriatraces   p95=2.7 ms valid=20/20
+[1;36m[bench][0m req traces/service_filter lakehouse POST http://localhost:30428/select/logsql/query?start=1789170280561490944&end=1789256680561490944 body=`resource_attr:service.name`:="api-gateway" | stats count() as n
+    traces/service_filter/24h/lat100   lakehouse        p95=9.4 ms valid=20/20
+[1;36m[bench][0m req traces/service_filter clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789170280561490944) AND Timestamp<=fromUnixTimestamp64Nano(1789256680561490944) AND ServiceName='api-gateway'
+    traces/service_filter/24h/lat100   clickhouse       p95=112.8 ms valid=20/20
+[1;36m[bench][0m req traces/trace_by_id victoriatraces POST http://localhost:30401/select/logsql/query?start=1789170284667297024&end=1789256684667297024 body=trace_id:=823a90720d1c7874cedeaaa0ab0e4076 | stats count() n
+    traces/trace_by_id/24h/lat100      victoriatraces   p95=2.0 ms valid=20/20
+[1;36m[bench][0m req traces/trace_by_id lakehouse POST http://localhost:30428/select/logsql/query?start=1789170284667297024&end=1789256684667297024 body=trace_id:=823a90720d1c7874cedeaaa0ab0e4076 | stats count() n
+    traces/trace_by_id/24h/lat100      lakehouse        p95=3.2 ms valid=20/20
+[1;36m[bench][0m req traces/trace_by_id clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789170284667297024) AND Timestamp<=fromUnixTimestamp64Nano(1789256684667297024) AND TraceId='823a90720d1c7874cedeaaa0ab0e4076'
+    traces/trace_by_id/24h/lat100      clickhouse       p95=90.7 ms valid=20/20
+[1;36m[bench][0m req traces/span_name victoriatraces POST http://localhost:30401/select/logsql/query?start=1789170288432603904&end=1789256688432603904 body=name:="HTTP GET /api/v1/users" | stats count() as n
+    traces/span_name/24h/lat100        victoriatraces   p95=2.2 ms valid=20/20
+[1;36m[bench][0m req traces/span_name lakehouse POST http://localhost:30428/select/logsql/query?start=1789170288432603904&end=1789256688432603904 body=name:="HTTP GET /api/v1/users" | stats count() as n
+    traces/span_name/24h/lat100        lakehouse        p95=7.9 ms valid=20/20
+[1;36m[bench][0m req traces/span_name clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789170288432603904) AND Timestamp<=fromUnixTimestamp64Nano(1789256688432603904) AND SpanName='HTTP GET /api/v1/users'
+    traces/span_name/24h/lat100        clickhouse       p95=91.9 ms valid=20/20
+[1;36m[bench][0m req traces/slow_spans victoriatraces POST http://localhost:30401/select/logsql/query?start=1789170292378745088&end=1789256692378745088 body=trace_id:* duration:>50000000 | stats count() as n
+    traces/slow_spans/24h/lat100       victoriatraces   p95=3.0 ms valid=20/20
+[1;36m[bench][0m req traces/slow_spans lakehouse POST http://localhost:30428/select/logsql/query?start=1789170292378745088&end=1789256692378745088 body=trace_id:* duration:>50000000 | stats count() as n
+    traces/slow_spans/24h/lat100       lakehouse        p95=9.9 ms valid=20/20
+[1;36m[bench][0m req traces/slow_spans clickhouse CH http://localhost:38123 body=SELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789170292378745088) AND Timestamp<=fromUnixTimestamp64Nano(1789256692378745088) AND Duration>50000000
+    traces/slow_spans/24h/lat100       clickhouse       p95=108.6 ms valid=20/20
+[1;36m[bench][0m req traces/scan victoriatraces POST http://localhost:30401/select/logsql/query?start=1789170296456418048&end=1789256696456418048 body=trace_id:* | fields trace_id, span_id, name, `resource_attr:service.name`, duration | limit 1000
+    traces/scan/24h/lat100             victoriatraces   p95=4.9 ms valid=20/20
+[1;36m[bench][0m req traces/scan lakehouse POST http://localhost:30428/select/logsql/query?start=1789170296456418048&end=1789256696456418048 body=trace_id:* | fields trace_id, span_id, name, `resource_attr:service.name`, duration | limit 1000
+    traces/scan/24h/lat100             lakehouse        p95=11.5 ms valid=20/20
+[1;36m[bench][0m req traces/scan clickhouse CH http://localhost:38123 body=SELECT TraceId AS trace_id, SpanId AS span_id, SpanName, ServiceName, Duration FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(1789170296456418048) AND Timestamp<=fromUnixTimestamp64Nano(1789256696456418048) LIMIT 1000 FORMAT JSONEachRow
+    traces/scan/24h/lat100             clickhouse       p95=97.5 ms valid=20/20
+[1;36m[bench][0m raw results -> bench-results/baseline-2026-09/run-baseline-v3.3.json
+[1;36m[bench][0m report -> bench-results/baseline-2026-09/run-baseline-v3.3.md
+[1;36m[bench][0m tearing down stack…

@@ -62,29 +62,32 @@ def as_int(v):
         return None
 
 
-_ROWS_RE = re.compile(r'^rows=(\d+)(?:;hash=([0-9a-f]+))?$')
+_ROWS_RE = re.compile(r'^rows=(\d+)(?:;total=(\d+))?(?:;hash=([0-9a-f]+))?$')
 _SPANS_RE = re.compile(r'^spans=(\d+)$')
 
 
 def parse_result(v):
-    """Parse a run.sh `result` value into {"count": int, "hash": str|None}.
+    """Parse a run.sh `result` value into
+    {"count": int, "total": int|None, "hash": str|None}.
 
-    Formats: plain integer (scalar count/filter/group-by), "rows=N" or
-    "rows=N;hash=H" (scan — hash only on non-CH engines, whose scan carries a
-    comparable row-set key), "spans=N" (trace_by_id/trace_lookup). Returns
-    None if unparseable.
+    Formats: plain integer (scalar count/filter), "rows=N" (scan, CH) or
+    "rows=N;hash=H" (scan, non-CH — a comparable row-set key), "rows=N" or
+    "rows=N;total=T;hash=H" (group-by — N is the group count, T the sum of
+    the per-group counts, independently checkable against the hashed pairs),
+    "spans=N" (trace_by_id/trace_lookup). Returns None if unparseable.
     """
     if v is None:
         return None
     m = _ROWS_RE.match(v)
     if m:
-        return {"count": int(m.group(1)), "hash": m.group(2)}
+        total = int(m.group(2)) if m.group(2) is not None else None
+        return {"count": int(m.group(1)), "total": total, "hash": m.group(3)}
     m = _SPANS_RE.match(v)
     if m:
-        return {"count": int(m.group(1)), "hash": None}
+        return {"count": int(m.group(1)), "total": None, "hash": None}
     n = as_int(v)
     if n is not None:
-        return {"count": n, "hash": None}
+        return {"count": n, "total": None, "hash": None}
     return None
 
 
@@ -113,9 +116,11 @@ def render_result(row):
     """The `[res]` bracket text for a cell. A `scan` row (has `window_rows`)
     shows `rows=<returned>/<window_rows>[;window=<hash8>]` — the returned
     (possibly truncated) row count over the reference window's TRUE row
-    count, plus a short window-hash when one is carried. Any other row with
-    a `rows=N;hash=H` result (e.g. group-by) shows the same shortened hash
-    for table readability; everything else shows its raw `result` string."""
+    count, plus a short window-hash when one is carried. A group-by row
+    shows `rows=<groups>[;total=<T>][;hash=<hash8>]` (the shortened hash, for
+    table readability, and the sum-of-counts total when carried — a
+    "same total, different groups" claim is then checkable straight from the
+    rendered cell). Everything else shows its raw `result` string."""
     if not row:
         return None
     wrows = row.get("window_rows")
@@ -127,8 +132,13 @@ def render_result(row):
         if whash:
             return f"rows={rcount}/{wrows};window={whash[:8]}"
         return f"rows={rcount}/{wrows}"
-    if rp and rp["hash"]:
-        return f"rows={rp['count']};hash={rp['hash'][:8]}"
+    if rp and (rp["hash"] or rp["total"] is not None):
+        out = f"rows={rp['count']}"
+        if rp["total"] is not None:
+            out += f";total={rp['total']}"
+        if rp["hash"]:
+            out += f";hash={rp['hash'][:8]}"
+        return out
     return result
 
 
@@ -265,7 +275,7 @@ def main():
         lh_ratios, ch_speedups, by_query = [], [], defaultdict(list)
         n_valid = n_invalid = 0
         table = [
-            "| query | range | S3 lat | baseline p95 [res] | valid | LH | valid | CH | valid |",
+            "| query | range | S3 lat | baseline p95/p90 [res] | valid | LH | valid | CH | valid |",
             "|---|---|---:|---:|---:|---|---:|---|---:|",
         ]
         for key in sorted(k for k in g if k[0] == signal):
@@ -273,7 +283,8 @@ def main():
             sysd = g[key]
             brow = sysd.get(base_sys, {})
             bp = num(brow.get("p95_ms"))
-            cells = [f"{bp} [{render_result(brow)}]"]
+            bp90 = num(brow.get("p90_ms"))
+            cells = [f"{bp}/{bp90} [{render_result(brow)}]"]
             valids = [valid_str(brow)]
             b_ok, b_note = base_status(brow, query)
             lh_ok = False
@@ -284,6 +295,7 @@ def main():
                 else:
                     ok, note = cell_status(row, brow)
                 p = num(row.get("p95_ms")) if row else None
+                p90 = num(row.get("p90_ms")) if row else None
                 valids.append(valid_str(row))
                 if eng == "lakehouse":
                     lh_ok = ok
@@ -293,7 +305,7 @@ def main():
                     if eng == "lakehouse":
                         n_invalid += 1
                 else:
-                    cells.append(f"{p} ({ratio_str(p, bp)}) [{render_result(row)}]{shape_flag(row, brow)}")
+                    cells.append(f"{p}/{p90} ({ratio_str(p, bp)}) [{render_result(row)}]{shape_flag(row, brow)}")
                     if eng == "lakehouse" and p and bp:
                         n_valid += 1
                         lh_ratios.append(p / bp)

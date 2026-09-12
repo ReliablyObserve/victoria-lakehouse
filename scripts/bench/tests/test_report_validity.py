@@ -27,17 +27,21 @@ def make_row(result, iters_valid=20, iters_invalid=0, invalid_reasons=None, avg_
 
 class TestParseResult(unittest.TestCase):
     def test_plain_scalar(self):
-        self.assertEqual(report.parse_result("17132"), {"count": 17132, "hash": None})
+        self.assertEqual(report.parse_result("17132"), {"count": 17132, "total": None, "hash": None})
 
     def test_scan_with_hash(self):
         r = report.parse_result("rows=1000;hash=abc123")
-        self.assertEqual(r, {"count": 1000, "hash": "abc123"})
+        self.assertEqual(r, {"count": 1000, "total": None, "hash": "abc123"})
 
     def test_scan_ch_rows_only(self):
-        self.assertEqual(report.parse_result("rows=1000"), {"count": 1000, "hash": None})
+        self.assertEqual(report.parse_result("rows=1000"), {"count": 1000, "total": None, "hash": None})
+
+    def test_groupby_with_total_and_hash(self):
+        r = report.parse_result("rows=5;total=14107;hash=abc123")
+        self.assertEqual(r, {"count": 5, "total": 14107, "hash": "abc123"})
 
     def test_spans(self):
-        self.assertEqual(report.parse_result("spans=8"), {"count": 8, "hash": None})
+        self.assertEqual(report.parse_result("spans=8"), {"count": 8, "total": None, "hash": None})
 
     def test_unparseable(self):
         self.assertIsNone(report.parse_result("invalid:parse-error"))
@@ -305,6 +309,10 @@ class TestRendering(unittest.TestCase):
     def test_render_result_groupby_truncates_hash_for_display(self):
         row = make_row("rows=5;hash=" + "ab" * 32)
         self.assertEqual(report.render_result(row), "rows=5;hash=" + "ab" * 4)
+
+    def test_render_result_groupby_with_total(self):
+        row = make_row("rows=5;total=14107;hash=" + "cd" * 32)
+        self.assertEqual(report.render_result(row), "rows=5;total=14107;hash=" + "cd" * 4)
 
     def test_render_result_missing_row(self):
         self.assertIsNone(report.render_result(None))
