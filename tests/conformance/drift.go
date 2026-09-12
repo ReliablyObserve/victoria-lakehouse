@@ -16,6 +16,7 @@ type DriftReport struct {
 	FlagWarnings     []inventory.Item // soft: upstream flags without a row
 	PendingBump      []string         // informational: rows whose Since version is newer than inventory
 	AbsentButPresent []string         // soft: row ids with expect=absent whose upstream key IS in inventory
+	MissingVersion   []string         // hard: surface names where inventory version is empty but rows cite since
 }
 
 // CheckDrift compares the upstream inventory against the registry to identify
@@ -45,6 +46,9 @@ func CheckDrift(inv *inventory.Inventory, reg *registry.Registry) DriftReport {
 		}
 	}
 
+	// Track missing versions (hard failure when a row cites since for empty-version surface).
+	missingVersions := make(map[string]bool)
+
 	// Check for stale rows and absent-but-present rows.
 	for _, r := range reg.Rows {
 		if r.Upstream == nil || r.Upstream.IsZero() {
@@ -61,6 +65,15 @@ func CheckDrift(inv *inventory.Inventory, reg *registry.Registry) DriftReport {
 			continue
 		}
 
+		// Check for missing versions: row cites since for a surface with empty inventory version.
+		if hasMissingVersion(&r, inv) {
+			surface := getSurfaceForSince(&r, inv)
+			if surface != "" {
+				missingVersions[surface] = true
+			}
+			continue
+		}
+
 		if !present[upstreamKey] {
 			// Check if this is a pending-bump row.
 			if isPendingBump(&r, inv) {
@@ -71,12 +84,18 @@ func CheckDrift(inv *inventory.Inventory, reg *registry.Registry) DriftReport {
 		}
 	}
 
+	// Convert missing versions to sorted list.
+	for surface := range missingVersions {
+		rep.MissingVersion = append(rep.MissingVersion, surface)
+	}
+
 	// Sort output for determinism.
 	sort.Slice(rep.Unmapped, func(i, j int) bool { return rep.Unmapped[i].Name < rep.Unmapped[j].Name })
 	sort.Slice(rep.FlagWarnings, func(i, j int) bool { return rep.FlagWarnings[i].Name < rep.FlagWarnings[j].Name })
 	sort.Strings(rep.Stale)
 	sort.Strings(rep.PendingBump)
 	sort.Strings(rep.AbsentButPresent)
+	sort.Strings(rep.MissingVersion)
 
 	return rep
 }
@@ -114,14 +133,13 @@ func buildCovered(reg *registry.Registry, inv *inventory.Inventory) map[string]b
 	return covered
 }
 
-// isPendingBump checks if a row's Since version is newer than the inventory's
-// version for that surface.
-func isPendingBump(r *registry.Row, inv *inventory.Inventory) bool {
+// hasMissingVersion checks if a row cites a since for a surface with empty inventory version.
+func hasMissingVersion(r *registry.Row, inv *inventory.Inventory) bool {
 	if len(r.Since) == 0 {
 		return false
 	}
 
-	for surface, sinceVersion := range r.Since {
+	for surface := range r.Since {
 		var invVersion string
 		switch surface {
 		case "vl":
@@ -129,6 +147,73 @@ func isPendingBump(r *registry.Row, inv *inventory.Inventory) bool {
 		case "vt":
 			invVersion = inv.VTVersion
 		default:
+			continue
+		}
+
+		if invVersion == "" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// getSurfaceForSince returns a surface name from the row's Since that has empty inventory version.
+func getSurfaceForSince(r *registry.Row, inv *inventory.Inventory) string {
+	for surface := range r.Since {
+		var invVersion string
+		switch surface {
+		case "vl":
+			invVersion = inv.VLVersion
+		case "vt":
+			invVersion = inv.VTVersion
+		default:
+			continue
+		}
+
+		if invVersion == "" {
+			return surface
+		}
+	}
+	return ""
+}
+
+// isPendingBump checks if a row's Since version is newer than the inventory's
+// version for that surface. The since must match the row's surface (or lh rows can use either).
+// Returns false if the inventory version is empty for the required surface.
+func isPendingBump(r *registry.Row, inv *inventory.Inventory) bool {
+	if len(r.Since) == 0 {
+		return false
+	}
+
+	// Determine which surfaces to check based on the row's surface.
+	var surfacesToCheck []string
+	switch r.Surface {
+	case registry.SurfaceVL:
+		surfacesToCheck = []string{"vl"}
+	case registry.SurfaceVT:
+		surfacesToCheck = []string{"vt"}
+	case registry.SurfaceLH:
+		// LH rows can use either vl or vt
+		surfacesToCheck = []string{"vl", "vt"}
+	}
+
+	for _, surface := range surfacesToCheck {
+		sinceVersion, hasSince := r.Since[surface]
+		if !hasSince {
+			continue
+		}
+
+		var invVersion string
+		switch surface {
+		case "vl":
+			invVersion = inv.VLVersion
+		case "vt":
+			invVersion = inv.VTVersion
+		}
+
+		// Empty inventory version means we can't determine if pending; must be treated as missing.
+		if invVersion == "" {
 			continue
 		}
 
@@ -178,10 +263,14 @@ func compareVersions(a, b string) int {
 	return 0
 }
 
-// HardFailures returns formatted error messages for unmapped items and stale rows.
+// HardFailures returns formatted error messages for unmapped items, stale rows, and missing versions.
 // The messages include a suggested row stub for unmapped items.
 func (d DriftReport) HardFailures() []string {
 	var out []string
+
+	for _, surface := range d.MissingVersion {
+		out = append(out, fmt.Sprintf("inventory has no %s version — regenerate with make conformance-gen", surface))
+	}
 
 	for _, it := range d.Unmapped {
 		kind := it.Kind
@@ -214,11 +303,12 @@ func (d DriftReport) Summary() string {
 
 	absentCount := len(d.AbsentButPresent)
 	if absentCount > 0 {
-		absentWord := "absent-but-present"
-		if absentCount != 1 {
-			absentWord = "absent-but-present"
-		}
-		parts = append(parts, fmt.Sprintf("%d %s", absentCount, absentWord))
+		parts = append(parts, fmt.Sprintf("%d absent-but-present", absentCount))
+	}
+
+	missingCount := len(d.MissingVersion)
+	if missingCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d missing-version", missingCount))
 	}
 
 	return strings.Join(parts, ", ")

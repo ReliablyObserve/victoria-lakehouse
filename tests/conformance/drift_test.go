@@ -171,6 +171,10 @@ func TestDrift_RealRegistry(t *testing.T) {
 	for _, w := range rep.FlagWarnings {
 		t.Logf("WARNING: upstream flag %s (%s) has no registry row — add one in rows/flags/matters.yaml if it changes behavior or compatibility", w.Name, w.Source)
 	}
+	for _, id := range rep.AbsentButPresent {
+		t.Logf("WARNING: row %s marked expect: absent but upstream is in inventory", id)
+	}
+	t.Logf("Summary: %s", rep.Summary())
 }
 
 func TestCheckDrift_Summary(t *testing.T) {
@@ -457,5 +461,140 @@ func TestCheckDrift_SummaryWithAbsentButPresent(t *testing.T) {
 		!strings.Contains(summary, "1 pending-bump") || !strings.Contains(summary, "1 flag warning") ||
 		!strings.Contains(summary, "1 absent-but-present") {
 		t.Fatalf("unexpected summary: %s", summary)
+	}
+}
+
+// TestCheckDrift_EmptyInventoryVersion tests that rows with since for an empty-version
+// surface record a hard failure instead of pending-bump.
+func TestCheckDrift_EmptyInventoryVersion(t *testing.T) {
+	inv := &inventory.Inventory{
+		VLVersion: "v1.50.0",
+		VTVersion: "", // Empty version
+	}
+	reg := &registry.Registry{ByID: map[string]*registry.Row{}}
+	reg.Rows = []registry.Row{{
+		ID:       "vt.new.feature.pending",
+		Title:    "new feature",
+		Surface:  registry.SurfaceVT,
+		Kind:     registry.KindSelect,
+		Origin:   registry.OriginNative,
+		Expect:   registry.ExpectPass,
+		Targets:  []registry.Target{registry.TargetHot},
+		Seed:     []string{"traces.base"},
+		Upstream: &registry.Upstream{Route: "/select/new"},
+		Request:  &registry.Request{Method: "GET", Path: "/select/new"},
+		Compare:  &registry.Compare{Type: "status"},
+		Layers:   []string{"api"},
+		Since:    map[string]string{"vt": "0.9.3"},
+	}}
+	rep := CheckDrift(inv, reg)
+	if len(rep.MissingVersion) != 1 || rep.MissingVersion[0] != "vt" {
+		t.Fatalf("expected 1 missing-version 'vt', got: %v", rep.MissingVersion)
+	}
+	if len(rep.PendingBump) != 0 {
+		t.Fatalf("empty-version rows should not be pending-bump, got: %v", rep.PendingBump)
+	}
+	hard := rep.HardFailures()
+	if len(hard) != 1 || !strings.Contains(hard[0], "inventory has no vt version") {
+		t.Fatalf("expected hard failure about missing version, got: %v", hard)
+	}
+}
+
+// TestCheckDrift_SurfaceSpecificSince tests that rows check only their surface's since.
+// A VT row with only since.vl (and missing since.vt) cites a missing upstream → stale, not pending-bump.
+func TestCheckDrift_SurfaceSpecificSince(t *testing.T) {
+	inv := &inventory.Inventory{
+		VLVersion: "v1.50.0",
+		VTVersion: "v0.9.0",
+	}
+	reg := &registry.Registry{ByID: map[string]*registry.Row{}}
+	reg.Rows = []registry.Row{{
+		ID:       "vt.new.feature",
+		Title:    "new feature",
+		Surface:  registry.SurfaceVT,
+		Kind:     registry.KindSelect,
+		Origin:   registry.OriginNative,
+		Expect:   registry.ExpectPass,
+		Targets:  []registry.Target{registry.TargetHot},
+		Seed:     []string{"traces.base"},
+		Upstream: &registry.Upstream{Route: "/select/new"},
+		Request:  &registry.Request{Method: "GET", Path: "/select/new"},
+		Compare:  &registry.Compare{Type: "status"},
+		Layers:   []string{"api"},
+		Since:    map[string]string{"vl": "1.51.0"}, // Only vl, no vt
+	}}
+	rep := CheckDrift(inv, reg)
+	// VT row only checks since.vt; since we have only since.vl, it's stale, not pending-bump.
+	if len(rep.Stale) != 1 {
+		t.Fatalf("vt row with only since.vl should be stale, got stale=%v", rep.Stale)
+	}
+	if len(rep.PendingBump) != 0 {
+		t.Fatalf("vt row should not check since.vl, got pending-bump=%v", rep.PendingBump)
+	}
+}
+
+// TestCheckDrift_TrailingSlashPrefixLiteral tests that a row citing the trailing-slash
+// prefix literal exactly (/select/jaeger/) is covered.
+func TestCheckDrift_TrailingSlashPrefixLiteral(t *testing.T) {
+	inv := &inventory.Inventory{
+		VLVersion: "v1.50.0",
+		VTVersion: "v0.9.0",
+		Items: []inventory.Item{
+			{Kind: "route", Name: "/select/jaeger/", Source: "app/vlselect/jaeger.go"},
+		},
+	}
+	reg := &registry.Registry{ByID: map[string]*registry.Row{}}
+	// Row citing /select/jaeger/ exactly (not a subpath)
+	reg.Rows = []registry.Row{{
+		ID:       "vl.select.jaeger.root",
+		Title:    "jaeger root",
+		Surface:  registry.SurfaceVL,
+		Kind:     registry.KindSelect,
+		Origin:   registry.OriginNative,
+		Expect:   registry.ExpectPass,
+		Targets:  []registry.Target{registry.TargetHot},
+		Seed:     []string{"logs.base"},
+		Upstream: &registry.Upstream{Route: "/select/jaeger/"},
+		Request:  &registry.Request{Method: "GET", Path: "/select/jaeger/"},
+		Compare:  &registry.Compare{Type: "status"},
+		Layers:   []string{"api"},
+	}}
+	rep := CheckDrift(inv, reg)
+	if len(rep.Unmapped) != 0 {
+		t.Fatalf("trailing-slash route cited exactly should be covered, got unmapped: %v", rep.Unmapped)
+	}
+}
+
+// TestCheckDrift_PrereleaseSuffixComparison tests that pre-release suffixes are ignored
+// in version comparison. Limitation: "1.51.0-rc1" vs "v1.51.0" compares as equal (not greater).
+func TestCheckDrift_PrereleaseSuffixComparison(t *testing.T) {
+	inv := &inventory.Inventory{
+		VLVersion: "v1.51.0",
+		VTVersion: "v0.9.0",
+	}
+	reg := &registry.Registry{ByID: map[string]*registry.Row{}}
+	// Row with pre-release version: "1.51.0-rc1" should compare equal to "1.51.0".
+	reg.Rows = []registry.Row{{
+		ID:       "vl.new.feature.prerelease",
+		Title:    "prerelease",
+		Surface:  registry.SurfaceVL,
+		Kind:     registry.KindSelect,
+		Origin:   registry.OriginNative,
+		Expect:   registry.ExpectPass,
+		Targets:  []registry.Target{registry.TargetHot},
+		Seed:     []string{"logs.base"},
+		Upstream: &registry.Upstream{Route: "/select/new"},
+		Request:  &registry.Request{Method: "GET", Path: "/select/new"},
+		Compare:  &registry.Compare{Type: "status"},
+		Layers:   []string{"api"},
+		Since:    map[string]string{"vl": "1.51.0-rc1"},
+	}}
+	rep := CheckDrift(inv, reg)
+	// "1.51.0-rc1" == "1.51.0" (pre-release suffix ignored), so NOT pending-bump.
+	if len(rep.PendingBump) != 0 {
+		t.Fatalf("pre-release suffix should be ignored; 1.51.0-rc1 == 1.51.0 (not >), got pending-bump: %v", rep.PendingBump)
+	}
+	if len(rep.Stale) != 1 {
+		t.Fatalf("1.51.0-rc1 == 1.51.0 means row is stale, got stale: %v", rep.Stale)
 	}
 }
