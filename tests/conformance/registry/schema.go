@@ -1,6 +1,6 @@
 // Package registry defines the conformance registry: one Row per endpoint or
 // feature that the verification machine must check, native VL/VT rows first,
-// Lakehouse additions second. Rows are declarative; the runner (a later milestone) executes them.
+// Lakehouse additions second. Rows are declarative; a future runner executes them.
 package registry
 
 import (
@@ -46,7 +46,7 @@ const (
 	TargetGlobal Target = "global"
 )
 
-// Comparators the runner (a later milestone) implements. Kept here so lint rejects typos early.
+// Comparators a future runner implements. Kept here so lint rejects typos early.
 var Comparators = map[string]bool{
 	"exact-json": true, "ndjson-multiset": true, "values-with-hits": true, "count": true,
 	"series": true, "trace": true, "status": true, "error": true, "schema": true,
@@ -248,20 +248,25 @@ func (r *Row) Validate() error {
 		}
 	}
 
-	// Seed validation
+	// Seed validation. The allow-list check (every named seed must be a
+	// known dataset) applies to every row that has a seed, regardless of
+	// Expect — including expect=unsupported rows, which still declare a
+	// real seed dataset (e.g. logs.base) even though the endpoint itself
+	// is documented as unsupported. Only the "required"/"must be empty"
+	// rules are Expect-specific.
 	switch r.Expect {
 	case ExpectPass, ExpectDiffer:
 		if len(r.Seed) == 0 && r.Kind != KindFlag {
 			add("seed required when expect=%s", r.Expect)
 		}
-		for _, s := range r.Seed {
-			if !Seeds[s] {
-				add("seed %q unknown", s)
-			}
-		}
 	case ExpectAbsent:
 		if len(r.Seed) != 0 {
 			add("seed must be empty when expect=absent")
+		}
+	}
+	for _, s := range r.Seed {
+		if !Seeds[s] {
+			add("seed %q unknown", s)
 		}
 	}
 

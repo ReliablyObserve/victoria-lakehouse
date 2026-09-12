@@ -68,6 +68,10 @@ func TestRow_Validate_Rejects(t *testing.T) {
 		{"pass needs seed", func(r *Row) { r.Seed = nil }, "seed"},
 		{"unknown seed", func(r *Row) { r.Seed = []string{"nope"} }, `seed "nope" unknown`},
 		{"absent must not have seed", func(r *Row) { r.Expect = ExpectAbsent }, "seed"},
+		// The allow-list check applies to every row with a seed, not just
+		// pass/differ: an expect=unsupported row with an unknown seed name
+		// must still be rejected (there is no Expect case that skips it).
+		{"unsupported with unknown seed", func(r *Row) { r.Expect = ExpectUnsupported; r.Seed = []string{"nope"} }, `seed "nope" unknown`},
 
 		// Since validation
 		{"since invalid key", func(r *Row) { r.Since = map[string]string{"xx": "1.0"} }, "since: key"},
