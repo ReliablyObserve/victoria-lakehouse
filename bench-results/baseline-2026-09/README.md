@@ -13,9 +13,10 @@ Judge every later PR against these numbers (perf gate: any LH/CH >= 1.0 cell or 
   measure a miss on every system (0 results): `fetch_sample_tid` picked a
   `trace_id` via an unordered `limit 1` over a 7-day window, so the id it grabbed
   usually wasn't the one on screen by the time the query ran. Fixed for the
-  traces rerun below (Step 2 in task-5-brief.md); the logs table was not rerun
-  because its own `trace_lookup` cells are the only ones affected and the fix
-  doesn't change any other logs query.
+  traces rerun below (`fetch_sample_tid` now queries a 1h window ordered by
+  time descending); the logs table was not rerun because its own
+  `trace_lookup` cells are the only ones affected and the fix doesn't change
+  any other logs query.
 - **`run-baseline.md` traces table is superseded by `run-baseline-traces-v2.md`.**
   The original traces sweep queried VictoriaTraces with Lakehouse-only field
   names (`service.name`, `span.name`, `duration_ns`); VT v0.9.2 stores spans as
@@ -31,19 +32,26 @@ Judge every later PR against these numbers (perf gate: any LH/CH >= 1.0 cell or 
      colon as a bucket-size / second-operator clause and either errors or
      silently matches the wrong thing (`resource_attr:service.name:="x"`
      without backticks parsed but returned 0 on both tiers).
-  2. `slow_spans` uses `trace_id:* duration:>50000000` (50 ms), not the 100 ms
-     originally proposed: the seed's real spans top out at 54 ms, so 100 ms is
-     zero on every tier. `trace_id:*` is required, not optional — VT rows with
-     no `trace_id` (internal aggregate rows, e.g. `service_graph`) also carry a
-     `duration` field and some exceed 100 ms, so a bare `duration:>N` filter
-     over-counted on VT only (1075 vs LH's real 0) until `trace_id:*` was
-     restored. `Duration` threshold made consistent in the ClickHouse SQL too.
+  2. `slow_spans` uses `trace_id:* duration:>50000000` (50 ms). 100 ms was the
+     original threshold; the seed's spans are 5-54 ms (`cmd/datagen`), so
+     >50 ms selects the slowest ~8% and is the largest round number giving a
+     non-zero, exactly-equal count on VT/LH/CH (verified at
+     10/20/30/40/45/50/53 ms — all matched exactly). `trace_id:*` is required,
+     not optional — VictoriaTraces' internal `trace_id_idx_stream` index rows
+     (fields `trace_id_idx, start_time, end_time, duration`) carry a
+     trace-level `duration` and no `trace_id`; some of those exceed 100 ms, so
+     a bare `duration:>N` filter over-counted on VT only (1075 vs LH's real 0)
+     until `trace_id:*` was restored. `Duration` threshold made consistent in
+     the ClickHouse SQL too.
   3. `fetch_sample_tid` now queries the last 1h window ordered `sort by (_time)
      desc | limit 1` and fails the run (non-zero exit) if no id comes back,
      instead of silently keeping a dummy id over an unordered 7-day `limit 1`.
   4. `parity_gate()` is now enforcing: it compares every system's `count_total`
      against the baseline (VL/VT) within ±5% and the call site aborts the run
      (`exit 1`) on any mismatch, instead of `parity_gate "$signal" || true`.
+     A baseline count of `0` (or a non-numeric baseline result) is itself now
+     treated as a mismatch — the gate refuses to sweep on empty data instead
+     of only comparing other systems against a zero baseline.
   5. `run.sh` logs the exact prepared request per (signal, query, system) via
      `prep()` → `log "req <signal>/<query> <system> <method> <url> body=..."`
      (visible throughout `run-baseline-traces-v2.log`).
@@ -66,6 +74,21 @@ Judge every later PR against these numbers (perf gate: any LH/CH >= 1.0 cell or 
      `deployment/docker/docker-compose-benchmark.yml`,
      `deployment/docker/docker-compose-e2e.yml`, `tests/parity/docker-compose.yml`
      (`minio/*:latest` is no longer anonymously pullable from Docker Hub).
+  9. `report.py`'s header no longer hardcodes "gp3-simulated": it now reads
+     `disk_profile` from the JSON rows (written by `run.sh` going forward)
+     and prints that, falling back to "unspecified" for JSON produced before
+     this fix (both `run-baseline.json` and `run-baseline-traces-v2.json`
+     predate it, so their re-rendered headers read "unspecified" — the actual
+     profile for both runs was `local-ssd`, the default, recorded below).
+
+**Exact rerun command for `run-baseline-traces-v2.{json,md,log}`** (Step-6
+stack already up, disk profile `local-ssd` — the default, not overridden):
+
+```
+scripts/bench/run.sh --signals traces --s3-latency "0 100" --ranges "1h 24h" \
+  --iterations 20 --warmup 3 --no-up --no-ingest \
+  --output bench-results/baseline-2026-09/run-baseline-traces-v2.json
+```
 - **Pre-rerun verification (Step 6, 24h window, one moment in time — see
   `run-baseline-traces-v2.log` for the actual per-run counts, which drift
   slightly between runs because the seed is a one-time 7-day backfill and the

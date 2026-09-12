@@ -2,7 +2,7 @@
 
 ## Overall
 
-- **28 valid LH cells, 0 invalid** (excluded). Baseline = VL/VT on disk (gp3-simulated); LH + ClickHouse read the same S3 Parquet.
+- **28 valid LH cells, 0 invalid** (excluded). Baseline = VL/VT on disk (disk profile: unspecified); LH + ClickHouse read the same S3 Parquet.
 - **traces**: LH median **2.7×** baseline (p90 4.7×, best 0.9×); LH is **21× faster than ClickHouse**. (28 valid / 0 invalid)
 
 ## Traces

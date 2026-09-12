@@ -94,6 +94,7 @@ def main():
     raw, out = sys.argv[1], sys.argv[2]
     with open(raw) as f:
         rows = json.load(f)
+    disk_profile = next((r["disk_profile"] for r in rows if r.get("disk_profile")), "unspecified")
     g = defaultdict(dict)
     for r in rows:
         g[(r["signal"], r["query"], r["range"], r["latency_ms"])][r["system"]] = r
@@ -157,7 +158,8 @@ def main():
     tot_v = sum(o["n_valid"] for o in overall.values())
     tot_i = sum(o["n_invalid"] for o in overall.values())
     lines.append(f"- **{tot_v} valid LH cells, {tot_i} invalid** (excluded). "
-                 f"Baseline = VL/VT on disk (gp3-simulated); LH + ClickHouse read the same S3 Parquet.")
+                 f"Baseline = VL/VT on disk (disk profile: {disk_profile}); "
+                 f"LH + ClickHouse read the same S3 Parquet.")
     for signal in signals:
         o = overall[signal]
         lh = f"median **{o['lh_med']:.1f}×** baseline (p90 {o['lh_p90']:.1f}×, best {o['lh_best']:.1f}×)" if o["lh_med"] else "—"
