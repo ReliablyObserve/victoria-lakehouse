@@ -7,7 +7,8 @@ func RequestHandler(path string) bool {
 	case "/insert/jsonline":
 		return true
 	}
-	if strings.HasPrefix(path, "/insert/loki/") {
+	switch {
+	case strings.HasPrefix(path, "/insert/loki/"):
 		return true
 	}
 	return false

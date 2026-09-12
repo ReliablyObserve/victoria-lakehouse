@@ -7,7 +7,8 @@ func RequestHandler(path string) bool {
 	case "/insert/native":
 		return true
 	}
-	if strings.HasPrefix(path, "/insert/opentelemetry/") {
+	switch {
+	case strings.HasPrefix(path, "/insert/opentelemetry/"):
 		return true
 	}
 	return false

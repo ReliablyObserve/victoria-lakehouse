@@ -48,12 +48,17 @@ func extractRoutes(root string, entries []string) ([]Item, error) {
 		}
 		var files []string
 		if st.IsDir() {
-			_ = filepath.WalkDir(p, func(path string, d fs.DirEntry, err error) error {
-				if err == nil && !d.IsDir() && strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") {
+			if err := filepath.WalkDir(p, func(path string, d fs.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				if !d.IsDir() && strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") {
 					files = append(files, path)
 				}
 				return nil
-			})
+			}); err != nil {
+				return nil, fmt.Errorf("walk upstream dir %s: %w", e, err)
+			}
 		} else {
 			files = []string{p}
 		}
