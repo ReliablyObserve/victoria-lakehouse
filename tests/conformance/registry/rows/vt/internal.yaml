@@ -34,7 +34,8 @@
   surface: vt
   kind: select
   origin: native
-  expect: pass
+  expect: differ
+  differ_note: "Neither binary mounts the upstream select dispatcher yet; hot returns JSON, cold 404 until the dispatcher PR. See docs/parity-and-gaps.md."
   targets: [hot, cold]
   seed: [traces.base]
   upstream: { route: /select/buildinfo }
@@ -111,7 +112,7 @@
   targets: [hot, cold]
   seed: [traces.base]
   upstream: { route: /delete/run_task }
-  request: { method: POST, path: /delete/run_task, params: { query: "resource_attr:service.name:checkout" } }
+  request: { method: POST, path: /delete/run_task, params: { query: "`resource_attr:service.name`:checkout" } }
   compare: { type: status }
   layers: [api]
   pending: true

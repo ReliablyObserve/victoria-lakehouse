@@ -122,7 +122,7 @@
   targets: [hot, cold, global]
   seed: [traces.base]
   upstream: {traceql: compare}
-  request: {method: GET, path: /select/tempo/api/metrics/query_range, params: {q: "{ resource_attr:service.name = \"checkout\" } | compare({status_code = \"error\"})", start: "{{seed.start}}", end: "{{seed.cold_end}}", step: "15s"}}
+  request: {method: GET, path: /select/tempo/api/metrics/query_range, params: {q: "{ resource.service.name = \"checkout\" } | compare({status = \"error\"})", start: "{{seed.start}}", end: "{{seed.cold_end}}", step: "15s"}}
   compare: {type: series, options: {rel_tolerance: "0.02"}}
   layers: [api]
   pending: true

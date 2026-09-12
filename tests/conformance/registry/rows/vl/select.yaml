@@ -61,7 +61,7 @@
   pending: true
 
 - id: vl.select.field_values.limit
-  title: "/select/logsql/field_values — limit keeps top hits (audit A6)"
+  title: "/select/logsql/field_values — limit keeps top hits"
   surface: vl
   kind: select
   origin: native
@@ -230,12 +230,12 @@
   pending: true
 
 - id: vl.select.buildinfo.basic
-  title: "/select/buildinfo — dispatcher endpoint (audit B4)"
+  title: "/select/buildinfo — dispatcher endpoint"
   surface: vl
   kind: select
   origin: native
   expect: differ
-  differ_note: "Not mounted on LH until the dispatcher PR (docs/parity-and-gaps.md #B4); hot returns JSON, cold 404."
+  differ_note: "Neither binary mounts the upstream select dispatcher yet; hot returns JSON, cold 404 until the dispatcher PR. See docs/parity-and-gaps.md."
   targets: [hot, cold]
   seed: [logs.base]
   upstream: { route: /select/buildinfo }

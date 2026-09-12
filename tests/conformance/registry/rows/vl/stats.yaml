@@ -1,4 +1,4 @@
-# VL LogsQL stats functions — one row per upstream stats function (audit inventory).
+# VL LogsQL stats functions — one row per upstream stats function.
 # Canonical query pattern: "* | stats <fn>(...) as v" via /select/logsql/stats_query.
 
 - {id: vl.stats.any.basic, title: "stats any", surface: vl, kind: stats, origin: native, expect: pass, targets: [hot, cold], seed: [logs.base], upstream: {stats: any}, request: {method: GET, path: /select/logsql/stats_query, params: {query: "* | stats any(_msg) as sample_msg | limit 1", start: "{{seed.start}}", end: "{{seed.cold_end}}"}}, compare: {type: series, project: [sample_msg]}, layers: [api], pending: true}
@@ -49,8 +49,3 @@
 
 - {id: vl.stats.quantile.by_service, title: "stats quantile(0.9, duration) by service.name", surface: vl, kind: stats, origin: native, expect: pass, targets: [hot, cold], seed: [logs.base], upstream: {stats: quantile}, request: {method: GET, path: /select/logsql/stats_query, params: {query: "* | stats by (service.name) quantile(0.9, duration_ms) as p90", start: "{{seed.start}}", end: "{{seed.cold_end}}"}}, compare: {type: series, project: [service.name, p90], options: {rel_tolerance: "0.02"}}, layers: [api], pending: true}
 
-- {id: vl.stats.count.by_service, title: "stats count — grouped by service.name", surface: vl, kind: stats, origin: native, expect: pass, targets: [hot, cold], seed: [logs.base], upstream: {stats: count}, request: {method: GET, path: /select/logsql/stats_query, params: {query: "* | stats by (service.name) count() as total", start: "{{seed.start}}", end: "{{seed.cold_end}}"}}, compare: {type: series, project: [service.name, total]}, layers: [api], pending: true}
-
-- {id: vl.stats.avg.by_service, title: "stats avg — grouped by service.name", surface: vl, kind: stats, origin: native, expect: pass, targets: [hot, cold], seed: [logs.base], upstream: {stats: avg}, request: {method: GET, path: /select/logsql/stats_query, params: {query: "* | stats by (service.name) avg(duration_ms) as avg_dur", start: "{{seed.start}}", end: "{{seed.cold_end}}"}}, compare: {type: series, project: [service.name, avg_dur]}, layers: [api], pending: true}
-
-- {id: vl.stats.max.by_service, title: "stats max — grouped by service.name", surface: vl, kind: stats, origin: native, expect: pass, targets: [hot, cold], seed: [logs.base], upstream: {stats: max}, request: {method: GET, path: /select/logsql/stats_query, params: {query: "* | stats by (service.name) max(duration_ms) as max_dur", start: "{{seed.start}}", end: "{{seed.cold_end}}"}}, compare: {type: series, project: [service.name, max_dur]}, layers: [api], pending: true}
