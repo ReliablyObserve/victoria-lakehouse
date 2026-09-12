@@ -1,0 +1,208 @@
+# VT Tempo-compat surface. TraceQL queries use VT-native field names:
+# resource_attr:service.name, name, duration, span_attr:<key>, trace_id,
+# span_id, kind, status_code. metrics/query_range rows live in traceql.yaml
+# (one row per TraceQL metrics function).
+
+- id: vt.tempo.echo.basic
+  title: "/select/tempo/api/echo — liveness echo"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold, global]
+  seed: [traces.base]
+  upstream: { route: /select/tempo/api/echo }
+  request: { method: GET, path: /select/tempo/api/echo }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vt.tempo.v2_search_tags.basic
+  title: "/select/tempo/api/v2/search/tags — attribute tag names"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/tempo/api/v2/search/tags }
+  request: { method: GET, path: /select/tempo/api/v2/search/tags, params: { start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+
+- id: vt.tempo.v2_search_tags.intrinsic_scope
+  title: "/select/tempo/api/v2/search/tags — scope=intrinsic (VT 0.9.4+)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: differ
+  differ_note: "scope=intrinsic filtering arrives in VT 0.9.4; absent at the pinned 0.9.2. Re-check after the version bump (docs/parity-and-gaps.md)."
+  since: { vt: "0.9.4" }
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/tempo/api/v2/search/tags }
+  request: { method: GET, path: /select/tempo/api/v2/search/tags, params: { scope: "intrinsic", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+
+- id: vt.tempo.v2_search_tag_values.basic
+  title: "/select/tempo/api/v2/search/tag/{name}/values — attribute tag values"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/tempo/api/v2/search/tag }
+  request: { method: GET, path: "/select/tempo/api/v2/search/tag/resource.service.name/values", params: { start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+
+- id: vt.tempo.v2_search_tag_values.span_kind_strings
+  title: "/select/tempo/api/v2/search/tag/kind/values — span kind as strings (VT 0.10.0+)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: differ
+  differ_note: "VT 0.10.0 returns span kind values as strings (SPAN_KIND_SERVER, ...) instead of the old ints; pinned 0.9.2 still returns ints. Re-check after the version bump (docs/parity-and-gaps.md)."
+  since: { vt: "0.10.0" }
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/tempo/api/v2/search/tag }
+  request: { method: GET, path: "/select/tempo/api/v2/search/tag/kind/values", params: { start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+
+- id: vt.tempo.search.empty_query
+  title: "/select/tempo/api/search — TraceQL {} (match all)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/tempo/api/search }
+  request: { method: GET, path: /select/tempo/api/search, params: { q: "{ }", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+
+- id: vt.tempo.search.service_name
+  title: "/select/tempo/api/search — TraceQL resource.service.name filter"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/tempo/api/search }
+  request: { method: GET, path: /select/tempo/api/search, params: { q: '{ resource.service.name = "checkout" }', start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+
+- id: vt.tempo.search.duration_filter
+  title: "/select/tempo/api/search — TraceQL duration filter"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/tempo/api/search }
+  request: { method: GET, path: /select/tempo/api/search, params: { q: '{ duration > 100ms }', start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+
+- id: vt.tempo.search.spansets_full
+  title: "/select/tempo/api/search — full spanSets response shape (VT 0.9.4+)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: differ
+  differ_note: "The full spanSets (multiple matched spans per trace, with match highlighting) response shape arrives in VT 0.9.4; pinned 0.9.2 returns the legacy single-spanSet shape. Re-check after the version bump (docs/parity-and-gaps.md)."
+  since: { vt: "0.9.4" }
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/tempo/api/search }
+  request: { method: GET, path: /select/tempo/api/search, params: { q: '{ resource.service.name = "checkout" } | count() > 1', start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+
+- id: vt.tempo.traces_v1.by_id
+  title: "/select/tempo/api/traces/{id} — v1 trace by id (VT 0.9.3+)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: differ
+  differ_note: "The v1 trace-by-id route arrives in VT 0.9.3; absent at the pinned 0.9.2. Re-check after the version bump (docs/parity-and-gaps.md)."
+  since: { vt: "0.9.3" }
+  targets: [hot, cold, global]
+  seed: [traces.base]
+  upstream: { route: /select/tempo/api/traces/ }
+  request: { method: GET, path: "/select/tempo/api/traces/{{seed.trace_id}}" }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+
+- id: vt.tempo.traces_v2.by_id
+  title: "/select/tempo/api/v2/traces/{id} — v2 trace by id (JSON)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold, global]
+  seed: [traces.base]
+  upstream: { route: /select/tempo/api/v2/traces/ }
+  request: { method: GET, path: "/select/tempo/api/v2/traces/{{seed.trace_id}}" }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+
+- id: vt.tempo.traces_v2.protobuf
+  title: "/select/tempo/api/v2/traces/{id} — Accept: application/protobuf (VT 0.9.3+)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: differ
+  differ_note: "Protobuf-encoded trace responses (Accept: application/protobuf) arrive in VT 0.9.3; pinned 0.9.2 only serves JSON. Re-check after the version bump (docs/parity-and-gaps.md)."
+  since: { vt: "0.9.3" }
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/tempo/api/v2/traces/ }
+  request: { method: GET, path: "/select/tempo/api/v2/traces/{{seed.trace_id}}", headers: { Accept: "application/protobuf" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+
+- id: vt.tempo.metrics_instant.absent
+  title: "/select/tempo/api/metrics/instant — absent upstream, must stay absent on LH"
+  surface: vt
+  kind: select
+  origin: native
+  expect: absent
+  targets: [hot, cold]
+  upstream: { route: /select/tempo/api/metrics/instant }
+  request: { method: GET, path: /select/tempo/api/metrics/instant, params: { q: "{ } | rate()" } }
+  compare: { type: absent }
+  layers: [api]
+  pending: true
+
+- id: vt.tempo.search_v2.absent
+  title: "/select/tempo/api/v2/search — absent upstream, must stay absent on LH"
+  surface: vt
+  kind: select
+  origin: native
+  expect: absent
+  targets: [hot, cold]
+  upstream: { route: /select/tempo/api/v2/search }
+  request: { method: GET, path: /select/tempo/api/v2/search, params: { q: "{ }" } }
+  compare: { type: absent }
+  layers: [api]
+  pending: true

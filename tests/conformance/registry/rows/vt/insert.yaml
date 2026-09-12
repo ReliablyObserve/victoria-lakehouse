@@ -1,0 +1,41 @@
+# VT /insert/* ingest families. Comparator is `count` (spans ingested vs.
+# spans retrievable) — the actual ingest step is a later milestone (the
+# runner), so every row here stays pending: true.
+
+- { id: vt.insert.otel_traces_json.count, title: "/insert/opentelemetry/v1/traces — OTLP/HTTP traces, JSON body", surface: vt, kind: insert, origin: native, expect: pass, targets: [hot], seed: [traces.base], upstream: { route: /insert/opentelemetry/v1/traces }, request: { method: POST, path: /insert/opentelemetry/v1/traces, headers: { Content-Type: "application/json", AccountID: "{{tenant.account}}", ProjectID: "{{tenant.project}}" } }, compare: { type: count }, layers: [api], pending: true }
+- { id: vt.insert.otel_traces_protobuf.count, title: "/insert/opentelemetry/v1/traces — OTLP/HTTP traces, protobuf body", surface: vt, kind: insert, origin: native, expect: pass, targets: [hot], seed: [traces.base], upstream: { route: /insert/opentelemetry/v1/traces }, request: { method: POST, path: /insert/opentelemetry/v1/traces, headers: { Content-Type: "application/x-protobuf" } }, compare: { type: count }, layers: [api], pending: true }
+- { id: vt.insert.otel_dispatch.status, title: "/insert/opentelemetry/ — OTLP sub-router dispatch gate", surface: vt, kind: internal, origin: native, expect: pass, targets: [hot, cold], seed: [traces.base], upstream: { route: /insert/opentelemetry/ }, request: { method: POST, path: /insert/opentelemetry/v1/traces, headers: { Content-Type: "application/json" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.insert.ready.status, title: "/insert/ready — ingest readiness probe", surface: vt, kind: insert, origin: native, expect: pass, targets: [hot, cold], seed: [traces.base], upstream: { route: /insert/ready }, request: { method: GET, path: /insert/ready }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.internal.insert.count, title: "/internal/insert — peer-to-peer ingest replication", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/insert }, request: { method: POST, path: /internal/insert }, compare: { type: count }, layers: [api], pending: true }
+
+- id: vt.insert.native.differ
+  title: "/insert/native — VT native binary protocol ingest (VT 0.11.0+)"
+  surface: vt
+  kind: insert
+  origin: native
+  expect: differ
+  differ_note: "Native binary ingest arrives with the VT 0.11.0 bump; pinned 0.9.2 has no /insert/native route. Re-check after the bump (docs/parity-and-gaps.md)."
+  since: { vt: "0.11.0" }
+  targets: [hot]
+  seed: [traces.base]
+  upstream: { route: /insert/native }
+  request: { method: POST, path: /insert/native }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+
+- id: vt.insert.multitenant_native.differ
+  title: "/insert/multitenant/native — multi-tenant native ingest (VT 0.11.0+)"
+  surface: vt
+  kind: insert
+  origin: native
+  expect: differ
+  differ_note: "Arrives with the VT 0.11.0 bump alongside /insert/native; pinned 0.9.2 lacks both. Re-check after the bump (docs/parity-and-gaps.md)."
+  since: { vt: "0.11.0" }
+  targets: [hot]
+  seed: [tenants.iso]
+  upstream: { route: /insert/multitenant/native }
+  request: { method: POST, path: /insert/multitenant/native }
+  compare: { type: count }
+  layers: [api]
+  pending: true

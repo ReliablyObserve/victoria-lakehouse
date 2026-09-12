@@ -1,0 +1,294 @@
+# Flags that matter: only flags that changed between versions, or that touch
+# LH compatibility (queueing/admission, retention, insert limits, cold-tier
+# lookbehind windows). kind: flag rows need no `request` and no `seed`.
+
+- id: vl.flag.search_max_concurrent_requests
+  title: "-search.maxConcurrentRequests — admission control, same semantics on LH"
+  surface: vl
+  kind: flag
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  upstream: { flag: search.maxConcurrentRequests }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vl.flag.search_max_queue_duration
+  title: "-search.maxQueueDuration — VL queues, LH returns 429"
+  surface: vl
+  kind: flag
+  origin: native
+  expect: differ
+  differ_note: "vlselect's queue is not linked into LH; LH's query.max_concurrent admission control rejects immediately instead of queueing. See docs/parity-and-gaps.md."
+  targets: [hot, cold]
+  upstream: { flag: search.maxQueueDuration }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vl.flag.search_max_query_duration
+  title: "-search.maxQueryDuration — hard timeout, same semantics on LH"
+  surface: vl
+  kind: flag
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  upstream: { flag: search.maxQueryDuration }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vl.flag.search_max_query_time_range
+  title: "-search.maxQueryTimeRange — window cap, same semantics on LH"
+  surface: vl
+  kind: flag
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  upstream: { flag: search.maxQueryTimeRange }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vl.flag.search_max_query_len
+  title: "-search.maxQueryLen — query length cap, same semantics on LH"
+  surface: vl
+  kind: flag
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  upstream: { flag: search.maxQueryLen }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vl.flag.search_log_slow_query_duration
+  title: "-search.logSlowQueryDuration — logging-only, no query-result effect"
+  surface: vl
+  kind: flag
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  upstream: { flag: search.logSlowQueryDuration }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vl.flag.future_retention
+  title: "-futureRetention — clock-skew ingest guard, same semantics on LH"
+  surface: vl
+  kind: flag
+  origin: native
+  expect: pass
+  targets: [hot]
+  upstream: { flag: futureRetention }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vl.flag.max_backfill_age
+  title: "-maxBackfillAge — cold tiering changes the effective backfill window"
+  surface: vl
+  kind: flag
+  origin: native
+  expect: differ
+  differ_note: "Hot enforces maxBackfillAge against local storage retention; once data tiers to cold, the age check has no local-storage analog and the LH compaction/retention path governs instead. See docs/parity-and-gaps.md."
+  targets: [hot, cold]
+  upstream: { flag: maxBackfillAge }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vl.flag.insert_max_fields_per_line
+  title: "-insert.maxFieldsPerLine — ingest guard, same semantics on LH"
+  surface: vl
+  kind: flag
+  origin: native
+  expect: pass
+  targets: [hot]
+  upstream: { flag: insert.maxFieldsPerLine }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vl.flag.insert_max_line_size_bytes
+  title: "-insert.maxLineSizeBytes — ingest guard, same semantics on LH"
+  surface: vl
+  kind: flag
+  origin: native
+  expect: pass
+  targets: [hot]
+  upstream: { flag: insert.maxLineSizeBytes }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vl.flag.default_msg_value
+  title: "-defaultMsgValue — fallback _msg value, same semantics on LH"
+  surface: vl
+  kind: flag
+  origin: native
+  expect: pass
+  targets: [hot]
+  upstream: { flag: defaultMsgValue }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vl.flag.vmalert_proxy_url
+  title: "-vmalert.proxyURL (VL 1.51.0+) — vmalert dispatcher proxy target"
+  surface: vl
+  kind: flag
+  origin: native
+  expect: differ
+  differ_note: "Flag arrives in VL 1.51.0 (pinned is 1.50.0); LH also has no vmalert proxy wired into its dispatcher yet. Re-check both after the version bump. See docs/parity-and-gaps.md."
+  since: { vl: "1.51.0" }
+  targets: [hot, cold]
+  upstream: { flag: vmalert.proxyURL }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vl.flag.delete_enable
+  title: "-delete.enable — cold delete dispatcher gap"
+  surface: vl
+  kind: flag
+  origin: native
+  expect: differ
+  differ_note: "Even with delete.enable=true, the /delete/* family isn't routed on cold until the dispatcher PR lands. See docs/parity-and-gaps.md."
+  targets: [hot, cold]
+  upstream: { flag: delete.enable }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vt.flag.search_max_traces
+  title: "-search.maxTraces (VT 0.9.4+) — result cap, not in pinned VT"
+  surface: vt
+  kind: flag
+  origin: native
+  expect: differ
+  differ_note: "Flag arrives in VT 0.9.4 (pinned is 0.9.2). Re-check after the version bump. See docs/parity-and-gaps.md."
+  since: { vt: "0.9.4" }
+  targets: [hot, cold]
+  upstream: { flag: search.maxTraces }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vt.flag.search_max_tags
+  title: "-search.maxTags (VT 0.9.4+) — result cap, not in pinned VT"
+  surface: vt
+  kind: flag
+  origin: native
+  expect: differ
+  differ_note: "Flag arrives in VT 0.9.4 alongside search.maxTraces (pinned is 0.9.2). Re-check after the version bump. See docs/parity-and-gaps.md."
+  since: { vt: "0.9.4" }
+  targets: [hot, cold]
+  upstream: { flag: search.maxTags }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vt.flag.search_fields_lookbehind
+  title: "-search.fieldsLookbehind (VT 0.10.0+, default 2h) — cold tag lookbehind"
+  surface: vt
+  kind: flag
+  origin: native
+  expect: differ
+  differ_note: "New 2h default hides tags for old cold data that predates it; explicit cold default needs to be set in compose/Helm once VT is bumped. See docs/parity-and-gaps.md."
+  since: { vt: "0.10.0" }
+  targets: [cold]
+  upstream: { flag: search.fieldsLookbehind }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vt.flag.search_stream_fields_lookbehind
+  title: "-search.streamFieldsLookbehind (VT 0.10.0+) — cold stream-field lookbehind"
+  surface: vt
+  kind: flag
+  origin: native
+  expect: differ
+  differ_note: "Same new-default-hides-old-cold-data issue as search.fieldsLookbehind, applied to stream fields. See docs/parity-and-gaps.md."
+  since: { vt: "0.10.0" }
+  targets: [cold]
+  upstream: { flag: search.streamFieldsLookbehind }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vt.flag.search_trace_service_and_span_name_lookbehind
+  title: "-search.traceServiceAndSpanNameLookbehind (deprecated VT 0.10.0+)"
+  surface: vt
+  kind: flag
+  origin: native
+  expect: differ
+  differ_note: "Deprecated in favor of fieldsLookbehind/streamFieldsLookbehind in VT 0.10.0; hot post-bump ignores it while LH cold (pre-bump) still honors it as the effective lookbehind. See docs/parity-and-gaps.md."
+  since: { vt: "0.10.0" }
+  targets: [cold]
+  upstream: { flag: search.traceServiceAndSpanNameLookbehind }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vt.flag.search_trace_max_duration_window
+  title: "-search.traceMaxDurationWindow — trace-id lookup window, same semantics"
+  surface: vt
+  kind: flag
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  upstream: { flag: search.traceMaxDurationWindow }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vt.flag.search_trace_search_step
+  title: "-search.traceSearchStep — search fan-out step, same semantics"
+  surface: vt
+  kind: flag
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  upstream: { flag: search.traceSearchStep }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vt.flag.search_latency_offset
+  title: "-search.latencyOffset — service-graph latency bucket offset, same semantics"
+  surface: vt
+  kind: flag
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  upstream: { flag: search.latencyOffset }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vt.flag.servicegraph_enable_task
+  title: "-servicegraph.enableTask — cold has no periodic-task runner"
+  surface: vt
+  kind: flag
+  origin: native
+  expect: unsupported
+  targets: [cold]
+  upstream: { flag: servicegraph.enableTask }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vt.flag.otlp_grpc_listen_addr
+  title: "-otlpGRPCListenAddr — OTLP/gRPC listener address, same semantics"
+  surface: vt
+  kind: flag
+  origin: native
+  expect: pass
+  targets: [hot]
+  upstream: { flag: otlpGRPCListenAddr }
+  compare: { type: status }
+  layers: [api]
+  pending: true

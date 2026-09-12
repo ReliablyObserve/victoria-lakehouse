@@ -1,0 +1,62 @@
+# Documented behaviors, not endpoints: places where the LH shim intentionally
+# (or currently, unintentionally) diverges from upstream request/response
+# semantics. See docs/parity-and-gaps.md for the full write-up of each.
+
+- id: lh.shim.tempo_search_empty_q
+  title: "Tempo search shim — empty q param treated as match-all on cold"
+  surface: lh
+  kind: select
+  origin: lh-shim
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  upstream: { route: /select/tempo/api/search }
+  request: { method: GET, path: /select/tempo/api/search, params: { start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+
+- id: lh.shim.time_params_ms
+  title: "Time params accept milliseconds on cold in addition to RFC3339/relative"
+  surface: lh
+  kind: select
+  origin: lh-shim
+  expect: differ
+  differ_note: "The LH shim also accepts start/end as raw millisecond-epoch integers (matching Tempo's convention); hot VL/VT only accept RFC3339 or relative durations. Documented, not a bug — see docs/parity-and-gaps.md."
+  targets: [cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "1700000000000", end: "1700003600000" } }
+  compare: { type: ndjson-multiset, project: [_time, _msg] }
+  layers: [api]
+  pending: true
+
+- id: lh.shim.field_values_map_order
+  title: "field_values truncation order differs from hot's top-hits sort"
+  surface: lh
+  kind: select
+  origin: lh-shim
+  expect: differ
+  differ_note: "Cold truncates field_values results in internal map iteration order rather than sorting by hit count first, so a `limit` can return a different (still valid) subset than hot. See docs/parity-and-gaps.md."
+  targets: [cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/field_values }
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "*", field: service.name, limit: "3", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+
+- id: lh.shim.delete_dispatcher_gap
+  title: "/delete/* family returns 404 on cold until the dispatcher PR lands"
+  surface: lh
+  kind: admin
+  origin: lh-shim
+  expect: differ
+  differ_note: "The LH HTTP dispatcher does not yet route the /delete/* family to any handler on cold; hot behaves as upstream. Tracked as a known gap, see docs/parity-and-gaps.md."
+  targets: [cold]
+  seed: [logs.base]
+  upstream: { route: /delete/run_task }
+  request: { method: POST, path: /delete/run_task, params: { query: "service.name:checkout" } }
+  compare: { type: status }
+  layers: [api]
+  pending: true

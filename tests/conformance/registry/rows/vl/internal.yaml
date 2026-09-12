@@ -1,0 +1,43 @@
+# VL /internal/select/* peer-fanout endpoints and /internal/force_* admin
+# endpoints. All internal/select rows are checked at the global target only
+# (they are the peer-to-peer contract, not a client-facing surface).
+
+- { id: vl.internal.select_query.status, title: "/internal/select/query — peer fanout", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.base], upstream: { route: /internal/select/query }, request: { method: GET, path: /internal/select/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vl.internal.select_field_names.status, title: "/internal/select/field_names — peer fanout", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.base], upstream: { route: /internal/select/field_names }, request: { method: GET, path: /internal/select/field_names, params: { query: "*" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vl.internal.select_field_values.status, title: "/internal/select/field_values — peer fanout", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.base], upstream: { route: /internal/select/field_values }, request: { method: GET, path: /internal/select/field_values, params: { query: "*", field: service.name } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vl.internal.select_stream_field_names.status, title: "/internal/select/stream_field_names — peer fanout", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.streams], upstream: { route: /internal/select/stream_field_names }, request: { method: GET, path: /internal/select/stream_field_names, params: { query: "*" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vl.internal.select_stream_field_values.status, title: "/internal/select/stream_field_values — peer fanout", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.streams], upstream: { route: /internal/select/stream_field_values }, request: { method: GET, path: /internal/select/stream_field_values, params: { query: "*", field: service.name } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vl.internal.select_streams.status, title: "/internal/select/streams — peer fanout", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.streams], upstream: { route: /internal/select/streams }, request: { method: GET, path: /internal/select/streams, params: { query: "*" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vl.internal.select_stream_ids.status, title: "/internal/select/stream_ids — peer fanout", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.streams], upstream: { route: /internal/select/stream_ids }, request: { method: GET, path: /internal/select/stream_ids, params: { query: "*" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vl.internal.select_hits.status, title: "/internal/select/hits — peer fanout", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.base], upstream: { route: /internal/select/hits }, request: { method: GET, path: /internal/select/hits, params: { query: "*", step: "1h" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vl.internal.select_facets.status, title: "/internal/select/facets — peer fanout", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.base], upstream: { route: /internal/select/facets }, request: { method: GET, path: /internal/select/facets, params: { query: "*", limit: "5" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vl.internal.select_query_time_range.status, title: "/internal/select/query_time_range — peer fanout", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.base], upstream: { route: /internal/select/query_time_range }, request: { method: GET, path: /internal/select/query_time_range, params: { query: "*" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vl.internal.select_tenant_ids.status, title: "/internal/select/tenant_ids — peer fanout", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [tenants.iso], upstream: { route: /internal/select/tenant_ids }, request: { method: GET, path: /internal/select/tenant_ids }, compare: { type: status }, layers: [api], pending: true }
+
+- id: vl.internal.force_flush.unsupported
+  title: "/internal/force_flush — cold has no local storage to flush"
+  surface: vl
+  kind: admin
+  origin: native
+  expect: unsupported
+  targets: [cold]
+  seed: [logs.base]
+  upstream: { route: /internal/force_flush }
+  request: { method: GET, path: /internal/force_flush }
+  compare: { type: status, options: { cold_status: "501" } }
+  layers: [api]
+  pending: true
+
+- id: vl.internal.force_merge.unsupported
+  title: "/internal/force_merge — cold has no local storage to merge"
+  surface: vl
+  kind: admin
+  origin: native
+  expect: unsupported
+  targets: [cold]
+  seed: [logs.base]
+  upstream: { route: /internal/force_merge }
+  request: { method: GET, path: /internal/force_merge, params: { partitionPrefix: "*" } }
+  compare: { type: status, options: { cold_status: "501" } }
+  layers: [api]
+  pending: true

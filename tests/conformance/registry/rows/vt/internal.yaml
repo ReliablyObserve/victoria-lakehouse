@@ -1,0 +1,187 @@
+# VT dispatcher-level, internal/select peer-fanout, and admin routes,
+# mirroring the equivalent VL surface. Pinned VT v0.9.2.
+
+- id: vt.select.jaeger_dispatch.status
+  title: "/select/jaeger/ — Jaeger sub-router dispatch gate"
+  surface: vt
+  kind: internal
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/jaeger/ }
+  request: { method: GET, path: /select/jaeger/api/services }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vt.select.tempo_dispatch.status
+  title: "/select/tempo/ — Tempo sub-router dispatch gate"
+  surface: vt
+  kind: internal
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/tempo/ }
+  request: { method: GET, path: /select/tempo/api/echo }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vt.select.buildinfo.basic
+  title: "/select/buildinfo — dispatcher endpoint"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/buildinfo }
+  request: { method: GET, path: /select/buildinfo }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+
+- id: vt.select.vmui.basic
+  title: "/select/vmui — UI bundle mounted on both tiers"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/vmui }
+  request: { method: GET, path: /select/vmui }
+  compare: { type: status, options: { hot_status: "200", cold_status: "200" } }
+  layers: [api]
+  pending: true
+
+- id: vt.select.vmui_slash.basic
+  title: "/select/vmui/ — trailing-slash prefix variant"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/vmui/ }
+  request: { method: GET, path: /select/vmui/ }
+  compare: { type: status, options: { hot_status: "200", cold_status: "200" } }
+  layers: [api]
+  pending: true
+
+- id: vt.select.tail.unsupported
+  title: "/select/logsql/tail — cold tier returns the documented no-op"
+  surface: vt
+  kind: select
+  origin: lh-shim
+  expect: unsupported
+  targets: [cold]
+  seed: [traces.base]
+  upstream: { route: /select/logsql/tail }
+  request: { method: GET, path: /select/logsql/tail, params: { query: "*" } }
+  compare: { type: status, options: { cold_status: "501" } }
+  layers: [api]
+  pending: true
+
+- id: vt.select.vmalert.differ
+  title: "/select/vmalert/ — not in the pinned VT; verify after the bump"
+  surface: vt
+  kind: select
+  origin: native
+  expect: differ
+  differ_note: "Route arrives in VT 0.10.0 (pinned is 0.9.2); LH dispatcher has no vmalert proxy wired either. Re-check both after the version bump (docs/parity-and-gaps.md)."
+  since: { vt: "0.10.0" }
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/vmalert/ }
+  request: { method: GET, path: /select/vmalert/ }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vt.delete.run_task.differ
+  title: "/delete/run_task — delete dispatcher not mounted on LH"
+  surface: vt
+  kind: admin
+  origin: native
+  expect: differ
+  differ_note: "Delete-task lifecycle isn't wired into the LH dispatcher (docs/parity-and-gaps.md); hot accepts, cold 404 until the dispatcher PR."
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /delete/run_task }
+  request: { method: POST, path: /delete/run_task, params: { query: "resource_attr:service.name:checkout" } }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vt.delete.stop_task.differ
+  title: "/delete/stop_task — delete dispatcher not mounted on LH"
+  surface: vt
+  kind: admin
+  origin: native
+  expect: differ
+  differ_note: "Same dispatcher gap as run_task (docs/parity-and-gaps.md); hot accepts, cold 404 until the dispatcher PR."
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /delete/stop_task }
+  request: { method: POST, path: /delete/stop_task, params: { taskID: "1" } }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vt.delete.active_tasks.differ
+  title: "/delete/active_tasks — delete dispatcher not mounted on LH"
+  surface: vt
+  kind: admin
+  origin: native
+  expect: differ
+  differ_note: "Same dispatcher gap as run_task/stop_task (docs/parity-and-gaps.md); hot returns the task list, cold 404 until the dispatcher PR."
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /delete/active_tasks }
+  request: { method: GET, path: /delete/active_tasks }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- { id: vt.internal.select_query.status, title: "/internal/select/query — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/query }, request: { method: GET, path: /internal/select/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.internal.select_field_names.status, title: "/internal/select/field_names — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/field_names }, request: { method: GET, path: /internal/select/field_names, params: { query: "*" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.internal.select_field_values.status, title: "/internal/select/field_values — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/field_values }, request: { method: GET, path: /internal/select/field_values, params: { query: "*", field: "resource_attr:service.name" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.internal.select_stream_field_names.status, title: "/internal/select/stream_field_names — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/stream_field_names }, request: { method: GET, path: /internal/select/stream_field_names, params: { query: "*" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.internal.select_stream_field_values.status, title: "/internal/select/stream_field_values — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/stream_field_values }, request: { method: GET, path: /internal/select/stream_field_values, params: { query: "*", field: "resource_attr:service.name" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.internal.select_streams.status, title: "/internal/select/streams — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/streams }, request: { method: GET, path: /internal/select/streams, params: { query: "*" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.internal.select_stream_ids.status, title: "/internal/select/stream_ids — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/stream_ids }, request: { method: GET, path: /internal/select/stream_ids, params: { query: "*" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.internal.select_hits.status, title: "/internal/select/hits — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/hits }, request: { method: GET, path: /internal/select/hits, params: { query: "*", step: "1h" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.internal.select_facets.status, title: "/internal/select/facets — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/facets }, request: { method: GET, path: /internal/select/facets, params: { query: "*", limit: "5" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.internal.select_query_time_range.status, title: "/internal/select/query_time_range — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/select/query_time_range }, request: { method: GET, path: /internal/select/query_time_range, params: { query: "*" } }, compare: { type: status }, layers: [api], pending: true }
+- { id: vt.internal.select_tenant_ids.status, title: "/internal/select/tenant_ids — peer fanout", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [tenants.iso], upstream: { route: /internal/select/tenant_ids }, request: { method: GET, path: /internal/select/tenant_ids }, compare: { type: status }, layers: [api], pending: true }
+
+- id: vt.internal.force_flush.unsupported
+  title: "/internal/force_flush — cold has no local storage to flush"
+  surface: vt
+  kind: admin
+  origin: native
+  expect: unsupported
+  targets: [cold]
+  seed: [traces.base]
+  upstream: { route: /internal/force_flush }
+  request: { method: GET, path: /internal/force_flush }
+  compare: { type: status, options: { cold_status: "501" } }
+  layers: [api]
+  pending: true
+
+- id: vt.internal.force_merge.unsupported
+  title: "/internal/force_merge — cold has no local storage to merge"
+  surface: vt
+  kind: admin
+  origin: native
+  expect: unsupported
+  targets: [cold]
+  seed: [traces.base]
+  upstream: { route: /internal/force_merge }
+  request: { method: GET, path: /internal/force_merge, params: { partitionPrefix: "*" } }
+  compare: { type: status, options: { cold_status: "501" } }
+  layers: [api]
+  pending: true
