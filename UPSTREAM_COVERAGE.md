@@ -6,103 +6,147 @@ Lakehouse mounts the upstream VictoriaLogs/VictoriaTraces handlers and engines; 
 
 Legend: ✅ verified · 🟡 declared, not yet executed · 🔁 differs from upstream (documented) · ⛔ absent or unsupported (documented) · ⚪ no registry row · 🧩 Lakehouse addition (no upstream equivalent)
 
-## Upstream route (91)
+## Upstream route (135)
 
-route: 91/91 covered by at least one registry row.
+route: 135/135 covered by at least one registry row.
 
 | route | Source | Rows | Status |
 |---|---|---|---|
-| `/api/v1/validate` | `app/vlinsert/datadog/datadog.go` | vl.insert.api_v1_validate.status | ✅ native, verified (declared, not yet executed) |
-| `/api/v2/logs` | `app/vlinsert/datadog/datadog.go` | vl.insert.api_v2_logs.count | ✅ native, verified (declared, not yet executed) |
-| `/delete/active_tasks` | `app/vlselect/main.go` | vl.delete.active_tasks.differ, vt.delete.active_tasks.differ | 🔁 differs: Same dispatcher gap as run_task/stop_task (docs/parity-and-gaps.md); hot returns the task list, cold 404 until the dispatcher PR. (declared, not yet executed) |
-| `/delete/run_task` | `app/vlselect/main.go` | vl.delete.run_task.differ, vt.delete.run_task.differ | 🔁 differs: Delete-task lifecycle isn't wired into the LH dispatcher (docs/parity-and-gaps.md); hot accepts, cold 404 until the dispatcher PR. (declared, not yet executed) |
-| `/delete/stop_task` | `app/vlselect/main.go` | vl.delete.stop_task.differ, vt.delete.stop_task.differ | 🔁 differs: Same dispatcher gap as run_task (docs/parity-and-gaps.md); hot accepts, cold 404 until the dispatcher PR. (declared, not yet executed) |
-| `/insert/datadog/` | `app/vlinsert/main.go` | vl.insert.datadog_logs.count, vl.insert.datadog_validate.status | ✅ native, verified (declared, not yet executed) |
-| `/insert/datadog/api/v1/validate` | `app/vlinsert/datadog/datadog.go` | vl.insert.datadog_validate.status | ✅ native, verified (declared, not yet executed) |
-| `/insert/datadog/api/v2/logs` | `app/vlinsert/datadog/datadog.go` | vl.insert.datadog_logs.count | ✅ native, verified (declared, not yet executed) |
-| `/insert/elasticsearch` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_bare.status | ✅ native, verified (declared, not yet executed) |
-| `/insert/elasticsearch/` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch.count, vl.insert.elasticsearch_bulk.count, vl.insert.elasticsearch_ilm_policy.status, vl.insert.elasticsearch_index_template.status, vl.insert.elasticsearch_ingest.status, vl.insert.elasticsearch_license.status, vl.insert.elasticsearch_logstash.status, vl.insert.elasticsearch_logstash_alt.status, vl.insert.elasticsearch_nodes.status, vl.insert.elasticsearch_rollup.status | ✅ native, verified (declared, not yet executed) |
-| `/insert/elasticsearch/_bulk` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_bulk.count | ✅ native, verified (declared, not yet executed) |
-| `/insert/elasticsearch/_ilm/policy` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_ilm_policy.status | ✅ native, verified (declared, not yet executed) |
-| `/insert/elasticsearch/_index_template` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_index_template.status | ✅ native, verified (declared, not yet executed) |
-| `/insert/elasticsearch/_ingest` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_ingest.status | ✅ native, verified (declared, not yet executed) |
-| `/insert/elasticsearch/_license` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_license.status | ✅ native, verified (declared, not yet executed) |
-| `/insert/elasticsearch/_logstash` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_logstash.status | ✅ native, verified (declared, not yet executed) |
-| `/insert/elasticsearch/_nodes` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_nodes.status | ✅ native, verified (declared, not yet executed) |
-| `/insert/elasticsearch/_rollup` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_rollup.status | ✅ native, verified (declared, not yet executed) |
-| `/insert/elasticsearch/logstash` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_logstash_alt.status | ✅ native, verified (declared, not yet executed) |
-| `/insert/journald/` | `app/vlinsert/main.go` | vl.insert.journald.count | ✅ native, verified (declared, not yet executed) |
-| `/insert/journald/upload` | `app/vlinsert/journald/journald.go` | vl.insert.journald.count | ✅ native, verified (declared, not yet executed) |
-| `/insert/jsonline` | `app/vlinsert/main.go` | vl.insert.jsonline.count | ✅ native, verified (declared, not yet executed) |
-| `/insert/loki/` | `app/vlinsert/main.go` | vl.insert.loki_push_json.count, vl.insert.loki_push_protobuf.count, vl.insert.loki_ready.status | ✅ native, verified (declared, not yet executed) |
-| `/insert/loki/api/v1/push` | `app/vlinsert/loki/loki.go` | vl.insert.loki_push_json.count, vl.insert.loki_push_protobuf.count | ✅ native, verified (declared, not yet executed) |
-| `/insert/loki/ready` | `app/vlinsert/loki/loki.go` | vl.insert.loki_ready.status | ✅ native, verified (declared, not yet executed) |
-| `/insert/multitenant/native` | `app/vlinsert/main.go` | vl.insert.multitenant_native.count, vt.insert.multitenant_native.differ | 🔁 differs: Arrives with the VT 0.11.0 bump alongside /insert/native; pinned 0.9.2 lacks both. Re-check after the bump (docs/parity-and-gaps.md). (declared, not yet executed) |
-| `/insert/native` | `app/vlinsert/main.go` | vl.insert.native.count, vt.insert.native.differ | 🔁 differs: Native binary ingest arrives with the VT 0.11.0 bump; pinned 0.9.2 has no /insert/native route. Re-check after the bump (docs/parity-and-gaps.md). (declared, not yet executed) |
-| `/insert/opentelemetry/` | `app/vlinsert/main.go` | vl.insert.otel_dispatch.status, vl.insert.otel_logs.count, vt.insert.otel_traces_json.count, vt.insert.otel_traces_protobuf.count | ✅ native, verified (declared, not yet executed) |
-| `/insert/opentelemetry/v1/logs` | `app/vlinsert/opentelemetry/opentelemetry.go` | vl.insert.otel_logs.count | ✅ native, verified (declared, not yet executed) |
-| `/insert/opentelemetry/v1/traces` | `app/vtinsert/opentelemetry/otlphttp.go` | vt.insert.otel_traces_json.count, vt.insert.otel_traces_protobuf.count | ✅ native, verified (declared, not yet executed) |
-| `/insert/ready` | `app/vlinsert/main.go` | vl.insert.ready.status, vt.insert.ready.status | ✅ native, verified (declared, not yet executed) |
-| `/insert/splunk/` | `app/vlinsert/main.go` | vl.insert.splunk_event.count, vl.insert.splunk_event_v1.count, vl.insert.splunk_health.status | ✅ native, verified (declared, not yet executed) |
-| `/insert/splunk/services/collector/event` | `app/vlinsert/splunk/splunk.go` | vl.insert.splunk_event.count | ✅ native, verified (declared, not yet executed) |
-| `/insert/splunk/services/collector/event/1.0` | `app/vlinsert/splunk/splunk.go` | vl.insert.splunk_event_v1.count | ✅ native, verified (declared, not yet executed) |
-| `/insert/splunk/services/collector/health` | `app/vlinsert/splunk/splunk.go` | vl.insert.splunk_health.status | ✅ native, verified (declared, not yet executed) |
-| `/internal/delete/active_tasks` | `app/vlselect/internalselect/internalselect.go` | vl.internal.delete_active_tasks.status | ✅ native, verified (declared, not yet executed) |
-| `/internal/delete/run_task` | `app/vlselect/internalselect/internalselect.go` | vl.internal.delete_run_task.status | ✅ native, verified (declared, not yet executed) |
-| `/internal/delete/stop_task` | `app/vlselect/internalselect/internalselect.go` | vl.internal.delete_stop_task.status | ✅ native, verified (declared, not yet executed) |
-| `/internal/force_flush` | `app/vlstorage/main.go` | vl.internal.force_flush.unsupported, vt.internal.force_flush.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
-| `/internal/force_merge` | `app/vlstorage/main.go` | vl.internal.force_merge.unsupported, vt.internal.force_merge.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
-| `/internal/insert` | `app/vlinsert/main.go` | vl.internal.insert.count, vt.internal.insert.count | ✅ native, verified (declared, not yet executed) |
+| `/api/v1/validate` | `app/vlinsert/datadog/datadog.go` | vl.insert.api_v1_validate.status | 🟡 declared, not yet executed |
+| `/api/v2/logs` | `app/vlinsert/datadog/datadog.go` | vl.insert.api_v2_logs.count | 🟡 declared, not yet executed |
+| `/delete/active_tasks` | `app/vtselect/logsql.go` | vt.delete.active_tasks.differ | 🔁 differs: Same dispatcher gap as run_task/stop_task (docs/parity-and-gaps.md); hot returns the task list, cold 404 until the dispatcher PR. (declared, not yet executed) |
+| `/delete/active_tasks` | `app/vlselect/main.go` | vl.delete.active_tasks.differ | 🔁 differs: Same dispatcher gap as run_task/stop_task (docs/parity-and-gaps.md); hot returns the task list, cold 404 until the dispatcher PR. (declared, not yet executed) |
+| `/delete/run_task` | `app/vlselect/main.go` | vl.delete.run_task.differ | 🔁 differs: Delete-task lifecycle isn't wired into the LH dispatcher (docs/parity-and-gaps.md); hot accepts, cold 404 until the dispatcher PR. (declared, not yet executed) |
+| `/delete/run_task` | `app/vtselect/logsql.go` | vt.delete.run_task.differ | 🔁 differs: Delete-task lifecycle isn't wired into the LH dispatcher (docs/parity-and-gaps.md); hot accepts, cold 404 until the dispatcher PR. (declared, not yet executed) |
+| `/delete/stop_task` | `app/vlselect/main.go` | vl.delete.stop_task.differ | 🔁 differs: Same dispatcher gap as run_task (docs/parity-and-gaps.md); hot accepts, cold 404 until the dispatcher PR. (declared, not yet executed) |
+| `/delete/stop_task` | `app/vtselect/logsql.go` | vt.delete.stop_task.differ | 🔁 differs: Same dispatcher gap as run_task (docs/parity-and-gaps.md); hot accepts, cold 404 until the dispatcher PR. (declared, not yet executed) |
+| `/insert/datadog/` | `app/vlinsert/main.go` | vl.insert.datadog_logs.count, vl.insert.datadog_validate.status | 🟡 declared, not yet executed |
+| `/insert/datadog/api/v1/validate` | `app/vlinsert/datadog/datadog.go` | vl.insert.datadog_validate.status | 🟡 declared, not yet executed |
+| `/insert/datadog/api/v2/logs` | `app/vlinsert/datadog/datadog.go` | vl.insert.datadog_logs.count | 🟡 declared, not yet executed |
+| `/insert/elasticsearch` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_bare.status | 🟡 declared, not yet executed |
+| `/insert/elasticsearch/` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch.count, vl.insert.elasticsearch_bulk.count, vl.insert.elasticsearch_ilm_policy.status, vl.insert.elasticsearch_index_template.status, vl.insert.elasticsearch_ingest.status, vl.insert.elasticsearch_license.status, vl.insert.elasticsearch_logstash.status, vl.insert.elasticsearch_logstash_alt.status, vl.insert.elasticsearch_nodes.status, vl.insert.elasticsearch_rollup.status | 🟡 declared, not yet executed |
+| `/insert/elasticsearch/_bulk` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_bulk.count | 🟡 declared, not yet executed |
+| `/insert/elasticsearch/_ilm/policy` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_ilm_policy.status | 🟡 declared, not yet executed |
+| `/insert/elasticsearch/_index_template` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_index_template.status | 🟡 declared, not yet executed |
+| `/insert/elasticsearch/_ingest` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_ingest.status | 🟡 declared, not yet executed |
+| `/insert/elasticsearch/_license` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_license.status | 🟡 declared, not yet executed |
+| `/insert/elasticsearch/_logstash` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_logstash.status | 🟡 declared, not yet executed |
+| `/insert/elasticsearch/_nodes` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_nodes.status | 🟡 declared, not yet executed |
+| `/insert/elasticsearch/_rollup` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_rollup.status | 🟡 declared, not yet executed |
+| `/insert/elasticsearch/logstash` | `app/vlinsert/elasticsearch/elasticsearch.go` | vl.insert.elasticsearch_logstash_alt.status | 🟡 declared, not yet executed |
+| `/insert/journald/` | `app/vlinsert/main.go` | vl.insert.journald.count | 🟡 declared, not yet executed |
+| `/insert/journald/upload` | `app/vlinsert/journald/journald.go` | vl.insert.journald.count | 🟡 declared, not yet executed |
+| `/insert/jsonline` | `app/vlinsert/main.go` | vl.insert.jsonline.count | 🟡 declared, not yet executed |
+| `/insert/loki/` | `app/vlinsert/main.go` | vl.insert.loki_push_json.count, vl.insert.loki_push_protobuf.count, vl.insert.loki_ready.status | 🟡 declared, not yet executed |
+| `/insert/loki/api/v1/push` | `app/vlinsert/loki/loki.go` | vl.insert.loki_push_json.count, vl.insert.loki_push_protobuf.count | 🟡 declared, not yet executed |
+| `/insert/loki/ready` | `app/vlinsert/loki/loki.go` | vl.insert.loki_ready.status | 🟡 declared, not yet executed |
+| `/insert/multitenant/native` | `app/vlinsert/main.go` | vl.insert.multitenant_native.count | 🟡 declared, not yet executed |
+| `/insert/native` | `app/vlinsert/main.go` | vl.insert.native.count | 🟡 declared, not yet executed |
+| `/insert/opentelemetry/` | `app/vlinsert/main.go` | vl.insert.otel_dispatch.status, vl.insert.otel_logs.count | 🟡 declared, not yet executed |
+| `/insert/opentelemetry/` | `app/vtinsert/main.go` | vt.insert.otel_traces_json.count, vt.insert.otel_traces_protobuf.count | 🟡 declared, not yet executed |
+| `/insert/opentelemetry/v1/logs` | `app/vlinsert/opentelemetry/opentelemetry.go` | vl.insert.otel_logs.count | 🟡 declared, not yet executed |
+| `/insert/opentelemetry/v1/traces` | `app/vtinsert/opentelemetry/otlphttp.go` | vt.insert.otel_traces_json.count, vt.insert.otel_traces_protobuf.count | 🟡 declared, not yet executed |
+| `/insert/ready` | `app/vlinsert/main.go` | vl.insert.ready.status | 🟡 declared, not yet executed |
+| `/insert/ready` | `app/vtinsert/main.go` | vt.insert.ready.status | 🟡 declared, not yet executed |
+| `/insert/splunk/` | `app/vlinsert/main.go` | vl.insert.splunk_event.count, vl.insert.splunk_event_v1.count, vl.insert.splunk_health.status | 🟡 declared, not yet executed |
+| `/insert/splunk/services/collector/event` | `app/vlinsert/splunk/splunk.go` | vl.insert.splunk_event.count | 🟡 declared, not yet executed |
+| `/insert/splunk/services/collector/event/1.0` | `app/vlinsert/splunk/splunk.go` | vl.insert.splunk_event_v1.count | 🟡 declared, not yet executed |
+| `/insert/splunk/services/collector/health` | `app/vlinsert/splunk/splunk.go` | vl.insert.splunk_health.status | 🟡 declared, not yet executed |
+| `/internal/delete/active_tasks` | `app/vlselect/internalselect/internalselect.go` | vl.internal.delete_active_tasks.status | 🟡 declared, not yet executed |
+| `/internal/delete/active_tasks` | `app/vtselect/internalselect/internalselect.go` | vt.internal.delete_active_tasks.status | 🟡 declared, not yet executed |
+| `/internal/delete/run_task` | `app/vlselect/internalselect/internalselect.go` | vl.internal.delete_run_task.status | 🟡 declared, not yet executed |
+| `/internal/delete/run_task` | `app/vtselect/internalselect/internalselect.go` | vt.internal.delete_run_task.status | 🟡 declared, not yet executed |
+| `/internal/delete/stop_task` | `app/vlselect/internalselect/internalselect.go` | vl.internal.delete_stop_task.status | 🟡 declared, not yet executed |
+| `/internal/delete/stop_task` | `app/vtselect/internalselect/internalselect.go` | vt.internal.delete_stop_task.status | 🟡 declared, not yet executed |
+| `/internal/force_flush` | `app/vlstorage/main.go` | vl.internal.force_flush.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
+| `/internal/force_flush` | `app/vtstorage/main.go` | vt.internal.force_flush.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
+| `/internal/force_merge` | `app/vlstorage/main.go` | vl.internal.force_merge.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
+| `/internal/force_merge` | `app/vtstorage/main.go` | vt.internal.force_merge.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
+| `/internal/insert` | `app/vlinsert/main.go` | vl.internal.insert.count | 🟡 declared, not yet executed |
+| `/internal/insert` | `app/vtinsert/main.go` | vt.internal.insert.count | 🟡 declared, not yet executed |
 | `/internal/log_new_streams` | `app/vlstorage/main.go` | vl.internal.log_new_streams.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
+| `/internal/log_new_streams` | `app/vtstorage/main.go` | vt.internal.log_new_streams.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
 | `/internal/partition/attach` | `app/vlstorage/main.go` | vl.internal.partition_attach.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
+| `/internal/partition/attach` | `app/vtstorage/main.go` | vt.internal.partition_attach.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
 | `/internal/partition/detach` | `app/vlstorage/main.go` | vl.internal.partition_detach.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
+| `/internal/partition/detach` | `app/vtstorage/main.go` | vt.internal.partition_detach.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
+| `/internal/partition/list` | `app/vtstorage/main.go` | vt.internal.partition_list.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
 | `/internal/partition/list` | `app/vlstorage/main.go` | vl.internal.partition_list.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
+| `/internal/partition/snapshot/create` | `app/vtstorage/main.go` | vt.internal.partition_snapshot_create.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
 | `/internal/partition/snapshot/create` | `app/vlstorage/main.go` | vl.internal.partition_snapshot_create.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
+| `/internal/partition/snapshot/delete` | `app/vtstorage/main.go` | vt.internal.partition_snapshot_delete.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
 | `/internal/partition/snapshot/delete` | `app/vlstorage/main.go` | vl.internal.partition_snapshot_delete.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
+| `/internal/partition/snapshot/delete_stale` | `app/vtstorage/main.go` | vt.internal.partition_snapshot_delete_stale.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
 | `/internal/partition/snapshot/delete_stale` | `app/vlstorage/main.go` | vl.internal.partition_snapshot_delete_stale.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
+| `/internal/partition/snapshot/list` | `app/vtstorage/main.go` | vt.internal.partition_snapshot_list.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
 | `/internal/partition/snapshot/list` | `app/vlstorage/main.go` | vl.internal.partition_snapshot_list.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
-| `/internal/select/field_names` | `app/vlselect/internalselect/internalselect.go` | vl.internal.select_field_names.status, vt.internal.select_field_names.status | ✅ native, verified (declared, not yet executed) |
-| `/internal/select/field_values` | `app/vlselect/internalselect/internalselect.go` | vl.internal.select_field_values.status, vt.internal.select_field_values.status | ✅ native, verified (declared, not yet executed) |
-| `/internal/select/query` | `app/vlselect/internalselect/internalselect.go` | vl.internal.select_query.status, vt.internal.select_query.status | ✅ native, verified (declared, not yet executed) |
-| `/internal/select/stream_field_names` | `app/vlselect/internalselect/internalselect.go` | vl.internal.select_stream_field_names.status, vt.internal.select_stream_field_names.status | ✅ native, verified (declared, not yet executed) |
-| `/internal/select/stream_field_values` | `app/vlselect/internalselect/internalselect.go` | vl.internal.select_stream_field_values.status, vt.internal.select_stream_field_values.status | ✅ native, verified (declared, not yet executed) |
-| `/internal/select/stream_ids` | `app/vlselect/internalselect/internalselect.go` | vl.internal.select_stream_ids.status, vt.internal.select_stream_ids.status | ✅ native, verified (declared, not yet executed) |
-| `/internal/select/streams` | `app/vlselect/internalselect/internalselect.go` | vl.internal.select_streams.status, vt.internal.select_streams.status | ✅ native, verified (declared, not yet executed) |
-| `/internal/select/tenant_ids` | `app/vlselect/internalselect/internalselect.go` | vl.internal.select_tenant_ids.status, vt.internal.select_tenant_ids.status | ✅ native, verified (declared, not yet executed) |
-| `/select/buildinfo` | `app/vlselect/main.go` | vl.select.buildinfo.basic, vt.select.buildinfo.basic | 🔁 differs: Neither binary mounts the upstream select dispatcher yet; hot returns JSON, cold 404 until the dispatcher PR. See docs/parity-and-gaps.md. (declared, not yet executed) |
-| `/select/jaeger/` | `app/vtselect/main.go` | vt.jaeger.dependencies.basic, vt.jaeger.operations.basic, vt.jaeger.services.basic, vt.jaeger.traces_by_id.basic, vt.jaeger.traces_search.by_service, vt.jaeger.traces_search.by_service_and_tag, vt.jaeger.traces_search.min_duration, vt.select.jaeger_dispatch.status, vt.jaeger.services.bare_shim, vt.jaeger.traces_search.bare_shim | ✅ native, verified (declared, not yet executed) |
-| `/select/jaeger/api/dependencies` | `app/vtselect/traces/jaeger/jaeger.go` | vt.jaeger.dependencies.basic | ✅ native, verified (declared, not yet executed) |
-| `/select/jaeger/api/services` | `app/vtselect/traces/jaeger/jaeger.go` | vt.jaeger.services.basic, vt.jaeger.services.bare_shim | ✅ native, verified (declared, not yet executed) |
-| `/select/jaeger/api/services/` | `app/vtselect/traces/jaeger/jaeger.go` | vt.jaeger.operations.basic | ✅ native, verified (declared, not yet executed) |
-| `/select/jaeger/api/traces` | `app/vtselect/traces/jaeger/jaeger.go` | vt.jaeger.traces_search.by_service, vt.jaeger.traces_search.by_service_and_tag, vt.jaeger.traces_search.min_duration, vt.jaeger.traces_search.bare_shim | ✅ native, verified (declared, not yet executed) |
-| `/select/jaeger/api/traces/` | `app/vtselect/traces/jaeger/jaeger.go` | vt.jaeger.traces_by_id.basic | ✅ native, verified (declared, not yet executed) |
-| `/select/logsql/facets` | `app/vlselect/main.go` | vl.select.facets.basic, vt.select.logsql_facets.basic | ✅ native, verified (declared, not yet executed) |
-| `/select/logsql/field_names` | `app/vlselect/main.go` | vl.select.field_names.basic, vt.select.logsql_field_names.basic | ✅ native, verified (declared, not yet executed) |
-| `/select/logsql/field_values` | `app/vlselect/main.go` | vl.select.field_values.limit, vl.select.field_values.nolimit, vt.select.logsql_field_values.basic | 🔁 differs: LH truncates in map order; hot returns top-hits sorted (docs/parity-and-gaps.md #A6). Flips to pass in the MergeValuesWithHits fix. (declared, not yet executed) |
-| `/select/logsql/hits` | `app/vlselect/main.go` | vl.select.hits.basic, vt.select.logsql_hits.basic | ✅ native, verified (declared, not yet executed) |
-| `/select/logsql/query` | `app/vlselect/main.go` | vl.select.query.bad_query, vl.select.query.wildcard, vt.select.logsql_query.wildcard, lh.shim.time_params_ms | 🔁 differs: The LH shim also accepts start/end as raw millisecond-epoch integers (matching Tempo's convention); hot VL/VT only accept RFC3339 or relative durations. Documented, not a bug — see docs/parity-and-gaps.md. (declared, not yet executed) |
-| `/select/logsql/query_time_range` | `app/vlselect/main.go` | vl.select.query_time_range.basic, vt.select.logsql_query_time_range.basic | ✅ native, verified (declared, not yet executed) |
-| `/select/logsql/stats_query` | `app/vlselect/main.go` | vl.select.stats_query.basic, vt.select.logsql_stats_query.basic | ✅ native, verified (declared, not yet executed) |
-| `/select/logsql/stats_query_range` | `app/vlselect/main.go` | vl.select.stats_query_range.basic, vt.select.logsql_stats_query_range.basic | ✅ native, verified (declared, not yet executed) |
-| `/select/logsql/stream_field_names` | `app/vlselect/main.go` | vl.select.stream_field_names.basic, vt.select.logsql_stream_field_names.basic | ✅ native, verified (declared, not yet executed) |
-| `/select/logsql/stream_field_values` | `app/vlselect/main.go` | vl.select.stream_field_values.basic, vt.select.logsql_stream_field_values.basic | ✅ native, verified (declared, not yet executed) |
-| `/select/logsql/stream_ids` | `app/vlselect/main.go` | vl.select.stream_ids.basic, vt.select.logsql_stream_ids.basic | ✅ native, verified (declared, not yet executed) |
-| `/select/logsql/streams` | `app/vlselect/main.go` | vl.select.streams.basic, vt.select.logsql_streams.basic | ✅ native, verified (declared, not yet executed) |
-| `/select/logsql/tail` | `app/vlselect/main.go` | vl.select.tail.native, vl.select.tail.unsupported, vt.select.tail.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
+| `/internal/select/field_names` | `app/vtselect/internalselect/internalselect.go` | vt.internal.select_field_names.status | 🟡 declared, not yet executed |
+| `/internal/select/field_names` | `app/vlselect/internalselect/internalselect.go` | vl.internal.select_field_names.status | 🟡 declared, not yet executed |
+| `/internal/select/field_values` | `app/vtselect/internalselect/internalselect.go` | vt.internal.select_field_values.status | 🟡 declared, not yet executed |
+| `/internal/select/field_values` | `app/vlselect/internalselect/internalselect.go` | vl.internal.select_field_values.status | 🟡 declared, not yet executed |
+| `/internal/select/query` | `app/vtselect/internalselect/internalselect.go` | vt.internal.select_query.status | 🟡 declared, not yet executed |
+| `/internal/select/query` | `app/vlselect/internalselect/internalselect.go` | vl.internal.select_query.status | 🟡 declared, not yet executed |
+| `/internal/select/stream_field_names` | `app/vlselect/internalselect/internalselect.go` | vl.internal.select_stream_field_names.status | 🟡 declared, not yet executed |
+| `/internal/select/stream_field_names` | `app/vtselect/internalselect/internalselect.go` | vt.internal.select_stream_field_names.status | 🟡 declared, not yet executed |
+| `/internal/select/stream_field_values` | `app/vlselect/internalselect/internalselect.go` | vl.internal.select_stream_field_values.status | 🟡 declared, not yet executed |
+| `/internal/select/stream_field_values` | `app/vtselect/internalselect/internalselect.go` | vt.internal.select_stream_field_values.status | 🟡 declared, not yet executed |
+| `/internal/select/stream_ids` | `app/vlselect/internalselect/internalselect.go` | vl.internal.select_stream_ids.status | 🟡 declared, not yet executed |
+| `/internal/select/stream_ids` | `app/vtselect/internalselect/internalselect.go` | vt.internal.select_stream_ids.status | 🟡 declared, not yet executed |
+| `/internal/select/streams` | `app/vtselect/internalselect/internalselect.go` | vt.internal.select_streams.status | 🟡 declared, not yet executed |
+| `/internal/select/streams` | `app/vlselect/internalselect/internalselect.go` | vl.internal.select_streams.status | 🟡 declared, not yet executed |
+| `/internal/select/tenant_ids` | `app/vtselect/internalselect/internalselect.go` | vt.internal.select_tenant_ids.status | 🟡 declared, not yet executed |
+| `/internal/select/tenant_ids` | `app/vlselect/internalselect/internalselect.go` | vl.internal.select_tenant_ids.status | 🟡 declared, not yet executed |
+| `/select/buildinfo` | `app/vtselect/main.go` | vt.select.buildinfo.basic | 🔁 differs: Neither binary mounts the upstream select dispatcher yet; hot returns JSON, cold 404 until the dispatcher PR. See docs/parity-and-gaps.md. (declared, not yet executed) |
+| `/select/buildinfo` | `app/vlselect/main.go` | vl.select.buildinfo.basic | 🔁 differs: Neither binary mounts the upstream select dispatcher yet; hot returns JSON, cold 404 until the dispatcher PR. See docs/parity-and-gaps.md. (declared, not yet executed) |
+| `/select/jaeger/` | `app/vtselect/main.go` | vt.jaeger.dependencies.basic, vt.jaeger.operations.basic, vt.jaeger.services.basic, vt.jaeger.traces_by_id.basic, vt.jaeger.traces_search.by_service, vt.jaeger.traces_search.by_service_and_tag, vt.jaeger.traces_search.min_duration, vt.select.jaeger_dispatch.status, vt.jaeger.services.bare_shim, vt.jaeger.traces_search.bare_shim | 🟡 declared, not yet executed |
+| `/select/jaeger/api/dependencies` | `app/vtselect/traces/jaeger/jaeger.go` | vt.jaeger.dependencies.basic | 🟡 declared, not yet executed |
+| `/select/jaeger/api/services` | `app/vtselect/traces/jaeger/jaeger.go` | vt.jaeger.services.basic, vt.jaeger.services.bare_shim | 🟡 declared, not yet executed |
+| `/select/jaeger/api/services/` | `app/vtselect/traces/jaeger/jaeger.go` | vt.jaeger.operations.basic | 🟡 declared, not yet executed |
+| `/select/jaeger/api/traces` | `app/vtselect/traces/jaeger/jaeger.go` | vt.jaeger.traces_search.by_service, vt.jaeger.traces_search.by_service_and_tag, vt.jaeger.traces_search.min_duration, vt.jaeger.traces_search.bare_shim | 🟡 declared, not yet executed |
+| `/select/jaeger/api/traces/` | `app/vtselect/traces/jaeger/jaeger.go` | vt.jaeger.traces_by_id.basic | 🟡 declared, not yet executed |
+| `/select/logsql/facets` | `app/vlselect/main.go` | vl.select.facets.basic | 🟡 declared, not yet executed |
+| `/select/logsql/facets` | `app/vtselect/logsql.go` | vt.select.logsql_facets.basic | 🟡 declared, not yet executed |
+| `/select/logsql/field_names` | `app/vlselect/main.go` | vl.select.field_names.basic | 🟡 declared, not yet executed |
+| `/select/logsql/field_names` | `app/vtselect/logsql.go` | vt.select.logsql_field_names.basic | 🟡 declared, not yet executed |
+| `/select/logsql/field_values` | `app/vlselect/main.go` | vl.select.field_values.limit, vl.select.field_values.nolimit | 🔁 differs: LH truncates in map order; hot returns top-hits sorted (docs/parity-and-gaps.md #A6). Flips to pass in the MergeValuesWithHits fix. (declared, not yet executed) |
+| `/select/logsql/field_values` | `app/vtselect/logsql.go` | vt.select.logsql_field_values.basic | 🟡 declared, not yet executed |
+| `/select/logsql/hits` | `app/vlselect/main.go` | vl.select.hits.basic | 🟡 declared, not yet executed |
+| `/select/logsql/hits` | `app/vtselect/logsql.go` | vt.select.logsql_hits.basic | 🟡 declared, not yet executed |
+| `/select/logsql/query` | `app/vlselect/main.go` | vl.select.query.bad_query, vl.select.query.wildcard, lh.shim.time_params_ms | 🔁 differs: The LH shim also accepts start/end as raw millisecond-epoch integers (matching Tempo's convention); hot VL/VT only accept RFC3339 or relative durations. Documented, not a bug — see docs/parity-and-gaps.md. (declared, not yet executed) |
+| `/select/logsql/query` | `app/vtselect/logsql.go` | vt.select.logsql_query.wildcard, lh.shim.time_params_ms | 🔁 differs: The LH shim also accepts start/end as raw millisecond-epoch integers (matching Tempo's convention); hot VL/VT only accept RFC3339 or relative durations. Documented, not a bug — see docs/parity-and-gaps.md. (declared, not yet executed) |
+| `/select/logsql/query_time_range` | `app/vlselect/main.go` | vl.select.query_time_range.basic | 🟡 declared, not yet executed |
+| `/select/logsql/query_time_range` | `app/vtselect/logsql.go` | vt.select.logsql_query_time_range.basic | 🟡 declared, not yet executed |
+| `/select/logsql/stats_query` | `app/vlselect/main.go` | vl.select.stats_query.basic | 🟡 declared, not yet executed |
+| `/select/logsql/stats_query` | `app/vtselect/logsql.go` | vt.select.logsql_stats_query.basic | 🟡 declared, not yet executed |
+| `/select/logsql/stats_query_range` | `app/vlselect/main.go` | vl.select.stats_query_range.basic | 🟡 declared, not yet executed |
+| `/select/logsql/stats_query_range` | `app/vtselect/logsql.go` | vt.select.logsql_stats_query_range.basic | 🟡 declared, not yet executed |
+| `/select/logsql/stream_field_names` | `app/vtselect/logsql.go` | vt.select.logsql_stream_field_names.basic | 🟡 declared, not yet executed |
+| `/select/logsql/stream_field_names` | `app/vlselect/main.go` | vl.select.stream_field_names.basic | 🟡 declared, not yet executed |
+| `/select/logsql/stream_field_values` | `app/vlselect/main.go` | vl.select.stream_field_values.basic | 🟡 declared, not yet executed |
+| `/select/logsql/stream_field_values` | `app/vtselect/logsql.go` | vt.select.logsql_stream_field_values.basic | 🟡 declared, not yet executed |
+| `/select/logsql/stream_ids` | `app/vlselect/main.go` | vl.select.stream_ids.basic | 🟡 declared, not yet executed |
+| `/select/logsql/stream_ids` | `app/vtselect/logsql.go` | vt.select.logsql_stream_ids.basic | 🟡 declared, not yet executed |
+| `/select/logsql/streams` | `app/vtselect/logsql.go` | vt.select.logsql_streams.basic | 🟡 declared, not yet executed |
+| `/select/logsql/streams` | `app/vlselect/main.go` | vl.select.streams.basic | 🟡 declared, not yet executed |
+| `/select/logsql/tail` | `app/vlselect/main.go` | vl.select.tail.native, vl.select.tail.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
+| `/select/logsql/tail` | `app/vtselect/main.go` | vt.select.tail.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
 | `/select/tempo/` | `app/vtselect/main.go` | vt.select.tempo_dispatch.status, vt.tempo.echo.basic, vt.tempo.metrics_instant.absent, vt.tempo.metrics_query_range.route, vt.tempo.search.duration_filter, vt.tempo.search.empty_query, vt.tempo.search.service_name, vt.tempo.search.span_scope, vt.tempo.search.spansets_full, vt.tempo.search_v2.absent, vt.tempo.traces_v1.by_id, vt.tempo.traces_v2.by_id, vt.tempo.traces_v2.protobuf, vt.tempo.v2_search_tag_values.basic, vt.tempo.v2_search_tag_values.span_kind_strings, vt.tempo.v2_search_tags.basic, vt.tempo.v2_search_tags.intrinsic_scope, lh.shim.tempo_search_empty_q | ⛔ absent upstream and on LH (declared, not yet executed) |
-| `/select/tempo/api/echo` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.echo.basic | ✅ native, verified (declared, not yet executed) |
-| `/select/tempo/api/metrics/query_range` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.metrics_query_range.route | ✅ native, verified (declared, not yet executed) |
+| `/select/tempo/api/echo` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.echo.basic | 🟡 declared, not yet executed |
+| `/select/tempo/api/metrics/query_range` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.metrics_query_range.route | 🟡 declared, not yet executed |
 | `/select/tempo/api/search` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.search.duration_filter, vt.tempo.search.empty_query, vt.tempo.search.service_name, vt.tempo.search.span_scope, vt.tempo.search.spansets_full, lh.shim.tempo_search_empty_q | 🔁 differs: The full spanSets (multiple matched spans per trace, with match highlighting) response shape arrives in VT 0.9.4; pinned 0.9.2 returns the legacy single-spanSet shape. Re-check after the version bump (docs/parity-and-gaps.md). (declared, not yet executed) |
 | `/select/tempo/api/v2/search/tag/` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.v2_search_tag_values.basic, vt.tempo.v2_search_tag_values.span_kind_strings | 🔁 differs: VT 0.10.0 returns span kind values as strings (SPAN_KIND_SERVER, ...) instead of the old ints; pinned 0.9.2 still returns ints. Re-check after the version bump (docs/parity-and-gaps.md). (declared, not yet executed) |
 | `/select/tempo/api/v2/search/tags` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.v2_search_tags.basic, vt.tempo.v2_search_tags.intrinsic_scope | 🔁 differs: scope=intrinsic filtering arrives in VT 0.9.4; absent at the pinned 0.9.2. Re-check after the version bump (docs/parity-and-gaps.md). (declared, not yet executed) |
 | `/select/tempo/api/v2/traces/` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.traces_v2.by_id, vt.tempo.traces_v2.protobuf | 🔁 differs: Protobuf-encoded trace responses (Accept: application/protobuf) arrive in VT 0.9.3; pinned 0.9.2 only serves JSON. Re-check after the version bump (docs/parity-and-gaps.md). (declared, not yet executed) |
-| `/select/tenant_ids` | `app/vlselect/main.go` | vl.select.tenant_ids.basic, vt.select.tenant_ids.basic | ✅ native, verified (declared, not yet executed) |
-| `/select/vmui` | `app/vlselect/main.go` | vl.select.vmui.basic, vt.select.vmui.basic | ✅ native, verified (declared, not yet executed) |
-| `/select/vmui/` | `app/vlselect/main.go` | vl.select.vmui_slash.basic, vt.select.vmui_slash.basic | ✅ native, verified (declared, not yet executed) |
-| `/services/collector/` | `app/vlinsert/main.go` | vl.insert.services_collector.status, vl.insert.services_collector_event.count, vl.insert.services_collector_event_v1.count, vl.insert.services_collector_health.status | ✅ native, verified (declared, not yet executed) |
-| `/services/collector/event` | `app/vlinsert/splunk/splunk.go` | vl.insert.services_collector_event.count | ✅ native, verified (declared, not yet executed) |
-| `/services/collector/event/1.0` | `app/vlinsert/splunk/splunk.go` | vl.insert.services_collector_event_v1.count | ✅ native, verified (declared, not yet executed) |
-| `/services/collector/health` | `app/vlinsert/splunk/splunk.go` | vl.insert.services_collector_health.status | ✅ native, verified (declared, not yet executed) |
+| `/select/tenant_ids` | `app/vlselect/main.go` | vl.select.tenant_ids.basic | 🟡 declared, not yet executed |
+| `/select/tenant_ids` | `app/vtselect/logsql.go` | vt.select.tenant_ids.basic | 🟡 declared, not yet executed |
+| `/select/vmui` | `app/vlselect/main.go` | vl.select.vmui.basic | 🟡 declared, not yet executed |
+| `/select/vmui` | `app/vtselect/main.go` | vt.select.vmui.basic | 🟡 declared, not yet executed |
+| `/select/vmui/` | `app/vlselect/main.go` | vl.select.vmui_slash.basic | 🟡 declared, not yet executed |
+| `/select/vmui/` | `app/vtselect/main.go` | vt.select.vmui_slash.basic | 🟡 declared, not yet executed |
+| `/services/collector/` | `app/vlinsert/main.go` | vl.insert.services_collector.status, vl.insert.services_collector_event.count, vl.insert.services_collector_event_v1.count, vl.insert.services_collector_health.status | 🟡 declared, not yet executed |
+| `/services/collector/event` | `app/vlinsert/splunk/splunk.go` | vl.insert.services_collector_event.count | 🟡 declared, not yet executed |
+| `/services/collector/event/1.0` | `app/vlinsert/splunk/splunk.go` | vl.insert.services_collector_event_v1.count | 🟡 declared, not yet executed |
+| `/services/collector/health` | `app/vlinsert/splunk/splunk.go` | vl.insert.services_collector_health.status | 🟡 declared, not yet executed |
 
 ## Upstream pipe (48)
 
@@ -112,52 +156,52 @@ pipe: 48/48 covered by at least one registry row.
 |---|---|---|---|
 | `block_stats` | `lib/logstorage/pipe_block_stats.go` | vl.pipe.block_stats.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
 | `blocks_count` | `lib/logstorage/pipe_blocks_count.go` | vl.pipe.blocks_count.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
-| `collapse_nums` | `lib/logstorage/pipe_collapse_nums.go` | vl.pipe.collapse_nums.basic | ✅ native, verified (declared, not yet executed) |
-| `copy` | `lib/logstorage/pipe_copy.go` | vl.pipe.copy.basic | ✅ native, verified (declared, not yet executed) |
-| `decolorize` | `lib/logstorage/pipe_decolorize.go` | vl.pipe.decolorize.basic | ✅ native, verified (declared, not yet executed) |
-| `delete` | `lib/logstorage/pipe_delete.go` | vl.pipe.delete.basic | ✅ native, verified (declared, not yet executed) |
-| `drop_empty_fields` | `lib/logstorage/pipe_drop_empty_fields.go` | vl.pipe.drop_empty_fields.basic | ✅ native, verified (declared, not yet executed) |
-| `extract` | `lib/logstorage/pipe_extract.go` | vl.pipe.extract.basic | ✅ native, verified (declared, not yet executed) |
-| `extract_regexp` | `lib/logstorage/pipe_extract_regexp.go` | vl.pipe.extract_regexp.basic | ✅ native, verified (declared, not yet executed) |
-| `facets` | `lib/logstorage/pipe_facets.go` | vl.pipe.facets.basic | ✅ native, verified (declared, not yet executed) |
-| `field_names` | `lib/logstorage/pipe_field_names.go` | vl.pipe.field_names.basic | ✅ native, verified (declared, not yet executed) |
-| `field_values` | `lib/logstorage/pipe_field_values.go` | vl.pipe.field_values.basic | ✅ native, verified (declared, not yet executed) |
-| `fields` | `lib/logstorage/pipe_fields.go` | vl.pipe.fields.basic | ✅ native, verified (declared, not yet executed) |
-| `filter` | `lib/logstorage/pipe_filter.go` | vl.pipe.filter.basic | ✅ native, verified (declared, not yet executed) |
-| `first` | `lib/logstorage/pipe_first.go` | vl.pipe.first.basic | ✅ native, verified (declared, not yet executed) |
-| `format` | `lib/logstorage/pipe_format.go` | vl.pipe.format.basic | ✅ native, verified (declared, not yet executed) |
-| `generate_sequence` | `lib/logstorage/pipe_generate_sequence.go` | vl.pipe.generate_sequence.basic | ✅ native, verified (declared, not yet executed) |
-| `hash` | `lib/logstorage/pipe_hash.go` | vl.pipe.hash.basic | ✅ native, verified (declared, not yet executed) |
-| `join` | `lib/logstorage/pipe_join.go` | vl.pipe.join.basic | ✅ native, verified (declared, not yet executed) |
-| `json_array_len` | `lib/logstorage/pipe_json_array_len.go` | vl.pipe.json_array_len.basic | ✅ native, verified (declared, not yet executed) |
-| `last` | `lib/logstorage/pipe_last.go` | vl.pipe.last.basic | ✅ native, verified (declared, not yet executed) |
-| `len` | `lib/logstorage/pipe_len.go` | vl.pipe.len.basic | ✅ native, verified (declared, not yet executed) |
-| `limit` | `lib/logstorage/pipe_limit.go` | vl.pipe.limit.basic, vl.pipe.limit.zero_edge | ✅ native, verified (declared, not yet executed) |
-| `math` | `lib/logstorage/pipe_math.go` | vl.pipe.math.basic | ✅ native, verified (declared, not yet executed) |
-| `offset` | `lib/logstorage/pipe_offset.go` | vl.pipe.offset.basic, vl.pipe.offset.large_edge | ✅ native, verified (declared, not yet executed) |
-| `pack_json` | `lib/logstorage/pipe_pack_json.go` | vl.pipe.pack_json.basic | ✅ native, verified (declared, not yet executed) |
-| `pack_logfmt` | `lib/logstorage/pipe_pack_logfmt.go` | vl.pipe.pack_logfmt.basic | ✅ native, verified (declared, not yet executed) |
+| `collapse_nums` | `lib/logstorage/pipe_collapse_nums.go` | vl.pipe.collapse_nums.basic | 🟡 declared, not yet executed |
+| `copy` | `lib/logstorage/pipe_copy.go` | vl.pipe.copy.basic | 🟡 declared, not yet executed |
+| `decolorize` | `lib/logstorage/pipe_decolorize.go` | vl.pipe.decolorize.basic | 🟡 declared, not yet executed |
+| `delete` | `lib/logstorage/pipe_delete.go` | vl.pipe.delete.basic | 🟡 declared, not yet executed |
+| `drop_empty_fields` | `lib/logstorage/pipe_drop_empty_fields.go` | vl.pipe.drop_empty_fields.basic | 🟡 declared, not yet executed |
+| `extract` | `lib/logstorage/pipe_extract.go` | vl.pipe.extract.basic | 🟡 declared, not yet executed |
+| `extract_regexp` | `lib/logstorage/pipe_extract_regexp.go` | vl.pipe.extract_regexp.basic | 🟡 declared, not yet executed |
+| `facets` | `lib/logstorage/pipe_facets.go` | vl.pipe.facets.basic | 🟡 declared, not yet executed |
+| `field_names` | `lib/logstorage/pipe_field_names.go` | vl.pipe.field_names.basic | 🟡 declared, not yet executed |
+| `field_values` | `lib/logstorage/pipe_field_values.go` | vl.pipe.field_values.basic | 🟡 declared, not yet executed |
+| `fields` | `lib/logstorage/pipe_fields.go` | vl.pipe.fields.basic | 🟡 declared, not yet executed |
+| `filter` | `lib/logstorage/pipe_filter.go` | vl.pipe.filter.basic | 🟡 declared, not yet executed |
+| `first` | `lib/logstorage/pipe_first.go` | vl.pipe.first.basic | 🟡 declared, not yet executed |
+| `format` | `lib/logstorage/pipe_format.go` | vl.pipe.format.basic | 🟡 declared, not yet executed |
+| `generate_sequence` | `lib/logstorage/pipe_generate_sequence.go` | vl.pipe.generate_sequence.basic | 🟡 declared, not yet executed |
+| `hash` | `lib/logstorage/pipe_hash.go` | vl.pipe.hash.basic | 🟡 declared, not yet executed |
+| `join` | `lib/logstorage/pipe_join.go` | vl.pipe.join.basic | 🟡 declared, not yet executed |
+| `json_array_len` | `lib/logstorage/pipe_json_array_len.go` | vl.pipe.json_array_len.basic | 🟡 declared, not yet executed |
+| `last` | `lib/logstorage/pipe_last.go` | vl.pipe.last.basic | 🟡 declared, not yet executed |
+| `len` | `lib/logstorage/pipe_len.go` | vl.pipe.len.basic | 🟡 declared, not yet executed |
+| `limit` | `lib/logstorage/pipe_limit.go` | vl.pipe.limit.basic, vl.pipe.limit.zero_edge | 🟡 declared, not yet executed |
+| `math` | `lib/logstorage/pipe_math.go` | vl.pipe.math.basic | 🟡 declared, not yet executed |
+| `offset` | `lib/logstorage/pipe_offset.go` | vl.pipe.offset.basic, vl.pipe.offset.large_edge | 🟡 declared, not yet executed |
+| `pack_json` | `lib/logstorage/pipe_pack_json.go` | vl.pipe.pack_json.basic | 🟡 declared, not yet executed |
+| `pack_logfmt` | `lib/logstorage/pipe_pack_logfmt.go` | vl.pipe.pack_logfmt.basic | 🟡 declared, not yet executed |
 | `query_stats` | `lib/logstorage/pipe_query_stats.go` | vl.pipe.query_stats.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
-| `rename` | `lib/logstorage/pipe_rename.go` | vl.pipe.rename.basic | ✅ native, verified (declared, not yet executed) |
-| `replace` | `lib/logstorage/pipe_replace.go` | vl.pipe.replace.basic | ✅ native, verified (declared, not yet executed) |
-| `replace_regexp` | `lib/logstorage/pipe_replace_regexp.go` | vl.pipe.replace_regexp.basic | ✅ native, verified (declared, not yet executed) |
-| `running_stats` | `lib/logstorage/pipe_running_stats.go` | vl.pipe.running_stats.basic | ✅ native, verified (declared, not yet executed) |
+| `rename` | `lib/logstorage/pipe_rename.go` | vl.pipe.rename.basic | 🟡 declared, not yet executed |
+| `replace` | `lib/logstorage/pipe_replace.go` | vl.pipe.replace.basic | 🟡 declared, not yet executed |
+| `replace_regexp` | `lib/logstorage/pipe_replace_regexp.go` | vl.pipe.replace_regexp.basic | 🟡 declared, not yet executed |
+| `running_stats` | `lib/logstorage/pipe_running_stats.go` | vl.pipe.running_stats.basic | 🟡 declared, not yet executed |
 | `sample` | `lib/logstorage/pipe_sample.go` | vl.pipe.sample.basic | 🔁 differs: sample keeps every Nth block; block ordering/boundaries differ between hot local storage and cold columnar reads, so the same N can select a different subset. See docs/parity-and-gaps.md. (declared, not yet executed) |
-| `set_stream_fields` | `lib/logstorage/pipe_set_stream_fields.go` | vl.pipe.set_stream_fields.basic | ✅ native, verified (declared, not yet executed) |
-| `sort` | `lib/logstorage/pipe_sort.go` | vl.pipe.sort.basic, vl.pipe.sort.multi_field | ✅ native, verified (declared, not yet executed) |
-| `split` | `lib/logstorage/pipe_split.go` | vl.pipe.split.basic | ✅ native, verified (declared, not yet executed) |
-| `stats` | `lib/logstorage/pipe_stats.go` | vl.pipe.stats.basic | ✅ native, verified (declared, not yet executed) |
+| `set_stream_fields` | `lib/logstorage/pipe_set_stream_fields.go` | vl.pipe.set_stream_fields.basic | 🟡 declared, not yet executed |
+| `sort` | `lib/logstorage/pipe_sort.go` | vl.pipe.sort.basic, vl.pipe.sort.multi_field | 🟡 declared, not yet executed |
+| `split` | `lib/logstorage/pipe_split.go` | vl.pipe.split.basic | 🟡 declared, not yet executed |
+| `stats` | `lib/logstorage/pipe_stats.go` | vl.pipe.stats.basic | 🟡 declared, not yet executed |
 | `stream_context` | `lib/logstorage/pipe_stream_context.go` | vl.pipe.stream_context.basic | 🔁 differs: stream_context resolves surrounding rows via the same subquery hook as union; unresolved on cold. Flips to pass in the subquery-parity fix (docs/parity-and-gaps.md). (declared, not yet executed) |
-| `time_add` | `lib/logstorage/pipe_time_add.go` | vl.pipe.time_add.basic | ✅ native, verified (declared, not yet executed) |
-| `top` | `lib/logstorage/pipe_top.go` | vl.pipe.top.basic, vl.pipe.top.multi_field | ✅ native, verified (declared, not yet executed) |
-| `total_stats` | `lib/logstorage/pipe_total_stats.go` | vl.pipe.total_stats.basic | ✅ native, verified (declared, not yet executed) |
+| `time_add` | `lib/logstorage/pipe_time_add.go` | vl.pipe.time_add.basic | 🟡 declared, not yet executed |
+| `top` | `lib/logstorage/pipe_top.go` | vl.pipe.top.basic, vl.pipe.top.multi_field | 🟡 declared, not yet executed |
+| `total_stats` | `lib/logstorage/pipe_total_stats.go` | vl.pipe.total_stats.basic | 🟡 declared, not yet executed |
 | `union` | `lib/logstorage/pipe_union.go` | vl.pipe.union.basic | 🔁 differs: external query hook runs only initJoinMaps; union subqueries unresolved on cold. Flips to pass once the subquery-parity fix lands (see docs/parity-and-gaps.md). (declared, not yet executed) |
-| `uniq` | `lib/logstorage/pipe_uniq.go` | vl.pipe.uniq.basic | ✅ native, verified (declared, not yet executed) |
-| `unpack_json` | `lib/logstorage/pipe_unpack_json.go` | vl.pipe.unpack_json.basic | ✅ native, verified (declared, not yet executed) |
-| `unpack_logfmt` | `lib/logstorage/pipe_unpack_logfmt.go` | vl.pipe.unpack_logfmt.basic | ✅ native, verified (declared, not yet executed) |
-| `unpack_syslog` | `lib/logstorage/pipe_unpack_syslog.go` | vl.pipe.unpack_syslog.basic | ✅ native, verified (declared, not yet executed) |
-| `unpack_words` | `lib/logstorage/pipe_unpack_words.go` | vl.pipe.unpack_words.basic | ✅ native, verified (declared, not yet executed) |
-| `unroll` | `lib/logstorage/pipe_unroll.go` | vl.pipe.unroll.basic | ✅ native, verified (declared, not yet executed) |
+| `uniq` | `lib/logstorage/pipe_uniq.go` | vl.pipe.uniq.basic | 🟡 declared, not yet executed |
+| `unpack_json` | `lib/logstorage/pipe_unpack_json.go` | vl.pipe.unpack_json.basic | 🟡 declared, not yet executed |
+| `unpack_logfmt` | `lib/logstorage/pipe_unpack_logfmt.go` | vl.pipe.unpack_logfmt.basic | 🟡 declared, not yet executed |
+| `unpack_syslog` | `lib/logstorage/pipe_unpack_syslog.go` | vl.pipe.unpack_syslog.basic | 🟡 declared, not yet executed |
+| `unpack_words` | `lib/logstorage/pipe_unpack_words.go` | vl.pipe.unpack_words.basic | 🟡 declared, not yet executed |
+| `unroll` | `lib/logstorage/pipe_unroll.go` | vl.pipe.unroll.basic | 🟡 declared, not yet executed |
 
 ## Upstream filter (33)
 
@@ -165,39 +209,39 @@ filter: 33/33 covered by at least one registry row.
 
 | filter | Source | Rows | Status |
 |---|---|---|---|
-| `and` | `lib/logstorage/filter_and.go` | vl.filter.and.basic | ✅ native, verified (declared, not yet executed) |
-| `any_case_phrase` | `lib/logstorage/filter_any_case_phrase.go` | vl.filter.any_case_phrase.basic | ✅ native, verified (declared, not yet executed) |
-| `any_case_prefix` | `lib/logstorage/filter_any_case_prefix.go` | vl.filter.any_case_prefix.basic | ✅ native, verified (declared, not yet executed) |
-| `contains_all` | `lib/logstorage/filter_contains_all.go` | vl.filter.contains_all.basic | ✅ native, verified (declared, not yet executed) |
-| `contains_any` | `lib/logstorage/filter_contains_any.go` | vl.filter.contains_any.basic | ✅ native, verified (declared, not yet executed) |
-| `contains_common_case` | `lib/logstorage/filter_contains_common_case.go` | vl.filter.contains_common_case.basic | ✅ native, verified (declared, not yet executed) |
-| `day_range` | `lib/logstorage/filter_day_range.go` | vl.filter.day_range.basic | ✅ native, verified (declared, not yet executed) |
-| `eq_field` | `lib/logstorage/filter_eq_field.go` | vl.filter.eq_field.basic | ✅ native, verified (declared, not yet executed) |
-| `equals_common_case` | `lib/logstorage/filter_equals_common_case.go` | vl.filter.equals_common_case.basic | ✅ native, verified (declared, not yet executed) |
-| `exact` | `lib/logstorage/filter_exact.go` | vl.filter.exact.basic | ✅ native, verified (declared, not yet executed) |
-| `exact_prefix` | `lib/logstorage/filter_exact_prefix.go` | vl.filter.exact_prefix.basic | ✅ native, verified (declared, not yet executed) |
+| `and` | `lib/logstorage/filter_and.go` | vl.filter.and.basic | 🟡 declared, not yet executed |
+| `any_case_phrase` | `lib/logstorage/filter_any_case_phrase.go` | vl.filter.any_case_phrase.basic | 🟡 declared, not yet executed |
+| `any_case_prefix` | `lib/logstorage/filter_any_case_prefix.go` | vl.filter.any_case_prefix.basic | 🟡 declared, not yet executed |
+| `contains_all` | `lib/logstorage/filter_contains_all.go` | vl.filter.contains_all.basic | 🟡 declared, not yet executed |
+| `contains_any` | `lib/logstorage/filter_contains_any.go` | vl.filter.contains_any.basic | 🟡 declared, not yet executed |
+| `contains_common_case` | `lib/logstorage/filter_contains_common_case.go` | vl.filter.contains_common_case.basic | 🟡 declared, not yet executed |
+| `day_range` | `lib/logstorage/filter_day_range.go` | vl.filter.day_range.basic | 🟡 declared, not yet executed |
+| `eq_field` | `lib/logstorage/filter_eq_field.go` | vl.filter.eq_field.basic | 🟡 declared, not yet executed |
+| `equals_common_case` | `lib/logstorage/filter_equals_common_case.go` | vl.filter.equals_common_case.basic | 🟡 declared, not yet executed |
+| `exact` | `lib/logstorage/filter_exact.go` | vl.filter.exact.basic | 🟡 declared, not yet executed |
+| `exact_prefix` | `lib/logstorage/filter_exact_prefix.go` | vl.filter.exact_prefix.basic | 🟡 declared, not yet executed |
 | `in` | `lib/logstorage/filter_in.go` | vl.filter.in.basic, vl.filter.in.subquery | 🔁 differs: in(...) subquery form shares the union/stream_context subquery hook; unresolved on cold. Flips to pass in the subquery-parity fix (docs/parity-and-gaps.md). (declared, not yet executed) |
-| `ipv4_range` | `lib/logstorage/filter_ipv4_range.go` | vl.filter.ipv4_range.basic | ✅ native, verified (declared, not yet executed) |
-| `ipv6_range` | `lib/logstorage/filter_ipv6_range.go` | vl.filter.ipv6_range.basic | ✅ native, verified (declared, not yet executed) |
-| `json_array_contains_any` | `lib/logstorage/filter_json_array_contains_any.go` | vl.filter.json_array_contains_any.basic | ✅ native, verified (declared, not yet executed) |
-| `le_field` | `lib/logstorage/filter_le_field.go` | vl.filter.le_field.basic, vl.filter.le_field.lt | ✅ native, verified (declared, not yet executed) |
-| `len_range` | `lib/logstorage/filter_len_range.go` | vl.filter.len_range.basic | ✅ native, verified (declared, not yet executed) |
-| `noop` | `lib/logstorage/filter_noop.go` | vl.filter.noop.basic | ✅ native, verified (declared, not yet executed) |
-| `not` | `lib/logstorage/filter_not.go` | vl.filter.not.basic | ✅ native, verified (declared, not yet executed) |
-| `or` | `lib/logstorage/filter_or.go` | vl.filter.or.basic | ✅ native, verified (declared, not yet executed) |
-| `pattern_match` | `lib/logstorage/filter_pattern_match.go` | vl.filter.pattern_match.basic, vl.filter.pattern_match.full, vl.filter.pattern_match.prefix, vl.filter.pattern_match.suffix | ✅ native, verified (declared, not yet executed) |
-| `phrase` | `lib/logstorage/filter_phrase.go` | vl.filter.phrase.basic | ✅ native, verified (declared, not yet executed) |
-| `prefix` | `lib/logstorage/filter_prefix.go` | vl.filter.prefix.basic | ✅ native, verified (declared, not yet executed) |
-| `range` | `lib/logstorage/filter_range.go` | vl.filter.range.retrieval | ✅ native, verified (declared, not yet executed) |
-| `regexp` | `lib/logstorage/filter_regexp.go` | vl.filter.regexp.basic | ✅ native, verified (declared, not yet executed) |
-| `sequence` | `lib/logstorage/filter_sequence.go` | vl.filter.sequence.basic | ✅ native, verified (declared, not yet executed) |
-| `stream` | `lib/logstorage/filter_stream.go` | vl.filter.stream.basic | ✅ native, verified (declared, not yet executed) |
-| `stream_id` | `lib/logstorage/filter_stream_id.go` | vl.filter.stream_id.basic | ✅ native, verified (declared, not yet executed) |
-| `string_range` | `lib/logstorage/filter_string_range.go` | vl.filter.string_range.basic | ✅ native, verified (declared, not yet executed) |
-| `substring` | `lib/logstorage/filter_substring.go` | vl.filter.substring.basic | ✅ native, verified (declared, not yet executed) |
-| `time` | `lib/logstorage/filter_time.go` | vl.filter.time.basic | ✅ native, verified (declared, not yet executed) |
-| `value_type` | `lib/logstorage/filter_value_type.go` | vl.filter.value_type.basic | ✅ native, verified (declared, not yet executed) |
-| `week_range` | `lib/logstorage/filter_week_range.go` | vl.filter.week_range.basic | ✅ native, verified (declared, not yet executed) |
+| `ipv4_range` | `lib/logstorage/filter_ipv4_range.go` | vl.filter.ipv4_range.basic | 🟡 declared, not yet executed |
+| `ipv6_range` | `lib/logstorage/filter_ipv6_range.go` | vl.filter.ipv6_range.basic | 🟡 declared, not yet executed |
+| `json_array_contains_any` | `lib/logstorage/filter_json_array_contains_any.go` | vl.filter.json_array_contains_any.basic | 🟡 declared, not yet executed |
+| `le_field` | `lib/logstorage/filter_le_field.go` | vl.filter.le_field.basic, vl.filter.le_field.lt | 🟡 declared, not yet executed |
+| `len_range` | `lib/logstorage/filter_len_range.go` | vl.filter.len_range.basic | 🟡 declared, not yet executed |
+| `noop` | `lib/logstorage/filter_noop.go` | vl.filter.noop.basic | 🟡 declared, not yet executed |
+| `not` | `lib/logstorage/filter_not.go` | vl.filter.not.basic | 🟡 declared, not yet executed |
+| `or` | `lib/logstorage/filter_or.go` | vl.filter.or.basic | 🟡 declared, not yet executed |
+| `pattern_match` | `lib/logstorage/filter_pattern_match.go` | vl.filter.pattern_match.basic, vl.filter.pattern_match.full, vl.filter.pattern_match.prefix, vl.filter.pattern_match.suffix | 🟡 declared, not yet executed |
+| `phrase` | `lib/logstorage/filter_phrase.go` | vl.filter.phrase.basic | 🟡 declared, not yet executed |
+| `prefix` | `lib/logstorage/filter_prefix.go` | vl.filter.prefix.basic | 🟡 declared, not yet executed |
+| `range` | `lib/logstorage/filter_range.go` | vl.filter.range.retrieval | 🟡 declared, not yet executed |
+| `regexp` | `lib/logstorage/filter_regexp.go` | vl.filter.regexp.basic | 🟡 declared, not yet executed |
+| `sequence` | `lib/logstorage/filter_sequence.go` | vl.filter.sequence.basic | 🟡 declared, not yet executed |
+| `stream` | `lib/logstorage/filter_stream.go` | vl.filter.stream.basic | 🟡 declared, not yet executed |
+| `stream_id` | `lib/logstorage/filter_stream_id.go` | vl.filter.stream_id.basic | 🟡 declared, not yet executed |
+| `string_range` | `lib/logstorage/filter_string_range.go` | vl.filter.string_range.basic | 🟡 declared, not yet executed |
+| `substring` | `lib/logstorage/filter_substring.go` | vl.filter.substring.basic | 🟡 declared, not yet executed |
+| `time` | `lib/logstorage/filter_time.go` | vl.filter.time.basic | 🟡 declared, not yet executed |
+| `value_type` | `lib/logstorage/filter_value_type.go` | vl.filter.value_type.basic | 🟡 declared, not yet executed |
+| `week_range` | `lib/logstorage/filter_week_range.go` | vl.filter.week_range.basic | 🟡 declared, not yet executed |
 
 ## Upstream stats (24)
 
@@ -206,29 +250,29 @@ stats: 24/24 covered by at least one registry row.
 | stats | Source | Rows | Status |
 |---|---|---|---|
 | `any` | `lib/logstorage/stats_any.go` | vl.stats.any.basic | 🔁 differs: any() returns an arbitrary matching row; hot and cold can legitimately pick a different one from the same result set. See docs/parity-and-gaps.md. (declared, not yet executed) |
-| `avg` | `lib/logstorage/stats_avg.go` | vl.stats.avg.basic | ✅ native, verified (declared, not yet executed) |
-| `count` | `lib/logstorage/stats_count.go` | vl.stats.count.basic | ✅ native, verified (declared, not yet executed) |
-| `count_empty` | `lib/logstorage/stats_count_empty.go` | vl.stats.count_empty.basic | ✅ native, verified (declared, not yet executed) |
-| `count_uniq` | `lib/logstorage/stats_count_uniq.go` | vl.stats.count_uniq.basic | ✅ native, verified (declared, not yet executed) |
-| `count_uniq_hash` | `lib/logstorage/stats_count_uniq_hash.go` | vl.stats.count_uniq_hash.basic | ✅ native, verified (declared, not yet executed) |
-| `field_max` | `lib/logstorage/stats_field_max.go` | vl.stats.field_max.basic | ✅ native, verified (declared, not yet executed) |
-| `field_min` | `lib/logstorage/stats_field_min.go` | vl.stats.field_min.basic | ✅ native, verified (declared, not yet executed) |
-| `histogram` | `lib/logstorage/stats_histogram.go` | vl.stats.histogram.basic | ✅ native, verified (declared, not yet executed) |
-| `json_values` | `lib/logstorage/stats_json_values.go` | vl.stats.json_values.basic | ✅ native, verified (declared, not yet executed) |
-| `max` | `lib/logstorage/stats_max.go` | vl.stats.max.basic | ✅ native, verified (declared, not yet executed) |
-| `median` | `lib/logstorage/stats_median.go` | vl.stats.median.basic | ✅ native, verified (declared, not yet executed) |
-| `min` | `lib/logstorage/stats_min.go` | vl.stats.min.basic | ✅ native, verified (declared, not yet executed) |
-| `quantile` | `lib/logstorage/stats_quantile.go` | vl.stats.quantile.by_service | ✅ native, verified (declared, not yet executed) |
-| `rate` | `lib/logstorage/stats_rate.go` | vl.stats.rate.basic | ✅ native, verified (declared, not yet executed) |
-| `rate_sum` | `lib/logstorage/stats_rate_sum.go` | vl.stats.rate_sum.basic | ✅ native, verified (declared, not yet executed) |
+| `avg` | `lib/logstorage/stats_avg.go` | vl.stats.avg.basic | 🟡 declared, not yet executed |
+| `count` | `lib/logstorage/stats_count.go` | vl.stats.count.basic | 🟡 declared, not yet executed |
+| `count_empty` | `lib/logstorage/stats_count_empty.go` | vl.stats.count_empty.basic | 🟡 declared, not yet executed |
+| `count_uniq` | `lib/logstorage/stats_count_uniq.go` | vl.stats.count_uniq.basic | 🟡 declared, not yet executed |
+| `count_uniq_hash` | `lib/logstorage/stats_count_uniq_hash.go` | vl.stats.count_uniq_hash.basic | 🟡 declared, not yet executed |
+| `field_max` | `lib/logstorage/stats_field_max.go` | vl.stats.field_max.basic | 🟡 declared, not yet executed |
+| `field_min` | `lib/logstorage/stats_field_min.go` | vl.stats.field_min.basic | 🟡 declared, not yet executed |
+| `histogram` | `lib/logstorage/stats_histogram.go` | vl.stats.histogram.basic | 🟡 declared, not yet executed |
+| `json_values` | `lib/logstorage/stats_json_values.go` | vl.stats.json_values.basic | 🟡 declared, not yet executed |
+| `max` | `lib/logstorage/stats_max.go` | vl.stats.max.basic | 🟡 declared, not yet executed |
+| `median` | `lib/logstorage/stats_median.go` | vl.stats.median.basic | 🟡 declared, not yet executed |
+| `min` | `lib/logstorage/stats_min.go` | vl.stats.min.basic | 🟡 declared, not yet executed |
+| `quantile` | `lib/logstorage/stats_quantile.go` | vl.stats.quantile.by_service | 🟡 declared, not yet executed |
+| `rate` | `lib/logstorage/stats_rate.go` | vl.stats.rate.basic | 🟡 declared, not yet executed |
+| `rate_sum` | `lib/logstorage/stats_rate_sum.go` | vl.stats.rate_sum.basic | 🟡 declared, not yet executed |
 | `row_any` | `lib/logstorage/stats_row_any.go` | vl.stats.row_any.basic | 🔁 differs: row_any() returns an arbitrary matching row; hot and cold can legitimately pick a different one from the same result set. See docs/parity-and-gaps.md. (declared, not yet executed) |
-| `row_max` | `lib/logstorage/stats_row_max.go` | vl.stats.row_max.basic | ✅ native, verified (declared, not yet executed) |
-| `row_min` | `lib/logstorage/stats_row_min.go` | vl.stats.row_min.basic | ✅ native, verified (declared, not yet executed) |
-| `stddev` | `lib/logstorage/stats_stddev.go` | vl.stats.stddev.basic | ✅ native, verified (declared, not yet executed) |
-| `sum` | `lib/logstorage/stats_sum.go` | vl.stats.sum.basic | ✅ native, verified (declared, not yet executed) |
-| `sum_len` | `lib/logstorage/stats_sum_len.go` | vl.stats.sum_len.basic | ✅ native, verified (declared, not yet executed) |
-| `uniq_values` | `lib/logstorage/stats_uniq_values.go` | vl.stats.uniq_values.basic | ✅ native, verified (declared, not yet executed) |
-| `values` | `lib/logstorage/stats_values.go` | vl.stats.values.basic | ✅ native, verified (declared, not yet executed) |
+| `row_max` | `lib/logstorage/stats_row_max.go` | vl.stats.row_max.basic | 🟡 declared, not yet executed |
+| `row_min` | `lib/logstorage/stats_row_min.go` | vl.stats.row_min.basic | 🟡 declared, not yet executed |
+| `stddev` | `lib/logstorage/stats_stddev.go` | vl.stats.stddev.basic | 🟡 declared, not yet executed |
+| `sum` | `lib/logstorage/stats_sum.go` | vl.stats.sum.basic | 🟡 declared, not yet executed |
+| `sum_len` | `lib/logstorage/stats_sum_len.go` | vl.stats.sum_len.basic | 🟡 declared, not yet executed |
+| `uniq_values` | `lib/logstorage/stats_uniq_values.go` | vl.stats.uniq_values.basic | 🟡 declared, not yet executed |
+| `values` | `lib/logstorage/stats_values.go` | vl.stats.values.basic | 🟡 declared, not yet executed |
 
 ## Upstream traceql (9)
 
@@ -236,44 +280,60 @@ traceql: 9/9 covered by at least one registry row.
 
 | traceql | Source | Rows | Status |
 |---|---|---|---|
-| `avg_over_time` | `lib/traceql/pipe_metrics.go` | vt.traceql.avg_over_time.basic | ✅ native, verified (declared, not yet executed) |
-| `compare` | `lib/traceql/pipe_metrics.go` | vt.traceql.compare.basic | ✅ native, verified (declared, not yet executed) |
-| `count_over_time` | `lib/traceql/pipe_metrics.go` | vt.traceql.count_over_time.basic | ✅ native, verified (declared, not yet executed) |
-| `histogram_over_time` | `lib/traceql/pipe_metrics.go` | vt.traceql.histogram_over_time.basic | ✅ native, verified (declared, not yet executed) |
-| `max_over_time` | `lib/traceql/pipe_metrics.go` | vt.traceql.max_over_time.basic | ✅ native, verified (declared, not yet executed) |
-| `min_over_time` | `lib/traceql/pipe_metrics.go` | vt.traceql.min_over_time.basic | ✅ native, verified (declared, not yet executed) |
-| `quantile_over_time` | `lib/traceql/pipe_metrics.go` | vt.traceql.quantile_over_time.basic | ✅ native, verified (declared, not yet executed) |
-| `rate` | `lib/traceql/pipe_metrics.go` | vt.traceql.rate.basic, vt.traceql.rate.by_service | ✅ native, verified (declared, not yet executed) |
-| `sum_over_time` | `lib/traceql/pipe_metrics.go` | vt.traceql.sum_over_time.basic | ✅ native, verified (declared, not yet executed) |
+| `avg_over_time` | `lib/traceql/pipe_metrics.go` | vt.traceql.avg_over_time.basic | 🟡 declared, not yet executed |
+| `compare` | `lib/traceql/pipe_metrics.go` | vt.traceql.compare.basic | 🟡 declared, not yet executed |
+| `count_over_time` | `lib/traceql/pipe_metrics.go` | vt.traceql.count_over_time.basic | 🟡 declared, not yet executed |
+| `histogram_over_time` | `lib/traceql/pipe_metrics.go` | vt.traceql.histogram_over_time.basic | 🟡 declared, not yet executed |
+| `max_over_time` | `lib/traceql/pipe_metrics.go` | vt.traceql.max_over_time.basic | 🟡 declared, not yet executed |
+| `min_over_time` | `lib/traceql/pipe_metrics.go` | vt.traceql.min_over_time.basic | 🟡 declared, not yet executed |
+| `quantile_over_time` | `lib/traceql/pipe_metrics.go` | vt.traceql.quantile_over_time.basic | 🟡 declared, not yet executed |
+| `rate` | `lib/traceql/pipe_metrics.go` | vt.traceql.rate.basic, vt.traceql.rate.by_service | 🟡 declared, not yet executed |
+| `sum_over_time` | `lib/traceql/pipe_metrics.go` | vt.traceql.sum_over_time.basic | 🟡 declared, not yet executed |
 
-## Upstream flag (125)
+## Upstream flag (174)
 
-flag: 18/125 covered by at least one registry row.
+flag: 18/174 covered by at least one registry row.
 
 | flag | Source | Rows | Status |
 |---|---|---|---|
 | `datadog.ignoreFields` | `app/vlinsert/datadog/datadog.go` |  | ⚪ no row |
 | `datadog.maxRequestSize` | `app/vlinsert/datadog/datadog.go` |  | ⚪ no row |
 | `datadog.streamFields` | `app/vlinsert/datadog/datadog.go` |  | ⚪ no row |
-| `defaultMsgValue` | `app/vlinsert/insertutil/flags.go` | vl.flag.default_msg_value | ✅ native, verified (declared, not yet executed) |
+| `defaultMsgValue` | `app/vtinsert/insertutil/common_params.go` |  | ⚪ no row |
+| `defaultMsgValue` | `app/vlinsert/insertutil/flags.go` | vl.flag.default_msg_value | 🟡 declared, not yet executed |
 | `defaultParallelReaders` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `defaultParallelReaders` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `delete.enable` | `app/vlselect/main.go` | vl.flag.delete_enable | 🔁 differs: Even with delete.enable=true, the /delete/* family isn't routed on cold until the dispatcher PR lands. See docs/parity-and-gaps.md. (declared, not yet executed) (package not linked into LH) |
+| `delete.enable` | `app/vtselect/main.go` |  | ⚪ not linked into LH, no row |
 | `elasticsearch.version` | `app/vlinsert/elasticsearch/elasticsearch.go` |  | ⚪ no row |
 | `forceFlushAuthKey` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `forceFlushAuthKey` | `app/vtstorage/main.go` |  | ⚪ no row |
+| `forceMergeAuthKey` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `forceMergeAuthKey` | `app/vlstorage/main.go` |  | ⚪ no row |
-| `futureRetention` | `app/vlstorage/main.go` | vl.flag.future_retention | ✅ native, verified (declared, not yet executed) |
+| `futureRetention` | `app/vlstorage/main.go` | vl.flag.future_retention | 🟡 declared, not yet executed |
+| `futureRetention` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `inmemoryDataFlushInterval` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `inmemoryDataFlushInterval` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `insert.concurrency` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `insert.concurrency` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `insert.disable` | `app/vlinsert/main.go` |  | ⚪ no row |
+| `insert.disable` | `app/vtinsert/main.go` |  | ⚪ no row |
 | `insert.disableCompression` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `insert.disableCompression` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `insert.indexFlushInterval` | `app/vtinsert/insertutil/index_helper.go` |  | ⚪ no row |
-| `insert.maxFieldsPerLine` | `app/vlinsert/insertutil/flags.go` | vl.flag.insert_max_fields_per_line | ✅ native, verified (declared, not yet executed) |
-| `insert.maxLineSizeBytes` | `app/vlinsert/insertutil/flags.go` | vl.flag.insert_max_line_size_bytes | ✅ native, verified (declared, not yet executed) |
+| `insert.maxFieldsPerLine` | `app/vlinsert/insertutil/flags.go` | vl.flag.insert_max_fields_per_line | 🟡 declared, not yet executed |
+| `insert.maxFieldsPerLine` | `app/vtinsert/insertutil/flags.go` |  | ⚪ no row |
+| `insert.maxLineSizeBytes` | `app/vlinsert/insertutil/flags.go` | vl.flag.insert_max_line_size_bytes | 🟡 declared, not yet executed |
+| `internaldelete.enable` | `app/vtselect/main.go` |  | ⚪ not linked into LH, no row |
 | `internaldelete.enable` | `app/vlselect/main.go` |  | ⚪ not linked into LH, no row |
+| `internalinsert.disable` | `app/vtinsert/main.go` |  | ⚪ no row |
 | `internalinsert.disable` | `app/vlinsert/main.go` |  | ⚪ no row |
 | `internalinsert.maxRequestSize` | `app/vlinsert/internalinsert/internalinsert.go` |  | ⚪ no row |
+| `internalinsert.maxRequestSize` | `app/vtinsert/internalinsert/internalinsert.go` |  | ⚪ no row |
 | `internalselect.disable` | `app/vlselect/main.go` |  | ⚪ not linked into LH, no row |
+| `internalselect.disable` | `app/vtselect/main.go` |  | ⚪ not linked into LH, no row |
 | `internalselect.maxConcurrentRequests` | `app/vlselect/internalselect/internalselect.go` |  | ⚪ no row |
+| `internalselect.maxConcurrentRequests` | `app/vtselect/internalselect/internalselect.go` |  | ⚪ not linked into LH, no row |
 | `journald.ignoreFields` | `app/vlinsert/journald/journald.go` |  | ⚪ no row |
 | `journald.includeEntryMetadata` | `app/vlinsert/journald/journald.go` |  | ⚪ no row |
 | `journald.streamFields` | `app/vlinsert/journald/journald.go` |  | ⚪ no row |
@@ -281,12 +341,16 @@ flag: 18/125 covered by at least one registry row.
 | `journald.timeField` | `app/vlinsert/journald/journald.go` |  | ⚪ no row |
 | `journald.useRemoteIP` | `app/vlinsert/journald/journald.go` |  | ⚪ no row |
 | `logIngestedRows` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `logIngestedRows` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `logNewStreams` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `logNewStreams` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `logNewStreamsAuthKey` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `logNewStreamsAuthKey` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `loki.disableMessageParsing` | `app/vlinsert/loki/loki.go` |  | ⚪ no row |
 | `loki.maxRequestSize` | `app/vlinsert/loki/loki_json.go` |  | ⚪ no row |
 | `loki.messageFieldsPrefix` | `app/vlinsert/loki/loki.go` |  | ⚪ no row |
 | `maxBackfillAge` | `app/vlstorage/main.go` | vl.flag.max_backfill_age | 🔁 differs: Hot enforces maxBackfillAge against local storage retention; once data tiers to cold, the age check has no local-storage analog and the LH compaction/retention path governs instead. See docs/parity-and-gaps.md. (declared, not yet executed) |
+| `maxBackfillAge` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `nativeinsert.maxRequestSize` | `app/vlinsert/nativeinsert/nativeinsert.go` |  | ⚪ no row |
 | `opentelemetry.maxRequestSize` | `app/vlinsert/opentelemetry/opentelemetry.go` |  | ⚪ no row |
 | `opentelemetry.traces.maxRequestSize` | `app/vtinsert/opentelemetry/opentelemetry.go` |  | ⚪ no row |
@@ -295,26 +359,39 @@ flag: 18/125 covered by at least one registry row.
 | `otlpGRPC.tlsCipherSuites` | `app/vtinsert/main.go` |  | ⚪ no row |
 | `otlpGRPC.tlsKeyFile` | `app/vtinsert/main.go` |  | ⚪ no row |
 | `otlpGRPC.tlsMinVersion` | `app/vtinsert/main.go` |  | ⚪ no row |
-| `otlpGRPCListenAddr` | `app/vtinsert/main.go` | vt.flag.otlp_grpc_listen_addr | ✅ native, verified (declared, not yet executed) |
+| `otlpGRPCListenAddr` | `app/vtinsert/main.go` | vt.flag.otlp_grpc_listen_addr | 🟡 declared, not yet executed |
 | `partitionManageAuthKey` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `partitionManageAuthKey` | `app/vtstorage/main.go` |  | ⚪ no row |
+| `retention.maxDiskSpaceUsageBytes` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `retention.maxDiskSpaceUsageBytes` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `retention.maxDiskUsagePercent` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `retention.maxDiskUsagePercent` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `retentionPeriod` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `retentionPeriod` | `app/vlstorage/main.go` |  | ⚪ no row |
 | `search.allowPartialResponse` | `app/vlselect/logsql/logsql.go` |  | ⚪ no row |
-| `search.latencyOffset` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_latency_offset | ✅ native, verified (declared, not yet executed) |
-| `search.logSlowQueryDuration` | `app/vlselect/main.go` | vl.flag.search_log_slow_query_duration | ✅ native, verified (declared, not yet executed) (package not linked into LH) |
-| `search.maxConcurrentRequests` | `app/vlselect/main.go` | vl.flag.search_max_concurrent_requests | ✅ native, verified (declared, not yet executed) (package not linked into LH) |
-| `search.maxQueryDuration` | `app/vlselect/main.go` | vl.flag.search_max_query_duration | ✅ native, verified (declared, not yet executed) (package not linked into LH) |
-| `search.maxQueryLen` | `app/vlselect/logsql/logsql.go` | vl.flag.search_max_query_len | ✅ native, verified (declared, not yet executed) |
-| `search.maxQueryTimeRange` | `app/vlselect/logsql/logsql.go` | vl.flag.search_max_query_time_range | ✅ native, verified (declared, not yet executed) |
+| `search.allowPartialResponse` | `app/vtselect/logsql/logsql.go` |  | ⚪ not linked into LH, no row |
+| `search.latencyOffset` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_latency_offset | 🟡 declared, not yet executed |
+| `search.logSlowQueryDuration` | `app/vlselect/main.go` | vl.flag.search_log_slow_query_duration | 🟡 declared, not yet executed (package not linked into LH) |
+| `search.logSlowQueryDuration` | `app/vtselect/main.go` |  | ⚪ not linked into LH, no row |
+| `search.maxConcurrentRequests` | `app/vlselect/main.go` | vl.flag.search_max_concurrent_requests | 🟡 declared, not yet executed (package not linked into LH) |
+| `search.maxConcurrentRequests` | `app/vtselect/main.go` |  | ⚪ not linked into LH, no row |
+| `search.maxQueryDuration` | `app/vlselect/main.go` | vl.flag.search_max_query_duration | 🟡 declared, not yet executed (package not linked into LH) |
+| `search.maxQueryDuration` | `app/vtselect/main.go` |  | ⚪ not linked into LH, no row |
+| `search.maxQueryLen` | `app/vlselect/logsql/logsql.go` | vl.flag.search_max_query_len | 🟡 declared, not yet executed |
+| `search.maxQueryLen` | `app/vtselect/logsql/logsql.go` |  | ⚪ not linked into LH, no row |
+| `search.maxQueryTimeRange` | `app/vlselect/logsql/logsql.go` | vl.flag.search_max_query_time_range | 🟡 declared, not yet executed |
+| `search.maxQueryTimeRange` | `app/vtselect/logsql/logsql.go` |  | ⚪ not linked into LH, no row |
 | `search.maxQueueDuration` | `app/vlselect/main.go` | vl.flag.search_max_queue_duration | 🔁 differs: vlselect's queue is not linked into LH; LH's query.max_concurrent admission control rejects immediately instead of queueing. See docs/parity-and-gaps.md. (declared, not yet executed) (package not linked into LH) |
-| `search.traceMaxDurationWindow` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_trace_max_duration_window | ✅ native, verified (declared, not yet executed) |
+| `search.maxQueueDuration` | `app/vtselect/main.go` |  | ⚪ not linked into LH, no row |
+| `search.traceMaxDurationWindow` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_trace_max_duration_window | 🟡 declared, not yet executed |
 | `search.traceMaxServiceNameList` | `app/vtselect/traces/tracecommon/tracecommon.go` |  | ⚪ no row |
 | `search.traceMaxSpanNameList` | `app/vtselect/traces/tracecommon/tracecommon.go` |  | ⚪ no row |
-| `search.traceSearchStep` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_trace_search_step | ✅ native, verified (declared, not yet executed) |
+| `search.traceSearchStep` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_trace_search_step | 🟡 declared, not yet executed |
 | `search.traceServiceAndSpanNameLookbehind` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_trace_service_and_span_name_lookbehind | 🔁 differs: Deprecated in favor of fieldsLookbehind/streamFieldsLookbehind in VT 0.10.0; hot post-bump ignores it while LH cold (pre-bump) still honors it as the effective lookbehind. See docs/parity-and-gaps.md. (declared, not yet executed) |
 | `select.disable` | `app/vlselect/main.go` |  | ⚪ not linked into LH, no row |
+| `select.disable` | `app/vtselect/main.go` |  | ⚪ not linked into LH, no row |
 | `select.disableCompression` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `select.disableCompression` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `servicegraph.databaseTaskLimit` | `app/victoria-traces/servicegraph/servicegraph.go` |  | ⚪ no row |
 | `servicegraph.enableTask` | `app/victoria-traces/servicegraph/servicegraph.go` | vt.flag.servicegraph_enable_task | ⛔ unsupported on cold (documented) (declared, not yet executed) |
 | `servicegraph.taskInterval` | `app/victoria-traces/servicegraph/servicegraph.go` |  | ⚪ no row |
@@ -322,6 +399,7 @@ flag: 18/125 covered by at least one registry row.
 | `servicegraph.taskLookbehind` | `app/victoria-traces/servicegraph/servicegraph.go` |  | ⚪ no row |
 | `servicegraph.taskTimeout` | `app/victoria-traces/servicegraph/servicegraph.go` |  | ⚪ no row |
 | `snapshotsMaxAge` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `snapshotsMaxAge` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `splunk.ignoreFields` | `app/vlinsert/splunk/splunk.go` |  | ⚪ no row |
 | `splunk.maxRequestSize` | `app/vlinsert/splunk/splunk.go` |  | ⚪ no row |
 | `splunk.msgField` | `app/vlinsert/splunk/splunk.go` |  | ⚪ no row |
@@ -330,20 +408,35 @@ flag: 18/125 covered by at least one registry row.
 | `splunk.tenantID` | `app/vlinsert/splunk/splunk.go` |  | ⚪ no row |
 | `splunk.timeField` | `app/vlinsert/splunk/splunk.go` |  | ⚪ no row |
 | `storage.minFreeDiskSpaceBytes` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `storage.minFreeDiskSpaceBytes` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `storageDataPath` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `storageDataPath` | `app/vtstorage/main.go` |  | ⚪ no row |
+| `storageNode` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `storageNode` | `app/vlstorage/main.go` |  | ⚪ no row |
 | `storageNode.bearerToken` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `storageNode.bearerToken` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `storageNode.bearerTokenFile` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `storageNode.bearerTokenFile` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `storageNode.password` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `storageNode.password` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `storageNode.passwordFile` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `storageNode.passwordFile` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `storageNode.tls` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `storageNode.tls` | `app/vtstorage/main.go` |  | ⚪ no row |
+| `storageNode.tlsCAFile` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `storageNode.tlsCAFile` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `storageNode.tlsCertFile` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `storageNode.tlsCertFile` | `app/vlstorage/main.go` |  | ⚪ no row |
 | `storageNode.tlsInsecureSkipVerify` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `storageNode.tlsInsecureSkipVerify` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `storageNode.tlsKeyFile` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `storageNode.tlsKeyFile` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `storageNode.tlsServerName` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `storageNode.tlsServerName` | `app/vtstorage/main.go` |  | ⚪ no row |
+| `storageNode.username` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `storageNode.username` | `app/vlstorage/main.go` |  | ⚪ no row |
 | `storageNode.usernameFile` | `app/vlstorage/main.go` |  | ⚪ no row |
+| `storageNode.usernameFile` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `syslog.compressMethod.tcp` | `app/vlinsert/syslog/syslog.go` |  | ⚪ no row |
 | `syslog.compressMethod.udp` | `app/vlinsert/syslog/syslog.go` |  | ⚪ no row |
 | `syslog.compressMethod.unix` | `app/vlinsert/syslog/syslog.go` |  | ⚪ no row |
@@ -415,6 +508,8 @@ flag: 18/125 covered by at least one registry row.
 | `vt.flag.search_max_tags` | vt 0.9.4 | differ | Flag arrives in VT 0.9.4 alongside search.maxTraces (pinned is 0.9.2). Re-check after the version bump. See docs/parity-and-gaps.md. |
 | `vt.flag.search_max_traces` | vt 0.9.4 | differ | Flag arrives in VT 0.9.4 (pinned is 0.9.2). Re-check after the version bump. See docs/parity-and-gaps.md. |
 | `vt.flag.search_stream_fields_lookbehind` | vt 0.10.0 | differ | Same new-default-hides-old-cold-data issue as search.fieldsLookbehind, applied to stream fields. See docs/parity-and-gaps.md. |
+| `vt.insert.multitenant_native.differ` | vt 0.11.0 | differ | Arrives with the VT 0.11.0 bump alongside /insert/native; pinned 0.9.2 lacks both. Re-check after the bump (docs/parity-and-gaps.md). |
+| `vt.insert.native.differ` | vt 0.11.0 | differ | Native binary ingest arrives with the VT 0.11.0 bump; pinned 0.9.2 has no /insert/native route. Re-check after the bump (docs/parity-and-gaps.md). |
 | `vt.select.vmalert.differ` | vt 0.10.0 | differ | Route arrives in VT 0.10.0 (pinned is 0.9.2); LH dispatcher has no vmalert proxy wired either. Re-check both after the version bump (docs/parity-and-gaps.md). |
 | `vt.tempo.metrics_instant.absent` | — | absent |  |
 | `vt.tempo.search_v2.absent` | — | absent |  |

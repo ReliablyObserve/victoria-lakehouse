@@ -4,1109 +4,1848 @@ vt_version: v0.9.2
 vl_commit_traces: 77df0c04d532
 items:
     - kind: route
+      surface: vl
       name: /api/v1/validate
       source: app/vlinsert/datadog/datadog.go
     - kind: route
+      surface: vl
       name: /api/v2/logs
       source: app/vlinsert/datadog/datadog.go
     - kind: route
+      surface: vl
       name: /delete/active_tasks
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /delete/run_task
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /delete/stop_task
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /insert/datadog/
       source: app/vlinsert/main.go
     - kind: route
+      surface: vl
       name: /insert/datadog/api/v1/validate
       source: app/vlinsert/datadog/datadog.go
     - kind: route
+      surface: vl
       name: /insert/datadog/api/v2/logs
       source: app/vlinsert/datadog/datadog.go
     - kind: route
+      surface: vl
       name: /insert/elasticsearch
       source: app/vlinsert/elasticsearch/elasticsearch.go
     - kind: route
+      surface: vl
       name: /insert/elasticsearch/
       source: app/vlinsert/elasticsearch/elasticsearch.go
     - kind: route
+      surface: vl
       name: /insert/elasticsearch/_bulk
       source: app/vlinsert/elasticsearch/elasticsearch.go
     - kind: route
+      surface: vl
       name: /insert/elasticsearch/_ilm/policy
       source: app/vlinsert/elasticsearch/elasticsearch.go
     - kind: route
+      surface: vl
       name: /insert/elasticsearch/_index_template
       source: app/vlinsert/elasticsearch/elasticsearch.go
     - kind: route
+      surface: vl
       name: /insert/elasticsearch/_ingest
       source: app/vlinsert/elasticsearch/elasticsearch.go
     - kind: route
+      surface: vl
       name: /insert/elasticsearch/_license
       source: app/vlinsert/elasticsearch/elasticsearch.go
     - kind: route
+      surface: vl
       name: /insert/elasticsearch/_logstash
       source: app/vlinsert/elasticsearch/elasticsearch.go
     - kind: route
+      surface: vl
       name: /insert/elasticsearch/_nodes
       source: app/vlinsert/elasticsearch/elasticsearch.go
     - kind: route
+      surface: vl
       name: /insert/elasticsearch/_rollup
       source: app/vlinsert/elasticsearch/elasticsearch.go
     - kind: route
+      surface: vl
       name: /insert/elasticsearch/logstash
       source: app/vlinsert/elasticsearch/elasticsearch.go
     - kind: route
+      surface: vl
       name: /insert/journald/
       source: app/vlinsert/main.go
     - kind: route
+      surface: vl
       name: /insert/journald/upload
       source: app/vlinsert/journald/journald.go
     - kind: route
+      surface: vl
       name: /insert/jsonline
       source: app/vlinsert/main.go
     - kind: route
+      surface: vl
       name: /insert/loki/
       source: app/vlinsert/main.go
     - kind: route
+      surface: vl
       name: /insert/loki/api/v1/push
       source: app/vlinsert/loki/loki.go
     - kind: route
+      surface: vl
       name: /insert/loki/ready
       source: app/vlinsert/loki/loki.go
     - kind: route
+      surface: vl
       name: /insert/multitenant/native
       source: app/vlinsert/main.go
     - kind: route
+      surface: vl
       name: /insert/native
       source: app/vlinsert/main.go
     - kind: route
+      surface: vl
       name: /insert/opentelemetry/
       source: app/vlinsert/main.go
     - kind: route
+      surface: vl
       name: /insert/opentelemetry/v1/logs
       source: app/vlinsert/opentelemetry/opentelemetry.go
     - kind: route
+      surface: vl
       name: /insert/ready
       source: app/vlinsert/main.go
     - kind: route
+      surface: vl
       name: /insert/splunk/
       source: app/vlinsert/main.go
     - kind: route
+      surface: vl
       name: /insert/splunk/services/collector/event
       source: app/vlinsert/splunk/splunk.go
     - kind: route
+      surface: vl
       name: /insert/splunk/services/collector/event/1.0
       source: app/vlinsert/splunk/splunk.go
     - kind: route
+      surface: vl
       name: /insert/splunk/services/collector/health
       source: app/vlinsert/splunk/splunk.go
     - kind: route
+      surface: vl
       name: /internal/delete/active_tasks
       source: app/vlselect/internalselect/internalselect.go
     - kind: route
+      surface: vl
       name: /internal/delete/run_task
       source: app/vlselect/internalselect/internalselect.go
     - kind: route
+      surface: vl
       name: /internal/delete/stop_task
       source: app/vlselect/internalselect/internalselect.go
     - kind: route
+      surface: vl
       name: /internal/force_flush
       source: app/vlstorage/main.go
     - kind: route
+      surface: vl
       name: /internal/force_merge
       source: app/vlstorage/main.go
     - kind: route
+      surface: vl
       name: /internal/insert
       source: app/vlinsert/main.go
     - kind: route
+      surface: vl
       name: /internal/log_new_streams
       source: app/vlstorage/main.go
     - kind: route
+      surface: vl
       name: /internal/partition/attach
       source: app/vlstorage/main.go
     - kind: route
+      surface: vl
       name: /internal/partition/detach
       source: app/vlstorage/main.go
     - kind: route
+      surface: vl
       name: /internal/partition/list
       source: app/vlstorage/main.go
     - kind: route
+      surface: vl
       name: /internal/partition/snapshot/create
       source: app/vlstorage/main.go
     - kind: route
+      surface: vl
       name: /internal/partition/snapshot/delete
       source: app/vlstorage/main.go
     - kind: route
+      surface: vl
       name: /internal/partition/snapshot/delete_stale
       source: app/vlstorage/main.go
     - kind: route
+      surface: vl
       name: /internal/partition/snapshot/list
       source: app/vlstorage/main.go
     - kind: route
+      surface: vl
       name: /internal/select/field_names
       source: app/vlselect/internalselect/internalselect.go
     - kind: route
+      surface: vl
       name: /internal/select/field_values
       source: app/vlselect/internalselect/internalselect.go
     - kind: route
+      surface: vl
       name: /internal/select/query
       source: app/vlselect/internalselect/internalselect.go
     - kind: route
+      surface: vl
       name: /internal/select/stream_field_names
       source: app/vlselect/internalselect/internalselect.go
     - kind: route
+      surface: vl
       name: /internal/select/stream_field_values
       source: app/vlselect/internalselect/internalselect.go
     - kind: route
+      surface: vl
       name: /internal/select/stream_ids
       source: app/vlselect/internalselect/internalselect.go
     - kind: route
+      surface: vl
       name: /internal/select/streams
       source: app/vlselect/internalselect/internalselect.go
     - kind: route
+      surface: vl
       name: /internal/select/tenant_ids
       source: app/vlselect/internalselect/internalselect.go
     - kind: route
+      surface: vl
       name: /select/buildinfo
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /select/logsql/facets
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /select/logsql/field_names
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /select/logsql/field_values
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /select/logsql/hits
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /select/logsql/query
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /select/logsql/query_time_range
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /select/logsql/stats_query
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /select/logsql/stats_query_range
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /select/logsql/stream_field_names
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /select/logsql/stream_field_values
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /select/logsql/stream_ids
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /select/logsql/streams
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /select/logsql/tail
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /select/tenant_ids
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /select/vmui
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /select/vmui/
       source: app/vlselect/main.go
     - kind: route
+      surface: vl
       name: /services/collector/
       source: app/vlinsert/main.go
     - kind: route
+      surface: vl
       name: /services/collector/event
       source: app/vlinsert/splunk/splunk.go
     - kind: route
+      surface: vl
       name: /services/collector/event/1.0
       source: app/vlinsert/splunk/splunk.go
     - kind: route
+      surface: vl
       name: /services/collector/health
       source: app/vlinsert/splunk/splunk.go
     - kind: route
+      surface: vt
+      name: /delete/active_tasks
+      source: app/vtselect/logsql.go
+    - kind: route
+      surface: vt
+      name: /delete/run_task
+      source: app/vtselect/logsql.go
+    - kind: route
+      surface: vt
+      name: /delete/stop_task
+      source: app/vtselect/logsql.go
+    - kind: route
+      surface: vt
+      name: /insert/opentelemetry/
+      source: app/vtinsert/main.go
+    - kind: route
+      surface: vt
       name: /insert/opentelemetry/v1/traces
       source: app/vtinsert/opentelemetry/otlphttp.go
     - kind: route
+      surface: vt
+      name: /insert/ready
+      source: app/vtinsert/main.go
+    - kind: route
+      surface: vt
+      name: /internal/delete/active_tasks
+      source: app/vtselect/internalselect/internalselect.go
+    - kind: route
+      surface: vt
+      name: /internal/delete/run_task
+      source: app/vtselect/internalselect/internalselect.go
+    - kind: route
+      surface: vt
+      name: /internal/delete/stop_task
+      source: app/vtselect/internalselect/internalselect.go
+    - kind: route
+      surface: vt
+      name: /internal/force_flush
+      source: app/vtstorage/main.go
+    - kind: route
+      surface: vt
+      name: /internal/force_merge
+      source: app/vtstorage/main.go
+    - kind: route
+      surface: vt
+      name: /internal/insert
+      source: app/vtinsert/main.go
+    - kind: route
+      surface: vt
+      name: /internal/log_new_streams
+      source: app/vtstorage/main.go
+    - kind: route
+      surface: vt
+      name: /internal/partition/attach
+      source: app/vtstorage/main.go
+    - kind: route
+      surface: vt
+      name: /internal/partition/detach
+      source: app/vtstorage/main.go
+    - kind: route
+      surface: vt
+      name: /internal/partition/list
+      source: app/vtstorage/main.go
+    - kind: route
+      surface: vt
+      name: /internal/partition/snapshot/create
+      source: app/vtstorage/main.go
+    - kind: route
+      surface: vt
+      name: /internal/partition/snapshot/delete
+      source: app/vtstorage/main.go
+    - kind: route
+      surface: vt
+      name: /internal/partition/snapshot/delete_stale
+      source: app/vtstorage/main.go
+    - kind: route
+      surface: vt
+      name: /internal/partition/snapshot/list
+      source: app/vtstorage/main.go
+    - kind: route
+      surface: vt
+      name: /internal/select/field_names
+      source: app/vtselect/internalselect/internalselect.go
+    - kind: route
+      surface: vt
+      name: /internal/select/field_values
+      source: app/vtselect/internalselect/internalselect.go
+    - kind: route
+      surface: vt
+      name: /internal/select/query
+      source: app/vtselect/internalselect/internalselect.go
+    - kind: route
+      surface: vt
+      name: /internal/select/stream_field_names
+      source: app/vtselect/internalselect/internalselect.go
+    - kind: route
+      surface: vt
+      name: /internal/select/stream_field_values
+      source: app/vtselect/internalselect/internalselect.go
+    - kind: route
+      surface: vt
+      name: /internal/select/stream_ids
+      source: app/vtselect/internalselect/internalselect.go
+    - kind: route
+      surface: vt
+      name: /internal/select/streams
+      source: app/vtselect/internalselect/internalselect.go
+    - kind: route
+      surface: vt
+      name: /internal/select/tenant_ids
+      source: app/vtselect/internalselect/internalselect.go
+    - kind: route
+      surface: vt
+      name: /select/buildinfo
+      source: app/vtselect/main.go
+    - kind: route
+      surface: vt
       name: /select/jaeger/
       source: app/vtselect/main.go
     - kind: route
+      surface: vt
       name: /select/jaeger/api/dependencies
       source: app/vtselect/traces/jaeger/jaeger.go
     - kind: route
+      surface: vt
       name: /select/jaeger/api/services
       source: app/vtselect/traces/jaeger/jaeger.go
     - kind: route
+      surface: vt
       name: /select/jaeger/api/services/
       source: app/vtselect/traces/jaeger/jaeger.go
     - kind: route
+      surface: vt
       name: /select/jaeger/api/traces
       source: app/vtselect/traces/jaeger/jaeger.go
     - kind: route
+      surface: vt
       name: /select/jaeger/api/traces/
       source: app/vtselect/traces/jaeger/jaeger.go
     - kind: route
+      surface: vt
+      name: /select/logsql/facets
+      source: app/vtselect/logsql.go
+    - kind: route
+      surface: vt
+      name: /select/logsql/field_names
+      source: app/vtselect/logsql.go
+    - kind: route
+      surface: vt
+      name: /select/logsql/field_values
+      source: app/vtselect/logsql.go
+    - kind: route
+      surface: vt
+      name: /select/logsql/hits
+      source: app/vtselect/logsql.go
+    - kind: route
+      surface: vt
+      name: /select/logsql/query
+      source: app/vtselect/logsql.go
+    - kind: route
+      surface: vt
+      name: /select/logsql/query_time_range
+      source: app/vtselect/logsql.go
+    - kind: route
+      surface: vt
+      name: /select/logsql/stats_query
+      source: app/vtselect/logsql.go
+    - kind: route
+      surface: vt
+      name: /select/logsql/stats_query_range
+      source: app/vtselect/logsql.go
+    - kind: route
+      surface: vt
+      name: /select/logsql/stream_field_names
+      source: app/vtselect/logsql.go
+    - kind: route
+      surface: vt
+      name: /select/logsql/stream_field_values
+      source: app/vtselect/logsql.go
+    - kind: route
+      surface: vt
+      name: /select/logsql/stream_ids
+      source: app/vtselect/logsql.go
+    - kind: route
+      surface: vt
+      name: /select/logsql/streams
+      source: app/vtselect/logsql.go
+    - kind: route
+      surface: vt
+      name: /select/logsql/tail
+      source: app/vtselect/main.go
+    - kind: route
+      surface: vt
       name: /select/tempo/
       source: app/vtselect/main.go
     - kind: route
+      surface: vt
       name: /select/tempo/api/echo
       source: app/vtselect/traces/tempo/tempo.go
     - kind: route
+      surface: vt
       name: /select/tempo/api/metrics/query_range
       source: app/vtselect/traces/tempo/tempo.go
     - kind: route
+      surface: vt
       name: /select/tempo/api/search
       source: app/vtselect/traces/tempo/tempo.go
     - kind: route
+      surface: vt
       name: /select/tempo/api/v2/search/tag/
       source: app/vtselect/traces/tempo/tempo.go
     - kind: route
+      surface: vt
       name: /select/tempo/api/v2/search/tags
       source: app/vtselect/traces/tempo/tempo.go
     - kind: route
+      surface: vt
       name: /select/tempo/api/v2/traces/
       source: app/vtselect/traces/tempo/tempo.go
+    - kind: route
+      surface: vt
+      name: /select/tenant_ids
+      source: app/vtselect/logsql.go
+    - kind: route
+      surface: vt
+      name: /select/vmui
+      source: app/vtselect/main.go
+    - kind: route
+      surface: vt
+      name: /select/vmui/
+      source: app/vtselect/main.go
     - kind: filter
+      surface: vl
       name: and
       source: lib/logstorage/filter_and.go
     - kind: filter
+      surface: vl
       name: any_case_phrase
       source: lib/logstorage/filter_any_case_phrase.go
     - kind: filter
+      surface: vl
       name: any_case_prefix
       source: lib/logstorage/filter_any_case_prefix.go
     - kind: filter
+      surface: vl
       name: contains_all
       source: lib/logstorage/filter_contains_all.go
     - kind: filter
+      surface: vl
       name: contains_any
       source: lib/logstorage/filter_contains_any.go
     - kind: filter
+      surface: vl
       name: contains_common_case
       source: lib/logstorage/filter_contains_common_case.go
     - kind: filter
+      surface: vl
       name: day_range
       source: lib/logstorage/filter_day_range.go
     - kind: filter
+      surface: vl
       name: eq_field
       source: lib/logstorage/filter_eq_field.go
     - kind: filter
+      surface: vl
       name: equals_common_case
       source: lib/logstorage/filter_equals_common_case.go
     - kind: filter
+      surface: vl
       name: exact
       source: lib/logstorage/filter_exact.go
     - kind: filter
+      surface: vl
       name: exact_prefix
       source: lib/logstorage/filter_exact_prefix.go
     - kind: filter
+      surface: vl
       name: in
       source: lib/logstorage/filter_in.go
     - kind: filter
+      surface: vl
       name: ipv4_range
       source: lib/logstorage/filter_ipv4_range.go
     - kind: filter
+      surface: vl
       name: ipv6_range
       source: lib/logstorage/filter_ipv6_range.go
     - kind: filter
+      surface: vl
       name: json_array_contains_any
       source: lib/logstorage/filter_json_array_contains_any.go
     - kind: filter
+      surface: vl
       name: le_field
       source: lib/logstorage/filter_le_field.go
     - kind: filter
+      surface: vl
       name: len_range
       source: lib/logstorage/filter_len_range.go
     - kind: filter
+      surface: vl
       name: noop
       source: lib/logstorage/filter_noop.go
     - kind: filter
+      surface: vl
       name: not
       source: lib/logstorage/filter_not.go
     - kind: filter
+      surface: vl
       name: or
       source: lib/logstorage/filter_or.go
     - kind: filter
+      surface: vl
       name: pattern_match
       source: lib/logstorage/filter_pattern_match.go
     - kind: filter
+      surface: vl
       name: phrase
       source: lib/logstorage/filter_phrase.go
     - kind: filter
+      surface: vl
       name: prefix
       source: lib/logstorage/filter_prefix.go
     - kind: filter
+      surface: vl
       name: range
       source: lib/logstorage/filter_range.go
     - kind: filter
+      surface: vl
       name: regexp
       source: lib/logstorage/filter_regexp.go
     - kind: filter
+      surface: vl
       name: sequence
       source: lib/logstorage/filter_sequence.go
     - kind: filter
+      surface: vl
       name: stream
       source: lib/logstorage/filter_stream.go
     - kind: filter
+      surface: vl
       name: stream_id
       source: lib/logstorage/filter_stream_id.go
     - kind: filter
+      surface: vl
       name: string_range
       source: lib/logstorage/filter_string_range.go
     - kind: filter
+      surface: vl
       name: substring
       source: lib/logstorage/filter_substring.go
     - kind: filter
+      surface: vl
       name: time
       source: lib/logstorage/filter_time.go
     - kind: filter
+      surface: vl
       name: value_type
       source: lib/logstorage/filter_value_type.go
     - kind: filter
+      surface: vl
       name: week_range
       source: lib/logstorage/filter_week_range.go
     - kind: pipe
+      surface: vl
       name: block_stats
       source: lib/logstorage/pipe_block_stats.go
     - kind: pipe
+      surface: vl
       name: blocks_count
       source: lib/logstorage/pipe_blocks_count.go
     - kind: pipe
+      surface: vl
       name: collapse_nums
       source: lib/logstorage/pipe_collapse_nums.go
     - kind: pipe
+      surface: vl
       name: copy
       source: lib/logstorage/pipe_copy.go
     - kind: pipe
+      surface: vl
       name: decolorize
       source: lib/logstorage/pipe_decolorize.go
     - kind: pipe
+      surface: vl
       name: delete
       source: lib/logstorage/pipe_delete.go
     - kind: pipe
+      surface: vl
       name: drop_empty_fields
       source: lib/logstorage/pipe_drop_empty_fields.go
     - kind: pipe
+      surface: vl
       name: extract
       source: lib/logstorage/pipe_extract.go
     - kind: pipe
+      surface: vl
       name: extract_regexp
       source: lib/logstorage/pipe_extract_regexp.go
     - kind: pipe
+      surface: vl
       name: facets
       source: lib/logstorage/pipe_facets.go
     - kind: pipe
+      surface: vl
       name: field_names
       source: lib/logstorage/pipe_field_names.go
     - kind: pipe
+      surface: vl
       name: field_values
       source: lib/logstorage/pipe_field_values.go
     - kind: pipe
+      surface: vl
       name: fields
       source: lib/logstorage/pipe_fields.go
     - kind: pipe
+      surface: vl
       name: filter
       source: lib/logstorage/pipe_filter.go
     - kind: pipe
+      surface: vl
       name: first
       source: lib/logstorage/pipe_first.go
     - kind: pipe
+      surface: vl
       name: format
       source: lib/logstorage/pipe_format.go
     - kind: pipe
+      surface: vl
       name: generate_sequence
       source: lib/logstorage/pipe_generate_sequence.go
     - kind: pipe
+      surface: vl
       name: hash
       source: lib/logstorage/pipe_hash.go
     - kind: pipe
+      surface: vl
       name: join
       source: lib/logstorage/pipe_join.go
     - kind: pipe
+      surface: vl
       name: json_array_len
       source: lib/logstorage/pipe_json_array_len.go
     - kind: pipe
+      surface: vl
       name: last
       source: lib/logstorage/pipe_last.go
     - kind: pipe
+      surface: vl
       name: len
       source: lib/logstorage/pipe_len.go
     - kind: pipe
+      surface: vl
       name: limit
       source: lib/logstorage/pipe_limit.go
     - kind: pipe
+      surface: vl
       name: math
       source: lib/logstorage/pipe_math.go
     - kind: pipe
+      surface: vl
       name: offset
       source: lib/logstorage/pipe_offset.go
     - kind: pipe
+      surface: vl
       name: pack_json
       source: lib/logstorage/pipe_pack_json.go
     - kind: pipe
+      surface: vl
       name: pack_logfmt
       source: lib/logstorage/pipe_pack_logfmt.go
     - kind: pipe
+      surface: vl
       name: query_stats
       source: lib/logstorage/pipe_query_stats.go
     - kind: pipe
+      surface: vl
       name: rename
       source: lib/logstorage/pipe_rename.go
     - kind: pipe
+      surface: vl
       name: replace
       source: lib/logstorage/pipe_replace.go
     - kind: pipe
+      surface: vl
       name: replace_regexp
       source: lib/logstorage/pipe_replace_regexp.go
     - kind: pipe
+      surface: vl
       name: running_stats
       source: lib/logstorage/pipe_running_stats.go
     - kind: pipe
+      surface: vl
       name: sample
       source: lib/logstorage/pipe_sample.go
     - kind: pipe
+      surface: vl
       name: set_stream_fields
       source: lib/logstorage/pipe_set_stream_fields.go
     - kind: pipe
+      surface: vl
       name: sort
       source: lib/logstorage/pipe_sort.go
     - kind: pipe
+      surface: vl
       name: split
       source: lib/logstorage/pipe_split.go
     - kind: pipe
+      surface: vl
       name: stats
       source: lib/logstorage/pipe_stats.go
     - kind: pipe
+      surface: vl
       name: stream_context
       source: lib/logstorage/pipe_stream_context.go
     - kind: pipe
+      surface: vl
       name: time_add
       source: lib/logstorage/pipe_time_add.go
     - kind: pipe
+      surface: vl
       name: top
       source: lib/logstorage/pipe_top.go
     - kind: pipe
+      surface: vl
       name: total_stats
       source: lib/logstorage/pipe_total_stats.go
     - kind: pipe
+      surface: vl
       name: union
       source: lib/logstorage/pipe_union.go
     - kind: pipe
+      surface: vl
       name: uniq
       source: lib/logstorage/pipe_uniq.go
     - kind: pipe
+      surface: vl
       name: unpack_json
       source: lib/logstorage/pipe_unpack_json.go
     - kind: pipe
+      surface: vl
       name: unpack_logfmt
       source: lib/logstorage/pipe_unpack_logfmt.go
     - kind: pipe
+      surface: vl
       name: unpack_syslog
       source: lib/logstorage/pipe_unpack_syslog.go
     - kind: pipe
+      surface: vl
       name: unpack_words
       source: lib/logstorage/pipe_unpack_words.go
     - kind: pipe
+      surface: vl
       name: unroll
       source: lib/logstorage/pipe_unroll.go
     - kind: stats
+      surface: vl
       name: any
       source: lib/logstorage/stats_any.go
     - kind: stats
+      surface: vl
       name: avg
       source: lib/logstorage/stats_avg.go
     - kind: stats
+      surface: vl
       name: count
       source: lib/logstorage/stats_count.go
     - kind: stats
+      surface: vl
       name: count_empty
       source: lib/logstorage/stats_count_empty.go
     - kind: stats
+      surface: vl
       name: count_uniq
       source: lib/logstorage/stats_count_uniq.go
     - kind: stats
+      surface: vl
       name: count_uniq_hash
       source: lib/logstorage/stats_count_uniq_hash.go
     - kind: stats
+      surface: vl
       name: field_max
       source: lib/logstorage/stats_field_max.go
     - kind: stats
+      surface: vl
       name: field_min
       source: lib/logstorage/stats_field_min.go
     - kind: stats
+      surface: vl
       name: histogram
       source: lib/logstorage/stats_histogram.go
     - kind: stats
+      surface: vl
       name: json_values
       source: lib/logstorage/stats_json_values.go
     - kind: stats
+      surface: vl
       name: max
       source: lib/logstorage/stats_max.go
     - kind: stats
+      surface: vl
       name: median
       source: lib/logstorage/stats_median.go
     - kind: stats
+      surface: vl
       name: min
       source: lib/logstorage/stats_min.go
     - kind: stats
+      surface: vl
       name: quantile
       source: lib/logstorage/stats_quantile.go
     - kind: stats
+      surface: vl
       name: rate
       source: lib/logstorage/stats_rate.go
     - kind: stats
+      surface: vl
       name: rate_sum
       source: lib/logstorage/stats_rate_sum.go
     - kind: stats
+      surface: vl
       name: row_any
       source: lib/logstorage/stats_row_any.go
     - kind: stats
+      surface: vl
       name: row_max
       source: lib/logstorage/stats_row_max.go
     - kind: stats
+      surface: vl
       name: row_min
       source: lib/logstorage/stats_row_min.go
     - kind: stats
+      surface: vl
       name: stddev
       source: lib/logstorage/stats_stddev.go
     - kind: stats
+      surface: vl
       name: sum
       source: lib/logstorage/stats_sum.go
     - kind: stats
+      surface: vl
       name: sum_len
       source: lib/logstorage/stats_sum_len.go
     - kind: stats
+      surface: vl
       name: uniq_values
       source: lib/logstorage/stats_uniq_values.go
     - kind: stats
+      surface: vl
       name: values
       source: lib/logstorage/stats_values.go
     - kind: traceql
+      surface: vt
       name: avg_over_time
       source: lib/traceql/pipe_metrics.go
     - kind: traceql
+      surface: vt
       name: compare
       source: lib/traceql/pipe_metrics.go
     - kind: traceql
+      surface: vt
       name: count_over_time
       source: lib/traceql/pipe_metrics.go
     - kind: traceql
+      surface: vt
       name: histogram_over_time
       source: lib/traceql/pipe_metrics.go
     - kind: traceql
+      surface: vt
       name: max_over_time
       source: lib/traceql/pipe_metrics.go
     - kind: traceql
+      surface: vt
       name: min_over_time
       source: lib/traceql/pipe_metrics.go
     - kind: traceql
+      surface: vt
       name: quantile_over_time
       source: lib/traceql/pipe_metrics.go
     - kind: traceql
+      surface: vt
       name: rate
       source: lib/traceql/pipe_metrics.go
     - kind: traceql
+      surface: vt
       name: sum_over_time
       source: lib/traceql/pipe_metrics.go
     - kind: flag
+      surface: vl
       name: datadog.ignoreFields
       source: app/vlinsert/datadog/datadog.go
       linked: true
     - kind: flag
+      surface: vl
       name: datadog.maxRequestSize
       source: app/vlinsert/datadog/datadog.go
       linked: true
     - kind: flag
+      surface: vl
       name: datadog.streamFields
       source: app/vlinsert/datadog/datadog.go
       linked: true
     - kind: flag
+      surface: vl
       name: defaultMsgValue
       source: app/vlinsert/insertutil/flags.go
       linked: true
     - kind: flag
+      surface: vl
       name: defaultParallelReaders
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: delete.enable
       source: app/vlselect/main.go
     - kind: flag
+      surface: vl
       name: elasticsearch.version
       source: app/vlinsert/elasticsearch/elasticsearch.go
       linked: true
     - kind: flag
+      surface: vl
       name: forceFlushAuthKey
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: forceMergeAuthKey
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: futureRetention
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: inmemoryDataFlushInterval
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: insert.concurrency
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: insert.disable
       source: app/vlinsert/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: insert.disableCompression
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: insert.maxFieldsPerLine
       source: app/vlinsert/insertutil/flags.go
       linked: true
     - kind: flag
+      surface: vl
       name: insert.maxLineSizeBytes
       source: app/vlinsert/insertutil/flags.go
       linked: true
     - kind: flag
+      surface: vl
       name: internaldelete.enable
       source: app/vlselect/main.go
     - kind: flag
+      surface: vl
       name: internalinsert.disable
       source: app/vlinsert/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: internalinsert.maxRequestSize
       source: app/vlinsert/internalinsert/internalinsert.go
       linked: true
     - kind: flag
+      surface: vl
       name: internalselect.disable
       source: app/vlselect/main.go
     - kind: flag
+      surface: vl
       name: internalselect.maxConcurrentRequests
       source: app/vlselect/internalselect/internalselect.go
       linked: true
     - kind: flag
+      surface: vl
       name: journald.ignoreFields
       source: app/vlinsert/journald/journald.go
       linked: true
     - kind: flag
+      surface: vl
       name: journald.includeEntryMetadata
       source: app/vlinsert/journald/journald.go
       linked: true
     - kind: flag
+      surface: vl
       name: journald.streamFields
       source: app/vlinsert/journald/journald.go
       linked: true
     - kind: flag
+      surface: vl
       name: journald.tenantID
       source: app/vlinsert/journald/journald.go
       linked: true
     - kind: flag
+      surface: vl
       name: journald.timeField
       source: app/vlinsert/journald/journald.go
       linked: true
     - kind: flag
+      surface: vl
       name: journald.useRemoteIP
       source: app/vlinsert/journald/journald.go
       linked: true
     - kind: flag
+      surface: vl
       name: logIngestedRows
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: logNewStreams
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: logNewStreamsAuthKey
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: loki.disableMessageParsing
       source: app/vlinsert/loki/loki.go
       linked: true
     - kind: flag
+      surface: vl
       name: loki.maxRequestSize
       source: app/vlinsert/loki/loki_json.go
       linked: true
     - kind: flag
+      surface: vl
       name: loki.messageFieldsPrefix
       source: app/vlinsert/loki/loki.go
       linked: true
     - kind: flag
+      surface: vl
       name: maxBackfillAge
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: nativeinsert.maxRequestSize
       source: app/vlinsert/nativeinsert/nativeinsert.go
       linked: true
     - kind: flag
+      surface: vl
       name: opentelemetry.maxRequestSize
       source: app/vlinsert/opentelemetry/opentelemetry.go
       linked: true
     - kind: flag
+      surface: vl
       name: partitionManageAuthKey
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: retention.maxDiskSpaceUsageBytes
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: retention.maxDiskUsagePercent
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: retentionPeriod
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: search.allowPartialResponse
       source: app/vlselect/logsql/logsql.go
       linked: true
     - kind: flag
+      surface: vl
       name: search.logSlowQueryDuration
       source: app/vlselect/main.go
     - kind: flag
+      surface: vl
       name: search.maxConcurrentRequests
       source: app/vlselect/main.go
     - kind: flag
+      surface: vl
       name: search.maxQueryDuration
       source: app/vlselect/main.go
     - kind: flag
+      surface: vl
       name: search.maxQueryLen
       source: app/vlselect/logsql/logsql.go
       linked: true
     - kind: flag
+      surface: vl
       name: search.maxQueryTimeRange
       source: app/vlselect/logsql/logsql.go
       linked: true
     - kind: flag
+      surface: vl
       name: search.maxQueueDuration
       source: app/vlselect/main.go
     - kind: flag
+      surface: vl
       name: select.disable
       source: app/vlselect/main.go
     - kind: flag
+      surface: vl
       name: select.disableCompression
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: snapshotsMaxAge
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: splunk.ignoreFields
       source: app/vlinsert/splunk/splunk.go
       linked: true
     - kind: flag
+      surface: vl
       name: splunk.maxRequestSize
       source: app/vlinsert/splunk/splunk.go
       linked: true
     - kind: flag
+      surface: vl
       name: splunk.msgField
       source: app/vlinsert/splunk/splunk.go
       linked: true
     - kind: flag
+      surface: vl
       name: splunk.preserveJSONKeys
       source: app/vlinsert/splunk/splunk.go
       linked: true
     - kind: flag
+      surface: vl
       name: splunk.streamFields
       source: app/vlinsert/splunk/splunk.go
       linked: true
     - kind: flag
+      surface: vl
       name: splunk.tenantID
       source: app/vlinsert/splunk/splunk.go
       linked: true
     - kind: flag
+      surface: vl
       name: splunk.timeField
       source: app/vlinsert/splunk/splunk.go
       linked: true
     - kind: flag
+      surface: vl
       name: storage.minFreeDiskSpaceBytes
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: storageDataPath
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: storageNode
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: storageNode.bearerToken
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: storageNode.bearerTokenFile
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: storageNode.password
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: storageNode.passwordFile
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: storageNode.tls
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: storageNode.tlsCAFile
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: storageNode.tlsCertFile
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: storageNode.tlsInsecureSkipVerify
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: storageNode.tlsKeyFile
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: storageNode.tlsServerName
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: storageNode.username
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: storageNode.usernameFile
       source: app/vlstorage/main.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.compressMethod.tcp
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.compressMethod.udp
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.compressMethod.unix
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.decolorizeFields.tcp
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.decolorizeFields.udp
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.decolorizeFields.unix
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.extraFields.tcp
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.extraFields.udp
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.extraFields.unix
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.ignoreFields.tcp
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.ignoreFields.udp
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.ignoreFields.unix
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.listenAddr.tcp
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.listenAddr.udp
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.listenAddr.unix
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.streamFields.tcp
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.streamFields.udp
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.streamFields.unix
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.tenantID.tcp
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.tenantID.udp
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.tenantID.unix
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.timezone
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.tls
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.tlsCertFile
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.tlsCipherSuites
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.tlsKeyFile
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.tlsMinVersion
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.useLocalTimestamp.tcp
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.useLocalTimestamp.udp
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.useLocalTimestamp.unix
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.useRemoteIP.tcp
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.useRemoteIP.udp
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vl
       name: syslog.useRemoteIP.unix
       source: app/vlinsert/syslog/syslog.go
       linked: true
     - kind: flag
+      surface: vt
+      name: defaultMsgValue
+      source: app/vtinsert/insertutil/common_params.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: defaultParallelReaders
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: delete.enable
+      source: app/vtselect/main.go
+    - kind: flag
+      surface: vt
+      name: forceFlushAuthKey
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: forceMergeAuthKey
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: futureRetention
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: inmemoryDataFlushInterval
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: insert.concurrency
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: insert.disable
+      source: app/vtinsert/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: insert.disableCompression
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
       name: insert.indexFlushInterval
       source: app/vtinsert/insertutil/index_helper.go
       linked: true
     - kind: flag
+      surface: vt
+      name: insert.maxFieldsPerLine
+      source: app/vtinsert/insertutil/flags.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: internaldelete.enable
+      source: app/vtselect/main.go
+    - kind: flag
+      surface: vt
+      name: internalinsert.disable
+      source: app/vtinsert/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: internalinsert.maxRequestSize
+      source: app/vtinsert/internalinsert/internalinsert.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: internalselect.disable
+      source: app/vtselect/main.go
+    - kind: flag
+      surface: vt
+      name: internalselect.maxConcurrentRequests
+      source: app/vtselect/internalselect/internalselect.go
+    - kind: flag
+      surface: vt
+      name: logIngestedRows
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: logNewStreams
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: logNewStreamsAuthKey
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: maxBackfillAge
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
       name: opentelemetry.traces.maxRequestSize
       source: app/vtinsert/opentelemetry/opentelemetry.go
       linked: true
     - kind: flag
+      surface: vt
       name: otlpGRPC.tls
       source: app/vtinsert/main.go
       linked: true
     - kind: flag
+      surface: vt
       name: otlpGRPC.tlsCertFile
       source: app/vtinsert/main.go
       linked: true
     - kind: flag
+      surface: vt
       name: otlpGRPC.tlsCipherSuites
       source: app/vtinsert/main.go
       linked: true
     - kind: flag
+      surface: vt
       name: otlpGRPC.tlsKeyFile
       source: app/vtinsert/main.go
       linked: true
     - kind: flag
+      surface: vt
       name: otlpGRPC.tlsMinVersion
       source: app/vtinsert/main.go
       linked: true
     - kind: flag
+      surface: vt
       name: otlpGRPCListenAddr
       source: app/vtinsert/main.go
       linked: true
     - kind: flag
+      surface: vt
+      name: partitionManageAuthKey
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: retention.maxDiskSpaceUsageBytes
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: retention.maxDiskUsagePercent
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: retentionPeriod
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: search.allowPartialResponse
+      source: app/vtselect/logsql/logsql.go
+    - kind: flag
+      surface: vt
       name: search.latencyOffset
       source: app/vtselect/traces/tracecommon/tracecommon.go
       linked: true
     - kind: flag
+      surface: vt
+      name: search.logSlowQueryDuration
+      source: app/vtselect/main.go
+    - kind: flag
+      surface: vt
+      name: search.maxConcurrentRequests
+      source: app/vtselect/main.go
+    - kind: flag
+      surface: vt
+      name: search.maxQueryDuration
+      source: app/vtselect/main.go
+    - kind: flag
+      surface: vt
+      name: search.maxQueryLen
+      source: app/vtselect/logsql/logsql.go
+    - kind: flag
+      surface: vt
+      name: search.maxQueryTimeRange
+      source: app/vtselect/logsql/logsql.go
+    - kind: flag
+      surface: vt
+      name: search.maxQueueDuration
+      source: app/vtselect/main.go
+    - kind: flag
+      surface: vt
       name: search.traceMaxDurationWindow
       source: app/vtselect/traces/tracecommon/tracecommon.go
       linked: true
     - kind: flag
+      surface: vt
       name: search.traceMaxServiceNameList
       source: app/vtselect/traces/tracecommon/tracecommon.go
       linked: true
     - kind: flag
+      surface: vt
       name: search.traceMaxSpanNameList
       source: app/vtselect/traces/tracecommon/tracecommon.go
       linked: true
     - kind: flag
+      surface: vt
       name: search.traceSearchStep
       source: app/vtselect/traces/tracecommon/tracecommon.go
       linked: true
     - kind: flag
+      surface: vt
       name: search.traceServiceAndSpanNameLookbehind
       source: app/vtselect/traces/tracecommon/tracecommon.go
       linked: true
     - kind: flag
+      surface: vt
+      name: select.disable
+      source: app/vtselect/main.go
+    - kind: flag
+      surface: vt
+      name: select.disableCompression
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
       name: servicegraph.databaseTaskLimit
       source: app/victoria-traces/servicegraph/servicegraph.go
       linked: true
     - kind: flag
+      surface: vt
       name: servicegraph.enableTask
       source: app/victoria-traces/servicegraph/servicegraph.go
       linked: true
     - kind: flag
+      surface: vt
       name: servicegraph.taskInterval
       source: app/victoria-traces/servicegraph/servicegraph.go
       linked: true
     - kind: flag
+      surface: vt
       name: servicegraph.taskLimit
       source: app/victoria-traces/servicegraph/servicegraph.go
       linked: true
     - kind: flag
+      surface: vt
       name: servicegraph.taskLookbehind
       source: app/victoria-traces/servicegraph/servicegraph.go
       linked: true
     - kind: flag
+      surface: vt
       name: servicegraph.taskTimeout
       source: app/victoria-traces/servicegraph/servicegraph.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: snapshotsMaxAge
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: storage.minFreeDiskSpaceBytes
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: storageDataPath
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: storageNode
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: storageNode.bearerToken
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: storageNode.bearerTokenFile
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: storageNode.password
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: storageNode.passwordFile
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: storageNode.tls
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: storageNode.tlsCAFile
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: storageNode.tlsCertFile
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: storageNode.tlsInsecureSkipVerify
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: storageNode.tlsKeyFile
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: storageNode.tlsServerName
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: storageNode.username
+      source: app/vtstorage/main.go
+      linked: true
+    - kind: flag
+      surface: vt
+      name: storageNode.usernameFile
+      source: app/vtstorage/main.go
       linked: true
