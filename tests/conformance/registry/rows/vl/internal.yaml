@@ -15,7 +15,7 @@
 - { id: vl.internal.delete_stop_task.status, title: "/internal/delete/stop_task — peer fanout, stop a delete task", surface: vl, kind: internal, origin: native, expect: pass, targets: [global], seed: [logs.base], upstream: { route: /internal/delete/stop_task }, request: { method: GET, path: /internal/delete/stop_task, params: { version: "{{proto.internal_delete}}", task_id: "{{seed.task_id}}" } }, compare: { type: status }, layers: [api], pending: true }
 
 - id: vl.internal.force_flush.unsupported
-  title: "/internal/force_flush — cold has no local storage to flush"
+  title: "/internal/force_flush — LH logs never registers this path"
   surface: vl
   kind: admin
   origin: native
@@ -27,9 +27,10 @@
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
+  notes: "Unrouted in the LH logs binary (no registration, no catch-all) → net/http default 404; hot VL serves it from local storage."
 
 - id: vl.internal.force_merge.unsupported
-  title: "/internal/force_merge — cold has no local storage to merge"
+  title: "/internal/force_merge — LH logs never registers this path"
   surface: vl
   kind: admin
   origin: native
@@ -41,6 +42,7 @@
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
+  notes: "Unrouted in the LH logs binary (no registration, no catch-all) → net/http default 404; hot VL serves it from local storage."
 
 - id: vl.internal.log_new_streams.unsupported
   title: "/internal/log_new_streams — cold has no local storage to track new streams"

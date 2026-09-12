@@ -161,7 +161,7 @@
 - { id: vt.internal.delete_stop_task.status, title: "/internal/delete/stop_task — peer fanout, stop a delete task", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/delete/stop_task }, request: { method: GET, path: /internal/delete/stop_task, params: { version: "{{proto.internal_delete}}", task_id: "{{seed.task_id}}" } }, compare: { type: status }, layers: [api], pending: true, notes: "LH traces mounts VL's internalselect package for /internal/select/* and /internal/delete/* (lakehouse-traces/main.go:1128-1129), not a VT-specific implementation, so this endpoint is gated by VL's checkProtocolVersion." }
 
 - id: vt.internal.force_flush.unsupported
-  title: "/internal/force_flush — cold has no local storage to flush"
+  title: "/internal/force_flush — LH traces never registers this path"
   surface: vt
   kind: admin
   origin: native
@@ -173,9 +173,10 @@
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
+  notes: "Unrouted in the LH traces binary (no registration, no catch-all) → net/http default 404; hot VT serves it from local storage."
 
 - id: vt.internal.force_merge.unsupported
-  title: "/internal/force_merge — cold has no local storage to merge"
+  title: "/internal/force_merge — LH traces never registers this path"
   surface: vt
   kind: admin
   origin: native
@@ -187,6 +188,7 @@
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
+  notes: "Unrouted in the LH traces binary (no registration, no catch-all) → net/http default 404; hot VT serves it from local storage."
 
 - id: vt.internal.log_new_streams.unsupported
   title: "/internal/log_new_streams — LH traces never registers this path"
