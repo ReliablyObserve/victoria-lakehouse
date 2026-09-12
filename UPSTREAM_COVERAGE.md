@@ -9,7 +9,7 @@ Upstream: VictoriaLogs v1.50.0 (traces module vendors its own VictoriaLogs copy 
 | `/api/v1/validate` | `app/vlinsert/datadog/datadog.go` | vl.insert.api_v1_validate.status | 🟡 declared, not yet executed |
 | `/api/v2/logs` | `app/vlinsert/datadog/datadog.go` | vl.insert.api_v2_logs.count | 🟡 declared, not yet executed |
 | `/delete/active_tasks` | `app/vlselect/main.go` | vl.delete.active_tasks.differ, vt.delete.active_tasks.differ | 🔁 differs: Same dispatcher gap as run_task/stop_task (docs/parity-and-gaps.md); hot returns the task list, cold 404 until the dispatcher PR. |
-| `/delete/run_task` | `app/vlselect/main.go` | vl.delete.run_task.differ, vt.delete.run_task.differ, lh.shim.delete_dispatcher_gap | 🔁 differs: Delete-task lifecycle isn't wired into the LH dispatcher (docs/parity-and-gaps.md); hot accepts, cold 404 until the dispatcher PR. |
+| `/delete/run_task` | `app/vlselect/main.go` | vl.delete.run_task.differ, vt.delete.run_task.differ | 🔁 differs: Delete-task lifecycle isn't wired into the LH dispatcher (docs/parity-and-gaps.md); hot accepts, cold 404 until the dispatcher PR. |
 | `/delete/stop_task` | `app/vlselect/main.go` | vl.delete.stop_task.differ, vt.delete.stop_task.differ | 🔁 differs: Same dispatcher gap as run_task (docs/parity-and-gaps.md); hot accepts, cold 404 until the dispatcher PR. |
 | `/insert/datadog/` | `app/vlinsert/main.go` |  | ⚪ no row |
 | `/insert/datadog/api/v1/validate` | `app/vlinsert/datadog/datadog.go` | vl.insert.datadog_validate.status | 🟡 declared, not yet executed |
@@ -33,7 +33,7 @@ Upstream: VictoriaLogs v1.50.0 (traces module vendors its own VictoriaLogs copy 
 | `/insert/loki/ready` | `app/vlinsert/loki/loki.go` | vl.insert.loki_ready.status | 🟡 declared, not yet executed |
 | `/insert/multitenant/native` | `app/vlinsert/main.go` | vl.insert.multitenant_native.count, vt.insert.multitenant_native.differ | 🟡 declared, not yet executed |
 | `/insert/native` | `app/vlinsert/main.go` | vl.insert.native.count, vt.insert.native.differ | 🟡 declared, not yet executed |
-| `/insert/opentelemetry/` | `app/vlinsert/main.go` | vt.insert.otel_dispatch.status | 🟡 declared, not yet executed |
+| `/insert/opentelemetry/` | `app/vlinsert/main.go` | vl.insert.otel_dispatch.status | 🟡 declared, not yet executed |
 | `/insert/opentelemetry/v1/logs` | `app/vlinsert/opentelemetry/opentelemetry.go` | vl.insert.otel_logs.count | 🟡 declared, not yet executed |
 | `/insert/opentelemetry/v1/traces` | `app/vtinsert/opentelemetry/otlphttp.go` | vt.insert.otel_traces_json.count, vt.insert.otel_traces_protobuf.count | 🟡 declared, not yet executed |
 | `/insert/ready` | `app/vlinsert/main.go` | vl.insert.ready.status, vt.insert.ready.status | 🟡 declared, not yet executed |
@@ -72,9 +72,9 @@ Upstream: VictoriaLogs v1.50.0 (traces module vendors its own VictoriaLogs copy 
 | `/select/jaeger/api/traces/` | `app/vtselect/traces/jaeger/jaeger.go` | vt.jaeger.traces_by_id.basic | 🟡 declared, not yet executed |
 | `/select/logsql/facets` | `app/vlselect/main.go` | vl.select.facets.basic, vt.select.logsql_facets.basic | 🟡 declared, not yet executed |
 | `/select/logsql/field_names` | `app/vlselect/main.go` | vl.select.field_names.basic, vt.select.logsql_field_names.basic | 🟡 declared, not yet executed |
-| `/select/logsql/field_values` | `app/vlselect/main.go` | vl.select.field_values.limit, vl.select.field_values.nolimit, vt.select.logsql_field_values.basic, lh.shim.field_values_map_order | 🔁 differs: LH truncates in map order; hot returns top-hits sorted (docs/parity-and-gaps.md #A6). Flips to pass in the MergeValuesWithHits fix. |
+| `/select/logsql/field_values` | `app/vlselect/main.go` | vl.select.field_values.limit, vl.select.field_values.nolimit, vt.select.logsql_field_values.basic | 🔁 differs: LH truncates in map order; hot returns top-hits sorted (docs/parity-and-gaps.md #A6). Flips to pass in the MergeValuesWithHits fix. |
 | `/select/logsql/hits` | `app/vlselect/main.go` | vl.select.hits.basic, vt.select.logsql_hits.basic | 🟡 declared, not yet executed |
-| `/select/logsql/query` | `app/vlselect/main.go` | vl.select.query.wildcard, vt.select.logsql_query.wildcard, lh.shim.time_params_ms | 🟡 declared, not yet executed |
+| `/select/logsql/query` | `app/vlselect/main.go` | vl.select.query.bad_query, vl.select.query.wildcard, vt.select.logsql_query.wildcard, lh.shim.time_params_ms | 🟡 declared, not yet executed |
 | `/select/logsql/query_time_range` | `app/vlselect/main.go` | vl.select.query_time_range.basic, vt.select.logsql_query_time_range.basic | 🟡 declared, not yet executed |
 | `/select/logsql/stats_query` | `app/vlselect/main.go` | vl.select.stats_query.basic, vt.select.logsql_stats_query.basic | 🟡 declared, not yet executed |
 | `/select/logsql/stats_query_range` | `app/vlselect/main.go` | vl.select.stats_query_range.basic, vt.select.logsql_stats_query_range.basic | 🟡 declared, not yet executed |
@@ -86,7 +86,7 @@ Upstream: VictoriaLogs v1.50.0 (traces module vendors its own VictoriaLogs copy 
 | `/select/tempo/` | `app/vtselect/main.go` | vt.select.tempo_dispatch.status | 🟡 declared, not yet executed |
 | `/select/tempo/api/echo` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.echo.basic | 🟡 declared, not yet executed |
 | `/select/tempo/api/metrics/query_range` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.metrics_query_range.route | 🟡 declared, not yet executed |
-| `/select/tempo/api/search` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.search.duration_filter, vt.tempo.search.empty_query, vt.tempo.search.service_name, vt.tempo.search.spansets_full, lh.shim.tempo_search_empty_q | 🟡 declared, not yet executed |
+| `/select/tempo/api/search` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.search.duration_filter, vt.tempo.search.empty_query, vt.tempo.search.service_name, vt.tempo.search.span_scope, vt.tempo.search.spansets_full, lh.shim.tempo_search_empty_q | 🟡 declared, not yet executed |
 | `/select/tempo/api/v2/search/tag/` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.v2_search_tag_values.basic, vt.tempo.v2_search_tag_values.span_kind_strings | 🟡 declared, not yet executed |
 | `/select/tempo/api/v2/search/tags` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.v2_search_tags.basic, vt.tempo.v2_search_tags.intrinsic_scope | 🟡 declared, not yet executed |
 | `/select/tempo/api/v2/traces/` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.traces_v2.by_id, vt.tempo.traces_v2.protobuf | 🟡 declared, not yet executed |
@@ -102,8 +102,8 @@ Upstream: VictoriaLogs v1.50.0 (traces module vendors its own VictoriaLogs copy 
 
 | pipe | Source | Rows | Status |
 |---|---|---|---|
-| `block_stats` | `lib/logstorage/pipe_block_stats.go` | vl.pipe.block_stats.basic, vl.pipe.block_stats.unsupported | 🟡 declared, not yet executed |
-| `blocks_count` | `lib/logstorage/pipe_blocks_count.go` | vl.pipe.blocks_count.basic | 🟡 declared, not yet executed |
+| `block_stats` | `lib/logstorage/pipe_block_stats.go` | vl.pipe.block_stats.unsupported | ⛔ unsupported on cold (documented) |
+| `blocks_count` | `lib/logstorage/pipe_blocks_count.go` | vl.pipe.blocks_count.unsupported | ⛔ unsupported on cold (documented) |
 | `collapse_nums` | `lib/logstorage/pipe_collapse_nums.go` | vl.pipe.collapse_nums.basic | 🟡 declared, not yet executed |
 | `copy` | `lib/logstorage/pipe_copy.go` | vl.pipe.copy.basic | 🟡 declared, not yet executed |
 | `decolorize` | `lib/logstorage/pipe_decolorize.go` | vl.pipe.decolorize.basic | 🟡 declared, not yet executed |
@@ -129,12 +129,12 @@ Upstream: VictoriaLogs v1.50.0 (traces module vendors its own VictoriaLogs copy 
 | `offset` | `lib/logstorage/pipe_offset.go` | vl.pipe.offset.basic, vl.pipe.offset.large_edge | 🟡 declared, not yet executed |
 | `pack_json` | `lib/logstorage/pipe_pack_json.go` | vl.pipe.pack_json.basic | 🟡 declared, not yet executed |
 | `pack_logfmt` | `lib/logstorage/pipe_pack_logfmt.go` | vl.pipe.pack_logfmt.basic | 🟡 declared, not yet executed |
-| `query_stats` | `lib/logstorage/pipe_query_stats.go` | vl.pipe.query_stats.basic | 🟡 declared, not yet executed |
+| `query_stats` | `lib/logstorage/pipe_query_stats.go` | vl.pipe.query_stats.unsupported | ⛔ unsupported on cold (documented) |
 | `rename` | `lib/logstorage/pipe_rename.go` | vl.pipe.rename.basic | 🟡 declared, not yet executed |
 | `replace` | `lib/logstorage/pipe_replace.go` | vl.pipe.replace.basic | 🟡 declared, not yet executed |
 | `replace_regexp` | `lib/logstorage/pipe_replace_regexp.go` | vl.pipe.replace_regexp.basic | 🟡 declared, not yet executed |
 | `running_stats` | `lib/logstorage/pipe_running_stats.go` | vl.pipe.running_stats.basic | 🟡 declared, not yet executed |
-| `sample` | `lib/logstorage/pipe_sample.go` | vl.pipe.sample.basic | 🟡 declared, not yet executed |
+| `sample` | `lib/logstorage/pipe_sample.go` | vl.pipe.sample.basic | 🔁 differs: sample keeps every Nth block; block ordering/boundaries differ between hot local storage and cold columnar reads, so the same N can select a different subset. See docs/parity-and-gaps.md. |
 | `set_stream_fields` | `lib/logstorage/pipe_set_stream_fields.go` | vl.pipe.set_stream_fields.basic | 🟡 declared, not yet executed |
 | `sort` | `lib/logstorage/pipe_sort.go` | vl.pipe.sort.basic, vl.pipe.sort.multi_field | 🟡 declared, not yet executed |
 | `split` | `lib/logstorage/pipe_split.go` | vl.pipe.split.basic | 🟡 declared, not yet executed |
@@ -175,7 +175,7 @@ Upstream: VictoriaLogs v1.50.0 (traces module vendors its own VictoriaLogs copy 
 | `noop` | `lib/logstorage/filter_noop.go` | vl.filter.noop.basic | 🟡 declared, not yet executed |
 | `not` | `lib/logstorage/filter_not.go` | vl.filter.not.basic | 🟡 declared, not yet executed |
 | `or` | `lib/logstorage/filter_or.go` | vl.filter.or.basic | 🟡 declared, not yet executed |
-| `pattern_match` | `lib/logstorage/filter_pattern_match.go` | vl.filter.pattern_match.basic | 🟡 declared, not yet executed |
+| `pattern_match` | `lib/logstorage/filter_pattern_match.go` | vl.filter.pattern_match.basic, vl.filter.pattern_match.full, vl.filter.pattern_match.prefix, vl.filter.pattern_match.suffix | 🟡 declared, not yet executed |
 | `phrase` | `lib/logstorage/filter_phrase.go` | vl.filter.phrase.basic | 🟡 declared, not yet executed |
 | `prefix` | `lib/logstorage/filter_prefix.go` | vl.filter.prefix.basic | 🟡 declared, not yet executed |
 | `range` | `lib/logstorage/filter_range.go` | vl.filter.range.retrieval | 🟡 declared, not yet executed |
@@ -193,7 +193,7 @@ Upstream: VictoriaLogs v1.50.0 (traces module vendors its own VictoriaLogs copy 
 
 | stats | Source | Rows | Status |
 |---|---|---|---|
-| `any` | `lib/logstorage/stats_any.go` | vl.stats.any.basic | 🟡 declared, not yet executed |
+| `any` | `lib/logstorage/stats_any.go` | vl.stats.any.basic | 🔁 differs: any() returns an arbitrary matching row; hot and cold can legitimately pick a different one from the same result set. See docs/parity-and-gaps.md. |
 | `avg` | `lib/logstorage/stats_avg.go` | vl.stats.avg.basic | 🟡 declared, not yet executed |
 | `count` | `lib/logstorage/stats_count.go` | vl.stats.count.basic | 🟡 declared, not yet executed |
 | `count_empty` | `lib/logstorage/stats_count_empty.go` | vl.stats.count_empty.basic | 🟡 declared, not yet executed |
@@ -209,7 +209,7 @@ Upstream: VictoriaLogs v1.50.0 (traces module vendors its own VictoriaLogs copy 
 | `quantile` | `lib/logstorage/stats_quantile.go` | vl.stats.quantile.by_service | 🟡 declared, not yet executed |
 | `rate` | `lib/logstorage/stats_rate.go` | vl.stats.rate.basic | 🟡 declared, not yet executed |
 | `rate_sum` | `lib/logstorage/stats_rate_sum.go` | vl.stats.rate_sum.basic | 🟡 declared, not yet executed |
-| `row_any` | `lib/logstorage/stats_row_any.go` | vl.stats.row_any.basic | 🟡 declared, not yet executed |
+| `row_any` | `lib/logstorage/stats_row_any.go` | vl.stats.row_any.basic | 🔁 differs: row_any() returns an arbitrary matching row; hot and cold can legitimately pick a different one from the same result set. See docs/parity-and-gaps.md. |
 | `row_max` | `lib/logstorage/stats_row_max.go` | vl.stats.row_max.basic | 🟡 declared, not yet executed |
 | `row_min` | `lib/logstorage/stats_row_min.go` | vl.stats.row_min.basic | 🟡 declared, not yet executed |
 | `stddev` | `lib/logstorage/stats_stddev.go` | vl.stats.stddev.basic | 🟡 declared, not yet executed |
@@ -229,7 +229,7 @@ Upstream: VictoriaLogs v1.50.0 (traces module vendors its own VictoriaLogs copy 
 | `max_over_time` | `lib/traceql/pipe_metrics.go` | vt.traceql.max_over_time.basic | 🟡 declared, not yet executed |
 | `min_over_time` | `lib/traceql/pipe_metrics.go` | vt.traceql.min_over_time.basic | 🟡 declared, not yet executed |
 | `quantile_over_time` | `lib/traceql/pipe_metrics.go` | vt.traceql.quantile_over_time.basic | 🟡 declared, not yet executed |
-| `rate` | `lib/traceql/pipe_metrics.go` | vt.traceql.rate.basic | 🟡 declared, not yet executed |
+| `rate` | `lib/traceql/pipe_metrics.go` | vt.traceql.rate.basic, vt.traceql.rate.by_service | 🟡 declared, not yet executed |
 | `sum_over_time` | `lib/traceql/pipe_metrics.go` | vt.traceql.sum_over_time.basic | 🟡 declared, not yet executed |
 
 ## Upstream flag (125)

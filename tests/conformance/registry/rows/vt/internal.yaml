@@ -45,7 +45,7 @@
   pending: true
 
 - id: vt.select.vmui.basic
-  title: "/select/vmui — UI bundle mounted on both tiers"
+  title: "/select/vmui — no-slash redirects to the trailing-slash bundle"
   surface: vt
   kind: select
   origin: native
@@ -54,7 +54,7 @@
   seed: [traces.base]
   upstream: { route: /select/vmui }
   request: { method: GET, path: /select/vmui }
-  compare: { type: status, options: { hot_status: "200", cold_status: "200" } }
+  compare: { type: status, options: { hot_status: "302", cold_status: "302" } }
   layers: [api]
   pending: true
 
@@ -166,7 +166,7 @@
   seed: [traces.base]
   upstream: { route: /internal/force_flush }
   request: { method: GET, path: /internal/force_flush }
-  compare: { type: status, options: { cold_status: "501" } }
+  compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
 
@@ -180,6 +180,6 @@
   seed: [traces.base]
   upstream: { route: /internal/force_merge }
   request: { method: GET, path: /internal/force_merge, params: { partitionPrefix: "*" } }
-  compare: { type: status, options: { cold_status: "501" } }
+  compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true

@@ -27,7 +27,7 @@
   targets: [hot, cold]
   seed: [logs.base]
   upstream: { route: /select/logsql/query_time_range }
-  request: { method: GET, path: /select/logsql/query_time_range, params: { query: "service.name:checkout" } }
+  request: { method: GET, path: /select/logsql/query_time_range, params: { query: "service.name:checkout", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
   compare: { type: exact-json }
   layers: [api]
   pending: true
@@ -112,7 +112,7 @@
   targets: [hot, cold]
   seed: [logs.base]
   upstream: { route: /select/logsql/stats_query }
-  request: { method: GET, path: /select/logsql/stats_query, params: { query: "* | stats count() as total", time: "{{seed.cold_end}}" } }
+  request: { method: GET, path: /select/logsql/stats_query, params: { query: "* | stats count() as total", time: "{{seed.cold_end}}", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
   compare: { type: count }
   layers: [api]
   pending: true
@@ -245,7 +245,7 @@
   pending: true
 
 - id: vl.select.vmui.basic
-  title: "/select/vmui — UI bundle mounted on both tiers"
+  title: "/select/vmui — no-slash redirects to the trailing-slash bundle"
   surface: vl
   kind: select
   origin: native
@@ -254,7 +254,7 @@
   seed: [logs.base]
   upstream: { route: /select/vmui }
   request: { method: GET, path: /select/vmui }
-  compare: { type: status, options: { hot_status: "200", cold_status: "200" } }
+  compare: { type: status, options: { hot_status: "302", cold_status: "302" } }
   layers: [api]
   pending: true
 
@@ -330,5 +330,19 @@
   upstream: { route: /delete/active_tasks }
   request: { method: GET, path: /delete/active_tasks }
   compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vl.select.query.bad_query
+  title: "/select/logsql/query — invalid LogsQL rejected the same way on both tiers"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "level:=\"ERROR\" | no_such_pipe_exists", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: error, options: { hot_status: "400", cold_status: "400" } }
   layers: [api]
   pending: true

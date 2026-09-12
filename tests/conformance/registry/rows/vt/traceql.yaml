@@ -127,3 +127,17 @@
   layers: [api]
   pending: true
 
+
+- id: vt.traceql.rate.by_service
+  title: "TraceQL metrics function rate() grouped by (resource.service.name)"
+  surface: vt
+  kind: traceql
+  origin: native
+  expect: pass
+  targets: [hot, cold, global]
+  seed: [traces.base]
+  upstream: {traceql: rate}
+  request: {method: GET, path: /select/tempo/api/metrics/query_range, params: {q: "{ } | rate() by (resource.service.name)", start: "{{seed.start}}", end: "{{seed.cold_end}}", step: "15s"}}
+  compare: {type: series, options: {rel_tolerance: "0.02"}}
+  layers: [api]
+  pending: true

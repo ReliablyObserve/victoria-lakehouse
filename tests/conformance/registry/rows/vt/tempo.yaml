@@ -220,3 +220,17 @@
   compare: { type: series, options: { rel_tolerance: "0.02" } }
   layers: [api]
   pending: true
+
+- id: vt.tempo.search.span_scope
+  title: "/select/tempo/api/search — TraceQL span. scope attribute filter"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/tempo/api/search }
+  request: { method: GET, path: /select/tempo/api/search, params: { q: '{ span.http.status_code = 500 }', start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true

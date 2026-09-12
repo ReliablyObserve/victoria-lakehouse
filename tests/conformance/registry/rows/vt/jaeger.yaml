@@ -54,7 +54,7 @@
   targets: [hot, cold]
   seed: [traces.base]
   upstream: { route: /select/jaeger/api/traces }
-  request: { method: GET, path: /select/jaeger/api/traces, params: { service: "checkout", tags: '{"status_code":"error"}', start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  request: { method: GET, path: /select/jaeger/api/traces, params: { service: "checkout", tags: '{"error":"true"}', start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
   compare: { type: trace }
   layers: [api]
   pending: true
