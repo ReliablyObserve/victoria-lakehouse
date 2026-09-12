@@ -36,7 +36,11 @@ func LoadDir(dir string) (*Registry, error) {
 	seenIDs := make(map[string]bool) // Track duplicates during loading
 	walk := func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
-			return fmt.Errorf("registry dir %q: %w", dir, werr)
+			// Returned as-is: the caller below wraps whatever WalkDir
+			// returns with "registry dir %q: %w" exactly once. Wrapping
+			// here too would double it to "registry dir %q: registry dir
+			// %q: ...".
+			return werr
 		}
 		if d.IsDir() || !strings.HasSuffix(path, ".yaml") {
 			return nil
