@@ -1,6 +1,7 @@
 package inventory
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,8 +15,10 @@ var flagRe = regexp.MustCompile(`(?:flag\.[A-Za-z]+|flagutil\.New[A-Za-z]+)\(\s*
 var VLFlagPackages = []string{"app/vlselect", "app/vlselect/logsql", "app/vlselect/internalselect", "app/vlinsert", "app/vlstorage"}
 var VTFlagPackages = []string{"app/vtselect", "app/vtselect/traces/tracecommon", "app/vtinsert", "app/vtstorage", "app/victoria-traces/servicegraph"}
 
-// LinkedIntoLH records which upstream packages the LH binaries import — a flag
-// defined in an unlinked package is not honored by LH (audit §2.4, §3.5).
+// LinkedIntoLH records which upstream packages the Lakehouse binaries import.
+// A flag defined in a package that is not linked (for example app/vlselect, whose
+// request dispatcher Lakehouse does not mount) is not honored by Lakehouse;
+// the coverage report marks such flags accordingly.
 var LinkedIntoLH = map[string]bool{
 	"app/vlselect": false, "app/vlselect/logsql": true, "app/vlselect/internalselect": true, "app/vlinsert": true, "app/vlstorage": true,
 	"app/vtselect": false, "app/vtselect/traces/tracecommon": true, "app/vtinsert": true, "app/vtstorage": true, "app/victoria-traces/servicegraph": true,
@@ -24,11 +27,16 @@ var LinkedIntoLH = map[string]bool{
 // ExtractFlags scans the non-test .go files directly inside each pkgDir (and, for
 // app/vlinsert, its per-format subdirectories) for flag definitions.
 func ExtractFlags(root string, pkgDirs []string, linked map[string]bool) ([]Item, error) {
+	// keyed by flag name: a Go binary cannot register the same flag name twice,
+	// so within one upstream root a name is unique; first occurrence wins.
 	seen := map[string]Item{}
 	for _, pkg := range pkgDirs {
 		dirs := []string{filepath.Join(root, pkg)}
 		if pkg == "app/vlinsert" {
-			ents, _ := os.ReadDir(filepath.Join(root, pkg))
+			ents, err := os.ReadDir(filepath.Join(root, pkg))
+			if err != nil {
+				return nil, fmt.Errorf("list %s: %w", pkg, err)
+			}
 			for _, e := range ents {
 				if e.IsDir() {
 					dirs = append(dirs, filepath.Join(root, pkg, e.Name()))

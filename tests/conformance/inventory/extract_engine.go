@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strings"
 )
 
 // LogsQL features are one file per feature in lib/logstorage:
@@ -53,6 +52,5 @@ func ExtractTraceQL(vtDir string) ([]Item, error) {
 	if len(out) == 0 {
 		return nil, os.ErrNotExist
 	}
-	_ = strings.TrimSpace
 	return out, nil
 }
