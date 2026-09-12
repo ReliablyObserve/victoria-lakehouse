@@ -1,0 +1,1034 @@
+[1;36m[bench][0m bringing up benchmark stack (disk-profile=local-ssd)…
+ Image clickhouse/clickhouse-server:26.5 Pulling 
+ Image ghcr.io/shopify/toxiproxy:2.9.0 Pulling 
+ Image victoriametrics/victoria-traces:v0.9.2 Pulling 
+ Image victoriametrics/victoria-metrics:v1.143.0 Pulling 
+ Image grafana/tempo:2.7.2 Pulling 
+ 5f0b33d07c43 Pulling fs layer 0B
+ b861b5f62a49 Pulling fs layer 0B
+ d152eb89e6fa Pulling fs layer 0B
+ 4f4fb700ef54 Pulling fs layer 0B
+ 6122f2c7dea2 Pulling fs layer 0B
+ fc5644ab8d28 Pulling fs layer 0B
+ 231032373bb3 Pulling fs layer 0B
+ c85e91c81f31 Pulling fs layer 0B
+ 61eb44eadcd1 Pulling fs layer 0B
+ b07ffa7bc2a1 Pulling fs layer 0B
+ 833e74c618b7 Pulling fs layer 0B
+ 4f4fb700ef54 Pulling fs layer 0B
+ 4f4fb700ef54 Pulling fs layer 0B
+ 4f4fb700ef54 Already exists 0B
+ ea6386ca0005 Pulling fs layer 0B
+ 6eef8f95eda8 Pulling fs layer 0B
+ facaa58498f1 Pulling fs layer 0B
+ 7eb2368af96d Pulling fs layer 0B
+ db939c45a72e Pulling fs layer 0B
+ fc5644ab8d28 Download complete 0B
+ b861b5f62a49 Download complete 0B
+ b861b5f62a49 Extracting 1B
+ b861b5f62a49 Pull complete 0B
+ 231032373bb3 Downloading 1.049MB
+ 231032373bb3 Downloading 4.194MB
+ 231032373bb3 Downloading 10.49MB
+ 231032373bb3 Downloading 15.73MB
+ 231032373bb3 Downloading 19.92MB
+ 5f0b33d07c43 Downloading 1.049MB
+ 231032373bb3 Downloading 24.12MB
+ 5f0b33d07c43 Downloading 1.049MB
+ 231032373bb3 Download complete 0B
+ 231032373bb3 Extracting 1B
+ 5f0b33d07c43 Downloading 1.049MB
+ c85e91c81f31 Downloading 2.097MB
+ 231032373bb3 Extracting 1B
+ 5f0b33d07c43 Downloading 2.097MB
+ c85e91c81f31 Downloading 4.194MB
+ 231032373bb3 Extracting 1B
+ 5f0b33d07c43 Downloading 2.097MB
+ c85e91c81f31 Download complete 0B
+ 61eb44eadcd1 Download complete 0B
+ 231032373bb3 Extracting 1B
+ 5f0b33d07c43 Downloading 2.097MB
+ 231032373bb3 Extracting 1B
+ 5f0b33d07c43 Downloading 2.097MB
+ d152eb89e6fa Download complete 0B
+ 6122f2c7dea2 Downloading 3.146MB
+ 231032373bb3 Extracting 1B
+ 5f0b33d07c43 Downloading 3.146MB
+ 6122f2c7dea2 Downloading 7.34MB
+ 231032373bb3 Extracting 1B
+ 5f0b33d07c43 Download complete 0B
+ 5f0b33d07c43 Extracting 1B
+ 5f0b33d07c43 Pull complete 0B
+ Image ghcr.io/shopify/toxiproxy:2.9.0 Pulled 
+ 6122f2c7dea2 Downloading 12.58MB
+ b07ffa7bc2a1 Download complete 0B
+ 231032373bb3 Extracting 1B
+ 6122f2c7dea2 Downloading 16.78MB
+ 231032373bb3 Extracting 1B
+ 6122f2c7dea2 Downloading 16.78MB
+ 231032373bb3 Extracting 1B
+ 833e74c618b7 Download complete 0B
+ 6122f2c7dea2 Downloading 22.02MB
+ 231032373bb3 Extracting 1B
+ 6122f2c7dea2 Downloading 26.21MB
+ 231032373bb3 Extracting 2B
+ 6122f2c7dea2 Downloading 31.46MB
+ 231032373bb3 Extracting 2B
+ 6122f2c7dea2 Downloading 36.7MB
+ 231032373bb3 Extracting 2B
+ 6122f2c7dea2 Downloading 40.89MB
+ 231032373bb3 Extracting 2B
+ 6122f2c7dea2 Downloading 45.09MB
+ 231032373bb3 Extracting 2B
+ 6122f2c7dea2 Downloading 50.33MB
+ 231032373bb3 Extracting 2B
+ 6122f2c7dea2 Downloading 54.53MB
+ 231032373bb3 Extracting 2B
+ 6122f2c7dea2 Downloading 58.72MB
+ 231032373bb3 Extracting 2B
+ 6eef8f95eda8 Downloading 1.049MB
+ 6122f2c7dea2 Downloading 62.91MB
+ 231032373bb3 Extracting 2B
+ 6eef8f95eda8 Downloading 1.049MB
+ 6122f2c7dea2 Downloading 67.11MB
+ 231032373bb3 Extracting 3B
+ 6eef8f95eda8 Downloading 1.049MB
+ 6122f2c7dea2 Downloading 70.25MB
+ 231032373bb3 Extracting 3B
+ 6eef8f95eda8 Downloading 1.049MB
+ 6122f2c7dea2 Downloading 75.5MB
+ 44136fa355b3 Already exists 0B
+ 231032373bb3 Extracting 3B
+ 6eef8f95eda8 Downloading 2.097MB
+ 6122f2c7dea2 Downloading 79.69MB
+ 231032373bb3 Extracting 3B
+ 6eef8f95eda8 Downloading 2.097MB
+ 6122f2c7dea2 Downloading 83.89MB
+ 231032373bb3 Extracting 3B
+ 6eef8f95eda8 Download complete 0B
+ 6eef8f95eda8 Extracting 1B
+ 6122f2c7dea2 Downloading 88.08MB
+ 231032373bb3 Pull complete 0B
+ c85e91c81f31 Extracting 1B
+ 6eef8f95eda8 Pull complete 0B
+ 6122f2c7dea2 Downloading 93.32MB
+ c85e91c81f31 Extracting 1B
+ facaa58498f1 Download complete 0B
+ 7eb2368af96d Downloading 1.049MB
+ 6122f2c7dea2 Downloading 96.47MB
+ 4f4fb700ef54 Pull complete 0B
+ c85e91c81f31 Pull complete 0B
+ 7eb2368af96d Downloading 2.097MB
+ 6122f2c7dea2 Downloading 99.61MB
+ 7eb2368af96d Downloading 2.097MB
+ 6122f2c7dea2 Downloading 104.9MB
+ ea6386ca0005 Download complete 0B
+ 7eb2368af96d Downloading 3.146MB
+ 6122f2c7dea2 Downloading 108MB
+ 7eb2368af96d Downloading 4.194MB
+ 6122f2c7dea2 Downloading 111.1MB
+ 7eb2368af96d Downloading 5.243MB
+ 6122f2c7dea2 Downloading 115.3MB
+ 7eb2368af96d Downloading 6.291MB
+ 6122f2c7dea2 Downloading 118.5MB
+ 7eb2368af96d Downloading 7.34MB
+ 6122f2c7dea2 Downloading 121.6MB
+ 7eb2368af96d Downloading 8.389MB
+ 6122f2c7dea2 Downloading 123.7MB
+ 7eb2368af96d Downloading 10.49MB
+ 6122f2c7dea2 Downloading 126.9MB
+ 7eb2368af96d Downloading 11.53MB
+ 6122f2c7dea2 Downloading 130MB
+ 7eb2368af96d Downloading 11.53MB
+ 6122f2c7dea2 Downloading 132.1MB
+ 7eb2368af96d Downloading 12.58MB
+ 6122f2c7dea2 Downloading 136.3MB
+ 7eb2368af96d Downloading 13.63MB
+ 6122f2c7dea2 Downloading 139.5MB
+ db939c45a72e Downloading 1.049MB
+ 7eb2368af96d Downloading 14.68MB
+ 6122f2c7dea2 Downloading 143.7MB
+ db939c45a72e Downloading 1.049MB
+ 7eb2368af96d Downloading 15.73MB
+ 6122f2c7dea2 Downloading 146.8MB
+ db939c45a72e Downloading 2.097MB
+ 7eb2368af96d Downloading 16.78MB
+ 6122f2c7dea2 Downloading 149.9MB
+ db939c45a72e Downloading 2.097MB
+ 7eb2368af96d Downloading 17.83MB
+ 6122f2c7dea2 Downloading 153.1MB
+ db939c45a72e Downloading 2.097MB
+ 7eb2368af96d Downloading 18.87MB
+ 6122f2c7dea2 Downloading 155.2MB
+ db939c45a72e Downloading 3.146MB
+ 7eb2368af96d Downloading 19.92MB
+ 6122f2c7dea2 Downloading 158.3MB
+ db939c45a72e Downloading 3.146MB
+ 7eb2368af96d Downloading 20.97MB
+ 6122f2c7dea2 Downloading 161.5MB
+ db939c45a72e Downloading 4.194MB
+ 7eb2368af96d Downloading 22.02MB
+ 6122f2c7dea2 Downloading 163.6MB
+ db939c45a72e Downloading 4.194MB
+ 7eb2368af96d Downloading 23.07MB
+ 6122f2c7dea2 Downloading 166.7MB
+ db939c45a72e Downloading 5.243MB
+ 7eb2368af96d Downloading 24.12MB
+ 6122f2c7dea2 Downloading 169.9MB
+ db939c45a72e Downloading 5.243MB
+ 7eb2368af96d Downloading 25.17MB
+ 6122f2c7dea2 Downloading 173MB
+ db939c45a72e Downloading 6.291MB
+ 7eb2368af96d Downloading 26.21MB
+ 6122f2c7dea2 Downloading 176.2MB
+ db939c45a72e Downloading 6.291MB
+ 7eb2368af96d Downloading 28.31MB
+ 6122f2c7dea2 Downloading 179.3MB
+ db939c45a72e Downloading 7.34MB
+ 7eb2368af96d Downloading 29.36MB
+ 6122f2c7dea2 Downloading 181.4MB
+ db939c45a72e Downloading 7.34MB
+ 7eb2368af96d Downloading 30.41MB
+ 6122f2c7dea2 Downloading 184.5MB
+ db939c45a72e Downloading 8.389MB
+ 7eb2368af96d Downloading 30.41MB
+ 6122f2c7dea2 Downloading 185.6MB
+ db939c45a72e Downloading 8.389MB
+ 7eb2368af96d Downloading 32.51MB
+ 6122f2c7dea2 Downloading 189.8MB
+ db939c45a72e Downloading 9.437MB
+ 7eb2368af96d Downloading 33.55MB
+ 6122f2c7dea2 Downloading 192.9MB
+ db939c45a72e Downloading 9.437MB
+ 7eb2368af96d Downloading 34.6MB
+ 6122f2c7dea2 Downloading 196.1MB
+ db939c45a72e Downloading 10.49MB
+ 7eb2368af96d Downloading 36.7MB
+ 6122f2c7dea2 Downloading 198.2MB
+ db939c45a72e Downloading 10.49MB
+ 7eb2368af96d Downloading 37.75MB
+ 6122f2c7dea2 Downloading 201.3MB
+ db939c45a72e Downloading 11.53MB
+ 7eb2368af96d Downloading 38.8MB
+ 6122f2c7dea2 Downloading 203.4MB
+ db939c45a72e Downloading 11.53MB
+ 7eb2368af96d Downloading 40.89MB
+ 6122f2c7dea2 Downloading 206.6MB
+ db939c45a72e Download complete 0B
+ db939c45a72e Extracting 1B
+ 7eb2368af96d Downloading 41.94MB
+ 6122f2c7dea2 Downloading 209.7MB
+ db939c45a72e Extracting 1B
+ 7eb2368af96d Downloading 42.99MB
+ 6122f2c7dea2 Downloading 212.4MB
+ db939c45a72e Extracting 1B
+ 7eb2368af96d Downloading 45.09MB
+ 6122f2c7dea2 Download complete 0B
+ 6122f2c7dea2 Extracting 1B
+ db939c45a72e Extracting 1B
+ 7eb2368af96d Download complete 0B
+ 7eb2368af96d Extracting 1B
+ 6122f2c7dea2 Extracting 1B
+ db939c45a72e Extracting 1B
+ 7eb2368af96d Extracting 1B
+ e5d9291bb704 Download complete 0B
+ 6122f2c7dea2 Extracting 1B
+ db939c45a72e Extracting 1B
+ 7eb2368af96d Extracting 1B
+ 4fd272d974ff Download complete 0B
+ 6122f2c7dea2 Extracting 1B
+ facaa58498f1 Pull complete 0B
+ ea6386ca0005 Pull complete 0B
+ 7eb2368af96d Pull complete 0B
+ Image grafana/tempo:2.7.2 Pulled 
+ db939c45a72e Extracting 1B
+ 6122f2c7dea2 Extracting 1B
+ db939c45a72e Extracting 1B
+ 6122f2c7dea2 Extracting 1B
+ 1f7a30f26828 Pulling fs layer 0B
+ 656ee07e6916 Pulling fs layer 0B
+ db939c45a72e Extracting 1B
+ 6122f2c7dea2 Extracting 1B
+ db939c45a72e Extracting 1B
+ 6122f2c7dea2 Extracting 1B
+ db939c45a72e Extracting 2B
+ 6122f2c7dea2 Extracting 1B
+ db939c45a72e Extracting 2B
+ 6122f2c7dea2 Extracting 1B
+ db939c45a72e Pull complete 0B
+ 6122f2c7dea2 Extracting 1B
+ 6122f2c7dea2 Extracting 2B
+ 7514e8c6ca58 Download complete 0B
+ 6122f2c7dea2 Extracting 2B
+ 6122f2c7dea2 Extracting 2B
+ 656ee07e6916 Download complete 0B
+ 656ee07e6916 Pull complete 0B
+ 6122f2c7dea2 Extracting 2B
+ fc5644ab8d28 Pull complete 0B
+ 61eb44eadcd1 Pull complete 0B
+ d152eb89e6fa Pull complete 0B
+ b07ffa7bc2a1 Pull complete 0B
+ 833e74c618b7 Pull complete 0B
+ 6122f2c7dea2 Pull complete 0B
+ Image clickhouse/clickhouse-server:26.5 Pulled 
+ Image victoriametrics/victoria-metrics:v1.143.0 Pulled 
+ 1f7a30f26828 Downloading 1.049MB
+ 1f7a30f26828 Downloading 3.146MB
+ 1f7a30f26828 Downloading 7.34MB
+ 1f7a30f26828 Downloading 11.41MB
+ 1f7a30f26828 Download complete 0B
+ 1f7a30f26828 Pull complete 0B
+ Image victoriametrics/victoria-traces:v0.9.2 Pulled 
+ Image victoria-lakehouse-benchmark-lakehouse-traces Building 
+ Image victoria-lakehouse-benchmark-loki-vl-proxy-vl-lh Building 
+ Image victoria-lakehouse-benchmark-datagen-seed Building 
+ Image victoria-lakehouse-benchmark-loki-vl-proxy-lh Building 
+ Image victoria-lakehouse-benchmark-lakehouse-logs Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 3.47kB done
+#1 DONE 0.0s
+
+#2 [lakehouse-traces internal] load build definition from Dockerfile.traces
+#2 transferring dockerfile: 3.78kB done
+#2 DONE 0.0s
+
+#3 [datagen-seed internal] load build definition from Dockerfile.datagen
+#3 transferring dockerfile: 562B done
+#3 DONE 0.0s
+
+#4 [lakehouse-logs internal] load build definition from Dockerfile.logs
+#4 transferring dockerfile: 2.42kB done
+#4 DONE 0.0s
+
+#5 [loki-vl-proxy-vl-lh internal] load build definition from Dockerfile.loki-vl-proxy
+#5 transferring dockerfile: 1.83kB done
+#5 DONE 0.0s
+
+#6 [lakehouse-logs internal] load metadata for docker.io/library/golang:1.26.4-alpine3.22
+#6 ...
+
+#7 [lakehouse-logs internal] load metadata for gcr.io/distroless/static-debian12:nonroot
+#7 DONE 0.9s
+
+#8 [loki-vl-proxy-vl-lh internal] load metadata for docker.io/library/alpine:3.21
+#8 DONE 1.6s
+
+#9 [loki-vl-proxy-vl-lh internal] load .dockerignore
+#9 transferring context: 2B done
+#9 DONE 0.0s
+
+#6 [lakehouse-logs internal] load metadata for docker.io/library/golang:1.26.4-alpine3.22
+#6 DONE 1.6s
+
+#10 [lakehouse-traces internal] load .dockerignore
+#10 transferring context: 746B done
+#10 DONE 0.0s
+
+#11 [lakehouse-traces stage-1 1/2] FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+#11 resolve gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab 0.0s done
+#11 CACHED
+
+#12 [lakehouse-traces builder 1/7] FROM docker.io/library/golang:1.26.4-alpine3.22@sha256:727cfc3c40be55cd1bc9a4a059406b28a059857e3be752aa9d09531e12c20c56
+#12 resolve docker.io/library/golang:1.26.4-alpine3.22@sha256:727cfc3c40be55cd1bc9a4a059406b28a059857e3be752aa9d09531e12c20c56 0.0s done
+#12 sha256:3d5760723101d478502ff76556f1437da3f6346fbbac705f454b6efc1601c024 126B / 126B 0.2s done
+#12 sha256:a477eaf154b7c8070862d9db01681f78c8a60ce90e8936310f6a906696df475a 0B / 64.17MB 0.2s
+#12 sha256:f40226cf4249b4165aca1574651e7b03ac37fc79585bf30765f3b4aa17daea51 0B / 291.90kB 0.2s
+#12 ...
+
+#13 [datagen-seed internal] load build context
+#13 transferring context: 41.17MB 0.4s done
+#13 DONE 0.4s
+
+#14 [loki-vl-proxy-lh 1/2] FROM docker.io/library/alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+#14 resolve docker.io/library/alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d 0.0s done
+#14 sha256:2dd7199cff98a7400e801cbfad6de906972a4e3dd0a749d4c1b80f5a1e3e4108 3.99MB / 3.99MB 0.4s done
+#14 extracting sha256:2dd7199cff98a7400e801cbfad6de906972a4e3dd0a749d4c1b80f5a1e3e4108 0.1s done
+#14 DONE 0.5s
+
+#12 [lakehouse-traces builder 1/7] FROM docker.io/library/golang:1.26.4-alpine3.22@sha256:727cfc3c40be55cd1bc9a4a059406b28a059857e3be752aa9d09531e12c20c56
+#12 sha256:58e777220c395c319866c5d73ea32a5ea574bbd12f4eb289b392f584d0cd953e 0B / 4.14MB 0.2s
+#12 sha256:a477eaf154b7c8070862d9db01681f78c8a60ce90e8936310f6a906696df475a 5.24MB / 64.17MB 0.8s
+#12 sha256:f40226cf4249b4165aca1574651e7b03ac37fc79585bf30765f3b4aa17daea51 291.90kB / 291.90kB 0.8s done
+#12 sha256:a477eaf154b7c8070862d9db01681f78c8a60ce90e8936310f6a906696df475a 12.58MB / 64.17MB 1.1s
+#12 sha256:a477eaf154b7c8070862d9db01681f78c8a60ce90e8936310f6a906696df475a 16.78MB / 64.17MB 1.2s
+#12 sha256:58e777220c395c319866c5d73ea32a5ea574bbd12f4eb289b392f584d0cd953e 1.05MB / 4.14MB 0.9s
+#12 sha256:58e777220c395c319866c5d73ea32a5ea574bbd12f4eb289b392f584d0cd953e 2.10MB / 4.14MB 1.1s
+#12 sha256:a477eaf154b7c8070862d9db01681f78c8a60ce90e8936310f6a906696df475a 24.12MB / 64.17MB 1.5s
+#12 sha256:58e777220c395c319866c5d73ea32a5ea574bbd12f4eb289b392f584d0cd953e 3.15MB / 4.14MB 1.2s
+#12 sha256:58e777220c395c319866c5d73ea32a5ea574bbd12f4eb289b392f584d0cd953e 4.14MB / 4.14MB 1.3s done
+#12 extracting sha256:58e777220c395c319866c5d73ea32a5ea574bbd12f4eb289b392f584d0cd953e 0.1s done
+#12 extracting sha256:f40226cf4249b4165aca1574651e7b03ac37fc79585bf30765f3b4aa17daea51 0.0s done
+#12 sha256:a477eaf154b7c8070862d9db01681f78c8a60ce90e8936310f6a906696df475a 28.31MB / 64.17MB 1.7s
+#12 extracting sha256:f40226cf4249b4165aca1574651e7b03ac37fc79585bf30765f3b4aa17daea51 0.0s done
+#12 sha256:a477eaf154b7c8070862d9db01681f78c8a60ce90e8936310f6a906696df475a 33.55MB / 64.17MB 1.8s
+#12 sha256:a477eaf154b7c8070862d9db01681f78c8a60ce90e8936310f6a906696df475a 39.85MB / 64.17MB 2.0s
+#12 sha256:a477eaf154b7c8070862d9db01681f78c8a60ce90e8936310f6a906696df475a 47.19MB / 64.17MB 2.1s
+#12 sha256:a477eaf154b7c8070862d9db01681f78c8a60ce90e8936310f6a906696df475a 54.53MB / 64.17MB 2.3s
+#12 sha256:a477eaf154b7c8070862d9db01681f78c8a60ce90e8936310f6a906696df475a 60.82MB / 64.17MB 2.4s
+#12 sha256:a477eaf154b7c8070862d9db01681f78c8a60ce90e8936310f6a906696df475a 64.17MB / 64.17MB 2.5s done
+#12 extracting sha256:a477eaf154b7c8070862d9db01681f78c8a60ce90e8936310f6a906696df475a
+#12 extracting sha256:a477eaf154b7c8070862d9db01681f78c8a60ce90e8936310f6a906696df475a 1.1s done
+#12 extracting sha256:a477eaf154b7c8070862d9db01681f78c8a60ce90e8936310f6a906696df475a 1.1s done
+#12 extracting sha256:3d5760723101d478502ff76556f1437da3f6346fbbac705f454b6efc1601c024 done
+#12 extracting sha256:4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1 done
+#12 DONE 3.7s
+
+#15 [lakehouse-traces builder 2/7] RUN apk add --no-cache git
+#15 ...
+
+#16 [loki-vl-proxy-vl-lh 2/2] RUN wget -qO /usr/local/bin/loki-vl-proxy       "https://github.com/ReliablyObserve/loki-vl-proxy/releases/download/v1.58.0/loki-vl-proxy-linux-amd64"     && chmod +x /usr/local/bin/loki-vl-proxy
+#16 DONE 4.0s
+
+#15 [lakehouse-traces builder 2/7] RUN apk add --no-cache git
+#15 0.794 fetch https://dl-cdn.alpinelinux.org/alpine/v3.22/main/aarch64/APKINDEX.tar.gz
+#15 1.085 fetch https://dl-cdn.alpinelinux.org/alpine/v3.22/community/aarch64/APKINDEX.tar.gz
+#15 ...
+
+#17 [loki-vl-proxy-lh] exporting to image
+#17 exporting layers 0.3s done
+#17 exporting manifest sha256:2733d2962a1026ee55c247a65329720d813acfac5968c9c16fecadb5a94f49f1 done
+#17 exporting config sha256:1872f717dcca61c763e2c8188c226cd050a99961e89ef3561819c12f112711f9 done
+#17 exporting attestation manifest sha256:457d296fd31015dbda0cc597bd09679db9837c2a578941eaab39f7dbae2a73b6 done
+#17 exporting manifest list sha256:fae06cbdcc3fe4357d790681d6cc7d9a6cdc52d6f90388f03b14a14dcb43b70a done
+#17 naming to docker.io/library/victoria-lakehouse-benchmark-loki-vl-proxy-lh:latest done
+#17 unpacking to docker.io/library/victoria-lakehouse-benchmark-loki-vl-proxy-lh:latest 0.0s done
+#17 DONE 0.4s
+
+#18 [loki-vl-proxy-vl-lh] exporting to image
+#18 exporting layers 0.3s done
+#18 exporting manifest sha256:3ce55dd9a63131ed0a02398a53d914f679848c049f536dd2847d1a189258457b done
+#18 exporting config sha256:a75a264c4be9933a3ad64bc02d1e51fc6b3ca5a671dd8a39bf4beb294ca86b2c done
+#18 exporting attestation manifest sha256:a15d21113067d3167cf98c449c76f3196fbc56201586cea128be8e50614f47f2 done
+#18 exporting manifest list sha256:ef1ba5a5a16650d525c8b230f10124af6fbabe46df031a510bffc79e98594ae1 done
+#18 naming to docker.io/library/victoria-lakehouse-benchmark-loki-vl-proxy-vl-lh:latest done
+#18 unpacking to docker.io/library/victoria-lakehouse-benchmark-loki-vl-proxy-vl-lh:latest 0.0s done
+#18 DONE 0.4s
+
+#19 [loki-vl-proxy-lh] resolving provenance for metadata file
+#19 DONE 0.0s
+
+#20 [loki-vl-proxy-vl-lh] resolving provenance for metadata file
+#20 DONE 0.0s
+
+#15 [lakehouse-traces builder 2/7] RUN apk add --no-cache git
+#15 1.298 (1/12) Installing brotli-libs (1.1.0-r2)
+#15 1.349 (2/12) Installing c-ares (1.34.8-r0)
+#15 1.391 (3/12) Installing libunistring (1.3-r0)
+#15 1.485 (4/12) Installing libidn2 (2.3.7-r0)
+#15 1.530 (5/12) Installing nghttp2-libs (1.69.0-r0)
+#15 1.568 (6/12) Installing libpsl (0.21.5-r3)
+#15 1.619 (7/12) Installing zstd-libs (1.5.7-r0)
+#15 1.667 (8/12) Installing libcurl (8.14.1-r3)
+#15 1.714 (9/12) Installing libexpat (2.8.4-r0)
+#15 1.762 (10/12) Installing pcre2 (10.46-r0)
+#15 1.807 (11/12) Installing git (2.49.1-r0)
+#15 1.959 (12/12) Installing git-init-template (2.49.1-r0)
+#15 2.000 Executing busybox-1.37.0-r20.trigger
+#15 2.003 OK: 20 MiB in 29 packages
+#15 DONE 2.1s
+
+#21 [datagen-seed builder 3/7] WORKDIR /app
+#21 DONE 0.0s
+
+#22 [lakehouse-logs builder 4/7] COPY go.mod go.sum ./
+#22 DONE 0.0s
+
+#23 [lakehouse-traces builder  5/14] COPY lakehouse-traces/go.mod lakehouse-traces/go.sum ./lakehouse-traces/
+#23 DONE 0.0s
+
+#24 [lakehouse-traces builder  6/14] RUN mkdir -p deps lakehouse-traces/deps &&     git clone --depth 1 --branch v1.50.0 https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs &&     git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src &&     cd /tmp/vl-src && git checkout 77df0c04d532 &&     cp -r /tmp/vl-src /app/lakehouse-traces/deps/VictoriaLogs &&     rm -rf /tmp/vl-src &&     cd /app &&     git clone --depth 1 --branch v0.9.2 https://github.com/VictoriaMetrics/VictoriaTraces.git lakehouse-traces/deps/VictoriaTraces &&     cd /app && go mod download &&     cd /app/lakehouse-traces && go mod download
+#24 0.102 Cloning into 'deps/VictoriaLogs'...
+#24 4.852 warning: refs/tags/v1.50.0 804086be444d5bae008ee538c02a6c45f9da1011 is not a commit!
+#24 4.852 Note: switching to '80d223f95f0e1d425658b1869db9c1f738fd5ea5'.
+#24 4.852 
+#24 4.852 You are in 'detached HEAD' state. You can look around, make experimental
+#24 4.852 changes and commit them, and you can discard any commits you make in this
+#24 4.852 state without impacting any branches by switching back to a branch.
+#24 4.852 
+#24 4.852 If you want to create a new branch to retain commits you create, you may
+#24 4.852 do so (now or later) by using -c with the switch command. Example:
+#24 4.852 
+#24 4.852   git switch -c <new-branch-name>
+#24 4.852 
+#24 4.852 Or undo this operation with:
+#24 4.852 
+#24 4.852   git switch -
+#24 4.852 
+#24 4.852 Turn off this advice by setting config variable advice.detachedHead to false
+#24 4.852 
+#24 5.110 Cloning into '/tmp/vl-src'...
+#24 ...
+
+#25 [lakehouse-logs builder  5/10] RUN mkdir -p deps &&     git clone --depth 1 --branch v1.50.0 https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs &&     go mod download
+#25 0.133 Cloning into 'deps/VictoriaLogs'...
+#25 5.553 warning: refs/tags/v1.50.0 804086be444d5bae008ee538c02a6c45f9da1011 is not a commit!
+#25 5.554 Note: switching to '80d223f95f0e1d425658b1869db9c1f738fd5ea5'.
+#25 5.554 
+#25 5.554 You are in 'detached HEAD' state. You can look around, make experimental
+#25 5.554 changes and commit them, and you can discard any commits you make in this
+#25 5.554 state without impacting any branches by switching back to a branch.
+#25 5.554 
+#25 5.554 If you want to create a new branch to retain commits you create, you may
+#25 5.554 do so (now or later) by using -c with the switch command. Example:
+#25 5.554 
+#25 5.554   git switch -c <new-branch-name>
+#25 5.554 
+#25 5.554 Or undo this operation with:
+#25 5.554 
+#25 5.554   git switch -
+#25 5.554 
+#25 5.554 Turn off this advice by setting config variable advice.detachedHead to false
+#25 5.554 
+#25 ...
+
+#26 [datagen-seed builder 5/7] RUN mkdir -p deps &&     git clone --depth 1 --branch v1.50.0 https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs &&     go mod download
+#26 0.127 Cloning into 'deps/VictoriaLogs'...
+#26 4.510 warning: refs/tags/v1.50.0 804086be444d5bae008ee538c02a6c45f9da1011 is not a commit!
+#26 4.510 Note: switching to '80d223f95f0e1d425658b1869db9c1f738fd5ea5'.
+#26 4.510 
+#26 4.510 You are in 'detached HEAD' state. You can look around, make experimental
+#26 4.510 changes and commit them, and you can discard any commits you make in this
+#26 4.510 state without impacting any branches by switching back to a branch.
+#26 4.510 
+#26 4.510 If you want to create a new branch to retain commits you create, you may
+#26 4.510 do so (now or later) by using -c with the switch command. Example:
+#26 4.510 
+#26 4.510   git switch -c <new-branch-name>
+#26 4.510 
+#26 4.510 Or undo this operation with:
+#26 4.510 
+#26 4.510   git switch -
+#26 4.510 
+#26 4.510 Turn off this advice by setting config variable advice.detachedHead to false
+#26 4.510 
+#26 ...
+
+#25 [lakehouse-logs builder  5/10] RUN mkdir -p deps &&     git clone --depth 1 --branch v1.50.0 https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs &&     go mod download
+#25 DONE 14.6s
+
+#26 [datagen-seed builder 5/7] RUN mkdir -p deps &&     git clone --depth 1 --branch v1.50.0 https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs &&     go mod download
+#26 DONE 14.6s
+
+#27 [lakehouse-logs builder  6/10] COPY patches/vl-logs/ /tmp/patches/
+#27 DONE 0.1s
+
+#28 [datagen-seed builder 6/7] COPY . .
+#28 DONE 0.2s
+
+#29 [lakehouse-logs builder  7/10] RUN cp /tmp/patches/external.go.src deps/VictoriaLogs/app/vlstorage/external.go &&     cp /tmp/patches/external_query.go.src deps/VictoriaLogs/lib/logstorage/external_query.go &&     cd deps/VictoriaLogs && git apply /tmp/patches/vlstorage-dispatch.patch &&     git apply /tmp/patches/vl-export-severity.patch &&     git apply /tmp/patches/vl-export-streamtags-get.patch
+#29 DONE 0.1s
+
+#30 [datagen-seed builder 7/7] RUN CGO_ENABLED=0 GOWORK=off go build -o /datagen ./cmd/datagen
+#30 ...
+
+#31 [lakehouse-logs builder  8/10] COPY . .
+#31 DONE 0.1s
+
+#32 [lakehouse-logs builder  9/10] RUN cp -r deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmui/
+#32 DONE 0.1s
+
+#33 [lakehouse-logs builder 10/10] RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64     go build -trimpath -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=dev" -o /lakehouse-logs ./cmd/lakehouse-logs &&     mkdir -p /data/lakehouse/cache
+#33 ...
+
+#30 [datagen-seed builder 7/7] RUN CGO_ENABLED=0 GOWORK=off go build -o /datagen ./cmd/datagen
+#30 DONE 3.9s
+
+#24 [lakehouse-traces builder  6/14] RUN mkdir -p deps lakehouse-traces/deps &&     git clone --depth 1 --branch v1.50.0 https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs &&     git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src &&     cd /tmp/vl-src && git checkout 77df0c04d532 &&     cp -r /tmp/vl-src /app/lakehouse-traces/deps/VictoriaLogs &&     rm -rf /tmp/vl-src &&     cd /app &&     git clone --depth 1 --branch v0.9.2 https://github.com/VictoriaMetrics/VictoriaTraces.git lakehouse-traces/deps/VictoriaTraces &&     cd /app && go mod download &&     cd /app/lakehouse-traces && go mod download
+#24 ...
+
+#34 [datagen-seed stage-1 2/2] COPY --from=builder /datagen /usr/local/bin/datagen
+#34 DONE 0.1s
+
+#24 [lakehouse-traces builder  6/14] RUN mkdir -p deps lakehouse-traces/deps &&     git clone --depth 1 --branch v1.50.0 https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs &&     git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src &&     cd /tmp/vl-src && git checkout 77df0c04d532 &&     cp -r /tmp/vl-src /app/lakehouse-traces/deps/VictoriaLogs &&     rm -rf /tmp/vl-src &&     cd /app &&     git clone --depth 1 --branch v0.9.2 https://github.com/VictoriaMetrics/VictoriaTraces.git lakehouse-traces/deps/VictoriaTraces &&     cd /app && go mod download &&     cd /app/lakehouse-traces && go mod download
+#24 ...
+
+#35 [datagen-seed] exporting to image
+#35 exporting layers
+#35 exporting layers 0.3s done
+#35 exporting manifest sha256:0c0590deb60764065a9783994f6918453a997553a5dba19344b4d1dd48431101 0.0s done
+#35 exporting config sha256:c6ea711b2baaca57042952f06b0bb911893b169c4276d88df16257240ceea5dc done
+#35 exporting attestation manifest sha256:a313eb7200d11da5d8f8f6be560e3ba0619d0eecd73cfc916db25a4b157284a6 done
+#35 exporting manifest list sha256:a8a3b4a4a73b7ad12997c2c99e6fd1b669e97a84189ff9900508cd34225d1cac 0.0s done
+#35 naming to docker.io/library/victoria-lakehouse-benchmark-datagen-seed:latest done
+#35 unpacking to docker.io/library/victoria-lakehouse-benchmark-datagen-seed:latest 0.0s done
+#35 DONE 0.4s
+
+#33 [lakehouse-logs builder 10/10] RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64     go build -trimpath -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=dev" -o /lakehouse-logs ./cmd/lakehouse-logs &&     mkdir -p /data/lakehouse/cache
+#33 ...
+
+#36 [datagen-seed] resolving provenance for metadata file
+#36 DONE 0.0s
+
+#24 [lakehouse-traces builder  6/14] RUN mkdir -p deps lakehouse-traces/deps &&     git clone --depth 1 --branch v1.50.0 https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs &&     git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src &&     cd /tmp/vl-src && git checkout 77df0c04d532 &&     cp -r /tmp/vl-src /app/lakehouse-traces/deps/VictoriaLogs &&     rm -rf /tmp/vl-src &&     cd /app &&     git clone --depth 1 --branch v0.9.2 https://github.com/VictoriaMetrics/VictoriaTraces.git lakehouse-traces/deps/VictoriaTraces &&     cd /app && go mod download &&     cd /app/lakehouse-traces && go mod download
+#24 ...
+
+#33 [lakehouse-logs builder 10/10] RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64     go build -trimpath -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=dev" -o /lakehouse-logs ./cmd/lakehouse-logs &&     mkdir -p /data/lakehouse/cache
+#33 DONE 7.5s
+
+#24 [lakehouse-traces builder  6/14] RUN mkdir -p deps lakehouse-traces/deps &&     git clone --depth 1 --branch v1.50.0 https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs &&     git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src &&     cd /tmp/vl-src && git checkout 77df0c04d532 &&     cp -r /tmp/vl-src /app/lakehouse-traces/deps/VictoriaLogs &&     rm -rf /tmp/vl-src &&     cd /app &&     git clone --depth 1 --branch v0.9.2 https://github.com/VictoriaMetrics/VictoriaTraces.git lakehouse-traces/deps/VictoriaTraces &&     cd /app && go mod download &&     cd /app/lakehouse-traces && go mod download
+#24 ...
+
+#37 [lakehouse-logs stage-1 2/3] COPY --from=builder /lakehouse-logs /usr/local/bin/lakehouse-logs
+#37 DONE 0.1s
+
+#38 [lakehouse-logs stage-1 3/3] COPY --from=builder --chown=65532:65532 /data/lakehouse /data/lakehouse
+#38 DONE 0.0s
+
+#24 [lakehouse-traces builder  6/14] RUN mkdir -p deps lakehouse-traces/deps &&     git clone --depth 1 --branch v1.50.0 https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs &&     git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src &&     cd /tmp/vl-src && git checkout 77df0c04d532 &&     cp -r /tmp/vl-src /app/lakehouse-traces/deps/VictoriaLogs &&     rm -rf /tmp/vl-src &&     cd /app &&     git clone --depth 1 --branch v0.9.2 https://github.com/VictoriaMetrics/VictoriaTraces.git lakehouse-traces/deps/VictoriaTraces &&     cd /app && go mod download &&     cd /app/lakehouse-traces && go mod download
+#24 ...
+
+#39 [lakehouse-logs] exporting to image
+#39 exporting layers 0.7s done
+#39 exporting manifest sha256:3b45dcbf432b12641085c0214ac5d051ab366a98efa79e2d375b59cf9f01c867 done
+#39 exporting config sha256:29b31bd34b7f16b94c25569ca3eb7d1a445a72b40a4c1c0decc713e8d14f0f13 done
+#39 exporting attestation manifest sha256:84cdc1d4f8898da6e6d68b5bbec67d6dddb1d23c4fd31bab491d5cff36ce07a7 done
+#39 exporting manifest list sha256:5c63371a2797d9ed886ef99ce5a6a434ac3bf19fbe0ba4d3c27461d5494bd572 done
+#39 naming to docker.io/library/victoria-lakehouse-benchmark-lakehouse-logs:latest done
+#39 unpacking to docker.io/library/victoria-lakehouse-benchmark-lakehouse-logs:latest 0.1s done
+#39 DONE 0.9s
+
+#40 [lakehouse-logs] resolving provenance for metadata file
+#40 DONE 0.0s
+
+#24 [lakehouse-traces builder  6/14] RUN mkdir -p deps lakehouse-traces/deps &&     git clone --depth 1 --branch v1.50.0 https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs &&     git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src &&     cd /tmp/vl-src && git checkout 77df0c04d532 &&     cp -r /tmp/vl-src /app/lakehouse-traces/deps/VictoriaLogs &&     rm -rf /tmp/vl-src &&     cd /app &&     git clone --depth 1 --branch v0.9.2 https://github.com/VictoriaMetrics/VictoriaTraces.git lakehouse-traces/deps/VictoriaTraces &&     cd /app && go mod download &&     cd /app/lakehouse-traces && go mod download
+#24 58.21 Note: switching to '77df0c04d532'.
+#24 58.21 
+#24 58.21 You are in 'detached HEAD' state. You can look around, make experimental
+#24 58.21 changes and commit them, and you can discard any commits you make in this
+#24 58.21 state without impacting any branches by switching back to a branch.
+#24 58.21 
+#24 58.21 If you want to create a new branch to retain commits you create, you may
+#24 58.21 do so (now or later) by using -c with the switch command. Example:
+#24 58.21 
+#24 58.21   git switch -c <new-branch-name>
+#24 58.21 
+#24 58.21 Or undo this operation with:
+#24 58.21 
+#24 58.21   git switch -
+#24 58.21 
+#24 58.21 Turn off this advice by setting config variable advice.detachedHead to false
+#24 58.21 
+#24 58.21 HEAD is now at 77df0c04d deployment: update VictoriaLogs Docker image tag from v1.49.0 to v1.50.0
+#24 58.38 Cloning into 'lakehouse-traces/deps/VictoriaTraces'...
+#24 63.83 warning: refs/tags/v0.9.2 61b129cfd5332641947712717d89319740062635 is not a commit!
+#24 63.83 Note: switching to '2418c96705e72cedcfc348d30bc96fe4fe648661'.
+#24 63.83 
+#24 63.83 You are in 'detached HEAD' state. You can look around, make experimental
+#24 63.83 changes and commit them, and you can discard any commits you make in this
+#24 63.83 state without impacting any branches by switching back to a branch.
+#24 63.83 
+#24 63.83 If you want to create a new branch to retain commits you create, you may
+#24 63.83 do so (now or later) by using -c with the switch command. Example:
+#24 63.83 
+#24 63.83   git switch -c <new-branch-name>
+#24 63.83 
+#24 63.83 Or undo this operation with:
+#24 63.83 
+#24 63.83   git switch -
+#24 63.83 
+#24 63.83 Turn off this advice by setting config variable advice.detachedHead to false
+#24 63.83 
+#24 DONE 70.1s
+
+#41 [lakehouse-traces builder  7/14] COPY patches/ /tmp/patches/
+#41 DONE 0.5s
+
+#42 [lakehouse-traces builder  8/14] RUN cp /tmp/patches/vl-logs/external.go.src deps/VictoriaLogs/app/vlstorage/external.go &&     cp /tmp/patches/vl-logs/external_query.go.src deps/VictoriaLogs/lib/logstorage/external_query.go &&     cd deps/VictoriaLogs && git apply /tmp/patches/vl-logs/vlstorage-dispatch.patch &&     git apply /tmp/patches/vl-logs/vl-export-severity.patch &&     git apply /tmp/patches/vl-logs/vl-export-streamtags-get.patch
+#42 DONE 0.1s
+
+#43 [lakehouse-traces builder  9/14] RUN cp /tmp/patches/vl-traces/external.go.src lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go &&     cp /tmp/patches/vl-traces/external_query.go.src lakehouse-traces/deps/VictoriaLogs/lib/logstorage/external_query.go &&     cd lakehouse-traces/deps/VictoriaLogs && git apply /tmp/patches/vl-traces/vlstorage-dispatch.patch &&     git apply /tmp/patches/vl-traces/vl-export-severity.patch &&     git apply /tmp/patches/vl-traces/vl-export-streamtags-get.patch
+#43 DONE 0.1s
+
+#44 [lakehouse-traces builder 10/14] RUN cp /tmp/patches/vt-traces/external.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/external.go &&     cp /tmp/patches/vt-traces/flag_dedup.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/flag_dedup.go &&     cd lakehouse-traces/deps/VictoriaTraces && git apply /tmp/patches/vt-traces/vtstorage-dispatch.patch &&     git apply /tmp/patches/vt-traces/vtstorage-flag-dedup.patch &&     git apply /tmp/patches/vt-traces/vtinsert-flag-dedup.patch &&     git apply /tmp/patches/vt-traces/go-mod-replace.patch
+#44 DONE 0.1s
+
+#45 [lakehouse-traces builder 11/14] COPY . .
+#45 DONE 0.1s
+
+#46 [lakehouse-traces builder 12/14] RUN cp -r lakehouse-traces/deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmui/
+#46 DONE 0.1s
+
+#47 [lakehouse-traces builder 13/14] RUN cd lakehouse-traces &&     CGO_ENABLED=0 GOOS=linux GOARCH=arm64     go build -trimpath -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=dev" -o /lakehouse-traces .
+#47 DONE 7.1s
+
+#48 [lakehouse-traces builder 14/14] RUN mkdir -p /data/lakehouse/cache
+#48 DONE 0.1s
+
+#49 [lakehouse-traces stage-1 2/3] COPY --from=builder /lakehouse-traces /usr/local/bin/lakehouse-traces
+#49 DONE 0.0s
+
+#50 [lakehouse-traces stage-1 3/3] COPY --from=builder --chown=65532:65532 /data/lakehouse /data/lakehouse
+#50 DONE 0.0s
+
+#51 [lakehouse-traces] exporting to image
+#51 exporting layers
+#51 exporting layers 0.6s done
+#51 exporting manifest sha256:820e2bc686230ce3b084bcd69e215d5c888d668915a761fac8042ad93b625e2f done
+#51 exporting config sha256:de81441119f81c3188f8b8fdadba3bde59e250c1aaf94b21fd3e124799b0033c done
+#51 exporting attestation manifest sha256:bb56f4665c2a90956d636bb619b83ed17fb38b47c0434fe735b63a72f62ed8a3 done
+#51 exporting manifest list sha256:d93108b40bdc60433f5073c88f115cb53bda6d3abd9eeefdbb3191c4e1a642c0 done
+#51 naming to docker.io/library/victoria-lakehouse-benchmark-lakehouse-traces:latest done
+#51 unpacking to docker.io/library/victoria-lakehouse-benchmark-lakehouse-traces:latest 0.1s done
+#51 DONE 0.7s
+
+#52 [lakehouse-traces] resolving provenance for metadata file
+#52 DONE 0.0s
+ Image victoria-lakehouse-benchmark-loki-vl-proxy-lh Built 
+ Image victoria-lakehouse-benchmark-lakehouse-logs Built 
+ Image victoria-lakehouse-benchmark-lakehouse-traces Built 
+ Image victoria-lakehouse-benchmark-datagen-seed Built 
+ Image victoria-lakehouse-benchmark-loki-vl-proxy-vl-lh Built 
+ Volume victoria-lakehouse-benchmark_lakehouse-cache-traces Creating 
+ Volume victoria-lakehouse-benchmark_lakehouse-cache-logs Creating 
+ Volume victoria-lakehouse-benchmark_lakehouse-cache-traces Creating 
+ Volume victoria-lakehouse-benchmark_lakehouse-cache-logs Creating 
+ Volume victoria-lakehouse-benchmark_loki-data Creating 
+ Volume victoria-lakehouse-benchmark_vl-data Creating 
+ Volume victoria-lakehouse-benchmark_loki-data Creating 
+ Volume victoria-lakehouse-benchmark_vm-data Creating 
+ Volume victoria-lakehouse-benchmark_vl-data Creating 
+ Volume victoria-lakehouse-benchmark_vm-data Creating 
+ Volume victoria-lakehouse-benchmark_vt-data Creating 
+ Volume victoria-lakehouse-benchmark_tempo-data Creating 
+ Volume victoria-lakehouse-benchmark_tempo-data Creating 
+ Volume victoria-lakehouse-benchmark_vt-data Creating 
+ Network victoria-lakehouse-benchmark_bench-net Creating 
+ Network victoria-lakehouse-benchmark_bench-net Creating 
+ Volume victoria-lakehouse-benchmark_lakehouse-cache-traces Created 
+ Volume victoria-lakehouse-benchmark_lakehouse-cache-traces Created 
+ Volume victoria-lakehouse-benchmark_tempo-data Created 
+ Volume victoria-lakehouse-benchmark_tempo-data Created 
+ Volume victoria-lakehouse-benchmark_vt-data Created 
+ Volume victoria-lakehouse-benchmark_vt-data Created 
+ Volume victoria-lakehouse-benchmark_loki-data Created 
+ Volume victoria-lakehouse-benchmark_loki-data Created 
+ Volume victoria-lakehouse-benchmark_lakehouse-cache-logs Created 
+ Volume victoria-lakehouse-benchmark_lakehouse-cache-logs Created 
+ Volume victoria-lakehouse-benchmark_vl-data Created 
+ Volume victoria-lakehouse-benchmark_vl-data Created 
+ Volume victoria-lakehouse-benchmark_vm-data Created 
+ Volume victoria-lakehouse-benchmark_vm-data Created 
+ Network victoria-lakehouse-benchmark_bench-net Created 
+ Network victoria-lakehouse-benchmark_bench-net Created 
+ Container victoria-lakehouse-benchmark-victorialogs-1 Creating 
+ Container victoria-lakehouse-benchmark-minio-1 Creating 
+ Container victoria-lakehouse-benchmark-victoriatraces-1 Creating 
+ Container victoria-lakehouse-benchmark-victoriatraces-1 Created 
+ Container victoria-lakehouse-benchmark-victorialogs-1 Created 
+ Container victoria-lakehouse-benchmark-minio-1 Created 
+ Container victoria-lakehouse-benchmark-minio-init-1 Creating 
+ Container victoria-lakehouse-benchmark-s3-latency-1 Creating 
+ Container victoria-lakehouse-benchmark-s3-latency-1 Created 
+ Container victoria-lakehouse-benchmark-minio-init-1 Created 
+ Container victoria-lakehouse-benchmark-clickhouse-1 Creating 
+ Container victoria-lakehouse-benchmark-tempo-1 Creating 
+ Container victoria-lakehouse-benchmark-lakehouse-traces-1 Creating 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Creating 
+ Container victoria-lakehouse-benchmark-loki-1 Creating 
+ Container victoria-lakehouse-benchmark-tempo-1 Created 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Created 
+ Container victoria-lakehouse-benchmark-loki-vl-proxy-lh-1 Creating 
+ Container victoria-lakehouse-benchmark-victoriametrics-1 Creating 
+ Container victoria-lakehouse-benchmark-loki-vl-proxy-vl-lh-1 Creating 
+ Container victoria-lakehouse-benchmark-lakehouse-traces-1 Created 
+ Container victoria-lakehouse-benchmark-loki-1 Created 
+ Container victoria-lakehouse-benchmark-datagen-seed-1 Creating 
+ Container victoria-lakehouse-benchmark-clickhouse-1 Created 
+ Container victoria-lakehouse-benchmark-loki-vl-proxy-lh-1 Created 
+ Container victoria-lakehouse-benchmark-loki-vl-proxy-vl-lh-1 Created 
+ Container victoria-lakehouse-benchmark-victoriametrics-1 Created 
+ Container victoria-lakehouse-benchmark-datagen-seed-1 Created 
+ Container victoria-lakehouse-benchmark-minio-1 Starting 
+ Container victoria-lakehouse-benchmark-victoriatraces-1 Starting 
+ Container victoria-lakehouse-benchmark-victorialogs-1 Starting 
+ Container victoria-lakehouse-benchmark-victorialogs-1 Started 
+ Container victoria-lakehouse-benchmark-victoriatraces-1 Started 
+ Container victoria-lakehouse-benchmark-minio-1 Started 
+ Container victoria-lakehouse-benchmark-minio-1 Waiting 
+ Container victoria-lakehouse-benchmark-minio-1 Waiting 
+ Container victoria-lakehouse-benchmark-minio-1 Healthy 
+ Container victoria-lakehouse-benchmark-minio-1 Healthy 
+ Container victoria-lakehouse-benchmark-minio-init-1 Starting 
+ Container victoria-lakehouse-benchmark-s3-latency-1 Starting 
+ Container victoria-lakehouse-benchmark-s3-latency-1 Started 
+ Container victoria-lakehouse-benchmark-minio-init-1 Started 
+ Container victoria-lakehouse-benchmark-minio-init-1 Waiting 
+ Container victoria-lakehouse-benchmark-minio-init-1 Waiting 
+ Container victoria-lakehouse-benchmark-minio-init-1 Waiting 
+ Container victoria-lakehouse-benchmark-minio-init-1 Waiting 
+ Container victoria-lakehouse-benchmark-minio-init-1 Waiting 
+ Container victoria-lakehouse-benchmark-s3-latency-1 Waiting 
+ Container victoria-lakehouse-benchmark-s3-latency-1 Waiting 
+ Container victoria-lakehouse-benchmark-minio-init-1 Exited 
+ Container victoria-lakehouse-benchmark-tempo-1 Starting 
+ Container victoria-lakehouse-benchmark-minio-init-1 Exited 
+ Container victoria-lakehouse-benchmark-clickhouse-1 Starting 
+ Container victoria-lakehouse-benchmark-minio-init-1 Exited 
+ Container victoria-lakehouse-benchmark-loki-1 Starting 
+ Container victoria-lakehouse-benchmark-minio-init-1 Exited 
+ Container victoria-lakehouse-benchmark-minio-init-1 Exited 
+ Container victoria-lakehouse-benchmark-clickhouse-1 Started 
+ Container victoria-lakehouse-benchmark-tempo-1 Started 
+ Container victoria-lakehouse-benchmark-loki-1 Started 
+ Container victoria-lakehouse-benchmark-s3-latency-1 Healthy 
+ Container victoria-lakehouse-benchmark-s3-latency-1 Healthy 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Starting 
+ Container victoria-lakehouse-benchmark-lakehouse-traces-1 Starting 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Started 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Waiting 
+ Container victoria-lakehouse-benchmark-victorialogs-1 Waiting 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Waiting 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Waiting 
+ Container victoria-lakehouse-benchmark-lakehouse-traces-1 Started 
+ Container victoria-lakehouse-benchmark-victoriatraces-1 Waiting 
+ Container victoria-lakehouse-benchmark-lakehouse-traces-1 Waiting 
+ Container victoria-lakehouse-benchmark-victorialogs-1 Waiting 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Waiting 
+ Container victoria-lakehouse-benchmark-victorialogs-1 Healthy 
+ Container victoria-lakehouse-benchmark-victoriatraces-1 Healthy 
+ Container victoria-lakehouse-benchmark-victorialogs-1 Healthy 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Healthy 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Healthy 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Healthy 
+ Container victoria-lakehouse-benchmark-victoriametrics-1 Starting 
+ Container victoria-lakehouse-benchmark-loki-vl-proxy-vl-lh-1 Starting 
+ Container victoria-lakehouse-benchmark-lakehouse-logs-1 Healthy 
+ Container victoria-lakehouse-benchmark-loki-vl-proxy-lh-1 Starting 
+ Container victoria-lakehouse-benchmark-lakehouse-traces-1 Healthy 
+ Container victoria-lakehouse-benchmark-datagen-seed-1 Starting 
+ Container victoria-lakehouse-benchmark-loki-vl-proxy-lh-1 Started 
+ Container victoria-lakehouse-benchmark-datagen-seed-1 Started 
+ Container victoria-lakehouse-benchmark-victoriametrics-1 Started 
+ Container victoria-lakehouse-benchmark-loki-vl-proxy-vl-lh-1 Started 
+[1;36m[bench][0m waiting for systems to report healthy…
+[1;36m[bench][0m waiting for datagen-seed to backfill (~7d of data)…
+[1;36m[bench][0m seed done; waiting for LH flush to CONVERGE to the baseline (so we measure equivalent data)…
+    logs    baseline=13749    LH=13749    ratio=1.000
+[1;36m[bench][0m flush converged (logs): LH=13749 ≈ baseline=13749
+    traces  baseline=18404    LH=15756    ratio=0.856
+    traces  baseline=18381    LH=16090    ratio=0.875
+    traces  baseline=18372    LH=16082    ratio=0.875
+    traces  baseline=18372    LH=16082    ratio=0.875
+    traces  baseline=18361    LH=16072    ratio=0.875
+    traces  baseline=18361    LH=16072    ratio=0.875
+    traces  baseline=18347    LH=16060    ratio=0.875
+    traces  baseline=18340    LH=16054    ratio=0.875
+    traces  baseline=18331    LH=16046    ratio=0.875
+    traces  baseline=18331    LH=16046    ratio=0.875
+    traces  baseline=18331    LH=16046    ratio=0.875
+    traces  baseline=18331    LH=16046    ratio=0.875
+[1;36m[bench][0m flush SETTLED (traces) but LH=16046 is only ratio=0.875 of baseline=18331 — REAL gap, not lag (cells will be flagged ✗ where it matters)
+[1;36m[bench][0m sample trace_id for point lookups: f80d4c741b0b356259731bb7385a4ed9
+[1;36m[bench][0m S3 latency: passthrough (0ms)
+[1;36m[bench][0m parity gate (logs, 24h): count_total across systems…
+    victorialogs     count=13718
+    lakehouse        count=13718
+    clickhouse       count=13718
+    logs/count_total/1h/lat0           victorialogs     p95=2.4 ms
+    logs/count_total/1h/lat0           lakehouse        p95=3.9 ms
+    logs/count_total/1h/lat0           clickhouse       p95=71.9 ms
+    logs/count_by_service/1h/lat0      victorialogs     p95=2.4 ms
+    logs/count_by_service/1h/lat0      lakehouse        p95=7.0 ms
+    logs/count_by_service/1h/lat0      clickhouse       p95=82.6 ms
+    logs/fulltext/1h/lat0              victorialogs     p95=3.6 ms
+    logs/fulltext/1h/lat0              lakehouse        p95=5.2 ms
+    logs/fulltext/1h/lat0              clickhouse       p95=72.0 ms
+    logs/level_filter/1h/lat0          victorialogs     p95=3.2 ms
+    logs/level_filter/1h/lat0          lakehouse        p95=5.0 ms
+    logs/level_filter/1h/lat0          clickhouse       p95=96.2 ms
+    logs/multi_filter/1h/lat0          victorialogs     p95=3.3 ms
+    logs/multi_filter/1h/lat0          lakehouse        p95=6.0 ms
+    logs/multi_filter/1h/lat0          clickhouse       p95=106.5 ms
+    logs/negation/1h/lat0              victorialogs     p95=2.8 ms
+    logs/negation/1h/lat0              lakehouse        p95=5.2 ms
+    logs/negation/1h/lat0              clickhouse       p95=81.1 ms
+    logs/trace_lookup/1h/lat0          victorialogs     p95=2.3 ms
+    logs/trace_lookup/1h/lat0          lakehouse        p95=1.7 ms
+    logs/trace_lookup/1h/lat0          clickhouse       p95=81.6 ms
+    logs/high_card/1h/lat0             victorialogs     p95=4.0 ms
+    logs/high_card/1h/lat0             lakehouse        p95=4.8 ms
+    logs/high_card/1h/lat0             clickhouse       p95=88.2 ms
+    logs/scan/1h/lat0                  victorialogs     p95=4.2 ms
+    logs/scan/1h/lat0                  lakehouse        p95=5.3 ms
+    logs/scan/1h/lat0                  clickhouse       p95=93.0 ms
+    logs/count_total/24h/lat0          victorialogs     p95=4.5 ms
+    logs/count_total/24h/lat0          lakehouse        p95=15.2 ms
+    logs/count_total/24h/lat0          clickhouse       p95=99.4 ms
+    logs/count_by_service/24h/lat0     victorialogs     p95=6.3 ms
+    logs/count_by_service/24h/lat0     lakehouse        p95=9.9 ms
+    logs/count_by_service/24h/lat0     clickhouse       p95=70.5 ms
+    logs/fulltext/24h/lat0             victorialogs     p95=5.1 ms
+    logs/fulltext/24h/lat0             lakehouse        p95=20.1 ms
+    logs/fulltext/24h/lat0             clickhouse       p95=78.9 ms
+    logs/level_filter/24h/lat0         victorialogs     p95=5.2 ms
+    logs/level_filter/24h/lat0         lakehouse        p95=20.5 ms
+    logs/level_filter/24h/lat0         clickhouse       p95=87.6 ms
+    logs/multi_filter/24h/lat0         victorialogs     p95=4.4 ms
+    logs/multi_filter/24h/lat0         lakehouse        p95=22.1 ms
+    logs/multi_filter/24h/lat0         clickhouse       p95=90.2 ms
+    logs/negation/24h/lat0             victorialogs     p95=5.3 ms
+    logs/negation/24h/lat0             lakehouse        p95=20.9 ms
+    logs/negation/24h/lat0             clickhouse       p95=92.6 ms
+    logs/trace_lookup/24h/lat0         victorialogs     p95=3.9 ms
+    logs/trace_lookup/24h/lat0         lakehouse        p95=5.5 ms
+    logs/trace_lookup/24h/lat0         clickhouse       p95=78.7 ms
+    logs/high_card/24h/lat0            victorialogs     p95=7.4 ms
+    logs/high_card/24h/lat0            lakehouse        p95=22.0 ms
+    logs/high_card/24h/lat0            clickhouse       p95=78.5 ms
+    logs/scan/24h/lat0                 victorialogs     p95=3.9 ms
+    logs/scan/24h/lat0                 lakehouse        p95=25.2 ms
+    logs/scan/24h/lat0                 clickhouse       p95=74.2 ms
+[1;36m[bench][0m parity gate (traces, 24h): count_total across systems…
+    victoriatraces   count=16026
+    lakehouse        count=16026
+    clickhouse       count=16026
+    traces/count_total/1h/lat0         victoriatraces   p95=1.5 ms
+    traces/count_total/1h/lat0         lakehouse        p95=4.8 ms
+    traces/count_total/1h/lat0         clickhouse       p95=107.6 ms
+    traces/count_by_service/1h/lat0    victoriatraces   p95=1.8 ms
+    traces/count_by_service/1h/lat0    lakehouse        p95=2.5 ms
+    traces/count_by_service/1h/lat0    clickhouse       p95=104.6 ms
+    traces/service_filter/1h/lat0      victoriatraces   p95=1.0 ms
+    traces/service_filter/1h/lat0      lakehouse        p95=2.9 ms
+    traces/service_filter/1h/lat0      clickhouse       p95=96.4 ms
+    traces/trace_by_id/1h/lat0         victoriatraces   p95=1.1 ms
+    traces/trace_by_id/1h/lat0         lakehouse        p95=2.8 ms
+    traces/trace_by_id/1h/lat0         clickhouse       p95=86.7 ms
+    traces/span_name/1h/lat0           victoriatraces   p95=1.4 ms
+    traces/span_name/1h/lat0           lakehouse        p95=3.9 ms
+    traces/span_name/1h/lat0           clickhouse       p95=99.8 ms
+    traces/slow_spans/1h/lat0          victoriatraces   p95=1.7 ms
+    traces/slow_spans/1h/lat0          lakehouse        p95=3.4 ms
+    traces/slow_spans/1h/lat0          clickhouse       p95=116.0 ms
+    traces/scan/1h/lat0                victoriatraces   p95=1.8 ms
+    traces/scan/1h/lat0                lakehouse        p95=5.7 ms
+    traces/scan/1h/lat0                clickhouse       p95=115.7 ms
+    traces/count_total/24h/lat0        victoriatraces   p95=2.3 ms
+    traces/count_total/24h/lat0        lakehouse        p95=11.3 ms
+    traces/count_total/24h/lat0        clickhouse       p95=104.5 ms
+    traces/count_by_service/24h/lat0   victoriatraces   p95=2.0 ms
+    traces/count_by_service/24h/lat0   lakehouse        p95=11.5 ms
+    traces/count_by_service/24h/lat0   clickhouse       p95=95.6 ms
+    traces/service_filter/24h/lat0     victoriatraces   p95=1.1 ms
+    traces/service_filter/24h/lat0     lakehouse        p95=9.8 ms
+    traces/service_filter/24h/lat0     clickhouse       p95=94.2 ms
+    traces/trace_by_id/24h/lat0        victoriatraces   p95=1.4 ms
+    traces/trace_by_id/24h/lat0        lakehouse        p95=3.6 ms
+    traces/trace_by_id/24h/lat0        clickhouse       p95=96.4 ms
+    traces/span_name/24h/lat0          victoriatraces   p95=1.8 ms
+    traces/span_name/24h/lat0          lakehouse        p95=12.9 ms
+    traces/span_name/24h/lat0          clickhouse       p95=109.2 ms
+    traces/slow_spans/24h/lat0         victoriatraces   p95=1.7 ms
+    traces/slow_spans/24h/lat0         lakehouse        p95=13.2 ms
+    traces/slow_spans/24h/lat0         clickhouse       p95=79.0 ms
+    traces/scan/24h/lat0               victoriatraces   p95=1.2 ms
+    traces/scan/24h/lat0               lakehouse        p95=12.9 ms
+    traces/scan/24h/lat0               clickhouse       p95=98.2 ms
+[1;36m[bench][0m S3 latency: 100ms
+[1;36m[bench][0m parity gate (logs, 24h): count_total across systems…
+    victorialogs     count=13693
+    lakehouse        count=13693
+    clickhouse       count=13693
+    logs/count_total/1h/lat100         victorialogs     p95=4.0 ms
+    logs/count_total/1h/lat100         lakehouse        p95=5.0 ms
+    logs/count_total/1h/lat100         clickhouse       p95=76.6 ms
+    logs/count_by_service/1h/lat100    victorialogs     p95=2.9 ms
+    logs/count_by_service/1h/lat100    lakehouse        p95=5.3 ms
+    logs/count_by_service/1h/lat100    clickhouse       p95=94.3 ms
+    logs/fulltext/1h/lat100            victorialogs     p95=4.1 ms
+    logs/fulltext/1h/lat100            lakehouse        p95=7.0 ms
+    logs/fulltext/1h/lat100            clickhouse       p95=85.5 ms
+    logs/level_filter/1h/lat100        victorialogs     p95=3.5 ms
+    logs/level_filter/1h/lat100        lakehouse        p95=6.4 ms
+    logs/level_filter/1h/lat100        clickhouse       p95=76.3 ms
+    logs/multi_filter/1h/lat100        victorialogs     p95=2.6 ms
+    logs/multi_filter/1h/lat100        lakehouse        p95=6.3 ms
+    logs/multi_filter/1h/lat100        clickhouse       p95=80.3 ms
+    logs/negation/1h/lat100            victorialogs     p95=2.5 ms
+    logs/negation/1h/lat100            lakehouse        p95=5.3 ms
+    logs/negation/1h/lat100            clickhouse       p95=83.9 ms
+    logs/trace_lookup/1h/lat100        victorialogs     p95=2.9 ms
+    logs/trace_lookup/1h/lat100        lakehouse        p95=2.3 ms
+    logs/trace_lookup/1h/lat100        clickhouse       p95=87.1 ms
+    logs/high_card/1h/lat100           victorialogs     p95=3.8 ms
+    logs/high_card/1h/lat100           lakehouse        p95=7.2 ms
+    logs/high_card/1h/lat100           clickhouse       p95=82.1 ms
+    logs/scan/1h/lat100                victorialogs     p95=3.2 ms
+    logs/scan/1h/lat100                lakehouse        p95=5.9 ms
+    logs/scan/1h/lat100                clickhouse       p95=86.7 ms
+    logs/count_total/24h/lat100        victorialogs     p95=4.8 ms
+    logs/count_total/24h/lat100        lakehouse        p95=14.2 ms
+    logs/count_total/24h/lat100        clickhouse       p95=86.0 ms
+    logs/count_by_service/24h/lat100   victorialogs     p95=5.1 ms
+    logs/count_by_service/24h/lat100   lakehouse        p95=13.2 ms
+    logs/count_by_service/24h/lat100   clickhouse       p95=89.7 ms
+    logs/fulltext/24h/lat100           victorialogs     p95=6.0 ms
+    logs/fulltext/24h/lat100           lakehouse        p95=23.0 ms
+    logs/fulltext/24h/lat100           clickhouse       p95=92.3 ms
+    logs/level_filter/24h/lat100       victorialogs     p95=6.0 ms
+    logs/level_filter/24h/lat100       lakehouse        p95=26.8 ms
+    logs/level_filter/24h/lat100       clickhouse       p95=92.7 ms
+    logs/multi_filter/24h/lat100       victorialogs     p95=6.9 ms
+    logs/multi_filter/24h/lat100       lakehouse        p95=35.3 ms
+    logs/multi_filter/24h/lat100       clickhouse       p95=92.2 ms
+    logs/negation/24h/lat100           victorialogs     p95=10.1 ms
+    logs/negation/24h/lat100           lakehouse        p95=29.8 ms
+    logs/negation/24h/lat100           clickhouse       p95=71.3 ms
+    logs/trace_lookup/24h/lat100       victorialogs     p95=3.2 ms
+    logs/trace_lookup/24h/lat100       lakehouse        p95=5.5 ms
+    logs/trace_lookup/24h/lat100       clickhouse       p95=103.5 ms
+    logs/high_card/24h/lat100          victorialogs     p95=8.3 ms
+    logs/high_card/24h/lat100          lakehouse        p95=25.3 ms
+    logs/high_card/24h/lat100          clickhouse       p95=97.6 ms
+    logs/scan/24h/lat100               victorialogs     p95=4.7 ms
+    logs/scan/24h/lat100               lakehouse        p95=21.4 ms
+    logs/scan/24h/lat100               clickhouse       p95=121.0 ms
+[1;36m[bench][0m parity gate (traces, 24h): count_total across systems…
+    victoriatraces   count=16008
+    lakehouse        count=16008
+    clickhouse       count=16008
+    traces/count_total/1h/lat100       victoriatraces   p95=1.6 ms
+    traces/count_total/1h/lat100       lakehouse        p95=3.1 ms
+    traces/count_total/1h/lat100       clickhouse       p95=101.8 ms
+    traces/count_by_service/1h/lat100  victoriatraces   p95=1.8 ms
+    traces/count_by_service/1h/lat100  lakehouse        p95=3.5 ms
+    traces/count_by_service/1h/lat100  clickhouse       p95=102.8 ms
+    traces/service_filter/1h/lat100    victoriatraces   p95=1.6 ms
+    traces/service_filter/1h/lat100    lakehouse        p95=5.9 ms
+    traces/service_filter/1h/lat100    clickhouse       p95=131.9 ms
+    traces/trace_by_id/1h/lat100       victoriatraces   p95=3.1 ms
+    traces/trace_by_id/1h/lat100       lakehouse        p95=1.8 ms
+    traces/trace_by_id/1h/lat100       clickhouse       p95=108.5 ms
+    traces/span_name/1h/lat100         victoriatraces   p95=1.1 ms
+    traces/span_name/1h/lat100         lakehouse        p95=4.3 ms
+    traces/span_name/1h/lat100         clickhouse       p95=95.2 ms
+    traces/slow_spans/1h/lat100        victoriatraces   p95=1.6 ms
+    traces/slow_spans/1h/lat100        lakehouse        p95=3.9 ms
+    traces/slow_spans/1h/lat100        clickhouse       p95=89.4 ms
+    traces/scan/1h/lat100              victoriatraces   p95=1.4 ms
+    traces/scan/1h/lat100              lakehouse        p95=3.8 ms
+    traces/scan/1h/lat100              clickhouse       p95=126.0 ms
+    traces/count_total/24h/lat100      victoriatraces   p95=2.8 ms
+    traces/count_total/24h/lat100      lakehouse        p95=11.6 ms
+    traces/count_total/24h/lat100      clickhouse       p95=188.5 ms
+    traces/count_by_service/24h/lat100 victoriatraces   p95=3.3 ms
+    traces/count_by_service/24h/lat100 lakehouse        p95=13.9 ms
+    traces/count_by_service/24h/lat100 clickhouse       p95=96.0 ms
+    traces/service_filter/24h/lat100   victoriatraces   p95=1.6 ms
+    traces/service_filter/24h/lat100   lakehouse        p95=12.0 ms
+    traces/service_filter/24h/lat100   clickhouse       p95=137.7 ms
+    traces/trace_by_id/24h/lat100      victoriatraces   p95=2.0 ms
+    traces/trace_by_id/24h/lat100      lakehouse        p95=4.2 ms
+    traces/trace_by_id/24h/lat100      clickhouse       p95=120.0 ms
+    traces/span_name/24h/lat100        victoriatraces   p95=1.7 ms
+    traces/span_name/24h/lat100        lakehouse        p95=13.3 ms
+    traces/span_name/24h/lat100        clickhouse       p95=156.2 ms
+    traces/slow_spans/24h/lat100       victoriatraces   p95=2.4 ms
+    traces/slow_spans/24h/lat100       lakehouse        p95=16.8 ms
+    traces/slow_spans/24h/lat100       clickhouse       p95=198.4 ms
+    traces/scan/24h/lat100             victoriatraces   p95=3.1 ms
+    traces/scan/24h/lat100             lakehouse        p95=22.3 ms
+    traces/scan/24h/lat100             clickhouse       p95=111.2 ms
+[1;36m[bench][0m raw results -> bench-results/baseline-2026-09/run-baseline.json
+[1;36m[bench][0m report -> bench-results/baseline-2026-09/run-baseline.md
+[1;36m[bench][0m tearing down stack…
