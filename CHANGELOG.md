@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **`google.golang.org/grpc` bumped `v1.80.0` → `v1.83.1`** in both `go.mod` (direct) and `lakehouse-traces/go.mod` (indirect), fixing four open Dependabot advisories: [GHSA-hrxh-6v49-42gf](https://github.com/advisories/GHSA-hrxh-6v49-42gf), [GHSA-2v4p-qf9q-27wj](https://github.com/advisories/GHSA-2v4p-qf9q-27wj), [GHSA-vp52-pcj8-j9qc](https://github.com/advisories/GHSA-vp52-pcj8-j9qc), [GHSA-qc2q-p7wx-3px3](https://github.com/advisories/GHSA-qc2q-p7wx-3px3). Confirmed via `govulncheck`: the reachable `GO-2026-6061` finding (xDS RBAC / HTTP2-transport grpc vuln) drops out of both modules' scans after the bump. The `github.com/VictoriaMetrics/VictoriaMetrics` lib advisory [GHSA-8q3c-rjr9-xxrp](https://github.com/advisories/GHSA-8q3c-rjr9-xxrp) (fixed upstream in `v1.146.0`) is **not** bumped here — `v1.146.0`'s `lib/mergeset` changed the `MustOpenTable` signature and does not compile against the vendored VictoriaLogs v1.50.0 / VictoriaTraces v0.9.2 trees (both modules pin `v1.140.1-0.20260414051809-8a20ccf21db7`); that fix lands with the planned upstream VL/VT version bump instead.
+- Go toolchain `1.26.4` → `1.26.8` (stdlib advisories flagged by govulncheck).
 
 ## [0.101.0] - 2026-06-12
 
