@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 // countOnlyPlan is the plan a bare `* | stats count()` produces: metadata may
@@ -172,15 +174,23 @@ func TestMetadataOnlyPlan_CoversSpan(t *testing.T) {
 type fakeFile struct {
 	fi        manifest.FileInfo
 	trueTimes []int64
+	// services holds each row's service.name, so the scan oracle can also answer
+	// queries that group by a column (hits with `field=`), which metadata can't.
+	services []string
 }
+
+// fakeServiceField is the column the oracle carries besides the timestamp.
+const fakeServiceField = "service.name"
 
 // newFakeFile spreads rowCount timestamps over [minNs, maxNs] in a
 // deliberately NON-uniform pattern, so a fast path that fabricates an evenly
 // spaced series cannot accidentally agree with the truth.
 func newFakeFile(key string, rowCount int64, minNs, maxNs int64) fakeFile {
 	times := make([]int64, rowCount)
+	services := make([]string, rowCount)
 	span := maxNs - minNs
 	for i := range times {
+		services[i] = "svc-" + strconv.Itoa(i%3)
 		if rowCount == 1 || span == 0 {
 			times[i] = minNs
 			continue
@@ -197,6 +207,7 @@ func newFakeFile(key string, rowCount int64, minNs, maxNs int64) fakeFile {
 	return fakeFile{
 		fi:        manifest.FileInfo{Key: key, Size: rowCount * 64, RowCount: rowCount, MinTimeNs: minNs, MaxTimeNs: maxNs},
 		trueTimes: times,
+		services:  services,
 	}
 }
 
@@ -208,26 +219,32 @@ func fileInfos(files []fakeFile) []manifest.FileInfo {
 	return out
 }
 
-// emitTrueRows writes the file's real timestamps the way a Parquet scan would:
-// one formatted value per row, filtered to the query window.
+// emitTrueRows writes the file's real rows the way a Parquet scan would — one
+// formatted timestamp per row plus its service.name — filtered to the window.
 func (s *Storage) emitTrueRows(f fakeFile, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc) {
 	name := s.timestampFieldName()
-	values := make([]string, 0, syntheticChunkSize)
+	times := make([]string, 0, syntheticChunkSize)
+	services := make([]string, 0, syntheticChunkSize)
 	flush := func() {
-		if len(values) == 0 {
+		if len(times) == 0 {
 			return
 		}
 		db := &logstorage.DataBlock{}
-		db.SetColumns([]logstorage.BlockColumn{{Name: name, Values: values}})
+		db.SetColumns([]logstorage.BlockColumn{
+			{Name: name, Values: times},
+			{Name: fakeServiceField, Values: services},
+		})
 		writeBlock(0, db)
-		values = make([]string, 0, syntheticChunkSize)
+		times = make([]string, 0, syntheticChunkSize)
+		services = make([]string, 0, syntheticChunkSize)
 	}
-	for _, ts := range f.trueTimes {
+	for i, ts := range f.trueTimes {
 		if ts < startNs || ts > endNs {
 			continue
 		}
-		values = append(values, s.registry.FormatField(name, ts))
-		if len(values) >= syntheticChunkSize {
+		times = append(times, s.registry.FormatField(name, ts))
+		services = append(services, f.services[i])
+		if len(times) >= syntheticChunkSize {
 			flush()
 		}
 	}
@@ -328,7 +345,9 @@ func TestManifestFastPath_ExactnessMatrix(t *testing.T) {
 	// File spans, relative to testBase, paired with the window they are
 	// queried under. Sizes stay at oracle-affordable row counts; the
 	// million-row cells are covered by TestManifestFastPath_ExactAboveOneMillion.
-	rowCounts := []int64{1, 2, 9_999, 10_000, 10_001}
+	// 0 is a manifest entry with no row count yet (not enriched from the footer):
+	// it must be read, never answered as an empty file.
+	rowCounts := []int64{0, 1, 2, 9_999, 10_000, 10_001}
 	coverage := []struct {
 		name           string
 		minOff, maxOff int64
@@ -643,5 +662,287 @@ func TestStreamConstTimeBlocks_AllocationCeiling(t *testing.T) {
 	}
 	if largeAllocs > 8 {
 		t.Errorf("allocations per file = %.0f, want a small constant (<= 8)", largeAllocs)
+	}
+}
+
+// TestManifestFastPath_ExactAtMaxRowsBudget locks how a truncated answer leaves
+// the fast path. The query's budget cancels the context mid-answer (preFilter ->
+// cancel) and streamConstTimeBlocks stops emitting; the fast path must then
+// behave exactly like this module's scan branch rather than returning nil as if
+// the short count were the whole answer.
+//
+// The traces module deliberately treats a MAX-ROWS cancellation as a truncation
+// rather than an error — its Jaeger/Tempo search handlers use that limit as a
+// result cap — so this test asserts that contract, and its sibling below asserts
+// that any OTHER cancellation does propagate. The logs module has no such caller
+// and returns the error unconditionally; see the same test there.
+func TestManifestFastPath_ExactAtMaxRowsBudget(t *testing.T) {
+	const maxRows = int64(5_000)
+
+	s := testStorage()
+	s.cfg.Query.MaxRows = maxRows
+
+	start := time.Unix(0, testBase)
+	partition := "dt=" + start.UTC().Format("2006-01-02") + "/hour=" + start.UTC().Format("15")
+	s.manifest.AddFile(partition, manifest.FileInfo{
+		Key:       "over-budget.parquet",
+		Size:      64 * 1024 * 1024,
+		RowCount:  maxRows * 100,
+		MinTimeNs: testBase + int64(time.Minute),
+		MaxTimeNs: testBase + int64(30*time.Minute),
+	})
+
+	q := mustParseQueryWithTime(t, "* | stats count()", testBase, testBase+int64(time.Hour))
+	ctx := storage.WithTimestampOnlyHint(context.Background())
+
+	var rows int64
+	err := s.RunQuery(ctx, nil, q, func(_ uint, db *logstorage.DataBlock) {
+		rows += int64(db.RowsCount())
+	})
+	if err != nil {
+		t.Fatalf("RunQuery: %v — a max-rows truncation is this module's documented cap, not an error", err)
+	}
+	if rows > maxRows+syntheticChunkSize {
+		t.Errorf("emitted %d rows, expected the max-rows cap to stop emission near %d", rows, maxRows)
+	}
+}
+
+// TestManifestFastPath_CallerCancellationPropagates is the other half: a
+// cancellation that is NOT the max-rows cap must reach the caller as an error
+// instead of a silently short count.
+func TestManifestFastPath_CallerCancellationPropagates(t *testing.T) {
+	s := testStorage()
+	s.cfg.Query.MaxRows = 0 // no cap, so only the caller can cancel
+
+	start := time.Unix(0, testBase)
+	partition := "dt=" + start.UTC().Format("2006-01-02") + "/hour=" + start.UTC().Format("15")
+	s.manifest.AddFile(partition, manifest.FileInfo{
+		Key:       "big.parquet",
+		Size:      64 * 1024 * 1024,
+		RowCount:  500_000,
+		MinTimeNs: testBase + int64(time.Minute),
+		MaxTimeNs: testBase + int64(30*time.Minute),
+	})
+
+	q := mustParseQueryWithTime(t, "* | stats count()", testBase, testBase+int64(time.Hour))
+	ctx, cancel := context.WithCancel(storage.WithTimestampOnlyHint(context.Background()))
+
+	var blocks int
+	err := s.RunQuery(ctx, nil, q, func(_ uint, _ *logstorage.DataBlock) {
+		blocks++
+		if blocks == 2 {
+			cancel()
+		}
+	})
+	cancel()
+
+	if err == nil {
+		t.Fatal("RunQuery returned nil after the caller cancelled mid-answer; a short count must be an error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// hits: the exact query shape VictoriaLogs builds for /select/logsql/hits
+// ---------------------------------------------------------------------------
+
+// hitsQuery builds the query ProcessHitsRequest runs, through VL's own
+// AddCountByTimePipe, so these tests track the real handler rather than a
+// hand-written approximation of it.
+func hitsQuery(t *testing.T, step time.Duration, fields []string) *logstorage.Query {
+	t.Helper()
+	q := mustParseQuery(t, "*")
+	q.AddCountByTimePipe(int64(step), 0, fields)
+	return q
+}
+
+// TestPlanMetadataOnly_HitsQueries walks /select/logsql/hits. Without `field=`
+// it is `stats by (_time:step) count() hits | sort by (_time)` — eligible, one
+// bucket. With `field=service.name` it groups by that column too, and a
+// metadata-only block has no such column, so it is refused at EVERY step —
+// including a step wider than any file, where every file sits inside one bucket
+// of _time but its per-service split is still unknown to the manifest.
+// (The HTTP layer refuses it earlier as well: requestNeedsFieldData withholds the
+// timestamp-only hint whenever `field=` is present; see
+// TestWrapVLTimestampOnly_FieldParamSkipsHint.)
+func TestPlanMetadataOnly_HitsQueries(t *testing.T) {
+	for _, step := range []time.Duration{5 * time.Second, time.Minute, 5 * time.Minute, time.Hour, 24 * time.Hour, 7 * 24 * time.Hour} {
+		t.Run("no_fields/"+step.String(), func(t *testing.T) {
+			q := hitsQuery(t, step, nil)
+			plan := planMetadataOnly(q)
+			if !plan.eligible || len(plan.buckets) != 1 {
+				t.Fatalf("plan = %+v, want eligible with one bucket for %s", plan, q)
+			}
+			if plan.buckets[0].Size != int64(step) {
+				t.Errorf("bucket size = %d, want %d", plan.buckets[0].Size, int64(step))
+			}
+		})
+		for _, fields := range [][]string{{"service.name"}, {"level"}, {"service.name", "level"}} {
+			t.Run(fmt.Sprintf("fields=%v/%s", fields, step), func(t *testing.T) {
+				q := hitsQuery(t, step, fields)
+				if plan := planMetadataOnly(q); plan.eligible {
+					t.Errorf("hits grouped by %v classified as metadata-answerable: %s", fields, q)
+				}
+			})
+		}
+	}
+}
+
+// TestManifestFastPath_ExactnessHitsWithFields runs the hits shapes through the
+// oracle: with fields the fast path must answer NO file at any step (and the
+// answer must still equal the scan); without fields it answers exactly the files
+// the containment rule allows.
+func TestManifestFastPath_ExactnessHitsWithFields(t *testing.T) {
+	s := testStorage()
+	hour := int64(time.Hour)
+	files := []fakeFile{
+		newFakeFile("short.parquet", 600, testBase+2*hour+int64(5*time.Minute), testBase+2*hour+int64(9*time.Minute)),
+		newFakeFile("one-hour.parquet", 900, testBase+4*hour+int64(time.Minute), testBase+4*hour+int64(58*time.Minute)),
+		newFakeFile("three-hours.parquet", 1200, testBase+6*hour+int64(40*time.Minute), testBase+9*hour+int64(20*time.Minute)),
+	}
+	startNs, endNs := testBase, testBase+24*hour
+
+	for _, step := range []time.Duration{5 * time.Minute, time.Hour, 24 * time.Hour, 7 * 24 * time.Hour} {
+		for _, fields := range [][]string{nil, {fakeServiceField}} {
+			qs := hitsQuery(t, step, fields).String()
+			t.Run(fmt.Sprintf("step=%s/fields=%v", step, fields), func(t *testing.T) {
+				want := answerViaScan(t, s, qs, files, startNs, endNs)
+				got, served := answerViaFastPath(t, s, qs, files, startNs, endNs)
+				if strings.Join(got, ";") != strings.Join(want, ";") {
+					t.Fatalf("fast path != scan for %s\n got: %v\nwant: %v", qs, got, want)
+				}
+				wantServed := 0
+				if fields == nil {
+					for _, f := range files {
+						// _time:1w is VL's calendar week (Monday-aligned), which the
+						// plain epoch truncation cannot restate; every file here
+						// sits inside the same week anyway.
+						bucket := int64(step)
+						if step == 7*24*time.Hour {
+							bucket = 0
+						}
+						if wantServedFromMetadata(f.fi, startNs, endNs, bucket) {
+							wantServed++
+						}
+					}
+				}
+				if served != wantServed {
+					t.Errorf("served %d files from metadata, want %d (%s)", served, wantServed, qs)
+				}
+			})
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Row filters: _stream selectors and friends never reach the fast path
+// ---------------------------------------------------------------------------
+
+// TestManifestFastPath_RowFiltersRefused covers every filter form that is
+// folded into the query's top-level filter rather than a pipe — `_stream`
+// selectors in both spellings, `_stream_id`, a word, a field — so the pipe
+// classifier alone would call them eligible. RunQuery's `filter == nil` gate is
+// what refuses them, because metadata cannot evaluate a row filter: serving the
+// file would count rows the selector excludes.
+func TestManifestFastPath_RowFiltersRefused(t *testing.T) {
+	for _, qs := range []string{
+		`{service.name="api"} | stats count()`,
+		`_stream:{service.name="api"} | stats count()`,
+		`{service.name="api"} | stats by (_time:1h) count()`,
+		`_stream_id:0000007b000001c850d9950ea6196b1a4812081265faa1c7 | stats count()`,
+		`error | stats count()`,
+		`service.name:="api" | stats count()`,
+		`* | filter service.name:="api" | stats count()`,
+	} {
+		t.Run(qs, func(t *testing.T) {
+			q := mustParseQueryWithTime(t, qs, testBase, testBase+int64(time.Hour))
+			if parseFilterFromQuery(q) == nil {
+				t.Fatalf("no row filter reported for %s — RunQuery would serve it from metadata", qs)
+			}
+		})
+	}
+	// Control: the time filter VL always prepends is NOT a row filter, or the
+	// fast path could never fire at all.
+	if f := parseFilterFromQuery(mustParseQueryWithTime(t, `* | stats count()`, testBase, testBase+int64(time.Hour))); f != nil {
+		t.Errorf("a bare time window was reported as a row filter: %v", f)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tenants
+// ---------------------------------------------------------------------------
+
+// TestManifestFastPath_ServesOnlyTheFilesItIsGiven locks the tenant contract at
+// the fast path's own boundary. manifestFastPath is a pure function of the file
+// set passed in: it never consults the manifest, so it cannot count another
+// tenant's files unless the caller hands them over. Choosing the right set is
+// the caller's job — manifest.GetFilesForRangeTenant is what a tenant-scoped
+// RunQuery passes — and this test proves that given tenant A's set, tenant B's
+// rows are never counted, and that an empty set counts nothing even while the
+// manifest holds files for the window.
+func TestManifestFastPath_ServesOnlyTheFilesItIsGiven(t *testing.T) {
+	s := testStorage()
+	hour := int64(time.Hour)
+	start := time.Unix(0, testBase+10*hour).UTC()
+	partition := "dt=" + start.Format("2006-01-02") + "/hour=" + start.Format("15")
+
+	tenantA := manifest.FileInfo{Key: "1/0/logs/" + partition + "/a.parquet", Size: 1024, RowCount: 1_234, MinTimeNs: testBase + 10*hour + 1, MaxTimeNs: testBase + 10*hour + int64(20*time.Minute)}
+	tenantB := manifest.FileInfo{Key: "2/0/logs/" + partition + "/b.parquet", Size: 1024, RowCount: 98_765, MinTimeNs: testBase + 10*hour + 1, MaxTimeNs: testBase + 10*hour + int64(20*time.Minute)}
+	s.manifest.AddFile(partition, tenantA)
+	s.manifest.AddFile(partition, tenantB)
+
+	windowStart, windowEnd := testBase+10*hour, testBase+11*hour
+
+	scoped := s.manifest.GetFilesForRangeTenant(windowStart, windowEnd, "1", "0")
+	if len(scoped) != 1 || scoped[0].Key != tenantA.Key {
+		t.Fatalf("fixture: tenant-scoped lookup returned %+v, want only tenant A's file", scoped)
+	}
+
+	var rows int64
+	remaining := s.manifestFastPath(context.Background(), scoped, windowStart, windowEnd, countOnlyPlan,
+		func(_ uint, db *logstorage.DataBlock) { rows += int64(db.RowsCount()) })
+	if len(remaining) != 0 {
+		t.Errorf("remaining = %+v, want tenant A's file served", remaining)
+	}
+	if rows != tenantA.RowCount {
+		t.Errorf("counted %d rows, want exactly tenant A's %d (tenant B holds %d in the same window)", rows, tenantA.RowCount, tenantB.RowCount)
+	}
+
+	rows = 0
+	s.manifestFastPath(context.Background(), nil, windowStart, windowEnd, countOnlyPlan,
+		func(_ uint, db *logstorage.DataBlock) { rows += int64(db.RowsCount()) })
+	if rows != 0 {
+		t.Errorf("an empty file set counted %d rows; the fast path must not look anything up on its own", rows)
+	}
+}
+
+// TestRunQuery_FastPathStaysInsideTheQueriedTenant goes one step further than
+// the unit test above, because this module's RunQuery already scopes its file
+// set (manifest.GetFilesForRangeTenant for a single tenant): with two tenants'
+// files in the same window, a count for tenant 1/0 answered entirely from
+// metadata must count exactly tenant 1/0's rows.
+func TestRunQuery_FastPathStaysInsideTheQueriedTenant(t *testing.T) {
+	s := testStorage()
+	hour := int64(time.Hour)
+	start := time.Unix(0, testBase+10*hour).UTC()
+	partition := "dt=" + start.Format("2006-01-02") + "/hour=" + start.Format("15")
+
+	tenantA := manifest.FileInfo{Key: "1/0/traces/" + partition + "/a.parquet", Size: 1024, RowCount: 1_234, MinTimeNs: testBase + 10*hour + 1, MaxTimeNs: testBase + 10*hour + int64(20*time.Minute)}
+	tenantB := manifest.FileInfo{Key: "2/0/traces/" + partition + "/b.parquet", Size: 1024, RowCount: 98_765, MinTimeNs: testBase + 10*hour + 1, MaxTimeNs: testBase + 10*hour + int64(20*time.Minute)}
+	s.manifest.AddFile(partition, tenantA)
+	s.manifest.AddFile(partition, tenantB)
+
+	q := mustParseQueryWithTime(t, "* | stats count()", testBase+10*hour, testBase+11*hour)
+	ctx := storage.WithTimestampOnlyHint(context.Background())
+
+	var rows int64
+	tenant := []logstorage.TenantID{{AccountID: 1, ProjectID: 0}}
+	if err := s.RunQuery(ctx, tenant, q, func(_ uint, db *logstorage.DataBlock) { rows += int64(db.RowsCount()) }); err != nil {
+		t.Fatalf("RunQuery: %v", err)
+	}
+	if rows != tenantA.RowCount {
+		t.Errorf("tenant 1/0 counted %d rows, want exactly %d (tenant 2/0 holds %d in the same window)", rows, tenantA.RowCount, tenantB.RowCount)
 	}
 }
