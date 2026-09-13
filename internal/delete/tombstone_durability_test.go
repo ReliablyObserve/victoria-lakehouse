@@ -111,8 +111,8 @@ func TestTombstoneDurability_S3PrefixHasNoDoubledSlash(t *testing.T) {
 	store := NewTombstoneStore()
 	// Config.AutoPrefix() already ends in "/", which the old
 	// fmt.Sprintf("%s/_tombstones/", tenant) turned into "logs//_tombstones/" —
-	// a different S3 prefix from the documented one, so LoadFromS3 listed an
-	// empty prefix and found nothing.
+	// not the documented layout, so anything reading "logs/_tombstones/" (an
+	// operator, a migration, a second implementation) would miss every record.
 	store.EnablePersistence(PersistenceConfig{Pool: pool, Prefix: "1002/0/logs/"})
 	store.Add(sampleTombstone("ts-prefix"))
 

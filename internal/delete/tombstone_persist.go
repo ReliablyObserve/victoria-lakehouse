@@ -50,9 +50,12 @@ type tombstonePersistence struct {
 
 // normalizeTombstonePrefix makes the caller's prefix safe to concatenate.
 // Config.AutoPrefix() already ends in "/", so the previous
-// fmt.Sprintf("%s/_tombstones/", tenant) produced "logs//_tombstones/" — a
-// distinct S3 prefix from the "logs/_tombstones/" documented in
-// docs/deletion-strategy.md, which is one reason LoadFromS3 found nothing.
+// fmt.Sprintf("%s/_tombstones/", tenant) produced "logs//_tombstones/": keys
+// that did not match the "logs/_tombstones/" layout documented in
+// docs/deletion-strategy.md. (The old writer and reader agreed with each other,
+// so the doubled slash was not why restores found nothing — nothing ever called
+// the writer — but anything reading the documented layout would have missed
+// every record.)
 // TrimRight rather than TrimSuffix: a prefix ending in more than one slash
 // ("//", from an empty tenant prefix concatenated with a signal suffix) would
 // otherwise keep one of them and produce a key the reader never lists. Found by

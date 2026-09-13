@@ -157,10 +157,11 @@ func FuzzTombstoneRoundTrip(f *testing.F) {
 	})
 }
 
-// FuzzNormalizeTombstonePrefix drives the S3 key prefix construction. A prefix
-// that differs by one character between the writer and the reader is exactly
-// the bug this PR fixes: the doubled slash meant every tombstone was written to
-// one prefix and looked for under another, so the startup restore found nothing.
+// FuzzNormalizeTombstonePrefix drives the S3 key prefix construction. The key
+// layout is part of the durable contract — the writer, the startup restore, the
+// orphan sweep's protected-substring match and anyone reading the documented
+// "{prefix}_tombstones/" layout must all derive the same string — so every
+// caller spelling (with or without trailing slashes) has to normalise to it.
 func FuzzNormalizeTombstonePrefix(f *testing.F) {
 	f.Add("")
 	f.Add("/")
