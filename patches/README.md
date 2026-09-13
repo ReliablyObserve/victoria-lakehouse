@@ -58,8 +58,8 @@ side is always an error; `DIVERGENCE.md` never excuses that.
 
 | Patch | Upstream file | Symbol exported / behavior |
 | --- | --- | --- |
-| `external.go.src` | `app/vlstorage/external.go` | Drop-in replacement that wires VL's vlstorage to LH's storage backend. Full-file replacement (no diff). |
-| `external_query.go.src` | `lib/logstorage/external_query.go` | Drop-in replacement exposing `ExternalQuery` hooks LH calls from its own query path. Full-file replacement. |
+| `external.go.src` | `app/vlstorage/external.go` | Added file (upstream has none) that wires VL's vlstorage to LH's storage backend: the `ExternalStorage` interface the dispatch patch routes to. Copied, not diffed — so it keeps compiling when upstream changes the storage functions it mirrors; see `docs/upstream-sync.md`. |
+| `external_query.go.src` | `lib/logstorage/external_query.go` | Added file (upstream has none) exposing `ExternalQuery` hooks LH calls from its own query path, mirroring the native path in `lib/logstorage/storage_search.go`. Copied, not diffed. |
 | `vlstorage-dispatch.patch` | `app/vlstorage/main.go` | Routes VL's `RunQuery` / `GetFieldNames` / `GetFieldValues` / `GetStreamFieldNames` / `GetStreamFieldValues` / `GetStreams` / `GetStreamIDs` / `DeleteRunTask` / `DeleteStopTask` / `DeleteActiveTasks` / `GetTenantIDs` to `externalStorage` when LH has registered itself. |
 | `vl-export-severity.patch` | `app/vlinsert/opentelemetry/pb.go` | Adds `FormatSeverity(int32) string` as the public wrapper around the package-local `formatSeverity`. Consumed by `internal/schema/severity.go::DeriveSeverityText` so cold rows derive `level` from `severity_number` the same way VL hot does. |
 | `vl-export-streamtags-get.patch` | `lib/logstorage/stream_tags.go` | Adds `(*StreamTags).Get(name)` and `(*StreamTags).UnmarshalString(s)`. The cold insert path uses `Get` to lift the stream-label `level` onto `row.SeverityText` without re-parsing the canonical string; the compactor uses `UnmarshalString` to re-parse the human-readable Stream column when backfilling SeverityText on historical files. |
@@ -70,7 +70,7 @@ Applied to `lakehouse-traces/deps/VictoriaTraces/...`.
 
 | Patch | Upstream file | Symbol exported / behavior |
 | --- | --- | --- |
-| `external.go.src` | `app/vtstorage/external.go` | Drop-in replacement that wires VT's vtstorage to LH's trace storage backend. |
+| `external.go.src` | `app/vtstorage/external.go` | Added file (upstream has none) that wires VT's vtstorage to LH's trace storage backend. Copied, not diffed. |
 | `flag_dedup.go.src` | `app/vtstorage/flag_dedup.go` | Adds the dedup-flag guard so VT's flags don't collide with LH's identical flags in the same binary. |
 | `vtstorage-dispatch.patch` | `app/vtstorage/main.go` | Routes VT's query handlers to `externalStorage` when LH has registered itself. |
 | `vtstorage-flag-dedup.patch` | `app/vtstorage/main.go` | Wires `flag_dedup.go.src` into VT's flag parsing path so duplicate `flag.Lookup` calls don't panic. (15 flag sites in one file — helper file is cheaper than inline closures.) |
@@ -207,7 +207,11 @@ $ go build ./lakehouse-traces/...
 If `git apply` fails after an upstream bump (`VL_VERSION_LOGS`,
 `VL_COMMIT_TRACES`, `VT_VERSION` in Makefile), regenerate the patch
 against the new upstream rather than locally reimplementing the
-behavior:
+behavior. The whole bump, of which this is one step, is described in
+`docs/upstream-sync.md`; the daily upstream sync probe
+(`scripts/ci/upstream_sync_probe.sh`) reports which patches no longer
+apply to the newest releases, with the context each one searched for,
+before anyone starts.
 
 ```
 $ rm -rf deps/VictoriaLogs
