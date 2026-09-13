@@ -1628,7 +1628,7 @@ func TestInteg_readRowGroupColumnar_WithBitmap(t *testing.T) {
 		"service.name":        true,
 	}
 
-	db := readRowGroupColumnar(f, rgs[0], cols, reg, startNs, endNs, bitmap)
+	db := readRowGroupColumnar(f, rgs[0], cols, reg, startNs, endNs, bitmap, nil)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -1660,7 +1660,7 @@ func TestInteg_readRowGroupColumnar_NoBitmap(t *testing.T) {
 		"body":                true,
 	}
 
-	db := readRowGroupColumnar(f, rgs[0], cols, reg, startNs, endNs, nil)
+	db := readRowGroupColumnar(f, rgs[0], cols, reg, startNs, endNs, nil, nil)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -1684,7 +1684,7 @@ func TestInteg_readRowGroupColumnar_EmptyCols(t *testing.T) {
 	rgs := f.RowGroups()
 	reg := schema.NewRegistry(schema.LogsProfile)
 
-	db := readRowGroupColumnar(f, rgs[0], map[string]bool{}, reg, 0, int64(time.Hour), nil)
+	db := readRowGroupColumnar(f, rgs[0], map[string]bool{}, reg, 0, int64(time.Hour), nil, nil)
 	if db != nil {
 		t.Error("expected nil for empty cols")
 	}
@@ -1713,7 +1713,7 @@ func TestInteg_readRowGroupColumnar_TimeRangeFilter(t *testing.T) {
 		"body":                true,
 	}
 
-	db := readRowGroupColumnar(f, rgs[0], cols, reg, startNs, endNs, nil)
+	db := readRowGroupColumnar(f, rgs[0], cols, reg, startNs, endNs, nil, nil)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -2837,7 +2837,7 @@ func TestInteg_readRowGroupColumnar_BitmapAndTimeFilter(t *testing.T) {
 	bitmap := []bool{true, false, true}
 	cols := map[string]bool{"body": true, "severity_text": true}
 
-	db := readRowGroupColumnar(f, rgs[0], cols, reg, startNs, endNs, bitmap)
+	db := readRowGroupColumnar(f, rgs[0], cols, reg, startNs, endNs, bitmap, nil)
 	if db == nil {
 		t.Fatal("expected DataBlock, got nil")
 	}
@@ -2873,7 +2873,7 @@ func TestInteg_readRowGroupColumnar_NoMatchingRows(t *testing.T) {
 	endNs := now.Add(2 * time.Hour).UnixNano()
 
 	cols := map[string]bool{"body": true}
-	db := readRowGroupColumnar(f, rgs[0], cols, reg, startNs, endNs, nil)
+	db := readRowGroupColumnar(f, rgs[0], cols, reg, startNs, endNs, nil, nil)
 	if db != nil {
 		t.Errorf("expected nil DataBlock (no matching rows), got %d rows", db.RowsCount())
 	}
@@ -3524,12 +3524,12 @@ func TestInteg_readRowGroupColumnar_EmptyWantCols(t *testing.T) {
 	}
 
 	reg := schema.NewRegistry(schema.LogsProfile)
-	db := readRowGroupColumnar(f, rgs[0], nil, reg, 0, 0, nil)
+	db := readRowGroupColumnar(f, rgs[0], nil, reg, 0, 0, nil, nil)
 	if db != nil {
 		t.Error("expected nil for nil wantCols")
 	}
 
-	db = readRowGroupColumnar(f, rgs[0], map[string]bool{}, reg, 0, 0, nil)
+	db = readRowGroupColumnar(f, rgs[0], map[string]bool{}, reg, 0, 0, nil, nil)
 	if db != nil {
 		t.Error("expected nil for empty wantCols map")
 	}
@@ -3560,7 +3560,7 @@ func TestInteg_readRowGroupColumnar_NonexistentCol(t *testing.T) {
 	startNs := now.Add(-time.Minute).UnixNano()
 	endNs := now.Add(time.Minute).UnixNano()
 
-	db := readRowGroupColumnar(f, rgs[0], map[string]bool{"nonexistent": true}, reg, startNs, endNs, nil)
+	db := readRowGroupColumnar(f, rgs[0], map[string]bool{"nonexistent": true}, reg, startNs, endNs, nil, nil)
 	if db != nil {
 		t.Error("expected nil for nonexistent column")
 	}

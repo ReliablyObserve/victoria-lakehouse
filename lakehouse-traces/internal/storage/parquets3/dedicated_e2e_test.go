@@ -16,7 +16,9 @@ import (
 // TestDedicated_E2E_PromotedColumn_Traces is the full-stack proof for traces: a
 // TraceRow carrying promoted OTel attributes in dedicated COLUMNS (container.id,
 // url.full) is written to (mock) S3, then queried back — the values must surface
-// under their bare OTel field names, identical to how the map attributes did.
+// under the VictoriaTraces field names (resource_attr: / span_attr: prefixed),
+// identical to how the same attributes surface when they live in the maps and to
+// what hot VT returns for the same span.
 func TestDedicated_E2E_PromotedColumn_Traces(t *testing.T) {
 	mock := newMockS3Server()
 	defer mock.close()
@@ -53,14 +55,14 @@ func TestDedicated_E2E_PromotedColumn_Traces(t *testing.T) {
 	total, sawContainer, sawURL := 0, false, false
 	for _, b := range blocks {
 		total += b.RowsCount()
-		if c := b.GetColumnByName("container.id"); c != nil {
+		if c := b.GetColumnByName("resource_attr:container.id"); c != nil {
 			for _, v := range c.Values {
 				if v == "ctr-AAA" || v == "ctr-BBB" {
 					sawContainer = true
 				}
 			}
 		}
-		if c := b.GetColumnByName("url.full"); c != nil {
+		if c := b.GetColumnByName("span_attr:url.full"); c != nil {
 			for _, v := range c.Values {
 				if v == "https://x/a" || v == "https://x/b" {
 					sawURL = true
@@ -72,9 +74,20 @@ func TestDedicated_E2E_PromotedColumn_Traces(t *testing.T) {
 		t.Errorf("query matched %d rows, want 2", total)
 	}
 	if !sawContainer {
-		t.Error("promoted resource column container.id not surfaced under its OTel name")
+		t.Error("promoted resource column container.id not surfaced as resource_attr:container.id")
 	}
 	if !sawURL {
-		t.Error("promoted span column url.full not surfaced under its OTel name")
+		t.Error("promoted span column url.full not surfaced as span_attr:url.full")
+	}
+
+	// A wildcard span carries the VT field names ONLY: the raw Parquet spelling
+	// is an alias emitted on demand (see emitParquetNameAlias), never extra
+	// noise on every row.
+	for _, b := range blocks {
+		for _, bare := range []string{"container.id", "url.full", "service.name", "span.name", "timestamp_unix_nano"} {
+			if c := b.GetColumnByName(bare); c != nil {
+				t.Errorf("wildcard span carries Parquet-spelled column %q; hot VT has no such field", bare)
+			}
+		}
 	}
 }
