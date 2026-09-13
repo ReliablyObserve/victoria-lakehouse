@@ -176,6 +176,8 @@ cache:
 manifest:
   refresh_interval: 30s
   persist_interval: 5m
+query:
+  max_concurrent: 8  # default 32; matches the small worked example above
 
 # Medium (100k files, 3-6 peers)
 startup:
@@ -205,6 +207,8 @@ manifest:
   persist_interval: 2m
 shutdown:
   persist_timeout: 60s
+query:
+  max_concurrent: 16  # default 32; matches the PB-scale worked example above
 ```
 
 ## What scales linearly vs sub-linearly
@@ -218,7 +222,7 @@ shutdown:
 | S3 LIST during refresh | objects under the enumerated prefixes, per replica, per interval | yes — every refresh re-lists every key; pages within a prefix are sequential, at most 8 tenant prefixes in parallel, 2-minute timeout |
 | Compaction selection, retention, size-stats recompute | file_count | yes — each starts from a full copy of the manifest |
 | Query latency (wide window) | file_count visited | sub-linearly with bloom + footer cache |
-| Restart `/ready` time | snapshot size + pmeta bundle GETs | yes for the snapshot decode and bundle GETs; the footer-cache reload runs async after `/ready=200` |
+| Restart `/ready` time | snapshot size + startup manifest enumeration (full LIST, ≤ 5 min) + pmeta bundle GETs | yes for the snapshot decode, the enumeration and the bundle GETs; the footer-cache reload runs async after `/ready=200` |
 | Cold storage size | bytes ingested × compression_ratio | sub-linearly — progressive compaction schedule reduces L1+ files ~25%, L2+ files another ~10% |
 
 ## What does NOT scale (gotchas)
@@ -250,7 +254,9 @@ shutdown:
 
 - **Simultaneous restart** of all peers cannot be made invisible —
   scaling out doesn't help when every peer's buffer is empty.
-  Stagger restarts with `maxUnavailable: 1` (helm chart default).
+  Stagger restarts — the chart deploys a StatefulSet and sets no
+  `updateStrategy`, so the Kubernetes default rolling update
+  replaces one pod at a time.
 
 ## Metrics for capacity planning
 

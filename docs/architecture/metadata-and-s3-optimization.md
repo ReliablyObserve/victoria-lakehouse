@@ -152,8 +152,11 @@ silently steps aside.
 ```
 
 The snapshot persists just the key list (no footer bytes — those
-are reconstructed via S3 range-reads). Cost on shutdown is a few
-KiB even at PB scale. On the next start the prefetch runs
+are reconstructed via S3 range-reads). Cost on shutdown is a 4-byte
+length plus the object key per cached entry — roughly 60–150 B
+depending on tenant ids and the configured prefix, so on the order
+of 10–30 MB at 200 k entries
+(`internal/storage/parquets3/footer_cache_snapshot.go`). On the next start the prefetch runs
 concurrently with the rest of the warmup chain, so first user
 queries arrive with the warmest files already cached.
 

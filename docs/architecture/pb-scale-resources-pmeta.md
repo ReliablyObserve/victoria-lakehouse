@@ -34,7 +34,7 @@ shared dict. Three terms:
      matter how many petabytes flow through. A value is stored **once per
      partition it appears in**, as a 4-byte id.
    - High-card id columns (`trace_id`, `span_id`) are **never enumerated** — they
-     get a **fixed 16 KB HLL** each (A2, one per field, in-RAM only),
+     get a **fixed 16 KB HLL** each (one per field, in RAM only),
      independent of how many billions of distinct ids exist.
 2. **File-meta facet — live FILE count.** One entry per live manifest file
    (key + times/counts ≈ 48 B + the per-file label map, itself capped at 100
@@ -90,12 +90,12 @@ The catalog half stays **tens of MB** at 1 PB (partition count and cardinality,
 not bytes, drive it — same order as the 7 MB measured at 1.9 GB). The per-file
 half is the same information the legacy `_file_metadata.json`/`_bloom.bin`
 sidecars held; pmeta makes it resident per live file and **bounded by
-compaction + retention** (above). The remaining lever is **A3**: there is **no
+compaction + retention** (above). The remaining lever is **time-tiered residency**: there is **no
 time-based paging of old-but-live partitions yet** — every partition still in
 the manifest keeps its bundle resident, so the hot-window-only residency
 (single-digit MB hot set) is designed but not implemented.
 
-**Guardrail:** the A2 cardinality cap (`pmeta.cardinality_threshold`, effective
+**Guardrail:** the per-field cardinality cap (`pmeta.cardinality_threshold`, effective
 default 50 000) hard-bounds any single field, so a misbehaving high-card field
 can't blow RAM — it flips to a 16 KB sketch.
 `lakehouse_catalog_resident_bytes` is the alert signal.
@@ -137,7 +137,7 @@ CPU stayed at ~1.5 % with pmeta on. No measurable flush-path regression.
 
 | dimension | status at PB scale |
 |---|---|
-| **RAM** | catalog half cardinality-bounded (tens of MB); per-file half (file-meta + bloom) scales with **live file count**, bounded by compaction (dead-key removal) + retention (bundle eviction + S3 GC); A2 cap is a hard per-field guardrail; A3 paging of old-but-live partitions is the open item |
+| **RAM** | catalog half cardinality-bounded (tens of MB); per-file half (file-meta + bloom) scales with **live file count**, bounded by compaction (dead-key removal) + retention (bundle eviction + S3 GC); the per-field cardinality cap is a hard guardrail; paging old-but-live partitions out of RAM is the open item |
 | **S3 storage** | **fewer** objects (1 bundle vs 3 sidecars/partition) |
 | **S3 ops** | **fewer** (1 GET/partition warm, 1 PUT/flush) — lower request cost + faster LIST |
 | **CPU** | flat (facets reuse existing extraction; HLL add is 9.7 ns) |
@@ -149,7 +149,7 @@ per-partition sidecars for 1 bundle, and keeps metadata RAM tied to **cardinalit
 (flat) plus live file count (bounded by compaction + retention, now wired as
 `PmetaOnCompacted`/`PmetaOnFileExpired`)** rather than bytes ingested, with the one
 per-field unbounded axis (high-card fields) cut off by a fixed-size sketch + a hard
-cap. The remaining scale lever is **A3 time-tiering** (page old-but-live partitions'
+cap. The remaining scale lever is **time-tiering** (page old-but-live partitions'
 bundles out of RAM) — designed and unblocked by the now-wired S3 bundle
 persist/warm, but **not implemented yet**: today the full live corpus stays
 resident.

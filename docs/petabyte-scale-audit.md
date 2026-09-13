@@ -39,7 +39,7 @@ are `F`, `P × T` and `R` in the metadata plane.**
 | Component | Scales with | Where it stands today | Failure mode past that | Planned change |
 | --- | --- | --- | --- | --- |
 | Manifest RAM | `O(F)` on each of `R` replicas | full file map resident on every replica; ~200 B/file *(estimate, not measured)* → ~1 GB/pod at 5 M files | per-pod RAM and snapshot decode grow with the whole corpus, not the query window | per-partition index derived from the pmeta file-meta facet, loaded by window |
-| Whole-manifest walks | `O(F)` per tick, run or request | `AllFiles()` deep-copies every entry; called on every compaction tick, retention run, refresh, trace-id lookup and two stats API requests | background loops and admin requests cost the whole corpus, however little they act on | partition-scoped iterators and incremental aggregates, as already done for tenant summaries |
+| Whole-manifest walks | `O(F)` per tick, run or request | `AllFiles()` deep-copies every entry; called on every compaction tick, retention run, refresh, trace-id lookup and by three stats API handlers | background loops and admin requests cost the whole corpus, however little they act on | partition-scoped iterators and incremental aggregates, as already done for tenant summaries |
 | Manifest refresh | `O(N)` per interval per replica | full re-enumeration of every tenant/signal prefix each `manifest.refresh_interval` (default 5 min), under a hard 2-minute timeout; no time window | LIST pages `≈ N/1000` per replica per refresh (~50 k at 50 M objects); once a refresh cannot finish in 2 minutes it fails every cycle and the manifest stops picking up files that peer push missed | poll only partitions newer than the snapshot; make push the primary path; periodic full reconcile |
 | pmeta residency | `O(P × T)` | every live partition's bundle stays resident; eviction only when a partition fully expires | metadata RAM and warm GETs grow with partitions × tenants | lazy load by window, age-LRU under `resourcebounds`, day-level bundles after rollup |
 | pmeta multi-writer | writers per partition | one bundle key per partition, written with an unconditional `PutObject` | concurrent writers replace each other's bundle — last write wins | per-peer shard keys, merge-on-read, owner-side consolidation |
@@ -53,19 +53,23 @@ are `F`, `P × T` and `R` in the metadata plane.**
 
 ## What changed since the previous revision of this page
 
-The previous revision listed five must-fix items. Four are fixed and the fifth is
-fixed for the only path that uses it. One of its numbers was wrong and another was
-never measured; both are corrected here.
+The previous revision listed five must-fix items, four should-fix items, and the
+components it considered acceptable. Four of the must-fix items are fixed and the
+fifth is fixed for the only path that uses it. Of the should-fix items, two are
+fixed, one is fixed for traces only, and one is still open. Of the numbers it
+quoted, one was wrong and one was never measured.
 
 | Previous item | State now | Evidence |
 | --- | --- | --- |
-| Manifest per-key lookups are `O(n)` | **Fixed.** A `byKey` index maps every file key to its partition; `findFileLocked` resolves the partition in `O(1)` and scans only that partition's slice. `SetFileBucket`, `UpdateFileColumnStats` and `EnrichFileMetadata` all use it | `internal/manifest/manifest.go:158`, `:1295` — v0.39.0 |
-| `TenantSummaries` full-scans every call | **Fixed.** An incremental `tenantAggregates` cache is maintained on add/remove/enrich and rebuilt on refresh and snapshot load; `TenantSummaries` is `O(T log T)`. The same cache lets `GetFilesForRangeTenant` skip partitions a tenant has no files in | `internal/manifest/manifest.go:186`, `:891`, `:2046` — v0.39.0 |
-| `KeysUnderPrefix` is `O(n)` | **Fixed for its caller.** A date-bucketed prefix resolves to at most 24 hourly partitions, and orphan sweep — the only non-test caller — passes exactly that. An empty or non-date prefix still scans everything; nothing in production passes one | `internal/manifest/manifest.go:1503`, `internal/compaction/orphan_sweep.go:340` — v0.39.0 |
-| `RefreshFromS3` lists the entire bucket | **Fixed.** With a tenant-prefixed key template the refresh discovers tenant prefixes and enumerates each (narrowed to the binary's own signal) in parallel; the full-bucket LIST is only a fallback. It is still a *full* enumeration per interval — see [Manifest refresh](#manifest-refresh) | `internal/manifest/manifest.go:738` — v0.39.0 |
-| Manifest snapshot is JSON | **Fixed.** Binary gob with a magic prefix and legacy-JSON detection; loading streams the decode under a size cap | `internal/manifest/manifest.go:1644`, `:1693` — v0.39.0, streaming decode v0.49.0 |
-| Label index reads full Parquet bodies at startup | **Mostly fixed.** Warmup samples at most 10 files; the index is persisted to local disk by both binaries, and the traces binary also keeps a copy in S3. The per-field value cap still truncates | `internal/storage/parquets3/storage.go:1301`, `internal/cache/persist.go:179` |
-| Footer cache "fixed at 10 000 entries" | **Fixed in traces only.** Traces honours `cache.footer_max_items` and re-sizes after every refresh. Logs still constructs the cache with a hardcoded 10 000 | `lakehouse-traces/internal/storage/parquets3/storage.go:235`, `:1259` vs `internal/storage/parquets3/storage.go:260` |
+| Must-fix 1 — manifest per-key lookups are `O(n)` | **Fixed.** A `byKey` index maps every file key to its partition; `findFileLocked` resolves the partition in `O(1)` and scans only that partition's slice. `SetFileBucket`, `UpdateFileColumnStats` and `EnrichFileMetadata` all use it | `internal/manifest/manifest.go:158`, `:1295` — v0.39.0 |
+| Must-fix 2 — `TenantSummaries` full-scans every call | **Fixed.** An incremental `tenantAggregates` cache is maintained on add/remove/enrich and rebuilt on refresh and snapshot load; `TenantSummaries` is `O(T log T)` | `internal/manifest/manifest.go:186`, `:2046` — v0.39.0 |
+| Must-fix 3 — `KeysUnderPrefix` is `O(n)` | **Fixed for its caller.** A date-bucketed prefix resolves to at most 24 hourly partitions, and orphan sweep — the only non-test caller — passes exactly that. An empty or non-date prefix still scans everything; nothing in production passes one | `internal/manifest/manifest.go:1503`, `internal/compaction/orphan_sweep.go:340` — v0.39.0 |
+| Must-fix 4 — label index reads Parquet bodies at startup | **Fixed.** Warmup samples at most 10 files, and the index is persisted to local disk and reloaded by both binaries; the traces binary also keeps a copy in S3 (v0.39.0). A restart does not rebuild it from bodies | `internal/storage/parquets3/storage.go:1301`, `internal/cache/persist.go:358` |
+| Must-fix 5 — `RefreshFromS3` lists the entire bucket | **Fixed.** With a tenant-prefixed key template the refresh discovers tenant prefixes and enumerates each (narrowed to the binary's own signal) in parallel; the full-bucket LIST is only a fallback. It is still a *full* enumeration per interval — see [Manifest refresh](#manifest-refresh) | `internal/manifest/manifest.go:738` — v0.39.0 |
+| Should-fix 6 — footer cache fixed at 10 000 entries | **Fixed in traces only.** Traces honours `cache.footer_max_items` and re-sizes after every refresh. Logs still constructs the cache with a hardcoded 10 000 | `lakehouse-traces/internal/storage/parquets3/storage.go:235`, `:1259` vs `internal/storage/parquets3/storage.go:260` |
+| Should-fix 7 — label index values truncate per field | **Open.** Still capped at 10 000 values per field; field names have an LRU, but it is off by default — see [Label index](#label-index) | `internal/cache/persist.go:179`, `:199` |
+| Should-fix 8 — manifest snapshot is JSON | **Fixed.** Binary gob with a magic prefix and legacy-JSON detection; loading streams the decode under a size cap | `internal/manifest/manifest.go:1644`, `:1693` — v0.39.0, streaming decode v0.49.0 |
+| Should-fix 9 — no tenant index for query-time pruning | **Fixed.** `GetFilesForRangeTenant` uses the tenant aggregates to visit only the partitions where the tenant has files | `internal/manifest/manifest.go:891` — v0.39.0 |
 | Footer entries are ~5 KB | **Not measured.** The configuration comment assumes ~5 KB, the [sizing guide](operations/sizing.md) budgets ~50 KiB; entry size varies with row-group count and, for traces, the `_trace_idx` key-value | `internal/config/config.go:467` |
 | Query fan-out defaults to 8 workers | **Wrong number.** `query.file_workers` defaults to 64 | `internal/config/config.go:1004` |
 
@@ -108,6 +112,7 @@ several loops and handlers that only need a slice of the corpus:
 | trace-id fast path | every trace-by-id lookup | `lakehouse-traces/internal/storage/parquets3/trace_index_lookup.go:61` |
 | tenant detail API | every request for a tenant that has data | `internal/stats/api.go:600` |
 | storage-class breakdown API | every request | `internal/stats/api.go:957` |
+| compaction stats API | every request | `internal/stats/api.go:108` → `internal/manifest/compaction_candidates.go:102` |
 
 Each of these costs `O(F)` time and a transient `O(F)` allocation regardless of
 how much it acts on. This is the same shape the previous revision of this page
@@ -321,14 +326,17 @@ after the pod is ready. `startup.min_manifest_files` keeps a pod out of rotation
 until its manifest is credible.
 
 A simultaneous restart of every peer cannot be hidden by any of this — stagger
-restarts (`maxUnavailable: 1`, the chart default).
+restarts. The chart deploys a StatefulSet and sets no `updateStrategy`, so the
+Kubernetes default rolling update replaces one pod at a time.
 
 ## What scales today
 
 Verified as bounded, or bounded by an operator setting:
 
-- **Partition-keyed file map.** 30 days × 24 h = 720 partitions, and range
-  selection binary-searches them instead of scanning.
+- **Partition-keyed file map.** Hourly partitions (≈ 26 k at 36-month
+  retention); range selection is `O(log P)` — a binary search over the sorted
+  partitions locates the window, and only the partitions inside it are visited
+  (`GetFilesForRange`, `internal/manifest/manifest.go:995`).
 - **Footer statistics and blooms narrow before any body read.** A wide query
   reads footers and metadata, not bodies — the load-bearing step.
 - **Query fan-out is bounded.** `query.file_workers` (default 64) and the
