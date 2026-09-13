@@ -249,7 +249,52 @@ upload is on S3 with no manifest entry. Tier B reclaims it after
 **Diagnostic:** `lakehouse_compaction_orphan_files_deleted_total` ticks
 on the next Tier B sweep that owns the date prefix.
 
-## 5. Spec cross-reference
+## 5. Why the merge decodes every row
+
+`mergeLogFiles` / `mergeTraceFiles` decode each input file into
+`[]schema.LogRow` / `[]schema.TraceRow`, heal the rows, sort them globally and
+write them back out. That is more expensive than handing parquet-go the input
+row groups and letting it copy column chunks verbatim, and the gap is measured
+rather than assumed: `BenchmarkMergeInterleaved` and `BenchmarkMergeDisjoint`
+(3 files x 100,000 rows, production writer options) compare the two, and
+`TestMergePathsAgree` asserts they produce the same rows, row count and time
+bounds so the comparison is honest.
+
+On parquet-go v0.32.0, Apple M5 Pro, median of three runs at `-benchtime=3x`:
+
+| Merge shape | Path | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| Interleaved inputs | decode + sort + write (today) | 745 ms | 1,850 MB | 6,687,946 |
+| Interleaved inputs | `MergeRowGroups` + `WriteRowGroup` | 596 ms | 385 MB | 644,798 |
+| Disjoint inputs | decode + sort + write (today) | 671 ms | 1,844 MB | 6,687,909 |
+| Disjoint inputs | `MergeRowGroups` + `WriteRowGroup` | 465 ms | 159 MB | 155,640 |
+
+The row-group path is 20-31% faster and allocates 79-91% less. It is still not
+adoptable as the merge stands, because the merge is not a pure row union:
+
+- it drops trace-shaped rows (`storage.IsTraceShapedStream`)
+- it backfills `SeverityText` (`schema.DeriveSeverityText`)
+- it re-promotes dedicated columns and Tier-2 slots
+- it re-sorts globally
+- and it feeds the decoded rows to `schema.LogRowTimeBounds`,
+  `schema.ExtractLogLabelAggregates` and `schema.ExtractLogBloomValues` for the
+  manifest time range, the label aggregates and the pmeta bloom
+
+A verbatim column-chunk copy skips exactly the decode those five consumers
+need. Adopting it means building a second metadata path out of footer
+statistics and giving up the healing passes, which is a design change, not a
+library swap. Two constraints already found and recorded in the benchmark:
+
+- a schema read back from a file is not `EqualNodes` to the one derived from
+  the Go struct tags, so the copy path must build its writer on the merged row
+  group's schema or `Writer.WriteRowGroup` rejects it outright
+- the copy fast paths introduced in parquet-go v0.32.0 do not themselves help
+  this workload (601 -> 596 ms interleaved, 451 -> 465 ms disjoint against
+  v0.30.1, with interleaved allocations rising from 174 MB / 167,035 to
+  385 MB / 644,798) -- the win in the table is the row-group path, not the
+  library version
+
+## 6. Spec cross-reference
 
 | Code surface | Spec section |
 |---|---|
