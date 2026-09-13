@@ -78,6 +78,7 @@ What hot VT/VL gives users that the cold tier silently doesn't, with rough effor
 | **Per-tenant bucket migration with concurrent writes** | Synchronous, full-window | Risk-only | `/admin/tenant/migrate` copies → flips manifest → deletes. New writes mid-migration land in the OLD bucket and become orphans needing a second migrate pass. Acceptable for the admin-only path; a "pause writes" knob would tighten this. |
 | **Cross-tenant aggregations** | Gated by global-read header | Expected | Same gate hot VT/VL exposes; behaves identically. |
 | **Stats snapshot vs manifest divergence** | Reconciled at API layer | Resolved | `/api/v1/tenants` now overlays manifest truth on registry entries; `LiveAggregateWindow` is the single source for time-bounded totals. |
+| **Cold row field set** | **Resolved** | UX-degradation | Cold rows used to carry every Parquet leaf column — unset ones as the literal `"<null>"` — plus the tenant columns, the unmapped spare slots, and (on traces) a duplicate of every promoted attribute under its raw Parquet name and the service-graph edge columns. A cold row now carries exactly its ingested fields, under the same names hot returns. See the Closed section below. |
 
 ## Versioning gap-register
 
@@ -135,3 +136,68 @@ pushes a 3-span chain (service-a → service-b → service-c), waits up
 to 5min for one task tick + flush, then asserts
 `/select/jaeger/api/dependencies` returns the expected (parent, child)
 edge.
+
+**Cold row field set** — 2026-09
+
+A cold row now carries exactly the fields that were ingested for it, under the
+same names hot VictoriaLogs / VictoriaTraces uses. Before, every row coming back
+from cold storage carried:
+
+- every Parquet leaf column of the file, with unset cells rendered as the literal
+  string `"<null>"` (`"telemetry.sdk.name":"<null>"`, `"ded_s04":"<null>"`, ...);
+- the tenant bookkeeping columns `account_id` and `project_id`;
+- the unmapped Tier-2 spare slots `ded_s01`..`ded_s08`;
+- on traces, each promoted attribute twice — under VictoriaTraces' name and under
+  its raw Parquet spelling (`service.name` next to `resource_attr:service.name`,
+  `span.name` next to `name`, `timestamp_unix_nano` next to `_time`) — plus the
+  service-graph edge columns `parent` / `child` / `callCount` on plain spans.
+
+Two causes, both in the scan path:
+
+1. `parquetValueToInterface` was the only one of the four Parquet value
+   converters without an `IsNull()` guard, so a NULL cell fell through to
+   `parquet.Value.String()`, which renders it as `"<null>"`. VictoriaLogs treats
+   an empty value as a non-existing field, so a NULL cell must map to `""`.
+2. The two scan implementations — the columnar fast path (`readRowGroupColumnar`)
+   and the row-oriented slow path (`projectedFieldsToDataBlock`) — each resolved
+   field names on their own, and neither applied the column classification the
+   typed reader applies (`logRowToFields` / `remapSlotFields`), which is why the
+   typed path was correct and the scan path was not.
+
+Both paths now resolve names through one shared `queryFieldName`:
+
+- columns classified `ColumnInternal` (the tenant ids) never surface;
+- a `ColumnSlot` surfaces under the attribute name the file's footer KV binds it
+  to, and not at all when the slot is unbound — the same rule `remapSlotFields`
+  applies on the typed path;
+- everything else resolves through the schema registry, which supplies VT's
+  `resource_attr:` / `span_attr:` prefixes;
+- a column that is empty on every row of a row group is not emitted at all.
+
+The raw Parquet spelling of a promoted traces column is still emitted alongside
+the VT name, but only when the query actually spells it (a filter term or a
+column-selecting pipe), so `service.name:="X"` keeps matching the same rows as
+`_stream:{resource_attr:service.name="X"}` while a wildcard span list carries VT's
+field names alone.
+
+The classification lives in `internal/schema/columns.go` and is guarded by
+`TestClassifyColumn_EveryRowColumnIsClassified`, which enumerates every top-level
+Parquet column of `LogRow` and `TraceRow` and fails on one nobody classified — so
+a column added later cannot leak into query results unnoticed.
+
+Verification: `internal/storage/parquets3/cold_row_fields_test.go` and
+`lakehouse-traces/internal/storage/parquets3/cold_row_fields_test.go` (row-group
+readers and the full query path, both the columnar and the row-oriented scan),
+`tests/parity/cold_row_fields_test.go` (`TestParity_ColdRowFields`,
+`TestParity_Traces_ColdSpanFields`), and the shared `assertNoInternalFields`
+helper now also asserted in `TestParity_Response/jsonl_structure`. Registry rows:
+`lh.rows.field_set_logs`, `lh.rows.field_set_traces`.
+
+Performance: dropping ~30 columns per row from the wildcard scan makes it
+cheaper, measured with `BenchmarkReadRowGroupColumnar_Wildcard100k` (one 100k-row
+row group, no projection, Apple M5 Pro, `-benchtime 5x -count 5`, median):
+
+| Module | ns/op before | ns/op after | allocs/op before | allocs/op after | B/op before | B/op after |
+|---|---|---|---|---|---|---|
+| logs | 155,244,183 | 79,132,592 (-49%) | 4,502,981 | 2,202,717 (-51%) | 237,613,003 | 183,950,430 (-23%) |
+| traces | 143,373,533 | 120,211,033 (-16%) | 5,303,660 | 2,603,376 (-51%) | 279,252,492 | 219,069,683 (-22%) |
