@@ -79,6 +79,85 @@ What hot VT/VL gives users that the cold tier silently doesn't, with rough effor
 | **Cross-tenant aggregations** | Gated by global-read header | Expected | Same gate hot VT/VL exposes; behaves identically. |
 | **Stats snapshot vs manifest divergence** | Reconciled at API layer | Resolved | `/api/v1/tenants` now overlays manifest truth on registry entries; `LiveAggregateWindow` is the single source for time-bounded totals. |
 
+## Known divergences under investigation
+
+Failures the hot-vs-cold parity suite (`tests/parity`, build tag `parity`)
+reproduces on every run. Each is a real cold-tier divergence, not a harness
+defect, and each is listed in `tests/parity/known_failures.txt` so CI fails
+the moment a *new* one appears or one of these starts passing. The ids are
+the handle the allowlist and the fixes refer to.
+
+| Id | Divergence | Surfaces as |
+|---|---|---|
+| **B1** | Cold query rows carry columns hot does not: `<null>` placeholders for unset map attributes, the `account_id` / `project_id` tenant columns, the `ded_s01`…`ded_s08` dedicated slot columns, and unprefixed duplicates of the traces attributes (`service.name` next to `resource_attr:service.name`). | Every `rows_match` comparison, `facets` value sets, `traces_trace_id_lookup`, `traces_field_names_resource_attr_prefix`. |
+| **B2** | `/select/logsql/field_names` is built from the Parquet columns present in the scanned files only, so it reports a fraction of the fields hot VL/VT lists (22 of 63 on the seeded traces corpus) and omits `_time`, `_msg`, `_stream`, the VT metadata fields and every map-stored attribute. | `field_names*` on both signals, `traces_field_names_vt_metadata`, `traces_field_names_span_attr_prefix`, `traces_field_names_completeness`. |
+| **B3** | A filter on a non-promoted map attribute combined with any pipe returns 0 rows on cold while hot returns the full match set. | `range_numeric`, `field_exists_multi`, `negated_exists_combined`, the numeric range/comparison filters, `stats_by_format`. |
+| **B4** | The `rename`, `format`, `len`, `math`, `extract` and `unpack_json` pipes drop their input columns on cold, so the output row is missing the fields the pipe read from. | `TestParity_PipesExtended/*`, `TestParity_PipesGapfill/string_functions`, `TestParity_PipesGapfill/chained_pipes_3plus`. |
+| **B5** | `/select/logsql/hits` at sub-hour `step` returns evenly spaced synthetic buckets — the totals match hot but the per-bucket distribution is flat, because cold partitions are hour-granular and the sub-hour buckets are interpolated rather than counted. | `hits_small_step`, `hits_bucket_keys`. |
+
+Each is fixed in its own PR; none of them is a test-harness problem, so the
+suite records them rather than hiding them.
+
+## Intentional differences
+
+Behaviors where hot and cold deliberately disagree. These are **not** gaps —
+a test that "fixes" one of them would be wrong.
+
+| Behavior | Hot | Cold | Why |
+|---|---|---|---|
+| Bare `service.name` on traces LogsQL | No such field; matches nothing | Answers from a promoted alias column | The Lakehouse traces schema promotes `service.name` alongside VT's `resource_attr:service.name` so Grafana/Tempo-shaped queries work without the prefix. Pinned by `TestParity_Traces_LogsQL/traces_service_name_is_lh_only_alias`, which asserts hot returns 0 and cold returns rows. |
+| Live tail (`/api/v2/search/tail`, `/select/logsql/tail`) | Streams | `501 Not Implemented` | Cold storage is write-once-read-many; there is nothing to tail after the flush. |
+
+## Running the parity suite
+
+The suite lives in `tests/parity` behind the `parity` build tag and runs
+inside its own compose stack (`tests/parity/docker-compose.yml`), which
+publishes no host ports — every service is addressed by container DNS from
+the `parity-tests` service, so it can run alongside other local stacks.
+
+```sh
+docker compose -f tests/parity/docker-compose.yml build
+docker compose -f tests/parity/docker-compose.yml up -d
+# wait for datagen-seed and datagen-seed-tenant2 to exit, then ~30s for the
+# lakehouse flush + manifest refresh
+docker compose -f tests/parity/docker-compose.yml --profile test run --rm -T \
+  parity-tests go test -tags=parity -json -count=1 -timeout=15m ./... \
+  > parity-results.json
+python scripts/ci/parity_ratchet.py --results parity-results.json
+docker compose -f tests/parity/docker-compose.yml down -v
+```
+
+Three properties the harness has to keep, because breaking any of them turns
+a comparison into a silent no-op:
+
+- **Quote field names containing `:`.** `resource_attr:service.name` unquoted
+  parses as field `resource_attr` with a bucket, matches nothing, and the
+  comparison then holds vacuously. Write `` `resource_attr:service.name` ``.
+- **Ask for the seeded window.** `cmd/datagen` backfills at
+  `now - rand[1..hours-back]h`; a short relative window like `_time:10m` is
+  empty on both tiers. Use `seedWindowParams()` / `seedWindowFilter()` from
+  `tests/parity/helpers.go`.
+- **Never compare against an empty reference.** `requireNonEmptyReference`
+  fails set / row / bucket / structure comparisons whose reference side
+  produced nothing. If it fires, fix the query or the seed — relaxing the
+  guard restores the vacuous pass it exists to catch.
+
+### The known-failure ratchet
+
+`tests/parity/known_failures.txt` lists every test allowed to fail, one per
+line with a `# reason` naming a divergence id above, plus a `# min-pass: N`
+directive recording how many tests passed when the list was last updated.
+`scripts/ci/parity_ratchet.py` reads `go test -json` output and fails the
+Parity Tests job when:
+
+- a failing test is not on the list (new divergence or harness regression),
+- a listed test passes, skips, or no longer exists (stale entry — delete it),
+- the pass count drops below `min-pass` (coverage went backwards, typically
+  a test that started skipping on missing data).
+
+A parent test that fails only because a listed subtest failed is accepted
+without its own entry. The list only ever shrinks.
+
 ## Versioning gap-register
 
 This file is the source of truth for "what cold tier doesn't do yet". When closing a gap, move its row to a closed section at the bottom with the PR number and date so reviewers can see the trajectory.
