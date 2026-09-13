@@ -4,7 +4,6 @@ import (
 	"io"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -254,6 +253,8 @@ func readMapColumnToBlockCols(
 	mapColName string,
 	promotedKeys map[string]bool,
 ) []logstorage.BlockColumn {
+	// Resolved once per column; mapAttrFieldNameWithPrefix applies the shared
+	// naming rule per attribute.
 	prefix := mapColumnToAttrPrefix(mapColName)
 
 	// Read all key and value entries with their repetition levels
@@ -344,7 +345,12 @@ func readMapColumnToBlockCols(
 		if promotedKeys[kv.key] {
 			continue
 		}
-		attrName := bytesutil.InternString(prefix + kv.key)
+		// Same naming rule the scalar columns go through: a MAP key that
+		// spells a reserved internal name never becomes a field.
+		attrName, ok := mapAttrFieldNameWithPrefix(prefix, kv.key)
+		if !ok {
+			continue
+		}
 		ac, ok := attrMap[attrName]
 		if !ok {
 			ac = &attrCol{values: make([]string, passCount)}

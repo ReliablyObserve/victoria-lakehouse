@@ -42,19 +42,20 @@ var InternalColumns = []string{
 	"project_id",
 }
 
-var internalColumnSet = func() map[string]struct{} {
-	m := make(map[string]struct{}, len(InternalColumns))
-	for _, c := range InternalColumns {
-		m[c] = struct{}{}
-	}
-	return m
-}()
-
 // IsInternalColumn reports whether a top-level Parquet column is storage
 // bookkeeping that must never surface as a query field.
+//
+// The read paths call this once per emitted field name — for MAP attributes,
+// once per attribute per row — so it scans the short InternalColumns slice
+// instead of hashing the name into a set: Go's string equality compares lengths
+// first, so for almost every name this is a couple of integer compares.
 func IsInternalColumn(parquetColumn string) bool {
-	_, ok := internalColumnSet[parquetColumn]
-	return ok
+	for _, c := range InternalColumns {
+		if parquetColumn == c {
+			return true
+		}
+	}
+	return false
 }
 
 // IsDedicatedSlotColumn reports whether a top-level Parquet column is one of

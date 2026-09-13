@@ -1493,21 +1493,21 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 
 		for _, fld := range fields {
 			if mapVal, ok := fld.value.(map[string]string); ok {
-				prefix := mapColumnToAttrPrefix(fld.name)
 				for k, v := range mapVal {
 					if v == "" {
 						continue
 					}
-					var effectivePrefix string
-					if schema.VTTopLevelSpanAttrKeys[k] {
-						effectivePrefix = ""
-					} else {
-						if scalarFieldNames[k] {
-							continue
-						}
-						effectivePrefix = prefix
+					if !schema.VTTopLevelSpanAttrKeys[k] && scalarFieldNames[k] {
+						continue
 					}
-					attrName := bytesutil.InternString(effectivePrefix + k)
+					// Same naming rule the scalar columns go through
+					// (mapAttrFieldName / queryFieldName share
+					// emittableFieldName), so a MAP key cannot introduce a
+					// field name a column is forbidden to produce.
+					attrName, ok := mapAttrFieldName(fld.name, k, schema.VTTopLevelSpanAttrKeys)
+					if !ok {
+						continue
+					}
 					idx := getCol(attrName)
 					for idx >= len(seenBitmap) {
 						seenBitmap = append(seenBitmap, false)

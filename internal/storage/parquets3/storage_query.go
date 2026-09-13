@@ -1376,7 +1376,6 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 
 		for _, fld := range fields {
 			if mapVal, ok := fld.value.(map[string]string); ok {
-				prefix := mapColumnToAttrPrefix(fld.name)
 				for k, v := range mapVal {
 					if v == "" {
 						continue
@@ -1384,7 +1383,14 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 					if scalarFieldNames[k] {
 						continue
 					}
-					attrName := bytesutil.InternString(prefix + k)
+					// Same naming rule the scalar columns go through
+					// (mapAttrFieldName / queryFieldName share
+					// emittableFieldName), so a MAP key cannot introduce a
+					// field name a column is forbidden to produce.
+					attrName, ok := mapAttrFieldName(fld.name, k)
+					if !ok {
+						continue
+					}
 					idx := getCol(attrName)
 					// Grow bitmap for new columns discovered via MAP.
 					for idx >= len(seenBitmap) {

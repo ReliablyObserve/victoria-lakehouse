@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -235,4 +236,26 @@ func writeWildcardBenchFile(b *testing.B, numRows int) *parquet.File {
 		b.Fatal(err)
 	}
 	return f
+}
+
+// BenchmarkMapAttrFieldName measures the per-attribute cost of the shared naming
+// rule on the MAP hot loop (one call per attribute per row): prefix
+// concatenation, the reserved-name classification, and interning. The
+// "intern_only" sub-benchmark is the same loop without the classification, so
+// the difference between the two is exactly what routing MAP keys through the
+// single rule costs.
+func BenchmarkMapAttrFieldName(b *testing.B) {
+	keys := []string{"custom.key", "http.route", "user.id", "k8s.container.name"}
+	b.Run("rule", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; b.Loop(); i++ {
+			_, _ = mapAttrFieldNameWithPrefix("", keys[i&3])
+		}
+	})
+	b.Run("intern_only", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; b.Loop(); i++ {
+			_ = bytesutil.InternString("" + keys[i&3])
+		}
+	})
 }

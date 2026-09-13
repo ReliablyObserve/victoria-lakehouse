@@ -46,6 +46,26 @@ If `verified_drift_pct` jumps significantly above these bands, investigate — m
 - manifest's RefreshFromS3 missed a prefix (tenant-isolation routing bug)
 - compaction wrote outputs to a different prefix than its inputs
 
+## Intentional differences
+
+Places where cold deliberately does something hot does not, and why. These are
+decisions, not gaps — a change here needs a reason, not a fix.
+
+- **Traces: the bare Parquet-name alias for a promoted column.** A promoted
+  traces column surfaces under VictoriaTraces' own name
+  (`resource_attr:service.name`), and additionally under its raw Parquet spelling
+  (`service.name`) **only when the query itself spells that name** — in a filter
+  term, or in a column-selecting pipe (`fields`, `stats`, `uniq`, `top`).
+  Operators routinely type the Parquet spelling because that is what a Parquet
+  tool shows them, and VictoriaLogs' filters match on the names the DataBlock
+  actually carries, so without the alias `service.name:="X"` matches zero rows
+  while `_stream:{resource_attr:service.name="X"}` finds every one of them
+  (a5576bf). Field-enumerating pipes do NOT trigger it: `field_names`,
+  `field_values` and `facets` answer from the schema, not from an alias column,
+  so their output carries VT's names alone. Hot VT has no `service.name` field at
+  all, so on every query that does not spell it — a Grafana span list above all —
+  cold returns exactly what hot returns.
+
 ## Cold-tier feature gaps register
 
 What hot VT/VL gives users that the cold tier silently doesn't, with rough effort estimates so each gap is decision-ready.
@@ -172,6 +192,9 @@ Both paths now resolve names through one shared `queryFieldName`:
   applies on the typed path;
 - everything else resolves through the schema registry, which supplies VT's
   `resource_attr:` / `span_attr:` prefixes;
+- a key inside a MAP attribute column takes its column's prefix and then passes
+  the same check (`mapAttrFieldName`), so there is one naming rule for every
+  emitted field, not one per scan path and one per column shape;
 - a column that is empty on every row of a row group is not emitted at all.
 
 The raw Parquet spelling of a promoted traces column is still emitted alongside
@@ -185,9 +208,29 @@ The classification lives in `internal/schema/columns.go` and is guarded by
 Parquet column of `LogRow` and `TraceRow` and fails on one nobody classified — so
 a column added later cannot leak into query results unnoticed.
 
+One rule, not two: the same `emittableFieldName` check every top-level column
+passes is also applied to the name a MAP attribute key would be emitted under, so
+a key inside `log.attributes` / `span.attributes` cannot introduce a field name a
+column is forbidden to produce. The check runs on the name that is actually
+emitted, which is what makes one rule sufficient: a span attribute `account_id`
+surfaces as `span_attr:account_id` and is an ordinary user attribute, while the
+same key in a map whose attributes surface unprefixed would be the reserved name
+itself and is dropped.
+
 Verification: `internal/storage/parquets3/cold_row_fields_test.go` and
 `lakehouse-traces/internal/storage/parquets3/cold_row_fields_test.go` (row-group
-readers and the full query path, both the columnar and the row-oriented scan),
+readers and the full query path, both the columnar and the row-oriented scan;
+reserved-looking MAP keys asserted absent in both modules). For logs the typed
+reader is the naming oracle and the scan path is asserted equal to it row by row.
+For traces it is NOT: `traceRowToFields` spells MAP attributes and the Tier-1
+dedicated columns bare (`custom.res`, `url.full`) where the scan path spells them
+as VT does (`resource_attr:custom.res`, `span_attr:url.full`) — which is what hot
+VT returns — so both spellings are pinned literally by
+`TestColdSpanFields_TypedPathNamesAreExplicit`, with the values asserted equal
+across the two. That split is a twin divergence worth closing separately; it is
+not introduced here.
+
+Other verification:
 `tests/parity/cold_row_fields_test.go` (`TestParity_ColdRowFields`,
 `TestParity_Traces_ColdSpanFields`), and the shared `assertNoInternalFields`
 helper now also asserted in `TestParity_Response/jsonl_structure`. Registry rows:
@@ -201,3 +244,13 @@ row group, no projection, Apple M5 Pro, `-benchtime 5x -count 5`, median):
 |---|---|---|---|---|---|---|
 | logs | 155,244,183 | 79,132,592 (-49%) | 4,502,981 | 2,202,717 (-51%) | 237,613,003 | 183,950,430 (-23%) |
 | traces | 143,373,533 | 120,211,033 (-16%) | 5,303,660 | 2,603,376 (-51%) | 279,252,492 | 219,069,683 (-22%) |
+
+Routing MAP attribute keys through the same rule adds no allocations and about
+3 ns per attribute: `BenchmarkMapAttrFieldName` measures the rule at 12.2 ns/op
+(logs) and 16.0 ns/op (traces) against 9.0 and 13.3 ns/op for the bare
+concatenate-and-intern loop it replaced, 0 allocs/op in all four cases — about
+0.5% of the 100k-row wildcard scan above. An interleaved A/B of the wildcard
+benchmark with and without the MAP-side check (10 alternating runs per module)
+shows allocs/op and B/op unchanged and a fastest-run delta of +1.0% (logs) and
++0.75% (traces); the median deltas (+3.8% / +0.65%) were taken with host load
+above 5 and are dominated by that noise.

@@ -323,3 +323,122 @@ func TestColdRowFields_Logs_NoJunkThroughQueryPipes(t *testing.T) {
 		})
 	}
 }
+
+// TestColdRowFields_MapKeysCannotSmuggleReservedNames pins the shared naming rule
+// on the MAP side: mapAttrFieldName runs the name it is about to emit through the
+// same classification every top-level column passes, so a key inside an attribute
+// map can never introduce a reserved field name. Logs surface their own attribute
+// maps UNPREFIXED, which is exactly where a colliding key would land as the bare
+// reserved name.
+func TestColdRowFields_MapKeysCannotSmuggleReservedNames(t *testing.T) {
+	for _, mapCol := range []string{"log.attributes", "resource.attributes"} {
+		for _, key := range append([]string{"account_id", "project_id"}, schema.DedicatedSlotColumns...) {
+			if name, ok := mapAttrFieldName(mapCol, key); ok {
+				t.Errorf("MAP key %q in %s surfaced as %q; a reserved name must never be "+
+					"emitted, whichever column produces it", key, mapCol, name)
+			}
+		}
+		if name, ok := mapAttrFieldName(mapCol, "custom.key"); !ok || name != "custom.key" {
+			t.Errorf("mapAttrFieldName(%s, custom.key) = (%q, %v), want (\"custom.key\", true)",
+				mapCol, name, ok)
+		}
+		if _, ok := mapAttrFieldName(mapCol, ""); ok {
+			t.Errorf("empty MAP key in %s must not surface", mapCol)
+		}
+	}
+	// A map column with no attr-prefix mapping falls back to "<column>:", which
+	// disambiguates the same key into an ordinary field name.
+	if name, ok := mapAttrFieldName("some.other.map", "account_id"); !ok || name != "some.other.map:account_id" {
+		t.Errorf("prefixed MAP key = (%q, %v), want (\"some.other.map:account_id\", true)", name, ok)
+	}
+}
+
+// TestColdRowFields_ReservedMapKeysDroppedEndToEnd is the file-level proof of the
+// rule above: a row whose attribute maps carry reserved-looking keys is read back
+// without any of them, while ordinary attributes in the same map survive.
+func TestColdRowFields_ReservedMapKeysDroppedEndToEnd(t *testing.T) {
+	now := time.Date(2026, 5, 10, 14, 0, 0, 0, time.UTC)
+	rows := []schema.LogRow{{
+		AccountID:         7,
+		ProjectID:         42,
+		TimestampUnixNano: now.UnixNano(),
+		Body:              "m",
+		ServiceName:       "api-gw",
+		LogAttributes:     map[string]string{"account_id": "leak", "ded_s01": "leak", "custom.key": "kept"},
+		ResourceAttributes: map[string]string{
+			"project_id": "leak", "ded_s08": "leak", "other.key": "kept",
+		},
+	}}
+	res, err := writeLogsParquet(rows, 1000, 3)
+	if err != nil {
+		t.Fatalf("writeLogsParquet: %v", err)
+	}
+	f := openParquetBytes(t, res.Data)
+	got := scanRowGroups(t, testStorage(), f, now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano(), nil)
+	if len(got) != 1 {
+		t.Fatalf("got %d rows, want 1", len(got))
+	}
+	assertNoJunkFields(t, "reserved map keys", got)
+	for _, name := range []string{"account_id", "project_id", "ded_s01", "ded_s08"} {
+		if v, ok := got[0][name]; ok {
+			t.Errorf("reserved name %q surfaced as a field (=%q) from a MAP key: %v",
+				name, v, got[0])
+		}
+	}
+	for name, want := range map[string]string{"custom.key": "kept", "other.key": "kept"} {
+		if got[0][name] != want {
+			t.Errorf("ordinary attribute %q = %q, want %q: %v", name, got[0][name], want, got[0])
+		}
+	}
+}
+
+// TestQueryFieldName_EveryBranch pins each branch of the shared top-level naming
+// rule directly, including the ones the file-level tests cannot reach through a
+// real Parquet file (a slot bound to a reserved name, an internal column handed
+// in explicitly even though allLeafColumns never projects one).
+func TestQueryFieldName_EveryBranch(t *testing.T) {
+	reg := schema.NewRegistry(schema.LogsProfile)
+	slots := schema.SlotMapping{
+		"ded_s01": "tenant_id",
+		"ded_s02": "",           // bound to nothing
+		"ded_s03": "account_id", // bound to a reserved name
+	}
+	cases := []struct {
+		col      string
+		wantName string
+		wantOK   bool
+	}{
+		{"ded_s01", "tenant_id", true},               // mapped slot -> configured name
+		{"ded_s02", "", false},                       // slot bound to the empty name
+		{"ded_s03", "", false},                       // slot bound to a reserved name
+		{"ded_s04", "", false},                       // unmapped slot
+		{"account_id", "", false},                    // internal column
+		{"project_id", "", false},                    // internal column
+		{"", "", false},                              // empty column name
+		{"timestamp_unix_nano", "_time", true},       // registry-resolved
+		{"body", "_msg", true},                       // registry-resolved
+		{"severity_text", "level", true},             // registry-resolved
+		{"container.id", "container.id", true},       // Tier-1 dedicated, unregistered alias
+		{"some.new.column", "some.new.column", true}, // unknown column passes through
+	}
+	for _, c := range cases {
+		name, ok := queryFieldName(c.col, reg, slots)
+		if name != c.wantName || ok != c.wantOK {
+			t.Errorf("queryFieldName(%q) = (%q, %v), want (%q, %v)", c.col, name, ok, c.wantName, c.wantOK)
+		}
+	}
+	// A nil slot mapping (no custom promotions configured) drops every slot.
+	if name, ok := queryFieldName("ded_s01", reg, nil); ok {
+		t.Errorf("queryFieldName(ded_s01, nil slots) = (%q, true), want dropped", name)
+	}
+}
+
+// TestNonEmptyOrNil covers the all-empty-column rule directly.
+func TestNonEmptyOrNil(t *testing.T) {
+	if got := nonEmptyOrNil([]string{"", ""}, false); got != nil {
+		t.Errorf("all-empty column must be dropped, got %q", got)
+	}
+	if got := nonEmptyOrNil([]string{"", "x"}, true); len(got) != 2 || got[1] != "x" {
+		t.Errorf("column with a value must be kept intact, got %q", got)
+	}
+}
