@@ -103,31 +103,42 @@ func TestTenantIsolation_Logs_PerTenantCounts(t *testing.T) {
 // the reference: whatever it reports for a tenant is that tenant's share, and
 // cold must report exactly the same.
 func TestTenantIsolation_Traces_PerTenantParity(t *testing.T) {
-	tenants := listTenants(t, lhtBaseURL)
-	if len(tenants) < 2 {
-		t.Fatalf("need two seeded tenants to test traces isolation, got %d — "+
-			"check the datagen-seed-tenant2 service in tests/parity/docker-compose.yml",
-			len(tenants))
-	}
+	tenants := requireSeededTenants(t)
 
 	for _, te := range tenants {
 		t.Run("account_"+te.AccountID, func(t *testing.T) {
 			t.Run("query_rows", func(t *testing.T) {
 				hot := tracesTenantQueryRows(t, vtBaseURL, te.AccountID, te.ProjectID)
+				requireHotTenantReference(t, "traces query", te.AccountID, hot)
 				cold := tracesTenantQueryRows(t, lhtBaseURL, te.AccountID, te.ProjectID)
 				assertTenantCount(t, "traces query", te.AccountID, hot, cold)
 			})
 			t.Run("hits_total", func(t *testing.T) {
 				hot := tracesTenantHitsTotal(t, vtBaseURL, te.AccountID, te.ProjectID)
+				requireHotTenantReference(t, "traces hits", te.AccountID, hot)
 				cold := tracesTenantHitsTotal(t, lhtBaseURL, te.AccountID, te.ProjectID)
 				assertTenantCount(t, "traces hits", te.AccountID, hot, cold)
 			})
 			t.Run("field_values_hits", func(t *testing.T) {
 				hot := tracesTenantFieldValueHits(t, vtBaseURL, te.AccountID, te.ProjectID, "kind")
+				requireHotTenantReference(t, "traces field_values", te.AccountID, hot)
 				cold := tracesTenantFieldValueHits(t, lhtBaseURL, te.AccountID, te.ProjectID, "kind")
 				assertTenantCount(t, "traces field_values", te.AccountID, hot, cold)
 			})
 		})
+	}
+}
+
+// requireHotTenantReference fails when the hot tier — the reference for a
+// traces tenant — answered with nothing. The readers return -1 on a request
+// or parse error and 0 on an empty answer, so without this guard a hot error
+// matched by a cold error (-1 == -1), or an empty seed on both tiers (0 == 0),
+// would pass as parity.
+func requireHotTenantReference(t *testing.T, what, account string, hot int) {
+	t.Helper()
+	if hot <= 0 {
+		t.Fatalf("%s: hot reference for account %s returned %d — seed or query defect, "+
+			"not parity: every tenant the manifest lists holds seeded spans", what, account, hot)
 	}
 }
 
