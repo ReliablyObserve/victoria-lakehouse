@@ -26,7 +26,7 @@
 # cold-tier divergence with a fix in flight; a harness defect belongs in the
 # harness, not on this list.
 #
-# min-pass: 357
+# min-pass: 381
 
 # --- B1: cold query rows carry columns hot does not -------------------------
 # `<null>` placeholders for unset map attributes, the account_id/project_id
@@ -63,8 +63,12 @@ TestParity_Traces_LogsQL/traces_field_names_resource_attr_prefix  # B2: resource
 TestParity_Traces_LogsQL/traces_field_names_span_attr_prefix  # B2: span_attr:* absent from cold field_names
 TestParity_Traces_LogsQL/traces_field_names_vt_metadata  # B2: VT metadata fields absent from cold field_names
 
-# --- B3: map-attribute filter + any pipe returns 0 rows ---------------------
+# --- B3: a filter + any pipe returns 0 rows ---------------------------------
+# Seen for filters on map attributes, for an exact `_msg` literal containing
+# `:`, and for a `_msg` regexp containing an escaped double quote.
 TestParity_Filters/range_numeric  # B3: map-attribute filter plus pipe returns 0 rows
+TestParity_Filters/exact_msg  # B3: exact _msg literal contains ':' (logfmt ts=), cold reads it as non-free-text and never projects the body
+TestParity_Filters/ipv4_filter  # B3: client_ip is a map attribute; ipv4_range on it plus stats returns 0 rows
 TestParity_FiltersExtended/field_exists_multi  # B3: map-attribute filter plus pipe returns 0 rows
 TestParity_FiltersExtended/negated_exists_combined  # B3: map-attribute filter plus pipe returns 0 rows
 TestParity_FiltersGapfill/escaped_special_chars/filter_with_double_quote  # B3: map-attribute filter plus pipe returns 0 rows
@@ -104,3 +108,9 @@ TestTenantIsolation_Logs_PerTenantCounts/LH/account_2/hits_total  # B6: cold log
 TestTenantIsolation_Logs_PerTenantCounts/LH/account_2/query_rows  # B6: cold logs query ignores the request's tenant
 TestTenantIsolation_Traces_PerTenantParity/account_0/field_values_hits  # B6: cold traces field_values ignores the request's tenant
 TestTenantIsolation_Traces_PerTenantParity/account_1/field_values_hits  # B6: cold traces field_values ignores the request's tenant
+
+# --- B7: a row group starting on the query's last nanosecond is skipped -----
+# The HTTP end bound is exclusive; the upstream handler turns it into an
+# inclusive bound, and cold row-group pruning then compares it exclusively
+# again (rgMin < endNs), dropping rows that sit exactly on it.
+TestParity_TimeRange/boundary_ns_start_inclusive  # B7: [oldest, oldest+1ns) reads the oldest row on hot, nothing on cold
