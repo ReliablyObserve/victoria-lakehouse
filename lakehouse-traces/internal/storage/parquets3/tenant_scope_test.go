@@ -300,16 +300,9 @@ func (f *tsFixture) runQuery(ctx context.Context, tenantIDs []logstorage.TenantI
 		// The traces profile emits the service under two aliases
 		// (`service.name` and `resource_attr:service.name`); count ONE of them
 		// per block so the totals stay comparable across modules.
-		var values []string
-		var found bool
-		for _, c := range db.GetColumns(false) {
-			if c.Name == f.svcCol {
-				values, found = c.Values, true
-				break
-			}
-			if !found && c.Name == "service.name" {
-				values, found = c.Values, true
-			}
+		values := tsColumnValues(db, f.svcCol)
+		if values == nil {
+			values = tsColumnValues(db, "service.name")
 		}
 		for _, v := range values {
 			svcs[v]++
@@ -319,6 +312,16 @@ func (f *tsFixture) runQuery(ctx context.Context, tenantIDs []logstorage.TenantI
 		f.t.Fatalf("RunQuery(%q): %v", queryStr, err)
 	}
 	return rows, svcs
+}
+
+// tsColumnValues returns the values of the named column of a block, or nil.
+func tsColumnValues(db *logstorage.DataBlock, name string) []string {
+	for _, c := range db.GetColumns(false) {
+		if c.Name == name {
+			return c.Values
+		}
+	}
+	return nil
 }
 
 // tsCase is one (name, tenantIDs, globalRead) request shape.
