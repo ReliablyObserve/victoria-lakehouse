@@ -205,12 +205,16 @@ func checkFiles(w io.Writer, files []genFile) (bool, error) {
 		if err != nil {
 			return false, fmt.Errorf("read %s: %w", f.path, err)
 		}
+		var werr error
 		switch f.state(have) {
 		case fileStale:
 			stale = true
-			fmt.Fprintln(w, "stale:", f.path)
+			_, werr = fmt.Fprintln(w, "stale:", f.path)
 		case fileAccepted:
-			fmt.Fprintln(w, "current:", f.path, "— its release references predate the newest CHANGELOG.md release but are still true; 'make conformance-gen' renders the exact versions")
+			_, werr = fmt.Fprintln(w, "current:", f.path, "— its release references predate the newest CHANGELOG.md release but are still true; 'make conformance-gen' renders the exact versions")
+		}
+		if werr != nil {
+			return false, werr
 		}
 	}
 	return stale, nil

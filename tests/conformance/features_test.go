@@ -159,10 +159,10 @@ func TestCheckFeatures_UnmappedChangelogBullets(t *testing.T) {
 func TestCheckFeatures_UnknownBullets(t *testing.T) {
 	a := newFeature("lh.feature.storage.a", registry.StatusShipped)
 	a.Tests = []string{"x_test.go"}
-	a.ChangelogBullets = []string{"Original.", "Orginal."}
+	a.ChangelogBullets = []string{"Original.", "Original, reworded."}
 
 	d := CheckFeatures(featureSet(a), featureTestRegistry(), registry.ParseChangelogBytes([]byte(gateChangelog)))
-	if len(d.UnknownBullets) != 1 || d.UnknownBullets[0] != "lh.feature.storage.a -> Orginal." {
+	if len(d.UnknownBullets) != 1 || d.UnknownBullets[0] != "lh.feature.storage.a -> Original, reworded." {
 		t.Fatalf("UnknownBullets = %v", d.UnknownBullets)
 	}
 	if !strings.Contains(strings.Join(d.HardFailures(), "\n"), "copy the bullet's bold lead-in exactly") {

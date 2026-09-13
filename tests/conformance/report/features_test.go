@@ -1,7 +1,6 @@
 package report
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
@@ -387,9 +386,9 @@ func materializeRelease(changelog, version string) string {
 
 func TestDocument_Accepts(t *testing.T) {
 	d := &Document{}
-	d.WriteString("since: ")
+	d.text("since: ")
 	d.release(releaseText{exact: "v1.2.0", alts: []string{"the release after v1.1.0"}})
-	d.WriteString(" · end\n")
+	d.text(" · end\n")
 
 	if got := d.String(); got != "since: v1.2.0 · end\n" {
 		t.Fatalf("String = %q: it must render the exact form", got)
@@ -416,7 +415,7 @@ func TestDocument_Accepts(t *testing.T) {
 func TestDocument_AcceptsTriesEveryRendering(t *testing.T) {
 	d := &Document{}
 	d.release(releaseText{exact: "a", alts: []string{"ab"}})
-	fmt.Fprintf(d, "%s", "c")
+	d.printf("%s", "c")
 	for have, want := range map[string]bool{"ac": true, "abc": true, "abd": false, "bc": false} {
 		if got := d.Accepts([]byte(have)); got != want {
 			t.Errorf("Accepts(%q) = %v, want %v", have, got, want)

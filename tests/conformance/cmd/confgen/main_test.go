@@ -185,4 +185,13 @@ func TestCheckFiles(t *testing.T) {
 	if _, err := checkFiles(&out, []genFile{{path: dir, want: []byte("x")}}); err == nil {
 		t.Error("an unreadable path must be an error, not a stale or current verdict")
 	}
+	for _, f := range []genFile{stale, accepted} {
+		if _, err := checkFiles(failingWriter{}, []genFile{f}); err == nil {
+			t.Errorf("%s: a report that cannot be written must be an error, not a silent verdict", f.path)
+		}
+	}
 }
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, os.ErrClosed }

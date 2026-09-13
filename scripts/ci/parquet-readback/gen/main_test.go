@@ -43,7 +43,7 @@ func readBack[T any](t *testing.T, path string) (*parquet.File, []T) {
 		t.Fatalf("parquet-go cannot open %s: %v", path, err)
 	}
 	r := parquet.NewGenericReader[T](bytes.NewReader(data))
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	rows := make([]T, 0, r.NumRows())
 	buf := make([]T, 128)
 	for {
