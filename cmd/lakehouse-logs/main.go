@@ -55,7 +55,12 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
-const vlCompat = "1.50.0"
+// vlCompat is the VictoriaLogs release this binary embeds, reported on
+// /lakehouse/info and in the startup log so an operator can tell which upstream
+// a running node speaks without reading go.mod. It must equal the version the
+// root go.mod requires; TestVLCompatMatchesGoMod fails the build otherwise,
+// because a stale value here misreports compatibility to every client that asks.
+const vlCompat = "1.52.0"
 
 var (
 	configPath      = flag.String("lakehouse.config", "", "Path to YAML config file")

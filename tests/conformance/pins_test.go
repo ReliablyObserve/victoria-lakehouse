@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path"
@@ -271,4 +272,38 @@ func TestWorkflowPinsMatchMakefile(t *testing.T) {
 		t.Fatal("no workflow pin declarations found — the regexp is stale, so this gate passes vacuously")
 	}
 	t.Logf("checked %d workflow pin declarations against the Makefile", checked)
+}
+
+// TestUpstreamVersionsManifestMatchesMakefile covers the last duplicated pin:
+// .upstream-versions.json, the manifest the daily upstream-check workflow
+// compares against the latest upstream releases. It carried bogus values
+// ("v1.20.0-victorialogs", "v1.5.0-victoriatraces") that matched no real tag,
+// so the check could never say anything useful. Nothing else in the repository
+// reads it — `scripts/ci/check_registry_touch.sh` only watches it for changes —
+// so it is a candidate for deletion once that workflow is rewritten; until
+// then it must at least be true.
+func TestUpstreamVersionsManifestMatchesMakefile(t *testing.T) {
+	root, err := inventory.RepoRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := inventory.DefaultDirs(root)
+
+	var manifest struct {
+		VictoriaLogs   string `json:"victorialogs"`
+		VictoriaTraces string `json:"victoriatraces"`
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".upstream-versions.json"))
+	if err != nil {
+		t.Skipf(".upstream-versions.json is gone (%v) — if the upstream-sync workflow no longer needs it, delete this test too", err)
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("parse .upstream-versions.json: %v", err)
+	}
+	if manifest.VictoriaLogs != d.VLVersion {
+		t.Errorf(".upstream-versions.json victorialogs=%q but the Makefile pins %s", manifest.VictoriaLogs, d.VLVersion)
+	}
+	if manifest.VictoriaTraces != d.VTVersion {
+		t.Errorf(".upstream-versions.json victoriatraces=%q but the Makefile pins %s", manifest.VictoriaTraces, d.VTVersion)
+	}
 }
