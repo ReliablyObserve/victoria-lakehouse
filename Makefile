@@ -182,11 +182,15 @@ coverage-traces: deps-traces
 	cd lakehouse-traces && go test ./internal/... -coverprofile=coverage-traces.out -covermode=atomic
 	cd lakehouse-traces && go tool cover -html=coverage-traces.out -o coverage-traces.html
 
+# The Dockerfiles carry the same pins as ARG defaults (kept equal to these by
+# TestDockerfilePinsMatchMakefile), but pass them explicitly so a local build is
+# never one forgotten default away from cloning the wrong upstream tree and
+# failing with a misleading "patch failed" hunk error.
 docker-logs:
-	docker build -f Dockerfile.logs -t ghcr.io/reliablyobserve/lakehouse-logs:$(VERSION) .
+	docker build -f Dockerfile.logs 		--build-arg VL_VERSION=$(VL_VERSION_LOGS) 		-t ghcr.io/reliablyobserve/lakehouse-logs:$(VERSION) .
 
 docker-traces:
-	docker build -f Dockerfile.traces -t ghcr.io/reliablyobserve/lakehouse-traces:$(VERSION) .
+	docker build -f Dockerfile.traces 		--build-arg VL_VERSION=$(VL_VERSION_LOGS) 		--build-arg VL_COMMIT=$(VL_COMMIT_TRACES) 		--build-arg VT_VERSION=$(VT_VERSION) 		-t ghcr.io/reliablyobserve/lakehouse-traces:$(VERSION) .
 
 docker: docker-logs docker-traces
 

@@ -422,6 +422,7 @@ jobs:
           for attempt in 1 2 3; do
             docker build -f Dockerfile.logs \
               --build-arg VERSION=${{ github.sha }} \
+              --build-arg VL_VERSION=${{ env.VL_VERSION_LOGS }} \
               -t ghcr.io/${REPO}/lakehouse-logs:${{ github.sha }} . && exit 0
             echo "build attempt ${attempt} failed; retrying in $((attempt*20))s"
             sleep $((attempt*20))
@@ -444,6 +445,9 @@ jobs:
           for attempt in 1 2 3; do
             docker build -f Dockerfile.traces \
               --build-arg VERSION=${{ github.sha }} \
+              --build-arg VL_VERSION=${{ env.VL_VERSION_LOGS }} \
+              --build-arg VL_COMMIT=${{ env.VL_COMMIT_TRACES }} \
+              --build-arg VT_VERSION=${{ env.VT_VERSION }} \
               -t ghcr.io/${REPO}/lakehouse-traces:${{ github.sha }} . && exit 0
             echo "build attempt ${attempt} failed; retrying in $((attempt*20))s"
             sleep $((attempt*20))

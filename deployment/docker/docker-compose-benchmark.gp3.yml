@@ -17,9 +17,9 @@ services:
       context: ../../
       dockerfile: deployment/docker/Dockerfile.bench-shaped
       args:
-        UPSTREAM: victoriametrics/victoria-logs:v1.50.0
+        UPSTREAM: victoriametrics/victoria-logs:v1.52.0
         BINARY: /victoria-logs-prod
-    image: bench-shaped-vl:v1.50.0
+    image: bench-shaped-vl:v1.52.0
     privileged: true            # losetup + mount + cgroup io.max
     environment:
       DISK_PROFILE: gp3-loop
@@ -36,9 +36,9 @@ services:
       context: ../../
       dockerfile: deployment/docker/Dockerfile.bench-shaped
       args:
-        UPSTREAM: victoriametrics/victoria-traces:v0.9.2
+        UPSTREAM: victoriametrics/victoria-traces:v0.11.0
         BINARY: /victoria-traces-prod
-    image: bench-shaped-vt:v0.9.2
+    image: bench-shaped-vt:v0.11.0
     privileged: true
     environment:
       DISK_PROFILE: gp3-loop

@@ -193,7 +193,12 @@ Serves Jaeger and Tempo-compatible trace query APIs backed by the same MinIO buc
 
 ```yaml
 victorialogs:
-  image: victoriametrics/victoria-logs:v1.50.0
+  build:
+    context: ../../
+    dockerfile: deployment/docker/Dockerfile.upstream-probe
+    args:
+      UPSTREAM: victoriametrics/victoria-logs:v1.52.0
+  image: vl-probed:v1.52.0
   command:
     - "-storageDataPath=/data"
     - "-retentionPeriod=24h"
@@ -202,13 +207,29 @@ victorialogs:
 
 A standalone VictoriaLogs instance acting as the hot log tier with 24-hour retention and local disk storage. Receives dual-written logs from datagen via `/insert/jsonline`.
 
+The image is the unmodified upstream release wrapped by
+`deployment/docker/Dockerfile.upstream-probe`, which adds one static busybox at
+`/probe/busybox`. From VictoriaLogs v1.51.0 and VictoriaTraces v0.10.0 the
+published images are distroless — no shell, no `wget` — so a Compose
+`healthcheck` has nothing to execute and every dependant wired with
+`condition: service_healthy` would wait forever. The probe binary is the only
+addition; the product binary, its entrypoint and its behaviour are untouched,
+so the hot tier under test is still the real upstream release. Healthchecks
+therefore read
+`["CMD", "/probe/busybox", "wget", "-qO-", "http://127.0.0.1:9428/health"]`.
+
 - **Internal endpoint**: `http://victorialogs:9428`
 
 ### VictoriaTraces (Hot Tier)
 
 ```yaml
 victoriatraces:
-  image: victoriametrics/victoria-traces:v0.9.2
+  build:
+    context: ../../
+    dockerfile: deployment/docker/Dockerfile.upstream-probe
+    args:
+      UPSTREAM: victoriametrics/victoria-traces:v0.11.0
+  image: vt-probed:v0.11.0
   command:
     - "-storageDataPath=/data"
     - "-retentionPeriod=24h"
@@ -223,7 +244,12 @@ A standalone VictoriaTraces instance acting as the hot trace tier with 24-hour r
 
 ```yaml
 vlselect:
-  image: victoriametrics/victoria-logs:v1.50.0
+  build:
+    context: ../../
+    dockerfile: deployment/docker/Dockerfile.upstream-probe
+    args:
+      UPSTREAM: victoriametrics/victoria-logs:v1.52.0
+  image: vl-probed:v1.52.0
   command:
     - "-storageNode=victorialogs:9428,lakehouse-logs:9428"
 ```
@@ -236,7 +262,12 @@ VictoriaLogs in cluster select mode. Fans out every query to both hot (victorial
 
 ```yaml
 vtselect:
-  image: victoriametrics/victoria-traces:v0.9.2
+  build:
+    context: ../../
+    dockerfile: deployment/docker/Dockerfile.upstream-probe
+    args:
+      UPSTREAM: victoriametrics/victoria-traces:v0.11.0
+  image: vt-probed:v0.11.0
   command:
     - "-storageNode=victoriatraces:10428,lakehouse-traces:10428"
 ```

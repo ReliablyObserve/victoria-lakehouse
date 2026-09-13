@@ -1,0 +1,25 @@
+# Dockerfile.upstream-probe — add a HEALTHCHECK probe to an otherwise untouched
+# upstream VictoriaLogs / VictoriaTraces image.
+#
+# From VictoriaLogs v1.51.0 and VictoriaTraces v0.10.0 the published images are
+# distroless: no /bin/sh, no wget, only the product binary. A Compose
+# `healthcheck: test: ["CMD", "wget", ...]` therefore has nothing to execute,
+# the container never reports healthy, and every dependant wired with
+# `condition: service_healthy` waits forever. v1.50.0 / v0.9.2 still shipped a
+# shell, which is why the composes could probe with wget until the upgrade.
+#
+# This layer copies ONE static busybox next to the unmodified upstream binary
+# purely so the healthcheck has something to run. The entrypoint, the product
+# binary, its flags and its behaviour are untouched, so the hot tier under test
+# is still the real upstream release.
+#
+#   docker build -f deployment/docker/Dockerfile.upstream-probe \
+#     --build-arg UPSTREAM=victoriametrics/victoria-logs:v1.52.0 \
+#     -t vl-probed:v1.52.0 .
+#
+# Probe with: ["CMD", "/probe/busybox", "wget", "-qO-", "http://127.0.0.1:<port>/health"]
+ARG UPSTREAM
+FROM busybox:1.37.0-uclibc AS probe
+
+FROM ${UPSTREAM}
+COPY --from=probe /bin/busybox /probe/busybox
