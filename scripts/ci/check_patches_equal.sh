@@ -16,6 +16,8 @@
 #
 #   * a file present in one directory and missing from the other;
 #   * files that differ without a DIVERGENCE.md entry;
+#   * a declared file whose added/removed lines (the payload) differ — a
+#     declaration only excuses differing diff CONTEXT, never content;
 #   * a stale DIVERGENCE.md entry naming a file that is in fact byte-equal
 #     (so the list shrinks back to nothing once the pins converge again);
 #   * a DIVERGENCE.md entry naming a file that does not exist.
@@ -51,6 +53,17 @@ is_declared() {
 fail=0
 note() { printf '%s\n' "$1" >&2; fail=1; }
 
+# payload <file> — the lines a unified diff adds or removes (the patch's
+# actual content), excluding the +++/--- file headers. For a non-diff file
+# (a *.src full-file addition) every line is payload, so any change counts.
+payload() {
+  if grep -q '^@@' "$1"; then
+    grep -E '^[+-]' "$1" | grep -vE '^(\+\+\+|---) '
+  else
+    cat "$1"
+  fi
+}
+
 # Union of both directories' file names, so a file missing on either side is
 # reported once. DIVERGENCE.md is the declaration itself and lives only on the
 # traces side, so it is never compared.
@@ -81,6 +94,13 @@ while IFS= read -r name; do
     continue
   fi
   if is_declared "$name"; then
+    # A declared divergence may differ ONLY in diff context: the payload —
+    # every added/removed line — must still be identical on both sides, or
+    # the two VictoriaLogs copies no longer get the same extension.
+    if ! cmp -s <(payload "$a") <(payload "$b"); then
+      note "diverged: $a and $b are declared in $DIVERGENCE_FILE, but their added/removed lines differ — only context may differ"
+      note "          $(diff <(payload "$a") <(payload "$b") | head -6 | tr '\n' '|')"
+    fi
     continue
   fi
   note "diverged: $a and $b differ but $name is not listed in $DIVERGENCE_FILE"

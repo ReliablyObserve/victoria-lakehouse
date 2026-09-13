@@ -2,7 +2,8 @@
 # Self-test for scripts/ci/check_patches_equal.sh. Builds synthetic
 # vl-logs/vl-traces directory pairs (no real patches, no upstream checkout)
 # and asserts the guard's verdict for each case: identical sets, an
-# undeclared divergence, a declared one, a stale declaration, a file missing
+# undeclared divergence, a declared context-only one, a declared one whose
+# payload (added/removed lines) differs, a stale declaration, a file missing
 # on either side, an unknown declaration, and the vacuous-pass guard.
 #
 # Usage: scripts/ci/tests/check_patches_equal_test.sh
@@ -67,17 +68,63 @@ check_rc "undeclared divergence fails" "$rc" 1
 check_contains "undeclared divergence names the file" "$out" "diverged:"
 check_contains "undeclared divergence names DIVERGENCE.md" "$out" "DIVERGENCE.md"
 
-# --- 3. declared divergence passes -------------------------------------
-mk declared
-printf 'different\n' > "$TMP/declared/vl-traces/a.patch"
+# --- 3. declared divergence passes when only diff context differs -------
+# mk_diff <case> <side> <context-line> — a minimal unified diff whose only
+# variable part is the context line above the added lines.
+mk_diff() {
+  mkdir -p "$TMP/$1/$2"
+  cat > "$TMP/$1/$2/a.patch" <<EOF
+--- a/main.go
++++ b/main.go
+@@ -1,2 +1,4 @@
+ $3
++func Exported() {}
++// added by the patch
+ trailing context
+EOF
+}
+mk_diff declared vl-logs 'old upstream comment'
+mk_diff declared vl-traces 'new upstream comment'
 cat > "$TMP/declared/vl-traces/DIVERGENCE.md" <<'EOF'
 # Declared divergences
 
 - `a.patch` — upstream moved the context line above our hunk.
 EOF
 run declared
-check_rc "declared divergence passes" "$rc" 0
-check_not_contains "declared divergence is not reported" "$out" "diverged:"
+check_rc "declared context-only divergence passes" "$rc" 0
+check_not_contains "declared context-only divergence is not reported" "$out" "diverged:"
+
+# --- 3b. a declaration never excuses differing added/removed lines -------
+mk_diff declared_payload vl-logs 'same context'
+mk_diff declared_payload vl-traces 'same context'
+sed -i.bak 's/^+func Exported() {}$/+func Exported() { panic("drift") }/' "$TMP/declared_payload/vl-traces/a.patch"
+rm -f "$TMP/declared_payload/vl-traces/a.patch.bak"
+cp "$TMP/declared/vl-traces/DIVERGENCE.md" "$TMP/declared_payload/vl-traces/DIVERGENCE.md"
+run declared_payload
+check_rc "declared file with differing payload fails" "$rc" 1
+check_contains "payload divergence is reported" "$out" "added/removed lines differ"
+
+# --- 3c. CRLF corruption of a declared file is a payload change ----------
+mk_diff declared_crlf vl-logs 'same context'
+mk_diff declared_crlf vl-traces 'same context'
+sed -i.bak 's/$/\r/' "$TMP/declared_crlf/vl-traces/a.patch"
+rm -f "$TMP/declared_crlf/vl-traces/a.patch.bak"
+cp "$TMP/declared/vl-traces/DIVERGENCE.md" "$TMP/declared_crlf/vl-traces/DIVERGENCE.md"
+run declared_crlf
+check_rc "declared file with CRLF-corrupted payload fails" "$rc" 1
+
+# --- 3d. a declared full-file .src addition may never differ at all ------
+mk declared_src
+printf 'package x\n' > "$TMP/declared_src/vl-logs/b.go.src"
+printf 'package y\n' > "$TMP/declared_src/vl-traces/b.go.src"
+cat > "$TMP/declared_src/vl-traces/DIVERGENCE.md" <<'EOF'
+# Declared divergences
+
+- `b.go.src` — (invalid: full-file additions carry no context)
+EOF
+run declared_src
+check_rc "declared .src file that differs fails" "$rc" 1
+check_contains "differing .src is reported as payload divergence" "$out" "added/removed lines differ"
 
 # --- 4. stale declaration fails (files are in fact equal) ---------------
 mk stale
