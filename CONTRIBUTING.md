@@ -147,6 +147,12 @@ internal/
    report validity per system; invalid responses never count as latency. Lakehouse must beat ClickHouse-over-S3
    on every scenario and minimize its ratio to hot VL/VT per query class; a regression against the recorded
    baseline blocks the PR.
+4. **Storage: fastest Lakehouse, fully open Parquet.** The storage layer targets the best performance achievable
+   on S3, comparable with VL/VT, while every object stays standard Parquet that ClickHouse, DuckDB, Trino and
+   Spark can read and prune efficiently in the long term: time-sorted, well-sized files with column statistics,
+   page indexes and bloom filters; hive-style prefixes; Lakehouse metadata only in footer key/values, pmeta or
+   sidecars that never break a `*.parquet` glob. A storage change is judged against both the Lakehouse benchmark
+   and the external-reader readback and performance checks.
 
 ## Reporting Issues
 
