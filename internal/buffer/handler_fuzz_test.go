@@ -1,6 +1,8 @@
 package buffer
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -86,5 +88,87 @@ func FuzzHandlerParams(f *testing.F) {
 		rec2 := httptest.NewRecorder()
 		hAuth.ServeHTTP(rec2, req)
 		_ = rec2.Code
+	})
+}
+
+// FuzzHandlerTenantParams fuzzes the tenant-scoping parameters and asserts the
+// property that matters: whatever the handler decides to answer, every row it
+// emits belongs to the tenant it echoed in the tenant-scope header. It must
+// never panic, and it must never emit a row of some other tenant.
+func FuzzHandlerTenantParams(f *testing.F) {
+	seeds := [][2]string{
+		{"0", "0"}, {"1001", "0"}, {"2002", "7"},
+		{"", ""}, {"0", ""}, {"", "0"},
+		{"-1", "0"}, {"0", "-1"},
+		{"4294967295", "4294967295"}, {"4294967296", "0"},
+		{"00", "00"}, {"+1", "1"}, {" 1", "1"},
+		{"0x1f", "0"}, {"1e3", "0"}, {"NaN", "0"},
+		{"0\x00", "0"}, {"１", "0"}, // fullwidth digit
+		{"999999999999999999999999", "0"},
+	}
+	for _, s := range seeds {
+		f.Add(s[0], s[1], "logs", TenantScopeVersion)
+		f.Add(s[0], s[1], "traces", TenantScopeVersion)
+	}
+	f.Add("0", "0", "logs", "")
+	f.Add("0", "0", "logs", "v0")
+
+	store := &mockBufferStore{
+		logRows: []schema.LogRow{
+			{TimestampUnixNano: 100, AccountID: 0, ProjectID: 0, Body: "t0"},
+			{TimestampUnixNano: 150, AccountID: 1001, ProjectID: 0, Body: "t1001"},
+			{TimestampUnixNano: 200, AccountID: 2002, ProjectID: 7, Body: "t2002"},
+		},
+		traceRows: []schema.TraceRow{
+			{TimestampUnixNano: 100, AccountID: 0, ProjectID: 0, TraceID: "t0"},
+			{TimestampUnixNano: 150, AccountID: 1001, ProjectID: 0, TraceID: "t1001"},
+		},
+	}
+	h := NewHandler(store, "")
+
+	f.Fuzz(func(t *testing.T, account, project, mode, scopeVersion string) {
+		q := url.Values{}
+		q.Set("start", "0")
+		q.Set("end", "1000")
+		q.Set("mode", mode)
+		q.Set("account_id", account)
+		q.Set("project_id", project)
+		q.Set("tenant_scope", scopeVersion)
+
+		req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query", nil)
+		req.URL.RawQuery = q.Encode()
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			return // refused: nothing was disclosed
+		}
+		scope := rec.Header().Get(TenantScopeHeader)
+		if scope == "" {
+			t.Fatalf("handler answered 200 without declaring the tenant it filtered to (account=%q project=%q)", account, project)
+		}
+		dec := json.NewDecoder(rec.Body)
+		for dec.More() {
+			switch mode {
+			case "logs":
+				var row schema.LogRow
+				if err := dec.Decode(&row); err != nil {
+					return
+				}
+				if got := fmt.Sprintf("%d:%d", row.AccountID, row.ProjectID); got != scope {
+					t.Fatalf("answer declared tenant %s but carried a row of tenant %s", scope, got)
+				}
+			case "traces":
+				var row schema.TraceRow
+				if err := dec.Decode(&row); err != nil {
+					return
+				}
+				if got := fmt.Sprintf("%d:%d", row.AccountID, row.ProjectID); got != scope {
+					t.Fatalf("answer declared tenant %s but carried a row of tenant %s", scope, got)
+				}
+			default:
+				return
+			}
+		}
 	})
 }
