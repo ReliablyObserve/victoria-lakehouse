@@ -32,9 +32,13 @@ var moduleLineRe = regexp.MustCompile(`(?m)^module github\.com/ReliablyObserve/v
 //
 // deps/VictoriaLogs (VL_VERSION_LOGS) is the VL basis for the logs surface.
 // The traces module vendors its own separate copy of VictoriaLogs at
-// lakehouse-traces/deps/VictoriaLogs, pinned to VL_COMMIT_TRACES; a guard
-// test (TestVLSurface_TracesPinEqualsLogsPin) verifies that copy's extracted
-// surface is identical to the logs-pin copy, so only one is used here.
+// lakehouse-traces/deps/VictoriaLogs, pinned to VL_COMMIT_TRACES — the commit
+// VictoriaTraces itself requires, which legitimately lags VL_VERSION_LOGS.
+// Only the logs-pin copy is extracted here; two guard tests back that
+// shortcut: TestVLCommitTracesPinIsDerivedFromVT (the traces pin really is
+// VT's own) and TestVLSurface_LogsPinSupersetOfTracesPin (the logs-pin
+// surface contains everything the traces-pin copy exposes, so nothing is
+// missed; the logs-only delta is newer upstream and is reported, not failed).
 func DefaultDirs(repoRoot string) Dirs {
 	d := Dirs{VL: filepath.Join(repoRoot, "deps", "VictoriaLogs"), VT: filepath.Join(repoRoot, "lakehouse-traces", "deps", "VictoriaTraces")}
 	if mk, err := os.ReadFile(filepath.Join(repoRoot, "Makefile")); err == nil {

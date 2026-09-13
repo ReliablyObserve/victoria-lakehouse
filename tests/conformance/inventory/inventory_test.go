@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -113,14 +114,73 @@ func TestExtract_RealDeps(t *testing.T) {
 		counts["route"], counts["pipe"], counts["filter"], counts["stats"], counts["traceql"], counts["flag"], len(inv.Items))
 }
 
-// TestVLSurface_TracesPinEqualsLogsPin guards the claim in DefaultDirs' doc
-// comment: the traces module vendors its own separate copy of VictoriaLogs
-// (pinned to VL_COMMIT_TRACES), and DefaultDirs only extracts the logs-pin
-// copy (deps/VictoriaLogs) for the shared VL surface (routes, engine tables,
-// flags). This test proves that shortcut is safe by extracting the same
-// surface from both copies and asserting item-for-item equality. If the two
-// pins ever diverge, this test fails and DefaultDirs must extract both.
-func TestVLSurface_TracesPinEqualsLogsPin(t *testing.T) {
+// vtVLRequireRe pulls the VictoriaLogs pseudo-version out of VictoriaTraces'
+// own go.mod require block, e.g.
+//
+//	github.com/VictoriaMetrics/VictoriaLogs v1.121.1-0.20260617051904-6ae2da3c11f3 // v1.51.0
+var vtVLRequireRe = regexp.MustCompile(`(?m)^\s*github\.com/VictoriaMetrics/VictoriaLogs\s+(\S+)`)
+
+// TestVLCommitTracesPinIsDerivedFromVT pins the derivation rule for the second
+// VictoriaLogs pin: VL_COMMIT_TRACES is never chosen, it is read off
+// VictoriaTraces' own go.mod at VT_VERSION. The traces binary links VT against
+// the exact VictoriaLogs commit VT was built and tested with, so lifting the
+// pin to VL_VERSION_LOGS "because it compiles" is a silent compatibility
+// change. This test fails the moment the Makefile pin stops matching the
+// vendored VT tree.
+func TestVLCommitTracesPinIsDerivedFromVT(t *testing.T) {
+	root, err := RepoRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := DefaultDirs(root)
+	if d.VLCommitTraces == "" {
+		t.Fatal("VL_COMMIT_TRACES not found in the Makefile")
+	}
+	vtGoMod := filepath.Join(root, "lakehouse-traces", "deps", "VictoriaTraces", "go.mod")
+	data, err := os.ReadFile(vtGoMod)
+	if err != nil {
+		if os.Getenv("CONFORMANCE_REQUIRE_DEPS") == "1" {
+			t.Fatalf("deps missing (%s): run make deps-vt", vtGoMod)
+		}
+		t.Skip("vendored deps not present locally")
+	}
+	m := vtVLRequireRe.FindSubmatch(data)
+	if m == nil {
+		t.Fatalf("no VictoriaLogs require line in %s", vtGoMod)
+	}
+	vtPin := string(m[1])
+	// The Makefile pin is the short commit; VT's pseudo-version ends in the
+	// 12-char commit prefix (vX.Y.Z-0.<timestamp>-<commit>).
+	idx := strings.LastIndex(vtPin, "-")
+	if idx < 0 {
+		t.Fatalf("VictoriaTraces pins VictoriaLogs at %q, which is not a pseudo-version — the derivation rule needs revisiting", vtPin)
+	}
+	wantCommit := vtPin[idx+1:]
+	if d.VLCommitTraces != wantCommit {
+		t.Fatalf("VL_COMMIT_TRACES = %s, but VictoriaTraces %s pins VictoriaLogs at %s (commit %s).\n"+
+			"The traces-side VL pin is derived from VT's go.mod, never chosen — see the Makefile comment.",
+			d.VLCommitTraces, d.VTVersion, vtPin, wantCommit)
+	}
+}
+
+// TestVLSurface_LogsPinSupersetOfTracesPin guards the claim in DefaultDirs'
+// doc comment: DefaultDirs extracts the shared VictoriaLogs surface (routes,
+// engine tables, flags) from the logs-pin copy (deps/VictoriaLogs) only, even
+// though the traces module vendors its own copy at VL_COMMIT_TRACES.
+//
+// The two pins are deliberately allowed to differ — the logs binary tracks the
+// newest VictoriaLogs release, the traces binary follows whatever VictoriaTraces
+// pins — so item-for-item equality is the wrong assertion. What must hold is
+// containment: everything the traces-pin copy exposes is also in the logs-pin
+// copy, so extracting the logs pin alone never *misses* a surface. The reverse
+// direction (logs-only items, i.e. what the newer VictoriaLogs added) is
+// expected and reported, not failed; those items are covered by registry rows
+// carrying the version they appeared in.
+//
+// A failure here means the newer VictoriaLogs *removed* something the traces
+// binary still serves: the inventory would then silently under-report the
+// traces surface and DefaultDirs must start extracting both copies.
+func TestVLSurface_LogsPinSupersetOfTracesPin(t *testing.T) {
 	root, err := RepoRoot()
 	if err != nil {
 		t.Fatal(err)
@@ -136,41 +196,74 @@ func TestVLSurface_TracesPinEqualsLogsPin(t *testing.T) {
 		}
 	}
 
-	logsRoutes, err := ExtractVLRoutes(d.VL)
-	if err != nil {
-		t.Fatal(err)
+	extractors := []struct {
+		what string
+		fn   func(dir string) ([]Item, error)
+	}{
+		{"routes", ExtractVLRoutes},
+		{"engine tables", ExtractEngine},
+		{"flags", func(dir string) ([]Item, error) {
+			return ExtractFlags(dir, VLFlagPackages, LinkedIntoLH, "vl")
+		}},
 	}
-	tracesRoutes, err := ExtractVLRoutes(tracesVL)
-	if err != nil {
-		t.Fatal(err)
+	for _, e := range extractors {
+		t.Run(e.what, func(t *testing.T) {
+			logsItems, err := e.fn(d.VL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tracesItems, err := e.fn(tracesVL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(logsItems) == 0 || len(tracesItems) == 0 {
+				t.Fatalf("extraction produced no %s (logs=%d traces=%d) — the containment check would pass vacuously",
+					e.what, len(logsItems), len(tracesItems))
+			}
+			logsSet := make(map[Item]bool, len(logsItems))
+			for _, it := range logsItems {
+				logsSet[it] = true
+			}
+			var missing []string
+			for _, it := range tracesItems {
+				if !logsSet[it] {
+					missing = append(missing, it.Kind+":"+it.Name)
+				}
+			}
+			if len(missing) > 0 {
+				t.Fatalf("VL %s present at the traces pin (%s) but absent at the logs pin (%s): %s\n"+
+					"The logs pin must be a superset; otherwise the inventory under-reports the traces surface "+
+					"and DefaultDirs must extract both copies.",
+					e.what, d.VLCommitTraces, d.VLVersion, strings.Join(missing, ", "))
+			}
+			tracesSet := make(map[Item]bool, len(tracesItems))
+			for _, it := range tracesItems {
+				tracesSet[it] = true
+			}
+			var added []string
+			for _, it := range logsItems {
+				if !tracesSet[it] {
+					added = append(added, it.Kind+":"+it.Name)
+				}
+			}
+			sort.Strings(added)
+			t.Logf("VL %s: traces pin %s ⊆ logs pin %s; logs-only (newer upstream): %d%s",
+				e.what, d.VLCommitTraces, d.VLVersion, len(added), formatDelta(added))
+		})
 	}
-	if !reflect.DeepEqual(logsRoutes, tracesRoutes) {
-		t.Fatalf("VL routes differ between logs pin and traces pin:\nlogs:   %+v\ntraces: %+v", logsRoutes, tracesRoutes)
-	}
+}
 
-	logsEngine, err := ExtractEngine(d.VL)
-	if err != nil {
-		t.Fatal(err)
+// formatDelta renders the logs-only item list for the t.Logf above, capped so
+// a large upstream jump doesn't bury the test output.
+func formatDelta(added []string) string {
+	if len(added) == 0 {
+		return ""
 	}
-	tracesEngine, err := ExtractEngine(tracesVL)
-	if err != nil {
-		t.Fatal(err)
+	const max = 20
+	if len(added) > max {
+		return " [" + strings.Join(added[:max], ", ") + ", …]"
 	}
-	if !reflect.DeepEqual(logsEngine, tracesEngine) {
-		t.Fatalf("VL engine tables differ between logs pin and traces pin:\nlogs:   %+v\ntraces: %+v", logsEngine, tracesEngine)
-	}
-
-	logsFlags, err := ExtractFlags(d.VL, VLFlagPackages, LinkedIntoLH, "vl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	tracesFlags, err := ExtractFlags(tracesVL, VLFlagPackages, LinkedIntoLH, "vl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(logsFlags, tracesFlags) {
-		t.Fatalf("VL flags differ between logs pin and traces pin:\nlogs:   %+v\ntraces: %+v", logsFlags, tracesFlags)
-	}
+	return " [" + strings.Join(added, ", ") + "]"
 }
 
 // TestInventory_FullRoundTripEquality proves Write→Read reproduces the
