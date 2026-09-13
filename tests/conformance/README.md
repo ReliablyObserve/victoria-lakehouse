@@ -95,10 +95,15 @@ gaps** — that list is the backlog.
 
 A PR that adds or extends a Lakehouse feature is not mergeable without its catalog entry and
 the regenerated documents. `scripts/ci/check_registry_touch.sh` classifies a PR as a feature
-PR when it adds a `### Added` changelog bullet, adds or changes a route, handler or
-`lakehouse.*` flag in non-test Go under `internal/`, `cmd/` or `lakehouse-traces/`, or adds a
-new `lh.*` registry row — and fails it unless `tests/conformance/registry/features/**` also
-changed and the generated documents are current.
+PR when, compared with its merge base, it adds a bold lead-in to a `### Added` section of
+`CHANGELOG.md`, adds or removes a route, handler or `lakehouse.*` flag registration in non-test
+Go under `internal/`, `cmd/` or `lakehouse-traces/`, adds a YAML config key to a struct in
+`internal/config/`, or adds a new `lh.*` registry row — and fails it unless
+`tests/conformance/registry/features/**` also changed and the generated documents are current.
+The first three are set comparisons rather than diff greps, so moving text is never mistaken
+for a new capability: a bold bullet under `### Fixed` or `### Changed`, the release workflow
+moving the `[Unreleased]` bullets under a version heading, and a registration or config field
+that only moved within its file are not feature signals.
 
 Checklist:
 
