@@ -61,3 +61,11 @@ lakehouse:
           keep: "30d"
         cardinality:
           max_streams: 50000
+
+      # Tenant 3003:0 lives in its own bucket (bucket-per-tenant layout
+      # next to the shared-bucket prefix layout every other tenant uses),
+      # so the tenant read-scoping e2e covers both layouts on one stack.
+      # Nothing else writes as 3003:0.
+      "3003:0":
+        s3:
+          bucket: obs-archive-tenant-3003

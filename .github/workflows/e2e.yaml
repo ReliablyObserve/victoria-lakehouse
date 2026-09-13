@@ -134,6 +134,12 @@ jobs:
         env: *e2e-env
         run: go test -tags=e2e -v -count=1 -timeout=5m ./tests/e2e/ -run "TestStringTenant_" 2>&1 | tee -a e2e-results.txt
 
+      - name: Verify tenant read scoping (exact per-tenant counts, both binaries, prefix + bucket layouts)
+        env: *e2e-env
+        run: |
+          set -o pipefail
+          go test -tags=e2e -v -count=1 -timeout=15m ./tests/e2e/ -run "TestMultitenancy_TenantScope_" 2>&1 | tee -a e2e-results.txt
+
       - name: Run remaining E2E tests
         env: *e2e-env
         run: go test -tags=e2e -v -count=1 -timeout=10m ./tests/e2e/ -run "^(?!TestSmoke|TestMetrics_|TestEndpoint_|TestSetting_|TestBloomVerify_|TestStringTenant_)" 2>&1 | tee -a e2e-results.txt
