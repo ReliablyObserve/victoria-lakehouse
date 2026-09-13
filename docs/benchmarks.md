@@ -239,3 +239,9 @@ The nightly workflow (`.github/workflows/nightly-loadtest.yaml`) runs the full b
 6. Uploads `benchmark.json` and `matrix.json` as workflow artifacts
 
 The workflow fails if any latency benchmark exceeds its p95 target, preventing performance regressions from merging.
+
+## Related Benchmarks
+
+See [Full-scope S3 / scan benchmark](./benchmarks/full-scope-s3.md) for the LH vs
+VL/VT vs ClickHouse-over-S3 comparison, including the 2026-09 pre-upgrade
+performance baseline used as the perf gate for later PRs.

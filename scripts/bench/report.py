@@ -1,19 +1,54 @@
 #!/usr/bin/env python3
 """Render the unified benchmark JSON into a markdown report — SPLIT by logs vs
-traces, each with its own summary, plus an overall roll-up. Every latency is
-validated against an equivalent, non-empty result; cells that errored, came back
-empty, or diverge >5% from the baseline are flagged ✗ and excluded from the stats.
+traces, each with its own summary, plus an overall roll-up.
+
+Response validation (v3 validation): a cell is only meaningful when EVERY timed
+iteration returned a correct, valid response — a fast wrong/empty/error
+answer is a broken response, never a latency sample. `run.sh` now validates
+each iteration itself (HTTP 2xx, parseable, non-empty unless the query is a
+documented miss scenario, stable/non-flapping) and excludes invalid
+iterations from p50/p95/p99, recording `iters_valid`/`iters_invalid`/
+`invalid_reasons` per cell.
+
+This report adds the CROSS-SYSTEM check on top: a cell is `✗` when
+`iters_invalid > 0` (own iterations were bad), or when its result diverges
+from the baseline system's. `run.sh` computes every system's window bounds
+for a given (signal, query, range, latency) cell ONCE and shares them across
+systems, and the seed is a static one-time backfill with no live ingest — so
+with byte-identical bounds, every system querying the same cell MUST return
+an EXACTLY EQUAL result; any difference is a real divergence, not window
+drift, and this report requires exact equality (no tolerance). A group-by
+result (`count_by_service`, `high_card`) is `rows=<groups>;hash=<H>` (the
+sorted (group, count) pairs hashed) so a same-total-but-different-groups
+answer is still caught, not just the total.
+
+`scan` specifically: VictoriaLogs documents that `limit N` without an
+explicit `sort` returns an arbitrary subset of matching rows once more than N
+rows match, so per-iteration identity is never meaningful for a truncated
+scan — `run.sh` instead validates each iteration by membership against a
+per-cell reference window (one unlimited request per system, same shared
+bounds) and records `window_rows`/`window_hash` (the FULL population's row
+count / sha256 of its sorted key set) alongside the timed `result`. This
+report compares `scan` cells via `window_rows`+`window_hash` (exact
+equality, all three systems — ClickHouse's `scan` now carries a real,
+comparable key too, see run.sh's `_prep_body`) rather than the per-iteration
+result, since a valid truncated scan's own result legitimately varies run to
+run.
 
 Usage: report.py <raw.json> <out.md>
 """
 import json
+import re
 import statistics
 import sys
 from collections import defaultdict
 
 BASELINE = {"logs": "victorialogs", "traces": "victoriatraces"}
 ENGINES = ["lakehouse", "clickhouse"]
-TOL = 0.05
+# Query kinds whose CORRECT answer can legitimately be empty/zero (a
+# cross-signal lookup that doesn't correlate) — must match run.sh's
+# MISS_QUERIES so a documented miss isn't flagged as a broken/empty baseline.
+MISS_QUERIES = {"trace_lookup"}
 
 
 def num(v):
@@ -27,23 +62,177 @@ def as_int(v):
         return None
 
 
-def cell_status(row, base_result):
+_ROWS_RE = re.compile(r'^rows=(\d+)(?:;total=(\d+))?(?:;hash=([0-9a-f]+))?$')
+_SPANS_RE = re.compile(r'^spans=(\d+)$')
+
+
+def parse_result(v):
+    """Parse a run.sh `result` value into
+    {"count": int, "total": int|None, "hash": str|None}.
+
+    Formats: plain integer (scalar count/filter), "rows=N" (scan, CH) or
+    "rows=N;hash=H" (scan, non-CH — a comparable row-set key), "rows=N" or
+    "rows=N;total=T;hash=H" (group-by — N is the group count, T the sum of
+    the per-group counts, independently checkable against the hashed pairs),
+    "spans=N" (trace_by_id/trace_lookup). Returns None if unparseable.
+    """
+    if v is None:
+        return None
+    m = _ROWS_RE.match(v)
+    if m:
+        total = int(m.group(2)) if m.group(2) is not None else None
+        return {"count": int(m.group(1)), "total": total, "hash": m.group(3)}
+    m = _SPANS_RE.match(v)
+    if m:
+        return {"count": int(m.group(1)), "total": None, "hash": None}
+    n = as_int(v)
+    if n is not None:
+        return {"count": n, "total": None, "hash": None}
+    return None
+
+
+def valid_str(row):
+    """'k/N' validity string for one system's cell (falls back to the older
+    iters/errors fields for pre-validation JSON so old raw results still render)."""
+    if not row:
+        return "0/0"
+    v, iv = row.get("iters_valid"), row.get("iters_invalid")
+    if v is None:
+        v = row.get("iters", 0) or 0
+        iv = row.get("errors", 0) or 0
+    return f"{v or 0}/{(v or 0) + (iv or 0)}"
+
+
+def invalid_note(row):
+    v, iv = row.get("iters_valid"), row.get("iters_invalid")
+    if v is None:
+        v = row.get("iters", 0) or 0
+        iv = row.get("errors", 0) or 0
+    reasons = row.get("invalid_reasons") or "unknown"
+    return f"{iv or 0}/{(v or 0) + (iv or 0)} invalid: {reasons}"
+
+
+def render_result(row):
+    """The `[res]` bracket text for a cell. A `scan` row (has `window_rows`)
+    shows `rows=<returned>/<window_rows>[;window=<hash8>]` — the returned
+    (possibly truncated) row count over the reference window's TRUE row
+    count, plus a short window-hash when one is carried. A group-by row
+    shows `rows=<groups>[;total=<T>][;hash=<hash8>]` (the shortened hash, for
+    table readability, and the sum-of-counts total when carried — a
+    "same total, different groups" claim is then checkable straight from the
+    rendered cell). Everything else shows its raw `result` string."""
+    if not row:
+        return None
+    wrows = row.get("window_rows")
+    result = row.get("result")
+    rp = parse_result(result)
+    if wrows is not None:
+        rcount = rp["count"] if rp else "?"
+        whash = row.get("window_hash")
+        if whash:
+            return f"rows={rcount}/{wrows};window={whash[:8]}"
+        return f"rows={rcount}/{wrows}"
+    if rp and (rp["hash"] or rp["total"] is not None):
+        out = f"rows={rp['count']}"
+        if rp["total"] is not None:
+            out += f";total={rp['total']}"
+        if rp["hash"]:
+            out += f";hash={rp['hash'][:8]}"
+        return out
+    return result
+
+
+def cell_status(row, brow):
+    """A system's cell is invalid when: it's missing; its OWN iterations
+    weren't all valid (`iters_invalid > 0`); or its result diverges from the
+    baseline's. Every system in a cell now queries the SAME shared window
+    bounds (run.sh computes them once per cell, not once per system), and
+    the seed is a static backfill with no live ingest — so divergence is
+    checked by EXACT equality, not a tolerance; any difference is real.
+
+    For a `scan` row (carries `window_rows`), divergence is checked against
+    the reference WINDOW, not the per-iteration `result` — a truncated
+    scan's own result legitimately varies run to run (see the module
+    docstring), but the window is the full, untruncated population and IS
+    directly comparable: `window_rows` must be exactly equal, and — when
+    both sides carry a `window_hash` — so must the hash (every system's
+    scan carries one now, ClickHouse included).
+
+    For any other row (including group-by's `rows=<groups>;hash=<H>`), the
+    same rule applies to `result`'s count/hash."""
     if row is None:
         return False, "missing"
-    if row.get("iters", 0) == 0:
-        return False, "errored"
-    if (row.get("avg_bytes", 0) or 0) == 0:
-        return False, "empty (0 bytes)"
-    r, b = as_int(row.get("result")), as_int(base_result)
-    if r is not None and b is not None:
-        # Strict: a 0-vs-nonzero result is a divergence too (don't let base==0
-        # silently pass mismatched cells — that hid a broken traces-scan compare).
-        if b == 0:
-            if r != 0:
-                return False, f"result {r} vs base 0"
-        elif abs(r - b) / b > TOL:
+    iv = row.get("iters_invalid")
+    if iv is not None:
+        if iv > 0:
+            return False, invalid_note(row)
+    else:
+        # pre-validation JSON: fall back to the old errored/empty checks.
+        if row.get("iters", 0) == 0:
+            return False, "errored"
+        if (row.get("avg_bytes", 0) or 0) == 0:
+            return False, "empty (0 bytes)"
+
+    wrows, bwrows = row.get("window_rows"), (brow or {}).get("window_rows")
+    if wrows is not None or bwrows is not None:
+        if wrows is None or bwrows is None:
+            return False, "window_rows missing"
+        if wrows != bwrows:
+            return False, f"window_rows {wrows} vs base {bwrows}"
+        whash, bwhash = row.get("window_hash"), (brow or {}).get("window_hash")
+        if whash is not None and bwhash is not None and whash != bwhash:
+            return False, f"same window ({wrows} rows), different rows (hash mismatch)"
+        return True, ""
+
+    rp = parse_result(row.get("result"))
+    bp = parse_result((brow or {}).get("result"))
+    if rp is not None and bp is not None:
+        r, b = rp["count"], bp["count"]
+        if r != b:
             return False, f"result {r} vs base {b}"
+        if rp["hash"] is not None and bp["hash"] is not None and rp["hash"] != bp["hash"]:
+            return False, f"same count ({r}), different rows (hash mismatch)"
     return True, ""
+
+
+def base_status(brow, query):
+    """The baseline (VL/VT) cell itself must be a real, valid result — a
+    baseline that errored/flapped/returned 0 (unless `query` is a documented
+    miss scenario) makes every ratio in the row meaningless, so every engine
+    cell in that row is invalid (reason "baseline-empty"/its own invalid
+    note), not just checked against a bogus baseline. For a `scan` row,
+    "empty" means the reference window (`window_rows`) is empty, not the
+    (possibly truncated) per-iteration `result`."""
+    if not brow:
+        return False, "baseline-empty (missing)"
+    biv = brow.get("iters_invalid")
+    if biv is not None and biv > 0:
+        return False, f"baseline-{invalid_note(brow)}"
+    wrows = brow.get("window_rows")
+    if wrows is not None:
+        if wrows == 0 and query not in MISS_QUERIES:
+            return False, "baseline-empty (window_rows=0)"
+        if (brow.get("avg_bytes", 0) or 0) == 0 and query not in MISS_QUERIES:
+            return False, "baseline-empty (avg_bytes=0)"
+        return True, ""
+    bp = parse_result(brow.get("result"))
+    if bp is None:
+        return False, "baseline-empty (result=0/empty)"
+    if bp["count"] == 0 and query not in MISS_QUERIES:
+        return False, "baseline-empty (result=0/empty)"
+    if (brow.get("avg_bytes", 0) or 0) == 0 and query not in MISS_QUERIES:
+        return False, "baseline-empty (avg_bytes=0)"
+    return True, ""
+
+
+def shape_flag(row, brow):
+    """⚠ shape: an engine's avg_bytes differs from the baseline's by more than
+    10x either way — same row count, wildly different payload shape."""
+    eb = (row.get("avg_bytes", 0) or 0) if row else 0
+    bb = (brow.get("avg_bytes", 0) or 0) if brow else 0
+    if eb and bb and (eb / bb >= 10 or bb / eb >= 10):
+        return " ⚠ shape"
+    return ""
 
 
 def ratio_str(v, base):
@@ -69,6 +258,7 @@ def main():
     raw, out = sys.argv[1], sys.argv[2]
     with open(raw) as f:
         rows = json.load(f)
+    disk_profile = next((r["disk_profile"] for r in rows if r.get("disk_profile")), "unspecified")
     g = defaultdict(dict)
     for r in rows:
         g[(r["signal"], r["query"], r["range"], r["latency_ms"])][r["system"]] = r
@@ -85,36 +275,53 @@ def main():
         lh_ratios, ch_speedups, by_query = [], [], defaultdict(list)
         n_valid = n_invalid = 0
         table = [
-            "| query | range | S3 lat | baseline p95 [res] | LH | CH |",
-            "|---|---|---:|---:|---|---|",
+            "| query | range | S3 lat | baseline p95/p90 [res] | valid | LH | valid | CH | valid |",
+            "|---|---|---:|---:|---:|---|---:|---|---:|",
         ]
         for key in sorted(k for k in g if k[0] == signal):
             _, query, rng, lat = key
             sysd = g[key]
             brow = sysd.get(base_sys, {})
             bp = num(brow.get("p95_ms"))
-            bres = brow.get("result")
-            cells = [f"{bp} [{bres}]"]
+            bp90 = num(brow.get("p90_ms"))
+            cells = [f"{bp}/{bp90} [{render_result(brow)}]"]
+            valids = [valid_str(brow)]
+            b_ok, b_note = base_status(brow, query)
+            lh_ok = False
             for eng in ENGINES:
                 row = sysd.get(eng)
-                ok, note = cell_status(row, bres)
+                if not b_ok:
+                    ok, note = False, b_note
+                else:
+                    ok, note = cell_status(row, brow)
                 p = num(row.get("p95_ms")) if row else None
+                p90 = num(row.get("p90_ms")) if row else None
+                valids.append(valid_str(row))
+                if eng == "lakehouse":
+                    lh_ok = ok
                 if not ok:
                     cells.append(f"✗ {note}")
                     invalid.append((signal, query, rng, lat, eng, note))
                     if eng == "lakehouse":
                         n_invalid += 1
                 else:
-                    cells.append(f"{p} ({ratio_str(p, bp)}) [{row.get('result')}]")
+                    cells.append(f"{p}/{p90} ({ratio_str(p, bp)}) [{render_result(row)}]{shape_flag(row, brow)}")
                     if eng == "lakehouse" and p and bp:
                         n_valid += 1
                         lh_ratios.append(p / bp)
                         by_query[query].append(p / bp)
-                    if eng == "clickhouse" and p:
+                    if eng == "clickhouse" and p and lh_ok:
+                        # Only a meaningful "how much faster is LH than CH"
+                        # when LH's own cell is valid — an invalid LH p95
+                        # (e.g. its baseline flapped) isn't a real speedup
+                        # basis.
                         lhp = num(sysd.get("lakehouse", {}).get("p95_ms"))
                         if lhp:
                             ch_speedups.append(p / lhp)
-            table.append(f"| {query} | {rng} | {lat}ms | {cells[0]} | {cells[1]} | {cells[2]} |")
+            table.append(
+                f"| {query} | {rng} | {lat}ms | {cells[0]} | {valids[0]} | "
+                f"{cells[1]} | {valids[1]} | {cells[2]} | {valids[2]} |"
+            )
         sections[signal] = table
         overall[signal] = dict(
             n_valid=n_valid, n_invalid=n_invalid,
@@ -128,7 +335,9 @@ def main():
     tot_v = sum(o["n_valid"] for o in overall.values())
     tot_i = sum(o["n_invalid"] for o in overall.values())
     lines.append(f"- **{tot_v} valid LH cells, {tot_i} invalid** (excluded). "
-                 f"Baseline = VL/VT on disk (gp3-simulated); LH + ClickHouse read the same S3 Parquet.")
+                 f"Baseline = VL/VT on disk (disk profile: {disk_profile}); "
+                 f"LH + ClickHouse read the same S3 Parquet. Medians below use only "
+                 f"fully valid cells (every system's iterations 20/20, results agreeing).")
     for signal in signals:
         o = overall[signal]
         lh = f"median **{o['lh_med']:.1f}×** baseline (p90 {o['lh_p90']:.1f}×, best {o['lh_best']:.1f}×)" if o["lh_med"] else "—"
