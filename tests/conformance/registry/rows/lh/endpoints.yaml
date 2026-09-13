@@ -276,7 +276,7 @@
   compare: { type: count }
   layers: [api]
   pending: true
-  notes: "After the background rewriter processes the tombstone, a query over the same window must still return every row the delete did not match, and none that it did. The rewritten object must be registered in the manifest (so the orphan sweep does not reclaim it) and the superseded key must be gone from it. Covered at unit level by internal/delete/rewrite_manifest_test.go (TestRewrite_PublishesReplacementIntoManifest) and internal/delete/rewrite_crash_test.go (TestRewriteCrashMatrix); this row is the end-to-end expectation the runner will execute."
+  notes: "After the background rewriter processes the tombstone, a query over the same window must still return every row the delete did not match, exactly once, and none that it did. The rewritten object must be registered in the manifest (so the orphan sweep does not reclaim it) and the superseded key must be gone from it, including when a compaction of the same file races the rewrite. Covered at unit level by internal/delete/rewrite_manifest_test.go (TestRewrite_PublishesReplacementIntoManifest), internal/delete/rewrite_crash_test.go (TestRewriteCrashMatrix), internal/compaction/delete_race_test.go (TestDeleteRace_*) and internal/compaction/delete_property_test.go (TestDeleteLifecycleProperties); this row is the end-to-end expectation the runner will execute."
 
 - id: lh.delete.hide_survives_crash
   title: "LH hide-mode delete — suppression survives a non-graceful restart"
@@ -290,4 +290,4 @@
   compare: { type: count }
   layers: [api, chaos]
   pending: true
-  notes: "Create a hide-mode tombstone, kill the pod without a graceful shutdown, restart it, and query the same window: the suppressed rows must still be absent, and the deleted value must still be absent from field_values. Covered at unit level by internal/delete/tombstone_durability_test.go (TestTombstoneDurability_SurvivesACrashViaDisk / ViaS3 / RestoreUnionsDiskAndS3) and internal/storage/parquets3/fields_tombstones_test.go (TestFieldValues_TombstonedValueDisappears); this row is the end-to-end expectation the runner will execute."
+  notes: "Create a hide-mode tombstone, kill the pod without a graceful shutdown, restart it, and query the same window: the suppressed rows must still be absent, the deleted value must still be absent from field_values, and removing the tombstone afterwards must bring the rows back even if a compaction ran in between. Covered at unit level by internal/delete/tombstone_durability_test.go (TestTombstoneDurability_SurvivesACrashViaDisk / ViaS3 / RestoreUnionsDiskAndS3), internal/storage/parquets3/fields_tombstones_test.go (TestFieldValues_TombstonedValueDisappears) and internal/compaction/tombstones_test.go (TestCompaction_HideModeRowsAreCarriedForward); this row is the end-to-end expectation the runner will execute."

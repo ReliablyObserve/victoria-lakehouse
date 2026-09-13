@@ -333,6 +333,250 @@
       "title": "Singleflight Dedup",
       "type": "timeseries",
       "targets": [{ "expr": "rate(lakehouse_cache_singleflight_dedup_total{instance=~\"$instance\"}[5m])", "legendFormat": "dedup/s" }]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 59
+      },
+      "id": 70,
+      "title": "Deletes",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 60
+      },
+      "id": 71,
+      "title": "Tombstones (active / retired)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "lakehouse_delete_tombstones_active{instance=~\"$instance\"}",
+          "legendFormat": "active"
+        },
+        {
+          "expr": "rate(lakehouse_delete_tombstones_completed_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "retired/s"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 60
+      },
+      "id": 72,
+      "title": "Rewrite Outcomes",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "rate(lakehouse_delete_rewrite_manifest_updated_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "published"
+        },
+        {
+          "expr": "rate(lakehouse_delete_rewrite_superseded_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "superseded by compaction"
+        },
+        {
+          "expr": "rate(lakehouse_delete_rewrite_manifest_errors_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "manifest errors"
+        },
+        {
+          "expr": "rate(lakehouse_delete_rewrite_errors_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "rewrite errors"
+        },
+        {
+          "expr": "rate(lakehouse_delete_rewrite_old_object_errors_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "superseded object not deleted"
+        },
+        {
+          "expr": "rate(lakehouse_delete_rewrite_skipped_no_manifest_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "refused: no manifest"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 60
+      },
+      "id": 73,
+      "title": "Tombstone Durability",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (target) (rate(lakehouse_delete_tombstone_persist_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "writes {{target}}"
+        },
+        {
+          "expr": "sum by (target) (rate(lakehouse_delete_tombstone_persist_errors_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "errors {{target}}"
+        },
+        {
+          "expr": "lakehouse_delete_tombstone_persist_pending{instance=~\"$instance\"}",
+          "legendFormat": "owed to S3"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 68
+      },
+      "id": 74,
+      "title": "Rows and Files Reaped",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "rate(lakehouse_delete_rows_suppressed_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "rows hidden at query time"
+        },
+        {
+          "expr": "rate(lakehouse_delete_compaction_rows_removed_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "rows removed by compaction"
+        },
+        {
+          "expr": "rate(lakehouse_delete_compaction_keys_reaped_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "files reaped by compaction"
+        },
+        {
+          "expr": "rate(lakehouse_delete_tombstone_keys_discovered_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "files discovered in range"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 68
+      },
+      "id": 75,
+      "title": "Field Enumeration Under Tombstones",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (endpoint) (rate(lakehouse_delete_fields_scan_fallback_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "scan fallback {{endpoint}}"
+        },
+        {
+          "expr": "sum by (result) (rate(lakehouse_delete_catalog_rebuilds_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "catalog rebuild {{result}}"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 68
+      },
+      "id": 76,
+      "title": "Consistency Checks",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (kind) (increase(lakehouse_delete_startup_inconsistencies_total{instance=~\"$instance\"}[1h]))",
+          "legendFormat": "self-check {{kind}}"
+        },
+        {
+          "expr": "rate(lakehouse_compaction_publish_conflicts_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "compaction publish conflicts/s"
+        }
+      ]
     }
   ],
   "schemaVersion": 39,

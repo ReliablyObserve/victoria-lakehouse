@@ -53,7 +53,7 @@ flowchart LR
 | **S3 unreachable** | Buffer keeps accepting (bounded by `buffer_retention` + disk); flush retries with backoff. | Same; legacy staging grows in memory, backpressure at `max_buffer_bytes`. | Backpressure at `max_buffer_bytes`. |
 | **Already-flushed data** | Immutable Parquet on S3; survives everything. | Same. | Same. |
 | **A delete (tombstone)** | Written through to local disk synchronously and to S3 in the same call before the API returns; retried until S3 confirms. Survives `kill -9`. | Same. | Same. |
-| **An in-progress delete rewrite** | Two-phase (prepare → publish → commit): a crash at any step leaves either the original or the replacement manifested, never neither. See §3.1. | Same. | Same. |
+| **An in-progress delete rewrite** | Two-phase (prepare → publish → commit) with a conditional publish: a crash or a concurrent compaction at any step leaves exactly one manifested copy of every kept row. See §3.1. | Same. | Same. |
 
 > **⚠️ Current default has a gap.** The buffer-authoritative flip
 > (`buffer_flush_enabled`) is **off by default** and the LH WAL is deleted. So in
@@ -112,18 +112,26 @@ self-check compares the result against the manifest and counts any disagreement
 
 **Rewrites.** Removing rows from a Parquet object means writing a filtered
 replacement and dropping the original. The manifest is swapped between the two in
-a single atomic step, and the original is never deleted before that swap lands:
+a single atomic step — and only if the original is still registered — and the
+original is never deleted before that swap lands:
 
-| crash point | state left behind | how it converges |
+| crash point / interleaving | state left behind | how it converges |
 |---|---|---|
 | after the replacement is uploaded | original still manifested; replacement unmanifested | the orphan sweep reclaims the replacement after `orphan_ttl`; the tombstone is retried |
 | after the manifest swap | replacement manifested; original unmanifested | the orphan sweep reclaims the original; the kept rows are served from the replacement |
-| after the original is deleted, before the tombstone records it | replacement manifested; tombstone still lists the key as pending | the scheduler sees the key is gone from the manifest, marks it reaped and completes the tombstone |
+| after the original is deleted, before the tombstone records it | replacement manifested; tombstone still lists the key as pending | the scheduler sees the key is gone, marks it reaped, re-reads the files in the range and completes the tombstone |
+| a compaction merged the original between the rewrite's read and its publish | the compacted output is manifested; the rewrite's swap is refused | the rewrite discards its replacement; the tombstone follows the rows into the compacted output and rewrites it if it still holds them |
+| a rewrite replaced a source between a compaction's read and its publish | the replacement is manifested; the compaction's swap is refused | the compaction discards its output and re-selects on the next tick |
+| a compaction published its output, then died before updating the tombstone | the output holds the tombstone's rows; nothing on the tombstone names it | before retiring, the scheduler re-reads every file overlapping the range, finds the output and rewrites it |
 
-Every one of these converges without operator action, and none of them can leave
-a kept row in no readable object. The one thing that would break this is
-rewriting without a manifest to publish into, so the rewriter refuses to run in
-that configuration rather than orphaning its output.
+Every one of these converges without operator action; none can leave a kept row
+in no readable object, store it twice, or retire a tombstone while a file still
+holds its rows. Compaction never physically removes rows of a `hide` tombstone
+or of one still inside `rewrite_delay`, so an un-delete always restores them.
+The one thing that would break this is rewriting without a manifest to publish
+into, so the rewriter refuses to run in that configuration rather than
+orphaning its output. Each row of this table is a test in
+`internal/delete/rewrite_crash_test.go` or `internal/compaction/delete_race_test.go`.
 
 ---
 

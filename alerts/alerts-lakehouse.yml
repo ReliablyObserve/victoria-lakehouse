@@ -100,3 +100,55 @@ groups:
         annotations:
           summary: "High peer cache error rate"
           description: "Peer cache error rate is {{ $value | humanizePercentage }}. Check network connectivity between pods."
+
+  - name: lakehouse-deletes
+    rules:
+      - alert: LakehouseTombstoneS3Backlog
+        expr: lakehouse_delete_tombstone_persist_pending > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tombstone records are not reaching S3"
+          description: "{{ $value }} tombstone record(s) exist only on the local disk. They survive a restart on this node but not a pod move or volume loss. Check S3 write permissions for the _tombstones/ prefix."
+
+      - alert: LakehouseTombstonePersistenceDisabled
+        expr: increase(lakehouse_delete_startup_inconsistencies_total{kind="persistence_disabled"}[1h]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Tombstones have no durable target"
+          description: "The delete self-check found write-through persistence disabled. Every delete on this instance is lost on an ungraceful restart."
+
+      - alert: LakehouseDeleteRewriteManifestErrors
+        expr: increase(lakehouse_delete_rewrite_manifest_errors_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Delete rewrites are failing to publish into the manifest"
+          description: "{{ $value }} rewrite(s) could not be published in 15 minutes. The superseded files are kept and the rewrites retry, so no rows are lost, but deletes are not completing."
+
+      - alert: LakehouseDeleteRewriteRefusedNoManifest
+        expr: increase(lakehouse_delete_rewrite_skipped_no_manifest_total[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Delete rewrites refused: no manifest wired into the scheduler"
+          description: "Permanent and auto deletes stay hidden at query time but are never physically removed. This is a deployment wiring problem."
+
+      - alert: LakehouseDeleteStateInconsistent
+        expr: sum by (kind) (increase(lakehouse_delete_startup_inconsistencies_total{kind!="persistence_disabled"}[1h])) > 0
+        labels:
+          severity: info
+        annotations:
+          summary: "Tombstones and manifest disagreed at startup ({{ $labels.kind }})"
+          description: "The delete self-check found restored tombstones and the restored manifest describing different moments. The rewrite scheduler converges these; alert only if it recurs on every boot."
+
+      - alert: LakehouseCompactionPublishConflicts
+        expr: rate(lakehouse_compaction_publish_conflicts_total[30m]) > 0.01
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Compactions repeatedly abandoned at publish"
+          description: "Compaction keeps finding its sources replaced mid-merge ({{ $value }}/s). Occasional conflicts with delete rewrites are expected; a sustained rate means two writers own the same partitions."

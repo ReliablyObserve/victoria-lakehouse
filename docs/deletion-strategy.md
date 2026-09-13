@@ -54,6 +54,12 @@ conflict-resolution rule and the boot-time self-check are documented in
 [Operations → Tombstone Management](operations.md#tombstone-management) and
 [Durability §3.1](durability.md#31-deletes-and-rewrites).
 
+**The un-delete window is honoured everywhere.** A `hide` tombstone's rows are
+never physically removed, and a `permanent`/`auto` tombstone's rows are removed
+only after `rewrite_delay` — by the rewriter, and equally by compaction, which
+otherwise carries the rows forward into its merged output and hands the
+tombstone over to that output.
+
 ### Tier 2: Rewrite (S3 Standard Only)
 
 For data still on S3 Standard (typically <90 days old), physical deletion is cheap:
