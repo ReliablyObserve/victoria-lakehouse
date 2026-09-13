@@ -56,40 +56,56 @@ func TestTenantParity_TenantCountsSumToTotal(t *testing.T) {
 }
 
 // TestTenantParity_PerTenantQueryReturnsOnlyOwnedData is the security
-// invariant: a query with tenant X's header must NEVER return rows
-// belonging to tenant Y. A regression here is a data leak — pinning
-// it explicitly so the issue surfaces in CI rather than in
-// customer support.
+// invariant: a query with tenant X's header must return exactly tenant X's
+// rows — never rows belonging to tenant Y.
+//
+// The reference is the hot tier (VT), which scopes by tenant natively: for
+// every tenant the cold tier knows, the cold scoped count must EQUAL the hot
+// scoped count over the same settled window. On top of that, when two or more
+// tenants hold data, no single tenant's count may reach the sum of all
+// tenants — which is exactly what a read that ignores the tenant returns.
+//
+// (An earlier version compared each tenant's count with the sum of the same
+// counts, which can never fail.)
 func TestTenantParity_PerTenantQueryReturnsOnlyOwnedData(t *testing.T) {
 	tenants := listTenants(t, lhtBaseURL)
 	if len(tenants) < 2 {
 		t.Skipf("need at least 2 tenants, got %d", len(tenants))
 	}
 
-	// For each tenant, query for spans and assert resource_attr:service.name
-	// matches services known to that tenant. Without an audit channel
-	// we can't directly inspect which tenant wrote which row, but we
-	// CAN assert the per-tenant count under a tenant header equals
-	// the count we get when filtering by that tenant's account_id field.
-	// Compute "true total across ALL tenants" by summing each tenant's
-	// scoped count. Each scoped count must be a strict subset of that
-	// sum — never exceeding it, since a tenant only owns its share.
-	var sumScoped int
-	scopedCounts := make(map[string]int, len(tenants))
-	for _, te := range tenants {
-		key := te.AccountID + ":" + te.ProjectID
-		scopedCounts[key] = withTenantHeader(t, lhtBaseURL,
-			"/select/logsql/stats_query",
-			url.Values{"query": {"_time:1h * | stats count() as n"}},
-			te.AccountID, te.ProjectID,
-		)
-		sumScoped += scopedCounts[key]
+	// A window that ended a few minutes ago, so both tiers have settled.
+	now := time.Now()
+	params := url.Values{
+		"query": {"* | stats count() as n"},
+		"start": {fmt.Sprintf("%d", now.Add(-65*time.Minute).UnixNano())},
+		"end":   {fmt.Sprintf("%d", now.Add(-5*time.Minute).UnixNano())},
 	}
+
+	var sumCold, sumHot, withData int
+	cold := make(map[string]int, len(tenants))
 	for _, te := range tenants {
 		key := te.AccountID + ":" + te.ProjectID
-		if scopedCounts[key] > sumScoped {
-			t.Errorf("tenant %s scoped count %d > sum-of-all-tenants %d — accounting bug",
-				key, scopedCounts[key], sumScoped)
+		cold[key] = withTenantHeader(t, lhtBaseURL, "/select/logsql/stats_query", params, te.AccountID, te.ProjectID)
+		hot := withTenantHeader(t, vtBaseURL, "/select/logsql/stats_query", params, te.AccountID, te.ProjectID)
+		if cold[key] != hot {
+			t.Errorf("tenant %s: cold scoped count %d, hot scoped count %d — the cold tier must answer "+
+				"a tenant-scoped read with exactly that tenant's rows", key, cold[key], hot)
+		}
+		sumCold += cold[key]
+		sumHot += hot
+		if cold[key] > 0 {
+			withData++
+		}
+	}
+	if sumCold != sumHot {
+		t.Errorf("sum over tenants: cold %d, hot %d", sumCold, sumHot)
+	}
+	if withData >= 2 {
+		for key, n := range cold {
+			if n >= sumCold {
+				t.Errorf("tenant %s scoped count %d reaches the all-tenant total %d although other tenants hold data — "+
+					"the read is not scoped to the tenant", key, n, sumCold)
+			}
 		}
 	}
 }
@@ -227,11 +243,16 @@ func withTenantHeader(t *testing.T, base, path string, params url.Values, acc, p
 	}
 	req.Header.Set("AccountID", acc)
 	req.Header.Set("ProjectID", proj)
+	// Transport errors, non-200 answers and undecodable bodies FAIL the test.
+	// Mapping them to 0 made "unknown tenant returns 0 rows" pass on an error.
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return 0
+		t.Fatalf("GET %s as tenant %s:%s: %v", u, acc, proj, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s as tenant %s:%s: status %d", u, acc, proj, resp.StatusCode)
+	}
 	var d struct {
 		Data struct {
 			Result []struct {
@@ -240,7 +261,7 @@ func withTenantHeader(t *testing.T, base, path string, params url.Values, acc, p
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
-		return 0
+		t.Fatalf("decode %s as tenant %s:%s: %v", u, acc, proj, err)
 	}
 	if len(d.Data.Result) == 0 {
 		return 0
