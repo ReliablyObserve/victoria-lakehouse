@@ -211,8 +211,9 @@ count as a latency.
 ## The daily sync probe
 
 `.github/workflows/upstream-check.yaml` runs `scripts/ci/upstream_sync_probe.sh` every day at
-08:00 UTC and on demand. It performs steps 1–5 and the automated parts of 7–9 on a throwaway
-clone, and reports what they cost before anyone starts the bump.
+08:00 UTC and on demand. On a throwaway clone it performs steps 1, 2, 4 and 5, checks every
+patch of step 3 (it does not regenerate any), runs the automated gates of steps 7–9, and
+reports what the bump would cost before anyone starts it.
 
 ### What it does
 
