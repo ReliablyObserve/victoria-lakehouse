@@ -20,6 +20,11 @@ func TestParity_Response(t *testing.T) {
 		if len(sutRows) == 0 {
 			t.Fatal("SUT returned 0 JSONL rows")
 		}
+		// Field hygiene: neither side may carry "<null>" placeholders or
+		// storage-internal column names. See TestParity_ColdRowFields for the
+		// full hot/cold field-vocabulary comparison.
+		assertNoInternalFields(t, "hot logs", refRows)
+		assertNoInternalFields(t, "cold logs", sutRows)
 		compareParity(t, pc, ref, sut)
 	})
 
