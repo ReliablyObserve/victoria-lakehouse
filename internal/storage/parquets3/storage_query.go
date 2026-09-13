@@ -216,10 +216,16 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
 		remaining := s.manifestFastPath(ctx, files, startNs, endNs, plan, filteredWriteBlock)
+		// The fast path stops emitting as soon as the query's max-rows or
+		// live-bytes budget cancels the context. Surface that the way the scan
+		// branch does (fileWorkerLoop parks ctx.Err() in firstErr, which
+		// RunQuery returns below): a count that stopped early is an ERROR, never
+		// a short number handed back as if it were the whole answer.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if len(remaining) == 0 {
-			if n := rowsEmitted.Load(); n > 0 {
-				metrics.QueryRowsTotal.Add(int(n))
-			}
+			recordQueryRows(&rowsEmitted)
 			s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 			return nil
 		}
@@ -234,9 +240,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	if aggField := countByPushdownField(queryStr, pipeFields, filter); aggField != "" && !hasTombstones {
 		remaining := s.manifestCountFastPath(files, startNs, endNs, aggField, filteredWriteBlock)
 		if len(remaining) == 0 {
-			if n := rowsEmitted.Load(); n > 0 {
-				metrics.QueryRowsTotal.Add(int(n))
-			}
+			recordQueryRows(&rowsEmitted)
 			s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 			return nil
 		}
@@ -312,9 +316,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}
 	}
 
-	if n := rowsEmitted.Load(); n > 0 {
-		metrics.QueryRowsTotal.Add(int(n))
-	}
+	recordQueryRows(&rowsEmitted)
 
 	return nil
 }
@@ -376,6 +378,15 @@ func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.Fil
 			continue
 		}
 		s.processOneFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, filteredWriteBlock)
+	}
+}
+
+// recordQueryRows adds the rows a query emitted to QueryRowsTotal. Shared by
+// RunQuery's three exits (manifest fast path, count pushdown, full scan), which
+// also keeps RunQuery inside the gocyclo budget.
+func recordQueryRows(rowsEmitted *atomic.Int64) {
+	if n := rowsEmitted.Load(); n > 0 {
+		metrics.QueryRowsTotal.Add(int(n))
 	}
 }
 

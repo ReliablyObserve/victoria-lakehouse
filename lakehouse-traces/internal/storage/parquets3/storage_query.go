@@ -223,6 +223,18 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
 		remaining := s.manifestFastPath(ctx, files, startNs, endNs, plan, filteredWriteBlock)
+		// The fast path stops emitting as soon as the query's budget cancels the
+		// context. Surface that exactly the way THIS module's scan branch does
+		// (see the firstErr handling below): a cancellation is an error, except
+		// when it came from the max-rows limit, which the traces module treats
+		// as a deliberate truncation because its Jaeger/Tempo search handlers
+		// use that limit as a result cap. The logs module has no such caller and
+		// returns the error unconditionally there.
+		if err := ctx.Err(); err != nil {
+			if maxRows <= 0 || rowsEmitted.Load() < maxRows {
+				return err
+			}
+		}
 		if len(remaining) == 0 {
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
