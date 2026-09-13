@@ -910,10 +910,14 @@ func TestMultitenancy_HitsEndpointWorks(t *testing.T) {
 //	headers 99:99          → nothing
 //
 // Different row counts per tenant make a leak unmistakable: an answer that
-// merges tenants matches no single expectation. The checks run twice — right
-// after ingest (served from the insert buffer) and again once the rows have
-// been flushed to Parquet (served from the cold tier) — because those are
-// different code paths with different scoping code.
+// merges tenants matches no single expectation. The checks run twice, because
+// those are different code paths with different scoping code:
+//
+//   - right after ingest the rows are only in the insert buffer. Row queries
+//     and hits merge the buffer, so they must already be exact; field and
+//     stream enumeration and the Jaeger service list read the cold tier only,
+//     so there they may be empty but must never show another tenant's value.
+//   - once the rows are flushed to Parquet every endpoint must be exact.
 // ---------------------------------------------------------------------------
 
 type scopeTenant struct {
@@ -1099,6 +1103,19 @@ func scopeEventually(t *testing.T, what string, deadline time.Duration, want str
 	}
 }
 
+// scopeNoForeign polls observe a few times and fails on the first answer that
+// carries another tenant's marker value. Used where an endpoint cannot see
+// unflushed rows yet, so exactness is only asserted after the flush.
+func scopeNoForeign(t *testing.T, what string, observe func() (got string, foreign []string)) {
+	t.Helper()
+	for i := 0; i < 3; i++ {
+		if got, foreign := observe(); len(foreign) > 0 {
+			t.Fatalf("%s: answer carried another tenant's data %v (full answer %s)", what, foreign, got)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
 func scopeForeign(services []string, allowed []string) []string {
 	ok := make(map[string]bool, len(allowed))
 	for _, a := range allowed {
@@ -1111,6 +1128,23 @@ func scopeForeign(services []string, allowed []string) []string {
 		}
 	}
 	return out
+}
+
+// scopeEnumerationCheck returns the assertion used for the cold-tier-only
+// endpoints (field/stream enumeration, Jaeger services) in a phase: before the
+// flush they may not see the rows yet, so only foreign values fail; after the
+// flush they must be exact.
+func scopeEnumerationCheck(phase string) func(t *testing.T, what, want string, observe func() (string, []string)) {
+	if phase == "buffer" {
+		return func(t *testing.T, what, _ string, observe func() (string, []string)) {
+			t.Helper()
+			scopeNoForeign(t, what, observe)
+		}
+	}
+	return func(t *testing.T, what, want string, observe func() (string, []string)) {
+		t.Helper()
+		scopeEventually(t, what, 90*time.Second, want, observe)
+	}
 }
 
 // scopeWaitForFlush waits until every scope tenant has at least one Parquet
@@ -1209,6 +1243,7 @@ func TestMultitenancy_TenantScope_Logs_ExactCounts(t *testing.T) {
 
 	check := func(t *testing.T, phase string) {
 		query := fmt.Sprintf(`_msg:=%q`, marker)
+		enumerate := scopeEnumerationCheck(phase)
 		for _, r := range scopeRequests() {
 			r := r
 			t.Run(phase+"/"+r.name, func(t *testing.T) {
@@ -1238,7 +1273,7 @@ func TestMultitenancy_TenantScope_Logs_ExactCounts(t *testing.T) {
 					return strconv.Itoa(scopeHitsTotal(t, scopeGet(t, logsBaseURL, "/select/logsql/hits", p, r.headers))), nil
 				})
 
-				scopeEventually(t, "logs field_values service.name", 60*time.Second, strings.Join(allowed, ","), func() (string, []string) {
+				enumerate(t, "logs field_values service.name", strings.Join(allowed, ","), func() (string, []string) {
 					p := scopeWindow(ingestAt)
 					p.Set("query", query)
 					p.Set("field", "service.name")
@@ -1246,7 +1281,7 @@ func TestMultitenancy_TenantScope_Logs_ExactCounts(t *testing.T) {
 					return strings.Join(got, ","), scopeForeign(got, allowed)
 				})
 
-				scopeEventually(t, "logs streams", 60*time.Second, strings.Join(allowed, ","), func() (string, []string) {
+				enumerate(t, "logs streams", strings.Join(allowed, ","), func() (string, []string) {
 					p := scopeWindow(ingestAt)
 					p.Set("query", query)
 					var svcs []string
@@ -1312,6 +1347,7 @@ func TestMultitenancy_TenantScope_Traces_ExactCounts(t *testing.T) {
 
 	check := func(t *testing.T, phase string) {
 		query := fmt.Sprintf(`name:=%q`, marker)
+		enumerate := scopeEnumerationCheck(phase)
 		for _, r := range scopeRequests() {
 			r := r
 			t.Run(phase+"/"+r.name, func(t *testing.T) {
@@ -1344,7 +1380,7 @@ func TestMultitenancy_TenantScope_Traces_ExactCounts(t *testing.T) {
 					return strconv.Itoa(scopeHitsTotal(t, scopeGet(t, tracesBaseURL, "/select/logsql/hits", p, r.headers))), nil
 				})
 
-				scopeEventually(t, "traces field_values resource_attr:service.name", 60*time.Second, strings.Join(allowed, ","), func() (string, []string) {
+				enumerate(t, "traces field_values resource_attr:service.name", strings.Join(allowed, ","), func() (string, []string) {
 					p := scopeWindow(ingestAt)
 					p.Set("query", query)
 					p.Set("field", "resource_attr:service.name")
@@ -1352,7 +1388,7 @@ func TestMultitenancy_TenantScope_Traces_ExactCounts(t *testing.T) {
 					return strings.Join(got, ","), scopeForeign(got, allowed)
 				})
 
-				scopeEventually(t, "jaeger services", 60*time.Second, strings.Join(allowed, ","), func() (string, []string) {
+				enumerate(t, "jaeger services", strings.Join(allowed, ","), func() (string, []string) {
 					body := scopeGet(t, tracesBaseURL, "/select/jaeger/api/services", url.Values{}, r.headers)
 					var resp struct {
 						Data []string `json:"data"`
