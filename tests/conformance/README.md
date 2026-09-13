@@ -34,6 +34,17 @@ on top.
   `/internal/select/*`/`/internal/delete/*` requests must send as `version=...` or be
   rejected before ever reaching the query logic). Full list and rationale: the header
   comment in `registry/rows/vl/select.yaml`.
+- **The two `{{proto.*}}` placeholders resolve PER MODULE**, from the vendored
+  VictoriaLogs tree of the binary the row targets: `deps/VictoriaLogs`
+  (`VL_VERSION_LOGS`) for `surface: vl` rows, `lakehouse-traces/deps/VictoriaLogs`
+  (`VL_COMMIT_TRACES`) for `surface: vt` rows — `lakehouse-traces` mounts
+  VictoriaLogs' `internalselect` package for these endpoints, so it follows its own
+  VictoriaLogs pin, not VictoriaTraces and not the logs pin. The pins may differ and
+  today do: `select` is `v5` on both, `delete` is `v2` on the logs pin (VL v1.52.0)
+  and `v1` on the traces pin (VL v1.51.0). The resolved pairs are extracted from both
+  trees and recorded under `protocol:` in `inventory.generated.yaml`, so a future bump
+  that moves either version surfaces as drift instead of as a runtime
+  "unexpected protocol version" rejection between peers.
 - Flag rows (`kind: flag`) declare `compare: { type: status }` with no `request`: they
   document that a flag exists and matters, not a specific HTTP call. They stay
   declarative only until the runner exercises actual flag-variant stacks.

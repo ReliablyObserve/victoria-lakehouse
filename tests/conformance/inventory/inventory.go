@@ -10,7 +10,15 @@ import (
 )
 
 type Dirs struct {
-	VL, VT               string
+	VL, VT string
+	// VLTraces is the traces module's own VictoriaLogs checkout
+	// (lakehouse-traces/deps/VictoriaLogs, pinned to VLCommitTraces). Only
+	// the internal-protocol extractor reads it: the traces binary mounts
+	// VictoriaLogs' internalselect handlers, so its /internal/select/* and
+	// /internal/delete/* protocol versions come from this tree, not from the
+	// logs pin. Empty disables protocol extraction (the fixture tests, which
+	// have no second tree).
+	VLTraces             string
 	VLVersion, VTVersion string
 	// VLCommitTraces is the VL_COMMIT_TRACES pin read from the Makefile: the
 	// commit of the VictoriaLogs tree the traces module vendors its own copy
@@ -40,7 +48,11 @@ var moduleLineRe = regexp.MustCompile(`(?m)^module github\.com/ReliablyObserve/v
 // surface contains everything the traces-pin copy exposes, so nothing is
 // missed; the logs-only delta is newer upstream and is reported, not failed).
 func DefaultDirs(repoRoot string) Dirs {
-	d := Dirs{VL: filepath.Join(repoRoot, "deps", "VictoriaLogs"), VT: filepath.Join(repoRoot, "lakehouse-traces", "deps", "VictoriaTraces")}
+	d := Dirs{
+		VL:       filepath.Join(repoRoot, "deps", "VictoriaLogs"),
+		VT:       filepath.Join(repoRoot, "lakehouse-traces", "deps", "VictoriaTraces"),
+		VLTraces: filepath.Join(repoRoot, "lakehouse-traces", "deps", "VictoriaLogs"),
+	}
 	if mk, err := os.ReadFile(filepath.Join(repoRoot, "Makefile")); err == nil {
 		if m := mkVLRe.FindSubmatch(mk); m != nil {
 			d.VLVersion = string(m[1])
@@ -75,9 +87,18 @@ func RepoRoot() (string, error) {
 	}
 }
 
-// Extract runs all six extractors in order, dedups by Key, sets versions from Dirs.
+// Extract runs all six item extractors in order, dedups by Key, sets versions
+// from Dirs, and — when both VictoriaLogs checkouts are available — records
+// the internal peer-protocol versions each module expects.
 func Extract(d Dirs) (*Inventory, error) {
 	inv := &Inventory{VLVersion: d.VLVersion, VTVersion: d.VTVersion, VLCommitTraces: d.VLCommitTraces}
+	if d.VLTraces != "" {
+		protocols, err := ExtractProtocols(d.VL, d.VLTraces)
+		if err != nil {
+			return nil, err
+		}
+		inv.Protocol = protocols
+	}
 	steps := []func() ([]Item, error){
 		func() ([]Item, error) { return ExtractVLRoutes(d.VL) },
 		func() ([]Item, error) { return ExtractVTRoutes(d.VT) },

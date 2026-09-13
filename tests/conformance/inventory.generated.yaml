@@ -2,6 +2,13 @@
 vl_version: v1.52.0
 vt_version: v0.11.0
 vl_commit_traces: 6ae2da3c11f3
+protocol:
+    vl:
+        select: v5
+        delete: v2
+    vt:
+        select: v5
+        delete: v1
 items:
     - kind: route
       surface: vl
