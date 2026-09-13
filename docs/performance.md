@@ -178,6 +178,58 @@ Dictionary pages are typically a few KB and are already loaded as part of the Pa
 
 Columns with more than 10,000 dictionary entries skip this check to avoid linear scan overhead on high-cardinality columns.
 
+### Metadata-only count queries
+
+`count()`-class queries — `* | stats count()` and histogram queries such as
+`/select/logsql/hits` (`| stats by (_time:<step>) count()`) — are answered from the
+in-memory manifest for every file whose whole time span sits inside the query window:
+zero S3 requests, zero Parquet bytes.
+
+The blocks these answers are made of carry ONE column, `_time`, holding a single
+CONSTANT value. VL stores a constant column once
+(`blockResult.addResultColumn` → `addResultColumnConst`) and `pipeStats` answers from
+the block's row count without walking the rows;
+`patches/vl-*/vl-const-timestamps-parse.patch` makes VL parse such a column once
+instead of once per row. Cost per file is one timestamp format and a fixed number of
+allocations, whatever the row count.
+
+Exactness comes from two gates, both in
+`internal/storage/parquets3/manifest_fastpath.go`:
+
+- The query classifier (`planMetadataOnly`) requires the first pipe to be a `stats`
+  pipe grouping only by a BUCKETED `_time`, with aggregates that read no column. Every
+  other shape — a retrieval, `sort by (_time)`, `by (_time)` ungrouped, `by (<field>)`,
+  `sum(x)`, a per-function `if (...)` — reads the files for real.
+- A file qualifies only when every `_time` bucket the query groups by contains its
+  whole `[MinTimeNs, MaxTimeNs]` span. A file straddling a bucket boundary is read,
+  because its per-bucket split depends on where its rows actually sit.
+
+There is no cap on how many rows a file may contribute: a fully-covered file counts
+exactly its `RowCount`. A manifest entry whose row count is implausible (above 2^40) is
+read rather than answered with a truncated number, and emission stops when the query's
+own row/byte budget cancels the context.
+
+Measured on an Apple M5 Pro (Go 1.26,
+`BenchmarkManifestFastPath_Emit` / `BenchmarkManifestFastPath_CountQuery`), for the two
+shapes the S3 layout produces — many small files right after flush, a few target-sized
+files after compaction:
+
+| Shape | Block emission | End-to-end `stats count()` | Bytes/op | Allocs/op |
+|---|---:|---:|---:|---:|
+| 124 files x 2 000 rows, before | 12.09 ms | 16.2 ms | 14.4 MB | 496 498 |
+| 124 files x 2 000 rows, after | 0.83 ms | 0.93 ms | 4.4 MB | 738 |
+| 4 files x 2 000 000 rows, before | 155.3 ms | 248.0 ms | 226.0 MB | 8 001 326 |
+| 4 files x 2 000 000 rows, after | 0.087 ms | 11.2 ms | 1.1 MB | 136 |
+
+The "before" rows stop at 1 000 000 rows per file (the cap that used to under-count
+large files), so the 4 x 2M row compares 4 M counted rows against 8 M — the real
+per-row improvement is larger than the ratio shows.
+
+Watch `lakehouse_metadata_only_files_total` against
+`lakehouse_metadata_only_fallback_files_total`: a rising fallback count with a flat
+served count means histogram steps are finer than the files' time spans, so the
+zero-S3 path is unavailable and the files are being read.
+
 ### Constant column optimization
 
 When all values in a row group column are identical (min == max across all pages in the column index), the engine detects this and skips deserializing that column entirely. The constant value is injected into every output row without reading column data.

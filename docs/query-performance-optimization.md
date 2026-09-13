@@ -59,11 +59,28 @@ graph TB
 For wildcard stats and hits queries (e.g., `* | stats count()`, `/select/logsql/hits`), the query engine can resolve results entirely from in-memory manifest metadata without any S3 I/O.
 
 **Conditions:**
-- Query is timestamp-only (no column filters)
-- No pushdown filter
-- No active tombstones
+
+Per query (`planMetadataOnly`, backed by `logstorage.GetQueryTimeBucketing` in
+`patches/vl-*/external_query.go.src`):
+- Query is timestamp-only (no column filters), with no pushdown filter and no active tombstones
+- The FIRST pipe is a `stats` pipe. A pipe ahead of it still sees raw rows and can
+  read, reorder or drop them by value (`| sort by (_time) | limit 1 | stats count()`
+  keeps a different row when the timestamps are real)
+- That `stats` pipe groups only by `_time`, and only with a bucket — `by (_time)`
+  ungrouped makes every distinct row timestamp its own group
+- Its aggregate functions need no field (`count()`, not `count(x)` / `sum(x)`) and
+  carry no per-function `if (...)` filter
+- Pipes AFTER the `stats` pipe are unconstrained: they see group keys and aggregates,
+  never raw rows (`/select/logsql/hits` appends `sort by (_time)` there)
+
+Per file:
 - File has RowCount, MinTimeNs, MaxTimeNs populated
 - File's time range is fully within the query range
+- Every `_time` bucketing the query groups by puts the file's WHOLE
+  `[MinTimeNs, MaxTimeNs]` span in a single bucket — otherwise the per-bucket counts
+  would depend on where inside the file each row actually sits, and the file is read
+- RowCount is plausible (`<= 2^40`); a manifest entry above that is read, never
+  answered with a truncated number
 
 **How it works:**
 
@@ -71,9 +88,11 @@ For wildcard stats and hits queries (e.g., `* | stats count()`, `/select/logsql/
 flowchart TD
     Q[Query arrives] --> CHECK{TimestampOnly && no filter && no tombstones?}
     CHECK -->|No| NORMAL[Normal S3 query path]
-    CHECK -->|Yes| SCAN[Scan manifest files]
-    SCAN --> EACH{File has RowCount > 0 and time range within query?}
-    EACH -->|Yes| SYNTH[Create synthetic DataBlock]
+    CHECK -->|Yes| PLAN{Query classifier:<br/>stats-first, count-only,<br/>_time bucketed or ungrouped?}
+    PLAN -->|needs real row values| NORMAL
+    PLAN -->|metadata is enough| SCAN[Scan manifest files]
+    SCAN --> EACH{RowCount > 0, span inside query range,<br/>span inside ONE bucket?}
+    EACH -->|Yes| SYNTH[Emit constant-_time blocks<br/>RowCount rows, one value]
     EACH -->|No| REMAIN[Add to remaining files]
     SYNTH --> EMIT[Emit to result channel]
     REMAIN --> MORE{More remaining files?}
@@ -81,9 +100,41 @@ flowchart TD
     MORE -->|No| DONE[Return — zero S3 I/O]
 ```
 
-`syntheticManifestBlock` creates a `DataBlock` with `fi.RowCount` timestamps distributed evenly across `[MinTimeNs, MaxTimeNs]`. VL's stats/hits pipeline counts rows without inspecting individual values, so the synthetic timestamps satisfy the contract.
+`streamConstTimeBlocks` emits `fi.RowCount` rows as blocks of at most 10 000 rows,
+each carrying ONE column (`_time`) holding a single CONSTANT value. VL collapses a
+constant column to one stored value on the way in
+(`blockResult.addResultColumn` → `addResultColumnConst`), and `pipeStats` then answers
+`count()` and `count() by (_time:<bucket>)` from `br.rowsLen` without walking the rows.
+`vl-const-timestamps-parse.patch` makes VL's `tryParseTimestamps` parse such a column
+once instead of once per row.
 
-**Performance:** 800x–3400x faster than S3 reads for stats/hits queries when all files are manifest-resolved.
+Cost per file is therefore one `FormatField` call and a fixed number of allocations,
+whatever the row count — the values slice, the column slice and the `DataBlock` are
+allocated up front and reused for every chunk. There is no cap on the number of rows a
+file may contribute: a fully-covered file contributes exactly its `RowCount`.
+`TestStreamConstTimeBlocks_AllocationCeiling` locks the allocation behaviour and
+`TestManifestFastPath_ExactnessMatrix` locks equality with a full scan across file
+sizes, window coverage and query shapes.
+
+**Metrics:** `lakehouse_metadata_only_files_total` counts files answered from metadata;
+`lakehouse_metadata_only_fallback_files_total` counts files that were inside the query
+window but still read, because the query could tell their rows apart (typically a
+histogram step finer than the files' time spans) or their row count was not
+trustworthy.
+
+**Performance:** measured on 124 files x 2 000 rows and 4 files x 2 000 000 rows
+(`BenchmarkManifestFastPath_Emit`, `BenchmarkManifestFastPath_CountQuery`,
+Apple M5 Pro, Go 1.26):
+
+| Shape | Block emission | End-to-end `\| stats count()` | Allocations |
+| --- | --- | --- | --- |
+| 124 x 2k, before | 12.09 ms | 16.2 ms | 496 498 |
+| 124 x 2k, after | 0.83 ms | 0.93 ms | 738 |
+| 4 x 2M, before | 155.3 ms | 248.0 ms | 8 001 326 |
+| 4 x 2M, after | 0.087 ms | 11.2 ms | 136 |
+
+The "before" rows stop at 1 000 000 rows per file, so the 4 x 2M case compares 4 M
+counted rows against 8 M — the real per-row gain is larger than the ratio shows.
 
 ### 2. Footer Prefetch
 

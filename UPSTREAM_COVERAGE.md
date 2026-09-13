@@ -112,14 +112,14 @@ route: 135/135 covered by at least one registry row.
 | `/select/logsql/field_names` | `app/vtselect/logsql.go` | vt.select.logsql_field_names.basic | 🟡 declared, not yet executed |
 | `/select/logsql/field_values` | `app/vlselect/main.go` | vl.select.field_values.limit, vl.select.field_values.nolimit | 🔁 differs: LH truncates in map order; hot returns top-hits sorted (docs/parity-and-gaps.md #A6). Flips to pass in the MergeValuesWithHits fix. (declared, not yet executed) |
 | `/select/logsql/field_values` | `app/vtselect/logsql.go` | vt.select.logsql_field_values.basic | 🟡 declared, not yet executed |
-| `/select/logsql/hits` | `app/vlselect/main.go` | vl.select.hits.basic | 🟡 declared, not yet executed |
-| `/select/logsql/hits` | `app/vtselect/logsql.go` | vt.select.logsql_hits.basic | 🟡 declared, not yet executed |
+| `/select/logsql/hits` | `app/vlselect/main.go` | vl.select.hits.basic, lh.cold.hits_bucket_counts_exact | 🟡 declared, not yet executed |
+| `/select/logsql/hits` | `app/vtselect/logsql.go` | vt.select.logsql_hits.basic, lh.cold.hits_bucket_counts_exact | 🟡 declared, not yet executed |
 | `/select/logsql/query` | `app/vlselect/main.go` | vl.select.query.bad_query, vl.select.query.wildcard, lh.shim.time_params_ms | 🔁 differs: The LH shim also accepts start/end as raw millisecond-epoch integers (matching Tempo's convention); hot VL/VT only accept RFC3339 or relative durations. Documented, not a bug — see docs/parity-and-gaps.md. (declared, not yet executed) |
 | `/select/logsql/query` | `app/vtselect/logsql.go` | vt.select.logsql_query.wildcard, lh.shim.time_params_ms | 🔁 differs: The LH shim also accepts start/end as raw millisecond-epoch integers (matching Tempo's convention); hot VL/VT only accept RFC3339 or relative durations. Documented, not a bug — see docs/parity-and-gaps.md. (declared, not yet executed) |
 | `/select/logsql/query_time_range` | `app/vlselect/main.go` | vl.select.query_time_range.basic | 🟡 declared, not yet executed |
 | `/select/logsql/query_time_range` | `app/vtselect/logsql.go` | vt.select.logsql_query_time_range.basic | 🟡 declared, not yet executed |
-| `/select/logsql/stats_query` | `app/vlselect/main.go` | vl.select.stats_query.basic | 🟡 declared, not yet executed |
-| `/select/logsql/stats_query` | `app/vtselect/logsql.go` | vt.select.logsql_stats_query.basic | 🟡 declared, not yet executed |
+| `/select/logsql/stats_query` | `app/vlselect/main.go` | vl.select.stats_query.basic, lh.cold.count_exact_above_1m_rows | 🟡 declared, not yet executed |
+| `/select/logsql/stats_query` | `app/vtselect/logsql.go` | vt.select.logsql_stats_query.basic, lh.cold.count_exact_above_1m_rows | 🟡 declared, not yet executed |
 | `/select/logsql/stats_query_range` | `app/vlselect/main.go` | vl.select.stats_query_range.basic | 🟡 declared, not yet executed |
 | `/select/logsql/stats_query_range` | `app/vtselect/logsql.go` | vt.select.logsql_stats_query_range.basic | 🟡 declared, not yet executed |
 | `/select/logsql/stream_field_names` | `app/vlselect/main.go` | vl.select.stream_field_names.basic | 🟡 declared, not yet executed |
