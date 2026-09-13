@@ -340,7 +340,7 @@
   kind: select
   origin: native
   expect: differ
-  differ_note: "Route arrives in VL 1.51.0 (pinned is 1.50.0); LH dispatcher also has no vmalert proxy wired yet. Re-check both after the version bump (docs/parity-and-gaps.md)."
+  differ_note: "Live since the VL 1.51.0 bump (pinned VL is 1.52.0), but Lakehouse registers no vmalert proxy route in its dispatcher, so the route is served hot only. Paired flag row: vl.flag.vmalert_proxy_url (docs/parity-and-gaps.md)."
   since: { vl: "1.51.0" }
   targets: [hot, cold]
   seed: [logs.base]

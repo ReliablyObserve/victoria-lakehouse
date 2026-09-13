@@ -48,3 +48,63 @@ on top.
 - Flag rows (`kind: flag`) declare `compare: { type: status }` with no `request`: they
   document that a flag exists and matters, not a specific HTTP call. They stay
   declarative only until the runner exercises actual flag-variant stacks.
+
+## Flag-warning triage
+
+An upstream flag without a row is a **soft warning**, not a failure — it says
+"upstream registers this, Lakehouse inherits whatever it does, and nothing
+Lakehouse-specific depends on it". Only flags in the two classes below get a row
+in `rows/flags/matters.yaml`:
+
+1. **Changed between the pinned versions** — the flag arrived, was renamed or was
+   deprecated in the range the bump crosses.
+2. **Touches Lakehouse compatibility** — admission control and queueing,
+   retention and backfill windows, ingest limits, cold-tier lookbehind windows,
+   or a route Lakehouse serves differently from the hot tier.
+
+Everything else stays a warning on purpose: ingest-format knobs (`syslog.*`,
+`splunk.*`, `journald.*`, `datadog.*`, `loki.*`), storage-node and TLS plumbing
+(`storageNode.*`), local-disk and auth-key knobs (`storageDataPath`,
+`*AuthKey`, `inmemoryDataFlushInterval`, `retention.maxDisk*`), and the internal
+peer transport caps (`internalinsert.*`, `internalselect.*`). They are either
+pre-storage admission control Lakehouse mounts verbatim, or they act on the hot
+local storage Lakehouse replaces wholesale.
+
+The VL v1.52.0 / VT v0.11.0 bump added six flags. Five already had rows carrying
+`since:`; the bump only moved them from pending-bump to live, and their notes were
+rewritten from "not in the pinned version, re-check after the bump" to what is
+actually true now:
+
+| flag | row | class |
+| --- | --- | --- |
+| `vl:vmalert.proxyURL` | `vl.flag.vmalert_proxy_url` | route Lakehouse does not serve |
+| `vt:vmalert.proxyURL` | `vt.flag.vmalert_proxy_url` (**added**) | same, traces side |
+| `vt:search.maxTraces` | `vt.flag.search_max_traces` | result cap |
+| `vt:search.maxTags` | `vt.flag.search_max_tags` | result cap |
+| `vt:search.fieldsLookbehind` | `vt.flag.search_fields_lookbehind` | cold lookbehind default |
+| `vt:search.streamFieldsLookbehind` | `vt.flag.search_stream_fields_lookbehind` | cold lookbehind default |
+| `vt:nativeinsert.maxRequestSize` | `vt.flag.nativeinsert_max_request_size` (**added**) | ingest limit on a new route |
+
+`vl:nativeinsert.maxRequestSize` did not change with the bump but was rowed
+alongside its VictoriaTraces twin, so the native-ingest admission cap is covered
+on both surfaces.
+
+Two deprecations to keep in view: `search.traceMaxServiceNameList` and
+`search.traceMaxSpanNameList` are assigned to `_` in VictoriaTraces 0.11.0
+(superseded by `search.maxTags`) — still registered, so still warned about, but
+setting them now does nothing.
+
+## Flag collisions in the traces binary
+
+`lakehouse-traces` links VictoriaLogs' and VictoriaTraces' packages into one
+process, and both register flags of the same name (`-retentionPeriod`,
+`-storageDataPath`, `-insert.maxFieldsPerLine`, ...) with the same global
+`flag.CommandLine`. The `patches/vt-traces/*-flag-dedup*` patches make the
+VictoriaTraces side reuse VictoriaLogs' registration instead of panicking.
+
+`TestVTFlagDedupCoversEveryCollision` recomputes that collision set from the two
+vendored trees — using `go list -deps` on the traces module, so only packages
+actually linked count — and requires the dedup list to match it exactly in both
+directions: an unguarded collision means the binary panics at startup, a guard
+with nothing behind it means VictoriaTraces silently skips its own registration.
+At VL v1.51.0 / VT v0.11.0 there are 34 collisions and all 34 are guarded.

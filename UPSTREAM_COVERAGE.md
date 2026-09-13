@@ -43,9 +43,9 @@ route: 140/140 covered by at least one registry row.
 | `/insert/loki/api/v1/push` | `app/vlinsert/loki/loki.go` | vl.insert.loki_push_json.count, vl.insert.loki_push_protobuf.count | 🟡 declared, not yet executed |
 | `/insert/loki/ready` | `app/vlinsert/loki/loki.go` | vl.insert.loki_ready.status | 🟡 declared, not yet executed |
 | `/insert/multitenant/native` | `app/vlinsert/main.go` | vl.insert.multitenant_native.count | 🟡 declared, not yet executed |
-| `/insert/multitenant/native` | `app/vtinsert/main.go` | vt.insert.multitenant_native.differ | 🔁 differs: Arrives with the VT 0.11.0 bump alongside /insert/native; pinned 0.9.2 lacks both. Re-check after the bump (docs/parity-and-gaps.md). (declared, not yet executed) |
+| `/insert/multitenant/native` | `app/vtinsert/main.go` | vt.insert.multitenant_native.differ | 🔁 differs: Live at the pinned VT 0.11.0 alongside /insert/native, with the same unverified cold-tier end-to-end path; additionally carries the per-request tenant, which the cold writer must honour (docs/parity-and-gaps.md). (declared, not yet executed) |
 | `/insert/native` | `app/vlinsert/main.go` | vl.insert.native.count | 🟡 declared, not yet executed |
-| `/insert/native` | `app/vtinsert/main.go` | vt.insert.native.differ | 🔁 differs: Native binary ingest arrives with the VT 0.11.0 bump; pinned 0.9.2 has no /insert/native route. Re-check after the bump (docs/parity-and-gaps.md). (declared, not yet executed) |
+| `/insert/native` | `app/vtinsert/main.go` | vt.insert.native.differ | 🔁 differs: Live at the pinned VT 0.11.0: lakehouse-traces mounts vtinsert.RequestHandler wholesale, so the route is served. End-to-end native ingest through the cold tier (a vtagent payload landing in Parquet) is not exercised yet — the verification round covers it (docs/parity-and-gaps.md). (declared, not yet executed) |
 | `/insert/opentelemetry/` | `app/vlinsert/main.go` | vl.insert.otel_dispatch.status, vl.insert.otel_logs.count | 🟡 declared, not yet executed |
 | `/insert/opentelemetry/` | `app/vtinsert/main.go` | vt.insert.otel_traces_json.count, vt.insert.otel_traces_protobuf.count | 🟡 declared, not yet executed |
 | `/insert/opentelemetry/v1/logs` | `app/vlinsert/opentelemetry/opentelemetry.go` | vl.insert.otel_logs.count | 🟡 declared, not yet executed |
@@ -137,15 +137,15 @@ route: 140/140 covered by at least one registry row.
 | `/select/tempo/` | `app/vtselect/main.go` | vt.select.tempo_dispatch.status, vt.tempo.echo.basic, vt.tempo.metrics_instant.absent, vt.tempo.metrics_query_range.route, vt.tempo.search.duration_filter, vt.tempo.search.empty_query, vt.tempo.search.service_name, vt.tempo.search.span_scope, vt.tempo.search.spansets_full, vt.tempo.search_v2.absent, vt.tempo.traces_v1.by_id, vt.tempo.traces_v2.by_id, vt.tempo.traces_v2.protobuf, vt.tempo.v2_search_tag_values.basic, vt.tempo.v2_search_tag_values.span_kind_strings, vt.tempo.v2_search_tags.basic, vt.tempo.v2_search_tags.intrinsic_scope, lh.shim.tempo_search_empty_q | ⛔ absent upstream and on LH (declared, not yet executed) |
 | `/select/tempo/api/echo` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.echo.basic | 🟡 declared, not yet executed |
 | `/select/tempo/api/metrics/query_range` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.metrics_query_range.route | 🟡 declared, not yet executed |
-| `/select/tempo/api/search` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.search.duration_filter, vt.tempo.search.empty_query, vt.tempo.search.service_name, vt.tempo.search.span_scope, vt.tempo.search.spansets_full, lh.shim.tempo_search_empty_q | 🔁 differs: The full spanSets (multiple matched spans per trace, with match highlighting) response shape arrives in VT 0.9.4; pinned 0.9.2 returns the legacy single-spanSet shape. Re-check after the version bump (docs/parity-and-gaps.md). (declared, not yet executed) |
-| `/select/tempo/api/traces/` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.traces_v1.by_id | 🔁 differs: The v1 trace-by-id route arrives in VT 0.9.3; absent at the pinned 0.9.2. Re-check after the version bump (docs/parity-and-gaps.md). (declared, not yet executed) |
-| `/select/tempo/api/v2/search/tag/` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.v2_search_tag_values.basic, vt.tempo.v2_search_tag_values.span_kind_strings | 🔁 differs: VT 0.10.0 returns span kind values as strings (SPAN_KIND_SERVER, ...) instead of the old ints; pinned 0.9.2 still returns ints. Re-check after the version bump (docs/parity-and-gaps.md). (declared, not yet executed) |
-| `/select/tempo/api/v2/search/tags` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.v2_search_tags.basic, vt.tempo.v2_search_tags.intrinsic_scope | 🔁 differs: scope=intrinsic filtering arrives in VT 0.9.4; absent at the pinned 0.9.2. Re-check after the version bump (docs/parity-and-gaps.md). (declared, not yet executed) |
-| `/select/tempo/api/v2/traces/` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.traces_v2.by_id, vt.tempo.traces_v2.protobuf | 🔁 differs: Protobuf-encoded trace responses (Accept: application/protobuf) arrive in VT 0.9.3; pinned 0.9.2 only serves JSON. Re-check after the version bump (docs/parity-and-gaps.md). (declared, not yet executed) |
+| `/select/tempo/api/search` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.search.duration_filter, vt.tempo.search.empty_query, vt.tempo.search.service_name, vt.tempo.search.span_scope, vt.tempo.search.spansets_full, lh.shim.tempo_search_empty_q | 🔁 differs: The pinned VT 0.11.0 returns the full spanSets shape (multiple matched spans per trace, with match highlighting) rather than the pre-0.9.4 single-spanSet one; whether the cold tier reproduces it is verified by the parity run (docs/parity-and-gaps.md). (declared, not yet executed) |
+| `/select/tempo/api/traces/` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.traces_v1.by_id | 🔁 differs: Live at the pinned VT 0.11.0 (arrived in 0.9.3). Whether the cold tier answers it identically to /api/v2/traces/{id} is verified by the parity run (docs/parity-and-gaps.md). (declared, not yet executed) |
+| `/select/tempo/api/v2/search/tag/` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.v2_search_tag_values.basic, vt.tempo.v2_search_tag_values.span_kind_strings | 🔁 differs: Both tiers now run VT 0.11.0, which returns span kind values as strings (SPAN_KIND_SERVER, ...) rather than the pre-0.10.0 ints; the cold tier must produce the same strings, which the parity run checks (docs/parity-and-gaps.md). (declared, not yet executed) |
+| `/select/tempo/api/v2/search/tags` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.v2_search_tags.basic, vt.tempo.v2_search_tags.intrinsic_scope | 🔁 differs: Live at the pinned VT 0.11.0 (arrived in 0.9.4). Whether the cold tier reports the same intrinsic tag set is verified by the parity run (docs/parity-and-gaps.md). (declared, not yet executed) |
+| `/select/tempo/api/v2/traces/` | `app/vtselect/traces/tempo/tempo.go` | vt.tempo.traces_v2.by_id, vt.tempo.traces_v2.protobuf | 🔁 differs: The pinned VT 0.11.0 serves protobuf-encoded trace responses for Accept: application/protobuf (added in 0.9.3); cold-tier encoding parity is verified by the parity run (docs/parity-and-gaps.md). (declared, not yet executed) |
 | `/select/tenant_ids` | `app/vlselect/main.go` | vl.select.tenant_ids.basic | 🟡 declared, not yet executed |
 | `/select/tenant_ids` | `app/vtselect/logsql.go` | vt.select.tenant_ids.basic | 🟡 declared, not yet executed |
-| `/select/vmalert/` | `app/vlselect/main.go` | vl.select.vmalert.differ | 🔁 differs: Route arrives in VL 1.51.0 (pinned is 1.50.0); LH dispatcher also has no vmalert proxy wired yet. Re-check both after the version bump (docs/parity-and-gaps.md). (declared, not yet executed) |
-| `/select/vmalert/` | `app/vtselect/main.go` | vt.select.vmalert.differ | 🔁 differs: Route arrives in VT 0.10.0 (pinned is 0.9.2); LH dispatcher has no vmalert proxy wired either. Re-check both after the version bump (docs/parity-and-gaps.md). (declared, not yet executed) |
+| `/select/vmalert/` | `app/vlselect/main.go` | vl.select.vmalert.differ | 🔁 differs: Live since the VL 1.51.0 bump (pinned VL is 1.52.0), but Lakehouse registers no vmalert proxy route in its dispatcher, so the route is served hot only. Paired flag row: vl.flag.vmalert_proxy_url (docs/parity-and-gaps.md). (declared, not yet executed) |
+| `/select/vmalert/` | `app/vtselect/main.go` | vt.select.vmalert.differ | 🔁 differs: Live since the VT 0.10.0 bump (pinned VT is 0.11.0), but Lakehouse registers no vmalert proxy route in its traces dispatcher, so the route is served hot only. Paired flag row: vt.flag.vmalert_proxy_url (docs/parity-and-gaps.md). (declared, not yet executed) |
 | `/select/vmui` | `app/vlselect/main.go` | vl.select.vmui.basic | 🟡 declared, not yet executed |
 | `/select/vmui` | `app/vtselect/main.go` | vt.select.vmui.basic | 🟡 declared, not yet executed |
 | `/select/vmui/` | `app/vlselect/main.go` | vl.select.vmui_slash.basic | 🟡 declared, not yet executed |
@@ -163,7 +163,7 @@ pipe: 50/50 covered by at least one registry row.
 |---|---|---|---|
 | `block_stats` | `lib/logstorage/pipe_block_stats.go` | vl.pipe.block_stats.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
 | `blocks_count` | `lib/logstorage/pipe_blocks_count.go` | vl.pipe.blocks_count.unsupported | ⛔ unsupported on cold (documented) (declared, not yet executed) |
-| `coalesce` | `lib/logstorage/pipe_coalesce.go` | vl.pipe.coalesce.basic | 🔁 differs: coalesce pipe ships in VL 1.51.0; absent at the pinned 1.50.0. Re-check after the version bump. See docs/parity-and-gaps.md. (declared, not yet executed) |
+| `coalesce` | `lib/logstorage/pipe_coalesce.go` | vl.pipe.coalesce.basic | 🔁 differs: Ships in VL 1.51.0 and is live at the pinned 1.52.0 on both tiers; whether the cold tier resolves the same first-non-empty field is verified by the parity run. See docs/parity-and-gaps.md. (declared, not yet executed) |
 | `collapse_nums` | `lib/logstorage/pipe_collapse_nums.go` | vl.pipe.collapse_nums.basic | 🟡 declared, not yet executed |
 | `copy` | `lib/logstorage/pipe_copy.go` | vl.pipe.copy.basic | 🟡 declared, not yet executed |
 | `decolorize` | `lib/logstorage/pipe_decolorize.go` | vl.pipe.decolorize.basic | 🟡 declared, not yet executed |
@@ -181,7 +181,7 @@ pipe: 50/50 covered by at least one registry row.
 | `generate_sequence` | `lib/logstorage/pipe_generate_sequence.go` | vl.pipe.generate_sequence.basic | 🟡 declared, not yet executed |
 | `hash` | `lib/logstorage/pipe_hash.go` | vl.pipe.hash.basic | 🟡 declared, not yet executed |
 | `join` | `lib/logstorage/pipe_join.go` | vl.pipe.join.basic | 🟡 declared, not yet executed |
-| `json_array_concat` | `lib/logstorage/pipe_json_array_concat.go` | vl.pipe.json_array_concat.basic | 🔁 differs: json_array_concat pipe ships in VL 1.52.0; absent at the pinned 1.50.0. Re-check after the version bump. (declared, not yet executed) |
+| `json_array_concat` | `lib/logstorage/pipe_json_array_concat.go` | vl.pipe.json_array_concat.basic | 🔁 differs: Ships in VL 1.52.0, the pinned version, so the pipe is live on both tiers; whether the cold tier joins the same array elements in the same order is verified by the parity run. (declared, not yet executed) |
 | `json_array_len` | `lib/logstorage/pipe_json_array_len.go` | vl.pipe.json_array_len.basic | 🟡 declared, not yet executed |
 | `last` | `lib/logstorage/pipe_last.go` | vl.pipe.last.basic | 🟡 declared, not yet executed |
 | `len` | `lib/logstorage/pipe_len.go` | vl.pipe.len.basic | 🟡 declared, not yet executed |
@@ -301,7 +301,7 @@ traceql: 9/9 covered by at least one registry row.
 
 ## Upstream flag (181)
 
-flag: 23/181 covered by at least one registry row.
+flag: 26/181 covered by at least one registry row.
 
 | flag | Source | Rows | Status |
 |---|---|---|---|
@@ -360,8 +360,8 @@ flag: 23/181 covered by at least one registry row.
 | `loki.messageFieldsPrefix` | `app/vlinsert/loki/loki.go` |  | ⚪ no row |
 | `maxBackfillAge` | `app/vlstorage/main.go` | vl.flag.max_backfill_age | 🔁 differs: Hot enforces maxBackfillAge against local storage retention; once data tiers to cold, the age check has no local-storage analog and the LH compaction/retention path governs instead. See docs/parity-and-gaps.md. (declared, not yet executed) |
 | `maxBackfillAge` | `app/vtstorage/main.go` |  | ⚪ no row |
-| `nativeinsert.maxRequestSize` | `app/vlinsert/nativeinsert/nativeinsert.go` |  | ⚪ no row |
-| `nativeinsert.maxRequestSize` | `app/vtinsert/nativeinsert/nativeinsert.go` |  | ⚪ no row |
+| `nativeinsert.maxRequestSize` | `app/vlinsert/nativeinsert/nativeinsert.go` | vl.flag.nativeinsert_max_request_size | 🟡 declared, not yet executed |
+| `nativeinsert.maxRequestSize` | `app/vtinsert/nativeinsert/nativeinsert.go` | vt.flag.nativeinsert_max_request_size | 🟡 declared, not yet executed |
 | `opentelemetry.maxRequestSize` | `app/vlinsert/opentelemetry/opentelemetry.go` |  | ⚪ no row |
 | `opentelemetry.traces.maxRequestSize` | `app/vtinsert/opentelemetry/opentelemetry.go` |  | ⚪ no row |
 | `otlpGRPC.tls` | `app/vtinsert/main.go` |  | ⚪ no row |
@@ -380,7 +380,7 @@ flag: 23/181 covered by at least one registry row.
 | `retentionPeriod` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `search.allowPartialResponse` | `app/vlselect/logsql/logsql.go` |  | ⚪ no row |
 | `search.allowPartialResponse` | `app/vtselect/logsql/logsql.go` |  | ⚪ not linked into LH, no row |
-| `search.fieldsLookbehind` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_fields_lookbehind | 🔁 differs: New 2h default hides tags for old cold data that predates it; explicit cold default needs to be set in compose/Helm once VT is bumped. See docs/parity-and-gaps.md. (declared, not yet executed) |
+| `search.fieldsLookbehind` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_fields_lookbehind | 🔁 differs: Live since the VT 0.10.0 bump: the 2h default hides tags for cold data older than the window, so compose/Helm must set an explicit cold-tier value. See docs/parity-and-gaps.md. (declared, not yet executed) |
 | `search.latencyOffset` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_latency_offset | 🟡 declared, not yet executed |
 | `search.logSlowQueryDuration` | `app/vlselect/main.go` | vl.flag.search_log_slow_query_duration | 🟡 declared, not yet executed (package not linked into LH) |
 | `search.logSlowQueryDuration` | `app/vtselect/main.go` |  | ⚪ not linked into LH, no row |
@@ -394,14 +394,14 @@ flag: 23/181 covered by at least one registry row.
 | `search.maxQueryTimeRange` | `app/vtselect/logsql/logsql.go` |  | ⚪ not linked into LH, no row |
 | `search.maxQueueDuration` | `app/vlselect/main.go` | vl.flag.search_max_queue_duration | 🔁 differs: vlselect's queue is not linked into LH; LH's query.max_concurrent admission control rejects immediately instead of queueing. See docs/parity-and-gaps.md. (declared, not yet executed) (package not linked into LH) |
 | `search.maxQueueDuration` | `app/vtselect/main.go` |  | ⚪ not linked into LH, no row |
-| `search.maxTags` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_max_tags | 🔁 differs: Flag arrives in VT 0.9.4 alongside search.maxTraces (pinned is 0.9.2). Re-check after the version bump. See docs/parity-and-gaps.md. (declared, not yet executed) |
-| `search.maxTraces` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_max_traces | 🔁 differs: Flag arrives in VT 0.9.4 (pinned is 0.9.2). Re-check after the version bump. See docs/parity-and-gaps.md. (declared, not yet executed) |
+| `search.maxTags` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_max_tags | 🔁 differs: Present since the VT 0.9.4 bump (pinned VT is 0.11.0) alongside search.maxTraces, and supersedes the deprecated search.traceMaxServiceNameList / search.traceMaxSpanNameList. Cold-tier behaviour is verified by the parity run, not here. See docs/parity-and-gaps.md. (declared, not yet executed) |
+| `search.maxTraces` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_max_traces | 🔁 differs: Present since the VT 0.9.4 bump (pinned VT is 0.11.0), declared in app/vtselect/traces/tracecommon and linked into the traces binary. Whether the 1000-trace cap applies identically once results come from the cold tier is verified by the parity run, not here. See docs/parity-and-gaps.md. (declared, not yet executed) |
 | `search.streamFieldsLookbehind` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_stream_fields_lookbehind | 🔁 differs: Same new-default-hides-old-cold-data issue as search.fieldsLookbehind, applied to stream fields. See docs/parity-and-gaps.md. (declared, not yet executed) |
 | `search.traceMaxDurationWindow` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_trace_max_duration_window | 🟡 declared, not yet executed |
 | `search.traceMaxServiceNameList` | `app/vtselect/traces/tracecommon/tracecommon.go` |  | ⚪ no row |
 | `search.traceMaxSpanNameList` | `app/vtselect/traces/tracecommon/tracecommon.go` |  | ⚪ no row |
 | `search.traceSearchStep` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_trace_search_step | 🟡 declared, not yet executed |
-| `search.traceServiceAndSpanNameLookbehind` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_trace_service_and_span_name_lookbehind | 🔁 differs: Deprecated in favor of fieldsLookbehind/streamFieldsLookbehind in VT 0.10.0; hot post-bump ignores it while LH cold (pre-bump) still honors it as the effective lookbehind. See docs/parity-and-gaps.md. (declared, not yet executed) |
+| `search.traceServiceAndSpanNameLookbehind` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_trace_service_and_span_name_lookbehind | 🔁 differs: Deprecated in VT 0.10.0 in favour of fieldsLookbehind/streamFieldsLookbehind; both tiers now run VT 0.11.0, so neither honours it as the effective lookbehind and a deployment still passing it gets the new defaults instead. See docs/parity-and-gaps.md. (declared, not yet executed) |
 | `select.disable` | `app/vlselect/main.go` |  | ⚪ not linked into LH, no row |
 | `select.disable` | `app/vtselect/main.go` |  | ⚪ not linked into LH, no row |
 | `select.disableCompression` | `app/vlstorage/main.go` |  | ⚪ no row |
@@ -484,8 +484,8 @@ flag: 23/181 covered by at least one registry row.
 | `syslog.useRemoteIP.tcp` | `app/vlinsert/syslog/syslog.go` |  | ⚪ no row |
 | `syslog.useRemoteIP.udp` | `app/vlinsert/syslog/syslog.go` |  | ⚪ no row |
 | `syslog.useRemoteIP.unix` | `app/vlinsert/syslog/syslog.go` |  | ⚪ no row |
-| `vmalert.proxyURL` | `app/vlselect/main.go` | vl.flag.vmalert_proxy_url | 🔁 differs: Flag arrives in VL 1.51.0 (pinned is 1.50.0); LH also has no vmalert proxy wired into its dispatcher yet. Re-check both after the version bump. See docs/parity-and-gaps.md. (declared, not yet executed) (package not linked into LH) |
-| `vmalert.proxyURL` | `app/vtselect/main.go` |  | ⚪ not linked into LH, no row |
+| `vmalert.proxyURL` | `app/vlselect/main.go` | vl.flag.vmalert_proxy_url | 🔁 differs: Present since the VL 1.51.0 bump (pinned VL is 1.52.0). Lakehouse registers no vmalert proxy route in its dispatcher, so the flag has no cold-tier effect; the paired route row is vl.select.vmalert.differ. See docs/parity-and-gaps.md. (declared, not yet executed) (package not linked into LH) |
+| `vmalert.proxyURL` | `app/vtselect/main.go` | vt.flag.vmalert_proxy_url | 🔁 differs: Present since the VT 0.10.0 bump (pinned VT is 0.11.0). Lakehouse registers no vmalert proxy route in its traces dispatcher, so the flag has no cold-tier effect; the paired route row is vt.select.vmalert.differ. Mirrors vl.flag.vmalert_proxy_url. See docs/parity-and-gaps.md. (declared, not yet executed) (package not linked into LH) |
 
 ## Lakehouse additions (no upstream equivalent)
 
