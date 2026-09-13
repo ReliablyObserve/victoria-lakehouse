@@ -94,7 +94,7 @@ the handle the allowlist and the fixes refer to.
 | **B3** | A filter on a non-promoted map attribute combined with any pipe returns 0 rows on cold while hot returns the full match set. | `range_numeric`, `field_exists_multi`, `negated_exists_combined`, the numeric range/comparison filters, `stats_by_format`. |
 | **B4** | The `rename`, `format`, `len`, `math`, `extract` and `unpack_json` pipes drop their input columns on cold, so the output row is missing the fields the pipe read from. | `TestParity_PipesExtended/*`, `TestParity_PipesGapfill/string_functions`, `TestParity_PipesGapfill/chained_pipes_3plus`. |
 | **B5** | `/select/logsql/hits` at sub-hour `step` returns evenly spaced synthetic buckets — the totals match hot but the per-bucket distribution is flat, because cold partitions are hour-granular and the sub-hour buckets are interpolated rather than counted. | `hits_small_step`, `hits_bucket_keys`. |
-| **B6** | A tenant-scoped read on the cold tier answers with every tenant's rows rather than only the requesting tenant's: the logs query path selects files with `GetFilesForRange` instead of `GetFilesForRangeTenant` (`internal/storage/parquets3/storage_query.go:175`) and never consults the request's tenant ids, and on both binaries `field_names`, `field_values` and `streams`, the pmeta catalog, the label index and the buffer bridge are unscoped; the traces Jaeger path passes `tenantIDs=nil`. | `TestTenantIsolation_Logs_PerTenantCounts/LH/*`, `TestTenantIsolation_Traces_PerTenantParity/*/field_values_hits`. |
+| **B6** | A tenant-scoped read on the cold tier answers with every tenant's rows rather than only the requesting tenant's: the logs query path in `internal/storage/parquets3/storage_query.go` selects files with `GetFilesForRange` instead of `GetFilesForRangeTenant` and never consults the request's tenant ids, and on both binaries `field_names`, `field_values` and `streams`, the pmeta catalog, the label index and the buffer bridge are unscoped; the traces Jaeger path passes `tenantIDs=nil`. | `TestTenantIsolation_Logs_PerTenantCounts/LH/*`, `TestTenantIsolation_Traces_PerTenantParity/*/field_values_hits`. |
 
 Each is fixed in its own PR; none of them is a test-harness problem, so the
 suite records them rather than hiding them.
@@ -119,16 +119,23 @@ the `parity-tests` service, so it can run alongside other local stacks.
 ```sh
 docker compose -f tests/parity/docker-compose.yml build
 docker compose -f tests/parity/docker-compose.yml up -d
-# wait for datagen-seed and datagen-seed-tenant2 to exit, then ~30s for the
-# lakehouse flush + manifest refresh
-docker compose -f tests/parity/docker-compose.yml --profile test run --rm -T \
+# Wait until datagen-seed and datagen-seed-tenant2 have exited 0, then until
+# each cold tier agrees with its hot counterpart on a positive row count: the
+# logs corpus, and span_id:* for traces tenants 0 and 1. The "Wait for LH to
+# flush and settle" step of .github/workflows/parity.yaml is that poll.
+docker compose -f tests/parity/docker-compose.yml --profile test run --rm --no-deps -T \
   parity-tests go test -tags=parity -json -count=1 -timeout=15m ./... \
   > parity-results.json
 python scripts/ci/parity_ratchet.py --results parity-results.json
 docker compose -f tests/parity/docker-compose.yml down -v
 ```
 
-Three properties the harness has to keep, because breaking any of them turns
+`--no-deps` is not optional. Without it `compose run` starts the
+`parity-tests` dependencies again, and for the one-shot datagen services that
+means seeding a second copy of the corpus — after the cold tier was checked
+and while the suite is already reading it.
+
+Four properties the harness has to keep, because breaking any of them turns
 a comparison into a silent no-op:
 
 - **Quote field names containing `:`.** `resource_attr:service.name` unquoted
@@ -137,27 +144,46 @@ a comparison into a silent no-op:
 - **Ask for the seeded window.** `cmd/datagen` backfills at
   `now - rand[1..hours-back]h`; a short relative window like `_time:10m` is
   empty on both tiers. Use `seedWindowParams()` / `seedWindowFilter()` from
-  `tests/parity/helpers.go`.
+  `tests/parity/helpers.go`. A relative filter inside the query is evaluated
+  at the request's `end`, which `seedWindowParams()` puts an hour after the
+  newest row, so a case testing `_time:1h` also sets `end` to
+  `seedWindowMidpoint()`.
 - **Never compare against an empty reference.** `requireNonEmptyReference`
-  fails set / row / bucket / structure comparisons whose reference side
-  produced nothing. If it fires, fix the query or the seed — relaxing the
-  guard restores the vacuous pass it exists to catch.
+  fails every comparison — set, row, bucket, structure and count — whose
+  reference side produced nothing; for counts that includes a `NaN` or empty
+  aggregate value. If it fires, fix the query or the seed — relaxing the
+  guard restores the vacuous pass it exists to catch. A case built to match
+  nothing sets `ExpectEmpty`, and then both tiers must answer 0.
+- **Look values up instead of guessing them.** The seed randomizes message
+  text and timestamps, so a case that needs an exact message or a row's exact
+  `_time` reads it from the reference tier with `referenceRow()` /
+  `referenceRowTime()`, and a narrow window is anchored on a row that exists
+  rather than on a fixed offset that is empty in some seeds.
 
 ### The known-failure ratchet
 
 `tests/parity/known_failures.txt` lists every test allowed to fail, one per
-line with a `# reason` naming a divergence id above, plus a `# min-pass: N`
-directive recording how many tests passed when the list was last updated.
-`scripts/ci/parity_ratchet.py` reads `go test -json` output and fails the
-Parity Tests job when:
+line: the test path, then whitespace, `#`, whitespace and a reason naming a
+divergence id above (the whitespace is what lets a path such as `sub#01`
+contain a `#`). One `# min-pass: N` directive records how many tests passed
+when the list was last updated. `scripts/ci/parity_ratchet.py` reads
+`go test -json` output, keyed by package and test, and fails the Parity Tests
+job when:
 
 - a failing test is not on the list (new divergence or harness regression),
+- a test started and never finished, the test binary panicked, or a package
+  failed without a failing test — a timeout or crash, which `go test -json`
+  otherwise reports only as a package-level `fail` and which no list entry
+  can cover,
 - a listed test passes, skips, or no longer exists (stale entry — delete it),
 - the pass count drops below `min-pass` (coverage went backwards, typically
   a test that started skipping on missing data).
 
 A parent test that fails only because a listed subtest failed is accepted
-without its own entry. The list only ever shrinks.
+without its own entry. `go test -json` does not say whether the parent's own
+body failed as well, so such a parent is excused either way — keep
+assertions out of parents whose subtests are listed. The list only ever
+shrinks.
 
 ## Versioning gap-register
 
