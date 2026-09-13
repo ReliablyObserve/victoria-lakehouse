@@ -94,6 +94,29 @@ Two deprecations to keep in view: `search.traceMaxServiceNameList` and
 (superseded by `search.maxTags`) — still registered, so still warned about, but
 setting them now does nothing.
 
+## LogsQL literals outside the registry
+
+VictoriaLogs 1.51.0 tightened the pipe grammar: a bare word after a pipe is no
+longer silently a filter, so `_time:5m | error` must become
+`_time:5m | filter error` (or fold into the leading filter as
+`_time:5m error`). Quoted tokens, non-word tokens (`!foo`, `{host="x"}`, `>5`)
+and `not` are still accepted bare — 1.51.0 rejected those too and 1.52.0
+restored them, which is why the rule is pinned by a test rather than by prose.
+
+`TestRows_QueriesParseWithUpstream` already parses the registry's own row
+queries. `logsql_literals_test.go` extends the same idea to every other LogsQL
+literal in the repository — Go tests and sources, benchmark and operational
+shell scripts, docs, dashboards, alerts, workflows, the changelog: it extracts
+quoted/backticked spans containing a `|`, keeps the ones that look like LogsQL
+(a stage name the parser recognises after a pipe, or a `_time`/`_msg`/`_stream`
+field), and fails on any that VictoriaLogs rejects with the missing-`filter`
+error. Strings that fail for any other reason (templates with `%s` holes,
+partial pipelines) are ignored, and genuine look-alikes go in the `notLogsQL`
+map with a reason — where a second test deletes entries that stop matching
+anything. `TestLogsQLPipeGrammarContract` pins the accepted and rejected forms
+directly against the vendored parser, so the next grammar change fails a unit
+test instead of a production query.
+
 ## Flag collisions in the traces binary
 
 `lakehouse-traces` links VictoriaLogs' and VictoriaTraces' packages into one
