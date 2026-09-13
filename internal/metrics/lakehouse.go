@@ -700,6 +700,55 @@ var (
 	DeleteVerifyLeakDetected    = NewCounter("lakehouse_delete_verify_leak_detected_total")
 )
 
+// Delete rewrite bookkeeping — the manifest hand-off and the tombstone
+// durability path. Every one of these counts a state transition that used to
+// happen silently (or not at all), so a non-zero error counter is the operator's
+// first signal that a rewritten object and the manifest have diverged.
+var (
+	// DeleteRewriteManifestUpdated counts rewritten objects successfully
+	// re-registered in the manifest (new key in, old key out).
+	DeleteRewriteManifestUpdated = NewCounter("lakehouse_delete_rewrite_manifest_updated_total")
+	// DeleteRewriteManifestErrors counts rewrites whose manifest hand-off
+	// failed. The rewritten object is left unpublished and the tombstone is
+	// NOT marked reaped, so the next scheduler tick retries.
+	DeleteRewriteManifestErrors = NewCounter("lakehouse_delete_rewrite_manifest_errors_total")
+	// DeleteRewriteSkippedNoManifest counts rewrites refused because no
+	// manifest was wired into the scheduler. Rewriting without a manifest
+	// would orphan the rewritten object, so the safeguard is to not rewrite.
+	DeleteRewriteSkippedNoManifest = NewCounter("lakehouse_delete_rewrite_skipped_no_manifest_total")
+	// DeleteRewriteOldObjectErrors counts failures to delete the superseded
+	// object AFTER the manifest already points at its replacement. Harmless
+	// for correctness (the stale object is unmanifested and the orphan sweep
+	// reclaims it) but it costs storage until then.
+	DeleteRewriteOldObjectErrors = NewCounter("lakehouse_delete_rewrite_old_object_errors_total")
+	// DeleteRewriteAlreadyReaped counts keys the rewriter found already gone
+	// from storage — the self-healing path after a crash between the manifest
+	// swap and the tombstone bookkeeping.
+	DeleteRewriteAlreadyReaped = NewCounter("lakehouse_delete_rewrite_already_reaped_total")
+	// DeleteTombstonesCompleted counts tombstones retired because every key
+	// they covered has been rewritten; a completed tombstone leaves Active().
+	DeleteTombstonesCompleted = NewCounter("lakehouse_delete_tombstones_completed_total")
+	// DeleteTombstonePersistTotal / Errors count durability writes by target
+	// ("disk" or "s3").
+	DeleteTombstonePersistTotal  = NewCounterVec("lakehouse_delete_tombstone_persist_total", "target")
+	DeleteTombstonePersistErrors = NewCounterVec("lakehouse_delete_tombstone_persist_errors_total", "target")
+	// DeleteTombstonePersistPending is the number of tombstone records whose
+	// S3 copy is behind the in-memory state. Steady-state 0; a sustained
+	// non-zero value means S3 writes are failing and only the local disk copy
+	// would survive a pod move.
+	DeleteTombstonePersistPending = NewGauge("lakehouse_delete_tombstone_persist_pending")
+	// DeleteStartupInconsistencies counts manifest/tombstone disagreements
+	// found by the boot-time self-check, by kind.
+	DeleteStartupInconsistencies = NewCounterVec("lakehouse_delete_startup_inconsistencies_total", "kind")
+	// DeleteFieldsScanFallback counts field_names/field_values/streams
+	// requests that gave up a metadata-only fast path because an active
+	// tombstone overlapped the window and the answer had to be row-verified.
+	DeleteFieldsScanFallback = NewCounterVec("lakehouse_delete_fields_scan_fallback_total", "endpoint")
+	// DeleteCompactionKeysReaped counts source keys marked reaped because a
+	// compaction merged them and dropped their tombstoned rows.
+	DeleteCompactionKeysReaped = NewCounter("lakehouse_delete_compaction_keys_reaped_total")
+)
+
 // Resource bound metrics — K8s-style request/limit/usage per resource surface.
 // One block of four (acquired_total counter, rejected_total counter,
 // outstanding_bytes gauge, outstanding_count gauge) per surface, matching

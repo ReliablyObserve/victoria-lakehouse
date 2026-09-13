@@ -290,24 +290,32 @@ func run(cfg *config.Config, addr string) {
 	// by the first compaction tick (Compaction.Interval default
 	// 5 min) the holder is always populated, so the closure
 	// returns real overrides instead of nil-no-op.
+	tombstoneStore := delete.NewTombstoneStore()
+	tombstonePersistence := delete.PersistenceConfig{
+		Dir:    cfg.Delete.PersistPath,
+		Pool:   &s3PoolAdapter{pool: store.Pool()},
+		Prefix: cfg.AutoPrefix(),
+	}
+	// Restore the UNION of the disk and S3 copies. The previous sequence only
+	// consulted S3 when disk restored nothing, and nothing ever WROTE to S3, so
+	// a pod that lost its local volume came back with no tombstones at all —
+	// silently un-deleting everything an operator had hidden.
+	if n, err := tombstoneStore.Restore(context.Background(), tombstonePersistence); err != nil {
+		logger.Warnf("tombstone restore incomplete (restored=%d): %s", n, err)
+	} else if n > 0 {
+		logger.Infof("tombstones restored; count=%d, prefix=%s", n, delete.TombstonePrefix(cfg.AutoPrefix()))
+	}
+	// Arm write-through durability AFTER the restore so replaying the restored
+	// records does not rewrite every object back out.
+	tombstoneStore.EnablePersistence(tombstonePersistence)
+	store.SetTombstoneStore(tombstoneStore)
+
 	var tenantPolicyHolder *tenant.PolicyRegistry
-	sched, sweep, stopCompaction := setupCompaction(cfg, store, pusher, addr, &tenantPolicyHolder)
+	sched, sweep, stopCompaction := setupCompaction(cfg, store, pusher, addr, &tenantPolicyHolder, tombstoneStore)
 	if stopCompaction != nil {
 		defer stopCompaction()
 	}
 	_ = sweep
-
-	tombstoneStore := delete.NewTombstoneStore()
-	if err := tombstoneStore.LoadFromDisk(cfg.Delete.PersistPath); err != nil {
-		logger.Warnf("failed to load tombstones from disk: %s; path=%s", err, cfg.Delete.PersistPath)
-	}
-	if tombstoneStore.Count() == 0 {
-		s3Pool := &s3PoolAdapter{pool: store.Pool()}
-		if err := tombstoneStore.LoadFromS3(context.Background(), s3Pool, cfg.S3.Bucket, cfg.AutoPrefix()); err != nil {
-			logger.Warnf("failed to load tombstones from S3: %s", err)
-		}
-	}
-	store.SetTombstoneStore(tombstoneStore)
 
 	// --- Tenant resolver ---
 	resolverCfg := tenant.ResolverConfig{
@@ -420,6 +428,10 @@ func run(cfg *config.Config, addr string) {
 			RewriteDelay:   cfg.Delete.RewriteDelay,
 			AllowedClasses: cfg.Delete.AutoRewriteClasses,
 			MaxConcurrent:  cfg.Delete.RewriteMaxConcurrent,
+			// Without this the rewriter deletes files the manifest still
+			// points at and publishes replacements the manifest has never
+			// heard of; the scheduler refuses to rewrite at all when it is nil.
+			Manifest: store.Manifest(),
 		})
 		rewriteSched.Start(cfg.Delete.VerifyInterval)
 		logger.Infof("delete rewrite scheduler started; rewrite_delay=%v, verify_interval=%v",
@@ -621,6 +633,15 @@ func runShutdown(
 	if err := tombstoneStore.PersistToDisk(cfg.Delete.PersistPath); err != nil {
 		logger.Errorf("failed to persist tombstones to disk: %s", err)
 	}
+	// Durability does not depend on reaching this point — every mutation was
+	// already written through — but shutdown is the last chance to drain any
+	// S3 write a transient failure left owed.
+	tsCtx, tsCancel := context.WithTimeout(context.Background(), persistTimeout)
+	if pending := tombstoneStore.FlushPending(tsCtx); pending > 0 {
+		logger.Errorf("%d tombstone records could not be written to S3; the local disk copy at %s is authoritative for this node",
+			pending, cfg.Delete.PersistPath)
+	}
+	tsCancel()
 
 	// Final stats snapshot on shutdown — bounded too.
 	if cfg.Stats.Enabled && cfg.Stats.SnapshotPrefix != "" {
@@ -657,6 +678,7 @@ func setupCompaction(
 	pusher *manifest.Pusher,
 	addr string,
 	tenantPolicyHolder **tenant.PolicyRegistry,
+	tombstoneStore *delete.TombstoneStore,
 ) (*compaction.Scheduler, *compaction.OrphanSweep, func()) {
 	if !cfg.Compaction.Enabled {
 		return nil, nil, nil
@@ -715,6 +737,10 @@ func setupCompaction(
 	}
 
 	sched := compaction.NewScheduler(compaction.SchedulerConfig{
+		// Compaction is the second reaper: it already rewrites every row it
+		// touches, so suppressing tombstoned rows there costs one predicate
+		// and removes them permanently instead of copying them forward.
+		Tombstones:               tombstoneStore,
 		Manifest:                 store.Manifest(),
 		Pool:                     store.Pool(),
 		Ownership:                ownership,
@@ -1387,6 +1413,12 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 			logger.Infof("manifest loaded from disk; files=%d, bytes=%d", m.TotalFiles(), m.TotalBytes())
 		}
 	}
+	// Both halves of the delete state are now restored (tombstones at
+	// construction, manifest just above), so this is the first moment they can
+	// be compared. Findings are reported, not repaired: every repair is a data
+	// movement the rewrite scheduler already owns.
+	delete.SelfCheck(store.TombstoneStore(), store.Manifest())
+
 	sm.SetManifestFiles(int64(store.Manifest().TotalFiles()))
 	logger.Infof("disk recovery complete; entering serve-while-warming mode (manifest_files=%d, min=%d)",
 		store.Manifest().TotalFiles(), cfg.Startup.MinManifestFiles)

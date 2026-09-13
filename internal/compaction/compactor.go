@@ -18,6 +18,7 @@ import (
 	"github.com/parquet-go/parquet-go/compress/zstd"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -54,6 +55,17 @@ type CompactorConfig struct {
 	// parameter per knob. Passed by value because the struct is small
 	// and the compactor doesn't mutate it.
 	CompactionConfig config.CompactionConfig
+
+	// Tombstones lets compaction act as a second reaper: rows matching an
+	// active tombstone are dropped from the merged output instead of being
+	// copied forward, and the source keys are marked reaped. Optional — a nil
+	// store leaves compaction behaving exactly as it did before.
+	Tombstones *delete.TombstoneStore
+
+	// NeverDeletePrefixes mirrors the orphan sweep's protected list so the
+	// reap bookkeeping never claims an object compaction is not allowed to
+	// remove. Empty means the sweep's defaults.
+	NeverDeletePrefixes []string
 
 	// TenantCompressionLookup resolves the per-output-level
 	// compression schedule for a given tenant prefix (e.g.
@@ -98,10 +110,16 @@ type Compactor struct {
 	bloomRebuilder   BloomRebuilder
 	cfg              config.CompactionConfig
 	tenantLookup     func(tenantPrefix string) []int
+	tombstones       *delete.TombstoneStore
+	neverDelete      []string
 }
 
 // NewCompactor creates a Compactor from the given config.
 func NewCompactor(cfg CompactorConfig) *Compactor {
+	neverDelete := cfg.NeverDeletePrefixes
+	if len(neverDelete) == 0 {
+		neverDelete = defaultNeverDeletePrefixes()
+	}
 	return &Compactor{
 		pool:             cfg.Pool,
 		manifest:         cfg.Manifest,
@@ -112,6 +130,8 @@ func NewCompactor(cfg CompactorConfig) *Compactor {
 		bloomRebuilder:   cfg.BloomRebuilder,
 		cfg:              cfg.CompactionConfig,
 		tenantLookup:     cfg.TenantCompressionLookup,
+		tombstones:       cfg.Tombstones,
+		neverDelete:      neverDelete,
 	}
 }
 
@@ -317,6 +337,11 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		if err != nil {
 			return nil, err
 		}
+		// Drop tombstoned rows BEFORE anything is derived from the merge:
+		// row count, time bounds, label aggregates and blooms all feed the
+		// manifest, and deriving them from rows that are about to be dropped
+		// would publish metadata describing data the output does not contain.
+		merged = dropTombstonedLogRows(c.tombstones, merged)
 		rowsMerged = int64(len(merged))
 		if rowsMerged > 0 {
 			// True min/max scan — NOT merged[0]/merged[len-1]. The merge
@@ -348,6 +373,8 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		if err != nil {
 			return nil, err
 		}
+		// See the logs branch: suppression happens before any derived metadata.
+		merged = dropTombstonedTraceRows(c.tombstones, merged)
 		rowsMerged = int64(len(merged))
 		if rowsMerged > 0 {
 			// True min/max scan — same rationale as the logs branch above.
@@ -444,6 +471,12 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 			logger.Warnf("failed to delete source file; key=%s, error=%s", f.Key, err)
 		}
 	}
+
+	// The merged output is published and the sources are gone, so any
+	// tombstone that named a source has had its work done for it. Recording
+	// that here is what stops the rewriter from chasing keys compaction
+	// already removed, and lets such a tombstone complete.
+	markKeysReaped(c.tombstones, inputKeys, c.neverDelete)
 
 	return &compactGroupResult{
 		InputKeys:    inputKeys,

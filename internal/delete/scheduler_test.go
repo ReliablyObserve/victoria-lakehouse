@@ -5,13 +5,35 @@ import (
 	"testing"
 	"time"
 
+	lhmanifest "github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
 // buildSchedulerForTest creates a scheduler for testing with given parameters.
+// The manifest is built from the pool's current contents so the fixture starts
+// with metadata and bucket in agreement — the state every invariant check
+// assumes.
 func buildSchedulerForTest(t *testing.T, store *TombstoneStore, detector *StorageClassDetector, pool *mockRewriterPool, allowedClasses []string) *RewriteScheduler {
 	t.Helper()
+	sched, _ := buildSchedulerWithManifest(t, store, detector, pool, allowedClasses)
+	return sched
+}
+
+func buildSchedulerWithManifest(t *testing.T, store *TombstoneStore, detector *StorageClassDetector, pool *mockRewriterPool, allowedClasses []string) (*RewriteScheduler, *lhmanifest.Manifest) {
+	t.Helper()
+	files := manifestFromPool(t, pool)
+	// Also register keys a tombstone names but the bucket does not hold: the
+	// manifest listing a key whose object is gone is a real state (it is what a
+	// crash mid-rewrite leaves), and several tests depend on reaching the
+	// download rather than the "already superseded" self-healing shortcut.
+	for _, ts := range store.Active() {
+		for _, k := range ts.AffectedKeys {
+			if !files.HasKey(k) {
+				files.AddFile(extractPartition(k), lhmanifest.FileInfo{Key: k, Size: 1, RowCount: 1, MinTimeNs: 1, MaxTimeNs: 1 << 40})
+			}
+		}
+	}
 	rewriter := NewRewriter(pool, "logs/", 10000, "logs")
 	return NewRewriteScheduler(RewriteSchedulerConfig{
 		Store:          store,
@@ -20,7 +42,8 @@ func buildSchedulerForTest(t *testing.T, store *TombstoneStore, detector *Storag
 		RewriteDelay:   time.Hour,
 		AllowedClasses: allowedClasses,
 		MaxConcurrent:  2,
-	})
+		Manifest:       files,
+	}), files
 }
 
 func TestSchedulerRunOnce_EligibleTombstone(t *testing.T) {
@@ -35,7 +58,7 @@ func TestSchedulerRunOnce_EligibleTombstone(t *testing.T) {
 		{TimestampUnixNano: 1000, Body: "delete me", SeverityText: "error", ServiceName: "web"},
 		{TimestampUnixNano: 2000, Body: "keep this", SeverityText: "info", ServiceName: "web"},
 	}
-	pool.objects[key] = buildTestParquet(t, rows)
+	pool.Put(key, buildTestParquet(t, rows))
 
 	ts := Tombstone{
 		ID:           "ts-1",
@@ -70,10 +93,15 @@ func TestSchedulerRunOnce_EligibleTombstone(t *testing.T) {
 		t.Error("expected DeleteRewriteTotal to be incremented")
 	}
 
-	// Key should be marked as reaped.
-	got, _ := store.Get("ts-1")
-	if !got.Reaped[key] {
-		t.Error("key should be marked as reaped after successful rewrite")
+	// Every affected key is now rewritten, so the tombstone has no work left
+	// and must be retired — not left in Active() to be re-examined forever.
+	if _, still := store.Get("ts-1"); still {
+		t.Error("a fully reaped tombstone must be completed, not left active")
+	}
+	for _, active := range store.Active() {
+		if active.ID == "ts-1" {
+			t.Error("completed tombstone must not appear in Active()")
+		}
 	}
 }
 
@@ -291,7 +319,7 @@ func TestSchedulerRunOnce_AutoMode(t *testing.T) {
 		{TimestampUnixNano: 1000, Body: "remove", SeverityText: "error", ServiceName: "svc"},
 		{TimestampUnixNano: 2000, Body: "keep", SeverityText: "info", ServiceName: "svc"},
 	}
-	pool.objects[key] = buildTestParquet(t, rows)
+	pool.Put(key, buildTestParquet(t, rows))
 
 	ts := Tombstone{
 		ID:           "ts-auto",

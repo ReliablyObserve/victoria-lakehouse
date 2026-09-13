@@ -1209,7 +1209,13 @@ func (m *Manifest) AllFiles() map[string][]FileInfo {
 func (m *Manifest) RemoveFile(partition string, key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.removeFileLocked(partition, key)
+}
 
+// removeFileLocked is RemoveFile's body without the lock so ReplaceFile can
+// pair it with addFileLocked inside ONE critical section. Returns true when a
+// file was actually removed. Caller must hold m.mu (write).
+func (m *Manifest) removeFileLocked(partition string, key string) bool {
 	files := m.files[partition]
 	for i, fi := range files {
 		if fi.Key == key {
@@ -1225,9 +1231,43 @@ func (m *Manifest) RemoveFile(partition string, key string) {
 			}
 			delete(m.byKey, key)
 			m.rebuildIndex()
-			return
+			return true
 		}
 	}
+	return false
+}
+
+// PartitionForKey returns the partition that owns the given file key. The
+// delete rewriter needs it to re-register a rewritten object under the same
+// partition the original was filed in — deriving the partition from the key
+// string would guess, and a guess that disagrees with byKey silently orphans
+// the entry. O(1) via byKey. Safe for concurrent use.
+func (m *Manifest) PartitionForKey(key string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	p, ok := m.byKey[key]
+	return p, ok
+}
+
+// ReplaceFile swaps oldKey's manifest entry for fi inside a single write-lock
+// critical section, so no reader can observe a window where the partition has
+// neither entry (which would make the rewritten rows briefly invisible) or a
+// window where it has both (which would double-count them). This is the
+// atomicity guarantee the delete rewriter needs when it publishes a rewritten
+// Parquet object: the manifest flips from "old key" to "new key" in one step.
+//
+// Returns true when the old entry existed and was replaced. When oldKey is
+// absent the new entry is still added (so a rewrite of an unmanifested object
+// still ends up managed rather than orphaned) and false is returned so the
+// caller can count the inconsistency.
+//
+// Safe for concurrent use.
+func (m *Manifest) ReplaceFile(partition string, oldKey string, fi FileInfo) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	removed := m.removeFileLocked(partition, oldKey)
+	m.addFileLocked(partition, fi)
+	return removed
 }
 
 // LiveAggregate is the single source of truth for global storage
@@ -1401,7 +1441,13 @@ func (m *Manifest) SetChangeObserver(onAdd, onRemove func(partition string, fi F
 func (m *Manifest) AddFile(partition string, fi FileInfo) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.addFileLocked(partition, fi)
+}
 
+// addFileLocked is AddFile's body without the lock so ReplaceFile can pair it
+// with removeFileLocked inside ONE critical section. Caller must hold m.mu
+// (write).
+func (m *Manifest) addFileLocked(partition string, fi FileInfo) {
 	// Idempotency guard (spec §2.2.4): two compaction loops racing on the
 	// same partition can produce duplicate AddFile calls with the same key
 	// (and also distinct UUID-suffixed keys; that case is handled by Tier B
