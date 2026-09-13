@@ -890,6 +890,16 @@ func applyTenantStorageOverrides(store *parquets3.Storage, policy *tenant.Policy
 		bucketFor := func(a, p uint32) string {
 			return bucketByTenant[uint64(a)<<32|uint64(p)]
 		}
+		// The manifest refresh must list the dedicated buckets too, or their
+		// objects drop out of the manifest at the next refresh.
+		tenantBuckets := make([]manifest.TenantBucket, 0, len(entries))
+		for _, e := range entries {
+			tenantBuckets = append(tenantBuckets, manifest.TenantBucket{
+				Bucket: e.Bucket,
+				Prefix: fmt.Sprintf("%d/%d/", e.AccountID, e.ProjectID),
+			})
+		}
+		store.Manifest().SetTenantBuckets(tenantBuckets)
 		store.Pool().SetBucketRouter(func(key string) string {
 			acc, proj, ok := parseTenantFromS3Key(key)
 			if !ok {

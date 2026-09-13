@@ -243,10 +243,9 @@ lakehouse:
 
 In mixed mode the s3reader `PoolRegistry` caches a separate `ClientPool` per bucket, and the writer's `SetTenantBucket(account, project) → bucket` resolver sends each tenant's flushed Parquet to its bucket. Reads use the same routing in reverse: the client pool's bucket router derives the bucket from the object key's `{AccountID}/{ProjectID}/` segments, so a read of a tenant's object reaches that tenant's bucket (see [Read Scoping](#read-scoping-which-data-a-request-sees) for which objects a request may read). `manifest.FileInfo.Bucket` is set by the bucket migration below. Sidecars and the fleet-wide manifest stay in the default bucket — the only sharded thing is the data files themselves.
 
-Current limitations of the bucket-per-tenant layout:
+The periodic manifest refresh lists every dedicated bucket under its tenant's prefix next to the default bucket, so objects that live only in a tenant's bucket stay in the manifest. If a dedicated bucket cannot be listed the refresh fails and the previous manifest is kept; a key found in both the shared and the dedicated bucket (a migration in progress) is kept once, as the dedicated-bucket copy.
 
-- The per-tenant `overrides[].s3.bucket` form above is what installs bucket routing. `isolation: bucket` with `bucket_template` is validated at startup but does not install per-tenant routing on its own.
-- The periodic manifest refresh lists the default bucket only, so objects that live solely in a dedicated tenant bucket drop out of the manifest at the next refresh; until then (and for the unflushed window) the tenant's reads are served normally. Requests stay scoped either way — a missing object makes an answer smaller, never wider.
+Current limitation: the per-tenant `overrides[].s3.bucket` form above is what installs bucket routing. `isolation: bucket` with `bucket_template` is validated at startup but does not install per-tenant routing on its own.
 
 ### Retroactive Bucket Migration
 

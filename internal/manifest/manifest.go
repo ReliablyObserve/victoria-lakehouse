@@ -231,6 +231,11 @@ type Manifest struct {
 	// full-bucket path) — same behaviour as before.
 	signalSuffix string
 
+	// tenantBuckets lists the dedicated buckets of bucket-per-tenant tenants
+	// (an s3.bucket override) and the key prefix their objects use there. The
+	// refresh lists them next to the default bucket; see SetTenantBuckets.
+	tenantBuckets []TenantBucket
+
 	// partitionAttempts maps "dt=YYYY-MM-DD/hour=HH" -> last MarkAttempt
 	// timestamp recorded by the compaction scheduler (see
 	// internal/compaction.OwnershipResolver + OrphanSweep). In-memory only
@@ -570,12 +575,73 @@ func (m *Manifest) SetSignalSuffix(suffix string) {
 // can abort the LIST without waiting for the remaining pages of a huge
 // bucket — at PB-scale a single full-bucket walk can run for minutes.
 func (m *Manifest) refreshFullBucket(ctx context.Context, client *s3.Client, listPrefix string) (map[string][]FileInfo, int, int64, error) {
+	return listBucketPrefix(ctx, client, m.bucket, listPrefix)
+}
+
+// listTenantBuckets lists every registered dedicated tenant bucket and merges
+// its Parquet objects into files, stamping FileInfo.Bucket. An object key that
+// the default-bucket listing also returned (a tenant mid-migration) is kept
+// once, as the dedicated-bucket copy — reads for that key already resolve to
+// the dedicated bucket, and listing it twice would scan it twice. Returns the
+// number of objects and bytes added.
+func (m *Manifest) listTenantBuckets(ctx context.Context, client *s3.Client, files map[string][]FileInfo) (int, int64, error) {
+	m.mu.RLock()
+	buckets := append([]TenantBucket(nil), m.tenantBuckets...)
+	suffix := m.signalSuffix
+	m.mu.RUnlock()
+	if len(buckets) == 0 {
+		return 0, 0, nil
+	}
+
+	type pos struct {
+		partition string
+		index     int
+	}
+	existing := make(map[string]pos)
+	for partition, pf := range files {
+		for i := range pf {
+			existing[pf[i].Key] = pos{partition, i}
+		}
+	}
+
+	var addedFiles int
+	var addedBytes int64
+	for _, tb := range buckets {
+		if tb.Bucket == "" || tb.Bucket == m.bucket || tb.Prefix == "" {
+			continue
+		}
+		listPrefix := tb.Prefix + suffix
+		listed, _, _, err := listBucketPrefix(ctx, client, tb.Bucket, listPrefix)
+		if err != nil {
+			return 0, 0, fmt.Errorf("list tenant bucket %s/%s: %w", tb.Bucket, listPrefix, err)
+		}
+		for partition, pf := range listed {
+			for _, fi := range pf {
+				fi.Bucket = tb.Bucket
+				if at, dup := existing[fi.Key]; dup {
+					addedBytes += fi.Size - files[at.partition][at.index].Size
+					files[at.partition][at.index] = fi
+					continue
+				}
+				files[partition] = append(files[partition], fi)
+				existing[fi.Key] = pos{partition, len(files[partition]) - 1}
+				addedFiles++
+				addedBytes += fi.Size
+			}
+		}
+	}
+	return addedFiles, addedBytes, nil
+}
+
+// listBucketPrefix lists the Parquet objects under prefix in bucket, grouped
+// by hour partition.
+func listBucketPrefix(ctx context.Context, client *s3.Client, bucket, listPrefix string) (map[string][]FileInfo, int, int64, error) {
 	files := make(map[string][]FileInfo)
 	var totalFiles int
 	var totalBytes int64
 
 	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(m.bucket),
+		Bucket: aws.String(bucket),
 		Prefix: aws.String(listPrefix),
 	})
 	for paginator.HasMorePages() {
@@ -791,6 +857,12 @@ func (m *Manifest) mergeRefreshedFilesLocked(files map[string][]FileInfo) {
 		}
 		for i := range newFiles {
 			if old, ok := oldByKey[newFiles[i].Key]; ok {
+				// Keep the enrichment already known, but take the bucket the
+				// listing found the object in when the old entry had none (a
+				// flush registers the object before any refresh has seen it).
+				if old.Bucket == "" {
+					old.Bucket = newFiles[i].Bucket
+				}
 				newFiles[i] = old
 			}
 		}
@@ -811,6 +883,26 @@ func (m *Manifest) mergeRefreshedFilesLocked(files map[string][]FileInfo) {
 			}
 		}
 	}
+}
+
+// TenantBucket is a dedicated bucket of the bucket-per-tenant layout and the
+// tenant key prefix of the objects inside it (for example "1002/0/"). The
+// manifest's signal suffix ("logs/" or "traces/", see SetSignalSuffix) is
+// appended when listing, so each binary lists only its own signal.
+type TenantBucket struct {
+	Bucket string
+	Prefix string
+}
+
+// SetTenantBuckets registers the dedicated tenant buckets that RefreshFromS3
+// must list in addition to the default bucket. The refresh replaces the file
+// set with exactly what its listings return, so without this the objects of a
+// tenant with an s3.bucket override would drop out of the manifest at the
+// next refresh and that tenant's cold-tier reads would come back short.
+func (m *Manifest) SetTenantBuckets(buckets []TenantBucket) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tenantBuckets = append([]TenantBucket(nil), buckets...)
 }
 
 func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
@@ -856,6 +948,16 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 		}
 		files, totalFiles, totalBytes = f, tf, tb
 	}
+
+	// Bucket-per-tenant: add each dedicated bucket's objects. A failed LIST
+	// fails the whole refresh (the previous state is kept) rather than
+	// swapping in a manifest that silently lost a tenant.
+	addedFiles, addedBytes, err := m.listTenantBuckets(ctx, client, files)
+	if err != nil {
+		return err
+	}
+	totalFiles += addedFiles
+	totalBytes += addedBytes
 
 	var minT, maxT time.Time
 	for partition := range files {
