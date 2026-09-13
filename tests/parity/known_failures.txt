@@ -1,18 +1,26 @@
 # Known-failure allowlist for the hot-vs-cold parity suite.
 #
-# One test (or subtest) path per line, each with a `# reason` naming the
-# divergence id from the "Known divergences under investigation" table in
-# docs/parity-and-gaps.md. scripts/ci/parity_ratchet.py reads this file and
-# fails the Parity Tests job when:
+# One test (or subtest) path per line, then whitespace, `#`, whitespace and a
+# reason naming the divergence id from the "Known divergences under
+# investigation" table in docs/parity-and-gaps.md. The separator needs the
+# whitespace on both sides because a `#` can be part of a path: go test names
+# a repeated subtest `name#01`. scripts/ci/parity_ratchet.py reads this file
+# and fails the Parity Tests job when:
 #
 #   * a failing test is NOT listed here — a new divergence or a harness
 #     regression, either way something to look at before merging;
+#   * a test started and never finished, the test binary panicked, or the
+#     package failed outside any test — a crash or timeout, which no entry
+#     here can cover;
 #   * a listed test passes, skips, or no longer exists — the entry is stale
 #     and must be deleted, so the list only ever shrinks;
-#   * fewer than `min-pass` tests pass — coverage went backwards.
+#   * fewer than `min-pass` tests pass — coverage went backwards. The file
+#     holds exactly one `min-pass` directive.
 #
 # A parent test that fails only because a listed subtest failed does not need
-# its own entry.
+# its own entry. go test reports a parent's own failure and its children's
+# the same way, so a parent whose failing children are all listed is excused
+# even if its own body failed too — keep assertions out of such parents.
 #
 # Do NOT add an entry to make a red build green. Every line here is a real
 # cold-tier divergence with a fix in flight; a harness defect belongs in the
