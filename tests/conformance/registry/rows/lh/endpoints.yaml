@@ -263,3 +263,31 @@
   compare: { type: schema }
   layers: [api]
   pending: true
+
+- id: lh.delete.rewrite_keeps_kept_rows
+  title: "LH delete rewrite — the rows a delete did NOT match stay queryable afterwards"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: POST, path: /delete/logsql/delete, params: { query: "service.name:checkout", start: "{{seed.start}}", end: "{{seed.cold_end}}", mode: "permanent" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  notes: "After the background rewriter processes the tombstone, a query over the same window must still return every row the delete did not match, and none that it did. The rewritten object must be registered in the manifest (so the orphan sweep does not reclaim it) and the superseded key must be gone from it. Covered at unit level by internal/delete/rewrite_manifest_test.go (TestRewrite_PublishesReplacementIntoManifest) and internal/delete/rewrite_crash_test.go (TestRewriteCrashMatrix); this row is the end-to-end expectation the runner will execute."
+
+- id: lh.delete.hide_survives_crash
+  title: "LH hide-mode delete — suppression survives a non-graceful restart"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: POST, path: /delete/logsql/delete, params: { query: "service.name:checkout", start: "{{seed.start}}", end: "{{seed.cold_end}}", mode: "hide" } }
+  compare: { type: count }
+  layers: [api, chaos]
+  pending: true
+  notes: "Create a hide-mode tombstone, kill the pod without a graceful shutdown, restart it, and query the same window: the suppressed rows must still be absent, and the deleted value must still be absent from field_values. Covered at unit level by internal/delete/tombstone_durability_test.go (TestTombstoneDurability_SurvivesACrashViaDisk / ViaS3 / RestoreUnionsDiskAndS3) and internal/storage/parquets3/fields_tombstones_test.go (TestFieldValues_TombstonedValueDisappears); this row is the end-to-end expectation the runner will execute."

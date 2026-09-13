@@ -189,3 +189,63 @@ func TestTraceRowTimestampNs_MissingColumnReadsAsZero(t *testing.T) {
 		t.Errorf("an unprojected timestamp column must read as 0, got %d", got)
 	}
 }
+
+func TestTraceAddTombstoneProjection_NoTombstonesLeavesTheProjectionAlone(t *testing.T) {
+	s := testStorage()
+	projected := map[string]bool{"span.name": true}
+	s.addTombstoneProjection(nil, projected)
+	if len(projected) != 1 {
+		t.Errorf("projection widened with no tombstones: %v", projected)
+	}
+}
+
+func TestTraceAddTombstoneProjection_MatchAllAndUnparseableNeedOnlyTheTimestamp(t *testing.T) {
+	s := testStorage()
+	for _, q := range []string{"*", `broken:=="`} {
+		projected := map[string]bool{}
+		s.addTombstoneProjection([]tombstone{{Query: q, StartNs: 0, EndNs: 10}}, projected)
+		if !projected[timestampColumn] {
+			t.Errorf("query %q: the timestamp column must be projected — every tombstone is time-bounded", q)
+		}
+		if len(projected) != 1 {
+			t.Errorf("query %q constrains no field, got %v", q, projected)
+		}
+	}
+}
+
+func TestTraceFieldsTombstones_EmptyStoreAndNonOverlappingWindow(t *testing.T) {
+	s := testStorage()
+	store := delete.NewTombstoneStore()
+	s.SetTombstoneStore(store)
+
+	if got := s.fieldsTombstones(0, 1<<62); got != nil {
+		t.Errorf("an empty store must report none, got %v", got)
+	}
+
+	store.Add(delete.Tombstone{ID: "ts", Query: "*", StartNs: 100, EndNs: 200, Mode: "hide"})
+	if got := s.fieldsTombstones(1000, 2000); got != nil {
+		t.Errorf("a tombstone outside the window must report none, got %v", got)
+	}
+	if got := s.fieldsTombstones(150, 160); len(got) != 1 {
+		t.Errorf("an overlapping tombstone must be reported, got %v", got)
+	}
+}
+
+// TestTraceFieldValues_TombstoneCombinesWithTheUserFilter covers the branch
+// where both predicates apply: the user's filter selects spans, and the
+// tombstone removes some of what it selected.
+func TestTraceFieldValues_TombstoneCombinesWithTheUserFilter(t *testing.T) {
+	f := newTraceFieldsTombstoneFixture(t, false)
+	f.addTombstone()
+
+	q := mustParseQueryWithTime(t, `service.name:*`, f.startNs, f.endNs)
+	got, err := f.storage.GetFieldValues(context.Background(), nil, q, "service.name", 100)
+	if err != nil {
+		t.Fatalf("GetFieldValues: %v", err)
+	}
+	for _, v := range traceValueStrings(got) {
+		if v == "order-service" {
+			t.Fatalf("the deleted span's service survived a filtered enumeration: %v", traceValueStrings(got))
+		}
+	}
+}

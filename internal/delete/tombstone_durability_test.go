@@ -2,6 +2,7 @@ package delete
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -443,5 +444,84 @@ func TestTombstoneFullyReaped(t *testing.T) {
 	empty := Tombstone{}
 	if empty.FullyReaped() {
 		t.Error("a tombstone with no affected keys must not report itself reaped")
+	}
+}
+
+// --- validation ---------------------------------------------------------------
+
+func TestTombstoneValidate(t *testing.T) {
+	base := func() Tombstone {
+		return Tombstone{ID: "id", Query: `severity_text:="error"`, StartNs: 0, EndNs: 10, Mode: "hide"}
+	}
+
+	ok := base()
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("a well-formed tombstone must be accepted: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Tombstone)
+		want   string
+	}{
+		{"no id", func(ts *Tombstone) { ts.ID = "" }, "no id"},
+		{"invalid utf-8 query", func(ts *Tombstone) { ts.Query = "\xb3" }, "query is not valid UTF-8"},
+		{"invalid utf-8 id", func(ts *Tombstone) { ts.ID = "\xb3" }, "id is not valid UTF-8"},
+		{"invalid utf-8 created_by", func(ts *Tombstone) { ts.CreatedBy = "\xb3" }, "created_by is not valid UTF-8"},
+		{"inverted range", func(ts *Tombstone) { ts.StartNs, ts.EndNs = 10, 0 }, "inverted"},
+		{"unparseable query", func(ts *Tombstone) { ts.Query = `severity_text:=="` }, "LogsQL"},
+		{"unknown mode", func(ts *Tombstone) { ts.Mode = "obliterate" }, "unknown mode"},
+		{"invalid utf-8 affected key", func(ts *Tombstone) { ts.AffectedKeys = []string{"\xb3"} }, "affected key"},
+	} {
+		ts := base()
+		tc.mutate(&ts)
+		err := ts.Validate()
+		if err == nil {
+			t.Errorf("%s: expected rejection", tc.name)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: error %q does not mention %q", tc.name, err, tc.want)
+		}
+	}
+
+	// Match-all and empty queries are legitimate: they mean "every row in the
+	// window", which is how a range delete is expressed.
+	for _, q := range []string{"", "*"} {
+		ts := base()
+		ts.Query = q
+		if err := ts.Validate(); err != nil {
+			t.Errorf("query %q must be accepted: %v", q, err)
+		}
+	}
+	// An empty mode falls back to the configured default downstream.
+	ts := base()
+	ts.Mode = ""
+	if err := ts.Validate(); err != nil {
+		t.Errorf("an empty mode must be accepted: %v", err)
+	}
+}
+
+// TestTombstoneValidate_RejectsWhatTheEncodingCannotCarry is the fuzz finding
+// turned into a standing check: a query with invalid UTF-8 comes back from JSON
+// with the bytes replaced, so the restored tombstone is not the one that was
+// stored. It must be refused at the door rather than mutated behind the user's
+// back.
+func TestTombstoneValidate_RejectsWhatTheEncodingCannotCarry(t *testing.T) {
+	ts := Tombstone{ID: "id", Query: "\xb3", StartNs: 0, EndNs: 10, Mode: "hide"}
+	if err := ts.Validate(); err == nil {
+		t.Fatal("a query that cannot be persisted faithfully must be rejected")
+	}
+
+	data, err := json.Marshal(ts)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back Tombstone
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.Query == ts.Query {
+		t.Skip("this Go release preserves the bytes; the guard is still correct")
 	}
 }

@@ -41,13 +41,18 @@ For data on any S3 class, the default deletion mode is **tombstone-based soft de
      "created_by": "admin@company.com"
    }
    ```
-4. On every read query, tombstones are evaluated as post-filters — matching rows are suppressed from results
+4. On every read query, tombstones are evaluated as post-filters — matching rows are suppressed from results, and from the `field_values` / `streams` / `stream_ids` enumerations that feed field pickers (see [Operations → Where tombstones are applied](operations.md#where-tombstones-are-applied))
 5. **Cost: $0** — no S3 reads, no rewrites, no retrieval fees
 
 **Tombstones are stored in:**
-- In-memory manifest (instant filter application)
-- Persisted to disk (survives restarts)
-- Synced to S3 as `_tombstones/{id}.json` (survives pod loss)
+- In-memory (instant filter application)
+- Written through to disk on every change (survives `kill -9`, not just a graceful shutdown)
+- Written through to S3 as `{tenant_prefix}_tombstones/{id}.json` in the same call, retried on failure (survives pod loss)
+
+Startup restores the union of the disk and S3 copies. The full guarantee, the
+conflict-resolution rule and the boot-time self-check are documented in
+[Operations → Tombstone Management](operations.md#tombstone-management) and
+[Durability §3.1](durability.md#31-deletes-and-rewrites).
 
 ### Tier 2: Rewrite (S3 Standard Only)
 
@@ -194,7 +199,7 @@ lakehouse:
     rewrite_delay: 1h                             # Wait before rewriting (batch tombstones)
     rewrite_batch_size: 50                        # Max files per rewrite job
     glacier_force_header: "X-Force-Glacier-Delete" # Required header for forced Glacier rewrite
-    tombstone_persist_path: /data/lakehouse/tombstones
+    persist_path: /data/lakehouse/tombstones      # Durable volume — holds the local tombstone copy
     cost_warning_threshold: "$10"                 # Warn user if estimated cost exceeds this
 ```
 
@@ -276,11 +281,18 @@ Each operates independently on its respective Parquet files. Both share the same
 ### Tombstone Storage Format
 
 ```
-s3://{bucket}/{tenant}/_tombstones/
-  2026-05-05T10-00-00Z_abc123.json   # One file per tombstone
+s3://{bucket}/{tenant_prefix}_tombstones/
+  {id}.json   # One object per tombstone
 ```
 
-Tombstones are small JSON files (<1KB) stored alongside data. They're loaded into memory on startup and synced via manifest broadcasts.
+`{tenant_prefix}` is the same prefix the signal's Parquet files live under (e.g.
+`1002/0/logs/`), so a tenant's tombstones sit beside its data. The
+`_tombstones/` segment is on the orphan sweep's never-delete list, so the sweep
+cannot reclaim a live tombstone record.
+
+Tombstones are small JSON objects (<1 KB). Each one is written on creation and
+rewritten whenever its rewrite progress changes; the object is deleted when the
+tombstone is un-deleted or retired. They are loaded into memory at startup.
 
 ### Rewrite Job Scheduling
 

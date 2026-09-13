@@ -369,10 +369,7 @@ func runRandomDeleteSequence(t *testing.T, rng *rand.Rand) {
 			// Issue a delete over a random severity, covering every file that
 			// still exists.
 			sev := severities[rng.Intn(len(severities))]
-			var keys []string
-			for _, k := range pool.Keys() {
-				keys = append(keys, k)
-			}
+			keys := pool.Keys()
 			if len(keys) == 0 {
 				continue
 			}

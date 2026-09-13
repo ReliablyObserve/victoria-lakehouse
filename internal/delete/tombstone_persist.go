@@ -34,6 +34,16 @@ type tombstonePersistence struct {
 	pool   S3Pool
 	prefix string
 
+	// diskMu serializes the snapshot-and-write of the whole-file disk copy.
+	// PersistToDisk marshals the entire tombstone map, so two concurrent
+	// mutations each snapshot independently and then race on the rename: the
+	// one that snapshotted FIRST can land LAST, leaving the file describing an
+	// older state than the one already acknowledged to a caller. Taking the
+	// snapshot under this lock makes the last file written also the last state
+	// observed. It is a separate lock from the store's own so a slow disk never
+	// blocks a query's ForRange.
+	diskMu sync.Mutex
+
 	mu      sync.Mutex
 	pending map[string]pendingOp
 }
@@ -43,8 +53,12 @@ type tombstonePersistence struct {
 // fmt.Sprintf("%s/_tombstones/", tenant) produced "logs//_tombstones/" — a
 // distinct S3 prefix from the "logs/_tombstones/" documented in
 // docs/deletion-strategy.md, which is one reason LoadFromS3 found nothing.
+// TrimRight rather than TrimSuffix: a prefix ending in more than one slash
+// ("//", from an empty tenant prefix concatenated with a signal suffix) would
+// otherwise keep one of them and produce a key the reader never lists. Found by
+// FuzzNormalizeTombstonePrefix.
 func normalizeTombstonePrefix(prefix string) string {
-	prefix = strings.TrimSuffix(prefix, "/")
+	prefix = strings.TrimRight(prefix, "/")
 	if prefix == "" {
 		return tombstonePrefixSegment
 	}
@@ -74,7 +88,10 @@ func (s *TombstoneStore) persistChange(p *tombstonePersistence, id string, op pe
 	defer cancel()
 
 	if p.dir != "" {
-		if err := s.PersistToDisk(p.dir); err != nil {
+		p.diskMu.Lock()
+		err := s.PersistToDisk(p.dir)
+		p.diskMu.Unlock()
+		if err != nil {
 			metrics.DeleteTombstonePersistErrors.Inc("disk")
 			logger.Errorf("tombstone disk persist failed; id=%s, dir=%s: %s", id, p.dir, err)
 		} else {

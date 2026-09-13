@@ -318,3 +318,153 @@ func fieldsFor(kv ...string) []logstorage.Field {
 	}
 	return out
 }
+
+func TestAddTombstoneProjection_AttributeFieldProjectsItsMapColumn(t *testing.T) {
+	s := testStorage()
+	projected := map[string]bool{}
+
+	// An attribute with no dedicated column resolves to the MAP column that
+	// holds it, and that column is what has to be fetched.
+	s.addTombstoneProjection([]tombstone{
+		{Query: `custom_attr_no_such_column:="x"`, StartNs: 0, EndNs: 10},
+	}, projected)
+
+	if !projected["resource.attributes"] {
+		t.Errorf("an attribute field must project the map column holding it, got %v", projected)
+	}
+	if !projected[timestampColumn] {
+		t.Error("the timestamp column must be projected")
+	}
+}
+
+func TestAddTombstoneProjection_UnparseableTombstoneIsSkipped(t *testing.T) {
+	s := testStorage()
+	projected := map[string]bool{}
+	s.addTombstoneProjection([]tombstone{
+		{Query: `broken:=="`, StartNs: 0, EndNs: 10},
+	}, projected)
+
+	// It still forces the timestamp (every tombstone is time-bounded) but
+	// contributes no predicate columns, because it has no predicate.
+	if !projected[timestampColumn] {
+		t.Error("the timestamp column must be projected even for an unparseable tombstone")
+	}
+	if len(projected) != 1 {
+		t.Errorf("an unparseable tombstone must contribute no predicate columns, got %v", projected)
+	}
+}
+
+// TestFieldValues_TombstoneCombinesWithTheUserFilter covers the branch where
+// both predicates apply: the user's filter selects rows, and the tombstone
+// removes some of what it selected.
+func TestFieldValues_TombstoneCombinesWithTheUserFilter(t *testing.T) {
+	f := newFieldsTombstoneFixture(t, false)
+	f.addTombstone()
+
+	// A filter that matches every row, so the surviving values are decided
+	// purely by the tombstone — but via the filtered branch of the scanner.
+	q := mustParseQueryWithTime(t, `_msg:*`, f.startNs, f.endNs)
+	got, err := f.storage.GetFieldValues(context.Background(), nil, q, "service.name", 100)
+	if err != nil {
+		t.Fatalf("GetFieldValues: %v", err)
+	}
+	for _, v := range valueStrings(got) {
+		if v == "order-service" {
+			t.Fatalf("the deleted value survived a filtered enumeration: %v", valueStrings(got))
+		}
+	}
+}
+
+// TestFieldNames_EmptyHitsFallsThroughUnderATombstone exercises the branch
+// where the footer walk produced no hits at all: the tombstone path must not
+// swallow the catalog/labelIndex fallbacks that still have names to offer.
+func TestFieldNames_EmptyHitsFallsThroughUnderATombstone(t *testing.T) {
+	f := newFieldsTombstoneFixture(t, false)
+	f.addTombstone()
+
+	// A window with no files at all: GetFieldNames returns before the footer
+	// walk, so the tombstone branch is never reached and nothing panics.
+	q := mustParseQueryWithTime(t, "*", 1, 2)
+	if _, err := f.storage.GetFieldNames(context.Background(), nil, q); err != nil {
+		t.Fatalf("GetFieldNames over an empty window: %v", err)
+	}
+}
+
+// --- field_names hit bookkeeping ---------------------------------------------
+//
+// These cover the two helpers the tombstone branch of GetFieldNames leans on.
+// Both are pure, and both decide what a caller SEES in a field picker, so they
+// are worth pinning independently of the endpoint that calls them.
+
+func TestLabelIndexNamesWithHits(t *testing.T) {
+	got := labelIndexNamesWithHits([]string{"a", "b"}, map[string]uint64{"a": 7})
+	if len(got) != 2 {
+		t.Fatalf("got %d entries, want 2", len(got))
+	}
+	if got[0].Value != "a" || got[0].Hits != 7 {
+		t.Errorf("entry 0 = %+v, want a/7", got[0])
+	}
+	// A name with no recorded count reports 0 — the documented "unknown count"
+	// signal, which is exactly what the tombstone branch relies on.
+	if got[1].Value != "b" || got[1].Hits != 0 {
+		t.Errorf("entry 1 = %+v, want b/0", got[1])
+	}
+
+	// A nil hits map means every count is unknown.
+	all := labelIndexNamesWithHits([]string{"x", "y"}, nil)
+	for _, v := range all {
+		if v.Hits != 0 {
+			t.Errorf("%q reports %d hits from a nil map", v.Value, v.Hits)
+		}
+	}
+	if len(labelIndexNamesWithHits(nil, nil)) != 0 {
+		t.Error("no names in, no entries out")
+	}
+}
+
+func TestRemapSlotFieldHits(t *testing.T) {
+	prev := activeSlotResolver
+	t.Cleanup(func() { activeSlotResolver = prev })
+	activeSlotResolver = schema.NewSlotResolver([]schema.SlotAttr{{Name: "tenant.tier"}})
+
+	mapping := activeSlotResolver.Mapping()
+	var mappedSlot string
+	for slot := range mapping {
+		mappedSlot = slot
+		break
+	}
+	if mappedSlot == "" {
+		t.Fatal("fixture is wrong: the resolver mapped no slot")
+	}
+
+	hits := map[string]uint64{
+		mappedSlot:     5,
+		"ded_s99":      3, // a slot with no operator mapping
+		"service.name": 11,
+	}
+	remapSlotFieldHits(hits)
+
+	// A MAPPED slot is reported under its configured attribute name.
+	if hits["tenant.tier"] != 5 {
+		t.Errorf("mapped slot not reported under its attribute name: %v", hits)
+	}
+	// An UNMAPPED slot is an empty placeholder column and must never surface —
+	// it shows up as `ded_sNN` noise in a field picker with no values on any row.
+	if _, still := hits["ded_s99"]; still {
+		t.Errorf("an unmapped slot column leaked into the field list: %v", hits)
+	}
+	if _, still := hits[mappedSlot]; still {
+		t.Errorf("the raw slot name is still present alongside its attribute name: %v", hits)
+	}
+	// Ordinary fields are untouched.
+	if hits["service.name"] != 11 {
+		t.Errorf("an ordinary field was disturbed: %v", hits)
+	}
+
+	// Empty input is a no-op rather than a panic.
+	empty := map[string]uint64{}
+	remapSlotFieldHits(empty)
+	if len(empty) != 0 {
+		t.Errorf("empty hits grew to %v", empty)
+	}
+}

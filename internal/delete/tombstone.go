@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
@@ -407,6 +408,63 @@ func (s *TombstoneStore) LoadFromS3(ctx context.Context, pool S3Pool, _ /*bucket
 	if skipped > 0 {
 		metrics.DeleteStartupInconsistencies.Inc("unreadable_tombstone_object")
 		return fmt.Errorf("restored %d of %d tombstone objects", len(loaded), len(keys))
+	}
+	return nil
+}
+
+// Validate rejects a tombstone that cannot be stored and enforced faithfully.
+//
+// Two of these checks exist because of what happens if they do not:
+//
+//   - A query that does not parse as LogsQL matches nothing. The delete then
+//     appears to succeed and silently hides no rows, which the user experiences
+//     as "the delete did not work" with no error anywhere. Rejecting at the API
+//     turns a silent no-op into a 400.
+//   - A query carrying invalid UTF-8 does not survive the durable JSON
+//     encoding: the bytes come back replaced with U+FFFD, so the tombstone
+//     restored after a restart is not the tombstone that was stored. Refusing
+//     it keeps "what was persisted" and "what was accepted" the same record.
+//     (Found by FuzzTombstoneRoundTrip.)
+//
+// An inverted time range is rejected for the same reason as the first: it can
+// never match a row.
+func (t *Tombstone) Validate() error {
+	if t.ID == "" {
+		return fmt.Errorf("tombstone has no id")
+	}
+	// Every persisted string must be valid UTF-8. JSON replaces invalid bytes
+	// with U+FFFD, so a record carrying them is not the record that comes back:
+	// a mutated id collides with (or hides from) the original on restore, a
+	// mutated query stops matching, and a mutated affected key sends the
+	// rewriter after an object that does not exist while the real one is never
+	// reaped. Found by FuzzTombstoneRoundTrip.
+	for _, f := range []struct{ name, value string }{
+		{"id", t.ID},
+		{"query", t.Query},
+		{"created_by", t.CreatedBy},
+		{"mode", t.Mode},
+	} {
+		if !utf8.ValidString(f.value) {
+			return fmt.Errorf("%s is not valid UTF-8; it would not survive being persisted", f.name)
+		}
+	}
+	for _, k := range t.AffectedKeys {
+		if !utf8.ValidString(k) {
+			return fmt.Errorf("affected key is not valid UTF-8; it would not survive being persisted")
+		}
+	}
+	if t.StartNs > t.EndNs {
+		return fmt.Errorf("time range is inverted: start %d is after end %d", t.StartNs, t.EndNs)
+	}
+	if t.Query != "" && t.Query != "*" {
+		if _, err := logstorage.ParseFilter(t.Query); err != nil {
+			return fmt.Errorf("query does not parse as LogsQL: %w", err)
+		}
+	}
+	switch t.Mode {
+	case "", "hide", "permanent", "auto":
+	default:
+		return fmt.Errorf("unknown mode %q", t.Mode)
 	}
 	return nil
 }

@@ -117,6 +117,13 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) {
 		Mode:         mode,
 	}
 
+	// Reject before storing. An unenforceable tombstone that is accepted looks
+	// to the user exactly like a successful delete that removed nothing.
+	if err := ts.Validate(); err != nil {
+		http.Error(w, "invalid delete request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	h.store.Add(ts)
 	metrics.DeleteTombstonesTotal.Inc()
 	metrics.DeleteTombstonesActive.Set(int64(h.store.Count()))

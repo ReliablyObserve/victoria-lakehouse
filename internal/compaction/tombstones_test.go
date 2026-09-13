@@ -279,3 +279,136 @@ func TestIsNeverDeleteKey(t *testing.T) {
 		t.Error("an empty prefix must not protect everything")
 	}
 }
+
+// --- traces mode -------------------------------------------------------------
+
+// TestCompaction_DropsTombstonedSpans is the traces twin of
+// TestCompaction_DropsTombstonedRows. The traces module shares this compactor,
+// so the span path needs its own proof that a deleted span is not copied into
+// the merged output.
+func TestCompaction_DropsTombstonedSpans(t *testing.T) {
+	pool := newMockPool()
+	m := manifest.New("test-bucket", "")
+	partition := "dt=2026-07-02/hour=05"
+
+	var files []manifest.FileInfo
+	var keys []string
+	for i, batch := range [][]schema.TraceRow{
+		{
+			{TimestampUnixNano: 1000, TraceID: "t1", SpanID: "s1", SpanName: "GET /a", ServiceName: "api-gateway"},
+			{TimestampUnixNano: 1100, TraceID: "t2", SpanID: "s2", SpanName: "POST /b", ServiceName: "order-service"},
+		},
+		{
+			{TimestampUnixNano: 2000, TraceID: "t3", SpanID: "s3", SpanName: "GET /c", ServiceName: "api-gateway"},
+			{TimestampUnixNano: 2100, TraceID: "t4", SpanID: "s4", SpanName: "POST /d", ServiceName: "order-service"},
+		},
+	} {
+		key := partition + "/span-" + string(rune('a'+i)) + ".parquet"
+		data, err := writeCompactedTraces(batch, 100, 1)
+		if err != nil {
+			t.Fatalf("write source parquet: %v", err)
+		}
+		pool.put(key, data)
+		fi := manifest.FileInfo{
+			Key: key, Size: int64(len(data)), RowCount: int64(len(batch)),
+			MinTimeNs: batch[0].TimestampUnixNano,
+			MaxTimeNs: batch[len(batch)-1].TimestampUnixNano,
+		}
+		m.AddFile(partition, fi)
+		files = append(files, fi)
+		keys = append(keys, key)
+	}
+
+	store := delete.NewTombstoneStore()
+	store.Add(delete.Tombstone{
+		ID:           "ts-spans",
+		Query:        `service.name:="order-service"`,
+		StartNs:      0,
+		EndNs:        1 << 40,
+		AffectedKeys: keys,
+		CreatedAt:    time.Now().Add(-time.Hour),
+		Mode:         "permanent",
+		Reaped:       map[string]bool{},
+	})
+
+	c := NewCompactor(CompactorConfig{
+		Pool: pool, Manifest: m, Mode: config.ModeTraces, RowGroupSize: 100, Tombstones: store,
+	})
+	res, err := c.Compact(context.Background(), partition, files, 0)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if res.RowsMerged != 2 {
+		t.Fatalf("merged %d spans, want the 2 that survive the tombstone", res.RowsMerged)
+	}
+
+	rows, err := readTraceRows(pool.get(res.OutputFile))
+	if err != nil {
+		t.Fatalf("read compacted output: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("output holds %d spans, want 2", len(rows))
+	}
+	for i := range rows {
+		if rows[i].ServiceName == "order-service" {
+			t.Fatalf("tombstoned span %s was copied into the compacted output", rows[i].SpanID)
+		}
+	}
+	if _, still := store.Get("ts-spans"); still {
+		t.Error("every affected key was merged away; the tombstone must be completed")
+	}
+}
+
+func TestDropTombstonedRows_NilStoreAndEmptyInputAreNoOps(t *testing.T) {
+	logs := []schema.LogRow{{TimestampUnixNano: 1, Body: "a"}}
+	if got := dropTombstonedLogRows(nil, logs); len(got) != 1 {
+		t.Errorf("a nil store must leave the rows alone, got %d", len(got))
+	}
+	if got := dropTombstonedLogRows(delete.NewTombstoneStore(), nil); got != nil {
+		t.Errorf("no rows in, no rows out, got %v", got)
+	}
+	// A store with no tombstone covering the range must not copy the slice.
+	if got := dropTombstonedLogRows(delete.NewTombstoneStore(), logs); len(got) != 1 {
+		t.Errorf("an empty store must leave the rows alone, got %d", len(got))
+	}
+
+	spans := []schema.TraceRow{{TimestampUnixNano: 1, SpanID: "s"}}
+	if got := dropTombstonedTraceRows(nil, spans); len(got) != 1 {
+		t.Errorf("a nil store must leave the spans alone, got %d", len(got))
+	}
+	if got := dropTombstonedTraceRows(delete.NewTombstoneStore(), nil); got != nil {
+		t.Errorf("no spans in, no spans out, got %v", got)
+	}
+	if got := dropTombstonedTraceRows(delete.NewTombstoneStore(), spans); len(got) != 1 {
+		t.Errorf("an empty store must leave the spans alone, got %d", len(got))
+	}
+}
+
+func TestTombstonedTraceRow(t *testing.T) {
+	tss := []delete.Tombstone{{Query: `service.name:="x"`, StartNs: 10, EndNs: 20}}
+	match := &schema.TraceRow{TimestampUnixNano: 15, ServiceName: "x"}
+	if !tombstonedTraceRow(tss, match) {
+		t.Error("a matching span inside the window is tombstoned")
+	}
+	outside := &schema.TraceRow{TimestampUnixNano: 5, ServiceName: "x"}
+	if tombstonedTraceRow(tss, outside) {
+		t.Error("a matching span outside the window is not tombstoned")
+	}
+	other := &schema.TraceRow{TimestampUnixNano: 15, ServiceName: "y"}
+	if tombstonedTraceRow(tss, other) {
+		t.Error("a non-matching span is not tombstoned")
+	}
+}
+
+func TestContainsKey(t *testing.T) {
+	keys := []string{"a", "b"}
+	if !containsKey(keys, "b") {
+		t.Error("a present key must be found")
+	}
+	if containsKey(keys, "c") {
+		t.Error("an absent key must not be found")
+	}
+	if containsKey(nil, "a") {
+		t.Error("nothing is present in an empty list")
+	}
+}

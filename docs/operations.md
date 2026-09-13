@@ -309,14 +309,61 @@ This is expected for `none` mode. Only use `none` for single-instance deployment
 
 ### Tombstone Management
 
-Tombstones are persisted to disk and S3. On startup, the store loads from disk first, then syncs from S3 for cluster-wide consistency.
+**Durability guarantee.** Every tombstone mutation — create, un-delete, and the
+retirement of a fully rewritten tombstone — is written through to durable
+storage before the API call returns:
+
+- the **local disk copy** (`{persist_path}/tombstones.json`, written to a
+  temporary file and renamed) is written synchronously, so a `SIGKILL`
+  immediately after the delete API returns cannot lose the record;
+- the **S3 copy** (`{tenant_prefix}_tombstones/{id}.json`) is attempted in the
+  same call. If S3 is unavailable the record is queued,
+  `lakehouse_delete_tombstone_persist_pending` rises above zero, and the write
+  is retried on the next mutation, on every rewrite-scheduler tick, and at
+  shutdown. The disk copy is authoritative for that node in the meantime.
+
+Nothing about durability depends on a graceful shutdown.
+
+**Startup** restores the **union** of the disk and S3 copies; neither source
+replaces the other. When the two disagree about the same tombstone, the merge
+keeps the record with the most rewrite progress — a key recorded as rewritten
+anywhere is rewritten everywhere, because the file it named is gone. A single
+unreadable S3 object is skipped and counted rather than aborting the restore.
+
+Immediately after the manifest is restored, a **self-check** compares the two
+and logs plus counts every disagreement under
+`lakehouse_delete_startup_inconsistencies_total{kind=...}`:
+
+| kind | meaning | consequence |
+|------|---------|-------------|
+| `persistence_disabled` | the store has no durable target | deletes are lost on an ungraceful restart |
+| `reaped_key_still_manifested` | tombstone state is ahead of the manifest snapshot | rows stay hidden by the query filter; self-heals |
+| `pending_key_missing_from_manifest` | the manifest snapshot is ahead of the tombstone copy | the scheduler marks the key reaped on its next tick |
+| `rewrite_source_unmanifested` | a rewrite ran on a file the manifest did not list | the replacement is still registered, so it is not swept |
+| `unreadable_tombstone_object` | an object under `_tombstones/` could not be parsed | that one record was skipped |
+
+Findings are reported, not repaired: every repair is a data movement that
+belongs to the rewrite scheduler's normal retry path.
 
 **Key metrics:**
 - `lakehouse_delete_tombstones_active` — active tombstones in memory
 - `lakehouse_delete_tombstones_total` — lifetime tombstones created
+- `lakehouse_delete_tombstones_completed_total` — tombstones retired because every file they covered has been rewritten
 - `lakehouse_delete_rows_suppressed_total` — rows filtered at query time
 - `lakehouse_delete_rewrite_total` — physical rewrites completed
+- `lakehouse_delete_rewrite_manifest_updated_total` — rewrites published into the manifest
+- `lakehouse_delete_rewrite_manifest_errors_total` — manifest hand-offs that failed; the rewrite is retried and the superseded object is **not** deleted
+- `lakehouse_delete_rewrite_skipped_no_manifest_total` — rewrites refused because no manifest was wired in (see below)
+- `lakehouse_delete_rewrite_old_object_errors_total` — superseded objects that could not be deleted after a successful publish; harmless, the orphan sweep reclaims them
 - `lakehouse_delete_rewrite_skipped_glacier_total` — rewrites skipped due to storage class
+- `lakehouse_delete_tombstone_persist_total{target="disk"|"s3"}` / `..._errors_total` — durability writes
+- `lakehouse_delete_tombstone_persist_pending` — records whose S3 copy is behind; steady state 0
+- `lakehouse_delete_compaction_rows_removed_total` / `lakehouse_delete_compaction_keys_reaped_total` — rows and source keys compaction reaped
+- `lakehouse_delete_fields_scan_fallback_total{endpoint=...}` — field-enumeration requests that gave up a metadata-only fast path because a tombstone overlapped
+
+**Alert on** a sustained non-zero `lakehouse_delete_tombstone_persist_pending`
+(only the local disk copy would survive a pod move) and on any increase in
+`lakehouse_delete_rewrite_manifest_errors_total`.
 
 **Configuration:**
 
@@ -342,10 +389,51 @@ The rewriter processes tombstones with mode `permanent` or `auto` against S3 Sta
 1. Scans active tombstones past `rewrite_delay`
 2. Checks file storage class (HeadObject or lifecycle prediction)
 3. Skips non-Standard files (Glacier, IA) — tombstone-only suppression
-4. Downloads, filters rows, rewrites, uploads replacement, updates manifest
-5. Marks tombstone as reaped once all affected files are processed
+4. Rewrites each affected file in three steps (below)
+5. Marks the key reaped, and retires the tombstone once every file it covers is done
+
+Each file goes through a **two-phase rewrite** so that no crash can lose rows:
+
+| step | what happens | if the process dies here |
+|------|--------------|--------------------------|
+| prepare | the filtered replacement is uploaded under a new key; the original is untouched | the original is still the manifested copy; the replacement is unmanifested and the orphan sweep reclaims it; the tombstone is retried |
+| publish | the manifest swaps the old key for the new one in a single atomic step | the original becomes unmanifested and is swept; the kept rows are served from the replacement |
+| commit | the superseded object is deleted | identical to the above |
+
+The superseded object is **never** deleted before the manifest points at its
+replacement. A manifest hand-off that fails leaves the key un-reaped, so the
+next tick retries it.
+
+**The rewriter refuses to run without a manifest.** A rewrite that cannot be
+published would leave the replacement unmanaged — the orphan sweep would delete
+it after `orphan_ttl`, taking the kept rows with it — and would strand the
+manifest on a deleted key. Refusing counts
+`lakehouse_delete_rewrite_skipped_no_manifest_total` and leaves the safe state:
+the rows are hidden by the query-time filter but not yet removed.
+
+**Compaction is a second reaper.** It already rewrites every row it touches, so
+it drops tombstoned rows from the merged output and marks the merged source keys
+reaped. A tombstone can therefore complete because compaction, rather than the
+rewriter, did the work. Keys under a never-delete prefix (`_meta/`,
+`_tombstones/`, `_compaction_lock`) are left alone.
 
 **Rewriter is mode-aware**: uses `schema.LogRow` for logs mode, `schema.TraceRow` for traces mode.
+
+### Where tombstones are applied
+
+| path | behaviour |
+|------|-----------|
+| log/span query results | rows matching an active tombstone are filtered out |
+| `field_values`, `streams`, `stream_ids` | a tombstoned row's values are not enumerated; the in-RAM catalog and label index are bypassed while a tombstone overlaps the window, so these requests get slower until the rewrite lands |
+| `field_names` | names are still returned, but hit **counts** are reported as unknown (`0`) rather than counts that still include the deleted rows |
+| compaction output | tombstoned rows are dropped, not copied forward |
+
+**Known bound:** `field_names` can stay *over-inclusive* — a field carried only
+by deleted rows still appears in the list until the rewrite replaces the file.
+Hit counts for that window come from the Parquet column index, which is
+row-count metadata, so applying a per-row predicate there would turn a footer
+walk into a full scan of every candidate file. Reporting the counts as unknown
+is the honest answer; the names settle once the background rewriter runs.
 
 ### Un-Delete (Restoring Data)
 
@@ -356,6 +444,9 @@ curl -X DELETE http://lakehouse:9428/delete/logsql/tombstone/{id}
 ```
 
 If the file has not been physically rewritten yet, the original data becomes visible again immediately. If already rewritten, the rows are permanently gone.
+
+The removal is persisted the same way the creation was (disk synchronously, S3
+in the same call with retry), so an un-delete is not undone by the next restart.
 
 ### Cost Estimation Before Delete
 

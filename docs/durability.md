@@ -52,6 +52,8 @@ flowchart LR
 | **Normal shutdown (SIGTERM)** | Buffer `Close()` flushes parts to disk; readiness gate holds `/ready`; manifest + footer-cache snapshots saved. | Same buffer `Close()`; legacy staging flush-on-shutdown. | Graceful flush of staging before exit. |
 | **S3 unreachable** | Buffer keeps accepting (bounded by `buffer_retention` + disk); flush retries with backoff. | Same; legacy staging grows in memory, backpressure at `max_buffer_bytes`. | Backpressure at `max_buffer_bytes`. |
 | **Already-flushed data** | Immutable Parquet on S3; survives everything. | Same. | Same. |
+| **A delete (tombstone)** | Written through to local disk synchronously and to S3 in the same call before the API returns; retried until S3 confirms. Survives `kill -9`. | Same. | Same. |
+| **An in-progress delete rewrite** | Two-phase (prepare → publish → commit): a crash at any step leaves either the original or the replacement manifested, never neither. See §3.1. | Same. | Same. |
 
 > **⚠️ Current default has a gap.** The buffer-authoritative flip
 > (`buffer_flush_enabled`) is **off by default** and the LH WAL is deleted. So in
@@ -92,6 +94,37 @@ watermark at T1, ingest `(T1, T2]`, "crash" (close + reopen the buffer from
 disk), recover → the watermark reloads and the un-flushed window is re-collected
 intact.
 
+### 3.1 Deletes and rewrites
+
+Deletes have two pieces of durable state — the **tombstone** (what is hidden or
+scheduled for removal) and the **manifest** (which Parquet objects exist) — and
+crash safety means never letting them disagree in a direction that loses rows.
+
+**Tombstones.** Every mutation (create, un-delete, retirement of a fully
+rewritten tombstone) is written through before the call returns: the local disk
+copy (`{delete.persist_path}/tombstones.json`, temp file + rename) synchronously,
+and the S3 copy (`{tenant_prefix}_tombstones/{id}.json`) in the same call, queued
+and retried if S3 is down. Durability does **not** depend on a graceful
+shutdown. On boot the store restores the **union** of both copies, resolving
+per-record conflicts towards the one with the most rewrite progress, then a
+self-check compares the result against the manifest and counts any disagreement
+(see [Operations → Tombstone Management](operations.md#tombstone-management)).
+
+**Rewrites.** Removing rows from a Parquet object means writing a filtered
+replacement and dropping the original. The manifest is swapped between the two in
+a single atomic step, and the original is never deleted before that swap lands:
+
+| crash point | state left behind | how it converges |
+|---|---|---|
+| after the replacement is uploaded | original still manifested; replacement unmanifested | the orphan sweep reclaims the replacement after `orphan_ttl`; the tombstone is retried |
+| after the manifest swap | replacement manifested; original unmanifested | the orphan sweep reclaims the original; the kept rows are served from the replacement |
+| after the original is deleted, before the tombstone records it | replacement manifested; tombstone still lists the key as pending | the scheduler sees the key is gone from the manifest, marks it reaped and completes the tombstone |
+
+Every one of these converges without operator action, and none of them can leave
+a kept row in no readable object. The one thing that would break this is
+rewriting without a manifest to publish into, so the rewriter refuses to run in
+that configuration rather than orphaning its output.
+
 ---
 
 ## 4. Normal shutdown
@@ -106,6 +139,10 @@ On SIGTERM the insert pod:
 3. Holds `/ready` at `503`/`204` until disk recovery + the `MinManifestFiles`
    gate pass on the next boot, so a load balancer never routes to a pod that
    hasn't restored its buffer.
+4. Drains any tombstone S3 write a transient failure left owed. This is a
+   backstop, not the durability mechanism — tombstones were already written
+   through on every change — so a pod that never reaches this step loses
+   nothing.
 
 > **Hardening item:** a graceful *flusher* stop (drain the current window to S3
 > on SIGTERM rather than re-flushing it on restart) is tracked as a follow-up.
@@ -171,6 +208,7 @@ engine that owns the flushed data.
 | `insert.buffer_flush_interval` | `5m` | The object-store flush **cap** (max-linger). The flusher flushes on `target_file_size` OR this, whichever first. Must be `<< buffer_retention`. |
 | `insert.target_file_size` | `128MB` | The size trigger for a flush and the compaction target. |
 | `insert.ack_mode` | `buffer` | `buffer` acks after the in-memory/buffer add; `flush-sync` acks only after S3 confirms (zero-loss for the legacy path). |
+| `delete.persist_path` | `/data/lakehouse/tombstones` | Directory holding the local tombstone copy. **Must be a durable volume** — it is the copy that survives a `kill -9` when S3 is also unreachable. |
 
 ---
 
@@ -180,3 +218,5 @@ engine that owns the flushed data.
 - [Read Path](read-path.md) — the manifest scan + buffer read-merge.
 - [Lifecycle & readiness](operations/lifecycle.md) — restart behavior, `/ready` semantics, warmup.
 - [Configuration](configuration.md) — all insert/buffer flags.
+- [Deletion strategy](deletion-strategy.md) — tombstone modes, cost model, rewrite scheduling.
+- [Operations → Deletion Operations](operations.md#deletion-operations) — tombstone durability guarantee, the rewrite steps, and where tombstones are applied.
