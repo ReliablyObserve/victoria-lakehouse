@@ -509,7 +509,7 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, m
 	// peer that answers without scoping cannot leak into this answer.
 	// Twin of the other module's queryBufferBridge.
 	fetchStartNs := startNs
-	if !scope.all {
+	if scope.single() {
 		fetchStartNs = bufferWindowStart(startNs, wm[singleTenantID(tenantIDs)])
 		if fetchStartNs > endNs {
 			return

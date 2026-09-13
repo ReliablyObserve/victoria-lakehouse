@@ -73,6 +73,7 @@ A select request is answered from **exactly one tenant** — the same rule upstr
 | `AccountID`/`ProjectID` (or `X-Scope-*`, or a resolved `X-Scope-OrgID`) headers for tenant `A:P` | tenant `A:P` only |
 | no tenant headers | tenant `0:0` only |
 | headers for a tenant that holds no data | an empty answer — never a fall-through to other tenants |
+| `/internal/select/*` with `tenant_ids=[…]` (VL's cluster protocol, e.g. from a `vlselect` node) | exactly the listed tenants |
 | valid global-read header or bearer token | every tenant |
 | wrong global-read value, or global read not configured | the tenant from the headers (`0:0` without headers) — never widened |
 

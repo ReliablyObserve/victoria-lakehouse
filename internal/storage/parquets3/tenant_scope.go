@@ -16,39 +16,58 @@ import (
 
 // tenantScope is the resolved read scope of a single request.
 //
-// It mirrors upstream VL/VT exactly: a select request carries EXACTLY ONE
-// tenant. VL derives it from the AccountID/ProjectID headers and falls back to
-// 0:0 when they are absent, so "no headers" is the default tenant — not
-// "every tenant". A scope covering more than one tenant is only ever produced
-// by a caller that already validated the global-read credential.
+// It mirrors upstream VL/VT exactly: a request is answered from EXACTLY the
+// tenants it names. A select request names one — VL derives it from the
+// AccountID/ProjectID headers and falls back to 0:0 when they are absent, so
+// "no headers" is the default tenant, not "every tenant". VL's internal select
+// protocol (/internal/select/*, tenant_ids=[...]) may name several, and then
+// the answer is the union of exactly those. Only a caller that validated the
+// global-read credential reads every tenant.
 type tenantScope struct {
-	// all=true is the cross-tenant read. It is NOT reachable from a plain
-	// select request; only a validated global-read caller can widen to it.
-	all     bool
+	// all=true is the cross-tenant read. It is NOT reachable from a tenant
+	// list; only a validated global-read caller can widen to it.
+	all bool
+	// account/project name the first (usually the only) tenant.
 	account string
 	project string
+	// more names the further tenants of a multi-tenant list.
+	more []tenantPair
+}
+
+// tenantPair is one tenant of a scope, in the string form object keys and the
+// manifest's tenant aggregates use.
+type tenantPair struct {
+	account, project string
 }
 
 // resolveTenantScope maps a request's tenant list onto the read scope.
 //
 //	len == 1 → that tenant (the only shape a select request produces)
 //	len == 0 → the default tenant 0:0, matching VL's no-headers fallback
-//	len  > 1 → cross-tenant, which only a validated global-read path builds
+//	len  > 1 → exactly the listed tenants (VL's internal select protocol)
 func resolveTenantScope(tenantIDs []logstorage.TenantID) tenantScope {
-	switch len(tenantIDs) {
-	case 0:
+	if len(tenantIDs) == 0 {
 		return tenantScope{account: "0", project: "0"}
-	case 1:
-		return scopeForTenantID(tenantIDs[0])
-	default:
-		return tenantScope{all: true}
 	}
+	scope := scopeForTenantID(tenantIDs[0])
+	seen := map[logstorage.TenantID]bool{tenantIDs[0]: true}
+	for _, t := range tenantIDs[1:] {
+		if seen[t] {
+			continue
+		}
+		seen[t] = true
+		scope.more = append(scope.more, tenantPair{
+			account: strconv.FormatUint(uint64(t.AccountID), 10),
+			project: strconv.FormatUint(uint64(t.ProjectID), 10),
+		})
+	}
+	return scope
 }
 
 // scopeFor resolves the read scope of a request, honouring a validated
 // global-read credential. Only the select handler can put that marker on the
 // context, and only after the configured credential checked out — so a plain
-// request can never widen past its own tenant, whatever tenant list it carries.
+// request can never widen past the tenants it names.
 func scopeFor(ctx context.Context, tenantIDs []logstorage.TenantID) tenantScope {
 	if storage.IsGlobalRead(ctx) {
 		return tenantScope{all: true}
@@ -63,17 +82,40 @@ func scopeForTenantID(t logstorage.TenantID) tenantScope {
 	}
 }
 
-// isDefault reports whether this is tenant 0:0, the scope that also owns data
-// written under the legacy static-prefix layout (see filesForScope).
+// pairs lists every tenant of a non-global scope.
+func (ts tenantScope) pairs() []tenantPair {
+	if ts.all {
+		return nil
+	}
+	return append([]tenantPair{{account: ts.account, project: ts.project}}, ts.more...)
+}
+
+// single reports whether the scope names exactly one tenant.
+func (ts tenantScope) single() bool {
+	return !ts.all && len(ts.more) == 0
+}
+
+// isDefault reports whether the scope includes tenant 0:0, the tenant that
+// also owns data written under the legacy static-prefix layout (see
+// filesForScope).
 func (ts tenantScope) isDefault() bool {
-	return !ts.all && ts.account == "0" && ts.project == "0"
+	for _, p := range ts.pairs() {
+		if p.account == "0" && p.project == "0" {
+			return true
+		}
+	}
+	return false
 }
 
 func (ts tenantScope) String() string {
 	if ts.all {
 		return "*"
 	}
-	return ts.account + ":" + ts.project
+	out := ts.account + ":" + ts.project
+	for _, p := range ts.more {
+		out += "," + p.account + ":" + p.project
+	}
+	return out
 }
 
 // filesForTenants is the ONLY way the read path may turn a time range into a
@@ -98,7 +140,13 @@ func (s *Storage) filesForScope(site string, startNs, endNs int64, scope tenantS
 		return s.manifest.GetFilesForRange(startNs, endNs)
 	}
 
-	files := s.manifest.GetFilesForRangeTenant(startNs, endNs, scope.account, scope.project)
+	var files []manifest.FileInfo
+	for _, p := range scope.pairs() {
+		files = append(files, s.manifest.GetFilesForRangeTenant(startNs, endNs, p.account, p.project)...)
+	}
+	if !scope.single() {
+		sort.Slice(files, func(i, j int) bool { return files[i].MinTimeNs < files[j].MinTimeNs })
+	}
 
 	// Legacy layout: objects written before the tenant prefix template existed
 	// (static s3.prefix=logs/) carry no tenant segment. That data was ingested
@@ -151,12 +199,14 @@ func tenantOwnsKey(parse func(string) (string, string, bool), scope tenantScope,
 		// Untenanted (legacy) key — the default tenant's data.
 		return scope.isDefault()
 	}
-	if account != scope.account {
-		return false
+	for _, p := range scope.pairs() {
+		// An {OrgID}-shaped template has no project segment; the account
+		// segment alone identifies the tenant.
+		if account == p.account && (project == "" || project == p.project) {
+			return true
+		}
 	}
-	// An {OrgID}-shaped template has no project segment; the account segment
-	// alone identifies the tenant.
-	return project == "" || project == scope.project
+	return false
 }
 
 // tenantScopeAllowsGlobalIndex reports whether the range-independent, NOT
@@ -180,8 +230,14 @@ func rowInTenantScope(scope tenantScope, accountID, projectID uint32) bool {
 	if scope.all {
 		return true
 	}
-	return scope.account == strconv.FormatUint(uint64(accountID), 10) &&
-		scope.project == strconv.FormatUint(uint64(projectID), 10)
+	account := strconv.FormatUint(uint64(accountID), 10)
+	project := strconv.FormatUint(uint64(projectID), 10)
+	for _, p := range scope.pairs() {
+		if p.account == account && p.project == project {
+			return true
+		}
+	}
+	return false
 }
 
 // filterLogRowsByTenant drops buffered log rows that do not belong to scope.
@@ -273,8 +329,8 @@ func (s *Storage) TenantIDsForRange(startNs, endNs int64) []logstorage.TenantID 
 }
 
 // localBufferTenantIDs is the tenant list handed to the co-located logstorage
-// buffer, which scopes natively by tenant like upstream VL. A single-tenant
-// scope passes exactly that tenant (a nil list becomes 0:0, the same default
+// buffer, which scopes natively by tenant like upstream VL. A request passes
+// exactly its own tenants (a nil list becomes 0:0, the same default
 // resolveTenantScope applies). A validated cross-tenant read enumerates the
 // tenants the buffer holds in the window, so global read sees every tenant's
 // unflushed rows — the same widening the cold tier applies — instead of only
@@ -361,8 +417,8 @@ func bufferWindowStart(startNs, watermarkNs int64) int64 {
 	return startNs
 }
 
-// singleTenantID is the one tenant of a single-tenant request (0:0 for an
-// empty list, matching resolveTenantScope).
+// singleTenantID is the first tenant of a request (0:0 for an empty list,
+// matching resolveTenantScope).
 func singleTenantID(tenantIDs []logstorage.TenantID) logstorage.TenantID {
 	if len(tenantIDs) == 0 {
 		return logstorage.TenantID{}

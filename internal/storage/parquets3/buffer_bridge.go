@@ -28,6 +28,21 @@ func checkPeerTenantScope(resp *http.Response, scope tenantScope) error {
 	return nil
 }
 
+// bridgeScopes splits a scope into the scopes one /internal/buffer/query can
+// express — every tenant, or exactly one tenant — so a request that names
+// several tenants asks each peer once per tenant and never for more.
+func bridgeScopes(scope tenantScope) []tenantScope {
+	if scope.all || scope.single() {
+		return []tenantScope{scope}
+	}
+	pairs := scope.pairs()
+	out := make([]tenantScope, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, tenantScope{account: p.account, project: p.project})
+	}
+	return out
+}
+
 // bufferScopeString is the tenant-scope value the buffer handler echoes for
 // this scope.
 func bufferScopeString(scope tenantScope) string {
@@ -179,17 +194,19 @@ func (b *BufferBridge) QueryLogs(ctx context.Context, startNs, endNs int64, scop
 	var wg sync.WaitGroup
 
 	for _, ep := range eps {
-		wg.Add(1)
-		go func(endpoint string) {
-			defer wg.Done()
-			rows, err := b.fetchLogs(ctx, endpoint, startNs, endNs, scope)
-			if err != nil {
-				return
-			}
-			mu.Lock()
-			all = append(all, rows...)
-			mu.Unlock()
-		}(ep)
+		for _, sub := range bridgeScopes(scope) {
+			wg.Add(1)
+			go func(endpoint string, sub tenantScope) {
+				defer wg.Done()
+				rows, err := b.fetchLogs(ctx, endpoint, startNs, endNs, sub)
+				if err != nil {
+					return
+				}
+				mu.Lock()
+				all = append(all, rows...)
+				mu.Unlock()
+			}(ep, sub)
+		}
 	}
 	wg.Wait()
 
@@ -248,17 +265,19 @@ func (b *BufferBridge) QueryTraces(ctx context.Context, startNs, endNs int64, sc
 	var wg sync.WaitGroup
 
 	for _, ep := range eps {
-		wg.Add(1)
-		go func(endpoint string) {
-			defer wg.Done()
-			rows, err := b.fetchTraces(ctx, endpoint, startNs, endNs, scope)
-			if err != nil {
-				return
-			}
-			mu.Lock()
-			all = append(all, rows...)
-			mu.Unlock()
-		}(ep)
+		for _, sub := range bridgeScopes(scope) {
+			wg.Add(1)
+			go func(endpoint string, sub tenantScope) {
+				defer wg.Done()
+				rows, err := b.fetchTraces(ctx, endpoint, startNs, endNs, sub)
+				if err != nil {
+					return
+				}
+				mu.Lock()
+				all = append(all, rows...)
+				mu.Unlock()
+			}(ep, sub)
+		}
 	}
 	wg.Wait()
 

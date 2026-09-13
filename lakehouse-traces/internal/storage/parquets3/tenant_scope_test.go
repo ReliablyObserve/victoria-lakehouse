@@ -217,7 +217,7 @@ func (f *tsFixture) visible(tenantIDs []logstorage.TenantID, globalRead bool) []
 	var out []tsTenant
 	scope := resolveTenantScope(tenantIDs)
 	for _, tn := range f.tenants {
-		if globalRead || scopeForTenantID(tn.tenant) == scope {
+		if globalRead || rowInTenantScope(scope, tn.tenant.AccountID, tn.tenant.ProjectID) {
 			out = append(out, tn)
 		}
 	}
@@ -337,6 +337,10 @@ func tsCases() []tsCase {
 		{name: "scoped/1001:0", tenantIDs: []logstorage.TenantID{{AccountID: 1001}}},
 		{name: "scoped/2002:7", tenantIDs: []logstorage.TenantID{{AccountID: 2002, ProjectID: 7}}},
 		{name: "unknown/7:0", tenantIDs: []logstorage.TenantID{{AccountID: 7}}},
+		// VL's internal select protocol can name several tenants: the answer is
+		// the union of exactly those, never every tenant.
+		{name: "list/1001:0+2002:7", tenantIDs: []logstorage.TenantID{{AccountID: 1001}, {AccountID: 2002, ProjectID: 7}}},
+		{name: "list/0:0+unknown", tenantIDs: []logstorage.TenantID{{}, {AccountID: 7}}},
 		{name: "global-read", tenantIDs: []logstorage.TenantID{{}}, globalRead: true},
 	}
 }
@@ -1077,8 +1081,24 @@ func TestTenantScope_Resolution(t *testing.T) {
 	if got := resolveTenantScope([]logstorage.TenantID{{AccountID: 4, ProjectID: 9}}); got.all || got.account != "4" || got.project != "9" {
 		t.Errorf("single tenant must resolve to itself, got %+v", got)
 	}
-	if got := resolveTenantScope([]logstorage.TenantID{{}, {AccountID: 1}}); !got.all {
-		t.Errorf("more than one tenant is the cross-tenant scope, got %+v", got)
+	multi := resolveTenantScope([]logstorage.TenantID{{AccountID: 1}, {AccountID: 2, ProjectID: 3}, {AccountID: 1}})
+	if multi.all {
+		t.Errorf("a tenant list must never widen to every tenant, got %+v", multi)
+	}
+	if got := multi.String(); got != "1:0,2:3" {
+		t.Errorf("tenant list scope = %q, want exactly the listed tenants once each (1:0,2:3)", got)
+	}
+	if multi.single() || !resolveTenantScope([]logstorage.TenantID{{AccountID: 4}}).single() {
+		t.Error("single() must be true only for a one-tenant scope")
+	}
+	if !rowInTenantScope(multi, 2, 3) || rowInTenantScope(multi, 3, 0) || rowInTenantScope(multi, 2, 0) {
+		t.Error("a tenant list must own rows of exactly the listed tenants")
+	}
+	if multi.isDefault() || !resolveTenantScope([]logstorage.TenantID{{AccountID: 9}, {}}).isDefault() {
+		t.Error("isDefault must report whether 0:0 is among the listed tenants")
+	}
+	if (tenantScope{all: true}).pairs() != nil {
+		t.Error("the cross-tenant scope has no tenant list")
 	}
 	if got := scopeFor(storage.WithGlobalRead(context.Background()), []logstorage.TenantID{{AccountID: 1001}}); !got.all {
 		t.Errorf("a validated global-read context must widen the scope, got %+v", got)
@@ -1375,5 +1395,62 @@ func TestTenantScope_GlobalRead_BridgeUsesEachTenantsWatermark(t *testing.T) {
 	s.queryBufferBridge(storage.WithGlobalRead(context.Background()), 1000, 100000, wm, q, []logstorage.TenantID{{}}, wb)
 	if got != 2 {
 		t.Errorf("global-read bridge merged %d rows, want 2: 0:0's row above its watermark and 2002:7's unflushed row", got)
+	}
+}
+
+// TestTenantScope_BufferBridge_TenantListAsksPerTenant: a request naming
+// several tenants asks each peer once per tenant — never all_tenants — and
+// merges exactly those tenants' rows.
+func TestTenantScope_BufferBridge_TenantListAsksPerTenant(t *testing.T) {
+	rows := []schema.LogRow{
+		{TimestampUnixNano: 100, AccountID: 0, Body: "t0"},
+		{TimestampUnixNano: 101, AccountID: 1001, Body: "t1001"},
+		{TimestampUnixNano: 102, AccountID: 2002, ProjectID: 7, Body: "t2002"},
+	}
+	var mu sync.Mutex
+	var asked []string
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		mu.Lock()
+		if q.Get("all_tenants") != "" {
+			asked = append(asked, "ALL")
+		} else {
+			asked = append(asked, q.Get("account_id")+":"+q.Get("project_id"))
+		}
+		mu.Unlock()
+		account, project := q.Get("account_id"), q.Get("project_id")
+		w.Header().Set(buffer.TenantScopeHeader, account+":"+project)
+		enc := json.NewEncoder(w)
+		for _, row := range rows {
+			if strconv.FormatUint(uint64(row.AccountID), 10) == account && strconv.FormatUint(uint64(row.ProjectID), 10) == project {
+				_ = enc.Encode(row)
+			}
+		}
+	}))
+	defer peer.Close()
+
+	bridge := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 2 * time.Second}, config.ModeLogs)
+	bridge.SetEndpoints([]string{peer.URL})
+	scope := resolveTenantScope([]logstorage.TenantID{{AccountID: 1001}, {AccountID: 2002, ProjectID: 7}})
+
+	got, err := bridge.QueryLogs(context.Background(), 0, 1000, scope)
+	if err != nil {
+		t.Fatalf("QueryLogs: %v", err)
+	}
+	bodies := map[string]bool{}
+	for _, r := range got {
+		bodies[r.Body] = true
+	}
+	if len(got) != 2 || !bodies["t1001"] || !bodies["t2002"] {
+		t.Errorf("merged rows = %+v, want exactly tenants 1001:0 and 2002:7", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	sort.Strings(asked)
+	if strings.Join(asked, ",") != "1001:0,2002:7" {
+		t.Errorf("peer was asked for %v, want one request per listed tenant and never all tenants", asked)
+	}
+	if n := len(bridgeScopes(tenantScope{all: true})); n != 1 {
+		t.Errorf("a cross-tenant scope is one bridge request, got %d", n)
 	}
 }
