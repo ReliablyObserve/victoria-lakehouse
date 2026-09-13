@@ -99,15 +99,16 @@ func TestTenantParity_DependenciesAPI_RespectsScope(t *testing.T) {
 	deadline := notBefore.Add(4 * time.Minute)
 	var tick time.Time
 	var graphs map[string]map[string]map[depEdgeKey]int
+	var missing string
 	for {
-		tick, graphs = latestCommonServiceGraphTick(t, tenants, notBefore)
+		tick, graphs, missing = latestCommonServiceGraphTick(t, tenants, notBefore)
 		if graphs != nil {
 			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("no service-graph snapshot stamped after %s reached both tiers for every "+
-				"tenant within 4m — the servicegraph task is not producing per-tenant edges "+
-				"on one tier", notBefore.UTC().Format(time.RFC3339))
+				"tenant within 4m (newest candidate: %s) — the servicegraph task is not "+
+				"producing per-tenant edges on one tier", notBefore.UTC().Format(time.RFC3339), missing)
 		}
 		time.Sleep(10 * time.Second)
 	}
@@ -271,14 +272,21 @@ func tenantStatsCount(t *testing.T, base, query, account, project string) int {
 
 type depEdgeKey struct{ parent, child string }
 
+// snapshotWindowHalfWidth brackets a service-graph stamp. It must stay well
+// under the shortest task interval (30s) so the window admits exactly one
+// snapshot, and above zero so no bound of the window lands exactly on the
+// stamp: a bound on a row's own timestamp is a separate boundary behavior,
+// pinned by TestParity_TimeRange/boundary_ns*, and must not decide this test.
+const snapshotWindowHalfWidth = time.Second
+
 // dependenciesAtTick reads a tenant's Jaeger dependencies graph pinned to the
-// snapshot stamped at tick: a 1 ms lookback ending on the stamp admits that
-// snapshot and no earlier one.
+// snapshot stamped at tick, through a window of snapshotWindowHalfWidth on
+// each side of the stamp.
 func dependenciesAtTick(t *testing.T, base string, tick time.Time, account, project string) map[depEdgeKey]int {
 	t.Helper()
 	params := url.Values{
-		"endTs":    {strconv.FormatInt(tick.UnixMilli(), 10)},
-		"lookback": {"1"},
+		"endTs":    {strconv.FormatInt(tick.Add(snapshotWindowHalfWidth).UnixMilli(), 10)},
+		"lookback": {strconv.FormatInt((2 * snapshotWindowHalfWidth).Milliseconds(), 10)},
 	}
 	r := tenantFetch(t, base, "/select/jaeger/api/dependencies", params, account, project)
 	if r.StatusCode != 200 {
@@ -295,32 +303,39 @@ func dependenciesAtTick(t *testing.T, base string, tick time.Time, account, proj
 // latestCommonServiceGraphTick walks back from the current minute to
 // notBefore and returns the newest whole-minute snapshot that both tiers
 // hold for every tenant, with the graphs read at it keyed by tier name and
-// account. It returns nil graphs while no such snapshot exists yet.
-func latestCommonServiceGraphTick(t *testing.T, tenants []tenantSummary, notBefore time.Time) (time.Time, map[string]map[string]map[depEdgeKey]int) {
+// account. While no such snapshot exists it returns nil graphs and names the
+// first tier and tenant the newest candidate was missing for.
+func latestCommonServiceGraphTick(t *testing.T, tenants []tenantSummary, notBefore time.Time) (time.Time, map[string]map[string]map[depEdgeKey]int, string) {
 	t.Helper()
 	tiers := []struct{ name, base string }{{"VT", vtBaseURL}, {"LHT", lhtBaseURL}}
+	missing := "no whole minute has passed since the test started"
+	newest := true
 	for tick := time.Now().Truncate(time.Minute); !tick.Before(notBefore); tick = tick.Add(-time.Minute) {
 		graphs := map[string]map[string]map[depEdgeKey]int{}
-		complete := true
+		gap := ""
 		for _, tier := range tiers {
 			graphs[tier.name] = map[string]map[depEdgeKey]int{}
 			for _, te := range tenants {
 				edges := dependenciesAtTick(t, tier.base, tick, te.AccountID, te.ProjectID)
 				if len(edges) == 0 {
-					complete = false
+					gap = tier.name + " account " + te.AccountID
 					break
 				}
 				graphs[tier.name][te.AccountID] = edges
 			}
-			if !complete {
+			if gap != "" {
 				break
 			}
 		}
-		if complete {
-			return tick, graphs
+		if gap == "" {
+			return tick, graphs, ""
+		}
+		if newest {
+			missing = tick.UTC().Format(time.RFC3339) + " has no edges on " + gap
+			newest = false
 		}
 	}
-	return time.Time{}, nil
+	return time.Time{}, nil, missing
 }
 
 func sumCalls(edges map[depEdgeKey]int) int {

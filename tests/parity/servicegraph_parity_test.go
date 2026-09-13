@@ -35,22 +35,13 @@ import (
 func TestServiceGraphParity_DependenciesAPI(t *testing.T) {
 	params := url.Values{"lookback": {"1800000"}}
 
-	hot := fetch(t, vtBaseURL, "/select/jaeger/api/dependencies", params)
-	cold := fetch(t, lhtBaseURL, "/select/jaeger/api/dependencies", params)
-
-	if hot.StatusCode != 200 {
-		t.Fatalf("hot Jaeger dependencies returned %d: %s", hot.StatusCode, string(hot.Body))
-	}
-	if cold.StatusCode != 200 {
-		t.Fatalf("cold Jaeger dependencies returned %d: %s", cold.StatusCode, string(cold.Body))
-	}
-
-	hotResp := parseDependenciesResponse(t, hot.Body)
-	coldResp := parseDependenciesResponse(t, cold.Body)
-
+	hotResp := waitForServiceGraphEdges(t, vtBaseURL, params, serviceGraphFirstTickTimeout)
 	if hotResp.Total == 0 {
-		t.Skip("hot VT has no service-graph edges yet — waiting for first task tick")
+		t.Fatalf("hot VT produced no service-graph edges within %s — the servicegraph task "+
+			"is not running on victoriatraces (see TestServiceGraphParity_HotTaskMustBeEnabled)",
+			serviceGraphFirstTickTimeout)
 	}
+	coldResp := waitForServiceGraphEdges(t, lhtBaseURL, params, serviceGraphFirstTickTimeout)
 	if coldResp.Total == 0 {
 		t.Fatalf("cold LH has zero service-graph edges but hot has %d — regression "+
 			"in one of: (a) servicegraph goroutine staying alive (defer fix), "+
@@ -259,13 +250,23 @@ func TestServiceGraphParity_StatsByOnSGFields(t *testing.T) {
 	q := `{trace_service_graph_stream="-"} NOT parent:"" ` +
 		`| fields parent, child, callCount ` +
 		`| stats by (parent, child) sum(callCount) as callCount`
-	res := fetch(t, lhtBaseURL, "/select/logsql/query", url.Values{"query": {q}})
-	if res.StatusCode != 200 {
-		t.Fatalf("cold stats-by query: %d, %s", res.StatusCode, string(res.Body))
+	var body string
+	deadline := time.Now().Add(serviceGraphFirstTickTimeout)
+	for {
+		res := fetch(t, lhtBaseURL, "/select/logsql/query", url.Values{"query": {q}})
+		if res.StatusCode != 200 {
+			t.Fatalf("cold stats-by query: %d, %s", res.StatusCode, string(res.Body))
+		}
+		body = strings.TrimSpace(string(res.Body))
+		if body != "" || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Second)
 	}
-	body := strings.TrimSpace(string(res.Body))
 	if body == "" {
-		t.Skip("no SG rows persisted yet")
+		t.Fatalf("cold persisted no service-graph rows within %s — the servicegraph task "+
+			"never wrote a snapshot, so the stats-by path under test was never exercised",
+			serviceGraphFirstTickTimeout)
 	}
 
 	collapsed := 0
@@ -305,6 +306,34 @@ type depEdge struct {
 type depResp struct {
 	Data  []depEdge `json:"data"`
 	Total int       `json:"total"`
+}
+
+// serviceGraphFirstTickTimeout bounds the wait for a tier's first
+// service-graph snapshot. The task first runs one interval after the binary
+// starts (1m on cold, tests/parity/docker-compose.yml) and its rows are
+// visible only once the writer has flushed them. A suite that reaches the
+// service-graph tests within a minute of the stack starting would otherwise
+// read the empty graph from before that tick and fail or skip on timing
+// alone.
+const serviceGraphFirstTickTimeout = 3 * time.Minute
+
+// waitForServiceGraphEdges polls a tier's Jaeger dependencies endpoint until
+// it reports at least one edge or the timeout passes, and returns the last
+// answer either way — the caller decides what an empty graph means.
+func waitForServiceGraphEdges(t *testing.T, base string, params url.Values, timeout time.Duration) depResp {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		r := fetch(t, base, "/select/jaeger/api/dependencies", params)
+		if r.StatusCode != 200 {
+			t.Fatalf("%s Jaeger dependencies returned %d: %s", base, r.StatusCode, string(r.Body))
+		}
+		resp := parseDependenciesResponse(t, r.Body)
+		if resp.Total > 0 || time.Now().After(deadline) {
+			return resp
+		}
+		time.Sleep(10 * time.Second)
+	}
 }
 
 func parseDependenciesResponse(t *testing.T, body []byte) depResp {
