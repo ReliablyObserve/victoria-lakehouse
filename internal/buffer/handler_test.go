@@ -51,7 +51,7 @@ func TestBufferQuery_Logs(t *testing.T) {
 	h := NewHandler(store, "")
 	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start="+
 		fmt.Sprintf("%d", base.UnixNano())+"&end="+fmt.Sprintf("%d", base.Add(time.Minute).UnixNano())+
-		"&mode=logs", nil)
+		"&mode=logs&account_id=0&project_id=0&tenant_scope=v1", nil)
 	rec := httptest.NewRecorder()
 
 	h.ServeHTTP(rec, req)
@@ -79,7 +79,7 @@ func TestBufferQuery_Traces(t *testing.T) {
 	h := NewHandler(store, "")
 	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start="+
 		fmt.Sprintf("%d", base.UnixNano())+"&end="+fmt.Sprintf("%d", base.Add(time.Minute).UnixNano())+
-		"&mode=traces", nil)
+		"&mode=traces&account_id=0&project_id=0&tenant_scope=v1", nil)
 	rec := httptest.NewRecorder()
 
 	h.ServeHTTP(rec, req)
@@ -103,8 +103,8 @@ func TestBufferQuery_MissingParams(t *testing.T) {
 		url  string
 	}{
 		{"no params", "/internal/buffer/query"},
-		{"missing end", "/internal/buffer/query?start=0&mode=logs"},
-		{"missing start", "/internal/buffer/query?end=1000&mode=logs"},
+		{"missing end", "/internal/buffer/query?start=0&mode=logs&account_id=0&project_id=0&tenant_scope=v1"},
+		{"missing start", "/internal/buffer/query?end=1000&mode=logs&account_id=0&project_id=0&tenant_scope=v1"},
 		{"missing mode", "/internal/buffer/query?start=0&end=1000"},
 	}
 
@@ -122,7 +122,7 @@ func TestBufferQuery_MissingParams(t *testing.T) {
 
 func TestBufferQuery_InvalidStart(t *testing.T) {
 	h := NewHandler(&mockBufferStore{}, "")
-	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=abc&end=1000&mode=logs", nil)
+	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=abc&end=1000&mode=logs&account_id=0&project_id=0&tenant_scope=v1", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -132,7 +132,7 @@ func TestBufferQuery_InvalidStart(t *testing.T) {
 
 func TestBufferQuery_InvalidEnd(t *testing.T) {
 	h := NewHandler(&mockBufferStore{}, "")
-	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=abc&mode=logs", nil)
+	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=abc&mode=logs&account_id=0&project_id=0&tenant_scope=v1", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -142,7 +142,7 @@ func TestBufferQuery_InvalidEnd(t *testing.T) {
 
 func TestBufferQuery_InvalidMode(t *testing.T) {
 	h := NewHandler(&mockBufferStore{}, "")
-	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=1000&mode=invalid", nil)
+	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=1000&mode=invalid&account_id=0&project_id=0&tenant_scope=v1", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -152,7 +152,7 @@ func TestBufferQuery_InvalidMode(t *testing.T) {
 
 func TestBufferQuery_Empty(t *testing.T) {
 	h := NewHandler(&mockBufferStore{}, "")
-	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=1000&mode=logs", nil)
+	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=1000&mode=logs&account_id=0&project_id=0&tenant_scope=v1", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -169,7 +169,7 @@ func TestBufferQuery_MethodNotAllowed(t *testing.T) {
 	h := NewHandler(&mockBufferStore{}, "")
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
 		t.Run(method, func(t *testing.T) {
-			req := httptest.NewRequest(method, "/internal/buffer/query?start=0&end=1000&mode=logs", nil)
+			req := httptest.NewRequest(method, "/internal/buffer/query?start=0&end=1000&mode=logs&account_id=0&project_id=0&tenant_scope=v1", nil)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
 			if rec.Code != http.StatusMethodNotAllowed {
@@ -183,7 +183,7 @@ func TestBufferQuery_AuthRequired(t *testing.T) {
 	h := NewHandler(&mockBufferStore{}, "secret-key")
 
 	t.Run("no auth header", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=1000&mode=logs", nil)
+		req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=1000&mode=logs&account_id=0&project_id=0&tenant_scope=v1", nil)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusUnauthorized {
@@ -192,7 +192,7 @@ func TestBufferQuery_AuthRequired(t *testing.T) {
 	})
 
 	t.Run("wrong key", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=1000&mode=logs", nil)
+		req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=1000&mode=logs&account_id=0&project_id=0&tenant_scope=v1", nil)
 		req.Header.Set("Authorization", "Bearer wrong-key")
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -202,7 +202,7 @@ func TestBufferQuery_AuthRequired(t *testing.T) {
 	})
 
 	t.Run("correct key", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=1000&mode=logs", nil)
+		req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=1000&mode=logs&account_id=0&project_id=0&tenant_scope=v1", nil)
 		req.Header.Set("Authorization", "Bearer secret-key")
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -214,7 +214,7 @@ func TestBufferQuery_AuthRequired(t *testing.T) {
 
 func TestBufferQuery_NoAuthWhenKeyEmpty(t *testing.T) {
 	h := NewHandler(&mockBufferStore{}, "")
-	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=1000&mode=logs", nil)
+	req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query?start=0&end=1000&mode=logs&account_id=0&project_id=0&tenant_scope=v1", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -238,7 +238,7 @@ func TestBufferQuery_InvertedTimeRange(t *testing.T) {
 	startNs := base.Add(time.Minute).UnixNano()
 	endNs := base.UnixNano()
 	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf(
-		"/internal/buffer/query?start=%d&end=%d&mode=logs", startNs, endNs), nil)
+		"/internal/buffer/query?start=%d&end=%d&mode=logs&account_id=0&project_id=0&tenant_scope=v1", startNs, endNs), nil)
 	rec := httptest.NewRecorder()
 
 	h.ServeHTTP(rec, req)
@@ -265,7 +265,7 @@ func TestBufferQuery_InvertedTimeRange_Traces(t *testing.T) {
 	startNs := base.Add(time.Hour).UnixNano()
 	endNs := base.UnixNano()
 	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf(
-		"/internal/buffer/query?start=%d&end=%d&mode=traces", startNs, endNs), nil)
+		"/internal/buffer/query?start=%d&end=%d&mode=traces&account_id=0&project_id=0&tenant_scope=v1", startNs, endNs), nil)
 	rec := httptest.NewRecorder()
 
 	h.ServeHTTP(rec, req)
@@ -304,7 +304,7 @@ func TestBufferQuery_Int64Boundaries(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			h := NewHandler(store, "")
 			req := httptest.NewRequest(http.MethodGet, fmt.Sprintf(
-				"/internal/buffer/query?start=%d&end=%d&mode=logs", tt.start, tt.end), nil)
+				"/internal/buffer/query?start=%d&end=%d&mode=logs&account_id=0&project_id=0&tenant_scope=v1", tt.start, tt.end), nil)
 			rec := httptest.NewRecorder()
 
 			h.ServeHTTP(rec, req)
@@ -334,7 +334,7 @@ func TestBufferQuery_ZeroTimeRange(t *testing.T) {
 	// start == end: since the filter is >= start && < end, zero-width range returns nothing
 	ts := base.UnixNano()
 	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf(
-		"/internal/buffer/query?start=%d&end=%d&mode=logs", ts, ts), nil)
+		"/internal/buffer/query?start=%d&end=%d&mode=logs&account_id=0&project_id=0&tenant_scope=v1", ts, ts), nil)
 	rec := httptest.NewRecorder()
 
 	h.ServeHTTP(rec, req)
@@ -360,7 +360,7 @@ func TestBufferQuery_ZeroTimeRange_Traces(t *testing.T) {
 	h := NewHandler(store, "")
 	ts := base.UnixNano()
 	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf(
-		"/internal/buffer/query?start=%d&end=%d&mode=traces", ts, ts), nil)
+		"/internal/buffer/query?start=%d&end=%d&mode=traces&account_id=0&project_id=0&tenant_scope=v1", ts, ts), nil)
 	rec := httptest.NewRecorder()
 
 	h.ServeHTTP(rec, req)
