@@ -26,20 +26,23 @@ const (
 )
 
 type ParityCase struct {
-	Name       string
-	Endpoint   string
-	Params     map[string]string
-	Compare    CompareMode
+	Name     string
+	Endpoint string
+	Params   map[string]string
+	Compare  CompareMode
+	// ValueField names the output column for SetEqual / SetSuperset when
+	// the query renames or projects it — `| uniq by(level)` rows carry a
+	// "level" key, not a "value" key, and without the hint they extract as
+	// the empty set, which compares equal to anything.
+	ValueField string
 	SkipFields []string
 	Tolerance  float64
 }
 
+// fullRangeParams covers the whole seeded window — see seedWindowParams in
+// helpers.go for why a short relative window reads empty on both tiers.
 func fullRangeParams() url.Values {
-	now := time.Now()
-	return url.Values{
-		"start": {fmt.Sprintf("%d", now.Add(-48*time.Hour).UnixNano())},
-		"end":   {fmt.Sprintf("%d", now.UnixNano())},
-	}
+	return seedWindowParams()
 }
 
 func rangeParams(dur time.Duration) url.Values {
@@ -99,9 +102,9 @@ func compareParity(t *testing.T, pc ParityCase, ref, sut fetchResult) {
 		}
 		compareCountEqual(t, ref, sut, tol)
 	case SetEqual:
-		compareSetEqual(t, ref, sut)
+		compareSetEqual(t, pc, ref, sut)
 	case SetSuperset:
-		compareSetSuperset(t, ref, sut)
+		compareSetSuperset(t, pc, ref, sut)
 	case RowsMatch:
 		compareRowsMatch(t, ref, sut, pc.SkipFields)
 	case StatusEqual:
@@ -159,7 +162,7 @@ func compareCountEqual(t *testing.T, ref, sut fetchResult, tolerance float64) {
 	t.Logf("count_equal: ref=%v sut=%v", refCount, sutCount)
 }
 
-func compareSetEqual(t *testing.T, ref, sut fetchResult) {
+func compareSetEqual(t *testing.T, pc ParityCase, ref, sut fetchResult) {
 	t.Helper()
 	if ref.StatusCode != 200 {
 		t.Fatalf("reference returned status %d", ref.StatusCode)
@@ -167,8 +170,9 @@ func compareSetEqual(t *testing.T, ref, sut fetchResult) {
 	if sut.StatusCode != 200 {
 		t.Fatalf("SUT returned status %d", sut.StatusCode)
 	}
-	refVals := sortedStrings(extractValuesStrings(ref.Body))
-	sutVals := sortedStrings(extractValuesStrings(sut.Body))
+	refVals := sortedStrings(extractValuesForField(ref.Body, pc.ValueField))
+	sutVals := sortedStrings(extractValuesForField(sut.Body, pc.ValueField))
+	requireNonEmptyReference(t, SetEqual, len(refVals), "no values extracted from "+string(ref.Body[:minInt(len(ref.Body), 200)]))
 	refSet := stringSet(refVals)
 	sutSet := stringSet(sutVals)
 	for _, v := range refVals {
@@ -184,7 +188,7 @@ func compareSetEqual(t *testing.T, ref, sut fetchResult) {
 	t.Logf("set_equal: ref=%d sut=%d", len(refVals), len(sutVals))
 }
 
-func compareSetSuperset(t *testing.T, ref, sut fetchResult) {
+func compareSetSuperset(t *testing.T, pc ParityCase, ref, sut fetchResult) {
 	t.Helper()
 	if ref.StatusCode != 200 {
 		t.Fatalf("reference returned status %d", ref.StatusCode)
@@ -192,8 +196,9 @@ func compareSetSuperset(t *testing.T, ref, sut fetchResult) {
 	if sut.StatusCode != 200 {
 		t.Fatalf("SUT returned status %d", sut.StatusCode)
 	}
-	refVals := extractValuesStrings(ref.Body)
-	sutSet := stringSet(extractValuesStrings(sut.Body))
+	refVals := extractValuesForField(ref.Body, pc.ValueField)
+	sutSet := stringSet(extractValuesForField(sut.Body, pc.ValueField))
+	requireNonEmptyReference(t, SetSuperset, len(refVals), "no values extracted from "+string(ref.Body[:minInt(len(ref.Body), 200)]))
 	for _, v := range refVals {
 		if !sutSet[v] {
 			t.Errorf("SUT missing value %q present in reference (superset check)", v)
@@ -212,6 +217,7 @@ func compareRowsMatch(t *testing.T, ref, sut fetchResult, skipFields []string) {
 	}
 	refRows := parseNDJSON(ref.Body)
 	sutRows := parseNDJSON(sut.Body)
+	requireNonEmptyReference(t, RowsMatch, len(refRows), "reference returned no rows")
 	if len(refRows) != len(sutRows) {
 		t.Errorf("row count mismatch: ref=%d sut=%d", len(refRows), len(sutRows))
 		return
@@ -267,8 +273,16 @@ func compareStructureMatch(t *testing.T, ref, sut fetchResult) {
 	}
 	refData, _ := refObj["data"].(map[string]any)
 	sutData, _ := sutObj["data"].(map[string]any)
+	if refData == nil && sutData == nil {
+		// Not a {status, data} envelope — /select/logsql/query_time_range
+		// answers with a flat object. Compare its shape directly instead
+		// of logging "missing data field" and passing vacuously.
+		compareTopLevelKeys(t, refObj, sutObj)
+		return
+	}
 	if refData == nil || sutData == nil {
-		t.Logf("structure_match: one or both missing data field")
+		t.Errorf("structure_match: data field present on only one tier (ref=%v sut=%v)",
+			refData != nil, sutData != nil)
 		return
 	}
 	refType, _ := refData["resultType"].(string)
@@ -278,10 +292,40 @@ func compareStructureMatch(t *testing.T, ref, sut fetchResult) {
 	}
 	refResult, _ := refData["result"].([]any)
 	sutResult, _ := sutData["result"].([]any)
+	requireNonEmptyReference(t, StructureMatch, len(refResult), "reference result array is empty")
 	if len(refResult) != len(sutResult) {
 		t.Errorf("result array length mismatch: ref=%d sut=%d", len(refResult), len(sutResult))
 	}
 	t.Logf("structure_match: type=%s ref_results=%d sut_results=%d", refType, len(refResult), len(sutResult))
+}
+
+// compareTopLevelKeys asserts two flat JSON objects carry the same key set.
+// Values are not compared: endpoints like query_time_range echo the caller's
+// window, so the keys are the parity-relevant part.
+func compareTopLevelKeys(t *testing.T, refObj, sutObj map[string]any) {
+	t.Helper()
+	refKeys := sortedStrings(mapKeys(refObj))
+	sutKeys := sortedStrings(mapKeys(sutObj))
+	requireNonEmptyReference(t, StructureMatch, len(refKeys), "reference object has no keys")
+	if strings.Join(refKeys, ",") != strings.Join(sutKeys, ",") {
+		t.Errorf("top-level key mismatch: ref=%v sut=%v", refKeys, sutKeys)
+	}
+	t.Logf("structure_match (flat object): keys=%v", refKeys)
+}
+
+func mapKeys(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func compareBucketMatch(t *testing.T, ref, sut fetchResult) {
@@ -294,6 +338,7 @@ func compareBucketMatch(t *testing.T, ref, sut fetchResult) {
 	}
 	refTS, refCounts := extractHitsBuckets(ref.Body)
 	sutTS, sutCounts := extractHitsBuckets(sut.Body)
+	requireNonEmptyReference(t, BucketMatch, len(refTS), "reference returned no hits buckets")
 	if len(refTS) != len(sutTS) {
 		t.Errorf("bucket count mismatch: ref=%d sut=%d", len(refTS), len(sutTS))
 		return
