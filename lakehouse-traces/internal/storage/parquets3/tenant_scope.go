@@ -273,3 +273,32 @@ func (s *Storage) TenantIDsForRange(startNs, endNs int64) []logstorage.TenantID 
 	})
 	return out
 }
+
+// localBufferTenantIDs is the tenant list handed to the co-located logstorage
+// buffer, which scopes natively by tenant like upstream VL. A single-tenant
+// scope passes exactly that tenant (a nil list becomes 0:0, the same default
+// resolveTenantScope applies). A validated cross-tenant read enumerates the
+// tenants the buffer holds in the window, so global read sees every tenant's
+// unflushed rows — the same widening the cold tier applies — instead of only
+// the default tenant's.
+func (s *Storage) localBufferTenantIDs(ctx context.Context, tenantIDs []logstorage.TenantID, startNs, endNs int64) []logstorage.TenantID {
+	own := tenantIDs
+	if len(own) == 0 {
+		own = []logstorage.TenantID{{}}
+	}
+	if !scopeFor(ctx, tenantIDs).all {
+		return own
+	}
+	lister, ok := s.localBuffer.(interface {
+		GetTenantIDs(ctx context.Context, start, end int64) ([]logstorage.TenantID, error)
+	})
+	if !ok {
+		return own
+	}
+	ids, err := lister.GetTenantIDs(ctx, startNs, endNs)
+	if err != nil {
+		logger.Warnf("global read: cannot enumerate buffered tenants, serving the request's own tenant from the buffer: %s", err)
+		return own
+	}
+	return ids
+}

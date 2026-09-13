@@ -19,13 +19,18 @@ type Querier interface {
 // TenantScopeVersion is the value the select side sends in the
 // `tenant_scope` query parameter of /internal/buffer/query, and
 // TenantScopeHeader is the response header this handler echoes the tenant it
-// filtered to. Together they make a mixed-version fleet fail CLOSED: a peer
+// filtered to ("<account>:<project>", or AllTenantsScope for a cross-tenant
+// answer). Together they make a mixed-version fleet fail CLOSED: a peer
 // running an older build ignores the parameter and sends no header, so the
 // caller drops its rows instead of merging rows it cannot attribute to a
 // tenant. Bump the version if the scoping contract ever changes shape.
 const (
 	TenantScopeVersion = "v1"
 	TenantScopeHeader  = "X-Lakehouse-Tenant-Scope"
+	// AllTenantsScope is echoed for an all_tenants=true request — sent only by
+	// a select pod answering a query that presented a valid global-read
+	// credential.
+	AllTenantsScope = "*"
 )
 
 // Handler serves the internal buffer query endpoint, allowing select
@@ -44,12 +49,13 @@ func NewHandler(store Querier, authKey string) *Handler {
 
 // ServeHTTP streams matching rows as newline-delimited JSON.
 //
-// Query parameters: start (ns), end (ns), mode (logs|traces),
-// account_id + project_id (the single tenant to answer for) and tenant_scope
-// (the contract version, see TenantScopeVersion). The tenant parameters are
-// REQUIRED: the buffer holds every tenant's unflushed rows, so answering
-// without them would hand the caller rows it must not see. Requests that omit
-// them are rejected rather than served unscoped.
+// Query parameters: start (ns), end (ns), mode (logs|traces), tenant_scope
+// (the contract version, see TenantScopeVersion) and EITHER account_id +
+// project_id (the single tenant to answer for) OR all_tenants=true (a
+// cross-tenant read the select pod has already authorised with the global-read
+// credential). The tenant selection is REQUIRED: the buffer holds every
+// tenant's unflushed rows, so a request that names no tenant is rejected
+// rather than served unscoped.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -88,58 +94,88 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tenant_scope parameter required", http.StatusBadRequest)
 		return
 	}
-	accountID, projectID, err := parseTenantParams(r)
+	sel, err := parseTenantSelection(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if mode != "logs" && mode != "traces" {
+		http.Error(w, "mode must be logs or traces", http.StatusBadRequest)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	// Echo the tenant this answer is filtered to, so the caller can prove the
 	// peer honoured the scope before merging the rows.
-	w.Header().Set(TenantScopeHeader, strconv.FormatUint(uint64(accountID), 10)+":"+strconv.FormatUint(uint64(projectID), 10))
+	w.Header().Set(TenantScopeHeader, sel.String())
 
 	enc := json.NewEncoder(w)
-	switch mode {
-	case "logs":
+	if mode == "logs" {
 		for _, row := range h.store.BufferedLogRows(startNs, endNs) {
-			if row.AccountID != accountID || row.ProjectID != projectID {
+			if !sel.owns(row.AccountID, row.ProjectID) {
 				continue
 			}
 			if err := enc.Encode(row); err != nil {
 				return
 			}
 		}
-	case "traces":
-		for _, row := range h.store.BufferedTraceRows(startNs, endNs) {
-			if row.AccountID != accountID || row.ProjectID != projectID {
-				continue
-			}
-			if err := enc.Encode(row); err != nil {
-				return
-			}
+		return
+	}
+	for _, row := range h.store.BufferedTraceRows(startNs, endNs) {
+		if !sel.owns(row.AccountID, row.ProjectID) {
+			continue
 		}
-	default:
-		http.Error(w, "mode must be logs or traces", http.StatusBadRequest)
+		if err := enc.Encode(row); err != nil {
+			return
+		}
 	}
 }
 
-// parseTenantParams reads the single tenant this request may be answered for.
-// Both parameters must be present and must parse as uint32, matching the
-// AccountID/ProjectID pair VL derives from the request headers.
-func parseTenantParams(r *http.Request) (accountID, projectID uint32, err error) {
+// tenantSelection is the set of tenants one buffer query may be answered for:
+// exactly one tenant, or every tenant for an authorised cross-tenant read.
+type tenantSelection struct {
+	all                  bool
+	accountID, projectID uint32
+}
+
+func (s tenantSelection) owns(accountID, projectID uint32) bool {
+	return s.all || (accountID == s.accountID && projectID == s.projectID)
+}
+
+func (s tenantSelection) String() string {
+	if s.all {
+		return AllTenantsScope
+	}
+	return strconv.FormatUint(uint64(s.accountID), 10) + ":" + strconv.FormatUint(uint64(s.projectID), 10)
+}
+
+// parseTenantSelection reads the tenant selection of a buffer query. Exactly
+// one form must be present: all_tenants=true, or account_id + project_id that
+// parse as uint32 (the AccountID/ProjectID pair VL derives from the request
+// headers). Mixing the forms is rejected so a caller cannot be ambiguous about
+// what it asked for.
+func parseTenantSelection(r *http.Request) (tenantSelection, error) {
 	q := r.URL.Query()
-	accountStr, projectStr := q.Get("account_id"), q.Get("project_id")
+	accountStr, projectStr, allStr := q.Get("account_id"), q.Get("project_id"), q.Get("all_tenants")
+	if allStr != "" {
+		if allStr != "true" {
+			return tenantSelection{}, errors.New("all_tenants must be true when present")
+		}
+		if accountStr != "" || projectStr != "" {
+			return tenantSelection{}, errors.New("all_tenants cannot be combined with account_id/project_id")
+		}
+		return tenantSelection{all: true}, nil
+	}
 	if accountStr == "" || projectStr == "" {
-		return 0, 0, errors.New("account_id and project_id parameters required")
+		return tenantSelection{}, errors.New("account_id and project_id parameters required")
 	}
 	a, err := strconv.ParseUint(accountStr, 10, 32)
 	if err != nil {
-		return 0, 0, errors.New("invalid account_id parameter")
+		return tenantSelection{}, errors.New("invalid account_id parameter")
 	}
 	p, err := strconv.ParseUint(projectStr, 10, 32)
 	if err != nil {
-		return 0, 0, errors.New("invalid project_id parameter")
+		return tenantSelection{}, errors.New("invalid project_id parameter")
 	}
-	return uint32(a), uint32(p), nil
+	return tenantSelection{accountID: uint32(a), projectID: uint32(p)}, nil
 }

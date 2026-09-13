@@ -136,3 +136,52 @@ func TestBufferQuery_Tenant_ParametersAreRequired(t *testing.T) {
 		})
 	}
 }
+
+func TestBufferQuery_Tenant_AllTenantsForAuthorisedCrossTenantRead(t *testing.T) {
+	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
+	h := NewHandler(tenantBufferStore(base), "")
+
+	u := fmt.Sprintf("/internal/buffer/query?start=%d&end=%d&mode=logs&all_tenants=true&tenant_scope=%s",
+		base.Add(-time.Minute).UnixNano(), base.Add(time.Minute).UnixNano(), TenantScopeVersion)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, u, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get(TenantScopeHeader); got != AllTenantsScope {
+		t.Errorf("%s = %q, want %q", TenantScopeHeader, got, AllTenantsScope)
+	}
+	n := 0
+	dec := json.NewDecoder(rec.Body)
+	for dec.More() {
+		var row schema.LogRow
+		if err := dec.Decode(&row); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		n++
+	}
+	if n != 3 {
+		t.Errorf("all-tenants answer carried %d rows, want every tenant's 3", n)
+	}
+}
+
+func TestBufferQuery_Tenant_SelectionFormsAreExclusive(t *testing.T) {
+	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
+	h := NewHandler(tenantBufferStore(base), "")
+	window := fmt.Sprintf("start=%d&end=%d&mode=logs&tenant_scope=%s", base.Add(-time.Minute).UnixNano(), base.Add(time.Minute).UnixNano(), TenantScopeVersion)
+
+	for _, tc := range []struct{ name, extra string }{
+		{"all_tenants combined with account/project", "&all_tenants=true&account_id=0&project_id=0"},
+		{"all_tenants combined with account only", "&all_tenants=true&account_id=0"},
+		{"all_tenants=false is not a selection", "&all_tenants=false"},
+		{"all_tenants=1 is not accepted", "&all_tenants=1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/internal/buffer/query?"+window+tc.extra, nil))
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", rec.Code)
+			}
+		})
+	}
+}

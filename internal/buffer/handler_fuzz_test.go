@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -112,6 +113,10 @@ func FuzzHandlerTenantParams(f *testing.F) {
 	}
 	f.Add("0", "0", "logs", "")
 	f.Add("0", "0", "logs", "v0")
+	f.Add("all:true", "", "logs", TenantScopeVersion)
+	f.Add("all:true", "0", "traces", TenantScopeVersion)
+	f.Add("all:false", "", "logs", TenantScopeVersion)
+	f.Add("all:TRUE", "", "logs", TenantScopeVersion)
 
 	store := &mockBufferStore{
 		logRows: []schema.LogRow{
@@ -131,8 +136,18 @@ func FuzzHandlerTenantParams(f *testing.F) {
 		q.Set("start", "0")
 		q.Set("end", "1000")
 		q.Set("mode", mode)
-		q.Set("account_id", account)
-		q.Set("project_id", project)
+		// An account value of the form "all:<x>" drives the all_tenants form
+		// instead, so the fuzzer explores both selection shapes (and their
+		// combinations) through the same corpus.
+		if rest, ok := strings.CutPrefix(account, "all:"); ok {
+			q.Set("all_tenants", rest)
+			if project != "" {
+				q.Set("project_id", project)
+			}
+		} else {
+			q.Set("account_id", account)
+			q.Set("project_id", project)
+		}
 		q.Set("tenant_scope", scopeVersion)
 
 		req := httptest.NewRequest(http.MethodGet, "/internal/buffer/query", nil)
@@ -146,6 +161,12 @@ func FuzzHandlerTenantParams(f *testing.F) {
 		scope := rec.Header().Get(TenantScopeHeader)
 		if scope == "" {
 			t.Fatalf("handler answered 200 without declaring the tenant it filtered to (account=%q project=%q)", account, project)
+		}
+		if scope == AllTenantsScope {
+			if q.Get("all_tenants") != "true" || q.Has("account_id") || q.Has("project_id") {
+				t.Fatalf("handler widened to all tenants without an exact all_tenants=true request: %s", req.URL.RawQuery)
+			}
+			return // a cross-tenant answer may carry any tenant's rows
 		}
 		dec := json.NewDecoder(rec.Body)
 		for dec.More() {

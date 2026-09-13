@@ -954,7 +954,7 @@ func TestTenantScope_BufferBridge_FanOutIsScoped(t *testing.T) {
 		bridge := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 2 * time.Second}, config.ModeLogs)
 		bridge.SetEndpoints([]string{peer.URL})
 
-		got, err := bridge.QueryLogs(context.Background(), 0, 1000, "1001", "0")
+		got, err := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "1001", project: "0"})
 		if err != nil {
 			t.Fatalf("QueryLogs: %v", err)
 		}
@@ -985,7 +985,7 @@ func TestTenantScope_BufferBridge_FanOutIsScoped(t *testing.T) {
 		bridge := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 2 * time.Second}, config.ModeLogs)
 		bridge.SetEndpoints([]string{peer.URL})
 
-		got, err := bridge.QueryLogs(context.Background(), 0, 1000, "1001", "0")
+		got, err := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "1001", project: "0"})
 		if err != nil {
 			t.Fatalf("QueryLogs: %v", err)
 		}
@@ -1006,7 +1006,7 @@ func TestTenantScope_BufferBridge_FanOutIsScoped(t *testing.T) {
 
 		bridge := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 2 * time.Second}, config.ModeTraces)
 		bridge.SetEndpoints([]string{peer.URL})
-		got, err := bridge.QueryTraces(context.Background(), 0, 1000, "1001", "0")
+		got, err := bridge.QueryTraces(context.Background(), 0, 1000, tenantScope{account: "1001", project: "0"})
 		if err != nil {
 			t.Fatalf("QueryTraces: %v", err)
 		}
@@ -1111,4 +1111,136 @@ func TestTenantScope_OrgIDShapedTemplate(t *testing.T) {
 	if tenantOwnsKey(parse, scope, "globex/logs/"+tsPartition+"/a.parquet") {
 		t.Error("single-segment key of another tenant must not be owned")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Global read also widens the unflushed window (bridge + co-located buffer).
+// ---------------------------------------------------------------------------
+
+func TestTenantScope_BufferBridge_GlobalReadAsksForAllTenants(t *testing.T) {
+	rows := []schema.LogRow{
+		{TimestampUnixNano: 100, AccountID: 0, ProjectID: 0, Body: "b"},
+		{TimestampUnixNano: 101, AccountID: 1001, ProjectID: 0, Body: "b"},
+	}
+	var mu sync.Mutex
+	var gotAll string
+	var gotHasAccount bool
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotAll = r.URL.Query().Get("all_tenants")
+		gotHasAccount = r.URL.Query().Has("account_id")
+		mu.Unlock()
+		w.Header().Set(buffer.TenantScopeHeader, buffer.AllTenantsScope)
+		enc := json.NewEncoder(w)
+		for _, row := range rows {
+			_ = enc.Encode(row)
+		}
+	}))
+	defer peer.Close()
+
+	bridge := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 2 * time.Second}, config.ModeLogs)
+	bridge.SetEndpoints([]string{peer.URL})
+	got, err := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{all: true})
+	if err != nil {
+		t.Fatalf("QueryLogs: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if gotAll != "true" || gotHasAccount {
+		t.Errorf("a cross-tenant bridge query must send all_tenants=true and no account_id (got all_tenants=%q, account_id present=%v)", gotAll, gotHasAccount)
+	}
+	if len(got) != 2 {
+		t.Errorf("cross-tenant bridge answer = %d rows, want both tenants' 2", len(got))
+	}
+
+	// A scoped request must refuse a peer that answered for all tenants.
+	scoped, err := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "1001", project: "0"})
+	if err != nil {
+		t.Fatalf("QueryLogs scoped: %v", err)
+	}
+	if len(scoped) != 0 {
+		t.Errorf("a peer answering all tenants to a scoped request must be dropped, got %+v", scoped)
+	}
+}
+
+// tenantListingBuffer is a LocalBuffer that also enumerates its tenants, like
+// the logstorage-native buffer does, and records the tenant list it was asked
+// to query.
+type tenantListingBuffer struct {
+	mu       sync.Mutex
+	tenants  []logstorage.TenantID
+	listErr  error
+	queried  [][]logstorage.TenantID
+	listCall int
+}
+
+func (b *tenantListingBuffer) RunQuery(qctx *logstorage.QueryContext, _ logstorage.WriteDataBlockFunc) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.queried = append(b.queried, append([]logstorage.TenantID(nil), qctx.TenantIDs...))
+	return nil
+}
+
+func (b *tenantListingBuffer) GetTenantIDs(_ context.Context, _, _ int64) ([]logstorage.TenantID, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.listCall++
+	return b.tenants, b.listErr
+}
+
+func (b *tenantListingBuffer) Close() {}
+
+func TestTenantScope_LocalBuffer_TenantList(t *testing.T) {
+	all := []logstorage.TenantID{{}, {AccountID: 1001}, {AccountID: 2002, ProjectID: 7}}
+	global := storage.WithGlobalRead(context.Background())
+
+	cases := []struct {
+		name    string
+		ctx     context.Context
+		ids     []logstorage.TenantID
+		listErr error
+		want    []logstorage.TenantID
+	}{
+		{"scoped request keeps its tenant", context.Background(), []logstorage.TenantID{{AccountID: 1001}}, nil, []logstorage.TenantID{{AccountID: 1001}}},
+		{"nil tenant list is the default tenant", context.Background(), nil, nil, []logstorage.TenantID{{}}},
+		{"global read enumerates the buffer's tenants", global, []logstorage.TenantID{{}}, nil, all},
+		{"global read falls back to the own tenant if enumeration fails", global, nil, fmt.Errorf("boom"), []logstorage.TenantID{{}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := &tenantListingBuffer{tenants: all, listErr: tc.listErr}
+			s := &Storage{localBuffer: buf}
+			got := s.localBufferTenantIDs(tc.ctx, tc.ids, 0, 1)
+			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Errorf("tenant list = %v, want %v", got, tc.want)
+			}
+			if !scopeFor(tc.ctx, tc.ids).all && buf.listCall != 0 {
+				t.Error("a scoped request must not enumerate the buffer's tenants")
+			}
+		})
+	}
+
+	t.Run("buffer without enumeration keeps the own tenant under global read", func(t *testing.T) {
+		s := &Storage{localBuffer: &fakeLocalBuffer{}}
+		if got := s.localBufferTenantIDs(global, []logstorage.TenantID{{AccountID: 5}}, 0, 1); fmt.Sprint(got) != fmt.Sprint([]logstorage.TenantID{{AccountID: 5}}) {
+			t.Errorf("tenant list = %v, want the request's own tenant", got)
+		}
+	})
+
+	t.Run("pure-buffer fast path hands the widened list to the buffer", func(t *testing.T) {
+		buf := &tenantListingBuffer{tenants: all}
+		s := &Storage{localBuffer: buf}
+		q := mustParseQueryWithTime(t, "*", 0, 1000)
+		if !s.servePureBufferQuery(global, q, []logstorage.TenantID{{}}, func(uint, *logstorage.DataBlock) {}) {
+			t.Fatal("pure-buffer path declined")
+		}
+		if !s.servePureBufferQuery(context.Background(), q, []logstorage.TenantID{{AccountID: 1001}}, func(uint, *logstorage.DataBlock) {}) {
+			t.Fatal("pure-buffer path declined")
+		}
+		buf.mu.Lock()
+		defer buf.mu.Unlock()
+		if len(buf.queried) != 2 || len(buf.queried[0]) != len(all) || len(buf.queried[1]) != 1 || buf.queried[1][0].AccountID != 1001 {
+			t.Errorf("buffer was queried with %v; want every tenant for global read, then only 1001:0", buf.queried)
+		}
+	})
 }

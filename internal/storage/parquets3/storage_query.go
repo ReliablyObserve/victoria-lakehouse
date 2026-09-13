@@ -465,7 +465,8 @@ func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query,
 	if s.localBuffer == nil || (s.bufferBridge != nil && s.bufferBridge.HasPeers()) {
 		return false
 	}
-	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, tenantIDs, q, false, nil)
+	startNs, endNs := q.GetFilterTimeRange()
+	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, s.localBufferTenantIDs(ctx, tenantIDs, startNs, endNs), q, false, nil)
 	if err := s.localBuffer.RunQuery(qctx, writeBlock); err != nil {
 		logger.Warnf("pure-buffer fast path failed, falling back to bridge: %s", err)
 		return false
@@ -509,7 +510,7 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, m
 	if s.localBuffer != nil && (s.bufferBridge == nil || !s.bufferBridge.HasPeers()) {
 		qBuf := q.CloneWithTimeFilter(q.GetTimestamp(), bufStartNs, endNs)
 		qBuf.DropAllPipes()
-		qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, tenantIDs, qBuf, false, nil)
+		qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, s.localBufferTenantIDs(ctx, tenantIDs, bufStartNs, endNs), qBuf, false, nil)
 		if err := s.localBuffer.RunQuery(qctx, writeBlock); err != nil {
 			logger.Warnf("Option B local buffer query failed (cold-tier results may miss the recent window): %s", err)
 		}
@@ -526,7 +527,7 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, m
 	scope := scopeFor(ctx, tenantIDs)
 	switch s.cfg.Mode {
 	case config.ModeLogs:
-		bufRows, _ := s.bufferBridge.QueryLogs(ctx, bufStartNs, endNs, scope.account, scope.project)
+		bufRows, _ := s.bufferBridge.QueryLogs(ctx, bufStartNs, endNs, scope)
 		if len(bufRows) > 0 {
 			db := s.logRowsToDataBlock(scope, "bridge_logs", bufRows)
 			if db != nil && db.RowsCount() > 0 {
@@ -534,7 +535,7 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, m
 			}
 		}
 	case config.ModeTraces:
-		bufRows, _ := s.bufferBridge.QueryTraces(ctx, bufStartNs, endNs, scope.account, scope.project)
+		bufRows, _ := s.bufferBridge.QueryTraces(ctx, bufStartNs, endNs, scope)
 		if len(bufRows) > 0 {
 			db := s.traceRowsToDataBlock(scope, "bridge_traces", bufRows)
 			if db != nil && db.RowsCount() > 0 {

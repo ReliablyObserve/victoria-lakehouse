@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"sync"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
@@ -19,12 +20,39 @@ import (
 // the whole answer rather than merging rows it cannot attribute. A mixed-version
 // fleet therefore loses the unflushed window from old peers (they are still in
 // the cold tier after the next flush) instead of leaking across tenants.
-func checkPeerTenantScope(resp *http.Response, account, project string) error {
+func checkPeerTenantScope(resp *http.Response, scope tenantScope) error {
 	got := resp.Header.Get(buffer.TenantScopeHeader)
-	if want := account + ":" + project; got != want {
+	if want := bufferScopeString(scope); got != want {
 		return fmt.Errorf("peer did not scope /internal/buffer/query to tenant %s (echoed %q); dropping its rows", want, got)
 	}
 	return nil
+}
+
+// bufferScopeString is the tenant-scope value the buffer handler echoes for
+// this scope.
+func bufferScopeString(scope tenantScope) string {
+	if scope.all {
+		return buffer.AllTenantsScope
+	}
+	return scope.account + ":" + scope.project
+}
+
+// bufferQueryURL builds the tenant-scoped /internal/buffer/query URL: one
+// tenant's account_id/project_id, or all_tenants=true for a cross-tenant read
+// that already passed the global-read check.
+func (b *BufferBridge) bufferQueryURL(endpoint string, startNs, endNs int64, scope tenantScope) string {
+	q := url.Values{}
+	q.Set("start", strconv.FormatInt(startNs, 10))
+	q.Set("end", strconv.FormatInt(endNs, 10))
+	q.Set("mode", string(b.mode))
+	q.Set("tenant_scope", buffer.TenantScopeVersion)
+	if scope.all {
+		q.Set("all_tenants", "true")
+	} else {
+		q.Set("account_id", scope.account)
+		q.Set("project_id", scope.project)
+	}
+	return endpoint + "/internal/buffer/query?" + q.Encode()
 }
 
 // BufferBridge queries insert pods for unflushed data via parallel fan-out.
@@ -133,7 +161,7 @@ func (b *BufferBridge) getQueryEndpoints() []string {
 // QueryLogs fans out to all insert pod endpoints in parallel and returns
 // the merged set of buffered log rows within the given time range.
 // Endpoint errors are silently ignored for graceful degradation.
-func (b *BufferBridge) QueryLogs(ctx context.Context, startNs, endNs int64, account, project string) ([]schema.LogRow, error) {
+func (b *BufferBridge) QueryLogs(ctx context.Context, startNs, endNs int64, scope tenantScope) ([]schema.LogRow, error) {
 	if !b.cfg.BufferQueryEnabled {
 		return nil, nil
 	}
@@ -154,7 +182,7 @@ func (b *BufferBridge) QueryLogs(ctx context.Context, startNs, endNs int64, acco
 		wg.Add(1)
 		go func(endpoint string) {
 			defer wg.Done()
-			rows, err := b.fetchLogs(ctx, endpoint, startNs, endNs, account, project)
+			rows, err := b.fetchLogs(ctx, endpoint, startNs, endNs, scope)
 			if err != nil {
 				return
 			}
@@ -168,12 +196,8 @@ func (b *BufferBridge) QueryLogs(ctx context.Context, startNs, endNs int64, acco
 	return all, nil
 }
 
-func (b *BufferBridge) fetchLogs(ctx context.Context, endpoint string, startNs, endNs int64, account, project string) ([]schema.LogRow, error) {
-	url := fmt.Sprintf("%s/internal/buffer/query?start=%d&end=%d&mode=%s&account_id=%s&project_id=%s&tenant_scope=%s",
-		endpoint, startNs, endNs, string(b.mode),
-		url.QueryEscape(account), url.QueryEscape(project), buffer.TenantScopeVersion)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func (b *BufferBridge) fetchLogs(ctx context.Context, endpoint string, startNs, endNs int64, scope tenantScope) ([]schema.LogRow, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.bufferQueryURL(endpoint, startNs, endNs, scope), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +211,7 @@ func (b *BufferBridge) fetchLogs(ctx context.Context, endpoint string, startNs, 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("buffer query returned %d", resp.StatusCode)
 	}
-	if err := checkPeerTenantScope(resp, account, project); err != nil {
+	if err := checkPeerTenantScope(resp, scope); err != nil {
 		return nil, err
 	}
 
@@ -206,7 +230,7 @@ func (b *BufferBridge) fetchLogs(ctx context.Context, endpoint string, startNs, 
 // QueryTraces fans out to all insert pod endpoints in parallel and returns
 // the merged set of buffered trace rows within the given time range.
 // Endpoint errors are silently ignored for graceful degradation.
-func (b *BufferBridge) QueryTraces(ctx context.Context, startNs, endNs int64, account, project string) ([]schema.TraceRow, error) {
+func (b *BufferBridge) QueryTraces(ctx context.Context, startNs, endNs int64, scope tenantScope) ([]schema.TraceRow, error) {
 	if !b.cfg.BufferQueryEnabled {
 		return nil, nil
 	}
@@ -227,7 +251,7 @@ func (b *BufferBridge) QueryTraces(ctx context.Context, startNs, endNs int64, ac
 		wg.Add(1)
 		go func(endpoint string) {
 			defer wg.Done()
-			rows, err := b.fetchTraces(ctx, endpoint, startNs, endNs, account, project)
+			rows, err := b.fetchTraces(ctx, endpoint, startNs, endNs, scope)
 			if err != nil {
 				return
 			}
@@ -241,12 +265,8 @@ func (b *BufferBridge) QueryTraces(ctx context.Context, startNs, endNs int64, ac
 	return all, nil
 }
 
-func (b *BufferBridge) fetchTraces(ctx context.Context, endpoint string, startNs, endNs int64, account, project string) ([]schema.TraceRow, error) {
-	url := fmt.Sprintf("%s/internal/buffer/query?start=%d&end=%d&mode=%s&account_id=%s&project_id=%s&tenant_scope=%s",
-		endpoint, startNs, endNs, string(b.mode),
-		url.QueryEscape(account), url.QueryEscape(project), buffer.TenantScopeVersion)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func (b *BufferBridge) fetchTraces(ctx context.Context, endpoint string, startNs, endNs int64, scope tenantScope) ([]schema.TraceRow, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.bufferQueryURL(endpoint, startNs, endNs, scope), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +280,7 @@ func (b *BufferBridge) fetchTraces(ctx context.Context, endpoint string, startNs
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("buffer query returned %d", resp.StatusCode)
 	}
-	if err := checkPeerTenantScope(resp, account, project); err != nil {
+	if err := checkPeerTenantScope(resp, scope); err != nil {
 		return nil, err
 	}
 
