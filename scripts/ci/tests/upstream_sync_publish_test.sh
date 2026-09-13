@@ -11,7 +11,7 @@
 #   5  the base branch moved             -> pushed, even with identical content
 #   6  a maintainer committed on top     -> branch left untouched, body carries the note
 #   7  an oversized matrix               -> body capped, truncation noted
-#   8  labels cannot be applied          -> still published, noted
+#   8  a label cannot be applied         -> still published, the other label applied, noted
 #   9  repository hooks                  -> never run during the push
 #  10  bad invocation                    -> exit 2
 #
@@ -117,7 +117,7 @@ case "$1 $2" in
 	printf 'https://github.com/example/repo/pull/42\n'
 	;;
 "pr edit")
-	if [[ "$*" == *--add-label* && -n "${FAKE_GH_LABEL_FAIL:-}" ]]; then
+	if [[ -n "${FAKE_GH_LABEL_FAIL:-}" && "$*" == *"--add-label $FAKE_GH_LABEL_FAIL"* ]]; then
 		printf 'could not add label: not found\n' >&2
 		exit 1
 	fi
@@ -157,7 +157,8 @@ publish GH_TOKEN=test-token
 check "first publish exits 0" "$rc" 0
 check "first publish pushes the probe commit" "$(origin_sha)" "$(git -C "$CLONE" rev-parse HEAD)"
 check_contains "first publish creates the pull request against the base" "$calls" "pr create --base main --head $BRANCH"
-check_contains "first publish labels the pull request" "$calls" "pr edit 42 --add-label dependencies --add-label upstream-sync"
+check_contains "first publish applies the dependencies label" "$calls" "pr edit 42 --add-label dependencies"
+check_contains "first publish applies the upstream-sync label" "$calls" "pr edit 42 --add-label upstream-sync"
 check_contains "the body is the matrix" "$(cat "$GHSTATE/body")" "a clean bump is possible"
 check_contains "the summary names the pull request" "$summ" "#42 opened"
 first_sha="$(origin_sha)"
@@ -250,10 +251,12 @@ fi
 check_contains "the cap is noted in the body" "$(cat "$GHSTATE/body")" "Truncated"
 printf '## Upstream sync probe\n\nVerdict: a clean bump is possible.\n' > "$MATRIX"
 
-# --- 8. labels cannot be applied -------------------------------------------
-publish GH_TOKEN=test-token FAKE_GH_LABEL_FAIL=1
+# --- 8. a label cannot be applied ------------------------------------------
+publish GH_TOKEN=test-token FAKE_GH_LABEL_FAIL=upstream-sync
 check "a label failure still publishes" "$rc" 0
-check_contains "a label failure is noted" "$summ" "labels could not be applied"
+check_contains "the missing label is named" "$summ" "label \`upstream-sync\` could not be applied"
+check_not_contains "the other label is not reported" "$summ" "label \`dependencies\` could not"
+check_contains "the other label is still applied" "$calls" "pr edit 42 --add-label dependencies"
 
 # --- 9. repository hooks never run -----------------------------------------
 mkdir -p "$CLONE/.git/hooks"

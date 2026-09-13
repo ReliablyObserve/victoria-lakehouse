@@ -176,11 +176,14 @@ else
 	action="opened"
 fi
 
-# Labels are best-effort: a token without permission to label, or a label that
-# does not exist yet, must not cost the pull request itself.
-if ! gh pr edit "$number" --add-label dependencies --add-label upstream-sync > /dev/null 2>&1; then
-	summary "note: the dependencies / upstream-sync labels could not be applied to #$number"
-fi
+# Labels are best-effort and applied one at a time: a label that does not exist
+# yet (the token cannot create one) must neither cost the pull request nor keep
+# the other label off it.
+for label in dependencies upstream-sync; do
+	if ! gh pr edit "$number" --add-label "$label" > /dev/null 2>&1; then
+		summary "note: label \`$label\` could not be applied to #$number — create it once with \`gh label create $label\`"
+	fi
+done
 
 if [[ $takeover -eq 1 ]]; then
 	branch_note="left untouched: its tip ($remote_sha) is not a probe commit"
