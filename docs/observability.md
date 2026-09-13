@@ -168,6 +168,13 @@ Per-tenant metrics subject to cardinality cap (`stats.metrics_cardinality_limit`
 | `lakehouse_tenant_last_write_timestamp` | Gauge | `tenant` | Unix seconds of last write |
 | `lakehouse_tenant_last_query_timestamp` | Gauge | `tenant` | Unix seconds of last query |
 
+Read scoping (see [multi-tenancy — Read Scoping](multi-tenancy.md#read-scoping-which-data-a-request-sees)); these are not per-tenant and not subject to the cap:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `lakehouse_tenant_scope_violations_total` | Counter | `site` | Objects or buffered rows the read path selected for a request but that belong to another tenant, dropped before answering. Expected to stay 0; `site` names the read path (`query`, `field_names`, `field_values`, `streams`, `stream_ids`, `catalog_field_names`, `catalog_field_values`, `trace_index_lookup`, `bridge_logs`, `bridge_traces`). |
+| `lakehouse_global_read_queries_total` | Counter | | Select requests that presented a valid global-read credential and were answered across all tenants |
+
 ### Global Storage Metrics
 
 | Metric | Type | Labels | Description |
@@ -267,6 +274,7 @@ Shipped in `alerts/alerts-lakehouse.yml`:
 | `LakehouseDiscoveryFailed` | critical | No storage nodes found for 10m |
 | `LakehouseS3ThrottleSustained` | warning | Sustained S3 throttling for 5m |
 | `LakehousePeerDown` | warning | High peer error rate for 5m |
+| `LakehouseTenantScopeViolation` | critical | Any `lakehouse_tenant_scope_violations_total` increase in 5m |
 
 ## Structured Logging
 
