@@ -1,0 +1,1066 @@
+{
+  "keys": {
+    "cache.bloom_ttl": {
+      "name": "BloomTTL",
+      "doc": "BloomTTL is how long cached bloom filter data stays valid."
+    },
+    "cache.disk_limit": {
+      "name": "DiskLimit",
+      "doc": "DiskLimit is the L2 disk cache size, as a size string such as 50GB."
+    },
+    "cache.disk_path": {
+      "name": "DiskPath",
+      "doc": "DiskPath is the L2 disk cache directory."
+    },
+    "cache.eviction_watermark": {
+      "name": "EvictionWatermark",
+      "doc": "EvictionWatermark is the fraction of disk_limit, in (0, 1], at which L2 eviction starts."
+    },
+    "cache.footer_max_items": {
+      "name": "FooterMaxItems",
+      "doc": "FooterMaxItems is the upper bound on the parquet footer cache. Each entry is ~5 KB so the default 10K caps the working set at ~50 MB. At PB-scale (50M files, 5 PB at rest) the default leaves a 0.02% hit rate — too low to be useful. Set to a larger value (e.g. 50000–100000) for those deployments. When zero, the storage layer auto-tunes: max(configured, 0.05% of manifest file count) clamped to [10000, 100000]. The auto-tune re-fires after every successful RefreshFromS3 so a growing bucket gradually scales the cache up."
+    },
+    "cache.footer_ttl": {
+      "name": "FooterTTL",
+      "doc": "FooterTTL is how long a cached Parquet footer stays valid."
+    },
+    "cache.label_index_max_fields": {
+      "name": "LabelIndexMaxFields",
+      "doc": "LabelIndexMaxFields caps the number of distinct field names the in-memory label index will track. When the index reaches this limit, the least-recently-touched field is evicted on each new Add. Setting to 0 disables eviction (unbounded growth — the current default behaviour).\n\nAt PB-scale with k8s-tagged data, distinct label key counts can climb into the hundreds of thousands (k8s.pod.name × every pod restart, container.id × every deploy). Capping prevents OOM in the long-running pod while leaving the most active fields available for tag-enumeration queries."
+    },
+    "cache.memory_limit": {
+      "name": "MemoryLimit",
+      "doc": "MemoryLimit is the deprecated L1 in-memory cache budget, as a size string such as 512MB, used when memory_request and memory_limit_v2 are unset."
+    },
+    "cache.memory_limit_v2": {
+      "name": "MemoryLimitV2",
+      "doc": "MemoryLimitV2 is the hard ceiling of the L1 in-memory cache budget, as a size string."
+    },
+    "cache.memory_request": {
+      "name": "MemoryRequest",
+      "doc": "K8s-style request/limit/scaling for the L1 in-memory cache budget. When non-zero, these take precedence over MemoryLimit which becomes a deprecated alias logged once at startup. Sizes are accepted as Go size strings (e.g. \"256MB\"). See internal/resourcebounds."
+    },
+    "cache.memory_scaling": {
+      "name": "MemoryScaling",
+      "doc": "MemoryScaling is the ramp policy from memory_request to memory_limit_v2: fixed, linear or expbackoff. Empty means fixed."
+    },
+    "cache.page_ttl": {
+      "name": "PageTTL",
+      "doc": "PageTTL is how long a cached Parquet data page stays valid."
+    },
+    "cache.partition_mode": {
+      "name": "PartitionMode",
+      "doc": "PartitionMode scopes the peer cache ring: az-local (peers in the pod's availability zone), global (every peer) or distributed."
+    },
+    "cache.warmup_concurrency": {
+      "name": "WarmupConcurrency",
+      "doc": "WarmupConcurrency is the number of concurrent startup warmup downloads; 0 means 16."
+    },
+    "cache.warmup_max_files": {
+      "name": "WarmupMaxFiles",
+      "doc": "WarmupMaxFiles caps the files warmed at startup. Warmup runs only when this or warmup_partitions is set; 0 means 500 when it runs."
+    },
+    "cache.warmup_partitions": {
+      "name": "WarmupPartitions",
+      "doc": "WarmupPartitions is the number of recent hourly partitions warmed at startup. Warmup runs only when this or warmup_max_files is set; 0 means 6 when it runs."
+    },
+    "compaction.compression_level_by_output_level": {
+      "name": "CompressionLevelByOutputLevel",
+      "doc": "CompressionLevelByOutputLevel sets the zstd level used when emitting a compacted file at output level i (index 0 = L0 rewrite, 1 = L0→L1, 2 = L1→L2, ...). The default is a progressive schedule (see Default) — fresh writes optimize for CPU/ingest, while older cold rollups invest more CPU to shrink long-term storage. Out-of-range output levels fall back to the last configured slot, or to Insert.CompressionLevel if the slice is empty."
+    },
+    "compaction.daily_rollup_age": {
+      "name": "DailyRollupAge",
+      "doc": "DailyRollupAge is the partition age after which L1 files roll up into daily files."
+    },
+    "compaction.enabled": {
+      "name": "Enabled",
+      "doc": "Enabled runs the compaction scheduler. Every pod runs it; HRW ownership assigns each partition to exactly one pod."
+    },
+    "compaction.interval": {
+      "name": "Interval",
+      "doc": "Interval is the compaction scan interval."
+    },
+    "compaction.max_concurrent": {
+      "name": "MaxConcurrent",
+      "doc": "MaxConcurrent is the number of partitions a pod compacts concurrently."
+    },
+    "compaction.min_age": {
+      "name": "MinAge",
+      "doc": "MinAge keeps files younger than this out of compaction."
+    },
+    "compaction.min_files_l0": {
+      "name": "MinFilesL0",
+      "doc": "MinFilesL0 is the number of L0 files a partition needs before L0 to L1 compaction; at least 2."
+    },
+    "compaction.min_files_l1": {
+      "name": "MinFilesL1",
+      "doc": "MinFilesL1 is the number of L1 files a partition needs before L1 to L2 compaction; at least 2."
+    },
+    "compaction.row_group_size_by_output_level": {
+      "name": "RowGroupSizeByOutputLevel",
+      "doc": "RowGroupSizeByOutputLevel sets the Parquet row-group size (max rows per row group) used when emitting a compacted file at output level i — same slot semantics as CompressionLevelByOutputLevel (index 0 = L0 rewrite, 1 = L0→L1, 2 = L1→L2, ...). Default [10000, 10000, 20000]: L0/L1 outputs keep the historical row-group size (the Insert.RowGroupSize default), L2+ rollups double it — cold rollups are scan-heavy and rarely pruned at row-group granularity, so fewer/larger row groups buy compression (dictionaries amortized over more rows, fewer page + row-group headers) at a modest pruning-granularity cost. Out-of-range output levels fall back to the last configured slot, or to Insert.RowGroupSize if the slice is empty."
+    },
+    "cross_signal.auth_key": {
+      "name": "AuthKey",
+      "doc": "AuthKey is the shared key of cross-signal requests."
+    },
+    "cross_signal.batch_interval": {
+      "name": "BatchInterval",
+      "doc": "BatchInterval is how often hint batches are sent."
+    },
+    "cross_signal.enabled": {
+      "name": "Enabled",
+      "doc": "Enabled sends prefetch and eviction hints to the other signal's lakehouse."
+    },
+    "cross_signal.endpoint": {
+      "name": "Endpoint",
+      "doc": "Endpoint is the URL of the other signal's lakehouse."
+    },
+    "cross_signal.headless_service": {
+      "name": "HeadlessService",
+      "doc": "HeadlessService is the Kubernetes headless service that resolves the other signal's pods, used instead of endpoint."
+    },
+    "cross_signal.max_batch": {
+      "name": "MaxBatch",
+      "doc": "MaxBatch is the number of trace ids per hint batch."
+    },
+    "cross_signal.timeout": {
+      "name": "Timeout",
+      "doc": "Timeout bounds a cross-signal request."
+    },
+    "delete.auto_rewrite_classes": {
+      "name": "AutoRewriteClasses",
+      "doc": "AutoRewriteClasses are the S3 storage classes whose files auto mode rewrites."
+    },
+    "delete.cost_warning_threshold": {
+      "name": "CostWarningThreshold",
+      "doc": "CostWarningThreshold is the estimated rewrite cost, in dollars, above which a delete warns."
+    },
+    "delete.default_mode": {
+      "name": "DefaultMode",
+      "doc": "DefaultMode is the delete mode of a request that names none: hide, permanent or auto."
+    },
+    "delete.enabled": {
+      "name": "Enabled",
+      "doc": "Enabled serves the delete API."
+    },
+    "delete.force_glacier_header": {
+      "name": "ForceGlacierHeader",
+      "doc": "ForceGlacierHeader is the header that forces rewriting files in Glacier storage classes."
+    },
+    "delete.lifecycle_rules": {
+      "name": "LifecycleRules",
+      "doc": "LifecycleRules are the bucket lifecycle rules used to predict storage classes for delete cost estimates."
+    },
+    "delete.persist_path": {
+      "name": "PersistPath",
+      "doc": "PersistPath is the directory tombstones persist to."
+    },
+    "delete.rewrite_batch_size": {
+      "name": "RewriteBatchSize",
+      "doc": "RewriteBatchSize is the number of files per rewrite batch."
+    },
+    "delete.rewrite_delay": {
+      "name": "RewriteDelay",
+      "doc": "RewriteDelay is the wait after a tombstone before files are rewritten, so tombstones batch."
+    },
+    "delete.rewrite_max_concurrent": {
+      "name": "RewriteMaxConcurrent",
+      "doc": "RewriteMaxConcurrent is the number of concurrent rewrite workers."
+    },
+    "delete.verify_interval": {
+      "name": "VerifyInterval",
+      "doc": "VerifyInterval is how often completed deletes are verified again."
+    },
+    "discovery.headless_service": {
+      "name": "HeadlessService",
+      "doc": "HeadlessService is the Kubernetes headless service that resolves the hot VictoriaLogs/VictoriaTraces storage nodes."
+    },
+    "discovery.partition_auth_key": {
+      "name": "PartitionAuthKey",
+      "doc": "PartitionAuthKey is the auth key sent to the storage nodes' /internal/partition/list endpoint."
+    },
+    "discovery.peer_headless_service": {
+      "name": "PeerHeadlessService",
+      "doc": "PeerHeadlessService is the Kubernetes headless service that resolves the peer fleet for the distributed cache and stats gossip."
+    },
+    "discovery.peer_refresh_interval": {
+      "name": "PeerRefreshInterval",
+      "doc": "PeerRefreshInterval is how often peer ring membership is refreshed."
+    },
+    "discovery.refresh_interval": {
+      "name": "RefreshInterval",
+      "doc": "RefreshInterval is how often the storage nodes and their partitions are refreshed."
+    },
+    "discovery.ring_change_notify": {
+      "name": "RingChangeNotify",
+      "doc": "RingChangeNotify notifies subscribers when ring membership changes."
+    },
+    "discovery.ring_stabilize_duration": {
+      "name": "RingStabilizeDuration",
+      "doc": "RingStabilizeDuration keeps departed peers in the ring as a shadow set during scaling, so both old and new assignments resolve."
+    },
+    "discovery.storage_nodes": {
+      "name": "StorageNodes",
+      "doc": "StorageNodes is a static list of hot storage node addresses, used instead of headless_service."
+    },
+    "discovery.timeout": {
+      "name": "Timeout",
+      "doc": "Timeout bounds a single storage node discovery request."
+    },
+    "gc.enabled": {
+      "name": "Enabled",
+      "doc": "Enabled runs garbage collection of orphan files."
+    },
+    "gc.interval": {
+      "name": "Interval",
+      "doc": "Interval is the garbage collection scan interval."
+    },
+    "gc.orphan_grace_period": {
+      "name": "OrphanGracePeriod",
+      "doc": "OrphanGracePeriod is the age an unreferenced file must reach before garbage collection deletes it."
+    },
+    "hot_boundary": {
+      "name": "HotBoundary",
+      "doc": "HotBoundary fixes the hot/cold boundary at an age such as 7d or 168h instead of discovering it from the hot storage nodes."
+    },
+    "insert.ack_mode": {
+      "name": "AckMode",
+      "doc": "AckMode selects when an insert is acknowledged: buffer (once buffered), wal or flush-sync (once S3 confirms the write)."
+    },
+    "insert.bloom_columns": {
+      "name": "BloomColumns",
+      "doc": "BloomColumns are extra columns to bloom-index on write, in addition to the signal's built-in bloom columns."
+    },
+    "insert.buffer_dir": {
+      "name": "BufferDir",
+      "doc": "BufferDir is the local/tmpfs directory for the logstore buffer's parts (durability is logstorage persistence here + the S3 Parquet flush)."
+    },
+    "insert.buffer_engine": {
+      "name": "BufferEngine",
+      "doc": "BufferEngine selects how the insert buffer (recently-ingested, not-yet-flushed rows) is held and queried (Option B): \"buffer\" (default) — legacy []schema.{Log,Trace}Row staging + struct→DataBlock conversion at query time. \"logstore\" — a per-pod logstorage.Storage, queried via the same engine as the S3-Parquet scan (no conversion). Rolled out in phases behind this flag; during P1 it dual-writes alongside the legacy buffer, which stays authoritative."
+    },
+    "insert.buffer_flush_enabled": {
+      "name": "BufferFlushEnabled",
+      "doc": "BufferFlushEnabled makes the logstore buffer the AUTHORITATIVE Parquet producer via the BufferFlusher (the WAL cutover). Default false: the legacy []row path stays authoritative and the buffer is read-only shadow. Requires BufferEngine == \"logstore\"."
+    },
+    "insert.buffer_flush_interval": {
+      "name": "BufferFlushInterval",
+      "doc": "BufferFlushInterval is the BufferFlusher's object-store flush CAP: the max time a sub-target window waits before being flushed to S3 Parquet anyway. The flusher checks more often than this but only flushes a window once it reaches target_file_size OR has lingered this long — so S3 gets ~target-sized objects, not one tiny file per tick. Must be << BufferRetention (validated: retention >= 2*interval). Default 5m."
+    },
+    "insert.buffer_retention": {
+      "name": "BufferRetention",
+      "doc": "BufferRetention bounds how long rows live in the logstore buffer before VL drops them; once the flush sink is active this is just a ceiling."
+    },
+    "insert.compression_level": {
+      "name": "CompressionLevel",
+      "doc": "CompressionLevel is the zstd level (1-22) of freshly written files; compaction recompresses older files per compaction.compression_level_by_output_level."
+    },
+    "insert.flush_interval": {
+      "name": "FlushInterval",
+      "doc": "FlushInterval is the interval at which buffered rows are flushed to Parquet on S3."
+    },
+    "insert.flush_linger": {
+      "name": "FlushLinger",
+      "doc": "FlushLinger delays a flush to coalesce small writes."
+    },
+    "insert.flush_max_rows": {
+      "name": "FlushMaxRows",
+      "doc": "FlushMaxRows caps the rows of one flush batch."
+    },
+    "insert.max_buffer_bytes": {
+      "name": "MaxBufferBytes",
+      "doc": "MaxBufferBytes is the total buffer memory across partitions, as a size string."
+    },
+    "insert.max_buffer_rows": {
+      "name": "MaxBufferRows",
+      "doc": "MaxBufferRows is the number of rows a partition buffer holds before it flushes."
+    },
+    "insert.peer_replicate": {
+      "name": "PeerReplicate",
+      "doc": "PeerReplicate replicates inserts to peer insert pods."
+    },
+    "insert.peer_replicate_timeout": {
+      "name": "PeerReplicateTimeout",
+      "doc": "PeerReplicateTimeout bounds one peer replication."
+    },
+    "insert.peer_replicate_ttl": {
+      "name": "PeerReplicateTTL",
+      "doc": "PeerReplicateTTL is how long replicated rows are kept on peers."
+    },
+    "insert.row_group_size": {
+      "name": "RowGroupSize",
+      "doc": "RowGroupSize is the number of rows per Parquet row group in freshly written files."
+    },
+    "insert.target_file_size": {
+      "name": "TargetFileSize",
+      "doc": "TargetFileSize is the target Parquet file size, as a size string; a buffer reaching it flushes early."
+    },
+    "logs.bloom_columns": {
+      "name": "BloomColumns",
+      "doc": "BloomColumns are extra columns to bloom-index for logs; the built-in log bloom columns are always included."
+    },
+    "logs.compat_version": {
+      "name": "CompatVersion",
+      "doc": "CompatVersion is the VictoriaLogs version the API reports; empty reports the built-in one."
+    },
+    "logs.delete_prefix": {
+      "name": "DeletePrefix",
+      "doc": "DeletePrefix is the path prefix of the logs delete API."
+    },
+    "logs.insert.profile": {
+      "name": "Profile",
+      "doc": "Profile is the profile for this role (insert or select) of the signal; it takes precedence over the signal's profile."
+    },
+    "logs.profile": {
+      "name": "Profile",
+      "doc": "Profile is the profile for the logs signal; it takes precedence over profile."
+    },
+    "logs.promoted_attributes": {
+      "name": "PromotedAttributes",
+      "doc": "PromotedAttributes are custom attributes promoted into dedicated Parquet columns, each {name, bloom}."
+    },
+    "logs.select.profile": {
+      "name": "Profile",
+      "doc": "Profile is the profile for this role (insert or select) of the signal; it takes precedence over the signal's profile."
+    },
+    "manifest.persist_interval": {
+      "name": "PersistInterval",
+      "doc": "PersistInterval is how often the manifest snapshot is written to persist_path."
+    },
+    "manifest.persist_path": {
+      "name": "PersistPath",
+      "doc": "PersistPath is the directory holding the manifest snapshot, index and footer-cache snapshot."
+    },
+    "manifest.refresh_interval": {
+      "name": "RefreshInterval",
+      "doc": "RefreshInterval is how often the manifest is fully re-listed from S3."
+    },
+    "manifest.sqs_queue_url": {
+      "name": "SQSQueueURL",
+      "doc": "SQSQueueURL is an SQS queue receiving S3 event notifications for near-real-time manifest updates."
+    },
+    "manifest.sqs_region": {
+      "name": "SQSRegion",
+      "doc": "SQSRegion is the AWS region of the SQS queue."
+    },
+    "manifest.sqs_wait_time": {
+      "name": "SQSWaitTime",
+      "doc": "SQSWaitTime is the long-poll wait of an SQS receive."
+    },
+    "mode": {
+      "name": "Mode",
+      "doc": "Mode is the signal this binary serves: logs or traces. Each binary sets its own mode, so a value in the config file is ignored."
+    },
+    "peer.auth_key": {
+      "name": "AuthKey",
+      "doc": "AuthKey is the bearer key protecting the peer cache HTTP endpoints."
+    },
+    "peer.az_aware": {
+      "name": "AZAware",
+      "doc": "AZAware prefers peers in the pod's own availability zone."
+    },
+    "peer.az_env_var": {
+      "name": "AZEnvVar",
+      "doc": "AZEnvVar names the environment variable that overrides the detected availability zone."
+    },
+    "peer.az_min_peers_per_az": {
+      "name": "AZMinPeersPerAZ",
+      "doc": "AZMinPeersPerAZ is the minimum number of same-zone peers strict mode requires."
+    },
+    "peer.az_mode": {
+      "name": "AZMode",
+      "doc": "AZMode is preferred (fall back to other zones) or strict (require az_min_peers_per_az peers in the same zone)."
+    },
+    "peer.cross_az_fallback": {
+      "name": "CrossAZFallback",
+      "doc": "CrossAZFallback allows fetching from another zone when no same-zone peer is available."
+    },
+    "peer.max_connections": {
+      "name": "MaxConnections",
+      "doc": "MaxConnections caps HTTP connections per peer."
+    },
+    "peer.timeout": {
+      "name": "Timeout",
+      "doc": "Timeout bounds a single peer cache fetch."
+    },
+    "pmeta.always_sketch_fields": {
+      "name": "AlwaysSketchFields",
+      "doc": "AlwaysSketchFields are forced high-cardinality regardless of the threshold (known unbounded id columns, e.g. trace_id, span_id, request_id)."
+    },
+    "pmeta.cardinality_threshold": {
+      "name": "CardinalityThreshold",
+      "doc": "CardinalityThreshold caps how many distinct values the catalog keeps per field. A field that exceeds it is treated as high-cardinality: the catalog stops storing its values (bounding RAM) and the read path falls through to the legacy scan, so the catalog never serves a truncated value list. 0 = unlimited (keep every field exact). Default 50000."
+    },
+    "pmeta.enabled": {
+      "name": "Enabled",
+      "doc": "Enabled turns on the field/value catalog facet (dropdown speedups). The catalog is built at flush and self-heals from S3, so it is safe to toggle."
+    },
+    "pmeta.refuse_sketch_enumeration": {
+      "name": "RefuseSketchEnumeration",
+      "doc": "RefuseSketchEnumeration, when true, makes field_values for an AlwaysSketchFields field return EMPTY instead of scanning to enumerate it (matches VL/VT, and avoids a pointless expensive scan on id columns nobody browses — you look them up by exact value, which is unaffected). Opt-in (default false) because it is a behavior change for those fields. Threshold crossers are NOT refused — they still fall through to the scan."
+    },
+    "prefetch.correlated": {
+      "name": "Correlated",
+      "doc": "Correlated enables correlated logs-to-traces prefetch by trace_id."
+    },
+    "prefetch.max_concurrent": {
+      "name": "MaxConcurrent",
+      "doc": "MaxConcurrent caps concurrent prefetch downloads."
+    },
+    "prefetch.max_queue": {
+      "name": "MaxQueue",
+      "doc": "MaxQueue caps pending prefetch tasks."
+    },
+    "prefetch.read_ahead_depth": {
+      "name": "ReadAheadDepth",
+      "doc": "ReadAheadDepth is the number of partitions prefetched ahead of a sequential scan."
+    },
+    "profile": {
+      "name": "Profile",
+      "doc": "Profile names the profile the config file is merged over: balanced, max-performance, max-durability, max-cost-savings or dev. A per-signal or per-role profile takes precedence."
+    },
+    "query.file_workers": {
+      "name": "FileWorkers",
+      "doc": "FileWorkers is the deprecated per-query pool of parallel Parquet file readers, used as request and limit when file_workers_request and file_workers_limit are unset."
+    },
+    "query.file_workers_limit": {
+      "name": "FileWorkersLimit",
+      "doc": "FileWorkersLimit is the hard ceiling on concurrent Parquet file readers."
+    },
+    "query.file_workers_request": {
+      "name": "FileWorkersRequest",
+      "doc": "K8s-style request/limit/scaling for file workers (process-wide concurrent parquet-file readers). Same semantics as S3.ConcurrentDownloads{Request,Limit,Scaling}. When non-zero these take precedence over FileWorkers which becomes a deprecated alias logged once at startup. See internal/resourcebounds."
+    },
+    "query.file_workers_scaling": {
+      "name": "FileWorkersScaling",
+      "doc": "FileWorkersScaling is the ramp policy from file_workers_request to file_workers_limit: fixed, linear or expbackoff. Empty means fixed."
+    },
+    "query.max_concurrent": {
+      "name": "MaxConcurrent",
+      "doc": "MaxConcurrent caps concurrent select queries; a query over the cap gets HTTP 429."
+    },
+    "query.max_files_per_query": {
+      "name": "MaxFilesPerQuery",
+      "doc": "MaxFilesPerQuery rejects a query that matches more S3 files than this; 0 means unlimited, leaving the memory budget as the safety net."
+    },
+    "query.max_live_bytes": {
+      "name": "MaxLiveBytes",
+      "doc": "MaxLiveBytes is a per-query ceiling on the bytes of in-flight DataBlocks currently held by RunQuery before writeBlock has consumed them. When exceeded, the query context is cancelled, returning a partial result instead of OOM-killing the container. 0 means use the default (defaultMaxLiveBytes in storage/parquets3)."
+    },
+    "query.max_rows": {
+      "name": "MaxRows",
+      "doc": "MaxRows is the deprecated per-query row ceiling, used when max_rows_limit is unset."
+    },
+    "query.max_rows_limit": {
+      "name": "MaxRowsLimit",
+      "doc": "MaxRowsLimit is the hard per-query row ceiling."
+    },
+    "query.max_rows_request": {
+      "name": "MaxRowsRequest",
+      "doc": "K8s-style request/limit/scaling for the per-query row ceiling. MaxRows remains the legacy hard limit (also the current Limit fallback when MaxRowsLimit is zero); MaxRowsRequest is an operator-visible baseline. Streaming hits the ceiling at MaxRowsLimit (or MaxRows if not set) regardless of Request."
+    },
+    "query.max_rows_scaling": {
+      "name": "MaxRowsScaling",
+      "doc": "MaxRowsScaling is the ramp policy from max_rows_request to max_rows_limit: fixed, linear or expbackoff. Empty means fixed."
+    },
+    "query.slow_threshold": {
+      "name": "SlowThreshold",
+      "doc": "SlowThreshold logs queries that run longer than this."
+    },
+    "query.timeout": {
+      "name": "Timeout",
+      "doc": "Timeout bounds a single query."
+    },
+    "retention.check_interval": {
+      "name": "CheckInterval",
+      "doc": "CheckInterval is how often expired data is looked for, as a duration such as 1h."
+    },
+    "retention.default": {
+      "name": "Default",
+      "doc": "Default is the retention period of data no rule matches, as a duration such as 90d."
+    },
+    "retention.enabled": {
+      "name": "Enabled",
+      "doc": "Enabled deletes data older than its retention period."
+    },
+    "retention.rules": {
+      "name": "Rules",
+      "doc": "Rules are per-stream retention periods: a label match and a keep duration."
+    },
+    "role": {
+      "name": "Role",
+      "doc": "Role selects the components to run: all, insert or select."
+    },
+    "s3.access_key": {
+      "name": "AccessKey",
+      "doc": "AccessKey is a static S3 access key. Prefer IAM roles or IRSA."
+    },
+    "s3.bucket": {
+      "name": "Bucket",
+      "doc": "Bucket is the S3 bucket holding the Parquet files. Required."
+    },
+    "s3.coalesce_gap_bytes": {
+      "name": "CoalesceGapBytes",
+      "doc": "CoalesceGapBytes merges S3 range reads separated by fewer bytes than this into one GET."
+    },
+    "s3.concurrent_downloads_limit": {
+      "name": "ConcurrentDownloadsLimit",
+      "doc": "ConcurrentDownloadsLimit is the hard ceiling on concurrent S3 downloads. 0 falls back to the request, or to max_concurrent_downloads when both are unset."
+    },
+    "s3.concurrent_downloads_request": {
+      "name": "ConcurrentDownloadsRequest",
+      "doc": "K8s-style request/limit/scaling for S3 download concurrency (request = always-reserved baseline, limit = hard ceiling, scaling = ramp policy). When any of these are non-zero they take precedence over MaxConcurrentDownloads which becomes a deprecated alias (logs a startup warning once). When all three are zero, MaxConcurrentDownloads is the live value (legacy flat behaviour). See internal/resourcebounds."
+    },
+    "s3.concurrent_downloads_scaling": {
+      "name": "ConcurrentDownloadsScaling",
+      "doc": "ConcurrentDownloadsScaling is the ramp policy from request to limit: fixed, linear or expbackoff. Empty means fixed."
+    },
+    "s3.endpoint": {
+      "name": "Endpoint",
+      "doc": "Endpoint is a custom S3-compatible endpoint URL (MinIO, R2); http or https only."
+    },
+    "s3.footer_prefetch_bytes": {
+      "name": "FooterPrefetchBytes",
+      "doc": "FooterPrefetchBytes is the tail range-read size used to prefetch parquet footers (footer cache fills: prefetchFooters, shouldSkipByFooter, fetchFooterFile, the inline open-path fetch). 0 = per-signal default: logs 128KB, traces 640KB. The defaults DIFFER because the footer geometry does: every live traces compacted-L2 footer measures 467-519KB (the trace index lives in footer key-value metadata), so the previous shared 64KB constant could never hold one — traces L2 projected reads always fell back to full downloads (fallback{reason=\"no-footer\"}). 640KB fits them with headroom. Logs footers are ~50KB; 128KB covers footer AND the page-index stripe (ends 91-97KB from EOF on measured files), so one tail GET serves footer + all indexes."
+    },
+    "s3.force_path_style": {
+      "name": "ForcePathStyle",
+      "doc": "ForcePathStyle uses path-style S3 URLs, which MinIO requires."
+    },
+    "s3.max_concurrent_downloads": {
+      "name": "MaxConcurrentDownloads",
+      "doc": "MaxConcurrentDownloads is the deprecated flat S3 download concurrency, used as request and limit when concurrent_downloads_request and concurrent_downloads_limit are both unset."
+    },
+    "s3.max_connections": {
+      "name": "MaxConnections",
+      "doc": "MaxConnections caps concurrent HTTP connections to S3."
+    },
+    "s3.parquet_read_mode": {
+      "name": "ParquetReadMode",
+      "doc": "ParquetReadMode selects parquet-go's page read mode on ranged S3 opens: \"async\" (default — pages are read ahead by a per-column goroutine, hiding S3 latency behind decode; bounded at one page in flight per column reader) or \"sync\" (the library default mode, kept as the rollback switch)."
+    },
+    "s3.planned_fetch_max_inflight": {
+      "name": "PlannedFetchMaxInflight",
+      "doc": "PlannedFetchMaxInflight bounds concurrent span GETs per file on the plan-then-fetch projected read path: min(k, spans) in flight. Default 16 (both signals): the live planned-v1 verdict measured 13-15 spans/file on real L2 footer geometry being drained 4-at-a- time into ~4 serial RTT waves per file; k=16 puts a typical per-file plan in flight in ONE wave while 8 file workers x 16 stays at MaxIdleConnsPerHost=128, the true HTTP/1.1 parallelism ceiling. Only the opt-in planned path reads this; window mode is untouched."
+    },
+    "s3.planned_fetch_span_cap_bytes": {
+      "name": "PlannedFetchSpanCapBytes",
+      "doc": "PlannedFetchSpanCapBytes caps ONE coalesced span of a plan-then- fetch projected read (default 16MB) — ClickHouse's bytes_per_read_task scope (16 MiB PER read task, NOT per plan). Spans above the cap are SPLIT into cap-sized concurrent GETs; the plan as a whole is admitted via the memory ledger (its absolute ceiling is fi.Size), so plans whose TOTAL exceeds the retired per-plan cap no longer fall back to the window path. Only the opt-in planned path reads this."
+    },
+    "s3.prefix": {
+      "name": "Prefix",
+      "doc": "Prefix is the S3 key prefix. Empty derives it from the tenant prefix and the signal (logs/ or traces/)."
+    },
+    "s3.projected_fetch_max_bytes": {
+      "name": "ProjectedFetchMaxBytes",
+      "doc": "ProjectedFetchMaxBytes — DEPRECATED since the planned-fetch v2 slice 1 cap re-scope (kept parsed for config compatibility; no longer consulted). The per-PLAN cap punished exactly the cross-RG coalescing that cuts GETs (merged gap bytes counted into the plan total and tripped fallback{reason=\"cap\"}). The cap is now per-SPAN (PlannedFetchSpanCapBytes — CH bytes_per_read_task scope) and plan admission is the memory ledger's job: span bytes are charged to the same fileBudget ledger as decode admission, and the file worker already holds an fi.Size admission that subsumes any plan (a plan can never exceed fi.Size — spans are file-clamped and disjoint)."
+    },
+    "s3.projected_fetch_mode": {
+      "name": "ProjectedFetchMode",
+      "doc": "ProjectedFetchMode selects the read strategy for COLUMN-PROJECTED parquet reads (queries that touch fewer than half the columns): \"planned\" — CH-style plan-then-fetch: the exact coalesced byte ranges of the projected column chunks (dictionary pages and page-index sections included) are derived from the cached footer and fetched concurrently up-front; NO speculative read-ahead window. Fixes the measured ~46 MB/query of never-read window bytes on filtered counts, where per-file 2MB base windows are fetched and abandoned (the adaptive shrink never fires because window state is per-reader-instance). \"window\" — the previous behavior (adaptive read-ahead window), kept as the full rollback switch. Full-scan (non-projected) reads always use the window stack."
+    },
+    "s3.read_ahead_bytes": {
+      "name": "ReadAheadBytes",
+      "doc": "ReadAheadBytes is the base read-ahead window, in bytes, for sequential S3 range reads; the adaptive window grows from it up to read_ahead_max_bytes."
+    },
+    "s3.read_ahead_max_bytes": {
+      "name": "ReadAheadMaxBytes",
+      "doc": "ReadAheadMaxBytes is the ceiling for the ADAPTIVE read-ahead window. The window starts at ReadAheadBytes and doubles (up to this max) after 2+ consecutive forward-sequential buffer misses — wide scans get CH-sized I/O units while needle queries stay at the small base window (a random seek resets it). Default 8MB. Tune per signal: scan-heavy logs deployments benefit from 8-16MB; needle-heavy traces deployments can pin it lower (4MB) to bound over-fetch."
+    },
+    "s3.read_ahead_waste_threshold": {
+      "name": "ReadAheadWasteThreshold",
+      "doc": "ReadAheadWasteThreshold is the waste-feedback knob for the ADAPTIVE read-ahead window: when a window is evicted with MORE than this fraction of its bytes never read (fetched-but-never-served, the same high-water-mark accounting behind lakehouse_s3_buffer_wasted_bytes_total), the next window is HALVED (floored at read_ahead_bytes) instead of kept or grown, and the growth credit resets — the window only grows again after consecutive efficient windows. Catches the sparse-forward-hop pattern that the pure grow/reset state machine misclassifies as a scan (measured: 46 MB/query never-read on filtered counts at a 56% hit rate). Default 0.5. Values >= 1 disable waste feedback (a window's waste ratio is always < 1); 0 means \"use the default\", not \"shrink on any waste\"."
+    },
+    "s3.read_buffer_size": {
+      "name": "ReadBufferSize",
+      "doc": "ReadBufferSize is parquet-go's per-column page read buffer for ranged S3 opens (the library default of 4KB is sized for local disk; its own docs suggest ~4MiB for network storage). Default 1MB: one buffered page read per underlying GET instead of hundreds."
+    },
+    "s3.region": {
+      "name": "Region",
+      "doc": "Region is the AWS region of the bucket."
+    },
+    "s3.retry_base_delay": {
+      "name": "RetryBaseDelay",
+      "doc": "RetryBaseDelay is the first retry backoff; it doubles on every retry."
+    },
+    "s3.retry_max": {
+      "name": "RetryMax",
+      "doc": "RetryMax caps retries of a failed S3 request."
+    },
+    "s3.secret_key": {
+      "name": "SecretKey",
+      "doc": "SecretKey is the static S3 secret key paired with AccessKey."
+    },
+    "s3.timeout": {
+      "name": "Timeout",
+      "doc": "Timeout bounds a single S3 request."
+    },
+    "s3.whole_file_threshold_bytes": {
+      "name": "WholeFileThresholdBytes",
+      "doc": "WholeFileThresholdBytes is S*: on the opt-in PLANNED projected-read path, a file whose footer is NOT yet cached and whose size is below this threshold is downloaded WHOLE through the smart-cache path (one GET; the download doubles as the footer-cache warmup via ParseFooterFromData) instead of paying footer-fetch + span RTTs. 0 = per-signal default: logs 5MB, traces 8MB — from the cost model over the live file-size distributions (traces files carry the multi-hundred-KB trace-index footer, shifting the whole-file breakeven higher). Files at or above the threshold fetch the footer (single range read) and plan exact spans. Window mode is untouched."
+    },
+    "select.az_aware": {
+      "name": "AZAware",
+      "doc": "AZAware prefers insert pods in the select pod's own availability zone for buffer queries."
+    },
+    "select.buffer_query_enabled": {
+      "name": "BufferQueryEnabled",
+      "doc": "BufferQueryEnabled queries the insert pods for rows not yet flushed to S3."
+    },
+    "select.buffer_query_timeout": {
+      "name": "BufferQueryTimeout",
+      "doc": "BufferQueryTimeout bounds a buffer query to the insert pods."
+    },
+    "select.cross_az_fallback": {
+      "name": "CrossAZFallback",
+      "doc": "CrossAZFallback queries insert pods in other zones when no same-zone pod answers."
+    },
+    "select.insert_headless_service": {
+      "name": "InsertHeadlessService",
+      "doc": "InsertHeadlessService is the Kubernetes headless service that resolves the insert pods for buffer queries."
+    },
+    "shutdown.delay": {
+      "name": "Delay",
+      "doc": "Delay is the pause before the HTTP server stops, so load balancers drain the pod. The Helm chart passes it to -http.shutdownDelay."
+    },
+    "shutdown.flush_timeout": {
+      "name": "FlushTimeout",
+      "doc": "FlushTimeout bounds flushing buffered rows to S3 during shutdown."
+    },
+    "shutdown.max_graceful_duration": {
+      "name": "MaxGraceful",
+      "doc": "MaxGraceful is the time in-flight HTTP requests get to finish. The Helm chart passes it to -http.maxGracefulShutdownDuration."
+    },
+    "shutdown.persist_timeout": {
+      "name": "PersistTimeout",
+      "doc": "PersistTimeout bounds writing the manifest, footer-cache and stats snapshots during shutdown; 0 means 30s."
+    },
+    "shutdown.release_timeout": {
+      "name": "ReleaseTimeout",
+      "doc": "ReleaseTimeout bounds notifying peers during shutdown."
+    },
+    "smart_cache.disk_limit": {
+      "name": "DiskLimit",
+      "doc": "DiskLimit is the hard ceiling of the smart-cache disk budget, as a size string."
+    },
+    "smart_cache.disk_limit_max": {
+      "name": "DiskLimitMax",
+      "doc": "DiskLimitMax is the deprecated smart-cache disk budget, as a size string, used when disk_request and disk_limit are unset."
+    },
+    "smart_cache.disk_request": {
+      "name": "DiskRequest",
+      "doc": "K8s-style request/limit/scaling for the smart-cache disk budget. When non-zero, these take precedence over DiskLimitMax which becomes a deprecated alias logged once at startup. Sizes accepted as Go size strings (e.g. \"50GB\"). See internal/resourcebounds."
+    },
+    "smart_cache.disk_scaling": {
+      "name": "DiskScaling",
+      "doc": "DiskScaling is the ramp policy from disk_request to disk_limit: fixed, linear or expbackoff. Empty means fixed."
+    },
+    "smart_cache.hot_access_threshold": {
+      "name": "HotAccessThreshold",
+      "doc": "HotAccessThreshold is the number of accesses within hot_window that marks an entry hot."
+    },
+    "smart_cache.hot_window": {
+      "name": "HotWindow",
+      "doc": "HotWindow is the window over which hot accesses are counted."
+    },
+    "smart_cache.ingestion_rate_hint": {
+      "name": "IngestionRateHint",
+      "doc": "IngestionRateHint is an ingestion rate such as 500MB that seeds cache sizing; empty detects it."
+    },
+    "smart_cache.max_age": {
+      "name": "MaxAge",
+      "doc": "MaxAge is the maximum age of a cached entry."
+    },
+    "smart_cache.query_grace_period": {
+      "name": "QueryGracePeriod",
+      "doc": "QueryGracePeriod is how long entries stay pinned after their query ends."
+    },
+    "smart_cache.snapshot_interval": {
+      "name": "SnapshotInterval",
+      "doc": "SnapshotInterval is how often cache metadata is persisted to disk."
+    },
+    "smart_cache.target_hours": {
+      "name": "TargetHours",
+      "doc": "TargetHours is the number of hours of recent data the cache sizes itself to hold."
+    },
+    "startup.cache_revalidation": {
+      "name": "CacheRevalidation",
+      "doc": "CacheRevalidation revalidates cache entries on a stale start."
+    },
+    "startup.max_resync_time": {
+      "name": "MaxResyncTime",
+      "doc": "MaxResyncTime bounds the stale-state resync before the pod reports ready anyway."
+    },
+    "startup.max_warmup_time": {
+      "name": "MaxWarmupTime",
+      "doc": "MaxWarmupTime bounds startup warmup before the pod reports ready."
+    },
+    "startup.min_manifest_files": {
+      "name": "MinManifestFiles",
+      "doc": "MinManifestFiles is the lower-bound the lifecycle manager requires before /ready can return 200. Counters the \"first-ever boot, empty PVC\" honesty gap: without this gate /ready flipped true ~1s after start while the manifest was still empty, lying about query availability for the 3-5 min it took the background S3 LIST to complete. Set above the smallest healthy partition count (100 for tiny dev clusters, 10000 for PB-scale prod). 0 disables (pre-change behaviour)."
+    },
+    "startup.peer_sync_timeout": {
+      "name": "PeerSyncTimeout",
+      "doc": "PeerSyncTimeout bounds syncing state from peers at startup."
+    },
+    "startup.require_manifest_sync": {
+      "name": "RequireManifestSync",
+      "doc": "RequireManifestSync requires a manifest sync before the pod reports ready."
+    },
+    "startup.serve_stale": {
+      "name": "ServeStale",
+      "doc": "ServeStale serves persisted local state before the S3 refresh completes."
+    },
+    "startup.serve_while_warming": {
+      "name": "ServeWhileWarming",
+      "doc": "ServeWhileWarming, when true, lets /ready return 204 (\"ready but warming\") immediately after disk recovery — before the background S3 refresh completes. Strict load balancers that only route on 200 will still wait for full warmup; soft routers (vtselect peer fan-out, k8s readinessProbe with successThreshold=1) can route to a 204 pod. Default false keeps strict semantics."
+    },
+    "startup.stale_threshold": {
+      "name": "StaleThreshold",
+      "doc": "StaleThreshold is the age after which persisted state, for example after a volume reattach, is treated as stale."
+    },
+    "startup.wal_reconciliation": {
+      "name": "WALReconciliation",
+      "doc": "WALReconciliation reconciles persisted write state against the manifest on a stale start."
+    },
+    "startup.warmup_window": {
+      "name": "WarmupWindow",
+      "doc": "WarmupWindow is the age of the recent data whose footers and blooms are pre-cached at startup."
+    },
+    "stats.breakdown_labels": {
+      "name": "BreakdownLabels",
+      "doc": "BreakdownLabels are the dimensions offered by the stats breakdown."
+    },
+    "stats.cardinality_warning_threshold": {
+      "name": "CardinalityWarningThreshold",
+      "doc": "CardinalityWarningThreshold is the field cardinality that raises a high-cardinality warning."
+    },
+    "stats.enabled": {
+      "name": "Enabled",
+      "doc": "Enabled collects tenant statistics and syncs them across the fleet."
+    },
+    "stats.headobject_max_per_refresh": {
+      "name": "HeadObjectMaxPerRefresh",
+      "doc": "HeadObjectMaxPerRefresh caps HeadObject calls per refresh."
+    },
+    "stats.headobject_sample_interval": {
+      "name": "HeadObjectSampleInterval",
+      "doc": "HeadObjectSampleInterval is the interval of HeadObject spot checks near lifecycle transitions."
+    },
+    "stats.max_delta_count": {
+      "name": "MaxDeltaCount",
+      "doc": "MaxDeltaCount is the number of deltas after which a full sync is forced."
+    },
+    "stats.meta_bucket": {
+      "name": "MetaBucket",
+      "doc": "MetaBucket is a dedicated bucket for metadata in bucket isolation; empty uses s3.bucket."
+    },
+    "stats.metrics_cardinality_limit": {
+      "name": "MetricsCardinalityLimit",
+      "doc": "MetricsCardinalityLimit caps distinct tenant label values in metrics."
+    },
+    "stats.node_meta_ttl": {
+      "name": "NodeMetaTTL",
+      "doc": "NodeMetaTTL bounds how long a peer's gossiped metadata footprint stays in the fleet view (/stats/instances + the cluster-wide Overview sum) without a refresh. The node id is the (ephemeral) container hostname, so without this dead nodes loaded from the shared S3 snapshot would accumulate forever. Defaults to 3× PushInterval (so a single missed gossip never evicts a live peer); set explicitly to override. 0 disables the staleness filter."
+    },
+    "stats.push_compression": {
+      "name": "PushCompression",
+      "doc": "PushCompression zstd-compresses delta broadcasts."
+    },
+    "stats.push_interval": {
+      "name": "PushInterval",
+      "doc": "PushInterval is how often stat deltas are broadcast to peers."
+    },
+    "stats.s3_inventory_bucket": {
+      "name": "S3InventoryBucket",
+      "doc": "S3InventoryBucket is an S3 Inventory bucket used to verify storage classes exactly."
+    },
+    "stats.s3_lifecycle_rules": {
+      "name": "S3LifecycleRules",
+      "doc": "S3LifecycleRules are the bucket lifecycle rules used to predict storage classes without API calls."
+    },
+    "stats.s3_price_per_gb": {
+      "name": "S3PricePerGB",
+      "doc": "S3PricePerGB is the storage price per GB-month of each storage class, for cost estimates."
+    },
+    "stats.s3_request_prices": {
+      "name": "S3RequestPrices",
+      "doc": "S3RequestPrices is the price per 1000 requests of each request type, for cost estimates."
+    },
+    "stats.snapshot_interval": {
+      "name": "SnapshotInterval",
+      "doc": "SnapshotInterval is how often the full registry snapshot is written to S3."
+    },
+    "stats.snapshot_prefix": {
+      "name": "SnapshotPrefix",
+      "doc": "SnapshotPrefix is the S3 key prefix of the registry snapshot."
+    },
+    "telemetry.always_sample_slow": {
+      "name": "AlwaysSampleSlow",
+      "doc": "AlwaysSampleSlow samples slow queries regardless of sample_rate."
+    },
+    "telemetry.batch_timeout": {
+      "name": "BatchTimeout",
+      "doc": "BatchTimeout is the span export batch timeout."
+    },
+    "telemetry.enabled": {
+      "name": "Enabled",
+      "doc": "Enabled traces the lakehouse itself with OpenTelemetry. Without an endpoint, spans are recorded but not exported."
+    },
+    "telemetry.endpoint": {
+      "name": "Endpoint",
+      "doc": "Endpoint is the OTLP gRPC endpoint that receives the lakehouse's own spans."
+    },
+    "telemetry.sample_rate": {
+      "name": "SampleRate",
+      "doc": "SampleRate is the fraction of traces sampled, parent-based."
+    },
+    "telemetry.service_name": {
+      "name": "ServiceName",
+      "doc": "ServiceName is the service name reported in the lakehouse's own spans."
+    },
+    "tenant.alias_sync_interval": {
+      "name": "AliasSyncInterval",
+      "doc": "AliasSyncInterval is how often runtime aliases and tenant policies sync across the fleet."
+    },
+    "tenant.aliases": {
+      "name": "Aliases",
+      "doc": "Aliases maps string tenant ids to an AccountID and ProjectID."
+    },
+    "tenant.auto_register": {
+      "name": "AutoRegister",
+      "doc": "AutoRegister registers an unknown string tenant id as a new alias."
+    },
+    "tenant.bucket_template": {
+      "name": "BucketTemplate",
+      "doc": "BucketTemplate names a tenant's bucket in bucket isolation; required when isolation is bucket."
+    },
+    "tenant.default_account": {
+      "name": "DefaultAccount",
+      "doc": "DefaultAccount is the AccountID of a request that carries no tenant header."
+    },
+    "tenant.default_prefix": {
+      "name": "DefaultPrefix",
+      "doc": "DefaultPrefix is a static S3 key prefix that replaces prefix_template."
+    },
+    "tenant.default_project": {
+      "name": "DefaultProject",
+      "doc": "DefaultProject is the ProjectID of a request that carries no tenant header."
+    },
+    "tenant.global_read_header": {
+      "name": "GlobalReadHeader",
+      "doc": "GlobalReadHeader is the header that, carrying global_read_value, grants a cross-tenant read."
+    },
+    "tenant.global_read_token": {
+      "name": "GlobalReadToken",
+      "doc": "GlobalReadToken is a bearer token that grants a cross-tenant read."
+    },
+    "tenant.global_read_value": {
+      "name": "GlobalReadValue",
+      "doc": "GlobalReadValue is the value global_read_header must carry."
+    },
+    "tenant.header_account": {
+      "name": "HeaderAccount",
+      "doc": "HeaderAccount is the HTTP header carrying the AccountID."
+    },
+    "tenant.header_project": {
+      "name": "HeaderProject",
+      "doc": "HeaderProject is the HTTP header carrying the ProjectID."
+    },
+    "tenant.isolation": {
+      "name": "Isolation",
+      "doc": "Isolation is prefix (tenants share the bucket under prefix_template) or bucket (each tenant gets the bucket named by bucket_template)."
+    },
+    "tenant.known_tenants": {
+      "name": "KnownTenants",
+      "doc": "KnownTenants lists tenants with their own lifecycle rules and prices, for bucket isolation."
+    },
+    "tenant.metrics_format": {
+      "name": "MetricsFormat",
+      "doc": "MetricsFormat is the tenant label of metrics: id, name or both."
+    },
+    "tenant.orgid_header": {
+      "name": "OrgIDHeader",
+      "doc": "OrgIDHeader is the header carrying a string tenant id (the Loki/Tempo X-Scope-OrgID), resolved through the aliases."
+    },
+    "tenant.overrides": {
+      "name": "Overrides",
+      "doc": "Overrides keys: either \"<account>:<project>\" (e.g. \"1:1\") or a string OrgID alias (e.g. \"acme-corp\"). String keys are resolved via the alias map at startup; unresolved aliases re-resolve on the alias-sync interval so late-registered tenants pick up their override without a process restart. See docs/multi-tenancy.md \"Per-tenant overrides\" for the merge rules."
+    },
+    "tenant.prefix_template": {
+      "name": "PrefixTemplate",
+      "doc": "PrefixTemplate is the S3 prefix of a tenant; {AccountID} and {ProjectID} are replaced from the request."
+    },
+    "topology": {
+      "name": "Topology",
+      "doc": "Topology selects how the hot tier is found: auto, storage-node, direct or loki-proxy."
+    },
+    "traces.bloom_columns": {
+      "name": "BloomColumns",
+      "doc": "BloomColumns are extra columns to bloom-index for traces; the built-in trace bloom columns are always included."
+    },
+    "traces.compat_version": {
+      "name": "CompatVersion",
+      "doc": "CompatVersion is the VictoriaTraces version the API reports; empty reports the built-in one."
+    },
+    "traces.delete_prefix": {
+      "name": "DeletePrefix",
+      "doc": "DeletePrefix is the path prefix of the traces delete API."
+    },
+    "traces.insert.profile": {
+      "name": "Profile",
+      "doc": "Profile is the profile for this role (insert or select) of the signal; it takes precedence over the signal's profile."
+    },
+    "traces.jaeger_enabled": {
+      "name": "JaegerEnabled",
+      "doc": "JaegerEnabled serves the Jaeger query API."
+    },
+    "traces.jaeger_grpc_addr": {
+      "name": "JaegerGRPCAddr",
+      "doc": "JaegerGRPCAddr is the listen address of the Jaeger gRPC API."
+    },
+    "traces.profile": {
+      "name": "Profile",
+      "doc": "Profile is the profile for the traces signal; it takes precedence over profile."
+    },
+    "traces.promoted_attributes": {
+      "name": "PromotedAttributes",
+      "doc": "PromotedAttributes are custom attributes promoted into dedicated Parquet columns, each {name, bloom}."
+    },
+    "traces.select.profile": {
+      "name": "Profile",
+      "doc": "Profile is the profile for this role (insert or select) of the signal; it takes precedence over the signal's profile."
+    },
+    "ui.enabled": {
+      "name": "Enabled",
+      "doc": "Enabled serves the Lakehouse Explorer at /lakehouse/ui/."
+    },
+    "ui.refresh_default": {
+      "name": "RefreshDefault",
+      "doc": "RefreshDefault is the default auto-refresh interval in seconds; 0 disables it."
+    },
+    "ui.theme": {
+      "name": "Theme",
+      "doc": "Theme is the UI theme: auto, dark or light."
+    },
+    "ui.vmui_tab": {
+      "name": "VMUITab",
+      "doc": "VMUITab adds a Lakehouse tab to the VictoriaLogs/VictoriaTraces VMUI."
+    }
+  },
+  "sections": {
+    "cache": {
+      "name": "CacheConfig",
+      "doc": "CacheConfig sizes the L1 in-memory and L2 disk caches of footers, blooms and pages."
+    },
+    "compaction": {
+      "name": "CompactionConfig",
+      "doc": "CompactionConfig controls background Parquet compaction."
+    },
+    "cross_signal": {
+      "name": "CrossSignalConfig",
+      "doc": "CrossSignalConfig controls prefetch and eviction hints between the logs and traces lakehouses."
+    },
+    "delete": {
+      "name": "DeleteConfig",
+      "doc": "DeleteConfig controls the delete API, tombstones and file rewrites."
+    },
+    "discovery": {
+      "name": "DiscoveryConfig",
+      "doc": "DiscoveryConfig finds the hot storage nodes and the peer fleet."
+    },
+    "gc": {
+      "name": "GCConfig",
+      "doc": "GCConfig controls garbage collection of orphan files."
+    },
+    "insert": {
+      "name": "InsertConfig",
+      "doc": "InsertConfig controls buffering and flushing on the write path."
+    },
+    "logs": {
+      "name": "LogsModeConfig",
+      "doc": "LogsModeConfig holds settings that apply only to lakehouse-logs."
+    },
+    "logs.insert": {
+      "name": "RoleProfileRef",
+      "doc": "RoleProfileRef selects a profile for one role of a signal."
+    },
+    "logs.select": {
+      "name": "RoleProfileRef",
+      "doc": "RoleProfileRef selects a profile for one role of a signal."
+    },
+    "manifest": {
+      "name": "ManifestConfig",
+      "doc": "ManifestConfig controls the index of Parquet files and its local snapshot."
+    },
+    "peer": {
+      "name": "PeerConfig",
+      "doc": "PeerConfig controls the distributed peer cache."
+    },
+    "pmeta": {
+      "name": "PmetaConfig",
+      "doc": "PmetaConfig gates the unified partition-metadata layer (internal/pmeta). It is ON by default; when disabled no catalog store is built and the hot flush/query paths are unchanged. See docs/architecture/metadata-consolidation.md."
+    },
+    "prefetch": {
+      "name": "PrefetchConfig",
+      "doc": "PrefetchConfig controls proactive cache warming ahead of queries."
+    },
+    "query": {
+      "name": "QueryConfig",
+      "doc": "QueryConfig bounds the cost of select queries."
+    },
+    "retention": {
+      "name": "RetentionConfig",
+      "doc": "RetentionConfig controls automatic deletion of expired data."
+    },
+    "s3": {
+      "name": "S3Config",
+      "doc": "S3Config is the object storage the Parquet files live in."
+    },
+    "select": {
+      "name": "SelectConfig",
+      "doc": "SelectConfig controls how select pods read rows not yet flushed to S3."
+    },
+    "shutdown": {
+      "name": "ShutdownConfig",
+      "doc": "ShutdownConfig bounds the phases of a graceful shutdown."
+    },
+    "smart_cache": {
+      "name": "SmartCacheConfig",
+      "doc": "SmartCacheConfig controls the cache controller that pins, ages and sizes cached data."
+    },
+    "startup": {
+      "name": "StartupConfig",
+      "doc": "StartupConfig controls warmup and readiness when a pod starts."
+    },
+    "stats": {
+      "name": "StatsConfig",
+      "doc": "StatsConfig controls tenant statistics, storage class tracking and cost estimates."
+    },
+    "telemetry": {
+      "name": "TelemetryConfig",
+      "doc": "TelemetryConfig controls OpenTelemetry tracing of the lakehouse itself."
+    },
+    "tenant": {
+      "name": "TenantConfig",
+      "doc": "TenantConfig controls multi-tenant routing, isolation and per-tenant overrides."
+    },
+    "traces": {
+      "name": "TracesModeConfig",
+      "doc": "TracesModeConfig holds settings that apply only to lakehouse-traces."
+    },
+    "traces.insert": {
+      "name": "RoleProfileRef",
+      "doc": "RoleProfileRef selects a profile for one role of a signal."
+    },
+    "traces.select": {
+      "name": "RoleProfileRef",
+      "doc": "RoleProfileRef selects a profile for one role of a signal."
+    },
+    "ui": {
+      "name": "UIConfig",
+      "doc": "UIConfig controls the Lakehouse Explorer web UI."
+    }
+  }
+}
