@@ -104,21 +104,33 @@ func TestJaeger_DerivesTenantFromRequest(t *testing.T) {
 }
 
 func TestJaeger_RejectsMalformedTenantHeader(t *testing.T) {
-	store := &recordingStore{}
-	h := tracesHandler(t, store, nil)
-	mux := http.NewServeMux()
-	h.Register(mux)
-
-	req := httptest.NewRequest(http.MethodGet, "/select/jaeger/api/services", nil)
-	req.Header.Set("AccountID", "not-a-number")
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400 — a malformed tenant header must be rejected, not silently downgraded to 0:0", rec.Code)
+	paths := []string{
+		"/select/jaeger/api/services",
+		"/select/jaeger/api/services/svc/operations",
+		"/select/jaeger/api/traces/abc",
+		"/select/jaeger/api/traces?service=svc",
 	}
-	if ids, _ := store.calls(); len(ids) != 0 {
-		t.Error("a request with a malformed tenant header must not reach the storage layer")
+	for _, path := range paths {
+		for _, header := range []string{"AccountID", "ProjectID"} {
+			t.Run(path+"/"+header, func(t *testing.T) {
+				store := &recordingStore{}
+				h := tracesHandler(t, store, nil)
+				mux := http.NewServeMux()
+				h.Register(mux)
+
+				req := httptest.NewRequest(http.MethodGet, path, nil)
+				req.Header.Set(header, "not-a-number")
+				rec := httptest.NewRecorder()
+				mux.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusBadRequest {
+					t.Errorf("status = %d, want 400 — a malformed tenant header must be rejected, not silently downgraded to 0:0", rec.Code)
+				}
+				if ids, _ := store.calls(); len(ids) != 0 {
+					t.Error("a request with a malformed tenant header must not reach the storage layer")
+				}
+			})
+		}
 	}
 }
 
