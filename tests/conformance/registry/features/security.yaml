@@ -3,7 +3,6 @@
 - id: lh.feature.security.internal_auth
   title: Internal endpoint authentication
   status: shipped
-  since: v0.18.1
   area: security
   surfaces: [api, flag]
   tests:
@@ -13,7 +12,6 @@
     - internal/discovery/discovery_test.go#TestPollPartitionList_WithAuthKey
   docs:
     - docs/security.md
-  changelog: ["0.18.1"]
   changelog_bullets:
     - 'Internal endpoint auth'
   highlight: >-

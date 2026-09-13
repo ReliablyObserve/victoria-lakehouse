@@ -3,7 +3,6 @@
 - id: lh.feature.deploy.helm
   title: Helm chart
   status: shipped
-  since: v0.10.0
   area: deploy
   surfaces: [cli]
   tests:
@@ -11,7 +10,6 @@
     - scripts/ci/helmdrift/main.go
   docs:
     - docs/kubernetes-deployment.md
-  changelog: ["0.10.0", "0.37.1"]
   changelog_bullets:
     - 'Helm RBAC'
     - 'Helm chart RBAC'
@@ -85,7 +83,6 @@
 - id: lh.feature.deploy.role_separation
   title: Insert and select role separation
   status: shipped
-  since: v0.8.0
   area: deploy
   surfaces: [flag]
   tests:
@@ -97,7 +94,6 @@
   docs:
     - docs/kubernetes-deployment.md
     - docs/deployment-architecture.md
-  changelog: ["0.8.0"]
   changelog_bullets:
     - 'Insert + select role separation'
   highlight: >-

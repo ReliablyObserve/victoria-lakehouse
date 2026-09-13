@@ -3,7 +3,6 @@
 - id: lh.feature.observability.metrics
   title: Prometheus metrics instrumentation
   status: shipped
-  since: v0.9.0
   area: observability
   surfaces: [api]
   tests:
@@ -14,7 +13,6 @@
     - tests/e2e/metrics_verification_test.go#TestMetrics_S3_RequestsTotal
   docs:
     - docs/observability.md
-  changelog: ["0.9.0", "0.10.0"]
   changelog_bullets:
     - 'Prometheus metrics instrumentation'
     - 'Compaction metrics'
@@ -30,14 +28,12 @@
 - id: lh.feature.observability.dashboards
   title: Grafana dashboards
   status: shipped
-  since: v0.9.0
   area: observability
   surfaces: [ui]
   tests:
     - internal/metrics/assets_test.go#TestDashboards_ParseAndHavePanels
   docs:
     - docs/observability.md
-  changelog: ["0.9.0"]
   changelog_bullets:
     - 'Grafana dashboards'
   highlight: >-
@@ -49,14 +45,12 @@
 - id: lh.feature.observability.alerts
   title: Prometheus alerting rules
   status: shipped
-  since: v0.9.0
   area: observability
   surfaces: [ui]
   tests:
     - internal/metrics/assets_test.go#TestAlertRules_ParseAndHaveExpressions
   docs:
     - docs/observability.md
-  changelog: ["0.9.0"]
   changelog_bullets:
     - 'Alerting rules'
   highlight: >-

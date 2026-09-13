@@ -7,7 +7,6 @@
 - id: lh.feature.storage.cold_open_zero_roundtrip
   title: Cold-open round-trip elimination
   status: planned
-  since: unreleased
   area: storage
   surfaces: [storage]
   docs:
@@ -23,7 +22,6 @@
 - id: lh.feature.storage.low_latency_metadata_tier
   title: Optional low-latency metadata tier
   status: planned
-  since: unreleased
   area: storage
   surfaces: [storage, flag]
   docs:
@@ -38,7 +36,6 @@
 - id: lh.feature.query.ngram_bloom
   title: N-gram pruning for full-text search
   status: planned
-  since: unreleased
   area: query
   surfaces: [storage]
   docs:
@@ -54,7 +51,6 @@
 - id: lh.feature.compaction.parallel_bounded
   title: Parallel compaction under resource caps
   status: planned
-  since: unreleased
   area: compaction
   surfaces: [flag]
   docs:
@@ -69,7 +65,6 @@
 - id: lh.feature.traces.dependency_preaggregation
   title: Pre-aggregated trace dependencies
   status: planned
-  since: unreleased
   area: traces
   surfaces: [storage]
   docs:
@@ -85,7 +80,6 @@
 - id: lh.feature.traces.span_metrics
   title: Derived span (RED) metrics
   status: planned
-  since: unreleased
   area: traces
   surfaces: [api]
   docs:
@@ -100,7 +94,6 @@
 - id: lh.feature.traces.service_graph_prometheus
   title: Prometheus-shaped service-graph series for the Tempo plugin
   status: planned
-  since: unreleased
   area: traces
   surfaces: [api]
   docs:
@@ -115,7 +108,6 @@
 - id: lh.feature.tenancy.stats_groupby
   title: Per-tenant grouping in the VL stats path
   status: planned
-  since: unreleased
   area: tenancy
   surfaces: [api]
   docs:

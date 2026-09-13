@@ -26,7 +26,6 @@
 - id: lh.feature.storage.manifest
   title: Partition manifest with label pruning
   status: shipped
-  since: v0.7.0
   area: storage
   readme_section: Write Path
   surfaces: [api, storage]
@@ -39,7 +38,6 @@
   docs:
     - docs/manifest-system.md#data-structures
     - docs/manifest-system.md#api-endpoints
-  changelog: ["0.7.0", "0.8.0"]
   changelog_bullets:
     - 'Manifest management'
     - 'Manifest label pruning'
@@ -78,7 +76,6 @@
 - id: lh.feature.storage.manifest_push
   title: Peer manifest push notifications
   status: shipped
-  since: v0.10.0
   area: storage
   surfaces: [api]
   tests:
@@ -87,7 +84,6 @@
     - cmd/lakehouse-logs/handlers_test.go#TestHandleManifestUpdate
   docs:
     - docs/manifest-system.md#peer-synchronization
-  changelog: ["0.10.0"]
   changelog_bullets:
     - 'Peer manifest push notifications'
     - 'Manifest update receiver'
@@ -182,7 +178,6 @@
 - id: lh.feature.storage.dedicated_columns
   title: Dedicated columns for hot attributes
   status: shipped
-  since: v0.90.0
   area: storage
   surfaces: [storage, flag]
   tests:
@@ -194,7 +189,6 @@
   docs:
     - docs/architecture/dedicated-columns.md#two-tiers
     - docs/benchmarks/dedicated-columns.md
-  changelog: ["0.90.0"]
   changelog_bullets:
     - 'Dedicated columns (Tier 1): promote hot OTel attributes out of the maps into typed Parquet columns.'
     - 'Dedicated columns (Tier 2): operator-configurable custom-attribute promotion.'
@@ -209,7 +203,6 @@
 - id: lh.feature.storage.field_size_stats
   title: Per-field storage and metadata size accounting
   status: shipped
-  since: v0.100.0
   area: storage
   surfaces: [api, storage]
   rows: [lh.stats.fields.schema]
@@ -220,7 +213,6 @@
   docs:
     - docs/tenant-stats.md
     - docs/architecture/field-value-catalog.md
-  changelog: ["0.100.0"]
   changelog_bullets:
     - 'Per-field storage/metadata size stats — foundation.'
   highlight: >-
@@ -234,7 +226,6 @@
 - id: lh.feature.storage.pmeta
   title: Unified partition metadata (pmeta) with field/value catalog
   status: shipped
-  since: v0.79.0
   area: storage
   surfaces: [storage, flag]
   tests:
@@ -247,7 +238,6 @@
     - docs/architecture/metadata-consolidation.md
     - docs/architecture/field-value-catalog.md
     - docs/architecture/pb-scale-resources-pmeta.md
-  changelog: ["0.79.0"]
   changelog_bullets:
     - 'pmeta — unified partition-metadata layer + field/value catalog (`-lakehouse.pmeta.enabled`, off by default).'
   highlight: >-
@@ -261,7 +251,6 @@
 - id: lh.feature.storage.pmeta_read_flips
   title: pmeta read flips for file metadata, bloom and field names
   status: shipped
-  since: v0.79.0
   area: storage
   surfaces: [storage, flag]
   tests:
@@ -272,7 +261,6 @@
   docs:
     - docs/architecture/metadata-consolidation.md
     - docs/architecture/field-value-catalog.md
-  changelog: ["0.79.0"]
   changelog_bullets:
     - 'pmeta file-meta read-flip — the manifest enriches `FileInfo` from the in-RAM bundle, not the S3 sidecars (flip phase 1, `--pmeta`).'
     - 'pmeta bloom read-flip — `checkFileBloom` consults the in-RAM bloom facet before a per-file `.bloom` S3 GET (`--pmeta`, logs + traces).'
@@ -287,7 +275,6 @@
 - id: lh.feature.storage.pmeta_retire_sidecars
   title: Retiring the legacy metadata sidecars
   status: shipped
-  since: v0.81.0
   area: storage
   surfaces: [storage, flag]
   tests:
@@ -298,7 +285,6 @@
   docs:
     - docs/architecture/metadata-consolidation.md
     - docs/query-performance-optimization.md
-  changelog: ["0.81.0"]
   changelog_bullets:
     - 'pmeta `retire-sidecar-writes` — stop writing ALL legacy sidecars the facets replace: `_file_metadata.json`, per-file `.bloom`, and partition `_bloom.bin` (`-lakehouse.pmeta.retire-sidecar-writes`, off by default, both modules).'
   highlight: >-
@@ -343,7 +329,6 @@
   docs:
     - docs/architecture/metadata-and-s3-optimization.md
     - docs/read-path.md
-  changelog: ["0.9.0", "0.83.0"]
   changelog_bullets:
     - 'S3 read-path Tier 1 (batch 1) — parquet open hygiene, adaptive read-ahead, BDP coalescing, singleflight, S3-op observability (both modules).'
     - 'Circuit breaker'
@@ -362,7 +347,6 @@
 - id: lh.feature.storage.read_ahead_waste_feedback
   title: Waste-feedback read-ahead
   status: shipped
-  since: v0.85.0
   area: storage
   surfaces: [storage, flag]
   tests:
@@ -371,7 +355,6 @@
     - internal/config/s3_readpath_knobs_test.go#TestS3ReadAheadWasteThreshold_DefaultAndMerge
   docs:
     - docs/architecture/metadata-and-s3-optimization.md
-  changelog: ["0.85.0"]
   changelog_bullets:
     - 'S3 batch 2a — waste-feedback read-ahead: the adaptive window now SHRINKS when it fetches bytes nobody reads (both modules).'
   highlight: >-
@@ -384,7 +367,6 @@
 - id: lh.feature.storage.plan_then_fetch
   title: Plan-then-fetch exact column ranges
   status: in-progress
-  since: v0.87.0
   area: storage
   surfaces: [storage, flag]
   tests:
@@ -396,7 +378,6 @@
   docs:
     - docs/architecture/metadata-and-s3-optimization.md
     - docs/read-path.md
-  changelog: ["0.87.0"]
   changelog_bullets:
     - 'S3 Tier-2 plan-then-fetch: column-projected reads now fetch EXACT coalesced column-chunk ranges — no speculative window (both modules).'
   highlight: >-
@@ -410,7 +391,6 @@
 - id: lh.feature.storage.planned_fetch_v2
   title: Planned-fetch v2 levers (footer prefetch, span concurrency, gap discipline)
   status: in-progress
-  since: v0.88.0
   area: storage
   surfaces: [storage, flag]
   tests:
@@ -422,7 +402,6 @@
   docs:
     - docs/architecture/metadata-and-s3-optimization.md
     - docs/benchmarks/full-scope-s3.md
-  changelog: ["0.88.0"]
   changelog_bullets:
     - 'Planned-fetch v2 slices 0+1: per-signal footer prefetch, span concurrency k=16, per-SPAN cap, gap discipline, and the S\* whole-file ladder (both modules; every slice-1 lever is opt-in-planned-path only — the `window` default is untouched).'
   highlight: >-

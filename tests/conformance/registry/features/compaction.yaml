@@ -4,7 +4,6 @@
 - id: lh.feature.compaction.level_based
   title: Level-based background compaction
   status: shipped
-  since: v0.10.0
   area: compaction
   surfaces: [storage, flag]
   rows: [lh.stats.compaction.schema]
@@ -16,7 +15,6 @@
   docs:
     - docs/operations.md
     - docs/write-path.md
-  changelog: ["0.10.0"]
   changelog_bullets:
     - 'Level-based Parquet compaction'
   highlight: >-
@@ -41,7 +39,6 @@
   docs:
     - docs/operations.md
     - docs/petabyte-scale-audit.md
-  changelog: ["0.10.0", "0.37.1", "0.37.3"]
   changelog_bullets:
     - 'Election-free compaction (spec 2026-05-31)'
     - 'Leader election'
@@ -63,7 +60,6 @@
 - id: lh.feature.compaction.hints_manual_trigger
   title: Compaction hints and manual recompaction
   status: shipped
-  since: v0.101.0
   area: compaction
   surfaces: [api]
   tests:
@@ -74,7 +70,6 @@
     - internal/manifest/compaction_candidates_test.go#TestComputeCompactionStats
   docs:
     - docs/operations.md
-  changelog: ["0.101.0"]
   changelog_bullets:
     - 'Compaction hints + manual recompaction trigger.'
   highlight: >-
@@ -87,7 +82,6 @@
 - id: lh.feature.compaction.bloom_retention
   title: Combined bloom retention across merges
   status: shipped
-  since: v0.101.0
   area: compaction
   surfaces: [storage, api]
   tests:
@@ -98,7 +92,6 @@
   docs:
     - docs/bloom-index.md
     - docs/operations.md
-  changelog: ["0.101.0"]
   changelog_bullets:
     - 'Compaction retains the combined bloom of all merged parquets + exposes bloom footprint in stats.'
   highlight: >-
@@ -111,7 +104,6 @@
 - id: lh.feature.compaction.attribute_repromotion
   title: Attribute re-promotion during compaction
   status: shipped
-  since: v0.101.1
   area: compaction
   surfaces: [storage]
   tests:
@@ -123,7 +115,6 @@
   docs:
     - docs/architecture/dedicated-columns.md
     - docs/operations.md
-  changelog: ["0.101.1"]
   changelog_bullets:
     - 'Compaction re-promotes map-stored attributes into dedicated columns (heals old files forward).'
   highlight: >-
@@ -136,7 +127,6 @@
 - id: lh.feature.compaction.row_group_by_level
   title: Row-group size by output level
   status: shipped
-  since: v0.85.0
   area: compaction
   surfaces: [flag, storage]
   tests:
@@ -146,7 +136,6 @@
   docs:
     - docs/configuration.md
     - docs/performance.md
-  changelog: ["0.85.0"]
   changelog_bullets:
     - 'Compression step 4 — 2× row groups on L2+ rollups: `compaction.row_group_size_by_output_level` (both modules).'
   highlight: >-

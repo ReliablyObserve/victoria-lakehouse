@@ -25,7 +25,6 @@
 - id: lh.feature.ui.vmui_tab
   title: VMUI tab injection with state persistence
   status: shipped
-  since: v0.100.0
   area: ui
   surfaces: [ui]
   tests:
@@ -34,7 +33,6 @@
     - internal/ui/guards_test.go
   docs:
     - docs/lakehouse-explorer.md
-  changelog: ["0.100.0"]
   changelog_bullets:
     - 'vmui Lakehouse tab and sub-tab persistence.'
   highlight: >-
@@ -47,7 +45,6 @@
 - id: lh.feature.ui.storage_overview
   title: Storage Overview tiles
   status: shipped
-  since: v0.100.0
   area: ui
   surfaces: [ui, api]
   tests:
@@ -58,7 +55,6 @@
   docs:
     - docs/lakehouse-explorer.md
     - docs/tenant-stats.md
-  changelog: ["0.100.0"]
   changelog_bullets:
     - 'Enriched Storage Overview tiles'
     - 'Storage Overview metadata footprint (Phase B).'
@@ -73,7 +69,6 @@
 - id: lh.feature.ui.storage_breakdown
   title: Searchable storage breakdown
   status: shipped
-  since: v0.100.0
   area: ui
   surfaces: [ui]
   tests:
@@ -81,7 +76,6 @@
     - tests/e2e/tenant_ui_breakdown_test.go#TestTenantAPI_BreakdownEndpointGroupsByTenant
   docs:
     - docs/lakehouse-explorer.md
-  changelog: ["0.100.0"]
   changelog_bullets:
     - 'Searchable, extensible Storage Breakdown'
     - 'Storage Breakdown selection is remembered and fully editable.'
@@ -95,7 +89,6 @@
 - id: lh.feature.ui.cardinality_explorer
   title: Cardinality Explorer
   status: shipped
-  since: v0.100.0
   area: ui
   surfaces: [ui, api]
   rows: [lh.cardinality.fields.schema]
@@ -107,7 +100,6 @@
   docs:
     - docs/lakehouse-explorer.md
     - docs/tenant-stats.md
-  changelog: ["0.100.0"]
   changelog_bullets:
     - 'Accurate Cardinality Explorer backed by durable pmeta state.'
     - 'Cardinality Explorer distinguishes "not indexed" from zero.'
@@ -124,7 +116,6 @@
 - id: lh.feature.ui.storage_details
   title: Per-field storage and metadata table
   status: shipped
-  since: v0.100.0
   area: ui
   surfaces: [ui, api]
   tests:
@@ -134,7 +125,6 @@
   docs:
     - docs/lakehouse-explorer.md
     - docs/tenant-stats.md
-  changelog: ["0.100.0"]
   changelog_bullets:
     - 'Storage Details → per-field storage + metadata table (Phase C).'
   highlight: >-
@@ -146,7 +136,6 @@
 - id: lh.feature.ui.fleet_instances
   title: Per-instance fleet breakdown
   status: shipped
-  since: v0.100.0
   area: ui
   surfaces: [ui, api]
   tests:
@@ -155,7 +144,6 @@
   docs:
     - docs/lakehouse-explorer.md
     - docs/tenant-stats.md
-  changelog: ["0.100.0"]
   changelog_bullets:
     - 'Per-instance fleet metadata breakdown (Phase D).'
   highlight: >-

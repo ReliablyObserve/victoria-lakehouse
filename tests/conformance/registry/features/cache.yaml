@@ -4,7 +4,6 @@
 - id: lh.feature.cache.smart_controller
   title: Unified four-tier smart cache controller
   status: shipped
-  since: v0.18.1
   area: cache
   readme_section: Smart Cache
   surfaces: [flag, storage]
@@ -17,7 +16,6 @@
     - internal/smartcache/hardening_test.go
   docs:
     - docs/cache-architecture.md
-  changelog: ["0.18.1"]
   changelog_bullets:
     - 'Smart cache controller'
   highlight: >-
@@ -30,7 +28,6 @@
 - id: lh.feature.cache.active_query_pinning
   title: Active-query pinning
   status: shipped
-  since: v0.18.1
   area: cache
   readme_section: Smart Cache
   surfaces: [flag]
@@ -43,7 +40,6 @@
   docs:
     - docs/cache-architecture.md
     - docs/configuration.md
-  changelog: ["0.18.1"]
   changelog_bullets:
     - 'Active query pinning'
   highlight: >-
@@ -56,7 +52,6 @@
 - id: lh.feature.cache.sizing_calculator
   title: Adaptive cache sizing calculator
   status: shipped
-  since: v0.18.1
   area: cache
   readme_section: Smart Cache
   surfaces: [flag]
@@ -67,7 +62,6 @@
   docs:
     - docs/cache-architecture.md
     - docs/performance.md
-  changelog: ["0.18.1"]
   changelog_bullets:
     - 'Cache sizing calculator'
   highlight: >-
@@ -162,7 +156,6 @@
 - id: lh.feature.cache.prefetch_engine
   title: Prefetch engine with read-ahead and column popularity
   status: shipped
-  since: v0.18.1
   area: cache
   readme_section: Read Path
   surfaces: [flag]
@@ -174,7 +167,6 @@
   docs:
     - docs/cache-architecture.md
     - docs/configuration.md
-  changelog: ["0.18.1"]
   changelog_bullets:
     - 'Prefetch engine wiring'
   highlight: >-
@@ -187,7 +179,6 @@
 - id: lh.feature.cache.cross_signal_prefetch
   title: Cross-signal prefetch between logs and traces
   status: shipped
-  since: v0.18.1
   area: cache
   readme_section: Cross-Signal Prefetch
   surfaces: [api, flag]
@@ -199,7 +190,6 @@
   docs:
     - docs/cache-architecture.md
     - docs/configuration.md
-  changelog: ["0.18.1"]
   changelog_bullets:
     - 'Cross-signal prefetch'
   highlight: >-
@@ -212,7 +202,6 @@
 - id: lh.feature.cache.connected_data_eviction
   title: Connected-data eviction
   status: shipped
-  since: v0.18.1
   area: cache
   readme_section: Cross-Signal Prefetch
   surfaces: [api]
@@ -225,7 +214,6 @@
   docs:
     - docs/cache-architecture.md
     - docs/configuration.md
-  changelog: ["0.18.1"]
   changelog_bullets:
     - 'Connected data eviction'
   highlight: >-
@@ -238,7 +226,6 @@
 - id: lh.feature.cache.hint_batching
   title: Cross-signal hint batching
   status: shipped
-  since: v0.18.1
   area: cache
   readme_section: Cross-Signal Prefetch
   surfaces: [flag]
@@ -250,7 +237,6 @@
   docs:
     - docs/cache-architecture.md
     - docs/configuration.md
-  changelog: ["0.18.1"]
   changelog_bullets:
     - 'Hint batching'
   highlight: >-
@@ -263,7 +249,6 @@
 - id: lh.feature.cache.metrics
   title: Smart cache and cross-signal metrics
   status: shipped
-  since: v0.18.1
   area: cache
   readme_section: Smart Cache
   surfaces: [api]
@@ -275,7 +260,6 @@
   docs:
     - docs/observability.md
     - docs/cache-architecture.md
-  changelog: ["0.18.1"]
   changelog_bullets:
     - 'Smart cache metrics'
     - 'Cross-signal metrics'

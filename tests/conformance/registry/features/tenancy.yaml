@@ -29,7 +29,6 @@
 - id: lh.feature.tenancy.s3_prefix_isolation
   title: In-path per-tenant S3 isolation
   status: shipped
-  since: v0.49.0
   area: tenancy
   readme_section: Multi-Tenancy
   surfaces: [storage, ingest]
@@ -41,7 +40,6 @@
   docs:
     - docs/multi-tenancy.md
     - docs/storage-flow.md
-  changelog: ["0.49.0"]
   changelog_bullets:
     - 'Multi-tenant S3 isolation (PR #111)'
   highlight: >-
@@ -228,7 +226,6 @@
 - id: lh.feature.tenancy.aliases
   title: Tenant aliases and name mapping
   status: shipped
-  since: v0.100.0
   area: tenancy
   surfaces: [api]
   tests:
@@ -240,7 +237,6 @@
   docs:
     - docs/tenant-stats.md
     - docs/multi-tenancy.md
-  changelog: ["0.100.0"]
   changelog_bullets:
     - 'Tenant aliases are config-mapped, reconstructed, and persisted.'
   highlight: >-
@@ -381,7 +377,6 @@
 - id: lh.feature.tenancy.pmeta_isolation
   title: Tenant-isolated partition metadata
   status: shipped
-  since: v0.100.0
   area: tenancy
   surfaces: [storage]
   tests:
@@ -392,7 +387,6 @@
   docs:
     - docs/tenant-stats.md
     - docs/architecture/pb-scale-resources-pmeta.md
-  changelog: ["0.100.0"]
   changelog_bullets:
     - 'Tenant-isolated pmeta metadata + exact per-tenant size (Phase E).'
   highlight: >-

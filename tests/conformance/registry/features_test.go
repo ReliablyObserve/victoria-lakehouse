@@ -26,10 +26,25 @@ func TestFeatureValidate_Valid(t *testing.T) {
 	f := validFeature()
 	f.ReadmeSection = "Write Path"
 	f.Bench = []string{"count_total"}
-	f.Changelog = []string{"1.2.3", "Unreleased"}
 	f.ChangelogBullets = []string{"Something."}
 	if err := f.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
+	}
+
+	// Release information is optional: a feature with bullets gets it from
+	// CHANGELOG.md, and a planned feature has none.
+	noRelease := validFeature()
+	noRelease.Since = ""
+	if err := noRelease.Validate(); err != nil {
+		t.Fatalf("a feature without since must validate: %v", err)
+	}
+
+	// A feature without bullets may declare the released versions that
+	// describe it.
+	declared := validFeature()
+	declared.Changelog = []string{"1.2.3", "1.3.0"}
+	if err := declared.Validate(); err != nil {
+		t.Fatalf("declared changelog versions without bullets must validate: %v", err)
 	}
 }
 
@@ -45,6 +60,14 @@ func TestFeatureValidate_Rejects(t *testing.T) {
 		{"bad status", func(f *Feature) { f.Status = "done" }, "status"},
 		{"bad area", func(f *Feature) { f.ID, f.Area = "lh.feature.nope.x", "nope" }, "area"},
 		{"bad since", func(f *Feature) { f.Since = "1.2.3" }, "since"},
+		// An unreleased value would go stale the moment the release workflow
+		// materializes the changelog, with no catalog change to catch it.
+		{"unreleased since", func(f *Feature) { f.Since = "unreleased" }, "must be a released version"},
+		{"unreleased changelog", func(f *Feature) { f.Changelog = []string{"Unreleased"} }, "must be a released version"},
+		{"changelog next to bullets", func(f *Feature) {
+			f.Changelog = []string{"1.2.3"}
+			f.ChangelogBullets = []string{"Something."}
+		}, "changelog: remove it"},
 		{"bad readme section", func(f *Feature) { f.ReadmeSection = "Nope" }, "readme_section"},
 		{"no surfaces", func(f *Feature) { f.Surfaces = nil }, "surfaces required"},
 		{"bad surface", func(f *Feature) { f.Surfaces = []FeatureSurface{"telepathy"} }, "surfaces:"},
@@ -278,11 +301,11 @@ func TestFeatures_RealCatalogLoads(t *testing.T) {
 	}
 	for i := range set.Features {
 		f := &set.Features[i]
-		if f.Since != SinceUnreleased && !versions[strings.TrimPrefix(f.Since, "v")] {
+		if f.Since != "" && !versions[strings.TrimPrefix(f.Since, "v")] {
 			t.Errorf("feature %s: since %q is not a CHANGELOG version heading", f.ID, f.Since)
 		}
 		for _, v := range f.Changelog {
-			if v != "Unreleased" && !versions[v] {
+			if !versions[v] {
 				t.Errorf("feature %s: changelog %q is not a CHANGELOG version heading", f.ID, v)
 			}
 		}

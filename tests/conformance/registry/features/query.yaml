@@ -26,7 +26,6 @@
 - id: lh.feature.query.logsql_filter_eval
   title: LogsQL filter evaluation on cold rows
   status: shipped
-  since: v0.18.1
   area: query
   readme_section: Read Path
   surfaces: [storage]
@@ -39,7 +38,6 @@
   docs:
     - docs/storage-flow.md
     - docs/read-path.md
-  changelog: ["0.18.1"]
   changelog_bullets:
     - 'LogsQL filter evaluation'
   bench: [level_filter, multi_filter, negation, fulltext]
@@ -53,7 +51,6 @@
 - id: lh.feature.query.max_rows
   title: Per-query row cap
   status: shipped
-  since: v0.18.1
   area: query
   readme_section: Read Path
   surfaces: [flag]
@@ -65,7 +62,6 @@
   docs:
     - docs/configuration.md
     - docs/read-path.md
-  changelog: ["0.18.1"]
   changelog_bullets:
     - 'max_rows enforcement'
   highlight: >-
@@ -99,7 +95,6 @@
 - id: lh.feature.query.resource_bounds
   title: K8s-style resource bounds for query surfaces
   status: shipped
-  since: v0.37.3
   area: query
   surfaces: [flag]
   tests:
@@ -111,7 +106,6 @@
   docs:
     - docs/performance-machinery.md
     - docs/configuration.md
-  changelog: ["0.37.3"]
   changelog_bullets:
     - 'Runtime `Acquire` wiring for 4 resource-bound surfaces'
   highlight: >-
@@ -125,7 +119,6 @@
 - id: lh.feature.query.parallel_file_workers
   title: Bounded parallel file workers
   status: shipped
-  since: v0.18.1
   area: query
   readme_section: Read Path
   surfaces: [flag]
@@ -137,7 +130,6 @@
   docs:
     - docs/storage-flow.md
     - docs/performance.md
-  changelog: ["0.18.1"]
   changelog_bullets:
     - 'Parallel query file workers'
   highlight: >-
@@ -150,7 +142,6 @@
 - id: lh.feature.query.count_pushdown
   title: Count and grouped-count pushdown to metadata
   status: shipped
-  since: v0.59.0
   area: query
   surfaces: [storage]
   tests:
@@ -160,7 +151,6 @@
   docs:
     - docs/query-performance-optimization.md
     - docs/read-path.md
-  changelog: ["0.59.0"]
   changelog_bullets:
     - 'PERF-2 — manifest count-pushdown for `stats by (field) count()` (logs + traces).'
   bench: [count_total, count_by_service, high_card]

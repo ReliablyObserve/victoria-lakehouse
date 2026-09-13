@@ -322,38 +322,46 @@ echo "== the generated documents must be current on a feature PR =="
 # cannot: the checker's own `confgen -check` sub-step, against a real clone of
 # this repository, in both directions — stale documents must fail, and the
 # same tree must pass once regenerated.
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+# clone_repo <case name>: echoes the path of a throwaway clone of this
+# repository with the vendored upstream sources linked in, or prints a skip
+# line and fails where confgen cannot run.
+clone_repo() {
+  local name="$1" tmp
+  if ! command -v go >/dev/null 2>&1; then
+    echo "skip - $name (no go toolchain)" >&2
+    return 1
+  fi
+  if [[ ! -f "$REPO_ROOT/deps/VictoriaLogs/go.mod" || ! -f "$REPO_ROOT/lakehouse-traces/deps/VictoriaTraces/go.mod" ]]; then
+    echo "skip - $name (upstream deps missing; run: make deps-logs deps-traces deps-vt)" >&2
+    return 1
+  fi
+  tmp="$(mktemp -d)"
+  if ! git clone --quiet --shared "$REPO_ROOT" "$tmp/repo" 2>/dev/null; then
+    rm -rf "$tmp"
+    echo "skip - $name (cannot clone the repository)" >&2
+    return 1
+  fi
+  # confgen extracts the upstream inventory from the vendored sources, which
+  # are .gitignored and therefore absent from the clone: link them in, and
+  # keep the links out of the fixture commits (`/deps/` ignores a directory,
+  # not a symlink).
+  ln -s "$REPO_ROOT/deps" "$tmp/repo/deps"
+  ln -s "$REPO_ROOT/lakehouse-traces/deps" "$tmp/repo/lakehouse-traces/deps"
+  printf '/deps\n/lakehouse-traces/deps\n' >> "$tmp/repo/.git/info/exclude"
+  (cd "$tmp/repo" && git config user.email t@example.com && git config user.name t)
+  echo "$tmp"
+}
+
 run_confgen_case() {
   local name="the checker fails a feature PR with stale generated docs, and passes once regenerated"
-  local repo_root
-  repo_root="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-
-  if ! command -v go >/dev/null 2>&1; then
-    echo "skip - $name (no go toolchain)"
-    return
-  fi
-  if [[ ! -f "$repo_root/deps/VictoriaLogs/go.mod" || ! -f "$repo_root/lakehouse-traces/deps/VictoriaTraces/go.mod" ]]; then
-    echo "skip - $name (upstream deps missing; run: make deps-logs deps-traces deps-vt)"
-    return
-  fi
-
   local tmp
-  tmp="$(mktemp -d)"
-  if ! git clone --quiet --shared "$repo_root" "$tmp/repo" 2>/dev/null; then
-    rm -rf "$tmp"
-    echo "skip - $name (cannot clone the repository)"
-    return
-  fi
-
-  # confgen extracts the upstream inventory from the vendored sources, which
-  # are .gitignored and therefore absent from the clone: link them in.
-  ln -s "$repo_root/deps" "$tmp/repo/deps"
-  ln -s "$repo_root/lakehouse-traces/deps" "$tmp/repo/lakehouse-traces/deps"
+  tmp="$(clone_repo "$name")" || return 0
 
   local out rc stale_out stale_rc
   (
     cd "$tmp/repo" || exit 1
-    git config user.email t@example.com
-    git config user.name t
     git branch -q base
 
     # A feature PR: a new route (feature + route signal), the rows touched as
@@ -369,7 +377,6 @@ run_confgen_case() {
 - id: lh.feature.ops.touch_check_fixture
   title: Touch-check fixture feature
   status: planned
-  since: unreleased
   area: ops
   surfaces: [cli]
   highlight: "**Fixture**: added by scripts/ci/tests/test_check_registry_touch.sh."
@@ -410,6 +417,114 @@ FIXTURE
 }
 
 run_confgen_case
+
+echo
+echo "== a release-metadata commit passes both gates without regenerating =="
+
+# After every release the release workflow opens a PR that only rewrites
+# CHANGELOG.md, moving the [Unreleased] bullets under the new version heading;
+# it never regenerates docs/features.md. This case replays that against a real
+# clone: a feature whose changelog entry is unreleased is merged with its
+# regenerated documents, then a release commit materializes [Unreleased] the
+# way the workflow does. On that commit `confgen -check` and the checker must
+# both pass untouched; regenerating must then name the new version in
+# docs/features.md with no catalog change, and stay current and byte-stable;
+# a second release on top of the unregenerated commit must pass as well.
+run_materialization_case() {
+  local name="a release-metadata commit passes confgen -check and the checker; regeneration names the version without catalog changes"
+  local tmp
+  tmp="$(clone_repo "$name")" || return 0
+
+  local fixture_line='`lh.feature.ops.touch_check_release_fixture` · status: shipped · since:'
+  local log="$tmp/log" ok=1 why=""
+  : > "$log"
+  # check_step <description> <command...>: runs the command in the clone and
+  # records the description when it fails.
+  check_step() {
+    local what="$1"
+    shift
+    if ! (cd "$tmp/repo" && "$@") >>"$log" 2>&1; then
+      ok=0
+      why="$why
+       - $what"
+    fi
+  }
+  commit_release() {
+    materialize_release "$1" && git add CHANGELOG.md && git commit -q -m "chore: release metadata for v$1 [skip release]"
+  }
+
+  (
+    cd "$tmp/repo" || exit 1
+    # A merged feature PR: an unreleased `### Added` entry, its catalog entry,
+    # and the documents regenerated as the checker requires.
+    rewrite CHANGELOG.md '{ print } /^## \[Unreleased\]$/ { print ""; print "### Added"; print ""; print "- **Touch-check release fixture.** Added by scripts/ci/tests/test_check_registry_touch.sh." }'
+    cat >> tests/conformance/registry/features/ops.yaml <<'FIXTURE'
+
+- id: lh.feature.ops.touch_check_release_fixture
+  title: Touch-check release fixture
+  status: shipped
+  area: ops
+  surfaces: [cli]
+  tests:
+    - scripts/ci/tests/test_check_registry_touch.sh
+  highlight: "**Release fixture**: added by scripts/ci/tests/test_check_registry_touch.sh."
+  description: >-
+    A shipped fixture feature whose changelog entry is unreleased, appended to a throwaway clone
+    to replay a release. It never exists in the repository itself.
+  changelog_bullets:
+    - 'Touch-check release fixture.'
+FIXTURE
+    GOWORK=off go run ./tests/conformance/cmd/confgen -write
+    git add -A
+    git commit -q -m "feature merged"
+    git branch -q base
+
+    # The release workflow's commit: CHANGELOG.md only.
+    commit_release 99.0.0
+    git branch -q release
+  ) >>"$log" 2>&1
+
+  check_step "the fixture feature is committed rendered as not yet released" \
+    grep -qF "$fixture_line the release after v" docs/features.md
+  check_step "the release commit touches CHANGELOG.md only" \
+    bash -c '[[ "$(git diff --name-only base release)" == "CHANGELOG.md" ]]'
+  check_step "confgen -check passes the unregenerated release commit" \
+    env GOWORK=off go run ./tests/conformance/cmd/confgen -check
+  check_step "confgen -check notes the still-true release references" \
+    bash -c 'GOWORK=off go run ./tests/conformance/cmd/confgen -check | grep -q "^current: .*docs/features.md"'
+  check_step "the checker passes the release commit" \
+    env SKIP_CONFGEN_CHECK= bash "$CHECKER" base
+
+  check_step "regeneration succeeds" env GOWORK=off go run ./tests/conformance/cmd/confgen -write
+  check_step "regeneration names the released version" \
+    grep -qF "$fixture_line v99.0.0 · surfaces: cli" docs/features.md
+  check_step "regeneration changes docs/features.md" bash -c '! git diff --quiet -- docs/features.md'
+  check_step "regeneration changes no catalog file" git diff --quiet -- tests/conformance/registry/features
+  check_step "the regenerated documents are exactly current" \
+    bash -c 'out=$(GOWORK=off go run ./tests/conformance/cmd/confgen -check) && ! grep -q "^current:" <<<"$out"'
+  check_step "a second regeneration is byte-stable" \
+    bash -c 'GOWORK=off go run ./tests/conformance/cmd/confgen -write | grep -qx "up to date"'
+
+  # A second release on top of the unregenerated release commit.
+  check_step "back to the release commit's documents" git checkout -q -- docs/features.md
+  check_step "a second release is committed" commit_release 99.1.0
+  check_step "confgen -check passes a second unregenerated release" \
+    env GOWORK=off go run ./tests/conformance/cmd/confgen -check
+  check_step "the checker passes the second release commit" \
+    env SKIP_CONFGEN_CHECK= bash "$CHECKER" release
+
+  if [[ $ok -eq 1 ]]; then
+    echo "ok   - $name"
+    pass=$((pass + 1))
+  else
+    echo "FAIL - $name:$why"
+    sed 's/^/       log: /' "$log"
+    fail=$((fail + 1))
+  fi
+  rm -rf "$tmp"
+}
+
+run_materialization_case
 
 echo
 echo "$pass passed, $fail failed"

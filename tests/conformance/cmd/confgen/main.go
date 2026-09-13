@@ -4,17 +4,23 @@
 // docs/features.md, and README.md's generated "Key Features" block.
 //
 //	confgen -write   # regenerate every file
-//	confgen -check   # exit 1 when a regeneration would change any file,
-//	                 # or when the feature-catalog gate fails
+//	confgen -check   # exit 1 when any file is out of date, or when the
+//	                 # feature-catalog gate fails
 //
 // Passing both flags writes first, then checks the freshly written files
 // (exit 0 when that second pass is clean).
+//
+// "Out of date" is byte inequality, with one exception: a release reference in
+// docs/features.md that an older changelog state rendered and that is still
+// true (see report.Document) is current for -check, so the release workflow's
+// changelog-only PR stays green. -write always writes the exact rendering.
 package main
 
 import (
 	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -27,6 +33,31 @@ import (
 type genFile struct {
 	path string
 	want []byte
+	// accepts, when set, decides whether the bytes on disk are current even
+	// though they differ from want (see report.Document.Accepts); nil means
+	// only want itself is current.
+	accepts func(have []byte) bool
+}
+
+// fileState is how a generated file on disk compares with its plan.
+type fileState int
+
+const (
+	fileExact    fileState = iota // identical to the planned bytes
+	fileAccepted                  // differs, but only in release references that are still true
+	fileStale                     // out of date: regenerate
+)
+
+// state compares have (the bytes on disk) with the plan for f.
+func (f genFile) state(have []byte) fileState {
+	switch {
+	case bytes.Equal(have, f.want):
+		return fileExact
+	case f.accepts != nil && f.accepts(have):
+		return fileAccepted
+	default:
+		return fileStale
+	}
 }
 
 // plan is everything a run needs: the documents to write or compare, and the
@@ -59,7 +90,7 @@ func buildPlan(root string) (*plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	bullets, err := registry.ParseChangelogAdded(filepath.Join(root, "CHANGELOG.md"))
+	changelog, err := registry.ParseChangelog(filepath.Join(root, "CHANGELOG.md"))
 	if err != nil {
 		return nil, err
 	}
@@ -79,13 +110,14 @@ func buildPlan(root string) (*plan, error) {
 		return nil, fmt.Errorf("README.md feature block: %w", err)
 	}
 
-	fd := conformance.CheckFeatures(features, reg, bullets)
+	fd := conformance.CheckFeatures(features, reg, changelog)
+	featuresDoc := report.RenderFeatures(features, reg, changelog, report.FeaturesDocDir)
 	return &plan{
 		files: []genFile{
-			{filepath.Join(root, "tests", "conformance", "inventory.generated.yaml"), wantInv},
-			{filepath.Join(root, "UPSTREAM_COVERAGE.md"), []byte(report.RenderCoverage(inv, reg))},
-			{filepath.Join(root, report.FeaturesDocDir, "features.md"), []byte(report.RenderFeatures(features, reg, report.FeaturesDocDir))},
-			{readmePath, []byte(wantReadme)},
+			{path: filepath.Join(root, "tests", "conformance", "inventory.generated.yaml"), want: wantInv},
+			{path: filepath.Join(root, "UPSTREAM_COVERAGE.md"), want: []byte(report.RenderCoverage(inv, reg))},
+			{path: filepath.Join(root, report.FeaturesDocDir, "features.md"), want: []byte(featuresDoc.String()), accepts: featuresDoc.Accepts},
+			{path: readmePath, want: []byte(wantReadme)},
 		},
 		featureCount:    len(features.Features),
 		featureFailures: fd.HardFailures(),
@@ -140,16 +172,9 @@ func main() {
 	}
 
 	if *check {
-		stale := false
-		for _, f := range files {
-			have, err := readExisting(f.path)
-			if err != nil {
-				fatal(fmt.Errorf("read %s: %w", f.path, err))
-			}
-			if !bytes.Equal(have, f.want) {
-				stale = true
-				fmt.Println("stale:", f.path)
-			}
+		stale, err := checkFiles(os.Stdout, files)
+		if err != nil {
+			fatal(err)
 		}
 
 		// The feature-catalog gate runs here as well as in the conformance
@@ -167,6 +192,28 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+// checkFiles compares every planned file with the one on disk, reporting each
+// out-of-date file as "stale:" and each file that is current only through
+// still-true release references as "current:", and returns whether any file
+// is stale.
+func checkFiles(w io.Writer, files []genFile) (bool, error) {
+	stale := false
+	for _, f := range files {
+		have, err := readExisting(f.path)
+		if err != nil {
+			return false, fmt.Errorf("read %s: %w", f.path, err)
+		}
+		switch f.state(have) {
+		case fileStale:
+			stale = true
+			fmt.Fprintln(w, "stale:", f.path)
+		case fileAccepted:
+			fmt.Fprintln(w, "current:", f.path, "— its release references predate the newest CHANGELOG.md release but are still true; 'make conformance-gen' renders the exact versions")
+		}
+	}
+	return stale, nil
 }
 
 // readExisting reads path, treating a missing file as legitimately empty (so

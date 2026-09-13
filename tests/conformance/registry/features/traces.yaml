@@ -96,7 +96,6 @@
 - id: lh.feature.traces.trace_by_id_fastpath
   title: Trace-by-id fast path and Loki-to-Tempo drilldown
   status: shipped
-  since: v0.37.3
   area: traces
   surfaces: [api, storage]
   tests:
@@ -108,7 +107,6 @@
   docs:
     - docs/read-path.md
     - docs/performance-machinery.md
-  changelog: ["0.37.3"]
   changelog_bullets:
     - 'VictoriaTraces parity milestone — cold-tier Tempo `/api/v2/traces/<id>` fast path + Loki → Tempo drilldown (PR #105)'
   bench: [trace_by_id]

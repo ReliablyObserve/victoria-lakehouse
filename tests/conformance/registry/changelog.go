@@ -116,3 +116,120 @@ func ChangelogVersions(data []byte) []string {
 	}
 	return out
 }
+
+// ChangelogUnreleased is the version name of the `## [Unreleased]` section.
+const ChangelogUnreleased = "Unreleased"
+
+// Changelog is what the feature catalog reads from CHANGELOG.md: the version
+// headings and every `### Added` bullet. It is the only source of a feature's
+// release information — the release workflow rewrites CHANGELOG.md after
+// every release (it moves the `[Unreleased]` bullets under a new version
+// heading) and never touches the catalog, so a release recorded in the catalog
+// itself would go stale the moment the feature shipped.
+type Changelog struct {
+	Versions []string          // version headings in file order, newest first, brackets stripped
+	Added    []ChangelogBullet // every top-level `### Added` bullet, in file order
+}
+
+// ParseChangelog reads the changelog at path.
+func ParseChangelog(path string) (*Changelog, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return ParseChangelogBytes(data), nil
+}
+
+// ParseChangelogBytes is ParseChangelog on an in-memory changelog.
+func ParseChangelogBytes(data []byte) *Changelog {
+	return &Changelog{Versions: ChangelogVersions(data), Added: ParseChangelogAddedBytes(data)}
+}
+
+// Released returns the released versions — every version heading except
+// `[Unreleased]` — newest first. A nil changelog has none.
+func (c *Changelog) Released() []string {
+	if c == nil {
+		return nil
+	}
+	out := make([]string, 0, len(c.Versions))
+	for _, v := range c.Versions {
+		if v != ChangelogUnreleased {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// IsReleased reports whether v is a released version heading.
+func (c *Changelog) IsReleased(v string) bool {
+	for _, r := range c.Released() {
+		if r == v {
+			return true
+		}
+	}
+	return false
+}
+
+// Newest returns the newest released version, or "" when nothing has been
+// released yet.
+func (c *Changelog) Newest() string {
+	if r := c.Released(); len(r) > 0 {
+		return r[0]
+	}
+	return ""
+}
+
+// Previous returns the released version that directly precedes the released
+// version v in the changelog — the release v came right after — or "" when v
+// is the oldest release or not a release at all.
+func (c *Changelog) Previous(v string) string {
+	r := c.Released()
+	for i := range r {
+		if r[i] == v && i+1 < len(r) {
+			return r[i+1]
+		}
+	}
+	return ""
+}
+
+// FeatureVersions returns the distinct versions of the `### Added` bullets
+// whose lead-ins the feature claims, oldest first (`Unreleased`, when present,
+// comes last). A claimed lead-in the changelog has no bullet for contributes
+// nothing; the feature gate reports it.
+func (c *Changelog) FeatureVersions(f *Feature) []string {
+	if c == nil || len(f.ChangelogBullets) == 0 {
+		return nil
+	}
+	claimed := make(map[string]bool, len(f.ChangelogBullets))
+	for _, lead := range f.ChangelogBullets {
+		claimed[lead] = true
+	}
+	seen := map[string]bool{}
+	var newestFirst []string
+	for _, b := range c.Added {
+		if b.Version == "" || !claimed[b.LeadIn] || seen[b.Version] {
+			continue
+		}
+		seen[b.Version] = true
+		newestFirst = append(newestFirst, b.Version)
+	}
+	out := make([]string, 0, len(newestFirst))
+	for i := len(newestFirst) - 1; i >= 0; i-- {
+		out = append(out, newestFirst[i])
+	}
+	return out
+}
+
+// HasLeadIn reports whether some `### Added` bullet carries exactly this bold
+// lead-in.
+func (c *Changelog) HasLeadIn(lead string) bool {
+	if c == nil {
+		return false
+	}
+	for _, b := range c.Added {
+		if b.LeadIn == lead {
+			return true
+		}
+	}
+	return false
+}

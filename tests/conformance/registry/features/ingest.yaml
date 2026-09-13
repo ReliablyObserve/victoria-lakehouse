@@ -4,7 +4,6 @@
 - id: lh.feature.ingest.vl_insert_protocols
   title: Full VictoriaLogs insert protocol surface
   status: shipped
-  since: v0.8.0
   area: ingest
   readme_section: Write Path
   surfaces: [api, ingest]
@@ -15,7 +14,6 @@
   docs:
     - docs/write-path.md
     - docs/getting-started.md
-  changelog: ["0.8.0"]
   changelog_bullets:
     - 'VL-compatible insert APIs'
   highlight: >-
@@ -29,7 +27,6 @@
 - id: lh.feature.ingest.crash_safe_durability
   title: Crash-safe durability without a WAL
   status: shipped
-  since: v0.8.0
   area: ingest
   readme_section: Write Path
   surfaces: [ingest, flag]
@@ -42,7 +39,6 @@
   docs:
     - docs/durability.md
     - docs/storage-flow.md
-  changelog: ["0.8.0"]
   changelog_bullets:
     - 'Write-ahead log (WAL)'
     - 'WAL integration in BatchWriter'
@@ -60,7 +56,6 @@
 - id: lh.feature.ingest.adaptive_file_sizing
   title: Adaptive Parquet file sizing
   status: shipped
-  since: v0.8.0
   area: ingest
   readme_section: Write Path
   surfaces: [ingest, flag]
@@ -71,7 +66,6 @@
   docs:
     - docs/write-path.md
     - docs/configuration.md
-  changelog: ["0.8.0"]
   changelog_bullets:
     - 'Adaptive file sizing'
   highlight: >-
@@ -105,7 +99,6 @@
 - id: lh.feature.ingest.buffer_query_bridge
   title: Buffer query bridge across insert pods
   status: shipped
-  since: v0.8.0
   area: ingest
   readme_section: Write Path
   surfaces: [api, ingest]
@@ -117,7 +110,6 @@
   docs:
     - docs/write-path.md
     - docs/read-path.md
-  changelog: ["0.8.0"]
   changelog_bullets:
     - 'Buffer query bridge'
   highlight: >-
@@ -131,7 +123,6 @@
 - id: lh.feature.ingest.logstore_buffer
   title: Engine-native queryable insert buffer
   status: in-progress
-  since: v0.39.0
   area: ingest
   surfaces: [ingest, flag]
   tests:
@@ -143,7 +134,6 @@
   docs:
     - docs/read-path.md
     - docs/storage-flow.md
-  changelog: ["0.39.0", "0.59.0"]
   changelog_bullets:
     - 'Option B — logstorage-native queryable buffer (cold-tier recently-flushed parity).'
     - 'Option B — logstorage-native queryable insert buffer (cold-tier recently-flushed parity with hot VT).'
@@ -160,7 +150,6 @@
 - id: lh.feature.ingest.label_extraction
   title: Write-time label extraction for manifest pruning
   status: shipped
-  since: v0.8.0
   area: ingest
   surfaces: [storage, ingest]
   tests:
@@ -171,7 +160,6 @@
   docs:
     - docs/manifest-system.md
     - docs/write-path.md
-  changelog: ["0.8.0"]
   changelog_bullets:
     - 'Label extraction'
   highlight: >-

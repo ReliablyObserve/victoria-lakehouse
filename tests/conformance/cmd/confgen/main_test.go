@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/tests/conformance/inventory"
@@ -77,6 +78,14 @@ func TestBuildPlan_RealRepo(t *testing.T) {
 		if len(f.want) == 0 {
 			t.Errorf("%s planned as empty", f.path)
 		}
+		// Only docs/features.md carries release references; the release
+		// workflow's changelog-only PR depends on -check accepting their
+		// older, still-true rendering there.
+		if isFeaturesDoc := filepath.Base(f.path) == "features.md"; isFeaturesDoc != (f.accepts != nil) {
+			t.Errorf("%s: release-reference acceptance wired = %v, want %v", f.path, f.accepts != nil, isFeaturesDoc)
+		} else if f.accepts != nil && f.state(f.want) != fileExact {
+			t.Errorf("%s: the planned bytes must be exact", f.path)
+		}
 	}
 	for _, want := range []string{"inventory.generated.yaml", "UPSTREAM_COVERAGE.md", "features.md", "README.md"} {
 		if !slices.Contains(names, want) {
@@ -107,5 +116,73 @@ func TestBuildPlan_RealRepo(t *testing.T) {
 func TestBuildPlan_BadRoot(t *testing.T) {
 	if _, err := buildPlan(t.TempDir()); err == nil {
 		t.Fatal("a directory that is not the repo root must fail rather than generate empty documents")
+	}
+}
+
+func TestGenFileState(t *testing.T) {
+	plain := genFile{path: "plain", want: []byte("exact")}
+	tolerant := genFile{path: "tolerant", want: []byte("exact"), accepts: func(have []byte) bool {
+		return string(have) == "exact" || string(have) == "older but true"
+	}}
+	cases := []struct {
+		name string
+		f    genFile
+		have string
+		want fileState
+	}{
+		{"identical bytes", plain, "exact", fileExact},
+		{"different bytes, no acceptance", plain, "older but true", fileStale},
+		{"identical bytes with acceptance", tolerant, "exact", fileExact},
+		{"accepted older rendering", tolerant, "older but true", fileAccepted},
+		{"rejected by acceptance", tolerant, "wrong", fileStale},
+	}
+	for _, tc := range cases {
+		if got := tc.f.state([]byte(tc.have)); got != tc.want {
+			t.Errorf("%s: state = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestCheckFiles drives the -check comparison: a stale file fails the check
+// and is named, a file current only through still-true release references
+// passes with a note, an exact file is silent, and an unreadable file is an
+// error rather than a verdict.
+func TestCheckFiles(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	accepts := func(have []byte) bool { return string(have) == "new" || string(have) == "old but true" }
+	exact := genFile{path: write("exact.md", "new"), want: []byte("new"), accepts: accepts}
+	accepted := genFile{path: write("accepted.md", "old but true"), want: []byte("new"), accepts: accepts}
+	stale := genFile{path: write("stale.md", "wrong"), want: []byte("new"), accepts: accepts}
+	missing := genFile{path: filepath.Join(dir, "missing.md"), want: []byte("new")}
+
+	var out bytes.Buffer
+	isStale, err := checkFiles(&out, []genFile{exact, accepted})
+	if err != nil || isStale {
+		t.Fatalf("exact + accepted: stale=%v err=%v, want a passing check", isStale, err)
+	}
+	if !strings.Contains(out.String(), "current: "+accepted.path) || strings.Contains(out.String(), exact.path) {
+		t.Errorf("only the accepted file gets a note, got:\n%s", out.String())
+	}
+
+	out.Reset()
+	isStale, err = checkFiles(&out, []genFile{exact, stale, missing})
+	if err != nil || !isStale {
+		t.Fatalf("stale + missing: stale=%v err=%v, want a failing check", isStale, err)
+	}
+	for _, want := range []string{"stale: " + stale.path, "stale: " + missing.path} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("check output missing %q:\n%s", want, out.String())
+		}
+	}
+
+	if _, err := checkFiles(&out, []genFile{{path: dir, want: []byte("x")}}); err == nil {
+		t.Error("an unreadable path must be an error, not a stale or current verdict")
 	}
 }

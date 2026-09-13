@@ -30,10 +30,6 @@ const (
 	StatusShipped    Status = "shipped"
 	StatusInProgress Status = "in-progress"
 	StatusPlanned    Status = "planned"
-
-	// SinceUnreleased marks a feature that has not been released yet: its
-	// changelog entry still lives in the `[Unreleased]` section.
-	SinceUnreleased = "unreleased"
 )
 
 // Areas lists every valid feature area, in the order the generated documents
@@ -104,8 +100,14 @@ type Feature struct {
 	ID     string `yaml:"id"`
 	Title  string `yaml:"title"`
 	Status Status `yaml:"status"`
-	Since  string `yaml:"since"` // "vX.Y.Z" (a CHANGELOG version) or "unreleased"
-	Area   Area   `yaml:"area"`
+	// Since is optional and only ever names a released version ("vX.Y.Z"). A
+	// feature that claims changelog bullets gets its first release from
+	// them, so it sets Since only to override that — to the release of one
+	// of its claimed bullets, e.g. the rebuild that superseded an older
+	// implementation whose bullets it keeps as history. A feature without
+	// bullets may declare the release it shipped in.
+	Since string `yaml:"since,omitempty"`
+	Area  Area   `yaml:"area"`
 
 	ReadmeSection string           `yaml:"readme_section,omitempty"`
 	Surfaces      []FeatureSurface `yaml:"surfaces"`
@@ -118,9 +120,12 @@ type Feature struct {
 	Highlight   string `yaml:"highlight"`   // one line, rendered into README.md and docs/features.md
 	Description string `yaml:"description"` // a paragraph, rendered into docs/features.md
 
-	// Changelog lists the released versions whose `### Added` bullets belong
-	// to this feature; ChangelogBullets lists the exact bold lead-ins of
-	// those bullets, which is what the gate matches on.
+	// ChangelogBullets lists the exact bold lead-ins of the `### Added`
+	// bullets that belong to this feature, which is what the gate matches on;
+	// the versions those bullets sit under are read from CHANGELOG.md when
+	// the documents are generated, never recorded here. Changelog is only for
+	// a feature without such bullets: the released versions whose entries
+	// (under another section) describe it.
 	Changelog        []string `yaml:"changelog,omitempty"`
 	ChangelogBullets []string `yaml:"changelog_bullets,omitempty"`
 
@@ -176,11 +181,8 @@ func (f *Feature) Validate() error {
 		add("area %q invalid", f.Area)
 	}
 
-	switch {
-	case f.Since == SinceUnreleased:
-	case featureSinceRe.MatchString(f.Since):
-	default:
-		add("since %q must be vX.Y.Z or %q", f.Since, SinceUnreleased)
+	if f.Since != "" && !featureSinceRe.MatchString(f.Since) {
+		add("since %q must be a released version vX.Y.Z, or omitted: an unreleased feature's release is read from its changelog bullets", f.Since)
 	}
 
 	if f.ReadmeSection != "" && !validReadmeSection(f.ReadmeSection) {
@@ -209,9 +211,12 @@ func (f *Feature) Validate() error {
 	}
 
 	for _, v := range f.Changelog {
-		if !changelogVerRe.MatchString(v) && v != "Unreleased" {
-			add("changelog: %q must be X.Y.Z or Unreleased", v)
+		if !changelogVerRe.MatchString(v) {
+			add("changelog: %q must be a released version X.Y.Z", v)
 		}
+	}
+	if len(f.Changelog) > 0 && len(f.ChangelogBullets) > 0 {
+		add("changelog: remove it — the versions of a feature with changelog_bullets are read from CHANGELOG.md")
 	}
 	for _, b := range f.ChangelogBullets {
 		if strings.TrimSpace(b) == "" {
