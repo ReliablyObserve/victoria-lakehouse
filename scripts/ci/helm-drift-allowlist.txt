@@ -211,3 +211,15 @@ ui.enabled
 ui.refresh_default
 ui.theme
 ui.vmui_tab
+
+# Deliberate deployment overrides — chart values that differ from the code
+# default on purpose, checked by scripts/ci/config_drift_report.py (the config
+# drift gate; helmdrift skips these lines). One line each:
+#   override <surface>:<key> <chart value as JSON> (code <code default as JSON>) — <reason>
+# An override goes stale — and fails the gate — as soon as the chart value or
+# the code default changes, so every deviation is re-justified.
+override helm-values:query.file_workers 8 (code 64) — 64 parallel file readers fanned out S3 downloads and parquet decode buffers wide enough to OOM a 2 GiB container on wildcard queries (see the file worker pool in internal/storage/parquets3/storage_query.go), so the chart keeps 8 for its default pods
+override helm-values:insert.buffer_engine "logstore" (code "buffer") — the chart mounts a persistent volume at /data/lakehouse, so it runs the on-disk logstore buffer that serves unflushed rows to reads (docs/durability.md); the binaries keep the legacy buffer for runs without a persistent data directory
+override helm-values:s3.concurrent_downloads_request 4 (code 0) — the chart sets the request/limit pair so pods do not log the max_concurrent_downloads deprecation warning that the unset pair triggers; the effective bounds are identical (request 4, limit 16)
+override helm-values:s3.concurrent_downloads_limit 16 (code 0) — see s3.concurrent_downloads_request
+override helm-values:traces.jaeger_grpc_port 16685 (code null) — a chart-only input for the Service and container port of the Jaeger gRPC listener; not a binary config key

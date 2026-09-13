@@ -252,15 +252,22 @@ func allowlist() (map[string]bool, error) {
 		}
 		return nil, err
 	}
+	return parseAllowlist(string(raw)), nil
+}
+
+// parseAllowlist returns the grandfathered key paths. `override ...` lines
+// record deliberate chart value overrides for the config drift gate
+// (scripts/ci/config_drift_report.py) and are not key paths.
+func parseAllowlist(raw string) map[string]bool {
 	out := map[string]bool{}
-	for _, line := range strings.Split(string(raw), "\n") {
+	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "override ") {
 			continue
 		}
 		out[line] = true
 	}
-	return out, nil
+	return out
 }
 
 func fatal(format string, args ...any) {
