@@ -87,6 +87,8 @@ How each part of the read path is scoped:
 - **Legacy layout.** Objects written before the tenant prefix template existed (a static `s3.prefix` such as `logs/`, no `{AccountID}/{ProjectID}/` segment in the key) were ingested without tenant headers, so they belong to tenant `0:0`: a `0:0` request includes them, every other tenant never sees them. Deployments that ingest more than one tenant must use the tenant prefix template.
 - **Bucket-per-tenant.** A tenant with an `s3.bucket` override has its objects in that bucket; the client pool derives the bucket from the object key (`{AccountID}/{ProjectID}/…`). Because the object list is already the tenant's, a scoped request only issues S3 requests against the tenant's own bucket, and an unscoped (`0:0`) request only against the default bucket.
 
+Cost: object selection walks only the requesting tenant's partitions. `BenchmarkTenantScope_FileSelection` (50 tenants × 168 hourly partitions × 4 objects, one tenant's 7-day query, Apple M5 Pro) measures 0.32 ms and 0.68 MB per query for the scoped selection including the per-key re-check, against 7.2 ms and 41 MB for the previous walk over every tenant — before counting the objects of other tenants that a query no longer opens.
+
 ### Tenant Name Mapping (X-Scope-OrgID)
 
 Victoria Lakehouse supports Loki/Tempo-compatible string-based tenant identification via the `X-Scope-OrgID` header. String aliases are mapped to VL/VT integer `{AccountID, ProjectID}` pairs at the system boundary — all internal operations remain pure integer.
