@@ -302,3 +302,103 @@ func (s *Storage) localBufferTenantIDs(ctx context.Context, tenantIDs []logstora
 	}
 	return ids
 }
+
+// bufferWatermarks is the flush watermark of each tenant: the newest MaxTimeNs
+// among the cold-tier objects a query selected for that tenant. The insert
+// buffer serves a tenant only the rows strictly newer than ITS watermark, so a
+// row that is already in Parquet is never counted again from the buffer, and —
+// for a global read spanning several tenants — one tenant's newer flush never
+// hides another tenant's still-unflushed rows. A tenant without selected
+// objects has watermark 0: the buffer serves its whole window.
+type bufferWatermarks map[logstorage.TenantID]int64
+
+// bufferWatermarksFor attributes every selected object to its tenant (legacy
+// untenanted objects to 0:0, where the read path serves them) and records each
+// tenant's newest MaxTimeNs.
+func (s *Storage) bufferWatermarksFor(files []manifest.FileInfo) bufferWatermarks {
+	if len(files) == 0 {
+		return nil
+	}
+	parse := s.manifest.TenantKeyParser()
+	wm := make(bufferWatermarks, 2)
+	for i := range files {
+		tid, ok := tenantIDOfKey(parse, files[i].Key)
+		if !ok {
+			continue
+		}
+		if files[i].MaxTimeNs > wm[tid] {
+			wm[tid] = files[i].MaxTimeNs
+		}
+	}
+	return wm
+}
+
+// tenantIDOfKey maps an object key to the numeric tenant it belongs to. A key
+// without tenant segments is legacy data of 0:0. ok=false for a segment that is
+// not a VL numeric tenant id (no watermark is recorded for it).
+func tenantIDOfKey(parse func(string) (string, string, bool), key string) (logstorage.TenantID, bool) {
+	account, project, tenanted := parse(key)
+	if !tenanted {
+		return logstorage.TenantID{}, true
+	}
+	a, err := strconv.ParseUint(account, 10, 32)
+	if err != nil {
+		return logstorage.TenantID{}, false
+	}
+	var p uint64
+	if project != "" {
+		if p, err = strconv.ParseUint(project, 10, 32); err != nil {
+			return logstorage.TenantID{}, false
+		}
+	}
+	return logstorage.TenantID{AccountID: uint32(a), ProjectID: uint32(p)}, true
+}
+
+// bufferWindowStart is the first timestamp the buffer may serve for a tenant:
+// strictly after the tenant's watermark, never before the query's own start.
+func bufferWindowStart(startNs, watermarkNs int64) int64 {
+	if watermarkNs > 0 && watermarkNs >= startNs {
+		return watermarkNs + 1
+	}
+	return startNs
+}
+
+// singleTenantID is the one tenant of a single-tenant request (0:0 for an
+// empty list, matching resolveTenantScope).
+func singleTenantID(tenantIDs []logstorage.TenantID) logstorage.TenantID {
+	if len(tenantIDs) == 0 {
+		return logstorage.TenantID{}
+	}
+	return tenantIDs[0]
+}
+
+// logRowsAfterWatermarks keeps the bridged log rows that are inside the query
+// window and newer than their own tenant's flush watermark.
+func logRowsAfterWatermarks(rows []schema.LogRow, startNs int64, wm bufferWatermarks) []schema.LogRow {
+	if len(wm) == 0 || len(rows) == 0 {
+		return rows
+	}
+	out := rows[:0:0]
+	for _, r := range rows {
+		tid := logstorage.TenantID{AccountID: r.AccountID, ProjectID: r.ProjectID}
+		if r.TimestampUnixNano >= bufferWindowStart(startNs, wm[tid]) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// traceRowsAfterWatermarks is logRowsAfterWatermarks for trace rows.
+func traceRowsAfterWatermarks(rows []schema.TraceRow, startNs int64, wm bufferWatermarks) []schema.TraceRow {
+	if len(wm) == 0 || len(rows) == 0 {
+		return rows
+	}
+	out := rows[:0:0]
+	for _, r := range rows {
+		tid := logstorage.TenantID{AccountID: r.AccountID, ProjectID: r.ProjectID}
+		if r.TimestampUnixNano >= bufferWindowStart(startNs, wm[tid]) {
+			out = append(out, r)
+		}
+	}
+	return out
+}

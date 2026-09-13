@@ -286,7 +286,7 @@ func TestInteg_queryBufferBridge_LogsMode(t *testing.T) {
 	startNs := time.Date(2026, 5, 10, 14, 0, 0, 0, time.UTC).UnixNano()
 	endNs := time.Date(2026, 5, 10, 15, 0, 0, 0, time.UTC).UnixNano()
 
-	s.queryBufferBridge(context.Background(), startNs, endNs, 0, &rowsEmitted, 0, nil, nil,
+	s.queryBufferBridge(context.Background(), startNs, endNs, 0, &rowsEmitted, nil, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			blocks = append(blocks, db)
 		})
@@ -337,7 +337,7 @@ func TestInteg_queryBufferBridge_TracesMode(t *testing.T) {
 	startNs := time.Date(2026, 5, 10, 14, 0, 0, 0, time.UTC).UnixNano()
 	endNs := time.Date(2026, 5, 10, 15, 0, 0, 0, time.UTC).UnixNano()
 
-	s.queryBufferBridge(context.Background(), startNs, endNs, 0, &rowsEmitted, 0, nil, nil,
+	s.queryBufferBridge(context.Background(), startNs, endNs, 0, &rowsEmitted, nil, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			blocks = append(blocks, db)
 		})
@@ -363,7 +363,7 @@ func TestInteg_queryBufferBridge_DisabledConfig(t *testing.T) {
 	s.bufferBridge = bb
 
 	var rowsEmitted atomic.Int64
-	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 0, &rowsEmitted, 0, nil, nil,
+	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 0, &rowsEmitted, nil, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			t.Error("should not be called when buffer query is disabled")
 		})
