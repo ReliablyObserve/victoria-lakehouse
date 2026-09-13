@@ -1,0 +1,27 @@
+- id: lh.feature.storage.example
+  title: Example storage feature
+  status: shipped
+  since: v1.2.3
+  area: storage
+  readme_section: Write Path
+  surfaces: [storage, flag]
+  rows: [lh.example.row]
+  tests: ["internal/x/x_test.go#TestExample"]
+  bench: [count_total]
+  docs: ["docs/example.md#a-heading"]
+  highlight: "**Example**: one line."
+  description: >-
+    A paragraph about the example feature.
+  changelog: ["1.2.3"]
+  changelog_bullets:
+    - 'Example bullet.'
+
+- id: lh.feature.query.example
+  title: Example query feature
+  status: planned
+  since: unreleased
+  area: query
+  surfaces: [api]
+  highlight: "**Planned example**: one line."
+  description: >-
+    A planned example.
