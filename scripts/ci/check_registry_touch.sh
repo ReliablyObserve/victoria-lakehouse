@@ -8,12 +8,12 @@ BASE=${1:-origin/main}
 changed=$(git diff --name-only "$BASE"...HEAD)
 
 # Path patterns that always count as route-touching, regardless of content:
-# whole route-dispatch directories, the binary entrypoints, patches, and the
-# upstream-versions manifest. Makefile and individual .go files are handled
-# separately below (content-based), since a filename match alone is either
-# too broad (any Makefile edit) or too narrow (misses handler registrations
-# in files that don't have "handler" in their name).
-touches_direct=$(echo "$changed" | grep -E '^(internal/selectapi/|lakehouse-traces/internal/selectapi/|cmd/lakehouse-logs/main\.go|lakehouse-traces/main\.go|patches/|\.upstream-versions\.json)' || true)
+# whole route-dispatch directories, the binary entrypoints and patches (the
+# upstream pins live in the Makefile alone). Makefile and individual .go files
+# are handled separately below (content-based), since a filename match alone is
+# either too broad (any Makefile edit) or too narrow (misses handler
+# registrations in files that don't have "handler" in their name).
+touches_direct=$(echo "$changed" | grep -E '^(internal/selectapi/|lakehouse-traces/internal/selectapi/|cmd/lakehouse-logs/main\.go|lakehouse-traces/main\.go|patches/)' || true)
 
 # Any changed non-test .go file whose diff adds or removes an HTTP
 # route-registration call — HandleFunc(, mux.Handle(, or a plain .Handle( —

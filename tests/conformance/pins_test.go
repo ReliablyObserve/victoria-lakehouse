@@ -1,7 +1,6 @@
 package conformance
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path"
@@ -274,36 +273,80 @@ func TestWorkflowPinsMatchMakefile(t *testing.T) {
 	t.Logf("checked %d workflow pin declarations against the Makefile", checked)
 }
 
-// TestUpstreamVersionsManifestMatchesMakefile covers the last duplicated pin:
-// .upstream-versions.json, the manifest the daily upstream-check workflow
-// compares against the latest upstream releases. It carried bogus values
-// ("v1.20.0-victorialogs", "v1.5.0-victoriatraces") that matched no real tag,
-// so the check could never say anything useful. Nothing else in the repository
-// reads it — `scripts/ci/check_registry_touch.sh` only watches it for changes —
-// so it is a candidate for deletion once that workflow is rewritten; until
-// then it must at least be true.
-func TestUpstreamVersionsManifestMatchesMakefile(t *testing.T) {
+// upstreamProbeDockerfile wraps the distroless upstream images with one static
+// busybox, so the Compose healthchecks have a binary to execute.
+const upstreamProbeDockerfile = "deployment/docker/Dockerfile.upstream-probe"
+
+// upstreamProbeBase is the image that busybox is copied from, pinned by tag AND
+// digest. The tag names a release a reader can look up; the digest makes the
+// bytes immutable, so a re-pushed tag cannot swap the binary that runs inside
+// every hot-tier container's healthcheck. To move it, resolve the new index
+// digest (`docker buildx imagetools inspect busybox:<tag>`, the "Digest:" line
+// of the index, not a per-platform manifest) and change the Dockerfile and this
+// constant in the same commit.
+const upstreamProbeBase = "busybox:1.37.0-uclibc@sha256:8d7b1636e974e0adfd8d945955fca609304f0a56c18799dfd032d6e661382d84"
+
+var (
+	dockerFromRe = regexp.MustCompile(`(?m)^FROM\s+(\S+)`)
+
+	// digestPinnedRe accepts `[registry/][path/]name:tag@sha256:<64 hex>`. The
+	// tag must sit on the last path component, so a registry port
+	// (`registry:5000/busybox@sha256:...`) is not mistaken for one.
+	digestPinnedRe = regexp.MustCompile(`^(?:[^@\s/]+/)*[^@\s/:]+:[^@\s/:]+@sha256:[0-9a-f]{64}$`)
+)
+
+// TestUpstreamProbeBaseImagePinnedByDigest keeps the healthcheck wrapper's own
+// base image as fixed as the upstream releases it wraps. `FROM ${UPSTREAM}` is
+// the release under test and is pinned through the Compose build arguments
+// (TestComposeImagePinsMatchMakefile); every other FROM must be pinned by tag and
+// digest, and must be exactly upstreamProbeBase.
+func TestUpstreamProbeBaseImagePinnedByDigest(t *testing.T) {
 	root, err := inventory.RepoRoot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := inventory.DefaultDirs(root)
+	body := readRepoFile(t, root, upstreamProbeDockerfile)
 
-	var manifest struct {
-		VictoriaLogs   string `json:"victorialogs"`
-		VictoriaTraces string `json:"victoriatraces"`
+	var bases []string
+	for _, m := range dockerFromRe.FindAllStringSubmatch(body, -1) {
+		ref := m[1]
+		if strings.HasPrefix(ref, "$") {
+			continue
+		}
+		bases = append(bases, ref)
+		if !digestPinnedRe.MatchString(ref) {
+			t.Errorf("%s: FROM %s is not pinned by tag and digest (want name:tag@sha256:<64 hex>) — a re-pushed tag would change the healthcheck binary without a diff here", upstreamProbeDockerfile, ref)
+		}
 	}
-	data, err := os.ReadFile(filepath.Join(root, ".upstream-versions.json"))
-	if err != nil {
-		t.Skipf(".upstream-versions.json is gone (%v) — if the upstream-sync workflow no longer needs it, delete this test too", err)
+	if len(bases) == 0 {
+		t.Fatalf("%s has no fixed base image — either the busybox stage was removed (then remove this test too) or the FROM regexp is stale", upstreamProbeDockerfile)
 	}
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		t.Fatalf("parse .upstream-versions.json: %v", err)
+	if len(bases) != 1 || bases[0] != upstreamProbeBase {
+		t.Errorf("%s copies its probe binary from %v, want exactly [%s] — move the Dockerfile and upstreamProbeBase together", upstreamProbeDockerfile, bases, upstreamProbeBase)
 	}
-	if manifest.VictoriaLogs != d.VLVersion {
-		t.Errorf(".upstream-versions.json victorialogs=%q but the Makefile pins %s", manifest.VictoriaLogs, d.VLVersion)
+}
+
+// TestDigestPinnedRe pins the shape the digest gate accepts, so loosening the
+// regexp cannot quietly let a tag-only or digest-only reference through.
+func TestDigestPinnedRe(t *testing.T) {
+	const digest = "sha256:8d7b1636e974e0adfd8d945955fca609304f0a56c18799dfd032d6e661382d84"
+	cases := []struct {
+		ref  string
+		want bool
+	}{
+		{"busybox:1.37.0-uclibc@" + digest, true},
+		{"docker.io/library/busybox:1.37.0-uclibc@" + digest, true},
+		{"registry.example:5000/team/busybox:1.37.0@" + digest, true},
+		{"busybox:1.37.0-uclibc", false},                                                                  // tag only: mutable
+		{"busybox@" + digest, false},                                                                      // digest only: unreadable
+		{"registry.example:5000/busybox@" + digest, false},                                                // a port is not a tag
+		{"busybox:1.37.0@sha256:8d7b1636", false},                                                         // truncated digest
+		{"busybox:1.37.0@sha256:8D7B1636E974E0ADFD8D945955FCA609304F0A56C18799DFD032D6E661382D84", false}, // digests are lowercase hex
+		{"busybox:1.37.0@sha512:" + digest[len("sha256:"):], false},
 	}
-	if manifest.VictoriaTraces != d.VTVersion {
-		t.Errorf(".upstream-versions.json victoriatraces=%q but the Makefile pins %s", manifest.VictoriaTraces, d.VTVersion)
+	for _, c := range cases {
+		if got := digestPinnedRe.MatchString(c.ref); got != c.want {
+			t.Errorf("digestPinnedRe.MatchString(%q) = %v, want %v", c.ref, got, c.want)
+		}
 	}
 }

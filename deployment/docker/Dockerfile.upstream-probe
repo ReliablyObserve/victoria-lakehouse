@@ -18,8 +18,14 @@
 #     -t vl-probed:v1.52.0 .
 #
 # Probe with: ["CMD", "/probe/busybox", "wget", "-qO-", "http://127.0.0.1:<port>/health"]
+#
+# The busybox base is pinned by tag AND index digest, so a re-pushed tag cannot
+# change the binary every healthcheck runs. tests/conformance/pins_test.go
+# (TestUpstreamProbeBaseImagePinnedByDigest) holds the same reference; to move
+# it, take the "Digest:" line of `docker buildx imagetools inspect busybox:<tag>`
+# and change both in one commit.
 ARG UPSTREAM
-FROM busybox:1.37.0-uclibc AS probe
+FROM busybox:1.37.0-uclibc@sha256:8d7b1636e974e0adfd8d945955fca609304f0a56c18799dfd032d6e661382d84 AS probe
 
 FROM ${UPSTREAM}
 COPY --from=probe /bin/busybox /probe/busybox
