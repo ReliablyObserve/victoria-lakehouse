@@ -525,3 +525,165 @@ func TestTombstoneValidate_RejectsWhatTheEncodingCannotCarry(t *testing.T) {
 		t.Skip("this Go release preserves the bytes; the guard is still correct")
 	}
 }
+
+// --- atomic updates -------------------------------------------------------------
+
+// TestTombstoneStore_UpdateLosesNoConcurrentChange is the primitive the rewrite
+// scheduler and compaction rely on when both mark keys on one tombstone. With a
+// Get-modify-Add sequence, whichever wrote last dropped the other's change —
+// and the change most likely to be dropped is compaction transferring the
+// tombstone to an output that still holds its rows.
+func TestTombstoneStore_UpdateLosesNoConcurrentChange(t *testing.T) {
+	store := NewTombstoneStore()
+	store.Add(Tombstone{ID: "ts", Mode: "permanent", Reaped: map[string]bool{}})
+
+	const writers = 32
+	var wg sync.WaitGroup
+	wg.Add(writers)
+	for i := 0; i < writers; i++ {
+		go func(i int) {
+			defer wg.Done()
+			key := "k" + strings.Repeat("x", i)
+			store.Update("ts", func(ts *Tombstone) bool {
+				ts.AffectedKeys = append(ts.AffectedKeys, key)
+				if ts.Reaped == nil {
+					ts.Reaped = map[string]bool{}
+				}
+				ts.Reaped[key] = true
+				return true
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	got, _ := store.Get("ts")
+	if len(got.AffectedKeys) != writers || len(got.Reaped) != writers {
+		t.Fatalf("concurrent updates lost changes: %d keys, %d reaped marks, want %d each",
+			len(got.AffectedKeys), len(got.Reaped), writers)
+	}
+}
+
+func TestTombstoneStore_UpdateSemantics(t *testing.T) {
+	store := NewTombstoneStore()
+	if _, ok := store.Update("absent", func(*Tombstone) bool { return true }); ok {
+		t.Error("updating an unknown id must report false")
+	}
+
+	store.Add(Tombstone{ID: "ts", Query: "a", Reaped: map[string]bool{"k": false}})
+	before, _ := store.Get("ts")
+	if _, ok := store.Update("ts", func(ts *Tombstone) bool {
+		ts.Query = "changed"
+		ts.Reaped["k"] = true
+		return false // abandon
+	}); ok {
+		t.Error("an abandoned update must report false")
+	}
+	after, _ := store.Get("ts")
+	if after.Query != "a" || after.Reaped["k"] {
+		t.Fatalf("an abandoned update leaked into the stored record: %+v", after)
+	}
+	if before.Reaped["k"] {
+		t.Fatal("an abandoned update mutated a record previously handed to a reader")
+	}
+}
+
+// TestTombstoneStore_ReadersNeverShareMutableStateWithWriters runs readers that
+// walk every record's Reaped map while writers update the same record. Under
+// -race this fails if the store ever mutates a map it has handed out.
+func TestTombstoneStore_ReadersNeverShareMutableStateWithWriters(t *testing.T) {
+	store := NewTombstoneStore()
+	store.Add(Tombstone{ID: "ts", Mode: "permanent", AffectedKeys: []string{"a"}, Reaped: map[string]bool{}})
+
+	stop := make(chan struct{})
+	var readers sync.WaitGroup
+	readers.Add(1)
+	go func() {
+		defer readers.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			for _, ts := range store.Active() {
+				_ = ts.FullyReaped()
+				for k, v := range ts.Reaped {
+					_, _ = k, v
+				}
+			}
+		}
+	}()
+
+	for i := 0; i < 200; i++ {
+		key := "k" + strings.Repeat("y", i%7)
+		store.Update("ts", func(ts *Tombstone) bool {
+			ts.Reaped[key] = !ts.Reaped[key]
+			ts.AffectedKeys = append(ts.AffectedKeys, key)
+			return true
+		})
+	}
+	close(stop)
+	readers.Wait()
+}
+
+func TestCloneTombstoneIsDeep(t *testing.T) {
+	orig := Tombstone{ID: "x", AffectedKeys: []string{"a"}, Reaped: map[string]bool{"a": true}}
+	c := cloneTombstone(orig)
+	c.AffectedKeys[0] = "changed"
+	c.Reaped["a"] = false
+	c.Reaped["b"] = true
+	if orig.AffectedKeys[0] != "a" || !orig.Reaped["a"] || orig.Reaped["b"] {
+		t.Fatalf("clone shares state with the original: %+v", orig)
+	}
+	empty := cloneTombstone(Tombstone{ID: "y"})
+	if empty.AffectedKeys != nil || empty.Reaped != nil {
+		t.Fatal("cloning nil collections must keep them nil")
+	}
+}
+
+// --- retirement observer ----------------------------------------------------------
+
+// TestTombstoneStore_CompletionObserverFiresBeforeThePersist pins the ordering
+// the catalog rebuild relies on: the observer runs when a tombstone retires and
+// BEFORE the retirement is durable, so a crash in between replays both on the
+// next boot rather than persisting a retirement whose follow-up never ran.
+func TestTombstoneStore_CompletionObserverFiresBeforeThePersist(t *testing.T) {
+	dir := t.TempDir()
+	store := NewTombstoneStore()
+	store.EnablePersistence(PersistenceConfig{Dir: dir})
+
+	ts := sampleTombstone("ts-obs")
+	ts.Mode = "permanent"
+	ts.Reaped = map[string]bool{ts.AffectedKeys[0]: true}
+	store.Add(ts)
+
+	var fired []string
+	var stillPersistedWhenFired bool
+	store.SetCompletionObserver(func(done Tombstone) {
+		fired = append(fired, done.ID)
+		probe := NewTombstoneStore()
+		n, _ := probe.Restore(context.Background(), PersistenceConfig{Dir: dir})
+		stillPersistedWhenFired = n == 1
+	})
+
+	if !store.Complete("ts-obs") {
+		t.Fatal("a fully reaped permanent tombstone should complete")
+	}
+	if len(fired) != 1 || fired[0] != "ts-obs" {
+		t.Fatalf("observer fired %v, want exactly [ts-obs]", fired)
+	}
+	if !stillPersistedWhenFired {
+		t.Error("the observer ran after the retirement was already persisted; a crash in between would skip it")
+	}
+
+	// Refused completions do not fire.
+	fired = nil
+	hide := sampleTombstone("ts-hide-obs")
+	hide.Reaped = map[string]bool{hide.AffectedKeys[0]: true}
+	store.Add(hide)
+	store.Complete("ts-hide-obs")
+	store.Complete("ts-unknown")
+	if len(fired) != 0 {
+		t.Fatalf("the observer fired for completions that did not happen: %v", fired)
+	}
+}

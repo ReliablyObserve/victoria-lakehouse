@@ -62,11 +62,11 @@ func FuzzTombstoneMatchesRow(f *testing.F) {
 	})
 }
 
-// FuzzExtractPartition drives the key → partition derivation with arbitrary
+// FuzzRewritePartitionFromKey drives the key → partition derivation with arbitrary
 // keys. It is the fallback the rewriter uses when the manifest does not know a
 // key, so a wrong answer files a replacement under a partition no query looks
 // in — the object exists, is manifested, and is invisible.
-func FuzzExtractPartition(f *testing.F) {
+func FuzzRewritePartitionFromKey(f *testing.F) {
 	f.Add("logs/dt=2026-01-01/hour=10/a.parquet")
 	f.Add("1002/0/logs/dt=2026-01-01/hour=10/a.parquet")
 	f.Add("")

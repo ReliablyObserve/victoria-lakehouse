@@ -301,6 +301,11 @@ func run(cfg *config.Config, addr string) {
 	// Arm write-through durability AFTER the restore so replaying the restored
 	// records does not rewrite every object back out.
 	tombstoneStore.EnablePersistence(tombstonePersistence)
+	// A tombstone retiring is when its rows stop being hidden at query time;
+	// the field catalog must no longer list values only those rows carried.
+	tombstoneStore.SetCompletionObserver(func(ts delete.Tombstone) {
+		store.PmetaRebuildCatalogValues(ts.AffectedKeys)
+	})
 	store.SetTombstoneStore(tombstoneStore)
 
 	var tenantPolicyHolder *tenant.PolicyRegistry
@@ -410,7 +415,7 @@ func run(cfg *config.Config, addr string) {
 	}
 	detector := delete.NewStorageClassDetector(lifecycleRules)
 
-	rewriter := delete.NewRewriter(store.Pool(), cfg.AutoPrefix(), cfg.Insert.RowGroupSize, "traces")
+	rewriter := newDeleteRewriter(store.Pool(), cfg, "traces")
 
 	var rewriteSched *delete.RewriteScheduler
 	if cfg.Delete.Enabled {
@@ -424,7 +429,8 @@ func run(cfg *config.Config, addr string) {
 			// Without this the rewriter deletes files the manifest still
 			// points at and publishes replacements the manifest has never
 			// heard of; the scheduler refuses to rewrite at all when it is nil.
-			Manifest: store.Manifest(),
+			Manifest:    store.Manifest(),
+			OnPublished: rewritePublishHook(store, pusher),
 		})
 		rewriteSched.Start(cfg.Delete.VerifyInterval)
 		logger.Infof("delete rewrite scheduler started; rewrite_delay=%v, verify_interval=%v",
@@ -649,6 +655,38 @@ func runShutdown(
 	logger.Infof("lakehouse-traces stopped")
 }
 
+// newDeleteRewriter builds the delete rewriter with the compactor's writers, so a
+// file rewritten to remove deleted rows keeps the SBBF blooms, slot binding,
+// compression and (for traces) the `_trace_idx` footer index a compaction output
+// of the same rows would carry. A rewrite must never make a file less prunable,
+// for LH or for an external Parquet reader. Extracted so the binary's tests can
+// pin the wiring.
+func newDeleteRewriter(pool delete.RewriterPool, cfg *config.Config, mode string) *delete.Rewriter {
+	return delete.NewRewriter(pool, cfg.AutoPrefix(), cfg.Insert.RowGroupSize, mode,
+		delete.WithParquetWriters(delete.ParquetWriters{
+			Logs:             compaction.WriteLogs,
+			Traces:           compaction.WriteTraces,
+			CompressionLevel: cfg.Insert.CompressionLevel,
+		}))
+}
+
+// rewritePublishHook routes a published delete rewrite through the consumers
+// compaction's OnCompacted uses — the pmeta facet feed and the peer manifest
+// push — with one addition: the field catalog's value sets are rebuilt, because
+// a rewrite REMOVES rows and the catalog is a union a removal cannot shrink
+// (see Storage.PmetaOnRewritten). Without the push, a peer keeps the superseded
+// key and never learns the replacement, and that peer's orphan sweep would
+// eventually reclaim it. Kept out of run() so the gocyclo budget there is not
+// spent on a closure.
+func rewritePublishHook(store *parquets3.Storage, pusher *manifest.Pusher) func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string) {
+	return func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string) {
+		store.PmetaOnRewritten(added, removed, blooms)
+		if pusher != nil {
+			pusher.Notify(added, removed)
+		}
+	}
+}
+
 // setupCompaction wires the election-free compaction scheduler + orphan
 // sweeper for the traces module. Mirror of cmd/lakehouse-logs/main.go's
 // setupCompaction — per feedback_logs_traces_module_parity these two
@@ -715,6 +753,7 @@ func setupCompaction(
 		// touches, so suppressing tombstoned rows there costs one predicate
 		// and removes them permanently instead of copying them forward.
 		Tombstones:               tombstoneStore,
+		TombstoneRewriteDelay:    cfg.Delete.RewriteDelay,
 		Manifest:                 store.Manifest(),
 		Pool:                     store.Pool(),
 		Ownership:                ownership,

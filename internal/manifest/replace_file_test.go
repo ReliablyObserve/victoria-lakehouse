@@ -103,25 +103,108 @@ func TestReplaceFile_SwapsTheEntryAndItsAggregates(t *testing.T) {
 	}
 }
 
-func TestReplaceFile_AddsWhenTheOldKeyIsAbsent(t *testing.T) {
+// TestReplaceFile_RefusesWhenTheSourceIsGone is the optimistic-concurrency
+// guard. A rewrite reads its source, then publishes; compaction may have merged
+// that source in between. Registering the rewrite anyway would put the kept rows
+// in the manifest twice (the rewrite and the compacted output) and bring the
+// deleted rows back through the compacted copy.
+func TestReplaceFile_RefusesWhenTheSourceIsGone(t *testing.T) {
 	m := manifestWithOneFile(t)
 
-	// The rewriter can reach this when the source object was never manifested.
-	// The replacement must still be registered — an unmanaged .parquet is
-	// exactly what the orphan sweep deletes — and the caller must be told, so
-	// it can count the inconsistency.
 	if m.ReplaceFile(replacePartition, "logs/dt=2026-08-01/hour=04/never-existed.parquet",
 		FileInfo{Key: replaceNewKey, Size: 1, RowCount: 1}) {
-		t.Error("ReplaceFile must report false when there was nothing to replace")
+		t.Fatal("ReplaceFile must refuse when the source is not in the manifest")
 	}
-	if !m.HasKey(replaceNewKey) {
-		t.Error("the replacement must be added even when the old key was absent")
+	if m.HasKey(replaceNewKey) {
+		t.Error("a refused swap must not register the replacement")
 	}
 	if !m.HasKey(replaceOldKey) {
 		t.Error("an unrelated entry must not be disturbed")
 	}
-	if got := m.TotalFiles(); got != 2 {
-		t.Errorf("TotalFiles = %d, want 2", got)
+	if got := m.TotalFiles(); got != 1 {
+		t.Errorf("TotalFiles = %d, want 1", got)
+	}
+}
+
+// TestReplaceFile_RefusesWhenTheSourceIsInAnotherPartition guards against a
+// caller passing the wrong partition: the swap is keyed on (partition, key), so
+// a mismatch is treated as "not present" rather than removing nothing and
+// adding the replacement to the wrong partition.
+func TestReplaceFile_RefusesWhenTheSourceIsInAnotherPartition(t *testing.T) {
+	m := manifestWithOneFile(t)
+	if m.ReplaceFile("dt=2026-08-01/hour=05", replaceOldKey, FileInfo{Key: replaceNewKey, RowCount: 1}) {
+		t.Fatal("ReplaceFile must refuse a source registered under a different partition")
+	}
+	if m.HasKey(replaceNewKey) || !m.HasKey(replaceOldKey) {
+		t.Fatal("a refused swap must leave the manifest unchanged")
+	}
+}
+
+func TestReplaceFiles_IsAllOrNothing(t *testing.T) {
+	m := manifestWithOneFile(t)
+	second := "logs/dt=2026-08-01/hour=04/second.parquet"
+	m.AddFile(replacePartition, FileInfo{Key: second, Size: 500, RowCount: 5, MinTimeNs: 100, MaxTimeNs: 900})
+	merged := FileInfo{Key: replaceNewKey, Size: 1200, RowCount: 15, MinTimeNs: 100, MaxTimeNs: 900}
+
+	// One source already gone: nothing may change. This is compaction racing a
+	// rewrite (or another compaction) that took one of its inputs.
+	if m.ReplaceFiles(replacePartition, []string{replaceOldKey, second, "logs/dt=2026-08-01/hour=04/gone.parquet"}, merged) {
+		t.Fatal("ReplaceFiles must refuse when any source is gone")
+	}
+	if m.HasKey(replaceNewKey) || !m.HasKey(replaceOldKey) || !m.HasKey(second) {
+		t.Fatal("a refused merge must leave every entry exactly as it was")
+	}
+	if got := m.TotalRows(); got != 15 {
+		t.Fatalf("TotalRows = %d after a refused merge, want the untouched 15", got)
+	}
+
+	// All present: the merge lands in one step.
+	if !m.ReplaceFiles(replacePartition, []string{replaceOldKey, second}, merged) {
+		t.Fatal("ReplaceFiles must succeed when every source is present")
+	}
+	if m.HasKey(replaceOldKey) || m.HasKey(second) || !m.HasKey(replaceNewKey) {
+		t.Fatal("the merge did not replace the sources with the output")
+	}
+	if got := m.TotalFiles(); got != 1 {
+		t.Errorf("TotalFiles = %d, want 1", got)
+	}
+	if got := m.TotalRows(); got != 15 {
+		t.Errorf("TotalRows = %d, want the output's 15", got)
+	}
+}
+
+// TestReplaceFiles_ConcurrentConflictingPublishesNeverBothLand races the two
+// publishes a delete rewrite and a compaction of the same source perform. Under
+// the old unconditional add, both could land and duplicate the source's rows.
+// Exactly one must win, every time.
+func TestReplaceFiles_ConcurrentConflictingPublishesNeverBothLand(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		m := manifestWithOneFile(t)
+		rewrite := FileInfo{Key: "logs/dt=2026-08-01/hour=04/rewrite.parquet", RowCount: 7}
+		compacted := FileInfo{Key: "logs/dt=2026-08-01/hour=04/compacted.parquet", RowCount: 10}
+
+		var wg sync.WaitGroup
+		var rewroteOK, compactedOK bool
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			rewroteOK = m.ReplaceFile(replacePartition, replaceOldKey, rewrite)
+		}()
+		go func() {
+			defer wg.Done()
+			compactedOK = m.ReplaceFiles(replacePartition, []string{replaceOldKey}, compacted)
+		}()
+		wg.Wait()
+
+		if rewroteOK == compactedOK {
+			t.Fatalf("iteration %d: rewrite=%v compaction=%v — exactly one publish must win", i, rewroteOK, compactedOK)
+		}
+		if m.HasKey(rewrite.Key) && m.HasKey(compacted.Key) {
+			t.Fatalf("iteration %d: both publishes landed; the source's rows are duplicated", i)
+		}
+		if got := m.TotalFiles(); got != 1 {
+			t.Fatalf("iteration %d: TotalFiles = %d, want 1", i, got)
+		}
 	}
 }
 

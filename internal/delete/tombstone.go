@@ -98,6 +98,26 @@ func (t *Tombstone) Filter() *logstorage.Filter {
 	return parseFilterCached(t.Query)
 }
 
+// EligibleForPhysicalRemoval reports whether rows matching this tombstone may
+// be permanently removed from storage at `now`.
+//
+// Two rules, shared by every path that can drop rows (the rewrite scheduler
+// and compaction) so they can never disagree:
+//
+//   - never for hide mode. A hide-mode delete is reversible by contract:
+//     removing the tombstone makes the rows visible again. A path that
+//     physically drops hide-mode rows turns an un-delete into silent data loss.
+//   - only once rewrite_delay has passed since the delete. The delay is the
+//     un-delete window for permanent and auto deletes; dropping rows inside it
+//     breaks the same promise for an operator who catches an over-broad
+//     predicate in time.
+func (t *Tombstone) EligibleForPhysicalRemoval(now time.Time, rewriteDelay time.Duration) bool {
+	if t.Mode == "hide" {
+		return false
+	}
+	return now.Sub(t.CreatedAt) >= rewriteDelay
+}
+
 // FullyReaped reports whether every key this tombstone covers has been
 // rewritten. A fully reaped tombstone has no remaining work: the rows it hides
 // are already physically gone from every file it named.
@@ -145,6 +165,22 @@ type TombstoneStore struct {
 	// mutex, never by s.mu: durable writes happen OUTSIDE the store lock so a
 	// slow disk or a stalled S3 PUT cannot block every query's ForRange.
 	persist *tombstonePersistence
+
+	// onComplete, when set, is called with a tombstone as it retires.
+	onComplete func(Tombstone)
+}
+
+// SetCompletionObserver installs a callback fired each time a tombstone
+// retires, before the retirement is persisted. Retirement is the moment the
+// query-time filter stops hiding the tombstone's rows, so anything derived from
+// row content that the filter was covering for — the pmeta field catalog, whose
+// value union a row removal cannot shrink — must be corrected by then. Firing
+// before the persist means a crash in between replays the retirement (and the
+// callback) on the next boot instead of skipping it. Set once, before use.
+func (s *TombstoneStore) SetCompletionObserver(fn func(Tombstone)) {
+	s.mu.Lock()
+	s.onComplete = fn
+	s.mu.Unlock()
 }
 
 // NewTombstoneStore creates a new empty TombstoneStore.
@@ -189,13 +225,63 @@ func (s *TombstoneStore) PersistenceEnabled() bool {
 }
 
 // Add inserts a tombstone into the store and persists the change.
+//
+// The store keeps its own deep copy. Records handed out by Get/Active/ForRange
+// share their AffectedKeys slice and Reaped map with the stored record, and the
+// store never mutates those in place (every change goes through a fresh copy),
+// so a reader can never observe a torn map.
 func (s *TombstoneStore) Add(ts Tombstone) {
 	s.mu.Lock()
-	s.tombstones[ts.ID] = ts
+	s.tombstones[ts.ID] = cloneTombstone(ts)
 	p := s.persist
 	s.mu.Unlock()
 	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
 	s.persistChange(p, ts.ID, pendingUpsert)
+}
+
+// Update applies fn to a private copy of the CURRENT record for id, under the
+// store lock, and stores the result. fn returns false to abandon the change.
+// Returns the record after the call and whether a change was stored.
+//
+// This is the only safe way to modify bookkeeping that more than one actor
+// writes. The rewrite scheduler and compaction both mark keys on the same
+// tombstone; with a Get-modify-Add sequence, whichever wrote last silently
+// dropped the other's change — including compaction transferring a tombstone to
+// an output that still holds its rows, which is exactly the record that must not
+// be lost. It also keeps callers from mutating a map the store shares with
+// concurrent readers.
+func (s *TombstoneStore) Update(id string, fn func(ts *Tombstone) bool) (Tombstone, bool) {
+	s.mu.Lock()
+	cur, ok := s.tombstones[id]
+	if !ok {
+		s.mu.Unlock()
+		return Tombstone{}, false
+	}
+	next := cloneTombstone(cur)
+	if !fn(&next) {
+		s.mu.Unlock()
+		return cur, false
+	}
+	s.tombstones[id] = next
+	p := s.persist
+	s.mu.Unlock()
+	s.persistChange(p, id, pendingUpsert)
+	return next, true
+}
+
+// cloneTombstone deep-copies the mutable parts of a tombstone.
+func cloneTombstone(ts Tombstone) Tombstone {
+	if ts.AffectedKeys != nil {
+		ts.AffectedKeys = append([]string(nil), ts.AffectedKeys...)
+	}
+	if ts.Reaped != nil {
+		reaped := make(map[string]bool, len(ts.Reaped))
+		for k, v := range ts.Reaped {
+			reaped[k] = v
+		}
+		ts.Reaped = reaped
+	}
+	return ts
 }
 
 // Remove deletes a tombstone from the store by ID and persists the removal, so
@@ -226,11 +312,15 @@ func (s *TombstoneStore) Complete(id string) bool {
 	}
 	delete(s.tombstones, id)
 	p := s.persist
+	observer := s.onComplete
 	s.mu.Unlock()
 
 	metrics.DeleteTombstonesCompleted.Inc()
 	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
 	logger.Infof("tombstone completed; id=%s, query=%s, keys=%d", ts.ID, ts.Query, len(ts.AffectedKeys))
+	if observer != nil {
+		observer(ts)
+	}
 	s.persistChange(p, id, pendingDelete)
 	return true
 }

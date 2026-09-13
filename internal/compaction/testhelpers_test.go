@@ -14,6 +14,7 @@ package compaction
 
 import (
 	"context"
+	"sort"
 	"sync"
 )
 
@@ -64,4 +65,16 @@ func (m *mockPool) put(key string, data []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.uploaded[key] = append([]byte(nil), data...)
+}
+
+// Keys satisfies storageinvariants.Bucket.
+func (m *mockPool) Keys() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	keys := make([]string, 0, len(m.uploaded))
+	for k := range m.uploaded {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

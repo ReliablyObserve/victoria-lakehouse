@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/google/uuid"
 	"github.com/parquet-go/parquet-go"
 
@@ -48,6 +49,16 @@ type RewriteResult struct {
 	ColumnBytes map[string]int64
 	// LabelAggregates is field -> value -> row count over the kept rows only.
 	LabelAggregates map[string]map[string]int64
+	// Labels is the per-field distinct value set over the kept rows — the set
+	// the manifest's inverted index is built from and the pmeta field catalog
+	// is fed with. It must be recomputed: a value carried only by the removed
+	// rows would otherwise go back into the catalog and be served by
+	// field_values after the rows are gone.
+	Labels map[string][]string
+	// BloomValues is column -> distinct values for the bloom columns over the
+	// kept rows, handed to the pmeta bloom facet so the replacement stays
+	// bloom-prunable (the same feed compaction provides for its outputs).
+	BloomValues map[string][]string
 
 	// Published is set by the scheduler once the manifest points at NewKey.
 	// Until then the superseded object MUST NOT be deleted: an unpublished
@@ -64,23 +75,64 @@ type Rewriter struct {
 	prefix       string
 	rowGroupSize int
 	mode         string
+	writers      ParquetWriters
+}
+
+// ParquetWriters produce the bytes of a rewritten file.
+//
+// A replacement must be as prunable as the file it replaces: the SBBF column
+// blooms external readers (ClickHouse, DuckDB, Trino) use straight from S3, the
+// Tier-2 slot blooms and binding, and for traces the `_trace_idx` footer index.
+// The compactor already writes exactly that, so the embedder injects the
+// compactor's writers (compaction.WriteLogs / WriteTraces) and a rewritten file
+// becomes indistinguishable from a compaction output of the same rows. The
+// delete package cannot import the compactor itself — the compactor imports
+// this package for the tombstone store — which is why this is injected rather
+// than called directly.
+//
+// Unset writers fall back to a minimal writer (row groups + the source file's
+// slot binding, no blooms, no compression). That fallback exists for unit tests;
+// production wiring always sets both, and the binaries' tests pin that.
+type ParquetWriters struct {
+	Logs             func(rows []schema.LogRow, rowGroupSize int, compressionLevel int) ([]byte, error)
+	Traces           func(rows []schema.TraceRow, rowGroupSize int, compressionLevel int) ([]byte, error)
+	CompressionLevel int
+}
+
+// RewriterOption configures a Rewriter.
+type RewriterOption func(*Rewriter)
+
+// WithParquetWriters injects the writers a replacement file is produced with.
+func WithParquetWriters(w ParquetWriters) RewriterOption {
+	return func(r *Rewriter) { r.writers = w }
 }
 
 // NewRewriter creates a Rewriter with the given pool, key prefix, row group size, and mode.
 // Mode should be "logs" or "traces". If rowGroupSize <= 0 it defaults to 10000.
-func NewRewriter(pool RewriterPool, prefix string, rowGroupSize int, mode string) *Rewriter {
+func NewRewriter(pool RewriterPool, prefix string, rowGroupSize int, mode string, opts ...RewriterOption) *Rewriter {
 	if rowGroupSize <= 0 {
 		rowGroupSize = 10000
 	}
 	if mode == "" {
 		mode = "logs"
 	}
-	return &Rewriter{
+	r := &Rewriter{
 		pool:         pool,
 		prefix:       prefix,
 		rowGroupSize: rowGroupSize,
 		mode:         mode,
 	}
+	for _, o := range opts {
+		o(r)
+	}
+	return r
+}
+
+// HasProductionWriters reports whether both format-preserving writers are
+// injected. The binaries assert it at construction so a missed wiring cannot
+// silently ship replacements without blooms.
+func (r *Rewriter) HasProductionWriters() bool {
+	return r.writers.Logs != nil && r.writers.Traces != nil
 }
 
 // RewriteFile is the PREPARE half of a two-phase rewrite: it downloads the
@@ -176,6 +228,18 @@ func (r *Rewriter) Commit(ctx context.Context, result *RewriteResult) error {
 	return nil
 }
 
+// Discard deletes a replacement that was written but will never be published —
+// the source was merged away concurrently. Best-effort: an object left behind is
+// unmanifested, so the orphan sweep reclaims it.
+func (r *Rewriter) Discard(ctx context.Context, result *RewriteResult) {
+	if result == nil || result.Published || result.NewKey == "" {
+		return
+	}
+	if err := r.pool.Delete(ctx, result.NewKey); err != nil {
+		logger.Warnf("discarded rewrite not deleted (orphan sweep will reclaim it); key=%s: %s", result.NewKey, err)
+	}
+}
+
 // footerBloomBytes sums the encoded size of every column-chunk bloom filter in
 // the written file — the same measure the flush and compaction writers record,
 // so the manifest's bloom-cost accounting stays comparable across all three
@@ -247,8 +311,9 @@ func sourceSlotMapping(data []byte) []byte {
 	return nil
 }
 
-// writerOptions builds the option set for a rewritten file: the configured row
-// group size plus the source's slot binding when it had one.
+// writerOptions builds the option set for the FALLBACK writer (see
+// ParquetWriters): the configured row group size plus the source's slot binding
+// when it had one.
 //
 // Per-row-group token-bloom KV entries are deliberately NOT carried over. They
 // are keyed by row group index, and removing rows re-packs the row groups, so
@@ -299,7 +364,17 @@ func (r *Rewriter) filterLogRows(data []byte, tombstones []Tombstone, result *Re
 	// these from the superseded entry would keep counting the deleted rows.
 	result.MinTimeNs, result.MaxTimeNs = schema.LogRowTimeBounds(kept)
 	result.LabelAggregates = schema.ExtractLogLabelAggregates(kept)
+	result.Labels = schema.ExtractLogLabels(kept)
+	result.BloomValues = schema.ExtractLogBloomValues(kept)
 	result.RawBytes = schema.EstimateRawBytesLogs(kept)
+
+	if r.writers.Logs != nil {
+		out, err := r.writers.Logs(kept, r.rowGroupSize, r.writers.CompressionLevel)
+		if err != nil {
+			return nil, fmt.Errorf("write parquet: %w", err)
+		}
+		return out, nil
+	}
 
 	var buf bytes.Buffer
 	writer := parquet.NewGenericWriter[schema.LogRow](&buf, r.writerOptions(data)...)
@@ -344,7 +419,17 @@ func (r *Rewriter) filterTraceRows(data []byte, tombstones []Tombstone, result *
 	// See filterLogRows: recomputed over the kept rows, never inherited.
 	result.MinTimeNs, result.MaxTimeNs = schema.TraceRowTimeBounds(kept)
 	result.LabelAggregates = schema.ExtractTraceLabelAggregates(kept)
+	result.Labels = schema.ExtractTraceLabels(kept)
+	result.BloomValues = schema.ExtractTraceBloomValues(kept)
 	result.RawBytes = schema.EstimateRawBytesTraces(kept)
+
+	if r.writers.Traces != nil {
+		out, err := r.writers.Traces(kept, r.rowGroupSize, r.writers.CompressionLevel)
+		if err != nil {
+			return nil, fmt.Errorf("write parquet: %w", err)
+		}
+		return out, nil
+	}
 
 	var buf bytes.Buffer
 	writer := parquet.NewGenericWriter[schema.TraceRow](&buf, r.writerOptions(data)...)

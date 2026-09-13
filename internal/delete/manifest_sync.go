@@ -1,6 +1,7 @@
 package delete
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -23,15 +24,28 @@ type ManifestUpdater interface {
 	// must be filed under the SAME partition, not one re-derived from the key
 	// string.
 	PartitionForKey(key string) (string, bool)
-	// ReplaceFile swaps oldKey's entry for fi in one critical section.
+	// ReplaceFile swaps oldKey's entry for fi in one critical section, and
+	// only if oldKey is still present.
 	ReplaceFile(partition string, oldKey string, fi manifest.FileInfo) bool
-	// RemoveFile drops an entry — the RowsKept == 0 case, where the rewrite
-	// leaves no replacement object at all.
-	RemoveFile(partition string, key string)
+	// RemoveFileIfPresent drops an entry if it is still there — the
+	// RowsKept == 0 case, where the rewrite leaves no replacement at all.
+	RemoveFileIfPresent(partition string, key string) bool
 	// HasKey is the post-condition check: after a publish the new key must be
 	// present and the old one absent.
 	HasKey(key string) bool
+	// GetFilesForRange lists the files that may hold a tombstone's rows. A
+	// tombstone's AffectedKeys is a snapshot from when the delete was issued;
+	// compaction and late flushes change the file set under it, so the
+	// scheduler re-reads it before retiring a tombstone.
+	GetFilesForRange(startNs, endNs int64) []manifest.FileInfo
 }
+
+// errSourceSuperseded reports that a rewrite's source left the manifest between
+// the read and the publish — a concurrent compaction merged it. The rewrite is
+// discarded: publishing it would put the kept rows in the manifest twice (the
+// rewrite and the compacted output) and bring the deleted rows back through the
+// compacted copy. The tombstone then follows the rows to that compacted output.
+var errSourceSuperseded = errors.New("rewrite source was superseded before publish")
 
 // publishRewrite moves a rewritten object's registration into the manifest.
 //
@@ -49,59 +63,74 @@ type ManifestUpdater interface {
 // Meanwhile the replacement object was in nobody's manifest, so the orphan
 // sweep deleted it once it passed the age gate — taking the kept rows with it.
 //
-// On success result.Published is set, which is what licenses Rewriter.Commit to
-// delete the superseded object.
-func publishRewrite(m ManifestUpdater, result *RewriteResult) error {
+// The publish is conditional on the source still being registered (see
+// errSourceSuperseded). On success result.Published is set, which is what
+// licenses Rewriter.Commit to delete the superseded object. The returned entry
+// is the replacement that was registered, or nil when the rewrite left no
+// replacement (every row removed).
+func publishRewrite(m ManifestUpdater, result *RewriteResult) (*manifest.FileInfo, error) {
 	if m == nil {
-		return fmt.Errorf("no manifest wired into the rewrite scheduler")
+		return nil, fmt.Errorf("no manifest wired into the rewrite scheduler")
 	}
 	if result == nil || result.RowsRemoved == 0 {
-		return nil
+		return nil, nil
 	}
 
 	partition, known := m.PartitionForKey(result.OldKey)
 	if !known {
-		// The superseded object was not in the manifest. That is already an
-		// inconsistency (it was listed as a tombstone's affected key), but the
-		// replacement must still end up managed or the orphan sweep will
-		// reclaim it. File it under the partition its key encodes.
-		partition = extractPartition(result.OldKey)
-		metrics.DeleteStartupInconsistencies.Inc("rewrite_source_unmanifested")
-		logger.Warnf("rewrite source not in manifest; key=%s, filing replacement under partition=%s",
-			result.OldKey, partition)
+		metrics.DeleteRewriteSuperseded.Inc()
+		return nil, errSourceSuperseded
 	}
 
 	if result.RowsKept == 0 {
 		// Nothing survived the filter: no replacement object exists, so the
-		// entry simply goes away.
-		m.RemoveFile(partition, result.OldKey)
-		if m.HasKey(result.OldKey) {
-			metrics.DeleteRewriteManifestErrors.Inc()
-			return fmt.Errorf("manifest still holds %s after removal", result.OldKey)
+		// entry simply goes away — if it is still ours to remove.
+		if !m.RemoveFileIfPresent(partition, result.OldKey) {
+			return nil, refusedPublish(m, result.OldKey)
 		}
 		result.Published = true
 		metrics.DeleteRewriteManifestUpdated.Inc()
-		return nil
+		return nil, nil
 	}
 
 	old, _ := m.GetFileByKey(result.OldKey)
 	fi := rewrittenFileInfo(old, result)
 
-	m.ReplaceFile(partition, result.OldKey, fi)
+	if !m.ReplaceFile(partition, result.OldKey, fi) {
+		return nil, refusedPublish(m, result.OldKey)
+	}
 
-	// Post-condition, checked rather than assumed: the manifest must now serve
-	// the kept rows from the new key and must no longer point at the old one.
-	if !m.HasKey(fi.Key) || m.HasKey(result.OldKey) {
+	// Post-condition, checked rather than assumed: a manifest that reports a
+	// successful swap must no longer list the old key — otherwise committing
+	// would delete an object the manifest still points at. The NEW key is
+	// deliberately not re-checked: once the swap has landed, a concurrent
+	// compaction may already have merged it, which is a legitimate outcome, not
+	// a failed publish.
+	if m.HasKey(result.OldKey) {
 		metrics.DeleteRewriteManifestErrors.Inc()
-		return fmt.Errorf("manifest swap did not take effect: new=%s present=%v, old=%s present=%v",
-			fi.Key, m.HasKey(fi.Key), result.OldKey, m.HasKey(result.OldKey))
+		return nil, fmt.Errorf("manifest reported the swap but still lists %s", result.OldKey)
 	}
 
 	result.Published = true
 	metrics.DeleteRewriteManifestUpdated.Inc()
 	logger.Infof("rewrite published; old=%s, new=%s, rows_kept=%d, rows_removed=%d, partition=%s",
 		result.OldKey, fi.Key, result.RowsKept, result.RowsRemoved, partition)
-	return nil
+	return &fi, nil
+}
+
+// refusedPublish classifies a publish the manifest refused. It is "superseded"
+// ONLY when the source is verifiably gone: that is the case where the rows now
+// live in a compacted output and the tombstone may follow them there. If the
+// source is still registered, the refusal is a failure, and treating it as
+// superseded would mark the key reaped while the source still holds the rows —
+// which the tombstone's retirement would then un-hide.
+func refusedPublish(m ManifestUpdater, oldKey string) error {
+	if m.HasKey(oldKey) {
+		metrics.DeleteRewriteManifestErrors.Inc()
+		return fmt.Errorf("manifest refused the publish while %s is still registered", oldKey)
+	}
+	metrics.DeleteRewriteSuperseded.Inc()
+	return errSourceSuperseded
 }
 
 // rewrittenFileInfo builds the replacement manifest entry.
@@ -109,16 +138,21 @@ func publishRewrite(m ManifestUpdater, result *RewriteResult) error {
 // Each field is either RECOMPUTED from the kept rows or INHERITED from the
 // superseded entry, and the split is deliberate:
 //
-//   - RowCount, MinTimeNs/MaxTimeNs, RawBytes, Size, BloomBytes, ColumnBytes
-//     and LabelAggregates are recomputed. These are the fields query paths
-//     answer from without opening the file; inheriting any of them would keep
-//     serving the deleted rows from metadata. RowCount in particular feeds the
-//     manifest fast path and the 404 recovery's synthetic blocks.
-//   - Labels and ColumnStats are inherited. A rewrite only ever REMOVES rows,
-//     so the old file's label set and column min/max are a superset of the new
-//     file's. A superset is the safe direction for both: it can only make a
-//     pruning decision more conservative (scan a file that turns out to have
-//     nothing), never skip a file that does hold matching rows.
+//   - RowCount, MinTimeNs/MaxTimeNs, RawBytes, Size, BloomBytes, ColumnBytes,
+//     LabelAggregates and Labels are recomputed. These are the fields query
+//     paths answer from without opening the file; inheriting any of them would
+//     keep serving the deleted rows from metadata. RowCount feeds the manifest
+//     fast path and the 404 recovery's synthetic blocks; Labels feed both the
+//     inverted index and the pmeta field catalog, which field_values serves
+//     verbatim, so a superset inherited from the old file would put deleted
+//     values straight back into every dropdown. Recomputed labels are exactly
+//     what the flush writer records for the same rows, so pruning over them
+//     behaves like it does for any freshly flushed file.
+//   - ColumnStats are inherited. A rewrite only ever REMOVES rows, so the old
+//     file's column min/max are a superset of the new file's. A superset is
+//     the safe direction for range pruning — it can only scan a file that
+//     turns out to have nothing, never skip one that holds matching rows — and
+//     unlike labels, column stats are never served as values.
 //   - Bucket, SchemaFingerprint, CompactionLevel and the storage-class fields
 //     describe where and how the object lives, which the rewrite preserves.
 func rewrittenFileInfo(old manifest.FileInfo, result *RewriteResult) manifest.FileInfo {
@@ -133,7 +167,7 @@ func rewrittenFileInfo(old manifest.FileInfo, result *RewriteResult) manifest.Fi
 		BloomBytes:        result.BloomBytes,
 		SchemaFingerprint: old.SchemaFingerprint,
 		CompactionLevel:   old.CompactionLevel,
-		Labels:            old.Labels,
+		Labels:            result.Labels,
 		ColumnStats:       old.ColumnStats,
 		LabelAggregates:   result.LabelAggregates,
 		ColumnBytes:       result.ColumnBytes,

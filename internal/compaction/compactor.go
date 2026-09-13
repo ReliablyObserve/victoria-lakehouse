@@ -56,11 +56,18 @@ type CompactorConfig struct {
 	// and the compactor doesn't mutate it.
 	CompactionConfig config.CompactionConfig
 
-	// Tombstones lets compaction act as a second reaper: rows matching an
-	// active tombstone are dropped from the merged output instead of being
-	// copied forward, and the source keys are marked reaped. Optional — a nil
+	// Tombstones lets compaction act as a second reaper: rows matching a
+	// tombstone that is eligible for physical removal are dropped from the
+	// merged output instead of being copied forward, and the tombstone's
+	// bookkeeping follows the rows (see reconcileTombstones). Optional — a nil
 	// store leaves compaction behaving exactly as it did before.
 	Tombstones *delete.TombstoneStore
+
+	// TombstoneRewriteDelay is the delete path's rewrite_delay: the un-delete
+	// window during which a permanent or auto tombstone's rows must NOT be
+	// physically removed. Compaction honours the same window the rewrite
+	// scheduler does (Tombstone.EligibleForPhysicalRemoval).
+	TombstoneRewriteDelay time.Duration
 
 	// NeverDeletePrefixes mirrors the orphan sweep's protected list so the
 	// reap bookkeeping never claims an object compaction is not allowed to
@@ -111,6 +118,7 @@ type Compactor struct {
 	cfg              config.CompactionConfig
 	tenantLookup     func(tenantPrefix string) []int
 	tombstones       *delete.TombstoneStore
+	tombstoneDelay   time.Duration
 	neverDelete      []string
 }
 
@@ -131,6 +139,7 @@ func NewCompactor(cfg CompactorConfig) *Compactor {
 		cfg:              cfg.CompactionConfig,
 		tenantLookup:     cfg.TenantCompressionLookup,
 		tombstones:       cfg.Tombstones,
+		tombstoneDelay:   cfg.TombstoneRewriteDelay,
 		neverDelete:      neverDelete,
 	}
 }
@@ -296,6 +305,13 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	var minTime, maxTime int64
 	var labelAggregates map[string]map[string]int64
 	var bloomValues map[string][]string
+	// survivors describes the merged output when tombstoned rows were dropped
+	// from it (nil otherwise). The label set and raw size normally come from
+	// the INPUT files' manifest entries, which is exact for a pure row union;
+	// once rows are dropped those inputs describe data the output no longer
+	// holds, and a label value only the dropped rows carried would be fed to
+	// the pmeta field catalog and served by field_values after the rows are gone.
+	var survivors *survivorMeta
 
 	// Pick the per-output-level compression. Tenant override beats
 	// the global progressive schedule, which in turn beats the
@@ -341,7 +357,14 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		// row count, time bounds, label aggregates and blooms all feed the
 		// manifest, and deriving them from rows that are about to be dropped
 		// would publish metadata describing data the output does not contain.
-		merged = dropTombstonedLogRows(c.tombstones, merged)
+		var dropped int
+		merged, dropped = dropTombstonedLogRows(c.tombstones, merged, time.Now(), c.tombstoneDelay)
+		if dropped > 0 {
+			survivors = &survivorMeta{
+				labels:   schema.ExtractLogLabels(merged),
+				rawBytes: schema.EstimateRawBytesLogs(merged),
+			}
+		}
 		rowsMerged = int64(len(merged))
 		if rowsMerged > 0 {
 			// True min/max scan — NOT merged[0]/merged[len-1]. The merge
@@ -374,7 +397,14 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 			return nil, err
 		}
 		// See the logs branch: suppression happens before any derived metadata.
-		merged = dropTombstonedTraceRows(c.tombstones, merged)
+		var dropped int
+		merged, dropped = dropTombstonedTraceRows(c.tombstones, merged, time.Now(), c.tombstoneDelay)
+		if dropped > 0 {
+			survivors = &survivorMeta{
+				labels:   schema.ExtractTraceLabels(merged),
+				rawBytes: schema.EstimateRawBytesTraces(merged),
+			}
+		}
 		rowsMerged = int64(len(merged))
 		if rowsMerged > 0 {
 			// True min/max scan — same rationale as the logs branch above.
@@ -422,6 +452,9 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	for _, f := range g.Files {
 		inputRawBytes += f.RawBytes
 	}
+	if survivors != nil {
+		inputRawBytes = survivors.rawBytes
+	}
 
 	// Per-output-level compression observability. The ratio is
 	// inputRawBytes / len(outputData) — same denominator as the
@@ -448,8 +481,18 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	// the bug. The union is bounded by maxLabelsPerField inside
 	// indexFileLabels so a misbehaving input can't blow up the index.
 	mergedLabels := mergeFileLabels(g.Files)
+	if survivors != nil {
+		mergedLabels = survivors.labels
+	}
 
-	c.manifest.AddFile(partition, manifest.FileInfo{
+	// Publish: register the output and drop the sources in ONE step, and only
+	// if every source is still registered. A source can leave the manifest
+	// while this merge runs — a delete rewrite replaced it, or a racing
+	// compaction merged it. The output was built from that source's ORIGINAL
+	// rows, so registering it anyway would duplicate them next to whatever
+	// replaced the source (and bring back any rows a delete removed). The
+	// merge is abandoned instead and the next tick re-selects.
+	if !c.manifest.ReplaceFiles(partition, inputKeys, manifest.FileInfo{
 		Key:               outputKey,
 		Bucket:            g.Bucket,
 		Size:              int64(len(outputData)),
@@ -463,20 +506,26 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		Labels:            mergedLabels,
 		LabelAggregates:   labelAggregates,
 		ColumnBytes:       columnBytesFromFooter(outputData),
-	})
+	}) {
+		metrics.CompactionPublishConflicts.Inc()
+		if err := c.pool.Delete(ctx, outputKey); err != nil {
+			logger.Warnf("abandoned compaction output not deleted (orphan sweep will reclaim it); key=%s: %s", outputKey, err)
+		}
+		return nil, fmt.Errorf("compaction of %s abandoned: a source left the manifest during the merge", partition)
+	}
 
 	for _, f := range g.Files {
-		c.manifest.RemoveFile(partition, f.Key)
 		if err := c.pool.Delete(ctx, f.Key); err != nil {
 			logger.Warnf("failed to delete source file; key=%s, error=%s", f.Key, err)
 		}
 	}
 
-	// The merged output is published and the sources are gone, so any
-	// tombstone that named a source has had its work done for it. Recording
-	// that here is what stops the rewriter from chasing keys compaction
-	// already removed, and lets such a tombstone complete.
-	markKeysReaped(c.tombstones, inputKeys, c.neverDelete)
+	// The merged output is published and the sources are gone. Every tombstone
+	// that named a source must now name the output instead, marked clean only
+	// when compaction actually filtered that tombstone's rows out of it — so a
+	// tombstone can never complete while a file that still holds its rows
+	// exists (which would un-hide those rows the moment it retires).
+	reconcileTombstones(c.tombstones, inputKeys, outputKey, c.neverDelete, time.Now(), c.tombstoneDelay)
 
 	return &compactGroupResult{
 		InputKeys:    inputKeys,
@@ -697,6 +746,24 @@ func columnBytesFromFooter(data []byte) map[string]int64 {
 		return nil
 	}
 	return out
+}
+
+// WriteLogs writes rows exactly as a compaction output is written: zstd at the
+// given level, the SBBF column blooms for the configured bloom set (including
+// Tier-2 slot blooms), and the slot binding in the footer KV. Exported so the
+// delete rewriter produces replacements that are indistinguishable from a
+// compaction output of the same rows — a rewrite must never reduce a file's
+// prunability, and sharing the one writer means a later improvement to the
+// output format reaches both producers at once.
+func WriteLogs(rows []schema.LogRow, rowGroupSize int, compressionLevel int) ([]byte, error) {
+	return writeCompactedLogs(rows, rowGroupSize, compressionLevel)
+}
+
+// WriteTraces is WriteLogs for spans; it also carries the per-file `_trace_idx`
+// footer index, recomputed from the rows written, so trace-by-ID lookups keep
+// their fast path on a rewritten file.
+func WriteTraces(rows []schema.TraceRow, rowGroupSize int, compressionLevel int) ([]byte, error) {
+	return writeCompactedTraces(rows, rowGroupSize, compressionLevel)
 }
 
 func writeCompactedLogs(rows []schema.LogRow, rowGroupSize int, compressionLevel int) ([]byte, error) {

@@ -486,15 +486,18 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 
 	// The catalog and the labelIndex are built at write/compaction time and
 	// carry no tombstone awareness: a value that exists only on deleted rows is
-	// still in both. Serving from them while a tombstone overlaps the window is
-	// how a "deleted" value kept appearing in dropdowns. When one does overlap,
-	// give up both fast paths and verify the answer against rows.
+	// still in both. Serving from them while a tombstone could cover their
+	// answer is how a "deleted" value kept appearing in dropdowns, so both fast
+	// paths are given up and the answer is verified against rows. The catalog
+	// answers per partition hour, so the check uses the hour-widened window;
+	// the row scan below applies tombstones to the exact window.
 	tombstones := s.fieldsTombstones(startNs, endNs)
-	if len(tombstones) > 0 {
+	fastPathTombstones := s.fieldsTombstones(partitionHourBounds(startNs, endNs))
+	if len(fastPathTombstones) > 0 {
 		noteFieldsScanFallback("field_values")
 	}
 
-	if filter == nil && len(tombstones) == 0 && s.catalog != nil {
+	if filter == nil && len(fastPathTombstones) == 0 && s.catalog != nil {
 		if s.refuseEnumeration(fieldName) {
 			return nil, nil // declared id column: don't enumerate (matches VL), no scan
 		}
@@ -503,7 +506,7 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 		}
 	}
 
-	if filter == nil && len(tombstones) == 0 && s.labelIndex.Len() > 0 {
+	if filter == nil && len(fastPathTombstones) == 0 && s.labelIndex.Len() > 0 {
 		vals := s.labelIndex.GetFieldValues(fieldName, limit)
 		if len(vals) > 0 {
 			result := make([]logstorage.ValueWithHits, len(vals))

@@ -51,6 +51,10 @@ func newCompactionTombstoneFixture(t *testing.T, mode string) *compactionTombsto
 			Key: key, Size: int64(len(data)), RowCount: int64(len(batch)),
 			MinTimeNs: batch[0].TimestampUnixNano,
 			MaxTimeNs: batch[len(batch)-1].TimestampUnixNano,
+			// What the flush writer records, so the compacted entry can be
+			// checked against real input metadata rather than zeros.
+			RawBytes: schema.EstimateRawBytesLogs(batch),
+			Labels:   schema.ExtractLogLabels(batch),
 		}
 		m.AddFile(partition, fi)
 		files = append(files, fi)
@@ -117,6 +121,31 @@ func TestCompaction_DropsTombstonedRows(t *testing.T) {
 	if agg := fi.LabelAggregates["severity_text"]; agg["error"] != 0 {
 		t.Errorf("aggregate still counts %d deleted error rows", agg["error"])
 	}
+	// The label SET must describe the survivors too. It is fed to the pmeta
+	// field catalog, which field_values serves verbatim; unioning the input
+	// files' labels would put the deleted "error" value back in the dropdown.
+	for _, v := range fi.Labels["severity_text"] {
+		if v == "error" {
+			t.Errorf("compacted labels still carry %q, a value only the dropped rows had: %v", v, fi.Labels["severity_text"])
+		}
+	}
+	if got := fi.Labels["severity_text"]; len(got) != 1 || got[0] != "info" {
+		t.Errorf("compacted severity_text labels = %v, want [info]", got)
+	}
+	// And the raw size is the survivors', not the sum of the inputs'.
+	var inputRaw int64
+	for _, src := range f.files {
+		inputRaw += src.RawBytes
+	}
+	if inputRaw <= 0 {
+		t.Fatal("fixture is wrong: the input entries carry no RawBytes to compare against")
+	}
+	if fi.RawBytes >= inputRaw {
+		t.Errorf("compacted RawBytes %d not reduced below the inputs' %d", fi.RawBytes, inputRaw)
+	}
+	if fi.RawBytes <= 0 {
+		t.Errorf("compacted RawBytes = %d; the survivors' size must be recorded", fi.RawBytes)
+	}
 
 	// And the bytes are actually gone.
 	rows, err := readLogRows(f.pool.get(res.OutputFile))
@@ -140,7 +169,8 @@ func TestCompaction_ReapsSourceKeysAndCompletesTheTombstone(t *testing.T) {
 	f := newCompactionTombstoneFixture(t, "permanent")
 
 	before := metrics.DeleteCompactionKeysReaped.Get()
-	if _, err := f.compactor(f.store).Compact(context.Background(), "dt=2026-07-01/hour=03", f.files, 0); err != nil {
+	res, err := f.compactor(f.store).Compact(context.Background(), "dt=2026-07-01/hour=03", f.files, 0)
+	if err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 
@@ -148,25 +178,41 @@ func TestCompaction_ReapsSourceKeysAndCompletesTheTombstone(t *testing.T) {
 		t.Errorf("expected %d keys to be reaped, counter moved by %d",
 			len(f.keys), metrics.DeleteCompactionKeysReaped.Get()-before)
 	}
+	// The tombstone was eligible, so compaction filtered its rows out of the
+	// output: the sources are gone, the output is clean, nothing is left to do.
 	if _, still := f.store.Get("ts-compact"); still {
-		t.Fatal("every affected key was merged away, so the tombstone must be completed rather than left active")
+		t.Fatalf("every file holding the tombstone's rows was filtered (sources merged into clean output %s); the tombstone must complete", res.OutputFile)
 	}
 }
 
-func TestCompaction_HideModeTombstoneIsNeverReaped(t *testing.T) {
+// TestCompaction_HideModeRowsAreCarriedForward pins the un-delete contract. A
+// hide-mode delete is reversible: removing the tombstone must make the rows
+// visible again. Compaction physically dropping them would turn every later
+// un-delete of that data into silent data loss.
+func TestCompaction_HideModeRowsAreCarriedForward(t *testing.T) {
 	f := newCompactionTombstoneFixture(t, "hide")
 
 	res, err := f.compactor(f.store).Compact(context.Background(), "dt=2026-07-01/hour=03", f.files, 0)
 	if err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
-	// The rows are still dropped from the output — hide mode only means the
-	// user did not ask for a rewrite, not that compaction should copy them.
-	if res.RowsMerged != 2 {
-		t.Fatalf("merged %d rows, want 2", res.RowsMerged)
+	if res.RowsMerged != 4 {
+		t.Fatalf("merged %d rows, want all 4 — hide mode never removes rows", res.RowsMerged)
 	}
-	// But the tombstone stands: it is a standing suppression instruction, and
-	// retiring it would un-hide anything it still covers elsewhere.
+	rows, err := readLogRows(f.pool.get(res.OutputFile))
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	var hidden int
+	for i := range rows {
+		if rows[i].SeverityText == "error" {
+			hidden++
+		}
+	}
+	if hidden != 2 {
+		t.Fatalf("the output holds %d of the 2 hidden rows; an un-delete could no longer restore them", hidden)
+	}
+
 	ts, ok := f.store.Get("ts-compact")
 	if !ok {
 		t.Fatal("a hide-mode tombstone must never be auto-completed")
@@ -176,49 +222,72 @@ func TestCompaction_HideModeTombstoneIsNeverReaped(t *testing.T) {
 			t.Errorf("hide-mode tombstone must not record %s as reaped", k)
 		}
 	}
-}
 
-func TestCompaction_WithoutATombstoneStoreIsUnchanged(t *testing.T) {
-	f := newCompactionTombstoneFixture(t, "permanent")
-
-	res, err := f.compactor(nil).Compact(context.Background(), "dt=2026-07-01/hour=03", f.files, 0)
-	if err != nil {
-		t.Fatalf("Compact: %v", err)
-	}
-	if res.RowsMerged != 4 {
-		t.Fatalf("a compactor with no tombstone store must merge all %d rows, got %d", 4, res.RowsMerged)
+	// Un-delete after compaction: the rows are still there to come back.
+	f.store.Remove("ts-compact")
+	if f.store.Count() != 0 {
+		t.Fatal("un-delete did not remove the tombstone")
 	}
 }
 
-func TestCompaction_TombstoneOutsideTheTimeRangeIsIgnored(t *testing.T) {
+// TestCompaction_InsideTheRewriteDelayCarriesRowsForwardAndTransfersTheKey is the
+// same contract for permanent and auto deletes: rewrite_delay is their un-delete
+// window. It also covers the bookkeeping hole that would otherwise resurrect
+// data — the sources were merged away, so without transferring the tombstone to
+// the output, every listed key would look reaped, the tombstone would retire,
+// and rows that were never removed would become visible again.
+func TestCompaction_InsideTheRewriteDelayCarriesRowsForwardAndTransfersTheKey(t *testing.T) {
 	f := newCompactionTombstoneFixture(t, "permanent")
 	ts, _ := f.store.Get("ts-compact")
-	// A tombstone whose window does not overlap the data must not suppress
-	// anything, no matter what its query says.
-	ts.StartNs, ts.EndNs = 1<<50, 1<<51
+	ts.CreatedAt = time.Now() // just issued
 	f.store.Add(ts)
 
-	res, err := f.compactor(f.store).Compact(context.Background(), "dt=2026-07-01/hour=03", f.files, 0)
+	c := NewCompactor(CompactorConfig{
+		Pool: f.pool, Manifest: f.manifest, Mode: config.ModeLogs, RowGroupSize: 100,
+		Tombstones: f.store, TombstoneRewriteDelay: time.Hour,
+	})
+	res, err := c.Compact(context.Background(), "dt=2026-07-01/hour=03", f.files, 0)
 	if err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
 	if res.RowsMerged != 4 {
-		t.Fatalf("merged %d rows, want all 4 (the tombstone's window does not overlap)", res.RowsMerged)
+		t.Fatalf("merged %d rows, want all 4 — the un-delete window has not passed", res.RowsMerged)
+	}
+
+	got, ok := f.store.Get("ts-compact")
+	if !ok {
+		t.Fatal("the tombstone completed while a file still holds its rows; they would reappear")
+	}
+	if !containsKey(got.AffectedKeys, res.OutputFile) {
+		t.Fatalf("the tombstone was not transferred to the output %s: %v", res.OutputFile, got.AffectedKeys)
+	}
+	if got.Reaped[res.OutputFile] {
+		t.Fatal("the output still holds the tombstone's rows and must stay pending for the rewriter")
+	}
+	for _, k := range f.keys {
+		if !got.Reaped[k] {
+			t.Errorf("merged-away source %s should be marked reaped", k)
+		}
+	}
+	if got.FullyReaped() {
+		t.Fatal("a tombstone with a pending output must not report itself fully reaped")
 	}
 }
 
-func TestMarkKeysReaped_HonoursNeverDeletePrefixes(t *testing.T) {
+func TestReconcileTombstones_HonoursNeverDeletePrefixes(t *testing.T) {
 	store := delete.NewTombstoneStore()
 	protected := "logs/_tombstones/x.parquet"
 	normal := "logs/dt=2026-07-01/hour=00/a.parquet"
+	output := "logs/dt=2026-07-01/hour=00/compacted.parquet"
 	store.Add(delete.Tombstone{
 		ID:           "ts",
 		Mode:         "permanent",
 		AffectedKeys: []string{protected, normal},
 		Reaped:       map[string]bool{},
+		CreatedAt:    time.Now().Add(-time.Hour),
 	})
 
-	markKeysReaped(store, []string{protected, normal}, defaultNeverDeletePrefixes())
+	reconcileTombstones(store, []string{protected, normal}, output, defaultNeverDeletePrefixes(), time.Now(), 0)
 
 	ts, ok := store.Get("ts")
 	if !ok {
@@ -230,15 +299,58 @@ func TestMarkKeysReaped_HonoursNeverDeletePrefixes(t *testing.T) {
 	if !ts.Reaped[normal] {
 		t.Error("the unprotected key should be reaped")
 	}
+	if !ts.Reaped[output] {
+		t.Error("an eligible tombstone's rows were filtered, so the output is clean")
+	}
 }
 
-func TestMarkKeysReaped_NilStoreAndEmptyInputAreNoOps(t *testing.T) {
-	markKeysReaped(nil, []string{"a"}, nil)
+func TestReconcileTombstones_UntouchedTombstonesAreLeftAlone(t *testing.T) {
 	store := delete.NewTombstoneStore()
-	markKeysReaped(store, nil, nil)
-	markKeysReaped(store, []string{"logs/_meta/x"}, defaultNeverDeletePrefixes())
+	store.Add(delete.Tombstone{
+		ID:           "other",
+		Mode:         "permanent",
+		AffectedKeys: []string{"logs/dt=2026-07-01/hour=00/unrelated.parquet"},
+		Reaped:       map[string]bool{},
+		CreatedAt:    time.Now().Add(-time.Hour),
+	})
+
+	reconcileTombstones(store, []string{"logs/dt=2026-07-01/hour=00/a.parquet"},
+		"logs/dt=2026-07-01/hour=00/out.parquet", nil, time.Now(), 0)
+
+	ts, _ := store.Get("other")
+	if len(ts.AffectedKeys) != 1 || len(ts.Reaped) != 0 {
+		t.Fatalf("a tombstone that named none of the merged sources must not change: %+v", ts)
+	}
+}
+
+func TestReconcileTombstones_NilStoreAndEmptyInputAreNoOps(t *testing.T) {
+	reconcileTombstones(nil, []string{"a"}, "out", nil, time.Now(), 0)
+	store := delete.NewTombstoneStore()
+	reconcileTombstones(store, nil, "out", nil, time.Now(), 0)
+	reconcileTombstones(store, []string{"logs/_meta/x"}, "out", defaultNeverDeletePrefixes(), time.Now(), 0)
 	if store.Count() != 0 {
 		t.Error("no tombstone should have been created")
+	}
+}
+
+func TestEligibleTombstones(t *testing.T) {
+	now := time.Now()
+	tss := []delete.Tombstone{
+		{ID: "hide", Mode: "hide", CreatedAt: now.Add(-24 * time.Hour)},
+		{ID: "fresh", Mode: "permanent", CreatedAt: now},
+		{ID: "old-permanent", Mode: "permanent", CreatedAt: now.Add(-2 * time.Hour)},
+		{ID: "old-auto", Mode: "auto", CreatedAt: now.Add(-2 * time.Hour)},
+	}
+	got := eligibleTombstones(tss, now, time.Hour)
+	ids := map[string]bool{}
+	for _, ts := range got {
+		ids[ts.ID] = true
+	}
+	if ids["hide"] || ids["fresh"] || !ids["old-permanent"] || !ids["old-auto"] || len(got) != 2 {
+		t.Fatalf("eligible = %v, want exactly old-permanent and old-auto", ids)
+	}
+	if len(tss) != 4 {
+		t.Fatal("eligibleTombstones must not modify its input slice")
 	}
 }
 
@@ -360,27 +472,69 @@ func TestCompaction_DropsTombstonedSpans(t *testing.T) {
 }
 
 func TestDropTombstonedRows_NilStoreAndEmptyInputAreNoOps(t *testing.T) {
+	now := time.Now()
 	logs := []schema.LogRow{{TimestampUnixNano: 1, Body: "a"}}
-	if got := dropTombstonedLogRows(nil, logs); len(got) != 1 {
-		t.Errorf("a nil store must leave the rows alone, got %d", len(got))
+	if got, n := dropTombstonedLogRows(nil, logs, now, 0); len(got) != 1 || n != 0 {
+		t.Errorf("a nil store must leave the rows alone, got %d rows, %d dropped", len(got), n)
 	}
-	if got := dropTombstonedLogRows(delete.NewTombstoneStore(), nil); got != nil {
-		t.Errorf("no rows in, no rows out, got %v", got)
+	if got, n := dropTombstonedLogRows(delete.NewTombstoneStore(), nil, now, 0); got != nil || n != 0 {
+		t.Errorf("no rows in, no rows out, got %v, %d dropped", got, n)
 	}
 	// A store with no tombstone covering the range must not copy the slice.
-	if got := dropTombstonedLogRows(delete.NewTombstoneStore(), logs); len(got) != 1 {
-		t.Errorf("an empty store must leave the rows alone, got %d", len(got))
+	if got, n := dropTombstonedLogRows(delete.NewTombstoneStore(), logs, now, 0); len(got) != 1 || n != 0 {
+		t.Errorf("an empty store must leave the rows alone, got %d rows, %d dropped", len(got), n)
 	}
 
 	spans := []schema.TraceRow{{TimestampUnixNano: 1, SpanID: "s"}}
-	if got := dropTombstonedTraceRows(nil, spans); len(got) != 1 {
-		t.Errorf("a nil store must leave the spans alone, got %d", len(got))
+	if got, n := dropTombstonedTraceRows(nil, spans, now, 0); len(got) != 1 || n != 0 {
+		t.Errorf("a nil store must leave the spans alone, got %d spans, %d dropped", len(got), n)
 	}
-	if got := dropTombstonedTraceRows(delete.NewTombstoneStore(), nil); got != nil {
-		t.Errorf("no spans in, no spans out, got %v", got)
+	if got, n := dropTombstonedTraceRows(delete.NewTombstoneStore(), nil, now, 0); got != nil || n != 0 {
+		t.Errorf("no spans in, no spans out, got %v, %d dropped", got, n)
 	}
-	if got := dropTombstonedTraceRows(delete.NewTombstoneStore(), spans); len(got) != 1 {
-		t.Errorf("an empty store must leave the spans alone, got %d", len(got))
+	if got, n := dropTombstonedTraceRows(delete.NewTombstoneStore(), spans, now, 0); len(got) != 1 || n != 0 {
+		t.Errorf("an empty store must leave the spans alone, got %d spans, %d dropped", len(got), n)
+	}
+}
+
+// TestDropTombstonedRows_OnlyEligibleTombstonesDrop pins the predicate at the
+// row level for both signals: an ineligible tombstone (hide, or still inside
+// the un-delete window) removes nothing, an eligible one removes its rows.
+func TestDropTombstonedRows_OnlyEligibleTombstonesDrop(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name      string
+		mode      string
+		createdAt time.Time
+		wantDrop  int
+	}{
+		{"hide never drops", "hide", now.Add(-24 * time.Hour), 0},
+		{"permanent inside the delay keeps rows", "permanent", now, 0},
+		{"permanent past the delay drops", "permanent", now.Add(-2 * time.Hour), 1},
+		{"auto past the delay drops", "auto", now.Add(-2 * time.Hour), 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := delete.NewTombstoneStore()
+			store.Add(delete.Tombstone{
+				ID: "ts", Query: `service.name:="gone"`, StartNs: 0, EndNs: 1 << 40,
+				Mode: tc.mode, CreatedAt: tc.createdAt,
+			})
+
+			logs := []schema.LogRow{
+				{TimestampUnixNano: 10, ServiceName: "gone"},
+				{TimestampUnixNano: 20, ServiceName: "stays"},
+			}
+			if _, n := dropTombstonedLogRows(store, logs, now, time.Hour); n != tc.wantDrop {
+				t.Errorf("logs: dropped %d, want %d", n, tc.wantDrop)
+			}
+			spans := []schema.TraceRow{
+				{TimestampUnixNano: 10, ServiceName: "gone", SpanID: "a"},
+				{TimestampUnixNano: 20, ServiceName: "stays", SpanID: "b"},
+			}
+			if _, n := dropTombstonedTraceRows(store, spans, now, time.Hour); n != tc.wantDrop {
+				t.Errorf("traces: dropped %d, want %d", n, tc.wantDrop)
+			}
+		})
 	}
 }
 

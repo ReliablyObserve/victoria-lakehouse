@@ -173,15 +173,19 @@ func (f *failingManifest) ReplaceFile(partition string, oldKey string, fi manife
 	return f.inner.ReplaceFile(partition, oldKey, fi)
 }
 
-func (f *failingManifest) RemoveFile(partition string, key string) {
+func (f *failingManifest) RemoveFileIfPresent(partition string, key string) bool {
 	f.mu.Lock()
 	fail := f.failRemove
 	f.failRemove = false
 	f.mu.Unlock()
 	if fail {
-		return
+		return false
 	}
-	f.inner.RemoveFile(partition, key)
+	return f.inner.RemoveFileIfPresent(partition, key)
+}
+
+func (f *failingManifest) GetFilesForRange(startNs, endNs int64) []manifest.FileInfo {
+	return f.inner.GetFilesForRange(startNs, endNs)
 }
 
 func (f *failingManifest) HasKey(key string) bool { return f.inner.HasKey(key) }

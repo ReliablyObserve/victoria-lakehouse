@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"context"
+	"math"
 	"sort"
 	"testing"
 	"time"
@@ -10,7 +11,9 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -247,5 +250,110 @@ func TestTraceFieldValues_TombstoneCombinesWithTheUserFilter(t *testing.T) {
 		if v == "order-service" {
 			t.Fatalf("the deleted span's service survived a filtered enumeration: %v", traceValueStrings(got))
 		}
+	}
+}
+
+// --- pmeta catalog rebuild after rows are removed (mirror) ---------------------
+
+func TestTracePmetaOnRewritten_RebuildsTheCatalogValues(t *testing.T) {
+	s := testStorage()
+	s.PmetaRebuildCatalogValues([]string{"traces/dt=2026-01-01/hour=00/a.parquet"}) // no catalog: no-op
+
+	s.catalog = newCatalogStore(config.PmetaConfig{Enabled: true}, "traces/")
+	oldKey := "traces/dt=2026-09-05/hour=02/old.parquet"
+	newKey := "traces/dt=2026-09-05/hour=02/new.parquet"
+	part := manifest.ExtractTenantPartition(oldKey)
+
+	s.catalog.OnFileFlush(pmeta.FileContribution{Partition: part, FileKey: oldKey,
+		Labels: map[string][]string{"service.name": {"api", "leaky"}}})
+	newFI := manifest.FileInfo{Key: newKey, RowCount: 1, Labels: map[string][]string{"service.name": {"api"}}}
+	s.manifest.AddFile("dt=2026-09-05/hour=02", newFI)
+
+	s.PmetaOnRewritten([]manifest.FileInfo{newFI}, []string{oldKey}, nil)
+
+	if got := s.catalog.FieldValues(part, "service.name", "", 0); len(got) != 1 || got[0] != "api" {
+		t.Fatalf("catalog after a rewrite = %v, want only [api]; the deleted span's service must not stay enumerable", got)
+	}
+
+	unlabeled := "traces/dt=2026-09-05/hour=02/unlabeled.parquet"
+	s.manifest.AddFile("dt=2026-09-05/hour=02", manifest.FileInfo{Key: unlabeled, RowCount: 3})
+	before := metrics.DeleteCatalogRebuilds.Get("skipped_unlabeled_file")
+	s.PmetaRebuildCatalogValues([]string{newKey})
+	if metrics.DeleteCatalogRebuilds.Get("skipped_unlabeled_file") <= before {
+		t.Error("a partition with an unlabeled file must be skipped and counted")
+	}
+}
+
+func TestTracePartitionHourBounds(t *testing.T) {
+	h := time.Date(2026, 9, 5, 14, 0, 0, 0, time.UTC)
+	lo, hi := partitionHourBounds(h.Add(17*time.Minute).UnixNano(), h.Add(42*time.Minute).UnixNano())
+	if lo != h.UnixNano() || hi != h.Add(time.Hour).UnixNano()-1 {
+		t.Errorf("window widened to [%v, %v], want the whole hour", time.Unix(0, lo).UTC(), time.Unix(0, hi).UTC())
+	}
+	if lo, hi := partitionHourBounds(math.MinInt64, math.MaxInt64); lo != math.MinInt64 || hi != math.MaxInt64 {
+		t.Errorf("open window became [%d, %d]", lo, hi)
+	}
+}
+
+// --- field-name and stream-id paths around the tombstone gate --------------------
+
+func TestTraceGetFieldNames_EveryAnswerPath(t *testing.T) {
+	// Footer path: no catalog, empty label index, files present.
+	f := newTraceFieldsTombstoneFixture(t, false)
+	q := mustParseQueryWithTime(t, "*", f.startNs, f.endNs)
+	names, err := f.storage.GetFieldNames(context.Background(), nil, q)
+	if err != nil {
+		t.Fatalf("GetFieldNames (footer path): %v", err)
+	}
+	if len(names) == 0 {
+		t.Fatal("the footer path must register and return the file's field names")
+	}
+
+	// Label-index path: the footer walk above populated it.
+	again, err := f.storage.GetFieldNames(context.Background(), nil, q)
+	if err != nil || len(again) == 0 {
+		t.Fatalf("GetFieldNames (label index path) = %v, %v", again, err)
+	}
+
+	// Catalog path.
+	withCatalog := newTraceFieldsTombstoneFixture(t, true)
+	qc := mustParseQueryWithTime(t, "*", withCatalog.startNs, withCatalog.endNs)
+	fromCatalog, err := withCatalog.storage.GetFieldNames(context.Background(), nil, qc)
+	if err != nil || len(fromCatalog) == 0 {
+		t.Fatalf("GetFieldNames (catalog path) = %v, %v", fromCatalog, err)
+	}
+
+	// A window with no files and nothing indexed answers nothing.
+	empty := testStorage()
+	none, err := empty.GetFieldNames(context.Background(), nil, mustParseQueryWithTime(t, "*", 1, 2))
+	if err != nil || none != nil {
+		t.Fatalf("an empty store must answer nil, got %v, %v", none, err)
+	}
+}
+
+func TestTraceGetStreamIDs_EmptyWindowAndCancelledContext(t *testing.T) {
+	f := newTraceFieldsTombstoneFixture(t, false)
+
+	none, err := f.storage.GetStreamIDs(context.Background(), nil, mustParseQueryWithTime(t, "*", 1, 2), 10)
+	if err != nil || none != nil {
+		t.Fatalf("a window with no files must answer nil, got %v, %v", none, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	q := mustParseQueryWithTime(t, "*", f.startNs, f.endNs)
+	if _, err := f.storage.GetStreamIDs(ctx, nil, q, 10); err == nil {
+		t.Fatal("a cancelled request must stop and report the cancellation")
+	}
+	if _, err := f.storage.GetStreams(ctx, nil, q, 10); err == nil {
+		t.Fatal("a cancelled request must stop and report the cancellation")
+	}
+
+	ids, err := f.storage.GetStreamIDs(context.Background(), nil, q, 1)
+	if err != nil {
+		t.Fatalf("GetStreamIDs: %v", err)
+	}
+	if len(ids) > 1 {
+		t.Fatalf("the limit must cap the answer, got %d ids", len(ids))
 	}
 }

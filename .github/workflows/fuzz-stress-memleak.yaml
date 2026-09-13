@@ -186,6 +186,10 @@ jobs:
           - internal/bloomindex:FuzzBloomCorruptInput
           - internal/bloomindex:FuzzChecksumTamper
           - internal/manifest:FuzzExtractPartition
+          - internal/delete:FuzzTombstoneMatchesRow
+          - internal/delete:FuzzRewritePartitionFromKey
+          - internal/delete:FuzzTombstoneRoundTrip
+          - internal/delete:FuzzNormalizeTombstonePrefix
           - internal/manifest:FuzzParsePartitionTime
           - internal/manifest:FuzzUnmarshalFileMetaSidecar
           - internal/pmeta:FuzzDecodeBundle

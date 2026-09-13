@@ -106,6 +106,21 @@ func (s *TombstoneStore) persistChange(p *tombstonePersistence, id string, op pe
 	s.flushPending(ctx, p)
 }
 
+// PendingS3Writes reports how many tombstone records are still owed to S3 —
+// the same number lakehouse_delete_tombstone_persist_pending exposes, for the
+// tombstone listing API.
+func (s *TombstoneStore) PendingS3Writes() int {
+	s.mu.RLock()
+	p := s.persist
+	s.mu.RUnlock()
+	if p == nil {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.pending)
+}
+
 // FlushPending retries every durable write still owed to S3. Called from the
 // rewrite scheduler's tick and from shutdown so a transient S3 failure is not
 // carried for the life of the process. Returns the number of records still
@@ -211,20 +226,31 @@ func (s *TombstoneStore) Restore(ctx context.Context, cfg PersistenceConfig) (in
 // progress. Two nodes (or two boots) can disagree about a tombstone only in how
 // much of it has been rewritten, and rewrite progress is monotonic: a key that
 // is reaped somewhere is reaped everywhere, because the file it named is gone.
-// So the merge is a union of the Reaped sets, and the earliest CreatedAt wins
-// (it bounds the rewrite delay conservatively).
+// So the merge is a union of the Reaped sets and of the AffectedKeys lists, and
+// the earliest CreatedAt wins (it bounds the rewrite delay conservatively).
 func (s *TombstoneStore) mergeLoadedLocked(ts Tombstone) {
 	cur, ok := s.tombstones[ts.ID]
 	if !ok {
 		s.tombstones[ts.ID] = ts
 		return
 	}
-	merged := cur
+	merged := cloneTombstone(cur)
 	if ts.CreatedAt.Before(merged.CreatedAt) && !ts.CreatedAt.IsZero() {
 		merged.CreatedAt = ts.CreatedAt
 	}
-	if len(ts.AffectedKeys) > len(merged.AffectedKeys) {
-		merged.AffectedKeys = ts.AffectedKeys
+	// Union, not "the longer list": both copies only ever grow, but a node
+	// that discovered different files than its peer holds keys the other
+	// copy lacks, and dropping either set would let the tombstone retire with
+	// a file still unhandled.
+	listed := make(map[string]bool, len(merged.AffectedKeys))
+	for _, k := range merged.AffectedKeys {
+		listed[k] = true
+	}
+	for _, k := range ts.AffectedKeys {
+		if !listed[k] {
+			merged.AffectedKeys = append(merged.AffectedKeys, k)
+			listed[k] = true
+		}
 	}
 	if len(ts.Reaped) > 0 {
 		if merged.Reaped == nil {

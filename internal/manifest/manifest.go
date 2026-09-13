@@ -1237,6 +1237,20 @@ func (m *Manifest) removeFileLocked(partition string, key string) bool {
 	return false
 }
 
+// RemoveFileIfPresent removes key from partition and reports whether it was
+// there, as one atomic step. The delete rewriter uses it when a rewrite leaves
+// no rows at all: if the source is already gone, a concurrent compaction merged
+// it, and the tombstone has to follow the rows to that compacted output instead
+// of treating the removal as its own. Safe for concurrent use.
+func (m *Manifest) RemoveFileIfPresent(partition string, key string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.keyInPartitionLocked(partition, key) {
+		return false
+	}
+	return m.removeFileLocked(partition, key)
+}
+
 // PartitionForKey returns the partition that owns the given file key. The
 // delete rewriter needs it to re-register a rewritten object under the same
 // partition the original was filed in — deriving the partition from the key
@@ -1256,18 +1270,56 @@ func (m *Manifest) PartitionForKey(key string) (string, bool) {
 // atomicity guarantee the delete rewriter needs when it publishes a rewritten
 // Parquet object: the manifest flips from "old key" to "new key" in one step.
 //
-// Returns true when the old entry existed and was replaced. When oldKey is
-// absent the new entry is still added (so a rewrite of an unmanifested object
-// still ends up managed rather than orphaned) and false is returned so the
-// caller can count the inconsistency.
+// The swap is CONDITIONAL on oldKey still being present. A rewrite reads its
+// source before it publishes, and in between compaction may merge that same
+// source into a new file. Registering the rewrite anyway would leave both the
+// rewrite and the compacted output in the manifest — the kept rows twice, and
+// the deleted rows back through the compacted copy. So when oldKey is gone the
+// manifest is left untouched and false is returned; the caller discards its
+// replacement and lets the tombstone follow the rows to the compacted output.
 //
 // Safe for concurrent use.
 func (m *Manifest) ReplaceFile(partition string, oldKey string, fi FileInfo) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	removed := m.removeFileLocked(partition, oldKey)
+	if !m.keyInPartitionLocked(partition, oldKey) {
+		return false
+	}
+	m.removeFileLocked(partition, oldKey)
 	m.addFileLocked(partition, fi)
-	return removed
+	return true
+}
+
+// ReplaceFiles is ReplaceFile for a merge: it registers fi and removes every
+// key in oldKeys in one critical section, and only if ALL of oldKeys are still
+// present. It is compaction's publish step. Without the condition, a source
+// that was concurrently rewritten (or merged by a racing compaction) would be
+// removed as a no-op while fi — built from that source's ORIGINAL rows — was
+// added, duplicating everything the source held.
+//
+// Returns false, changing nothing, when any source is gone.
+//
+// Safe for concurrent use.
+func (m *Manifest) ReplaceFiles(partition string, oldKeys []string, fi FileInfo) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, k := range oldKeys {
+		if !m.keyInPartitionLocked(partition, k) {
+			return false
+		}
+	}
+	for _, k := range oldKeys {
+		m.removeFileLocked(partition, k)
+	}
+	m.addFileLocked(partition, fi)
+	return true
+}
+
+// keyInPartitionLocked reports whether key is registered under partition.
+// Caller must hold m.mu.
+func (m *Manifest) keyInPartitionLocked(partition, key string) bool {
+	p, ok := m.byKey[key]
+	return ok && p == partition
 }
 
 // LiveAggregate is the single source of truth for global storage

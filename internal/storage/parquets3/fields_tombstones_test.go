@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"context"
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -10,7 +11,9 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -466,5 +469,120 @@ func TestRemapSlotFieldHits(t *testing.T) {
 	remapSlotFieldHits(empty)
 	if len(empty) != 0 {
 		t.Errorf("empty hits grew to %v", empty)
+	}
+}
+
+// --- pmeta catalog rebuild after rows are removed ------------------------------
+
+func TestPmetaRebuildCatalogValues_NoCatalogOrNoKeysIsANoOp(t *testing.T) {
+	s := testStorage()
+	s.PmetaRebuildCatalogValues([]string{"logs/dt=2026-01-01/hour=00/a.parquet"})
+	s.PmetaOnRewritten(nil, []string{"logs/dt=2026-01-01/hour=00/a.parquet"}, nil)
+
+	s.catalog = newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
+	s.PmetaRebuildCatalogValues(nil)
+}
+
+// TestPmetaRebuildCatalogValues_SkipsPartitionsWithUnlabeledFiles pins the
+// safety valve. A manifest built from an S3 listing carries no labels; replaying
+// such a file contributes nothing, so a rebuild would silently shrink the
+// catalog to a PARTIAL list that field_values then serves as authoritative —
+// worse than the stale superset it would replace.
+func TestPmetaRebuildCatalogValues_SkipsPartitionsWithUnlabeledFiles(t *testing.T) {
+	s := testStorage()
+	s.catalog = newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
+
+	labeled := "logs/dt=2026-09-05/hour=01/labeled.parquet"
+	unlabeled := "logs/dt=2026-09-05/hour=01/unlabeled.parquet"
+	part := manifest.ExtractTenantPartition(labeled)
+
+	s.catalog.OnFileFlush(pmeta.FileContribution{Partition: part, FileKey: labeled,
+		Labels: map[string][]string{"service.name": {"api", "worker"}}})
+	s.manifest.AddFile("dt=2026-09-05/hour=01", manifest.FileInfo{Key: labeled, RowCount: 2,
+		Labels: map[string][]string{"service.name": {"api"}}})
+	s.manifest.AddFile("dt=2026-09-05/hour=01", manifest.FileInfo{Key: unlabeled, RowCount: 5})
+
+	before := metrics.DeleteCatalogRebuilds.Get("skipped_unlabeled_file")
+	s.PmetaRebuildCatalogValues([]string{labeled})
+	if metrics.DeleteCatalogRebuilds.Get("skipped_unlabeled_file") <= before {
+		t.Error("a skipped rebuild must be counted")
+	}
+	got := s.catalog.FieldValues(part, "service.name", "", 0)
+	if !reflect.DeepEqual(got, []string{"api", "worker"}) {
+		t.Fatalf("a skipped rebuild must leave the catalog untouched, got %v", got)
+	}
+
+	// Once every file is labeled the rebuild runs and is exact.
+	s.manifest.RemoveFile("dt=2026-09-05/hour=01", unlabeled)
+	beforeRebuilt := metrics.DeleteCatalogRebuilds.Get("rebuilt")
+	s.PmetaRebuildCatalogValues([]string{labeled})
+	if metrics.DeleteCatalogRebuilds.Get("rebuilt") <= beforeRebuilt {
+		t.Error("a completed rebuild must be counted")
+	}
+	if got := s.catalog.FieldValues(part, "service.name", "", 0); !reflect.DeepEqual(got, []string{"api"}) {
+		t.Fatalf("catalog after an exact rebuild = %v, want [api]", got)
+	}
+}
+
+func TestPartitionHourBounds(t *testing.T) {
+	h := time.Date(2026, 9, 5, 14, 0, 0, 0, time.UTC)
+	lo, hi := partitionHourBounds(h.Add(17*time.Minute).UnixNano(), h.Add(42*time.Minute).UnixNano())
+	if lo != h.UnixNano() {
+		t.Errorf("lo = %v, want the start of the hour %v", time.Unix(0, lo).UTC(), h)
+	}
+	if hi != h.Add(time.Hour).UnixNano()-1 {
+		t.Errorf("hi = %v, want the last nanosecond of the hour", time.Unix(0, hi).UTC())
+	}
+
+	// A window spanning hours covers every hour it touches.
+	lo, hi = partitionHourBounds(h.Add(59*time.Minute).UnixNano(), h.Add(61*time.Minute).UnixNano())
+	if lo != h.UnixNano() || hi != h.Add(2*time.Hour).UnixNano()-1 {
+		t.Errorf("spanning window widened to [%v, %v]", time.Unix(0, lo).UTC(), time.Unix(0, hi).UTC())
+	}
+
+	// Open-ended windows stay open instead of overflowing.
+	if lo, hi := partitionHourBounds(math.MinInt64, math.MaxInt64); lo != math.MinInt64 || hi != math.MaxInt64 {
+		t.Errorf("open window became [%d, %d]", lo, hi)
+	}
+	if _, hi := partitionHourBounds(0, math.MaxInt64-1); hi != math.MaxInt64-1 {
+		t.Errorf("a near-max end must not overflow, got %d", hi)
+	}
+}
+
+// TestFieldValues_TombstoneInTheSameHourGatesTheCatalog covers the catalog's
+// granularity: it answers with the value union of whole partition hours. A
+// tombstone later in the same hour, outside the query window, still hides rows
+// whose values that union lists, so the fast path must not be used — the row
+// scan over the exact window is the right answer.
+func TestFieldValues_TombstoneInTheSameHourGatesTheCatalog(t *testing.T) {
+	f := newFieldsTombstoneFixture(t, true)
+
+	// The fixture's rows sit at "now"; a tombstone over a sliver of the same
+	// hour that does NOT overlap a narrow window around those rows.
+	now := time.Now()
+	hourStart := now.UTC().Truncate(time.Hour)
+	windowStart, windowEnd := now.Add(-time.Second).UnixNano(), now.Add(time.Second).UnixNano()
+	tsStart := hourStart.UnixNano()
+	tsEnd := now.Add(-2 * time.Second).UnixNano()
+	if tsEnd <= tsStart {
+		t.Skip("the fixture rows landed at the very start of an hour; no room for a same-hour tombstone before them")
+	}
+
+	store := delete.NewTombstoneStore()
+	store.Add(delete.Tombstone{ID: "same-hour", Query: "*", StartNs: tsStart, EndNs: tsEnd, Mode: "hide"})
+	f.storage.SetTombstoneStore(store)
+
+	q := mustParseQueryWithTime(t, "*", windowStart, windowEnd)
+	before := metrics.DeleteFieldsScanFallback.Get("field_values")
+	got, err := f.storage.GetFieldValues(context.Background(), nil, q, "service.name", 100)
+	if err != nil {
+		t.Fatalf("GetFieldValues: %v", err)
+	}
+	if metrics.DeleteFieldsScanFallback.Get("field_values") <= before {
+		t.Error("a tombstone in the same partition hour must gate the catalog fast path")
+	}
+	// Nothing in the exact window is tombstoned, so the scan returns everything.
+	if want := []string{"api-gateway", "order-service"}; !reflect.DeepEqual(valueStrings(got), want) {
+		t.Fatalf("values = %v, want %v", valueStrings(got), want)
 	}
 }

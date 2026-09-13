@@ -1,6 +1,9 @@
 package parquets3
 
 import (
+	"math"
+	"time"
+
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
@@ -35,6 +38,27 @@ func (s *Storage) fieldsTombstones(startNs, endNs int64) []tombstone {
 		return nil
 	}
 	return ts
+}
+
+// partitionHourBounds widens [startNs, endNs] to the whole partition hours it
+// touches. The pmeta catalog answers field_values with the value union of every
+// partition hour a query window touches, not just the rows inside the window; a
+// tombstone in the same hour but outside the exact window still hides rows whose
+// values that union lists. So the catalog fast path is gated on tombstones
+// overlapping these bounds, while the row scan applies tombstones to the exact
+// window. Open-ended windows (the math.MinInt64 / MaxInt64 a query without time
+// bounds carries) stay open rather than overflowing.
+func partitionHourBounds(startNs, endNs int64) (int64, int64) {
+	const hour = int64(time.Hour)
+	lo := startNs
+	if lo > math.MinInt64+hour {
+		lo = time.Unix(0, startNs).UTC().Truncate(time.Hour).UnixNano()
+	}
+	hi := endNs
+	if hi < math.MaxInt64-2*hour {
+		hi = time.Unix(0, endNs).UTC().Truncate(time.Hour).UnixNano() + hour - 1
+	}
+	return lo, hi
 }
 
 // addTombstoneProjection adds every Parquet column a tombstone predicate needs

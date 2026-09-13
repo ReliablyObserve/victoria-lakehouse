@@ -721,6 +721,11 @@ var (
 	// for correctness (the stale object is unmanifested and the orphan sweep
 	// reclaims it) but it costs storage until then.
 	DeleteRewriteOldObjectErrors = NewCounter("lakehouse_delete_rewrite_old_object_errors_total")
+	// DeleteRewriteSuperseded counts rewrites discarded because their source
+	// left the manifest between the read and the publish — a concurrent
+	// compaction merged it. The tombstone follows the rows to the compacted
+	// output instead; publishing would have duplicated them.
+	DeleteRewriteSuperseded = NewCounter("lakehouse_delete_rewrite_superseded_total")
 	// DeleteRewriteAlreadyReaped counts keys the rewriter found already gone
 	// from storage — the self-healing path after a crash between the manifest
 	// swap and the tombstone bookkeeping.
@@ -745,8 +750,21 @@ var (
 	// tombstone overlapped the window and the answer had to be row-verified.
 	DeleteFieldsScanFallback = NewCounterVec("lakehouse_delete_fields_scan_fallback_total", "endpoint")
 	// DeleteCompactionKeysReaped counts source keys marked reaped because a
-	// compaction merged them and dropped their tombstoned rows.
+	// compaction merged them (the tombstone follows the rows to the output).
 	DeleteCompactionKeysReaped = NewCounter("lakehouse_delete_compaction_keys_reaped_total")
+	// CompactionPublishConflicts counts compactions abandoned at publish
+	// because one of their sources had already left the manifest (a
+	// concurrent delete rewrite, or a racing compaction). The merged output is
+	// discarded rather than registered next to whatever replaced the source.
+	CompactionPublishConflicts = NewCounter("lakehouse_compaction_publish_conflicts_total")
+	// DeleteCatalogRebuilds counts pmeta field-catalog value rebuilds after rows
+	// were removed, by result ("rebuilt", "skipped_unlabeled_file"). A skipped
+	// rebuild leaves the previous (over-inclusive) value set in place.
+	DeleteCatalogRebuilds = NewCounterVec("lakehouse_delete_catalog_rebuilds_total", "result")
+	// DeleteTombstoneKeysDiscovered counts files added to a tombstone's work
+	// list because they overlap its range but were not in AffectedKeys — the
+	// outputs of compactions that carried its rows forward, and late flushes.
+	DeleteTombstoneKeysDiscovered = NewCounter("lakehouse_delete_tombstone_keys_discovered_total")
 )
 
 // Resource bound metrics — K8s-style request/limit/usage per resource surface.

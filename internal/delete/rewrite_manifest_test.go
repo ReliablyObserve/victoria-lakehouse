@@ -2,6 +2,7 @@ package delete
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -324,22 +325,30 @@ func TestPublishRewrite_RejectsAFailedSwap(t *testing.T) {
 		RowsRemoved: 2,
 		BytesAfter:  100,
 	}
-	err := publishRewrite(f.wrapped, res)
+	fi, err := publishRewrite(f.wrapped, res)
 	if err == nil {
 		t.Fatal("a swap that did not take effect must be reported, not assumed")
 	}
 	if res.Published {
 		t.Fatal("a failed publish must not mark the result published — Commit would then delete the only copy")
 	}
+	if fi != nil {
+		t.Fatalf("a failed publish must not report a registered entry, got %+v", fi)
+	}
 }
 
 func TestPublishRewrite_RequiresAManifest(t *testing.T) {
-	if err := publishRewrite(nil, &RewriteResult{OldKey: "k", RowsRemoved: 1}); err == nil {
+	if _, err := publishRewrite(nil, &RewriteResult{OldKey: "k", RowsRemoved: 1}); err == nil {
 		t.Fatal("publishing without a manifest must be an error")
 	}
 }
 
-func TestPublishRewrite_FilesAnUnmanifestedSourceUnderItsKeyPartition(t *testing.T) {
+// TestPublishRewrite_RefusesASupersededSource covers the concurrent-compaction
+// case: the source left the manifest between the rewrite's read and its
+// publish. Registering the replacement anyway would put the kept rows in the
+// manifest twice (the replacement and the compacted output) and bring the
+// deleted rows back through the compacted copy.
+func TestPublishRewrite_RefusesASupersededSource(t *testing.T) {
 	m := lhmanifest.New("b", "")
 	res := &RewriteResult{
 		OldKey:      fixtureKey,
@@ -348,16 +357,44 @@ func TestPublishRewrite_FilesAnUnmanifestedSourceUnderItsKeyPartition(t *testing
 		RowsRemoved: 1,
 		BytesAfter:  10,
 	}
-	if err := publishRewrite(m, res); err != nil {
-		t.Fatalf("publish: %v", err)
+	fi, err := publishRewrite(m, res)
+	if !errors.Is(err, errSourceSuperseded) {
+		t.Fatalf("publish of a source that is not registered must report supersession, got %v", err)
 	}
-	// Even though the source was never manifested, the replacement must end up
-	// managed — otherwise the orphan sweep reclaims it.
-	if !m.HasKey(res.NewKey) {
-		t.Fatal("replacement must be registered even when the source was not")
+	if fi != nil || res.Published {
+		t.Fatal("a superseded rewrite must not be registered or marked published")
 	}
-	if p, ok := m.PartitionForKey(res.NewKey); !ok || p != "dt=2026-03-01/hour=07" {
-		t.Fatalf("replacement filed under partition %q", p)
+	if m.HasKey(res.NewKey) {
+		t.Fatal("the replacement must not enter the manifest")
+	}
+
+	// The every-row-removed path has the same guard.
+	res0 := &RewriteResult{OldKey: fixtureKey, RowsKept: 0, RowsRemoved: 3}
+	if _, err := publishRewrite(m, res0); !errors.Is(err, errSourceSuperseded) {
+		t.Fatalf("an all-rows-removed publish of an unregistered source must report supersession, got %v", err)
+	}
+}
+
+// TestPublishRewrite_RefusalWithTheSourceStillPresentIsAFailure pins the
+// classification the scheduler depends on. Only a verifiably-gone source may be
+// treated as superseded (key marked reaped, tombstone follows the rows). A
+// refusal while the source is still registered is a failure to retry — marking
+// that key reaped would retire the tombstone with its rows still in the source.
+func TestPublishRewrite_RefusalWithTheSourceStillPresentIsAFailure(t *testing.T) {
+	f := newRewriteFixture(t)
+	f.wrapped.failReplace = true
+
+	res := &RewriteResult{OldKey: f.key, NewKey: "logs/dt=2026-03-01/hour=07/n.parquet", RowsKept: 3, RowsRemoved: 2, BytesAfter: 5}
+	_, err := publishRewrite(f.wrapped, res)
+	if err == nil || errors.Is(err, errSourceSuperseded) {
+		t.Fatalf("a refusal with the source still registered must be a plain failure, got %v", err)
+	}
+
+	f.wrapped.failRemove = true
+	res0 := &RewriteResult{OldKey: f.key, RowsKept: 0, RowsRemoved: 5}
+	_, err = publishRewrite(f.wrapped, res0)
+	if err == nil || errors.Is(err, errSourceSuperseded) {
+		t.Fatalf("a refused removal with the source still registered must be a plain failure, got %v", err)
 	}
 }
 
@@ -380,13 +417,15 @@ func TestManifestReplaceFile_IsASingleSwap(t *testing.T) {
 		t.Fatalf("manifest rows = %d, want 3", got)
 	}
 
-	// Replacing a key that is not there still adds the new entry, and says so.
+	// Replacing a key that is not there changes nothing: the swap is
+	// conditional so a rewrite racing a compaction can never register a second
+	// copy of the source's rows.
 	if m.ReplaceFile("dt=2026-03-01/hour=07", "logs/dt=2026-03-01/hour=07/absent.parquet",
 		lhmanifest.FileInfo{Key: "logs/dt=2026-03-01/hour=07/n2.parquet", RowCount: 1}) {
 		t.Fatal("ReplaceFile should report false when the old key was absent")
 	}
-	if !m.HasKey("logs/dt=2026-03-01/hour=07/n2.parquet") {
-		t.Fatal("new key must be added even when the old one was absent")
+	if m.HasKey("logs/dt=2026-03-01/hour=07/n2.parquet") {
+		t.Fatal("a refused swap must not register the replacement")
 	}
 }
 
@@ -462,7 +501,10 @@ func TestRewrittenFileInfo_InheritsWhatARewriteCannotChange(t *testing.T) {
 		Labels:            map[string][]string{"service.name": {"web", "api"}},
 		ColumnStats:       map[string]lhmanifest.ColumnMinMax{"x": {}},
 	}
-	res := &RewriteResult{NewKey: "new", RowsKept: 2, BytesAfter: 7, RawBytes: 9}
+	res := &RewriteResult{
+		NewKey: "new", RowsKept: 2, BytesAfter: 7, RawBytes: 9,
+		Labels: map[string][]string{"service.name": {"web"}},
+	}
 
 	fi := rewrittenFileInfo(old, res)
 	for _, tc := range []struct{ name, got, want string }{
@@ -478,11 +520,15 @@ func TestRewrittenFileInfo_InheritsWhatARewriteCannotChange(t *testing.T) {
 	if fi.CompactionLevel != old.CompactionLevel {
 		t.Errorf("compaction level = %d, want inherited %d", fi.CompactionLevel, old.CompactionLevel)
 	}
-	// Labels and column stats are a superset after a row-removing rewrite,
-	// which is the safe direction: it can only make pruning more conservative.
-	if len(fi.Labels["service.name"]) != 2 {
-		t.Error("labels must be inherited (a superset is safe; a missing label would skip a file that has matching rows)")
+	// Labels are RECOMPUTED, never inherited. They feed the pmeta field
+	// catalog, which field_values serves verbatim: the old file's "api" value
+	// belonged only to rows the rewrite removed, and inheriting it would put
+	// the deleted value straight back into every dropdown.
+	if got := fi.Labels["service.name"]; len(got) != 1 || got[0] != "web" {
+		t.Errorf("labels = %v, want the recomputed [web] — an inherited superset resurrects deleted values", got)
 	}
+	// Column stats are inherited: a superset min/max is the safe direction
+	// for range pruning, and stats are never served as values.
 	if len(fi.ColumnStats) != 1 {
 		t.Error("column stats must be inherited")
 	}

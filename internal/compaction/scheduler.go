@@ -64,6 +64,10 @@ type SchedulerConfig struct {
 	// compaction drop tombstoned rows rather than copy them forward. Optional;
 	// nil keeps the pre-existing behaviour.
 	Tombstones *delete.TombstoneStore
+	// TombstoneRewriteDelay is forwarded with it: the un-delete window inside
+	// which compaction must carry a tombstone's rows forward (see
+	// CompactorConfig.TombstoneRewriteDelay).
+	TombstoneRewriteDelay time.Duration
 	// OnCompacted is fired after a successful compaction. blooms carries the
 	// combined pmeta bloom of each output (outputKey -> column -> values) so the
 	// embedder can feed the bloom facet (compacted files stay bloom-prunable).
@@ -141,6 +145,7 @@ type Scheduler struct {
 	compactionCfg    config.CompactionConfig
 	tenantLookup     func(tenantPrefix string) []int
 	tombstones       *delete.TombstoneStore
+	tombstoneDelay   time.Duration
 	onCompacted      func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string)
 
 	ringChangeRate int
@@ -206,6 +211,7 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 		compactionCfg:    cfg.CompactionConfig,
 		tenantLookup:     cfg.TenantCompressionLookup,
 		tombstones:       cfg.Tombstones,
+		tombstoneDelay:   cfg.TombstoneRewriteDelay,
 		onCompacted:      cfg.OnCompacted,
 		ringChangeRate:   rate,
 		drainTimeout:     drainTimeout,
@@ -412,6 +418,7 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 			CompactionConfig:        s.compactionCfg,
 			TenantCompressionLookup: s.tenantLookup,
 			Tombstones:              s.tombstones,
+			TombstoneRewriteDelay:   s.tombstoneDelay,
 		})
 
 		result, err := compactor.Compact(ctx, c.partition, selected, c.level)
@@ -499,6 +506,7 @@ func (s *Scheduler) ForceCompactPartition(ctx context.Context, partition string,
 		CompactionConfig:        s.compactionCfg,
 		TenantCompressionLookup: s.tenantLookup,
 		Tombstones:              s.tombstones,
+		TombstoneRewriteDelay:   s.tombstoneDelay,
 	})
 	result, err := compactor.Compact(ctx, partition, selected, level)
 

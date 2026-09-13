@@ -202,8 +202,10 @@ func TestSelfCheck_ReportsMissingDurability(t *testing.T) {
 func TestRewriteConcurrency_RaceWithReadersAndCompaction(t *testing.T) {
 	f := newRewriteFixture(t)
 
-	// A second scheduler over the same store, manifest and bucket: two pods
-	// racing the same tombstone, which is exactly what an HPA scale-out does.
+	// A second scheduler over the same store, manifest and bucket: two rewrite
+	// loops racing the same tombstone inside one process. (Separate pods have
+	// separate manifests; that case is not covered by this test — see the
+	// multi-instance bounds in docs/operations.md.)
 	other := NewRewriteScheduler(RewriteSchedulerConfig{
 		Store:          f.store,
 		Rewriter:       NewRewriter(f.pool, "logs/", 1000, "logs"),
