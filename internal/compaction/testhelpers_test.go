@@ -49,3 +49,19 @@ func (m *mockPool) Delete(_ context.Context, key string) error {
 	delete(m.uploaded, key)
 	return nil
 }
+
+// get returns a stored object under the mutex. Tests that read back a
+// compacted output must go through this rather than the map, so the race
+// detector reports only the races under test.
+func (m *mockPool) get(key string) []byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.uploaded[key]
+}
+
+// put seeds an object directly, the way a test stands up source files.
+func (m *mockPool) put(key string, data []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.uploaded[key] = append([]byte(nil), data...)
+}

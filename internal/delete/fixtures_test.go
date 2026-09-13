@@ -12,6 +12,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/testutil/storageinvariants"
 )
 
 var errInjected = errors.New("injected fault")
@@ -138,12 +139,16 @@ func (f *faultPool) Delete(ctx context.Context, key string) error {
 // hand-off. That is how the crash matrix reaches the windows between
 // "replacement uploaded" and "manifest updated" — the exact states a process
 // killed mid-rewrite leaves behind.
+// Each flag fires ONCE and then clears, matching faultPool: a crash is a single
+// event, and the retry that follows has to be clean for the test to show that
+// recovery converges.
 type failingManifest struct {
+	mu    sync.Mutex
 	inner ManifestUpdater
-	// failReplace makes ReplaceFile a no-op: the replacement object exists but
-	// the manifest never learns about it.
+	// failReplace makes the next ReplaceFile a no-op: the replacement object
+	// exists but the manifest never learns about it.
 	failReplace bool
-	// failRemove makes RemoveFile a no-op: the RowsKept == 0 path.
+	// failRemove makes the next RemoveFile a no-op: the RowsKept == 0 path.
 	failRemove bool
 }
 
@@ -158,14 +163,22 @@ func (f *failingManifest) PartitionForKey(key string) (string, bool) {
 }
 
 func (f *failingManifest) ReplaceFile(partition string, oldKey string, fi manifest.FileInfo) bool {
-	if f.failReplace {
+	f.mu.Lock()
+	fail := f.failReplace
+	f.failReplace = false
+	f.mu.Unlock()
+	if fail {
 		return false
 	}
 	return f.inner.ReplaceFile(partition, oldKey, fi)
 }
 
 func (f *failingManifest) RemoveFile(partition string, key string) {
-	if f.failRemove {
+	f.mu.Lock()
+	fail := f.failRemove
+	f.failRemove = false
+	f.mu.Unlock()
+	if fail {
 		return
 	}
 	f.inner.RemoveFile(partition, key)
@@ -182,4 +195,43 @@ func mustGet(t *testing.T, pool interface{ Get(string) ([]byte, bool) }, key str
 		t.Fatalf("expected object at %s", key)
 	}
 	return data
+}
+
+// buildTestParquetWithSlots writes a Parquet file carrying the Tier-2
+// dedicated-slot binding in its footer KV, so a test can assert the rewriter
+// carries that binding into the replacement.
+func buildTestParquetWithSlots(t *testing.T, rows []schema.LogRow, slotJSON string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w := parquet.NewGenericWriter[schema.LogRow](&buf,
+		parquet.MaxRowsPerRowGroup(100),
+		parquet.KeyValueMetadata(schema.DedicatedSlotsMetaKey, slotJSON),
+	)
+	if _, err := w.Write(rows); err != nil {
+		t.Fatalf("write test parquet: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close test parquet writer: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// tombstoneViews adapts the store to the invariant checker's dependency-free
+// view type. The checker cannot import this package (it is imported BY this
+// package's tests), so the conversion lives here.
+func tombstoneViews(store *TombstoneStore) []storageinvariants.TombstoneView {
+	if store == nil {
+		return nil
+	}
+	active := store.Active()
+	out := make([]storageinvariants.TombstoneView, 0, len(active))
+	for _, ts := range active {
+		out = append(out, storageinvariants.TombstoneView{
+			ID:           ts.ID,
+			Mode:         ts.Mode,
+			AffectedKeys: ts.AffectedKeys,
+			Reaped:       ts.Reaped,
+		})
+	}
+	return out
 }

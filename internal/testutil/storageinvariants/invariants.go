@@ -21,7 +21,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 )
 
@@ -36,12 +35,37 @@ type Bucket interface {
 type State struct {
 	Manifest *manifest.Manifest
 	Bucket   Bucket
-	// Tombstones may be nil for checks that do not involve deletes.
-	Tombstones *delete.TombstoneStore
+	// Tombstones may be empty for checks that do not involve deletes. It is a
+	// plain view rather than the store itself so this package stays free of a
+	// dependency on internal/delete — which would make it unusable from that
+	// package's own tests (import cycle), and those are exactly the tests that
+	// need it most.
+	Tombstones []TombstoneView
 	// KeyFilter restricts the comparison to keys the test owns, so a fixture
 	// holding unrelated objects (snapshots, sidecars) does not fail the
 	// parquet-set checks. Nil means "every key ending in .parquet".
 	KeyFilter func(key string) bool
+}
+
+// TombstoneView is the part of a tombstone the invariants care about.
+type TombstoneView struct {
+	ID           string
+	Mode         string
+	AffectedKeys []string
+	Reaped       map[string]bool
+}
+
+// FullyReaped reports whether every key this tombstone covers is rewritten.
+func (t TombstoneView) FullyReaped() bool {
+	if len(t.AffectedKeys) == 0 {
+		return false
+	}
+	for _, k := range t.AffectedKeys {
+		if !t.Reaped[k] {
+			return false
+		}
+	}
+	return true
 }
 
 // Violation is one broken invariant.
@@ -126,21 +150,19 @@ func Check(st State) []Violation {
 	// key is reaped has no work left; leaving it in Active() makes the
 	// scheduler re-examine it forever and keeps the manifest-metadata query
 	// fast paths disabled for the life of the process.
-	if st.Tombstones != nil {
-		for _, ts := range st.Tombstones.Active() {
-			if ts.Mode == "hide" {
-				continue
-			}
-			if ts.FullyReaped() {
-				out = append(out, Violation{"eternally_active_tombstone",
-					fmt.Sprintf("tombstone %s is fully reaped but still active", ts.ID)})
-			}
-			// I4b — a key recorded as reaped must be gone from the manifest.
-			for key, reaped := range ts.Reaped {
-				if reaped && manifestKeys[key] {
-					out = append(out, Violation{"reaped_key_still_manifested",
-						fmt.Sprintf("tombstone %s reaped %s but the manifest still lists it", ts.ID, key)})
-				}
+	for _, ts := range st.Tombstones {
+		if ts.Mode == "hide" {
+			continue
+		}
+		if ts.FullyReaped() {
+			out = append(out, Violation{"eternally_active_tombstone",
+				fmt.Sprintf("tombstone %s is fully reaped but still active", ts.ID)})
+		}
+		// I4b — a key recorded as reaped must be gone from the manifest.
+		for key, reaped := range ts.Reaped {
+			if reaped && manifestKeys[key] {
+				out = append(out, Violation{"reaped_key_still_manifested",
+					fmt.Sprintf("tombstone %s reaped %s but the manifest still lists it", ts.ID, key)})
 			}
 		}
 	}
