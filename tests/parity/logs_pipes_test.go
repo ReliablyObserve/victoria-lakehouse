@@ -17,8 +17,10 @@ func TestParity_Pipes(t *testing.T) {
 		{Name: "sort_time_desc", Endpoint: queryEndpoint(), Params: map[string]string{"query": "* | sort by(_time) desc", "limit": "10"}, Compare: RowsMatch},
 		{Name: "limit_10", Endpoint: queryEndpoint(), Params: map[string]string{"query": "* | sort by (_time) desc | limit 10", "limit": "10"}, Compare: RowsMatch},
 		{Name: "limit_1", Endpoint: queryEndpoint(), Params: map[string]string{"query": "* | sort by (_time) desc | limit 1", "limit": "1"}, Compare: RowsMatch},
-		{Name: "uniq_level", Endpoint: queryEndpoint(), Params: map[string]string{"query": "* | uniq by(level)"}, Compare: SetEqual},
-		{Name: "uniq_service", Endpoint: queryEndpoint(), Params: map[string]string{"query": "* | uniq by(service.name)"}, Compare: SetEqual},
+		// `uniq by(x)` emits {"x": "..."} rows with no "value" key — without
+		// ValueField the extracted set is empty and compares equal to anything.
+		{Name: "uniq_level", Endpoint: queryEndpoint(), Params: map[string]string{"query": "* | uniq by(level)"}, Compare: SetEqual, ValueField: "level"},
+		{Name: "uniq_service", Endpoint: queryEndpoint(), Params: map[string]string{"query": "* | uniq by(service.name)"}, Compare: SetEqual, ValueField: "service.name"},
 		{Name: "top_services", Endpoint: queryEndpoint(), Params: map[string]string{"query": "* | top 5 by(service.name)"}, Compare: RowsMatch},
 		{Name: "pipe_chain_fields_sort", Endpoint: queryEndpoint(), Params: map[string]string{"query": "* | fields _time, level | sort by(_time) | limit 5", "limit": "5"}, Compare: RowsMatch},
 		{Name: "pipe_chain_filter_stats", Endpoint: statsEndpoint(), Params: map[string]string{"query": `level:="ERROR" | stats by(service.name) count() rows`}, Compare: StructureMatch},

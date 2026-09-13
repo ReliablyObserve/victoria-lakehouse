@@ -38,7 +38,7 @@ func TestParity_TracesExtended(t *testing.T) {
 		{
 			Name:     "traces_stats_by_service_name",
 			Endpoint: statsEndpoint(),
-			Params:   map[string]string{"query": `span_id:* | stats by("resource_attr:service.name") count() rows`},
+			Params:   map[string]string{"query": "span_id:* | stats by(`resource_attr:service.name`) count() rows"},
 			Compare:  StructureMatch,
 		},
 		// 5. Stats by status
@@ -68,12 +68,14 @@ func TestParity_TracesExtended(t *testing.T) {
 			Endpoint: queryEndpoint(),
 			Params:   map[string]string{"query": `span_id:* | uniq by(name)`},
 			Compare:  SetEqual,
+			// `uniq by(name)` rows are {"name": "..."} — no "value" key.
+			ValueField: "name",
 		},
 		// 9. Hits filtered by service
 		{
 			Name:     "traces_hits_filtered",
 			Endpoint: hitsEndpoint(),
-			Params:   map[string]string{"query": `span_id:* resource_attr:service.name:="api-gateway"`, "step": "3600s"},
+			Params:   map[string]string{"query": "span_id:* `resource_attr:service.name`:=\"api-gateway\"", "step": "3600s"},
 			Compare:  BucketMatch,
 		},
 		// 10. Count by kind
@@ -87,14 +89,14 @@ func TestParity_TracesExtended(t *testing.T) {
 		{
 			Name:     "traces_filter_http_method",
 			Endpoint: statsEndpoint(),
-			Params:   map[string]string{"query": `span_id:* span_attr:http.method:="GET" | stats count() rows`},
+			Params:   map[string]string{"query": "span_id:* `span_attr:http.method`:=\"GET\" | stats count() rows"},
 			Compare:  CountEqual,
 		},
 		// 12. Filter by any DB span
 		{
 			Name:     "traces_filter_db_system",
 			Endpoint: statsEndpoint(),
-			Params:   map[string]string{"query": `span_id:* span_attr:db.system:* | stats count() rows`},
+			Params:   map[string]string{"query": "span_id:* `span_attr:db.system`:* | stats count() rows"},
 			Compare:  CountEqual,
 		},
 		// 14. Sort by duration descending — verify values are sorted correctly.
@@ -110,14 +112,14 @@ func TestParity_TracesExtended(t *testing.T) {
 		{
 			Name:     "traces_filter_resource_region",
 			Endpoint: statsEndpoint(),
-			Params:   map[string]string{"query": `span_id:* resource_attr:cloud.region:="us-east-1" | stats count() rows`},
+			Params:   map[string]string{"query": "span_id:* `resource_attr:cloud.region`:=\"us-east-1\" | stats count() rows"},
 			Compare:  CountEqual,
 		},
 		// 16. Combined AND filter
 		{
 			Name:     "traces_and_filter_combined",
 			Endpoint: statsEndpoint(),
-			Params:   map[string]string{"query": `span_id:* resource_attr:service.name:="api-gateway" AND kind:="1" | stats count() rows`},
+			Params:   map[string]string{"query": "span_id:* `resource_attr:service.name`:=\"api-gateway\" AND kind:=\"1\" | stats count() rows"},
 			Compare:  CountEqual,
 		},
 		// 17. NOT filter (non-error spans)
@@ -154,7 +156,7 @@ func TestParity_TracesExtended(t *testing.T) {
 				params := url.Values{
 					"start": {fmt.Sprintf("%d", now.Add(-48*time.Hour).UnixNano())},
 					"end":   {fmt.Sprintf("%d", now.UnixNano())},
-					"query": {fmt.Sprintf(`span_id:* resource_attr:service.name:="%s" status_code:="2" | stats count() rows`, svc)},
+					"query": {fmt.Sprintf("span_id:* `resource_attr:service.name`:=%q status_code:=\"2\" | stats count() rows", svc)},
 				}
 				ref := fetch(t, vtBaseURL, statsEndpoint(), params)
 				sut := fetch(t, lhtBaseURL, statsEndpoint(), params)

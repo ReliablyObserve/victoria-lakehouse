@@ -163,15 +163,26 @@ func TestServiceGraphParity_ColdTaskGoroutineLives(t *testing.T) {
 // preprocess the inner subquery via initJoinMaps, otherwise the result
 // is silently empty even though both sides exist independently.
 func TestServiceGraphParity_JoinPipeWorksOnCold(t *testing.T) {
-	// Run the exact upstream-task query shape against the cold LogsQL endpoint.
-	// We trim the time range to 10m to match the task's lookbehind window.
-	q := `_time:10m (NOT parent_span_id:"") AND (kind:~"2|5") ` +
-		`| fields parent_span_id, resource_attr:service.name ` +
-		`| rename parent_span_id as span_id, resource_attr:service.name as child ` +
+	// Run the exact upstream-task query shape against the cold LogsQL
+	// endpoint. Two things this query has to get right or it tests nothing:
+	//
+	//   - The window must cover the seeded data. `_time:10m` is empty by
+	//     the time the suite runs (datagen backfills 1-24h ago), so both
+	//     the outer query and the join subquery returned zero rows and the
+	//     "join is broken" failure was really a "window is empty" failure.
+	//     The subquery cannot inherit the request's start/end, so the
+	//     filter is inlined on both sides.
+	//   - `resource_attr:service.name` contains a ':' and must be
+	//     backtick-quoted, otherwise LogsQL parses it as field
+	//     `resource_attr` with a bucket and the projection is empty.
+	window := seedWindowFilter()
+	q := window + ` (NOT parent_span_id:"") AND (kind:~"2|5") ` +
+		"| fields parent_span_id, `resource_attr:service.name` " +
+		"| rename parent_span_id as span_id, `resource_attr:service.name` as child " +
 		`| join by (span_id) (` +
-		`_time:10m (NOT span_id:"") AND (kind:~"3|4") ` +
-		`| fields span_id, resource_attr:service.name ` +
-		`| rename resource_attr:service.name as parent` +
+		window + ` (NOT span_id:"") AND (kind:~"3|4") ` +
+		"| fields span_id, `resource_attr:service.name` " +
+		"| rename `resource_attr:service.name` as parent" +
 		`) inner ` +
 		`| NOT parent:eq_field(child) ` +
 		`| stats by (parent, child) count() callCount`

@@ -38,10 +38,11 @@ func getTraceID(t *testing.T, baseURL string) string {
 }
 
 func TestParity_Traces_Jaeger(t *testing.T) {
-	// VT's Jaeger handler panics when reading LH trace data because
-	// start_time_unix_nano is stored as a formatted timestamp string.
-	// The Jaeger handler rewrite is tracked as a separate task.
-	t.Skip("Jaeger handler panics on LH data format — requires handler rewrite (Task 6)")
+	// The blanket skip that used to sit here claimed the Jaeger handler
+	// panics on LH data. It does not: the sibling Jaeger tests in
+	// coldhot_endpoint_parity_test.go exercise the same handlers on the
+	// same stack and pass. Any genuinely failing assertion belongs to the
+	// one subtest that carries it, never to the whole file.
 
 	t.Run("jaeger_services", func(t *testing.T) {
 		ref := fetch(t, vtBaseURL, "/select/jaeger/api/services", nil)
@@ -258,9 +259,14 @@ func TestParity_Traces_LogsQL(t *testing.T) {
 		compareParity(t, ParityCase{Compare: BucketMatch}, ref, sut)
 	})
 
+	// The trace service name lives at `resource_attr:service.name` on VT.
+	// The field name contains a ':' so it must be backtick-quoted, and the
+	// bare `service.name` spelling is a Lakehouse-only alias VT does not
+	// have — see traces_service_name_is_lh_only_alias below and
+	// docs/parity-and-gaps.md.
 	t.Run("traces_filter_service", func(t *testing.T) {
 		params := tracesFullRange()
-		params.Set("query", `span_id:* service.name:="api-gateway" | stats count() rows`)
+		params.Set("query", "span_id:* `resource_attr:service.name`:=\"api-gateway\" | stats count() rows")
 		ref := fetch(t, vtBaseURL, "/select/logsql/stats_query", params)
 		sut := fetch(t, lhtBaseURL, "/select/logsql/stats_query", params)
 		compareParity(t, ParityCase{Compare: CountEqual}, ref, sut)
@@ -283,10 +289,43 @@ func TestParity_Traces_LogsQL(t *testing.T) {
 
 	t.Run("traces_stats_by_service", func(t *testing.T) {
 		params := tracesFullRange()
-		params.Set("query", "span_id:* | stats by(service.name) count() rows")
+		params.Set("query", "span_id:* | stats by(`resource_attr:service.name`) count() rows")
 		ref := fetch(t, vtBaseURL, "/select/logsql/stats_query", params)
 		sut := fetch(t, lhtBaseURL, "/select/logsql/stats_query", params)
 		compareParity(t, ParityCase{Compare: StructureMatch}, ref, sut)
+	})
+
+	// The Lakehouse traces schema promotes a bare `service.name` column
+	// alongside VT's `resource_attr:service.name`. VT has no such field, so
+	// this is an intentional, permanent difference rather than a gap: cold
+	// answers the alias, hot returns nothing. Recorded in
+	// docs/parity-and-gaps.md under "Intentional differences".
+	t.Run("traces_service_name_is_lh_only_alias", func(t *testing.T) {
+		params := tracesFullRange()
+		params.Set("query", `span_id:* service.name:="api-gateway" | stats count() rows`)
+		ref := fetch(t, vtBaseURL, "/select/logsql/stats_query", params)
+		sut := fetch(t, lhtBaseURL, "/select/logsql/stats_query", params)
+		if ref.StatusCode != 200 || sut.StatusCode != 200 {
+			t.Fatalf("status ref=%d sut=%d", ref.StatusCode, sut.StatusCode)
+		}
+		hot, err := extractVectorCount(ref.Body)
+		if err != nil {
+			t.Fatalf("VT extractVectorCount: %v", err)
+		}
+		cold, err := extractVectorCount(sut.Body)
+		if err != nil {
+			t.Fatalf("LHT extractVectorCount: %v", err)
+		}
+		if hot != 0 {
+			t.Errorf("VT answered the bare service.name alias with %v rows — it has "+
+				"no such field, so either VT gained one or the query stopped "+
+				"exercising the alias", hot)
+		}
+		if cold == 0 {
+			t.Error("LH returned 0 rows for its own service.name alias — the " +
+				"promoted alias column regressed")
+		}
+		t.Logf("service.name alias: hot=%v (expected 0) cold=%v (expected >0)", hot, cold)
 	})
 
 	t.Run("traces_empty_range", func(t *testing.T) {
@@ -458,7 +497,7 @@ func TestParity_Traces_LogsQL(t *testing.T) {
 		for _, svc := range []string{"api-gateway", "order-service", "user-service"} {
 			t.Run(svc, func(t *testing.T) {
 				params := tracesFullRange()
-				params.Set("query", fmt.Sprintf(`span_id:* service.name:="%s" | stats count() rows`, svc))
+				params.Set("query", fmt.Sprintf("span_id:* `resource_attr:service.name`:=%q | stats count() rows", svc))
 				ref := fetch(t, vtBaseURL, "/select/logsql/stats_query", params)
 				sut := fetch(t, lhtBaseURL, "/select/logsql/stats_query", params)
 				compareParity(t, ParityCase{Compare: CountEqual}, ref, sut)

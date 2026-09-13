@@ -53,11 +53,11 @@ func TestParity_PipesGapfill(t *testing.T) {
 			{Name: "dedup_by_level", Endpoint: queryEndpoint(), Params: map[string]string{
 				"query": "* | sort by(_time) desc | uniq by(level)",
 				"limit": "20",
-			}, Compare: SetEqual},
+			}, Compare: SetEqual, ValueField: "level"},
 			{Name: "dedup_by_service", Endpoint: queryEndpoint(), Params: map[string]string{
 				"query": "* | sort by(_time) desc | uniq by(service.name)",
 				"limit": "20",
-			}, Compare: SetEqual},
+			}, Compare: SetEqual, ValueField: "service.name"},
 		}
 		RunParity(t, vlBaseURL, lhBaseURL, cases)
 	})

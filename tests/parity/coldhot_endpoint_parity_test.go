@@ -187,7 +187,11 @@ func TestParity_LogsQL_ServiceFilterFindsData(t *testing.T) {
 		t.Skip("no services to test")
 	}
 	svc := hot[0]
-	q := fmt.Sprintf(`_time:1h resource_attr:service.name:=%q | stats count() as n`, svc)
+	// The field name contains a ':' so it MUST be backtick-quoted —
+	// unquoted, LogsQL reads `resource_attr` as the field and
+	// `service.name:="..."` as a bucket, which matches nothing and turns
+	// this into a silent skip instead of a comparison.
+	q := fmt.Sprintf("%s `resource_attr:service.name`:=%q | stats count() as n", seedWindowFilter(), svc)
 	hotN := logsqlStatsCount(t, vtBaseURL, q)
 	coldN := logsqlStatsCount(t, lhtBaseURL, q)
 	if hotN == 0 {
@@ -201,7 +205,7 @@ func TestParity_LogsQL_ServiceFilterFindsData(t *testing.T) {
 func TestParity_LogsQL_AggregateByService_SameKeys(t *testing.T) {
 	// Group-by on a top-level promoted column. Both tiers must
 	// produce the same key set even if counts differ.
-	q := `_time:1h * | stats by (resource_attr:service.name) count() as n`
+	q := seedWindowFilter() + " * | stats by (`resource_attr:service.name`) count() as n"
 	hot := logsqlGroupKeys(t, vtBaseURL, q, "resource_attr:service.name")
 	cold := logsqlGroupKeys(t, lhtBaseURL, q, "resource_attr:service.name")
 	if len(hot) == 0 {
@@ -233,7 +237,7 @@ func TestParity_LogsQL_KindFilter_Both0and1Spans(t *testing.T) {
 
 func TestParity_LogsQL_NonExistentService_BothEmpty(t *testing.T) {
 	// Negative path: a name no service has. Both must return 0.
-	q := `_time:1h resource_attr:service.name:="this-service-does-not-exist-xyzzy" | stats count() as n`
+	q := seedWindowFilter() + " `resource_attr:service.name`:=\"this-service-does-not-exist-xyzzy\" | stats count() as n"
 	hotN := logsqlStatsCount(t, vtBaseURL, q)
 	coldN := logsqlStatsCount(t, lhtBaseURL, q)
 	if hotN != 0 || coldN != 0 {
@@ -265,7 +269,7 @@ func TestParity_LogsQL_StreamSelectorEqualsCardinality(t *testing.T) {
 	}
 	svc := hot[0]
 	// Counts of distinct trace_ids.
-	q := fmt.Sprintf(`_time:1h resource_attr:service.name:=%q | fields trace_id | uniq by (trace_id) | stats count() as n`, svc)
+	q := fmt.Sprintf("%s `resource_attr:service.name`:=%q | fields trace_id | uniq by (trace_id) | stats count() as n", seedWindowFilter(), svc)
 	hotN := logsqlStatsCount(t, vtBaseURL, q)
 	coldN := logsqlStatsCount(t, lhtBaseURL, q)
 	if hotN == 0 {

@@ -245,6 +245,15 @@ func TestParity_CrossValidation(t *testing.T) {
 	})
 
 	t.Run("count_same_across_time_formats", func(t *testing.T) {
+		// One `now` for the whole test, truncated to a whole second: the
+		// nanosecond and second spellings of the window then describe the
+		// exact same instant. Re-reading the clock per sub-case made the
+		// two windows differ by however long the previous request took, so
+		// a boundary row could fall inside one window and outside the
+		// other and the comparison flaked on timing rather than on parity.
+		now := time.Now().Truncate(time.Second)
+		start := now.Add(-24 * time.Hour)
+
 		for _, label := range []struct {
 			name    string
 			baseURL string
@@ -253,8 +262,6 @@ func TestParity_CrossValidation(t *testing.T) {
 			{"LH", lhBaseURL},
 		} {
 			t.Run(label.name, func(t *testing.T) {
-				now := time.Now()
-				start := now.Add(-24 * time.Hour)
 
 				// Query with nanosecond epoch
 				nanoParams := url.Values{

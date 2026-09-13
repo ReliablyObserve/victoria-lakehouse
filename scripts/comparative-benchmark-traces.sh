@@ -178,11 +178,15 @@ run_scenario "trace_id_exact_miss" \
 # ============================================================
 # Scenario 2: service.name filter
 # ============================================================
+# VT's field is `resource_attr:service.name`. The ':' in the name means it
+# MUST be backtick-quoted (%60 URL-encoded) — unquoted, LogsQL reads the
+# field as `resource_attr` with a bucket, matches nothing, and the VT column
+# of this benchmark times an empty result set instead of a real query.
 echo ""
 echo "--- Service & Span Filters ---"
 run_scenario "service_name_filter" \
   "${LH_URL}/select/logsql/query?query=service.name%3A%3D%22api-gateway%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
-  "${VT_URL}/select/logsql/query?query=resource_attr%3Aservice.name%3A%3D%22api-gateway%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
+  "${VT_URL}/select/logsql/query?query=%60resource_attr%3Aservice.name%60%3A%3D%22api-gateway%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
   "${TEMPO_URL}/api/search?tags=service.name%3Dapi-gateway&start=${ONE_HOUR_AGO_S}&end=${NOW_S}&limit=50"
 
 # ============================================================
@@ -216,7 +220,7 @@ echo ""
 echo "--- Time Range Queries ---"
 run_scenario "service_range_1h" \
   "${LH_URL}/select/logsql/query?query=service.name%3A%3D%22api-gateway%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=100" \
-  "${VT_URL}/select/logsql/query?query=resource_attr%3Aservice.name%3A%3D%22api-gateway%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=100" \
+  "${VT_URL}/select/logsql/query?query=%60resource_attr%3Aservice.name%60%3A%3D%22api-gateway%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=100" \
   "${TEMPO_URL}/api/search?tags=service.name%3Dapi-gateway&start=${ONE_HOUR_AGO_S}&end=${NOW_S}&limit=100"
 
 # ============================================================
@@ -224,7 +228,7 @@ run_scenario "service_range_1h" \
 # ============================================================
 run_scenario "service_range_6h" \
   "${LH_URL}/select/logsql/query?query=service.name%3A%3D%22api-gateway%22&start=${SIX_HOURS_AGO_NS}&end=${NOW_NS}&limit=200" \
-  "${VT_URL}/select/logsql/query?query=resource_attr%3Aservice.name%3A%3D%22api-gateway%22&start=${SIX_HOURS_AGO_NS}&end=${NOW_NS}&limit=200" \
+  "${VT_URL}/select/logsql/query?query=%60resource_attr%3Aservice.name%60%3A%3D%22api-gateway%22&start=${SIX_HOURS_AGO_NS}&end=${NOW_NS}&limit=200" \
   "${TEMPO_URL}/api/search?tags=service.name%3Dapi-gateway&start=${SIX_HOURS_AGO_S}&end=${NOW_S}&limit=200"
 
 # ============================================================
@@ -234,7 +238,7 @@ echo ""
 echo "--- Combined Filters ---"
 run_scenario "service_and_error" \
   "${LH_URL}/select/logsql/query?query=service.name%3A%3D%22api-gateway%22%20AND%20status_code%3A%3D%222%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
-  "${VT_URL}/select/logsql/query?query=resource_attr%3Aservice.name%3A%3D%22api-gateway%22%20AND%20status_code%3A%3D%222%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
+  "${VT_URL}/select/logsql/query?query=%60resource_attr%3Aservice.name%60%3A%3D%22api-gateway%22%20AND%20status_code%3A%3D%222%22&start=${ONE_HOUR_AGO_NS}&end=${NOW_NS}&limit=50" \
   "${TEMPO_URL}/api/search?tags=service.name%3Dapi-gateway%20status%3Derror&start=${ONE_HOUR_AGO_S}&end=${NOW_S}&limit=50"
 
 # ============================================================
