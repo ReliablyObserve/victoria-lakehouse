@@ -16,6 +16,7 @@ import (
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/discovery"
@@ -158,6 +159,7 @@ func TestQueryBufferBridge_LogsMode(t *testing.T) {
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.Header().Set("Content-Type", "application/json")
 		enc := json.NewEncoder(w)
 		for _, row := range logRows {
@@ -196,6 +198,7 @@ func TestQueryBufferBridge_TracesMode(t *testing.T) {
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.Header().Set("Content-Type", "application/json")
 		enc := json.NewEncoder(w)
 		for _, row := range traceRows {
@@ -229,6 +232,7 @@ func TestQueryBufferBridge_TracesMode(t *testing.T) {
 
 func TestQueryBufferBridge_ServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()

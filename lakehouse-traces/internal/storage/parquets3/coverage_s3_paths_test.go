@@ -17,6 +17,7 @@ import (
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -243,6 +244,7 @@ func TestS3_QuerySpecificFiles_CancelledContext(t *testing.T) {
 
 func TestS3_queryBufferBridge_TracesMode(t *testing.T) {
 	insertSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		rows := []schema.TraceRow{
 			{
 				TimestampUnixNano: time.Date(2026, 5, 10, 14, 30, 0, 0, time.UTC).UnixNano(),
@@ -1466,7 +1468,7 @@ func TestS3_logRowsToDataBlock(t *testing.T) {
 		{TimestampUnixNano: now + int64(time.Second), Body: "world", SeverityText: "ERROR", ServiceName: "worker"},
 	}
 
-	db := s.logRowsToDataBlock(rows)
+	db := s.logRowsToDataBlock(tenantScope{all: true}, "test", rows)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -1477,7 +1479,7 @@ func TestS3_logRowsToDataBlock(t *testing.T) {
 
 func TestS3_logRowsToDataBlock_Empty(t *testing.T) {
 	s := testStorage()
-	db := s.logRowsToDataBlock(nil)
+	db := s.logRowsToDataBlock(tenantScope{all: true}, "test", nil)
 	if db != nil {
 		t.Error("expected nil for empty rows")
 	}
@@ -1493,7 +1495,7 @@ func TestS3_traceRowsToDataBlock(t *testing.T) {
 		{TimestampUnixNano: now, TraceID: "trace-1", SpanID: "span-1", ServiceName: "api-gw"},
 	}
 
-	db := s.traceRowsToDataBlock(rows)
+	db := s.traceRowsToDataBlock(tenantScope{all: true}, "test", rows)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -1504,7 +1506,7 @@ func TestS3_traceRowsToDataBlock(t *testing.T) {
 
 func TestS3_traceRowsToDataBlock_Empty(t *testing.T) {
 	s := testStorage()
-	db := s.traceRowsToDataBlock(nil)
+	db := s.traceRowsToDataBlock(tenantScope{all: true}, "test", nil)
 	if db != nil {
 		t.Error("expected nil for empty rows")
 	}
@@ -2142,6 +2144,7 @@ func TestS3_RunQuery_WithBufferBridge(t *testing.T) {
 	defer mock.close()
 
 	insertSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		now := time.Date(2026, 5, 10, 14, 30, 30, 0, time.UTC)
 		rows := []schema.TraceRow{
 			{

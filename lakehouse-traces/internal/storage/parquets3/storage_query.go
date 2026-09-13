@@ -232,22 +232,13 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		liveBytes.Add(-sz)
 	}
 
-	// Tenant-scoped file enumeration when exactly one tenant is in scope.
-	// The cross-tenant (admin) read path retains the legacy full-manifest
-	// walk because it legitimately needs every tenant's files. Most query
-	// paths are single-tenant by construction (per-request auth) so this
-	// branch wins for the common case.
-	var files []manifest.FileInfo
-	if len(tenantIDs) == 1 {
-		t := tenantIDs[0]
-		files = s.manifest.GetFilesForRangeTenant(
-			startNs, endNs,
-			fmt.Sprintf("%d", t.AccountID),
-			fmt.Sprintf("%d", t.ProjectID),
-		)
-	} else {
-		files = s.manifest.GetFilesForRange(startNs, endNs)
-	}
+	// Tenant-scoped file enumeration. VT/VL hand us exactly one tenant per
+	// request (0:0 when no headers are present); only a validated global-read
+	// caller widens the scope. Everything downstream — the fast paths, the scan
+	// and the buffer bridge — works off THIS list. Twin of
+	// internal/storage/parquets3/storage_query.go.
+	scope := scopeFor(ctx, tenantIDs)
+	files := s.filesForScope("query", startNs, endNs, scope)
 	if len(files) == 0 {
 		// Pure-buffer window: no cold-tier file covers it, so the WHOLE answer
 		// is the co-located logstorage buffer. Push the FULL query (aggregation
@@ -928,19 +919,24 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs, waterma
 	if s.bufferBridge == nil {
 		return
 	}
+	// Multi-pod fan-out. The bridge asks each peer for ONE tenant's rows, and
+	// the row→block conversion re-checks every row's account/project — belt and
+	// braces, so a peer that answers without scoping cannot leak into this
+	// answer. Twin of internal/storage/parquets3/storage_query.go.
+	scope := scopeFor(ctx, tenantIDs)
 	switch s.cfg.Mode {
 	case config.ModeLogs:
-		bufRows, _ := s.bufferBridge.QueryLogs(ctx, bufStartNs, endNs)
+		bufRows, _ := s.bufferBridge.QueryLogs(ctx, bufStartNs, endNs, scope.account, scope.project)
 		if len(bufRows) > 0 {
-			db := s.logRowsToDataBlock(bufRows)
+			db := s.logRowsToDataBlock(scope, "bridge_logs", bufRows)
 			if db != nil && db.RowsCount() > 0 {
 				filteredWriteBlock(0, db)
 			}
 		}
 	case config.ModeTraces:
-		bufRows, _ := s.bufferBridge.QueryTraces(ctx, bufStartNs, endNs)
+		bufRows, _ := s.bufferBridge.QueryTraces(ctx, bufStartNs, endNs, scope.account, scope.project)
 		if len(bufRows) > 0 {
-			db := s.traceRowsToDataBlock(bufRows)
+			db := s.traceRowsToDataBlock(scope, "bridge_traces", bufRows)
 			if db != nil && db.RowsCount() > 0 {
 				filteredWriteBlock(0, db)
 			}
@@ -2794,7 +2790,10 @@ func (s *Storage) QuerySpecificFiles(ctx context.Context, fileKeys []string, sta
 		keySet[k] = true
 	}
 
-	allFiles := s.manifest.GetFilesForRange(startNs, endNs)
+	// Cross-tenant by construction: the caller has already named the exact
+	// objects to read (compaction / verification tooling, never a select
+	// request), so there is no request tenant to scope to.
+	allFiles := s.filesForScope("query_specific_files", startNs, endNs, tenantScope{all: true})
 
 	var files []manifest.FileInfo
 	for _, f := range allFiles {
