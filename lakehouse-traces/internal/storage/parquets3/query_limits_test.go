@@ -79,7 +79,9 @@ func TestQueryManifestFastPathWithTimestampOnly(t *testing.T) {
 	addManifestFiles(s, 5)
 
 	startNs, endNs := queryRange(5)
-	q := mustParseQueryWithTime(t, "*", startNs, endNs)
+	// A count-shaped query is what the manifest fast path answers: a bare `*`
+	// is a retrieval and always reads the file for real.
+	q := mustParseQueryWithTime(t, "* | stats count()", startNs, endNs)
 
 	ctx := storage.WithTimestampOnlyHint(context.Background())
 	var blocksEmitted int
