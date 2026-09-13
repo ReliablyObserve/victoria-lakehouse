@@ -7,7 +7,9 @@
   surfaces: [cli]
   tests:
     - charts/victoria-lakehouse/test_templates.sh
-    - scripts/ci/helmdrift/main.go
+  notes: >-
+    The linked chart template test is not run in CI; CI runs `helm lint` and the Helm drift check
+    (`scripts/ci/helmdrift`) instead.
   docs:
     - docs/kubernetes-deployment.md
   changelog_bullets:
@@ -29,7 +31,6 @@
   tests:
     - tests/e2e/smoke_test.go#TestSmoke_ColdTierTracesQuery
     - tests/e2e/smoke_test.go#TestSmoke_LogsHealth
-    - scripts/smoke-test.sh
   docs:
     - docs/docker-compose-setup.md
   highlight: >-

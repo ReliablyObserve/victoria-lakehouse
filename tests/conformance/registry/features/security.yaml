@@ -73,6 +73,9 @@
   docs:
     - docs/security.md
     - docs/kubernetes-deployment.md
+  notes: >-
+    The linked probes and the chart template test are not run in CI: the probes check built images
+    and a deployed stack, and are run by hand.
   highlight: >-
     **Hardened images and pods**: minimal non-root images with a read-only root filesystem and dropped capabilities, and chart defaults that set the matching pod security context rather than leaving it to the deployer.
   description: >-
@@ -87,11 +90,13 @@
   area: security
   surfaces: [cli]
   tests:
-    - .github/workflows/security.yaml
-    - .github/workflows/codeql.yaml
     - tests/verification/probe_image_freshness.sh
   docs:
     - docs/security.md
+  notes: >-
+    The scans themselves are the Security and CodeQL workflows, which run on every PR but are not
+    tests the catalog can link. The linked image-freshness probe runs against a deployed stack and
+    is not run in CI.
   highlight: >-
     **CI security gates**: static analysis, dependency and image scanning on every change, plus an image-freshness probe that catches a deploy still running a stale binary.
   description: >-

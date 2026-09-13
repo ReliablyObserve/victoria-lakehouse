@@ -209,10 +209,9 @@
   readme_section: Multi-Tenancy
   surfaces: [flag, storage]
   tests:
-    - internal/delete/tenant_lifecycle_test.go
-    - internal/stats/handlecost_lifecycle_test.go
-    - internal/retention/tenant_rules_test.go
-    - internal/tenant/retention_adapter_test.go
+    - internal/delete/tenant_lifecycle_test.go#TestStorageClassDetector_DetectForKey_TenantOverrideWins
+    - internal/delete/tenant_lifecycle_test.go#TestStorageClassDetector_DetectForKey_FallsBackToGlobal
+    - internal/delete/tenant_lifecycle_test.go#TestParseTenantFromKey
   docs:
     - docs/tenant-stats.md
     - docs/multi-tenancy.md

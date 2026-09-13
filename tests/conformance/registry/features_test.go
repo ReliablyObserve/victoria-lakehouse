@@ -139,6 +139,7 @@ func TestLoadFeatures_Rejects(t *testing.T) {
 		{"testdata/features/badref", "no such file"},
 		{"testdata/features/badlink", "markdown link"},
 		{"testdata/features/dupbullet", "claimed by both"},
+		{"testdata/features/nottest", "not a test"},
 	}
 	for _, tc := range cases {
 		t.Run(filepath.Base(tc.dir), func(t *testing.T) {
@@ -172,7 +173,9 @@ func TestCheckTestRef(t *testing.T) {
 	ok := []string{
 		"internal/x/x_test.go",
 		"internal/x/x_test.go#TestExample",
-		"docs/example.md#heading", // non-Go: word match
+		"tests/verification/probe_example.sh#scenario_one", // script under tests/: word match
+		"charts/example/test_templates.sh",                 // a script named as a test
+		"scripts/tool/tests/check.py#case_one",             // a script under scripts/**/tests/
 	}
 	for _, ref := range ok {
 		if err := CheckTestRef(fixtureRepo, ref); err != nil {
@@ -181,12 +184,20 @@ func TestCheckTestRef(t *testing.T) {
 	}
 	bad := map[string]string{
 		"":                                 "empty path",
-		"/abs/path.go":                     "repo-relative",
-		"../escape.go":                     "repo-relative",
-		"internal/x":                       "is a directory",
+		"/abs/path_test.go":                "repo-relative",
+		"../escape_test.go":                "repo-relative",
+		"tests/verification":               "not a test", // a directory has no test extension
 		"internal/x/missing_test.go":       "no such file",
 		"internal/x/x_test.go#TestMissing": "no `func TestMissing(`",
-		"docs/example.md#nonsense":         "does not mention",
+		"tests/verification/probe_example.sh#nonsense": "does not mention",
+		// Existing files that are not tests: what a test would cover.
+		"internal/x/x.go":           "not a test",
+		"docs/example.md#a-heading": "not a test",
+		"scripts/tool/check.sh":     "not a test",
+		// Rejected before the filesystem is consulted.
+		".github/workflows/ci.yaml":        "not a test",
+		"tests/conformance/rows/lh.yaml":   "not a test",
+		"internal/x/testdata/x_test.go.gz": "not a test",
 	}
 	for ref, want := range bad {
 		err := CheckTestRef(fixtureRepo, ref)
@@ -197,6 +208,15 @@ func TestCheckTestRef(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("CheckTestRef(%q) = %q, want %q", ref, err, want)
 		}
+	}
+
+	// A directory whose name looks like a test is still not a file.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "tests", "case.sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckTestRef(dir, "tests/case.sh"); err == nil || !strings.Contains(err.Error(), "is a directory") {
+		t.Errorf("CheckTestRef on a directory = %v, want \"is a directory\"", err)
 	}
 }
 
@@ -341,8 +361,66 @@ func TestCheckRefs_UnreadableFile(t *testing.T) {
 	if err := CheckDocRef(dir, "docs/secret.md#heading"); err == nil {
 		t.Error("CheckDocRef must surface an unreadable file")
 	}
-	if err := CheckTestRef(dir, "docs/secret.md#Heading"); err == nil {
-		t.Error("CheckTestRef must surface an unreadable file")
+
+	if err := os.MkdirAll(filepath.Join(dir, "tests"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "tests", "secret.sh")
+	if err := os.WriteFile(script, []byte("echo Heading\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(script, 0o600) })
+	err := CheckTestRef(dir, "tests/secret.sh#Heading")
+	if err == nil {
+		t.Fatal("CheckTestRef must surface an unreadable file")
+	}
+	if strings.Contains(err.Error(), "not a test") {
+		t.Fatalf("the unreadable-file branch must be reached, got the test-artifact rejection: %v", err)
+	}
+}
+
+func TestIsTestArtifact(t *testing.T) {
+	cases := map[string]bool{
+		"internal/delete/tombstone_test.go":                 true,
+		"lakehouse-traces/internal/vlstorage/x_test.go":     true,
+		"tests/e2e/delete_test.go":                          true,
+		"tests/verification/probe_fips_active.sh":           true,
+		"scripts/bench/tests/extract_result_test.sh":        true,
+		"scripts/bench/tests/test_report_validity.py":       true,
+		"scripts/ci/tests/test_check_registry_touch.sh":     true,
+		"charts/victoria-lakehouse/test_templates.sh":       true,
+		"scripts/tools/migrate_test.py":                     true,
+		"internal/delete/tombstone.go":                      false, // implementation
+		"tests/e2e/helpers.go":                              false, // Go under tests/ must still be a _test.go
+		"scripts/ci/check_registry_touch.sh":                false, // the checker, not its test
+		"scripts/ci/parquet-readback/verify.py":             false, // a CI gate, not a test file
+		"scripts/ci/helmdrift/main.go":                      false,
+		"scripts/smoke-test.sh":                             false,
+		".github/workflows/security.yaml":                   false,
+		"tests/conformance/registry/rows/lh/endpoints.yaml": false,
+		"docs/benchmarks.md":                                false,
+		"testing_notes.sh":                                  false, // "test" in the name is not enough
+	}
+	for path, want := range cases {
+		if got := IsTestArtifact(path); got != want {
+			t.Errorf("IsTestArtifact(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
+
+// TestFeatures_RealCatalogLinksOnlyTests keeps the committed catalog honest
+// independently of the loader: every `tests:` entry names a test.
+func TestFeatures_RealCatalogLinksOnlyTests(t *testing.T) {
+	set, err := LoadFeatures(filepath.Join("..", "..", "..", "tests", "conformance", "registry", "features"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range set.Features {
+		for _, ref := range f.Tests {
+			if path, _ := splitRef(ref); !IsTestArtifact(path) {
+				t.Errorf("feature %s links %q, which is not a test", f.ID, ref)
+			}
+		}
 	}
 }
 

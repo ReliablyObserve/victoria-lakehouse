@@ -85,7 +85,11 @@ history); on a feature without bullets it declares the release it shipped in.
 Decoding is strict (an unknown key fails), ids must be unique, and every `tests:` and `docs:`
 reference is checked against the filesystem: the file must exist, a `#TestName` suffix must
 resolve to a `func TestName(` in that file (or, for a script, to that word), and a `#anchor`
-must match a real heading in the document. Linking a test that does not exist is worse than
+must match a real heading in the document. A `tests:` entry must name a test — a `*_test.go`
+file, a test script (`*_test.sh`, `test_*.sh`, `*_test.py`, `test_*.py`), or a shell or Python
+script under `tests/` or `scripts/**/tests/` — never the CI workflow, checker script or
+implementation it covers; when a CI job is the verification, say so in `notes:`, and say there
+too when a linked test is not run by any CI job. Linking a test that does not exist is worse than
 linking none — it claims verification the repo does not have — so `tests: []` and a place in
 the verification-gap list is the honest answer for a feature nothing covers yet.
 

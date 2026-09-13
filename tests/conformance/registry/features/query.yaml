@@ -148,6 +148,7 @@
     - internal/storage/parquets3/count_pushdown_test.go
     - internal/storage/parquets3/filtered_count_pushdown_test.go
     - internal/manifest/count_by_label_test.go
+    - internal/compaction/aggregate_healing_test.go#TestCompactor_HealsWipedLabelAggregates
   docs:
     - docs/query-performance-optimization.md
     - docs/read-path.md

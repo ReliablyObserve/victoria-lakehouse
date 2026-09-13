@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -397,12 +398,40 @@ func splitRef(ref string) (path, name string) {
 	return ref, ""
 }
 
-// CheckTestRef verifies that a `tests:` entry names something that exists:
-// the file must be present under repoRoot, and when the entry carries a
-// "#Name" suffix that name must be findable in the file — `func Name(` for a
-// Go test, and the bare word for a shell/script scenario key (e.g.
-// `scripts/bench/run.sh#count_total`). Linking a test that does not exist is
-// worse than linking none: it claims verification the repo does not have.
+// IsTestArtifact reports whether a repo-relative path names a test rather
+// than the thing a test would cover: a Go test file (`*_test.go`), a shell or
+// Python script named as a test (`*_test.sh`, `test_*.sh`, `*_test.py`,
+// `test_*.py`), or a shell or Python script under the `tests/` tree or under
+// a `tests/` directory in `scripts/`. A CI workflow, a checker script, a
+// generator or any other implementation file is not a test however much it
+// checks — linking one claims coverage no test provides.
+func IsTestArtifact(path string) bool {
+	base := pathpkg.Base(path)
+	ext := pathpkg.Ext(base)
+	switch ext {
+	case ".go":
+		return strings.HasSuffix(base, "_test.go")
+	case ".sh", ".py":
+		stem := strings.TrimSuffix(base, ext)
+		switch {
+		case strings.HasPrefix(stem, "test_"), strings.HasSuffix(stem, "_test"):
+			return true
+		case strings.HasPrefix(path, "tests/"):
+			return true
+		case strings.HasPrefix(path, "scripts/") && strings.Contains(path, "/tests/"):
+			return true
+		}
+	}
+	return false
+}
+
+// CheckTestRef verifies that a `tests:` entry names a test that exists: the
+// path must be a test artifact (IsTestArtifact), the file must be present
+// under repoRoot, and when the entry carries a "#Name" suffix that name must
+// be findable in the file — `func Name(` for a Go test, and the bare word for
+// a shell or Python test (a scenario or case name). Linking a test that does
+// not exist is worse than linking none: it claims verification the repo does
+// not have.
 func CheckTestRef(repoRoot, ref string) error {
 	path, name := splitRef(ref)
 	if path == "" {
@@ -410,6 +439,9 @@ func CheckTestRef(repoRoot, ref string) error {
 	}
 	if filepath.IsAbs(path) || strings.Contains(path, "..") {
 		return fmt.Errorf("%q: must be a repo-relative path", ref)
+	}
+	if !IsTestArtifact(path) {
+		return fmt.Errorf("%q: not a test — link a Go test file (*_test.go), a test script (*_test.sh, test_*.sh, *_test.py, test_*.py) or a script under tests/ or scripts/**/tests/, not the workflow, checker or implementation it covers", ref)
 	}
 	full := filepath.Join(repoRoot, filepath.FromSlash(path))
 	info, err := os.Stat(full)

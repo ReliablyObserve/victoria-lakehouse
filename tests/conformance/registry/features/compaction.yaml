@@ -107,11 +107,12 @@
   area: compaction
   surfaces: [storage]
   tests:
-    - internal/vlstorage/repromote_test.go
-    - lakehouse-traces/internal/vlstorage/repromote_test.go
-    - internal/storage/parquets3/dedicated_equivalence_test.go
+    - internal/vlstorage/repromote_test.go#TestRepromoteLogRow
+    - internal/vlstorage/repromote_test.go#TestRepromoteLogRow_Tier2Slots
+    - lakehouse-traces/internal/vlstorage/repromote_test.go#TestRepromoteTraceRow
+    - lakehouse-traces/internal/vlstorage/repromote_test.go#TestRepromoteTraceRow_Tier2Slots
+    - internal/storage/parquets3/dedicated_equivalence_test.go#TestDedicated_DualReadEquivalence_Logs
     - internal/compaction/recompact_e2e_test.go#TestRecompact_E2E_StaleSchemaDrivesCompaction
-    - internal/compaction/aggregate_healing_test.go#TestCompactor_HealsWipedLabelAggregates
   docs:
     - docs/architecture/dedicated-columns.md
     - docs/operations.md
@@ -121,8 +122,9 @@
     **Schema healing forward**: when a key is promoted to a dedicated column, compaction rewrites older files that stored it in the attribute map, so the whole history gradually gains the faster layout without a migration job.
   description: >-
     A promotion that only applies to new files leaves a permanent seam in query performance.
-    Compaction closes it: files written under an older schema are re-promoted as they are merged,
-    and the same pass repairs label aggregates that were wiped by earlier bugs.
+    Compaction closes it: files written under an older schema are re-promoted through the same
+    mappers ingest uses as they are merged, and partitions still holding stale-schema files are
+    picked for recompaction even when the level policy alone would leave them.
 
 - id: lh.feature.compaction.row_group_by_level
   title: Row-group size by output level

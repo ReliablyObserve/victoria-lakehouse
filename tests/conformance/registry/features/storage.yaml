@@ -11,7 +11,9 @@
     - internal/storage/parquets3/writer_test.go#TestWriteLogsParquet
     - internal/storage/parquets3/footer_parse_test.go#TestParseFooterFromBytes_WideSchema23Cols
     - internal/schema/verify_test.go
-    - scripts/ci/parquet-readback/verify.py
+  notes: >-
+    Readability by external engines is enforced by the multi-engine readback gate, which reads the
+    files with pyarrow and DuckDB in the `parquet-readback` CI job.
   docs:
     - docs/open-parquet-format.md#s3-layout
     - docs/open-parquet-format.md#querying-with-external-tools
@@ -102,10 +104,12 @@
   readme_section: Infrastructure
   surfaces: [storage]
   tests:
-    - internal/cache/persist_test.go
-    - internal/manifest/snapshot_binary_test.go
-    - internal/storage/parquets3/footer_cache_snapshot_test.go
-    - internal/cache/persist_regression_test.go
+    - internal/cache/persist_test.go#TestPersister_SaveLoadManifest
+    - internal/cache/persist_test.go#TestPersister_SaveLoadLabelIndex
+    - internal/cache/persist_test.go#TestPersister_SaveLoadFileMetadata
+    - internal/manifest/snapshot_binary_test.go#TestSnapshot_BinaryRoundtrip
+    - internal/storage/parquets3/footer_cache_snapshot_test.go#TestFooterCacheSnapshot_RoundTrip
+    - internal/smartcache/metadata_test.go#TestSnapshot_SaveLoad
   docs:
     - docs/architecture/restart-and-warmup-design.md
     - docs/cache-architecture.md
@@ -485,6 +489,8 @@
   tests:
     - internal/retention/retention_test.go
     - internal/retention/coverage_hardening_test.go
+    - internal/retention/tenant_rules_test.go#TestSynthesizeRules_AppliedByResolveTTL
+    - internal/tenant/retention_adapter_test.go#TestPolicyRegistry_RetentionEntries_RoundtripsThroughSynthesizer
     - tests/e2e/smoke_components_test.go#TestSmoke_Retention_ConfigLoaded
   docs:
     - docs/configuration.md

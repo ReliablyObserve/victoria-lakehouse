@@ -39,7 +39,7 @@ Shipped features with no linked test, whose only verification is a declared, not
 
 The writer tracks an estimated on-disk size per partition and flushes as it approaches the configured target, so files land in the size band that keeps S3 request counts and row-group geometry sane instead of being dictated by wall-clock flush intervals alone.
 
-- Verification: tests: `internal/storage/parquets3/writer_test.go#TestAdaptiveFlush_TargetFileSize`, `internal/storage/parquets3/writer_test.go#TestCheckSizeThreshold`, `lakehouse-traces/internal/storage/parquets3/writer_test.go`
+- Verification: tests: `internal/storage/parquets3/writer_test.go#TestAdaptiveFlush_TargetFileSize`, `lakehouse-traces/internal/storage/parquets3/writer_test.go#TestAdaptiveFlush_TargetFileSize`, `internal/storage/parquets3/raw_bytes_test.go#TestEstimateRawBytesLogs_CountsEveryStringColumn`, `lakehouse-traces/internal/storage/parquets3/raw_bytes_test.go#TestEstimateRawBytesTraces_CountsEveryStringColumn`
 - Docs: `docs/write-path.md`, `docs/configuration.md`
 - Changelog: `0.8.0`
 
@@ -218,7 +218,7 @@ Newly flushed files become visible fleet-wide within a round trip: the writer pu
 
 Everything expensive to rebuild is snapshotted to disk and reloaded on start: the manifest, the label index, the Parquet footer cache and the smart cache's entry metadata. A restarted pod serves from warm metadata instead of re-listing S3.
 
-- Verification: tests: `internal/cache/persist_test.go`, `internal/manifest/snapshot_binary_test.go`, `internal/storage/parquets3/footer_cache_snapshot_test.go`, `internal/cache/persist_regression_test.go`
+- Verification: tests: `internal/cache/persist_test.go#TestPersister_SaveLoadManifest`, `internal/cache/persist_test.go#TestPersister_SaveLoadLabelIndex`, `internal/cache/persist_test.go#TestPersister_SaveLoadFileMetadata`, `internal/manifest/snapshot_binary_test.go#TestSnapshot_BinaryRoundtrip`, `internal/storage/parquets3/footer_cache_snapshot_test.go#TestFooterCacheSnapshot_RoundTrip`, `internal/smartcache/metadata_test.go#TestSnapshot_SaveLoad`
 - Docs: `docs/architecture/restart-and-warmup-design.md`, `docs/cache-architecture.md`
 
 ### ✅ Plain, tool-readable Parquet on S3
@@ -229,8 +229,9 @@ Everything expensive to rebuild is snapshotted to disk and reloaded on start: th
 
 The storage format is the product's contract with its users: data written by Lakehouse stays readable by any Parquet engine, with no import step and no vendor decoder. Lakehouse-specific metadata (the trace index, partition metadata) is carried in standard footer key-value metadata or in separate objects, so stripping Lakehouse never strips the data.
 
-- Verification: tests: `internal/storage/parquets3/writer_test.go#TestWriteLogsParquet`, `internal/storage/parquets3/footer_parse_test.go#TestParseFooterFromBytes_WideSchema23Cols`, `internal/schema/verify_test.go`, `scripts/ci/parquet-readback/verify.py`
+- Verification: tests: `internal/storage/parquets3/writer_test.go#TestWriteLogsParquet`, `internal/storage/parquets3/footer_parse_test.go#TestParseFooterFromBytes_WideSchema23Cols`, `internal/schema/verify_test.go`
 - Docs: `docs/open-parquet-format.md#s3-layout`, `docs/open-parquet-format.md#querying-with-external-tools`
+- Note: Readability by external engines is enforced by the multi-engine readback gate, which reads the files with pyarrow and DuckDB in the `parquet-readback` CI job.
 
 ### 🔧 Plan-then-fetch exact column ranges
 
@@ -323,7 +324,7 @@ Read-ahead that only grows is a bandwidth tax on point lookups. The reader track
 
 Retention deletes what is past its window and keeps the manifest honest about it. Per-tenant retention overrides shadow the global window so one tenant's compliance requirement does not dictate the fleet's.
 
-- Verification: tests: `internal/retention/retention_test.go`, `internal/retention/coverage_hardening_test.go`, `tests/e2e/smoke_components_test.go#TestSmoke_Retention_ConfigLoaded`
+- Verification: tests: `internal/retention/retention_test.go`, `internal/retention/coverage_hardening_test.go`, `internal/retention/tenant_rules_test.go#TestSynthesizeRules_AppliedByResolveTTL`, `internal/tenant/retention_adapter_test.go#TestPolicyRegistry_RetentionEntries_RoundtripsThroughSynthesizer`, `tests/e2e/smoke_components_test.go#TestSmoke_Retention_ConfigLoaded`
 - Docs: `docs/configuration.md`, `docs/deletion-strategy.md`
 
 ### ✅ Row-group geometry and statistics pruning
@@ -437,7 +438,7 @@ The projection is derived from the query's fields, filters and stats, then hande
 
 The metadata already knows how many rows each file holds and how they distribute across a field's values, so the common dashboard aggregations never open a Parquet file. Measured at 100 ms injected object-store latency, this is where the cold tier beats ClickHouse-over-S3 outright.
 
-- Verification: tests: `internal/storage/parquets3/count_pushdown_test.go`, `internal/storage/parquets3/filtered_count_pushdown_test.go`, `internal/manifest/count_by_label_test.go` · bench: `count_total`, `count_by_service`, `high_card`
+- Verification: tests: `internal/storage/parquets3/count_pushdown_test.go`, `internal/storage/parquets3/filtered_count_pushdown_test.go`, `internal/manifest/count_by_label_test.go`, `internal/compaction/aggregate_healing_test.go#TestCompactor_HealsWipedLabelAggregates` · bench: `count_total`, `count_by_service`, `high_card`
 - Docs: `docs/query-performance-optimization.md`, `docs/read-path.md`
 - Changelog: `0.59.0`
 
@@ -728,9 +729,9 @@ The writer already holds the complete file in memory at upload time. Handing it 
 
 **Schema healing forward**: when a key is promoted to a dedicated column, compaction rewrites older files that stored it in the attribute map, so the whole history gradually gains the faster layout without a migration job.
 
-A promotion that only applies to new files leaves a permanent seam in query performance. Compaction closes it: files written under an older schema are re-promoted as they are merged, and the same pass repairs label aggregates that were wiped by earlier bugs.
+A promotion that only applies to new files leaves a permanent seam in query performance. Compaction closes it: files written under an older schema are re-promoted through the same mappers ingest uses as they are merged, and partitions still holding stale-schema files are picked for recompaction even when the level policy alone would leave them.
 
-- Verification: tests: `internal/vlstorage/repromote_test.go`, `lakehouse-traces/internal/vlstorage/repromote_test.go`, `internal/storage/parquets3/dedicated_equivalence_test.go`, `internal/compaction/recompact_e2e_test.go#TestRecompact_E2E_StaleSchemaDrivesCompaction`, `internal/compaction/aggregate_healing_test.go#TestCompactor_HealsWipedLabelAggregates`
+- Verification: tests: `internal/vlstorage/repromote_test.go#TestRepromoteLogRow`, `internal/vlstorage/repromote_test.go#TestRepromoteLogRow_Tier2Slots`, `lakehouse-traces/internal/vlstorage/repromote_test.go#TestRepromoteTraceRow`, `lakehouse-traces/internal/vlstorage/repromote_test.go#TestRepromoteTraceRow_Tier2Slots`, `internal/storage/parquets3/dedicated_equivalence_test.go#TestDedicated_DualReadEquivalence_Logs`, `internal/compaction/recompact_e2e_test.go#TestRecompact_E2E_StaleSchemaDrivesCompaction`
 - Docs: `docs/architecture/dedicated-columns.md`, `docs/operations.md`
 - Changelog: `0.101.1`
 
@@ -1130,7 +1131,7 @@ Bytes and rows are different resources — a flood of tiny rows and a flood of l
 
 Storage-class policy is a cost decision each tenant may make differently. Both the predictor that estimates cost and the scheduler that acts on it read the same per-tenant rules, so an estimate is never computed against a policy the fleet does not actually apply.
 
-- Verification: tests: `internal/delete/tenant_lifecycle_test.go`, `internal/stats/handlecost_lifecycle_test.go`, `internal/retention/tenant_rules_test.go`, `internal/tenant/retention_adapter_test.go`
+- Verification: tests: `internal/delete/tenant_lifecycle_test.go#TestStorageClassDetector_DetectForKey_TenantOverrideWins`, `internal/delete/tenant_lifecycle_test.go#TestStorageClassDetector_DetectForKey_FallsBackToGlobal`, `internal/delete/tenant_lifecycle_test.go#TestParseTenantFromKey`
 - Docs: `docs/tenant-stats.md`, `docs/multi-tenancy.md`
 
 ### ✅ Per-tenant bucket overrides
@@ -1392,6 +1393,7 @@ A fast wrong answer is not a benchmark result. The harness validates every itera
 - Verification: tests: `scripts/bench/tests/extract_result_test.sh`, `scripts/bench/tests/measure_query_test.sh`, `scripts/bench/tests/scan_membership_test.sh`, `scripts/bench/tests/test_report_validity.py` · bench: `count_total`, `count_by_service`, `scan`, `trace_by_id`
 - Docs: `docs/benchmarks.md`, `docs/benchmarks/full-scope-s3.md`
 - Changelog: `0.79.0`
+- Note: The linked harness tests are not run in CI; they are run by hand alongside the benchmarks.
 
 ### ✅ Configuration profiles
 
@@ -1413,7 +1415,7 @@ Most deployments want one of a few postures, not forty individual decisions. A p
 
 The registry is the answer to "what does upstream have that we might have missed". The inventory is extracted from the vendored sources rather than maintained by hand, the drift check is a hard gate on unmapped items and on rows citing something upstream no longer has, and `UPSTREAM_COVERAGE.md` is generated from both.
 
-- Verification: tests: `tests/conformance/drift_test.go#TestDrift_RealRegistry`, `tests/conformance/registry/rows_test.go#TestRows_LoadAndCounts`, `tests/conformance/inventory/inventory_test.go#TestExtract_RealDeps`, `scripts/ci/check_registry_touch.sh`
+- Verification: tests: `tests/conformance/drift_test.go#TestDrift_RealRegistry`, `tests/conformance/registry/rows_test.go#TestRows_LoadAndCounts`, `tests/conformance/inventory/inventory_test.go#TestExtract_RealDeps`, `scripts/ci/tests/test_check_registry_touch.sh`
 - Docs: `tests/conformance/README.md`, `UPSTREAM_COVERAGE.md`
 - Changelog: `0.111.0`
 
@@ -1425,7 +1427,7 @@ The registry is the answer to "what does upstream have that we might have missed
 
 Every e2e and benchmark claim in this repo is only as honest as its seed. The generator emits logs and traces that correlate, span services, and carry the cardinality real telemetry has, which is what makes service-graph and cross-signal tests meaningful.
 
-- Verification: tests: `tests/parity/servicegraph_parity_test.go#TestServiceGraphParity_GeneratorProducesCrossServiceEdges`, `scripts/verify-data.sh`, `scripts/benchmark-preflight.sh`
+- Verification: tests: `tests/parity/servicegraph_parity_test.go#TestServiceGraphParity_GeneratorProducesCrossServiceEdges`
 - Docs: `docs/benchmarks.md`, `docs/docker-compose-setup.md`
 
 ### ✅ Lakehouse feature catalog
@@ -1459,9 +1461,10 @@ Readiness on a cold tier is not binary: a pod can be up, ringed and still unable
 
 Throughput and degradation under concurrent read/write are properties that only fail at scale. The binary measures them with an explicit pass check, and the nightly workflow keeps the measurement continuous rather than occasional.
 
-- Verification: tests: `cmd/loadtest/concurrent_test.go#TestBuildQueryMix`, `cmd/loadtest/mixed_rw_test.go#TestCalcDegradation`, `cmd/loadtest/report_test.go#TestReport_PassCheck`, `.github/workflows/nightly-loadtest.yaml`
+- Verification: tests: `cmd/loadtest/concurrent_test.go#TestBuildQueryMix`, `cmd/loadtest/mixed_rw_test.go#TestCalcDegradation`, `cmd/loadtest/report_test.go#TestReport_PassCheck`
 - Docs: `docs/benchmarks.md`
 - Changelog: `0.10.0`
+- Note: The linked unit tests are not run in CI (the CI test jobs cover `internal/`); the nightly load-test workflow runs the binary itself.
 
 ### ✅ Multi-engine Parquet readback gate
 
@@ -1471,9 +1474,10 @@ Throughput and degradation under concurrent read/write are properties that only 
 
 The promise that Lakehouse files are plain Parquet is only as good as the last encoding change. The gate writes files with the current writer and reads them back with two independent engines, comparing row-level equality rather than just "it opened".
 
-- Verification: tests: `scripts/ci/parquet-readback/verify.py`, `scripts/ci/parquet-readback/gen/main.go`
+- Verification: tests: `scripts/ci/parquet-readback/gen/main_test.go#TestGenLogs_TruthMatchesTheFileWritten`, `scripts/ci/parquet-readback/gen/main_test.go#TestGenTraces_TruthMatchesTheFileWritten`
 - Docs: `docs/open-parquet-format.md`
 - Changelog: `0.85.0`
+- Note: The engine comparison itself (`verify.py` reading the generated files with pyarrow and DuckDB) is the `parquet-readback` CI job, not a test the catalog can link. The linked tests, which run in that job first, read the generated files back and check the truth the engines are compared against and the production writer options the files carry.
 
 ### ✅ Three-level profile hierarchy
 
@@ -1543,7 +1547,7 @@ Cross-zone traffic is one of the larger avoidable line items in a cache-heavy fl
 
 The same compose files that a reader uses to try the product are the ones CI runs its e2e tests and benchmarks against, so "it works locally" and "it is tested" are the same claim.
 
-- Verification: tests: `tests/e2e/smoke_test.go#TestSmoke_ColdTierTracesQuery`, `tests/e2e/smoke_test.go#TestSmoke_LogsHealth`, `scripts/smoke-test.sh`
+- Verification: tests: `tests/e2e/smoke_test.go#TestSmoke_ColdTierTracesQuery`, `tests/e2e/smoke_test.go#TestSmoke_LogsHealth`
 - Docs: `docs/docker-compose-setup.md`
 
 ### ✅ Headless-DNS peer and storage discovery
@@ -1565,9 +1569,10 @@ SRV records are the membership list. Adding a replica makes it discoverable and 
 
 The chart encodes the operational rules that keep a stateful cold tier safe under autoscaling — drain before termination, stabilize before reshuffling the ring, report ready only when warm — and a drift check keeps its rendered output honest in CI.
 
-- Verification: tests: `charts/victoria-lakehouse/test_templates.sh`, `scripts/ci/helmdrift/main.go`
+- Verification: tests: `charts/victoria-lakehouse/test_templates.sh`
 - Docs: `docs/kubernetes-deployment.md`
 - Changelog: `0.10.0`, `0.37.1`
+- Note: The linked chart template test is not run in CI; CI runs `helm lint` and the Helm drift check (`scripts/ci/helmdrift`) instead.
 
 ### ✅ Insert and select role separation
 
@@ -1591,8 +1596,9 @@ Ingest scales with traffic, query scales with users, and they fail differently. 
 
 Scanning that runs on every PR is the only kind that finds things before release. The freshness probe closes the other half of the problem — a scanned artifact that was never actually deployed — by comparing each running container's image against the newest source commit.
 
-- Verification: tests: `.github/workflows/security.yaml`, `.github/workflows/codeql.yaml`, `tests/verification/probe_image_freshness.sh`
+- Verification: tests: `tests/verification/probe_image_freshness.sh`
 - Docs: `docs/security.md`
+- Note: The scans themselves are the Security and CodeQL workflows, which run on every PR but are not tests the catalog can link. The linked image-freshness probe runs against a deployed stack and is not run in CI.
 
 ### ✅ Container and pod hardening
 
@@ -1604,6 +1610,7 @@ The default deployment should be the safe one. The images carry no shell-level e
 
 - Verification: tests: `tests/verification/probe_fips_active.sh`, `tests/verification/probe_image_size.sh`, `charts/victoria-lakehouse/test_templates.sh`
 - Docs: `docs/security.md`, `docs/kubernetes-deployment.md`
+- Note: The linked probes and the chart template test are not run in CI: the probes check built images and a deployed stack, and are run by hand.
 
 ### ✅ Cross-signal hint authentication
 

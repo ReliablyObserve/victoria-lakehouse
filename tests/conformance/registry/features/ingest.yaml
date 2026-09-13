@@ -61,8 +61,9 @@
   surfaces: [ingest, flag]
   tests:
     - internal/storage/parquets3/writer_test.go#TestAdaptiveFlush_TargetFileSize
-    - internal/storage/parquets3/writer_test.go#TestCheckSizeThreshold
-    - lakehouse-traces/internal/storage/parquets3/writer_test.go
+    - lakehouse-traces/internal/storage/parquets3/writer_test.go#TestAdaptiveFlush_TargetFileSize
+    - internal/storage/parquets3/raw_bytes_test.go#TestEstimateRawBytesLogs_CountsEveryStringColumn
+    - lakehouse-traces/internal/storage/parquets3/raw_bytes_test.go#TestEstimateRawBytesTraces_CountsEveryStringColumn
   docs:
     - docs/write-path.md
     - docs/configuration.md
