@@ -103,7 +103,7 @@ func TestRenderFeatures(t *testing.T) {
 	ok.Notes = "A note."
 	planned := feature("lh.feature.query.p", "query", registry.StatusPlanned)
 
-	out := RenderFeatures(testSet(gap, ok, planned), testRegistry())
+	out := RenderFeatures(testSet(gap, ok, planned), testRegistry(), "")
 
 	for _, want := range []string{
 		"# Lakehouse features (GENERATED",
@@ -135,7 +135,7 @@ func TestRenderFeatures_NoGapsAndNoVerification(t *testing.T) {
 	ok := feature("lh.feature.ui.a", "ui", registry.StatusShipped)
 	ok.Tests = []string{"internal/x/x_test.go"}
 	planned := feature("lh.feature.ui.p", "ui", registry.StatusPlanned)
-	out := RenderFeatures(testSet(ok, planned), testRegistry())
+	out := RenderFeatures(testSet(ok, planned), testRegistry(), "")
 	if !strings.Contains(out, "None: every shipped feature") {
 		t.Error("with no gaps the list must say so explicitly")
 	}
@@ -221,7 +221,7 @@ func TestRenderFeatures_UnreleasedAndMissingRow(t *testing.T) {
 	f.Rows = []string{"lh.a.pending", "lh.does.not.exist"}
 	f.Surfaces = []registry.FeatureSurface{"cli", "api"}
 
-	out := RenderFeatures(testSet(f), testRegistry())
+	out := RenderFeatures(testSet(f), testRegistry(), "")
 	if !strings.Contains(out, "since: unreleased") {
 		t.Error("an unreleased feature must be rendered as such")
 	}
@@ -236,11 +236,92 @@ func TestRenderFeatures_UnreleasedAndMissingRow(t *testing.T) {
 func TestRenderFeatures_SummaryCountsInProgress(t *testing.T) {
 	wip := feature("lh.feature.storage.wip", "storage", registry.StatusInProgress)
 	wip.Tests = []string{"internal/x/x_test.go"}
-	out := RenderFeatures(testSet(wip), testRegistry())
+	out := RenderFeatures(testSet(wip), testRegistry(), "")
 	if !strings.Contains(out, "| Storage | 0 | 0 | 1 | 0 | 1 |") {
 		t.Errorf("an in-progress feature must be counted in its own column:\n%s", out)
 	}
 	if !strings.Contains(out, "### "+IconInProgress+" ") {
 		t.Error("in-progress features must carry their icon in the heading")
+	}
+}
+
+func TestRelinkMarkdown(t *testing.T) {
+	cases := []struct{ name, in, outDir, want string }{
+		{
+			name:   "repo-relative target becomes docs-relative",
+			in:     "See [Persistence & Durability](docs/durability.md).",
+			outDir: "docs",
+			want:   "See [Persistence & Durability](durability.md).",
+		},
+		{
+			name:   "anchor is preserved",
+			in:     "See [Bloom](docs/bloom-index.md#age-based-tiering).",
+			outDir: "docs",
+			want:   "See [Bloom](bloom-index.md#age-based-tiering).",
+		},
+		{
+			name:   "nested output directory walks up",
+			in:     "See [Bloom](docs/bloom-index.md).",
+			outDir: "docs/architecture",
+			want:   "See [Bloom](../bloom-index.md).",
+		},
+		{
+			name:   "a file outside the output directory keeps a path that reaches it",
+			in:     "See [the chart](charts/victoria-lakehouse/values.yaml).",
+			outDir: "docs",
+			want:   "See [the chart](../charts/victoria-lakehouse/values.yaml).",
+		},
+		{
+			name:   "root output is unchanged",
+			in:     "See [Persistence & Durability](docs/durability.md).",
+			outDir: "",
+			want:   "See [Persistence & Durability](docs/durability.md).",
+		},
+		{
+			name:   "external links and in-page anchors are left alone",
+			in:     "[site](https://example.com/x) [mail](mailto:a@b.c) [here](#section) [abs](/x/y)",
+			outDir: "docs",
+			want:   "[site](https://example.com/x) [mail](mailto:a@b.c) [here](#section) [abs](/x/y)",
+		},
+		{
+			name:   "several links in one line",
+			in:     "[a](docs/a.md) and [b](docs/b.md#c)",
+			outDir: "docs",
+			want:   "[a](a.md) and [b](b.md#c)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RelinkMarkdown(tc.in, tc.outDir); got != tc.want {
+				t.Errorf("RelinkMarkdown(%q, %q) = %q, want %q", tc.in, tc.outDir, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRenderFeatures_RelinksHighlightLinks is the regression lock for the
+// documentation-site build: a highlight authored for README.md
+// (repo-root-relative) must come out of the docs/ render resolvable from
+// docs/, or Docusaurus fails the build on a broken link.
+func TestRenderFeatures_RelinksHighlightLinks(t *testing.T) {
+	f := feature("lh.feature.ingest.a", "ingest", registry.StatusShipped)
+	f.Tests = []string{"internal/x/x_test.go"}
+	f.ReadmeSection = "Write Path"
+	f.Highlight = "**Durability**: see [Persistence & Durability](docs/durability.md)."
+	f.Description = "More in [the bloom index](docs/bloom-index.md#architecture)."
+
+	out := RenderFeatures(testSet(f), testRegistry(), FeaturesDocDir)
+	if strings.Contains(out, "](docs/") {
+		t.Errorf("a link inside docs/features.md must not be repo-root-relative:\n%s", out)
+	}
+	for _, want := range []string{"](durability.md)", "](bloom-index.md#architecture)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered doc missing %q", want)
+		}
+	}
+
+	readme := RenderReadmeFeatures(testSet(f))
+	if !strings.Contains(readme, "](docs/durability.md)") {
+		t.Errorf("the README block must keep repo-root-relative links:\n%s", readme)
 	}
 }

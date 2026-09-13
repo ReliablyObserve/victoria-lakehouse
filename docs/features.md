@@ -70,7 +70,7 @@ Rows are queryable the moment they are accepted: a select pod asks every insert 
 
 `lh.feature.ingest.crash_safe_durability` · status: shipped · since: v0.8.0 · surfaces: ingest, flag
 
-**Crash-safe durability (no WAL)**: the `logstore` insert buffer persists rows as on-disk parts (the same engine hot VL/VT use, restored on open); a persisted **flush watermark** re-flushes any uncommitted window on restart — idempotently — so the crash-loss window matches hot VL/VT. Configurable `ack_mode`: `buffer` (default, fast) or `flush-sync` (zero data loss, used by `max-durability` profile). See [Persistence & Durability](docs/durability.md).
+**Crash-safe durability (no WAL)**: the `logstore` insert buffer persists rows as on-disk parts (the same engine hot VL/VT use, restored on open); a persisted **flush watermark** re-flushes any uncommitted window on restart — idempotently — so the crash-loss window matches hot VL/VT. Configurable `ack_mode`: `buffer` (default, fast) or `flush-sync` (zero data loss, used by `max-durability` profile). See [Persistence & Durability](durability.md).
 
 Buffered rows are persisted by the same logstorage engine the hot tier uses, so a pod that dies mid-window restores its parts on open. A persisted flush watermark records what already reached S3, so the restart re-flushes only the uncommitted window and does so idempotently. `ack_mode=flush-sync` trades throughput for acknowledging only after the S3 write.
 
@@ -411,7 +411,7 @@ Ingest writes at a level chosen for throughput; each compaction level re-encodes
 
 `lh.feature.query.bloom_index` · status: shipped · since: v0.18.2 · surfaces: api, storage, flag
 
-**Multi-tier bloom index** on `trace_id` and `service.name` for fast point lookups. Age-based tiering (Hot/Warm/Cold/Archive) with automatic downgrade, LRU cache, auto-tuning controller, and `/api/v1/bloom/status` API. See [Bloom Index](docs/bloom-index.md).
+**Multi-tier bloom index** on `trace_id` and `service.name` for fast point lookups. Age-based tiering (Hot/Warm/Cold/Archive) with automatic downgrade, LRU cache, auto-tuning controller, and `/api/v1/bloom/status` API. See [Bloom Index](bloom-index.md).
 
 Point lookups over an object store are a file-skipping problem. Blooms answer "this file cannot contain that value" without a read, and their footprint is tiered by age so recent data keeps the most precise filters while archives keep the cheapest.
 

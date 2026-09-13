@@ -316,6 +316,11 @@ func LoadFeatures(dir, repoRoot string) (*FeatureSet, error) {
 					seenLeadIn[lead] = f.ID
 				}
 				if repoRoot != "" {
+					for _, text := range []string{f.Highlight, f.Description} {
+						if err := CheckMarkdownLinks(repoRoot, text); err != nil {
+							errs = append(errs, fmt.Sprintf("%s: feature %s: %v", path, f.ID, err))
+						}
+					}
 					for _, ref := range f.Tests {
 						if err := CheckTestRef(repoRoot, ref); err != nil {
 							errs = append(errs, fmt.Sprintf("%s: feature %s: tests: %v", path, f.ID, err))
@@ -484,4 +489,50 @@ func SlugifyHeading(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// markdownLinkRe matches an inline Markdown link's target: [text](target).
+var markdownLinkRe = regexp.MustCompile(`\[[^\]]*\]\(([^)\s]+)\)`)
+
+// isExternalLink reports whether a Markdown link target points outside the
+// repository (an absolute URL, a mail link, a site-absolute path) or is a
+// pure in-page anchor — none of which name a file this repo can check.
+func isExternalLink(target string) bool {
+	switch {
+	case strings.HasPrefix(target, "#"), strings.HasPrefix(target, "/"):
+		return true
+	case strings.Contains(target, "://"), strings.HasPrefix(target, "mailto:"):
+		return true
+	}
+	return false
+}
+
+// MarkdownLinkTargets returns the repo-relative targets of every inline
+// Markdown link in text, skipping external links and in-page anchors.
+//
+// Highlights and descriptions are rendered into two documents that live in
+// different directories (README.md at the repo root, docs/features.md inside
+// docs/), so their link targets are authored repo-root-relative here and
+// rewritten per output file by the renderer — see report.RelinkMarkdown.
+func MarkdownLinkTargets(text string) []string {
+	var out []string
+	for _, m := range markdownLinkRe.FindAllStringSubmatch(text, -1) {
+		if !isExternalLink(m[1]) {
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
+
+// CheckMarkdownLinks verifies every in-repo Markdown link in text with the
+// same resolver the `docs:` list uses (CheckDocRef, repo-root-relative, with
+// the anchor checked when one is given), so a highlight cannot carry a link
+// the catalog would reject in `docs:`.
+func CheckMarkdownLinks(repoRoot, text string) error {
+	for _, target := range MarkdownLinkTargets(text) {
+		if err := CheckDocRef(repoRoot, target); err != nil {
+			return fmt.Errorf("markdown link %v", err)
+		}
+	}
+	return nil
 }

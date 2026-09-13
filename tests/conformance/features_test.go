@@ -166,8 +166,8 @@ func TestFeatures_RealCatalog(t *testing.T) {
 	t.Logf("feature catalog: %d features, %s", len(set.Features), d.Summary())
 
 	// The generated documents must be current.
-	wantFeatures := report.RenderFeatures(set, reg)
-	haveFeatures, err := os.ReadFile(filepath.Join(root, "docs", "features.md"))
+	wantFeatures := report.RenderFeatures(set, reg, report.FeaturesDocDir)
+	haveFeatures, err := os.ReadFile(filepath.Join(root, report.FeaturesDocDir, "features.md"))
 	if err != nil {
 		t.Fatalf("read docs/features.md: %v", err)
 	}

@@ -114,6 +114,7 @@ func TestLoadFeatures_Rejects(t *testing.T) {
 		{"testdata/features/invalid", "status \"done\" invalid"},
 		{"testdata/features/unknownkey", "field hilight not found"},
 		{"testdata/features/badref", "no such file"},
+		{"testdata/features/badlink", "markdown link"},
 		{"testdata/features/dupbullet", "claimed by both"},
 	}
 	for _, tc := range cases {
@@ -350,5 +351,34 @@ func TestLoadFeatures_UnreadablePaths(t *testing.T) {
 	}
 	if _, err := LoadFeatures(sub, ""); err == nil {
 		t.Error("an unwalkable catalog directory must fail the load")
+	}
+}
+
+func TestMarkdownLinkTargets(t *testing.T) {
+	in := "[a](docs/a.md) [ext](https://example.com) [mail](mailto:x@y.z) [anchor](#z) [abs](/p) [b](docs/b.md#c)"
+	got := MarkdownLinkTargets(in)
+	want := []string{"docs/a.md", "docs/b.md#c"}
+	if len(got) != len(want) {
+		t.Fatalf("MarkdownLinkTargets = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("MarkdownLinkTargets = %v, want %v", got, want)
+		}
+	}
+	if n := len(MarkdownLinkTargets("no links here")); n != 0 {
+		t.Fatalf("want no targets, got %d", n)
+	}
+}
+
+func TestCheckMarkdownLinks(t *testing.T) {
+	if err := CheckMarkdownLinks(fixtureRepo, "see [it](docs/example.md#a-heading) and [ext](https://example.com)"); err != nil {
+		t.Fatalf("valid links: %v", err)
+	}
+	if err := CheckMarkdownLinks(fixtureRepo, "see [gone](docs/missing.md)"); err == nil {
+		t.Error("a link to a missing file must fail — the docs site would break on it")
+	}
+	if err := CheckMarkdownLinks(fixtureRepo, "see [bad anchor](docs/example.md#nope)"); err == nil {
+		t.Error("a link to a missing anchor must fail")
 	}
 }

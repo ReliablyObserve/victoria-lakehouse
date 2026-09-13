@@ -84,7 +84,7 @@ func buildPlan(root string) (*plan, error) {
 		files: []genFile{
 			{filepath.Join(root, "tests", "conformance", "inventory.generated.yaml"), wantInv},
 			{filepath.Join(root, "UPSTREAM_COVERAGE.md"), []byte(report.RenderCoverage(inv, reg))},
-			{filepath.Join(root, "docs", "features.md"), []byte(report.RenderFeatures(features, reg))},
+			{filepath.Join(root, report.FeaturesDocDir, "features.md"), []byte(report.RenderFeatures(features, reg, report.FeaturesDocDir))},
 			{readmePath, []byte(wantReadme)},
 		},
 		featureCount:    len(features.Features),
