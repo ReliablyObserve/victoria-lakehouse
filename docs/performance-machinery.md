@@ -506,13 +506,16 @@ CPU caveats:
 into a Go process. The footer cache is the biggest in-process
 allocation — every entry past line 4 in the section A table that
 mentions "in footer cache" is sharing this single pool. At PB scale
-the footer cache alone consumes 10 GiB per pod and the manifest
+the footer cache alone can consume 10 GiB per pod and the manifest
 another 1 GiB; the operator-tunable knobs (`cache.memory_mb`,
-`cache.disk_max_mb`, `cache.footer_max_items`) all gate this, and
+`cache.disk_max_mb`, `cache.footer_max_items`) gate this — except
+that the logs binary currently ignores `cache.footer_max_items` and
+fixes its footer cache at 10 000 entries (see
+[scale limits](petabyte-scale-audit.md#footer-cache)) — and
 the [sizing guide](operations/sizing.md) records the actual worked
 examples for k8s pod limits.
 
-The PB-scale row of the table is the failure mode the [PB-scale audit](petabyte-scale-audit.md) discusses
+The PB-scale row of the table is the failure mode the [scale limits page](petabyte-scale-audit.md) discusses
 — without the lifecycle speedups in section F and the file
 narrowing in section A, the per-query S3 budget would not survive.
 
@@ -611,6 +614,6 @@ Today's coverage:
 - [docs/cache-architecture.md](cache-architecture.md) — deep-dive on the L1/L2/footer caches
 - [docs/manifest-system.md](manifest-system.md) — the manifest, including signal-suffix + cliff-guard fixes
 - [docs/bloom-index.md](bloom-index.md) — file-level bloom mechanics
-- [docs/petabyte-scale-audit.md](petabyte-scale-audit.md) — the audit that motivated several of the lifecycle items
+- [docs/petabyte-scale-audit.md](petabyte-scale-audit.md) — scale limits and roadmap: what does not scale yet, with the code paths and planned changes
 - [docs/observability.md](observability.md) — the metrics surface
 - [docs/configuration.md](configuration.md) — current knobs

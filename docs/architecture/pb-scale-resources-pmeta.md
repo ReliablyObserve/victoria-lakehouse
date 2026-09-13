@@ -1,8 +1,10 @@
 # Resource & cost at PB scale — with the pmeta consolidation
 
 How the unified metadata layer changes RAM / CPU / disk / S3-storage / S3-ops, and
-why LH is ready for petabyte-scale cold tier. Grounded in a live measurement of the
-pmeta-on stack, then extrapolated.
+what that means for a petabyte-scale cold tier. Grounded in a live measurement of the
+pmeta-on stack, then extrapolated for a single tenant. The terms that still grow
+without bound — per-tenant residency, multi-writer persistence, full manifest
+enumeration — are covered on the [scale limits page](../petabyte-scale-audit.md).
 
 ## Measured baseline (live, pmeta on)
 

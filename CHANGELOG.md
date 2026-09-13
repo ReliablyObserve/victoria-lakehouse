@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Docs: the petabyte-scale audit page is replaced by "Scale limits and roadmap" (`docs/petabyte-scale-audit.md`, same URL).** The old page was stale: four of its five must-fix items shipped in v0.39.0 (per-key manifest index, incremental tenant summaries, tenant-scoped refresh, binary snapshot — streaming decode in v0.49.0) and the fifth (`KeysUnderPrefix`) is fixed for its only production caller, while two of its numbers were wrong (query fan-out defaults to 64 workers, not 8). The new page lists, per component, what scales with file count, partitions × tenants and replicas, with the code path, the current limit, the failure mode past it and the planned change, plus what is not measured. Limits it documents that were not on the old page: every replica re-lists every key on each manifest refresh under a hard 2-minute timeout (startup: 5 minutes) with at most 8 tenant prefixes in parallel; resident pmeta bundles are never evicted for live partitions and scale with partitions × tenants; bundles are persisted with an unconditional PUT, so two writers for one partition overwrite each other; compaction selection, retention, the size-stats recompute, trace-id lookup and two stats API handlers each walk a full copy of the manifest; compaction defaults to one partition per 5-minute tick; flush compares *uncompressed* bytes to the 128 MiB target; and the logs binary ignores `cache.footer_max_items` (footer cache fixed at 10 000 entries — traces honours it). `docs/operations/sizing.md` now marks its PB figures as estimates, adds the pmeta term, corrects the footer-cache snapshot (a key list, already implemented), the LIST scaling row and the query-memory default (32 × 512 MiB); README, `performance-machinery.md`, `metadata-and-s3-optimization.md` and `pb-scale-resources-pmeta.md` drop the over-claims and link the new page. Docs only; no code or perf delta.
+
 ## [0.121.0] - 2026-09-13
 
 ### Changed
