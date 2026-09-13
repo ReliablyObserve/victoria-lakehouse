@@ -25,6 +25,8 @@
 #   6c a reported-version gate vanished     -> exit 30, never a silent pass
 #   7  --no-pr                              -> exit 0,  open_pr=false
 #   8  a deps step fails; numeric commit    -> exit 1,  step named; YAML pin quoted
+#   8b gh unusable, curl fallback           -> exit 0,  releases read off the REST API
+#   8c no release source                    -> exit 1,  explained
 #   9  bad invocation                       -> exit 2
 #  10  version comparison table            (the probe's own version_gt, extracted)
 #
@@ -387,6 +389,8 @@ mkdir -p "$BIN"
 cat > "$BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 # gh api repos/<owner>/<name>/releases/latest --jq .tag_name
+# FAKE_GH_FAIL makes it behave like an unauthenticated or missing gh.
+[[ -n "${FAKE_GH_FAIL:-}" ]] && exit 1
 case "$*" in
 *VictoriaLogs*) printf '%s\n' "${FAKE_LATEST_VL:-v1.50.0}" ;;
 *VictoriaTraces*) printf '%s\n' "${FAKE_LATEST_VT:-v0.9.2}" ;;
@@ -470,7 +474,21 @@ test)
 esac
 exit 0
 EOF
-chmod +x "$BIN/gh" "$BIN/go"
+# The public REST API fallback: curl -sSfL ... https://api.github.com/repos/<owner>/<name>/releases/latest
+cat > "$BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+[[ -n "${FAKE_CURL_FAIL:-}" ]] && exit 22
+case "$*" in
+*api.github.com/repos/VictoriaMetrics/VictoriaLogs/releases/latest*)
+	printf '{\n  "url": "https://api.github.com/repos/VictoriaMetrics/VictoriaLogs/releases/1",\n  "tag_name": "%s",\n  "name": "v"\n}\n' "${FAKE_LATEST_VL:-v1.50.0}"
+	;;
+*api.github.com/repos/VictoriaMetrics/VictoriaTraces/releases/latest*)
+	printf '{"tag_name":"%s","prerelease":false}\n' "${FAKE_LATEST_VT:-v0.9.2}"
+	;;
+*) exit 22 ;;
+esac
+EOF
+chmod +x "$BIN/gh" "$BIN/go" "$BIN/curl"
 
 # run <case> [probe args...] — runs the probe with the shims on PATH, keeping
 # the work directory so the clone can be inspected afterwards.
@@ -643,6 +661,18 @@ check_not_contains "no value is double-quoted" \
 	"$(cat "$clone/.github/workflows/release.yaml")" '""'
 check_contains "a version pin that is not numeric stays unquoted" \
 	"$(cat "$clone/.github/workflows/ci.yaml")" "VT_VERSION: v0.12.0"
+
+# --- 8b. gh unusable: the public REST API through curl ------------------
+FAKE_GH_FAIL=1 FAKE_LATEST_VL=v1.52.0 FAKE_LATEST_VT=v0.11.0 run curlfallback --no-pr
+check_rc "the curl fallback resolves the releases" "$rc" 0
+check_contains "the curl fallback reads a pretty-printed tag" "$envv" "vl_candidate=v1.52.0"
+check_contains "the curl fallback reads a compact tag" "$envv" "vt_candidate=v0.11.0"
+check_contains "the curl fallback leads to a real probe" "$envv" "status=clean"
+
+# --- 8c. no release source at all ----------------------------------------
+FAKE_GH_FAIL=1 FAKE_CURL_FAIL=1 run noreleases
+check_rc "unresolvable releases exit 1" "$rc" 1
+check_contains "unresolvable releases are explained" "$out" "could not resolve the newest VictoriaMetrics/VictoriaLogs release"
 
 # --- 9. bad invocation --------------------------------------------------
 out="$(PATH="$BIN:$PATH" "$PROBE" --repo "$REPO" --nonsense 2>&1)"
