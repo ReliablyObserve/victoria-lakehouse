@@ -293,6 +293,12 @@ jobs:
       - name: Patch-set consistency (vl-logs vs vl-traces)
         run: scripts/ci/check_patches_equal.sh
 
+      # The daily upstream sync probe, against a fake upstream (local git
+      # repositories, shimmed gh and go): every verdict and exit code, no
+      # network, no Go toolchain needed.
+      - name: Upstream sync probe self-test
+        run: scripts/ci/tests/upstream_sync_probe_test.sh
+
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
