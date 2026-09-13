@@ -121,6 +121,42 @@ func fetchWith(t *testing.T, client *http.Client, baseURL, path string, params u
 	return fetchResult{StatusCode: resp.StatusCode, Body: body}
 }
 
+// readAllOrEmpty reads a response body, treating a read error (a client
+// deadline on a streaming endpoint) as an empty body rather than a fatal —
+// same contract as fetchWith.
+func readAllOrEmpty(resp *http.Response) []byte {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+	return body
+}
+
+// sumFieldValueHits totals the `hits` counts in a /select/logsql/field_values
+// response — the number of rows behind the returned value set.
+func sumFieldValueHits(data []byte) int {
+	obj, err := parseJSON(data)
+	if err != nil {
+		return -1
+	}
+	values, _ := obj["values"].([]any)
+	total := 0
+	for _, entry := range values {
+		m, _ := entry.(map[string]any)
+		if m == nil {
+			continue
+		}
+		switch h := m["hits"].(type) {
+		case float64:
+			total += int(h)
+		case string:
+			n, _ := strconv.Atoi(h)
+			total += n
+		}
+	}
+	return total
+}
+
 func parseNDJSON(data []byte) []map[string]any {
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	var results []map[string]any
