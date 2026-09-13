@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Contributing: main rules and the feature-PR process.** `CONTRIBUTING.md` now states the four non-negotiable rules (full VictoriaLogs/VictoriaTraces compatibility with upstream-first reuse; verified-not-assumed through the conformance machine; performance measured with validated three-way benchmarks; fastest Lakehouse storage on fully open Parquet) and the process for adding or extending a feature (feature catalog entry, registry rows and regression tests, regenerated docs, CHANGELOG bullet) that CI enforces; the PR template carries the matching checklist.
+
 ## [0.121.0] - 2026-09-13
 
 ### Changed
