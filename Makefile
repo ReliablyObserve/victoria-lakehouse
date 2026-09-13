@@ -44,7 +44,7 @@ VT_VERSION := v0.11.0
 VT_REPO := https://github.com/VictoriaMetrics/VictoriaTraces.git
 VT_DIR := lakehouse-traces/deps/VictoriaTraces
 
-.PHONY: build build-logs build-traces bench test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces deps-vt conformance-gen conformance-check
+.PHONY: build build-logs build-traces bench test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces deps-vt sync-vmui sync-vmui-traces conformance-gen conformance-check
 
 deps-logs: $(VL_DIR_LOGS)/go.mod
 
@@ -87,15 +87,50 @@ $(VT_DIR)/go.mod:
 	# indistinguishable from a real breakage.
 	cd $(VT_DIR) && go mod edit -replace github.com/VictoriaMetrics/VictoriaLogs=../VictoriaLogs
 
+# vmui is VictoriaLogs' own web UI. Lakehouse serves it at /select/vmui/ from
+# internal/ui/vmui/ via `go:embed` (internal/ui/vmui.go) and injects the
+# Lakehouse tab into its index.html on the way out (internal/ui/vmui_inject.go)
+# — the assets themselves are never modified, they are VL's build output.
+#
+# Only index.html is tracked in git; the rest of the bundle (assets/,
+# favicon.svg, manifest.json, config.json, preview.jpg, robots.txt) is
+# .gitignore'd and copied from the vendored VL tree at build time, so the repo
+# never carries a second copy of VL's minified bundle. index.html IS tracked
+# because it names the content-hashed asset filenames, which makes it the
+# drift marker TestVMUIIndexMatchesVendoredVL compares against the vendored
+# tree: a VL bump that rebuilds vmui changes those hashes and fails the test
+# until `make sync-vmui` is re-run and index.html re-committed.
+#
+# The Docker builds do the same copy inline (Dockerfile.logs:30,
+# Dockerfile.traces:50). These targets make a local build reproduce it.
+# The vmui directory is wiped first so assets from a previous VL version
+# cannot survive a downgrade or a partial copy.
+sync-vmui: deps-logs
+	@rm -rf internal/ui/vmui
+	@mkdir -p internal/ui/vmui
+	cp -R $(VL_DIR_LOGS)/app/vlselect/vmui/. internal/ui/vmui/
+	@echo "vmui: internal/ui/vmui <- $(VL_DIR_LOGS)/app/vlselect/vmui (VictoriaLogs $(VL_VERSION_LOGS))"
+
+# sync-vmui-traces is the traces-binary counterpart: lakehouse-traces embeds the
+# same internal/ui package, but Dockerfile.traces copies vmui from the traces
+# module's own VL checkout (VL_COMMIT_TRACES), not the logs one. Run this before
+# a local `make build-traces` if the two pins have diverged and you care which
+# vmui build the traces binary serves.
+sync-vmui-traces: deps-traces
+	@rm -rf internal/ui/vmui
+	@mkdir -p internal/ui/vmui
+	cp -R $(VL_DIR_TRACES)/app/vlselect/vmui/. internal/ui/vmui/
+	@echo "vmui: internal/ui/vmui <- $(VL_DIR_TRACES)/app/vlselect/vmui (VictoriaLogs $(VL_COMMIT_TRACES))"
+
 build: build-logs build-traces
 
 bench:
 	go build -o bin/lakehouse-bench ./cmd/bench/
 
-build-logs: deps-logs
+build-logs: deps-logs sync-vmui
 	go build $(GOBUILDFLAGS) -ldflags "$(LDFLAGS)" -o bin/lakehouse-logs ./cmd/lakehouse-logs
 
-build-traces: deps-traces deps-vt
+build-traces: deps-traces deps-vt sync-vmui-traces
 	cd lakehouse-traces && go build $(GOBUILDFLAGS) -ldflags "$(LDFLAGS)" -o ../bin/lakehouse-traces .
 
 test: test-logs test-traces
