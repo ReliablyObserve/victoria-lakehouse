@@ -1,0 +1,85 @@
+# Known-failure allowlist for the hot-vs-cold parity suite.
+#
+# One test (or subtest) path per line, each with a `# reason` naming the
+# divergence id from the "Known divergences under investigation" table in
+# docs/parity-and-gaps.md. scripts/ci/parity_ratchet.py reads this file and
+# fails the Parity Tests job when:
+#
+#   * a failing test is NOT listed here — a new divergence or a harness
+#     regression, either way something to look at before merging;
+#   * a listed test passes, skips, or no longer exists — the entry is stale
+#     and must be deleted, so the list only ever shrinks;
+#   * fewer than `min-pass` tests pass — coverage went backwards.
+#
+# A parent test that fails only because a listed subtest failed does not need
+# its own entry.
+#
+# Do NOT add an entry to make a red build green. Every line here is a real
+# cold-tier divergence with a fix in flight; a harness defect belongs in the
+# harness, not on this list.
+#
+# min-pass: 344
+
+# --- B1: cold query rows carry columns hot does not -------------------------
+# `<null>` placeholders for unset map attributes, the account_id/project_id
+# tenant columns, the ded_s01..ded_s08 dedicated slot columns, and unprefixed
+# duplicates of the traces attributes.
+TestParity_EdgeCasesExtended/limit_equals_offset/limit_equals_offset  # B1: junk columns in cold rows
+TestParity_EdgeCasesExtended/multiple_sort_keys/multiple_sort_keys  # B1: junk columns in cold rows
+TestParity_Endpoints/facets  # B1: cold facets carry exception.message/type=<null>
+TestParity_Endpoints/query_wildcard  # B1: junk columns in cold rows
+TestParity_Pipes/copy_pipe  # B1: junk columns in cold rows
+TestParity_Pipes/limit_1  # B1: junk columns in cold rows
+TestParity_Pipes/limit_10  # B1: junk columns in cold rows
+TestParity_Pipes/sort_time_asc  # B1: junk columns in cold rows
+TestParity_Pipes/sort_time_desc  # B1: junk columns in cold rows
+TestParity_PipesExtended/first_pipe  # B1: junk columns in cold rows
+TestParity_PipesExtended/last_pipe  # B1: junk columns in cold rows
+TestParity_PipesExtended/offset_pipe  # B1: junk columns in cold rows
+TestParity_PipesExtended/pipe_chain_delete_sort  # B1: junk columns in cold rows
+TestParity_Response/jsonl_structure  # B1: junk columns in cold rows
+TestParity_Traces_LogsQL/traces_trace_id_lookup  # B1: junk columns + unprefixed traces attributes
+
+# --- B2: field_names is built from Parquet columns only ---------------------
+# Cold reports only the columns present in the scanned files, so _time, _msg,
+# _stream, the VT metadata fields and every map-stored attribute are missing.
+TestParity_CrossValidationExtended/field_names_parity  # B2: field_names from Parquet columns only
+TestParity_Endpoints/field_names  # B2: field_names from Parquet columns only
+TestParity_Fields/field_names_all  # B2: field_names from Parquet columns only
+TestParity_Fields/field_names_filtered  # B2: field_names from Parquet columns only
+TestParity_LogsQL_FieldNamesSuperset  # B2: field_names from Parquet columns only
+TestParity_Response/field_names_jsonl/field_names_jsonl  # B2: field_names from Parquet columns only
+TestParity_TracesExtended/traces_field_names_completeness  # B2: field_names from Parquet columns only
+TestParity_Traces_LogsQL/traces_field_names  # B2: field_names from Parquet columns only
+TestParity_Traces_LogsQL/traces_field_names_resource_attr_prefix  # B2: resource_attr:service.name absent from cold field_names
+TestParity_Traces_LogsQL/traces_field_names_span_attr_prefix  # B2: span_attr:* absent from cold field_names
+TestParity_Traces_LogsQL/traces_field_names_vt_metadata  # B2: VT metadata fields absent from cold field_names
+
+# --- B3: map-attribute filter + any pipe returns 0 rows ---------------------
+TestParity_Filters/range_numeric  # B3: map-attribute filter plus pipe returns 0 rows
+TestParity_FiltersExtended/field_exists_multi  # B3: map-attribute filter plus pipe returns 0 rows
+TestParity_FiltersExtended/negated_exists_combined  # B3: map-attribute filter plus pipe returns 0 rows
+TestParity_FiltersGapfill/escaped_special_chars/filter_with_double_quote  # B3: map-attribute filter plus pipe returns 0 rows
+TestParity_FiltersGapfill/range_comparison_filters/numeric_greater_than  # B3: map-attribute filter plus pipe returns 0 rows
+TestParity_FiltersGapfill/range_comparison_filters/numeric_gte  # B3: map-attribute filter plus pipe returns 0 rows
+TestParity_FiltersGapfill/range_comparison_filters/numeric_less_than  # B3: map-attribute filter plus pipe returns 0 rows
+TestParity_FiltersGapfill/range_comparison_filters/numeric_range_combined  # B3: map-attribute filter plus pipe returns 0 rows
+TestParity_StatsExtended/stats_by_format  # B3: map-attribute filter plus pipe returns 0 rows
+
+# --- B4: rename/format/len/math/extract/unpack lose input columns -----------
+TestParity_PipesExtended/extract_pattern  # B4: pipe loses its input columns
+TestParity_PipesExtended/format_pipe  # B4: pipe loses its input columns
+TestParity_PipesExtended/len_pipe  # B4: pipe loses its input columns
+TestParity_PipesExtended/pipe_chain_rename_stats  # B4: pipe loses its input columns
+TestParity_PipesExtended/rename_field  # B4: pipe loses its input columns
+TestParity_PipesExtended/unpack_json  # B4: pipe loses its input columns
+TestParity_PipesGapfill/chained_pipes_3plus/filter_rename_sort_limit  # B4: pipe loses its input columns
+TestParity_PipesGapfill/chained_pipes_3plus/format_delete_sort_limit  # B4: pipe loses its input columns
+TestParity_PipesGapfill/chained_pipes_3plus/len_math_filter_stats  # B4: pipe loses its input columns
+TestParity_PipesGapfill/chained_pipes_3plus/rename_filter_sort_fields_limit  # B4: pipe loses its input columns
+TestParity_PipesGapfill/string_functions/len_msg  # B4: pipe loses its input columns
+TestParity_PipesGapfill/string_functions/upper_level  # B4: pipe loses its input columns
+
+# --- B5: /hits at sub-hour steps returns synthetic buckets ------------------
+TestParity_EdgeCasesExtended/hits_small_step/hits_small_step  # B5: sub-hour /hits buckets are interpolated
+TestParity_Response/hits_bucket_keys/hits_bucket_keys  # B5: sub-hour /hits buckets are interpolated

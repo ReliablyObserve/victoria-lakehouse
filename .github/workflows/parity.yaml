@@ -7,6 +7,8 @@ on:
       - 'internal/**'
       - 'cmd/**'
       - 'tests/parity/**'
+      - 'scripts/ci/parity_ratchet.py'
+      - 'scripts/ci/tests/test_parity_ratchet.py'
       - 'Dockerfile.*'
       - 'go.mod'
       - 'go.sum'
@@ -17,6 +19,7 @@ on:
       - 'internal/**'
       - 'cmd/**'
       - 'tests/parity/**'
+      - 'scripts/ci/parity_ratchet.py'
       - 'Dockerfile.*'
   schedule:
     - cron: '0 5 * * *'
@@ -34,6 +37,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # The ratchet decides whether this job passes, so its own tests run
+      # first — a broken gate must not silently wave a broken suite through.
+      - name: Test the parity ratchet
+        run: python -m unittest scripts.ci.tests.test_parity_ratchet -v
 
       - name: Build parity stack
         run: docker compose -f tests/parity/docker-compose.yml build
@@ -57,51 +69,73 @@ jobs:
 
       - name: Wait for datagen to complete
         run: |
-          for i in $(seq 1 120); do
-            status=$(docker compose -f tests/parity/docker-compose.yml ps --format json datagen-seed 2>/dev/null | jq -r '.State' 2>/dev/null)
-            if [ "$status" = "exited" ]; then
-              echo "datagen-seed completed"
-              break
-            fi
-            echo "waiting for datagen-seed... ($i/120)"
-            sleep 2
+          for svc in datagen-seed datagen-seed-tenant2; do
+            for i in $(seq 1 120); do
+              status=$(docker compose -f tests/parity/docker-compose.yml ps -a --format json "$svc" 2>/dev/null | jq -r '.State' 2>/dev/null)
+              if [ "$status" = "exited" ]; then
+                echo "$svc completed"
+                break
+              fi
+              echo "waiting for $svc... ($i/120)"
+              sleep 2
+            done
           done
 
-      - name: Wait for LH flush to S3
+      # A fixed sleep is not enough: the cold tier keeps flushing and
+      # compacting after datagen exits, and a comparison taken mid-flush
+      # reads fewer rows than the hot tier holds (and than the cold tier's
+      # own scan path returns a second later). Poll until each cold tier
+      # agrees with its hot counterpart on a plain row count.
+      - name: Wait for LH to flush and settle
         run: |
-          echo "Waiting 30s for LH to flush data and refresh manifest..."
-          sleep 30
+          # Probes run from inside the network (the stack publishes no
+          # host ports); victorialogs' image carries wget.
+          probe() { # probe <host:port> <logsql query>
+            docker compose -f tests/parity/docker-compose.yml exec -T victorialogs \
+              wget -qO- --header="Content-Type: application/x-www-form-urlencoded" \
+              --post-data="query=$2" "http://$1/select/logsql/stats_query" 2>/dev/null \
+              | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo 0
+          }
+          for i in $(seq 1 60); do
+            hot_logs=$(probe victorialogs:9428 '* | stats count() n')
+            cold_logs=$(probe lakehouse-logs:9428 '* | stats count() n')
+            hot_traces=$(probe victoriatraces:10428 'span_id:* | stats count() n')
+            cold_traces=$(probe lakehouse-traces:10428 'span_id:* | stats count() n')
+            echo "settle check $i/60: logs hot=$hot_logs cold=$cold_logs | traces hot=$hot_traces cold=$cold_traces"
+            if [ "$hot_logs" != "0" ] && [ "$hot_logs" = "$cold_logs" ] \
+               && [ "$hot_traces" != "0" ] && [ "$hot_traces" = "$cold_traces" ]; then
+              echo "cold tiers settled"
+              break
+            fi
+            sleep 5
+          done
 
+      # `go test` exits non-zero while the known-failure allowlist is
+      # non-empty, so its status is recorded and deliberately not propagated
+      # here: the ratchet step below is what passes or fails this job. That
+      # is the whole point of the allowlist — a blanket `continue-on-error`
+      # on this step would also swallow the ratchet's verdict.
       - name: Run parity tests in-network
-        continue-on-error: true
         run: |
-          docker compose -f tests/parity/docker-compose.yml --profile test run --rm parity-tests 2>&1 | tee parity-results.txt
-          echo "EXIT_CODE=${PIPESTATUS[0]}" >> $GITHUB_ENV
+          set +e
+          docker compose -f tests/parity/docker-compose.yml --profile test run --rm -T parity-tests \
+            go test -tags=parity -json -count=1 -timeout=15m ./... > parity-results.json
+          echo "go test exit code: $?"
+          wc -l parity-results.json
 
-      - name: Parse parity results
-        if: always()
+      - name: Parity ratchet (known-failure allowlist)
         run: |
-          echo "## Parity Test Results" >> $GITHUB_STEP_SUMMARY
-          PASS=$(grep -c '--- PASS' parity-results.txt 2>/dev/null || echo 0)
-          FAIL=$(grep -c '--- FAIL' parity-results.txt 2>/dev/null || echo 0)
-          echo "- **Passed:** $PASS" >> $GITHUB_STEP_SUMMARY
-          echo "- **Failed:** $FAIL (expected — tracks known LH parity gaps)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ "$FAIL" -gt 0 ]; then
-            echo "<details><summary>Failed tests (click to expand)</summary>" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            grep -A2 '--- FAIL' parity-results.txt >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            echo "</details>" >> $GITHUB_STEP_SUMMARY
-          fi
+          python scripts/ci/parity_ratchet.py \
+            --results parity-results.json \
+            --allowlist tests/parity/known_failures.txt \
+            --summary-file "$GITHUB_STEP_SUMMARY"
 
       - name: Upload parity results
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: parity-results
-          path: parity-results.txt
+          path: parity-results.json
 
       - name: Show docker logs on failure
         if: failure()
@@ -116,6 +150,8 @@ jobs:
           docker compose -f tests/parity/docker-compose.yml logs lakehouse-traces --tail=50
           echo "=== datagen-seed ==="
           docker compose -f tests/parity/docker-compose.yml logs datagen-seed --tail=50
+          echo "=== datagen-seed-tenant2 ==="
+          docker compose -f tests/parity/docker-compose.yml logs datagen-seed-tenant2 --tail=50
 
       - name: Stop parity stack
         if: always()
