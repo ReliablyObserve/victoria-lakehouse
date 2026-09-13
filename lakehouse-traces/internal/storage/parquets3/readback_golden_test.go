@@ -565,17 +565,13 @@ func TestReadbackGolden(t *testing.T) {
 		t.Fatalf("golden has %d files, test produced %d", len(want.Files), len(files))
 	}
 	for i := range files {
-		got, err := json.MarshalIndent(files[i], "", "  ")
-		if err != nil {
-			t.Fatalf("marshal got: %v", err)
-		}
-		expect, err := json.MarshalIndent(want.Files[i], "", "  ")
-		if err != nil {
-			t.Fatalf("marshal want: %v", err)
-		}
-		if !bytes.Equal(got, expect) {
-			t.Errorf("readback golden mismatch for %s\n--- want (%s) ---\n%s\n--- got ---\n%s",
-				want.Files[i].Name, want.ParquetGoVersion, expect, got)
+		// diffGolden (readback_reproducibility_test.go) names each field that
+		// moved instead of printing two multi-thousand-line JSON blobs, so a
+		// parquet-go bump reports a diagnosis rather than homework. Its own
+		// sensitivity is proved by TestGoldenDiffNamesTamperedFields.
+		if diffs := diffGolden(want.Files[i], files[i]); len(diffs) != 0 {
+			t.Errorf("readback golden mismatch for %s (golden written by parquet-go %s), %d field(s) changed:\n  %s",
+				want.Files[i].Name, want.ParquetGoVersion, len(diffs), strings.Join(diffs, "\n  "))
 		}
 	}
 }

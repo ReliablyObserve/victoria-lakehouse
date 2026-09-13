@@ -172,6 +172,16 @@ Structural readback goldens in both modules assert the same thing from the Go si
 
 Three upstream writer defects were fixed between the two versions: page counts belonging to one row group being overwritten by a later row group, bloom filters mis-sized when a row group is closed by the row limit, and the dictionary fallback dropping values. None of them was reachable from the Lakehouse writers, which build files through `Write(rows)` -- filters there are sized at flush time from the values actually written. Measured on v0.30.1 and v0.32.0 alike: blooms come out at 12,512 bytes for a 10,000-row group (10 bits per value), with a 1.0-1.3% false-positive rate and no false negatives, and a 200,000-distinct-value dictionary column reads back complete and in order. Regression tests in both modules now pin all three properties.
 
+### Write reproducibility
+
+For logs the writer is **byte-reproducible**: writing the same rows twice with the same options produces identical files, asserted in both modules by `TestLogsParquetWriteIsByteReproducible`. That is what makes a byte-level comparison across library versions meaningful — once the writer itself is deterministic, any remaining difference belongs to parquet-go.
+
+For traces it is not, and the reason is Lakehouse's own, not the library's: the `_trace_idx` footer key-value entry is serialised by iterating a Go map, so its byte order varies from run to run **within one library version**. Readers are unaffected (the index is self-describing and the read path sorts it), but byte-level provenance is impossible for trace files. `TestTracesParquetIsStructurallyStableButNotByteStable` therefore asserts the property that does hold: two writes of the same rows describe the same file — same row groups, same encodings, same blooms, same footer key set. Making the trace index emit in a stable order is a small, separate change, worth doing if reproducible builds of Parquet output ever become a requirement.
+
+`footerMetadataDiff` (same test files) reports which footer fields differ between two Parquet files — `created_by`, format version, row counts, footer key set, and per row group per column the path, codec, value count, encodings, dictionary-page presence, null and distinct counts and min/max statistics. Point `PARQUET_FOOTER_BASELINE` at a file written by another parquet-go version and `TestFooterMetadataDiffAgainstBaseline` re-runs that comparison and prints the exact field list, so the next library bump records what moved instead of asserting from memory that nothing did. At v0.30.1 -> v0.32.0 the list was `created_by` and nothing else.
+
+The structural goldens report differences the same way: `diffGolden` names each field that changed (`columns[3].encodings[0]`, `bloom_probes[1].present_hits`, `rows_per_row_group[0]`) rather than printing two multi-thousand-line JSON documents, and `TestGoldenDiffNamesTamperedFields` proves that sensitivity by mutating a copy of a real golden — one encoding, one bloom probe count, one row-group boundary — and requiring each mutation to be named.
+
 ## Querying with External Tools
 
 ### DuckDB
