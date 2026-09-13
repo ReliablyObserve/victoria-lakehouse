@@ -96,6 +96,7 @@ jobs:
               --post-data="query=$2" "http://$1/select/logsql/stats_query" 2>/dev/null \
               | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo 0
           }
+          settled=0
           for i in $(seq 1 60); do
             hot_logs=$(probe victorialogs:9428 '* | stats count() n')
             cold_logs=$(probe lakehouse-logs:9428 '* | stats count() n')
@@ -104,11 +105,21 @@ jobs:
             echo "settle check $i/60: logs hot=$hot_logs cold=$cold_logs | traces hot=$hot_traces cold=$cold_traces"
             if [ "$hot_logs" != "0" ] && [ "$hot_logs" = "$cold_logs" ] \
                && [ "$hot_traces" != "0" ] && [ "$hot_traces" = "$cold_traces" ]; then
+              settled=1
               echo "cold tiers settled"
               break
             fi
             sleep 5
           done
+          # Falling out of the loop is a failed run, not a slow one: every
+          # comparison after this point would be measured against a partial
+          # cold corpus and the results would be meaningless.
+          if [ "$settled" != "1" ]; then
+            echo "cold tier never settled after 60 attempts (300s):" >&2
+            echo "  logs   hot=$hot_logs cold=$cold_logs" >&2
+            echo "  traces hot=$hot_traces cold=$cold_traces" >&2
+            exit 1
+          fi
 
       # `go test` exits non-zero while the known-failure allowlist is
       # non-empty, so its status is recorded and deliberately not propagated
