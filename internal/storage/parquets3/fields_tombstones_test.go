@@ -586,3 +586,81 @@ func TestFieldValues_TombstoneInTheSameHourGatesTheCatalog(t *testing.T) {
 		t.Fatalf("values = %v, want %v", valueStrings(got), want)
 	}
 }
+
+func TestFilesTimeSpan(t *testing.T) {
+	files := []manifest.FileInfo{
+		{Key: "a", MinTimeNs: 100, MaxTimeNs: 200},
+		{Key: "b", MinTimeNs: 50, MaxTimeNs: 150},
+	}
+	if lo, hi := filesTimeSpan(files, 120, 130); lo != 50 || hi != 200 {
+		t.Errorf("span = [%d, %d], want [50, 200] (the counted files' rows)", lo, hi)
+	}
+	if lo, hi := filesTimeSpan(files, 10, 500); lo != 10 || hi != 500 {
+		t.Errorf("span = [%d, %d], want the wider query window [10, 500]", lo, hi)
+	}
+	unknown := append(files, manifest.FileInfo{Key: "c"})
+	if lo, hi := filesTimeSpan(unknown, 120, 130); lo != math.MinInt64 || hi != math.MaxInt64 {
+		t.Errorf("a file with unknown bounds could hold rows from any time; span = [%d, %d]", lo, hi)
+	}
+	if lo, hi := filesTimeSpan(nil, 1, 2); lo != 1 || hi != 2 {
+		t.Errorf("no files: span = [%d, %d], want the query window", lo, hi)
+	}
+}
+
+// TestFieldNames_TombstoneInsideACountedFileButOutsideTheWindow: hit counts come
+// from whole-file column indexes, so a tombstone outside the query window but
+// inside a counted file's rows still means the counts include deleted rows.
+func TestFieldNames_TombstoneInsideACountedFileButOutsideTheWindow(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+
+	now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
+	early := now.Add(-10 * time.Second)
+	bw.AddLogRows([]schema.LogRow{
+		{TimestampUnixNano: early.UnixNano(), Body: "early", ServiceName: "old-svc"},
+		{TimestampUnixNano: now.UnixNano(), Body: "late", ServiceName: "new-svc"},
+	})
+	bw.triggerFlush()
+
+	files := s.manifest.GetFilesForRange(early.UnixNano(), now.UnixNano())
+	if len(files) != 1 || files[0].MinTimeNs == files[0].MaxTimeNs {
+		t.Fatalf("fixture: want one file spanning both rows, got %+v", files)
+	}
+
+	// Before any delete, the narrow window around the late row reports counts.
+	q := mustParseQueryWithTime(t, "*", now.Add(-time.Second).UnixNano(), now.Add(time.Second).UnixNano())
+	before, err := s.GetFieldNames(context.Background(), nil, q)
+	if err != nil {
+		t.Fatalf("GetFieldNames before: %v", err)
+	}
+	var counted bool
+	for _, v := range before {
+		if v.Hits > 0 {
+			counted = true
+		}
+	}
+	if !counted {
+		t.Fatal("fixture: expected real hit counts before the delete")
+	}
+
+	// A tombstone over the early row only: outside the query window, inside the
+	// counted file.
+	store := delete.NewTombstoneStore()
+	store.Add(delete.Tombstone{ID: "edge", Query: "*", StartNs: early.UnixNano(), EndNs: early.Add(time.Second).UnixNano(), Mode: "hide"})
+	s.SetTombstoneStore(store)
+
+	after, err := s.GetFieldNames(context.Background(), nil, q)
+	if err != nil {
+		t.Fatalf("GetFieldNames after: %v", err)
+	}
+	if len(after) == 0 {
+		t.Fatal("names must still be returned")
+	}
+	for _, v := range after {
+		if v.Hits != 0 {
+			t.Fatalf("field %q reports %d hits although a tombstone covers rows in the counted file", v.Value, v.Hits)
+		}
+	}
+}

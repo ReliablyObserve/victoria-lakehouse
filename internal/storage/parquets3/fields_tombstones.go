@@ -7,6 +7,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
@@ -57,6 +58,25 @@ func partitionHourBounds(startNs, endNs int64) (int64, int64) {
 	hi := endNs
 	if hi < math.MaxInt64-2*hour {
 		hi = time.Unix(0, endNs).UTC().Truncate(time.Hour).UnixNano() + hour - 1
+	}
+	return lo, hi
+}
+
+// filesTimeSpan returns the time range covered by the given files' rows,
+// widened to include the query window. A file with unknown bounds (either end
+// zero) could hold rows from any time, so the span is left open on both ends.
+func filesTimeSpan(files []manifest.FileInfo, startNs, endNs int64) (int64, int64) {
+	lo, hi := startNs, endNs
+	for _, fi := range files {
+		if fi.MinTimeNs == 0 || fi.MaxTimeNs == 0 {
+			return math.MinInt64, math.MaxInt64
+		}
+		if fi.MinTimeNs < lo {
+			lo = fi.MinTimeNs
+		}
+		if fi.MaxTimeNs > hi {
+			hi = fi.MaxTimeNs
+		}
 	}
 	return lo, hi
 }

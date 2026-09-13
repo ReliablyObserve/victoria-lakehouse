@@ -191,7 +191,11 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 	// Names stay over-inclusive (a field carried only by deleted rows still
 	// appears until the rewrite lands and the file is replaced) — that bound is
 	// documented in docs/operations.md rather than papered over.
-	if len(s.fieldsTombstones(startNs, endNs)) > 0 {
+	//
+	// The check covers every row the counts came from: the column index of a
+	// whole file, whose rows can extend past the query window, so a tombstone
+	// just outside the window but inside a counted file still taints the count.
+	if tsLo, tsHi := filesTimeSpan(files, startNs, endNs); len(s.fieldsTombstones(tsLo, tsHi)) > 0 {
 		noteFieldsScanFallback("field_names")
 		names := make([]string, 0, len(hits))
 		for name := range hits {

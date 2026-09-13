@@ -486,7 +486,7 @@ while a compacted file still holds its rows. Keys under a never-delete prefix
 |------|-----------|
 | log/span query results | rows matching an active tombstone are filtered out |
 | `field_values`, `streams`, `stream_ids` | a tombstoned row's values are not enumerated. The pmeta catalog and the label index are bypassed while a tombstone overlaps the partition hours the query touches (the catalog answers with whole-hour value sets), so these requests fall back to a column-projected row scan until the tombstone retires — counted in `lakehouse_delete_fields_scan_fallback_total{endpoint}` |
-| `field_names` | names are still returned, but hit **counts** are reported as unknown (`0`) rather than counts that still include the deleted rows |
+| `field_names` | names are still returned, but hit **counts** are reported as unknown (`0`) whenever a tombstone overlaps the rows they were counted from — the whole of every counted file, which can extend past the query window — rather than counts that still include the deleted rows |
 | compaction output | rows of tombstones eligible for physical removal are dropped; `hide` and in-window rows are carried forward |
 
 **Known bounds**, stated rather than papered over:
