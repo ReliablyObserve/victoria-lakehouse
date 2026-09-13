@@ -6,21 +6,29 @@ on:
     paths:
       - 'internal/**'
       - 'cmd/**'
+      - 'lakehouse-traces/**'
+      - 'patches/**'
       - 'tests/parity/**'
       - 'scripts/ci/parity_ratchet.py'
       - 'scripts/ci/tests/test_parity_ratchet.py'
       - 'Dockerfile.*'
       - 'go.mod'
       - 'go.sum'
-      - 'lakehouse-traces/**'
+      - '.github/workflows/parity.yaml'
   push:
     branches: [main]
     paths:
       - 'internal/**'
       - 'cmd/**'
+      - 'lakehouse-traces/**'
+      - 'patches/**'
       - 'tests/parity/**'
       - 'scripts/ci/parity_ratchet.py'
+      - 'scripts/ci/tests/test_parity_ratchet.py'
       - 'Dockerfile.*'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/parity.yaml'
   schedule:
     - cron: '0 5 * * *'
   workflow_dispatch:
