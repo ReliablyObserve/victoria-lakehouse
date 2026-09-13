@@ -1,8 +1,11 @@
-// confgen regenerates tests/conformance/inventory.generated.yaml and
-// UPSTREAM_COVERAGE.md from the vendored upstream sources and the registry.
+// confgen regenerates the documents derived from the vendored upstream
+// sources, the conformance registry and the feature catalog:
+// tests/conformance/inventory.generated.yaml, UPSTREAM_COVERAGE.md,
+// docs/features.md, and README.md's generated "Key Features" block.
 //
-//	confgen -write   # regenerate both files
-//	confgen -check   # exit 1 when a regeneration would change either file
+//	confgen -write   # regenerate every file
+//	confgen -check   # exit 1 when a regeneration would change any file,
+//	                 # or when the feature-catalog gate fails
 //
 // Passing both flags writes first, then checks the freshly written files
 // (exit 0 when that second pass is clean).
@@ -15,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 
+	conformance "github.com/ReliablyObserve/victoria-lakehouse/tests/conformance"
 	"github.com/ReliablyObserve/victoria-lakehouse/tests/conformance/inventory"
 	"github.com/ReliablyObserve/victoria-lakehouse/tests/conformance/registry"
 	"github.com/ReliablyObserve/victoria-lakehouse/tests/conformance/report"
@@ -23,6 +27,70 @@ import (
 type genFile struct {
 	path string
 	want []byte
+}
+
+// plan is everything a run needs: the documents to write or compare, and the
+// feature-catalog verdict. It is built in one place so `-write` and `-check`
+// can never disagree about what "current" means, and so the whole derivation
+// is testable without running the command.
+type plan struct {
+	files           []genFile
+	featureCount    int
+	featureFailures []string
+	featureSummary  string
+}
+
+// buildPlan derives every generated document and the feature-gate verdict for
+// the repository at root.
+func buildPlan(root string) (*plan, error) {
+	dirs := inventory.DefaultDirs(root)
+	if dirs.VLVersion == "" || dirs.VTVersion == "" {
+		return nil, fmt.Errorf("VLVersion/VTVersion not read from Makefile (VL_VERSION_LOGS=%q VT_VERSION=%q) — an empty pin is never a valid basis to write or check the generated inventory", dirs.VLVersion, dirs.VTVersion)
+	}
+	inv, err := inventory.Extract(dirs)
+	if err != nil {
+		return nil, fmt.Errorf("extract (run make deps-logs deps-traces deps-vt first): %w", err)
+	}
+	reg, err := registry.LoadDir(filepath.Join(root, "tests", "conformance", "registry", "rows"))
+	if err != nil {
+		return nil, err
+	}
+	features, err := registry.LoadFeatures(filepath.Join(root, "tests", "conformance", "registry", "features"), root)
+	if err != nil {
+		return nil, err
+	}
+	bullets, err := registry.ParseChangelogAdded(filepath.Join(root, "CHANGELOG.md"))
+	if err != nil {
+		return nil, err
+	}
+
+	wantInv, err := inv.Bytes()
+	if err != nil {
+		return nil, err
+	}
+
+	readmePath := filepath.Join(root, "README.md")
+	readme, err := os.ReadFile(readmePath)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", readmePath, err)
+	}
+	wantReadme, err := report.ReplaceMarkedBlock(string(readme), report.ReadmeFeaturesBegin, report.ReadmeFeaturesEnd, report.RenderReadmeFeatures(features))
+	if err != nil {
+		return nil, fmt.Errorf("README.md feature block: %w", err)
+	}
+
+	fd := conformance.CheckFeatures(features, reg, bullets)
+	return &plan{
+		files: []genFile{
+			{filepath.Join(root, "tests", "conformance", "inventory.generated.yaml"), wantInv},
+			{filepath.Join(root, "UPSTREAM_COVERAGE.md"), []byte(report.RenderCoverage(inv, reg))},
+			{filepath.Join(root, "docs", "features.md"), []byte(report.RenderFeatures(features, reg))},
+			{readmePath, []byte(wantReadme)},
+		},
+		featureCount:    len(features.Features),
+		featureFailures: fd.HardFailures(),
+		featureSummary:  fd.Summary(),
+	}, nil
 }
 
 func main() {
@@ -44,28 +112,11 @@ func main() {
 		}
 		*root = r
 	}
-	dirs := inventory.DefaultDirs(*root)
-	if dirs.VLVersion == "" || dirs.VTVersion == "" {
-		fatal(fmt.Errorf("VLVersion/VTVersion not read from Makefile (VL_VERSION_LOGS=%q VT_VERSION=%q) — an empty pin is never a valid basis to write or check the generated inventory", dirs.VLVersion, dirs.VTVersion))
-	}
-	inv, err := inventory.Extract(dirs)
-	if err != nil {
-		fatal(fmt.Errorf("extract (run make deps-logs deps-traces deps-vt first): %w", err))
-	}
-	reg, err := registry.LoadDir(filepath.Join(*root, "tests", "conformance", "registry", "rows"))
+	p, err := buildPlan(*root)
 	if err != nil {
 		fatal(err)
 	}
-
-	wantInv, err := inv.Bytes()
-	if err != nil {
-		fatal(err)
-	}
-	wantCov := []byte(report.RenderCoverage(inv, reg))
-	files := []genFile{
-		{filepath.Join(*root, "tests", "conformance", "inventory.generated.yaml"), wantInv},
-		{filepath.Join(*root, "UPSTREAM_COVERAGE.md"), wantCov},
-	}
+	files := p.files
 
 	if *write {
 		wroteAny := false
@@ -100,8 +151,19 @@ func main() {
 				fmt.Println("stale:", f.path)
 			}
 		}
+
+		// The feature-catalog gate runs here as well as in the conformance
+		// tests, so `confgen -check` alone is enough to tell a PR author
+		// that a feature is missing, unverified or undocumented.
+		for _, msg := range p.featureFailures {
+			fmt.Println("feature catalog:", msg)
+		}
+		fmt.Printf("feature catalog: %d features, %s\n", p.featureCount, p.featureSummary)
+
 		if stale {
 			fmt.Println("generated files are stale — run: make conformance-gen")
+		}
+		if stale || len(p.featureFailures) > 0 {
 			os.Exit(1)
 		}
 	}
