@@ -151,6 +151,14 @@ func TestMetadataOnlyPlan_CoversSpan(t *testing.T) {
 		{"5s bucket, straddles", `* | stats by (_time:5s) count()`, hour + int64(4*time.Second), hour + int64(6*time.Second), false},
 		{"1d bucket, inside one day", `* | stats by (_time:1d) count()`, hour, hour + int64(23*time.Hour), true},
 		{"1d bucket, spans two days", `* | stats by (_time:1d) count()`, hour + int64(23*time.Hour), hour + int64(25*time.Hour), false},
+		// Calendar buckets go through VL's own truncation. testBase is Thursday
+		// 2026-01-01, so Sunday 23:00 -> Monday 01:00 crosses a `week` boundary
+		// (Monday-aligned) but not a `1w` one (epoch-aligned, Thursday 00:00).
+		{"week keyword, Sunday into Monday straddles", `* | stats by (_time:week) count()`, hour + int64(3*24*time.Hour+23*time.Hour), hour + int64(4*24*time.Hour+time.Hour), false},
+		{"1w step, same Sunday into Monday span is one bucket", `* | stats by (_time:1w) count()`, hour + int64(3*24*time.Hour+23*time.Hour), hour + int64(4*24*time.Hour+time.Hour), true},
+		{"1w step, Wednesday into Thursday straddles", `* | stats by (_time:1w) count()`, hour + int64(6*24*time.Hour+23*time.Hour), hour + int64(7*24*time.Hour+time.Hour), false},
+		{"month keyword, inside January", `* | stats by (_time:month) count()`, hour + int64(24*time.Hour), hour + int64(29*24*time.Hour), true},
+		{"month keyword, January into February straddles", `* | stats by (_time:month) count()`, hour + int64(30*24*time.Hour+23*time.Hour), hour + int64(31*24*time.Hour+time.Hour), false},
 		{"ineligible query never covers", `*`, hour, hour, false},
 		{"inverted span never covers", `* | stats count()`, hour + 1, hour, false},
 	}
@@ -816,14 +824,10 @@ func TestManifestFastPath_ExactnessHitsWithFields(t *testing.T) {
 				wantServed := 0
 				if fields == nil {
 					for _, f := range files {
-						// _time:1w is VL's calendar week (Monday-aligned), which the
-						// plain epoch truncation cannot restate; every file here
-						// sits inside the same week anyway.
-						bucket := int64(step)
-						if step == 7*24*time.Hour {
-							bucket = 0
-						}
-						if wantServedFromMetadata(f.fi, startNs, endNs, bucket) {
+						// A 7-day step marshals as `_time:1w`, a plain 604800s bucket
+						// aligned to the Unix epoch — only the `week` keyword is
+						// Monday-aligned — so epoch truncation restates every step.
+						if wantServedFromMetadata(f.fi, startNs, endNs, int64(step)) {
 							wantServed++
 						}
 					}
