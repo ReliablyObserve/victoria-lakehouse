@@ -25,8 +25,10 @@ func TestParity_Pipes(t *testing.T) {
 		{Name: "pipe_chain_fields_sort", Endpoint: queryEndpoint(), Params: map[string]string{"query": "* | fields _time, level | sort by(_time) | limit 5", "limit": "5"}, Compare: RowsMatch},
 		{Name: "pipe_chain_filter_stats", Endpoint: statsEndpoint(), Params: map[string]string{"query": `level:="ERROR" | stats by(service.name) count() rows`}, Compare: StructureMatch},
 		{Name: "stats_by_two_fields", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* | stats by(level, service.name) count() rows"}, Compare: StructureMatch},
-		{Name: "stats_sum", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* | stats sum(duration) total"}, Compare: CountTolerance, Tolerance: 0.05},
-		{Name: "stats_avg", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* | stats avg(duration) mean"}, Compare: CountTolerance, Tolerance: 0.05},
+		// Log rows carry no `duration` field, so these aggregated nothing and
+		// compared NaN with NaN; severity_number is the numeric column.
+		{Name: "stats_sum", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* | stats sum(severity_number) total"}, Compare: CountTolerance, Tolerance: 0.05},
+		{Name: "stats_avg", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* | stats avg(severity_number) mean"}, Compare: CountTolerance, Tolerance: 0.05},
 		{Name: "copy_pipe", Endpoint: queryEndpoint(), Params: map[string]string{"query": "* | copy level AS severity", "limit": "10"}, Compare: RowsMatch},
 	}
 	RunParity(t, vlBaseURL, lhBaseURL, cases)

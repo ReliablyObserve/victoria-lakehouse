@@ -115,11 +115,12 @@ func TestParity_TracesExtended(t *testing.T) {
 			Params:   map[string]string{"query": "span_id:* `resource_attr:cloud.region`:=\"us-east-1\" | stats count() rows"},
 			Compare:  CountEqual,
 		},
-		// 16. Combined AND filter
+		// 16. Combined AND filter. cmd/datagen writes only SERVER (2) and
+		// CLIENT (3) spans; kind 1 (INTERNAL) matched nothing.
 		{
 			Name:     "traces_and_filter_combined",
 			Endpoint: statsEndpoint(),
-			Params:   map[string]string{"query": "span_id:* `resource_attr:service.name`:=\"api-gateway\" AND kind:=\"1\" | stats count() rows"},
+			Params:   map[string]string{"query": "span_id:* `resource_attr:service.name`:=\"api-gateway\" AND kind:=\"2\" | stats count() rows"},
 			Compare:  CountEqual,
 		},
 		// 17. NOT filter (non-error spans)
@@ -139,10 +140,11 @@ func TestParity_TracesExtended(t *testing.T) {
 		},
 		// 19. Empty filter (should return 0)
 		{
-			Name:     "traces_empty_filter",
-			Endpoint: statsEndpoint(),
-			Params:   map[string]string{"query": `span_id:* nonexistent_trace_field:="impossible" | stats count() rows`},
-			Compare:  CountEqual,
+			Name:        "traces_empty_filter",
+			Endpoint:    statsEndpoint(),
+			Params:      map[string]string{"query": `span_id:* nonexistent_trace_field:="impossible" | stats count() rows`},
+			Compare:     CountEqual,
+			ExpectEmpty: true,
 		},
 	}
 	RunParity(t, vtBaseURL, lhtBaseURL, cases)

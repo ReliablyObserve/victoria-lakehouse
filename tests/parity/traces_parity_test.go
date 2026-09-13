@@ -338,7 +338,7 @@ func TestParity_Traces_LogsQL(t *testing.T) {
 		}
 		ref := fetch(t, vtBaseURL, "/select/logsql/stats_query", params)
 		sut := fetch(t, lhtBaseURL, "/select/logsql/stats_query", params)
-		compareParity(t, ParityCase{Compare: CountEqual}, ref, sut)
+		compareParity(t, ParityCase{Compare: CountEqual, ExpectEmpty: true}, ref, sut)
 	})
 
 	// VT metadata fields must appear without span_attr: prefix.
@@ -464,10 +464,11 @@ func TestParity_Traces_LogsQL(t *testing.T) {
 		}
 	})
 
-	// Filter by VT metadata field value.
+	// Filter by VT metadata field value. cmd/datagen writes only SERVER (2)
+	// and CLIENT (3) spans, so kind 1 (INTERNAL) matched nothing.
 	t.Run("traces_filter_metadata_field", func(t *testing.T) {
 		params := tracesFullRange()
-		params.Set("query", `span_id:* kind:="1" | stats count() rows`)
+		params.Set("query", `span_id:* kind:="3" | stats count() rows`)
 		ref := fetch(t, vtBaseURL, "/select/logsql/stats_query", params)
 		sut := fetch(t, lhtBaseURL, "/select/logsql/stats_query", params)
 		compareParity(t, ParityCase{Compare: CountEqual}, ref, sut)

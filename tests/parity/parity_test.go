@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +38,12 @@ type ParityCase struct {
 	ValueField string
 	SkipFields []string
 	Tolerance  float64
+	// ExpectEmpty marks a negative-path count case — a query built to match
+	// nothing, such as a filter on a field the corpus never writes or a
+	// window in the future. Both tiers must then answer 0. Every other count
+	// case refuses an empty reference: 0 == 0 is indistinguishable from a
+	// query that silently stopped matching the seeded data.
+	ExpectEmpty bool
 }
 
 // fullRangeParams covers the whole seeded window — see seedWindowParams in
@@ -92,15 +99,18 @@ func RunParityWithRange(t *testing.T, refBase, sutBase string, dur time.Duration
 
 func compareParity(t *testing.T, pc ParityCase, ref, sut fetchResult) {
 	t.Helper()
+	if pc.ExpectEmpty && pc.Compare != CountEqual && pc.Compare != CountTolerance {
+		t.Fatalf("ExpectEmpty is only defined for count comparisons, not %s", pc.Compare)
+	}
 	switch pc.Compare {
 	case CountEqual:
-		compareCountEqual(t, ref, sut, 0)
+		compareCountEqual(t, pc, ref, sut, 0)
 	case CountTolerance:
 		tol := pc.Tolerance
 		if tol == 0 {
 			tol = 0.01
 		}
-		compareCountEqual(t, ref, sut, tol)
+		compareCountEqual(t, pc, ref, sut, tol)
 	case SetEqual:
 		compareSetEqual(t, pc, ref, sut)
 	case SetSuperset:
@@ -120,7 +130,7 @@ func compareParity(t *testing.T, pc ParityCase, ref, sut fetchResult) {
 	}
 }
 
-func compareCountEqual(t *testing.T, ref, sut fetchResult, tolerance float64) {
+func compareCountEqual(t *testing.T, pc ParityCase, ref, sut fetchResult, tolerance float64) {
 	t.Helper()
 	if ref.StatusCode != 200 {
 		t.Fatalf("reference returned status %d: %s", ref.StatusCode, string(ref.Body))
@@ -128,38 +138,129 @@ func compareCountEqual(t *testing.T, ref, sut fetchResult, tolerance float64) {
 	if sut.StatusCode != 200 {
 		t.Fatalf("SUT returned status %d: %s", sut.StatusCode, string(sut.Body))
 	}
-	refCount, err := extractVectorCount(ref.Body)
+	refCount, refShape, err := readComparableCount(ref.Body)
 	if err != nil {
-		refLines := parseNDJSON(ref.Body)
-		sutLines := parseNDJSON(sut.Body)
-		refCount = float64(len(refLines))
-		sutCount := float64(len(sutLines))
-		if tolerance == 0 {
-			if refCount != sutCount {
-				t.Errorf("count mismatch: ref=%v sut=%v", refCount, sutCount)
-			}
-		} else {
-			if refCount > 0 && math.Abs(refCount-sutCount)/refCount > tolerance {
-				t.Errorf("count outside tolerance %.1f%%: ref=%v sut=%v", tolerance*100, refCount, sutCount)
-			}
-		}
-		t.Logf("count_equal (NDJSON): ref=%v sut=%v", refCount, sutCount)
-		return
+		t.Fatalf("reference: %v", err)
 	}
-	sutCount, err := extractVectorCount(sut.Body)
+	sutCount, sutShape, err := readComparableCount(sut.Body)
 	if err != nil {
-		t.Fatalf("SUT extractVectorCount: %v", err)
+		t.Fatalf("SUT: %v", err)
 	}
-	if tolerance == 0 {
-		if refCount != sutCount {
-			t.Errorf("count mismatch: ref=%v sut=%v", refCount, sutCount)
+	if refShape != sutShape {
+		t.Fatalf("response shape differs: reference answered with %s, SUT with %s", refShape, sutShape)
+	}
+	verdict := judgeCounts(pc, refCount, sutCount, tolerance)
+	if verdict.emptyReference {
+		requireNonEmptyReference(t, pc.Compare, 0, fmt.Sprintf("%s = %v", refShape, refCount))
+	}
+	for _, problem := range verdict.problems {
+		t.Error(problem)
+	}
+	mode := string(pc.Compare)
+	if pc.ExpectEmpty {
+		mode += ", expect empty"
+	}
+	t.Logf("%s (%s): ref=%v sut=%v", mode, refShape, refCount, sutCount)
+}
+
+// countVerdict is what judgeCounts found wrong with a pair of counts.
+type countVerdict struct {
+	// emptyReference: the reference produced nothing to compare against and
+	// the case is not marked ExpectEmpty.
+	emptyReference bool
+	problems       []string
+}
+
+// judgeCounts applies the count-comparison rules without reporting them, so
+// the rules themselves are unit-testable (TestHarness_JudgeCounts).
+func judgeCounts(pc ParityCase, ref, sut, tolerance float64) countVerdict {
+	var v countVerdict
+	if pc.ExpectEmpty {
+		if ref != 0 {
+			v.problems = append(v.problems, fmt.Sprintf("reference returned %v for a case "+
+				"marked ExpectEmpty — the query no longer exercises the empty path; fix "+
+				"the query or drop ExpectEmpty", ref))
 		}
-	} else {
-		if refCount > 0 && math.Abs(refCount-sutCount)/refCount > tolerance {
-			t.Errorf("count outside tolerance %.1f%%: ref=%v sut=%v", tolerance*100, refCount, sutCount)
+		if sut != 0 {
+			v.problems = append(v.problems, fmt.Sprintf("SUT returned %v for a query that "+
+				"matches nothing, want 0", sut))
+		}
+		return v
+	}
+	if ref == 0 || math.IsNaN(ref) {
+		v.emptyReference = true
+		return v
+	}
+	switch {
+	case math.IsNaN(sut):
+		v.problems = append(v.problems, fmt.Sprintf("count mismatch: ref=%v sut=%v", ref, sut))
+	case tolerance == 0:
+		if ref != sut {
+			v.problems = append(v.problems, fmt.Sprintf("count mismatch: ref=%v sut=%v", ref, sut))
+		}
+	default:
+		if math.Abs(ref-sut)/math.Abs(ref) > tolerance {
+			v.problems = append(v.problems, fmt.Sprintf("count outside tolerance %.1f%%: ref=%v sut=%v",
+				tolerance*100, ref, sut))
 		}
 	}
-	t.Logf("count_equal: ref=%v sut=%v", refCount, sutCount)
+	return v
+}
+
+// Response shapes readComparableCount distinguishes. Both tiers must answer a
+// count case with the same one.
+const (
+	shapeStatsSample = "stats sample"
+	shapeNDJSONRows  = "NDJSON rows"
+)
+
+// readComparableCount reads the number a count comparison compares.
+//
+// A stats_query envelope ({"data": {"result": [...]}}) yields its first
+// sample: an empty result is 0, and an empty or "NaN" sample value — what an
+// aggregate over a field no row carries returns — is NaN, which the caller
+// treats as nothing to compare. Any other body is the NDJSON row stream of
+// /select/logsql/query and yields its row count.
+//
+// A stats envelope never falls back to counting lines. It is a single line,
+// so that fallback used to turn every unreadable aggregate into 1 == 1.
+func readComparableCount(body []byte) (float64, string, error) {
+	obj, err := parseJSON(body)
+	if err != nil {
+		// Zero or several NDJSON rows: not a single JSON document.
+		return float64(len(parseNDJSON(body))), shapeNDJSONRows, nil
+	}
+	data, isEnvelope := obj["data"].(map[string]any)
+	if !isEnvelope {
+		// Exactly one NDJSON row also parses as a single object.
+		return 1, shapeNDJSONRows, nil
+	}
+	result, ok := data["result"].([]any)
+	if !ok {
+		return 0, shapeStatsSample, fmt.Errorf("stats envelope has no result array: %s",
+			string(body[:minInt(len(body), 200)]))
+	}
+	if len(result) == 0 {
+		return 0, shapeStatsSample, nil
+	}
+	first, _ := result[0].(map[string]any)
+	value, _ := first["value"].([]any)
+	if len(value) < 2 {
+		return 0, shapeStatsSample, fmt.Errorf("stats sample has no [timestamp, value] pair: %s",
+			string(body[:minInt(len(body), 200)]))
+	}
+	s, isString := value[1].(string)
+	if !isString {
+		return 0, shapeStatsSample, fmt.Errorf("stats sample value is %T, want string", value[1])
+	}
+	if s == "" {
+		return math.NaN(), shapeStatsSample, nil
+	}
+	n, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, shapeStatsSample, fmt.Errorf("stats sample value %q is not a number: %w", s, err)
+	}
+	return n, shapeStatsSample, nil
 }
 
 func compareSetEqual(t *testing.T, pc ParityCase, ref, sut fetchResult) {

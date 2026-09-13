@@ -34,7 +34,7 @@ func TestParity_Stats(t *testing.T) {
 			"query": "* | stats count() rows",
 			"start": fmt.Sprintf("%d", now.Add(24*time.Hour).UnixNano()),
 			"end":   fmt.Sprintf("%d", now.Add(48*time.Hour).UnixNano()),
-		}, Compare: CountEqual},
+		}, Compare: CountEqual, ExpectEmpty: true},
 	}
 
 	durations := map[string]time.Duration{

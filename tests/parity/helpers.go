@@ -70,6 +70,51 @@ func seedWindowFilter() string {
 		seedWindowEnd().Format(time.RFC3339Nano))
 }
 
+// seedWindowMidpoint is a moment in the middle of the seeded data. A relative
+// time filter such as `_time:1h` is evaluated at the request's `end` (upstream
+// VictoriaLogs, app/vlselect/logsql parseCommonArgsWithConfig), and
+// seedWindowParams puts `end` an hour past the newest seeded row — so
+// `_time:1h` against it covers exactly the empty hour after the seed. A case
+// exercising a relative filter sets `end` here instead.
+func seedWindowMidpoint() time.Time {
+	return time.Now().Add(-seedWindowHours / 2 * time.Hour)
+}
+
+// referenceRow returns the first row the reference logs tier (VictoriaLogs)
+// answers query with over params. A case that needs a value guaranteed to
+// exist — an exact message, a row's exact timestamp — looks it up here rather
+// than hard-coding one: cmd/datagen randomizes both on every seed. An empty
+// answer is a seed defect and fails the test.
+func referenceRow(t *testing.T, params url.Values, query string) map[string]any {
+	t.Helper()
+	p := url.Values{}
+	for k, v := range params {
+		p[k] = v
+	}
+	p.Set("query", query)
+	p.Set("limit", "1")
+	r := fetch(t, vlBaseURL, queryEndpoint(), p)
+	if r.StatusCode != 200 {
+		t.Fatalf("reference row lookup %q returned status %d: %s", query, r.StatusCode, string(r.Body))
+	}
+	rows := parseNDJSON(r.Body)
+	if len(rows) == 0 {
+		t.Fatalf("reference row lookup %q returned no rows — seed defect, not parity", query)
+	}
+	return rows[0]
+}
+
+// referenceRowTime is referenceRow's `_time`, parsed.
+func referenceRowTime(t *testing.T, params url.Values, query string) time.Time {
+	t.Helper()
+	raw, _ := referenceRow(t, params, query)["_time"].(string)
+	ts, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		t.Fatalf("reference row lookup %q: cannot parse _time %q: %v", query, raw, err)
+	}
+	return ts
+}
+
 // requireNonEmptyReference fails when the reference tier returned nothing to
 // compare against. Every set / row / bucket comparison is vacuously true
 // against an empty reference, so a silent pass there means the seed or the
