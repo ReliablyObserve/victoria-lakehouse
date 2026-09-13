@@ -467,6 +467,18 @@ var (
 	QueryRejectedTotal        = NewCounter("lakehouse_query_rejected_total")
 	QueryFileLimitExceeded    = NewCounter("lakehouse_query_file_limit_exceeded_total")
 	QueryMemoryBudgetExceeded = NewCounter("lakehouse_query_memory_budget_exceeded_total")
+
+	// TenantScopeViolations counts objects/rows the read path selected that do
+	// NOT belong to the requesting tenant. The guard drops them before they can
+	// reach a response, so a non-zero value is a defect signal (manifest key
+	// shape drift, a new call site that bypassed the scoped file lookup, or a
+	// peer answering the buffer bridge without tenant scoping), never routine.
+	// {site} names the query path that tripped it.
+	TenantScopeViolations = NewCounterVec("lakehouse_tenant_scope_violations_total", "site")
+
+	// GlobalReadQueriesTotal counts select requests that presented a valid
+	// global-read credential and were therefore answered across every tenant.
+	GlobalReadQueriesTotal = NewCounter("lakehouse_global_read_queries_total")
 )
 
 // Compaction metrics

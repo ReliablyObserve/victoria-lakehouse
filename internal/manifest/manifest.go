@@ -185,6 +185,15 @@ type Manifest struct {
 	// the manifest's file count).
 	tenantAggregates map[tenantAccumKey]*tenantAccum
 
+	// legacyAggregate accumulates files whose key carries no parseable
+	// tenant segment — the pre-tenant-layout deployments that write
+	// under a static prefix (s3.prefix=logs/). They are NOT a tenant of
+	// their own: they are the data of the default tenant 0:0, and the
+	// read path must be able to find them without walking every
+	// partition. Kept out of tenantAggregates so TenantSummaries()
+	// keeps reporting only real, key-identified tenants.
+	legacyAggregate *tenantAccum
+
 	minTime     time.Time
 	maxTime     time.Time
 	totalFiles  int
@@ -315,33 +324,95 @@ func (m *Manifest) tenantKeyFromFileKey(fileKey string) (tenantAccumKey, bool) {
 			segments = 1
 		}
 	}
+	account, project, ok := parseTenantSegments(fileKey, segments)
+	if !ok {
+		return tenantAccumKey{}, false
+	}
+	return tenantAccumKey{account: account, project: project}, true
+}
+
+// parseTenantSegments splits the leading tenant segments off an S3 object key.
+// segments is 1 for an {OrgID}-shaped template and 2 for the default
+// {AccountID}/{ProjectID}. ok=false means the key is not tenant-segmented.
+func parseTenantSegments(fileKey string, segments int) (account, project string, ok bool) {
 	parts := strings.SplitN(fileKey, "/", segments+2)
 	if len(parts) < segments+1 {
-		return tenantAccumKey{}, false
+		return "", "", false
 	}
 	if !isValidTenantSegment(parts[0]) {
-		return tenantAccumKey{}, false
+		return "", "", false
 	}
 	if segments == 1 {
-		return tenantAccumKey{account: parts[0]}, true
+		return parts[0], "", true
 	}
 	if !isValidTenantSegment(parts[1]) {
-		return tenantAccumKey{}, false
+		return "", "", false
 	}
-	return tenantAccumKey{account: parts[0], project: parts[1]}, true
+	return parts[0], parts[1], true
+}
+
+// KeyTenant parses the (account, project) tuple out of an S3 object key using
+// the manifest's configured prefix template. ok=false means the key carries no
+// tenant segment at all — the legacy static-prefix layout, whose data belongs
+// to the default tenant 0:0. Exported so the read path can verify that every
+// object it is about to open really belongs to the requesting tenant.
+func (m *Manifest) KeyTenant(key string) (account, project string, ok bool) {
+	return m.TenantKeyParser()(key)
+}
+
+// TenantKeyParser snapshots the manifest's prefix template once and returns a
+// lock-free parser for object keys. Use it instead of KeyTenant when checking a
+// whole file list: the read-path guard runs over every selected file on every
+// query, and taking the manifest lock per file would serialise the hot path.
+func (m *Manifest) TenantKeyParser() func(key string) (account, project string, ok bool) {
+	m.mu.RLock()
+	segments := m.templateSegments
+	tmpl := m.prefixTemplate
+	m.mu.RUnlock()
+
+	if segments == 0 {
+		segments = 2
+		if strings.Contains(tmpl, "{OrgID}") && !strings.Contains(tmpl, "{ProjectID}") {
+			segments = 1
+		}
+	}
+	return func(key string) (string, string, bool) {
+		return parseTenantSegments(key, segments)
+	}
+}
+
+// TenantKeyPrefix returns the S3 key prefix that isolates (account, project)
+// under the manifest's configured prefix template.
+func (m *Manifest) TenantKeyPrefix(account, project string) string {
+	m.mu.RLock()
+	segments := m.templateSegments
+	m.mu.RUnlock()
+
+	if segments == 1 {
+		return account + "/"
+	}
+	return account + "/" + project + "/"
 }
 
 // updateTenantAggregateOnAdd applies a +1 file delta for fi/partition
 // to the tenant aggregate cache. Must hold m.mu (write).
 func (m *Manifest) updateTenantAggregateOnAdd(partition string, fi FileInfo) {
 	tk, ok := m.tenantKeyFromFileKey(fi.Key)
-	if !ok {
-		return
-	}
-	a := m.tenantAggregates[tk]
-	if a == nil {
-		a = &tenantAccum{partitions: make(map[string]int)}
-		m.tenantAggregates[tk] = a
+	var a *tenantAccum
+	if ok {
+		a = m.tenantAggregates[tk]
+		if a == nil {
+			a = &tenantAccum{partitions: make(map[string]int)}
+			m.tenantAggregates[tk] = a
+		}
+	} else {
+		// Legacy (untenanted) key. Accumulate separately so the read
+		// path can resolve the default tenant's files without a full
+		// manifest walk, and so they are never silently dropped.
+		if m.legacyAggregate == nil {
+			m.legacyAggregate = &tenantAccum{partitions: make(map[string]int)}
+		}
+		a = m.legacyAggregate
 	}
 	a.files++
 	a.bytes += fi.Size
@@ -368,10 +439,12 @@ func (m *Manifest) updateTenantAggregateOnAdd(partition string, fi FileInfo) {
 // count. Must hold m.mu (write).
 func (m *Manifest) updateTenantAggregateOnRemove(partition string, fi FileInfo) {
 	tk, ok := m.tenantKeyFromFileKey(fi.Key)
-	if !ok {
-		return
+	var a *tenantAccum
+	if ok {
+		a = m.tenantAggregates[tk]
+	} else {
+		a = m.legacyAggregate
 	}
-	a := m.tenantAggregates[tk]
 	if a == nil {
 		return
 	}
@@ -399,7 +472,11 @@ func (m *Manifest) updateTenantAggregateOnRemove(partition string, fi FileInfo) 
 	// Drop empty tenant aggregates so TenantSummaries() doesn't have to
 	// filter them out on every call.
 	if a.files == 0 {
-		delete(m.tenantAggregates, tk)
+		if ok {
+			delete(m.tenantAggregates, tk)
+		} else {
+			m.legacyAggregate = nil
+		}
 	}
 }
 
@@ -431,6 +508,7 @@ func (m *Manifest) recomputeTenantTimeBounds(a *tenantAccum) {
 // reassignments (RefreshFromS3, snapshot Load). Must hold m.mu (write).
 func (m *Manifest) rebuildTenantAggregates() {
 	m.tenantAggregates = make(map[tenantAccumKey]*tenantAccum)
+	m.legacyAggregate = nil
 	for partition, files := range m.files {
 		for i := range files {
 			m.updateTenantAggregateOnAdd(partition, files[i])
@@ -903,13 +981,61 @@ func (m *Manifest) GetFilesForRangeTenant(startNs, endNs int64, account, project
 		return nil
 	}
 
-	start := time.Unix(0, startNs)
-	end := time.Unix(0, endNs)
-
 	keyPrefix := account + "/"
 	if project != "" {
 		keyPrefix += project + "/"
 	}
+	return m.filesInAccumRangeLocked(a, startNs, endNs, keyPrefix)
+}
+
+// GetFilesForRangeUntenanted returns the files overlapping [startNs, endNs]
+// whose S3 key carries NO parseable tenant segment — the legacy static-prefix
+// layout (s3.prefix=logs/, written before the tenant prefix template existed).
+// Those objects hold the default tenant's data, so a 0:0 read must include
+// them; every other tenant must not see them. Walks only the partitions the
+// legacy accumulator recorded, so it costs nothing on a tenant-clean manifest.
+func (m *Manifest) GetFilesForRangeUntenanted(startNs, endNs int64) []FileInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	a := m.legacyAggregate
+	if a == nil || len(a.partitions) == 0 {
+		return nil
+	}
+	files := m.filesInAccumRangeLocked(a, startNs, endNs, "")
+	// The accumulator's partitions can also hold tenant-scoped files when a
+	// deployment migrated mid-life, so re-check each key's shape.
+	out := files[:0]
+	for _, fi := range files {
+		if _, ok := m.tenantKeyFromFileKey(fi.Key); ok {
+			continue
+		}
+		out = append(out, fi)
+	}
+	return out
+}
+
+// TenantScopeCount reports how many distinct tenant scopes the manifest holds,
+// counting the legacy untenanted layout as one scope. 0 or 1 means no query
+// can cross a tenant boundary, which lets the read path keep using global
+// in-RAM indexes (labelIndex) that are not tenant-keyed.
+func (m *Manifest) TenantScopeCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	n := len(m.tenantAggregates)
+	if m.legacyAggregate != nil && m.legacyAggregate.files > 0 {
+		n++
+	}
+	return n
+}
+
+// filesInAccumRangeLocked collects the files of one accumulator's partitions
+// that overlap [startNs, endNs] and carry keyPrefix ("" = no prefix check).
+// Must hold m.mu (read).
+func (m *Manifest) filesInAccumRangeLocked(a *tenantAccum, startNs, endNs int64, keyPrefix string) []FileInfo {
+	start := time.Unix(0, startNs)
+	end := time.Unix(0, endNs)
 
 	var result []FileInfo
 	for partition := range a.partitions {
@@ -922,7 +1048,7 @@ func (m *Manifest) GetFilesForRangeTenant(startNs, endNs int64, account, project
 			continue
 		}
 		for _, fi := range m.files[partition] {
-			if !strings.HasPrefix(fi.Key, keyPrefix) {
+			if keyPrefix != "" && !strings.HasPrefix(fi.Key, keyPrefix) {
 				continue
 			}
 			if fi.MinTimeNs != 0 && fi.MaxTimeNs != 0 {
