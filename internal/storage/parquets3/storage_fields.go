@@ -123,9 +123,10 @@ func remapSlotFieldHits(hits map[string]uint64) {
 
 func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
 	filter := parseFilterFromQuery(q)
+	scope := scopeFor(ctx, tenantIDs)
 
 	startNs, endNs := q.GetFilterTimeRange()
-	files := s.manifest.GetFilesForRange(startNs, endNs)
+	files := s.filesForScope("field_names", startNs, endNs, scope)
 
 	// Aggregate actual non-null row counts across candidate files.
 	// Previously this returned Hits=1 for every field — a stub that fed
@@ -138,7 +139,7 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 		// No catalog consult here: catalogFieldNames unions over the SAME
 		// (empty) file range, so it can never return names in this branch —
 		// only the range-independent labelIndex can.
-		if filter == nil && s.labelIndex.Len() > 0 {
+		if filter == nil && s.labelIndex.Len() > 0 && s.tenantScopeAllowsGlobalIndex(scope) {
 			return labelIndexNamesWithHits(s.labelIndex.GetFieldNames(), nil), nil
 		}
 		return nil, nil
@@ -192,11 +193,11 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 	// so callers that only want names still see them. pmeta read-flip: catalog
 	// first, legacy labelIndex second.
 	if s.catalog != nil {
-		if names := s.catalogFieldNames(q); len(names) > 0 {
+		if names := s.catalogFieldNames(q, scope); len(names) > 0 {
 			return labelIndexNamesWithHits(names, hits), nil
 		}
 	}
-	if s.labelIndex.Len() > 0 {
+	if s.labelIndex.Len() > 0 && s.tenantScopeAllowsGlobalIndex(scope) {
 		return labelIndexNamesWithHits(s.labelIndex.GetFieldNames(), hits), nil
 	}
 	return nil, nil
@@ -446,6 +447,7 @@ func (s *Storage) scanProjectedFieldValues(
 
 func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
 	filter := parseFilterFromQuery(q)
+	scope := scopeFor(ctx, tenantIDs)
 
 	// pmeta catalog fast-path (--pmeta): union the field's values across the
 	// partitions in the query's time range, served from RAM. nil (flag off) or
@@ -460,12 +462,12 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 		if s.refuseEnumeration(fieldName) {
 			return nil, nil // declared id column: don't enumerate (matches VL), no scan
 		}
-		if result := s.catalogFieldValues(q, fieldName, limit); len(result) > 0 {
+		if result := s.catalogFieldValues(q, scope, fieldName, limit); len(result) > 0 {
 			return result, nil
 		}
 	}
 
-	if filter == nil && s.labelIndex.Len() > 0 {
+	if filter == nil && s.labelIndex.Len() > 0 && s.tenantScopeAllowsGlobalIndex(scope) {
 		vals := s.labelIndex.GetFieldValues(fieldName, limit)
 		if len(vals) > 0 {
 			result := make([]logstorage.ValueWithHits, len(vals))
@@ -478,7 +480,7 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 
 	startNs, endNs := q.GetFilterTimeRange()
 
-	files := s.manifest.GetFilesForRange(startNs, endNs)
+	files := s.filesForScope("field_values", startNs, endNs, scope)
 	if len(files) == 0 {
 		return nil, nil
 	}
@@ -541,7 +543,7 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 
 	startNs, endNs := q.GetFilterTimeRange()
 
-	files := s.manifest.GetFilesForRange(startNs, endNs)
+	files := s.filesForTenants(ctx, "streams", startNs, endNs, tenantIDs)
 	if len(files) == 0 {
 		return nil, nil
 	}
@@ -586,7 +588,7 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 
 	startNs, endNs := q.GetFilterTimeRange()
 
-	files := s.manifest.GetFilesForRange(startNs, endNs)
+	files := s.filesForTenants(ctx, "stream_ids", startNs, endNs, tenantIDs)
 	if len(files) == 0 {
 		return nil, nil
 	}

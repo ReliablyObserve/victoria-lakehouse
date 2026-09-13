@@ -1270,10 +1270,13 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			listenAddr = cfg.ListenAddr()
 		}
 		parityAPI.RegisterParity(mux, stats.NewLocalVLQuerier(fmt.Sprintf("http://127.0.0.1%s", listenAddr)), func(r *http.Request) bool {
-			if cfg.Tenant.GlobalReadHeader != "" && cfg.Tenant.GlobalReadValue != "" {
-				return r.Header.Get(cfg.Tenant.GlobalReadHeader) == cfg.Tenant.GlobalReadValue
-			}
-			return cfg.Tenant.GlobalReadToken != "" && r.Header.Get("Authorization") == "Bearer "+cfg.Tenant.GlobalReadToken
+			// Same validator the select path uses to widen a query to
+			// every tenant — one credential, one implementation.
+			return tenant.NewGlobalReadAuth(
+				cfg.Tenant.GlobalReadHeader,
+				cfg.Tenant.GlobalReadValue,
+				cfg.Tenant.GlobalReadToken,
+			).Authorize(r)
 		})
 	}
 

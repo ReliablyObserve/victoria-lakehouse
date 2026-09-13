@@ -17,6 +17,7 @@ import (
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -261,6 +262,7 @@ func TestInteg_queryBufferBridge_LogsMode(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		enc := json.NewEncoder(w)
 		for _, row := range rows {
 			_ = enc.Encode(row)
@@ -310,6 +312,7 @@ func TestInteg_queryBufferBridge_TracesMode(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		enc := json.NewEncoder(w)
 		for _, row := range rows {
 			_ = enc.Encode(row)
@@ -2273,7 +2276,7 @@ func TestInteg_logRowsToDataBlock(t *testing.T) {
 		{TimestampUnixNano: now + int64(time.Second), Body: "world", SeverityText: "ERROR", ServiceName: "worker"},
 	}
 
-	db := s.logRowsToDataBlock(rows)
+	db := s.logRowsToDataBlock(tenantScope{all: true}, "test", rows)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -2284,7 +2287,7 @@ func TestInteg_logRowsToDataBlock(t *testing.T) {
 
 func TestInteg_logRowsToDataBlock_Empty(t *testing.T) {
 	s := testStorage()
-	db := s.logRowsToDataBlock(nil)
+	db := s.logRowsToDataBlock(tenantScope{all: true}, "test", nil)
 	if db != nil {
 		t.Error("expected nil for empty rows")
 	}
@@ -2300,7 +2303,7 @@ func TestInteg_traceRowsToDataBlock(t *testing.T) {
 		{TimestampUnixNano: now, TraceID: "trace-1", SpanID: "span-1", ServiceName: "api-gw"},
 	}
 
-	db := s.traceRowsToDataBlock(rows)
+	db := s.traceRowsToDataBlock(tenantScope{all: true}, "test", rows)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -2311,7 +2314,7 @@ func TestInteg_traceRowsToDataBlock(t *testing.T) {
 
 func TestInteg_traceRowsToDataBlock_Empty(t *testing.T) {
 	s := testStorage()
-	db := s.traceRowsToDataBlock(nil)
+	db := s.traceRowsToDataBlock(tenantScope{all: true}, "test", nil)
 	if db != nil {
 		t.Error("expected nil for empty rows")
 	}
@@ -2570,6 +2573,7 @@ func TestInteg_RunQuery_WithBufferBridge(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		enc := json.NewEncoder(w)
 		for _, row := range rows {
 			_ = enc.Encode(row)

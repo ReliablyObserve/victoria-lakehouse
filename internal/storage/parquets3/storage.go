@@ -1035,8 +1035,13 @@ func (s *Storage) PrefetchFootersByKeys(ctx context.Context, keys []string, conc
 		fetched, len(keys), len(files))
 }
 
-// logRowsToDataBlock converts in-memory LogRow slices to a columnar DataBlock.
-func (s *Storage) logRowsToDataBlock(rows []schema.LogRow) *logstorage.DataBlock {
+// logRowsToDataBlock converts in-memory LogRow slices to a columnar DataBlock,
+// keeping only the rows that belong to the requesting tenant. The buffer bridge
+// already asks each peer for one tenant's rows; this is the second check, so a
+// peer that answers unscoped still cannot put another tenant's row in the
+// answer.
+func (s *Storage) logRowsToDataBlock(scope tenantScope, site string, rows []schema.LogRow) *logstorage.DataBlock {
+	rows = filterLogRowsByTenant(scope, site, rows)
 	if len(rows) == 0 {
 		return nil
 	}
@@ -1146,8 +1151,11 @@ func (s *Storage) logRowsToDataBlock(rows []schema.LogRow) *logstorage.DataBlock
 	return db
 }
 
-// traceRowsToDataBlock converts in-memory TraceRow slices to a columnar DataBlock.
-func (s *Storage) traceRowsToDataBlock(rows []schema.TraceRow) *logstorage.DataBlock {
+// traceRowsToDataBlock converts in-memory TraceRow slices to a columnar
+// DataBlock, keeping only the rows that belong to the requesting tenant (see
+// logRowsToDataBlock).
+func (s *Storage) traceRowsToDataBlock(scope tenantScope, site string, rows []schema.TraceRow) *logstorage.DataBlock {
+	rows = filterTraceRowsByTenant(scope, site, rows)
 	if len(rows) == 0 {
 		return nil
 	}
@@ -1302,7 +1310,11 @@ func (s *Storage) WarmLabelIndex(ctx context.Context) {
 	if s.labelIndex.Len() > 0 {
 		return
 	}
-	files := s.manifest.GetFilesForRange(0, 1<<62)
+	// Cross-tenant by construction: the label index is a global, NOT
+	// tenant-keyed, RAM structure. That is exactly why the read path may only
+	// answer from it in a single-tenant deployment — see
+	// tenantScopeAllowsGlobalIndex, which gates every query that touches it.
+	files := s.filesForScope("warm_label_index", 0, 1<<62, tenantScope{all: true})
 	if len(files) == 0 {
 		return
 	}

@@ -590,7 +590,7 @@ func TestInteg_PmetaFlip_FieldNamesAndBloom(t *testing.T) {
 	q := mustParseQueryWithTime(t, "*", now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 
 	// (1) labels field_names flip: the catalog serves field names, incl. service.name.
-	names := s.catalogFieldNames(q)
+	names := s.catalogFieldNames(q, tenantScope{all: true})
 	hasSvc := false
 	for _, n := range names {
 		if n == "service.name" {
