@@ -69,8 +69,14 @@ func main() {
 	orgID := flag.String("org-id", "", "string tenant ID via X-Scope-OrgID header (overrides account-id/project-id)")
 	flag.Parse()
 
-	if *vlEndpoint == "" && *lhLogsEndpoint == "" && *lokiEndpoint == "" {
-		log.Fatal("at least one of --vl-endpoint, --lh-logs-endpoint, or --loki-endpoint is required")
+	// At least one destination of EITHER signal. Requiring a logs endpoint
+	// specifically made a traces-only seed impossible, which is exactly what
+	// the parity stack needs to add a second tenant to the traces tier
+	// without changing the logs corpus every other test counts.
+	if *vlEndpoint == "" && *lhLogsEndpoint == "" && *lokiEndpoint == "" &&
+		*vtEndpoint == "" && *lhTracesEndpoint == "" && *tempoEndpoint == "" {
+		log.Fatal("at least one endpoint is required: --vl-endpoint, --lh-logs-endpoint, " +
+			"--loki-endpoint, --vt-endpoint, --lh-traces-endpoint or --tempo-endpoint")
 	}
 
 	generateBatch(*logsCount, *tracesCount, *hoursBack, *vlEndpoint, *vtEndpoint, *lhLogsEndpoint, *lhTracesEndpoint, *lokiEndpoint, *tempoEndpoint, *accountID, *projectID, *orgID)

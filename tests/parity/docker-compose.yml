@@ -90,6 +90,22 @@ services:
       - "-storageDataPath=/data"
       - "-retentionPeriod=48h"
       - "-loggerLevel=INFO"
+      # Service-graph parity needs the upstream background task running on
+      # BOTH tiers — without it hot never emits edges and every
+      # service-graph test either times out or skips.
+      #
+      # taskInterval is the tick period AND the truncation unit for the
+      # window end; upstream enforces no minimum, so 30s is picked to get
+      # the first tick (and therefore the first edges) well inside the
+      # suite's budget.
+      #
+      # taskLookbehind must cover the whole seeded window: datagen writes
+      # spans at now - rand[1..hours-back]h, so a default 1m lookbehind
+      # sees no spans at all and the join produces nothing.
+      - "-servicegraph.enableTask=true"
+      - "-servicegraph.taskInterval=30s"
+      - "-servicegraph.taskLookbehind=25h"
+      - "-servicegraph.taskTimeout=25s"
     networks: [parity-net]
     volumes:
       - vt-data:/data
@@ -119,6 +135,13 @@ services:
       - "-lakehouse.compaction.interval=15s"
       - "-lakehouse.query.file-workers=64"
       - "-lakehouse.cache.memory-mb=256"
+      # Same task as hot VT (see victoriatraces above). The cold tier runs
+      # the aggregation over Parquet on S3, so it gets a longer tick and a
+      # timeout that still fits inside one interval.
+      - "-servicegraph.enableTask=true"
+      - "-servicegraph.taskInterval=1m"
+      - "-servicegraph.taskLookbehind=25h"
+      - "-servicegraph.taskTimeout=55s"
       - "-loggerLevel=INFO"
     healthcheck:
       test: ["CMD", "/usr/local/bin/lakehouse-traces", "healthcheck", "http://localhost:10428/health"]
@@ -150,11 +173,38 @@ services:
       - "--lh-logs-endpoint=http://lakehouse-logs:9428"
       - "--lh-traces-endpoint=http://lakehouse-traces:10428"
 
+  # Second tenant, traces only. tenant_scope_parity_test.go needs at least
+  # two tenants in the manifest; with a single seeded tenant all four of its
+  # tests skip and tenant isolation goes untested. Runs after datagen-seed so
+  # the two tenants' files land in separate manifest partitions rather than
+  # racing for the same flush.
+  datagen-seed-tenant2:
+    build:
+      context: ../../
+      dockerfile: Dockerfile.datagen
+    depends_on:
+      datagen-seed:
+        condition: service_completed_successfully
+    networks: [parity-net]
+    command:
+      # Traces only. The tenant-scope tests all query lakehouse-traces, and
+      # leaving the logs corpus untouched keeps every logs comparison in
+      # this suite counting exactly the rows datagen-seed wrote.
+      - "--logs=0"
+      - "--traces=600"
+      - "--hours-back=24"
+      - "--account-id=1"
+      - "--project-id=0"
+      - "--vt-endpoint=http://victoriatraces:10428"
+      - "--lh-traces-endpoint=http://lakehouse-traces:10428"
+
   parity-tests:
     image: golang:1.26.8
     profiles: ["test"]
     depends_on:
       datagen-seed:
+        condition: service_completed_successfully
+      datagen-seed-tenant2:
         condition: service_completed_successfully
     networks: [parity-net]
     working_dir: /app/tests/parity
