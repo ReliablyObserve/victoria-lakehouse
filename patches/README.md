@@ -44,9 +44,10 @@ other.
 | Patch | Upstream file | Symbol exported / behavior |
 | --- | --- | --- |
 | `external.go.src` | `app/vlstorage/external.go` | Drop-in replacement that wires VL's vlstorage to LH's storage backend. Full-file replacement (no diff). |
-| `external_query.go.src` | `lib/logstorage/external_query.go` | Drop-in replacement exposing `ExternalQuery` hooks LH calls from its own query path. Full-file replacement. |
+| `external_query.go.src` | `lib/logstorage/external_query.go` | Drop-in replacement exposing `ExternalQuery` hooks LH calls from its own query path, plus `GetQueryTimeBucketing` / `TruncateTimestampToBucket`, which classify whether a query can be answered without reading per-row values and with which `_time` bucketing. Full-file replacement. |
 | `vlstorage-dispatch.patch` | `app/vlstorage/main.go` | Routes VL's `RunQuery` / `GetFieldNames` / `GetFieldValues` / `GetStreamFieldNames` / `GetStreamFieldValues` / `GetStreamIDs` / `GetStreams` / `GetStats` / `GetHits` to `externalStorage` when LH has registered itself. |
 | `vl-export-severity.patch` | `app/vlinsert/opentelemetry/pb.go` | Adds `FormatSeverity(int32) string` as the public wrapper around the package-local `formatSeverity`. Consumed by `internal/schema/severity.go::DeriveSeverityText` so cold rows derive `level` from `severity_number` the same way VL hot does. |
+| `vl-const-timestamps-parse.patch` | `lib/logstorage/block_result.go` | Makes `tryParseTimestamps` parse a CONSTANT `_time` column once instead of once per row, using VL's own `areConstValues`. Pure optimization, no semantic change. The cold tier answers count-class queries from manifest metadata with a constant `_time` column (see `internal/storage/parquets3/manifest_fastpath.go`); without this, a metadata-only answer still cost O(rows) RFC3339 parsing. |
 | `vl-export-streamtags-get.patch` | `lib/logstorage/stream_tags.go` | Adds `(*StreamTags).Get(name)` and `(*StreamTags).UnmarshalString(s)`. The cold insert path uses `Get` to lift the stream-label `level` onto `row.SeverityText` without re-parsing the canonical string; the compactor uses `UnmarshalString` to re-parse the human-readable Stream column when backfilling SeverityText on historical files. |
 
 ### `vt-traces/`
