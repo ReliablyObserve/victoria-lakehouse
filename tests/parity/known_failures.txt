@@ -26,7 +26,7 @@
 # cold-tier divergence with a fix in flight; a harness defect belongs in the
 # harness, not on this list.
 #
-# min-pass: 381
+# min-pass: 386
 
 # --- B1: cold query rows carry columns hot does not -------------------------
 # `<null>` placeholders for unset map attributes, the account_id/project_id
