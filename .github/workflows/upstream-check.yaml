@@ -1,97 +1,168 @@
-name: Check Upstream Releases
+# Daily upstream sync probe.
+#
+# It does not bump anything. It runs scripts/ci/upstream_sync_probe.sh, which
+# performs the mechanical half of a bump to the newest VictoriaLogs /
+# VictoriaTraces releases on a throwaway clone — pins, deps clone, `git apply
+# --check` per patch, build and vet in both modules, inventory regeneration and
+# the conformance gates — and reports what it cost. The result matrix is always
+# an artifact and a step summary; when a newer release exists it is also the
+# body of one pull request per version pair, opened on a branch that already
+# carries the pin bump.
+#
+# Authentication: the pull request is created with UPSTREAM_SYNC_TOKEN, never
+# with GITHUB_TOKEN. This repository deliberately keeps "Allow GitHub Actions to
+# create and approve pull requests" OFF, so GITHUB_TOKEN cannot open one — and
+# should not: a token that can open pull requests is a token every workflow run
+# in a public repository carries. UPSTREAM_SYNC_TOKEN is a fine-grained personal
+# access token (or a GitHub App installation token) scoped to this repository
+# alone with Contents: read and write plus Pull requests: read and write. When
+# the secret is absent and a bump is available, the job says so in the summary
+# and fails, so the omission is visible instead of silently producing nothing.
+# docs/upstream-sync.md has the setup steps.
+#
+# A finding (patches to regenerate, a build break, registry rows to add) does
+# NOT fail the run: it is carried by the pull request, where it can be worked
+# on. The run fails only when the probe itself could not run or the token is
+# missing.
+#
+# GitHub disables scheduled workflows in a repository with no commit activity
+# for 60 days; if this stops running by itself, re-enable it in the Actions tab.
+name: Upstream sync probe
 
 on:
   schedule:
     - cron: '0 8 * * *'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      vl_version:
+        description: 'VictoriaLogs release to probe (default: the newest release)'
+        required: false
+        type: string
+      vt_version:
+        description: 'VictoriaTraces release to probe (default: the newest release)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Probe and report only: do not open or update the pull request'
+        required: false
+        default: false
+        type: boolean
 
+# Read-only for the automatic token: every write below is done by the
+# fine-grained UPSTREAM_SYNC_TOKEN instead.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+
+# One probe at a time. Two overlapping runs would push the same sync branch.
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
 
 jobs:
-  check-upstream:
+  probe:
+    name: Probe the newest upstream releases
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
+      # Full history: the probe clones this checkout and pushes the clone's
+      # branch, which a shallow checkout cannot do. No persisted credentials:
+      # the job compiles and runs third-party code, and the only token that may
+      # ever write is handed to the publish step alone.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Check VictoriaLogs releases
-        id: vl
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Probe
+        id: probe
+        env:
+          # Read-only use: the releases API. The automatic token cannot open a
+          # pull request here, and is not asked to.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VL_INPUT: ${{ inputs.vl_version }}
+          VT_INPUT: ${{ inputs.vt_version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          MATRIX: ${{ runner.temp }}/upstream-sync-matrix.md
+          FACTS: ${{ runner.temp }}/upstream-sync.env
         run: |
-          LATEST=$(gh api repos/VictoriaMetrics/VictoriaLogs/releases/latest --jq .tag_name 2>/dev/null || echo "unknown")
-          CURRENT=$(jq -r '.victorialogs' .upstream-versions.json 2>/dev/null || echo "none")
-          echo "latest=$LATEST" >> $GITHUB_OUTPUT
-          echo "current=$CURRENT" >> $GITHUB_OUTPUT
-          if [ "$LATEST" != "$CURRENT" ] && [ "$LATEST" != "unknown" ] && [ "$CURRENT" != "none" ]; then
-            echo "outdated=true" >> $GITHUB_OUTPUT
+          set -uo pipefail
+          args=(--repo "$GITHUB_WORKSPACE"
+                --workdir "$RUNNER_TEMP/upstream-sync"
+                --out "$MATRIX"
+                --env-out "$FACTS")
+          if [ -n "${VL_INPUT:-}" ]; then args+=(--vl "$VL_INPUT"); fi
+          if [ -n "${VT_INPUT:-}" ]; then args+=(--vt "$VT_INPUT"); fi
+          if [ "${DRY_RUN:-false}" = "true" ]; then args+=(--no-pr); fi
+
+          scripts/ci/upstream_sync_probe.sh "${args[@]}"
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ -f "$FACTS" ]; then
+            cat "$FACTS" >> "$GITHUB_OUTPUT"
+          fi
+          # The verdict is reported by the last step, after the matrix has been
+          # published and the pull request updated: a finding must not cost us
+          # the report that explains it.
+          exit 0
+
+      - name: Publish the result matrix
+        if: always()
+        env:
+          MATRIX: ${{ runner.temp }}/upstream-sync-matrix.md
+        run: |
+          if [ -s "$MATRIX" ]; then
+            cat "$MATRIX" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "outdated=false" >> $GITHUB_OUTPUT
+            echo "The probe produced no result matrix — it failed before it could report. See the step log." >> "$GITHUB_STEP_SUMMARY"
           fi
-          echo "VL: current=$CURRENT latest=$LATEST"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Check VictoriaTraces releases
-        id: vt
+      - name: Upload the result matrix
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: upstream-sync-matrix
+          path: ${{ runner.temp }}/upstream-sync-matrix.md
+          if-no-files-found: warn
+          retention-days: 30
+
+      # All the git and gh work lives in a tested script: it refuses to push
+      # without the token (exit 3, explained in the summary), never overwrites
+      # a branch someone else has committed to, skips the push when nothing
+      # changed, and edits the one open pull request instead of opening another.
+      - name: Open or update the sync pull request
+        if: steps.probe.outputs.open_pr == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ steps.probe.outputs.branch }}
+          VL: ${{ steps.probe.outputs.vl_candidate }}
+          VT: ${{ steps.probe.outputs.vt_candidate }}
+          MATRIX: ${{ runner.temp }}/upstream-sync-matrix.md
         run: |
-          LATEST=$(gh api repos/VictoriaMetrics/VictoriaTraces/releases/latest --jq .tag_name 2>/dev/null || echo "unknown")
-          CURRENT=$(jq -r '.victoriatraces' .upstream-versions.json 2>/dev/null || echo "none")
-          echo "latest=$LATEST" >> $GITHUB_OUTPUT
-          echo "current=$CURRENT" >> $GITHUB_OUTPUT
-          if [ "$LATEST" != "$CURRENT" ] && [ "$LATEST" != "unknown" ] && [ "$CURRENT" != "none" ]; then
-            echo "outdated=true" >> $GITHUB_OUTPUT
-          else
-            echo "outdated=false" >> $GITHUB_OUTPUT
-          fi
-          echo "VT: current=$CURRENT latest=$LATEST"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          scripts/ci/upstream_sync_publish.sh \
+            --clone "$RUNNER_TEMP/upstream-sync/repo" \
+            --branch "$BRANCH" \
+            --base "$GITHUB_REF_NAME" \
+            --matrix "$MATRIX" \
+            --title "Upstream sync: VictoriaLogs $VL, VictoriaTraces $VT" \
+            --summary "$GITHUB_STEP_SUMMARY"
 
-      - name: Create sync PR
-        if: steps.vl.outputs.outdated == 'true' || steps.vt.outputs.outdated == 'true'
+      - name: Verdict
+        if: always()
+        env:
+          RC: ${{ steps.probe.outputs.rc }}
+          STATUS: ${{ steps.probe.outputs.status }}
         run: |
-          BRANCH="upstream-sync/$(date +%Y%m%d)"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$BRANCH"
-
-          # Update version tracking file
-          jq --arg vl "${{ steps.vl.outputs.latest }}" \
-             --arg vt "${{ steps.vt.outputs.latest }}" \
-             '.victorialogs = $vl | .victoriatraces = $vt' \
-             .upstream-versions.json > .upstream-versions.json.tmp
-          mv .upstream-versions.json.tmp .upstream-versions.json
-
-          # Update docker-compose image tags
-          if [ "${{ steps.vl.outputs.outdated }}" = "true" ]; then
-            sed -i "s|victoriametrics/victoria-logs:[^ ]*|victoriametrics/victoria-logs:${{ steps.vl.outputs.latest }}|g" \
-              deployment/docker/docker-compose-e2e.yml
-          fi
-
-          git add .upstream-versions.json deployment/docker/docker-compose-e2e.yml
-          git commit -m "deps: upstream sync VL=${{ steps.vl.outputs.latest }} VT=${{ steps.vt.outputs.latest }}"
-          git push -u origin "$BRANCH"
-
-          gh pr create \
-            --title "Upstream sync: VL ${{ steps.vl.outputs.latest }}, VT ${{ steps.vt.outputs.latest }}" \
-            --label "dependencies" \
-            --body "$(cat <<'EOF'
-          ## Upstream Release Update
-
-          | Component | Previous | Latest |
-          |---|---|---|
-          | VictoriaLogs | ${{ steps.vl.outputs.current }} | ${{ steps.vl.outputs.latest }} |
-          | VictoriaTraces | ${{ steps.vt.outputs.current }} | ${{ steps.vt.outputs.latest }} |
-
-          ### Changelog
-          - [VL releases](https://github.com/VictoriaMetrics/VictoriaLogs/releases)
-          - [VT releases](https://github.com/VictoriaMetrics/VictoriaTraces/releases)
-
-          ### Review Checklist
-          - [ ] E2E tests pass with new images
-          - [ ] No breaking API changes
-          - [ ] Performance regression check
-          EOF
-          )"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Findings are reported by the matrix and the sync pull request, not
+          # by a red daily run; only a probe that could not run fails here.
+          case "${RC:-}" in
+            0)  echo "probe status: $STATUS" ;;
+            10) echo "probe status: $STATUS — patches need regeneration" ;;
+            20) echo "probe status: $STATUS — the bump does not tidy, build or vet" ;;
+            30) echo "probe status: $STATUS — the conformance gates need a human" ;;
+            *)  echo "the probe itself failed (exit ${RC:-unknown})"; exit 1 ;;
+          esac

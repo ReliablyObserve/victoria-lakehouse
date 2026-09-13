@@ -299,6 +299,11 @@ jobs:
       - name: Upstream sync probe self-test
         run: scripts/ci/tests/upstream_sync_probe_test.sh
 
+      # Its publishing half against a local bare repository: no token no push,
+      # never overwriting a branch a maintainer committed to, one pull request.
+      - name: Upstream sync publish self-test
+        run: scripts/ci/tests/upstream_sync_publish_test.sh
+
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
