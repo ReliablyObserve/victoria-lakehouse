@@ -284,6 +284,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Pure repo-tree checks: the two VictoriaLogs patch directories must
+      # stay byte-equal except where patches/vl-traces/DIVERGENCE.md declares
+      # a reason. No upstream checkout needed, so it runs before setup-go.
+      - name: Patch-set consistency guard self-test
+        run: scripts/ci/tests/check_patches_equal_test.sh
+
+      - name: Patch-set consistency (vl-logs vs vl-traces)
+        run: scripts/ci/check_patches_equal.sh
+
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
