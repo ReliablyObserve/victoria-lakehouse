@@ -69,25 +69,25 @@ var (
 	topology        = flag.String("lakehouse.topology", "", "Deployment topology: auto, storage-node, direct, loki-proxy")
 	hotBoundary     = flag.String("lakehouse.hot-boundary", "", "Manual hot boundary override (e.g., 7d)")
 	role            = flag.String("lakehouse.role", "", "Role: all, insert, select (default: all)")
-	profileFlag     = flag.String("lakehouse.profile", "", "Configuration profile: balanced, max-performance, max-durability, max-cost-savings, dev")
+	profileFlag     = flag.String("lakehouse.profile", "", "Configuration profile: balanced, max-performance, max-durability, max-cost-savings, dev. Applied under the already-loaded config, so only keys left at zero take the profile value; prefer profile: in the config file")
 	flushInterval   = flag.Duration("lakehouse.insert.flush-interval", 0, "Insert flush interval (e.g., 10s)")
 	listenAddrFlag  = flag.String("httpListenAddr", ":9428", "HTTP listen address")
 	manifestRefresh = flag.Duration("lakehouse.manifest.refresh-interval", 0, "Manifest refresh interval (e.g., 30s)")
 
-	cacheMemoryMB         = flag.Int("lakehouse.cache.memory-mb", 0, "L1 memory cache size in MB (default: 256)")
+	cacheMemoryMB         = flag.Int("lakehouse.cache.memory-mb", 0, "L1 memory cache size in MB (default: 512)")
 	cacheDiskPath         = flag.String("lakehouse.cache.disk-path", "", "L2 disk cache directory path")
-	cacheDiskMB           = flag.Int("lakehouse.cache.disk-max-mb", 0, "L2 disk cache max size in MB (default: 1024)")
-	cacheWarmupPartitions = flag.Int("lakehouse.cache.warmup-partitions", 0, "Number of recent hourly partitions to warm on startup (0=disabled)")
-	cacheWarmupMaxFiles   = flag.Int("lakehouse.cache.warmup-max-files", 0, "Max files to warm on startup (default: 500)")
+	cacheDiskMB           = flag.Int("lakehouse.cache.disk-max-mb", 0, "L2 disk cache max size in MB (default: 51200)")
+	cacheWarmupPartitions = flag.Int("lakehouse.cache.warmup-partitions", 0, "Number of recent hourly partitions to warm on startup; warmup runs only when this or -lakehouse.cache.warmup-max-files is set (default: 0 = 6 when warmup runs)")
+	cacheWarmupMaxFiles   = flag.Int("lakehouse.cache.warmup-max-files", 0, "Max files to warm on startup; warmup runs only when this or -lakehouse.cache.warmup-partitions is set (default: 0 = 500 when warmup runs)")
 	cachePartitionMode    = flag.String("lakehouse.cache.partition-mode", "", "Cache partition mode: az-local (default), global, distributed")
 
-	compactionEnabled        = flag.Bool("lakehouse.compaction.enabled", false, "Enable compaction scheduler")
+	compactionEnabled        = flag.Bool("lakehouse.compaction.enabled", false, "Enable the compaction scheduler (on by default; false does not turn it off — select a profile that disables compaction in the config file)")
 	compactionInterval       = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
 	compactionDailyRollupAge = flag.Duration("lakehouse.compaction.daily-rollup-age", 0, "Minimum partition age for daily rollup compaction (default: 24h)")
 	compactionRowGroupSizes  = flag.String("lakehouse.compaction.row-group-size-by-output-level", "", "Comma-separated Parquet row-group sizes per compaction output level, slot N = output level N (default: 10000,10000,20000)")
 
-	queryFileWorkers      = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 8)")
-	queryMaxFilesPerQuery = flag.Int("lakehouse.query.max-files-per-query", 0, "Max S3 files per query before rejection (default: 500)")
+	queryFileWorkers      = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 64)")
+	queryMaxFilesPerQuery = flag.Int("lakehouse.query.max-files-per-query", 0, "Max S3 files per query before rejection (default: 0 = unlimited)")
 	queryMaxLiveBytes     = flag.Int64("lakehouse.query.max-live-bytes", 0, "Per-query ceiling on in-flight DataBlock bytes before cancellation (default: 512MiB)")
 
 	s3ReadAhead       = flag.Int("lakehouse.s3.read-ahead-bytes", 0, "S3 read-ahead base window in bytes (default: 2MB)")
@@ -108,9 +108,9 @@ var (
 	// (see internal/resourcebounds). When any of these are non-zero
 	// they take precedence over the deprecated lakehouse.s3.max-concurrent-downloads
 	// flag. Triple defaults: request=4, limit=16, scaling=fixed.
-	s3ConcurrentDownloadsRequest = flag.Int("lakehouse.s3.concurrent-downloads.request", 0, "S3 download concurrency request (always-reserved baseline; default: 4)")
-	s3ConcurrentDownloadsLimit   = flag.Int("lakehouse.s3.concurrent-downloads.limit", 0, "S3 download concurrency limit (hard ceiling; default: 16)")
-	s3ConcurrentDownloadsScaling = flag.String("lakehouse.s3.concurrent-downloads.scaling", "", "S3 download concurrency scaling policy: fixed|linear|expbackoff (default: fixed)")
+	s3ConcurrentDownloadsRequest = flag.Int("lakehouse.s3.concurrent-downloads.request", 0, "S3 download concurrency request (always-reserved baseline; default: 0 = limit/4 when the limit is at least 8, else the limit)")
+	s3ConcurrentDownloadsLimit   = flag.Int("lakehouse.s3.concurrent-downloads.limit", 0, "S3 download concurrency limit (hard ceiling; default: 0 = the request, or -lakehouse.s3.max-concurrent-downloads when both are unset)")
+	s3ConcurrentDownloadsScaling = flag.String("lakehouse.s3.concurrent-downloads.scaling", "", "S3 download concurrency scaling policy: fixed|linear|expbackoff (empty means fixed)")
 	// DEPRECATED: superseded by the request/limit/scaling triple above.
 	// Setting this flag alone still works (logged as deprecation warning
 	// at startup); the value is taken as both request and limit
@@ -137,13 +137,13 @@ var (
 	queryMaxRowsLimit   = flag.Int64("lakehouse.query.max-rows.limit", 0, "Query max-rows limit (hard ceiling)")
 	queryMaxRowsScaling = flag.String("lakehouse.query.max-rows.scaling", "", "Query max-rows scaling policy: fixed|linear|expbackoff")
 
-	logsBloomColumns = flag.String("lakehouse.logs.bloom-columns", "", "Comma-separated bloom filter columns for logs (default: service.name)")
+	logsBloomColumns = flag.String("lakehouse.logs.bloom-columns", "", "Comma-separated bloom filter columns for logs (default: service.name,trace_id)")
 	logsDeletePrefix = flag.String("lakehouse.logs.delete-prefix", "", "Delete API prefix (default: /delete/logsql)")
 
 	tenantDefaultAccount    = flag.String("lakehouse.tenant.default-account", "", "Default tenant account ID (default: 0)")
 	tenantDefaultProject    = flag.String("lakehouse.tenant.default-project", "", "Default tenant project ID (default: 0)")
-	tenantHeaderAccount     = flag.String("lakehouse.tenant.header-account", "", "HTTP header for account ID (default: AccountID)")
-	tenantHeaderProject     = flag.String("lakehouse.tenant.header-project", "", "HTTP header for project ID (default: ProjectID)")
+	tenantHeaderAccount     = flag.String("lakehouse.tenant.header-account", "", "HTTP header for account ID (default: X-Scope-AccountID)")
+	tenantHeaderProject     = flag.String("lakehouse.tenant.header-project", "", "HTTP header for project ID (default: X-Scope-ProjectID)")
 	tenantGlobalHeader      = flag.String("lakehouse.tenant.global-read-header", "", "Header name for global read access")
 	tenantGlobalValue       = flag.String("lakehouse.tenant.global-read-value", "", "Expected header value for global read access")
 	tenantGlobalToken       = flag.String("lakehouse.tenant.global-read-token", "", "Bearer token for global read access")
