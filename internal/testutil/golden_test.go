@@ -3,6 +3,7 @@ package testutil
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -127,5 +128,34 @@ func TestCompareGoldenJSON_InvalidGolden(t *testing.T) {
 	err := CompareGoldenJSON(golden, []byte(`{"a":1}`))
 	if err == nil {
 		t.Error("expected error for invalid golden JSON, got nil")
+	}
+}
+
+func TestDiffGolden(t *testing.T) {
+	dir := t.TempDir()
+	golden := filepath.Join(dir, "surface.json")
+	if err := os.WriteFile(golden, []byte("a\nb\nc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := DiffGolden(golden, []byte("a\nb\nc\n")); err != nil {
+		t.Errorf("identical content: %v", err)
+	}
+	cases := map[string]string{
+		"a\nX\nc\n":        `line 2`,
+		"a\nb\n":           `line 3`,
+		"a\nb\nc\n\nextra": `golden: (end of file)`,
+	}
+	for actual, want := range cases {
+		err := DiffGolden(golden, []byte(actual))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("DiffGolden(%q) = %v, want mention of %q", actual, err, want)
+		}
+	}
+	missing := filepath.Join(dir, "missing.json")
+	if err := DiffGolden(missing, []byte("x")); err == nil {
+		t.Error("a missing golden file must fail")
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Error("DiffGolden must not create a missing golden file")
 	}
 }

@@ -1222,11 +1222,21 @@ func LoadWithMode(path string, mode Mode, role Role) (*Config, error) {
 		return nil, fmt.Errorf("read config file %s: %w", path, err)
 	}
 
+	cfg, err := loadConfigBytes(data, mode, role)
+	if err != nil {
+		return nil, fmt.Errorf("parse config file %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// loadConfigBytes is LoadWithMode for an already-read config file: the
+// file's `lakehouse:` document is merged over the profile it selects.
+func loadConfigBytes(data []byte, mode Mode, role Role) (*Config, error) {
 	var wrapper struct {
 		Lakehouse Config `yaml:"lakehouse"`
 	}
 	if err := yaml.Unmarshal(data, &wrapper); err != nil {
-		return nil, fmt.Errorf("parse config file %s: %w", path, err)
+		return nil, err
 	}
 
 	fileConfig := &wrapper.Lakehouse

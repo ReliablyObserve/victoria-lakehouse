@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 func CompareGolden(goldenPath string, actual []byte) error {
@@ -53,6 +54,35 @@ func CompareGoldenJSON(goldenPath string, actual []byte) error {
 			expectedNorm.String(), actualNorm.String())
 	}
 	return nil
+}
+
+// DiffGolden compares actual with the committed golden file byte for byte.
+// Unlike CompareGolden it never creates a missing file — a gate must fail
+// when its expectation is absent — and it reports the first differing line
+// rather than both documents.
+func DiffGolden(goldenPath string, actual []byte) error {
+	expected, err := os.ReadFile(goldenPath)
+	if err != nil {
+		return fmt.Errorf("read golden file: %w", err)
+	}
+	if bytes.Equal(expected, actual) {
+		return nil
+	}
+	exp := strings.Split(string(expected), "\n")
+	act := strings.Split(string(actual), "\n")
+	line := 0
+	for line < len(exp) && line < len(act) && exp[line] == act[line] {
+		line++
+	}
+	return fmt.Errorf("%s is stale: first difference at line %d\n  golden: %s\n  actual: %s",
+		goldenPath, line+1, lineAt(exp, line), lineAt(act, line))
+}
+
+func lineAt(lines []string, i int) string {
+	if i < len(lines) {
+		return fmt.Sprintf("%q", lines[i])
+	}
+	return "(end of file)"
 }
 
 func UpdateGolden(goldenPath string, data []byte) {

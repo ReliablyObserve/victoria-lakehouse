@@ -175,6 +175,9 @@ func main() {
 		case "fips-status":
 			runFIPSStatusSubcommand()
 			return
+		case "print-default-config", "-print-default-config", "--print-default-config":
+			runPrintDefaultConfigSubcommand()
+			return
 		}
 	}
 	buildinfo.Init()
