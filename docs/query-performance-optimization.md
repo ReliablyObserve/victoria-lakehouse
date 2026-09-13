@@ -73,6 +73,24 @@ Per query (`planMetadataOnly`, backed by `logstorage.GetQueryTimeBucketing` in
 - Pipes AFTER the `stats` pipe are unconstrained: they see group keys and aggregates,
   never raw rows (`/select/logsql/hits` appends `sort by (_time)` there)
 
+What that means for the common shapes (each is a test in
+`internal/storage/parquets3/manifest_fastpath_exactness_test.go`):
+- `/select/logsql/hits` without `field=` — eligible, one bucket (`step`).
+- `/select/logsql/hits` with `field=...` — refused at EVERY step, even a step wider than
+  every file: the grouping column's per-file split is not in the block. The hint wrapper
+  (`wrapVLTimestampOnly`, currently registered on no route) also withholds the
+  timestamp-only hint whenever `field=` is present.
+- `_stream` selectors (`{...}`, `_stream:{...}`), `_stream_id:...`, words and field
+  filters — folded into the query's filter, so refused by the "no pushdown filter"
+  condition: metadata cannot tell which rows a selector keeps.
+- Tenants — the fast path answers only the file set its caller passes in and never
+  looks up files on its own, so tenant scoping is decided where that set is built. The
+  traces module's `RunQuery` already scopes it (`GetFilesForRangeTenant`) and a
+  cross-tenant RunQuery test locks that; the logs module's `RunQuery` does not yet, which
+  affects its scan path exactly as much as this fast path and is being fixed separately.
+- A manifest entry with `RowCount = 0` (not yet enriched from the footer) is read, never
+  answered as an empty file.
+
 Per file:
 - File has RowCount, MinTimeNs, MaxTimeNs populated
 - File's time range is fully within the query range
@@ -115,6 +133,15 @@ file may contribute: a fully-covered file contributes exactly its `RowCount`.
 `TestStreamConstTimeBlocks_AllocationCeiling` locks the allocation behaviour and
 `TestManifestFastPath_ExactnessMatrix` locks equality with a full scan across file
 sizes, window coverage and query shapes.
+
+**Caveat — the row-group path inside the scan.** When a file is read (it straddles a
+bucket, or does not lie fully inside the window), a ROW GROUP of it that lies fully in the
+window AND inside one bucket of every bucketing is still emitted without decoding column
+data, by `syntheticTimestampBlock`. That function formats one timestamp per row of the row
+group, so it is O(rows) — but it is correct (every value lands in the same bucket as the
+real ones, which `rowGroupCoveredByPlan` checks against the page-aggregated column-index
+bounds) and uncapped (its row count is `rg.NumRows()` from the footer). It only runs after
+the footer has been fetched, so it is not on the zero-S3 path.
 
 **Metrics:** `lakehouse_metadata_only_files_total` counts files answered from metadata;
 `lakehouse_metadata_only_fallback_files_total` counts files that were inside the query
