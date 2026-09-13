@@ -1,0 +1,103 @@
+# Security features: what is closed by default and what guards the edges.
+
+- id: lh.feature.security.internal_auth
+  title: Internal endpoint authentication
+  status: shipped
+  since: v0.18.1
+  area: security
+  surfaces: [api, flag]
+  tests:
+    - internal/peercache/peercache_test.go#TestPeerCache_Fetch_AuthRejected
+    - internal/buffer/handler_test.go#TestBufferQuery_AuthRequired
+    - internal/stats/sync_test.go#TestSyncHandlerRejectsBadAuth
+    - internal/discovery/discovery_test.go#TestPollPartitionList_WithAuthKey
+  docs:
+    - docs/security.md
+  changelog: ["0.18.1"]
+  changelog_bullets:
+    - 'Internal endpoint auth'
+  highlight: >-
+    **Internal endpoint auth**: the cluster-only surfaces — buffer query, peer cache, stats and tenant sync, partition list — require a shared key, so fleet-internal APIs are not open to anything that can reach the pod's network.
+  description: >-
+    The internal endpoints exist to let pods trust each other, which is exactly why they need a
+    credential: without one, network reachability alone would grant cross-tenant reads. Each
+    surface has a test asserting the rejection path, not only the accept path.
+
+- id: lh.feature.security.cross_signal_auth
+  title: Cross-signal hint authentication
+  status: shipped
+  since: v0.18.1
+  area: security
+  readme_section: Cross-Signal Prefetch
+  surfaces: [api, flag]
+  tests:
+    - internal/crosssignal/handler_test.go#TestEvictHintHandler_NoAuthKey_AllowAll
+    - internal/crosssignal/handler_test.go#TestEvictHintHandler_ValidRequest
+  docs:
+    - docs/security.md
+    - docs/configuration.md
+  highlight: >-
+    **Auth key support**: optional `X-Cross-Signal-Key` header for securing cross-deployment communication.
+  description: >-
+    Logs and traces deployments exchange hints across deployment boundaries, which may not share
+    a trust domain. The key is optional so a single-tenant lab stays simple, and enforced
+    everywhere it is set.
+
+- id: lh.feature.security.ssrf_guard
+  title: S3 endpoint SSRF guard
+  status: shipped
+  since: v0.18.2
+  area: security
+  surfaces: [flag]
+  tests:
+    - internal/config/config_security_test.go#TestValidate_S3EndpointSSRF
+    - internal/config/config_security_test.go#TestValidate_S3EndpointInternalNetworks
+    - internal/config/config_security_test.go#TestValidate_S3EndpointScheme
+  docs:
+    - docs/security.md
+  highlight: >-
+    **SSRF guard**: a custom S3 endpoint is validated before use — scheme restricted, link-local addresses and cloud metadata endpoints refused — so an operator-supplied or templated endpoint cannot be pointed at the instance metadata service.
+  description: >-
+    The S3 endpoint is an operator-controlled URL the process will fetch from, which is the
+    classic SSRF shape. Validation happens at configuration time with an explicit deny list, and
+    the attack vectors are enumerated in tests rather than assumed.
+
+- id: lh.feature.security.container_hardening
+  title: Container and pod hardening
+  status: shipped
+  since: v0.10.0
+  area: security
+  surfaces: [cli]
+  tests:
+    - tests/verification/probe_fips_active.sh
+    - tests/verification/probe_image_size.sh
+    - charts/victoria-lakehouse/test_templates.sh
+  docs:
+    - docs/security.md
+    - docs/kubernetes-deployment.md
+  highlight: >-
+    **Hardened images and pods**: minimal non-root images with a read-only root filesystem and dropped capabilities, and chart defaults that set the matching pod security context rather than leaving it to the deployer.
+  description: >-
+    The default deployment should be the safe one. The images carry no shell-level extras, the
+    chart's security context is restrictive out of the box, and probes verify the shipped image
+    actually has the properties claimed.
+
+- id: lh.feature.security.ci_pipeline
+  title: CI security pipeline
+  status: shipped
+  since: v0.10.0
+  area: security
+  surfaces: [cli]
+  tests:
+    - .github/workflows/security.yaml
+    - .github/workflows/codeql.yaml
+    - tests/verification/probe_image_freshness.sh
+  docs:
+    - docs/security.md
+  highlight: >-
+    **CI security gates**: static analysis, dependency and image scanning on every change, plus an image-freshness probe that catches a deploy still running a stale binary.
+  description: >-
+    Scanning that runs on every PR is the only kind that finds things before release. The
+    freshness probe closes the other half of the problem — a scanned artifact that was never
+    actually deployed — by comparing each running container's image against the newest source
+    commit.

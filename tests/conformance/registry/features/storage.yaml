@@ -1,0 +1,538 @@
+# Storage features: the on-S3 format, the partition manifest, the unified
+# partition-metadata layer, and how bytes are fetched back out of S3.
+
+- id: lh.feature.storage.open_parquet_format
+  title: Plain, tool-readable Parquet on S3
+  status: shipped
+  since: v0.8.0
+  area: storage
+  surfaces: [storage]
+  tests:
+    - internal/storage/parquets3/writer_test.go#TestWriteLogsParquet
+    - internal/storage/parquets3/footer_parse_test.go#TestParseFooterFromBytes_WideSchema23Cols
+    - internal/schema/verify_test.go
+    - scripts/ci/parquet-readback/verify.py
+  docs:
+    - docs/open-parquet-format.md#s3-layout
+    - docs/open-parquet-format.md#querying-with-external-tools
+  highlight: >-
+    **Open Parquet on S3**: every object is a standard Parquet file with no custom framing, so DuckDB, pyarrow, ClickHouse, Trino and Spark read the same bytes Lakehouse queries — Lakehouse metadata rides in the footer key-value area or in sidecars, never in a proprietary container.
+  description: >-
+    The storage format is the product's contract with its users: data written by Lakehouse stays
+    readable by any Parquet engine, with no import step and no vendor decoder. Lakehouse-specific
+    metadata (the trace index, partition metadata) is carried in standard footer key-value
+    metadata or in separate objects, so stripping Lakehouse never strips the data.
+
+- id: lh.feature.storage.manifest
+  title: Partition manifest with label pruning
+  status: shipped
+  since: v0.7.0
+  area: storage
+  readme_section: Write Path
+  surfaces: [api, storage]
+  rows: [lh.manifest.range.schema, lh.manifest.partitions.schema]
+  tests:
+    - internal/manifest/manifest_test.go
+    - internal/manifest/api_test.go
+    - internal/manifest/manifest_range_test.go
+    - internal/manifest/refresh_tenantscoped_test.go
+  docs:
+    - docs/manifest-system.md#data-structures
+    - docs/manifest-system.md#api-endpoints
+  changelog: ["0.7.0", "0.8.0"]
+  changelog_bullets:
+    - 'Manifest management'
+    - 'Manifest label pruning'
+    - 'Manifest partitions API'
+    - 'GetPartitions()'
+    - 'PartitionsHandler'
+  highlight: >-
+    **Manifest label pruning**: `FileInfo.Labels` enables query-time file skipping based on label values without opening Parquet files.
+  description: >-
+    The manifest is the index of what exists: which files cover which time range, for which
+    tenant, with which labels and row counts. It answers "is there anything here at all" without
+    an S3 GET, prunes files by label before any Parquet is opened, and exposes the partition and
+    range APIs the select side and the hot-boundary discovery use.
+
+- id: lh.feature.storage.manifest_fastpath
+  title: Manifest fast path for empty and metadata-only queries
+  status: shipped
+  since: v0.8.0
+  area: storage
+  readme_section: Read Path
+  surfaces: [storage]
+  tests:
+    - internal/storage/parquets3/manifest_fastpath_test.go
+    - lakehouse-traces/internal/storage/parquets3/manifest_fastpath_test.go
+  docs:
+    - docs/read-path.md#level-2-manifest-fast-path
+    - docs/query-performance-optimization.md#1-manifest-only-fast-path
+  bench: [count_total]
+  highlight: >-
+    **Partition manifest** for sub-ms "nothing here" responses. Recent queries cost zero S3 I/O.
+  description: >-
+    A query whose window or filters cannot match any file is answered from the manifest alone, in
+    sub-millisecond time and with no object-store traffic at all — the common case for dashboards
+    that poll a window the cold tier does not hold.
+
+- id: lh.feature.storage.manifest_push
+  title: Peer manifest push notifications
+  status: shipped
+  since: v0.10.0
+  area: storage
+  surfaces: [api]
+  tests:
+    - internal/manifest/push_test.go
+    - internal/manifest/push_coverage_test.go
+    - cmd/lakehouse-logs/handlers_test.go#TestHandleManifestUpdate
+  docs:
+    - docs/manifest-system.md#peer-synchronization
+  changelog: ["0.10.0"]
+  changelog_bullets:
+    - 'Peer manifest push notifications'
+    - 'Manifest update receiver'
+  highlight: >-
+    **Manifest push**: an insert pod tells its peers about a new file over `/internal/manifest/update` instead of leaving them to discover it on the next S3 refresh.
+  description: >-
+    Newly flushed files become visible fleet-wide within a round trip: the writer pushes the
+    manifest delta to peers, which apply it to their in-memory manifest. The periodic S3 refresh
+    stays as the backstop for pods that missed a push.
+
+- id: lh.feature.storage.metadata_persistence
+  title: Metadata survives restarts
+  status: shipped
+  since: v0.9.0
+  area: storage
+  readme_section: Infrastructure
+  surfaces: [storage]
+  tests:
+    - internal/cache/persist_test.go
+    - internal/manifest/snapshot_binary_test.go
+    - internal/storage/parquets3/footer_cache_snapshot_test.go
+    - internal/cache/persist_regression_test.go
+  docs:
+    - docs/architecture/restart-and-warmup-design.md
+    - docs/cache-architecture.md
+  highlight: >-
+    **Metadata persistence**: manifest, label index, cache metadata, and smart cache snapshots survive restarts.
+  description: >-
+    Everything expensive to rebuild is snapshotted to disk and reloaded on start: the manifest,
+    the label index, the Parquet footer cache and the smart cache's entry metadata. A restarted
+    pod serves from warm metadata instead of re-listing S3.
+
+- id: lh.feature.storage.sqs_sns
+  title: SQS/SNS manifest updates from S3 events
+  status: shipped
+  since: v0.9.0
+  area: storage
+  readme_section: Infrastructure
+  surfaces: [flag, storage]
+  tests:
+    - internal/config/config_test.go#TestMergeConfig_ManifestFields
+  docs:
+    - docs/manifest-system.md
+    - docs/configuration.md
+  highlight: >-
+    **SQS/SNS support**: optional near-real-time manifest updates from S3 event notifications.
+  description: >-
+    Where the bucket emits event notifications, the manifest can follow them instead of polling,
+    which keeps discovery latency low on buckets written by something other than this fleet
+    (backfills, migrations, external compaction).
+
+- id: lh.feature.storage.schema_registry
+  title: Schema registry with typed columns
+  status: shipped
+  since: v0.9.0
+  area: storage
+  readme_section: Read Path
+  surfaces: [storage]
+  tests:
+    - internal/schema/registry_test.go
+    - internal/schema/verify_test.go
+  docs:
+    - docs/storage-flow.md
+    - docs/open-parquet-format.md#column-naming-convention
+  highlight: >-
+    **Schema-driven FieldType system**: centralized type-aware formatting for all Parquet column types (INT64 nanoseconds to RFC3339Nano, INT32 to decimal, etc.) via `FieldType.FormatValue()`. Eliminates scattered `fmt.Sprintf`/`time.Format` calls — all query paths use the schema registry for consistent output.
+  description: >-
+    One registry carries every column's Parquet type and how to render it, so a timestamp reads
+    the same whether it came back through LogsQL, the stats API or the UI. Formatting bugs are
+    fixed once, in the registry, instead of at each call site.
+
+- id: lh.feature.storage.schema_autodiscovery
+  title: OTLP schema auto-discovery and promoted columns
+  status: shipped
+  since: v0.9.0
+  area: storage
+  readme_section: Infrastructure
+  surfaces: [storage, flag]
+  tests:
+    - internal/schema/registry_parity_test.go
+    - internal/schema/label_columns_test.go
+  docs:
+    - docs/open-parquet-format.md#column-naming-convention
+    - docs/configuration.md
+  highlight: >-
+    **Schema auto-discovery**: OTLP column names in Parquet, mapped to VL/VT names at query time. Schema registry carries per-column type information (FieldType) for type-aware formatting, extensible via `--lakehouse.schema.extra-promoted` with typed columns (string, int32, int64, float64, bool, timestamp_nano).
+  description: >-
+    Files keep OTLP-native column names so external engines see familiar schemas, while queries
+    keep VL/VT field names; the registry maps between them. Operators can promote additional
+    attributes to typed columns without a code change.
+
+- id: lh.feature.storage.dedicated_columns
+  title: Dedicated columns for hot attributes
+  status: shipped
+  since: v0.90.0
+  area: storage
+  surfaces: [storage, flag]
+  tests:
+    - internal/schema/dedicated_test.go
+    - internal/storage/parquets3/dedicated_equivalence_test.go
+    - internal/storage/parquets3/dedicated_e2e_test.go#TestDedicated_E2E_PromotedColumn
+    - internal/vlstorage/slot_e2e_test.go#TestTier2_SlotRoundTrip
+    - lakehouse-traces/internal/storage/parquets3/dedicated_equivalence_test.go
+  docs:
+    - docs/architecture/dedicated-columns.md#two-tiers
+    - docs/benchmarks/dedicated-columns.md
+  changelog: ["0.90.0"]
+  changelog_bullets:
+    - 'Dedicated columns (Tier 1): promote hot OTel attributes out of the maps into typed Parquet columns.'
+    - 'Dedicated columns (Tier 2): operator-configurable custom-attribute promotion.'
+  highlight: >-
+    **Dedicated columns**: the highest-volume OTel attributes are promoted out of the attribute maps into typed Parquet columns — smaller files and order-of-magnitude faster filters on promoted keys, with Tier 2 letting operators promote their own keys.
+  description: >-
+    Tier 1 promotes a fixed set of hot OTel attributes; Tier 2 lets an operator name their own.
+    Promoted keys become first-class columns with statistics and projection, so filters on them
+    prune row groups instead of decoding attribute maps. Equivalence tests assert a promoted key
+    answers exactly what the map-stored form answered.
+
+- id: lh.feature.storage.field_size_stats
+  title: Per-field storage and metadata size accounting
+  status: shipped
+  since: v0.100.0
+  area: storage
+  surfaces: [api, storage]
+  rows: [lh.stats.fields.schema]
+  tests:
+    - internal/pmeta/metadata_bytes_by_field_test.go
+    - internal/stats/api_fields_test.go
+    - tests/e2e/stats_metadata_test.go#TestStatsOverviewMetadata
+  docs:
+    - docs/tenant-stats.md
+    - docs/architecture/field-value-catalog.md
+  changelog: ["0.100.0"]
+  changelog_bullets:
+    - 'Per-field storage/metadata size stats — foundation.'
+  highlight: >-
+    **Per-field size accounting**: how many on-S3 bytes each field costs, in data and in metadata, computed from partition metadata rather than estimated.
+  description: >-
+    The size of every field — its column bytes on S3 and the metadata bytes it costs in the
+    partition bundle — is accounted per partition and rolled up, which is what makes the UI's
+    per-field storage tables and the cardinality explorer's cost column exact rather than a
+    share-out of a total.
+
+- id: lh.feature.storage.pmeta
+  title: Unified partition metadata (pmeta) with field/value catalog
+  status: shipped
+  since: v0.79.0
+  area: storage
+  surfaces: [storage, flag]
+  tests:
+    - internal/pmeta/bundle_test.go
+    - internal/pmeta/facet_field_catalog_test.go
+    - internal/storage/parquets3/pmeta_integration_test.go
+    - internal/storage/parquets3/pmeta_wire_test.go
+    - lakehouse-traces/internal/storage/parquets3/pmeta_integration_test.go
+  docs:
+    - docs/architecture/metadata-consolidation.md
+    - docs/architecture/field-value-catalog.md
+    - docs/architecture/pb-scale-resources-pmeta.md
+  changelog: ["0.79.0"]
+  changelog_bullets:
+    - 'pmeta — unified partition-metadata layer + field/value catalog (`-lakehouse.pmeta.enabled`, off by default).'
+  highlight: >-
+    **Unified partition metadata**: one metadata object per partition carries file statistics, the field/value catalog and bloom facets — one read serving every consumer instead of a sidecar per concern.
+  description: >-
+    pmeta replaces the per-file metadata sidecars with a single bundle per partition: file
+    statistics, the field and value catalog behind field-name/value queries and the cardinality
+    explorer, and bloom facets for file skipping. One GET answers what several used to, and the
+    bundle is the unit that is cached, rebuilt and tenant-scoped.
+
+- id: lh.feature.storage.pmeta_read_flips
+  title: pmeta read flips for file metadata, bloom and field names
+  status: shipped
+  since: v0.79.0
+  area: storage
+  surfaces: [storage, flag]
+  tests:
+    - internal/storage/parquets3/pmeta_integration_test.go#TestInteg_PmetaFlip_FieldNamesAndBloom
+    - internal/storage/parquets3/pmeta_integration_test.go#TestInteg_GetFieldNames_CatalogFlip
+    - internal/storage/parquets3/pmeta_integration_test.go#TestInteg_EnrichEquivalence_ProviderVsSidecar
+    - lakehouse-traces/internal/storage/parquets3/pmeta_integration_test.go#TestInteg_PmetaFlip_TracesBloomFacet
+  docs:
+    - docs/architecture/metadata-consolidation.md
+    - docs/architecture/field-value-catalog.md
+  changelog: ["0.79.0"]
+  changelog_bullets:
+    - 'pmeta file-meta read-flip — the manifest enriches `FileInfo` from the in-RAM bundle, not the S3 sidecars (flip phase 1, `--pmeta`).'
+    - 'pmeta bloom read-flip — `checkFileBloom` consults the in-RAM bloom facet before a per-file `.bloom` S3 GET (`--pmeta`, logs + traces).'
+    - 'pmeta labels `field_names` read-flip — `GetFieldNames` serves from the catalog before the legacy labelIndex (`--pmeta`, logs + traces).'
+  highlight: >-
+    **pmeta read path**: file enrichment, bloom checks and field-name lookups are served from the in-RAM bundle before any sidecar GET, with equivalence tests asserting the bundle answers exactly what the sidecars answered.
+  description: >-
+    Each read flip moved one consumer from its legacy sidecar to the bundle behind a flag, and
+    each landed with an equivalence test proving the two sources agree. That is what makes
+    retiring the sidecar writes safe.
+
+- id: lh.feature.storage.pmeta_retire_sidecars
+  title: Retiring the legacy metadata sidecars
+  status: shipped
+  since: v0.81.0
+  area: storage
+  surfaces: [storage, flag]
+  tests:
+    - internal/storage/parquets3/pmeta_integration_test.go#TestInteg_PmetaRetire_SkipsFileMetaSidecar
+    - internal/storage/parquets3/pmeta_migrate_test.go
+    - internal/manifest/metadata_sidecar_test.go
+    - internal/pmeta/facet_bloom_test.go
+  docs:
+    - docs/architecture/metadata-consolidation.md
+    - docs/query-performance-optimization.md
+  changelog: ["0.81.0"]
+  changelog_bullets:
+    - 'pmeta `retire-sidecar-writes` — stop writing ALL legacy sidecars the facets replace: `_file_metadata.json`, per-file `.bloom`, and partition `_bloom.bin` (`-lakehouse.pmeta.retire-sidecar-writes`, off by default, both modules).'
+  highlight: >-
+    **Sidecar retirement**: with the facets carrying the same information, `-lakehouse.pmeta.retire-sidecar-writes` stops writing `_file_metadata.json`, per-file `.bloom` and partition `_bloom.bin` — fewer objects, fewer PUTs, less S3 cost per flush.
+  description: >-
+    The flag is off by default and retires only the sidecars whose readers have already flipped
+    to the bundle, so a cluster can move at its own pace and roll back by turning the flag off.
+
+- id: lh.feature.storage.pmeta_self_heal
+  title: Self-healing partition metadata
+  status: shipped
+  since: v0.79.0
+  area: storage
+  surfaces: [storage]
+  tests:
+    - internal/pmeta/facet_field_catalog_test.go#TestFieldCatalog_SelfHealRebuildParity
+    - internal/pmeta/bundle_test.go#TestStore_FlushAndRebuild
+    - internal/pmeta/hardening_test.go
+    - internal/pmeta/persist_test.go
+    - lakehouse-traces/internal/storage/parquets3/pmeta_wire_coverage_test.go#TestWarmCatalogFromS3_RebuildMissingBundle
+  docs:
+    - docs/architecture/restore-and-elasticity-pmeta.md
+    - docs/architecture/metadata-consolidation.md
+  highlight: >-
+    **Self-healing metadata**: a lost or damaged partition bundle is rebuilt from the Parquet footers themselves, so metadata loss degrades performance rather than correctness.
+  description: >-
+    Because every fact in the bundle is derivable from the files it describes, a missing bundle
+    is a cache miss, not data loss: the partition is rebuilt from footers on demand and the
+    rebuild is asserted to produce the same catalog the incremental path produces.
+
+- id: lh.feature.storage.s3_read_path_tier1
+  title: S3 read-path hygiene, adaptive read-ahead and coalescing
+  status: shipped
+  since: v0.83.0
+  area: storage
+  surfaces: [storage, flag]
+  tests:
+    - internal/s3reader/adaptive_test.go
+    - internal/s3reader/coalescing_reader_test.go
+    - internal/storage/parquets3/coverage_s3_paths_test.go#TestInteg_openParquetFile_ConcurrentDownloads
+    - internal/storage/parquets3/coverage_integration_test.go#TestInteg_openParquetFile_RangeRead
+  docs:
+    - docs/architecture/metadata-and-s3-optimization.md
+    - docs/read-path.md
+  changelog: ["0.9.0", "0.83.0"]
+  changelog_bullets:
+    - 'S3 read-path Tier 1 (batch 1) — parquet open hygiene, adaptive read-ahead, BDP coalescing, singleflight, S3-op observability (both modules).'
+    - 'Circuit breaker'
+  notes: >-
+    The v0.9.0 S3 circuit breaker was removed in the VL-integration refactor (PR #37); S3
+    failure and load behavior is governed by resource bounds, singleflight and adaptive
+    read-ahead instead. Its changelog bullet belongs to this feature's history.
+  highlight: >-
+    **S3 read-path Tier 1**: parquet-open hygiene, adaptive read-ahead sized to the bandwidth-delay product, coalesced ranges, singleflight de-duplication and per-operation S3 metrics.
+  description: >-
+    Opening a Parquet file over an object store is dominated by round trips. This batch fixed the
+    open sequence, sized read-ahead to the connection's bandwidth-delay product, coalesced nearby
+    ranges into one GET, de-duplicated concurrent identical fetches and made every S3 operation
+    observable so the next optimization has numbers to argue with.
+
+- id: lh.feature.storage.read_ahead_waste_feedback
+  title: Waste-feedback read-ahead
+  status: shipped
+  since: v0.85.0
+  area: storage
+  surfaces: [storage, flag]
+  tests:
+    - internal/s3reader/waste_feedback_test.go
+    - internal/s3reader/adaptive_test.go#TestBufferedReaderAt_WastedBytes
+    - internal/config/s3_readpath_knobs_test.go#TestS3ReadAheadWasteThreshold_DefaultAndMerge
+  docs:
+    - docs/architecture/metadata-and-s3-optimization.md
+  changelog: ["0.85.0"]
+  changelog_bullets:
+    - 'S3 batch 2a — waste-feedback read-ahead: the adaptive window now SHRINKS when it fetches bytes nobody reads (both modules).'
+  highlight: >-
+    **Waste-feedback read-ahead**: the adaptive window shrinks when it fetches bytes nobody reads, so read-ahead stops paying for itself in wasted transfer on selective queries.
+  description: >-
+    Read-ahead that only grows is a bandwidth tax on point lookups. The reader tracks how much of
+    each prefetched window is actually consumed and contracts the window when the waste ratio
+    crosses a configurable threshold.
+
+- id: lh.feature.storage.plan_then_fetch
+  title: Plan-then-fetch exact column ranges
+  status: in-progress
+  since: v0.87.0
+  area: storage
+  surfaces: [storage, flag]
+  tests:
+    - internal/storage/parquets3/projected_fetch_test.go#TestGetFieldValues_PlannedFetch_OnlyPlannedRangesRequested
+    - internal/storage/parquets3/projected_fetch_test.go#TestPlanProjectedRanges_Derivation
+    - internal/s3reader/planned_fetch_test.go#TestPlannedFetch_CoalescingCorrectness
+    - lakehouse-traces/internal/storage/parquets3/projected_fetch_test.go#TestRunQuery_PlannedVsWindow_Equivalence_Traces
+    - internal/config/s3_readpath_knobs_test.go#TestS3ProjectedFetchKnobs_DefaultsMergeValidate
+  docs:
+    - docs/architecture/metadata-and-s3-optimization.md
+    - docs/read-path.md
+  changelog: ["0.87.0"]
+  changelog_bullets:
+    - 'S3 Tier-2 plan-then-fetch: column-projected reads now fetch EXACT coalesced column-chunk ranges — no speculative window (both modules).'
+  highlight: >-
+    **Plan-then-fetch**: a projected read plans the exact column-chunk byte ranges it needs and fetches those, coalesced — no speculative window at all. Opt-in per signal while the benchmark gate decides whether it becomes the default.
+  description: >-
+    With the footer in hand the reader knows precisely which byte ranges a projection touches,
+    so it can ask for those and nothing else. It is opt-in until it beats the windowed path on
+    every benchmark scenario at both latency profiles — the graduation rule for any performance
+    default in this repo.
+
+- id: lh.feature.storage.planned_fetch_v2
+  title: Planned-fetch v2 levers (footer prefetch, span concurrency, gap discipline)
+  status: in-progress
+  since: v0.88.0
+  area: storage
+  surfaces: [storage, flag]
+  tests:
+    - internal/s3reader/planned_fetch_test.go#TestPlannedFetch_V2LeversSimMeasurement
+    - internal/s3reader/planned_fetch_test.go#TestPlannedFetch_MaxInflightRespected
+    - internal/s3reader/planned_fetch_test.go#TestPlannedFetch_SpanCapSplits
+    - internal/storage/parquets3/projected_fetch_test.go#TestFooterPrefetch_OversizeFooterFitsPerSignalDefault
+    - internal/config/s3_readpath_knobs_test.go#TestS3PlannedFetchV2Knobs_DefaultsMergeValidate
+  docs:
+    - docs/architecture/metadata-and-s3-optimization.md
+    - docs/benchmarks/full-scope-s3.md
+  changelog: ["0.88.0"]
+  changelog_bullets:
+    - 'Planned-fetch v2 slices 0+1: per-signal footer prefetch, span concurrency k=16, per-SPAN cap, gap discipline, and the S\* whole-file ladder (both modules; every slice-1 lever is opt-in-planned-path only — the `window` default is untouched).'
+  highlight: >-
+    **Planned-fetch v2**: per-signal footer prefetch removes the second open round trip, spans are fetched with bounded concurrency and a per-span cap, and gap discipline decides when to bridge a hole rather than split a request.
+  description: >-
+    The v2 levers attack the measured causes of cold-open latency: two serial round trips per
+    file, a per-plan cap that punished the very coalescing that removes GETs, and too little
+    concurrency across the spans of one file. Every lever is confined to the opt-in planned path
+    so the default read path is unchanged until the numbers say otherwise.
+
+- id: lh.feature.storage.wildcard_range_read
+  title: Lazy range reads for wildcard queries
+  status: shipped
+  since: v0.87.0
+  area: storage
+  surfaces: [storage]
+  tests:
+    - internal/storage/parquets3/range_reader_test.go#TestShouldUseWildcardRangeRead
+    - lakehouse-traces/internal/storage/parquets3/range_reader_test.go#TestShouldUseWildcardRangeRead
+    - internal/storage/parquets3/range_reader_test.go#TestShouldUseRangeRead
+  docs:
+    - docs/read-path.md
+    - docs/architecture/metadata-and-s3-optimization.md
+  highlight: >-
+    **Wildcard range reads**: a wildcard query over large files opens them through a lazy S3 ReaderAt instead of downloading each file whole, bounding heap to the working row-group set rather than cumulative file bytes.
+  description: >-
+    Buffered full downloads made wildcard scans scale with worker count times file size. Above a
+    size threshold the reader switches to reading row groups through a range-reading ReaderAt, so
+    peak memory follows the working set instead of the fleet's concurrency.
+
+- id: lh.feature.storage.row_group_geometry
+  title: Row-group geometry and statistics pruning
+  status: shipped
+  since: v0.8.0
+  area: storage
+  surfaces: [storage, flag]
+  tests:
+    - internal/storage/parquets3/rg_skip_test.go
+    - internal/storage/parquets3/row_group_time_range_test.go
+    - internal/storage/parquets3/page_aggregate_bounds_test.go
+    - internal/config/rowgroup_schedule_test.go
+    - internal/storage/parquets3/filter_pushdown_test.go
+  docs:
+    - docs/read-path.md#level-4-row-group-timestamp-pruning
+    - docs/open-parquet-format.md
+  highlight: >-
+    **Row-group pruning**: min/max statistics and the page index skip row groups and pages before any decode, with row-group size scheduled by the age and level of the data.
+  description: >-
+    Files are written with a row-group geometry chosen for the access pattern, and reads use the
+    standard Parquet statistics and page index to skip everything the predicate excludes. Both
+    sides are tested, including the out-of-order page-bound cases that first exposed the
+    aggregation bug behind them.
+
+- id: lh.feature.storage.zstd_compression
+  title: ZSTD compression tuning by age
+  status: shipped
+  since: v0.85.0
+  area: storage
+  surfaces: [storage, flag]
+  tests:
+    - internal/storage/parquets3/writer_test.go#TestWriteLogsParquet_CompressionLevels
+    - internal/compaction/ttl_compression_test.go
+    - internal/config/config_test.go#TestCompressionLevelForOutput_GlobalSchedule
+    - internal/storage/parquets3/writer_realdata_bench_test.go#TestRealDataCompressionBenchmark
+  docs:
+    - docs/zstd-compression-benchmark.md
+    - docs/open-parquet-format.md
+  highlight: >-
+    **Age-aware compression**: compression level steps up as data ages and is compacted, so recent data stays cheap to write while archives get the ratio — measured on real e2e data, not guessed.
+  description: >-
+    Ingest writes at a level chosen for throughput; each compaction level re-encodes at a higher
+    level. The schedule is configurable, and the repo carries the measured benchmark that chose
+    the defaults.
+
+- id: lh.feature.storage.retention
+  title: Retention enforcement
+  status: shipped
+  since: v0.9.0
+  area: storage
+  surfaces: [flag, storage]
+  tests:
+    - internal/retention/retention_test.go
+    - internal/retention/coverage_hardening_test.go
+    - tests/e2e/smoke_components_test.go#TestSmoke_Retention_ConfigLoaded
+  docs:
+    - docs/configuration.md
+    - docs/deletion-strategy.md
+  highlight: >-
+    **Retention**: aged partitions are removed on a schedule, per fleet or per tenant, with the manifest and metadata updated in the same pass.
+  description: >-
+    Retention deletes what is past its window and keeps the manifest honest about it. Per-tenant
+    retention overrides shadow the global window so one tenant's compliance requirement does not
+    dictate the fleet's.
+
+- id: lh.feature.storage.lifecycle_tiering
+  title: S3 storage-class lifecycle tiering
+  status: shipped
+  since: v0.49.0
+  area: storage
+  surfaces: [storage, flag]
+  tests:
+    - internal/delete/storageclass_test.go#TestDetector
+    - internal/stats/storageclass_test.go
+    - internal/storage/parquets3/tier_transition_test.go
+  docs:
+    - docs/deletion-strategy.md
+    - docs/tenant-stats.md
+  highlight: >-
+    **Storage-class tiering**: aged, compacted objects transition to cheaper S3 classes, and the storage-class detector keeps cost estimates and delete decisions aware of where each object actually lives.
+  description: >-
+    Because compaction produces large immutable objects, they are exactly what lifecycle
+    transitions want. The detector predicts an object's class from the lifecycle rules at zero
+    API cost, with HeadObject sampling and optional S3 Inventory import when exactness matters.

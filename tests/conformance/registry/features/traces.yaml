@@ -1,0 +1,183 @@
+# Traces features: what lakehouse-traces adds on top of the upstream
+# VictoriaTraces Jaeger/Tempo surfaces when the data lives in cold Parquet.
+
+- id: lh.feature.traces.storage_adapter
+  title: VictoriaTraces storage adapter
+  status: shipped
+  since: v0.18.2
+  area: traces
+  surfaces: [storage]
+  tests:
+    - lakehouse-traces/internal/vtstorage_adapter/adapter_test.go#TestInterfaceCompliance
+    - lakehouse-traces/internal/vtstorage_adapter/adapter_test.go#TestRunQuery_DelegatesToStorage
+    - lakehouse-traces/internal/vtstorage_adapter/adapter_coverage_test.go#TestInit_InstallsExternalStorage
+    - lakehouse-traces/internal/vtstorage_adapter/adapter_race_test.go#TestRace_MixedHitMiss_ConcurrentQueries
+    - lakehouse-traces/internal/vtstorage_adapter/adapter_stress_test.go#TestStress_AdapterRunQuery_HighConcurrency
+  docs:
+    - docs/storage-flow.md
+    - docs/read-path.md
+  highlight: >-
+    **VT storage adapter**: the upstream VictoriaTraces handlers run unmodified against Parquet on S3 — Lakehouse implements VT's external-storage interface instead of re-implementing its APIs.
+  description: >-
+    Everything VT serves — Jaeger, Tempo, TraceQL, the service-graph task — goes through its own
+    storage interface. Implementing that interface is the entire integration, which is why cold
+    traces behave like hot traces rather than like a lookalike API.
+
+- id: lh.feature.traces.jaeger_api
+  title: Cold-tier Jaeger API
+  status: shipped
+  since: v0.18.2
+  area: traces
+  surfaces: [api]
+  rows: [vt.jaeger.services.bare_shim, vt.jaeger.traces_search.bare_shim]
+  tests:
+    - tests/e2e/traces_jaeger_test.go#TestJaeger_Search
+    - tests/e2e/traces_jaeger_test.go#TestJaeger_Services
+    - tests/parity/coldhot_endpoint_parity_test.go#TestParity_Jaeger_Services_NonEmpty
+    - tests/e2e/endpoints_verification_test.go#TestEndpoint_Traces_Jaeger_SearchTraces
+    - tests/verification/probe_jaeger_search_24h.sh
+  docs:
+    - docs/parity-and-gaps.md
+    - docs/docker-compose-setup.md
+  highlight: >-
+    **Jaeger API on cold data**: trace search, services, operations and dependencies answer from Parquet through VT's own Jaeger handlers, so Grafana's Jaeger datasource works against the archive unchanged.
+  description: >-
+    The Jaeger surface is the one Grafana and the Jaeger UI speak, and it is served by upstream
+    code reading cold storage. Parity tests compare cold answers against the hot tier on the same
+    seed rather than merely asserting HTTP 200. Lakehouse additionally serves the bare `/api/...`
+    Jaeger paths, which upstream VictoriaTraces exposes only under `/select/jaeger/` — a declared
+    shim rather than accidental drift.
+
+- id: lh.feature.traces.tempo_api
+  title: Cold-tier Tempo API and datasources
+  status: shipped
+  since: v0.18.2
+  area: traces
+  surfaces: [api]
+  tests:
+    - tests/parity/coldhot_endpoint_parity_test.go#TestParity_Tempo_TagsScopesIdentical
+    - tests/parity/coldhot_endpoint_parity_test.go#TestParity_Tempo_ServiceNameValuesSuperset
+    - lakehouse-traces/internal/selectapi/handler_test.go#TestRegister_TracesMode_TraceAndSearchPaths
+    - tests/parity/traces_extended_test.go#TestParity_TracesExtended
+    - tests/verification/probe_tempo_search_24h.sh
+  docs:
+    - docs/docker-compose-setup.md
+    - docs/parity-and-gaps.md
+  highlight: >-
+    **Tempo API datasources** for hot (VT disk) and cold (S3 Parquet) tiers, including TraceQL search, tag scopes and tag values.
+  description: >-
+    A Grafana installation can point one Tempo datasource at hot VT and another at the Lakehouse
+    and get the same query language and the same tag vocabulary from both, which is what makes
+    the hot/cold split invisible in dashboards.
+
+- id: lh.feature.traces.trace_index
+  title: Trace index in the Parquet footer
+  status: shipped
+  since: v0.18.2
+  area: traces
+  surfaces: [storage]
+  tests:
+    - internal/traceindex/traceindex_test.go#TestFromMetadata_HitAndMiss
+    - internal/traceindex/traceindex_test.go#TestMarshalUnmarshal_Roundtrip
+    - lakehouse-traces/internal/storage/parquets3/trace_index_lookup_test.go#TestFindTraceIDInFooterMeta_Hit
+    - lakehouse-traces/internal/storage/parquets3/trace_index_lookup_integration_test.go#TestLookupTraceIndex_AggregatesAcrossFiles
+    - internal/traceindex/traceindex_fuzz_test.go#FuzzUnmarshalIndex
+  docs:
+    - docs/read-path.md
+    - docs/open-parquet-format.md
+  highlight: >-
+    **Trace index in Parquet metadata** for fast `trace_id` lookups: a compact per-file index rides in the standard footer key-value area, so a trace-by-id lookup skips files without reading them and without a proprietary sidecar.
+  description: >-
+    Replacing VT's internal high-cardinality index rows with a footer index keeps cold files
+    plain Parquet while still answering the trace UX's most important query — "show me this
+    trace" — in one or two reads. The decoder is fuzzed, because a corrupt footer must degrade to
+    a miss, never to a panic.
+
+- id: lh.feature.traces.trace_by_id_fastpath
+  title: Trace-by-id fast path and Loki-to-Tempo drilldown
+  status: shipped
+  since: v0.37.3
+  area: traces
+  surfaces: [api, storage]
+  tests:
+    - lakehouse-traces/internal/vtstorage_adapter/trace_index_fastpath_test.go#TestAdapter_TraceIndexFastpath_Hit
+    - lakehouse-traces/internal/vtstorage_adapter/trace_index_fastpath_test.go#TestAdapter_TraceIndexFastpath_MissFallsThrough
+    - tests/parity/traces_parity_test.go#TestParity_Traces_ColdHot_RecentTraceID
+    - tests/parity/coldhot_endpoint_parity_test.go#TestParity_Jaeger_TraceByID_Roundtrip
+    - tests/e2e/traces_jaeger_test.go#TestJaeger_TraceDetail
+  docs:
+    - docs/read-path.md
+    - docs/performance-machinery.md
+  changelog: ["0.37.3"]
+  changelog_bullets:
+    - 'VictoriaTraces parity milestone — cold-tier Tempo `/api/v2/traces/<id>` fast path + Loki → Tempo drilldown (PR #105)'
+  bench: [trace_by_id]
+  highlight: >-
+    **Trace-by-id fast path**: `/api/v2/traces/<id>` on cold data resolves through the footer trace index before any scan, closing the trace-by-ID gap with hot VictoriaTraces and making the Loki → Tempo drilldown work end to end.
+  description: >-
+    The point lookup that matters most for trace UX was the widest gap against hot VT. The fast
+    path consults the trace index, falls through to the normal path on a miss, and is pinned by
+    cold-vs-hot parity tests on a trace ingested in the same run.
+
+- id: lh.feature.traces.service_graph
+  title: Service graph from cold storage
+  status: shipped
+  since: v0.49.0
+  area: traces
+  surfaces: [api, ingest]
+  tests:
+    - tests/e2e/service_graph_test.go#TestServiceGraph_ColdTierGeneratesEdges
+    - tests/parity/servicegraph_parity_test.go#TestServiceGraphParity_DependenciesAPI
+    - tests/parity/servicegraph_parity_test.go#TestServiceGraphParity_JoinPipeWorksOnCold
+    - tests/e2e/golden_test.go#TestGolden_Traces_JaegerDependencies
+    - tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope
+  docs:
+    - docs/parity-and-gaps.md
+  highlight: >-
+    **Service graph on cold data**: VT's own service-graph task runs against Parquet, persisting edges as ordinary rows, so Grafana's Jaeger Dependencies view works from the archive with no new aggregation engine.
+  description: >-
+    The edges are produced by upstream code reading cold storage through the adapter and written
+    back through the normal writer, which means no second storage format and no reimplementation.
+    Tenant scoping is asserted, so one tenant's graph never includes another's edges.
+
+- id: lh.feature.traces.tempo_search_shim
+  title: Tempo search parameter shim
+  status: shipped
+  since: v0.37.3
+  area: traces
+  surfaces: [api]
+  rows: [lh.shim.tempo_search_empty_q, lh.shim.time_params_ms]
+  tests:
+    - lakehouse-traces/internal/selectapi/handler_test.go#TestNormalizeTempoSearchParams
+    - lakehouse-traces/internal/selectapi/handler_test.go#TestTempoTagsToTraceQL
+    - lakehouse-traces/internal/selectapi/handler_test.go#TestNormalizeTimeParams
+  docs:
+    - docs/parity-and-gaps.md
+  highlight: >-
+    **Tempo search shim**: Grafana's tag-style search parameters and its millisecond time units are normalized into the TraceQL and nanosecond forms the engine expects, so the Tempo explore UI works without asking users to change their queries.
+  description: >-
+    Grafana sends searches that upstream VT would reject or interpret differently — an empty `q`,
+    scope-prefixed tags, millisecond `start`/`end`. The shim's exact divergences are declared as
+    registry rows so they are documented behavior, not accidental drift.
+
+- id: lh.feature.traces.vt_internal_rows
+  title: VT-internal index rows handled at insert
+  status: shipped
+  since: v0.37.3
+  area: traces
+  surfaces: [ingest]
+  tests:
+    - lakehouse-traces/internal/vlstorage/insert_test.go#TestVTInsertAdapter_DropsTraceIDIndexRow
+    - lakehouse-traces/internal/vlstorage/insert_test.go#TestVTInsertAdapter_KeepsServiceGraphRow
+    - internal/stats/parity_internal_test.go#TestParity_VTInternalDropped_AccountedInExpectedDrift
+    - internal/storage/parquets3/drop_trace_shaped_rows_test.go#TestDropTraceShapedRows_DropsTraceStreams
+    - internal/storage/streamshape_test.go#TestIsTraceShapedStream
+  docs:
+    - docs/parity-and-gaps.md
+  highlight: >-
+    **VT-internal rows are handled deliberately**: high-cardinality `trace_id_idx` index rows are dropped at insert (the footer trace index replaces them) while low-cardinality service-graph rows are kept — and every dropped row is counted so the discrepancy is visible in the parity endpoint.
+  description: >-
+    VT's ingest pipeline emits internal rows alongside spans. Storing them as cold spans would
+    create degenerate rows with empty `trace_id`; dropping them silently would make row counts
+    disagree with hot VT for unexplained reasons. They are classified, counted per kind, and
+    subtracted from expected parity drift.

@@ -1,0 +1,165 @@
+# UI features: the built-in Lakehouse Explorer and the tabs it adds to VMUI.
+
+- id: lh.feature.ui.explorer
+  title: Lakehouse Explorer UI
+  status: shipped
+  since: v0.49.0
+  area: ui
+  readme_section: Tenant Stats & Storage Metrics
+  surfaces: [ui]
+  rows: [lh.ui.page.status, lh.ui.lakehouse.status]
+  tests:
+    - internal/ui/ui_test.go
+    - internal/ui/guards_test.go
+    - internal/ui/nostore_test.go
+  docs:
+    - docs/lakehouse-explorer.md
+  highlight: >-
+    **Lakehouse Explorer UI**: built-in Preact+uPlot dashboard with Storage Overview, Tenants, and Cardinality Explorer tabs. Injected into VL/VT VMUI as optional tab (zero upstream modifications).
+  description: >-
+    The UI ships inside the binary and needs no Grafana, no datasource and no separate deployment
+    to answer "what is in this lakehouse, for whom, and what does it cost". It is served from
+    `/lakehouse/ui` and is deliberately small — a couple of dependencies, no build-time coupling
+    to upstream.
+
+- id: lh.feature.ui.vmui_tab
+  title: VMUI tab injection with state persistence
+  status: shipped
+  since: v0.100.0
+  area: ui
+  surfaces: [ui]
+  tests:
+    - internal/ui/vmui_inject_test.go
+    - internal/ui/vmui_inject_regression_test.go
+    - internal/ui/guards_test.go
+  docs:
+    - docs/lakehouse-explorer.md
+  changelog: ["0.100.0"]
+  changelog_bullets:
+    - 'vmui Lakehouse tab and sub-tab persistence.'
+  highlight: >-
+    **VMUI tab injection**: the Lakehouse tab appears inside the upstream VMUI with zero upstream modification, and both the tab and its sub-tab survive reloads and navigation.
+  description: >-
+    Injection happens at serve time over the upstream assets, so upgrading VL or VT never
+    conflicts with a patched UI bundle. Remembering the selected sub-tab is what makes the tab
+    usable during an investigation rather than resetting on every reload.
+
+- id: lh.feature.ui.storage_overview
+  title: Storage Overview tiles
+  status: shipped
+  since: v0.100.0
+  area: ui
+  surfaces: [ui, api]
+  tests:
+    - internal/stats/api_regression_test.go
+    - internal/stats/api_overlay_test.go
+    - tests/e2e/stats_metadata_test.go#TestStatsOverviewMetadata
+    - tests/e2e/tenant_stats_consistency_test.go#TestTenantUI_RendersCompressionAndRawBytesFields
+  docs:
+    - docs/lakehouse-explorer.md
+    - docs/tenant-stats.md
+  changelog: ["0.100.0"]
+  changelog_bullets:
+    - 'Enriched Storage Overview tiles'
+    - 'Storage Overview metadata footprint (Phase B).'
+    - 'Storage Overview surfaces retention.'
+  highlight: >-
+    **Storage Overview**: tier sizes, object counts, compression, the metadata footprint and the effective retention, on one screen backed by the same facets the APIs serve.
+  description: >-
+    The overview answers the first questions an operator has — how much is stored, how well it
+    compresses, how much of it is metadata, how long it is kept — from computed facets rather
+    than sampled estimates.
+
+- id: lh.feature.ui.storage_breakdown
+  title: Searchable storage breakdown
+  status: shipped
+  since: v0.100.0
+  area: ui
+  surfaces: [ui]
+  tests:
+    - internal/stats/api_tenant_breakdown_test.go
+    - tests/e2e/tenant_ui_breakdown_test.go#TestTenantAPI_BreakdownEndpointGroupsByTenant
+  docs:
+    - docs/lakehouse-explorer.md
+  changelog: ["0.100.0"]
+  changelog_bullets:
+    - 'Searchable, extensible Storage Breakdown'
+    - 'Storage Breakdown selection is remembered and fully editable.'
+  highlight: >-
+    **Storage Breakdown**: group storage by tenant or any other facet, search within it, edit the selection, and have that selection remembered between visits.
+  description: >-
+    The breakdown is the drill-down half of the overview. Making the grouping extensible and the
+    selection editable and persistent turns it from a fixed report into the view an operator
+    actually keeps open.
+
+- id: lh.feature.ui.cardinality_explorer
+  title: Cardinality Explorer
+  status: shipped
+  since: v0.100.0
+  area: ui
+  surfaces: [ui, api]
+  rows: [lh.cardinality.fields.schema]
+  tests:
+    - internal/stats/pmeta_cardinality_test.go
+    - internal/pmeta/field_cardinality_test.go
+    - internal/stats/api_fields_test.go
+    - tests/e2e/stats_metadata_test.go#TestCardinalityStorageBytes
+  docs:
+    - docs/lakehouse-explorer.md
+    - docs/tenant-stats.md
+  changelog: ["0.100.0"]
+  changelog_bullets:
+    - 'Accurate Cardinality Explorer backed by durable pmeta state.'
+    - 'Cardinality Explorer distinguishes "not indexed" from zero.'
+    - 'Promoted id columns get real, durable cardinality (`container.id`, `service.instance.id`).'
+    - 'Per-field on-S3 storage size in the Cardinality Explorer (Phase A).'
+  highlight: >-
+    **Cardinality Explorer**: per-field distinct-value counts backed by durable sketches in partition metadata, with on-S3 bytes per field, and an explicit "not indexed" state that is never rendered as zero.
+  description: >-
+    Cardinality is what drives storage cost and query cost, so the numbers must survive restarts
+    and must not lie. The counts come from sketches persisted in the partition bundle, promoted id
+    columns carry real cardinality, and a field nobody indexed says so instead of reporting zero
+    distinct values.
+
+- id: lh.feature.ui.storage_details
+  title: Per-field storage and metadata table
+  status: shipped
+  since: v0.100.0
+  area: ui
+  surfaces: [ui, api]
+  tests:
+    - internal/stats/api_fields_test.go
+    - internal/pmeta/metadata_bytes_by_field_test.go
+    - internal/stats/api_regression_test.go
+  docs:
+    - docs/lakehouse-explorer.md
+    - docs/tenant-stats.md
+  changelog: ["0.100.0"]
+  changelog_bullets:
+    - 'Storage Details → per-field storage + metadata table (Phase C).'
+  highlight: >-
+    **Storage Details**: a per-field table of data bytes and metadata bytes on S3, so the cost of a field is a number rather than an intuition.
+  description: >-
+    Deciding whether to keep, promote or drop a field needs its actual cost. The table shows both
+    halves — the column bytes and the metadata the field forces into every partition bundle.
+
+- id: lh.feature.ui.fleet_instances
+  title: Per-instance fleet breakdown
+  status: shipped
+  since: v0.100.0
+  area: ui
+  surfaces: [ui, api]
+  tests:
+    - internal/stats/api_test.go
+    - internal/stats/sync_test.go
+  docs:
+    - docs/lakehouse-explorer.md
+    - docs/tenant-stats.md
+  changelog: ["0.100.0"]
+  changelog_bullets:
+    - 'Per-instance fleet metadata breakdown (Phase D).'
+  highlight: >-
+    **Fleet view**: metadata footprint and activity per instance, so an uneven fleet — one pod holding far more metadata than its peers — is visible before it becomes an incident.
+  description: >-
+    Aggregates hide skew. Breaking the same facets down per instance shows whether ownership,
+    warmup or cache residency is distributed the way the ring says it should be.

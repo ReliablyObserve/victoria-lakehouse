@@ -1,0 +1,323 @@
+# Query features: how a LogsQL/TraceQL query reaches cold Parquet and what
+# it is allowed to cost on the way.
+
+- id: lh.feature.query.hot_boundary_autodiscovery
+  title: Automatic hot/cold boundary discovery
+  status: shipped
+  since: v0.9.0
+  area: query
+  readme_section: Read Path
+  surfaces: [api, flag]
+  tests:
+    - internal/discovery/discovery_test.go#TestPollPartitionList
+    - internal/discovery/discovery_test.go#TestGetHotBoundary
+    - internal/storage/parquets3/storage_query_test.go#TestRunQuery_HotBoundary_InsertRoleSuppresses
+    - internal/discovery/discovery_coverage_test.go
+  docs:
+    - docs/read-path.md
+    - docs/configuration.md
+  highlight: >-
+    **Auto-discovery of hot boundary** via `/internal/partition/list` on vlstorage/vtstorage. Zero manual config.
+  description: >-
+    Lakehouse asks the hot tier which partitions it still holds and serves only what lies below
+    that boundary, so hot and cold never double-answer and no operator has to keep a retention
+    constant in two places. The boundary moves on its own as hot retention rolls.
+
+- id: lh.feature.query.logsql_filter_eval
+  title: LogsQL filter evaluation on cold rows
+  status: shipped
+  since: v0.18.1
+  area: query
+  readme_section: Read Path
+  surfaces: [storage]
+  tests:
+    - internal/storage/parquets3/filter_test.go
+    - lakehouse-traces/internal/storage/parquets3/filter_test.go
+    - lakehouse-traces/internal/storage/parquets3/filter_parity_test.go
+    - internal/storage/parquets3/free_text_filter_test.go
+    - lakehouse-traces/internal/storage/parquets3/filter_fuzz_test.go
+  docs:
+    - docs/storage-flow.md
+    - docs/read-path.md
+  changelog: ["0.18.1"]
+  changelog_bullets:
+    - 'LogsQL filter evaluation'
+  bench: [level_filter, multi_filter, negation, fulltext]
+  highlight: >-
+    **LogsQL filter evaluation**: field matchers (exact, substring, regex, NOT) are applied post-scan to filter DataBlock rows at the storage layer.
+  description: >-
+    Filters that Parquet statistics cannot decide are evaluated on the decoded rows before they
+    are handed to the engine, so cold results match what the hot engine would have returned.
+    Parity and fuzz tests compare the cold evaluator against the upstream semantics.
+
+- id: lh.feature.query.max_rows
+  title: Per-query row cap
+  status: shipped
+  since: v0.18.1
+  area: query
+  readme_section: Read Path
+  surfaces: [flag]
+  tests:
+    - internal/storage/parquets3/runtime_acquire_wiring_test.go#TestQueryMaxRows_BoundEnforced
+    - internal/storage/parquets3/runtime_acquire_wiring_test.go#TestQueryMaxRows_BoundReleases
+    - internal/storage/parquets3/coverage_integration_test.go#TestInteg_RunQuery_MaxRows
+    - internal/storage/parquets3/coverage_s3_paths_test.go#TestInteg_RunQuery_MaxRowsLimit
+  docs:
+    - docs/configuration.md
+    - docs/read-path.md
+  changelog: ["0.18.1"]
+  changelog_bullets:
+    - 'max_rows enforcement'
+  highlight: >-
+    **max_rows enforcement**: `query.max_rows` (default 10M) caps emitted rows per query, preventing unbounded cold-query resource usage.
+  description: >-
+    A cold query can address far more data than a hot one, so an unbounded scan is a
+    availability risk rather than a slow answer. The cap is enforced where rows are emitted and
+    releases its budget on every exit path.
+
+- id: lh.feature.query.memory_budget
+  title: Per-query live-memory budget
+  status: shipped
+  since: v0.49.0
+  area: query
+  surfaces: [flag]
+  tests:
+    - internal/storage/parquets3/query_memory_budget_test.go
+    - lakehouse-traces/internal/storage/parquets3/query_memory_budget_test.go
+    - internal/storage/parquets3/query_limits_test.go
+    - lakehouse-traces/internal/storage/parquets3/query_limits_test.go
+  docs:
+    - docs/performance-machinery.md
+    - docs/configuration.md
+  highlight: >-
+    **Query memory budget**: `-lakehouse.query.max-live-bytes` bounds the live DataBlock bytes one query may hold, and cancels the query rather than the process when the budget trips.
+  description: >-
+    Cold queries hold decoded row groups in memory while they stream results. The budget makes
+    that bounded and observable: a query that would exceed it is cancelled with a counted
+    reason, instead of pushing the pod into an OOM kill that takes every other query with it.
+
+- id: lh.feature.query.resource_bounds
+  title: K8s-style resource bounds for query surfaces
+  status: shipped
+  since: v0.37.3
+  area: query
+  surfaces: [flag]
+  tests:
+    - internal/resourcebounds/bounds_test.go
+    - internal/resourcebounds/policy_test.go
+    - internal/resourcebounds/metrics_test.go
+    - internal/storage/parquets3/resourcebound_wiring_test.go
+    - lakehouse-traces/internal/storage/parquets3/resourcebound_wiring_test.go
+  docs:
+    - docs/performance-machinery.md
+    - docs/configuration.md
+  changelog: ["0.37.3"]
+  changelog_bullets:
+    - 'Runtime `Acquire` wiring for 4 resource-bound surfaces'
+  highlight: >-
+    **Resource bounds**: S3 downloads, query file workers, cache memory, smart-cache disk and per-query rows each carry a Kubernetes-style request/limit pair with per-surface admission metrics.
+  description: >-
+    One primitive governs every bounded surface: a reserved request, a hard limit, a per-holder
+    count cap and a scaling policy, with acquire/reject/outstanding metrics per surface. Legacy
+    outlier semantics are preserved so a single oversized Parquet file is still processable when
+    the pool is empty.
+
+- id: lh.feature.query.parallel_file_workers
+  title: Bounded parallel file workers
+  status: shipped
+  since: v0.18.1
+  area: query
+  readme_section: Read Path
+  surfaces: [flag]
+  tests:
+    - internal/storage/parquets3/worker_cap_test.go
+    - internal/storage/parquets3/query_memory_budget_test.go#TestAcquireFileBudget_BoundsConcurrency
+    - internal/storage/parquets3/query_memory_budget_test.go#TestAcquireRGDecode_BoundsConcurrency
+    - lakehouse-traces/internal/storage/parquets3/query_memory_budget_test.go#TestAcquireRGDecode_BoundsConcurrency
+  docs:
+    - docs/storage-flow.md
+    - docs/performance.md
+  changelog: ["0.18.1"]
+  changelog_bullets:
+    - 'Parallel query file workers'
+  highlight: >-
+    **Parallel file workers**: configurable bounded worker pool for concurrent Parquet file processing (default 8 workers).
+  description: >-
+    Cold queries are dominated by per-file latency, so files are processed concurrently — but
+    from a bounded pool, because unbounded fan-out turns an object-store latency problem into a
+    memory problem.
+
+- id: lh.feature.query.count_pushdown
+  title: Count and grouped-count pushdown to metadata
+  status: shipped
+  since: v0.59.0
+  area: query
+  surfaces: [storage]
+  tests:
+    - internal/storage/parquets3/count_pushdown_test.go
+    - internal/storage/parquets3/filtered_count_pushdown_test.go
+    - internal/manifest/count_by_label_test.go
+  docs:
+    - docs/query-performance-optimization.md
+    - docs/read-path.md
+  changelog: ["0.59.0"]
+  changelog_bullets:
+    - 'PERF-2 — manifest count-pushdown for `stats by (field) count()` (logs + traces).'
+  bench: [count_total, count_by_service, high_card]
+  highlight: >-
+    **Count pushdown**: `count()`, `count() by (field)` and single-field filtered counts are answered from partition metadata with near-zero S3 reads.
+  description: >-
+    The metadata already knows how many rows each file holds and how they distribute across a
+    field's values, so the common dashboard aggregations never open a Parquet file. Measured at
+    100 ms injected object-store latency, this is where the cold tier beats ClickHouse-over-S3
+    outright.
+
+- id: lh.feature.query.column_projection
+  title: Column projection
+  status: shipped
+  since: v0.18.1
+  area: query
+  surfaces: [storage]
+  tests:
+    - internal/storage/parquets3/projection_test.go
+    - internal/storage/parquets3/reader_projected_test.go
+    - lakehouse-traces/internal/storage/parquets3/projection_test.go
+    - lakehouse-traces/internal/storage/parquets3/reader_projected_test.go
+  docs:
+    - docs/performance.md
+    - docs/read-path.md
+  bench: [scan]
+  highlight: >-
+    **Column projection**: only the columns a query actually reads are fetched and decoded, which is what makes a wide OTel schema affordable over an object store.
+  description: >-
+    The projection is derived from the query's fields, filters and stats, then handed to the
+    reader so the fetch planner can turn it into byte ranges. A `fields`-limited scan pays for
+    those columns and nothing else.
+
+- id: lh.feature.query.gap_redistribution
+  title: Targeted file queries for gap redistribution
+  status: shipped
+  since: v0.18.2
+  area: query
+  surfaces: [api]
+  tests:
+    - internal/storage/parquets3/specific_files_test.go
+    - lakehouse-traces/internal/storage/parquets3/specific_files_test.go
+    - internal/storage/parquets3/coverage_s3_paths_test.go
+  docs:
+    - docs/read-path.md
+    - docs/scaling.md
+  highlight: >-
+    **Targeted file queries**: a select node can be asked for an explicit file set, so coverage gaps can be redistributed across the fleet instead of failing the query.
+  description: >-
+    `QuerySpecificFiles` lets the fan-out layer re-issue exactly the files a node could not
+    serve to a node that can, which keeps a partially warm fleet answering completely.
+
+- id: lh.feature.query.select_overlay
+  title: Cluster select protocol over cold storage
+  status: shipped
+  since: v0.9.0
+  area: query
+  surfaces: [api]
+  rows: [lh.info.schema]
+  tests:
+    - internal/selectapi/handler_test.go
+    - internal/selectapi/coverage_hardening_test.go
+    - lakehouse-traces/internal/selectapi/handler_test.go
+    - tests/e2e/vlselect_multilevel_test.go#TestVLSelect_QueryReturnsData
+    - tests/parity/coldhot_endpoint_parity_test.go#TestParity_LogsQL_FieldNamesSuperset
+  docs:
+    - docs/read-path.md
+    - docs/architecture.md
+  highlight: >-
+    **Native select protocol**: Lakehouse speaks VL/VT's own internal select protocol, so a vlselect/vtselect tier queries it as just another storage node — no bespoke client, no translation layer.
+  description: >-
+    The select API is the upstream one; the Lakehouse difference is what answers it. That is why
+    a multi-level select topology, Grafana datasources and the VMUI all work against the cold
+    tier unchanged.
+
+- id: lh.feature.query.bloom_index
+  title: Multi-tier bloom index
+  status: shipped
+  since: v0.18.2
+  area: query
+  readme_section: Read Path
+  surfaces: [api, storage, flag]
+  rows: [lh.bloom.status.schema]
+  tests:
+    - internal/bloomindex/bloomindex_test.go
+    - internal/bloomindex/bloom_tiering_test.go
+    - internal/bloomindex/cache_test.go
+    - internal/bloomindex/controller_test.go
+    - tests/e2e/bloom_verification_test.go#TestBloomVerify_StatusAPI_FullResponse
+  docs:
+    - docs/bloom-index.md#architecture
+    - docs/bloom-index.md#age-based-tiering
+  bench: [trace_lookup, trace_by_id]
+  highlight: >-
+    **Multi-tier bloom index** on `trace_id` and `service.name` for fast point lookups. Age-based tiering (Hot/Warm/Cold/Archive) with automatic downgrade, LRU cache, auto-tuning controller, and `/api/v1/bloom/status` API. See [Bloom Index](docs/bloom-index.md).
+  description: >-
+    Point lookups over an object store are a file-skipping problem. Blooms answer "this file
+    cannot contain that value" without a read, and their footprint is tiered by age so recent
+    data keeps the most precise filters while archives keep the cheapest.
+
+- id: lh.feature.query.loki_drilldown
+  title: Loki Drilldown hot+cold routing
+  status: shipped
+  since: v0.37.3
+  area: query
+  readme_section: Loki Drilldown Compatibility
+  surfaces: [api]
+  tests:
+    - tests/e2e/loki_proxy_test.go#TestLokiProxy_QueryRange
+    - tests/e2e/loki_proxy_test.go#TestLokiProxy_Labels
+    - tests/e2e/loki_proxy_test.go#TestLokiProxy_LabelValues
+  docs:
+    - docs/docker-compose-setup.md
+    - docs/getting-started.md
+  highlight: >-
+    **loki-vl-proxy hot+cold routing** with automatic time-based query routing: recent queries to VictoriaLogs (hot), older queries to lakehouse (cold), with configurable overlap. Trace-to-logs linking via derived fields lets a trace ID in Grafana jump straight to the correlated logs.
+  description: >-
+    Grafana's Loki Drilldown talks to the proxy, which splits a query by time: the recent part
+    goes to hot VictoriaLogs, the older part to the Lakehouse, with a configurable overlap so
+    the boundary is never a hole. Derived fields carry trace IDs across to the trace datasource.
+
+- id: lh.feature.query.translated_metadata
+  title: Translated metadata mode for Loki clients
+  status: shipped
+  since: v0.37.3
+  area: query
+  readme_section: Loki Drilldown Compatibility
+  surfaces: [api]
+  tests:
+    - tests/e2e/smoke_components_test.go#TestSmoke_LokiProxy_StructuredMetadata
+    - tests/e2e/smoke_components_test.go#TestSmoke_LokiProxy_NoDotsInLabels
+  docs:
+    - docs/docker-compose-setup.md
+    - docs/analytics.md
+  highlight: >-
+    **Translated metadata mode** (`-metadata-field-mode=translated`) and structured metadata emission for full Grafana Loki Drilldown support.
+  description: >-
+    Loki's label model rejects the dotted OTel names Lakehouse stores, so the proxy translates
+    them and emits the rest as structured metadata — which is what makes Drilldown's field
+    browser work against cold data rather than showing an empty label set.
+
+- id: lh.feature.query.live_tail_unsupported
+  title: Live tail answers as documented rather than silently
+  status: shipped
+  since: v0.18.2
+  area: query
+  surfaces: [api]
+  rows: [vl.select.tail.unsupported, vt.select.tail.unsupported]
+  docs:
+    - docs/parity-and-gaps.md
+  highlight: >-
+    **Live tail**: `/select/logsql/tail` is answered with an explicit documented status on the cold tier instead of hanging or returning an empty stream — cold storage is write-once-read-many, so tailing a flushed archive has no meaning.
+  description: >-
+    Upstream's live tail streams from the hot ingestion path. Rather than emulate it badly, the
+    cold tier refuses it explicitly and the refusal is a declared registry row, so the behavior is
+    a documented contract instead of an accident a user discovers in production. Both binaries
+    behave the same way.
+  notes: >-
+    Verified only by declared (pending) registry rows today — it appears in the verification-gap
+    list until the conformance runner executes them.

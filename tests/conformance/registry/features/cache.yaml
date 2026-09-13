@@ -1,0 +1,287 @@
+# Cache features: the four-tier smart cache, what warms it, and the
+# cross-signal hints that warm the other binary's cache.
+
+- id: lh.feature.cache.smart_controller
+  title: Unified four-tier smart cache controller
+  status: shipped
+  since: v0.18.1
+  area: cache
+  readme_section: Smart Cache
+  surfaces: [flag, storage]
+  rows: [lh.internal.cache_stats.schema]
+  tests:
+    - internal/smartcache/controller_test.go
+    - internal/smartcache/controller_coverage_test.go
+    - internal/smartcache/integration_test.go
+    - internal/smartcache/eviction_test.go
+    - internal/smartcache/hardening_test.go
+  docs:
+    - docs/cache-architecture.md
+  changelog: ["0.18.1"]
+  changelog_bullets:
+    - 'Smart cache controller'
+  highlight: >-
+    **Unified cache controller** orchestrating L1 (memory), L2 (disk), L3 (peer), L4 (S3) with per-entry TTL, hot access detection, and singleflight S3 deduplication.
+  description: >-
+    One controller decides where an object comes from and where it is kept: process memory,
+    local disk, a peer's cache, or S3. Concurrent misses for the same object collapse into one
+    S3 fetch, and entries that are read repeatedly are marked hot so eviction leaves them alone.
+
+- id: lh.feature.cache.active_query_pinning
+  title: Active-query pinning
+  status: shipped
+  since: v0.18.1
+  area: cache
+  readme_section: Smart Cache
+  surfaces: [flag]
+  tests:
+    - internal/smartcache/controller_eviction_test.go#TestController_EvictionLoop_PinnedSurvives
+    - internal/smartcache/controller_test.go#TestController_PinUnpin
+    - internal/smartcache/metadata_test.go#TestMetadataMap_PinUnpin
+    - internal/smartcache/hardening_test.go#TestCollectLRU_AllPinned
+    - internal/smartcache/integration_test.go#TestIntegration_GetPinEvict
+  docs:
+    - docs/cache-architecture.md
+    - docs/configuration.md
+  changelog: ["0.18.1"]
+  changelog_bullets:
+    - 'Active query pinning'
+  highlight: >-
+    **Active query pinning**: files used by in-flight queries are pinned in cache with configurable grace period, preventing eviction under load.
+  description: >-
+    Under memory pressure the naive LRU evicts exactly the file a running query is about to read
+    again. Pinning holds a file for the life of the query plus a grace period, so concurrency
+    degrades throughput rather than causing re-downloads of work in progress.
+
+- id: lh.feature.cache.sizing_calculator
+  title: Adaptive cache sizing calculator
+  status: shipped
+  since: v0.18.1
+  area: cache
+  readme_section: Smart Cache
+  surfaces: [flag]
+  tests:
+    - internal/smartcache/sizing_test.go
+    - internal/smartcache/integration_test.go#TestIntegration_SizingCalculator
+    - internal/config/config_smartcache_test.go
+  docs:
+    - docs/cache-architecture.md
+    - docs/performance.md
+  changelog: ["0.18.1"]
+  changelog_bullets:
+    - 'Cache sizing calculator'
+  highlight: >-
+    **Cache sizing calculator**: adaptive budget estimation blending ingestion rate (early) and query pattern analysis (after 12h uptime), with per-node fleet division.
+  description: >-
+    A cold cache has no query history, so the calculator starts from ingestion rate and shifts to
+    observed query patterns once it has enough uptime to know what is actually read, dividing the
+    resulting budget across the fleet.
+
+- id: lh.feature.cache.snapshot_persistence
+  title: Cache snapshot persistence
+  status: shipped
+  since: v0.18.1
+  area: cache
+  readme_section: Smart Cache
+  surfaces: [storage]
+  tests:
+    - internal/smartcache/metadata_test.go#TestSnapshot_SaveLoad
+    - internal/smartcache/hardening_test.go#TestSnapshotVersioning_SaveLoadRoundtrip
+    - internal/smartcache/hardening_test.go#TestSnapshotVersioning_LoadLegacyFormat
+    - internal/smartcache/metadata_test.go#TestMetadataMap_Reconcile
+  docs:
+    - docs/cache-architecture.md
+    - docs/query-performance-optimization.md
+  highlight: >-
+    **Snapshot persistence**: metadata snapshots to disk for fast cache warmup on restart.
+  description: >-
+    The cache's entry metadata is snapshotted and reconciled against what is actually on disk at
+    start, so a restarted pod knows what it still has instead of treating a full disk cache as
+    empty.
+
+- id: lh.feature.cache.peer_cache
+  title: Distributed peer cache
+  status: shipped
+  since: v0.10.0
+  area: cache
+  readme_section: Infrastructure
+  surfaces: [api, flag]
+  tests:
+    - internal/peercache/peercache_test.go
+    - internal/peercache/ring_test.go
+    - internal/peercache/ring_az_test.go
+    - internal/peercache/integration_az_test.go
+    - internal/discovery/discovery_test.go#TestDiscoverPeers
+  docs:
+    - docs/cache-architecture.md
+    - docs/cross-az-optimization.md
+  highlight: >-
+    **Distributed peer cache**: consistent hash routing across fleet instances via headless DNS.
+  description: >-
+    A file cached by any pod is reachable by all of them: a consistent hash ring maps object to
+    owner, so the fleet's aggregate cache is the sum of its nodes rather than N copies of the
+    same working set. Routing prefers same-AZ peers to keep cross-zone transfer off the bill.
+
+- id: lh.feature.cache.write_through
+  title: Write-through caching on flush
+  status: shipped
+  since: v0.18.2
+  area: cache
+  surfaces: [storage]
+  tests:
+    - internal/storage/parquets3/cache_on_flush_test.go
+    - lakehouse-traces/internal/storage/parquets3/cache_on_flush_test.go
+  docs:
+    - docs/cache-architecture.md
+    - docs/storage-flow.md
+  highlight: >-
+    **Write-through cache on flush**: a freshly written Parquet file is placed in cache as it is uploaded, so the first read of new data never goes back to S3 for bytes this pod just had.
+  description: >-
+    The writer already holds the complete file in memory at upload time. Handing it to the cache
+    there removes the S3 round trip that would otherwise serve the very next query over the
+    newest partition.
+
+- id: lh.feature.cache.file_ordering
+  title: Cache-aware file ordering
+  status: shipped
+  since: v0.18.2
+  area: cache
+  surfaces: [storage]
+  tests:
+    - internal/storage/parquets3/cache_order_test.go
+    - lakehouse-traces/internal/storage/parquets3/cache_order_test.go
+  docs:
+    - docs/cache-architecture.md
+    - docs/read-path.md
+  highlight: >-
+    **Cache-aware file ordering**: a query processes the files it already has cached first, so results start streaming while the S3 fetches for the rest are still in flight.
+  description: >-
+    Ordering by cache residency turns the cache from a per-file win into a time-to-first-row win,
+    and lets the slower fetches overlap with useful work instead of blocking it.
+
+- id: lh.feature.cache.prefetch_engine
+  title: Prefetch engine with read-ahead and column popularity
+  status: shipped
+  since: v0.18.1
+  area: cache
+  readme_section: Read Path
+  surfaces: [flag]
+  tests:
+    - internal/prefetch/prefetch_test.go#TestEngine_ReadAheadEnqueue
+    - internal/prefetch/prefetch_crosssignal_test.go#TestPriorityDequeue_CrossSignalBeforeReadAhead
+    - internal/prefetch/prefetch_race_test.go
+    - internal/smartcache/col_popularity_test.go
+  docs:
+    - docs/cache-architecture.md
+    - docs/configuration.md
+  changelog: ["0.18.1"]
+  changelog_bullets:
+    - 'Prefetch engine wiring'
+  highlight: >-
+    **Read-ahead**: sequential time scans prefetch next partitions, with column-popularity tracking deciding which columns are worth warming.
+  description: >-
+    A priority queue carries prefetch work: cross-signal hints first, then read-ahead of the next
+    partitions a sequential scan will reach. Column popularity keeps the prefetcher from warming
+    columns nobody queries.
+
+- id: lh.feature.cache.cross_signal_prefetch
+  title: Cross-signal prefetch between logs and traces
+  status: shipped
+  since: v0.18.1
+  area: cache
+  readme_section: Cross-Signal Prefetch
+  surfaces: [api, flag]
+  tests:
+    - internal/crosssignal/handler_test.go
+    - internal/crosssignal/client_test.go
+    - internal/prefetch/prefetch_crosssignal_test.go
+    - tests/e2e/smoke_components_test.go#TestSmoke_CrossSignal_EndpointExists
+  docs:
+    - docs/cache-architecture.md
+    - docs/configuration.md
+  changelog: ["0.18.1"]
+  changelog_bullets:
+    - 'Cross-signal prefetch'
+  highlight: >-
+    **Bidirectional hints** between `lakehouse-logs` and `lakehouse-traces` deployments: a logs query for `service=checkout` automatically warms trace Parquet for the same time window, and vice versa. The two binaries need not be co-located — hints travel over HTTP (`/internal/prefetch/hint`, `/internal/cache/evict-hint`).
+  description: >-
+    Investigations cross signals: a spike in logs is followed by the traces for the same service
+    and window. Each binary tells the other what is about to be asked for, so the second query
+    reads a warm cache instead of cold S3.
+
+- id: lh.feature.cache.connected_data_eviction
+  title: Connected-data eviction
+  status: shipped
+  since: v0.18.1
+  area: cache
+  readme_section: Cross-Signal Prefetch
+  surfaces: [api]
+  tests:
+    - internal/crosssignal/handler_test.go#TestEvictHintHandler_ValidRequest
+    - internal/smartcache/controller_eviction_test.go#TestController_DeprioritizeByTraceIDs
+    - internal/smartcache/integration_test.go#TestIntegration_TraceIDRecordAndDeprioritize
+    - internal/crosssignal/client_test.go#TestClient_SendEvictionHint
+    - internal/smartcache/hardening_test.go#TestFindFilesByTraceID
+  docs:
+    - docs/cache-architecture.md
+    - docs/configuration.md
+  changelog: ["0.18.1"]
+  changelog_bullets:
+    - 'Connected data eviction'
+  highlight: >-
+    **Connected data eviction**: when trace cache entries are evicted, correlated log entries are deprioritized.
+  description: >-
+    Correlation works in both directions: if the traces for a window are no longer worth keeping,
+    the logs that correlate with them are unlikely to be asked for either, so they lose priority
+    instead of holding cache against fresher data.
+
+- id: lh.feature.cache.hint_batching
+  title: Cross-signal hint batching
+  status: shipped
+  since: v0.18.1
+  area: cache
+  readme_section: Cross-Signal Prefetch
+  surfaces: [flag]
+  tests:
+    - internal/crosssignal/client_test.go#TestClient_BatchAccumulation
+    - internal/crosssignal/client_test.go#TestClient_MaxBatchFlush
+    - internal/crosssignal/client_test.go#TestClient_CloseFlushesRemaining
+    - internal/crosssignal/memleak_test.go
+  docs:
+    - docs/cache-architecture.md
+    - docs/configuration.md
+  changelog: ["0.18.1"]
+  changelog_bullets:
+    - 'Hint batching'
+  highlight: >-
+    **Hint batching**: trace ID hints are accumulated and flushed on interval or batch size threshold, reducing HTTP overhead.
+  description: >-
+    A query can produce thousands of trace IDs; sending one request each would cost more than the
+    prefetch saves. Hints accumulate and flush on a size or time threshold, and the remainder is
+    flushed on shutdown so nothing is silently dropped.
+
+- id: lh.feature.cache.metrics
+  title: Smart cache and cross-signal metrics
+  status: shipped
+  since: v0.18.1
+  area: cache
+  readme_section: Smart Cache
+  surfaces: [api]
+  tests:
+    - internal/metrics/lakehouse_smartcache_test.go
+    - tests/e2e/metrics_verification_test.go#TestMetrics_Cache_HitRatioAndMemory
+    - tests/e2e/metrics_verification_test.go#TestMetrics_Cache_SingleflightDedup
+    - tests/e2e/metrics_verification_test.go#TestMetrics_Peer_AllExist
+  docs:
+    - docs/observability.md
+    - docs/cache-architecture.md
+  changelog: ["0.18.1"]
+  changelog_bullets:
+    - 'Smart cache metrics'
+    - 'Cross-signal metrics'
+  highlight: >-
+    **15 Prometheus metrics**: hit ratio, entries, bytes used/limit, evictions by reason, hot/pinned entries, coverage hours, prefetch hit ratio.
+  description: >-
+    Cache behavior is only tunable if it is visible: hit ratio per tier, eviction reasons, how
+    many hours of data the cache covers, and whether cross-signal prefetch is actually landing
+    hits — all exported and asserted by live e2e metric checks.

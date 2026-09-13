@@ -1,0 +1,111 @@
+# Observability features: what Lakehouse reports about itself.
+
+- id: lh.feature.observability.metrics
+  title: Prometheus metrics instrumentation
+  status: shipped
+  since: v0.9.0
+  area: observability
+  surfaces: [api]
+  tests:
+    - internal/metrics/metrics_test.go
+    - internal/metrics/verify_test.go
+    - internal/metrics/metrics_coverage_test.go
+    - tests/e2e/metrics_verification_test.go#TestMetrics_HTTP_RequestsTotal
+    - tests/e2e/metrics_verification_test.go#TestMetrics_S3_RequestsTotal
+  docs:
+    - docs/observability.md
+  changelog: ["0.9.0", "0.10.0"]
+  changelog_bullets:
+    - 'Prometheus metrics instrumentation'
+    - 'Compaction metrics'
+    - 'Election metrics'
+    - 'Manifest push metrics'
+  highlight: >-
+    **Prometheus metrics**: around 150 series covering ingest, query, S3 operations, cache tiers, compaction, peers, tenants and lifecycle — asserted live against a running stack, not just declared in code.
+  description: >-
+    Every subsystem that can fail slowly exports counters and gauges for it, and the e2e suite
+    scrapes a live stack to assert the important families actually appear with non-zero values —
+    the check that catches an instrumented code path that stopped being reached.
+
+- id: lh.feature.observability.dashboards
+  title: Grafana dashboards
+  status: shipped
+  since: v0.9.0
+  area: observability
+  surfaces: [ui]
+  tests:
+    - internal/metrics/assets_test.go#TestDashboards_ParseAndHavePanels
+  docs:
+    - docs/observability.md
+  changelog: ["0.9.0"]
+  changelog_bullets:
+    - 'Grafana dashboards'
+  highlight: >-
+    **Grafana dashboards** shipped in `dashboards/`: cluster, per-tenant and single-instance views built on the exported metrics.
+  description: >-
+    The dashboards are deployable artifacts, not screenshots in a doc: they are imported as they
+    are, and a structural test keeps a malformed or empty dashboard from shipping.
+
+- id: lh.feature.observability.alerts
+  title: Prometheus alerting rules
+  status: shipped
+  since: v0.9.0
+  area: observability
+  surfaces: [ui]
+  tests:
+    - internal/metrics/assets_test.go#TestAlertRules_ParseAndHaveExpressions
+  docs:
+    - docs/observability.md
+  changelog: ["0.9.0"]
+  changelog_bullets:
+    - 'Alerting rules'
+  highlight: >-
+    **Alerting rules** shipped in `alerts/`: the conditions that mean this deployment is degrading — S3 failures, flush backlog, cache collapse, compaction falling behind.
+  description: >-
+    The rules encode the operational knowledge of what "unhealthy" means for a cold tier, where
+    slow degradation is more common than a hard outage. A structural test asserts every rule has
+    a name and an expression so a broken rule file cannot ship silently.
+
+- id: lh.feature.observability.parity_endpoint
+  title: VL-vs-manifest parity endpoint
+  status: shipped
+  since: v0.49.0
+  area: observability
+  readme_section: Multi-Tenancy
+  surfaces: [api]
+  rows: [lh.admin.parity.schema]
+  tests:
+    - internal/stats/parity_test.go
+    - internal/stats/parity_internal_test.go
+    - tests/e2e/tenant_parity_test.go#TestParity_VLViewVsManifest
+    - tests/e2e/tenant_parity_test.go#TestParity_AuthRequired
+  docs:
+    - docs/parity-and-gaps.md
+    - docs/multi-tenancy.md
+  highlight: >-
+    **VL/manifest parity endpoint** surfaces drift between upstream VL counts and Lakehouse manifest counters with a matching UI panel — catches double-counting and silent missed writes.
+  description: >-
+    Two independent code paths answer "how many rows do we hold over this window": the embedded
+    VL stats path and the manifest's own counters. Publishing their difference — and the part of
+    it that is explained by VT-internal rows dropped at insert — turns a class of silent
+    correctness bugs into a number an operator can alert on.
+
+- id: lh.feature.observability.telemetry
+  title: OpenTelemetry self-instrumentation
+  status: shipped
+  since: v0.39.0
+  area: observability
+  surfaces: [flag]
+  tests:
+    - internal/telemetry/telemetry_test.go
+    - internal/telemetry/traced_storage_test.go
+    - internal/telemetry/traced_writer_test.go
+    - internal/config/telemetry_test.go
+  docs:
+    - docs/telemetry.md
+  highlight: >-
+    **Self-tracing**: the storage and writer paths emit OpenTelemetry spans, so a slow cold query can be read as a trace — S3 open, footer parse, row-group decode — instead of guessed at from aggregate metrics.
+  description: >-
+    Cold-query latency is a sum of many small object-store operations, which aggregates hide.
+    Optional self-instrumentation exports the span tree for a query so the expensive stage is
+    identifiable on a single request.

@@ -1,0 +1,108 @@
+# Deploy features: how the binaries are shipped, found and scaled.
+
+- id: lh.feature.deploy.helm
+  title: Helm chart
+  status: shipped
+  since: v0.10.0
+  area: deploy
+  surfaces: [cli]
+  tests:
+    - charts/victoria-lakehouse/test_templates.sh
+    - scripts/ci/helmdrift/main.go
+  docs:
+    - docs/kubernetes-deployment.md
+  changelog: ["0.10.0", "0.37.1"]
+  changelog_bullets:
+    - 'Helm RBAC'
+    - 'Helm chart RBAC'
+  highlight: >-
+    **Helm chart**: one chart deploys either signal in any role, with RBAC, HPA scale-down stabilization, a preStop drain hook and lifecycle-aware readiness probes wired to the lifecycle endpoints.
+  description: >-
+    The chart encodes the operational rules that keep a stateful cold tier safe under
+    autoscaling — drain before termination, stabilize before reshuffling the ring, report ready
+    only when warm — and a drift check keeps its rendered output honest in CI.
+
+- id: lh.feature.deploy.compose
+  title: Docker Compose stacks
+  status: shipped
+  since: v0.9.0
+  area: deploy
+  surfaces: [cli]
+  tests:
+    - tests/e2e/smoke_test.go#TestSmoke_ColdTierTracesQuery
+    - tests/e2e/smoke_test.go#TestSmoke_LogsHealth
+    - scripts/smoke-test.sh
+  docs:
+    - docs/docker-compose-setup.md
+  highlight: >-
+    **Compose stacks**: complete local deployments — MinIO, both binaries in both roles, hot VL/VT, the Loki proxy, Grafana and ClickHouse — used by the e2e suite and the benchmark harness, not just by the docs.
+  description: >-
+    The same compose files that a reader uses to try the product are the ones CI runs its e2e
+    tests and benchmarks against, so "it works locally" and "it is tested" are the same claim.
+
+- id: lh.feature.deploy.discovery
+  title: Headless-DNS peer and storage discovery
+  status: shipped
+  since: v0.9.0
+  area: deploy
+  surfaces: [flag]
+  tests:
+    - internal/discovery/discovery_test.go#TestDiscoverStorageNodes_HeadlessSRV
+    - internal/discovery/discovery_test.go#TestPollPartitionList_WithAuthKey
+    - internal/discovery/discovery_test.go#TestDiscoverPeers
+    - internal/discovery/discovery_coverage_test.go#TestDiscoverStorageNodes_HeadlessSRV_WithCustomPort
+  docs:
+    - docs/configuration.md
+    - docs/kubernetes-deployment.md
+  highlight: >-
+    **Discovery**: storage nodes and cache peers are found through headless-service DNS, so the fleet has no membership config to maintain and no coordination service to run.
+  description: >-
+    SRV records are the membership list. Adding a replica makes it discoverable and ringed
+    without touching configuration, and the partition-list poll that derives the hot boundary
+    rides the same mechanism, authenticated by a shared key.
+
+- id: lh.feature.deploy.az_aware
+  title: AZ detection and AZ-aware routing
+  status: shipped
+  since: v0.18.2
+  area: deploy
+  surfaces: [flag]
+  tests:
+    - internal/azdetect/detect_test.go#TestDetect_FullChain_EnvWins
+    - internal/azdetect/detect_k8s_test.go#TestK8sNodeLabelParsing_GALabel
+    - internal/peercache/ring_az_test.go#TestRing_LookupAZ_PrefersSameZone
+    - internal/azdetect/integration_test.go#TestIntegration_AWSIMDS_WhenEnvEmpty
+    - tests/e2e/az_test.go#TestAZ_TracesCacheStatsIncludesAZ
+  docs:
+    - docs/cross-az-optimization.md
+  highlight: >-
+    **AZ awareness**: each pod detects its availability zone (env, then Kubernetes node labels, then cloud metadata) and peer-cache routing prefers same-zone peers, so the cache does not quietly bill cross-AZ transfer.
+  description: >-
+    Cross-zone traffic is one of the larger avoidable line items in a cache-heavy fleet.
+    Detection falls back through several sources so it works in Kubernetes, on plain cloud VMs
+    and in compose; routing then prefers a same-zone copy and only crosses a zone when it must.
+
+- id: lh.feature.deploy.role_separation
+  title: Insert and select role separation
+  status: shipped
+  since: v0.8.0
+  area: deploy
+  surfaces: [flag]
+  tests:
+    - internal/config/config_test.go#TestValidate_InvalidRole
+    - internal/config/config_test.go#TestValidate_EmptyRoleDefaultsToAll
+    - internal/storage/parquets3/storage_query_test.go#TestRunQuery_HotBoundary_InsertRoleSuppresses
+    - internal/storage/parquets3/coverage_final_push_test.go#TestNew_SelectOnly
+    - tests/e2e/settings_verification_test.go#TestSetting_Role_InsertEnabled
+  docs:
+    - docs/kubernetes-deployment.md
+    - docs/deployment-architecture.md
+  changelog: ["0.8.0"]
+  changelog_bullets:
+    - 'Insert + select role separation'
+  highlight: >-
+    **Role separation**: `--lakehouse.role=insert|select|all` splits write and read fleets so each scales on its own signal, with one binary and one configuration model.
+  description: >-
+    Ingest scales with traffic, query scales with users, and they fail differently. Running the
+    same binary in a role lets a deployment separate them — different replica counts, different
+    profiles, different resources — without a second artifact to build and ship.

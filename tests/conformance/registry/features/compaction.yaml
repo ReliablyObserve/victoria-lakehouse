@@ -1,0 +1,157 @@
+# Compaction features: how small files become large ones, who decides to do
+# it, and what the rollups repair on the way.
+
+- id: lh.feature.compaction.level_based
+  title: Level-based background compaction
+  status: shipped
+  since: v0.10.0
+  area: compaction
+  surfaces: [storage, flag]
+  rows: [lh.stats.compaction.schema]
+  tests:
+    - internal/compaction/policy_test.go
+    - internal/compaction/compactor_test.go
+    - internal/compaction/scheduler_test.go
+    - internal/compaction/integration_test.go
+  docs:
+    - docs/operations.md
+    - docs/write-path.md
+  changelog: ["0.10.0"]
+  changelog_bullets:
+    - 'Level-based Parquet compaction'
+  highlight: >-
+    **Level-based compaction**: small flush-time files are rolled up level by level into large immutable objects, so file count stays bounded as data ages instead of growing with ingest.
+  description: >-
+    Ingest optimizes for latency and produces many modest files; compaction optimizes for reads
+    and cost, merging them upward through levels. Each level re-encodes at a higher compression
+    level and a larger row-group size, which is also exactly the shape S3 lifecycle transitions
+    want.
+
+- id: lh.feature.compaction.election_free
+  title: Election-free compaction ownership
+  status: shipped
+  since: v0.37.3
+  area: compaction
+  surfaces: [storage]
+  tests:
+    - internal/compaction/ownership_test.go
+    - internal/compaction/ownership_coverage_test.go
+    - internal/compaction/scheduler_test.go#TestScheduler_NoOwnership_NoWork
+    - internal/compaction/fair_share_test.go
+  docs:
+    - docs/operations.md
+    - docs/petabyte-scale-audit.md
+  changelog: ["0.10.0", "0.37.1", "0.37.3"]
+  changelog_bullets:
+    - 'Election-free compaction (spec 2026-05-31)'
+    - 'Leader election'
+    - 'K8s leader election test pyramid'
+    - 'Real-K8s e2e for leader election'
+    - '`internal/election/README.md` + `RUNBOOK.md`'
+  notes: >-
+    Supersedes the Kubernetes lease leader election shipped in v0.10.0 and hardened in v0.37.1;
+    that package was removed in v0.37.3, so its changelog bullets belong to this feature's
+    history.
+  highlight: >-
+    **Election-free compaction**: every pod derives which partitions it owns from the ring, so compaction needs no leader, no lease and no split-brain handling — a pod that loses ownership simply stops working on it.
+  description: >-
+    Leader election made compaction a single point of coordination and a source of K8s lease
+    churn. Deriving ownership deterministically from the hash ring gives the same
+    "exactly-one-worker-per-partition" property with fair sharing across the fleet, and makes
+    scale-up and scale-down uneventful.
+
+- id: lh.feature.compaction.hints_manual_trigger
+  title: Compaction hints and manual recompaction
+  status: shipped
+  since: v0.101.0
+  area: compaction
+  surfaces: [api]
+  tests:
+    - internal/compaction/recompact_trigger_test.go#TestRecompactHandler
+    - internal/compaction/recompact_trigger_test.go#TestForceCompactPartition_E2E_FragmentedClears
+    - internal/compaction/recompact_hint_test.go#TestRecompactionLevel
+    - internal/compaction/recompact_e2e_test.go#TestRecompact_E2E_StaleSchemaDrivesCompaction
+    - internal/manifest/compaction_candidates_test.go#TestComputeCompactionStats
+  docs:
+    - docs/operations.md
+  changelog: ["0.101.0"]
+  changelog_bullets:
+    - 'Compaction hints + manual recompaction trigger.'
+  highlight: >-
+    **Compaction hints and a manual trigger**: the stats API says which partitions would benefit from recompaction and why, and `POST /lakehouse/compaction/recompact` acts on it without waiting for the schedule.
+  description: >-
+    Operators need an answer to "is this partition fragmented, and can I fix it now". Hints rank
+    candidates by fragmentation and schema staleness; the trigger compacts a named partition on
+    demand, which is also how a schema change is rolled forward deliberately.
+
+- id: lh.feature.compaction.bloom_retention
+  title: Combined bloom retention across merges
+  status: shipped
+  since: v0.101.0
+  area: compaction
+  surfaces: [storage, api]
+  tests:
+    - internal/compaction/combined_bloom_test.go#TestCombinedBloomOnCompaction_E2E
+    - internal/storage/parquets3/bloom_compaction_test.go#TestCompaction_RebuildBloomAfterMerge
+    - internal/stats/compaction_handler_test.go#TestHandleCompaction
+    - internal/compaction/coverage_hardening_test.go#TestCompactor_WithBloomRebuilder
+  docs:
+    - docs/bloom-index.md
+    - docs/operations.md
+  changelog: ["0.101.0"]
+  changelog_bullets:
+    - 'Compaction retains the combined bloom of all merged parquets + exposes bloom footprint in stats.'
+  highlight: >-
+    **Blooms survive compaction**: a merged file carries the combined bloom of all its inputs, so point lookups stay fast after a rollup instead of falling back to a full scan — with the bloom footprint reported in stats.
+  description: >-
+    Losing the bloom on compaction would trade write cost for read cost silently. The compactor
+    rebuilds the filter for the merged output and reports how many bytes the blooms cost, so the
+    trade-off is visible rather than assumed.
+
+- id: lh.feature.compaction.attribute_repromotion
+  title: Attribute re-promotion during compaction
+  status: shipped
+  since: v0.101.1
+  area: compaction
+  surfaces: [storage]
+  tests:
+    - internal/vlstorage/repromote_test.go
+    - lakehouse-traces/internal/vlstorage/repromote_test.go
+    - internal/storage/parquets3/dedicated_equivalence_test.go
+    - internal/compaction/recompact_e2e_test.go#TestRecompact_E2E_StaleSchemaDrivesCompaction
+    - internal/compaction/aggregate_healing_test.go#TestCompactor_HealsWipedLabelAggregates
+  docs:
+    - docs/architecture/dedicated-columns.md
+    - docs/operations.md
+  changelog: ["0.101.1"]
+  changelog_bullets:
+    - 'Compaction re-promotes map-stored attributes into dedicated columns (heals old files forward).'
+  highlight: >-
+    **Schema healing forward**: when a key is promoted to a dedicated column, compaction rewrites older files that stored it in the attribute map, so the whole history gradually gains the faster layout without a migration job.
+  description: >-
+    A promotion that only applies to new files leaves a permanent seam in query performance.
+    Compaction closes it: files written under an older schema are re-promoted as they are merged,
+    and the same pass repairs label aggregates that were wiped by earlier bugs.
+
+- id: lh.feature.compaction.row_group_by_level
+  title: Row-group size by output level
+  status: shipped
+  since: v0.85.0
+  area: compaction
+  surfaces: [flag, storage]
+  tests:
+    - internal/compaction/rowgroup_schedule_test.go
+    - internal/config/rowgroup_schedule_test.go
+    - internal/config/config_test.go#TestDefaultConfig_CompactionCompressionSchedule
+  docs:
+    - docs/configuration.md
+    - docs/performance.md
+  changelog: ["0.85.0"]
+  changelog_bullets:
+    - 'Compression step 4 — 2× row groups on L2+ rollups: `compaction.row_group_size_by_output_level` (both modules).'
+  highlight: >-
+    **Row groups grow with level**: L2 and higher rollups double their row-group size, which measurably cuts row-group count and metadata on aged data at the same file size.
+  description: >-
+    Aged data is scanned in bulk and pruned coarsely, so larger row groups are strictly better
+    there, while recent data keeps small groups for selective queries. The schedule is a
+    configuration table, not a constant.
