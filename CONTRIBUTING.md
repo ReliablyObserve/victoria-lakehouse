@@ -86,6 +86,24 @@ golangci-lint run ./...
 - Ensure all CI checks pass before requesting review
 - Squash commits if the history is noisy
 
+### Adding or extending a feature
+
+A PR that adds a Lakehouse feature or extends an existing one is not mergeable until it carries:
+
+1. **Feature catalog entry** — add or update the feature in `tests/conformance/registry/features/<area>.yaml`:
+   title, status, `since`, the registry rows that verify it, the regression tests (existing files/functions),
+   docs links and a one-line highlight. Every `lh-addition`/`lh-shim` registry row must belong to a feature.
+2. **Verification** — registry rows for every new endpoint, flag or behavior (native VL/VT rows first when the
+   feature touches upstream surfaces), regression tests that exercise the feature, and benchmarks when it
+   affects the read or write path (validated responses, compared against the recorded baseline).
+3. **Generated docs** — run `make conformance-gen`; `docs/features.md`, `UPSTREAM_COVERAGE.md` and the README
+   highlights block are generated from the registry and must be committed current.
+4. **CHANGELOG** — an `[Unreleased]` `### Added`/`### Changed` bullet whose bold lead-in maps to the feature.
+
+CI enforces this: the required `conformance-inventory` check fails when a PR adds a CHANGELOG `### Added`
+bullet, a route, flag or handler, or an `lh.*` registry row without touching the feature catalog, or when
+any generated file is stale.
+
 ### CI Checks
 
 All PRs must pass:
@@ -93,6 +111,8 @@ All PRs must pass:
 - `golangci-lint` (errcheck, gosec, gosimple, govet, staticcheck)
 - CodeQL security analysis
 - Build verification
+- Conformance: registry/inventory drift, feature catalog completeness, generated docs current
+- Hot/cold parity suite (required once the known-failure allowlist is empty)
 
 ## Documentation Policy
 

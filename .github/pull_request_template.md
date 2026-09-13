@@ -17,6 +17,18 @@
 - [ ] Integration tests pass (if applicable)
 - [ ] Manual testing performed
 
+## Feature catalog (required for feature PRs)
+
+- [ ] `tests/conformance/registry/features/*.yaml` entry added/updated (rows, tests, docs, highlight)
+- [ ] Registry rows + regression tests cover the new/changed behavior
+- [ ] `make conformance-gen` run; `docs/features.md`, `UPSTREAM_COVERAGE.md`, README highlights committed current
+
+## Feature catalog (required for feature PRs)
+
+- [ ] `tests/conformance/registry/features/*.yaml` entry added/updated (rows, tests, docs, highlight)
+- [ ] Registry rows + regression tests cover the new/changed behavior
+- [ ] `make conformance-gen` run; `docs/features.md`, `UPSTREAM_COVERAGE.md`, README highlights committed current
+
 ## Checklist
 
 - [ ] Code follows project conventions
