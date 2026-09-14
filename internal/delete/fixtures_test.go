@@ -141,10 +141,11 @@ func (f *faultPool) Delete(ctx context.Context, key string) error {
 // killed mid-rewrite leaves behind.
 // Each flag fires ONCE and then clears, matching faultPool: a crash is a single
 // event, and the retry that follows has to be clean for the test to show that
-// recovery converges.
+// recovery converges. Every other method is the wrapped manifest's.
 type failingManifest struct {
-	mu    sync.Mutex
-	inner ManifestUpdater
+	ManifestUpdater
+
+	mu sync.Mutex
 	// failReplace makes the next ReplaceFile a no-op: the replacement object
 	// exists but the manifest never learns about it.
 	failReplace bool
@@ -152,15 +153,7 @@ type failingManifest struct {
 	failRemove bool
 }
 
-func wrapManifest(m ManifestUpdater) *failingManifest { return &failingManifest{inner: m} }
-
-func (f *failingManifest) GetFileByKey(key string) (manifest.FileInfo, bool) {
-	return f.inner.GetFileByKey(key)
-}
-
-func (f *failingManifest) PartitionForKey(key string) (string, bool) {
-	return f.inner.PartitionForKey(key)
-}
+func wrapManifest(m ManifestUpdater) *failingManifest { return &failingManifest{ManifestUpdater: m} }
 
 func (f *failingManifest) ReplaceFile(partition string, oldKey string, fi manifest.FileInfo) bool {
 	f.mu.Lock()
@@ -170,7 +163,7 @@ func (f *failingManifest) ReplaceFile(partition string, oldKey string, fi manife
 	if fail {
 		return false
 	}
-	return f.inner.ReplaceFile(partition, oldKey, fi)
+	return f.ManifestUpdater.ReplaceFile(partition, oldKey, fi)
 }
 
 func (f *failingManifest) RemoveFileIfPresent(partition string, key string) bool {
@@ -181,14 +174,8 @@ func (f *failingManifest) RemoveFileIfPresent(partition string, key string) bool
 	if fail {
 		return false
 	}
-	return f.inner.RemoveFileIfPresent(partition, key)
+	return f.ManifestUpdater.RemoveFileIfPresent(partition, key)
 }
-
-func (f *failingManifest) GetFilesForRange(startNs, endNs int64) []manifest.FileInfo {
-	return f.inner.GetFilesForRange(startNs, endNs)
-}
-
-func (f *failingManifest) HasKey(key string) bool { return f.inner.HasKey(key) }
 
 // mustGet returns a stored object or fails the test — used where the object's
 // absence would make the rest of the assertion meaningless.
@@ -235,6 +222,8 @@ func tombstoneViews(store *TombstoneStore) []storageinvariants.TombstoneView {
 			Mode:         ts.Mode,
 			AffectedKeys: ts.AffectedKeys,
 			Reaped:       ts.Reaped,
+			Clean:        ts.Clean,
+			Unfinished:   len(ts.Superseded),
 		})
 	}
 	return out

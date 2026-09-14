@@ -109,7 +109,7 @@ func assertOutputStillPending(t *testing.T, w *raceWorld, id, output, query stri
 	if !active {
 		t.Fatalf("tombstone %s retired although %d of its rows were carried unfiltered into %s", id, matching, output)
 	}
-	if ts.Reaped[output] {
+	if ts.Handled(output) {
 		t.Fatalf("output %s recorded clean for %s although it holds %d of its rows", output, id, matching)
 	}
 	if !containsKey(ts.AffectedKeys, output) {

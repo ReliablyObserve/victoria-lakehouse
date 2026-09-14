@@ -38,6 +38,32 @@ type ManifestUpdater interface {
 	// compaction and late flushes change the file set under it, so the
 	// scheduler re-reads it before retiring a tombstone.
 	GetFilesForRange(startNs, endNs int64) []manifest.FileInfo
+
+	// MarkPending keeps a periodic refresh from adopting a replacement between
+	// its upload and its publish; AbandonPending retires one that will never be
+	// published. Retire / UnretireIfReplacedBy / ForgetRetired / LookupRetired
+	// let an interrupted rewrite be finished or undone after a restart without
+	// the refresh re-adopting the object it let go of. See manifest/retired.go.
+	MarkPending(key string)
+	AbandonPending(key string)
+	Retire(key, by string, reclaim bool) bool
+	UnretireIfReplacedBy(key, replacement string) bool
+	ForgetRetired(key string)
+	LookupRetired(key string) (manifest.RetiredKey, bool)
+}
+
+// removedByRewrite is the "replaced by" a source records when a rewrite removed
+// every one of its rows and so wrote no replacement. It lets an interrupted
+// rewrite of that kind be undone without disturbing a retirement some other
+// component made.
+const removedByRewrite = "rewrite:all-rows-removed"
+
+// replacedBy is the retirement "by" a rewrite of source uses.
+func replacedBy(newKey string) string {
+	if newKey == "" {
+		return removedByRewrite
+	}
+	return newKey
 }
 
 // errSourceSuperseded reports that a rewrite's source left the manifest between
@@ -88,6 +114,9 @@ func publishRewrite(m ManifestUpdater, result *RewriteResult) (*manifest.FileInf
 		if !m.RemoveFileIfPresent(partition, result.OldKey) {
 			return nil, refusedPublish(m, result.OldKey)
 		}
+		// Record the removal as this rewrite's, so a restart that has to undo it
+		// can tell it from a retirement someone else made.
+		m.Retire(result.OldKey, removedByRewrite, true)
 		result.Published = true
 		metrics.DeleteRewriteManifestUpdated.Inc()
 		return nil, nil

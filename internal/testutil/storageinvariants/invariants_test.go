@@ -165,3 +165,53 @@ func TestAssert_PassesQuietlyOnAHealthyState(t *testing.T) {
 	m, b := healthy()
 	Assert(t, "healthy", State{Manifest: m, Bucket: b})
 }
+
+func TestCheck_ObjectsAwaitingDeletionAreAccountedFor(t *testing.T) {
+	m, b := healthy()
+	retired := key("retired")
+	m.Retire(retired, "x", true)
+	withRetired := append(b, retired)
+
+	if v := kinds(Check(State{Manifest: m, Bucket: withRetired})); !v["unmanifested_parquet_in_bucket"] {
+		t.Fatalf("without the awaiting-deletion view every unmanifested object is a violation, got %v", v)
+	}
+	if v := Check(State{Manifest: m, Bucket: withRetired, AwaitingDeletion: AwaitingDeletionIn(m)}); len(v) != 0 {
+		t.Fatalf("an object the manifest retired is expected residue, got %v", v)
+	}
+	pending := key("uploading")
+	m.MarkPending(pending)
+	if v := Check(State{Manifest: m, Bucket: append(withRetired, pending), AwaitingDeletion: AwaitingDeletionIn(m)}); len(v) != 0 {
+		t.Fatalf("an unpublished upload is expected residue, got %v", v)
+	}
+	// An object neither manifested nor accounted for is still reported.
+	if v := kinds(Check(State{Manifest: m, Bucket: append(withRetired, key("stray")), AwaitingDeletion: AwaitingDeletionIn(m)})); !v["unmanifested_parquet_in_bucket"] {
+		t.Fatalf("a stray object must still be reported, got %v", v)
+	}
+}
+
+func TestCheck_ManifestedKeyAwaitingDeletionIsAViolation(t *testing.T) {
+	m, b := healthy()
+	v := kinds(Check(State{Manifest: m, Bucket: b, AwaitingDeletion: func(k string) bool { return k == key("a") }}))
+	if !v["manifested_key_awaiting_deletion"] {
+		t.Fatalf("a key both served and awaiting deletion must be reported, got %v", v)
+	}
+}
+
+func TestTombstoneViewFullyReaped_CleanAndUnfinished(t *testing.T) {
+	v := TombstoneView{AffectedKeys: []string{"src", "repl"}, Reaped: map[string]bool{"src": true}, Clean: map[string]bool{"repl": true}}
+	if !v.FullyReaped() {
+		t.Error("a reaped source and a clean replacement are fully handled")
+	}
+	v.Unfinished = 1
+	if v.FullyReaped() {
+		t.Error("an unfinished rewrite keeps the tombstone working")
+	}
+	// A clean key is live by definition: it is not "reaped but still manifested".
+	m, b := healthy()
+	got := Check(State{Manifest: m, Bucket: b, Tombstones: []TombstoneView{{
+		ID: "ts", Mode: "permanent", AffectedKeys: []string{key("a"), "other"}, Clean: map[string]bool{key("a"): true},
+	}}})
+	if len(got) != 0 {
+		t.Fatalf("a clean manifested key is healthy, got %v", got)
+	}
+}

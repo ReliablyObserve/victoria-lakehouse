@@ -190,10 +190,7 @@ func reconcileTombstones(store *delete.TombstoneStore, inputKeys []string, outpu
 				if !containsKey(ts.AffectedKeys, k) || ts.Reaped[k] {
 					continue
 				}
-				if ts.Reaped == nil {
-					ts.Reaped = make(map[string]bool)
-				}
-				ts.Reaped[k] = true
+				ts.MarkReaped(k) // a clean file merged away is now gone too
 				touched = true
 				reapedHere++
 			}
@@ -207,7 +204,7 @@ func reconcileTombstones(store *delete.TombstoneStore, inputKeys []string, outpu
 				// Clean only if this merge applied the tombstone's predicate;
 				// otherwise the rows were carried forward and the output waits
 				// for the rewriter.
-				ts.Reaped[outputKey] = clean
+				ts.SetClean(outputKey, clean)
 			}
 			return true
 		})

@@ -265,5 +265,72 @@ func (s *TombstoneStore) mergeLoadedLocked(ts Tombstone) {
 			}
 		}
 	}
+	// Clean marks union too, except where the other copy has the key reaped:
+	// "gone" is later than "clean" (a clean replacement merged away since).
+	for k, v := range ts.Clean {
+		if v {
+			if merged.Clean == nil {
+				merged.Clean = make(map[string]bool, len(ts.Clean))
+			}
+			merged.Clean[k] = true
+		}
+	}
+	for k := range merged.Clean {
+		if merged.Reaped[k] {
+			delete(merged.Clean, k)
+		}
+	}
+	merged.Superseded = mergeSupersessions(merged.Superseded, ts.Superseded, merged.Reaped)
 	s.tombstones[ts.ID] = merged
+}
+
+// mergeSupersessions unions two copies' rewrite records without walking one
+// back. For the same source: a record that got further (published or
+// discarded) beats a prepared one, and between two rewrites with different
+// replacements the later one wins. A PREPARED record is dropped when the merged
+// copy already has its source reaped: a copy only ever reaps a key after its
+// rewrite left the prepared state, so that record is an older copy's view of a
+// rewrite that has since finished — and undoing it would delete the live
+// replacement.
+func mergeSupersessions(a, b map[string]Supersession, reaped map[string]bool) map[string]Supersession {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	out := make(map[string]Supersession, len(a)+len(b))
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		cur, ok := out[k]
+		if !ok || supersessionRank(v, cur) > 0 {
+			out[k] = v
+		}
+	}
+	for k, v := range out {
+		if v.State == SupersessionPrepared && reaped[k] {
+			delete(out, k)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// supersessionRank compares two records for the same source: >0 when a should
+// win.
+func supersessionRank(a, b Supersession) int {
+	if a.NewKey == b.NewKey {
+		progress := func(s Supersession) int {
+			if s.State == SupersessionPrepared {
+				return 0
+			}
+			return 1
+		}
+		return progress(a) - progress(b)
+	}
+	if a.At.After(b.At) {
+		return 1
+	}
+	return -1
 }

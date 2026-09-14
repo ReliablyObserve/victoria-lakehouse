@@ -261,7 +261,7 @@ func TestCompaction_InsideTheRewriteDelayCarriesRowsForwardAndTransfersTheKey(t 
 	if !containsKey(got.AffectedKeys, res.OutputFile) {
 		t.Fatalf("the tombstone was not transferred to the output %s: %v", res.OutputFile, got.AffectedKeys)
 	}
-	if got.Reaped[res.OutputFile] {
+	if got.Handled(res.OutputFile) {
 		t.Fatal("the output still holds the tombstone's rows and must stay pending for the rewriter")
 	}
 	for _, k := range f.keys {
@@ -299,7 +299,7 @@ func TestReconcileTombstones_HonoursNeverDeletePrefixes(t *testing.T) {
 	if !ts.Reaped[normal] {
 		t.Error("the unprotected key should be reaped")
 	}
-	if !ts.Reaped[output] {
+	if !ts.Clean[output] || ts.Reaped[output] {
 		t.Error("an eligible tombstone's rows were filtered, so the output is clean")
 	}
 }
@@ -340,7 +340,7 @@ func TestReconcileTombstones_OutputCleanOnlyForTombstonesTheMergeApplied(t *test
 	if !active {
 		t.Fatalf("tombstone retired although its rows were carried into %s unfiltered", out)
 	}
-	if ts.Reaped[out] || !ts.Reaped[src] || !containsKey(ts.AffectedKeys, out) {
+	if ts.Handled(out) || !ts.Reaped[src] || !containsKey(ts.AffectedKeys, out) {
 		t.Fatalf("want source reaped and output listed as pending, got keys=%v reaped=%v", ts.AffectedKeys, ts.Reaped)
 	}
 

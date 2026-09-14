@@ -45,6 +45,18 @@ type State struct {
 	// holding unrelated objects (snapshots, sidecars) does not fail the
 	// parquet-set checks. Nil means "every key ending in .parquet".
 	KeyFilter func(key string) bool
+	// AwaitingDeletion, when set, reports the objects the manifest deliberately
+	// does not list while their deletes are outstanding — its retired and
+	// pending keys (see AwaitingDeletionIn). Those are exempt from I2 (they are
+	// the expected residue of a failed delete or an interrupted rewrite), and
+	// I2b checks the converse. Nil means nothing may be outside the manifest.
+	AwaitingDeletion func(key string) bool
+}
+
+// AwaitingDeletionIn is the AwaitingDeletion view of a manifest's retired and
+// pending keys.
+func AwaitingDeletionIn(m *manifest.Manifest) func(string) bool {
+	return func(key string) bool { return m.IsRetired(key) || m.IsPending(key) }
 }
 
 // TombstoneView is the part of a tombstone the invariants care about.
@@ -52,16 +64,23 @@ type TombstoneView struct {
 	ID           string
 	Mode         string
 	AffectedKeys []string
-	Reaped       map[string]bool
+	// Reaped keys' objects are gone; Clean keys are live files free of the
+	// tombstone's rows.
+	Reaped map[string]bool
+	Clean  map[string]bool
+	// Unfinished is the number of rewrites whose objects are not settled yet;
+	// a tombstone with any is still working.
+	Unfinished int
 }
 
-// FullyReaped reports whether every key this tombstone covers is rewritten.
+// FullyReaped reports whether every key this tombstone covers is handled and
+// no rewrite of its files is unfinished.
 func (t TombstoneView) FullyReaped() bool {
-	if len(t.AffectedKeys) == 0 {
+	if len(t.AffectedKeys) == 0 || t.Unfinished > 0 {
 		return false
 	}
 	for _, k := range t.AffectedKeys {
-		if !t.Reaped[k] {
+		if !t.Reaped[k] && !t.Clean[k] {
 			return false
 		}
 	}
@@ -116,8 +135,19 @@ func Check(st State) []Violation {
 	// delete it once it passes the age gate, so any rows only it holds are on
 	// a timer.
 	for k := range bucketKeys {
-		if !manifestKeys[k] {
+		if !manifestKeys[k] && (st.AwaitingDeletion == nil || !st.AwaitingDeletion(k)) {
 			out = append(out, Violation{"unmanifested_parquet_in_bucket", k})
+		}
+	}
+
+	// I2b — nothing is both served and awaiting deletion. A key the manifest
+	// lists AND remembers as retired or pending would be deleted (or skipped by
+	// the refresh) while queries still read it.
+	if st.AwaitingDeletion != nil {
+		for k := range manifestKeys {
+			if st.owns(k) && st.AwaitingDeletion(k) {
+				out = append(out, Violation{"manifested_key_awaiting_deletion", k})
+			}
 		}
 	}
 
@@ -158,7 +188,8 @@ func Check(st State) []Violation {
 			out = append(out, Violation{"eternally_active_tombstone",
 				fmt.Sprintf("tombstone %s is fully reaped but still active", ts.ID)})
 		}
-		// I4b — a key recorded as reaped must be gone from the manifest.
+		// I4b — a key recorded as reaped must be gone from the manifest (a
+		// clean key is live by definition and exempt).
 		for key, reaped := range ts.Reaped {
 			if reaped && manifestKeys[key] {
 				out = append(out, Violation{"reaped_key_still_manifested",

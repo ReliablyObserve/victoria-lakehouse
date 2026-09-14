@@ -2,6 +2,7 @@ package compaction
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -173,6 +174,7 @@ func tombstoneViewsOf(store *delete.TombstoneStore) []storageinvariants.Tombston
 	for _, ts := range store.Active() {
 		out = append(out, storageinvariants.TombstoneView{
 			ID: ts.ID, Mode: ts.Mode, AffectedKeys: ts.AffectedKeys, Reaped: ts.Reaped,
+			Clean: ts.Clean, Unfinished: len(ts.Superseded),
 		})
 	}
 	return out
@@ -189,7 +191,13 @@ type gatedPool struct {
 	reached  chan struct{}
 	release  chan struct{}
 	consumed bool
+
+	failDelete  func(key string) bool
+	afterMatch  func(key string) bool
+	afterUpload func(key string)
 }
+
+var errDeleteInjected = errors.New("injected delete failure")
 
 func (g *gatedPool) gate(match func(string) bool) (reached <-chan struct{}, release func()) {
 	g.mu.Lock()
@@ -215,7 +223,48 @@ func (g *gatedPool) Upload(ctx context.Context, key string, data []byte) error {
 		close(reached)
 		<-release
 	}
-	return g.mockPool.Upload(ctx, key, data)
+	if err := g.mockPool.Upload(ctx, key, data); err != nil {
+		return err
+	}
+	g.mu.Lock()
+	after := g.afterUpload
+	if after != nil && g.afterMatch != nil && g.afterMatch(key) {
+		g.afterUpload = nil
+	} else {
+		after = nil
+	}
+	g.mu.Unlock()
+	if after != nil {
+		after(key)
+	}
+	return nil
+}
+
+// Delete fails for every key failDelete matches, until the predicate is
+// cleared — a delete that keeps failing, not a single blip.
+func (g *gatedPool) Delete(ctx context.Context, key string) error {
+	g.mu.Lock()
+	fail := g.failDelete != nil && g.failDelete(key)
+	g.mu.Unlock()
+	if fail {
+		return errDeleteInjected
+	}
+	return g.mockPool.Delete(ctx, key)
+}
+
+func (g *gatedPool) setFailDelete(match func(string) bool) {
+	g.mu.Lock()
+	g.failDelete = match
+	g.mu.Unlock()
+}
+
+// onUpload runs fn once, right after the first successful upload of a key match
+// accepts: the window between an upload and the publish that follows it.
+func (g *gatedPool) onUpload(match func(string) bool, fn func(key string)) {
+	g.mu.Lock()
+	g.afterMatch = match
+	g.afterUpload = fn
+	g.mu.Unlock()
 }
 
 // TestDeleteRace_CompactionPublishesWhileTheRewriteIsInFlight freezes the

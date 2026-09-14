@@ -442,7 +442,11 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	short := uuid.New().String()[:8]
 	outputKey := fmt.Sprintf("%s%s/compacted-L%d-%s.parquet", outputPrefix, partition, outputLevel, short)
 
+	// Until the publish below, the output is a second copy of its sources'
+	// rows: a manifest refresh running in between must not adopt it.
+	c.manifest.MarkPending(outputKey)
 	if err := c.pool.Upload(ctx, outputKey, outputData); err != nil {
+		c.manifest.AbandonPending(outputKey)
 		return nil, fmt.Errorf("upload compacted file: %w", err)
 	}
 
@@ -513,16 +517,26 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		ColumnBytes:       columnBytesFromFooter(outputData),
 	}) {
 		metrics.CompactionPublishConflicts.Inc()
+		// Retired before the delete: if the delete fails, no refresh adopts
+		// the abandoned output, and the scheduler's reclaim retries it.
+		c.manifest.AbandonPending(outputKey)
 		if err := c.pool.Delete(ctx, outputKey); err != nil {
-			logger.Warnf("abandoned compaction output not deleted (orphan sweep will reclaim it); key=%s: %s", outputKey, err)
+			logger.Warnf("abandoned compaction output not deleted (retried by the next reclaim); key=%s: %s", outputKey, err)
+		} else {
+			c.manifest.ForgetRetired(outputKey)
 		}
 		return nil, fmt.Errorf("compaction of %s abandoned: a source left the manifest during the merge", partition)
 	}
 
+	// The publish retired every source in the manifest, so a source whose
+	// delete fails is not adopted again by a refresh; the scheduler's reclaim
+	// retries the delete.
 	for _, f := range g.Files {
 		if err := c.pool.Delete(ctx, f.Key); err != nil {
-			logger.Warnf("failed to delete source file; key=%s, error=%s", f.Key, err)
+			logger.Warnf("failed to delete source file (retried by the next reclaim); key=%s, error=%s", f.Key, err)
+			continue
 		}
+		c.manifest.ForgetRetired(f.Key)
 	}
 
 	// The merged output is published and the sources are gone. Every tombstone

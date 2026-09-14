@@ -66,6 +66,9 @@ type RewriteResult struct {
 	Published bool
 
 	Duration time.Duration
+
+	// data holds a prepared replacement's bytes until Upload writes them.
+	data []byte
 }
 
 // Rewriter reads Parquet files from S3, removes tombstoned rows, and writes
@@ -140,29 +143,37 @@ func (r *Rewriter) HasProductionWriters() bool {
 	return r.writers.Logs != nil && r.writers.Traces != nil
 }
 
-// RewriteFile is the PREPARE half of a two-phase rewrite: it downloads the
-// Parquet file at key, removes rows matching any of the provided tombstones and
-// uploads the filtered result under a new key. It deliberately does NOT touch
-// the superseded object — that is Commit's job, and it must not happen until
-// the manifest points at the replacement.
+// RewriteFile prepares a rewrite and uploads its replacement in one call: it
+// downloads the Parquet file at key, removes rows matching any of the provided
+// tombstones and writes the filtered result under a new key. It deliberately
+// does NOT touch the superseded object — that is Commit's job, and it must not
+// happen until the manifest points at the replacement.
 //
-// The ordering matters for every crash window:
-//
-//	prepare  — new object exists, unmanifested. A crash here leaves the old
-//	           object intact and manifested; the new one is reclaimed by the
-//	           orphan sweep and the tombstone is retried. No data moves.
-//	publish  — manifest swaps old key for new, atomically (Manifest.ReplaceFile).
-//	           A crash here leaves the old object unmanifested; the sweep
-//	           reclaims it and the kept rows are served from the new object.
-//	commit   — old object deleted. A crash here is identical to the above.
-//
-// The previous single-phase version deleted the old object inside this function
-// while nothing ever updated the manifest, so the manifest pointed at a deleted
-// key and the replacement was an unmanaged object the orphan sweep removed
-// after its age gate — losing the rows the delete was supposed to KEEP.
+// The scheduler does not use it: it records the replacement key durably between
+// Prepare and Upload (see RewriteScheduler), which is what lets a restart find
+// a replacement a crash left behind. The previous single-phase version deleted
+// the old object inside this function while nothing ever updated the manifest,
+// so the manifest pointed at a deleted key and the replacement was an unmanaged
+// object the orphan sweep removed after its age gate — losing the rows the
+// delete was supposed to KEEP.
 //
 // If no rows match, the original file is left untouched and RowsRemoved == 0.
 func (r *Rewriter) RewriteFile(ctx context.Context, key string, tombstones []Tombstone) (*RewriteResult, error) {
+	result, err := r.Prepare(ctx, key, tombstones)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.Upload(ctx, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// Prepare downloads key, removes the rows matching the tombstones, and fills in
+// the result — the kept rows' metadata and the replacement key, chosen in the
+// source's own directory — without writing anything. When rows are removed and
+// some are kept, the replacement bytes are held for Upload.
+func (r *Rewriter) Prepare(ctx context.Context, key string, tombstones []Tombstone) (*RewriteResult, error) {
 	start := time.Now()
 
 	data, err := r.pool.Download(ctx, key)
@@ -186,14 +197,9 @@ func (r *Rewriter) RewriteFile(ctx context.Context, key string, tombstones []Tom
 		return nil, err
 	}
 
-	if result.RowsRemoved == 0 {
-		result.Duration = time.Since(start)
-		return result, nil
-	}
-
-	if result.RowsKept == 0 {
-		// Every row went. There is no replacement object; publishing means
-		// dropping the manifest entry, and Commit deletes the file.
+	if result.RowsRemoved == 0 || result.RowsKept == 0 {
+		// Nothing to write: either no row matched, or every row went and there
+		// is no replacement (publishing drops the entry; Commit deletes the file).
 		result.BytesAfter = 0
 		result.Duration = time.Since(start)
 		return result, nil
@@ -202,16 +208,25 @@ func (r *Rewriter) RewriteFile(ctx context.Context, key string, tombstones []Tom
 	result.BytesAfter = int64(len(newData))
 	result.BloomBytes = footerBloomBytes(newData)
 	result.ColumnBytes = columnBytesFromFooter(newData)
-
-	newKey := replacementKey(key, uuid.New().String()[:8])
-	result.NewKey = newKey
-
-	if err := r.pool.Upload(ctx, newKey, newData); err != nil {
-		return nil, fmt.Errorf("upload %s: %w", newKey, err)
-	}
-
+	result.NewKey = replacementKey(key, uuid.New().String()[:8])
+	result.data = newData
 	result.Duration = time.Since(start)
 	return result, nil
+}
+
+// Upload writes a prepared replacement. A result with no replacement is a
+// no-op.
+func (r *Rewriter) Upload(ctx context.Context, result *RewriteResult) error {
+	if result == nil || result.NewKey == "" {
+		return nil
+	}
+	start := time.Now()
+	if err := r.pool.Upload(ctx, result.NewKey, result.data); err != nil {
+		return fmt.Errorf("upload %s: %w", result.NewKey, err)
+	}
+	result.data = nil
+	result.Duration += time.Since(start)
+	return nil
 }
 
 // Commit is the CLEANUP half: it deletes the superseded object once the
@@ -241,6 +256,11 @@ func (r *Rewriter) Discard(ctx context.Context, result *RewriteResult) {
 	if err := r.pool.Delete(ctx, result.NewKey); err != nil {
 		logger.Warnf("discarded rewrite not deleted (orphan sweep will reclaim it); key=%s: %s", result.NewKey, err)
 	}
+}
+
+// deleteObject deletes one object through the rewriter's pool.
+func (r *Rewriter) deleteObject(ctx context.Context, key string) error {
+	return r.pool.Delete(ctx, key)
 }
 
 // footerBloomBytes sums the encoded size of every column-chunk bloom filter in

@@ -58,6 +58,7 @@ func SelfCheck(store *TombstoneStore, m ManifestUpdater) []Inconsistency {
 		for _, ts := range store.Active() {
 			for _, key := range ts.AffectedKeys {
 				reaped := ts.Reaped[key]
+				clean := ts.Clean[key]
 				present := m.HasKey(key)
 				switch {
 				case reaped && present:
@@ -71,7 +72,7 @@ func SelfCheck(store *TombstoneStore, m ManifestUpdater) []Inconsistency {
 						Key:         key,
 						Detail:      "tombstone records this key as rewritten but the manifest still lists it; rows stay hidden by the query filter",
 					})
-				case !reaped && !present:
+				case !reaped && !clean && !present:
 					// The manifest no longer has the key the tombstone wants to
 					// rewrite. The scheduler's self-healing path marks it reaped
 					// on the next tick rather than retrying a download forever.

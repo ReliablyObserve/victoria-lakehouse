@@ -2,6 +2,7 @@ package delete
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -248,12 +249,16 @@ func (h *Handler) handleTombstoneByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, ts)
 
 	case http.MethodDelete:
-		_, ok := h.store.Get(id)
-		if !ok {
+		switch err := h.store.TryRemove(id); {
+		case errors.Is(err, ErrTombstoneNotFound):
 			http.Error(w, "tombstone not found", http.StatusNotFound)
 			return
+		case errors.Is(err, ErrRewriteInProgress):
+			// The rewrite's record lives on this tombstone until its objects
+			// are settled; the un-delete is refused rather than lose it.
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
 		}
-		h.store.Remove(id)
 		metrics.DeleteTombstonesActive.Set(int64(h.store.Count()))
 
 		logger.Infof("tombstone removed; id=%s", id)

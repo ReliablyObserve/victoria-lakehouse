@@ -299,6 +299,10 @@ func (s *Scheduler) Drain() {
 // IsDraining reports the current drain state. Tests + sweep coordination.
 func (s *Scheduler) IsDraining() bool { return s.draining.Load() }
 
+// maxReclaimPerScan bounds the retired-object deletes one scan attempts, so a
+// long outage's backlog drains over several ticks instead of stalling one.
+const maxReclaimPerScan = 1000
+
 // partitionCandidate pairs a partition name with its eligible compaction level.
 type partitionCandidate struct {
 	partition string
@@ -315,6 +319,16 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 	// (A) Drain check — no new work after Drain().
 	if s.draining.Load() {
 		return 0, nil
+	}
+
+	// Retry the deletes of objects this node superseded or abandoned whose
+	// first delete failed (merged sources, refused outputs). They are retired
+	// in the manifest, so no refresh adopts them meanwhile; until they are
+	// deleted they cost storage and keep their retirement record alive.
+	if s.pool != nil {
+		if deleted, failed := s.manifest.ReclaimRetired(ctx, s.pool.Delete, maxReclaimPerScan); deleted+failed > 0 {
+			logger.Infof("retired objects reclaimed; deleted=%d, failed=%d", deleted, failed)
+		}
 	}
 
 	// (B) Stabilization check (spec §3.1 cases 3 + 22).

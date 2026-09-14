@@ -184,12 +184,31 @@ var (
 	// genuinely shrank and the guard is now lying to readers, so
 	// an operator should restart the pod to force a clean rebuild.
 	ManifestRefreshCliffGuardRejections = NewCounter("lakehouse_manifest_refresh_cliff_guard_rejections_total")
-	DiscoveryHotBoundaryDays            = NewFloatGauge("lakehouse_discovery_hot_boundary_days")
-	DiscoveryGapDays                    = NewFloatGauge("lakehouse_discovery_hot_boundary_gap_days")
-	ManifestPushTotal                   = NewCounter("lakehouse_manifest_push_total")
-	ManifestPushPeers                   = NewGauge("lakehouse_manifest_push_peers")
-	ManifestPushErrorsTotal             = NewCounter("lakehouse_manifest_push_errors_total")
-	ManifestUpdateReceivedTotal         = NewCounter("lakehouse_manifest_update_received_total")
+	// ManifestRetiredKeys is the number of keys the manifest deliberately
+	// stopped listing whose objects may still exist (a publish replaced them,
+	// an output was abandoned, or they were removed on another component's
+	// behalf). The refresh does not adopt them. It drains as their deletes land;
+	// a value that only grows means deletes are failing.
+	ManifestRetiredKeys = NewGauge("lakehouse_manifest_retired_keys")
+	// ManifestRefreshSkipped counts listed objects the refresh kept out of the
+	// manifest (reason=retired|pending) and tracked files it kept although the
+	// listing lacked them because they were published while it ran
+	// (reason=published_during_listing).
+	ManifestRefreshSkipped = NewCounterVec("lakehouse_manifest_refresh_skipped_total", "reason")
+	// ManifestRetiredEvicted counts retired keys forgotten by the age or size
+	// bound (reason=ttl|cap) rather than by their object being deleted. Should
+	// stay 0: an evicted key whose object still exists is adopted again.
+	ManifestRetiredEvicted = NewCounterVec("lakehouse_manifest_retired_evicted_total", "reason")
+	// ManifestRetiredReclaimed / ManifestRetiredReclaimErrors count the retry
+	// deletes of superseded and abandoned objects whose first delete failed.
+	ManifestRetiredReclaimed     = NewCounter("lakehouse_manifest_retired_reclaimed_total")
+	ManifestRetiredReclaimErrors = NewCounter("lakehouse_manifest_retired_reclaim_errors_total")
+	DiscoveryHotBoundaryDays     = NewFloatGauge("lakehouse_discovery_hot_boundary_days")
+	DiscoveryGapDays             = NewFloatGauge("lakehouse_discovery_hot_boundary_gap_days")
+	ManifestPushTotal            = NewCounter("lakehouse_manifest_push_total")
+	ManifestPushPeers            = NewGauge("lakehouse_manifest_push_peers")
+	ManifestPushErrorsTotal      = NewCounter("lakehouse_manifest_push_errors_total")
+	ManifestUpdateReceivedTotal  = NewCounter("lakehouse_manifest_update_received_total")
 )
 
 // Parquet engine metrics
@@ -745,6 +764,14 @@ var (
 	// DeleteStartupInconsistencies counts manifest/tombstone disagreements
 	// found by the boot-time self-check, by kind.
 	DeleteStartupInconsistencies = NewCounterVec("lakehouse_delete_startup_inconsistencies_total", "kind")
+	// DeleteRewriteInterrupted counts rewrites found unfinished — at startup or
+	// by a later pass — by how they were resolved: undone (never published),
+	// published (finished: the superseded object is deleted) or discarded (the
+	// abandoned replacement is deleted).
+	DeleteRewriteInterrupted = NewCounterVec("lakehouse_delete_rewrite_interrupted_total", "outcome")
+	// DeleteRewriteAbandonedObjectErrors counts failed deletes of replacements
+	// whose publish was refused or failed. Retried on every scheduler pass.
+	DeleteRewriteAbandonedObjectErrors = NewCounter("lakehouse_delete_rewrite_abandoned_object_errors_total")
 	// DeleteTombstoneRemovedMarkersEvicted counts removed-tombstone markers
 	// dropped by their TTL or cap. A marker is never evicted while its S3
 	// delete is still owed; eviction only bounds the set's size.

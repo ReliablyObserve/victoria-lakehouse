@@ -1461,9 +1461,16 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 		}
 	}
 	// Both halves of the delete state are now restored (tombstones at
-	// construction, manifest just above), so this is the first moment they can
-	// be compared. Findings are reported, not repaired: every repair is a data
-	// movement the rewrite scheduler already owns.
+	// construction, manifest just above). Before the first manifest refresh can
+	// run, apply every rewrite a previous process left unfinished to the
+	// manifest's view, so the refresh neither adopts an unpublished replacement
+	// next to its source nor re-adopts a source whose replacement was
+	// published. The objects themselves are settled by the rewrite scheduler.
+	if n := delete.ResolveInterruptedRewrites(store.TombstoneStore(), store.Manifest()); n > 0 {
+		logger.Infof("interrupted rewrites resolved at startup; count=%d", n)
+	}
+	// Now the two halves can be compared. Findings are reported, not repaired:
+	// every repair is a data movement the rewrite scheduler already owns.
 	delete.SelfCheck(store.TombstoneStore(), store.Manifest())
 
 	sm.SetManifestFiles(int64(store.Manifest().TotalFiles()))

@@ -3,6 +3,7 @@ package delete
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,8 +35,49 @@ type Tombstone struct {
 	AffectedKeys []string
 	CreatedAt    time.Time
 	CreatedBy    string
-	Reaped       map[string]bool
-	Mode         string // "hide"|"permanent"|"auto"
+	// Reaped lists files whose rows this tombstone no longer needs to act on
+	// because the object is gone — rewritten, merged, or found already
+	// superseded.
+	Reaped map[string]bool
+	Mode   string // "hide"|"permanent"|"auto"
+
+	// Clean lists LIVE files verified to hold none of this tombstone's rows: a
+	// rewrite's replacement, or a compaction output that filtered them. Kept
+	// apart from Reaped so "handled" never reads as "gone": a clean file is
+	// still manifested, a reaped one must not be.
+	Clean map[string]bool `json:",omitempty"`
+
+	// Superseded is the durable record of the rewrites of this tombstone's
+	// files that have not finished: source key → the replacement and how far
+	// the rewrite got. It is written before the replacement is uploaded and
+	// cleared only once the superseded (or abandoned) object is deleted, so a
+	// restart — on this node or on one that only has the S3 copy — can finish
+	// or undo every rewrite a crash interrupted. See ResolveInterruptedRewrites.
+	Superseded map[string]Supersession `json:",omitempty"`
+}
+
+// Supersession states, in the order a rewrite passes through them.
+const (
+	// SupersessionPrepared: the replacement key is chosen and may be uploaded;
+	// the publish has not been recorded. Nothing outside this process has seen
+	// the replacement, so an interrupted rewrite in this state is undone.
+	SupersessionPrepared = "prepared"
+	// SupersessionPublished: the manifest points at the replacement (or, when
+	// every row was removed, no longer lists the source) and peers may have been
+	// told. Only the superseded object's delete is outstanding.
+	SupersessionPublished = "published"
+	// SupersessionDiscarded: the publish was refused or failed; only the
+	// abandoned replacement's delete is outstanding.
+	SupersessionDiscarded = "discarded"
+)
+
+// Supersession records one interrupted-or-in-flight rewrite of a file.
+type Supersession struct {
+	// NewKey is the replacement object; empty when the rewrite removes every
+	// row and so writes no replacement.
+	NewKey string
+	State  string
+	At     time.Time
 }
 
 // AffectsFile returns true if the tombstone's time range overlaps with the
@@ -118,15 +160,49 @@ func (t *Tombstone) EligibleForPhysicalRemoval(now time.Time, rewriteDelay time.
 	return now.Sub(t.CreatedAt) >= rewriteDelay
 }
 
+// MarkReaped records that key's object is gone. A key that was clean (a live
+// replacement) and has since been merged away moves from Clean to Reaped.
+func (t *Tombstone) MarkReaped(key string) {
+	if t.Reaped == nil {
+		t.Reaped = make(map[string]bool)
+	}
+	t.Reaped[key] = true
+	delete(t.Clean, key)
+}
+
+// SetClean records whether the live file key is free of this tombstone's rows.
+func (t *Tombstone) SetClean(key string, clean bool) {
+	if !clean {
+		delete(t.Clean, key)
+		return
+	}
+	if t.Clean == nil {
+		t.Clean = make(map[string]bool)
+	}
+	t.Clean[key] = true
+}
+
+// Handled reports whether key needs no further work for this tombstone: its
+// object is gone (Reaped) or it is a live file free of the tombstone's rows
+// (Clean).
+func (t *Tombstone) Handled(key string) bool {
+	return t.Reaped[key] || t.Clean[key]
+}
+
 // FullyReaped reports whether every key this tombstone covers has been
-// rewritten. A fully reaped tombstone has no remaining work: the rows it hides
+// handled. A fully reaped tombstone has no remaining work: the rows it hides
 // are already physically gone from every file it named.
 func (t *Tombstone) FullyReaped() bool {
 	if len(t.AffectedKeys) == 0 {
 		return false
 	}
+	// A rewrite whose superseded or abandoned object is not yet deleted is
+	// still work: retiring would drop the only durable record of that object.
+	if len(t.Superseded) > 0 {
+		return false
+	}
 	for _, k := range t.AffectedKeys {
-		if !t.Reaped[k] {
+		if !t.Handled(k) {
 			return false
 		}
 	}
@@ -176,6 +252,40 @@ type TombstoneStore struct {
 	// staleS3 holds ids whose stale S3 copies a restore found before
 	// persistence was enabled; EnablePersistence queues their deletes.
 	staleS3 map[string]bool
+
+	// inflight is the set of source keys a rewrite in THIS process is working
+	// on. Process-local by design: it stops two schedulers sharing the store
+	// from rewriting — or resolving the record of — the same file at once.
+	inflightMu sync.Mutex
+	inflight   map[string]bool
+}
+
+// ErrRewriteInProgress is returned by TryRemove for a tombstone with a rewrite
+// that has not finished.
+var ErrRewriteInProgress = errors.New("a rewrite of this tombstone's files is in progress; retry once it finishes")
+
+// ErrTombstoneNotFound is returned by TryRemove for an unknown id.
+var ErrTombstoneNotFound = errors.New("tombstone not found")
+
+// claimKey marks source as being rewritten by this process. Returns false when
+// another rewrite here already holds it.
+func (s *TombstoneStore) claimKey(source string) bool {
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+	if s.inflight == nil {
+		s.inflight = make(map[string]bool)
+	}
+	if s.inflight[source] {
+		return false
+	}
+	s.inflight[source] = true
+	return true
+}
+
+func (s *TombstoneStore) releaseKey(source string) {
+	s.inflightMu.Lock()
+	delete(s.inflight, source)
+	s.inflightMu.Unlock()
 }
 
 // SetCompletionObserver installs a callback fired each time a tombstone
@@ -297,6 +407,20 @@ func cloneTombstone(ts Tombstone) Tombstone {
 		}
 		ts.Reaped = reaped
 	}
+	if ts.Clean != nil {
+		clean := make(map[string]bool, len(ts.Clean))
+		for k, v := range ts.Clean {
+			clean[k] = v
+		}
+		ts.Clean = clean
+	}
+	if ts.Superseded != nil {
+		sup := make(map[string]Supersession, len(ts.Superseded))
+		for k, v := range ts.Superseded {
+			sup[k] = v
+		}
+		ts.Superseded = sup
+	}
 	return ts
 }
 
@@ -311,6 +435,31 @@ func (s *TombstoneStore) Remove(id string) {
 	s.mu.Unlock()
 	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
 	s.persistChange(p, id, pendingDelete)
+}
+
+// TryRemove is the un-delete: it removes the tombstone unless one of its
+// rewrites has not finished. A rewrite's durable record lives on the tombstone
+// (see intents.go); removing it mid-rewrite would drop the only record a
+// restart has of a replacement object, which the next refresh would then adopt
+// next to its source.
+func (s *TombstoneStore) TryRemove(id string) error {
+	s.mu.Lock()
+	ts, ok := s.tombstones[id]
+	if !ok {
+		s.mu.Unlock()
+		return ErrTombstoneNotFound
+	}
+	if len(ts.Superseded) > 0 {
+		s.mu.Unlock()
+		return ErrRewriteInProgress
+	}
+	delete(s.tombstones, id)
+	s.markRemovedLocked(id, time.Now())
+	p := s.persist
+	s.mu.Unlock()
+	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
+	s.persistChange(p, id, pendingDelete)
+	return nil
 }
 
 // Complete retires a tombstone whose every affected key has been rewritten.
@@ -602,6 +751,21 @@ func (t *Tombstone) Validate() error {
 	for _, k := range t.AffectedKeys {
 		if !utf8.ValidString(k) {
 			return fmt.Errorf("affected key is not valid UTF-8; it would not survive being persisted")
+		}
+	}
+	for k := range t.Clean {
+		if !utf8.ValidString(k) {
+			return fmt.Errorf("clean key is not valid UTF-8; it would not survive being persisted")
+		}
+	}
+	for k, sup := range t.Superseded {
+		if !utf8.ValidString(k) || !utf8.ValidString(sup.NewKey) {
+			return fmt.Errorf("superseded key is not valid UTF-8; it would not survive being persisted")
+		}
+		switch sup.State {
+		case SupersessionPrepared, SupersessionPublished, SupersessionDiscarded:
+		default:
+			return fmt.Errorf("unknown rewrite state %q for %s", sup.State, k)
 		}
 	}
 	if t.StartNs > t.EndNs {

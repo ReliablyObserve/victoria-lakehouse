@@ -54,6 +54,10 @@ type RewriteScheduler struct {
 	allowedClasses map[string]bool
 	maxConcurrent  int
 	stopCh         chan struct{}
+
+	// crashAt, set only by tests, stops a rewrite at the named step as if the
+	// process died there: nothing after it runs. See the crash matrix.
+	crashAt func(step string) bool
 }
 
 // NewRewriteScheduler creates a RewriteScheduler from the given config.
@@ -110,9 +114,10 @@ func (s *RewriteScheduler) Stop() {
 
 // RunOnce processes all eligible active tombstones, rewriting affected files.
 //
-// Each key goes through the full prepare → publish → commit sequence; a failure
-// at any step leaves the key un-reaped so the next tick retries it, and never
-// leaves the manifest disagreeing with what is actually in the bucket.
+// Each key goes through the full prepare → publish → commit sequence with every
+// step recorded on the tombstone before the step that depends on it (see
+// intents.go); a failure at any step leaves a record the next pass resolves, and
+// never leaves the manifest disagreeing with what is actually in the bucket.
 //
 // A tombstone retires only when every file that may still hold its rows has
 // been handled — judged against the files that exist at that moment, not the
@@ -140,7 +145,11 @@ func (s *RewriteScheduler) RunOnce(ctx context.Context) []RewriteResult {
 			continue
 		}
 
-		results = append(results, s.processTombstone(ctx, now, snapshot.ID)...)
+		done, interrupted := s.processTombstone(ctx, now, snapshot.ID)
+		results = append(results, done...)
+		if interrupted {
+			return results
+		}
 	}
 
 	// Drain any tombstone durability writes S3 rejected earlier.
@@ -153,21 +162,27 @@ func (s *RewriteScheduler) RunOnce(ctx context.Context) []RewriteResult {
 }
 
 // processTombstone runs one tombstone's rewrite pass and retires it when
-// nothing is left to do.
-func (s *RewriteScheduler) processTombstone(ctx context.Context, now time.Time, id string) []RewriteResult {
-	var results []RewriteResult
+// nothing is left to do. interrupted reports that a test crash hook stopped the
+// pass, which must then leave everything exactly as it is.
+func (s *RewriteScheduler) processTombstone(ctx context.Context, now time.Time, id string) (results []RewriteResult, interrupted bool) {
+	// Settle what earlier passes (or a process that crashed) left unfinished
+	// before starting anything new on the same files.
+	s.resumeRewrites(ctx, id)
 
 	// Pull in every file that may now hold the tombstone's rows.
 	s.discoverAffectedKeys(id)
 
 	ts, ok := s.store.Get(id)
 	if !ok {
-		return nil
+		return nil, false
 	}
 
 	for _, key := range ts.AffectedKeys {
-		if ts.Reaped[key] {
+		if ts.Handled(key) {
 			continue
+		}
+		if _, recorded := ts.Superseded[key]; recorded {
+			continue // resumeRewrites owns it until its record clears
 		}
 
 		// A key that is no longer in the manifest was rewritten already (a
@@ -191,18 +206,20 @@ func (s *RewriteScheduler) processTombstone(ctx context.Context, now time.Time, 
 			continue
 		}
 
-		result, outcome := s.rewriteOne(ctx, key, ts)
+		if !s.store.claimKey(key) {
+			continue // another rewrite in this process has it
+		}
+		result, outcome := s.rewriteOne(ctx, id, key, ts)
+		s.store.releaseKey(key)
 		switch outcome {
 		case rewriteDone:
 			results = append(results, *result)
-			s.markReaped(id, key, result.NewKey)
-		case rewriteSuperseded:
-			// The source was merged away between the read and the publish.
-			// Our replacement was discarded; the compacted output is what
-			// holds the rows now, and discovery will list it.
-			s.markReaped(id, key, "")
-		case rewriteFailed:
-			// Left pending; the next tick retries.
+		case rewriteInterrupted:
+			return results, true
+		case rewriteSuperseded, rewriteFailed:
+			// Superseded: the source was merged away and the tombstone follows
+			// the rows to the compacted output via discovery. Failed: the next
+			// pass retries.
 		}
 	}
 
@@ -216,7 +233,7 @@ func (s *RewriteScheduler) processTombstone(ctx context.Context, now time.Time, 
 	// fast paths come back; leaving it active forever was the second half of
 	// the original bug.
 	s.store.Complete(id)
-	return results
+	return results, false
 }
 
 // discoverAffectedKeys adds every manifest file overlapping the tombstone's
@@ -256,18 +273,21 @@ func (s *RewriteScheduler) discoverAffectedKeys(id string) int {
 // rewrite.
 func (s *RewriteScheduler) markReaped(id, key, replacement string) {
 	s.store.Update(id, func(ts *Tombstone) bool {
-		if ts.Reaped == nil {
-			ts.Reaped = make(map[string]bool)
-		}
-		ts.Reaped[key] = true
-		if replacement != "" {
-			if !containsString(ts.AffectedKeys, replacement) {
-				ts.AffectedKeys = append(ts.AffectedKeys, replacement)
-			}
-			ts.Reaped[replacement] = true
-		}
+		markHandled(ts, key, replacement)
 		return true
 	})
+}
+
+// markHandled records key as reaped (its object is gone) and, when there is
+// one, its replacement as clean (live, free of the tombstone's rows).
+func markHandled(ts *Tombstone, key, replacement string) {
+	ts.MarkReaped(key)
+	if replacement != "" {
+		if !containsString(ts.AffectedKeys, replacement) {
+			ts.AffectedKeys = append(ts.AffectedKeys, replacement)
+		}
+		ts.SetClean(replacement, true)
+	}
 }
 
 type rewriteOutcome int
@@ -276,54 +296,125 @@ const (
 	rewriteFailed rewriteOutcome = iota
 	rewriteDone
 	rewriteSuperseded
+	// rewriteInterrupted: a test crash hook stopped the rewrite mid-flight.
+	rewriteInterrupted
 )
 
-// rewriteOne performs the three-step rewrite of a single key.
-func (s *RewriteScheduler) rewriteOne(ctx context.Context, key string, ts Tombstone) (*RewriteResult, rewriteOutcome) {
-	// Step 1 — prepare: write the replacement object. The source is untouched.
-	result, err := s.rewriter.RewriteFile(ctx, key, []Tombstone{ts})
+// Rewrite steps a test crash hook can stop at (see RewriteScheduler.crashAt).
+const (
+	stepIntentRecorded   = "intent-recorded"
+	stepUploaded         = "uploaded"
+	stepSwappedInMemory  = "swapped-in-memory"
+	stepPublishRecorded  = "publish-recorded"
+	stepNotified         = "notified"
+	stepSupersededGone   = "superseded-object-deleted"
+	stepDiscardRecorded  = "discard-recorded"
+	stepAbandonedDeleted = "abandoned-object-deleted"
+)
+
+// crashed reports whether the test crash hook stops the rewrite at step.
+func (s *RewriteScheduler) crashed(step string) bool {
+	return s.crashAt != nil && s.crashAt(step)
+}
+
+// rewriteOne performs one key's rewrite, recording each step on the tombstone
+// before the step that depends on it.
+func (s *RewriteScheduler) rewriteOne(ctx context.Context, id, key string, ts Tombstone) (*RewriteResult, rewriteOutcome) {
+	// Step 1 — prepare: read the source and build the replacement in memory.
+	result, err := s.rewriter.Prepare(ctx, key, []Tombstone{ts})
 	if err != nil {
 		metrics.DeleteRewriteErrors.Inc()
 		logger.Errorf("rewrite failed: %s; key=%s", err, key)
 		return nil, rewriteFailed
 	}
-
 	if result.RowsRemoved == 0 {
-		// The file holds no row this tombstone matches. Nothing was written
-		// and nothing must be deleted; the key is done.
+		// The file holds no row this tombstone matches. Nothing is written
+		// and nothing must be deleted; the live file is clean.
 		metrics.DeleteRewriteTotal.Inc()
+		s.store.Update(id, func(cur *Tombstone) bool {
+			cur.SetClean(key, true)
+			return true
+		})
 		return result, rewriteDone
 	}
 
-	// Step 2 — publish: swap the manifest entry. Until this succeeds the
+	// Step 2 — record the rewrite before anything is written, so a restart can
+	// find the replacement object whatever happens next.
+	if _, ok := s.store.Update(id, func(cur *Tombstone) bool {
+		if cur.Superseded == nil {
+			cur.Superseded = make(map[string]Supersession)
+		}
+		cur.Superseded[key] = Supersession{NewKey: result.NewKey, State: SupersessionPrepared, At: time.Now()}
+		return true
+	}); !ok {
+		// Un-deleted while the rewrite was being prepared: nothing was
+		// written, so there is nothing to undo.
+		return nil, rewriteFailed
+	}
+	if result.NewKey != "" {
+		s.manifest.MarkPending(result.NewKey)
+	}
+	if s.crashed(stepIntentRecorded) {
+		return nil, rewriteInterrupted
+	}
+
+	// Step 3 — upload the replacement. The source is untouched.
+	if err := s.rewriter.Upload(ctx, result); err != nil {
+		metrics.DeleteRewriteErrors.Inc()
+		logger.Errorf("rewrite upload failed: %s; key=%s", err, key)
+		s.discard(ctx, id, key, result.NewKey)
+		return nil, rewriteFailed
+	}
+	if s.crashed(stepUploaded) {
+		return nil, rewriteInterrupted
+	}
+
+	// Step 4 — publish: swap the manifest entry. Until this succeeds the
 	// superseded object is the ONLY copy of the kept rows and must survive.
 	published, err := publishRewrite(s.manifest, result)
+	if err == nil && s.crashed(stepSwappedInMemory) {
+		return nil, rewriteInterrupted
+	}
 	if errors.Is(err, errSourceSuperseded) {
 		// A concurrent compaction took the source. Discard our replacement
 		// rather than register a second copy of its rows.
-		s.rewriter.Discard(ctx, result)
 		logger.Infof("rewrite discarded: source merged concurrently; key=%s", key)
+		if !s.discardStep(ctx, id, key, result.NewKey) {
+			return nil, rewriteInterrupted
+		}
+		s.markReaped(id, key, "")
 		return result, rewriteSuperseded
 	}
 	if err != nil {
 		metrics.DeleteRewriteErrors.Inc()
 		logger.Errorf("rewrite manifest publish failed: %s; key=%s, new=%s", err, key, result.NewKey)
 		// The replacement will never be published by this attempt; the retry
-		// writes a fresh one. Drop it now instead of leaving it for the sweep.
-		s.rewriter.Discard(ctx, result)
+		// writes a fresh one.
+		if !s.discardStep(ctx, id, key, result.NewKey) {
+			return nil, rewriteInterrupted
+		}
 		return nil, rewriteFailed
 	}
 
-	// Step 2b — propagate: the facet feed and the peer push, before the
+	// Step 5 — record the publish (and the key's bookkeeping) durably, BEFORE
+	// peers, pmeta or the delete of the superseded object can act on it.
+	recordPublished(s.store, id, key, result.NewKey)
+	if s.crashed(stepPublishRecorded) {
+		return nil, rewriteInterrupted
+	}
+
+	// Step 6 — propagate: the facet feed and the peer push, before the
 	// superseded object disappears.
 	s.notifyPublished(published, result)
+	if s.crashed(stepNotified) {
+		return nil, rewriteInterrupted
+	}
 
-	// Step 3 — commit: drop the superseded object. A failure here costs storage
-	// (the orphan sweep reclaims it) but cannot lose data, so the key still
-	// counts as reaped.
-	if err := s.rewriter.Commit(ctx, result); err != nil {
-		metrics.DeleteRewriteOldObjectErrors.Inc()
-		logger.Warnf("superseded object not deleted (orphan sweep will reclaim it): %s", err)
+	// Step 7 — commit: delete the superseded object and clear the record. A
+	// failed delete keeps the record (and the source retired in the manifest),
+	// and the next pass retries it.
+	if s.commit(ctx, id, key, result.NewKey) && s.crashed(stepSupersededGone) {
+		return nil, rewriteInterrupted
 	}
 
 	metrics.DeleteRewriteTotal.Inc()
@@ -331,6 +422,32 @@ func (s *RewriteScheduler) rewriteOne(ctx context.Context, key string, ts Tombst
 		metrics.DeleteRewriteBytesSaved.Add(int(saved))
 	}
 	return result, rewriteDone
+}
+
+// discardStep is discard with the test crash hook between recording the
+// discard and deleting the abandoned replacement. Returns false when the hook
+// stopped it.
+func (s *RewriteScheduler) discardStep(ctx context.Context, id, key, newKey string) bool {
+	if s.crashAt == nil {
+		s.discard(ctx, id, key, newKey)
+		return true
+	}
+	s.store.Update(id, func(ts *Tombstone) bool {
+		cur, ok := ts.Superseded[key]
+		if !ok || cur.NewKey != newKey {
+			return false
+		}
+		ts.Superseded[key] = Supersession{NewKey: newKey, State: SupersessionDiscarded, At: time.Now()}
+		return true
+	})
+	if newKey != "" {
+		s.manifest.AbandonPending(newKey)
+	}
+	if s.crashed(stepDiscardRecorded) {
+		return false
+	}
+	s.discard(ctx, id, key, newKey)
+	return !s.crashed(stepAbandonedDeleted)
 }
 
 func containsString(list []string, v string) bool {

@@ -131,6 +131,10 @@ func FuzzTombstoneRoundTrip(f *testing.F) {
 	f.Add("id-2", "*", int64(-1), int64(1<<62), "hide", "logs/dt=2026-01-01/hour=00/a.parquet", true)
 
 	f.Fuzz(func(t *testing.T, id, query string, startNs, endNs int64, mode, key string, reaped bool) {
+		// The rewrite record and the clean marks ride the same encoding; derive
+		// them from the inputs so the corpus format stays unchanged.
+		states := []string{SupersessionPrepared, SupersessionPublished, SupersessionDiscarded}
+		replacement := key + ".replacement"
 		original := Tombstone{
 			ID:           id,
 			Query:        query,
@@ -140,6 +144,10 @@ func FuzzTombstoneRoundTrip(f *testing.F) {
 			CreatedAt:    time.Unix(0, 0).UTC(),
 			Mode:         mode,
 			Reaped:       map[string]bool{key: reaped},
+			Clean:        map[string]bool{replacement: !reaped},
+			Superseded: map[string]Supersession{
+				key: {NewKey: replacement, State: states[len(key)%len(states)], At: time.Unix(0, startNs).UTC()},
+			},
 		}
 
 		// A record the API would refuse cannot be expected to round-trip: it is
@@ -174,6 +182,15 @@ func FuzzTombstoneRoundTrip(f *testing.F) {
 		}
 		if back.FullyReaped() != original.FullyReaped() {
 			t.Fatalf("round trip changed FullyReaped: %v -> %v", original.FullyReaped(), back.FullyReaped())
+		}
+		// The rewrite record is what a restart resolves an interrupted rewrite
+		// from; a record that does not survive the encoding un-does a finished
+		// rewrite or orphans a replacement.
+		if got, want := back.Superseded[key], original.Superseded[key]; got.NewKey != want.NewKey || got.State != want.State || !got.At.Equal(want.At) {
+			t.Fatalf("round trip changed the rewrite record: %+v -> %+v", want, got)
+		}
+		if back.Clean[replacement] != original.Clean[replacement] {
+			t.Fatalf("round trip changed the clean mark for %q", replacement)
 		}
 	})
 }

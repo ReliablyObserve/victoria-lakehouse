@@ -93,7 +93,7 @@ func TestDiscoverAffectedKeys_AddsOverlappingFilesOnce(t *testing.T) {
 		t.Fatalf("discovered %d files, want the 1 unlisted overlapping file", n)
 	}
 	got, _ := store.Get("ts")
-	if !containsString(got.AffectedKeys, late) || got.Reaped[late] {
+	if !containsString(got.AffectedKeys, late) || got.Handled(late) {
 		t.Fatalf("the late file must be listed as pending: %+v", got)
 	}
 	if n := s.discoverAffectedKeys("ts"); n != 0 {

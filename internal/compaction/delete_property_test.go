@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,12 +23,21 @@ import (
 // and restarts that rebuild the tombstone store from its persisted copy — and
 // checks, after every step, the properties that must hold no matter the order:
 //
-//	P1  manifest key set == bucket object set, Σ RowCount == full scan
-//	P2  no row is ever stored twice
-//	P3  a row no delete ever matched is always stored
+//	P1  every manifested key has its object, every other object is one the
+//	    manifest is waiting to delete, and Σ RowCount == a scan of what the
+//	    manifest serves
+//	P2  no row is ever served twice
+//	P3  a row no delete ever matched is always served
 //	P4  un-delete contract: a row matched only by hide-mode tombstones, or by
-//	    permanent/auto tombstones still inside their window, is still stored
-//	P5  a retired tombstone's rows are gone — retirement never precedes removal
+//	    permanent/auto tombstones still inside their window, is still served
+//	P5  a retired tombstone's rows are not served — retirement never precedes
+//	    removal
+//
+// Deletes of superseded objects fail at random, the periodic manifest refresh
+// runs at random (including in the middle of a restart, before anything else),
+// and restarts rebuild the manifest from its snapshot as well as the tombstone
+// store from its persisted copy. After the sequence the faults stop and the
+// system must converge to the strict set: nothing left awaiting deletion.
 //
 // The hand-written tests pick one interleaving each; the bugs this suite exists
 // for lived in the ones nobody picked.
@@ -50,7 +61,7 @@ type lifecycleWorld struct {
 	t        *testing.T
 	rng      *rand.Rand
 	dir      string
-	pool     *mockPool
+	pool     *gatedPool
 	manifest *manifest.Manifest
 	store    *delete.TombstoneStore
 
@@ -73,7 +84,7 @@ func runDeleteLifecycle(t *testing.T, rng *rand.Rand) {
 		t:          t,
 		rng:        rng,
 		dir:        t.TempDir(),
-		pool:       newMockPool(),
+		pool:       &gatedPool{mockPool: newMockPool()},
 		manifest:   manifest.New("test-bucket", ""),
 		services:   []string{"alpha", "beta", "gamma"},
 		rowService: map[string]string{},
@@ -85,9 +96,14 @@ func runDeleteLifecycle(t *testing.T, rng *rand.Rand) {
 	}
 	w.check("initial")
 
-	for step := 0; step < 14; step++ {
+	for step := 0; step < 18; step++ {
 		var label string
-		switch w.rng.Intn(9) {
+		// Superseded-object deletes fail for this step one time in four.
+		failing := w.rng.Intn(4) == 0
+		if failing {
+			w.pool.setFailDelete(func(k string) bool { return strings.HasSuffix(k, ".parquet") })
+		}
+		switch w.rng.Intn(12) {
 		case 0:
 			label = w.deleteRows("permanent", true)
 		case 1:
@@ -106,19 +122,58 @@ func runDeleteLifecycle(t *testing.T, rng *rand.Rand) {
 		case 8:
 			w.restart()
 			label = "restart"
+		case 9, 10:
+			w.refresh()
+			label = "manifest refresh"
+		case 11:
+			w.manifest.ReclaimRetired(context.Background(), w.pool.Delete, 0)
+			label = "reclaim retired objects"
 		}
-		w.check(fmt.Sprintf("step %d (%s)", step, label))
+		w.pool.setFailDelete(nil)
+		w.check(fmt.Sprintf("step %d (%s, deletes failing=%v)", step, label, failing))
 	}
+
+	// The faults stop: every leftover must be settled.
+	for i := 0; i < 6; i++ {
+		w.scheduler().RunOnce(context.Background())
+		w.manifest.ReclaimRetired(context.Background(), w.pool.Delete, 0)
+		w.refresh()
+		w.check(fmt.Sprintf("settling pass %d", i))
+	}
+	w.checkSettled("settled")
 }
 
 func (w *lifecycleWorld) restart() {
-	// A fresh process: the store comes back only from what was persisted.
+	// A fresh process: the store comes back only from what was persisted, and
+	// the manifest from its snapshot, with interrupted rewrites resolved and a
+	// refresh run before anything else.
+	snapshot := filepath.Join(w.dir, "manifest.bin")
+	if err := w.manifest.SaveTo(snapshot); err != nil {
+		w.t.Fatalf("snapshot: %v", err)
+	}
 	w.store = delete.NewTombstoneStore()
 	cfg := delete.PersistenceConfig{Dir: w.dir}
 	if _, err := w.store.Restore(context.Background(), cfg); err != nil {
 		w.t.Fatalf("restore: %v", err)
 	}
 	w.store.EnablePersistence(cfg)
+	m := manifest.New("test-bucket", "")
+	if err := m.LoadFrom(snapshot); err != nil {
+		w.t.Fatalf("load snapshot: %v", err)
+	}
+	w.manifest = m
+	delete.ResolveInterruptedRewrites(w.store, m)
+	w.refresh()
+}
+
+// refresh runs the periodic manifest refresh against the bucket.
+func (w *lifecycleWorld) refresh() {
+	listStart := time.Now()
+	var objects []manifest.ListedObject
+	for _, k := range w.pool.Keys() {
+		objects = append(objects, manifest.ListedObject{Key: k, Size: int64(len(w.pool.get(k)))})
+	}
+	w.manifest.ApplyListing(objects, listStart)
 }
 
 func (w *lifecycleWorld) flushFile(i int) {
@@ -182,7 +237,9 @@ func (w *lifecycleWorld) undelete() string {
 	}
 	sort.Slice(active, func(i, j int) bool { return active[i].ID < active[j].ID })
 	ts := active[w.rng.Intn(len(active))]
-	w.store.Remove(ts.ID)
+	if err := w.store.TryRemove(ts.ID); err != nil {
+		return "undelete " + ts.ID + " refused: " + err.Error()
+	}
 	if o, ok := w.tombstones[ts.ID]; ok {
 		o.undeleted = true
 	}
@@ -214,6 +271,7 @@ func (w *lifecycleWorld) compact() string {
 		RowGroupSize: 100, Tombstones: w.store, TombstoneRewriteDelay: propertyDelay,
 	})
 	if _, err := c.Compact(context.Background(), "dt=2026-07-09/hour=11", files, 0); err != nil {
+		// Only a lost publish race may abandon a merge, and nothing races here.
 		w.t.Fatalf("compact: %v", err)
 	}
 	return fmt.Sprintf("compact %d files", len(files))
@@ -235,12 +293,15 @@ func (w *lifecycleWorld) check(stage string) {
 	t.Helper()
 
 	storageinvariants.Assert(t, stage, storageinvariants.State{
-		Manifest: w.manifest, Bucket: w.pool, Tombstones: tombstoneViewsOf(w.store),
+		Manifest: w.manifest, Bucket: w.pool.mockPool, Tombstones: tombstoneViewsOf(w.store),
+		AwaitingDeletion: storageinvariants.AwaitingDeletionIn(w.manifest),
 	})
 
+	// "stored" is what the manifest serves: objects awaiting deletion are not
+	// readable by any query.
 	stored := map[string]int{}
 	var scanned int64
-	for _, k := range w.pool.Keys() {
+	for _, k := range storageinvariants.ManifestKeys(w.manifest) {
 		rows, err := readLogRows(w.pool.get(k))
 		if err != nil {
 			t.Fatalf("%s: read %s: %v", stage, k, err)
@@ -296,6 +357,27 @@ func (w *lifecycleWorld) check(stage string) {
 		}
 		if matchedByAny && !mayBeRemoved && stored[body] != 1 {
 			t.Fatalf("%s: P4 row %q is protected by the un-delete contract but is stored %d times", stage, body, stored[body])
+		}
+	}
+}
+
+// checkSettled is the strict end state: nothing awaits deletion, every object
+// is manifested, and no rewrite is unfinished.
+func (w *lifecycleWorld) checkSettled(stage string) {
+	w.t.Helper()
+	storageinvariants.Assert(w.t, stage, storageinvariants.State{
+		Manifest: w.manifest, Bucket: w.pool.mockPool, Tombstones: tombstoneViewsOf(w.store),
+	})
+	if rk := w.manifest.RetiredKeys(); len(rk) != 0 {
+		for _, r := range rk {
+			if w.pool.get(r.Key) != nil {
+				w.t.Fatalf("%s: retired object %s still in the bucket", stage, r.Key)
+			}
+		}
+	}
+	for _, ts := range w.store.Active() {
+		if len(ts.Superseded) != 0 {
+			w.t.Fatalf("%s: tombstone %s still has unfinished rewrites: %+v", stage, ts.ID, ts.Superseded)
 		}
 	}
 }

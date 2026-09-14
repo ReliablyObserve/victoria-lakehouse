@@ -229,6 +229,13 @@ type Manifest struct {
 	// 3×Interval, then HRW resumes normally. Same mutex as files map so
 	// AttemptsView is a coherent snapshot relative to the manifest.
 	partitionAttempts map[string]time.Time
+
+	// retired, pending and recentAdds keep the periodic refresh from adopting
+	// objects the manifest let go of or has not published yet, and from
+	// dropping files published while a listing ran. See retired.go.
+	retired    map[string]RetiredKey
+	pending    map[string]time.Time
+	recentAdds []recentAdd
 }
 
 func New(bucket, prefix string) *Manifest {
@@ -239,6 +246,8 @@ func New(bucket, prefix string) *Manifest {
 		partitionAttempts: make(map[string]time.Time),
 		byKey:             make(map[string]string),
 		tenantAggregates:  make(map[tenantAccumKey]*tenantAccum),
+		retired:           make(map[string]RetiredKey),
+		pending:           make(map[string]time.Time),
 		prefix:            prefix,
 		bucket:            bucket,
 	}
@@ -701,7 +710,13 @@ func (m *Manifest) listCommonPrefixes(ctx context.Context, client *s3.Client, pr
 // (reflection over FileInfo) keeps this from regressing when fields are added.
 // Files without explicit time bounds get [hour, hour+1h) inferred from the
 // partition key (pre-process files / post-restart lists).
-func (m *Manifest) mergeRefreshedFilesLocked(files map[string][]FileInfo) {
+//
+// Before any of that, keys the manifest retired or has pending are removed from
+// the listing and files published after listStart are kept (see retired.go).
+// Returns the retired keys the listing proves deleted, for the caller to forget
+// once the refresh is accepted.
+func (m *Manifest) mergeRefreshedFilesLocked(files map[string][]FileInfo, listStart time.Time) []string {
+	confirmedGone := m.refreshExclusionsLocked(files, listStart)
 	for partition, newFiles := range files {
 		oldFiles := m.files[partition]
 		if len(oldFiles) == 0 {
@@ -733,14 +748,15 @@ func (m *Manifest) mergeRefreshedFilesLocked(files map[string][]FileInfo) {
 			}
 		}
 	}
+	return confirmedGone
 }
 
 func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
-	var (
-		files      map[string][]FileInfo
-		totalFiles int
-		totalBytes int64
-	)
+	// The listing's start time bounds what it can know: an object published
+	// or removed after this instant may or may not be in the pages that follow.
+	listStart := time.Now()
+
+	var files map[string][]FileInfo
 
 	// When per-tenant prefix isolation is configured, the writer
 	// writes under "{AccountID}/{ProjectID}/<mode>/" — many distinct
@@ -758,29 +774,73 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	//   2. Full-bucket fallback: kept for the single-prefix template
 	//      and as a safety net if tenant discovery fails.
 	if strings.Contains(m.prefixTemplate, "{AccountID}") {
-		f, tf, tb, err := m.refreshTenantScoped(ctx, client)
+		f, _, _, err := m.refreshTenantScoped(ctx, client)
 		if err == nil {
-			files, totalFiles, totalBytes = f, tf, tb
+			files = f
 		} else {
 			// Tenant discovery failed; fall back to the legacy full-bucket
 			// LIST so a transient list failure doesn't drop the manifest.
 			logger.Warnf("tenant-scoped refresh failed (%s); falling back to full-bucket LIST", err)
-			f, tf, tb, ferr := m.refreshFullBucket(ctx, client, "")
+			f, _, _, ferr := m.refreshFullBucket(ctx, client, "")
 			if ferr != nil {
 				return ferr
 			}
-			files, totalFiles, totalBytes = f, tf, tb
+			files = f
 		}
 	} else {
-		f, tf, tb, err := m.refreshFullBucket(ctx, client, m.prefix)
+		f, _, _, err := m.refreshFullBucket(ctx, client, m.prefix)
 		if err != nil {
 			return err
 		}
-		files, totalFiles, totalBytes = f, tf, tb
+		files = f
 	}
 
-	var minT, maxT time.Time
-	for partition := range files {
+	m.applyRefreshedFiles(files, listStart)
+	return nil
+}
+
+// ListedObject is one object a bucket listing returned.
+type ListedObject struct {
+	Key  string
+	Size int64
+}
+
+// ApplyListing folds a bucket listing into the manifest exactly as the periodic
+// S3 refresh does, for listers other than the S3 client (and for tests that
+// drive a refresh against an in-memory bucket). listStart is when the listing
+// began. Non-Parquet keys and keys without a partition are ignored. Returns
+// false when the cliff guard rejected the listing.
+func (m *Manifest) ApplyListing(objects []ListedObject, listStart time.Time) bool {
+	files := make(map[string][]FileInfo)
+	for _, o := range objects {
+		if !strings.HasSuffix(o.Key, ".parquet") {
+			continue
+		}
+		partition := extractPartition(o.Key)
+		if partition == "" {
+			continue
+		}
+		files[partition] = append(files[partition], FileInfo{Key: o.Key, Size: o.Size})
+	}
+	return m.applyRefreshedFiles(files, listStart)
+}
+
+// applyRefreshedFiles replaces the tracked file set with a listing (merged per
+// mergeRefreshedFilesLocked). Returns false when the cliff guard rejected it.
+func (m *Manifest) applyRefreshedFiles(files map[string][]FileInfo, listStart time.Time) bool {
+	m.mu.Lock()
+	confirmedGone := m.mergeRefreshedFilesLocked(files, listStart)
+
+	var (
+		totalFiles int
+		totalBytes int64
+		minT, maxT time.Time
+	)
+	for partition, pFiles := range files {
+		totalFiles += len(pFiles)
+		for _, fi := range pFiles {
+			totalBytes += fi.Size
+		}
 		t, err := parsePartitionTime(partition)
 		if err != nil {
 			continue
@@ -793,9 +853,6 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 			maxT = end
 		}
 	}
-
-	m.mu.Lock()
-	m.mergeRefreshedFilesLocked(files)
 
 	// Cliff guard. A transient S3 LIST hiccup (toxiproxy spike, brief
 	// partial pagination, network blip mid-refresh) can return success
@@ -811,7 +868,7 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 		logger.Warnf("manifest refresh cliff-guard: rejecting refresh that lost %d/%d files; keeping previous state (likely transient S3 LIST hiccup)", m.totalFiles-totalFiles, m.totalFiles)
 		metrics.ManifestRefreshCliffGuardRejections.Inc()
 		m.mu.Unlock()
-		return nil
+		return false
 	}
 
 	m.files = files
@@ -823,6 +880,7 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	m.totalFiles = totalFiles
 	m.totalBytes = totalBytes
 	m.lastRefresh = time.Now()
+	m.afterAcceptedRefreshLocked(confirmedGone, listStart)
 	m.mu.Unlock()
 
 	metrics.StorageFilesTotal.Set(int64(totalFiles))
@@ -853,8 +911,7 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	}
 
 	logger.Infof("manifest refreshed; partitions=%d, files=%d, bytes=%d, min_time=%v, max_time=%v", len(files), totalFiles, totalBytes, minT, maxT)
-
-	return nil
+	return true
 }
 
 func (m *Manifest) HasDataForRange(startNs, endNs int64) bool {
@@ -1206,10 +1263,16 @@ func (m *Manifest) AllFiles() map[string][]FileInfo {
 	return snap
 }
 
+// RemoveFile drops key from partition and retires it, so a refresh that still
+// lists the object does not adopt it again. A key that is not registered is
+// retired all the same: the removal may be a peer's push for a file this node
+// has not adopted yet. The caller (retention, which deletes first; a peer push)
+// owns the object; see Retire for keys whose deletion this process owes.
 func (m *Manifest) RemoveFile(partition string, key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.removeFileLocked(partition, key)
+	m.retireLocked(RetiredKey{Key: key})
 }
 
 // removeFileLocked is RemoveFile's body without the lock so ReplaceFile can
@@ -1248,7 +1311,11 @@ func (m *Manifest) RemoveFileIfPresent(partition string, key string) bool {
 	if !m.keyInPartitionLocked(partition, key) {
 		return false
 	}
-	return m.removeFileLocked(partition, key)
+	if !m.removeFileLocked(partition, key) {
+		return false
+	}
+	m.retireLocked(RetiredKey{Key: key, Reclaim: true})
+	return true
 }
 
 // PartitionForKey returns the partition that owns the given file key. The
@@ -1286,6 +1353,7 @@ func (m *Manifest) ReplaceFile(partition string, oldKey string, fi FileInfo) boo
 		return false
 	}
 	m.removeFileLocked(partition, oldKey)
+	m.retireLocked(RetiredKey{Key: oldKey, By: fi.Key, Reclaim: true})
 	m.addFileLocked(partition, fi)
 	return true
 }
@@ -1310,6 +1378,7 @@ func (m *Manifest) ReplaceFiles(partition string, oldKeys []string, fi FileInfo)
 	}
 	for _, k := range oldKeys {
 		m.removeFileLocked(partition, k)
+		m.retireLocked(RetiredKey{Key: k, By: fi.Key, Reclaim: true})
 	}
 	m.addFileLocked(partition, fi)
 	return true
@@ -1517,6 +1586,7 @@ func (m *Manifest) addFileLocked(partition string, fi FileInfo) {
 		metrics.ManifestAddFileDuplicateKeyTotal.Inc()
 		return
 	}
+	m.noteAddedLocked(fi.Key, time.Now())
 
 	isNew := len(m.files[partition]) == 0
 	m.files[partition] = append(m.files[partition], fi)
@@ -1737,10 +1807,17 @@ type persistedManifest struct {
 	TotalFiles_ int                   `json:"total_files"`
 	TotalBytes_ int64                 `json:"total_bytes"`
 	SavedAt     time.Time             `json:"saved_at"`
+	// Retired carries the retired keys (see retired.go), so a restart does not
+	// re-adopt an object a publish replaced before its delete landed. Absent
+	// from snapshots written before it existed; decoding those yields none.
+	Retired []RetiredKey `json:"retired,omitempty"`
 }
 
 func (m *Manifest) SaveTo(path string) error {
 	now := time.Now()
+	m.mu.Lock()
+	m.pruneRetiredLocked(now)
+	m.mu.Unlock()
 	m.mu.RLock()
 	snap := persistedManifest{
 		Files:       m.files,
@@ -1749,6 +1826,10 @@ func (m *Manifest) SaveTo(path string) error {
 		TotalFiles_: m.totalFiles,
 		TotalBytes_: m.totalBytes,
 		SavedAt:     now,
+		Retired:     make([]RetiredKey, 0, len(m.retired)),
+	}
+	for _, rk := range m.retired {
+		snap.Retired = append(snap.Retired, rk)
 	}
 	m.mu.RUnlock()
 
@@ -1865,6 +1946,18 @@ func (m *Manifest) LoadFrom(path string) error {
 	m.rebuildIndex()
 	m.totalFiles = snap.TotalFiles_
 	m.totalBytes = snap.TotalBytes_
+	// Pending uploads and recent adds describe the previous process's in-flight
+	// work, not this one's; retired keys carry over (see retired.go).
+	m.pending = make(map[string]time.Time)
+	m.recentAdds = nil
+	m.retired = make(map[string]RetiredKey, len(snap.Retired))
+	for _, rk := range snap.Retired {
+		if _, tracked := m.byKey[rk.Key]; tracked {
+			continue
+		}
+		m.retired[rk.Key] = rk
+	}
+	m.pruneRetiredLocked(time.Now())
 	if snap.MinTimeNs != 0 {
 		m.minTime = time.Unix(0, snap.MinTimeNs)
 	}
