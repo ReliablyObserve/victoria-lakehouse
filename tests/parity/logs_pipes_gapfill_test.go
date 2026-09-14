@@ -34,15 +34,18 @@ func TestParity_PipesGapfill(t *testing.T) {
 	})
 
 	t.Run("math_functions", func(t *testing.T) {
+		// Log rows carry no `duration` field, so `duration:*` matched no row
+		// and every case here compared 0 with 0 (or NaN with NaN).
+		// severity_number is the corpus's numeric column.
 		cases := []ParityCase{
 			{Name: "math_multiply", Endpoint: statsEndpoint(), Params: map[string]string{
-				"query": "* duration:* | math duration * 2 as doubled | stats count() rows",
+				"query": "* severity_number:* | math severity_number * 2 as doubled | stats count() rows",
 			}, Compare: CountEqual},
 			{Name: "math_add", Endpoint: statsEndpoint(), Params: map[string]string{
-				"query": "* duration:* | math duration + 100 as shifted | stats count() rows",
+				"query": "* severity_number:* | math severity_number + 100 as shifted | stats count() rows",
 			}, Compare: CountEqual},
 			{Name: "math_division", Endpoint: statsEndpoint(), Params: map[string]string{
-				"query": "* duration:* | math duration / 1000 as dur_sec | stats avg(dur_sec) avg_dur",
+				"query": "* severity_number:* | math severity_number / 1000 as severity_scaled | stats avg(severity_scaled) avg_scaled",
 			}, Compare: CountTolerance, Tolerance: 0.05},
 		}
 		RunParity(t, vlBaseURL, lhBaseURL, cases)
@@ -53,11 +56,11 @@ func TestParity_PipesGapfill(t *testing.T) {
 			{Name: "dedup_by_level", Endpoint: queryEndpoint(), Params: map[string]string{
 				"query": "* | sort by(_time) desc | uniq by(level)",
 				"limit": "20",
-			}, Compare: SetEqual},
+			}, Compare: SetEqual, ValueField: "level"},
 			{Name: "dedup_by_service", Endpoint: queryEndpoint(), Params: map[string]string{
 				"query": "* | sort by(_time) desc | uniq by(service.name)",
 				"limit": "20",
-			}, Compare: SetEqual},
+			}, Compare: SetEqual, ValueField: "service.name"},
 		}
 		RunParity(t, vlBaseURL, lhBaseURL, cases)
 	})

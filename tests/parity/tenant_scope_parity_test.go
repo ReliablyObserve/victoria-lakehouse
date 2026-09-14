@@ -2,46 +2,46 @@
 
 package parity
 
-// Per-tenant parity coverage. Validates that:
+// Tenant-scoped behavior of the traces tier beyond the row, hits and
+// field-value reads TestTenantIsolation_Traces_PerTenantParity pins:
 //
-//   - A query with tenant header X returns data only for tenant X.
-//   - The sum-of-tenants equals the all-tenants total.
-//   - Tenant-scoped query results agree with the unscoped path
-//     filtered by tenant prefix.
-//   - Unknown tenants return empty cleanly (not full-corpus
-//     fall-through — which would be a serious data leak).
+//   - the manifest's per-tenant file and byte totals add up to the bucket
+//     overview (TestTenantParity_TenantCountsSumToTotal);
+//   - a tenant the stack never saw reads as empty on both tiers instead of
+//     falling through to another tenant's data
+//     (TestTenantParity_UnknownTenantReturnsEmpty);
+//   - the Jaeger dependencies graph and the Tempo trace search answer each
+//     seeded tenant with exactly what hot VictoriaTraces answers that tenant
+//     with (TestTenantParity_DependenciesAPI_RespectsScope,
+//     TestTenantParity_TraceQLPerTenant).
 //
-// These tests run against the cold tier (lakehouse-traces). They
-// exercise the GetFilesForRangeTenant() optimization from PB-scale
-// should-fix #2 — if that optimization regresses to returning all
-// tenants' files, the per-tenant counts here either drop below the
-// real values or leak data across tenants.
+// Every assertion is an exact expectation against a non-empty reference. The
+// two seeded tenants share service names, so the only thing that separates a
+// scoped answer from one that leaks the other tenant's data is a count or an
+// id set — never a status code, a self-consistency check or a `>=`.
 
 import (
 	"encoding/json"
-	"fmt"
-	"net/http"
+	"maps"
 	"net/url"
-	"strings"
+	"strconv"
 	"testing"
 	"time"
 )
 
-// TestTenantParity_TenantCountsSumToTotal pins the conservation
-// invariant: total rows for tenant X + tenant Y + ... must equal
-// the bucket-wide total (when no specific tenant header is set the
-// LH default scopes to tenant 0:0, but the admin /tenants summary
-// covers every tenant).
+// TestTenantParity_TenantCountsSumToTotal pins the manifest accounting: the
+// per-tenant file and byte totals must add up to the bucket overview.
 func TestTenantParity_TenantCountsSumToTotal(t *testing.T) {
-	tenants := listTenants(t, lhtBaseURL)
-	if len(tenants) < 2 {
-		t.Skipf("need at least 2 tenants for sum check, got %d", len(tenants))
-	}
+	tenants := requireSeededTenants(t)
 
 	var sumFiles, sumBytes int64
 	for _, te := range tenants {
 		sumFiles += te.TotalFiles
 		sumBytes += te.TotalBytes
+	}
+	if sumFiles == 0 {
+		t.Fatalf("the manifest lists %d tenants and no files — flush defect, not an "+
+			"accounting result", len(tenants))
 	}
 
 	overview := fetchOverview(t, lhtBaseURL)
@@ -55,140 +55,148 @@ func TestTenantParity_TenantCountsSumToTotal(t *testing.T) {
 	}
 }
 
-// TestTenantParity_PerTenantQueryReturnsOnlyOwnedData is the security
-// invariant: a query with tenant X's header must return exactly tenant X's
-// rows — never rows belonging to tenant Y.
-//
-// The reference is the hot tier (VT), which scopes by tenant natively: for
-// every tenant the cold tier knows, the cold scoped count must EQUAL the hot
-// scoped count over the same settled window. On top of that, when two or more
-// tenants hold data, no single tenant's count may reach the sum of all
-// tenants — which is exactly what a read that ignores the tenant returns.
-//
-// (An earlier version compared each tenant's count with the sum of the same
-// counts, which can never fail.)
-func TestTenantParity_PerTenantQueryReturnsOnlyOwnedData(t *testing.T) {
-	tenants := listTenants(t, lhtBaseURL)
-	if len(tenants) < 2 {
-		t.Skipf("need at least 2 tenants, got %d", len(tenants))
-	}
-
-	// A window that ended a few minutes ago, so both tiers have settled.
-	now := time.Now()
-	params := url.Values{
-		"query": {"* | stats count() as n"},
-		"start": {fmt.Sprintf("%d", now.Add(-65*time.Minute).UnixNano())},
-		"end":   {fmt.Sprintf("%d", now.Add(-5*time.Minute).UnixNano())},
-	}
-
-	var sumCold, sumHot, withData int
-	cold := make(map[string]int, len(tenants))
-	for _, te := range tenants {
-		key := te.AccountID + ":" + te.ProjectID
-		cold[key] = withTenantHeader(t, lhtBaseURL, "/select/logsql/stats_query", params, te.AccountID, te.ProjectID)
-		hot := withTenantHeader(t, vtBaseURL, "/select/logsql/stats_query", params, te.AccountID, te.ProjectID)
-		if cold[key] != hot {
-			t.Errorf("tenant %s: cold scoped count %d, hot scoped count %d — the cold tier must answer "+
-				"a tenant-scoped read with exactly that tenant's rows", key, cold[key], hot)
-		}
-		sumCold += cold[key]
-		sumHot += hot
-		if cold[key] > 0 {
-			withData++
-		}
-	}
-	if sumCold != sumHot {
-		t.Errorf("sum over tenants: cold %d, hot %d", sumCold, sumHot)
-	}
-	if withData >= 2 {
-		for key, n := range cold {
-			if n >= sumCold {
-				t.Errorf("tenant %s scoped count %d reaches the all-tenant total %d although other tenants hold data — "+
-					"the read is not scoped to the tenant", key, n, sumCold)
-			}
-		}
-	}
-}
-
-// TestTenantParity_UnknownTenantReturnsEmpty pins the "no data leak
-// on unauthorized scope" invariant. A query with a tenant header for
-// an account/project that doesn't exist in the manifest must return
-// 0 rows — NOT fall through to the global scan, which would let a
-// bad header bypass tenant isolation.
+// TestTenantParity_UnknownTenantReturnsEmpty pins that a read for a tenant
+// with no data answers 0 rather than falling through to a global scan, which
+// would let a made-up header read another tenant's spans. The same read for
+// the seeded default tenant is the control: without it, a 0 would only prove
+// that the window is empty.
 func TestTenantParity_UnknownTenantReturnsEmpty(t *testing.T) {
-	scoped := withTenantHeader(t, lhtBaseURL,
-		"/select/logsql/stats_query",
-		url.Values{"query": {"_time:1h * | stats count() as n"}},
-		"99999", "99999",
-	)
-	if scoped != 0 {
-		t.Errorf("unknown tenant returned %d rows, want 0 (no cross-tenant fallthrough)", scoped)
+	const query = "span_id:* | stats count() rows"
+	for _, tier := range []struct{ name, base string }{
+		{"VT", vtBaseURL},
+		{"LHT", lhtBaseURL},
+	} {
+		t.Run(tier.name, func(t *testing.T) {
+			seeded := tenantStatsCount(t, tier.base, query, "0", "0")
+			if seeded <= 0 {
+				t.Fatalf("control read for the seeded tenant 0:0 returned %d spans — seed "+
+					"or query defect: a zero for the unknown tenant would prove nothing", seeded)
+			}
+			if got := tenantStatsCount(t, tier.base, query, "99999", "99999"); got != 0 {
+				t.Errorf("tenant 99999:99999 read %d spans, want 0 — a tenant with no data "+
+					"must not fall through to another tenant's (tenant 0:0 holds %d)", got, seeded)
+			}
+		})
 	}
 }
 
-// TestTenantParity_DependenciesAPI_RespectsScope pins that the
-// Jaeger Dependencies endpoint is tenant-scoped. Two tenants must
-// see independent edge sets; one tenant must not see the other's.
+// TestTenantParity_DependenciesAPI_RespectsScope asserts that the Jaeger
+// dependencies graph each tier serves a tenant carries exactly the call
+// counts hot VictoriaTraces derives from that tenant's spans.
+//
+// Each service-graph task tick persists one snapshot covering its whole
+// lookbehind, stamped with the tick's window end truncated to the task
+// interval: 30s on hot and 1m on cold (tests/parity/docker-compose.yml). A
+// whole minute is therefore a stamp both tiers write, and a snapshot stamped
+// after this test started was computed after the stack settled, over the
+// complete corpus. The request is pinned to that one snapshot; reading a
+// longer lookback would sum every snapshot in it and scale each count by how
+// many ticks the tier happened to run.
 func TestTenantParity_DependenciesAPI_RespectsScope(t *testing.T) {
-	tenants := listTenants(t, lhtBaseURL)
-	if len(tenants) < 2 {
-		t.Skip("need at least 2 tenants")
+	tenants := requireSeededTenants(t)
+
+	notBefore := time.Now()
+	deadline := notBefore.Add(4 * time.Minute)
+	var tick time.Time
+	var graphs map[string]map[string]map[depEdgeKey]int
+	var missing string
+	for {
+		tick, graphs, missing = latestCommonServiceGraphTick(t, tenants, notBefore)
+		if graphs != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no service-graph snapshot stamped after %s reached both tiers for every "+
+				"tenant within 4m (newest candidate: %s) — the servicegraph task is not "+
+				"producing per-tenant edges on one tier", notBefore.UTC().Format(time.RFC3339), missing)
+		}
+		time.Sleep(10 * time.Second)
 	}
 
-	depsForTenant := func(acc, proj string) int {
-		req, _ := http.NewRequest("GET", lhtBaseURL+"/select/jaeger/api/dependencies?lookback=3600000", nil)
-		req.Header.Set("AccountID", acc)
-		req.Header.Set("ProjectID", proj)
-		resp, err := httpClient.Do(req)
-		if err != nil {
-			return -1
-		}
-		defer func() { _ = resp.Body.Close() }()
-		var d struct {
-			Total int `json:"total"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&d)
-		return d.Total
+	first, second := tenants[0].AccountID, tenants[1].AccountID
+	if maps.Equal(graphs["VT"][first], graphs["VT"][second]) {
+		t.Fatalf("hot answers tenants %s and %s with the same graph — the seed cannot tell "+
+			"a scoped graph from a leaking one", first, second)
 	}
 
-	a := depsForTenant(tenants[0].AccountID, tenants[0].ProjectID)
-	b := depsForTenant(tenants[1].AccountID, tenants[1].ProjectID)
-	if a < 0 || b < 0 {
-		t.Skip("dependencies API not reachable per-tenant")
-	}
-	// At minimum: a query with the default-tenant header must agree
-	// with itself when called twice in a row.
-	a2 := depsForTenant(tenants[0].AccountID, tenants[0].ProjectID)
-	if a != a2 {
-		t.Errorf("dependencies count not idempotent for tenant %s:%s: %d vs %d",
-			tenants[0].AccountID, tenants[0].ProjectID, a, a2)
+	for _, te := range tenants {
+		t.Run("account_"+te.AccountID, func(t *testing.T) {
+			hot := graphs["VT"][te.AccountID]
+			cold := graphs["LHT"][te.AccountID]
+			for edge, want := range hot {
+				if got, ok := cold[edge]; !ok {
+					t.Errorf("edge %s -> %s: missing on cold, hot callCount %d", edge.parent, edge.child, want)
+				} else if got != want {
+					t.Errorf("edge %s -> %s: cold callCount %d, hot %d — a graph scoped to "+
+						"one tenant must count that tenant's calls only (see B6 in "+
+						"docs/parity-and-gaps.md)", edge.parent, edge.child, got, want)
+				}
+			}
+			for edge, got := range cold {
+				if _, ok := hot[edge]; !ok {
+					t.Errorf("edge %s -> %s (callCount %d) is on cold only", edge.parent, edge.child, got)
+				}
+			}
+			t.Logf("snapshot %s, account %s: hot %d edges / %d calls, cold %d edges / %d calls",
+				tick.UTC().Format(time.RFC3339), te.AccountID, len(hot), sumCalls(hot), len(cold), sumCalls(cold))
+		})
 	}
 }
 
-// TestTenantParity_TraceQLPerTenant pins that Tempo TraceQL search
-// respects tenant headers. Two requests with different headers may
-// return different traces but each must be self-consistent.
+// TestTenantParity_TraceQLPerTenant asserts that a Tempo search scoped to a
+// tenant returns exactly the traces hot VictoriaTraces returns for it. Trace
+// ids are random per seed, so a search that leaks the other tenant's traces
+// shows up as extra ids rather than hiding inside a count.
 func TestTenantParity_TraceQLPerTenant(t *testing.T) {
-	tenants := listTenants(t, lhtBaseURL)
-	if len(tenants) == 0 {
-		t.Skip("no tenants")
+	tenants := requireSeededTenants(t)
+
+	// Three hours from the middle of the seeded day: tens of traces per
+	// tenant, far below the search limit, so each answer is the complete set
+	// rather than whichever traces a limit happened to keep.
+	mid := seedWindowMidpoint()
+	start, end := mid.Add(-90*time.Minute), mid.Add(90*time.Minute)
+
+	hot := make(map[string][]string, len(tenants))
+	owner := map[string]string{}
+	for _, te := range tenants {
+		ids := tempoTraceIDs(t, vtBaseURL, start, end, te.AccountID, te.ProjectID)
+		if len(ids) == 0 {
+			t.Fatalf("hot reference for account %s returned no traces between %s and %s — "+
+				"seed or query defect, not parity", te.AccountID, start.UTC().Format(time.RFC3339),
+				end.UTC().Format(time.RFC3339))
+		}
+		for _, id := range ids {
+			if other, seen := owner[id]; seen {
+				t.Fatalf("hot returns trace %s for both account %s and account %s — the seed "+
+					"cannot tell a scoped search from a leaking one", id, other, te.AccountID)
+			}
+			owner[id] = te.AccountID
+		}
+		hot[te.AccountID] = ids
 	}
-	now := time.Now().Unix()
-	start := now - 600
-	for _, te := range tenants[:1] { // just the first to keep fast
-		req, _ := http.NewRequest("GET",
-			fmt.Sprintf("%s/select/tempo/api/search?q=%%7B%%7D&limit=3&start=%d&end=%d", lhtBaseURL, start, now),
-			nil)
-		req.Header.Set("AccountID", te.AccountID)
-		req.Header.Set("ProjectID", te.ProjectID)
-		resp, err := httpClient.Do(req)
-		if err != nil {
-			continue
-		}
-		_ = resp.Body.Close()
-		if resp.StatusCode != 200 {
-			t.Errorf("tenant %s:%s TraceQL returned %d", te.AccountID, te.ProjectID, resp.StatusCode)
-		}
+
+	for _, te := range tenants {
+		t.Run("account_"+te.AccountID, func(t *testing.T) {
+			want := hot[te.AccountID]
+			got := tempoTraceIDs(t, lhtBaseURL, start, end, te.AccountID, te.ProjectID)
+			wantSet, gotSet := stringSet(want), stringSet(got)
+			for _, id := range want {
+				if !gotSet[id] {
+					t.Errorf("trace %s is missing on cold", id)
+				}
+			}
+			for _, id := range got {
+				if !wantSet[id] {
+					if other, ok := owner[id]; ok {
+						t.Errorf("trace %s belongs to account %s — a search scoped to account "+
+							"%s must not return it (see B6 in docs/parity-and-gaps.md)", id, other, te.AccountID)
+					} else {
+						t.Errorf("trace %s is on cold only", id)
+					}
+				}
+			}
+			t.Logf("account %s: hot %d traces, cold %d", te.AccountID, len(want), len(got))
+		})
 	}
 }
 
@@ -202,16 +210,24 @@ type tenantSummary struct {
 	TotalRows  int64  `json:"total_rows"`
 }
 
-func listTenants(t *testing.T, base string) []tenantSummary {
+// requireSeededTenants returns the tenants the cold traces manifest lists and
+// fails unless it lists at least the two the parity compose seeds.
+func requireSeededTenants(t *testing.T) []tenantSummary {
 	t.Helper()
-	r := fetch(t, base, "/lakehouse/api/v1/tenants", nil)
+	r := fetch(t, lhtBaseURL, "/lakehouse/api/v1/tenants", nil)
 	if r.StatusCode != 200 {
-		return nil
+		t.Fatalf("GET /lakehouse/api/v1/tenants returned %d: %s", r.StatusCode, string(r.Body))
 	}
 	var d struct {
 		Tenants []tenantSummary `json:"tenants"`
 	}
-	_ = json.Unmarshal(r.Body, &d)
+	if err := json.Unmarshal(r.Body, &d); err != nil {
+		t.Fatalf("parse /lakehouse/api/v1/tenants: %v", err)
+	}
+	if len(d.Tenants) < 2 {
+		t.Fatalf("need the two seeded tenants, the manifest lists %d — check the "+
+			"datagen-seed-tenant2 service in tests/parity/docker-compose.yml", len(d.Tenants))
+	}
 	return d.Tenants
 }
 
@@ -224,58 +240,147 @@ type overviewResp struct {
 func fetchOverview(t *testing.T, base string) overviewResp {
 	t.Helper()
 	r := fetch(t, base, "/lakehouse/api/v1/stats/overview", nil)
+	if r.StatusCode != 200 {
+		t.Fatalf("GET /lakehouse/api/v1/stats/overview returned %d: %s", r.StatusCode, string(r.Body))
+	}
 	var o overviewResp
-	if r.StatusCode == 200 {
-		_ = json.Unmarshal(r.Body, &o)
+	if err := json.Unmarshal(r.Body, &o); err != nil {
+		t.Fatalf("parse /lakehouse/api/v1/stats/overview: %v", err)
 	}
 	return o
 }
 
-func withTenantHeader(t *testing.T, base, path string, params url.Values, acc, proj string) int {
+// tenantStatsCount runs a single-value stats query over the seeded window with
+// tenant headers. Every failure is fatal: a reader that turns a failed request
+// into 0 cannot tell "no data" from "request failed", and 0 is exactly what
+// a tenant-scope assertion is looking for.
+func tenantStatsCount(t *testing.T, base, query, account, project string) int {
 	t.Helper()
-	u := base + path
-	if len(params) > 0 {
-		u += "?" + params.Encode()
+	params := seedWindowParams()
+	params.Set("query", query)
+	r := tenantFetch(t, base, "/select/logsql/stats_query", params, account, project)
+	if r.StatusCode != 200 {
+		t.Fatalf("%s stats_query for tenant %s:%s returned %d: %s",
+			base, account, project, r.StatusCode, string(r.Body))
 	}
-	req, err := http.NewRequest("GET", u, nil)
+	v, err := extractVectorCount(r.Body)
 	if err != nil {
-		t.Fatalf("build request: %v", err)
+		t.Fatalf("%s stats_query for tenant %s:%s: %v", base, account, project, err)
 	}
-	req.Header.Set("AccountID", acc)
-	req.Header.Set("ProjectID", proj)
-	// Transport errors, non-200 answers and undecodable bodies FAIL the test.
-	// Mapping them to 0 made "unknown tenant returns 0 rows" pass on an error.
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("GET %s as tenant %s:%s: %v", u, acc, proj, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET %s as tenant %s:%s: status %d", u, acc, proj, resp.StatusCode)
-	}
-	var d struct {
-		Data struct {
-			Result []struct {
-				Value [2]any `json:"value"`
-			} `json:"result"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
-		t.Fatalf("decode %s as tenant %s:%s: %v", u, acc, proj, err)
-	}
-	if len(d.Data.Result) == 0 {
-		return 0
-	}
-	v := d.Data.Result[0].Value[1]
-	switch x := v.(type) {
-	case string:
-		var n int
-		_, _ = fmt.Sscanf(x, "%d", &n)
-		return n
-	case float64:
-		return int(x)
-	}
-	return 0
+	return int(v)
 }
 
-var _ = strings.HasPrefix // keep strings import for potential future use
+type depEdgeKey struct{ parent, child string }
+
+// snapshotWindowHalfWidth brackets a service-graph stamp. It must stay well
+// under the shortest task interval (30s) so the window admits exactly one
+// snapshot, and above zero so no bound of the window lands exactly on the
+// stamp: a bound on a row's own timestamp is a separate boundary behavior,
+// pinned by TestParity_TimeRange/boundary_ns*, and must not decide this test.
+const snapshotWindowHalfWidth = time.Second
+
+// dependenciesAtTick reads a tenant's Jaeger dependencies graph pinned to the
+// snapshot stamped at tick, through a window of snapshotWindowHalfWidth on
+// each side of the stamp.
+func dependenciesAtTick(t *testing.T, base string, tick time.Time, account, project string) map[depEdgeKey]int {
+	t.Helper()
+	params := url.Values{
+		"endTs":    {strconv.FormatInt(tick.Add(snapshotWindowHalfWidth).UnixMilli(), 10)},
+		"lookback": {strconv.FormatInt((2 * snapshotWindowHalfWidth).Milliseconds(), 10)},
+	}
+	r := tenantFetch(t, base, "/select/jaeger/api/dependencies", params, account, project)
+	if r.StatusCode != 200 {
+		t.Fatalf("%s dependencies for tenant %s:%s returned %d: %s",
+			base, account, project, r.StatusCode, string(r.Body))
+	}
+	edges := map[depEdgeKey]int{}
+	for _, e := range parseDependenciesResponse(t, r.Body).Data {
+		edges[depEdgeKey{e.Parent, e.Child}] += e.CallCount
+	}
+	return edges
+}
+
+// latestCommonServiceGraphTick walks back from the current minute to
+// notBefore and returns the newest whole-minute snapshot that both tiers
+// hold for every tenant, with the graphs read at it keyed by tier name and
+// account. While no such snapshot exists it returns nil graphs and names the
+// first tier and tenant the newest candidate was missing for.
+func latestCommonServiceGraphTick(t *testing.T, tenants []tenantSummary, notBefore time.Time) (time.Time, map[string]map[string]map[depEdgeKey]int, string) {
+	t.Helper()
+	tiers := []struct{ name, base string }{{"VT", vtBaseURL}, {"LHT", lhtBaseURL}}
+	missing := "no whole minute has passed since the test started"
+	newest := true
+	for tick := time.Now().Truncate(time.Minute); !tick.Before(notBefore); tick = tick.Add(-time.Minute) {
+		graphs := map[string]map[string]map[depEdgeKey]int{}
+		gap := ""
+		for _, tier := range tiers {
+			graphs[tier.name] = map[string]map[depEdgeKey]int{}
+			for _, te := range tenants {
+				edges := dependenciesAtTick(t, tier.base, tick, te.AccountID, te.ProjectID)
+				if len(edges) == 0 {
+					gap = tier.name + " account " + te.AccountID
+					break
+				}
+				graphs[tier.name][te.AccountID] = edges
+			}
+			if gap != "" {
+				break
+			}
+		}
+		if gap == "" {
+			return tick, graphs, ""
+		}
+		if newest {
+			missing = tick.UTC().Format(time.RFC3339) + " has no edges on " + gap
+			newest = false
+		}
+	}
+	return time.Time{}, nil, missing
+}
+
+func sumCalls(edges map[depEdgeKey]int) int {
+	total := 0
+	for _, n := range edges {
+		total += n
+	}
+	return total
+}
+
+// tempoSearchLimit is the largest `limit` VictoriaTraces accepts on
+// /select/tempo/api/search; larger values are clamped to it.
+const tempoSearchLimit = 1000
+
+// tempoTraceIDs returns the sorted trace ids a tenant-scoped Tempo search for
+// every trace (`{}`) answers with between start and end. An answer that fills
+// the limit may be truncated, so it fails instead of being compared.
+func tempoTraceIDs(t *testing.T, base string, start, end time.Time, account, project string) []string {
+	t.Helper()
+	params := url.Values{
+		"q":     {"{}"},
+		"limit": {strconv.Itoa(tempoSearchLimit)},
+		"start": {strconv.FormatInt(start.Unix(), 10)},
+		"end":   {strconv.FormatInt(end.Unix(), 10)},
+	}
+	r := tenantFetch(t, base, "/select/tempo/api/search", params, account, project)
+	if r.StatusCode != 200 {
+		t.Fatalf("%s tempo search for tenant %s:%s returned %d: %s",
+			base, account, project, r.StatusCode, string(r.Body))
+	}
+	var resp struct {
+		Traces []struct {
+			TraceID string `json:"traceID"`
+		} `json:"traces"`
+	}
+	if err := json.Unmarshal(r.Body, &resp); err != nil {
+		t.Fatalf("parse %s tempo search for tenant %s:%s: %v", base, account, project, err)
+	}
+	if len(resp.Traces) >= tempoSearchLimit {
+		t.Fatalf("%s tempo search for tenant %s:%s filled the %d-trace limit — the answer "+
+			"may be truncated, so narrow the window", base, account, project, tempoSearchLimit)
+	}
+	ids := make([]string, 0, len(resp.Traces))
+	for _, tr := range resp.Traces {
+		ids = append(ids, tr.TraceID)
+	}
+	return sortedStrings(ids)
+}
