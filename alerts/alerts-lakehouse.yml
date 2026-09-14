@@ -163,9 +163,42 @@ groups:
           description: "Deletes of superseded or abandoned Parquet objects have kept failing for an hour. They stay out of the manifest, so no row is served twice, but they occupy storage, keep their tombstones active, and are forgotten by the manifest after 7 days — after which a refresh would serve them again. Check S3 delete permissions."
 
       - alert: LakehouseManifestRetiredKeyEvicted
-        expr: increase(lakehouse_manifest_retired_evicted_total[1h]) > 0
+        expr: increase(lakehouse_manifest_retired_evicted_total{reason!="ttl"}[1h]) > 0
         labels:
           severity: warning
         annotations:
           summary: "The manifest forgot a retired key before its object was deleted"
-          description: "{{ $value }} retired key(s) reached the age or size bound. If their objects still exist, the next manifest refresh serves their rows again next to the files that replaced them. Delete the listed leftovers or investigate why their deletes never succeeded."
+          description: "{{ $value }} retired key(s) reached the size bound. If their objects still exist, the next manifest refresh serves their rows again next to the files that replaced them. List what is outstanding on the instance with GET /delete/logsql/leftovers (traces: /delete/tracessql/leftovers), then delete those objects or fix why their deletes never succeeded."
+
+      - alert: LakehouseManifestRetiredKeyEvictedWithDeleteOwed
+        expr: increase(lakehouse_manifest_retired_evicted_total{reason="cap_delete_owed"}[1h]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "The manifest forgot a key whose object it still owed a delete for"
+          description: "{{ $value }} key(s) this instance superseded were dropped from the retired set while their objects were still in the bucket. The next refresh adopts them: their rows are served next to the files that replaced them, and rows a delete removed come back. List them with GET /delete/logsql/leftovers and delete the objects by hand. lakehouse_manifest_retired_delete_owed shows how close the set is to its bound."
+
+      - alert: LakehouseTombstoneRestoreFailed
+        expr: increase(lakehouse_delete_startup_inconsistencies_total{kind="s3_restore_failed"}[1h]) > 0 and on() lakehouse_delete_tombstone_restore_pending > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "The tombstone store could not be read from S3"
+          description: "This instance started without the S3 copy of the tombstone store. Deletes made on other nodes are NOT enforced here (their rows are visible in queries), and every interrupted rewrite stays unresolved until the read succeeds. It is retried every minute; check S3 read permissions for the _tombstones/ prefix. GET /delete/logsql/leftovers reports s3_restore_pending and what is outstanding."
+
+      - alert: LakehouseTombstoneRecordNotDurable
+        expr: increase(lakehouse_delete_tombstone_not_durable_total[30m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Delete rewrites are held: their records are not reaching durable storage"
+          description: "{{ $value }} tombstone change(s) could not be confirmed durable in 30 minutes, so no rewrite deleted the object it superseded (nothing is lost — the rewrites wait). lakehouse_delete_rewrite_deferred_total{reason=\"not_durable\"} counts the deferrals and lakehouse_delete_tombstone_persist_pending the backlog; check S3 write permissions for the _tombstones/ prefix."
+
+      - alert: LakehouseDeleteRewritesUnfinished
+        expr: lakehouse_delete_rewrites_unfinished > 0
+        for: 2h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Delete rewrites have been unfinished for hours"
+          description: "{{ $value }} rewrite record(s) are still open: a replacement is uploaded or published but its superseded object has not been deleted. GET /delete/logsql/leftovers lists them with their state. Drain these to zero before rolling back to a release before v0.10.x — an older binary drops the records and nothing would finish them (see docs/operations.md → Rolling back)."

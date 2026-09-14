@@ -39,17 +39,32 @@ type ManifestUpdater interface {
 	// scheduler re-reads it before retiring a tombstone.
 	GetFilesForRange(startNs, endNs int64) []manifest.FileInfo
 
-	// MarkPending keeps a periodic refresh from adopting a replacement between
-	// its upload and its publish; AbandonPending retires one that will never be
-	// published. Retire / UnretireIfReplacedBy / ForgetRetired / LookupRetired
-	// let an interrupted rewrite be finished or undone after a restart without
-	// the refresh re-adopting the object it let go of. See manifest/retired.go.
-	MarkPending(key string)
+	// ClaimPending reserves the replacement key before it is uploaded — no
+	// refresh adopts it, and no other writer can take the same key;
+	// ReleasePending gives the claim back when nothing was written and
+	// AbandonPending retires an upload that will never be published.
+	// Retire / UnretireIfReplacedBy / ForgetRetired / LookupRetired let an
+	// interrupted rewrite be finished or undone after a restart without the
+	// refresh re-adopting the object it let go of. Hold / Release keep another
+	// publish from superseding a replacement whose swap is not durable yet.
+	// Listed reports whether the manifest has seen a bucket listing in this
+	// process, without which an absent key says nothing about the object.
+	// ExpectInListing / AwaitingListing cover the same blind spot for one key
+	// after a listing has run: an undone rewrite's source is back to being the
+	// live copy of its rows, but its entry only returns with the next refresh.
+	// See manifest/retired.go.
+	ClaimPending(key string) bool
+	ReleasePending(key string)
 	AbandonPending(key string)
 	Retire(key, by string, reclaim bool) bool
 	UnretireIfReplacedBy(key, replacement string) bool
 	ForgetRetired(key string)
 	LookupRetired(key string) (manifest.RetiredKey, bool)
+	Hold(key string)
+	Release(key string)
+	Listed() bool
+	ExpectInListing(key string)
+	AwaitingListing(key string) bool
 }
 
 // removedByRewrite is the "replaced by" a source records when a rewrite removed
@@ -72,6 +87,11 @@ func replacedBy(newKey string) string {
 // rewrite and the compacted output) and bring the deleted rows back through the
 // compacted copy. The tombstone then follows the rows to that compacted output.
 var errSourceSuperseded = errors.New("rewrite source was superseded before publish")
+
+// errReplacementKeyTaken reports that the key chosen for a replacement is
+// already a file the manifest serves. The replacement must NOT be deleted in
+// that case: the object under that key may be the other file.
+var errReplacementKeyTaken = errors.New("replacement key already belongs to a registered file")
 
 // publishRewrite moves a rewritten object's registration into the manifest.
 //
@@ -126,6 +146,14 @@ func publishRewrite(m ManifestUpdater, result *RewriteResult) (*manifest.FileInf
 	fi := rewrittenFileInfo(old, result)
 
 	if !m.ReplaceFile(partition, result.OldKey, fi) {
+		if m.HasKey(result.NewKey) {
+			// The replacement key belongs to a file this manifest already
+			// serves. The claim taken before the upload makes this
+			// unreachable within one process; refuse loudly rather than
+			// delete an object that is not ours.
+			metrics.DeleteRewriteKeyCollisions.Inc()
+			return nil, fmt.Errorf("%w: %s", errReplacementKeyTaken, result.NewKey)
+		}
 		return nil, refusedPublish(m, result.OldKey)
 	}
 

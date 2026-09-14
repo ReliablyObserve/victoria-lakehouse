@@ -301,6 +301,12 @@ func run(cfg *config.Config, addr string) {
 	// Arm write-through durability AFTER the restore so replaying the restored
 	// records does not rewrite every object back out.
 	tombstoneStore.EnablePersistence(tombstonePersistence)
+	// A restore that could not read S3 leaves this node enforcing an incomplete
+	// set of deletes, so keep retrying in the background. The rewrite scheduler
+	// retries on every pass too, but it may be disabled on this node.
+	if tombstoneStore.S3RestorePending() {
+		go tombstoneStore.RunRestoreRetry(context.Background(), time.Minute)
+	}
 	// The restore re-queues the S3 delete of any removed tombstone whose stale
 	// S3 copy survived a crash. Drain that now rather than at the first rewrite
 	// scheduler tick: the scheduler may be disabled on this node.
@@ -2176,6 +2182,13 @@ func (a *s3PoolAdapter) HeadObject(ctx context.Context, key string) (int64, time
 type manifestQuerierAdapter struct {
 	m *manifest.Manifest
 }
+
+// RetiredKeys / PendingKeys back the read-only {prefix}/leftovers listing: the
+// objects this instance has stopped serving but not deleted yet, and the
+// uploads it has claimed but not published (delete.LeftoverLister).
+func (a *manifestQuerierAdapter) RetiredKeys() []manifest.RetiredKey { return a.m.RetiredKeys() }
+
+func (a *manifestQuerierAdapter) PendingKeys() []manifest.PendingKey { return a.m.PendingKeys() }
 
 func (a *manifestQuerierAdapter) GetFilesForRange(startNs, endNs int64) []delete.FileInfo {
 	mFiles := a.m.GetFilesForRange(startNs, endNs)

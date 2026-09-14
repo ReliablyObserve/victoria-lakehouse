@@ -179,7 +179,7 @@ func TestCheck_ObjectsAwaitingDeletionAreAccountedFor(t *testing.T) {
 		t.Fatalf("an object the manifest retired is expected residue, got %v", v)
 	}
 	pending := key("uploading")
-	m.MarkPending(pending)
+	m.ClaimPending(pending)
 	if v := Check(State{Manifest: m, Bucket: append(withRetired, pending), AwaitingDeletion: AwaitingDeletionIn(m)}); len(v) != 0 {
 		t.Fatalf("an unpublished upload is expected residue, got %v", v)
 	}

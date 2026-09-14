@@ -131,7 +131,7 @@ func (s *TombstoneStore) owePendingS3DeletesLocked(ids []string) {
 	if p := s.persist; p != nil {
 		p.mu.Lock()
 		for _, id := range ids {
-			p.pending[id] = pendingDelete
+			p.pending[id] = pendingEntry{op: pendingDelete, ver: s.bumpLocked(id)}
 		}
 		p.mu.Unlock()
 		return

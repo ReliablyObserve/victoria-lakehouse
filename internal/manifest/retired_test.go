@@ -54,7 +54,7 @@ func TestRetire_ASecondRetirementNeverDropsAnOwedReclaim(t *testing.T) {
 func TestAddFile_ClearsPendingAndRetired(t *testing.T) {
 	a, b := refreshKey("a"), refreshKey("b")
 	m := New("b", "")
-	m.MarkPending(a)
+	m.ClaimPending(a)
 	m.Retire(b, "", true)
 	m.AddFile(refreshPartition, enriched(a, 1))
 	m.AddFile(refreshPartition, enriched(b, 1))
@@ -66,7 +66,7 @@ func TestAddFile_ClearsPendingAndRetired(t *testing.T) {
 func TestAbandonPending_RetiresForReclaim(t *testing.T) {
 	k := refreshKey("out")
 	m := New("b", "")
-	m.MarkPending(k)
+	m.ClaimPending(k)
 	m.AbandonPending(k)
 	if m.IsPending(k) {
 		t.Fatal("an abandoned upload is no longer pending")
@@ -94,7 +94,7 @@ func TestUnretire(t *testing.T) {
 	if !m.Unretire(k) || m.IsRetired(k) {
 		t.Fatal("Unretire must forget the retirement")
 	}
-	m.MarkPending(k)
+	m.ClaimPending(k)
 	if !m.Unretire(k) || m.IsPending(k) {
 		t.Fatal("Unretire must forget a pending mark too")
 	}
@@ -180,7 +180,19 @@ func TestReclaimRetired(t *testing.T) {
 	}
 }
 
+// withSmallBounds shrinks the retired/recent-add caps for the tests that check
+// eviction ORDER: which key goes first is the behaviour, and a 100,000-entry
+// set proves nothing extra while costing minutes under -race. The production
+// values are restored when the test ends.
+func withSmallBounds(t *testing.T, retired, adds int) {
+	t.Helper()
+	oldRetired, oldAdds := maxRetiredKeys, maxRecentAdds
+	maxRetiredKeys, maxRecentAdds = retired, adds
+	t.Cleanup(func() { maxRetiredKeys, maxRecentAdds = oldRetired, oldAdds })
+}
+
 func TestPruneRetired_AgeAndSizeBounds(t *testing.T) {
+	withSmallBounds(t, 200, 100)
 	m := New("b", "")
 	now := time.Now()
 	m.mu.Lock()
@@ -204,13 +216,200 @@ func TestPruneRetired_AgeAndSizeBounds(t *testing.T) {
 	}
 }
 
+// TestPruneRetired_KeysWhoseDeleteIsOwedSurviveCapPressure: the cap exists to
+// bound memory, but forgetting a key whose object is still in the bucket and
+// whose delete this process owes puts that object back in the manifest at the
+// next refresh — a superseded file served next to its replacement, or a
+// tombstoned file served again after its tombstone retired. So the keys nobody
+// owes a delete for go first, oldest of them first, and the owed ones stay
+// while there is anything else to drop.
+func TestPruneRetired_KeysWhoseDeleteIsOwedSurviveCapPressure(t *testing.T) {
+	withSmallBounds(t, 200, 100)
+	m := New("b", "")
+	now := time.Now()
+	const owedCount = 10
+	m.mu.Lock()
+	// The owed keys are the OLDEST, so a plain oldest-first eviction would take
+	// exactly these.
+	for i := 0; i < owedCount; i++ {
+		m.retireLocked(RetiredKey{Key: "owed" + strconv.Itoa(i), At: now.Add(-time.Hour), Reclaim: true})
+	}
+	for i := 0; i < maxRetiredKeys+owedCount; i++ {
+		m.retireLocked(RetiredKey{Key: "free" + strconv.Itoa(i), At: now.Add(time.Duration(i) * time.Microsecond)})
+	}
+	beforeCap := metrics.ManifestRetiredEvicted.Get("cap")
+	beforeOwed := metrics.ManifestRetiredEvicted.Get("cap_delete_owed")
+	m.pruneRetiredLocked(now.Add(time.Second))
+
+	var survivingOwed int
+	for i := 0; i < owedCount; i++ {
+		if _, ok := m.retired["owed"+strconv.Itoa(i)]; ok {
+			survivingOwed++
+		}
+	}
+	total := len(m.retired)
+	_, newestFree := m.retired["free"+strconv.Itoa(maxRetiredKeys+owedCount-1)]
+	_, oldestFree := m.retired["free0"]
+	m.mu.Unlock()
+
+	if survivingOwed != owedCount {
+		t.Fatalf("%d of %d keys whose delete is owed survived the cap; the rest come back at the next refresh",
+			survivingOwed, owedCount)
+	}
+	if total != maxRetiredKeys {
+		t.Fatalf("the retired set holds %d keys, want the cap %d", total, maxRetiredKeys)
+	}
+	if oldestFree {
+		t.Error("the oldest key nobody owes a delete for should have been evicted first")
+	}
+	if !newestFree {
+		t.Error("the newest key was evicted although older ones were available")
+	}
+	if metrics.ManifestRetiredEvicted.Get("cap") <= beforeCap {
+		t.Error("cap evictions must be counted")
+	}
+	if got := metrics.ManifestRetiredEvicted.Get("cap_delete_owed") - beforeOwed; got != 0 {
+		t.Errorf("%d keys whose delete is owed were evicted; that counter is the alert for losing track of objects", got)
+	}
+}
+
+// TestPruneRetired_TTLNeverDropsAKeyWhoseDeleteIsOwed: same rule for the age
+// bound. An object still awaiting deletion after a week is a stuck delete, not
+// a key to forget.
+func TestPruneRetired_TTLNeverDropsAKeyWhoseDeleteIsOwed(t *testing.T) {
+	m := New("b", "")
+	now := time.Now()
+	m.mu.Lock()
+	m.retireLocked(RetiredKey{Key: "owed-ancient", At: now.Add(-retiredKeyTTL - time.Hour), Reclaim: true})
+	m.retireLocked(RetiredKey{Key: "free-ancient", At: now.Add(-retiredKeyTTL - time.Hour)})
+	m.pruneRetiredLocked(now)
+	_, owed := m.retired["owed-ancient"]
+	_, free := m.retired["free-ancient"]
+	m.mu.Unlock()
+
+	if !owed {
+		t.Error("a key whose object is still in the bucket and whose delete is owed was dropped by the TTL")
+	}
+	if free {
+		t.Error("a key nobody owes a delete for outlived the TTL")
+	}
+}
+
+// TestExpectInListing_KeepsAnUndoneRewritesSourceOutOfTheAbsenceInference: after
+// an undo the source is the live copy of its rows again, but its entry only
+// comes back with the next refresh. Until that refresh the manifest cannot be
+// used to decide whether the object exists.
+func TestExpectInListing_KeepsAnUndoneRewritesSourceOutOfTheAbsenceInference(t *testing.T) {
+	src, repl := refreshKey("src"), refreshKey("repl")
+	m := New("b", "")
+	m.AddFile(refreshPartition, enriched(src, 5))
+	if !m.ApplyListing([]ListedObject{{Key: src, Size: 1}}, time.Now()) {
+		t.Fatal("fixture: the first listing was rejected")
+	}
+	if !m.Listed() {
+		t.Fatal("fixture: the manifest should have applied a listing")
+	}
+
+	// The rewrite published, then was undone.
+	m.ReplaceFile(refreshPartition, src, enriched(repl, 3))
+	m.UnretireIfReplacedBy(src, repl)
+	m.ExpectInListing(src)
+
+	if m.HasKey(src) {
+		t.Fatal("fixture: the publish should have removed the source's entry")
+	}
+	if !m.AwaitingListing(src) {
+		t.Fatal("a source restored by an undo must be marked as awaiting the next listing")
+	}
+	if m.AwaitingListing(repl) {
+		t.Error("nothing was expected for the replacement")
+	}
+
+	// A listing that began BEFORE the expectation proves nothing about it.
+	if !m.ApplyListing([]ListedObject{{Key: src, Size: 1}, {Key: repl, Size: 1}}, time.Now().Add(-time.Minute)) {
+		t.Fatal("the listing was rejected")
+	}
+	if !m.AwaitingListing(src) {
+		t.Error("a listing that began before the expectation must not clear it")
+	}
+
+	// One that began after it does, and the key is back in the manifest.
+	if !m.ApplyListing([]ListedObject{{Key: src, Size: 1}, {Key: repl, Size: 1}}, time.Now()) {
+		t.Fatal("the listing was rejected")
+	}
+	if m.AwaitingListing(src) {
+		t.Error("a listing that began after the expectation must clear it")
+	}
+	if !m.HasKey(src) {
+		t.Error("the refresh did not adopt the undone rewrite's source back")
+	}
+}
+
+// TestExpectInListing_ClearedByTheEntryComingBack: an AddFile (a peer push, a
+// re-publish) answers the expectation just as well as a listing.
+func TestExpectInListing_ClearedByTheEntryComingBack(t *testing.T) {
+	src := refreshKey("src")
+	m := New("b", "")
+	m.ExpectInListing(src)
+	if !m.AwaitingListing(src) {
+		t.Fatal("the expectation was not recorded")
+	}
+	m.AddFile(refreshPartition, enriched(src, 2))
+	if m.AwaitingListing(src) {
+		t.Error("an entry that came back must clear the expectation")
+	}
+}
+
+// TestExpectInListing_IsBounded: a node whose refresh never succeeds must not
+// grow this memory without limit.
+func TestExpectInListing_IsBounded(t *testing.T) {
+	withSmallBounds(t, 200, 100)
+	m := New("b", "")
+	for i := 0; i < maxRecentAdds+100; i++ {
+		m.ExpectInListing("k" + strconv.Itoa(i))
+	}
+	m.mu.RLock()
+	n := len(m.awaitingAdoption)
+	m.mu.RUnlock()
+	if n > maxRecentAdds {
+		t.Fatalf("the awaiting-listing set holds %d keys, want at most %d", n, maxRecentAdds)
+	}
+	if !m.AwaitingListing("k" + strconv.Itoa(maxRecentAdds+99)) {
+		t.Error("the newest expectation was evicted")
+	}
+}
+
+// TestLoadFrom_DropsAwaitingListing: the expectations describe the previous
+// process's in-flight work, not this one's.
+func TestLoadFrom_DropsAwaitingListing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "manifest.bin")
+	src := refreshKey("src")
+	m := New("b", "")
+	m.AddFile(refreshPartition, enriched(src, 1))
+	if err := m.SaveTo(path); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	m.ExpectInListing("logs/dt=2026-03-01/hour=07/other.parquet")
+
+	loaded := New("b", "")
+	if err := loaded.LoadFrom(path); err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if loaded.AwaitingListing("logs/dt=2026-03-01/hour=07/other.parquet") {
+		t.Error("a loaded snapshot must not carry another process's expectations")
+	}
+	if loaded.Listed() {
+		t.Error("a loaded snapshot is not a listing")
+	}
+}
+
 func TestSnapshot_CarriesRetiredKeysButNotPending(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "manifest.bin")
 	src, repl, pending := refreshKey("src"), refreshKey("repl"), refreshKey("pending")
 	m := New("b", "")
 	m.AddFile(refreshPartition, enriched(src, 5))
 	m.ReplaceFile(refreshPartition, src, enriched(repl, 3))
-	m.MarkPending(pending)
+	m.ClaimPending(pending)
 	if err := m.SaveTo(path); err != nil {
 		t.Fatalf("SaveTo: %v", err)
 	}
@@ -339,7 +538,7 @@ func TestRecentAdds_StaySortedAndBounded(t *testing.T) {
 func TestRefresh_PendingKeyIsNotAdopted(t *testing.T) {
 	k := refreshKey("uploading")
 	m := New("b", "")
-	m.MarkPending(k)
+	m.ClaimPending(k)
 	m.ApplyListing([]ListedObject{{Key: k, Size: 1}}, time.Now())
 	if m.HasKey(k) {
 		t.Fatal("an upload that is not published yet must not be adopted")

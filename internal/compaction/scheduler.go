@@ -303,6 +303,21 @@ func (s *Scheduler) IsDraining() bool { return s.draining.Load() }
 // long outage's backlog drains over several ticks instead of stalling one.
 const maxReclaimPerScan = 1000
 
+// withoutHeld drops the files a rewrite has swapped in but not yet recorded
+// durably. Merging one would carry its rows into an output that the undo of
+// that rewrite — still possible until its record lands — knows nothing about,
+// and the publish would be refused anyway.
+func withoutHeld(m *manifest.Manifest, files []manifest.FileInfo) []manifest.FileInfo {
+	out := files[:0:0]
+	for _, fi := range files {
+		if m.IsHeld(fi.Key) {
+			continue
+		}
+		out = append(out, fi)
+	}
+	return out
+}
+
 // partitionCandidate pairs a partition name with its eligible compaction level.
 type partitionCandidate struct {
 	partition string
@@ -410,7 +425,7 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 		// from us).
 		s.manifest.MarkAttempt(c.partition, time.Now())
 
-		partFiles := s.manifest.FilesForPartition(c.partition)
+		partFiles := withoutHeld(s.manifest, s.manifest.FilesForPartition(c.partition))
 		fp := MajoritySchemaFingerprint(partFiles, c.level)
 		selected := s.policy.SelectFiles(partFiles, c.level, fp)
 		if len(selected) < 2 {
@@ -483,7 +498,7 @@ func (s *Scheduler) ForceCompactPartition(ctx context.Context, partition string,
 	if s.draining.Load() {
 		return nil, fmt.Errorf("scheduler is draining; no new compaction accepted")
 	}
-	files := s.manifest.FilesForPartition(partition)
+	files := withoutHeld(s.manifest, s.manifest.FilesForPartition(partition))
 	if len(files) == 0 {
 		return nil, fmt.Errorf("partition not found or empty: %s", partition)
 	}

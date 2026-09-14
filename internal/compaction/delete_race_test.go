@@ -83,6 +83,7 @@ func newRaceWorld(t *testing.T) *raceWorld {
 		w.files = append(w.files, fi)
 	}
 	keys := []string{w.files[0].Key, w.files[1].Key}
+	markListed(t, w.manifest, keys)
 	w.store.Add(delete.Tombstone{
 		ID:           "ts-race",
 		Query:        `service.name:="leaky"`,
@@ -163,6 +164,20 @@ func (w *raceWorld) assert(t *testing.T, stage string) {
 				t.Fatalf("%s: the tombstone retired but deleted row %q is still stored (%d copies)", stage, body, counts[body])
 			}
 		}
+	}
+}
+
+// markListed puts a fixture manifest in the state a running node reaches after
+// its first bucket listing: until then nothing infers "the object is gone" from
+// an absent key and no tombstone retires (see Manifest.Listed).
+func markListed(t *testing.T, m *manifest.Manifest, keys []string) {
+	t.Helper()
+	objects := make([]manifest.ListedObject, 0, len(keys))
+	for _, k := range keys {
+		objects = append(objects, manifest.ListedObject{Key: k, Size: 1})
+	}
+	if !m.ApplyListing(objects, time.Now()) {
+		t.Fatal("fixture: the listing was rejected")
 	}
 }
 

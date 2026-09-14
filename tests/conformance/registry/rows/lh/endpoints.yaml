@@ -160,6 +160,20 @@
   pending: true
   notes: "Depends on a prior delete step in the same run: {{tombstone_id}} is the id that step's response returned, not a seeded value."
 
+- id: lh.delete.leftovers.status
+  title: "LH delete leftovers — list retired/pending keys and unfinished rewrites"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /delete/logsql/leftovers }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  notes: "Read-only and instance-wide (not tenant-scoped); the delete alerts point at it to name the objects they warn about."
+
 - id: lh.delete.verify.status
   title: "LH delete verify — confirm a query's matching rows are gone"
   surface: lh

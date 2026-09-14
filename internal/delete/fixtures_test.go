@@ -7,6 +7,7 @@ import (
 	"sort"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/parquet-go/parquet-go"
 
@@ -38,7 +39,23 @@ func newTestManifest(t *testing.T, rowsByKey map[string]int64) *manifest.Manifes
 			MaxTimeNs: 1 << 40,
 		})
 	}
+	markListed(t, m, keys)
 	return m
+}
+
+// markListed puts the manifest in the state a running node reaches after its
+// first bucket listing. Without it the scheduler refuses to read an absent key
+// as "the object is gone" and never retires a tombstone — the state a restarted
+// process is in until its first refresh (see Manifest.Listed).
+func markListed(t *testing.T, m *manifest.Manifest, keys []string) {
+	t.Helper()
+	objects := make([]manifest.ListedObject, 0, len(keys))
+	for _, k := range keys {
+		objects = append(objects, manifest.ListedObject{Key: k, Size: 1024})
+	}
+	if !m.ApplyListing(objects, time.Now()) {
+		t.Fatal("fixture: the listing was rejected")
+	}
 }
 
 // manifestFromPool registers every .parquet object the pool holds, reading each

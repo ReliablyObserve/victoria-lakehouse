@@ -208,7 +208,7 @@ func (r *Rewriter) Prepare(ctx context.Context, key string, tombstones []Tombsto
 	result.BytesAfter = int64(len(newData))
 	result.BloomBytes = footerBloomBytes(newData)
 	result.ColumnBytes = columnBytesFromFooter(newData)
-	result.NewKey = replacementKey(key, uuid.New().String()[:8])
+	result.NewKey = replacementKey(key, newReplacementID())
 	result.data = newData
 	result.Duration = time.Since(start)
 	return result, nil
@@ -217,7 +217,7 @@ func (r *Rewriter) Prepare(ctx context.Context, key string, tombstones []Tombsto
 // Upload writes a prepared replacement. A result with no replacement is a
 // no-op.
 func (r *Rewriter) Upload(ctx context.Context, result *RewriteResult) error {
-	if result == nil || result.NewKey == "" {
+	if result == nil || result.NewKey == "" || result.data == nil {
 		return nil
 	}
 	start := time.Now()
@@ -476,6 +476,10 @@ func matchesAny(fields map[string]string, ts int64, tombstones []Tombstone) bool
 	}
 	return false
 }
+
+// newReplacementID draws the short random id a replacement key is built from.
+// A variable so a test can force the collision the claim guards against.
+var newReplacementID = func() string { return uuid.New().String()[:8] }
 
 // replacementKey names the object that replaces sourceKey: same directory, new
 // base name. The directory is kept byte for byte — it carries the tenant prefix

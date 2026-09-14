@@ -202,7 +202,7 @@ func (o *OrphanSweep) RunTierA(ctx context.Context) (int, error) {
 			continue
 		}
 
-		files := o.cfg.Manifest.FilesForPartition(partition)
+		files := withoutHeld(o.cfg.Manifest, o.cfg.Manifest.FilesForPartition(partition))
 		if len(files) == 0 {
 			continue
 		}

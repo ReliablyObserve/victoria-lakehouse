@@ -159,8 +159,11 @@ func eligibleTombstones(tss []delete.Tombstone, now time.Time, rewriteDelay time
 // rows that were never removed.
 //
 // Hide-mode tombstones have no reap lifecycle and are left alone. Keys under a
-// never-delete prefix are not compaction's and are skipped.
-func reconcileTombstones(store *delete.TombstoneStore, inputKeys []string, outputKey string, neverDelete []string, applied map[string]bool) {
+// never-delete prefix are not compaction's and are skipped. canRetire is false
+// while the manifest has not listed the bucket in this process or the tombstone
+// store was not fully restored: the bookkeeping is still recorded, but nothing
+// is retired on a file set that may be incomplete.
+func reconcileTombstones(store *delete.TombstoneStore, inputKeys []string, outputKey string, neverDelete []string, applied map[string]bool, canRetire bool) {
 	if store == nil || len(inputKeys) == 0 {
 		return
 	}
@@ -212,7 +215,9 @@ func reconcileTombstones(store *delete.TombstoneStore, inputKeys []string, outpu
 			continue
 		}
 		metrics.DeleteCompactionKeysReaped.Add(reapedHere)
-		store.Complete(snapshot.ID)
+		if canRetire {
+			store.Complete(snapshot.ID)
+		}
 	}
 }
 

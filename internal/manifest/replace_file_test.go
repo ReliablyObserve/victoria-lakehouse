@@ -230,19 +230,48 @@ func TestReplaceFile_FiresBothChangeObservers(t *testing.T) {
 	}
 }
 
-func TestReplaceFile_RejectsADuplicateReplacementKey(t *testing.T) {
+func TestReplaceFile_RefusesAKeyTheManifestAlreadyServes(t *testing.T) {
 	m := manifestWithOneFile(t)
 	m.AddFile(replacePartition, FileInfo{Key: replaceNewKey, Size: 5, RowCount: 1})
 
-	// AddFile's idempotency guard still applies inside the swap: the old entry
-	// goes, the already-present replacement is not duplicated.
-	m.ReplaceFile(replacePartition, replaceOldKey, FileInfo{Key: replaceNewKey, Size: 5, RowCount: 1})
-
-	if n := len(m.FilesForPartition(replacePartition)); n != 1 {
-		t.Fatalf("partition holds %d entries, want 1", n)
+	// Output keys carry a short random id. A swap onto a key the manifest
+	// already serves would drop the source (AddFile's idempotency guard makes
+	// the insert a no-op) and take its rows out of the manifest with it, so the
+	// swap is refused and nothing changes.
+	if m.ReplaceFile(replacePartition, replaceOldKey, FileInfo{Key: replaceNewKey, Size: 5, RowCount: 1}) {
+		t.Fatal("a swap onto an already-registered key must be refused")
 	}
-	if got := m.TotalFiles(); got != 1 {
-		t.Errorf("TotalFiles = %d, want 1", got)
+	if n := len(m.FilesForPartition(replacePartition)); n != 2 {
+		t.Fatalf("partition holds %d entries, want both files untouched", n)
+	}
+	if !m.HasKey(replaceOldKey) || m.IsRetired(replaceOldKey) {
+		t.Fatal("the refused swap must leave the source registered")
+	}
+
+	// The same guard for a merge publish.
+	if m.ReplaceFiles(replacePartition, []string{replaceOldKey}, FileInfo{Key: replaceNewKey, Size: 5, RowCount: 1}) {
+		t.Fatal("a merge onto an already-registered key must be refused")
+	}
+	if n := len(m.FilesForPartition(replacePartition)); n != 2 {
+		t.Fatalf("partition holds %d entries after the refused merge", n)
+	}
+}
+
+func TestReplaceFile_RefusesAHeldKey(t *testing.T) {
+	m := manifestWithOneFile(t)
+	m.Hold(replaceOldKey)
+	if m.ReplaceFile(replacePartition, replaceOldKey, FileInfo{Key: replaceNewKey, Size: 1, RowCount: 1}) {
+		t.Fatal("a held key may not be superseded while its own publish is unsettled")
+	}
+	if m.ReplaceFiles(replacePartition, []string{replaceOldKey}, FileInfo{Key: replaceNewKey, Size: 1, RowCount: 1}) {
+		t.Fatal("a merge may not take a held source")
+	}
+	if m.RemoveFileIfPresent(replacePartition, replaceOldKey) {
+		t.Fatal("a held key may not be removed by a rewrite that emptied it")
+	}
+	m.Release(replaceOldKey)
+	if !m.ReplaceFile(replacePartition, replaceOldKey, FileInfo{Key: replaceNewKey, Size: 1, RowCount: 1}) {
+		t.Fatal("a released key is swappable again")
 	}
 }
 

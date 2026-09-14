@@ -73,6 +73,13 @@ func TestDeleteRewrite_CatalogForgetsTheDeletedValue(t *testing.T) {
 			}
 			oldKey := files[0].Key
 			part := manifest.ExtractTenantPartition(oldKey)
+			// A tombstone retires only on a manifest that has listed the
+			// bucket in this process — before that, a key missing from the
+			// manifest says nothing about the object (see Manifest.Listed).
+			// A running node reaches that state on its first refresh.
+			if !s.manifest.ApplyListing([]manifest.ListedObject{{Key: oldKey, Size: files[0].Size}}, time.Now()) {
+				t.Fatal("fixture: the listing was rejected")
+			}
 
 			store := delete.NewTombstoneStore()
 			store.Add(delete.Tombstone{

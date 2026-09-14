@@ -218,41 +218,48 @@ func TestSchedulerRunOnce_GlacierClassSkipped(t *testing.T) {
 	}
 }
 
-func TestSchedulerRunOnce_AlreadyReaped(t *testing.T) {
+// TestSchedulerRunOnce_ReapedKeyTheManifestStillServesIsMadePendingAgain: a key
+// recorded as reaped means "its object is gone". If the manifest — having
+// listed the bucket — still serves it, one of the two is wrong, and the safe
+// reading is that the file is still there: the tombstone must not retire over
+// it. The key goes back to pending and is retried (the fixture has no object
+// behind it, so the retry fails and a later pass tries again), and once the
+// manifest stops serving it the tombstone completes.
+func TestSchedulerRunOnce_ReapedKeyTheManifestStillServesIsMadePendingAgain(t *testing.T) {
+	const key = "logs/dt=2026-01-01/hour=00/file1.parquet"
 	store := NewTombstoneStore()
 	pool := newMockRewriterPool()
 	detector := NewStorageClassDetector(nil)
 
-	ts := Tombstone{
+	store.Add(Tombstone{
 		ID:           "ts-reaped",
 		Query:        "*",
 		StartNs:      0,
 		EndNs:        time.Now().UnixNano(),
-		AffectedKeys: []string{"logs/dt=2026-01-01/file1.parquet"},
+		AffectedKeys: []string{key},
 		CreatedAt:    time.Now().Add(-2 * time.Hour),
 		Mode:         "permanent",
-		Reaped:       map[string]bool{"logs/dt=2026-01-01/file1.parquet": true},
+		Reaped:       map[string]bool{key: true},
+	})
+
+	sched, files := buildSchedulerWithManifest(t, store, detector, pool, []string{"STANDARD"})
+	sched.RunOnce(context.Background())
+
+	got, still := store.Get("ts-reaped")
+	if !still {
+		t.Fatal("a tombstone must not retire while the manifest serves one of its files")
 	}
-	store.Add(ts)
-
-	sched := buildSchedulerForTest(t, store, detector, pool, []string{"STANDARD"})
-
-	beforeErrors := metrics.DeleteRewriteErrors.Get()
-	beforeTotal := metrics.DeleteRewriteTotal.Get()
-
-	results := sched.RunOnce(context.Background())
-
-	afterErrors := metrics.DeleteRewriteErrors.Get()
-	afterTotal := metrics.DeleteRewriteTotal.Get()
-
-	if len(results) != 0 {
-		t.Errorf("expected 0 results for already-reaped key, got %d", len(results))
+	if got.Reaped[key] {
+		t.Fatalf("a key the manifest serves must be pending again: %+v", got.Reaped)
 	}
-	if afterErrors != beforeErrors {
-		t.Error("already-reaped key should not trigger rewrite errors")
-	}
-	if afterTotal != beforeTotal {
-		t.Error("already-reaped key should not trigger rewrite total")
+
+	// The manifest drops the key (its object really is gone): the next pass
+	// records it as reaped and retires the tombstone.
+	files.RemoveFile(extractPartition(key), key)
+	files.ForgetRetired(key)
+	sched.RunOnce(context.Background())
+	if _, still := store.Get("ts-reaped"); still {
+		t.Fatal("once the manifest no longer serves the key the tombstone completes")
 	}
 }
 

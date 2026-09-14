@@ -57,6 +57,16 @@ type crashWorld struct {
 	store    *TombstoneStore
 	kept     map[string]bool
 	deleted  map[string]bool
+
+	// persistPool is the pool the tombstone store writes its records to and
+	// restores them from. Tests replace it with a wrapper that fails the
+	// durable writes or the restore listing; nil means w.s3 itself.
+	persistPool S3Pool
+	// allowRestoreFailure lets restart() carry on when the tombstone restore
+	// fails, which is the state under test when the restore's LIST is broken.
+	allowRestoreFailure bool
+	// restoreErr is what the last restart()'s restore returned.
+	restoreErr error
 }
 
 func newCrashWorld(t *testing.T) *crashWorld {
@@ -117,7 +127,20 @@ func newCrashWorld(t *testing.T) *crashWorld {
 }
 
 func (w *crashWorld) persistence(dir string) PersistenceConfig {
-	return PersistenceConfig{Dir: dir, Pool: w.s3, Prefix: "logs/"}
+	pool := w.persistPool
+	if pool == nil {
+		pool = w.s3
+	}
+	return PersistenceConfig{Dir: dir, Pool: pool, Prefix: "logs/"}
+}
+
+// usePersistPool swaps the durable target of the tombstone records — the S3
+// side of the store, not the data bucket — and re-arms write-through on the
+// live store so the change takes effect immediately.
+func (w *crashWorld) usePersistPool(pool S3Pool) {
+	w.t.Helper()
+	w.persistPool = pool
+	w.store.EnablePersistence(w.persistence(w.diskDir))
 }
 
 func (w *crashWorld) scheduler(m ManifestUpdater) *RewriteScheduler {
@@ -150,8 +173,9 @@ func (w *crashWorld) restart(mode restartMode) {
 		tombstoneDir = filepath.Join(w.t.TempDir(), "fresh-disk")
 	}
 	store := NewTombstoneStore()
-	if _, err := store.Restore(context.Background(), w.persistence(tombstoneDir)); err != nil {
-		w.t.Fatalf("restore tombstones: %v", err)
+	_, w.restoreErr = store.Restore(context.Background(), w.persistence(tombstoneDir))
+	if w.restoreErr != nil && !w.allowRestoreFailure {
+		w.t.Fatalf("restore tombstones: %v", w.restoreErr)
 	}
 	store.EnablePersistence(w.persistence(tombstoneDir))
 	w.manifest, w.store = m, store
@@ -165,6 +189,21 @@ func (w *crashWorld) refresh() { simulateManifestRefresh(w.t, w.manifest, w.buck
 // object and describes it truthfully, and every object outside the manifest is
 // one the manifest knows it is waiting to delete.
 func (w *crashWorld) assertServing(stage string) {
+	w.t.Helper()
+	w.assertRowsVisible(stage)
+	storageinvariants.Assert(w.t, stage, storageinvariants.State{
+		Manifest: w.manifest, Bucket: w.bucket, Tombstones: tombstoneViews(w.store),
+		AwaitingDeletion: storageinvariants.AwaitingDeletionIn(w.manifest),
+	})
+}
+
+// assertRowsVisible is the half of assertServing that is about what a query
+// returns: each kept row exactly once, no deleted row, and no manifest entry
+// describing an object other than the one behind it. It is asserted on its own
+// at the moments where a bookkeeping step is legitimately still owed to the next
+// scheduler pass — a tombstone that became fully reaped while the manifest had
+// not listed the bucket cannot retire until that pass runs.
+func (w *crashWorld) assertRowsVisible(stage string) {
 	w.t.Helper()
 	got := visibleBodies(w.t, w.manifest, w.bucket, w.store)
 	for body := range w.kept {
@@ -187,10 +226,6 @@ func (w *crashWorld) assertServing(stage string) {
 			}
 		}
 	}
-	storageinvariants.Assert(w.t, stage, storageinvariants.State{
-		Manifest: w.manifest, Bucket: w.bucket, Tombstones: tombstoneViews(w.store),
-		AwaitingDeletion: storageinvariants.AwaitingDeletionIn(w.manifest),
-	})
 }
 
 // assertConverged is rest: nothing awaits deletion, nothing is unmanifested,

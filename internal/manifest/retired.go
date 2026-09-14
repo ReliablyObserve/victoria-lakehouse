@@ -45,13 +45,19 @@ import (
 // the snapshot a node restarted from — are still adopted: that is what the
 // refresh is for.
 
-const (
-	retiredKeyTTL  = 7 * 24 * time.Hour
+const retiredKeyTTL = 7 * 24 * time.Hour
+
+// maxRetiredKeys caps the retired set and maxRecentAdds the add log between
+// refreshes (trimmed to the newest entries in amortised chunks; every accepted
+// refresh drops the entries older than its listing).
+//
+// Variables rather than constants so the tests that exercise the eviction
+// ORDER can do it at a small cap: what matters there is which key goes first,
+// and filling a 100,000-entry set for every such case costs minutes under the
+// race detector without testing anything the small cap does not.
+var (
 	maxRetiredKeys = 100_000
-	// maxRecentAdds bounds the add log between refreshes (it is trimmed to the
-	// newest entries in amortised chunks). Every accepted refresh drops the
-	// entries older than its listing.
-	maxRecentAdds = 50_000
+	maxRecentAdds  = 50_000
 )
 
 // recentAdd is one AddFile, in the order they happened. The log is append-only
@@ -60,6 +66,13 @@ const (
 type recentAdd struct {
 	key string
 	at  time.Time
+}
+
+// PendingKey is an upload that has not been published yet.
+type PendingKey struct {
+	Key  string
+	At   time.Time
+	Held bool
 }
 
 // RetiredKey is a key the manifest deliberately stopped listing while its object
@@ -93,16 +106,17 @@ func (m *Manifest) retireLocked(rk RetiredKey) {
 	}
 	m.retired[rk.Key] = rk
 	delete(m.pending, rk.Key)
-	metrics.ManifestRetiredKeys.Set(int64(len(m.retired)))
+	m.updateRetiredGaugesLocked()
 }
 
 // noteAddedLocked records that key entered the manifest now and is therefore
 // neither pending nor retired. Caller holds m.mu (write).
 func (m *Manifest) noteAddedLocked(key string, now time.Time) {
 	delete(m.pending, key)
+	delete(m.awaitingAdoption, key)
 	if _, ok := m.retired[key]; ok {
 		delete(m.retired, key)
-		metrics.ManifestRetiredKeys.Set(int64(len(m.retired)))
+		m.updateRetiredGaugesLocked()
 	}
 	if n := len(m.recentAdds); n > 0 && now.Before(m.recentAdds[n-1].at) {
 		now = m.recentAdds[n-1].at // keep the log sorted
@@ -119,16 +133,121 @@ func (m *Manifest) recentAddsSinceLocked(t time.Time) []recentAdd {
 	return m.recentAdds[i:]
 }
 
-// MarkPending records that key is being uploaded and is not yet published, so
-// a refresh running in between does not adopt it. The publish (AddFile,
-// ReplaceFile, ReplaceFiles) clears it; AbandonPending retires it.
-func (m *Manifest) MarkPending(key string) {
+// ClaimPending reserves key for an upload that is not published yet: a refresh
+// running in between does not adopt it, and the claim fails when the key is
+// already registered, retired or claimed. Writers generate keys from a short
+// random id, and an upload to a key that is already in use would overwrite a
+// live object, so the claim is what makes the id collision-safe. The publish
+// (AddFile, ReplaceFile, ReplaceFiles) clears it; AbandonPending retires it;
+// ReleasePending drops it when nothing was written.
+func (m *Manifest) ClaimPending(key string) bool {
+	if key == "" {
+		return false
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if _, taken := m.byKey[key]; taken {
+		metrics.ManifestKeyClaimRejected.Inc("registered")
+		return false
+	}
+	if _, taken := m.retired[key]; taken {
+		metrics.ManifestKeyClaimRejected.Inc("retired")
+		return false
+	}
+	if _, taken := m.pending[key]; taken {
+		metrics.ManifestKeyClaimRejected.Inc("pending")
+		return false
+	}
 	if m.pending == nil {
 		m.pending = make(map[string]time.Time)
 	}
 	m.pending[key] = time.Now()
+	return true
+}
+
+// ReleasePending drops a claim whose object was never written. Unlike
+// AbandonPending it does not retire the key: there is nothing to delete, and
+// retiring would keep a usable key out of the manifest for no reason.
+func (m *Manifest) ReleasePending(key string) {
+	m.mu.Lock()
+	delete(m.pending, key)
+	m.mu.Unlock()
+}
+
+// Hold marks a registered key as not yet safe for another publish to supersede:
+// a rewrite has swapped it into the manifest but the record authorising that
+// swap is not durable yet, so the swap may still be undone. A compaction that
+// merged it in that window would take its rows into an output the undo knows
+// nothing about. ReplaceFile, ReplaceFiles and RemoveFileIfPresent refuse a held
+// key, and compaction does not select one. Holds are in-memory only: a restart
+// re-derives them from the durable rewrite records.
+func (m *Manifest) Hold(key string) {
+	if key == "" {
+		return
+	}
+	m.mu.Lock()
+	if m.held == nil {
+		m.held = make(map[string]bool)
+	}
+	m.held[key] = true
+	metrics.ManifestHeldKeys.Set(int64(len(m.held)))
+	m.mu.Unlock()
+}
+
+// Release lifts a Hold.
+func (m *Manifest) Release(key string) {
+	m.mu.Lock()
+	delete(m.held, key)
+	metrics.ManifestHeldKeys.Set(int64(len(m.held)))
+	m.mu.Unlock()
+}
+
+// IsHeld reports whether key is held.
+func (m *Manifest) IsHeld(key string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.held[key]
+}
+
+// HeldKeys returns the held keys, sorted.
+func (m *Manifest) HeldKeys() []string {
+	m.mu.RLock()
+	out := make([]string, 0, len(m.held))
+	for k := range m.held {
+		out = append(out, k)
+	}
+	m.mu.RUnlock()
+	sort.Strings(out)
+	return out
+}
+
+// PendingKeys returns the unpublished uploads, oldest first.
+func (m *Manifest) PendingKeys() []PendingKey {
+	m.mu.RLock()
+	out := make([]PendingKey, 0, len(m.pending))
+	for k, at := range m.pending {
+		out = append(out, PendingKey{Key: k, At: at, Held: m.held[k]})
+	}
+	m.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].At.Equal(out[j].At) {
+			return out[i].At.Before(out[j].At)
+		}
+		return out[i].Key < out[j].Key
+	})
+	return out
+}
+
+// Listed reports whether this manifest has applied at least one accepted bucket
+// listing since it was created or loaded from a snapshot. Until it has, "the
+// manifest does not have this key" says nothing about whether the object
+// exists: a snapshot can be older than the file, and a node that lost its disk
+// starts empty. Callers that would infer "the object is gone" from an absent
+// key must wait for this.
+func (m *Manifest) Listed() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.listed
 }
 
 // AbandonPending retires an upload that will never be published — its publish
@@ -167,7 +286,7 @@ func (m *Manifest) Unretire(key string) bool {
 	_, wasPending := m.pending[key]
 	delete(m.retired, key)
 	delete(m.pending, key)
-	metrics.ManifestRetiredKeys.Set(int64(len(m.retired)))
+	m.updateRetiredGaugesLocked()
 	return wasRetired || wasPending
 }
 
@@ -182,7 +301,7 @@ func (m *Manifest) UnretireIfReplacedBy(key, replacement string) bool {
 		return false
 	}
 	delete(m.retired, key)
-	metrics.ManifestRetiredKeys.Set(int64(len(m.retired)))
+	m.updateRetiredGaugesLocked()
 	return true
 }
 
@@ -193,7 +312,7 @@ func (m *Manifest) ForgetRetired(key string) {
 	defer m.mu.Unlock()
 	if _, ok := m.retired[key]; ok {
 		delete(m.retired, key)
-		metrics.ManifestRetiredKeys.Set(int64(len(m.retired)))
+		m.updateRetiredGaugesLocked()
 	}
 }
 
@@ -265,7 +384,7 @@ func (m *Manifest) ReclaimRetired(ctx context.Context, del func(ctx context.Cont
 		if cur, ok := m.retired[rk.Key]; ok && cur.At.Equal(rk.At) {
 			delete(m.retired, rk.Key)
 		}
-		metrics.ManifestRetiredKeys.Set(int64(len(m.retired)))
+		m.updateRetiredGaugesLocked()
 		m.mu.Unlock()
 		deleted++
 		metrics.ManifestRetiredReclaimed.Inc()
@@ -273,11 +392,19 @@ func (m *Manifest) ReclaimRetired(ctx context.Context, del func(ctx context.Cont
 	return deleted, failed
 }
 
-// pruneRetiredLocked applies retiredKeyTTL and maxRetiredKeys. Caller holds
-// m.mu (write).
+// pruneRetiredLocked applies retiredKeyTTL and maxRetiredKeys, evicting the
+// keys whose loss costs least first.
+//
+// A key whose delete this process owes (Reclaim) is the expensive one to
+// forget: its object is still in the bucket, so the next refresh adopts it back
+// next to whatever replaced it. A key removed on another component's behalf
+// (retention, which deletes first; a peer's push, whose own node owes the
+// delete) usually has no object left at all. So the TTL only applies to the
+// latter, and the cap evicts every one of them before touching an owed key.
+// Caller holds m.mu (write).
 func (m *Manifest) pruneRetiredLocked(now time.Time) {
 	for k, rk := range m.retired {
-		if now.Sub(rk.At) > retiredKeyTTL {
+		if !rk.Reclaim && now.Sub(rk.At) > retiredKeyTTL {
 			delete(m.retired, k)
 			metrics.ManifestRetiredEvicted.Inc("ttl")
 		}
@@ -287,13 +414,38 @@ func (m *Manifest) pruneRetiredLocked(now time.Time) {
 		for k := range m.retired {
 			keys = append(keys, k)
 		}
-		sort.Slice(keys, func(i, j int) bool { return m.retired[keys[i]].At.Before(m.retired[keys[j]].At) })
+		sort.Slice(keys, func(i, j int) bool {
+			ri, rj := m.retired[keys[i]], m.retired[keys[j]]
+			if ri.Reclaim != rj.Reclaim {
+				return !ri.Reclaim // evict keys nobody here owes a delete for first
+			}
+			return ri.At.Before(rj.At)
+		})
 		for _, k := range keys[:len(keys)-maxRetiredKeys] {
+			reason := "cap"
+			if m.retired[k].Reclaim {
+				// The object is still in the bucket and its delete is owed:
+				// forgetting it means the next refresh serves it again.
+				reason = "cap_delete_owed"
+			}
 			delete(m.retired, k)
-			metrics.ManifestRetiredEvicted.Inc("cap")
+			metrics.ManifestRetiredEvicted.Inc(reason)
+		}
+	}
+	m.updateRetiredGaugesLocked()
+}
+
+// updateRetiredGaugesLocked publishes the retired-set size and how much of it
+// this process still owes deletes for. Caller holds m.mu.
+func (m *Manifest) updateRetiredGaugesLocked() {
+	owed := 0
+	for _, rk := range m.retired {
+		if rk.Reclaim {
+			owed++
 		}
 	}
 	metrics.ManifestRetiredKeys.Set(int64(len(m.retired)))
+	metrics.ManifestRetiredReclaimOwed.Set(int64(owed))
 }
 
 // refreshExclusionsLocked removes retired and pending keys from a listing,
@@ -363,5 +515,65 @@ func (m *Manifest) afterAcceptedRefreshLocked(confirmedGone []string, listStart 
 	if newer := m.recentAddsSinceLocked(listStart); len(newer) < len(m.recentAdds) {
 		m.recentAdds = append([]recentAdd(nil), newer...)
 	}
+	// A listing that began after the expectation has now spoken: either it
+	// found the key (this refresh adopted it) or it did not (the object is
+	// gone). Either way the manifest is no longer the one that is behind.
+	for k, at := range m.awaitingAdoption {
+		if at.Before(listStart) {
+			delete(m.awaitingAdoption, k)
+		}
+	}
 	m.pruneRetiredLocked(time.Now())
+}
+
+// ExpectInListing records that key's object exists and belongs in the manifest
+// again, but that no listing has adopted it back yet. It is what an undone
+// rewrite leaves behind: the publish removed the source's entry, the crash
+// stopped the rewrite, and the undo restored the source as the live copy of its
+// rows — an entry only the next refresh can rebuild from the bucket.
+//
+// Until then the manifest not listing the key says nothing about the object,
+// and anything that would read "not in the manifest" as "the object is gone"
+// (the delete scheduler reaping a key, see AwaitingListing) must wait. Reading
+// it the other way round un-hides every row the object still holds: the
+// tombstone retires over a file nothing ever rewrote.
+func (m *Manifest) ExpectInListing(key string) {
+	if key == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.awaitingAdoption == nil {
+		m.awaitingAdoption = make(map[string]time.Time)
+	}
+	// Bounded like every other cross-refresh memory here: a refresh clears the
+	// entries it has spoken for, and the cap keeps a node whose refresh is
+	// failing from growing this without limit.
+	if len(m.awaitingAdoption) >= maxRecentAdds {
+		m.dropOldestAwaitingAdoptionLocked()
+	}
+	m.awaitingAdoption[key] = time.Now()
+}
+
+// dropOldestAwaitingAdoptionLocked evicts the oldest expectation. Caller holds
+// m.mu (write).
+func (m *Manifest) dropOldestAwaitingAdoptionLocked() {
+	var oldestKey string
+	var oldest time.Time
+	for k, at := range m.awaitingAdoption {
+		if oldestKey == "" || at.Before(oldest) {
+			oldestKey, oldest = k, at
+		}
+	}
+	delete(m.awaitingAdoption, oldestKey)
+}
+
+// AwaitingListing reports that key is expected back in the manifest and no
+// listing that began since has been applied yet, so the manifest cannot be used
+// to decide whether its object still exists.
+func (m *Manifest) AwaitingListing(key string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.awaitingAdoption[key]
+	return ok
 }

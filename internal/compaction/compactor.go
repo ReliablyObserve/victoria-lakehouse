@@ -221,6 +221,26 @@ type tenantFileGroup struct {
 // groupFilesByTenant partitions the input by tenant prefix + bucket.
 // Same-tenant files in different buckets are kept separate so output
 // inherits the source bucket. Group order is deterministic.
+// newCompactionOutputID draws the short random id an output key is built from.
+// A variable so a test can force the collision the claim guards against.
+var newCompactionOutputID = func() string { return uuid.New().String()[:8] }
+
+// maxOutputKeyAttempts bounds the redraw loop on a key collision.
+const maxOutputKeyAttempts = 5
+
+// claimOutputKey reserves an unused key for the merged output.
+func (c *Compactor) claimOutputKey(prefix, partition string, level int) (string, bool) {
+	for attempt := 0; attempt < maxOutputKeyAttempts; attempt++ {
+		key := fmt.Sprintf("%s%s/compacted-L%d-%s.parquet", prefix, partition, level, newCompactionOutputID())
+		if c.manifest.ClaimPending(key) {
+			return key, true
+		}
+		metrics.ManifestKeyClaimRejected.Inc("compaction_output")
+		logger.Warnf("compaction output key already in use; drawing another; key=%s", key)
+	}
+	return "", false
+}
+
 func groupFilesByTenant(files []manifest.FileInfo) []tenantFileGroup {
 	type groupKey struct {
 		Prefix string
@@ -439,14 +459,16 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	if outputPrefix == "" {
 		outputPrefix = c.prefix
 	}
-	short := uuid.New().String()[:8]
-	outputKey := fmt.Sprintf("%s%s/compacted-L%d-%s.parquet", outputPrefix, partition, outputLevel, short)
-
 	// Until the publish below, the output is a second copy of its sources'
-	// rows: a manifest refresh running in between must not adopt it.
-	c.manifest.MarkPending(outputKey)
+	// rows: a manifest refresh running in between must not adopt it. The claim
+	// also makes the short random id collision-safe — uploading to a key the
+	// manifest already serves would overwrite a live object.
+	outputKey, claimed := c.claimOutputKey(outputPrefix, partition, outputLevel)
+	if !claimed {
+		return nil, fmt.Errorf("no free output key for %s", partition)
+	}
 	if err := c.pool.Upload(ctx, outputKey, outputData); err != nil {
-		c.manifest.AbandonPending(outputKey)
+		c.manifest.ReleasePending(outputKey)
 		return nil, fmt.Errorf("upload compacted file: %w", err)
 	}
 
@@ -517,6 +539,13 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		ColumnBytes:       columnBytesFromFooter(outputData),
 	}) {
 		metrics.CompactionPublishConflicts.Inc()
+		if c.manifest.HasKey(outputKey) {
+			// The output key belongs to a file the manifest already serves.
+			// The claim above makes this unreachable within one process; never
+			// delete in that case — the object may be that other file.
+			metrics.ManifestKeyClaimRejected.Inc("publish_key_taken")
+			return nil, fmt.Errorf("compaction of %s abandoned: its output key %s is already registered", partition, outputKey)
+		}
 		// Retired before the delete: if the delete fails, no refresh adopts
 		// the abandoned output, and the scheduler's reclaim retries it.
 		c.manifest.AbandonPending(outputKey)
@@ -544,7 +573,11 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	// when compaction actually filtered that tombstone's rows out of it — so a
 	// tombstone can never complete while a file that still holds its rows
 	// exists (which would un-hide those rows the moment it retires).
-	reconcileTombstones(c.tombstones, inputKeys, outputKey, c.neverDelete, appliedTombstones)
+	// Retiring a tombstone means its rows stop being hidden, so it waits for a
+	// manifest that has listed the bucket (the file set it is judged against
+	// must be real) and for a tombstone store that was restored completely.
+	canRetire := c.manifest.Listed() && (c.tombstones == nil || !c.tombstones.S3RestorePending())
+	reconcileTombstones(c.tombstones, inputKeys, outputKey, c.neverDelete, appliedTombstones, canRetire)
 
 	return &compactGroupResult{
 		InputKeys:    inputKeys,

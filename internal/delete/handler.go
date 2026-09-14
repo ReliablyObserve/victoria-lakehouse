@@ -66,6 +66,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc(prefix+"/delete", h.handleDelete)
 	mux.HandleFunc(prefix+"/estimate", h.handleEstimate)
 	mux.HandleFunc(prefix+"/tombstones", h.handleListTombstones)
+	mux.HandleFunc(prefix+"/leftovers", h.handleLeftovers)
 	mux.HandleFunc(prefix+"/tombstone/", h.handleTombstoneByID)
 	mux.HandleFunc(prefix+"/verify", h.handleVerify)
 }

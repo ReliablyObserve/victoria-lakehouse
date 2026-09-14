@@ -203,12 +203,24 @@ var (
 	// deletes of superseded and abandoned objects whose first delete failed.
 	ManifestRetiredReclaimed     = NewCounter("lakehouse_manifest_retired_reclaimed_total")
 	ManifestRetiredReclaimErrors = NewCounter("lakehouse_manifest_retired_reclaim_errors_total")
-	DiscoveryHotBoundaryDays     = NewFloatGauge("lakehouse_discovery_hot_boundary_days")
-	DiscoveryGapDays             = NewFloatGauge("lakehouse_discovery_hot_boundary_gap_days")
-	ManifestPushTotal            = NewCounter("lakehouse_manifest_push_total")
-	ManifestPushPeers            = NewGauge("lakehouse_manifest_push_peers")
-	ManifestPushErrorsTotal      = NewCounter("lakehouse_manifest_push_errors_total")
-	ManifestUpdateReceivedTotal  = NewCounter("lakehouse_manifest_update_received_total")
+	// ManifestRetiredReclaimOwed is the part of the retired set whose objects
+	// this process still owes a delete for — the keys whose eviction would let
+	// a refresh serve them again. Drains as the deletes land.
+	ManifestRetiredReclaimOwed = NewGauge("lakehouse_manifest_retired_delete_owed")
+	// ManifestHeldKeys is the number of registered files another publish may
+	// not supersede yet because the rewrite that swapped them in has not
+	// recorded that swap durably. Steady state 0.
+	ManifestHeldKeys = NewGauge("lakehouse_manifest_held_keys")
+	// ManifestKeyClaimRejected counts refused key claims and publishes by
+	// reason (registered, retired, pending, publish_key_taken) — a non-zero
+	// value means two writers generated the same object key.
+	ManifestKeyClaimRejected    = NewCounterVec("lakehouse_manifest_key_claim_rejected_total", "reason")
+	DiscoveryHotBoundaryDays    = NewFloatGauge("lakehouse_discovery_hot_boundary_days")
+	DiscoveryGapDays            = NewFloatGauge("lakehouse_discovery_hot_boundary_gap_days")
+	ManifestPushTotal           = NewCounter("lakehouse_manifest_push_total")
+	ManifestPushPeers           = NewGauge("lakehouse_manifest_push_peers")
+	ManifestPushErrorsTotal     = NewCounter("lakehouse_manifest_push_errors_total")
+	ManifestUpdateReceivedTotal = NewCounter("lakehouse_manifest_update_received_total")
 )
 
 // Parquet engine metrics
@@ -772,6 +784,32 @@ var (
 	// DeleteRewriteAbandonedObjectErrors counts failed deletes of replacements
 	// whose publish was refused or failed. Retried on every scheduler pass.
 	DeleteRewriteAbandonedObjectErrors = NewCounter("lakehouse_delete_rewrite_abandoned_object_errors_total")
+	// DeleteTombstoneNotDurable counts the times a rewrite step could not
+	// proceed because the tombstone change authorising it had not reached
+	// durable storage. Sustained values mean tombstone writes are failing and
+	// deletes have stopped making progress (they are not losing data).
+	DeleteTombstoneNotDurable = NewCounter("lakehouse_delete_tombstone_not_durable_total")
+	// DeleteRewritesUnfinished is the number of rewrite records whose objects
+	// are not settled yet. Must be 0 before rolling back to a release that
+	// cannot read them.
+	DeleteRewritesUnfinished = NewGauge("lakehouse_delete_rewrites_unfinished")
+	// DeleteTombstoneRestoreAttempts counts S3 restore attempts by result
+	// (failed, recovered) — a failed startup restore is retried on every
+	// rewrite pass until it succeeds.
+	DeleteTombstoneRestoreAttempts = NewCounterVec("lakehouse_delete_tombstone_restore_attempts_total", "result")
+	// DeleteTombstoneRestorePending is 1 while the S3 copy of the tombstone
+	// store has not been read in this process. While it is 1 the node enforces
+	// only the deletes it found locally and resolves no interrupted rewrite —
+	// the state the restore-failed alert fires on.
+	DeleteTombstoneRestorePending = NewGauge("lakehouse_delete_tombstone_restore_pending")
+	// DeleteRewriteDeferred counts rewrite work postponed rather than done, by
+	// reason: the manifest has not listed the bucket yet (unlisted), the
+	// tombstone store is incomplete (restore_pending), or a record is not
+	// durable (not_durable).
+	DeleteRewriteDeferred = NewCounterVec("lakehouse_delete_rewrite_deferred_total", "reason")
+	// DeleteRewriteKeyCollisions counts replacement keys that could not be
+	// claimed because the key was already in use.
+	DeleteRewriteKeyCollisions = NewCounter("lakehouse_delete_rewrite_key_collisions_total")
 	// DeleteTombstoneRemovedMarkersEvicted counts removed-tombstone markers
 	// dropped by their TTL or cap. A marker is never evicted while its S3
 	// delete is still owed; eviction only bounds the set's size.

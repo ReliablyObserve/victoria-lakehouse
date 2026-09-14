@@ -54,6 +54,7 @@ type testSetup struct {
 // accidentally set up a state where the two already disagree.
 func (ts *testSetup) setFiles(files []FileInfo) {
 	ts.manifest.files = files
+	objects := make([]lhmanifest.ListedObject, 0, len(files))
 	for _, f := range files {
 		ts.files.AddFile(extractPartition(f.Key), lhmanifest.FileInfo{
 			Key:       f.Key,
@@ -62,7 +63,12 @@ func (ts *testSetup) setFiles(files []FileInfo) {
 			MaxTimeNs: f.MaxTimeNs,
 			RowCount:  1,
 		})
+		objects = append(objects, lhmanifest.ListedObject{Key: f.Key, Size: f.Size})
 	}
+	// A running node has listed its bucket; until a manifest has, the scheduler
+	// refuses to read an absent key as a deleted object and never retires a
+	// tombstone (see Manifest.Listed).
+	ts.files.ApplyListing(objects, time.Now())
 }
 
 func newTestSetup(t *testing.T, lifecycleRules []LifecycleRule) *testSetup {

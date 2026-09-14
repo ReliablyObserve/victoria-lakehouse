@@ -197,3 +197,31 @@
     archive" — are reconciled by separating visibility from physical presence: erasure is
     immediate and total from every read path, while the bytes leave on the lifecycle schedule
     unless physical deletion is explicitly demanded.
+
+- id: lh.feature.deletion.leftovers_api
+  title: Leftovers API — what an instance still owes
+  status: shipped
+  area: deletion
+  readme_section: Deletion
+  surfaces: [api]
+  rows: [lh.delete.leftovers.status]
+  tests:
+    - internal/delete/handler_leftovers_test.go#TestLeftovers_ListsRetiredPendingAndUnfinishedRewrites
+    - internal/delete/handler_leftovers_test.go#TestLeftovers_IsBounded
+    - internal/delete/handler_leftovers_test.go#TestLeftovers_RejectsNonGET
+    - internal/delete/handler_leftovers_test.go#TestLeftovers_IsRegistered
+    - internal/metrics/assets_test.go#TestDeleteMetrics_AreVisibleSomewhere
+  docs:
+    - docs/deletion-strategy.md
+    - docs/operations.md#what-this-instance-still-owes-prefixleftovers
+    - docs/operations.md#rolling-back
+  changelog_bullets:
+    - 'Delete leftovers API — what an instance still owes.'
+  highlight: >-
+    **Leftovers API**: `GET /delete/logsql/leftovers` (or `/delete/tracessql/leftovers`) names the retired keys, unpublished uploads and unfinished rewrites an instance is still holding on to.
+  description: >-
+    The alerts on retired-key eviction, non-durable tombstone records and unfinished rewrites all
+    ask an operator to act on specific objects, which until now no API could name. The listing is
+    read-only and instance-wide (not tenant-scoped, like the tombstone listing beside it), bounded
+    by a limit, and reports for each entry why it is still there — the delete that is owed, the
+    upload that is held, or the rewrite state a restart would resolve from.

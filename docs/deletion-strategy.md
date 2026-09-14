@@ -33,14 +33,18 @@ For data on any S3 class, the default deletion mode is **tombstone-based soft de
 3. Instead of rewriting files, a **tombstone record** is written to the manifest:
    ```json
    {
-     "type": "tombstone",
-     "query": "service.name:=\"leaked-credentials\"",
-     "time_range": {"start": "2025-01-01T00:00:00Z", "end": "2025-06-01T00:00:00Z"},
-     "affected_files": ["logs/dt=2025-03-15/hour=14/00001.parquet", ...],
-     "created_at": "2026-05-05T10:00:00Z",
-     "created_by": "admin@company.com"
+     "ID": "3f1c0f6e-2a5c-4f0a-9a1e-7b2d9c8e4a11",
+     "Query": "service.name:=\"leaked-credentials\"",
+     "StartNs": 1735689600000000000,
+     "EndNs": 1748736000000000000,
+     "AffectedKeys": ["logs/dt=2025-03-15/hour=14/00001.parquet"],
+     "CreatedAt": "2026-05-05T10:00:00Z",
+     "Mode": "auto"
    }
    ```
+   That is the record verbatim: it is what `{prefix}_tombstones/{id}.json` holds
+   and what a restore reads back (progress fields — `Reaped`, `Clean`,
+   `Superseded` — are added as the rewrite advances).
 4. On every read query, tombstones are evaluated as post-filters — matching rows are suppressed from results, and from the `field_values` / `streams` / `stream_ids` enumerations that feed field pickers (see [Operations → Where tombstones are applied](operations.md#where-tombstones-are-applied))
 5. **Cost: $0** — no S3 reads, no rewrites, no retrieval fees
 
@@ -99,25 +103,31 @@ The delete API uses a mode-specific prefix: `/delete/logsql/*` for logs mode, `/
 ```
 POST /delete/{logsql|tracessql}/delete
   ?query=<LogsQL filter>
-  &start=<timestamp>
-  &end=<timestamp>
-  &mode=tombstone|rewrite|auto   (default: auto)
+  &start=<unix nanoseconds>
+  &end=<unix nanoseconds>
+  &mode=hide|permanent|auto   (default: the configured delete.default_mode, "auto")
 ```
+
+`start` and `end` are UNIX timestamps in **nanoseconds** — the same unit the
+manifest and the Parquet files store — and are parsed as integers: a request
+carrying `start=2025-01-01` is rejected with `400 invalid start parameter`.
+Produce them from a date with `date -u -d '2025-01-01' +%s`000000000 (GNU date)
+or `date -ujf '%Y-%m-%d' 2025-01-01 +%s`000000000 (BSD/macOS date).
 
 **Examples:**
 
 ```bash
-# Delete logs matching a query
-curl -X POST 'http://lakehouse:9428/delete/logsql/delete?query=service.name:="leaked-creds"&start=2025-01-01&end=2025-06-01'
+# Delete logs matching a query (2025-01-01 .. 2025-06-01)
+curl -X POST 'http://lakehouse:9428/delete/logsql/delete?query=service.name:="leaked-creds"&start=1735689600000000000&end=1748736000000000000'
 
 # Delete traces matching a query
-curl -X POST 'http://lakehouse:10428/delete/tracessql/delete?query=trace_id:="abc123"&start=2025-01-01&end=2025-06-01'
+curl -X POST 'http://lakehouse:10428/delete/tracessql/delete?query=trace_id:="abc123"&start=1735689600000000000&end=1748736000000000000'
 ```
 
 **Mode behavior:**
-- `tombstone`: always soft-delete only (cheapest, instant)
-- `rewrite`: force physical deletion (warns if touching Glacier, requires confirmation header)
-- `auto` (default): tombstone immediately, schedule rewrite for S3 Standard files only
+- `hide`: always soft-delete only (cheapest, instant; rows stay in the objects and come back if the tombstone is removed)
+- `permanent`: physical deletion — the affected files are rewritten without the matching rows once the un-delete window has passed
+- `auto` (default): hide immediately, then rewrite the S3 Standard files only (files on IA/Glacier stay suppressed until lifecycle expiry)
 
 ### Cost Estimation Endpoint
 
@@ -126,8 +136,8 @@ Before executing a delete, users can estimate the cost:
 ```
 POST /delete/{logsql|tracessql}/estimate
   ?query=<LogsQL filter>
-  &start=<timestamp>
-  &end=<timestamp>
+  &start=<unix nanoseconds>
+  &end=<unix nanoseconds>
 
 Response:
 {
@@ -157,13 +167,29 @@ GET /delete/{logsql|tracessql}/tombstone/{id}/status
   # Shows rewrite progress for this tombstone
 ```
 
+### Leftovers Endpoint
+
+```
+GET /delete/{logsql|tracessql}/leftovers
+  ?limit=<max entries per list>   (default 1000, maximum 10000)
+```
+
+Read-only listing of what this instance is still holding on to: keys the
+manifest retired while their objects await deletion (`delete_owed` marks the
+ones this process owes), uploads claimed but not published (`held` marks a
+replacement whose swap is not durable yet), and the durable records of
+unfinished rewrites with their state. It is instance-wide, not tenant-scoped
+(`"scope": "instance"`), like the tombstone listing. The alerts on retired-key
+eviction, on non-durable records and on unfinished rewrites all point at it; see
+[Operations → What this instance still owes](operations.md#what-this-instance-still-owes-prefixleftovers).
+
 ### Verify Endpoint
 
 ```
 POST /delete/{logsql|tracessql}/verify
   ?query=<LogsQL filter>
-  &start=<timestamp>
-  &end=<timestamp>
+  &start=<unix nanoseconds>
+  &end=<unix nanoseconds>
 ```
 
 Confirms that deleted data is no longer visible through queries. Returns verification status and affected file count.

@@ -3,6 +3,7 @@ package delete
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -26,6 +27,22 @@ const (
 	pendingDelete
 )
 
+// pendingEntry is one owed write and the store version that owed it. The
+// version is what makes an acknowledgement meaningful: an upload that read the
+// record before a later change must not clear the queue entry that change
+// created, and a caller asking "is my change durable?" must not be answered by
+// an older upload that happened to succeed.
+type pendingEntry struct {
+	op  pendingOp
+	ver uint64
+}
+
+// ErrNotDurable reports that a tombstone change has not reached every durable
+// target. Nothing that deletes an object may proceed on a change in that state:
+// a restart restores the record from those targets, and an older record there
+// would undo a rewrite whose objects are already gone.
+var ErrNotDurable = errors.New("tombstone change is not durable yet")
+
 // tombstonePersistence owns the durable copies of a TombstoneStore. It is
 // deliberately separate from the store's own mutex: durable writes must never
 // be held under the lock that every query's ForRange takes.
@@ -44,8 +61,52 @@ type tombstonePersistence struct {
 	// blocks a query's ForRange.
 	diskMu sync.Mutex
 
+	// s3Mu serializes the S3 writes so the LAST object written is the one read
+	// LAST. Without it two flushes can read different versions of a record and
+	// land in the opposite order, leaving S3 holding the older one while the
+	// queue looks drained — and an acknowledgement that the newer record is
+	// durable would be false.
+	s3Mu sync.Mutex
+
 	mu      sync.Mutex
-	pending map[string]pendingOp
+	pending map[string]pendingEntry
+	// diskVer / s3Ver are the newest store version each target is known to
+	// hold, per tombstone id.
+	diskVer map[string]uint64
+	s3Ver   map[string]uint64
+}
+
+// newTombstonePersistence builds the durable-target bookkeeping.
+func newTombstonePersistence(cfg PersistenceConfig) *tombstonePersistence {
+	return &tombstonePersistence{
+		dir:     cfg.Dir,
+		pool:    cfg.Pool,
+		prefix:  normalizeTombstonePrefix(cfg.Prefix),
+		pending: make(map[string]pendingEntry),
+		diskVer: make(map[string]uint64),
+		s3Ver:   make(map[string]uint64),
+	}
+}
+
+// durableAt reports whether the target that a restore would rely on holds
+// version ver (or newer) of id.
+//
+// When S3 is configured it is that target: every restore reads it, on this node
+// and on a node that starts without this disk, and the merge prefers the record
+// that got further, so an S3 copy that is current cannot be undone by a stale
+// local one. With no S3 configured the local disk is the only copy, so it
+// decides. With neither, nothing durable exists to contradict the caller.
+func (p *tombstonePersistence) durableAt(id string, ver uint64) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch {
+	case p.pool != nil:
+		return p.s3Ver[id] >= ver
+	case p.dir != "":
+		return p.diskVer[id] >= ver
+	default:
+		return true
+	}
 }
 
 // normalizeTombstonePrefix makes the caller's prefix safe to concatenate.
@@ -79,11 +140,11 @@ func (p *tombstonePersistence) keyFor(id string) string {
 	return p.prefix + id + ".json"
 }
 
-// persistChange is the write-through path taken by Add / Remove / Complete.
-// The disk copy is synchronous and authoritative for crash recovery on the same
-// node; the S3 copy is attempted immediately and queued for retry on failure so
-// a transient S3 outage degrades to "durable locally" rather than "lost".
-func (s *TombstoneStore) persistChange(p *tombstonePersistence, id string, op pendingOp) {
+// persistChange is the write-through path taken by Add / Update / Remove /
+// Complete. The disk copy is synchronous; the S3 copy is attempted immediately
+// and queued for retry on failure so a transient S3 outage degrades to "durable
+// locally" rather than "lost". ver is the store version of the change.
+func (s *TombstoneStore) persistChange(p *tombstonePersistence, id string, op pendingOp, ver uint64) {
 	if p == nil {
 		return
 	}
@@ -91,22 +152,76 @@ func (s *TombstoneStore) persistChange(p *tombstonePersistence, id string, op pe
 	defer cancel()
 
 	if p.dir != "" {
-		p.diskMu.Lock()
-		err := s.PersistToDisk(p.dir)
-		p.diskMu.Unlock()
-		if err != nil {
-			metrics.DeleteTombstonePersistErrors.Inc("disk")
-			logger.Errorf("tombstone disk persist failed; id=%s, dir=%s: %s", id, p.dir, err)
-		} else {
-			metrics.DeleteTombstonePersistTotal.Inc("disk")
-		}
+		s.writeDiskCopy(p, id)
 	}
 
-	p.mu.Lock()
-	p.pending[id] = op
-	p.mu.Unlock()
-
+	p.queue(id, pendingEntry{op: op, ver: ver})
 	s.flushPending(ctx, p)
+}
+
+// writeDiskCopy writes the whole-file disk copy and records, per id, the
+// version it captured.
+func (s *TombstoneStore) writeDiskCopy(p *tombstonePersistence, id string) {
+	p.diskMu.Lock()
+	vers, err := s.writeDisk(p.dir)
+	p.diskMu.Unlock()
+	if err != nil {
+		metrics.DeleteTombstonePersistErrors.Inc("disk")
+		logger.Errorf("tombstone disk persist failed; id=%s, dir=%s: %s", id, p.dir, err)
+		return
+	}
+	metrics.DeleteTombstonePersistTotal.Inc("disk")
+	p.mu.Lock()
+	for k, v := range vers {
+		if v > p.diskVer[k] {
+			p.diskVer[k] = v
+		}
+	}
+	p.mu.Unlock()
+}
+
+// queue records an owed write, never replacing a newer one with an older one.
+func (p *tombstonePersistence) queue(id string, e pendingEntry) {
+	p.mu.Lock()
+	if cur, ok := p.pending[id]; !ok || cur.ver <= e.ver {
+		p.pending[id] = e
+	}
+	p.mu.Unlock()
+}
+
+// EnsureDurable reports nil once the tombstone's current state has reached the
+// target a restore would rely on, re-issuing the write if it has not. Every
+// step that deletes an object calls it first: the record that authorises the
+// delete must survive the restart that could otherwise undo it.
+func (s *TombstoneStore) EnsureDurable(ctx context.Context, id string) error {
+	s.mu.RLock()
+	p := s.persist
+	ver := s.vers[id]
+	_, exists := s.tombstones[id]
+	s.mu.RUnlock()
+	if p == nil {
+		// No durable target: nothing can hold a stale record either.
+		return nil
+	}
+	if !exists {
+		return ErrTombstoneNotFound
+	}
+	if p.durableAt(id, ver) {
+		return nil
+	}
+
+	if p.dir != "" {
+		s.writeDiskCopy(p, id)
+	}
+	if p.pool != nil {
+		p.queue(id, pendingEntry{op: pendingUpsert, ver: ver})
+		s.flushPending(ctx, p)
+	}
+	if p.durableAt(id, ver) {
+		return nil
+	}
+	metrics.DeleteTombstoneNotDurable.Inc()
+	return fmt.Errorf("%w: tombstone %s at version %d", ErrNotDurable, id, ver)
 }
 
 // PendingS3Writes reports how many tombstone records are still owed to S3 —
@@ -143,35 +258,41 @@ func (s *TombstoneStore) flushPending(ctx context.Context, p *tombstonePersisten
 		p.mu.Lock()
 		// Without a pool there is no S3 target at all; drop the queue rather
 		// than growing it forever and reporting a backlog no one can drain.
-		p.pending = make(map[string]pendingOp)
+		p.pending = make(map[string]pendingEntry)
 		p.mu.Unlock()
 		metrics.DeleteTombstonePersistPending.Set(0)
 		return 0
 	}
 
+	// One writer at a time, with each record read inside the lock: the object
+	// that lands last is then always the newest state read.
+	p.s3Mu.Lock()
+	defer p.s3Mu.Unlock()
+
 	p.mu.Lock()
-	todo := make(map[string]pendingOp, len(p.pending))
-	for id, op := range p.pending {
-		todo[id] = op
+	todo := make(map[string]pendingEntry, len(p.pending))
+	for id, e := range p.pending {
+		todo[id] = e
 	}
 	p.mu.Unlock()
 
-	for id, op := range todo {
+	for id, e := range todo {
 		var err error
-		switch op {
+		written := e.ver
+		switch e.op {
 		case pendingDelete:
 			err = p.pool.Delete(ctx, p.keyFor(id))
 		default:
 			// Re-read the live record: a later mutation may have landed
 			// between queueing and flushing, and the newest state is the one
 			// that belongs in S3.
-			ts, ok := s.Get(id)
+			ts, ver, ok := s.getWithVersion(id)
 			if !ok {
 				// Removed in the meantime — the delete op will have been
 				// queued too; skip the upload rather than resurrecting it.
-				err = nil
-				break
+				continue
 			}
+			written = ver
 			var data []byte
 			data, err = json.Marshal(ts)
 			if err == nil {
@@ -185,8 +306,12 @@ func (s *TombstoneStore) flushPending(ctx context.Context, p *tombstonePersisten
 		}
 		metrics.DeleteTombstonePersistTotal.Inc("s3")
 		p.mu.Lock()
-		// Only clear if the queued op is still the one we just performed.
-		if cur, ok := p.pending[id]; ok && cur == op {
+		if written > p.s3Ver[id] {
+			p.s3Ver[id] = written
+		}
+		// Only clear an entry the write actually covers: a change made while
+		// this upload ran queued a newer entry that still needs writing.
+		if cur, ok := p.pending[id]; ok && cur.op == e.op && cur.ver <= written {
 			delete(p.pending, id)
 		}
 		p.mu.Unlock()
@@ -210,11 +335,26 @@ func (s *TombstoneStore) Restore(ctx context.Context, cfg PersistenceConfig) (in
 	if cfg.Dir != "" {
 		if err := s.LoadFromDisk(cfg.Dir); err != nil {
 			errs = append(errs, fmt.Sprintf("disk: %s", err))
+			metrics.DeleteStartupInconsistencies.Inc("disk_restore_failed")
 		}
 	}
 	if cfg.Pool != nil {
-		if err := s.LoadFromS3(ctx, cfg.Pool, "", cfg.Prefix); err != nil {
+		// The S3 copy is the one a node that starts without this disk has, and
+		// the one every rewrite record must be read back from, so a failure
+		// here is a durability failure, not a warning: it is retried a few
+		// times now and then on every scheduler pass, counted, reported by the
+		// self-check, and it stops this process from resolving or finishing any
+		// rewrite until it succeeds (the records it would act on may be stale).
+		err := s.loadFromS3WithRetry(ctx, cfg)
+		s.mu.Lock()
+		s.restoreCfg = cfg
+		s.s3RestorePending = err != nil
+		s.mu.Unlock()
+		metrics.DeleteTombstoneRestorePending.Set(boolToInt64(err != nil))
+		if err != nil {
 			errs = append(errs, fmt.Sprintf("s3: %s", err))
+			metrics.DeleteStartupInconsistencies.Inc("s3_restore_failed")
+			logger.Errorf("tombstone restore from S3 failed; deletes made elsewhere are not enforced here and interrupted rewrites stay unresolved until it succeeds: %s", err)
 		}
 	}
 	n := s.Count()
@@ -225,6 +365,107 @@ func (s *TombstoneStore) Restore(ctx context.Context, cfg PersistenceConfig) (in
 	return n, nil
 }
 
+// boolToInt64 renders a state flag as the 0/1 a gauge carries.
+func boolToInt64(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// restoreAttempts / restoreBackoff bound the startup retry of the S3 restore.
+// Small on purpose: a node must not sit in disk recovery for minutes because
+// S3 is unhappy, and RetryS3Restore keeps trying afterwards.
+var (
+	restoreAttempts = 3
+	restoreBackoff  = time.Second
+)
+
+func (s *TombstoneStore) loadFromS3WithRetry(ctx context.Context, cfg PersistenceConfig) error {
+	var err error
+	for attempt := 1; attempt <= restoreAttempts; attempt++ {
+		if err = s.LoadFromS3(ctx, cfg.Pool, "", cfg.Prefix); err == nil {
+			return nil
+		}
+		metrics.DeleteTombstoneRestoreAttempts.Inc("failed")
+		if attempt == restoreAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(restoreBackoff * time.Duration(attempt)):
+		}
+	}
+	return err
+}
+
+// S3RestorePending reports that the S3 copy of the tombstone store could not be
+// read at startup and has not been read since. While it is true the in-memory
+// records may be incomplete or older than what S3 holds, so no rewrite may be
+// resolved, finished or retired on their strength.
+func (s *TombstoneStore) S3RestorePending() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.s3RestorePending
+}
+
+// RetryS3Restore re-reads the S3 copy after a failed restore and merges it in.
+// Returns true when the store is (now) complete.
+func (s *TombstoneStore) RetryS3Restore(ctx context.Context) bool {
+	s.mu.RLock()
+	pending := s.s3RestorePending
+	cfg := s.restoreCfg
+	s.mu.RUnlock()
+	if !pending {
+		return true
+	}
+	if cfg.Pool == nil {
+		return false
+	}
+	if err := s.LoadFromS3(ctx, cfg.Pool, "", cfg.Prefix); err != nil {
+		metrics.DeleteTombstoneRestoreAttempts.Inc("failed")
+		logger.Warnf("tombstone restore from S3 still failing: %s", err)
+		return false
+	}
+	s.mu.Lock()
+	s.s3RestorePending = false
+	s.mu.Unlock()
+	metrics.DeleteTombstoneRestorePending.Set(0)
+	metrics.DeleteTombstoneRestoreAttempts.Inc("recovered")
+	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
+	logger.Infof("tombstone restore from S3 succeeded on retry; tombstones=%d", s.Count())
+	return true
+}
+
+// RunRestoreRetry keeps re-reading the S3 copy until it succeeds, then returns.
+// The rewrite scheduler already retries on every pass, but a node with rewriting
+// disabled — a query-only replica, or one whose delete scheduler is off — has no
+// such pass: without this loop it would serve queries from an incomplete
+// tombstone set for the life of the process, un-hiding rows another node
+// deleted. Returns immediately when nothing is pending.
+func (s *TombstoneStore) RunRestoreRetry(ctx context.Context, every time.Duration) {
+	if every <= 0 {
+		every = time.Minute
+	}
+	for {
+		s.mu.RLock()
+		pending, pool := s.s3RestorePending, s.restoreCfg.Pool
+		s.mu.RUnlock()
+		if !pending || pool == nil {
+			return
+		}
+		if s.RetryS3Restore(ctx) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(every):
+		}
+	}
+}
+
 // mergeLoadedLocked folds a loaded record into the store without losing
 // progress. Two nodes (or two boots) can disagree about a tombstone only in how
 // much of it has been rewritten, and rewrite progress is monotonic: a key that
@@ -232,6 +473,16 @@ func (s *TombstoneStore) Restore(ctx context.Context, cfg PersistenceConfig) (in
 // So the merge is a union of the Reaped sets and of the AffectedKeys lists, and
 // the earliest CreatedAt wins (it bounds the rewrite delay conservatively).
 func (s *TombstoneStore) mergeLoadedLocked(ts Tombstone) {
+	// A restored record is a MERGE of what the targets held, so no single
+	// target is known to hold it: the disk copy can be ahead of S3 (the state a
+	// crash between the disk write and the S3 write leaves), and the merge of
+	// two nodes' copies is newer than either. Advancing the change counter is
+	// what keeps EnsureDurable honest about that — version 0 against an
+	// acknowledgement of 0 would read as "already durable" and let a rewrite
+	// delete its source on the strength of a record S3 does not hold. The
+	// write-back is lazy: EnsureDurable issues it for the ids something acts
+	// on, so a boot does not rewrite every record it restored.
+	defer s.bumpLocked(ts.ID)
 	cur, ok := s.tombstones[ts.ID]
 	if !ok {
 		s.tombstones[ts.ID] = ts

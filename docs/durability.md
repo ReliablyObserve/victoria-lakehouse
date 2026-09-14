@@ -122,6 +122,34 @@ the upload, `published` after the swap, cleared after the original's delete;
 `discarded` when a publish is refused), because the tombstone store is durable on
 every change while the manifest is durable only as of its last snapshot.
 
+**Recorded is not the same as durable.** Writing the record into the store is
+what the next step reads, but a restart reads the *durable copies*, so no object
+is deleted until the record authorising it has been **acknowledged by the target
+a restore would read** — S3 when it is configured, the local disk otherwise. The
+prepared record must be durable before the replacement is uploaded; the published
+record before peers are told and before the original is deleted; the discarded
+record before the abandoned replacement is deleted. When the write cannot be
+confirmed the rewrite is deferred with everything left exactly as it is
+(`lakehouse_delete_rewrite_deferred_total{reason="not_durable"}`), the
+replacement stays **held** so no compaction can merge it while an undo is still
+possible, and the next pass retries. A record restored at boot is a *merge* of
+what the copies held, so it counts as durable nowhere until it has been written
+back — otherwise a disk copy that outran S3 would authorise a delete S3 knows
+nothing about.
+
+**Nothing is inferred from an empty manifest.** "This key is not in the manifest"
+means "the object is gone" only once this process has applied a bucket listing:
+before the first refresh the manifest is a snapshot that may be older than the
+object — or empty, on a node that lost its disk — so no tombstone retires and no
+key is recorded as reaped until then
+(`..._deferred_total{reason="unlisted"}`). The same holds for one key after a
+listing: an undone rewrite's source is the live copy of its rows again, but its
+entry only returns with the next refresh, so it is exempt until a listing that
+*began after the undo* has been applied (`reason="awaiting_listing"`). And a node
+whose S3 restore failed holds records that may be older than what S3 has, so it
+resolves, finishes and retires nothing until the read succeeds
+(`reason="restore_pending"`, `lakehouse_delete_tombstone_restore_pending`).
+
 **The manifest refresh.** Every `manifest.refresh_interval` (and at startup) the
 manifest is rebuilt from a bucket listing. A listing cannot tell a live file from
 an object the manifest let go of, so the manifest remembers **retired** keys (a
@@ -153,6 +181,10 @@ scheduler gets another turn. Every row below holds in all three:
 | a rewrite replaced a source between a compaction's read and its publish | the replacement is manifested; the compaction's swap is refused | the compaction abandons (retires and deletes) its output and re-selects on the next tick |
 | a compaction's source delete fails | output live; source retired | the compaction scheduler retries the delete every scan; the refresh never re-adopts the source |
 | a compaction published its output, then died before updating the tombstone | the output holds the tombstone's rows; nothing on the tombstone names it | before retiring, the scheduler re-reads every file overlapping the range, finds the output and rewrites it |
+| the record of a step cannot be written durably (S3 rejecting the tombstone writes) | the step before it stands; no object deleted | the rewrite is deferred with the replacement held; every pass retries the write and then the step |
+| the scheduler ticks before this process has listed the bucket (a restart with no disk, or a snapshot older than the delete) | keys missing from the manifest that the bucket still holds | nothing is reaped and no tombstone retires until a listing has been applied; the refresh then adopts the objects and the rewrite runs |
+| the tombstone store's S3 copy cannot be read at boot | the node holds only what its disk had (possibly nothing) | it enforces what it has, resolves and retires nothing, and retries the read every minute until it succeeds |
+| two writers draw the same object key | one of them would overwrite a live file | keys are claimed before anything is written and redrawn on a collision; a publish onto a key the manifest already serves is refused |
 
 Every one of these converges without operator action; none can leave a kept row
 in no readable object, serve it twice, or retire a tombstone while a file still
@@ -163,6 +195,12 @@ The rewriter refuses to run without a manifest to publish into.
 
 The rows are tests: `TestRewriteCrashMatrix_WithManifestRefresh` (every step of
 the publish and discard paths × the three restart modes, refresh first),
+`TestRewriteCrashMatrix_DurableRecordWritesFailing` (the same matrix with every
+tombstone record after `prepared` rejected by S3),
+`TestRewriteCrashMatrix_PassBeforeTheFirstRefresh` (the scheduler ticking before
+this process has listed the bucket),
+`TestRewriteCrashMatrix_TombstoneRestoreListFailing`,
+`TestRewriteDurability_*`, `TestRewrite_ReplacementKeyCollision*`,
 `TestRewriteRefreshAtEveryStep`, `TestRewriteRefresh_*` and
 `TestResumeRewrites_RetriesUntilTheDeleteLands` in `internal/delete`;
 `TestDeleteRace_*`, `TestDeleteRefresh_*` and the property suite
@@ -177,6 +215,15 @@ manifest snapshot, so a crash between that compaction and the next snapshot can
 let the refresh adopt the leftover source again — the compaction crash window
 that predates this change (see
 [Operations → Known bounds](operations.md#where-tombstones-are-applied)).
+
+**Rolling back is one-directional.** This release reads the previous release's
+tombstone files; the previous release cannot read this one's disk envelope and
+drops the rewrite records from the S3 copies it can read, so a rewrite that is
+unfinished at the moment of a rollback is never resolved. Drain
+`lakehouse_delete_rewrites_unfinished` and
+`lakehouse_delete_tombstone_persist_pending` to zero first — the procedure is in
+[Operations → Rolling back](operations.md#rolling-back), and
+`GET {prefix}/leftovers` lists what is still outstanding.
 
 ---
 

@@ -13,7 +13,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Query | 13 | 1 | 0 | 1 | 15 |
 | Cache | 12 | 0 | 0 | 0 | 12 |
 | Compaction | 6 | 0 | 0 | 1 | 7 |
-| Deletion | 8 | 0 | 0 | 0 | 8 |
+| Deletion | 9 | 0 | 0 | 0 | 9 |
 | Traces | 8 | 0 | 0 | 3 | 11 |
 | Tenancy | 18 | 0 | 0 | 1 | 19 |
 | UI | 7 | 0 | 0 | 0 | 7 |
@@ -21,7 +21,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Ops | 12 | 0 | 0 | 0 | 12 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **126** | **1** | **3** | **8** | **138** |
+| **Total** | **127** | **1** | **3** | **8** | **139** |
 
 ## Coverage gaps
 
@@ -807,7 +807,7 @@ Aged data is scanned in bulk and pruned coarsely, so larger row groups are stric
 - Docs: `docs/configuration.md`, `docs/performance.md`
 - Changelog: `0.85.0`
 
-## Deletion (8)
+## Deletion (9)
 
 ### ✅ Glacier-safe, GDPR-compatible deletion
 
@@ -841,6 +841,18 @@ A delete over cold storage can be free or expensive depending on where the match
 
 - Verification: rows: `lh.delete.logsql.estimate.status` (pass, pending) · tests: `internal/delete/handler_test.go#TestHandler_handleEstimate_Valid`, `internal/delete/storageclass_test.go#TestStorageClass_EstimateRewriteCost`, `internal/delete/handler_test.go#TestHandler_handleEstimate_CachedStorageClass`, `tests/e2e/delete_test.go#TestDelete_Estimate`
 - Docs: `docs/deletion-strategy.md`
+
+### ✅ Leftovers API — what an instance still owes
+
+`lh.feature.deletion.leftovers_api` · status: shipped · since: the release after v0.122.0 · surfaces: api
+
+**Leftovers API**: `GET /delete/logsql/leftovers` (or `/delete/tracessql/leftovers`) names the retired keys, unpublished uploads and unfinished rewrites an instance is still holding on to.
+
+The alerts on retired-key eviction, non-durable tombstone records and unfinished rewrites all ask an operator to act on specific objects, which until now no API could name. The listing is read-only and instance-wide (not tenant-scoped, like the tombstone listing beside it), bounded by a limit, and reports for each entry why it is still there — the delete that is owed, the upload that is held, or the rewrite state a restart would resolve from.
+
+- Verification: rows: `lh.delete.leftovers.status` (pass, pending) · tests: `internal/delete/handler_leftovers_test.go#TestLeftovers_ListsRetiredPendingAndUnfinishedRewrites`, `internal/delete/handler_leftovers_test.go#TestLeftovers_IsBounded`, `internal/delete/handler_leftovers_test.go#TestLeftovers_RejectsNonGET`, `internal/delete/handler_leftovers_test.go#TestLeftovers_IsRegistered`, `internal/metrics/assets_test.go#TestDeleteMetrics_AreVisibleSomewhere`
+- Docs: `docs/deletion-strategy.md`, `docs/operations.md#what-this-instance-still-owes-prefixleftovers`, `docs/operations.md#rolling-back`
+- Changelog: the release after `0.122.0`
 
 ### ✅ Hide, permanent and auto delete modes
 

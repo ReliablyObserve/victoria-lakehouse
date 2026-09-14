@@ -341,8 +341,9 @@ and logs plus counts every disagreement under
 | kind | meaning | consequence |
 |------|---------|-------------|
 | `persistence_disabled` | the store has no durable target | deletes are lost on an ungraceful restart |
-| `reaped_key_still_manifested` | tombstone state is ahead of the manifest snapshot | rows stay hidden by the query filter; self-heals |
-| `pending_key_missing_from_manifest` | the manifest snapshot is ahead of the tombstone copy | the scheduler marks the key reaped on its next tick |
+| `s3_restore_failed` | the S3 copy of the store could not be read (LIST or an object) | **deletes made on other nodes are not enforced here** and no interrupted rewrite is resolved or tombstone retired until it succeeds; retried every minute and on every rewrite pass (`lakehouse_delete_tombstone_restore_pending`) |
+| `reaped_key_still_manifested` | a key the tombstone records as gone is one the manifest still serves — another node's record, or a rewrite that was undone | the key is put back on the tombstone's work list and rewritten again; rows stay hidden by the query filter meanwhile |
+| `pending_key_missing_from_manifest` | the manifest snapshot does not list a key the tombstone still has work for | nothing is inferred from it: the scheduler waits for a bucket listing in this process (and, for a key an undo restored, for a listing that began after the undo) before treating the object as gone |
 | `removed_tombstone_still_in_s3` | an un-deleted or retired tombstone's S3 copy survived a crash | the stale copy is ignored and its delete re-issued (see *Un-Delete*) |
 | `unreadable_tombstone_object` | an object under `_tombstones/` could not be parsed | that one record was skipped |
 
@@ -373,15 +374,81 @@ belongs to the rewrite scheduler's normal retry path.
 - `lakehouse_delete_rewrite_skipped_glacier_total` — rewrites skipped due to storage class
 - `lakehouse_delete_tombstone_persist_total{target="disk"|"s3"}` / `..._errors_total` — durability writes
 - `lakehouse_delete_tombstone_persist_pending` — records whose S3 copy is behind; steady state 0
+- `lakehouse_delete_tombstone_not_durable_total` — steps that could not proceed because the change authorising them was not durable yet; the objects are kept and the next pass retries
+- `lakehouse_delete_rewrite_deferred_total{reason="not_durable"|"unlisted"|"awaiting_listing"|"restore_pending"}` — rewrite work postponed rather than done, by why
+- `lakehouse_delete_rewrites_unfinished` — rewrite records whose objects are not settled yet; **drain to 0 before rolling back** (see *Rolling back*)
+- `lakehouse_delete_tombstone_restore_pending` / `lakehouse_delete_tombstone_restore_attempts_total{result="failed"|"recovered"}` — whether this node has read the S3 copy of the store, and the retries
+- `lakehouse_delete_rewrite_key_collisions_total`, `lakehouse_manifest_key_claim_rejected_total{reason}` — object keys that were already in use and had to be redrawn; a sustained rate means something other than chance is generating them
+- `lakehouse_manifest_held_keys` — replacements another publish may not supersede yet (their swap is not durable)
+- `lakehouse_manifest_retired_delete_owed` — how much of the retired set is this process's own outstanding deletes
+- `lakehouse_delete_tombstone_removed_markers_evicted_total` — removed-tombstone markers dropped by their TTL or cap (never while their S3 delete is owed)
 - `lakehouse_delete_compaction_rows_removed_total` / `lakehouse_delete_compaction_keys_reaped_total` — rows and source keys compaction reaped
 - `lakehouse_delete_fields_scan_fallback_total{endpoint=...}` — requests that gave up a fast path a tombstone cannot be applied to because one overlapped: metadata-only field enumeration (`field_names`, `field_values`, `streams`, `stream_ids`) and the pure-buffer aggregate path (`pure_buffer`)
 
 **Alert on** a sustained non-zero `lakehouse_delete_tombstone_persist_pending`
 (only the local disk copy would survive a pod move), on any increase in
 `lakehouse_delete_rewrite_manifest_errors_total`, on superseded or abandoned
-objects whose deletes keep failing, and on any retired key evicted by its bound
-(`lakehouse_manifest_retired_evicted_total`) — all ship as rules in
-`alerts/alerts-lakehouse.yml`.
+objects whose deletes keep failing, on a retired key evicted by its size bound
+(`lakehouse_manifest_retired_evicted_total{reason!="ttl"}`, and critically on
+`reason="cap_delete_owed"`), on `lakehouse_delete_tombstone_restore_pending`
+(this node is not enforcing other nodes' deletes), on
+`lakehouse_delete_tombstone_not_durable_total` and on
+`lakehouse_delete_rewrites_unfinished` staying above zero for hours — all ship
+as rules in `alerts/alerts-lakehouse.yml`, and all of them name
+`GET {prefix}/leftovers` as the way to see what is outstanding.
+
+### What this instance still owes: `{prefix}/leftovers`
+
+```bash
+curl 'http://lakehouse:9428/delete/logsql/leftovers'        # traces: /delete/tracessql/leftovers
+curl 'http://lakehouse:9428/delete/logsql/leftovers?limit=50'
+```
+
+A read-only listing of everything this instance is holding on to, which is what
+the alerts above tell an operator to look at:
+
+- `retired_keys` — objects the manifest has stopped serving. `delete_owed: true`
+  means this process superseded the object and owes its deletion;
+  `replaced_by` names the file that took its place.
+- `pending_keys` — uploads claimed but not published. `held: true` means a
+  replacement whose swap is not durable yet, which compaction may not merge.
+- `unfinished_rewrites` — the durable rewrite records, with `state`
+  (`prepared`, `published` or `discarded`) and the objects each one names.
+- `counts`, plus `truncated`/`limit`: the lists are capped (default 1000
+  entries, maximum 10000) while the counts are always the full totals.
+- `tombstone_store` — whether write-through persistence is armed, how many
+  records are owed to S3, and whether the S3 restore is still pending.
+
+It is **instance-wide, not tenant-scoped** (`"scope": "instance"` in the
+payload) — like the tombstone listing next to it, because tombstones and the
+retired/pending sets are per instance, not per tenant. Treat it as an operator
+endpoint. It is read-only: nothing here deletes or repairs anything, because
+every repair is a data movement that belongs to the scheduler's retry path.
+
+### Rolling back
+
+Upgrading is safe in one direction only, and the difference matters when a
+rewrite is in flight:
+
+- **Old files, new binary:** this release reads the previous release's
+  `tombstones.json` (a bare id → record map) and its `_tombstones/{id}.json`
+  objects unchanged. Nothing to do.
+- **New files, old binary:** the previous release cannot read this release's
+  `tombstones.json` envelope at all (it carries the removed-tombstone markers),
+  and the per-id S3 objects it *can* read lose the rewrite records
+  (`Superseded`). A rewrite that is half-finished when you roll back is then
+  never resolved: a replacement stays unmanifested until the orphan sweep
+  reclaims it, or a superseded object keeps its rows.
+
+So before rolling back to a release older than this one:
+
+1. Stop issuing deletes, and wait for `lakehouse_delete_rewrites_unfinished` to
+   reach **0** on every instance (`{prefix}/leftovers` shows what is left).
+2. Wait for `lakehouse_delete_tombstone_persist_pending` to reach **0**, so
+   every record is in S3 — the only copy the old binary will read.
+3. Check `lakehouse_manifest_retired_delete_owed` is 0, or delete the listed
+   objects yourself: the old binary does not carry the retired set forward in
+   its snapshot, and a refresh would serve those objects again.
 
 **Configuration:**
 
@@ -619,8 +686,14 @@ the others (see *Known bounds*).
 Always estimate before large deletes:
 
 ```bash
-curl -X POST 'http://lakehouse:9428/delete/logsql/estimate?query=service.name:="leaked"&start=2025-01-01&end=2025-06-01'
+curl -X POST 'http://lakehouse:9428/delete/logsql/estimate?query=service.name:="leaked"&start=1735689600000000000&end=1748736000000000000'
 ```
+
+`start` and `end` are UNIX timestamps in **nanoseconds** on every delete
+endpoint (`400 invalid start parameter` otherwise); the values above are
+2025-01-01 and 2025-06-01. Produce them with `date -u -d '2025-01-01'
++%s`000000000 (GNU date) or `date -ujf '%Y-%m-%d' 2025-01-01 +%s`000000000
+(BSD/macOS date).
 
 Response includes per-storage-class file counts and estimated rewrite costs. Use `mode=hide` to avoid any physical rewrites if cost is too high.
 
@@ -629,7 +702,7 @@ Response includes per-storage-class file counts and estimated rewrite costs. Use
 After deletion, verify data is suppressed:
 
 ```bash
-curl -X POST 'http://lakehouse:9428/delete/logsql/verify?query=service.name:="leaked"&start=2025-01-01&end=2025-06-01'
+curl -X POST 'http://lakehouse:9428/delete/logsql/verify?query=service.name:="leaked"&start=1735689600000000000&end=1748736000000000000'
 ```
 
 Normal mode (default): runs the query through the normal read path — if results are empty, deletion is working. Deep mode (`mode=deep`): scans affected files directly for compliance auditing.

@@ -54,6 +54,13 @@ func SelfCheck(store *TombstoneStore, m ManifestUpdater) []Inconsistency {
 		})
 	}
 
+	if store.S3RestorePending() {
+		found = append(found, Inconsistency{
+			Kind:   "s3_restore_failed",
+			Detail: "the S3 copy of the tombstone store could not be read; deletes made on other nodes are not enforced here and no rewrite is resolved or retired until it can be",
+		})
+	}
+
 	if m != nil {
 		for _, ts := range store.Active() {
 			for _, key := range ts.AffectedKeys {
@@ -70,7 +77,7 @@ func SelfCheck(store *TombstoneStore, m ManifestUpdater) []Inconsistency {
 						Kind:        "reaped_key_still_manifested",
 						TombstoneID: ts.ID,
 						Key:         key,
-						Detail:      "tombstone records this key as rewritten but the manifest still lists it; rows stay hidden by the query filter",
+						Detail:      "tombstone records this key as rewritten but the manifest still lists it; rows stay hidden by the query filter and the next discovery pass makes the key pending again",
 					})
 				case !reaped && !clean && !present:
 					// The manifest no longer has the key the tombstone wants to
@@ -80,7 +87,7 @@ func SelfCheck(store *TombstoneStore, m ManifestUpdater) []Inconsistency {
 						Kind:        "pending_key_missing_from_manifest",
 						TombstoneID: ts.ID,
 						Key:         key,
-						Detail:      "tombstone still lists this key as pending but the manifest does not have it; the scheduler will mark it reaped",
+						Detail:      "tombstone still lists this key as pending but the manifest does not have it; once the first bucket listing of this process confirms the object is gone the scheduler marks it reaped — until then it is left alone, because a snapshot older than the file looks exactly like this",
 					})
 				}
 			}

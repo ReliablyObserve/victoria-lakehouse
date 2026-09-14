@@ -236,6 +236,16 @@ type Manifest struct {
 	retired    map[string]RetiredKey
 	pending    map[string]time.Time
 	recentAdds []recentAdd
+	// awaitingAdoption holds keys whose objects exist and belong in the
+	// manifest again, but which no listing has re-adopted yet (see
+	// ExpectInListing). Cleared by the first listing that began after the
+	// expectation was recorded.
+	awaitingAdoption map[string]time.Time
+	// held keys are registered files another publish must not supersede yet
+	// (see Hold); listed reports whether a bucket listing has been applied in
+	// this process (see Listed). Neither is persisted.
+	held   map[string]bool
+	listed bool
 }
 
 func New(bucket, prefix string) *Manifest {
@@ -248,6 +258,7 @@ func New(bucket, prefix string) *Manifest {
 		tenantAggregates:  make(map[tenantAccumKey]*tenantAccum),
 		retired:           make(map[string]RetiredKey),
 		pending:           make(map[string]time.Time),
+		held:              make(map[string]bool),
 		prefix:            prefix,
 		bucket:            bucket,
 	}
@@ -880,6 +891,7 @@ func (m *Manifest) applyRefreshedFiles(files map[string][]FileInfo, listStart ti
 	m.totalFiles = totalFiles
 	m.totalBytes = totalBytes
 	m.lastRefresh = time.Now()
+	m.listed = true
 	m.afterAcceptedRefreshLocked(confirmedGone, listStart)
 	m.mu.Unlock()
 
@@ -1308,7 +1320,7 @@ func (m *Manifest) removeFileLocked(partition string, key string) bool {
 func (m *Manifest) RemoveFileIfPresent(partition string, key string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.keyInPartitionLocked(partition, key) {
+	if !m.keyInPartitionLocked(partition, key) || m.held[key] {
 		return false
 	}
 	if !m.removeFileLocked(partition, key) {
@@ -1349,7 +1361,7 @@ func (m *Manifest) PartitionForKey(key string) (string, bool) {
 func (m *Manifest) ReplaceFile(partition string, oldKey string, fi FileInfo) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.keyInPartitionLocked(partition, oldKey) {
+	if !m.keyInPartitionLocked(partition, oldKey) || m.held[oldKey] || !m.freeForPublishLocked(fi.Key, oldKey) {
 		return false
 	}
 	m.removeFileLocked(partition, oldKey)
@@ -1372,9 +1384,12 @@ func (m *Manifest) ReplaceFiles(partition string, oldKeys []string, fi FileInfo)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, k := range oldKeys {
-		if !m.keyInPartitionLocked(partition, k) {
+		if !m.keyInPartitionLocked(partition, k) || m.held[k] {
 			return false
 		}
+	}
+	if !m.freeForPublishLocked(fi.Key, oldKeys...) {
+		return false
 	}
 	for _, k := range oldKeys {
 		m.removeFileLocked(partition, k)
@@ -1382,6 +1397,25 @@ func (m *Manifest) ReplaceFiles(partition string, oldKeys []string, fi FileInfo)
 	}
 	m.addFileLocked(partition, fi)
 	return true
+}
+
+// freeForPublishLocked reports whether newKey may be registered: it must not
+// already belong to a file this manifest serves (other than one of the keys
+// this publish is replacing). Output keys carry a short random id, and a
+// publish that added nothing because the key was taken — addFileLocked drops a
+// duplicate — while removing its sources would delete those rows from the
+// manifest outright. Caller must hold m.mu.
+func (m *Manifest) freeForPublishLocked(newKey string, replacing ...string) bool {
+	if _, taken := m.byKey[newKey]; !taken {
+		return true
+	}
+	for _, k := range replacing {
+		if k == newKey {
+			return true
+		}
+	}
+	metrics.ManifestKeyClaimRejected.Inc("publish_key_taken")
+	return false
 }
 
 // keyInPartitionLocked reports whether key is registered under partition.
@@ -1946,10 +1980,15 @@ func (m *Manifest) LoadFrom(path string) error {
 	m.rebuildIndex()
 	m.totalFiles = snap.TotalFiles_
 	m.totalBytes = snap.TotalBytes_
-	// Pending uploads and recent adds describe the previous process's in-flight
-	// work, not this one's; retired keys carry over (see retired.go).
+	// Pending uploads, holds and recent adds describe the previous process's
+	// in-flight work, not this one's; retired keys carry over (see retired.go).
+	// A loaded snapshot is not a listing: `listed` stays false until a refresh
+	// tells this process what the bucket actually holds.
 	m.pending = make(map[string]time.Time)
+	m.held = make(map[string]bool)
 	m.recentAdds = nil
+	m.awaitingAdoption = nil
+	m.listed = false
 	m.retired = make(map[string]RetiredKey, len(snap.Retired))
 	for _, rk := range snap.Retired {
 		if _, tracked := m.byKey[rk.Key]; tracked {

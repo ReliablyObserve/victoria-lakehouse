@@ -253,11 +253,53 @@ type TombstoneStore struct {
 	// persistence was enabled; EnablePersistence queues their deletes.
 	staleS3 map[string]bool
 
+	// vers counts the changes made to each tombstone id. It is what the
+	// durable-target bookkeeping compares against, so an acknowledgement names
+	// a specific state rather than "some write succeeded". Survives removal:
+	// an id reused later keeps counting up, so no stale acknowledgement can
+	// look current.
+	vers map[string]uint64
+
+	// s3RestorePending / restoreCfg carry a failed S3 restore forward so it can
+	// be retried and so nothing acts on possibly stale records meanwhile.
+	s3RestorePending bool
+	restoreCfg       PersistenceConfig
+
 	// inflight is the set of source keys a rewrite in THIS process is working
 	// on. Process-local by design: it stops two schedulers sharing the store
 	// from rewriting — or resolving the record of — the same file at once.
 	inflightMu sync.Mutex
 	inflight   map[string]bool
+}
+
+// bumpLocked advances and returns the change counter for id. Caller holds s.mu.
+func (s *TombstoneStore) bumpLocked(id string) uint64 {
+	if s.vers == nil {
+		s.vers = make(map[string]uint64)
+	}
+	s.vers[id]++
+	return s.vers[id]
+}
+
+// getWithVersion returns a record and the version it is at.
+func (s *TombstoneStore) getWithVersion(id string) (Tombstone, uint64, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ts, ok := s.tombstones[id]
+	return ts, s.vers[id], ok
+}
+
+// UnfinishedRewrites is the number of rewrite records across active tombstones
+// whose objects are not settled yet. Operators read it before a rollback: the
+// previous release cannot carry these records.
+func (s *TombstoneStore) UnfinishedRewrites() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for _, ts := range s.tombstones {
+		n += len(ts.Superseded)
+	}
+	return n
 }
 
 // ErrRewriteInProgress is returned by TryRemove for a tombstone with a rewrite
@@ -305,6 +347,7 @@ func (s *TombstoneStore) SetCompletionObserver(fn func(Tombstone)) {
 func NewTombstoneStore() *TombstoneStore {
 	return &TombstoneStore{
 		tombstones: make(map[string]Tombstone),
+		vers:       make(map[string]uint64),
 	}
 }
 
@@ -324,16 +367,14 @@ type PersistenceConfig struct {
 // before the store is handed to the HTTP handler or the scheduler.
 func (s *TombstoneStore) EnablePersistence(cfg PersistenceConfig) {
 	s.mu.Lock()
-	s.persist = &tombstonePersistence{
-		dir:     cfg.Dir,
-		pool:    cfg.Pool,
-		prefix:  normalizeTombstonePrefix(cfg.Prefix),
-		pending: make(map[string]pendingOp),
+	s.persist = newTombstonePersistence(cfg)
+	if s.restoreCfg.Pool == nil && cfg.Pool != nil {
+		s.restoreCfg = cfg
 	}
 	// Stale S3 copies of removed tombstones found by a restore that ran before
 	// persistence was armed: their deletes are owed from now on.
 	for id := range s.staleS3 {
-		s.persist.pending[id] = pendingDelete
+		s.persist.pending[id] = pendingEntry{op: pendingDelete, ver: s.bumpLocked(id)}
 	}
 	s.staleS3 = nil
 	s.mu.Unlock()
@@ -375,10 +416,12 @@ func (s *TombstoneStore) Add(ts Tombstone) {
 	s.tombstones[ts.ID] = next
 	// A new delete reusing a removed id stands; its marker no longer applies.
 	delete(s.removed, ts.ID)
+	ver := s.bumpLocked(ts.ID)
 	p := s.persist
 	s.mu.Unlock()
 	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
-	s.persistChange(p, ts.ID, pendingUpsert)
+	metrics.DeleteRewritesUnfinished.Set(int64(s.UnfinishedRewrites()))
+	s.persistChange(p, ts.ID, pendingUpsert, ver)
 }
 
 // Update applies fn to a private copy of the CURRENT record for id, under the
@@ -405,9 +448,11 @@ func (s *TombstoneStore) Update(id string, fn func(ts *Tombstone) bool) (Tombsto
 		return cur, false
 	}
 	s.tombstones[id] = next
+	ver := s.bumpLocked(id)
 	p := s.persist
 	s.mu.Unlock()
-	s.persistChange(p, id, pendingUpsert)
+	metrics.DeleteRewritesUnfinished.Set(int64(s.UnfinishedRewrites()))
+	s.persistChange(p, id, pendingUpsert, ver)
 	return next, true
 }
 
@@ -447,10 +492,12 @@ func (s *TombstoneStore) Remove(id string) {
 	s.mu.Lock()
 	delete(s.tombstones, id)
 	s.markRemovedLocked(id, time.Now())
+	ver := s.bumpLocked(id)
 	p := s.persist
 	s.mu.Unlock()
 	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
-	s.persistChange(p, id, pendingDelete)
+	metrics.DeleteRewritesUnfinished.Set(int64(s.UnfinishedRewrites()))
+	s.persistChange(p, id, pendingDelete, ver)
 }
 
 // TryRemove is the un-delete: it removes the tombstone unless one of its
@@ -471,10 +518,11 @@ func (s *TombstoneStore) TryRemove(id string) error {
 	}
 	delete(s.tombstones, id)
 	s.markRemovedLocked(id, time.Now())
+	ver := s.bumpLocked(id)
 	p := s.persist
 	s.mu.Unlock()
 	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
-	s.persistChange(p, id, pendingDelete)
+	s.persistChange(p, id, pendingDelete, ver)
 	return nil
 }
 
@@ -495,6 +543,7 @@ func (s *TombstoneStore) Complete(id string) bool {
 	}
 	delete(s.tombstones, id)
 	s.markRemovedLocked(id, time.Now())
+	ver := s.bumpLocked(id)
 	p := s.persist
 	observer := s.onComplete
 	s.mu.Unlock()
@@ -505,7 +554,7 @@ func (s *TombstoneStore) Complete(id string) bool {
 	if observer != nil {
 		observer(ts)
 	}
-	s.persistChange(p, id, pendingDelete)
+	s.persistChange(p, id, pendingDelete, ver)
 	return true
 }
 
@@ -551,8 +600,15 @@ func (s *TombstoneStore) Count() int {
 // PersistToDisk writes every tombstone, plus the removed-tombstone markers, to
 // {dir}/tombstones.json atomically (tmp + rename). Creates dir if needed.
 func (s *TombstoneStore) PersistToDisk(dir string) error {
+	_, err := s.writeDisk(dir)
+	return err
+}
+
+// writeDisk is PersistToDisk plus the per-id versions the written snapshot
+// captured, which the durable-target bookkeeping records.
+func (s *TombstoneStore) writeDisk(dir string) (map[string]uint64, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fmt.Errorf("create dir: %w", err)
+		return nil, fmt.Errorf("create dir: %w", err)
 	}
 
 	// The markers whose S3 delete is still owed must survive pruning; read the
@@ -564,8 +620,8 @@ func (s *TombstoneStore) PersistToDisk(dir string) error {
 	if p != nil {
 		p.mu.Lock()
 		owed = make(map[string]pendingOp, len(p.pending))
-		for id, op := range p.pending {
-			owed[id] = op
+		for id, e := range p.pending {
+			owed[id] = e.op
 		}
 		p.mu.Unlock()
 	}
@@ -580,23 +636,27 @@ func (s *TombstoneStore) PersistToDisk(dir string) error {
 		Tombstones: s.tombstones,
 		Removed:    s.removed,
 	})
+	vers := make(map[string]uint64, len(s.vers))
+	for id, v := range s.vers {
+		vers[id] = v
+	}
 	s.mu.RUnlock()
 	if err != nil {
-		return fmt.Errorf("marshal tombstones: %w", err)
+		return nil, fmt.Errorf("marshal tombstones: %w", err)
 	}
 
 	target := filepath.Join(dir, "tombstones.json")
 	tmp := target + ".tmp"
 
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return fmt.Errorf("write tmp file: %w", err)
+		return nil, fmt.Errorf("write tmp file: %w", err)
 	}
 
 	if err := os.Rename(tmp, target); err != nil {
-		return fmt.Errorf("rename to target: %w", err)
+		return nil, fmt.Errorf("rename to target: %w", err)
 	}
 
-	return nil
+	return vers, nil
 }
 
 // LoadFromDisk reads {dir}/tombstones.json (either the current envelope or the

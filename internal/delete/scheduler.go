@@ -3,6 +3,7 @@ package delete
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
@@ -57,6 +58,28 @@ type RewriteScheduler struct {
 	// crashAt, set only by tests, stops a rewrite at the named step as if the
 	// process died there: nothing after it runs. See the crash matrix.
 	crashAt func(step string) bool
+
+	// handedOff remembers the rewrites this process has already told pmeta and
+	// the peers about, so a rewrite finished by a later pass is announced once.
+	// In-memory: after a restart the announcement is simply repeated, which
+	// both consumers take idempotently.
+	handoffMu sync.Mutex
+	handedOff map[string]bool
+}
+
+func (s *RewriteScheduler) markHandedOff(source, newKey string) {
+	s.handoffMu.Lock()
+	if s.handedOff == nil {
+		s.handedOff = make(map[string]bool)
+	}
+	s.handedOff[source+"\x00"+newKey] = true
+	s.handoffMu.Unlock()
+}
+
+func (s *RewriteScheduler) alreadyHandedOff(source, newKey string) bool {
+	s.handoffMu.Lock()
+	defer s.handoffMu.Unlock()
+	return s.handedOff[source+"\x00"+newKey]
 }
 
 // NewRewriteScheduler creates a RewriteScheduler from the given config.
@@ -128,6 +151,17 @@ func (s *RewriteScheduler) RunOnce(ctx context.Context) []RewriteResult {
 	now := time.Now()
 	var results []RewriteResult
 
+	// A store whose S3 copy could not be read may be missing records and
+	// progress other nodes (or this one, before the crash) wrote. Nothing may
+	// be resolved, finished or retired on that; retry the restore instead.
+	if s.store.S3RestorePending() {
+		if !s.store.RetryS3Restore(ctx) {
+			metrics.DeleteRewriteDeferred.Inc("restore_pending")
+			return nil
+		}
+		ResolveInterruptedRewrites(s.store, s.manifest)
+	}
+
 	for _, snapshot := range s.store.Active() {
 		// Hide mode never removes rows, and permanent/auto only once the
 		// un-delete window (rewrite_delay) has passed.
@@ -188,7 +222,25 @@ func (s *RewriteScheduler) processTombstone(ctx context.Context, now time.Time, 
 		// crash lost the bookkeeping) or merged by compaction. Either way the
 		// object is gone; if its rows moved, the file they moved into exists
 		// in the manifest and the discovery pass before retirement picks it up.
+		//
+		// That inference holds only once the manifest has listed the bucket in
+		// this process. Before then the manifest is a snapshot — possibly
+		// empty, on a node that lost its disk — and "not in the manifest" says
+		// nothing about the object, which may still hold every row this
+		// tombstone hides.
 		if !s.manifest.HasKey(key) {
+			if !s.manifest.Listed() {
+				metrics.DeleteRewriteDeferred.Inc("unlisted")
+				continue
+			}
+			// And a key this process is waiting to see listed again — an
+			// undone rewrite's source, whose entry the publish removed before
+			// the crash — is absent because the manifest is behind, not
+			// because the object is gone.
+			if s.manifest.AwaitingListing(key) {
+				metrics.DeleteRewriteDeferred.Inc("awaiting_listing")
+				continue
+			}
 			metrics.DeleteRewriteAlreadyReaped.Inc()
 			logger.Infof("rewrite key already superseded; key=%s, tombstone=%s", key, id)
 			s.markReaped(id, key, "")
@@ -215,7 +267,7 @@ func (s *RewriteScheduler) processTombstone(ctx context.Context, now time.Time, 
 			results = append(results, *result)
 		case rewriteInterrupted:
 			return results, true
-		case rewriteSuperseded, rewriteFailed:
+		case rewriteSuperseded, rewriteFailed, rewriteDeferred:
 			// Superseded: the source was merged away and the tombstone follows
 			// the rows to the compacted output via discovery. Failed: the next
 			// pass retries.
@@ -230,8 +282,14 @@ func (s *RewriteScheduler) processTombstone(ctx context.Context, now time.Time, 
 	// A tombstone whose every file has been handled has no work left.
 	// Retiring it keeps Active() bounded and lets the manifest-metadata query
 	// fast paths come back; leaving it active forever was the second half of
-	// the original bug.
-	s.store.Complete(id)
+	// the original bug. Retirement is what stops hiding the rows, so it waits
+	// for a manifest that has listed the bucket: the discovery above can only
+	// be complete against a manifest that knows what the bucket holds.
+	if s.manifest.Listed() {
+		s.store.Complete(id)
+	} else {
+		metrics.DeleteRewriteDeferred.Inc("unlisted")
+	}
 	return results, false
 }
 
@@ -243,13 +301,24 @@ func (s *RewriteScheduler) discoverAffectedKeys(id string) int {
 		return 0
 	}
 	files := s.manifest.GetFilesForRange(ts.StartNs, ts.EndNs)
-	var added int
+	var added, unreaped int
 	s.store.Update(id, func(cur *Tombstone) bool {
 		listed := make(map[string]bool, len(cur.AffectedKeys))
 		for _, k := range cur.AffectedKeys {
 			listed[k] = true
 		}
 		for _, fi := range files {
+			// A key recorded as reaped means "its object is gone", so a
+			// manifested one is a contradiction — a key that came back when an
+			// interrupted rewrite was undone, or another node's copy of the
+			// record. Make it pending again rather than let the tombstone
+			// retire over a file the manifest is serving. Only once the
+			// manifest has listed the bucket, though: before that it may be
+			// serving a key from a snapshot older than the object's delete.
+			if cur.Reaped[fi.Key] && s.manifest.Listed() {
+				delete(cur.Reaped, fi.Key)
+				unreaped++
+			}
 			if listed[fi.Key] {
 				continue
 			}
@@ -257,8 +326,12 @@ func (s *RewriteScheduler) discoverAffectedKeys(id string) int {
 			listed[fi.Key] = true
 			added++
 		}
-		return added > 0
+		return added+unreaped > 0
 	})
+	if unreaped > 0 {
+		metrics.DeleteStartupInconsistencies.Add("reaped_key_still_manifested", unreaped)
+		logger.Warnf("tombstone work list corrected; tombstone=%s, keys the manifest still serves: %d", id, unreaped)
+	}
 	if added > 0 {
 		metrics.DeleteTombstoneKeysDiscovered.Add(added)
 		logger.Infof("tombstone work list extended; tombstone=%s, new_keys=%d", id, added)
@@ -295,6 +368,9 @@ const (
 	rewriteFailed rewriteOutcome = iota
 	rewriteDone
 	rewriteSuperseded
+	// rewriteDeferred: the rewrite is published but its record is not durable
+	// yet, so nothing has been deleted and the next pass finishes it.
+	rewriteDeferred
 	// rewriteInterrupted: a test crash hook stopped the rewrite mid-flight.
 	rewriteInterrupted
 )
@@ -317,7 +393,8 @@ func (s *RewriteScheduler) crashed(step string) bool {
 }
 
 // rewriteOne performs one key's rewrite, recording each step on the tombstone
-// before the step that depends on it.
+// before the step that depends on it — and, before every step that deletes an
+// object, waiting for that record to reach durable storage.
 func (s *RewriteScheduler) rewriteOne(ctx context.Context, id, key string, ts Tombstone) (*RewriteResult, rewriteOutcome) {
 	// Step 1 — prepare: read the source and build the replacement in memory.
 	result, err := s.rewriter.Prepare(ctx, key, []Tombstone{ts})
@@ -337,8 +414,16 @@ func (s *RewriteScheduler) rewriteOne(ctx context.Context, id, key string, ts To
 		return result, rewriteDone
 	}
 
-	// Step 2 — record the rewrite before anything is written, so a restart can
-	// find the replacement object whatever happens next.
+	// Step 2 — claim the replacement key. The id is short and random, so
+	// uploading without a claim could overwrite a live object.
+	if !s.claimReplacementKey(result) {
+		return nil, rewriteFailed
+	}
+
+	// Step 3 — record the rewrite before anything is written, so a restart can
+	// find the replacement object whatever happens next, and do not write
+	// until that record is durable: a replacement no durable record names is
+	// adopted by the next refresh next to the source it replaces.
 	if _, ok := s.store.Update(id, func(cur *Tombstone) bool {
 		if cur.Superseded == nil {
 			cur.Superseded = make(map[string]Supersession)
@@ -348,16 +433,21 @@ func (s *RewriteScheduler) rewriteOne(ctx context.Context, id, key string, ts To
 	}); !ok {
 		// Un-deleted while the rewrite was being prepared: nothing was
 		// written, so there is nothing to undo.
+		s.manifest.ReleasePending(result.NewKey)
 		return nil, rewriteFailed
 	}
-	if result.NewKey != "" {
-		s.manifest.MarkPending(result.NewKey)
+	if err := s.store.EnsureDurable(ctx, id); err != nil {
+		metrics.DeleteRewriteDeferred.Inc("not_durable")
+		logger.Warnf("rewrite not started: its record is not durable yet: %s; key=%s", err, key)
+		clearRecord(s.store, id, key, result.NewKey)
+		s.manifest.ReleasePending(result.NewKey)
+		return nil, rewriteFailed
 	}
 	if s.crashed(stepIntentRecorded) {
 		return nil, rewriteInterrupted
 	}
 
-	// Step 3 — upload the replacement. The source is untouched.
+	// Step 4 — upload the replacement. The source is untouched.
 	if err := s.rewriter.Upload(ctx, result); err != nil {
 		metrics.DeleteRewriteErrors.Inc()
 		logger.Errorf("rewrite upload failed: %s; key=%s", err, key)
@@ -368,16 +458,29 @@ func (s *RewriteScheduler) rewriteOne(ctx context.Context, id, key string, ts To
 		return nil, rewriteInterrupted
 	}
 
-	// Step 4 — publish: swap the manifest entry. Until this succeeds the
+	// Step 5 — publish: swap the manifest entry. Until this succeeds the
 	// superseded object is the ONLY copy of the kept rows and must survive.
+	// The replacement is HELD from here until the swap is recorded durably:
+	// a compaction that merged it in that window would carry its rows into an
+	// output the undo of this rewrite knows nothing about.
+	s.manifest.Hold(result.NewKey)
 	published, err := publishRewrite(s.manifest, result)
 	if err == nil && s.crashed(stepSwappedInMemory) {
 		return nil, rewriteInterrupted
+	}
+	if errors.Is(err, errReplacementKeyTaken) {
+		// Never delete the replacement here: the object under that key may be
+		// the file the manifest already serves.
+		logger.Errorf("rewrite abandoned: %s; key=%s", err, key)
+		s.manifest.Release(result.NewKey)
+		clearRecord(s.store, id, key, result.NewKey)
+		return nil, rewriteFailed
 	}
 	if errors.Is(err, errSourceSuperseded) {
 		// A concurrent compaction took the source. Discard our replacement
 		// rather than register a second copy of its rows.
 		logger.Infof("rewrite discarded: source merged concurrently; key=%s", key)
+		s.manifest.Release(result.NewKey)
 		if !s.discardStep(ctx, id, key, result.NewKey) {
 			return nil, rewriteInterrupted
 		}
@@ -389,27 +492,37 @@ func (s *RewriteScheduler) rewriteOne(ctx context.Context, id, key string, ts To
 		logger.Errorf("rewrite manifest publish failed: %s; key=%s, new=%s", err, key, result.NewKey)
 		// The replacement will never be published by this attempt; the retry
 		// writes a fresh one.
+		s.manifest.Release(result.NewKey)
 		if !s.discardStep(ctx, id, key, result.NewKey) {
 			return nil, rewriteInterrupted
 		}
 		return nil, rewriteFailed
 	}
 
-	// Step 5 — record the publish (and the key's bookkeeping) durably, BEFORE
-	// peers, pmeta or the delete of the superseded object can act on it.
+	// Step 6 — record the publish (and the key's bookkeeping) durably, BEFORE
+	// peers, pmeta or the delete of the superseded object can act on it. Until
+	// the record is durable nothing outside this process may see the swap: a
+	// restart would restore the earlier record and undo it.
 	recordPublished(s.store, id, key, result.NewKey)
 	if s.crashed(stepPublishRecorded) {
 		return nil, rewriteInterrupted
 	}
+	if err := s.store.EnsureDurable(ctx, id); err != nil {
+		metrics.DeleteRewriteDeferred.Inc("not_durable")
+		logger.Warnf("rewrite published but not recorded durably (the superseded object is kept and the next pass retries): %s; key=%s", err, key)
+		return result, rewriteDeferred
+	}
+	s.manifest.Release(result.NewKey)
 
-	// Step 6 — propagate: the facet feed and the peer push, before the
+	// Step 7 — propagate: the facet feed and the peer push, before the
 	// superseded object disappears.
 	s.notifyPublished(published, result)
+	s.markHandedOff(key, result.NewKey)
 	if s.crashed(stepNotified) {
 		return nil, rewriteInterrupted
 	}
 
-	// Step 7 — commit: delete the superseded object and clear the record. A
+	// Step 8 — commit: delete the superseded object and clear the record. A
 	// failed delete keeps the record (and the source retired in the manifest),
 	// and the next pass retries it.
 	if s.commit(ctx, id, key, result.NewKey) && s.crashed(stepSupersededGone) {
@@ -423,6 +536,29 @@ func (s *RewriteScheduler) rewriteOne(ctx context.Context, id, key string, ts To
 	return result, rewriteDone
 }
 
+// claimReplacementKey reserves the prepared replacement key, drawing a new id
+// on the (astronomically unlikely) collision with a key the manifest already
+// knows. Returns false when no free key was found.
+func (s *RewriteScheduler) claimReplacementKey(result *RewriteResult) bool {
+	if result.NewKey == "" {
+		return true // every row went: there is no replacement to write
+	}
+	for attempt := 0; attempt < maxReplacementKeyAttempts; attempt++ {
+		if s.manifest.ClaimPending(result.NewKey) {
+			return true
+		}
+		metrics.DeleteRewriteKeyCollisions.Inc()
+		logger.Warnf("replacement key already in use; drawing another; key=%s", result.NewKey)
+		result.NewKey = replacementKey(result.OldKey, newReplacementID())
+	}
+	logger.Errorf("no free replacement key for %s after %d attempts", result.OldKey, maxReplacementKeyAttempts)
+	return false
+}
+
+// maxReplacementKeyAttempts bounds the redraw loop; a second collision means
+// something other than chance is generating keys.
+const maxReplacementKeyAttempts = 5
+
 // discardStep is discard with the test crash hook between recording the
 // discard and deleting the abandoned replacement. Returns false when the hook
 // stopped it.
@@ -431,15 +567,20 @@ func (s *RewriteScheduler) discardStep(ctx context.Context, id, key, newKey stri
 		s.discard(ctx, id, key, newKey)
 		return true
 	}
+	recorded := false
 	s.store.Update(id, func(ts *Tombstone) bool {
 		cur, ok := ts.Superseded[key]
-		if !ok || cur.NewKey != newKey {
+		if !ok || cur.NewKey != newKey || cur.State == SupersessionPublished {
+			return false
+		}
+		recorded = true
+		if cur.State == SupersessionDiscarded {
 			return false
 		}
 		ts.Superseded[key] = Supersession{NewKey: newKey, State: SupersessionDiscarded, At: time.Now()}
 		return true
 	})
-	if newKey != "" {
+	if recorded && newKey != "" {
 		s.manifest.AbandonPending(newKey)
 	}
 	if s.crashed(stepDiscardRecorded) {
