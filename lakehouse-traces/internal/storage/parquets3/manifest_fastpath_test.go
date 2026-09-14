@@ -1,6 +1,7 @@
 package parquets3
 
 import (
+	"context"
 	"testing"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -35,7 +36,7 @@ func TestManifestFastPath_ResolvesFilesFullyInRange(t *testing.T) {
 		resolvedRows += db.RowsCount()
 	}
 
-	remaining := s.manifestFastPath(files, startNs, endNs, writeBlock)
+	remaining := s.manifestFastPath(context.Background(), files, startNs, endNs, countOnlyPlan, writeBlock)
 
 	// Files fully in range: full-inside (10 rows) + exact-boundary (5 rows) = 2 files, 15 rows
 	if resolvedBlocks != 2 {
@@ -79,7 +80,7 @@ func TestManifestFastPath_AllFilesResolved(t *testing.T) {
 		resolvedRows += db.RowsCount()
 	}
 
-	remaining := s.manifestFastPath(files, 1000, 5000, writeBlock)
+	remaining := s.manifestFastPath(context.Background(), files, 1000, 5000, countOnlyPlan, writeBlock)
 
 	if len(remaining) != 0 {
 		t.Errorf("remaining = %d, want 0 (all files fully in range)", len(remaining))
@@ -102,7 +103,7 @@ func TestManifestFastPath_NoFilesResolved(t *testing.T) {
 		resolvedBlocks++
 	}
 
-	remaining := s.manifestFastPath(files, 1000, 5000, writeBlock)
+	remaining := s.manifestFastPath(context.Background(), files, 1000, 5000, countOnlyPlan, writeBlock)
 
 	if resolvedBlocks != 0 {
 		t.Errorf("resolvedBlocks = %d, want 0 (no files fully in range)", resolvedBlocks)
@@ -125,7 +126,7 @@ func TestManifestFastPath_ZeroRowCountSkipped(t *testing.T) {
 		resolvedBlocks++
 	}
 
-	remaining := s.manifestFastPath(files, 1000, 5000, writeBlock)
+	remaining := s.manifestFastPath(context.Background(), files, 1000, 5000, countOnlyPlan, writeBlock)
 
 	if resolvedBlocks != 0 {
 		t.Errorf("resolvedBlocks = %d, want 0 (zero RowCount should not resolve)", resolvedBlocks)
@@ -150,7 +151,7 @@ func TestManifestFastPath_MissingTimestampsNotResolved(t *testing.T) {
 		resolvedBlocks++
 	}
 
-	remaining := s.manifestFastPath(files, 1000, 5000, writeBlock)
+	remaining := s.manifestFastPath(context.Background(), files, 1000, 5000, countOnlyPlan, writeBlock)
 
 	if resolvedBlocks != 0 {
 		t.Errorf("resolvedBlocks = %d, want 0 (missing timestamps should not resolve)", resolvedBlocks)

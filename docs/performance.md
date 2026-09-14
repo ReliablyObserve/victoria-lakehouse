@@ -178,6 +178,95 @@ Dictionary pages are typically a few KB and are already loaded as part of the Pa
 
 Columns with more than 10,000 dictionary entries skip this check to avoid linear scan overhead on high-cardinality columns.
 
+### Metadata-only count queries
+
+`count()`-class queries — `* | stats count()` and histogram queries such as
+`/select/logsql/hits` (`| stats by (_time:<step>) count()`) — are answered from the
+in-memory manifest for every file whose whole time span sits inside the query window:
+zero S3 requests, zero Parquet bytes.
+
+The blocks these answers are made of carry ONE column, `_time`, holding a single
+CONSTANT value. VL stores a constant column once
+(`blockResult.addResultColumn` → `addResultColumnConst`) and `pipeStats` answers from
+the block's row count without walking the rows;
+`patches/vl-*/vl-const-timestamps-parse.patch` makes VL parse such a column once
+instead of once per row. Cost per file is one timestamp format and a fixed number of
+allocations, whatever the row count.
+
+Exactness comes from two gates, both in
+`internal/storage/parquets3/manifest_fastpath.go`:
+
+- The query classifier (`planMetadataOnly`) requires the first pipe to be a `stats`
+  pipe grouping only by a BUCKETED `_time`, with aggregates that read no column. Every
+  other shape — a retrieval, `sort by (_time)`, `by (_time)` ungrouped, `by (<field>)`,
+  `sum(x)`, a per-function `if (...)` — reads the files for real.
+- A file qualifies only when every `_time` bucket the query groups by contains its
+  whole `[MinTimeNs, MaxTimeNs]` span. A file straddling a bucket boundary is read,
+  because its per-bucket split depends on where its rows actually sit.
+
+There is no cap on how many rows a file may contribute: a fully-covered file counts
+exactly its `RowCount`. A manifest entry whose row count is implausible (above 2^40) is
+read rather than answered with a truncated number, and emission stops when the query's
+own row/byte budget cancels the context.
+
+Measured on an Apple M5 Pro (Go 1.26,
+`BenchmarkManifestFastPath_Emit` / `BenchmarkManifestFastPath_CountQuery`), for the two
+shapes the S3 layout produces — many small files right after flush, a few target-sized
+files after compaction:
+
+| Shape | Block emission | End-to-end `stats count()` | Bytes/op | Allocs/op |
+|---|---:|---:|---:|---:|
+| 124 files x 2 000 rows, before | 12.09 ms | 16.2 ms | 14.4 MB | 496 498 |
+| 124 files x 2 000 rows, after | 0.83 ms | 0.93 ms | 4.4 MB | 738 |
+| 4 files x 2 000 000 rows, before | 155.3 ms | 248.0 ms | 226.0 MB | 8 001 326 |
+| 4 files x 2 000 000 rows, after | 0.087 ms | 11.2 ms | 1.1 MB | 136 |
+
+The "before" rows stop at 1 000 000 rows per file (the cap that used to under-count
+large files), so the 4 x 2M row compares 4 M counted rows against 8 M — the real
+per-row improvement is larger than the ratio shows.
+
+Watch `lakehouse_metadata_only_files_total` against
+`lakehouse_metadata_only_fallback_files_total`: a rising fallback count with a flat
+served count means histogram steps are finer than the files' time spans, so the
+zero-S3 path is unavailable and the files are being read.
+
+**What a fallback costs — measured, not assumed.** Exactness means a file straddling a
+bucket boundary is read rather than guessed. `BenchmarkManifestFastPath_StraddlingFallback`
+prices that on Parquet objects spanning 2-3 hours from an unaligned start (07:23:17), so
+under `_time:5m` every file straddles and every file is read, against the same files
+under `_time:1d`, where metadata answers all of them, and against the same `_time:5m`
+query run WITHOUT the timestamp-only hint (an ordinary scan — the yardstick). "cold" =
+empty caches for every query, "warm" = after one warm-up; production S3 read-ahead and
+coalescing defaults; every timed response validated (the rows reaching the pipes must
+equal the fixture's exact row count, or the iteration fails instead of counting).
+Medians of 6 runs x 30 iterations, Apple M5 Pro, Go 1.26, `[min-max]` in brackets:
+
+| Window | Query | Cache | ns/op | S3 GETs/op | S3 bytes/op | Files read / from metadata | Allocs/op |
+|---|---|---|---:|---:|---:|---:|---:|
+| 8 files x 50 000 rows (1.30 MB of objects) | `_time:5m`, hinted | cold | 13.8 ms [12.8-17.1] | 92.2 | 4.49 MB | 8 / 0 | 907 602 |
+| | `_time:5m`, hinted | warm | 8.4 ms [8.0-10.7] | 64 | 3.13 MB | 8 / 0 | 873 932 |
+| | `_time:5m`, **no hint (plain scan)** | warm | 8.2 ms [8.0-9.3] | 64 | 3.13 MB | — | 873 916 |
+| | `_time:1d`, hinted | any | 0.27 ms [0.25-0.28] | 0 | 0 | 0 / 8 | 191 |
+| 4 files x 200 000 rows (2.57 MB of objects) | `_time:5m`, hinted | cold | 27.2 ms [26.5-29.7] | 58.2 | 8.69 MB | 4 / 0 | 1 669 963 |
+| | `_time:5m`, hinted | warm | 19.7 ms [18.5-22.1] | 32 | 5.79 MB | 4 / 0 | 1 638 856 |
+| | `_time:1d`, hinted | any | 0.24 ms [0.23-0.27] | 0 | 0 | 0 / 4 | 170 |
+
+The bound is simply a full scan of the window: the hinted fallback and the plain scan
+fetch the same 64 GETs / 3.13 MB and differ by 16 allocations, so a fallback costs what
+reading those files always cost and the correctness gate adds nothing measurable on top.
+Row volume scales it roughly linearly: ~21-25 ms per million rows read warm on this
+machine, against a flat ~0.25 ms when metadata answers. Fetched bytes run at 2.2x-3.4x
+the objects' size on these small files; that ratio belongs to the existing ranged-read
+path — the plain scan shows the identical figure — and is tracked separately from this
+fast path.
+
+One path still materializes a value per row, and it is correct and uncapped rather
+than O(1): inside the scan, a ROW GROUP that lies fully in the window and inside one
+bucket is emitted by `syntheticTimestampBlock` with one formatted timestamp per row of
+that row group (its row count comes from the Parquet footer, so it cannot under-count).
+It runs only after the footer has been read, so it is not on the zero-S3 path; making
+it constant-valued too is left for the sub-hour histogram work.
+
 ### Constant column optimization
 
 When all values in a row group column are identical (min == max across all pages in the column index), the engine detects this and skips deserializing that column entirely. The constant value is injected into every output row without reading column data.

@@ -555,9 +555,10 @@ func TestInteg_RunQuery_TimestampOnlyHint(t *testing.T) {
 	startNs := now.Add(-time.Hour).UnixNano()
 	endNs := now.Add(time.Hour).UnixNano()
 
-	// Use WithTimestampOnlyHint to trigger the metadata fast path
+	// The timestamp-only hint plus a count-shaped query is what puts a query
+	// on the metadata fast path — a bare `*` is a retrieval and reads the file.
 	ctx := storage.WithTimestampOnlyHint(context.Background())
-	q := mustParseQueryWithTime(t, "*", startNs, endNs)
+	q := mustParseQueryWithTime(t, "* | stats count()", startNs, endNs)
 
 	var totalRows int
 	var mu sync.Mutex
@@ -3707,7 +3708,7 @@ func TestInteg_RunQuery_TimestampOnlyFastPath(t *testing.T) {
 
 	startNs := now.Add(-time.Minute).UnixNano()
 	endNs := now.Add(time.Minute).UnixNano()
-	q := mustParseQueryWithTime(t, "*", startNs, endNs)
+	q := mustParseQueryWithTime(t, "* | stats count()", startNs, endNs)
 
 	ctx := storage.WithTimestampOnlyHint(context.Background())
 
@@ -3721,8 +3722,11 @@ func TestInteg_RunQuery_TimestampOnlyFastPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunQuery with ts-only: %v", err)
 	}
-	// Should return results via either fast path or regular path
-	t.Logf("timestamp-only fast path: totalRows=%d", totalRows)
+	// The file is fully inside the window, so the manifest answers it and the
+	// row count must be exactly what the file holds.
+	if totalRows != len(rows) {
+		t.Errorf("totalRows = %d, want %d", totalRows, len(rows))
+	}
 }
 
 // ---------------------------------------------------------------------------

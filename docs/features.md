@@ -438,7 +438,7 @@ The projection is derived from the query's fields, filters and stats, then hande
 
 The metadata already knows how many rows each file holds and how they distribute across a field's values, so the common dashboard aggregations never open a Parquet file. Measured at 100 ms injected object-store latency, this is where the cold tier beats ClickHouse-over-S3 outright.
 
-- Verification: tests: `internal/storage/parquets3/count_pushdown_test.go`, `internal/storage/parquets3/filtered_count_pushdown_test.go`, `internal/manifest/count_by_label_test.go`, `internal/compaction/aggregate_healing_test.go#TestCompactor_HealsWipedLabelAggregates` · bench: `count_total`, `count_by_service`, `high_card`
+- Verification: rows: `lh.cold.count_exact_above_1m_rows` (pass, pending), `lh.cold.hits_bucket_counts_exact` (pass, pending) · tests: `internal/storage/parquets3/count_pushdown_test.go`, `internal/storage/parquets3/filtered_count_pushdown_test.go`, `internal/storage/parquets3/manifest_fastpath_exactness_test.go`, `lakehouse-traces/internal/storage/parquets3/manifest_fastpath_exactness_test.go`, `internal/manifest/count_by_label_test.go`, `internal/compaction/aggregate_healing_test.go#TestCompactor_HealsWipedLabelAggregates` · bench: `count_total`, `count_by_service`, `high_card`
 - Docs: `docs/query-performance-optimization.md`, `docs/read-path.md`
 - Changelog: `0.59.0`
 
@@ -844,7 +844,7 @@ A delete over cold storage can be free or expensive depending on where the match
 
 ### ✅ Leftovers API — what an instance still owes
 
-`lh.feature.deletion.leftovers_api` · status: shipped · since: the release after v0.132.0 · surfaces: api
+`lh.feature.deletion.leftovers_api` · status: shipped · since: v0.132.1 · surfaces: api
 
 **Leftovers API**: `GET /delete/logsql/leftovers` (or `/delete/tracessql/leftovers`) names the retired keys, unpublished uploads and unfinished rewrites an instance is still holding on to.
 
@@ -852,7 +852,7 @@ The alerts on retired-key eviction, non-durable tombstone records and unfinished
 
 - Verification: rows: `lh.delete.leftovers.status` (pass, pending) · tests: `internal/delete/handler_leftovers_test.go#TestLeftovers_ListsRetiredPendingAndUnfinishedRewrites`, `internal/delete/handler_leftovers_test.go#TestLeftovers_IsBounded`, `internal/delete/handler_leftovers_test.go#TestLeftovers_RejectsNonGET`, `internal/delete/handler_leftovers_test.go#TestLeftovers_IsRegistered`, `internal/metrics/assets_test.go#TestDeleteMetrics_AreVisibleSomewhere`
 - Docs: `docs/deletion-strategy.md`, `docs/operations.md#what-this-instance-still-owes-prefixleftovers`, `docs/operations.md#rolling-back`
-- Changelog: the release after `0.132.0`
+- Changelog: `0.132.1`
 
 ### ✅ Hide, permanent and auto delete modes
 

@@ -54,3 +54,52 @@
   compare: { type: ndjson-multiset, project: [_time, _msg] }
   layers: [api]
   pending: true
+
+- id: lh.cold.count_exact_above_1m_rows
+  title: "count() over files with more than 1M rows is exact on cold"
+  surface: lh
+  kind: select
+  origin: lh-shim
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/stats_query }
+  request: { method: GET, path: /select/logsql/stats_query, params: { query: "* | stats count() rows", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs:
+    tests:
+      - internal/storage/parquets3/manifest_fastpath_exactness_test.go
+      - lakehouse-traces/internal/storage/parquets3/manifest_fastpath_exactness_test.go
+  notes: >-
+    The cold tier answers count-class queries from manifest metadata for files whose whole
+    time span sits inside the query window. That path used to materialise one row per file
+    row and stop at 1,000,000 rows per file, so any larger file was under-counted; the cap is
+    gone and a fully-covered file now contributes exactly its RowCount. The parity seed's
+    files are far below 1M rows, so the >1M case is locked by the unit regressions listed
+    above (TestStreamConstTimeBlocks_NoRowCap, TestManifestFastPath_ExactAboveOneMillion)
+    rather than by this row; this row keeps the endpoint-level count comparison declared for
+    the runner.
+
+- id: lh.cold.hits_bucket_counts_exact
+  title: "Time-bucketed counts on cold are exact, never a fabricated distribution"
+  surface: lh
+  kind: select
+  origin: lh-shim
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/hits }
+  request: { method: GET, path: /select/logsql/hits, params: { query: "*", step: "1h", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: series }
+  layers: [api]
+  pending: true
+  refs:
+    tests:
+      - internal/storage/parquets3/manifest_fastpath_exactness_test.go
+  notes: >-
+    A file is served from manifest metadata only when every _time bucket the query groups by
+    contains its whole [MinTimeNs, MaxTimeNs] span; otherwise it is read, so a per-bucket
+    count never depends on where inside the file its rows actually sit.
+    lakehouse_metadata_only_fallback_files_total counts the files read for this reason.

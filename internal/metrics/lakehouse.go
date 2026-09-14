@@ -289,11 +289,20 @@ var (
 	// malformed/corrupted file — or a legitimate file that outgrew the
 	// footer-length policy cap — is visible instead of silently falling
 	// back to a full download.
-	FooterParseRejected    = NewCounterVec("lakehouse_footer_parse_rejected_total", "reason")
-	TraceIDCacheHits       = NewCounter("lakehouse_trace_id_cache_hits_total")
-	MetadataOnlyFiles      = NewCounter("lakehouse_metadata_only_files_total")
-	QueryFileNotFoundTotal = NewCounter("lakehouse_query_file_not_found_total")
-	QueryFileErrorsTotal   = NewCounter("lakehouse_query_file_errors_total")
+	FooterParseRejected = NewCounterVec("lakehouse_footer_parse_rejected_total", "reason")
+	TraceIDCacheHits    = NewCounter("lakehouse_trace_id_cache_hits_total")
+	MetadataOnlyFiles   = NewCounter("lakehouse_metadata_only_files_total")
+
+	// MetadataOnlyFallbackFiles counts files that the manifest fast path
+	// COULD have served — their whole time span sits inside the query window —
+	// but handed back for a real read because the query can tell their rows
+	// apart (a `_time` bucket boundary falls inside the file) or because the
+	// manifest row count was not trustworthy. Rising alongside a flat
+	// MetadataOnlyFiles means histogram steps are finer than the files'
+	// time spans, so the zero-S3 path is unavailable.
+	MetadataOnlyFallbackFiles = NewCounter("lakehouse_metadata_only_fallback_files_total")
+	QueryFileNotFoundTotal    = NewCounter("lakehouse_query_file_not_found_total")
+	QueryFileErrorsTotal      = NewCounter("lakehouse_query_file_errors_total")
 
 	// LogsTraceShapedRowsDropped counts rows dropped from
 	// LogsProfile query results because their stream tags identify
