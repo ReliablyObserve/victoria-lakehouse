@@ -196,7 +196,7 @@ If all rows match the filter (100% selectivity), the bitmap is discarded and the
 
 A dedicated LRU cache (default: 10,000 entries) stores parsed `parquet.File` metadata (footer, schema, column indices). This avoids re-parsing the Parquet footer on every query for recently accessed files.
 
-The footer cache is populated on first access and during cache warmup. It is separate from the L1/L2 data cache — it stores only the parsed metadata structure, not the file data itself. It plans ranged reads; a read of every column decodes a fresh handle over the downloaded object rather than reusing a cached one (see [read-path.md](read-path.md#level-3-footer-parse-and-cache)).
+The footer cache is populated on first access and during cache warmup. It is separate from the L1/L2 data cache — it stores only the parsed metadata structure, not the file data itself. It plans ranged reads; an entry holds a copy of the object's metadata tail (page index + footer), never a handle over the object body, and a read of every column decodes a fresh handle over the downloaded object (see [read-path.md](read-path.md#level-3-footer-parse-and-cache)).
 
 | Setting | Default | Impact |
 |---|---|---|

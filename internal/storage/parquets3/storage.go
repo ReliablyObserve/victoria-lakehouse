@@ -1429,11 +1429,20 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 	s.saveFileMetadataToDisk()
 }
 
+// enrichFromCachedFooter enriches from a footer cache entry. Time bounds come
+// from the page index, which a footer-only entry (the footer prefetch, or the
+// copy ParseFooterFromData caches) cannot read — such an entry contributes the
+// row count only. Callers holding a handle over the object's bytes should use
+// enrichFromParquetFile instead.
 func (s *Storage) enrichFromCachedFooter(fi manifest.FileInfo, cached *CachedFooter) bool {
+	return s.enrichFromParquetFile(fi, cached.File)
+}
+
+func (s *Storage) enrichFromParquetFile(fi manifest.FileInfo, pf *parquet.File) bool {
 	var totalRows int64
 	var minTs, maxTs int64
-	tsIdx := findColumnIndex(cached.File.Root(), s.registry.TimestampColumn())
-	for _, rg := range cached.File.RowGroups() {
+	tsIdx := findColumnIndex(pf.Root(), s.registry.TimestampColumn())
+	for _, rg := range pf.RowGroups() {
 		totalRows += rg.NumRows()
 		if tsIdx < 0 {
 			continue
@@ -1494,14 +1503,16 @@ func (s *Storage) enrichSmallFiles(ctx context.Context, files []manifest.FileInf
 				if err != nil || len(data) == 0 {
 					continue
 				}
-				cached, _, err := ParseFooterFromData(fi.Key, data)
+				cached, pf, err := ParseFooterFromData(fi.Key, data)
 				if err != nil {
 					continue
 				}
 				if s.footerCache != nil {
 					s.footerCache.Put(fi.Key, cached)
 				}
-				if s.enrichFromCachedFooter(fi, cached) {
+				// pf, not the cache entry: the entry keeps only the footer, and
+				// the time bounds below come from the page index.
+				if s.enrichFromParquetFile(fi, pf) {
 					mu.Lock()
 					enriched++
 					mu.Unlock()
