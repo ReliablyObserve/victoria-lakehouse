@@ -482,9 +482,9 @@ Upstream's live tail streams from the hot ingestion path. Rather than emulate it
 
 **LogsQL filter evaluation**: field matchers (exact, substring, regex, NOT) are applied post-scan to filter DataBlock rows at the storage layer.
 
-Filters that Parquet statistics cannot decide are evaluated on the decoded rows before they are handed to the engine, so cold results match what the hot engine would have returned. Parity and fuzz tests compare the cold evaluator against the upstream semantics.
+Filters that Parquet statistics cannot decide are evaluated on the decoded rows before they are handed to the engine, so cold results match what the hot engine would have returned. The row filter is taken straight from the parsed query, so a time-only query (any range form, including half-open) runs no per-row filter and never re-parses query text, and a query VictoriaLogs cannot print back is answered rather than crashing the process. Parity and fuzz tests compare the cold evaluator against the upstream semantics.
 
-- Verification: tests: `internal/storage/parquets3/filter_test.go`, `lakehouse-traces/internal/storage/parquets3/filter_test.go`, `lakehouse-traces/internal/storage/parquets3/filter_parity_test.go`, `internal/storage/parquets3/free_text_filter_test.go`, `lakehouse-traces/internal/storage/parquets3/filter_fuzz_test.go` · bench: `level_filter`, `multi_filter`, `negation`, `fulltext`
+- Verification: rows: `lh.query.half_open_time_range` (pass, pending) · tests: `internal/storage/parquets3/filter_test.go`, `lakehouse-traces/internal/storage/parquets3/filter_test.go`, `lakehouse-traces/internal/storage/parquets3/filter_parity_test.go`, `internal/storage/parquets3/free_text_filter_test.go`, `lakehouse-traces/internal/storage/parquets3/filter_fuzz_test.go`, `internal/storage/parquets3/time_only_filter_test.go`, `lakehouse-traces/internal/storage/parquets3/time_only_filter_test.go` · bench: `level_filter`, `multi_filter`, `negation`, `fulltext`
 - Docs: `docs/storage-flow.md`, `docs/read-path.md`
 - Changelog: `0.18.1`
 

@@ -168,6 +168,7 @@ jobs:
           - internal/storage/parquets3:FuzzFooterLength
           - internal/storage/parquets3:FuzzStorageFetchPeerAZ
           - internal/storage/parquets3:FuzzExtractTraceBloomValues
+          - internal/storage/parquets3:FuzzParseFilterFromQuery_TimeOnlyIsSound
           - internal/schema:FuzzResolveToParquet
           - internal/schema:FuzzResolveToParquet_Traces
           - internal/schema:FuzzSlotMapping
@@ -310,6 +311,7 @@ jobs:
           - internal/storage/parquets3:FuzzTraceRowWithMapAttributes
           - internal/storage/parquets3:FuzzContainsOrOperatorQuoted
           - internal/storage/parquets3:FuzzParseFilterFromQuery
+          - internal/storage/parquets3:FuzzParseFilterFromQuery_TimeOnlyIsSound
           - internal/storage/parquets3:FuzzExtractFilterValuesAST
           - internal/storage/parquets3:FuzzPreFilterFiles_TraceID
           - internal/storage/parquets3:FuzzExtractFilterValuesAST_TraceID
