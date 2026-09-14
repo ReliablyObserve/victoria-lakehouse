@@ -346,3 +346,29 @@ func TestRunQuery_PreservesPipesToStorage(t *testing.T) {
 		})
 	}
 }
+
+// TestDeleteStopTask_RefusedWhileARewriteIsUnfinished: stopping a delete task
+// removes its tombstone, and a tombstone carries the durable record of any
+// rewrite of its files that has not finished. Dropping it mid-rewrite loses the
+// only trace of a replacement object — the next manifest refresh would adopt it
+// next to its source — so the stop is refused until the rewrite settles, the
+// same as the delete API's un-delete.
+func TestDeleteStopTask_RefusedWhileARewriteIsUnfinished(t *testing.T) {
+	ts := delete.NewTombstoneStore()
+	ts.Add(delete.Tombstone{ID: "task-busy", Query: "*", Mode: "auto",
+		Superseded: map[string]delete.Supersession{
+			"logs/dt=2026-03-01/hour=07/src.parquet": {NewKey: "logs/dt=2026-03-01/hour=07/repl.parquet", State: delete.SupersessionPublished},
+		}})
+	a := &adapter{store: mockStore{}, tombstones: ts}
+
+	if err := a.DeleteStopTask(context.Background(), "task-busy"); err == nil {
+		t.Fatal("stopping a task whose rewrite is unfinished must fail")
+	}
+	if _, ok := ts.Get("task-busy"); !ok {
+		t.Fatal("a refused stop must keep the tombstone and its rewrite record")
+	}
+	// Stopping a task that does not exist stays a no-op.
+	if err := a.DeleteStopTask(context.Background(), "no-such-task"); err != nil {
+		t.Fatalf("stopping an unknown task: %v", err)
+	}
+}

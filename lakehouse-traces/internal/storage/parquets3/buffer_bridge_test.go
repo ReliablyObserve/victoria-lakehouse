@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
@@ -19,6 +20,7 @@ func TestBufferBridge_QueryLogs(t *testing.T) {
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		enc := json.NewEncoder(w)
 		for _, row := range rows {
 			_ = enc.Encode(row)
@@ -32,7 +34,7 @@ func TestBufferBridge_QueryLogs(t *testing.T) {
 	}, config.ModeLogs)
 	bridge.SetEndpoints([]string{srv.URL})
 
-	got, err := bridge.QueryLogs(context.Background(), base.UnixNano(), base.Add(time.Hour).UnixNano())
+	got, err := bridge.QueryLogs(context.Background(), base.UnixNano(), base.Add(time.Hour).UnixNano(), tenantScope{account: "0", project: "0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,6 +53,7 @@ func TestBufferBridge_QueryTraces(t *testing.T) {
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		enc := json.NewEncoder(w)
 		for _, row := range rows {
 			_ = enc.Encode(row)
@@ -64,7 +67,7 @@ func TestBufferBridge_QueryTraces(t *testing.T) {
 	}, config.ModeTraces)
 	bridge.SetEndpoints([]string{srv.URL})
 
-	got, err := bridge.QueryTraces(context.Background(), base.UnixNano(), base.Add(time.Hour).UnixNano())
+	got, err := bridge.QueryTraces(context.Background(), base.UnixNano(), base.Add(time.Hour).UnixNano(), tenantScope{account: "0", project: "0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +84,7 @@ func TestBufferBridge_Disabled(t *testing.T) {
 		BufferQueryEnabled: false,
 	}, config.ModeLogs)
 
-	got, err := bridge.QueryLogs(context.Background(), 0, 1000)
+	got, err := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +98,7 @@ func TestBufferBridge_DisabledTraces(t *testing.T) {
 		BufferQueryEnabled: false,
 	}, config.ModeTraces)
 
-	got, err := bridge.QueryTraces(context.Background(), 0, 1000)
+	got, err := bridge.QueryTraces(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +113,7 @@ func TestBufferBridge_NoEndpoints(t *testing.T) {
 		BufferQueryTimeout: 2 * time.Second,
 	}, config.ModeLogs)
 
-	got, err := bridge.QueryLogs(context.Background(), 0, 1000)
+	got, err := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,11 +126,13 @@ func TestBufferBridge_MultipleEndpoints(t *testing.T) {
 	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
 
 	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		_ = json.NewEncoder(w).Encode(schema.LogRow{TimestampUnixNano: base.UnixNano(), Body: "from-1"})
 	}))
 	defer srv1.Close()
 
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		_ = json.NewEncoder(w).Encode(schema.LogRow{TimestampUnixNano: base.UnixNano(), Body: "from-2"})
 	}))
 	defer srv2.Close()
@@ -138,7 +143,7 @@ func TestBufferBridge_MultipleEndpoints(t *testing.T) {
 	}, config.ModeLogs)
 	bridge.SetEndpoints([]string{srv1.URL, srv2.URL})
 
-	got, err := bridge.QueryLogs(context.Background(), base.UnixNano(), base.Add(time.Hour).UnixNano())
+	got, err := bridge.QueryLogs(context.Background(), base.UnixNano(), base.Add(time.Hour).UnixNano(), tenantScope{account: "0", project: "0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +159,7 @@ func TestBufferBridge_EndpointError(t *testing.T) {
 	}, config.ModeLogs)
 	bridge.SetEndpoints([]string{"http://localhost:1"}) // unreachable
 
-	got, err := bridge.QueryLogs(context.Background(), 0, 1000)
+	got, err := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
 	if err != nil {
 		t.Fatal("should not return error for endpoint failures (graceful degradation)")
 	}
@@ -165,6 +170,7 @@ func TestBufferBridge_EndpointError(t *testing.T) {
 
 func TestBufferBridge_ServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
@@ -175,7 +181,7 @@ func TestBufferBridge_ServerError(t *testing.T) {
 	}, config.ModeLogs)
 	bridge.SetEndpoints([]string{srv.URL})
 
-	got, err := bridge.QueryLogs(context.Background(), 0, 1000)
+	got, err := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
 	if err != nil {
 		t.Fatal("should handle server errors gracefully")
 	}
@@ -186,6 +192,7 @@ func TestBufferBridge_ServerError(t *testing.T) {
 
 func TestBufferBridge_TraceServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
@@ -196,7 +203,7 @@ func TestBufferBridge_TraceServerError(t *testing.T) {
 	}, config.ModeTraces)
 	bridge.SetEndpoints([]string{srv.URL})
 
-	got, err := bridge.QueryTraces(context.Background(), 0, 1000)
+	got, err := bridge.QueryTraces(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
 	if err != nil {
 		t.Fatal("should handle server errors gracefully")
 	}
@@ -212,7 +219,7 @@ func TestBufferBridge_TraceEndpointError(t *testing.T) {
 	}, config.ModeTraces)
 	bridge.SetEndpoints([]string{"http://localhost:1"})
 
-	got, err := bridge.QueryTraces(context.Background(), 0, 1000)
+	got, err := bridge.QueryTraces(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
 	if err != nil {
 		t.Fatal("should not return error for trace endpoint failures")
 	}
@@ -227,7 +234,7 @@ func TestBufferBridge_NoEndpointsTraces(t *testing.T) {
 		BufferQueryTimeout: 2 * time.Second,
 	}, config.ModeTraces)
 
-	got, err := bridge.QueryTraces(context.Background(), 0, 1000)
+	got, err := bridge.QueryTraces(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
 	if err != nil {
 		t.Fatal(err)
 	}

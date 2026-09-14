@@ -313,7 +313,7 @@ changing the global default.
 | Flag | Default | Description |
 |---|---|---|
 | `--lakehouse.tenant.default-prefix` | `""` | S3 prefix for default (no tenant) queries |
-| `--lakehouse.tenant.prefix-template` | `{AccountID}/{ProjectID}/` | S3 prefix template per tenant |
+| `--lakehouse.tenant.prefix-template` | `{AccountID}/{ProjectID}/` | S3 prefix template per tenant. Must contain both `{AccountID}` and `{ProjectID}`; other placeholders (`{OrgID}`) are rejected at startup — see [multi-tenancy.md](multi-tenancy.md#s3-prefix-templates) |
 
 ## Compaction Settings
 

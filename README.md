@@ -415,6 +415,7 @@ Each binary supports three roles for independent scaling:
 - **Glacier-safe**: never triggers retrieval fees — the tombstone suppresses reads and data ages out via lifecycle. **GDPR compliant**: immediate inaccessibility satisfies right-to-erasure, with optional physical delete for strict compliance.
 - **`lakehouse-logs`**: `/delete/logsql/*` endpoints. **`lakehouse-traces`**: `/delete/tracessql/*` endpoints.
 - **Cost estimation**: `/delete/logsql/estimate` (or `/delete/tracessql/estimate`) returns per-storage-class cost breakdown before executing.
+- **Leftovers API**: `GET /delete/logsql/leftovers` (or `/delete/tracessql/leftovers`) names the retired keys, unpublished uploads and unfinished rewrites an instance is still holding on to.
 - **Three modes**: `hide` (tombstone only, never rewrites), `permanent` (physical removal), `auto` (smart default).
 - **Three-tier strategy**: tombstone (instant, $0) -> selective rewrite (S3 Standard only) -> lifecycle expiry (Glacier/IA).
 - **Un-delete**: remove a tombstone to restore data visibility instantly.

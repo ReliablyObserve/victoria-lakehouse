@@ -91,6 +91,7 @@ func TestGetFieldNames_FromLabelIndex(t *testing.T) {
 		labelIndex: cache.NewLabelIndex(),
 		discovery:  discovery.New("", nil, "", "", "9428", 5*time.Second),
 	}
+	soleTenantManifest(t, s)
 	s.labelIndex.Add("service.name", []string{"api", "web"})
 	s.labelIndex.Add("span_name", []string{"GET /", "POST /api"})
 	s.labelIndex.Add("trace_id", nil)
@@ -192,6 +193,7 @@ func TestGetFieldValues_FromLabelIndex(t *testing.T) {
 		labelIndex: cache.NewLabelIndex(),
 		discovery:  discovery.New("", nil, "", "", "9428", 5*time.Second),
 	}
+	soleTenantManifest(t, s)
 	s.labelIndex.Add("service.name", []string{"api", "web", "worker"})
 
 	q := mustParseQueryWithTime(t, "*",
@@ -220,6 +222,7 @@ func TestGetFieldValues_FromLabelIndex_WithLimit(t *testing.T) {
 		labelIndex: cache.NewLabelIndex(),
 		discovery:  discovery.New("", nil, "", "", "9428", 5*time.Second),
 	}
+	soleTenantManifest(t, s)
 	s.labelIndex.Add("span_name", []string{"GET /", "POST /", "PUT /", "DELETE /", "PATCH /"})
 
 	q := mustParseQueryWithTime(t, "*",
@@ -468,6 +471,7 @@ func TestGetStreamFieldValues_DelegatesToGetFieldValues(t *testing.T) {
 		labelIndex: cache.NewLabelIndex(),
 		discovery:  discovery.New("", nil, "", "", "9428", 5*time.Second),
 	}
+	soleTenantManifest(t, s)
 	s.labelIndex.Add("service.name", []string{"api"})
 
 	q := mustParseQueryWithTime(t, "*",

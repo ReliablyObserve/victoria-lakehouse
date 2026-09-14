@@ -22,6 +22,10 @@
 #                                               used by the /internal/delete/* and
 #                                               /delete/run_task-style rows.
 #   {{tenant.account}} / {{tenant.project}}  — the seeded tenant pair.
+#   {{tenant.global_read}}                    — the value of the configured global-read
+#                                               header (X-Lakehouse-Global-Read) on the
+#                                               cold stack under test; only the
+#                                               tenant_scope.global rows send it.
 #   {{tombstone_id}}                          — not part of the seed: the id returned by a
 #                                               prior delete request in the same run (see
 #                                               lh.delete.tombstone_by_id.status).

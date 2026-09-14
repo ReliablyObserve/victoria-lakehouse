@@ -255,6 +255,39 @@ func (s *Store) RemoveFiles(partition string, keys []string) {
 	b.markDirty()
 }
 
+// RebuildFieldCatalogValues re-derives a partition's enumerable field values
+// from the files that exist now — the hook for anything that REMOVES rows (a
+// delete rewrite, or a compaction that dropped tombstoned rows).
+//
+// RemoveFiles cannot express that: it drops per-file facets, and the catalog's
+// value sets are a partition-level union that a pure merge never shrinks. After
+// a delete, a value carried only by the removed rows would stay in the dropdown
+// catalog indefinitely. Only the value sets are rebuilt; file-meta and bloom
+// facets are per-file and already maintained, and high-card state and HLL
+// sketches are kept (see fieldCatalogFacet.rebuildLowCardValues).
+//
+// Returns false when the partition has no catalog facet to rebuild. Marks the
+// bundle dirty so the corrected catalog persists.
+func (s *Store) RebuildFieldCatalogValues(partition string, files []FileContribution) bool {
+	s.mu.RLock()
+	b, ok := s.bundles[partition]
+	s.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	fc, ok := b.Get(FacetFieldCatalog)
+	if !ok {
+		return false
+	}
+	c, ok := fc.(*fieldCatalogFacet)
+	if !ok {
+		return false
+	}
+	c.rebuildLowCardValues(files)
+	b.markDirty()
+	return true
+}
+
 // Remove drops a partition's bundle from RAM — the retention/expiry hook. The
 // caller is responsible for deleting (or ignoring) the S3 bundle object.
 func (s *Store) Remove(partition string) {

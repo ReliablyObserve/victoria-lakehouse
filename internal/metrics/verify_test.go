@@ -45,6 +45,7 @@ func TestVerifyMetrics_AllCountersExist(t *testing.T) {
 		{"QueryRejectedTotal", QueryRejectedTotal},
 		{"QueryFileLimitExceeded", QueryFileLimitExceeded},
 		{"QueryMemoryBudgetExceeded", QueryMemoryBudgetExceeded},
+		{"GlobalReadQueriesTotal", GlobalReadQueriesTotal},
 		{"CompactionRunsTotal", CompactionRunsTotal},
 		{"CompactionFilesInputTotal", CompactionFilesInputTotal},
 		{"CompactionFilesOutputTotal", CompactionFilesOutputTotal},
@@ -198,6 +199,8 @@ func TestVerifyMetrics_CounterVecsExist(t *testing.T) {
 		{"TenantRowsTotal", TenantRowsTotal},
 		{"TenantIngestionBytesTotal", TenantIngestionBytesTotal},
 		{"TenantQueriesTotal", TenantQueriesTotal},
+		{"TenantScopeViolations", TenantScopeViolations},
+		{"ManifestTenantBucketListErrors", ManifestTenantBucketListErrors},
 		{"CompactionSkippedTotal", CompactionSkippedTotal},
 		{"FooterParseRejected", FooterParseRejected},
 	}
