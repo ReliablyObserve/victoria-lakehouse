@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -346,5 +347,50 @@ func TestTenantConfig_AllFieldsMerge(t *testing.T) {
 		if f.got != f.want {
 			t.Errorf("Tenant.%s = %q, want %q", f.name, f.got, f.want)
 		}
+	}
+}
+
+// TestTenantConfig_PrefixTemplateMustNameATenant: the writer only expands
+// {AccountID}/{ProjectID}. A template without them (an {OrgID} one, say) writes
+// every tenant under one static prefix; such objects carry no tenant segment,
+// which makes them tenant 0:0's data — every other tenant's rows would land in
+// 0:0's layout and be readable only by 0:0. Startup must refuse it.
+func TestTenantConfig_PrefixTemplateMustNameATenant(t *testing.T) {
+	cases := []struct {
+		name     string
+		template string
+		wantErr  bool
+	}{
+		{"account and project", "{AccountID}/{ProjectID}/", false},
+		{"nested under a prefix", "tenants/{AccountID}/{ProjectID}/", false},
+		{"empty (single-tenant layout)", "", false},
+		// One segment: the signal directory ("logs/") is parsed as the other.
+		{"account only", "{AccountID}/", true},
+		{"project only", "tenants/{ProjectID}/", true},
+		// Placeholders the writer never expands land in the key literally.
+		{"orgid only", "{OrgID}/", true},
+		{"orgid and project", "{OrgID}/{ProjectID}/", true},
+		{"static prefix", "tenants/", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Mode = ModeLogs
+			cfg.S3.Bucket = "test-bucket"
+			cfg.Tenant.PrefixTemplate = tc.template
+			err := cfg.Validate()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("template %q was accepted; it names no tenant", tc.template)
+				}
+				if !strings.Contains(err.Error(), "prefix-template") || !strings.Contains(err.Error(), "{AccountID}/{ProjectID}") {
+					t.Errorf("error %q should name the flag and the placeholder an operator must add", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("template %q rejected: %v", tc.template, err)
+			}
+		})
 	}
 }

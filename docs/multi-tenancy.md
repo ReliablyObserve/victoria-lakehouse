@@ -193,15 +193,17 @@ Net effect: a name registered once — by config, by API, or by first ingest —
 
 #### S3 Prefix Templates
 
-Three template modes for S3 key organization:
+The tenant is the two leading segments of every object key, and the template that produces them must name both:
 
-| Template | S3 Key Example | Use Case |
+| Template | S3 Key Example | Accepted |
 |----------|---------------|----------|
-| `{AccountID}/{ProjectID}/` (default) | `42/3/logs/dt=2026-05-15/...` | VL/VT compatible |
-| `{OrgID}/` | `prod-team-eu_staging/logs/dt=2026-05-15/...` | Standalone deployment |
-| `{OrgID}/{ProjectID}/` | `prod-team-eu/3/logs/dt=2026-05-15/...` | Hybrid string + integer |
+| `{AccountID}/{ProjectID}/` (default) | `42/3/logs/dt=2026-05-15/...` | yes — VL/VT compatible |
+| `tenants/{AccountID}/{ProjectID}/` | `tenants/42/3/logs/dt=2026-05-15/...` | yes — a fixed prefix in front is fine |
+| *(empty)* | `logs/dt=2026-05-15/...` | yes — the single-tenant (legacy) layout; the data belongs to tenant `0:0` |
+| `{OrgID}/`, `{OrgID}/{ProjectID}/` | — | no — rejected at startup |
+| `{AccountID}/`, `{ProjectID}/` | — | no — rejected at startup |
 
-The `{OrgID}` template requires at least one alias configured (or `auto_register: true`) and is not compatible with VL/VT upstream storage node integration.
+Startup refuses a template that does not carry both `{AccountID}` and `{ProjectID}`, or that carries a placeholder the writer does not expand. The writer expands only those two: anything else stays in the key literally (`{OrgID}/3/logs/…`), which makes the object untenanted — and an untenanted object is tenant `0:0`'s data, so every other tenant would write into `0:0`'s layout and never read its own rows back. A single segment is just as wrong: the signal directory (`logs/`, `traces/`) is then parsed as the missing segment. String OrgIDs stay presentation-only — an alias maps to an account/project pair, and the pair is what reaches S3 (see [Tenant Name Mapping](#tenant-name-mapping-x-scope-orgid)).
 
 #### Prometheus Metrics Format
 
@@ -412,7 +414,7 @@ The PolicyRegistry caches resolved entries in a `sync.Map` keyed by `(account, p
 
 | Flag | Default | Description |
 |---|---|---|
-| `--lakehouse.tenant.prefix-template` | `{AccountID}/{ProjectID}/` | S3 prefix pattern. Supports `{AccountID}`, `{ProjectID}`, `{OrgID}` |
+| `--lakehouse.tenant.prefix-template` | `{AccountID}/{ProjectID}/` | S3 prefix pattern. Must contain `{AccountID}` and `{ProjectID}` (both are expanded; any other placeholder is rejected at startup). Empty = the single-tenant legacy layout |
 | `--lakehouse.tenant.isolation` | `prefix` | Isolation mode: `prefix` (shared bucket) or `bucket` (separate buckets) |
 | `--lakehouse.tenant.bucket-template` | (empty) | Bucket name pattern for `bucket` isolation mode |
 | `--lakehouse.tenant.default-account` | `0` | Default AccountID when header is absent (single-tenant mode) |
