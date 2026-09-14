@@ -13,7 +13,9 @@ data:
   config.yaml: |
     lakehouse:
       mode: {{ $signal }}
-      {{- $.Values.lakehouseConfig | toYaml | nindent 6 }}
+      {{- /* mode is set per signal above; a user-supplied lakehouseConfig.mode would
+             duplicate the key, which the binaries reject */}}
+      {{- omit $.Values.lakehouseConfig "mode" | toYaml | nindent 6 }}
       {{ $signal }}:
         {{- $signalVals.config | toYaml | nindent 8 }}
 {{- end }}
