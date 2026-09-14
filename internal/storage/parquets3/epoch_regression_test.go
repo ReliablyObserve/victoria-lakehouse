@@ -1,6 +1,7 @@
 package parquets3
 
 import (
+	"context"
 	"testing"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -23,7 +24,7 @@ func TestManifestFastPathSkipsUnpopulatedTime(t *testing.T) {
 		resolvedBlocks++
 	}
 
-	remaining := s.manifestFastPath(files, 0, 2000, writeBlock)
+	remaining := s.manifestFastPath(context.Background(), files, 0, 2000, countOnlyPlan, writeBlock)
 
 	if resolvedBlocks != 1 {
 		t.Errorf("resolvedBlocks = %d, want 1 (only normal file resolved)", resolvedBlocks)
@@ -50,7 +51,7 @@ func TestManifestFastPathSkipsBothBoundsZero(t *testing.T) {
 		resolvedBlocks++
 	}
 
-	remaining := s.manifestFastPath(files, 0, 1000, writeBlock)
+	remaining := s.manifestFastPath(context.Background(), files, 0, 1000, countOnlyPlan, writeBlock)
 
 	if resolvedBlocks != 0 {
 		t.Errorf("resolvedBlocks = %d, want 0 (no metadata = skip fast path)", resolvedBlocks)
@@ -74,7 +75,7 @@ func TestManifestFastPathNormalFile(t *testing.T) {
 		resolvedRows += db.RowsCount()
 	}
 
-	remaining := s.manifestFastPath(files, 0, 1000, writeBlock)
+	remaining := s.manifestFastPath(context.Background(), files, 0, 1000, countOnlyPlan, writeBlock)
 
 	if resolvedRows != 42 {
 		t.Errorf("resolvedRows = %d, want 42", resolvedRows)
@@ -98,7 +99,7 @@ func TestManifestFastPathPartialOverlap(t *testing.T) {
 		resolvedBlocks++
 	}
 
-	remaining := s.manifestFastPath(files, 500, 1500, writeBlock)
+	remaining := s.manifestFastPath(context.Background(), files, 500, 1500, countOnlyPlan, writeBlock)
 
 	if resolvedBlocks != 0 {
 		t.Errorf("resolvedBlocks = %d, want 0 (partial overlap = no fast path)", resolvedBlocks)

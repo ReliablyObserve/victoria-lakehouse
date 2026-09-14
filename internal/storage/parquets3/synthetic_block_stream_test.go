@@ -1,6 +1,7 @@
 package parquets3
 
 import (
+	"context"
 	"sort"
 	"testing"
 
@@ -9,16 +10,15 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 )
 
-// TestStreamSyntheticManifestBlocks_ChunkSize verifies that synthetic
-// blocks are emitted in chunks of at most syntheticChunkSize rows even
-// when the file row count is in the millions. Avoids the previous
-// pathology where a single []string of 50M elements was allocated for a
-// large file's synthetic block.
-func TestStreamSyntheticManifestBlocks_ChunkSize(t *testing.T) {
+// TestStreamConstTimeBlocks_ChunkSize verifies that metadata-only blocks are
+// emitted in chunks of at most syntheticChunkSize rows even when the file row
+// count is in the millions, so a downstream pipe never materializes a huge
+// block.
+func TestStreamConstTimeBlocks_ChunkSize(t *testing.T) {
 	s := testStorage()
 
 	// A file with 250,000 rows. With syntheticChunkSize=10_000 we expect
-	// 25 chunks, each ≤ 10k rows.
+	// 25 chunks, each <= 10k rows.
 	fi := manifest.FileInfo{
 		RowCount:  250_000,
 		MinTimeNs: 1_000_000_000,
@@ -28,16 +28,14 @@ func TestStreamSyntheticManifestBlocks_ChunkSize(t *testing.T) {
 	var totalRows int
 	var maxChunk int
 	var chunks int
-	emit := func(db *logstorage.DataBlock) {
+	s.streamConstTimeBlocks(context.Background(), fi, func(_ uint, db *logstorage.DataBlock) {
 		chunks++
 		n := db.RowsCount()
 		totalRows += n
 		if n > maxChunk {
 			maxChunk = n
 		}
-	}
-
-	s.streamSyntheticManifestBlocks(fi, emit)
+	})
 
 	if totalRows != int(fi.RowCount) {
 		t.Errorf("totalRows = %d, want %d", totalRows, int(fi.RowCount))
@@ -51,9 +49,9 @@ func TestStreamSyntheticManifestBlocks_ChunkSize(t *testing.T) {
 	}
 }
 
-// TestStreamSyntheticManifestBlocks_SmallFile verifies a sub-chunk
-// row count emits exactly one block of that size.
-func TestStreamSyntheticManifestBlocks_SmallFile(t *testing.T) {
+// TestStreamConstTimeBlocks_SmallFile verifies a sub-chunk row count emits
+// exactly one block of that size.
+func TestStreamConstTimeBlocks_SmallFile(t *testing.T) {
 	s := testStorage()
 
 	fi := manifest.FileInfo{
@@ -64,7 +62,7 @@ func TestStreamSyntheticManifestBlocks_SmallFile(t *testing.T) {
 
 	var chunks int
 	var totalRows int
-	s.streamSyntheticManifestBlocks(fi, func(db *logstorage.DataBlock) {
+	s.streamConstTimeBlocks(context.Background(), fi, func(_ uint, db *logstorage.DataBlock) {
 		chunks++
 		totalRows += db.RowsCount()
 	})
@@ -77,23 +75,46 @@ func TestStreamSyntheticManifestBlocks_SmallFile(t *testing.T) {
 	}
 }
 
-// TestStreamSyntheticManifestBlocks_CapsAtMaxRows verifies that the
-// total row count is capped at maxSyntheticRows as a safety net.
-func TestStreamSyntheticManifestBlocks_CapsAtMaxRows(t *testing.T) {
+// TestStreamConstTimeBlocks_NoRowCap is the regression for the under-count
+// bug: the fast path used to stop at maxSyntheticRows = 1_000_000 rows per
+// file, so any file above that silently reported fewer rows than it holds.
+// Every row count must now be emitted in full.
+func TestStreamConstTimeBlocks_NoRowCap(t *testing.T) {
 	s := testStorage()
 
-	fi := manifest.FileInfo{
-		RowCount:  int64(maxSyntheticRows) + 5000,
-		MinTimeNs: 1_000_000_000,
-		MaxTimeNs: 9_000_000_000,
+	for _, rowCount := range []int64{1_000_001, 1_500_000, 5_000_000} {
+		fi := manifest.FileInfo{
+			RowCount:  rowCount,
+			MinTimeNs: 1_000_000_000,
+			MaxTimeNs: 9_000_000_000,
+		}
+		var totalRows int64
+		s.streamConstTimeBlocks(context.Background(), fi, func(_ uint, db *logstorage.DataBlock) {
+			totalRows += int64(db.RowsCount())
+		})
+		if totalRows != rowCount {
+			t.Errorf("RowCount=%d: emitted %d rows, want %d (the 1M cap must be gone)", rowCount, totalRows, rowCount)
+		}
 	}
+}
 
-	var totalRows int
-	s.streamSyntheticManifestBlocks(fi, func(db *logstorage.DataBlock) {
-		totalRows += db.RowsCount()
+// TestStreamConstTimeBlocks_StopsOnCancelledContext locks the safeguard that
+// replaced the row cap: a runaway row count is bounded by the query's own
+// budget, which cancels the context, not by silently truncating the answer.
+func TestStreamConstTimeBlocks_StopsOnCancelledContext(t *testing.T) {
+	s := testStorage()
+	fi := manifest.FileInfo{RowCount: 10_000_000, MinTimeNs: 1_000_000_000, MaxTimeNs: 9_000_000_000}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var blocks int
+	s.streamConstTimeBlocks(ctx, fi, func(_ uint, db *logstorage.DataBlock) {
+		blocks++
+		if blocks == 3 {
+			cancel()
+		}
 	})
-	if totalRows != maxSyntheticRows {
-		t.Errorf("totalRows = %d, want capped at %d", totalRows, maxSyntheticRows)
+	if blocks != 3 {
+		t.Errorf("blocks = %d, want 3 (emission must stop once the context is cancelled)", blocks)
 	}
 }
 

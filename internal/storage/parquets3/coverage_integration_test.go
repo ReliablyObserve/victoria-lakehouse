@@ -13,13 +13,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/parquet-go/parquet-go"
-
-	"sync/atomic"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
@@ -37,6 +36,11 @@ type mockS3Server struct {
 	mu    sync.RWMutex
 	files map[string][]byte // key -> file data
 	srv   *httptest.Server
+
+	// gets / bytesServed count object reads (full and ranged) and the body
+	// bytes they returned, so benchmarks can report real S3 economics.
+	gets        atomic.Int64
+	bytesServed atomic.Int64
 }
 
 func newMockS3Server() *mockS3Server {
@@ -126,12 +130,16 @@ func (m *mockS3Server) handler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(data)))
 		w.Header().Set("Content-Length", strconv.Itoa(int(end-start+1)))
 		w.WriteHeader(http.StatusPartialContent)
+		m.gets.Add(1)
+		m.bytesServed.Add(end - start + 1)
 		_, _ = w.Write(data[start : end+1])
 		return
 	}
 
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.WriteHeader(http.StatusOK)
+	m.gets.Add(1)
+	m.bytesServed.Add(int64(len(data)))
 	_, _ = w.Write(data)
 }
 
@@ -148,7 +156,7 @@ func (m *mockS3Server) url() string {
 // and manifest.
 // ---------------------------------------------------------------------------
 
-func testStorageWithS3(t *testing.T, s3url string) *Storage {
+func testStorageWithS3(t testing.TB, s3url string) *Storage {
 	t.Helper()
 	pool := testPool(t, s3url)
 	cfg := testConfig()
@@ -169,7 +177,7 @@ func testStorageWithS3(t *testing.T, s3url string) *Storage {
 }
 
 // writeParquetToBytes generates a Parquet file in memory and returns its bytes.
-func writeParquetToBytes(t *testing.T, rows []logRow) []byte {
+func writeParquetToBytes(t testing.TB, rows []logRow) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	w := parquet.NewGenericWriter[logRow](&buf, parquet.Compression(&parquet.Zstd))

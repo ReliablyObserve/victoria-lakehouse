@@ -221,12 +221,25 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	files = s.applySelfFilter(files)
 	s.applyCacheAffinity(files)
 
+	// The plan decides whether this query may be answered from metadata at
+	// all, and with which `_time` bucketing. It also rides the context down to
+	// the row-group readers, which apply the same containment rule to a row
+	// group's own bounds before serving it without reading its data.
+	plan := planMetadataOnly(q)
+	ctx = withMetadataOnlyPlan(ctx, plan)
+
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
-		remaining := s.manifestFastPath(files, startNs, endNs, filteredWriteBlock)
+		remaining := s.manifestFastPath(ctx, files, startNs, endNs, plan, filteredWriteBlock)
+		// The fast path stops emitting as soon as the query's max-rows or
+		// live-bytes budget cancels the context. Surface that the way the scan
+		// branch does (fileWorkerLoop parks ctx.Err() in firstErr, which
+		// RunQuery returns below): a count that stopped early is an ERROR, never
+		// a short number handed back as if it were the whole answer.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if len(remaining) == 0 {
-			if n := rowsEmitted.Load(); n > 0 {
-				metrics.QueryRowsTotal.Add(int(n))
-			}
+			recordQueryRows(&rowsEmitted)
 			s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
 			return nil
 		}
@@ -241,9 +254,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	if aggField := countByPushdownField(queryStr, pipeFields, filter); aggField != "" && !hasTombstones {
 		remaining := s.manifestCountFastPath(files, startNs, endNs, aggField, filteredWriteBlock)
 		if len(remaining) == 0 {
-			if n := rowsEmitted.Load(); n > 0 {
-				metrics.QueryRowsTotal.Add(int(n))
-			}
+			recordQueryRows(&rowsEmitted)
 			s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
 			return nil
 		}
@@ -319,9 +330,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}
 	}
 
-	if n := rowsEmitted.Load(); n > 0 {
-		metrics.QueryRowsTotal.Add(int(n))
-	}
+	recordQueryRows(&rowsEmitted)
 
 	return nil
 }
@@ -383,6 +392,15 @@ func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.Fil
 			continue
 		}
 		s.processOneFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, filteredWriteBlock)
+	}
+}
+
+// recordQueryRows adds the rows a query emitted to QueryRowsTotal. Shared by
+// RunQuery's three exits (manifest fast path, count pushdown, full scan), which
+// also keeps RunQuery inside the gocyclo budget.
+func recordQueryRows(rowsEmitted *atomic.Int64) {
+	if n := rowsEmitted.Load(); n > 0 {
+		metrics.QueryRowsTotal.Add(int(n))
 	}
 }
 
@@ -561,32 +579,6 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, m
 	}
 }
 
-func (s *Storage) manifestFastPath(files []manifest.FileInfo, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc) []manifest.FileInfo {
-	var remaining []manifest.FileInfo
-	for _, fi := range files {
-		if fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
-			fi.MinTimeNs >= startNs && fi.MaxTimeNs <= endNs {
-			emitted := false
-			s.streamSyntheticManifestBlocks(fi, func(db *logstorage.DataBlock) {
-				if db != nil && db.RowsCount() > 0 {
-					writeBlock(0, db)
-					emitted = true
-				}
-			})
-			if emitted {
-				metrics.MetadataOnlyFiles.Inc()
-			}
-		} else {
-			remaining = append(remaining, fi)
-		}
-	}
-	if len(remaining) < len(files) {
-		logger.Infof("metadata fast path: resolved %d/%d files from manifest, %d remain for S3",
-			len(files)-len(remaining), len(files), len(remaining))
-	}
-	return remaining
-}
-
 // countByPushdownField returns the single field a query groups/projects by when
 // it is eligible for the manifest count-pushdown fast-path, or "" otherwise. The
 // fast-path is SOUND only when the query references exactly one raw field and has
@@ -661,7 +653,7 @@ func countByPushdownField(queryStr string, pipeFields []string, filter *logstora
 // LabelAggregate for aggField by emitting synthetic rows reproducing that field's
 // value distribution — zero S3 reads. Files that straddle the range boundary
 // (whole-file aggregate would over-count outside the window), lack the aggregate,
-// or exceed the synthetic-row cap are returned for normal scanning. Mirrors
+// or exceed maxSyntheticAggRows are returned for normal scanning. Mirrors
 // manifestFastPath's boundary contract.
 func (s *Storage) manifestCountFastPath(files []manifest.FileInfo, startNs, endNs int64, aggField string, writeBlock logstorage.WriteDataBlockFunc) []manifest.FileInfo {
 	var remaining []manifest.FileInfo
@@ -687,17 +679,23 @@ func (s *Storage) manifestCountFastPath(files []manifest.FileInfo, startNs, endN
 	return remaining
 }
 
+// maxSyntheticAggRows bounds the count-pushdown fast path, which DOES
+// materialize one row per value occurrence because it has to reproduce a
+// field's value distribution. Above it the file is scanned for real —
+// the cap withholds the fast path, it never truncates an answer.
+const maxSyntheticAggRows = 1_000_000
+
 // streamSyntheticAggBlocks emits synthetic DataBlocks reproducing file fi's
 // distribution of aggField values: each value V repeated LabelAggregates[aggField][V]
 // times, plus the empty-value group (RowCount - sum) so rows with no value form the
 // "" group exactly as a real scan would. The field column is named and formatted
 // IDENTICALLY to the scan path (registry.ResolveFromParquet + FormatField) so the
 // downstream pipe groups the same way. Returns false (emitting nothing) when fi has
-// no aggregate for the field or its RowCount exceeds the synthetic cap (avoid the
+// no aggregate for the field or its RowCount exceeds maxSyntheticAggRows (avoid the
 // undercount a cap would cause) — caller then scans it.
 func (s *Storage) streamSyntheticAggBlocks(fi manifest.FileInfo, aggField string, emit func(*logstorage.DataBlock)) bool {
 	agg := fi.LabelAggregates[aggField]
-	if len(agg) == 0 || fi.RowCount <= 0 || fi.RowCount > maxSyntheticRows || emit == nil {
+	if len(agg) == 0 || fi.RowCount <= 0 || fi.RowCount > maxSyntheticAggRows || emit == nil {
 		return false
 	}
 
@@ -1098,11 +1096,18 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	// (stats/hits on wildcard query), row groups that are fully within the
 	// query time range don't need any data reads — emit synthetic DataBlocks
 	// using row counts from Parquet metadata.
+	//
+	// The synthetic series is evenly spaced, which only tells the truth while
+	// the query cannot tell the row group's timestamps apart. The plan carries
+	// the query's `_time` bucketing; a row group whose true bounds straddle a
+	// bucket boundary is deferred to a real read, so per-bucket counts stay
+	// exact instead of being smeared uniformly across the buckets.
 	tsOnly := len(projectedCols) == 1 && projectedCols[s.registry.TimestampColumn()]
+	plan := metadataOnlyPlanFromContext(ctx)
 	if tsOnly && tsIdx >= 0 {
 		var deferred []indexedRowGroup
 		for _, m := range matchedRGs {
-			if rowGroupFullyInRange(m.rg, tsIdx, startNs, endNs) {
+			if rowGroupFullyInRange(m.rg, tsIdx, startNs, endNs) && rowGroupCoveredByPlan(m.rg, tsIdx, plan) {
 				metrics.ParquetRowGroupsScanned.Inc()
 				db := s.syntheticTimestampBlock(m.rg, tsIdx, startNs, endNs)
 				if db != nil && db.RowsCount() > 0 {
@@ -2721,6 +2726,31 @@ func rowGroupFullyInRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs int6
 	return rgMin >= startNs && rgMax <= endNs
 }
 
+// rowGroupCoveredByPlan reports whether the row group's rows are
+// indistinguishable to the query that produced plan — i.e. its true timestamp
+// bounds fall inside one bucket of every `_time` bucketing the query groups by.
+// Only then may the evenly-spaced synthetic series stand in for the real
+// timestamps: every fabricated value lands in the same bucket as every real
+// one, so the per-bucket counts are exact.
+func rowGroupCoveredByPlan(rg parquet.RowGroup, tsColIdx int, plan metadataOnlyPlan) bool {
+	if !plan.eligible {
+		return false
+	}
+	if len(plan.buckets) == 0 {
+		return true
+	}
+	cols := rg.ColumnChunks()
+	if tsColIdx >= len(cols) {
+		return false
+	}
+	idx, err := cols[tsColIdx].ColumnIndex()
+	if err != nil || idx == nil || idx.NumPages() == 0 {
+		return false
+	}
+	rgMin, rgMax := columnIndexTimeBounds(idx)
+	return plan.coversSpan(rgMin, rgMax)
+}
+
 // syntheticTimestampBlock creates a DataBlock with NumRows rows containing
 // evenly distributed timestamps derived from row group metadata. Used for
 // stats/hits queries on wildcard where the row group is fully in range,
@@ -2806,108 +2836,6 @@ func (s *Storage) enrichManifestFromFooter(fi manifest.FileInfo, f *parquet.File
 	if totalRows > 0 {
 		s.manifest.EnrichFileMetadata(fi.Key, totalRows, minTs, maxTs)
 	}
-}
-
-// Synthetic manifest block sizing.
-//
-//   - syntheticChunkSize bounds the per-block allocation so a multi-million
-//     row file no longer triggers a single huge []string allocation.
-//   - maxSyntheticRows is a defense-in-depth cap on the total row count
-//     emitted per file from the manifest fast path. Previously this was
-//     50M which could still allocate ~1GB of strings if the registry's
-//     timestamp formatter produced long values.
-const (
-	syntheticChunkSize = 10_000
-	maxSyntheticRows   = 1_000_000
-)
-
-// syntheticManifestBlock creates a DataBlock with fi.RowCount rows using
-// timestamps distributed across [MinTimeNs, MaxTimeNs] from manifest metadata.
-//
-// Prefer streamSyntheticManifestBlocks for query-path callers — it emits
-// multiple smaller blocks instead of materializing the full row count in
-// one slice. This single-block variant is preserved for legacy callers
-// (tests/benchmarks) and clamps to syntheticChunkSize to avoid surprise
-// allocations.
-func (s *Storage) syntheticManifestBlock(fi manifest.FileInfo) *logstorage.DataBlock {
-	n := int(fi.RowCount)
-	if n == 0 {
-		return nil
-	}
-	if n > syntheticChunkSize {
-		n = syntheticChunkSize
-	}
-	return s.buildSyntheticChunk(fi, 0, n)
-}
-
-// streamSyntheticManifestBlocks emits one or more DataBlocks covering
-// fi.RowCount rows, each of size <= syntheticChunkSize. Total row count
-// is capped at maxSyntheticRows as a safety net against pathological
-// manifest entries (the manifest fast path is metadata-only, so a wildly
-// inflated RowCount would otherwise allocate proportionally).
-func (s *Storage) streamSyntheticManifestBlocks(fi manifest.FileInfo, emit func(*logstorage.DataBlock)) {
-	total := int(fi.RowCount)
-	if total <= 0 || emit == nil {
-		return
-	}
-	if total > maxSyntheticRows {
-		total = maxSyntheticRows
-	}
-
-	for offset := 0; offset < total; offset += syntheticChunkSize {
-		chunk := syntheticChunkSize
-		if offset+chunk > total {
-			chunk = total - offset
-		}
-		db := s.buildSyntheticChunkOf(fi, offset, chunk, total)
-		if db != nil && db.RowsCount() > 0 {
-			emit(db)
-		}
-	}
-}
-
-// buildSyntheticChunk is a thin wrapper around buildSyntheticChunkOf that
-// derives the global row count from chunk size — kept for callers that
-// only emit a single chunk.
-func (s *Storage) buildSyntheticChunk(fi manifest.FileInfo, offset, chunk int) *logstorage.DataBlock {
-	return s.buildSyntheticChunkOf(fi, offset, chunk, chunk)
-}
-
-// buildSyntheticChunkOf renders `chunk` rows of synthetic timestamps
-// starting at the given offset, where the timestamp step is computed
-// against the global `total` row count so successive chunks remain
-// monotonically increasing across the file's [MinTimeNs, MaxTimeNs] range.
-func (s *Storage) buildSyntheticChunkOf(fi manifest.FileInfo, offset, chunk, total int) *logstorage.DataBlock {
-	if chunk <= 0 {
-		return nil
-	}
-
-	tsCol := s.registry.TimestampColumn()
-	internalName := tsCol
-	if m := s.registry.ResolveFromParquet(tsCol); m != nil {
-		internalName = m.InternalName
-	}
-
-	values := make([]string, chunk)
-	if total == 1 {
-		values[0] = s.registry.FormatField(internalName, fi.MinTimeNs)
-	} else {
-		step := (fi.MaxTimeNs - fi.MinTimeNs) / int64(total-1)
-		if step == 0 {
-			step = 1
-		}
-		for i := range values {
-			ts := fi.MinTimeNs + int64(offset+i)*step
-			if ts > fi.MaxTimeNs {
-				ts = fi.MaxTimeNs
-			}
-			values[i] = s.registry.FormatField(internalName, ts)
-		}
-	}
-
-	db := &logstorage.DataBlock{}
-	db.SetColumns([]logstorage.BlockColumn{{Name: internalName, Values: values}})
-	return db
 }
 
 func rowGroupMatchesTimeRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs int64) bool {
@@ -3164,16 +3092,11 @@ func isFileNotFoundError(err error) bool {
 
 func (s *Storage) handle404Recovery(ctx context.Context, fi manifest.FileInfo, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock func(uint, *logstorage.DataBlock)) {
 	metrics.QueryFileNotFoundTotal.Inc()
+	plan := metadataOnlyPlanFromContext(ctx)
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones &&
-		fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 {
-		emitted := false
-		s.streamSyntheticManifestBlocks(fi, func(db *logstorage.DataBlock) {
-			if db != nil && db.RowsCount() > 0 {
-				filteredWriteBlock(0, db)
-				emitted = true
-			}
-		})
-		if emitted {
+		fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
+		fi.RowCount <= maxPlausibleRowCount && plan.coversFile(fi) {
+		if s.streamConstTimeBlocks(ctx, fi, filteredWriteBlock) {
 			metrics.MetadataOnlyFiles.Inc()
 		}
 		logger.Infof("query recovered compacted file via manifest metadata; key=%s rows=%d", fi.Key, fi.RowCount)

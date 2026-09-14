@@ -438,7 +438,7 @@ The projection is derived from the query's fields, filters and stats, then hande
 
 The metadata already knows how many rows each file holds and how they distribute across a field's values, so the common dashboard aggregations never open a Parquet file. Measured at 100 ms injected object-store latency, this is where the cold tier beats ClickHouse-over-S3 outright.
 
-- Verification: tests: `internal/storage/parquets3/count_pushdown_test.go`, `internal/storage/parquets3/filtered_count_pushdown_test.go`, `internal/manifest/count_by_label_test.go`, `internal/compaction/aggregate_healing_test.go#TestCompactor_HealsWipedLabelAggregates` · bench: `count_total`, `count_by_service`, `high_card`
+- Verification: rows: `lh.cold.count_exact_above_1m_rows` (pass, pending), `lh.cold.hits_bucket_counts_exact` (pass, pending) · tests: `internal/storage/parquets3/count_pushdown_test.go`, `internal/storage/parquets3/filtered_count_pushdown_test.go`, `internal/storage/parquets3/manifest_fastpath_exactness_test.go`, `lakehouse-traces/internal/storage/parquets3/manifest_fastpath_exactness_test.go`, `internal/manifest/count_by_label_test.go`, `internal/compaction/aggregate_healing_test.go#TestCompactor_HealsWipedLabelAggregates` · bench: `count_total`, `count_by_service`, `high_card`
 - Docs: `docs/query-performance-optimization.md`, `docs/read-path.md`
 - Changelog: `0.59.0`
 

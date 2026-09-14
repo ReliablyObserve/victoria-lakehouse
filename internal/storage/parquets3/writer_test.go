@@ -194,7 +194,7 @@ func mockS3() *httptest.Server {
 	}))
 }
 
-func testPool(t *testing.T, endpoint string) *s3reader.ClientPool {
+func testPool(t testing.TB, endpoint string) *s3reader.ClientPool {
 	t.Helper()
 	cfg := &config.S3Config{
 		Bucket:         "test-bucket",
