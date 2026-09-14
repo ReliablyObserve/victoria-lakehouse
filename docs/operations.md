@@ -381,6 +381,8 @@ belongs to the rewrite scheduler's normal retry path.
 - `lakehouse_delete_rewrite_key_collisions_total`, `lakehouse_manifest_key_claim_rejected_total{reason}` — object keys that were already in use and had to be redrawn; a sustained rate means something other than chance is generating them
 - `lakehouse_manifest_held_keys` — replacements another publish may not supersede yet (their swap is not durable)
 - `lakehouse_manifest_retired_delete_owed` — how much of the retired set is this process's own outstanding deletes
+- `lakehouse_manifest_retired_delete_landed` — the part whose objects are already deleted, held only until a bucket listing older than the delete can no longer be applied; it should drain at every refresh, so a value that keeps climbing means refreshes are not being accepted
+- `lakehouse_manifest_retired_settled_total` — retired keys an accepted listing proved gone. This is the drain signal: on a node compacting faster than it refreshes the gauge above never reads zero even while draining perfectly, so alert on this counter standing still, not on the gauge being non-zero
 - `lakehouse_delete_tombstone_removed_markers_evicted_total` — removed-tombstone markers dropped by their TTL or cap (never while their S3 delete is owed)
 - `lakehouse_delete_compaction_rows_removed_total` / `lakehouse_delete_compaction_keys_reaped_total` — rows and source keys compaction reaped
 - `lakehouse_delete_fields_scan_fallback_total{endpoint=...}` — requests that gave up a fast path a tombstone cannot be applied to because one overlapped: metadata-only field enumeration (`field_names`, `field_values`, `streams`, `stream_ids`) and the pure-buffer aggregate path (`pure_buffer`)
@@ -390,7 +392,7 @@ belongs to the rewrite scheduler's normal retry path.
 `lakehouse_delete_rewrite_manifest_errors_total`, on superseded or abandoned
 objects whose deletes keep failing, on a retired key evicted by its size bound
 (`lakehouse_manifest_retired_evicted_total{reason!="ttl"}`, and critically on
-`reason="cap_delete_owed"`), on `lakehouse_delete_tombstone_restore_pending`
+`reason="cap_delete_owed"` and `reason="cap_delete_landed"`), on `lakehouse_delete_tombstone_restore_pending`
 (this node is not enforcing other nodes' deletes), on
 `lakehouse_delete_tombstone_not_durable_total` and on
 `lakehouse_delete_rewrites_unfinished` staying above zero for hours — all ship
@@ -409,7 +411,10 @@ the alerts above tell an operator to look at:
 
 - `retired_keys` — objects the manifest has stopped serving. `delete_owed: true`
   means this process superseded the object and owes its deletion;
-  `replaced_by` names the file that took its place.
+  `deleted: true` means the object is already gone and the entry is held only
+  so a bucket listing that began before the delete cannot adopt it back (it
+  clears at the next refresh); `replaced_by` names the file that took its
+  place.
 - `pending_keys` — uploads claimed but not published. `held: true` means a
   replacement whose swap is not durable yet, which compaction may not merge.
 - `unfinished_rewrites` — the durable rewrite records, with `state`

@@ -43,7 +43,7 @@ type ManifestUpdater interface {
 	// refresh adopts it, and no other writer can take the same key;
 	// ReleasePending gives the claim back when nothing was written and
 	// AbandonPending retires an upload that will never be published.
-	// Retire / UnretireIfReplacedBy / ForgetRetired / LookupRetired let an
+	// Retire / UnretireIfReplacedBy / ConfirmDeleted / LookupRetired let an
 	// interrupted rewrite be finished or undone after a restart without the
 	// refresh re-adopting the object it let go of. Hold / Release keep another
 	// publish from superseding a replacement whose swap is not durable yet.
@@ -58,7 +58,7 @@ type ManifestUpdater interface {
 	AbandonPending(key string)
 	Retire(key, by string, reclaim bool) bool
 	UnretireIfReplacedBy(key, replacement string) bool
-	ForgetRetired(key string)
+	ConfirmDeleted(key string)
 	LookupRetired(key string) (manifest.RetiredKey, bool)
 	Hold(key string)
 	Release(key string)

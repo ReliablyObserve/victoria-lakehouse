@@ -45,8 +45,14 @@ func TestScheduler_ScanRetriesDeletesOfRetiredObjects(t *testing.T) {
 	if _, err := sched.Scan(context.Background()); err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
-	if pool.get(owed) != nil || m.IsRetired(owed) {
-		t.Fatal("the scan must delete the owed object and forget it")
+	if pool.get(owed) != nil {
+		t.Fatal("the scan must delete the owed object once the delete can land")
+	}
+	// The key stays retired until a listing proves it gone — a listing that
+	// began before this delete still reports the object — but nothing is owed
+	// for it any more, so no later scan retries it.
+	if rk, ok := m.LookupRetired(owed); !ok || rk.Reclaim || !rk.Deleted {
+		t.Fatalf("a landed reclaim settles the debt and keeps the guard, got %+v ok=%v", rk, ok)
 	}
 	if pool.get(notOwed) == nil {
 		t.Fatal("an object removed on another component's behalf is not this node's to delete")

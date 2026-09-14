@@ -278,8 +278,13 @@ func TestResumeRewrites_RetriesUntilTheDeleteLands(t *testing.T) {
 	if _, still := f.store.Get("ts-fixture"); still {
 		t.Fatal("once the delete lands the record clears and the tombstone retires")
 	}
-	if f.pool.Has(f.key) || f.manifest.IsRetired(f.key) {
-		t.Fatal("the superseded object must be gone and forgotten")
+	if f.pool.Has(f.key) {
+		t.Fatal("the superseded object must be gone")
+	}
+	// Gone, but still guarded: a listing that began before this delete would
+	// otherwise put the source back and serve the rows the delete removed.
+	if rk, ok := f.manifest.LookupRetired(f.key); !ok || rk.Reclaim || !rk.Deleted {
+		t.Fatalf("the landed delete settles the debt and keeps the guard, got %+v ok=%v", rk, ok)
 	}
 	f.assertConverged(t, "after the retried delete")
 }
