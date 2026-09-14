@@ -148,6 +148,7 @@ probe_commit "VL_VERSION_LOGS := v1.53.0"
 publish GH_TOKEN=
 check "no token exits 3" "$rc" 3
 check_contains "no token names the secret" "$summ" "UPSTREAM_SYNC_TOKEN"
+check_contains "no token names the fallback secret" "$summ" "TOKEN_GITHUB"
 check_contains "no token names the permissions" "$summ" "Pull requests: read and write"
 check "no token pushes nothing" "$(origin_sha)" ""
 check "no token never calls gh" "$calls" ""

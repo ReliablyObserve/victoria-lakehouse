@@ -287,7 +287,11 @@ daily run stops, re-enable it from the workflow's page in the Actions tab.
 
 The probe runs with a read-only workflow token (`permissions: contents: read`, no persisted
 checkout credentials). Pushing the branch and opening the pull request use the repository
-secret **`UPSTREAM_SYNC_TOKEN`** instead, for two reasons:
+secret **`UPSTREAM_SYNC_TOKEN`** when it is set, and otherwise **`TOKEN_GITHUB`** — the token
+the release workflow already uses to open its release-metadata pull requests, so no new secret
+is required. Pull requests opened with `TOKEN_GITHUB` are authored by that token's owner. Set a
+dedicated `UPSTREAM_SYNC_TOKEN` (below) to give the probe its own narrowly scoped identity. Either
+way a real token is required, for two reasons:
 
 - the repository keeps **"Allow GitHub Actions to create and approve pull requests" off**, so
   `GITHUB_TOKEN` cannot open one — in a public repository every workflow run carries that

@@ -6,7 +6,7 @@
 # (scripts/ci/tests/upstream_sync_publish_test.sh):
 #
 #   * no token, no push. The pull request must be created with
-#     UPSTREAM_SYNC_TOKEN (a fine-grained token scoped to this repository), never
+#     the sync token (UPSTREAM_SYNC_TOKEN, falling back to TOKEN_GITHUB), never
 #     with GITHUB_TOKEN — the repository keeps "Allow GitHub Actions to create
 #     and approve pull requests" off. A missing token is reported in the summary
 #     and exits 3, so the scheduled run turns red instead of doing nothing;
@@ -101,7 +101,7 @@ if [[ -z "${GH_TOKEN:-}" ]]; then
 	summary "### No sync pull request was opened"
 	summary ""
 	summary "The probe found an upstream release worth probing and its matrix is complete, but the"
-	summary "repository secret \`UPSTREAM_SYNC_TOKEN\` is not set, so nothing was pushed."
+	summary "repository secrets \`UPSTREAM_SYNC_TOKEN\` and \`TOKEN_GITHUB\` are both unset, so nothing was pushed."
 	summary ""
 	summary "Grant it as a fine-grained personal access token limited to this repository with"
 	summary "**Contents: read and write** and **Pull requests: read and write**, or as a GitHub App"

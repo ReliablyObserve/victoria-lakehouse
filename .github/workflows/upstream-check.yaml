@@ -9,8 +9,10 @@
 # body of one pull request per version pair, opened on a branch that already
 # carries the pin bump.
 #
-# Authentication: the pull request is created with UPSTREAM_SYNC_TOKEN, never
-# with GITHUB_TOKEN. This repository deliberately keeps "Allow GitHub Actions to
+# Authentication: the pull request is created with UPSTREAM_SYNC_TOKEN when that
+# secret is set, otherwise with TOKEN_GITHUB (the repository token the release
+# workflow already uses to open its release-metadata pull requests), never with
+# GITHUB_TOKEN. This repository deliberately keeps "Allow GitHub Actions to
 # create and approve pull requests" OFF, so GITHUB_TOKEN cannot open one — and
 # should not: a token that can open pull requests is a token every workflow run
 # in a public repository carries. UPSTREAM_SYNC_TOKEN is a fine-grained personal
@@ -49,7 +51,7 @@ on:
         type: boolean
 
 # Read-only for the automatic token: every write below is done by the
-# fine-grained UPSTREAM_SYNC_TOKEN instead.
+# sync token (UPSTREAM_SYNC_TOKEN, falling back to TOKEN_GITHUB) instead.
 permissions:
   contents: read
 
@@ -136,7 +138,7 @@ jobs:
       - name: Open or update the sync pull request
         if: steps.probe.outputs.open_pr == 'true'
         env:
-          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || secrets.TOKEN_GITHUB }}
           GH_REPO: ${{ github.repository }}
           BRANCH: ${{ steps.probe.outputs.branch }}
           VL: ${{ steps.probe.outputs.vl_candidate }}
