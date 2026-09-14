@@ -33,21 +33,36 @@ For data on any S3 class, the default deletion mode is **tombstone-based soft de
 3. Instead of rewriting files, a **tombstone record** is written to the manifest:
    ```json
    {
-     "type": "tombstone",
-     "query": "service.name:=\"leaked-credentials\"",
-     "time_range": {"start": "2025-01-01T00:00:00Z", "end": "2025-06-01T00:00:00Z"},
-     "affected_files": ["logs/dt=2025-03-15/hour=14/00001.parquet", ...],
-     "created_at": "2026-05-05T10:00:00Z",
-     "created_by": "admin@company.com"
+     "ID": "3f1c0f6e-2a5c-4f0a-9a1e-7b2d9c8e4a11",
+     "Query": "service.name:=\"leaked-credentials\"",
+     "StartNs": 1735689600000000000,
+     "EndNs": 1748736000000000000,
+     "AffectedKeys": ["logs/dt=2025-03-15/hour=14/00001.parquet"],
+     "CreatedAt": "2026-05-05T10:00:00Z",
+     "Mode": "auto"
    }
    ```
-4. On every read query, tombstones are evaluated as post-filters — matching rows are suppressed from results
+   That is the record verbatim: it is what `{prefix}_tombstones/{id}.json` holds
+   and what a restore reads back (progress fields — `Reaped`, `Clean`,
+   `Superseded` — are added as the rewrite advances).
+4. On every read query, tombstones are evaluated as post-filters — matching rows are suppressed from results, and from the `field_values` / `streams` / `stream_ids` enumerations that feed field pickers (see [Operations → Where tombstones are applied](operations.md#where-tombstones-are-applied))
 5. **Cost: $0** — no S3 reads, no rewrites, no retrieval fees
 
 **Tombstones are stored in:**
-- In-memory manifest (instant filter application)
-- Persisted to disk (survives restarts)
-- Synced to S3 as `_tombstones/{id}.json` (survives pod loss)
+- In-memory (instant filter application)
+- Written through to disk on every change (survives `kill -9`, not just a graceful shutdown)
+- Written through to S3 as `{prefix}_tombstones/{id}.json` in the same call, retried on failure (survives pod loss)
+
+Startup restores the union of the disk and S3 copies. The full guarantee, the
+conflict-resolution rule and the boot-time self-check are documented in
+[Operations → Tombstone Management](operations.md#tombstone-management) and
+[Durability §3.1](durability.md#31-deletes-and-rewrites).
+
+**The un-delete window is honoured everywhere.** A `hide` tombstone's rows are
+never physically removed, and a `permanent`/`auto` tombstone's rows are removed
+only after `rewrite_delay` — by the rewriter, and equally by compaction, which
+otherwise carries the rows forward into its merged output and hands the
+tombstone over to that output.
 
 ### Tier 2: Rewrite (S3 Standard Only)
 
@@ -88,25 +103,31 @@ The delete API uses a mode-specific prefix: `/delete/logsql/*` for logs mode, `/
 ```
 POST /delete/{logsql|tracessql}/delete
   ?query=<LogsQL filter>
-  &start=<timestamp>
-  &end=<timestamp>
-  &mode=tombstone|rewrite|auto   (default: auto)
+  &start=<unix nanoseconds>
+  &end=<unix nanoseconds>
+  &mode=hide|permanent|auto   (default: the configured delete.default_mode, "auto")
 ```
+
+`start` and `end` are UNIX timestamps in **nanoseconds** — the same unit the
+manifest and the Parquet files store — and are parsed as integers: a request
+carrying `start=2025-01-01` is rejected with `400 invalid start parameter`.
+Produce them from a date with `date -u -d '2025-01-01' +%s`000000000 (GNU date)
+or `date -ujf '%Y-%m-%d' 2025-01-01 +%s`000000000 (BSD/macOS date).
 
 **Examples:**
 
 ```bash
-# Delete logs matching a query
-curl -X POST 'http://lakehouse:9428/delete/logsql/delete?query=service.name:="leaked-creds"&start=2025-01-01&end=2025-06-01'
+# Delete logs matching a query (2025-01-01 .. 2025-06-01)
+curl -X POST 'http://lakehouse:9428/delete/logsql/delete?query=service.name:="leaked-creds"&start=1735689600000000000&end=1748736000000000000'
 
 # Delete traces matching a query
-curl -X POST 'http://lakehouse:10428/delete/tracessql/delete?query=trace_id:="abc123"&start=2025-01-01&end=2025-06-01'
+curl -X POST 'http://lakehouse:10428/delete/tracessql/delete?query=trace_id:="abc123"&start=1735689600000000000&end=1748736000000000000'
 ```
 
 **Mode behavior:**
-- `tombstone`: always soft-delete only (cheapest, instant)
-- `rewrite`: force physical deletion (warns if touching Glacier, requires confirmation header)
-- `auto` (default): tombstone immediately, schedule rewrite for S3 Standard files only
+- `hide`: always soft-delete only (cheapest, instant; rows stay in the objects and come back if the tombstone is removed)
+- `permanent`: physical deletion — the affected files are rewritten without the matching rows once the un-delete window has passed
+- `auto` (default): hide immediately, then rewrite the S3 Standard files only (files on IA/Glacier stay suppressed until lifecycle expiry)
 
 ### Cost Estimation Endpoint
 
@@ -115,8 +136,8 @@ Before executing a delete, users can estimate the cost:
 ```
 POST /delete/{logsql|tracessql}/estimate
   ?query=<LogsQL filter>
-  &start=<timestamp>
-  &end=<timestamp>
+  &start=<unix nanoseconds>
+  &end=<unix nanoseconds>
 
 Response:
 {
@@ -146,13 +167,29 @@ GET /delete/{logsql|tracessql}/tombstone/{id}/status
   # Shows rewrite progress for this tombstone
 ```
 
+### Leftovers Endpoint
+
+```
+GET /delete/{logsql|tracessql}/leftovers
+  ?limit=<max entries per list>   (default 1000, maximum 10000)
+```
+
+Read-only listing of what this instance is still holding on to: keys the
+manifest retired while their objects await deletion (`delete_owed` marks the
+ones this process owes), uploads claimed but not published (`held` marks a
+replacement whose swap is not durable yet), and the durable records of
+unfinished rewrites with their state. It is instance-wide, not tenant-scoped
+(`"scope": "instance"`), like the tombstone listing. The alerts on retired-key
+eviction, on non-durable records and on unfinished rewrites all point at it; see
+[Operations → What this instance still owes](operations.md#what-this-instance-still-owes-prefixleftovers).
+
 ### Verify Endpoint
 
 ```
 POST /delete/{logsql|tracessql}/verify
   ?query=<LogsQL filter>
-  &start=<timestamp>
-  &end=<timestamp>
+  &start=<unix nanoseconds>
+  &end=<unix nanoseconds>
 ```
 
 Confirms that deleted data is no longer visible through queries. Returns verification status and affected file count.
@@ -194,7 +231,7 @@ lakehouse:
     rewrite_delay: 1h                             # Wait before rewriting (batch tombstones)
     rewrite_batch_size: 50                        # Max files per rewrite job
     glacier_force_header: "X-Force-Glacier-Delete" # Required header for forced Glacier rewrite
-    tombstone_persist_path: /data/lakehouse/tombstones
+    persist_path: /data/lakehouse/tombstones      # Durable volume — holds the local tombstone copy
     cost_warning_threshold: "$10"                 # Warn user if estimated cost exceeds this
 ```
 
@@ -276,11 +313,23 @@ Each operates independently on its respective Parquet files. Both share the same
 ### Tombstone Storage Format
 
 ```
-s3://{bucket}/{tenant}/_tombstones/
-  2026-05-05T10-00-00Z_abc123.json   # One file per tombstone
+s3://{bucket}/{prefix}_tombstones/
+  {id}.json   # One object per tombstone
 ```
 
-Tombstones are small JSON files (<1KB) stored alongside data. They're loaded into memory on startup and synced via manifest broadcasts.
+`{prefix}` is the deployment's S3 prefix: `s3.prefix` if set, otherwise the
+default tenant prefix followed by the signal (`logs/` or `traces/`). Tombstones
+are **not** stored per tenant — in multi-tenant mode every tenant's tombstones
+share that one prefix (typically `logs/_tombstones/`), not the
+`{AccountID}/{ProjectID}/<signal>/` prefix its data lives under. The
+`_tombstones/` segment is on the orphan sweep's never-delete list, so the sweep
+cannot reclaim a live tombstone record.
+
+Tombstones are small JSON objects (<1 KB). Each one is written on creation and
+rewritten whenever its rewrite progress changes — including the per-file rewrite
+record (`Superseded`) written before a replacement is uploaded and cleared once
+the superseded object is deleted; the object is deleted when the tombstone is
+un-deleted or retired. They are loaded into memory at startup.
 
 ### Rewrite Job Scheduling
 

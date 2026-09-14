@@ -13,7 +13,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Query | 13 | 1 | 0 | 1 | 15 |
 | Cache | 12 | 0 | 0 | 0 | 12 |
 | Compaction | 6 | 0 | 0 | 1 | 7 |
-| Deletion | 8 | 0 | 0 | 0 | 8 |
+| Deletion | 9 | 0 | 0 | 0 | 9 |
 | Traces | 8 | 0 | 0 | 3 | 11 |
 | Tenancy | 18 | 0 | 0 | 1 | 19 |
 | UI | 7 | 0 | 0 | 0 | 7 |
@@ -21,7 +21,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Ops | 13 | 0 | 0 | 0 | 13 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **127** | **1** | **3** | **8** | **139** |
+| **Total** | **128** | **1** | **3** | **8** | **140** |
 
 ## Coverage gaps
 
@@ -807,7 +807,7 @@ Aged data is scanned in bulk and pruned coarsely, so larger row groups are stric
 - Docs: `docs/configuration.md`, `docs/performance.md`
 - Changelog: `0.85.0`
 
-## Deletion (8)
+## Deletion (9)
 
 ### ✅ Glacier-safe, GDPR-compatible deletion
 
@@ -842,6 +842,18 @@ A delete over cold storage can be free or expensive depending on where the match
 - Verification: rows: `lh.delete.logsql.estimate.status` (pass, pending) · tests: `internal/delete/handler_test.go#TestHandler_handleEstimate_Valid`, `internal/delete/storageclass_test.go#TestStorageClass_EstimateRewriteCost`, `internal/delete/handler_test.go#TestHandler_handleEstimate_CachedStorageClass`, `tests/e2e/delete_test.go#TestDelete_Estimate`
 - Docs: `docs/deletion-strategy.md`
 
+### ✅ Leftovers API — what an instance still owes
+
+`lh.feature.deletion.leftovers_api` · status: shipped · since: v0.132.1 · surfaces: api
+
+**Leftovers API**: `GET /delete/logsql/leftovers` (or `/delete/tracessql/leftovers`) names the retired keys, unpublished uploads and unfinished rewrites an instance is still holding on to.
+
+The alerts on retired-key eviction, non-durable tombstone records and unfinished rewrites all ask an operator to act on specific objects, which until now no API could name. The listing is read-only and instance-wide (not tenant-scoped, like the tombstone listing beside it), bounded by a limit, and reports for each entry why it is still there — the delete that is owed, the upload that is held, or the rewrite state a restart would resolve from.
+
+- Verification: rows: `lh.delete.leftovers.status` (pass, pending) · tests: `internal/delete/handler_leftovers_test.go#TestLeftovers_ListsRetiredPendingAndUnfinishedRewrites`, `internal/delete/handler_leftovers_test.go#TestLeftovers_IsBounded`, `internal/delete/handler_leftovers_test.go#TestLeftovers_RejectsNonGET`, `internal/delete/handler_leftovers_test.go#TestLeftovers_IsRegistered`, `internal/metrics/assets_test.go#TestDeleteMetrics_AreVisibleSomewhere`
+- Docs: `docs/deletion-strategy.md`, `docs/operations.md#what-this-instance-still-owes-prefixleftovers`, `docs/operations.md#rolling-back`
+- Changelog: `0.132.1`
+
 ### ✅ Hide, permanent and auto delete modes
 
 `lh.feature.deletion.modes` · status: shipped · since: v0.18.2 · surfaces: api, flag
@@ -861,8 +873,8 @@ The mode is the operator's statement about intent and budget: `hide` never touch
 
 Deleting from an object store costs money and, on archival classes, retrieval fees. The strategy picks the cheapest tier that satisfies the request: hide it instantly with a tombstone, rewrite the file only where rewriting is cheap, and otherwise let lifecycle expire the data on schedule.
 
-- Verification: tests: `internal/delete/integration_test.go#TestIntegration_ModeHide_NoRewrite`, `internal/delete/rewriter_test.go#TestRewriteFile_MatchingRowsRemoved`, `internal/delete/storageclass_test.go#TestDetector`
-- Docs: `docs/deletion-strategy.md`
+- Verification: rows: `lh.delete.rewrite_keeps_kept_rows` (pass, pending) · tests: `internal/delete/integration_test.go#TestIntegration_ModeHide_NoRewrite`, `internal/delete/rewriter_test.go#TestRewriteFile_MatchingRowsRemoved`, `internal/delete/storageclass_test.go#TestDetector`, `internal/delete/rewrite_manifest_test.go#TestRewrite_PublishesReplacementIntoManifest`, `internal/delete/rewrite_crash_refresh_test.go#TestRewriteCrashMatrix_WithManifestRefresh`, `internal/delete/rewrite_crash_refresh_test.go#TestRewriteRefreshAtEveryStep`, `internal/delete/rewrite_refresh_test.go#TestRewriteRefresh_SupersededObjectWhoseDeleteFailedIsNotReadopted`, `internal/delete/intents_test.go#TestResumeRewrites_RetriesUntilTheDeleteLands`, `internal/delete/rewrite_tenant_key_test.go#TestRewrite_TenantFileStaysWithItsTenantInTheManifest`, `internal/compaction/delete_race_test.go#TestDeleteRace_CompactionPublishesWhileTheRewriteIsInFlight`, `internal/compaction/delete_clean_marking_test.go#TestDeleteRace_EligibilityBoundaryCrossedDuringTheMerge`, `internal/compaction/delete_refresh_test.go#TestDeleteRefresh_MergedSourceWhoseDeleteFailedIsNotReadopted`, `internal/compaction/delete_property_test.go#TestDeleteLifecycleProperties`, `internal/manifest/refresh_retired_test.go#TestRefresh_DoesNotReadoptTheSourceARewriteReplaced`
+- Docs: `docs/deletion-strategy.md`, `docs/operations.md#background-rewriter`, `docs/durability.md#31-deletes-and-rewrites`, `docs/manifest-system.md#what-the-refresh-does-not-adopt`
 
 ### ✅ Tombstones and query-time suppression
 
@@ -872,8 +884,8 @@ Deleting from an object store costs money and, on archival classes, retrieval fe
 
 The tombstone store is consulted on every query path, including the ones that answer from metadata, so a tombstoned row cannot reappear through a fast path. Physical removal, when requested, happens afterwards on its own schedule.
 
-- Verification: tests: `internal/delete/tombstone_test.go#TestTombstoneStore_AddAndActive`, `internal/delete/handler_test.go#TestHandler_handleDelete_Valid`, `tests/e2e/delete_test.go#TestDelete_TombstoneAndQuery`
-- Docs: `docs/deletion-strategy.md`
+- Verification: rows: `lh.delete.hide_survives_crash` (pass, pending) · tests: `internal/delete/tombstone_test.go#TestTombstoneStore_AddAndActive`, `internal/delete/handler_test.go#TestHandler_handleDelete_Valid`, `tests/e2e/delete_test.go#TestDelete_TombstoneAndQuery`, `internal/delete/tombstone_durability_test.go#TestTombstoneDurability_SurvivesACrashViaDisk`, `internal/delete/tombstone_durability_test.go#TestTombstoneDurability_RestoreUnionsDiskAndS3`, `internal/storage/parquets3/fields_tombstones_test.go#TestFieldValues_TombstonedValueDisappears`, `internal/storage/parquets3/fields_tombstones_span_test.go#TestFieldValues_TombstoneInsideAScannedFileButOutsideTheWindow`, `internal/storage/parquets3/pure_buffer_tombstone_test.go#TestRunQuery_PureBufferWindowHonoursTombstones`, `lakehouse-traces/internal/storage/parquets3/fields_tombstones_span_test.go#TestTraceFieldValues_TombstoneInsideAScannedFileButOutsideTheWindow`, `internal/compaction/tombstones_test.go#TestCompaction_HideModeRowsAreCarriedForward`
+- Docs: `docs/deletion-strategy.md`, `docs/operations.md#tombstone-management`, `docs/operations.md#where-tombstones-are-applied`, `docs/durability.md#31-deletes-and-rewrites`
 
 ### ✅ Un-delete by removing a tombstone
 
@@ -883,8 +895,8 @@ The tombstone store is consulted on every query path, including the ones that an
 
 Because a hide-mode delete never touched the data, it is reversible: deleting the tombstone makes the rows visible again immediately, which is what makes tombstone-first the safe default for an accidental over-broad predicate.
 
-- Verification: tests: `internal/delete/integration_test.go#TestIntegration_Undelete`, `internal/delete/handler_test.go#TestHandler_handleTombstoneByID_DeleteExisting`, `internal/delete/tombstone_test.go#TestTombstoneStore_Remove`
-- Docs: `docs/deletion-strategy.md`
+- Verification: tests: `internal/delete/integration_test.go#TestIntegration_Undelete`, `internal/delete/handler_test.go#TestHandler_handleTombstoneByID_DeleteExisting`, `internal/delete/tombstone_test.go#TestTombstoneStore_Remove`, `internal/delete/tombstone_removal_test.go#TestUndelete_SurvivesACrashWhileTheS3DeleteIsPending`, `internal/delete/intents_test.go#TestHandler_UndeleteMidRewriteIsAConflict`
+- Docs: `docs/deletion-strategy.md`, `docs/operations.md#un-delete-restoring-data`
 
 ### ✅ Delete verification
 
@@ -1098,7 +1110,7 @@ Pods broadcast compressed deltas to each other on an interval and checkpoint to 
 
 Fleet-wide dashboards need to see everything, and nothing else should. Global read is off until enabled, requires a credential, and is covered by tests for the correct secret, the wrong secret and the missing header — the three cases that decide whether isolation holds.
 
-- Verification: tests: `internal/config/tenant_test.go`, `tests/e2e/isolation_verify_test.go#TestVerifyIsolation_GlobalRead_SeesAllTenants`, `tests/e2e/multitenancy_test.go#TestMultitenancy_GlobalReadWithCorrectSecret`, `tests/e2e/multitenancy_test.go#TestMultitenancy_GlobalReadWithWrongSecret`, `tests/e2e/multitenancy_test.go#TestMultitenancy_GlobalReadMissingHeader`
+- Verification: tests: `internal/config/tenant_test.go`, `tests/e2e/isolation_verify_test.go#TestVerifyIsolation_GlobalRead_SeesAllTenants`, `tests/e2e/multitenancy_test.go#TestMultitenancy_GlobalReadWithCorrectSecret`, `tests/e2e/multitenancy_test.go#TestMultitenancy_GlobalReadWithWrongSecret`, `tests/e2e/multitenancy_test.go#TestMultitenancy_GlobalReadMissingHeader`, `internal/tenant/global_read_test.go`, `internal/storage/global_read_test.go`, `lakehouse-traces/internal/selectapi/global_read_test.go`
 - Docs: `docs/multi-tenancy.md`, `docs/security.md`
 
 ### ✅ Header-routed multi-tenancy in one process
@@ -1107,10 +1119,10 @@ Fleet-wide dashboards need to see everything, and nothing else should. Global re
 
 **Single binary, all tenants**: one lakehouse-logs/traces process serves all tenants simultaneously via header-based routing (`X-Scope-AccountID` / `X-Scope-ProjectID`, vmauth-compatible). Same pattern as Grafana Loki and Tempo.
 
-Tenancy is resolved from request headers at the edge of every path — insert, query, admin — and carried through to the storage prefix, so there is no per-tenant process to schedule and no per-tenant config to reload. Isolation is asserted by e2e tests that try to read across tenants and must fail.
+Tenancy is resolved from request headers at the edge of every path — insert, query, admin — and carried through to the storage prefix, so there is no per-tenant process to schedule and no per-tenant config to reload. A select request reads exactly one tenant, as upstream VictoriaLogs and VictoriaTraces do: the tenant in its headers, or `0:0` when there are none, on every query class — row scans, metadata fast paths, field and stream enumeration, pmeta catalog answers, the buffer bridge and the Jaeger API. Isolation is asserted by an invariant matrix over query class × request shape × tenant layout and by e2e tests that count each tenant's rows exactly and try to read across tenants.
 
-- Verification: rows: `lh.tenants.list.schema` (pass, pending) · tests: `internal/tenant/middleware_test.go`, `internal/tenant/resolver_test.go`, `tests/e2e/tenant_mapping_test.go#TestTenantMapping_StringAndIntPaths`, `tests/e2e/isolation_verify_test.go#TestVerifyIsolation_OrgID_NoCrossTenantLeak`, `tests/e2e/endpoints_verification_test.go#TestEndpoint_MultiTenant_DataIsolation`
-- Docs: `docs/multi-tenancy.md`, `docs/configuration.md`
+- Verification: rows: `lh.tenants.list.schema` (pass, pending) · tests: `internal/tenant/middleware_test.go`, `internal/tenant/resolver_test.go`, `tests/e2e/tenant_mapping_test.go#TestTenantMapping_StringAndIntPaths`, `tests/e2e/isolation_verify_test.go#TestVerifyIsolation_OrgID_NoCrossTenantLeak`, `tests/e2e/endpoints_verification_test.go#TestEndpoint_MultiTenant_DataIsolation`, `internal/storage/parquets3/tenant_scope_test.go`, `internal/storage/parquets3/tenant_scope_labelindex_test.go`, `lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go`, `lakehouse-traces/internal/storage/parquets3/tenant_scope_labelindex_test.go`, `lakehouse-traces/internal/storage/parquets3/tenant_scope_traces_test.go`, `internal/selectapi/tenant_scope_test.go`, `internal/buffer/handler_tenant_test.go`, `internal/manifest/tenant_scope_test.go`, `tests/e2e/multitenancy_test.go#TestMultitenancy_TenantScope_Logs_ExactCounts`, `tests/e2e/multitenancy_test.go#TestMultitenancy_TenantScope_Traces_ExactCounts`, `tests/parity/tenant_isolation_parity_test.go#TestTenantIsolation_Traces_PerTenantParity`
+- Docs: `docs/multi-tenancy.md`, `docs/multi-tenancy.md#read-scoping-which-data-a-request-sees`, `docs/configuration.md`
 
 ### ✅ Per-tenant ingest rate limits
 
@@ -1142,7 +1154,7 @@ Storage-class policy is a cost decision each tenant may make differently. Both t
 
 Some tenants need their data in their own bucket for billing or IAM reasons, and they should not force every tenant into that shape. A per-tenant override is a policy entry, not a deployment: clients are pooled per bucket and the manifest keeps resolving across all of them.
 
-- Verification: tests: `internal/tenant/bucket_entries_test.go`, `internal/s3reader/pool_registry_test.go`, `internal/storage/parquets3/bucket_routing_test.go`, `internal/tenant/effective_test.go`
+- Verification: tests: `internal/tenant/bucket_entries_test.go`, `internal/s3reader/pool_registry_test.go`, `internal/storage/parquets3/bucket_routing_test.go`, `internal/tenant/effective_test.go`, `internal/manifest/tenant_buckets_refresh_test.go`, `internal/manifest/tenant_range_walk_test.go`, `tests/e2e/multitenancy_test.go#TestMultitenancy_TenantScope_BucketLayout`
 - Docs: `docs/multi-tenancy.md`, `docs/configuration.md`
 
 ### ✅ Tenant-isolated partition metadata
@@ -1444,7 +1456,7 @@ The conformance registry answers "did we miss something upstream has"; the featu
 
 ### ✅ Hot-vs-cold parity suite and known-failure ratchet
 
-`lh.feature.ops.hot_cold_parity_suite` · status: shipped · since: v0.122.0 · surfaces: cli
+`lh.feature.ops.hot_cold_parity_suite` · status: shipped · since: the release after v0.142.0 · surfaces: cli
 
 **Hot-vs-cold parity suite**: the same queries against hot VictoriaLogs/VictoriaTraces and the Lakehouse cold tier on one seed — comparisons that refuse to pass against an empty reference, exact per-tenant read-scope checks, and a known-failure ratchet that fails CI on any new divergence, crash or timeout, and on every allowlisted failure that starts passing.
 
@@ -1452,7 +1464,7 @@ Parity is only a result if a comparison can fail. Every set, row, bucket, struct
 
 - Verification: tests: `scripts/ci/tests/test_parity_ratchet.py`, `tests/parity/harness_test.go#TestHarness_JudgeCounts`, `tests/parity/harness_test.go#TestHarness_ReadComparableCount`, `tests/parity/logs_filters_test.go#TestParity_Filters`, `tests/parity/logs_timerange_test.go#TestParity_TimeRange`, `tests/parity/traces_parity_test.go#TestParity_Traces_LogsQL`, `tests/parity/tenant_isolation_parity_test.go#TestTenantIsolation_Logs_PerTenantCounts`, `tests/parity/tenant_isolation_parity_test.go#TestTenantIsolation_Traces_PerTenantParity`, `tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty`, `tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant`
 - Docs: `docs/parity-and-gaps.md#known-divergences-under-investigation`, `docs/parity-and-gaps.md#running-the-parity-suite`, `docs/parity-and-gaps.md#the-known-failure-ratchet`
-- Changelog: `0.122.0`
+- Changelog: the release after `0.142.0`
 - Note: The parity tests run in the Parity Tests workflow (`.github/workflows/parity.yaml`) against its own compose stack, not in the unit-test jobs; that workflow runs the ratchet's unit tests before it builds the stack. The `TestHarness_*` checks issue no requests and also run without the stack. Some linked tests currently record known cold-tier divergences (B1–B7 in `docs/parity-and-gaps.md`) and are listed in `tests/parity/known_failures.txt` instead of passing — among them the Lakehouse subtests of both tenant-isolation tests (B6).
 
 ### ✅ Lifecycle HTTP endpoints

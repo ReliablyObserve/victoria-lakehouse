@@ -78,8 +78,8 @@ func TestFlushLogTenantGroup_ShuffledRows_ManifestHoldsTrueBounds(t *testing.T) 
 	// Trap 2: bufferWatermark is max(MaxTimeNs) of the scanned files — with
 	// positional bounds it would sit at the LAST row's timestamp (+40s),
 	// re-opening the 2× buffer↔Parquet double-count for rows in (+40s, +90s].
-	tenants := []logstorage.TenantID{{AccountID: 0, ProjectID: 0}}
-	if wm := bufferWatermark(files, tenants); wm != wantMax {
+	tenant := logstorage.TenantID{AccountID: 0, ProjectID: 0}
+	if wm := (&Storage{manifest: m}).bufferWatermarksFor(files)[tenant]; wm != wantMax {
 		t.Errorf("bufferWatermark = %d, want true max %d (positional bounds would give %d)",
 			wm, wantMax, last)
 	}

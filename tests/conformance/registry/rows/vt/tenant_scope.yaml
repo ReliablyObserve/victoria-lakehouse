@@ -1,0 +1,259 @@
+# Tenant read scoping on the VT Jaeger surface, for both tenant layouts.
+# Same rule and layouts as rows/vl/tenant_scope.yaml; the Jaeger handlers
+# derive the tenant from the request exactly like the LogsQL endpoints.
+
+- id: vt.jaeger.services.tenant_scope.default.prefix
+  title: "/select/jaeger/api/services — no tenant headers → the default tenant 0:0 only (prefix layout)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/jaeger/api/services }
+  request: { method: GET, path: /select/jaeger/api/services }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "Without AccountID/ProjectID headers VL scopes the read to tenant 0:0; the cold tier must answer with tenant 0:0's data only (plus legacy untenanted objects, which belong to 0:0). Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vt.jaeger.services.tenant_scope.default.bucket
+  title: "/select/jaeger/api/services — no tenant headers → the default tenant 0:0 only (bucket layout)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/jaeger/api/services }
+  request: { method: GET, path: /select/jaeger/api/services }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "Without AccountID/ProjectID headers VL scopes the read to tenant 0:0; the cold tier must answer with tenant 0:0's data only (plus legacy untenanted objects, which belong to 0:0). Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vt.jaeger.services.tenant_scope.scoped.prefix
+  title: "/select/jaeger/api/services — tenant headers → exactly that tenant (prefix layout)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/jaeger/api/services }
+  request: { method: GET, path: /select/jaeger/api/services, headers: { AccountID: "{{tenant.account}}", ProjectID: "{{tenant.project}}" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vt.jaeger.services.tenant_scope.scoped.bucket
+  title: "/select/jaeger/api/services — tenant headers → exactly that tenant (bucket layout)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/jaeger/api/services }
+  request: { method: GET, path: /select/jaeger/api/services, headers: { AccountID: "{{tenant.account}}", ProjectID: "{{tenant.project}}" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vt.jaeger.services.tenant_scope.unknown.prefix
+  title: "/select/jaeger/api/services — unknown tenant → empty, never a fall-through to other tenants (prefix layout)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/jaeger/api/services }
+  request: { method: GET, path: /select/jaeger/api/services, headers: { AccountID: "99999", ProjectID: "99999" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vt.jaeger.services.tenant_scope.unknown.bucket
+  title: "/select/jaeger/api/services — unknown tenant → empty, never a fall-through to other tenants (bucket layout)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/jaeger/api/services }
+  request: { method: GET, path: /select/jaeger/api/services, headers: { AccountID: "99999", ProjectID: "99999" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vt.jaeger.services.tenant_scope.global.prefix
+  title: "/select/jaeger/api/services — valid global-read credential → every tenant (prefix layout)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/jaeger/api/services }
+  request: { method: GET, path: /select/jaeger/api/services, headers: { X-Lakehouse-Global-Read: "{{tenant.global_read}}" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "Only a request presenting the configured global-read header or bearer token is widened to all tenants; a wrong value keeps the default-tenant scope. Cold-only: hot VL has no global-read credential. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vt.jaeger.services.tenant_scope.global.bucket
+  title: "/select/jaeger/api/services — valid global-read credential → every tenant (bucket layout)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/jaeger/api/services }
+  request: { method: GET, path: /select/jaeger/api/services, headers: { X-Lakehouse-Global-Read: "{{tenant.global_read}}" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "Only a request presenting the configured global-read header or bearer token is widened to all tenants; a wrong value keeps the default-tenant scope. Cold-only: hot VL has no global-read credential. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vt.jaeger.traces_search.tenant_scope.default.prefix
+  title: "/select/jaeger/api/traces — no tenant headers → the default tenant 0:0 only (prefix layout)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/jaeger/api/traces }
+  request: { method: GET, path: /select/jaeger/api/traces, params: { service: "checkout", start: "{{seed.start_us}}", end: "{{seed.cold_end_us}}", limit: "100" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "Without AccountID/ProjectID headers VL scopes the read to tenant 0:0; the cold tier must answer with tenant 0:0's data only (plus legacy untenanted objects, which belong to 0:0). Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vt.jaeger.traces_search.tenant_scope.default.bucket
+  title: "/select/jaeger/api/traces — no tenant headers → the default tenant 0:0 only (bucket layout)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/jaeger/api/traces }
+  request: { method: GET, path: /select/jaeger/api/traces, params: { service: "checkout", start: "{{seed.start_us}}", end: "{{seed.cold_end_us}}", limit: "100" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "Without AccountID/ProjectID headers VL scopes the read to tenant 0:0; the cold tier must answer with tenant 0:0's data only (plus legacy untenanted objects, which belong to 0:0). Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vt.jaeger.traces_search.tenant_scope.scoped.prefix
+  title: "/select/jaeger/api/traces — tenant headers → exactly that tenant (prefix layout)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/jaeger/api/traces }
+  request: { method: GET, path: /select/jaeger/api/traces, params: { service: "checkout", start: "{{seed.start_us}}", end: "{{seed.cold_end_us}}", limit: "100" }, headers: { AccountID: "{{tenant.account}}", ProjectID: "{{tenant.project}}" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vt.jaeger.traces_search.tenant_scope.scoped.bucket
+  title: "/select/jaeger/api/traces — tenant headers → exactly that tenant (bucket layout)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/jaeger/api/traces }
+  request: { method: GET, path: /select/jaeger/api/traces, params: { service: "checkout", start: "{{seed.start_us}}", end: "{{seed.cold_end_us}}", limit: "100" }, headers: { AccountID: "{{tenant.account}}", ProjectID: "{{tenant.project}}" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vt.jaeger.traces_search.tenant_scope.unknown.prefix
+  title: "/select/jaeger/api/traces — unknown tenant → empty, never a fall-through to other tenants (prefix layout)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/jaeger/api/traces }
+  request: { method: GET, path: /select/jaeger/api/traces, params: { service: "checkout", start: "{{seed.start_us}}", end: "{{seed.cold_end_us}}", limit: "100" }, headers: { AccountID: "99999", ProjectID: "99999" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vt.jaeger.traces_search.tenant_scope.unknown.bucket
+  title: "/select/jaeger/api/traces — unknown tenant → empty, never a fall-through to other tenants (bucket layout)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/jaeger/api/traces }
+  request: { method: GET, path: /select/jaeger/api/traces, params: { service: "checkout", start: "{{seed.start_us}}", end: "{{seed.cold_end_us}}", limit: "100" }, headers: { AccountID: "99999", ProjectID: "99999" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vt.jaeger.traces_search.tenant_scope.global.prefix
+  title: "/select/jaeger/api/traces — valid global-read credential → every tenant (prefix layout)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/jaeger/api/traces }
+  request: { method: GET, path: /select/jaeger/api/traces, params: { service: "checkout", start: "{{seed.start_us}}", end: "{{seed.cold_end_us}}", limit: "100" }, headers: { X-Lakehouse-Global-Read: "{{tenant.global_read}}" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "Only a request presenting the configured global-read header or bearer token is widened to all tenants; a wrong value keeps the default-tenant scope. Cold-only: hot VL has no global-read credential. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vt.jaeger.traces_search.tenant_scope.global.bucket
+  title: "/select/jaeger/api/traces — valid global-read credential → every tenant (bucket layout)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/jaeger/api/traces }
+  request: { method: GET, path: /select/jaeger/api/traces, params: { service: "checkout", start: "{{seed.start_us}}", end: "{{seed.cold_end_us}}", limit: "100" }, headers: { X-Lakehouse-Global-Read: "{{tenant.global_read}}" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "Only a request presenting the configured global-read header or bearer token is widened to all tenants; a wrong value keeps the default-tenant scope. Cold-only: hot VL has no global-read credential. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."

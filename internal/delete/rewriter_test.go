@@ -3,6 +3,8 @@ package delete
 import (
 	"bytes"
 	"context"
+	"sort"
+	"sync"
 	"testing"
 
 	"github.com/parquet-go/parquet-go"
@@ -11,7 +13,14 @@ import (
 )
 
 // mockRewriterPool is an in-memory mock implementing RewriterPool.
+//
+// Every accessor takes the mutex: the concurrency tests run a rewrite against a
+// query, a compaction and a second rewrite of the same file under -race, and an
+// unguarded map would report the fixture's own data race rather than the one
+// under test. Tests reach the contents through Has/Get/Put/Count rather than
+// the bare map for the same reason.
 type mockRewriterPool struct {
+	mu      sync.Mutex
 	objects map[string][]byte
 }
 
@@ -19,13 +28,54 @@ func newMockRewriterPool() *mockRewriterPool {
 	return &mockRewriterPool{objects: make(map[string][]byte)}
 }
 
-func (m *mockRewriterPool) Upload(_ context.Context, key string, data []byte) error {
+// Put stores an object directly, bypassing the RewriterPool interface — the
+// way a test seeds a bucket.
+func (m *mockRewriterPool) Put(key string, data []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.objects[key] = append([]byte(nil), data...)
+}
+
+// Get returns a stored object and whether it exists.
+func (m *mockRewriterPool) Get(key string) ([]byte, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.objects[key]
+	return d, ok
+}
+
+// Has reports whether a key is present.
+func (m *mockRewriterPool) Has(key string) bool {
+	_, ok := m.Get(key)
+	return ok
+}
+
+// Count returns the number of stored objects.
+func (m *mockRewriterPool) Count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.objects)
+}
+
+// Keys satisfies storageinvariants.Bucket.
+func (m *mockRewriterPool) Keys() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	keys := make([]string, 0, len(m.objects))
+	for k := range m.objects {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func (m *mockRewriterPool) Upload(_ context.Context, key string, data []byte) error {
+	m.Put(key, data)
 	return nil
 }
 
 func (m *mockRewriterPool) Download(_ context.Context, key string) ([]byte, error) {
-	data, ok := m.objects[key]
+	data, ok := m.Get(key)
 	if !ok {
 		return nil, context.DeadlineExceeded
 	}
@@ -33,6 +83,8 @@ func (m *mockRewriterPool) Download(_ context.Context, key string) ([]byte, erro
 }
 
 func (m *mockRewriterPool) Delete(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	delete(m.objects, key)
 	return nil
 }
@@ -67,7 +119,7 @@ func TestRewriteFile_MatchingRowsRemoved(t *testing.T) {
 	}
 
 	key := "logs/dt=2026-01-15/hour=10/00001.parquet"
-	pool.objects[key] = buildTestParquet(t, rows)
+	pool.Put(key, buildTestParquet(t, rows))
 
 	rw := NewRewriter(pool, "logs/", 100, "logs")
 
@@ -92,21 +144,40 @@ func TestRewriteFile_MatchingRowsRemoved(t *testing.T) {
 		t.Fatalf("expected 3 rows kept, got %d", result.RowsKept)
 	}
 
-	// Old file should be deleted.
-	if _, ok := pool.objects[key]; ok {
-		t.Fatal("expected old file to be deleted")
+	// PREPARE leaves the superseded object in place: until the manifest points
+	// at the replacement it is the only copy of the kept rows.
+	if !pool.Has(key) {
+		t.Fatal("prepare must not delete the superseded object")
+	}
+	if result.Published {
+		t.Fatal("a prepared-but-unpublished result must not be marked published")
+	}
+	if err := rw.Commit(ctx, result); err == nil {
+		t.Fatal("Commit must refuse an unpublished result")
+	}
+	if !pool.Has(key) {
+		t.Fatal("a refused Commit must not delete anything")
+	}
+
+	// COMMIT, once published, removes it.
+	result.Published = true
+	if err := rw.Commit(ctx, result); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if pool.Has(key) {
+		t.Fatal("expected the superseded object to be deleted after commit")
 	}
 
 	// New file should exist.
 	if result.NewKey == "" {
 		t.Fatal("expected NewKey to be set")
 	}
-	if _, ok := pool.objects[result.NewKey]; !ok {
+	if _, ok := pool.Get(result.NewKey); !ok {
 		t.Fatalf("expected new file at %s", result.NewKey)
 	}
 
 	// Verify new file has correct rows.
-	newData := pool.objects[result.NewKey]
+	newData := mustGet(t, pool, result.NewKey)
 	reader := parquet.NewGenericReader[schema.LogRow](bytes.NewReader(newData))
 	defer func() { _ = reader.Close() }()
 
@@ -145,7 +216,7 @@ func TestRewriteFile_NoMatchingRows(t *testing.T) {
 
 	key := "logs/dt=2026-01-15/hour=10/00002.parquet"
 	originalData := buildTestParquet(t, rows)
-	pool.objects[key] = originalData
+	pool.Put(key, originalData)
 
 	rw := NewRewriter(pool, "logs/", 100, "logs")
 
@@ -171,7 +242,7 @@ func TestRewriteFile_NoMatchingRows(t *testing.T) {
 	}
 
 	// Old file should NOT be deleted.
-	if _, ok := pool.objects[key]; !ok {
+	if _, ok := pool.Get(key); !ok {
 		t.Fatal("expected old file to remain untouched")
 	}
 
@@ -197,7 +268,7 @@ func TestRewriteFile_AllRowsMatching(t *testing.T) {
 	}
 
 	key := "logs/dt=2026-02-01/hour=05/00003.parquet"
-	pool.objects[key] = buildTestParquet(t, rows)
+	pool.Put(key, buildTestParquet(t, rows))
 
 	rw := NewRewriter(pool, "logs/", 100, "logs")
 
@@ -223,8 +294,15 @@ func TestRewriteFile_AllRowsMatching(t *testing.T) {
 	}
 
 	// Old file should be deleted.
-	if _, ok := pool.objects[key]; ok {
-		t.Fatal("expected old file to be deleted")
+	if !pool.Has(key) {
+		t.Fatal("prepare must not delete the superseded object")
+	}
+	result.Published = true
+	if err := rw.Commit(ctx, result); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if pool.Has(key) {
+		t.Fatal("expected the superseded object to be deleted after commit")
 	}
 
 	// No new file should be created (all rows removed).
@@ -233,8 +311,8 @@ func TestRewriteFile_AllRowsMatching(t *testing.T) {
 	}
 
 	// No new files in pool (only the old key was there).
-	if len(pool.objects) != 0 {
-		t.Fatalf("expected empty pool, got %d objects", len(pool.objects))
+	if pool.Count() != 0 {
+		t.Fatalf("expected empty pool, got %d objects", pool.Count())
 	}
 
 	if result.BytesAfter != 0 {
@@ -254,7 +332,7 @@ func TestRewriteFile_MultipleTombstones(t *testing.T) {
 	}
 
 	key := "logs/dt=2026-03-10/hour=12/00004.parquet"
-	pool.objects[key] = buildTestParquet(t, rows)
+	pool.Put(key, buildTestParquet(t, rows))
 
 	rw := NewRewriter(pool, "logs/", 100, "logs")
 
@@ -299,7 +377,7 @@ func TestRewriteFile_TimeRangeFiltering(t *testing.T) {
 	}
 
 	key := "logs/dt=2026-04-01/hour=08/00005.parquet"
-	pool.objects[key] = buildTestParquet(t, rows)
+	pool.Put(key, buildTestParquet(t, rows))
 
 	rw := NewRewriter(pool, "logs/", 100, "logs")
 
@@ -457,7 +535,7 @@ func TestRewriteFile_WildcardTombstone(t *testing.T) {
 	}
 
 	key := "logs/dt=2026-01-01/hour=00/00006.parquet"
-	pool.objects[key] = buildTestParquet(t, rows)
+	pool.Put(key, buildTestParquet(t, rows))
 
 	rw := NewRewriter(pool, "logs/", 100, "logs")
 
@@ -477,8 +555,15 @@ func TestRewriteFile_WildcardTombstone(t *testing.T) {
 	if result.RowsKept != 0 {
 		t.Fatalf("expected 0 rows kept, got %d", result.RowsKept)
 	}
-	if len(pool.objects) != 0 {
-		t.Fatalf("expected pool to be empty, got %d objects", len(pool.objects))
+	if pool.Count() != 1 {
+		t.Fatalf("prepare must leave the superseded object in place, got %d objects", pool.Count())
+	}
+	result.Published = true
+	if err := rw.Commit(ctx, result); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if pool.Count() != 0 {
+		t.Fatalf("expected pool to be empty after commit, got %d objects", pool.Count())
 	}
 }
 
@@ -551,7 +636,7 @@ func TestRewriteFile_Traces_MatchingRowsRemoved(t *testing.T) {
 	}
 
 	key := "traces/dt=2026-05-02/hour=10/batch-01.parquet"
-	pool.objects[key] = buildTestTraceParquet(t, rows)
+	pool.Put(key, buildTestTraceParquet(t, rows))
 
 	rw := NewRewriter(pool, "traces/", 1000, "traces")
 
@@ -571,7 +656,7 @@ func TestRewriteFile_Traces_MatchingRowsRemoved(t *testing.T) {
 		t.Fatalf("expected 3 rows kept, got %d", result.RowsKept)
 	}
 
-	newData := pool.objects[result.NewKey]
+	newData := mustGet(t, pool, result.NewKey)
 	reader := parquet.NewGenericReader[schema.TraceRow](bytes.NewReader(newData))
 	defer func() { _ = reader.Close() }()
 
@@ -598,7 +683,7 @@ func TestRewriteFile_Traces_AllRowsRemoved(t *testing.T) {
 	}
 
 	key := "traces/dt=2026-05-02/hour=10/batch-02.parquet"
-	pool.objects[key] = buildTestTraceParquet(t, rows)
+	pool.Put(key, buildTestTraceParquet(t, rows))
 
 	rw := NewRewriter(pool, "traces/", 1000, "traces")
 	tombstones := []Tombstone{
@@ -616,8 +701,15 @@ func TestRewriteFile_Traces_AllRowsRemoved(t *testing.T) {
 	if result.RowsKept != 0 {
 		t.Fatalf("expected 0 rows kept, got %d", result.RowsKept)
 	}
-	if len(pool.objects) != 0 {
-		t.Fatalf("expected pool empty after all rows removed, got %d", len(pool.objects))
+	if pool.Count() != 1 {
+		t.Fatalf("prepare must leave the superseded object in place, got %d", pool.Count())
+	}
+	result.Published = true
+	if err := rw.Commit(ctx, result); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if pool.Count() != 0 {
+		t.Fatalf("expected pool empty after commit, got %d", pool.Count())
 	}
 }
 
@@ -630,7 +722,7 @@ func TestRewriteFile_Traces_NoMatch(t *testing.T) {
 	}
 
 	key := "traces/dt=2026-05-02/hour=10/batch-03.parquet"
-	pool.objects[key] = buildTestTraceParquet(t, rows)
+	pool.Put(key, buildTestTraceParquet(t, rows))
 
 	rw := NewRewriter(pool, "traces/", 1000, "traces")
 	tombstones := []Tombstone{
@@ -645,7 +737,7 @@ func TestRewriteFile_Traces_NoMatch(t *testing.T) {
 	if result.RowsRemoved != 0 {
 		t.Fatalf("expected 0 rows removed, got %d", result.RowsRemoved)
 	}
-	if _, ok := pool.objects[key]; !ok {
+	if _, ok := pool.Get(key); !ok {
 		t.Fatal("original file should remain untouched")
 	}
 }
@@ -661,7 +753,7 @@ func TestRewriteFile_Traces_ByTraceID(t *testing.T) {
 	}
 
 	key := "traces/dt=2026-05-02/hour=10/batch-04.parquet"
-	pool.objects[key] = buildTestTraceParquet(t, rows)
+	pool.Put(key, buildTestTraceParquet(t, rows))
 
 	rw := NewRewriter(pool, "traces/", 1000, "traces")
 	tombstones := []Tombstone{
@@ -692,7 +784,7 @@ func TestRewriteFile_Traces_BySpanName(t *testing.T) {
 	}
 
 	key := "traces/dt=2026-05-02/hour=10/batch-05.parquet"
-	pool.objects[key] = buildTestTraceParquet(t, rows)
+	pool.Put(key, buildTestTraceParquet(t, rows))
 
 	rw := NewRewriter(pool, "traces/", 1000, "traces")
 	tombstones := []Tombstone{

@@ -22,7 +22,15 @@ type Inventory struct {
 	// VLCommitTraces is the VL_COMMIT_TRACES pin (the traces module's own,
 	// separate VictoriaLogs vendor commit); see Dirs.VLCommitTraces.
 	VLCommitTraces string `yaml:"vl_commit_traces,omitempty"`
-	Items          []Item `yaml:"items"`
+	// Protocol records the /internal/select/* and /internal/delete/* peer
+	// protocol versions each module expects, read from that module's own
+	// vendored VictoriaLogs tree. They are what the registry's
+	// {{proto.internal_select}} / {{proto.internal_delete}} placeholders
+	// resolve to, and they are NOT in lockstep across the two pins — so a
+	// bump that moves either one shows up here as a diff instead of as a
+	// runtime "unexpected protocol version" rejection between peers.
+	Protocol Protocols `yaml:"protocol,omitempty"`
+	Items    []Item    `yaml:"items"`
 }
 
 // Key returns "<surface>:<kind>:<name>", the identity used to join with

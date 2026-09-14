@@ -606,13 +606,21 @@ func TestSetting_Parquet_RowGroupSize_MetricsReflect(t *testing.T) {
 }
 
 func TestSetting_Parquet_BloomChecks_AfterQuery(t *testing.T) {
-	queryLogs(t, `trace_id:="parquet-bloom-check-test"`, 1)
+	if rows := queryLogs(t, `trace_id:="parquet-bloom-check-test"`, 1); len(rows) != 0 {
+		t.Fatalf("absent trace_id returned %d rows", len(rows))
+	}
 
 	metrics := scrapeMetrics(t, logsBaseURL)
-	// No dedicated bloom_checks_total metric; bloom skipping is tracked via
-	// lakehouse_parquet_row_groups_skipped_total{reason="bloom"}
-	assertMetricExists(t, metrics, "lakehouse_parquet_row_groups_skipped_total")
-	assertMetricWithLabelExists(t, metrics, "lakehouse_parquet_row_groups_skipped_total", "reason", "bloom")
+	// Skips are recorded in lakehouse_parquet_row_groups_skipped_total under
+	// the stage that made them (label index, manifest column statistics, the
+	// footer, the row-group checks). Which stage prunes this query depends on
+	// the objects in the window and on the statistics earlier reads recorded:
+	// a request without tenant headers reads only tenant 0:0, and its objects
+	// can all be pruned before any row group is opened, so the row-group bloom
+	// reason itself is pinned on a controlled object by
+	// TestRowGroupBloomSkip_RecordsEverySkippedRowGroup; here a recorded skip is
+	// required.
+	assertMetricGE(t, metrics, "lakehouse_parquet_row_groups_skipped_total", 1)
 }
 
 // =============================================================================

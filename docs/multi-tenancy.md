@@ -40,12 +40,12 @@ graph LR
     style TR fill:#e9c46a,color:#000
 ```
 
-1. Every incoming request carries tenant identity via **integer headers** (`X-Scope-AccountID` + `X-Scope-ProjectID`) or a **string alias** (`X-Scope-OrgID`)
+1. Every incoming request carries tenant identity via **integer headers** (`X-Scope-AccountID` + `X-Scope-ProjectID`, or VL/VT's native `AccountID` + `ProjectID`) or a **string alias** (`X-Scope-OrgID`)
 2. When `X-Scope-OrgID` is present, the TenantResolver translates it to integer IDs via the configured alias map
-3. The prefix template `{AccountID}/{ProjectID}/` (or `{OrgID}/` for standalone) resolves to the tenant's S3 prefix
-4. The manifest is tenant-scoped internally: `map[tenantKey]map[partition][]FileInfo` — a query for tenant-A only sees tenant-A's file index
-5. All S3 reads and writes are scoped to that prefix — a tenant cannot access another tenant's data
-6. When no tenant headers are present, the default `0/0/` prefix is used (single-tenant mode)
+3. The prefix template `{AccountID}/{ProjectID}/` resolves to the tenant's S3 prefix for writes
+4. The manifest keeps per-tenant aggregates (the partitions each tenant owns), so a read resolves exactly the requesting tenant's objects — see [Read Scoping](#read-scoping-which-data-a-request-sees)
+5. Every read — row queries, hits, stats, field and stream enumeration, pmeta catalog answers, Jaeger/Tempo, and the unflushed buffer window — is scoped to that one tenant
+6. When no tenant headers are present, the request is the default tenant `0:0` (prefix `0/0/`), exactly like upstream VL/VT
 7. Requests using integer headers bypass the resolver entirely (zero overhead)
 
 ### S3 Layout
@@ -63,6 +63,39 @@ s3://obs-archive/
   200/5/                        ← tenant 200:5
     logs/dt=2026-01-15/hour=00/batch-006.parquet
 ```
+
+### Read Scoping (Which Data a Request Sees)
+
+A select request is answered from **exactly one tenant** — the same rule upstream VictoriaLogs and VictoriaTraces apply. Lakehouse widens a read to every tenant only for a request that presents the configured [global-read credential](#global-read-mode-cross-tenant-admin-access).
+
+| Request | Answered from |
+|---|---|
+| `AccountID`/`ProjectID` (or `X-Scope-*`, or a resolved `X-Scope-OrgID`) headers for tenant `A:P` | tenant `A:P` only |
+| no tenant headers | tenant `0:0` only |
+| headers for a tenant that holds no data | an empty answer — never a fall-through to other tenants |
+| `/internal/select/*` with `tenant_ids=[…]` (VL's cluster protocol, e.g. from a `vlselect` node) | exactly the listed tenants |
+| valid global-read header or bearer token | every tenant |
+| wrong global-read value, or global read not configured | the tenant from the headers (`0:0` without headers) — never widened |
+
+This applies on both binaries to every read surface that returns stored data: `/select/logsql/query`, `hits`, `stats_query`, `stats_query_range`, `facets`, `field_names`, `field_values`, `stream_field_values`, `streams`, `stream_ids`, and the Jaeger (`/select/jaeger/api/*`) and Tempo (`/select/tempo/api/*`) APIs. `/select/tenant_ids` reports the tenants the cold tier actually holds. (`stream_field_names` returns the configured stream field names, which are the same schema for every tenant.)
+
+How each part of the read path is scoped:
+
+- **Cold-tier objects.** The object list for a query comes from the manifest's per-tenant aggregates for the request tenant — for the row scan and for the metadata fast paths that answer without opening Parquet (timestamp-only queries, `count()` pushdown). Before any object is opened, its key is checked once more against the request tenant; an object that does not belong is dropped and counted in `lakehouse_tenant_scope_violations_total{site}` (a non-zero value indicates a defect, not normal operation).
+- **Field and stream enumeration.** `field_names`, `field_values` and `streams` read only the tenant's objects. The pmeta catalog is keyed by the tenant partition (the full key directory), so a catalog answer unions only the tenant's partitions. The in-memory label index is not tenant-keyed — it holds the field names and values of every object it was built from — so it answers only a request for the one tenant the manifest holds objects for (objects under the legacy untenanted layout count as tenant `0:0`, so a default-tenant deployment part-way through adopting the prefix template keeps the fast path). Every other request — another tenant, an unknown tenant, `0:0` in a deployment whose only tenant is someone else, or a multi-tenant list — uses the tenant-partitioned catalog or a scan.
+- **Trace-by-id lookups (traces).** The `_trace_idx` footer lookup that resolves a trace's time bounds before its spans are fetched reads only the tenant's objects, so it cannot confirm that another tenant holds a trace ID.
+- **Unflushed rows.** The co-located insert buffer scopes by tenant natively. In multi-pod deployments the select pod asks every insert pod's `/internal/buffer/query` for one tenant (`account_id`, `project_id`, `tenant_scope=v1`), each pod filters its buffer and echoes the tenant in `X-Lakehouse-Tenant-Scope`, and the select pod re-checks every row. A pod that does not echo the header (an older build during a rolling upgrade) has its rows dropped — the unflushed window of that pod is missing until it flushes, rather than merged unscoped. Buffered rows are merged only when newer than the Parquet the query already read for the same tenant (a per-tenant flush watermark), so a global read neither counts a flushed row twice nor hides one tenant's unflushed rows behind another tenant's newer flush.
+- **Legacy layout.** Objects written before the tenant prefix template existed (a static `s3.prefix` such as `logs/`, no `{AccountID}/{ProjectID}/` segment in the key) were ingested without tenant headers, so they belong to tenant `0:0`: a `0:0` request includes them, every other tenant never sees them. Deployments that ingest more than one tenant must use the tenant prefix template.
+- **Bucket-per-tenant.** A tenant with an `s3.bucket` override has its objects in that bucket; the client pool derives the bucket from the object key (`{AccountID}/{ProjectID}/…`). Because the object list is already the tenant's, a scoped request only issues S3 requests against the tenant's own bucket, and an unscoped (`0:0`) request only against the default bucket.
+
+Cost: object selection walks the partitions inside the query window and skips the ones the tenant has no objects in (a binary search into the manifest's time-sorted partition index, the same walk the unscoped path uses). Two shapes, measured on an Apple M5 Pro with the old and new code interleaved (medians of 6 runs of `BenchmarkTenantScope_FileSelection`, `-benchtime 1s`):
+
+| shape | previous unscoped walk | scoped selection |
+|---|---|---|
+| 50 tenants × 168 hourly partitions × 4 objects, one tenant's 7-day query | 9.1 ms, 40 MiB, 28 allocs | **0.27 ms, 0.78 MiB, 690 allocs** |
+| 2 tenants × 8,760 hourly partitions (a year), one-hour query | 0.26 µs, 0.9 KiB, 5 allocs | **0.32 µs, 0.8 KiB, 7 allocs** |
+
+The second shape is the dashboard shape, and it is the one that regressed while the selection iterated the tenant's whole partition set: 2.3 ms, 959 KiB and 43,807 allocations per call — per `hits`, `field_values` and `streams` request — because every partition the tenant had ever written was parsed. Those numbers are the "before" of the second row before the partition-index walk landed. Neither figure counts the objects of other tenants that a scoped query no longer opens.
 
 ### Tenant Name Mapping (X-Scope-OrgID)
 
@@ -160,15 +193,17 @@ Net effect: a name registered once — by config, by API, or by first ingest —
 
 #### S3 Prefix Templates
 
-Three template modes for S3 key organization:
+The tenant is the two leading segments of every object key, and the template that produces them must name both:
 
-| Template | S3 Key Example | Use Case |
+| Template | S3 Key Example | Accepted |
 |----------|---------------|----------|
-| `{AccountID}/{ProjectID}/` (default) | `42/3/logs/dt=2026-05-15/...` | VL/VT compatible |
-| `{OrgID}/` | `prod-team-eu_staging/logs/dt=2026-05-15/...` | Standalone deployment |
-| `{OrgID}/{ProjectID}/` | `prod-team-eu/3/logs/dt=2026-05-15/...` | Hybrid string + integer |
+| `{AccountID}/{ProjectID}/` (default) | `42/3/logs/dt=2026-05-15/...` | yes — VL/VT compatible |
+| `tenants/{AccountID}/{ProjectID}/` | `tenants/42/3/logs/dt=2026-05-15/...` | yes — a fixed prefix in front is fine |
+| *(empty)* | `logs/dt=2026-05-15/...` | yes — the single-tenant (legacy) layout; the data belongs to tenant `0:0` |
+| `{OrgID}/`, `{OrgID}/{ProjectID}/` | — | no — rejected at startup |
+| `{AccountID}/`, `{ProjectID}/` | — | no — rejected at startup |
 
-The `{OrgID}` template requires at least one alias configured (or `auto_register: true`) and is not compatible with VL/VT upstream storage node integration.
+Startup refuses a template that does not carry both `{AccountID}` and `{ProjectID}`, or that carries a placeholder the writer does not expand. The writer expands only those two: anything else stays in the key literally (`{OrgID}/3/logs/…`), which makes the object untenanted — and an untenanted object is tenant `0:0`'s data, so every other tenant would write into `0:0`'s layout and never read its own rows back. A single segment is just as wrong: the signal directory (`logs/`, `traces/`) is then parsed as the missing segment. String OrgIDs stay presentation-only — an alias maps to an account/project pair, and the pair is what reaches S3 (see [Tenant Name Mapping](#tenant-name-mapping-x-scope-orgid)).
 
 #### Prometheus Metrics Format
 
@@ -218,7 +253,17 @@ lakehouse:
           bucket: obs-archive    # alias-keyed; resolved on alias-sync tick
 ```
 
-In mixed mode the s3reader `PoolRegistry` caches a separate `ClientPool` per bucket. The writer's `SetTenantBucket(account, project) → bucket` resolver stamps `manifest.FileInfo.Bucket` on every flushed Parquet so reads route back to the right bucket. Sidecars and the fleet-wide manifest stay in the default bucket so a single manifest still resolves files across many tenant buckets — the only sharded thing is the data files themselves.
+In mixed mode the s3reader `PoolRegistry` caches a separate `ClientPool` per bucket, and the writer's `SetTenantBucket(account, project) → bucket` resolver sends each tenant's flushed Parquet to its bucket. Reads use the same routing in reverse: the client pool's bucket router derives the bucket from the object key's `{AccountID}/{ProjectID}/` segments, so a read of a tenant's object reaches that tenant's bucket (see [Read Scoping](#read-scoping-which-data-a-request-sees) for which objects a request may read). `manifest.FileInfo.Bucket` is set by the bucket migration below. Sidecars and the fleet-wide manifest stay in the default bucket — the only sharded thing is the data files themselves.
+
+The periodic manifest refresh lists every dedicated bucket under its tenant's prefix next to the default bucket, so objects that live only in a tenant's bucket stay in the manifest. The dedicated buckets are listed concurrently (at most 4 at a time) and merged in the order they are registered, so the manifest a refresh produces does not depend on which LIST answered first; a key found in both the shared and the dedicated bucket (a migration in progress) is kept once, as the dedicated-bucket copy.
+
+**When a dedicated bucket cannot be listed** the whole refresh fails and the previous manifest is kept — for every tenant, not just that one — because the alternative is silently dropping the unreachable tenant's objects out of the manifest. Objects written after the last successful refresh stay invisible to queries until the bucket is reachable again, so this needs an operator:
+
+- each failure is counted in `lakehouse_manifest_tenant_bucket_list_errors_total{bucket}` (the series of every registered dedicated bucket is exported at zero, so the counter is visible before the first failure), and the `LakehouseTenantBucketListFailing` alert fires after 10 minutes of failures;
+- the refresh logs `list tenant bucket <bucket>/<prefix>` with the S3 error;
+- check that the bucket exists, that the pod's credentials still reach it, and that its policy grants `s3:ListBucket` on the tenant prefix. Removing the tenant's `s3.bucket` override (after migrating its objects back) also clears it, since an unregistered bucket is never listed.
+
+Current limitation: the per-tenant `overrides[].s3.bucket` form above is what installs bucket routing. `isolation: bucket` with `bucket_template` is validated at startup but does not install per-tenant routing on its own.
 
 ### Retroactive Bucket Migration
 
@@ -369,7 +414,7 @@ The PolicyRegistry caches resolved entries in a `sync.Map` keyed by `(account, p
 
 | Flag | Default | Description |
 |---|---|---|
-| `--lakehouse.tenant.prefix-template` | `{AccountID}/{ProjectID}/` | S3 prefix pattern. Supports `{AccountID}`, `{ProjectID}`, `{OrgID}` |
+| `--lakehouse.tenant.prefix-template` | `{AccountID}/{ProjectID}/` | S3 prefix pattern. Must contain `{AccountID}` and `{ProjectID}` (both are expanded; any other placeholder is rejected at startup). Empty = the single-tenant legacy layout |
 | `--lakehouse.tenant.isolation` | `prefix` | Isolation mode: `prefix` (shared bucket) or `bucket` (separate buckets) |
 | `--lakehouse.tenant.bucket-template` | (empty) | Bucket name pattern for `bucket` isolation mode |
 | `--lakehouse.tenant.default-account` | `0` | Default AccountID when header is absent (single-tenant mode) |
@@ -513,18 +558,12 @@ upstream VL/VT.
 
 ### Manifest
 
-The manifest tracks files per tenant. Queries only see their own tenant's files:
+The manifest indexes files by hour partition and keeps a per-tenant aggregate of the partitions (and file/byte/row totals) each tenant owns, derived from the object keys. A read for tenant `100:1` walks only the partitions tenant `100:1` owns and only the files under its `100/1/` prefix:
 
 ```
-manifest.tenants = {
-  "100/1": {
-    "dt=2026-01-15/hour=00": [file1.parquet, file2.parquet],
-    "dt=2026-01-15/hour=01": [file3.parquet],
-  },
-  "200/5": {
-    "dt=2026-01-15/hour=00": [file4.parquet],
-  },
-}
+files      = { "dt=2026-01-15/hour=00": [100/1/…/file1, 200/5/…/file4], "dt=2026-01-15/hour=01": [100/1/…/file3] }
+aggregates = { "100/1": {partitions: [hour=00, hour=01]}, "200/5": {partitions: [hour=00]} }
+legacy     = objects whose key has no tenant segment — served as tenant 0:0
 ```
 
 ### Write Path
@@ -533,7 +572,7 @@ manifest.tenants = {
 
 ### Read Path
 
-`RunQuery` resolves the tenant from `QueryContext.TenantIDs`, looks up only that tenant's manifest entries, and scans only that tenant's Parquet files. Cross-tenant data leakage is impossible at the storage layer.
+Every read (`RunQuery` and the field/stream enumeration calls) resolves the tenant from `QueryContext.TenantIDs` — exactly one tenant, `0:0` when the request had no tenant headers — and asks the manifest for that tenant's objects only; a validated global-read request resolves to all tenants instead. The resulting object list is re-checked key by key against the tenant before anything is opened, and the same list drives the metadata fast paths, the scan, the pmeta catalog answers, and the unflushed buffer window. See [Read Scoping](#read-scoping-which-data-a-request-sees).
 
 ### Delete Path
 
@@ -641,7 +680,7 @@ lakehouse:
 --lakehouse.tenant.global-read-token=eyJhbGciOiJIUzI1NiIs...
 ```
 
-When configured, requests must include `Authorization: Bearer <token>` AND have no tenant headers (or the global read header). This method is preferred for Grafana integration because Grafana natively supports Bearer token auth in datasource config.
+When configured, a request that includes `Authorization: Bearer <token>` is a global read. This method is preferred for Grafana integration because Grafana natively supports Bearer token auth in datasource config.
 
 **Method 3: Both (defense-in-depth)**
 
@@ -649,7 +688,9 @@ Configure both methods. The request must satisfy at least one to get global read
 
 ### How It Works
 
-When a request authenticates for global read (via header+value or Bearer token), the read path scans **all tenant prefixes** in the manifest and returns merged results:
+When a request authenticates for global read (via header+value or Bearer token), the read path covers **every tenant** — every tenant's cold-tier objects and every tenant's unflushed rows — and returns merged results. The credential is checked on every select request (LogsQL, Jaeger and Tempo APIs) with a constant-time comparison; tenant headers on the same request do not narrow it. A missing or wrong credential leaves the request on its own tenant (`0:0` without headers) — it is never rejected and never widened. Each widened request increments `lakehouse_global_read_queries_total`.
+
+Without a global-read credential configured, no request can read across tenants.
 
 ```bash
 # Normal tenant-scoped query (only sees tenant 100/1 data)

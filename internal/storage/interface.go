@@ -19,6 +19,22 @@ func IsTimestampOnly(ctx context.Context) bool {
 	return v
 }
 
+type globalReadKey struct{}
+
+// WithGlobalRead marks a request context as authorised to read ACROSS tenants.
+// Only the select handler sets it, and only after the configured global-read
+// credential validated. Everything else is answered from exactly one tenant's
+// data, mirroring VL/VT.
+func WithGlobalRead(ctx context.Context) context.Context {
+	return context.WithValue(ctx, globalReadKey{}, true)
+}
+
+// IsGlobalRead reports whether this request proved the global-read credential.
+func IsGlobalRead(ctx context.Context) bool {
+	v, _ := ctx.Value(globalReadKey{}).(bool)
+	return v
+}
+
 func WithCountOnlyHint(ctx context.Context) context.Context {
 	return context.WithValue(ctx, countOnlyKey{}, true)
 }

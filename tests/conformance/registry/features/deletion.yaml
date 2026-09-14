@@ -7,12 +7,27 @@
   area: deletion
   readme_section: Deletion
   surfaces: [api, storage]
+  rows: [lh.delete.rewrite_keeps_kept_rows]
   tests:
     - internal/delete/integration_test.go#TestIntegration_ModeHide_NoRewrite
     - internal/delete/rewriter_test.go#TestRewriteFile_MatchingRowsRemoved
     - internal/delete/storageclass_test.go#TestDetector
+    - internal/delete/rewrite_manifest_test.go#TestRewrite_PublishesReplacementIntoManifest
+    - internal/delete/rewrite_crash_refresh_test.go#TestRewriteCrashMatrix_WithManifestRefresh
+    - internal/delete/rewrite_crash_refresh_test.go#TestRewriteRefreshAtEveryStep
+    - internal/delete/rewrite_refresh_test.go#TestRewriteRefresh_SupersededObjectWhoseDeleteFailedIsNotReadopted
+    - internal/delete/intents_test.go#TestResumeRewrites_RetriesUntilTheDeleteLands
+    - internal/delete/rewrite_tenant_key_test.go#TestRewrite_TenantFileStaysWithItsTenantInTheManifest
+    - internal/compaction/delete_race_test.go#TestDeleteRace_CompactionPublishesWhileTheRewriteIsInFlight
+    - internal/compaction/delete_clean_marking_test.go#TestDeleteRace_EligibilityBoundaryCrossedDuringTheMerge
+    - internal/compaction/delete_refresh_test.go#TestDeleteRefresh_MergedSourceWhoseDeleteFailedIsNotReadopted
+    - internal/compaction/delete_property_test.go#TestDeleteLifecycleProperties
+    - internal/manifest/refresh_retired_test.go#TestRefresh_DoesNotReadoptTheSourceARewriteReplaced
   docs:
     - docs/deletion-strategy.md
+    - docs/operations.md#background-rewriter
+    - docs/durability.md#31-deletes-and-rewrites
+    - docs/manifest-system.md#what-the-refresh-does-not-adopt
   highlight: >-
     **Three-tier strategy**: tombstone (instant, $0) -> selective rewrite (S3 Standard only) -> lifecycle expiry (Glacier/IA).
   description: >-
@@ -49,12 +64,23 @@
   since: v0.18.2
   area: deletion
   surfaces: [api, storage]
+  rows: [lh.delete.hide_survives_crash]
   tests:
     - internal/delete/tombstone_test.go#TestTombstoneStore_AddAndActive
     - internal/delete/handler_test.go#TestHandler_handleDelete_Valid
     - tests/e2e/delete_test.go#TestDelete_TombstoneAndQuery
+    - internal/delete/tombstone_durability_test.go#TestTombstoneDurability_SurvivesACrashViaDisk
+    - internal/delete/tombstone_durability_test.go#TestTombstoneDurability_RestoreUnionsDiskAndS3
+    - internal/storage/parquets3/fields_tombstones_test.go#TestFieldValues_TombstonedValueDisappears
+    - internal/storage/parquets3/fields_tombstones_span_test.go#TestFieldValues_TombstoneInsideAScannedFileButOutsideTheWindow
+    - internal/storage/parquets3/pure_buffer_tombstone_test.go#TestRunQuery_PureBufferWindowHonoursTombstones
+    - lakehouse-traces/internal/storage/parquets3/fields_tombstones_span_test.go#TestTraceFieldValues_TombstoneInsideAScannedFileButOutsideTheWindow
+    - internal/compaction/tombstones_test.go#TestCompaction_HideModeRowsAreCarriedForward
   docs:
     - docs/deletion-strategy.md
+    - docs/operations.md#tombstone-management
+    - docs/operations.md#where-tombstones-are-applied
+    - docs/durability.md#31-deletes-and-rewrites
   highlight: >-
     **Tombstones**: a delete is recorded as a predicate and applied at query time, so data disappears from every read immediately and at zero S3 cost.
   description: >-
@@ -139,8 +165,11 @@
     - internal/delete/integration_test.go#TestIntegration_Undelete
     - internal/delete/handler_test.go#TestHandler_handleTombstoneByID_DeleteExisting
     - internal/delete/tombstone_test.go#TestTombstoneStore_Remove
+    - internal/delete/tombstone_removal_test.go#TestUndelete_SurvivesACrashWhileTheS3DeleteIsPending
+    - internal/delete/intents_test.go#TestHandler_UndeleteMidRewriteIsAConflict
   docs:
     - docs/deletion-strategy.md
+    - docs/operations.md#un-delete-restoring-data
   highlight: >-
     **Un-delete**: remove a tombstone to restore data visibility instantly.
   description: >-
@@ -168,3 +197,31 @@
     archive" — are reconciled by separating visibility from physical presence: erasure is
     immediate and total from every read path, while the bytes leave on the lifecycle schedule
     unless physical deletion is explicitly demanded.
+
+- id: lh.feature.deletion.leftovers_api
+  title: Leftovers API — what an instance still owes
+  status: shipped
+  area: deletion
+  readme_section: Deletion
+  surfaces: [api]
+  rows: [lh.delete.leftovers.status]
+  tests:
+    - internal/delete/handler_leftovers_test.go#TestLeftovers_ListsRetiredPendingAndUnfinishedRewrites
+    - internal/delete/handler_leftovers_test.go#TestLeftovers_IsBounded
+    - internal/delete/handler_leftovers_test.go#TestLeftovers_RejectsNonGET
+    - internal/delete/handler_leftovers_test.go#TestLeftovers_IsRegistered
+    - internal/metrics/assets_test.go#TestDeleteMetrics_AreVisibleSomewhere
+  docs:
+    - docs/deletion-strategy.md
+    - docs/operations.md#what-this-instance-still-owes-prefixleftovers
+    - docs/operations.md#rolling-back
+  changelog_bullets:
+    - 'Delete leftovers API — what an instance still owes.'
+  highlight: >-
+    **Leftovers API**: `GET /delete/logsql/leftovers` (or `/delete/tracessql/leftovers`) names the retired keys, unpublished uploads and unfinished rewrites an instance is still holding on to.
+  description: >-
+    The alerts on retired-key eviction, non-durable tombstone records and unfinished rewrites all
+    ask an operator to act on specific objects, which until now no API could name. The listing is
+    read-only and instance-wide (not tenant-scoped, like the tombstone listing beside it), bounded
+    by a limit, and reports for each entry why it is still there — the delete that is owed, the
+    upload that is held, or the rewrite state a restart would resolve from.

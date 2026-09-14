@@ -1,7 +1,9 @@
 FROM golang:1.26.8-alpine3.23 AS builder
 RUN apk add --no-cache git
 WORKDIR /app
-ARG VL_VERSION=v1.50.0
+# Must equal the Makefile's VL_VERSION_LOGS (asserted by
+# TestDockerfilePinsMatchMakefile in tests/conformance).
+ARG VL_VERSION=v1.52.0
 COPY go.mod go.sum ./
 RUN mkdir -p deps && \
     git clone --depth 1 --branch ${VL_VERSION} https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs && \

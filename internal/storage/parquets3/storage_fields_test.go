@@ -81,6 +81,7 @@ func testFieldStorage(t *testing.T, rows []fullLogRow) (*Storage, string) {
 
 func TestGetFieldNames_FromLabelIndex(t *testing.T) {
 	s := testStorage()
+	soleTenantManifest(t, s)
 	s.labelIndex.Add("service.name", []string{"api", "web"})
 	s.labelIndex.Add("level", []string{"info", "error"})
 	s.labelIndex.Add("host.name", nil)
@@ -192,6 +193,7 @@ func TestGetFieldNames_CancelledContext(t *testing.T) {
 
 func TestGetFieldValues_FromLabelIndex(t *testing.T) {
 	s := testStorage()
+	soleTenantManifest(t, s)
 	s.labelIndex.Add("service.name", []string{"api", "web", "worker"})
 
 	q := mustParseQueryWithTime(t, "*",
@@ -210,6 +212,7 @@ func TestGetFieldValues_FromLabelIndex(t *testing.T) {
 
 func TestGetFieldValues_FromLabelIndex_WithLimit(t *testing.T) {
 	s := testStorage()
+	soleTenantManifest(t, s)
 	s.labelIndex.Add("level", []string{"info", "warn", "error", "debug", "trace"})
 
 	q := mustParseQueryWithTime(t, "*",
@@ -449,6 +452,7 @@ func TestGetStreamFieldNames_Traces_ReturnsRegistryFields(t *testing.T) {
 
 func TestGetStreamFieldValues_DelegatesToGetFieldValues(t *testing.T) {
 	s := testStorage()
+	soleTenantManifest(t, s)
 	s.labelIndex.Add("service.name", []string{"api", "web"})
 
 	q := mustParseQueryWithTime(t, "*",
@@ -762,7 +766,7 @@ func TestCollectFilteredValues_NilFilter(t *testing.T) {
 		for {
 			n, readErr := rRows.ReadRows(buf)
 			if n > 0 {
-				collectFilteredValues(buf[:n], colNames, svcIdx, nil, s, seen)
+				collectFilteredValues(buf[:n], colNames, svcIdx, nil, nil, s, seen)
 			}
 			if readErr != nil {
 				break
@@ -818,7 +822,7 @@ func TestCollectFilteredValues_WithFilter(t *testing.T) {
 		for {
 			n, readErr := rRows.ReadRows(buf)
 			if n > 0 {
-				collectFilteredValues(buf[:n], colNames, svcIdx, filter, s, seen)
+				collectFilteredValues(buf[:n], colNames, svcIdx, filter, nil, s, seen)
 			}
 			if readErr != nil {
 				break
@@ -835,7 +839,7 @@ func TestCollectFilteredValues_WithFilter(t *testing.T) {
 
 func TestCollectFilteredValues_EmptyRows(t *testing.T) {
 	seen := make(map[string]uint64)
-	collectFilteredValues(nil, nil, 0, nil, nil, seen)
+	collectFilteredValues(nil, nil, 0, nil, nil, nil, seen)
 	if len(seen) != 0 {
 		t.Errorf("expected empty map for nil rows, got %v", seen)
 	}
@@ -866,7 +870,7 @@ func TestCollectFilteredValues_OutOfBoundsColumn(t *testing.T) {
 			n, readErr := rRows.ReadRows(buf)
 			if n > 0 {
 				// targetColIdx way out of bounds
-				collectFilteredValues(buf[:n], colNames, 999, nil, s, seen)
+				collectFilteredValues(buf[:n], colNames, 999, nil, nil, s, seen)
 			}
 			if readErr != nil {
 				break
@@ -1087,6 +1091,7 @@ func TestGetFieldValues_MultipleFiles(t *testing.T) {
 
 func TestGetFieldValues_ZeroLimit(t *testing.T) {
 	s := testStorage()
+	soleTenantManifest(t, s)
 	s.labelIndex.Add("service.name", []string{"a", "b", "c"})
 
 	q := mustParseQueryWithTime(t, "*",

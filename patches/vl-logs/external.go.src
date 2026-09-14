@@ -27,6 +27,10 @@ var externalStorage ExternalStorage
 
 // SetExternalStorage sets an external storage backend.
 // When set, all dispatch functions route queries to it.
+//
+// upstream-original: the setter for this file's own package-level hook. The
+// interface above mirrors the dispatch functions the sibling *-dispatch.patch
+// routes; those are patched, so `git apply` fails when their signatures move.
 func SetExternalStorage(s ExternalStorage) {
 	externalStorage = s
 }

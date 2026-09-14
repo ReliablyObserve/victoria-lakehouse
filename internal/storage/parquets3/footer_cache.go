@@ -126,17 +126,72 @@ func (fc *FooterCache) Remove(key string) {
 	}
 }
 
-// ParseFooterFromData creates a CachedFooter by parsing only the parquet metadata
-// from the end of a full file's data. This avoids re-parsing on subsequent accesses.
+// ParseFooterFromData opens a downloaded object and returns two things: the
+// cache entry for its metadata, and a handle over the downloaded bytes for the
+// caller's own reads (row groups, page index, column data).
+//
+// The cache entry keeps ONLY a copy of the footer. A CachedFooter holding a
+// handle over the object body keeps that body alive for as long as the entry
+// stays in the footer cache, and the cache is bounded by item count, not bytes:
+// 10,000 entries of multi-MiB objects is gigabytes of retained heap. Callers
+// that need to read data must use the returned *parquet.File, never the
+// entry's — the entry's handle reads the column-data region as zeros, the same
+// as an entry built by the footer prefetch.
 func ParseFooterFromData(key string, data []byte) (*CachedFooter, *parquet.File, error) {
 	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return nil, nil, fmt.Errorf("open parquet file %s: %w", key, err)
 	}
+	if tail, terr := footerTailOfObject(data, f); terr == nil {
+		if cached, _, ferr := ParseFooterFromBytes(key, tail, int64(len(data))); ferr == nil {
+			return cached, f, nil
+		}
+	}
+	// The object parsed but its footer did not re-parse on its own (a shape the
+	// footer prefetch would also fail on). Cache the handle we have rather than
+	// failing the read; it retains the object, which is why it is the fallback.
+	metrics.FooterParseRejected.Inc("footer_copy_failed")
 	return &CachedFooter{
 		File:     f,
 		FileSize: int64(len(data)),
 	}, f, nil
+}
+
+// footerTailOfObject returns a COPY of the object's metadata tail: the page
+// index (column + offset index, written right before the footer) and the footer
+// itself. The copy matters — a sub-slice of the object keeps the whole object
+// alive — and so does including the page index: per-page null counts and
+// min/max bounds live there, and field_names' hit counts and the manifest
+// enrichment's time bounds read them through the cached handle.
+func footerTailOfObject(data []byte, f *parquet.File) ([]byte, error) {
+	if len(data) < 8 {
+		return nil, fmt.Errorf("object is %d bytes, too short for a parquet footer", len(data))
+	}
+	footerLen, err := FooterLength(data[len(data)-8:])
+	if err != nil {
+		return nil, err
+	}
+	total := footerLen + 8
+	if total > len(data) {
+		return nil, fmt.Errorf("declared footer length %d exceeds the object (%d bytes)", footerLen, len(data))
+	}
+	start := int64(len(data) - total)
+	if md := f.Metadata(); md != nil {
+		for i := range md.RowGroups {
+			for j := range md.RowGroups[i].Columns {
+				c := &md.RowGroups[i].Columns[j]
+				for _, off := range [...]int64{c.ColumnIndexOffset, c.OffsetIndexOffset} {
+					if off > 0 && off < start {
+						start = off
+					}
+				}
+			}
+		}
+	}
+	if start < 0 || start > int64(len(data)) {
+		start = int64(len(data) - total)
+	}
+	return bytes.Clone(data[start:]), nil
 }
 
 // maxParquetFooterBytes is a policy cap on the trusted parquet footer

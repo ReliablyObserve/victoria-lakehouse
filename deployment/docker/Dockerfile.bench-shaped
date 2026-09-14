@@ -5,8 +5,8 @@
 # A no-op under DISK_PROFILE=local-ssd. Build context is the repo root.
 #
 #   docker build -f deployment/docker/Dockerfile.bench-shaped \
-#     --build-arg UPSTREAM=victoriametrics/victoria-logs:v1.50.0 \
-#     --build-arg BINARY=/victoria-logs-prod -t bench-shaped-vl:v1.50.0 .
+#     --build-arg UPSTREAM=victoriametrics/victoria-logs:v1.52.0 \
+#     --build-arg BINARY=/victoria-logs-prod -t bench-shaped-vl:v1.52.0 .
 ARG UPSTREAM
 FROM ${UPSTREAM} AS upstream
 

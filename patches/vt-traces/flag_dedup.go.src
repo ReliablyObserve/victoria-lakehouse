@@ -10,6 +10,9 @@ import (
 // Safe flag registration helpers that skip registration when the flag already exists.
 // Prevents panics when both VL's vlstorage and VT's vtstorage are in the same binary.
 
+// upstream-original: a flag.Lookup guard in front of flagutil.NewRetentionDuration. No
+// upstream body is copied; which collisions must be guarded is checked
+// against both vendored trees by TestVTFlagDedupCoversEveryCollision.
 func safeRetentionDuration(name, defaultValue, description string) *flagutil.RetentionDuration {
 	if flag.Lookup(name) != nil {
 		d := &flagutil.RetentionDuration{}
@@ -19,6 +22,9 @@ func safeRetentionDuration(name, defaultValue, description string) *flagutil.Ret
 	return flagutil.NewRetentionDuration(name, defaultValue, description)
 }
 
+// upstream-original: a flag.Lookup guard in front of flagutil.NewBytes. No
+// upstream body is copied; which collisions must be guarded is checked
+// against both vendored trees by TestVTFlagDedupCoversEveryCollision.
 func safeBytes(name string, defaultValue int64, description string) *flagutil.Bytes {
 	if flag.Lookup(name) != nil {
 		return &flagutil.Bytes{}
@@ -26,6 +32,9 @@ func safeBytes(name string, defaultValue int64, description string) *flagutil.By
 	return flagutil.NewBytes(name, defaultValue, description)
 }
 
+// upstream-original: a flag.Lookup guard in front of flagutil.NewPassword. No
+// upstream body is copied; which collisions must be guarded is checked
+// against both vendored trees by TestVTFlagDedupCoversEveryCollision.
 func safePassword(name, description string) *flagutil.Password {
 	if flag.Lookup(name) != nil {
 		return &flagutil.Password{}
@@ -33,6 +42,9 @@ func safePassword(name, description string) *flagutil.Password {
 	return flagutil.NewPassword(name, description)
 }
 
+// upstream-original: a flag.Lookup guard in front of flagutil.NewArrayString. No
+// upstream body is copied; which collisions must be guarded is checked
+// against both vendored trees by TestVTFlagDedupCoversEveryCollision.
 func safeArrayString(name, description string) *flagutil.ArrayString {
 	if flag.Lookup(name) != nil {
 		return &flagutil.ArrayString{}
@@ -40,6 +52,9 @@ func safeArrayString(name, description string) *flagutil.ArrayString {
 	return flagutil.NewArrayString(name, description)
 }
 
+// upstream-original: a flag.Lookup guard in front of flagutil.NewArrayBool. No
+// upstream body is copied; which collisions must be guarded is checked
+// against both vendored trees by TestVTFlagDedupCoversEveryCollision.
 func safeArrayBool(name, description string) *flagutil.ArrayBool {
 	if flag.Lookup(name) != nil {
 		return &flagutil.ArrayBool{}
@@ -47,6 +62,9 @@ func safeArrayBool(name, description string) *flagutil.ArrayBool {
 	return flagutil.NewArrayBool(name, description)
 }
 
+// upstream-original: a flag.Lookup guard in front of flag.Int. No
+// upstream body is copied; which collisions must be guarded is checked
+// against both vendored trees by TestVTFlagDedupCoversEveryCollision.
 func safeInt(name string, value int, usage string) *int {
 	if flag.Lookup(name) != nil {
 		v := value
@@ -55,6 +73,9 @@ func safeInt(name string, value int, usage string) *int {
 	return flag.Int(name, value, usage)
 }
 
+// upstream-original: a flag.Lookup guard in front of flag.Bool. No
+// upstream body is copied; which collisions must be guarded is checked
+// against both vendored trees by TestVTFlagDedupCoversEveryCollision.
 func safeBool(name string, value bool, usage string) *bool {
 	if flag.Lookup(name) != nil {
 		v := value
@@ -63,6 +84,9 @@ func safeBool(name string, value bool, usage string) *bool {
 	return flag.Bool(name, value, usage)
 }
 
+// upstream-original: a flag.Lookup guard in front of flag.String. No
+// upstream body is copied; which collisions must be guarded is checked
+// against both vendored trees by TestVTFlagDedupCoversEveryCollision.
 func safeString(name, value, usage string) *string {
 	if flag.Lookup(name) != nil {
 		v := value
@@ -71,6 +95,9 @@ func safeString(name, value, usage string) *string {
 	return flag.String(name, value, usage)
 }
 
+// upstream-original: a flag.Lookup guard in front of flag.Duration. No
+// upstream body is copied; which collisions must be guarded is checked
+// against both vendored trees by TestVTFlagDedupCoversEveryCollision.
 func safeDuration(name string, value time.Duration, usage string) *time.Duration {
 	if flag.Lookup(name) != nil {
 		v := value

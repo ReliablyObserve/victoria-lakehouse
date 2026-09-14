@@ -715,7 +715,7 @@ func TestLogRowsToDataBlock_SingleRow(t *testing.T) {
 		},
 	}
 
-	db := s.logRowsToDataBlock(rows)
+	db := s.logRowsToDataBlock(tenantScope{all: true}, "test", rows)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -749,14 +749,14 @@ func TestLogRowsToDataBlock_SingleRow(t *testing.T) {
 
 func TestLogRowsToDataBlock_NilInput(t *testing.T) {
 	s := testStorage()
-	if db := s.logRowsToDataBlock(nil); db != nil {
+	if db := s.logRowsToDataBlock(tenantScope{all: true}, "test", nil); db != nil {
 		t.Error("expected nil for nil input")
 	}
 }
 
 func TestLogRowsToDataBlock_EmptySlice(t *testing.T) {
 	s := testStorage()
-	if db := s.logRowsToDataBlock([]schema.LogRow{}); db != nil {
+	if db := s.logRowsToDataBlock(tenantScope{all: true}, "test", []schema.LogRow{}); db != nil {
 		t.Error("expected nil for empty slice")
 	}
 }
@@ -774,7 +774,7 @@ func TestLogRowsToDataBlock_MultipleRows(t *testing.T) {
 		}
 	}
 
-	db := s.logRowsToDataBlock(rows)
+	db := s.logRowsToDataBlock(tenantScope{all: true}, "test", rows)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -809,7 +809,7 @@ func TestTraceRowsToDataBlock_SingleRow(t *testing.T) {
 		},
 	}
 
-	db := s.traceRowsToDataBlock(rows)
+	db := s.traceRowsToDataBlock(tenantScope{all: true}, "test", rows)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -844,14 +844,14 @@ func TestTraceRowsToDataBlock_SingleRow(t *testing.T) {
 
 func TestTraceRowsToDataBlock_NilInput(t *testing.T) {
 	s := testStorage()
-	if db := s.traceRowsToDataBlock(nil); db != nil {
+	if db := s.traceRowsToDataBlock(tenantScope{all: true}, "test", nil); db != nil {
 		t.Error("expected nil for nil input")
 	}
 }
 
 func TestTraceRowsToDataBlock_EmptySlice(t *testing.T) {
 	s := testStorage()
-	if db := s.traceRowsToDataBlock([]schema.TraceRow{}); db != nil {
+	if db := s.traceRowsToDataBlock(tenantScope{all: true}, "test", []schema.TraceRow{}); db != nil {
 		t.Error("expected nil for empty slice")
 	}
 }
@@ -874,7 +874,7 @@ func TestTraceRowsToDataBlock_MultipleRows(t *testing.T) {
 		}
 	}
 
-	db := s.traceRowsToDataBlock(rows)
+	db := s.traceRowsToDataBlock(tenantScope{all: true}, "test", rows)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}

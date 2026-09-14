@@ -1,7 +1,6 @@
 package parquets3
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -232,22 +231,19 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		liveBytes.Add(-sz)
 	}
 
-	// Tenant-scoped file enumeration when exactly one tenant is in scope.
-	// The cross-tenant (admin) read path retains the legacy full-manifest
-	// walk because it legitimately needs every tenant's files. Most query
-	// paths are single-tenant by construction (per-request auth) so this
-	// branch wins for the common case.
-	var files []manifest.FileInfo
-	if len(tenantIDs) == 1 {
-		t := tenantIDs[0]
-		files = s.manifest.GetFilesForRangeTenant(
-			startNs, endNs,
-			fmt.Sprintf("%d", t.AccountID),
-			fmt.Sprintf("%d", t.ProjectID),
-		)
-	} else {
-		files = s.manifest.GetFilesForRange(startNs, endNs)
-	}
+	// Tombstones are applied to the blocks this function emits, so every path
+	// that emits something other than raw rows — manifest-answered counts,
+	// label-aggregate pushdown, and the pure-buffer path's aggregated result —
+	// is only usable while no tombstone overlaps the window.
+	hasTombstones := s.tombstones != nil && len(s.tombstones.ForRange(startNs, endNs)) > 0
+
+	// Tenant-scoped file enumeration. VT/VL hand us exactly one tenant per
+	// request (0:0 when no headers are present); only a validated global-read
+	// caller widens the scope. Everything downstream — the fast paths, the scan
+	// and the buffer bridge — works off THIS list. Twin of
+	// internal/storage/parquets3/storage_query.go.
+	scope := scopeFor(ctx, tenantIDs)
+	files := s.filesForScope("query", startNs, endNs, scope)
 	if len(files) == 0 {
 		// Pure-buffer window: no cold-tier file covers it, so the WHOLE answer
 		// is the co-located logstorage buffer. Push the FULL query (aggregation
@@ -257,8 +253,11 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// re-aggregated (profiled as the dominant recent-window cost). Safe
 		// because there is no Parquet data to double-count or merge with. Uses
 		// the buffer's public RunQuery (VL engine) — no upstream modification.
+		// Not while a tombstone overlaps the window: the aggregated result
+		// carries no row the tombstone filter could drop, so deleted buffered
+		// spans would be counted; the raw-row path below filters them.
 		// Twin of internal/storage/parquets3/storage_query.go.
-		if s.servePureBufferQuery(ctx, q, tenantIDs, filteredWriteBlock) {
+		if s.servePureBufferQuery(ctx, q, tenantIDs, hasTombstones, filteredWriteBlock) {
 			return nil
 		}
 		// No cold-tier files cover the requested window, but the in-flight
@@ -266,21 +265,20 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// parquet (Jaeger's GetTrace narrow-window lookup against trace_ids
 		// just observed in the previous search step is the canonical case).
 		// Falling through here keeps the buffer query in the flow.
-		s.queryBufferBridge(ctx, startNs, endNs, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
+		s.queryBufferBridge(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
 		return nil
 	}
 
 	files = s.applySelfFilter(files)
 	s.applyCacheAffinity(files)
 
-	hasTombstones := s.tombstones != nil && len(s.tombstones.ForRange(startNs, endNs)) > 0
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
 		remaining := s.manifestFastPath(files, startNs, endNs, filteredWriteBlock)
 		if len(remaining) == 0 {
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
-			s.queryBufferBridge(ctx, startNs, endNs, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
+			s.queryBufferBridge(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
 			return nil
 		}
 		files = remaining
@@ -297,7 +295,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
-			s.queryBufferBridge(ctx, startNs, endNs, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
+			s.queryBufferBridge(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
 			return nil
 		}
 		files = remaining
@@ -306,7 +304,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	files = s.preFilterFiles(files, queryStr)
 
 	if len(files) == 0 {
-		s.queryBufferBridge(ctx, startNs, endNs, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
+		s.queryBufferBridge(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
 		return nil
 	}
 
@@ -324,7 +322,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	if tids := extractFilterValuesAST(queryStr, "trace_id"); len(tids) > 0 {
 		files = s.filterFilesByTraceIdx(ctx, files, tids)
 		if len(files) == 0 {
-			s.queryBufferBridge(ctx, startNs, endNs, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
+			s.queryBufferBridge(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
 			return nil
 		}
 	}
@@ -394,7 +392,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}
 	}
 
-	s.queryBufferBridge(ctx, startNs, endNs, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
+	s.queryBufferBridge(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
 
 	return nil
 }
@@ -802,27 +800,6 @@ func traceIdxKeepFile(meta *format.FileMetaData, tidSet map[string]bool) bool {
 	return true
 }
 
-// bufferWatermark returns the timestamp up to which the just-scanned Parquet
-// files already cover the data, so the buffer is queried only for STRICTLY
-// newer rows — preventing the buffer and the S3-Parquet scan from both emitting
-// the same span (a 2× double-count on count()/stats queries over the overlap
-// window). It is the max MaxTimeNs of the emitted files. Returns 0 (serve the
-// full window) for multi-tenant admin reads, where a global watermark could
-// advance past a lagging tenant and lose rows; those reads accept the rare
-// double-count instead of risking loss.
-func bufferWatermark(files []manifest.FileInfo, tenantIDs []logstorage.TenantID) int64 {
-	if len(tenantIDs) != 1 {
-		return 0
-	}
-	var wm int64
-	for i := range files {
-		if files[i].MaxTimeNs > wm {
-			wm = files[i].MaxTimeNs
-		}
-	}
-	return wm
-}
-
 // widenTraceIDQueryToNow widens a trace_id-filtered query's upper time bound to
 // now. Trace_id queries (Jaeger/Tempo GetTraceList step-2 `trace_id:in(...)`,
 // Jaeger/Tempo get-trace `trace_id:"X"`) target specific traces and want ALL
@@ -858,18 +835,37 @@ func widenTraceIDQueryToNow(q *logstorage.Query, startNs, endNs int64) (*logstor
 }
 
 // servePureBufferQuery answers a query whose window is entirely unflushed (no
-// cold-tier files) by running the FULL query — aggregation pipes intact — on the
-// co-located logstorage buffer's own VL engine, so it aggregates natively
-// instead of the bridge's DropAllPipes path that ships every raw row upstream.
+// cold-tier files for the request's tenants) from the co-located logstorage
+// buffer's own VL engine, emitting the matching RAW rows; the storage adapter
+// applies the query's pipes on top, exactly as for rows read from Parquet.
 // Returns true when it served the query. Declines (false, caller falls through
 // to the bridge) when there is no local buffer, when peers exist (this node's
 // buffer then holds only its own rows — multi-pod must fan out), or on error.
 // Twin of internal/storage/parquets3/storage_query.go.
-func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) bool {
+func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query, tenantIDs []logstorage.TenantID, hasTombstones bool, writeBlock logstorage.WriteDataBlockFunc) bool {
+	// A tombstone is applied to the blocks the storage emits, and this path
+	// emits the buffer's already-aggregated result, which carries no row the
+	// tombstone filter could drop. While one overlaps the window, decline and
+	// let the caller serve the raw rows.
+	if hasTombstones {
+		noteFieldsScanFallback("pure_buffer")
+		return false
+	}
 	if s.localBuffer == nil || (s.bufferBridge != nil && s.bufferBridge.HasPeers()) {
 		return false
 	}
-	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, tenantIDs, q, false, nil)
+	startNs, endNs := q.GetFilterTimeRange()
+	// Emit RAW rows. Both storage adapters run a query's pipes themselves
+	// (logstorage.RunQueryExternal*) over whatever RunQuery emits, and RunQuery's
+	// block filter re-applies the query's row filter to every block. Running the
+	// pipes here as well would hand aggregated rows (count, hits buckets) to both:
+	// the row filter drops them (a filtered `| stats count()` answered 0) or the
+	// adapter aggregates them a second time (`* | stats count()` answered 1).
+	qBuf := q
+	if logstorage.QueryHasPipes(q) {
+		qBuf = logstorage.CloneWithoutPipes(q)
+	}
+	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, s.localBufferTenantIDs(ctx, tenantIDs, startNs, endNs), qBuf, false, nil)
 	if err := s.localBuffer.RunQuery(qctx, writeBlock); err != nil {
 		logger.Warnf("pure-buffer fast path failed, falling back to bridge: %s", err)
 		return false
@@ -877,70 +873,79 @@ func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query,
 	return true
 }
 
-func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs, watermarkNs int64, q *logstorage.Query, tenantIDs []logstorage.TenantID, filteredWriteBlock logstorage.WriteDataBlockFunc) {
+func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, wm bufferWatermarks, q *logstorage.Query, tenantIDs []logstorage.TenantID, filteredWriteBlock logstorage.WriteDataBlockFunc) {
 	// The watermark boundary exists ONLY to stop aggregation queries
-	// (count()/stats) from counting a span twice — once from the Parquet scan,
-	// once from the overlapping buffer. Trace-retrieval queries (Jaeger/Tempo
-	// span fetch, trace-by-id) are deduplicated by the reader on
-	// (trace_id, span_id), so for them double-emission is harmless — but the
-	// watermark would WRONGLY exclude a trace's buffer spans whenever a scanned
-	// Parquet file (holding other, newer traces) has a MaxTimeNs above this
-	// trace's time. So ignore the watermark for trace_id-filtered queries and
+	// (count()/stats) from counting a row twice across the buffer↔Parquet
+	// overlap. trace_id-filtered queries are span/log RETRIEVAL (Jaeger/Tempo
+	// fetch, trace-by-id, log→trace correlation): completeness matters and the
+	// watermark would wrongly exclude a trace's buffer rows whenever a scanned
+	// Parquet file (holding other, newer data) has a MaxTimeNs above this
+	// trace's time. So ignore the watermarks for trace_id-filtered queries and
 	// serve the buffer's full window.
 	if q != nil && queryFiltersTraceID(q.String()) {
-		watermarkNs = 0
+		wm = nil
 	}
-	// Serve the buffer only for data STRICTLY newer than what the Parquet scan
-	// at this call site already emitted (watermarkNs). Call sites where no
-	// Parquet was emitted pass watermarkNs=0, so the buffer serves the whole
-	// window.
-	bufStartNs := startNs
-	if watermarkNs > 0 && watermarkNs >= bufStartNs {
-		bufStartNs = watermarkNs + 1
-	}
-	if bufStartNs > endNs {
-		return // Parquet already covers this whole window; nothing newer to add.
-	}
+	scope := scopeFor(ctx, tenantIDs)
 
-	// Option B (P3): when a co-located logstorage-native buffer is present,
-	// serve the recent/unflushed window from it via the SAME engine the
-	// S3-Parquet scan uses — no struct→DataBlock conversion (which is the bug
-	// class this whole effort removes). We run a pipe-stripped clone scoped to
-	// (watermark, endNs] so the store emits filtered raw blocks into
-	// filteredWriteBlock; the outer RunQuery applies pipes once over buffer +
-	// Parquet blocks.
-	// Use the local logstorage buffer directly (zero-conversion) ONLY when this
-	// node has no peers — i.e. single-node role=all, where the local buffer holds
-	// ALL unflushed rows. In a multi-pod deployment the local buffer holds only
-	// THIS pod's ingested rows; other insert pods' unflushed rows live in their
-	// buffers, reachable only via the BufferBridge HTTP fan-out. So with peers we
-	// fall through to the fan-out (every pod's handler returns its own rows — no
-	// double-count, no need to exclude self from the unfiltered peer list).
+	// The buffer serves each tenant only the rows STRICTLY newer than that
+	// tenant's flush watermark (the newest MaxTimeNs among the Parquet objects
+	// this query selected for it), so no row is emitted from both tiers. The
+	// watermark is per tenant: under a global read one tenant's newer flush
+	// must not hide another tenant's still-unflushed rows.
+	//
+	// Option B (P3): use the co-located logstorage-native buffer directly
+	// (zero-conversion) ONLY when this node has no peers — single-node role=all,
+	// where the local buffer holds ALL unflushed rows. In a multi-pod deployment
+	// the local buffer holds only THIS pod's rows; other insert pods' unflushed
+	// rows live in their buffers, reachable only via the BufferBridge HTTP
+	// fan-out. So with peers we fall through to the fan-out (every pod's handler
+	// returns its own rows — no double-count, no need to exclude self from the
+	// unfiltered peer list).
 	if s.localBuffer != nil && (s.bufferBridge == nil || !s.bufferBridge.HasPeers()) {
-		qBuf := q.CloneWithTimeFilter(q.GetTimestamp(), bufStartNs, endNs)
-		qBuf.DropAllPipes()
-		qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, tenantIDs, qBuf, false, nil)
-		if err := s.localBuffer.RunQuery(qctx, filteredWriteBlock); err != nil {
-			logger.Warnf("Option B local buffer query failed (cold-tier results may miss the recent window): %s", err)
+		for _, id := range s.localBufferTenantIDs(ctx, tenantIDs, startNs, endNs) {
+			bufStartNs := bufferWindowStart(startNs, wm[id])
+			if bufStartNs > endNs {
+				continue // Parquet already covers this tenant's whole window.
+			}
+			qBuf := q.CloneWithTimeFilter(q.GetTimestamp(), bufStartNs, endNs)
+			qBuf.DropAllPipes()
+			qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{id}, qBuf, false, nil)
+			if err := s.localBuffer.RunQuery(qctx, filteredWriteBlock); err != nil {
+				logger.Warnf("Option B local buffer query failed (cold-tier results may miss the recent window): %s", err)
+			}
 		}
 		return
 	}
 	if s.bufferBridge == nil {
 		return
 	}
+	// Multi-pod fan-out. The bridge asks each peer for ONE tenant's rows (or
+	// every tenant's, for a validated global read), and the row→block
+	// conversion re-checks every row's account/project — belt and braces, so a
+	// peer that answers without scoping cannot leak into this answer.
+	// Twin of the other module's queryBufferBridge.
+	fetchStartNs := startNs
+	if scope.single() {
+		fetchStartNs = bufferWindowStart(startNs, wm[singleTenantID(tenantIDs)])
+		if fetchStartNs > endNs {
+			return
+		}
+	}
 	switch s.cfg.Mode {
 	case config.ModeLogs:
-		bufRows, _ := s.bufferBridge.QueryLogs(ctx, bufStartNs, endNs)
+		bufRows, _ := s.bufferBridge.QueryLogs(ctx, fetchStartNs, endNs, scope)
+		bufRows = logRowsAfterWatermarks(bufRows, startNs, wm)
 		if len(bufRows) > 0 {
-			db := s.logRowsToDataBlock(bufRows)
+			db := s.logRowsToDataBlock(scope, "bridge_logs", bufRows)
 			if db != nil && db.RowsCount() > 0 {
 				filteredWriteBlock(0, db)
 			}
 		}
 	case config.ModeTraces:
-		bufRows, _ := s.bufferBridge.QueryTraces(ctx, bufStartNs, endNs)
+		bufRows, _ := s.bufferBridge.QueryTraces(ctx, fetchStartNs, endNs, scope)
+		bufRows = traceRowsAfterWatermarks(bufRows, startNs, wm)
 		if len(bufRows) > 0 {
-			db := s.traceRowsToDataBlock(bufRows)
+			db := s.traceRowsToDataBlock(scope, "bridge_traces", bufRows)
 			if db != nil && db.RowsCount() > 0 {
 				filteredWriteBlock(0, db)
 			}
@@ -1060,24 +1065,21 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 	metrics.ParquetFilesOpened.Inc()
 	metrics.ParquetColumnBytesRead.Add(len(data))
 
-	if s.footerCache != nil {
-		if cached, ok := s.footerCache.Get(fi.Key); ok && cached.FileSize == int64(len(data)) {
-			return cached.File, nil, nil
-		}
-	}
-
-	if s.footerCache != nil {
-		cached, f, parseErr := ParseFooterFromData(fi.Key, data)
-		if parseErr != nil {
-			return nil, nil, parseErr
-		}
-		s.footerCache.Put(fi.Key, cached)
-		return f, nil, nil
-	}
-
-	f, parseErr := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+	// Always open a fresh *parquet.File over the downloaded bytes. A footer
+	// cache entry is metadata only: one fetched by prefetchFooters or
+	// shouldSkipByFooter is backed by a synthetic reader that holds just the
+	// footer and reads the column-data region as zeros, so decoding rows
+	// through it yields no matching rows (every timestamp reads as 0). Even a
+	// data-backed entry must not be shared: parquet-go column chunk and page
+	// readers keep per-read state. ParseFooterFromData still feeds the cache,
+	// so the whole-file download doubles as the footer warmup. Mirror of
+	// internal/storage/parquets3/storage_query.go.
+	cached, f, parseErr := ParseFooterFromData(fi.Key, data)
 	if parseErr != nil {
-		return nil, nil, fmt.Errorf("open parquet file %s: %w", fi.Key, parseErr)
+		return nil, nil, parseErr
+	}
+	if s.footerCache != nil {
+		s.footerCache.Put(fi.Key, cached)
 	}
 	return f, nil, nil
 }
@@ -2794,7 +2796,10 @@ func (s *Storage) QuerySpecificFiles(ctx context.Context, fileKeys []string, sta
 		keySet[k] = true
 	}
 
-	allFiles := s.manifest.GetFilesForRange(startNs, endNs)
+	// Cross-tenant by construction: the caller has already named the exact
+	// objects to read (compaction / verification tooling, never a select
+	// request), so there is no request tenant to scope to.
+	allFiles := s.filesForScope("query_specific_files", startNs, endNs, tenantScope{all: true})
 
 	var files []manifest.FileInfo
 	for _, f := range allFiles {

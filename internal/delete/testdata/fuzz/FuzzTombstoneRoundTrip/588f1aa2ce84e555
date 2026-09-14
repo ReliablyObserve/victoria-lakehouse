@@ -1,0 +1,8 @@
+go test fuzz v1
+string("0")
+string("0")
+int64(0)
+int64(100)
+string("")
+string("\xfd")
+bool(true)
