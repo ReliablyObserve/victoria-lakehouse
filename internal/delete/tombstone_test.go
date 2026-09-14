@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,45 @@ type mockS3Pool struct {
 
 func newMockS3Pool() *mockS3Pool {
 	return &mockS3Pool{objects: make(map[string][]byte)}
+}
+
+// Put / Get / Has / Count let tests reach the contents without touching the map
+// directly, so every access goes through the mutex — the delete tests run
+// rewrites, queries and compactions concurrently under -race.
+func (m *mockS3Pool) Put(key string, data []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.objects[key] = append([]byte(nil), data...)
+}
+
+func (m *mockS3Pool) Get(key string) ([]byte, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.objects[key]
+	return d, ok
+}
+
+func (m *mockS3Pool) Has(key string) bool {
+	_, ok := m.Get(key)
+	return ok
+}
+
+func (m *mockS3Pool) Count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.objects)
+}
+
+// Keys satisfies storageinvariants.Bucket.
+func (m *mockS3Pool) Keys() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	keys := make([]string, 0, len(m.objects))
+	for k := range m.objects {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (m *mockS3Pool) Upload(_ context.Context, key string, data []byte) error {

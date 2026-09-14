@@ -2,8 +2,10 @@ package delete
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
@@ -35,6 +37,14 @@ type Handler struct {
 	mode     string
 }
 
+// routePrefix is the URL prefix every delete route of this binary lives under.
+func (h *Handler) routePrefix() string {
+	if h.mode == "traces" {
+		return "/delete/tracessql"
+	}
+	return "/delete/logsql"
+}
+
 // NewHandler creates a Handler with the given dependencies.
 // Mode should be "logs" or "traces" and determines the URL prefix.
 func NewHandler(store *TombstoneStore, manifest ManifestQuerier, detector *StorageClassDetector, cfg *config.DeleteConfig, mode string) *Handler {
@@ -52,13 +62,11 @@ func NewHandler(store *TombstoneStore, manifest ManifestQuerier, detector *Stora
 
 // Register mounts all delete endpoints on the given ServeMux.
 func (h *Handler) Register(mux *http.ServeMux) {
-	prefix := "/delete/logsql"
-	if h.mode == "traces" {
-		prefix = "/delete/tracessql"
-	}
+	prefix := h.routePrefix()
 	mux.HandleFunc(prefix+"/delete", h.handleDelete)
 	mux.HandleFunc(prefix+"/estimate", h.handleEstimate)
 	mux.HandleFunc(prefix+"/tombstones", h.handleListTombstones)
+	mux.HandleFunc(prefix+"/leftovers", h.handleLeftovers)
 	mux.HandleFunc(prefix+"/tombstone/", h.handleTombstoneByID)
 	mux.HandleFunc(prefix+"/verify", h.handleVerify)
 }
@@ -115,6 +123,13 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) {
 		AffectedKeys: affectedKeys,
 		CreatedAt:    time.Now(),
 		Mode:         mode,
+	}
+
+	// Reject before storing. An unenforceable tombstone that is accepted looks
+	// to the user exactly like a successful delete that removed nothing.
+	if err := ts.Validate(); err != nil {
+		http.Error(w, "invalid delete request: "+err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	h.store.Add(ts)
@@ -205,14 +220,22 @@ func (h *Handler) handleListTombstones(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tombstones": tombstones,
 		"count":      len(tombstones),
+		// Whether what is listed would survive a pod loss: write-through
+		// persistence armed, and how many records are still owed to S3
+		// (only the local disk copy holds those).
+		"persistence": map[string]any{
+			"enabled":           h.store.PersistenceEnabled(),
+			"pending_s3_writes": h.store.PendingS3Writes(),
+		},
 	})
 }
 
 func (h *Handler) handleTombstoneByID(w http.ResponseWriter, r *http.Request) {
-	// Extract ID from path: /delete/logsql/tombstone/{id}
-	const prefix = "/delete/logsql/tombstone/"
-	id := r.URL.Path[len(prefix):]
-	if id == "" {
+	// Extract ID from path: {routePrefix}/tombstone/{id}. The prefix is the
+	// mode's own — slicing the traces route with the logs prefix produced
+	// "ne/<id>", so by-id lookups and un-deletes 404'd on the traces binary.
+	id := strings.TrimPrefix(r.URL.Path, h.routePrefix()+"/tombstone/")
+	if id == "" || id == r.URL.Path {
 		http.Error(w, "missing tombstone id", http.StatusBadRequest)
 		return
 	}
@@ -227,12 +250,16 @@ func (h *Handler) handleTombstoneByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, ts)
 
 	case http.MethodDelete:
-		_, ok := h.store.Get(id)
-		if !ok {
+		switch err := h.store.TryRemove(id); {
+		case errors.Is(err, ErrTombstoneNotFound):
 			http.Error(w, "tombstone not found", http.StatusNotFound)
 			return
+		case errors.Is(err, ErrRewriteInProgress):
+			// The rewrite's record lives on this tombstone until its objects
+			// are settled; the un-delete is refused rather than lose it.
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
 		}
-		h.store.Remove(id)
 		metrics.DeleteTombstonesActive.Set(int64(h.store.Count()))
 
 		logger.Infof("tombstone removed; id=%s", id)

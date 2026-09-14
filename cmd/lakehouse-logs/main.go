@@ -55,7 +55,12 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
-const vlCompat = "1.50.0"
+// vlCompat is the VictoriaLogs release this binary embeds, reported on
+// /lakehouse/info and in the startup log so an operator can tell which upstream
+// a running node speaks without reading go.mod. It must equal the version the
+// root go.mod requires; TestVLCompatMatchesGoMod fails the build otherwise,
+// because a stale value here misreports compatibility to every client that asks.
+const vlCompat = "1.52.0"
 
 var (
 	configPath      = flag.String("lakehouse.config", "", "Path to YAML config file")
@@ -290,24 +295,51 @@ func run(cfg *config.Config, addr string) {
 	// by the first compaction tick (Compaction.Interval default
 	// 5 min) the holder is always populated, so the closure
 	// returns real overrides instead of nil-no-op.
+	tombstoneStore := delete.NewTombstoneStore()
+	tombstonePersistence := delete.PersistenceConfig{
+		Dir:    cfg.Delete.PersistPath,
+		Pool:   &s3PoolAdapter{pool: store.Pool()},
+		Prefix: cfg.AutoPrefix(),
+	}
+	// Restore the UNION of the disk and S3 copies. The previous sequence only
+	// consulted S3 when disk restored nothing, and nothing ever WROTE to S3, so
+	// a pod that lost its local volume came back with no tombstones at all —
+	// silently un-deleting everything an operator had hidden.
+	if n, err := tombstoneStore.Restore(context.Background(), tombstonePersistence); err != nil {
+		logger.Warnf("tombstone restore incomplete (restored=%d): %s", n, err)
+	} else if n > 0 {
+		logger.Infof("tombstones restored; count=%d, prefix=%s", n, delete.TombstonePrefix(cfg.AutoPrefix()))
+	}
+	// Arm write-through durability AFTER the restore so replaying the restored
+	// records does not rewrite every object back out.
+	tombstoneStore.EnablePersistence(tombstonePersistence)
+	// A restore that could not read S3 leaves this node enforcing an incomplete
+	// set of deletes, so keep retrying in the background. The rewrite scheduler
+	// retries on every pass too, but it may be disabled on this node.
+	if tombstoneStore.S3RestorePending() {
+		go tombstoneStore.RunRestoreRetry(context.Background(), time.Minute)
+	}
+	// The restore re-queues the S3 delete of any removed tombstone whose stale
+	// S3 copy survived a crash. Drain that now rather than at the first rewrite
+	// scheduler tick: the scheduler may be disabled on this node.
+	if tombstoneStore.PendingS3Writes() > 0 {
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		tombstoneStore.FlushPending(flushCtx)
+		flushCancel()
+	}
+	// A tombstone retiring is when its rows stop being hidden at query time;
+	// the field catalog must no longer list values only those rows carried.
+	tombstoneStore.SetCompletionObserver(func(ts delete.Tombstone) {
+		store.PmetaRebuildCatalogValues(ts.AffectedKeys)
+	})
+	store.SetTombstoneStore(tombstoneStore)
+
 	var tenantPolicyHolder *tenant.PolicyRegistry
-	sched, sweep, stopCompaction := setupCompaction(cfg, store, pusher, addr, &tenantPolicyHolder)
+	sched, sweep, stopCompaction := setupCompaction(cfg, store, pusher, addr, &tenantPolicyHolder, tombstoneStore)
 	if stopCompaction != nil {
 		defer stopCompaction()
 	}
 	_ = sweep
-
-	tombstoneStore := delete.NewTombstoneStore()
-	if err := tombstoneStore.LoadFromDisk(cfg.Delete.PersistPath); err != nil {
-		logger.Warnf("failed to load tombstones from disk: %s; path=%s", err, cfg.Delete.PersistPath)
-	}
-	if tombstoneStore.Count() == 0 {
-		s3Pool := &s3PoolAdapter{pool: store.Pool()}
-		if err := tombstoneStore.LoadFromS3(context.Background(), s3Pool, cfg.S3.Bucket, cfg.AutoPrefix()); err != nil {
-			logger.Warnf("failed to load tombstones from S3: %s", err)
-		}
-	}
-	store.SetTombstoneStore(tombstoneStore)
 
 	// --- Tenant resolver ---
 	resolverCfg := tenant.ResolverConfig{
@@ -409,7 +441,7 @@ func run(cfg *config.Config, addr string) {
 	}
 	detector := delete.NewStorageClassDetector(lifecycleRules)
 
-	rewriter := delete.NewRewriter(store.Pool(), cfg.AutoPrefix(), cfg.Insert.RowGroupSize, "logs")
+	rewriter := newDeleteRewriter(store.Pool(), cfg, "logs")
 
 	var rewriteSched *delete.RewriteScheduler
 	if cfg.Delete.Enabled {
@@ -420,6 +452,11 @@ func run(cfg *config.Config, addr string) {
 			RewriteDelay:   cfg.Delete.RewriteDelay,
 			AllowedClasses: cfg.Delete.AutoRewriteClasses,
 			MaxConcurrent:  cfg.Delete.RewriteMaxConcurrent,
+			// Without this the rewriter deletes files the manifest still
+			// points at and publishes replacements the manifest has never
+			// heard of; the scheduler refuses to rewrite at all when it is nil.
+			Manifest:    store.Manifest(),
+			OnPublished: rewritePublishHook(store, pusher),
 		})
 		rewriteSched.Start(cfg.Delete.VerifyInterval)
 		logger.Infof("delete rewrite scheduler started; rewrite_delay=%v, verify_interval=%v",
@@ -621,6 +658,15 @@ func runShutdown(
 	if err := tombstoneStore.PersistToDisk(cfg.Delete.PersistPath); err != nil {
 		logger.Errorf("failed to persist tombstones to disk: %s", err)
 	}
+	// Durability does not depend on reaching this point — every mutation was
+	// already written through — but shutdown is the last chance to drain any
+	// S3 write a transient failure left owed.
+	tsCtx, tsCancel := context.WithTimeout(context.Background(), persistTimeout)
+	if pending := tombstoneStore.FlushPending(tsCtx); pending > 0 {
+		logger.Errorf("%d tombstone records could not be written to S3; the local disk copy at %s is authoritative for this node",
+			pending, cfg.Delete.PersistPath)
+	}
+	tsCancel()
 
 	// Final stats snapshot on shutdown — bounded too.
 	if cfg.Stats.Enabled && cfg.Stats.SnapshotPrefix != "" {
@@ -646,6 +692,38 @@ func runShutdown(
 	logger.Infof("lakehouse-logs stopped")
 }
 
+// newDeleteRewriter builds the delete rewriter with the compactor's writers, so a
+// file rewritten to remove deleted rows keeps the SBBF blooms, slot binding,
+// compression and (for traces) the `_trace_idx` footer index a compaction output
+// of the same rows would carry. A rewrite must never make a file less prunable,
+// for LH or for an external Parquet reader. Extracted so the binary's tests can
+// pin the wiring.
+func newDeleteRewriter(pool delete.RewriterPool, cfg *config.Config, mode string) *delete.Rewriter {
+	return delete.NewRewriter(pool, cfg.AutoPrefix(), cfg.Insert.RowGroupSize, mode,
+		delete.WithParquetWriters(delete.ParquetWriters{
+			Logs:             compaction.WriteLogs,
+			Traces:           compaction.WriteTraces,
+			CompressionLevel: cfg.Insert.CompressionLevel,
+		}))
+}
+
+// rewritePublishHook routes a published delete rewrite through the consumers
+// compaction's OnCompacted uses — the pmeta facet feed and the peer manifest
+// push — with one addition: the field catalog's value sets are rebuilt, because
+// a rewrite REMOVES rows and the catalog is a union a removal cannot shrink
+// (see Storage.PmetaOnRewritten). Without the push, a peer keeps the superseded
+// key and never learns the replacement, and that peer's orphan sweep would
+// eventually reclaim it. Kept out of run() so the gocyclo budget there is not
+// spent on a closure.
+func rewritePublishHook(store *parquets3.Storage, pusher *manifest.Pusher) func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string) {
+	return func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string) {
+		store.PmetaOnRewritten(added, removed, blooms)
+		if pusher != nil {
+			pusher.Notify(added, removed)
+		}
+	}
+}
+
 // setupCompaction wires the election-free compaction scheduler + orphan
 // sweeper for one module. Returns (scheduler, sweep, stop) where stop is
 // nil when compaction is disabled. Extracted from run() to keep the
@@ -657,6 +735,7 @@ func setupCompaction(
 	pusher *manifest.Pusher,
 	addr string,
 	tenantPolicyHolder **tenant.PolicyRegistry,
+	tombstoneStore *delete.TombstoneStore,
 ) (*compaction.Scheduler, *compaction.OrphanSweep, func()) {
 	if !cfg.Compaction.Enabled {
 		return nil, nil, nil
@@ -715,6 +794,11 @@ func setupCompaction(
 	}
 
 	sched := compaction.NewScheduler(compaction.SchedulerConfig{
+		// Compaction is the second reaper: it already rewrites every row it
+		// touches, so suppressing tombstoned rows there costs one predicate
+		// and removes them permanently instead of copying them forward.
+		Tombstones:               tombstoneStore,
+		TombstoneRewriteDelay:    cfg.Delete.RewriteDelay,
 		Manifest:                 store.Manifest(),
 		Pool:                     store.Pool(),
 		Ownership:                ownership,
@@ -923,6 +1007,16 @@ func applyTenantStorageOverrides(store *parquets3.Storage, policy *tenant.Policy
 		bucketFor := func(a, p uint32) string {
 			return bucketByTenant[uint64(a)<<32|uint64(p)]
 		}
+		// The manifest refresh must list the dedicated buckets too, or their
+		// objects drop out of the manifest at the next refresh.
+		tenantBuckets := make([]manifest.TenantBucket, 0, len(entries))
+		for _, e := range entries {
+			tenantBuckets = append(tenantBuckets, manifest.TenantBucket{
+				Bucket: e.Bucket,
+				Prefix: fmt.Sprintf("%d/%d/", e.AccountID, e.ProjectID),
+			})
+		}
+		store.Manifest().SetTenantBuckets(tenantBuckets)
 		store.Pool().SetBucketRouter(func(key string) string {
 			acc, proj, ok := parseTenantFromS3Key(key)
 			if !ok {
@@ -1270,10 +1364,13 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			listenAddr = cfg.ListenAddr()
 		}
 		parityAPI.RegisterParity(mux, stats.NewLocalVLQuerier(fmt.Sprintf("http://127.0.0.1%s", listenAddr)), func(r *http.Request) bool {
-			if cfg.Tenant.GlobalReadHeader != "" && cfg.Tenant.GlobalReadValue != "" {
-				return r.Header.Get(cfg.Tenant.GlobalReadHeader) == cfg.Tenant.GlobalReadValue
-			}
-			return cfg.Tenant.GlobalReadToken != "" && r.Header.Get("Authorization") == "Bearer "+cfg.Tenant.GlobalReadToken
+			// Same validator the select path uses to widen a query to
+			// every tenant — one credential, one implementation.
+			return tenant.NewGlobalReadAuth(
+				cfg.Tenant.GlobalReadHeader,
+				cfg.Tenant.GlobalReadValue,
+				cfg.Tenant.GlobalReadToken,
+			).Authorize(r)
 		})
 	}
 
@@ -1387,6 +1484,19 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 			logger.Infof("manifest loaded from disk; files=%d, bytes=%d", m.TotalFiles(), m.TotalBytes())
 		}
 	}
+	// Both halves of the delete state are now restored (tombstones at
+	// construction, manifest just above). Before the first manifest refresh can
+	// run, apply every rewrite a previous process left unfinished to the
+	// manifest's view, so the refresh neither adopts an unpublished replacement
+	// next to its source nor re-adopts a source whose replacement was
+	// published. The objects themselves are settled by the rewrite scheduler.
+	if n := delete.ResolveInterruptedRewrites(store.TombstoneStore(), store.Manifest()); n > 0 {
+		logger.Infof("interrupted rewrites resolved at startup; count=%d", n)
+	}
+	// Now the two halves can be compared. Findings are reported, not repaired:
+	// every repair is a data movement the rewrite scheduler already owns.
+	delete.SelfCheck(store.TombstoneStore(), store.Manifest())
+
 	sm.SetManifestFiles(int64(store.Manifest().TotalFiles()))
 	logger.Infof("disk recovery complete; entering serve-while-warming mode (manifest_files=%d, min=%d)",
 		store.Manifest().TotalFiles(), cfg.Startup.MinManifestFiles)
@@ -2082,6 +2192,13 @@ func (a *s3PoolAdapter) HeadObject(ctx context.Context, key string) (int64, time
 type manifestQuerierAdapter struct {
 	m *manifest.Manifest
 }
+
+// RetiredKeys / PendingKeys back the read-only {prefix}/leftovers listing: the
+// objects this instance has stopped serving but not deleted yet, and the
+// uploads it has claimed but not published (delete.LeftoverLister).
+func (a *manifestQuerierAdapter) RetiredKeys() []manifest.RetiredKey { return a.m.RetiredKeys() }
+
+func (a *manifestQuerierAdapter) PendingKeys() []manifest.PendingKey { return a.m.PendingKeys() }
 
 func (a *manifestQuerierAdapter) GetFilesForRange(startNs, endNs int64) []delete.FileInfo {
 	mFiles := a.m.GetFilesForRange(startNs, endNs)

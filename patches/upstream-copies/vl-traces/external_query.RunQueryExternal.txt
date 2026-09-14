@@ -1,0 +1,22 @@
+# upstream: lib/logstorage/storage_search.go (*Storage).runQuery
+# tree: lakehouse-traces/deps/VictoriaLogs
+# pin: 6ae2da3c11f3
+
+func (s *Storage) runQuery(qctx *QueryContext, writeBlock writeBlockResultFunc) error {
+	qNew, err := initSubqueries(qctx, s.runQuery, false)
+	if err != nil {
+		return err
+	}
+	q := qNew
+
+	sso := s.getSearchOptions(qctx.TenantIDs, q, qctx.HiddenFieldsFilters)
+
+	search := func(stopCh <-chan struct{}, writeBlockToPipes writeBlockResultFunc) error {
+		workersCount := q.GetParallelReaders(s.defaultParallelReaders)
+		s.searchParallel(workersCount, sso, qctx.QueryStats, stopCh, writeBlockToPipes)
+		return nil
+	}
+
+	concurrency := q.GetConcurrency()
+	return runPipes(qctx, q.pipes, search, writeBlock, concurrency)
+}

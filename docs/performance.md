@@ -196,11 +196,11 @@ If all rows match the filter (100% selectivity), the bitmap is discarded and the
 
 A dedicated LRU cache (default: 10,000 entries) stores parsed `parquet.File` metadata (footer, schema, column indices). This avoids re-parsing the Parquet footer on every query for recently accessed files.
 
-The footer cache is populated on first access and during cache warmup. It is separate from the L1/L2 data cache — it stores only the parsed metadata structure, not the file data itself.
+The footer cache is populated on first access and during cache warmup. It is separate from the L1/L2 data cache — it stores only the parsed metadata structure, not the file data itself. It plans ranged reads; an entry holds a copy of the object's metadata tail (page index + footer), never a handle over the object body, and a read of every column decodes a fresh handle over the downloaded object (see [read-path.md](read-path.md#level-3-footer-parse-and-cache)).
 
 | Setting | Default | Impact |
 |---|---|---|
-| `cache.footer_max_items` | 10000 | Max parsed footers in memory. Each footer is a few KB. |
+| `cache.footer_max_items` | 10000 | Max parsed footers in memory. Each footer is a few KB. (traces only today — the logs binary's footer cache is fixed at 10 000 entries; see [scale limits](petabyte-scale-audit.md#footer-cache)) |
 
 ### Parallel row group processing
 
@@ -530,6 +530,8 @@ Optimizations applied: inverted label index, SmartCache trace_id fast-path.
 #### Traces: Phase 4 (2026-05-22)
 
 Dataset: 5881 traces, 168h back. LH-traces vs VictoriaTraces v0.9.2 (disk) vs Tempo 2.7.2 (S3).
+VictoriaTraces v0.9.2 is the release pinned when this run was measured; the current pin is v0.11.0,
+and these numbers are not re-stated for it — see `docs/benchmarks/full-scope-s3.md` for the runs that are.
 
 | Category | Scenario | LH p95 | VT p95 | Tempo p95 | LH/VT | LH/Tempo |
 |---|---|---|---|---|---|---|

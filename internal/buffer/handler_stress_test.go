@@ -122,7 +122,7 @@ func TestStress_ConcurrentReadsDuringWrites(t *testing.T) {
 	var maxObservedTS atomic.Int64
 	startStr := strconv.FormatInt(0, 10)
 	endStr := strconv.FormatInt(int64(1)<<62, 10)
-	urlPath := fmt.Sprintf("/internal/buffer/query?start=%s&end=%s&mode=logs", startStr, endStr)
+	urlPath := fmt.Sprintf("/internal/buffer/query?start=%s&end=%s&mode=logs&account_id=0&project_id=0&tenant_scope=v1", startStr, endStr)
 
 	for i := 0; i < readers; i++ {
 		readerWG.Add(1)

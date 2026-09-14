@@ -3,12 +3,16 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -881,4 +885,599 @@ func TestMultitenancy_HitsEndpointWorks(t *testing.T) {
 
 	body := httpGetBody(t, logsBaseURL, "/select/logsql/hits", params)
 	assertHitsResponse(t, body)
+}
+
+// ---------------------------------------------------------------------------
+// Tenant read scoping — exact per-tenant counts on BOTH binaries, in BOTH
+// tenant layouts.
+//
+// Each test run writes its own small corpus under a unique marker, so every
+// expected number is a constant rather than whatever the shared seed produced:
+//
+//	tenant 0:0     prefix layout (obs-archive/0/0/...)              7 rows
+//	tenant 1:1     prefix layout (obs-archive/1/1/...)              4 rows
+//	tenant 3003:0  bucket-per-tenant (obs-archive-tenant-3003/...)  5 rows
+//
+// and then asserts, for query / hits / field_values / streams (logs) and
+// query / hits / field_values / Jaeger services (traces):
+//
+//	headers 0:0            → exactly tenant 0:0
+//	headers 1:1            → exactly tenant 1:1
+//	headers 3003:0         → exactly tenant 3003:0
+//	no tenant headers      → exactly tenant 0:0 (VL's default tenant)
+//	valid global-read      → exactly the sum of all three
+//	wrong global-read      → exactly tenant 0:0 (no widening)
+//	headers 99:99          → nothing
+//
+// Different row counts per tenant make a leak unmistakable: an answer that
+// merges tenants matches no single expectation. The checks run twice, because
+// those are different code paths with different scoping code:
+//
+//   - right after ingest the rows are only in the insert buffer. Row queries
+//     and hits merge the buffer, so they must already be exact; field and
+//     stream enumeration and the Jaeger service list read the cold tier only,
+//     so there they may be empty but must never show another tenant's value.
+//   - once the rows are flushed to Parquet every endpoint must be exact.
+// ---------------------------------------------------------------------------
+
+type scopeTenant struct {
+	account, project string
+	bucket           string // bucket the tenant's Parquet lands in
+	rows             int
+}
+
+func (st scopeTenant) key() string { return st.account + ":" + st.project }
+
+const scopeBucketTenantBucket = "obs-archive-tenant-3003"
+
+var scopeTenants = []scopeTenant{
+	{account: "0", project: "0", bucket: "obs-archive", rows: 7},
+	{account: "1", project: "1", bucket: "obs-archive", rows: 4},
+	{account: "3003", project: "0", bucket: scopeBucketTenantBucket, rows: 5},
+}
+
+// scopeRequest is one request shape and the tenants it may see.
+type scopeRequest struct {
+	name    string
+	headers map[string]string
+	visible []string // tenant keys
+}
+
+func scopeRequests() []scopeRequest {
+	return []scopeRequest{
+		{"headers-0:0", map[string]string{"AccountID": "0", "ProjectID": "0"}, []string{"0:0"}},
+		{"headers-1:1", map[string]string{"AccountID": "1", "ProjectID": "1"}, []string{"1:1"}},
+		{"headers-3003:0-bucket-layout", map[string]string{"AccountID": "3003", "ProjectID": "0"}, []string{"3003:0"}},
+		{"no-headers", nil, []string{"0:0"}},
+		{"global-read", map[string]string{globalReadHeader: globalReadSecret}, []string{"0:0", "1:1", "3003:0"}},
+		{"wrong-global-read", map[string]string{globalReadHeader: "not-the-secret"}, []string{"0:0"}},
+		{"headers-99:99-unknown", map[string]string{"AccountID": "99", "ProjectID": "99"}, nil},
+	}
+}
+
+func (r scopeRequest) expectedRows() int {
+	n := 0
+	for _, st := range scopeTenants {
+		for _, v := range r.visible {
+			if st.key() == v {
+				n += st.rows
+			}
+		}
+	}
+	return n
+}
+
+func (r scopeRequest) expectedServices(marker string) []string {
+	out := make([]string, 0, len(r.visible))
+	for _, v := range r.visible {
+		out = append(out, scopeService(marker, v))
+	}
+	sort.Strings(out)
+	return out
+}
+
+func scopeService(marker, tenantKey string) string {
+	return marker + "-" + strings.ReplaceAll(tenantKey, ":", "-")
+}
+
+func scopeGet(t *testing.T, base, path string, params url.Values, headers map[string]string) []byte {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, base+path+"?"+params.Encode(), nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("GET %s%s: %v", base, path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read %s%s: %v", base, path, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s%s: status %d: %s", base, path, resp.StatusCode, string(body))
+	}
+	return body
+}
+
+func scopeWindow(ingestAt time.Time) url.Values {
+	return url.Values{
+		"start": {strconv.FormatInt(ingestAt.Add(-15*time.Minute).UnixNano(), 10)},
+		"end":   {strconv.FormatInt(ingestAt.Add(5*time.Minute).UnixNano(), 10)},
+	}
+}
+
+func scopeNDJSONRows(body []byte) int {
+	n := 0
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var obj map[string]any
+		if json.Unmarshal(line, &obj) == nil {
+			n++
+		}
+	}
+	return n
+}
+
+func scopeHitsTotal(t *testing.T, body []byte) int {
+	t.Helper()
+	var resp struct {
+		Hits []struct {
+			Total  *int  `json:"total"`
+			Values []int `json:"values"`
+		} `json:"hits"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("parse hits: %v: %s", err, string(body))
+	}
+	n := 0
+	for _, h := range resp.Hits {
+		for _, v := range h.Values {
+			n += v
+		}
+	}
+	return n
+}
+
+func scopeValueSet(t *testing.T, body []byte) []string {
+	t.Helper()
+	var resp struct {
+		Values []struct {
+			Value string `json:"value"`
+		} `json:"values"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("parse values: %v: %s", err, string(body))
+	}
+	out := make([]string, 0, len(resp.Values))
+	for _, v := range resp.Values {
+		out = append(out, v.Value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// scopeMarkerServices keeps only this run's marker services, so values that
+// other tests or the seed wrote into the same tenant cannot disturb the check.
+func scopeMarkerServices(vals []string, marker string) []string {
+	out := make([]string, 0, len(vals))
+	for _, v := range vals {
+		if strings.HasPrefix(v, marker+"-") {
+			out = append(out, v)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+var scopeStreamServiceRe = regexp.MustCompile(`service\.name="([^"]+)"`)
+
+// scopeEventually re-evaluates observe until it matches want or the deadline
+// passes. A leak is persistent — the answer never converges to a single
+// tenant's number — so waiting out transient flush/compaction windows cannot
+// hide one. forbidden is checked on EVERY observation: another tenant's marker
+// service may never appear, not even once.
+func scopeEventually(t *testing.T, what string, deadline time.Duration, want string, observe func() (got string, foreign []string)) {
+	t.Helper()
+	scopeEventuallyDiag(t, what, deadline, want, observe, nil)
+}
+
+// scopeEventuallyDiag is scopeEventually with a diagnostics callback whose
+// output is attached to a convergence failure, so a failing CI run carries the
+// evidence needed to tell a scoping defect from a cold-tier or timing one.
+func scopeEventuallyDiag(t *testing.T, what string, deadline time.Duration, want string, observe func() (got string, foreign []string), diag func() string) {
+	t.Helper()
+	end := time.Now().Add(deadline)
+	var got string
+	for {
+		var foreign []string
+		got, foreign = observe()
+		if len(foreign) > 0 {
+			t.Fatalf("%s: answer carried another tenant's data %v (full answer %s)", what, foreign, got)
+		}
+		if got == want {
+			return
+		}
+		if time.Now().After(end) {
+			extra := ""
+			if diag != nil {
+				extra = "\n  diagnostics:\n" + diag()
+			}
+			t.Fatalf("%s: got %s, want exactly %s%s", what, got, want, extra)
+		}
+		time.Sleep(3 * time.Second)
+	}
+}
+
+// scopeCountRows runs a LogsQL query and returns the number of result rows, or
+// the error text — for diagnostics only.
+func scopeCountRows(t *testing.T, base, query string, ingestAt time.Time, headers map[string]string) string {
+	t.Helper()
+	p := scopeWindow(ingestAt)
+	p.Set("query", query)
+	p.Set("limit", "1000")
+	req, err := http.NewRequest(http.MethodGet, base+"/select/logsql/query?"+p.Encode(), nil)
+	if err != nil {
+		return err.Error()
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	if err != nil {
+		return err.Error()
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Sprintf("status %d: %.200s", resp.StatusCode, body)
+	}
+	return strconv.Itoa(scopeNDJSONRows(body))
+}
+
+// scopeListObjects lists the Parquet objects of a tenant/signal written since
+// the ingest started (key, size, last-modified) — for diagnostics only.
+func scopeListObjects(t *testing.T, st scopeTenant, signal string, since time.Time) string {
+	t.Helper()
+	client := newS3Client(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	prefix := st.account + "/" + st.project + "/" + signal + "/"
+	var b strings.Builder
+	pg := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{Bucket: aws.String(st.bucket), Prefix: aws.String(prefix)})
+	for pg.HasMorePages() {
+		page, err := pg.NextPage(ctx)
+		if err != nil {
+			return "list error: " + err.Error()
+		}
+		for _, o := range page.Contents {
+			if o.LastModified != nil && o.LastModified.Before(since.Add(-10*time.Minute)) {
+				continue
+			}
+			fmt.Fprintf(&b, "    s3://%s/%s size=%d modified=%s\n", st.bucket, aws.ToString(o.Key), aws.ToInt64(o.Size), o.LastModified.UTC().Format(time.RFC3339))
+		}
+	}
+	return b.String()
+}
+
+// scopeNoForeign polls observe a few times and fails on the first answer that
+// carries another tenant's marker value. Used where an endpoint cannot see
+// unflushed rows yet, so exactness is only asserted after the flush.
+func scopeNoForeign(t *testing.T, what string, observe func() (got string, foreign []string)) {
+	t.Helper()
+	for i := 0; i < 3; i++ {
+		if got, foreign := observe(); len(foreign) > 0 {
+			t.Fatalf("%s: answer carried another tenant's data %v (full answer %s)", what, foreign, got)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+func scopeForeign(services []string, allowed []string) []string {
+	ok := make(map[string]bool, len(allowed))
+	for _, a := range allowed {
+		ok[a] = true
+	}
+	var out []string
+	for _, s := range services {
+		if !ok[s] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// scopeEnumerationCheck returns the assertion used for the cold-tier-only
+// endpoints (field/stream enumeration, Jaeger services) in a phase: before the
+// flush they may not see the rows yet, so only foreign values fail; after the
+// flush they must be exact.
+func scopeEnumerationCheck(phase string) func(t *testing.T, what, want string, observe func() (string, []string)) {
+	if phase == "buffer" {
+		return func(t *testing.T, what, _ string, observe func() (string, []string)) {
+			t.Helper()
+			scopeNoForeign(t, what, observe)
+		}
+	}
+	return func(t *testing.T, what, want string, observe func() (string, []string)) {
+		t.Helper()
+		scopeEventually(t, what, 90*time.Second, want, observe)
+	}
+}
+
+// scopeWaitForFlush waits until every scope tenant has at least one Parquet
+// object written after ingestAt in the bucket its layout puts it in.
+func scopeWaitForFlush(t *testing.T, signal string, ingestAt time.Time) {
+	t.Helper()
+	client := newS3Client(t)
+	deadline := time.Now().Add(240 * time.Second)
+	for {
+		pending := 0
+		for _, st := range scopeTenants {
+			if !scopeHasObjectSince(t, client, st.bucket, st.account+"/"+st.project+"/"+signal+"/", ingestAt) {
+				pending++
+			}
+		}
+		if pending == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: %d scope tenant(s) never flushed Parquet within 240s", signal, pending)
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
+func scopeHasObjectSince(t *testing.T, client *s3.Client, bucket, prefix string, since time.Time) bool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	p := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{Bucket: aws.String(bucket), Prefix: aws.String(prefix)})
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			t.Fatalf("list s3://%s/%s: %v", bucket, prefix, err)
+		}
+		for _, o := range page.Contents {
+			if strings.HasSuffix(aws.ToString(o.Key), ".parquet") && o.LastModified != nil && !o.LastModified.Before(since.Add(-time.Second)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestMultitenancy_TenantScope_BucketLayout pins the physical side of the
+// bucket-per-tenant layout on both binaries: the dedicated tenant's Parquet
+// lands in its own bucket and never under its prefix in the shared bucket.
+func TestMultitenancy_TenantScope_BucketLayout(t *testing.T) {
+	client := newS3Client(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(scopeBucketTenantBucket)}); err != nil {
+		t.Fatalf("dedicated tenant bucket %q missing (docker-compose-e2e.yml minio-init): %v", scopeBucketTenantBucket, err)
+	}
+	for _, signal := range []string{"logs", "traces"} {
+		if keys := listS3Objects(t, client, "3003/0/"+signal+"/"); len(keys) > 0 {
+			t.Errorf("tenant 3003:0 has %d %s objects in the shared bucket; its override puts them in %s (first: %s)",
+				len(keys), signal, scopeBucketTenantBucket, keys[0])
+		}
+	}
+}
+
+// TestMultitenancy_TenantScope_Logs_ExactCounts — see the file comment.
+func TestMultitenancy_TenantScope_Logs_ExactCounts(t *testing.T) {
+	// Parallel with its twin so both flush waits overlap.
+	t.Parallel()
+	marker := fmt.Sprintf("tscopelogs%d", time.Now().UnixNano())
+	ingestAt := time.Now()
+
+	for _, st := range scopeTenants {
+		var buf bytes.Buffer
+		svc := scopeService(marker, st.key())
+		for i := 0; i < st.rows; i++ {
+			line, _ := json.Marshal(map[string]any{
+				"_time":        ingestAt.Add(-time.Duration(i) * time.Millisecond).Format(time.RFC3339Nano),
+				"_msg":         marker,
+				"service.name": svc,
+				"level":        "INFO",
+			})
+			buf.Write(line)
+			buf.WriteByte('\n')
+		}
+		req, _ := http.NewRequest(http.MethodPost, logsBaseURL+"/insert/jsonline?_stream_fields=service.name", &buf)
+		req.Header.Set("Content-Type", "application/x-ndjson")
+		req.Header.Set("AccountID", st.account)
+		req.Header.Set("ProjectID", st.project)
+		resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+		if err != nil {
+			t.Fatalf("ingest tenant %s: %v", st.key(), err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("ingest tenant %s: status %d", st.key(), resp.StatusCode)
+		}
+	}
+
+	check := func(t *testing.T, phase string) {
+		query := fmt.Sprintf(`_msg:=%q`, marker)
+		enumerate := scopeEnumerationCheck(phase)
+		for _, r := range scopeRequests() {
+			r := r
+			t.Run(phase+"/"+r.name, func(t *testing.T) {
+				allowed := r.expectedServices(marker)
+
+				scopeEventually(t, "logs query rows", 150*time.Second, strconv.Itoa(r.expectedRows()), func() (string, []string) {
+					p := scopeWindow(ingestAt)
+					p.Set("query", query)
+					p.Set("limit", "1000")
+					body := scopeGet(t, logsBaseURL, "/select/logsql/query", p, r.headers)
+					var svcs []string
+					for _, line := range bytes.Split(body, []byte("\n")) {
+						var obj map[string]any
+						if json.Unmarshal(line, &obj) == nil {
+							if s, ok := obj["service.name"].(string); ok {
+								svcs = append(svcs, s)
+							}
+						}
+					}
+					return strconv.Itoa(scopeNDJSONRows(body)), scopeForeign(scopeMarkerServices(svcs, marker), allowed)
+				})
+
+				scopeEventually(t, "logs hits total", 60*time.Second, strconv.Itoa(r.expectedRows()), func() (string, []string) {
+					p := scopeWindow(ingestAt)
+					p.Set("query", query)
+					p.Set("step", "1h")
+					return strconv.Itoa(scopeHitsTotal(t, scopeGet(t, logsBaseURL, "/select/logsql/hits", p, r.headers))), nil
+				})
+
+				enumerate(t, "logs field_values service.name", strings.Join(allowed, ","), func() (string, []string) {
+					p := scopeWindow(ingestAt)
+					p.Set("query", query)
+					p.Set("field", "service.name")
+					got := scopeMarkerServices(scopeValueSet(t, scopeGet(t, logsBaseURL, "/select/logsql/field_values", p, r.headers)), marker)
+					return strings.Join(got, ","), scopeForeign(got, allowed)
+				})
+
+				enumerate(t, "logs streams", strings.Join(allowed, ","), func() (string, []string) {
+					p := scopeWindow(ingestAt)
+					p.Set("query", query)
+					var svcs []string
+					for _, v := range scopeValueSet(t, scopeGet(t, logsBaseURL, "/select/logsql/streams", p, r.headers)) {
+						if m := scopeStreamServiceRe.FindStringSubmatch(v); m != nil {
+							svcs = append(svcs, m[1])
+						}
+					}
+					got := scopeMarkerServices(svcs, marker)
+					return strings.Join(got, ","), scopeForeign(got, allowed)
+				})
+			})
+		}
+	}
+
+	check(t, "buffer")
+	scopeWaitForFlush(t, "logs", ingestAt)
+	check(t, "cold")
+}
+
+// TestMultitenancy_TenantScope_Traces_ExactCounts — see the file comment.
+func TestMultitenancy_TenantScope_Traces_ExactCounts(t *testing.T) {
+	// Parallel with its twin so both flush waits overlap.
+	t.Parallel()
+	marker := fmt.Sprintf("tscopetraces%d", time.Now().UnixNano())
+	ingestAt := time.Now()
+
+	for ti, st := range scopeTenants {
+		svc := scopeService(marker, st.key())
+		spans := make([]map[string]any, 0, st.rows)
+		for i := 0; i < st.rows; i++ {
+			start := ingestAt.Add(-time.Duration(i+1) * time.Millisecond)
+			spans = append(spans, map[string]any{
+				"traceId":           fmt.Sprintf("%016x%08x%08x", ingestAt.UnixNano(), ti, i),
+				"spanId":            fmt.Sprintf("%08x%08x", ti, i),
+				"name":              marker,
+				"kind":              2,
+				"startTimeUnixNano": strconv.FormatInt(start.UnixNano(), 10),
+				"endTimeUnixNano":   strconv.FormatInt(start.Add(time.Millisecond).UnixNano(), 10),
+			})
+		}
+		payload, _ := json.Marshal(map[string]any{
+			"resourceSpans": []map[string]any{{
+				"resource": map[string]any{"attributes": []map[string]any{
+					{"key": "service.name", "value": map[string]any{"stringValue": svc}},
+				}},
+				"scopeSpans": []map[string]any{{"scope": map[string]any{"name": "tenant-scope-e2e"}, "spans": spans}},
+			}},
+		})
+		req, _ := http.NewRequest(http.MethodPost, tracesBaseURL+"/insert/opentelemetry/v1/traces", bytes.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("AccountID", st.account)
+		req.Header.Set("ProjectID", st.project)
+		resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+		if err != nil {
+			t.Fatalf("ingest spans for tenant %s: %v", st.key(), err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("ingest spans for tenant %s: status %d", st.key(), resp.StatusCode)
+		}
+	}
+
+	check := func(t *testing.T, phase string) {
+		query := fmt.Sprintf(`name:=%q`, marker)
+		enumerate := scopeEnumerationCheck(phase)
+		for _, r := range scopeRequests() {
+			r := r
+			t.Run(phase+"/"+r.name, func(t *testing.T) {
+				allowed := r.expectedServices(marker)
+
+				diag := func() string {
+					var b strings.Builder
+					fmt.Fprintf(&b, "    regex name (no exact-value pruning): %s\n", scopeCountRows(t, tracesBaseURL, fmt.Sprintf(`name:~%q`, "^"+marker+"$"), ingestAt, r.headers))
+					for _, v := range r.visible {
+						fmt.Fprintf(&b, "    service %s exact: %s\n", v, scopeCountRows(t, tracesBaseURL, fmt.Sprintf(`"resource_attr:service.name":=%q`, scopeService(marker, v)), ingestAt, r.headers))
+					}
+					for _, st := range scopeTenants {
+						b.WriteString(scopeListObjects(t, st, "traces", ingestAt))
+					}
+					return b.String()
+				}
+				scopeEventuallyDiag(t, "traces query rows", 150*time.Second, strconv.Itoa(r.expectedRows()), func() (string, []string) {
+					p := scopeWindow(ingestAt)
+					p.Set("query", query)
+					p.Set("limit", "1000")
+					body := scopeGet(t, tracesBaseURL, "/select/logsql/query", p, r.headers)
+					var svcs []string
+					for _, line := range bytes.Split(body, []byte("\n")) {
+						var obj map[string]any
+						if json.Unmarshal(line, &obj) == nil {
+							for _, k := range []string{"resource_attr:service.name", "service.name"} {
+								if s, ok := obj[k].(string); ok {
+									svcs = append(svcs, s)
+									break
+								}
+							}
+						}
+					}
+					return strconv.Itoa(scopeNDJSONRows(body)), scopeForeign(scopeMarkerServices(svcs, marker), allowed)
+				}, diag)
+
+				scopeEventually(t, "traces hits total", 60*time.Second, strconv.Itoa(r.expectedRows()), func() (string, []string) {
+					p := scopeWindow(ingestAt)
+					p.Set("query", query)
+					p.Set("step", "1h")
+					return strconv.Itoa(scopeHitsTotal(t, scopeGet(t, tracesBaseURL, "/select/logsql/hits", p, r.headers))), nil
+				})
+
+				enumerate(t, "traces field_values resource_attr:service.name", strings.Join(allowed, ","), func() (string, []string) {
+					p := scopeWindow(ingestAt)
+					p.Set("query", query)
+					p.Set("field", "resource_attr:service.name")
+					got := scopeMarkerServices(scopeValueSet(t, scopeGet(t, tracesBaseURL, "/select/logsql/field_values", p, r.headers)), marker)
+					return strings.Join(got, ","), scopeForeign(got, allowed)
+				})
+
+				enumerate(t, "jaeger services", strings.Join(allowed, ","), func() (string, []string) {
+					body := scopeGet(t, tracesBaseURL, "/select/jaeger/api/services", url.Values{}, r.headers)
+					var resp struct {
+						Data []string `json:"data"`
+					}
+					if err := json.Unmarshal(body, &resp); err != nil {
+						t.Fatalf("parse jaeger services: %v: %s", err, string(body))
+					}
+					got := scopeMarkerServices(resp.Data, marker)
+					return strings.Join(got, ","), scopeForeign(got, allowed)
+				})
+			})
+		}
+	}
+
+	check(t, "buffer")
+	scopeWaitForFlush(t, "traces", ingestAt)
+	check(t, "cold")
 }

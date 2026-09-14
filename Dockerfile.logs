@@ -6,7 +6,11 @@ FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine3.23 AS builder
 RUN apk add --no-cache git
 WORKDIR /app
 ARG VERSION=dev
-ARG VL_VERSION=v1.50.0
+# VL_VERSION must equal the Makefile's VL_VERSION_LOGS: the patches applied
+# below are generated against that exact tree and a mismatch fails the build
+# with an unhelpful "patch failed" hunk error. Asserted by
+# TestDockerfilePinsMatchMakefile in tests/conformance.
+ARG VL_VERSION=v1.52.0
 ARG TARGETOS
 ARG TARGETARCH
 # FIPS=1 enables Go 1.26+ native FIPS 140-3 mode. The image is then tagged

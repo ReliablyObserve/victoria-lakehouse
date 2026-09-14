@@ -12,6 +12,7 @@ import (
 
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -156,6 +157,7 @@ func TestDictionaryContainsMatch_PrefixMiss(t *testing.T) {
 
 func TestFlushLoop_StopsOnClose(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -176,6 +178,7 @@ func TestFlushLoop_StopsOnClose(t *testing.T) {
 
 func TestCanWriteData_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -193,6 +196,7 @@ func TestCanWriteData_Success(t *testing.T) {
 
 func TestCanWriteData_S3Error(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
@@ -264,6 +268,7 @@ func TestWriteTracesParquet_SingleRow(t *testing.T) {
 
 func TestTriggerFlush_WithData(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -608,6 +613,7 @@ func TestReadRowGroupProjectedBitmap_AllCols(t *testing.T) {
 
 func TestAddTraceRows_BufferingAndPartitioning(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -637,6 +643,7 @@ func TestAddTraceRows_BufferingAndPartitioning(t *testing.T) {
 
 func TestAddTraceRows_EmptyInput(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -660,6 +667,7 @@ func TestAddTraceRows_EmptyInput(t *testing.T) {
 
 func TestNew_TracesMode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -688,6 +696,7 @@ func TestNew_TracesMode(t *testing.T) {
 
 func TestNew_SelectOnly(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -720,6 +729,7 @@ func TestNew_SelectOnly(t *testing.T) {
 
 func TestNew_InsertOnly(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -758,6 +768,7 @@ func TestNew_InsertOnly(t *testing.T) {
 
 func TestNew_WithDiskCache(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -788,6 +799,7 @@ func TestNew_WithDiskCache(t *testing.T) {
 
 func TestNew_WithPersistPath(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -828,6 +840,7 @@ func TestStartWriter_NilWriterFinal(t *testing.T) {
 
 func TestStartWriter_WithWriterFinal(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -855,6 +868,7 @@ func TestClose_NilWriter(t *testing.T) {
 
 func TestClose_WithWriterAndPersister(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -884,6 +898,7 @@ func TestWriter_NilAndNonNil(t *testing.T) {
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()

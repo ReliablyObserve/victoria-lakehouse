@@ -54,7 +54,10 @@ func (s *Storage) WarmupCache(ctx context.Context) {
 	end := now.UnixNano()
 	start := now.Add(-time.Duration(partitionsBack) * time.Hour).UnixNano()
 
-	files := s.manifest.GetFilesForRange(start, end)
+	// Cross-tenant by construction: this fills a key-addressed local disk
+	// cache at startup, it never answers a request. Every read that later
+	// serves those bytes still goes through the per-tenant file selection.
+	files := s.filesForScope("warmup", start, end, tenantScope{all: true})
 	if len(files) == 0 {
 		logger.Infof("warmup: no files in range [-%dh, now]", partitionsBack)
 		return
