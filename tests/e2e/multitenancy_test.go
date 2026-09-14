@@ -1085,6 +1085,14 @@ var scopeStreamServiceRe = regexp.MustCompile(`service\.name="([^"]+)"`)
 // service may never appear, not even once.
 func scopeEventually(t *testing.T, what string, deadline time.Duration, want string, observe func() (got string, foreign []string)) {
 	t.Helper()
+	scopeEventuallyDiag(t, what, deadline, want, observe, nil)
+}
+
+// scopeEventuallyDiag is scopeEventually with a diagnostics callback whose
+// output is attached to a convergence failure, so a failing CI run carries the
+// evidence needed to tell a scoping defect from a cold-tier or timing one.
+func scopeEventuallyDiag(t *testing.T, what string, deadline time.Duration, want string, observe func() (got string, foreign []string), diag func() string) {
+	t.Helper()
 	end := time.Now().Add(deadline)
 	var got string
 	for {
@@ -1097,10 +1105,65 @@ func scopeEventually(t *testing.T, what string, deadline time.Duration, want str
 			return
 		}
 		if time.Now().After(end) {
-			t.Fatalf("%s: got %s, want exactly %s", what, got, want)
+			extra := ""
+			if diag != nil {
+				extra = "\n  diagnostics:\n" + diag()
+			}
+			t.Fatalf("%s: got %s, want exactly %s%s", what, got, want, extra)
 		}
 		time.Sleep(3 * time.Second)
 	}
+}
+
+// scopeCountRows runs a LogsQL query and returns the number of result rows, or
+// the error text — for diagnostics only.
+func scopeCountRows(t *testing.T, base, query string, ingestAt time.Time, headers map[string]string) string {
+	t.Helper()
+	p := scopeWindow(ingestAt)
+	p.Set("query", query)
+	p.Set("limit", "1000")
+	req, err := http.NewRequest(http.MethodGet, base+"/select/logsql/query?"+p.Encode(), nil)
+	if err != nil {
+		return err.Error()
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	if err != nil {
+		return err.Error()
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Sprintf("status %d: %.200s", resp.StatusCode, body)
+	}
+	return strconv.Itoa(scopeNDJSONRows(body))
+}
+
+// scopeListObjects lists the Parquet objects of a tenant/signal written since
+// the ingest started (key, size, last-modified) — for diagnostics only.
+func scopeListObjects(t *testing.T, st scopeTenant, signal string, since time.Time) string {
+	t.Helper()
+	client := newS3Client(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	prefix := st.account + "/" + st.project + "/" + signal + "/"
+	var b strings.Builder
+	pg := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{Bucket: aws.String(st.bucket), Prefix: aws.String(prefix)})
+	for pg.HasMorePages() {
+		page, err := pg.NextPage(ctx)
+		if err != nil {
+			return "list error: " + err.Error()
+		}
+		for _, o := range page.Contents {
+			if o.LastModified != nil && o.LastModified.Before(since.Add(-10*time.Minute)) {
+				continue
+			}
+			fmt.Fprintf(&b, "    s3://%s/%s size=%d modified=%s\n", st.bucket, aws.ToString(o.Key), aws.ToInt64(o.Size), o.LastModified.UTC().Format(time.RFC3339))
+		}
+	}
+	return b.String()
 }
 
 // scopeNoForeign polls observe a few times and fails on the first answer that
@@ -1353,7 +1416,18 @@ func TestMultitenancy_TenantScope_Traces_ExactCounts(t *testing.T) {
 			t.Run(phase+"/"+r.name, func(t *testing.T) {
 				allowed := r.expectedServices(marker)
 
-				scopeEventually(t, "traces query rows", 150*time.Second, strconv.Itoa(r.expectedRows()), func() (string, []string) {
+				diag := func() string {
+					var b strings.Builder
+					fmt.Fprintf(&b, "    regex name (no exact-value pruning): %s\n", scopeCountRows(t, tracesBaseURL, fmt.Sprintf(`name:~%q`, "^"+marker+"$"), ingestAt, r.headers))
+					for _, v := range r.visible {
+						fmt.Fprintf(&b, "    service %s exact: %s\n", v, scopeCountRows(t, tracesBaseURL, fmt.Sprintf(`"resource_attr:service.name":=%q`, scopeService(marker, v)), ingestAt, r.headers))
+					}
+					for _, st := range scopeTenants {
+						b.WriteString(scopeListObjects(t, st, "traces", ingestAt))
+					}
+					return b.String()
+				}
+				scopeEventuallyDiag(t, "traces query rows", 150*time.Second, strconv.Itoa(r.expectedRows()), func() (string, []string) {
 					p := scopeWindow(ingestAt)
 					p.Set("query", query)
 					p.Set("limit", "1000")
@@ -1371,7 +1445,7 @@ func TestMultitenancy_TenantScope_Traces_ExactCounts(t *testing.T) {
 						}
 					}
 					return strconv.Itoa(scopeNDJSONRows(body)), scopeForeign(scopeMarkerServices(svcs, marker), allowed)
-				})
+				}, diag)
 
 				scopeEventually(t, "traces hits total", 60*time.Second, strconv.Itoa(r.expectedRows()), func() (string, []string) {
 					p := scopeWindow(ingestAt)
