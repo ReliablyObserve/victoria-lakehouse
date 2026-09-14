@@ -81,8 +81,11 @@ func SelfCheck(store *TombstoneStore, m ManifestUpdater) []Inconsistency {
 					})
 				case !reaped && !clean && !present:
 					// The manifest no longer has the key the tombstone wants to
-					// rewrite. The scheduler's self-healing path marks it reaped
-					// on the next tick rather than retrying a download forever.
+					// rewrite. Nothing is concluded from that here: only a pass
+					// against a manifest that has listed the bucket in this
+					// process (and, for a key an undo restored, a listing that
+					// began after the undo) may read an absent key as a deleted
+					// object.
 					found = append(found, Inconsistency{
 						Kind:        "pending_key_missing_from_manifest",
 						TombstoneID: ts.ID,
