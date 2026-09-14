@@ -440,7 +440,7 @@ says what happened:
 | step | what happens | if the process dies here |
 |------|--------------|--------------------------|
 | record `prepared` | the replacement key is chosen and written onto the tombstone; nothing is uploaded yet | restart **undoes** the rewrite: the replacement key is retired in the manifest (a refresh will not adopt it) and the rewrite runs again |
-| upload | the filtered replacement is uploaded under its new key; the manifest marks it *pending*, so a manifest refresh in the meantime does not adopt it | same: undone; the replacement object is deleted by the next pass |
+| upload | the filtered replacement is uploaded under its new key — in the source object's own directory, so a tenant's rows stay under its `{AccountID}/{ProjectID}/<signal>/` prefix; the manifest marks it *pending*, so a manifest refresh in the meantime does not adopt it | same: undone; the replacement object is deleted by the next pass |
 | publish | the manifest swaps the old key for the new one in a single atomic step, and retires the old key | still `prepared`: undone — even if a snapshot captured the swap, the swap is reversed and the source is served again; peers, pmeta and the source's delete all wait for the next step, so nothing outside the process saw the replacement |
 | record `published` | the publish and the key's bookkeeping (source reaped, replacement clean) are recorded | restart **finishes** the rewrite: the source is retired (a refresh will not re-adopt it) and deleted by the next pass; the replacement is served from the manifest or adopted by the refresh |
 | hand-off | pmeta and peers are told | same: finished |
