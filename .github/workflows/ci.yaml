@@ -136,6 +136,11 @@ jobs:
       - name: Install readers
         run: pip install pyarrow duckdb
 
+      # The truth verify.py holds both engines to must itself match the
+      # files written: read back with parquet-go and recomputed.
+      - name: Generator truth tests
+        run: go test ./scripts/ci/parquet-readback/... -count=1
+
       - name: Generate parquet files (production schemas + options)
         run: go run ./scripts/ci/parquet-readback/gen -out /tmp/parquet-readback
 

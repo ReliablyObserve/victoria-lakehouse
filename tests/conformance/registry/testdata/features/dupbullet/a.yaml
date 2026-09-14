@@ -1,0 +1,18 @@
+- id: lh.feature.storage.one
+  title: One
+  status: shipped
+  since: v1.0.0
+  area: storage
+  surfaces: [storage]
+  highlight: "h"
+  description: "d"
+  changelog_bullets: ['Shared bullet.']
+- id: lh.feature.storage.two
+  title: Two
+  status: shipped
+  since: v1.0.0
+  area: storage
+  surfaces: [storage]
+  highlight: "h"
+  description: "d"
+  changelog_bullets: ['Shared bullet.']
