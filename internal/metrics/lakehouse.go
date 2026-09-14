@@ -745,9 +745,11 @@ var (
 	// DeleteStartupInconsistencies counts manifest/tombstone disagreements
 	// found by the boot-time self-check, by kind.
 	DeleteStartupInconsistencies = NewCounterVec("lakehouse_delete_startup_inconsistencies_total", "kind")
-	// DeleteFieldsScanFallback counts field_names/field_values/streams
-	// requests that gave up a metadata-only fast path because an active
-	// tombstone overlapped the window and the answer had to be row-verified.
+	// DeleteFieldsScanFallback counts requests that gave up a fast path whose
+	// answer a tombstone cannot be applied to (metadata-only field
+	// enumeration: field_names/field_values/streams/stream_ids; the
+	// pure-buffer aggregate path: pure_buffer) because an active tombstone
+	// overlapped what that path answers from, so rows had to be verified.
 	DeleteFieldsScanFallback = NewCounterVec("lakehouse_delete_fields_scan_fallback_total", "endpoint")
 	// DeleteCompactionKeysReaped counts source keys marked reaped because a
 	// compaction merged them (the tombstone follows the rows to the output).

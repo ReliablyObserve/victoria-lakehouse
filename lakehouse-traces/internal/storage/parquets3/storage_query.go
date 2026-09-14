@@ -237,6 +237,12 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// walk because it legitimately needs every tenant's files. Most query
 	// paths are single-tenant by construction (per-request auth) so this
 	// branch wins for the common case.
+	// Tombstones are applied to the blocks this function emits, so every path
+	// that emits something other than raw rows — manifest-answered counts,
+	// label-aggregate pushdown, and the pure-buffer path's aggregated result —
+	// is only usable while no tombstone overlaps the window.
+	hasTombstones := s.tombstones != nil && len(s.tombstones.ForRange(startNs, endNs)) > 0
+
 	var files []manifest.FileInfo
 	if len(tenantIDs) == 1 {
 		t := tenantIDs[0]
@@ -257,9 +263,15 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// re-aggregated (profiled as the dominant recent-window cost). Safe
 		// because there is no Parquet data to double-count or merge with. Uses
 		// the buffer's public RunQuery (VL engine) — no upstream modification.
+		// Not while a tombstone overlaps the window: the aggregated result
+		// carries no row the tombstone filter could drop, so deleted buffered
+		// spans would be counted; the raw-row path below filters them.
 		// Twin of internal/storage/parquets3/storage_query.go.
-		if s.servePureBufferQuery(ctx, q, tenantIDs, filteredWriteBlock) {
+		if !hasTombstones && s.servePureBufferQuery(ctx, q, tenantIDs, filteredWriteBlock) {
 			return nil
+		}
+		if hasTombstones {
+			noteFieldsScanFallback("pure_buffer")
 		}
 		// No cold-tier files cover the requested window, but the in-flight
 		// buffer-bridge may still have rows newer than the latest flushed
@@ -273,7 +285,6 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	files = s.applySelfFilter(files)
 	s.applyCacheAffinity(files)
 
-	hasTombstones := s.tombstones != nil && len(s.tombstones.ForRange(startNs, endNs)) > 0
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
 		remaining := s.manifestFastPath(files, startNs, endNs, filteredWriteBlock)
 		if len(remaining) == 0 {
