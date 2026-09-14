@@ -284,12 +284,6 @@ func New(bucket, prefix string) *Manifest {
 	}
 }
 
-// supersededTTL bounds how long a compacted-away key stays marked. It only has
-// to outlive an S3 LIST that was already in flight when the object was deleted
-// (seconds), and a wrong mark — a delete that failed after the merged output
-// was written — heals on its own after it.
-const supersededTTL = 10 * time.Minute
-
 // tenantAccumKey + tenantAccum back the incremental TenantSummaries
 // cache. Lives next to m.files under m.mu's protection.
 type tenantAccumKey struct {
