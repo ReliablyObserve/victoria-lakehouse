@@ -480,7 +480,10 @@ flag: 18/174 covered by at least one registry row.
 | `lh.admin.parity.schema` | LH parity admin — self-reported parity/drift status vs. pinned upstream | admin | 🟡 declared, not yet executed |
 | `lh.bloom.status.schema` | LH bloom status — combined-bloom retention and per-partition stats | admin | 🟡 declared, not yet executed |
 | `lh.cardinality.fields.schema` | LH cardinality fields — field cardinality estimates (HLL-backed) | admin | 🟡 declared, not yet executed |
+| `lh.delete.hide_survives_crash` | LH hide-mode delete — suppression survives a non-graceful restart | admin | 🟡 declared, not yet executed |
+| `lh.delete.leftovers.status` | LH delete leftovers — list retired/pending keys and unfinished rewrites | admin | 🟡 declared, not yet executed |
 | `lh.delete.logsql.estimate.status` | LH delete estimate — dry-run row count before a LogsQL delete | admin | 🟡 declared, not yet executed |
+| `lh.delete.rewrite_keeps_kept_rows` | LH delete rewrite — the rows a delete did NOT match stay queryable afterwards | admin | 🟡 declared, not yet executed |
 | `lh.delete.tombstone_by_id.status` | LH delete tombstone by id — lookup one tombstone's status | admin | 🟡 declared, not yet executed |
 | `lh.delete.tombstones.status` | LH delete tombstones — list active LogsQL delete tombstones | admin | 🟡 declared, not yet executed |
 | `lh.delete.verify.status` | LH delete verify — confirm a query's matching rows are gone | admin | 🟡 declared, not yet executed |

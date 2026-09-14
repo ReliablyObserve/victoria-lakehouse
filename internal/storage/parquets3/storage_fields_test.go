@@ -766,7 +766,7 @@ func TestCollectFilteredValues_NilFilter(t *testing.T) {
 		for {
 			n, readErr := rRows.ReadRows(buf)
 			if n > 0 {
-				collectFilteredValues(buf[:n], colNames, svcIdx, nil, s, seen)
+				collectFilteredValues(buf[:n], colNames, svcIdx, nil, nil, s, seen)
 			}
 			if readErr != nil {
 				break
@@ -822,7 +822,7 @@ func TestCollectFilteredValues_WithFilter(t *testing.T) {
 		for {
 			n, readErr := rRows.ReadRows(buf)
 			if n > 0 {
-				collectFilteredValues(buf[:n], colNames, svcIdx, filter, s, seen)
+				collectFilteredValues(buf[:n], colNames, svcIdx, filter, nil, s, seen)
 			}
 			if readErr != nil {
 				break
@@ -839,7 +839,7 @@ func TestCollectFilteredValues_WithFilter(t *testing.T) {
 
 func TestCollectFilteredValues_EmptyRows(t *testing.T) {
 	seen := make(map[string]uint64)
-	collectFilteredValues(nil, nil, 0, nil, nil, seen)
+	collectFilteredValues(nil, nil, 0, nil, nil, nil, seen)
 	if len(seen) != 0 {
 		t.Errorf("expected empty map for nil rows, got %v", seen)
 	}
@@ -870,7 +870,7 @@ func TestCollectFilteredValues_OutOfBoundsColumn(t *testing.T) {
 			n, readErr := rRows.ReadRows(buf)
 			if n > 0 {
 				// targetColIdx way out of bounds
-				collectFilteredValues(buf[:n], colNames, 999, nil, s, seen)
+				collectFilteredValues(buf[:n], colNames, 999, nil, nil, s, seen)
 			}
 			if readErr != nil {
 				break

@@ -175,6 +175,54 @@ func (f *fieldCatalogFacet) Merge(c FileContribution) {
 	}
 }
 
+// rebuildLowCardValues replaces the enumerable value sets with exactly the
+// union of the given files' labels, keeping every high-card marking and every
+// HLL sketch.
+//
+// Merge only ever ADDS: the catalog is a partition-level union with no per-file
+// attribution, which is exact for flushes and compactions (a merge is a row
+// union) but cannot express a file LOSING rows. A delete that removes the only
+// rows carrying a value would otherwise leave that value enumerable forever. The
+// rebuild is the subtraction: replay the surviving files' labels into fresh sets.
+//
+// High-card state is left alone on purpose. High-card is sticky (a field that
+// crossed the cap stays non-enumerable), and the HLL sketches are fed by the row
+// tap rather than by labels, so they cannot be re-derived from contributions;
+// a sketch over-counting removed rows is an estimate staying an estimate.
+func (f *fieldCatalogFacet) rebuildLowCardValues(files []FileContribution) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.byField = map[uint32]*valueSet{}
+	for i := range files {
+		c := &files[i]
+		for _, field := range c.TruncatedFields {
+			f.markHighCard(f.dict.internField(field))
+		}
+		for field, vals := range c.Labels {
+			fid := f.dict.internField(field)
+			if f.highCard[fid] {
+				continue
+			}
+			if f.alwaysSketch[field] {
+				f.markHighCard(fid)
+				continue
+			}
+			vs := f.byField[fid]
+			if vs == nil {
+				vs = &valueSet{}
+				f.byField[fid] = vs
+			}
+			for _, v := range vals {
+				vs.add(f.dict.internValue(v))
+				if f.threshold > 0 && len(vs.ids) > f.threshold {
+					f.markHighCard(fid)
+					break
+				}
+			}
+		}
+	}
+}
+
 // markHighCard flags a field high-card and drops its now-incomplete value set so
 // RAM stays bounded. The field remains known (Fields() still lists it) but its
 // values are not enumerable. Caller holds f.mu.

@@ -13,7 +13,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Query | 13 | 1 | 0 | 1 | 15 |
 | Cache | 12 | 0 | 0 | 0 | 12 |
 | Compaction | 6 | 0 | 0 | 1 | 7 |
-| Deletion | 8 | 0 | 0 | 0 | 8 |
+| Deletion | 9 | 0 | 0 | 0 | 9 |
 | Traces | 8 | 0 | 0 | 3 | 11 |
 | Tenancy | 18 | 0 | 0 | 1 | 19 |
 | UI | 7 | 0 | 0 | 0 | 7 |
@@ -21,7 +21,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Ops | 12 | 0 | 0 | 0 | 12 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **126** | **1** | **3** | **8** | **138** |
+| **Total** | **127** | **1** | **3** | **8** | **139** |
 
 ## Coverage gaps
 
@@ -807,7 +807,7 @@ Aged data is scanned in bulk and pruned coarsely, so larger row groups are stric
 - Docs: `docs/configuration.md`, `docs/performance.md`
 - Changelog: `0.85.0`
 
-## Deletion (8)
+## Deletion (9)
 
 ### ✅ Glacier-safe, GDPR-compatible deletion
 
@@ -842,6 +842,18 @@ A delete over cold storage can be free or expensive depending on where the match
 - Verification: rows: `lh.delete.logsql.estimate.status` (pass, pending) · tests: `internal/delete/handler_test.go#TestHandler_handleEstimate_Valid`, `internal/delete/storageclass_test.go#TestStorageClass_EstimateRewriteCost`, `internal/delete/handler_test.go#TestHandler_handleEstimate_CachedStorageClass`, `tests/e2e/delete_test.go#TestDelete_Estimate`
 - Docs: `docs/deletion-strategy.md`
 
+### ✅ Leftovers API — what an instance still owes
+
+`lh.feature.deletion.leftovers_api` · status: shipped · since: the release after v0.132.0 · surfaces: api
+
+**Leftovers API**: `GET /delete/logsql/leftovers` (or `/delete/tracessql/leftovers`) names the retired keys, unpublished uploads and unfinished rewrites an instance is still holding on to.
+
+The alerts on retired-key eviction, non-durable tombstone records and unfinished rewrites all ask an operator to act on specific objects, which until now no API could name. The listing is read-only and instance-wide (not tenant-scoped, like the tombstone listing beside it), bounded by a limit, and reports for each entry why it is still there — the delete that is owed, the upload that is held, or the rewrite state a restart would resolve from.
+
+- Verification: rows: `lh.delete.leftovers.status` (pass, pending) · tests: `internal/delete/handler_leftovers_test.go#TestLeftovers_ListsRetiredPendingAndUnfinishedRewrites`, `internal/delete/handler_leftovers_test.go#TestLeftovers_IsBounded`, `internal/delete/handler_leftovers_test.go#TestLeftovers_RejectsNonGET`, `internal/delete/handler_leftovers_test.go#TestLeftovers_IsRegistered`, `internal/metrics/assets_test.go#TestDeleteMetrics_AreVisibleSomewhere`
+- Docs: `docs/deletion-strategy.md`, `docs/operations.md#what-this-instance-still-owes-prefixleftovers`, `docs/operations.md#rolling-back`
+- Changelog: the release after `0.132.0`
+
 ### ✅ Hide, permanent and auto delete modes
 
 `lh.feature.deletion.modes` · status: shipped · since: v0.18.2 · surfaces: api, flag
@@ -861,8 +873,8 @@ The mode is the operator's statement about intent and budget: `hide` never touch
 
 Deleting from an object store costs money and, on archival classes, retrieval fees. The strategy picks the cheapest tier that satisfies the request: hide it instantly with a tombstone, rewrite the file only where rewriting is cheap, and otherwise let lifecycle expire the data on schedule.
 
-- Verification: tests: `internal/delete/integration_test.go#TestIntegration_ModeHide_NoRewrite`, `internal/delete/rewriter_test.go#TestRewriteFile_MatchingRowsRemoved`, `internal/delete/storageclass_test.go#TestDetector`
-- Docs: `docs/deletion-strategy.md`
+- Verification: rows: `lh.delete.rewrite_keeps_kept_rows` (pass, pending) · tests: `internal/delete/integration_test.go#TestIntegration_ModeHide_NoRewrite`, `internal/delete/rewriter_test.go#TestRewriteFile_MatchingRowsRemoved`, `internal/delete/storageclass_test.go#TestDetector`, `internal/delete/rewrite_manifest_test.go#TestRewrite_PublishesReplacementIntoManifest`, `internal/delete/rewrite_crash_refresh_test.go#TestRewriteCrashMatrix_WithManifestRefresh`, `internal/delete/rewrite_crash_refresh_test.go#TestRewriteRefreshAtEveryStep`, `internal/delete/rewrite_refresh_test.go#TestRewriteRefresh_SupersededObjectWhoseDeleteFailedIsNotReadopted`, `internal/delete/intents_test.go#TestResumeRewrites_RetriesUntilTheDeleteLands`, `internal/delete/rewrite_tenant_key_test.go#TestRewrite_TenantFileStaysWithItsTenantInTheManifest`, `internal/compaction/delete_race_test.go#TestDeleteRace_CompactionPublishesWhileTheRewriteIsInFlight`, `internal/compaction/delete_clean_marking_test.go#TestDeleteRace_EligibilityBoundaryCrossedDuringTheMerge`, `internal/compaction/delete_refresh_test.go#TestDeleteRefresh_MergedSourceWhoseDeleteFailedIsNotReadopted`, `internal/compaction/delete_property_test.go#TestDeleteLifecycleProperties`, `internal/manifest/refresh_retired_test.go#TestRefresh_DoesNotReadoptTheSourceARewriteReplaced`
+- Docs: `docs/deletion-strategy.md`, `docs/operations.md#background-rewriter`, `docs/durability.md#31-deletes-and-rewrites`, `docs/manifest-system.md#what-the-refresh-does-not-adopt`
 
 ### ✅ Tombstones and query-time suppression
 
@@ -872,8 +884,8 @@ Deleting from an object store costs money and, on archival classes, retrieval fe
 
 The tombstone store is consulted on every query path, including the ones that answer from metadata, so a tombstoned row cannot reappear through a fast path. Physical removal, when requested, happens afterwards on its own schedule.
 
-- Verification: tests: `internal/delete/tombstone_test.go#TestTombstoneStore_AddAndActive`, `internal/delete/handler_test.go#TestHandler_handleDelete_Valid`, `tests/e2e/delete_test.go#TestDelete_TombstoneAndQuery`
-- Docs: `docs/deletion-strategy.md`
+- Verification: rows: `lh.delete.hide_survives_crash` (pass, pending) · tests: `internal/delete/tombstone_test.go#TestTombstoneStore_AddAndActive`, `internal/delete/handler_test.go#TestHandler_handleDelete_Valid`, `tests/e2e/delete_test.go#TestDelete_TombstoneAndQuery`, `internal/delete/tombstone_durability_test.go#TestTombstoneDurability_SurvivesACrashViaDisk`, `internal/delete/tombstone_durability_test.go#TestTombstoneDurability_RestoreUnionsDiskAndS3`, `internal/storage/parquets3/fields_tombstones_test.go#TestFieldValues_TombstonedValueDisappears`, `internal/storage/parquets3/fields_tombstones_span_test.go#TestFieldValues_TombstoneInsideAScannedFileButOutsideTheWindow`, `internal/storage/parquets3/pure_buffer_tombstone_test.go#TestRunQuery_PureBufferWindowHonoursTombstones`, `lakehouse-traces/internal/storage/parquets3/fields_tombstones_span_test.go#TestTraceFieldValues_TombstoneInsideAScannedFileButOutsideTheWindow`, `internal/compaction/tombstones_test.go#TestCompaction_HideModeRowsAreCarriedForward`
+- Docs: `docs/deletion-strategy.md`, `docs/operations.md#tombstone-management`, `docs/operations.md#where-tombstones-are-applied`, `docs/durability.md#31-deletes-and-rewrites`
 
 ### ✅ Un-delete by removing a tombstone
 
@@ -883,8 +895,8 @@ The tombstone store is consulted on every query path, including the ones that an
 
 Because a hide-mode delete never touched the data, it is reversible: deleting the tombstone makes the rows visible again immediately, which is what makes tombstone-first the safe default for an accidental over-broad predicate.
 
-- Verification: tests: `internal/delete/integration_test.go#TestIntegration_Undelete`, `internal/delete/handler_test.go#TestHandler_handleTombstoneByID_DeleteExisting`, `internal/delete/tombstone_test.go#TestTombstoneStore_Remove`
-- Docs: `docs/deletion-strategy.md`
+- Verification: tests: `internal/delete/integration_test.go#TestIntegration_Undelete`, `internal/delete/handler_test.go#TestHandler_handleTombstoneByID_DeleteExisting`, `internal/delete/tombstone_test.go#TestTombstoneStore_Remove`, `internal/delete/tombstone_removal_test.go#TestUndelete_SurvivesACrashWhileTheS3DeleteIsPending`, `internal/delete/intents_test.go#TestHandler_UndeleteMidRewriteIsAConflict`
+- Docs: `docs/deletion-strategy.md`, `docs/operations.md#un-delete-restoring-data`
 
 ### ✅ Delete verification
 

@@ -1052,7 +1052,7 @@ func TestCovFinal_CollectFilteredValues_NoFilter(t *testing.T) {
 
 	seen := make(map[string]uint64)
 	// nil filter: all rows contribute.
-	collectFilteredValues(buf[:n], colNames, colIdx, nil, nil, seen)
+	collectFilteredValues(buf[:n], colNames, colIdx, nil, nil, nil, seen)
 	if len(seen) == 0 {
 		t.Error("expected at least one value in seen map")
 	}
@@ -1105,7 +1105,7 @@ func TestCovFinal_CollectFilteredValues_WithFilter(t *testing.T) {
 
 	s := testStorage()
 	seen := make(map[string]uint64)
-	collectFilteredValues(buf[:n], colNames, colIdx, filter, s, seen)
+	collectFilteredValues(buf[:n], colNames, colIdx, filter, nil, s, seen)
 	// Should only see "api-gw" (rows where service.name == "api-gw").
 	// Worker rows don't match the filter.
 	_ = seen
@@ -1116,7 +1116,7 @@ func TestCovFinal_CollectFilteredValues_OutOfBounds(t *testing.T) {
 	// Pass an out-of-bounds column index.
 	seen := make(map[string]uint64)
 	// Empty row slice → nothing happens.
-	collectFilteredValues(nil, []string{"col0"}, 99, nil, nil, seen)
+	collectFilteredValues(nil, []string{"col0"}, 99, nil, nil, nil, seen)
 	if len(seen) != 0 {
 		t.Error("expected empty seen map")
 	}
@@ -1155,7 +1155,7 @@ func TestCovFinal_CollectFilteredValues_WithStorage(t *testing.T) {
 
 	s := testStorage() // has a registry
 	seen := make(map[string]uint64)
-	collectFilteredValues(buf[:n], colNames, colIdx, nil, s, seen)
+	collectFilteredValues(buf[:n], colNames, colIdx, nil, nil, s, seen)
 	if len(seen) == 0 {
 		t.Error("expected values in seen map")
 	}

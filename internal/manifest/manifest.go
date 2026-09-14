@@ -163,20 +163,6 @@ type Manifest struct {
 	// RefreshFromS3, rebuildIndex, snapshot Load.
 	byKey map[string]string
 
-	// superseded holds the keys of objects the compactor merged into a higher
-	// level and then deleted from S3, with the time they were marked. A LIST
-	// that started before those deletes still returns them, so a refresh would
-	// re-admit rows that are already inside the merged output and count them
-	// twice. The marks expire (supersededTTL) and are dropped as soon as a
-	// listing stops returning the key, so the map is bounded by the objects S3
-	// is still reporting after their delete — a handful, briefly.
-	//
-	// This is the ONLY place the read path learns that an object is redundant.
-	// The enumeration paths used to guess it from time ranges and compaction
-	// levels, which silently dropped the newest flush of a live partition
-	// whenever its rows fell inside a compacted neighbour's range.
-	superseded map[string]time.Time
-
 	// onAdd / onRemove fire (under the write lock) on every file add/remove.
 	// Flush AND compaction both route through AddFile/RemoveFile, so one observer
 	// captures every storage diff — used by the StatsAggregate sidecar cache to
@@ -263,6 +249,23 @@ type Manifest struct {
 	// 3×Interval, then HRW resumes normally. Same mutex as files map so
 	// AttemptsView is a coherent snapshot relative to the manifest.
 	partitionAttempts map[string]time.Time
+
+	// retired, pending and recentAdds keep the periodic refresh from adopting
+	// objects the manifest let go of or has not published yet, and from
+	// dropping files published while a listing ran. See retired.go.
+	retired    map[string]RetiredKey
+	pending    map[string]time.Time
+	recentAdds []recentAdd
+	// awaitingAdoption holds keys whose objects exist and belong in the
+	// manifest again, but which no listing has re-adopted yet (see
+	// ExpectInListing). Cleared by the first listing that began after the
+	// expectation was recorded.
+	awaitingAdoption map[string]time.Time
+	// held keys are registered files another publish must not supersede yet
+	// (see Hold); listed reports whether a bucket listing has been applied in
+	// this process (see Listed). Neither is persisted.
+	held   map[string]bool
+	listed bool
 }
 
 func New(bucket, prefix string) *Manifest {
@@ -273,106 +276,12 @@ func New(bucket, prefix string) *Manifest {
 		partitionAttempts: make(map[string]time.Time),
 		byKey:             make(map[string]string),
 		tenantAggregates:  make(map[tenantAccumKey]*tenantAccum),
-		superseded:        make(map[string]time.Time),
+		retired:           make(map[string]RetiredKey),
+		pending:           make(map[string]time.Time),
+		held:              make(map[string]bool),
 		prefix:            prefix,
 		bucket:            bucket,
 	}
-}
-
-// supersededTTL bounds how long a compacted-away key stays marked. It only has
-// to outlive an S3 LIST that was already in flight when the object was deleted
-// (seconds), and a wrong mark — a delete that failed after the merged output
-// was written — heals on its own after it.
-const supersededTTL = 10 * time.Minute
-
-// MarkSuperseded records that these objects were merged into a higher-level
-// object and deleted, so a listing that still returns them must not put their
-// rows back into the manifest. Called by the compactor with the keys it is
-// removing; the rows are in the merged output, so hiding them is never a loss.
-func (m *Manifest) MarkSuperseded(keys []string) {
-	if len(keys) == 0 {
-		return
-	}
-	now := time.Now()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.superseded == nil {
-		m.superseded = make(map[string]time.Time, len(keys))
-	}
-	for _, k := range keys {
-		if k == "" {
-			continue
-		}
-		m.superseded[k] = now
-	}
-}
-
-// IsSuperseded reports whether key is currently marked as compacted away.
-func (m *Manifest) IsSuperseded(key string) bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	marked, ok := m.superseded[key]
-	return ok && time.Since(marked) < supersededTTL
-}
-
-// SupersededCount is the number of live marks — bounded by what S3 still lists
-// after a delete, and by supersededTTL.
-func (m *Manifest) SupersededCount() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	n := 0
-	for _, marked := range m.superseded {
-		if time.Since(marked) < supersededTTL {
-			n++
-		}
-	}
-	return n
-}
-
-// dropSupersededLocked removes the listed objects that were compacted away and
-// forgets every mark the listing no longer returns (or that has expired).
-// Returns how many files and bytes were dropped so the caller can correct the
-// refresh totals. Must be called with m.mu held.
-func (m *Manifest) dropSupersededLocked(files map[string][]FileInfo) (int, int64) {
-	if len(m.superseded) == 0 {
-		return 0, 0
-	}
-	now := time.Now()
-	for key, marked := range m.superseded {
-		if now.Sub(marked) >= supersededTTL {
-			delete(m.superseded, key)
-		}
-	}
-	if len(m.superseded) == 0 {
-		return 0, 0
-	}
-	stillListed := make(map[string]struct{}, len(m.superseded))
-	var droppedFiles int
-	var droppedBytes int64
-	for partition, pFiles := range files {
-		kept := pFiles[:0]
-		for _, fi := range pFiles {
-			if _, ok := m.superseded[fi.Key]; ok {
-				stillListed[fi.Key] = struct{}{}
-				droppedFiles++
-				droppedBytes += fi.Size
-				continue
-			}
-			kept = append(kept, fi)
-		}
-		if len(kept) == 0 {
-			delete(files, partition)
-			continue
-		}
-		files[partition] = kept
-	}
-	// A key S3 no longer lists is gone for good; the mark has done its job.
-	for key := range m.superseded {
-		if _, ok := stillListed[key]; !ok {
-			delete(m.superseded, key)
-		}
-	}
-	return droppedFiles, droppedBytes
 }
 
 // tenantAccumKey + tenantAccum back the incremental TenantSummaries
@@ -1007,7 +916,13 @@ func (m *Manifest) listCommonPrefixes(ctx context.Context, client *s3.Client, pr
 // (reflection over FileInfo) keeps this from regressing when fields are added.
 // Files without explicit time bounds get [hour, hour+1h) inferred from the
 // partition key (pre-process files / post-restart lists).
-func (m *Manifest) mergeRefreshedFilesLocked(files map[string][]FileInfo) {
+//
+// Before any of that, keys the manifest retired or has pending are removed from
+// the listing and files published after listStart are kept (see retired.go).
+// Returns the retired keys the listing proves deleted, for the caller to forget
+// once the refresh is accepted.
+func (m *Manifest) mergeRefreshedFilesLocked(files map[string][]FileInfo, listStart time.Time) []string {
+	confirmedGone := m.refreshExclusionsLocked(files, listStart)
 	for partition, newFiles := range files {
 		oldFiles := m.files[partition]
 		if len(oldFiles) == 0 {
@@ -1045,6 +960,7 @@ func (m *Manifest) mergeRefreshedFilesLocked(files map[string][]FileInfo) {
 			}
 		}
 	}
+	return confirmedGone
 }
 
 // TenantBucket is a dedicated bucket of the bucket-per-tenant layout and the
@@ -1077,11 +993,11 @@ func (m *Manifest) SetTenantBuckets(buckets []TenantBucket) {
 }
 
 func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
-	var (
-		files      map[string][]FileInfo
-		totalFiles int
-		totalBytes int64
-	)
+	// The listing's start time bounds what it can know: an object published
+	// or removed after this instant may or may not be in the pages that follow.
+	listStart := time.Now()
+
+	var files map[string][]FileInfo
 
 	// When per-tenant prefix isolation is configured, the writer
 	// writes under "{AccountID}/{ProjectID}/<mode>/" — many distinct
@@ -1099,39 +1015,79 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	//   2. Full-bucket fallback: kept for the single-prefix template
 	//      and as a safety net if tenant discovery fails.
 	if strings.Contains(m.prefixTemplate, "{AccountID}") {
-		f, tf, tb, err := m.refreshTenantScoped(ctx, client)
+		f, _, _, err := m.refreshTenantScoped(ctx, client)
 		if err == nil {
-			files, totalFiles, totalBytes = f, tf, tb
+			files = f
 		} else {
 			// Tenant discovery failed; fall back to the legacy full-bucket
 			// LIST so a transient list failure doesn't drop the manifest.
 			logger.Warnf("tenant-scoped refresh failed (%s); falling back to full-bucket LIST", err)
-			f, tf, tb, ferr := m.refreshFullBucket(ctx, client, "")
+			f, _, _, ferr := m.refreshFullBucket(ctx, client, "")
 			if ferr != nil {
 				return ferr
 			}
-			files, totalFiles, totalBytes = f, tf, tb
+			files = f
 		}
 	} else {
-		f, tf, tb, err := m.refreshFullBucket(ctx, client, m.prefix)
+		f, _, _, err := m.refreshFullBucket(ctx, client, m.prefix)
 		if err != nil {
 			return err
 		}
-		files, totalFiles, totalBytes = f, tf, tb
+		files = f
 	}
 
-	// Bucket-per-tenant: add each dedicated bucket's objects. A failed LIST
-	// fails the whole refresh (the previous state is kept) rather than
+	// Bucket-per-tenant: add each dedicated bucket's objects into files. A failed
+	// LIST fails the whole refresh (the previous state is kept) rather than
 	// swapping in a manifest that silently lost a tenant.
-	addedFiles, addedBytes, err := m.listTenantBuckets(ctx, client, files)
-	if err != nil {
+	if _, _, err := m.listTenantBuckets(ctx, client, files); err != nil {
 		return err
 	}
-	totalFiles += addedFiles
-	totalBytes += addedBytes
+	m.applyRefreshedFiles(files, listStart)
+	return nil
+}
 
-	var minT, maxT time.Time
-	for partition := range files {
+// ListedObject is one object a bucket listing returned.
+type ListedObject struct {
+	Key  string
+	Size int64
+}
+
+// ApplyListing folds a bucket listing into the manifest exactly as the periodic
+// S3 refresh does, for listers other than the S3 client (and for tests that
+// drive a refresh against an in-memory bucket). listStart is when the listing
+// began. Non-Parquet keys and keys without a partition are ignored. Returns
+// false when the cliff guard rejected the listing.
+func (m *Manifest) ApplyListing(objects []ListedObject, listStart time.Time) bool {
+	files := make(map[string][]FileInfo)
+	for _, o := range objects {
+		if !strings.HasSuffix(o.Key, ".parquet") {
+			continue
+		}
+		partition := extractPartition(o.Key)
+		if partition == "" {
+			continue
+		}
+		files[partition] = append(files[partition], FileInfo{Key: o.Key, Size: o.Size})
+	}
+	return m.applyRefreshedFiles(files, listStart)
+}
+
+// applyRefreshedFiles replaces the tracked file set with a listing (merged per
+// mergeRefreshedFilesLocked). Returns false when the cliff guard rejected it.
+func (m *Manifest) applyRefreshedFiles(files map[string][]FileInfo, listStart time.Time) bool {
+	m.mu.Lock()
+	confirmedGone := m.mergeRefreshedFilesLocked(files, listStart)
+
+	var (
+		totalFiles int
+		totalBytes int64
+		minT, maxT time.Time
+	)
+	for partition, pFiles := range files {
+		totalFiles += len(pFiles)
+		for _, fi := range pFiles {
+			totalBytes += fi.Size
+		}
 		t, err := parsePartitionTime(partition)
 		if err != nil {
 			continue
@@ -1144,18 +1100,6 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 			maxT = end
 		}
 	}
-
-	m.mu.Lock()
-	// Objects the compactor merged away and deleted can still come back from a
-	// LIST that started before the delete. Their rows are inside the merged
-	// output, so re-admitting them would count every row twice until the next
-	// refresh.
-	if droppedFiles, droppedBytes := m.dropSupersededLocked(files); droppedFiles > 0 {
-		totalFiles -= droppedFiles
-		totalBytes -= droppedBytes
-		logger.Infof("manifest refresh: ignored %d compacted-away objects still returned by LIST", droppedFiles)
-	}
-	m.mergeRefreshedFilesLocked(files)
 
 	// Cliff guard. A transient S3 LIST hiccup (toxiproxy spike, brief
 	// partial pagination, network blip mid-refresh) can return success
@@ -1171,7 +1115,7 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 		logger.Warnf("manifest refresh cliff-guard: rejecting refresh that lost %d/%d files; keeping previous state (likely transient S3 LIST hiccup)", m.totalFiles-totalFiles, m.totalFiles)
 		metrics.ManifestRefreshCliffGuardRejections.Inc()
 		m.mu.Unlock()
-		return nil
+		return false
 	}
 
 	m.files = files
@@ -1183,6 +1127,8 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	m.totalFiles = totalFiles
 	m.totalBytes = totalBytes
 	m.lastRefresh = time.Now()
+	m.listed = true
+	m.afterAcceptedRefreshLocked(confirmedGone, listStart)
 	m.mu.Unlock()
 
 	metrics.StorageFilesTotal.Set(int64(totalFiles))
@@ -1213,8 +1159,7 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	}
 
 	logger.Infof("manifest refreshed; partitions=%d, files=%d, bytes=%d, min_time=%v, max_time=%v", len(files), totalFiles, totalBytes, minT, maxT)
-
-	return nil
+	return true
 }
 
 func (m *Manifest) HasDataForRange(startNs, endNs int64) bool {
@@ -1643,10 +1588,22 @@ func (m *Manifest) AllFiles() map[string][]FileInfo {
 	return snap
 }
 
+// RemoveFile drops key from partition and retires it, so a refresh that still
+// lists the object does not adopt it again. A key that is not registered is
+// retired all the same: the removal may be a peer's push for a file this node
+// has not adopted yet. The caller (retention, which deletes first; a peer push)
+// owns the object; see Retire for keys whose deletion this process owes.
 func (m *Manifest) RemoveFile(partition string, key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.removeFileLocked(partition, key)
+	m.retireLocked(RetiredKey{Key: key})
+}
 
+// removeFileLocked is RemoveFile's body without the lock so ReplaceFile can
+// pair it with addFileLocked inside ONE critical section. Returns true when a
+// file was actually removed. Caller must hold m.mu (write).
+func (m *Manifest) removeFileLocked(partition string, key string) bool {
 	files := m.files[partition]
 	for i, fi := range files {
 		if fi.Key == key {
@@ -1662,9 +1619,123 @@ func (m *Manifest) RemoveFile(partition string, key string) {
 			}
 			delete(m.byKey, key)
 			m.rebuildIndex()
-			return
+			return true
 		}
 	}
+	return false
+}
+
+// RemoveFileIfPresent removes key from partition and reports whether it was
+// there, as one atomic step. The delete rewriter uses it when a rewrite leaves
+// no rows at all: if the source is already gone, a concurrent compaction merged
+// it, and the tombstone has to follow the rows to that compacted output instead
+// of treating the removal as its own. Safe for concurrent use.
+func (m *Manifest) RemoveFileIfPresent(partition string, key string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.keyInPartitionLocked(partition, key) || m.held[key] {
+		return false
+	}
+	if !m.removeFileLocked(partition, key) {
+		return false
+	}
+	m.retireLocked(RetiredKey{Key: key, Reclaim: true})
+	return true
+}
+
+// PartitionForKey returns the partition that owns the given file key. The
+// delete rewriter needs it to re-register a rewritten object under the same
+// partition the original was filed in — deriving the partition from the key
+// string would guess, and a guess that disagrees with byKey silently orphans
+// the entry. O(1) via byKey. Safe for concurrent use.
+func (m *Manifest) PartitionForKey(key string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	p, ok := m.byKey[key]
+	return p, ok
+}
+
+// ReplaceFile swaps oldKey's manifest entry for fi inside a single write-lock
+// critical section, so no reader can observe a window where the partition has
+// neither entry (which would make the rewritten rows briefly invisible) or a
+// window where it has both (which would double-count them). This is the
+// atomicity guarantee the delete rewriter needs when it publishes a rewritten
+// Parquet object: the manifest flips from "old key" to "new key" in one step.
+//
+// The swap is CONDITIONAL on oldKey still being present. A rewrite reads its
+// source before it publishes, and in between compaction may merge that same
+// source into a new file. Registering the rewrite anyway would leave both the
+// rewrite and the compacted output in the manifest — the kept rows twice, and
+// the deleted rows back through the compacted copy. So when oldKey is gone the
+// manifest is left untouched and false is returned; the caller discards its
+// replacement and lets the tombstone follow the rows to the compacted output.
+//
+// Safe for concurrent use.
+func (m *Manifest) ReplaceFile(partition string, oldKey string, fi FileInfo) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.keyInPartitionLocked(partition, oldKey) || m.held[oldKey] || !m.freeForPublishLocked(fi.Key, oldKey) {
+		return false
+	}
+	m.removeFileLocked(partition, oldKey)
+	m.retireLocked(RetiredKey{Key: oldKey, By: fi.Key, Reclaim: true})
+	m.addFileLocked(partition, fi)
+	return true
+}
+
+// ReplaceFiles is ReplaceFile for a merge: it registers fi and removes every
+// key in oldKeys in one critical section, and only if ALL of oldKeys are still
+// present. It is compaction's publish step. Without the condition, a source
+// that was concurrently rewritten (or merged by a racing compaction) would be
+// removed as a no-op while fi — built from that source's ORIGINAL rows — was
+// added, duplicating everything the source held.
+//
+// Returns false, changing nothing, when any source is gone.
+//
+// Safe for concurrent use.
+func (m *Manifest) ReplaceFiles(partition string, oldKeys []string, fi FileInfo) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, k := range oldKeys {
+		if !m.keyInPartitionLocked(partition, k) || m.held[k] {
+			return false
+		}
+	}
+	if !m.freeForPublishLocked(fi.Key, oldKeys...) {
+		return false
+	}
+	for _, k := range oldKeys {
+		m.removeFileLocked(partition, k)
+		m.retireLocked(RetiredKey{Key: k, By: fi.Key, Reclaim: true})
+	}
+	m.addFileLocked(partition, fi)
+	return true
+}
+
+// freeForPublishLocked reports whether newKey may be registered: it must not
+// already belong to a file this manifest serves (other than one of the keys
+// this publish is replacing). Output keys carry a short random id, and a
+// publish that added nothing because the key was taken — addFileLocked drops a
+// duplicate — while removing its sources would delete those rows from the
+// manifest outright. Caller must hold m.mu.
+func (m *Manifest) freeForPublishLocked(newKey string, replacing ...string) bool {
+	if _, taken := m.byKey[newKey]; !taken {
+		return true
+	}
+	for _, k := range replacing {
+		if k == newKey {
+			return true
+		}
+	}
+	metrics.ManifestKeyClaimRejected.Inc("publish_key_taken")
+	return false
+}
+
+// keyInPartitionLocked reports whether key is registered under partition.
+// Caller must hold m.mu.
+func (m *Manifest) keyInPartitionLocked(partition, key string) bool {
+	p, ok := m.byKey[key]
+	return ok && p == partition
 }
 
 // LiveAggregate is the single source of truth for global storage
@@ -1838,7 +1909,13 @@ func (m *Manifest) SetChangeObserver(onAdd, onRemove func(partition string, fi F
 func (m *Manifest) AddFile(partition string, fi FileInfo) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.addFileLocked(partition, fi)
+}
 
+// addFileLocked is AddFile's body without the lock so ReplaceFile can pair it
+// with removeFileLocked inside ONE critical section. Caller must hold m.mu
+// (write).
+func (m *Manifest) addFileLocked(partition string, fi FileInfo) {
 	// Idempotency guard (spec §2.2.4): two compaction loops racing on the
 	// same partition can produce duplicate AddFile calls with the same key
 	// (and also distinct UUID-suffixed keys; that case is handled by Tier B
@@ -1856,6 +1933,7 @@ func (m *Manifest) AddFile(partition string, fi FileInfo) {
 		metrics.ManifestAddFileDuplicateKeyTotal.Inc()
 		return
 	}
+	m.noteAddedLocked(fi.Key, time.Now())
 
 	isNew := len(m.files[partition]) == 0
 	m.files[partition] = append(m.files[partition], fi)
@@ -2076,10 +2154,17 @@ type persistedManifest struct {
 	TotalFiles_ int                   `json:"total_files"`
 	TotalBytes_ int64                 `json:"total_bytes"`
 	SavedAt     time.Time             `json:"saved_at"`
+	// Retired carries the retired keys (see retired.go), so a restart does not
+	// re-adopt an object a publish replaced before its delete landed. Absent
+	// from snapshots written before it existed; decoding those yields none.
+	Retired []RetiredKey `json:"retired,omitempty"`
 }
 
 func (m *Manifest) SaveTo(path string) error {
 	now := time.Now()
+	m.mu.Lock()
+	m.pruneRetiredLocked(now)
+	m.mu.Unlock()
 	m.mu.RLock()
 	snap := persistedManifest{
 		Files:       m.files,
@@ -2088,6 +2173,10 @@ func (m *Manifest) SaveTo(path string) error {
 		TotalFiles_: m.totalFiles,
 		TotalBytes_: m.totalBytes,
 		SavedAt:     now,
+		Retired:     make([]RetiredKey, 0, len(m.retired)),
+	}
+	for _, rk := range m.retired {
+		snap.Retired = append(snap.Retired, rk)
 	}
 	m.mu.RUnlock()
 
@@ -2204,6 +2293,23 @@ func (m *Manifest) LoadFrom(path string) error {
 	m.rebuildIndex()
 	m.totalFiles = snap.TotalFiles_
 	m.totalBytes = snap.TotalBytes_
+	// Pending uploads, holds and recent adds describe the previous process's
+	// in-flight work, not this one's; retired keys carry over (see retired.go).
+	// A loaded snapshot is not a listing: `listed` stays false until a refresh
+	// tells this process what the bucket actually holds.
+	m.pending = make(map[string]time.Time)
+	m.held = make(map[string]bool)
+	m.recentAdds = nil
+	m.awaitingAdoption = nil
+	m.listed = false
+	m.retired = make(map[string]RetiredKey, len(snap.Retired))
+	for _, rk := range snap.Retired {
+		if _, tracked := m.byKey[rk.Key]; tracked {
+			continue
+		}
+		m.retired[rk.Key] = rk
+	}
+	m.pruneRetiredLocked(time.Now())
 	if snap.MinTimeNs != 0 {
 		m.minTime = time.Unix(0, snap.MinTimeNs)
 	}

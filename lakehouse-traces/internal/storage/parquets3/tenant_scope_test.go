@@ -1238,10 +1238,10 @@ func TestTenantScope_LocalBuffer_TenantList(t *testing.T) {
 		buf := &tenantListingBuffer{tenants: all}
 		s := &Storage{localBuffer: buf}
 		q := mustParseQueryWithTime(t, "*", 0, 1000)
-		if !s.servePureBufferQuery(global, q, []logstorage.TenantID{{}}, func(uint, *logstorage.DataBlock) {}) {
+		if !s.servePureBufferQuery(global, q, []logstorage.TenantID{{}}, false, func(uint, *logstorage.DataBlock) {}) {
 			t.Fatal("pure-buffer path declined")
 		}
-		if !s.servePureBufferQuery(context.Background(), q, []logstorage.TenantID{{AccountID: 1001}}, func(uint, *logstorage.DataBlock) {}) {
+		if !s.servePureBufferQuery(context.Background(), q, []logstorage.TenantID{{AccountID: 1001}}, false, func(uint, *logstorage.DataBlock) {}) {
 			t.Fatal("pure-buffer path declined")
 		}
 		buf.mu.Lock()

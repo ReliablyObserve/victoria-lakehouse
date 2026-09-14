@@ -172,6 +172,12 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		liveBytes.Add(-sz)
 	}
 
+	// Tombstones are applied to the blocks this function emits, so every path
+	// that emits something other than raw rows — manifest-answered counts,
+	// label-aggregate pushdown, and the pure-buffer path's aggregated result —
+	// is only usable while no tombstone overlaps the window.
+	hasTombstones := s.tombstones != nil && len(s.tombstones.ForRange(startNs, endNs)) > 0
+
 	// Tenant-scoped file enumeration. VL hands us exactly one tenant per
 	// request (0:0 when no headers are present); only a validated global-read
 	// caller widens the scope. Everything downstream — the manifest fast path,
@@ -189,8 +195,11 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// re-aggregated (profiled as the dominant recent-window cost). Safe
 		// because there is no Parquet data to double-count or merge with. Uses
 		// the buffer's public RunQuery (VL engine) — no upstream modification.
+		// Not while a tombstone overlaps the window: the aggregated result
+		// carries no row the tombstone filter could drop, so deleted buffered
+		// rows would be counted; the raw-row path below filters them.
 		// Mirror in lakehouse-traces/internal/storage/parquets3/storage_query.go.
-		if s.servePureBufferQuery(ctx, q, tenantIDs, filteredWriteBlock) {
+		if s.servePureBufferQuery(ctx, q, tenantIDs, hasTombstones, filteredWriteBlock) {
 			return nil
 		}
 		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
@@ -212,7 +221,6 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	files = s.applySelfFilter(files)
 	s.applyCacheAffinity(files)
 
-	hasTombstones := s.tombstones != nil && len(s.tombstones.ForRange(startNs, endNs)) > 0
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
 		remaining := s.manifestFastPath(files, startNs, endNs, filteredWriteBlock)
 		if len(remaining) == 0 {
@@ -440,7 +448,14 @@ func (s *Storage) applyCacheAffinity(files []manifest.FileInfo) {
 // isn't a single-node logstore buffer: with peers, other pods hold unflushed
 // rows reachable only via the bridge fan-out. No upstream modification — this
 // calls the buffer's public RunQuery.
-func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) bool {
+func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query, tenantIDs []logstorage.TenantID, hasTombstones bool, writeBlock logstorage.WriteDataBlockFunc) bool {
+	// While a tombstone overlaps the window, decline this fast path and let the
+	// caller serve the rows through the standard path, which applies the storage
+	// tombstone filter to every emitted block.
+	if hasTombstones {
+		noteFieldsScanFallback("pure_buffer")
+		return false
+	}
 	if s.localBuffer == nil || (s.bufferBridge != nil && s.bufferBridge.HasPeers()) {
 		return false
 	}

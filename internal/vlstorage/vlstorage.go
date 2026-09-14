@@ -2,6 +2,7 @@ package vlstorage
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -142,7 +143,12 @@ func (a *adapter) DeleteStopTask(_ context.Context, taskID string) error {
 	if a.tombstones == nil {
 		return nil
 	}
-	a.tombstones.Remove(taskID)
+	// Stopping a task is an un-delete: refused while a rewrite of the
+	// tombstone's files is unfinished, because the tombstone carries that
+	// rewrite's durable record. Stopping an unknown task stays a no-op.
+	if err := a.tombstones.TryRemove(taskID); err != nil && !errors.Is(err, delete.ErrTombstoneNotFound) {
+		return err
+	}
 	return nil
 }
 
