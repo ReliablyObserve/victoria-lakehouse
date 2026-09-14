@@ -286,7 +286,12 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		allData   [][]byte
 		inputKeys []string
 		bytesRead int64
+		// appliedTombstones is the set of tombstones the merge filtered out of
+		// the output, the only ones the output may be recorded clean for.
+		appliedTombstones map[string]bool
 	)
+	// One clock reading for the whole merge, so eligibility is judged once.
+	now := time.Now()
 	for _, f := range g.Files {
 		data, err := c.pool.Download(ctx, f.Key)
 		if err != nil {
@@ -358,7 +363,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		// manifest, and deriving them from rows that are about to be dropped
 		// would publish metadata describing data the output does not contain.
 		var dropped int
-		merged, dropped = dropTombstonedLogRows(c.tombstones, merged, time.Now(), c.tombstoneDelay)
+		merged, dropped, appliedTombstones = dropTombstonedLogRows(c.tombstones, merged, now, c.tombstoneDelay)
 		if dropped > 0 {
 			survivors = &survivorMeta{
 				labels:   schema.ExtractLogLabels(merged),
@@ -398,7 +403,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		}
 		// See the logs branch: suppression happens before any derived metadata.
 		var dropped int
-		merged, dropped = dropTombstonedTraceRows(c.tombstones, merged, time.Now(), c.tombstoneDelay)
+		merged, dropped, appliedTombstones = dropTombstonedTraceRows(c.tombstones, merged, now, c.tombstoneDelay)
 		if dropped > 0 {
 			survivors = &survivorMeta{
 				labels:   schema.ExtractTraceLabels(merged),
@@ -525,7 +530,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	// when compaction actually filtered that tombstone's rows out of it — so a
 	// tombstone can never complete while a file that still holds its rows
 	// exists (which would un-hide those rows the moment it retires).
-	reconcileTombstones(c.tombstones, inputKeys, outputKey, c.neverDelete, time.Now(), c.tombstoneDelay)
+	reconcileTombstones(c.tombstones, inputKeys, outputKey, c.neverDelete, appliedTombstones)
 
 	return &compactGroupResult{
 		InputKeys:    inputKeys,

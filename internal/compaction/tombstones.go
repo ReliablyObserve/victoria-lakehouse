@@ -27,15 +27,19 @@ import (
 // permanently.
 //
 // The tombstone store is optional; a compactor wired without one behaves
-// exactly as before. Returns the survivors and how many rows were dropped.
-func dropTombstonedLogRows(store *delete.TombstoneStore, rows []schema.LogRow, now time.Time, rewriteDelay time.Duration) ([]schema.LogRow, int) {
+// exactly as before. Returns the survivors, how many rows were dropped, and the
+// IDs of the tombstones whose predicate was applied to EVERY row — the only
+// tombstones the output may later be recorded clean for (see
+// reconcileTombstones). A tombstone that becomes eligible, or is issued, after
+// this call was not applied, whatever the clock says by bookkeeping time.
+func dropTombstonedLogRows(store *delete.TombstoneStore, rows []schema.LogRow, now time.Time, rewriteDelay time.Duration) ([]schema.LogRow, int, map[string]bool) {
 	if store == nil || len(rows) == 0 {
-		return rows, 0
+		return rows, 0, nil
 	}
 	minNs, maxNs := schema.LogRowTimeBounds(rows)
 	tss := eligibleTombstones(store.ForRange(minNs, maxNs), now, rewriteDelay)
 	if len(tss) == 0 {
-		return rows, 0
+		return rows, 0, nil
 	}
 
 	kept := rows[:0]
@@ -51,18 +55,18 @@ func dropTombstonedLogRows(store *delete.TombstoneStore, rows []schema.LogRow, n
 		metrics.DeleteCompactionRowsRemoved.Add(dropped)
 		logger.Infof("compaction dropped tombstoned rows; dropped=%d, kept=%d", dropped, len(kept))
 	}
-	return kept, dropped
+	return kept, dropped, appliedIDs(tss)
 }
 
 // dropTombstonedTraceRows is dropTombstonedLogRows for spans.
-func dropTombstonedTraceRows(store *delete.TombstoneStore, rows []schema.TraceRow, now time.Time, rewriteDelay time.Duration) ([]schema.TraceRow, int) {
+func dropTombstonedTraceRows(store *delete.TombstoneStore, rows []schema.TraceRow, now time.Time, rewriteDelay time.Duration) ([]schema.TraceRow, int, map[string]bool) {
 	if store == nil || len(rows) == 0 {
-		return rows, 0
+		return rows, 0, nil
 	}
 	minNs, maxNs := schema.TraceRowTimeBounds(rows)
 	tss := eligibleTombstones(store.ForRange(minNs, maxNs), now, rewriteDelay)
 	if len(tss) == 0 {
-		return rows, 0
+		return rows, 0, nil
 	}
 
 	kept := rows[:0]
@@ -78,7 +82,16 @@ func dropTombstonedTraceRows(store *delete.TombstoneStore, rows []schema.TraceRo
 		metrics.DeleteCompactionRowsRemoved.Add(dropped)
 		logger.Infof("compaction dropped tombstoned spans; dropped=%d, kept=%d", dropped, len(kept))
 	}
-	return kept, dropped
+	return kept, dropped, appliedIDs(tss)
+}
+
+// appliedIDs is the ID set of the tombstones a drop evaluated.
+func appliedIDs(tss []delete.Tombstone) map[string]bool {
+	out := make(map[string]bool, len(tss))
+	for i := range tss {
+		out[tss[i].ID] = true
+	}
+	return out
 }
 
 // survivorMeta carries the manifest fields that must be re-derived from the
@@ -129,11 +142,17 @@ func eligibleTombstones(tss []delete.Tombstone, now time.Time, rewriteDelay time
 // tombstone that named a source:
 //
 //   - the source is marked reaped — the object is gone;
-//   - the output is added to AffectedKeys, marked reaped only if compaction
-//     filtered this tombstone's rows out of it (the tombstone was eligible for
-//     physical removal). Otherwise the rows were carried forward and the output
-//     stays pending, so the rewrite scheduler rewrites it once the tombstone
-//     becomes eligible.
+//   - the output is added to AffectedKeys, marked reaped only if the merge
+//     applied this tombstone's predicate to every row (its ID is in applied, as
+//     returned by the drop step). Otherwise the rows were carried forward and the
+//     output stays pending, so the rewrite scheduler rewrites it once the
+//     tombstone becomes eligible.
+//
+// Cleanliness is a fact about what the merge DID, so it is taken from the drop
+// step rather than re-judged here: judging eligibility again at bookkeeping time
+// recorded the output clean for a tombstone that became eligible — or was
+// issued — while the merge ran, although the merge had carried its rows. That
+// tombstone then retired and the carried rows came back.
 //
 // Without the second half, a tombstone still inside its un-delete window whose
 // source was compacted would see every listed key "reaped", retire, and un-hide
@@ -141,7 +160,7 @@ func eligibleTombstones(tss []delete.Tombstone, now time.Time, rewriteDelay time
 //
 // Hide-mode tombstones have no reap lifecycle and are left alone. Keys under a
 // never-delete prefix are not compaction's and are skipped.
-func reconcileTombstones(store *delete.TombstoneStore, inputKeys []string, outputKey string, neverDelete []string, now time.Time, rewriteDelay time.Duration) {
+func reconcileTombstones(store *delete.TombstoneStore, inputKeys []string, outputKey string, neverDelete []string, applied map[string]bool) {
 	if store == nil || len(inputKeys) == 0 {
 		return
 	}
@@ -160,7 +179,7 @@ func reconcileTombstones(store *delete.TombstoneStore, inputKeys []string, outpu
 		if snapshot.Mode == "hide" {
 			continue
 		}
-		clean := snapshot.EligibleForPhysicalRemoval(now, rewriteDelay)
+		clean := applied[snapshot.ID]
 		var reapedHere int
 		// Update, not Get-modify-Add: the rewrite scheduler writes the same
 		// record concurrently, and a lost update here would drop the transfer
@@ -185,9 +204,9 @@ func reconcileTombstones(store *delete.TombstoneStore, inputKeys []string, outpu
 				if !containsKey(ts.AffectedKeys, outputKey) {
 					ts.AffectedKeys = append(ts.AffectedKeys, outputKey)
 				}
-				// Clean only if this compaction applied the tombstone's
-				// predicate; otherwise the rows were carried forward and the
-				// output waits for the rewriter.
+				// Clean only if this merge applied the tombstone's predicate;
+				// otherwise the rows were carried forward and the output waits
+				// for the rewriter.
 				ts.Reaped[outputKey] = clean
 			}
 			return true
