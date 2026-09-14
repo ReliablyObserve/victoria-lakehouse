@@ -113,7 +113,7 @@ graph LR
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `lakehouse_parquet_row_groups_skipped_total` | Counter | `reason` | Skipped by stats/bloom |
+| `lakehouse_parquet_row_groups_skipped_total` | Counter | `reason` | Objects or row groups skipped before decoding, by the stage that pruned them: `label_index`, `column_stats` (manifest file pre-filters), `footer_prefetch` (footer-only file skip), `stats` (row-group time range), `bloom`, `pushdown`, `token_bloom` (row-group checks). Every reason is exported at zero from process start |
 | `lakehouse_parquet_bloom_checks_total` | Counter | `result` | Bloom lookups |
 | `lakehouse_parquet_column_bytes_read_total` | Counter | | Parquet I/O |
 

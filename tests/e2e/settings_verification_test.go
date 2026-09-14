@@ -611,14 +611,15 @@ func TestSetting_Parquet_BloomChecks_AfterQuery(t *testing.T) {
 	}
 
 	metrics := scrapeMetrics(t, logsBaseURL)
-	// The absent trace_id is answered from object metadata, and every skip is
-	// recorded in lakehouse_parquet_row_groups_skipped_total under the stage
-	// that made it (manifest column statistics, the footer, the row-group bloom
-	// filter). Which stage fires depends on the objects in the window: a request
-	// without tenant headers reads only tenant 0:0, whose objects on this stack
-	// are pruned by column statistics before any row group is opened. The
-	// row-group bloom reason is pinned on a controlled object by
-	// TestRowGroupBloomSkip_RecordsEverySkippedRowGroup.
+	// Skips are recorded in lakehouse_parquet_row_groups_skipped_total under
+	// the stage that made them (label index, manifest column statistics, the
+	// footer, the row-group checks). Which stage prunes this query depends on
+	// the objects in the window and on the statistics earlier reads recorded:
+	// a request without tenant headers reads only tenant 0:0, and its objects
+	// can all be pruned before any row group is opened, so the row-group bloom
+	// reason itself is pinned on a controlled object by
+	// TestRowGroupBloomSkip_RecordsEverySkippedRowGroup; here a recorded skip is
+	// required.
 	assertMetricGE(t, metrics, "lakehouse_parquet_row_groups_skipped_total", 1)
 }
 

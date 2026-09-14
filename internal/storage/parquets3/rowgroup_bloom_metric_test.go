@@ -21,11 +21,12 @@ import (
 // only the row group that can hold the queried trace_id, and records every
 // other row group as lakehouse_parquet_row_groups_skipped_total{reason="bloom"}.
 //
-// The e2e settings check can no longer infer this from a live stack: a request
-// without tenant headers reads only tenant 0:0, and manifest column statistics
-// prune 0:0's objects for an absent trace_id before any row group is opened —
-// the `reason="bloom"` series it looked for came from other tenants' objects,
-// which an unscoped read used to include.
+// A live stack cannot show this reliably: a request without tenant headers
+// reads only tenant 0:0, and when the e2e settings check ran, manifest column
+// statistics pruned all of 0:0's objects for its absent trace_id before any row
+// group was opened ("column stats pre-filter: skipped 3/3 files"), so no bloom
+// skip happened. Before tenant scoping the same request also read every other
+// tenant's objects.
 func TestRowGroupBloomSkip_RecordsEverySkippedRowGroup(t *testing.T) {
 	const known = "deadbeefcafe00010203040506070809"
 

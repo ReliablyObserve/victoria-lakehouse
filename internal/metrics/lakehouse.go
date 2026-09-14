@@ -192,6 +192,22 @@ var (
 	ManifestUpdateReceivedTotal         = NewCounter("lakehouse_manifest_update_received_total")
 )
 
+// RowGroupSkipReasons is every reason ParquetRowGroupsSkipped is incremented
+// with on either binary: the manifest-level file pre-filters (label_index,
+// column_stats), the footer-only file skip (footer_prefetch) and the
+// row-group checks (stats = time range, bloom, pushdown, token_bloom).
+// TestRowGroupSkipReasons_MatchCallSites keeps the list and the call sites in
+// step.
+var RowGroupSkipReasons = []string{"label_index", "column_stats", "footer_prefetch", "stats", "bloom", "pushdown", "token_bloom"}
+
+func init() {
+	// Export every reason from process start. Which stage prunes a query
+	// depends on the objects it selects, so a series that only appeared on
+	// its first skip could be missing for a long time on a tenant-scoped
+	// read that never reaches that stage.
+	ParquetRowGroupsSkipped.Init(RowGroupSkipReasons...)
+}
+
 // Parquet engine metrics
 var (
 	ParquetRowGroupsScanned = NewCounter("lakehouse_parquet_row_groups_scanned_total")

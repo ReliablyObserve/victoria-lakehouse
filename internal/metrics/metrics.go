@@ -111,6 +111,15 @@ func (cv *CounterVec) Get(labelValue string) uint64 {
 	return vmmetrics.GetOrCreateCounter(fmt.Sprintf(`%s{%s=%q}`, cv.name, cv.label, labelValue)).Get()
 }
 
+// Init creates the series of each label value at zero, so a counter whose
+// label values are known in advance is exported before its first increment
+// (rate() and absent-series alerts see it from process start).
+func (cv *CounterVec) Init(labelValues ...string) {
+	for _, v := range labelValues {
+		vmmetrics.GetOrCreateCounter(fmt.Sprintf(`%s{%s=%q}`, cv.name, cv.label, v))
+	}
+}
+
 // GaugeVec is a set of gauges indexed by a single label value.
 type GaugeVec struct {
 	name  string
