@@ -1,0 +1,121 @@
+# Planned features. Only items the repo already documents as committed or as
+# a known gap belong here (docs/roadmap.md, docs/parity-and-gaps.md) — the
+# catalog is a record of what exists and what is promised in writing, never a
+# wish list. Each keeps its own area, so it is grouped with the shipped
+# features it will extend.
+
+- id: lh.feature.storage.cold_open_zero_roundtrip
+  title: Cold-open round-trip elimination
+  status: planned
+  area: storage
+  surfaces: [storage]
+  docs:
+    - docs/roadmap.md
+    - docs/architecture/metadata-and-s3-optimization.md
+  highlight: >-
+    **Zero-round-trip cold open**: file geometry carried in partition metadata so a planned read starts fetching data with no metadata round trips at all.
+  description: >-
+    Opening a cold file still costs a footer read before the planner knows where anything is.
+    Carrying the geometry in the partition bundle would remove that round trip entirely, which is
+    the last structural latency cost in the planned-fetch path.
+
+- id: lh.feature.storage.low_latency_metadata_tier
+  title: Optional low-latency metadata tier
+  status: planned
+  area: storage
+  surfaces: [storage, flag]
+  docs:
+    - docs/roadmap.md
+  highlight: >-
+    **Optional low-latency metadata tier**: a profile-integrated choice for single-digit-millisecond metadata reads where the deployment can support one.
+  description: >-
+    Partition metadata on S3 inherits the object store's latency floor. Where a deployment can
+    offer something faster, the metadata layer would be able to use it as an option chosen by
+    profile — without becoming a required dependency for everyone else.
+
+- id: lh.feature.query.ngram_bloom
+  title: N-gram pruning for full-text search
+  status: planned
+  area: query
+  surfaces: [storage]
+  docs:
+    - docs/roadmap.md
+    - docs/bloom-index.md
+  highlight: >-
+    **Full-text acceleration**: n-gram pruning so a substring search over message bodies skips files instead of scanning them.
+  description: >-
+    Today's blooms answer exact-value questions on indexed fields, so a free-text search still
+    reads the message column. N-gram filters would extend file skipping to substring search, the
+    most common interactive query the cold tier cannot yet prune.
+
+- id: lh.feature.compaction.parallel_bounded
+  title: Parallel compaction under resource caps
+  status: planned
+  area: compaction
+  surfaces: [flag]
+  docs:
+    - docs/roadmap.md
+  highlight: >-
+    **Parallel compaction with resource caps**: higher compaction throughput under the same memory governors that bound the query path.
+  description: >-
+    Compaction is currently deliberately serial per owner to keep its memory predictable. Running
+    several merges under the existing resource-bound primitive would raise throughput without
+    reintroducing the unbounded-memory failure mode.
+
+- id: lh.feature.traces.dependency_preaggregation
+  title: Pre-aggregated trace dependencies
+  status: planned
+  area: traces
+  surfaces: [storage]
+  docs:
+    - docs/roadmap.md
+    - docs/parity-and-gaps.md
+  highlight: >-
+    **Trace dependency pre-aggregation**: service-graph queries answered from precomputed edges rather than re-aggregating spans per request.
+  description: >-
+    The service graph is currently recomputed by a periodic task and queried as rows. Pre-
+    aggregating the edges would make the Dependencies view cheap on long windows, where the
+    aggregation cost grows with the span count.
+
+- id: lh.feature.traces.span_metrics
+  title: Derived span (RED) metrics
+  status: planned
+  area: traces
+  surfaces: [api]
+  docs:
+    - docs/parity-and-gaps.md
+  highlight: >-
+    **Span metrics**: rate/error/duration series derived from cold spans, the one Tempo capability the cold tier does not synthesize today.
+  description: >-
+    Tempo emits derived RED metrics from spans; the cold tier does not, so that Grafana view
+    stays empty over archived windows and users fall back to the hot tier's retention. Closing it
+    means generating the series from cold spans and exposing them on a Prometheus-shaped surface.
+
+- id: lh.feature.traces.service_graph_prometheus
+  title: Prometheus-shaped service-graph series for the Tempo plugin
+  status: planned
+  area: traces
+  surfaces: [api]
+  docs:
+    - docs/parity-and-gaps.md
+  highlight: >-
+    **Tempo Service Graph view**: a Prometheus-API shim turning persisted service-graph edges into `traces_service_graph_*` series, so Grafana's Tempo plugin renders the graph it expects.
+  description: >-
+    The Jaeger Dependencies view already works from cold storage; the Tempo plugin's own service
+    map requires a Prometheus datasource carrying `traces_service_graph_*` metrics. The datasource
+    is wired so the view no longer errors, but it renders empty until the shim exists.
+
+- id: lh.feature.tenancy.stats_groupby
+  title: Per-tenant grouping in the VL stats path
+  status: planned
+  area: tenancy
+  surfaces: [api]
+  docs:
+    - docs/parity-and-gaps.md
+  highlight: >-
+    **`stats by (account_id, project_id)`**: grouping a LogsQL stats query by tenant, which the VL stats path cannot do today because those are plain Parquet columns rather than stream fields.
+  description: >-
+    Per-tenant totals are available from `/api/v1/tenants` and the breakdown API, but not from a
+    LogsQL `stats by` query, because tenancy is carried in columns the stream-id machinery does
+    not know about. Closing it means promoting them into the stream id or extending the stats
+    path.

@@ -1,0 +1,276 @@
+# Ops features: running the thing — lifecycle, profiles, and the verification
+# machinery that keeps the other features honest.
+
+- id: lh.feature.ops.lifecycle_endpoints
+  title: Lifecycle HTTP endpoints
+  status: shipped
+  since: v0.49.0
+  area: ops
+  surfaces: [api]
+  rows: [lh.lifecycle.ring.schema, lh.health.status, lh.ready.status]
+  tests:
+    - internal/lifecycle/handlers_test.go#TestHandleDrain_Post
+    - internal/lifecycle/handlers_test.go#TestHandleLifecycleReady_Draining
+    - internal/lifecycle/handlers_test.go#TestHandleLifecycleRing
+    - internal/lifecycle/handlers_test.go#TestHandleLifecycleStale_WithData
+    - internal/lifecycle/k8s_safety_test.go#TestHandleLifecycleReady_DrainingHeader
+  docs:
+    - docs/operations/lifecycle.md
+    - docs/kubernetes-deployment.md
+  highlight: >-
+    **Lifecycle endpoints**: `/internal/lifecycle/drain`, `/ready`, `/ring` and `/stale` let Kubernetes and an operator see and drive what a pod is doing — draining, warm, stale, or holding which part of the ring.
+  description: >-
+    Readiness on a cold tier is not binary: a pod can be up, ringed and still unable to answer
+    correctly because its snapshot is stale. These endpoints expose that distinction so probes,
+    the HPA and a human all act on the same truth.
+
+- id: lh.feature.ops.scaling_safety
+  title: Scaling safety — phased shutdown, staleness detection, ring stabilization
+  status: shipped
+  area: ops
+  surfaces: [api, flag]
+  tests:
+    - internal/lifecycle/shutdown_test.go#TestShutdownOrchestrator_HappyPath
+    - internal/lifecycle/shutdown_test.go#TestShutdownOrchestrator_PhaseTimeout
+    - internal/lifecycle/k8s_safety_test.go#TestShutdownPhaseOrdering_StrictSequence
+    - internal/lifecycle/staleness_test.go#TestStalenessDetector_StaleManifest
+    - internal/peercache/ring_change_test.go#TestPeerCache_Stabilization_ShadowMembers
+  docs:
+    - docs/operations/lifecycle.md
+    - docs/architecture/scaling-restart-scenarios.md
+  changelog_bullets:
+    - 'Honest lifecycle + cold-start protection at PB scale (PR #122)'
+  highlight: >-
+    **K8s scaling safety**: a phased shutdown (drain → flush → persist → release) with per-phase timeouts, startup staleness detection that re-flushes and revalidates before serving, and ring-change stabilization with shadow members so a scale event does not strand cached data.
+  description: >-
+    Autoscaling a stateful cold tier is where data is quietly lost: a pod killed mid-flush, a pod
+    that comes back with a stale snapshot and answers confidently, a ring that reshuffles
+    ownership faster than caches can follow. Each of those is handled explicitly and, at PB
+    scale, with cold-start protection so a restarted fleet does not stampede S3.
+
+- id: lh.feature.ops.startup_warmup
+  title: Startup warmup sequence
+  status: shipped
+  area: ops
+  surfaces: [flag]
+  tests:
+    - internal/startup/honesty_test.go#TestWarmupComplete_OnlyTrueAfterSet
+    - internal/startup/manager_test.go#TestManager_Lifecycle
+    - internal/storage/parquets3/warmup_test.go#TestFilterOwnedFiles_MixedOwnership
+    - internal/storage/parquets3/warmup_priority_test.go#TestWarmupSortByMaxTimeNs
+    - internal/startup/hints_test.go#TestEmitStartupHints_SlowWarmup
+  docs:
+    - docs/operations/lifecycle.md
+    - docs/architecture/restart-and-warmup-design.md
+  changelog_bullets:
+    - 'Startup warmup sequence'
+  highlight: >-
+    **Startup warmup**: a starting pod loads its snapshots and warms the files it owns, newest first, and only reports warm when it actually is — with hints emitted when warmup is running slow.
+  description: >-
+    A pod that reports ready before it is warm converts a restart into a latency incident. The
+    warmup sequence prioritizes the data most likely to be queried, restricts work to the files
+    the ring says this pod owns, and refuses to claim completion early.
+
+- id: lh.feature.ops.config_profiles
+  title: Configuration profiles
+  status: shipped
+  area: ops
+  readme_section: Configuration Profiles
+  surfaces: [flag, cli]
+  tests:
+    - internal/config/profile_test.go#TestProfileConfig_AllProfiles
+    - internal/config/profile_integration_test.go#TestIntegration_AllProfilesCompileForTraces
+    - internal/config/profile_regression_test.go#TestProfileRegression_InsertPath
+  docs:
+    - docs/configuration.md#configuration-profiles
+    - docs/getting-started.md
+  changelog_bullets:
+    - 'Config extensions'
+  highlight: >-
+    **Five named presets** (`balanced`, `max-performance`, `max-durability`, `max-cost-savings`, `dev`) tune 40+ settings for a specific operational goal.
+  description: >-
+    Most deployments want one of a few postures, not forty individual decisions. A profile sets
+    them coherently — durability, cache budget, GC cadence, retention — and is regression-tested
+    so a profile change cannot silently alter the insert path's behavior.
+
+- id: lh.feature.ops.profile_hierarchy
+  title: Three-level profile hierarchy
+  status: shipped
+  since: v0.49.0
+  area: ops
+  readme_section: Configuration Profiles
+  surfaces: [flag]
+  tests:
+    - internal/config/profile_resolve_test.go#TestResolveEffectiveProfile_PerRoleOverridesPerSignal
+    - internal/config/profile_precedence_test.go#TestProfilePrecedence_ConfigFileOverridesProfile
+  docs:
+    - docs/configuration.md#configuration-profiles
+    - docs/kubernetes-deployment.md
+  highlight: >-
+    **Three-level hierarchy** in Helm: global → per-signal (logs/traces) → per-role (insert/select), with the more specific level winning — and any explicit setting always overriding the profile, because profiles provide defaults, not constraints.
+  description: >-
+    One cluster usually wants different postures per signal and per role: durable inserts,
+    fast selects. The hierarchy expresses that without forking the values file, and explicit
+    settings always beat the profile so there is no knob a profile can take away.
+
+- id: lh.feature.ops.conformance_registry
+  title: Conformance registry and upstream drift gate
+  status: shipped
+  area: ops
+  surfaces: [cli]
+  tests:
+    - tests/conformance/drift_test.go#TestDrift_RealRegistry
+    - tests/conformance/registry/rows_test.go#TestRows_LoadAndCounts
+    - tests/conformance/inventory/inventory_test.go#TestExtract_RealDeps
+    - scripts/ci/tests/test_check_registry_touch.sh
+  docs:
+    - tests/conformance/README.md
+    - UPSTREAM_COVERAGE.md
+  changelog_bullets:
+    - 'Conformance registry + upstream inventory (verification machine, first slice).'
+  highlight: >-
+    **Conformance registry**: one row per upstream endpoint, pipe, filter, stats function and TraceQL function, extracted from the vendored VL/VT sources and gated in CI — an upstream surface without a row fails the build.
+  description: >-
+    The registry is the answer to "what does upstream have that we might have missed". The
+    inventory is extracted from the vendored sources rather than maintained by hand, the drift
+    check is a hard gate on unmapped items and on rows citing something upstream no longer has,
+    and `UPSTREAM_COVERAGE.md` is generated from both.
+
+- id: lh.feature.ops.feature_catalog
+  title: Lakehouse feature catalog
+  status: shipped
+  area: ops
+  surfaces: [cli]
+  tests:
+    - tests/conformance/features_test.go#TestFeatures_RealCatalog
+    - tests/conformance/registry/features_test.go#TestLoadFeatures_Valid
+    - tests/conformance/report/features_test.go#TestRenderFeatures
+    - scripts/ci/tests/test_check_registry_touch.sh
+  docs:
+    - tests/conformance/README.md
+    - docs/features.md
+  changelog_bullets:
+    - 'Lakehouse feature catalog — every feature linked to its rows, tests and docs, with generated highlights.'
+  highlight: >-
+    **Feature catalog**: every Lakehouse capability is declared with the registry rows, tests, benchmarks and docs that verify it — and `docs/features.md` plus the README's Key Features bullets are generated from that declaration, so what ships and what is verified cannot drift apart.
+  description: >-
+    The conformance registry answers "did we miss something upstream has"; the feature catalog
+    answers the mirror question, "did we miss verifying something we built". A changelog
+    `### Added` bullet, a new route, flag or handler, or a new Lakehouse registry row all fail CI
+    until the catalog accounts for them, and the highlights users read are generated from the
+    same source rather than written separately.
+
+- id: lh.feature.ops.verification_matrix
+  title: Per-surface verification matrix and probes
+  status: shipped
+  area: ops
+  surfaces: [cli]
+  tests:
+    - tests/verification/check_matrix_coverage.sh
+    - tests/verification/probe_matrix_sweep.sh
+    - tests/verification/probe_logs_24h_wildcard.sh
+    - tests/verification/probe_jaeger_search_24h_full_chain.sh
+    - tests/verification/probe_tempo_search_24h.sh
+  docs:
+    - tests/verification/matrix.md
+    - docs/parity-and-gaps.md
+  changelog_bullets:
+    - 'E2E verification probes'
+  highlight: >-
+    **Verification matrix**: every exposed HTTP surface has a row with its verified status and a probe script that replays it against a live stack, plus a CI check that fails when the matrix cites a file that no longer exists.
+  description: >-
+    The matrix is the operational counterpart of the registry: it records what has actually been
+    exercised end to end against a running compose stack. Its self-policing coverage check means
+    renaming or deleting a probe forces the matrix to be updated in the same PR.
+
+- id: lh.feature.ops.benchmark_harness
+  title: Validated benchmark harness
+  status: shipped
+  area: ops
+  surfaces: [cli]
+  tests:
+    - scripts/bench/tests/extract_result_test.sh
+    - scripts/bench/tests/measure_query_test.sh
+    - scripts/bench/tests/scan_membership_test.sh
+    - scripts/bench/tests/test_report_validity.py
+  notes: >-
+    The linked harness tests are not run in CI; they are run by hand alongside the benchmarks.
+  docs:
+    - docs/benchmarks.md
+    - docs/benchmarks/full-scope-s3.md
+  changelog_bullets:
+    - 'Benchmark tooling'
+  bench: [count_total, count_by_service, scan, trace_by_id]
+  highlight: >-
+    **Benchmark harness**: Lakehouse against hot VL/VT and ClickHouse-over-S3 on the same seed, the same nanosecond windows and both S3 latency profiles — with every timed response validated before its latency counts.
+  description: >-
+    A fast wrong answer is not a benchmark result. The harness validates every iteration's
+    response — status, parseability, non-emptiness, stability, and for truncated scans membership
+    plus cardinality against a reference window — and drops invalid iterations instead of
+    reporting them as latency.
+
+- id: lh.feature.ops.parquet_readback_gate
+  title: Multi-engine Parquet readback gate
+  status: shipped
+  area: ops
+  surfaces: [cli]
+  tests:
+    - scripts/ci/parquet-readback/gen/main_test.go#TestGenLogs_TruthMatchesTheFileWritten
+    - scripts/ci/parquet-readback/gen/main_test.go#TestGenTraces_TruthMatchesTheFileWritten
+  docs:
+    - docs/open-parquet-format.md
+  changelog_bullets:
+    - 'Multi-engine parquet readback CI gate (`parquet-readback` job): every parquet encoding change now ships behind a pyarrow + duckdb readback proof.'
+  notes: >-
+    The engine comparison itself (`verify.py` reading the generated files with pyarrow and DuckDB)
+    is the `parquet-readback` CI job, not a test the catalog can link. The linked tests, which run
+    in that job first, read the generated files back and check the truth the engines are compared
+    against and the production writer options the files carry.
+  highlight: >-
+    **Readback gate**: every Parquet encoding change must prove that pyarrow and DuckDB still read the files — row-for-row — before it can merge.
+  description: >-
+    The promise that Lakehouse files are plain Parquet is only as good as the last encoding
+    change. The gate writes files with the current writer and reads them back with two
+    independent engines, comparing row-level equality rather than just "it opened".
+
+- id: lh.feature.ops.loadtest
+  title: Load-test binary and nightly run
+  status: shipped
+  area: ops
+  surfaces: [cli]
+  tests:
+    - cmd/loadtest/concurrent_test.go#TestBuildQueryMix
+    - cmd/loadtest/mixed_rw_test.go#TestCalcDegradation
+    - cmd/loadtest/report_test.go#TestReport_PassCheck
+  docs:
+    - docs/benchmarks.md
+  changelog_bullets:
+    - 'Load testing binary'
+    - 'Nightly CI load test'
+  notes: >-
+    The linked unit tests are not run in CI (the CI test jobs cover `internal/`); the nightly
+    load-test workflow runs the binary itself.
+  highlight: >-
+    **Load testing**: `cmd/loadtest` drives mixed read/write load with a configurable query mix and pass/fail thresholds, run nightly in CI so throughput regressions surface without a human remembering to look.
+  description: >-
+    Throughput and degradation under concurrent read/write are properties that only fail at
+    scale. The binary measures them with an explicit pass check, and the nightly workflow keeps
+    the measurement continuous rather than occasional.
+
+- id: lh.feature.ops.datagen
+  title: Synthetic OTel data generator
+  status: shipped
+  since: v0.10.0
+  area: ops
+  surfaces: [cli]
+  tests:
+    - tests/parity/servicegraph_parity_test.go#TestServiceGraphParity_GeneratorProducesCrossServiceEdges
+  docs:
+    - docs/benchmarks.md
+    - docs/docker-compose-setup.md
+  highlight: >-
+    **Data generator**: `cmd/datagen` produces realistic OTel logs and traces — correlated trace IDs, cross-service spans, believable cardinality — so e2e, parity and benchmark runs measure something representative.
+  description: >-
+    Every e2e and benchmark claim in this repo is only as honest as its seed. The generator emits
+    logs and traces that correlate, span services, and carry the cardinality real telemetry has,
+    which is what makes service-graph and cross-signal tests meaningful.
