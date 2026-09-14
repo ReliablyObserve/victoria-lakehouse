@@ -681,7 +681,7 @@ func plainValue(v reflect.Value) any {
 			}
 		}
 		return out
-	case reflect.Ptr, reflect.Interface:
+	case reflect.Pointer, reflect.Interface:
 		if v.IsNil() {
 			return nil
 		}
@@ -724,7 +724,7 @@ func typeName(t reflect.Type) string {
 		return "map[" + typeName(t.Key()) + "]" + typeName(t.Elem())
 	case reflect.Struct:
 		return "object"
-	case reflect.Ptr:
+	case reflect.Pointer:
 		return typeName(t.Elem())
 	}
 	return t.Kind().String()
@@ -760,7 +760,7 @@ func probeValue(t reflect.Type, variant int) reflect.Value {
 				v.Field(i).Set(probeValue(t.Field(i).Type, variant))
 			}
 		}
-	case t.Kind() == reflect.Ptr:
+	case t.Kind() == reflect.Pointer:
 		p := reflect.New(t.Elem())
 		p.Elem().Set(probeValue(t.Elem(), variant))
 		v.Set(p)
